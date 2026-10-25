@@ -1,0 +1,8 @@
+{
+	"lt_bank": { "label": "LT + D-pad bank", "type": "toggle",
+	             "description": "Four more slots, reached by holding the left trigger." },
+	"rt_bank": { "label": "RT + D-pad bank", "type": "toggle",
+	             "description": "Four more slots, reached by holding the right trigger. While any of them is assigned the right trigger no longer opens the spells menu." },
+	"hud_icons": { "label": "Slot icons on the D-pad", "type": "toggle",
+	               "description": "Show what each slot holds on the HUD's D-pad, and the held bank's slots while a trigger is down." }
+}

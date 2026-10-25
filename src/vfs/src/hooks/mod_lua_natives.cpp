@@ -43,6 +43,8 @@
 //   event_replica() · wheel_switches_target(e)
 //   renown(e) · morality(e) · purity(e) · physique(e) -> fat, height
 //   age(e) · inventory(e) · equipped(e) -> melee, ranged · near(x, y, z, r [, creatures])
+//   use_item(p, def) · equip_weapon(p, def) · perform_expression(p, expression) · assign_spell(p, spell)
+//   expressions(p) · spells_known(p) · selected_expression(p) · record_string(def, field) · record_int(def, field)
 //   line_of_sight(x1, y1, z1, x2, y2, z2) · spawn(def, x, y, z) · entity(handle) · handle(entity)
 //   forgive_crimes(villager, p) · discovered_crime(villager, p) · perceived_renown(villager, p)
 //   stop_fx(id) · _play_fx(name, x, y, z, e, duration, scale, r, g, b, intensity, loop, ox, oy, oz)
@@ -52,6 +54,7 @@
 //   notice(title, text [, seconds [, p]]) · _menu_box(title, text, p, cancelable, n, o1 .. o12)
 //   _mark(e, x, y, z, icon, text, p) (mark is the preamble's) · unmark(id) · fade(p, dir [, seconds])
 //   meter(id, label, value, max [, p [, style]]) · meter_remove(id)
+//   input_claim(p, action, on) · hud_icon(p, element, texture) · hud_slide(p, element, slide) · hud_hold(p, piece, on)
 //   _light(e, x, y, z, r, g, b, energy, range, ox, oy, oz, at, flicker, dx, dy, dz, cone, attenuation) (light is the preamble's)
 //   light_remove(id) · send_to_partner(mod, name, payload)
 //   (menu_box is the preamble's: it unpacks the options table)
@@ -1516,6 +1519,114 @@ REFII_LUA_NATIVE(NativeEquipped) {
 }
 
 // Refii.near(x, y, z, radius [, creatures_only]): handles, nearest first (at most 2048).
+// The quick menu's actions for player p (refii_mod_use_item ..): Refii.use_item(p, def) ·
+// equip_weapon(p, def) · perform_expression(p, expression) · assign_spell(p, spell) -> performed.
+REFII_LUA_NATIVE(NativeUseItem) {
+  lua.PushBoolean(refii_mod_use_item(&lua.ctx, lua.base, lua.Int(1), lua.Hash(2)) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeEquipWeapon) {
+  lua.PushBoolean(refii_mod_equip_weapon(&lua.ctx, lua.base, lua.Int(1), lua.Hash(2)) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativePerformExpression) {
+  lua.PushBoolean(refii_mod_perform_expression(&lua.ctx, lua.base, lua.Int(1), lua.Hash(2)) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeAssignSpell) {
+  lua.PushBoolean(refii_mod_assign_spell(&lua.ctx, lua.base, lua.Int(1), lua.Int(2)) != 0);
+  RESULTS(1);
+}
+
+// Refii.expressions(p): { {record = "0x…", id = "0x…", uses = n}, … } the performer knows (id is
+// the record: what perform_expression takes and selected_expression answers), or nil without one.
+REFII_LUA_NATIVE(NativeExpressions) {
+  const int32_t player = lua.Int(1);
+  const uint32_t hero = player >= 1 && player <= 2 ? refii_mod_player_hero(lua.base, player) : 0u;
+  if (hero == 0 || refii_mod_component(lua.base, hero, 154) == 0) {
+    lua.PushNil();
+    RESULTS(1);
+    return;
+  }
+  lua.NewTable();
+  uint32_t record = 0;
+  int32_t uses = 0;
+  for (int32_t i = 0; i < 512 && refii_mod_expression(lua.base, player, i, &record, &uses) != 0; ++i) {
+    lua.NewTable();
+    lua.PushHash(record);
+    lua.SetField(-2, "record");
+    lua.PushHash(record);
+    lua.SetField(-2, "id");
+    lua.PushNumber(uses);
+    lua.SetField(-2, "uses");
+    lua.RawSetI(-2, i + 1);
+  }
+  RESULTS(1);
+}
+
+// Refii.spells_known(p): { type, … } ascending — the spell types the hero can assign to some tier —
+// or nil without a spell manager.
+REFII_LUA_NATIVE(NativeSpellsKnown) {
+  uint32_t mask = 0;
+  if (refii_mod_spells_known(lua.base, lua.Int(1), &mask) == 0) {
+    lua.PushNil();
+    RESULTS(1);
+    return;
+  }
+  lua.NewTable();
+  int32_t n = 0;
+  for (uint32_t type = 0; type < 8; ++type) {
+    if ((mask & (1u << type)) != 0) {
+      lua.PushNumber(type);
+      lua.RawSetI(-2, ++n);
+    }
+  }
+  RESULTS(1);
+}
+
+// Refii.selected_expression(p): the record "0x…" the expression wheel highlights while it is up for
+// player p, or nil.
+REFII_LUA_NATIVE(NativeSelectedExpression) {
+  const uint32_t record = refii_mod_selected_expression(lua.base, lua.Int(1));
+  if (record != 0) {
+    lua.PushHash(record);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+// Refii.record_string(def, field): a GDB record's inherited string property ("NameTag",
+// "IconGraphic") through the game's own getter, or nil.
+REFII_LUA_NATIVE(NativeRecordString) {
+  char field[64];
+  lua.String(2, field, sizeof(field));
+  char text[256];
+  if (refii_mod_record_string(&lua.ctx, lua.base, lua.Hash(1), field, text, sizeof(text)) != 0) {
+    lua.PushString(text);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+// Refii.record_int(def, field): a GDB record's inherited integer or enum property ("Category",
+// "WeaponType") through the game's typed getter, or nil.
+REFII_LUA_NATIVE(NativeRecordInt) {
+  char field[64];
+  lua.String(2, field, sizeof(field));
+  int32_t value = 0;
+  if (refii_mod_record_int(&lua.ctx, lua.base, lua.Hash(1), field, &value) != 0) {
+    lua.PushNumber(static_cast<double>(value));
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
 REFII_LUA_NATIVE(NativeNear) {
   const float xyz[3] = {static_cast<float>(lua.Number(1)), static_cast<float>(lua.Number(2)),
                         static_cast<float>(lua.Number(3))};
@@ -1637,6 +1748,42 @@ REFII_LUA_NATIVE(NativeMeterRemove) {
   char id[96];
   lua.String(1, id, sizeof(id));
   lua.PushBoolean(refii_mod_meter_remove(id) != 0);
+  RESULTS(1);
+}
+
+// Refii.input_claim(p, action, on): refii_mod_input_claim — the action's buttons and keys leave
+// player p's pad (0 or nil: both) while claimed; its input_action events still fire. True when posted.
+REFII_LUA_NATIVE(NativeInputClaim) {
+  char action[96];
+  lua.String(2, action, sizeof(action));
+  lua.PushBoolean(refii_mod_input_claim(lua.Int(1), action, lua.Boolean(3) ? 1 : 0) != 0);
+  RESULTS(1);
+}
+
+// Refii.hud_icon(p, element, texture): refii_mod_hud_icon — a game texture path or a mod PNG on a HUD
+// element for player p (0 or nil: both); "" or nil clears. True when posted.
+REFII_LUA_NATIVE(NativeHudIcon) {
+  char element[96];
+  char texture[160];
+  lua.String(2, element, sizeof(element));
+  lua.String(3, texture, sizeof(texture));
+  lua.PushBoolean(refii_mod_hud_icon(lua.Int(1), element, texture) != 0);
+  RESULTS(1);
+}
+
+// Refii.hud_slide(p, element, slide): refii_mod_hud_slide — the slide as the game counts them; 0 clears.
+REFII_LUA_NATIVE(NativeHudSlide) {
+  char element[96];
+  lua.String(2, element, sizeof(element));
+  lua.PushBoolean(refii_mod_hud_slide(lua.Int(1), element, lua.Int(3)) != 0);
+  RESULTS(1);
+}
+
+// Refii.hud_hold(p, piece, on): refii_mod_hud_hold — keeps a HUD piece visible for player p.
+REFII_LUA_NATIVE(NativeHudHold) {
+  char piece[96];
+  lua.String(2, piece, sizeof(piece));
+  lua.PushBoolean(refii_mod_hud_hold(lua.Int(1), piece, lua.Boolean(3) ? 1 : 0) != 0);
   RESULTS(1);
 }
 
@@ -1930,6 +2077,15 @@ Native g_natives[] = {
     {"age", &NativeAge, 0},
     {"inventory", &NativeInventory, 0},
     {"equipped", &NativeEquipped, 0},
+    {"use_item", &NativeUseItem, 0},
+    {"equip_weapon", &NativeEquipWeapon, 0},
+    {"perform_expression", &NativePerformExpression, 0},
+    {"assign_spell", &NativeAssignSpell, 0},
+    {"expressions", &NativeExpressions, 0},
+    {"spells_known", &NativeSpellsKnown, 0},
+    {"selected_expression", &NativeSelectedExpression, 0},
+    {"record_string", &NativeRecordString, 0},
+    {"record_int", &NativeRecordInt, 0},
     {"near", &NativeNear, 0},
     {"line_of_sight", &NativeLineOfSight, 0},
     {"spawn", &NativeSpawn, 0},
@@ -1947,6 +2103,10 @@ Native g_natives[] = {
     {"fade", &NativeFade, 0},
     {"meter", &NativeMeter, 0},
     {"meter_remove", &NativeMeterRemove, 0},
+    {"input_claim", &NativeInputClaim, 0},
+    {"hud_icon", &NativeHudIcon, 0},
+    {"hud_slide", &NativeHudSlide, 0},
+    {"hud_hold", &NativeHudHold, 0},
     {"_light", &NativeLight, 0},
     {"light_remove", &NativeLightRemove, 0},
     {"send_to_partner", &NativeSendToPartner, 0},

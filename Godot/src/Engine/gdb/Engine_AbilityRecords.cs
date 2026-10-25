@@ -88,6 +88,43 @@ public static class Engine_AbilityRecords
 		return true;
 	}
 
+	/// <summary>
+	/// THE TAGS THE PAGE SHOWS FOR A HERO AT <paramref name="level"/>: the OFFERED record's own —
+	/// the next level's while one can be bought, the held level's at the maximum — with the base
+	/// record's behind each as the fallback. The level records name themselves (`..._NAME_01`,
+	/// `..._LEVEL_01`), and for the two Styles the description IS the level ("Brutal Style 1:
+	/// Blocking … Future Abilities: 2, 3, 4" against "Next Ability: Style 3 … Already Unlocked"),
+	/// so a page reading Record1's tags told a hero with four styles what level one does — the
+	/// "abilities menu shows the first level information" report.
+	/// </summary>
+	public static bool TryTags(string baseRecord, int level, out string nameTag, out string descriptionTag,
+		out string nameFallback, out string descriptionFallback)
+	{
+		nameTag = descriptionTag = nameFallback = descriptionFallback = string.Empty;
+		GdbMulti? multi = Database;
+		if (multi is null || string.IsNullOrEmpty(baseRecord) ||
+			!multi.TryLookup(Engine_GameHash.Fnv1(baseRecord), out GdbCursor at))
+		{
+			return false;
+		}
+
+		int max = MaxLevel(baseRecord);
+		int offered = max > 0 && level >= max ? max : level + 1;
+		GdbCursor from = at;
+		if (!TryLevelRecord(baseRecord, offered, out from) &&
+			!(level > 0 && TryLevelRecord(baseRecord, level, out from)) &&
+			!TryLevelRecord(baseRecord, 1, out from))
+		{
+			from = at;
+		}
+
+		nameFallback = TryText(multi, at, "NameTextTag");
+		descriptionFallback = TryText(multi, at, "DescriptionTextTag");
+		nameTag = Text(multi, from, at, "NameTextTag");
+		descriptionTag = Text(multi, from, at, "DescriptionTextTag");
+		return nameTag.Length != 0 || descriptionTag.Length != 0;
+	}
+
 	/// <summary>A string property off the level record, falling back to the base.</summary>
 	private static string Text(GdbMulti multi, GdbCursor level, GdbCursor root, string property)
 	{

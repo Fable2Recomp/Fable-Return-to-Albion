@@ -168,6 +168,6 @@ public class ModUiHostTests
         string chunk = Engine_UiModMenuCommand.LuaCall(command, "my_menu", "Row", 2, "my_mod");
         AssertThat(chunk.Contains(",player=2,", System.StringComparison.Ordinal)).IsTrue();
         AssertThat(Engine_UiModMenuCommand.RowCommandLine("my menu", "Row", 2, string.Empty))
-            .IsEqual("menu_row 2 my_menu Row -");
+            .IsEqual("menu_row 2 my_menu Row - - -");
     }
 }

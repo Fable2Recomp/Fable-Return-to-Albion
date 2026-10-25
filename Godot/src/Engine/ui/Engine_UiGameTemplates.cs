@@ -102,37 +102,6 @@ public static class Engine_UiGameTemplates
               "hostOnly": true,
               "icon": "Art\\GUI\\WheelIcons\\Abilities\\icon_logbook.tga",
               "counted": false
-            },
-            {
-              "name": "Quickslots",
-              "tag": "Quickslots",
-              "when": "in-game,hotkeys",
-              "hostOnly": true,
-              "icon": "Art\\GUI\\WheelIcons\\Abilities\\icon_logbook.tga",
-              "counted": false,
-              "children": [
-                {
-                  "name": "QuickslotsBase",
-                  "tag": "D-pad",
-                  "command": "options:quickslots:0",
-                  "hostOnly": true,
-                  "counted": false
-                },
-                {
-                  "name": "QuickslotsLT",
-                  "tag": "LT + D-pad",
-                  "command": "options:quickslots:1",
-                  "hostOnly": true,
-                  "counted": false
-                },
-                {
-                  "name": "QuickslotsRT",
-                  "tag": "RT + D-pad",
-                  "command": "options:quickslots:2",
-                  "hostOnly": true,
-                  "counted": false
-                }
-              ]
             }
           ]
         },

@@ -37,13 +37,12 @@ inline constexpr uint32_t kGuestAudioSampleRate = 48000;
 inline constexpr uint32_t kGuestAudioChannels = 6;
 inline constexpr uint32_t kGuestAudioSamplesPerFrame = 256;
 
-/// What we hand Godot. Godot's AudioStreamGenerator is stereo, so the 5.1 frame is
-/// folded on the way in — the same fold the SDK's SDL driver already applies to a
-/// stereo device, so this is not a regression against the current build. Stage 2
-/// retires the question entirely by feeding Godot individual voices instead.
-inline constexpr uint32_t kHostAudioChannels = 2;
-inline constexpr uint32_t kHostAudioFloatsPerFrame =
-    kGuestAudioSamplesPerFrame * kHostAudioChannels;
+/// The ring carries the frame AS SUBMITTED — planar big-endian float, all six channels.
+/// The output stage converts at pull time to what the device has: the SDK's ITU fold for
+/// a stereo device, a pass-through for 5.1. Converting on the way in fixed the channel
+/// count before anything knew the device, which is how the output was stereo-only.
+inline constexpr uint32_t kGuestAudioFloatsPerFrame =
+    kGuestAudioSamplesPerFrame * kGuestAudioChannels;
 
 /// How the guest is credited for a frame the consumer has taken.
 ///
@@ -62,19 +61,28 @@ using HostAudioCreditFn = void (*)(void* context, uint32_t frames);
 /// exactly one client, but "cannot happen" is not the same as "is not handled".
 bool SetHostAudioCreditSink(HostAudioCreditFn fn, void* context);
 
-/// Queues one mixed frame of `kHostAudioFloatsPerFrame` interleaved stereo floats.
+/// Queues one frame of `kGuestAudioFloatsPerFrame` floats, planar big-endian as the guest
+/// submitted it.
 ///
 /// BLOCKS while the ring is full, which is the back-pressure that paces the guest. If
 /// no consumer takes a frame within `timeout_ms` the frame is DROPPED and credited
-/// immediately: a Godot that never polls — no GameAudio node in the scene, a shell that
-/// exited — must leave the guest running silently rather than wedged. Returns true when
-/// the frame was queued, false when it was dropped.
-bool PushHostAudioFrame(const float* interleaved_stereo, uint32_t timeout_ms);
+/// immediately: a Godot that never pulls — no output in the scene, a shell that exited —
+/// must leave the guest running silently rather than wedged. While no consumer is
+/// attached at all (SetHostAudioConsumerAttached) the drop is immediate, so a missing
+/// output costs the guest its sound and nothing else. Returns true when the frame was
+/// queued, false when it was dropped.
+bool PushHostAudioFrame(const float* planar_be, uint32_t timeout_ms);
 
 /// Takes up to `max_frames` frames into `out`, which must hold
-/// `max_frames * kHostAudioFloatsPerFrame` floats. Credits the guest for exactly what it
+/// `max_frames * kGuestAudioFloatsPerFrame` floats. Credits the guest for exactly what it
 /// took. Returns the number of frames written.
 uint32_t PopHostAudioFrames(float* out, uint32_t max_frames);
+
+/// Whether anything is pulling. The output stage attaches once Godot's bus is up and
+/// detaches when it goes; detaching empties the ring, since nothing will take what is in
+/// it.
+void SetHostAudioConsumerAttached(bool attached);
+bool HostAudioConsumerAttached();
 
 /// Frames waiting to be taken.
 uint32_t HostAudioQueuedFrames();

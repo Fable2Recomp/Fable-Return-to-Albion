@@ -35,13 +35,29 @@ public static class Engine_DrawAdvance
 
 	/// <summary>
 	/// The ticks a playhead advances for <paramref name="seconds"/> of drawn time. The pace is
-	/// measured once per frame, from the first caller's frame instant and draw point.
+	/// measured once per frame, from the first caller's frame instant and draw point. Zero while
+	/// the guest states a pause (<see cref="Engine_StatedPause"/>), and the pace measurement is
+	/// re-seeded on release so the held draw point is never read as a slow guest.
 	/// </summary>
 	public static double Ticks(double seconds, ulong nowUsec, double drawTick)
 	{
+		if (Engine_StatedPause.Latched)
+		{
+			_paceUsec = 0UL;
+			_paceDrawTick = double.NaN;
+			return 0.0;
+		}
+
 		Measure(nowUsec, drawTick);
 		return seconds * Engine_TickClock.GameTicksPerSecond * Pace;
 	}
+
+	/// <summary>
+	/// The world time a `_Process` consumer advances by for a frame of <paramref name="delta"/>
+	/// real seconds: the frame at the guest's pace, 0 while the guest states a pause. Identical
+	/// to <paramref name="delta"/> at full pace.
+	/// </summary>
+	public static double Seconds(double delta) => Engine_StatedPause.Latched ? 0.0 : delta * Pace;
 
 	private static void Measure(ulong nowUsec, double drawTick)
 	{

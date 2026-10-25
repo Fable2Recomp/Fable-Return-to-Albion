@@ -1016,12 +1016,6 @@ public static class Engine_UiInventorySource
 	private static string NameTagOf(Refii.Host.HostBridge.InventoryRecord record) =>
 		ItemString(record.RecordId, NameTagField);
 
-	public static Engine_QuickSlots.Choice QuickSlotChoice(Engine_QuickSlots.Binding binding)
-	{
-		var record = new Refii.Host.HostBridge.InventoryRecord(binding.Id, 1, 0, true);
-		return new(binding, binding.Type + ": " + LabelOf(record, NameTagOf(record)), IconOf(record));
-	}
-
 	/// <summary>
 	/// The row's display text: resolves via Engine_ItemNames (or Babel tag fallback), with the stack
 	/// count appended the way the guest does it — `L" x"` then the number (`word_820CE5E0`, 0x826CE31C),

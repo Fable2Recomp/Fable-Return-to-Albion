@@ -156,6 +156,12 @@ public partial class GameInput
 
 		foreach (BoundInput input in inputs)
 		{
+			// A key a mod has CLAIMED (ModInput.Claim) is the mod's: it no longer presses the pad.
+			if (input.Key != Key.None && _withheldKeys.Contains(input.Key))
+			{
+				continue;
+			}
+
 			if (input.Key != Key.None
 				? Godot.Input.IsKeyPressed(input.Key) || Godot.Input.IsPhysicalKeyPressed(input.Key)
 				: MouseInput && PlayButtons.Held((int)input.Mouse))
@@ -182,7 +188,7 @@ public partial class GameInput
 	/// </summary>
 	private void UpdateKeyboardMouse(bool devices)
 	{
-		bool menuOwns = GameGoldenCock.OwnsInput || GameQuickSlots.Assigning || HostUiOwnsPad || ScreenMenuOwnsInput || CoopScreenOwnsInput ||
+		bool menuOwns = GameGoldenCock.OwnsInput || HostUiOwnsPad || ScreenMenuOwnsInput || CoopScreenOwnsInput ||
 			ModalBoxOwnsInput || MenuBoxOwnsInput ||
 			ReceiveItemsOwnsInput || DisplayMessageBoxUp || HostBridge.FrontEndGuiIsUp;
 		Playing = HostBridge.IsInGame && !menuOwns && !MaskPauseInput &&
@@ -255,7 +261,7 @@ public partial class GameInput
 		"RT" => Shown("spells_menu"),
 		"Start" => Shown("pause"),
 		"Back" => Shown("expression_wheel"),
-		"DPad" => Playing || GameQuickSlots.Assigning ? "F1-F4" : "Arrows",
+		"DPad" => Playing ? "F1-F4" : "Arrows",
 		// In a menu the stick prompt sits beside arrows the mouse clicks: no key to show.
 		"LS" => Playing ? "WASD" : string.Empty,
 		"RS" => Playing ? "Mouse" : "Wheel",
@@ -345,6 +351,9 @@ public partial class GameInput
 		}
 	}
 
+	/// <summary>The keys the mods' claims withhold from the pad mapping this frame (ModInput.WithheldKeys).</summary>
+	private static IReadOnlySet<Key> _withheldKeys = new HashSet<Key>();
+
 	/// <summary>The keyboard as pad 0's buttons, triggers and left stick.</summary>
 	private static void KeyboardMouseState(ref PadState state)
 	{
@@ -354,6 +363,7 @@ public partial class GameInput
 			return;
 		}
 
+		_withheldKeys = Refii.Mods.ModInput.WithheldKeys();
 		uint buttons = 0;
 		if (Down("interact") || Down("sprint")) buttons |= ButtonA;
 		if (Down("melee")) buttons |= ButtonX;

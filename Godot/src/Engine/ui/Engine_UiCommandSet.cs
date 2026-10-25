@@ -34,6 +34,11 @@ public readonly record struct Engine_UiCommandContext(
 	public string Command { get; init; } = string.Empty;
 
 	public Engine_FrontEndMenuView? View { get; init; }
+
+	/// <summary>A row action's trailing fields: the highlighted row's own command and the button pressed (Engine_UiRowActions).</summary>
+	public string RowCommand { get; init; } = string.Empty;
+
+	public string Button { get; init; } = string.Empty;
 }
 
 public enum Engine_UiCommandOutcome

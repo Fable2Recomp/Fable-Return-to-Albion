@@ -893,6 +893,9 @@ public static class Engine_UiTemplates
 	/// <summary>Every modal row as it runs, by key — the editor's and the Studio's listing.</summary>
 	public static IEnumerable<KeyValuePair<string, Engine_UiModalTemplate>> ModalRows => Set.Modals.Rows;
 
+	/// <summary>The row actions a mod states for a screen list's menu template (<c>"rowActions"</c>); empty for none.</summary>
+	public static IReadOnlyList<Engine_UiRowActions.RowAction> RowActionsFor(string menu) => Set.RowActions.For(menu);
+
 	/// <summary>
 	/// The answer for a box, or null when it is not owned. A screen-specific row wins over the
 	/// any-screen one, so id 0 can be per-screen while every other id states itself once.
@@ -1553,16 +1556,6 @@ public static class Engine_UiTemplates
 						HostOnly = true,
 						Counted = false,
 						Command = Engine_UiVibrationOptions.OpenCommand,
-					},
-					new Engine_UiMenuEntry
-					{
-						Name = "Quickslots", Tag = "Quickslots", Icon = controls.Icon, HostOnly = true, Counted = false, When = Engine_UiRowConditions.InGame + "," + Engine_UiRowConditions.Hotkeys,
-						Children =
-						{
-							new Engine_UiMenuEntry { Name = "QuickslotsBase", Tag = "D-pad", HostOnly = true, Counted = false, Command = Engine_UiQuickSlotOptions.Prefix + "0" },
-							new Engine_UiMenuEntry { Name = "QuickslotsLT", Tag = "LT + D-pad", HostOnly = true, Counted = false, Command = Engine_UiQuickSlotOptions.Prefix + "1" },
-							new Engine_UiMenuEntry { Name = "QuickslotsRT", Tag = "RT + D-pad", HostOnly = true, Counted = false, Command = Engine_UiQuickSlotOptions.Prefix + "2" },
-						},
 					},
 				},
 				Source = Refii.Mods.ModInputUi.SourceName,

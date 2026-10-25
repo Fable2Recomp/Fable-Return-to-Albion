@@ -275,7 +275,9 @@ public partial class Engine_ShaderWarmup : Node
 
 		int sampleCount = pcm.Length / System.Math.Max(1, channels);
 		stream.LoopBegin = 0;
-		stream.LoopEnd = sampleCount;
+		// Inclusive: the mixer decodes the loop-end frame, so the end is the last frame, not the
+		// count — one past the data is a click at every repeat.
+		stream.LoopEnd = sampleCount - 1;
 		stream.LoopMode = AudioStreamWav.LoopModeEnum.Forward;
 
 		try

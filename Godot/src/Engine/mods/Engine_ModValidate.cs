@@ -423,7 +423,10 @@ public static partial class ModValidate
 	// input.json — ModInput.Load / Parse / TryButton / TryTrigger
 	// ---------------------------------------------------------------------------------------
 
-	private static readonly string[] InputKeys = { "label", "keys", "buttons", "axis" };
+	private static readonly string[] InputKeys = { "label", "keys", "buttons", "axis", "chord" };
+
+	/// <summary>The pad modifiers a <c>"chord"</c> may name (ModInputClaims.PadModifiers); anything else is a key name, the engine's to check.</summary>
+	private static readonly string[] ChordModifiers = { "LT", "RT", "LB", "RB" };
 
 	/// <summary>
 	/// ModInput.TryButton's Xbox aliases and TryTrigger's trigger names. Mirrored, not called:
@@ -534,6 +537,21 @@ public static partial class ModValidate
 				{
 					doc.Error(At(at, "axis"), $"'{axis}' is not a pad axis: LeftX, LeftY, RightX, RightY, TriggerLeft or " +
 						"TriggerRight, optionally signed (+LeftY, -LeftY); ignored");
+				}
+			}
+
+			// The chord: a held LT / RT / LB / RB, or a key name; a chord on nothing is a mistake.
+			string? chord = doc.Text(binding, "chord", at, strict: true);
+			if (chord is not null && chord.Trim().Length != 0)
+			{
+				string name = chord.Trim();
+				if (!ChordModifiers.Contains(name, StringComparer.OrdinalIgnoreCase) && name.Any(char.IsWhiteSpace))
+				{
+					doc.Error(At(at, "chord"), $"'{chord}' is neither LT, RT, LB, RB nor a key name; the chord is ignored");
+				}
+				else if (bound == 0)
+				{
+					doc.Warn(At(at, "chord"), "a chord on an action that binds nothing never fires");
 				}
 			}
 
@@ -1284,7 +1302,9 @@ public static partial class ModValidate
 	// ui/templates.json — Engine_UiTemplates.ApplyOverrideText / PatchMenu / ParseMenu / ParseEntry / ParseScreen
 	// ---------------------------------------------------------------------------------------
 
-	private static readonly string[] TemplatesKeys = { "menus", "screens", "modals" };
+	private static readonly string[] TemplatesKeys = { "menus", "screens", "modals", "rowActions" };
+
+	private static readonly string[] RowActionKeys = { "button", "tag", "command" };
 
 	private static readonly string[] ModalKeys = { "kind", "confirm", "cancel" };
 
@@ -1397,6 +1417,11 @@ public static partial class ModValidate
 			}
 		}
 
+		if (Has(root, Refii.Ui.Engine_UiRowActions.Section))
+		{
+			CheckRowActions(doc, root.GetProperty(Refii.Ui.Engine_UiRowActions.Section));
+		}
+
 		if (Has(root, "screens") && doc.Object(root.GetProperty("screens"), "screens", "must be an object of screens by numeric id; ignored"))
 		{
 			doc.DuplicateKeys(root.GetProperty("screens"), "screens");
@@ -1506,6 +1531,67 @@ public static partial class ModValidate
 	/// name a menu, <c>Mod:lua:&lt;function&gt;[:&lt;arg&gt;]</c> a Lua name path. Whether the menu
 	/// exists is the engine's to say — another mod may define it.
 	/// </summary>
+	/// <summary>
+	/// <c>rowActions</c> (Engine_UiRowActions.ApplyText): an object of lists by menu template name
+	/// (<c>ItemsMenu</c>, <c>WeaponsMenu</c>, <c>ExpressionsMenu</c>, <c>AbilitiesMenu</c>, a mod menu's
+	/// name), each record <c>{ "button": X | Y, "tag", "command" }</c>; <c>null</c> or <c>[]</c> removes
+	/// the list.
+	/// </summary>
+	private static void CheckRowActions(Doc doc, JsonElement block)
+	{
+		string section = Refii.Ui.Engine_UiRowActions.Section;
+		if (!doc.Object(block, section, "must be an object of action lists by menu template name; ignored"))
+		{
+			return;
+		}
+
+		doc.DuplicateKeys(block, section);
+		foreach (JsonProperty menu in block.EnumerateObject())
+		{
+			string at = At(section, menu.Name);
+			if (menu.Name.Trim().Length == 0)
+			{
+				doc.Error(at, "a menu needs a name; ignored");
+				continue;
+			}
+
+			if (menu.Value.ValueKind == JsonValueKind.Null)
+			{
+				continue;
+			}
+
+			if (menu.Value.ValueKind != JsonValueKind.Array)
+			{
+				doc.Error(at, "must be a list of { \"button\", \"tag\", \"command\" } or null; ignored");
+				continue;
+			}
+
+			int index = 0;
+			foreach (JsonElement record in menu.Value.EnumerateArray())
+			{
+				string where = At(at, index++);
+				if (!doc.Object(record, where, "must be an object { \"button\", \"tag\", \"command\" }; ignored"))
+				{
+					continue;
+				}
+
+				doc.Keys(record, where, RowActionKeys);
+				doc.Text(record, "tag", where, strict: true);
+				string? button = doc.Text(record, "button", where, required: true, strict: true);
+				if (button is not null && !Refii.Ui.Engine_UiRowActions.Buttons.Contains(button.Trim(), StringComparer.OrdinalIgnoreCase))
+				{
+					doc.Error(At(where, "button"), $"'{button}' is not a button a screen list can hold: {string.Join(" or ", Refii.Ui.Engine_UiRowActions.Buttons)}; ignored");
+				}
+
+				string? command = doc.Text(record, "command", where, required: true, strict: true);
+				if (command is not null && command.Trim().Length != 0)
+				{
+					MenuCommand(doc, At(where, "command"), command.Trim());
+				}
+			}
+		}
+	}
+
 	private static void MenuCommand(Doc doc, string at, string command)
 	{
 		if (command.StartsWith(Refii.Ui.Engine_UiHostScreens.OpenPrefix, StringComparison.Ordinal) &&

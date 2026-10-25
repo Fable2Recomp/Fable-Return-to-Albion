@@ -44,6 +44,8 @@
 // Naming the guest side of a crash record: the payload's function table owns every host pc
 // inside the recompiled module, the kernel's memory owns every host address inside the arena,
 // and the faulting thread's PPC context carries the guest stack.
+#include <rex/exception_handler.h>
+#include <rex/system/mmio_handler.h>
 #include <rex/system/thread_state.h>
 #include <rex/system/xmemory.h>
 #else
@@ -642,10 +644,50 @@ void WriteWindowsCrashRecord(const char* source,
     std::fclose(crashLog);
 }
 
+/// The fault the vectored path already recorded on this thread, so the unhandled filter does
+/// not write it a second time when the same exception reaches it (a guest thread's does).
+thread_local const void* t_recordedExceptionAddress = nullptr;
+thread_local ULONG_PTR t_recordedAccessAddress = 0;
+
+bool AlreadyRecorded(const EXCEPTION_POINTERS* exceptionPointers) {
+    const EXCEPTION_RECORD* record = exceptionPointers->ExceptionRecord;
+    const ULONG_PTR access =
+        record->NumberParameters >= 2 ? record->ExceptionInformation[1] : 0;
+    return t_recordedExceptionAddress == record->ExceptionAddress &&
+           t_recordedAccessAddress == access;
+}
+
+void NoteRecorded(const EXCEPTION_POINTERS* exceptionPointers) {
+    const EXCEPTION_RECORD* record = exceptionPointers->ExceptionRecord;
+    t_recordedExceptionAddress = record->ExceptionAddress;
+    t_recordedAccessAddress =
+        record->NumberParameters >= 2 ? record->ExceptionInformation[1] : 0;
+}
+
 LONG WINAPI RefiiWindowsUnhandledExceptionFilter(
     EXCEPTION_POINTERS* exceptionPointers) {
-    WriteWindowsCrashRecord("unhandled_exception_filter", exceptionPointers);
+    if (!AlreadyRecorded(exceptionPointers)) {
+        WriteWindowsCrashRecord("unhandled_exception_filter", exceptionPointers);
+    }
     return EXCEPTION_EXECUTE_HANDLER;
+}
+
+/// A read or write of the guest arena that the runtime declined to handle, seen in its
+/// vectored handler — BEFORE the managed runtime takes the fault. On a managed thread (Godot's
+/// main thread reading guest state through the host bridge) coreclr's own handling ends the
+/// process without ever reaching SetUnhandledExceptionFilter, so a fault there left no record:
+/// a player's log ended at "Unhandled guest access violation: read of guest 0x4328910A on
+/// thread 0x19E4" (2026-10-24) and nothing named the reader. This writes the record from the
+/// one place that sees every such fault.
+void RecordUnhandledGuestFault(uint32_t /*guestAddress*/, bool /*isWrite*/,
+                               rex::arch::Exception* exception) {
+    auto* exceptionPointers =
+        static_cast<EXCEPTION_POINTERS*>(exception != nullptr ? exception->native_info() : nullptr);
+    if (exceptionPointers == nullptr) {
+        return;
+    }
+    WriteWindowsCrashRecord("guest_access_violation", exceptionPointers);
+    NoteRecorded(exceptionPointers);
 }
 
 void InstallWindowsCrashRecorder() {
@@ -653,7 +695,9 @@ void InstallWindowsCrashRecorder() {
     std::call_once(once, [] {
         // Guest-memory probes and MMIO can handle access violations normally. A vectored
         // handler runs before those handlers, so walking and logging every fault here
-        // turns normal reads into synchronous crash reports. Record only unhandled faults.
+        // turns normal reads into synchronous crash reports. Record only unhandled faults:
+        // the runtime names them in its own vectored handler, and the filter takes the rest.
+        rex::runtime::SetUnhandledGuestFaultObserver(RecordUnhandledGuestFault);
         SetUnhandledExceptionFilter(RefiiWindowsUnhandledExceptionFilter);
     });
 }

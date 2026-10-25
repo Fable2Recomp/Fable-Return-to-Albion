@@ -85,6 +85,15 @@
 //   query ID lua_int EXPR... (last two tokens LO HI) -> id,ok,value
 //   query ID renown E -> renown · morality E / purity E -> value · physique E -> fat,height
 //   query ID age E -> age · equipped E -> melee,ranged · inventory_stack E I -> definition,count
+//   use_item P DEF · equip_weapon P DEF · perform_expression P EXPRESSION · assign_spell P SPELL
+//                        (refii_mod_use_item ..: the quick menu's own actions for player P's hero,
+//                        gated as the quick menu is; a joiner's weapon pick goes through the co-op kit)
+//   query ID expressions P -> count,e1..eN (records '0x…'),u1..uN (uses)  (refii_mod_expression)
+//   query ID spells_known P -> mask,count  (refii_mod_spells_known: bit 1 << type)
+//   query ID selected_expression P -> expression='0x…'  (refii_mod_selected_expression; ok false with
+//                        no wheel up for P)
+//   query ID record_string DEF FIELD -> value='..'  (refii_mod_record_string: the inherited string)
+//   query ID record_int DEF FIELD -> value=n  (refii_mod_record_int: the inherited int or enum)
 //   query ID near X Y Z R [CREATURES [OFFSET]] -> total,offset,count,e1..ecount (100 a page)
 //   query ID line_of_sight X1 Y1 Z1 X2 Y2 Z2 -> clear
 //   query ID spawn DEF X Y Z -> entity
@@ -413,6 +422,42 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
     int32_t count = 0;
     ok = refii_mod_inventory_stack(base, E(w, 3), I(w, 4), &definition, &count) != 0;
     std::snprintf(fields, sizeof(fields), "definition='0x%08x',count=%d", definition, count);
+  } else if (what == "expressions") {
+    // query ID expressions P -> count=n,e1='0x…',u1=n,...: the performer's known expressions, at
+    // most 60 a reply (a hero knows a few dozen).
+    const int32_t player = I(w, 3);
+    const uint32_t hero = player >= 1 && player <= 2 ? refii_mod_player_hero(base, player) : 0u;
+    ok = hero != 0 && refii_mod_component(base, hero, 154) != 0;
+    uint32_t record = 0;
+    int32_t uses = 0, count = 0;
+    char list[1700] = {0};
+    int at = 0;
+    for (int32_t i = 0; ok && i < 60 && refii_mod_expression(base, player, i, &record, &uses) != 0; ++i) {
+      at += std::snprintf(list + at, sizeof(list) - static_cast<size_t>(at), ",e%d='0x%08x',u%d=%d", i + 1, record, i + 1, uses);
+      ++count;
+      if (static_cast<size_t>(at) >= sizeof(list) - 32) {
+        break;
+      }
+    }
+    std::snprintf(fields, sizeof(fields), "count=%d%s", count, list);
+  } else if (what == "spells_known") {
+    uint32_t mask = 0;
+    ok = refii_mod_spells_known(base, I(w, 3), &mask) != 0;
+    std::snprintf(fields, sizeof(fields), "mask=%u,count=%d", mask, __builtin_popcount(mask));
+  } else if (what == "selected_expression") {
+    const uint32_t record = refii_mod_selected_expression(base, I(w, 3));
+    ok = record != 0;
+    std::snprintf(fields, sizeof(fields), "expression='0x%08x'", record);
+  } else if (what == "record_string") {
+    char text[256] = {0};
+    ok = refii_mod_record_string(&ctx, base, U(w, 3), w.size() > 4 ? w[4].c_str() : "", text, sizeof(text)) != 0;
+    char quoted[300];
+    Quote(text, quoted, sizeof(quoted));
+    std::snprintf(fields, sizeof(fields), "value='%s'", quoted);
+  } else if (what == "record_int") {
+    int32_t value = 0;
+    ok = refii_mod_record_int(&ctx, base, U(w, 3), w.size() > 4 ? w[4].c_str() : "", &value) != 0;
+    std::snprintf(fields, sizeof(fields), "value=%d", value);
   } else if (what == "near") {
     // query ID near X Y Z R [CREATURES [OFFSET]] -> total=n,offset=o,count=k,e1=h..ek=h: up to
     // 100 handles a reply, nearest first, starting at OFFSET; ask again from offset+count for more.
@@ -525,18 +570,30 @@ void RaiseMenuRow(PPCContext& ctx, uint8_t* base, const std::vector<std::string>
   e.menu = Name(w, 2);
   e.row = Name(w, 3);
   e.mod = Name(w, 4);
+  // A row action's trailing words: the row's own command (base64, '-' for none) and the button.
+  std::string command;
+  if (w.size() >= 6 && w[5] != "-" && !UnbaseCommand(w[5], command)) {
+    command.clear();
+  }
+  e.command = command.c_str();
+  e.button = Name(w, 6);
   refii::mods::Dispatch(e);
   // No game VM (the title, the front end): the mods' front-end Lua hears it instead.
   if (!refii::vfs::GameLuaUp(base)) {
     char menu[160];
     char row[160];
     char mod[96];
+    char cmd[256];
+    char button[16];
     Quote(e.menu, menu, sizeof(menu));
     Quote(e.row, row, sizeof(row));
     Quote(e.mod, mod, sizeof(mod));
-    char chunk[640];
-    std::snprintf(chunk, sizeof(chunk), "if Refii and Refii._fire then Refii._fire(%d, {player=%d,menu='%s',row='%s',mod='%s'}) end",
-                  REFII_EVENT_MOD_MENU_ROW, e.player, menu, row, mod);
+    Quote(e.command, cmd, sizeof(cmd));
+    Quote(e.button, button, sizeof(button));
+    char chunk[960];
+    std::snprintf(chunk, sizeof(chunk),
+                  "if Refii and Refii._fire then Refii._fire(%d, {player=%d,menu='%s',row='%s',mod='%s',command='%s',button='%s'}) end",
+                  REFII_EVENT_MOD_MENU_ROW, e.player, menu, row, mod, cmd, button);
     refii::vfs::RunFrontEndLua(ctx, base, chunk);
   }
 }
@@ -1119,6 +1176,14 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
     refii_mod_release_lock(&ctx, base, I(w, 1));
   } else if (op == "switch_target" && w.size() >= 3) {
     refii_mod_switch_target(&ctx, base, I(w, 1), I(w, 2));
+  } else if (op == "use_item" && w.size() >= 3) {
+    refii_mod_use_item(&ctx, base, I(w, 1), U(w, 2));
+  } else if (op == "equip_weapon" && w.size() >= 3) {
+    refii_mod_equip_weapon(&ctx, base, I(w, 1), U(w, 2));
+  } else if (op == "perform_expression" && w.size() >= 3) {
+    refii_mod_perform_expression(&ctx, base, I(w, 1), U(w, 2));
+  } else if (op == "assign_spell" && w.size() >= 3) {
+    refii_mod_assign_spell(&ctx, base, I(w, 1), I(w, 2));
   } else if (op == "apply_status" && w.size() >= 4) {
     refii_mod_apply_status(&ctx, base, E(w, 1), I(w, 2), F(w, 3), w.size() >= 5 ? I(w, 4) : 0,
                            w.size() >= 6 ? E(w, 5) : 0u);

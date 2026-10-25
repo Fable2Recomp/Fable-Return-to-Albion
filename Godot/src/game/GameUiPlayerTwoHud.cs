@@ -143,8 +143,6 @@ public partial class GameUi
 	/// </summary>
 	private void DriveDpadTwo(string[] icons, Engine_UiBindings bindings)
 	{
-		for (int i = 0; i < icons.Length && i < 4; i++)
-			if (QuickSlotIcon(2, i, out string icon)) icons[i] = icon;
 		for (int i = 0; i < DpadSlotToggles.Length && i < icons.Length; ++i)
 		{
 			foreach (int ordinal in bindings.Elements(Engine_UiBindings.Kind.SlideToggle, Refii.Core.Engine_GameHash.Fnv1(DpadSlotToggles[i])))
@@ -162,7 +160,6 @@ public partial class GameUi
 			{
 				names?.Add(icons[i]);
 				texture = Refii.Core.Engine_GameHash.ResourcePath(icons[i].ToLowerInvariant());
-				if (QuickSlotIcon(2, i, out _)) texture = QuickSlotTexture(icons[i]);
 			}
 
 			foreach (int ordinal in slots[i])
@@ -170,6 +167,9 @@ public partial class GameUi
 				_hudTwoTextures[ordinal] = texture != 0 ? texture : _hudScreen?.Nodes[ordinal].Quad?.TextureHash ?? 0;
 			}
 		}
+
+		// A mod's stated icons and slides for player two (hud_icon / hud_slide), over the fill's.
+		ApplyHudOverridesTwo(bindings);
 	}
 
 	private void ClearDpadTwo()
@@ -209,7 +209,8 @@ public partial class GameUi
 		Release(_hudTwoSlides);
 		Release(_hudTwoQuerySlides);
 		Release(_hudTwoDpadSlides);
-		KeepQuickSlotHudVisible(doc, slides, active, own);
+		Release(_hudTwoOverrideSlides);
+		ApplyHudHold(ref _hudHoldTwo, ref _hudHoldTwoKey, doc, slides, active, own, 2);
 
 		if (_hudTwoResolve is null || !ReferenceEquals(_hudTwoResolveScreen, doc))
 		{

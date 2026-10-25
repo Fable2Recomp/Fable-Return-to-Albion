@@ -177,6 +177,9 @@ public partial class RefiiHost : Node
 	};
 
 	public const string SingletonName = "RefiiHost";
+
+	/// <summary>The <c>lua_ready</c> event's kind (REFII_EVENT_LUA): every mod's init.lua has run again.</summary>
+	public const int LuaReadyKind = 3;
 	public const string ModEventSignal = "mod_event";
 
 	/// <summary>The cutscene event's kind: the host hears it while any script is loaded, for <see cref="in_cutscene"/>.</summary>
@@ -558,6 +561,14 @@ public partial class RefiiHost : Node
 				continue;
 			}
 
+			// An online joiner's weapon pick a native or Lua mod made (refii_mod_equip_weapon): into
+			// the co-op kit, which carries it to the host; never an event.
+			if (kind == CoopHeroKit.PickKind)
+			{
+				CoopHeroKit.HandlePick(fields);
+				continue;
+			}
+
 			// A mod menu's rows or a host screen a native or Lua mod asked for: Godot's UI, never an event.
 			if (kind == Refii.Ui.Engine_UiModRows.Kind)
 			{
@@ -604,6 +615,14 @@ public partial class RefiiHost : Node
 			if (kind < 0 || kind >= _nameByKind.Length)
 			{
 				continue;
+			}
+
+			// THE MODS' LUA RELOADED (lua_ready): the claims and HUD overrides the last chunk held go
+			// with it, so a reloaded mod starts from nothing claimed and nothing overridden.
+			if (kind == LuaReadyKind)
+			{
+				ModInput.ClearClaims();
+				Refii.Ui.Engine_UiHudOverrides.Clear();
 			}
 
 			Godot.Collections.Dictionary e = ParseFields(fields);
@@ -825,6 +844,27 @@ public partial class RefiiHost : Node
 
 	/// <summary>Switches a player's locked target to the next one left or right (refii_mod_switch_target), the camera's own flick.</summary>
 	public void switch_target(int player, bool left) => Post($"switch_target {player} {(left ? 1 : 0)}");
+
+	/// <summary>
+	/// Uses an inventory item of player 1 or 2's hero by its definition (its GDB record hash: the
+	/// "0x…" string the events carry, or a number) through the game's own use (refii_mod_use_item):
+	/// the quick menu's action, gated as the quick menu is (the hero alive, the d-pad up, the game's
+	/// CanPlayerOpenQuickMenu for that player).
+	/// </summary>
+	public void use_item(int player, Variant definition) => Post($"use_item {player} {Arg(definition)}");
+
+	/// <summary>
+	/// Equips a weapon the hero's inventory holds, by definition, through the weapon set's own
+	/// EquipWeaponByRecord (refii_mod_equip_weapon). On an online joiner the pick goes through the
+	/// co-op kit to the host, who equips it and replicates the held item back — the caller never cares.
+	/// </summary>
+	public void equip_weapon(int player, Variant definition) => Post($"equip_weapon {player} {Arg(definition)}");
+
+	/// <summary>Performs an expression the hero's performer knows, by its record (refii_mod_perform_expression); <c>query expressions P</c> lists them.</summary>
+	public void perform_expression(int player, Variant expression) => Post($"perform_expression {player} {Arg(expression)}");
+
+	/// <summary>Assigns spell type 0..7 to every tier player 1 or 2's hero knows (refii_mod_assign_spell); <c>query spells_known P</c> lists the types.</summary>
+	public void assign_spell(int player, int spell) => Post($"assign_spell {player} {spell}");
 
 	/// <summary>
 	/// Puts a status on an entity for seconds (refii_mod_apply_status): kind 1 electrified, 2 chaos,
@@ -1337,7 +1377,7 @@ public partial class RefiiHost : Node
 	/// <c>mod_menu_row</c> signal and <c>mod_event</c>. The guest raises the same event for native
 	/// and Lua handlers on its tick and never posts it back here.
 	/// </summary>
-	internal void RaiseModMenuRow(string menu, string row, int player, string mod)
+	internal void RaiseModMenuRow(string menu, string row, int player, string mod, string command = "", string button = "")
 	{
 		var e = new Godot.Collections.Dictionary
 		{
@@ -1345,6 +1385,8 @@ public partial class RefiiHost : Node
 			["row"] = row,
 			["player"] = (long)player,
 			["mod"] = mod,
+			["command"] = command ?? string.Empty,
+			["button"] = button ?? string.Empty,
 		};
 		EmitSignal(SignalName.mod_menu_row, e);
 		EmitSignal(SignalName.mod_event, "mod_menu_row", e);
@@ -1632,6 +1674,83 @@ public partial class RefiiHost : Node
 
 	/// <summary>Removes the meter from every player's HUD; false when none stands under the id.</summary>
 	public bool meter_remove(string id) => Refii.Ui.Engine_HudModMeters.Remove(id ?? string.Empty);
+
+	// ---- input claims and HUD overrides: the pad publish and the HUD feed read them (ModInput, Engine_UiHudOverrides) ----
+
+	/// <summary>
+	/// Claims (or releases) a mod's input action — its scoped name <c>&lt;mod&gt;.&lt;action&gt;</c> from
+	/// <c>input.json</c> — for <paramref name="player"/> (1 or 2; 0 both): while claimed, the action's
+	/// pad buttons, triggers and keys are withheld from the pad the guest sees for that player, and a
+	/// chord's modifier with them while the chord is held; the action's own <c>input_action</c> events
+	/// still fire. Cleared when the mods' Lua reloads and when the game goes down. False for an
+	/// action no enabled mod declares.
+	/// </summary>
+	public bool claim_input(long player, string action, bool on = true) =>
+		player is >= 0 and <= 2 && ModInput.Claim((int)player, action ?? string.Empty, on);
+
+	/// <summary>Whether <paramref name="action"/> is claimed for <paramref name="player"/> (1 or 2).</summary>
+	public bool input_claimed(long player, string action) =>
+		player is 1 or 2 && ModInput.Claimed((int)player, action ?? string.Empty);
+
+	/// <summary>The actions claimed for <paramref name="player"/> (1 or 2), in declaration order.</summary>
+	public Godot.Collections.Array<string> input_claims(long player)
+	{
+		var list = new Godot.Collections.Array<string>();
+		if (player is 1 or 2)
+		{
+			foreach (string name in ModInput.Claims((int)player))
+			{
+				list.Add(name);
+			}
+		}
+
+		return list;
+	}
+
+	/// <summary>
+	/// States the texture a HUD element shows for <paramref name="player"/> (1 or 2; 0 both):
+	/// <paramref name="element"/> a slide-toggle binding name (<c>DPadUp</c>) or an element path by its
+	/// trailing segments; <paramref name="texture"/> a game texture path or an enabled mod's PNG under
+	/// <c>art/</c>, fitted to the slot when it is not 128 × 128; "" clears. False for no element.
+	/// </summary>
+	public bool hud_icon(long player, string element, string texture) =>
+		player is >= 0 and <= 2 && Refii.Ui.Engine_UiHudOverrides.SetIcon((int)player, element ?? string.Empty, texture ?? string.Empty);
+
+	/// <summary>States the slide a HUD element sits on, as the game counts them (1 the first); 0 clears. False for no element.</summary>
+	public bool hud_slide(long player, string element, long slide) =>
+		player is >= 0 and <= 2 && slide is >= 0 and <= 65535 &&
+		Refii.Ui.Engine_UiHudOverrides.SetSlide((int)player, element ?? string.Empty, (int)slide);
+
+	/// <summary>Holds a HUD piece visible (its owner chain kept on its shown slides) for a player, or lets it go. False for no name.</summary>
+	public bool hud_hold(long player, string piece, bool on = true) =>
+		player is >= 0 and <= 2 && Refii.Ui.Engine_UiHudOverrides.SetHold((int)player, piece ?? string.Empty, on);
+
+	/// <summary>The overrides standing for <paramref name="player"/>: <c>icons</c> (element → texture), <c>slides</c> (element → slide), <c>holds</c> (pieces).</summary>
+	public Godot.Collections.Dictionary hud_overrides(long player)
+	{
+		var icons = new Godot.Collections.Dictionary();
+		var slides = new Godot.Collections.Dictionary();
+		var holds = new Godot.Collections.Array<string>();
+		if (player is 1 or 2)
+		{
+			foreach ((string element, string texture) in Refii.Ui.Engine_UiHudOverrides.IconsFor((int)player))
+			{
+				icons[element] = texture;
+			}
+
+			foreach ((string element, int slide) in Refii.Ui.Engine_UiHudOverrides.SlidesFor((int)player))
+			{
+				slides[element] = (long)slide;
+			}
+
+			foreach (string piece in Refii.Ui.Engine_UiHudOverrides.HoldsFor((int)player))
+			{
+				holds.Add(piece);
+			}
+		}
+
+		return new Godot.Collections.Dictionary { ["icons"] = icons, ["slides"] = slides, ["holds"] = holds };
+	}
 
 	/// <summary>The meters standing, in stack order: id, player, label, value, max, style.</summary>
 	public Godot.Collections.Array<Godot.Collections.Dictionary> meters()

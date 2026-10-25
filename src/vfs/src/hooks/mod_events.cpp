@@ -882,10 +882,15 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
       char menu[96];
       char row[96];
       char mod[96];
+      char command[192];
+      char button[16];
       LuaString(e.menu, menu, sizeof(menu));
       LuaString(e.row, row, sizeof(row));
       LuaString(e.mod, mod, sizeof(mod));
-      std::snprintf(out, size, "menu='%s',row='%s',player=%d,mod='%s'", menu, row, e.player, mod);
+      LuaString(e.command, command, sizeof(command));
+      LuaString(e.button, button, sizeof(button));
+      std::snprintf(out, size, "menu='%s',row='%s',player=%d,mod='%s',command='%s',button='%s'", menu, row, e.player, mod,
+                    command, button);
       return;
     }
     case REFII_EVENT_MOD_MESSAGE_BOX: {
@@ -966,9 +971,12 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
       const auto& e = *static_cast<const StartGameEvent*>(event);
       char save[96];
       char level[96];
+      char commit[160];
       LuaString(e.save, save, sizeof(save));
       LuaString(e.level, level, sizeof(level));
-      std::snprintf(out, size, "save='%s',level='%s',new_game=%s,player=%d", save, level, e.new_game ? "true" : "false", e.player);
+      LuaString(e.commit, commit, sizeof(commit));
+      std::snprintf(out, size, "save='%s',level='%s',new_game=%s,player=%d,commit='%s'", save, level,
+                    e.new_game ? "true" : "false", e.player, commit);
       return;
     }
     case REFII_EVENT_CUTSCENE: {
@@ -5895,6 +5903,8 @@ REX_EXTERN(rex_lhGameFlowGuiMode_Remove) {
 // object, r4 = the save name LHString, r5 = the start level LHString. Before the call; a cancel
 // refuses the start. There is no game VM on the title: Lua hears it in the mods' front-end state (mod/frontend.lua),
 // as the mod_menu_row / mod_message_box commands deliver theirs. TU1 0x82379838 / disc 0x8237A2D8.
+// `commit` is the pump action this start is running under (GuestTickPumpDispatching): the
+// root's Continue row is dispatched by its bare name, the fan's pick as `LoadSave:N`.
 // ---------------------------------------------------------------------------------------------
 REX_EXTERN(rex_lhFrontEnd_SetStartGameTarget) {
   REX_FUNC_PROLOGUE();
@@ -5902,6 +5912,7 @@ REX_EXTERN(rex_lhFrontEnd_SetStartGameTarget) {
   if (AnySubscriber(REFII_EVENT_START_GAME) || front_end_lua) {
     const std::string save = ctx.r4.u32 != 0 ? refii::vfs::ReadGuestLhString(base, ctx.r4.u32) : std::string();
     const std::string level = ctx.r5.u32 != 0 ? refii::vfs::ReadGuestLhString(base, ctx.r5.u32) : std::string();
+    const std::string commit = refii::vfs::GuestTickPumpDispatching();
     StartGameEvent e{};
     PPCContext e_ctx = ctx;
     e.ctx = &e_ctx;
@@ -5910,9 +5921,10 @@ REX_EXTERN(rex_lhFrontEnd_SetStartGameTarget) {
     e.level = level.c_str();
     e.new_game = save.empty();
     e.player = 1;
+    e.commit = commit.c_str();
     Dispatch(e);
     if (front_end_lua) {
-      char fields[320];
+      char fields[640];
       LuaFields(REFII_EVENT_START_GAME, &e, fields, sizeof(fields));
       std::string chunk = "if Refii and Refii._fire then Refii._fire(";
       chunk += std::to_string(static_cast<int>(REFII_EVENT_START_GAME));

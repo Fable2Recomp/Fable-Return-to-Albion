@@ -111,6 +111,9 @@ public sealed partial class Engine_FxDriver : Node
         }
         Stepped = 0;
 
+        // The frame at the guest's pace, 0 under a stated pause: one world delta for every system.
+        double world = Refii.Core.Engine_DrawAdvance.Seconds(delta);
+
         for (int i = 0; i < Systems.Count; i++)
         {
             FableFx fx = Systems[i];
@@ -125,7 +128,7 @@ public sealed partial class Engine_FxDriver : Node
                 continue;
             }
 
-            fx.Step(delta, camera, cameraPos, cameraTransform);
+            fx.Step(world, camera, cameraPos, cameraTransform);
             ++Stepped;
         }
     }

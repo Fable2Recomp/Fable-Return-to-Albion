@@ -117,6 +117,9 @@ public static class Engine_DrawnFrame
 	/// <summary>The guest tick the playhead was last swapped on.</summary>
 	private static uint _statedTick;
 
+	/// <summary>A swap was withheld under a stated pause; the next swap re-anchors as one interval.</summary>
+	private static bool _heldByPause;
+
 	/// <summary>
 	/// The guest has restated something on its tick. Dated ONCE per guest tick, however many
 	/// callers notice it.
@@ -131,15 +134,25 @@ public static class Engine_DrawnFrame
 	/// </remarks>
 	public static void NoteRestated()
 	{
+		// The guest states a pause: the pair holds whatever its counter does (a paused cutscene
+		// keeps counting). Released, the next tick re-anchors on the guest's current pair as one
+		// swap — the ticks counted under the hold are not motion to catch up on.
+		if (Refii.Core.Engine_StatedPause.Latched)
+		{
+			_heldByPause = _statedTick != 0u;
+			return;
+		}
+
 		uint tick = Refii.Core.Engine_TickClock.GuestGameTick;
 		if (tick == 0u || tick == _statedTick)
 		{
 			return;
 		}
 
-		int intervals = _statedTick == 0u
+		int intervals = _statedTick == 0u || _heldByPause
 			? 1
 			: (int)System.Math.Clamp((long)tick - (long)_statedTick, 1L, 8L);
+		_heldByPause = false;
 		_statedTick = tick;
 
 		// Histogram of ticks each swap claims to cover. The anchor advances by this many whole

@@ -617,7 +617,7 @@ public partial class GameVideo : Node
 		// The guest's stated track volumes times the fold's front weight: on the console the
 		// movie's voices went through the same mastering voice as every other sound, so the
 		// host-decoded copy takes the same scale as the guest's mix.
-		float front = HostBridge.AudioFrontGain();
+		float front = HostBridge.AudioFrontGain((uint)Refii.Audio.Engine_AudioOutput.ActiveOutputChannels);
 		HostBridge.GetMovieSound(_trackIds, _trackVolumes, out int count);
 		for (int i = 0; i < count; i++)
 		{

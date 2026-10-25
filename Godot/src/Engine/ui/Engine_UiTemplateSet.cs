@@ -20,7 +20,8 @@ namespace Refii.Ui;
 /// every one. Menu-level fields present in a patch replace the menu's own.</para>
 /// <para>SCREENS replace the whole record, or with <c>"patch": true</c> merge PER FIELD over the
 /// record that stands (<see cref="Engine_UiTemplateJson.ParseScreen"/>).</para>
-/// <para>MODALS compose whole records per key (<see cref="Engine_UiModals"/>).</para>
+/// <para>MODALS compose whole records per key (<see cref="Engine_UiModals"/>); ROW ACTIONS per menu
+/// (<see cref="Engine_UiRowActions"/>).</para>
 /// <para>Pure .NET: <see cref="Warn"/> and <see cref="Log"/> are the caller's to route.</para>
 /// </remarks>
 public sealed class Engine_UiTemplateSet
@@ -30,6 +31,9 @@ public sealed class Engine_UiTemplateSet
 	public readonly Dictionary<string, Engine_UiMenuTemplate> Menus = new();
 
 	public readonly Engine_UiModals Modals = new();
+
+	/// <summary>The row actions on the screen lists (<c>"rowActions"</c>), composed per menu like the modals.</summary>
+	public readonly Engine_UiRowActions RowActions = new();
 
 	/// <summary>Which mod last stated each piece (<c>menu:pause-root/Map</c>, <c>screen:23</c>, <c>screen:23/fields</c>).</summary>
 	public readonly Dictionary<string, string> Owners = new(StringComparer.Ordinal);
@@ -112,6 +116,7 @@ public sealed class Engine_UiTemplateSet
 		}
 
 		taken += Modals.ApplyText(text, piece => NoteOwner(piece, owner), warning => Warn?.Invoke($"'{where}': {warning}"));
+		taken += RowActions.ApplyText(text, owner, piece => NoteOwner(piece, owner), warning => Warn?.Invoke($"'{where}': {warning}"));
 		return taken;
 	}
 
@@ -287,6 +292,7 @@ public sealed class Engine_UiTemplateSet
 			["menus"] = menus,
 			["screens"] = screens,
 			[Engine_UiModals.Section] = JsonNode.Parse(Modals.ToJson()),
+			[Engine_UiRowActions.Section] = JsonNode.Parse(RowActions.ToJson()),
 		};
 	}
 

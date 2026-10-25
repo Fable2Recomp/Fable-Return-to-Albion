@@ -712,6 +712,86 @@ public class ModApiTests
     }
 
     [TestCase]
+    public void TheQuickActionsAreOnEverySurface()
+    {
+        // The quick menu's actions (use_item, equip_weapon, perform_expression, assign_spell), the reads
+        // they choose from (expressions, spells_known, selected_expression) and record_string: native,
+        // Lua and Godot each name every call, by PLAYER — never a player-one default.
+        string native = string.Join("\n", ModApi.Helpers.Select(h => h.Signature));
+        string lua = string.Join("\n", ModApi.LuaHelpers.Select(h => h.Signature));
+        string godot = string.Join("\n", ModApi.GodotHelpers.Select(h => h.Signature));
+        string[] actions = { "use_item", "equip_weapon", "perform_expression", "assign_spell" };
+        foreach (string call in actions)
+        {
+            AssertThat(native.Contains("refii_mod_" + call + "(ctx, base, player, ", StringComparison.Ordinal)).OverrideFailureMessage("native " + call).IsTrue();
+            AssertThat(lua.Contains("Refii." + call + "(p, ", StringComparison.Ordinal)).OverrideFailureMessage("lua " + call).IsTrue();
+            AssertThat(ModApi.GodotHelpers.Any(h => ModApi.GodotMethodNames(h.Signature).Contains(call))).OverrideFailureMessage("godot " + call).IsTrue();
+        }
+        string[] reads = { "expressions", "spells_known", "selected_expression" };
+        foreach (string read in reads)
+        {
+            AssertThat(lua.Contains("Refii." + read + "(p)", StringComparison.Ordinal)).OverrideFailureMessage("lua " + read).IsTrue();
+            AssertThat(Regex.IsMatch(godot, @"query [^\n]*\b" + read + @" P\b")).OverrideFailureMessage("godot " + read).IsTrue();
+        }
+        AssertThat(native.Contains("refii_mod_expression(base, player, index, uint32_t* record, int32_t* uses)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(native.Contains("refii_mod_spells_known(base, player, uint32_t* mask)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(native.Contains("refii_mod_selected_expression(base, player)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(native.Contains("refii_mod_record_string(ctx, base, definition, field, out, size)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("Refii.record_string(def, field)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(godot.Contains("record_string DEF FIELD", StringComparison.Ordinal)).IsTrue();
+        AssertThat(native.Contains("refii_mod_record_int(ctx, base, definition, field, int32_t* out)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("Refii.record_int(def, field)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(godot.Contains("record_int DEF FIELD", StringComparison.Ordinal)).IsTrue();
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string host = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_RefiiHost.cs"));
+        foreach (string call in actions)
+        {
+            AssertThat(header.Contains("refii_mod_" + call + "(PPCContext* ctx, uint8_t* base, int32_t player, ", StringComparison.Ordinal)).OverrideFailureMessage("header " + call).IsTrue();
+            AssertThat(Regex.IsMatch(natives, "\\{\"" + call + "\", &Native\\w+, 0\\}")).OverrideFailureMessage("natives " + call).IsTrue();
+            AssertThat(commands.Contains("op == \"" + call + "\"", StringComparison.Ordinal)).OverrideFailureMessage("command " + call).IsTrue();
+            AssertThat(Regex.IsMatch(host, @"public void " + call + @"\(int player, ")).OverrideFailureMessage("host " + call).IsTrue();
+        }
+        foreach (string read in reads.Append("record_string").Append("record_int"))
+        {
+            AssertThat(Regex.IsMatch(natives, "\\{\"" + read + "\", &Native\\w+, 0\\}")).OverrideFailureMessage("natives " + read).IsTrue();
+            AssertThat(commands.Contains("what == \"" + read + "\"", StringComparison.Ordinal)).OverrideFailureMessage("query " + read).IsTrue();
+        }
+        AssertThat(header.Contains("refii_mod_expression(uint8_t* base, int32_t player, int32_t index, uint32_t* out_record,", StringComparison.Ordinal)).IsTrue();
+        AssertThat(header.Contains("refii_mod_spells_known(uint8_t* base, int32_t player, uint32_t* out_mask)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(header.Contains("refii_mod_selected_expression(uint8_t* base, int32_t player)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(header.Contains("refii_mod_record_string(PPCContext* ctx, uint8_t* base, uint32_t definition, const char* field,", StringComparison.Ordinal)).IsTrue();
+
+        // One body: the pump's PerformQuickslot is the quick slot's and the API's alike, and the
+        // joiner's weapon pick crosses to the co-op kit under its own host kind.
+        string pump = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "guest_tick_pump.cpp"));
+        string api = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        string events = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod_events.h"));
+        string kit = File.ReadAllText(Path.Combine(root, "Godot", "src", "host", "CoopHeroKit.cs"));
+        AssertThat(pump.Contains("bool PerformQuickslot(PPCContext& ctx, uint8_t* base, uint32_t player, uint32_t kind, uint32_t record)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(api.Contains("refii::vfs::PerformQuickslot(work, base,", StringComparison.Ordinal)).IsTrue();
+        AssertThat(events.Contains("#define REFII_MOD_HOST_HERO_KIND 1005", StringComparison.Ordinal)).IsTrue();
+        AssertThat(pump.Contains("refii::mods::PostEvent(REFII_MOD_HOST_HERO_KIND, fields)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(kit.Contains("public const int PickKind = 1005;", StringComparison.Ordinal)).IsTrue();
+        AssertThat(host.Contains("CoopHeroKit.HandlePick(fields)", StringComparison.Ordinal)).IsTrue();
+
+        // Every guest function called by TU1 address has its disc row.
+        string rows = File.ReadAllText(Path.Combine(root, "versions", "Fable2", "guest_addresses.inc"));
+        foreach (string row in new[] { "{0x824F1C90u, 0x8261B978u},", "{0x823E0FF8u, 0x823BF9C0u},", "{0x82764DC0u, 0x82741BD8u},", "{0x82323540u, 0x82345978u},", "{0x82A006C8u, 0x829FB978u},", "{0x83496B08u, 0x834968A4u},", "{0x83496DA0u, 0x83496BD0u}," })
+        {
+            AssertThat(rows.Contains(row, StringComparison.Ordinal)).OverrideFailureMessage(row).IsTrue();
+        }
+    }
+
+    [TestCase]
     public void TheWheelSwitchedLockIsOnEverySurface()
     {
         // H.16: Refii.wheel_switches_target restates itself each Lua tick; a Godot script runs off
@@ -1152,7 +1232,7 @@ public class ModApiTests
         AssertThat(paused.SeamFunctions.Contains("rex_lhGameFlowGuiMode_Remove")).IsTrue();
         ModApiEvent start = ModApi.Events.Single(e => e.Name == "StartGame");
         AssertThat(start.Kind).IsEqual(99);
-        AssertThat(start.Fields.Select(f => f.Name).ToArray()).IsEqual(new[] { "save", "level", "new_game", "player" });
+        AssertThat(start.Fields.Select(f => f.Name).ToArray()).IsEqual(new[] { "save", "level", "new_game", "player", "commit" });
         AssertThat(start.SeamFunctions.Contains("rex_lhFrontEnd_SetStartGameTarget")).IsTrue();
         AssertThat(ModApi.Events.Count).IsEqual(101);
         foreach (string name in new[] { "MeleeSwing", "AnimEvent" })

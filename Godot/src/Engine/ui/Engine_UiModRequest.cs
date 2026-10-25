@@ -7,7 +7,9 @@ namespace Refii.Ui;
 /// <summary>
 /// A UI request a native or Lua mod made — <c>refii_mod_open_menu</c> / <c>Refii.open_menu</c>,
 /// <c>refii_mod_message_box</c> / <c>Refii.message_box</c>, <c>refii_mod_notice</c> /
-/// <c>Refii.notice</c>, <c>refii_mod_menu_box</c> / <c>Refii.menu_box</c> — as it crosses the mod bus to Godot
+/// <c>Refii.notice</c>, <c>refii_mod_menu_box</c> / <c>Refii.menu_box</c>, and the HUD's own: markers, fades,
+/// meters, input claims (<c>refii_mod_input_claim</c>) and HUD overrides (<c>refii_mod_hud_icon</c> /
+/// <c>_hud_slide</c> / <c>_hud_hold</c>) — as it crosses the mod bus to Godot
 /// under <see cref="Kind"/> (REFII_MOD_HOST_UI_KIND, core/refii_mod_events.h): never an event,
 /// posted whatever the mask says. And the guest command a box's answer goes back as, which raises
 /// the <c>ModMessageBox</c> event for native and Lua handlers.
@@ -64,6 +66,18 @@ public static class Engine_UiModRequest
 
 		/// <summary>A meter removed by id (<see cref="Request.Name"/>).</summary>
 		MeterRemove,
+
+		/// <summary>An input claim (<c>refii_mod_input_claim</c>): <see cref="Request.Name"/> the scoped action, <see cref="Request.On"/>.</summary>
+		InputClaim,
+
+		/// <summary>A HUD element's icon (<c>refii_mod_hud_icon</c>): <see cref="Request.Name"/> the element, <see cref="Request.Icon"/> the texture ("" clears).</summary>
+		HudIcon,
+
+		/// <summary>A HUD element's slide (<c>refii_mod_hud_slide</c>): <see cref="Request.Name"/> the element, <see cref="Request.Slide"/> (0 clears).</summary>
+		HudSlide,
+
+		/// <summary>A HUD piece held visible (<c>refii_mod_hud_hold</c>): <see cref="Request.Name"/> the piece, <see cref="Request.On"/>.</summary>
+		HudHold,
 	}
 
 	/// <summary>
@@ -80,7 +94,7 @@ public static class Engine_UiModRequest
 		Op Op, uint Id, int Player, string Name, string Title, string Text, string? Accept, string? Cancel, bool Question,
 		IReadOnlyList<string>? Options = null, float Seconds = 0f, bool Cancelable = true,
 		uint Entity = 0, float X = 0f, float Y = 0f, float Z = 0f, string Icon = "", bool ToBlack = false,
-		float Value = 0f, float Max = 0f, string Style = "");
+		float Value = 0f, float Max = 0f, string Style = "", bool On = false, int Slide = 0);
 
 	/// <summary>The request in <paramref name="fields"/>, or null when it is not one (no op, an open with no menu, a box with no id or text).</summary>
 	public static Request? Parse(IEnumerable<KeyValuePair<string, object>> fields)
@@ -206,6 +220,39 @@ public static class Engine_UiModRequest
 				return name.Length == 0
 					? null
 					: new Request(Op.MeterRemove, 0u, player, name, string.Empty, string.Empty, null, null, false);
+			}
+
+			case "input_claim":
+			{
+				string action = Text("action").Trim();
+				return action.Length == 0
+					? null
+					: new Request(Op.InputClaim, 0u, player, action, string.Empty, string.Empty, null, null, false, On: Number("on") != 0);
+			}
+
+			case "hud_icon":
+			{
+				string element = Text("element").Trim();
+				return element.Length == 0
+					? null
+					: new Request(Op.HudIcon, 0u, player, element, string.Empty, string.Empty, null, null, false, Icon: Text("texture").Trim());
+			}
+
+			case "hud_slide":
+			{
+				string element = Text("element").Trim();
+				double slide = Number("slide");
+				return element.Length == 0 || slide < 0 || slide > 65535
+					? null
+					: new Request(Op.HudSlide, 0u, player, element, string.Empty, string.Empty, null, null, false, Slide: (int)slide);
+			}
+
+			case "hud_hold":
+			{
+				string piece = Text("piece").Trim();
+				return piece.Length == 0
+					? null
+					: new Request(Op.HudHold, 0u, player, piece, string.Empty, string.Empty, null, null, false, On: Number("on") != 0);
 			}
 
 			default:

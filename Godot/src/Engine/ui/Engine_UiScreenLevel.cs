@@ -3,14 +3,40 @@ namespace Refii.Ui;
 /// <summary>
 /// Input cadence for a screen's second input level (the options category page). Nothing is
 /// drawn: the level stays guest-mirrored; this only supplies the auto-repeat the guest's stick
-/// translator would (the masked D-pad never reaches it). 36 commits the whole page
-/// (`sub_829BF698`); nothing is written while scrolling. Each axis has its own clock.
+/// translator would (the masked D-pad never reaches it) and posts the codes. 36 commits the
+/// whole page (`sub_829BF698`); nothing is written while scrolling. Each axis has its own clock.
+///
+/// Two gates on the guest's side shape what is sent. The page's repeat gate (`sub_82881B28`)
+/// drops a second 28..31 within 0.3 s of the first unless a release (32..35) came between —
+/// `sub_828818E8` resets the gate's clocks on any release — so every press goes out WITH its
+/// release and every tap lands. And the page group dispatches nothing to the page for its first
+/// half second (`sub_829907F0`: `timer <= 0.5` returns) while the screen's own handler still
+/// takes a 36 and closes the page without committing (`sub_826DA228` case 36 → `sub_826D9F28`),
+/// so the codes of that window are HELD here and posted when it ends — not dropped, not early.
+/// A host page (<see cref="Engine_UiHostOptionsPage"/>) has no guest and no gates.
 /// </summary>
 public sealed class Engine_UiScreenLevel
 {
 	private Engine_UiNavigationClock? _vertical;
 
 	private Engine_UiNavigationClock? _horizontal;
+
+	/// <summary>`sub_829907F0` ignores the page for its first half second; so do the pad and the pointer.</summary>
+	public const double OpenQuiet = 0.55;
+
+	/// <summary>Codes pressed inside the quiet window, posted in order when it ends.</summary>
+	private readonly System.Collections.Generic.Queue<uint> _held = new();
+
+	private const int HeldCap = 16;
+
+	private string _page = string.Empty;
+
+	private double _openFor;
+
+	private int _dragRow = -1;
+
+	/// <summary>The row the pointer is walking the cursor to, or -1.</summary>
+	private int _walkTarget = -1;
 
 	/// <summary>A clock on the page gate's repeat numbers, not the menu's.</summary>
 	private static Engine_UiNavigationClock PageClock() => new()
@@ -21,48 +47,111 @@ public sealed class Engine_UiScreenLevel
 
 	public void Drive(Engine_UiSurfaceInput input)
 	{
+		Follow(input.Delta);
+		if (!Quiet)
+		{
+			Flush();
+		}
+
 		_vertical ??= PageClock();
 		_horizontal ??= PageClock();
 
 		for (int step = _vertical.Steps(input.Direction, input.Delta);
 			step > 0; --step)
 		{
-			Send(input.Direction < 0 ? Engine_UiScreenInput.Up : Engine_UiScreenInput.Down);
+			Post(input.Direction < 0 ? Engine_UiScreenInput.Up : Engine_UiScreenInput.Down);
 		}
 
 		for (int step = _horizontal.Steps(input.Horizontal, input.Delta);
 			step > 0; --step)
 		{
-			Send(input.Horizontal < 0 ? Engine_UiScreenInput.Left : Engine_UiScreenInput.Right);
+			Post(input.Horizontal < 0 ? Engine_UiScreenInput.Left : Engine_UiScreenInput.Right);
 		}
 
 		if (input.Accept)
 		{
-			Send(Engine_UiScreenInput.Select);
+			Post(Engine_UiScreenInput.Select);
 		}
 		else if (input.Back)
 		{
-			Send(Engine_UiScreenInput.Back);
+			Post(Engine_UiScreenInput.Back);
 		}
 	}
 
-	/// <summary>To the guest, and to the host's own record of the page's pending choices.</summary>
+	/// <summary>Restarts the page clock when the open page changes; advances it by <paramref name="delta"/>.</summary>
+	private void Follow(double delta)
+	{
+		string page = Engine_UiOptionsPending.Page;
+		if (page != _page)
+		{
+			_page = page;
+			_openFor = 0.0;
+			_dragRow = -1;
+			_walkTarget = -1;
+			_held.Clear();
+		}
+
+		_openFor += delta;
+	}
+
+	/// <summary>Whether a guest page is still inside its quiet window.</summary>
+	private bool Quiet => !Engine_UiHostOptionsPage.Open && _openFor < OpenQuiet;
+
+	/// <summary>A code from the pad: held through the quiet window, otherwise sent after anything held.</summary>
+	private void Post(uint code)
+	{
+		if (Quiet)
+		{
+			if (_held.Count < HeldCap)
+			{
+				_held.Enqueue(code);
+			}
+
+			return;
+		}
+
+		Flush();
+		Send(code);
+	}
+
+	private void Flush()
+	{
+		while (_held.Count > 0)
+		{
+			Send(_held.Dequeue());
+		}
+	}
+
+	/// <summary>
+	/// One code to the page. A guest page gets the press and, for 28..31, its release, so its
+	/// repeat gate takes the next tap; a host page has no guest, only the host's record moves.
+	/// </summary>
 	private static void Send(uint code)
 	{
-		if (!Engine_UiHostOptionsPage.Open) Engine_UiSource.Current.ScreenAction(code);
-		Engine_UiOptionsPending.Track(code);
+		if (Engine_UiHostOptionsPage.Open)
+		{
+			Engine_UiOptionsPending.Track(code);
+			return;
+		}
+
+		Engine_UiSource.Current.ScreenAction(code);
+		if (code >= Engine_UiScreenInput.Up && code <= Engine_UiScreenInput.Right)
+		{
+			Engine_UiSource.Current.ScreenAction(
+				code + (Engine_UiScreenInput.UpReleased - Engine_UiScreenInput.Up));
+		}
 	}
 
 	// ---------------------------------------------------------------------------------------
 	// THE MOUSE ON AN OPTIONS PAGE
 	// ---------------------------------------------------------------------------------------
 	//
-	// The guest owns the row and every value; the pointer only posts the codes the keys would,
-	// each followed by its release (32..35) so the page gate lets a burst land in one drain.
+	// The guest owns the row and every value; the pointer only posts the codes the keys would.
 	// Hovering a row walks the cursor to it; a click or drag on a slider steps it to the point
 	// under the pointer; a pickbox steps back on its left half and forward on its right; the
 	// wheel over a value row steps it; the page's A and B prompts commit and cancel. Every other
-	// click is taken, so a stray one cannot commit the page.
+	// click is taken, so a stray one cannot commit the page. A guest page's cursor moves on the
+	// guest's frame, so a walk is one pair per frame and a value step waits until it has arrived.
 
 	/// <summary>Each page's rows, top to bottom, as the guest orders them.</summary>
 	private static readonly System.Collections.Generic.Dictionary<string, string[]> Rows = new()
@@ -82,28 +171,15 @@ public sealed class Engine_UiScreenLevel
 		},
 	};
 
-	/// <summary>`sub_829907F0` ignores the page for its first half second; so does the pointer.</summary>
-	private const double OpenQuiet = 0.55;
-
-	private string _page = string.Empty;
-	private double _openFor;
-	private int _dragRow = -1;
-
 	/// <summary>One frame of the pointer on the open page of <paramref name="book"/>.</summary>
 	public void Pointer(Engine_UiOwnedBook book, double delta)
 	{
-		string page = Engine_UiOptionsPending.Page;
-		if (page != _page)
-		{
-			_page = page;
-			_openFor = 0.0;
-			_dragRow = -1;
-		}
+		// Drive, which runs after the pointer every frame, advances the clock.
+		Follow(0.0);
 
-		_openFor += delta;
 		// A host page stands on the shared five rows whatever it is called.
 		string[]? rows = Engine_UiHostOptionsPage.Open ? Engine_UiHostOptionsPage.Rows : null;
-		if (rows is null && !Rows.TryGetValue(page, out rows))
+		if (rows is null && !Rows.TryGetValue(_page, out rows))
 		{
 			return;
 		}
@@ -119,6 +195,8 @@ public sealed class Engine_UiScreenLevel
 		{
 			return;
 		}
+
+		Walk();
 
 		// A slider drag holds its row while the button is down, wherever the pointer goes.
 		if (_dragRow >= 0)
@@ -149,9 +227,16 @@ public sealed class Engine_UiScreenLevel
 			return;
 		}
 
+		int target = row + Engine_UiHostOptionsPage.VisibleStart;
 		if (Engine_UiPointer.Moved || left || wheel != 0)
 		{
-			WalkTo(row + Engine_UiHostOptionsPage.VisibleStart);
+			WalkTo(target);
+		}
+
+		// A value step lands on the cursor's row: none goes out until the cursor is on this one.
+		if (Engine_UiOptionsPending.Row != target)
+		{
+			return;
 		}
 
 		bool slider = Engine_UiOptionsPending.SliderValue(row) is not null;
@@ -179,38 +264,43 @@ public sealed class Engine_UiScreenLevel
 		}
 	}
 
-	/// <summary>Moves the guest's row cursor to <paramref name="row"/>, one pair per row.</summary>
-	private static void WalkTo(int row)
+	/// <summary>Starts walking the cursor to <paramref name="row"/>.</summary>
+	private void WalkTo(int row)
 	{
-		while (Engine_UiOptionsPending.Row != row)
+		_walkTarget = row;
+		Walk();
+	}
+
+	/// <summary>
+	/// One 28/29 pair per row the cursor has still to move. A host page's record moves at once,
+	/// so the walk completes here; a guest page's cursor moves on its own frame and is read back
+	/// by the next <see cref="Engine_UiOptionsPending.Follow"/>, so the target is kept until then.
+	/// </summary>
+	private void Walk()
+	{
+		for (int i = 0; i < 32 && _walkTarget >= 0 && Engine_UiOptionsPending.Row != _walkTarget; ++i)
 		{
-			bool up = row < Engine_UiOptionsPending.Row;
 			int before = Engine_UiOptionsPending.Row;
-			Send(up ? Engine_UiScreenInput.Up : Engine_UiScreenInput.Down);
-			if (!Engine_UiHostOptionsPage.Open)
-				Engine_UiSource.Current.ScreenAction(
-					up ? Engine_UiScreenInput.UpReleased : Engine_UiScreenInput.DownReleased);
+			Send(_walkTarget < before ? Engine_UiScreenInput.Up : Engine_UiScreenInput.Down);
 			if (Engine_UiOptionsPending.Row == before)
 			{
 				return;
 			}
 		}
+
+		_walkTarget = -1;
 	}
 
-	/// <summary>One value step on the cursor's row, with its release.</summary>
-	private static void Step(int direction)
-	{
+	/// <summary>One value step on the cursor's row.</summary>
+	private static void Step(int direction) =>
 		Send(direction < 0 ? Engine_UiScreenInput.Left : Engine_UiScreenInput.Right);
-		if (!Engine_UiHostOptionsPage.Open)
-			Engine_UiSource.Current.ScreenAction(
-				direction < 0 ? Engine_UiScreenInput.LeftReleased : Engine_UiScreenInput.RightReleased);
-	}
 
 	/// <summary>
 	/// Steps a slider to the value under the pointer: the pip travels `x = v·440 − 210` in the
-	/// slider group's own units (`sub_82881E38`), in twentieths.
+	/// slider group's own units (`sub_82881E38`), in twentieths. Nothing until the cursor is on
+	/// the row — a step lands on the cursor's widget.
 	/// </summary>
-	private static void SetSlider(Engine_UiOwnedBook book, string path, int row, Godot.Vector2 at)
+	private void SetSlider(Engine_UiOwnedBook book, string path, int row, Godot.Vector2 at)
 	{
 		if (book.NodeFor(path + ".grp") is not { } group ||
 			Engine_UiOptionsPending.SliderValue(row) is not { } value)
@@ -219,6 +309,11 @@ public sealed class Engine_UiScreenLevel
 		}
 
 		WalkTo(row);
+		if (Engine_UiOptionsPending.Row != row)
+		{
+			return;
+		}
+
 		Godot.Vector3 local = group.GlobalTransform.AffineInverse() *
 			new Godot.Vector3(at.X, at.Y, group.GlobalPosition.Z);
 		float wanted = Godot.Mathf.Clamp((local.X + 210f) / 440f, 0f, 1f);

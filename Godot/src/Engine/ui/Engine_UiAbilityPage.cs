@@ -266,11 +266,30 @@ public static class Engine_UiAbilityPage
 			: 0;
 
 		string nextRecord = Engine_AbilityRecords.RecordForLevel(ability.BaseRecord, level + 1);
-		bool maxed = nextRecord.Length == 0 || !Engine_AbilityRecords.Exists(nextRecord);
+		// MAXED BY THE GROUP'S COUNT, the guest's own rule (`sub_824E2D40`) and what the rows, the
+		// slides and the movie already use. An orphan `…Level5` record exists for the four-level
+		// Styles, so "the next record exists" said level 5 was on offer, priced it off the base
+		// (100) and titled it "Level 5" while the guest's own Learn would have answered MAXED.
+		int maxLevel = Engine_AbilityRecords.MaxLevel(ability.BaseRecord);
+		bool maxed = maxLevel > 0
+			? level >= maxLevel
+			: nextRecord.Length == 0 || !Engine_AbilityRecords.Exists(nextRecord);
 
 		string suffix = maxed
 			? Babel(strings, MaximisedTag)
 			: Babel(strings, LevelTagPrefix + (level + 1).ToString(CultureInfo.InvariantCulture));
+
+		// The offered level's own tags, the base's behind them (a shipped typo tag — Chaos's
+		// `…CHAOSDESC_LEVEL_01` — is in no book, and then the base's text stands).
+		string nameTag = ability.NameTag, descriptionTag = ability.DescriptionTag;
+		if (Engine_AbilityRecords.TryTags(ability.BaseRecord, level, out string levelName, out string levelDescription,
+				out string baseName, out string baseDescription))
+		{
+			nameTag = Babel(strings, levelName).Length != 0 ? levelName : baseName.Length != 0 ? baseName : ability.NameTag;
+			descriptionTag = Babel(strings, levelDescription).Length != 0 ? levelDescription
+				: baseDescription.Length != 0 ? baseDescription : ability.DescriptionTag;
+		}
+		ability = ability with { NameTag = nameTag, DescriptionTag = descriptionTag };
 
 		string name = Babel(strings, ability.NameTag);
 		if (name.Length == 0)

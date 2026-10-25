@@ -331,6 +331,11 @@ inline std::string GuestTickPumpTakenAction(uint32_t index) {
   return name;
 }
 
+/// The action the drain is dispatching right now, for a hook the dispatch reaches on the guest
+/// thread (the front end's start-game target names it as its commit); "" outside a dispatch.
+/// Defined in guest_tick_pump.cpp.
+const std::string& GuestTickPumpDispatching();
+
 /// Holds an action that could not run yet. End puts every deferred one back at the front.
 inline void GuestTickPumpDeferAction(const std::string& name) {
   refii_bridge_guest_tick_pump_defer_action(name.c_str(), name.size());

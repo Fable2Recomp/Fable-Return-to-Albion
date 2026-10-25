@@ -57,6 +57,8 @@
 #include <rex/kernel/xboxkrnl/threading.h>
 
 #include "core/guest_state.h"
+#include "core/mod_values.h"
+#include "core/refii_mod_events.h"
 #include "gui/gui_display_box.h"
 #include "hooks/ppc_externs.h"
 #include "core/guest_build.h"
@@ -2927,11 +2929,16 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
     PPCFunc* component = FindGuestFunction(refii::guest::Address(0x822A99E8u));
     PPCFunc* flag = FindGuestFunction(refii::guest::Address(0x82310290u));
     PPCFunc* leave = FindGuestFunction(refii::guest::Address(0x8236ED98u));
-    if (used && record != nullptr && component != nullptr && flag != nullptr &&
+    // THE REF'S CURRENT ITEM, re-read after the use: a use that consumed the last unit destroys
+    // the object, which unregisters and zeroes the ref (the quick slot crashed in exactly this
+    // state, sub_82764DC0+0x6D reading the null item's ref list at +0x2C). Nothing is left to ask
+    // or to release then.
+    const uint32_t remaining = LoadGuestU32(base, handle);
+    if (used && remaining != 0u && record != nullptr && component != nullptr && flag != nullptr &&
         leave != nullptr) {
       ctx = saved;
       ctx.r1.u32 = frame;
-      ctx.r3.u32 = LoadGuestU32(base, handle) + 4u;
+      ctx.r3.u32 = remaining + 4u;
       record(ctx, base);
       const uint32_t item_record = ctx.r3.u32;
       ctx = saved;
@@ -2964,12 +2971,14 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
     }
   }
 
-  ctx = saved;
-  ctx.r1.u32 = frame;
-  ctx.r3.u32 = LoadGuestU32(base, handle);
-  ctx.r4.u32 = handle;
-  release(ctx, base);
-  ctx = saved;
+  if (LoadGuestU32(base, handle) != 0u) {
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = LoadGuestU32(base, handle);
+    ctx.r4.u32 = handle;
+    release(ctx, base);
+    ctx = saved;
+  }
 
   REXLOG_INFO("Refii guest-tick pump: Inventory:{} ran on item 0x{:08X} (record 0x{:08X}) — no "
               "GUI event, no screen", op, item, static_cast<uint32_t>(hash));
@@ -8283,6 +8292,13 @@ bool DispatchQueryAnswer(PPCContext& ctx, uint8_t* base, uint32_t code) {
 /// retype posted as an action) waits for the tick instead of nesting.
 std::atomic<bool> g_pump_draining{false};
 
+namespace {
+/// The action DrainOnGuestThread is running, read on the same thread by the hooks it reaches.
+std::string g_dispatching;
+}  // namespace
+
+const std::string& GuestTickPumpDispatching() { return g_dispatching; }
+
 // --- Guest heap integrity, checked every tick --------------------------------------------
 //
 // THE INSTRUMENT FOR A CORRUPTION NOBODY CAN SEE IN A CRASH LOG. Three runs (2026-10-07
@@ -8436,12 +8452,24 @@ void CheckGuestHeaps(uint8_t* base, uint32_t tick) {
 
 PPC_EXTERN_FUNC(rex_CECExpressionPerformer_StartExpression);
 
-bool DispatchQuickslot(PPCContext& ctx, uint8_t* base, const std::string& body) {
-  unsigned player = 0, kind = 0, record = 0;
-  char extra = 0;
-  if (std::sscanf(body.c_str(), "%u:%u:%u%c", &player, &kind, &record, &extra) != 3 ||
-      player < 1 || player > 2 || kind < 1 || kind > 4 ||
-      (kind == 4 ? record >= 8 : record == 0)) return true;
+/// One quick action for player `player`'s hero, the sequence the game's own quick menu runs
+/// (refii_mod_use_item / equip_weapon / perform_expression / assign_spell in core/refii_mod.h):
+///   kind 1  use the inventory item with record `record`: the item handle by record
+///           (`sub_824F1C90(out, inventory, record)`), `sub_823E0FF8(hero, handle, "")` uses it,
+///           `sub_82764DC0(item, handle)` releases the handle, and the UI data generation moves.
+///   kind 2  perform the expression `record` the performer (component 154) knows: its +0x88
+///           vector of 20-byte entries {record, cached entry, _, uses, recency}; the game's own
+///           StartExpression(performer, {record, entry}, 0). Refused while +20 says one plays.
+///   kind 3  equip the weapon with record `record` from the inventory: the weapon set's own
+///           EquipWeaponByRecord(comp28, record, 0) — on an online JOINER the pick goes to Godot
+///           instead (REFII_MOD_HOST_HERO_KIND: CoopHeroKit.SetLocalWeapon), where the kit carries
+///           it to the host, who equips it and replicates the held item back.
+///   kind 4  assign spell type `record` (0..7) to every tier the hero knows (the manager's +156
+///           known and +196 offered bytes, index 5*spell+tier) through DispatchSpellAssign.
+/// Gated as the quick menu is: the hero alive (+144 & 0x40), the d-pad up (hud+56 → +32), and
+/// `rex_lhGuiManager_CanPlayerOpenQuickMenu(quick, player)`. True when the action was performed.
+bool PerformQuickslot(PPCContext& ctx, uint8_t* base, uint32_t player, uint32_t kind, uint32_t record) {
+  if (player < 1 || player > 2 || kind < 1 || kind > 4 || (kind == 4 ? record >= 8 : record == 0)) return false;
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
   const uint32_t hero = refii_mod_player_hero(base, player);
   const uint32_t owner = PlayerWithId(base, player);
@@ -8450,30 +8478,33 @@ bool DispatchQuickslot(PPCContext& ctx, uint8_t* base, const std::string& body) 
   const uint32_t hud = plausible(gui) ? LoadGuestU32(base, gui + 32u) : 0u;
   const uint32_t dpad = plausible(hud) ? LoadGuestU32(base, hud + 56u) : 0u;
   if (!plausible(hero) || !plausible(owner) || !plausible(quick) || !plausible(dpad) ||
-      (LoadGuestU8(base, hero + 144u) & 0x40u) == 0u || LoadGuestU8(base, dpad + 32u) == 0u) return true;
+      (LoadGuestU8(base, hero + 144u) & 0x40u) == 0u || LoadGuestU8(base, dpad + 32u) == 0u) return false;
   const PPCContext saved = ctx;
   ctx.r3.u32 = quick;
   ctx.r4.u32 = owner;
   rex_lhGuiManager_CanPlayerOpenQuickMenu(ctx, base);
   const bool allowed = (ctx.r3.u32 & 0xFFu) != 0u;
   ctx = saved;
-  if (!allowed) return true;
+  if (!allowed) return false;
   const uint32_t frame = (saved.r1.u32 - 0x200u) & ~0xFu;
+  bool done = false;
   if (kind == 4) {
     const uint32_t manager = EntityComponent(base, hero, 56u);
     if (plausible(manager)) {
       for (uint32_t tier = 0; tier < 5; ++tier) {
         const uint32_t index = 5u * record + tier;
-        if (LoadGuestU8(base, manager + 156u + index) && LoadGuestU8(base, manager + 196u + index))
+        if (LoadGuestU8(base, manager + 156u + index) && LoadGuestU8(base, manager + 196u + index)) {
           DispatchSpellAssign(ctx, base, tier, record, player);
+          done = true;
+        }
       }
     }
   } else if (kind == 2) {
     const uint32_t performer = EntityComponent(base, hero, 154u);
-    if (!plausible(performer) || LoadGuestU8(base, performer + 20u) != 0u) return true;
+    if (!plausible(performer) || LoadGuestU8(base, performer + 20u) != 0u) return false;
     const uint32_t begin = LoadGuestU32(base, performer + 0x88u);
     const uint32_t end = LoadGuestU32(base, performer + 0x8Cu);
-    if (!plausible(begin) || end < begin || end - begin > 20u * 512u || (end - begin) % 20u != 0u) return true;
+    if (!plausible(begin) || end < begin || end - begin > 20u * 512u || (end - begin) % 20u != 0u) return false;
     for (uint32_t at = begin; at < end; at += 20u) {
       if (LoadGuestU32(base, at) != record) continue;
       const uint32_t pair = frame + 0x60u;
@@ -8484,25 +8515,36 @@ bool DispatchQuickslot(PPCContext& ctx, uint8_t* base, const std::string& body) 
       ctx.r4.u32 = pair;
       ctx.r5.u32 = 0u;
       rex_CECExpressionPerformer_StartExpression(ctx, base);
+      done = (ctx.r3.u32 & 0xFFu) != 0u;
       ctx = saved;
       break;
     }
   } else {
     const uint32_t inventory = EntityComponent(base, hero, 13u);
-    if (!plausible(inventory)) return true;
+    if (!plausible(inventory)) return false;
     const uint32_t handle = frame + 0x60u;
     for (uint32_t word = 0; word < 4; ++word) StoreGuestU32(base, handle + word * 4u, 0u);
     CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x824F1C90u), handle, inventory, record);
     const uint32_t item = LoadGuestU32(base, handle);
-    if (!plausible(item)) return true;
+    if (!plausible(item)) return false;
     if (kind == 3) {
       const uint32_t weapons = EntityComponent(base, hero, 28u);
-      if (plausible(weapons) && !IsCoopJoiner(base) && HeldItemWithRecord(base, hero, record) == 0u) {
-        ctx.r1.u32 = frame;
-        ctx.r3.u32 = weapons;
-        ctx.r4.u32 = record;
-        ctx.r5.u32 = 0u;
-        rex_CECWeaponSet_EquipWeaponByRecord(ctx, base);
+      if (IsCoopJoiner(base)) {
+        // The joiner's weapon set is the host's replica: the pick crosses to Godot's CoopHeroKit,
+        // whose kit the host equips from (CoopHeroHeld brings the held item back).
+        char fields[64];
+        std::snprintf(fields, sizeof(fields), "player=%u,op='weapon',record='0x%08x'", player, record);
+        refii::mods::PostEvent(REFII_MOD_HOST_HERO_KIND, fields);
+        done = true;
+      } else if (plausible(weapons)) {
+        if (HeldItemWithRecord(base, hero, record) == 0u) {
+          ctx.r1.u32 = frame;
+          ctx.r3.u32 = weapons;
+          ctx.r4.u32 = record;
+          ctx.r5.u32 = 0u;
+          rex_CECWeaponSet_EquipWeaponByRecord(ctx, base);
+        }
+        done = true;
       }
       ctx = saved;
     } else {
@@ -8518,12 +8560,22 @@ bool DispatchQuickslot(PPCContext& ctx, uint8_t* base, const std::string& body) 
       ctx.r3.u32 = text;
       rex_lhCharString_Dtor(ctx, base);
       ctx = saved;
+      done = true;
     }
-    CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x82764DC0u), LoadGuestU32(base, handle), handle);
+    // THE REF IS RELEASED ON THE ITEM IT NOW NAMES, AND ONLY IF ONE IS LEFT. The ref is registered
+    // on the item (sub_82764D00) and rebound when the use splits a stack, so the item to release
+    // against is the ref's current word, not the one looked up above. A use that consumed the last
+    // unit destroys the object, which unregisters and zeroes the ref: there is nothing to release,
+    // and sub_82764DC0(0, ref) reads the null item's ref list at +0x2C — the crash two players sent
+    // from beta 6a (sub_82764DC0+0x6D, access 0x2C) after using up a potion from a quick slot.
+    const uint32_t remaining = LoadGuestU32(base, handle);
+    if (plausible(remaining)) {
+      CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x82764DC0u), remaining, handle);
+    }
     refii_bridge_ui_data_changed();
   }
   ctx = saved;
-  return true;
+  return done;
 }
 
 void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
@@ -8540,6 +8592,13 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
   for (uint32_t slot = 0; slot < taken; ++slot) {
     const std::string name = GuestTickPumpTakenAction(slot);
     bool ran = false;
+
+    // Named for the hooks the dispatch below reaches (GuestTickPumpDispatching), cleared with
+    // the slot however the dispatch leaves.
+    struct Dispatching {
+      explicit Dispatching(const std::string& action) { g_dispatching = action; }
+      ~Dispatching() { g_dispatching.clear(); }
+    } dispatching(name);
 
     // Logged before the call, not only after it: everything below dispatches into the guest on
     // its own thread, so an action that never returns would otherwise log nothing. The last
@@ -8904,8 +8963,6 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base) {
     } else if (name.rfind(kActionCoopHeroBodyPrefix, 0) == 0) {
       ran = DispatchCoopHeroBody(ctx, base,
                                  name.substr(std::strlen(kActionCoopHeroBodyPrefix)));
-    } else if (name.rfind("Quickslot:", 0) == 0) {
-      ran = DispatchQuickslot(ctx, base, name.substr(10));
     } else if (name.rfind(kActionQuickWheelPrefix, 0) == 0) {
       ran = DispatchQuickWheel(ctx, base, name.substr(std::strlen(kActionQuickWheelPrefix)));
     } else if (name.rfind(kActionSpellBladePrefix, 0) == 0) {

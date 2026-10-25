@@ -26,8 +26,9 @@ namespace Refii.Mods;
 ///   stamped with mods of its own is REFUSED once (the event's cancel) and the player is told
 ///   on the host page book (<see cref="Engine_UiHostBoxes.AskPage"/>) which mods it was made
 ///   with and which are not enabled now; on Continue the save is filtered when any are
-///   missing and the same commit Godot posted (`LoadSave:N`, the root's `MenuEvent:…`) is
-///   posted again, this time let through. Back leaves the front end where it was — the fan.
+///   missing and the event's own `commit` — the pump action the start ran under (`LoadSave:N`,
+///   the root's Continue row by name) — is posted again, this time let through. Back leaves
+///   the front end where it was — the fan.
 /// - THE FILTER (<see cref="ModSaveFilter"/>) rewrites `mainsave.bin` in the save's folder with
 ///   the missing mods' records out, the player store without their keys, and keeps everything it
 ///   removed under `mods.held` in the sidecar; the unfiltered main save is kept beside it
@@ -99,15 +100,7 @@ public static class ModSaveGate
 			return false;
 		}
 
-		string save = string.Empty;
-		foreach ((string key, object value) in fields)
-		{
-			if (key == "save" && value is string s)
-			{
-				save = s;
-			}
-		}
-
+		string save = Field(fields, "save");
 		if (save.Length == 0)
 		{
 			return false;
@@ -186,7 +179,7 @@ public static class ModSaveGate
 		// EVERY STAMPED SAVE IS TOLD ABOUT: the player sees which mods it was made with before it
 		// loads, and which of them are not enabled now. Refused once, asked on the page book, and
 		// let through on Continue.
-		var pending = new Pending(save, directory, diff, HostBridge.LastCommitAction, archon, archonDiff);
+		var pending = new Pending(save, directory, diff, CommitOf(fields), archon, archonDiff);
 		lock (Lock)
 		{
 			_pending = pending;
@@ -197,6 +190,29 @@ public static class ModSaveGate
 			$" — refused, asking (commit '{pending.Commit}')");
 		Callable.From(() => ShowNotice(stamp)).CallDeferred();
 		return true;
+	}
+
+	/// <summary>
+	/// The action posted again once the box is answered: the event's `commit`, the guest-tick
+	/// pump's name for the action the start ran under (`LoadSave:N`, the root's Continue row by
+	/// its bare name). "" for a start the pump did not run — nothing is posted then, and the
+	/// player is told to choose once more; a commit remembered host-side could be a previous
+	/// load's, so it is never read from anywhere else.
+	/// </summary>
+	public static string CommitOf(IReadOnlyList<KeyValuePair<string, object>> fields) => Field(fields, "commit");
+
+	private static string Field(IReadOnlyList<KeyValuePair<string, object>> fields, string name)
+	{
+		string found = string.Empty;
+		foreach ((string key, object value) in fields)
+		{
+			if (key == name && value is string s)
+			{
+				found = s;
+			}
+		}
+
+		return found;
 	}
 
 	private static void ShowNotice(SaveSidecar.ModsLayer stamp)

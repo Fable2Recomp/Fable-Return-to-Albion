@@ -51,6 +51,17 @@ struct MMIORange {
 void EnterHostProbe();
 void LeaveHostProbe();
 
+/// Told of a READ or WRITE of the guest arena that nothing handled: not an MMIO range, not a
+/// watched page, not a host probe, and declined by the memory's access-violation callback —
+/// the fault that is about to leave the vectored handler and take the process down. A host
+/// records it here, because on Windows a fault on a managed thread (the embedding app's main
+/// thread, say) is taken by the managed runtime's own handling before any
+/// SetUnhandledExceptionFilter runs, so a recorder installed there never sees it.
+/// `ex->native_info()` is the platform's exception record. Called under no lock.
+typedef void (*UnhandledGuestFaultObserver)(uint32_t guest_address, bool is_write,
+                                            arch::Exception* ex);
+void SetUnhandledGuestFaultObserver(UnhandledGuestFaultObserver observer);
+
 // NOTE: only one can exist at a time!
 class MMIOHandler {
  public:

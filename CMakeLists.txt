@@ -736,11 +736,6 @@ add_library(refii_host STATIC
     # bridge and this driver must see one ring, not one each.
     src/host_audio.cpp
 )
-# host_audio.cpp calls the SDK's 5.1 fold, whose x86-64 path is SSSE3 — the same flag the
-# SDK's own audio objects get above.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
-    target_compile_options(refii_host PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-mssse3>)
-endif()
 set_target_properties(refii_host PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
     # Linked into refii_hostbridge, which is SHARED so Godot can P/Invoke it. Without

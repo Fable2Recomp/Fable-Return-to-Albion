@@ -87,6 +87,27 @@ public static class Engine_UiModBoxes
 			case Engine_UiModRequest.Op.MeterRemove:
 				Engine_HudModMeters.Remove(request.Name);
 				break;
+
+			// A mod's input claim and HUD overrides: state the pad publish and the HUD feed read.
+			case Engine_UiModRequest.Op.InputClaim:
+				if (!Refii.Mods.ModInput.Claim(request.Player, request.Name, request.On))
+				{
+					GD.PushWarning($"[mod-ui] input_claim: no action '{request.Name}' (input.json declares <mod>.<action>)");
+				}
+
+				break;
+
+			case Engine_UiModRequest.Op.HudIcon:
+				Engine_UiHudOverrides.SetIcon(request.Player, request.Name, request.Icon);
+				break;
+
+			case Engine_UiModRequest.Op.HudSlide:
+				Engine_UiHudOverrides.SetSlide(request.Player, request.Name, request.Slide);
+				break;
+
+			case Engine_UiModRequest.Op.HudHold:
+				Engine_UiHudOverrides.SetHold(request.Player, request.Name, request.On);
+				break;
 		}
 	}
 

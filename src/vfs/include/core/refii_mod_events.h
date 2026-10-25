@@ -180,6 +180,11 @@ enum refii_mod_event_kind : int32_t {
 /// sidecar with the mod set): never a bus event, posted whatever the mask says.
 #define REFII_MOD_HOST_SAVE_KIND 1004
 
+/// The kind an online JOINER's weapon pick crosses to Godot under (`player=N,op='weapon',
+/// record='0x…'`, posted by refii_mod_equip_weapon's seam in the guest tick pump; CoopHeroKit puts it
+/// in the kit the host equips from): never a bus event, posted whatever the mask says.
+#define REFII_MOD_HOST_HERO_KIND 1005
+
 /// A subscriber: `event` is the kind's struct (below), `user` is what was registered with it.
 typedef void (*refii_mod_event_fn)(void* event, void (*user)(void));
 
@@ -1268,6 +1273,11 @@ struct ModMenuRowEvent : Event {
   const char* row;
   int32_t player;
   const char* mod;
+  /// A ROW ACTION's trailing fields (ui/templates.json "rowActions", Engine_UiRowActions): the
+  /// highlighted row's own command ("Inventory:use:1234", "Ability:learn:9", an expression id) and
+  /// the button pressed ("X", "Y"); both "" for a plain row choice.
+  const char* command;
+  const char* button;
 };
 
 /// A message box a mod raised (refii_mod_message_box, Refii.message_box, RefiiHost.message_box) was
@@ -1522,6 +1532,11 @@ struct StartGameEvent : Event {
   bool new_game;
   /// The signed-in pad's player: 1.
   int32_t player;
+  /// The host action the start was dispatched from — the guest-tick pump's name for it
+  /// (`LoadSave:N`, `MenuEvent:…`, the root's bare row name) — or "" for a start the pump did
+  /// not run. A refusing handler posts it again to make the same start once its question is
+  /// answered (the host's save gate).
+  const char* commit;
 };
 
 /// A CUTSCENE took a hero's camera and controls away from free play, or gave them back: one of the

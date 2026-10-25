@@ -1,17 +1,26 @@
 using System;
+using System.Collections.Generic;
 
 namespace Refii.Ui;
 
 /// <summary>
-/// The options page's UNCOMMITTED choices, kept by the host because the host sends every
-/// LEFT/RIGHT the page sees. The guest's pickbox handler `sub_828820B0` moves its own index
-/// (`pb+36`: 31 → idx+1 while idx &lt; count-1, 30 → idx-1 while idx &gt; 0, no wrap for these)
-/// and rewrites the caption from its Babel table (`sub_828821D0`), committing nothing until
-/// code 36 (`sub_829BF698`); 37 re-populates from the stored values. The page's captions are
-/// written by the guest with a DIRECT element text write at the screen's Show, which the
-/// owned clone does not carry, so the host renders them from this state instead — the same
-/// tables, the same arithmetic. Sliders are not tracked: their pips follow the committed
-/// values until the page commits.
+/// The open options page's row cursor and row values, for the host's captions, pips and pointer.
+///
+/// A GUEST page (Game, Controls, Video, Audio) owns all of it. Its handler moves the cursor
+/// (`page+40`) on 28/29 and hands 30/31 to the cursor's widget, whose pickbox index (`widget+36`,
+/// `sub_828820B0`: 31 → idx+1 while idx &lt; count-1, 30 → idx-1 while idx &gt; 0) or slider value
+/// (`widget+40`) moves at once and the caption is rewritten from its Babel table
+/// (`sub_828821D0`); 36 commits the page (`sub_829BF698` and its siblings), 37 re-populates.
+/// Nothing here steps on a code sent to a guest page: <see cref="Follow"/> reads the guest's own
+/// state back every frame (`RefiiHostGetOptionsPage`), so the captions painted from
+/// <see cref="IndexOf"/> never disagree with the highlight the guest draws, and A commits exactly
+/// what is shown. The guest's captions are a DIRECT element text write that the owned clone does
+/// not carry, which is why the host paints them at all — from the same tables, at the guest's
+/// index. The page closes when the guest's slide does, never on a code the host sent.
+///
+/// A HOST page (<see cref="Engine_UiHostOptionsPage"/>) has no guest behind it, so the record
+/// kept here IS its state: <see cref="Track"/> steps the cursor and the indices with the
+/// pickbox's own arithmetic, and 36/37 close it.
 /// </summary>
 public static class Engine_UiOptionsPending
 {
@@ -20,29 +29,48 @@ public static class Engine_UiOptionsPending
 
 	public static bool Open => Page.Length != 0;
 
-	/// <summary>The page's row cursor — the guest's `page+40`, 28/29 move it, clamped.</summary>
+	/// <summary>The page's row cursor — the guest's `page+40` on a guest page, the host's on a host page.</summary>
 	public static int Row { get; private set; }
 
+	/// <summary>Each row's pickbox index; -1 on a slider row or one the guest has not stated yet.</summary>
 	private static int[] _index = Array.Empty<int>();
 
+	/// <summary>Each row's choice count — a HOST page's, the only one the host steps.</summary>
 	private static int[] _count = Array.Empty<int>();
 
 	/// <summary>
-	/// THE SLIDERS' PENDING VALUES. A slider row's value lives at `row+40` on the guest's page
-	/// widget and moves by `1 / (row+44)` (steps, ctor 20) on codes 30/31; the export the host
-	/// draws pips from reads the PAGE's committed fields (`page4+0x2C…`), which only change
-	/// on Accept — so the pip stood still while editing. Tracked here from the same codes the
-	/// guest receives, NaN on a row that is not a slider.
+	/// Each row's LIVE slider value, the widget's own `widget+40` read back from the guest; NaN on
+	/// a row that is not a slider. Page 4 copies these into the fields `RefiiHostGetOptionsSliders`
+	/// reads on every step (`sub_829C1488(page, 0)`), page 3 only on commit (`sub_829C07D0`) —
+	/// so the pip drawn while editing comes from here, not from the page fields.
 	/// </summary>
 	private static float[] _slider = Array.Empty<float>();
 
-	private const int SliderSteps = 20;
+	/// <summary>
+	/// The guest's pages, by the name the list row carries: the page's index in the screen's page
+	/// vector and, per row in the guest's order, whether the row is a pickbox (else a slider).
+	/// </summary>
+	private static readonly Dictionary<string, (int Index, bool[] Pickbox)> GuestPages = new(StringComparer.Ordinal)
+	{
+		// Subtitles, Breadcrumb size, Tutorial boxes, Online orbs, Auto-joinable.
+		["Game"] = (0, new[] { true, true, true, true, true }),
+		["Controls"] = (1, new[] { true }),
+		["Video"] = (2, new[] { false }),
+		// Three sliders, then the speaker pickbox.
+		["Audio"] = (3, new[] { false, false, false, true }),
+	};
 
-	/// <summary>A slider row's pending value, or null for a pickbox row / no page.</summary>
+	/// <summary>The open guest page's index in the screen's page vector, or -1 for a host page or none.</summary>
+	public static int GuestPageIndex =>
+		Engine_UiHostOptionsPage.Current is null && GuestPages.TryGetValue(Page, out var page)
+			? page.Index
+			: -1;
+
+	/// <summary>A slider row's live value, or null for a pickbox row / no page.</summary>
 	public static float? SliderValue(int row) =>
 		row >= 0 && row < _slider.Length && !float.IsNaN(_slider[row]) ? _slider[row] : null;
 
-	/// <summary>The committed sliders with this page's pending values written over them.</summary>
+	/// <summary>The committed sliders with the open page's live widget values written over them.</summary>
 	public static Refii.Host.HostBridge.OptionSliders Pending(Refii.Host.HostBridge.OptionSliders committed)
 	{
 		if (!Open || !committed.Known)
@@ -63,57 +91,62 @@ public static class Engine_UiOptionsPending
 		};
 	}
 
-	/// <summary>A row's pending index, or -1 for an untracked (slider) row.</summary>
+	/// <summary>A row's pickbox index, or -1 for a slider row or one not yet stated.</summary>
 	public static int IndexOf(int row) =>
 		row >= 0 && row < _index.Length ? _index[row] : -1;
 
 	/// <summary>
-	/// Enter the page named by the list row, seeding every pickbox from the committed values the
-	/// guest's populate (`sub_829BE130`) would seed them from.
+	/// Enter the guest page named by the list row. Nothing is seeded: the rows are the guest's
+	/// and arrive with the first <see cref="Follow"/>. An empty name is no page and is refused —
+	/// the list's highlight can be null for a frame, and that must not close or reopen the page.
 	/// </summary>
-	public static void Enter(
-		string page, Refii.Host.HostBridge.GameOptions options,
-		Refii.Host.HostBridge.OptionSliders sliders)
+	public static void Enter(string page)
 	{
-		if (string.Equals(Page, page, StringComparison.Ordinal))
+		if (page.Length == 0 || string.Equals(Page, page, StringComparison.Ordinal))
 		{
 			return;
 		}
 
 		Page = page;
 		Row = 0;
-		_slider = Array.Empty<float>();
-		switch (page)
+		_count = Array.Empty<int>();
+		if (GuestPages.TryGetValue(page, out var layout))
 		{
-			case "Game":
-				// Subtitles, Breadcrumb size (5 steps: last table entry the size reaches),
-				// Tutorial boxes, Online orbs (3), Auto-joinable.
-				_count = new[] { 2, 5, 2, 3, 2 };
-				_index = new[]
-				{
-					options.Subtitles ? 1 : 0,
-					BreadcrumbIndex(options.Breadcrumb),
-					options.TutorialBoxes ? 1 : 0,
-					Math.Clamp(options.MultiplayerOrbs, 0, 2),
-					options.AutoJoinable ? 1 : 0,
-				};
-				break;
-			case "Controls":
-				_count = new[] { 2 };
-				_index = new[] { options.InvertCamera ? 1 : 0 };
-				break;
-			case "Audio":
-				// Three sliders, then the speaker pickbox.
-				_count = new[] { 0, 0, 0, 3 };
-				_index = new[] { -1, -1, -1, Math.Clamp(sliders.Speaker, 0, 2) };
-				_slider = new[] { sliders.Sfx, sliders.Music, sliders.Speech, float.NaN };
-				break;
-			default:
-				// Video: one slider, nothing to track.
-				_count = new[] { 0 };
-				_index = new[] { -1 };
-				_slider = new[] { sliders.Gamma };
-				break;
+			_index = new int[layout.Pickbox.Length];
+			_slider = new float[layout.Pickbox.Length];
+			Array.Fill(_index, -1);
+			Array.Fill(_slider, float.NaN);
+		}
+		else
+		{
+			_index = Array.Empty<int>();
+			_slider = Array.Empty<float>();
+		}
+	}
+
+	/// <summary>
+	/// The guest's own state for the open guest page, read this frame: its cursor becomes
+	/// <see cref="Row"/>, each pickbox row's `widget+36` its <see cref="IndexOf"/>, each slider
+	/// row's `widget+40` its <see cref="SliderValue"/>. An unknown reading (screen not live yet)
+	/// keeps the last. Nothing on a host page.
+	/// </summary>
+	public static void Follow(Refii.Host.HostBridge.GuestOptionsPage guest)
+	{
+		if (!guest.Known || Engine_UiHostOptionsPage.Current is not null ||
+			!GuestPages.TryGetValue(Page, out var layout))
+		{
+			return;
+		}
+
+		bool[] pickbox = layout.Pickbox;
+		Row = Math.Clamp(guest.Cursor, 0, pickbox.Length - 1);
+		for (int row = 0; row < pickbox.Length; ++row)
+		{
+			bool stated = guest.Indices is not null && row < guest.Indices.Length;
+			_index[row] = pickbox[row] && stated ? guest.Indices![row] : -1;
+			_slider[row] = !pickbox[row] && stated && guest.Values is not null && row < guest.Values.Length
+				? guest.Values[row]
+				: float.NaN;
 		}
 	}
 
@@ -129,8 +162,8 @@ public static class Engine_UiOptionsPending
 
 	/// <summary>
 	/// Enter a HOST page — one with no guest page behind it (<see cref="Engine_UiHostOptionsPage"/>).
-	/// Seeded from the page's committed indices the way a guest page is seeded from the stored
-	/// options; the codes that follow are tracked here and never sent to the guest.
+	/// Seeded from the page's committed indices; the codes that follow are tracked here and never
+	/// sent to the guest.
 	/// </summary>
 	public static void EnterHost(Engine_UiHostOptionsPage page)
 	{
@@ -144,16 +177,18 @@ public static class Engine_UiOptionsPending
 		Engine_UiHostOptionsPage.Current = page;
 	}
 
-	/// <summary>One screen action the host just sent to the page.</summary>
+	/// <summary>
+	/// One screen action the host just sent to a HOST page. A guest page's codes move the
+	/// guest's own record, which <see cref="Follow"/> reads back — nothing is stepped here for one.
+	/// </summary>
 	public static void Track(uint code)
 	{
-		if (!Open)
+		if (Engine_UiHostOptionsPage.Current is not { } host)
 		{
 			return;
 		}
 
-		Engine_UiHostOptionsPage? host = Engine_UiHostOptionsPage.Current;
-		if (host is not null && code == Engine_UiScreenInput.Select && !host.Commit(IndexOf))
+		if (code == Engine_UiScreenInput.Select && !host.Commit(IndexOf))
 		{
 			return;
 		}
@@ -164,55 +199,27 @@ public static class Engine_UiOptionsPending
 				Row = Math.Max(0, Row - 1);
 				break;
 			case Engine_UiScreenInput.Down:
-				Row = Math.Min((host?.Count ?? _index.Length) - 1, Row + 1);
+				Row = Math.Min(host.Count - 1, Row + 1);
 				break;
 			case Engine_UiScreenInput.Left:
 				if (Row < _index.Length && _index[Row] > 0)
 				{
 					--_index[Row];
-					host?.Changed(Row, _index[Row]);
+					host.Changed(Row, _index[Row]);
 				}
-				Nudge(-1f / SliderSteps);
 				break;
 			case Engine_UiScreenInput.Right:
 				if (Row < _index.Length && _index[Row] >= 0 && _index[Row] < _count[Row] - 1)
 				{
 					++_index[Row];
-					host?.Changed(Row, _index[Row]);
+					host.Changed(Row, _index[Row]);
 				}
-				Nudge(1f / SliderSteps);
 				break;
 			case Engine_UiScreenInput.Select:
 			case Engine_UiScreenInput.Back:
-				// 36 commits, 37 re-populates — either way the page closes and the committed
-				// values are the truth again.
+				// 36 commits, 37 discards — either way the page closes.
 				Leave();
 				break;
 		}
-	}
-
-	/// <summary>`sub_82881D60` events 30/31 on the cursor's slider row: `value ∓= 1/steps`, clamped [0, 1].</summary>
-	private static void Nudge(float by)
-	{
-		if (Row < _slider.Length && !float.IsNaN(_slider[Row]))
-		{
-			_slider[Row] = Math.Clamp(_slider[Row] + by, 0f, 1f);
-		}
-	}
-
-	/// <summary>The guest's `for i: if size >= table[i] → index = i` over {0, .5, 1, 1.5, 2}.</summary>
-	public static int BreadcrumbIndex(float size)
-	{
-		int index = 0;
-		float[] least = { 0.0f, 0.5f, 1.0f, 1.5f, 2.0f };
-		for (int i = 0; i < least.Length; ++i)
-		{
-			if (size >= least[i])
-			{
-				index = i;
-			}
-		}
-
-		return index;
 	}
 }

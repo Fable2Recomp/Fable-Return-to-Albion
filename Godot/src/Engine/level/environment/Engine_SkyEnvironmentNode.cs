@@ -183,7 +183,12 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
         Refii.Core.Engine_FramePhases.Lap("sky.gi", ref lap);
 
-        Engine_WaterMaterial.AdvancePhases(GetParent()?.GetNodeOrNull<Node3D>(Path_Water), (float)delta);
+        // THE WORLD'S DELTA, ONCE. Water, clouds, bodies, weather and thunder animate the guest's
+        // world, so they advance by the frame at the guest's pace and hold under its stated pause
+        // (Engine_DrawAdvance.Seconds). The GI refresh budget and the painted blend are the host's
+        // own transitions and stay on real time.
+        float world = (float)Refii.Core.Engine_DrawAdvance.Seconds(delta);
+        Engine_WaterMaterial.AdvancePhases(GetParent()?.GetNodeOrNull<Node3D>(Path_Water), world);
         if (Current == this)
         {
             Refii.Models.Engine_SceneWind.Pump();
@@ -208,12 +213,12 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         Refii.Core.Engine_FramePhases.Lap("sky.relight", ref lap);
         TickPainted((float)delta);
         Refii.Core.Engine_FramePhases.Lap("sky.painted", ref lap);
-        TrackBodies((float)delta);
+        TrackBodies(world);
         Refii.Core.Engine_FramePhases.Lap("sky.bodies", ref lap);
-        AnimateSky((float)delta);
-        Engine_WeatherShelter.Tick((float)delta);
+        AnimateSky(world);
+        Engine_WeatherShelter.Tick(world);
         FollowSkyChoice();
-        Engine_DynamicWeatherChoice.Tick((float)delta);
+        Engine_DynamicWeatherChoice.Tick(world);
         if (Engine_DynamicSky.Enabled &&
             Environment?.Sky?.SkyMaterial is ShaderMaterial dynamicMaterial)
         {
@@ -236,9 +241,9 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                 _dynamicThunder.Bind(_dynamicSky);
                 var volume = HostBridge.GetOptionSliders();
                 if (volume.Known) _thunderSfx = volume.Sfx;
-                _dynamicThunder.Advance((float)delta, Engine_WeatherShelter.Exposure, _thunderSfx);
+                _dynamicThunder.Advance(world, Engine_WeatherShelter.Exposure, _thunderSfx);
             }
-            _dynamicSky.Tick((float)delta, dynamicMaterial,
+            _dynamicSky.Tick(world, dynamicMaterial,
                 GetParent()?.GetNodeOrNull<Engine_DynamicPrecipitation>(Path_Precipitation),
                 Environment);
             if (Current == this && !Engine.IsEditorHint())

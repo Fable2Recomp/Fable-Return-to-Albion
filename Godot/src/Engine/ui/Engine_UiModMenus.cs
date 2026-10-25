@@ -281,7 +281,7 @@ public static class Engine_UiModMenus
 			}
 
 			return CallLua(command, context.Menu, context.Row, context.Player is 1 or 2 ? context.Player : MenuPlayer,
-				context.Mod);
+				context.Mod, context.RowCommand, context.Button);
 		});
 	}
 
@@ -294,13 +294,24 @@ public static class Engine_UiModMenus
 	private static void Raise(string menu, string row, int player, string? mod = null)
 	{
 		mod ??= Engine_UiTemplates.MenuOwner(menu, row);
-		Refii.Mods.ModGodot.Host?.RaiseModMenuRow(menu, row, player, mod);
+		RaiseRow(menu, row, player, mod, string.Empty, string.Empty);
+	}
+
+	/// <summary>
+	/// The <c>ModMenuRow</c> event with its trailing fields — the highlighted row's own command and the
+	/// button pressed — as a ROW ACTION on a screen list raises it (Engine_UiRowActions); the plain
+	/// row choice leaves both empty.
+	/// </summary>
+	public static void RaiseRow(string menu, string row, int player, string mod, string rowCommand, string button)
+	{
+		Refii.Mods.ModGodot.Host?.RaiseModMenuRow(menu, row, player, mod, rowCommand, button);
 		if (HostBridge.IsGuestUp)
 		{
-			HostBridge.PostModCommand(Engine_UiModMenuCommand.RowCommandLine(menu, row, player, mod));
+			HostBridge.PostModCommand(Engine_UiModMenuCommand.RowCommandLine(menu, row, player, mod, rowCommand, button));
 		}
 
-		GD.Print($"[mod-menus] '{menu}/{row}' chosen by player {player}" + (mod.Length == 0 ? string.Empty : $" ({mod})"));
+		GD.Print($"[mod-menus] '{menu}/{row}' chosen by player {player}" + (mod.Length == 0 ? string.Empty : $" ({mod})") +
+			(button.Length == 0 ? string.Empty : $" with {button}"));
 	}
 
 	/// <summary>
@@ -310,12 +321,13 @@ public static class Engine_UiModMenus
 	/// <c>mod/frontend.lua</c> (Refii.Mods.ModLua.FrontendPreamble).
 	/// </summary>
 	private static Engine_UiCommandResult CallLua(
-		Engine_UiModMenuCommand.Parsed command, string menu, string row, int player, string mod)
+		Engine_UiModMenuCommand.Parsed command, string menu, string row, int player, string mod,
+		string rowCommand = "", string button = "")
 	{
 		// In a game, the game VM; on the title and the front end, the mods' front-end Lua (the current
 		// Gameface presentation's state with every mod's mod/frontend.lua, mod_frontend_lua.cpp).
 		string line = (HostBridge.IsInGame ? "run_lua " : Refii.Mods.ModLua.FrontendCommand) +
-			Engine_UiModMenuCommand.LuaCall(command, menu, row, player, mod);
+			Engine_UiModMenuCommand.LuaCall(command, menu, row, player, mod, rowCommand, button);
 		if (System.Text.Encoding.UTF8.GetByteCount(line) >= Refii.Mods.RefiiHost.CommandLimit)
 		{
 			return Engine_UiCommandResult.Refused($"the call to {command.Function} is over the " +

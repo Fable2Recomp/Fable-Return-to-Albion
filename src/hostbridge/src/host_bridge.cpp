@@ -59,7 +59,6 @@
 #include <achievement/achievement_runtime.h>
 #include <rex/chrono/clock.h>
 #include <rex/cvar.h>
-#include <rex/audio/downmix.h>
 #include <rex/logging.h>
 
 namespace rex {
@@ -2483,10 +2482,17 @@ extern "C" {
 ///     exe_dir/logs/refii_hang_<utc>.txt.
 /// 220 adds RefiiHostGetCurrentCulture — the locale code of the guest's current language row, so
 ///     the host's text book and fonts follow a language the player picks at the title.
-/// 221 adds RefiiHostAudioFrontGain — the linear weight the host's 5.1 fold gives the front
-///     channels, so sound the host decodes itself (movies) sits at the same level as the guest's
-///     mix, which on the console went through the same mastering voice.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 221; }
+/// 221 makes this library Godot's audio output. It is also a GDExtension
+///     (`refii_godot_audio_init`, godot_audio_effect.cpp): its RefiiGuestAudioEffect writes
+///     the guest's frame onto each speaker pair of a bus, so a 5.1 device gets the guest's 5.1
+///     and a stereo one the SDK's ITU fold. RefiiHostAudioOutputConfigure / Detach / Stats
+///     replace RefiiHostPullAudio, RefiiHostAudioChannels and RefiiHostAudioFloatsPerFrame;
+///     RefiiHostAudioFrontGain(channels) gives host-decoded sound (movies) the fold's front
+///     weight, since on the console it went through the same mastering voice.
+/// 222 adds RefiiHostGetOptionsPage — one options page as the GUEST holds it: its row cursor and
+///     every row widget's own pickbox index / slider value, so the host paints the page's captions
+///     and pips from the state the guest's handler moves instead of stepping a record of its own.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 222; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostUiDataGeneration(void) { return refii_bridge_ui_data_generation(); }
 
@@ -3485,6 +3491,10 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetOptions(uint32_t* words, uint32_t word_cap
 ///
 /// Values are 0..1, the slider's own clamp (`sub_82881E38`). The pip sits at
 /// `position.x = value * 440 - 210`, which is the caller's arithmetic.
+///
+/// These are the PAGE fields: page 4 refreshes its three on every 30/31 (`sub_829C1488(page,
+/// 0)` from `sub_829C1668`), page 3 writes its one on commit only (`sub_829C07D0`). The value a
+/// slider shows while it is being edited is the widget's own, RefiiHostGetOptionsPage's.
 REFII_HOST_ABI_EXPORT int RefiiHostGetOptionsSliders(float* out_gamma, float* out_sfx,
                                                      float* out_music, float* out_speech,
                                                      uint32_t* out_speaker) {
@@ -3516,6 +3526,95 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetOptionsSliders(float* out_gamma, float* ou
     if (out_speech != nullptr) *out_speech = read_float(screen + 408u + 0x34u);
     if (out_speaker != nullptr) *out_speaker = GuestWordAt(base, screen + 408u + 0x38u);
     return 1;
+}
+
+/// One page of the options screen AS THE GUEST HOLDS IT — its row cursor and every row widget's
+/// own state — so the host paints the page's captions and pips from the data point the guest's
+/// handler moves, never from a record of its own.
+///
+/// The screen's page group is at `screen+28` (`sub_826D9AC0` zeroes its timer there; it is the
+/// `*(float*)this <= 0.5` gate of `sub_829907F0`) and its pages are the vector at `group+12..16`
+/// (`screen+40/44`), one pointer per page in screen order: Game (inline at `screen+72`, vtable
+/// `off_820F03EC`), Controls (`screen+184`), Video (`screen+312`), Audio (`screen+408`). Every
+/// page keeps a keyed widget map at `page+28` — `sub_82484B70` builds its header node at
+/// `page+32`, the count is `page+36` — and the selected row's key at `page+40`:
+/// `sub_829C0438(page+28, n)` stores `*(map+12) = n`, the `a1[10]` each page handler reads on
+/// 28/29 (`sub_829BFA28` page 1, `sub_829C02D8` page 2, `sub_829C0B58` page 3, `sub_829C1668`
+/// page 4; the handler's `this` is the page — page 1's ctor writes `screen+112 = -1`).
+/// A row's widget is found the way `sub_829C18B8` finds it, the map's own lower_bound
+/// (`sub_82A177D8`): nodes are {left +0, parent +4, right +8, key +12, widget +16, nil byte +25}.
+/// A pickbox keeps its index at `widget+36` (`sub_828820B0` steps it) and a slider its 0..1
+/// value at `widget+40` — the field page 4 copies into its own +44..+52 on every 30/31
+/// (`sub_829C1488(page, 0)`) and page 3 copies into its +48 only on 36 (`sub_829C07D0`), which
+/// is why a pip read from the page fields stood still while gamma was edited.
+///
+/// `page` is the page's index in the vector. Fills `out_cursor` with the selected key (-1 before
+/// the page has been shown) and, per row, `indices[n]` / `values[n]` with the widget's +36 / +40;
+/// a row with no widget keeps -1 / 0. Returns the map's row count, 0 when the screen or the page
+/// is not live. Guest memory is only read.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetOptionsPage(uint32_t page, int32_t* out_cursor,
+                                                       int32_t* indices, float* values,
+                                                       uint32_t capacity) {
+    if (out_cursor != nullptr) *out_cursor = -1;
+    for (uint32_t n = 0; n < capacity; ++n) {
+        if (indices != nullptr) indices[n] = -1;
+        if (values != nullptr) values[n] = 0.0f;
+    }
+
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) return 0u;
+    const uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) return 0u;
+
+    constexpr uint32_t kOptionsScreenId = 18u;
+    const uint32_t screen = ScreenObject(base, kOptionsScreenId);
+    if (screen == 0u) return 0u;
+
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+
+    const uint32_t pages_begin = read32(screen + 40u);
+    const uint32_t pages_end = read32(screen + 44u);
+    if (!plausible(pages_begin) || pages_end < pages_begin) return 0u;
+    const uint32_t page_count = (pages_end - pages_begin) >> 2;
+    if (page_count > 8u || page >= page_count) return 0u;
+    const uint32_t object = read32(pages_begin + 4u * page);
+    if (!plausible(object)) return 0u;
+
+    if (out_cursor != nullptr) *out_cursor = static_cast<int32_t>(read32(object + 40u));
+
+    const uint32_t head = read32(object + 32u);
+    const uint32_t rows = read32(object + 36u);
+    if (!plausible(head) || rows > 8u) return 0u;
+
+    for (uint32_t n = 0; n < rows && n < capacity; ++n) {
+        // `sub_82A177D8`: from the root, remember the last node whose key is >= n.
+        const auto key = [&](uint32_t node) { return static_cast<int32_t>(read32(node + 12u)); };
+        uint32_t best = head;
+        uint32_t node = read32(head + 4u);
+        for (uint32_t step = 0; step < 64u && plausible(node) && GuestByteAt(base, node + 25u) == 0u;
+             ++step) {
+            if (key(node) >= static_cast<int32_t>(n)) {
+                best = node;
+                node = read32(node);
+            } else {
+                node = read32(node + 8u);
+            }
+        }
+        if (best == head || key(best) != static_cast<int32_t>(n)) continue;
+
+        const uint32_t widget = read32(best + 16u);
+        if (!plausible(widget)) continue;
+        if (indices != nullptr) indices[n] = static_cast<int32_t>(read32(widget + 36u));
+        if (values != nullptr) {
+            const uint32_t raw = read32(widget + 40u);
+            float value = 0.0f;
+            std::memcpy(&value, &raw, sizeof(value));
+            values[n] = value;
+        }
+    }
+
+    return rows;
 }
 
 /// Installs Godot's asset reader, so the guest's loaders resolve through it and one mount
@@ -4948,32 +5047,12 @@ REFII_HOST_ABI_EXPORT void RefiiHostSetAppRoot(const char* root) {
 // Audio
 // ---------------------------------------------------------------------------------
 
-/// Takes up to `max_frames` mixed frames as interleaved stereo float32.
-///
-/// This call is the guest's audio clock: every frame taken credits the guest for one more.
-/// Call it only with somewhere to put the audio — draining faster than playback lets the guest
-/// run ahead of what is audible, and not calling it stalls the guest's audio thread (which
-/// recovers by dropping after a timeout).
-///
-/// `out` must hold `max_frames * RefiiHostAudioFloatsPerFrame()` floats. Returns frames
-/// written.
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostPullAudio(float* out, uint32_t max_frames) {
-    return refii::vfs::PopHostAudioFrames(out, max_frames);
-}
-
-/// The frame geometry, so the host does not hard-code what the binary states.
+/// The frame geometry, so the host does not hard-code what the binary states. The frames
+/// themselves are taken by the Godot audio effect in godot_audio_effect.cpp — in-process, on
+/// Godot's audio thread — which also carries the output's configure, detach and stats exports.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostAudioSampleRate(void) { return refii::vfs::kGuestAudioSampleRate; }
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostAudioChannels(void) { return refii::vfs::kHostAudioChannels; }
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostAudioSamplesPerFrame(void) {
     return refii::vfs::kGuestAudioSamplesPerFrame;
-}
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostAudioFloatsPerFrame(void) { return refii::vfs::kHostAudioFloatsPerFrame; }
-
-/// The linear weight the 5.1 fold gives a front channel (`StereoFold::scale` times the output
-/// gain). Sound the host decodes itself is scaled by this so it matches the guest's mix: on
-/// the console both went through the same mastering voice and the same fold.
-REFII_HOST_ABI_EXPORT float RefiiHostAudioFrontGain(void) {
-    return rex::audio::GetStereoFold().scale * rex::audio::GetOutputGain();
 }
 
 /// Health. `pushed` settles at 187.5/s (48000/256) once the guest is producing; `dropped`
@@ -15525,12 +15604,27 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetExpressionMeter(float* out_values, ui
 /// `mgr = *(*(GUI+32)+88)`; `sub_8230D4F0`: channels are a vector at `mgr+8..+12` of Channel*,
 /// each channel's records at `+4..+8` of Record*, and the front is the LAST non-null record of
 /// the FIRST non-empty channel. Record (32 bytes, filled by `sub_823033D0` at 0x82303640–a4):
-/// +0 FNV1(name), +4 title tag hash, +12 lifetime ms (−1 forever), +16 ShowA, +17 IsHoldA,
-/// +24 ShowY, +25 IsHoldY. Records enter through Lua natives AND natively (the quest objective,
-/// `sub_8251D818`), which is why the host reads the manager rather than its own copy of the calls.
+/// +0 FNV1(name), +4 title tag hash, +12 remaining ms as a FLOAT (`stfs` at 0x8230b5ac),
+/// +16 ShowA, +17 IsHoldA, +24 ShowY, +25 IsHoldY. Records enter through Lua natives AND
+/// natively (the quest objective, `sub_8251D818`), which is why the host reads the manager
+/// rather than its own copy of the calls.
+///
+/// HOW A RECORD ENDS — the vector is the end condition; there is no done flag:
+///   - lifetime: the HUD tick `sub_822BD220` → `sub_822CD618` → `sub_822CD6F0` walks every
+///     channel, `*(float*)(rec+12) -= dt` (0x822cd74c) and at `<= 0` frees and ERASES the
+///     record in that tick (0x822cd754–0x822cd79c). A record pushed with `+12 <= 0` is skipped
+///     at 0x822cd74c and never expires: `DisplayInfoBoxParams` stores LifeTime×1000 with the
+///     default −1.0 (0x82303618), the quest objective 20000.0 (0x8251d76c), the will name 0.0.
+///     The countdown pauses while the GameFlow top state's kind is 1, 2 or 8 (0x822cd694).
+///   - by name: `GUI.RemoveDisplayBox` → `sub_826B9AA8` → `sub_8230D0C0(mgr, Fnv1(name))` →
+///     `sub_8230C130` erases every record with that hash (memmove at 0x8230c1a8).
+///   - a completed hold (`sub_8230D2E0` meter ≥ 1.0 → `sub_8230D548`) posts message 34/101
+///     (0x8230d61c) and does NOT touch the record; the script removes it.
+/// So "present" below is exactly what the guest shows, and no host-side timer belongs here.
 ///
 /// words: [0] present, [1] title hash, [2] showA, [3] holdA, [4] showY, [5] holdY, [6] channel,
-/// [7] name hash, [8] lifetime ms as int. Returns 9, or 0 with no manager.
+/// [7] name hash, [8] remaining ms as int (the float truncated; <= 0 never expires). Returns 9,
+/// or 0 with no manager.
 /// The TopBox manager's FRONT record (`sub_8230D4F0`): the last record of the lowest-index
 /// non-empty channel. Returns 0 with `channel` untouched when the manager is not up; sets
 /// `manager_found` so a caller can tell "no manager" from "no record".
@@ -15698,7 +15792,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTopBoxFront(uint32_t* out_words, uint
     out_words[5] = byte_at(record + 25u);
     out_words[6] = channel;
     out_words[7] = GuestWordAt(base, record + 0u);
-    out_words[8] = GuestWordAt(base, record + 12u);
+    // +12 is the countdown FLOAT `sub_822CD6F0` decrements; handed over as whole milliseconds.
+    float remaining = 0.0f;
+    const uint32_t remaining_bits = GuestWordAt(base, record + 12u);
+    std::memcpy(&remaining, &remaining_bits, sizeof remaining);
+    out_words[8] = std::isfinite(remaining) && std::fabs(remaining) < 2147483000.0f
+        ? static_cast<uint32_t>(static_cast<int32_t>(remaining))
+        : 0u;
     return 9u;
 }
 

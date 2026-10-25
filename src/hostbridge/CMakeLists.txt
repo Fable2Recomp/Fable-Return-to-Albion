@@ -10,7 +10,20 @@ add_library(refii_hostbridge SHARED
     ${REFII_HOSTBRIDGE_ROOT}/src/host_bridge.cpp
     ${REFII_HOSTBRIDGE_ROOT}/src/host_tracy.cpp
     ${REFII_HOSTBRIDGE_ROOT}/src/hang_watchdog.cpp
+    # The guest's audio output as a Godot audio effect. This library is ALSO the GDExtension
+    # Godot loads for it — the same file .NET holds — so the effect reads the ring in-process.
+    ${REFII_HOSTBRIDGE_ROOT}/src/godot_audio_effect.cpp
 )
+
+# Godot's extension interface, dumped from the 4.7.1 editor (`--dump-gdextension-interface`).
+# Header only: the extension talks to Godot through the procedure table it is handed.
+target_include_directories(refii_hostbridge PRIVATE ${REFII_HOSTBRIDGE_ROOT}/include)
+
+# The SDK's 5.1 fold is SSSE3 on x86-64, the flag the SDK's own audio objects get.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64" AND NOT MSVC)
+    set_source_files_properties(${REFII_HOSTBRIDGE_ROOT}/src/godot_audio_effect.cpp
+        PROPERTIES COMPILE_OPTIONS "-mssse3")
+endif()
 
 # refii_host carries RunRefiiEmbedded and pulls in refii_core and refii_generated —
 # the whole recompiled guest. That is what "run refii inside Godot" costs, and it is why

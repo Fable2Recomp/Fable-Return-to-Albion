@@ -55,6 +55,9 @@ namespace refii::vfs {
 uint32_t ModScriptSystem();
 uint32_t HeroEntity(uint8_t* base);
 bool IsCoopJoiner(uint8_t* base);
+/// guest_tick_pump.cpp: the quick menu's action (1 use an item, 2 perform an expression, 3 equip a
+/// weapon, 4 assign a spell) for a player's hero, gated as the quick menu is; true when performed.
+bool PerformQuickslot(PPCContext& ctx, uint8_t* base, uint32_t player, uint32_t kind, uint32_t record);
 bool CoopSessionLive(uint8_t* base);
 bool MenusActForPlayerTwo(uint8_t* base);
 void RunModEventsTick(PPCContext& ctx, uint8_t* base, float seconds);
@@ -750,6 +753,49 @@ extern "C" int32_t refii_mod_meter_remove(const char* id) {
     return 0;
   }
   refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, "op='meter_remove',id='" + key + "'");
+  return 1;
+}
+
+// Input claims and HUD overrides: state Godot's pad publish and HUD feed read (ModInput,
+// Engine_UiHudOverrides), posted on the host-only UI kind like the meters.
+
+extern "C" int32_t refii_mod_input_claim(int32_t player, const char* action, int32_t on) {
+  const std::string name = QuotedField(action, 96);
+  if (name.empty()) {
+    return 0;
+  }
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, "op='input_claim',player=" + std::to_string(ClampPlayer(player)) +
+                                                     ",action='" + name + "',on=" + (on != 0 ? "1" : "0"));
+  return 1;
+}
+
+extern "C" int32_t refii_mod_hud_icon(int32_t player, const char* element, const char* texture) {
+  const std::string name = QuotedField(element, 96);
+  if (name.empty()) {
+    return 0;
+  }
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, "op='hud_icon',player=" + std::to_string(ClampPlayer(player)) +
+                                                     ",element='" + name + "',texture='" + QuotedField(texture, 160) + "'");
+  return 1;
+}
+
+extern "C" int32_t refii_mod_hud_slide(int32_t player, const char* element, int32_t slide) {
+  const std::string name = QuotedField(element, 96);
+  if (name.empty() || slide < 0) {
+    return 0;
+  }
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, "op='hud_slide',player=" + std::to_string(ClampPlayer(player)) +
+                                                     ",element='" + name + "',slide=" + std::to_string(slide));
+  return 1;
+}
+
+extern "C" int32_t refii_mod_hud_hold(int32_t player, const char* piece, int32_t on) {
+  const std::string name = QuotedField(piece, 96);
+  if (name.empty()) {
+    return 0;
+  }
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, "op='hud_hold',player=" + std::to_string(ClampPlayer(player)) +
+                                                     ",piece='" + name + "',on=" + (on != 0 ? "1" : "0"));
   return 1;
 }
 
@@ -2617,6 +2663,238 @@ extern "C" int32_t refii_mod_equipped(uint8_t* base, uint32_t entity, uint32_t* 
     *out_ranged = refii::vfs::LoadGuestU32(base, set + kWeaponRanged);
   }
   return 1;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The quick menu's actions, the performer's expressions, the spell tables, a record's strings
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr uint32_t kPerformerComponent = 154;
+constexpr uint32_t kPerformerKnownBegin = 0x88;
+constexpr uint32_t kPerformerKnownEnd = 0x8C;
+constexpr uint32_t kPerformerEntryBytes = 20;
+constexpr uint32_t kPerformerEntryUses = 12;
+constexpr uint32_t kPerformerKnownMax = 512;
+constexpr uint32_t kSpellTiers = 5;
+constexpr uint32_t kSpellTypes = 8;
+constexpr uint32_t kSpellKnown = 156;    // manager + 156 + 5 * type + tier: the hero knows it
+constexpr uint32_t kSpellOffered = 196;  // manager + 196 + 5 * type + tier: the tier may take it
+constexpr uint32_t kGuiObject = 0x83496B08u;           // disc 0x834968A4
+constexpr uint32_t kGdbManager = 0x83496DA0u;          // disc 0x83496BD0
+constexpr uint32_t kRecordStringGetter = 0x82323540u;  // disc 0x82345978: (entry, "Name") -> char*
+constexpr uint32_t kRecordTypedGetter = 0x82A006C8u;   // disc 0x829FB978: GDBEntry_GetPropTyped(entry, hash, type) -> value*
+constexpr uint32_t kGdbTypeInt = 1;                     // GDB property types, as the database states them
+constexpr uint32_t kGdbTypeEnum = 5;
+// The expression wheel (the HUD's own reader): the
+// controller at *(*(GUI + 32) + 60); 15 words read as one.
+constexpr uint32_t kWheelOpen = 0;
+constexpr uint32_t kWheelCursor = 5;
+constexpr uint32_t kWheelPlayer = 6;
+constexpr uint32_t kWheelBegin = 13;
+constexpr uint32_t kWheelEnd = 14;
+constexpr uint32_t kWheelEntryBytes = 12;
+constexpr uint32_t kWheelEntriesMax = 64;
+
+int32_t Quickslot(PPCContext* ctx, uint8_t* base, int32_t player, uint32_t kind, uint32_t record) {
+  if (ctx == nullptr || player < 1 || player > 2) {
+    return 0;
+  }
+  PPCContext work = *ctx;
+  return refii::vfs::PerformQuickslot(work, base, static_cast<uint32_t>(player), kind, record) ? 1 : 0;
+}
+
+/// Player `player`'s performer (component 154), or 0.
+uint32_t PlayerPerformer(uint8_t* base, int32_t player) {
+  const uint32_t hero = player >= 1 && player <= 2 ? refii_mod_player_hero(base, player) : 0u;
+  return Plausible(hero) ? refii_mod_component(base, hero, kPerformerComponent) : 0u;
+}
+
+/// The performer's known-expression vector, validated; false when it is not one.
+bool KnownExpressions(uint8_t* base, uint32_t performer, uint32_t& begin, uint32_t& end) {
+  begin = refii::mods::LoadU32(base, performer + kPerformerKnownBegin);
+  end = refii::mods::LoadU32(base, performer + kPerformerKnownEnd);
+  return Plausible(begin) && end >= begin && end - begin <= kPerformerEntryBytes * kPerformerKnownMax &&
+         (end - begin) % kPerformerEntryBytes == 0;
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_use_item(PPCContext* ctx, uint8_t* base, int32_t player, uint32_t definition) {
+  return Quickslot(ctx, base, player, 1u, definition);
+}
+
+extern "C" int32_t refii_mod_perform_expression(PPCContext* ctx, uint8_t* base, int32_t player, uint32_t expression) {
+  return Quickslot(ctx, base, player, 2u, expression);
+}
+
+extern "C" int32_t refii_mod_equip_weapon(PPCContext* ctx, uint8_t* base, int32_t player, uint32_t definition) {
+  return Quickslot(ctx, base, player, 3u, definition);
+}
+
+extern "C" int32_t refii_mod_assign_spell(PPCContext* ctx, uint8_t* base, int32_t player, int32_t spell) {
+  if (spell < 0 || spell >= static_cast<int32_t>(kSpellTypes)) {
+    return 0;
+  }
+  return Quickslot(ctx, base, player, 4u, static_cast<uint32_t>(spell));
+}
+
+extern "C" int32_t refii_mod_expression(uint8_t* base, int32_t player, int32_t index, uint32_t* out_record,
+                                        int32_t* out_uses) {
+  const uint32_t performer = PlayerPerformer(base, player);
+  uint32_t begin = 0, end = 0;
+  if (performer == 0 || index < 0 || !KnownExpressions(base, performer, begin, end)) {
+    return 0;
+  }
+  const uint32_t at = begin + kPerformerEntryBytes * static_cast<uint32_t>(index);
+  if (at + kPerformerEntryBytes > end) {
+    return 0;
+  }
+  if (out_record != nullptr) {
+    *out_record = refii::mods::LoadU32(base, at);
+  }
+  if (out_uses != nullptr) {
+    *out_uses = static_cast<int32_t>(refii::mods::LoadU32(base, at + kPerformerEntryUses));
+  }
+  return 1;
+}
+
+extern "C" int32_t refii_mod_spells_known(uint8_t* base, int32_t player, uint32_t* out_mask) {
+  const uint32_t hero = player >= 1 && player <= 2 ? refii_mod_player_hero(base, player) : 0u;
+  const uint32_t manager = Plausible(hero) ? refii_mod_component(base, hero, kSpellManagerComponent) : 0u;
+  if (manager == 0) {
+    return 0;
+  }
+  uint32_t mask = 0;
+  for (uint32_t type = 0; type < kSpellTypes; ++type) {
+    for (uint32_t tier = 0; tier < kSpellTiers; ++tier) {
+      const uint32_t index = kSpellTiers * type + tier;
+      if (refii::mods::LoadU8(base, manager + kSpellKnown + index) != 0 &&
+          refii::mods::LoadU8(base, manager + kSpellOffered + index) != 0) {
+        mask |= 1u << type;
+        break;
+      }
+    }
+  }
+  if (out_mask != nullptr) {
+    *out_mask = mask;
+  }
+  return 1;
+}
+
+extern "C" uint32_t refii_mod_selected_expression(uint8_t* base, int32_t player) {
+  if (player < 1 || player > 2) {
+    return 0;
+  }
+  const uint32_t gui = refii::vfs::LoadGuestU32(base, refii::guest::Address(kGuiObject));
+  const uint32_t hud = Plausible(gui) ? refii::mods::LoadU32(base, gui + 32u) : 0u;
+  const uint32_t wheel = Plausible(hud) ? refii::mods::LoadU32(base, hud + 60u) : 0u;
+  if (!Plausible(wheel) || refii::mods::LoadU32(base, wheel + 4u * kWheelOpen) != 1u ||
+      refii::mods::LoadU32(base, wheel + 4u * kWheelPlayer) != static_cast<uint32_t>(player)) {
+    return 0;
+  }
+  const uint32_t begin = refii::mods::LoadU32(base, wheel + 4u * kWheelBegin);
+  const uint32_t end = refii::mods::LoadU32(base, wheel + 4u * kWheelEnd);
+  const uint32_t cursor = refii::mods::LoadU32(base, wheel + 4u * kWheelCursor);
+  if (!Plausible(begin) || end < begin || end - begin > kWheelEntryBytes * kWheelEntriesMax ||
+      (end - begin) % kWheelEntryBytes != 0 || cursor >= (end - begin) / kWheelEntryBytes) {
+    return 0;
+  }
+  const uint32_t entry = begin + cursor * kWheelEntryBytes;
+  const uint32_t record = refii::mods::LoadU32(base, entry);
+  const uint32_t flags = refii::mods::LoadU32(base, entry + 4u);
+  const uint32_t tail = refii::mods::LoadU32(base, entry + 8u);
+  if (((flags >> 16) & 0xFFu) == 0u || (flags & 0xFFu) != 0u || (tail & 0xFFFF0000u) != 0u) {
+    return 0;
+  }
+  return record;
+}
+
+extern "C" int32_t refii_mod_record_string(PPCContext* ctx, uint8_t* base, uint32_t definition, const char* field,
+                                           char* out, uint32_t size) {
+  if (out != nullptr && size != 0) {
+    out[0] = 0;
+  }
+  if (ctx == nullptr || definition == 0 || field == nullptr || field[0] == 0 || out == nullptr || size == 0) {
+    return 0;
+  }
+  const uint32_t gdb = refii::vfs::LoadGuestU32(base, refii::guest::Address(kGdbManager));
+  if (!Plausible(gdb)) {
+    return 0;
+  }
+  PPCContext lookup = refii::mods::Frame(*ctx);
+  lookup.r3.u32 = gdb;
+  lookup.r4.u32 = definition;
+  rex_GDBManager_FindEntryByHash(lookup, base);
+  const uint32_t entry = lookup.r3.u32;
+  if (!Plausible(entry)) {
+    return 0;
+  }
+  // The property name on our own frame: the getter hashes it (FNV-1) and asks the entry.
+  PPCContext work = refii::mods::Frame(*ctx);
+  const uint32_t name = work.r1.u32 + 0x80u;
+  size_t n = std::strlen(field);
+  if (n > 63) {
+    n = 63;
+  }
+  std::memcpy(base + name, field, n);
+  base[name + n] = 0;
+  work.r3.u32 = entry;
+  work.r4.u32 = name;
+  if (!refii::mods::CallGuest(work, base, refii::guest::Address(kRecordStringGetter))) {
+    return 0;
+  }
+  const uint32_t text = work.r3.u32;
+  if (!Plausible(text)) {
+    return 0;
+  }
+  uint32_t i = 0;
+  for (; i + 1 < size && base[text + i] != 0; ++i) {
+    out[i] = static_cast<char>(base[text + i]);
+  }
+  out[i] = 0;
+  return 1;
+}
+
+extern "C" int32_t refii_mod_record_int(PPCContext* ctx, uint8_t* base, uint32_t definition, const char* field,
+                                        int32_t* out) {
+  if (out != nullptr) {
+    *out = 0;
+  }
+  if (ctx == nullptr || definition == 0 || field == nullptr || field[0] == 0 || out == nullptr) {
+    return 0;
+  }
+  const uint32_t gdb = refii::vfs::LoadGuestU32(base, refii::guest::Address(kGdbManager));
+  if (!Plausible(gdb)) {
+    return 0;
+  }
+  PPCContext lookup = refii::mods::Frame(*ctx);
+  lookup.r3.u32 = gdb;
+  lookup.r4.u32 = definition;
+  rex_GDBManager_FindEntryByHash(lookup, base);
+  const uint32_t entry = lookup.r3.u32;
+  if (!Plausible(entry)) {
+    return 0;
+  }
+  // The string getter hashes the name itself (sub_82323540 -> sub_821D4D90 -> GetPropTyped with
+  // type 4); an integer takes the typed getter directly, as an int and then as an enum.
+  const uint32_t hash = refii_mod_fnv1(field);
+  for (uint32_t type : {kGdbTypeInt, kGdbTypeEnum}) {
+    PPCContext work = refii::mods::Frame(*ctx);
+    work.r3.u32 = entry;
+    work.r4.u32 = hash;
+    work.r5.u32 = type;
+    if (!refii::mods::CallGuest(work, base, refii::guest::Address(kRecordTypedGetter))) {
+      return 0;
+    }
+    const uint32_t value = work.r3.u32;
+    if (Plausible(value)) {
+      *out = static_cast<int32_t>(refii::mods::LoadU32(base, value));
+      return 1;
+    }
+  }
+  return 0;
 }
 
 extern "C" int32_t refii_mod_entities_near(PPCContext* ctx, uint8_t* base, const float* xyz, float radius,

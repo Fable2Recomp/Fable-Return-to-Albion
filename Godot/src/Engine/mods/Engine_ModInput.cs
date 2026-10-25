@@ -8,9 +8,12 @@ namespace Refii.Mods;
 /// <summary>
 /// A mod's own input actions: <c>input.json</c> in the package, an object keyed by action name
 /// whose values bind keys (Godot key names), pad buttons (<see cref="JoyButton"/> names or the
-/// Xbox aliases A/B/X/Y/LB/RB/L3/R3/LT/RT/Start/Back) and at most one pad axis. Actions are
+/// Xbox aliases A/B/X/Y/LB/RB/L3/R3/LT/RT/Start/Back) and at most one pad axis, under an optional
+/// <c>"chord"</c> (a held LT / RT / LB / RB, or a key). Actions are
 /// scoped <c>&lt;mod&gt;.&lt;action&gt;</c>; each is also a Godot <see cref="InputMap"/> action
-/// <c>mod.&lt;mod&gt;.&lt;action&gt;</c> so the Godot side sees it.
+/// <c>mod.&lt;mod&gt;.&lt;action&gt;</c> so the Godot side sees it. A mod CLAIMS an action for a
+/// player (<see cref="Claim"/>: <c>Refii.input_claim</c>, <c>RefiiHost.claim_input</c>,
+/// <c>refii_mod_input_claim</c>) to take its buttons away from the guest while keeping the events.
 /// </summary>
 /// <remarks>
 /// Polled once per frame from <c>GameInput._Process</c>, after the pads are assigned, with the
@@ -66,6 +69,19 @@ public static class ModInput
 	{
 		/// <summary>The Godot InputMap action name.</summary>
 		public StringName InputMapAction => ActionPrefix + Name;
+
+		/// <summary>
+		/// The held modifier the action fires under (<c>"chord"</c>): LT, RT, LB or RB on the pad, or
+		/// a Godot key name on the keyboard; empty for a plain action. While a chord's modifier is
+		/// held, a plain action on the same button or key does not fire.
+		/// </summary>
+		public string Chord { get; init; } = string.Empty;
+
+		/// <summary>What <see cref="Chord"/> names (<see cref="ModInputClaims.ParseModifier"/>).</summary>
+		public ModInputClaims.Modifier ChordModifier => ModInputClaims.ParseModifier(Chord);
+
+		/// <summary>The chord's key when it names one, else <see cref="Key.None"/>.</summary>
+		public Key ChordKey { get; init; } = Key.None;
 	}
 
 	private static List<Action>? _actions;
@@ -86,6 +102,196 @@ public static class ModInput
 	/// <summary>The control settings last read, applied again when the actions reload.</summary>
 	private static IReadOnlyDictionary<string, string>? _lastValues;
 
+	/// <summary>
+	/// THE CLAIMS: (scoped action name, player) pairs a mod holds. While claimed, the action's
+	/// bound pad buttons, triggers and keys are withheld from the pad the guest sees for that
+	/// player (<see cref="Withhold"/>, <see cref="WithheldKeys"/>) — and a chord action's modifier
+	/// too while the chord is held — but the action's own <c>input_action</c> events still fire.
+	/// Cleared when the mod set reloads, when the mods' Lua reloads and when the game goes down.
+	/// </summary>
+	private static readonly HashSet<(string Action, int Player)> _claims = new();
+
+	/// <summary>Bumped on every claim change, for a caller that caches what it withholds.</summary>
+	public static int ClaimGeneration { get; private set; }
+
+	/// <summary>
+	/// Claims or releases <paramref name="action"/> (the scoped <c>&lt;mod&gt;.&lt;action&gt;</c> name)
+	/// for <paramref name="player"/> (1 or 2; 0 for both). False for an unknown action or player.
+	/// </summary>
+	public static bool Claim(int player, string action, bool on)
+	{
+		string name = (action ?? string.Empty).Trim();
+		if (name.Length == 0 || player is < 0 or > 2 || !Has(All, name))
+		{
+			return false;
+		}
+
+		bool changed = false;
+		foreach (int p in player == 0 ? new[] { 1, 2 } : new[] { player })
+		{
+			changed |= on ? _claims.Add((name, p)) : _claims.Remove((name, p));
+		}
+
+		if (changed)
+		{
+			++ClaimGeneration;
+			GD.Print($"[mod-input] '{name}' {(on ? "claimed" : "released")} for player {(player == 0 ? "1 and 2" : player.ToString())}");
+		}
+
+		return true;
+	}
+
+	/// <summary>Whether <paramref name="action"/> is claimed for <paramref name="player"/> (1 or 2).</summary>
+	public static bool Claimed(int player, string action) => _claims.Contains(((action ?? string.Empty).Trim(), player));
+
+	/// <summary>The actions claimed for <paramref name="player"/>, in declaration order.</summary>
+	public static List<string> Claims(int player)
+	{
+		var list = new List<string>();
+		foreach (Action action in All)
+		{
+			if (_claims.Contains((action.Name, player)))
+			{
+				list.Add(action.Name);
+			}
+		}
+
+		return list;
+	}
+
+	/// <summary>Releases every claim (a Lua reload, the game going down, the set reloading).</summary>
+	public static void ClearClaims()
+	{
+		if (_claims.Count != 0)
+		{
+			_claims.Clear();
+			++ClaimGeneration;
+		}
+	}
+
+	/// <summary>
+	/// Takes the claimed actions' bindings out of one pad state before the guest reads it:
+	/// each claimed action's pad buttons (their XInput bits) and triggers (zeroed), and, for a
+	/// chord action whose modifier is held now, the modifier itself. The state is the merged one
+	/// GameInput built (keyboard folded in), so a key-driven chord is seen through its pad bits.
+	/// </summary>
+	public static void Withhold(int player, ref uint buttons, ref uint leftTrigger, ref uint rightTrigger)
+	{
+		if (_claims.Count == 0 || _actions is null)
+		{
+			return;
+		}
+
+		uint before = buttons;
+		uint lt = leftTrigger, rt = rightTrigger;
+		foreach (Action action in _actions)
+		{
+			if (!_claims.Contains((action.Name, player)))
+			{
+				continue;
+			}
+
+			ModInputClaims.Modifier modifier = action.ChordModifier;
+			bool chordHeld = modifier == ModInputClaims.Modifier.None ||
+				(modifier == ModInputClaims.Modifier.Key ? ChordKeyHeld(action) : ModInputClaims.ModifierHeld(modifier, before, lt, rt));
+			if (!chordHeld)
+			{
+				continue;
+			}
+
+			(IReadOnlyList<JoyButton> padButtons, IReadOnlyList<JoyAxis> triggers) = EffectivePad(action);
+			buttons &= ~ModInputClaims.PadBits(padButtons);
+			foreach (JoyAxis trigger in triggers)
+			{
+				if (trigger == JoyAxis.TriggerLeft) leftTrigger = 0;
+				if (trigger == JoyAxis.TriggerRight) rightTrigger = 0;
+			}
+
+			// The chord's own modifier goes with it while the chord is active.
+			switch (modifier)
+			{
+				case ModInputClaims.Modifier.LT: leftTrigger = 0; break;
+				case ModInputClaims.Modifier.RT: rightTrigger = 0; break;
+				case ModInputClaims.Modifier.LB:
+				case ModInputClaims.Modifier.RB: buttons &= ~ModInputClaims.ModifierBit(modifier); break;
+			}
+		}
+	}
+
+	/// <summary>
+	/// The keys the keyboard's own pad mapping must ignore for player 1: every claimed action's
+	/// keys, and a claimed chord's key while it is held. Empty with nothing claimed.
+	/// </summary>
+	public static IReadOnlySet<Key> WithheldKeys()
+	{
+		_withheldKeys.Clear();
+		if (_claims.Count == 0 || _actions is null)
+		{
+			return _withheldKeys;
+		}
+
+		foreach (Action action in _actions)
+		{
+			if (!_claims.Contains((action.Name, 1)))
+			{
+				continue;
+			}
+
+			if (action.ChordModifier == ModInputClaims.Modifier.Key)
+			{
+				if (!ChordKeyHeld(action))
+				{
+					continue;
+				}
+
+				_withheldKeys.Add(action.ChordKey);
+			}
+			else if (action.ChordModifier != ModInputClaims.Modifier.None && !PadModifierHeld(action, JoypadOf(1)))
+			{
+				continue;
+			}
+
+			foreach (Key key in EffectiveKeys(action))
+			{
+				_withheldKeys.Add(key);
+			}
+		}
+
+		return _withheldKeys;
+	}
+
+	private static readonly HashSet<Key> _withheldKeys = new();
+
+	private static int JoypadOf(int player) => Refii.Game.GameInput.JoypadForPad(player - 1);
+
+	private static bool ChordKeyHeld(Action action) =>
+		action.ChordKey != Key.None && !Refii.Game.GameDevMenu.KeyboardCaptured &&
+		(Input.IsKeyPressed(action.ChordKey) || Input.IsPhysicalKeyPressed(action.ChordKey));
+
+	/// <summary>Whether a pad chord's modifier is held on a joypad (a key chord: on the keyboard).</summary>
+	private static bool PadModifierHeld(Action action, int joypad)
+	{
+		switch (action.ChordModifier)
+		{
+			case ModInputClaims.Modifier.None: return true;
+			case ModInputClaims.Modifier.Key: return ChordKeyHeld(action);
+		}
+
+		if (joypad < 0)
+		{
+			return false;
+		}
+
+		return action.ChordModifier switch
+		{
+			ModInputClaims.Modifier.LT => Input.GetJoyAxis(joypad, JoyAxis.TriggerLeft) > AxisThreshold,
+			ModInputClaims.Modifier.RT => Input.GetJoyAxis(joypad, JoyAxis.TriggerRight) > AxisThreshold,
+			ModInputClaims.Modifier.LB => Input.IsJoyButtonPressed(joypad, JoyButton.LeftShoulder),
+			ModInputClaims.Modifier.RB => Input.IsJoyButtonPressed(joypad, JoyButton.RightShoulder),
+			_ => false,
+		};
+	}
+
 	/// <summary>Every action the enabled mods declare, in load order.</summary>
 	public static IReadOnlyList<Action> All => _actions ??= Load();
 
@@ -93,6 +299,7 @@ public static class ModInput
 	public static void Reload()
 	{
 		_actions = null;
+		ClearClaims();
 	}
 
 	/// <summary>The refii.toml key holding an action's keyboard rebind.</summary>
@@ -274,6 +481,7 @@ public static class ModInput
 		if (!HostBridge.IsGuestUp)
 		{
 			_held.Clear();
+			ClearClaims();
 			return;
 		}
 
@@ -311,10 +519,26 @@ public static class ModInput
 		int joypad2 = devices ? Refii.Game.GameInput.JoypadForPad(1) : -1;
 		foreach (Action action in actions)
 		{
-			Post(action, 1, (keyboard && KeysDown(action)) || PadDown(action, joypad1));
-			Post(action, 2, PadDown(action, joypad2));
+			// A CHORD fires only under its held modifier; a PLAIN action is silent while a chord on
+			// the same button or key is held (ModInputClaims.PlainSuppressed).
+			bool keys = keyboard && KeysDown(action) && KeyChordHeld(action) &&
+				!ModInputClaims.PlainSuppressed(action, actions, KeyChordHeld, keyboard: true);
+			bool pad1 = PadDown(action, joypad1) && PadModifierHeld(action, joypad1) &&
+				!ModInputClaims.PlainSuppressed(action, actions, a => PadModifierHeld(a, joypad1), keyboard: false);
+			bool pad2 = PadDown(action, joypad2) && PadModifierHeld(action, joypad2) &&
+				!ModInputClaims.PlainSuppressed(action, actions, a => PadModifierHeld(a, joypad2), keyboard: false);
+			Post(action, 1, keys || pad1);
+			Post(action, 2, pad2);
 		}
 	}
+
+	/// <summary>A key chord's modifier on the keyboard; a pad chord's on player 1's joypad; a plain action's always.</summary>
+	private static bool KeyChordHeld(Action action) => action.ChordModifier switch
+	{
+		ModInputClaims.Modifier.None => true,
+		ModInputClaims.Modifier.Key => ChordKeyHeld(action),
+		_ => PadModifierHeld(action, Refii.Game.GameInput.JoypadForPad(0)),
+	};
 
 	private static bool Has(IReadOnlyList<Action> actions, string name)
 	{
@@ -533,7 +757,22 @@ public static class ModInput
 			return null;
 		}
 
-		return new Action(name, mod, label, keys, buttons, triggers, axis, axisSign);
+		// The chord: LT / RT / LB / RB, or a key name the keyboard holds.
+		string chord = binding.TryGetValue("chord", out Variant chordValue) && chordValue.VariantType == Variant.Type.String
+			? chordValue.AsString().Trim()
+			: string.Empty;
+		Key chordKey = Key.None;
+		if (ModInputClaims.ParseModifier(chord) == ModInputClaims.Modifier.Key)
+		{
+			chordKey = OS.FindKeycodeFromString(chord);
+			if (chordKey == Key.None)
+			{
+				GD.PushWarning($"[mod-input] {name}: chord '{chord}' is neither LT, RT, LB, RB nor a key name; ignored");
+				chord = string.Empty;
+			}
+		}
+
+		return new Action(name, mod, label, keys, buttons, triggers, axis, axisSign) { Chord = chord, ChordKey = chordKey };
 	}
 
 	/// <summary>A binding list: an array of strings, or one string.</summary>

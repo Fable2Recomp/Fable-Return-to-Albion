@@ -566,6 +566,13 @@ public sealed partial class Engine_FrameStartNode : Godot.Node
 		// (ProcessPriority = int.MinValue) before any clock discipline or reader runs.
 		Refii.Host.HostBridge.SampleGuestFrame();
 
+		// The guest's pause statement, latched before any swap or draw this frame: the in-game
+		// GUI's active screen (RefiiHostGetPauseState). Null off the in-game GUI; 31 when no
+		// screen is up. Not GameSession.Paused — the guest's steps keep running the GUI tick.
+		Engine_StatedPause.BeginFrame(
+			Refii.Host.HostBridge.GetPauseState() is { } pause &&
+			Engine_StatedPause.StatesPause(pause.ScreenId));
+
 		// The guest's own clock first: it states its simulation time every iteration at
 		// `game+0x110` (0x82276F18). It cannot be fitted from sample arrivals because the guest
 		// does not catch up — more than one step behind, it takes one step and re-bases.

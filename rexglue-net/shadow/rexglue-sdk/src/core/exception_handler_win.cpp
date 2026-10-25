@@ -87,6 +87,9 @@ LONG CALLBACK ExceptionHandlerCallback(PEXCEPTION_POINTERS ex_info) {
   // https://msdn.microsoft.com/en-us/library/ms679331(v=vs.85).aspx
   // https://msdn.microsoft.com/en-us/library/aa363082(v=vs.85).aspx
   Exception ex;
+  // The platform's own record rides along: an observer of an unhandled fault (a crash
+  // recorder) needs the Win32 context the OS built, not the portable copy above.
+  ex.set_native_info(ex_info);
   switch (ex_info->ExceptionRecord->ExceptionCode) {
     case STATUS_ILLEGAL_INSTRUCTION:
       ex.InitializeIllegalInstruction(&thread_context);

@@ -948,7 +948,7 @@ public static class ModApi
 				F("from_host", "bool", "an online joiner adopting the host's statement; false where this machine decided it"),
 			}),
 		new ModApiEvent("ModMenuRow", "mod_menu_row", 87, "Godot's menu lists (Engine_UiModMenus), then the guest tick from the host's command queue (menu_row)",
-			"A row of a menu a mod defines in ui/templates.json was chosen, or a row a mod patched into a shipped menu, or any row whose command is Opens:<menu> or Mod:lua:<function>. Godot scripts get it as it happens; native handlers on the next guest tick, on the title and the front end too; Lua handlers on the next guest tick: in a game the init.lua ones, on the title and the front end the mod/frontend.lua ones (run in the current Gameface presentation's own Lua state).",
+			"A row of a menu a mod defines in ui/templates.json was chosen, or a row a mod patched into a shipped menu, or any row whose command is Opens:<menu> or Mod:lua:<function> — or a ROW ACTION (ui/templates.json \"rowActions\": a button a mod puts beside a shipped screen list's page buttons) was pressed on the highlighted row, with menu the list's template name (ItemsMenu, WeaponsMenu, ExpressionsMenu, AbilitiesMenu) and the trailing fields command and button. Godot scripts get it as it happens; native handlers on the next guest tick, on the title and the front end too; Lua handlers on the next guest tick: in a game the init.lua ones, on the title and the front end the mod/frontend.lua ones (run in the current Gameface presentation's own Lua state).",
 			string.Empty,
 			new[]
 			{
@@ -956,6 +956,8 @@ public static class ModApi
 				F("row", "const char* / string", "the row's name"),
 				F("player", "int32_t", "1 or 2: the player whose menu it is"),
 				F("mod", "const char* / string", "the mod that stated the row or its menu, empty for a shipped row"),
+				F("command", "const char* / string", "a ROW ACTION's: the highlighted row's own command (Inventory:use:1234, Inventory:equip:…, Ability:learn:9; the expression id on the expressions list); empty for a plain row choice"),
+				F("button", "const char* / string", "a ROW ACTION's: the button pressed (X or Y); empty for a plain row choice"),
 			}),
 		new ModApiEvent("ModMessageBox", "mod_message_box", 88, "Godot's host boxes (Engine_UiModBoxes), then the guest tick from the host's command queue (box_answer)",
 			"A message box a mod raised (refii_mod_message_box, Refii.message_box, RefiiHost.message_box) was answered. Godot scripts get it as it happens; native handlers on the next guest tick, on the front end too; Lua handlers in a game (init.lua) and on the front end (mod/frontend.lua).",
@@ -1099,6 +1101,7 @@ public static class ModApi
 				F("level", "const char* / string", "the level the game starts in"),
 				F("new_game", "bool", "no save: a new game"),
 				F("player", "int32_t", "the signed-in pad's player: 1"),
+				F("commit", "const char* / string", "the host action the start was dispatched from, the guest-tick pump's name for it (LoadSave:N, MenuEvent:…, the root's bare row name); \"\" for a start the pump did not run. A refusing handler posts it again to make the same start once its question is answered"),
 			}),
 		new ModApiEvent("Cutscene", "cutscene", 100, "polled each guest tick before tick (no hook): GUI.IsFullCutscenePlaying (sub_823060E0 / disc sub_82907D08); the player component's +0x3B (Player.SetForegroundCutsceneInEffect sub_823E72B8 / sub_823C5CE8) and +0xC8 (Player.SetOverrideCameraMode's LOOK_AT scope, sub_823E31B8 / sub_823C1B80)",
 			"A cutscene took a hero's camera and controls away from free play, or gave them back — one of the game's own three statements flipped, raised per kind on each edge: " + CutsceneKindsMeaning +
@@ -1158,6 +1161,25 @@ public static class ModApi
 		"the target lock as the game's own LT states it, for player 1 or 2: lock_target sets the targeting component's SetTarget (entity 0: the game's own pick), " +
 		"the force byte and the look-at flag; release_lock clears the last two (a held LT is the trigger's); switch_target is the camera's own flick, left or right, " +
 		"and answers the target held; locked_target is the target while player mode 4 or the force byte holds, else 0. Guest tick";
+
+	private const string QuickActionMeaning =
+		"the quick menu's own actions for player 1 or 2's hero, gated as the game gates its quick menu (the hero alive, the d-pad up, CanPlayerOpenQuickMenu for that player), " +
+		"true when performed: use_item uses an inventory item by definition (the item handle by record, the game's Use, the handle released; the UI data generation moves); " +
+		"equip_weapon is the weapon set's own EquipWeaponByRecord for a weapon the inventory holds — on an online joiner the pick crosses to the co-op kit (REFII_MOD_HOST_HERO_KIND, CoopHeroKit.SetLocalWeapon), " +
+		"whose kit the host equips from and replicates back, so the caller never cares; perform_expression is StartExpression on the performer (component 154) for an expression it knows; " +
+		"assign_spell puts spell type 0..7 on every tier the hero knows (the spell manager's known and offered tables) through the game's own assign. Definitions and expressions are \"0x…\" record hashes. Guest tick";
+
+	private const string ExpressionsMeaning =
+		"what the quick actions choose from, by player: the performer's known expressions (its +0x88 vector: the record, counted uses; the record is the id perform_expression takes), " +
+		"the spell types the hero can assign (known AND offered on some tier: the quick wheel's own test; a bit mask natively, a list in Lua), and the expression the expression wheel highlights while it is up for that player (0 / nil with no wheel up)";
+
+	private const string RecordIntMeaning =
+		"a GDB record's integer or enum property, INHERITED, through the game's typed getter (GDBEntry_GetPropTyped on the entry FindEntryByHash gives, as an int then as an enum): " +
+		"definition the record's \"0x…\" hash, field the property's name (Category, WeaponType, …); 0 / nil for a record the database lacks or a property it has not got. Guest tick";
+
+	private const string RecordStringMeaning =
+		"a GDB record's string property, INHERITED, through the game's own getter (the property name's FNV-1 on the entry FindEntryByHash gives — what the d-pad reads IconGraphic with): " +
+		"definition the record's \"0x…\" hash, field the property's name (NameTag, IconGraphic, …); \"\" / nil for a record the database lacks or a property it has not got. Guest tick";
 
 	private const string StatusMeaning =
 		"a status through the spell's own per-victim installer, without the spell: kind 1 electrified, 2 chaos, 3 burning (4, a vortex, is refused), " +
@@ -1319,6 +1341,10 @@ public static class ModApi
 		new ModApiHelper("int32_t refii_mod_physique(base, entity, float* fat, float* height) / refii_mod_age(base, entity, float* years)", "physique from the stats component, age from the age component (122)"),
 		new ModApiHelper("int32_t refii_mod_inventory_stack(base, entity, index, uint32_t* definition, int32_t* count)", "stack index of an inventory, in the game's order; false past the end"),
 		new ModApiHelper("int32_t refii_mod_equipped(base, entity, uint32_t* melee, uint32_t* ranged)", "the weapon set's melee and ranged definition hashes"),
+		new ModApiHelper("int32_t refii_mod_use_item(ctx, base, player, definition) / refii_mod_equip_weapon(ctx, base, player, definition) / refii_mod_perform_expression(ctx, base, player, expression) / refii_mod_assign_spell(ctx, base, player, spell)", QuickActionMeaning),
+		new ModApiHelper("int32_t refii_mod_expression(base, player, index, uint32_t* record, int32_t* uses) / refii_mod_spells_known(base, player, uint32_t* mask) / uint32_t refii_mod_selected_expression(base, player)", ExpressionsMeaning + "; expression is false past the end"),
+		new ModApiHelper("int32_t refii_mod_record_string(ctx, base, definition, field, out, size)", RecordStringMeaning),
+		new ModApiHelper("int32_t refii_mod_record_int(ctx, base, definition, field, int32_t* out)", RecordIntMeaning),
 		new ModApiHelper("int32_t refii_mod_entities_near(ctx, base, xyz, radius, creatures_only, out[], max)", "entities within a radius, nearest first"),
 		new ModApiHelper("int32_t refii_mod_line_of_sight(ctx, base, from, to)", "the game's physics raycast: true when nothing is between"),
 		new ModApiHelper("uint32_t refii_mod_spawn(ctx, base, definition, xyz)", "an entity created through the game's own CreateEntityFromIDAtPosition"),
@@ -1330,6 +1356,8 @@ public static class ModApi
 		new ModApiHelper("uint32_t refii_mod_mark(player, entity, xyz, icon, text) / refii_mod_unmark(id)", MarkMeaning + " Any thread"),
 		new ModApiHelper("int32_t refii_mod_fade(player, to_black, seconds)", FadeMeaning + " Any thread"),
 		new ModApiHelper("int32_t refii_mod_meter(player, id, label, value, max, style) / refii_mod_meter_remove(id)", MeterMeaning + " Any thread"),
+		new ModApiHelper("int32_t refii_mod_input_claim(player, action, on)", InputClaimMeaning),
+		new ModApiHelper("int32_t refii_mod_hud_icon(player, element, texture) / refii_mod_hud_slide(player, element, slide) / refii_mod_hud_hold(player, piece, on)", HudOverrideMeaning),
 		new ModApiHelper("uint32_t refii_mod_light(entity, xyz, rgb, energy, range, options) / refii_mod_light_remove(id)",
 			LightMeaning + " options (refii_mod_light_options, null for none): offset, at (a model helper, as play_fx_on's), flicker; direction, cone, attenuation for a spot. Any thread"),
 		new ModApiHelper("int32_t refii_mod_send_to_partner(mod, name, payload)", PartnerMeaning + " Any thread"),
@@ -1374,6 +1402,22 @@ public static class ModApi
 		"\"generic\" (hud.bgf's GenericMeter: the ornate bar), \"crucible\" (CrucibleMeter: the plain red bar) or \"price\" (PriceWidget: the bowl, the value as a number), " +
 		"a copy lit on its own fader slide while the shipped original stays as authored; stacked under the top centre of that player's screen in the order first " +
 		"shown; the same id restates it in place; meter_remove takes it down.";
+
+	/// <summary>What input_claim means on every surface (ModInput.Claim).</summary>
+	public const string InputClaimMeaning =
+		"claims (or releases) a mod's input action — its scoped input.json name <mod>.<action> — for player 1 or 2 (0: both): while claimed, the " +
+		"action's pad buttons, triggers and keys are withheld from the pad the guest sees for that player, and a chord's modifier with them while " +
+		"the chord is held (the keyboard's F1-F4 d-pad keys included); the action's own input_action events still fire. Cleared when the mods' Lua " +
+		"reloads and when the game goes down.";
+
+	/// <summary>What hud_icon / hud_slide / hud_hold mean on every surface (Engine_UiHudOverrides).</summary>
+	public const string HudOverrideMeaning =
+		"a HUD override by element name for player 1 or 2 (0: both; the shared HUD is the local player's, the second half local player two's): " +
+		"hud_icon states the texture an element shows — a game texture path (Art\\GUI\\WheelIcons\\expressions.tex) or an enabled mod's PNG " +
+		"under art/, fitted to the 128 x 128 slot when it is not that size, \"\" clears; hud_slide the slide it sits on as the game counts them " +
+		"(0 clears); hud_hold keeps a HUD piece visible, its slide owners held on their shown (\"in\") slides while the guest would hide it — " +
+		"the d-pad is the case. An element is a slide-toggle binding name (DPadUp) or an element path by its trailing segments " +
+		"(dpadmenu.group.up.up). Everything goes when the mods' Lua reloads or the game goes down.";
 
 	/// <summary>What light means on every surface (Engine_ModLights).</summary>
 	public const string LightMeaning =
@@ -1444,6 +1488,10 @@ public static class ModApi
 		new ModApiHelper("Refii.renown(e) / Refii.morality(e) / Refii.purity(e) / Refii.age(e) / Refii.physique(e) -> fat, height", "the hero stats the game reports"),
 		new ModApiHelper("Refii.inventory(e)", "{ {definition = \"0x…\", count = n}, … } in the game's order"),
 		new ModApiHelper("Refii.equipped(e) -> melee, ranged", "the weapon set's definition hashes, nil for an empty hand"),
+		new ModApiHelper("Refii.use_item(p, def) / Refii.equip_weapon(p, def) / Refii.perform_expression(p, expression) / Refii.assign_spell(p, spell)", QuickActionMeaning),
+		new ModApiHelper("Refii.expressions(p) / Refii.spells_known(p) / Refii.selected_expression(p)", ExpressionsMeaning + "; expressions is { {record = \"0x…\", id = \"0x…\", uses = n}, … } (nil without a performer), spells_known { type, … } (nil without a spell manager), selected_expression the record \"0x…\" or nil"),
+		new ModApiHelper("Refii.record_string(def, field)", RecordStringMeaning),
+		new ModApiHelper("Refii.record_int(def, field)", RecordIntMeaning),
 		new ModApiHelper("Refii.near(x, y, z, radius [, creatures_only])", "handles of the entities within a radius, nearest first (at most 2048)"),
 		new ModApiHelper("Refii.line_of_sight(x1, y1, z1, x2, y2, z2)", "true when the game's physics sees nothing between"),
 		new ModApiHelper("Refii.spawn(definition, x, y, z)", "a new entity through the game's own CreateEntityFromIDAtPosition: its handle, or nil"),
@@ -1456,6 +1504,8 @@ public static class ModApi
 		new ModApiHelper("Refii.mark(target, icon, text [, p]) / Refii.unmark(id)", MarkMeaning + " target is an entity handle or {x, y, z}"),
 		new ModApiHelper("Refii.fade(p, dir [, seconds])", FadeMeaning + " dir is \"to_black\" or \"from_black\" (\"out\" / \"in\")"),
 		new ModApiHelper("Refii.meter(id, label, value, max [, p [, style]]) / Refii.meter_remove(id)", MeterMeaning),
+		new ModApiHelper("Refii.input_claim(p, action, on)", InputClaimMeaning + " True when posted"),
+		new ModApiHelper("Refii.hud_icon(p, element, texture) / Refii.hud_slide(p, element, slide) / Refii.hud_hold(p, piece, on)", HudOverrideMeaning + " True when posted"),
 		new ModApiHelper("Refii.light(target, color, energy, range [, o]) / Refii.light_remove(id)",
 			LightMeaning + " target an entity handle or {x, y, z}, color {r, g, b}, o = { offset = {x, y, z}, at = \"Weapon.Weapon.Top\", flicker = n, direction = {x, y, z}, cone = degrees, attenuation = n }; the id, or nil"),
 		new ModApiHelper("Refii.send_to_partner(mod, name, payload)", PartnerMeaning),
@@ -1525,6 +1575,9 @@ public static class ModApi
 		new ModApiHelper("query relation A B / alive E / definition E / name E / level_name / hero P / player_of E", "relation · alive · definition · name · level · hero · player"),
 		new ModApiHelper("query player_for E / world_here / combat_state P", "player (refii_mod_player_for: who \"the hero\" is for E) · here · midst, close_to_combat, in_any_combat (Refii.combat_state, asked of the game VM); acting_player and run_as_player are Lua's — reach them with run_lua"),
 		new ModApiHelper("query renown E / morality E / purity E / physique E / age E / equipped E / inventory_stack E I", "renown · value · value · fat, height · age · melee, ranged · definition, count"),
+		new ModApiHelper("use_item(player, definition) / equip_weapon(player, definition) / perform_expression(player, expression) / assign_spell(player, spell)", QuickActionMeaning),
+		new ModApiHelper("query expressions P / spells_known P / selected_expression P / record_string DEF FIELD", ExpressionsMeaning + " — count, e1..eN (records), u1..uN (uses) · mask, count · expression (ok false with no wheel up) · value: " + RecordStringMeaning),
+		new ModApiHelper("query record_int DEF FIELD", RecordIntMeaning + " — value"),
 		new ModApiHelper("query near X Y Z R [CREATURES [OFFSET]] / line_of_sight X1 Y1 Z1 X2 Y2 Z2 / spawn DEF X Y Z / lua_int EXPR LO HI", "total, offset, count, e1..eN (100 a reply) · clear · entity · value"),
 		new ModApiHelper("query local_hero / coop_mode / menu_player / coop_state", "hero · mode · player · local_hero, coop_mode, menu_player: Refii.local_hero / coop_mode / menu_player, asked now"),
 		new ModApiHelper("query player_value P KEY [FALLBACK] / player_here P", "value, has (ok false when neither the value nor a fallback is there) · here: Refii.player_value / player_here"),
@@ -1538,6 +1591,8 @@ public static class ModApi
 		new ModApiHelper("mark(target, icon, text = \"\", player = 0) -> id / unmark(id) / markers()", MarkMeaning + " target is an entity handle or a Vector3; markers() lists what stands"),
 		new ModApiHelper("fade(player, to_black, seconds = 0) -> bool / fade_state(player)", FadeMeaning + " fade_state answers alpha (0 clear .. 1 black), target and seconds"),
 		new ModApiHelper("meter(id, label, value, max, player = 0, style = \"\") -> bool / meter_remove(id) / meters()", MeterMeaning + " meters() lists what stands, in stack order"),
+		new ModApiHelper("claim_input(player, action, on = true) -> bool / input_claimed(player, action) -> bool / input_claims(player)", InputClaimMeaning + " input_claims lists the actions claimed for a player"),
+		new ModApiHelper("hud_icon(player, element, texture) -> bool / hud_slide(player, element, slide) -> bool / hud_hold(player, piece, on = true) -> bool / hud_overrides(player)", HudOverrideMeaning + " hud_overrides answers icons, slides, holds"),
 		new ModApiHelper("light(target, color, energy, range, options = null) -> id / light_remove(id) / lights()",
 			LightMeaning + " target an entity handle or a Vector3, color a Color or [r, g, b], options { offset, at, flicker, direction, cone, attenuation }; lights() lists what stands (id, entity, r, g, b, energy, range, x, y, z, cone, dx, dy, dz)"),
 		new ModApiHelper("send_to_partner(mod, name, payload = \"\") -> bool (the command partner_send) / signal partner_message(e)", PartnerMeaning + " The signal carries mod, name, payload, from"),

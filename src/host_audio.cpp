@@ -1,9 +1,5 @@
 #include "host_audio.h"
 
-#include <vector>
-
-#include <rex/audio/conversion.h>
-#include <rex/audio/downmix.h>
 #include <rex/logging.h>
 
 #include "core/audio_state.h"
@@ -37,24 +33,6 @@ constexpr uint32_t kConsumerTimeoutMs = 250;
 /// there too rather than only to a console that scrolls away.
 constexpr uint64_t kHealthReportFrames = 1875;
 
-/// Folds the guest's planar big-endian 5.1 frame down to interleaved stereo.
-///
-/// The SDK's fold, with the SDK's weights: it is the one place the output level of every
-/// sound in the game is set, so it must not have a second implementation here. The title
-/// always mixes to 5.1 — it never reads the speaker configuration (no XAudioGetSpeakerConfig
-/// or XGetAudioFlags import), X3DAudioInitialize is given mask 0x3F at 0x82c5abe0 so a 3D
-/// sound dead ahead lands in the centre channel, and 2D sources route identity L->FL, R->FR
-/// (CRouterEffect::Process, 0x82cdf9d4). The kernel's fold was the console's; this is ours,
-/// and it follows ITU-R BS.775: centre and surrounds at -3 dB, LFE dropped, front weight
-/// `fold.scale * gain` (0.586 by default). Movie sound decoded on the host is given the same
-/// front weight (RefiiHostAudioFrontGain), since on the console it went through the same
-/// mastering voice. The guest's own master-bus limiter (-3 dBFS ceiling) runs before this.
-void FoldGuestFrameToStereo(const float* planar, uint32_t samples_per_channel, float* out) {
-    rex::audio::conversion::sequential_6_BE_to_interleaved_2_LE(
-        out, planar, samples_per_channel, rex::audio::GetStereoFold(),
-        rex::audio::GetOutputGain());
-}
-
 }  // namespace
 
 HostAudioDriver::HostAudioDriver(rex::memory::Memory* memory,
@@ -76,14 +54,11 @@ bool HostAudioDriver::Initialize() {
     }
 
     refii::vfs::SetHostAudioDriverInstalled(true);
-    const rex::audio::StereoFold fold = rex::audio::GetStereoFold();
     REXLOG_INFO(
         "refii audio: host driver installed; guest output is {} Hz {} ch, {} samples per "
-        "frame, folded to stereo for Godot (front {:.3f}, centre {:.3f}, surround {:.3f}, "
-        "lfe {:.3f}, gain {:.3f})",
+        "frame, handed to Godot's audio effect as submitted",
         refii::vfs::kGuestAudioSampleRate, refii::vfs::kGuestAudioChannels,
-        refii::vfs::kGuestAudioSamplesPerFrame, fold.scale, fold.center * fold.scale,
-        fold.surround * fold.scale, fold.lfe * fold.scale, rex::audio::GetOutputGain());
+        refii::vfs::kGuestAudioSamplesPerFrame);
     return true;
 }
 
@@ -121,14 +96,9 @@ void HostAudioDriver::SubmitFrame(uint32_t frame_ptr) {
         return;
     }
 
-    // Thread-local so the guest's audio worker reuses one buffer instead of allocating
-    // 187 times a second, and so a future second render-driver client cannot share it.
-    static thread_local std::vector<float> stereo(refii::vfs::kHostAudioFloatsPerFrame);
-
     // The guest hands us PLANAR BIG-ENDIAN float32 — 256 samples per channel, 1024-byte
-    // channel stride. This both deinterleaves and byte-swaps.
-    FoldGuestFrameToStereo(input_frame, refii::vfs::kGuestAudioSamplesPerFrame,
-                           stereo.data());
+    // channel stride — and that is what is queued. The output stage converts at pull time,
+    // because only it knows whether the device is stereo or 5.1 (godot_audio_effect.cpp).
 
     // ALWAYS PUSH, even when the host is playing individual voices instead of this mix.
     //
@@ -142,7 +112,7 @@ void HostAudioDriver::SubmitFrame(uint32_t frame_ptr) {
     // Silencing the mix is the HOST's job: it keeps consuming at 48 kHz and pushes zeros
     // instead. The clock is then identical in both modes, which is the point — Stage 2
     // should change what reaches the speakers, not how time passes.
-    if (!refii::vfs::PushHostAudioFrame(stereo.data(), kConsumerTimeoutMs)) {
+    if (!refii::vfs::PushHostAudioFrame(input_frame, kConsumerTimeoutMs)) {
         // Dropped rather than queued. Credit anyway so the guest keeps running; the ring
         // has already logged why.
         CreditFrames(this, 1);

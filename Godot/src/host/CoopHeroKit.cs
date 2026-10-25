@@ -406,6 +406,46 @@ public static class CoopHeroKit
 		record != 0u && RecordName is { } resolve ? resolve(record) ?? string.Empty : string.Empty;
 
 	/// <summary>
+	/// REFII_MOD_HOST_HERO_KIND (core/refii_mod_events.h): an online joiner's weapon pick a native
+	/// or Lua mod made (<c>refii_mod_equip_weapon</c> / <c>Refii.equip_weapon</c>), as the guest
+	/// tick posts it — <c>player=N,op='weapon',record='0x…'</c>. Never an event; RefiiHost hands it
+	/// to <see cref="HandlePick"/>.
+	/// </summary>
+	public const int PickKind = 1005;
+
+	/// <summary>
+	/// A <see cref="PickKind"/> line into <see cref="SetLocalWeapon"/>, with the record's own weapon
+	/// class (<see cref="Refii.Ui.Engine_UiInventorySource.WeaponClassOf"/>) — the same route the
+	/// joiner's own menu pick takes. False for a line that is not a weapon pick.
+	/// </summary>
+	public static bool HandlePick(string fields)
+	{
+		string op = string.Empty;
+		uint record = 0u;
+		foreach (KeyValuePair<string, object> pair in Refii.Mods.RefiiHost.ParseFieldsPlain(fields))
+		{
+			if (pair.Key == "op")
+			{
+				op = pair.Value as string ?? string.Empty;
+			}
+			else if (pair.Key == "record")
+			{
+				string text = pair.Value is string s ? s : System.Convert.ToString(pair.Value, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+				record = text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+					? (uint.TryParse(text.AsSpan(2), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out uint hex) ? hex : 0u)
+					: (uint.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out uint dec) ? dec : 0u);
+			}
+		}
+
+		if (op != "weapon" || record == 0u)
+		{
+			return false;
+		}
+
+		return SetLocalWeapon(record, Refii.Ui.Engine_UiInventorySource.WeaponClassOf(record));
+	}
+
+	/// <summary>
 	/// A joiner's weapon pick goes into the record: the host equips it and the replica comes
 	/// back (`CoopHeroHeld`). <paramref name="weaponClass"/> is 1 melee, 2 ranged. The changed
 	/// kit reaches the peer on the next HeroState tick, as a new version.

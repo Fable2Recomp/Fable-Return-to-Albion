@@ -9,6 +9,8 @@ Numbers a player can tune, and buttons a mod can bind.
 - [Input actions: input.json](#input-actions-inputjson)
   - [Who presses it](#who-presses-it)
   - [The input_action event](#the-input_action-event)
+  - [Chords](#chords)
+  - [Claims: taking a button from the game](#claims-taking-a-button-from-the-game)
   - [Rebinding](#rebinding)
 
 ## settings.json
@@ -75,8 +77,10 @@ game scopes it `<mod>.<action>`:
 
 ```json
 {
-	"dash": { "label": "Dash", "keys": ["F"], "buttons": ["L3"], "axis": null },
-	"aim":  { "label": "Aim",  "keys": ["Ctrl"], "buttons": ["LT"], "axis": "-RightY" }
+	"dash":    { "label": "Dash", "keys": ["F"], "buttons": ["L3"], "axis": null },
+	"aim":     { "label": "Aim",  "keys": ["Ctrl"], "buttons": ["LT"], "axis": "-RightY" },
+	"slot_up": { "label": "Slot up", "keys": ["F1"], "buttons": ["DpadUp"] },
+	"alt_up":  { "label": "Alt slot up", "keys": ["F1"], "buttons": ["DpadUp"], "chord": "LT" }
 }
 ```
 
@@ -86,6 +90,7 @@ game scopes it `<mod>.<action>`:
 | `keys` | Godot key names: `F`, `Ctrl`, `Space`, `F5`, `BracketLeft`, … |
 | `buttons` | `JoyButton` names (`A`, `LeftShoulder`, `DpadUp`, `Guide`, …) or the Xbox aliases `A B X Y LB RB L3 R3 LT RT Start Back`; `LT` and `RT` are the triggers, pressed past half their travel |
 | `axis` | one `JoyAxis` name (`LeftX`, `LeftY`, `RightX`, `RightY`, `TriggerLeft`, `TriggerRight`) or null; pressed past half deflection either way, or one way with a leading `+` / `-` |
+| `chord` | optional: a held modifier the action fires under — `LT`, `RT`, `LB` or `RB` on the pad, or a Godot key name on the keyboard (see [Chords](#chords)) |
 
 - A list field also takes a single string.
 - An action with nothing bound is ignored with a warning.
@@ -93,7 +98,7 @@ game scopes it `<mod>.<action>`:
 - Each action is also registered in Godot's `InputMap` as `mod.<mod>.<action>`, for Godot
   scripts.
 - The editor writes entries with `RefiiModApi.SetInputAction(action, binding)` (every name is
-  checked) and `RemoveInputAction(action)`.
+  checked, the chord too) and `RemoveInputAction(action)`.
 
 ### Who presses it
 
@@ -118,6 +123,43 @@ your own handler if you need "while held".
 local dashing = { false, false }
 Refii.on("input_action", function(e)
   if e.name == "my_mod.dash" then dashing[e.player] = e.pressed end
+end)
+```
+
+### Chords
+
+An action with a `"chord"` fires only while its modifier is held: `LT`, `RT`, `LB` or `RB` on the
+pad, or a key (`Shift`, `Alt`, …) on the keyboard. While a chord's modifier is held, a PLAIN action
+(no chord) on the same button or key does not fire — so `slot_up` above is D-pad up alone and
+`alt_up` is LT + D-pad up, never both. A pad chord gates the pad and the keyboard both (player 1's
+keyboard reads player 1's pad for its trigger); a key chord gates the keyboard alone. The chord is
+not rebound; the keys and buttons under it are, as usual.
+
+### Claims: taking a button from the game
+
+Declaring an action does not stop the game reading the same button: D-pad up still changes the
+item slot while your `slot_up` fires. A CLAIM does. While an action is claimed for a player, its
+pad buttons, triggers and keys are withheld from the pad the guest sees for that player — the
+game's D-pad is F1–F4 on the keyboard, so a claimed action bound to F1 takes F1 from the item slot
+too — and a chord's modifier goes with it while the chord is held (claim an LT chord and the guest
+does not see LT while LT + the button is down, so the lock-on does not fire under your chord). Your
+own `input_action` events still fire; the guest's edge detection never sees a release it was not
+shown a press for.
+
+| Surface | Call |
+|---|---|
+| Lua | `Refii.input_claim(p, "my_mod.slot_up", true)` — p 1 or 2, 0 for both |
+| Godot | `host.claim_input(player, "my_mod.slot_up", true)`; `host.input_claimed(player, action)`, `host.input_claims(player)` read the state |
+| Native | `refii_mod_input_claim(player, "my_mod.slot_up", 1)` |
+
+Claims are per player and are cleared when the mod's Lua reloads and when the game goes down, so a
+mod claims again from its `lua_ready` (or its `hero_ready`), and releases with `false` when it no
+longer wants the button — a menu of its own closing, say. An action no enabled mod declares is
+refused (false).
+
+```lua
+Refii.on("lua_ready", function()
+  for p = 1, 2 do Refii.input_claim(p, "my_mod.slot_up", true) end
 end)
 ```
 

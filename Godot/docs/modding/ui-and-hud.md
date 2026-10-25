@@ -13,9 +13,11 @@ shipped UI runs through, with no second implementation.
   - [Text pieces](#text-pieces)
 - [Markers, fades and meters](#markers-fades-and-meters)
   - [The game's own world icons](#the-games-own-world-icons)
+- [HUD overrides: icons, slides and holds](#hud-overrides-icons-slides-and-holds)
 - [Boxes: messages, notices and menu boxes](#boxes-messages-notices-and-menu-boxes)
 - [Modals: who answers the game's boxes](#modals-who-answers-the-games-boxes)
 - [A mod's own menus](#a-mods-own-menus)
+  - [Row actions on the game's screens](#row-actions-on-the-games-screens)
 - [Lua on the title screen](#lua-on-the-title-screen)
   - [The front-end surface](#the-front-end-surface)
 - [Mod abilities: ui/abilities.json](#mod-abilities-uiabilitiesjson)
@@ -191,6 +193,42 @@ Refii.meter_remove("my_mod.boss"); Refii.unmark(id); Refii.fade(1, "from_black",
 
 An unknown name is a path as given.
 
+## HUD overrides: icons, slides and holds
+
+Three calls change what the game's own HUD elements show, per player, by element name — the way a
+quickslot mod puts its own icons on the D-pad and keeps the D-pad on screen:
+
+| Surface | Calls |
+|---|---|
+| Native | `refii_mod_hud_icon(player, element, texture)` · `refii_mod_hud_slide(player, element, slide)` · `refii_mod_hud_hold(player, piece, on)` |
+| Lua | `Refii.hud_icon(p, element, texture)` · `Refii.hud_slide(p, element, slide)` · `Refii.hud_hold(p, piece, on)` |
+| Godot | `hud_icon(player, element, texture)` · `hud_slide(player, element, slide)` · `hud_hold(player, piece, on)` · `hud_overrides(player)` |
+
+```lua
+Refii.hud_icon(1, "DPadUp", "Art\\GUI\\WheelIcons\\expressions.tex")  -- a game texture
+Refii.hud_icon(1, "DPadLeft", "art/my_mod/potion.png")                  -- a PNG the mod ships
+Refii.hud_slide(1, "DPadUp", 2)                                         -- the slot's "on" slide
+Refii.hud_hold(1, "dpad", true)                                         -- keep the D-pad on screen
+Refii.hud_icon(1, "DPadUp", ""); Refii.hud_slide(1, "DPadUp", 0); Refii.hud_hold(1, "dpad", false)
+```
+
+- **Player** is 1 or 2, or 0 for both. The shared HUD is the local player's (player two's on an
+  online joiner); local player two's half on split screen takes player two's overrides.
+- **Element** is a slide-toggle binding name — the name the guest's own `GUI.ToggleElement` states:
+  `DPadUp`, `DPadDown`, `DPadLeft`, `DPadRight` — or an element path of `hud.bgf` matched by its
+  trailing segments (`dpadmenu.group.up.up`). An icon lands on the element's quad, or the leaf
+  quads beneath it.
+- **Icons** are a game texture path or a PNG an enabled mod ships under `art/`, resolved as
+  markers resolve theirs. Art that is not 128 × 128 is fitted the way the game's own slot icons
+  are: 84% of the slot on its longer side, centred, transparent around. `""` clears.
+- **Slides** are counted as the game counts them (1 the first; a toggle's off is 1, on is 2); 0
+  clears and the guest's own stands.
+- **Holds** name a HUD piece (`dpad`): every slide owner under it is kept on screen — one with an
+  `in` slide is forced onto it, the others keep the slide the guest states — so a piece the guest
+  tweens away stays up.
+- Everything is cleared when the mod's Lua reloads and when the game goes down; state it again from
+  `lua_ready` / `hero_ready`.
+
 ## Boxes: messages, notices and menu boxes
 
 | Surface | Calls | Answer |
@@ -301,6 +339,44 @@ Editor: `RefiiModApi.SetMenu(name, record)`, `RemoveMenu`, `GetMenu`, `ListModMe
 `SetMenuRow(menu, entry)`, `RemoveMenuRow`, `OpensCommand(menu)`, `LuaCommand(function, arg)`,
 `ParseMenuCommand(command)`.
 
+### Row actions on the game's screens
+
+A mod puts a button of its own on a shipped screen list with the `"rowActions"` block of
+`ui/templates.json`, keyed by the list's menu template name — `ItemsMenu` and `WeaponsMenu` (the
+inventory's two lists), `ExpressionsMenu` (the logbook's expressions), `AbilitiesMenu`, or a mod
+menu's own name:
+
+```json
+{
+  "rowActions": {
+    "ItemsMenu":       [ { "button": "Y", "tag": "QUICKSLOTS_ASSIGN", "command": "Mod:lua:quickslots.assign" } ],
+    "WeaponsMenu":     [ { "button": "Y", "tag": "QUICKSLOTS_ASSIGN", "command": "Mod:lua:quickslots.assign" } ],
+    "ExpressionsMenu": [ { "button": "Y", "tag": "QUICKSLOTS_ASSIGN", "command": "Mod:lua:quickslots.assign" } ],
+    "AbilitiesMenu":   [ { "button": "X", "tag": "QUICKSLOTS_ASSIGN", "command": "Mod:lua:quickslots.assign" } ]
+  }
+}
+```
+
+- While that list is up and a leaf row is highlighted, the prompt — the button's icon and the
+  tag's text (a Babel tag, or a literal) — is drawn beside the page buttons where the game draws
+  its own, and the button is HELD from the guest (`X` is the equip hold, `Y` the flip hold: the two
+  a screen list can take; the shipped prompt for the same button stands aside).
+- On the press, or a click on the prompt, the row raises **`mod_menu_row`** on every surface with
+  `menu` the list's template name, `row` the highlighted row's name, `player`, `mod`, and the two
+  trailing fields `command` — the row's OWN command, `Inventory:use:1234`, `Inventory:equip:…`,
+  `Ability:learn:9`, or on the expressions list the expression id — and `button`. Then the
+  action's `command` runs exactly as a mod menu row's: `Mod:lua:<function>[:<arg>]` calls your
+  Lua with `(arg, e)`, `e` carrying the same fields.
+- A later mod's list for the same menu replaces the earlier one's; `null` or `[]` removes it. The
+  first action's prompt is drawn; every action's button is held and answered.
+
+```lua
+quickslots = {}
+function quickslots.assign(arg, e)
+  -- e.menu "ItemsMenu", e.row the item row, e.command "Inventory:use:1234", e.button "Y"
+end
+```
+
 ## Lua on the title screen
 
 There is no game on the title — no hero, no save, no world, no game VM — so a mod's Lua for the
@@ -333,7 +409,7 @@ What `Refii` offers in `mod/frontend.lua`:
 
 | In `Refii` on the front end | What it is |
 |---|---|
-| `Refii.on(name, fn)` for `start_game`, `mod_menu_row`, `mod_message_box`, `mod_notice`, `mod_menu_box` | the events raised without a world: the start target stated (`save`, `level`, `new_game`, `player`), a row chosen, a box or notice answered. No other event reaches here — every other seam needs the world |
+| `Refii.on(name, fn)` for `start_game`, `mod_menu_row`, `mod_message_box`, `mod_notice`, `mod_menu_box` | the events raised without a world: the start target stated (`save`, `level`, `new_game`, `player`, `commit`), a row chosen, a box or notice answered. No other event reaches here — every other seam needs the world |
 | `Refii.signed_in()` | the signed-in pad's user index, nil for none |
 | `Refii.save_count()` | the signed-in profile's saved games on every device, nil with no front end — a content enumeration: ask once a screen (on a `mod_menu_row`), never per tick |
 | `Refii.screen()` | the current presentation's name (`FrontendStartup`, `FrontendMainMenu`, …), nil for none |

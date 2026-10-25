@@ -24,6 +24,44 @@ public sealed partial class Engine_HudView : Node3D
     public Engine_HudArt Art { get; set; } = new();
 
     /// <summary>
+    /// What a live-text node paints. The text STATED for the element's name wins —
+    /// `GUI.SetGUIText`, or the host's own TopBox body (Engine_UiHudTopBox) — so a body of ""
+    /// clears a slab whose element the guest never cleared. Else the element's own text, except
+    /// that a string equal to the one the FILE authors is UNWRITTEN in this HUD instance and
+    /// paints blank: the artist's "Text" placeholder stays on an element the guest never wrote
+    /// (a ButtonOnly record and channel 7 never write TopMain; the HUD is rebuilt per instance),
+    /// and the TopBoxX/TopBoxY meters sized half a screen of parchment around it. A text the
+    /// guest writes replaces the placeholder, so equality is the test, not emptiness.
+    ///
+    /// `TargetedQueryButton` keeps its authored text instead of blank: the name is hashed in
+    /// exactly two places in the image — its initialiser and `sub_823FE848` at 0x823fd71c, a
+    /// registry-9 BOOL for visibility — and no text writer exists for it, while `hud.bgf` binds
+    /// it to two text elements authoring `GUI_DIALOG_MORE_INFO` and `GUI_SCREEN_GIFT_ACCEPT`,
+    /// which the guest shows.
+    /// </summary>
+    public static string LiveTextToPaint(string pieceId, string? element, string? authored, string? stated)
+    {
+        if (stated is not null)
+        {
+            return stated;
+        }
+
+        string live = element ?? string.Empty;
+        if (authored is { Length: > 0 } && live == authored)
+        {
+            live = string.Empty;
+        }
+
+        if (live.Length == 0 && authored is { Length: > 0 } &&
+            pieceId.Contains(".TargetedQueryButton.", System.StringComparison.Ordinal))
+        {
+            live = authored;
+        }
+
+        return live;
+    }
+
+    /// <summary>
     /// The guest's published values. A second seat's view SHARES the first view's values — the
     /// guest publishes one set for the one `hud.bgf` presentation — and leaves reading and gliding
     /// them to their owner (<see cref="ReadsValues"/>), or the glides would advance twice a frame.
@@ -2796,27 +2834,16 @@ public sealed partial class Engine_HudView : Node3D
                 foreach ((MeshInstance3D label, int ordinal) in built.LiveTextNodes)
                 {
                     int stated = built.StateOf(ordinal);
-                    string live = stated >= 0 && stated < texts.Length
-                        ? texts[stated] ?? string.Empty
-                        : string.Empty;
+                    string? element = stated >= 0 && stated < texts.Length ? texts[stated] : null;
+                    built.AuthoredTexts.TryGetValue(ordinal, out string? authoredText);
 
-                    // A LABEL THE GUEST NEVER WRITES KEEPS THE ONE THE FILE GAVE IT. Not a
-                    // general rule — a field the guest deliberately CLEARS must go blank, and
-                    // falling back everywhere would put authoring placeholders on screen as if
-                    // they were data, which is worse than empty.
-                    //
-                    // Narrowed to the names the binary proves carry no text. `TargetedQueryButton`
-                    // is hashed in exactly two places — its initialiser and one publish, and that
-                    // publish is `sub_823FE848` at 0x823fd71c, a registry-9 BOOL for visibility.
-                    // No text writer exists for it anywhere in the image, while `hud.bgf` binds
-                    // the name to TWO text elements which author `GUI_DIALOG_MORE_INFO` and
-                    // `GUI_SCREEN_GIFT_ACCEPT`. The guest shows those; we were blanking them.
-                    if (live.Length == 0 &&
-                        built.Piece.Id.Contains(".TargetedQueryButton.", System.StringComparison.Ordinal) &&
-                        built.AuthoredTexts.TryGetValue(ordinal, out string? authoredText))
-                    {
-                        live = authoredText;
-                    }
+                    // The text STATED for the element by name: `GUI.SetGUIText`, or the host's
+                    // TopBox body (Engine_UiHudTopBox) for `TopMain`.
+                    string? statedText = Screen is { } document && ordinal >= 0 && ordinal < document.Nodes.Length &&
+                        document.Nodes[ordinal] is { HasAuthoredName: true } named
+                        ? Values.Text(new Engine_HudValues.Handle(named.Name, Engine_GameHash.Fnv1(named.Name)))
+                        : null;
+                    string live = LiveTextToPaint(built.Piece.Id, element, authoredText, statedText);
                     if (built.ShownTexts.TryGetValue(ordinal, out string? shown) && shown == live)
                     {
                         continue;

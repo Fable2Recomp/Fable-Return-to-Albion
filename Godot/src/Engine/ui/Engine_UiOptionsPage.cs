@@ -123,8 +123,9 @@ public static class Engine_UiOptionsPage
 			return places;
 		}
 
-		// While a page is open the pips follow the PENDING values the guest's widget is
-		// editing (see Engine_UiOptionsPending), not the committed fields the export reads.
+		// While a page is open the pips follow the slider WIDGETS' live values, read back from
+		// the guest (see Engine_UiOptionsPending), not the page fields the export reads — page 3
+		// writes its field only on commit.
 		sliders = Engine_UiOptionsPending.Pending(sliders);
 
 		Place(places, Gamma, sliders.Gamma);
@@ -149,10 +150,10 @@ public static class Engine_UiOptionsPage
 	/// <summary>The pickbox captions for the current settings, or blanks.</summary>
 	/// <param name="pageOpen">
 	/// True while the page level is open, when the pickbox captions are the GUEST's: LEFT/RIGHT
-	/// rewrites `.grp.text` at once (`sub_828821D0`) but the setting commits only on A
+	/// moves the pickbox's own index at once (`sub_828820B0`) but the setting commits only on A
 	/// (`sub_829BF698`), so a caption from the committed bytes would show the old choice. The
-	/// seven captions are then omitted so the guest's live text passes through; the slider labels
-	/// stay ours.
+	/// open page's captions are painted at the index read back from the guest's pickbox
+	/// (<see cref="Engine_UiOptionsPending.IndexOf"/>), blank until it has been read.
 	/// </param>
 	public static IReadOnlyDictionary<string, string> Values(
 		Refii.Host.HostBridge.GameOptions options,
@@ -187,28 +188,25 @@ public static class Engine_UiOptionsPage
 
 		if (pageOpen)
 		{
-			// THE PAGE'S OWN CHOICES, not yet committed — see Engine_UiOptionsPending. The
-			// guest's captions are a direct element write the clone never sees, so the host
-			// paints them from the same tables at the index the page is on.
+			// THE GUEST'S OWN PICKBOX INDICES, not yet committed — see Engine_UiOptionsPending.
+			// The guest's captions are a direct element write the clone never sees, so the host
+			// paints them from the same tables at the index each pickbox holds.
 			if (Engine_UiOptionsPending.Open)
 			{
 				switch (Engine_UiOptionsPending.Page)
 				{
 					case "Game":
-						values[Subtitles] = Toggle(strings, Engine_UiOptionsPending.IndexOf(0) != 0);
-						values[Breadcrumb] = Babel(strings, BreadcrumbSizes[
-							Math.Clamp(Engine_UiOptionsPending.IndexOf(1), 0, BreadcrumbSizes.Length - 1)].Tag);
-						values[TutorialBoxes] = Toggle(strings, Engine_UiOptionsPending.IndexOf(2) != 0);
-						values[MultiplayerOrbs] = Babel(strings, OrbModes[
-							Math.Clamp(Engine_UiOptionsPending.IndexOf(3), 0, OrbModes.Length - 1)]);
-						values[AutoJoinable] = Toggle(strings, Engine_UiOptionsPending.IndexOf(4) != 0);
+						values[Subtitles] = Toggle(strings, Engine_UiOptionsPending.IndexOf(0));
+						values[Breadcrumb] = Pick(strings, BreadcrumbTags, Engine_UiOptionsPending.IndexOf(1));
+						values[TutorialBoxes] = Toggle(strings, Engine_UiOptionsPending.IndexOf(2));
+						values[MultiplayerOrbs] = Pick(strings, OrbModes, Engine_UiOptionsPending.IndexOf(3));
+						values[AutoJoinable] = Toggle(strings, Engine_UiOptionsPending.IndexOf(4));
 						break;
 					case "Controls":
-						values[InvertCamera] = Toggle(strings, Engine_UiOptionsPending.IndexOf(0) != 0);
+						values[InvertCamera] = Toggle(strings, Engine_UiOptionsPending.IndexOf(0));
 						break;
 					case "Audio":
-						values[Speaker] = Babel(strings, SpeakerModes[
-							Math.Clamp(Engine_UiOptionsPending.IndexOf(3), 0, SpeakerModes.Length - 1)]);
+						values[Speaker] = Pick(strings, SpeakerModes, Engine_UiOptionsPending.IndexOf(3));
 						break;
 				}
 			}
@@ -263,6 +261,18 @@ public static class Engine_UiOptionsPage
 
 	private static string Toggle(Refii.Text.Engine_BabelDatabase? strings, bool on) =>
 		Babel(strings, on ? OnTag : OffTag);
+
+	/// <summary>A two-state row at a pickbox index; blank for an index the guest has not stated.</summary>
+	private static string Toggle(Refii.Text.Engine_BabelDatabase? strings, int index) =>
+		index < 0 ? string.Empty : Toggle(strings, index != 0);
+
+	/// <summary>A pickbox's caption at its index; blank when unstated or past its table.</summary>
+	private static string Pick(Refii.Text.Engine_BabelDatabase? strings, string[] tags, int index) =>
+		index >= 0 && index < tags.Length ? Babel(strings, tags[index]) : string.Empty;
+
+	/// <summary>The breadcrumb row's captions by pickbox index — the same order as its sizes.</summary>
+	private static readonly string[] BreadcrumbTags =
+		Array.ConvertAll(BreadcrumbSizes, size => size.Tag);
 
 	private static string Babel(Refii.Text.Engine_BabelDatabase? strings, string tag) =>
 		strings is not null && strings.TryGetString(tag, out string value) ? value : string.Empty;

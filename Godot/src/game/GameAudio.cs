@@ -15,29 +15,17 @@ namespace Refii.Game;
 /// The guest's audio clock is not a timer — it is the rate its output is consumed. One
 /// credit per frame taken wakes its audio worker, which re-enters its render-driver
 /// callback, which mixes the next frame. Under the SDK's SDL driver those credits came from
-/// SDL's playback thread, so the guest ran on SDL's clock while Godot drew on another. Every
-/// frame this node pulls is a credit, so the guest now runs on Godot's.
-///
-/// That also explains the shape of <see cref="_Process"/>: it pulls only what the generator
-/// reports room for. Draining greedily would buffer the guest ahead of what is audible and
-/// reintroduce exactly the drift this replaces.
+/// SDL's playback thread, so the guest ran on SDL's clock while Godot drew on another. Now
+/// the taker is <see cref="Engine_AudioOutput"/>'s effect, on Godot's audio thread, so the
+/// guest runs on the device's clock with nothing in between — no pump, no generator queue.
 ///
 /// Stage 2 — per-voice playback, so each sound can sit in Godot's own 3D field against
 /// Godot's camera — layers on top of this and needs it. The guest's mixer keeps running and
-/// keeps being credited even once its mixed output is discarded, because that mix is the
+/// keeps being credited even once its mixed output is silenced, because that mix is the
 /// clock and it does not stop being the clock just because nobody is listening to it.
 /// </summary>
 public partial class GameAudio : Node
 {
-	/// <summary>
-	/// How many guest frames to move in one poll, at most.
-	///
-	/// A guest frame is 5.333 ms and Godot polls at frame rate, so a 60 Hz frame owes about
-	/// three. This ceiling covers a long hitch without letting one catch-up poll dump the
-	/// whole ring into the generator in a single push.
-	/// </summary>
-	private const int MaxFramesPerPoll = 32;
-
 	/// <summary>
 	/// How many voices to ask the bridge for in one snapshot. Grown if the guest reports
 	/// more, so a busy scene is not silently truncated.
@@ -53,7 +41,6 @@ public partial class GameAudio : Node
 
 	private Engine_AudioOutput? _output;
 	private uint _samplesPerFrame;
-	private uint _floatsPerFrame;
 
 	private Engine_VoicePool? _voices;
 	private HostBridge.GuestVoice[] _voiceScratch = Array.Empty<HostBridge.GuestVoice>();
@@ -73,17 +60,14 @@ public partial class GameAudio : Node
 	private double _statsTimer;
 	private ulong _lastPushed;
 	private ulong _lastDropped;
+	private ulong _lastUnderruns;
 	private int _reports;
 	private bool _wasOutsideBand;
 	private uint _lastVoiceCount;
 	private bool _reportedSilence;
 
-	/// <summary>
-	/// Guest frames handed to Godot since start. Counted by the sink, since the sink's own
-	/// thread is what moves them.
-	/// </summary>
-	public long FramesPlayed =>
-		_output is null || _samplesPerFrame == 0 ? 0 : _output.FramesPushed / _samplesPerFrame;
+	/// <summary>Guest frames the output has taken since start.</summary>
+	public long FramesPlayed { get; private set; }
 
 	/// <summary>
 	/// The guest's production rate over the last sampling window, in frames per second.
@@ -96,16 +80,11 @@ public partial class GameAudio : Node
 
 	public override void _Ready()
 	{
-		_output = new Engine_AudioOutput { Name = "AudioOutput" };
-		AddChild(_output);
-
 		// Ask the bridge for the frame geometry rather than hard-coding what the binary
-		// states. If the guest's mastering voice ever reports something else, this follows
-		// it instead of quietly writing past the end of a buffer sized from a guess.
+		// states. This is also the P/Invoke that loads the bridge, which the output needs to
+		// have happened: it hands Godot the same file as a GDExtension.
 		_samplesPerFrame = HostBridge.AudioSamplesPerFrame();
-		_floatsPerFrame = HostBridge.AudioFloatsPerFrame();
-
-		if (_samplesPerFrame == 0 || _floatsPerFrame == 0)
+		if (_samplesPerFrame == 0)
 		{
 			GD.PushWarning(
 				"[audio] the bridge reports a zero-sized audio frame; guest audio is off this " +
@@ -113,18 +92,12 @@ public partial class GameAudio : Node
 			return;
 		}
 
-		// The pull runs on the sink's own thread, NOT here. Pulling from _Process tied the
-		// guest's audio clock to Godot's render rate: the generator holds 18 guest frames,
-		// so once-per-frame pulling needs Godot above ~10 fps, and building a region drops
-		// it to about 7. A run measured exactly that — 187.6 frames/s settled, 123.2 during
-		// the level load with an empty ring and no drops.
-		_output.StartPump(
-			(buffer, frames) => (int)HostBridge.PullAudio(buffer, (uint)frames),
-			(int)_samplesPerFrame, (int)_floatsPerFrame, MaxFramesPerPoll);
+		_output = new Engine_AudioOutput { Name = "AudioOutput" };
+		AddChild(_output);
 
 		GD.Print(
 			$"[audio] host sink ready: {HostBridge.AudioSampleRate()} Hz, " +
-			$"{HostBridge.AudioChannels()} ch, {_samplesPerFrame} samples/frame");
+			$"{_samplesPerFrame} samples/frame");
 
 		// Per-voice playback is OFF by default.
 		//
@@ -154,10 +127,9 @@ public partial class GameAudio : Node
 			AddChild(_voices);
 			_voiceScratch = new HostBridge.GuestVoice[InitialVoiceCapacity];
 
-			// The mix is SILENCED, not skipped. The sink keeps consuming it at 48 kHz —
-			// that consumption is the guest's clock — and pushes zeros instead, so the
-			// voices carry the sound without everything playing twice.
-			_output.Muted = true;
+			// The mix is SILENCED, not skipped. The output keeps taking it at 48 kHz — that
+			// consumption is the guest's clock — and writes zeros instead, so the voices carry
+			// the sound without everything playing twice.
 			HostBridge.SetVoicePlaybackOwned(true);
 			GD.Print("[audio] per-voice playback enabled; the guest's mix is muted but still paced");
 		}
@@ -176,7 +148,7 @@ public partial class GameAudio : Node
 	public override void _Process(double delta)
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("gameaudio");
-		if (_output is null || !_output.IsReady || _floatsPerFrame == 0)
+		if (_output is null || !_output.IsReady)
 		{
 			return;
 		}
@@ -187,16 +159,13 @@ public partial class GameAudio : Node
 		// boot and survives a failed one — and `PumpVoices` reads the guest's voice table every
 		// frame. With no guest that is a per-frame read of a runtime that was never created.
 		//
-		// The MIXED path is deliberately untouched: it is pulled by the sink's own thread and it
-		// owns the guest's clock, so it must keep being called and must SILENCE rather than skip.
-		// `PullAudio` already returns nothing when there is no guest, which is that silence.
+		// The MIXED path is not touched here at all: the effect takes it on Godot's audio
+		// thread and owns the guest's clock.
 		if (HostBridge.TryGetAbiVersion() is null)
 		{
 			return;
 		}
 
-		// The mixed output is pumped by the sink's own thread; only the per-voice mirror and
-		// the health report belong on the render frame.
 		PumpVoices();
 		ReportHealth(delta);
 	}
@@ -258,7 +227,6 @@ public partial class GameAudio : Node
 		_voices.RetireAllExcept(_aliveVoices);
 	}
 
-
 	/// <summary>
 	/// The rate the guest should produce at: 48000 / 256. A measured rate that is not this
 	/// means the clock is wrong however the audio happens to sound, which is the whole
@@ -286,15 +254,17 @@ public partial class GameAudio : Node
 			return;
 		}
 
-		HostBridge.AudioStats(out uint queued, out ulong pushed, out _, out ulong dropped,
+		HostBridge.AudioStats(out uint queued, out ulong pushed, out ulong popped, out ulong dropped,
 			out bool driverInstalled);
+		HostBridge.AudioOutputStats(out _, out ulong underruns, out uint channels);
+		FramesPlayed = (long)popped;
 
 		GuestFramesPerSecond = (pushed - _lastPushed) / _statsTimer;
 		_lastPushed = pushed;
 		_statsTimer = 0.0;
 		_reports++;
 
-		if (pushed == 0 && FramesPlayed == 0)
+		if (pushed == 0 && popped == 0)
 		{
 			// Normal during boot — the guest has not reached its audio path yet. Only
 			// worth saying while it is still plausibly starting up.
@@ -308,17 +278,17 @@ public partial class GameAudio : Node
 			return;
 		}
 
-		// The first window spans startup — the sink comes up partway through it, so its
+		// The first window spans startup — the output comes up partway through it, so its
 		// average is always low and judging it against the settled rate is a false alarm.
 		// The first run reported "174.6 OFF RATE" for exactly this reason and 187.6 from
 		// then on.
 		//
 		// And ONE window off is not a fault. The guest cannot outrun the device that
 		// credits it, so the long-run average is pinned to the expected rate; a single high
-		// sample is the queue catching up after dipping under target, which is the pump
-		// working. A run reported "202.0 OFF RATE" for exactly that. What a real problem
-		// looked like was different in kind — sustained and downward, 167.0 then 123.2 —
-		// so it takes two consecutive windows to call it.
+		// sample is the queue catching up after dipping under target. A run reported
+		// "202.0 OFF RATE" for exactly that. What a real problem looked like was different
+		// in kind — sustained and downward, 167.0 then 123.2 — so it takes two consecutive
+		// windows to call it.
 		bool outsideBand = _reports > 1 &&
 			Math.Abs(GuestFramesPerSecond - ExpectedFramesPerSecond) >
 			ExpectedFramesPerSecond * RateTolerance;
@@ -327,13 +297,20 @@ public partial class GameAudio : Node
 		bool newDrops = dropped != _lastDropped;
 		_lastDropped = dropped;
 
-		if (_reports <= BootReports || offRate || newDrops)
+		// Underruns are the device asking for a frame the guest had not produced yet: the
+		// guest's audio thread running late, not the output. A few at a level load are the
+		// guest; a steady stream is a fault.
+		bool newUnderruns = underruns != _lastUnderruns;
+		_lastUnderruns = underruns;
+
+		if (_reports <= BootReports || offRate || newDrops || newUnderruns)
 		{
 			string verdict = offRate ? "OFF RATE" : "ok";
 			GD.Print(
 				$"[audio] {GuestFramesPerSecond:F1} frames/s (expect {ExpectedFramesPerSecond:F1}) " +
-				$"{verdict}, queued={queued}, played={FramesPlayed}, dropped={dropped}" +
-				(_output!.Muted ? " (mix muted, voices carry the sound)" : string.Empty));
+				$"{verdict}, queued={queued}, played={FramesPlayed}, dropped={dropped}, " +
+				$"underrun steps={underruns}, {channels} ch out" +
+				(_voicePlayback ? " (mix muted, voices carry the sound)" : string.Empty));
 		}
 
 		// Stage 2 needs its own evidence. The mixed-frame numbers above say the CLOCK is

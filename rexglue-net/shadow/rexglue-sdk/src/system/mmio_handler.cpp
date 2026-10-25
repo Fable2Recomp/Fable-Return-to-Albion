@@ -27,7 +27,12 @@ namespace rex::runtime {
 
 namespace {
 thread_local int t_host_probe_depth = 0;
+UnhandledGuestFaultObserver g_unhandled_guest_fault_observer = nullptr;
 }  // namespace
+
+void SetUnhandledGuestFaultObserver(UnhandledGuestFaultObserver observer) {
+  g_unhandled_guest_fault_observer = observer;
+}
 
 void EnterHostProbe() { ++t_host_probe_depth; }
 
@@ -428,11 +433,16 @@ bool MMIOHandler::ExceptionCallback(arch::Exception* ex) {
     }
     // The address is not found within any range, so either a write watch or an
     // actual access violation.
+    bool handled = false;
     if (access_violation_callback_) {
-      return access_violation_callback_(std::move(lock), access_violation_callback_context_,
-                                        fault_host_address, is_write);
+      handled = access_violation_callback_(std::move(lock), access_violation_callback_context_,
+                                           fault_host_address, is_write);
     }
-    return false;
+    if (!handled && g_unhandled_guest_fault_observer != nullptr) {
+      // The lock went to the callback (and was released by it); the observer runs without it.
+      g_unhandled_guest_fault_observer(fault_guest_virtual_address, is_write, ex);
+    }
+    return handled;
   }
 
   auto rip = ex->pc();

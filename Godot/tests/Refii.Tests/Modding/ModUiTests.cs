@@ -262,12 +262,12 @@ public class ModUiTests
             Engine_UiModMenuCommand.Parse("Mod:lua:my_mod_menu.give_gold:100"), "my_mod.menu", "gold", 2, "my_mod");
         AssertThat(call).IsEqual(
             "if Refii and Refii._menu_row then Refii._menu_row('my_mod_menu.give_gold', '100', " +
-            "{menu='my_mod.menu',row='gold',player=2,mod='my_mod'}) end");
+            "{menu='my_mod.menu',row='gold',player=2,mod='my_mod',command='',button=''}) end");
         AssertThat(Engine_UiModMenuCommand.LuaCall(Engine_UiModMenuCommand.Parse("Mod:lua:f"), "m", "r", 1, string.Empty))
             .Contains("Refii._menu_row('f', nil, ");
 
         AssertThat(Engine_UiModMenuCommand.RowCommandLine("my menu", "row", 1, string.Empty))
-            .IsEqual("menu_row 1 my_menu row -");
+            .IsEqual("menu_row 1 my_menu row - - -");
     }
 
     [TestCase]
@@ -364,7 +364,7 @@ public class ModUiTests
         AssertThat(row).IsNotNull();
         AssertThat(row.Name).IsEqual("ModMenuRow");
         AssertThat(row.Cancellable).IsFalse();
-        AssertThat(row.Fields.Select(f => f.Name).ToArray()).IsEqual(new[] { "menu", "row", "player", "mod" });
+        AssertThat(row.Fields.Select(f => f.Name).ToArray()).IsEqual(new[] { "menu", "row", "player", "mod", "command", "button" });
         AssertThat(RefiiHost.SignalNames.Contains("mod_menu_row")).IsTrue();
     }
 

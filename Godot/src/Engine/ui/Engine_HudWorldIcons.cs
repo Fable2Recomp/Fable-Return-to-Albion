@@ -423,13 +423,15 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 			}
 
 			// The title, through the same glyph path as every owned surface. Live text only:
-			// the authored string is the artist's "Text" placeholder, never a fallback.
+			// the authored string is the artist's "Text" placeholder, never a fallback — an
+			// element still holding it was never written (Engine_HudView.LiveTextToPaint).
 			string title = statedFill
 				? StatedFill!
 				: StatedTitles is { } titles && titles.TryGetValue(PoolIndexOf(slot.Name), out string? own)
 					? own
 				: slot.TitleOrdinal >= 0 && slot.TitleOrdinal < elements.Count
-					? elements[slot.TitleOrdinal].Text ?? string.Empty
+					? Engine_HudView.LiveTextToPaint(
+						string.Empty, elements[slot.TitleOrdinal].Text, slot.Title?.Display, null)
 					: string.Empty;
 			// The `.fac` record's colour — the prompt title is authored (255,255,48).
 			var colour = slot.Title is { } record

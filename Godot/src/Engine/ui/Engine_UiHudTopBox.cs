@@ -16,12 +16,45 @@ namespace Refii.Ui;
 ///
 /// Channels: style 1 → HeroJobBoxes (1), style 2 → QuestAcceptanceBoxes (2), else ScriptInfo
 /// (3); the front record is the LAST of the LOWEST non-empty channel (`sub_8230D4F0`).
+///
+/// WHEN A BOX ENDS, THE GUEST ERASES ITS RECORD — there is no "done" flag to read. The manager's
+/// HUD tick `sub_822BD220` runs `sub_822CD618` → `sub_822CD6F0` over every channel: a record's
+/// `+12` float is its remaining milliseconds, `*(float*)(rec+12) -= dt` (0x822cd74c), and at
+/// `<= 0` the record is freed and erased in the same tick (0x822cd754–0x822cd79c); a record
+/// pushed with `+12 <= 0` is skipped and never expires. A script's `GUI.RemoveDisplayBox` erases
+/// by name hash (`sub_82304C48` → `sub_826B9AA8` → `sub_8230D0C0` → `sub_8230C130`, memmove at
+/// 0x8230c1a8). A completed hold (`sub_8230D2E0` meter ≥ 1.0 → `sub_8230D548`) posts message
+/// 34/101 (0x8230d61c) and leaves the record for the script to remove. So "the front record is
+/// present and the manager is not hidden" IS the guest's own end condition, and this follows
+/// it: present → up, gone → down, no manager → down.
 /// </remarks>
 public static class Engine_UiHudTopBox
 {
+	/// <summary>
+	/// The will-name record `sub_826B50B8` pushes on channel 10 while the spell blade is up —
+	/// `sub_8230B560(rec, dword_8349AE44, …)` at 0x826b5200, the hash `sub_8325E1C8` seeds from
+	/// "SpellAssignerInfo". The blade's label already draws that word, so the banner stays down
+	/// for THIS record only; the quest objective `sub_8251D538` pushes on the same channel
+	/// (`Fnv1("QuestObjective")`, 20 000 ms, 0x8251d800) shows like any other box.
+	/// </summary>
+	public const uint SpellAssignerInfoHash = 0xF2BA95B7u;
+
+	/// <summary>The channel the interaction prompt rides; `sub_821787D0` returns for it at 0x82178978.</summary>
+	public const int InteractionPromptChannel = 7;
+
+	private static readonly string[] BoxToggles =
+	{
+		"ButtonOnly", "TopTitle", "TopMain", "RightTopButtonVisible",
+		"LeftTopButtonVisible", "RightTopButtonIsY", "RightTopButtonMeterVisible",
+		"LeftTopButtonMeterVisible", "RightTopButtonHeld", "LeftTopButtonHeld",
+	};
+
 	private static bool _wasUp;
 
 	private static uint _shown;
+
+	/// <summary>The diagnostic sink; the test host, which cannot call Godot, replaces it.</summary>
+	public static System.Action<string> Log { get; set; } = line => Godot.GD.Print(line);
 
 	/// <param name="front">The manager's front record, read out of the guest.</param>
 	/// <param name="strings">Babel, for `TextManager_HasKey` on the title tag.</param>
@@ -31,15 +64,22 @@ public static class Engine_UiHudTopBox
 	/// </param>
 	public static void Publish(
 		Refii.Host.HostBridge.TopBoxFront front, bool aHeld, bool yHeld,
-		Engine_HudValues values, Refii.Text.Engine_BabelDatabase? strings, string? hostNotice = null)
-	{
-		if (!front.Known)
-		{
-			return;
-		}
+		Engine_HudValues values, Refii.Text.Engine_BabelDatabase? strings, string? hostNotice = null) =>
+		Publish(front, aHeld, yHeld, values, strings, hostNotice,
+			static () => Refii.Host.HostBridge.GetTopBoxBody());
 
-		bool hostUp = !front.Present && !string.IsNullOrEmpty(hostNotice);
-		bool up = front.Present || hostUp;
+	/// <param name="readBody">The front record's body provider, read out of the guest (ABI 118).</param>
+	public static void Publish(
+		Refii.Host.HostBridge.TopBoxFront front, bool aHeld, bool yHeld,
+		Engine_HudValues values, Refii.Text.Engine_BabelDatabase? strings, string? hostNotice,
+		System.Func<Refii.Host.HostBridge.TopBoxBody> readBody)
+	{
+		// A box cannot be up without a readable manager; `Known` false (no manager, or no
+		// bridge) states it down rather than freezing whatever was stated last.
+		bool willName = front.Known && front.Present && front.NameHash == SpellAssignerInfoHash;
+		bool guestUp = front.Known && front.Present && !willName;
+		bool hostUp = front.Known && !guestUp && !string.IsNullOrEmpty(hostNotice);
+		bool up = guestUp || hostUp;
 		State(values, "TopBox", up);
 		if (up != _wasUp)
 		{
@@ -51,32 +91,24 @@ public static class Engine_UiHudTopBox
 
 		if (!up)
 		{
-			foreach (string name in new[]
-				{
-					"ButtonOnly", "TopTitle", "TopMain", "RightTopButtonVisible",
-					"LeftTopButtonVisible", "RightTopButtonIsY", "RightTopButtonMeterVisible",
-					"LeftTopButtonMeterVisible", "RightTopButtonHeld", "LeftTopButtonHeld",
-				})
+			Lower(values);
+			if (willName && _shown != front.NameHash)
 			{
-				State(values, name, false);
+				_shown = front.NameHash;
+				Log($"[hud-topbox] front record 0x{front.NameHash:X8} on channel {front.Channel} — " +
+					"SpellAssignerInfo, the will name; the spell blade draws it, so the banner stays down");
+			}
+			else if (!willName)
+			{
+				_shown = 0u;
 			}
 
-			_shown = 0u;
 			return;
 		}
 
 		if (hostUp)
 		{
-			foreach (string name in new[]
-				{
-					"ButtonOnly", "TopTitle", "RightTopButtonVisible", "LeftTopButtonVisible",
-					"RightTopButtonIsY", "RightTopButtonMeterVisible", "LeftTopButtonMeterVisible",
-					"RightTopButtonHeld", "LeftTopButtonHeld",
-				})
-			{
-				State(values, name, false);
-			}
-
+			Lower(values);
 			State(values, "TopMain", true);
 			values.StateText(Refii.Core.Engine_GameHash.Fnv1("TopTitle"), string.Empty);
 			values.StateText(Refii.Core.Engine_GameHash.Fnv1("TopMain"), hostNotice!);
@@ -88,17 +120,11 @@ public static class Engine_UiHudTopBox
 		// before any text work (0x82178978): the box is up, the targeted-query slide is set
 		// (`sub_823FD8E8(+112)`), and TopTitle/TopMain/ButtonOnly are never stated. Composing
 		// them here from the registry is what put the previous box's body under a vendor's
-		// name.
-		if (front.Channel == 7)
+		// name. Every box toggle goes down with the text: the previous record's buttons must
+		// not outlive it.
+		if (front.Channel == InteractionPromptChannel)
 		{
-			foreach (string name in new[]
-				{
-					"ButtonOnly", "TopTitle", "TopMain", "RightTopButtonVisible",
-					"LeftTopButtonVisible", "RightTopButtonMeterVisible", "LeftTopButtonMeterVisible",
-				})
-			{
-				State(values, name, false);
-			}
+			Lower(values);
 
 			// AND THE PROMPT ITSELF. What channel 7 goes on to do is the whole prompt:
 			// `sub_823FD8E8` raises `TargetedQuery` on BOTH channels the host cannot read —
@@ -111,37 +137,7 @@ public static class Engine_UiHudTopBox
 			if (_shown != front.NameHash)
 			{
 				_shown = front.NameHash;
-				Godot.GD.Print($"[hud-topbox] front record 0x{front.NameHash:X8} on channel 7 — interaction prompt, no text");
-			}
-
-			return;
-		}
-
-		// CHANNEL 10 IS THE WILL NAME, AND THE SPELL BLADE ALREADY DRAWS IT.
-		//
-		// `sub_826B50B8` is the only publisher on this channel: it clears it
-		// (`sub_8230D0C0`, 0x826b51c4) and pushes the resolved will tag
-		// (`sub_8230C908(..., 10, ...)`, 0x826b5220) while the blade is up, gated on the
-		// widget's own `this+416 == 1`. The guest writes that name to NO element — the banner
-		// here and the label under the blade are two host renderings of one string, and showing
-		// both says the same word twice on one screen.
-		//
-		// The blade's copy wins because it is attached to the widget the player is reading. If
-		// a record ever arrives on this channel from somewhere else, the line below names it.
-		if (front.Channel == 10)
-		{
-			foreach (string name in new[] { "ButtonOnly", "TopTitle", "TopMain" })
-			{
-				State(values, name, false);
-			}
-
-			values.StateText(Refii.Core.Engine_GameHash.Fnv1("TopMain"), string.Empty);
-			values.StateText(Refii.Core.Engine_GameHash.Fnv1("TopTitle"), string.Empty);
-			if (_shown != front.NameHash)
-			{
-				_shown = front.NameHash;
-				Godot.GD.Print($"[hud-topbox] front record 0x{front.NameHash:X8} on channel 10 — " +
-					"the will name; the spell blade draws it, so the banner stays down");
+				Log($"[hud-topbox] front record 0x{front.NameHash:X8} on channel 7 — interaction prompt, no text");
 			}
 
 			return;
@@ -154,13 +150,16 @@ public static class Engine_UiHudTopBox
 		// "Find the abbot in Oakfield." was the previous box's body under the new title.
 
 		bool hasTitle = strings is not null && strings.TryGetString(front.TitleTag, out _);
-		string body = ComposeBody(Refii.Host.HostBridge.GetTopBoxBody(), strings);
+		string body = ComposeBody(readBody(), strings);
 		bool buttonOnly = !hasTitle && body.Length == 0;
 		State(values, "ButtonOnly", buttonOnly);
 		State(values, "TopTitle", !buttonOnly && hasTitle);
 		State(values, "TopMain", !buttonOnly && body.Length != 0);
 		values.StateText(Refii.Core.Engine_GameHash.Fnv1("TopMain"), body);
 
+		// The button toggles exactly as the publisher states them (0x82178c84–0x82179070):
+		// every one is written on every publish, so a record without buttons lowers the
+		// previous record's.
 		bool showA = front.ShowA;
 		bool showY = front.ShowY;
 		bool holdA = front.HoldA;
@@ -176,9 +175,19 @@ public static class Engine_UiHudTopBox
 		if (_shown != front.NameHash)
 		{
 			_shown = front.NameHash;
-			Godot.GD.Print($"[hud-topbox] front record 0x{front.NameHash:X8} on channel {front.Channel}" +
+			string lifetime = front.LifetimeMs <= 0 ? "until removed" : $"{front.LifetimeMs} ms left";
+			Log($"[hud-topbox] front record 0x{front.NameHash:X8} on channel {front.Channel}" +
 				$" — title {(hasTitle ? "yes" : "no")}, A {(showA ? (holdA ? "hold" : "press") : "off")}," +
-				$" Y {(showY ? (holdY ? "hold" : "press") : "off")}, lifetime {front.LifetimeMs} ms");
+				$" Y {(showY ? (holdY ? "hold" : "press") : "off")}, {lifetime}");
+		}
+	}
+
+	/// <summary>Every toggle inside the box down; `TopBox` itself is stated by the caller.</summary>
+	private static void Lower(Engine_HudValues values)
+	{
+		foreach (string name in BoxToggles)
+		{
+			State(values, name, false);
 		}
 	}
 

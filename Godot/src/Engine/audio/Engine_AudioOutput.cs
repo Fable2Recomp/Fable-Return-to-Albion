@@ -1,286 +1,228 @@
 using System;
 using Godot;
+using Refii.Core;
+using Refii.Host;
 
 namespace Refii.Audio;
 
 /// <summary>
-/// A generator-backed audio sink: PCM in, Godot's audio bus out.
+/// The guest's audio output: a Godot bus whose one effect writes the guest's frame onto
+/// every speaker pair the device has.
 ///
 /// This is the seam that makes Godot the owner of the guest's audio rather than a bystander
 /// to it. The guest's audio clock is its output device's CONSUMPTION rate — it is credited
 /// for each frame something takes, and that credit is what lets its mixer produce the next
-/// one. Feeding it through Godot's own device therefore hands Godot the guest's audio
-/// timeline, not merely its speakers.
+/// one. Here the taker is the effect's mix step on Godot's audio thread, so the guest runs on
+/// the device's clock with nothing in between.
 ///
-/// Which is why <see cref="FramesAvailable"/> matters more than it looks: it is the
-/// back-pressure. Pulling from the guest faster than Godot can play lets the guest run ahead
-/// of what is audible, which is exactly the drift this exists to remove. Only ever pull what
-/// this reports room for.
+/// Why an effect and not a stream: Godot's buses carry speaker PAIRS, and the only writer of
+/// a specific pair is an audio effect's process call, which Godot exposes to GDExtension
+/// alone. The host bridge is that extension (godot_audio_effect.cpp); this node loads it,
+/// builds the bus and keeps it alive. A 5.1 device gets the guest's own 5.1; a stereo one
+/// gets the SDK's ITU fold. Both come out of the same code, chosen by the pair count.
 ///
-/// THE PUMP IS ITS OWN THREAD, NOT `_Process`. It was `_Process` first, and a run showed why
-/// that cannot work: the generator holds 18 guest frames, so pulling once per rendered frame
-/// needs Godot above ~10 fps just to keep audio fed. Building a region drops it to about 7,
-/// and the measured production rate fell with it — 187.6/s settled, 123.2/s during the level
-/// load, with an empty ring and no drops, which is the guest waiting for credit rather than
-/// being blocked. Pulling on the render thread makes every frame hitch an audio hitch, and
-/// the guest's audio clock is not the render clock.
+/// The keep-alive player is not decoration. Godot copies a bus's pairs to the device only
+/// while they are ACTIVE, and only a playing stream marks them so — an effect writing into
+/// an inactive pair is heard by nobody. A looping silent stream on the bus touches every
+/// pair each step and costs nothing.
 /// </summary>
-public partial class Engine_AudioOutput : AudioStreamPlayer
+public partial class Engine_AudioOutput : Node
 {
 	/// <summary>
-	/// The guest's rate, stated by its mastering voice rather than assumed. Godot resamples
-	/// if its own mix rate differs, so matching the project to this avoids a resample of
-	/// every sound in the game.
+	/// The guest's rate, stated by its mastering voice rather than assumed. The effect copies
+	/// samples one to one, so the project's mix rate must match it.
 	/// </summary>
 	public const int GuestMixRate = 48000;
 
-	/// <summary>
-	/// Capacity of the generator's buffer. Headroom, not the working depth — see
-	/// <see cref="TargetQueuedSeconds"/>.
-	/// </summary>
-	public const float BufferSeconds = 0.25f;
+	/// <summary>The bus the guest plays through. Sends to Master.</summary>
+	public const string BusName = "GuestAudio";
+
+	private const string BridgeLibrary = "refii_hostbridge";
+	private const string EffectClass = "RefiiGuestAudioEffect";
+	private const string EntrySymbol = "refii_godot_audio_init";
+	private const string ManifestPath = "user://refii_godot_audio.gdextension";
 
 	/// <summary>
-	/// How much audio we keep queued ahead of the speaker.
-	///
-	/// This is the latency, so it is deliberately much smaller than the buffer. Filling to
-	/// capacity would make the buffer size and the latency the same number, which is why
-	/// simply enlarging the buffer is not a fix for starvation — it only trades a dropout
-	/// for a delay.
+	/// Channels the output stage produces: 6 when the device has a centre and rears, else 2.
+	/// Host-decoded sound (movies) asks the bridge for its front weight with this.
 	/// </summary>
-	public const float TargetQueuedSeconds = 0.04f;
+	public static int ActiveOutputChannels { get; private set; } = 2;
 
-	/// <summary>
-	/// How often the pump thread tops the queue up. Far faster than a render frame, which
-	/// is the entire point of it being a thread.
-	/// </summary>
-	private const int PumpIntervalMs = 2;
+	/// <summary>True once the bus, the effect and the keep-alive are all up.</summary>
+	public bool IsReady { get; private set; }
 
-	private AudioStreamGeneratorPlayback? _playback;
-	private Vector2[] _scratch = Array.Empty<Vector2>();
+	/// <summary>Godot's channel count for the bus: 1 stereo, 2 for 3.1, 3 for 5.1, 4 for 7.1.</summary>
+	public int SpeakerPairs { get; private set; }
 
-	private System.Threading.Thread? _pump;
-	private volatile bool _pumping;
-	private Func<float[], int, int>? _pull;
-	private float[] _pullBuffer = Array.Empty<float>();
-	private int _floatsPerGuestFrame;
-	private int _samplesPerGuestFrame;
-	private int _capacityFrames;
-	private int _targetFrames;
-
-	/// <summary>Frames Godot can accept right now. 0 until the stream is playing.</summary>
-	public int FramesAvailable => _playback?.GetFramesAvailable() ?? 0;
-
-	/// <summary>
-	/// True once the generator is live and will accept pushes.
-	///
-	/// Not called <c>Ready</c>: that name is already <see cref="Node"/>'s, and shadowing it
-	/// reads as the lifecycle callback rather than a state query.
-	/// </summary>
-	public bool IsReady => _playback is not null;
-
-	/// <summary>Frames pushed since this sink started, for rate checks.</summary>
-	public long FramesPushed { get; private set; }
-
-	/// <summary>
-	/// Pushes silence instead of the guest's mix, while still consuming it.
-	///
-	/// Used when the host plays individual voices: those carry the sound, and playing the
-	/// guest's mix as well would double everything. Muting HERE rather than declining to
-	/// queue the frame is deliberate — the guest is paced by this sink consuming at 48 kHz,
-	/// so a mode that stops consuming stops the clock. Silence still takes real time to
-	/// play; a skipped frame does not.
-	/// </summary>
-	public bool Muted { get; set; }
-
-	/// <summary>
-	/// Pushes that were refused because the buffer was full. A climbing count means the
-	/// caller is not honouring <see cref="FramesAvailable"/>.
-	/// </summary>
-	public long PushesRefused { get; private set; }
+	private AudioStreamPlayer? _keepAlive;
+	private int _bus = -1;
 
 	public override void _Ready()
 	{
-		Stream = new AudioStreamGenerator
+		// The bridge is loaded by the first P/Invoke, which the owner has already made for the
+		// frame geometry. Godot must open THAT file: a different copy is a second module with
+		// its own, empty ring.
+		string? library = Engine_NativeLibraries.LoadedPath(BridgeLibrary);
+		if (library is null)
 		{
-			MixRate = GuestMixRate,
-			BufferLength = BufferSeconds,
+			GD.PushError("[audio] the host bridge is not loaded, so the guest's output cannot be installed");
+			return;
+		}
+
+		if (!LoadExtension(library) || !ClassDB.ClassExists(EffectClass))
+		{
+			GD.PushError($"[audio] {EffectClass} is not available after loading {library}; the guest runs silently");
+			return;
+		}
+
+		int bus = AudioServer.BusCount;
+		AudioServer.AddBus();
+		AudioServer.SetBusName(bus, BusName);
+		AudioServer.SetBusSend(bus, "Master");
+		_bus = bus;
+
+		if (ClassDB.Instantiate(EffectClass).As<AudioEffect>() is not { } effect)
+		{
+			GD.PushError($"[audio] {EffectClass} could not be instantiated; the guest runs silently");
+			return;
+		}
+		AudioServer.AddBusEffect(bus, effect);
+
+		SpeakerPairs = Math.Max(1, AudioServer.GetBusChannels(bus));
+		int mixRate = (int)AudioServer.GetMixRate();
+		ActiveOutputChannels = SpeakerPairs >= 3 ? 6 : 2;
+		HostBridge.AudioOutputConfigure((uint)SpeakerPairs, (uint)mixRate);
+
+		_keepAlive = new AudioStreamPlayer
+		{
+			Name = "KeepAlive",
+			Bus = BusName,
+			Stream = SilentLoop(),
+			MixTarget = AudioStreamPlayer.MixTargetEnum.Surround,
 		};
+		AddChild(_keepAlive);
+		_keepAlive.Play();
 
-		// The playback object only exists once the stream is playing, so this cannot be
-		// fetched in advance. Nothing is audible until something is pushed.
-		Play();
-		_playback = GetStreamPlayback() as AudioStreamGeneratorPlayback;
+		IsReady = true;
+		GD.Print(
+			$"[audio] guest output on bus '{BusName}': {AudioServer.GetSpeakerMode()}, " +
+			$"{SpeakerPairs} speaker pair(s), {mixRate} Hz, the guest's 5.1 " +
+			(ActiveOutputChannels == 6 ? "passed through" : "folded to stereo"));
 
-		if (_playback is null)
-		{
-			GD.PushWarning(
-				"[audio] AudioStreamGenerator produced no playback; guest audio has nowhere " +
-				"to go. The guest will keep running silently.");
-		}
-
-		_capacityFrames = (int)(BufferSeconds * GuestMixRate);
-		_targetFrames = (int)(TargetQueuedSeconds * GuestMixRate);
-	}
-
-	/// <summary>
-	/// Starts the pump.
-	/// </summary>
-	/// <param name="pull">
-	/// Takes up to N guest frames into the buffer, returning how many it wrote. This is the
-	/// call that credits the guest, so it runs on the pump thread and nowhere else.
-	/// </param>
-	/// <param name="samplesPerGuestFrame">256, as the guest's renderer states.</param>
-	/// <param name="floatsPerGuestFrame">Samples times channels.</param>
-	/// <param name="maxFramesPerPull">Ceiling on one pull, to bound the scratch buffer.</param>
-	public void StartPump(
-		Func<float[], int, int> pull, int samplesPerGuestFrame, int floatsPerGuestFrame,
-		int maxFramesPerPull)
-	{
-		if (_playback is null || _pumping)
-		{
-			return;
-		}
-
-		_pull = pull;
-		_samplesPerGuestFrame = samplesPerGuestFrame;
-		_floatsPerGuestFrame = floatsPerGuestFrame;
-		_pullBuffer = new float[floatsPerGuestFrame * maxFramesPerPull];
-
-		_pumping = true;
-		_pump = new System.Threading.Thread(PumpLoop)
-		{
-			IsBackground = true,
-			Name = "refii-audio-pump",
-		};
-		_pump.Start();
-	}
-
-	/// <summary>Stops the pump and waits for it, so nothing pushes into a freed playback.</summary>
-	public void StopPump()
-	{
-		_pumping = false;
-		_pump?.Join(500);
-		_pump = null;
-	}
-
-	public override void _ExitTree() => StopPump();
-
-	/// <summary>
-	/// Keeps the queue near <see cref="TargetQueuedSeconds"/>, forever, independent of how
-	/// long a rendered frame takes.
-	///
-	/// Single producer, single consumer: this thread is the only one that pushes, and
-	/// Godot's audio thread is the only one that drains. That is the contract the
-	/// generator's ring is built for.
-	/// </summary>
-	private void PumpLoop()
-	{
-		while (_pumping)
-		{
-			try
-			{
-				TopUp();
-			}
-			catch (Exception error)
-			{
-				// A throw here would kill the pump silently and the guest would stall
-				// behind a ring nobody drains. Say so and keep going.
-				GD.PushError($"[audio] pump: {error.Message}");
-			}
-
-			System.Threading.Thread.Sleep(PumpIntervalMs);
-		}
-	}
-
-	private void TopUp()
-	{
-		if (_playback is null || _pull is null)
-		{
-			return;
-		}
-
-		int free = _playback.GetFramesAvailable();
-		int queued = _capacityFrames - free;
-		int wantSamples = _targetFrames - queued;
-		if (wantSamples <= 0)
-		{
-			return;
-		}
-
-		int wantFrames = Math.Min(wantSamples / _samplesPerGuestFrame,
-			_pullBuffer.Length / _floatsPerGuestFrame);
-		if (wantFrames <= 0)
-		{
-			return;
-		}
-
-		int taken = _pull(_pullBuffer, wantFrames);
-		if (taken > 0)
-		{
-			PushInterleavedStereo(_pullBuffer, taken * _samplesPerGuestFrame);
-		}
-	}
-
-	/// <summary>
-	/// Pushes interleaved stereo float samples.
-	/// </summary>
-	/// <param name="interleaved">
-	/// L,R pairs. Must hold at least <paramref name="frames"/> * 2 entries.
-	/// </param>
-	/// <param name="frames">How many stereo frames to take from the front of the buffer.</param>
-	/// <returns>True when Godot accepted them.</returns>
-	public bool PushInterleavedStereo(float[] interleaved, int frames)
-	{
-		if (_playback is null || frames <= 0)
-		{
-			return false;
-		}
-
-		if (interleaved.Length < frames * 2)
+		if (mixRate != GuestMixRate)
 		{
 			GD.PushError(
-				$"[audio] asked to push {frames} frames from a buffer of {interleaved.Length} " +
-				"floats; refusing rather than reading past the end");
-			return false;
+				$"[audio] Godot mixes at {mixRate} Hz but the guest renders at {GuestMixRate}; " +
+				"set audio/driver/mix_rate in project.godot, or the game plays at the wrong speed");
+		}
+	}
+
+	/// <summary>
+	/// Follows the device. Godot rebuilds a bus's channels when the output device changes
+	/// layout, and the effect's pair count must change with it or the pairs would be read off
+	/// by one; the stride is reset on the native side when the channel count moves.
+	/// </summary>
+	public override void _Process(double delta)
+	{
+		if (!IsReady || _bus < 0 || _bus >= AudioServer.BusCount || AudioServer.GetBusName(_bus) != BusName)
+		{
+			return;
 		}
 
-		// Sized to EXACTLY the request and reused across calls. PushBuffer takes an array
-		// rather than a span, so a larger scratch would have to be copied down to size on
-		// every push — which is the allocation this exists to avoid. The pull is a whole
-		// number of 256-sample guest frames, so in practice this reallocates almost never.
-		if (_scratch.Length != frames)
+		int pairs = Math.Max(1, AudioServer.GetBusChannels(_bus));
+		if (pairs == SpeakerPairs)
 		{
-			_scratch = new Vector2[frames];
+			return;
 		}
 
-		if (Muted)
+		SpeakerPairs = pairs;
+		ActiveOutputChannels = pairs >= 3 ? 6 : 2;
+		HostBridge.AudioOutputConfigure((uint)pairs, (uint)AudioServer.GetMixRate());
+		GD.Print(
+			$"[audio] speaker layout changed: {AudioServer.GetSpeakerMode()}, {pairs} speaker pair(s), " +
+			$"the guest's 5.1 {(ActiveOutputChannels == 6 ? "passed through" : "folded to stereo")}");
+	}
+
+	public override void _ExitTree()
+	{
+		if (!IsReady)
 		{
-			// Zeroed rather than turned down with VolumeDb: exact, and free of Godot's own
-			// volume smoothing. The frames still occupy real time in the generator, which
-			// is what keeps the guest paced.
-			Array.Clear(_scratch, 0, frames);
+			return;
 		}
-		else
+
+		IsReady = false;
+		HostBridge.AudioOutputDetach();
+		_keepAlive?.Stop();
+
+		int bus = AudioServer.GetBusIndex(BusName);
+		if (bus > 0)
 		{
-			for (int i = 0; i < frames; i++)
+			AudioServer.RemoveBus(bus);
+		}
+	}
+
+	/// <summary>
+	/// Loads the bridge as a GDExtension, through a manifest written beside the user's data.
+	///
+	/// Written rather than shipped: a manifest in the project can only name a path under
+	/// res://, and the export does not carry the staging tree — the natives live in the app's
+	/// bin directory. The resolver already chose a file; this names that exact file, which is
+	/// the only way to be sure Godot and .NET hold one module.
+	/// </summary>
+	private static bool LoadExtension(string library)
+	{
+		string os = OperatingSystem.IsWindows() ? "windows"
+			: OperatingSystem.IsMacOS() ? "macos"
+			: "linux";
+		string manifest =
+			"[configuration]\n" +
+			$"entry_symbol = \"{EntrySymbol}\"\n" +
+			"compatibility_minimum = \"4.7\"\n" +
+			"reloadable = false\n" +
+			"\n" +
+			"[libraries]\n" +
+			$"{os}.{Engine_NativeLibraries.ArchFolder} = \"{library.Replace('\\', '/')}\"\n";
+
+		using (var file = Godot.FileAccess.Open(ManifestPath, Godot.FileAccess.ModeFlags.Write))
+		{
+			if (file is null)
 			{
-				_scratch[i] = new Vector2(interleaved[i * 2], interleaved[(i * 2) + 1]);
+				GD.PushError($"[audio] cannot write {ManifestPath}: {Godot.FileAccess.GetOpenError()}");
+				return false;
 			}
+			file.StoreString(manifest);
 		}
 
-		// PushBuffer takes the whole buffer or none of it, so the caller must have gated on
-		// FramesAvailable already. A refusal here is a bug upstream, not a normal outcome.
-		bool accepted = _playback.PushBuffer(_scratch);
-		if (accepted)
+		var status = GDExtensionManager.Singleton.LoadExtension(ManifestPath);
+		if (status is GDExtensionManager.LoadStatus.Ok or GDExtensionManager.LoadStatus.AlreadyLoaded)
 		{
-			FramesPushed += frames;
-		}
-		else
-		{
-			PushesRefused++;
+			return true;
 		}
 
-		return accepted;
+		GD.PushError($"[audio] loading {library} as a GDExtension: {status}");
+		return false;
+	}
+
+	/// <summary>
+	/// A tenth of a second of silence, looped, so the bus's pairs stay active.
+	///
+	/// <c>LoopEnd</c> is INCLUSIVE: Godot's WAV mixer decodes the frame at the loop end before
+	/// wrapping (the WAV <c>smpl</c> convention). A loop end equal to the frame count reads one
+	/// frame past the data — four bytes of whatever the heap holds — and that lands on every
+	/// speaker pair as a one-sample click once per loop. The last frame is <c>frames - 1</c>.
+	/// </summary>
+	private static AudioStreamWav SilentLoop()
+	{
+		const int frames = GuestMixRate / 10;
+		return new AudioStreamWav
+		{
+			Data = new byte[frames * 2 * sizeof(short)],
+			Format = AudioStreamWav.FormatEnum.Format16Bits,
+			MixRate = GuestMixRate,
+			Stereo = true,
+			LoopMode = AudioStreamWav.LoopModeEnum.Forward,
+			LoopBegin = 0,
+			LoopEnd = frames - 1,
+		};
 	}
 }

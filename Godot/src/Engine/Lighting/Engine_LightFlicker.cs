@@ -223,7 +223,8 @@ public partial class Engine_LightFlicker : Node
 		// flicker weakens — a look change. So the walk runs on its own 1/30 s accumulator on
 		// Godot's clock (not the guest's frames), and every display frame draws the light
 		// between its last two walk states.
-		_carried += delta;
+		// The guest's own frames, so the walk runs at its pace and holds under its stated pause.
+		_carried += Refii.Core.Engine_DrawAdvance.Seconds(delta);
 		int steps = 0;
 		while (_carried >= WalkSeconds && steps < MaxWalkSteps)
 		{

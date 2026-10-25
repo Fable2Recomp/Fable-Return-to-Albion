@@ -434,7 +434,6 @@ public partial class GameInput : Node
 			Engine_UiInputMode.KeyboardMouse = false;
 		}
 		ControllerVibration = Refii.Core.Engine_RefiiConfig.Bool(values, "controller_vibration", true);
-		GameQuickSlots.Configure(values);
 		ReadKeyBindings(values);
 		// The mods' actions take their rebinds (key_<mod>.<action>, pad_<mod>.<action>) from the same read.
 		Refii.Mods.ModInput.ReadBindings(values);
@@ -598,7 +597,13 @@ public partial class GameInput : Node
 		}
 
 		bool connected = joypad >= 0 || GameDebugServer.PadConnected(pad);
-		ApplyQuickSlots(pad, ref state);
+		// A MOD'S CLAIMED ACTIONS leave this pad before the guest reads it (ModInput.Withhold):
+		// the second pad is player two's, as the mods' own input reads it.
+		if (pad == PlayerTwoPad)
+		{
+			Refii.Mods.ModInput.Withhold(2, ref state.Buttons, ref state.LeftTrigger, ref state.RightTrigger);
+		}
+
 		SetMasked(pad, connected, state);
 
 		// Local player two's own expression wheel, off their own pad.
@@ -758,7 +763,9 @@ public partial class GameInput : Node
 
 		// THE SPELLS MENU'S HOLD — GameAction 42 on press, 43 on release, which the shipped
 		// scheme binds to XboxButton 16: the RIGHT TRIGGER. Same 30/255 threshold as above.
-		ApplyQuickSlots(0, ref state);
+		// A MOD'S CLAIMED ACTIONS leave pad 0 — player one's, keyboard folded in — before the
+		// guest reads it (ModInput.Withhold); the mod's own input_action events still fire.
+		Refii.Mods.ModInput.Withhold(1, ref state.Buttons, ref state.LeftTrigger, ref state.RightTrigger);
 		bool spells = state.RightTrigger > 30;
 		SpellsMenuPressed = spells && !_spellsWasDown;
 		SpellsMenuReleased = !spells && _spellsWasDown;
@@ -793,7 +800,7 @@ public partial class GameInput : Node
 		// The owned menus' masks hold the menu owner's pad — every pad until an owner is stated.
 		bool owned = MasksPad(pad);
 		bool masked = owned && MaskMenuInput;
-		bool goldenMenu = GameGoldenCock.OwnsInput || (owned && (HostUiOwnsPad || GameQuickSlots.Assigning));
+		bool goldenMenu = GameGoldenCock.OwnsInput || (owned && HostUiOwnsPad);
 		bool pauseMasked = owned && !masked && MaskPauseInput;
 		bool queryMasked = owned && !masked && !pauseMasked && MaskPauseQueryInput;
 		// The card's mask keeps the sticks and the D-pad live: its screen does not pause the
@@ -829,8 +836,6 @@ public partial class GameInput : Node
 			(pad == 0 || !Refii.Core.Engine_Views.Split)
 			? (ButtonX | ButtonY)
 			: 0u;
-		if (pad == 0 && QuickWheelHeld || pad == PlayerTwoPad && QuickWheelTwoHeld)
-			wheelBits |= ButtonY;
 
 		// LOCAL PLAYER TWO'S BACK IS THE HOST'S: it holds their expression wheel (the pump's
 		// QuickWheel:2: levers). Shipped, the henchman's Back teleported them to the hero — the
@@ -861,20 +866,6 @@ public partial class GameInput : Node
 			// is the camera's — never under a menu, which reads it as a direction.
 			goldenMenu || cardMasked ? 0 : (InvertCameraX && !menuMask ? -state.RightX : state.RightX),
 			goldenMenu || cardMasked ? 0 : state.RightY);
-	}
-
-	private static void ApplyQuickSlots(int pad, ref PadState state)
-	{
-		if (pad != 0 && pad != PlayerTwoPad) return;
-		bool owned = MasksPad(pad);
-		bool allowed = Playing && !GameQuickSlots.Assigning && (state.Buttons & (Start | Back)) == 0 && !QuickWheelHeld && !QuickWheelTwoHeld && !GameDevMenu.WindowOpen &&
-			!GameDevMenu.KeyboardCaptured && !GameGoldenCock.OwnsInput &&
-			!(owned && (MaskMenuInput || MaskPauseInput || MaskPauseQueryInput || MaskReceiveItemsInput ||
-				HostUiOwnsPad || ModalBoxOwnsInput || MenuBoxOwnsInput));
-		int player = pad == PlayerTwoPad ? 2 : GameQuickSlots.LocalPlayer;
-		var result = GameQuickSlots.Process(player, state.Buttons, state.LeftTrigger, state.RightTrigger, allowed);
-		state.Buttons = result.Buttons;
-		if (result.ReserveRightTrigger) state.RightTrigger = 0;
 	}
 
 	/// <summary>

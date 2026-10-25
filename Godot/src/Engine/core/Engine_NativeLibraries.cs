@@ -35,8 +35,19 @@ public static class Engine_NativeLibraries
 	private static readonly List<string> Paths = new();
 
 	private static readonly object Gate = new();
+	private static readonly Dictionary<string, string> Loaded = new(StringComparer.Ordinal);
 	private static bool _installed;
 	private static bool _published;
+
+	/// <summary>
+	/// The file a library was resolved from, once it has been. Godot loads the host bridge a
+	/// second time as a GDExtension, and it must open THIS file: a different copy would be a
+	/// second module with its own, empty audio ring.
+	/// </summary>
+	public static string? LoadedPath(string library)
+	{
+		lock (Gate) return Loaded.TryGetValue(library, out string? path) ? path : null;
+	}
 
 	/// <summary>
 	/// The staging folder name for the architecture THIS PROCESS is running as — matching
@@ -156,7 +167,10 @@ public static class Engine_NativeLibraries
 
 		foreach (string candidate in found.OrderByDescending(File.GetLastWriteTimeUtc))
 			if (NativeLibrary.TryLoad(candidate, out IntPtr handle))
+			{
+				lock (Gate) Loaded[name] = Path.GetFullPath(candidate);
 				return handle;
+			}
 
 		return IntPtr.Zero;
 	}

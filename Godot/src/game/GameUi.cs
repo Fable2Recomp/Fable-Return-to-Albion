@@ -1721,6 +1721,15 @@ public partial class GameUi : Node
 				_screenMenuView.Visible = false;
 			}
 
+			// Start leaving Options with a host page open comes through HERE, not the page
+			// branch below: the page goes with its screen, or the next Options visit opens on
+			// the page path with the list hidden. A modal over the page keeps the screen id.
+			if (Engine_UiHostOptionsPage.Open &&
+				(pause is not { } optionsGone || optionsGone.ScreenId != Engine_UiDetailPages.OptionsScreenId))
+			{
+				Engine_UiOptionsPending.Leave();
+			}
+
 			// The guest's stick latch does not survive us walking away from it — see
 			// HoldScreenStick.
 			HoldScreenStick(0);
@@ -1841,11 +1850,16 @@ public partial class GameUi : Node
 			// Any screen whose provider fills a page gets the same treatment; only a screen that
 			// declared a page element reaches here at all, and only one that needs the sliders
 			// pays for reading them.
-			// THE PAGE'S PENDING CHOICES START FROM THE COMMITTED ONES the moment it opens.
+			// THE PAGE'S ROW AND VALUES ARE THE GUEST'S, read back every frame: its cursor and
+			// each row widget's own index or value (RefiiHostGetOptionsPage). The host paints
+			// the captions from them and steps nothing of its own.
 			if (!hostPage)
-				Engine_UiOptionsPending.Enter(
-					_screenMenu?.Script.Highlighted?.Name ?? string.Empty,
-					HostBridge.GetOptions(), HostBridge.GetOptionSliders());
+			{
+				Engine_UiOptionsPending.Enter(_screenMenu?.Script.Highlighted?.Name ?? string.Empty);
+				if (Engine_UiOptionsPending.Open)
+					Engine_UiOptionsPending.Follow(
+						HostBridge.GetOptionsPage(Engine_UiOptionsPending.GuestPageIndex));
+			}
 
 			if (Engine_UiDetailPages.Owns(state.ScreenId) &&
 				_books.Book(state.ScreenId) is { } pageBook)
@@ -2223,7 +2237,9 @@ public partial class GameUi : Node
 			HoldScreenStick(GameInput.MenuDirection);
 		}
 
-		if (DriveQuickSlotBookAssignment(state.ScreenId)) return true;
+		// A MOD'S ROW ACTIONS on this list (ui/templates.json "rowActions"): a prompt beside the page
+		// buttons, the button held from the guest, mod_menu_row on the press.
+		if (DriveRowActions(state.ScreenId)) return true;
 
 		// Y on the abilities screen is UNLEARN: `sub_826C2958` code 39 clears `+198`
 		// (0x826c2b2c) and raises `OnPressA` through Lua, whose push is deferred here and never
@@ -3144,8 +3160,6 @@ public partial class GameUi : Node
 	/// </summary>
 	private int StatedMenuOwner()
 	{
-		if (GameQuickSlots.Assigning) return GameQuickSlots.Assignment!.Player;
-
 		// A consent question is the partner's to answer, on their pad and in their half.
 		if (_consentOwner != 0)
 		{
@@ -3221,7 +3235,8 @@ public partial class GameUi : Node
 	private System.Collections.Generic.IReadOnlyList<int>? SlidesForPlayerTwo(
 		System.Collections.Generic.IReadOnlyList<int>? shared)
 	{
-		if (shared is null || (_hudTwoSlides.Count == 0 && _hudTwoQuerySlides.Count == 0 && _hudTwoDpadSlides.Count == 0))
+		if (shared is null || (_hudTwoSlides.Count == 0 && _hudTwoQuerySlides.Count == 0 && _hudTwoDpadSlides.Count == 0 &&
+			_hudTwoOverrideSlides.Count == 0))
 		{
 			return shared;
 		}
@@ -3253,6 +3268,14 @@ public partial class GameUi : Node
 		}
 
 		foreach ((int ordinal, int slide) in _hudTwoDpadSlides)
+		{
+			if (ordinal >= 0 && ordinal < _hudTwoSlideBuffer.Length)
+			{
+				_hudTwoSlideBuffer[ordinal] = slide;
+			}
+		}
+
+		foreach ((int ordinal, int slide) in _hudTwoOverrideSlides)
 		{
 			if (ordinal >= 0 && ordinal < _hudTwoSlideBuffer.Length)
 			{
@@ -3800,6 +3823,8 @@ public partial class GameUi : Node
 				Engine_HudModMarkers.Clear();
 				Engine_HudModMeters.Clear();
 				Engine_UiModFade.Clear();
+				Engine_UiHudOverrides.Clear();
+				Refii.Mods.ModInput.ClearClaims();
 				Refii.Lighting.Engine_ModLights.Clear();
 				_worldSprites.Feed(
 					new System.Collections.Generic.List<Engine_HudWorldSprites.Sprite>());
@@ -4651,7 +4676,8 @@ public partial class GameUi : Node
 		// number a second rather than noise.
 		bool hudValid = _hud is not null && GodotObject.IsInstanceValid(_hud);
 		bool needHudFeed = guestFrame || cadence || GameInput.QuickWheelHeld ||
-			GameInput.SpellsMenuHeld || _quickslotHudGeneration != GameQuickSlots.Generation || (hudValid && _hud!.ElementActive is null);
+			GameInput.SpellsMenuHeld ||
+			_hudOverrideGeneration != Engine_UiHudOverrides.Generation || (hudValid && _hud!.ElementActive is null);
 		long began = System.Diagnostics.Stopwatch.GetTimestamp();
 		if (needHudFeed && Engine_UiElementState.Current.Elements(_hudAddress) is { Count: > 0 } elements)
 		{
@@ -4737,7 +4763,8 @@ public partial class GameUi : Node
 					// folded here as the slides those registries would play: toggle true → 2,
 					// false → 1 (`sub_823FE848`); fader index as stated, plus one on the second channel.
 					FoldStatedHudSlides(doc, slides, active, stated);
-					ApplyQuickSlotSlides(slides);
+					// A mod's stated slides (hud_slide) stand over the guest's, for the local player's HUD.
+					ApplyHudSlideOverrides(slides, HudLocalPlayer);
 
 					ReleaseHudRootSlide(doc, slides, active, stated);
 
@@ -4748,7 +4775,8 @@ public partial class GameUi : Node
 					// band across the top of every region. Slide 0 is the master, never played,
 					// and its elements keep their stated values.
 					ReleaseHudPlayedSlides(doc, slides, active, stated);
-					KeepQuickSlotHudVisible(doc, slides, active, stated);
+					// The pieces a mod holds visible (hud_hold): kept on their shown slides.
+					ApplyHudHold(ref _hudHold, ref _hudHoldKey, doc, slides, active, stated, HudLocalPlayer);
 
 					long resolveBegan = System.Diagnostics.Stopwatch.GetTimestamp();
 					_hudResolve.Apply(slides, active, stated);
@@ -4764,7 +4792,8 @@ public partial class GameUi : Node
 					// equips something, not per frame, and this is the one read here that walks a
 					// hash per element. Held across frames rather than re-read, so the gate above
 					// can be per frame without the whole feed becoming so.
-					if (cadence || _hud.LiveTextures is null || _quickslotHudGeneration != GameQuickSlots.Generation)
+					if (cadence || _hud.LiveTextures is null ||
+						_hudOverrideGeneration != Engine_UiHudOverrides.Generation)
 					{
 						_hud.LiveTextures = SampleHudTextures(elements.Count);
 					}
@@ -4774,8 +4803,10 @@ public partial class GameUi : Node
 					long transformBegan = System.Diagnostics.Stopwatch.GetTimestamp();
 					_hud.LiveTransform =
 						Engine_UiLiveAttributes.Transform(_hudAddress, elements.Count);
-					if (QuickSlotHudVisible && _quickslotHud is not null)
-						_hud.LiveTransform = _quickslotHud.Transforms(_hud.LiveTransform);
+					if (_hudHold is { OwnerCount: > 0 } held)
+					{
+						_hud.LiveTransform = held.Transforms(_hud.LiveTransform);
+					}
 					_hudTransformTicks += System.Diagnostics.Stopwatch.GetTimestamp() - transformBegan;
 
 					// AND THE ELEMENT TEXT, for the expression wheel's titles — the guest writes
@@ -4830,9 +4861,6 @@ public partial class GameUi : Node
 
 		if (hudValid && _hudScreen is not null)
 		{
-			DriveQuickSlotExpressionAssignment();
-			if (GameQuickSlots.Assigning) return;
-
 			// THE EXPRESSION WHEEL, through the guest's own open/close/select — the
 			// GameAction chain that would run them from the pad does not fire here.
 			// Hold to open, release to close (the shipped default; the toggle option
@@ -5219,6 +5247,18 @@ public partial class GameUi : Node
 	/// </summary>
 	private bool DrivePauseMenu(double delta)
 	{
+		// A pattern-book retire (a mod remount) frees the view, and the guest rebuilds
+		// `pausemainmenu` only on its next state change: a tree still standing is adopted again
+		// here, or Start would pause with no list and this returning false would read as nothing
+		// wrong. Once per retire — the adoption stands the view back up.
+		if (_pauseView is null && _presentation is not null && _pauseAddress != 0 &&
+			_drawn.TryGetValue(_pauseAddress, out Engine_UiDrawnPresentation? standingTree) &&
+			standingTree.Name == PausePresentation && GodotObject.IsInstanceValid(standingTree.Node))
+		{
+			GD.Print("[game-ui] pause list not standing: rebuilt after retire");
+			AdoptPauseMenu(standingTree.Node, _pauseAddress);
+		}
+
 		if (_pauseView is null || _pauseMenu is null)
 		{
 			return false;
@@ -7214,10 +7254,8 @@ public partial class GameUi : Node
 
 	private void ui_processBody(double delta)
 	{
-		ResetQuickSlotPrompt();
-		WorldInteractionAllowed = IsRevealed && !ModalPanelUp && !_fullCutscene && !GameQuickSlots.Assigning;
-		if (GameQuickSlots.Assigning) SeatPlayerUi(GetViewport().GetVisibleRect().Size);
-		if (DriveQuickSlotPicker(delta)) return;
+		ResetRowActionPrompt();
+		WorldInteractionAllowed = IsRevealed && !ModalPanelUp && !_fullCutscene;
 		if (DriveGoldenCockMenu(delta)) return;
 		// THE QUIT LATCH. The guest is still running its confirmation, save and teardown; the
 		// front end coming up is it reporting all three done, and the only point at which
@@ -10303,7 +10341,7 @@ public partial class GameUi : Node
 		}
 
 		read.CopyTo(_hudTextures);
-		ApplyQuickSlotTextures(_hudTextures);
+		ApplyHudIconOverrides(_hudTextures, HudLocalPlayer);
 		return _hudTextures;
 	}
 

@@ -497,7 +497,7 @@ public partial class FableFx : Node3D
 	public override void _Process(double delta)
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("fablefx");
-		Step(delta);
+		Step(Refii.Core.Engine_DrawAdvance.Seconds(delta));
 	}
 
 	/// <summary>

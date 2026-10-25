@@ -113,7 +113,8 @@ public static class Engine_UiModMenuCommand
 	/// the init chunk's preamble (Engine_ModLua), which looks the name up and runs it protected.
 	/// <c>e</c> is the same table the <c>mod_menu_row</c> event carries.
 	/// </summary>
-	public static string LuaCall(Parsed command, string menu, string row, int player, string mod)
+	public static string LuaCall(Parsed command, string menu, string row, int player, string mod,
+		string rowCommand = "", string button = "")
 	{
 		var text = new StringBuilder("if Refii and Refii._menu_row then Refii._menu_row(");
 		text.Append(LuaLiteral(command.Function)).Append(", ");
@@ -122,17 +123,22 @@ public static class Engine_UiModMenuCommand
 		text.Append(",row=").Append(LuaLiteral(row));
 		text.Append(",player=").Append(player.ToString(CultureInfo.InvariantCulture));
 		text.Append(",mod=").Append(LuaLiteral(mod));
+		text.Append(",command=").Append(LuaLiteral(rowCommand ?? string.Empty));
+		text.Append(",button=").Append(LuaLiteral(button ?? string.Empty));
 		text.Append("}) end");
 		return text.ToString();
 	}
 
 	/// <summary>
 	/// The guest command line that raises <c>ModMenuRow</c>: <c>menu_row &lt;player&gt; &lt;menu&gt;
-	/// &lt;row&gt; &lt;mod&gt;</c>. Words are space-separated, so a space in a name becomes '_'; an
-	/// empty name is '-'.
+	/// &lt;row&gt; &lt;mod&gt; &lt;command&gt; &lt;button&gt;</c>. Words are space-separated, so a space
+	/// in a name becomes '_'; an empty name is '-'. The row's own command (a row action's trailing
+	/// field) crosses base64, since it carries any character; '-' for none.
 	/// </summary>
-	public static string RowCommandLine(string menu, string row, int player, string mod) =>
-		$"{RowCommandVerb} {player.ToString(CultureInfo.InvariantCulture)} {Word(menu)} {Word(row)} {Word(mod)}";
+	public static string RowCommandLine(string menu, string row, int player, string mod,
+		string rowCommand = "", string button = "") =>
+		$"{RowCommandVerb} {player.ToString(CultureInfo.InvariantCulture)} {Word(menu)} {Word(row)} {Word(mod)} " +
+		$"{(string.IsNullOrEmpty(rowCommand) ? "-" : Convert.ToBase64String(Encoding.UTF8.GetBytes(rowCommand)))} {Word(button ?? string.Empty)}";
 
 	private static string Word(string text)
 	{

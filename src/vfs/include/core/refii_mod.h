@@ -1045,6 +1045,58 @@ extern "C" int32_t refii_mod_inventory_stack(uint8_t* base, uint32_t entity, int
 /// True when it has a weapon set.
 extern "C" int32_t refii_mod_equipped(uint8_t* base, uint32_t entity, uint32_t* out_melee, uint32_t* out_ranged);
 
+/// The quick menu's own actions for player `player`'s hero (1 or 2), gated as the game gates its
+/// quick menu (the hero alive, the d-pad up, lhGuiManager::CanPlayerOpenQuickMenu for that player).
+/// Each answers true when the action was performed. Guest tick thread only.
+///   use_item: the inventory item with definition `definition` (a GDB record hash) through the
+///     game's own use — the item handle by record (sub_824F1C90), Use(hero, handle, "")
+///     (sub_823E0FF8), the handle released (sub_82764DC0); the UI data generation moves.
+///   equip_weapon: the weapon set's own EquipWeaponByRecord, for a weapon the inventory holds (an
+///     already-held one is left as it is). On an online JOINER the weapon set is the host's replica,
+///     so the pick crosses to Godot (REFII_MOD_HOST_HERO_KIND → CoopHeroKit.SetLocalWeapon), whose
+///     kit the host equips from and replicates back; the caller never cares which.
+///   perform_expression: StartExpression on the performer (component 154) for an `expression` (a GDB
+///     record hash) it knows; refused while one plays.
+///   assign_spell: spell type 0..7 assigned to every tier the hero knows (the spell manager's known
+///     and offered tables), through the game's own assign — the d-pad, the UI and the net event.
+extern "C" int32_t refii_mod_use_item(PPCContext* ctx, uint8_t* base, int32_t player, uint32_t definition);
+extern "C" int32_t refii_mod_equip_weapon(PPCContext* ctx, uint8_t* base, int32_t player, uint32_t definition);
+extern "C" int32_t refii_mod_perform_expression(PPCContext* ctx, uint8_t* base, int32_t player, uint32_t expression);
+extern "C" int32_t refii_mod_assign_spell(PPCContext* ctx, uint8_t* base, int32_t player, int32_t spell);
+
+/// Expression `index` (from 0) of player `player`'s performer (component 154: the known-expression
+/// vector at +0x88..+0x8C, 20-byte entries {record, cached GDB entry, _, uses, recency} — what
+/// StartExpression takes and counts): the record hash and how often it has been performed. False
+/// past the end or with no performer.
+extern "C" int32_t refii_mod_expression(uint8_t* base, int32_t player, int32_t index, uint32_t* out_record,
+                                        int32_t* out_uses);
+
+/// The spell types player `player`'s hero can assign, as bits 1 << type (0 Lightning .. 7 Dead
+/// Rising): known AND offered on at least one tier (the spell manager's +156 known and +196 offered
+/// bytes, index 5 * type + tier — the quick wheel's own offering test). False with no spell manager.
+extern "C" int32_t refii_mod_spells_known(uint8_t* base, int32_t player, uint32_t* out_mask);
+
+/// The expression the wheel highlights while player `player`'s expression wheel is up: the wheel at
+/// *(*(GUI + 32) + 60) — open flag +0, its player +24, cursor +20, entries +52..+56 of 12 bytes
+/// {record, flags, _} — read and validated as the HUD's own reader validates it. The record hash,
+/// or 0 with no wheel up for that player.
+extern "C" uint32_t refii_mod_selected_expression(uint8_t* base, int32_t player);
+
+/// A GDB record's string property, INHERITED, through the game's own getter (sub_82323540: the
+/// property name's FNV-1 looked up on the entry GDBManager_FindEntryByHash gives, type string):
+/// `definition` the record's hash, `field` the property's name ("NameTag", "IconGraphic"). The text
+/// is copied into `out` (at most `size` - 1 bytes). False, and "" in `out`, for a record the
+/// database lacks or a property it has not got. Guest tick thread only.
+extern "C" int32_t refii_mod_record_string(PPCContext* ctx, uint8_t* base, uint32_t definition, const char* field,
+                                           char* out, uint32_t size);
+
+/// A GDB record's integer property, INHERITED, through the game's typed getter (GDBEntry_GetPropTyped
+/// on the entry FindEntryByHash gives, as an int and then as an enum): `definition` the record's
+/// hash, `field` the property's name ("Category", "WeaponType"). False, and 0 in `out`, for a
+/// record the database lacks or a property it has not got. Guest tick thread only.
+extern "C" int32_t refii_mod_record_int(PPCContext* ctx, uint8_t* base, uint32_t definition, const char* field,
+                                        int32_t* out);
+
 /// Entities in the world within `radius` of `xyz` (the world entity manager's list, in-world ones
 /// with a placement, measured by their own position getter), nearest first, up to `max` into `out`.
 /// `creatures_only` keeps those with a creature component (20). Returns how many were written.
@@ -1200,6 +1252,29 @@ extern "C" int32_t refii_mod_meter(int32_t player, const char* id, const char* l
 
 /// Removes the meter `id` from every player's HUD. Returns 1 when posted.
 extern "C" int32_t refii_mod_meter_remove(const char* id);
+
+/// Claims (`on` non-zero) or releases a mod's input action — its scoped name "<mod>.<action>" from
+/// input.json — for `player` (1 or 2; 0 both): while claimed, Godot withholds the action's pad buttons,
+/// triggers and keys from the pad the guest sees for that player (a chord's modifier with them while
+/// the chord is held), and the action's own InputAction events still fire. Cleared when the mods' Lua
+/// reloads and when the game goes down. Returns 1 when posted (0 for no name). Any thread.
+extern "C" int32_t refii_mod_input_claim(int32_t player, const char* action, int32_t on);
+
+/// States the texture a HUD element shows for `player` (1 or 2; 0 both): `element` a slide-toggle
+/// binding name ("DPadUp") or an element path by its trailing segments ("dpadmenu.group.up.up"),
+/// `texture` a game texture path ("Art\GUI\WheelIcons\expressions.tex") or an enabled mod's PNG
+/// under art/, fitted to the slot when it is not 128 x 128; null or "" clears. Returns 1 when posted
+/// (0 for no element). Any thread.
+extern "C" int32_t refii_mod_hud_icon(int32_t player, const char* element, const char* texture);
+
+/// States the slide a HUD element sits on for `player`, as the game counts slides (1 the first); 0
+/// clears and the guest's own stands. Returns 1 when posted (0 for no element). Any thread.
+extern "C" int32_t refii_mod_hud_slide(int32_t player, const char* element, int32_t slide);
+
+/// Holds a HUD piece visible for `player` (`on` non-zero) — its slide owners kept on their shown
+/// ("in") slides while the guest would hide it; the D-pad is the case — or lets it go. Returns 1 when
+/// posted (0 for no name). Any thread.
+extern "C" int32_t refii_mod_hud_hold(int32_t player, const char* piece, int32_t on);
 
 // ---------------------------------------------------------------------------------------------
 // The UI: a mod's menus, message boxes, notices and menu boxes, drawn by Godot (posted as REFII_MOD_HOST_UI_KIND)

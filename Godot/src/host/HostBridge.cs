@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 221;
+	public const int ExpectedAbiVersion = 222;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -1338,22 +1338,23 @@ public static class HostBridge
 	}
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostPullAudio(float[] outFrames, uint maxFrames);
-
-	[DllImport(Library)]
 	private static extern uint RefiiHostAudioSampleRate();
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostAudioChannels();
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostAudioSamplesPerFrame();
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostAudioFloatsPerFrame();
+	private static extern float RefiiHostAudioFrontGain(uint channels);
 
 	[DllImport(Library)]
-	private static extern float RefiiHostAudioFrontGain();
+	private static extern void RefiiHostAudioOutputConfigure(uint speakerPairs, uint mixRate);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostAudioOutputDetach();
+
+	[DllImport(Library)]
+	private static extern void RefiiHostAudioOutputStats(
+		out ulong outFramesPulled, out ulong outUnderrunSteps, out uint outChannels);
 
 	[DllImport(Library)]
 	private static extern void RefiiHostAudioStats(
@@ -1375,30 +1376,36 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern void RefiiHostSetVoicePlaybackOwned(int owned);
 
-	/// <summary>
-	/// Takes up to <paramref name="maxFrames"/> mixed frames as interleaved stereo float. This is
-	/// the guest's audio clock: each frame taken credits one more, so drain only at playback rate.
-	/// </summary>
-	public static uint PullAudio(float[] outFrames, uint maxFrames) =>
-		RefiiHostPullAudio(outFrames, maxFrames);
-
 	/// <summary>The guest's output rate — 48000, stated by its mastering voice.</summary>
 	public static uint AudioSampleRate() => RefiiHostAudioSampleRate();
-
-	/// <summary>Channels the host receives, after the 5.1 fold.</summary>
-	public static uint AudioChannels() => RefiiHostAudioChannels();
 
 	/// <summary>256 — one frame is 5.333 ms, so 187.5 frames a second.</summary>
 	public static uint AudioSamplesPerFrame() => RefiiHostAudioSamplesPerFrame();
 
-	/// <summary>Floats in one frame, i.e. samples times channels.</summary>
-	public static uint AudioFloatsPerFrame() => RefiiHostAudioFloatsPerFrame();
+	/// <summary>
+	/// The linear weight the output stage gives the guest's front channels for a device of
+	/// <paramref name="channels"/> (2 folds, 6 passes through). Sound the host decodes itself is
+	/// scaled by this so it sits at the level of the guest's mix.
+	/// </summary>
+	public static float AudioFrontGain(uint channels) => RefiiHostAudioFrontGain(channels);
 
 	/// <summary>
-	/// The linear weight the 5.1 fold gives the guest's front channels. Sound the host decodes
-	/// itself is scaled by this so it sits at the level of the guest's mix.
+	/// Tells the output stage how many speaker pairs the bus has (Godot's bus channel count: 1
+	/// stereo, 2 for 3.1, 3 for 5.1, 4 for 7.1) and the mix rate, and attaches it to the guest's
+	/// frame ring. Call before the effect's first mix step, and again if the device changes.
 	/// </summary>
-	public static float AudioFrontGain() => RefiiHostAudioFrontGain();
+	public static void AudioOutputConfigure(uint speakerPairs, uint mixRate) =>
+		RefiiHostAudioOutputConfigure(speakerPairs, mixRate);
+
+	/// <summary>Detaches the output stage; the guest's frames are then dropped, not waited for.</summary>
+	public static void AudioOutputDetach() => RefiiHostAudioOutputDetach();
+
+	/// <summary>
+	/// Frames the effect has pulled, mix steps it found the ring empty on once the guest was
+	/// producing, and the channel count it is producing (2 or 6).
+	/// </summary>
+	public static void AudioOutputStats(out ulong framesPulled, out ulong underrunSteps, out uint channels) =>
+		RefiiHostAudioOutputStats(out framesPulled, out underrunSteps, out channels);
 
 	/// <summary>
 	/// Audio health. <paramref name="pushed"/> settles at 187.5/s when the clock is right;
@@ -5297,23 +5304,7 @@ public static class HostBridge
 		}
 	}
 
-	public static uint PostFrontEndAction(string name)
-	{
-		// A COMMIT is remembered so the save gate can post it again once its box is answered:
-		// the fan's `LoadSave:N`, a row's `MenuEvent:…` (the root's Continue among them) and
-		// `MenuSelect`. Cursor moves and answers are not commits.
-		if (name.StartsWith("LoadSave:", StringComparison.Ordinal) ||
-			name.StartsWith("MenuEvent:", StringComparison.Ordinal) ||
-			name == "MenuSelect")
-		{
-			LastCommitAction = name;
-		}
-
-		return RefiiHostPostFrontEndAction(name);
-	}
-
-	/// <summary>The last front-end commit posted (see <see cref="PostFrontEndAction"/>), or empty.</summary>
-	public static string LastCommitAction { get; private set; } = string.Empty;
+	public static uint PostFrontEndAction(string name) => RefiiHostPostFrontEndAction(name);
 
 	/// <summary>
 	/// The load fan's save FILE names in card order (ABI 218): the folder names under the
@@ -6639,6 +6630,20 @@ public static class HostBridge
 		bool Known, float Gamma, float Sfx, float Music, float Speech, int Speaker);
 
 	/// <summary>
+	/// One options page as the GUEST holds it while the screen is open: the row its cursor is on
+	/// (<see cref="Cursor"/>, -1 before the page has been shown) and each row widget's own state —
+	/// a pickbox's index in <see cref="Indices"/>, a slider's 0..1 value in <see cref="Values"/>;
+	/// the other kind's slot is noise, the caller knows which rows are which. Pages are in the
+	/// screen's order: 0 Game, 1 Controls, 2 Video, 3 Audio. <see cref="Known"/> false when the
+	/// screen or the page is not live. See `RefiiHostGetOptionsPage` for the guest's layout.
+	/// </summary>
+	public readonly record struct GuestOptionsPage(bool Known, int Cursor, int[] Indices, float[] Values)
+	{
+		public static readonly GuestOptionsPage None =
+			new(false, -1, Array.Empty<int>(), Array.Empty<float>());
+	}
+
+	/// <summary>
 	/// The signature the guest calls back on. See `core/host_asset_reader.h`. `IntPtr` rather
 	/// than `byte*` throughout, so none of this needs `unsafe`.
 	/// </summary>
@@ -6910,6 +6915,34 @@ public static class HostBridge
 		{
 			GD.PushWarning($"[host-assets] the guest's asset read threw: {e.Message}");
 			return 0;
+		}
+	}
+
+	/// <summary>Reads one options page's cursor and row widgets. See <see cref="GuestOptionsPage"/>.</summary>
+	public static GuestOptionsPage GetOptionsPage(int page)
+	{
+		if (page < 0 || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return GuestOptionsPage.None;
+		}
+
+		try
+		{
+			const uint capacity = 8u;
+			var indices = new int[capacity];
+			var values = new float[capacity];
+			uint rows = RefiiHostGetOptionsPage((uint)page, out int cursor, indices, values, capacity);
+			if (rows == 0u)
+			{
+				return GuestOptionsPage.None;
+			}
+
+			int count = (int)Math.Min(rows, capacity);
+			return new GuestOptionsPage(true, cursor, indices[..count], values[..count]);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return GuestOptionsPage.None;
 		}
 	}
 
@@ -10362,6 +10395,10 @@ public static class HostBridge
 	private static extern int RefiiHostGetOptionsSliders(
 		out float outGamma, out float outSfx, out float outMusic, out float outSpeech,
 		out uint outSpeaker);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetOptionsPage(
+		uint page, out int outCursor, int[] indices, float[] values, uint capacity);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetCrimeScreen(

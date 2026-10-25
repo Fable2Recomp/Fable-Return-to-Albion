@@ -20,6 +20,7 @@ calls run on the game's tick thread.
 - [Opinion and deeds](#opinion-and-deeds)
 - [NPC orders](#npc-orders)
 - [Time and weather](#time-and-weather)
+- [Items, weapons, expressions and spells](#items-weapons-expressions-and-spells)
 
 ## Appearance: tint, alpha, scale
 
@@ -329,3 +330,52 @@ The Dynamic Sky's weather (the `dynamic_weather` event) is Godot's own, decided 
 Auto, or a set weather — and adopted by an online joiner; `set_weather` states the game's theme,
 which the sky reads like any other. In co-op, run the blend where `world_here()` is true and let
 the joiner's copy follow.
+
+## Items, weapons, expressions and spells
+
+The quick menu's own actions, as calls, for player 1 or 2 — what a quick slot does when pressed:
+
+| Call (native / Lua / Godot) | What it does |
+|---|---|
+| `refii_mod_use_item` / `Refii.use_item(p, def)` / `use_item(player, definition)` | uses an inventory item by definition (its `"0x…"` record hash): the item handle by record, the game's own Use on the hero, the handle released; the UI data generation moves |
+| `refii_mod_equip_weapon` / `Refii.equip_weapon(p, def)` / `equip_weapon(player, definition)` | equips a weapon the inventory holds through the weapon set's own EquipWeaponByRecord; one already held is left as it is |
+| `refii_mod_perform_expression` / `Refii.perform_expression(p, expression)` / `perform_expression(player, expression)` | StartExpression on the hero's performer for an expression it knows (its record); refused while one plays |
+| `refii_mod_assign_spell` / `Refii.assign_spell(p, spell)` / `assign_spell(player, spell)` | puts spell type 0..7 (0 Lightning .. 7 Dead Rising) on every tier the hero knows, through the game's own assign — the d-pad, the UI and the net event follow |
+
+- **Gated as the quick menu is.** Each runs only while the hero is alive, the d-pad is up and the
+  game's own `CanPlayerOpenQuickMenu` says yes for that player (not mid-cutscene, not in a menu);
+  otherwise it answers false and nothing happens.
+- **Both players.** `p` names the hero; player two's quick actions act on player two's hero,
+  wherever the call is made. **An online joiner's `equip_weapon`** does not touch the joiner's weapon
+  set (it is the host's replica): the pick crosses to the co-op kit (`CoopHeroKit.SetLocalWeapon`,
+  under `REFII_MOD_HOST_HERO_KIND`), the kit carries it to the host, the host equips it and the held
+  item replicates back — the same route the joiner's own weapon menu takes. The caller never cares.
+- **What to choose from:** `Refii.expressions(p)` is the performer's known expressions
+  (`{ record, id, uses }`; `id` is the record), `Refii.spells_known(p)` the spell types the hero can
+  assign (known and offered on some tier — the quick wheel's own test), and
+  `Refii.selected_expression(p)` the record the expression wheel highlights while it is up for that
+  player (nil otherwise). Natively `refii_mod_expression(base, player, index, &record, &uses)`
+  walks the list, `refii_mod_spells_known` answers a bit mask, `refii_mod_selected_expression` the
+  record; in Godot `query expressions P`, `query spells_known P`, `query selected_expression P`.
+- **Naming a record:** `Refii.record_string(def, "NameTag")` and `Refii.record_string(def,
+  "IconGraphic")` read a GDB record's string property, inherited, through the game's own getter
+  (`refii_mod_record_string(ctx, base, definition, field, out, size)`; `query record_string DEF
+  FIELD`). A text tag goes through the game's text as usual. Nil for a record the database lacks or
+  a property it has not got. `Refii.record_int(def, "Category")` and `Refii.record_int(def,
+  "WeaponType")` read an integer or enum property the same way (`refii_mod_record_int(ctx, base,
+  definition, field, &out)`; `query record_int DEF FIELD`): an inventory's items are category 2
+  (potions) to 26, a weapon is category 1 with WeaponType 1..4 melee and 5..8 ranged.
+
+```lua
+-- A quick slot of our own: on the mod's action, drink a health potion, or strike a pose when full.
+Refii.on("mod_action", function(e)
+  if e.name ~= "my_mod.quick" then return end
+  local cur, max = Refii.health(Refii.player_hero(e.player))
+  if cur < max then
+    Refii.use_item(e.player, Refii.hash("OBJECT_HEALTH_POTION"))
+  else
+    local known = Refii.expressions(e.player)
+    if known and known[1] then Refii.perform_expression(e.player, known[1].record) end
+  end
+end)
+```

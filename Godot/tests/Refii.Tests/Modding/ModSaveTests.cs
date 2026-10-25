@@ -558,4 +558,26 @@ public class ModSaveTests
 		AssertThat(chunks > 1).IsTrue();
 		AssertThat(SaveStream.Inflate(file.AsSpan(0, pos).ToArray()).Length).IsEqual(rawSoFar);
 	}
+
+	// ---- the gate's commit --------------------------------------------------------------------
+
+	/// <summary>
+	/// The commit the gate posts again on Continue is the start_game event's own `commit` field:
+	/// the pump action the start ran under, as the native hook writes it. A start the pump did not
+	/// run carries "" and nothing is posted — never a commit remembered from an earlier post.
+	/// </summary>
+	[TestCase]
+	public void GateRepostsTheEventsCommit()
+	{
+		// The root's Continue row is dispatched by its bare name; the fan's pick as LoadSave:N.
+		var fromRow = RefiiHost.ParseFieldsPlain("save='Hero',level='Bowerstone',new_game=false,player=1,commit='Continue'");
+		AssertThat(ModSaveGate.CommitOf(fromRow)).IsEqual("Continue");
+		var fromFan = RefiiHost.ParseFieldsPlain("save='Hero',level='Bowerstone',new_game=false,player=1,commit='LoadSave:2'");
+		AssertThat(ModSaveGate.CommitOf(fromFan)).IsEqual("LoadSave:2");
+
+		var outsideThePump = RefiiHost.ParseFieldsPlain("save='Hero',level='Bowerstone',new_game=false,player=1,commit=''");
+		AssertThat(ModSaveGate.CommitOf(outsideThePump)).IsEqual(string.Empty);
+		var noField = RefiiHost.ParseFieldsPlain("save='Hero',level='Bowerstone',new_game=false,player=1");
+		AssertThat(ModSaveGate.CommitOf(noField)).IsEqual(string.Empty);
+	}
 }

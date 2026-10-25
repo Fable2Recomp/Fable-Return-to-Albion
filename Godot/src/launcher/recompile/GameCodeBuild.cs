@@ -1470,6 +1470,29 @@ public static class GameCodeBuild
 				"/hook_sources.cmake). Copy the whole extracted folder, not just the executable.");
 		}
 
+		// EVERY LISTED SOURCE MUST BE ON DISK. The manifest and the sources are extracted
+		// separately, and a zip unpacked part-way (one file skipped, an extraction stopped early)
+		// leaves a name in the list with nothing behind it. zig reports that as
+		// "<file>:1:1: error: CacheCheckFailed" — its cache check could not open the input — which
+		// reads as a compiler fault in the hook. A fresh Windows install hit exactly this on one
+		// hook source of 85. Named here instead, with the fix.
+		var absentSources = new List<string>();
+		foreach (string source in hookSources)
+		{
+			if (!File.Exists(source))
+			{
+				absentSources.Add(Path.GetRelativePath(RecompileDirectory, source).Replace('\\', '/'));
+			}
+		}
+
+		if (absentSources.Count > 0)
+		{
+			return new Result(false,
+				"This install is missing " + absentSources.Count + " of the game code's source files: " +
+				string.Join(", ", absentSources) + ". The download was not fully extracted — extract " +
+				"the whole zip again over this folder, or reinstall, then build again.");
+		}
+
 		sources.AddRange(hookSources);
 
 		// HARD MODS: their native sources compile in this same step, after refii's hooks, with the

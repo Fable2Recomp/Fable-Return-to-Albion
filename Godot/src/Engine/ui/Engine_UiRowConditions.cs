@@ -27,13 +27,11 @@ public static class Engine_UiRowConditions
 	/// <summary>A game is running (not the title).</summary>
 	public const string InGame = "in-game";
 
-	public const string Hotkeys = "hotkeys";
-
 	/// <summary>The facts a list's builder states, for the validator and the Studio.</summary>
 	public static readonly string[] BuilderFacts = { PlayerTwo };
 
 	/// <summary>Every name the game states — the builders' facts and what the in-game UI registers.</summary>
-	public static readonly string[] Game = { PlayerTwo, Coop, CoopOnline, CoopClient, InGame, Hotkeys };
+	public static readonly string[] Game = { PlayerTwo, Coop, CoopOnline, CoopClient, InGame };
 
 	private static readonly Dictionary<string, Func<bool>> Registered = new(StringComparer.Ordinal);
 

@@ -71,6 +71,17 @@ public partial class RefiiModApi
 			}
 		}
 
+		// The chord: LT / RT / LB / RB, or a key the keyboard holds.
+		if (binding.TryGetValue("chord", out Variant chord) && chord.VariantType == Variant.Type.String)
+		{
+			string name = chord.AsString().Trim();
+			if (name.Length != 0 && ModInputClaims.ParseModifier(name) == ModInputClaims.Modifier.Key &&
+				OS.FindKeycodeFromString(name) == Key.None)
+			{
+				return $"'{name}' is neither LT, RT, LB, RB nor a Godot key name (the chord)";
+			}
+		}
+
 		return string.Empty;
 	}
 

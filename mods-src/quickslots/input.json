@@ -1,0 +1,21 @@
+{
+	"up":    { "label": "Quickslot up",    "buttons": ["DpadUp"],    "keys": ["F1"] },
+	"down":  { "label": "Quickslot down",  "buttons": ["DpadDown"],  "keys": ["F2"] },
+	"left":  { "label": "Quickslot left",  "buttons": ["DpadLeft"],  "keys": ["F3"] },
+	"right": { "label": "Quickslot right", "buttons": ["DpadRight"], "keys": ["F4"] },
+
+	"lt_up":    { "label": "LT quickslot up",    "buttons": ["DpadUp"],    "chord": "LT" },
+	"lt_down":  { "label": "LT quickslot down",  "buttons": ["DpadDown"],  "chord": "LT" },
+	"lt_left":  { "label": "LT quickslot left",  "buttons": ["DpadLeft"],  "chord": "LT" },
+	"lt_right": { "label": "LT quickslot right", "buttons": ["DpadRight"], "chord": "LT" },
+
+	"rt_up":    { "label": "RT quickslot up",    "buttons": ["DpadUp"],    "chord": "RT" },
+	"rt_down":  { "label": "RT quickslot down",  "buttons": ["DpadDown"],  "chord": "RT" },
+	"rt_left":  { "label": "RT quickslot left",  "buttons": ["DpadLeft"],  "chord": "RT" },
+	"rt_right": { "label": "RT quickslot right", "buttons": ["DpadRight"], "chord": "RT" },
+
+	"lt": { "label": "LT bank (held)", "buttons": ["LT"] },
+	"rt": { "label": "RT bank (held)", "buttons": ["RT"] },
+
+	"assign": { "label": "Assign the highlighted expression", "buttons": ["Y"], "keys": ["Q"] }
+}

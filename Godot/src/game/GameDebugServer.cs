@@ -3219,6 +3219,12 @@ public partial class GameDebugServer : Node
 					["timelineSnaps"] = Refii.Core.Engine_TickTimeline.Snaps,
 					["timelineSaturated"] = Refii.Core.Engine_TickTimeline.Saturated,
 					["pace"] = Refii.Core.Engine_DrawAdvance.Pace,
+					// The guest's stated pause: whether the drawn world is held this frame, how
+					// many frames this hold has lasted, and the run totals.
+					["guestPaused"] = Refii.Core.Engine_StatedPause.Latched,
+					["pausedFrames"] = Refii.Core.Engine_StatedPause.HeldFrames,
+					["pausedFramesTotal"] = Refii.Core.Engine_StatedPause.HeldFramesTotal,
+					["pauses"] = Refii.Core.Engine_StatedPause.Pauses,
 					// The draw point's latency margin, in ticks: the measured arrival lateness the
 					// shared playhead sits behind, and the lateness it is steered toward.
 					["marginTicks"] = Refii.Entities.Engine_DrawnFrame.Playhead.MarginTicks,

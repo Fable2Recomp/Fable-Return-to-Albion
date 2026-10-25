@@ -143,7 +143,9 @@ public sealed class Engine_ClipPlayhead
 	/// <summary>Moves the playhead by one drawn frame of <paramref name="seconds"/>.</summary>
 	public double Advance(double seconds, double drawTick)
 	{
-		if (!Started)
+		// A stated pause holds the clip where it is: no advance, no steering — the reference is
+		// the pair the guest stopped on and the next pair re-anchors on release.
+		if (!Started || Refii.Core.Engine_StatedPause.Latched)
 		{
 			return Time;
 		}
@@ -174,7 +176,7 @@ public sealed class Engine_ClipPlayhead
 	/// <summary>Moves the playhead by one drawn frame at the last stated rate, unsteered.</summary>
 	public double Freewheel(double seconds, double drawTick)
 	{
-		if (Started)
+		if (Started && !Refii.Core.Engine_StatedPause.Latched)
 		{
 			Time += Rate / TicksPerSecond * Refii.Core.Engine_DrawAdvance.Ticks(seconds, Refii.Entities.Engine_DrawnFrame.NowUsec, drawTick);
 		}

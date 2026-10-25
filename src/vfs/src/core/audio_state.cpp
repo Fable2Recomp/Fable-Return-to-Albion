@@ -26,10 +26,9 @@ namespace {
 // Stage 1 — the mixed frame ring
 // ---------------------------------------------------------------------------------
 
-/// 64 frames is 341 ms at the guest's 5.333 ms quantum. Deep enough that a Godot frame
-/// running long never starves the device, shallow enough that the guest cannot run far
-/// ahead of what is audible — the ring is the pacing mechanism, so making it huge would
-/// defeat its purpose.
+/// Capacity, not depth. The guest can only run ahead by its credit count (the SDK's
+/// `audio_maxqframes`), because every frame here is one it was credited for; 64 is headroom
+/// for a consumer that pulls in bursts, 341 ms at the guest's 5.333 ms quantum.
 constexpr uint32_t kFrameRingCapacity = 64;
 
 struct HostAudioRing {
@@ -53,7 +52,7 @@ struct HostAudioRing {
     uint64_t drops_reported = 0;
 
     HostAudioRing() {
-        storage.resize(static_cast<size_t>(kFrameRingCapacity) * kHostAudioFloatsPerFrame,
+        storage.resize(static_cast<size_t>(kFrameRingCapacity) * kGuestAudioFloatsPerFrame,
                        0.0f);
     }
 };
@@ -64,6 +63,7 @@ HostAudioRing& Ring() {
 }
 
 std::atomic<bool> g_host_audio_driver_installed{false};
+std::atomic<bool> g_host_audio_consumer_attached{false};
 
 // ---------------------------------------------------------------------------------
 // Stage 2 — per-voice state
@@ -149,17 +149,19 @@ bool SetHostAudioCreditSink(HostAudioCreditFn fn, void* context) {
     return true;
 }
 
-bool PushHostAudioFrame(const float* interleaved_stereo, uint32_t timeout_ms) {
-    if (interleaved_stereo == nullptr) {
+bool PushHostAudioFrame(const float* planar_be, uint32_t timeout_ms) {
+    if (planar_be == nullptr) {
         return false;
     }
 
     auto& ring = Ring();
     std::unique_lock guard(ring.mutex);
 
-    const bool have_space = ring.space_available.wait_for(
-        guard, std::chrono::milliseconds(timeout_ms),
-        [&ring] { return ring.count < kFrameRingCapacity; });
+    // With nothing attached, do not make the guest sit out the timeout on every frame.
+    const bool have_space =
+        g_host_audio_consumer_attached.load(std::memory_order_acquire) &&
+        ring.space_available.wait_for(guard, std::chrono::milliseconds(timeout_ms),
+                                      [&ring] { return ring.count < kFrameRingCapacity; });
 
     if (!have_space) {
         // The consumer is gone, not merely late. Drop the frame and let the caller
@@ -177,8 +179,8 @@ bool PushHostAudioFrame(const float* interleaved_stereo, uint32_t timeout_ms) {
     }
 
     float* slot = ring.storage.data() +
-                  static_cast<size_t>(ring.write_at) * kHostAudioFloatsPerFrame;
-    std::memcpy(slot, interleaved_stereo, kHostAudioFloatsPerFrame * sizeof(float));
+                  static_cast<size_t>(ring.write_at) * kGuestAudioFloatsPerFrame;
+    std::memcpy(slot, planar_be, kGuestAudioFloatsPerFrame * sizeof(float));
 
     ring.write_at = (ring.write_at + 1) % kFrameRingCapacity;
     ring.count++;
@@ -201,9 +203,9 @@ uint32_t PopHostAudioFrames(float* out, uint32_t max_frames) {
         taken = std::min(max_frames, ring.count);
         for (uint32_t i = 0; i < taken; i++) {
             const float* slot = ring.storage.data() +
-                                static_cast<size_t>(ring.read_at) * kHostAudioFloatsPerFrame;
-            std::memcpy(out + static_cast<size_t>(i) * kHostAudioFloatsPerFrame, slot,
-                        kHostAudioFloatsPerFrame * sizeof(float));
+                                static_cast<size_t>(ring.read_at) * kGuestAudioFloatsPerFrame;
+            std::memcpy(out + static_cast<size_t>(i) * kGuestAudioFloatsPerFrame, slot,
+                        kGuestAudioFloatsPerFrame * sizeof(float));
             ring.read_at = (ring.read_at + 1) % kFrameRingCapacity;
         }
 
@@ -252,6 +254,22 @@ bool HostAudioDriverInstalled() {
 
 void SetHostAudioDriverInstalled(bool installed) {
     g_host_audio_driver_installed.store(installed, std::memory_order_release);
+}
+
+bool HostAudioConsumerAttached() {
+    return g_host_audio_consumer_attached.load(std::memory_order_acquire);
+}
+
+void SetHostAudioConsumerAttached(bool attached) {
+    g_host_audio_consumer_attached.store(attached, std::memory_order_release);
+    if (!attached) {
+        auto& ring = Ring();
+        std::lock_guard guard(ring.mutex);
+        ring.read_at = 0;
+        ring.write_at = 0;
+        ring.count = 0;
+        ring.space_available.notify_all();
+    }
 }
 
 // ---------------------------------------------------------------------------------

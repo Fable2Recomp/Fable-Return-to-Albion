@@ -1995,8 +1995,20 @@ public partial class Engine_FrontEndMenuView : Node3D
 			return resolved;
 		}
 
+		// A stated row's label may be a literal with text tags inside braces — "{QUICKSLOTS_SLOT_1}:
+		// {OBJECT_HEALTH_POTION_NAME}" — since a mod's Lua has no text lookup of its own: each tag
+		// is drawn as the book says, or as written when the book has no such tag.
+		if (tag.IndexOf('{') >= 0 && tag.IndexOf('}') > tag.IndexOf('{'))
+		{
+			return TagPattern.Replace(tag, m =>
+				Theme?.Resolve(m.Groups[1].Value) is { Length: > 0 } inner ? inner : m.Groups[1].Value);
+		}
+
 		return tag;
 	}
+
+	private static readonly System.Text.RegularExpressions.Regex TagPattern =
+		new(@"\{([A-Za-z0-9_]+)\}", System.Text.RegularExpressions.RegexOptions.Compiled);
 
 	/// <summary>
 	/// Finds a row component to clone inside a built presentation, by the script's own test:

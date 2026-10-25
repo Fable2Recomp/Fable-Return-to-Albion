@@ -552,10 +552,6 @@ public static class RuntimeCVarsGodot
                 "Rumble the controller as the console did: hits taken and landed, blocks, shots, " +
                 "spells, landings and the near-death heartbeat. The game's own Controls page has " +
                 "a Controller Vibration switch too; both must be on."),
-            new(Refii.Ui.Engine_QuickSlots.EnabledKey, ControlsCategory, RuntimeCVarType.Bool, "false",
-                "Enable 12 assignable quickslots using D-pad, LT + D-pad and RT + D-pad, " +
-                "with assignment prompts and a permanent D-pad display. Off restores the original " +
-                "D-pad controls and UI. Saved assignments are kept."),
             new("mouse_sensitivity", ControlsCategory, RuntimeCVarType.Double, "1.0",
                 "How far the camera turns for a given mouse movement. 1.0 is the default; 2.0 " +
                 "turns twice as far."),

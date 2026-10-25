@@ -1,0 +1,34 @@
+{
+	"menus": {
+		"pause-root": {
+			"patch": true,
+			"entries": [
+				{ "name": "quickslots.menu", "tag": "QUICKSLOTS_MENU", "opens": "quickslots.menu", "hostOnly": true }
+			]
+		},
+		"quickslots.menu": {
+			"title": "QUICKSLOTS_MENU",
+			"entries": [
+				{ "name": "slots", "source": "rows" }
+			]
+		},
+		"quickslots.assign": {
+			"title": "QUICKSLOTS_ASSIGN_TITLE",
+			"entries": [
+				{ "name": "slots", "source": "rows" }
+			]
+		},
+		"quickslots.choose": {
+			"title": "QUICKSLOTS_CHOOSE_TITLE",
+			"entries": [
+				{ "name": "choices", "source": "rows" }
+			]
+		}
+	},
+	"rowActions": {
+		"ItemsMenu":       [ { "button": "Y", "tag": "QUICKSLOTS_ASSIGN", "command": "Mod:lua:quickslots.assign_row" } ],
+		"WeaponsMenu":     [ { "button": "Y", "tag": "QUICKSLOTS_ASSIGN", "command": "Mod:lua:quickslots.assign_row" } ],
+		"ExpressionsMenu": [ { "button": "Y", "tag": "QUICKSLOTS_ASSIGN", "command": "Mod:lua:quickslots.assign_row" } ],
+		"AbilitiesMenu":   [ { "button": "X", "tag": "QUICKSLOTS_ASSIGN", "command": "Mod:lua:quickslots.assign_row" } ]
+	}
+}
