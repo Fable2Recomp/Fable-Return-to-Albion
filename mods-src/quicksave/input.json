@@ -1,0 +1,4 @@
+{
+	"quicksave": { "label": "Quicksave", "keys": ["F8"] },
+	"quickload": { "label": "Quickload", "keys": ["F9"] }
+}

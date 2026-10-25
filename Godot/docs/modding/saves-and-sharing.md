@@ -19,6 +19,7 @@ save without breaking it.
   - [When a save is loaded](#when-a-save-is-loaded)
   - [Copies for an Xbox 360 or Xenia](#copies-for-an-xbox-360-or-xenia)
   - [For a mod author](#for-a-mod-author)
+  - [Snapshots: a quicksave and a quickload](#snapshots-a-quicksave-and-a-quickload)
 
 ## Sharing a mod
 
@@ -242,3 +243,27 @@ everything. The Load Game list marks a stamped save: *Mods: Souls Combat 0.1.0*.
   game's `HeroAbility` stats: the game's loader has no bound on that index.
 - **Keep record ids stable across versions.** A new version is not a missing mod: a save stamped
   with 0.1.0 loads under 0.2.0 unfiltered and is re-stamped on the next save.
+
+### Snapshots: a quicksave and a quickload
+
+A Godot script can keep its own copies of the hero's save and load one back without a trip to the
+title (RefiiHost, see [the calls](reference-calls.md#members-and-signals)). The Quicksave mod is
+built on them.
+
+- **Taking one.** Have the game save first, the way it saves itself: from Lua,
+  `AutoSaveGame(true, true)` when `Player.IsAbleToSaveGame(GetPlayerHero())` allows it. When
+  `save_written` arrives with `player` 1, `save_snapshot("<mod>.<name>")` copies every file of the
+  save folder to `user_data_root/<xuid>/refii-snapshots/<save>/<mod>.<name>/`, beside the title's
+  own `4D5307F1/`, so the Load Game list never shows it. A key holds one copy; taking it again
+  replaces it once the new copy is whole.
+- **Loading one.** `load_snapshot(key)` loads it through the game's own fail-quest reload
+  (`LoadFailQuestSave`, the region-lock box's "reload"): the same load-from-save a Continue runs,
+  with the loading screen, in the running game. The snapshot's files go into the save folder for
+  the load, its main save also as `failquestsave.bin`. Once `level_loaded` arrives the folder gets
+  its own files back: the player's main save and the quest's fail-quest save are as they were, and
+  a file the game wrote meanwhile is kept. A load the game never finishes is put back after three
+  minutes, and a hold a crash left behind is put back before that save next starts.
+- **Per save.** A snapshot belongs to the save it was taken from. `snapshot_time` and
+  `load_snapshot` answer for the save the session started or last wrote, so another hero never
+  loads it.
+- **Alone only.** `load_snapshot` refuses in co-op: the partner's game would not follow the load.

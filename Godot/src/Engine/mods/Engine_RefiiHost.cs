@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Godot;
 using Refii.Host;
+using Refii.Save;
 
 namespace Refii.Mods;
 
@@ -148,6 +149,13 @@ public partial class RefiiHost : Node
 
 	/// <summary>A <see cref="menu_box"/>'s answer: the id it returned and the chosen option's index (-1 for none).</summary>
 	[Signal] public delegate void menu_box_answeredEventHandler(long id, long option);
+
+	/// <summary>
+	/// A save the guest has written, whole: <c>save</c> (its folder name, <c>Hero000</c>) and
+	/// <c>player</c> (1, or 2 for player two's own package). Godot only — the moment a
+	/// <see cref="save_snapshot"/> of the new save can be taken.
+	/// </summary>
+	[Signal] public delegate void save_writtenEventHandler(Godot.Collections.Dictionary e);
 
 	/// <summary>The per-event signal names, in kind order: the static twin of the catalog's Lua names.</summary>
 	public static readonly string[] SignalNames =
@@ -404,6 +412,9 @@ public partial class RefiiHost : Node
 			}
 
 			// The engine's own verdict first: the save gate (start_game), which no script sees.
+			// Before it, the save being started is named for the snapshots, and a quickload's hold a
+			// crash left behind is put back, so the game reads the player's own files.
+			SnapshotsOnStartGame(kind, plain);
 			bool cancel = ModSaveGate.Verdict(kind, plain);
 			if (handlers.Length == 0)
 			{
@@ -526,6 +537,12 @@ public partial class RefiiHost : Node
 			HostBridge.SetModEventMask(mask);
 		}
 
+		// A quickload whose level never stood (a load the guest refused): the folder goes back anyway.
+		if (_staged is not null && Time.GetTicksMsec() - _stagedAt > StagedTimeoutMs)
+		{
+			FinishSnapshotLoad($"no level in {StagedTimeoutMs / 1000} s");
+		}
+
 		// One question a frame while a script is loaded: the co-op state the sync getters answer.
 		if (!mask.IsZero && (_coopStateQuery == 0 || ++_coopStateWait > CoopStateRetryFrames))
 		{
@@ -540,7 +557,23 @@ public partial class RefiiHost : Node
 			if (kind == ModSaveGate.SaveWrittenKind)
 			{
 				ModSaveGate.OnSaveWritten(fields);
+				Godot.Collections.Dictionary written = SaveWrittenFields(fields);
+				if (written["player"].AsInt64() == 1 && written["save"].AsString().Length != 0)
+				{
+					lock (SnapshotLock)
+					{
+						_currentSave = written["save"].AsString();
+					}
+				}
+
+				EmitSignal(SignalName.save_written, written);
 				continue;
+			}
+
+			// A quickload's level stands: the save folder gets its own files back.
+			if (kind == LevelLoadedKind && _staged is not null)
+			{
+				FinishSnapshotLoad("the level is up");
 			}
 
 			// A save's Lua table loaded: a filtered load drops the missing mods' keys now.
@@ -688,13 +721,23 @@ public partial class RefiiHost : Node
 	{
 		// The engine's own want: a filtered load drops the missing mods' RefiiModSave keys on
 		// save_loaded (ModSaveGate), scripts or none.
+		// A quickload in flight waits for level_loaded to put the save folder back (load_snapshot).
 		ModEventMask own = ModSaveGate.WantsSaveLoaded ? new ModEventMask().With(ModSaveGate.SaveLoadedKind) : new ModEventMask();
+		if (_staged is not null)
+		{
+			own = own.With(LevelLoadedKind);
+		}
+
 		if (ScriptsRoot is null || !IsInstanceValid(ScriptsRoot) || ScriptsRoot.GetChildCount() == 0)
 		{
 			return own;
 		}
 
 		ModEventMask mask = ModSaveGate.WantsSaveLoaded ? HeroKinds.With(ModSaveGate.SaveLoadedKind) : HeroKinds;
+		if (_staged is not null)
+		{
+			mask = mask.With(LevelLoadedKind);
+		}
 		if (GetSignalConnectionList(SignalName.mod_event).Count != 0)
 		{
 			for (int kind = 0; kind < _nameByKind.Length; kind++)
@@ -799,6 +842,204 @@ public partial class RefiiHost : Node
 				CultureInfo.InvariantCulture, out uint record) && record != 0u
 			? $"{Refii.Ui.Engine_UiInventorySource.InventoryAction}use:{record}"
 			: null;
+	}
+
+	// ---- save snapshots: what a quicksave and a quickload are made of (SaveSnapshots) ------
+
+	/// <summary>The level_loaded kind: a quickload's save folder is put back when it arrives.</summary>
+	private const int LevelLoadedKind = 24;
+
+	/// <summary>How long a quickload may take to stand its level before the folder goes back anyway.</summary>
+	private const ulong StagedTimeoutMs = 180_000;
+
+	private static readonly object SnapshotLock = new();
+
+	/// <summary>Player one's save as the game last started or wrote it (its folder name); empty before either.</summary>
+	private static string _currentSave = string.Empty;
+
+	/// <summary>The save folder a quickload has staged, until its level stands; null when none is in flight.</summary>
+	private static string? _staged;
+	private static ulong _stagedAt;
+
+	/// <summary>
+	/// Copies this machine's player-one save, as it stands on disk, to the snapshot under
+	/// <paramref name="key"/> (<c>"&lt;mod&gt;.&lt;name&gt;"</c>), replacing the last one. Kept beside
+	/// the save, never in the load list. Take it on <c>save_written</c>, after the game's own save.
+	/// False before the session has started or written a save, for a bad key, or when the copy fails.
+	/// </summary>
+	public bool save_snapshot(string key)
+	{
+		if (CurrentSaveDirectory() is not { } directory)
+		{
+			GD.PushWarning($"[mods] save_snapshot('{key}'): no save started or written yet");
+			return false;
+		}
+
+		if (!SaveSnapshots.Take(directory, key, DateTime.UtcNow, out string error))
+		{
+			GD.PushWarning($"[mods] save_snapshot('{key}'): {error}");
+			return false;
+		}
+
+		GD.Print($"[mods] snapshot '{key}' of save '{System.IO.Path.GetFileName(directory)}' taken");
+		return true;
+	}
+
+	/// <summary>When the current save's snapshot under <paramref name="key"/> was taken, unix seconds; 0 when there is none.</summary>
+	public long snapshot_time(string key) =>
+		CurrentSaveDirectory() is { } directory && SaveSnapshots.Taken(directory, key) is { } taken
+			? new DateTimeOffset(taken).ToUnixTimeSeconds()
+			: 0;
+
+	/// <summary>
+	/// Loads the current save's snapshot under <paramref name="key"/> back into the running game:
+	/// the guest's own in-game reload (<c>LoadFailQuestSave</c>), loading screen and all, with the
+	/// save folder's own files put back once the level stands — the player's main save and the
+	/// quest's fail-quest save are left as they were. False in co-op, with no snapshot, or while a
+	/// load is in flight.
+	/// </summary>
+	public bool load_snapshot(string key)
+	{
+		if (_coopMode != 0)
+		{
+			GD.PushWarning($"[mods] load_snapshot('{key}'): not in co-op");
+			return false;
+		}
+
+		lock (SnapshotLock)
+		{
+			if (_staged is not null)
+			{
+				return false;
+			}
+		}
+
+		if (CurrentSaveDirectory() is not { } directory)
+		{
+			GD.PushWarning($"[mods] load_snapshot('{key}'): no save started or written yet");
+			return false;
+		}
+
+		if (!SaveSnapshots.Stage(directory, key, out string error))
+		{
+			GD.PushWarning($"[mods] load_snapshot('{key}'): {error}");
+			return false;
+		}
+
+		lock (SnapshotLock)
+		{
+			_staged = directory;
+			_stagedAt = Time.GetTicksMsec();
+		}
+
+		if (!Post("run_lua LoadFailQuestSave()"))
+		{
+			FinishSnapshotLoad("the load was not posted");
+			return false;
+		}
+
+		GD.Print($"[mods] snapshot '{key}' of save '{System.IO.Path.GetFileName(directory)}' loading");
+		return true;
+	}
+
+	/// <summary>A written package's fields (<c>player=N,name='X'</c>) as <c>save_written</c> carries them.</summary>
+	public static (string Save, int Player) ParseSaveWritten(string fields)
+	{
+		string save = string.Empty;
+		int player = 0;
+		foreach ((string key, object value) in ParseFieldsPlain(fields))
+		{
+			if (key == "name" && value is string s) save = s;
+			if (key == "player" && value is long l) player = (int)l;
+		}
+
+		return (save, player);
+	}
+
+	private static Godot.Collections.Dictionary SaveWrittenFields(string fields)
+	{
+		(string save, int player) = ParseSaveWritten(fields);
+		return new Godot.Collections.Dictionary { ["save"] = save, ["player"] = player };
+	}
+
+	/// <summary>The game's live save root (the emulator's user_data_root), else the configured one.</summary>
+	private static string SaveRoot() =>
+		HostBridge.GetSaveRoot() is { Length: > 0 } live ? live : ModSaveGate.UserDataRoot;
+
+	private static string? CurrentSaveDirectory()
+	{
+		string save;
+		lock (SnapshotLock)
+		{
+			save = _currentSave;
+		}
+
+		return save.Length == 0 ? null : Engine_SaveHero.FindSaveDirectory(SaveRoot(), save);
+	}
+
+	/// <summary>A quickload is over (its level stands, or it never will): the save folder gets its own files back.</summary>
+	private static void FinishSnapshotLoad(string reason)
+	{
+		string? directory;
+		lock (SnapshotLock)
+		{
+			directory = _staged;
+			_staged = null;
+		}
+
+		if (directory is null)
+		{
+			return;
+		}
+
+		try
+		{
+			int restored = SaveSnapshots.Restore(directory);
+			GD.Print($"[mods] snapshot load of save '{System.IO.Path.GetFileName(directory)}' over ({reason}): {restored} save file(s) put back");
+		}
+		catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException)
+		{
+			GD.PushWarning($"[mods] snapshot load of '{directory}': the save folder could not be put back: {e.Message}");
+		}
+	}
+
+	/// <summary>
+	/// On the guest thread, inside start_game: names the save being started for the snapshots, and
+	/// puts back a quickload's hold a crash left in that save's folder before the game reads it.
+	/// </summary>
+	private static void SnapshotsOnStartGame(int kind, IReadOnlyList<KeyValuePair<string, object>> fields)
+	{
+		if (kind != ModSaveGate.StartGameKind)
+		{
+			return;
+		}
+
+		string save = fields.FirstOrDefault(f => f.Key == "save").Value as string ?? string.Empty;
+		lock (SnapshotLock)
+		{
+			// Empty for a new game: no snapshot until its first save.
+			_currentSave = save;
+			if (_staged is not null)
+			{
+				return;
+			}
+		}
+
+		if (save.Length == 0 || Engine_SaveHero.FindSaveDirectory(SaveRoot(), save) is not { } directory ||
+			!SaveSnapshots.IsStaged(directory))
+		{
+			return;
+		}
+
+		try
+		{
+			int restored = SaveSnapshots.Restore(directory);
+			GD.Print($"[mods] save '{save}': a quickload's hold left by an earlier session put back ({restored} file(s))");
+		}
+		catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException)
+		{
+			GD.PushWarning($"[mods] save '{save}': a quickload's hold could not be put back: {e.Message}");
+		}
 	}
 
 	/// <summary>Gives experience to one of an entity's pools.</summary>
