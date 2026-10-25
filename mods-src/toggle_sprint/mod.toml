@@ -1,0 +1,4 @@
+name = "Toggle Sprint"
+version = "0.1.0"
+author = "ammuica"
+description = "Sprint is a toggle instead of a hold: press Shift (or A on a pad) once to start sprinting, press it again to stop. Each co-op player has their own toggle."
