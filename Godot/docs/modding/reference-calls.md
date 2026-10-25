@@ -224,6 +224,8 @@ Objects are addresses natively.
 
 `Engine.get_singleton("RefiiHost")` in a mod's `godot/*.gd`. Entities are handles, as in Lua.
 See [Godot scripts](events.md#godot-scripts) for signals, verdicts and how queries answer.
+An argument written `name = value` may be left off, from the right: `notice(title, text)` is
+`notice(title, text, 0, 0)` and `in_cutscene()` is `in_cutscene(0, 7)`.
 
 ### Members and signals
 

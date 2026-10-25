@@ -1529,7 +1529,9 @@ public static class ModApi
 	/// members and the <c>query</c> verbs (mod_commands.cpp's grammar), each answering on
 	/// <c>reply(id, result)</c> with <c>ok</c> and the named fields. Entities are handles, as in Lua.
 	/// A signature's " / "-separated parts name methods (<see cref="GodotMethodNames"/>), except
-	/// those that start "signal ", "query " or "e." and a part's "-> result".
+	/// those that start "signal ", "query " or "e." and a part's "-> result". An argument written
+	/// "name = value" may be left off from the right: RefiiHost has an overload for each count, as
+	/// the script bridge passes no C# default (RefiiHostTests holds every count to a method).
 	/// </summary>
 	public static readonly IReadOnlyList<ModApiHelper> GodotHelpers = new[]
 	{

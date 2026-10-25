@@ -148,6 +148,9 @@ players it plays; the mod's code runs on the other machine too.
 | Lua | `Refii.mark(target, icon, text [, p])` · `Refii.unmark(id)` · `Refii.fade(p, dir [, seconds])` · `Refii.meter(id, label, value, max [, p [, style]])` · `Refii.meter_remove(id)` |
 | Godot | `mark(target, icon, text, player)` · `unmark(id)` · `markers()` · `fade(player, to_black, seconds)` · `fade_state(player)` · `meter(id, label, value, max, player, style)` · `meter_remove(id)` · `meters()` |
 
+From GDScript, the trailing arguments may be left off, from the right: `mark`'s `text` ("") and
+`player` (0), `fade`'s `seconds` (0), and `meter`'s `player` (0) and `style` ("").
+
 ```lua
 local id = Refii.mark(e.victim, "art/gui/wheelicons/abilities/will_shock.tex", "Marked", 0)
 Refii.mark({x, y, z}, "art/my_mod_flag.png", "Go here", 2)
@@ -241,6 +244,11 @@ Refii.hud_icon(1, "DPadUp", ""); Refii.hud_slide(1, "DPadUp", 0); Refii.hud_hold
 |---|---|---|
 | Godot | `message_box(title, text, buttons) -> id` | `message_box_answered(id, button)` |
 | Lua (game and title) | `Refii.message_box(title, text [, accept [, cancel [, p]]])` · `Refii.notice(title, text [, seconds [, p]])` · `Refii.menu_box(title, text, options [, p [, cancelable]])` | the events `mod_message_box`, `mod_notice`, `mod_menu_box` |
+
+From Godot, `notice(title, text, seconds = 0, player = 0) -> id` and
+`menu_box(title, text, options, player = 0, cancelable = true) -> id` open the other two boxes and
+answer with `notice_done(id, outcome)` and `menu_box_answered(id, option)`; `message_box` also
+takes `player = 0`. An argument written `= value` may be left off, from the right.
 
 - A Godot `message_box` with `buttons` empty or one caption is a notice (one dismiss); two
   captions are a question (A and B). `title` sits above `text`. In game only.

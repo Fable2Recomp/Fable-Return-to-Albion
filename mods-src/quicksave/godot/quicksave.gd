@@ -73,9 +73,9 @@ func _quickload() -> void:
 		return
 	var taken: int = host.snapshot_time(KEY)
 	if taken == 0:
-		_notice("There is no quicksave yet. Press F8 to make one.")
+		_notice("There is no quicksave yet. Quicksave to make one.")
 		return
-	if host.in_cutscene(1, 7):
+	if host.in_cutscene(1):
 		_notice("You can't quickload right now.")
 		return
 	if host.load_snapshot(KEY):
@@ -121,7 +121,7 @@ func _on_level_loaded(_e: Dictionary) -> void:
 
 
 func _notice(text: String) -> void:
-	host.notice(TITLE, text, 3.0, 0)
+	host.notice(TITLE, text, 3.0)
 
 
 # A unix time as the local hour and minute.

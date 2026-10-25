@@ -1315,8 +1315,11 @@ public class ModApiTests
         AssertThat(lua.Contains("Refii.in_cutscene([p [, kinds]]) -> inside, kinds", StringComparison.Ordinal)).IsTrue();
         AssertThat(godot.Contains("in_cutscene(player = 0, kinds = 7) -> bool / cutscene_kinds(player = 0)", StringComparison.Ordinal)).IsTrue();
         AssertThat(godot.Contains("/ in_cutscene P", StringComparison.Ordinal)).IsTrue();
-        AssertThat(typeof(RefiiHost).GetMethod("in_cutscene") is not null).IsTrue();
-        AssertThat(typeof(RefiiHost).GetMethod("cutscene_kinds") is not null).IsTrue();
+        // Every short form is an overload of its own (the script bridge passes no C# default).
+        AssertThat(typeof(RefiiHost).GetMethods().Where(m => m.Name == "in_cutscene").Select(m => m.GetParameters().Length).OrderBy(n => n).ToArray())
+            .IsEqual(new[] { 0, 1, 2 });
+        AssertThat(typeof(RefiiHost).GetMethods().Where(m => m.Name == "cutscene_kinds").Select(m => m.GetParameters().Length).OrderBy(n => n).ToArray())
+            .IsEqual(new[] { 0, 1 });
 
         if (RepoRoot() is not { } root)
         {
