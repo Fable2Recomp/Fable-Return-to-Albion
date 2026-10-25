@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 222;
+	public const int ExpectedAbiVersion = 223;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -9646,6 +9646,9 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetHudPulsers([Out] uint[]? hashes, [Out] float[]? phases, uint capacity);
 
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetHudPulserStates([Out] uint[]? hashes, [Out] float[]? phases, [Out] uint[]? modes, uint capacity);
+
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetHudTexts([Out] uint[]? hashes, uint capacity, [Out] byte[]? text, uint textCapacity);
@@ -10905,28 +10908,43 @@ public static class HostBridge
 			return dictionary;
 		}
 
+		private static uint[]? _hudPulserModes;
+
 		/// <summary>
-		/// The HUD's pulsers — registry 4 — as their loop PHASE 0..1 (`rec+20`), keyed by
-		/// `FNV1(PulserName)`. The guest advances them; the host scrubs at `phase × 1000`.
+		/// The HUD's pulsers — registry 4 — keyed by `FNV1(PulserName)`: each one's loop PHASE 0..1
+		/// (`rec+20`) and whether it RUNS (`rec+12`: 0 looping, 1 finishing its loop, 2 stopped; the
+		/// stop zeroes the phase and applies tick 0). The guest advances a running one; the host
+		/// runs it on its own clock between statements and holds a stopped one still.
 		/// </summary>
-		public static Dictionary<uint, float> GetHudPulsers()
+		public static Dictionary<uint, Refii.Ui.Engine_UiSource.HudPulser> GetHudPulsers()
 		{
-			Dictionary<uint, float> dictionary = new Dictionary<uint, float>();
+			var dictionary = new Dictionary<uint, Refii.Ui.Engine_UiSource.HudPulser>();
 			if (!TryGetAbiVersion().HasValue || !IsGuestUp)
 			{
 				return dictionary;
 			}
 			uint[] array = _hudMeterHashes ??= new uint[256];
 			float[] array2 = _hudMeterValues ??= new float[256];
+			uint[] modes = _hudPulserModes ??= new uint[256];
 			const uint cap = 64u;
 			uint num;
+			bool stated = true;
 			try
 			{
-				num = RefiiHostGetHudPulsers(array, array2, cap);
+				num = RefiiHostGetHudPulserStates(array, array2, modes, cap);
 			}
 			catch (EntryPointNotFoundException)
 			{
-				return dictionary;
+				// A bridge before 223 states the phase alone; a pulser it lists is taken as running.
+				stated = false;
+				try
+				{
+					num = RefiiHostGetHudPulsers(array, array2, cap);
+				}
+				catch (EntryPointNotFoundException)
+				{
+					return dictionary;
+				}
 			}
 			if (num > cap)
 			{
@@ -10934,7 +10952,7 @@ public static class HostBridge
 			}
 			for (uint i = 0u; i < num; i++)
 			{
-				dictionary[array[i]] = array2[i];
+				dictionary[array[i]] = new Refii.Ui.Engine_UiSource.HudPulser(array2[i], !stated || modes[i] != 2u);
 			}
 			return dictionary;
 		}

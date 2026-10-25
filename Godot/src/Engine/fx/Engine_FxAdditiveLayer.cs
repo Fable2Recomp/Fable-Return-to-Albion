@@ -69,7 +69,6 @@ public partial class Engine_FxAdditiveLayer : Node
     private Engine_FxAdditiveLayer? _second;
     private Vector2I _size;
     private bool _enabled = true;
-    private bool _active;
 
     /// <summary>Whether the viewport's texture resolved to a render-device texture the post
     /// chain can sample; without it nothing routed here would ever reach the screen.</summary>
@@ -316,9 +315,7 @@ public partial class Engine_FxAdditiveLayer : Node
         _viewport.Size = size;
     }
 
-    public override void _Process(double delta) => RefreshView(false);
-
-    public void RefreshView(bool frozen)
+    public override void _Process(double delta)
     {
         using var _framePhase = Refii.Core.Engine_FramePhases.Measure("fxadditivelayer");
         if (!HostAlive) return;
@@ -331,8 +328,7 @@ public partial class Engine_FxAdditiveLayer : Node
 
         if ((main.CullMask & LayerMask) != 0) main.CullMask &= ~LayerMask;
 
-        if (!frozen) _active = Engine.GetProcessFrames() - _activeFrame <= 1;
-        bool active = _enabled && _active;
+        bool active = _enabled && Engine.GetProcessFrames() - _activeFrame <= 1;
         _viewport.RenderTargetUpdateMode = active ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
 
         Rid rd = default;

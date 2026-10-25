@@ -2492,7 +2492,9 @@ extern "C" {
 /// 222 adds RefiiHostGetOptionsPage — one options page as the GUEST holds it: its row cursor and
 ///     every row widget's own pickbox index / slider value, so the host paints the page's captions
 ///     and pips from the state the guest's handler moves instead of stepping a record of its own.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 222; }
+/// 223 adds RefiiHostGetHudPulserStates — each HUD pulser's mode (`rec+12`: 0 looping, 1 finishing,
+///     2 stopped) beside its phase, so the host's own pulse clock stops when the guest's does.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 223; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostUiDataGeneration(void) { return refii_bridge_ui_data_generation(); }
 
@@ -16241,14 +16243,21 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPlayerTwoHud(uint32_t* out_target, ch
     return refii_bridge_player_two_hud(out_target, out, capacity);
 }
 
-/// Every live PULSER the in-game HUD is holding — registry 4, `PulserName` — as its PHASE.
+/// Every live PULSER the in-game HUD is holding — registry 4, `PulserName` — as its PHASE and
+/// its MODE.
 ///
-
 /// A pulser LOOPS the authored timeline: `sub_822C21E0` advances `rec+20` by `rec+24 · dt`
 /// (mode `rec+12`: 0 loop with wrap, 1 one-shot then 2 stopped) and applies
 /// `time = phase × 1000` to the element. The guest advances it; the host reads the phase at
 /// +0x14 (same slot as the meter's current value) and scrubs its clone at the same tick.
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudPulsers(uint32_t* out_hashes, float* out_phases, uint32_t capacity) {
+///
+/// THE MODE IS THE STATEMENT THAT IT RUNS. Starting (`sub_828F09C0`) sets the rate and mode 0;
+/// stopping (`sub_828F0A28`) sets mode 1, and the advance finishes the loop, zeroes the phase,
+/// applies tick 0 and leaves mode 2 — the phase then never changes again. A host that runs the
+/// pulse on its own clock between statements must be told the stop, or it keeps the rate it
+/// measured and pulses the low-health heart for the rest of the session.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudPulserStates(uint32_t* out_hashes, float* out_phases,
+                                                           uint32_t* out_modes, uint32_t capacity) {
     auto* memory = SafeKernelMemory();
     if (memory == nullptr) {
         return 0u;
@@ -16268,15 +16277,21 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudPulsers(uint32_t* out_hashes, floa
 
     const uint32_t stored = found < want ? found : want;
     for (uint32_t i = 0; i < stored; ++i) {
-        if (out_phases == nullptr) {
-            break;
+        if (out_phases != nullptr) {
+            const uint32_t raw = GuestWordAt(base, elements[i] + 0x14u);
+            std::memcpy(&out_phases[i], &raw, sizeof(out_phases[i]));
         }
-
-        const uint32_t raw = GuestWordAt(base, elements[i] + 0x14u);
-        std::memcpy(&out_phases[i], &raw, sizeof(out_phases[i]));
+        if (out_modes != nullptr) {
+            out_modes[i] = GuestWordAt(base, elements[i] + 0x0Cu);
+        }
     }
 
     return found;
+}
+
+/// The phases alone — the shape before 223, kept for a host built against it.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudPulsers(uint32_t* out_hashes, float* out_phases, uint32_t capacity) {
+    return RefiiHostGetHudPulserStates(out_hashes, out_phases, nullptr, capacity);
 }
 
 /// WHY THERE IS NO SLIDE OR IMAGE READER HERE, though the registries exist.

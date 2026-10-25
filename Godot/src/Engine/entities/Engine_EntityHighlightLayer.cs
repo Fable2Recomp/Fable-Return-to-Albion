@@ -87,7 +87,6 @@ public partial class Engine_EntityHighlightLayer : Node
 
     private Vector2I _size;
     private bool _enabled = true;
-    private bool _active;
     private bool _usable;
 
     private Rid _layerRd;
@@ -322,9 +321,7 @@ public partial class Engine_EntityHighlightLayer : Node
         _viewport.Size = size;
     }
 
-    public override void _Process(double delta) => RefreshView(false);
-
-    public void RefreshView(bool frozen)
+    public override void _Process(double delta)
     {
         using var _framePhase = Refii.Core.Engine_FramePhases.Measure("entityhighlightlayer");
         if (!HostAlive) return;
@@ -339,17 +336,13 @@ public partial class Engine_EntityHighlightLayer : Node
 
         // Active while any slot has a target, not while the walk last touched one: the walk
         // need not run every frame, and a highlight lasts until the guest clears it.
-        if (!frozen)
-        {
-            Array.Clear(_targets, 0, Slots);
-            _active = _enabled && Gather(main.GlobalPosition, _targets);
-        }
-        bool active = _enabled && _active;
+        Array.Clear(_targets, 0, Slots);
+        bool active = _enabled && Gather(main.GlobalPosition, _targets);
         _viewport.RenderTargetUpdateMode = active ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
 
         // The stated width, read here because this is the main thread; the post chain runs on
         // the render thread and must not reach into the guest.
-        if (active && !frozen)
+        if (active)
         {
             int texels = Refii.Host.HostBridge.HighlightWidthTexels();
             if (texels > 0)

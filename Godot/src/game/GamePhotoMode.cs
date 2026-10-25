@@ -9,6 +9,14 @@ using Refii.Ui;
 
 namespace Refii.Game;
 
+/// <summary>
+/// Photo mode: L3 + R3 or F11 holds the world and hands the camera to the player. The hold is the
+/// engine's own pause latch (<see cref="Engine_StatedPause.HostHold"/>) beside
+/// <see cref="GameSession.Paused"/>, so the drawn world stands exactly as it does under the guest's
+/// pause menu and everything else — the UI, the debug channel, the mods, the audio — keeps running.
+/// The camera is placed here first each frame (ProcessPriority -100); <see cref="GameWorld"/> leaves
+/// it alone while <see cref="Active"/> and reads the guest's statement again once it is handed back.
+/// </summary>
 public partial class GamePhotoMode : Node
 {
     private const uint ControlsButton = 1u << 12;
@@ -23,8 +31,6 @@ public partial class GamePhotoMode : Node
     private float _pitch;
     private Vector3 _position;
     private bool _sessionPaused;
-    private bool _treePaused;
-    private double _timeScale;
     private Input.MouseModeEnum _mouseMode;
     private CanvasLayer? _effects;
     private CanvasLayer? _controls;
@@ -39,7 +45,6 @@ public partial class GamePhotoMode : Node
     private double _repeat;
     private bool _closeRequested;
     private bool _capturing;
-    private bool _renderViewsConnected;
     private int _generation;
 
     public static string? KeyLabel(string button) => button switch
@@ -51,7 +56,6 @@ public partial class GamePhotoMode : Node
 
     public override void _Ready()
     {
-        ProcessMode = ProcessModeEnum.Always;
         ProcessPriority = -100;
         _lastUsec = Time.GetTicksUsec();
     }
@@ -121,9 +125,6 @@ public partial class GamePhotoMode : Node
             RefreshSettings();
         }
         MoveCamera(pad, seconds, left);
-        Refii.Models.Engine_ClassicViews.Begin(_camera);
-        if (Refii.Models.Engine_ClassicMaterial.Active)
-            Refii.Models.Engine_ClassicPath.Pump(_session, _camera, GetViewport().GetVisibleRect().Size);
     }
 
     private bool HandleHelpActions(uint pressed)
@@ -183,8 +184,6 @@ public partial class GamePhotoMode : Node
         _originalTransform = camera.GlobalTransform;
         _originalFov = camera.Fov;
         _sessionPaused = session.Paused;
-        _treePaused = GetTree().Paused;
-        _timeScale = Engine.TimeScale;
         _mouseMode = Input.MouseMode;
         _closeRequested = false;
         _held = uint.MaxValue;
@@ -195,13 +194,10 @@ public partial class GamePhotoMode : Node
         {
             if (HostBridge.TryGetAbiVersion() is not null) GameInput.ReleaseForPhotoMode();
             session.Paused = true;
-            GetTree().Paused = true;
-            Engine.TimeScale = 0;
+            Engine_StatedPause.HostHold = true;
             HideLayers(GetTree().Root);
             BuildControls();
             ResetView();
-            RenderingServer.FramePreDraw += RefreshRenderViews;
-            _renderViewsConnected = true;
             Input.MouseMode = Input.MouseModeEnum.Visible;
             return true;
         }
@@ -224,31 +220,14 @@ public partial class GamePhotoMode : Node
         foreach (Node child in node.GetChildren()) HideLayers(child);
     }
 
-    private void RefreshRenderViews()
-    {
-        if (!Active || _camera is null || !IsInstanceValid(_camera)) return;
-        if (Refii.Fx.Engine_FxAdditiveLayer.Current is { } additive && IsInstanceValid(additive) && additive.IsNodeReady())
-            additive.RefreshView(true);
-        if (Refii.Fx.Engine_FxDisplacement.Current is { } displacement && IsInstanceValid(displacement) && displacement.IsNodeReady())
-            displacement.RefreshView(true);
-        if (Refii.Entities.Engine_EntityHighlightLayer.Current is { } highlight && IsInstanceValid(highlight) && highlight.IsNodeReady())
-            highlight.RefreshView(true);
-    }
-
     public void Close()
     {
-        if (_renderViewsConnected)
-        {
-            RenderingServer.FramePreDraw -= RefreshRenderViews;
-            _renderViewsConnected = false;
-        }
         if (!Active || _session is null) return;
         _generation++;
         if (_camera is not null && IsInstanceValid(_camera))
         {
             _camera.GlobalTransform = _originalTransform;
             _camera.Fov = _originalFov;
-            RefreshRenderViews();
         }
         if (_effects is not null) { _effects.Visible = false; _effects.QueueFree(); }
         if (_controls is not null) { _controls.Visible = false; _controls.QueueFree(); }
@@ -261,8 +240,7 @@ public partial class GamePhotoMode : Node
         foreach (CanvasLayer layer in _hiddenLayers)
             if (IsInstanceValid(layer)) layer.Visible = true;
         _hiddenLayers.Clear();
-        Engine.TimeScale = _timeScale;
-        GetTree().Paused = _treePaused;
+        Engine_StatedPause.HostHold = false;
         if (IsInstanceValid(_session)) _session.Paused = _sessionPaused;
         Input.MouseMode = _mouseMode;
         if (HostBridge.TryGetAbiVersion() is not null) GameInput.ReleaseForPhotoMode();
@@ -338,7 +316,7 @@ public partial class GamePhotoMode : Node
             ?? throw new InvalidOperationException("Fable 2's Photo Mode UI is not ready.");
         _effects = new CanvasLayer { Name = "PhotoFilter", Layer = 120 };
         AddChild(_effects);
-        _filter = new ShaderMaterial { Shader = GD.Load<Shader>("res://src/game/photo_mode.gdshader") };
+        _filter = new ShaderMaterial { Shader = GD.Load<Shader>("res://src/Engine/material/photo_mode.gdshader") };
         var effect = new ColorRect { Material = _filter, MouseFilter = Control.MouseFilterEnum.Ignore };
         effect.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
         _effects.AddChild(effect);

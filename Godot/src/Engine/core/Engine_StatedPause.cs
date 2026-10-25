@@ -16,8 +16,15 @@ namespace Refii.Core;
 /// </remarks>
 public static class Engine_StatedPause
 {
-	/// <summary>Whether the guest states a pause this frame.</summary>
+	/// <summary>Whether a pause is stated this frame, by the guest or by the host.</summary>
 	public static bool Latched { get; private set; }
+
+	/// <summary>
+	/// A pause the HOST states — photo mode — held exactly as the guest's: the same latch, the
+	/// same zero advance, the same unswapped pair. <see cref="Refii.Game.GameSession.Paused"/>
+	/// stops the guest's steps beside it; this stops what Godot draws on its own clock.
+	/// </summary>
+	public static bool HostHold { get; set; }
 
 	/// <summary>Frames the latch has held in the current pause; 0 when not latched.</summary>
 	public static long HeldFrames { get; private set; }
@@ -31,7 +38,7 @@ public static class Engine_StatedPause
 	/// <summary>Once per frame, before anything swaps or draws: takes the guest's statement.</summary>
 	public static void BeginFrame(bool stated)
 	{
-		if (stated)
+		if (stated || HostHold)
 		{
 			if (!Latched)
 			{

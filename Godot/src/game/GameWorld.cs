@@ -131,6 +131,13 @@ public partial class GameWorld : Node3D
 		ReleaseWhenPropsHaveStreamed();
 		TraceEntities();
 
+		// Photo mode owns the camera: it places it first each frame and restores the guest's
+		// transform when it closes, so the statement below is read again from then on.
+		if (GamePhotoMode.Active)
+		{
+			return;
+		}
+
 		// The camera is drawn on the same clock as the bodies (`GameEntities.Drawn()`), with no
 		// latency. The guest has no split either: `sub_8228FEF0` (camera) and `sub_822112D8`
 		// (renderables) are handed the SAME alpha register — one `fdivs` at `0x822771e4`, two

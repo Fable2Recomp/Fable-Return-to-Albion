@@ -434,7 +434,17 @@ public sealed class Engine_HudValues
 
         // `_meters` is replaced, not merged, so the stated meters are re-applied at the end.
         _meters = Engine_UiSource.Current.GetHudMeters();
-        _pulsers = Engine_UiSource.Current.GetHudPulsers();
+        _stoppedPulsers.Clear();
+        _pulsers = new Dictionary<uint, float>();
+        foreach ((uint hash, Engine_UiSource.HudPulser pulser) in Engine_UiSource.Current.GetHudPulsers())
+        {
+            _pulsers[hash] = pulser.Phase;
+            if (!pulser.Running)
+            {
+                _stoppedPulsers.Add(hash);
+            }
+        }
+
         _texts = Engine_UiSource.Current.GetHudTexts();
         FollowPolled();
         foreach ((uint hash, float value) in _meterOverrides)
@@ -521,6 +531,16 @@ public sealed class Engine_HudValues
         ulong now = Refii.Entities.Engine_DrawnFrame.NowUsec;
         foreach ((uint hash, float phase) in _pulsers)
         {
+            // A STOPPED pulser holds at its stated phase (0: the tick the guest's stop applied).
+            // Its statements never change again, and a clock here that only re-measures on a
+            // change would keep the rate it had while it ran — the low-health heart pulsed on at
+            // full health for the rest of the session (2026-10-25).
+            if (_stoppedPulsers.Contains(hash))
+            {
+                _pulses.Remove(hash);
+                continue;
+            }
+
             if (!_pulses.TryGetValue(hash, out Pulse? pulse))
             {
                 _pulses[hash] = new Pulse { Phase = phase, Stated = phase, StatedUsec = now };
@@ -566,6 +586,9 @@ public sealed class Engine_HudValues
     }
 
     private readonly List<uint> _gonePulses = new();
+
+    /// <summary>The pulsers the guest holds stopped this read: no clock of their own.</summary>
+    private readonly HashSet<uint> _stoppedPulsers = new();
 
     /// <summary>
     /// The localised string book, for resolving the tag ids the Lua route states; null drops

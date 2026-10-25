@@ -42,7 +42,6 @@ public partial class Engine_FxDisplacement : Node
     private Engine_FxDisplacement? _second;
 
     private bool _enabled = true;
-    private bool _active;
 
     /// <summary>True only when the host window is BOTH assigned and still alive.</summary>
     /// <remarks>
@@ -241,9 +240,7 @@ public partial class Engine_FxDisplacement : Node
         _apply?.SetShaderParameter("disp_pixel_scale", new Vector2(s, s));
     }
 
-    public override void _Process(double delta) => RefreshView(false);
-
-    public void RefreshView(bool frozen)
+    public override void _Process(double delta)
     {
     	using var _framePhase = Refii.Core.Engine_FramePhases.Measure("fxdisplacement");
         if (!HostAlive || _apply is null) return;
@@ -257,8 +254,7 @@ public partial class Engine_FxDisplacement : Node
 
         if ((main.CullMask & LayerMask) != 0) main.CullMask &= ~LayerMask;
 
-        if (!frozen) _active = Engine.GetProcessFrames() - _activeFrame <= 1;
-        bool active = _enabled && _active;
+        bool active = Engine.GetProcessFrames() - _activeFrame <= 1;
         _rect.Visible = active;
         _viewport.RenderTargetUpdateMode = active ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
         if (!active) return;

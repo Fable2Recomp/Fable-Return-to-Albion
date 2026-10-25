@@ -133,7 +133,7 @@ public sealed class HostUiSource : Engine_UiSource
 
 	public override Dictionary<uint, float> GetHudMeters() => HostBridge.GetHudMeters();
 
-	public override Dictionary<uint, float> GetHudPulsers() => HostBridge.GetHudPulsers();
+	public override Dictionary<uint, Refii.Ui.Engine_UiSource.HudPulser> GetHudPulsers() => HostBridge.GetHudPulsers();
 
 	public override Dictionary<uint, string> GetHudTexts() => HostBridge.GetHudTexts();
 

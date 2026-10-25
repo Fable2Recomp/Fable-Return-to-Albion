@@ -111,8 +111,14 @@ public abstract class Engine_UiSource
 	/// <summary>Meter values by FNV-1 name hash.</summary>
 	public virtual Dictionary<uint, float> GetHudMeters() => new();
 
-	/// <summary>The HUD's pulsers by `FNV1(PulserName)` — loop phase 0..1. See the bridge.</summary>
-	public virtual Dictionary<uint, float> GetHudPulsers() => new();
+	/// <summary>
+	/// A HUD pulser as the guest holds it: its loop phase 0..1, and whether it runs. A stopped one
+	/// (the guest's mode 2) stays at its phase — 0, the tick the stop applied — until started again.
+	/// </summary>
+	public readonly record struct HudPulser(float Phase, bool Running);
+
+	/// <summary>The HUD's pulsers by `FNV1(PulserName)`. See the bridge.</summary>
+	public virtual Dictionary<uint, HudPulser> GetHudPulsers() => new();
 
 	/// <summary>Text values by FNV-1 name hash.</summary>
 	public virtual Dictionary<uint, string> GetHudTexts() => new();

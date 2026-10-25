@@ -101,10 +101,11 @@ public partial class GameInput : Node
 		}
 
 		// The mods' own actions, on the keyboard and on the pads as just assigned, under the
-		// same focus gate: edges only, posted to the mod event bus.
+		// same focus gate: edges only, posted to the mod event bus. Photo mode has every key and
+		// button while it is up, so the mods see releases then.
 		using (Refii.Core.Engine_FramePhases.Measure("input.mods"))
 		{
-			Refii.Mods.ModInput.Pump(devices);
+			Refii.Mods.ModInput.Pump(devices && !GamePhotoMode.Active);
 		}
 	}
 
