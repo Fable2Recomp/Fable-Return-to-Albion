@@ -250,6 +250,20 @@ public partial class Engine_PostFxEffect : CompositorEffect
     private volatile bool _ready;
     private bool _disposed;
     private bool _firstFrame = true;
+
+    /// <summary>
+    /// THE TITLE RESETS ITS TONE HISTORY WHILE A LEVEL LOADS. `sub_82181B68`, run every frame
+    /// from the scene tick, clears T+0x4190 for as long as the scene is streaming, so the first
+    /// frame drawn after the load snaps the smoothed min/avg/max and the CDF to that frame
+    /// (`sub_822767E0`: blend 1 with no history). A theme stating EXPOSURE_SPEED 0, as the caves
+    /// do, then holds them: the room is levelled to its own first picture, not to the region
+    /// the player came from. The world calls this when its load hold releases; each effect
+    /// snaps on its next frame.
+    /// </summary>
+    public static void ResetHistory() => System.Threading.Interlocked.Increment(ref _historyResetGeneration);
+
+    private static int _historyResetGeneration;
+    private int _historyResetSeen;
     private bool _histogramValid;
     private bool _measuredAny;
     private bool _materialDisabledWritten;
@@ -1002,6 +1016,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
 
         _firstFrame = false;
+        _historyResetSeen = _historyResetGeneration;
         _histogramValid = true;
 
         if (_trapRatio > 0f)
@@ -1103,7 +1118,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
         float lockValue = Engine_PostFxParams.ExposureLock
             ? Math.Clamp(Engine_PostFxParams.ExposureLockValue, Engine_PostFxModel.ExposureMin, Engine_PostFxModel.ExposureMax)
             : 0.0f;
-        Set(p, 0, dt, _firstFrame ? 1.0f : 0.0f, _histogramValid ? 1.0f : 0.0f, lockValue);
+        bool snap = _firstFrame || _historyResetSeen != _historyResetGeneration;
+        Set(p, 0, dt, snap ? 1.0f : 0.0f, _histogramValid ? 1.0f : 0.0f, lockValue);
         Set(p, 1, d.ExposureSpeed, d.BlackMin, d.MidMin, d.WhiteMin);
         Set(p, 2, d.Pct[0], d.Pct[1], d.Pct[2], d.Knee);
         Set(p, 3, d.ContrastEnhancement, d.ContrastExponent, d.ContrastMaxDeviation, d.WhiteFactor);

@@ -82,6 +82,7 @@ public partial class Engine_PostFxEffect
     // This frame's state for the classic passes, set by the render callback.
     private Projection _frameProjection = Projection.Identity;
     private bool _frameDof;
+    private bool _classicDofLogged;
 
     /// <summary>The classic look with its translated passes built.</summary>
     private bool ClassicPost => Refii.Models.Engine_ClassicMaterial.Active && EnsureClassicPost();
@@ -280,6 +281,31 @@ public partial class Engine_PostFxEffect
     /// the chain's own copy of it: the variant reads around the pixel it writes, and Godot's
     /// scene colour takes storage writes but no copies.
     /// </summary>
+    /// <summary>
+    /// The title's <c>g_PerspectiveConstants</c>, c18 = (q, -near·q), for this frame's projection:
+    /// its post shaders turn Godot's reversed depth into view distance as
+    /// <c>c18.y / (1 - c18.x - z)</c>, the console's own <c>1 - z_d3d</c> map.
+    /// </summary>
+    /// <remarks>
+    /// The render data's projection arrives in the device's reversed [0, 1] form, where Godot's
+    /// <c>GetZNear</c>/<c>GetZFar</c> read the wrong planes: a 0.05 near camera gave near -0.05,
+    /// far -0.1, q -50000, so every pixel's distance came out at -0.05 and the whole frame took
+    /// the near blur, hero included (Howling Halls, 2026-10-25). In that form the clip z row IS
+    /// the map — <c>z = -Z.Z + W.Z / d</c> — so <c>q = Z.Z + 1</c> and <c>near·q = W.Z</c>, the
+    /// infinite far (Z.Z = 0) included. The camera's own GL form (Z.Z &lt; 0) keeps the accessors.
+    /// </remarks>
+    private static (float Q, float NearQ) PerspectiveConstants(in Projection projection)
+    {
+        if (projection.Z.Z < 0f)
+        {
+            float near = projection.GetZNear(), far = projection.GetZFar();
+            float q = far / MathF.Max(far - near, 1e-6f);
+            return (q, near * q);
+        }
+
+        return (projection.Z.Z + 1f, projection.W.Z);
+    }
+
     private void ClassicComposite(Rid colour, Rid depth, Vector2I size)
     {
         Engine_PostFxModel.Derived d = _derived;
@@ -329,11 +355,18 @@ public partial class Engine_PostFxEffect
             1f / MathF.Max(d.DofNearFocal - d.DofNearPlane, 1e-4f), d.DofNearFocal,
             d.DofFarFocal, 1f / MathF.Max(d.DofFarPlane - d.DofFarFocal, 1e-4f));
         pass.Set("ps_g_DepthOfFieldUnitMaxBlurNearFar", d.DofNearBlur, d.DofFarBlur);
-        // g_PerspectiveConstants: the projection's D3D depth terms, which with Godot's reversed
-        // depth give the view distance as the title's `c18.y / (1 - c18.x - z)` reads it.
-        float near = _frameProjection.GetZNear(), far = _frameProjection.GetZFar();
-        float q = far / MathF.Max(far - near, 1e-6f);
-        pass.Set("ps_g_PerspectiveConstants", q, -near * q);
+        (float q, float nearQ) = PerspectiveConstants(_frameProjection);
+        pass.Set("ps_g_PerspectiveConstants", q, -nearQ);
+        if (!_classicDofLogged)
+        {
+            // Once per run: the depth terms and the depth-of-field planes the title's shader is
+            // handed, so a whole-frame blur can be read against the theme's numbers.
+            _classicDofLogged = true;
+            GD.Print($"[postfx] classic composite: q {q:0.####} near*q {nearQ:0.####} " +
+                $"(projection Z.Z {_frameProjection.Z.Z:0.####} W.Z {_frameProjection.W.Z:0.####}); dof on {_frameDof}: " +
+                $"planes near {d.DofNearPlane:0.##} nearFocal {d.DofNearFocal:0.##} farFocus {d.DofFarFocal:0.##} " +
+                $"far {d.DofFarPlane:0.##}, blur near {d.DofNearBlur:0.###} far {d.DofFarBlur:0.###}");
+        }
         // The displacement terms over the composite's input (a2[0], the HDR scene): offsets
         // stored in bytes, a maximum that scales with the target against 1280 x 720.
         float w = size.X, h = size.Y;
@@ -732,12 +765,12 @@ public partial class Engine_PostFxEffect
         "\tview_depth = c.w;\n" +
         "\treturn all(greaterThanEqual(uv, vec2(0.0))) && all(lessThanEqual(uv, vec2(1.0)));\n" +
         "}\n" +
-        // Godot's depth is reversed and remapped: d = 0.5 - 0.5 z_gl.
+        // Godot's depth is reversed: d = 1 - z_d3d. The terms are the title's c18, (q, near·q)
+        // (PerspectiveConstants), so the distance is near·q / (q - z_d3d), infinite far included.
         "float scene_view_depth(vec2 uv) {\n" +
         "\tfloat d = textureLod(depth, uv, 0.0).r;\n" +
         "\tif (d <= 0.0) { return -1.0; }\n" +
-        "\tfloat z = 1.0 - 2.0 * d, n = push.terms.x, f = push.terms.y;\n" +
-        "\treturn 2.0 * n * f / ((f + n) - z * (f - n));\n" +
+        "\treturn push.terms.y / max(push.terms.x - 1.0 + d, 1e-6);\n" +
         "}\n" +
         "bool refine(inout vec3 p, vec3 axis, out float delta) {\n" +
         "\tvec2 uv; float vd; delta = 0.0;\n" +
@@ -856,7 +889,8 @@ public partial class Engine_PostFxEffect
         }
         Vector3 forward = -basis.Z;
         push[16] = -forward.X; push[17] = forward.Z; push[18] = forward.Y; push[19] = 0f;
-        push[20] = projection.GetZNear(); push[21] = projection.GetZFar(); push[22] = 0f; push[23] = 0f;
+        (float decalQ, float decalNearQ) = PerspectiveConstants(projection);
+        push[20] = decalQ; push[21] = decalNearQ; push[22] = 0f; push[23] = 0f;
         Dispatch(_cDecalPipeline, _cDecalSet.Set, _cDecalPush, (289 + 63) / 64, Refii.Models.Engine_ClassicDecals.Slots);
     }
 

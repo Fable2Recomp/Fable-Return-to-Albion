@@ -112,4 +112,5 @@ public class LightingSettingsTests
         AssertThat(Refii.Core.Engine_RefiiConfig.Float(configured, "placed_light_range", 65.0f)).IsEqual(45.0f);
         AssertThat(Refii.Core.Engine_RefiiConfig.Float(configured, "placed_shadow_range", 50.0f)).IsEqual(30.0f);
     }
+
 }

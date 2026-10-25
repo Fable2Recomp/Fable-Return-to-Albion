@@ -763,15 +763,16 @@ public static partial class Engine_LevelProps
                 bakeKeys.Add(bake.Key);
             }
 
-            // The 48-byte ambient blocks cover essentially every placement — they are the
-            // guest's per-object ambient, and the fallback for props the probe field has no
-            // cell for. Without these keys 694 of one region's props carried no lighting
-            // identity at all and rendered as flat global ambient.
-            foreach (KeyValuePair<ulong, byte[]> ambient in bakes.Blocks48)
-            {
-                bakeKeys.Add(ambient.Key);
-            }
+            // The 48-byte blocks are NOT bake keys: the title reads them for skinned models
+            // only (`sub_82219178`); a static with no stream and no texture is flat.
         }
+
+        // THE TITLE DRAWS EVERY BAKED PLACEMENT ON ITS OWN. A vertex bake is that placement's
+        // colours and a lightmap its texture (`sub_82219978`, Amb 1/3); only the bake-less
+        // repeated family is instanced (`sub_82223C68`). The classic path can only bind a bake
+        // to a MeshInstance3D (Engine_PropStreamer.FinishVertexBake), so under it a baked
+        // placement leaves its batch — the hall's tiles were batches drawing flat ambient.
+        bool classicBakedSingles = Refii.Models.Engine_ClassicMaterial.Active;
 
         // Diagnostics only. A composed key is (modelPathHash << 32 | placementHash); when the
         // whole key misses, the half that still matches something in the .lmp says which half
@@ -988,6 +989,8 @@ public static partial class Engine_LevelProps
                     ((editorHierarchy is not null && block.InstanceHashes[i] != 0) ||
                         (inspect is not null && inspect.HasFor(block.InstanceHashes[i])) ||
                         lightHosts.Contains(block.InstanceHashes[i]));
+                forcedSingle |= classicBakedSingles && i < block.InstanceBakeKeys.Count &&
+                    bakeKeys.Contains(block.InstanceBakeKeys[i]);
                 if (forcedSingle)
                 {
                     stats.ForcedSingles++;

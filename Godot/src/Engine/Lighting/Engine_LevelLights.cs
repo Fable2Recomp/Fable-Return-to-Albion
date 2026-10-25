@@ -330,19 +330,24 @@ public static class Engine_LevelLights
 		out float baseEnergy,
 		out float authoredRange)
 	{
-		// Cave/interior levels (CurrentInterior == true, i.e., levels with no sky) keep the
-		// canonical PlacedScale and PlacedRange so cave lighting is never altered by town
-		// building interior or unattached-light settings.
+		// A level with no sky (CurrentInterior) takes every placed light AS STATED: there the
+		// authored bakes carry the room (Engine_LevelLighting, the no-sky rule) and the title's
+		// torch, L+208 × L+448 over 1/(L+452 × L+320), is the ratio the bake was painted
+		// against. The remaster's scales are for outdoors, where the bakes are not drawn.
 		bool isCaveLevel = Engine_LightingFrame.CurrentInterior;
 		bool isBuildingInterior = !isCaveLevel && isIndoorLight;
 
-		float energyScale = PlacedScale * (isBuildingInterior ? BuildingInteriorLightScale : 1.0f);
+		float energyScale = isCaveLevel
+			? 1.0f
+			: PlacedScale * (isBuildingInterior ? BuildingInteriorLightScale : 1.0f);
 		if (!isCaveLevel && isUnattached)
 		{
 			energyScale *= UnattachedLightScale;
 		}
 
-		float reachScale = PlacedRange * (isBuildingInterior ? BuildingInteriorReachScale : 1.0f);
+		float reachScale = isCaveLevel
+			? 1.0f
+			: PlacedRange * (isBuildingInterior ? BuildingInteriorReachScale : 1.0f);
 
 		baseEnergy = rawIntensity * energyScale;
 		authoredRange = rawRange * reachScale;

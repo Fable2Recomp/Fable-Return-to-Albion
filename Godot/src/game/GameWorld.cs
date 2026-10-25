@@ -494,6 +494,10 @@ public partial class GameWorld : Node3D
 
 		_holdingForProps = false;
 		Refii.Models.Engine_ClassicLoad.End();
+		// The title clears its tone-map history for as long as a level streams
+		// (`sub_82181B68`), so the first frame after the load snaps the statistics; a cave
+		// theme with EXPOSURE_SPEED 0 then holds that snap.
+		Refii.Lighting.Engine_PostFxEffect.ResetHistory();
 		SetWorldBuildHeld(false);
 		if (_entities is { } released)
 		{

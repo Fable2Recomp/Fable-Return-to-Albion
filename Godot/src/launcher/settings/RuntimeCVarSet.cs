@@ -403,10 +403,13 @@ public static class RuntimeCVarsGodot
             new("placed_light_scale", LightingCategory, RuntimeCVarType.Double, "1.5",
                 "Multiplier on torch, lamp and fixture light intensity. The authored fixtures "
                 + "throw modest pools — a tall lamp post barely reaches the ground — "
-                + "so the remaster brightens them. 1.0 follows the shipped data exactly."),
+                + "so the remaster brightens them. 1.0 follows the shipped data exactly. "
+                + "Levels with no sky (caves, halls) always keep the shipped intensity: their "
+                + "authored bakes were painted against it."),
             new("placed_light_reach_scale", LightingCategory, RuntimeCVarType.Double, "1.5",
                 "Multiplier on outdoor torch, lamp and fixture radius (reach). 1.5 expands "
-                + "outdoor street lamps so they reach the ground; 1.0 uses the shipped radius."),
+                + "outdoor street lamps so they reach the ground; 1.0 uses the shipped radius. "
+                + "Levels with no sky always keep the shipped radius."),
             new("building_interior_ambient_scale", LightingCategory, RuntimeCVarType.Double, "0.5",
                 "Multiplier on outdoor sky and theme ambient inside town buildings in outdoor "
                 + "levels (taverns, shops, houses). Caves and sky-less levels are unaffected "

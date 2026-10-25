@@ -1478,13 +1478,27 @@ public static class CoopHeroLua
 		-- Furthermore, IsAtDestination hardcoded a 10cm tolerance which caused the dog to circle
 		-- endlessly and stand right back up, and the engine's offscreen auto-teleport (sub_822AEAC0)
 		-- teleports the dog inside unless AIManager:GetMustStayType returns a stay mode (3 = LIE).
+		-- Dog.IsMasterInsideBuilding (sub_82812E88) reads the master's flags with NO null guard: a
+		-- dog whose master is not bound yet — every dog in the frames between its creation and
+		-- the first CECDog_Update that finds the hero flagged, and the partner dog while hero one
+		-- is still loading — faults at 0x34 (three player reports, 2026-10-25). Dog.GetMaster
+		-- (sub_82174410) is the title's guarded reader and answers nil for that window.
+		C.DogMasterInsideBuilding = C.DogMasterInsideBuilding or function(entity)
+			if Dog == nil or Dog.IsMasterInsideBuilding == nil or Dog.GetMaster == nil then
+				return false
+			end
+			if Dog.GetMaster(entity) == nil then
+				return false
+			end
+			return Dog.IsMasterInsideBuilding(entity) == true
+		end
 		if BehaviourDogLyingDownBase ~= nil and BehaviourDogLyingDownBase.IsStillRunnable ~= C.DogLyingDownBaseRunnable then
 			C.DogLyingDownBaseRunnable = C.Permanent(function(self)
 				local spot = self:GetSleepSpot()
 				if spot == nil then
 					return false
 				end
-				if Dog ~= nil and Dog.IsMasterInsideBuilding ~= nil and Dog.IsMasterInsideBuilding(self.Entity) then
+				if C.DogMasterInsideBuilding(self.Entity) then
 					return true
 				end
 				local waterDepth = GetWaterDepthAt(spot)
@@ -1517,7 +1531,7 @@ public static class CoopHeroLua
 				if stay and stay ~= EDogStayType.DOG_STAY_TYPE_NONE then
 					return stay
 				end
-				if entity and Dog ~= nil and Dog.IsMasterInsideBuilding ~= nil and Dog.IsMasterInsideBuilding(entity) then
+				if entity and C.DogMasterInsideBuilding(entity) then
 					return EDogStayType.DOG_STAY_TYPE_LIE
 				end
 				return EDogStayType.DOG_STAY_TYPE_NONE
@@ -1530,7 +1544,7 @@ public static class CoopHeroLua
 				if pos ~= nil then
 					return pos
 				end
-				if entity and Dog ~= nil and Dog.IsMasterInsideBuilding ~= nil and Dog.IsMasterInsideBuilding(entity) then
+				if entity and C.DogMasterInsideBuilding(entity) then
 					return Dog.GetWaitOutsideBuildingPosition(entity)
 				end
 				return nil

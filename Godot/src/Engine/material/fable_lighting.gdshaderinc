@@ -142,6 +142,11 @@ global uniform vec3 fable_ambient_colour;
 /// have.
 global uniform vec3 fable_darkening;
 
+/// The bent-normal reference direction for the darkening, dome convention (x, z, y of Godot
+/// world): the guest's VS c19 = the main-light RIG direction the sun controller posts to the
+/// ambient light each frame (`sub_821DF670`), not the visible disc the modern sun is aimed at.
+global uniform vec3 fable_ambient_ref = vec3(0.0, 0.0, 1.0);
+
 /// The probe field's order-2 spherical harmonics, evaluated for a world normal.
 ///
 /// THE BASIS IS D3DX's, AND ITS SIGNS ARE NOT SYMMETRIC. Decompiling `D3DXSHEvalDirection`

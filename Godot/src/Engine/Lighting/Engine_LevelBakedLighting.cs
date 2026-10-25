@@ -737,17 +737,8 @@ public static class Engine_LevelBakedLighting
 			var gamePosition = new Vector3(godotPosition.X, godotPosition.Z, godotPosition.Y);
 			ProbeSample sample = haveField ? probes!.Sample(gamePosition) : default;
 
-			// THE SPARSE-FIELD FALLBACK, per instance: the guest's per-object ambient block
-			// (the .lmp 48-byte payload) answers where the probe field has no cell, looked up
-			// by the instance's own bake key.
-			if (sample.R.LengthSquared() + sample.G.LengthSquared() +
-				sample.B.LengthSquared() <= 0f &&
-				bakes is not null && bakeKeys is not null && i < bakeKeys.Count &&
-				TryGetObjectAmbient(bakes, bakeKeys[i],
-					out Vector4 ar, out Vector4 ag, out Vector4 ab))
-			{
-				sample = new ProbeSample { R = ar, G = ag, B = ab };
-			}
+			// No 48-byte fallback: those blocks are the title's probe result for SKINNED models
+			// (`sub_82219178`); a static the field has no cell for is flat, as the title draws it.
 
 			// The flat band only, SCALED BY THE BAND-0 CONSTANT. The three that follow it are
 			// directional and there is nowhere on a MultiMesh instance to put them.

@@ -34,6 +34,8 @@ public partial class LevelViewer : Node3D
 	/// <summary>Frames to render before the screenshot, so streaming and materials settle.</summary>
 	[Export] public int ShotWarmupFrames { get; set; } = 90;
 
+	private bool _historyReset;
+
 	private Camera3D _camera = null!;
 	private Label _caption = null!;
 	private Node3D? _region;
@@ -375,6 +377,16 @@ public partial class LevelViewer : Node3D
 				Refii.Models.Engine_ClassicCasters.Census(), kv => $"{kv.Key} {kv.Value}")));
 			GD.Print($"[level-viewer] classic load hold done in " +
 				$"{System.Diagnostics.Stopwatch.GetElapsedTime(_classicLoadFrom).TotalSeconds:0.00} s after streaming");
+		}
+
+		// The game's load hold release: the tone history snaps on the first settled frame
+		// (Engine_PostFxEffect.ResetHistory), as the title's `sub_82181B68` has it. The game's
+		// hold covers the light feed; the viewer's placed-light feed lands some 45 frames after
+		// its hold, so the snap waits for a frame with the lights in.
+		if (_framesRendered == 120 && !_historyReset)
+		{
+			_historyReset = true;
+			Refii.Lighting.Engine_PostFxEffect.ResetHistory();
 		}
 
 		// REFII_LEVEL_HERO=1: the hero's composed parts (CharacterLightLab.Parts) standing at the

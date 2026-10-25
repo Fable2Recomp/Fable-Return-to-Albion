@@ -930,6 +930,7 @@ public static class Engine_ClassicMaterial
         result.SetMeta(PixelTokensMeta, pixel);
         result.SetMeta(VertexTokensMeta, vertex);
         result.SetMeta(GroupVariantMeta, true);
+        result.SetMeta(GroupSourceMeta, source);
         result.NextPass = null;
         // An additive light group is a later pass: it fogs but adds no fog colour (`sub_82214FB0`).
         result.SetShaderParameter("ps_g_AtmosphericFactors", new Vector4(1f, pass == 0 ? 1f : 0f, 0f, 0f));
@@ -1180,6 +1181,9 @@ public static class Engine_ClassicMaterial
 
     /// <summary>Marks a light-group variant, so an instance never derives a variant from one.</summary>
     public static readonly StringName GroupVariantMeta = "xenos_group_variant";
+
+    /// <summary>The material a group variant was composed from, for a reader that finds the variant bound where it expects a base.</summary>
+    public static readonly StringName GroupSourceMeta = "xenos_group_source";
 
     /// <summary>
     /// Marks a material built elsewhere on a translated pair (the terrain's patch materials), so

@@ -17,6 +17,15 @@ public sealed class LightingFrame
 	/// </summary>
 	public float[] LightDirection { get; } = new float[3];
 
+	/// <summary>
+	/// The RIG's main-light direction, guest space: the sun controller posts it every frame to
+	/// the scene's ambient light (`sub_821DF670` → `sub_8217B130`, msg+128 = −sunDir →
+	/// L+304), and VS c19, the bent-normal reference of every standard material, is −L+304.
+	/// Kept apart from <see cref="SunDirection"/>, which the modern model aims at the visible
+	/// disc: the darkening follows the rig, as it did on the console.
+	/// </summary>
+	public float[] AmbientReference { get; } = new float[3];
+
 	public float[] SunColour { get; } = { 1.0f, 1.0f, 1.0f };
 
 	public float SunEnergy { get; set; } = 1.0f;
@@ -209,16 +218,20 @@ public static class Engine_LightingFrame
 	/// <summary>
 	/// How far every exterior bake (probes, vertex bakes, the terrain lightmap) is pulled
 	/// toward the live sky ambient in the modern model (`fable_sky_ambient.w`). Bakes keep
-	/// 1-this of their authored locality while the sky sets the level and the tint.
+	/// 1-this of their authored locality while the sky sets the level and the tint. 0.6 is
+	/// measured: at midday in chapter2posh the theme's LightmapColour factor is (4.6, 5.1, 7.1),
+	/// and below 0.6 the terrain's ambient blue sits above the sun's, so no shadow can show in
+	/// that channel. 0.45 (23 October) was not measured and is taken back.
 	/// </summary>
-	public const float ModernProbeSkyBlend = 0.45f;
+	public const float ModernProbeSkyBlend = 0.6f;
 
 	/// <summary>
-	/// Minimum share of the theme's authored <c>AmbientColour</c> blended into the live
-	/// sky-derived ambient in the modern model so outdoor regions retain their distinct
-	/// painterly palette while still breathing with the sky dome.
+	/// A fixed share of the theme's authored <c>AmbientColour</c> blended into the sky-derived
+	/// ambient outdoors. 0: the authored colour enters by the painted day set's weight alone, as
+	/// the remake shipped. A fixed 0.40 (23 October) recoloured every outdoor region's resting
+	/// picture and was taken back on 25 October.
 	/// </summary>
-	public const float ModernAuthoredAmbientBlend = 0.40f;
+	public const float ModernAuthoredAmbientBlend = 0.0f;
 
 	private static int _switchesGen = -1;
 	private static bool? _modernAmbient;
@@ -321,6 +334,7 @@ public static class Engine_LightingFrame
 		// 348 samples, worst case 156.5 degrees — invisible on the 360, whose shadowing was
 		// baked, so nothing ever revealed where the rig pointed.
 		Array.Copy(frame.MainLightDirection, result.SunDirection, 3);
+		Array.Copy(frame.MainLightDirection, result.AmbientReference, 3);
 
 		// THE MODERN MODEL LIGHTS FROM THE VISIBLE SUN. The remaster's live shadows made the
 		// authored rig/disc disagreement legible for the first time — shadows falling away from
@@ -464,8 +478,7 @@ public static class Engine_LightingFrame
 			// A PAINTED DAY SET DESCRIBES WHERE THE HERO STANDS, and the sky does not: a tavern
 			// or a cave is painted precisely because its ambient is not the sky's. Its authored
 			// ambient takes over by the painted weight, so the fade the guest runs is the fade
-			// the room lights up with. Exterior scenes also retain a share of the theme's authored
-			// ambient palette alongside the live sky-dome hemisphere so regions keep their identity.
+			// the room lights up with.
 			float authoredBlend = MathF.Max(
 				ModernAuthoredAmbientBlend,
 				MathF.Min(lighting.PaintedWeight, 1f));

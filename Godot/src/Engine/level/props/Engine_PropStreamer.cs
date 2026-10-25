@@ -809,7 +809,7 @@ public partial class Engine_PropStreamer : Node3D
         if (!_reported)
         {
             _reported = true;
-            GD.Print($"[props] bakes applied={_bakeApplied} (texture={_bakeTextured}) ambient={_bakeAmbient} misfit={_bakeMisfit} keyless={_bakeKeyless}" +
+            GD.Print($"[props] bakes applied={_bakeApplied} (texture={_bakeTextured}) misfit={_bakeMisfit} keyless={_bakeKeyless}" +
                 (Refii.Lighting.Engine_LevelBakedLighting.VertexBakeSamples > 0
                     ? $" vertexBake mean={Refii.Lighting.Engine_LevelBakedLighting.VertexBakeSum / Refii.Lighting.Engine_LevelBakedLighting.VertexBakeSamples:0.000} max={Refii.Lighting.Engine_LevelBakedLighting.VertexBakeMax:0.000} over {Refii.Lighting.Engine_LevelBakedLighting.VertexBakeSamples} vertices"
                     : ""));
@@ -1132,20 +1132,10 @@ public partial class Engine_PropStreamer : Node3D
             return;
         }
 
-        // THE THIRD RUNG: the guest's per-object ambient (the .lmp 48-byte blocks). This is
-        // what lights a movable crate or rock — the artists never baked those, and the probe
-        // FIELD is sparse, so without this they fell to flat global ambient (the mode-0 red
-        // population in the bake-mode debug view). It rides the existing probe uniforms:
-        // ApplyInstanceLighting below turns the meta into shader state as mode 1.
-        if (Refii.Lighting.Engine_LevelBakedLighting.TryGetObjectAmbient(
-                container, key,
-                out Godot.Vector4 ar, out Godot.Vector4 ag, out Godot.Vector4 ab))
-        {
-            node.SetMeta(Refii.Lighting.Engine_LevelBakedLighting.ProbeMeta,
-                new Godot.Collections.Array<Godot.Vector4> { ar, ag, ab });
-            ++_bakeAmbient;
-            return;
-        }
+        // NO THIRD RUNG. The .lmp's 48-byte blocks are a precomputed PROBE RESULT the title
+        // reads for skinned models only (`sub_82219178` 0x8221920c, `*(model+100) == 1`); a
+        // static with neither stream nor texture is Amb 0, flat ambient (`sub_82219978`), and
+        // one with PRT data takes the probe field at its position — the sample the build stored.
 
         if (_bakeMisfit++ < 8)
         {
@@ -1229,7 +1219,6 @@ public partial class Engine_PropStreamer : Node3D
 
     private int _bakeTextured;
 
-    private int _bakeAmbient;
 
     private int _bakeMisfit;
 

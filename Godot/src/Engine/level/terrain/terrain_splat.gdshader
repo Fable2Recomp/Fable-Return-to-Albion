@@ -497,7 +497,7 @@ void fragment() {
 		vec3 mapped_world = normalize(
 			(world_t * mapped_normal.x) + (world_b * mapped_normal.y) +
 			(world_geom * mapped_normal.z));
-		vec3 amb_ref = normalize(vec3(atmos_sun.x, atmos_sun.z, atmos_sun.y));
+		vec3 amb_ref = normalize(vec3(fable_ambient_ref.x, fable_ambient_ref.z, fable_ambient_ref.y));
 		float bend = 0.5 * (dot(world_geom, amb_ref) + 1.0);
 		vec3 bent = normalize(mix(world_geom, amb_ref, bend));
 		float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);

@@ -115,6 +115,10 @@ atmos_sun={
 "type": "vec3",
 "value": Vector3(0, 0, 1)
 }
+fable_ambient_ref={
+"type": "vec3",
+"value": Vector3(0, 0, 1)
+}
 atmos_close_fog={
 "type": "vec3",
 "value": Vector3(0, 0, 0)

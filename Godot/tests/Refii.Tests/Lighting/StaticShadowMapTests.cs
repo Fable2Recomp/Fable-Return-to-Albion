@@ -177,6 +177,8 @@ public class StaticShadowMapTests
 	[TestCase]
 	public void TestComputeMaxBakeRangeHonoursPlacedRangeAndUnattachedLights()
 	{
+		// An outdoor level: a level with no sky keeps the stated range (no PlacedRange).
+		Engine_LightingFrame.CurrentInterior = false;
 		var placement = new Engine_LevelLights.LightPlacement(
 			ColourLinear: Vector3.One,
 			Intensity: 16.0f,

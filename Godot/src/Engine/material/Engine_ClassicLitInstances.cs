@@ -737,13 +737,42 @@ public static class Engine_ClassicLitInstances
         }
         else if (node is MultiMeshInstance3D batch && batch.Multimesh?.Mesh is { } shared)
         {
-            // A batch has no per-surface override: its MaterialOverride replaces EVERY surface.
-            // Only a one-surface batch can take the group variant that way; a house or a tree
-            // drew all its surfaces with surface 0's variant (a whole townhouse in its window
-            // texture, a trunk in its leaves). Those stay on their own materials and the frame row.
-            if (shared.GetSurfaceCount() > 1)
+            // A batch has no per-surface override: its MaterialOverride replaces EVERY surface,
+            // so only a one-surface batch takes its variant that way. A many-surface batch puts
+            // its group on the SHARED mesh's surface materials instead — group 0 only, as the
+            // title's instanced path draws (`sub_82223C68`: one light query on the batch's
+            // union box, no additive passes). A single of the same mesh reads the variant's
+            // source as its base (Bases); two batches of one mesh share the last-set variant,
+            // each with its own row, and a wider variant reads an empty slot as no light.
+            int surfaces = shared.GetSurfaceCount();
+            if (surfaces > 1)
             {
-                return counts.Length == 0;
+                Bases(entry, surfaces, i => (null, shared.SurfaceGetMaterial(i) as ShaderMaterial));
+                int[] firstCounts = counts.Length == 0 ? counts : new[] { counts[0] };
+                bool[] firstSingle = singleLocal.Length == 0 ? singleLocal : new[] { singleLocal[0] };
+                var batchChains = new ShaderMaterial?[surfaces];
+                for (int i = 0; i < surfaces; i++)
+                {
+                    batchChains[i] = Chain(entry.Bases[i], firstCounts, firstSingle, mist);
+                    complete &= entry.Bases[i] is null || firstCounts.Length == 0 || batchChains[i] is not null;
+                }
+                if (!complete)
+                {
+                    return false;
+                }
+                for (int i = 0; i < surfaces; i++)
+                {
+                    if (entry.Bases[i] is null)
+                    {
+                        continue;
+                    }
+                    ShaderMaterial want = batchChains[i] ?? entry.Bases[i]!;
+                    if (shared.SurfaceGetMaterial(i) != want)
+                    {
+                        shared.SurfaceSetMaterial(i, want);
+                    }
+                }
+                return true;
             }
             Bases(entry, 1, _ => (batch.MaterialOverride as ShaderMaterial, shared.SurfaceGetMaterial(0) as ShaderMaterial));
             if (entry.Bases[0] is not null)
@@ -877,9 +906,18 @@ public static class Engine_ClassicLitInstances
                 (mesh.GetSurfaceOverrideMaterial(i) as ShaderMaterial, mesh.Mesh.SurfaceGetMaterial(i) as ShaderMaterial));
             return true;
         }
-        if (entry.Node is MultiMeshInstance3D batch && batch.Multimesh?.Mesh is { } shared && shared.GetSurfaceCount() == 1)
+        if (entry.Node is MultiMeshInstance3D batch && batch.Multimesh?.Mesh is { } shared)
         {
-            Bases(entry, 1, _ => (batch.MaterialOverride as ShaderMaterial, shared.SurfaceGetMaterial(0) as ShaderMaterial));
+            int surfaces = shared.GetSurfaceCount();
+            if (surfaces == 1)
+            {
+                Bases(entry, 1, _ => (batch.MaterialOverride as ShaderMaterial, shared.SurfaceGetMaterial(0) as ShaderMaterial));
+            }
+            else
+            {
+                // The group lives on the shared mesh's surface materials (ApplyChains).
+                Bases(entry, surfaces, i => (null, shared.SurfaceGetMaterial(i) as ShaderMaterial));
+            }
             return true;
         }
         return false;
@@ -899,6 +937,12 @@ public static class Engine_ClassicLitInstances
         for (int i = 0; i < surfaces; i++)
         {
             (ShaderMaterial? over, ShaderMaterial? own) = read(i);
+            if (own is not null && own.HasMeta(Engine_ClassicMaterial.GroupVariantMeta) &&
+                own.GetMeta(Engine_ClassicMaterial.GroupSourceMeta).Obj is ShaderMaterial groupSource)
+            {
+                // A batch bound its group variant on the shared mesh: the base is the source.
+                own = groupSource;
+            }
             if (over is not null && !over.HasMeta(Engine_ClassicMaterial.GroupVariantMeta))
             {
                 // An ambient-keyed override (or any override that is not ours) is the base.

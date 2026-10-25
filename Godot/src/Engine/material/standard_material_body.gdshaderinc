@@ -444,7 +444,7 @@ void fragment() {
     vec3 mapped_world = normalize((INV_VIEW_MATRIX * vec4(mapped_view, 0.0)).xyz);
     vec3 darken = vec3(1.0);
     if (!grass && (!foliage || has_normal)) {
-        vec3 amb_ref = normalize(vec3(atmos_sun.x, atmos_sun.z, atmos_sun.y));
+        vec3 amb_ref = normalize(vec3(fable_ambient_ref.x, fable_ambient_ref.z, fable_ambient_ref.y));
         float bend = 0.5 * (dot(world_normal, amb_ref) + 1.0);
         vec3 bent = normalize(mix(world_normal, amb_ref, bend));
         float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);

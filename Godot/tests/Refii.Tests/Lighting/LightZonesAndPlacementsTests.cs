@@ -472,7 +472,9 @@ public class LightZonesAndPlacementsTests
             out _);
         AssertThat(Mathf.IsEqualApprox(unattachedIndoorEnergy, 1.5f, 0.001f)).IsTrue();
 
-        // 2d. Cave/interior level (CurrentInterior = true) ignores building_interior_* and unattached_light_scale completely.
+        // 2d. A level with no sky (CurrentInterior = true) takes every placed light AS STATED:
+        //     no placed, building-interior or unattached scale — the authored bakes carry the
+        //     room and were painted against the shipped torch.
         Engine_LightingFrame.CurrentInterior = true;
         Engine_LevelLights.ComputeEffectiveLightValues(
             rawIntensity: 10.0f,
@@ -481,8 +483,8 @@ public class LightZonesAndPlacementsTests
             isUnattached: true,
             out float caveEnergy,
             out float caveRange);
-        AssertThat(Mathf.IsEqualApprox(caveEnergy, 15.0f, 0.001f)).IsTrue();
-        AssertThat(Mathf.IsEqualApprox(caveRange, 12.0f, 0.001f)).IsTrue();
+        AssertThat(Mathf.IsEqualApprox(caveEnergy, 10.0f, 0.001f)).IsTrue();
+        AssertThat(Mathf.IsEqualApprox(caveRange, 8.0f, 0.001f)).IsTrue();
 
         Engine_LightingFrame.CurrentInterior = false;
         Engine_RefiiConfig.TrySetGodotCvar("building_interior_light_scale", "0.65");

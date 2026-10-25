@@ -516,7 +516,13 @@ public static class Engine_LevelLighting
 		//            and both take the bounce of the lights that are actually there.
 		//   fable  — the guest: the shaders emit the 360's own fills and Godot's ambient has no
 		//            energy, which is what `ambient_light_disabled` used to guarantee.
-		bool unified = Engine_LightingFrame.ModernModel;
+		// NO SKY, NO GI: a cave or hall states no main light, so there is no sky light for the
+		// GI to trace and no sun for it to bounce; its fill IS the authored bake (vertex
+		// colours and lightmaps under the placement id, `sub_82219978`) plus the flat ambient,
+		// and the torches are live. The outdoor stand-in (a terrain-texel mean × LightmapColour,
+		// below) has no business in a room, so a sky-less level takes the guest's own fill
+		// under the modern model too, with the modern torches on top.
+		bool unified = Engine_LightingFrame.ModernModel && frame.HasSky;
 		RenderingServer.GlobalShaderParameterSet(FableUnifiedName, unified ? 1.0f : 0.0f);
 		ConfigureGlobalIllumination(environment, unified);
 
@@ -581,6 +587,9 @@ public static class Engine_LevelLighting
 		Engine_LevelBakedLighting.InteriorBakeNow =
 			interior ? Engine_LightingFrame.InteriorBakeScale : 1.0f;
 		RenderingServer.GlobalShaderParameterSet(FableInteriorName, interior ? 1.0f : 0.0f);
+		// The bent-normal reference: the rig's sun direction, dome convention like `atmos_sun`.
+		RenderingServer.GlobalShaderParameterSet(FableAmbientRefName,
+			Refii.Level.Engine_SkyFrame.ToDome(frame.AmbientReference));
 		RenderingServer.GlobalShaderParameterSet(FableInteriorFogName,
 			interior ? Engine_LightingFrame.InteriorFogScale : 1.0f);
 		RenderingServer.GlobalShaderParameterSet(FableInteriorBakeName,
@@ -654,6 +663,8 @@ public static class Engine_LevelLighting
 	private static StringName? _fableSkyAmbientName;
 
 	private static StringName FableUnifiedName => _fableUnifiedName ??= "fable_unified";
+	private static StringName? _fableAmbientRefName;
+	private static StringName FableAmbientRefName => _fableAmbientRefName ??= "fable_ambient_ref";
 	private static StringName FableFillFloorName => _fableFillFloorName ??= "fable_fill_floor";
 	private static StringName FableInteriorName => _fableInteriorName ??= "fable_interior";
 	private static StringName FableInteriorFogName => _fableInteriorFogName ??= "fable_interior_fog";
