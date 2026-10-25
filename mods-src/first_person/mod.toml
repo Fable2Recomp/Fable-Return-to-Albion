@@ -1,0 +1,4 @@
+name = "First Person"
+version = "0.1.0"
+author = "ammuica"
+description = "Play Fable II in first person: the camera sits in the hero's head, the head is hidden and the body stays in view, and you walk, fight and look around with the mouse or right stick. H switches between first and third person. Full cutscenes, canned actions and (by default) the gun aim keep the game's own cameras."
