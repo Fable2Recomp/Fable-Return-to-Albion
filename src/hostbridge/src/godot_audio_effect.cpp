@@ -50,9 +50,10 @@ struct Output {
     std::atomic<uint64_t> underrun_steps{0};
 
     // Audio thread only from here down.
-    std::vector<float> staging;  ///< Interleaved, `stride` floats per sample.
+    std::vector<float> staging;  ///< Interleaved, `stride` floats per sample, at the GUEST's rate.
     uint32_t stride = 0;
     size_t staged = 0;           ///< Samples converted and not yet released.
+    double phase = 0.0;          ///< Where the next output sample reads, in guest samples, within staged.
     uint32_t step_calls = 0;     ///< Which pair this process call is, within the step.
     bool heard_guest = false;    ///< A pop has succeeded, so an empty ring is an underrun.
     alignas(16) float raw[refii::vfs::kGuestAudioFloatsPerFrame];
@@ -61,6 +62,21 @@ struct Output {
 Output& Out() {
     static Output output;
     return output;
+}
+
+/// Guest samples per output sample: the guest renders at 48 kHz whatever the device runs at.
+/// 1.0 at 48 kHz; 2.0 on a 96 kHz device, where writing the frames one to one played the game
+/// at double speed (2026-10-26).
+double Ratio(const Output& o) {
+    const uint32_t mix_rate = o.mix_rate.load(std::memory_order_relaxed);
+    return mix_rate == 0 ? 1.0 : static_cast<double>(refii::vfs::kGuestAudioSampleRate) / mix_rate;
+}
+
+/// Guest samples a step of `count` output samples reads through the interpolation, from the
+/// current phase: the last index touched plus its neighbour.
+size_t Needed(const Output& o, size_t count) {
+    const double last = o.phase + static_cast<double>(count) * Ratio(o);
+    return static_cast<size_t>(last) + 2;
 }
 
 /// Makes `count` converted samples available at the front of the staging buffer.
@@ -109,6 +125,7 @@ void Fill(Output& o, size_t count) {
 void Release(Output& o, size_t count) {
     if (o.staged <= count) {
         o.staged = 0;
+        o.phase = 0.0;
         return;
     }
     std::memmove(o.staging.data(), o.staging.data() + count * o.stride,
@@ -128,29 +145,44 @@ void Process(const float* src, float* dst, int32_t frame_count) {
         return;
     }
     const size_t count = static_cast<size_t>(frame_count);
+    const double ratio = Ratio(o);
+    const size_t needed = Needed(o, count);
 
     if (pair == 0) {
-        Fill(o, count);
+        Fill(o, needed);
     }
 
     // Stage 2 (per-voice playback) owns the sound: the mix is still pulled, so the clock
     // runs, and written as silence.
     const bool muted = refii::vfs::VoiceCaptureOwnsOutput();
     const uint32_t stride = o.stride;
-    const bool carries = (2u * pair + 1u) < stride && !muted && o.staged >= count;
+    const bool carries = (2u * pair + 1u) < stride && !muted && o.staged >= needed;
 
     if (carries) {
+        // Linear interpolation between neighbouring guest samples at the device's rate. At
+        // 48 kHz the ratio is exactly 1 and the phase stays 0: every read lands on a sample
+        // and this is the plain copy it was.
         const float* s = o.staging.data() + 2u * pair;
-        for (size_t i = 0; i < count; i++, s += stride) {
-            dst[2 * i] = src[2 * i] + s[0];
-            dst[(2 * i) + 1] = src[(2 * i) + 1] + s[1];
+        for (size_t i = 0; i < count; i++) {
+            const double at = o.phase + static_cast<double>(i) * ratio;
+            const size_t index = static_cast<size_t>(at);
+            const float frac = static_cast<float>(at - static_cast<double>(index));
+            const float* a = s + index * stride;
+            const float* b = a + stride;
+            dst[2 * i] = src[2 * i] + a[0] + (b[0] - a[0]) * frac;
+            dst[(2 * i) + 1] = src[(2 * i) + 1] + a[1] + (b[1] - a[1]) * frac;
         }
     } else if (dst != src) {
         std::memcpy(dst, src, count * 2 * sizeof(float));
     }
 
     if (pair + 1 == pairs) {
-        Release(o, count);
+        // The step consumed `count` output samples' worth of guest samples; the fraction left
+        // over is where the next step starts reading.
+        const double advanced = o.phase + static_cast<double>(count) * ratio;
+        const size_t consumed = static_cast<size_t>(advanced);
+        o.phase = advanced - static_cast<double>(consumed);
+        Release(o, consumed);
     }
 }
 
@@ -348,11 +380,13 @@ REFII_HOST_ABI_EXPORT void RefiiHostAudioOutputConfigure(uint32_t speaker_pairs,
                 "is {}",
                 pairs, mix_rate, ChannelsForPairs(pairs) == 6 ? "passed through" : "folded to stereo");
     if (mix_rate != refii::vfs::kGuestAudioSampleRate) {
-        // The effect copies samples one to one. A bus at another rate plays the guest at the
-        // wrong speed, which is a project setting (audio/driver/mix_rate), not a runtime fix.
-        REXLOG_ERROR("refii audio: Godot mixes at {} Hz but the guest renders at {} Hz; set "
-                     "audio/driver/mix_rate to {}",
-                     mix_rate, refii::vfs::kGuestAudioSampleRate, refii::vfs::kGuestAudioSampleRate);
+        // The project asks for 48 kHz; a device Godot cannot run at that rate (WASAPI follows
+        // the device) lands here, and the effect interpolates the guest's samples to the bus
+        // rate (Process). Before it did, a 96 kHz device played the game at double speed.
+        REXLOG_INFO("refii audio: Godot mixes at {} Hz; the guest's {} Hz frames are resampled "
+                    "to it ({:.4f} guest samples per output sample)",
+                    mix_rate, refii::vfs::kGuestAudioSampleRate,
+                    static_cast<double>(refii::vfs::kGuestAudioSampleRate) / mix_rate);
     }
 }
 

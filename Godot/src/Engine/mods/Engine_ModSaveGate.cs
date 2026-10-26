@@ -182,6 +182,17 @@ public static class ModSaveGate
 		var pending = new Pending(save, directory, diff, CommitOf(fields), archon, archonDiff);
 		lock (Lock)
 		{
+			// THE FRONT END STATES THE SAME START TWICE: once under the pump's action, with the
+			// commit to post again, and once more on its own tick with none. Taking the second as
+			// the pending load replaced `LoadSave:N` with "", so Yes on the box had nothing to
+			// post and the player was told to choose once more instead of loading (2026-10-26).
+			// The refusal stands; the box already up is the one answered.
+			if (_pending is { } asked && string.Equals(asked.Save, save, StringComparison.Ordinal) &&
+				pending.Commit.Length == 0 && asked.Commit.Length != 0)
+			{
+				GD.Print($"[mod-save] '{save}' stated again with no commit while its box is up — keeping '{asked.Commit}'");
+				return true;
+			}
 			_pending = pending;
 		}
 

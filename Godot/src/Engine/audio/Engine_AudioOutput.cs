@@ -111,9 +111,9 @@ public partial class Engine_AudioOutput : Node
 
 		if (mixRate != GuestMixRate)
 		{
-			GD.PushError(
-				$"[audio] Godot mixes at {mixRate} Hz but the guest renders at {GuestMixRate}; " +
-				"set audio/driver/mix_rate in project.godot, or the game plays at the wrong speed");
+			// The project asks for 48 kHz; on a device Godot cannot run at that rate the effect
+			// resamples the guest's frames to the bus rate (godot_audio_effect.cpp Process).
+			GD.Print($"[audio] Godot mixes at {mixRate} Hz; the guest's {GuestMixRate} Hz output is resampled to it");
 		}
 	}
 
