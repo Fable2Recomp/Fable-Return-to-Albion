@@ -17,6 +17,7 @@ set(REFII_HOOK_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/character_morph_hooks.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/coop_world_hooks.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/firearm_hooks.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/receive_items_hooks.cpp
 )
 
 set(REFII_HOOK_INCLUDE_DIRS

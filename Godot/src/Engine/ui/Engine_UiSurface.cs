@@ -43,12 +43,32 @@ public abstract class Engine_UiSurface<TView>
 	/// True while this view stands in for the guest's presentation, so the follower does not
 	/// mirror it as a second copy. Art and join both: without a join nothing is ever applied,
 	/// so suppressing the mirror on art alone would leave the screen empty.
+	///
+	/// AND ONLY WHILE IT IS ACTUALLY ON SCREEN, past a short grace. Art and join say the view
+	/// CAN draw; whether it HAS needs the guest's live presentation found by name and its
+	/// element count agreeing with the document, and either can fail for a whole opening
+	/// (a presentation the guest has not built or named as expected, a count that never
+	/// matches). Claiming ownership on art and join alone then suppressed the mirror while
+	/// nothing of ours stood: the player saw no box and the guest waited on one — a chest's
+	/// item card, more than once. The grace covers the frames between the guest opening the
+	/// box and the first apply, so the mirror does not flash the guest's own copy first.
 	/// </summary>
-	public bool Owned => _open && View is { HasShippedArt: true } && Joined;
+	public bool Owned =>
+		_open && View is { HasShippedArt: true } && Joined &&
+		(Standing || Godot.Engine.GetProcessFrames() - OpenedFrame <= OwnerGraceFrames);
+
+	/// <summary>Frames an open surface may take to stand before the mirror draws the guest's own panel.</summary>
+	public const ulong OwnerGraceFrames = 30;
 
 	/// <summary>The guest has this surface up and it is being driven this frame; <see cref="Owned"/>
 	/// hangs off it so the flag falls the same frame the box closes.</summary>
 	private bool _open;
+
+	/// <summary>The process frame this opening began, for the grace and the starvation report.</summary>
+	protected ulong OpenedFrame { get; private set; }
+
+	/// <summary>True once this opening's starvation has been reported, so it prints once.</summary>
+	protected bool Starved { get; set; }
 
 	/// <summary>True while the view is on screen, which is not the same as owning the
 	/// presentation. Mask and input routing gate on this, so an undrawn box still answers to
@@ -101,6 +121,11 @@ public abstract class Engine_UiSurface<TView>
 	/// surface answerable.</summary>
 	protected void Ensure(Engine_UiPresentationHost host)
 	{
+		if (!_open)
+		{
+			OpenedFrame = Godot.Engine.GetProcessFrames();
+			Starved = false;
+		}
 		_open = true;
 		int generation = host.BookGeneration(Presentation);
 		if (View is not null && GodotObject.IsInstanceValid(View) && generation == _generation)
@@ -244,8 +269,9 @@ public abstract class Engine_UiModalSurface<TView> : Engine_UiSurface<TView>
 		System.Collections.Generic.List<Engine_UiModel.UiElement> elements,
 		Engine_UiPresentationHost host);
 
-	/// <summary>A host-raised box's text, shown without the guest's elements; true when it is one.</summary>
-	protected virtual bool ApplyHost() => false;
+	/// <summary>A surface whose content the HOST states — a host-raised box's text, or a card fed
+	/// from the guest's entry point — shown without the guest's elements; true when it is one.</summary>
+	protected virtual bool ApplyHost(Engine_UiPresentationHost host) => false;
 
 	/// <summary>This frame's press, once the view is standing.</summary>
 	protected abstract void Route(Engine_UiSurfaceInput input);
@@ -307,10 +333,12 @@ public abstract class Engine_UiModalSurface<TView> : Engine_UiSurface<TView>
 		// A box the HOST raises states its own text: it needs no guest presentation, and over a
 		// screen with none (the world map) waiting for one left it unseen, deaf, and holding the
 		// frame — every menu under it starved.
-		if (!ApplyHost() && Address != 0 && Joined && Elements(Address) is { } elements)
+		if (!ApplyHost(host) && Address != 0 && Joined && Elements(Address) is { } elements)
 		{
 			Apply(elements, host);
 		}
+
+		ReportStarvation(host);
 
 		Mask?.Invoke(Standing && TakesInput);
 		if (!Standing || !TakesInput)
@@ -327,6 +355,33 @@ public abstract class Engine_UiModalSurface<TView> : Engine_UiSurface<TView>
 
 		Route(input);
 		return true;
+	}
+
+	/// <summary>
+	/// Names, once per opening, why an open surface has not stood past the grace: the live
+	/// presentation missing by name, its element count disagreeing with the document, or the
+	/// join. The mirror draws the guest's own panel from that frame (<see cref="Owned"/>); this
+	/// line is what turns "the box did not appear" into a cause.
+	/// </summary>
+	private void ReportStarvation(Engine_UiPresentationHost host)
+	{
+		if (Starved || Standing || ApplyHost(host) ||
+			Godot.Engine.GetProcessFrames() - OpenedFrame <= OwnerGraceFrames)
+		{
+			return;
+		}
+
+		Starved = true;
+		int live = Address == 0 ? -1 : Engine_UiElementState.Current.Elements(Address)?.Count ?? -1;
+		GD.Print($"[ui-surface] {Label} is up but NOT DRAWN after {OwnerGraceFrames} frames — " +
+			(Address == 0
+				? $"no live presentation named '{Presentation}.bgf'"
+				: live < 0
+					? $"presentation 0x{Address:X8} has no element sample"
+					: live != ElementCount
+						? $"presentation 0x{Address:X8} has {live} live elements, the document {ElementCount}"
+						: Joined ? "elements agree, apply left the view hidden" : "the join did not resolve") +
+			"; the mirror draws the guest's own panel from here");
 	}
 
 	/// <summary>

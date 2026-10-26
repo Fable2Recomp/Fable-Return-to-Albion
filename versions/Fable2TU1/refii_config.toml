@@ -10973,6 +10973,9 @@
 0x825C5220 = { name = "rex_CECHitReceiver_OnHit" }
 0x823A4E98 = { name = "rex_CECCreature_Die" }
 0x824CE7F8 = { name = "rex_CECHealth_OnHeroDeath" }
+0x82537F38 = { name = "rex_CGUIReceiveItems_SetItem" }
+0x82538268 = { name = "rex_CGUIReceiveItems_SetPeerItem" }
+0x82536F70 = { name = "rex_CGUIReceiveItems_OnLeave" }
 0x824CAA08 = { name = "rex_CECHealth_OnHit" }
 0x824CBC68 = { name = "rex_CECHealth_Modify" }
 0x82460BF0 = { name = "rex_lhLuaScriptSystem_OnLevelLoad" }

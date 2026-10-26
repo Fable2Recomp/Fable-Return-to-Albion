@@ -173,10 +173,18 @@ public static class Engine_UiAbilitySource
 				Icon: AbilityIcon,
 				EventType: eventType,
 
-				// The guest's id is the FNV-1 of the LEVEL record currently displayed, so it
-				// changes as the ability levels up. Ours is the ability Type, which does not —
-				// these rows act host-side and never commit by the guest's identity.
-				Id: (uint)type,
+				// THE GUEST'S OWN IDENTITY: the FNV-1 of the level record on display, which the
+				// shipped menu Lua pushes and which changes as the ability levels up. It is not
+				// decorative. Y commits this row BY IDENTITY as a discard (Engine_UiScreenMenu,
+				// MenuDiscard), and the guest's confirm — `sub_826C2D40` / `sub_826C2E68` —
+				// resolves the ability from that id alone: `sub_82896900` runs
+				// `GDBManager_FindEntryByHash(id)` and reads the record's `Type`. With the type
+				// number here instead (as it was), no record matched, `Type` was never written,
+				// and whatever stood in that slot was discarded: a player unlearning Shock lost a
+				// level of Brutal Styles. The learn path is unaffected — it calls the purchase by
+				// type and never reads this.
+				Id: Refii.Core.Engine_GameHash.Fnv1(
+					Refii.Gdb.Engine_AbilityRecords.RecordForLevel(record, level)),
 				Rating: rating,
 				Committable: false,
 				Counted: upgradeable,

@@ -421,7 +421,7 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 		return _display || _host;
 	}
 
-	protected override bool ApplyHost()
+	protected override bool ApplyHost(Engine_UiPresentationHost host)
 	{
 		if (!_host || (Engine_UiHostBoxes.Question ?? Engine_UiHostBoxes.Notice) is not { } body || _joins is null)
 		{
@@ -662,24 +662,80 @@ public sealed class Engine_UiNumericSurface : Engine_UiModalSurface<Engine_UiNum
 }
 
 /// <summary>
-/// The owned received-item card (screen id 8). The guest pushes it on every pickup; its strings,
-/// icon and side are live state, and its buttons go through the handler's own screen-input
-/// method, so the answers are `ReceiveItemsAction` rather than `QueryAnswer`.
+/// The owned received-item card (screen id 8), drawn from what the guest STATES at its own
+/// entry points. The handler's set-item (`sub_82537F38`, and `sub_82538268` for the co-op
+/// partner's card), its input handler and its leave are hooked (receive_items_hooks.cpp) and post
+/// the handler's fields as a host-only record: the title and description TEXT KEYS, the icon's
+/// resource hash, the NameAndIcon line, the usable flag, the side and the peer flag. Nothing here
+/// reads the presentation's elements — the guest rebuilds that presentation under a sampler
+/// between the items of one chest, which is how the card stood invisible. The answers go through
+/// the handler's own screen-input method (`ReceiveItemsAction`), as before.
 /// </summary>
 public sealed class Engine_UiReceiveItemsSurface : Engine_UiModalSurface<Engine_UiReceiveItems>
 {
-	/// <summary>The guest's screen id and the modal mode it stands in.</summary>
+	/// <summary>The host-only record kind the hooks post (receive_items_hooks.cpp kCardKind).</summary>
+	public const int StateKind = 1006;
+
+	/// <summary>The guest's screen id for the card, read beside the stated record as the sanity
+	/// that the screen the record belongs to is still the current one.</summary>
 	private const uint CardScreen = 8;
 
-	private const uint CardMode = 1;
-
-	/// <summary>The screen handler's own codes: done, and turn the card over.</summary>
+	/// <summary>The screen handler's own codes: done, turn the card over, equip.</summary>
 	private const uint DoneCode = 36;
 
 	private const uint FlipCode = 39;
 
-	/// <summary>X — equip and close, gated by the guest on `+80` (`sub_82537128` code 75).</summary>
 	private const uint EquipCode = 75;
+
+	/// <summary>The prompt tags the card's file authors (`receiveitemsscreen.bgf`: GUI_USE,
+	/// GUI_INFO, GUI_FLIP, GUI_TAKE); the partner's card captions Done as GUI_DONE (+324).</summary>
+	private const string UseTag = "GUI_USE";
+
+	private const string InfoTag = "GUI_INFO";
+
+	private const string FlipTag = "GUI_FLIP";
+
+	private const string TakeTag = "GUI_TAKE";
+
+	private const string DoneTag = "GUI_DONE";
+
+	/// <summary>One stated card: the handler's fields after set-item, the side after each input.</summary>
+	public sealed record CardState(
+		bool Up, bool Peer, bool Front, bool Usable,
+		uint Record, uint Model, uint Icon, uint Title, uint Description, uint Extra, uint Amount,
+		string Name);
+
+	private static readonly CardState Down = new(false, false, true, false, 0, 0, 0, 0, 0, 0, 0, string.Empty);
+
+	/// <summary>What the guest last stated; read by the drive each frame.</summary>
+	public static CardState State { get; private set; } = Down;
+
+	/// <summary>A record from the hooks: `up=1,peer=,front=,usable=,record=,model=,icon=,title=,desc=,extra=,amount=,name='…'` or `up=0`.</summary>
+	public static void Stated(string fields)
+	{
+		var values = new System.Collections.Generic.Dictionary<string, object>(System.StringComparer.Ordinal);
+		foreach (System.Collections.Generic.KeyValuePair<string, object> pair in Refii.Mods.RefiiHost.ParseFieldsPlain(fields))
+		{
+			values[pair.Key] = pair.Value;
+		}
+
+		uint U(string key) => values.TryGetValue(key, out object? v) && v is long n ? unchecked((uint)n) : 0u;
+		bool B(string key) => U(key) != 0u;
+		if (!B("up"))
+		{
+			State = Down;
+			GD.Print("[game-ui] received-item card stated DOWN");
+			return;
+		}
+
+		State = new CardState(
+			true, B("peer"), B("front"), B("usable"),
+			U("record"), U("model"), U("icon"), U("title"), U("desc"), U("extra"), U("amount"),
+			values.TryGetValue("name", out object? name) ? name as string ?? name?.ToString() ?? string.Empty : string.Empty);
+		GD.Print($"[game-ui] received-item card stated UP — record 0x{State.Record:X8} title 0x{State.Title:X8} " +
+			$"icon 0x{State.Icon:X8} {(State.Front ? "front" : "back")} {(State.Usable ? "usable" : "NOT usable")}" +
+			$"{(State.Peer ? " (partner's)" : string.Empty)}");
+	}
 
 	public override string Presentation => Engine_UiReceiveItems.Presentation;
 
@@ -697,70 +753,67 @@ public sealed class Engine_UiReceiveItemsSurface : Engine_UiModalSurface<Engine_
 	protected override void Join(Engine_UiScreen document) =>
 		_joins = Engine_UiReceiveItems.Resolve(document);
 
+	/// <summary>Open while the guest's set-item has stated a card and its leave has not taken it
+	/// down, and the card is the current screen: a latch over it (a box) does not close it.</summary>
 	protected override bool IsOpen(Engine_UiModel.PauseState? pause) =>
-		pause is { ScreenId: CardScreen, ModalMode: CardMode };
+		State.Up && pause is { ScreenId: CardScreen };
 
-	protected override void Apply(
-		System.Collections.Generic.List<Engine_UiModel.UiElement> elements,
-		Engine_UiPresentationHost host)
+	/// <summary>The stated card on screen: the strings by their text keys, the icon by its
+	/// resource hash, the prompts by the file's tags.</summary>
+	protected override bool ApplyHost(Engine_UiPresentationHost host)
 	{
-		string? title = elements[_joins!.Title].Text;
-		string? name = elements[_joins.Name].Text;
-		string? back = _joins.BackText >= 0 ? elements[_joins.BackText].Text : null;
-		bool frontUp = elements[_joins.Front].IsGloballyActive;
-		bool backUp = elements[_joins.Back].IsGloballyActive;
-
-		// WHICH SIDE IS UP IS THE ROOT'S STATED SLIDE. `sub_82537128` code 39 runs
-		// `sub_82426BA8(root, pres, 3)` to turn the card over and `4` to turn it back, and
-		// `Foreground` stays globally active through both — its paper turns edge-on and its
-		// contents fade — so the two groups' active flags never say "the back is up".
-		int rootSlide = _joins.Root >= 0 ? elements[_joins.Root].Slide : 0;
-		bool reverse = rootSlide == Engine_UiReceiveItems.FlipToBackSlide ||
-			rootSlide == Engine_UiReceiveItems.FlipOutroSlide;
-
-		// `sub_82538910`: `Buttons` slide = (handler+80 == 0) + 1, written ONLY on the side that
-		// is up. The card always opens on its front and is filled there, so the front's slide is
-		// this card's answer on both sides; the back's still holds the last card's until the
-		// guest's refresh lands, which is the X that flashed on every turn-over.
-		int buttons = _joins.FrontButtons;
-		bool usable = buttons < 0 ||
-			elements[buttons].Slide != Engine_UiReceiveItems.UnusableSlide;
-
-		var labels = new string?[_joins.Labels.Length];
-		for (int i = 0; i < labels.Length; ++i)
+		CardState s = State;
+		if (!s.Up || View is null)
 		{
-			labels[i] = _joins.Labels[i] >= 0 ? elements[_joins.Labels[i]].Text : null;
+			return false;
 		}
 
-		uint iconHash = 0;
-		uint[]? hashes = Engine_UiSource.Current.GetUiTextureHashes(Address, elements.Count);
-		if (hashes is not null && _joins.Icon < hashes.Length)
+		if (!Changed($"stated:{s.Peer}|{s.Front}|{s.Usable}|{s.Icon:X8}|{s.Title:X8}|{s.Description:X8}|" +
+			$"{s.Extra:X8}|{s.Amount}|{s.Name}"))
 		{
-			iconHash = hashes[_joins.Icon];
+			return true;
 		}
 
-		if (!Changed($"{title}|{name}|{back}|{frontUp}|{backUp}|{iconHash:X8}|{rootSlide}|" +
-			$"{usable}|{string.Join('\u001F', labels)}"))
-		{
-			return;
-		}
+		Engine_UiTheme? theme = View.Theme;
+		string? title = Text(theme, s.Title);
+		string? back = Text(theme, s.Description);
+		// The discount card's line is its tag and amount (`+68`, `+72`); every other card's line
+		// is the string the guest composed (`+76`), empty for most items.
+		string name = s.Name.Length == 0 && s.Extra != 0
+			? $"{Text(theme, s.Extra)} {s.Amount}"
+			: s.Name;
 
-		// The icon, resolved the way every other live texture is.
 		Texture2D? icon = null;
-		if (iconHash != 0 &&
-			host.TextureNames is { } names &&
-			names.TryResolve(iconHash, out string path))
+		if (s.Icon != 0 && host.TextureNames is { } names && names.TryResolve(s.Icon, out string path))
 		{
 			icon = host.LoadTexture(path);
 		}
 
-		View!.BackClip = _joins.BackClip;
-		View!.ShowStated(title, name, back, iconHash, icon, frontUp || backUp, reverse, usable, labels);
+		var labels = new string?[]
+		{
+			theme?.Resolve(UseTag),
+			theme?.Resolve(s.Front ? InfoTag : FlipTag),
+			theme?.Resolve(s.Peer ? DoneTag : TakeTag),
+		};
+
+		View.BackClip = _joins?.BackClip;
+		View.ShowStated(title, name, back, s.Icon, icon, up: true, reverse: !s.Front, usable: s.Usable, labels);
 		GD.Print($"[game-ui] received-item card up — '{title}' " +
-			$"(icon {(icon is null ? $"0x{iconHash:X8} unresolved" : "resolved")}, " +
-			$"root slide {rootSlide} = {(reverse ? "back" : "front")}, " +
-			$"buttons slide {(buttons < 0 ? -1 : elements[buttons].Slide)} = " +
-			$"{(usable ? "usable" : "NOT usable")})");
+			$"(icon {(icon is null ? $"0x{s.Icon:X8} unresolved" : "resolved")}, " +
+			$"{(s.Front ? "front" : "back")}, {(s.Usable ? "usable" : "NOT usable")})");
+		return true;
+	}
+
+	/// <summary>A text by the key hash the guest holds (`Text_HashKeyNameFnv1`), or null.</summary>
+	private static string? Text(Engine_UiTheme? theme, uint key) =>
+		key != 0 && theme?.Strings is { } strings && strings.TryGetString(key, out string value) ? value : null;
+
+	/// <summary>Never reached: the card is host-stated (<see cref="ApplyHost"/>) and the elements
+	/// are not read.</summary>
+	protected override void Apply(
+		System.Collections.Generic.List<Engine_UiModel.UiElement> elements,
+		Engine_UiPresentationHost host)
+	{
 	}
 
 	/// <summary>A click on a prompt is its button; the card itself answers nothing.</summary>

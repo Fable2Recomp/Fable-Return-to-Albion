@@ -554,6 +554,13 @@ public partial class RefiiHost : Node
 				continue;
 			}
 
+			// The received-item card the guest's own entry points stated: Godot's UI, never an event.
+			if (kind == Refii.Ui.Engine_UiReceiveItemsSurface.StateKind)
+			{
+				Refii.Ui.Engine_UiReceiveItemsSurface.Stated(fields);
+				continue;
+			}
+
 			// A menu or a message box a native or Lua mod asked for: Godot's UI, never an event.
 			if (kind == Refii.Ui.Engine_UiModRequest.Kind)
 			{

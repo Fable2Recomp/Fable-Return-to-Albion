@@ -10601,7 +10601,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMenuBox(uint32_t* out_selected, uint3
     if (!plausible(owner)) return 0;
 
     const uint32_t control = read32(owner + 56u);
-    if (!plausible(control) || base[control + 12u] == 0u) return 0;  // no box open
+    if (!plausible(control) || GuestByteAt(base, control + 12u) == 0u) return 0;  // no box open
 
     const uint32_t begin = read32(control + 20u);
     const uint32_t end = read32(control + 24u);
@@ -10614,15 +10614,15 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMenuBox(uint32_t* out_selected, uint3
     if (out_selected != nullptr) *out_selected = read32(control + 0u);
     if (out_flags != nullptr) {
         // bit 0 cancelable, bit 1 already-cancelled.
-        *out_flags = (base[control + 14u] != 0u ? 1u : 0u) |
-                     (base[control + 13u] != 0u ? 2u : 0u);
+        *out_flags = (GuestByteAt(base, control + 14u) != 0u ? 1u : 0u) |
+                     (GuestByteAt(base, control + 13u) != 0u ? 2u : 0u);
     }
 
     if (out_enabled_mask != nullptr) {
         uint32_t mask = 0u;
         for (uint32_t i = 0; i < count; ++i) {
             const uint32_t item = read32(begin + (i * 8u));
-            if (plausible(item) && base[item + 4u] != 0u) {
+            if (plausible(item) && GuestByteAt(base, item + 4u) != 0u) {
                 mask |= 1u << i;
             }
         }
@@ -15451,13 +15451,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiMovie(uint32_t presentation, uint32
         // THE TYPE BYTE IS NOT OPTIONAL — `node+10 == 2` is the guest's own guard before it
         // treats `node+0` as a sprite (`sub_829A5A18` at 0x829A5B64). Without it, +564 is read
         // off every kind of render item and returns whatever pointer-shaped bytes are there.
-        if (plausible(holder) && (base[holder + 10u] == 2u)) {
+        if (plausible(holder) && (GuestByteAt(base, holder + 10u) == 2u)) {
             const uint32_t record = read32(holder);
             if (plausible(record)) {
                 const uint32_t indirect = read32(record + 564u);
                 if (plausible(indirect)) {
                     const uint32_t text = read32(indirect);
-                    if (plausible(text) && base[text] != 0) {
+                    if (plausible(text) && GuestByteAt(base, text) != 0) {
                         if (out_ordinal != nullptr) {
                             *out_ordinal = ordinal;
                         }
@@ -15465,7 +15465,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiMovie(uint32_t presentation, uint32
                         if (out != nullptr && capacity > 0) {
                             uint32_t i = 0;
                             for (; i + 1u < capacity; ++i) {
-                                const char c = (char)base[text + i];
+                                const char c = (char)GuestByteAt(base, text + i);
                                 if (c == 0) {
                                     break;
                                 }
@@ -19810,7 +19810,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiPreviewObject(uint32_t* out_model_h
     if (!plausible(handler)) return 0;
 
     const uint32_t preview = handler + preview_offset;
-    if (base[preview + 64u] == 0u) return 0;  // nothing spawned — the panel is empty
+    if (GuestByteAt(base, preview + 64u) == 0u) return 0;  // nothing spawned — the panel is empty
 
     if (out_model_hash != nullptr) *out_model_hash = read32(preview + 124u);
     if (out_entity != nullptr) *out_entity = read32(preview);
@@ -19902,6 +19902,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldSprites(uint32_t* words, uint32_
         std::memcpy(&out, &bits, sizeof(out));
         return out;
     };
+    // EVERY BYTE THROUGH THE GUARD. This walk runs on the host thread while the guest may be
+    // tearing the region down (a fast travel answered in a menu box): the vector's entries go
+    // stale under it, and a raw `base[obj + N]` or a memcmp at a pointer read from such an
+    // entry faults on an unmapped page — an unhandled read of guest 0x9AC26D6D ended a
+    // player's run on 2026-10-25. GuestByteAt/CopyGuest zero-fill instead of faulting.
     // D3D objects (the sprite class is `Render_AllocD3DObject(368)`) live in the guest's
     // PHYSICAL heaps, above 0xC0000000, so the usual pointer ceiling does not apply.
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xE0000000u; };
@@ -19936,7 +19941,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldSprites(uint32_t* words, uint32_
         ++entries;
         const uint32_t vtable = plausible(obj) ? read32(obj) : 0u;
         if (vtable == kPooledVtable) {
-            if (base[obj + 160u] != 0u) continue;  // not yet updated: no anchor to publish
+            if (GuestByteAt(base, obj + 160u) != 0u) continue;  // not yet updated: no anchor to publish
             if ((written + 1u) * kWords > word_capacity || (written + 1u) * kValues > value_capacity) break;
             const uint32_t slot_record = read32(obj + 128u);
             uint32_t* w = words + written * kWords;
@@ -19976,20 +19981,22 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldSprites(uint32_t* words, uint32_
         const float opacity = readf(obj + 160u);
         const uint32_t alpha = opacity <= 0.0f ? 0u : opacity >= 1.0f ? 255u
                                                   : static_cast<uint32_t>(opacity * 255.0f);
-        w[2] = (static_cast<uint32_t>(base[obj + 62u]) << 24) |
-               (static_cast<uint32_t>(base[obj + 61u]) << 16) |
-               (static_cast<uint32_t>(base[obj + 60u]) << 8) | alpha;
+        w[2] = (static_cast<uint32_t>(GuestByteAt(base, obj + 62u)) << 24) |
+               (static_cast<uint32_t>(GuestByteAt(base, obj + 61u)) << 16) |
+               (static_cast<uint32_t>(GuestByteAt(base, obj + 60u)) << 8) | alpha;
         const uint32_t handle = read32(obj + 28u);
         w[3] = plausible(handle) ? read32(handle) : 0u;
-        w[4] = base[obj + 52u];
+        w[4] = GuestByteAt(base, obj + 52u);
         // bit0 fading, bit1 pooled, bit2 player two's (its key, +16, ends "_P2": mod_events.cpp,
         // the opinion icons asked in player two's scope).
         const uint32_t key_rep = read32(obj + 16u);
         const uint32_t key_chars = plausible(key_rep) ? read32(key_rep) : 0u;
         const uint32_t key_length = plausible(key_rep) ? read32(key_rep + 4u) : 0u;
+        char key_tail[3] = {0, 0, 0};
         const bool player_two = plausible(key_chars) && key_length >= 3u && key_length <= 512u &&
-                                std::memcmp(base + key_chars + key_length - 3u, "_P2", 3u) == 0;
-        w[5] = (base[obj + 100u] != 0u ? 1u : 0u) | (player_two ? 4u : 0u);
+                                CopyGuest(base, key_chars + key_length - 3u, key_tail, sizeof(key_tail)) &&
+                                std::memcmp(key_tail, "_P2", 3u) == 0;
+        w[5] = (GuestByteAt(base, obj + 100u) != 0u ? 1u : 0u) | (player_two ? 4u : 0u);
         w[6] = 0xFFFFFFFFu;
         w[7] = obj;
 
@@ -20052,7 +20059,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldIcons(uint32_t* out_flags, uint3
     const uint32_t wim = read32(hud + 28u);
     if (!plausible(wim)) return 0;
 
-    uint32_t flags = base[wim + 48u] != 0u ? 1u : 0u;
+    uint32_t flags = GuestByteAt(base, wim + 48u) != 0u ? 1u : 0u;
 
     // ShowIncomeIcon, off the hero's money component: the pause-tab predicate's hero chain,
     // then component id 81 (`CECMoney`) via the sorted {id, ptr} pairs at entity+0x48..+0x4C.
@@ -20062,7 +20069,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldIcons(uint32_t* out_flags, uint3
     const uint32_t player_map = plausible(game) ? read32(game + 0x9Cu) : 0u;
     if (plausible(session) && plausible(player_map)) {
         const uint32_t key =
-            (base[session + 0x34u] != 0u && base[session + 0x35u] != 0u) ? 1u : 2u;
+            (GuestByteAt(base, session + 0x34u) != 0u && GuestByteAt(base, session + 0x35u) != 0u) ? 1u : 2u;
         uint32_t entry = read32(player_map + 8u);
         const uint32_t entries_end = read32(player_map + 12u);
         uint32_t hero = 0;
@@ -20084,7 +20091,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldIcons(uint32_t* out_flags, uint3
                 for (uint32_t at = pairs; at < pairs_end; at += 8u) {
                     if (read32(at) == 81u) {
                         const uint32_t money = read32(at + 4u);
-                        if (plausible(money) && base[money + 20u] != 0u) flags |= 2u;
+                        if (plausible(money) && GuestByteAt(base, money + 20u) != 0u) flags |= 2u;
                         break;
                     }
                 }
@@ -20104,13 +20111,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldIcons(uint32_t* out_flags, uint3
     const uint32_t kIconPoolEnd = refii::guest::Address(0x8349C080u);
     uint32_t lit = 0;
     for (uint32_t slot = kIconPool; slot < kIconPoolEnd; slot += 64u) {
-        if (base[slot + 48u] != 0u) ++lit;
+        if (GuestByteAt(base, slot + 48u) != 0u) ++lit;
     }
     flags |= (lit & 0xFFu) << 8;
 
     const uint32_t kIconSingles[3] = {refii::guest::Address(0x8349C080u), refii::guest::Address(0x8349C0C0u), refii::guest::Address(0x8349C100u)};
     for (uint32_t i = 0; i < 3u; ++i) {
-        if (base[kIconSingles[i] + 48u] != 0u) flags |= 1u << (16u + i);
+        if (GuestByteAt(base, kIconSingles[i] + 48u) != 0u) flags |= 1u << (16u + i);
     }
 
     if (out_flags != nullptr) *out_flags = flags;
