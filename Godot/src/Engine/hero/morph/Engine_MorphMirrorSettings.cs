@@ -13,6 +13,7 @@ public sealed class Engine_MorphMirrorSettings
     public int Selected { get; private set; }
     public int Count => _page.Count;
     public float Rotation { get; private set; }
+    public float Zoom { get; private set; }
 
     public Engine_MorphMirrorSettings(Func<string, string> read, Action<string>? playSound = null)
     {
@@ -49,6 +50,7 @@ public sealed class Engine_MorphMirrorSettings
         _page.Changed(0, _values[0]);
         Selected = Math.Min(Selected, Count - 1);
         Rotation = 0;
+        Zoom = 0;
     }
 
     public void Rotate(float stick, float drag, float seconds)
@@ -59,6 +61,16 @@ public sealed class Engine_MorphMirrorSettings
         float axis = Math.Clamp((Math.Abs(stick) - 0.18f) / 0.82f, 0, 1) * Math.Sign(stick);
         float turn = axis * Math.Clamp(seconds, 0, 0.1f) * 2.2f + drag * 0.008f;
         Rotation = MathF.IEEERemainder(Rotation + turn, MathF.Tau);
+    }
+
+    public void ZoomBy(float stick, float wheel, float seconds)
+    {
+        if (!float.IsFinite(stick)) stick = 0;
+        if (!float.IsFinite(wheel)) wheel = 0;
+        if (!float.IsFinite(seconds)) seconds = 0;
+        float axis = Math.Clamp((Math.Abs(stick) - 0.18f) / 0.82f, 0, 1) * Math.Sign(stick);
+        Zoom = Math.Clamp(Zoom + axis * Math.Clamp(seconds, 0, 0.1f) * 0.65f +
+            Math.Clamp(wheel, -20, 20) * 0.12f, 0, 1);
     }
 
     public Dictionary<string, string> Values() => Engine_CharacterMorphs.Values(row => _values[row]);

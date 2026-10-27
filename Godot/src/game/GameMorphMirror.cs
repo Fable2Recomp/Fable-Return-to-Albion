@@ -22,6 +22,13 @@ public partial class GameMorphMirror : Node
     private float _originalHOffset;
     private Transform3D _previewTransform;
     private float _previewFov;
+    private float _wideFov;
+    private Vector3 _previewEye;
+    private Vector3 _previewHero;
+    private float _headHeight = 1.7f;
+    private float _cameraZoom;
+    private float _mouseZoom;
+    private double _headPoll;
     private Vector2 _size;
     private Vector2 _dragOrigin;
     private float _mouseTurn;
@@ -110,7 +117,7 @@ public partial class GameMorphMirror : Node
             _repeat = (pressed & 0xF0) != 0 ? 0.32 : 0.1;
             _ui?.ShowSettings(_settings);
         }
-        if (!_closing) Rotate(delta, focused);
+        if (!_closing) UpdateView(delta, focused);
     }
 
     private static bool CanOpen() => _actor?.Placement is { Enabled: true } && IsInstanceValid(_actor) &&
@@ -138,6 +145,10 @@ public partial class GameMorphMirror : Node
             _rotationPoll = 0;
             _sentRotation = 0;
             _mouseTurn = 0;
+            _mouseZoom = 0;
+            _cameraZoom = 0;
+            _headHeight = 1.7f;
+            _headPoll = 0;
             _layer = new CanvasLayer { Name = "MorphMirrorMenu", Layer = 121 };
             AddChild(_layer);
             _container = new SubViewportContainer { Stretch = true, MouseFilter = Control.MouseFilterEnum.Ignore };
@@ -175,9 +186,19 @@ public partial class GameMorphMirror : Node
         return true;
     }
 
-    public static Transform3D FrameCamera(Vector3 eye, Vector3 hero, float fov, float aspect, float panelFraction)
+    public static float ZoomFov(float fov, float zoom)
     {
-        Basis basis = Basis.LookingAt(hero + Vector3.Up * 1.15f - eye, Vector3.Up);
+        fov = float.IsFinite(fov) ? Math.Clamp(fov, 10, 120) : 60;
+        zoom = float.IsFinite(zoom) ? Math.Clamp(zoom, 0, 1) : 0;
+        return Mathf.Lerp(fov, Math.Min(20, fov), zoom);
+    }
+
+    public static Transform3D FrameCamera(Vector3 eye, Vector3 hero, float fov, float aspect,
+        float panelFraction, float zoom = 0, float headHeight = 1.7f)
+    {
+        zoom = float.IsFinite(zoom) ? Math.Clamp(zoom, 0, 1) : 0;
+        headHeight = float.IsFinite(headHeight) ? Math.Clamp(headHeight, 0.7f, 3.2f) : 1.7f;
+        Basis basis = Basis.LookingAt(hero + Vector3.Up * Mathf.Lerp(1.15f, headHeight, zoom) - eye, Vector3.Up);
         float yaw = MathF.Atan(panelFraction * aspect * MathF.Tan(Mathf.DegToRad(fov * 0.5f)));
         return new Transform3D(basis * new Basis(Vector3.Up, yaw), eye);
     }
@@ -195,10 +216,45 @@ public partial class GameMorphMirror : Node
         if (_actor?.Placement is { } placement && IsInstanceValid(_actor))
         {
             Transform3D world = _actor.GlobalTransform;
-            _previewFov = placement.CameraFov;
-            _previewTransform = FrameCamera(world * placement.CameraPosition, world * placement.HeroPose.Origin,
-                _previewFov, size.X / Math.Max(1, size.Y), (Engine_UiMorphMirror.Width + 20) / width);
+            _wideFov = placement.CameraFov;
+            _previewEye = world * placement.CameraPosition;
+            _previewHero = world * placement.HeroPose.Origin;
+            Reframe();
         }
+    }
+
+    private void Reframe()
+    {
+        float aspect = _size.X / Math.Max(1, _size.Y);
+        float width = Math.Max(Engine_UiMorphMirror.Width + 40, 720 * aspect);
+        _previewFov = ZoomFov(_wideFov, _cameraZoom);
+        _previewTransform = FrameCamera(_previewEye, _previewHero, _previewFov, aspect,
+            (Engine_UiMorphMirror.Width + 20) / width, _cameraZoom, _headHeight);
+    }
+
+    private void UpdateZoom(double delta)
+    {
+        float next = Mathf.MoveToward(_cameraZoom, _settings!.Zoom, (float)Math.Clamp(delta, 0, 0.1) * 2.5f);
+        bool changed = next != _cameraZoom;
+        _cameraZoom = next;
+        if (_cameraZoom > 0)
+        {
+            _headPoll -= delta;
+            if (_headPoll <= 0)
+            {
+                _headPoll = 0.1;
+                if (GameEntities.Current?.TryHeroHeadPosition(out Vector3 head) == true)
+                {
+                    float height = Math.Clamp(head.Y - _previewHero.Y + 0.12f, 0.7f, 3.2f);
+                    if (Math.Abs(height - _headHeight) > 0.01f)
+                    {
+                        _headHeight = height;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if (changed) Reframe();
     }
 
     private void Preview()
@@ -208,12 +264,15 @@ public partial class GameMorphMirror : Node
         _ui?.ShowSettings(_settings);
     }
 
-    private void Rotate(double delta, bool focused)
+    private void UpdateView(double delta, bool focused)
     {
-        if (!focused) { EndDrag(); return; }
+        if (!focused) { EndDrag(); _mouseZoom = 0; return; }
         int pad = GameInput.JoypadForPad(0);
         _settings!.Rotate(pad >= 0 ? Input.GetJoyAxis(pad, JoyAxis.RightX) : 0, _mouseTurn, (float)delta);
+        _settings.ZoomBy(pad >= 0 ? -Input.GetJoyAxis(pad, JoyAxis.RightY) : 0, _mouseZoom, (float)delta);
         _mouseTurn = 0;
+        _mouseZoom = 0;
+        UpdateZoom(delta);
         _rotationPoll -= delta;
         if (_rotationPoll > 0 || _settings.Rotation == _sentRotation) return;
         _sentRotation = _settings.Rotation;
@@ -296,6 +355,9 @@ public partial class GameMorphMirror : Node
             }
             else if (_dragging && input is InputEventMouseMotion motion)
                 _mouseTurn += motion.ScreenRelative.X;
+            else if (input is InputEventMouseButton { Pressed: true } wheel &&
+                wheel.ButtonIndex is MouseButton.WheelUp or MouseButton.WheelDown)
+                _mouseZoom += (wheel.ButtonIndex == MouseButton.WheelUp ? 1 : -1) * wheel.Factor;
         }
         if (!_closing && !_dragging && input is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left } click && _uiCamera is not null && _ui is not null)
         {

@@ -126,9 +126,10 @@ public static class Engine_HeroTextureMorph
     /// for the material's diffuse (<c>sub_8222AAC8</c>, command type 14) over diffuse and normal.
     /// </summary>
     public static void ApplyTo(
-        ArrayMesh mesh, IReadOnlyList<Refii.Host.HostBridge.GuestTextureComposite> composites)
+        ArrayMesh mesh, IReadOnlyList<Refii.Host.HostBridge.GuestTextureComposite> composites,
+        float tan = 0.5f)
     {
-        if (composites.Count == 0)
+        if (composites.Count == 0 && tan == 0.5f)
         {
             return;
         }
@@ -208,7 +209,9 @@ public static class Engine_HeroTextureMorph
                 Refii.Host.HostBridge.GuestTextureLayer[]? slotOver =
                     slot == DiffuseSlot || slot == NormalSlot ? over : null;
 
-                if (Composite(original, composite.Layers, slotOver, slot == NormalSlot)
+                var layers = slot == DiffuseSlot && everyMap[DiffuseSlot] is null
+                    ? SkinLayers(names[slot], composite.Layers, tan) : composite.Layers;
+                if (Composite(original, layers, slotOver, slot == NormalSlot)
                     is not Texture2D composited)
                 {
                     continue;
@@ -255,6 +258,48 @@ public static class Engine_HeroTextureMorph
                 mesh.SurfaceSetMaterial(s, own);
             }
         }
+    }
+
+    public static Refii.Host.HostBridge.GuestTextureLayer[]? SkinLayers(
+        string texture, Refii.Host.HostBridge.GuestTextureLayer[]? layers, float tan)
+    {
+        if (!float.IsFinite(tan) || tan == 0.5f) return layers;
+        string path = texture.Replace('\\', '/').ToLowerInvariant();
+        const string root = "art/characters/heros/unclothed ";
+        string sex;
+        string prefix;
+        string suffix;
+        if (path.StartsWith(root + "male/pictures/_sharedtextures/", StringComparison.Ordinal))
+        {
+            sex = "male";
+            prefix = "mhero_";
+            suffix = "_01.tex";
+        }
+        else if (path.StartsWith(root + "female/pictures/_sharedtextures/", StringComparison.Ordinal))
+        {
+            sex = "female";
+            prefix = "fhero_";
+            suffix = "_02.tex";
+        }
+        else return layers;
+
+        string name = path[(path.LastIndexOf('/') + 1)..];
+        string part = name == prefix + "face" + suffix ? "face" :
+            name == prefix + "torso" + suffix ? "torso" :
+            name == prefix + "legs" + suffix ? "legs" : string.Empty;
+        if (part.Length == 0) return layers;
+        string target = root + sex + "/pictures/_sharedtextures/" + prefix + part +
+            (tan < 0.5f ? "_pale_01.tex" : "_tanned_01.tex");
+        uint hash = Engine_TexPathIndex.PathHash(target);
+        if (Engine_TexPathIndex.Resolve(hash) is null) return layers;
+
+        int count = layers?.Length ?? 0;
+        var result = new Refii.Host.HostBridge.GuestTextureLayer[Math.Max(1, count) + 1];
+        result[0] = count > 0 ? layers![0] :
+            new(Engine_TexPathIndex.PathHash(texture), 0, 1, false, 0, 0);
+        result[1] = new(hash, 1, Math.Abs(Math.Clamp(tan, 0, 1) - 0.5f) * 2, false, 0, 0);
+        if (count > 1) Array.Copy(layers!, 1, result, 2, count - 1);
+        return result;
     }
 
     /// <summary>

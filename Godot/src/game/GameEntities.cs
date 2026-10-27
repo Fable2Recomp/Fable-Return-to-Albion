@@ -158,6 +158,24 @@ public partial class GameEntities : Node3D
         return float.IsFinite(top) ? Mathf.Clamp(top, 0.3f, 6f) : 1.8f;
     }
 
+    private Refii.Entities.Engine_EntitySkeleton? _headPositionRig;
+    private int _headPositionBone = -1;
+
+    public bool TryHeroHeadPosition(out Vector3 position)
+    {
+        position = default;
+        if (!_skeletons.TryGetValue(_principals.Hero, out var rig) ||
+            NodeFor(_principals.Hero) is not { } node || !GodotObject.IsInstanceValid(rig.Node)) return false;
+        if (_headPositionRig != rig)
+        {
+            _headPositionRig = rig;
+            rig.TryBone("Shadow_Head", out _headPositionBone);
+        }
+        if (_headPositionBone < 0) return false;
+        position = (node.GlobalTransform * rig.Node.GetBoneGlobalPose(_headPositionBone)).Origin;
+        return position.IsFinite();
+    }
+
     /// <summary>Meshes by model hash. Resolving and loading is the expensive half.</summary>
     private readonly Dictionary<uint, Mesh?> _meshes = new();
 
@@ -3127,7 +3145,8 @@ public partial class GameEntities : Node3D
 
         hasParts = true;
         _builtParts += built;
-        return ComposeParts(parts, TextureLayersOf(address), PartMorphsOf(address)) ??
+        return ComposeParts(parts, TextureLayersOf(address), PartMorphsOf(address),
+            address == _principals.Hero ? GameCharacterMorphs.ManualTan : 0.5f) ??
             _nodeMesh.GetValueOrDefault(address);
     }
 
@@ -3524,7 +3543,7 @@ public partial class GameEntities : Node3D
     /// <summary>Resolves part hashes to paths and returns the cached assembly, queueing it once.</summary>
     private Mesh? ComposeParts(
         uint[] parts, HostBridge.GuestTextureComposite[]? layers = null,
-        HostBridge.GuestPartMorph[]? stated = null)
+        HostBridge.GuestPartMorph[]? stated = null, float tan = 0.5f)
     {
         ulong signature = 14695981039346656037UL;
         foreach (uint part in parts)
@@ -3568,6 +3587,9 @@ public partial class GameEntities : Node3D
             signature = (signature ^ layerHash) * 1099511628211UL;
         }
 
+        if (tan != 0.5f)
+            signature = (signature ^ System.BitConverter.SingleToUInt32Bits(tan)) * 1099511628211UL;
+
         if (_composedBySignature.TryGetValue(signature, out Mesh? known))
         {
             return known;
@@ -3609,6 +3631,7 @@ public partial class GameEntities : Node3D
         }
 
         var key = new System.Text.StringBuilder(string.Join('|', paths));
+        if (tan != 0.5f) key.Append("|tan").Append(System.BitConverter.SingleToUInt32Bits(tan).ToString("x8"));
         if (layers is not null && layers.Length != 0)
         {
             key.Append("|t").Append(layerHash.ToString("x16"));
@@ -3650,7 +3673,7 @@ public partial class GameEntities : Node3D
         // Not built yet. Queue it and draw nothing this frame; the completion stores it and the
         // next frame is a cache hit.
         ++_awaitingBuild;
-        QueueCompositeBuild(composedKey, paths, hashes, layers, targets);
+        QueueCompositeBuild(composedKey, paths, hashes, layers, targets, tan);
         return null;
     }
 
@@ -3684,7 +3707,7 @@ public partial class GameEntities : Node3D
     private void QueueCompositeBuild(
         string key, List<string> paths, List<long> hashes,
         HostBridge.GuestTextureComposite[]? layers,
-        Dictionary<uint, List<(string Path, float Weight)>>? targets)
+        Dictionary<uint, List<(string Path, float Weight)>>? targets, float tan)
     {
         // Already building, or the pipe is full and this retries next frame. NOT added to the
         // job set in the full case: leaving it out is what makes the retry possible.
@@ -3721,9 +3744,10 @@ public partial class GameEntities : Node3D
                     out resolved,
                     out missing);
 
-                if (assembled is not null && layers is not null && layers.Length != 0)
+                if (assembled is not null && (tan != 0.5f || layers is { Length: > 0 }))
                 {
-                    Refii.Hero.Engine_HeroTextureMorph.ApplyTo(assembled, layers);
+                    Refii.Hero.Engine_HeroTextureMorph.ApplyTo(assembled,
+                        layers ?? System.Array.Empty<HostBridge.GuestTextureComposite>(), tan);
                 }
             }
             catch (System.Exception e)

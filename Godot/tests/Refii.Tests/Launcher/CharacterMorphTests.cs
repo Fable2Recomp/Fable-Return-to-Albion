@@ -9,9 +9,11 @@ using Refii.Core;
 using Refii.Bnk;
 using Refii.Gdb;
 using Refii.Hero;
+using Refii.Host;
 using Refii.Launcher.Core;
 using Refii.Models;
 using Refii.Save;
+using Refii.Textures;
 using Refii.Ui;
 using static GdUnit4.Assertions;
 
@@ -20,6 +22,113 @@ namespace Refii.Tests.Launcher;
 [TestSuite]
 public class CharacterMorphTests
 {
+    [TestCase]
+    public void TanUsesTheOriginalMaleAndFemaleSkinTexturesAndKeepsOtherLayers()
+    {
+        foreach (bool female in new[] { false, true })
+        foreach (string part in new[] { "face", "torso", "legs" })
+        {
+            string root = "Art/Characters/Heros/Unclothed " + (female ? "Female" : "Male") + "/Pictures/_SharedTextures/";
+            string prefix = (female ? "fhero_" : "mhero_") + part;
+            string original = root + prefix + (female ? "_02.tex" : "_01.tex");
+            string pale = root + prefix + "_pale_01.tex";
+            string tanned = root + prefix + "_tanned_01.tex";
+            Engine_TexPathIndex.SetPathSource(() => new[] { original, pale, tanned });
+            try
+            {
+                var source = new[]
+                {
+                    new HostBridge.GuestTextureLayer(Engine_TexPathIndex.PathHash(original), 0, 1, false, 0, 0),
+                    new HostBridge.GuestTextureLayer(42, 1, 0.3f, true, 0x12345678, 0.2f)
+                };
+                foreach (var (tan, texture, weight) in new[]
+                {
+                    (0f, pale, 1f), (0.25f, pale, 0.5f), (0.75f, tanned, 0.5f), (1f, tanned, 1f)
+                })
+                {
+                    var layers = Engine_HeroTextureMorph.SkinLayers(original.Replace('/', '\\'), source, tan)!;
+                    AssertThat(layers.Length).IsEqual(3);
+                    AssertThat(layers[0]).IsEqual(source[0]);
+                    AssertThat(layers[1].Texture).IsEqual(Engine_TexPathIndex.PathHash(texture));
+                    AssertThat(layers[1].Weight).IsEqual(weight);
+                    AssertThat(layers[1].Mode).IsEqual(1);
+                    AssertThat(layers[2]).IsEqual(source[1]);
+                    AssertThat(source.Length).IsEqual(2);
+                }
+                AssertThat(ReferenceEquals(Engine_HeroTextureMorph.SkinLayers(original, source, 0.5f), source)).IsTrue();
+                AssertThat(ReferenceEquals(Engine_HeroTextureMorph.SkinLayers(original, source, float.NaN), source)).IsTrue();
+                var onlyTan = Engine_HeroTextureMorph.SkinLayers(original, null, 1)!;
+                AssertThat(onlyTan.Length).IsEqual(2);
+                AssertThat(onlyTan[0].Texture).IsEqual(Engine_TexPathIndex.PathHash(original));
+            }
+            finally { Engine_TexPathIndex.SetPathSource(null); }
+        }
+    }
+
+    [TestCase]
+    public void TanLeavesClothingHairEyesHornsAndMissingTexturesUnchanged()
+    {
+        const string root = "Art/Characters/Heros/Unclothed Male/Pictures/_SharedTextures/";
+        var source = new[] { new HostBridge.GuestTextureLayer(1, 0, 1, false, 0, 0) };
+        Engine_TexPathIndex.SetPathSource(() => new[] { root + "mhero_face_tanned_01.tex" });
+        try
+        {
+            foreach (string path in new[]
+            {
+                root + "NORM_mhero_face_01.tex", root + "SPEC_mhero_face_02.tex",
+                root + "ILL_mhero_face_01.tex", root + "mhero_horns_01.tex",
+                root + "mhero_legs_01.tex", root + "mhero_face_old_01.tex",
+                "Art/Characters/Heros/Hair/Pictures/hero_hair_01.tex",
+                "Art/Characters/Heros/Clothing/Pictures/mhero_torso_01.tex",
+                "Art/Characters/Shared assets/Pictures/_SharedTextures/eye_brown_01.tex"
+            }) AssertThat(ReferenceEquals(Engine_HeroTextureMorph.SkinLayers(path, source, 1), source)).IsTrue();
+            AssertThat(ReferenceEquals(Engine_HeroTextureMorph.SkinLayers(root + "mhero_face_01.tex", source, 0), source)).IsTrue();
+        }
+        finally { Engine_TexPathIndex.SetPathSource(null); }
+    }
+
+    [TestCase]
+    public void MirrorTanPreviewResetAndAutomaticModeReachTheSkinLayers()
+    {
+        const string root = "Art/Characters/Heros/Unclothed Female/Pictures/_SharedTextures/";
+        const string original = root + "fhero_face_02.tex";
+        var stored = new Dictionary<string, string>
+        {
+            [Engine_CharacterMorphs.AutomaticKey] = "false",
+            [Engine_CharacterMorphs.Key(HeroMorphInput.Tan)] = "0.75"
+        };
+        string Read(string key) => stored.GetValueOrDefault(key, "");
+        var mirror = new Engine_MorphMirrorSettings(Read);
+        int row = Array.FindIndex(Engine_CharacterMorphs.Sliders, slider => slider.Input == HeroMorphInput.Tan) + 1;
+        Engine_TexPathIndex.SetPathSource(() => new[] { root + "fhero_face_pale_01.tex", root + "fhero_face_tanned_01.tex" });
+        try
+        {
+            HostBridge.GuestTextureLayer[]? Preview()
+            {
+                var values = mirror.Values();
+                float tan = Engine_CharacterMorphs.ManualTan(key => values.GetValueOrDefault(key, ""));
+                return Engine_HeroTextureMorph.SkinLayers(original, null, tan);
+            }
+            AssertThat(Preview()![1].Weight).IsEqual(0.5f);
+            mirror.Adjust(row, -100);
+            AssertThat(Preview()![1].Texture).IsEqual(Engine_TexPathIndex.PathHash(root + "fhero_face_pale_01.tex"));
+            AssertThat(Preview()![1].Weight).IsEqual(1f);
+            AssertThat(stored[Engine_CharacterMorphs.Key(HeroMorphInput.Tan)]).IsEqual("0.75");
+            mirror.Reset();
+            AssertThat(Preview()![1].Texture).IsEqual(Engine_TexPathIndex.PathHash(root + "fhero_face_tanned_01.tex"));
+            AssertThat(Preview()![1].Weight).IsEqual(0.5f);
+            mirror.Adjust(0, 1);
+            AssertThat(Preview() is null).IsTrue();
+            mirror.Adjust(0, -1);
+            AssertThat(Preview()![1].Weight).IsEqual(0.5f);
+            mirror.Adjust(row, 100);
+            foreach (var (key, value) in mirror.Values()) stored[key] = value;
+            var reopened = new Engine_MorphMirrorSettings(Read);
+            AssertThat(Engine_CharacterMorphs.ManualTan(key => reopened.Values().GetValueOrDefault(key, ""))).IsEqual(1f);
+        }
+        finally { Engine_TexPathIndex.SetPathSource(null); }
+    }
+
     [TestCase]
     public void MirrorAdjustmentsUsePauseMenuSoundsOnlyWhenTheValueChanges()
     {
@@ -98,6 +207,103 @@ public class CharacterMorphTests
             for (int frame = 0; frame < fps; frame++) mirror.Rotate(-1, 0, 1f / fps);
             AssertThat(Math.Abs(mirror.Rotation) < 0.0001f).IsTrue();
         }
+    }
+
+    [TestCase]
+    public void MirrorZoomFiltersStickDriftAndHasTheSameSpeedAtDifferentFrameRates()
+    {
+        foreach (int fps in new[] { 30, 60, 120 })
+        {
+            var mirror = new Engine_MorphMirrorSettings(_ => "");
+            foreach (float drift in new[] { 0f, 0.1f, -0.1f, 0.18f, -0.18f }) mirror.ZoomBy(drift, 0, 0.1f);
+            AssertThat(mirror.Zoom).IsEqual(0f);
+            for (int frame = 0; frame < fps; frame++) mirror.ZoomBy(1, 0, 1f / fps);
+            AssertThat(Math.Abs(mirror.Zoom - 0.65f) < 0.0001f).IsTrue();
+            for (int frame = 0; frame < fps; frame++) mirror.ZoomBy(-1, 0, 1f / fps);
+            AssertThat(mirror.Zoom < 0.0001f).IsTrue();
+        }
+    }
+
+    [TestCase]
+    public void MirrorWheelZoomClampsAtBothEndsAndRejectsInvalidInput()
+    {
+        var mirror = new Engine_MorphMirrorSettings(_ => "");
+        mirror.ZoomBy(0, 1, 0);
+        AssertThat(Math.Abs(mirror.Zoom - 0.12f) < 0.0001f).IsTrue();
+        mirror.ZoomBy(0, -0.5f, 0);
+        AssertThat(Math.Abs(mirror.Zoom - 0.06f) < 0.0001f).IsTrue();
+        mirror.ZoomBy(float.NaN, float.PositiveInfinity, float.NaN);
+        AssertThat(Math.Abs(mirror.Zoom - 0.06f) < 0.0001f).IsTrue();
+        mirror.ZoomBy(0, 100000, 0);
+        AssertThat(mirror.Zoom).IsEqual(1f);
+        for (int i = 0; i < 40; i++) mirror.ZoomBy(1, 1, 0.1f);
+        AssertThat(mirror.Zoom).IsEqual(1f);
+        mirror.ZoomBy(0, -100000, 0);
+        AssertThat(mirror.Zoom).IsEqual(0f);
+        for (int i = 0; i < 40; i++) mirror.ZoomBy(-1, -1, 0.1f);
+        AssertThat(mirror.Zoom).IsEqual(0f);
+        mirror.ZoomBy(1, 0, -1);
+        AssertThat(mirror.Zoom).IsEqual(0f);
+        mirror.ZoomBy(1, 0, 60);
+        AssertThat(Math.Abs(mirror.Zoom - 0.065f) < 0.0001f).IsTrue();
+    }
+
+    [TestCase]
+    public void MirrorFaceZoomKeepsTheCameraAtTheMirrorAndTheFaceClearOfTheMenu()
+    {
+        var eye = new Vector3(285.62756f, 100.256615f, 90.376884f);
+        var hero = new Vector3(286.92944f, 98.94005f, 88.06957f);
+        foreach (float aspect in new[] { 4f / 3f, 16f / 9f, 21f / 9f })
+        foreach (float height in new[] { 1.35f, 1.7f, 2.3f })
+        foreach (float zoom in new[] { 0f, 0.25f, 0.5f, 0.75f, 1f })
+        {
+            float panel = (Engine_UiMorphMirror.Width + 20) / (720 * aspect);
+            float fov = Refii.Game.GameMorphMirror.ZoomFov(60, zoom);
+            AssertThat(fov >= 20 && fov <= 60).IsTrue();
+            Transform3D camera = Refii.Game.GameMorphMirror.FrameCamera(eye, hero, fov, aspect, panel, zoom, height);
+            AssertThat(camera.Origin).IsEqual(eye);
+            Vector3 target = hero + Vector3.Up * Mathf.Lerp(1.15f, height, zoom);
+            Vector3 focus = camera.AffineInverse() * target;
+            float tan = MathF.Tan(Mathf.DegToRad(fov / 2));
+            float screenX = (1 + focus.X / (-focus.Z * tan * aspect)) / 2;
+            AssertThat(Math.Abs(screenX - (1 + panel) / 2) < 0.0001f).IsTrue();
+            if (zoom != 1) continue;
+            foreach (float side in new[] { -0.22f, 0.22f })
+            {
+                Vector3 point = camera.AffineInverse() * (target + camera.Basis.X * side + Vector3.Up * side);
+                AssertThat(point.Z < 0).IsTrue();
+                AssertThat(Math.Abs(point.Y / (-point.Z * tan)) < 1).IsTrue();
+                float x = (1 + point.X / (-point.Z * tan * aspect)) / 2;
+                AssertThat(x > panel && x < 1).IsTrue();
+            }
+        }
+        AssertThat(Refii.Game.GameMorphMirror.ZoomFov(60, -10)).IsEqual(60f);
+        AssertThat(Refii.Game.GameMorphMirror.ZoomFov(60, 10)).IsEqual(20f);
+        AssertThat(Refii.Game.GameMorphMirror.ZoomFov(15, 1)).IsEqual(15f);
+        AssertThat(Refii.Game.GameMorphMirror.ZoomFov(float.NaN, float.NaN)).IsEqual(60f);
+    }
+
+    [TestCase]
+    public void MirrorZoomAndRotationAreIndependentAndResetWithoutChangingSavedAppearance()
+    {
+        var mirror = new Engine_MorphMirrorSettings(_ => "");
+        var saved = mirror.Values();
+        mirror.Rotate(1, 20, 0.1f);
+        float rotation = mirror.Rotation;
+        mirror.ZoomBy(1, 1, 0.1f);
+        AssertThat(mirror.Rotation).IsEqual(rotation);
+        float zoom = mirror.Zoom;
+        mirror.Rotate(-1, 0, 0.1f);
+        AssertThat(mirror.Zoom).IsEqual(zoom);
+        AssertThat(mirror.Values()).IsEqual(saved);
+        AssertThat(Refii.Game.GameMorphMirror.ZoomFov(60, mirror.Zoom) < 60).IsTrue();
+        mirror.Reset();
+        AssertThat(mirror.Zoom).IsEqual(0f);
+        AssertThat(mirror.Rotation).IsEqual(0f);
+        AssertThat(Refii.Game.GameMorphMirror.ZoomFov(60, mirror.Zoom)).IsEqual(60f);
+        AssertThat(mirror.Values()).IsEqual(saved);
+        var reopened = new Engine_MorphMirrorSettings(key => saved.GetValueOrDefault(key, ""));
+        AssertThat(reopened.Zoom).IsEqual(0f);
     }
 
     [TestCase]

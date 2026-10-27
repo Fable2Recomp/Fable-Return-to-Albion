@@ -26,6 +26,8 @@ public static class Engine_CharacterMorphs
     public static bool Automatic(Func<string, string> read) =>
         read(AutomaticKey).Trim().Trim('"').ToLowerInvariant() is not ("false" or "0" or "off");
 
+    public static float ManualTan(Func<string, string> read) => Automatic(read) ? 0.5f : Read(read).Tan;
+
     public static HeroMorphStats Read(Func<string, string> read)
     {
         var stats = new HeroMorphStats();
