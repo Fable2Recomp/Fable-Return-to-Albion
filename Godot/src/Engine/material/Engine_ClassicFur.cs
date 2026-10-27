@@ -393,6 +393,10 @@ public partial class Engine_ClassicFur : Node
             m.SetShaderParameter(Cascade0Name, shadows.CascadeTextureFor(view, 0));
             m.SetShaderParameter(Cascade1Name, shadows.CascadeTextureFor(view, 1));
         }
+        // The group's spot map: the prelit rows are copies of the group's own row, which carries
+        // its spot transform and layer (Engine_ClassicSpotShadows).
+        m.SetShaderParameter(Engine_ClassicSpotShadows.SamplerName, Engine_ClassicSpotShadows.Maps);
+        m.SetShaderParameter("xr_booleans", Engine_ClassicSpotShadows.DoSpotShadows);
         return m;
     }
 

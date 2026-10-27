@@ -1810,7 +1810,7 @@ public static class Engine_LevelScene
                     continue;
                 }
 
-                TerrainMesh? mesh = Engine_WaterMesh.BuildBody(body);
+                TerrainMesh? mesh = Engine_WaterMesh.BuildBody(body, fullPatches: Refii.Models.Engine_ClassicMaterial.Active);
                 if (mesh is null)
                 {
                     continue;
@@ -2099,7 +2099,11 @@ public static class Engine_LevelScene
     {
         if (water.GetNodeOrNull<MeshInstance3D>(VistaOceanNodeName) is { } ocean)
         {
-            ocean.Visible = theme[WaterThemeParam.DisableVistaWater] == 0f;
+            // Classic follows the guest's live block (param 102, `sub_821D5068` theme+1648).
+            float disabled = Refii.Models.Engine_ClassicMaterial.Active && Refii.Models.Engine_ClassicTheme.Live
+                ? Refii.Models.Engine_ClassicTheme.Param(102)
+                : theme[WaterThemeParam.DisableVistaWater];
+            ocean.Visible = disabled == 0f;
         }
     }
 

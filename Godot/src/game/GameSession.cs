@@ -511,7 +511,8 @@ public partial class GameSession : Node
 		if (!_driving)
 			return;
 
-		if (Paused)
+		// Classic builds the light-group shapes the guest stated on activation under the cover.
+		if (Paused || Refii.Models.Engine_ClassicLoad.FreezeGuest)
 		{
 			// The accumulator does not advance while paused; resuming replays nothing.
 			return;

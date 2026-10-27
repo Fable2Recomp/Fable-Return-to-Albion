@@ -230,6 +230,7 @@ public static class Engine_ClassicLitInstances
     private static readonly Dictionary<ulong, SharedRow> _sharedByKey = new();
     private static readonly Dictionary<int, SharedRow> _sharedByRow = new();
     private static readonly Dictionary<int, Engine_ClassicLights.Light> _byIndex = new();
+    private static readonly List<Engine_ClassicLights.Light> _members = new(7);
 
     private static int AcquireShared(int group, List<Engine_ClassicLights.Light> members, Engine_ClassicMist.Volume? mist)
     {
@@ -280,12 +281,14 @@ public static class Engine_ClassicLitInstances
     {
         Array.Clear(_block);
         int slot = 0;
+        _members.Clear();
         foreach (int index in shared.Lights)
         {
             if (!_byIndex.TryGetValue(index, out Engine_ClassicLights.Light light))
             {
                 continue;
             }
+            _members.Add(light);
             Engine_ClassicLights.PackInto(_block, light, slot++);
             if (light.Primary && (light.Type == Engine_ClassicLights.Light.Directional
                 || light.Type == Engine_ClassicLights.Light.Spot))
@@ -293,6 +296,9 @@ public static class Engine_ClassicLitInstances
                 Engine_ClassicLights.PackCaster(_block, light);
             }
         }
+        // The group's one spot map (s9, c32..c35, c48): it may clear the slots' own-map flags,
+        // so it goes before the block.
+        Engine_ClassicSpotShadows.WriteRow(shared.Row, Engine_ClassicSpotShadows.ShadowingSpot(_members), _block);
         Engine_ClassicConstants.SetRowBlock(true, shared.Row, Engine_ClassicRegisters.Ps.LightPositions, _block);
         Engine_ClassicConstants.SetRowBlock(false, shared.Row, Engine_ClassicRegisters.Vs.LightPositions, Engine_ClassicLights.VertexBlock(_block));
         // g_AtmosphericFactors: every pass is attenuated, the first alone in-scatters.
@@ -876,7 +882,75 @@ public static class Engine_ClassicLitInstances
     /// <summary>Warm chains not yet built.</summary>
     public static int WarmPending => _warm.Count;
 
-    public static void ClearWarm() => _warm.Clear();
+    public static void ClearWarm()
+    {
+        _warm.Clear();
+        _shaderWarm.Clear();
+    }
+
+    private static readonly Queue<ShaderMaterial> _shaderWarm = new();
+
+    /// <summary>Base materials whose light-group shaders are not yet composed.</summary>
+    public static int ShaderWarmPending => _shaderWarm.Count;
+
+    /// <summary>
+    /// Queues every distinct base material in the region — each surface's, each landscape
+    /// layer's and each glass pass's — for <see cref="Engine_ClassicMaterial.WarmGroupShaders"/>.
+    /// The fixture warm builds the shapes the placed lights can reach; lights the guest states
+    /// after the hold (carried, cast, scripted) reach shapes no fixture does, and each would
+    /// otherwise compose its shader in play (200-500 ms on the main thread).
+    /// </summary>
+    public static void PlanShaderWarm()
+    {
+        _shaderWarm.Clear();
+        var seen = new HashSet<ulong>();
+        void Add(ShaderMaterial? material)
+        {
+            // A landscape patch's layers are its NextPass chain (Chain reads the flag on the first).
+            bool layered = material is not null && material.HasMeta(Engine_ClassicMaterial.LayerChainMeta);
+            for (Material? m = material; m is ShaderMaterial layer; m = layered ? layer.NextPass : null)
+            {
+                if (seen.Add(layer.GetInstanceId()))
+                {
+                    _shaderWarm.Enqueue(layer);
+                }
+                if (layer.HasMeta(Engine_ClassicMaterial.TranslucentPassMeta) &&
+                    layer.GetMeta(Engine_ClassicMaterial.TranslucentPassMeta).Obj is ShaderMaterial glass &&
+                    seen.Add(glass.GetInstanceId()))
+                {
+                    _shaderWarm.Enqueue(glass);
+                }
+            }
+        }
+        lock (_entries)
+        {
+            foreach (Entry entry in _entries.Values)
+            {
+                if (!GodotObject.IsInstanceValid(entry.Node) || !entry.Node.IsInsideTree() || !ReadBases(entry))
+                {
+                    continue;
+                }
+                foreach (ShaderMaterial? b in entry.Bases)
+                {
+                    Add(b);
+                }
+            }
+        }
+    }
+
+    /// <summary>Composes queued bases' light-group shaders for up to <paramref name="budgetTicks"/>. Main thread.</summary>
+    public static void PumpShaderWarm(long budgetTicks)
+    {
+        long from = System.Diagnostics.Stopwatch.GetTimestamp();
+        while (_shaderWarm.Count > 0 && System.Diagnostics.Stopwatch.GetTimestamp() - from < budgetTicks)
+        {
+            ShaderMaterial material = _shaderWarm.Dequeue();
+            if (GodotObject.IsInstanceValid(material))
+            {
+                Engine_ClassicMaterial.WarmGroupShaders(material);
+            }
+        }
+    }
 
     private static readonly Queue<(Entry Entry, int[] Counts, bool[] Single)> _warm = new();
 

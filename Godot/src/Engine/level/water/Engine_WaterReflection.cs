@@ -83,6 +83,16 @@ public sealed partial class Engine_WaterReflection : Node
     /// <summary>How far a reflection camera sees. Not the main camera's range — see its use.</summary>
     private const float ReflectionFar = 50f;
 
+    /// <summary>
+    /// The mirror's far plane. Under classic it is the view's own, as the title's mirror has none
+    /// (`sub_82AA2540` builds it from the camera's near/far and culls with the five-plane
+    /// `Render_BuildFrustum5_NearSides`): at 50 m a lake's far shore left the reflection and the
+    /// horizon sky stood in for it. Classic casts through its own cascade world, so the full
+    /// range carries none of Godot's sun-shadow cost the 50 m cut was made for.
+    /// </summary>
+    private static float MirrorFar(float viewFar) =>
+        Refii.Models.Engine_ClassicMaterial.Active ? viewFar : Mathf.Min(viewFar, ReflectionFar);
+
     private readonly int[] _turn = new int[2];
     private int _frame;
 
@@ -253,7 +263,7 @@ public sealed partial class Engine_WaterReflection : Node
             // primitives, because the sun's cascades cover whatever the view frustum covers.
             // Everything a player can actually make out in a rippling 256-pixel reflection
             // is within a few dozen metres of the water.
-            Far = Mathf.Min(view.Far, ReflectionFar),
+            Far = MirrorFar(view.Far),
             KeepAspect = Camera3D.KeepAspectEnum.Height,
             Current = true,
 
@@ -490,7 +500,7 @@ public sealed partial class Engine_WaterReflection : Node
             chosen.Camera.Near = source.Near;
         }
 
-        float far = Mathf.Min(source.Far, ReflectionFar);
+        float far = MirrorFar(source.Far);
         if (chosen.Camera.Far != far)
         {
             chosen.Camera.Far = far;
@@ -616,6 +626,16 @@ public sealed partial class Engine_WaterReflection : Node
         for (Material? pass = material; pass is ShaderMaterial shader; pass = shader.NextPass)
         {
             shader.SetShaderParameter(sampler, mirror is null ? default(Variant) : mirror);
+        }
+        // The body's other pair (plain or MISTED): a node switched into a mist volume must not
+        // draw with its reflection unbound.
+        if (material.HasMeta(Engine_ClassicWater.MistedPairMeta) &&
+            material.GetMeta(Engine_ClassicWater.MistedPairMeta).Obj is ShaderMaterial twin)
+        {
+            for (Material? pass = twin; pass is ShaderMaterial shader; pass = shader.NextPass)
+            {
+                shader.SetShaderParameter(sampler, mirror is null ? default(Variant) : mirror);
+            }
         }
     }
 }

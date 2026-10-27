@@ -85,6 +85,17 @@ public sealed class Engine_ClassicPostPass
     /// <summary>The samplers the pass declares, in binding order (3 up).</summary>
     public IReadOnlyList<string> Samplers => _samplers;
 
+    // Sampler name -> true for point, false for linear, as the stage's fetches state it.
+    private readonly System.Collections.Generic.Dictionary<string, bool> _stated = new();
+
+    /// <summary>
+    /// <paramref name="nearest"/> or <paramref name="linear"/> as the stage's fetches of
+    /// <paramref name="sampler"/> state (the translator's <c>xr-sampler-filter</c> line), else
+    /// <paramref name="fallback"/>: the fetch, not the pass, owns the filter.
+    /// </summary>
+    public Rid Filter(string sampler, Rid nearest, Rid linear, Rid fallback) =>
+        _stated.TryGetValue(sampler, out bool point) ? (point ? nearest : linear) : fallback;
+
     private Engine_ClassicPostPass(Kind kind, string entry, int samplerCount)
     {
         PassKind = kind;
@@ -132,6 +143,19 @@ public sealed class Engine_ClassicPostPass
 
         var pass = new Engine_ClassicPostPass(kind, pixelEntry, samplers.Count);
         pass._samplers.AddRange(samplers);
+        foreach (string line in pixel.Split('\n'))
+        {
+            // `// xr-sampler-filter <name> <filter>`: the filter the stage's fetches state.
+            const string marker = "// xr-sampler-filter ";
+            if (line.StartsWith(marker, StringComparison.Ordinal))
+            {
+                string[] parts = line[marker.Length..].Trim().Split(' ');
+                if (parts.Length == 2 && parts[1] != "mixed")
+                {
+                    pass._stated[parts[0]] = parts[1].StartsWith("nearest", StringComparison.Ordinal);
+                }
+            }
+        }
         int register = 0;
         foreach ((string name, int count) in constants)
         {

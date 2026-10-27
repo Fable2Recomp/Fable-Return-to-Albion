@@ -55,6 +55,9 @@ public static class Engine_ClassicWater
         // which Engine_WaterReflection binds to the mirror rendered for player two's camera.
         Engine_ClassicShaders.ViewSampler(ReflectionSampler);
 
+    /// <summary>On a water core: the other pair's core (plain to MISTED and back), whose passes take the mirror too.</summary>
+    public static readonly StringName MistedPairMeta = "xr_water_misted_pair";
+
     /// <summary>The mirror's sampler in the title's water stages (g_ReflectionSampler).</summary>
     public const string ReflectionSampler = "ps_g_ReflectionSampler";
 
@@ -69,6 +72,8 @@ public static class Engine_ClassicWater
         /// <summary>The vista ocean (SKY_OCEANWATER), which also takes the sky's overlay.</summary>
         public bool Vista;
         public WaterTheme Theme = WaterTheme.Default;
+        /// <summary>This surface's copy of the stated theme (<see cref="FollowTheme"/>).</summary>
+        public readonly WaterTheme Stated = new();
         public Vector2 Phase0;
         public Vector2 Phase1;
         /// <summary>The theme changed since the constants were last written in full.</summary>
@@ -84,8 +89,12 @@ public static class Engine_ClassicWater
         public ShaderMaterial? MistedFringe;
         /// <summary>The drawn body, for its bounds (<see cref="Attach"/>).</summary>
         public MeshInstance3D? Node;
+        /// <summary>The node was attached once: a freed node means the body is gone.</summary>
+        public bool Attached;
         public int Row;
         public Engine_ClassicMist.Volume? Mist;
+        /// <summary>The theme normal map's hash last bound (<see cref="FollowNormal"/>).</summary>
+        public uint NormalHash;
 
         /// <summary>The passes into <paramref name="into"/> (four at most); how many.</summary>
         public int MaterialsInto(ShaderMaterial[] into)
@@ -166,7 +175,7 @@ public static class Engine_ClassicWater
                 : null;
 
         // The mask in the body's own grid; its texture coordinates replace the mesh's world ones.
-        Engine_WaterMask.Mask? mask = Engine_WaterMask.TryBuild(body);
+        Engine_WaterMask.Mask? mask = Engine_WaterMask.TryBuild(body, perTile: true);
         float[] uvs = mesh.Uvs;
         if (mask is { } m)
         {
@@ -188,6 +197,9 @@ public static class Engine_ClassicWater
         {
             all.Add(m2.Core);
             all.Add(m2.Fringe);
+            // Each core names its twin, so the mirror reaches the misted passes too (BindMirror).
+            coreMaterial.SetMeta(MistedPairMeta, m2.Core);
+            m2.Core.SetMeta(MistedPairMeta, coreMaterial);
             foreach (ShaderMaterial material in new[] { m2.Core, m2.Fringe })
             {
                 material.SetShaderParameter("ps_g_MistHeightSampler", Engine_ClassicMist.FlatHeight);
@@ -275,6 +287,7 @@ public static class Engine_ClassicWater
                 if (ReferenceEquals(surface.Core, core))
                 {
                     surface.Node = node;
+                    surface.Attached = true;
                     return;
                 }
             }
@@ -325,6 +338,37 @@ public static class Engine_ClassicWater
             surface.Row = 0;
         }
     }
+
+    /// <summary>
+    /// THE THEME'S NORMAL MAP, not the body's own: the water draw binds the live theme's texture
+    /// slot 12 (`sub_82B3CDE8` 0x82B3CEAC..0x82B3CEC0, `sub_821D0BA0(theme, 12)`), and slot 13
+    /// beside it, which these stages do not sample. Every Bower Lake body names the engine's test
+    /// map. The body's file stands while the theme states none.
+    /// </summary>
+    private static void FollowNormal(Surface surface)
+    {
+        if (!Engine_ClassicTheme.TexturesLive)
+        {
+            return;
+        }
+        uint hash = Engine_ClassicTheme.TopHash(Engine_ClassicTheme.SlotWaterNormal);
+        if (hash == 0u || hash == surface.NormalHash)
+        {
+            return;
+        }
+        surface.NormalHash = hash;
+        if (Engine_EnvironmentTextures.Load(hash, Engine_BnkMeshLoader.ReadBytes, out _) is not { } normal)
+        {
+            return;
+        }
+        int n = surface.MaterialsInto(_passes);
+        for (int i = 0; i < n; i++)
+        {
+            _passes[i].SetShaderParameter(NormalSamplerName, normal);
+        }
+    }
+
+    private static readonly StringName NormalSamplerName = "ps_g_NormalTextureSampler";
 
     /// <summary>
     /// For the debug channel: each surface's node, world box (Godot), whether it is the vista
@@ -382,18 +426,27 @@ public static class Engine_ClassicWater
         _lastSeconds = seconds;
         var tile = new Vector4(0f, 0f, 1f / Math.Max(viewport.X, 1f), 1f / Math.Max(viewport.Y, 1f));
         bool sun = Engine_ClassicFeed.TrySun(out Vector3 colour, out Vector3 direction, out _);
+        bool stated = ReadStatedTheme();
         lock (_surfaces)
         {
             for (int i = _surfaces.Count - 1; i >= 0; i--)
             {
                 Surface surface = _surfaces[i];
-                if (!GodotObject.IsInstanceValid(surface.Core))
+                // The list holds the materials itself, so a body taken down with its region is
+                // known by its node.
+                if (!GodotObject.IsInstanceValid(surface.Core) ||
+                    (surface.Attached && (surface.Node is null || !GodotObject.IsInstanceValid(surface.Node))))
                 {
                     Engine_ClassicConstants.ReleaseRow(surface.Row);
                     _surfaces.RemoveAt(i);
                     continue;
                 }
                 FollowMist(surface);
+                FollowNormal(surface);
+                if (stated)
+                {
+                    FollowTheme(surface);
+                }
                 WaterTheme theme = surface.Theme;
                 surface.Phase0 += new Vector2(theme[WaterThemeParam.NormalMapSpeed0X], theme[WaterThemeParam.NormalMapSpeed0Y]) * dt;
                 surface.Phase1 += new Vector2(theme[WaterThemeParam.NormalMapSpeed1X], theme[WaterThemeParam.NormalMapSpeed1Y]) * dt;
@@ -419,6 +472,65 @@ public static class Engine_ClassicWater
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// The theme `sub_821E4C88` reads: parameter p at T + 16p, T = `*(*(ctx+4)+20) + 16`
+    /// (`sub_82B3CDE8`), the block Engine_ClassicTheme carries after the guest's own time-of-day
+    /// blend (the editor frame's where no guest runs). The theme applied at build stands only
+    /// until a block is live.
+    /// </summary>
+    private static readonly (int Water, int Param, int Lane)[] StatedParams =
+    {
+        (WaterThemeParam.ShallowR, 116, 0), (WaterThemeParam.ShallowG, 116, 1), (WaterThemeParam.ShallowB, 116, 2),
+        (WaterThemeParam.DeepR, 117, 0), (WaterThemeParam.DeepG, 117, 1), (WaterThemeParam.DeepB, 117, 2),
+        (WaterThemeParam.NormalScale, 118, 0),
+        (WaterThemeParam.FresnelBias, 119, 0),
+        (WaterThemeParam.ReflectionBias, 120, 0),
+        (WaterThemeParam.ReflectionScale, 121, 0),
+        (WaterThemeParam.RefractionScale, 122, 0),
+        (WaterThemeParam.ReflectionStrength, 123, 0),
+        (WaterThemeParam.GlitterBend, 124, 0),
+        (WaterThemeParam.GlitterStrength, 125, 0),
+        (WaterThemeParam.GlitterPower, 126, 0),
+        (WaterThemeParam.ShadowScaleBias, 127, 0),
+        (WaterThemeParam.MaxRefractionDistance, 128, 0),
+        (WaterThemeParam.EdgeBlendMax, 129, 0),
+        (WaterThemeParam.EdgeBlendMin, 130, 0),
+        (WaterThemeParam.EdgeBlendBias, 131, 0),
+        (WaterThemeParam.NormalMapSpeed0X, 103, 0), (WaterThemeParam.NormalMapSpeed0Y, 104, 0),
+        (WaterThemeParam.NormalMapSpeed1X, 105, 0), (WaterThemeParam.NormalMapSpeed1Y, 106, 0),
+        (WaterThemeParam.NormalMapScale0, 107, 0), (WaterThemeParam.NormalMapScale1, 108, 0),
+        (WaterThemeParam.DetailMapSpeedX, 109, 0), (WaterThemeParam.DetailMapSpeedY, 110, 0),
+        (WaterThemeParam.DetailMapScale, 111, 0),
+        (WaterThemeParam.DisableVistaWater, 102, 0),
+    };
+
+    private static readonly float[] _stated = new float[WaterThemeParam.Count];
+
+    private static bool ReadStatedTheme()
+    {
+        if (!Engine_ClassicTheme.Live)
+        {
+            return false;
+        }
+        foreach ((int water, int param, int lane) in StatedParams)
+        {
+            _stated[water] = Engine_ClassicTheme.Param(param, lane);
+        }
+        return true;
+    }
+
+    /// <summary>The stated theme onto the surface's own copy; a change rewrites every row.</summary>
+    private static void FollowTheme(Surface surface)
+    {
+        if (ReferenceEquals(surface.Theme, surface.Stated) && surface.Stated.Values.AsSpan().SequenceEqual(_stated))
+        {
+            return;
+        }
+        _stated.CopyTo(surface.Stated.Values, 0);
+        surface.Theme = surface.Stated;
+        surface.Dirty = true;
     }
 
     /// <summary>The constants that move every frame: the two bump phases and the detail phase.</summary>

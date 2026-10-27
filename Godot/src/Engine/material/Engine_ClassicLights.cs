@@ -46,6 +46,39 @@ public static class Engine_ClassicLights
         public bool Shadowed => Casts && !NoShadow;
     }
 
+    /// <summary>
+    /// A local light as its packer and shadow object state it (HostBridge.GetClassicLocalLights):
+    /// the slot's position L+288 (the manager entry is the light's bounding sphere, L+112) and,
+    /// for a spot with a shadow object, its map's camera and depth biases.
+    /// </summary>
+    public readonly record struct Local(
+        Vector3 Origin, Vector3 Direction, bool Mapped, float FovY, float Near, float Far, float Bias, float Slope);
+
+    private const int MaxLocalIndex = 256;
+    private static readonly Local[] _locals = new Local[MaxLocalIndex];
+    private static readonly bool[] _hasLocal = new bool[MaxLocalIndex];
+    private static readonly float[] _localRaw = new float[64 * Refii.Host.HostBridge.ClassicLocalLightStride];
+
+    /// <summary>This frame's stated origin and spot map of the light at manager index <paramref name="index"/>.</summary>
+    public static bool TryLocal(int index, out Local local)
+    {
+        if (index >= 0 && index < MaxLocalIndex && _hasLocal[index])
+        {
+            local = _locals[index];
+            return true;
+        }
+        local = default;
+        return false;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="light"/> shadows with a map of its own (`Render_SpotLight_PackGroupSlot`:
+    /// an active shadow object and not the screen-mask light, L+337 with L+484).
+    /// </summary>
+    public static bool OwnsSpotMap(in Light light) =>
+        light.Type == Light.Spot && light.Shadowed && !(light.Flag337 && light.Primary) &&
+        TryLocal(light.Index, out Local local) && local.Mapped;
+
     private const int MaxLights = 64;
     private static readonly float[] _raw = new float[MaxLights * Refii.Host.HostBridge.ClassicLightStride];
     private static readonly List<Light> _lights = new(MaxLights);
@@ -142,6 +175,27 @@ public static class Engine_ClassicLights
                 _frustums[(int)_frustumRaw[at]] = (Math.Clamp((int)_frustumRaw[at + 1], 0, 16), at + 2);
             }
         }
+        Array.Clear(_hasLocal);
+        if (Replay is null)
+        {
+            const int ls = Refii.Host.HostBridge.ClassicLocalLightStride;
+            uint locals = Refii.Host.HostBridge.GetClassicLocalLights(_localRaw);
+            for (int i = 0; i < locals; i++)
+            {
+                int at = i * ls;
+                int index = (int)_localRaw[at];
+                if (index < 0 || index >= MaxLocalIndex)
+                {
+                    continue;
+                }
+                _locals[index] = new Local(
+                    new Vector3(_localRaw[at + 1], _localRaw[at + 2], _localRaw[at + 3]),
+                    new Vector3(_localRaw[at + 4], _localRaw[at + 5], _localRaw[at + 6]),
+                    _localRaw[at + 7] != 0f, _localRaw[at + 8], _localRaw[at + 9], _localRaw[at + 10],
+                    _localRaw[at + 11], _localRaw[at + 12]);
+                _hasLocal[index] = true;
+            }
+        }
         for (int i = 0; i < count; i++)
         {
             int at = i * stride;
@@ -182,6 +236,7 @@ public static class Engine_ClassicLights
         // The vertex block is c76..c107: the pixel block's layout without its last two entries
         // (screen and spot shadow masks), which would land on g_VertexAtmosphericParameters c108.
         Engine_ClassicConstants.SetFrame(false, Engine_ClassicRegisters.Vs.LightPositions, VertexBlock(_block));
+        Engine_ClassicSpotShadows.WriteFrameDefaults();
     }
 
     private const int MaxSceneLights = 2048;
@@ -281,6 +336,14 @@ public static class Engine_ClassicLights
             {
                 break;
             }
+            // Its packed position, L+288 ([20..22]); no map: the guest renders none for a light
+            // it did not gather.
+            if (index < MaxLocalIndex)
+            {
+                _locals[index] = new Local(new Vector3(_scene[at + 20], _scene[at + 21], _scene[at + 22]),
+                    new Vector3(_scene[at + 8], _scene[at + 9], _scene[at + 10]), false, 0f, 0f, 0f, 0f, 0f);
+                _hasLocal[index] = true;
+            }
             _lights.Add(new Light(
                 new Vector3(_scene[at], _scene[at + 1], _scene[at + 2]), _scene[at + 3],
                 new Vector3(_scene[at + 4], _scene[at + 5], _scene[at + 6]), intensity,
@@ -345,7 +408,10 @@ public static class Engine_ClassicLights
             return;
         }
 
-        Set(block, positions + slot, light.Position.X, light.Position.Y, light.Position.Z, 1f);
+        // The packer's position is L+288; the light's Position is its query sphere (L+112),
+        // which for a spot stands out along the cone.
+        Vector3 origin = TryLocal(light.Index, out Local local) ? local.Origin : light.Position;
+        Set(block, positions + slot, origin.X, origin.Y, origin.Z, 1f);
         Set(block, colors + slot,
             light.Colour.X * light.Intensity, light.Colour.Y * light.Intensity, light.Colour.Z * light.Intensity, 0f);
         Lane(block, type + quad, lane, 1f);
@@ -359,7 +425,7 @@ public static class Engine_ClassicLights
             Lane(block, spotFalloff + quad, lane, 1f - cos != 0f ? 1f / (1f - cos) : 0f);
             bool a = light.Shadowed && light.Flag337 && light.Primary;
             Lane(block, screenShadow + quad, lane, a ? 1f : 0f);
-            Lane(block, spotShadow + quad, lane, light.Shadowed && !a ? 1f : 0f);
+            Lane(block, spotShadow + quad, lane, OwnsSpotMap(light) ? 1f : 0f);
         }
         else
         {

@@ -116,6 +116,9 @@ vec4 xr_tfetchTexcoord(uint swapped, vec4 value, uint index) {
 #define xr_tfetch2D_denorm(t, uv, offset) texture(t, ((uv) + (offset)) / vec2(textureSize(t, 0)))
 #define xr_tfetch2D(t, uv, offset) texture(t, (uv) + (offset) / vec2(textureSize(t, 0)))
 #define xr_tfetch2D_depth(t, uv, offset) texture(t, (uv) + (offset) / vec2(textureSize(t, 0)))
+// The spot maps: one layer per shadowing spot (Engine_ClassicSpotShadows), the layer the light
+// group's row states.
+#define xr_tfetch2D_layer(t, uv, offset, layer) texture(t, vec3((uv) + (offset) / vec2(textureSize(t, 0).xy), layer))
 // A composition whose title source was rendered unexposed while ours is the exposed scene
 // scales the read back (the water's refraction tile, Engine_ClassicWater).
 #ifndef XR_SCREEN_SCALE

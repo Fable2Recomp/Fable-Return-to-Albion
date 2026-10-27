@@ -113,7 +113,9 @@ public partial class Engine_PostFxEffect
                 ("ps_g_BrightnessThresholdAndScale",
                     $"vec4(xr_state.v[{Engine_PostFxState.Threshold}], 1.0 / max(xr_state.v[{Engine_PostFxState.ExposureFrame}], 1e-4), 0.0, 0.0)"),
             },
-            string.Empty, out error);
+            // The cut writes an A2B10G10R10 UNORM target (`sub_8229F7E8` 0x8229F800, format 15),
+            // which clamps to [0, 1] before the blurs; our rgba16f target does not.
+            "clamp((c), 0.0, 1.0)", out error);
         _cGaussH = _cBrightcut is null ? null : Engine_ClassicPostPass.Build(rd, "PSHADER_POSTPROCESSING_HORIZONTAL_GAUSSBLUR", NoFixups, string.Empty, out error);
         _cGaussV = _cGaussH is null ? null : Engine_ClassicPostPass.Build(rd, "PSHADER_POSTPROCESSING_VERTICAL_GAUSSBLUR", NoFixups, string.Empty, out error);
 
@@ -237,7 +239,7 @@ public partial class Engine_PostFxEffect
     /// <summary>DOWNSCALE4 (0161): the scene into the quarter target, four taps of texel centres.</summary>
     private void ClassicDownscale4(Rid colour)
     {
-        _cTextures[0] = (_linearSampler, colour);
+        _cTextures[0] = (Filter(_cDownscale4!, 0, _linearSampler), colour);
         _cDownscale4!.Run(_rd!, _quarter, _quarterSize, _stateBuffer, _cTextures.AsSpan(0, 1));
     }
 
@@ -248,7 +250,7 @@ public partial class Engine_PostFxEffect
         pass.Set("ps_g_Center", centre.X, centre.Y);
         pass.Set("ps_g_FalloffMultiplier", _derived.RadialFalloff, _derived.RadialFalloff, _derived.RadialFalloff, _derived.RadialFalloff);
         pass.Set("ps_g_MagnificationFactor", _derived.RadialMagnification, _derived.RadialMagnification, _derived.RadialMagnification, _derived.RadialMagnification);
-        _cTextures[0] = (_linearSampler, _rays[src]);
+        _cTextures[0] = (Filter(pass, 0, _linearSampler), _rays[src]);
         pass.Run(_rd!, _rays[1 - src], _quarterSize, _stateBuffer, _cTextures.AsSpan(0, 1));
     }
 
@@ -272,7 +274,7 @@ public partial class Engine_PostFxEffect
         System.Array.Clear(_cWeights);
         System.Array.Copy(weights, _cWeights, Math.Min(weights.Length, 7));
         pass.Set("ps_g_FixedGuassBlurWeights", _cWeights);
-        _cTextures[0] = (_linearSampler, src);
+        _cTextures[0] = (Filter(pass, 0, _linearSampler), src);
         pass.Run(_rd!, dst, _quarterSize, _stateBuffer, _cTextures.AsSpan(0, 1));
     }
 
@@ -395,7 +397,7 @@ public partial class Engine_PostFxEffect
     /// <summary>CONVERTTOLUMINANCE (0159) of the quarter scene, then the histogram of it.</summary>
     private void ClassicHistogram()
     {
-        _cTextures[0] = (_nearestSampler, _quarter);
+        _cTextures[0] = (Filter(_cLuminance!, 0, _nearestSampler), _quarter);
         _cLuminance!.Run(_rd!, _cLum, _quarterSize, _stateBuffer, _cTextures.AsSpan(0, 1));
         Dispatch(_histogramPipeline, _cHistogramSet, PushSizeFloats(_quarterSize, 0f, 0f),
             (_quarterSize.X + 15) / 16, (_quarterSize.Y + 15) / 16);
@@ -420,8 +422,13 @@ public partial class Engine_PostFxEffect
                 "ps_g_DisplacementSampler" => (_linearSampler, _cDisplacement.IsValid ? _cDisplacement : _exposureRd),
                 _ => (_linearSampler, _exposureRd),
             };
+            _cTextures[i].Sampler = Filter(pass, i, _cTextures[i].Sampler);
         }
     }
+
+    /// <summary>The filter the pass's stage states for its sampler <paramref name="index"/>, else <paramref name="fallback"/>.</summary>
+    private Rid Filter(Engine_ClassicPostPass pass, int index, Rid fallback) =>
+        index < pass.Samplers.Count ? pass.Filter(pass.Samplers[index], _nearestSampler, _linearSampler, fallback) : fallback;
 
     // ---- The classic sky's layer draws (Engine_ClassicSkyLayers) ----
 

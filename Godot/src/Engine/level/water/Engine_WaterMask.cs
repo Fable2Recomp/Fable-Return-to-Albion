@@ -57,7 +57,13 @@ public static class Engine_WaterMask
     /// Builds one body's mask. <c>Bounds</c> is <c>(minX, minZ, 1/sizeX, 1/sizeZ)</c> so the shader
     /// can turn a local XZ position into the texture's UV without the mesh carrying one.
     /// </summary>
-    public static Mask? TryBuild(WaterBody body)
+    /// <remarks>
+    /// <paramref name="perTile"/> (the classic renderer) blurs as the title does: each tile's
+    /// cells filled and blurred at that tile's own resolution (sigma = cellsX * 0.078125, three
+    /// passes, `sub_82B3B2A0`), then resampled bilinearly into the body's grid. The fade then
+    /// spans about six of the tile's cells, as authored, instead of six of the body's finest.
+    /// </remarks>
+    public static Mask? TryBuild(WaterBody body, bool perTile = false)
     {
         if (body.Tiles.Count == 0)
         {
@@ -104,7 +110,14 @@ public static class Engine_WaterMask
 
         foreach (WaterTile tile in body.Tiles)
         {
-            Stamp(tile, texels, width, height, minX, minZ, sizeX, sizeZ);
+            if (perTile)
+            {
+                StampBlurred(tile, texels, width, height, minX, minZ, sizeX, sizeZ);
+            }
+            else
+            {
+                Stamp(tile, texels, width, height, minX, minZ, sizeX, sizeZ);
+            }
         }
 
         // COUNTED ONCE, AFTER STAMPING — tiles overlap, so counting inside the fill loop tallies
@@ -132,10 +145,13 @@ public static class Engine_WaterMask
             return null;
         }
 
-        float sigma = MathF.Max(width * SigmaPerTexel, 1e-3f);
-        for (int pass = 0; pass < BlurPasses; pass++)
+        if (!perTile)
         {
-            texels = Blur(texels, width, height, sigma);
+            float sigma = MathF.Max(width * SigmaPerTexel, 1e-3f);
+            for (int pass = 0; pass < BlurPasses; pass++)
+            {
+                texels = Blur(texels, width, height, sigma);
+            }
         }
 
         var bytes = new byte[texels.Length];
@@ -219,6 +235,56 @@ public static class Engine_WaterMask
                         texels[(y * width) + x] = value;
                     }
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// One tile's own mask — its cells, inverted (`sub_82B3B4F8`), blurred three times at its own
+    /// width — resampled bilinearly (texel centres, clamped) into the body grid over the tile's
+    /// rectangle.
+    /// </summary>
+    private static void StampBlurred(
+        WaterTile tile, float[] texels, int width, int height,
+        float minX, float minZ, float sizeX, float sizeZ)
+    {
+        int cw = tile.CellsX, ch = tile.CellsZ;
+        if (cw <= 0 || ch <= 0 || tile.Mask.Length < cw * ch)
+        {
+            return;
+        }
+        var own = new float[cw * ch];
+        for (int i = 0; i < own.Length; i++)
+        {
+            own[i] = tile.Mask[i] == 0 ? 1f : 0f;
+        }
+        float sigma = MathF.Max(cw * SigmaPerTexel, 1e-3f);
+        for (int pass = 0; pass < BlurPasses; pass++)
+        {
+            own = Blur(own, cw, ch, sigma);
+        }
+
+        float tileMinX = tile.CentreX - (tile.ExtentX * 0.5f);
+        float tileMinZ = tile.CentreZ - (tile.ExtentZ * 0.5f);
+        int x0 = Math.Clamp((int)MathF.Floor((tileMinX - minX) / sizeX * width), 0, width - 1);
+        int y0 = Math.Clamp((int)MathF.Floor((tileMinZ - minZ) / sizeZ * height), 0, height - 1);
+        int x1 = Math.Clamp((int)MathF.Ceiling((tileMinX + tile.ExtentX - minX) / sizeX * width), x0 + 1, width);
+        int y1 = Math.Clamp((int)MathF.Ceiling((tileMinZ + tile.ExtentZ - minZ) / sizeZ * height), y0 + 1, height);
+        for (int y = y0; y < y1; y++)
+        {
+            float worldZ = minZ + ((y + 0.5f) / height * sizeZ);
+            float fy = Math.Clamp(((worldZ - tileMinZ) / tile.ExtentZ * ch) - 0.5f, 0f, ch - 1);
+            int ry = Math.Min((int)fy, ch - 1), ry1 = Math.Min(ry + 1, ch - 1);
+            float ty = fy - ry;
+            for (int x = x0; x < x1; x++)
+            {
+                float worldX = minX + ((x + 0.5f) / width * sizeX);
+                float fx = Math.Clamp(((worldX - tileMinX) / tile.ExtentX * cw) - 0.5f, 0f, cw - 1);
+                int rx = Math.Min((int)fx, cw - 1), rx1 = Math.Min(rx + 1, cw - 1);
+                float tx = fx - rx;
+                float top = own[(ry * cw) + rx] + ((own[(ry * cw) + rx1] - own[(ry * cw) + rx]) * tx);
+                float bottom = own[(ry1 * cw) + rx] + ((own[(ry1 * cw) + rx1] - own[(ry1 * cw) + rx]) * tx);
+                texels[(y * width) + x] = top + ((bottom - top) * ty);
             }
         }
     }

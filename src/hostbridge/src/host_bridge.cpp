@@ -2505,7 +2505,11 @@ extern "C" {
 ///     RefiiHostFrontEndPresentation, the front end's key for them.
 /// 227 adds RefiiHostGetLogbookOrbView — the other player's stats the logbook was opened on
 /// from an orb's View Stats.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 227; }
+/// 228 adds RefiiHostGetClassicLocalLights — each local light's packed position (L+288, not
+///     the manager's bounding sphere) and a shadowing spot's map parameters, for the classic
+///     renderer's light block and spot shadow maps; and RefiiHostGetClassicShadowSpheres — the
+///     render scene's shadow spheres (category 36) with their last two stated keyframes.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 228; }
 
 /// THE GUEST'S STATEMENTS TO ITS PRESENTATIONS (hooks/gui_slide_hooks.cpp), oldest first: six
 /// words each — kind (1 slide entry, 2 paused, 3 attribute, 4 active), presentation, root name
@@ -13017,6 +13021,78 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSpotFrustums(float* out, uint32_t cap
     return used;
 }
 
+/// The manager's LOCAL lights (types 8 point and 9 spot) as their packer and their shadow
+/// object state them. A light's manager entry is its bounding sphere (L+112, copied by
+/// `sub_82240CE8`), but `sub_82A6CDD0` packs the slot's position from L+288; and a spot with a
+/// shadow object (`Render_LightHasActiveShadow`: S = L+176, S+8, L+336, !L+338) renders a 512²
+/// map from L+288 along L+304 (`Render_SpotShadow_UpdateCamera`) with the parameters
+/// `Render_ShadowObject_SetParams` stored on S. 16 floats per light:
+///   [0] entry index, [1..3] position L+288, [4..6] direction L+304, [7] has a map (0/1),
+///   [8] fovY 2·L+324, [9] near S+56, [10] far L+452·L+320, [11] depth bias S+48,
+///   [12] slope-scale bias S+52, [13..15] reserved.
+/// The map's matrices (S+448, S+512) are not read: the guest writes them while it draws the
+/// map, which it does not do here. Returns the lights written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicLocalLights(float* out, uint32_t capacity) {
+    constexpr uint32_t kStride = 16u;
+    if (out == nullptr || capacity < kStride) {
+        return 0u;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0u;
+    }
+    const auto plausible = [](uint32_t pointer) { return pointer >= 0x10000u && pointer < 0xC0000000u; };
+    const auto read_float = [base](uint32_t at) {
+        const uint32_t bits = GuestWordAt(base, at);
+        float value;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+    const auto byte_at = [base](uint32_t at) { return (GuestWordAt(base, at & ~3u) >> (24u - 8u * (at & 3u))) & 0xFFu; };
+    const uint32_t scene = ClassicThemeScene(base);
+    const uint32_t manager = scene != 0u ? GuestWordAt(base, scene + 3684u) : 0u;
+    if (!plausible(manager)) {
+        return 0u;
+    }
+    const uint32_t entries = GuestWordAt(base, manager + 8u);
+    const uint64_t mask = (static_cast<uint64_t>(GuestWordAt(base, manager + 24u)) << 32) | GuestWordAt(base, manager + 28u);
+    if (!plausible(entries)) {
+        return 0u;
+    }
+    uint32_t written = 0u;
+    for (uint32_t index = 0; index < 64u && (written + 1u) * kStride <= capacity; ++index) {
+        if ((mask & (1ull << index)) == 0u) {
+            continue;
+        }
+        const uint32_t light = GuestWordAt(base, entries + index * 32u + 16u);
+        const uint32_t type = plausible(light) ? GuestWordAt(base, light + 4u) : 0u;
+        if (type != 8u && type != 9u) {
+            continue;
+        }
+        float* o = out + written * kStride;
+        std::memset(o, 0, kStride * sizeof(float));
+        o[0] = static_cast<float>(index);
+        for (uint32_t k = 0; k < 3u; ++k) {
+            o[1 + k] = read_float(light + 288u + 4u * k);
+            o[4 + k] = read_float(light + 304u + 4u * k);
+        }
+        const uint32_t shadow = GuestWordAt(base, light + 176u);
+        const bool mapped = type == 9u && plausible(shadow) && byte_at(shadow + 8u) != 0u &&
+            byte_at(light + 336u) != 0u && byte_at(light + 338u) == 0u;
+        o[7] = mapped ? 1.0f : 0.0f;
+        o[8] = 2.0f * read_float(light + 324u);
+        o[10] = read_float(light + 452u) * read_float(light + 320u);
+        if (mapped) {
+            o[9] = read_float(shadow + 56u);
+            o[11] = read_float(shadow + 48u);
+            o[12] = read_float(shadow + 52u);
+        }
+        ++written;
+    }
+    return written;
+}
+
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicLights(float* out, uint32_t capacity) {
     constexpr uint32_t kStride = 20u;
     if (out == nullptr || capacity < kStride) {
@@ -13224,6 +13300,71 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicSceneLights(float* out, uint32
             for (uint32_t k = 33u; k < kStride; ++k) {
                 o[k] = 0.0f;
             }
+            ++written;
+        }
+    }
+    return written;
+}
+
+/// The render scene's SHADOW SPHERES: the category-36 objects of its typed list (O+3412, as
+/// RefiiHostGetClassicMists walks it), which `Render_EntityShadowSphere_Update` 0x8222A8A8 creates
+/// for the hero, the dog and the villagers (radius 0.5 / 0.5 / 0.4, centre the entity + 0.1 up)
+/// and moves every tick. Each holds its last two stated keyframes, shifted by every newer command
+/// (`Render_ShadowSphere_ApplyCommand` 0x82A74F20 for the create, `sub_821F5F78` for the type-1
+/// moves): centre R+176 (previous) and R+192 (newest), radius R+224 / R+228; the title's draw
+/// blends them by its render clock (`Render_ShadowSphere_Interpolate` 0x821E5CB8). 8 floats each:
+///   [0..2] previous centre, [3] previous radius, [4..6] newest centre, [7] newest radius.
+/// Returns the spheres written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicShadowSpheres(float* out, uint32_t capacity) {
+    constexpr uint32_t kStride = 8u;
+    constexpr uint32_t kShadowSphere = 36u;
+    if (out == nullptr || capacity < kStride) {
+        return 0u;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0u;
+    }
+    const auto plausible = [](uint32_t pointer) { return pointer >= 0x10000u && pointer < 0xC0000000u; };
+    const auto read_float = [base](uint32_t at) {
+        const uint32_t bits = GuestWordAt(base, at);
+        float value;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+    const uint32_t scene = ClassicThemeScene(base);
+    if (scene == 0u) {
+        return 0u;
+    }
+    const uint32_t list = scene + 3412u;
+    const uint32_t nodes_begin = GuestWordAt(base, list + 4u);
+    const uint32_t nodes_end = GuestWordAt(base, list + 8u);
+    if (!plausible(nodes_begin) || nodes_end < nodes_begin || nodes_end - nodes_begin > 48u * 24u) {
+        return 0u;
+    }
+    uint32_t written = 0u;
+    for (uint32_t node = nodes_begin; node + 24u <= nodes_end; node += 24u) {
+        if (GuestWordAt(base, node) != kShadowSphere) {
+            continue;
+        }
+        const uint32_t objects_begin = GuestWordAt(base, node + 12u);
+        const uint32_t objects_end = GuestWordAt(base, node + 16u);
+        if (!plausible(objects_begin) || objects_end < objects_begin) {
+            break;
+        }
+        for (uint32_t at = objects_begin; at + 4u <= objects_end && (written + 1u) * kStride <= capacity; at += 4u) {
+            const uint32_t sphere = GuestWordAt(base, at);
+            if (!plausible(sphere)) {
+                continue;
+            }
+            float* o = out + written * kStride;
+            for (uint32_t k = 0; k < 3u; ++k) {
+                o[k] = read_float(sphere + 176u + 4u * k);
+                o[4 + k] = read_float(sphere + 192u + 4u * k);
+            }
+            o[3] = read_float(sphere + 224u);
+            o[7] = read_float(sphere + 228u);
             ++written;
         }
     }

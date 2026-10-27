@@ -265,10 +265,10 @@ public partial class GameLoadingScreen : Node
 
 		if (HostBridge.GetLoadingScreen() is not { } loading || loading.Screen == 0)
 		{
-			if (GameWorld.WorldBuildHeld)
+			if (GameWorld.CoverHeld)
 			{
 				HoldCover("[game-loading] the guest dropped its loading screen while the world " +
-					"build still holds its level change — covering until the build releases it");
+					"build holds its level change or classic settles its shaders — covering until both release it");
 				return;
 			}
 
@@ -278,7 +278,7 @@ public partial class GameLoadingScreen : Node
 
 		if (HostBridge.GetLoadingScreenArt() is not { } art || art.Name.Length == 0)
 		{
-			if (GameWorld.WorldBuildHeld)
+			if (GameWorld.CoverHeld)
 			{
 				HoldCover("[game-loading] the guest wants a loading screen but its art is " +
 					"unreadable — covering while the world build holds");

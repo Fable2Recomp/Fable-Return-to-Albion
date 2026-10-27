@@ -72,6 +72,10 @@ public static class Engine_ClassicMaterial
                 {
                     m.SetShaderParameter(name, Engine_ClassicScreenShadow.Mask);
                 }
+                else if (name == Engine_ClassicSpotShadows.SamplerName)
+                {
+                    m.SetShaderParameter(name, Engine_ClassicSpotShadows.Maps);
+                }
                 else if (Engine_ClassicShadows.Instance is { } shadows && (name == Cascade0Name || name == Cascade1Name))
                 {
                     m.SetShaderParameter(name, shadows.CascadeTexture(name == Cascade0Name ? 0 : 1));
@@ -305,7 +309,20 @@ public static class Engine_ClassicMaterial
         }
         if (family == "TREEMATERIAL")
         {
-            // The tree draw's shader set is always entry 2 (TreeDefines): no lightmap, no bake.
+            // The tree key (`Render_TreeMaterial_Key` 0x82B17F50) is Nrm | Sp<<1 | Trunk<<2 |
+            // Amb<<3: one specular bit and no secondary diffuse. Asked for SP2 or SDIF1 the bank
+            // had no tree pair and the modern material drew the tree.
+            pixelTokens.Remove("SDIF1");
+            if (pixelTokens.Remove("SP2"))
+            {
+                pixelTokens.Add("SP1");
+            }
+            // A tree takes no .lmp bake (`Render_StaticMesh_ResolveLmpBake` 0x82222F70 has the
+            // static mesh draw as its only caller), so `sub_82219978` gives it AMB2 when the
+            // submesh carries radiance transfer (submesh+124 > 0) and the level has probes. The
+            // shipped trees draw lit at night (warm canopies under a blue ambient), so they take
+            // AMB2; our reader states no transfer for them (ShDescriptor empty), which is the
+            // reader's gap, not the trees'.
             vertexTokens.Add("AMB2");
             pixelTokens.Add("AMB2");
         }
@@ -426,6 +443,8 @@ public static class Engine_ClassicMaterial
             result.SetShaderParameter("ps_g_DirectionalLightShadowMapSampler0", shadows.CascadeTexture(0));
             result.SetShaderParameter("ps_g_DirectionalLightShadowMapSampler1", shadows.CascadeTexture(1));
         }
+        // The spot maps (s9), one layer per shadowing spot; the light group's row names the layer.
+        result.SetShaderParameter(Engine_ClassicSpotShadows.SamplerName, Engine_ClassicSpotShadows.Maps);
 
         // The material block as `sub_822015B8` uploads RC+112..+176 (c24..c27, and VS c50..53):
         //   c24 = (RC+60 specular power min, RC+64 max, RC+72 self-illumination scale, RC+88)
@@ -465,7 +484,9 @@ public static class Engine_ClassicMaterial
         // b4 g_NeedsScattering: set with the tables bound, as the material state setup sets it
         // while the sky is on. b1 g_EnableMist: set once any mist has existed (byte_8335CBD2 is
         // never cleared); the per-draw gate is the volume test, not this bit.
-        uint booleans = (1u << (16 + 4)) | (1u << (16 + 1));
+        // b7 g_DoSpotShadows: on for every draw; a group with no spot map of its own has its
+        // slots' own-map flags at zero and the frame's inert transform (Engine_ClassicSpotShadows).
+        uint booleans = (1u << (16 + 4)) | (1u << (16 + 1)) | Engine_ClassicSpotShadows.DoSpotShadows;
         if (envmap is not null)
         {
             booleans |= 1u << (16 + 6);
@@ -858,32 +879,8 @@ public static class Engine_ClassicMaterial
         {
             return null;
         }
-        string family = source.GetMeta(FamilyMeta, "STANDARDMATERIAL").AsString();
-        string pixel = RetokenBlt(source.GetMeta(PixelTokensMeta).AsString(), blt, mist is not null, out List<string> pixelTokens);
-        string vertex = RetokenBlt(source.GetMeta(VertexTokensMeta).AsString(), blt, mist is not null, out List<string> vertexTokens);
-        string pixelEntry = Engine_ClassicShaders.FindEntry("PSHADER", family, pixelTokens);
-        string vertexEntry = source.HasMeta(VertexEntryMeta)
-            ? source.GetMeta(VertexEntryMeta).AsString()
-            : Engine_ClassicShaders.FindEntry("VSHADER", family, vertexTokens);
-        if (family == "TREEMATERIAL" && blt > 1 &&
-            (vertexEntry.Length == 0 || TrunkStage(pixelEntry) != pixelTokens.Contains("TRUNK1")))
-        {
-            // NO TREE PAIR PAST ONE LIGHT. The bank's BLT2/4/7 tree pixel shaders are TRUNK1 only
-            // and its BLT2/4/7 vertex shaders are never TRUNK1, and the two layouts differ (the
-            // trunk stages pass eight varyings, the canopy's six). A trunk would take a BLT1 vertex
-            // stage under a BLT2 pixel stage and a canopy the trunk's pixel stage: either reads
-            // its in-scatter as its transmittance, and a lit tree washed out to the sky colour in
-            // daylight. The tree keeps its BLT1 pair.
-            return null;
-        }
-        if (vertexEntry.Length == 0)
-        {
-            // A family whose vertex stage does not vary with the light count (the landscape
-            // ships BLT1 vertex shaders only) keeps its BLT1 vertex shader under any group.
-            vertexEntry = Engine_ClassicShaders.FindEntry("VSHADER", family,
-                RetokenBlt(vertex, 1, mist is not null, out List<string> _).Split(' ', StringSplitOptions.RemoveEmptyEntries));
-        }
-        if (pixelEntry.Length == 0 || vertexEntry.Length == 0)
+        if (!ResolveGroupShader(source, blt, mist is not null, out string pixel, out string vertex,
+                out string vertexEntry, out string pixelEntry))
         {
             return null;
         }
@@ -893,23 +890,13 @@ public static class Engine_ClassicMaterial
         // the frame's budget a build waits (`Deferred`), and the instance keeps its base until
         // its next assignment; the first build of a frame always runs. Under the load hold
         // nothing is on screen and there is no budget (Engine_ClassicLoad).
-        if (VariantBuildTicks > VariantBudgetTicks && !Engine_ClassicLoad.Holding)
+        if (VariantBuildTicks > VariantBudgetTicks && !Engine_ClassicLoad.Unbudgeted)
         {
             Deferred = true;
             return null;
         }
         fresh = true;
-        string renderMode = source.GetMeta(RenderModeMeta).AsString();
-        if (pass > 0)
-        {
-            // Additive on top of the first pass, same depth, no second depth write. An opaque
-            // source states no blend at all, which Godot would draw as a mix.
-            renderMode = renderMode.Replace("blend_mix", "blend_add").Replace("depth_draw_opaque", "depth_draw_never");
-            if (!renderMode.Contains("blend_"))
-            {
-                renderMode += ", blend_add";
-            }
-        }
+        string renderMode = GroupRenderMode(source, pass);
         long composeFrom = System.Diagnostics.Stopwatch.GetTimestamp();
         Shader? shader = Engine_ClassicShaders.Compose(
             vertexEntry, pixelEntry, renderMode, pass, source.GetMeta(DefinesMeta, string.Empty).AsString());
@@ -1214,6 +1201,98 @@ public static class Engine_ClassicMaterial
         material.SetMeta(DefinesMeta, defines);
         material.SetMeta(SinglePassMeta, true);
     }
+
+    /// <summary>
+    /// The pair a light group of BLT <paramref name="blt"/> draws <paramref name="source"/> with,
+    /// as the title's shader sets pair them; false when the bank has none.
+    /// </summary>
+    private static bool ResolveGroupShader(ShaderMaterial source, int blt, bool mist, out string pixel, out string vertex,
+        out string vertexEntry, out string pixelEntry)
+    {
+        // TREES LIGHT IN ONE STAGE ONLY (the tree shader sets, `Render_TreeShaderSet_Find`
+        // 0x82B181A8 over the builders 0x82B0D030..0x82B17638): a canopy lights per vertex, its
+        // vertex shader taking the group's BLT and its pixel shader staying BLT1; a trunk lights
+        // per pixel, the other way round. Every other family takes the BLT in both.
+        vertexEntry = pixelEntry = string.Empty;
+        string family = source.GetMeta(FamilyMeta, "STANDARDMATERIAL").AsString();
+        string rawPixel = source.GetMeta(PixelTokensMeta).AsString();
+        bool tree = family == "TREEMATERIAL";
+        bool trunk = tree && rawPixel.Contains("TRUNK1", StringComparison.Ordinal);
+        pixel = RetokenBlt(rawPixel, tree && !trunk ? 1 : blt, mist, out List<string> pixelTokens);
+        // MIST IS A PIXEL AXIS ONLY. The bank ships no MIST1 vertex shader in any family, and
+        // every MIST1 pixel stage reads exactly its MIST0 twin's varyings: a misted draw keeps
+        // its MIST0 vertex stage. Asking for MIST1 here found nothing and left every lit
+        // instance inside a volume with neither its mist nor its light groups.
+        vertex = RetokenBlt(source.GetMeta(VertexTokensMeta).AsString(), trunk ? 1 : blt, false, out List<string> vertexTokens);
+        pixelEntry = Engine_ClassicShaders.FindEntry("PSHADER", family, pixelTokens);
+        vertexEntry = source.HasMeta(VertexEntryMeta)
+            ? source.GetMeta(VertexEntryMeta).AsString()
+            : Engine_ClassicShaders.FindEntry("VSHADER", family, vertexTokens);
+        if (tree && TrunkStage(pixelEntry) != trunk)
+        {
+            // A canopy must never take a trunk stage (eight varyings against six): no pair.
+            return false;
+        }
+        if (vertexEntry.Length == 0)
+        {
+            // A family whose vertex stage does not vary with the light count (the landscape
+            // ships BLT1 vertex shaders only) keeps its BLT1 vertex shader under any group.
+            vertexEntry = Engine_ClassicShaders.FindEntry("VSHADER", family,
+                RetokenBlt(vertex, 1, false, out List<string> _).Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        }
+        return pixelEntry.Length != 0 && vertexEntry.Length != 0;
+    }
+
+    /// <summary>A light group pass's render mode: the source's, and additive after the first pass.</summary>
+    private static string GroupRenderMode(ShaderMaterial source, int pass)
+    {
+        string renderMode = source.GetMeta(RenderModeMeta).AsString();
+        if (pass > 0)
+        {
+            // Additive on top of the first pass, same depth, no second depth write. An opaque
+            // source states no blend at all, which Godot would draw as a mix.
+            renderMode = renderMode.Replace("blend_mix", "blend_add").Replace("depth_draw_opaque", "depth_draw_never");
+            if (!renderMode.Contains("blend_"))
+            {
+                renderMode += ", blend_add";
+            }
+        }
+        return renderMode;
+    }
+
+    /// <summary>
+    /// Composes every light-group shader <paramref name="source"/> can be drawn with — BLT 1, 2,
+    /// 4 and 7 on each of the three passes — without building a material, so the load hold
+    /// compiles them (the pool, Engine_ClassicShaders) instead of play composing one the first
+    /// time a light reaches the instance. Returns how many were new. Main thread.
+    /// </summary>
+    public static int WarmGroupShaders(ShaderMaterial source)
+    {
+        if (!source.HasMeta(PixelTokensMeta) || !source.HasMeta(RenderModeMeta))
+        {
+            return 0;
+        }
+        int passes = source.HasMeta(SinglePassMeta) ? 1 : 3;
+        string defines = source.GetMeta(DefinesMeta, string.Empty).AsString();
+        int composed = 0;
+        foreach (int blt in WarmBlts)
+        {
+            if (!ResolveGroupShader(source, blt, false, out string _, out string _, out string vertexEntry, out string pixelEntry))
+            {
+                continue;
+            }
+            for (int pass = 0; pass < passes; pass++)
+            {
+                if (Engine_ClassicShaders.Warm(vertexEntry, pixelEntry, GroupRenderMode(source, pass), pass, defines))
+                {
+                    ++composed;
+                }
+            }
+        }
+        return composed;
+    }
+
+    private static readonly int[] WarmBlts = { 1, 2, 4, 7 };
 
     private static bool TrunkStage(string entry) => entry.Contains("_TRUNK1", StringComparison.Ordinal);
 

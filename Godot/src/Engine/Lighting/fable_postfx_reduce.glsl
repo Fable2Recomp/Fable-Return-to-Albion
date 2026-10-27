@@ -206,7 +206,10 @@ void main() {
 		// For `x * (1 + x / W_x^2) / (1 + x)` to reach 1.0 at the white point `l = wb` (where `x = wb * knee_n`),
 		// the white point in curve space must be `W_x = max(wb * knee_n, 2.0)` so `1 / W_x^2 <= 0.25` is never super-linear.
 		float white_x = max(wb * knee_n, 2.0);
-		float inv_white_sq = 1.0 / (white_x * white_x);
+		// THE CLASSIC CURVE IS THE TITLE'S: `sub_8217E428` takes 1 / (max - min)^2 in raw units
+		// (0x8217E484 fsubs, 0x8217E518 fmuls, 0x8217E530 fdivs) with no key and no floor, so a
+		// night whose stats sit on the floors (max - min ~ 1) runs near-linear.
+		float inv_white_sq = params.reserved1.z > 0.5 ? 1.0 / (wb * wb) : 1.0 / (white_x * white_x);
 		state.v[S_CURVE_SCALE] = raw_gain * knee_n / prev_exp;
 		state.v[S_INV_WHITE_SQ] = inv_white_sq;
 		s_scalar[0] = bin_to_lum * knee_n;

@@ -54,6 +54,8 @@ public partial class LevelViewer : Node3D
 	private bool _classicLoaded;
 	private long _classicLoadFrom;
 	private int _framesWaited;
+	// The classic load hold's own bound: the streaming wait used to spend the shared one.
+	private int _classicFramesWaited;
 
 	/// <summary>Viewport render times summed over the frames before the shot: one sample is noise.</summary>
 	private double _cpuSum, _gpuSum, _setupSum;
@@ -159,6 +161,7 @@ public partial class LevelViewer : Node3D
 				Refii.Models.Engine_ClassicShadows.MapMode = maps;
 			}
 		}
+		LabReady();
 
 		string dataRoot = Engine_GameData.Resolve();
 		if (dataRoot.Length == 0)
@@ -211,6 +214,7 @@ public partial class LevelViewer : Node3D
 		}
 
 		Refii.Models.Engine_ClassicPath.Pump(this, _camera, GetViewport().GetVisibleRect().Size);
+		LabPump();
 		if (_shotPath.Length != 0 && _framesRendered == ShotWarmupFrames - 1)
 		{
 			GD.Print(Refii.Models.Engine_ClassicPath.Status());
@@ -248,9 +252,15 @@ public partial class LevelViewer : Node3D
 
 		// THE GAME'S LOAD HOLD, classic share (GameWorld -> Engine_ClassicLoad): bakes applied,
 		// compositions compiled and the light-group warm built before the shot's warm-up starts.
-		if (_framesRendered == 0 && !_classicLoaded && _region is not null && Refii.Models.Engine_ClassicMaterial.Active &&
-			++_framesWaited < 2400)
+		if (_framesRendered == 0 && !_classicLoaded && _region is not null && Refii.Models.Engine_ClassicMaterial.Active)
 		{
+			if (++_classicFramesWaited >= 20000)
+			{
+				GD.PrintErr("[level-viewer] classic load hold NOT done after 20000 frames; the shot shows a partly lit frame");
+				_classicLoaded = true;
+				_caption.Text = string.Empty;
+				goto ClassicHoldOver;
+			}
 			if (_classicLoadFrom == 0)
 			{
 				_classicLoadFrom = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -377,7 +387,10 @@ public partial class LevelViewer : Node3D
 				Refii.Models.Engine_ClassicCasters.Census(), kv => $"{kv.Key} {kv.Value}")));
 			GD.Print($"[level-viewer] classic load hold done in " +
 				$"{System.Diagnostics.Stopwatch.GetElapsedTime(_classicLoadFrom).TotalSeconds:0.00} s after streaming");
+			// The hold's caption is stale from here; left up, it was baked into every shot.
+			_caption.Text = string.Empty;
 		}
+		ClassicHoldOver:
 
 		// The game's load hold release: the tone history snaps on the first settled frame
 		// (Engine_PostFxEffect.ResetHistory), as the title's `sub_82181B68` has it. The game's
@@ -1010,6 +1023,7 @@ public partial class LevelViewer : Node3D
 				}
 				GD.Print(sb.ToString() + $" rebuilds {Refii.Models.Engine_ClassicAtmosphere.Rebuilds}");
 			}
+			LabApply();
 		}
 
 		// REFII_LEVEL_PROBE=1: a white DYNAMIC sphere at the camera target, on the shipped material.
@@ -1385,7 +1399,8 @@ public partial class LevelViewer : Node3D
 			GD.Print($"[level-viewer] exposure held at {lockedExposure}");
 		}
 
-		// REFII_LEVEL_POSTFX=bloom,dof,rays: the post-FX stages named are switched off for the run.
+		// REFII_LEVEL_POSTFX=bloom,dof,rays,saturation,mask,all: the post-FX stages named are switched
+		// off for the run; `all` is the whole chain (the materials then take its disabled exposure).
 		foreach (string stage in OS.GetEnvironment("REFII_LEVEL_POSTFX").Split(',', StringSplitOptions.RemoveEmptyEntries))
 		{
 			switch (stage.Trim().ToLowerInvariant())
@@ -1393,6 +1408,8 @@ public partial class LevelViewer : Node3D
 				case "bloom": Refii.Lighting.Engine_PostFxParams.Bloom = false; break;
 				case "dof": Refii.Lighting.Engine_PostFxParams.Dof = false; break;
 				case "rays": Refii.Lighting.Engine_PostFxParams.Rays = false; break;
+				case "saturation": Refii.Lighting.Engine_PostFxParams.Saturation = false; break;
+				case "all": Refii.Lighting.Engine_PostFxParams.Enabled = false; break;
 				case "mask":
 					foreach (CompositorEffect effect in _camera.Compositor?.CompositorEffects ?? new Godot.Collections.Array<CompositorEffect>())
 					{
@@ -1835,6 +1852,12 @@ public partial class LevelViewer : Node3D
 		return spots;
 	}
 
+	private static float LinearToSrgb(float c)
+	{
+		c = Math.Clamp(c, 0f, 1f);
+		return c <= 0.0031308f ? c * 12.92f : 1.055f * MathF.Pow(c, 1f / 2.4f) - 0.055f;
+	}
+
 	private void WriteShot()
 	{
 		WriteLightmap();
@@ -1844,10 +1867,36 @@ public partial class LevelViewer : Node3D
 		}
 
 		Image image = GetViewport().GetTexture().GetImage();
+		// THE PROJECT RENDERS WITH viewport/hdr_2d ON: the viewport texture holds LINEAR values
+		// (RGBAH) and SavePng only clamps them, so an unconverted shot is the display's linear
+		// light written as if it were sRGB — about 6x too dark at night. The game's own shot
+		// (GameDebugServer.Shot) encodes the same way.
+		GD.Print($"[level-viewer] shot format {image.GetFormat()} hdr2d {GetViewport().UseHdr2D}");
+		if (GetViewport().UseHdr2D)
+		{
+			// Encoded from the half-float data, not after an 8-bit clamp: a night frame's linear
+			// values sit in the first few codes, which posterises them.
+			image.Convert(Image.Format.Rgbaf);
+			int w = image.GetWidth(), h = image.GetHeight();
+			for (int y = 0; y < h; y++)
+			{
+				for (int x = 0; x < w; x++)
+				{
+					Color c = image.GetPixel(x, y);
+					image.SetPixel(x, y, new Color(LinearToSrgb(c.R), LinearToSrgb(c.G), LinearToSrgb(c.B), 1f));
+				}
+			}
+			image.Convert(Image.Format.Rgb8);
+		}
 		Error saved = image.SavePng(_shotPath);
 		GD.Print(saved == Error.Ok
 			? $"[level-viewer] wrote {_shotPath}"
 			: $"[level-viewer] could not write {_shotPath}: {saved}");
+		if (saved == Error.Ok)
+		{
+			LabSidecar(_shotPath, image.GetSize());
+			LabWaterDump(_shotPath);
+		}
 
 		GetTree().Quit(saved == Error.Ok ? 0 : 1);
 	}
@@ -1964,5 +2013,391 @@ public partial class LevelViewer : Node3D
 			GD.Print($"[level-viewer] shadow probe at godot {g}: uv ({u:0.000}, {v:0.000}) godot cam uv ({screen.X:0.000}, {screen.Y:0.000}) " +
 				$"view depth {godotDepth:0.00} 1-z {1f - z:0.0000} map {stored:0.0000} -> {(1f - z > stored ? "lit" : "SHADOWED")}{maskText}");
 		}
+	}
+
+	// THE REFERENCE-COMPARISON LAB's switches: the camera's field of view, the classic debug views,
+	// and a sidecar stating what a shot was taken with. The lab script (lab.py in the scratch lab
+	// directory) turns a viewpoint into these knobs. Every view takes one term out of the frame from
+	// OUTSIDE the classic sources: nodes hidden, frame registers held after the feed has written them,
+	// material uniforms, the replay arrays.
+	//   REFII_LEVEL_FOV=<deg>        the camera's vertical field of view (the debug channel's `camera`
+	//                                op reports the game camera's).
+	//   REFII_LEVEL_SKY=off          the classic sky dome (both views) and the celestial elements.
+	//   REFII_LEVEL_WATER=off        the water bodies and the vista ocean.
+	//   REFII_LEVEL_BILLBOARDS=off   the classic billboard draws (the props they stand in for stay
+	//                                hidden, so the view shows what the billboards contribute).
+	//   REFII_CLASSIC_TERMS=ambient,lightmap,darkening
+	//                                the frame's global ambient (PS c20.xyz, VS c54.xyz), lightmap factor
+	//                                (PS c21.xyz, VS c18.xyz) or normal-map darkening colour (PS c22.xyz)
+	//                                zeroed after the feed writes them; c20.w, the exposure lane, is kept.
+	//   REFII_CLASSIC_LIGHTS=main|placed|none
+	//                                the light list cut to its directional lights (type 10, the level's
+	//                                fixtures dropped), to everything else, or to nothing.
+	//   REFII_LEVEL_FOG=off          with the viewer's own global: ps_g_AtmosphericFactors zeroed on every
+	//                                classic material declaring it (x blends the atmosphere in, y scales
+	//                                its and the mist's in-scatter).
+	//   REFII_LEVEL_MIST=off         with the viewer's fog volumes: the classic mist list emptied.
+	// A recorded frame with REFII_CLASSIC_THEME_TOD: the theme (sky elements, billboards) is the level's
+	// at that hour, the frame, lights and mists are the recording's.
+
+	private bool _labSkyOff;
+	private bool _labBillboardsOff;
+	private bool _labFogOff;
+
+	/// <summary>Frame registers held after the feed: NaN lanes keep the feed's value.</summary>
+	private readonly List<(bool Pixel, int Register, float[] Values)> _labRegisters = new();
+
+	private readonly List<Node3D> _labHidden = new();
+
+	private static bool Off(string name) => OS.GetEnvironment(name).Equals("off", StringComparison.OrdinalIgnoreCase);
+
+	/// <summary>The knobs read at start: the camera's field of view and the replay-side views.</summary>
+	private void LabReady()
+	{
+		if (float.TryParse(OS.GetEnvironment("REFII_LEVEL_FOV"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float fov) &&
+			fov is > 1f and < 179f)
+		{
+			_camera.Fov = fov;
+			GD.Print($"[level-viewer] lab: fov {fov:0.##} deg");
+		}
+
+		_labSkyOff = Off("REFII_LEVEL_SKY");
+		_labBillboardsOff = Off("REFII_LEVEL_BILLBOARDS");
+		_labFogOff = Off("REFII_LEVEL_FOG");
+
+		const float Keep = float.NaN;
+		foreach (string term in OS.GetEnvironment("REFII_CLASSIC_TERMS").Split(',', StringSplitOptions.RemoveEmptyEntries))
+		{
+			switch (term.Trim().ToLowerInvariant())
+			{
+				case "ambient":
+					_labRegisters.Add((true, Refii.Models.Engine_ClassicRegisters.Ps.GlobalAmbientAndBrightness, new[] { 0f, 0f, 0f, Keep }));
+					_labRegisters.Add((false, Refii.Models.Engine_ClassicRegisters.Vs.GlobalAmbientAndBrightness, new[] { 0f, 0f, 0f, Keep }));
+					break;
+				case "lightmap":
+					_labRegisters.Add((true, Refii.Models.Engine_ClassicRegisters.Ps.LightmapFactorAndGamma, new[] { 0f, 0f, 0f, Keep }));
+					_labRegisters.Add((false, Refii.Models.Engine_ClassicRegisters.Vs.LightmapFactorAndGamma, new[] { 0f, 0f, 0f, Keep }));
+					break;
+				case "darkening":
+					_labRegisters.Add((true, Refii.Models.Engine_ClassicRegisters.Ps.AmbientNormalMapDarkeningColour, new[] { 0f, 0f, 0f, Keep }));
+					break;
+				default:
+					GD.Print($"[level-viewer] lab: unknown classic term '{term.Trim()}'");
+					continue;
+			}
+			GD.Print($"[level-viewer] lab: classic term off: {term.Trim()}");
+		}
+
+		if (Refii.Models.Engine_ClassicMaterial.Active && Off("REFII_LEVEL_MIST"))
+		{
+			Refii.Models.Engine_ClassicMist.Replay = Array.Empty<float>();
+			GD.Print("[level-viewer] lab: classic mist list emptied");
+		}
+	}
+
+	/// <summary>Once the region stands (frame 0, after the theme frame): hidden nodes, lights, uniforms.</summary>
+	private void LabApply()
+	{
+		if (_region is null)
+		{
+			return;
+		}
+
+		// The recording wins over the theme frame the hour built; the theme itself stays the hour's.
+		string recorded = OS.GetEnvironment("REFII_CLASSIC_FRAME");
+		if (recorded.Length != 0 && OS.GetEnvironment("REFII_CLASSIC_THEME_TOD").Length != 0 && Refii.Models.Engine_ClassicMaterial.Active)
+		{
+			bool loaded = Refii.Models.Engine_ClassicPath.LoadReplay(recorded, out string error);
+			Refii.Models.Engine_ClassicPlacedLights.Level = null;
+			GD.Print(loaded
+				? $"[level-viewer] lab: frame, lights and mists from {recorded}; theme from the hour"
+				: $"[level-viewer] lab: recorded frame NOT loaded from {recorded}: {error}");
+			if (Off("REFII_LEVEL_MIST"))
+			{
+				Refii.Models.Engine_ClassicMist.Replay = Array.Empty<float>();
+			}
+		}
+
+		// The list by type (lane 11 of each entry, Engine_ClassicLights' unpack): `main` keeps the
+		// directional lights, `placed` everything else, `none` nothing.
+		string lights = OS.GetEnvironment("REFII_CLASSIC_LIGHTS").ToLowerInvariant();
+		if (lights is "main" or "placed" or "none" && Refii.Models.Engine_ClassicMaterial.Active)
+		{
+			const int TypeLane = 11;
+			int stride = Refii.Host.HostBridge.ClassicLightStride;
+			float[] list = Refii.Models.Engine_ClassicLights.Replay ?? Array.Empty<float>();
+			var kept = new List<float>();
+			for (int at = 0; at + stride <= list.Length; at += stride)
+			{
+				bool directional = (int)list[at + TypeLane] == Refii.Models.Engine_ClassicLights.Light.Directional;
+				if (lights == "main" ? directional : lights == "placed" && !directional)
+				{
+					kept.AddRange(list.AsSpan(at, stride).ToArray());
+				}
+			}
+			Refii.Models.Engine_ClassicLights.Replay = kept.ToArray();
+			if (lights != "placed")
+			{
+				Refii.Models.Engine_ClassicPlacedLights.Level = null;
+			}
+			GD.Print($"[level-viewer] lab: classic lights '{lights}': {kept.Count / stride} of {list.Length / stride} stated kept" +
+				(lights == "placed" ? ", the level's fixtures kept" : ", the level's fixtures dropped"));
+		}
+
+		if (Off("REFII_LEVEL_WATER"))
+		{
+			foreach (string name in new[] { Refii.Level.Engine_LevelScene.WaterNodeName, Refii.Level.Engine_LevelScene.VistaOceanNodeName })
+			{
+				foreach (Node node in GetTree().Root.FindChildren(name, "", true, false))
+				{
+					if (node is Node3D spatial)
+					{
+						_labHidden.Add(spatial);
+					}
+				}
+			}
+			GD.Print($"[level-viewer] lab: water off ({_labHidden.Count} node(s))");
+		}
+
+		if (_labSkyOff)
+		{
+			int before = _labHidden.Count;
+			foreach (Node node in GetTree().Root.FindChildren(Refii.Level.Engine_CelestialElements.NodeName, "", true, false))
+			{
+				if (node is Node3D spatial)
+				{
+					_labHidden.Add(spatial);
+				}
+			}
+			GD.Print($"[level-viewer] lab: sky off (dome, {_labHidden.Count - before} celestial container(s))");
+		}
+
+		LabUniforms();
+	}
+
+	/// <summary>
+	/// Each frame after the classic feed has published: hidden nodes re-hidden, held registers
+	/// re-written and the constants republished, and the uniforms re-stated late in the warm-up for
+	/// materials built after frame 0.
+	/// </summary>
+	private void LabPump()
+	{
+		foreach (Node3D node in _labHidden)
+		{
+			if (IsInstanceValid(node))
+			{
+				node.Visible = false;
+			}
+		}
+
+		if (_labSkyOff)
+		{
+			if (Refii.Level.Engine_ClassicSkyDome.Instance is { } dome)
+			{
+				dome.Visible = false;
+			}
+			if (Refii.Level.Engine_ClassicSkyDome.Second is { } second)
+			{
+				second.Visible = false;
+			}
+		}
+
+		if (_labBillboardsOff && Refii.Models.Engine_ClassicBillboards.Instance is { } billboards)
+		{
+			foreach (Node child in billboards.GetChildren())
+			{
+				if (child is GeometryInstance3D draw)
+				{
+					draw.Visible = false;
+				}
+			}
+		}
+
+		if (_labRegisters.Count != 0 && Refii.Models.Engine_ClassicMaterial.Active)
+		{
+			Span<float> values = stackalloc float[4];
+			foreach ((bool pixel, int register, float[] held) in _labRegisters)
+			{
+				float[] current = Refii.Models.Engine_ClassicConstants.ReadFrame(pixel, register, 1);
+				for (int k = 0; k < 4; k++)
+				{
+					values[k] = float.IsNaN(held[k]) ? current[k] : held[k];
+				}
+				Refii.Models.Engine_ClassicConstants.SetFrame(pixel, register, values);
+			}
+			Refii.Models.Engine_ClassicConstants.Publish();
+		}
+
+		if (_shotPath.Length != 0 && _framesRendered > 0 && _framesRendered == ShotWarmupFrames - 30)
+		{
+			LabUniforms();
+		}
+	}
+
+	/// <summary>The uniform views, on every ShaderMaterial reachable from the scene that declares the uniform.</summary>
+	private void LabUniforms()
+	{
+		if (!_labFogOff || !Refii.Models.Engine_ClassicMaterial.Active)
+		{
+			return;
+		}
+		int set = LabSetUniform("ps_g_AtmosphericFactors", new Vector4(0f, 0f, 0f, 0f));
+		GD.Print($"[level-viewer] lab: classic atmosphere off on {set} material(s)");
+	}
+
+	private int LabSetUniform(string uniform, Variant value)
+	{
+		var seen = new HashSet<ulong>();
+		var declares = new Dictionary<ulong, bool>();
+		int set = 0;
+		void Visit(Material? material)
+		{
+			for (Material? m = material; m is not null; m = m.NextPass)
+			{
+				if (m is not ShaderMaterial sm || !seen.Add(sm.GetInstanceId()) || sm.Shader is not { } shader)
+				{
+					continue;
+				}
+				if (!declares.TryGetValue(shader.GetInstanceId(), out bool has))
+				{
+					foreach (Godot.Collections.Dictionary u in shader.GetShaderUniformList())
+					{
+						has |= u["name"].AsString() == uniform;
+					}
+					declares[shader.GetInstanceId()] = has;
+				}
+				if (has)
+				{
+					sm.SetShaderParameter(uniform, value);
+					++set;
+				}
+			}
+		}
+		foreach (Node node in GetTree().Root.FindChildren("*", nameof(GeometryInstance3D), true, false))
+		{
+			var g = (GeometryInstance3D)node;
+			Visit(g.MaterialOverride);
+			Visit(g.MaterialOverlay);
+			Mesh? mesh = g switch { MeshInstance3D mi => mi.Mesh, MultiMeshInstance3D mm => mm.Multimesh?.Mesh, _ => null };
+			for (int i = 0; i < (mesh?.GetSurfaceCount() ?? 0); i++)
+			{
+				Visit(mesh!.SurfaceGetMaterial(i));
+				if (g is MeshInstance3D instance)
+				{
+					Visit(instance.GetSurfaceOverrideMaterial(i));
+				}
+			}
+		}
+		return set;
+	}
+
+	/// <summary>
+	/// <c>&lt;shot&gt;.json</c> beside the shot: the camera it was taken from (Godot axes), the
+	/// viewport, the hour, the model and the lab knobs — what the comparison report quotes.
+	/// </summary>
+	private void LabWaterDump(string shotPath)
+	{
+		// Every water mirror as <shot>.mirrorN.png (sRGB-encoded linear, before the main view's
+		// exposure) with its mean linear colour, and each classic water pass's live constants.
+		int n = 0;
+		foreach (Node node in GetTree().Root.FindChildren("*", nameof(SubViewport), true, false))
+		{
+			var viewport = (SubViewport)node;
+			if (viewport.GetChildCount() == 0 || viewport.GetChild(0) is not Camera3D camera ||
+				camera.CullMask != Refii.Level.Engine_ReflectionLayer.MirrorCullMask)
+			{
+				continue;
+			}
+			Image mirror = viewport.GetTexture().GetImage();
+			mirror.Convert(Image.Format.Rgbaf);
+			double r = 0, g = 0, b = 0;
+			int w = mirror.GetWidth(), h = mirror.GetHeight();
+			for (int y = 0; y < h; y++)
+			{
+				for (int x = 0; x < w; x++)
+				{
+					Color c = mirror.GetPixel(x, y);
+					r += c.R; g += c.G; b += c.B;
+					mirror.SetPixel(x, y, new Color(LinearToSrgb(c.R), LinearToSrgb(c.G), LinearToSrgb(c.B), 1f));
+				}
+			}
+			mirror.Convert(Image.Format.Rgb8);
+			string path = System.IO.Path.ChangeExtension(shotPath, $".mirror{n}.png");
+			mirror.SavePng(path);
+			double count = Math.Max(1, w * h);
+			GD.Print($"[level-viewer] lab: mirror {n} {viewport.GetParent()?.Name}/{viewport.Name} at {camera.GlobalPosition} " +
+				$"far {camera.Far:0} mean linear ({r / count:0.0000}, {g / count:0.0000}, {b / count:0.0000}) -> {path}");
+			++n;
+		}
+
+		var seen = new HashSet<ulong>();
+		foreach (Node node in GetTree().Root.FindChildren("*", nameof(MeshInstance3D), true, false))
+		{
+			if (node is not MeshInstance3D surface || surface.MaterialOverride is not ShaderMaterial core ||
+				!core.HasMeta(Refii.Level.Engine_ClassicWater.Meta) || !seen.Add(core.GetInstanceId()))
+			{
+				continue;
+			}
+			for (Material? m = core; m is ShaderMaterial pass; m = m.NextPass)
+			{
+				var rows = pass.GetShaderParameter("ps_g_WaterConstants").AsVector4Array();
+				string Row(int i) => i < rows.Length ? $"c{i}={rows[i]}" : $"c{i}=-";
+				GD.Print($"[level-viewer] lab: water {surface.Name} pass {pass.RenderPriority} visible {surface.IsVisibleInTree()} " +
+					$"mirror {pass.GetShaderParameter(Refii.Level.Engine_ClassicWater.ReflectionSampler).Obj is not null} " +
+					$"{Row(0)} {Row(1)} {Row(10)} {Row(11)} {Row(12)} {Row(13)} {Row(14)} {Row(15)} {Row(24)} {Row(25)}");
+			}
+		}
+	}
+
+	private void LabSidecar(string shotPath, Vector2I size)
+	{
+		var knobs = new SortedDictionary<string, string>();
+		foreach (System.Collections.DictionaryEntry entry in System.Environment.GetEnvironmentVariables())
+		{
+			string key = (string)entry.Key;
+			if (key.StartsWith("REFII_LEVEL", StringComparison.Ordinal) || key.StartsWith("REFII_CLASSIC", StringComparison.Ordinal) ||
+				key == "REFII_LIGHTING_MODEL")
+			{
+				knobs[key] = (string?)entry.Value ?? string.Empty;
+			}
+		}
+		Vector3 eye = _camera.GlobalPosition, forward = -_camera.GlobalBasis.Z;
+		float? tod = _region?.GetNodeOrNull<Refii.Level.Engine_SkyEnvironmentNode>(Refii.Level.Engine_SkyEnvironment.NodeName)?.TimeOfDay;
+		string path = System.IO.Path.ChangeExtension(shotPath, ".json");
+		using (var stream = System.IO.File.Create(path))
+		using (var json = new System.Text.Json.Utf8JsonWriter(stream, new System.Text.Json.JsonWriterOptions { Indented = true }))
+		{
+			void Triple(string name, Vector3 v)
+			{
+				json.WriteStartArray(name);
+				json.WriteNumberValue(v.X);
+				json.WriteNumberValue(v.Y);
+				json.WriteNumberValue(v.Z);
+				json.WriteEndArray();
+			}
+			json.WriteStartObject();
+			json.WriteString("shot", shotPath);
+			json.WriteString("level", LevelName);
+			json.WriteBoolean("classic", Refii.Models.Engine_ClassicMaterial.Active);
+			Triple("eye", eye);
+			Triple("forward", forward);
+			json.WriteNumber("fov", _camera.Fov);
+			json.WriteStartArray("size");
+			json.WriteNumberValue(size.X);
+			json.WriteNumberValue(size.Y);
+			json.WriteEndArray();
+			if (tod is float hours)
+			{
+				json.WriteNumber("tod", hours);
+			}
+			json.WriteStartObject("knobs");
+			foreach ((string key, string value) in knobs)
+			{
+				json.WriteString(key, value);
+			}
+			json.WriteEndObject();
+			json.WriteEndObject();
+		}
+		GD.Print($"[level-viewer] wrote {path}");
 	}
 }

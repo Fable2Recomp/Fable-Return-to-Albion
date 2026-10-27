@@ -233,8 +233,10 @@ std::string ShaderRecompiler::godotVertexInput(uint32_t usage, uint32_t usageInd
         // Fable's streams, as its standard vertex shaders read them: TEXCOORD0 the texture
         // coordinate, TEXCOORD1 the tangent (`_nrm1` takes it whole as xyzw), TEXCOORD2 the
         // lightmap coordinate (`_amb3`, xy, Godot's UV2) or the radiance-transfer weights
-        // (`_amb2`, xyzw, which the mesh builder keeps in CUSTOM0). The handedness Godot folds
-        // into BINORMAL is given as 1.
+        // (`_amb2`, xyzw, which the mesh builder keeps in CUSTOM0). The tangent's w is the
+        // stream's handedness (+-1, the shaders take the bitangent as cross(N, T) * w); Godot
+        // folds it into BINORMAL = cross(NORMAL, TANGENT) * w, and the file-axis map is a
+        // rotation, so its sign is read back from there.
         // A particle record's TEXCOORD0 (sizes, rotation, keyframe time) and TEXCOORD1 (the
         // animation lanes) are float4s the mesh builder keeps whole in CUSTOM0 and CUSTOM1.
         if (godotParticleShader() && usageIndex <= 1)
@@ -242,7 +244,7 @@ std::string ShaderRecompiler::godotVertexInput(uint32_t usage, uint32_t usageInd
         switch (usageIndex)
         {
         case 0: return "vec4(UV, 0.0, 0.0)";
-        case 1: return "vec4(xr_file_dir(TANGENT), 1.0)";
+        case 1: return "vec4(xr_file_dir(TANGENT), dot(cross(NORMAL, TANGENT), BINORMAL) < 0.0 ? -1.0 : 1.0)";
         case 2: return godotTransferShader() || godotFurShellShader() ? "CUSTOM0" : "vec4(UV2, 0.0, 0.0)";
         case 3: return "CUSTOM0";
         case 4: return "CUSTOM1";
@@ -585,17 +587,31 @@ std::string ShaderRecompiler::godotHeader() const
         else if (name.find("g_ReflectionSampler") != std::string::npos)
             h.println("uniform {} {} : hint_default_black, filter_linear, repeat_disable;", type, name);
         else if (name.find("g_DepthSampler") != std::string::npos ||
-                 name.find("g_RainDepthTexture") != std::string::npos)
+                 name.find("g_RainDepthTexture") != std::string::npos ||
+                 name.find("g_DepthTextureSampler") != std::string::npos)
             // The scene depth the title resolved before its translucent passes: Godot's own
             // depth buffer, which a transparent material reads as it draws.
             h.println("uniform {} {} : hint_depth_texture, filter_nearest, repeat_disable;", type, name);
         else if (name.find("ShadowMap") != std::string::npos)
             h.println("uniform {} {} : hint_default_black, filter_nearest, repeat_disable;", type, name);
-        else if (clamped)
-            h.println("uniform {} {} : hint_default_black, filter_linear, repeat_disable;", type, name);
         else
-            h.println("uniform {} {} : hint_default_black;", type, name);
+        {
+            // The filter the fetches state wins over the name's default.
+            auto stated = godotSamplerFilters.find(name);
+            const bool hasStated = stated != godotSamplerFilters.end() && stated->second != "mixed";
+            if (clamped)
+                h.println("uniform {} {} : hint_default_black, filter_{}, repeat_disable;", type, name,
+                    hasStated ? stated->second : std::string("linear"));
+            else if (hasStated)
+                h.println("uniform {} {} : hint_default_black, filter_{};", type, name, stated->second);
+            else
+                h.println("uniform {} {} : hint_default_black;", type, name);
+        }
     }
+
+    // The same, for a host that binds its own samplers (the classic post chain's compute passes).
+    for (auto& [name, filter] : godotSamplerFilters)
+        h.println("// xr-sampler-filter {} {}", name, filter);
 
     h.out += '\n';
     return h.out;
@@ -841,6 +857,14 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
         // is what a material binds its texture to; 3D and cube fetches get a suffix.
         const char* samplerType = "sampler2D";
         const char* suffix = "";
+        // THE SPOT MAPS ARE ONE ARRAY (Engine_ClassicSpotShadows): a light group binds one spot's
+        // map to s9 on the console, and Godot has no sampler per instance, so the group's row
+        // names a layer in c48.z (g_SpotShadowMapResolution, of which every stage reads .xy).
+        const bool spotMap = instr.dimension == TextureDimension::Texture2D &&
+            instr.opcode != FetchOpcode::GetTextureWeights &&
+            std::string_view(constNamePtr) == "g_SpotLightShadowMapSampler";
+        if (spotMap)
+            samplerType = "sampler2DArray";
         if (instr.dimension == TextureDimension::Texture3D)
         {
             samplerType = "sampler3D";
@@ -854,6 +878,20 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
         const std::string uniformName = fmt::format("{}{}{}", stagePrefix(), constNamePtr, suffix);
         godotSamplers.emplace(uniformName, samplerType);
 
+        // THE FETCH STATES ITS OWN FILTER (Xenia: one sampler binding per mag/min/mip override).
+        // 0 point, 1 linear, 3 the fetch constant's; a mip filter of 2 is the base map. Godot
+        // has one filter per uniform and none per axis, so min and mag must agree.
+        if (instr.opcode != FetchOpcode::GetTextureWeights && instr.magFilter != 3 && instr.minFilter != 3)
+        {
+            std::string filter = instr.magFilter != instr.minFilter ? "mixed"
+                : instr.magFilter == 0 ? "nearest" : "linear";
+            if (filter != "mixed" && (instr.mipFilter == 1 || instr.mipFilter == 3))
+                filter += "_mipmap";
+            auto [held, added] = godotSamplerFilters.emplace(uniformName, filter);
+            if (!added && held->second != filter)
+                held->second = "mixed";
+        }
+
         // The "tfetch"/"getWeights" already written is the HLSL name; the Godot helper is prefixed.
         out.erase(out.size() - (instr.opcode == FetchOpcode::GetTextureWeights ? 10 : 6));
         print("{}{}({}, ", instr.opcode == FetchOpcode::GetTextureWeights ? "xr_getWeights" : "xr_tfetch",
@@ -861,7 +899,9 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
             // whose hints differ, so it fetches through its own.
             instr.opcode != FetchOpcode::GetTextureWeights &&
                 (std::string_view(constNamePtr).find("g_DepthSampler") != std::string_view::npos ||
-                 std::string_view(constNamePtr).find("g_RainDepthTexture") != std::string_view::npos) ? "2D_depth" :
+                 std::string_view(constNamePtr).find("g_RainDepthTexture") != std::string_view::npos ||
+                 // The shadow spheres' g_ResolvedDepthTexture (s13), read as 1 - z.
+                 std::string_view(constNamePtr).find("g_DepthTextureSampler") != std::string_view::npos) ? "2D_depth" :
             instr.opcode != FetchOpcode::GetTextureWeights &&
                 std::string_view(constNamePtr).find("g_RefractionSampler") != std::string_view::npos ? "2D_screen" :
             // The host's mirror is a right-handed camera's image of the reflected world, which
@@ -873,17 +913,25 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
             instr.opcode != FetchOpcode::GetTextureWeights && instr.dimension == TextureDimension::Texture2D &&
                 instr.texCoordDenorm ? "2D_denorm" :
             instr.opcode != FetchOpcode::GetTextureWeights && instr.dimension == TextureDimension::Texture1D ? "1D_offset" :
+            spotMap ? "2D_layer" :
             dimension, uniformName);
         printSrcRegister(componentCount);
 
+        // Xenia's rounding epsilon on every fetch offset (1.5/1024 texel): a point fetch whose
+        // coordinate lands on a texel boundary (the blur taps at n + 0.5) resolves to the texel
+        // the console's fixed-point coordinate picks, not either at random.
+        const float roundingOffset = instr.opcode == FetchOpcode::GetTextureWeights ? 0.0f : 1.5f / 1024.0f;
         switch (instr.dimension)
         {
         case TextureDimension::Texture1D:
             if (instr.opcode != FetchOpcode::GetTextureWeights)
-                print(", {}", formatFloat(instr.offsetX * 0.5f));
+                print(", {}", formatFloat(instr.offsetX * 0.5f + roundingOffset));
             break;
         case TextureDimension::Texture2D:
-            print(", vec2({}, {})", formatFloat(instr.offsetX * 0.5f), formatFloat(instr.offsetY * 0.5f));
+            print(", vec2({}, {})", formatFloat(instr.offsetX * 0.5f + roundingOffset),
+                formatFloat(instr.offsetY * 0.5f + roundingOffset));
+            if (spotMap)
+                out += ", xr_const(xr_ps_constants, 48).z";
             break;
         case TextureDimension::TextureCube:
             out += ", cubeMapData";
@@ -954,6 +1002,10 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
         SCALAR_CONSTANT_1
     };
 
+    // Set when the scalar half reads the temp the vector half writes: the scalar operand reads
+    // `xr_pre`, that register as it was before this instruction.
+    bool scalarReadsPre = false;
+
     auto op = [&](size_t operand)
         {
             size_t reg = 0;
@@ -1022,12 +1074,22 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
 
             if (select)
             {
-                regFormatted = fmt::format("r{}", reg);
+                if (scalarReadsPre && reg == instr.vectorDest &&
+                    (operand == SCALAR_0 || operand == SCALAR_1 || operand == SCALAR_CONSTANT_1))
+                    regFormatted = "xr_pre";
+                else
+                    regFormatted = fmt::format("r{}", reg);
             }
             else
             {
                 auto findResult = float4Constants.find(reg);
-                const bool useRelativeAddressing = instr.const0Relative || instr.const1Relative;
+                // Relative addressing is per constant operand (ucode.h src_const_is_addressed):
+                // the first constant takes const0Relative, a later one const1Relative; the
+                // scalar constant counts as the third operand.
+                const bool firstConstant = operand == VECTOR_0 ||
+                    (operand == VECTOR_1 && instr.src1Select) ||
+                    (operand != VECTOR_1 && instr.src1Select && instr.src2Select);
+                const bool useRelativeAddressing = firstConstant ? instr.const0Relative : instr.const1Relative;
                 const char* relativeSuffix = "";
                 if (useRelativeAddressing)
                 {
@@ -1361,6 +1423,34 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
     uint32_t vectorWriteMask = instr.vectorWriteMask;
     if (instr.exportData)
         vectorWriteMask &= ~instr.scalarWriteMask;
+
+    // BOTH HALVES READ BEFORE EITHER WRITES. The vector store below lands first; a scalar
+    // operand naming the same temp must still see the value from before the instruction
+    // (Xenia loads every operand ahead of any store).
+    // The *sc ops take their temp from the opcode's low bit, src3Select and the swizzle
+    // (SCALAR_CONSTANT_1); the others from src3.
+    const bool scalarConstantOp = instr.scalarOpcode >= AluScalarOpcode::Mulsc0 &&
+        instr.scalarOpcode <= AluScalarOpcode::Subsc1;
+    const bool scalarReadsTemp = scalarConstantOp || instr.src3Select;
+    const uint32_t scalarTemp = scalarConstantOp
+        ? ((uint32_t(instr.scalarOpcode) & 1) | (instr.src3Select << 1) | (instr.src3Swizzle & 0x3C))
+        : (instr.src3Register & 0x3F);
+    // The components the scalar operands select (op(): SCALAR_0 lane (swz >> 6) + 3, SCALAR_1
+    // and SCALAR_CONSTANT_1 lane swz), both counted for the src3 forms.
+    const uint32_t scalarLanes = (1u << (instr.src3Swizzle & 0x3)) |
+        (scalarConstantOp ? 0u : 1u << (((instr.src3Swizzle >> 6) + 3) & 0x3));
+    const bool scalarReadsVectorDest = !instr.exportData && (vectorWriteMask & scalarLanes) != 0 &&
+        instr.scalarOpcode != AluScalarOpcode::RetainPrev && scalarReadsTemp &&
+        scalarTemp == instr.vectorDest;
+    if (scalarReadsVectorDest)
+    {
+        indent();
+        out += "{\n";
+        ++indentation;
+        indent();
+        println("{} xr_pre = r{};", godot() ? "vec4" : "float4", instr.vectorDest);
+        scalarReadsPre = true;
+    }
 
     // Depth is a scalar: HLSL tolerates `oDepth.x`, Godot's DEPTH does not.
     const bool godotScalarExport = godot() && hasResolvedExportRegister && exportRegister == "oDepth";
@@ -1904,6 +1994,13 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
     {
         indent();
         out += godot() ? "if (ps != 0.0) { discard; }\n" : "clip(ps != 0.0 ? -1 : 1);\n";
+    }
+
+    if (scalarReadsVectorDest)
+    {
+        --indentation;
+        indent();
+        out += "}\n";
     }
 
     if (closeIfBracket)
@@ -3169,14 +3266,19 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     indent();
                     if (godot())
                     {
-                        // The counter has to be declared in the `for`; aL is what the body reads.
+                        // The counter has to be declared in the `for`; aL is what the body reads:
+                        // the loop constant's start + iteration * step (x count, y start, z step),
+                        // left alone by a repeat loop.
                         const uint32_t loopId = uint32_t(cfInstr.loopStart.loopId);
                         println("for (int xr_l{0} = 0; xr_l{0} < {1}i{0}.x; xr_l{0}++)", loopId, stagePrefix());
                         indent();
                         out += "{\n";
                         ++indentation;
-                        indent();
-                        println("aL = xr_l{};", loopId);
+                        if (!cfInstr.loopStart.isRepeat)
+                        {
+                            indent();
+                            println("aL = {1}i{0}.y + xr_l{0} * {1}i{0}.z;", loopId, stagePrefix());
+                        }
                         break;
                     }
                 #ifdef UNLEASHED_RECOMP
@@ -3196,6 +3298,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             case ControlFlowOpcode::LoopEnd:
                 if (simpleControlFlow)
                 {
+                    if (godot() && cfInstr.loopEnd.isPredicatedBreak)
+                    {
+                        // `loop_end` leaves when the predicate equals its condition.
+                        indent();
+                        println("if (p0 == {}) {{ break; }}", cfInstr.loopEnd.condition ? "true" : "false");
+                    }
                     --indentation;
                     indent();
                     out += "}\n";

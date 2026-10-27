@@ -30,7 +30,7 @@ namespace Refii.Models;
 public partial class Engine_ClassicScreenShadow : CompositorEffect
 {
     /// <summary>The pass's uniform set, by the depth, cascade maps, target and block it binds.</summary>
-    private readonly Refii.Core.Engine_UniformSetKey _set = new(5);
+    private readonly Refii.Core.Engine_UniformSetKey _set = new(6);
 
     public const string ShaderPath = "res://src/Engine/material/classic_screen_shadow.glsl";
     private const int ParamsBytes = 4 * 16 * 4 + 3 * 16;
@@ -84,7 +84,7 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
     public static Vector2I Size { get; private set; }
 
     private RenderingDevice? _rd;
-    private Rid _shader, _pipeline, _nearest, _params;
+    private Rid _shader, _pipeline, _nearest, _params, _rotation;
     /// <summary>The mask every instance writes (render thread): one per process, see the remarks.</summary>
     private static Rid _target;
     private static Vector2I _targetSize;
@@ -123,7 +123,40 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
             RepeatU = RenderingDevice.SamplerRepeatMode.ClampToEdge, RepeatV = RenderingDevice.SamplerRepeatMode.ClampToEdge,
         });
         _params = _rd.UniformBufferCreate(ParamsBytes);
-        _ready = _pipeline.IsValid && _nearest.IsValid && _params.IsValid;
+        _rotation = _rd.TextureCreate(new RDTextureFormat
+        {
+            Width = 32,
+            Height = 32,
+            Format = RenderingDevice.DataFormat.R8G8Unorm,
+            TextureType = RenderingDevice.TextureType.Type2D,
+            UsageBits = RenderingDevice.TextureUsageBits.SamplingBit,
+        }, new RDTextureView(), new Array<byte[]> { RotationTexels() });
+        _ready = _pipeline.IsValid && _nearest.IsValid && _params.IsValid && _rotation.IsValid;
+    }
+
+    /// <summary>
+    /// g_RandomRotTexture as `Render_ScreenShadowMask_InitShaders` (0x82A87368) fills it: 32x32,
+    /// row-major, two bytes a texel [sin, cos] of a = rand() / 32767 * 2pi, each stored as
+    /// trunc((f + 1) / 2 * 255) in single precision, rand being the CRT's LCG
+    /// (h = h * 214013 + 2531011, (h >> 16) & 0x7FFF). The generator is the title's; its state
+    /// when the table is filled is not provable statically (rand is shared), and this starts
+    /// from the CRT's own seed, 1. The channel order of the texture format is filled at run
+    /// time; a swap of sin and cos only mirrors each angle.
+    /// </summary>
+    private static byte[] RotationTexels()
+    {
+        var texels = new byte[32 * 32 * 2];
+        uint h = 1;
+        for (int i = 0; i < 32 * 32; i++)
+        {
+            h = h * 214013u + 2531011u;
+            float a = (float)((h >> 16) & 0x7FFF) * (1f / 32767f) * (2f * MathF.PI);
+            texels[i * 2] = Quantise(MathF.Sin(a));
+            texels[i * 2 + 1] = Quantise(MathF.Cos(a));
+        }
+        return texels;
+
+        static byte Quantise(float f) => (byte)Math.Clamp((int)((f + 1f) * 0.5f * 255f), 0, 255);
     }
 
     private void EnsureTarget(Vector2I size)
@@ -214,7 +247,7 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
         _rd.BufferUpdate(_params, 0, ParamsBytes, _bytes);
 
         Rid depth = buffers.GetDepthLayer(0), near = c0.TextureRdRid, far = c1.TextureRdRid;
-        Rid set = _set.For(_rd, stackalloc Rid[] { depth, near, far, _target, _params });
+        Rid set = _set.For(_rd, stackalloc Rid[] { depth, near, far, _target, _params, _rotation });
         if (!set.IsValid)
         {
             var uniforms = new Array<RDUniform>();
@@ -234,6 +267,7 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
             var block = new RDUniform { UniformType = RenderingDevice.UniformType.UniformBuffer, Binding = 4 };
             block.AddId(_params);
             uniforms.Add(block);
+            uniforms.Add(Sampled(5, _rotation));
             set = _set.Hold(UniformSetCacheRD.GetCache(_shader, 0, uniforms));
         }
 
@@ -252,6 +286,7 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
             return;
         }
         if (_params.IsValid) _rd.FreeRid(_params);
+        if (_rotation.IsValid) _rd.FreeRid(_rotation);
         if (_nearest.IsValid) _rd.FreeRid(_nearest);
         if (_pipeline.IsValid) _rd.FreeRid(_pipeline);
         if (_shader.IsValid) _rd.FreeRid(_shader);

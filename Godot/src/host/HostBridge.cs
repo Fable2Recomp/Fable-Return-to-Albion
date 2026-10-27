@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 227;
+	public const int ExpectedAbiVersion = 228;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -2238,6 +2238,59 @@ public static class HostBridge
 		catch (EntryPointNotFoundException)
 		{
 			_spotFrustumsMissing = true;
+			return 0;
+		}
+	}
+
+	private static bool _localLightsMissing;
+
+	/// <summary>Floats per light of <see cref="GetClassicLocalLights"/>.</summary>
+	public const int ClassicLocalLightStride = 16;
+
+	/// <summary>
+	/// The manager's local lights as their packer and shadow object state them, 16 floats each:
+	/// entry index, position L+288, direction L+304, has a spot map, fovY, near, far, depth bias,
+	/// slope-scale bias, three reserved. Returns the lights written.
+	/// </summary>
+	public static uint GetClassicLocalLights(float[] into)
+	{
+		if (_localLightsMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		try
+		{
+			return RefiiHostGetClassicLocalLights(into, (uint)into.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_localLightsMissing = true;
+			return 0;
+		}
+	}
+
+	private static bool _shadowSpheresMissing;
+
+	/// <summary>Floats per sphere of <see cref="GetClassicShadowSpheres"/>.</summary>
+	public const int ClassicShadowSphereStride = 8;
+
+	/// <summary>
+	/// The render scene's shadow spheres, 8 floats each: previous centre and radius, newest
+	/// centre and radius (guest axes). Returns the spheres written.
+	/// </summary>
+	public static uint GetClassicShadowSpheres(float[] into)
+	{
+		if (_shadowSpheresMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+		try
+		{
+			return RefiiHostGetClassicShadowSpheres(into, (uint)into.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_shadowSpheresMissing = true;
 			return 0;
 		}
 	}
@@ -11551,6 +11604,12 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetSpotFrustums([Out] float[] outFloats, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClassicLocalLights([Out] float[] outFloats, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClassicShadowSpheres([Out] float[] outFloats, uint capacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetEntityDisplacementParts(uint entity, [Out] uint[] outHashes, uint maxHashes);

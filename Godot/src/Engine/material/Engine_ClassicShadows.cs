@@ -332,8 +332,8 @@ public partial class Engine_ClassicShadows : Node
 
     // Guest (x, y, z) <-> Godot (-x, z, y): a rotation, so the light's basis carries over
     // exactly and the captured map needs no flip.
-    private static Vector3 ToGuest(Vector3 godot) => new(-godot.X, godot.Z, godot.Y);
-    private static Vector3 ToGodot(Vector3 guest) => new(-guest.X, guest.Z, guest.Y);
+    internal static Vector3 ToGuest(Vector3 godot) => new(-godot.X, godot.Z, godot.Y);
+    internal static Vector3 ToGodot(Vector3 guest) => new(-guest.X, guest.Z, guest.Y);
 
     /// <summary>The light's basis as D3DXMatrixLookAtRH builds it from the travel direction.</summary>
     private static void Basis(Vector3 travel, out Vector3 xAxis, out Vector3 yAxis, out Vector3 up)
@@ -349,7 +349,7 @@ public partial class Engine_ClassicShadows : Node
     }
 
     /// <summary>D3DXMatrixLookAtRH, row-major for row vectors (p * M).</summary>
-    private static float[,] LookAtRH(Vector3 eye, Vector3 at, Vector3 up)
+    internal static float[,] LookAtRH(Vector3 eye, Vector3 at, Vector3 up)
     {
         Vector3 z = (eye - at).Normalized();
         Vector3 x = up.Cross(z).Normalized();
@@ -376,7 +376,7 @@ public partial class Engine_ClassicShadows : Node
     }
 
     /// <summary>The clip-to-texture matrix `sub_821A2810` appends.</summary>
-    private static float[,] TexMat(int size)
+    internal static float[,] TexMat(int size)
     {
         float half = 0.5f + 0.5f / size;
         return new float[4, 4]
@@ -388,7 +388,7 @@ public partial class Engine_ClassicShadows : Node
         };
     }
 
-    private static float[,] Multiply(float[,] a, float[,] b)
+    internal static float[,] Multiply(float[,] a, float[,] b)
     {
         var result = new float[4, 4];
         for (int i = 0; i < 4; i++)
@@ -436,6 +436,13 @@ public partial class Engine_ClassicShadows : Node
 
         public float BiasConstant;
         public float BiasSlope;
+
+        /// <summary>
+        /// A layer of a texture array the capture is also copied into (the spot maps,
+        /// Engine_ClassicSpotShadows); unset for the cascades. Render thread.
+        /// </summary>
+        internal Rid ArrayTarget;
+        internal int ArrayLayer = -1;
 
         /// <summary>
         /// Capture into a map of its own instead of the published one: the first view's set while
@@ -670,6 +677,10 @@ public partial class Engine_ClassicShadows : Node
             _rd.ComputeListSetPushConstant(list, push, (uint)push.Length);
             _rd.ComputeListDispatch(list, (uint)((size.X + 7) / 8), (uint)((size.Y + 7) / 8), 1);
             _rd.ComputeListEnd();
+            if (ArrayTarget.IsValid && ArrayLayer >= 0)
+            {
+                _rd.TextureCopy(output, ArrayTarget, Vector3.Zero, Vector3.Zero, new Vector3(size.X, size.Y, 1), 0, 0, 0, (uint)ArrayLayer);
+            }
         }
     }
 }

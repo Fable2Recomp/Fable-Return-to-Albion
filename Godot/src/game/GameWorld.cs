@@ -529,6 +529,9 @@ public partial class GameWorld : Node3D
 	/// </summary>
 	public static bool WorldBuildHeld { get; private set; }
 
+	/// <summary>The loading cover stays up: the build holds, or classic settles the stated lights' shapes.</summary>
+	public static bool CoverHeld => WorldBuildHeld || Refii.Models.Engine_ClassicLoad.Settling;
+
 	/// <summary>When the current hold began, for the load's wall time on the release line.</summary>
 	private static long _heldSince;
 
@@ -1292,6 +1295,7 @@ public partial class GameWorld : Node3D
 		_waitingForGuest = false;
 		_holdingForProps = false;
 		Refii.Models.Engine_ClassicLoad.End();
+		Refii.Models.Engine_ClassicLoad.Abandon();
 		Refii.Models.Engine_ClassicVertexBakes.Clear();
 		Refii.Models.Engine_ClassicPrtRows.Clear();
 		if (_entities is { } tornDown)

@@ -193,6 +193,20 @@ public static class Engine_ClassicShaders
         return _composed.GetOrAdd(key, _ => Build(vertexEntry, pixelEntry, renderMode, pass, defines));
     }
 
+    /// <summary>
+    /// <see cref="Compose(string, string, string, int, string)"/> ahead of need, for the load
+    /// hold: true when this call composed it (it is now compiling on the pool).
+    /// </summary>
+    public static bool Warm(string vertexEntry, string pixelEntry, string renderMode, int pass, string defines)
+    {
+        string key = vertexEntry + "|" + pixelEntry + "|" + renderMode + "|" + pass + "|" + defines;
+        if (_composed.ContainsKey(key))
+        {
+            return false;
+        }
+        return Compose(vertexEntry, pixelEntry, renderMode, pass, defines) is not null;
+    }
+
     private sealed class ComposedAt
     {
         public volatile bool Ready;

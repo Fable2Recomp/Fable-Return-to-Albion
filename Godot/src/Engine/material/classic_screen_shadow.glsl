@@ -35,14 +35,12 @@ const vec2 POISSON[12] = vec2[](
 	vec2(-0.6959, 0.4571), vec2(0.4734, -0.4800), vec2(0.9623, -0.1950), vec2(-0.2033, 0.6207),
 	vec2(-0.8401, -0.0736), vec2(0.5074, 0.0644), vec2(0.1855, -0.8931), vec2(0.5195, 0.7670));
 
-// The title's g_RandomRotTexture is 32x32 of random angles, point sampled, wrapped; any fixed
-// random table gives its pattern, so the angle here is a hash of the wrapped cell.
+// The title's g_RandomRotTexture (Engine_ClassicScreenShadow.RotationTexels): 32x32 bytes of
+// [sin, cos], point sampled at the pixel's cell, decoded v * 2 - 1 as POISSON decodes it.
+layout(set = 0, binding = 5) uniform sampler2D rotation_tex;
+
 vec2 rotation(ivec2 pixel) {
-	ivec2 cell = pixel & ivec2(31);
-	uint h = uint(cell.x) * 73856093u ^ uint(cell.y) * 19349663u;
-	h = (h ^ (h >> 13u)) * 1274126177u;
-	float angle = float(h & 0xFFFFu) / 65535.0 * 6.2831853;
-	return vec2(sin(angle), cos(angle));
+	return texelFetch(rotation_tex, pixel & ivec2(31), 0).xy * 2.0 - 1.0;
 }
 
 vec4 shadow_coords(mat4 rows, vec3 world) {

@@ -3856,12 +3856,12 @@ public partial class GameDebugServer : Node
 
 		System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
 		Image image = window.GetTexture().GetImage();
-		if (!window.UseHdr2D || window.GetOutputMaxLinearValue() <= 1.001f)
+		// AN HDR-2D VIEWPORT HOLDS LINEAR LIGHT, whatever the display: the PNG takes the sRGB
+		// encode (values past 1 clip). Skipped on an HDR display before, every shot there was
+		// linear bytes read as sRGB, ~6x too dark at night. A non-HDR viewport is sRGB already.
+		if (window.UseHdr2D && image.GetFormat() is Image.Format.Rgbah or Image.Format.Rgbaf or Image.Format.Rgba8)
 		{
-			if (image.GetFormat() is Image.Format.Rgbah or Image.Format.Rgbaf or Image.Format.Rgba8)
-			{
-				image.LinearToSrgb();
-			}
+			image.LinearToSrgb();
 		}
 
 		Error error = image.SavePng(path);

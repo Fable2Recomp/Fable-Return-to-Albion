@@ -7,7 +7,13 @@ public static class Engine_WaterMesh
 {
     private const long MaxVerticesPerTile = 1200000;
 
-    public static TerrainMesh? BuildBody(WaterBody body)
+    /// <summary>
+    /// One mesh for a body's tiles. <paramref name="fullPatches"/> (the classic renderer) meshes
+    /// each tile as the title does (`sub_82B3A960`): its whole rectangle on a grid of
+    /// max(2, min(cells, extent * 0.2)) vertices per axis, every quad kept, the shore left to the
+    /// mask's fade; otherwise one quad per water cell.
+    /// </summary>
+    public static TerrainMesh? BuildBody(WaterBody body, bool fullPatches = false)
     {
         var positions = new List<float>();
         var normals = new List<float>();
@@ -20,6 +26,11 @@ public static class Engine_WaterMesh
         {
             int cellsX = Math.Max(tile.CellsX, 1);
             int cellsZ = Math.Max(tile.CellsZ, 1);
+            if (fullPatches)
+            {
+                cellsX = Math.Max(2, Math.Min(cellsX, (int)(Math.Abs(tile.ExtentX) * 0.2f))) - 1;
+                cellsZ = Math.Max(2, Math.Min(cellsZ, (int)(Math.Abs(tile.ExtentZ) * 0.2f))) - 1;
+            }
             long vertexCount = (long)(cellsX + 1) * (cellsZ + 1);
             if (vertexCount > MaxVerticesPerTile)
             {
@@ -63,7 +74,7 @@ public static class Engine_WaterMesh
             {
                 for (int mx = 0; mx < cellsX; mx++)
                 {
-                    if (!IsActive(tile, cellsX, mx, mz))
+                    if (!fullPatches && !IsActive(tile, cellsX, mx, mz))
                     {
                         continue;
                     }

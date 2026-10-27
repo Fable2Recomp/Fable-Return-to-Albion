@@ -98,6 +98,9 @@ struct ShaderRecompiler : StringBuffer
     std::set<std::string> godotVaryings;
     // uniform name -> sampler type ("sampler2D", "sampler3D", "samplerCube").
     std::map<std::string, std::string> godotSamplers;
+    // uniform name -> the filter its fetches state ("nearest", "linear", with "_mipmap" when the
+    // mip filter blends), or "mixed" when two fetches disagree. Absent = the fetch constant's.
+    std::map<std::string, std::string> godotSamplerFilters;
     // The per-material constants the body read; frame constants come by register from the frame
     // texture and aliased matrices from Godot's built-ins, so neither is declared.
     std::set<const ConstantInfo*> godotConstants;

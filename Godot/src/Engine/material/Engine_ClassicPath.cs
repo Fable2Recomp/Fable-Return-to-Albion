@@ -27,6 +27,14 @@ public static class Engine_ClassicPath
         {
             host.AddChild(new Engine_ClassicShadows { Name = "ClassicShadows" });
         }
+        if (Engine_ClassicSpotShadows.Instance is null)
+        {
+            host.AddChild(new Engine_ClassicSpotShadows { Name = "ClassicSpotShadows" });
+        }
+        if (Engine_ClassicShadowSpheres.Instance is null)
+        {
+            host.AddChild(new Engine_ClassicShadowSpheres());
+        }
         if (Engine_ClassicMist.Instance is null)
         {
             host.AddChild(new Engine_ClassicMist { Name = "ClassicMist" });
@@ -145,6 +153,8 @@ public static class Engine_ClassicPath
         using (Refii.Core.Engine_FramePhases.Measure("classic.lit"))
         {
             Engine_ClassicLitInstances.Pump();
+            Engine_ClassicSpotShadows.Instance?.Place();
+            Engine_ClassicLoad.PumpSettle();
         }
         if (camera is not null)
         {
@@ -154,6 +164,7 @@ public static class Engine_ClassicPath
                 Refii.Fx.Engine_FxMeshTwins.Instance?.Pump(camera);
                 Engine_ClassicDisplacement.Instance?.Pump(camera, viewport);
                 Engine_ClassicDecals.Instance?.Pump(camera);
+                Engine_ClassicShadowSpheres.Instance?.Pump(Engine_ClassicViews.Camera(0) ?? camera);
             }
             PumpWeather(host, camera, viewport);
             using (Refii.Core.Engine_FramePhases.Measure("classic.billboards"))

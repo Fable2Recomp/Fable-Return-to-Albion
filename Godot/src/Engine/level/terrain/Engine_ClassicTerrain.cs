@@ -77,6 +77,9 @@ public static class Engine_ClassicTerrain
 
     private const string LayerRenderMode = "unshaded, blend_add, depth_draw_never, cull_front";
 
+    /// <summary>Transparent sort order of every landscape layer: before the shadow spheres and the water.</summary>
+    public const int TerrainRenderPriority = -120;
+
     /// <summary>
     /// Builds one mesh per patch with its layer materials set, from the .ehf and its decoded
     /// heights. False with the reason when the shaders or the data are not there.
@@ -209,7 +212,12 @@ public static class Engine_ClassicTerrain
                     {
                         continue;
                     }
-                    var material = new ShaderMaterial { Shader = shader };
+                    // THE TERRAIN DRAWS BEFORE THE WATER. The title's main scene runs
+                    // LandscapeForeground (0x82A86710), then Shadow Spheres, then the Water Layer
+                    // (0x82A86898); our additive layers sorted after the water (priority -2/-1) and
+                    // added the lake bed's paint over the finished surface, square by quadrant.
+                    // Below the shadow spheres (-100), above the sky (-127).
+                    var material = new ShaderMaterial { Shader = shader, RenderPriority = TerrainRenderPriority };
                     Engine_ClassicMaterial.Register(material, Family, pixelTokens, vertexTokens, renderMode);
                     material.SetMeta(Engine_ClassicMaterial.DefinesMeta, defines);
 
@@ -271,7 +279,8 @@ public static class Engine_ClassicTerrain
                         material.SetShaderParameter("ps_g_DirectionalLightShadowMapSampler0", shadows.CascadeTexture(0));
                         material.SetShaderParameter("ps_g_DirectionalLightShadowMapSampler1", shadows.CascadeTexture(1));
                     }
-                    material.SetShaderParameter("xr_booleans", (1u << (16 + 4)) | (1u << (16 + 1)));
+                    material.SetShaderParameter(Refii.Models.Engine_ClassicSpotShadows.SamplerName, Refii.Models.Engine_ClassicSpotShadows.Maps);
+                    material.SetShaderParameter("xr_booleans", (1u << (16 + 4)) | (1u << (16 + 1)) | Refii.Models.Engine_ClassicSpotShadows.DoSpotShadows);
 
                     if (first is null)
                     {
