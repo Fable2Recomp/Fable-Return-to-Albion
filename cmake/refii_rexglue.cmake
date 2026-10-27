@@ -286,6 +286,31 @@ function(refii_rexglue_shadow_copy_mutable_sdk_file relative_path)
     unset(_refii_rexglue_mutable_source)
 endfunction()
 
+function(refii_rexglue_prepare_exception_header)
+    refii_rexglue_shadow_source(_source "include/rex/exception_handler.h")
+    file(READ "${_source}" _header)
+    if(NOT _header MATCHES "set_native_info")
+        set(_public_anchor "  Code code() const { return code_; }")
+        set(_private_anchor "  HostThreadContext* thread_context_ = nullptr;")
+        string(FIND "${_header}" "${_public_anchor}" _public_index)
+        string(FIND "${_header}" "${_private_anchor}" _private_index)
+        if(_public_index EQUAL -1 OR _private_index EQUAL -1)
+            message(FATAL_ERROR "Cannot add native exception context to ${_source}: unsupported Exception layout")
+        endif()
+        string(REPLACE "${_public_anchor}"
+            "${_public_anchor}\n  void* native_info() const { return native_info_; }\n  void set_native_info(void* info) { native_info_ = info; }"
+            _header "${_header}"
+        )
+        string(REPLACE "${_private_anchor}"
+            "${_private_anchor}\n  void* native_info_ = nullptr;"
+            _header "${_header}"
+        )
+    endif()
+    refii_rexglue_write_file_if_different(
+        "${REFII_REXGLUE_SHADOW_BUILD_DIR}/include/rex/exception_handler.h" "${_header}"
+    )
+endfunction()
+
 function(refii_rexglue_prepare_shadow_sdk out_var)
     if(NOT EXISTS "${REFII_REXGLUE_SHADOW_DIR}")
         set(${out_var} "${REFII_REXGLUE_SDK_SOURCE_DIR}" PARENT_SCOPE)
@@ -348,7 +373,7 @@ function(refii_rexglue_prepare_shadow_sdk out_var)
         "${REFII_REXGLUE_SHADOW_DIR}"
         "${REFII_REXGLUE_SHADOW_BUILD_DIR}"
     )
-
+    refii_rexglue_prepare_exception_header()
 
     set(_refii_rexglue_submodule_marker_dirs
         thirdparty/FFmpeg

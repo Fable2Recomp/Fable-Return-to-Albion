@@ -129,7 +129,8 @@ public partial class GameMorphMirror : Node
             _originalTransform = _camera.GlobalTransform;
             _originalFov = _camera.Fov;
             _originalHOffset = _camera.HOffset;
-            _settings = new Engine_MorphMirrorSettings(key => Engine_Switches.String(key, string.Empty));
+            _settings = new Engine_MorphMirrorSettings(key => Engine_Switches.String(key, string.Empty),
+                static cue => HostBridge.PostFrontEndAction(cue));
             _held = uint.MaxValue;
             _closing = false;
             _touch = 0;

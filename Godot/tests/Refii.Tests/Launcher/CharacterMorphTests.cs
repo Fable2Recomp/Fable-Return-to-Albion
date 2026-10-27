@@ -21,6 +21,71 @@ namespace Refii.Tests.Launcher;
 public class CharacterMorphTests
 {
     [TestCase]
+    public void MirrorAdjustmentsUsePauseMenuSoundsOnlyWhenTheValueChanges()
+    {
+        var sounds = new List<string>();
+        var mirror = new Engine_MorphMirrorSettings(_ => "", sounds.Add);
+        AssertThat(sounds.Count).IsEqual(0);
+        AssertThat(mirror.Adjust(1, 1)).IsFalse();
+        AssertThat(mirror.Adjust(0, -1)).IsTrue();
+        AssertThat(mirror.Adjust(0, -1)).IsFalse();
+        AssertThat(mirror.Adjust(1, 1)).IsTrue();
+        AssertThat(mirror.Adjust(1, 0)).IsFalse();
+        AssertThat(mirror.Adjust(1, -1)).IsTrue();
+        AssertThat(mirror.Adjust(1, -1)).IsFalse();
+        AssertThat(mirror.Adjust(1, 100)).IsTrue();
+        AssertThat(mirror.Adjust(1, 1)).IsFalse();
+        AssertThat(mirror.Adjust(1, -100)).IsTrue();
+        AssertThat(mirror.Adjust(-1, 1)).IsFalse();
+        AssertThat(mirror.Adjust(10, 1)).IsFalse();
+        mirror.Select(1);
+        mirror.Rotate(1, 0, 0.1f);
+        mirror.Reset();
+        AssertThat(mirror.Count).IsEqual(1);
+        AssertThat(mirror.Adjust(1, 1)).IsFalse();
+        AssertThat(sounds.ToArray()).IsEqual(new[]
+        {
+            "UiCue:game:slideup", "UiCue:game:slidedown", "UiCue:game:slideup",
+            "UiCue:game:slidedown", "UiCue:game:slideup", "UiCue:game:slidedown"
+        });
+    }
+
+    [TestCase]
+    public void MirrorNavigationUsesPauseMenuSoundsOnlyWhenTheSelectedRowChanges()
+    {
+        var sounds = new List<string>();
+        var mirror = new Engine_MorphMirrorSettings(_ => "", sounds.Add);
+        mirror.Select(1);
+        mirror.Select(-1);
+        AssertThat(sounds.Count).IsEqual(0);
+        mirror.Adjust(0, -1);
+        sounds.Clear();
+        var values = mirror.Values();
+        mirror.Select(1);
+        AssertThat(mirror.Selected).IsEqual(1);
+        mirror.Select(-1);
+        mirror.Select(-1);
+        mirror.Select(0);
+        AssertThat(mirror.Selected).IsEqual(0);
+        mirror.Select(200);
+        mirror.Select(1);
+        AssertThat(mirror.Selected).IsEqual(9);
+        mirror.Select(-200);
+        AssertThat(mirror.Selected).IsEqual(0);
+        AssertThat(mirror.Values()).IsEqual(values);
+        AssertThat(sounds.ToArray()).IsEqual(new[]
+        {
+            "UiCue:game:slidedown", "UiCue:game:slideup",
+            "UiCue:game:slidedown", "UiCue:game:slideup"
+        });
+        mirror.Adjust(0, 1);
+        sounds.Clear();
+        mirror.Select(1);
+        mirror.Select(-1);
+        AssertThat(sounds.Count).IsEqual(0);
+    }
+
+    [TestCase]
     public void MirrorRotationFiltersStickDriftAndHasTheSameSpeedAtDifferentFrameRates()
     {
         foreach (int fps in new[] { 30, 60, 120 })
