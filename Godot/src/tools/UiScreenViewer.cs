@@ -65,9 +65,78 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 		CaptureIfRequested();
 	}
 
+	/// <summary>The game's own book for the shown screen, stood without the game (Engine_UiScreenStand).</summary>
+	private Engine_UiScreenStand? _stand;
+
+	/// <summary>Book mode: the screen as the game draws it. `B` flips to the file's own layout.</summary>
+	private bool _book = System.Environment.GetEnvironmentVariable("REFII_UI_BOOK") != "0";
+
+	/// <summary>The component whose slide `,` / `.` step, by index into the stand's owners.</summary>
+	private int _owner = -1;
+
+	private string _bookLine = string.Empty;
+
+	/// <summary>Stands the screen's owned book in place of the file layout, when it has one.</summary>
+	private void StandBook(Engine_UiScreen screen)
+	{
+		_stand ??= new Engine_UiScreenStand(this);
+		_owner = -1;
+		if (!_book || Engine_UiTemplates.ScreenFor(screen.Name) is not { } template)
+		{
+			if (_stand.Book is { } shown && IsInstanceValid(shown))
+			{
+				shown.Visible = false;
+			}
+
+			if (MirrorTree is { } file && IsInstanceValid(file))
+			{
+				file.Visible = true;
+			}
+
+			_bookLine = _book ? "book: this presentation has no screen template — the file's layout is shown" : "file layout (B: book)";
+			return;
+		}
+
+		_stand.Stand(template.ScreenId);
+		_bookLine = $"book: screen {template.ScreenId} '{template.Name}'";
+	}
+
+	public override void _Process(double delta)
+	{
+		base._Process(delta);
+		if (!_book || _stand is null || _stand.ScreenId == uint.MaxValue)
+		{
+			return;
+		}
+
+		// The file's own tree is rebuilt on every show; the book stands in its place.
+		if (MirrorTree is { } file && IsInstanceValid(file) && file.Visible && _stand.Book is not null)
+		{
+			file.Visible = false;
+		}
+
+		_stand.Tick();
+		if (_status is not null && _stand.Book is { } book)
+		{
+			IReadOnlyList<Engine_UiScreenStand.Owner> owners = _stand.Owners();
+			string selected = _owner >= 0 && _owner < owners.Count
+				? $"   [{owners[_owner].Path}#{owners[_owner].Ordinal}: " +
+					(_stand.Slides.TryGetValue("#" + owners[_owner].Ordinal, out int slide) && slide > 0 && slide <= owners[_owner].SlideNames.Count
+						? $"slide {slide} '{owners[_owner].SlideNames[slide - 1]}' stated]"
+						: "rest slide]")
+				: string.Empty;
+			_status.Text = _statusBase + "\n" + _bookLine +
+				$"   speed {book.PlaybackSpeed:0.##}   {(_stand.PlayEntries ? "openers play" : "entries wait (as the walk leaves them)")}{selected}\n" +
+				"B book/file · R replay · P pause · F step · O openers · Tab component · , . slide · 0 clear";
+		}
+	}
+
+	private string _statusBase = string.Empty;
+
 	protected override void OnScreenShown(
 		Engine_UiScreen screen, Engine_UiSceneBuilder builder, Camera3D camera)
 	{
+		StandBook(screen);
 		DriveValuesIfRequested(screen, builder);
 		DumpWidescreenIfRequested(screen, builder);
 		DumpSlides(screen);
@@ -94,6 +163,12 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 		if (ScreenNames.Count == 0 || @event is not InputEventKey { Pressed: true } key)
 			return;
 
+		if (BookKey(key.Keycode))
+		{
+			GetViewport().SetInputAsHandled();
+			return;
+		}
+
 		int delta = key.Keycode switch
 		{
 			Key.Right or Key.Down => 1,
@@ -105,6 +180,57 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 
 		Show((CurrentIndex + delta + ScreenNames.Count) % ScreenNames.Count);
 		GetViewport().SetInputAsHandled();
+	}
+
+	/// <summary>The book's keys; true when one was taken.</summary>
+	private bool BookKey(Key key)
+	{
+		if (key == Key.B)
+		{
+			_book = !_book;
+			Show(CurrentIndex);
+			return true;
+		}
+
+		if (!_book || _stand?.Book is not { } book)
+		{
+			return false;
+		}
+
+		IReadOnlyList<Engine_UiScreenStand.Owner> owners = _stand.Owners();
+		switch (key)
+		{
+			case Key.R:
+				_stand.Replay();
+				return true;
+			case Key.P:
+				book.PlaybackSpeed = book.PlaybackSpeed > 0 ? 0 : 1;
+				return true;
+			case Key.F:
+				book.StepPlayback(33);
+				return true;
+			case Key.O:
+				_stand.PlayEntries = !_stand.PlayEntries;
+				_stand.Replay();
+				return true;
+			case Key.Key0:
+				_stand.Slides.Clear();
+				return true;
+			case Key.Tab:
+				_owner = owners.Count == 0 ? -1 : (_owner + 1) % owners.Count;
+				return true;
+			case Key.Comma or Key.Period when _owner >= 0 && _owner < owners.Count:
+			{
+				Engine_UiScreenStand.Owner owner = owners[_owner];
+				string at = "#" + owner.Ordinal;
+				int slide = _stand.Slides.TryGetValue(at, out int stated) ? stated : 1;
+				slide = System.Math.Clamp(slide + (key == Key.Period ? 1 : -1), 1, owner.SlideNames.Count);
+				_stand.Slides[at] = slide;
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/// <summary>
@@ -546,11 +672,31 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 		// Two frames: one to flush the scene change, one to draw it.
 		await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
 		await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+		await SettleBook();
 
 		Image image = GetViewport().GetTexture().GetImage();
 		Error err = image.SavePng(target!);
 		GD.Print(err == Error.Ok ? $"wrote {target}" : $"screenshot failed: {err}");
 		GetTree().Quit();
+	}
+
+	/// <summary>
+	/// In book mode, waits for the book's art (at most ten seconds) and then
+	/// <c>REFII_UI_SHOT_DELAY_MS</c> (default 1500) for its slides to play out before a capture.
+	/// </summary>
+	private async System.Threading.Tasks.Task SettleBook()
+	{
+		if (!_book || _stand is null || _stand.ScreenId == uint.MaxValue)
+			return;
+
+		ulong start = Time.GetTicksMsec();
+		while (_stand.Book is null && Time.GetTicksMsec() - start < 10000)
+			await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+
+		ulong delay = ulong.TryParse(System.Environment.GetEnvironmentVariable("REFII_UI_SHOT_DELAY_MS"), out ulong ms) ? ms : 1500;
+		start = Time.GetTicksMsec();
+		while (Time.GetTicksMsec() - start < delay)
+			await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
 	}
 
 	/// <summary>
@@ -572,6 +718,7 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 			// Two frames: one to flush the scene change, one to draw it.
 			await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
 			await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+			await SettleBook();
 
 			Image image = GetViewport().GetTexture().GetImage();
 			string path = Path.Combine(directory, $"{i:D2}_{ScreenNames[i]}.png");
@@ -842,6 +989,7 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 
 	protected override void Report(string message)
 	{
+		_statusBase = message;
 		if (_status is not null)
 			_status.Text = message;
 		GD.Print(message);

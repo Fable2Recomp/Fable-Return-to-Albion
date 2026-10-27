@@ -480,6 +480,12 @@ std::mutex g_region_mutex;
 WorldMapRegion g_region;
 std::mutex g_estate_mutex;
 RealEstate g_estate;
+std::mutex g_furniture_mutex;
+Furniture g_furniture;
+std::mutex g_coop_mutex;
+CoopScreen g_coop;
+std::mutex g_shop_front_mutex;
+ShopFront g_shop_front;
 std::mutex g_journey_mutex;
 QuestTravel g_journey;
 std::atomic<uint32_t> g_journey_wanted{0};
@@ -516,6 +522,40 @@ extern "C" void refii_bridge_hero_derived_snapshot(void* out) {
   }
   std::lock_guard lock(g_hero_mutex);
   *static_cast<HeroDerived*>(out) = g_hero;
+}
+
+namespace {
+std::mutex g_inventory_mutex;
+std::vector<uint32_t> g_inventory;
+}  // namespace
+
+extern "C" void refii_bridge_publish_hero_inventory(const uint32_t* words, uint32_t count) {
+  const size_t n = static_cast<size_t>(count) * 4u;
+  bool changed = false;
+  {
+    std::lock_guard lock(g_inventory_mutex);
+    changed = g_inventory.size() != n ||
+              (n != 0 && std::memcmp(g_inventory.data(), words, n * sizeof(uint32_t)) != 0);
+    if (changed) {
+      g_inventory.assign(words, words + n);
+    }
+  }
+  if (changed) {
+    refii_bridge_ui_data_changed();
+  }
+}
+
+extern "C" uint32_t refii_bridge_hero_inventory_snapshot(uint32_t* out, uint32_t word_capacity) {
+  std::lock_guard lock(g_inventory_mutex);
+  const uint32_t words = static_cast<uint32_t>(g_inventory.size());
+  if (out != nullptr && word_capacity != 0u) {
+    const uint32_t whole = word_capacity - (word_capacity % 4u);
+    const uint32_t n = std::min(words, whole);
+    if (n != 0u) {
+      std::memcpy(out, g_inventory.data(), n * sizeof(uint32_t));
+    }
+  }
+  return words / 4u;
 }
 
 void RequestQuestTravel(uint32_t record) { g_journey_wanted.store(record); }
@@ -600,6 +640,78 @@ extern "C" void refii_bridge_publish_real_estate(const void* estate) {
 RealEstate RealEstateSnapshot() {
   std::lock_guard<std::mutex> lock(g_estate_mutex);
   return g_estate;
+}
+
+extern "C" void refii_bridge_publish_furniture(const void* furniture) {
+  if (furniture == nullptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_furniture_mutex);
+  g_furniture = *static_cast<const Furniture*>(furniture);
+}
+
+Furniture FurnitureSnapshot() {
+  std::lock_guard<std::mutex> lock(g_furniture_mutex);
+  return g_furniture;
+}
+
+extern "C" void refii_bridge_publish_coop_screen(const void* coop) {
+  if (coop == nullptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_coop_mutex);
+  g_coop = *static_cast<const CoopScreen*>(coop);
+}
+
+CoopScreen CoopScreenSnapshot() {
+  std::lock_guard<std::mutex> lock(g_coop_mutex);
+  return g_coop;
+}
+
+namespace {
+std::mutex g_highlight_mutex;
+uint32_t g_highlight_screen = 0;
+int32_t g_highlight_event = 0;
+int32_t g_highlight_id = 0;
+char g_highlight_name[128] = {};
+char g_highlight_label[128] = {};
+}  // namespace
+
+extern "C" void refii_bridge_set_stated_highlight(uint32_t screen, int32_t event_type, int32_t id,
+                                                  const char* name, const char* label) {
+  std::lock_guard<std::mutex> lock(g_highlight_mutex);
+  g_highlight_screen = screen;
+  g_highlight_event = event_type;
+  g_highlight_id = id;
+  std::snprintf(g_highlight_name, sizeof(g_highlight_name), "%s", name != nullptr ? name : "");
+  std::snprintf(g_highlight_label, sizeof(g_highlight_label), "%s", label != nullptr ? label : "");
+}
+
+extern "C" bool refii_bridge_get_stated_highlight(uint32_t* screen, int32_t* event_type, int32_t* id,
+                                                  char* name, char* label, uint32_t capacity) {
+  std::lock_guard<std::mutex> lock(g_highlight_mutex);
+  if (g_highlight_screen == 0u) {
+    return false;
+  }
+  if (screen != nullptr) *screen = g_highlight_screen;
+  if (event_type != nullptr) *event_type = g_highlight_event;
+  if (id != nullptr) *id = g_highlight_id;
+  if (name != nullptr && capacity != 0u) std::snprintf(name, capacity, "%s", g_highlight_name);
+  if (label != nullptr && capacity != 0u) std::snprintf(label, capacity, "%s", g_highlight_label);
+  return true;
+}
+
+extern "C" void refii_bridge_publish_shop_front(const void* front) {
+  if (front == nullptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_shop_front_mutex);
+  g_shop_front = *static_cast<const ShopFront*>(front);
+}
+
+ShopFront ShopFrontSnapshot() {
+  std::lock_guard<std::mutex> lock(g_shop_front_mutex);
+  return g_shop_front;
 }
 
 namespace {

@@ -365,13 +365,16 @@ public partial class ReinstallPanel : VBoxContainer
 			: "Needs the game data.");
 		_shaders.Action.Disabled = !idle || !assets;
 
-		// Modernized assets: untracked, because the cache fills during play as well and a tick
-		// driven by "has anything been cached" would show complete after one texture. Gated on
-		// the game not running: the prebuild and a session would be two writers on one cache.
-		SetState(_assets, false, assets
-			? "Optional. Builds the Modern look's textures ahead of play instead of during it."
-			: "Needs the game data.");
-		_assets.Tick.Modulate = new Color(1, 1, 1, 0.35f);
+		// Modernized assets: ticked on a COMPLETED sweep for the current settings (the marker
+		// Engine_TexPrebuild writes), never on "something is cached" — the cache fills during
+		// play as well, and one texture would have read as complete. Gated on the game not
+		// running: the prebuild and a session would be two writers on one cache.
+		SetState(_assets, status.Assets, !assets
+			? "Needs the game data."
+			: status.AssetsDetail.Length != 0
+				? status.AssetsDetail
+				: "Optional. Builds the Modern look's textures ahead of play instead of during it.");
+		_assets.Tick.Modulate = status.Assets ? new Color(1, 1, 1, 1) : new Color(1, 1, 1, 0.35f);
 		_assets.Action.Disabled = !idle || !assets;
 	}
 

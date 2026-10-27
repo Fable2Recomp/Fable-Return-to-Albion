@@ -380,7 +380,7 @@ public static class Installer
         Path.Combine(GetWorkspaceBasePath(GetActiveGameDataDirectoryPath()), "generated");
 
     /// <summary>Which derived artefacts the Install tab tracks by a file the pipeline writes.</summary>
-    public readonly record struct ReinstallStepStatus(bool Shaders);
+    public readonly record struct ReinstallStepStatus(bool Shaders, bool Assets, string AssetsDetail);
 
     private const long StepStatusTtlMs = 1000;
     private static ReinstallStepStatus _stepStatus;
@@ -403,8 +403,11 @@ public static class Installer
         }
 
         string workspace = GetLuaWorkspacePath();
+        bool assets = Refii.Textures.Engine_TexPrebuild.IsCurrent(out string assetsDetail);
         _stepStatus = new ReinstallStepStatus(
-            File.Exists(Path.Combine(workspace, "shaders", "compile_report.tsv")));
+            File.Exists(Path.Combine(workspace, "shaders", "compile_report.tsv")),
+            assets,
+            assetsDetail);
         _stepStatusValid = true;
         _stepStatusStamp = now;
         return _stepStatus;

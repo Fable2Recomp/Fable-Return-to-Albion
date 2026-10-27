@@ -1,0 +1,98 @@
+using System.Collections.Generic;
+
+namespace Refii.Ui;
+
+/// <summary>
+/// THE QUEST BOX (screen 5, `questrepeatable.bgf`), stated by the call that opens it.
+///
+/// It is not a screen class but a box page (vtable `off_820AE6C8`, kind 4 → screen 5) built by
+/// the GUI native `DisplayQuestBoxParams(table, text)` (`sub_82304920` → `sub_826B96F8`). On show
+/// (`sub_823CFF60`) the root goes to slide `Type` and the filler `sub_823CFBE0` writes, under
+/// `elements`:
+/// <list type="bullet">
+/// <item>`QuestDescription` ← the call's text (argument 2, localised with `%n` substitution).</item>
+/// <item>`Stars` slide `RiskLevel + 5`, only for a risk level 1..5 (0x823cfc3c..58) — the second
+/// set of `1star`..`5star`.</item>
+/// <item>`DetailsGroup.{Occupation,Appearance,Features,Name,Whereabouts,Reason}Amount` ← the
+/// table's `Occupation`, `Appearance`, `Features`, `TargetName`, `Whereabouts`, `Reason`,
+/// localised.</item>
+/// <item>`Remember` shown iff there is a condition; `Condition1` / `Condition2` ← the table's
+/// conditions, localised, shown iff there are at least one / two. A condition counts unless it
+/// is `"nocondition"` (0x82304a44..7c): two when `Condition2` is real, else one when
+/// `Condition1` is.</item>
+/// </list>
+/// `Name` is stored (page+4) and never drawn.
+/// </summary>
+public static class Engine_UiQuestBoxPage
+{
+	public const uint ScreenId = 5;
+
+	/// <summary>One open, as the call stated it — every string already localised.</summary>
+	public sealed record Statement(
+		int Type, int RiskLevel, string Description,
+		string Occupation, string Appearance, string Features, string TargetName,
+		string Whereabouts, string Reason, string Condition1, string Condition2, int Conditions);
+
+	/// <summary>The quest box the last `DisplayQuestBoxParams` call opened.</summary>
+	public static Statement? Stated { get; set; }
+
+	private const string Elements = "elements.";
+
+	/// <summary>The root element carries no authored name: it is addressed by ordinal.</summary>
+	private const string Root = "#0";
+
+	public static IReadOnlyDictionary<string, string> Values()
+	{
+		var values = new Dictionary<string, string>();
+		if (Stated is not { } s)
+		{
+			return values;
+		}
+
+		values[Elements + "QuestDescription"] = s.Description;
+		values[Elements + "DetailsGroup.OccupationAmount"] = s.Occupation;
+		values[Elements + "DetailsGroup.AppearanceAmount"] = s.Appearance;
+		values[Elements + "DetailsGroup.FeaturesAmount"] = s.Features;
+		values[Elements + "DetailsGroup.NameAmount"] = s.TargetName;
+		values[Elements + "DetailsGroup.WhereaboutsAmount"] = s.Whereabouts;
+		values[Elements + "DetailsGroup.ReasonAmount"] = s.Reason;
+		values[Elements + "Condition1"] = s.Condition1;
+		values[Elements + "Condition2"] = s.Condition2;
+		return values;
+	}
+
+	public static IReadOnlyDictionary<string, bool> Active()
+	{
+		var active = new Dictionary<string, bool>();
+		if (Stated is not { } s)
+		{
+			return active;
+		}
+
+		active[Elements + "Remember"] = s.Conditions > 0;
+		active[Elements + "Condition1"] = s.Conditions > 0;
+		active[Elements + "Condition2"] = s.Conditions > 1;
+		return active;
+	}
+
+	public static IReadOnlyDictionary<string, int> Slides()
+	{
+		var slides = new Dictionary<string, int>();
+		if (Stated is not { } s)
+		{
+			return slides;
+		}
+
+		if (s.Type > 0)
+		{
+			slides[Root] = s.Type;
+		}
+
+		if (s.RiskLevel is >= 1 and <= 5)
+		{
+			slides[Elements + "Stars"] = s.RiskLevel + 5;
+		}
+
+		return slides;
+	}
+}

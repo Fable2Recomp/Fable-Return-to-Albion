@@ -132,7 +132,7 @@ public class CharacterMorphTests
     [TestCase]
     public void MirrorAdjustmentsUsePauseMenuSoundsOnlyWhenTheValueChanges()
     {
-        var sounds = new List<string>();
+        var sounds = new List<int>();
         var mirror = new Engine_MorphMirrorSettings(_ => "", sounds.Add);
         AssertThat(sounds.Count).IsEqual(0);
         AssertThat(mirror.Adjust(1, 1)).IsFalse();
@@ -152,17 +152,13 @@ public class CharacterMorphTests
         mirror.Reset();
         AssertThat(mirror.Count).IsEqual(1);
         AssertThat(mirror.Adjust(1, 1)).IsFalse();
-        AssertThat(sounds.ToArray()).IsEqual(new[]
-        {
-            "UiCue:game:slideup", "UiCue:game:slidedown", "UiCue:game:slideup",
-            "UiCue:game:slidedown", "UiCue:game:slideup", "UiCue:game:slidedown"
-        });
+        AssertThat(sounds.ToArray()).IsEqual(new[] { -1, 1, -1, 1, -1, 1 });
     }
 
     [TestCase]
     public void MirrorNavigationUsesPauseMenuSoundsOnlyWhenTheSelectedRowChanges()
     {
-        var sounds = new List<string>();
+        var sounds = new List<int>();
         var mirror = new Engine_MorphMirrorSettings(_ => "", sounds.Add);
         mirror.Select(1);
         mirror.Select(-1);
@@ -182,11 +178,7 @@ public class CharacterMorphTests
         mirror.Select(-200);
         AssertThat(mirror.Selected).IsEqual(0);
         AssertThat(mirror.Values()).IsEqual(values);
-        AssertThat(sounds.ToArray()).IsEqual(new[]
-        {
-            "UiCue:game:slidedown", "UiCue:game:slideup",
-            "UiCue:game:slidedown", "UiCue:game:slideup"
-        });
+        AssertThat(sounds.ToArray()).IsEqual(new[] { 1, -1, 1, -1 });
         mirror.Adjust(0, 1);
         sounds.Clear();
         mirror.Select(1);

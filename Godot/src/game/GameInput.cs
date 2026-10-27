@@ -871,11 +871,12 @@ public partial class GameInput : Node
 
 	/// <summary>
 	/// Whether the guest's own front-end menu should be shielded from this frame's input.
-	/// True only while the guest's active screen is MainMenu in its root substate; the title
-	/// keeps every button (A there is the guest's contract, `a2 == 36 &amp;&amp;
+	/// True while the guest's active screen is MainMenu in a substate the host draws over; the
+	/// title keeps every button (A there is the guest's contract, `a2 == 36 &amp;&amp;
 	/// *(BYTE*)(a1+80)` at 0x826E3078). `screen+24` is 0 for the menu list; 1 is the guest's own
-	/// input lock, 2/3/4 the gender card, 5 the load-game carousel, 6/7 a modal — masking
-	/// through those deadlocks, since a modal parks the screen in substate 1 until an A press.
+	/// input lock, 2/3/4 the gender card, 5 the load-game carousel, 6/7 a modal. 1 and 6/7 are
+	/// never masked: a modal parks the screen in substate 1 until an A press, and
+	/// `sub_826DEE40` answers the dialog itself in mode 6 (36 at 0x826df9c0, 37 at 0x826dfc98).
 	/// The vtable check is load-bearing: `dword_83496B08` has two writers through the same base
 	/// ctor, and the game's base-only object has no screen pointers at +180/+184/+188.
 	/// </summary>
@@ -887,7 +888,7 @@ public partial class GameInput : Node
 				HostBridge.FrontEndGuiIsUp &&
 				HostBridge.TryGetFrontEnd(out Engine_UiModel.FrontEndScreen screen, out uint state,
 					out _, out _, out _, out _) &&
-				screen == Engine_UiModel.FrontEndScreen.MainMenu && state == MenuRootState;
+				screen == Engine_UiModel.FrontEndScreen.MainMenu && HostDrawsOver(state);
 
 			// Never mask once a world is up, whatever the front-end decode says: masking exists
 			// only to stop Godot's main menu and the guest's from acting on one press, and a
@@ -968,17 +969,21 @@ public partial class GameInput : Node
 	/// Open and Close, not the router's modal latch, which such a box never sets.</summary>
 	public static bool DisplayMessageBoxUp { get; set; }
 
-	/// <summary>Masks the box's buttons only while the guest still says a modal dialog is
-	/// pending (the mode latch, over ANY screen — the openers never change the screen id), or
-	/// has a display box open — which never sets that latch. Fails open.</summary>
+	/// <summary>Masks the box's buttons while the guest still says a modal dialog is pending
+	/// (the mode latch, over ANY screen — the openers never change the screen id), has a display
+	/// box open — which never sets that latch — or a HOST question or notice stands in the query
+	/// slot: a standing box owns the pad whoever raised it, or A answers it and reaches the guest
+	/// too. Fails open.</summary>
 	private static bool MaskPauseQueryInput =>
 		ModalBoxOwnsInput &&
 		(DisplayMessageBoxUp || HostBridge.GetDisplayBox() is not null ||
-			HostBridge.GetPauseState() is { ModalUp: true });
+			HostBridge.GetPauseState() is { ModalUp: true } ||
+			Refii.Ui.Engine_UiHostBoxes.Question is not null ||
+			Refii.Ui.Engine_UiHostBoxes.Notice is not null);
 
 	/// <summary>
 	/// Set by <c>GameUi.DriveReceiveItems</c> while the owned received-item card is standing.
-	/// The card does not pause the game, so only A (done) and Y (flip) are taken.
+	/// The card does not pause the game, so only its own buttons are taken.
 	/// </summary>
 	public static bool ReceiveItemsOwnsInput { get; set; }
 
@@ -986,7 +991,8 @@ public partial class GameInput : Node
 		ReceiveItemsOwnsInput &&
 		HostBridge.GetPauseState() is { ScreenId: 8, ModalMode: 1 };
 
-	private static uint WithoutCardInput(uint buttons) => buttons & ~(ButtonA | ButtonY);
+	/// <summary>A (done), Y (flip) and X (equip, code 75): each is posted as the card's own action, so the guest must not read the pad for it as well.</summary>
+	private static uint WithoutCardInput(uint buttons) => buttons & ~(ButtonA | ButtonY | ButtonX);
 
 	/// <summary>
 	/// Set by <c>GameUi.DriveMenuBox</c> while the owned option list is standing. Its whole
@@ -1017,17 +1023,15 @@ public partial class GameInput : Node
 		ScreenMenuOwnsInput && HostBridge.GetPauseState() is { ModalMode: 1, ScreenId: not 0 };
 
 	/// <summary>
-	/// Set while the owned list's highlighted row is a MOD's ability, whose Y is the mod's unlearn.
-	/// The guest must not see that Y: its abilities handler `sub_826C2958` takes code 39 as
-	/// `+198 = 0` (0x826c2b30), and `sub_826C2D40` reads that byte to open the discard confirm on
-	/// its next commit — for the guest's own highlighted ability, not ours.
+	/// The buttons with the owned list's WHOLE vocabulary taken out. Godot owns the cursor and
+	/// every press on it: A and the directions are its own levers, B is forwarded as the screen's
+	/// own back, LB/RB as the tab cycle (72/73), Y is the ability unlearn or a mod's row action,
+	/// X a mod's row action. The guest's input router `sub_824047E8` would otherwise answer the
+	/// same pad press against ITS highlight — Y arms the abilities discard (`sub_826C2958` code
+	/// 39 → `+198 = 0`) for the guest's row, and a shoulder would cycle the tab twice.
 	/// </summary>
-	public static bool ScreenMenuHoldsFlip { get; set; }
-	public static bool ScreenMenuHoldsEquip { get; set; }
-
 	private static uint WithoutListInput(uint buttons) =>
-		WithoutQueryInput(buttons) & (ScreenMenuHoldsFlip ? ~ButtonY : uint.MaxValue) &
-		(ScreenMenuHoldsEquip ? ~ButtonX : uint.MaxValue);
+		WithoutQueryInput(buttons) & ~(ButtonX | ButtonY | LeftShoulder | RightShoulder);
 
 	/// <summary>The buttons with the owned query box's whole vocabulary taken out — A and B
 	/// both, unlike the pause root where B is the guest's resume.</summary>
@@ -1052,9 +1056,20 @@ public partial class GameInput : Node
 	/// own tab switch is the lever our tab entries write. B is conditional, see
 	/// <see cref="PauseMenuSwallowsBack"/>.
 	/// </summary>
+	/// <summary>
+	/// The buttons a standing list's ROW ACTIONS bind this frame (GameUi.DriveRowActionsOn),
+	/// withheld from the guest. Re-derived every frame: reset before the drives, set by the one
+	/// that stands a list with row actions.
+	/// </summary>
+	public static uint RowActionHolds { get; set; }
+
+	public const uint PadButtonX = ButtonX;
+
+	public const uint PadButtonY = ButtonY;
+
 	private static uint WithoutPauseInput(uint buttons)
 	{
-		uint filtered = buttons & ~(DpadUp | DpadDown | DpadLeft | DpadRight | ButtonA);
+		uint filtered = buttons & ~(DpadUp | DpadDown | DpadLeft | DpadRight | ButtonA | RowActionHolds);
 		if (PauseMenuSwallowsBack)
 		{
 			filtered &= ~ButtonB;
@@ -1064,17 +1079,39 @@ public partial class GameInput : Node
 	}
 
 	/// <summary>
-	/// `screen+24` while the menu LIST is the thing on screen. Every other value is a substate
-	/// the guest drives itself — see <see cref="MaskMenuInput"/>.
+	/// `screen+24` while the menu LIST is the thing on screen — see <see cref="MaskMenuInput"/>.
 	/// </summary>
 	private const uint MenuRootState = 0;
+
+	/// <summary>`screen+24` while the guest's own gender card stands (2 both down, 3 boy, 4 girl).</summary>
+	private const uint CardFirstState = 2;
+
+	private const uint CardLastState = 4;
+
+	/// <summary>`screen+24` while the guest's load-game carousel stands.</summary>
+	private const uint LoadCarouselState = 5;
+
+	/// <summary>
+	/// Whether the host draws its own panel over this substate, so the guest's handler for the
+	/// same press must not run. Root: the host's row list. Carousel: the host's load fan posts
+	/// `LoadSave:N` by its own cursor, while `sub_826DEE40` would commit the guest's cursor
+	/// `+72` on A (0x826df880) and move it on 30/31 (0x826df170, 0x826df2bc). Card: the host's
+	/// card posts "New Game" / "New Game Female" itself, so only while it stands. B stays
+	/// through on the carousel (<see cref="WithoutMenuInput"/>): leaving it is the guest's own
+	/// `+24 = 0` at 0x826dfb7c, and the host's fan follows that substate.
+	/// </summary>
+	private static bool HostDrawsOver(uint state) =>
+		state == MenuRootState ||
+		state == LoadCarouselState ||
+		(state >= CardFirstState && state <= CardLastState && FrontEndDrive.CardUp);
 
 	/// <summary>
 	/// The buttons with the front end's navigation taken out. Godot owns the main menu and
 	/// dispatches by name, but the guest never stopped running its own: `sub_826DEE40` still
 	/// forwards A and B to `g_Menu` through `OnPressA`/`OnPressB` while `screen+24` is 0, and
 	/// the two highlights are different objects. B is left through at the root, where it is the
-	/// guest's own path to the title; elsewhere <see cref="FrontEndSwallowsBack"/> masks it.
+	/// guest's own path to the title, and on the carousel, where it is the guest's own exit;
+	/// <see cref="FrontEndSwallowsBack"/> masks it while a host panel answers B itself.
 	/// </summary>
 	private static uint WithoutMenuInput(uint buttons)
 	{

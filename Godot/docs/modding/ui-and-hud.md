@@ -17,6 +17,7 @@ shipped UI runs through, with no second implementation.
 - [Boxes: messages, notices and menu boxes](#boxes-messages-notices-and-menu-boxes)
 - [Modals: who answers the game's boxes](#modals-who-answers-the-games-boxes)
 - [A mod's own menus](#a-mods-own-menus)
+  - [How a game screen stands: its file and Godot's statements](#how-a-game-screen-stands-its-file-and-godots-statements)
   - [Row actions on the game's screens](#row-actions-on-the-games-screens)
 - [Lua on the title screen](#lua-on-the-title-screen)
   - [The front-end surface](#the-front-end-surface)
@@ -31,7 +32,12 @@ package, lowest priority first, so a higher mod wins a shared piece and both mod
 land. A piece two mods state is recorded as a conflict and logged.
 
 The Studio's **🖼️ UI** tab edits the HUD, menus, modals, presentations and the settings page
-against the game's own HUD view and list view. Its editor calls are in
+against the game's own HUD view and list view. Its **🖥 Screens** page shows any game screen as the
+game draws it — the screen's book built by the game's own code from its file and template, its
+slides playing — with the open replayable, slowed, paused or stepped and any component's slide
+stated by hand; a presentation exported from the Presentations page is what it stands once the
+preview reloads. Outside the editor, `ui_viewer.tscn` does the same per presentation (B book/file,
+R replay, P pause, F step, Tab and `,` `.` to state a component's slide). Its editor calls are in
 [Commands and queries](reference-commands.md#refiimodapi-in-the-editor).
 
 ## The HUD: ui/hud.json
@@ -238,8 +244,10 @@ Refii.hud_icon(1, "DPadUp", ""); Refii.hud_slide(1, "DPadUp", 0); Refii.hud_hold
 
 - A Godot `message_box` with `buttons` empty or one caption is a notice (one dismiss); two
   captions are a question (A and B). `title` sits above `text`. In game only.
-- `button` is 0 for A (accept, or a notice's dismiss), 1 for B, -1 when another box of the same
-  kind replaced it first. One question and one notice stand at a time.
+- `button` is 0 for A (accept, or a notice's dismiss), 1 for B, -1 only when the box was
+  withdrawn before it was answered. One question and one notice stand at a time; the rest queue
+  in order — a second question is asked once the first is answered, a notice told under a notice
+  follows it. A box is never answered -1 on another box's account.
 - `mod_menu_box` answers `option` (-1 none); `mod_notice` answers `outcome` (0 shown, -1 never
   shown).
 
@@ -299,12 +307,22 @@ with the root.
 
 - A row patched onto the **pause list** must carry `"hostOnly": true`: the pause rows take their
   labels from the game's own list by order, and a row the game never spawned has to say so.
+- The shipped **options**, **upgradefurniture** and **decoration** screens carry
+  `"commitsByHighlight": true` (a screens-record flag, default false): on such a screen a press
+  puts the game's own menu cursor on the row and sends the game's A, instead of pushing the row's
+  identity. A mod's row on one of these screens therefore needs a `command` (a host action), or a
+  name the game's own list also carries.
 - `Mod:lua:<function>[:<arg>]` calls a global Lua function — a name or a dotted path
   (`my_mod_menu.give_gold`), looked up, never compiled — in the game VM on the next guest tick,
   protected, as `function(arg, e)`: `arg` is everything after the second colon (`nil` when there
   is none), `e` the row's `mod_menu_row` table. On the title it runs in `mod/frontend.lua`.
 - Any other command on a mod menu's row runs as a host action (`setting:toggle:…`,
   `setting:set:…`, an options page) and never reaches the game.
+- The game's own screen verbs can be named on any row: `Ability:learn:<1..14>` buys one level of
+  that ability through the game's own purchase, `Ability:unlearn:<1..14>` gives one back through
+  its own unlearn (without the confirm Y asks first); `Shop:buy:<ticket>` / `Shop:sell:<ticket>`
+  is a shop row's transaction, pushed at the shop screen's own handler, whose own confirm follows.
+  Shop rows carry it already.
 - A Godot script opens a menu itself with `host.open_menu(name)` (false when no list is up, or no
   template has that name); Lua with `Refii.open_menu(name [, p])` on the title.
 
@@ -339,6 +357,52 @@ Editor: `RefiiModApi.SetMenu(name, record)`, `RemoveMenu`, `GetMenu`, `ListModMe
 `SetMenuRow(menu, entry)`, `RemoveMenuRow`, `OpensCommand(menu)`, `LuaCommand(function, arg)`,
 `ParseMenuCommand(command)`.
 
+### How a game screen stands: its file and Godot's statements
+
+Godot draws every book from its own `.bgf`, not from the game's hidden copy of it. A screen
+record says how:
+
+```json
+{
+  "screens": {
+    "23": {
+      "restFromFile": true,
+      "restPose": { "Foreground.ExpandableMenu.KeyLight": [22] },
+      "restOpacity": { "Foreground.Book.Pages.QuestsPage.Contents.Scrollbar": 0 }
+    }
+  }
+}
+```
+
+- `"restFromFile": true` stands the book on the file's REST state: every component on its
+  first slide (one whose first slide is its opening `PlayIntro` on the one after), every
+  element switched on, and nothing read back from the game. Whatever the screen shows beyond
+  that comes from Godot: the page provider's values, switches, slides, positions, textures and
+  tints, and the game's GUI registries (below). The shipped books all carry it; a mod screen
+  that sets it gets a picture that never drifts with the game's hidden cursor.
+- **The slides play.** A stood book runs each component's slide over real time as the game
+  does: the slide's animation tracks (position, scale, rotation, pivot, opacity) evaluate from
+  0 to the slide's length, a slide plays its passes and holds its end (or loops / ping-pongs as
+  its flags say), a go-next slide hands on to the next one, and an element's `timeoffset` /
+  `endtime` window hides it outside that span. Changing a slide — by a provider's slide value,
+  a registry write or a page turn — enters the new one from 0, so a mod screen's intros and
+  transitions animate with no code. A `restPose` / `restOpacity` value or a provider's stated
+  position or opacity is a later write and wins over a track.
+- `"restPose"` puts an element where the game's own open leaves it, when that is not its file
+  pose: a path to up to six numbers — position x, y, z, then scale x, y, z — with `null` for
+  "keep the file's".
+- `"restOpacity"` does the same for opacity, 0..100.
+- `"flowWhenDrawn": true` limits a screen's measured reflow (`flowMeasured` / `flowBase` /
+  `flowMoved`) to when the measured element is on screen — the pause legend moves under the quest
+  objective only while there is an objective.
+- **The GUI registries come for free.** An element the file binds by `TextName`,
+  `SlideToggleName`, `SlideFaderName`, `SlideFader2Name`, `SlideSetName`, `MeterName` or
+  `ImageName` draws what the game publishes under that name — the text, the slide, the meter
+  (scrubbing the element's own timeline at percent × 10 ms) or the picture — on any book, a
+  mod's included. A provider's own value still wins over a registry one.
+- Elements with no authored name (a file's root) are addressed as `#<ordinal>` in any path a
+  provider states, `#0` being the root.
+
 ### Row actions on the game's screens
 
 A mod puts a button of its own on a shipped screen list with the `"rowActions"` block of
@@ -359,8 +423,11 @@ menu's own name:
 
 - While that list is up and a leaf row is highlighted, the prompt — the button's icon and the
   tag's text (a Babel tag, or a literal) — is drawn beside the page buttons where the game draws
-  its own, and the button is HELD from the guest (`X` is the equip hold, `Y` the flip hold: the two
-  a screen list can take; the shipped prompt for the same button stands aside).
+  its own. The pad under a Godot-owned list is the host's: X, Y, LB and RB never reach the game
+  while one stands (`X` is the equip hold, `Y` the flip hold: the two a screen list can take; the
+  shipped prompt for the same button stands aside).
+- On `AbilitiesMenu`, Y is the game's unlearn — its confirm, then one level back. A mod's Y row
+  action on that list runs instead of it.
 - On the press, or a click on the prompt, the row raises **`mod_menu_row`** on every surface with
   `menu` the list's template name, `row` the highlighted row's name, `player`, `mod`, and the two
   trailing fields `command` — the row's OWN command, `Inventory:use:1234`, `Inventory:equip:…`,

@@ -232,7 +232,7 @@ public static class Engine_UiModel
 	/// The labels are not here: they are live element text on `Multiplayer_Button{i+1}`.
 	/// </remarks>
 	public readonly record struct MenuBoxState(
-		int Count, int Selected, bool Cancelable, bool Cancelled, uint EnabledMask)
+		int Count, int Selected, bool Cancelable, bool Cancelled, uint EnabledMask, bool GamerCard = false)
 	{
 		public bool IsEnabled(int index) =>
 			index >= 0 && index < Count && (EnabledMask & (1u << index)) != 0;

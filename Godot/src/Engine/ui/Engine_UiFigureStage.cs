@@ -4,8 +4,9 @@ using Godot;
 namespace Refii.Ui;
 
 /// <summary>
-/// The co-op screen's figure stage: the original's separate GUI 3D world, rebuilt as a
-/// <see cref="SubViewport"/> with its own camera and lights, drawn into the page as one quad.
+/// The GUI's figure stage — the co-op screen's figures and every menu's item preview: the
+/// original's separate GUI 3D world, rebuilt as a <see cref="SubViewport"/> with its own camera
+/// and lights, drawn into the page as one quad.
 /// </summary>
 /// <remarks>
 /// <para>WHAT THE ORIGINAL DOES (TU1). The figures are not canvas elements. They stand in the GUI's
@@ -249,35 +250,68 @@ public partial class Engine_UiFigureStage : Node3D
 			: SubViewport.UpdateMode.Disabled;
 	}
 
-	/// <summary>
-	/// Each surface gets a lit material carrying the model's own albedo — the modern albedo or the
-	/// classic diffuse sampler, whichever the body was built with — so the stage's lights shape it
-	/// without the world shaders' dependence on the level's state. A surface with no albedo is
-	/// neutral grey, so missing art reads as missing.
-	/// </summary>
-	private static int Dress(MeshInstance3D body, Mesh mesh)
-	{
-		int textured = 0;
-		for (int surface = 0; surface < mesh.GetSurfaceCount(); ++surface)
-		{
-			Texture2D? albedo = mesh.SurfaceGetMaterial(surface) is ShaderMaterial source
-				? Refii.Models.Engine_ClassicMaterial.Albedo(source)
-				: null;
-			if (albedo is not null)
-			{
-				++textured;
-			}
+	/// <summary>Each surface of a figure dressed for the stage (Engine_UiStageMaterial).</summary>
+	private static int Dress(MeshInstance3D body, Mesh mesh) => Engine_UiStageMaterial.Dress(body, mesh);
 
-			body.SetSurfaceOverrideMaterial(surface, new StandardMaterial3D
-			{
-				AlbedoTexture = albedo,
-				AlbedoColor = albedo is null ? new Color(0.62f, 0.60f, 0.56f) : Colors.White,
-				Roughness = 0.85f,
-				// Hair cards and capes are single sheets.
-				CullMode = BaseMaterial3D.CullModeEnum.Disabled,
-			});
+	/// <summary>
+	/// A canvas transform (Godot's axes, canvas units — Engine_UiTheme.CanvasTransform) in the
+	/// stage: `sub_822A89C0`'s 0.01 metres per unit, the canvas plane 40 m from the camera —
+	/// exactly as <see cref="Show"/> stands a figure, rotation and scale carried whole.
+	/// </summary>
+	public static Transform3D StageFromCanvas(Transform3D canvas) =>
+		new Transform3D(Basis.Identity.Scaled(Vector3.One * MetresPerCanvasUnit),
+			new Vector3(0f, 0f, -CanvasPlaneDistance)) * canvas;
+
+	/// <summary>
+	/// Draws <paramref name="source"/>'s model on the stage in slot <paramref name="slot"/> at
+	/// <paramref name="canvas"/> — where it stands, in canvas units measured from the point of the
+	/// canvas plane this stage covers (<see cref="StageFromCanvas"/>). A menu's item preview keeps
+	/// its own placement (the guest's offsets, axis swizzle and spin) on a hidden node and is drawn
+	/// here, lit as the original lights its GUI world. The source's skin and skeleton come with it.
+	/// Returns the dressing report when the mesh changed, else null.
+	/// </summary>
+	public string? Mirror(int slot, MeshInstance3D source, Transform3D canvas)
+	{
+		if (source.Mesh is not { } mesh)
+		{
+			Hide(slot);
+			return null;
 		}
 
-		return textured;
+		if (!_figures.TryGetValue(slot, out Figure? figure))
+		{
+			figure = new Figure { Body = new MeshInstance3D { Name = $"Model{slot}" } };
+			_view.AddChild(figure.Body);
+			_figures[slot] = figure;
+		}
+
+		string? report = null;
+		if (!ReferenceEquals(figure.Body.Mesh, mesh))
+		{
+			figure.Body.Mesh = mesh;
+			var notes = new List<string>();
+			int textured = Engine_UiStageMaterial.Dress(figure.Body, mesh, notes);
+			report = $"{textured}/{mesh.GetSurfaceCount()} surface(s) textured [{string.Join(" ", notes)}]";
+		}
+
+		if (!ReferenceEquals(figure.Body.Skin, source.Skin))
+		{
+			figure.Body.Skin = source.Skin;
+		}
+
+		if (!source.Skeleton.IsEmpty && source.GetNodeOrNull<Skeleton3D>(source.Skeleton) is { } rig &&
+			rig.IsInsideTree() && figure.Body.IsInsideTree())
+		{
+			NodePath path = figure.Body.GetPathTo(rig);
+			if (figure.Body.Skeleton != path)
+			{
+				figure.Body.Skeleton = path;
+			}
+		}
+
+		figure.Body.Transform = StageFromCanvas(canvas);
+		figure.Body.Visible = true;
+		Refresh();
+		return report;
 	}
 }

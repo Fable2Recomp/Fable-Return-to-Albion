@@ -269,6 +269,89 @@ inline void PublishRealEstate(const RealEstate& estate) {
 
 RealEstate RealEstateSnapshot();
 
+/// THE UPGRADE-FURNITURE SCREEN'S PIECE (screen 26) — the targeted entity's component 68
+/// (`CECUpgradeableFurniture`), reached as the real-estate screen reaches its building (hero
+/// component 77, `vtbl[0x44]`). The page fillers `sub_8299B6D8` / `sub_8299C710` derive every
+/// number from these: the per-level value delta `sub_825CBFC8` (+12 gate, +16 installed,
+/// +20 kind, +28..+32 the values), the building's multiplier `sub_825CC900` (the owner's
+/// component 64 → its entity → component 67 `+116`), and the unlock item / card by `+44` type.
+struct Furniture {
+    bool known = false;
+    bool gate = false;          // +12
+    int32_t installed = 0;      // +16
+    int32_t kind = 0;           // +20
+    int32_t type = 0;           // +44, index into the `<Type>Level` name table
+    int32_t count = 0;          // values in +28..+32, at most 8 carried
+    int32_t values[8] = {};
+    float multiplier = 0.0f;    // building comp67 +116
+};
+
+inline void PublishFurniture(const Furniture& furniture) {
+  refii_bridge_publish_furniture(&furniture);
+}
+
+Furniture FurnitureSnapshot();
+
+/// THE CO-OP SCREEN'S STATE (screen 24, ctor `sub_82434DD8`) — what its writers decide from,
+/// read off the screen object and the session as plain data. The host composes every caption,
+/// slide and opacity from these by the writers' own rules (`sub_82439988` buttons,
+/// `sub_8281F010` profile publish, the pickbox widget `sub_82881F58`, `sub_82437810` connecting).
+struct CoopScreen {
+    bool known = false;
+    int32_t session = 0;            // *(game+284): 2 local co-op, 1 online
+    bool online_client = false;     // *(game+0x8C) +0x34 && +0x36
+    bool right_signed_in = false;   // XamUserGetSigninState(scr+300) != 0, scr+300 < 4
+    bool accepted_left = false;     // scr+48
+    bool accepted_right = false;    // scr+160
+    bool peer_ready = false;        // scr+296
+    bool flag297 = false;           // scr+297
+    bool flag298 = false;           // scr+298
+    bool child = false;             // scr+270
+    bool child_level = false;       // scr+271
+    int32_t user_right_save = -1;   // scr+292
+    bool save_chosen = false;       // *(*(game+0x94)+4) non-empty: player two's chosen hero save
+    int32_t pick_selected[3] = {};  // pickbox widget +36
+    bool pick_enabled[3] = {};      // pickbox widget +25
+    int32_t pick_state[3] = {};     // pickbox widget +28: frame slide 1 normal, 2 focused, 3 off
+    int32_t profile_left = 0;       // scr+264 widget +56 (4 = published)
+    int32_t profile_right = 0;      // scr+260 widget +56
+};
+
+/// THE SHOP'S FRONT PAGE (screen 22), as its one-time writer `sub_82991800` computes it — the
+/// guest's own helpers called on the guest thread, their answers published as data. Keys are
+/// Babel TEXT KEYS (narrow); the keeper's name is display text already.
+struct ShopFront {
+    bool known = false;
+    bool trader = false;            // sub_828738D8(shop)
+    bool crier = false;             // keeper component 26 +156 == 31
+    char name_key[96] = {};         // sub_82873980
+    char anecdote_key[96] = {};     // sub_82873B48
+    float stars = 0.0f;             // sub_8296FAA0(econ)
+    float wealth = 1.0f;            // sub_8296C170(econ) * *(econ+36)
+    bool has_keeper_name = false;
+    char keeper_name[128] = {};     // sub_823A8148(keeper comp20), UTF-8
+    bool owner = false;             // sub_82873D20(shop, hero, &discount)
+    float owner_discount = 1.0f;
+    char title_key[96] = {};        // sub_824D8A10(hero comp57)
+    float love = 1.0f, hate = 1.0f, fear = 1.0f;  // sub_82873F18
+    float special = 1.0f;           // *(shop+12)
+    bool sale_known = false;        // sub_8296FEF8(econ, &factor, &days)
+    float sale_factor = 1.0f;
+    int32_t sale_days = -1;
+};
+
+inline void PublishShopFront(const ShopFront& front) {
+  refii_bridge_publish_shop_front(&front);
+}
+
+ShopFront ShopFrontSnapshot();
+
+inline void PublishCoopScreen(const CoopScreen& coop) {
+  refii_bridge_publish_coop_screen(&coop);
+}
+
+CoopScreen CoopScreenSnapshot();
+
 /// THE WORLD MAP'S PROPERTY ROW. The host names the UID under its cursor; the pump answers with
 /// screen 28's numbers for that building while its region is loaded, unknown otherwise.
 void RequestPropertyEstate(uint64_t uid);

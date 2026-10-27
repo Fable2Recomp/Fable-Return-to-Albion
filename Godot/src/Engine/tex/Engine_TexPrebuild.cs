@@ -76,8 +76,13 @@ public static class Engine_TexPrebuild
 		Func<string, byte[]?> read =
 			path => banks.TryGetFile(path, out BnkFile file) ? file.ReadAllBytes() : null;
 
+		// PUT BACK ON THE WAY OUT. The resolver is global; this one reads a bank system the
+		// `using` above disposes, and the launcher runs this sweep in its own process — a sky,
+		// weather or terrain read in the editor afterwards would have gone to a dead bank.
+		Func<string, byte[]?>? previous = Engine_BnkMeshLoader.Resolver;
 		Engine_BnkMeshLoader.SetResolver(read);
-
+		try
+		{
 		List<Item> items = Enumerate(banks, out List<OrmItem> orm);
 		int total = items.Count + orm.Count;
 
@@ -171,8 +176,95 @@ public static class Engine_TexPrebuild
 		}
 
 		Progress final = Snapshot(done, total, built, failed, current);
+		if (!cancel.IsCancellationRequested && total > 0)
+		{
+			WriteMarker(final);
+		}
 		report?.Invoke(final);
 		return final;
+		}
+		finally
+		{
+			Engine_BnkMeshLoader.SetResolver(previous);
+		}
+	}
+
+	// ------------------------------------------------------------------ the completion marker
+
+	/// <summary>
+	/// What a finished sweep was built for: the settings that enter the cache keys. A marker
+	/// whose fingerprint is not this one belongs to another configuration and does not count.
+	/// </summary>
+	public static string Fingerprint() =>
+		$"model={Engine_TexSettings.Model};weights={Engine_TexSettings.Weights};" +
+		$"upscale={Engine_TexSettings.UpscaleEnabled};orm={Engine_TexSettings.OrmEnabled};" +
+		$"ao={Engine_TexSettings.OrmAoStrength:F2};metal={Engine_TexSettings.OrmMetallicStrength:F2};" +
+		$"height={Engine_TexSettings.OrmHeight};converter={Engine_TexCache.ConverterVersion};" +
+		$"policy={Engine_TexSemantic.PolicyVersion}";
+
+	/// <summary>Beside the cache it describes, so clearing the cache clears the claim.</summary>
+	public static string MarkerPath =>
+		System.IO.Path.Combine(Engine_TexCache.CacheRoot, "prebuild.txt");
+
+	/// <summary>
+	/// Records a COMPLETED sweep (not a cancelled one): the fingerprint and the counts. The
+	/// launcher's Install tab ticks the row on this, never on "something is cached" — the cache
+	/// fills during play as well, and one texture would have read as complete.
+	/// </summary>
+	private static void WriteMarker(Progress final)
+	{
+		try
+		{
+			System.IO.Directory.CreateDirectory(Engine_TexCache.CacheRoot);
+			System.IO.File.WriteAllText(MarkerPath,
+				$"fingerprint={Fingerprint()}\n" +
+				$"built={final.Built}\ntotal={final.Total}\nfailed={final.Failed}\n" +
+				$"when={DateTime.Now:yyyy-MM-dd HH:mm}\n");
+		}
+		catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException)
+		{
+			GD.PushWarning($"[tex] prebuild marker not written: {e.Message}");
+		}
+	}
+
+	/// <summary>
+	/// Whether a completed sweep for the CURRENT settings is on record, and what it built.
+	/// False with an empty detail when there is none; false with the detail when the marker is
+	/// for other settings, so the row can say why it does not count.
+	/// </summary>
+	public static bool IsCurrent(out string detail)
+	{
+		detail = string.Empty;
+		string path = MarkerPath;
+		if (!System.IO.File.Exists(path))
+		{
+			return false;
+		}
+		var values = new Dictionary<string, string>(StringComparer.Ordinal);
+		try
+		{
+			foreach (string line in System.IO.File.ReadAllLines(path))
+			{
+				int eq = line.IndexOf('=');
+				if (eq > 0)
+				{
+					values[line[..eq]] = line[(eq + 1)..];
+				}
+			}
+		}
+		catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException)
+		{
+			return false;
+		}
+		values.TryGetValue("built", out string? built);
+		values.TryGetValue("total", out string? total);
+		values.TryGetValue("when", out string? when);
+		values.TryGetValue("fingerprint", out string? fingerprint);
+		bool current = string.Equals(fingerprint, Fingerprint(), StringComparison.Ordinal);
+		detail = current
+			? $"Built {built ?? "?"} of {total ?? "?"} on {when ?? "?"}. The game's boot sweep finds them ready."
+			: $"Built on {when ?? "?"} for other settings; build again for the current ones.";
+		return current;
 	}
 
 	/// <summary>

@@ -9,15 +9,16 @@ public sealed class Engine_MorphMirrorSettings
     private readonly Engine_UiCharacterOptions _page;
     private readonly int[] _original;
     private readonly int[] _values;
-    private readonly Action<string>? _playSound;
+    private readonly Action<int>? _moved;
     public int Selected { get; private set; }
     public int Count => _page.Count;
     public float Rotation { get; private set; }
     public float Zoom { get; private set; }
 
-    public Engine_MorphMirrorSettings(Func<string, string> read, Action<string>? playSound = null)
+    /// <param name="moved">Told the direction (-1 up, 1 down) each time the selection or a value moves.</param>
+    public Engine_MorphMirrorSettings(Func<string, string> read, Action<int>? moved = null)
     {
-        _playSound = playSound;
+        _moved = moved;
         _page = new Engine_UiCharacterOptions(read, _ => false);
         _values = _page.Read();
         _original = (int[])_values.Clone();
@@ -30,7 +31,7 @@ public sealed class Engine_MorphMirrorSettings
         int next = Math.Clamp(Selected + direction, 0, Count - 1);
         if (next == Selected) return;
         Selected = next;
-        _playSound?.Invoke(direction < 0 ? "UiCue:game:slideup" : "UiCue:game:slidedown");
+        _moved?.Invoke(Math.Sign(direction));
     }
     public bool Adjust(int row, int direction)
     {
@@ -40,7 +41,7 @@ public sealed class Engine_MorphMirrorSettings
         _values[row] = next;
         _page.Changed(row, next);
         Selected = Math.Min(row, Count - 1);
-        _playSound?.Invoke(direction < 0 ? "UiCue:game:slideup" : "UiCue:game:slidedown");
+        _moved?.Invoke(Math.Sign(direction));
         return true;
     }
 

@@ -117,6 +117,62 @@ public sealed class Engine_HudValues
     public void StateVisible(uint elementHash, bool visible) => _toggled[elementHash] = visible;
 
     /// <summary>
+    /// The slide each registry name was last played to, by `(registry, name hash)` — the guest's
+    /// own slide writers (`sub_823FE848` toggle, `sub_828421F8` fader/slide set) as
+    /// gui_registry_hooks.cpp states them. Kept across <see cref="Reset"/>: the native side posts
+    /// on change only, and the registry is the guest's for as long as the guest runs.
+    /// </summary>
+    private readonly Dictionary<(int Registry, uint Hash), int> _registrySlides = new();
+
+    /// <summary>Bumped on every change to <see cref="RegistrySlide"/>.</summary>
+    public ulong RegistryGeneration { get; private set; }
+
+    /// <summary>`@Gui.Slide registry hash slide played`.</summary>
+    public void StateRegistrySlide(int registry, uint hash, int slide, bool played)
+    {
+        _registryPlayed[(registry, hash)] = played;
+        if (_registrySlides.TryGetValue((registry, hash), out int was) && was == slide)
+        {
+            return;
+        }
+
+        _registrySlides[(registry, hash)] = slide;
+        ++RegistryGeneration;
+    }
+
+    private readonly Dictionary<(int Registry, uint Hash), bool> _registryPlayed = new();
+
+    /// <summary>
+    /// Whether the last write to a registry name PLAYED its slide (`sub_82426CA8`: toggles and
+    /// the jump writer) rather than only entering it (`sub_82426BA8`: the fader's set), which
+    /// leaves an authored-paused slide waiting at t = 0.
+    /// </summary>
+    public bool RegistryPlayed(int registry, uint hash) =>
+        _registryPlayed.TryGetValue((registry, hash), out bool played) && played;
+
+    private readonly Dictionary<uint, uint> _registryImages = new();
+
+    /// <summary>`@Gui.Image hash texture` — the image registry (12), TU1 only.</summary>
+    public void StateRegistryImage(uint hash, uint texture)
+    {
+        if (_registryImages.TryGetValue(hash, out uint was) && was == texture)
+        {
+            return;
+        }
+
+        _registryImages[hash] = texture;
+        ++RegistryGeneration;
+    }
+
+    /// <summary>The texture an image name was last given, or null when the guest never has.</summary>
+    public uint? RegistryImage(uint hash) =>
+        _registryImages.TryGetValue(hash, out uint texture) && texture != 0u ? texture : null;
+
+    /// <summary>The slide a registry name was last played to, or null when the guest never has.</summary>
+    public int? RegistrySlide(int registry, uint hash) =>
+        _registrySlides.TryGetValue((registry, hash), out int slide) ? slide : null;
+
+    /// <summary>
     /// Meters stated through `SetMeterRatioOverTime`, 0..100, keyed by FNV-1 of the raw element
     /// name (`sub_82306928`, basis 0x811C9DC5). The Lua channel; the C++ registry covers ~20 names.
     /// </summary>

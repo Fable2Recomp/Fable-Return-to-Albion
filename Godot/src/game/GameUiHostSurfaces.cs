@@ -269,11 +269,23 @@ public partial class GameUi
 			return false;
 		}
 
+		// A host screen this menu opened stands over it; the screen's drive takes the frame.
+		if (_hostScreen is { IsOpen: true })
+		{
+			return false;
+		}
+
+		_hostMenuView.Visible = true;
 		GameInput.HostUiOwnsPad = true;
 		Engine_UiModMenus.Focus(_hostMenuView, _hostMenuRoot, Engine_UiCommandList.HostList);
 		_hostMenuView.Navigate(GameInput.MenuDirection, delta);
 		bool clicked = PointerList(_hostMenuView);
 		ReportMenuView(_hostMenuView);
+		if (DriveRowActionsOn(_hostMenuView.OpenedMenuName ?? _hostMenuRoot, _hostMenuView.Menu?.Highlighted,
+				_hostMenuView, 0u, Engine_UiCommandList.HostList))
+		{
+			return true;
+		}
 
 		if (GameInput.MenuBackPressed)
 		{

@@ -1330,17 +1330,17 @@ public static partial class ModValidate
 
 	private static readonly string[] ScreenFlagKeys =
 	{
-		"ownsList", "ownsRevealedInput", "hasSpellBlade", "fadesTopEnd", "fadesBottomEnd",
+		"ownsList", "restFromFile", "flowWhenDrawn", "commitsByHighlight", "ownsRevealedInput", "hasSpellBlade", "fadesTopEnd", "fadesBottomEnd",
 	};
 
 	private static readonly string[] ScreenListKeys =
 	{
-		"chrome", "panelSubtrees", "ownedElsewhere", "liveTexts", "boxUnits", "pages", "guestTextUnits",
+		"chrome", "panelSubtrees", "ownedElsewhere", "boxUnits", "pages", "guestTextUnits",
 		"wideLeft", "wideRight", "wideGround", "wideStretch", "flowMoved", "flowTailMoved",
 	};
 
 	private static readonly string[] ScreenKeys = ScreenTextKeys.Concat(ScreenFlagKeys).Concat(ScreenListKeys)
-		.Concat(new[] { "pageSlide", "listLift", "boxPaths", "pageStackAt", "statFields", "panelFields", "menuScriptByMode" })
+		.Concat(new[] { "pageSlide", "listLift", "boxPaths", "pageStackAt", "statFields", "panelFields", "menuScriptByMode", "restPose", "restOpacity" })
 		.Concat(new[] { "patch", "fields", "switches" })
 		.ToArray();
 

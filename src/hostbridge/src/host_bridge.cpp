@@ -212,6 +212,7 @@ uint32_t MenuRows(uint32_t index, char* out_name, size_t name_capacity, char* ou
 #include "gui/gui_display_box.h"
 #include "gui/gui_menu_chunks.h"
 #include "gui/gui_element_state.h"
+#include "gui/gui_told_statements.h"
 
 namespace {
 /// Guest memory, or nullptr when there is no guest — the check `rex::system::kernel_memory`
@@ -2494,7 +2495,57 @@ extern "C" {
 ///     and pips from the state the guest's handler moves instead of stepping a record of its own.
 /// 223 adds RefiiHostGetHudPulserStates — each HUD pulser's mode (`rec+12`: 0 looping, 1 finishing,
 ///     2 stopped) beside its phase, so the host's own pulse clock stops when the guest's does.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 223; }
+/// 224 adds RefiiHostGetQuestTaskStates — each task line's completed byte, beside the tags
+///     RefiiHostGetQuestTasks crosses, for the pause root's objective line.
+/// 225 adds RefiiHostGetFurniture — the upgrade-furniture screen's targeted piece — and
+///     RefiiHostGetQueryCard, the villager card subject's rename facts, RefiiHostGetCoopState and
+///     RefiiHostGetShopFront, and RefiiHostSetHighlightedRow.
+/// 226 adds RefiiHostTakeToldStatements — every slide entry, play / pause, attribute and `active`
+///     write the guest tells a presentation's elements — RefiiHostTakeToldTexts, its texts, and
+///     RefiiHostFrontEndPresentation, the front end's key for them.
+/// 227 adds RefiiHostGetLogbookOrbView — the other player's stats the logbook was opened on
+/// from an orb's View Stats.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 227; }
+
+/// THE GUEST'S STATEMENTS TO ITS PRESENTATIONS (hooks/gui_slide_hooks.cpp), oldest first: six
+/// words each — kind (1 slide entry, 2 paused, 3 attribute, 4 active), presentation, root name
+/// hash, element ordinal, then the slide / paused / attribute id / on, and the attribute's value
+/// bits. Takes them; returns how many were written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostTakeToldStatements(uint32_t* out_words, uint32_t word_capacity) {
+    return refii::vfs::TakeToldStatements(out_words, word_capacity);
+}
+
+/// The front end's active screen presentation (`GUI+188` → `+20`) while the front end owns the
+/// GUI, the key its told statements carry; 0 when there is none.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostFrontEndPresentation(void) {
+    auto* memory = SafeKernelMemory();
+    const uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto plausible = [](uint32_t address) { return address >= 0x10000u && address < 0xC0000000u; };
+    const uint32_t gui = GuestWordAt(base, refii::guest::Address(0x83496B08u));
+    if (!plausible(gui)) {
+        return 0u;
+    }
+
+    const uint32_t active = GuestWordAt(base, gui + 188u);
+    if (!plausible(active)) {
+        return 0u;
+    }
+
+    const uint32_t presentation = GuestWordAt(base, active + 20u);
+    return plausible(presentation) ? presentation : 0u;
+}
+
+/// The texts the guest wrote into its presentations' elements (`SetText` / `SetTextFromTag`,
+/// already localised), oldest first: four words each — presentation, root name hash, ordinal,
+/// UTF-16 length — with the units back to back in `units`. Takes them; returns how many.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostTakeToldTexts(uint32_t* out_words, uint32_t word_capacity,
+                                                      uint16_t* units, uint32_t unit_capacity) {
+    return refii::vfs::TakeToldTexts(out_words, word_capacity, units, unit_capacity);
+}
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostUiDataGeneration(void) { return refii_bridge_ui_data_generation(); }
 
@@ -3418,6 +3469,151 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetRealEstate(uint32_t* out_words, uint3
     return estate.known ? 1u : 0u;
 }
 
+/// THE UPGRADE-FURNITURE PIECE (screen 26) — fifteen words: known, gate, installed level, kind,
+/// type, value count, the building multiplier's bits, then up to eight per-level values. The host
+/// derives every number on the page from these by the guest's own rules (`sub_825CBFC8`).
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFurniture(uint32_t* out_words, uint32_t word_capacity) {
+    const refii::vfs::Furniture furniture = refii::vfs::FurnitureSnapshot();
+    uint32_t multiplier = 0;
+    std::memcpy(&multiplier, &furniture.multiplier, sizeof(float));
+    uint32_t words[15] = {
+        furniture.known ? 1u : 0u,
+        furniture.gate ? 1u : 0u,
+        static_cast<uint32_t>(furniture.installed),
+        static_cast<uint32_t>(furniture.kind),
+        static_cast<uint32_t>(furniture.type),
+        static_cast<uint32_t>(furniture.count),
+        multiplier,
+    };
+    for (int i = 0; i < 8; ++i) {
+        words[7 + i] = static_cast<uint32_t>(furniture.values[i]);
+    }
+
+    if (out_words != nullptr) {
+        for (uint32_t i = 0; i < word_capacity && i < 15u; ++i) {
+            out_words[i] = words[i];
+        }
+    }
+
+    return furniture.known ? 1u : 0u;
+}
+
+/// THE HIGHLIGHTED ROW GODOT STATES for an in-game screen's list (screen 0 clears it): the guest's
+/// highlighted-row reader `sub_826C1B50` answers with it (gui_menu_hooks.cpp) instead of asking
+/// its hidden Lua menu, so every screen handler acts on the row the player is on.
+REFII_HOST_ABI_EXPORT void RefiiHostSetHighlightedRow(uint32_t screen, int32_t event_type, int32_t id,
+                                                      const char* name, const char* label) {
+    refii_bridge_set_stated_highlight(screen, event_type, id, name, label);
+}
+
+/// THE SHOP'S FRONT PAGE (screen 22) — see `ShopFront`. Fifteen words: known, flags (1 trader,
+/// 2 crier, 4 keeper name, 8 owner, 16 sale known), then the float bits of stars, wealth, owner
+/// discount, love, hate, fear, special, sale factor, then sale days. The four strings — name
+/// key, anecdote key, keeper name, title key — go NUL-separated into `text`.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetShopFront(uint32_t* out_words, uint32_t word_capacity,
+                                                     char* text, uint32_t text_capacity) {
+    const refii::vfs::ShopFront front = refii::vfs::ShopFrontSnapshot();
+    const auto bits = [](float value) {
+        uint32_t word = 0;
+        std::memcpy(&word, &value, sizeof(word));
+        return word;
+    };
+    const uint32_t words[] = {
+        front.known ? 1u : 0u,
+        (front.trader ? 1u : 0u) | (front.crier ? 2u : 0u) | (front.has_keeper_name ? 4u : 0u) |
+            (front.owner ? 8u : 0u) | (front.sale_known ? 16u : 0u),
+        bits(front.stars), bits(front.wealth), bits(front.owner_discount),
+        bits(front.love), bits(front.hate), bits(front.fear), bits(front.special),
+        bits(front.sale_factor), static_cast<uint32_t>(front.sale_days),
+    };
+    if (out_words != nullptr) {
+        for (uint32_t i = 0; i < word_capacity && i < sizeof(words) / sizeof(words[0]); ++i) {
+            out_words[i] = words[i];
+        }
+    }
+    if (text != nullptr && text_capacity > 0u) {
+        uint32_t at = 0;
+        for (const char* piece : {front.name_key, front.anecdote_key, front.keeper_name, front.title_key}) {
+            for (const char* c = piece; *c != '\0' && at + 1u < text_capacity; ++c) {
+                text[at++] = *c;
+            }
+            if (at < text_capacity) {
+                text[at++] = '\0';
+            }
+        }
+    }
+    return front.known ? 1u : 0u;
+}
+
+/// THE CO-OP SCREEN'S STATE (screen 24) — see `CoopScreen` in hero_derived.h. Twenty-two words:
+/// known, session, online client, right signed in, accepted left/right, peer ready, flags
+/// 297/298, child, child level, right save user, save chosen, three pickboxes' selected /
+/// enabled / frame state, then the two profile widgets' states.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopState(uint32_t* out_words, uint32_t word_capacity) {
+    const refii::vfs::CoopScreen coop = refii::vfs::CoopScreenSnapshot();
+    const uint32_t words[] = {
+        coop.known ? 1u : 0u,
+        static_cast<uint32_t>(coop.session),
+        coop.online_client ? 1u : 0u,
+        coop.right_signed_in ? 1u : 0u,
+        coop.accepted_left ? 1u : 0u,
+        coop.accepted_right ? 1u : 0u,
+        coop.peer_ready ? 1u : 0u,
+        coop.flag297 ? 1u : 0u,
+        coop.flag298 ? 1u : 0u,
+        coop.child ? 1u : 0u,
+        coop.child_level ? 1u : 0u,
+        static_cast<uint32_t>(coop.user_right_save),
+        coop.save_chosen ? 1u : 0u,
+        static_cast<uint32_t>(coop.pick_selected[0]),
+        static_cast<uint32_t>(coop.pick_selected[1]),
+        static_cast<uint32_t>(coop.pick_selected[2]),
+        (coop.pick_enabled[0] ? 1u : 0u) | (coop.pick_enabled[1] ? 2u : 0u) | (coop.pick_enabled[2] ? 4u : 0u),
+        static_cast<uint32_t>(coop.pick_state[0]),
+        static_cast<uint32_t>(coop.pick_state[1]),
+        static_cast<uint32_t>(coop.pick_state[2]),
+        static_cast<uint32_t>(coop.profile_left),
+        static_cast<uint32_t>(coop.profile_right),
+    };
+    if (out_words != nullptr) {
+        for (uint32_t i = 0; i < word_capacity && i < sizeof(words) / sizeof(words[0]); ++i) {
+            out_words[i] = words[i];
+        }
+    }
+    return coop.known ? 1u : 0u;
+}
+
+/// THE VILLAGER CARD'S SUBJECT (screen 10): three words — known, the subject's component-20 name
+/// key (`+48`) and its rename byte (`+34`). The card's rename prompt (`elements.buttons`) is on
+/// slide 1 iff `sub_823A3C40` holds: the byte set and the key not one of the five
+/// `TEXT_CREATURE_NAME_CHILDSPLAYCHARITY_*` (0x826cd14c..84) — the host compares the key.
+/// The subject is the entity at `screen+28` (`sub_826CCC88`; 0x826ccfd0). Plain reads.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetQueryCard(uint32_t* out_words, uint32_t word_capacity) {
+    if (out_words == nullptr || word_capacity < 3u) {
+        return 0u;
+    }
+
+    out_words[0] = out_words[1] = out_words[2] = 0u;
+    auto* memory = SafeKernelMemory();
+    const uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+    const uint32_t screen = ScreenObject(base, 10u);
+    const uint32_t subject = plausible(screen) ? GuestWordAt(base, screen + 28u) : 0u;
+    const uint32_t record = plausible(subject) ? EntityComponent(base, subject, 20u) : 0u;
+    if (!plausible(record)) {
+        return 0u;
+    }
+
+    out_words[0] = 1u;
+    out_words[1] = GuestWordAt(base, record + 48u);
+    out_words[2] = GuestByteAt(base, record + 34u);
+    return 1u;
+}
+
 /// The OPTIONS screen's settings — pages 1 and 2, all of it plain loads.
 ///
 /// Nothing here needs the guest thread: page 1's three accessors are each a field read behind
@@ -3993,71 +4189,21 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroVitals(uint32_t* words, uint32_t 
 /// (The `twui r0, 0x16` between those lines are MSVC iterator-debug traps; this walk bounds
 /// its own hops instead.)
 ///
-/// Walk hazards: `_Myhead` is written once in the constructor, so it is stable. `_Mysize` is
-/// NOT atomic with the links — it is bumped before the pointers are patched — so no buffer is
-/// sized from it and the walk terminates on the sentinel. An erase frees its node the moment a
-/// `Count` reaches zero, so a captured `next` can dangle; every hop is re-validated and the
-/// total is capped.
+/// SERVED FROM THE PUMP'S SNAPSHOT, walked on the guest's own thread (SampleHeroInventory in
+/// guest_tick_pump.cpp) every 15 ticks and on the tick after a UI change. Walked from here, on
+/// Godot's thread, the list was read while the guest patched it — `_Mysize` is bumped before
+/// the links and an erase frees its node the moment a `Count` reaches zero — and a torn read
+/// was a list with a row missing or doubled.
 ///
 /// A RecordID is NOT unique across records: two share one id whenever the first still holds
 /// instance data. Callers must group, not assume.
 ///
 /// Four words per record — {recordId, count, category, flags} — where `recordId` is the FNV-1
 /// GDB key, `category` is −1 when the item states none, and `flags` bit 0 is `Viewed` (the
-/// new-item marker). Returns the number of records found, which may exceed what fitted.
+/// new-item marker). Returns the number of records in the snapshot, which may exceed what
+/// fitted.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroInventory(uint32_t* words, uint32_t word_capacity) {
-    auto* memory = SafeKernelMemory();
-    if (memory == nullptr) {
-        return 0;
-    }
-
-    uint8_t* base = memory->virtual_membase();
-    if (base == nullptr) {
-        return 0;
-    }
-
-    const uint32_t hero = ResolvePlayerHero(base);
-    if (hero == 0u) {
-        return 0;
-    }
-
-    const uint32_t inventory = EntityComponent(base, hero, 13u);
-    if (inventory == 0u) {
-        return 0;
-    }
-
-    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
-
-    const uint32_t sentinel = GuestWordAt(base, inventory + 0x10u);
-    if (!plausible(sentinel)) {
-        return 0;
-    }
-
-    // A ceiling on a walk over links another thread is patching.
-    constexpr uint32_t kMaxRecords = 4096u;
-    constexpr uint32_t kWordsPerRecord = 4u;
-
-    uint32_t found = 0;
-    uint32_t node = GuestWordAt(base, sentinel);
-
-    while (plausible(node) && node != sentinel && found < kMaxRecords) {
-        const uint32_t item = GuestWordAt(base, node + 8u);
-        if (plausible(item)) {
-            if (words != nullptr &&
-                (found * kWordsPerRecord + kWordsPerRecord - 1u) < word_capacity) {
-                uint32_t* row = words + found * kWordsPerRecord;
-                row[0] = GuestWordAt(base, item + 0x04u);
-                row[1] = GuestWordAt(base, item + 0x0Cu);
-                row[2] = GuestWordAt(base, item + 0x10u);
-                row[3] = GuestByteAt(base, item + 0x14u) != 0u ? 1u : 0u;
-            }
-            ++found;
-        }
-
-        node = GuestWordAt(base, node);
-    }
-
-    return found;
+    return refii_bridge_hero_inventory_snapshot(words, word_capacity);
 }
 
 /// The AUGMENTS socketed into one inventory record — the weapon page's augment lines.
@@ -4933,6 +5079,59 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetQuestTasks(uint32_t record_id, char* 
         }
 
         WriteOut(packed, out, capacity);
+        return count;
+    }
+
+    return 0;
+}
+
+/// One quest's task lines' COMPLETED bytes, index-parallel with RefiiHostGetQuestTasks: the
+/// 8-byte entry at `quest+104..+108` is {+0 tag, +4 completed}, set by the Lua native
+/// "SetObjectiveAsCompleted" (`sub_8251E400`). The pause root's objective line (`sub_82522E48`)
+/// is the LAST entry whose byte is clear. Returns the entries written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetQuestTaskStates(uint32_t record_id, uint8_t* out,
+                                                           uint32_t capacity) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr || out == nullptr || capacity == 0u) {
+        return 0;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const uint32_t hero = ResolvePlayerHero(base);
+    const uint32_t log = hero != 0u ? EntityComponent(base, hero, 102u) : 0u;
+    if (log == 0u) {
+        return 0;
+    }
+
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+    const uint32_t begin = GuestWordAt(base, log + 0x10u);
+    const uint32_t end = GuestWordAt(base, log + 0x14u);
+    if (!plausible(begin) || !plausible(end) || end < begin || ((end - begin) % 12u) != 0u) {
+        return 0;
+    }
+
+    for (uint32_t at = begin; at < end; at += 12u) {
+        const uint32_t quest = GuestWordAt(base, at + 4u);
+        if (!plausible(quest) || GuestWordAt(base, quest + 4u) != record_id) {
+            continue;
+        }
+
+        const uint32_t tasks = GuestWordAt(base, quest + 104u);
+        const uint32_t tasks_end = GuestWordAt(base, quest + 108u);
+        if (!plausible(tasks) || tasks_end <= tasks || ((tasks_end - tasks) % 8u) != 0u ||
+            (tasks_end - tasks) > 0x400u) {
+            return 0;
+        }
+
+        uint32_t count = 0;
+        for (uint32_t entry = tasks; entry < tasks_end && count < capacity; entry += 8u) {
+            out[count++] = base[entry + 4u] != 0u ? 1u : 0u;
+        }
+
         return count;
     }
 
@@ -10613,9 +10812,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMenuBox(uint32_t* out_selected, uint3
 
     if (out_selected != nullptr) *out_selected = read32(control + 0u);
     if (out_flags != nullptr) {
-        // bit 0 cancelable, bit 1 already-cancelled.
+        // bit 0 cancelable, bit 1 already-cancelled, bit 2 the Orb box's player card — the card
+        // object at +44, set by the Orb open `sub_823DB968` (0x823dba10) and cleared by the
+        // close `sub_823DC2B0` (0x823dc3ec).
         *out_flags = (GuestByteAt(base, control + 14u) != 0u ? 1u : 0u) |
-                     (GuestByteAt(base, control + 13u) != 0u ? 2u : 0u);
+                     (GuestByteAt(base, control + 13u) != 0u ? 2u : 0u) |
+                     (read32(control + 44u) != 0u ? 4u : 0u);
     }
 
     if (out_enabled_mask != nullptr) {
@@ -18617,6 +18819,59 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetInventoryScreenMode(void) {
     }
 
     return read32(screen + 372u);
+}
+
+/// THE LOGBOOK OPENED ON ANOTHER PLAYER — an orb's View Stats. 1 when it is, else 0.
+///
+/// The orb box's answer (`sub_8281E410`, bit 4) looks the player up by XUID and calls
+/// `sub_823C48D8(gui, member + 0xA0)`, which stores that stats object at logbook `screen+24` and
+/// the mode 2 at `screen+4` (vtable 0x820D0110 slot +32, `stw r4,4(r3)`). The logbook's open
+/// (`sub_826D8DD8`) reads the mode: 2 repopulates `'LogbookMenuOrb'` and fills the stats page
+/// (`sub_829BAEB8`) from `*(screen+24)` instead of the hero's own.
+///
+/// That object's accessors (vtable 0x820A9B6C): slot 0 `*(this + 8 + 4*id)` for ids below 124
+/// (0x82390C18, `addi r11,r4,2; slwi; lwzx`), slot 1 `*(this + 504 + 4*id)` for the rest, slot 2
+/// the name at `this+4`, an 8-bit string (`sub_82B3F968` widens `**handle` byte by byte). The
+/// counters are what the peer's type-11 reply copied in (`sub_822F8F38`).
+REFII_HOST_ABI_EXPORT int RefiiHostGetLogbookOrbView(int32_t* stats, uint32_t stats_capacity,
+                                                     char* name, uint32_t name_capacity) {
+    if (name != nullptr && name_capacity != 0u) {
+        name[0] = '\0';
+    }
+
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0;
+    }
+
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+    constexpr uint32_t kLogbookScreen = 17u;
+    constexpr uint32_t kOrbMode = 2u;
+    constexpr uint32_t kCounters = 124u;
+
+    const uint32_t screen = ScreenObject(base, kLogbookScreen);
+    if (screen == 0u || GuestWordAt(base, screen + 4u) != kOrbMode) {
+        return 0;
+    }
+
+    const uint32_t viewed = GuestWordAt(base, screen + 24u);
+    if (!plausible(viewed)) {
+        return 0;
+    }
+
+    if (stats != nullptr) {
+        const uint32_t count = stats_capacity < kCounters ? stats_capacity : kCounters;
+        for (uint32_t id = 0; id < count; ++id) {
+            stats[id] = static_cast<int32_t>(GuestWordAt(base, viewed + 8u + 4u * id));
+        }
+    }
+
+    if (name != nullptr && name_capacity != 0u) {
+        WriteOut(ReadGuestString(base, viewed + 4u), name, name_capacity);
+    }
+
+    return 1;
 }
 
 REFII_HOST_ABI_EXPORT int RefiiHostGetInGameScreen(uint32_t* out) {

@@ -87,6 +87,17 @@ public interface Engine_UiPageProvider
 		Engine_UiPageProviders.NoRotations;
 
 	/// <summary>
+	/// A page with no list and no screen of its own — a box page — whose book is filled each time
+	/// it draws (<see cref="Engine_UiDetailPages.FillOnDraw"/>) rather than by the screen feeds.
+	/// </summary>
+	bool FillsOnDraw => false;
+
+	/// <summary>Elements this page tints (the quad's vertex colour, `sub_82425C58`) — see
+	/// <see cref="Engine_UiOwnedBook.HostTints"/>.</summary>
+	IReadOnlyDictionary<string, Godot.Color> Tints(in Engine_UiPageContext page) =>
+		Engine_UiPageProviders.NoTints;
+
+	/// <summary>
 	/// Whether this screen needs the guest's option sliders read this frame.
 	///
 	/// ASKING COSTS A TREE WALK. `GetOptionSliders` walks the guest's LIVE screen map from

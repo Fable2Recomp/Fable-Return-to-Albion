@@ -21,6 +21,7 @@ public sealed class Engine_UiTheme
 	// Text re-paints carry the fade and clip band across to the fresh material on every string
 	// change: one StringName each, never a literal (a literal is a weak handle per call).
 	private static readonly StringName ClipRectName = "clip_rect";
+	private static readonly StringName ClipSeatName = "clip_seat";
 	private static readonly StringName OpacityName = "opacity";
 
 	/// <summary>The bitmap fonts. Without them <see cref="Label"/> produces nothing.</summary>
@@ -272,10 +273,12 @@ public sealed class Engine_UiTheme
 
 		Variant? clip = null;
 		Variant? opacity = null;
+		Variant? seat = null;
 		if (node.MaterialOverride is ShaderMaterial previous)
 		{
 			clip = previous.GetShaderParameter(ClipRectName);
 			opacity = previous.GetShaderParameter(OpacityName);
+			seat = previous.GetShaderParameter(ClipSeatName);
 		}
 
 		node.MaterialOverride = Engine_UiSceneBuilder.TextMaterial(opaque, selection.Font.Atlas);
@@ -289,6 +292,11 @@ public sealed class Engine_UiTheme
 			if (opacity is { } o && o.VariantType != Variant.Type.Nil)
 			{
 				fresh.SetShaderParameter(OpacityName, o);
+			}
+
+			if (seat is { } st && st.VariantType != Variant.Type.Nil)
+			{
+				fresh.SetShaderParameter(ClipSeatName, st);
 			}
 		}
 
@@ -331,10 +339,12 @@ public sealed class Engine_UiTheme
 		// same fade, or a faded label re-texted would flash its glyphs at full alpha.
 		Variant? clip = null;
 		Variant? opacity = null;
+		Variant? seat = null;
 		if (node.MaterialOverride is ShaderMaterial previous)
 		{
 			clip = previous.GetShaderParameter(ClipRectName);
 			opacity = previous.GetShaderParameter(OpacityName);
+			seat = previous.GetShaderParameter(ClipSeatName);
 		}
 
 		float iconAlpha = opacity is { } carried && carried.VariantType == Variant.Type.Float
@@ -352,11 +362,22 @@ public sealed class Engine_UiTheme
 				continue;
 			}
 
+			ShaderMaterial iconMaterial = IconMaterial(art, iconAlpha);
+			if (clip is { } iconClip && iconClip.VariantType != Variant.Type.Nil)
+			{
+				iconMaterial.SetShaderParameter(ClipRectName, iconClip);
+			}
+
+			if (seat is { } iconSeat && iconSeat.VariantType != Variant.Type.Nil)
+			{
+				iconMaterial.SetShaderParameter(ClipSeatName, iconSeat);
+			}
+
 			node.AddChild(MarkInlineIcon(new MeshInstance3D
 			{
 				Mesh = IconQuad(icon.Size),
 				Position = new Vector3(icon.TopLeft.X, icon.TopLeft.Y, 0f),
-				MaterialOverride = IconMaterial(art, iconAlpha),
+				MaterialOverride = iconMaterial,
 			}));
 		}
 
@@ -374,6 +395,11 @@ public sealed class Engine_UiTheme
 			if (opacity is { } o && o.VariantType != Variant.Type.Nil)
 			{
 				fresh.SetShaderParameter(OpacityName, o);
+			}
+
+			if (seat is { } st && st.VariantType != Variant.Type.Nil)
+			{
+				fresh.SetShaderParameter(ClipSeatName, st);
 			}
 		}
 
@@ -523,41 +549,29 @@ public sealed class Engine_UiTheme
 	/// constants 0.0 and 1.0 only, so an inline icon is never a sub-rect of a sheet.
 	/// </summary>
 	/// <summary>
-	/// An inline icon's material. Unshaded — GUI art is emissive and shading it against the
-	/// screen's lights leaves it black. Tinted by alpha alone: `sub_828706F0` passes only the
-	/// element's alpha into the quad's vertices, never the text colour.
+	/// An inline icon's material: the UI quad shader (Engine_UiSceneBuilder.IconMaterial), so a
+	/// scroll window's `clip_rect` clips it with its glyphs — on a material of its own, an icon
+	/// drew wherever its line had scrolled, outside the window. Tinted by alpha alone:
+	/// `sub_828706F0` passes only the element's alpha into the quad's vertices, never the text
+	/// colour.
 	/// </summary>
-	public static StandardMaterial3D IconMaterial(Texture2D art, float alpha) => new()
-	{
-		AlbedoTexture = art,
-		AlbedoColor = new Color(1f, 1f, 1f, alpha),
-		ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-		Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
-		CullMode = BaseMaterial3D.CullModeEnum.Disabled,
-		NoDepthTest = true,
-		TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
-	};
+	public static ShaderMaterial IconMaterial(Texture2D art, float alpha) =>
+		Engine_UiSceneBuilder.IconMaterial(art, alpha);
 
 	/// <summary>
-	/// Fades one inline-icon quad, or answers false for anything else. The icons ride a
-	/// StandardMaterial3D, not the text shader, so every fade that reaches a label's material
-	/// — a retint, an opacity chain, a clone's fade — has to reach its icon children too, or a
-	/// scrolled-away menu row leaves its `<exclamation.img>` standing at full alpha.
+	/// Fades one inline-icon quad, or answers false for anything else. Every fade that reaches a
+	/// label's material — a retint, an opacity chain, a clone's fade — has to reach its icon
+	/// children too, or a scrolled-away menu row leaves its `<exclamation.img>` standing at full alpha.
 	/// </summary>
 	public static bool SetIconOpacity(Node node, float alpha)
 	{
 		if (node is not MeshInstance3D icon || !IsInlineIcon(icon) ||
-			icon.MaterialOverride is not StandardMaterial3D material)
+			icon.MaterialOverride is not ShaderMaterial material)
 		{
 			return false;
 		}
 
-		Color albedo = material.AlbedoColor;
-		if (!Mathf.IsEqualApprox(albedo.A, alpha))
-		{
-			material.AlbedoColor = new Color(albedo.R, albedo.G, albedo.B, alpha);
-		}
-
+		material.SetShaderParameter(OpacityName, alpha);
 		return true;
 	}
 

@@ -86,6 +86,16 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 
 		/// <summary>The card's authored opacity, 0..100, for when the guest states none.</summary>
 		public float GamerTagAuthoredOpacity;
+
+		/// <summary>`Group/GamerTag` — the component the card's fill reveals: `sub_8281F010`
+		/// puts it on slide 2 once the profile it was asked for has arrived. -1 when absent.</summary>
+		public int GamerTagReveal = -1;
+
+		/// <summary>The card's name and gamerscore texts (`…gamertag.gamertag`, `…gamertag.score`),
+		/// written by the same fill. -1 when absent.</summary>
+		public int GamerName = -1;
+
+		public int GamerScore = -1;
 	}
 
 	public static Joins? Resolve(Engine_UiScreen screen)
@@ -119,11 +129,14 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 
 		joins.Cancel = Engine_UiStatedPanel.Child(
 			Engine_UiStatedPanel.Child(group, P("OK/CANCEL")), P("Negative"))?.Ordinal ?? -1;
-		if (Engine_UiStatedPanel.Child(Engine_UiStatedPanel.Child(group, P("GamerTag")), P("gamertag"))
-			is { } card)
+		UiNode? reveal = Engine_UiStatedPanel.Child(group, P("GamerTag"));
+		if (Engine_UiStatedPanel.Child(reveal, P("gamertag")) is { } card)
 		{
 			joins.GamerTag = card.Ordinal;
 			joins.GamerTagAuthoredOpacity = card.Opacity;
+			joins.GamerTagReveal = reveal!.Ordinal;
+			joins.GamerName = Engine_UiStatedPanel.Child(card, P("gamertag"))?.Ordinal ?? -1;
+			joins.GamerScore = Engine_UiStatedPanel.Child(card, P("score"))?.Ordinal ?? -1;
 		}
 
 		return joins;
@@ -195,7 +208,8 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 	/// </summary>
 	public void ShowStated(
 		string? title, string?[] labels, int count, int selected,
-		uint enabledMask, bool cancelable, bool gamerTag = false)
+		uint enabledMask, bool cancelable, bool gamerTag = false, string? gamerName = null,
+		string? gamerScore = null)
 	{
 		if (_group is null || Theme is null)
 		{
@@ -208,6 +222,22 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 		if (_group.GetNodeOrNull<Node3D>(P("GamerTag")) is { } card)
 		{
 			card.Visible = gamerTag;
+
+			// What the card's fill wrote — never the artist's sample name and score the clone
+			// carries. The name the fill writes is the empty string it was built with
+			// (`sub_823DB850` passes `dword_834A5E78`): the gamertag is the box's title.
+			if (gamerTag)
+			{
+				if (card.GetNodeOrNull<MeshInstance3D>(P("gamertag/gamertag")) is { } name)
+				{
+					Theme.SetMeshText(name, gamerName ?? string.Empty);
+				}
+
+				if (card.GetNodeOrNull<MeshInstance3D>(P("gamertag/score")) is { } score)
+				{
+					Theme.SetMeshText(score, gamerScore ?? string.Empty);
+				}
+			}
 		}
 
 		if (!string.IsNullOrEmpty(title) &&
@@ -421,6 +451,40 @@ public partial class Engine_UiMessageBox : Node3D, IUiSurfaceView
 		}
 
 		Visible = true;
+	}
+
+	/// <summary>
+	/// THE SIZE THE TEXT NEEDS, chosen the way the guest's fitter `sub_823CEFA8` chooses it: for
+	/// each variant from <paramref name="start"/> (1, or 4 with the action button) to 6, lay the
+	/// text out in that variant's own box and take the first whose laid-out height fits the box
+	/// (0x823cf0a4..0x823cf15c); the largest when none does. Laid out by OUR text, so the paper
+	/// is sized to what is actually drawn. Returns a zero-based index, or -1 without art.
+	/// </summary>
+	public int Fit(string body, int start = 1)
+	{
+		if (_paper is null || Theme is null)
+		{
+			return -1;
+		}
+
+		for (int i = System.Math.Max(1, start); i <= TextSizes; ++i)
+		{
+			if (_paper.GetNodeOrNull<MeshInstance3D>(P("MessageBox/MessageText") + $"{i}") is not { } node ||
+				!node.HasMeta("text_box"))
+			{
+				continue;
+			}
+
+			Theme.SetMeshText(node, body);
+			Vector2 box = (Vector2)node.GetMeta("text_box");
+			float height = node.Mesh is not null ? node.GetAabb().Size.Y : 0f;
+			if (height <= box.Y)
+			{
+				return i - 1;
+			}
+		}
+
+		return TextSizes - 1;
 	}
 
 	private System.Collections.Generic.Dictionary<int, Node3D>? _byOrdinal;

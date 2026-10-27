@@ -23,7 +23,7 @@ public static class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 223;
+	public const int ExpectedAbiVersion = 227;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -2031,16 +2031,34 @@ public static class HostBridge
 
 	private static uint[]? _componentPairs;
 
+	/// <summary>
+	/// ONE SNAPSHOT PER GODOT FRAME. The guest step runs concurrently with `_Process`, so two
+	/// reads in one frame could name two screens, and twenty-two call sites read this; every
+	/// driver in a frame now sees the same statement, read once.
+	/// </summary>
 	public static PauseState? GetPauseState()
 	{
-		if (TryGetAbiVersion() is null ||
-			RefiiHostGetPauseState(out uint screen, out uint modal, out uint mode, out uint tab) == 0)
+		if (TryGetAbiVersion() is null)
 		{
 			return null;
 		}
 
-		return new PauseState(screen, modal, mode, tab);
+		ulong frame = Godot.Engine.GetProcessFrames();
+		if (frame == _pauseStateFrame)
+		{
+			return _pauseState;
+		}
+
+		_pauseStateFrame = frame;
+		_pauseState = RefiiHostGetPauseState(out uint screen, out uint modal, out uint mode, out uint tab) == 0
+			? null
+			: new PauseState(screen, modal, mode, tab);
+		return _pauseState;
 	}
+
+	private static PauseState? _pauseState;
+
+	private static ulong _pauseStateFrame = ulong.MaxValue;
 
 	/// <summary>
 	/// Selects a pause tab through the guest's own lever — a pure write its GUI tick polls,
@@ -2064,7 +2082,7 @@ public static class HostBridge
 		uint count = RefiiHostGetMenuBox(out uint selected, out uint flags, out uint enabled);
 		return count == 0
 			? null
-			: new MenuBoxState((int)count, (int)selected, (flags & 1) != 0, (flags & 2) != 0, enabled);
+			: new MenuBoxState((int)count, (int)selected, (flags & 1) != 0, (flags & 2) != 0, enabled, (flags & 4) != 0);
 	}
 
 	/// <summary>The QueryBox class — `GUI.DisplayYesNoQuestion` and its two siblings.</summary>
@@ -3820,6 +3838,80 @@ public static class HostBridge
 
 	private static readonly uint[] CollectedKeysBuffer = new uint[512];
 
+	/// <summary>The front end's active screen presentation while the front end owns the GUI, 0 otherwise.</summary>
+	public static uint FrontEndPresentation()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+
+		try
+		{
+			return RefiiHostFrontEndPresentation();
+		}
+		catch (DllNotFoundException)
+		{
+			return 0;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return 0;
+		}
+	}
+
+	/// <summary>
+	/// Takes the texts the guest wrote into its presentations' elements (`SetText` /
+	/// `SetTextFromTag`, localised): four words each — presentation, root name hash, ordinal,
+	/// UTF-16 length — the units back to back in <paramref name="units"/>. Returns how many.
+	/// </summary>
+	public static int TakeToldTexts(uint[] words, ushort[] units)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+
+		try
+		{
+			return (int)RefiiHostTakeToldTexts(words, (uint)words.Length, units, (uint)units.Length);
+		}
+		catch (DllNotFoundException)
+		{
+			return 0;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return 0;
+		}
+	}
+
+	/// <summary>
+	/// Takes the statements the guest told its presentations' elements (hooks/gui_slide_hooks.cpp),
+	/// oldest first, six words each — kind (1 slide entry, 2 paused, 3 attribute, 4 active),
+	/// presentation, root name hash, ordinal, a, b. Returns how many records were written.
+	/// </summary>
+	public static int TakeToldStatements(uint[] into)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 0;
+		}
+
+		try
+		{
+			return (int)RefiiHostTakeToldStatements(into, (uint)into.Length);
+		}
+		catch (DllNotFoundException)
+		{
+			return 0;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return 0;
+		}
+	}
+
 	/// <summary>The partner's answer to a question from <see cref="ConsentTake"/>.</summary>
 	public static void ConsentGive(uint ticket, bool yes)
 	{
@@ -5550,15 +5642,6 @@ public static class HostBridge
 		PostFrontEndAction($"MenuEvent:{name}:{eventType}:{id}");
 
 	/// <summary>
-	/// The same identity commit, with the abilities screen's `+198` byte CLEARED instead of set
-	/// — the guest's own Y. `sub_826C2D40` @0x826c2d78 branches on it: set runs `sub_8246C970`
-	/// (the PURCHASE), clear opens the discard confirm. `sub_826C2958` case 39 stores 0 there
-	/// and case 36 stores 1, so the arm is part of the press, not a constant.
-	/// </summary>
-	public static uint MenuDiscard(string name, int eventType, uint id) =>
-		PostFrontEndAction($"MenuDiscard:{name}:{eventType}:{id}");
-
-	/// <summary>
 	/// The shipped commit — `g_Menu:SelectMenuItem()` on the guest's own tick thread. It is an
 	/// event AND a toggle, and the toggle is what <see cref="MenuEvent"/> cannot do: only the
 	/// guest's Lua menu spawns a category's child rows, off the expand `SelectMenuItem` fires
@@ -5566,6 +5649,15 @@ public static class HostBridge
 	/// Acts on the GUEST's cursor, so use it only while that cursor is the row meant.
 	/// </summary>
 	public static uint MenuSelect() => PostFrontEndAction("MenuSelect");
+
+	/// <summary>
+	/// Puts the guest's own menu cursor (`g_Menu.CurrentHighlightIdx`) on the row named, by the
+	/// name both menus carry. Run by the pump inside the guest's Lua window, so the screen
+	/// handlers that read `g_Menu:GetHighlightedMenuItemData()` (options, logbook, furniture;
+	/// the items/clothing caches) then resolve the row Godot's cursor is on — see
+	/// Engine_UiScreenTemplate.CommitsByHighlight.
+	/// </summary>
+	public static uint MenuHighlight(string name) => PostFrontEndAction($"MenuHighlight:{name}");
 
 	/// <summary>
 	/// Every row the guest has spawned into the current list, in spawn order: the identity —
@@ -8186,6 +8278,42 @@ public static class HostBridge
 		}
 	}
 
+	/// <summary>The other player the logbook is showing: their 124 counters and their name.</summary>
+	public sealed record LogbookOrbView(int[] Stats, string Name);
+
+	/// <summary>
+	/// The player the logbook was opened on from an orb's View Stats, or null when it shows the
+	/// hero — RefiiHostGetLogbookOrbView: the stats object the orb box handed the screen.
+	/// </summary>
+	public static LogbookOrbView? GetLogbookOrbView()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		try
+		{
+			var stats = new int[124];
+			var name = new byte[64];
+			if (RefiiHostGetLogbookOrbView(stats, (uint)stats.Length, name, (uint)name.Length) == 0)
+			{
+				return null;
+			}
+
+			int end = System.Array.IndexOf(name, (byte)0);
+			return new LogbookOrbView(stats, System.Text.Encoding.UTF8.GetString(name, 0, end < 0 ? name.Length : end));
+		}
+		catch (System.DllNotFoundException)
+		{
+			return null;
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return null;
+		}
+	}
+
 	public static List<(uint NameHash, uint Ordinal)> GetFastTravelRegions()
 	{
 		var regions = new List<(uint, uint)>();
@@ -8356,6 +8484,79 @@ public static class HostBridge
 		}
 
 		return tasks;
+	}
+
+	/// <summary>
+	/// The upgrade-furniture screen's targeted piece (screen 26) — its component 68 as the page
+	/// fillers read it, and the building's value multiplier. See <c>Furniture</c> in hero_derived.h.
+	/// </summary>
+	public readonly record struct Furniture(
+		bool Known, bool Gate, int Installed, int Kind, int Type, int[] Values, float Multiplier);
+
+	private static uint[]? _furnitureWords;
+
+	public static Furniture GetFurniture()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return default;
+		}
+
+		uint[] words = _furnitureWords ??= new uint[15];
+		try
+		{
+			if (RefiiHostGetFurniture(words, (uint)words.Length) == 0u)
+			{
+				return default;
+			}
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return default;
+		}
+
+		int count = (int)System.Math.Min(words[5], 8u);
+		var values = new int[count];
+		for (int i = 0; i < count; ++i)
+		{
+			values[i] = unchecked((int)words[7 + i]);
+		}
+
+		return new Furniture(
+			true, words[1] != 0u, unchecked((int)words[2]), unchecked((int)words[3]),
+			unchecked((int)words[4]), values,
+			System.BitConverter.Int32BitsToSingle(unchecked((int)words[6])));
+	}
+
+	/// <summary>
+	/// One quest's task lines' completed flags, index-parallel with <see cref="GetQuestTasks"/>
+	/// (`quest+104` entries, byte +4). Empty when the quest has none or the guest is down.
+	/// </summary>
+	public static bool[] GetQuestTaskStates(uint recordId)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp || recordId == 0u)
+		{
+			return System.Array.Empty<bool>();
+		}
+
+		var completed = new byte[128];
+		uint count;
+		try
+		{
+			count = RefiiHostGetQuestTaskStates(recordId, completed, (uint)completed.Length);
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return System.Array.Empty<bool>();
+		}
+
+		var states = new bool[System.Math.Min(count, (uint)completed.Length)];
+		for (int i = 0; i < states.Length; ++i)
+		{
+			states[i] = completed[i] != 0;
+		}
+
+		return states;
 	}
 
 	/// <summary>
@@ -8709,8 +8910,8 @@ public static class HostBridge
 			return records;
 		}
 
-		// Headroom: the guest mutates the list during the walk, so the second call can find
-		// more than the probe did.
+		// The snapshot is published whole on the guest's thread; headroom only for a publish
+		// landing between the probe and the read.
 		var words = new uint[(count + 32u) * stride];
 		uint written = RefiiHostGetHeroInventory(words, (uint)words.Length);
 
@@ -9712,6 +9913,9 @@ public static class HostBridge
 	private static extern uint RefiiHostGetInventoryScreenMode();
 
 	[DllImport(Library)]
+	private static extern int RefiiHostGetLogbookOrbView(int[] stats, uint statsCapacity, byte[] name, uint nameCapacity);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostGetQuestLog(uint[] outWords, uint wordCapacity);
 
 	[DllImport(Library)]
@@ -10361,6 +10565,160 @@ public static class HostBridge
 	private static extern uint RefiiHostGetQuestTasks(uint recordId, byte[] packed, uint capacity);
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostGetQuestTaskStates(uint recordId, byte[] completed, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetFurniture(uint[] words, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetQueryCard(uint[] words, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetCoopState(uint[] words, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetShopFront(uint[] words, uint capacity, byte[] text, uint textCapacity);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetHighlightedRow(
+		uint screen, int eventType, int id,
+		[MarshalAs(UnmanagedType.LPUTF8Str)] string name, [MarshalAs(UnmanagedType.LPUTF8Str)] string label);
+
+	/// <summary>States the highlighted row of an in-game screen's Godot list — what the guest's
+	/// highlighted-row reader answers with (gui_menu_hooks.cpp). Screen 0 clears it.</summary>
+	public static void SetHighlightedRow(uint screen, int eventType, int id, string name, string label)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return;
+		}
+
+		try
+		{
+			RefiiHostSetHighlightedRow(screen, eventType, id, name, label);
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+		}
+	}
+
+	/// <summary>The shop's front page as its writer computes it — see <c>ShopFront</c> in hero_derived.h.</summary>
+	public readonly record struct ShopFront(
+		bool Known, bool Trader, bool Crier, bool HasKeeperName, bool Owner, bool SaleKnown,
+		float Stars, float Wealth, float OwnerDiscount, float Love, float Hate, float Fear,
+		float Special, float SaleFactor, int SaleDays,
+		string NameKey, string AnecdoteKey, string KeeperName, string TitleKey);
+
+	private static uint[]? _shopFrontWords;
+	private static byte[]? _shopFrontText;
+
+	public static ShopFront GetShopFront()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return default;
+		}
+
+		uint[] w = _shopFrontWords ??= new uint[11];
+		byte[] text = _shopFrontText ??= new byte[512];
+		System.Array.Clear(text);
+		try
+		{
+			if (RefiiHostGetShopFront(w, (uint)w.Length, text, (uint)text.Length) == 0u)
+			{
+				return default;
+			}
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return default;
+		}
+
+		var pieces = new string[4];
+		int at = 0;
+		for (int i = 0; i < 4; ++i)
+		{
+			int end = System.Array.IndexOf(text, (byte)0, at);
+			if (end < 0)
+			{
+				end = text.Length;
+			}
+
+			pieces[i] = Encoding.UTF8.GetString(text, at, end - at);
+			at = System.Math.Min(end + 1, text.Length);
+		}
+
+		static float F(uint bits) => System.BitConverter.Int32BitsToSingle(unchecked((int)bits));
+		uint flags = w[1];
+		return new ShopFront(
+			true, (flags & 1u) != 0u, (flags & 2u) != 0u, (flags & 4u) != 0u, (flags & 8u) != 0u,
+			(flags & 16u) != 0u, F(w[2]), F(w[3]), F(w[4]), F(w[5]), F(w[6]), F(w[7]), F(w[8]),
+			F(w[9]), unchecked((int)w[10]), pieces[0], pieces[1], pieces[2], pieces[3]);
+	}
+
+	/// <summary>The co-op screen's decision state (screen 24) — see <c>CoopScreen</c> in hero_derived.h.</summary>
+	public readonly record struct CoopPageState(
+		bool Known, int Session, bool OnlineClient, bool RightSignedIn,
+		bool AcceptedLeft, bool AcceptedRight, bool PeerReady, bool Flag297, bool Flag298,
+		bool Child, bool ChildLevel, int UserRightSave, bool SaveChosen,
+		int[] PickSelected, bool[] PickEnabled, int[] PickState, int ProfileLeft, int ProfileRight);
+
+	private static uint[]? _coopWords;
+
+	public static CoopPageState GetCoopState()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return default;
+		}
+
+		uint[] w = _coopWords ??= new uint[22];
+		try
+		{
+			if (RefiiHostGetCoopState(w, (uint)w.Length) == 0u)
+			{
+				return default;
+			}
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return default;
+		}
+
+		return new CoopPageState(
+			true, unchecked((int)w[1]), w[2] != 0u, w[3] != 0u, w[4] != 0u, w[5] != 0u, w[6] != 0u,
+			w[7] != 0u, w[8] != 0u, w[9] != 0u, w[10] != 0u, unchecked((int)w[11]), w[12] != 0u,
+			new[] { unchecked((int)w[13]), unchecked((int)w[14]), unchecked((int)w[15]) },
+			new[] { (w[16] & 1u) != 0u, (w[16] & 2u) != 0u, (w[16] & 4u) != 0u },
+			new[] { unchecked((int)w[17]), unchecked((int)w[18]), unchecked((int)w[19]) },
+			unchecked((int)w[20]), unchecked((int)w[21]));
+	}
+
+	private static uint[]? _queryCardWords;
+
+	/// <summary>The villager card's subject: its component-20 name key and rename byte, or
+	/// unknown — see RefiiHostGetQueryCard.</summary>
+	public static (bool Known, uint NameKey, bool RenameByte) GetQueryCard()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return default;
+		}
+
+		uint[] words = _queryCardWords ??= new uint[3];
+		try
+		{
+			return RefiiHostGetQueryCard(words, (uint)words.Length) != 0u
+				? (true, words[1], words[2] != 0u)
+				: default;
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+			return default;
+		}
+	}
+
+	[DllImport(Library)]
 	private static extern void RefiiHostSetQuestTravel(uint record);
 
 	[DllImport(Library)]
@@ -10448,6 +10806,15 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetCollectedKeys(uint[] outPairs, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostTakeToldStatements(uint[] outWords, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostFrontEndPresentation();
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostTakeToldTexts(uint[] outWords, uint wordCapacity, ushort[] units, uint unitCapacity);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostConsentTake(out uint ticket, out int kind, out int asker, out int detail,

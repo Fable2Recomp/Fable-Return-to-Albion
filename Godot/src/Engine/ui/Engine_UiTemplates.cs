@@ -239,12 +239,14 @@ public sealed class Engine_UiMenuTemplate
 			}
 		}
 
-		if (Same(current, rows))
+		if (SameNames(current, rows))
 		{
-			// The SAME rows, possibly re-emphasised — the world map's primary quest moving from
-			// one row to another after `SetAsPrimary`. Written onto the standing items rather
-			// than respawned, so the fold and the cursor survive; the view's signature carries
-			// the emphasis and re-tints on its next pass.
+			// THE SAME ROWS, restated in place — re-emphasised (the world map's primary quest
+			// moving after `SetAsPrimary`), relabelled (an ability's rank in its name, a shop
+			// price), re-rated, re-counted. Written onto the standing items rather than respawned,
+			// so the fold and the cursor survive and the view does not run its arrival cascade;
+			// a respawn on every relabel snapped group folds shut and left the cursor on the
+			// same index of a different list.
 			bool restated = false;
 			for (int i = 0; i < rows.Count; ++i)
 			{
@@ -266,18 +268,21 @@ public sealed class Engine_UiMenuTemplate
 					continue;
 				}
 
-				// The rating too: an ability's rank changes under a label that does not (every
-				// `..._TOUGHNESS_NAME_LEVEL_0N` reads "Toughness"), so a purchase restates only it.
+				// The label against what the SPAWN would have set: a header is spawned with no
+				// stated label (the view resolves its tag) and the bound list writes its
+				// "Caption (N)" count onto it afterwards, so headers are not relabelled here.
 				string? command = row.Command ?? (rowCommand.Length != 0 ? rowCommand : null);
 				if (current[i].Unviewed != row.Unviewed ||
 					current[i].Counted != row.Counted ||
 					current[i].RatingSlide != row.Rating ||
-					!string.Equals(current[i].Command, command, System.StringComparison.Ordinal))
+					!string.Equals(current[i].Command, command, System.StringComparison.Ordinal) ||
+					!string.Equals(current[i].StatedLabel, row.Label, System.StringComparison.Ordinal))
 				{
 					current[i].Unviewed = row.Unviewed;
 					current[i].Counted = row.Counted;
 					current[i].RatingSlide = row.Rating;
 					current[i].Command = command;
+					current[i].StatedLabel = row.Label;
 					restated = true;
 				}
 			}
@@ -378,7 +383,8 @@ public sealed class Engine_UiMenuTemplate
 		return expanded;
 	}
 
-	private static bool Same(
+	/// <summary>The same rows in the same order, by NAME: everything else a row states is restated in place.</summary>
+	private static bool SameNames(
 		List<Engine_UiExpandableMenu.Item> current,
 		IReadOnlyList<Engine_UiMenuSources.Row> rows)
 	{
@@ -389,15 +395,7 @@ public sealed class Engine_UiMenuTemplate
 
 		for (int i = 0; i < rows.Count; ++i)
 		{
-			// Against what the SPAWN would have set, not against the row's own label: a group
-			// header is spawned with no stated label so the view resolves its Babel tag, and
-			// comparing that null to the tag would report a difference on every sample and
-			// rebuild the list — cursor, fold and all — every frame.
-			// A header is compared by NAME alone: the bound list writes its "Caption (N)" count
-			// onto the header's stated label afterwards.
-			if (!string.Equals(current[i].Name, rows[i].Name, System.StringComparison.Ordinal) ||
-				(!rows[i].IsHeader &&
-				!string.Equals(current[i].StatedLabel, rows[i].Label, System.StringComparison.Ordinal)))
+			if (!string.Equals(current[i].Name, rows[i].Name, System.StringComparison.Ordinal))
 			{
 				return false;
 			}
@@ -523,6 +521,37 @@ public sealed class Engine_UiScreenTemplate
 
 	/// <summary>Whether Godot owns this screen's ExpandableMenu list.</summary>
 	public bool OwnsList;
+
+	/// <summary>
+	/// The book's chrome stands on its FILE's rest state (Engine_UiRestState) and the host's
+	/// channels, never on the guest's presentation sample: every component on its rest slide, the
+	/// draw bit the host's (all on, then the provider's switches), the authored pose. Set per screen
+	/// once the `rest:` check (debug channel `elements`) shows the screen's rest state and its live
+	/// sample agree but for what the host drives.
+	/// </summary>
+	public bool RestFromFile;
+
+	/// <summary>
+	/// Where the guest's open leaves an element that its rest slide does not: path → the six
+	/// transform slots (position x/y/z, scale x/y/z), null keeping the slid value. Measured with
+	/// the `rest:` check; only read while <see cref="RestFromFile"/> stands the book.
+	/// </summary>
+	public Dictionary<string, float?[]> RestPose = new(System.StringComparer.Ordinal);
+
+	/// <summary>The stated opacity (0..100) the guest's open leaves an element at, for a book stood by <see cref="RestFromFile"/>.</summary>
+	public Dictionary<string, float> RestOpacity = new(System.StringComparer.Ordinal);
+
+	/// <summary>
+	/// The screen's handler chooses the row from the GUEST'S OWN HIGHLIGHT, never from a pushed
+	/// event: options (`sub_826DA228` reads `g_Menu:GetHighlightedMenuItemData()` @0x826da3ec and
+	/// takes the page as its type − 70), furniture and decoration (`sub_826B6A18`, `sub_826B7550`).
+	/// (The logbook's A reaches no C++ at all — `sub_826D96F0` 36 fires Lua `OnPressA` only, and
+	/// its page follows the highlight, which StateGuestHighlight keeps on ours.) A press on such a screen
+	/// puts the guest's cursor on the row (`MenuHighlight:&lt;name&gt;`, run inside the guest's
+	/// Lua window) and then sends the guest's own A (code 36). An identity push at these
+	/// handlers answers only the scroll sounds.
+	/// </summary>
+	public bool CommitsByHighlight;
 
 	/// <summary>
 	/// The menu template this screen's list is built from when the WIDGET NAMES NONE.
@@ -696,9 +725,6 @@ public sealed class Engine_UiScreenTemplate
 	/// </summary>
 	public List<string> GuestTextUnits = new();
 
-	/// <summary>Live text fields an owned build re-meshes in place, dotted paths.</summary>
-	public List<string> LiveTexts = new();
-
 	/// <summary>The static menu this screen offers, or empty when the guest supplies rows.</summary>
 	public string Menu = string.Empty;
 
@@ -726,8 +752,8 @@ public sealed class Engine_UiScreenTemplate
 	public string RevealedBack = string.Empty;
 
 	/// <summary>
-	/// The action the flip button runs on this screen. Abilities is the one that has one: its
-	/// flip unlearns the highlighted ability.
+	/// The action the flip button (Y) runs on this screen (`flipAction`), a mod's hook. The
+	/// shipped abilities screen has none: its Y is the unlearn by type, GameUi.
 	/// </summary>
 	public string FlipAction = string.Empty;
 
@@ -758,6 +784,13 @@ public sealed class Engine_UiScreenTemplate
 	public string FlowBase = string.Empty;
 
 	public List<string> FlowMoved = new();
+
+	/// <summary>
+	/// The reflow runs only while the measured element draws — the pause root moves
+	/// `Legend.Fixed` under the objective inside its quest branch, and leaves it where it stands
+	/// when there is no quest (0x826a2018..0x826a20b0 vs the else at 0x826a2168).
+	/// </summary>
+	public bool FlowWhenDrawn;
 
 	/// <summary>
 	/// The reflow's tail — `0x829abcdc`: the rows here stand at the anchor row's Y, less 30
@@ -1171,6 +1204,7 @@ public static class Engine_UiTemplates
 		RegisterPopulationTables(set.Menus);
 		BuildDefaults(set.Menus, set.Screens);
 		StateWideLayouts(set.Screens);
+		StateRestStates(set.Screens);
 		return set;
 	}
 
@@ -2193,24 +2227,17 @@ public static class Engine_UiTemplates
 			ScrollMask = "Mask",
 			ScrollBar = "Foreground.Pages.Contents.Scrollbar",
 			BackdropUnit = "BackgroundTint",
-			// WHAT THE GUEST STILL WRITES HERE, and nothing more.
-			//
-			// Renown, the clock, the purse and the four orb readouts came off this list too —
-			// re-meshed from whatever the mirrored tree last said, which is right only while
-			// the guest keeps writing them. They are plain reads off the hero the host already
-			// samples, so `Engine_UiPausePage` states them and they are gone from here.
-			//
-			// The quest lines and the nine legend captions stay for now: they want sources of
-			// their own, and replacing a stale string with an invented one is worse.
-			LiveTexts =
-			{
-				"Contents.CurrentQuest",
-				"Legend.CurrentObjective",
-				"Legend.Fixed.KeyName1", "Legend.Fixed.KeyName2", "Legend.Fixed.KeyName3",
-				"Legend.Fixed.KeyName4", "Legend.Fixed.KeyName5", "Legend.Fixed.KeyName6",
-				"Legend.Fixed.KeyName7", "Legend.Fixed.KeyName8", "Legend.Fixed.KeyName9",
-				"Money.Back.Select",
-			},
+
+			// `Legend.Fixed` hangs under the objective's laid-out text, only while there is one
+			// (0x826a2050..0x826a20b0): y = CurrentObjective.y − its height.
+			FlowMeasured = "Foreground.Pages.Contents.MiniMap.Legend.CurrentObjective",
+			FlowBase = "Foreground.Pages.Contents.MiniMap.Legend.Fixed",
+			FlowMoved = { "Foreground.Pages.Contents.MiniMap.Legend.Fixed" },
+			FlowWhenDrawn = true,
+
+			// Renown, the clock, the purse and the four orb readouts are plain reads off the hero
+			// (`Engine_UiPausePage`); the minimap, its legend and the quest lines are
+			// `Engine_UiPauseMinimap`.
 		});
 
 		// THE ITEM-BOOK FAMILY, which had no template records at all — items, clothing, gift
@@ -2237,15 +2264,12 @@ public static class Engine_UiTemplates
 			ScreenId = 14, Name = "abilities", OwnsList = true,
 			Provider = Engine_UiPageProviders.Abilities,
 			HasSpellBlade = true,
-			FlipAction = Engine_UiScreenActions.ScreenUnlearn,
 			Presentation = "abilitiesscreen",
 			ChromeUnits = { "Foreground" },
 
-			// Godot owns the row list and its cursor; the rest of the assembly is guest art,
-			// riding in on the guest's stated position for `ExpandableMenu` — the assignment
-			// blade included: `sub_826C2480` binds `SpellAssigning` on the LIVE presentation and
-			// the guest's own widget writes every slide, icon texture and adjuster position
-			// there, so the book's clone follows it and the host only forwards the levers.
+			// Godot owns the row list and its cursor; the chrome rides the guest's stated position
+			// for `ExpandableMenu`. The assignment blade reads the guest's C++ widget at
+			// screen14+200 (RefiiHostGetSpellBlade) and is drawn on the book's own clone.
 			OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
 			PageRootUnit = "Pages", BackdropUnit = "background_red",
 
@@ -2285,6 +2309,9 @@ public static class Engine_UiTemplates
 				// clothing (`sub_829B7328`), gift (`sub_829A9E08`) and decoration
 				// (`sub_8299CEA8`). Upgrade furniture (26) has no mask: the guest registers
 				// nothing there.
+				// Furniture and decoration choose in the input handler's 36 arm from the guest's
+				// highlight (`sub_826B6A18`); the item books act by stated command.
+				CommitsByHighlight = id is 26 or 27,
 				ScrollContent = id == 26 ? string.Empty : "Foreground.Book.Pages.Page2.Contents.ItemDescription",
 				ScrollMask = id == 26 ? string.Empty : "Mask",
 				ScrollBar = id == 26 ? string.Empty : "Foreground.Book.Pages.Page2.Contents.Scrollbar",
@@ -2505,7 +2532,7 @@ public static class Engine_UiTemplates
 
 		AddScreen(screens, new Engine_UiScreenTemplate
 		{
-			ScreenId = 18, Name = "options", OwnsList = true,
+			ScreenId = 18, Name = "options", OwnsList = true, CommitsByHighlight = true,
 			// Four pages; the stack is authored on the leaf already.
 			Pages = { "Foreground.Book.Pages.Page1", "Foreground.Book.Pages.Page2", "Foreground.Book.Pages.Page3", "Foreground.Book.Pages.Page4" },
 			Provider = Engine_UiPageProviders.Options,
@@ -2584,10 +2611,9 @@ public static class Engine_UiTemplates
 			ScrollMask = "Mask|Mask",
 			ScrollBar = "Foreground.Book.Pages.Page2.Contents.Scrollbar|",
 
-			// The front page (name, anecdote, keeper, owner, opinions, sale, discount, wealth)
-			// is written natively by `sub_82991800` at the screen's show and never again —
-			// see [[refii-shop-front-page]]. The host reads those writes as data.
-			GuestTextUnits = { "Foreground.FrontPage" },
+			// The front page (name, anecdote, keeper, owner, opinions, sale, discount, wealth) is
+			// composed from the guest's own helpers' answers (Engine_UiShopFrontPage), sampled
+			// while the screen stands — nothing is read back from the page `sub_82991800` fills.
 			PanelFields =
 			{
 				new("Foreground.Book.Pages.Page1.Contents.ItemName"),
@@ -2785,7 +2811,10 @@ public static class Engine_UiTemplates
 			// `loadgame` too: the save picker Y opens (`sub_8243B070`) writes each card's quest line
 			// and the description into that unit, and without it the authored placeholder
 			// ("fdggdf dfg …") stood where the guest's text was.
-			GuestTextUnits = { "LeftPage", "RightPage", "Connecting", "loadgame" },
+			// The pickbox and button captions, the connecting line and the selector and button
+			// slides are composed from the screen's own data (Engine_UiCoopPage) — nothing is
+			// read back from these units.
+			RestFromFile = true,
 
 			// AND THIS IS WHAT LIGHTS THE PROFILE BLOCKS. The gamertag, its stars, the
 			// reputation and gamerscore captions and `Select Gamer Profile` are all BUILT and
@@ -2828,7 +2857,10 @@ public static class Engine_UiTemplates
 				"QuestDescription", "QuestDescription2", "RiskLevel", "Remember",
 				"Condition1", "Condition2",
 			},
-			GuestTextUnits = { "elements" },
+
+			// Stated by the call that opens it (`DisplayQuestBoxParams`), filled as it draws.
+			Provider = Engine_UiPageProviders.QuestBox,
+			RestFromFile = true,
 		});
 
 		// THE END CREDITS — drawn by Engine_UiCreditsRoll (the file's elements are anonymous,
@@ -2853,7 +2885,10 @@ public static class Engine_UiTemplates
 		{
 			ScreenId = 7, Name = "displaybox", Presentation = "displaybox",
 			ChromeUnits = { "Paper" },
-			GuestTextUnits = { "Paper" },
+
+			// The card is stated by its call (`DisplayInfoBoxParams`), the `infocard` provider.
+			Provider = Engine_UiPageProviders.InfoCard,
+			RestFromFile = true,
 		});
 
 		AddScreen(screens, new Engine_UiScreenTemplate
@@ -2868,12 +2903,12 @@ public static class Engine_UiTemplates
 			ChromeUnits = { "paperbox", "Select", "Motif", "Amounts", "Title" },
 			PanelSubtrees = { "Component" },
 
-			// EVERY STRING IS THE GUEST'S: `TurnOnMiniGameComplete` publishes MiniGameTitle and
-			// MiniGameButton, `AddAmountToMiniGameComplete` MiniGameName%d/Amount%d, and the
-			// tally's own tick republishes the amounts as they count up — all through TextName
-			// registry 6 onto these elements. Without this unit the book showed the file's
-			// placeholders ('Money earned', '0000001') on every row and no title.
-			GuestTextUnits = { "Component" },
+			// EVERY STRING AND ROW IS A REGISTRY STATEMENT, read by the names the file binds
+			// (`Engine_UiOwnedBook.RegistryText` / `RegistrySlide`): `TurnOnMiniGameComplete`
+			// publishes MiniGameTitle and MiniGameButton, `AddAmountToMiniGameComplete`
+			// MiniGameName%d/Amount%d and the row toggles, and the tally's tick republishes the
+			// amounts as they count up (`sub_823CD688`). The class writes no element directly.
+			RestFromFile = true,
 		});
 
 		AddScreen(screens, new Engine_UiScreenTemplate
@@ -2901,14 +2936,12 @@ public static class Engine_UiTemplates
 			},
 			PanelSubtrees = { "elements" },
 
-			// EVERY STRING IS THE GUEST'S, as on the tally next door. `SetGoldRewardInEpilogue`
-			// and `AddItemRewardToEpilogueScreen` publish EpilogueTitle, EpilogueDescription,
-			// EpilogueReward, EpilogueRenown, EpilogueRenownAmt and EpilogueItem1/2 through
-			// TextName registry 6 onto these elements, and taking a native does not suppress
-			// the guest's own write. Without this the freshly cloned fields would draw the
-			// FILE'S placeholders — "A Bridge too Far", "Ripper has been thwarted…", "1000" —
-			// which is worse than blank, because it reads as real data.
-			GuestTextUnits = { "elements" },
+			// EVERY STRING, BULLET AND THE PICTURE ARE REGISTRY STATEMENTS, as on the tally next
+			// door: `ShowEpilogueScreen` (`sub_823D3FF0`), `SetGoldRewardInEpilogue` and
+			// `AddItemRewardToEpilogueScreen` publish the Epilogue* texts, the EpilogueItem1/2
+			// toggles and the `EpilogueImage` screenshot (registry 12, TU1). The class writes no
+			// element directly.
+			RestFromFile = true,
 		});
 
 		// 10 QUERY — the villager card. Opened from three sites — the interaction chain
@@ -2929,12 +2962,13 @@ public static class Engine_UiTemplates
 			ChromeUnits = { "elements" },
 			PanelSubtrees = { "elements" },
 
-			// The card is entirely the guest's strings and this screen has no provider; without
-			// this every field falls back to the file's unresolved caption keys.
-			// `sub_826CCC88` fills once on open: `character` ('<Name> the <Job>'),
-			// `characterdescription`, the `Opinion`/`Likes`/`Dislikes` headings, `Likes1..3`,
-			// `LikesType1..3`, `Dislikes1..3` and the button caption under `buttons`.
-			GuestTextUnits = { "elements" },
+			// THE CARD IS REGISTRY STATEMENTS: `sub_826CCC88` and its fillers publish every text
+			// (QueryName, QueryDesc, the likes and dislikes), the gift/divorce/marry toggles and
+			// eight meters by name, which the book reads by its file's bindings — the meters
+			// scrub their element's own timeline (Engine_UiOwnedBook.ScrubMeters). The one direct
+			// write, the rename prompt's slide, is the `querycard` provider's.
+			Provider = Engine_UiPageProviders.QueryCard,
+			RestFromFile = true,
 		});
 
 		// THE FRONT END. Its overlays — the storage dialog, the loading animation, the countdown
@@ -2958,6 +2992,10 @@ public static class Engine_UiTemplates
 		{
 			ScreenId = 1010, Name = "frontend", Presentation = "frontendmainmenu",
 			ChromeUnits = { "Foreground", "LiveCountdown", "LoadingAnimation" },
+
+			// The front end stands on its file and the guest's statements to it (§15j): its
+			// slides, plays, attributes, switches, texts and the load cards' portraits.
+			RestFromFile = true,
 			PageRootUnit = "Pages",
 
 			// The row pool and its cursor sit INSIDE `Foreground` and Godot draws both.
@@ -2970,6 +3008,7 @@ public static class Engine_UiTemplates
 		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 1011, Name = "title", Presentation = "frontendstartupscreen",
+			RestFromFile = true,
 
 			// "Press Start" has a space in the element name.
 			//
@@ -2988,6 +3027,7 @@ public static class Engine_UiTemplates
 		{
 			ScreenId = 1012, Name = "backdrop", Presentation = "scrollingbackground",
 			ChromeUnits = { "Scrolling" },
+			RestFromFile = true,
 			PageRootUnit = "Scrolling",
 
 			// The scroll is the guest's own statement: it moves `Group` leftwards and the clone
@@ -3212,6 +3252,77 @@ public static class Engine_UiTemplates
 	/// one table because the shipped books share one skeleton; an override record states its
 	/// own lists.
 	/// </summary>
+	/// <summary>
+	/// THE BOOKS THAT STAND ON THEIR FILE (<see cref="Engine_UiScreenTemplate.RestFromFile"/>), and
+	/// what the guest's open leaves that their rest slides do not. Every value here was measured
+	/// on the live game with the `rest:` check (2026-10-26) — a screen is listed once its check
+	/// shows nothing left but what the host drives:
+	///
+	///   `ExpandableMenu.KeyLight` x 22 on every book; the item list's background page at x 66
+	///   and its list title faded out; the dye swatch faded out on items and clothing; the
+	///   clothing mannequin proxy at x 20; the world map's quest-page scroll bar faded out (it is
+	///   no scroll region of ours).
+	///
+	/// The shop's front page is the guest's one-time fill, read whole as a guest unit; real
+	/// estate's second page is the host's page turn and its rows blank by value. Gift (25) and
+	/// decoration (27) are stated from IDA rather than measured: the item book's provider states
+	/// what their page refreshes write (gold bag, prompts, hidden value lines, the title).
+	///
+	/// Pause stands on its file with <see cref="Engine_UiPauseMinimap"/> stating the minimap, its
+	/// legend and the quest lines. Gift, furniture, decoration, crime and the one-off panels are
+	/// not measured yet. Upgrade furniture (26) is stated from its targeted piece
+	/// (<see cref="Engine_UiFurniturePage"/>, ABI 225).
+	/// </summary>
+	private static void StateRestStates(Dictionary<uint, Engine_UiScreenTemplate> screens)
+	{
+		const string keyLight = "Foreground.ExpandableMenu.KeyLight";
+		foreach (uint id in new uint[] { 0, 14, 15, 16, 17, 18, 21, 22, 23, 25, 26, 27, 28 })
+		{
+			if (screens.TryGetValue(id, out Engine_UiScreenTemplate? screen))
+			{
+				screen.RestFromFile = true;
+				screen.RestPose[keyLight] = new float?[] { 22f, null, null, null, null, null };
+			}
+		}
+
+		if (screens.TryGetValue(15, out Engine_UiScreenTemplate? items))
+		{
+			items.RestPose["Foreground.Book.Pages.Page1_Background"] = new float?[] { 66f, null, null, null, null, null };
+			items.RestOpacity["Foreground.ExpandableMenu.Title"] = 0f;
+			items.RestOpacity["Foreground.Book.Pages.Page1.Contents.DyeSwatch"] = 0f;
+		}
+
+		// Gift and decoration share the items file but not its enter: only 15 hides the list
+		// title and plays `Foreground` slide 2 (`sub_829B4E10`); both hide the swatch at enter
+		// and never show it (`sub_829AA460` 0x829aa4cc, `sub_8299BF48` 0x8299bfd0).
+		foreach (uint id in new uint[] { 25, 26, 27 })
+		{
+			if (screens.TryGetValue(id, out Engine_UiScreenTemplate? sibling))
+			{
+				sibling.RestOpacity["Foreground.Book.Pages.Page1.Contents.DyeSwatch"] = 0f;
+			}
+		}
+
+		if (screens.TryGetValue(16, out Engine_UiScreenTemplate? clothing))
+		{
+			clothing.RestPose["Foreground.Book.Pages.Page1.Contents.TypeSpecific.model_proxy"] =
+				new float?[] { 20f, null, null, null, null, null };
+			clothing.RestOpacity["Foreground.Book.Pages.Page1.Contents.DyeSwatch"] = 0f;
+		}
+
+		// The shop: the item page's swatch as on the items screen. The front page is the guest's
+		// one-time fill (`sub_82991800`), read whole as a guest unit — see GuestTextUnits.
+		if (screens.TryGetValue(22, out Engine_UiScreenTemplate? shop))
+		{
+			shop.RestOpacity["Foreground.Book.Pages.Page1.Contents.DyeSwatch"] = 0f;
+		}
+
+		if (screens.TryGetValue(23, out Engine_UiScreenTemplate? map))
+		{
+			map.RestOpacity["Foreground.Book.Pages.QuestsPage.Contents.Scrollbar"] = 0f;
+		}
+	}
+
 	private static void StateWideLayouts(Dictionary<uint, Engine_UiScreenTemplate> screens)
 	{
 		const string list = "Foreground.ExpandableMenu";

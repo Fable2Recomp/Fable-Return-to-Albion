@@ -109,16 +109,15 @@ public partial class GameUi
 	}
 
 	/// <summary>
-	/// Stands a template book screen over the pause book. It lives on the pause root — the drive
-	/// drops it the moment the root is not what the guest says is up — so it opens from the pause
-	/// list (or a mod menu over it) and refuses anywhere else.
+	/// Stands a template book screen over whichever list opened it — the pause list, a screen's
+	/// list, a mod's menu over either or on its own. It holds the whole pad while it stands and
+	/// closes when the menus close or a guest box comes up; B returns to the list under it.
 	/// </summary>
 	private Engine_UiCommandResult OpenHostScreen(uint screenId, int player, Engine_UiCommandContext context)
 	{
-		if (!HostBridge.IsInGame || context.List != Engine_UiCommandList.Pause)
+		if (!HostBridge.IsInGame || !IsRevealed)
 		{
-			return Engine_UiCommandResult.Refused(
-				$"screen {screenId} stands over the pause book; open it from the pause list");
+			return Engine_UiCommandResult.Refused($"screen {screenId} opens over the in-game menus");
 		}
 
 		if (!_hostScreens.TryGetValue(screenId, out Engine_UiHostScreen? screen))
@@ -155,21 +154,44 @@ public partial class GameUi
 	/// the moment the pause root is not standing: a tab push, a query box or the resume all close
 	/// it, the same window the list itself yields in.
 	/// </summary>
-	private bool DriveHostScreen(bool standing, double delta)
+	private bool DriveHostScreen(double delta)
 	{
 		if (_hostScreen is not { IsOpen: true } screen)
 		{
 			return false;
 		}
 
+		// Stands while the game's menus are open and no guest box is up: a resume, a quit or a
+		// box takes it down, the same window the lists themselves yield in. A mod's standalone
+		// menu opened it with no menus under it, so that one stands while the menu does.
+		Engine_UiModel.PauseState? pause = HostBridge.GetPauseState();
+		bool menusUp = pause is { ModalUp: false } state &&
+			state.ScreenId != (uint)Engine_UiModel.InGameScreen.None;
+		bool standing = HostBridge.IsInGame && IsRevealed &&
+			(menusUp || (_hostMenuView is not null && pause is not { ModalUp: true }));
 		if (!standing)
 		{
 			screen.Close();
 			return false;
 		}
 
-		_pauseView!.Visible = false;
-		GameInput.PauseMenuSwallowsBack = true;
+		if (_pauseView is not null)
+		{
+			_pauseView.Visible = false;
+		}
+
+		if (_screenMenuView is not null)
+		{
+			_screenMenuView.Visible = false;
+		}
+
+		if (_hostMenuView is not null)
+		{
+			_hostMenuView.Visible = false;
+		}
+
+		// The whole pad is the screen's: its B closes it, never the guest's resume or back.
+		GameInput.HostUiOwnsPad = true;
 
 		float slabZ =
 			_drawn.TryGetValue(_pauseAddress, out Engine_UiDrawnPresentation? slab) && IsInstanceValid(slab.Node)

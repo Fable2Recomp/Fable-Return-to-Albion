@@ -43,6 +43,16 @@ public sealed class Engine_BabelDatabase
 	/// <summary>Speaker display names, keyed by the same hash as the record table.</summary>
 	public readonly Dictionary<uint, string> SpeakerNames = new();
 
+	/// <summary>
+	/// The text GROUPS: a group's key (the text-key hash of its name) to its member keys, in order —
+	/// what `sub_8237AC80` finds and the credits screen walks (`sub_826B79D8`).
+	/// </summary>
+	public readonly Dictionary<uint, uint[]> Groups = new();
+
+	/// <summary>A group's member keys by its name, or empty when the bank has no such group.</summary>
+	public uint[] GroupMembers(string name) =>
+		Groups.TryGetValue(Engine_GameHash.Fnv1(name), out uint[]? members) ? members : System.Array.Empty<uint>();
+
 	public int Count => _keys.Length;
 
 	/// <summary>Where the post-block sections start — see the note at the assignment.</summary>
@@ -183,17 +193,23 @@ public sealed class Engine_BabelDatabase
 
 		p += 4; // max-block-size hint; the engine stores it but never sizes anything from it
 
-		// Speech links (10 bytes each) and text groups are skipped: neither is needed
-		// to resolve a tag to text, and both are documented in the format notes.
+		// Speech links (10 bytes each) are skipped; text groups are kept for the screens that
+		// walk one (the credits).
 		int speechLinks = checked((int)ReadU32(data, ref p));
 		p += speechLinks * 10;
 
 		int textGroups = checked((int)ReadU32(data, ref p));
 		for (int i = 0; i < textGroups; i++)
 		{
-			p += 4;
+			uint group = ReadU32(data, ref p);
 			int members = checked((int)ReadU32(data, ref p));
-			p += members * 4;
+			var memberKeys = new uint[members];
+			for (int m = 0; m < members; m++)
+			{
+				memberKeys[m] = ReadU32(data, ref p);
+			}
+
+			db.Groups[group] = memberKeys;
 		}
 
 		int speakerNames = checked((int)ReadU32(data, ref p));

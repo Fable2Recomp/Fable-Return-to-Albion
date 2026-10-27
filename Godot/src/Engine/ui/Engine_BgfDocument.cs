@@ -144,15 +144,23 @@ public readonly struct BgfSlideEntry
 
 	public int EventCount { get; init; }
 
-	/// <summary>Animation indices this entry switches on; -1 for a pair whose flag is clear.</summary>
+	/// <summary>Animation indices this entry switches on; -1 for a pair that switches a track off or names an action.</summary>
 	public int[]? ActivatedAnimations { get; init; }
 
 	/// <summary>The <c>(flag, animationIndex)</c> u16 pairs as the file stores them; <see cref="ActivatedAnimations"/> is derived from these.</summary>
 	public BgfAnimationEvent[] AnimationEvents { get; init; }
 }
 
-/// <summary>One animation-event pair of a slide entry: a non-zero flag switches the track on.</summary>
-public readonly record struct BgfAnimationEvent(ushort Flag, ushort Index);
+/// <summary>
+/// One switch of a slide entry: <c>Flag</c> is the file's `{u8 kind, u8 on}` pair. Kind 0 names
+/// an animation track and turns it on or OFF; any other kind names an event action.
+/// </summary>
+public readonly record struct BgfAnimationEvent(ushort Flag, ushort Index)
+{
+	public bool IsTrack => (Flag >> 8) == 0;
+
+	public bool On => (Flag & 0xFF) != 0;
+}
 
 /// <summary>
 /// One keyframe: the value at <paramref name="Time"/>, plus the cubic-Bezier control pair of
@@ -652,7 +660,9 @@ public sealed class Engine_BgfDocument
 				for (int c = 0; c < cmdCount; c++)
 					commands[c] = ReadAttribute(ref r);
 
-				// The tracks this slide activates: `(flag, animationIndex)` u16 pairs. A slide
+				// The tracks and actions this slide switches: `{u8 kind, u8 on, u16 index}`
+				// (sub_82BC8F30 stores `(kind == 0) << 14 | (on != 0) << 15 | index`). Kind 0
+				// is an animation track, anything else an event action (sub_82BB6870); a slide
 				// switches on a SUBSET of its element's tracks (`TurnOn` and `TurnOffFast` on
 				// one fader are one track each) — see Engine_HudView.BindTracks.
 				int evtCount = checked((int)r.U32());
@@ -663,7 +673,7 @@ public sealed class Engine_BgfDocument
 					ushort flag = r.U16();
 					ushort index = r.U16();
 					events[e] = new BgfAnimationEvent(flag, index);
-					activated[e] = flag != 0 ? index : -1;
+					activated[e] = events[e].IsTrack && events[e].On ? index : -1;
 				}
 
 				s.Entries[j] = new BgfSlideEntry

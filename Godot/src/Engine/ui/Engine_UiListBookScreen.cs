@@ -115,14 +115,6 @@ public sealed class Engine_UiListBookScreen(uint screenId, string menuName, stri
 				Engine_UiPresentationDepth.BookOffset));
 		_view.Visible = true;
 
-		// The list arrives with the title's XDBF, which is read off the seam and can land after
-		// the screen is first opened. Re-sourced every frame; `RefreshSources` compares the set
-		// and does nothing when it has not moved, so a settled list costs one walk.
-		if (_template!.RefreshSources(_menu!))
-		{
-			_view.Refresh();
-		}
-
 		// Y RE-READS. The sources hold their answer for a quarter second so a per-frame
 		// re-source is not a per-frame P/Invoke; an explicit refresh drops that.
 		if (refresh)
@@ -130,7 +122,8 @@ public sealed class Engine_UiListBookScreen(uint screenId, string menuName, stri
 			Engine_UiNetworkSource.Invalidate();
 		}
 
-		// EVERY FRAME, because a friend coming online has to appear under an already-open fold.
+		// ONCE A FRAME: the list arrives with the title's XDBF, which can land after the screen
+		// is first opened, and a friend coming online has to appear under an already-open fold.
 		// `RefreshSources` compares the finished set and does nothing when it has not moved.
 		if (_template!.RefreshSources(_menu!))
 		{
@@ -141,8 +134,13 @@ public sealed class Engine_UiListBookScreen(uint screenId, string menuName, stri
 
 		if (back)
 		{
-			// The left list has no folds of its own, so B is always "leave".
-			Close();
+			// The one B rule every list keeps: a fold, then a mod menu opened over the list,
+			// then the screen itself. The list holds group headers, so a fold can be open.
+			if (!_view.Back() && !Engine_UiModMenus.Back(_view))
+			{
+				Close();
+			}
+
 			return true;
 		}
 

@@ -187,7 +187,7 @@ public static class Engine_UiModBoxes
 	/// <summary>
 	/// Raises a mod's box: two buttons for a <paramref name="question"/> (captions
 	/// <paramref name="accept"/> and <paramref name="cancel"/>, null keeping the box's own), else one.
-	/// <paramref name="answered"/> gets 0 for A, 1 for B, -1 when another box replaced it or the
+	/// <paramref name="answered"/> gets 0 for A, 1 for B, -1 when it was withdrawn or the
 	/// player is not played here; the <c>ModMessageBox</c> event carries the same. False when the
 	/// box was not raised here.
 	/// </summary>

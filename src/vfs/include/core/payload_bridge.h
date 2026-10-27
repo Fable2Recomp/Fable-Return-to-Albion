@@ -320,6 +320,12 @@ size_t refii_bridge_host_asset_name_for_hash(uint32_t hash, char* out, size_t ca
 //
 void refii_bridge_publish_hero_derived(const void* sampled);
 void refii_bridge_hero_derived_snapshot(void* out);
+/// The hero's inventory as the pump last walked it on the guest thread (SampleHeroInventory):
+/// four words per record {recordId, count, category, viewed}. A publish whose records differ
+/// from the last bumps the UI data generation; the snapshot call returns the record count and
+/// copies as many whole records as fit.
+void refii_bridge_publish_hero_inventory(const uint32_t* words, uint32_t count);
+uint32_t refii_bridge_hero_inventory_snapshot(uint32_t* out, uint32_t word_capacity);
 void refii_bridge_publish_quests(const void* entries, uint32_t count);
 uint32_t refii_bridge_requested_world_map_region(void);
 void refii_bridge_publish_world_map_region(const void* region);
@@ -331,6 +337,18 @@ void refii_bridge_publish_world_map_region(const void* region);
 // contract gives at the top of this file.
 void refii_bridge_publish_family(const void* members, uint32_t count);
 void refii_bridge_publish_real_estate(const void* estate);
+void refii_bridge_publish_furniture(const void* furniture);
+void refii_bridge_publish_coop_screen(const void* coop);
+void refii_bridge_publish_shop_front(const void* front);
+
+/// The highlighted row Godot's list states for an in-game screen (screen 0 clears): what the
+/// guest's `g_Menu:GetHighlightedMenuItemData()` reader `sub_826C1B50` answers with instead of
+/// asking its hidden Lua menu. Name and label are copied, NUL-terminated, at most 127 bytes.
+void refii_bridge_set_stated_highlight(uint32_t screen, int32_t event_type, int32_t id,
+                                       const char* name, const char* label);
+/// Copies the statement out; false when none stands.
+bool refii_bridge_get_stated_highlight(uint32_t* screen, int32_t* event_type, int32_t* id,
+                                       char* name, char* label, uint32_t capacity);
 /// The world map's property row: the UID the host wants sampled, and the page's numbers for it.
 uint64_t refii_bridge_requested_property_estate(void);
 /// The UI data generation: bumped when something an open menu lists changes (an ability level,
@@ -359,6 +377,14 @@ void refii_bridge_note_gui_native_entry(uint32_t implementation);
 uint32_t refii_bridge_current_gui_native_entry(void);
 
 void refii_bridge_post_gui_native_call(const uint8_t* blob, size_t length);
+
+// What the guest TELLS a presentation's elements (hooks/gui_slide_hooks.cpp posts, the host bridge
+// drains — gui/gui_told_statements.cpp). `kind` 1 slide entry, 2 paused, 3 attribute, 4 active,
+// 5 texture; `a`/`b` per kind. A text is its UTF-16 units, copied.
+void refii_bridge_told_push(uint32_t kind, uint32_t presentation, uint32_t root_hash, uint32_t ordinal,
+                            uint32_t a, uint32_t b);
+void refii_bridge_told_text_push(uint32_t presentation, uint32_t root_hash, uint32_t ordinal,
+                                 const uint16_t* units, uint32_t length);
 
 void refii_bridge_note_gui_element_change(const void* change);
 

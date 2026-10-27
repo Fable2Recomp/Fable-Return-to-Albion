@@ -153,9 +153,6 @@ public sealed class Engine_UiExpandableMenu
 		/// </summary>
 		public string? Command;
 
-		/// <summary>The `(EventType, id)` here is the guest's row's, borrowed by name.</summary>
-		public bool BorrowedIdentity;
-
 		/// <summary>
 		/// The guest's own spawn condition over a host-authored list ("Load Game" needs a save,
 		/// "Language" more than one installed). False drops the entry from the visible list

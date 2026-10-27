@@ -101,6 +101,13 @@ public sealed class Engine_UiBindings
 		/// element is the hero's marker without a host-side table of node names.
 		/// </summary>
 		PrimDesc,
+
+		/// <summary>
+		/// `ImageName` — registry 12. The value is a TEXTURE, a resource-name hash the writer
+		/// `sub_82804C28(registry, name, &hash)` puts on the bound quad (`+0x200`, dirty `+0x224`):
+		/// the epilogue's screenshot (`EpilogueImage`).
+		/// </summary>
+		Image,
 	}
 
 	/// <summary>
@@ -136,6 +143,7 @@ public sealed class Engine_UiBindings
 		(Kind.SlideFader2, "SlideFader2Name"),
 		(Kind.SlideSet, "SlideSetName"),
 		(Kind.PrimDesc, "PrimDescName"),
+		(Kind.Image, "ImageName"),
 	};
 
 	private readonly List<Binding> _bindings = new();

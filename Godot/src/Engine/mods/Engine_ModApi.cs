@@ -674,11 +674,11 @@ public static class ModApi
 				F("player", "int32_t", MenuPlayerMeaning),
 			}),
 		new ModApiEvent("MenuScreen", "menu_screen", 59, "rex_lhGuiManager_SetScreen (r3 the GUI manager; r4 the screen id), when it changes; TU1 numbering on both builds",
-			"A menu shows a screen: 0 pause, 2 spells, 14 abilities, 16 equipment, 17 logbook, 18 options, 22 shop, 23 world map, 24 co-op.",
+			"A menu shows a screen: 0 pause, 2 spells, 14 abilities, 16 equipment, 17 logbook, 18 options, 22 shop, 23 world map, 24 co-op. A screen Godot owns (1000 and up) raises it from Godot on its open AND its close, to Godot scripts only, with two extra dictionary keys: host (true) and open (true opening, false closing).",
 			string.Empty,
 			new[]
 			{
-				F("screen", "int32_t", "the screen id the game states"),
+				F("screen", "int32_t", "the screen id the game states; 1000 and up a screen Godot owns (achievements 1013, multiplayer 1014, a mod's screens record)"),
 				F("player", "int32_t", MenuPlayerMeaning),
 			}),
 		new ModApiEvent("WeatherRegion", "weather_region", 60, "rex_lhPaintMap_DaySetAt (r3 paint map, v1 the hero's position; returns the day set hash or -1), after it",
@@ -948,7 +948,7 @@ public static class ModApi
 				F("from_host", "bool", "an online joiner adopting the host's statement; false where this machine decided it"),
 			}),
 		new ModApiEvent("ModMenuRow", "mod_menu_row", 87, "Godot's menu lists (Engine_UiModMenus), then the guest tick from the host's command queue (menu_row)",
-			"A row of a menu a mod defines in ui/templates.json was chosen, or a row a mod patched into a shipped menu, or any row whose command is Opens:<menu> or Mod:lua:<function> — or a ROW ACTION (ui/templates.json \"rowActions\": a button a mod puts beside a shipped screen list's page buttons) was pressed on the highlighted row, with menu the list's template name (ItemsMenu, WeaponsMenu, ExpressionsMenu, AbilitiesMenu) and the trailing fields command and button. Godot scripts get it as it happens; native handlers on the next guest tick, on the title and the front end too; Lua handlers on the next guest tick: in a game the init.lua ones, on the title and the front end the mod/frontend.lua ones (run in the current Gameface presentation's own Lua state).",
+			"A row of ANY list was chosen — the game's own menus included, a menu a mod defines in ui/templates.json, a row a mod patched into a shipped menu, any row whose command is Opens:<menu> or Mod:lua:<function> — or a ROW ACTION (ui/templates.json \"rowActions\": a button a mod puts beside a shipped screen list's page buttons) was pressed on the highlighted row, with menu the list's template name (ItemsMenu, WeaponsMenu, ExpressionsMenu, AbilitiesMenu) and the trailing fields command and button. A GODOT HANDLER MAY ANSWER IT on the dictionary it is handed: e[\"cancel\"] = true consumes the press (nothing is dispatched to the game or the list), and e[\"command\"] rewritten to another verb runs that verb instead of the row's own. Godot scripts get it as it happens; native handlers on the next guest tick, on the title and the front end too; Lua handlers on the next guest tick: in a game the init.lua ones, on the title and the front end the mod/frontend.lua ones (run in the current Gameface presentation's own Lua state).",
 			string.Empty,
 			new[]
 			{
@@ -956,7 +956,7 @@ public static class ModApi
 				F("row", "const char* / string", "the row's name"),
 				F("player", "int32_t", "1 or 2: the player whose menu it is"),
 				F("mod", "const char* / string", "the mod that stated the row or its menu, empty for a shipped row"),
-				F("command", "const char* / string", "a ROW ACTION's: the highlighted row's own command (Inventory:use:1234, Inventory:equip:…, Ability:learn:9; the expression id on the expressions list); empty for a plain row choice"),
+				F("command", "const char* / string", "the row's own command (Inventory:use:1234, Inventory:equip:…, Ability:learn:9, Shop:buy:7; the expression id on the expressions list), or a ROW ACTION's highlighted row's; a Godot handler may REWRITE it to another verb, which then runs instead"),
 				F("button", "const char* / string", "a ROW ACTION's: the button pressed (X or Y); empty for a plain row choice"),
 			}),
 		new ModApiEvent("ModMessageBox", "mod_message_box", 88, "Godot's host boxes (Engine_UiModBoxes), then the guest tick from the host's command queue (box_answer)",

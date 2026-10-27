@@ -51,6 +51,8 @@ public static class Engine_UiQuestSource
 	/// printed its "Description:" heading with a blank under it for every quest.
 	/// </summary>
 	private static readonly uint DescriptionField = Engine_GameHash.Fnv1("DescriptionTag");
+
+	private static readonly uint FirstObjectiveField = Engine_GameHash.Fnv1("FirstObjectiveTag");
 	private static readonly uint TypeField = Engine_GameHash.Fnv1("Type");
 	private static readonly uint PriorityField = Engine_GameHash.Fnv1("DisplayPriority");
 
@@ -105,7 +107,9 @@ public static class Engine_UiQuestSource
 				// hash there is an enormous index into a list of seven.
 				Id: ordinal + RegionIdBias,
 				Rating: Engine_UiMenuConstants.EmptyRatingSlide,
-				Committable: false));
+
+				// The guest's own identity, so the push at `sub_826C7E90` is the contract.
+				Committable: true));
 		}
 
 		Report = $"{rows.Count} region(s) of {regions.Count} with an active stop" +
@@ -375,6 +379,22 @@ public static class Engine_UiQuestSource
 		cursor.View.Names.TryGetValue(tagHash, out string? tag) && tag.Length != 0 &&
 		Strings is { } book && book.TryGetString(tag, out string resolved)
 			? resolved
+			: string.Empty;
+
+	/// <summary>The quest's title as the pause root writes it — `sub_82522CB0`'s `NameTag`,
+	/// localised by the caller.</summary>
+	public static string TitleOf(uint definition) => LabelOf(definition);
+
+	/// <summary>
+	/// The record's `FirstObjectiveTag` — a raw text TAG, unlocalised — which `sub_82522DC0`
+	/// returns for a quest that has no objective lines yet. Empty when the record states none.
+	/// </summary>
+	public static string FirstObjectiveTagOf(uint definition) =>
+		TryDefinitionField(definition, FirstObjectiveField, (int)GdbFieldType.String, out uint tagHash) &&
+		Globals is { } globals &&
+		globals.TryLookup(definition, out GdbCursor cursor) &&
+		cursor.View.Names.TryGetValue(tagHash, out string? tag)
+			? tag ?? string.Empty
 			: string.Empty;
 
 	private static string LabelOf(uint definition)

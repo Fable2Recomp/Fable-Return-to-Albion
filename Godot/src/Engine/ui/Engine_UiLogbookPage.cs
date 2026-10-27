@@ -264,7 +264,8 @@ public static class Engine_UiLogbookPage
 		Engine_UiExpandableMenu.Item? row,
 		Refii.Host.HostBridge.HeroDerived hero,
 		List<Refii.Host.HostBridge.CompletedQuest> quests,
-		Refii.Text.Engine_BabelDatabase? strings)
+		Refii.Text.Engine_BabelDatabase? strings,
+		Refii.Host.HostBridge.LogbookOrbView? orb = null)
 	{
 		var values = new Dictionary<string, string>(10)
 		{
@@ -275,6 +276,20 @@ public static class Engine_UiLogbookPage
 		// The hero pages do not depend on the cursor: morality, renown and the title are player
 		// state, filled whatever row is highlighted.
 		HeroPages(values, hero, strings);
+
+		// ANOTHER PLAYER'S BOOK. An orb's View Stats opens this screen on that player's stats
+		// object (`sub_823C48D8`), and the guest's open fills the stats page from it alone
+		// (`sub_826D8DD8` → `sub_829BAEB8`), titled with its name — the only row is Stats.
+		if (orb is not null)
+		{
+			values["StatsPage.Contents.LogBook.Title"] = orb.Name;
+			foreach ((int stat, string path) in StatRows)
+			{
+				values[$"Stats.{path}"] = stat >= 0 && stat < orb.Stats.Length
+					? orb.Stats[stat].ToString(System.Globalization.CultureInfo.InvariantCulture)
+					: string.Empty;
+			}
+		}
 		HelpPage(values, row, strings);
 		QuestsPage(values, row, quests, strings);
 

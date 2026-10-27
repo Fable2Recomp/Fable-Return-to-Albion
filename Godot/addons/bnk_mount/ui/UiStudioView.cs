@@ -18,6 +18,9 @@ namespace Refii.Assets.UI;
 /// the game's list view.</item>
 /// <item>Modals (<see cref="UiStudioModalsView"/>): who answers each box.</item>
 /// <item>Settings (<see cref="UiStudioSettingsView"/>): the mod's options page.</item>
+/// <item>Presentations (<see cref="UiStudioPresentationsView"/>): a <c>.bgf</c>'s element tree.</item>
+/// <item>Screens (<see cref="UiStudioScreensView"/>): any game screen as the game draws it — its
+/// owned book and its slides playing, stood by the game's own code.</item>
 /// </list>
 /// Each page shows the schema check (<see cref="Refii.Mods.ModValidate"/>) of its file as it would be
 /// saved and the conflicts with the other enabled mods the engine's composition records. Save
@@ -35,6 +38,7 @@ public partial class UiStudioView : MarginContainer
 	private UiStudioModalsView _modals = null!;
 	private UiStudioSettingsView _settings = null!;
 	private UiStudioPresentationsView _presentations = null!;
+	private UiStudioScreensView _screens = null!;
 	private Label _modLabel = null!;
 	private Label _status = null!;
 	private VBoxContainer _issues = null!;
@@ -47,7 +51,8 @@ public partial class UiStudioView : MarginContainer
 	private const int ModalsTab = 2;
 	private const int SettingsTab = 3;
 	private const int PresentationsTab = 4;
-	private static readonly string[] TabNames = { "🎯 HUD", "📜 Menus", "💬 Modals", "⚙ Settings", "🧩 Presentations" };
+	private const int ScreensTab = 5;
+	private static readonly string[] TabNames = { "🎯 HUD", "📜 Menus", "💬 Modals", "⚙ Settings", "🧩 Presentations", "🖥 Screens" };
 
 	public override void _Ready()
 	{
@@ -88,7 +93,8 @@ public partial class UiStudioView : MarginContainer
 		_modals = new UiStudioModalsView(_docs) { Name = "Modals" };
 		_settings = new UiStudioSettingsView(_docs, _preview) { Name = "Settings" };
 		_presentations = new UiStudioPresentationsView(_docs, _preview) { Name = "Presentations" };
-		foreach (Control page in new Control[] { _hud, _menus, _modals, _settings, _presentations })
+		_screens = new UiStudioScreensView(_preview) { Name = "Screens" };
+		foreach (Control page in new Control[] { _hud, _menus, _modals, _settings, _presentations, _screens })
 		{
 			page.SizeFlagsVertical = SizeFlags.ExpandFill;
 			_tabs.AddChild(page);
@@ -226,6 +232,9 @@ public partial class UiStudioView : MarginContainer
 			case PresentationsTab:
 				_presentations.Activate();
 				break;
+			case ScreensTab:
+				_screens.Activate();
+				break;
 		}
 
 		ShowIssues();
@@ -246,6 +255,9 @@ public partial class UiStudioView : MarginContainer
 				break;
 			case PresentationsTab:
 				_presentations.Deactivate();
+				break;
+			case ScreensTab:
+				_screens.Deactivate();
 				break;
 		}
 
@@ -268,6 +280,7 @@ public partial class UiStudioView : MarginContainer
 			_docs.ModalsChanged,
 			_docs.SettingsChanged,
 			_presentations.Dirty,
+			false,
 		};
 		for (int i = 0; i < TabNames.Length; i++)
 		{

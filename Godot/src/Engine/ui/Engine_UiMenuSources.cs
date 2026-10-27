@@ -142,6 +142,9 @@ public static class Engine_UiMenuSources
 	/// <summary>`shop:<group>` — the capture under that group, each row carrying its commit.</summary>
 	public const string ShopSource = "shop";
 
+	/// <summary>The verb a shop row carries — `Shop:buy|sell:&lt;ticket&gt;`, see Engine_UiScreenActions.</summary>
+	public const string ShopAction = "Shop:";
+
 	/// <summary>
 	/// The shop's rows are the capture's, with one thing added: WHICH TRANSACTION THE ROW IS.
 	///
@@ -172,7 +175,7 @@ public static class Engine_UiMenuSources
 			// commit would be dropped by the pump with a puzzling message.
 			rows.Add(row.Id == 0u
 				? row
-				: row with { Command = $"Shop:{(selling ? "sell" : "buy")}:{row.Id}" });
+				: row with { Command = $"{ShopAction}{(selling ? "sell" : "buy")}:{row.Id}" });
 		}
 
 		return rows;
@@ -196,6 +199,12 @@ public static class Engine_UiMenuSources
 		StatedFolders.TryGetValue((populationScript, rowName), out string? source) ? source : null;
 
 	private static readonly HashSet<string> Unknown = new(System.StringComparer.OrdinalIgnoreCase);
+
+	/// <summary>The names the game registers at start, which a script may not replace.</summary>
+	private static readonly HashSet<string> GameSources = new(Providers.Keys, System.StringComparer.OrdinalIgnoreCase);
+
+	/// <summary>Whether <paramref name="name"/> is one of the game's own sources.</summary>
+	public static bool IsGameSource(string name) => GameSources.Contains(name);
 
 	/// <summary>Adds or replaces a source; the name is the `source` field before the colon, the rest is the argument.</summary>
 	public static void Register(string name, Provider provider) => Providers[name] = provider;

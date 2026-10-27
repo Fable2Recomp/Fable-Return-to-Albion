@@ -225,16 +225,28 @@ public static class Engine_UiModMenus
 
 		bool modVerb = Engine_UiModMenuCommand.Parse(action).Verb != Engine_UiModMenuCommand.Verb.None;
 		string mod = Engine_UiTemplates.MenuOwner(menu, item.Name);
-		if (!modVerb && !inModMenu && mod.Length == 0)
+
+		// EVERY ROW RAISES THE EVENT, the game's own included, and a Godot handler may answer it:
+		// cancel the press, or rewrite the command the row runs. A shipped row the handlers left
+		// alone is then answered by the list as it answers its own rows.
+		(bool cancelled, string command) = RaiseRow(menu, item.Name, player, mod, action, string.Empty);
+		if (cancelled)
 		{
-			return false;
+			GD.Print($"[mod-menus] '{menu}/{item.Name}' — a handler cancelled the press");
+			return true;
 		}
 
-		Raise(menu, item.Name, player, mod);
+		if (!string.Equals(command, action, System.StringComparison.Ordinal) && command.Length != 0)
+		{
+			GD.Print($"[mod-menus] '{menu}/{item.Name}' — a handler rewrote '{action}' to '{command}'");
+			Engine_UiCommands.Run(command, new Engine_UiCommandContext(list, menu, item.Name, player, mod) { View = view });
+			return true;
+		}
+
 		if (!modVerb && !inModMenu)
 		{
-			// A mod's row patched into a shipped list, with a command of the list's own: the
-			// event is raised and the list answers it as it answers its own rows.
+			// A shipped row, or a mod's row patched into a shipped list with a command of the
+			// list's own: the list answers it as it answers its own rows.
 			return false;
 		}
 
@@ -297,21 +309,27 @@ public static class Engine_UiModMenus
 		RaiseRow(menu, row, player, mod, string.Empty, string.Empty);
 	}
 
+	/// <summary>Raises <c>menu_screen</c> for a host-owned screen's open or close edge.</summary>
+	public static void RaiseHostScreen(uint screen, int player, bool open) =>
+		Refii.Mods.ModGodot.Host?.RaiseHostScreen(screen, player, open);
+
 	/// <summary>
 	/// The <c>ModMenuRow</c> event with its trailing fields — the highlighted row's own command and the
 	/// button pressed — as a ROW ACTION on a screen list raises it (Engine_UiRowActions); the plain
 	/// row choice leaves both empty.
 	/// </summary>
-	public static void RaiseRow(string menu, string row, int player, string mod, string rowCommand, string button)
+	public static (bool Cancelled, string Command) RaiseRow(string menu, string row, int player, string mod, string rowCommand, string button)
 	{
-		Refii.Mods.ModGodot.Host?.RaiseModMenuRow(menu, row, player, mod, rowCommand, button);
-		if (HostBridge.IsGuestUp)
+		(bool cancelled, string command) = Refii.Mods.ModGodot.Host?.RaiseModMenuRow(menu, row, player, mod, rowCommand, button)
+			?? (false, rowCommand ?? string.Empty);
+		if (HostBridge.IsGuestUp && !cancelled)
 		{
 			HostBridge.PostModCommand(Engine_UiModMenuCommand.RowCommandLine(menu, row, player, mod, rowCommand, button));
 		}
 
 		GD.Print($"[mod-menus] '{menu}/{row}' chosen by player {player}" + (mod.Length == 0 ? string.Empty : $" ({mod})") +
 			(button.Length == 0 ? string.Empty : $" with {button}"));
+		return (cancelled, command);
 	}
 
 	/// <summary>

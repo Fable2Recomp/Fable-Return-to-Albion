@@ -48,6 +48,8 @@ public sealed class HostUiSource : Engine_UiSource
 	public override bool DisplayAdjusterUp() =>
 		HostBridge.GetDisplayBox() is { Vtable: HostBridge.DisplayAdjusterVtable };
 
+	public override uint DisplayBoxAddress() => HostBridge.GetDisplayBox()?.Box ?? 0u;
+
 	/// <summary>
 	/// The guest's own mapping: the class's type (vtable slot 7, `li r3,N`) through
 	/// `sub_823D0B90` — 0 → 3, 2 → 19, 3 → 4, 4 → 5, 5 → 6, 6..8 → 7.
@@ -190,10 +192,12 @@ public sealed class HostUiSource : Engine_UiSource
 	public override uint MenuEvent(string name, int eventType, uint id) =>
 		HostBridge.MenuEvent(name, eventType, id);
 
-	public override uint MenuDiscard(string name, int eventType, uint id) =>
-		HostBridge.MenuDiscard(name, eventType, id);
-
 	public override uint MenuSelect() => HostBridge.MenuSelect();
+
+	public override uint MenuHighlight(string name) => HostBridge.MenuHighlight(name);
+
+	public override void StateHighlightedRow(uint screen, int eventType, int id, string name, string label) =>
+		HostBridge.SetHighlightedRow(screen, eventType, id, name, label);
 
 	public override uint MenuScroll(Engine_UiModel.MenuStick direction, bool held) =>
 		HostBridge.MenuScroll(direction, held);

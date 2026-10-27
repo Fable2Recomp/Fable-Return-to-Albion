@@ -4,11 +4,12 @@ using Godot;
 namespace Refii.Ui;
 
 /// <summary>
-/// The end credits (screen 29, `GUI.ShowCreditsScreen`). The guest runs the whole roll itself:
-/// `sub_826B79D8` loads text group `GUI_CREDITS` and parks 24 recycled Text elements a line
-/// apart; its update `sub_826B7D00` moves them up 30 units a second, hands each the next string
-/// as it wraps past y 360, and closes the screen when the last string has gone by. Nothing of
-/// that is re-derived here — this draws each Text element's live string at its live position.
+/// The end credits (screen 29, `GUI.ShowCreditsScreen`), run by the guest's own rule from its
+/// own data: `sub_826B79D8` loads text group `GUI_CREDITS` and parks 24 recycled Text elements
+/// at y = 360 − 32·i (768 / 24); its update `sub_826B7D00` moves them up 30 units a second and,
+/// as one reaches y 360, drops it 768 and hands it the next line (or nothing past the last). So
+/// wrap n happens at t = 32·n / 30 and gives element n mod 24 line n — <see cref="Roll"/> — and
+/// the guest closes the screen itself once the last line has gone by.
 ///
 /// `creditsscreen.bgf`'s elements are anonymous (their names are hashes only), which is why no
 /// template can name them; the roll needs none, because every Text element in the file is a
@@ -27,6 +28,52 @@ public sealed partial class Engine_UiCreditsRoll : Control
 	public readonly record struct Line(string Text, Vector2 At, int Size, Color Colour);
 
 	private readonly List<Line> _lines = new();
+
+	private const float Top = 360f;
+
+	private const float Pitch = 32f;
+
+	private const float Span = 768f;
+
+	private const float Speed = 30f;
+
+	private const int Slots = 24;
+
+	/// <summary>
+	/// The roll at <paramref name="seconds"/> since the screen opened: each slot's line and
+	/// height, styled by that slot's authored Text element (in file order).
+	/// </summary>
+	public static List<Line> Roll(double seconds, IReadOnlyList<string> credits, IReadOnlyList<UiNode> slots)
+	{
+		var lines = new List<Line>(Slots);
+		float travel = (float)(seconds * Speed);
+		for (int i = 0; i < Slots && i < slots.Count; ++i)
+		{
+			float since = travel - (Pitch * i);
+			if (since < 0f)
+			{
+				continue;
+			}
+
+			int wraps = (int)(since / Span) + 1;
+			int index = i + (Slots * (wraps - 1));
+			if (index >= credits.Count || credits[index].Length == 0)
+			{
+				continue;
+			}
+
+			float y = Top - (Pitch * i) + travel - (Span * wraps);
+			UiNode slot = slots[i];
+			UiText? authored = slot.Text;
+			lines.Add(new Line(
+				credits[index],
+				new Vector2(slot.PositionX, y),
+				authored is { Size: > 0 } ? authored.Size : 18,
+				authored is null ? Colors.White : new Color(authored.R, authored.G, authored.B)));
+		}
+
+		return lines;
+	}
 
 	public override void _Ready()
 	{

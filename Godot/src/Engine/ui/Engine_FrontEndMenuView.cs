@@ -659,8 +659,17 @@ public partial class Engine_FrontEndMenuView : Node3D
 		}
 
 		Refresh();
+		Moved?.Invoke(this, direction);
 		return true;
 	}
+
+	/// <summary>
+	/// Raised for every move a list's own navigation made — the one place every list's cursor
+	/// moves, so the movement sound and the guest-cursor statement are one mechanism for the
+	/// front end, the pause list, the screen lists, mod menus, list books and host screens.
+	/// Unset in the editor.
+	/// </summary>
+	public static System.Action<Engine_FrontEndMenuView, int>? Moved;
 
 	/// <summary>
 	/// Activates the highlighted entry — the single entry point for "the player pressed A". Returns

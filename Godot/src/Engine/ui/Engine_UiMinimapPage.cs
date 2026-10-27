@@ -137,15 +137,20 @@ public static class Engine_UiMinimapPage
 	private static string _said = string.Empty;
 
 	/// <summary>The record for one sampled region, or null when the GDB names none for it.</summary>
-	public static Info? Resolve(in Refii.Host.HostBridge.WorldMapRegion region)
+	public static Info? Resolve(in Refii.Host.HostBridge.WorldMapRegion region) =>
+		Resolve(region.LevelName, region.Scenario, region.Name);
+
+	/// <summary>The record for a level by name and scenario — the pause root's lookup
+	/// (`sub_826A4388`) keys the CURRENT level the same way.</summary>
+	public static Info? Resolve(string levelName, string? scenarioName, string label)
 	{
-		if (region.LevelName.Length == 0)
+		if (levelName.Length == 0)
 		{
 			return null;
 		}
 
-		string scenario = region.Scenario.Length != 0 ? region.Scenario : "DefaultScenario";
-		string key = region.LevelName + "\u0001" + scenario;
+		string scenario = string.IsNullOrEmpty(scenarioName) ? "DefaultScenario" : scenarioName;
+		string key = levelName + "\u0001" + scenario;
 		if (_resolved.TryGetValue(key, out Info? cached))
 		{
 			return cached;
@@ -154,12 +159,12 @@ public static class Engine_UiMinimapPage
 		Info? info = null;
 		if (Engine_GameGdb.Database is { } gdb && gdb.TryLookup(TableAlias, out GdbCursor table))
 		{
-			string full = Sanitise("regionmap_" + region.LevelName + "_" + scenario);
-			string bare = Sanitise(region.LevelName);
+			string full = Sanitise("regionmap_" + levelName + "_" + scenario);
+			string bare = Sanitise(levelName);
 			if (!TryChild(gdb, table, full, out GdbCursor record) &&
 				!TryChild(gdb, table, bare, out record))
 			{
-				Say($"[minimap] no MinimapInfo child '{full}' or '{bare}' for region '{region.Name}'");
+				Say($"[minimap] no MinimapInfo child '{full}' or '{bare}' for '{label}'");
 			}
 			else
 			{
@@ -173,7 +178,7 @@ public static class Engine_UiMinimapPage
 						Float(gdb, record, IconZField)),
 					FloatOr(gdb, record, IconScaleField, 1f),
 					Number(gdb, record, ProperField, GdbFieldType.Bool) != 0u);
-				Say($"[minimap] '{region.Name}' -> '{full}': background={info.Background:X8} " +
+				Say($"[minimap] '{label}' -> '{full}': background={info.Background:X8} " +
 					$"north={info.DegreesToNorth} iconRot={info.IconRotation} offset={info.IconOffset} " +
 					$"scale={info.IconScale} proper={info.Proper}");
 			}
@@ -271,7 +276,9 @@ public static class Engine_UiMinimapPage
 		("GUI_SCREEN_MAP_APPEARANCE", 23),
 	};
 
-	private static IReadOnlyList<(string Tag, int Icon)> Legend(Info info, bool heroHere, bool questHere)
+	/// <summary>The legend rows the guest lists for a record — shared with the pause root's
+	/// `sub_826A3658`, which lists the same nine in the same order.</summary>
+	public static IReadOnlyList<(string Tag, int Icon)> Legend(Info info, bool heroHere, bool questHere)
 	{
 		if (!info.Proper)
 		{
@@ -408,11 +415,12 @@ public static class Engine_UiMinimapPage
 		float depth = 0f;
 		Vector2 origin = new(mapAt.X, mapAt.Y);
 
-		// The hero: the sprite is turned to face the way the hero does.
-		if (Refii.Game.GameEntities.HeroGuestPosition is { } heroAt)
+		// The hero — the menu owner's (`live.Hero`), so player two's map plots player two: the
+		// sprite is turned to face the way that hero does.
+		if (live.Hero != 0u && Refii.Game.GameEntities.TryGuestPosition(live.Hero, out Vector3 heroAt))
 		{
 			float facing = 0f;
-			if (Refii.Game.GameEntities.HeroGuestRotation is { } heroRotation)
+			if (Refii.Game.GameEntities.TryGuestRotation(live.Hero, out Quaternion heroRotation))
 			{
 				Vector3 forward = heroRotation * Vector3.Up;  // the guest's (0, 1, 0)
 				facing = Mathf.Atan2(forward.Y, forward.X);

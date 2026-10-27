@@ -85,6 +85,8 @@ set(REFII_VFS_RUNTIME_SOURCES
     # each library would have the hook filling one queue while the bridge reads another empty
     # one. That is not a link error on Linux, which is what makes it worth stating here.
     ${REFII_VFS_ROOT}/src/gui/gui_native_calls.cpp
+    # The told-statement queues (hooks/gui_slide_hooks.cpp pushes, the bridge takes): same rule.
+    ${REFII_VFS_ROOT}/src/gui/gui_told_statements.cpp
     ${REFII_VFS_ROOT}/src/gui/gui_menu_chunks.cpp
     ${REFII_VFS_ROOT}/src/gui/gui_element_state.cpp
     # Host side of the payload's log bridge. Must be in refii_vfs, which the payload links,
@@ -136,6 +138,8 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/crt_memory.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_natives.cpp
     ${REFII_VFS_ROOT}/src/hooks/display_box_hooks.cpp
+    ${REFII_VFS_ROOT}/src/hooks/gui_registry_hooks.cpp
+    ${REFII_VFS_ROOT}/src/hooks/gui_slide_hooks.cpp
     ${REFII_VFS_ROOT}/src/hooks/reticule_hooks.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_menu_hooks.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_element_hooks.cpp

@@ -17,12 +17,26 @@ public sealed class Engine_UiBookSet
 	/// <summary>The host the books are parented to and take their art from.</summary>
 	public Engine_UiPresentationHost? Host { get; set; }
 
+	/// <summary>The guest's GUI registries as stated — handed to every book this set makes
+	/// (<see cref="Engine_UiOwnedBook.RegistryText"/>, <see cref="Engine_UiOwnedBook.RegistrySlide"/>).</summary>
+	public System.Func<Engine_HudValues?>? Registry { get; set; }
+
 	/// <summary>One screen's book, or null when it has none yet.</summary>
 	public Engine_UiOwnedBook? Book(uint screenId) =>
 		_books.TryGetValue(screenId, out Engine_UiOwnedBook? book) &&
 		GodotObject.IsInstanceValid(book)
 			? book
 			: null;
+
+	/// <summary>Registers a book <see cref="Ensure"/> built for a caller that stands it itself (Engine_UiScreenStand).</summary>
+	public void Keep(uint screenId, Engine_UiOwnedBook book) => _books[screenId] = book;
+
+	/// <summary>Forgets every book — their owner frees them.</summary>
+	public void ForgetAll()
+	{
+		_books.Clear();
+		_made.Clear();
+	}
 
 	/// <summary>Forgets which book the front end is standing — the guest has left it.</summary>
 	public void ReleaseFrontEnd() => FrontEndBookId = 0;
@@ -62,7 +76,10 @@ public sealed class Engine_UiBookSet
 				names.TryResolve(hash, out string path)
 					? Host.LoadTexture(path)
 					: null,
+			NameTexture = hash =>
+				Host.TextureNames is { } names && names.TryResolve(hash, out string path) ? path : null,
 		};
+		Wire(book);
 
 		// Suppression is applied at bind time, so it must be registered before Build().
 		foreach (string owned in template.OwnedElsewhere)
@@ -202,8 +219,12 @@ public sealed class Engine_UiBookSet
 	/// values. The mirror is still sampled, only not drawn: every value the book paints comes off
 	/// the same walk.
 	/// </summary>
-	private void Drive(uint screenId, Engine_UiDrawnPresentation drawn)
+	private void Drive(uint screenId, Engine_UiDrawnPresentation? drawn, uint address = 0)
 	{
+		// BY ID, WITHOUT A PRESENTATION: a rest-stand screen needs nothing from the guest's tree
+		// but its name, which its template states.
+		string presentation = drawn?.Name ?? Engine_UiTemplates.Screen(screenId)?.Presentation ?? string.Empty;
+
 		if (_books.TryGetValue(screenId, out Engine_UiOwnedBook? book) &&
 			!GodotObject.IsInstanceValid(book))
 		{
@@ -220,7 +241,8 @@ public sealed class Engine_UiBookSet
 			{
 				_bookless.Add(screenId);
 			}
-			else if ((ClaimPrebuilt(screenId, drawn.Name) ?? Ensure(screenId, drawn.Name)) is { } made)
+			else if (presentation.Length != 0 &&
+				(ClaimPrebuilt(screenId, presentation) ?? Ensure(screenId, presentation)) is { } made)
 			{
 				_books[screenId] = made;
 				book = made;
@@ -232,7 +254,7 @@ public sealed class Engine_UiBookSet
 		// would be inherited dark by the next screen that has no book of its own.
 		// THE GUEST'S TREE IS NEVER DRAWN. Godot owns every screen; a screen with no chrome yet
 		// shows nothing rather than the guest's picture.
-		if (GodotObject.IsInstanceValid(drawn.Node))
+		if (drawn is not null && GodotObject.IsInstanceValid(drawn.Node))
 		{
 			drawn.Node.Visible = false;
 		}
@@ -243,13 +265,17 @@ public sealed class Engine_UiBookSet
 		}
 
 		// The mirror tree is freed on every guest slide change; a book keeps its last depth
-		// across that frame rather than reading a disposed node.
-		if (GodotObject.IsInstanceValid(drawn.Node))
+		// across that frame rather than reading a disposed node — and keeps it with no tree at all.
+		if (drawn is not null && GodotObject.IsInstanceValid(drawn.Node))
 		{
 			book.Position = new Vector3(0f, 0f, drawn.Node.Position.Z + (Engine_UiPresentationDepth.Step / 4f));
 		}
 
 		book.Visible = true;
+		if (address != 0)
+		{
+			book.PresentationAddress = address;
+		}
 
 		// The guest's mirror is still fed whole: its transform carries the CHROME's layout (the
 		// screen is laid out once at open, before the highlight froze) and dropping it took the
@@ -258,9 +284,29 @@ public sealed class Engine_UiBookSet
 		// host writes (Opaqued / Positioned).
 		using (Refii.Core.Engine_FramePhases.Measure("ui.book.live"))
 		{
-			book.SetLive(
-				drawn.Texts, drawn.Textures, drawn.LastTransform,
-				drawn.Visible, drawn.Opacity, drawn.Slides);
+			Engine_UiDetailPages.FillOnDraw(screenId, book);
+
+			// A screen whose rest state is proven stands on its file and the host alone; the
+			// guest's sample, when there is one, is kept for the `rest:` check only.
+			if (book.Template is { RestFromFile: true })
+			{
+				if (drawn is not null)
+				{
+					book.KeepSample(drawn.Textures, drawn.LastTransform, drawn.Visible, drawn.Opacity, drawn.Slides);
+				}
+
+				book.SetRest(drawn?.Texts);
+			}
+			else if (drawn is null)
+			{
+				return;
+			}
+			else
+			{
+				book.SetLive(
+					drawn.Texts, drawn.Textures, drawn.LastTransform,
+					drawn.Visible, drawn.Opacity, drawn.Slides);
+			}
 		}
 	}
 
@@ -305,7 +351,20 @@ public sealed class Engine_UiBookSet
 
 		book.Position = Vector3.Zero;
 		book.Visible = true;
-		book.SetLive(texts, textures, transform, visible, opacity, slides);
+		if (book.Template is { RestFromFile: true })
+		{
+			// THE FRONT END STANDS ON ITS FILE: its slides, plays, attributes, switches and texts
+			// arrive as the guest's statements to this presentation (Engine_UiSlideStatements),
+			// keyed by the front end's active screen; the sample is kept for the `rest:` check.
+			book.PresentationAddress = Refii.Host.HostBridge.FrontEndPresentation();
+			book.KeepSample(textures, transform, visible, opacity, slides);
+			book.SetRest(texts);
+		}
+		else
+		{
+			book.SetLive(texts, textures, transform, visible, opacity, slides);
+		}
+
 		FrontEndBookId = screenId;
 
 		// Take the other front-end book down: title and main menu are two presentations and only
@@ -396,8 +455,22 @@ public sealed class Engine_UiBookSet
 					continue;
 				}
 
-				Drive(screenId, live);
+				Drive(screenId, live, address);
 				standing.Add(screenId);
+			}
+
+			// THE STATED SCREEN STANDS WITHOUT ITS PRESENTATION: a rest-stand screen the manager
+			// names as current, or the display box's, is stood by its id whether or not the
+			// guest built (or still holds) a presentation for it.
+			foreach (uint stated in new[] { current, boxScreen })
+			{
+				if (stated is not (uint.MaxValue or 0) && stated < HostOnlyScreenId &&
+					!standing.Contains(stated) &&
+					Engine_UiTemplates.Screen(stated) is { RestFromFile: true })
+				{
+					Drive(stated, null);
+					standing.Add(stated);
+				}
 			}
 		}
 
@@ -427,4 +500,15 @@ public sealed class Engine_UiBookSet
 	/// <summary>One owned book per screen id, built on first sight of that screen.</summary>
 	private readonly System.Collections.Generic.Dictionary<uint, Engine_UiOwnedBook> _books =
 		new();
+
+	/// <summary>Hands a book the guest's registries — every book, the set's own and the pause root's.</summary>
+	public void Wire(Engine_UiOwnedBook book)
+	{
+		book.RegistryText = hash => Registry?.Invoke()?.Text(new Engine_HudValues.Handle(string.Empty, hash));
+		book.RegistrySlide = (registry, hash) => Registry?.Invoke()?.RegistrySlide(registry, hash);
+		book.RegistryPlayed = (registry, hash) => Registry?.Invoke()?.RegistryPlayed(registry, hash) ?? false;
+		book.RegistryGeneration = () => Registry?.Invoke()?.RegistryGeneration ?? 0ul;
+		book.RegistryImage = hash => Registry?.Invoke()?.RegistryImage(hash);
+		book.RegistryMeter = hash => Registry?.Invoke()?.Meter(new Engine_HudValues.Handle(string.Empty, hash));
+	}
 }

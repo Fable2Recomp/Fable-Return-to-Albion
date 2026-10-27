@@ -25,10 +25,11 @@ namespace Refii.Mods;
 ///   `start_game`, r4 the save name) runs this class's verdict on the guest thread. A save
 ///   stamped with mods of its own is REFUSED once (the event's cancel) and the player is told
 ///   on the host page book (<see cref="Engine_UiHostBoxes.AskPage"/>) which mods it was made
-///   with and which are not enabled now; on Continue the save is filtered when any are
-///   missing and the event's own `commit` — the pump action the start ran under (`LoadSave:N`,
-///   the root's Continue row by name) — is posted again, this time let through. Back leaves
-///   the front end where it was — the fan.
+///   with and which are not enabled now; on Continue held records of mods enabled again are
+///   put back, the save is filtered when any are missing, and the event's own `commit` — the
+///   pump action the start ran under: `LoadSave:N` from the fan, or "Load Game" when the one
+///   save commits directly — is posted again and let through once, by (save, commit). Back
+///   leaves the front end where it was — the fan — and the save's files untouched.
 /// - THE FILTER (<see cref="ModSaveFilter"/>) rewrites `mainsave.bin` in the save's folder with
 ///   the missing mods' records out, the player store without their keys, and keeps everything it
 ///   removed under `mods.held` in the sidecar; the unfiltered main save is kept beside it
@@ -68,10 +69,13 @@ public static class ModSaveGate
 	// What the verdict refused and the box is asking about.
 	private sealed record Pending(
 		string Save, string Directory, ModSaveStamp.Diff Diff, string Commit,
-		SaveSidecar.ArchonLayer? Archon, ArchonToolbox.Diff? ArchonDiff);
+		SaveSidecar.ArchonLayer? Archon, ArchonToolbox.Diff? ArchonDiff, ModFingerprint Current);
 
 	private static Pending? _pending;
-	private static string _allowedOnce = string.Empty;
+
+	// The one start let through after Continue: the re-posted commit for that save. A statement
+	// of the same save under another commit (the guest's own tick carries "") does not consume it.
+	private static (string Save, string Commit)? _allowedOnce;
 	private static string _luaClear = string.Empty;
 
 	/// <summary>Whether the host wants `save_loaded` posted: a filtered load is waiting to drop keys.</summary>
@@ -106,11 +110,13 @@ public static class ModSaveGate
 			return false;
 		}
 
+		string commit = CommitOf(fields);
 		lock (Lock)
 		{
-			if (string.Equals(_allowedOnce, save, StringComparison.Ordinal))
+			if (_allowedOnce is { } allowed && string.Equals(allowed.Save, save, StringComparison.Ordinal) &&
+				string.Equals(allowed.Commit, commit, StringComparison.Ordinal))
 			{
-				_allowedOnce = string.Empty;
+				_allowedOnce = null;
 				return false;
 			}
 		}
@@ -141,14 +147,6 @@ public static class ModSaveGate
 		}
 
 		ModSaveStamp.Diff diff = ModSaveStamp.Compare(stamp, current);
-		try
-		{
-			RestoreHeld(directory, sidecar, current);
-		}
-		catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
-		{
-			GD.PushWarning($"[mod-save] held records of '{save}' could not be restored: {e.Message}");
-		}
 
 		// A SAVE WITH NO MODS OF ITS OWN loads as it is: a session mod is the host's, not the
 		// save's, and says nothing about what the save holds.
@@ -168,6 +166,10 @@ public static class ModSaveGate
 		int archonOwn = archon?.Mods.Count ?? 0;
 		if (own == 0 && archonOwn == 0)
 		{
+			// Nothing to ask, so held records of mods enabled again go back here, inside the
+			// start call, before the guest reads the file. A save that is asked about has them
+			// put back on Continue instead (never before the answer).
+			RestoreHeldQuietly(save, directory, sidecar, current);
 			return false;
 		}
 
@@ -179,7 +181,7 @@ public static class ModSaveGate
 		// EVERY STAMPED SAVE IS TOLD ABOUT: the player sees which mods it was made with before it
 		// loads, and which of them are not enabled now. Refused once, asked on the page book, and
 		// let through on Continue.
-		var pending = new Pending(save, directory, diff, CommitOf(fields), archon, archonDiff);
+		var pending = new Pending(save, directory, diff, commit, archon, archonDiff, current);
 		lock (Lock)
 		{
 			// THE FRONT END STATES THE SAME START TWICE: once under the pump's action, with the
@@ -205,10 +207,10 @@ public static class ModSaveGate
 
 	/// <summary>
 	/// The action posted again once the box is answered: the event's `commit`, the guest-tick
-	/// pump's name for the action the start ran under (`LoadSave:N`, the root's Continue row by
-	/// its bare name). "" for a start the pump did not run — nothing is posted then, and the
-	/// player is told to choose once more; a commit remembered host-side could be a previous
-	/// load's, so it is never read from anywhere else.
+	/// pump's name for the action the start ran under (`LoadSave:N` from the fan, "Load Game"
+	/// when the one save commits directly). "" for a start the pump did not run — nothing is
+	/// posted then, and the player is told to choose once more; a commit remembered host-side
+	/// could be a previous load's, so it is never read from anywhere else.
 	/// </summary>
 	public static string CommitOf(IReadOnlyList<KeyValuePair<string, object>> fields) => Field(fields, "commit");
 
@@ -266,7 +268,9 @@ public static class ModSaveGate
 			}
 		}
 
-		// Filtered only when something is missing; a save whose mods are all enabled loads as it is.
+		// The answer is in: first held records of mods enabled again go back, then the save is
+		// filtered of the missing ones; a save whose mods are all enabled loads as it is.
+		RestoreHeldQuietly(pending.Save, pending.Directory, SaveSidecar.Read(pending.Directory), pending.Current);
 		bool filter = pending.Diff.Missing.Count != 0;
 		if (filter)
 		{
@@ -282,16 +286,16 @@ public static class ModSaveGate
 			}
 		}
 
-		lock (Lock)
-		{
-			_allowedOnce = pending.Save;
-			_luaClear = filter ? ModSaveFilter.LuaClearKeys(pending.Diff.MissingKeys()) : string.Empty;
-		}
-
 		if (pending.Commit.Length == 0)
 		{
 			GD.PushWarning($"[mod-save] '{pending.Save}' filtered, but no commit to post again — choose it once more");
 			return;
+		}
+
+		lock (Lock)
+		{
+			_allowedOnce = (pending.Save, pending.Commit);
+			_luaClear = filter ? ModSaveFilter.LuaClearKeys(pending.Diff.MissingKeys()) : string.Empty;
 		}
 
 		HostBridge.PostFrontEndAction(pending.Commit);
@@ -403,6 +407,19 @@ public static class ModSaveGate
 		sidecar.Write(directory);
 		GD.Print($"[mod-save] filtered '{Path.GetFileName(directory)}': {held.Inventory.Count} item(s), {held.Worn.Count} worn, " +
 			$"{(held.Melee != 0 ? 1 : 0) + (held.Ranged != 0 ? 1 : 0)} weapon id(s), {storeHeld.Count} store key(s) held for {diff.Missing.Count} mod(s)");
+	}
+
+	/// <summary><see cref="RestoreHeld"/> with a file failure reported, not thrown.</summary>
+	private static void RestoreHeldQuietly(string save, string directory, SaveSidecar sidecar, ModFingerprint current)
+	{
+		try
+		{
+			RestoreHeld(directory, sidecar, current);
+		}
+		catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
+		{
+			GD.PushWarning($"[mod-save] held records of '{save}' could not be restored: {e.Message}");
+		}
 	}
 
 	/// <summary>

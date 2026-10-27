@@ -281,7 +281,24 @@ public sealed class Engine_UiGuiBoxes
 	}
 
 	/// <summary>The menu box up right now, or null.</summary>
-	public MenuBoxModel? Menu { get; private set; }
+	public MenuBoxModel? Menu
+	{
+		get => _menu;
+		private set
+		{
+			_menu = value;
+			if (value is not null)
+			{
+				StatedMenuBox = value;
+			}
+		}
+	}
+
+	private MenuBoxModel? _menu;
+
+	/// <summary>The menu box the last `DisplayMenuBox` call stated — its title and options as the
+	/// call named them — for the owned menu-box surface, which has no handle on this instance.</summary>
+	public static MenuBoxModel? StatedMenuBox { get; private set; }
 
 	/// <summary>True when anything is up — the cheap gate a drawer can test per frame.</summary>
 	public bool Any => _boxes.Count != 0 || _counters.Count != 0 || Menu is not null ||
@@ -321,8 +338,17 @@ public sealed class Engine_UiGuiBoxes
 		box.Title = title;
 		box.Style = style;
 		box.Buttons = buttons;
+		if (style == 0)
+		{
+			StatedCard = box;
+		}
+
 		return box;
 	}
+
+	/// <summary>The last style-0 `DisplayInfoBoxParams` card — the display box's `Paper` (screen 7),
+	/// for its page provider, which has no handle on this instance.</summary>
+	public static Box? StatedCard { get; private set; }
 
 	/// <summary>`GUI.DisplayMenuBox` / `DisplayUncancelableMenuBox` — puts up the modal.</summary>
 	public void ShowMenuBox(string text, IReadOnlyList<MenuOption> options, bool cancelable)
@@ -410,19 +436,32 @@ public sealed class Engine_UiGuiBoxes
 					body = "+" + body;
 				}
 
-				return (Type & 1) != 0 ? "$" + body : (Type & 2) != 0 ? body + "%" : body;
+				// `sub_826B8BB0`: the money form builds "$" + text into a temporary it discards
+				// (0x826b8c30..48), so money shows the bare number; only percent appends.
+				return (Type & 1) == 0 && (Type & 2) != 0 ? body + "%" : body;
 			}
 		}
 	}
 
 	/// <summary>The adjuster's state when one is up, else null.</summary>
-	public AdjusterState? Adjusting { get; private set; }
+	public AdjusterState? Adjusting
+	{
+		get => _adjusting;
+		private set => DisplayAdjuster = _adjusting = value;
+	}
+
+	private AdjusterState? _adjusting;
+
+	/// <summary>The Lua adjuster last opened (`DisplayNumericAdjusterParams`), for the owned
+	/// numeric surface, which has no handle on this instance.</summary>
+	public static AdjusterState? DisplayAdjuster { get; private set; }
 
 	/// <summary>`GUI.DisplayYesNoQuestion` and its two siblings — a persistent query box.</summary>
 	public Box Question(string name, string text)
 	{
 		Box box = Add(name, text, -1f, removable: true);
 		box.Kind = BoxKind.Question;
+		StatedQuestion = text;
 		return box;
 	}
 
@@ -709,12 +748,24 @@ public sealed class Engine_UiGuiBoxes
 
 	/// <summary>The guest opened a MessageBox — it now holds GameFlow state 8, both players'
 	/// movement, until action 36 closes it.</summary>
-	public void GuestMessageOpened(uint box, string identity)
+	public void GuestMessageOpened(uint box, string identity, string body = "")
 	{
 		_guestMessages.RemoveAll(m => m.Box == box);
 		_guestMessages.Add((box, identity));
+		if (body.Length != 0)
+		{
+			StatedMessageBodies[box] = body;
+		}
+
 		++Generation;
 	}
+
+	/// <summary>The last display question's body as its call stated it (`DisplayYesNoQuestion` and
+	/// its siblings), for the query surface, which has no handle on this instance.</summary>
+	public static string? StatedQuestion { get; private set; }
+
+	/// <summary>A guest MessageBox's body as its Open stated it (display_box_hooks.cpp), by box.</summary>
+	public static readonly Dictionary<uint, string> StatedMessageBodies = new();
 
 	/// <summary>
 	/// The guest closed a MessageBox, or destroyed one still open. The owned copy a
@@ -722,6 +773,7 @@ public sealed class Engine_UiGuiBoxes
 	/// </summary>
 	public void GuestMessageClosed(uint box, string identity)
 	{
+		StatedMessageBodies.Remove(box);
 		_guestMessages.RemoveAll(m => m.Box == box);
 		_seats.Remove(box);
 		_boxes.RemoveAll(b => b.Kind == BoxKind.Message && b.Persistent && b.Name == identity);

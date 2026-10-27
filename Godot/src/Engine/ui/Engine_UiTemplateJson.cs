@@ -382,6 +382,9 @@ public static class Engine_UiTemplateJson
 		screen.BoxPresentation = TextOr(record, "boxPresentation", screen.BoxPresentation);
 
 		if (record.TryGetPropertyValue("ownsList", out JsonNode? owns)) screen.OwnsList = Flag(owns);
+		if (record.TryGetPropertyValue("restFromFile", out JsonNode? rest)) screen.RestFromFile = Flag(rest);
+		if (record.TryGetPropertyValue("flowWhenDrawn", out JsonNode? flowDrawn)) screen.FlowWhenDrawn = Flag(flowDrawn);
+		if (record.TryGetPropertyValue("commitsByHighlight", out JsonNode? byHighlight)) screen.CommitsByHighlight = Flag(byHighlight);
 		if (record.TryGetPropertyValue("ownsRevealedInput", out JsonNode? revealed)) screen.OwnsRevealedInput = Flag(revealed);
 		if (record.TryGetPropertyValue("hasSpellBlade", out JsonNode? blade)) screen.HasSpellBlade = Flag(blade);
 		if (record.TryGetPropertyValue("fadesTopEnd", out JsonNode? top)) screen.FadesTopEnd = Flag(top);
@@ -392,7 +395,6 @@ public static class Engine_UiTemplateJson
 		Strings(record, "chrome", ref screen.ChromeUnits);
 		Strings(record, "panelSubtrees", ref screen.PanelSubtrees);
 		Strings(record, "ownedElsewhere", ref screen.OwnedElsewhere);
-		Strings(record, "liveTexts", ref screen.LiveTexts);
 		Strings(record, "boxUnits", ref screen.BoxUnits);
 		Strings(record, "pages", ref screen.Pages);
 		Strings(record, "guestTextUnits", ref screen.GuestTextUnits);
@@ -430,6 +432,57 @@ public static class Engine_UiTemplateJson
 					else if (Text(value) is { Length: > 0 } script)
 					{
 						screen.MenuScriptByMode[mode] = script;
+					}
+				}
+			}
+		}
+
+		if (record.TryGetPropertyValue("restPose", out JsonNode? poseNode))
+		{
+			if (!patch)
+			{
+				screen.RestPose.Clear();
+			}
+
+			if (poseNode is JsonObject poses)
+			{
+				foreach ((string path, JsonNode? value) in poses)
+				{
+					if (value is not JsonArray slots)
+					{
+						screen.RestPose.Remove(path);
+						continue;
+					}
+
+					var pose = new float?[6];
+					for (int slot = 0; slot < pose.Length && slot < slots.Count; ++slot)
+					{
+						pose[slot] = slots[slot] is null ? null : Single(slots[slot]);
+					}
+
+					screen.RestPose[path] = pose;
+				}
+			}
+		}
+
+		if (record.TryGetPropertyValue("restOpacity", out JsonNode? fadeNode))
+		{
+			if (!patch)
+			{
+				screen.RestOpacity.Clear();
+			}
+
+			if (fadeNode is JsonObject fades)
+			{
+				foreach ((string path, JsonNode? value) in fades)
+				{
+					if (value is null)
+					{
+						screen.RestOpacity.Remove(path);
+					}
+					else
+					{
+						screen.RestOpacity[path] = Single(value);
 					}
 				}
 			}
@@ -491,13 +544,14 @@ public static class Engine_UiTemplateJson
 		copy.Pages = new List<string>(screen.Pages);
 		copy.BoxUnits = new List<string>(screen.BoxUnits);
 		copy.BoxPaths = new Dictionary<string, string>(screen.BoxPaths, System.StringComparer.Ordinal);
+		copy.RestPose = new Dictionary<string, float?[]>(screen.RestPose, System.StringComparer.Ordinal);
+		copy.RestOpacity = new Dictionary<string, float>(screen.RestOpacity, System.StringComparer.Ordinal);
 		copy.WideLeft = new List<string>(screen.WideLeft);
 		copy.WideRight = new List<string>(screen.WideRight);
 		copy.WideStretch = new List<string>(screen.WideStretch);
 		copy.WideGround = new List<string>(screen.WideGround);
 		copy.OwnedElsewhere = new List<string>(screen.OwnedElsewhere);
 		copy.GuestTextUnits = new List<string>(screen.GuestTextUnits);
-		copy.LiveTexts = new List<string>(screen.LiveTexts);
 		copy.StatFields = new List<(int Id, string Path)>(screen.StatFields);
 		copy.FlowMoved = new List<string>(screen.FlowMoved);
 		copy.FlowTailMoved = new List<string>(screen.FlowTailMoved);
@@ -565,6 +619,8 @@ public static class Engine_UiTemplateJson
 		}
 
 		PutFlag("ownsList", screen.OwnsList, false);
+		PutFlag("restFromFile", screen.RestFromFile, false);
+		PutFlag("commitsByHighlight", screen.CommitsByHighlight, false);
 		Put("menuScript", screen.MenuScript);
 		if (full || screen.MenuScriptByMode.Count != 0)
 		{
@@ -597,6 +653,7 @@ public static class Engine_UiTemplateJson
 		Put("flowMeasured", screen.FlowMeasured);
 		Put("flowBase", screen.FlowBase);
 		PutList("flowMoved", screen.FlowMoved);
+		PutFlag("flowWhenDrawn", screen.FlowWhenDrawn, false);
 		Put("flowTailAnchor", screen.FlowTailAnchor);
 		PutList("flowTailMoved", screen.FlowTailMoved);
 		PutFlag("fadesTopEnd", screen.FadesTopEnd, true);
@@ -612,7 +669,6 @@ public static class Engine_UiTemplateJson
 		PutList("chrome", screen.ChromeUnits);
 		PutList("panelSubtrees", screen.PanelSubtrees);
 		PutList("ownedElsewhere", screen.OwnedElsewhere);
-		PutList("liveTexts", screen.LiveTexts);
 		Put("boxPresentation", screen.BoxPresentation);
 		PutList("boxUnits", screen.BoxUnits);
 		PutMap("boxPaths", screen.BoxPaths);
@@ -656,6 +712,40 @@ public static class Engine_UiTemplateJson
 		if (screen.PageStackAt is Vector3 stackAt)
 		{
 			record["pageStackAt"] = new JsonArray { stackAt.X, stackAt.Y, stackAt.Z };
+		}
+
+		if (screen.RestPose.Count != 0)
+		{
+			var poses = new JsonObject();
+			foreach ((string path, float?[] pose) in screen.RestPose)
+			{
+				int last = pose.Length - 1;
+				while (last >= 0 && pose[last] is null)
+				{
+					--last;
+				}
+
+				var slots = new JsonArray();
+				for (int slot = 0; slot <= last; ++slot)
+				{
+					slots.Add(pose[slot] is { } value ? JsonValue.Create(value) : null);
+				}
+
+				poses[path] = slots;
+			}
+
+			record["restPose"] = poses;
+		}
+
+		if (screen.RestOpacity.Count != 0)
+		{
+			var fades = new JsonObject();
+			foreach ((string path, float opacity) in screen.RestOpacity)
+			{
+				fades[path] = opacity;
+			}
+
+			record["restOpacity"] = fades;
 		}
 
 		return record;

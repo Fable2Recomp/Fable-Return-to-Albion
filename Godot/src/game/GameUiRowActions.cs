@@ -39,30 +39,42 @@ public partial class GameUi
 	/// The row actions of the screen list up, on its highlighted row. True when one ran (the frame is
 	/// taken); false lets the list's own drive go on.
 	/// </summary>
-	private bool DriveRowActions(uint screen)
+	private bool DriveRowActions(uint screen) =>
+		_screenMenu is { } menu &&
+		DriveRowActionsOn(menu.PopulationScript, menu.Script.Highlighted, _screenMenuView, screen,
+			Engine_UiCommandList.Screen);
+
+	/// <summary>
+	/// A list's ROW ACTIONS (ui/templates.json "rowActions", keyed by the menu's template name):
+	/// the prompt beside the page buttons, X or Y pressed on the highlighted row. Every list runs
+	/// this — a screen list, the pause list, a mod's menu opened over either, a mod's standalone
+	/// menu — so a row action is one mechanism wherever its menu stands. The buttons it binds are
+	/// withheld from the guest while the list stands (<see cref="GameInput.RowActionHolds"/>).
+	/// </summary>
+	private bool DriveRowActionsOn(
+		string menuName, Engine_UiExpandableMenu.Item? row, Engine_FrontEndMenuView? view, uint screen,
+		Engine_UiCommandList list)
 	{
-		if (_screenMenu is not { } menu || menu.PopulationScript.Length == 0)
+		if (menuName.Length == 0)
 		{
 			return false;
 		}
 
-		var actions = Engine_UiTemplates.RowActionsFor(menu.PopulationScript);
+		var actions = Engine_UiTemplates.RowActionsFor(menuName);
 		if (actions.Count == 0)
 		{
 			return false;
 		}
 
-		Engine_UiExpandableMenu.Item? row = menu.Script.Highlighted;
 		if (row is null || row.IsGhosted || row.Children.Count != 0 ||
 			row.EventType == (int)Engine_UiMenuConstants.EventType.Submenu)
 		{
 			return false;
 		}
 
-		foreach (Engine_UiRowActions.RowAction action in actions)
+		foreach (Engine_UiRowActions.RowAction bound in actions)
 		{
-			if (action.Button == "X") GameInput.ScreenMenuHoldsEquip = true;
-			if (action.Button == "Y") GameInput.ScreenMenuHoldsFlip = true;
+			GameInput.RowActionHolds |= bound.Button == "X" ? GameInput.PadButtonX : GameInput.PadButtonY;
 		}
 
 		int player = Engine_UiModMenus.MenuPlayer;
@@ -91,14 +103,18 @@ public partial class GameUi
 		}
 
 		string rowCommand = RowOwnCommand(row);
-		Engine_UiModMenus.RaiseRow(menu.PopulationScript, row.Name, player, chosen.Mod, rowCommand, chosen.Button);
-		var context = new Engine_UiCommandContext(Engine_UiCommandList.Screen, menu.PopulationScript, row.Name, player, chosen.Mod)
+		if (Engine_UiModMenus.RaiseRow(menuName, row.Name, player, chosen.Mod, rowCommand, chosen.Button).Cancelled)
 		{
-			Command = chosen.Command, RowCommand = rowCommand, Button = chosen.Button, View = _screenMenuView,
+			return true;
+		}
+
+		var context = new Engine_UiCommandContext(list, menuName, row.Name, player, chosen.Mod)
+		{
+			Command = chosen.Command, RowCommand = rowCommand, Button = chosen.Button, View = view,
 		};
 		if (Engine_UiCommands.Run(chosen.Command, context).Outcome == Engine_UiCommandOutcome.NotOurs)
 		{
-			GD.Print($"[row-actions] '{menu.PopulationScript}/{row.Name}' {chosen.Button} names '{chosen.Command}', which no verb runs");
+			GD.Print($"[row-actions] '{menuName}/{row.Name}' {chosen.Button} names '{chosen.Command}', which no verb runs");
 		}
 
 		_rowActionPrompt?.Hide();

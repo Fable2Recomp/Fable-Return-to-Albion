@@ -438,4 +438,12 @@ public sealed class Engine_UiMenuModel
 			? $"{_applied} statement(s), no menu stated yet"
 			: $"{_applied} statement(s) | {string.Join(" | ", parts)}";
 	}
+
+	/// <summary>The menus the model holds, without the statement count — the report's change key.</summary>
+	public string DescribeMenus()
+	{
+		string all = Describe();
+		int bar = all.IndexOf(" | ", System.StringComparison.Ordinal);
+		return bar < 0 ? string.Empty : all[(bar + 3)..];
+	}
 }

@@ -455,6 +455,7 @@ public partial class GameEntities : Node3D
                 if (entity.Changed && IsUsablePlacement(entity.Position))
                 {
                     _guestPositions[entity.Address] = entity.Position;
+                    _guestRotations[entity.Address] = entity.Rotation;
                 }
                 ++_prologueSkipped;
                 skipTicks += System.Diagnostics.Stopwatch.GetTimestamp() - prologueFrom;
@@ -548,6 +549,7 @@ public partial class GameEntities : Node3D
             if (IsUsablePlacement(entity.Position))
             {
                 _guestPositions[entity.Address] = entity.Position;
+                _guestRotations[entity.Address] = entity.Rotation;
             }
 
             if (entity.ModelHash == 0)
@@ -2930,6 +2932,7 @@ public partial class GameEntities : Node3D
 
             _nodes.Remove(address);
             _guestPositions.Remove(address);
+            _guestRotations.Remove(address);
             _lastLook.Remove(address);
             _batches?.Demote(address);
             _still.Remove(address);
@@ -4272,6 +4275,13 @@ public partial class GameEntities : Node3D
 
     public static bool TryGuestPosition(uint address, out Vector3 position) =>
         _guestPositions.TryGetValue(address, out position);
+
+    private static readonly Dictionary<uint, Quaternion> _guestRotations = new();
+
+    /// <summary>The stated orientation beside <see cref="TryGuestPosition"/> — for the readers that
+    /// turn a marker the way an entity faces (the pause minimap's hero, either player's).</summary>
+    public static bool TryGuestRotation(uint address, out Quaternion rotation) =>
+        _guestRotations.TryGetValue(address, out rotation);
 
     /// <summary>The guest's sim tick as of this frame's walk, read once.</summary>
     private uint _tickNow;

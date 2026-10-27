@@ -36,6 +36,9 @@ public partial class Engine_BnkMeshLoader : ResourceFormatLoader
 
     public static void SetResolver(Func<string, byte[]?>? resolver) => _resolver = resolver;
 
+    /// <summary>The resolver in place, for a caller that swaps one in and must put it back.</summary>
+    public static Func<string, byte[]?>? Resolver => _resolver;
+
     public static void SetExistsProbe(Func<string, bool>? probe) => _exists = probe;
 
     public static bool FileExists(string virtualPath) => _exists?.Invoke(virtualPath) ?? false;

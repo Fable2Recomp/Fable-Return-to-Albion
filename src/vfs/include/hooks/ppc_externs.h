@@ -115,6 +115,15 @@ PPC_EXTERN_FUNC(__imp__rex_luaD_precall);
 // hooks/display_box_hooks.cpp.
 PPC_EXTERN_FUNC(__imp__rex_lhDisplayMessageBox_Dtor);
 PPC_EXTERN_FUNC(__imp__rex_lhDisplayMessageBox_Open);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiManager_OpenModal);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRegistry_SetToggle);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRegistry_SetSlide);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRegistry_JumpSlide);
+// Every explicit slide statement and play/pause on a presentation — hooks/gui_slide_hooks.cpp.
+PPC_EXTERN_FUNC(__imp__rex_lhGfxTimeline_SetPaused);
+PPC_EXTERN_FUNC(__imp__rex_lhGfxElements_EvaluateTracks);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiMenu_GetHighlightedItemData);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiManager_OpenNumericAdjuster);
 PPC_EXTERN_FUNC(__imp__rex_lhDisplayMessageBox_Close);
 // hooks/reticule_hooks.cpp.
 PPC_EXTERN_FUNC(__imp__rex_lhGui_Reticule_SetActiveForObject);

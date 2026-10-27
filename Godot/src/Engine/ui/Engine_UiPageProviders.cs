@@ -22,6 +22,8 @@ public static class Engine_UiPageProviders
 	public static readonly IReadOnlyDictionary<string, float> NoRotations =
 		new Dictionary<string, float>();
 	public static readonly IReadOnlyDictionary<string, Vector3> NoPositions = new Dictionary<string, Vector3>();
+
+	public static readonly IReadOnlyDictionary<string, Color> NoTints = new Dictionary<string, Color>();
 	public static readonly IReadOnlyDictionary<string, int> NoSlides = new Dictionary<string, int>();
 
 	public const string Abilities = "abilities";
@@ -32,6 +34,9 @@ public static class Engine_UiPageProviders
 	public const string ItemBook = "item-book";
 	public const string Achievements = "achievements";
 	public const string RealEstate = "realestate";
+	public const string QuestBox = "questbox";
+	public const string QueryCard = "querycard";
+	public const string InfoCard = "infocard";
 	public const string Multiplayer = "multiplayer";
 	public const string Coop = "coop";
 
@@ -97,6 +102,9 @@ public static class Engine_UiPageProviders
 		[ItemBook] = new ItemBookProvider(),
 		[Achievements] = new AchievementsProvider(),
 		[RealEstate] = new RealEstateProvider(),
+		[QuestBox] = new QuestBoxProvider(),
+		[QueryCard] = new QueryCardProvider(),
+		[InfoCard] = new InfoCardProvider(),
 		[Multiplayer] = new MultiplayerProvider(),
 		[Coop] = new CoopProvider(),
 		[HostBox] = new HostBoxProvider(),
@@ -105,7 +113,7 @@ public static class Engine_UiPageProviders
 
 	/// <summary>The game's own provider names, which a registration may not replace.</summary>
 	public static readonly string[] ShippedNames =
-		{ Abilities, Logbook, Crime, WorldMap, Options, ItemBook, Achievements, RealEstate, Multiplayer, Coop, HostBox, Data };
+		{ Abilities, Logbook, Crime, WorldMap, Options, ItemBook, Achievements, RealEstate, QuestBox, QueryCard, InfoCard, Multiplayer, Coop, HostBox, Data };
 
 	private static readonly HashSet<string> Shipped = new(ShippedNames);
 
@@ -232,8 +240,21 @@ public static class Engine_UiPageProviders
 				values["Foreground.RightPage.buttons.LoadGroup.LoadText"] = "Select Save";
 			}
 
+			// The guest-decided captions (pickboxes, the load caption, cancel, connecting), from
+			// the screen's own data — the provider's own statements above win.
+			foreach ((string key, string text) in Coop(page).Values)
+			{
+				values.TryAdd(key, text);
+			}
+
 			return values;
 		}
+
+		private static Engine_UiCoopPage.Statements Coop(in Engine_UiPageContext page) =>
+			Engine_UiCoopPage.State(page.Strings, CoopPlayerTwoName, CoopRemotePlayerTwo);
+
+		public IReadOnlyDictionary<string, int> Slides(in Engine_UiPageContext page) =>
+			Coop(page).Slides;
 
 		/// <summary>
 		/// The two `ProfileSelector.Buttons` groups are AUTHORED AT ZERO (`auth=0`, read live),
@@ -253,7 +274,18 @@ public static class Engine_UiPageProviders
 		/// `Title2` + `icon_button_x` pair; the left page's is `icon_button_x2` and stays dark,
 		/// because the action is player two's.
 		/// </summary>
-		public IReadOnlyDictionary<string, float> Opacities(in Engine_UiPageContext page) =>
+		public IReadOnlyDictionary<string, float> Opacities(in Engine_UiPageContext page)
+		{
+			Dictionary<string, float> opacities = OwnOpacities();
+			foreach ((string key, float value) in Coop(page).Opacities)
+			{
+				opacities.TryAdd(key, value);
+			}
+
+			return opacities;
+		}
+
+		private static Dictionary<string, float> OwnOpacities() =>
 			new Dictionary<string, float>(System.StringComparer.Ordinal)
 			{
 				// THE NAME ONLY. Lighting the whole `gamertag` subtree brought the Xbox gamerpic,
@@ -364,6 +396,12 @@ public static class Engine_UiPageProviders
 			// Player two's save prompt on every machine; the henchman rows only for a henchman.
 			active["Foreground.RightPage.buttons.LoadGroup"] = true;
 			active["Foreground.RightPage.Pickbox"] = !CoopOwnHero;
+
+			// Connecting hides the right page's selector, pickboxes and buttons (`sub_82437810`).
+			foreach ((string key, bool on) in Coop(page).Active)
+			{
+				active[key] = on && (!active.TryGetValue(key, out bool own) || own);
+			}
 
 			// The save picker's cards are drawn by the shared Load Game fan
 			// (Engine_FrontEndSaveCards), as on the main menu; the guest's own copy stays dark.
@@ -478,8 +516,14 @@ public static class Engine_UiPageProviders
 
 	private sealed class LogbookProvider : Engine_UiPageProvider
 	{
+		/// <summary>The other player an orb's View Stats opened the book on; null for the hero.</summary>
+		private Refii.Host.HostBridge.LogbookOrbView? _orb;
+
+		public void Prepare(in Engine_UiPageContext page) =>
+			_orb = Refii.Host.HostBridge.GetLogbookOrbView();
+
 		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page) =>
-			Engine_UiLogbookPage.Values(page.Row, page.Hero, page.Quests, page.Strings);
+			Engine_UiLogbookPage.Values(page.Row, page.Hero, page.Quests, page.Strings, _orb);
 
 		public IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page) =>
 			Engine_UiLogbookPage.Active(page.Row);
@@ -540,12 +584,167 @@ public static class Engine_UiPageProviders
 
 		public IReadOnlyDictionary<string, int> Slides(in Engine_UiPageContext page) =>
 			Engine_UiRealEstatePage.Slides(Refii.Host.HostBridge.GetRealEstate());
+
+		/// <summary>The page that is up — the host's page turn, as on the item books. The guest
+		/// parks the other page's `Contents` at x 430; a switched-off page needs no parking.</summary>
+		public IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page) =>
+			BookPagesByOpacity(BookPage, RealEstatePageElements);
+
+		public IReadOnlyDictionary<string, Vector3> Positions(in Engine_UiPageContext page) =>
+			BookPage >= 0 && BookPage < RealEstatePageElements.Length
+				? new Dictionary<string, Vector3>(1) { [$"{RealEstatePageElements[BookPage]}.Contents"] = Vector3.Zero }
+				: NoPositions;
+	}
+
+	private static readonly string[] RealEstatePageElements =
+	{
+		"Foreground.Book.Pages.Page1", "Foreground.Book.Pages.Page2",
+	};
+
+	/// <summary>The quest box (screen 5): a box page, filled whenever it draws, from the call that
+	/// opened it — see <see cref="Engine_UiQuestBoxPage"/>.</summary>
+	private sealed class QuestBoxProvider : Engine_UiPageProvider
+	{
+		public bool FillsOnDraw => true;
+
+		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page) =>
+			Engine_UiQuestBoxPage.Values();
+
+		public IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page) =>
+			Engine_UiQuestBoxPage.Active();
+
+		public IReadOnlyDictionary<string, int> Slides(in Engine_UiPageContext page) =>
+			Engine_UiQuestBoxPage.Slides();
+	}
+
+	/// <summary>
+	/// The villager card (screen 10). Its text, toggles and meters are registry statements; the
+	/// one direct write is the rename prompt, `elements.buttons` slide 1 when the subject can be
+	/// renamed and 2 when not (`sub_826CCFC0` 0x826cd14c..84 → `sub_823A3C40`: the subject's
+	/// component-20 byte `+34`, unless its name key `+48` is one of the five charity children).
+	/// </summary>
+	private sealed class QueryCardProvider : Engine_UiPageProvider
+	{
+		public bool FillsOnDraw => true;
+
+		private static readonly uint[] CharityChildren =
+		{
+			Refii.Core.Engine_GameHash.Fnv1("TEXT_CREATURE_NAME_CHILDSPLAYCHARITY_FARMER"),
+			Refii.Core.Engine_GameHash.Fnv1("TEXT_CREATURE_NAME_CHILDSPLAYCHARITY_MONK"),
+			Refii.Core.Engine_GameHash.Fnv1("TEXT_CREATURE_NAME_CHILDSPLAYCHARITY_POSH"),
+			Refii.Core.Engine_GameHash.Fnv1("TEXT_CREATURE_NAME_CHILDSPLAYCHARITY_QUEST"),
+			Refii.Core.Engine_GameHash.Fnv1("TEXT_CREATURE_NAME_CHILDSPLAYCHARITY_SHOPKEEPER"),
+		};
+
+		public IReadOnlyDictionary<string, int> Slides(in Engine_UiPageContext page)
+		{
+			(bool known, uint key, bool byteSet) = Refii.Host.HostBridge.GetQueryCard();
+			if (!known)
+			{
+				return NoSlides;
+			}
+
+			bool renamable = byteSet && System.Array.IndexOf(CharityChildren, key) < 0;
+			return new Dictionary<string, int> { ["elements.buttons"] = renamable ? 1 : 2 };
+		}
+	}
+
+	/// <summary>
+	/// The display box's info card (screen 7, `Paper`): a style-0 `DisplayInfoBoxParams` call,
+	/// written by its open `sub_8299E490` — `Paper.Text` the call's text, `Paper.Title` its title,
+	/// `Paper.Accept` the accept caption shown iff `ShowAButton` with `Paper.HoldButton` to match
+	/// and `HoldMeter` iff `IsHoldAButton`, `Paper.Info` the help caption shown iff `ShowYButton`
+	/// with `Paper.abyx`, and the root on slide 7. Stated from the call, filled as it draws.
+	/// </summary>
+	private sealed class InfoCardProvider : Engine_UiPageProvider
+	{
+		public bool FillsOnDraw => true;
+
+		private static Engine_UiGuiBoxes.Box? Card => Engine_UiGuiBoxes.StatedCard;
+
+		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page)
+		{
+			if (Card is not { } card)
+			{
+				return NoValues;
+			}
+
+			var values = new Dictionary<string, string>
+			{
+				["Paper.Text"] = card.Text,
+				["Paper.Title"] = card.Title,
+			};
+			if (card.Buttons is { } buttons)
+			{
+				values["Paper.Accept"] = buttons.AcceptText;
+				values["Paper.Info"] = buttons.HelpText;
+			}
+
+			return values;
+		}
+
+		public IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page)
+		{
+			if (Card?.Buttons is not { } buttons)
+			{
+				return NoActive;
+			}
+
+			return new Dictionary<string, bool>
+			{
+				["Paper.Accept"] = buttons.ShowA,
+				["Paper.Info"] = buttons.ShowY,
+				["Paper.abyx"] = buttons.ShowY,
+			};
+		}
+
+		public IReadOnlyDictionary<string, float> Opacities(in Engine_UiPageContext page) =>
+			Card?.Buttons is { } buttons
+				? new Dictionary<string, float>
+				{
+					["Paper.HoldButton"] = buttons.ShowA ? 1f : 0f,
+					["Paper.HoldButton.HoldMeter"] = buttons.HoldA ? 1f : 0f,
+				}
+				: NoOpacities;
+
+		public IReadOnlyDictionary<string, int> Slides(in Engine_UiPageContext page) =>
+			Card is null ? NoSlides : new Dictionary<string, int> { ["#0"] = 7 };
 	}
 
 	private sealed class CrimeProvider : Engine_UiPageProvider
 	{
-		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page) =>
-			Engine_UiCrimePage.Values(page.Crime, page.Strings);
+		/// <summary>The pages' text, and the purse the tick writes every frame
+		/// (`Foreground.ExpandableMenu.Money.Text`, `sub_8246B5E8`: the gold token and the gold).</summary>
+		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page)
+		{
+			IReadOnlyDictionary<string, string> text = Engine_UiCrimePage.Values(page.Crime, page.Strings);
+			if (!page.Vitals.Known)
+			{
+				return text;
+			}
+
+			var values = new Dictionary<string, string>(text)
+			{
+				["ExpandableMenu.Money.Text"] = "<gold_img>" +
+					page.Vitals.Gold.ToString(System.Globalization.CultureInfo.InvariantCulture),
+			};
+			return values;
+		}
+
+		/// <summary>
+		/// THE PAGES PARK BY SLIDE (`sub_82990B30` 0x82990c78..d0): for the book's second and
+		/// third page, slide 2 when it is the one up and slide 1 otherwise; the first page owns
+		/// none.
+		/// </summary>
+		public IReadOnlyDictionary<string, int> Slides(in Engine_UiPageContext page)
+		{
+			string up = page.Row?.Name ?? string.Empty;
+			return new Dictionary<string, int>
+			{
+				["Foreground.Book.Pages.Page2"] = up == "ResistArrest" ? 2 : 1,
+				["Foreground.Book.Pages.Page3"] = up == "CommunityService" ? 2 : 1,
+			};
+		}
 
 		/// <summary>
 		/// `crimescreen.bgf` authors THREE pages of identical shape, one per row, and
@@ -556,8 +755,9 @@ public static class Engine_UiPageProviders
 		/// fine, and Page3's terms branch is gated on the same flag that gates the
 		/// CommunityService row, which leaves the bare-charges Page2 for ResistArrest.
 		/// </summary>
-		public IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page) =>
-			BookPagesByOpacity(
+		public IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page)
+		{
+			Dictionary<string, bool> active = BookPagesByOpacity(
 				page.Row?.Name switch
 				{
 					"PayFine" => 0,
@@ -566,6 +766,15 @@ public static class Engine_UiPageProviders
 					_ => 0,
 				},
 				PagesOf(page, CrimePageElements));
+
+			// The A prompt on the pay page iff the fine can be paid, on the service page iff
+			// service is available (`sub_826A90D8`: screen+0x2C / +0x2D).
+			active["Page1.Contents.Select.icon_button_a"] = page.Crime.CanPayFine;
+			active["Page1.Contents.Select.Select"] = page.Crime.CanPayFine;
+			active["Page3.Contents.Select.icon_button_a"] = page.Crime.CanServe;
+			active["Page3.Contents.Select.Select"] = page.Crime.CanServe;
+			return active;
+		}
 	}
 
 	private sealed class WorldMapProvider : Engine_UiPageProvider
@@ -678,6 +887,55 @@ public static class Engine_UiPageProviders
 			_ => 0,
 		};
 
+		/// <summary>
+		/// Each page's value widgets, top to bottom — the order the guest's own page cursor
+		/// (`page+40`) counts them: Game's five pickboxes; Controls' invert-camera pickbox;
+		/// Video's gamma slider; Audio's three volume sliders and the speaker pickbox.
+		/// </summary>
+		private static readonly string[][] OptionWidgets =
+		{
+			new[]
+			{
+				"Contents.Options.Subtitles_pickbox", "Contents.Options.BreadcrumbSize_pickbox",
+				"Contents.Options.TutorialBoxes_pickbox", "Contents.Options.MultiplayerOrbs_pickbox",
+				"Contents.Options.Auto_joinable_pickbox",
+			},
+			new[] { "Contents.pickbox1" },
+			new[] { "Contents.slider1" },
+			new[] { "Contents.slider1", "Contents.slider2", "Contents.slider3", "Contents.pickbox1" },
+		};
+
+		/// <summary>
+		/// THE PAGE CURSOR'S ROW IS `selected` (slide 2), every other row `unselected` (1) — the
+		/// widgets' own slides, whose entries show the selection frame on the cursor's row alone.
+		/// The cursor is the page's (the pending tracker's row, which follows the guest's
+		/// `page+40`), the first row while the list level is up — as the guest leaves it.
+		/// A host options page draws its own rows.
+		/// </summary>
+		public IReadOnlyDictionary<string, int> Slides(in Engine_UiPageContext page)
+		{
+			if (Engine_UiHostOptionsPage.Open)
+			{
+				return NoSlides;
+			}
+
+			string[] pages = PagesOf(page, OptionsPageElements);
+			int index = PageIndexOf(PickedRow(page));
+			if (index < 0 || index >= pages.Length || index >= OptionWidgets.Length)
+			{
+				return NoSlides;
+			}
+
+			int cursor = Engine_UiOptionsPending.Open ? Engine_UiOptionsPending.Row : 0;
+			var slides = new Dictionary<string, int>(OptionWidgets[index].Length);
+			for (int row = 0; row < OptionWidgets[index].Length; ++row)
+			{
+				slides[$"{pages[index]}.{OptionWidgets[index][row]}"] = row == cursor ? 2 : 1;
+			}
+
+			return slides;
+		}
+
 		public bool NeedsOptionSliders => true;
 	}
 
@@ -688,12 +946,118 @@ public static class Engine_UiPageProviders
 	/// </summary>
 	private sealed class ItemBookProvider : Engine_UiPageProvider
 	{
-		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page) =>
-			Engine_UiItemPage.Values(page.Row, page.Strings);
+		/// <summary>The item's lines; on the decoration book also the list title, which its enter
+		/// writes once (`sub_826B6FE8` 0x826b70b8..e8: `GUI_SCREEN_TITLE_DECORATION`).</summary>
+		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page)
+		{
+			// Upgrade furniture: a row is a LEVEL, not an item — its pages are the piece's
+			// (Engine_UiFurniturePage), with the `Done` prompt both page inits write
+			// (`sub_8299BF48`, `sub_8299CEA8`) and the purse the screen's open writes.
+			if (page.ScreenId == Engine_UiFurniturePage.ScreenId)
+			{
+				var furniture = new Dictionary<string, string>(
+					Engine_UiFurniturePage.State(page.Row, page.Strings)?.Values ?? new Dictionary<string, string>());
+				string done = page.Strings is { } doneBook && doneBook.TryGetString("GUI_DONE", out string caption) ? caption : string.Empty;
+				furniture["Page1.Contents.PageButtons.B.B.Text"] = done;
+				furniture["Page2.Contents.PageButtons.B.B.Text"] = done;
+				if (page.Vitals.Known)
+				{
+					furniture["ExpandableMenu.Money.Text"] = "<gold_img>" +
+						page.Vitals.Gold.ToString(System.Globalization.CultureInfo.InvariantCulture);
+				}
 
+				return furniture;
+			}
+
+			IReadOnlyDictionary<string, string> lines = Engine_UiItemPage.Values(page.Row, page.Strings);
+
+			// The shop's front page: the guest's own answers (Engine_UiShopFrontPage).
+			if (page.ScreenId == ShopScreenId && Engine_UiShopFrontPage.State(page.Strings) is { } front)
+			{
+				var shop = new Dictionary<string, string>(lines);
+				foreach ((string key, string text) in front.Values)
+				{
+					shop[key] = text;
+				}
+
+				return shop;
+			}
+
+			if (page.ScreenId != DecorationScreenId)
+			{
+				return lines;
+			}
+
+			var values = new Dictionary<string, string>(lines);
+			values["ExpandableMenu.Title.Group.Title"] =
+				page.Strings is { } book && book.TryGetString("GUI_SCREEN_TITLE_DECORATION", out string title)
+					? title
+					: string.Empty;
+			return values;
+		}
+
+		/// <summary>
+		/// The item's picture; on the GIFT book a gold row (type 7) shows the bag
+		/// (`sub_829AA588` 0x829aa738: `Art\GUI\WheelIcons\Items\icon_bag.tex`).
+		/// </summary>
 		public IReadOnlyDictionary<string, uint> Textures(in Engine_UiPageContext page) =>
-			Engine_UiItemPage.Textures(page.Row);
+			page.ScreenId == GiftScreenId && page.Row?.EventType == GiftGoldEventType
+				? GoldBag
+				: page.ScreenId == Engine_UiFurniturePage.ScreenId
+					? NoTextures
+					: Engine_UiItemPage.Textures(page.Row);
 
+		private static readonly IReadOnlyDictionary<string, uint> GoldBag =
+			new Dictionary<string, uint>
+			{
+				["Contents.ItemImage"] = Refii.Core.Engine_GameHash.ResourcePath(@"Art\GUI\WheelIcons\Items\icon_bag.tex"),
+			};
+
+		/// <summary>Elements the guest's page refresh switches by the row, per book:
+		/// <list type="bullet">
+		/// <item>items (15): the A prompt on both pages shows iff the item is
+		/// `UsableFromInventory` (`sub_827649C8`; 0x829b50b0, 0x829b6c58).</item>
+		/// <item>gift (25): a gold row hides the value lines and the stars (0x829aa008..30).</item>
+		/// <item>decoration (27): the picture is hidden on every refresh (0x8299c4dc); the value
+		/// lines and stars are hidden at enter and never shown (0x8299cf40..6c).</item>
+		/// </list></summary>
+		private static void RowSwitches(Dictionary<string, bool> active, in Engine_UiPageContext page)
+		{
+			bool item = page.Row is { } row && row.EventType != (int)Engine_UiMenuConstants.EventType.Submenu;
+			switch (page.ScreenId)
+			{
+				case ItemsScreenId when item:
+					bool usable = Engine_UiItemPage.Usable(page.Row);
+					active["PageButtons.A.A.Text"] = usable;
+					active["PageButtons.A.A.a_button"] = usable;
+					break;
+
+				case GiftScreenId when page.Row?.EventType == GiftGoldEventType:
+				case DecorationScreenId:
+				case Engine_UiFurniturePage.ScreenId:
+					active["Contents.ItemValue"] = false;
+					active["Contents.ItemValueName"] = false;
+					active["Contents.StarRating"] = false;
+					if (page.ScreenId == DecorationScreenId)
+					{
+						active["Page1.Contents.ItemImage"] = false;
+					}
+
+					break;
+			}
+		}
+
+		/// <summary>The dye swatch on the items book: shown and tinted to the dye's colour for a
+		/// dye (0x829b53dc, 0x829b5418), at rest (hidden) otherwise.</summary>
+		public IReadOnlyDictionary<string, Color> Tints(in Engine_UiPageContext page) =>
+			page.ScreenId == ItemsScreenId && Engine_UiItemPage.DyeColour(page.Row) is { } dye
+				? new Dictionary<string, Color> { [DyeSwatch + ".dynamic"] = dye }
+				: page.ScreenId == Engine_UiFurniturePage.ScreenId &&
+					Engine_UiFurniturePage.State(page.Row, page.Strings) is { } furniture
+						? furniture.Tints
+						: NoTints;
+
+		private const string DyeSwatch = "Foreground.Book.Pages.Page1.Contents.DyeSwatch";
 
 		/// <summary>The page that is up, plus the star strip.</summary>
 		public IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page)
@@ -702,6 +1066,7 @@ public static class Engine_UiPageProviders
 				BookPage, page.Row,
 				page.ScreenId == ShopScreenId ? ShopPageElements : BookPageElements);
 			AddItemStars(active, page.Row);
+			RowSwitches(active, page);
 
 			// THE SHOP'S FRONT PAGE IS ITS OWN UNIT. `Foreground.FrontPage` (name, owner,
 			// keeper, discount, wealth) is not one of the book's pages; the guest shows it on
@@ -713,6 +1078,13 @@ public static class Engine_UiPageProviders
 					page.Row is null ||
 					page.Row.EventType == (int)Engine_UiMenuConstants.EventType.Submenu;
 				Engine_UiItemPage.ShopStatsActive(active, ShopPageElements[ShopStatsPage]);
+				if (Engine_UiShopFrontPage.State(page.Strings) is { } front)
+				{
+					foreach ((string key, bool on) in front.Active)
+					{
+						active[key] = on;
+					}
+				}
 			}
 
 			return active;
@@ -737,6 +1109,16 @@ public static class Engine_UiPageProviders
 				return folder ? ShopFrontPageParchment : NoOpacities;
 			}
 
+			if (page.ScreenId == ItemsScreenId && Engine_UiItemPage.DyeColour(page.Row) is not null)
+			{
+				return DyeShown;
+			}
+
+			if (page.ScreenId == Engine_UiFurniturePage.ScreenId)
+			{
+				return Engine_UiFurniturePage.State(page.Row, page.Strings)?.Opacities ?? NoOpacities;
+			}
+
 			return page.ScreenId == EquipmentScreenId && !folder ? EquipmentFooter : NoOpacities;
 		}
 
@@ -753,6 +1135,9 @@ public static class Engine_UiPageProviders
 			{
 				["Foreground.Book.Pages.Page1.Contents.Footer.*"] = float.NaN,
 			};
+
+		private static readonly IReadOnlyDictionary<string, float> DyeShown =
+			new Dictionary<string, float>(System.StringComparer.Ordinal) { [DyeSwatch] = 1f };
 
 		private static readonly IReadOnlyDictionary<string, float> ShopFrontPageParchment =
 			new Dictionary<string, float>(System.StringComparer.Ordinal)
@@ -868,6 +1253,40 @@ public static class Engine_UiPageProviders
 				slides["Foreground.Book.Pages.Page1.Contents.Footer"] = FooterNormalSlide;
 			}
 
+			// THE DECORATION PROMPTS (`sub_8299BF48` 0x8299bf7c, `sub_8299CEA8` 0x8299cef0: both
+			// pages' `PageButtons` on slide 10; `sub_8299C008` / `sub_8299CF80`): on the placed
+			// item (row id 0x0FFFFFFF) Y is offered (Y 1, A 2), otherwise A (Y 2, A 1).
+			if (page.ScreenId == ShopScreenId && Engine_UiShopFrontPage.State(page.Strings) is { } front)
+			{
+				// The front page's stars are its writer's (`2·trunc(stars)`), not a row's.
+				slides.Remove("FrontPage.Contents.StarRating");
+				foreach ((string key, int slide) in front.Slides)
+				{
+					slides[key] = slide;
+				}
+			}
+
+			// Upgrade furniture's pages put `PageButtons` on slide 10 too (`sub_8299BF48`, `sub_8299CEA8`).
+			if (page.ScreenId == Engine_UiFurniturePage.ScreenId)
+			{
+				foreach (string side in BookPageElements)
+				{
+					slides[$"{side}.Contents.PageButtons"] = DecorationButtonsSlide;
+				}
+			}
+
+			if (page.ScreenId == DecorationScreenId)
+			{
+				bool placed = page.Row is { } row &&
+					(((uint)row.IdHigh << 16) | ((uint)row.IdLow & 0xFFFFu)) == DecorationPlacedId;
+				foreach (string side in BookPageElements)
+				{
+					slides[$"{side}.Contents.PageButtons"] = DecorationButtonsSlide;
+					slides[$"{side}.Contents.PageButtons.Y"] = placed ? 1 : 2;
+					slides[$"{side}.Contents.PageButtons.A"] = placed ? 2 : 1;
+				}
+			}
+
 			return slides;
 		}
 
@@ -894,6 +1313,21 @@ public static class Engine_UiPageProviders
 	}
 
 	private const uint ShopScreenId = 22;
+
+	private const uint ItemsScreenId = 15;
+
+	private const uint GiftScreenId = 25;
+
+	private const uint DecorationScreenId = 27;
+
+	/// <summary>The gift book's gold row (`sub_826C4468` 0x826c454c).</summary>
+	private const int GiftGoldEventType = 7;
+
+	/// <summary>The decoration list's row for the item already placed (`sub_8299C008`).</summary>
+	private const uint DecorationPlacedId = 0x0FFFFFFFu;
+
+	/// <summary>`PageButtons` slide 10 on the decoration book's pages.</summary>
+	private const int DecorationButtonsSlide = 10;
 
 	/// <summary>The shop's stats page — `Page2` of `shopscreen.bgf`.</summary>
 	private const int ShopStatsPage = 1;
@@ -1056,19 +1490,6 @@ public static class Engine_UiPageProviders
 			? screen.Pages.ToArray()
 			: fallback;
 
-	private static void AddPagePrompts(Dictionary<string, bool> active, string[] pages)
-	{
-		foreach (string page in pages)
-		{
-			active[$"{page}.Contents.PageButtons.A"] = true;
-			foreach (string unused in PromptsNotOffered)
-			{
-				active[$"{page}.Contents.PageButtons.{unused}"] = false;
-			}
-		}
-	}
-
-	private static readonly string[] PromptsNotOffered = { "B", "X", "Y" };
 
 
 	private static void AddItemStars(

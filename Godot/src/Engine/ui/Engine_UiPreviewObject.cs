@@ -17,6 +17,11 @@ namespace Refii.Ui;
 /// (`GUIScreenTranslationOffset` / `GUIScreenRotationOffset` / `GUIScreenScaleMultiplier` /
 /// `GUIScreenRotationAxis`), and the spin, written as `rotation.x/y/z` on the anchor element
 /// every frame.
+///
+/// DRAWN ON THE GUI STAGE (<see cref="Engine_UiFigureStage"/>), the original's own lit
+/// perspective world, as the co-op figures are: this node keeps the placement — anchor, offsets,
+/// axis swizzle, spin, fit — on a hidden mesh, and the stage draws its twin with the model's own
+/// materials (Engine_UiStageMaterial), glass see-through and cutouts cut.
 /// </remarks>
 public partial class Engine_UiPreviewObject : Node3D
 {
@@ -138,11 +143,10 @@ public partial class Engine_UiPreviewObject : Node3D
 			dyed = $", dyed ({dye.Count} composite(s))";
 		}
 
-		_mesh = new MeshInstance3D { Name = MeshName, Mesh = mesh };
-		int textured = Present(_mesh, mesh);
+		_mesh = new MeshInstance3D { Name = MeshName, Mesh = mesh, Visible = false };
 		AddChild(_mesh);
-		LastReport = $"{path} ({textured}/{mesh.GetSurfaceCount()} surface(s) textured{dyed})";
 		Apply(placement);
+		LastReport = $"{path}{dyed}: {Draw() ?? "on the stage"}";
 		Visible = true;
 		return true;
 	}
@@ -197,12 +201,14 @@ public partial class Engine_UiPreviewObject : Node3D
 			if (mesh is not null && !ReferenceEquals(_mesh.Mesh, mesh))
 			{
 				_mesh.Mesh = mesh;
-				int retextured = Present(_mesh, mesh);
-				LastReport = $"live entity 0x{key:X8} redressed ({retextured}/{mesh.GetSurfaceCount()} " +
-					"surface(s) textured)";
 			}
 
 			Apply(placement);
+			if (Draw() is { } redressed)
+			{
+				LastReport = $"live entity 0x{key:X8} redressed: {redressed}";
+			}
+
 			Visible = true;
 			return true;
 		}
@@ -217,11 +223,16 @@ public partial class Engine_UiPreviewObject : Node3D
 		ModelHash = 0;
 		_liveKey = key;
 		_mesh?.QueueFree();
-		_mesh = new MeshInstance3D { Name = MeshName, Mesh = mesh, Skin = skin };
-		int textured = Present(_mesh, mesh);
+		_mesh = new MeshInstance3D { Name = MeshName, Mesh = mesh, Skin = skin, Visible = false };
 		AddChild(_mesh);
-		LastReport = $"live entity 0x{key:X8} ({textured}/{mesh.GetSurfaceCount()} surface(s) textured)";
+		if (skeleton is not null && GodotObject.IsInstanceValid(skeleton) && skeleton.IsInsideTree() &&
+			_mesh.IsInsideTree())
+		{
+			_mesh.Skeleton = _mesh.GetPathTo(skeleton);
+		}
+
 		Apply(placement);
+		LastReport = $"live entity 0x{key:X8}: {Draw() ?? "on the stage"}";
 		Visible = true;
 		return true;
 	}
@@ -258,49 +269,82 @@ public partial class Engine_UiPreviewObject : Node3D
 		return hash == 0UL ? 1UL : hash;
 	}
 
-	/// Gives each surface an unlit material carrying the model's own albedo.
-	///
-	/// The model arrives with `Engine_MdlMaterial`'s lit world shader, which reads as a pink
-	/// smear under the UI viewport's canvas camera. A host presentation choice, not a claim about
-	/// the original: take the albedo and show it unlit. A surface stating no albedo gets neutral
-	/// grey, so an untextured item reads as missing art rather than a rendering fault.
+	/// <summary>The GUI stage this preview's model is drawn on, created with the first model.</summary>
+	private Engine_UiFigureStage? _stage;
+
+	/// <summary>
+	/// OVER THE PAGE BY DEPTH. The stage's quad stands this far in front of the anchor in canvas
+	/// units: the item books' anchor lies 350 behind the parchment (`model_proxy.model` z 1900,
+	/// `frames_page` z 2249).
 	/// </summary>
-	private static int Present(MeshInstance3D instance, Mesh mesh)
+	private const float PageClearance = 400f;
+
+	/// <summary>
+	/// Draws the hidden placement mesh's twin on the stage. The stage is seated on the canvas at
+	/// the view's centre, <see cref="PageClearance"/> in front of the anchor, and covers the
+	/// visible canvas; the model stands at its canvas point measured from the anchor's depth, so
+	/// the anchor's plane is the stage's 40 m plane and the model's size there is its canvas
+	/// size. Returns the stage's dressing report when the model changed.
+	/// </summary>
+	private string? Draw()
 	{
-		int textured = 0;
-		for (int surface = 0; surface < mesh.GetSurfaceCount(); ++surface)
+		if (_mesh is null || !IsInsideTree() || GetViewport() is not { } viewport)
 		{
-			// The modern albedo or the classic diffuse sampler, whichever the model was built with.
-			Texture2D? albedo = mesh.SurfaceGetMaterial(surface) is ShaderMaterial source
-				? Refii.Models.Engine_ClassicMaterial.Albedo(source)
-				: null;
-
-			var flat = new StandardMaterial3D
-			{
-				// Unlit, as stated above: the UI viewport has no environment, and a lone key
-				// light inside the clone's mirrored basis read every item as a flat grey ball.
-				ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-				// DEPTH-TESTED, ALWAYS. The guest drew its preview as a real entity in its own
-				// pass, so it sat on top of the book and occluded itself. A depth-free draw
-				// paints triangles in index order — far faces over near ones, a see-through
-				// model as it turns. Over-the-page comes from `Centre` lifting the mesh toward
-				// the orthographic camera instead.
-				// NO CULLING: the anchor's basis is mirrored (see the light note above), so a
-				// back-face cull removes the faces the player sees.
-				CullMode = BaseMaterial3D.CullModeEnum.Disabled,
-				AlbedoTexture = albedo,
-				AlbedoColor = albedo is null ? new Color(0.62f, 0.60f, 0.56f) : Colors.White,
-			};
-
-			if (albedo is not null)
-			{
-				++textured;
-			}
-
-			instance.SetSurfaceOverrideMaterial(surface, flat);
+			_stage?.HideAll();
+			return null;
 		}
 
-		return textured;
+		Transform3D own = Engine_UiTheme.CanvasTransform(this);
+		if (Mathf.Abs(own.Basis.Determinant()) < 1e-9f)
+		{
+			// Scaled away by its anchor: nothing stands.
+			_stage?.HideAll();
+			return null;
+		}
+
+		if (_stage is null)
+		{
+			_stage = new Engine_UiFigureStage { Name = "PreviewStage" };
+			AddChild(_stage);
+		}
+
+		_stage.Transform = own.AffineInverse() *
+			new Transform3D(Basis.Identity, new Vector3(0f, 0f, own.Origin.Z + PageClearance));
+		_stage.Frame(
+			Engine_UiSceneBuilder.VisibleHalfWidth,
+			Engine_UiSceneBuilder.CanvasHeight / Engine_UiSceneBuilder.PixelsPerUnit,
+			(Vector2I)viewport.GetVisibleRect().Size);
+
+		Transform3D placed = Engine_UiTheme.CanvasTransform(_mesh);
+		placed.Origin = new Vector3(placed.Origin.X, placed.Origin.Y, placed.Origin.Z - own.Origin.Z);
+		return _stage.Mirror(0, _mesh, placed);
+	}
+
+	public override void _Process(double delta)
+	{
+		if (_mesh is not null && IsVisibleInTree())
+		{
+			Draw();
+		}
+		else if (_stage is not null && _stage.Visible)
+		{
+			_stage.HideAll();
+		}
+	}
+
+	/// <summary>
+	/// The model's extent on the canvas, from its placement mesh, or null when nothing stands —
+	/// what a press must land near to grab it.
+	/// </summary>
+	public Rect2? CanvasBounds()
+	{
+		if (_mesh?.Mesh is null || !IsVisibleInTree())
+		{
+			return null;
+		}
+
+		Aabb box = _mesh.GlobalTransform * _mesh.GetAabb();
+		return new Rect2(box.Position.X, box.Position.Y, box.Size.X, box.Size.Y);
 	}
 
 	/// <summary>The player's turn of the model about the panel's vertical, in degrees.</summary>
@@ -313,6 +357,7 @@ public partial class Engine_UiPreviewObject : Node3D
 
 		_yaw = Mathf.DegToRad(yawDegrees);
 		Orient();
+		Draw();
 	}
 
 	private void Orient()
@@ -394,32 +439,6 @@ public partial class Engine_UiPreviewObject : Node3D
 		_mesh.Position = _placed.Hung
 			? _placedOffset
 			: _placedOffset - _mesh.Basis * _meshCentre;
-		Lift();
-	}
-
-	/// <summary>
-	/// Clear of the page, in canvas units: the item books' anchor lies 350 behind the parchment
-	/// (`model_proxy.model` z 1900, `frames_page` z 2249).
-	/// </summary>
-	private const float PageClearance = 400f;
-
-	/// <summary>
-	/// OVER THE PAGE BY DEPTH, NOT BY DRAW ORDER. The UI camera is orthographic, so moving the
-	/// mesh along the view axis changes what it occludes and nothing about its size. It is
-	/// lifted past the parchment by its own radius, so no turn of it dips back into the page.
-	/// </summary>
-	private void Lift()
-	{
-		if (_mesh is null || !_mesh.IsInsideTree() ||
-			GetViewport()?.GetCamera3D() is not { } camera)
-		{
-			return;
-		}
-
-		Vector3 extent = _mesh.Mesh?.GetAabb().Size ?? Vector3.Zero;
-		float radius = (_meshCentre.Length() + (0.5f * extent.Length())) *
-			Mathf.Abs(_mesh.GlobalTransform.Basis.Scale.X);
-		_mesh.GlobalPosition += camera.GlobalTransform.Basis.Z * (PageClearance + radius);
 	}
 
 	private void Apply(Placement placement)
@@ -468,15 +487,6 @@ public partial class Engine_UiPreviewObject : Node3D
 		_drawnScale = fitted / inherited;
 		_placed = placement;
 		Orient();
-
-		// The guest lights the object with the presentation's own key light. The UI viewport owns
-		// its world, so a light here reaches nothing else.
-		if (GetNodeOrNull<DirectionalLight3D>("KeyLight") is null)
-		{
-			var key = new DirectionalLight3D { Name = "KeyLight", LightEnergy = 1.2f };
-			key.RotationDegrees = new Vector3(-40f, 35f, 0f);
-			AddChild(key);
-		}
 
 		// Carried on the report the caller prints once per model: what the guest stated, the
 		// model's size, and what the fit had to do about it.

@@ -126,6 +126,35 @@ public sealed class Engine_UiElementResolve
 
 	public Vector3[] SlidScale { get; }
 
+	/// <summary>
+	/// THE PLAYING SLIDES' TRACKS: per element, the value each channel's animation wrote this
+	/// frame, NaN where none did — <see cref="Engine_UiSlidePlayback.Channels"/> floats per element.
+	/// The engine evaluates active tracks every frame after the slide's commands (`sub_822846B0`),
+	/// so a track stands over the slid value and under a stated write. Null on a book whose
+	/// sample already carries the guest's own playback.
+	/// </summary>
+	public float[]? Animated { get; private set; }
+
+	/// <summary>Per element: outside its component's time window this frame (`sub_822849A0`).</summary>
+	public bool[]? Closed { get; private set; }
+
+	/// <summary>States this frame's playback; null leaves the slid values alone.</summary>
+	public void Animate(float[]? animated, bool[]? closed)
+	{
+		Animated = animated;
+		Closed = closed;
+	}
+
+	/// <summary>An element's authored node.</summary>
+	public UiNode Node(int ordinal) => _screen.Nodes[ordinal];
+
+	/// <summary>One animated channel of an element, or NaN.</summary>
+	public float AnimatedValue(int ordinal, Engine_UiSlidePlayback.Channel channel) =>
+		Animated is { } values && ordinal >= 0
+			&& (ordinal * Engine_UiSlidePlayback.Channels) + (int)channel < values.Length
+			? values[(ordinal * Engine_UiSlidePlayback.Channels) + (int)channel]
+			: float.NaN;
+
 	/// <summary>Bumped whenever the slide pass ran, so a consumer can rewrite only on a change.</summary>
 	public int SlideRevision { get; private set; }
 
@@ -234,12 +263,14 @@ public sealed class Engine_UiElementResolve
 			// names every subject page inactive and the guest then lit the chosen one. A host
 			// switch ON is that later write, so it is not gated by the slide's entry.
 			bool forced = switchedOn is not null && i < switchedOn.Count && switchedOn[i];
-			Drawn[i] = own && (_slid[i] || forced) && parentDraws;
+			bool closed = Closed is { } shut && i < shut.Length && shut[i];
+			Drawn[i] = own && (_slid[i] || forced) && parentDraws && !closed;
 
 			bool fromGuest = opacity is not null && i < opacity.Count && opacity[i] is not null;
+			float animated = AnimatedValue(i, Engine_UiSlidePlayback.Channel.Opacity);
 			float stated = fromGuest
 				? Mathf.Clamp(opacity![i]!.Value, 0f, 100f)
-				: _slidOpacity[i];
+				: !float.IsNaN(animated) ? Mathf.Clamp(animated, 0f, 100f) : _slidOpacity[i];
 
 			Stated[i] = fromGuest;
 			Own[i] = stated / 100f;

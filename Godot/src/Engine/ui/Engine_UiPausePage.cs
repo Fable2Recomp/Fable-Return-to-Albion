@@ -6,11 +6,8 @@ namespace Refii.Ui;
 /// <summary>
 /// THE PAUSE ROOT'S READOUTS, PULLED RATHER THAN MIRRORED.
 ///
-/// These six fields — renown, the purse and the four experience orbs — were the pause page's
-/// last guest-fed numbers. They arrived through the screen's `LiveTexts` list, which re-meshes
-/// whatever the mirrored tree last said, so they were correct exactly as long as the guest kept
-/// writing them and silently stale the moment it stopped. That is the same failure the ability
-/// movie and the region page had, in the one place a player looks first.
+/// Renown, the purse, the clock and the four experience orbs, read off the hero the host already
+/// samples rather than off the guest's presentation.
 ///
 /// The compositions are the guest's own (`sub_826A4D50`, the pause root's per-tick filler):
 ///

@@ -720,8 +720,38 @@ public sealed class Engine_UiCloneBinding
 		// The base is the SLIDE's, not the cloned node's own transform (which bakes the preview
 		// slide). Order is the engine's: element attributes at load, slide on switch, stated
 		// runtime write last.
-		Vector3 slid = resolve.SlidPosition[source] + bound.Shift;
+		Vector3 slid = resolve.SlidPosition[source];
 		Vector3 scale = resolve.SlidScale[source];
+		Vector3 pivot = bound.Pivot;
+		Basis? turned = null;
+
+		// The playing slide's tracks, written every frame over the slide's commands.
+		if (resolve.Animated is not null)
+		{
+			slid = Animate(resolve, source, slid, Engine_UiSlidePlayback.Channel.PositionX);
+			scale = Animate(resolve, source, scale, Engine_UiSlidePlayback.Channel.ScaleX);
+			float px = resolve.AnimatedValue(source, Engine_UiSlidePlayback.Channel.PivotX);
+			float py = resolve.AnimatedValue(source, Engine_UiSlidePlayback.Channel.PivotY);
+			float pz = resolve.AnimatedValue(source, Engine_UiSlidePlayback.Channel.PivotZ);
+			pivot = new Vector3(
+				float.IsNaN(px) ? pivot.X : px,
+				float.IsNaN(py) ? pivot.Y : py,
+				float.IsNaN(pz) ? pivot.Z : Engine_UiSceneBuilder.ToGodotZ(pz));
+
+			float turnX = resolve.AnimatedValue(source, Engine_UiSlidePlayback.Channel.RotationX);
+			float turnY = resolve.AnimatedValue(source, Engine_UiSlidePlayback.Channel.RotationY);
+			float turnZ = resolve.AnimatedValue(source, Engine_UiSlidePlayback.Channel.RotationZ);
+			if (!float.IsNaN(turnX) || !float.IsNaN(turnY) || !float.IsNaN(turnZ))
+			{
+				UiNode authored = resolve.Node(source);
+				turned = Basis.FromEuler(new Vector3(
+					-(float.IsNaN(turnX) ? authored.RotationX : turnX),
+					-(float.IsNaN(turnY) ? authored.RotationY : turnY),
+					float.IsNaN(turnZ) ? authored.RotationZ : turnZ));
+			}
+		}
+
+		slid += bound.Shift;
 		var position = new Vector3(slid.X, slid.Y, Engine_UiSceneBuilder.ToGodotZ(slid.Z));
 
 		float?[]? values = transform is not null && source < transform.Count
@@ -749,7 +779,7 @@ public sealed class Engine_UiCloneBinding
 		// singular basis and every `hud.bgf` meter bar is authored with a zero column. Each column
 		// keeps its direction (the rotation) and takes the new length; a zero column is rebuilt
 		// from the cross product of the other two to stay right-handed.
-		Basis basis = before.Basis;
+		Basis basis = turned ?? before.Basis;
 		for (int axis = 0; axis < 3; ++axis)
 		{
 			float length = axis == 0 ? scale.X : axis == 1 ? scale.Y : scale.Z;
@@ -773,7 +803,7 @@ public sealed class Engine_UiCloneBinding
 			basis = new Basis(Vector3.Back, rz).Scaled(scale);
 		}
 
-		var after = new Transform3D(basis, position - (basis * bound.Pivot));
+		var after = new Transform3D(basis, position - (basis * pivot));
 		if (after == before)
 		{
 			return;
@@ -789,6 +819,19 @@ public sealed class Engine_UiCloneBinding
 		}
 
 		bound.Node.Transform = after;
+	}
+
+	/// <summary>Three consecutive animated channels (x, y, z) over a base, axis by axis.</summary>
+	private static Vector3 Animate(Engine_UiElementResolve resolve, int source, Vector3 value,
+		Engine_UiSlidePlayback.Channel x)
+	{
+		float ax = resolve.AnimatedValue(source, x);
+		float ay = resolve.AnimatedValue(source, x + 1);
+		float az = resolve.AnimatedValue(source, x + 2);
+		return new Vector3(
+			float.IsNaN(ax) ? value.X : ax,
+			float.IsNaN(ay) ? value.Y : ay,
+			float.IsNaN(az) ? value.Z : az);
 	}
 
 	private static Vector3 Axis(int axis) => axis switch

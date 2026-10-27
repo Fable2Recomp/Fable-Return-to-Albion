@@ -39,6 +39,11 @@ public readonly record struct Engine_UiCommandContext(
 	public string RowCommand { get; init; } = string.Empty;
 
 	public string Button { get; init; } = string.Empty;
+
+	/// <summary>The row's own `(EventType, id)` as the guest spawned it, for a verb that pushes the row at the guest's handler (Shop:).</summary>
+	public int RowEventType { get; init; }
+
+	public uint RowId { get; init; }
 }
 
 public enum Engine_UiCommandOutcome
@@ -259,8 +264,11 @@ public static class Engine_UiVerbs
 	public static readonly Engine_UiVerb Sale = new(Engine_UiQuestSource.SaleAction, "Sale:<...>",
 		"a world-map sale row's answer", Anywhere);
 
-	public static readonly Engine_UiVerb Ability = new(Engine_UiAbilitySource.AbilityAction, "Ability:learn:<1..14>",
-		"buys an ability through the guest's own purchase", Anywhere);
+	public static readonly Engine_UiVerb Ability = new(Engine_UiAbilitySource.AbilityAction, "Ability:learn|unlearn:<1..14>",
+		"buys one level of an ability through the guest's own purchase, or gives one back through its own unlearn (the row's Y asks first)", Anywhere);
+
+	public static readonly Engine_UiVerb Shop = new(Engine_UiMenuSources.ShopAction, "Shop:buy|sell:<ticket>",
+		"a shop row's transaction: the row pushed at the shop screen's own handler by its ticket (30 buys, 31 sells), which asks its own confirm", Anywhere);
 
 	public static readonly Engine_UiVerb PropertyRepair = new(Engine_UiPropertySource.RepairAction, "PropertyRepair:<uid>",
 		"confirms and repairs a property for the menu's player", Anywhere);
@@ -281,7 +289,7 @@ public static class Engine_UiVerbs
 		"dismisses a one-off guest panel", GuestScreen);
 
 	public static readonly Engine_UiVerb ScreenUnlearn = new(Engine_UiScreenActions.ScreenUnlearn, "screen:unlearn",
-		"the abilities screen's unlearn", GuestScreen);
+		"the guest's own Y press (code 39) to the current screen", GuestScreen);
 
 	public static readonly Engine_UiVerb ScreenSelect = new(Engine_UiScreenActions.ScreenSelect, "screen:select",
 		"A on a guest screen whose rows it does not answer by identity", GuestScreen);
@@ -313,7 +321,7 @@ public static class Engine_UiVerbs
 	/// <summary>Every verb the game registers, for the validator, the Studio and the guide.</summary>
 	public static readonly IReadOnlyList<Engine_UiVerb> Game = new[]
 	{
-		Opens, Lua, OpenScreen, Options, SettingToggle, SettingCycle, SettingSet, Inventory, Quest, Sale, Ability,
+		Opens, Lua, OpenScreen, Options, SettingToggle, SettingCycle, SettingSet, Inventory, Quest, Sale, Ability, Shop,
 		PropertyRepair, PropertyRepairAll, Partner, ModBuy, ScreenBack, ScreenDismiss, ScreenUnlearn, ScreenSelect,
 		BoxDismiss, PauseTab, PauseSaving, PauseQuit, PauseCoop, PauseOwned, QuitToDesktop, Network,
 	};

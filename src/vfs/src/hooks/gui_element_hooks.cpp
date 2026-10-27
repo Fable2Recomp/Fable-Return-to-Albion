@@ -6,6 +6,7 @@
 #include "vfs_hooks_private.h"
 #include "core/guest_state.h"
 #include "gui/gui_element_state.h"
+#include "gui/gui_told_statements.h"
 #include "hooks/ppc_externs.h"
 
 PPC_EXTERN_FUNC(__imp__rex_lhGuiAttributeService_SetElementAttribute);
@@ -52,7 +53,12 @@ REX_EXTERN(rex_lhGuiAttributeService_SetElementAttribute) {
         refii::vfs::NoteGuiElementChange(change);
     }
 
+    const uint32_t told_service = ctx.r3.u32;
+    const uint32_t told_element = ctx.r4.u32;
+    const uint32_t told_id = ctx.r5.u32;
+    const uint32_t told_value = ctx.r6.u32;
     __imp__rex_lhGuiAttributeService_SetElementAttribute(ctx, base);
+    refii::vfs::TellAttribute(base, told_service, told_element, told_id, told_value);
 }
 
 /// The flag writer — `(attrSvc, element, u16 mask, bool set)`; attribute-service vtable
@@ -85,7 +91,12 @@ REX_EXTERN(rex_lhGuiAttributeService_SetElementFlags) {
         }
     }
 
+    const uint32_t told_service = ctx.r3.u32;
+    const uint32_t told_element = ctx.r4.u32;
+    const uint32_t told_mask = ctx.r5.u32 & 0xFFFFu;
+    const bool told_on = (ctx.r6.u32 & 0xFFu) != 0u;
     __imp__rex_lhGuiAttributeService_SetElementFlags(ctx, base);
+    refii::vfs::TellFlags(base, told_service, told_element, told_mask, told_on);
 }
 
 /// The slide writer — `(animSvc, element, int slideIndex, bool notify)`; animation-service
@@ -106,7 +117,15 @@ REX_EXTERN(rex_lhGuiAnimation_GotoSlide) {
         refii::vfs::NoteGuiElementChange(change);
     }
 
+    // Every explicit entry is the guest's statement (gui_slide_hooks.cpp); the walk's own entry
+    // of a component coming live passes `notify` 0 (`sub_822849A0` 0x82284b38).
+    const uint32_t told_service = ctx.r3.u32;
+    const uint32_t told_element = ctx.r4.u32;
+    const uint32_t told_slide = ctx.r5.u32;
+    const bool told_stated = (ctx.r6.u32 & 0xFFu) != 0u;
+    refii::vfs::TellGotoSlideBegin();
     __imp__rex_lhGuiAnimation_GotoSlide(ctx, base);
+    refii::vfs::TellGotoSlideEnd(base, told_service, told_element, told_slide, told_stated);
 }
 
 /// The text writer — `(element, ...)`. Text lives on the text record: `element+4` holder,
@@ -127,6 +146,7 @@ REX_EXTERN(rex_lhGuiElement_SetText) {
     }
 
     __imp__rex_lhGuiElement_SetText(ctx, base);
+    refii::vfs::TellText(base, element);
 }
 
 /// The OTHER text writer — same record, but it takes a TAG and resolves it first.
@@ -157,4 +177,5 @@ REX_EXTERN(rex_lhGuiElement_SetTextFromTag) {
     }
 
     __imp__rex_lhGuiElement_SetTextFromTag(ctx, base);
+    refii::vfs::TellText(base, element);
 }

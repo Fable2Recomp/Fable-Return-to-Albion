@@ -72,6 +72,9 @@ public abstract class Engine_UiSource
 	/// </summary>
 	public virtual bool DisplayAdjusterUp() => false;
 
+	/// <summary>The address of the display box showing, or 0: the box an answer is addressed to.</summary>
+	public virtual uint DisplayBoxAddress() => 0;
+
 	/// <summary>
 	/// The screen id the showing display box stands on, <see cref="uint.MaxValue"/> when none.
 	/// A box is never the manager's current screen, so a template for a box's screen (the quest
@@ -223,7 +226,9 @@ public abstract class Engine_UiSource
 	/// is a no-op.
 	/// </summary>
 	public uint DisplayBoxAction(BoxAction action) =>
-		PostFrontEndAction($"BoxAction:{(int)action}");
+		DisplayBoxAddress() is var box && box != 0
+			? PostFrontEndAction($"BoxAction:{(int)action}@{box:X8}")
+			: PostFrontEndAction($"BoxAction:{(int)action}");
 
 	/// <summary>Answers one `GUI` predicate instead of the guest. Only for a native whose setters this host owns; otherwise the answer is a guess.</summary>
 	public virtual void SetPredicate(string name, bool value)
@@ -249,16 +254,17 @@ public abstract class Engine_UiSource
 	/// <summary>Pushes a menu button event by identity.</summary>
 	public virtual uint MenuEvent(string name, int eventType, uint id) => 0;
 
-	/// <summary>
-	/// The same identity commit, with the abilities screen's `+198` byte CLEARED instead of set
-	/// — the guest's own Y. `sub_826C2D40` @0x826c2d78 branches on it: set runs `sub_8246C970`
-	/// (the PURCHASE), clear opens the discard confirm. `sub_826C2958` case 39 stores 0 there
-	/// and case 36 stores 1, so the arm is part of the press, not a constant.
-	/// </summary>
-	public virtual uint MenuDiscard(string name, int eventType, uint id) => 0;
-
 	/// <summary>Runs the shipped <c>SelectMenuItem</c> against the guest's own highlight.</summary>
 	public virtual uint MenuSelect() => 0;
+
+	/// <summary>Puts the guest's own menu cursor on the row named, inside its Lua window.</summary>
+	public virtual uint MenuHighlight(string name) => 0;
+
+	/// <summary>States the highlighted row of an in-game screen's list (screen 0 clears) — see
+	/// <c>HostBridge.SetHighlightedRow</c>.</summary>
+	public virtual void StateHighlightedRow(uint screen, int eventType, int id, string name, string label)
+	{
+	}
 
 	/// <summary>Holds or releases the menu stick in one direction.</summary>
 	public virtual uint MenuScroll(Engine_UiModel.MenuStick direction, bool held) => 0;

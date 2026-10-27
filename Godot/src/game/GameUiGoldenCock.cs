@@ -59,6 +59,9 @@ public partial class GameUi
                 new Engine_UiFrameCloning(book).Dress(document, binding);
             }
         }
+        // The whole pad is the box's while it stands: this drive returns before the per-frame
+        // flag resets, so the flag holds until the box is gone and the resets run again.
+        GameInput.HostUiOwnsPad = true;
         bool clicked = Engine_UiPointer.TakeLeft();
         int pointed = (clicked || Engine_UiPointer.Moved) && Engine_UiPointer.Canvas is { } at
             ? _goldenCockView.OptionAt(at) : -1;

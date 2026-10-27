@@ -389,45 +389,6 @@ public sealed class Engine_UiScreenMenu
 			}
 		}
 
-		// THE GUEST'S IDENTITY FOR A DATA-AREA ROW, by name — A BRIDGE, NOT THE DESTINATION.
-		//
-		// A row built from the data areas has no `(EventType, id)` of its own, and the guest's id
-		// is a per-population TICKET (`sub_82880AC8` hands out a counter and resets it on every
-		// repopulate), so it cannot be derived — only borrowed. Our row and the guest's carry the
-		// SAME NAME, because both are the item's `NameTag`, which is what makes the borrow safe.
-		//
-		// This exists so the lists stay usable while the host actions that replace it are built.
-		// `Engine_UiMenuEntry.Command` is checked BEFORE any identity commit, so a row that gains
-		// a real host action stops using this without anything here changing.
-		if (stated.Count != 0)
-		{
-			foreach (Engine_UiMenuModel.Row row in stated)
-			{
-				// Re-borrowed whenever the guest's differs: the ticket is per POPULATION, so one
-				// latched at the first borrow is dead after the guest repopulates.
-				if (row.Name.Length == 0 || Menu.Find(row.Name) is not { Sourced: true } sourced ||
-					(sourced.Committable && !sourced.BorrowedIdentity))
-				{
-					continue;
-				}
-
-				int low = (int)(row.Id & 0xFFFFu);
-				int high = (int)((row.Id >> 16) & 0xFFFFu);
-				if (sourced.BorrowedIdentity && sourced.EventType == row.EventType &&
-					sourced.IdLow == low && sourced.IdHigh == high)
-				{
-					continue;
-				}
-
-				sourced.EventType = row.EventType;
-				sourced.IdLow = low;
-				sourced.IdHigh = high;
-				sourced.Committable = true;
-				sourced.BorrowedIdentity = true;
-				moved = true;
-			}
-		}
-
 		// THE GUEST'S EXPLICIT GHOSTING, by name — its only statement that a row is unavailable
 		// right now (the childhood restrictions on the pause tabs, an empty category, a shop
 		// item you cannot afford). Applied to `Ghosted`, never to `AutoGhosted`: the two are
@@ -476,7 +437,7 @@ public sealed class Engine_UiScreenMenu
 
 	private bool _saidTemplateDry;
 
-	private bool _saidStatedScript;
+	private string _saidStatedScript = string.Empty;
 
 	private string _boundScript = string.Empty;
 
@@ -654,21 +615,24 @@ public sealed class Engine_UiScreenMenu
 	{
 		PopulationScript = Engine_ExpandableMenuItems.PopulationScriptOf(screen);
 
-		// THE WIDGET DOES NOT ALWAYS SAY WHICH LIST IT IS. The gift family's states no
-		// `MenuPopulationScript` attribute at all, which left it with no template to look up and
-		// dropped it onto the raw model. The guest states it a second way — the argument of
-		// `RepopulateMenuFromPopulationScript`, which the shipped Lua also writes onto the
-		// element — so the captured statement stands in when the attribute is silent.
-		if (PopulationScript.Length == 0 &&
-			Model?.For(presentation)?.PopulationScript is { Length: > 0 } stated)
+		// THE GUEST'S STATEMENT WINS OVER THE FILE'S ATTRIBUTE. `RepopulateMenuFromPopulationScript`
+		// is the shipped Lua's `setAttribute(parent, "MenuPopulationScript", name)` followed by the
+		// repopulation, so its argument IS the widget's live attribute; the file's is only where
+		// it started. The logbook opened on an orb is the case: its widget says `LogbookMenu` and
+		// the open states `'LogbookMenuOrb'` (`sub_826D8DD8`), one row. The gift family's widget
+		// has no attribute at all, so the statement is its only name. The model forgets a
+		// presentation that is freed, so a statement never outlives the screen it was made on.
+		if (Model?.For(presentation)?.PopulationScript is { Length: > 0 } stated &&
+			!string.Equals(stated, PopulationScript, System.StringComparison.Ordinal))
 		{
+			string file = PopulationScript;
 			PopulationScript = stated;
-			if (!_saidStatedScript)
+			if (!string.Equals(_saidStatedScript, $"{presentation:X8}:{stated}", System.StringComparison.Ordinal))
 			{
-				_saidStatedScript = true;
-				GD.Print($"[screen-menu] presentation 0x{presentation:X8} states no " +
-					$"MenuPopulationScript attribute — taking '{stated}' from the guest's own " +
-					"RepopulateMenuFromPopulationScript statement");
+				_saidStatedScript = $"{presentation:X8}:{stated}";
+				GD.Print($"[screen-menu] presentation 0x{presentation:X8} is '{stated}' by the guest's " +
+					$"RepopulateMenuFromPopulationScript (its file says " +
+					$"{(file.Length == 0 ? "none" : $"'{file}'")})");
 			}
 		}
 
@@ -1723,6 +1687,26 @@ public sealed class Engine_UiScreenMenu
 	/// A row with a host action needs no guest identity — that is the whole point of having one —
 	/// so this is tried ahead of both the identity push and `Committable`.
 	/// </summary>
+	/// <summary>
+	/// Whether this screen's handler reads the guest's own highlight rather than a pushed event
+	/// — see <see cref="Engine_UiScreenTemplate.CommitsByHighlight"/>.
+	/// </summary>
+	private bool CommitsByHighlight => Engine_UiTemplates.Screen(ScreenId)?.CommitsByHighlight == true;
+
+	/// <summary>
+	/// The commit for a screen whose handler acts on the guest's own highlight: the guest's
+	/// cursor is put on the row by name (`MenuHighlight`, inside the guest's Lua window), then
+	/// the guest's own A (code 36) runs the handler's 36 arm against it. Both ride the same
+	/// pump pass, in order, in one tick.
+	/// </summary>
+	private static void CommitThroughHighlight(Engine_UiExpandableMenu.Item row, string label)
+	{
+		GD.Print($"[screen-menu] commit THROUGH THE GUEST'S HIGHLIGHT: '{label}' ({row.Name}) — " +
+			"the guest's cursor is put on the row, then its own A");
+		Engine_UiSource.Current.MenuHighlight(row.Name);
+		Engine_UiSource.Current.ScreenAction(Engine_UiScreenInput.Select);
+	}
+
 	private static bool RunHostAction(Engine_UiExpandableMenu.Item row, string label)
 	{
 		if (row.Command is not { Length: > 0 } action)
@@ -1731,7 +1715,11 @@ public sealed class Engine_UiScreenMenu
 		}
 
 		Engine_UiCommandResult ran = Engine_UiCommands.Run(action, new Engine_UiCommandContext(
-			Engine_UiCommandList.Screen, Row: row.Name, Player: Engine_UiModMenus.MenuPlayer));
+			Engine_UiCommandList.Screen, Row: row.Name, Player: Engine_UiModMenus.MenuPlayer)
+		{
+			RowEventType = row.EventType,
+			RowId = ((uint)row.IdHigh << 16) | ((uint)row.IdLow & 0xFFFFu),
+		});
 		if (ran.Outcome == Engine_UiCommandOutcome.Done)
 		{
 			Engine_UiScreenActions.RefreshSettingLabel(row);
@@ -1761,36 +1749,16 @@ public sealed class Engine_UiScreenMenu
 	/// `(EventType, id)` pair would activate something else), so the caller falls back to the A
 	/// press.
 	/// </summary>
-	/// <param name="discard">
-	/// The Y press on the abilities screen, which is DISCARD, not activate. Two things have to
-	/// change for it and both are easy to miss:
-	///
-	/// The row's own `Command` must NOT run. Every ability leaf carries
-	/// `Ability:learn:&lt;type&gt;` (`Engine_UiAbilitySource.cs:167`), `RunHostAction` is tried
-	/// ahead of the identity push on purpose, and that lever calls `sub_8246C970` — the
-	/// PURCHASE — directly. So Y bought the ability and the discard never entered the picture,
-	/// spending the player's gold on a keypress meant to refund it.
-	///
-	/// And the identity push must DISARM `+198`, because the guest's own Y does
-	/// (`sub_826C2958` case 39 stores 0 at 0x826c2b2c; case 36 stores 1). `sub_826C2D40`
-	/// @0x826c2d78 reads that byte to choose purchase over the discard confirm.
-	/// </param>
 	/// <summary>Whether the highlighted row is a mod ability's, which has nothing to unlearn.</summary>
 	public bool HighlightedIsModAbility =>
 		Script.Highlighted?.Command?.StartsWith(Engine_UiModAbilities.BuyAction, System.StringComparison.Ordinal) == true;
 
-	public bool Commit(bool discard = false)
+	public bool Commit()
 	{
 		if (Script.Highlighted is not { } row)
 		{
 			GD.Print("[screen-menu] A pressed with NO highlighted row — falling back to the A press");
 			return false;
-		}
-
-		// A mod ability cannot be unlearned, and its identity means nothing to the guest.
-		if (discard && HighlightedIsModAbility)
-		{
-			return true;
 		}
 
 		string label = row.StatedLabel ?? row.Name;
@@ -1835,22 +1803,32 @@ public sealed class Engine_UiScreenMenu
 				return true;
 			}
 
-			if (!discard && RunHostAction(row, label))
+			if (RunHostAction(row, label))
 			{
 				return true;
 			}
 
+			if (CommitsByHighlight)
+			{
+				CommitThroughHighlight(row, label);
+				return true;
+			}
+
+			// NO ACTION AND NO IDENTITY OF THE GUEST'S: nothing is pushed. A row the guest would
+			// not act on (a trophy on the items list, a clothing slot with nothing to take off)
+			// used to borrow a ticket by name and push it at a handler that reads its own cursor —
+			// the abilities-discard shape, on items and clothing.
+			if (!row.Committable)
+			{
+				GD.Print($"[screen-menu] '{label}' has no action and no identity of the guest's — " +
+					"nothing to commit");
+				return true;
+			}
+
 			uint hostId = ((uint)row.IdHigh << 16) | ((uint)row.IdLow & 0xFFFFu);
-			GD.Print($"[screen-menu] host commit BY IDENTITY{(discard ? " (DISCARD)" : string.Empty)}: " +
+			GD.Print($"[screen-menu] host commit BY IDENTITY: " +
 				$"'{label}' ({row.Name}, type {row.EventType}, id 0x{hostId:X8})");
-			if (discard)
-			{
-				Engine_UiSource.Current.MenuDiscard(row.Name, row.EventType, hostId);
-			}
-			else
-			{
-				Engine_UiSource.Current.MenuEvent(row.Name, row.EventType, hostId);
-			}
+			Engine_UiSource.Current.MenuEvent(row.Name, row.EventType, hostId);
 			return true;
 		}
 
@@ -1956,33 +1934,6 @@ public sealed class Engine_UiScreenMenu
 			return true;
 		}
 
-		if (!_stated && GuestHighlight == pressed)
-		{
-			GD.Print($"[screen-menu] selecting '{label}' through the guest's own SelectMenuItem " +
-				$"— cursor {pressed}/{Script.Visible.Count}, " +
-				$"({row.Name}, type {row.EventType})" +
-				(row.EventType == (int)Engine_UiMenuConstants.EventType.Submenu
-					? " — a SUBMENU row, so the fold is the whole action"
-					: string.Empty));
-
-			// The fold already happened above, for every path — not repeated here.
-			Engine_UiSource.Current.MenuSelect();
-
-			// Fold probe, diagnostic: `SelectMenuItem`'s two gates (`WaitForInput`, `Ghosted`)
-			// are invisible from outside, so ask the guest's own Lua and write the answer into
-			// pool button 26's title — a row nothing fills — where the filled-count line prints it.
-			if (row.EventType == (int)Engine_UiMenuConstants.EventType.Submenu)
-			{
-				Engine_UiSource.Current.PostFrontEndAction(
-					"GuiLua:local i=g_Menu.VisibleInfo.VisibleElements[g_Menu.CurrentHighlightIdx] " +
-					"setAttribute(getElement(\"Icon.Title\", g_MenuFormatter.MenuItems[26].element)," +
-					"\"textstring\", \"PROBE w=\"..tostring(g_Menu:WaitForInput())..\" g=\".." +
-					"tostring(i.Ghosted)..\" c=\"..tostring(#i.ChildItems)..\" o=\"..tostring(i.IsOpen))");
-			}
-
-			return true;
-		}
-
 		// A HOST ACTION FIRST, AND IT NEVER REACHES THE GUEST'S DISPATCHER. A template row may
 		// name what activating it DOES (`Engine_UiMenuEntry.Command`), and that is the seam by
 		// which a menu stops needing the guest's UI at all: the row is ours, the action is ours,
@@ -1990,30 +1941,43 @@ public sealed class Engine_UiScreenMenu
 		//
 		// It is checked before `Committable` on purpose — a row with a host action needs no
 		// guest identity, which is the whole point of having one.
-		if (!discard && RunHostAction(row, label))
+		if (RunHostAction(row, label))
 		{
 			return true;
 		}
 
+		// A ROW OF THE GUEST'S OWN POOL (position-solved, no model): the shipped `SelectMenuItem`,
+		// after the guest's cursor is put on the row pressed — by name, in the same pump pass, so
+		// a click or a cursor the solve has not caught up with still commits the row chosen.
+		if (!_stated)
+		{
+			GD.Print($"[screen-menu] selecting '{label}' through the guest's own SelectMenuItem " +
+				$"on the row named — ours {pressed}/{Script.Visible.Count}, " +
+				$"({row.Name}, type {row.EventType})");
+			Engine_UiSource.Current.MenuHighlight(row.Name);
+			Engine_UiSource.Current.MenuSelect();
+			return true;
+		}
+
+		if (CommitsByHighlight)
+		{
+			CommitThroughHighlight(row, label);
+			return true;
+		}
+
+		// A stated row with no identity of the guest's: the guest's own A on that row, its cursor
+		// put there first — never the A press on wherever the guest's cursor happened to be.
 		if (!row.Committable)
 		{
-			GD.Print($"[screen-menu] '{label}' has no usable NAME — falling back to the A press " +
-				$"(guest cursor {GuestHighlight}, ours {Script.CurrentHighlightIdx})");
-			return false;
+			CommitThroughHighlight(row, label);
+			return true;
 		}
 
 		uint id = ((uint)row.IdHigh << 16) | ((uint)row.IdLow & 0xFFFFu);
-		GD.Print($"[screen-menu] commit BY IDENTITY{(discard ? " (DISCARD)" : string.Empty)}: " +
+		GD.Print($"[screen-menu] commit BY IDENTITY: " +
 			$"'{label}' ({row.Name}, type {row.EventType}, id 0x{id:X8}) — our cursor " +
 			$"{Script.CurrentHighlightIdx}/{Script.Visible.Count}, the guest's {GuestHighlight}");
-		if (discard)
-		{
-			Engine_UiSource.Current.MenuDiscard(row.Name, row.EventType, id);
-		}
-		else
-		{
-			Engine_UiSource.Current.MenuEvent(row.Name, row.EventType, id);
-		}
+		Engine_UiSource.Current.MenuEvent(row.Name, row.EventType, id);
 		return true;
 	}
 

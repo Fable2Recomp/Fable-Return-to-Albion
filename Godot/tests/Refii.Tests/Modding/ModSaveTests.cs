@@ -569,7 +569,7 @@ public class ModSaveTests
 	[TestCase]
 	public void GateRepostsTheEventsCommit()
 	{
-		// The root's Continue row is dispatched by its bare name; the fan's pick as LoadSave:N.
+		// The root's "Load Game" row is dispatched by its bare name (one save commits directly); the fan's pick as LoadSave:N.
 		var fromRow = RefiiHost.ParseFieldsPlain("save='Hero',level='Bowerstone',new_game=false,player=1,commit='Continue'");
 		AssertThat(ModSaveGate.CommitOf(fromRow)).IsEqual("Continue");
 		var fromFan = RefiiHost.ParseFieldsPlain("save='Hero',level='Bowerstone',new_game=false,player=1,commit='LoadSave:2'");

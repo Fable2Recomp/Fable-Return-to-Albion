@@ -67,12 +67,18 @@ public sealed class Engine_UiHostScreen
 
 		Player = player;
 		IsOpen = true;
+		Engine_UiModMenus.RaiseHostScreen(ScreenId, player, open: true);
 		return true;
 	}
 
 	/// <summary>Takes the screen down. The book and the list are kept, only hidden.</summary>
 	public void Close()
 	{
+		if (IsOpen)
+		{
+			Engine_UiModMenus.RaiseHostScreen(ScreenId, Player, open: false);
+		}
+
 		IsOpen = false;
 		if (_view is not null && GodotObject.IsInstanceValid(_view))
 		{

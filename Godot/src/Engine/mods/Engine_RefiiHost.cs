@@ -1206,6 +1206,107 @@ public partial class RefiiHost : Node
 	/// reports the row refused; anything else is done. The game's verbs stay the game's: false when
 	/// the name is one of them.
 	/// </summary>
+	/// <summary>
+	/// Registers a ROW SOURCE every list's template may name (<c>"source": "&lt;name&gt;[:&lt;argument&gt;]"</c>,
+	/// Refii.Ui.Engine_UiMenuSources): <paramref name="rows"/> is called with the argument and
+	/// returns an Array of Dictionaries, one row each — <c>name</c> (required, unique on the list),
+	/// <c>label</c>, <c>icon</c>, <c>command</c> (a verb the row runs on A), <c>rating</c> (0..10
+	/// stars), <c>ghosted</c>, <c>group</c> (a header the row sits under), <c>emphasised</c>,
+	/// <c>counted</c>, <c>unviewed</c>. The game's sources stay the game's: false when the name is
+	/// one of them.
+	/// </summary>
+	public bool register_source(string name, Callable rows)
+	{
+		if (string.IsNullOrWhiteSpace(name) || Refii.Ui.Engine_UiMenuSources.IsGameSource(name))
+		{
+			return false;
+		}
+
+		Refii.Ui.Engine_UiMenuSources.Register(name, argument =>
+		{
+			var list = new List<Refii.Ui.Engine_UiMenuSources.Row>();
+			if (rows.Target is { } target && !IsInstanceValid(target))
+			{
+				return list;
+			}
+
+			Variant answer = rows.Call(argument);
+			if (answer.VariantType != Variant.Type.Array)
+			{
+				return list;
+			}
+
+			foreach (Variant item in answer.AsGodotArray())
+			{
+				if (item.VariantType != Variant.Type.Dictionary)
+				{
+					continue;
+				}
+
+				Godot.Collections.Dictionary row = item.AsGodotDictionary();
+				string rowName = Text(row, "name");
+				if (rowName.Length == 0)
+				{
+					continue;
+				}
+
+				string command = Text(row, "command");
+				list.Add(new Refii.Ui.Engine_UiMenuSources.Row(
+					Name: rowName,
+					Label: Text(row, "label", rowName),
+					Icon: Text(row, "icon"),
+					EventType: 0,
+					Id: 0u,
+					Rating: Number(row, "rating", Refii.Ui.Engine_UiMenuConstants.EmptyRatingSlide),
+					Committable: false,
+					Ghosted: Flag(row, "ghosted"),
+					Command: command.Length != 0 ? command : null,
+					Group: Text(row, "group"),
+					GroupTag: Text(row, "group"),
+					Emphasised: Flag(row, "emphasised"),
+					Counted: !row.ContainsKey("counted") || Flag(row, "counted"),
+					Unviewed: Flag(row, "unviewed")));
+			}
+
+			return list;
+		});
+		return true;
+
+		static string Text(Godot.Collections.Dictionary row, string key, string fallback = "") =>
+			row.TryGetValue(key, out Variant value) && value.VariantType == Variant.Type.String ? value.AsString() : fallback;
+		static bool Flag(Godot.Collections.Dictionary row, string key) =>
+			row.TryGetValue(key, out Variant value) && value.VariantType == Variant.Type.Bool && value.AsBool();
+		static int Number(Godot.Collections.Dictionary row, string key, int fallback) =>
+			row.TryGetValue(key, out Variant value) && (value.VariantType == Variant.Type.Int || value.VariantType == Variant.Type.Float)
+				? (int)value.AsDouble()
+				: fallback;
+	}
+
+	/// <summary>
+	/// Registers a ROW CONDITION every list's entries may name in <c>when</c>
+	/// (Refii.Ui.Engine_UiRowConditions): <paramref name="holds"/> is called when a list is built
+	/// and answers whether the rows naming it show. The game's conditions stay the game's.
+	/// </summary>
+	public bool register_condition(string name, Callable holds)
+	{
+		if (string.IsNullOrWhiteSpace(name) || Array.IndexOf(Refii.Ui.Engine_UiRowConditions.Game, name) >= 0)
+		{
+			return false;
+		}
+
+		Refii.Ui.Engine_UiRowConditions.Register(name, () =>
+		{
+			if (holds.Target is { } target && !IsInstanceValid(target))
+			{
+				return false;
+			}
+
+			Variant answer = holds.Call();
+			return answer.VariantType == Variant.Type.Bool && answer.AsBool();
+		});
+		return true;
+	}
+
 	public bool register_command(string verb, Callable handler)
 	{
 		var record = new Refii.Ui.Engine_UiVerb(verb, verb, "a Godot script's verb", Array.Empty<Refii.Ui.Engine_UiCommandList>(),
@@ -1384,7 +1485,13 @@ public partial class RefiiHost : Node
 	/// <c>mod_menu_row</c> signal and <c>mod_event</c>. The guest raises the same event for native
 	/// and Lua handlers on its tick and never posts it back here.
 	/// </summary>
-	internal void RaiseModMenuRow(string menu, string row, int player, string mod, string command = "", string button = "")
+	/// <summary>
+	/// Raises the row event to Godot scripts and reads their verdict back off the same
+	/// dictionary: <c>e["cancel"] = true</c> consumes the press (nothing is dispatched);
+	/// <c>e["command"]</c> rewritten to another verb runs that instead of the row's own. Native
+	/// and Lua handlers see the event a tick later and cannot answer it.
+	/// </summary>
+	internal (bool Cancelled, string Command) RaiseModMenuRow(string menu, string row, int player, string mod, string command = "", string button = "")
 	{
 		var e = new Godot.Collections.Dictionary
 		{
@@ -1397,6 +1504,30 @@ public partial class RefiiHost : Node
 		};
 		EmitSignal(SignalName.mod_menu_row, e);
 		EmitSignal(SignalName.mod_event, "mod_menu_row", e);
+		bool cancelled = e.TryGetValue("cancel", out Variant cancel) &&
+			cancel.VariantType == Variant.Type.Bool && cancel.AsBool();
+		string after = e.TryGetValue("command", out Variant rewritten) && rewritten.VariantType == Variant.Type.String
+			? rewritten.AsString()
+			: command ?? string.Empty;
+		return (cancelled, after);
+	}
+
+	/// <summary>
+	/// Raises <c>menu_screen</c> for a screen Godot owns outright (achievements, multiplayer, a
+	/// mod's screens record): the game never states these, so the event comes from here, with
+	/// <c>host = true</c> and <c>open</c> saying which edge. Godot scripts only.
+	/// </summary>
+	internal void RaiseHostScreen(uint screen, int player, bool open)
+	{
+		var e = new Godot.Collections.Dictionary
+		{
+			["screen"] = (long)screen,
+			["player"] = (long)player,
+			["host"] = true,
+			["open"] = open,
+		};
+		EmitSignal(SignalName.menu_screen, e);
+		EmitSignal(SignalName.mod_event, "menu_screen", e);
 	}
 
 	// ---- effects: Godot draws them (Engine_FxPlayer) --------------------------------------------

@@ -17,8 +17,7 @@ namespace Refii.Ui;
 /// No new reader — `Engine_ItemDetails.BuildOne` already resolves an item's GDB record (name
 /// tag, description tag, value) and is what the bank browser reads.
 ///
-/// Adopted field by field: only the four named here are host-owned; `ItemValueName`,
-/// `ItemValue2` and `Info` still come from the guest.
+/// Every field the page shows — name, description, value, value caption, `Info` — is the host's.
 /// </summary>
 public static class Engine_UiItemPage
 {
@@ -434,6 +433,50 @@ public static class Engine_UiItemPage
 	/// shop page has no item — never a guess from the label. Every other book's id is the
 	/// inventory's own record (`item + 4`), resolved directly.
 	/// </summary>
+	/// <summary>The item record a row names, or null for a folder or an unresolved row.</summary>
+	private static GdbCursor? RecordOf(Engine_UiExpandableMenu.Item? row)
+	{
+		if (row is null || string.IsNullOrEmpty(row.Name) ||
+			row.EventType == SubmenuEventType || row.EventType == SpellAssignEventType ||
+			Engine_GameGdb.Database is not { } multi)
+		{
+			return null;
+		}
+
+		uint id = ((uint)row.IdHigh << 16) | ((uint)row.IdLow & 0xFFFFu);
+		return Resolve(multi, row, id) is { RecordHash: not 0u } detail &&
+			multi.TryLookup(detail.RecordHash, out GdbCursor at)
+				? at
+				: null;
+	}
+
+	/// <summary>
+	/// The dye an item carries: its `DyeComponent`'s `Colour` child, integer `Red`/`Green`/`Blue`
+	/// (`sub_829B5160` 0x829b5364..0x829b53c4), at full alpha (0x829b5414). Null when the item
+	/// has none — the guest then leaves the swatch alone; it shows only for a dye.
+	/// </summary>
+	public static Color? DyeColour(Engine_UiExpandableMenu.Item? row)
+	{
+		if (RecordOf(row) is not { } at || Engine_GameGdb.Database is not { } multi ||
+			!Engine_AbilityRecords.TryRef(multi, at, "DyeComponent", out GdbCursor dye) ||
+			!Engine_AbilityRecords.TryRef(multi, dye, "Colour", out GdbCursor colour))
+		{
+			return null;
+		}
+
+		return new Color(
+			(Engine_AbilityRecords.IntOrEnumOn(colour, "Red") & 0xFF) / 255f,
+			(Engine_AbilityRecords.IntOrEnumOn(colour, "Green") & 0xFF) / 255f,
+			(Engine_AbilityRecords.IntOrEnumOn(colour, "Blue") & 0xFF) / 255f,
+			1f);
+	}
+
+	/// <summary>`sub_827649C8`: the record's `InventoryItemComponent.UsableFromInventory`.</summary>
+	public static bool Usable(Engine_UiExpandableMenu.Item? row) =>
+		RecordOf(row) is { } at && Engine_GameGdb.Database is { } multi &&
+		Engine_AbilityRecords.TryRef(multi, at, "InventoryItemComponent", out GdbCursor inv) &&
+		Engine_AbilityRecords.BoolOn(inv, "UsableFromInventory");
+
 	private static ItemDetail? Resolve(GdbMulti multi, Engine_UiExpandableMenu.Item row, uint id)
 	{
 		if (row.EventType == BuyEventType || row.EventType == SellEventType)
@@ -543,7 +586,12 @@ public static class Engine_UiItemPage
 		}
 
 		uint id = ((uint)row.IdHigh << 16) | ((uint)row.IdLow & 0xFFFFu);
-		ItemDetail? detail = Resolve(multi, row, id);
+
+		// Upgrade furniture's rows are LEVELS: the preview is the level's unlock item or the
+		// installed card (Engine_UiFurniturePage.PreviewRecord).
+		ItemDetail? detail = screenId == Engine_UiFurniturePage.ScreenId
+			? Engine_UiFurniturePage.PreviewRecord(row) is { } furniture ? Engine_ItemDetails.BuildOne(multi, furniture) : null
+			: Resolve(multi, row, id);
 		if (detail is null)
 		{
 			ReportPreview($"'{row.Name}' id {id:X8}: no record");

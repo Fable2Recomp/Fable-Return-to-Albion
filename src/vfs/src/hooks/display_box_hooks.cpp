@@ -17,6 +17,7 @@
 // draws the box from its live `messageboxmulti` presentation and answers the stated address.
 
 #include <cstdint>
+#include <initializer_list>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -27,6 +28,10 @@
 #include "gui/gui_native_calls.h"
 #include "hooks/ppc_externs.h"
 
+namespace refii::vfs {
+std::string ReadStatedWideLhString(uint8_t* base, uint32_t handle);
+}  // namespace refii::vfs
+
 namespace {
 
 /// The open byte every handler gates on — `lbz r11, 0xC(r3)`; Open sets it at 0x823cec7c,
@@ -36,6 +41,9 @@ constexpr uint32_t kBoxOpen = 12u;
 /// The identity handle, 8-bit class — Close copies it with `strcpy_s(**(char***)(box+4))`
 /// at 0x823ced18.
 constexpr uint32_t kBoxIdentity = 4u;
+
+/// The body text, a wide LHString handle — the display-box controller base (`sub_823D0768`).
+constexpr uint32_t kBoxBody = 8u;
 
 void State(uint8_t* base, const char* name, uint32_t box) {
     refii::vfs::GuiNativeCall call;
@@ -53,10 +61,84 @@ void State(uint8_t* base, const char* name, uint32_t box) {
     identity.text = refii::vfs::ReadGuestLhString(base, box + kBoxIdentity);
     call.arguments.push_back(std::move(identity));
 
+    // The box's BODY — the controller base's wide text at +8 (`sub_823D0768`), what Open writes
+    // into the presentation — so the host draws the box from its own statement.
+    refii::vfs::GuiNativeArgument body;
+    body.kind = refii::vfs::GuiNativeArgument::Kind::kString;
+    body.text = refii::vfs::ReadStatedWideLhString(base, box + kBoxBody);
+    call.arguments.push_back(std::move(body));
+
     refii::vfs::PostGuiNativeCall(std::move(call));
 }
 
 }  // namespace
+
+
+namespace {
+
+/// The modal router's opener states its box: kind (2 message, 3 query, 5 adjuster), the modal id
+/// the answer is keyed on, and the TEXT, read from the opener's own argument — the string the
+/// guest then writes into `Group.QueryBox.Text` / the message box's text — so the host draws the
+/// box from the call, not from the presentation it fills.
+void StateModal(uint32_t kind, uint32_t id, const std::string& text,
+                std::initializer_list<int32_t> numbers = {}) {
+    refii::vfs::GuiNativeCall call;
+    call.name = "@Modal.Open";
+    const auto add = [&call](std::string value) {
+        refii::vfs::GuiNativeArgument argument;
+        argument.kind = refii::vfs::GuiNativeArgument::Kind::kString;
+        argument.text = std::move(value);
+        call.arguments.push_back(std::move(argument));
+    };
+    add(std::to_string(kind));
+    add(std::to_string(id));
+    add(text);
+    for (const int32_t number : numbers) {
+        add(std::to_string(number));
+    }
+    refii::vfs::PostGuiNativeCall(std::move(call));
+}
+
+}  // namespace
+
+// The modal router's opener `sub_8236FA68(gui28, text, kind, modalId, flag, extra)` (disc
+// `sub_82337C68`): it acts only while `gui28+40 == 1` (0x8236fa90), sets the mode and id, pushes
+// screen 19 (query) or 3 (message) and writes the text; it releases the text on the way out, so
+// the text is read before the call. Stated only when the box opened.
+REX_EXTERN(rex_lhGuiManager_OpenModal) {
+    const uint32_t owner = ctx.r3.u32;
+    const uint32_t text = ctx.r4.u32;
+    const uint32_t kind = ctx.r5.u32;
+    const uint32_t id = ctx.r6.u32;
+    const bool opens = refii::vfs::LoadGuestU32(base, owner + 40u) == 1u;
+    const std::string said = opens ? refii::vfs::ReadStatedWideLhString(base, text) : std::string();
+    __imp__rex_lhGuiManager_OpenModal(ctx, base);
+    if (opens && refii::vfs::LoadGuestU32(base, owner + 40u) == kind) {
+        StateModal(kind, id, said);
+    }
+}
+
+// The numeric adjuster's opener `sub_8236FCA8(gui28, text, modalId, value, min, max, step, flags)`
+// (disc `sub_82337EA0`; 0x8236fcb4..0x8236fde4): mode 5 and the id at +44, the text into
+// `Group.QueryBox.Text`, the numbers into the widget at `*(gui28+0x40)` (+0x2C value, +0x20 min,
+// +0x24 max, +0x28 step, +0x1C flags: 1 money, 2 percent, 4 sign). Stated whole, so the host
+// steps, formats and gates the arrows by the widget's own rules (`sub_826B8CF0`, `sub_826B8BB0`).
+REX_EXTERN(rex_lhGuiManager_OpenNumericAdjuster) {
+    const uint32_t owner = ctx.r3.u32;
+    const uint32_t text = ctx.r4.u32;
+    const uint32_t id = ctx.r5.u32;
+    const int32_t value = static_cast<int32_t>(ctx.r6.u32);
+    const int32_t minimum = static_cast<int32_t>(ctx.r7.u32);
+    const int32_t maximum = static_cast<int32_t>(ctx.r8.u32);
+    const int32_t step = static_cast<int32_t>(ctx.r9.u32);
+    const int32_t flags = static_cast<int32_t>(ctx.r10.u32);
+    const bool opens = refii::vfs::LoadGuestU32(base, owner + 40u) == 1u;
+    const std::string said = opens ? refii::vfs::ReadStatedWideLhString(base, text) : std::string();
+    __imp__rex_lhGuiManager_OpenNumericAdjuster(ctx, base);
+    if (opens && refii::vfs::LoadGuestU32(base, owner + 40u) == 5u) {
+        StateModal(5u, id, said, {value, minimum, maximum, step, flags});
+    }
+}
 
 // MessageBox::Open — stated after the guest's own Open, so the presentation exists and the open
 // byte is set by the time the host asks for either.

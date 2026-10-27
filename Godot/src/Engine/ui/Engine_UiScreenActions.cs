@@ -122,7 +122,7 @@ public static class Engine_UiScreenActions
 	/// <summary>Dismisses the screen — the one-off panels' own close.</summary>
 	public const string ScreenDismiss = "screen:dismiss";
 
-	/// <summary>Unlearns the highlighted ability, then commits the row.</summary>
+	/// <summary>The guest's own flip press (code 39) to the current screen's input method.</summary>
 	public const string ScreenUnlearn = "screen:unlearn";
 
 	/// <summary>
@@ -225,6 +225,27 @@ public static class Engine_UiScreenActions
 		set.Register(Engine_UiVerbs.Quest, pump);
 		set.Register(Engine_UiVerbs.Sale, pump);
 		set.Register(Engine_UiVerbs.Ability, pump);
+
+		// `Shop:buy|sell:<ticket>` — the shop screen's handler `sub_826AE5C0` acts on the PUSHED
+		// row: it caches the event's id at screen+396 and its confirm's YES re-reads it
+		// (@0x826AF8BC) before `sub_82872D70` / `sub_82872A68`. So the push IS the guest's
+		// contract here — type 30 buys, 31 sells, the ticket is the one its own populate handed
+		// the row — and the shop's own confirm (modal 19/20) follows.
+		set.Register(Engine_UiVerbs.Shop, (_, context) =>
+		{
+			string body = context.Command[Engine_UiMenuSources.ShopAction.Length..];
+			int colon = body.IndexOf(':');
+			string op = colon > 0 ? body[..colon] : string.Empty;
+			if ((op != "buy" && op != "sell") ||
+				!uint.TryParse(body[(colon + 1)..], out uint ticket) || ticket == 0)
+			{
+				return Engine_UiCommandResult.Refused($"'{context.Command}' names no buy|sell ticket");
+			}
+
+			int type = context.RowEventType != 0 ? context.RowEventType : (op == "buy" ? 30 : 31);
+			Engine_UiSource.Current.MenuEvent(context.Row, type, ticket);
+			return Engine_UiCommandResult.Done;
+		});
 
 		// The world map's property rows: confirmed, then repaired for the player whose menus are
 		// open (Engine_UiPropertySource).

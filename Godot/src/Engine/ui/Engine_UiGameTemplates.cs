@@ -886,10 +886,17 @@ public static class Engine_UiGameTemplates
   "screens": {
     "0": {
       "name": "pause",
+      "restFromFile": true,
       "menu": "pause-root",
       "scrollContent": "Foreground.Pages.Contents.MiniMap.Legend",
       "scrollMask": "Mask",
       "scrollBar": "Foreground.Pages.Contents.Scrollbar",
+      "flowMeasured": "Foreground.Pages.Contents.MiniMap.Legend.CurrentObjective",
+      "flowBase": "Foreground.Pages.Contents.MiniMap.Legend.Fixed",
+      "flowMoved": [
+        "Foreground.Pages.Contents.MiniMap.Legend.Fixed"
+      ],
+      "flowWhenDrawn": true,
       "presentation": "pausemainmenu",
       "pageRootUnit": "Pages",
       "backdropUnit": "BackgroundTint",
@@ -901,20 +908,6 @@ public static class Engine_UiGameTemplates
         "ExpandableMenu.Buttons",
         "MenuHighlight"
       ],
-      "liveTexts": [
-        "Contents.CurrentQuest",
-        "Legend.CurrentObjective",
-        "Legend.Fixed.KeyName1",
-        "Legend.Fixed.KeyName2",
-        "Legend.Fixed.KeyName3",
-        "Legend.Fixed.KeyName4",
-        "Legend.Fixed.KeyName5",
-        "Legend.Fixed.KeyName6",
-        "Legend.Fixed.KeyName7",
-        "Legend.Fixed.KeyName8",
-        "Legend.Fixed.KeyName9",
-        "Money.Back.Select"
-      ],
       "wideLeft": [
         "Foreground.ExpandableMenu"
       ],
@@ -922,13 +915,18 @@ public static class Engine_UiGameTemplates
         "Foreground.RightFrame",
         "Foreground.Pages",
         "Foreground.ReusableTokens"
-      ]
+      ],
+      "restPose": {
+        "Foreground.ExpandableMenu.KeyLight": [
+          22
+        ]
+      }
     },
     "14": {
       "name": "abilities",
       "ownsList": true,
+      "restFromFile": true,
       "provider": "abilities",
-      "flipAction": "screen:unlearn",
       "hasSpellBlade": true,
       "scrollContent": "Foreground.Book.Pages.Page2.Contents.Text",
       "scrollMask": "Mask",
@@ -985,11 +983,17 @@ public static class Engine_UiGameTemplates
         0,
         0,
         0
-      ]
+      ],
+      "restPose": {
+        "Foreground.ExpandableMenu.KeyLight": [
+          22
+        ]
+      }
     },
     "15": {
       "name": "items",
       "ownsList": true,
+      "restFromFile": true,
       "menuScript": "ItemsMenu",
       "menuScriptByMode": {
         "1": "ItemsMenu",
@@ -1061,11 +1065,24 @@ public static class Engine_UiGameTemplates
         0,
         0,
         0
-      ]
+      ],
+      "restPose": {
+        "Foreground.ExpandableMenu.KeyLight": [
+          22
+        ],
+        "Foreground.Book.Pages.Page1_Background": [
+          66
+        ]
+      },
+      "restOpacity": {
+        "Foreground.ExpandableMenu.Title": 0,
+        "Foreground.Book.Pages.Page1.Contents.DyeSwatch": 0
+      }
     },
     "16": {
       "name": "clothing",
       "ownsList": true,
+      "restFromFile": true,
       "previewAnchor": "Foreground.Book.Pages.Page1.Contents.TypeSpecific.model_proxy.model",
       "provider": "item-book",
       "scrollContent": "Foreground.Book.Pages.Page2.Contents.ItemDescription",
@@ -1132,11 +1149,23 @@ public static class Engine_UiGameTemplates
         0,
         0,
         0
-      ]
+      ],
+      "restPose": {
+        "Foreground.ExpandableMenu.KeyLight": [
+          22
+        ],
+        "Foreground.Book.Pages.Page1.Contents.TypeSpecific.model_proxy": [
+          20
+        ]
+      },
+      "restOpacity": {
+        "Foreground.Book.Pages.Page1.Contents.DyeSwatch": 0
+      }
     },
     "25": {
       "name": "gift",
       "ownsList": true,
+      "restFromFile": true,
       "menuScript": "GiftGivingMenu",
       "previewAnchor": "Foreground.Book.Pages.Page1.Contents.ModelHider.model_proxy.model",
       "provider": "item-book",
@@ -1204,11 +1233,21 @@ public static class Engine_UiGameTemplates
         0,
         0,
         0
-      ]
+      ],
+      "restPose": {
+        "Foreground.ExpandableMenu.KeyLight": [
+          22
+        ]
+      },
+      "restOpacity": {
+        "Foreground.Book.Pages.Page1.Contents.DyeSwatch": 0
+      }
     },
     "26": {
       "name": "upgradefurniture",
       "ownsList": true,
+      "restFromFile": true,
+      "commitsByHighlight": true,
       "previewAnchor": "Foreground.Book.Pages.Page1.Contents.ModelHider.model_proxy.model",
       "provider": "item-book",
       "presentation": "upgradefurniture",
@@ -1272,11 +1311,21 @@ public static class Engine_UiGameTemplates
         0,
         0,
         0
-      ]
+      ],
+      "restPose": {
+        "Foreground.ExpandableMenu.KeyLight": [
+          22
+        ]
+      },
+      "restOpacity": {
+        "Foreground.Book.Pages.Page1.Contents.DyeSwatch": 0
+      }
     },
     "27": {
       "name": "decoration",
       "ownsList": true,
+      "restFromFile": true,
+      "commitsByHighlight": true,
       "previewAnchor": "Foreground.Book.Pages.Page1.Contents.ModelHider.model_proxy.model",
       "provider": "item-book",
       "scrollContent": "Foreground.Book.Pages.Page2.Contents.ItemDescription",
@@ -1343,11 +1392,20 @@ public static class Engine_UiGameTemplates
         0,
         0,
         0
-      ]
+      ],
+      "restPose": {
+        "Foreground.ExpandableMenu.KeyLight": [
+          22
+        ]
+      },
+      "restOpacity": {
+        "Foreground.Book.Pages.Page1.Contents.DyeSwatch": 0
+      }
     },
     "17": {
       "name": "logbook",
       "ownsList": true,
+      "restFromFile": true,
       "provider": "logbook",
       "scrollContent": "Foreground.Book.Pages.StatsPage.Contents.LogBook.Stats|Foreground.Book.Pages.RenownPage.Contents.LogBook.Renown|Foreground.Book.Pages.ExpressionsPage.Contents|Foreground.Book.Pages.CompletedQuestsPage.Contents.Quests|Foreground.Book.Pages.HelpPage.Contents.LogBook",
       "scrollMask": "Mask|Mask|Mask|Mask|Mask",
@@ -1762,11 +1820,18 @@ public static class Engine_UiGameTemplates
         0,
         0,
         0
-      ]
+      ],
+      "restPose": {
+        "Foreground.ExpandableMenu.KeyLight": [
+          22
+        ]
+      }
     },
     "18": {
       "name": "options",
       "ownsList": true,
+      "restFromFile": true,
+      "commitsByHighlight": true,
       "pageElement": "Foreground.ExpandableMenu",
       "pageSlide": 2,
       "provider": "options",
@@ -1797,11 +1862,17 @@ public static class Engine_UiGameTemplates
         0,
         0,
         0
-      ]
+      ],
+      "restPose": {
+        "Foreground.ExpandableMenu.KeyLight": [
+          22
+        ]
+      }
     },
     "21": {
       "name": "crime",
       "ownsList": true,
+      "restFromFile": true,
       "provider": "crime",
       "scrollContent": "Foreground.Book.Pages.Page1.Contents.Text|Foreground.Book.Pages.Page2.Contents.Text|Foreground.Book.Pages.Page3.Contents.Text",
       "scrollMask": "Mask|Mask|Mask",
@@ -1843,11 +1914,17 @@ public static class Engine_UiGameTemplates
         "Foreground.Book.Pages.Page1",
         "Foreground.Book.Pages.Page2",
         "Foreground.Book.Pages.Page3"
-      ]
+      ],
+      "restPose": {
+        "Foreground.ExpandableMenu.KeyLight": [
+          22
+        ]
+      }
     },
     "22": {
       "name": "shop",
       "ownsList": true,
+      "restFromFile": true,
       "menuScript": "ShopMenu",
       "previewAnchor": "Foreground.Book.Pages.Page1.Contents.ModelHider.model_proxy.model",
       "provider": "item-book",
@@ -1910,18 +1987,24 @@ public static class Engine_UiGameTemplates
         "Foreground.Book.Pages.Page2",
         "Foreground.Book.Pages.Page3"
       ],
-      "guestTextUnits": [
-        "Foreground.FrontPage"
-      ],
       "pageStackAt": [
         0,
         0,
         0
-      ]
+      ],
+      "restPose": {
+        "Foreground.ExpandableMenu.KeyLight": [
+          22
+        ]
+      },
+      "restOpacity": {
+        "Foreground.Book.Pages.Page1.Contents.DyeSwatch": 0
+      }
     },
     "23": {
       "name": "worldmap",
       "ownsList": true,
+      "restFromFile": true,
       "provider": "worldmap",
       "scrollContent": "Foreground.Book.Pages.Page1.Contents.Text|Foreground.Book.Pages.QuestsPage.Contents.Description|Foreground.Book.Pages.FamilyPage.Contents.Group|Foreground.Book.Pages.Page2.Contents.Legend|Foreground.Book.Pages.SalesPage.Contents.Description",
       "scrollMask": "MaskPage2|MaskQuests|MaskFamily|MaskPage3|MaskPage2",
@@ -2044,11 +2127,20 @@ public static class Engine_UiGameTemplates
         0,
         0,
         0
-      ]
+      ],
+      "restPose": {
+        "Foreground.ExpandableMenu.KeyLight": [
+          22
+        ]
+      },
+      "restOpacity": {
+        "Foreground.Book.Pages.QuestsPage.Contents.Scrollbar": 0
+      }
     },
     "28": {
       "name": "realestate",
       "ownsList": true,
+      "restFromFile": true,
       "provider": "realestate",
       "scrollContent": "Foreground.Book.Pages.Page1.Group|Foreground.Book.Pages.Page2.Contents.Group",
       "scrollMask": "Mask|Mask",
@@ -2073,7 +2165,12 @@ public static class Engine_UiGameTemplates
       "pages": [
         "Foreground.Book.Pages.Page1",
         "Foreground.Book.Pages.Page2"
-      ]
+      ],
+      "restPose": {
+        "Foreground.ExpandableMenu.KeyLight": [
+          22
+        ]
+      }
     },
     "1": {
       "name": "photomode",
@@ -2088,6 +2185,7 @@ public static class Engine_UiGameTemplates
     },
     "24": {
       "name": "coop",
+      "restFromFile": true,
       "previewAnchor": "RightPage.model_proxy.model",
       "provider": "coop",
       "presentation": "coopscreen",
@@ -2113,16 +2211,12 @@ public static class Engine_UiGameTemplates
       "wideStretch": [
         "Foreground.LeftBackground.PageTexture",
         "Foreground.RightBackground.PageTexture"
-      ],
-      "guestTextUnits": [
-        "LeftPage",
-        "RightPage",
-        "Connecting",
-        "loadgame"
       ]
     },
     "5": {
       "name": "questrepeatable",
+      "restFromFile": true,
+      "provider": "questbox",
       "ownsRevealedInput": true,
       "revealedAccept": "box:dismiss",
       "presentation": "questrepeatable",
@@ -2138,9 +2232,6 @@ public static class Engine_UiGameTemplates
         "Remember",
         "Condition1",
         "Condition2"
-      ],
-      "guestTextUnits": [
-        "elements"
       ]
     },
     "29": {
@@ -2152,16 +2243,16 @@ public static class Engine_UiGameTemplates
     },
     "7": {
       "name": "displaybox",
+      "restFromFile": true,
+      "provider": "infocard",
       "presentation": "displaybox",
       "chrome": [
-        "Paper"
-      ],
-      "guestTextUnits": [
         "Paper"
       ]
     },
     "11": {
       "name": "minigamecompleted",
+      "restFromFile": true,
       "ownsRevealedInput": true,
       "revealedAccept": "screen:dismiss",
       "presentation": "minigamecompleted",
@@ -2174,13 +2265,11 @@ public static class Engine_UiGameTemplates
       ],
       "panelSubtrees": [
         "Component"
-      ],
-      "guestTextUnits": [
-        "Component"
       ]
     },
     "12": {
       "name": "questcompletion",
+      "restFromFile": true,
       "ownsRevealedInput": true,
       "revealedAccept": "screen:dismiss",
       "presentation": "questcompletion",
@@ -2200,13 +2289,12 @@ public static class Engine_UiGameTemplates
       ],
       "panelSubtrees": [
         "elements"
-      ],
-      "guestTextUnits": [
-        "elements"
       ]
     },
     "10": {
       "name": "query",
+      "restFromFile": true,
+      "provider": "querycard",
       "ownsRevealedInput": true,
       "revealedBack": "screen:back",
       "presentation": "queryscreen",
@@ -2215,13 +2303,11 @@ public static class Engine_UiGameTemplates
       ],
       "panelSubtrees": [
         "elements"
-      ],
-      "guestTextUnits": [
-        "elements"
       ]
     },
     "1010": {
       "name": "frontend",
+      "restFromFile": true,
       "presentation": "frontendmainmenu",
       "pageRootUnit": "Pages",
       "chrome": [
@@ -2245,6 +2331,7 @@ public static class Engine_UiGameTemplates
     },
     "1011": {
       "name": "title",
+      "restFromFile": true,
       "presentation": "frontendstartupscreen",
       "chrome": [
         "logo",
@@ -2256,6 +2343,7 @@ public static class Engine_UiGameTemplates
     },
     "1012": {
       "name": "backdrop",
+      "restFromFile": true,
       "presentation": "scrollingbackground",
       "pageRootUnit": "Scrolling",
       "chrome": [

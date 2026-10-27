@@ -11170,6 +11170,14 @@
 0x82337600 = { name = "rex_lhGuiManager_CanPlayerOpenQuickMenu", size = 0x388 }
 0x82337988 = { name = "rex_lhGuiManager_OpenSpellsMenu" }
 0x82337B68 = { name = "rex_lhGuiManager_CloseSpellsMenu" }
+0x82337C68 = { name = "rex_lhGuiManager_OpenModal" }
+0x8257B408 = { name = "rex_lhGuiRegistry_SetToggle" }
+0x8257C9C8 = { name = "rex_lhGuiRegistry_SetSlide" }
+0x82845CB8 = { name = "rex_lhGuiRegistry_JumpSlide" }
+0x82BAFA98 = { name = "rex_lhGfxTimeline_SetPaused" }
+0x82284218 = { name = "rex_lhGfxElements_EvaluateTracks" }
+0x8259DB00 = { name = "rex_lhGuiMenu_GetHighlightedItemData" }
+0x82337EA0 = { name = "rex_lhGuiManager_OpenNumericAdjuster" }
 0x82338150 = { name = "rex_lhGuiManager_ClearModalState" }
 0x823381B8 = { name = "rex_lhGuiManager_FindScreenHandler" }
 0x82305A78 = { name = "rex_lhGui_RegisterPlayer" }

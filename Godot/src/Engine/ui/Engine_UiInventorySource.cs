@@ -329,10 +329,11 @@ public static class Engine_UiInventorySource
 				Ghosted: false,
 
 				// THE ROW'S OWN ACTION, performed on the simulation without the guest's menus:
-				// `Inventory:<op>:<record hash>` reaches the guest's own script-command entry
-				// points (`AddAndReplaceItemOfRecordID`, `Player:GiveGift`) through the tick
-				// pump. Empty when the screen states no operation, and then the row falls back
-				// to borrowing the guest's identity.
+				// `Inventory:<op>:<record hash>` reaches the guest's own entry points through the
+				// tick pump. Empty when the screen states no operation or the item refuses it,
+				// and then the row does NOTHING on A — as the guest's own list does (`sub_826D19B8`
+				// tests `UsableFromInventory` before it dispatches a use). It is never pushed at
+				// the screen's handler, which acts on ITS cursor (`screen+396`), not on the row.
 				Command: Acts(rowOperation, record)
 					? $"{InventoryAction}{rowOperation}:{record.RecordId}"
 					: null,
@@ -387,8 +388,8 @@ public static class Engine_UiInventorySource
 	///
 	/// `use` is gated on the item's own `UsableFromInventory`, which is the guest's own test
 	/// (`sub_827649C8`, checked at 0x826D19B8 before it will dispatch a use). A trophy and a book
-	/// sit in the item list but are not consumable, and a row with no command falls back to
-	/// borrowing the guest's identity rather than performing an operation the data forbids.
+	/// sit in the item list but are not consumable, and a row with no command is inert rather
+	/// than performing an operation the data forbids.
 	///
 	/// `wear` and `gift` are not gated here: wear is only ever offered on the clothing
 	/// categories, and gift has its own predicate on a component this cannot yet read.
@@ -846,7 +847,10 @@ public static class Engine_UiInventorySource
 					Rating: RatingOf(heldRecord),
 					Committable: false,
 					Ghosted: false,
-					Command: string.Empty,
+
+					// A on the held weapon runs the guest's own switch (`sub_826C9AB8`, the same
+					// call the list's own A makes), which decides what re-choosing it means.
+					Command: $"{InventoryAction}equip:{heldId}",
 					Group: string.Empty,
 					GroupTag: string.Empty,
 					IsHeader: false,

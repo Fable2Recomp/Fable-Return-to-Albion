@@ -177,7 +177,47 @@ public partial class GameUi
 		{
 			if (GuestAddress(call) is { } box)
 			{
-				_boxes.GuestMessageOpened(box, call.Argument(1).Text);
+				_boxes.GuestMessageOpened(box, call.Argument(1).Text, call.Argument(2).Text ?? string.Empty);
+			}
+		});
+
+		// The registry slide writers (gui_registry_hooks.cpp): registry index, name hash, slide,
+		// and whether the write played it.
+		_guiNatives.Register("@Gui.Slide", call =>
+		{
+			if (int.TryParse(call.Argument(0).Text, out int registry) &&
+				uint.TryParse(call.Argument(1).Text, out uint hash) &&
+				int.TryParse(call.Argument(2).Text, out int slide))
+			{
+				_hud.Values.StateRegistrySlide(registry, hash, slide, call.Argument(3).Text == "1");
+			}
+		});
+
+		_guiNatives.Register("@Gui.Image", call =>
+		{
+			if (uint.TryParse(call.Argument(0).Text, out uint hash) &&
+				uint.TryParse(call.Argument(1).Text, out uint texture))
+			{
+				_hud.Values.StateRegistryImage(hash, texture);
+			}
+		});
+
+		// The modal router's opener stating its box: kind, modal id, text (display_box_hooks.cpp).
+		_guiNatives.Register("@Modal.Open", call =>
+		{
+			if (uint.TryParse(call.Argument(0).Text, out uint kind) &&
+				uint.TryParse(call.Argument(1).Text, out uint id))
+			{
+				Engine_UiModalText.Stated(kind, id, call.Argument(2).Text ?? string.Empty);
+				if (kind == 5u && call.Arguments.Count >= 8 &&
+					int.TryParse(call.Argument(3).Text, out int value) &&
+					int.TryParse(call.Argument(4).Text, out int min) &&
+					int.TryParse(call.Argument(5).Text, out int max) &&
+					int.TryParse(call.Argument(6).Text, out int step) &&
+					int.TryParse(call.Argument(7).Text, out int flags))
+				{
+					Engine_UiModalText.StatedAdjuster(id, value, min, max, step, flags);
+				}
 			}
 		});
 
@@ -778,22 +818,40 @@ public partial class GameUi
 		_guiNatives.Register("DisplayQuestBoxParams", call =>
 		{
 			Engine_UiModel.GuiNativeArgument table = call.Argument(0);
-			_boxes.QuestBox(
-				table.FieldText("Name", "Unnamed Quest"),
-				Localise(call, 1),
-				(int)table.FieldNumber("Type", 0f),
-				(int)table.FieldNumber("RiskLevel", 1f));
+			string text = Localise(call, 1);
+			int type = (int)table.FieldNumber("Type", 0f);
+			int risk = (int)table.FieldNumber("RiskLevel", 1f);
+			_boxes.QuestBox(table.FieldText("Name", "Unnamed Quest"), text, type, risk);
+
+			// The page's whole statement (`sub_82304920`): the fields localised as the filler
+			// `sub_823CFBE0` localises them, the condition count as 0x82304a44..7c counts it.
+			string Field(string key) =>
+				Engine_UiGuiText.Resolve(table.FieldText(key, string.Empty), _presentation?.Strings);
+			string condition1 = table.FieldText("Condition1", "nocondition");
+			string condition2 = table.FieldText("Condition2", "nocondition");
+			int conditions = condition2 != "nocondition" ? 2 : condition1 != "nocondition" ? 1 : 0;
+			Engine_UiQuestBoxPage.Stated = new Engine_UiQuestBoxPage.Statement(
+				type, risk, text,
+				Field("Occupation"), Field("Appearance"), Field("Features"), Field("TargetName"),
+				Field("Whereabouts"), Field("Reason"),
+				conditions > 0 ? Engine_UiGuiText.Resolve(condition1, _presentation?.Strings) : string.Empty,
+				conditions > 1 ? Engine_UiGuiText.Resolve(condition2, _presentation?.Strings) : string.Empty,
+				conditions);
 		});
 
 		// The acceptance box has `li r3,0; blr` in both input slots — its whole interaction is
 		// in the Gameface Lua behind `g_DisplayBox:OpenAsAcceptanceBox()`. The button box takes
 		// input at another vtable slot as an input-phase record, and its enum is unresolved.
-		_guiNatives.Observe("DisplayAcceptanceBox",
-			"its input slots are both `li r3,0; blr` — the whole interaction is in the Gameface " +
-			"Lua we discard, so owning it means writing it rather than porting it");
-		_guiNatives.Observe("DisplayButtonBox",
-			"takes input at vtable slot 4 as an input-phase record, not an action code, and its " +
-			"0x0B..0x0E button enum is unresolved");
+		// Their TEXT is the call's (`DisplayAcceptanceBox(name, text)`, `DisplayButtonBox(name,
+		// text)`: name → ctrl+4, text → ctrl+8, which the open `sub_8299EE40` writes into
+		// `FramePositioningGroup.Text`) — recorded for the display-box surface. Their INPUT stays
+		// the guest's: the acceptance box's input slots are both `li r3,0; blr` (the interaction
+		// is in the Gameface Lua), and the button box takes an input-phase record at vtable slot 4
+		// whose 0x0B..0x0E enum is unresolved.
+		_guiNatives.Register("DisplayAcceptanceBox", call =>
+			Engine_UiStatedSurface.StatedDisplayText = Localise(call, 1));
+		_guiNatives.Register("DisplayButtonBox", call =>
+			Engine_UiStatedSurface.StatedDisplayText = Localise(call, 1));
 
 		// The full-screen screens are already owned as screens, each with a surface driven by
 		// the screen the guest stands up; the native still opens it.

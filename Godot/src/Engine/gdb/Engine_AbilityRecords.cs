@@ -30,6 +30,20 @@ public static class Engine_AbilityRecords
 		public bool Known => Type != 0;
 	}
 
+	/// <summary>
+	/// The ENTRY id of a record, by any name that reaches it: `AbilityHeavyWeaponsBase` is alias
+	/// 0x064A4B7E for entry 0x19F1B0CD, and the guest's `GDBManager_FindEntryByHash` takes the
+	/// entry's own id — the number its menu Lua pushes as a row's identity. 0 when unknown.
+	/// </summary>
+	public static uint EntryId(string recordName)
+	{
+		GdbMulti? multi = Database;
+		return !string.IsNullOrEmpty(recordName) && multi is not null &&
+			multi.TryLookup(Engine_GameHash.Fnv1(recordName), out GdbCursor at) && at.Valid
+			? at.View.RecordHash(at.Record)
+			: 0u;
+	}
+
 	/// <summary>The static record behind a spawned row, by the name the guest spawned it with.</summary>
 	public static bool TryGet(string recordName, out Ability ability)
 	{

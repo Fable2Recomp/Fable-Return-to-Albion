@@ -29,6 +29,26 @@ public static class Engine_UiDetailPages
 			? Engine_UiPageProviders.Find(template.Provider)
 			: null;
 
+	/// <summary>
+	/// Fills a box page's book from its provider as it draws — the pages no screen feed reaches
+	/// (<see cref="Engine_UiPageProvider.FillsOnDraw"/>). False for every other screen.
+	/// </summary>
+	public static bool FillOnDraw(uint screenId, Engine_UiOwnedBook book)
+	{
+		if (Provider(screenId) is not { FillsOnDraw: true } provider)
+		{
+			return false;
+		}
+
+		Engine_UiPageContext page = Row(screenId, null);
+		book.HostValues = provider.Values(page);
+		book.HostActive = provider.Active(page);
+		book.HostSlides = provider.Slides(page) is { Count: > 0 } slides ? slides : null;
+		book.HostTextures = provider.Textures(page);
+		book.HostOpacity = provider.Opacities(page);
+		return true;
+	}
+
 	/// <summary>Screens whose detail page Godot fills.</summary>
 	public static bool Owns(uint screenId) => Provider(screenId) is not null;
 
@@ -45,7 +65,7 @@ public static class Engine_UiDetailPages
 
 	/// <summary>
 	/// The host-owned field values for this screen's detail page, as final display text. Empty
-	/// for a screen with no provider, leaving every field on the guest's own channel.
+	/// for a screen with no provider, whose fields show the file's own captions.
 	/// </summary>
 	public static IReadOnlyDictionary<string, string> Values(
 		uint screenId,
@@ -131,6 +151,11 @@ public static class Engine_UiDetailPages
 	public static IReadOnlyDictionary<string, float> Rotations(
 		uint screenId, Engine_UiExpandableMenu.Item? row = null) =>
 		Provider(screenId)?.Rotations(Row(screenId, row)) ?? Engine_UiPageProviders.NoRotations;
+
+	/// <summary>Elements this screen's provider tints — see <see cref="Engine_UiOwnedBook.HostTints"/>.</summary>
+	public static IReadOnlyDictionary<string, Godot.Color> Tints(
+		uint screenId, Engine_UiExpandableMenu.Item? row = null) =>
+		Provider(screenId)?.Tints(Row(screenId, row)) ?? Engine_UiPageProviders.NoTints;
 
 	/// <summary>
 	/// The MOVIE this screen's page wants playing, or empty when it wants none. Only the

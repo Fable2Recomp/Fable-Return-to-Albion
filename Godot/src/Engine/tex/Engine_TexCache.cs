@@ -83,7 +83,7 @@ public static class Engine_TexCache
 	/// Absolute rather than a Godot virtual path: FileAccess and DirAccess take OS paths, and
 	/// GlobalizePath returns an absolute path unchanged, so every existing call site still works.
 	/// </remarks>
-	private static string CacheRoot =>
+	public static string CacheRoot =>
 		System.IO.Path.Combine(Refii.Core.Engine_AppRoot.CacheDirectory, "textures");
 
 	/// <summary>

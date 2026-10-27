@@ -783,6 +783,19 @@ public sealed class Engine_UiSceneBuilder
 		return true;
 	}
 
+	/// <summary>
+	/// An inline icon's material (`<gold_img>` in a string): the same quad shader every Gameface
+	/// quad draws through, the whole texture, at the label's alpha — so a mask's `clip_rect` and
+	/// a seated book's `clip_seat` reach it as they reach the glyphs beside it.
+	/// </summary>
+	public static ShaderMaterial IconMaterial(Texture2D art, float alpha)
+	{
+		var material = new ShaderMaterial { Shader = QuadShader };
+		material.SetShaderParameter(DiffuseTexName, art);
+		material.SetShaderParameter(OpacityName, alpha);
+		return material;
+	}
+
 	private MeshInstance3D BuildQuad(UiNode n)
 	{
 		UiQuad q = n.Quad!;

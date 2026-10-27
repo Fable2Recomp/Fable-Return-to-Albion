@@ -173,18 +173,12 @@ public static class Engine_UiAbilitySource
 				Icon: AbilityIcon,
 				EventType: eventType,
 
-				// THE GUEST'S OWN IDENTITY: the FNV-1 of the level record on display, which the
-				// shipped menu Lua pushes and which changes as the ability levels up. It is not
-				// decorative. Y commits this row BY IDENTITY as a discard (Engine_UiScreenMenu,
-				// MenuDiscard), and the guest's confirm — `sub_826C2D40` / `sub_826C2E68` —
-				// resolves the ability from that id alone: `sub_82896900` runs
-				// `GDBManager_FindEntryByHash(id)` and reads the record's `Type`. With the type
-				// number here instead (as it was), no record matched, `Type` was never written,
-				// and whatever stood in that slot was discarded: a player unlearning Shock lost a
-				// level of Brutal Styles. The learn path is unaffected — it calls the purchase by
-				// type and never reads this.
-				Id: Refii.Core.Engine_GameHash.Fnv1(
-					Refii.Gdb.Engine_AbilityRecords.RecordForLevel(record, level)),
+				// THE GUEST'S OWN IDENTITY for the row: the base record's ENTRY id (the name is an
+				// alias — `AbilityHeavyWeaponsBase` is 0x064A4B7E for entry 0x19F1B0CD). Nothing is
+				// dispatched on it: A buys and Y unlearns BY TYPE (the command below, AskUnlearn).
+				Id: Refii.Gdb.Engine_AbilityRecords.EntryId(record) is var entry && entry != 0
+					? entry
+					: Refii.Core.Engine_GameHash.Fnv1(record),
 				Rating: rating,
 				Committable: false,
 				Counted: upgradeable,
@@ -292,6 +286,54 @@ public static class Engine_UiAbilitySource
 	/// The name of the level this ability is OFFERING — `level + 1`, or the top level when it is
 	/// already maxed, with the maxed tag's last character forced to '6'.
 	/// </summary>
+	/// <summary>
+	/// Y on one of the fourteen: the guest's discard confirm, then its own unlearn BY TYPE —
+	/// `Ability:unlearn:&lt;type&gt;`, `sub_8246D510` through the pump — which takes one level
+	/// back, refunds half its cost and opens its own result box. Never the guest's Y lever (code
+	/// 39): its YES handler (`sub_826C2B58`) resolves the ability from the guest menu's cached
+	/// highlight at screen+624, not from any pushed row, and that cache is not Godot's cursor —
+	/// Physique's Y took a level of Brutal Styles (2026-10-26). An ability with no level is the
+	/// guest's "cannot discard" text, told without a confirm. False when the record is not one
+	/// of the fourteen.
+	/// </summary>
+	public static bool AskUnlearn(string record)
+	{
+		int type = 0;
+		foreach ((int candidate, string name, _) in Abilities)
+		{
+			if (name == record)
+			{
+				type = candidate;
+				break;
+			}
+		}
+
+		if (type == 0)
+		{
+			return false;
+		}
+
+		Refii.Host.HostBridge.HeroVitals vitals = Refii.Host.HostBridge.GetHeroVitals();
+		int level = vitals.Known && vitals.AbilityLevels is { Length: > 14 } levels ? levels[type] : 0;
+		Refii.Text.Engine_BabelDatabase? book = Engine_UiInventorySource.Strings;
+		string Text(string tag)
+		{
+			string text = book is not null && book.TryGetString(tag, out string found) ? found : tag;
+			return text.Replace("%1", LabelOf(record, System.Math.Max(level - 1, 0), out _),
+				System.StringComparison.Ordinal);
+		}
+
+		if (level <= 0)
+		{
+			Engine_UiHostBoxes.Tell(Text("GUI_SCREEN_ABILITY_CANNOT_DISCARD_ABILITY"));
+			return true;
+		}
+
+		Engine_UiHostBoxes.Ask(Text("GUI_SCREEN_ABILITIES_DISCARD_CONFIRM"), () =>
+			Refii.Host.HostBridge.PostFrontEndAction($"{AbilityAction}unlearn:{type}"));
+		return true;
+	}
+
 	private static string LabelOf(string record, int level, out bool named)
 	{
 		named = false;

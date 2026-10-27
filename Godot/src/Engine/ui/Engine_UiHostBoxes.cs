@@ -12,8 +12,9 @@ namespace Refii.Ui;
 /// (<see cref="Engine_UiPaperBox"/>). The answer runs host code; nothing is posted to the guest.
 /// </summary>
 /// <remarks>
-/// One of each at a time: a host question raised while another is up replaces it, as a second
-/// press of the same key would, and the replaced one is answered -1. An answer is the button's
+/// One of each on screen at a time, the rest QUEUED in order: a question raised while another is
+/// up is asked when that one is answered, and a notice told under a notice follows it. Nothing
+/// is answered -1 on another's account; -1 is only a withdrawal. An answer is the button's
 /// index: 0 for A (the question's accept, the notice's dismiss), 1 for B.
 /// </remarks>
 public static class Engine_UiHostBoxes
@@ -43,6 +44,33 @@ public static class Engine_UiHostBoxes
 	/// <summary>Who asked the question up, so its asker can take it back; empty for none.</summary>
 	private static string _key = string.Empty;
 
+	private readonly record struct PendingQuestion(
+		string Body, string? Title, Action<int>? Answered, string? Accept, string? Cancel, string Key);
+
+	private readonly record struct PendingNotice(string Body, Action<int>? Dismissed);
+
+	private static readonly System.Collections.Generic.List<PendingQuestion> _questions = new();
+
+	private static readonly System.Collections.Generic.List<PendingNotice> _notices = new();
+
+	private static void Show(PendingQuestion next)
+	{
+		Question = next.Body;
+		PageTitle = next.Title;
+		AcceptCaption = next.Accept;
+		CancelCaption = next.Cancel;
+		_onQuestion = next.Answered;
+		_key = next.Key;
+		Godot.GD.Print($"[host-box] asked: {next.Body}");
+	}
+
+	private static void Show(PendingNotice next)
+	{
+		Notice = next.Body;
+		_onNotice = next.Dismissed;
+		Godot.GD.Print($"[host-box] told: {next.Body}");
+	}
+
 	/// <summary>
 	/// Asks <paramref name="body"/> as a yes/no question; <paramref name="onYes"/> runs on A and
 	/// <paramref name="onNo"/>, when given, on B. A <paramref name="key"/> lets the asker take the
@@ -63,20 +91,21 @@ public static class Engine_UiHostBoxes
 
 	/// <summary>
 	/// Asks <paramref name="body"/> with the two captions given (null keeps the box's own);
-	/// <paramref name="answered"/> gets 0 for A, 1 for B, -1 when another question replaced it.
+	/// <paramref name="answered"/> gets 0 for A, 1 for B, -1 when it was withdrawn. Asked behind a question already up, it waits its turn.
 	/// </summary>
-	public static void Ask(string body, Action<int>? answered, string? accept, string? cancel, string key = "")
+	public static void Ask(string body, Action<int>? answered, string? accept, string? cancel, string key = "") =>
+		Ask(new PendingQuestion(body, null, answered, accept, cancel, key));
+
+	private static void Ask(PendingQuestion question)
 	{
-		Action<int>? replaced = _onQuestion;
-		_onQuestion = null;
-		replaced?.Invoke(-1);
-		Question = body;
-		PageTitle = null;
-		AcceptCaption = accept;
-		CancelCaption = cancel;
-		_onQuestion = answered;
-		_key = key;
-		Godot.GD.Print($"[host-box] asked: {body}");
+		if (Question is not null)
+		{
+			_questions.Add(question);
+			Godot.GD.Print($"[host-box] queued behind the question up: {question.Body}");
+			return;
+		}
+
+		Show(question);
 	}
 
 	/// <summary>
@@ -86,11 +115,18 @@ public static class Engine_UiHostBoxes
 	/// bound — a list. The same question channel as <see cref="Ask"/>: one at a time, answered
 	/// through <see cref="Answer"/>, withdrawn by <paramref name="key"/>.
 	/// </summary>
-	public static void AskPage(string title, string body, Action onYes, Action? onNo = null, string key = "")
-	{
-		Ask(body, onYes, onNo, key);
-		PageTitle = title;
-	}
+	public static void AskPage(string title, string body, Action onYes, Action? onNo = null, string key = "") =>
+		Ask(new PendingQuestion(body, title, answer =>
+		{
+			if (answer == 0)
+			{
+				onYes();
+			}
+			else if (answer == 1)
+			{
+				onNo?.Invoke();
+			}
+		}, null, null, key));
 
 	/// <summary>Whether the question up was asked under <paramref name="key"/>.</summary>
 	public static bool Asking(string key) => Question is not null && key.Length != 0 && _key == key;
@@ -98,6 +134,11 @@ public static class Engine_UiHostBoxes
 	/// <summary>Closes the question asked under <paramref name="key"/> without running either answer.</summary>
 	public static void Withdraw(string key)
 	{
+		if (key.Length != 0)
+		{
+			_questions.RemoveAll(q => q.Key == key);
+		}
+
 		if (!Asking(key))
 		{
 			return;
@@ -110,6 +151,25 @@ public static class Engine_UiHostBoxes
 		_onQuestion = null;
 		_key = string.Empty;
 		Godot.GD.Print($"[host-box] withdrawn: {key}");
+		Next();
+	}
+
+	/// <summary>The next queued question, when none is up.</summary>
+	private static void Next()
+	{
+		if (Question is null && _questions.Count != 0)
+		{
+			PendingQuestion next = _questions[0];
+			_questions.RemoveAt(0);
+			Show(next);
+		}
+
+		if (Notice is null && _notices.Count != 0)
+		{
+			PendingNotice next = _notices[0];
+			_notices.RemoveAt(0);
+			Show(next);
+		}
 	}
 
 	/// <summary>Shows <paramref name="body"/> until it is dismissed.</summary>
@@ -117,16 +177,18 @@ public static class Engine_UiHostBoxes
 
 	/// <summary>
 	/// Shows <paramref name="body"/> until it is dismissed; <paramref name="dismissed"/> gets 0 on
-	/// the dismiss, -1 when another notice replaced it.
+	/// the dismiss. Told under a notice already up, it waits its turn.
 	/// </summary>
 	public static void Tell(string body, Action<int>? dismissed)
 	{
-		Action<int>? replaced = _onNotice;
-		_onNotice = null;
-		replaced?.Invoke(-1);
-		Notice = body;
-		_onNotice = dismissed;
-		Godot.GD.Print($"[host-box] told: {body}");
+		if (Notice is not null)
+		{
+			_notices.Add(new PendingNotice(body, dismissed));
+			Godot.GD.Print($"[host-box] queued behind the notice up: {body}");
+			return;
+		}
+
+		Show(new PendingNotice(body, dismissed));
 	}
 
 	/// <summary>The question's answer: A (<paramref name="yes"/>) or B. Closes it either way.</summary>
@@ -140,6 +202,7 @@ public static class Engine_UiHostBoxes
 		_onQuestion = null;
 		_key = string.Empty;
 		answered?.Invoke(yes ? 0 : 1);
+		Next();
 	}
 
 	public static void Dismiss()
@@ -148,5 +211,6 @@ public static class Engine_UiHostBoxes
 		Notice = null;
 		_onNotice = null;
 		dismissed?.Invoke(0);
+		Next();
 	}
 }
