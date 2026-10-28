@@ -23,6 +23,25 @@ public abstract class Engine_UiSource
 	/// <summary>One presentation's element array, or null when there is nothing to read.</summary>
 	public virtual List<Engine_UiModel.UiElement>? GetUiElements(uint presentation = 0) => null;
 
+	/// <summary>
+	/// <see cref="GetUiElements"/> into <paramref name="into"/>, replacing what it held; false (and
+	/// <paramref name="into"/> untouched) when there is nothing to read. <paramref name="previous"/>
+	/// is the last walk of the same presentation, whose strings a source may reuse where the text
+	/// is unchanged.
+	/// </summary>
+	public virtual bool FillUiElements(
+		uint presentation, List<Engine_UiModel.UiElement> into, List<Engine_UiModel.UiElement>? previous)
+	{
+		if (GetUiElements(presentation) is not { } walked)
+		{
+			return false;
+		}
+
+		into.Clear();
+		into.AddRange(walked);
+		return true;
+	}
+
 	/// <summary>Element count without reading any element; how <see cref="Engine_UiElementState"/> notices a reloaded screen.</summary>
 	public virtual uint GetUiElementCount(uint presentation = 0) => 0;
 
@@ -132,6 +151,18 @@ public abstract class Engine_UiSource
 
 	/// <summary>The Lua-owned meter channel.</summary>
 	public virtual Dictionary<uint, float> GetHudScriptMeters() => new();
+
+	/// <summary>
+	/// The HUD's five channels read into dictionaries the caller owns and reuses, cleared first;
+	/// false when this source only hands out its own (the caller then takes those, as before).
+	/// </summary>
+	/// <remarks>
+	/// The HUD reads every channel once per guest frame. A source that answers with a new
+	/// dictionary each time (the guest's) costs five dictionaries and their growth per frame,
+	/// and the texts a new string each; filling the reader's own keeps the storage.
+	/// </remarks>
+	public virtual bool FillHud(Dictionary<uint, float> meters, Dictionary<uint, HudPulser> pulsers,
+		Dictionary<uint, string> texts, Dictionary<uint, float> scriptMeters, Dictionary<uint, uint> scriptTexts) => false;
 
 	// ---- THE FRONT END'S OWN STATE -----------------------------------------------------
 

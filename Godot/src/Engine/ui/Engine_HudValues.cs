@@ -488,11 +488,30 @@ public sealed class Engine_HudValues
     public void Read()
     {
 
-        // `_meters` is replaced, not merged, so the stated meters are re-applied at the end.
-        _meters = Engine_UiSource.Current.GetHudMeters();
+        // `_meters` is replaced, not merged, so the stated meters are re-applied at the end. A
+        // source that fills (the guest's) refills this feed's own dictionaries; one that hands out
+        // its own is taken as it was.
+        Engine_UiSource source = Engine_UiSource.Current;
+        Dictionary<uint, Engine_UiSource.HudPulser> pulsers = _readPulsers;
+        Dictionary<uint, float> scriptMeters = _readScriptMeters;
+        Dictionary<uint, uint> scriptTexts = _readScriptTexts;
+        if (source.FillHud(_ownMeters, _readPulsers, _ownTexts, _readScriptMeters, _readScriptTexts))
+        {
+            _meters = _ownMeters;
+            _texts = _ownTexts;
+        }
+        else
+        {
+            _meters = source.GetHudMeters();
+            pulsers = source.GetHudPulsers();
+            _texts = source.GetHudTexts();
+            scriptMeters = source.GetHudScriptMeters();
+            scriptTexts = source.GetHudScriptTexts();
+        }
+
         _stoppedPulsers.Clear();
-        _pulsers = new Dictionary<uint, float>();
-        foreach ((uint hash, Engine_UiSource.HudPulser pulser) in Engine_UiSource.Current.GetHudPulsers())
+        _pulsers.Clear();
+        foreach ((uint hash, Engine_UiSource.HudPulser pulser) in pulsers)
         {
             _pulsers[hash] = pulser.Phase;
             if (!pulser.Running)
@@ -501,7 +520,6 @@ public sealed class Engine_HudValues
             }
         }
 
-        _texts = Engine_UiSource.Current.GetHudTexts();
         FollowPolled();
         foreach ((uint hash, float value) in _meterOverrides)
         {
@@ -509,7 +527,7 @@ public sealed class Engine_HudValues
         }
 
         // The registry wins where both channels hold a name.
-        foreach ((uint hash, float value) in Engine_UiSource.Current.GetHudScriptMeters())
+        foreach ((uint hash, float value) in scriptMeters)
         {
             if (!_meters.ContainsKey(hash))
             {
@@ -524,7 +542,7 @@ public sealed class Engine_HudValues
             return;
         }
 
-        foreach ((uint hash, uint tag) in Engine_UiSource.Current.GetHudScriptTexts())
+        foreach ((uint hash, uint tag) in scriptTexts)
         {
             if (!_texts.ContainsKey(hash) && Strings.TryGetString(tag, out string display))
             {
@@ -663,7 +681,14 @@ public sealed class Engine_HudValues
     public float? Pulser(Handle handle) =>
         _pulsers.TryGetValue(handle.Hash, out float phase) ? phase : Under?.Pulser(handle);
 
-    private Dictionary<uint, float> _pulsers = new();
+    private readonly Dictionary<uint, float> _pulsers = new();
+
+    // What a filling source reads into, kept across reads (see Read).
+    private readonly Dictionary<uint, float> _ownMeters = new();
+    private readonly Dictionary<uint, string> _ownTexts = new();
+    private readonly Dictionary<uint, Engine_UiSource.HudPulser> _readPulsers = new();
+    private readonly Dictionary<uint, float> _readScriptMeters = new();
+    private readonly Dictionary<uint, uint> _readScriptTexts = new();
 
     /// <summary>A meter as a 0..1 fraction, for a bar's scale.</summary>
     public float? Fraction(Handle handle) =>

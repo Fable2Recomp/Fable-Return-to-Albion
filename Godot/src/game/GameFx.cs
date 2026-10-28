@@ -229,6 +229,7 @@ public partial class GameFx : Node3D
 
         _draw = Refii.Core.Engine_RefiiConfig.Bool(config, DrawSettingKey, true);
         _report = Refii.Core.Engine_RefiiConfig.Bool(config, ReportSettingKey, false);
+        Refii.Fx.Engine_FxFastPaths.Configure(config);
 
         // The environment wins: a headless harness may have no config.
         string forced = OS.GetEnvironment(DrawEnvironmentVariable);
@@ -461,6 +462,7 @@ public partial class GameFx : Node3D
 
             if (node is null)
             {
+                long madeFrom = System.Diagnostics.Stopwatch.GetTimestamp();
                 node = new FableFx
                 {
                     Name = $"LiveFx_{key:X8}",
@@ -470,6 +472,7 @@ public partial class GameFx : Node3D
                 };
                 _nodes[key] = node;
                 AddChild(node);
+                Refii.Core.Engine_SpikeNotes.Since(Refii.Core.Engine_SpikeNotes.Kind.FxNode, madeFrom);
             }
 
             _effectOf[key] = effect;

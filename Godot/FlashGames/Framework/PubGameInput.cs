@@ -17,6 +17,7 @@ namespace Refii.FlashGames.Framework;
 /// left, 8689 on the right, reads as centred), then value/32767 when positive and value/32768
 /// when negative, with no rescale past the deadzone. Up is +Y. Devices only count while the
 /// window has focus; unfocused, the pad is published neutral so every press gets its release.
+/// A host's on-screen pad (<see cref="Touch"/>) is one more device, merged the same way.
 /// </remarks>
 public static class PubGameInput
 {
@@ -25,6 +26,12 @@ public static class PubGameInput
 
     private static readonly bool IgnorePads =
         System.Environment.GetEnvironmentVariable("REFII_PUBGAME_NO_PAD") is "1";
+
+    /// <summary>
+    /// The host's on-screen pad (Android's touch controls), read with the other devices at each
+    /// sample, in the same raw XInput units; null where the host has none.
+    /// </summary>
+    public static Func<Sample>? Touch { get; set; }
 
     /// <summary>One raw XInput snapshot of pad 0.</summary>
     public readonly record struct Sample(
@@ -60,8 +67,16 @@ public static class PubGameInput
             }
         }
 
-        return new Sample(leftTrigger, rightTrigger, leftX, leftY, rightX, rightY, buttons);
+        var sample = new Sample(leftTrigger, rightTrigger, leftX, leftY, rightX, rightY, buttons);
+        return Touch is { } touch ? Merge(sample, touch()) : sample;
     }
+
+    /// <summary>Two devices as one pad: buttons OR'd, each trigger and stick axis the one pushed hardest.</summary>
+    public static Sample Merge(Sample a, Sample b) => new(
+        Math.Max(a.LeftTrigger, b.LeftTrigger), Math.Max(a.RightTrigger, b.RightTrigger),
+        Dominant(a.ThumbLX, b.ThumbLX), Dominant(a.ThumbLY, b.ThumbLY),
+        Dominant(a.ThumbRX, b.ThumbRX), Dominant(a.ThumbRY, b.ThumbRY),
+        a.Buttons | b.Buttons);
 
     /// <summary><c>pubGame.SetPadValue</c> with the guest's stick filter applied.</summary>
     public static void Publish(PubGame game, Sample sample)

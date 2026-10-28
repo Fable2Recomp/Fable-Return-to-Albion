@@ -24,6 +24,17 @@ public static class Engine_UiComponentLibrary
 	}
 
 	/// <summary>
+	/// Runs the desktop authoring export at HUD startup. Android builds screens on demand:
+	/// exporting every component would first retain every screen's detached pattern tree,
+	/// although gameplay never reads these editable scene files.
+	/// </summary>
+	/// <param name="android">Whether this startup belongs to the Android player.</param>
+	/// <param name="export">The desktop export, deferred so Android never opens its pattern books.</param>
+	/// <returns>The desktop export result, or null when Android leaves authoring to the editor.</returns>
+	internal static Result? ExportAtStartup(bool android, System.Func<Result> export) =>
+		android ? null : export();
+
+	/// <summary>
 	/// Writes every screen's chrome units out as scenes. Screens whose presentation is not in the
 	/// shipped set are skipped silently — 21 of the 52 `.bgf` are never loaded by the game either.
 	/// </summary>

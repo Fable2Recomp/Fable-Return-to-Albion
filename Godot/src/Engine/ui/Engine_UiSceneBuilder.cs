@@ -132,7 +132,7 @@ public sealed class Engine_UiSceneBuilder
 		arrays[(int)Mesh.ArrayType.Index] = indices;
 
 		var mesh = new ArrayMesh();
-		mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+		Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays);
 		return mesh;
 	}
 
@@ -275,8 +275,11 @@ public sealed class Engine_UiSceneBuilder
 		root.SetMeta("canvas_width", screen.CanvasWidth);
 		root.SetMeta("canvas_height", screen.CanvasHeight);
 		if (screen.ContractNames.Count > 0)
-			root.SetMeta("contract", new Godot.Collections.Array(
-				screen.ContractNames.ConvertAll(n => Variant.From(n))));
+		{
+			var contract = new Godot.Collections.Array(screen.ContractNames.ConvertAll(n => Variant.From(n)));
+			root.SetMeta("contract", contract);
+			GC.KeepAlive(contract);
+		}
 
 		foreach (UiNode n in screen.Roots)
 		{
@@ -894,7 +897,7 @@ public sealed class Engine_UiSceneBuilder
 
 		// The Shader itself is not duplicated: Duplicate copies the parameter set and keeps
 		// pointing at the one compiled program.
-		mesh.MaterialOverride = (ShaderMaterial)shared.Duplicate();
+		mesh.MaterialOverride = Refii.Models.Engine_MaterialCopy.Shallow(shared);
 		return true;
 	}
 

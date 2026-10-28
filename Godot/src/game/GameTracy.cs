@@ -35,7 +35,7 @@ public static class GameTracy
 
 	public static void Start(IReadOnlyDictionary<string, string> config)
 	{
-		bool gameProcess = GameChildProcess.IsChild || System.OperatingSystem.IsAndroid();
+		bool gameProcess = GameChildProcess.IsChild || Refii.Core.Engine_Platform.IsAndroid;
 		if (Enabled || !gameProcess || !Refii.Core.Engine_RefiiConfig.Bool(config, "tracy", false))
 		{
 			return;

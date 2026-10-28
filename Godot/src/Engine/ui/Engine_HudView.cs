@@ -1243,7 +1243,7 @@ public sealed partial class Engine_HudView : Node3D
         var owned = new List<ShaderMaterial>();
         if (node is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial shared)
         {
-            var copy = (ShaderMaterial)shared.Duplicate();
+            var copy = Refii.Models.Engine_MaterialCopy.Shallow(shared);
             mesh.MaterialOverride = copy;
             owned.Add(copy);
         }

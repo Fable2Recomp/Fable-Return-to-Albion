@@ -86,6 +86,11 @@ public partial class GameUi
 			screen, bindings, HostAppliesWidescreen ? Engine_UiWidescreen.Read(screen.Document) : null);
 		DirAccess.MakeDirRecursiveAbsolute("user://hud");
 		int modArranged = layout.ApplyModLayout();
+		if (OS.HasFeature("android"))
+		{
+			layout.LiftDpad(Engine_HudLayout.AndroidDpadLift);
+			layout.InsetSpellCharge(Engine_HudLayout.AndroidSpellChargeInset);
+		}
 		layout.Save(HudLayoutSnapshotPath, Engine_HudLayout.SnapshotLayer);
 		int arranged = layout.ApplyOverrides(HudLayoutPath);
 

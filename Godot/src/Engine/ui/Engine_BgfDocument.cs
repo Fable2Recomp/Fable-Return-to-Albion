@@ -721,6 +721,7 @@ public sealed class Engine_BgfDocument
 	/// </summary>
 	public void SetSceneSlide(int sceneSlide)
 	{
+		SlideGrouping grouping = Grouped();
 		SlideState = ComputeSlideState((owner, owned) =>
 		{
 			if (owner != SceneOwnerElement)
@@ -730,7 +731,7 @@ public sealed class Engine_BgfDocument
 
 			// The master is the baseline and is applied separately, so it is not one of
 			// the numbered slides the script indexes.
-			BgfSlide[] numbered = owned.Where(s => !s.IsMaster).ToArray();
+			BgfSlide[] numbered = Numbered(grouping, owner);
 			return sceneSlide >= 1 && sceneSlide <= numbered.Length
 				? numbered[sceneSlide - 1]
 				: null;
@@ -760,6 +761,7 @@ public sealed class Engine_BgfDocument
 			return false;
 		}
 
+		SlideGrouping grouping = Grouped();
 		SlideState = ComputeSlideState((owner, owned) =>
 		{
 			if (owner < 0 || owner >= slidesByOrdinal.Count)
@@ -775,12 +777,100 @@ public sealed class Engine_BgfDocument
 				return null;
 			}
 
-			BgfSlide[] numbered = owned.Where(s => !s.IsMaster).ToArray();
+			BgfSlide[] numbered = Numbered(grouping, owner);
 			return slide <= numbered.Length ? numbered[slide - 1] : null;
 		});
 
 		return true;
 	}
+
+	/// <summary>One owner's slides in file order, its master, and the rest in order.</summary>
+	private sealed class SlideGroup
+	{
+		public int Owner;
+		public BgfSlide[] Owned = Array.Empty<BgfSlide>();
+
+		/// <summary>Identified by name, not position: nothing in the format promises it is first.</summary>
+		public BgfSlide? Master;
+		public BgfSlide[] Numbered = Array.Empty<BgfSlide>();
+	}
+
+	/// <summary>
+	/// <see cref="Slides"/> grouped by owner, owners in order of first appearance, with what the
+	/// grouping was made from. Built again only when a slide, its owner or its name changed; one
+	/// snapshot, swapped whole, so a reader on another thread never sees half of one.
+	/// </summary>
+	private sealed class SlideGrouping
+	{
+		public BgfSlide[] From = Array.Empty<BgfSlide>();
+		public int[] Owners = Array.Empty<int>();
+		public string[] Names = Array.Empty<string>();
+		public SlideGroup[] Groups = Array.Empty<SlideGroup>();
+		public Dictionary<int, SlideGroup> ByOwner = new();
+	}
+
+	private SlideGrouping? _grouping;
+
+	private SlideGrouping Grouped()
+	{
+		BgfSlide[] slides = Slides;
+		SlideGrouping? grouping = _grouping;
+		if (grouping is not null && grouping.From.Length == slides.Length)
+		{
+			bool same = true;
+			for (int i = 0; i < slides.Length && same; ++i)
+			{
+				BgfSlide s = slides[i];
+				same = ReferenceEquals(s, grouping.From[i]) && s.OwnerElement == grouping.Owners[i] &&
+					ReferenceEquals(s.Name, grouping.Names[i]);
+			}
+
+			if (same)
+			{
+				return grouping;
+			}
+		}
+
+		grouping = new SlideGrouping
+		{
+			From = (BgfSlide[])slides.Clone(),
+			Owners = new int[slides.Length],
+			Names = new string[slides.Length],
+		};
+		var lists = new List<(SlideGroup Group, List<BgfSlide> Owned)>();
+		var at = new Dictionary<int, int>();
+		for (int i = 0; i < slides.Length; ++i)
+		{
+			BgfSlide s = slides[i];
+			grouping.Owners[i] = s.OwnerElement;
+			grouping.Names[i] = s.Name;
+			if (!at.TryGetValue(s.OwnerElement, out int index))
+			{
+				at[s.OwnerElement] = index = lists.Count;
+				lists.Add((new SlideGroup { Owner = s.OwnerElement }, new List<BgfSlide>()));
+			}
+
+			lists[index].Owned.Add(s);
+		}
+
+		grouping.Groups = new SlideGroup[lists.Count];
+		for (int i = 0; i < lists.Count; ++i)
+		{
+			(SlideGroup group, List<BgfSlide> owned) = lists[i];
+			group.Owned = owned.ToArray();
+			group.Master = owned.FirstOrDefault(s => s.IsMaster);
+			group.Numbered = owned.Where(s => !s.IsMaster).ToArray();
+			grouping.Groups[i] = group;
+			grouping.ByOwner[group.Owner] = group;
+		}
+
+		_grouping = grouping;
+		return grouping;
+	}
+
+	/// <summary>One owner's non-master slides in file order: the numbering the script indexes.</summary>
+	private static BgfSlide[] Numbered(SlideGrouping grouping, int owner) =>
+		grouping.ByOwner.TryGetValue(owner, out SlideGroup? group) ? group.Numbered : Array.Empty<BgfSlide>();
 
 	public BgfSlideState ComputeSlideState(Func<int, BgfSlide[], BgfSlide?>? choose) =>
 		ComputeSlideState(choose, null);
@@ -805,28 +895,20 @@ public sealed class Engine_BgfDocument
 		}
 		var overrides = new Dictionary<uint, BgfAttribute>?[Elements.Length];
 
-		var byOwner = new Dictionary<int, List<BgfSlide>>();
-		foreach (BgfSlide s in Slides)
+		SlideGroup[] groups = Grouped().Groups;
+		if (order is not null)
 		{
-			if (!byOwner.TryGetValue(s.OwnerElement, out var list))
-				byOwner[s.OwnerElement] = list = new List<BgfSlide>();
-			list.Add(s);
+			groups = groups.OrderBy(group => order(group.Owner)).ThenBy(group => group.Owner).ToArray();
 		}
 
-		IEnumerable<KeyValuePair<int, List<BgfSlide>>> owners = order is null
-			? byOwner
-			: byOwner.OrderBy(pair => order(pair.Key)).ThenBy(pair => pair.Key);
-		foreach ((int owner, List<BgfSlide> owned) in owners)
+		foreach (SlideGroup group in groups)
 		{
-			// The master is identified by name, not position — nothing in the format promises
-			// it is stored first.
-			BgfSlide? master = owned.FirstOrDefault(s => s.IsMaster);
-			if (master is not null)
-				Apply(master);
+			if (group.Master is not null)
+				Apply(group.Master);
 
 			BgfSlide? target = choose is not null
-				? choose(owner, owned.ToArray())
-				: PickForPreview(owned);
+				? choose(group.Owner, group.Owned)
+				: PickForPreview(group.Owned);
 			if (target is not null)
 				Apply(target);
 		}
@@ -886,7 +968,7 @@ public sealed class Engine_BgfDocument
 	/// Ordinary pairs score zero on both, so file order still decides for them. A preview
 	/// heuristic only: pass a chooser to <see cref="ComputeSlideState"/> when you know better.
 	/// </summary>
-	private BgfSlide? PickForPreview(List<BgfSlide> owned)
+	private BgfSlide? PickForPreview(BgfSlide[] owned)
 	{
 		BgfSlide? best = null;
 		int bestHidden = int.MaxValue;

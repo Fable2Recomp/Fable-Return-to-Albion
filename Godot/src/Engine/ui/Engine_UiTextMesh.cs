@@ -209,7 +209,7 @@ public static class Engine_UiTextMesh
 		arrays[(int)Mesh.ArrayType.Index] = indices.ToArray();
 
 		var mesh = new ArrayMesh();
-		mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+		Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays);
 		return new Built(mesh, lines.Count, icons);
 	}
 

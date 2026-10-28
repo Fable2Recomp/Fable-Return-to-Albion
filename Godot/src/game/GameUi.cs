@@ -914,6 +914,10 @@ public partial class GameUi : Node
 
 		GD.Print($"[game-ui] the guest has left the front end — taking '{_showing}' down");
 
+		// The load the player waits through starts here (Continue, New Game): its timeline runs
+		// through the region build and the hold to the world settling (Engine_LoadTimeline).
+		Refii.Core.Engine_LoadTimeline.Open("front end left");
+
 		// Freed, not hidden: both views hold references INTO the tree about to go away (the row
 		// view keeps the shipped `MenuItemButton` it duplicates slots from). AdoptMenu re-sources
 		// them from the next build; the model they draw is untouched here.
@@ -2887,17 +2891,28 @@ public partial class GameUi : Node
 		// authoring set: instance a component in the editor, place it, name it in a template,
 		// and it stands through the same code every shipped screen uses.
 		//
-		// Done at HUD build time because that is where the pattern books are already open and it
-		// is once per session. Under `user://` because these are converted Fable 2 art and are
-		// not ours to ship.
-		Engine_UiComponentLibrary.Result exported =
-			Engine_UiComponentLibrary.ExportAll(name => _presentation.PatternBookFor(name));
-		GD.Print($"[ui-components] {exported} -> {Engine_UiComponentLibrary.Root}");
+		// Desktop exports once here, but most pattern books are NOT otherwise open yet. On
+		// Android that authoring pass would build and retain thousands of unused UI nodes
+		// before the world loads. Actual menu/HUD construction still requests its own book.
+		Engine_UiComponentLibrary.Result? exported = Engine_UiComponentLibrary.ExportAtStartup(
+			OS.HasFeature("android"),
+			() => Engine_UiComponentLibrary.ExportAll(name => _presentation.PatternBookFor(name)));
+		if (exported is { } result)
+			GD.Print($"[ui-components] {result} -> {Engine_UiComponentLibrary.Root}");
+		else
+			GD.Print("[ui-components] Android: authoring export skipped; screen art loads on demand");
 
 		// The mods' arrangement, then the player's, over the derived one — shipped < mods < the
 		// player's file. Both only move pieces, so the banks stay the source of what a piece IS.
 		DirAccess.MakeDirRecursiveAbsolute("user://hud");
 		int modArranged = _hud.Layout.ApplyModLayout();
+		// Android lifts the d-pad clear of the touch controls' Options below it and moves the spell
+		// charge in from the edges, where Spells and Lock stand — beneath the player's file.
+		if (OS.HasFeature("android"))
+		{
+			_hud.Layout.LiftDpad(Engine_HudLayout.AndroidDpadLift);
+			_hud.Layout.InsetSpellCharge(Engine_HudLayout.AndroidSpellChargeInset);
+		}
 
 		// The derived arrangement, written out for the player's layout tool and for modders: the
 		// piece ids are the contract for BOTH override files. It is the arrangement BENEATH the
@@ -3123,10 +3138,18 @@ public partial class GameUi : Node
 	private int _wheelSectorTwo = -1;
 
 	/// <summary>
-	/// The wheel sector a stick points at, as `sub_826AA060` computes it: dead zone |v|² < 0.1,
-	/// then the nearest of eight unit vectors at 3π/4 − iπ/4 (0 = NE, clockwise). −1 at rest.
+	/// The wheel sector a stick points at, in the guest's numbering: dead zone |v|² < 0.1, then
+	/// the nearest of eight directions, sector i at −45° + i·45° (0 = SE, counter-clockwise,
+	/// Y up). −1 at rest.
 	/// </summary>
-	private static int WheelSector(Vector2 stick)
+	/// <remarks>
+	/// MEASURED ON THE GUEST, not read off `sub_826AA060`'s constants: `QuickWheel:point:0` lights
+	/// the south-east wedge (Dog), `:2` the north-east (Fun), `:6` the south-west (Turn Safety).
+	/// The decode this replaced (3π/4 − iπ/4 against −Y: 0 = NE, clockwise) is the same compass
+	/// mirrored top to bottom, so a pointer aimed at Fun selected Dog and one at Fun's neighbour
+	/// toggled the safety. A pad hid it: the guest re-points its own cursor from the raw stick.
+	/// </remarks>
+	internal static int WheelSector(Vector2 stick)
 	{
 		if (stick.LengthSquared() < 0.1f)
 		{
@@ -3137,9 +3160,9 @@ public partial class GameUi : Node
 		float bestDistance = float.MaxValue;
 		for (int i = 0; i < 8; ++i)
 		{
-			float angle = 2.3561945f - (i * 0.7853982f);
-			float dx = stick.X - Mathf.Sin(angle);
-			float dy = -stick.Y - Mathf.Cos(angle);
+			float angle = (i - 1) * 0.7853982f;
+			float dx = stick.X - Mathf.Cos(angle);
+			float dy = stick.Y - Mathf.Sin(angle);
 			float distance = (dx * dx) + (dy * dy);
 			if (distance < bestDistance)
 			{
@@ -4916,10 +4939,13 @@ public partial class GameUi : Node
 			// Hold to open, release to close (the shipped default; the toggle option
 			// `GUIQuickAccessMenuOnToggle` is not read yet). The pump gates every call
 			// on the guest's own tests, so a press it cannot honour is refused there.
+			ExpressionWheelOpen = GameInput.QuickWheelHeld && GuestExpressionWheelOpen();
+			FollowItemSlots();
 			if (GameInput.QuickWheelPressed)
 			{
 				HostBridge.PostFrontEndAction("QuickWheel:open");
 				_wheelSector = -1;
+				_wheelInGroup = false;
 			}
 			else if (GameInput.QuickWheelReleased)
 			{
@@ -4932,6 +4958,7 @@ public partial class GameUi : Node
 				if (GameInput.MenuAcceptPressed)
 				{
 					HostBridge.PostFrontEndAction("QuickWheel:select");
+					NoteWheelSelect(_wheelSector);
 				}
 				else if (GameInput.MenuAcceptReleased)
 				{
@@ -4940,31 +4967,42 @@ public partial class GameUi : Node
 				else if (GameInput.MenuBackPressed)
 				{
 					HostBridge.PostFrontEndAction("QuickWheel:back");
+					_wheelInGroup = false;
+					ForgetWheelPointing();
 				}
 
-				// THE CURSOR, as `sub_826AA060` computes it from the stick: dead zone
-				// |v|² < 0.1, then the nearest of eight unit vectors at 3π/4 − iπ/4 (0 =
-				// NE, clockwise). The guest's own raw-stick route feeds the same routine
-				// when it is alive; this posts only on a sector change, so the two agree.
+				// THE CURSOR, in the guest's sector numbering (WheelSector). The guest's own
+				// raw-stick route feeds the same routine when it is alive; this posts only on a
+				// sector change, so the two agree.
 				// THE POINTER AS THE STICK: its offset from the wheel's centre, inside a
 				// dead ring of a third of the wheel, is the same direction the stick
 				// would hold. Left press selects, its release ends a held expression.
 				Vector2 stick = GameInput.LeftStick;
+				bool clicked = false;
+				// THE WHEEL IS FOUND BY ITS NODE'S NAME, which is the HUD piece's id with its dots
+				// made underscores (Engine_HudArt): `group_ExpressionWheel_wheelmenu`. It was
+				// looked up as "ExpressionWheel", found nothing, and the pointer never pointed or
+				// selected. Its CENTRE is the node's own position: the drawn bounds take in the
+				// wheel's Close/Select prompts beside it and sit off to one side of the wedges.
 				if (Engine_UiPointer.Canvas is { } wheelAt &&
-					Engine_UiTheme.FindByName(_hud!, "ExpressionWheel") is Node3D wheelNode &&
+					Engine_UiTheme.FindByName(_hud!, ExpressionWheelNode) is Node3D wheelNode &&
 					Engine_UiPointer.CanvasBounds(wheelNode) is { } wheelBox)
 				{
-					Vector2 offset = wheelAt - wheelBox.GetCenter();
+					var centre = new Vector2(wheelNode.GlobalPosition.X, wheelNode.GlobalPosition.Y);
+					Vector2 offset = wheelAt - centre;
 					float radius = Mathf.Min(wheelBox.Size.X, wheelBox.Size.Y) * 0.5f;
 					if (radius > 0f && offset.Length() > radius / 3f)
 					{
 						stick = offset.Normalized();
 					}
 
+					// The click selects BELOW, after this frame's pointing: a pointer that arrives
+					// with its click (a tap on a touchscreen, a quick mouse) must point the cursor
+					// at the wedge first, or the select takes whatever was highlighted before.
 					if (Engine_UiPointer.TakeLeft())
 					{
 						_wheelMouseDown = true;
-						HostBridge.PostFrontEndAction("QuickWheel:select");
+						clicked = true;
 					}
 					else if (_wheelMouseDown && !Input.IsMouseButtonPressed(MouseButton.Left))
 					{
@@ -4973,28 +5011,17 @@ public partial class GameUi : Node
 					}
 				}
 
-				if (stick.LengthSquared() >= 0.1f)
+				int sector = WheelSector(stick);
+				if (sector >= 0 && sector != _wheelSector)
 				{
-					int best = -1;
-					float bestDistance = float.MaxValue;
-					for (int i = 0; i < 8; ++i)
-					{
-						float angle = 2.3561945f - (i * 0.7853982f);
-						float dx = stick.X - Mathf.Sin(angle);
-						float dy = -stick.Y - Mathf.Cos(angle);
-						float distance = (dx * dx) + (dy * dy);
-						if (distance < bestDistance)
-						{
-							bestDistance = distance;
-							best = i;
-						}
-					}
+					_wheelSector = sector;
+					HostBridge.PostFrontEndAction($"QuickWheel:point:{sector}");
+				}
 
-					if (best != _wheelSector)
-					{
-						_wheelSector = best;
-						HostBridge.PostFrontEndAction($"QuickWheel:point:{best}");
-					}
+				if (clicked)
+				{
+					HostBridge.PostFrontEndAction("QuickWheel:select");
+					NoteWheelSelect(_wheelSector);
 				}
 			}
 
@@ -6979,6 +7006,150 @@ public partial class GameUi : Node
 	/// packed, or -1 while it stands.
 	/// </summary>
 	private int _pauseStandingSaid = -1;
+
+	/// <summary>
+	/// Counts the expression wheel's picks that perform something — an expression or a dog
+	/// command, not a group entered or left. The touch controls let a latched Emotes go on each.
+	/// </summary>
+	/// <remarks>
+	/// THE WHEEL IS TWO LEVELS: the top holds the groups (Social, Fun, Dog…) beside Turn Safety
+	/// and Close, which close the wheel themselves; each group holds its actions and Back, at the
+	/// south (sector 7). So a select inside a group on anything but Back performs; a select at the
+	/// top enters a group (or closes the wheel); Back and B return to the top.
+	/// </remarks>
+	public static int ExpressionWheelPicks { get; private set; }
+
+	/// <summary>Whether the open wheel stands in a group rather than at its top level.</summary>
+	private bool _wheelInGroup;
+
+	/// <summary>The wheel's sector the stated Back stands in, inside a group: south.</summary>
+	private const int WheelBackSector = 7;
+
+	/// <summary>Follows the wheel's level through one select on <paramref name="sector"/>.</summary>
+	private void NoteWheelSelect(int sector)
+	{
+		ForgetWheelPointing();
+		(_wheelInGroup, bool picked) = WheelSelectStep(_wheelInGroup, sector);
+		if (picked)
+		{
+			++ExpressionWheelPicks;
+		}
+	}
+
+	/// <summary>One select on the two-level wheel: the level after it, and whether it performed.</summary>
+	/// <param name="inGroup">Whether the wheel stood in a group before the select.</param>
+	/// <param name="sector">The sector selected, −1 when none is pointed.</param>
+	internal static (bool InGroup, bool Picked) WheelSelectStep(bool inGroup, int sector) =>
+		sector < 0 ? (inGroup, false)
+		: !inGroup ? (true, false)
+		: sector == WheelBackSector ? (false, false)
+		: (true, true);
+
+	/// <summary>
+	/// Whether the guest states its expression wheel open while the wheel's button is held. Close,
+	/// Turn Safety and backing out of the top level close it; the touch controls let a latched
+	/// Emotes go on that. False while the button is up.
+	/// </summary>
+	public static bool ExpressionWheelOpen { get; private set; }
+
+	/// <summary>
+	/// The guest's own open flag, as the pump's QuickWheel lever reads it: the quick menu
+	/// `*(GUI+28)`, its byte +35 (+34 unpatched, `GuiOwnerField`). The HUD's drawn quads are no
+	/// answer — the closed wheel's art stays drawn under the guest's element state.
+	/// </summary>
+	private static bool GuestExpressionWheelOpen()
+	{
+		System.Span<uint> word = stackalloc uint[1];
+		uint at = HostBridge.GuestAddress(0x83496B08u);
+		if (at == 0u || HostBridge.Peek(at, word) != 1 || word[0] < 0x10000u)
+		{
+			return false;
+		}
+
+		if (HostBridge.Peek(word[0] + 28u, word) != 1 || word[0] < 0x10000u)
+		{
+			return false;
+		}
+
+		uint field = HostBridge.PickByBuild(35u, 34u);
+		if (HostBridge.Peek(word[0] + 32u, word) != 1)
+		{
+			return false;
+		}
+
+		// Guest words are big-endian: byte +32 is the word's top byte, +35 its bottom.
+		return ((word[0] >> (int)((35u - field) * 8u)) & 0xFFu) != 0u;
+	}
+
+	/// <summary>
+	/// Where the HUD draws its four quick-item slots (the D-pad's items), in UI canvas units (Y
+	/// up, origin at the centre): the cross's centre and the distance from it to a slot. Null
+	/// until the slots have been drawn once; kept while the HUD hides them, since they do not
+	/// move. The touch controls put their item buttons over these, so a finger taps the item it sees.
+	/// </summary>
+	public static (Vector2 Centre, float Reach)? HudItemSlots { get; private set; }
+
+	/// <summary>The four slot pieces of the HUD's item D-pad (Engine_HudLayout), as node names.</summary>
+	private static readonly string[] ItemSlotNodes =
+	{
+		"slidetoggle_DPadUp_up", "slidetoggle_DPadDown_down", "slidetoggle_DPadLeft_left", "slidetoggle_DPadRight_right",
+	};
+
+	private readonly Node3D?[] _itemSlotNodes = new Node3D?[4];
+	private int _itemSlotSearchIn;
+
+	/// <summary>Re-reads <see cref="HudItemSlots"/> from the drawn slots; cheap once the nodes are found.</summary>
+	private void FollowItemSlots()
+	{
+		Vector2 sum = Vector2.Zero;
+		var centres = new Vector2[4];
+		for (int i = 0; i < 4; ++i)
+		{
+			if (_itemSlotNodes[i] is not { } node || !GodotObject.IsInstanceValid(node))
+			{
+				// A missing slot is looked for every 60 frames (one to two seconds), not every
+				// frame: the walk covers the whole HUD tree.
+				if (--_itemSlotSearchIn > 0)
+				{
+					return;
+				}
+
+				_itemSlotSearchIn = 60;
+				node = Engine_UiTheme.FindByName(_hud!, ItemSlotNodes[i]) as Node3D;
+				_itemSlotNodes[i] = node;
+			}
+
+			if (node is null || !node.IsVisibleInTree() || Engine_UiPointer.CanvasBounds(node) is not { } box)
+			{
+				return;
+			}
+
+			centres[i] = box.GetCenter();
+			sum += centres[i];
+		}
+
+		Vector2 centre = sum / 4f;
+		float reach = 0f;
+		foreach (Vector2 slot in centres)
+		{
+			reach += slot.DistanceTo(centre) / 4f;
+		}
+
+		HudItemSlots = (centre, reach);
+	}
+
+	/// <summary>
+	/// A select or a back-out changes the wheel's level, and the guest's cursor starts the new level
+	/// pointing at nothing (`cursor 2/-1` after entering group 2): the sector posted last is
+	/// forgotten, so the next pointing is posted even in the same direction. Otherwise an item
+	/// standing where its group stood (Fun's Laugh, north-east like Fun) was never pointed at and
+	/// its select picked nothing.
+	/// </summary>
+	private void ForgetWheelPointing() => _wheelSector = -1;
+
+	/// <summary>The expression wheel's HUD node: its piece id, dots made underscores (Engine_HudArt).</summary>
+	private static readonly string ExpressionWheelNode =
+		"group_ExpressionWheel_" + Engine_HudLayout.ExpressionWheelName;
 
 	/// <summary>The co-op screen — id 24, `CoopScreen.bgf`.</summary>
 	private const uint CoopScreenId = 24u;

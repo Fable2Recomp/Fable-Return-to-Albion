@@ -135,7 +135,7 @@ public partial class GameUi
 			}
 			else
 			{
-				using Image source = texture.GetImage();
+				using Image source = Refii.Core.Engine_ServerSyncs.Image(texture)!;
 				if (source is not null && !source.IsEmpty() && (!source.IsCompressed() || source.Decompress() == Error.Ok))
 				{
 					source.Convert(Image.Format.Rgba8);

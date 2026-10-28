@@ -206,7 +206,7 @@ public sealed class Engine_UiTheme
 	{
 		if (node is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial shared)
 		{
-			mesh.MaterialOverride = (ShaderMaterial)shared.Duplicate();
+			mesh.MaterialOverride = Refii.Models.Engine_MaterialCopy.Shallow(shared);
 		}
 
 		foreach (Node child in node.GetChildren())
@@ -542,6 +542,29 @@ public sealed class Engine_UiTheme
 		return built.Mesh is not null || built.Icons.Count != 0;
 	}
 
+	/// <summary>The amber of a selected settings row's band: see-through, so the parchment shows.</summary>
+	public static readonly Color SelectionBandColour = new(0.80f, 0.52f, 0.16f, 0.34f);
+
+	/// <summary>
+	/// The band behind the selected row of a host settings panel (photo mode's, Murgo's mirror's),
+	/// drawn behind the row's text: the selected row's ink alone is too close to the others' to
+	/// pick out at a glance, least of all on a phone.
+	/// </summary>
+	public static MeshInstance3D SelectionBand(Vector2 size) => new()
+	{
+		Name = "SelectionBand",
+		Mesh = new QuadMesh { Size = size },
+		MaterialOverride = new StandardMaterial3D
+		{
+			AlbedoColor = SelectionBandColour,
+			ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+			Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+			CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+			NoDepthTest = true,
+		},
+		CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+	};
+
 	/// <summary>
 	/// One icon's quad, top-left at the origin and running down in -Y.
 	///
@@ -608,7 +631,7 @@ public sealed class Engine_UiTheme
 		};
 		arrays[(int)Mesh.ArrayType.Index] = new[] { 0, 1, 2, 0, 2, 3 };
 
-		mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+		Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays);
 		return mesh;
 	}
 

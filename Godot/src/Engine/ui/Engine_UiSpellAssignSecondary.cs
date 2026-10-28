@@ -210,7 +210,7 @@ public sealed partial class Engine_UiSpellAssign
 			quad.Position = new Vector3(PromptGlyphX, y + (glyph.Position.Y - done.Position.Y), glyph.Position.Z);
 			if (quad.MaterialOverride is ShaderMaterial shared)
 			{
-				var material = (ShaderMaterial)shared.Duplicate();
+				var material = Refii.Models.Engine_MaterialCopy.Shallow(shared);
 				Vector2 offset = material.GetShaderParameter("uv1_offset").AsVector2();
 				float inset = offset.X - (Mathf.Floor((offset.X * 4f) + 0.01f) * 0.25f);
 				material.SetShaderParameter("uv1_offset", new Vector2((column * 0.25f) + inset, offset.Y));
@@ -452,7 +452,9 @@ public sealed partial class Engine_UiSpellAssign
 			{
 				Name = "Secondary" + row.Minis.Count,
 				Mesh = icon.Mesh,
-				MaterialOverride = icon.MaterialOverride?.Duplicate() as Material,
+				MaterialOverride = icon.MaterialOverride is ShaderMaterial shaded
+					? Refii.Models.Engine_MaterialCopy.Shallow(shaded)
+					: icon.MaterialOverride?.Duplicate() as Material,
 				Visible = false,
 			};
 			icon.AddChild(mini);

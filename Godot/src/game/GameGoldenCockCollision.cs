@@ -25,7 +25,7 @@ public partial class GameGoldenCockCollision : CharacterBody3D
     private ulong _corrections;
     private uint _queued;
 
-    private static bool Enabled => GameSession.Current is { Paused: false } && HostBridge.IsInGame &&
+    private static bool Enabled => GameGoldenCock.GuestRuns && HostBridge.IsInGame &&
         GameUi.WorldInteractionAllowed && !GameGoldenCock.OwnsInput &&
         GameGoldenCock.SessionAllowsInteraction(CoopSession.State, CoopSession.Side, CoopSession.LocalCoop);
 

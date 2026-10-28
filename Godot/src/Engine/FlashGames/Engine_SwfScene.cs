@@ -308,9 +308,11 @@ public static class Engine_SwfScene
                     }
 
                     frame.Add(entry);
+                    entry.Dispose();
                 }
 
                 table.Add(frame);
+                frame.Dispose();
 
                 if (frames[f].Label.Length != 0)
                 {
@@ -323,12 +325,19 @@ public static class Engine_SwfScene
                 }
             }
 
+            // Each wrapper above holds its own reference to the native array or dictionary until
+            // the finalizer gets to it, and a Keystone build makes tens of thousands of them: the
+            // board's whole timeline (~40 MB on the S10e) stayed allocated after the board closed.
+            // The metadata holds the values now, so the wrappers are let go here.
             node.SetMeta(TimelineMeta, table);
+            table.Dispose();
             node.SetMeta(FrameCountMeta, frames.Count);
             if (labels.Count != 0)
             {
                 node.SetMeta(LabelsMeta, labels);
             }
+
+            labels.Dispose();
 
             if (stops.Count != 0)
             {
@@ -492,11 +501,13 @@ public static class Engine_SwfScene
                 animation.TrackSetPath(stopTrack, TimelineName);
                 foreach (int frame in stops)
                 {
-                    animation.TrackInsertKey(stopTrack, (frame - 1) * step, new Godot.Collections.Dictionary
+                    var pause = new Godot.Collections.Dictionary
                     {
                         ["method"] = "pause",
                         ["args"] = new Godot.Collections.Array(),
-                    });
+                    };
+                    animation.TrackInsertKey(stopTrack, (frame - 1) * step, pause);
+                    GC.KeepAlive(pause);
                 }
             }
 

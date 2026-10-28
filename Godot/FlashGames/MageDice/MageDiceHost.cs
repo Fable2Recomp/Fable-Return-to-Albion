@@ -73,6 +73,15 @@ public partial class MageDiceHost : Node, IPubGameSession
 
     public SwfSceneUi? SceneUi => _sceneUi;
 
+    /// <summary>The board's timelines freed with it, when <c>pubgame_release_on_close</c> is on.</summary>
+    public override void _Notification(int what)
+    {
+        if (what == NotificationPredelete && Engine_TexSettings.PubGameReleaseOnClose)
+        {
+            _sceneUi?.Release();
+        }
+    }
+
     public override void _Ready()
     {
         Engine_TexEnhance.EnsureRegistered();

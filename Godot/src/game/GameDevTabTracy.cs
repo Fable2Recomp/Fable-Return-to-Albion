@@ -64,7 +64,7 @@ public partial class GameDevTabTracy : GameDevTab
 					"this session — crash captures included. The game runs without it.\n\n" +
 					"On Windows an antivirus quarantining TracyClient.dll is the usual cause: restore it, or\n" +
 					"reinstall, and start the game again."
-				: System.OperatingSystem.IsAndroid()
+				: Refii.Core.Engine_Platform.IsAndroid
 				? "The game's own profiler is not running in this session.\n\n" +
 					"It starts with the game when `tracy` is on in the runtime refii.toml, read once at\n" +
 					"launch, and when the Android game host starts it (GameTracy.Start).\n\n" +
@@ -87,7 +87,7 @@ public partial class GameDevTabTracy : GameDevTab
 		}
 
 		// Android has no file manager to hand a folder to; the captures are in the app's user data.
-		_folder.Visible = !System.OperatingSystem.IsAndroid();
+		_folder.Visible = !Refii.Core.Engine_Platform.IsAndroid;
 
 		AddChild(controls);
 		AddChild(_status);

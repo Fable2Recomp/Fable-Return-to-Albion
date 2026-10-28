@@ -178,7 +178,7 @@ public partial class Engine_UiMenuBox : Node3D, IUiSurfaceView
 				{
 					label.Scale *= ChoiceTextScale;
 					if (label is MeshInstance3D { MaterialOverride: ShaderMaterial material } text)
-						text.MaterialOverride = (ShaderMaterial)material.Duplicate();
+						text.MaterialOverride = Refii.Models.Engine_MaterialCopy.Shallow(material);
 				}
 				if (clone.GetNodeOrNull<Node3D>(P("Choices/Multiplayer_Button") + $"{i + 1}/" + P("Choice1/RimSelect")) is { } rim)
 					RevealSelectionArt(rim);
@@ -1223,7 +1223,7 @@ public partial class Engine_UiReceiveItems : Node3D, IUiSurfaceView
 		if (panel._front?.GetNodeOrNull<MeshInstance3D>(P("NameAndIcon/IconGraphic")) is { } iconMesh &&
 			iconMesh.MaterialOverride is ShaderMaterial shared)
 		{
-			panel._iconMaterial = (ShaderMaterial)shared.Duplicate();
+			panel._iconMaterial = Refii.Models.Engine_MaterialCopy.Shallow(shared);
 			iconMesh.MaterialOverride = panel._iconMaterial;
 		}
 

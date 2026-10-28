@@ -89,7 +89,9 @@ public sealed partial class Engine_UiScreenFade : Node
 		bool covering = fade.Known && fade.Covers;
 
 		_rect.Color = covering ? fade.Colour : new Color(0f, 0f, 0f, 0f);
-		_rect.Visible = covering;
+		// canvas_lean: a fade too faint to move an 8-bit pixel is a full-screen pass of its own
+		// for nothing; the mods' fades below already stop at that alpha.
+		_rect.Visible = covering && !(Engine_CanvasLean.Enabled && Engine_CanvasLean.Invisible(fade.Colour.A));
 		IsCovering = covering;
 
 		// Report the lock too: `CmdLevelChange_Update` proceeds on `!IsFading() || locked`, so it

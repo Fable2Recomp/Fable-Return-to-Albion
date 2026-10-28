@@ -12,6 +12,83 @@ namespace Refii.Game;
 /// </summary>
 public partial class GameInput : Node
 {
+	private readonly GameJoypadButtonCapture _buttonCapture = new();
+	private GameInputButtonRoute _captureRoute;
+	private long _deliveryEpoch, _deliveryCaptureGeneration = -1;
+	private uint _deliveryMask = uint.MaxValue;
+	private int _deliveryPad0 = int.MinValue;
+
+	/// <summary>Native-fixture metadata override only; production reads actual Android/window/device state.</summary>
+	internal GameInputDevicePolicy? DevicePolicyOverride { get; set; }
+
+	/// <summary>Android retains event edges through slow frame polling; desktop keeps its original sampler.</summary>
+	private bool CapturePhysicalButtons => DevicePolicyOverride?.CapturePhysicalButtons ?? OS.HasFeature("android");
+
+	/// <summary>Captures mapped physical button events for Android without dispatching actions; called from <see cref="_Input"/>.</summary>
+	/// <param name="inputEvent">The real Godot joypad event; axes, keyboard and other event types are unchanged.</param>
+	private void CapturePhysicalButton(InputEvent inputEvent)
+	{
+		if (!CapturePhysicalButtons || inputEvent is not InputEventJoypadButton button) return;
+		_buttonCapture.RefreshDevices(ConnectedJoypadIds());
+		_buttonCapture.SetContext(HasInputFocus(), _captureRoute);
+		_buttonCapture.Capture(button.Device, JoyButtonBit(button.ButtonIndex), button.Pressed);
+	}
+
+	/// <summary>Retires pending physical identities when this input owner leaves the scene.</summary>
+	public override void _ExitTree()
+	{
+		SilenceRumble();
+		_buttonCapture.RefreshDevices(System.Array.Empty<int>());
+		if (CapturePhysicalButtons)
+			ControllerStateSink?.Invoke(new GameControllerPacket(0, false, 0, 0, 0, 0, 0, 0, 0));
+	}
+	/// <summary>Optional embedded-owner mailbox; when set, the direct native writer is not called.</summary>
+	public System.Action<GameControllerPacket>? ControllerStateSink { get; set; }
+
+	/// <summary>External application-focus gate; keep processing neutral samples so menu edges reset.</summary>
+	public bool DevicesEnabled { get; set; } = true;
+
+	/// <summary>The latest raw player-one sample before production menu ownership masks.</summary>
+	public GameControllerPacket? LastRawPacket { get; private set; }
+
+	/// <summary>The latest player-one sample after masks and held-across-unmask protection.</summary>
+	public GameControllerPacket? LastFilteredPacket { get; private set; }
+
+	/// <summary>A bounded main-thread snapshot of device identities, raw axes, assignments and masks.</summary>
+	/// <returns>Observed physical state and the actual production packet; no input is changed.</returns>
+	public object DescribeControllerInput()
+	{
+		var devices = new System.Collections.Generic.List<object>();
+		foreach (int id in Input.GetConnectedJoypads())
+		{
+			if (devices.Count >= 8) break;
+			devices.Add(new
+			{
+				id, name = Input.GetJoyName(id), guid = Input.GetJoyGuid(id), known = Input.IsJoyKnown(id),
+				selected_guest_pad = System.Array.IndexOf(_padDevice, id), buttons = JoypadButtons(id),
+				left_x = Input.GetJoyAxis(id, JoyAxis.LeftX), left_y = Input.GetJoyAxis(id, JoyAxis.LeftY),
+				right_x = Input.GetJoyAxis(id, JoyAxis.RightX), right_y = Input.GetJoyAxis(id, JoyAxis.RightY),
+				left_trigger = Input.GetJoyAxis(id, JoyAxis.TriggerLeft),
+				right_trigger = Input.GetJoyAxis(id, JoyAxis.TriggerRight)
+			});
+		}
+		return new
+		{
+			devices, selected_pad0_device = _padDevice[0], focused = HasInputFocus(),
+			raw_packet = LastRawPacket, filtered_packet = LastFilteredPacket,
+			menu_mask = MaskMenuInput, pause_mask = MaskPauseInput, query_mask = MaskPauseQueryInput,
+			card_mask = MaskReceiveItemsInput, box_mask = MaskMenuBoxInput, screen_mask = MaskScreenMenuInput,
+			denied_button_bits = _maskBits[0], held_across_unmask = _heldAcrossUnmask[0],
+			menu_direction = MenuDirection, menu_horizontal = MenuHorizontal,
+			accept_edge = MenuAcceptPressed, back_edge = MenuBackPressed,
+			physical_button_capture = CapturePhysicalButtons, captured_button_overflows = _buttonCapture.Overflows,
+			touch_mode = Engine_UiInputMode.Touch, touch_hold = Touch,
+			pointer_free = Engine_UiPointer.Free, pointer_canvas = Engine_UiPointer.Canvas?.ToString(),
+			mouse_mode = Input.MouseMode.ToString(), playing = Playing, in_overlay = InOverlay,
+			transport = ControllerStateSink == null ? "direct desktop bridge" : "single-player guest-owner mailbox"
+		};
+	}
+
 	/// <summary>Xbox 360 supports four pads, and so does the guest.</summary>
 	private const int MaxControllers = 4;
 
@@ -39,6 +116,7 @@ public partial class GameInput : Node
 
 	public static bool YHeld { get; private set; }
 
+	/// <summary>Samples devices once, preserving production menu navigation and packet masking.</summary>
 	public override void _Process(double delta)
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("gameinput");
@@ -81,6 +159,12 @@ public partial class GameInput : Node
 		}
 
 		bool devices = HasInputFocus();
+		if (CapturePhysicalButtons)
+		{
+			_buttonCapture.RefreshDevices(ConnectedJoypadIds());
+			_captureRoute = ReadButtonRoute();
+			_buttonCapture.SetContext(devices, _captureRoute);
+		}
 		using (Refii.Core.Engine_FramePhases.Measure("input.kbm"))
 		{
 			UpdateKeyboardMouse(devices);
@@ -109,8 +193,6 @@ public partial class GameInput : Node
 		}
 	}
 
-	public override void _ExitTree() => SilenceRumble();
-
 	public static void ReleaseForPhotoMode()
 	{
 		SilenceRumble();
@@ -130,6 +212,9 @@ public partial class GameInput : Node
 
 	/// <summary>The joypad each pad's running effect was started on, or -1.</summary>
 	private static readonly int[] _rumbleJoypad = { -1, -1, -1, -1 };
+
+	/// <summary>Pad 0's rumble as last applied to the phone's own vibrator.</summary>
+	private static readonly Engine_HandheldRumble _handheldRumble = new();
 
 	/// <summary>
 	/// RUMBLE, THE OTHER WAY DOWN THE SAME SEAM. The guest states each pad's motors through
@@ -190,6 +275,38 @@ public partial class GameInput : Node
 					break;
 			}
 		}
+
+		DriveHandheldRumble(devices);
+	}
+
+	/// <summary>
+	/// Pad 0's rumble on the phone itself, while the touchscreen is the device on Android and no
+	/// controller holds pad 0 — a touch player has no joypad for <see cref="DriveRumble"/> to tell.
+	/// The same gates as the joypad's (focus, the guest's switch, <see cref="ControllerVibration"/>);
+	/// pulses and stops as <see cref="Engine_HandheldRumble"/> decides, so the Java bridge hears only
+	/// a change or a renewal. A controller taking the pad, or a key press, stops the phone at once.
+	/// </summary>
+	private static void DriveHandheldRumble(bool devices)
+	{
+		uint left = 0;
+		uint right = 0;
+		bool stated = devices && ControllerVibration && Engine_Platform.IsAndroid && Engine_UiInputMode.Touch &&
+			_padDevice[0] < 0 && HostBridge.TryGetVibration(0, out left, out right);
+		ApplyHandheldRumble(stated ? _handheldRumble.Observe(left, right, Time.GetTicksMsec()) : _handheldRumble.Silence());
+	}
+
+	/// <summary>Tells the phone's vibrator a verdict; <c>vibrate_handheld</c> has no stop, so a stop is a pulse too short to feel.</summary>
+	private static void ApplyHandheldRumble(Engine_HandheldRumble.Verdict verdict)
+	{
+		switch (verdict)
+		{
+			case Engine_HandheldRumble.Verdict.Pulse:
+				Input.VibrateHandheld(Engine_HandheldRumble.PulseMs, _handheldRumble.Amplitude);
+				break;
+			case Engine_HandheldRumble.Verdict.Stop:
+				Input.VibrateHandheld(Engine_HandheldRumble.StopMs, Engine_HandheldRumble.StopAmplitude);
+				break;
+		}
 	}
 
 	/// <summary>Stops every running effect: the guest is down or this node is leaving.</summary>
@@ -204,7 +321,13 @@ public partial class GameInput : Node
 
 			_rumbleJoypad[pad] = -1;
 		}
+
+		ApplyHandheldRumble(_handheldRumble.Silence());
 	}
+
+	/// <summary>Pad 0's rumble on the phone for the debug channel: whether a pulse runs, and its strength.</summary>
+	public static (bool Running, float Amplitude) HandheldRumbleReadout() =>
+		(_handheldRumble.Running, _handheldRumble.Amplitude);
 
 	/// <summary>
 	/// One pad's rumble for the debug channel: the joypad holding it, the pair the guest states
@@ -237,6 +360,15 @@ public partial class GameInput : Node
 	/// <summary>Mouse events go to the UI pointer, which resolves them against the UI camera.</summary>
 	public override void _Input(InputEvent @event)
 	{
+		// A joypad the cached list has never seen is read in now, whether or not Godot's connection
+		// signal reached us (OnJoyConnectionChanged): a controller paired after the game started
+		// otherwise switched the menus to it and drove nothing.
+		if (@event is InputEventJoypadButton or InputEventJoypadMotion && DevicePolicyOverride is null &&
+			_joypadsHooked && !IsJoypadConnected(_connectedJoypads, @event.Device))
+		{
+			RefreshConnectedJoypads();
+		}
+
 		if (@event is InputEventMouse)
 		{
 			if (!MouseInput)
@@ -245,7 +377,11 @@ public partial class GameInput : Node
 			}
 
 			Engine_UiPointer.Feed(@event);
-			FeedMouseMotion(@event);
+			if (!IsTouchPointer(@event))
+			{
+				FeedMouseMotion(@event);
+			}
+
 			DetectDevice(@event);
 			return;
 		}
@@ -254,6 +390,7 @@ public partial class GameInput : Node
 		FeedMouseMotion(@event);
 		FeedMouseWheel(@event);
 		DetectDevice(@event);
+		CapturePhysicalButton(@event);
 	}
 
 	/// <summary>
@@ -266,8 +403,19 @@ public partial class GameInput : Node
 	{
 		switch (@event)
 		{
+			// Android's back gesture arrives as the Back key: the touchscreen's own, not a keyboard,
+			// so it leaves the touch controls on screen.
+			case InputEventKey { Pressed: true, Keycode: Key.Back }:
+				break;
 			case InputEventKey { Pressed: true }:
 				Engine_UiInputMode.KeyboardMouse = true;
+				break;
+			// A finger is the touchscreen, never the mouse: the menus take its taps, the prompts
+			// keep the pad's art.
+			case InputEventMouseButton { Pressed: true } when MouseInput && IsTouchPointer(@event):
+				Engine_UiInputMode.Touch = true;
+				break;
+			case InputEventMouseMotion when IsTouchPointer(@event):
 				break;
 			case InputEventMouseButton { Pressed: true } when MouseInput:
 			case InputEventMouseMotion motion when MouseInput && motion.Relative.LengthSquared() > 4f:
@@ -400,10 +548,13 @@ public partial class GameInput : Node
 	/// <summary>`mouse_lock` in refii.toml — whether the mouse cursor is captured during play.</summary>
 	public static bool MouseLock { get; private set; } = true;
 
-	/// <summary>`controller_vibration` in refii.toml, on by default — the host's rumble gate.</summary>
+	/// <summary>`controller_vibration` in refii.toml, on by default — the host's rumble gate, for a joypad and for the phone played by touch.</summary>
 	public static bool ControllerVibration { get; private set; } = true;
 
 	private static double _settingsClock;
+
+	/// <summary>Rereads refii.toml on the next frame: a setting the player just changed in game takes effect now.</summary>
+	public static void RereadControlSettings() => _settingsClock = 0.0;
 	private static System.Collections.Generic.IReadOnlyDictionary<string, string>? _lastControlValues;
 
 	/// <summary>
@@ -467,8 +618,11 @@ public partial class GameInput : Node
 		RefreshConnectedJoypads();
 	}
 
-	private static void OnJoyConnectionChanged(long device, bool connected) =>
+	private static void OnJoyConnectionChanged(long device, bool connected)
+	{
 		RefreshConnectedJoypads();
+		GD.Print($"[input] joypad {device} {(connected ? "connected" : "disconnected")}");
+	}
 
 	private static void RefreshConnectedJoypads()
 	{
@@ -488,6 +642,11 @@ public partial class GameInput : Node
 				list[i] = (id, Input.IsJoyKnown(id));
 			}
 
+			if (list.Length != _connectedJoypads.Length)
+			{
+				GD.Print($"[input] {list.Length} joypad(s) connected: {string.Join(", ", System.Array.ConvertAll(list, j => $"{j.Id}{(j.Known ? "" : " (unmapped)")}"))}");
+			}
+
 			_connectedJoypads = list;
 		}
 		finally
@@ -496,9 +655,28 @@ public partial class GameInput : Node
 		}
 	}
 
-	private static bool IsJoypadConnected(int id)
+	/// <summary>Serves the cached Godot enumeration unless a native fixture supplied device metadata.</summary>
+	/// <returns>Each connected identity with whether it has a real mapping.</returns>
+	private (int Id, bool Known)[] ConnectedJoypadStates()
 	{
-		foreach ((int connectedId, _) in _connectedJoypads)
+		if (DevicePolicyOverride is { } policy)
+		{
+			var states = new (int Id, bool Known)[policy.Connected.Count];
+			for (int i = 0; i < states.Length; ++i)
+			{
+				states[i] = (policy.Connected[i], policy.Known(policy.Connected[i]));
+			}
+
+			return states;
+		}
+
+		EnsureJoypadsHooked();
+		return _connectedJoypads;
+	}
+
+	private static bool IsJoypadConnected((int Id, bool Known)[] connected, int id)
+	{
+		foreach ((int connectedId, _) in connected)
 		{
 			if (connectedId == id)
 			{
@@ -509,12 +687,14 @@ public partial class GameInput : Node
 		return false;
 	}
 
-	private static void AssignPads(bool devices)
+	/// <summary>Preserves first-press assignment, including an Android tap already released before this frame.</summary>
+	/// <param name="devices">Whether real devices have application/window focus.</param>
+	private void AssignPads(bool devices)
 	{
-		EnsureJoypadsHooked();
+		(int Id, bool Known)[] connected = ConnectedJoypadStates();
 		for (int pad = 0; pad < MaxControllers; ++pad)
 		{
-			if (_padDevice[pad] >= 0 && !IsJoypadConnected(_padDevice[pad]))
+			if (_padDevice[pad] >= 0 && !IsJoypadConnected(connected, _padDevice[pad]))
 			{
 				GD.Print($"[input] joypad {_padDevice[pad]} disconnected — guest pad {pad} is free");
 				_padDevice[pad] = -1;
@@ -526,10 +706,10 @@ public partial class GameInput : Node
 			return;
 		}
 
-		foreach ((int joypad, bool known) in _connectedJoypads)
+		foreach ((int joypad, bool known) in connected)
 		{
 			if (!known || System.Array.IndexOf(_padDevice, joypad) >= 0 ||
-				JoypadButtons(joypad) == 0)
+				(JoypadButtons(joypad) | (CapturePhysicalButtons ? _buttonCapture.PendingButtons(joypad) : 0)) == 0)
 			{
 				continue;
 			}
@@ -548,12 +728,16 @@ public partial class GameInput : Node
 	/// <summary>One pad's raw state, before the menu masks.</summary>
 	private struct PadState
 	{
-		public uint Buttons, LeftTrigger, RightTrigger;
+		public uint Buttons, PhysicalButtons, OtherButtons, LeftTrigger, RightTrigger;
 		public int LeftX, LeftY, RightX, RightY;
 
-		public void Merge(int joypad)
+		/// <summary>Merges unchanged analog polling with the caller's physical button sample.</summary>
+		/// <param name="joypad">The device whose current analog values are read.</param>
+		/// <param name="buttons">Ordinary desktop polling or the Android event-retained sample.</param>
+		public void Merge(int joypad, uint buttons)
 		{
-			Buttons |= JoypadButtons(joypad);
+			Buttons |= buttons;
+			PhysicalButtons |= buttons;
 			LeftTrigger = System.Math.Max(LeftTrigger, Trigger(joypad, JoyAxis.TriggerLeft));
 			RightTrigger = System.Math.Max(RightTrigger, Trigger(joypad, JoyAxis.TriggerRight));
 			LeftX = Dominant(LeftX, Axis(joypad, JoyAxis.LeftX));
@@ -571,7 +755,7 @@ public partial class GameInput : Node
 	/// The menu masks apply as on pad 0: an owned menu's vocabulary must not reach the guest
 	/// from any pad.
 	/// </summary>
-	private static void PublishPad(int pad, bool devices)
+	private void PublishPad(int pad, bool devices)
 	{
 		if (pad == 0)
 		{
@@ -580,6 +764,7 @@ public partial class GameInput : Node
 		}
 
 		var state = new PadState { Buttons = GameDebugServer.Buttons(pad) };
+		state.OtherButtons = state.Buttons;
 		if (GameDebugServer.Sticks(pad, out int debugLX, out int debugLY, out int debugRX,
 				out int debugRY, out uint debugLT, out uint debugRT))
 		{
@@ -594,7 +779,7 @@ public partial class GameInput : Node
 		int joypad = _padDevice[pad];
 		if (devices && joypad >= 0)
 		{
-			state.Merge(joypad);
+			state.Merge(joypad, PhysicalButtons(joypad));
 		}
 
 		bool connected = joypad >= 0 || GameDebugServer.PadConnected(pad);
@@ -665,14 +850,60 @@ public partial class GameInput : Node
 		// `GetWindow()` is the nearest Window ancestor — the game's own window, not the
 		// launcher's, so a focused launcher does not count as a focused game.
 		Window? window = IsInsideTree() ? GetWindow() : null;
-		return window is null || window.HasFocus();
+		return GameControllerTransport.DevicesHaveFocus(DevicesEnabled,
+			DevicePolicyOverride?.WindowFocused ?? (window is null || window.HasFocus()));
+	}
+
+	private readonly System.Collections.Generic.List<int> _connectedJoypadIds = new();
+
+	/// <summary>
+	/// The connected identities for the capture lifetime: the same cached enumeration pad
+	/// assignment uses (refreshed on Godot's connection signal), unless a native fixture supplied
+	/// metadata.
+	/// </summary>
+	/// <remarks>
+	/// Android refreshes the capture every frame. Asking Godot each time made a Godot array (a
+	/// finalizable wrapper) per frame, and the capture a set and a list besides.
+	/// </remarks>
+	private System.Collections.Generic.List<int> ConnectedJoypadIds()
+	{
+		_connectedJoypadIds.Clear();
+		foreach ((int id, _) in ConnectedJoypadStates())
+		{
+			_connectedJoypadIds.Add(id);
+		}
+
+		return _connectedJoypadIds;
+	}
+
+	/// <summary>Augments only Android physical buttons before the existing aggregation and ownership masks.</summary>
+	/// <param name="device">The assigned or unmapped device sampled once this frame.</param>
+	/// <returns>The current physical hold plus a bounded unsampled event edge.</returns>
+	private uint PhysicalButtons(int device) => CapturePhysicalButtons
+		? _buttonCapture.Sample(device, JoypadButtons(device)) : JoypadButtons(device);
+
+	/// <summary>Keys pending taps to actual native screens/modals and host ownership, without bypassing input gates.</summary>
+	/// <returns>A changes-only identity; highlights and animation progress deliberately do not invalidate a held input.</returns>
+	private GameInputButtonRoute ReadButtonRoute()
+	{
+		if (DevicePolicyOverride is { } policy) return policy.Route;
+		bool found = HostBridge.TryGetFrontEnd(out var screen, out uint state, out _, out _, out _, out _);
+		Engine_UiModel.PauseState? pause = HostBridge.GetPauseState();
+		uint flags = (PauseMenuSwallowsBack ? 1u : 0) | (FrontEndSwallowsBack ? 2u : 0) |
+			(ModalBoxOwnsInput ? 4u : 0) | (DisplayMessageBoxUp ? 8u : 0) |
+			(ReceiveItemsOwnsInput ? 16u : 0) | (MenuBoxOwnsInput ? 32u : 0) |
+			(ScreenMenuOwnsInput ? 64u : 0) | (FrontEndDrive.ListUp ? 128u : 0) |
+			(FrontEndDrive.CardUp ? 256u : 0) | (FrontEndDrive.WarningUp ? 512u : 0);
+		return new(found, found ? (uint)screen : 0, found ? state : 0,
+			pause?.ScreenId ?? uint.MaxValue, pause?.ModalId ?? 0, pause?.ModalMode ?? 0,
+			pause?.CurrentTab ?? 0, flags);
 	}
 
 	/// <summary>Said once per focus change, not once per frame.</summary>
 	private static bool _reportedUnfocused;
 
 	/// <summary>
-	/// Pad 0: the keyboard, the gamepad holding pad 0 and every unmapped joypad, merged, plus
+	/// Pad 0: the keyboard, the touch controls, the gamepad holding pad 0 and every unmapped joypad, merged, plus
 	/// the scripted sources. Buttons are OR'd; triggers and sticks take whichever device is
 	/// pushing hardest, so a pad at rest never cancels one in use. With
 	/// <paramref name="devices"/> false the keyboard and joypads are muted (the window is
@@ -683,7 +914,7 @@ public partial class GameInput : Node
 	/// The host-owned menus read pad 0 unless the guest states that player two owns the open
 	/// menu — see <see cref="MenuOwner"/>.
 	/// </summary>
-	private static void Publish0(bool devices)
+	private void Publish0(bool devices)
 	{
 		if (devices == _reportedUnfocused)
 		{
@@ -699,19 +930,21 @@ public partial class GameInput : Node
 		{
 			Buttons = (devices ? _pointerBits : 0u) | GameDebugServer.Buttons(0),
 		};
+		state.OtherButtons = state.Buttons;
 
 		if (devices)
 		{
 			KeyboardMouseState(ref state);
+			TouchState(ref state);
 		}
 
 		if (devices)
 		{
-			foreach ((int joypad, bool known) in _connectedJoypads)
+			foreach ((int joypad, bool known) in ConnectedJoypadStates())
 			{
 				if (joypad == _padDevice[0] || !known)
 				{
-					state.Merge(joypad);
+					state.Merge(joypad, PhysicalButtons(joypad));
 				}
 			}
 		}
@@ -733,6 +966,7 @@ public partial class GameInput : Node
 		if (GameDebugServer.ReplayFrame(out GameDebugServer.PadFrame replay))
 		{
 			state.Buttons |= replay.Buttons;
+			state.OtherButtons |= replay.Buttons;
 			state.LeftTrigger = replay.Lt;
 			state.RightTrigger = replay.Rt;
 			state.LeftX = replay.Lx;
@@ -794,7 +1028,8 @@ public partial class GameInput : Node
 	/// guest until released. See <see cref="SetMasked"/>.</summary>
 	private static readonly uint[] _heldAcrossUnmask = new uint[MaxControllers];
 
-	private static void SetMasked(int pad, bool connected, PadState state)
+	/// <summary>Applies production ownership masks and sends the result to exactly one transport.</summary>
+	private void SetMasked(int pad, bool connected, PadState state)
 	{
 		uint buttons = state.Buttons;
 
@@ -850,7 +1085,7 @@ public partial class GameInput : Node
 		_heldAcrossUnmask[pad] &= buttons;
 		_maskBits[pad] = maskBits;
 
-		HostBridge.SetControllerState(
+		var packet = new GameControllerPacket(
 			pad, connected,
 			filter(buttons) & ~wheelBits & ~_heldAcrossUnmask[pad],
 			goldenMenu ? (byte)0 : state.LeftTrigger, goldenMenu ? (byte)0 : state.RightTrigger,
@@ -867,7 +1102,49 @@ public partial class GameInput : Node
 			// is the camera's — never under a menu, which reads it as a direction.
 			goldenMenu || cardMasked ? 0 : (InvertCameraX && !menuMask ? -state.RightX : state.RightX),
 			goldenMenu || cardMasked ? 0 : state.RightY);
+		if (pad == 0)
+		{
+			if (CapturePhysicalButtons && ControllerStateSink != null)
+			{
+				if (_deliveryCaptureGeneration != _buttonCapture.ContextGeneration ||
+					_deliveryMask != maskBits || _deliveryPad0 != _padDevice[0])
+				{
+					++_deliveryEpoch;
+					_deliveryCaptureGeneration = _buttonCapture.ContextGeneration;
+					_deliveryMask = maskBits; _deliveryPad0 = _padDevice[0];
+				}
+				bool focus = HasInputFocus();
+				uint physicalButtons = filter(state.PhysicalButtons) & ~wheelBits & ~_heldAcrossUnmask[pad];
+				uint otherButtons = filter(state.OtherButtons) & ~wheelBits & ~_heldAcrossUnmask[pad];
+				// An immutable record: an unchanged sample is the last one again, not a new copy.
+				GameControllerPhysicalPublication? physical = LastFilteredPacket?.Physical;
+				if (physical is null || physical.Epoch != _deliveryEpoch || physical.Enabled != focus ||
+					physical.Buttons != physicalButtons || physical.OtherButtons != otherButtons)
+				{
+					physical = new GameControllerPhysicalPublication(_deliveryEpoch, focus, physicalButtons, otherButtons);
+				}
+
+				packet = packet with { Physical = physical };
+			}
+			if (LastRawPacket is not { } raw || raw.Pad != pad || raw.Connected != connected ||
+				raw.Buttons != buttons || raw.LeftTrigger != state.LeftTrigger ||
+				raw.RightTrigger != state.RightTrigger || raw.LeftX != state.LeftX ||
+				raw.LeftY != state.LeftY || raw.RightX != state.RightX || raw.RightY != state.RightY ||
+				raw.Physical is not null)
+			{
+				LastRawPacket = new GameControllerPacket(pad, connected, buttons,
+					state.LeftTrigger, state.RightTrigger, state.LeftX, state.LeftY, state.RightX, state.RightY);
+			}
+			LastFilteredPacket = packet;
+		}
+		GameControllerTransport.Publish(packet, ControllerStateSink, PublishNativePacket);
 	}
+
+	/// <summary>Keeps the original desktop bridge call as the default transport.</summary>
+	/// <param name="packet">The complete production-masked sample.</param>
+	private static void PublishNativePacket(GameControllerPacket packet) =>
+		HostBridge.SetControllerState(packet.Pad, packet.Connected, packet.Buttons,
+			packet.LeftTrigger, packet.RightTrigger, packet.LeftX, packet.LeftY, packet.RightX, packet.RightY);
 
 	/// <summary>
 	/// Whether the guest's own front-end menu should be shielded from this frame's input.
@@ -1444,6 +1721,20 @@ public partial class GameInput : Node
 
 	private static uint Bit(int pad, JoyButton button, uint mask) =>
 		Input.IsJoyButtonPressed(pad, button) ? mask : 0u;
+
+	/// <summary>Uses the existing Xbox button vocabulary for event capture; unmapped extras remain ignored.</summary>
+	/// <param name="button">The actual mapped Godot button index.</param>
+	/// <returns>One existing XInput bit or zero for unsupported buttons.</returns>
+	internal static uint JoyButtonBit(JoyButton button) => button switch
+	{
+		JoyButton.DpadUp => DpadUp, JoyButton.DpadDown => DpadDown,
+		JoyButton.DpadLeft => DpadLeft, JoyButton.DpadRight => DpadRight,
+		JoyButton.Start => Start, JoyButton.Back => Back,
+		JoyButton.LeftStick => LeftThumb, JoyButton.RightStick => RightThumb,
+		JoyButton.LeftShoulder => LeftShoulder, JoyButton.RightShoulder => RightShoulder,
+		JoyButton.A => ButtonA, JoyButton.B => ButtonB, JoyButton.X => ButtonX, JoyButton.Y => ButtonY,
+		_ => 0,
+	};
 
 	/// <summary>
 	/// Godot reports -1..1; the guest wants -32768..32767. Scaled by 32767 both ways so a full

@@ -508,13 +508,20 @@ public partial class Engine_FrontEndMenuView : Node3D
 	{
 		if (_cursor is not null && GodotObject.IsInstanceValid(_cursor))
 		{
-			bool show = _cursorShown && _cursorPlaced && !Engine_UiInputMode.KeyboardMouse;
+			bool show = _cursorShown && _cursorPlaced && CursorForDevice;
 			if (_cursor.Visible != show)
 			{
 				_cursor.Visible = show;
 			}
 		}
 	}
+
+	/// <summary>
+	/// Whether the device in use gets the cursor: the pad and the touchscreen do, the keyboard
+	/// and mouse do not. Touch lays the menu out as the PC's, but the on-screen A the player
+	/// presses is the pad's, and the ring's A is what says which row it will choose.
+	/// </summary>
+	internal static bool CursorForDevice => !Engine_UiInputMode.Keycaps;
 
 	private Node3D? _cursor;
 
@@ -679,24 +686,18 @@ public partial class Engine_FrontEndMenuView : Node3D
 	/// </summary>
 	public string? Activate()
 	{
-		if (Menu is null)
+		if (Menu is null || !Menu.CanActivate)
 		{
 			return null;
 		}
 
 		// The model first: it owns expand/collapse and decides whether the press is the guest's
 		// business. An entry with both children and a submenu expands, as the original does.
-		Engine_UiExpandableMenu.Item? item = Menu.Highlighted;
-		string? dispatch = Menu.Activate();
+		string? dispatch = Menu.Activate(out string? screen);
 
-		if (dispatch is null && item?.Opens is { } screen)
+		if (dispatch is null && screen is not null)
 		{
-			// A refused entry opens nothing; the model latched the reason as a text tag.
-			if (Menu.Warning is null)
-			{
-				_openedScreen = screen;
-			}
-
+			_openedScreen = screen;
 			return null;
 		}
 
