@@ -50,6 +50,11 @@
 #include <rex/runtime.h>
 #include <rex/net/pseudonym.h>
 #include <rex/net/rexnet.h>
+
+REXCVAR_DEFINE_STRING(rexnet_connect, "", "RexNet",
+                      "Peers to dial directly at startup: comma-separated host:port or "
+                      "multiaddrs. For a friend the DHT does not find, such as a phone on "
+                      "mobile data reaching a PC whose rexnet_listen_port is forwarded.");
 #endif
 
 #if REX_PLATFORM_WIN32
@@ -373,6 +378,18 @@ void RexNetStartup() {
           "XNetStartup: RexNet initialization failed; "
           "networking exports will behave as offline");
       return;
+    }
+
+    // Direct dials the player configured, for peers discovery cannot reach.
+    const std::string connect = REXCVAR_GET(rexnet_connect);
+    for (size_t pos = 0; pos < connect.size();) {
+      size_t comma = connect.find(',', pos);
+      if (comma == std::string::npos)
+        comma = connect.size();
+      if (comma > pos) {
+        rexnet->ConnectManual(connect.substr(pos, comma - pos));
+      }
+      pos = comma + 1;
     }
 
     // Inbound game datagrams -> the guest UDP socket bound to that port.
@@ -2208,6 +2225,7 @@ uint16_t RefiiSyncChannelPort(void) { return rex::kRefiiSyncPort; }
 /// Idempotent while connecting or open. 0 when RexNet is down or no peer has
 /// been seen; the outcome is read back through RefiiSyncChannelState.
 int RefiiSyncChannelConnect(void) {
+#if REXGLUE_ENABLE_REXNET
   auto* rexnet = rex::net::RexNet::shared();
   const uint32_t peer = rex::g_refii_coop_peer_vip.load(std::memory_order_relaxed);
   if (rexnet == nullptr || peer == 0) {
@@ -2224,6 +2242,10 @@ int RefiiSyncChannelConnect(void) {
   }
   rexnet->StreamConnect(peer, rex::kRefiiSyncPort, rex::kRefiiSyncPort);
   return 1;
+#else
+  // Built without RexNet (-DREXGLUE_ENABLE_REXNET=OFF): there is no stream to open.
+  return 0;
+#endif  // REXGLUE_ENABLE_REXNET
 }
 
 /// 0 idle, 1 connecting, 2 open, 3 closed by the peer, 4 connect failed, 5 inbox overflowed.
@@ -2245,12 +2267,16 @@ int RefiiSyncChannelSend(const uint8_t* data, uint32_t len) {
     }
     stream = rex::g_refii_sync_stream;
   }
+#if REXGLUE_ENABLE_REXNET
   auto* rexnet = rex::net::RexNet::shared();
   if (rexnet == nullptr) {
     return 0;
   }
   rexnet->StreamSend(stream, data, len);
   return 1;
+#else
+  return 0;
+#endif  // REXGLUE_ENABLE_REXNET
 }
 
 /// Takes up to `capacity` received bytes, in order. Returns the byte count.
@@ -2279,11 +2305,13 @@ void RefiiSyncChannelClose(void) {
     rex::g_refii_sync_state = 0;
     rex::g_refii_sync_inbox.clear();
   }
+#if REXGLUE_ENABLE_REXNET
   if (stream != 0) {
     if (auto* rexnet = rex::net::RexNet::shared()) {
       rexnet->StreamClose(stream);
     }
   }
+#endif  // REXGLUE_ENABLE_REXNET
 }
 
 }  // extern "C"

@@ -56,8 +56,7 @@
 
 #include <linux/ashmem.h>
 
-// TODO(tomc): Android or maybe na. idk
-// #include "xenia/base/main_android.h"
+#include <rex/main_android.h>
 #endif
 
 namespace rex {
@@ -94,6 +93,9 @@ static void* libandroid_;
 static int (*android_ASharedMemory_create_)(const char* name, size_t size);
 
 void AndroidInitialize() {
+  if (libandroid_) {
+    return;
+  }
   if (rex::GetAndroidApiLevel() >= 26) {
     libandroid_ = dlopen("libandroid.so", RTLD_NOW);
     assert_not_null(libandroid_);
@@ -381,12 +383,24 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
 #endif
 
   void* result = mmap(base_address, length, prot_initial, flags, -1, 0);
+  if (result != MAP_FAILED && base_address && result != base_address) {
+    // Linux before 4.17 may ignore MAP_FIXED_NOREPLACE and treat the fixed
+    // address as an ordinary hint. Android devices with older vendor kernels can
+    // return a different address on collision. Never report that allocation
+    // as a successful fixed guest mapping or leave its unrelated mapping alive.
+    // MAP_FIXED is deliberately not a fallback: it would clobber the collision.
+    (void)munmap(result, length);
+    errno = EEXIST;
+    result = MAP_FAILED;
+    // Normalize the ignored-flag collision to the existing EEXIST path below:
+    // only commit requests may recover by mprotect on their existing reservation.
+  }
   if (result != MAP_FAILED) {
     ProtShadowTrack(result, length,
                     allocation_type == AllocationType::kReserve ? PageAccess::kNoAccess : access);
     return result;
   }
-#if defined(MAP_FIXED_NOREPLACE) && REX_PLATFORM_LINUX
+#if defined(MAP_FIXED_NOREPLACE) && (REX_PLATFORM_LINUX || REX_PLATFORM_ANDROID)
   // Handle EEXIST: address already has a mapping (e.g., from prior Reserve)
   // This is the "commit on existing reservation" path
   if (errno == EEXIST && base_address &&

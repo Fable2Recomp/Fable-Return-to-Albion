@@ -10,8 +10,10 @@
 #include <rex/logging.h>
 
 #include <cstdlib>
+#include <filesystem>
 #include <mutex>
 #include <stdexcept>
+#include <vector>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -40,6 +42,7 @@ struct State {
   ModuleHandle handle = nullptr;
   const rex::PPCImageInfo* image = nullptr;
   std::string path;
+  std::string requested_path;
   std::string error;
   bool attempted = false;
 };
@@ -123,6 +126,22 @@ void* FindSymbol(ModuleHandle handle, const char* symbol) {
 
 }  // namespace
 
+bool SetModulePath(const std::string& path, std::string& error) {
+  std::lock_guard<std::mutex> guard(Lock());
+  State& state = Get();
+  if (state.attempted) {
+    error = "The game module path must be set before the first load attempt";
+    return false;
+  }
+  if (path.empty() || !std::filesystem::path(path).is_absolute()) {
+    error = "The game module path must be absolute";
+    return false;
+  }
+  state.requested_path = path;
+  error.clear();
+  return true;
+}
+
 bool Load(std::string& error) {
   std::lock_guard<std::mutex> guard(Lock());
   State& state = Get();
@@ -149,11 +168,14 @@ bool Load(std::string& error) {
   // where an exported app keeps its whole native closure. The others are dev-tree layouts
   // — the standalone executable is in bin/ while the libraries are in lib/, so "beside me"
   // on its own never finds it there.
-  const std::string candidates[] = {
+  std::vector<std::string> candidates = {
       directory + "/" + kPayloadFileName,
       directory + "/../lib/" + kPayloadFileName,
       directory + "/lib/" + kPayloadFileName,
   };
+  if (!state.requested_path.empty()) {
+    candidates = {state.requested_path};
+  }
 
   // EVERY candidate's own error, not the last one's. Reporting a single `openError`
   // overwritten by each attempt named the FIRST path and quoted the LAST failure's

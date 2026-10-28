@@ -16,7 +16,8 @@ if(MSVC)
 endif()
 
 set(REFII_EXTRACTOR_THIRDPARTY_ROOT "${REFII_EXTRACTOR_ROOT}/thirdparty")
-set(REFII_EXTRACTOR_ZLIB_ROOT "${REFII_EXTRACTOR_THIRDPARTY_ROOT}/zlib")
+set(REFII_EXTRACTOR_ZLIB_ROOT "${REFII_EXTRACTOR_THIRDPARTY_ROOT}/zlib"
+    CACHE PATH "Initialized zlib source tree; defaults to the pinned repository submodule")
 set(REFII_EXTRACTOR_ZLIB_TARGET)
 
 if(TARGET ZLIB::ZLIB)

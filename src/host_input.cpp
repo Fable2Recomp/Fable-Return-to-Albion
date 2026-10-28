@@ -3,6 +3,8 @@
 #include <atomic>
 #include <cstring>
 #include <string>
+#include <mutex>
+#include <array>
 
 #include <rex/input/input.h>
 
@@ -14,9 +16,9 @@ using namespace rex;
 
 namespace {
 
-/// One published snapshot plus a sequence counter.
+/// One published snapshot plus a sequence counter and Android consumption tag.
 ///
-/// A seqlock rather than a mutex: the guest polls this on its own threads, potentially
+/// Desktop retains its original seqlock: the guest polls this on its own threads, potentially
 /// every frame per pad, and must never block the host's frame thread — nor be blocked by
 /// it. Writers bump the sequence odd, write, bump it even; readers retry while the
 /// sequence is odd or changed underneath them. A torn controller frame would show as a
@@ -30,7 +32,23 @@ struct Slot {
     std::atomic<uint32_t> packet{0};
 
     std::atomic<uint32_t> vibration{0};  // left << 16 | right
+    uint64_t receipt_token = 0;
+    std::atomic<uint64_t> consumed_token{0};
+#if defined(__ANDROID__) || defined(REFII_CONTROLLER_RECEIPT_TEST)
+    // Android needs state and its receipt tag in one C++-legal snapshot. A plain-field
+    // seqlock still races under the C++ memory model; these tiny copies use one lock.
+    std::mutex snapshot_mutex;
+#endif
 };
+
+/// One exact driver-read snapshot per thread, so a concurrent NULL query cannot
+/// overwrite the record another GetState is about to acknowledge.
+struct DriverRead {
+    const HostInputDriver* driver = nullptr;
+    uint64_t token = 0;
+    rex::input::X_INPUT_STATE state{};
+};
+thread_local std::array<DriverRead, kMaxControllers> driver_reads{};
 
 Slot& SlotFor(uint32_t user_index) {
     static Slot slots[kMaxControllers];
@@ -44,8 +62,14 @@ bool SameInputs(const ControllerState& a, const ControllerState& b) {
            a.thumb_rx == b.thumb_rx && a.thumb_ry == b.thumb_ry;
 }
 
-ControllerState Read(uint32_t user_index, uint32_t* out_packet) {
+ControllerState Read(uint32_t user_index, uint32_t* out_packet, uint64_t* out_token = nullptr) {
     Slot& slot = SlotFor(user_index);
+#if defined(__ANDROID__) || defined(REFII_CONTROLLER_RECEIPT_TEST)
+    std::lock_guard<std::mutex> lock(slot.snapshot_mutex);
+    if (out_packet) *out_packet = slot.packet.load(std::memory_order_relaxed);
+    if (out_token) *out_token = slot.receipt_token;
+    return slot.state;
+#else
     ControllerState copy{};
     uint32_t before = 0;
     do {
@@ -63,16 +87,29 @@ ControllerState Read(uint32_t user_index, uint32_t* out_packet) {
     } while (before != slot.sequence.load(std::memory_order_acquire));
 
     return copy;
+#endif
 }
 
 }  // namespace
 
 void PublishControllerState(uint32_t user_index, const ControllerState& state) {
+    PublishControllerStateTracked(user_index, state, 0);
+}
+
+void PublishControllerStateTracked(uint32_t user_index, const ControllerState& state, uint64_t token) {
     if (user_index >= kMaxControllers) {
         return;
     }
 
     Slot& slot = SlotFor(user_index);
+#if defined(__ANDROID__) || defined(REFII_CONTROLLER_RECEIPT_TEST)
+    std::lock_guard<std::mutex> lock(slot.snapshot_mutex);
+    const bool changed = !SameInputs(slot.state, state);
+    slot.state = state;
+    slot.receipt_token = token;
+    if (changed) slot.packet.fetch_add(1, std::memory_order_relaxed);
+#else
+    (void)token; // Desktop keeps its existing snapshot publisher and never requests receipts.
 
     // Only advance the packet number on a real change. The guest treats an unchanged
     // packet_number as "nothing happened" and may skip work; bumping it every frame
@@ -85,6 +122,12 @@ void PublishControllerState(uint32_t user_index, const ControllerState& state) {
         slot.packet.fetch_add(1, std::memory_order_relaxed);
     }
     slot.sequence.fetch_add(1, std::memory_order_release);
+#endif
+}
+
+uint64_t ControllerReadReceipt(uint32_t user_index) {
+    return user_index < kMaxControllers
+        ? SlotFor(user_index).consumed_token.load(std::memory_order_acquire) : 0;
 }
 
 bool TakeVibration(uint32_t user_index, uint16_t* out_left, uint16_t* out_right) {
@@ -162,12 +205,16 @@ rex::X_RESULT HostInputDriver::GetDeviceCapabilities(rex::input::DeviceId id, ui
 rex::X_RESULT HostInputDriver::GetDeviceState(rex::input::DeviceId id,
                                               rex::input::X_INPUT_STATE* out_state) {
     const uint32_t user_index = SlotOf(id);
+    if (user_index < kMaxControllers) driver_reads[user_index] = {};
     if (user_index >= kMaxControllers || out_state == nullptr) {
         return X_ERROR_BAD_ARGUMENTS;
     }
 
+    DriverRead& captured = driver_reads[user_index];
+    captured = {};
     uint32_t packet = 0;
-    const ControllerState state = Read(user_index, &packet);
+    uint64_t token = 0;
+    const ControllerState state = Read(user_index, &packet, &token);
     if (!state.connected) {
         return X_ERROR_DEVICE_NOT_CONNECTED;
     }
@@ -180,7 +227,27 @@ rex::X_RESULT HostInputDriver::GetDeviceState(rex::input::DeviceId id,
     out_state->gamepad.thumb_ly = state.thumb_ly;
     out_state->gamepad.thumb_rx = state.thumb_rx;
     out_state->gamepad.thumb_ry = state.thumb_ry;
+    captured.driver = this;
+    captured.token = token;
+    captured.state = *out_state;
     return X_ERROR_SUCCESS;
+}
+
+void HostInputDriver::ObserveStateCopy(void* context, rex::input::InputDriver* driver,
+                                      rex::input::DeviceId id,
+                                      const rex::input::X_INPUT_STATE& copied_state) {
+    const auto* owner = static_cast<const HostInputDriver*>(context);
+    const uint32_t slot = SlotOf(id);
+    if (driver != owner || slot >= kMaxControllers) return;
+    DriverRead& captured = driver_reads[slot];
+    if (captured.driver != owner || captured.token == 0 ||
+        std::memcmp(&captured.state, &copied_state, sizeof(copied_state)) != 0) return;
+    uint64_t before = SlotFor(slot).consumed_token.load(std::memory_order_relaxed);
+    // Contention fails closed; another actual state copy can retry this same phase.
+    for (int attempt = 0; attempt < 8 && before < captured.token; ++attempt)
+        if (SlotFor(slot).consumed_token.compare_exchange_strong(before, captured.token,
+            std::memory_order_release, std::memory_order_relaxed)) break;
+    captured = {};
 }
 
 rex::X_RESULT HostInputDriver::SetDeviceVibration(rex::input::DeviceId id,

@@ -17,6 +17,17 @@ endif()
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(ANDROID)
+    if(NOT CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+        message(FATAL_ERROR "Refii's Android runtime currently supports arm64-v8a only")
+    endif()
+    # NDK r28 libc++ lacks the std::chrono::clock_time_conversion primary template that
+    # cross-platform headers specialize; force-include the same shim the payload SDK uses.
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-include>"
+        "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/src/payload/src/libcxx_chrono_shim.h>")
+    add_link_options("LINKER:-z,max-page-size=16384" "LINKER:-z,common-page-size=16384")
+endif()
+
 if(CMAKE_CONFIGURATION_TYPES)
     set(_REFII_DEFAULT_PACKAGE_OUTPUT_DIR "${CMAKE_BINARY_DIR}/$<CONFIG>")
 else()
@@ -378,7 +389,7 @@ function(refii_apply_generated_payload_compile_options target_name)
         )
     endif()
 
-    if(UNIX AND NOT APPLE)
+    if(UNIX AND NOT APPLE AND NOT ANDROID)
         target_compile_options("${target_name}" PRIVATE -mcmodel=large)
     endif()
 
@@ -804,7 +815,11 @@ endif()
 # The code generator the launcher loads to build the player's game code. BEFORE the host
 # bridge, whose staging target takes every native in the closure that exists when its
 # directory is processed: declared after it, the library built but never reached bin/.
-add_subdirectory(src/recompiler)
+# Android's self-contained tool bundle supplies the separately audited executable
+# generator. Its runtime SDK deliberately excludes desktop rex::codegen targets.
+if(NOT ANDROID)
+    add_subdirectory(src/recompiler)
+endif()
 
 if(REFII_BUILD_HOST_BRIDGE)
     add_subdirectory(src/hostbridge)
@@ -1006,6 +1021,12 @@ set(REFII_PACKAGE_RUNTIME_SEARCH_DIRS
 # earlier it silently missed refii-stage-external-libs (defined further down) and would have
 # packaged a build without them.
 refii_define_godot_export_target()
+
+# Optional private module and semantic tests. These consume external generated
+# source; a distributable Android runtime never needs a user's game image.
+if(ANDROID)
+    include(cmake/refii_android.cmake)
+endif()
 
 if(REFII_WINDOWS_INSTALL_INPUTS_ONLY)
     foreach(_required_target refii_payload_sdk refii_stage_godot)

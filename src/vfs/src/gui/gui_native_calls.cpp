@@ -138,6 +138,10 @@ std::mutex& AnswersMutex() {
 
 thread_local uint32_t t_entry = 0;
 
+/// How many answers are held, so a call with none held (nearly always) skips both locks. Kept
+/// under `AnswersMutex`; read lock-free only on Android, where the guest is CPU-bound.
+std::atomic<size_t> g_answer_count{0};
+
 }  // namespace
 
 void SetGuiNativeAnswer(const std::string& name, GuiNativeAnswerKind kind, uint32_t bits) {
@@ -148,12 +152,14 @@ void SetGuiNativeAnswer(const std::string& name, GuiNativeAnswerKind kind, uint3
     std::lock_guard<std::mutex> lock(AnswersMutex());
     if (kind == GuiNativeAnswerKind::kNone) {
         Answers().erase(name);
+        g_answer_count.store(Answers().size(), std::memory_order_release);
         return;
     }
 
     GuiNativeAnswer& answer = Answers()[name];
     answer.kind = kind;
     answer.bits = bits;
+    g_answer_count.store(Answers().size(), std::memory_order_release);
 }
 
 extern "C" uint32_t refii_bridge_gui_native_answer_for(uint32_t implementation,
@@ -163,6 +169,14 @@ extern "C" uint32_t refii_bridge_gui_native_answer_for(uint32_t implementation,
     if (implementation == 0 || !g_registered.load(std::memory_order_acquire)) {
         return none;
     }
+
+#if defined(__ANDROID__)
+    // The same answer the empty check below gives, without the two locks every thunk call
+    // would otherwise take.
+    if (g_answer_count.load(std::memory_order_acquire) == 0u) {
+        return none;
+    }
+#endif
 
     std::lock_guard<std::mutex> names(NamesMutex());
     auto found = Names().find(implementation);

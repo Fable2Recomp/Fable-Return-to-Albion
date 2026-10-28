@@ -333,7 +333,7 @@ function(refii_rexglue_prepare_shadow_sdk out_var)
     endif()
 
     file(MAKE_DIRECTORY "${REFII_REXGLUE_SHADOW_BUILD_DIR}")
-    if(WIN32)
+    if(CMAKE_HOST_WIN32)
         refii_rexglue_shadow_link_sdk_tree()
         refii_rexglue_shadow_prune_orphans()
     else()

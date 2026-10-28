@@ -2,7 +2,8 @@
 //
 // Godot owns input, exactly as it owns the window and the world. This is the seam the
 // guest reads through: Godot pushes a controller snapshot per frame, and the guest's
-// XInput calls are served from it.
+// XInput calls are served from it. Android retains physical phases through its sole
+// guest owner until the successful non-null XInput state-copy path acknowledges them.
 //
 // It exists because the guest's SDL input driver initialises its subsystems in
 // OnWindowAvailable, and an embedded guest deliberately has no window — so that driver
@@ -43,6 +44,13 @@ inline constexpr uint32_t kMaxControllers = 4;
 /// guest reads on its own threads.
 void PublishControllerState(uint32_t user_index, const ControllerState& state);
 
+/// Android owner publication tagged with a stable physical phase; analog changes do
+/// not change this token. A zero token requests no acknowledgment.
+void PublishControllerStateTracked(uint32_t user_index, const ControllerState& state, uint64_t token);
+
+/// The last phase actually copied by a successful non-null guest state query.
+uint64_t ControllerReadReceipt(uint32_t user_index);
+
 /// The rumble the guest most recently asked for, so the host can drive it. Returns false
 /// when the index is out of range.
 bool TakeVibration(uint32_t user_index, uint16_t* out_left, uint16_t* out_right);
@@ -71,6 +79,12 @@ public:
                                      rex::input::X_INPUT_VIBRATION* vibration) override;
     rex::X_RESULT GetDeviceKeystroke(rex::input::DeviceId id, uint32_t flags,
                                      rex::input::X_INPUT_KEYSTROKE* out_keystroke) override;
+
+    /// Registered only by the Android owner. Confirms this exact thread's coherent
+    /// state snapshot after InputSystem copied it, excluding NULL queries and merges.
+    static void ObserveStateCopy(void* context, rex::input::InputDriver* driver,
+                                 rex::input::DeviceId id,
+                                 const rex::input::X_INPUT_STATE& copied_state);
 
 private:
     /// The host slot behind a device id, or kMaxControllers when the id is not ours.

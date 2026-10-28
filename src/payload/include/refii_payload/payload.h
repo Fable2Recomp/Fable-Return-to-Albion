@@ -33,6 +33,10 @@ using RefiiPayloadImageConfigFn = const rex::PPCImageInfo* (*)();
 
 namespace refii::payload {
 
+/// Selects an absolute privately imported module path before the first Load().
+/// Android assets and writable modules live outside the APK's native library directory.
+bool SetModulePath(const std::string& path, std::string& error);
+
 /// Loads the payload module beside the calling library. Idempotent; the first call
 /// decides. False leaves a reason in LoadError().
 bool Load(std::string& error);

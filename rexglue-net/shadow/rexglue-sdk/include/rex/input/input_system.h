@@ -26,6 +26,18 @@ class Window;
 
 namespace rex::input {
 
+class InputSystem;
+
+/// Observes an actual successful non-null state copy with exactly one contributing
+/// driver. Runs inside the input-system lock: it must perform only bounded native work.
+using StateCopyObserver = void (*)(void* context, InputDriver* driver, DeviceId device,
+                                  const X_INPUT_STATE& copied_state);
+
+/// Configures the single embedded observer before any guest polling begins. A null
+/// observer clears registration. This free seam changes no InputSystem/driver layout
+/// or vtable; callers must not replace it while guest polls are in flight.
+void SetInputStateCopyObserver(InputSystem* system, StateCopyObserver observer, void* context);
+
 class InputSystem : public system::IInputSystem {
  public:
   explicit InputSystem(rex::ui::Window* window);

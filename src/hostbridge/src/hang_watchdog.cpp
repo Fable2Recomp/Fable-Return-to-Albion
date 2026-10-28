@@ -64,7 +64,11 @@
 #include <csignal>
 #include <ctime>
 #include <dlfcn.h>
+// Bionic's execinfo API starts at API33; the API31 Android bridge reports the stalled thread's
+// PC and SP without its native frames (as host_bridge.cpp's crash report does).
+#if !defined(__ANDROID__) || __ANDROID_API__ >= 33
 #include <execinfo.h>
+#endif
 #include <fcntl.h>
 #include <pthread.h>
 #include <sys/stat.h>
@@ -142,6 +146,17 @@ constexpr uint64_t kPollNs = 250ull * 1000000ull;
 constexpr uint64_t kCaptureWaitNs = 3ull * 1000000000ull;
 constexpr int kCaptureSignal = SIGUSR2;  // free: the SDK's thread signals are SIGRTMIN+n on Linux
 constexpr int kMaxFrames = 128;
+
+/// backtrace() where the platform has it; no frames on Android below API33.
+int CaptureFrames(void** frames, int capacity) {
+#if !defined(__ANDROID__) || __ANDROID_API__ >= 33
+    return ::backtrace(frames, capacity);
+#else
+    (void)frames;
+    (void)capacity;
+    return 0;
+#endif
+}
 
 // The main thread, as named by its first stamp.
 std::atomic<bool> g_started{false};
@@ -302,7 +317,7 @@ void CaptureHandler(int, siginfo_t*, void* context) {
         (void)uc;
 #endif
     }
-    const int count = ::backtrace(g_capture_frames, kMaxFrames);
+    const int count = CaptureFrames(g_capture_frames, kMaxFrames);
     g_capture_count.store(count, std::memory_order_relaxed);
     g_capture_done.store(1, std::memory_order_release);
 }
@@ -627,7 +642,7 @@ void StartFromMainThread() {
         // backtrace() loads libgcc_s on its first call and gmtime_r may read the zone tables:
         // both taken here, on a healthy thread, so the stalled-path calls are walks only.
         void* frames[4];
-        (void)::backtrace(frames, 4);
+        (void)CaptureFrames(frames, 4);
         char stamp[48];
         UtcStamp(stamp, sizeof(stamp), true);
     }

@@ -21,6 +21,7 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
 #include <deque>
 #include <limits>
 #include <memory>
+#include <system_error>
 
 #include <pthread.h>
 #include <semaphore.h>
@@ -64,6 +65,10 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
 
 namespace rex::thread {
 
+namespace {
+void UnregisterSignalThread();
+}
+
 #if REX_PLATFORM_ANDROID
 // May be null if no dynamically loaded functions are required.
 static void* android_libc_;
@@ -71,6 +76,9 @@ static void* android_libc_;
 static int (*android_pthread_getname_np_)(pthread_t pthread, char* buf, size_t n);
 
 void AndroidInitialize() {
+  if (android_libc_) {
+    return;
+  }
   if (rex::GetAndroidApiLevel() >= 26) {
     android_libc_ = dlopen("libc.so", RTLD_NOW);
     assert_not_null(android_libc_);
@@ -116,9 +124,8 @@ enum class SignalType {
   kThreadSuspend,
   kThreadUserCallback,
 #if REX_PLATFORM_ANDROID
-  // pthread_cancel is not available on Android, using a signal handler for
-  // simplified PTHREAD_CANCEL_ASYNCHRONOUS-like behavior - not disabling
-  // cancellation currently, so should be enough.
+  // Reserved legacy signal number. Asynchronous termination is rejected on
+  // Android until a cooperative backend can preserve native lock lifetimes.
   kThreadTerminate,
 #endif
   k_Count
@@ -280,7 +287,7 @@ static sem_t* RexCreateAnonymousSemaphore() {
 class PosixConditionBase {
  public:
   PosixConditionBase() {
-#if REX_PLATFORM_LINUX
+#if REX_PLATFORM_LINUX && !REX_PLATFORM_ANDROID
     // Use robust mutexes so waits can recover if owner thread terminates.
     pthread_mutexattr_t attr;
     if (pthread_mutexattr_init(&attr) == 0) {
@@ -300,7 +307,7 @@ class PosixConditionBase {
   WaitResult Wait(std::chrono::milliseconds timeout) {
     bool executed;
     auto predicate = [this] { return this->signaled(); };
-#if REX_PLATFORM_LINUX
+#if REX_PLATFORM_LINUX && !REX_PLATFORM_ANDROID
     auto native_mutex = static_cast<pthread_mutex_t*>(mutex_.native_handle());
     int lock_result = pthread_mutex_lock(native_mutex);
     if (lock_result == EOWNERDEAD) {
@@ -314,6 +321,19 @@ class PosixConditionBase {
 #endif
     if (predicate()) {
       executed = true;
+    } else if (poll_owner_lifetime()) {
+      // Android has no robust pthread mutexes. Guest-mutant ownership is
+      // tracked separately from this short-lived internal state lock. A thread
+      // may exit without releasing a guest mutant, so poll its lifetime token
+      // with a bounded sleep rather than waiting for an absent notification.
+      auto deadline = timeout == std::chrono::milliseconds::max()
+                          ? std::chrono::steady_clock::time_point::max()
+                          : std::chrono::steady_clock::now() + timeout;
+      while (!predicate() && std::chrono::steady_clock::now() < deadline) {
+        cond_.wait_until(lock, std::min(deadline, std::chrono::steady_clock::now() +
+                                                   std::chrono::milliseconds(1)));
+      }
+      executed = predicate();
     } else {
       if (timeout == std::chrono::milliseconds::max()) {
         cond_.wait(lock, predicate);
@@ -323,8 +343,9 @@ class PosixConditionBase {
       }
     }
     if (executed) {
+      bool was_abandoned = abandoned();
       post_execution();
-      return WaitResult::kSuccess;
+      return was_abandoned ? WaitResult::kAbandoned : WaitResult::kSuccess;
     } else {
       return WaitResult::kTimeout;
     }
@@ -354,7 +375,7 @@ class PosixConditionBase {
       locks.reserve(handles.size());
 
       for (size_t i = 0; i < handles.size(); ++i) {
-#if REX_PLATFORM_LINUX
+#if REX_PLATFORM_LINUX && !REX_PLATFORM_ANDROID
         auto native_mutex = static_cast<pthread_mutex_t*>(handles[i]->mutex_.native_handle());
         int result = pthread_mutex_trylock(native_mutex);
         if (result == 0 || result == EOWNERDEAD) {
@@ -377,6 +398,9 @@ class PosixConditionBase {
 
       if (!all_locked) {
         locks.clear();
+        if (std::chrono::steady_clock::now() >= end_time) {
+          return std::make_pair(WaitResult::kTimeout, size_t{0});
+        }
         std::this_thread::yield();
         continue;
       }
@@ -404,14 +428,24 @@ class PosixConditionBase {
       }
 
       if (condition_met) {
+        bool was_abandoned = false;
+        size_t abandoned_index = first_signaled;
         if (wait_all) {
+          for (size_t i = 0; i < handles.size(); ++i) {
+            if (handles[i]->abandoned() && !was_abandoned) {
+              was_abandoned = true;
+              abandoned_index = i;
+            }
+          }
           for (size_t i = 0; i < handles.size(); ++i) {
             handles[i]->post_execution();
           }
         } else {
+          was_abandoned = handles[first_signaled]->abandoned();
           handles[first_signaled]->post_execution();
         }
-        return std::make_pair(WaitResult::kSuccess, first_signaled);
+        return std::make_pair(was_abandoned ? WaitResult::kAbandoned : WaitResult::kSuccess,
+                              was_abandoned ? abandoned_index : first_signaled);
       }
 
       locks.clear();
@@ -443,6 +477,8 @@ class PosixConditionBase {
  protected:
   inline virtual bool signaled() const = 0;
   inline virtual void post_execution() = 0;
+  virtual bool abandoned() const { return false; }
+  virtual bool poll_owner_lifetime() const { return false; }
   std::condition_variable cond_;
   std::mutex mutex_;
 };
@@ -515,6 +551,21 @@ class PosixCondition<Semaphore> : public PosixConditionBase {
   const uint32_t maximum_count_;
 };
 
+#if REX_PLATFORM_ANDROID
+// A weak token is immune to thread-id reuse and expires for ordinary C++
+// threads as well as runtime workers. Runtime exit paths clear it before
+// publishing their thread as signaled, so zero-time waits observe abandonment.
+struct AndroidOwnerLifetime {};
+thread_local std::shared_ptr<AndroidOwnerLifetime> android_owner_lifetime;
+static std::shared_ptr<AndroidOwnerLifetime> CurrentAndroidOwnerLifetime() {
+  if (!android_owner_lifetime) {
+    android_owner_lifetime = std::make_shared<AndroidOwnerLifetime>();
+  }
+  return android_owner_lifetime;
+}
+static void ReleaseAndroidOwnerLifetime() { android_owner_lifetime.reset(); }
+#endif
+
 template <>
 class PosixCondition<Mutant> : public PosixConditionBase {
  public:
@@ -522,14 +573,21 @@ class PosixCondition<Mutant> : public PosixConditionBase {
     if (initial_owner) {
       count_ = 1;
       owner_ = std::this_thread::get_id();
+#if REX_PLATFORM_ANDROID
+      owner_lifetime_ = CurrentAndroidOwnerLifetime();
+#endif
     }
   }
 
   bool Signal() override { return Release(); }
 
   bool Release() {
-    if (owner_ == std::this_thread::get_id() && count_ > 0) {
-      auto lock = std::unique_lock<std::mutex>(mutex_);
+    auto lock = std::unique_lock<std::mutex>(mutex_);
+    if (owner_ == std::this_thread::get_id() && count_ > 0
+#if REX_PLATFORM_ANDROID
+        && !owner_lifetime_.expired()
+#endif
+        ) {
       --count_;
       // Free to be acquired by another thread
       if (count_ == 0) {
@@ -544,14 +602,29 @@ class PosixCondition<Mutant> : public PosixConditionBase {
 
  private:
   inline bool signaled() const override {
-    return count_ == 0 || owner_ == std::this_thread::get_id();
+    return count_ == 0 || owner_ == std::this_thread::get_id()
+#if REX_PLATFORM_ANDROID
+           || owner_lifetime_.expired()
+#endif
+        ;
   }
   inline void post_execution() override {
+#if REX_PLATFORM_ANDROID
+    if (abandoned()) {
+      count_ = 0;
+    }
+    owner_lifetime_ = CurrentAndroidOwnerLifetime();
+#endif
     count_++;
     owner_ = std::this_thread::get_id();
   }
   uint32_t count_;
   std::thread::id owner_;
+#if REX_PLATFORM_ANDROID
+  bool abandoned() const override { return count_ > 0 && owner_lifetime_.expired(); }
+  bool poll_owner_lifetime() const override { return true; }
+  std::weak_ptr<AndroidOwnerLifetime> owner_lifetime_;
+#endif
 };
 
 template <>
@@ -972,6 +1045,18 @@ class PosixCondition<Thread> : public PosixConditionBase {
 
   void Terminate(int exit_code) {
     bool is_current_thread = pthread_self() == thread_;
+#if REX_PLATFORM_ANDROID
+    if (!is_current_thread) {
+      // Bionic cannot recover an internal mutex abandoned by an asynchronous
+      // signal-based pthread_exit. Reject this operation before publishing a
+      // false exit or freeing a still-running guest's stack. The first Android
+      // host uses process restart; remote cooperative termination is future work.
+      REXSYS_ERROR("Android asynchronous cross-thread termination is unsupported");
+      throw std::system_error(std::make_error_code(std::errc::operation_not_supported),
+                              "Android cross-thread termination");
+    }
+    ReleaseAndroidOwnerLifetime();
+#endif
     {
       std::unique_lock<std::mutex> lock(state_mutex_);
       if (state_ == State::kFinished) {
@@ -996,6 +1081,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
       cond_.notify_all();
     }
     if (is_current_thread) {
+      UnregisterSignalThread();
       pthread_exit(reinterpret_cast<void*>(exit_code));
     } else {
 #if REX_PLATFORM_ANDROID
@@ -1029,6 +1115,12 @@ class PosixCondition<Thread> : public PosixConditionBase {
   static void* ThreadStartRoutine(void* parameter);
   inline bool signaled() const override { return signaled_; }
   inline void post_execution() override {
+#if REX_PLATFORM_ANDROID
+    // A thread wait is persistent. Joining and destroying its suspend semaphore
+    // are one-time cleanup operations, even when several callers wait again.
+    // PosixConditionBase holds mutex_ while calling post_execution().
+    if (wait_resources_released_) return;
+#endif
     if (thread_) {
       pthread_join(thread_, nullptr);
     }
@@ -1039,6 +1131,9 @@ class PosixCondition<Thread> : public PosixConditionBase {
     }
 #else
     sem_destroy(&suspend_sem_);
+#endif
+#if REX_PLATFORM_ANDROID
+    wait_resources_released_ = true;
 #endif
   }
   pthread_t thread_;
@@ -1059,6 +1154,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
   std::deque<std::function<void()>> user_callbacks_;
   std::atomic<bool> has_pending_user_callbacks_{false};
 #if REX_PLATFORM_ANDROID
+  bool wait_resources_released_ = false;  // Protected by mutex_.
   // Name accessible via name() on Android before API 26 which added
   // pthread_getname_np.
   mutable std::mutex android_pre_api_26_name_mutex_;
@@ -1330,7 +1426,7 @@ class PosixTimer : public PosixConditionHandle<Timer> {
   }
   bool SetOnceAt(WClock_::time_point due_time,
                  std::function<void()> opt_callback = nullptr) override {
-    return SetOnceAt(std::chrono::clock_cast<GClock_>(due_time), std::move(opt_callback));
+    return SetOnceAt(rex::chrono::ClockCast<GClock_>(due_time), std::move(opt_callback));
   };
   bool SetOnceAt(GClock_::time_point due_time,
                  std::function<void()> opt_callback = nullptr) override {
@@ -1344,7 +1440,7 @@ class PosixTimer : public PosixConditionHandle<Timer> {
   }
   bool SetRepeatingAt(WClock_::time_point due_time, std::chrono::milliseconds period,
                       std::function<void()> opt_callback = nullptr) override {
-    return SetRepeatingAt(std::chrono::clock_cast<GClock_>(due_time), period,
+    return SetRepeatingAt(rex::chrono::ClockCast<GClock_>(due_time), period,
                           std::move(opt_callback));
   }
   bool SetRepeatingAt(GClock_::time_point due_time, std::chrono::milliseconds period,
@@ -1509,6 +1605,10 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
 
   start_routine();
 
+#if REX_PLATFORM_ANDROID
+  ReleaseAndroidOwnerLifetime();
+#endif
+
   {
     std::unique_lock<std::mutex> lock(thread->handle_.state_mutex_);
     thread->handle_.state_ = State::kFinished;
@@ -1574,6 +1674,9 @@ void Thread::Exit(int exit_code) {
     current_thread_->Terminate(exit_code);
   } else {
     // Should only happen with the main thread
+#if REX_PLATFORM_ANDROID
+    ReleaseAndroidOwnerLifetime();
+#endif
     pthread_exit(reinterpret_cast<void*>(exit_code));
   }
   // Function must not return
@@ -1609,7 +1712,9 @@ static void signal_handler(int signal, siginfo_t* /*info*/, void* /*context*/) {
     } break;
 #if REX_PLATFORM_ANDROID
     case SignalType::kThreadTerminate: {
-      pthread_exit(reinterpret_cast<void*>(-1));
+      // Asynchronous termination is deliberately unavailable: pthread_exit is
+      // not async-signal-safe and Bionic has no robust state locks. Terminate()
+      // reports operation_not_supported from normal caller context instead.
     } break;
 #endif
     default:

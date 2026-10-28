@@ -22,7 +22,11 @@
 #include <csignal>
 #ifndef _WIN32
 #include <dlfcn.h>
+// Bionic's execinfo API starts at API33. This isolated API31 bridge keeps
+// fault addresses and the guest stack without importing unavailable host APIs.
+#if !defined(__ANDROID__) || __ANDROID_API__ >= 33
 #include <execinfo.h>
+#endif
 #include <fcntl.h>
 #include <sys/syscall.h>
 #include <sys/resource.h>
@@ -46,7 +50,14 @@
 #include <unordered_map>
 #include <vector>
 
+#if defined(__ANDROID__)
+// Godot owns the Activity and entry point; this library explicitly readies SDL.
+#define SDL_MAIN_HANDLED 1
+#include <SDL3/SDL_main.h>
+#endif
 #include <SDL3/SDL_events.h>
+#include <SDL3/SDL_hints.h>
+#include <SDL3/SDL_error.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -60,6 +71,9 @@
 #include <rex/chrono/clock.h>
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#if defined(__ANDROID__)
+#include <rex/main_android.h>
+#endif
 
 namespace rex {
 /// Defined in the runtime's logging.cpp and not declared by its header; the crash reporters
@@ -73,6 +87,7 @@ void FlushLogging();
 #include "core/payload_bridge.h"
 #include "core/property_condition.h"
 #include "core/rex_payload_bridge.h"
+#include "refii_payload/payload.h"
 #include <rex/memory/utils.h>
 #include <rex/system/mmio_handler.h>
 #include <rex/system/xmemory.h>
@@ -213,6 +228,47 @@ uint32_t MenuRows(uint32_t index, char* out_name, size_t name_capacity, char* ou
 #include "gui/gui_menu_chunks.h"
 #include "gui/gui_element_state.h"
 #include "gui/gui_told_statements.h"
+
+#if defined(__aarch64__) && !defined(_WIN32)
+/// Copies `size` bytes and returns 1. A leaf with no stack frame, so a fault on either access
+/// can be answered by returning 0 to the caller (`fault::FixupGuardedCopy`). Unaligned
+/// accesses are fine on normal memory, which guest memory is.
+extern "C" int refii_guarded_copy(void* dst, const void* src, std::size_t size);
+extern "C" const char refii_guarded_copy_end[];
+asm(R"(
+    .text
+    .p2align 4
+    .globl refii_guarded_copy
+    .hidden refii_guarded_copy
+    .type refii_guarded_copy, %function
+refii_guarded_copy:
+    cmp x2, #16
+    b.lo 2f
+1:  ldp x3, x4, [x1], #16
+    stp x3, x4, [x0], #16
+    sub x2, x2, #16
+    cmp x2, #16
+    b.hs 1b
+2:  tbz x2, #3, 3f
+    ldr x3, [x1], #8
+    str x3, [x0], #8
+3:  tbz x2, #2, 4f
+    ldr w3, [x1], #4
+    str w3, [x0], #4
+4:  tbz x2, #1, 5f
+    ldrh w3, [x1], #2
+    strh w3, [x0], #2
+5:  tbz x2, #0, 6f
+    ldrb w3, [x1]
+    strb w3, [x0]
+6:  mov w0, #1
+    ret
+    .globl refii_guarded_copy_end
+    .hidden refii_guarded_copy_end
+refii_guarded_copy_end:
+    .size refii_guarded_copy, refii_guarded_copy_end - refii_guarded_copy
+)");
+#endif
 
 namespace {
 /// Guest memory, or nullptr when there is no guest — the check `rex::system::kernel_memory`
@@ -365,7 +421,7 @@ constexpr std::size_t kGuardSlots = 64;
 GuardSlot g_guard_slots[kGuardSlots];
 thread_local GuardSlot* t_guard_slot = nullptr;
 
-GuardSlot* GuardSlotForThisThread() {
+[[maybe_unused]] GuardSlot* GuardSlotForThisThread() {
     if (t_guard_slot != nullptr) {
         return t_guard_slot;
     }
@@ -392,6 +448,21 @@ sigjmp_buf* GuardForFaultingThread() {
     return nullptr;
 }
 
+#if defined(__aarch64__)
+/// The ARM64 guard costs one call. The walks make thousands of small reads a frame, and on
+/// Android a `sigsetjmp` per read (bionic fetches its setjmp cookie and saves every callee-saved
+/// register) plus the dynamic-TLS slot lookup was 37% of the entity walker's samples and a tenth
+/// of the main thread's. `refii_guarded_copy` is a leaf with no frame: a fault inside it is
+/// answered by the handler setting the return value to 0 and the pc to the link register,
+/// which is the same `false` the jump delivered, without a jump target per read.
+bool CopyGuestBytesGuarded(const uint8_t* source, void* out, std::size_t size) {
+    return refii_guarded_copy(out, source, size) != 0;
+}
+
+bool StoreGuestBytesGuarded(uint8_t* target, const void* value, std::size_t size) {
+    return refii_guarded_copy(target, value, size) != 0;
+}
+#else
 bool CopyGuestBytesGuarded(const uint8_t* source, void* out, std::size_t size) {
     GuardSlot* slot = GuardSlotForThisThread();
     if (slot == nullptr) {
@@ -427,6 +498,7 @@ bool StoreGuestBytesGuarded(uint8_t* target, const void* value, std::size_t size
     slot->guard = previous;
     return ok;
 }
+#endif  // __aarch64__
 #endif
 
 /// The first few unreadable reads are worth naming: this is the read that used to take
@@ -680,14 +752,24 @@ namespace crash {
 char g_path[4096] = {};
 
 
-/// Beside the guest log: `ReXApp::OnInitialize` logs to `exe_dir/logs`.
+/// Beside the guest log, using the host's writable app root on Android.
 void ResolvePath() {
     if (g_path[0] != '\0') {
         return;
     }
     std::error_code ec;
+#if defined(__ANDROID__)
+    // Android's /proc/self/exe is app_process64 under /system/bin, so an
+    // executable-relative crash path is unwritable. The host supplies its
+    // private root before initialization; retain stderr fallback if unset.
+    std::filesystem::path dir = RefiiGetAppRoot();
+    if (dir.empty()) {
+        return;
+    }
+#else
     std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
     std::filesystem::path dir = ec ? std::filesystem::current_path(ec) : exe.parent_path();
+#endif
     std::filesystem::create_directories(dir / "logs", ec);
     const std::string path = (dir / "logs" / "refii_crash.log").string();
     std::snprintf(g_path, sizeof(g_path), "%s", path.c_str());
@@ -784,9 +866,15 @@ void WriteRecord(const char* line, uintptr_t pc) {
         DescribeAddress(fd, pc);
     }
     DescribeGuestThread(fd);
+#if !defined(__ANDROID__) || __ANDROID_API__ >= 33
     void* frames[64];
     const int count = ::backtrace(frames, 64);
     ::backtrace_symbols_fd(frames, count, fd);
+#else
+    // A crash diagnostic must not prevent the complete library from loading on
+    // API31. Android resolves strong imports eagerly even before this executes.
+    Append(fd, "  host backtrace unavailable on Android API<33; fault PC and guest frames retained\n");
+#endif
     ::close(fd);
 }
 
@@ -957,7 +1045,28 @@ void Chain(int sig, const struct sigaction& to, siginfo_t* info, void* context) 
     ::signal(sig, SIG_DFL);
 }
 
+#if defined(__aarch64__)
+/// A fault inside `refii_guarded_copy` returns 0 from it: the copy is a leaf, so the link
+/// register still holds its caller. Returning through sigreturn restores the signal mask.
+bool FixupGuardedCopy(void* context) {
+    auto* ucontext = static_cast<ucontext_t*>(context);
+    const uintptr_t pc = static_cast<uintptr_t>(ucontext->uc_mcontext.pc);
+    if (pc < reinterpret_cast<uintptr_t>(&refii_guarded_copy) ||
+        pc >= reinterpret_cast<uintptr_t>(refii_guarded_copy_end)) {
+        return false;
+    }
+    ucontext->uc_mcontext.regs[0] = 0;
+    ucontext->uc_mcontext.pc = ucontext->uc_mcontext.regs[30];
+    return true;
+}
+#endif
+
 void LastResort(int sig, siginfo_t* info, void* context) {
+#if defined(__aarch64__)
+    if ((sig == SIGSEGV || sig == SIGBUS) && FixupGuardedCopy(context)) {
+        return;
+    }
+#endif
     const uintptr_t pc = ProgramCounter(context);
     const uintptr_t address = reinterpret_cast<uintptr_t>(info != nullptr ? info->si_addr : nullptr);
 
@@ -999,9 +1108,16 @@ void LastResort(int sig, siginfo_t* info, void* context) {
 }
 
 /// The exits nothing else reports: a plain `exit()`, SIGTERM/SIGINT/SIGQUIT, and
-/// SIGPIPE/SIGSYS/SIGTRAP/SIGXCPU/SIGXFSZ, whose default action dies without a word.
+/// SIGPIPE/SIGSYS/SIGTRAP/SIGXFSZ/SIGHUP and (not on Android) SIGXCPU, whose default action dies
+/// without a word.
 /// Recorded, then handed on unchanged.
-constexpr int kExtraSignals[] = {SIGTERM, SIGINT, SIGQUIT, SIGPIPE, SIGSYS, SIGTRAP, SIGXCPU,
+// Android Mono uses self-delivered SIGXCPU to resume suspended managed threads.
+// Leave its handler untouched: diagnostic backtraces/logging can take a lock held
+// by a suspended thread, and those GC signals must not consume the fault budget.
+constexpr int kExtraSignals[] = {SIGTERM, SIGINT, SIGQUIT, SIGPIPE, SIGSYS, SIGTRAP,
+#if !defined(__ANDROID__)
+                                 SIGXCPU,
+#endif
                                  SIGXFSZ, SIGHUP};
 
 void OnExit() {
@@ -1287,7 +1403,9 @@ void InstallEmbeddedFailureHandlers() {
     g_previous_unhandled_filter = ::SetUnhandledExceptionFilter(SaveTracyOnUnhandled);
 #endif
 
-#ifndef _WIN32
+#if !defined(_WIN32) && (!defined(__ANDROID__) || __ANDROID_API__ >= 33)
+    // Bionic only supplies execinfo from API33; retain API31's existing PC/guest
+    // frame diagnostics without importing an unavailable backtrace symbol.
     // backtrace() loads libgcc_s on its first call, through the dynamic loader and the
     // heap. Taken here, on a healthy thread, so the call inside a signal handler is a walk
     // and nothing more.
@@ -1298,14 +1416,28 @@ void InstallEmbeddedFailureHandlers() {
 #endif
 
     // abort() raises SIGABRT before it fail-fasts, and unlike terminate this handler is
-    // process-wide — it is the only one that sees a guest worker die. The default action is
-    // restored and the signal re-raised here rather than left to abort()'s own second raise,
-    // so a SIGABRT that arrived any other way ends the process too.
+    // process-wide — it is the only one that sees a guest worker die. On POSIX the handler it
+    // replaced is restored (on Windows, the default) and the signal re-raised here rather than
+    // left to abort()'s own second raise, so a SIGABRT that arrived any other way ends the process
+    // too. Restoring the previous one rather than the default keeps Android's debuggerd in the
+    // chain: its tombstone carries the native backtrace this report cannot take below API 33.
+#ifdef _WIN32
     std::signal(SIGABRT, [](int) {
         ReportEmbeddedFailure("SIGABRT", {});
         std::signal(SIGABRT, SIG_DFL);
         std::raise(SIGABRT);
     });
+#else
+    static struct sigaction previous_abort {};
+    struct sigaction on_abort {};
+    on_abort.sa_handler = [](int) {
+        ReportEmbeddedFailure("SIGABRT", {});
+        sigaction(SIGABRT, &previous_abort, nullptr);
+        std::raise(SIGABRT);
+    };
+    sigemptyset(&on_abort.sa_mask);
+    sigaction(SIGABRT, &on_abort, &previous_abort);
+#endif
 
     std::set_terminate([]() {
         std::string detail;
@@ -5248,6 +5380,16 @@ REFII_HOST_ABI_EXPORT void RefiiHostSetAppRoot(const char* root) {
                                                        : std::filesystem::path{});
 }
 
+/// Selects the user's private Android-compatible game module before guest initialization.
+/// Returns zero with a diagnostic for invalid paths or changes after a load attempt.
+REFII_HOST_ABI_EXPORT int RefiiHostSetGameModulePath(const char* path, char* out,
+                                                   std::size_t capacity) {
+    std::string error;
+    const bool success = refii::payload::SetModulePath(path != nullptr ? path : "", error);
+    WriteOut(success ? "game module path selected" : error, out, capacity);
+    return success ? 1 : 0;
+}
+
 // ---------------------------------------------------------------------------------
 // Audio
 // ---------------------------------------------------------------------------------
@@ -5923,19 +6065,8 @@ REFII_HOST_ABI_EXPORT void RefiiHostGuestTickPump(uint64_t* out_ticks, uint64_t*
     refii::vfs::GuestTickPumpCounters(out_ticks, out_drained, out_queued);
 }
 
-/// Publishes one controller's state, in XInput terms, for the guest to read.
-///
-/// Godot owns input the same way it owns the window: it reads the real device and pushes
-/// a snapshot here, and the guest's XInput calls are served from it. Translating to Xbox
-/// vocabulary happens once, on the way in.
-///
-/// `buttons` is a mask of X_INPUT_GAMEPAD_* bits; triggers are 0..255; thumbsticks are
-/// -32768..32767 with +Y up, which is the Xbox convention and NOT Godot's screen-space
-/// one — the caller flips it.
-///
-/// Safe to call every frame from the host's main thread while the guest reads on its
-/// own; the slot is a seqlock, so neither side blocks the other.
-REFII_HOST_ABI_EXPORT void RefiiHostSetControllerState(uint32_t user_index, int connected, uint32_t buttons,
+/// Converts the host's arguments to a clamped ControllerState.
+static refii::host::ControllerState HostControllerState(int connected, uint32_t buttons,
                                  uint32_t left_trigger, uint32_t right_trigger,
                                  int32_t thumb_lx, int32_t thumb_ly, int32_t thumb_rx,
                                  int32_t thumb_ry) {
@@ -5955,7 +6086,44 @@ REFII_HOST_ABI_EXPORT void RefiiHostSetControllerState(uint32_t user_index, int 
     state.thumb_rx = clamp_axis(thumb_rx);
     state.thumb_ry = clamp_axis(thumb_ry);
 
-    refii::host::PublishControllerState(user_index, state);
+    return state;
+}
+
+/// Publishes one controller's state, in XInput terms, for the guest to read.
+///
+/// Godot owns input the same way it owns the window: it reads the real device and pushes
+/// a snapshot here, and the guest's XInput calls are served from it. Translating to Xbox
+/// vocabulary happens once, on the way in.
+///
+/// `buttons` is a mask of X_INPUT_GAMEPAD_* bits; triggers are 0..255; thumbsticks are
+/// -32768..32767 with +Y up, which is the Xbox convention and NOT Godot's screen-space
+/// one — the caller flips it.
+///
+/// Safe to call every frame from the host's main thread while the guest reads on its
+/// own. Desktop retains its seqlock; Android takes a tiny native snapshot lock so the
+/// state and optional consumption tag have a coherent C++-legal lifetime.
+REFII_HOST_ABI_EXPORT void RefiiHostSetControllerState(uint32_t user_index, int connected, uint32_t buttons,
+                                 uint32_t left_trigger, uint32_t right_trigger,
+                                 int32_t thumb_lx, int32_t thumb_ly, int32_t thumb_rx,
+                                 int32_t thumb_ry) {
+    refii::host::PublishControllerState(user_index, HostControllerState(connected, buttons,
+        left_trigger, right_trigger, thumb_lx, thumb_ly, thumb_rx, thumb_ry));
+}
+
+/// Android physical phase publication. The tag is independent of analog packet updates;
+/// acknowledgment is emitted only after InputSystem actually copies a non-null state.
+REFII_HOST_ABI_EXPORT void RefiiHostSetControllerStateTracked(uint32_t user_index, int connected,
+                                 uint32_t buttons, uint32_t left_trigger, uint32_t right_trigger,
+                                 int32_t thumb_lx, int32_t thumb_ly, int32_t thumb_rx,
+                                 int32_t thumb_ry, uint64_t receipt_token) {
+    refii::host::PublishControllerStateTracked(user_index, HostControllerState(connected, buttons,
+        left_trigger, right_trigger, thumb_lx, thumb_ly, thumb_rx, thumb_ry), receipt_token);
+}
+
+/// Last actual successful non-null state-copy receipt, excluding capabilities,
+/// vibration, NULL queries and native owner service-step counts.
+REFII_HOST_ABI_EXPORT uint64_t RefiiHostGetControllerReadReceipt(uint32_t user_index) {
+    return refii::host::ControllerReadReceipt(user_index);
 }
 
 /// Copies the current Bink video frame out of guest memory as RGBA8.
@@ -20949,10 +21117,21 @@ REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const 
     }
 
     try {
+#if defined(__ANDROID__)
+        // Optional Android services must exist before the actual runtime creates guest memory/threads.
+        rex::InitializeAndroidPlatform();
+#endif
 #ifdef __linux__
         ReclaimAbandonedGuestArenas();
 #endif
         ApplyEmbeddedEnvironment();
+#if defined(__ANDROID__)
+        // Godot owns the Android Activity and rendering. The embedded guest only
+        // needs SDL's event queue, so avoid initializing SDL's separate Java host.
+        SDL_SetHint("SDL_VIDEO_DRIVER", "dummy");
+        SDL_SetHint("SDL_AUDIO_DRIVER", "dummy");
+        SDL_SetMainReady();
+#endif
 
         // argv[0] then the flags. The game directory goes as an explicit flag, not
         // positionally: embedded, GetExecutableFolder() is the HOST's directory, so the
@@ -20975,7 +21154,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const 
 
         hosted.context = std::make_unique<rex::ui::SDLWindowedAppContext>();
         if (!hosted.context->Initialize()) {
-            hosted.status = "SDL context init failed";
+            hosted.status = std::string("SDL context init failed: ") + SDL_GetError();
             WriteOut(hosted.status, out, capacity);
             return 0;
         }

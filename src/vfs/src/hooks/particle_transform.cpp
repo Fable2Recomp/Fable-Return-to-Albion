@@ -60,7 +60,11 @@ REX_EXTERN(rex_CParticleSystemEntityInstance_SetPositionAndVelocity) {
   REX_FUNC_PROLOGUE();
 
   // All four lanes of v1 in the recompiler's register order; the host decides which is x.
+  // Only a coverage measure (the host places effects from `node+0x20`), so not on Android,
+  // where the guest is CPU-bound and a hash probe plus a shared counter per call is its cost.
+#if !defined(__ANDROID__)
   refii::vfs::NoteFxPosition(ctx.r3.u32, ctx.v1.f32);
+#endif
 
   // Placed by a spell's own update: one of that spell's effects (spell_fx_owner.cpp).
   refii::vfs::NoteSpellFxInstancePlaced(ctx.r3.u32);
@@ -79,10 +83,13 @@ REX_EXTERN(rex_CParticleSystemEntityInstance_SetOrientation) {
 
   // r4 then r5, high word first: `sub_83228D78` stores r4 at `emitter+0x10` and r5 at
   // `emitter+0x18`, so the four components are the register halves in that order.
+  // The same coverage measure as the position, so not on Android either.
+#if !defined(__ANDROID__)
   const uint32_t lanes[4] = {
       static_cast<uint32_t>(ctx.r4.u64 >> 32), static_cast<uint32_t>(ctx.r4.u64),
       static_cast<uint32_t>(ctx.r5.u64 >> 32), static_cast<uint32_t>(ctx.r5.u64)};
   refii::vfs::NoteFxOrientation(ctx.r3.u32, lanes);
+#endif
 
   REFII_VFS_NATIVE_PASSTHROUGH(rex_CParticleSystemEntityInstance_SetOrientation);
 }
