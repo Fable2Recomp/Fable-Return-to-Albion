@@ -148,6 +148,12 @@ _RENDER_LEVERS = {
     "positionalAtlas": {"type": "integer",
                         "description": "Omni/spot shadow atlas edge in texels; default 4096."},
     "lightBudget": {"type": "integer", "description": "Placed lights kept lit; 0 is all."},
+    "shaderCeiling": {"type": ["object", "string"],
+                      "description": "Per category (props, trees, terrain, entities; `all` fills the rest): off, "
+                                     "flat (constant unshaded colour, the vertex kept only where it moves), flatcut "
+                                     "(flat, alpha tests kept) or hide. `\"all\":\"unshaded\"` is Godot's own unshaded "
+                                     "debug draw (materials still run, lights and shadows go). Each request states "
+                                     "the whole ceiling; \"off\" restores the original materials."},
     "lightRangeScale": {"type": "number", "description": "Every placed light's reach, scaled."},
     "poseFullRate": {"type": "number",
                      "description": "Radius in metres inside which rigs pose every step."},

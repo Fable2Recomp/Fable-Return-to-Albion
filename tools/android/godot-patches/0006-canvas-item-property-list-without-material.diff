@@ -1,0 +1,17 @@
+diff --git a/scene/main/canvas_item.cpp b/scene/main/canvas_item.cpp
+index 8428243..adc5227 100644
+--- a/scene/main/canvas_item.cpp
++++ b/scene/main/canvas_item.cpp
+@@ -721,7 +721,11 @@ void CanvasItem::_get_property_list(List<PropertyInfo> *p_list) const {
+ #endif
+ 
+ 	List<PropertyInfo> pinfo;
+-	RS::get_singleton()->canvas_item_get_instance_shader_parameter_list(get_canvas_item(), &pinfo);
++	// An item without a material of its own has no instance parameters: skip the server's list,
++	// which is a synchronous round trip to the render thread under the separate thread model.
++	if (material.is_valid()) {
++		RS::get_singleton()->canvas_item_get_instance_shader_parameter_list(get_canvas_item(), &pinfo);
++	}
+ 
+ 	for (PropertyInfo &pi : pinfo) {
+ 		bool has_def_value = false;

@@ -176,9 +176,10 @@ def sockets(_args):
     "Every guest pad's rumble: the joypad holding it, the motor pair the guest states this "
     "frame through XamInputSetState (0..65535, left = low-frequency), and what the joypad was "
     "last told (running, weak, strong), with both switches: guestSwitch (byte_8331924F, the "
-    "Controls fold's Controller Vibration page) and launcherSwitch (controller_vibration). A "
-    "hit that leaves left/right at 0 never reached the guest's rumble; a non-zero pair with "
-    "running=false is the host side.",
+    "Controls fold's Controller Vibration page) and launcherSwitch (controller_vibration), and "
+    "handheld (running, amplitude): pad 0 on the phone's vibrator when played by touch on "
+    "Android. A hit that leaves left/right at 0 never reached the guest's rumble; a non-zero "
+    "pair with running=false is the host side.",
 )
 def rumble(_args):
     return ask({"op": "rumble"})

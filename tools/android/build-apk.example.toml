@@ -1,0 +1,39 @@
+# Copy this file outside the checkout (for example ~/.config/refii-android/build-apk.toml),
+# fill in the paths, and run:
+#   python tools/android/build-apk.py --config ~/.config/refii-android/build-apk.toml --output ../android-local/release-01
+# Relative paths are read against this file's own folder. See docs/android.md, "Build the APK".
+
+# Godot 4.7.1 .NET editor, and the patched Android templates (tools/android/godot-patches).
+godot = "/tools/godot/Godot_v4.7.1-stable_mono_linux.x86_64"
+templates = "/tools/godot-templates-patched"
+# Only needed when `templates` does not exist yet: build-apk.py builds it from these.
+# godot_source = "/src/godot-4.7.1-stable"
+# official_templates = "/tools/godot-templates-4.7.1-mono"
+
+dotnet = "/usr/share/dotnet"                     # .NET 9 SDK with the android workload
+jdk = "/usr/lib/jvm/java-17-openjdk-amd64"
+sdk = "/opt/android-sdk"                         # platform 36, build-tools 36.1.0
+ndk = "/opt/android-sdk/ndk/28.2.13676358"       # r28c
+
+# The desktop ReXGlue generator built from this checkout's SDK (a desktop build's rexglued).
+host_codegen = "/src/refii/out/build/linux-amd64-release/rexglue-sdk-shadow/out/linux-amd64/rexglued"
+# For a worktree without initialized submodules: initialized SDK and zlib trees to read.
+# sdk_source = "/src/refii/rexglue-net/rexglue-sdk"
+# zlib_source = "/src/refii/src/extractor/thirdparty/zlib"
+
+# An earlier phone compiler bundle; its prebuilt phone tools are reused (docs/android.md).
+phone_tools_from = "/builds/earlier-build-apk-output/compiler-bundle"
+
+# Signing. Leave keystore out for a new local debug key (it cannot update an APK signed
+# with another key). passwords_json holds REFII_ANDROID_STORE_PASSWORD and
+# REFII_ANDROID_KEY_PASSWORD; those environment variables work too.
+# keystore = "~/.config/refii-android/release.keystore"
+# passwords_json = "~/.config/refii-android/release-passwords.json"
+# alias = "androiddebugkey"
+
+package = "org.refii.androidpresentationprobe"   # the previews' package: updates keep saves
+# cache_root = "/cache/refii-android"            # gradle-home/ and nuget-packages/
+# min_sdk = 31
+# target_sdk = 36
+# rendering_method = "mobile"
+# jobs = 12

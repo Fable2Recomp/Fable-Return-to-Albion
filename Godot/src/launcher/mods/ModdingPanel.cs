@@ -36,6 +36,12 @@ public partial class ModdingPanel : VBoxContainer
 	private List<ModDependencyProblem> _dependencyProblems = new();
 	private readonly Dictionary<string, ModTally> _tallies = new();
 
+	/// <summary>
+	/// The Android launcher. The phone has no folder to open, no editor and no Mod Studio, and its
+	/// phone compiler builds no mod's native code yet, so those mods cannot be enabled there.
+	/// </summary>
+	private static bool Phone => !Engine.IsEditorHint() && OS.HasFeature("android");
+
 	public void Configure(Font? font, int fontSize, SmartStyle style)
 	{
 		_font = font;
@@ -67,10 +73,15 @@ public partial class ModdingPanel : VBoxContainer
 
 		_rootLabel = MakeLabel(string.Empty);
 		_rootLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+		_rootLabel.Visible = !Phone;
 		AddChild(_rootLabel);
 
-		Label help = MakeLabel(
-			"Install a mod package (.f2mod) from a file or a link, or drop packages into this " +
+		Label help = MakeLabel(Phone
+			? "Install a mod package (.f2mod) from this phone's storage; the mods that come with " +
+			  "the app are already listed. A mod is installed disabled: tick it to turn it on. " +
+			  "Higher in the list wins a conflict. Changes apply the next time the game starts. " +
+			  "Mods with native code cannot run on the phone yet."
+			: "Install a mod package (.f2mod) from a file or a link, or drop packages into this " +
 			"folder. A mod is installed disabled: tick it to turn it on. Enabled mods override " +
 			"matching game records; higher in the list wins a conflict. Changes apply the next " +
 			"time the game starts.");
@@ -86,6 +97,15 @@ public partial class ModdingPanel : VBoxContainer
 		installFile.TooltipText = "Install a .f2mod package from this computer.";
 		installFile.Pressed += OnInstallFromFile;
 		installRow.AddChild(installFile);
+
+		if (Phone)
+		{
+			// The refresh rides on the install row; the rest of the desktop's buttons have nothing
+			// to open on a phone.
+			installRow.AddChild(RefreshButton());
+			AddStatusAndList();
+			return;
+		}
 
 		var installUrl = new Button { Text = "Install from URL…" };
 		Apply(installUrl);
@@ -111,14 +131,7 @@ public partial class ModdingPanel : VBoxContainer
 		create.Pressed += OnNewMod;
 		row.AddChild(create);
 
-		var refresh = new Button { Text = "Refresh" };
-		Apply(refresh);
-		refresh.Pressed += () =>
-		{
-			_statusMessage = string.Empty;
-			RefreshState();
-		};
-		row.AddChild(refresh);
+		row.AddChild(RefreshButton());
 
 		// THE EDITOR OPENS THIS INSTALL. It is the same project the game ships as, pointed at
 		// the player's own `assets/`, so a mod exported there is the mod listed above.
@@ -127,6 +140,24 @@ public partial class ModdingPanel : VBoxContainer
 		_editorButton.Pressed += OnEditor;
 		row.AddChild(_editorButton);
 
+		AddStatusAndList();
+	}
+
+	private Button RefreshButton()
+	{
+		var refresh = new Button { Text = "Refresh" };
+		Apply(refresh);
+		refresh.Pressed += () =>
+		{
+			_statusMessage = string.Empty;
+			RefreshState();
+		};
+		return refresh;
+	}
+
+	/// <summary>The status line and the scrolling list of mods, under the buttons.</summary>
+	private void AddStatusAndList()
+	{
 		_statusLabel = MakeLabel(string.Empty);
 		_statusLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
 		AddChild(_statusLabel);
@@ -309,6 +340,12 @@ public partial class ModdingPanel : VBoxContainer
 	/// <summary>Picks a .f2mod on this computer and shows what it is before installing it.</summary>
 	private void OnInstallFromFile()
 	{
+		if (Phone)
+		{
+			OnInstallFromPhone();
+			return;
+		}
+
 		var picker = new FileDialog
 		{
 			FileMode = FileDialog.FileModeEnum.OpenFile,
@@ -327,6 +364,36 @@ public partial class ModdingPanel : VBoxContainer
 		};
 		DialogHost().AddChild(picker);
 		picker.PopupCentered();
+	}
+
+	/// <summary>
+	/// Picks a .f2mod in Android's document picker, copies it into <c>.cache/downloads/</c> (the
+	/// picker gives a content URI, not a path) and shows what it is before installing it.
+	/// </summary>
+	private void OnInstallFromPhone()
+	{
+		Error error = DisplayServer.FileDialogShow("Install Mod Package", "", "", false,
+			DisplayServer.FileDialogMode.OpenFile,
+			// A .f2mod has no MIME type Android knows: show every document and let the installer check it.
+			new[] { "*.f2mod;Refii mod package;*/*" },
+			Callable.From<bool, string[], int>((selected, paths, _) =>
+			{
+				if (!selected || paths.Length != 1)
+				{
+					return;
+				}
+
+				string uri = paths[0];
+				Callable.From(() => ConfirmInstall(
+					Refii.AndroidRuntime.AndroidModPicker.Fetch(uri, _modsRoot,
+						target => Refii.AndroidRuntime.AndroidModPicker.CopyDocument(uri, target)),
+					downloaded: true)).CallDeferred();
+			}));
+		if (error != Error.Ok)
+		{
+			_statusMessage = "The Android document picker could not open: " + error;
+			Rebuild();
+		}
 	}
 
 	/// <summary>
@@ -720,7 +787,7 @@ public partial class ModdingPanel : VBoxContainer
 
 		var check = new CheckBox { ButtonPressed = enabled };
 		Apply(check);
-		check.CustomMinimumSize = new Vector2(24, 24);
+		check.CustomMinimumSize = Hit(new Vector2(24, 24));
 		ModInstall captured = mod;
 		check.Toggled += pressed =>
 		{
@@ -735,6 +802,14 @@ public partial class ModdingPanel : VBoxContainer
 					Rebuild();
 					return;
 				}
+			}
+
+			if (pressed && Phone && _native.ContainsKey(captured.Name))
+			{
+				check.SetPressedNoSignal(false);
+				_statusMessage = $"'{captured.Name}' has native code, which the phone cannot build into the game yet.";
+				Rebuild();
+				return;
 			}
 
 			if (pressed && _native.TryGetValue(captured.Name, out ModNativeSources? native) &&
@@ -779,7 +854,7 @@ public partial class ModdingPanel : VBoxContainer
 
 		var up = new Button { Text = "▲", Disabled = rowIndex == 0 };
 		Apply(up);
-		up.CustomMinimumSize = new Vector2(20, 20);
+		up.CustomMinimumSize = Hit(new Vector2(20, 20));
 		int upIndex = rowIndex;
 		up.Pressed += () =>
 		{
@@ -794,7 +869,7 @@ public partial class ModdingPanel : VBoxContainer
 
 		var down = new Button { Text = "▼", Disabled = rowIndex >= totalRows - 1 };
 		Apply(down);
-		down.CustomMinimumSize = new Vector2(20, 20);
+		down.CustomMinimumSize = Hit(new Vector2(20, 20));
 		int downIndex = rowIndex;
 		down.Pressed += () =>
 		{
@@ -871,7 +946,17 @@ public partial class ModdingPanel : VBoxContainer
 				string.Equals(conflict.Second, mod.Name, StringComparison.OrdinalIgnoreCase)).ToList()
 			: new List<ModNativeConflict>();
 		_tallies.TryGetValue(mod.Name, out ModTally? tally);
-		if (enabled && nativeSources != null && !NativeModConsent.IsGranted(nativeSources))
+		if (Phone && nativeSources != null)
+		{
+			// The phone compiler builds refii's own hooks only, so a native mod's code would be
+			// missing from the game while its data and Lua loaded around it.
+			var phoneLabel = MakeLabel("⛔ not on phone");
+			phoneLabel.AddThemeColorOverride("font_color", new Color(0.95f, 0.3f, 0.25f));
+			phoneLabel.HorizontalAlignment = HorizontalAlignment.Center;
+			phoneLabel.TooltipText = "This mod has native code, which the phone cannot build into the game yet.";
+			statusControl = phoneLabel;
+		}
+		else if (enabled && nativeSources != null && !NativeModConsent.IsGranted(nativeSources))
 		{
 			// ENABLED BUT NOT CONSENTED: enabled before it carried native code, or before an update
 			// changed it. Its data and Lua load; its native code is withheld from the build until
@@ -993,7 +1078,7 @@ public partial class ModdingPanel : VBoxContainer
 
 		var deleteBtn = new Button { Text = "🗑" };
 		Apply(deleteBtn);
-		deleteBtn.CustomMinimumSize = new Vector2(28, 22);
+		deleteBtn.CustomMinimumSize = Hit(new Vector2(28, 22));
 		deleteBtn.TooltipText = $"Delete '{mod.Name}.f2mod' package.";
 		ModInstall targetMod = mod;
 		deleteBtn.Pressed += () => OnDeleteMod(targetMod);
@@ -1082,6 +1167,9 @@ public partial class ModdingPanel : VBoxContainer
 			control.MouseDefaultCursorShape = CursorShape.PointingHand;
 		}
 	}
+
+	/// <summary>A row control's size, grown on the phone to a fingertip (twice the text height).</summary>
+	private Vector2 Hit(Vector2 size) => Phone ? size.Max(new Vector2(_fontSize * 2, _fontSize * 2)) : size;
 
 	private Label MakeLabel(string text)
 	{

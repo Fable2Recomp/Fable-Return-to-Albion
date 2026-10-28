@@ -1,0 +1,16 @@
+config_version=5
+[application]
+config/name="Refii isolated production shader regression"
+run/main_scene="res://main.tscn"
+run/flush_stdout_on_print=true
+[display]
+window/size/viewport_width=64
+window/size/viewport_height=64
+window/size/window_width_override=64
+window/size/window_height_override=64
+[rendering]
+renderer/rendering_method="mobile"
+renderer/rendering_method.mobile="mobile"
+environment/defaults/default_clear_color=Color(0, 0, 0, 1)
+[debug]
+file_logging/enable_file_logging=false
