@@ -60,4 +60,32 @@ public static class Engine_RdRetire
         }
         Pending.RemoveRange(kept, Pending.Count - kept);
     }
+
+    /// <summary>
+    /// Runs <paramref name="release"/> where the device's frees are legal: at once on the render
+    /// thread, otherwise queued behind everything already sent to it.
+    /// </summary>
+    /// <remarks>
+    /// `RenderingDevice.free_rid` refuses every thread but the render thread
+    /// (`ERR_RENDER_THREAD_GUARD`). A CompositorEffect's predelete runs on whichever thread drops
+    /// its last reference, normally the main thread: with `thread_model = 2` its frees did
+    /// nothing but print an error, and the objects leaked (so did a predelete from the
+    /// finalizer thread under Safe). Queued, the release also runs after an `Initialise` still
+    /// waiting on the queue, so it frees what that made.
+    ///
+    /// THE CALLABLE WRAPS A CLOSURE, NOT THE EFFECT'S METHOD: a Callable whose target is the
+    /// GodotObject being deleted is dropped as a call on a freed instance. The release must touch
+    /// only managed fields, never the dying object's Godot API, and must ask for the device
+    /// again (null once it is torn down). Nothing waits for it: a predelete at shutdown can come
+    /// after the render thread has exited, and a sync would never return.
+    /// </remarks>
+    public static void OnRenderThread(System.Action release)
+    {
+        if (RenderingServer.IsOnRenderThread())
+        {
+            release();
+            return;
+        }
+        RenderingServer.CallOnRenderThread(Callable.From(() => release()));
+    }
 }

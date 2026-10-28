@@ -50,8 +50,22 @@ public static class Engine_GameHash
 	/// UPPER_SNAKE_CASE by convention only — this does not fold case, so
 	/// "gui_back" and "GUI_BACK" are different keys.
 	/// </summary>
-	public static uint Fnv1(string value) =>
-		Fnv1(System.Text.Encoding.UTF8.GetBytes(value));
+	/// <remarks>
+	/// Encoded into the stack for a short value (the HUD hashes a few element names every
+	/// frame); a long one still gets a byte array.
+	/// </remarks>
+	public static uint Fnv1(string value)
+	{
+		const int StackBytes = 256;
+		if (value.Length <= StackBytes / 3)
+		{
+			Span<byte> buffer = stackalloc byte[StackBytes];
+			int written = System.Text.Encoding.UTF8.GetBytes(value, buffer);
+			return Fnv1(buffer[..written]);
+		}
+
+		return Fnv1(System.Text.Encoding.UTF8.GetBytes(value));
+	}
 
 	/// <summary>FNV-1 with ASCII case folding, mirroring LHUtil_FNVHashLower.</summary>
 	public static uint Fnv1Lower(string value) => Fnv1(value.ToLowerInvariant());

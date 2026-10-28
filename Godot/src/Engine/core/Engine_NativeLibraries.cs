@@ -37,7 +37,10 @@ public static class Engine_NativeLibraries
 	private static readonly object Gate = new();
 	private static readonly Dictionary<string, string> Loaded = new(StringComparer.Ordinal);
 	private static bool _installed;
-	private static bool _published;
+	private static volatile bool _published;
+
+	/// <summary>Held for the whole publication, so a second first-resolve waits for the paths.</summary>
+	private static readonly object PublishGate = new();
 
 	/// <summary>
 	/// The file a library was resolved from, once it has been. Godot loads the host bridge a
@@ -179,15 +182,28 @@ public static class Engine_NativeLibraries
 	/// Adds the project's build directories, once. Kept lazy so resolution does not
 	/// depend on the caller having mounted anything first.
 	/// </summary>
+	/// <remarks>
+	/// PUBLISHED ONLY ONCE THE PATHS ARE IN. Marking it first let a second thread's first
+	/// resolve — GameAudio's, while the shader warm-up decodes XMA on a worker — search an
+	/// empty list and throw DllNotFoundException, which left the game with no sound.
+	/// </remarks>
 	private static void EnsurePublished()
 	{
-		lock (Gate)
+		if (_published)
+			return;
+
+		lock (PublishGate)
 		{
 			if (_published)
 				return;
+
+			PublishSearchPaths();
 			_published = true;
 		}
+	}
 
+	private static void PublishSearchPaths()
+	{
 		// Every build output under out/build. No config is hardcoded — they vary by
 		// platform and by debug/netplay — and the libraries land in different
 		// subdirectories per target, so all three are tried.

@@ -23,17 +23,7 @@ public static class Engine_GpuPasses
 	/// <summary>Bytes per packed name handed to the sink, NUL padded.</summary>
 	public const int NameStride = 48;
 
-	private sealed class Pass
-	{
-		public double AverageMs;
-		public double PeakMs;
-		public double LastMs;
-		public int Order;
-		public long LastFrame;
-	}
-
-	private static readonly Dictionary<string, Pass> Passes = new();
-	private static readonly Refii.Core.Engine_TracedLock Gate = new("GPU passes");
+	private static readonly GpuPassHistory History = new();
 
 	/// <summary>(packed names, stride, cpu times, gpu ns, count) for the finished frame.</summary>
 	public static System.Action<byte[], uint, long[], long[], int>? Sink;
@@ -60,11 +50,11 @@ public static class Engine_GpuPasses
 	/// <summary>Frames between re-reads of an unchanged pass list; see SampleOnRenderThread.</summary>
 	private const long NameRefreshFrames = 600;
 
-	/// <summary>True once a table has been read: the engine is capturing timestamps.</summary>
-	public static bool Available { get; private set; }
+	/// <summary>True once a whole completed timestamp frame has been published.</summary>
+	public static bool Available => History.Available;
 
 	/// <summary>The finished frame's GPU span, first timestamp to last, in milliseconds.</summary>
-	public static double LastTotalMs { get; private set; }
+	public static double LastTotalMs => History.LastTotalMs;
 
 	private static readonly Callable OnRenderThread = Callable.From(SampleOnRenderThread);
 
@@ -97,7 +87,6 @@ public static class Engine_GpuPasses
 		}
 
 		_lastFrame = frame;
-		Available = true;
 		++_frames;
 
 		if (count > _cpu.Length)
@@ -179,81 +168,16 @@ public static class Engine_GpuPasses
 			}
 		}
 
-		for (int k = 0; k < _frameOrder.Count; ++k)
-		{
-			Record(_frameOrder[k], _frameSums[_frameOrder[k]], k);
-		}
-
-		LastTotalMs = (_gpu[count - 1] - _gpu[0]) / NanosecondsPerMs;
-		Record("total", LastTotalMs, int.MaxValue);
+		History.PublishCompletedFrame(frame, _frameOrder, _frameSums,
+			(_gpu[count - 1] - _gpu[0]) / NanosecondsPerMs);
 		Sink?.Invoke(_names, NameStride, _cpu, _gpu, (int)count);
 	}
 
-	private static void Record(string name, double ms, int order)
-	{
-		using (Gate.Hold())
-		{
-			if (!Passes.TryGetValue(name, out Pass? pass))
-			{
-				pass = new Pass { AverageMs = ms, Order = order };
-				Passes[name] = pass;
-			}
-
-			pass.LastMs = ms;
-			pass.LastFrame = _frames;
-			pass.Order = order;
-			pass.AverageMs += (ms - pass.AverageMs) * 0.05;
-			pass.PeakMs = System.Math.Max(pass.PeakMs * 0.98, ms);
-		}
-	}
-
 	/// <summary>
-	/// The passes in the engine's own order, each {avgMs, peakMs, lastMs}, with the total last.
-	/// Says how to switch the capture on when the engine is not producing one.
+	/// A detached, completed-frame report with rolling timings, actual captured IDs and current/stale
+	/// markers. Historical rows remain visible for 300 publications; only current interval lastMs
+	/// values, excluding total, belong in a latest-frame sum. No mutable rolling row escapes its gate.
 	/// </summary>
-	public static Dictionary<string, object?> Report()
-	{
-		var report = new Dictionary<string, object?>
-		{
-			["available"] = Available,
-			["frames"] = _frames,
-		};
-
-		if (!Available)
-		{
-			report["note"] = "the engine is not capturing pass timestamps — set gpu_profile = true " +
-				"in refii.toml (the launcher passes --gpu-profile) and relaunch";
-			return report;
-		}
-
-		var ordered = new List<KeyValuePair<string, Pass>>();
-		using (Gate.Hold())
-		{
-			foreach (KeyValuePair<string, Pass> entry in Passes)
-			{
-				// A pass the engine stopped emitting drops out rather than lingering at its last value.
-				if (_frames - entry.Value.LastFrame < 300)
-				{
-					ordered.Add(entry);
-				}
-			}
-		}
-
-		ordered.Sort((a, b) => a.Value.Order.CompareTo(b.Value.Order));
-		var passes = new List<Dictionary<string, object?>>(ordered.Count);
-		foreach ((string name, Pass pass) in ordered)
-		{
-			passes.Add(new Dictionary<string, object?>
-			{
-				["pass"] = name,
-				["avgMs"] = System.Math.Round(pass.AverageMs, 3),
-				["peakMs"] = System.Math.Round(pass.PeakMs, 3),
-				["lastMs"] = System.Math.Round(pass.LastMs, 3),
-			});
-		}
-
-		report["passes"] = passes;
-		report["lastTotalMs"] = System.Math.Round(LastTotalMs, 3);
-		return report;
-	}
+	/// <returns>A fresh JSON-compatible snapshot; callers may mutate it without changing history.</returns>
+	public static Dictionary<string, object?> Report() => History.Report();
 }

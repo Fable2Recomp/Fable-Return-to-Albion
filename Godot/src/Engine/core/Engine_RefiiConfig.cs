@@ -180,6 +180,17 @@ public static class Engine_RefiiConfig
     /// </summary>
     public static event Action<string, string>? OnConfigChanged;
 
+    /// <summary>Bumped on every live override, so a merge is rebuilt only when either side changed.</summary>
+    private static int _overridesVersion;
+    private static IReadOnlyDictionary<string, string>? _merged;
+    private static IReadOnlyDictionary<string, string>? _mergedBase;
+    private static int _mergedVersion = -1;
+
+    /// <remarks>
+    /// The merge is kept for the same base and overrides: some readers ask every frame (the shadow
+    /// reach scale), and once any live override existed each ask built a new merged dictionary of
+    /// the whole config.
+    /// </remarks>
     private static IReadOnlyDictionary<string, string> ApplyOverrides(IReadOnlyDictionary<string, string> baseValues)
     {
         lock (_cacheGate)
@@ -187,6 +198,11 @@ public static class Engine_RefiiConfig
             if (_overrides.Count == 0)
             {
                 return baseValues;
+            }
+
+            if (_merged is not null && ReferenceEquals(_mergedBase, baseValues) && _mergedVersion == _overridesVersion)
+            {
+                return _merged;
             }
 
             var merged = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -198,6 +214,10 @@ public static class Engine_RefiiConfig
             {
                 merged[k] = v;
             }
+
+            _merged = merged;
+            _mergedBase = baseValues;
+            _mergedVersion = _overridesVersion;
             return merged;
         }
     }
@@ -255,6 +275,7 @@ public static class Engine_RefiiConfig
         lock (_cacheGate)
         {
             _overrides[def.Name] = trimmed;
+            ++_overridesVersion;
         }
 
         Engine_Switches.Invalidate();
