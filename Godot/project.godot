@@ -17,6 +17,7 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 config/name="Fable 2 Launcher"
 config/description="Rebuild of the refii launcher. Dependencies remain native DLLs."
 run/main_scene="res://main.tscn"
+run/main_scene.android="res://src/android/AndroidGame.tscn"
 config/project_settings_override="user://renderer.cfg"
 config/features=PackedStringArray("4.7", "C#", "Forward Plus")
 run/flush_stdout_on_print=true
@@ -40,6 +41,8 @@ file_logging/max_log_files=10
 
 window/size/viewport_width=1280
 window/size/viewport_height=760
+window/size/viewport_width.android=1560
+window/size/viewport_height.android=720
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 
@@ -63,7 +66,10 @@ banks/game_data_root="res://../out/build/linux-amd64-debug/bin/assets/game/data"
 
 [rendering]
 
+renderer/rendering_method.android="forward_plus"
+rendering_device/driver.android="vulkan"
 rendering_device/staging_buffer/block_size_kb=1024
+rendering_device/pipeline_cache/save_chunk_size_mb.android=0.25
 rendering_device/staging_buffer/max_size_mb=256
 rendering_device/staging_buffer/texture_upload_region_size_px=128
 rendering_device/d3d12/max_resource_descriptors=1000000
@@ -135,11 +141,55 @@ atmos_fog_on={
 "type": "bool",
 "value": false
 }
+atmos_near_ready={
+"type": "bool",
+"value": false
+}
+atmos_near_t0={
+"type": "vec3",
+"value": Vector3(1, 1, 1)
+}
+atmos_near_t1={
+"type": "vec3",
+"value": Vector3(1, 1, 1)
+}
+atmos_near_t2={
+"type": "vec3",
+"value": Vector3(1, 1, 1)
+}
+atmos_near_t3={
+"type": "vec3",
+"value": Vector3(1, 1, 1)
+}
+atmos_near_t4={
+"type": "vec3",
+"value": Vector3(1, 1, 1)
+}
+fable_near_fog_precompute={
+"type": "bool",
+"value": true
+}
+fable_sparse_terrain_work={
+"type": "bool",
+"value": true
+}
 atmos_factors={
 "type": "vec2",
 "value": Vector2(1, 1)
 }
+fable_zero_specular_work={
+"type": "bool",
+"value": true
+}
+fable_zero_cliff_work={
+"type": "bool",
+"value": true
+}
 fable_light_debug={
+"type": "int",
+"value": 0
+}
+fable_shader_cost_diagnostic={
 "type": "int",
 "value": 0
 }

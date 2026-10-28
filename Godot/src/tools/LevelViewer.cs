@@ -41,6 +41,12 @@ public partial class LevelViewer : Node3D
 	private Node3D? _region;
 	private MeshInstance3D? _labHero;
 
+	/// <summary>Reads explicit preview part paths without depending on an unshipped developer-only character recipe.</summary>
+	/// <param name="paths">Semicolon-separated virtual model paths from REFII_LEVEL_HERO_PARTS.</param>
+	/// <returns>Trimmed nonempty paths; an unset recipe provides no invented game parts.</returns>
+	internal static string[] ParseHeroPreviewParts(string paths) =>
+		paths.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+
 	private float _yaw = 0.6f;
 	private float _pitch = 0.35f;
 	private float _distance = 40.0f;
@@ -408,7 +414,7 @@ public partial class LevelViewer : Node3D
 		if (_framesRendered == 0 && _labHero is null && OS.GetEnvironment("REFII_LEVEL_HERO") == "1" && _region is not null)
 		{
 			ArrayMesh? body = Refii.Models.Engine_MdlComposite.Build(
-				CharacterLightLab.Parts,
+				ParseHeroPreviewParts(OS.GetEnvironment("REFII_LEVEL_HERO_PARTS")),
 				path => Refii.Models.Engine_BnkMeshLoader.ReadBytes(path) is { } bytes
 					? Refii.Models.Engine_MdlMesh.TryCreateMesh(bytes, path, out _, out _) : null,
 				out int resolved, out int missing);

@@ -38,7 +38,21 @@ public static class Engine_ShadowProxy
 	public const string NodeName = "ShadowProxy";
 
 	/// <summary>Debug lever: false hands every body its own shadow back on its next <see cref="Sync"/>.</summary>
-	public static bool Enabled = true;
+	/// <remarks>
+	/// OFF WHEN THE SUN CASTS NOTHING (`sun_shadow_distance` 0, as a phone's Performance preset sets it). The
+	/// proxies are mostly the sun's casters; without them every rig keeps a second skeleton posed,
+	/// placed and culled for shadows nobody draws. A spot light the data marks to cast still gets
+	/// each body's own shadow, at the body's cadence. Measured in Bowerstone Market on the S25+:
+	/// main-thread work -0.6 of 5.0 ms per frame (NativeAOT), 5% fewer draw calls. It follows the
+	/// sun's setting live until something sets it.
+	/// </remarks>
+	public static bool Enabled
+	{
+		get => _enabled ?? Refii.Lighting.Engine_LevelLighting.SunFarDepth > 0f;
+		set => _enabled = value;
+	}
+
+	private static bool? _enabled;
 
 	/// <summary>
 	/// Every skinned body gets a proxy, whatever it saves in draws: the proxy is what lets a
@@ -579,13 +593,13 @@ public static class Engine_ShadowProxy
 			}
 
 			one[(int)Mesh.ArrayType.Index] = indices.ToArray();
-			result.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, one, null, MergedLods(levels));
+			Refii.Core.Engine_ArrayMeshes.AddSurface(result, Mesh.PrimitiveType.Triangles, one, null, MergedLods(levels));
 			result.SurfaceSetMaterial(0, Caster);
 		}
 
 		foreach ((Godot.Collections.Array arrays, Material material, Godot.Collections.Dictionary? lods) in kept)
 		{
-			result.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, null, lods);
+			Refii.Core.Engine_ArrayMeshes.AddSurface(result, Mesh.PrimitiveType.Triangles, arrays, null, lods);
 			result.SurfaceSetMaterial(result.GetSurfaceCount() - 1, material);
 		}
 

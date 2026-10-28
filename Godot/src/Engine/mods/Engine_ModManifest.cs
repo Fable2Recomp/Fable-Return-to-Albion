@@ -244,7 +244,7 @@ public sealed class ModManifest
 		try
 		{
 			using FileStream stream = File.OpenRead(path);
-			return Convert.ToHexString(SHA1.HashData(stream)).ToLowerInvariant();
+			return Convert.ToHexString(Refii.Core.Engine_Hash.Sha1(stream)).ToLowerInvariant();
 		}
 		catch
 		{

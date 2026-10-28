@@ -99,6 +99,9 @@ public partial class Engine_ClothBody : MeshInstance3D
 
     private Task? _job;
 
+    /// <summary><see cref="Solve"/> as a delegate made once: a method group is a new one per call.</summary>
+    private Action? _solve;
+
     private float _jobDt;
 
     private bool _jobStepped;
@@ -491,7 +494,7 @@ public partial class Engine_ClothBody : MeshInstance3D
 
         _jobDt = step ? subDt : 0.0f;
         _jobStepped = step;
-        _job = Task.Run(Solve);
+        _job = Task.Run(_solve ??= Solve);
         System.Threading.Interlocked.Increment(ref _stepped);
         System.Threading.Interlocked.Add(ref _mainTicks, System.Diagnostics.Stopwatch.GetTimestamp() - mainFrom);
     }
@@ -513,6 +516,7 @@ public partial class Engine_ClothBody : MeshInstance3D
     private void Solve()
     {
         long from = System.Diagnostics.Stopwatch.GetTimestamp();
+        long allocFrom = System.GC.GetAllocatedBytesForCurrentThread();
         bool still = _jobStepped && _skeleton is null;
 
         for (int i = 0; i < _instances.Count; i++)
@@ -566,6 +570,8 @@ public partial class Engine_ClothBody : MeshInstance3D
 
         _lastSolveTicks = System.Diagnostics.Stopwatch.GetTimestamp() - from;
         System.Threading.Interlocked.Add(ref _solveTicks, _lastSolveTicks);
+        Refii.Core.Engine_GcFrames.Note(ref Refii.Core.Engine_GcFrames.ClothBytes,
+            System.GC.GetAllocatedBytesForCurrentThread() - allocFrom);
     }
 
     private bool Woken(in PhysMat4 world, Vector3 wind)

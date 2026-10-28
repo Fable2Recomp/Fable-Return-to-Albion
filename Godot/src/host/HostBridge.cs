@@ -562,12 +562,19 @@ public static class HostBridge
 	/// </summary>
 	private static byte[]? _partHidesText;
 
-	public static List<GuestPartHides> GetEntityPartHides(uint entity)
+	public static List<GuestPartHides> GetEntityPartHides(uint entity) =>
+		ParsePartHides(GetEntityPartHidesText(entity));
+
+	/// <summary>
+	/// The guest's part-hides text for <paramref name="entity"/>, one line per part, in a buffer
+	/// the next call overwrites; empty when there is none. A caller that keeps what it parsed can
+	/// compare this first and skip the parse while it is unchanged.
+	/// </summary>
+	public static ReadOnlySpan<byte> GetEntityPartHidesText(uint entity)
 	{
-		var result = new List<GuestPartHides>();
 		if (entity == 0 || TryGetAbiVersion() is null || !IsGuestUp)
 		{
-			return result;
+			return ReadOnlySpan<byte>.Empty;
 		}
 
 		byte[] text = _partHidesText ??= new byte[8192];
@@ -579,16 +586,28 @@ public static class HostBridge
 		}
 		catch (EntryPointNotFoundException)
 		{
-			return result;
+			return ReadOnlySpan<byte>.Empty;
 		}
 
 		if (count == 0)
 		{
-			return result;
+			return ReadOnlySpan<byte>.Empty;
 		}
 
 		int end = System.Array.IndexOf(text, (byte)0);
-		string all = System.Text.Encoding.ASCII.GetString(text, 0, end < 0 ? text.Length : end);
+		return new ReadOnlySpan<byte>(text, 0, end < 0 ? text.Length : end);
+	}
+
+	/// <summary>Parses <see cref="GetEntityPartHidesText"/>'s lines.</summary>
+	public static List<GuestPartHides> ParsePartHides(ReadOnlySpan<byte> text)
+	{
+		var result = new List<GuestPartHides>();
+		if (text.IsEmpty)
+		{
+			return result;
+		}
+
+		string all = System.Text.Encoding.ASCII.GetString(text);
 		foreach (string line in all.Split('\n', StringSplitOptions.RemoveEmptyEntries))
 		{
 			string[] fields = line.Split(' ');
@@ -1220,6 +1239,27 @@ public static class HostBridge
 			(uint)userIndex, connected ? 1 : 0, buttons, leftTrigger, rightTrigger,
 			thumbLx, thumbLy, thumbRx, thumbRy);
 
+	/// <summary>Publishes an Android physical phase tag without conflating current analog packet updates with consumption.</summary>
+	/// <param name="userIndex">The existing guest controller slot.</param>
+	/// <param name="connected">Whether the selected pad is connected.</param>
+	/// <param name="buttons">Already-filtered XInput button bits.</param>
+	/// <param name="leftTrigger">Current left trigger, in Xbox units.</param>
+	/// <param name="rightTrigger">Current right trigger, in Xbox units.</param>
+	/// <param name="thumbLx">Current left-stick X.</param>
+	/// <param name="thumbLy">Current left-stick Y.</param>
+	/// <param name="thumbRx">Current right-stick X.</param>
+	/// <param name="thumbRy">Current right-stick Y.</param>
+	/// <param name="receiptToken">Stable physical phase identity; zero requests no acknowledgment.</param>
+	internal static void SetControllerStateTracked(int userIndex, bool connected, uint buttons,
+		uint leftTrigger, uint rightTrigger, int thumbLx, int thumbLy, int thumbRx, int thumbRy,
+		ulong receiptToken) => RefiiHostSetControllerStateTracked((uint)userIndex, connected ? 1 : 0,
+			buttons, leftTrigger, rightTrigger, thumbLx, thumbLy, thumbRx, thumbRy, receiptToken);
+
+	/// <summary>Returns the exact phase last copied by a successful non-null guest XInput state read.</summary>
+	/// <param name="userIndex">The existing guest controller slot.</param>
+	/// <returns>A monotonically acknowledged phase tag; selecting or stepping alone never acknowledges it.</returns>
+	internal static ulong GetControllerReadReceipt(int userIndex) => RefiiHostGetControllerReadReceipt((uint)userIndex);
+
 	/// <summary>
 	/// Copies the current Bink frame as RGBA8. Pass null to probe the size; width/height are
 	/// reported either way.
@@ -1240,6 +1280,15 @@ public static class HostBridge
 	/// </summary>
 	public static byte[]? GetRequestedVideo(out uint generation) =>
 		GetRequestedVideo(out generation, uint.MaxValue);
+
+	/// <summary>Probes an embedded Bink request without allocating or copying its guest-memory buffer.</summary>
+	/// <param name="generation">The shared request generation, including unnamed startup logos.</param>
+	/// <returns>The live embedded buffer size, or zero for no buffer/name-only requests.</returns>
+	public static uint GetRequestedVideoSize(out uint generation)
+	{
+		int ok = RefiiHostGetRequestedVideo(null, 0, out uint size, out generation);
+		return ok != 0 ? size : 0;
+	}
 
 	/// <summary>
 	/// The requested movie's bytes, or null without a copy when its generation is still
@@ -5574,6 +5623,9 @@ public static class HostBridge
 
 	private const int MouseLookValues = 15;
 
+	[ThreadStatic]
+	private static double[]? _mouseLookScratch;
+
 	/// <summary>The mouse's account as of the guest's last camera update, or null without a guest.</summary>
 	public static MouseLookState? GetMouseLook()
 	{
@@ -5582,13 +5634,21 @@ public static class HostBridge
 			return null;
 		}
 
-		var v = new double[MouseLookValues];
+		// Read every frame by the camera (twice) and the UI: one buffer per thread, not one per read.
+		double[] v = _mouseLookScratch ??= new double[MouseLookValues];
+		System.Array.Clear(v);
 		uint sequence = RefiiHostGetMouseLook(v, MouseLookValues);
 		return new MouseLookState(
 			sequence, (uint)v[0], v[1], v[2], v[3], v[4], v[5], v[6], (float)v[7],
 			new Vector3((float)v[8], (float)v[9], (float)v[10]), (int)v[11], (uint)v[12],
 			(float)v[13], (uint)v[14]);
 	}
+
+	[ThreadStatic]
+	private static uint[]? _unlockIds, _unlockUsers;
+
+	[ThreadStatic]
+	private static ulong[]? _unlockSequences;
 
 	/// <summary>The guest's achievement writes newer than <paramref name="afterSequence"/>, oldest first.</summary>
 	public static AchievementUnlock[] GetAchievementUnlocks(ulong afterSequence, int max = 16)
@@ -5598,9 +5658,17 @@ public static class HostBridge
 			return System.Array.Empty<AchievementUnlock>();
 		}
 
-		var ids = new uint[max];
-		var users = new uint[max];
-		var sequences = new ulong[max];
+		// Polled on every guest frame and nearly always empty: the buffers are kept per thread.
+		if (_unlockIds is null || _unlockIds.Length < max)
+		{
+			_unlockIds = new uint[max];
+			_unlockUsers = new uint[max];
+			_unlockSequences = new ulong[max];
+		}
+
+		uint[] ids = _unlockIds;
+		uint[] users = _unlockUsers!;
+		ulong[] sequences = _unlockSequences!;
 		uint count = RefiiHostGetAchievementUnlocks(afterSequence, ids, users, sequences, (uint)max);
 		if (count == 0)
 		{
@@ -7008,6 +7076,7 @@ public static class HostBridge
 	/// </summary>
 	private static int ReadAssetForGuest(IntPtr path, IntPtr buffer, uint capacity, IntPtr outSize)
 	{
+		long allocFrom = GC.GetAllocatedBytesForCurrentThread();
 		try
 		{
 			if (outSize != IntPtr.Zero)
@@ -7066,6 +7135,11 @@ public static class HostBridge
 		{
 			GD.PushWarning($"[host-assets] the guest's asset read threw: {e.Message}");
 			return 0;
+		}
+		finally
+		{
+			Refii.Core.Engine_GcFrames.Note(ref Refii.Core.Engine_GcFrames.GuestAssetReadBytes,
+				GC.GetAllocatedBytesForCurrentThread() - allocFrom);
 		}
 	}
 
@@ -9365,8 +9439,21 @@ public static class HostBridge
 			: null;
 	}
 
-	public static bool FrontEndGuiIsUp =>
-		GetFrontEndRaw() is { } words && GuestAddressToTu1(words[9]) == FrontEndGuiVtable;
+	/// <remarks>
+	/// Asked several times a frame (input masking, the button route, the Android host, the UI),
+	/// so it reads into a per-thread buffer rather than <see cref="GetFrontEndRaw"/>'s new array.
+	/// </remarks>
+	public static bool FrontEndGuiIsUp
+	{
+		get
+		{
+			uint[] words = _frontEndScratch ??= new uint[10];
+			return RefiiHostGetFrontEnd(words) != 0 && GuestAddressToTu1(words[9]) == FrontEndGuiVtable;
+		}
+	}
+
+	[ThreadStatic]
+	private static uint[]? _frontEndScratch;
 
 	/// <summary>
 	/// The guest's live front-end state.
@@ -9392,7 +9479,7 @@ public static class HostBridge
 		out FrontEndScreen screen, out uint state, out bool canPressA, out uint cursor,
 		out int sceneSlide, out int slideCount)
 	{
-		uint[] words = new uint[10];
+		uint[] words = _frontEndScratch ??= new uint[10];
 		int ok = RefiiHostGetFrontEnd(words);
 
 		screen = (FrontEndScreen)words[2];
@@ -9538,10 +9625,21 @@ public static class HostBridge
 
 	public static List<UiElement>? GetUiElements(uint presentation = 0)
 	{
+		var elements = new List<UiElement>();
+		return FillUiElements(presentation, elements, null) ? elements : null;
+	}
+
+	/// <summary>
+	/// <see cref="GetUiElements"/> into a kept list. A text equal to the one at the same ordinal
+	/// of <paramref name="previous"/> is that string again, not a new copy: a re-walk for one
+	/// changed text otherwise copied every string on the screen.
+	/// </summary>
+	public static bool FillUiElements(uint presentation, List<UiElement> into, List<UiElement>? previous)
+	{
 		uint count = RefiiHostGetUiElements(presentation, null, 0, null, 0);
 		if (count == 0)
 		{
-			return null;
+			return false;
 		}
 
 		// Sized from the probe, with headroom: the guest mutates the tree, so the second walk
@@ -9565,7 +9663,12 @@ public static class HostBridge
 			presentation, words, (uint)neededWords, chars, (uint)neededChars);
 
 		int usable = (int)Math.Min(written, (uint)(neededWords / 6));
-		var elements = new List<UiElement>(usable);
+		into.Clear();
+		if (into.Capacity < usable)
+		{
+			into.Capacity = usable;
+		}
+
 		for (int i = 0; i < usable; ++i)
 		{
 			uint offset = words[i * 6 + 2];
@@ -9579,16 +9682,23 @@ public static class HostBridge
 				}
 
 				int len = end - (int)offset;
-				text = len == 0
-					? string.Empty
-					: new string(MemoryMarshal.Cast<ushort, char>(chars.AsSpan((int)offset, len)));
+				if (len == 0)
+				{
+					text = string.Empty;
+				}
+				else
+				{
+					ReadOnlySpan<char> read = MemoryMarshal.Cast<ushort, char>(chars.AsSpan((int)offset, len));
+					string? before = previous is not null && i < previous.Count ? previous[i].Text : null;
+					text = before is not null && read.SequenceEqual(before) ? before : new string(read);
+				}
 			}
 
-			elements.Add(new UiElement(words[i * 6], (int)words[i * 6 + 1], text,
+			into.Add(new UiElement(words[i * 6], (int)words[i * 6 + 1], text,
 				(int)words[i * 6 + 3], (int)words[i * 6 + 4], words[i * 6 + 5]));
 		}
 
-		return elements;
+		return true;
 	}
 
 	/// <summary>The four-argument form, for callers that only want the screen state.</summary>
@@ -10942,6 +11052,14 @@ public static class HostBridge
 		int thumbLx, int thumbLy, int thumbRx, int thumbRy);
 
 	[DllImport(Library)]
+	private static extern void RefiiHostSetControllerStateTracked(uint userIndex, int connected,
+		uint buttons, uint leftTrigger, uint rightTrigger, int thumbLx, int thumbLy,
+		int thumbRx, int thumbRy, ulong receiptToken);
+
+	[DllImport(Library)]
+	private static extern ulong RefiiHostGetControllerReadReceipt(uint userIndex);
+
+	[DllImport(Library)]
 	private static extern int RefiiHostGetVibration(
 		uint userIndex, out uint outLeft, out uint outRight);
 
@@ -11026,6 +11144,12 @@ public static class HostBridge
 		public int TotalPoints => (int)(Points[0] + Points[1] + Points[2]);
 	}
 
+	[ThreadStatic]
+	private static uint[]? _pubGameValues;
+
+	[ThreadStatic]
+	private static byte[]? _pubGameName, _pubGameVariation;
+
 	/// <summary>Reads the manager, or null when the guest is not up.</summary>
 	public static PubGameState? GetPubGame()
 	{
@@ -11034,9 +11158,10 @@ public static class HostBridge
 			return null;
 		}
 
-		var values = new uint[6];
-		var name = new byte[64];
-		var variation = new byte[64];
+		// Polled every frame by the Android host: the buffers are kept per thread.
+		uint[] values = _pubGameValues ??= new uint[6];
+		byte[] name = _pubGameName ??= new byte[64];
+		byte[] variation = _pubGameVariation ??= new byte[64];
 
 		try
 		{
@@ -11305,10 +11430,18 @@ public static class HostBridge
 
 		public static Dictionary<uint, float> GetHudMeters()
 		{
-			Dictionary<uint, float> dictionary = new Dictionary<uint, float>();
+			var dictionary = new Dictionary<uint, float>();
+			FillHudMeters(dictionary);
+			return dictionary;
+		}
+
+		/// <summary><see cref="GetHudMeters"/> into a dictionary the caller reuses (cleared first).</summary>
+		public static void FillHudMeters(Dictionary<uint, float> dictionary)
+		{
+			dictionary.Clear();
 			if (!TryGetAbiVersion().HasValue || !IsGuestUp)
 			{
-				return dictionary;
+				return;
 			}
 			uint[] array = _hudMeterHashes ??= new uint[256];
 			float[] array2 = _hudMeterValues ??= new float[256];
@@ -11320,7 +11453,7 @@ public static class HostBridge
 			}
 			catch (EntryPointNotFoundException)
 			{
-				return dictionary;
+				return;
 			}
 			if (num > cap)
 			{
@@ -11331,7 +11464,6 @@ public static class HostBridge
 			{
 				dictionary[array[num2]] = array2[num2];
 			}
-			return dictionary;
 		}
 
 		private static uint[]? _hudPulserModes;
@@ -11345,9 +11477,17 @@ public static class HostBridge
 		public static Dictionary<uint, Refii.Ui.Engine_UiSource.HudPulser> GetHudPulsers()
 		{
 			var dictionary = new Dictionary<uint, Refii.Ui.Engine_UiSource.HudPulser>();
+			FillHudPulsers(dictionary);
+			return dictionary;
+		}
+
+		/// <summary><see cref="GetHudPulsers"/> into a dictionary the caller reuses (cleared first).</summary>
+		public static void FillHudPulsers(Dictionary<uint, Refii.Ui.Engine_UiSource.HudPulser> dictionary)
+		{
+			dictionary.Clear();
 			if (!TryGetAbiVersion().HasValue || !IsGuestUp)
 			{
-				return dictionary;
+				return;
 			}
 			uint[] array = _hudMeterHashes ??= new uint[256];
 			float[] array2 = _hudMeterValues ??= new float[256];
@@ -11369,7 +11509,7 @@ public static class HostBridge
 				}
 				catch (EntryPointNotFoundException)
 				{
-					return dictionary;
+					return;
 				}
 			}
 			if (num > cap)
@@ -11380,7 +11520,6 @@ public static class HostBridge
 			{
 				dictionary[array[i]] = new Refii.Ui.Engine_UiSource.HudPulser(array2[i], !stated || modes[i] != 2u);
 			}
-			return dictionary;
 		}
 
 		/// <summary>
@@ -11395,9 +11534,17 @@ public static class HostBridge
 		public static Dictionary<uint, float> GetHudScriptMeters()
 		{
 			var values = new Dictionary<uint, float>();
+			FillHudScriptMeters(values);
+			return values;
+		}
+
+		/// <summary><see cref="GetHudScriptMeters"/> into a dictionary the caller reuses (cleared first).</summary>
+		public static void FillHudScriptMeters(Dictionary<uint, float> values)
+		{
+			values.Clear();
 			if (!TryGetAbiVersion().HasValue || !IsGuestUp)
 			{
-				return values;
+				return;
 			}
 
 			uint[] hashes = _hudMeterHashes ??= new uint[256];
@@ -11409,7 +11556,7 @@ public static class HostBridge
 			}
 			catch (EntryPointNotFoundException)
 			{
-				return values;
+				return;
 			}
 
 			if (found > hashes.Length)
@@ -11423,8 +11570,6 @@ public static class HostBridge
 			{
 				values[hashes[i]] = ratios[i] * 100f;
 			}
-
-			return values;
 		}
 
 		/// <summary>
@@ -11434,9 +11579,17 @@ public static class HostBridge
 		public static Dictionary<uint, uint> GetHudScriptTexts()
 		{
 			var values = new Dictionary<uint, uint>();
+			FillHudScriptTexts(values);
+			return values;
+		}
+
+		/// <summary><see cref="GetHudScriptTexts"/> into a dictionary the caller reuses (cleared first).</summary>
+		public static void FillHudScriptTexts(Dictionary<uint, uint> values)
+		{
+			values.Clear();
 			if (!TryGetAbiVersion().HasValue || !IsGuestUp)
 			{
-				return values;
+				return;
 			}
 
 			uint[] hashes = _hudMeterHashes ??= new uint[256];
@@ -11448,7 +11601,7 @@ public static class HostBridge
 			}
 			catch (EntryPointNotFoundException)
 			{
-				return values;
+				return;
 			}
 
 			if (found > hashes.Length)
@@ -11462,16 +11615,29 @@ public static class HostBridge
 			{
 				values[hashes[i]] = ids[i];
 			}
-
-			return values;
 		}
 
 		public static Dictionary<uint, string> GetHudTexts()
 		{
-			Dictionary<uint, string> dictionary = new Dictionary<uint, string>();
+			var dictionary = new Dictionary<uint, string>();
+			FillHudTexts(dictionary);
+			return dictionary;
+		}
+
+		/// <summary>The last string decoded for each HUD text, with the bytes it came from.</summary>
+		[System.ThreadStatic]
+		private static Dictionary<uint, (byte[] Bytes, string Text)>? _hudTextDecoded;
+
+		/// <summary>
+		/// <see cref="GetHudTexts"/> into a dictionary the caller reuses (cleared first). A text
+		/// whose bytes are unchanged since the last read is the same string, not a new decode.
+		/// </summary>
+		public static void FillHudTexts(Dictionary<uint, string> dictionary)
+		{
+			dictionary.Clear();
 			if (!TryGetAbiVersion().HasValue || !IsGuestUp)
 			{
-				return dictionary;
+				return;
 			}
 			uint[] array = _hudTextHashes ??= new uint[64];
 			byte[] array2 = _hudTextBytes ??= new byte[8192];
@@ -11484,7 +11650,7 @@ public static class HostBridge
 			}
 			catch (EntryPointNotFoundException)
 			{
-				return dictionary;
+				return;
 			}
 			if (num > array.Length)
 			{
@@ -11503,10 +11669,22 @@ public static class HostBridge
 				{
 					break;
 				}
-				dictionary[array[num3]] = Encoding.UTF8.GetString(array2, num2, num4 - num2);
+				dictionary[array[num3]] = DecodeHudText(array[num3], array2.AsSpan(num2, num4 - num2));
 				num2 = num4 + 1;
 			}
-			return dictionary;
+		}
+
+		private static string DecodeHudText(uint hash, ReadOnlySpan<byte> bytes)
+		{
+			Dictionary<uint, (byte[] Bytes, string Text)> decoded = _hudTextDecoded ??= new();
+			if (decoded.TryGetValue(hash, out (byte[] Bytes, string Text) last) && bytes.SequenceEqual(last.Bytes))
+			{
+				return last.Text;
+			}
+
+			string text = Encoding.UTF8.GetString(bytes);
+			decoded[hash] = (bytes.ToArray(), text);
+			return text;
 		}
 
 		public static uint[]? GetUiTextureHashes(uint presentation, int elementCount)

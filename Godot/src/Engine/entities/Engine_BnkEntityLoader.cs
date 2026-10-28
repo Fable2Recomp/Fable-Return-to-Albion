@@ -35,6 +35,7 @@ public partial class Engine_BnkEntityLoader : ResourceFormatLoader
 
         node.SetMeta(Refii.Hero.Engine_HeroInstance.FemaleMeta, female);
         node.SetMeta(Refii.Hero.Engine_HeroInstance.BodyModelsMeta, body);
+        GC.KeepAlive(body);
         return node;
     }
 
@@ -99,6 +100,8 @@ public partial class Engine_BnkEntityLoader : ResourceFormatLoader
 
         node.SetMeta(Engine_EntityInstance.ModelsMeta, models);
         node.SetMeta(Engine_EntityInstance.ModelHashesMeta, hashes);
+        GC.KeepAlive(hashes);
+        GC.KeepAlive(models);
 
         var animator = new Refii.Animations.Engine_EntityAnimator
         {

@@ -38,7 +38,8 @@ public partial class ShaderCheck : Node
 	public override void _Ready()
 	{
 		int bad = 0;
-		foreach (string path in Shaders)
+		// The mobile lite builds too: the same bodies under other defines, so each can break alone.
+		foreach (string path in System.Linq.Enumerable.Concat(Shaders, Refii.Models.Engine_ShaderVariant.AllVariantPaths))
 		{
 			var shader = GD.Load<Shader>(path);
 			if (shader is null)

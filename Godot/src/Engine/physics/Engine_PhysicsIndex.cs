@@ -14,6 +14,26 @@ public static class Engine_PhysicsIndex
 
     private static Func<string, byte[]?>? _resolver;
 
+    /// <summary>The model paths indexed and the bytes of their cloth arrays, for the heap census.</summary>
+    internal static (long Models, long Bytes) Census()
+    {
+        lock (IndexLock)
+        {
+            long bytes = 0;
+            foreach (List<ClothAsset> assets in Cache.Values)
+            {
+                foreach (ClothAsset asset in assets)
+                {
+                    bytes += asset.Edges.LongLength * 2 + asset.Indices.LongLength * 2 +
+                        asset.VertexAttr.LongLength +
+                        (asset.EdgeParams.LongLength + asset.BindPos.LongLength) * 16;
+                }
+            }
+
+            return (Cache.Count, bytes);
+        }
+    }
+
     public static void SetResolver(Func<string, byte[]?>? resolver)
     {
         lock (IndexLock)

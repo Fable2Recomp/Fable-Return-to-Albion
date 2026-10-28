@@ -161,7 +161,7 @@ public static class ModBundled
 
 	private static string HashSource(string metadataText, List<(string Path, byte[] Bytes)> files)
 	{
-		using var sha = SHA256.Create();
+		using var sha = Refii.Core.Engine_Hash.CreateSha256();
 		byte[] metadata = Encoding.UTF8.GetBytes(metadataText + "\n");
 		sha.TransformBlock(metadata, 0, metadata.Length, null, 0);
 		foreach ((string path, byte[] bytes) in files)
@@ -178,7 +178,7 @@ public static class ModBundled
 	private static string HashFile(string path)
 	{
 		using FileStream stream = File.OpenRead(path);
-		return Convert.ToHexString(SHA256.HashData(stream));
+		return Convert.ToHexString(Refii.Core.Engine_Hash.Sha256(stream));
 	}
 
 	private static (string From, string As) ReadMarker(string marker)

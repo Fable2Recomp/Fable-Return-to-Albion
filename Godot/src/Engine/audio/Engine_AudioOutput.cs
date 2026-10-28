@@ -62,7 +62,8 @@ public partial class Engine_AudioOutput : Node
 		// The bridge is loaded by the first P/Invoke, which the owner has already made for the
 		// frame geometry. Godot must open THAT file: a different copy is a second module with
 		// its own, empty ring.
-		string? library = Engine_NativeLibraries.LoadedPath(BridgeLibrary);
+		string? library = Engine_NativeLibraries.LoadedPath(BridgeLibrary)
+			?? (Refii.Core.Engine_Platform.IsAndroid ? MappedPath(FileSystemMaps(), Engine_NativeLibraries.FileNameFor(BridgeLibrary)) : null);
 		if (library is null)
 		{
 			GD.PushError("[audio] the host bridge is not loaded, so the guest's output cannot be installed");
@@ -173,6 +174,7 @@ public partial class Engine_AudioOutput : Node
 	{
 		string os = OperatingSystem.IsWindows() ? "windows"
 			: OperatingSystem.IsMacOS() ? "macos"
+			: Refii.Core.Engine_Platform.IsAndroid ? "android"
 			: "linux";
 		string manifest =
 			"[configuration]\n" +
@@ -201,6 +203,38 @@ public partial class Engine_AudioOutput : Node
 
 		GD.PushError($"[audio] loading {library} as a GDExtension: {status}");
 		return false;
+	}
+
+	/// <summary>
+	/// The file a library is mapped from, read off <c>/proc/self/maps</c>.
+	///
+	/// Android loads the shipped bridge through its linker's package search, not the resolver,
+	/// so <see cref="Engine_NativeLibraries.LoadedPath"/> has nothing. The mapping names the
+	/// extracted file the process already holds, which is the one Godot must open.
+	/// </summary>
+	internal static string? MappedPath(string? maps, string fileName)
+	{
+		if (string.IsNullOrEmpty(maps))
+			return null;
+
+		foreach (string line in maps.Split('\n'))
+		{
+			int slash = line.IndexOf('/');
+			if (slash < 0)
+				continue;
+
+			string path = line[slash..].TrimEnd();
+			if (path.EndsWith("/" + fileName, StringComparison.Ordinal))
+				return path;
+		}
+
+		return null;
+	}
+
+	private static string? FileSystemMaps()
+	{
+		try { return System.IO.File.ReadAllText("/proc/self/maps"); }
+		catch (Exception) { return null; }
 	}
 
 	/// <summary>

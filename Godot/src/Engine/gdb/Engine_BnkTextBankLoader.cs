@@ -67,6 +67,27 @@ public static class Engine_BnkTextBankLoader
     /// <summary>Unpatched base text bank loaded directly from raw disk (ignoring mod overlays).</summary>
     public static TextBank? BaseBank => _baseBank ??= LoadDiskBank();
 
+    /// <summary>The mounted and base banks loaded so far and their bytes, for the heap census.
+    /// Builds neither.</summary>
+    internal static (long Banks, long Bytes) Census()
+    {
+        TextBank? bank = _bank, baseBank = _baseBank;
+        long banks = 0, bytes = 0;
+        if (bank is not null)
+        {
+            ++banks;
+            bytes += bank.HeldBytes;
+        }
+
+        if (baseBank is not null && !ReferenceEquals(baseBank, bank))
+        {
+            ++banks;
+            bytes += baseBank.HeldBytes;
+        }
+
+        return (banks, bytes);
+    }
+
     /// <summary>Looks up localized text in the active (potentially modded) text bank.</summary>
     public static bool TryLookup(uint tag, out string text)
     {

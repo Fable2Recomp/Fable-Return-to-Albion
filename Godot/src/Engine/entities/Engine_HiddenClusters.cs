@@ -297,8 +297,7 @@ public static class Engine_HiddenClusters
 			_collapsedSurfaces.Add(node, state);
 		}
 
-		List<HostBridge.GuestPartHides> parts = HostBridge.GetEntityPartHides(entity);
-		Dictionary<uint, HashSet<string>>? hidden = parts.Count == 0 ? null : HiddenPerPart(parts);
+		Dictionary<uint, HashSet<string>>? hidden = HiddenFor(entity);
 
 		int count = 0;
 		int surfaces = Math.Min(mesh.GetSurfaceCount(), regions.Length);
@@ -324,6 +323,49 @@ public static class Engine_HiddenClusters
 
 		Present(node, mesh as ArrayMesh, state);
 		return count;
+	}
+
+	/// <summary>One entity's last part-hides text and what it gave; null when it gave no parts.</summary>
+	private sealed class HiddenRead
+	{
+		public byte[] Text = Array.Empty<byte>();
+		public Dictionary<uint, HashSet<string>>? Hidden;
+	}
+
+	private static readonly Dictionary<uint, HiddenRead> _hiddenReads = new();
+
+	/// <summary>
+	/// <see cref="HiddenPerPart"/> of the entity's built parts, parsed again only when the
+	/// guest's text changed: it is the same every reconcile until the entity is dressed again,
+	/// and the parse was a string, a split and a set per part, per entity, per pass.
+	/// </summary>
+	private static Dictionary<uint, HashSet<string>>? HiddenFor(uint entity)
+	{
+		ReadOnlySpan<byte> text = HostBridge.GetEntityPartHidesText(entity);
+		if (_hiddenReads.TryGetValue(entity, out HiddenRead? read))
+		{
+			if (text.SequenceEqual(read.Text.AsSpan()))
+			{
+				return read.Hidden;
+			}
+		}
+		else
+		{
+			// Entity addresses are reused as the world streams; the text is compared each
+			// time, so a stale entry is only memory, dropped wholesale past a bound.
+			if (_hiddenReads.Count >= 4096)
+			{
+				_hiddenReads.Clear();
+			}
+
+			read = new HiddenRead();
+			_hiddenReads[entity] = read;
+		}
+
+		List<HostBridge.GuestPartHides> parts = HostBridge.ParsePartHides(text);
+		read.Text = text.ToArray();
+		read.Hidden = parts.Count == 0 ? null : HiddenPerPart(parts);
+		return read.Hidden;
 	}
 
 	/// <summary>

@@ -331,7 +331,7 @@ public static class ArchonToolbox
 			}
 
 			using FileStream stream = File.OpenRead(path);
-			return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+			return Convert.ToHexString(Refii.Core.Engine_Hash.Sha256(stream)).ToLowerInvariant();
 		}
 		catch (Exception e) when (e is IOException or UnauthorizedAccessException)
 		{

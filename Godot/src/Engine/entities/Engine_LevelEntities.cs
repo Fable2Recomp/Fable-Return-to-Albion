@@ -219,6 +219,7 @@ public static class Engine_LevelEntities
 
             node.SetMeta(Engine_EntityInstance.ModelsMeta, models);
             node.SetMeta(Engine_EntityInstance.ModelHashesMeta, modelHashes);
+            GC.KeepAlive(modelHashes);
 
             if (models.Count != 0)
             {

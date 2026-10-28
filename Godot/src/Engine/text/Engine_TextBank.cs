@@ -16,6 +16,21 @@ public sealed class TextBank
 
     public int TagCount => _entries.Count;
 
+    /// <summary>The decompressed pages and the tag table, in bytes, for the heap census.</summary>
+    internal long HeldBytes
+    {
+        get
+        {
+            long bytes = (long)_entries.Count * 24;
+            foreach (byte[] page in _pages.Values)
+            {
+                bytes += page.LongLength;
+            }
+
+            return bytes;
+        }
+    }
+
     public static readonly string[] LanguageOrder =
     {
         "en-uk", "en-us", "en-gb", "en", "fr-fr", "de-de", "es-es", "it-it",

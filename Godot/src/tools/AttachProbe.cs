@@ -18,6 +18,7 @@ public partial class AttachProbe : Node
 {
 	private BnkFileSystem? _banks;
 
+	/// <summary>Reads explicitly selected hero parts and reports their attachment transforms.</summary>
 	public override void _Ready()
 	{
 		string data = Engine_GameData.Resolve();
@@ -30,7 +31,7 @@ public partial class AttachProbe : Node
 
 		_banks = BnkFileSystem.Mount(data);
 		Engine_BnkMeshLoader.SetResolver(Read);
-		foreach (string part in CharacterLightLab.Parts)
+		foreach (string part in LevelViewer.ParseHeroPreviewParts(System.Environment.GetEnvironmentVariable("REFII_LEVEL_HERO_PARTS") ?? ""))
 		{
 			Engine_GmdSkeleton? gmd = Engine_GmdSkeleton.TryParse(Engine_BnkMeshLoader.ReadBytes(part + ".gmd"));
 			if (gmd is null)

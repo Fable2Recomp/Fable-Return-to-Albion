@@ -116,6 +116,15 @@ public sealed class Engine_EntityAttachments
 
 	private readonly Dictionary<uint, Record> _byChild = new();
 
+	/// <summary>
+	/// Moves whenever a child gains, changes or loses its record: what reads <see cref="ParentOf"/>
+	/// once and keeps the answer (the feed's skip index) asks again when this has moved.
+	/// </summary>
+	public int Version { get; private set; }
+
+	/// <summary>Every child with a record now.</summary>
+	public Dictionary<uint, Record>.KeyCollection Children => _byChild.Keys;
+
 	private readonly List<HostBridge.GuestAttachment> _stated = new();
 
 	private readonly Dictionary<uint, (uint Ticket, float[] Matrix)> _grips = new();
@@ -157,6 +166,7 @@ public sealed class Engine_EntityAttachments
 				_byChild.Remove(stated.Child);
 			}
 
+			++Version;
 			_byChild[stated.Child] = new Record
 			{
 				Child = stated.Child,
@@ -221,11 +231,17 @@ public sealed class Engine_EntityAttachments
 		{
 			_byChild.Remove(child);
 		}
+
+		if (gone.Count != 0)
+		{
+			++Version;
+		}
 	}
 
 	/// <summary>Drops every record naming a retired entity, as child or as parent.</summary>
 	public void Forget(uint entity)
 	{
+		++Version;
 		_byChild.Remove(entity);
 		var orphans = new List<uint>();
 		foreach ((uint child, Record record) in _byChild)

@@ -125,7 +125,7 @@ public static class Engine_Achievements
 			var image = new Image();
 			if (image.LoadPngFromBuffer(png) == Error.Ok)
 			{
-				texture = ImageTexture.CreateFromImage(image);
+				texture = Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(image);
 			}
 		}
 

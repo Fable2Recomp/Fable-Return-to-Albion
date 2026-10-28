@@ -104,10 +104,17 @@ public partial class Engine_EntityHighlightLayer : Node
     /// <summary>The layer's pixels, for the debug channel — a GPU readback, main thread.</summary>
     public Image? Capture() => _viewport?.GetTexture()?.GetImage();
 
-    /// <summary>Whether silhouettes should be built on the layer this frame.</summary>
+    /// <summary>
+    /// Whether silhouettes should be built on the layer this frame: the layer is up and the post
+    /// chain, its only reader, both runs and can reach the colour layer. On the Mobile renderer it
+    /// cannot (<see cref="Refii.Lighting.Engine_PostFxRoute"/>), so no proxy is built, the viewport
+    /// stays Disabled and nothing is drawn for the highlight: the game has no other outline path,
+    /// and the glow never reached the screen there anyway.
+    /// </summary>
     public static bool Present =>
         _current is not null && GodotObject.IsInstanceValid(_current) && _current.IsInsideTree() &&
         _current._enabled && _current._usable && Refii.Lighting.Engine_PostFxParams.Enabled &&
+        Refii.Lighting.Engine_PostFxRoute.LayersReachScreen &&
         RenderingServer.GetRenderingDevice() is not null;
 
 
@@ -337,7 +344,8 @@ public partial class Engine_EntityHighlightLayer : Node
         // Active while any slot has a target, not while the walk last touched one: the walk
         // need not run every frame, and a highlight lasts until the guest clears it.
         Array.Clear(_targets, 0, Slots);
-        bool active = _enabled && Gather(main.GlobalPosition, _targets);
+        bool active = _enabled && Refii.Lighting.Engine_PostFxRoute.LayersReachScreen &&
+            Gather(main.GlobalPosition, _targets);
         _viewport.RenderTargetUpdateMode = active ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
 
         // The stated width, read here because this is the main thread; the post chain runs on
@@ -436,7 +444,8 @@ public partial class Engine_EntityHighlightLayer : Node
     {
         box = default;
         bool any = false;
-        var stack = new System.Collections.Generic.Stack<Node>();
+        System.Collections.Generic.Stack<Node> stack = BoundsStack;
+        stack.Clear();
         stack.Push(node);
         while (stack.Count > 0)
         {
@@ -450,12 +459,17 @@ public partial class Engine_EntityHighlightLayer : Node
                 any = true;
             }
 
-            foreach (Node child in n.GetChildren())
+            // By index: GetChildren builds a Godot array, per node, per lit entity, per frame.
+            int children = n.GetChildCount();
+            for (int i = 0; i < children; i++)
             {
-                stack.Push(child);
+                stack.Push(n.GetChild(i));
             }
         }
 
         return any;
     }
+
+    /// <summary>The walk's stack, kept: the layer runs on the main thread only.</summary>
+    private static readonly System.Collections.Generic.Stack<Node> BoundsStack = new();
 }

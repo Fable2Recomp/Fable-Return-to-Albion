@@ -15,6 +15,12 @@ public static class AssetHashIndex
 	/// </summary>
 	public static uint Hash(string value) => Refii.Core.Engine_GameHash.Fnv1(value);
 
+	/// <summary>
+	/// Hash to the path AS THE MOUNT SPELLS IT, the string its file already holds. The folded
+	/// mount key is made on lookup (<see cref="PathForHash"/>), not stored: a stored key was a
+	/// second copy of every path in the game (235k of them, ~96 characters each, about 50 MB of
+	/// gen2), and the guest asks for a name only when it opens a resource.
+	/// </summary>
 	private static Dictionary<uint, string>? _byHash;
 
 	/// <summary>How many distinct hashes the current index answers for.</summary>
@@ -34,19 +40,19 @@ public static class AssetHashIndex
 				continue;
 			}
 
-			// Key hashed in the guest's spelling (backslashes); value stored in the mount's.
-			Add(index, GuestSpelling(path), path);
+			// Key hashed in the guest's spelling (backslashes); value the mount's own string.
+			Add(index, GuestSpelling(path), file.VirtualPath);
 
 			// The guest hashes relative to its data root: `sub_82C6EFC0` strips `game:\` then
 			// `cache:\`; `GameInit_MountDataFileSystems` (0x822F2868) sets that root to `"data\"`.
 			const string dataPrefix = "data/";
 			if (path.StartsWith(dataPrefix, StringComparison.Ordinal))
 			{
-				Add(index, GuestSpelling(path[dataPrefix.Length..]), path);
+				Add(index, GuestSpelling(path[dataPrefix.Length..]), file.VirtualPath);
 			}
 			else
 			{
-				Add(index, GuestSpelling(dataPrefix + path), path);
+				Add(index, GuestSpelling(dataPrefix + path), file.VirtualPath);
 			}
 
 			// No bare-leaf key: every hashed call site in the binary hashes a full relative path.
@@ -73,22 +79,22 @@ public static class AssetHashIndex
 		}
 
 		_byHash ??= new Dictionary<uint, string>();
-		_byHash[Hash(GuestSpelling(path))] = path;
+		_byHash[Hash(GuestSpelling(path))] = virtualPath;
 
 		const string dataPrefix = "data/";
 		if (path.StartsWith(dataPrefix, StringComparison.Ordinal))
 		{
-			_byHash[Hash(GuestSpelling(path[dataPrefix.Length..]))] = path;
+			_byHash[Hash(GuestSpelling(path[dataPrefix.Length..]))] = virtualPath;
 		}
 		else
 		{
-			_byHash[Hash(GuestSpelling(dataPrefix + path))] = path;
+			_byHash[Hash(GuestSpelling(dataPrefix + path))] = virtualPath;
 		}
 	}
 
 	/// <summary>The mounted path for <paramref name="hash"/>; null if absent or before <see cref="Build"/>.</summary>
 	public static string? PathForHash(uint hash) =>
-		_byHash is { } index && index.TryGetValue(hash, out string? path) ? path : null;
+		_byHash is { } index && index.TryGetValue(hash, out string? path) ? MountKey(path) : null;
 
 	private static void Add(Dictionary<uint, string> index, string spelling, string path)
 	{

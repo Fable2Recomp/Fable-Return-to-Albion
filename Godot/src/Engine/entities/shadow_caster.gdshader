@@ -13,10 +13,12 @@
 shader_type spatial;
 render_mode unshaded, cull_disabled;
 
-instance uniform vec4 xr_tree_fade_in = vec4(0.0);
-instance uniform vec4 xr_tree_fade_out = vec4(0.0);
-instance uniform vec3 xr_tree_centre = vec3(0.0);
-instance uniform float xr_fade_alpha = 1.0;
+// PINNED to the body's slots: a twin keeps a prop's alpha-cut surfaces with their own (body)
+// material beside this one on the same instance, and Godot takes one index per name.
+instance uniform vec4 xr_tree_fade_in : instance_index(10) = vec4(0.0);
+instance uniform vec4 xr_tree_fade_out : instance_index(11) = vec4(0.0);
+instance uniform vec3 xr_tree_centre : instance_index(12) = vec3(0.0);
+instance uniform float xr_fade_alpha : instance_index(13) = 1.0;
 varying float v_fade;
 
 void vertex() {

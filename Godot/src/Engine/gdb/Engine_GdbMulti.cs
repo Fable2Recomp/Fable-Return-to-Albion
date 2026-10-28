@@ -28,6 +28,40 @@ public sealed class GdbMulti
 
     public IReadOnlyList<GdbView> Views => _views;
 
+    /// <summary>Every database built, weakly, so the heap census can count the copies still alive.</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<GdbMulti, object?> Live = new();
+
+    private GdbMulti()
+    {
+        Live.AddOrUpdate(this, null);
+    }
+
+    /// <summary>
+    /// The databases alive (or not yet collected) and an estimate of their bytes: each view's blob
+    /// and offsets, counted once however many databases share it, plus about 160 bytes per
+    /// record for the two hash indexes and the per-record cursor lists.
+    /// </summary>
+    internal static (long Databases, long Bytes) LiveCensus()
+    {
+        long databases = 0, bytes = 0;
+        var views = new HashSet<GdbView>(ReferenceEqualityComparer.Instance);
+        foreach (KeyValuePair<GdbMulti, object?> entry in Live)
+        {
+            GdbMulti multi = entry.Key;
+            ++databases;
+            bytes += (long)multi._index.Count * 40 + (long)multi._cursorsByHash.Count * 120;
+            foreach (GdbView view in multi._views)
+            {
+                if (views.Add(view))
+                {
+                    bytes += view.HeldBytes;
+                }
+            }
+        }
+
+        return (databases, bytes);
+    }
+
     public int RecordCount => _index.Count;
 
     public static GdbMulti Build(IEnumerable<byte[]?> gdbs)

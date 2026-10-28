@@ -111,6 +111,7 @@ public static class HostEntityWalk
 		while (true)
 		{
 			_kick.WaitOne();
+			long allocFrom = System.GC.GetAllocatedBytesForCurrentThread();
 			List<HostBridge.GuestEntity> into = _lists[_fill];
 			_fill ^= 1;
 
@@ -131,6 +132,8 @@ public static class HostEntityWalk
 			}
 
 			_result = new Walk(entities, unknown, unknownVtables);
+			Refii.Core.Engine_GcFrames.Note(ref Refii.Core.Engine_GcFrames.EntityWalkBytes,
+				System.GC.GetAllocatedBytesForCurrentThread() - allocFrom);
 			_done.Set();
 		}
 	}

@@ -94,6 +94,9 @@ public static class Engine_AnimCatalog
 
     public static IReadOnlyList<AnimClip> AllClips => Clips;
 
+    /// <summary>The clips catalogued and the animation data file held whole, for the heap census.</summary>
+    internal static (long Clips, long Bytes) DataCensus() => (Clips.Count, Data.Size);
+
     public static Engine_AnimDecoder ActiveDecoder => Decoder;
 
     public static bool IsReady => _ready;

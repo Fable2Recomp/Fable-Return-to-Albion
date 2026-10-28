@@ -13,15 +13,19 @@ namespace Refii.Core;
 /// That is the right shape for a cache and the wrong shape for an owner, and none of them had
 /// a caller for the clear they already defined.
 ///
-/// SAFE TO CALL WHILE THE GAME RUNS, because none of these maps OWNS what it holds. Materials
-/// keep their own references to the textures they use, so clearing the library frees only what
-/// nothing is drawing; the rest is rebuilt from the disk cache, which is what it is for.
-/// Call it AFTER the region node is freed, so the entries the old region held go with it.
+/// Clearing removes cache references; it does not deterministically release native/GPU storage.
+/// Materials and active callers retain borrowed resources. Android's retirement boundary waits
+/// for producers and queued node deletion before clearing, then measures bounded collection and
+/// finalizer passes. Desktop keeps its existing clear timing. Never Dispose borrowed entries.
 /// </remarks>
 public static class Engine_LevelCaches
 {
 	/// <summary>Drops every region-scoped cache. Idempotent.</summary>
-	public static void ReleaseRegion()
+	public static void ReleaseRegion() => ReleaseRegion(Refii.Core.Engine_Platform.IsAndroid);
+
+	/// <summary>Executes the platform retirement branch, also permitting an actual desktop Godot lifecycle fixture.</summary>
+	/// <param name="android">Whether to retire Android's additional CPU/lighting owners.</param>
+	internal static void ReleaseRegion(bool android)
 	{
 		Refii.Textures.Engine_TexLibrary.Clear();
 		Refii.Models.Engine_MdlMaterial.ClearSharedCache();
@@ -33,6 +37,14 @@ public static class Engine_LevelCaches
 		Refii.Entities.Engine_EntityAppearance.ForgetAll();
 		Refii.Entities.Engine_ShadowProxy.Forget();
 		Refii.Level.Engine_PropShadow.Forget();
+		Refii.Level.Engine_PropFarShading.Forget();
+		Refii.Level.Engine_BuildingOccluders.Clear();
 		Refii.Entities.Engine_EntityAttachments.ClearCaches();
+		if (android)
+		{
+			Refii.Hero.Engine_HeroTextureMorph.ReleaseRegionTextures();
+			Refii.Physics.Engine_ClothPieces.Invalidate();
+			Refii.Lighting.Engine_LevelBakedLighting.ReleaseRegionReferences();
+		}
 	}
 }

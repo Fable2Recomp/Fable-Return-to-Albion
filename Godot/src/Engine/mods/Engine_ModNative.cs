@@ -425,12 +425,12 @@ public static class ModNative
 			text.Append(mod.ModName).Append('\n').Append(mod.ContentHash).Append('\n');
 		}
 
-		return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text.ToString())));
+		return Convert.ToHexString(Refii.Core.Engine_Hash.Sha256(Encoding.UTF8.GetBytes(text.ToString())));
 	}
 
 	private static string HashFiles(IEnumerable<ModNativeFile> files)
 	{
-		using var sha = SHA256.Create();
+		using var sha = Refii.Core.Engine_Hash.CreateSha256();
 		foreach (ModNativeFile file in files)
 		{
 			byte[] name = Encoding.UTF8.GetBytes(file.Path + "\n");

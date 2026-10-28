@@ -432,6 +432,8 @@ public partial class RefiiHost : Node
 					cancel = true;
 				}
 			}
+			// Godot reads e through each handler; see Refii.Core.Engine_ArrayMeshes.
+			GC.KeepAlive(e);
 
 			if (e.TryGetValue("cancel", out Variant cancelled) && cancelled.VariantType == Variant.Type.Bool && cancelled.AsBool())
 			{
@@ -616,6 +618,7 @@ public partial class RefiiHost : Node
 				}
 
 				EmitSignal(SignalName.reply, id, result);
+				GC.KeepAlive(result);
 				continue;
 			}
 
@@ -641,6 +644,7 @@ public partial class RefiiHost : Node
 			}
 
 			EmitSignal(SignalName.mod_event, _nameByKind[kind].ToString(), e);
+			GC.KeepAlive(e);
 		}
 
 		Refii.Fx.Engine_FxPlayer.Pump(delta);
@@ -1448,6 +1452,7 @@ public partial class RefiiHost : Node
 		};
 		EmitSignal(SignalName.mod_notice, e);
 		EmitSignal(SignalName.mod_event, "mod_notice", e);
+		GC.KeepAlive(e);
 	}
 
 	/// <summary>The ModMenuBox event's Godot surface, raised where the box was answered.</summary>
@@ -1461,6 +1466,7 @@ public partial class RefiiHost : Node
 		};
 		EmitSignal(SignalName.mod_menu_box, e);
 		EmitSignal(SignalName.mod_event, "mod_menu_box", e);
+		GC.KeepAlive(e);
 	}
 
 	/// <summary>
@@ -1478,6 +1484,7 @@ public partial class RefiiHost : Node
 		};
 		EmitSignal(SignalName.mod_message_box, e);
 		EmitSignal(SignalName.mod_event, "mod_message_box", e);
+		GC.KeepAlive(e);
 	}
 
 	/// <summary>
@@ -1528,6 +1535,7 @@ public partial class RefiiHost : Node
 		};
 		EmitSignal(SignalName.menu_screen, e);
 		EmitSignal(SignalName.mod_event, "menu_screen", e);
+		GC.KeepAlive(e);
 	}
 
 	// ---- effects: Godot draws them (Engine_FxPlayer) --------------------------------------------

@@ -55,6 +55,9 @@ public partial class Engine_GameAssets : Node
 
 	public int FileCount => Snapshot()?.FileCount ?? 0;
 
+	/// <summary>The nested-bank cache counters, for the Android diagnostics report; null before mounting.</summary>
+	public BnkNestedCacheSnapshot? NestedBankCache => IsMounted ? BnkNestedCacheSnapshot.Current() : null;
+
 	public int ShadowedFileCount => Snapshot()?.ShadowedFileCount ?? 0;
 
 	public IReadOnlyList<string> Failures =>
