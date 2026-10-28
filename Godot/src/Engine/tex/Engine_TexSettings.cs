@@ -56,6 +56,8 @@ public static class Engine_TexSettings
 
 	private static bool _pubGameVectorShapes = true;
 
+	private static bool _pubGameReleaseOnClose;
+
 	private static string _model = "resample";
 
 	private static string _weights = "realesr-general-x4v3";
@@ -307,6 +309,23 @@ public static class Engine_TexSettings
 	///
 	/// <see cref="PubGameRasterScale"/> applies only when this is off.
 	/// </remarks>
+	/// <summary>
+	/// Whether a pub-game board disposes its Flash timelines when it is freed instead of leaving
+	/// them to the finalizer. On by default on Android, where a Keystone board's timelines
+	/// outlived it; off on the desktop. See <see cref="Refii.Ui.Flash.SwfSceneUi.Release"/>.
+	/// </summary>
+	public static bool PubGameReleaseOnClose
+	{
+		get
+		{
+			Load();
+			lock (Gate)
+			{
+				return _pubGameReleaseOnClose;
+			}
+		}
+	}
+
 	public static bool PubGameVectorShapes
 	{
 		get
@@ -497,6 +516,8 @@ public static class Engine_TexSettings
 				Engine_RefiiConfig.Int(values, "pubgame_raster_scale_percent", 100) / 100.0f;
 			_pubGameVectorShapes =
 				Engine_RefiiConfig.Bool(values, "pubgame_vector_shapes", true);
+			_pubGameReleaseOnClose = Engine_RefiiConfig.Bool(
+				values, "pubgame_release_on_close", !Engine_AppRoot.IsTestHost && OS.HasFeature("android"));
 			// 0 means "decide for me", and the decision depends on whether upscaling is on, so it
 			// is resolved AFTER the environment overrides below rather than here.
 			_budgetMegabytes = Engine_RefiiConfig.Int(values, "texture_cache_max_mb", 0);

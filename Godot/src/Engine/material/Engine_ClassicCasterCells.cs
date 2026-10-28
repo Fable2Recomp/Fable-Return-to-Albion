@@ -295,7 +295,7 @@ public static class Engine_ClassicCasterCells
             arrays.Resize((int)Mesh.ArrayType.Max);
             arrays[(int)Mesh.ArrayType.Vertex] = positions;
             arrays[(int)Mesh.ArrayType.Index] = index;
-            mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, null,
+            Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays, null,
                 Refii.Entities.Engine_ShadowProxy.MergedLods(levels));
             int surface = mesh.GetSurfaceCount() - 1;
             mesh.SurfaceSetMaterial(surface, materials[cull]);

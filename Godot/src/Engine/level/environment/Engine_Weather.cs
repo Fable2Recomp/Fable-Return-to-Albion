@@ -152,7 +152,7 @@ public static class Engine_Weather
         arrays[(int)Mesh.ArrayType.TexUV2] = ids;
 
         var mesh = new ArrayMesh();
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays);
         mesh.SurfaceSetName(0, "Weather");
         mesh.CustomAabb = new Aabb(new Vector3(-4096f, -4096f, -4096f),
                                    new Vector3(8192f, 8192f, 8192f));

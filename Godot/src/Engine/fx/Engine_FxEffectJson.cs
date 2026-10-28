@@ -516,12 +516,29 @@ public static class Engine_FxEffectJson
 					.Where(f => f.FieldType == typeof(float) || f.FieldType == typeof(int) || f.FieldType == typeof(uint) ||
 						f.FieldType == typeof(bool) || f.FieldType == typeof(string) || f.FieldType == typeof(float[]) ||
 						f.FieldType == typeof(float[][]))
-					.OrderBy(f => f.MetadataToken)
+					.OrderBy(DeclarationOrder)
 					.ToArray();
 				PlainFieldCache[type] = fields;
 			}
 
 			return fields;
+		}
+	}
+
+	/// <summary>
+	/// The field's metadata token, which follows declaration order. NativeAOT (the linux-bionic
+	/// Android export) keeps no tokens and throws; there every field ranks equal and the stable
+	/// sort keeps reflection's own order, which is also declaration order for these flat types.
+	/// </summary>
+	private static int DeclarationOrder(FieldInfo field)
+	{
+		try
+		{
+			return field.MetadataToken;
+		}
+		catch (InvalidOperationException)
+		{
+			return 0;
 		}
 	}
 

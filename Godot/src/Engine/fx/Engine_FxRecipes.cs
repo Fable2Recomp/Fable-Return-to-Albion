@@ -1171,7 +1171,10 @@ public static class Engine_FxRecipes
 			list.Add(record);
 		}
 
-		return Json.Stringify(new Godot.Collections.Dictionary { ["recipes"] = list }, "\t");
+		var root = new Godot.Collections.Dictionary { ["recipes"] = list };
+		string json = Json.Stringify(root, "\t");
+		GC.KeepAlive(root);
+		return json;
 	}
 }
 

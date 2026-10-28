@@ -177,7 +177,7 @@ public static class Engine_EhfPages
             arrays[(int)Mesh.ArrayType.Custom0] = rects.ToArray();
             arrays[(int)Mesh.ArrayType.Index] = indices.ToArray();
             var mesh = new ArrayMesh();
-            mesh.AddSurfaceFromArrays(
+            Refii.Core.Engine_ArrayMeshes.AddSurface(mesh,
                 Mesh.PrimitiveType.Triangles, arrays, null, null, CustomRectFormat);
             mesh.SurfaceSetMaterial(0, ClassicPageMaterial(ehf, patch, heights) ?? PageMaterial(page, heights));
             meshes.Add(mesh);
@@ -256,7 +256,9 @@ public static class Engine_EhfPages
         float chunk = 32f * heights.Spacing;
         var material = new ShaderMaterial
         {
-            Shader = GD.Load<Shader>(Engine_TerrainSplatMaterial.ShaderPath),
+            Shader = Refii.Models.Engine_ShaderVariant.Lite
+                ? Refii.Models.Engine_ShaderSpecialisation.Load(Refii.Models.Engine_ShaderVariant.PageTerrainPath)
+                : GD.Load<Shader>(Refii.Models.Engine_ShaderVariant.PageTerrainPath),
         };
         material.SetShaderParameter("page_mode", true);
         if (!image.IsEmpty())

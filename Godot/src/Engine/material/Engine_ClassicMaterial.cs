@@ -456,13 +456,15 @@ public static class Engine_ClassicMaterial
         //         group adds no second ambient. The lightmap only picks sampler 3's texture.
         // RC+88..+104 are the record's five block floats in file order.
         float[] block = material.BlockFloats.Length >= 5 ? material.BlockFloats : new float[5];
-        result.SetShaderParameter("ps_g_StandardMaterialPSConstants", new Godot.Collections.Array
+        var psConstants = new Godot.Collections.Array
         {
             new Vector4(material.SpecularPowerMin, material.SpecularPowerMax, material.SelfIlluminationScale, block[0]),
             new Vector4(block[1], block[3], block[4], 30f),
             new Vector4(1f, 1f, 1f, 1f),
             new Vector4(0f, 0f, 0f, 1f),
-        });
+        };
+        result.SetShaderParameter("ps_g_StandardMaterialPSConstants", psConstants);
+        GC.KeepAlive(psConstants);
         // The same block's first row at VS c50 (the tree vertex shaders' g_StandardMaterialVSConstants).
         result.SetShaderParameter("vs_g_StandardMaterialVSConstants",
             new Vector4(material.SpecularPowerMin, material.SpecularPowerMax, material.SelfIlluminationScale, block[0]));
@@ -933,6 +935,7 @@ public static class Engine_ClassicMaterial
             var passRows = new Godot.Collections.Array(rows);
             passRows[3] = new Vector4(0f, 0f, 0f, pass == 0 ? 1f : 0f);
             result.SetShaderParameter("ps_g_StandardMaterialPSConstants", passRows);
+            GC.KeepAlive(passRows);
         }
         if (mist is not null)
         {
@@ -957,7 +960,7 @@ public static class Engine_ClassicMaterial
     /// <summary>A duplicate's own state: never its source's variants or glass pass.</summary>
     private static ShaderMaterial DuplicateOwn(ShaderMaterial source)
     {
-        var copy = (ShaderMaterial)source.Duplicate();
+        var copy = Refii.Models.Engine_MaterialCopy.Shallow(source);
         copy.RemoveMeta(GroupVariantsMeta);
         return copy;
     }

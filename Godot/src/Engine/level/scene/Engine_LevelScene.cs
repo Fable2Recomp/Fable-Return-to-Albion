@@ -159,11 +159,110 @@ public static class Engine_LevelMesh
         arrays[(int)Mesh.ArrayType.Tangent] = tangents;
         arrays[(int)Mesh.ArrayType.TexUV] = uvs;
         arrays[(int)Mesh.ArrayType.Index] = indices;
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        Godot.Collections.Dictionary? lods = TerrainLodEnabled() ? GenerateLods(arrays, vertices, indices.Length) : null;
+        Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays, null, lods);
         mesh.SurfaceSetName(mesh.GetSurfaceCount() - 1, surfaceName);
+        // The level table alone (a few floats), so the lodcensus sees the ground's levels.
+        Refii.Models.Engine_MdlSurfaceArrays.RecordLevels(mesh, mesh.GetSurfaceCount() - 1, lods);
+
+        // The steepest normal, for the lite splat's no-cliff chunks (Engine_TerrainSplatMaterial.ForChunk).
+        if (Refii.Models.Engine_ShaderVariant.Lite)
+        {
+            float minUp = mesh.HasMeta(Engine_TerrainSplatMaterial.MinUpMeta)
+                ? mesh.GetMeta(Engine_TerrainSplatMaterial.MinUpMeta).AsSingle()
+                : 1f;
+            foreach (Vector3 normal in normals)
+            {
+                float length = normal.Length();
+                minUp = MathF.Min(minUp, length > 1e-6f ? MathF.Abs(normal.Y) / length : 0f);
+            }
+
+            mesh.SetMeta(Engine_TerrainSplatMaterial.MinUpMeta, minUp);
+        }
+    }
+
+    /// <summary>The coarser levels' error, relative to a surface's largest extent: on a 32 m chunk
+    /// 6 cm, 26 cm and 1 m.</summary>
+    private static readonly float[] LodErrors = { 0.002f, 0.008f, 0.03f };
+
+    /// <summary>
+    /// Coarser index lists over the same vertices, meshoptimizer's (Godot's SurfaceTool) with the
+    /// border locked so neighbouring chunks at different levels still meet exactly. Keyed as
+    /// Godot's importer keys them, by absolute error, so a level draws once that error projects
+    /// under `mesh_lod_pixels`.
+    /// </summary>
+    /// <remarks>THE GROUND HAD NO LOD AT ALL: a Bowerstone frame drew 600k terrain triangles,
+    /// distant chunks at the full 8,192, and on an Adreno 640 triangles cost ~12 GPU cycles each.
+    /// A level that saves under 30% of its predecessor is not kept.</remarks>
+    private static Godot.Collections.Dictionary? GenerateLods(Godot.Collections.Array arrays, Vector3[] vertices, int indexCount)
+    {
+        if (indexCount < 600 || vertices.Length == 0)
+        {
+            return null;
+        }
+
+        Vector3 min = vertices[0], max = vertices[0];
+        foreach (Vector3 v in vertices)
+        {
+            min = min.Min(v);
+            max = max.Max(v);
+        }
+
+        Vector3 size = max - min;
+        float extent = Math.Max(size.X, Math.Max(size.Y, size.Z));
+        if (!(extent > 0f))
+        {
+            return null;
+        }
+
+        using var tool = new SurfaceTool();
+        tool.CreateFromArrays(arrays);
+        GC.KeepAlive(arrays);
+        Godot.Collections.Dictionary? lods = null;
+        int previous = indexCount;
+        foreach (float error in LodErrors)
+        {
+            int[] level = tool.GenerateLod(error, 3);
+            if (level.Length < 3 || level.Length > previous * 7 / 10)
+            {
+                continue;
+            }
+
+            lods ??= new Godot.Collections.Dictionary();
+            lods[error * extent] = level;
+            previous = level.Length;
+        }
+
+        if (lods is not null)
+        {
+            System.Threading.Interlocked.Increment(ref _surfacesWithLods);
+        }
+
+        return lods;
+    }
+
+    private static int _surfacesWithLods;
+
+    /// <summary>Terrain surfaces given generated levels since start-up.</summary>
+    public static int SurfacesWithLods => System.Threading.Volatile.Read(ref _surfacesWithLods);
+
+    /// <summary>`terrain_lod`: generated levels for the ground's chunks and vistas. Default on for
+    /// Android, off elsewhere (the desktop draws the heightfield at full detail, as the 360 did).</summary>
+    internal static bool TerrainLodEnabled()
+    {
+        try
+        {
+            return Refii.Core.Engine_RefiiConfig.Bool(Refii.Core.Engine_RefiiConfig.Read(out _), "terrain_lod",
+                Refii.Core.Engine_Platform.IsAndroid);
+        }
+        catch (Exception)
+        {
+            return Refii.Core.Engine_Platform.IsAndroid;
+        }
     }
 }
 
+/// <summary>Builds detached region presentation nodes from the game's stated landscape and scenario assets.</summary>
 public static class Engine_LevelScene
 {
     public const string TerrainNodeName = "Terrain";
@@ -221,7 +320,7 @@ public static class Engine_LevelScene
 
         Refii.Models.Engine_MdlMaterial.WarmShaders();
         Refii.Entities.Engine_ShadowProxy.WarmShader();
-        _ = GD.Load<Shader>(Engine_TerrainSplatMaterial.ShaderPath);
+        Engine_TerrainSplatMaterial.WarmShaders();
 
         if (!EnsureDirectory(level, out error))
         {
@@ -583,6 +682,12 @@ public static class Engine_LevelScene
         return lines;
     }
 
+    /// <summary>Constructs one detached region, using a build-scoped decoded-asset cache when banks are available.</summary>
+    /// <param name="level">The resolved region and scenario to present.</param>
+    /// <param name="source">The committed asset reader, or null for imported editor resources.</param>
+    /// <param name="findByName">An optional mounted-path resolver for environment textures.</param>
+    /// <param name="error">The reason a required landscape could not be built.</param>
+    /// <returns>The detached region, or null when its required terrain is unavailable.</returns>
     public static Node3D? Build(
         LevelEntry level,
         Func<string, byte[]?>? source,
@@ -665,6 +770,7 @@ public static class Engine_LevelScene
 
         if (heightfieldPath.Length == 0)
         {
+            Finished(level, reads, "build-failed");
             error = "level has no heightfield";
             return null;
         }
@@ -1198,6 +1304,7 @@ public static class Engine_LevelScene
 
         if (landscapes.Count == 0 || !landscapes[0].Grid || landscapes[0].Chunks.Count == 0)
         {
+            Finished(level, reads, "build-failed");
             root.QueueFree();
             error = $"terrain mesh did not load from {meshPath}";
             return null;
@@ -1220,13 +1327,18 @@ public static class Engine_LevelScene
                 };
                 if (material is not null)
                 {
-                    chunk.MaterialOverride = material;
+                    // The lite splat's no-cliff copy where the chunk can take no cliff; else as is.
+                    Material? drawn = Engine_TerrainSplatMaterial.ForChunk(material, chunks[i]);
+                    chunk.MaterialOverride = drawn;
                     if (chunks[i].GetSurfaceCount() > 0)
                     {
-                        chunks[i].SurfaceSetMaterial(0, material);
+                        chunks[i].SurfaceSetMaterial(0, drawn);
                     }
                 }
 
+                // Mesh-local AABB precedes the region mirror; it is the shader's unchanged v_local.
+                Engine_TerrainSplatMaterial.ApplyWeightSupport(chunk, material);
+                Engine_TerrainLodBias.Apply(chunk);
                 container.AddChild(chunk);
                 chunk.Owner = root;
                 nodes.Add(chunk);
@@ -1291,7 +1403,17 @@ public static class Engine_LevelScene
             }
             else
             {
-                surfaces.Add((built.Landscape.Ehf, nodes[0]));
+                // One node per distinct material: the lite splat hands flat chunks their own
+                // no-cliff copy (Engine_TerrainSplatMaterial.ForChunk), made before the bake is
+                // bound, and each copy holds its own `lightmap`.
+                var bakeTargets = new HashSet<Material>();
+                foreach (MeshInstance3D node in nodes)
+                {
+                    if (node.MaterialOverride is { } drawn && bakeTargets.Add(drawn))
+                    {
+                        surfaces.Add((built.Landscape.Ehf, node));
+                    }
+                }
             }
         }
 
@@ -1316,8 +1438,30 @@ public static class Engine_LevelScene
 
         GD.Print($"[level-build] {level}: {clock.ElapsedMilliseconds} ms of construction — " +
             string.Join("  ", phases.ConvertAll(p => $"{p.Name} {p.Ms}ms")));
+        Finished(level, reads, "build-complete");
 
         return root;
+    }
+
+    /// <summary>
+    /// The end of a build, built or not: the read cache's counters logged, and the decoded splat
+    /// sources dropped.
+    /// </summary>
+    /// <remarks>
+    /// The splat sources are RGBA arrays of the enhanced palette textures, 4-16 MB each and all on
+    /// the large object heap, shared so the landscapes of one build decode each texture once.
+    /// Nothing after the build reads them: the ground's texture arrays are uploaded, and the
+    /// next build is a region change, which drops them anyway (`Engine_LevelCaches`). Kept, they
+    /// held up to their 384 MB budget for as long as the player stayed in the region.
+    /// </remarks>
+    private static void Finished(LevelEntry level, LevelReads? reads, string outcome)
+    {
+        if (reads is not null)
+        {
+            GD.Print($"[level-reads] {level}: {outcome} {reads.Complete()}");
+        }
+
+        Engine_TerrainSplatMaterial.ClearSharedCache();
     }
 
     /// <summary>
@@ -1348,7 +1492,10 @@ public static class Engine_LevelScene
 
         EngineLevelFile engineLevel = Engine_EngineLevelFile.Parse(bytes);
         var bound = new HashSet<ulong>();
-        var decoded = new Dictionary<ulong, ImageTexture?>();
+        // A heightfield can contribute several surfaces with the same bake. Keep one upload
+        // per stated ID for this build; the bound materials retain their own native references.
+        // Failed decodes are remembered too, and a later build gets a fresh cache for changed assets.
+        var textures = new Dictionary<ulong, ImageTexture?>();
         var reported = new HashSet<ulong>();
 
         foreach ((string surfacePath, MeshInstance3D node) in surfaces)
@@ -1397,11 +1544,8 @@ public static class Engine_LevelScene
                     break;
                 }
 
-                if (!decoded.TryGetValue(heightfield.LightmapKey, out ImageTexture? texture))
-                {
-                    texture = Engine_LevelBakedLighting.DecodeTexture(bake.Blob);
-                    decoded[heightfield.LightmapKey] = texture;
-                }
+                ImageTexture? texture = GetTerrainLightmapTexture(
+                    textures, heightfield.LightmapKey, bake.Blob, Engine_LevelBakedLighting.DecodeTexture);
                 if (texture is null)
                 {
                     GD.Print($"[baked] {level}: lightmap 0x{heightfield.LightmapKey:X16} did not decode");
@@ -1449,7 +1593,7 @@ public static class Engine_LevelScene
                             ShaderMaterial lit = Refii.Models.Engine_ClassicMaterial.WithAmbient(layer, 1, texture, wait: true) ?? layer;
                             if (ReferenceEquals(lit, layer))
                             {
-                                lit = (ShaderMaterial)layer.Duplicate();
+                                lit = Refii.Models.Engine_MaterialCopy.Shallow(layer);
                             }
                             // g_LandscapeLightmapUVFactor (VS c14), per landscape (`sub_82A8EA50`):
                             // (1 / (W * s), 1 / (H * s), 1, 1), the bake's texel size over the
@@ -1511,6 +1655,32 @@ public static class Engine_LevelScene
                     $"{heightfield.Path} is shipped but nothing draws that heightfield");
             }
         }
+    }
+
+    /// <summary>
+    /// Resolves a terrain bake once within one binding call, including an unsuccessful decode.
+    /// </summary>
+    /// <param name="textures">Build-local references shared by that build's material borrowers.</param>
+    /// <param name="key">The complete 64-bit lightmap ID stated by the heightfield.</param>
+    /// <param name="blob">The selected container's original texture data.</param>
+    /// <param name="decode">The ordinary texture decoder, or a native-free test substitute.</param>
+    /// <returns>The shared result, or null when decoding failed.</returns>
+    /// <remarks>
+    /// The cache never disposes its results: materials can keep using a texture after this
+    /// dictionary leaves scope. It is deliberately not global or part of the container, so
+    /// subsequent region builds and changed asset overlays resolve their own texture data.
+    /// </remarks>
+    internal static T? GetTerrainLightmapTexture<T>(
+        Dictionary<ulong, T?> textures, ulong key, byte[] blob, Func<byte[], T?> decode)
+        where T : class
+    {
+        if (!textures.TryGetValue(key, out T? texture))
+        {
+            texture = decode(blob);
+            textures.Add(key, texture);
+        }
+
+        return texture;
     }
 
     /// <summary>
@@ -1620,6 +1790,10 @@ public static class Engine_LevelScene
         };
     }
 
+    /// <summary>Warms scenario assets and reports bounded aggregate cache work without per-file traffic logs.</summary>
+    /// <param name="level">The region named in the summary.</param>
+    /// <param name="manifest">The guest's scenario preload buckets.</param>
+    /// <param name="reads">The build-scoped reader and its platform retention policy.</param>
     private static void Preload(LevelEntry level, ScenarioManifest manifest, LevelReads reads)
     {
         var wanted = new List<string>();
@@ -1687,7 +1861,7 @@ public static class Engine_LevelScene
                        (missing.Count > shown.Count ? ", ..." : string.Empty);
         }
 
-        GD.Print(summary);
+        GD.Print(summary + $"; cache snapshot: {reads.Snapshot()}");
     }
 
     private static void ReadGameOrderResources(

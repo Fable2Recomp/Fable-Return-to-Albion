@@ -1,5 +1,6 @@
 using Godot;
 using Godot.Collections;
+using Refii.Core;
 
 namespace Refii.Lighting;
 
@@ -44,14 +45,14 @@ public sealed class Engine_PostFxSaturationMask
             return false;
         }
 
-        _shader = _rd.ShaderCreateFromSpirV(spirv);
+        _shader = _rd.Shader(spirv);
         return _shader.IsValid;
     }
 
     public void Resize(Vector2I size)
     {
         ReleaseTargets();
-        Texture = _rd.TextureCreate(
+        Texture = _rd.Texture(
             new RDTextureFormat
             {
                 Width = (uint)size.X,
@@ -97,7 +98,7 @@ public sealed class Engine_PostFxSaturationMask
             !_rd.FramebufferIsValid(_framebuffer))
         {
             FreeFramebuffer();
-            _framebuffer = _rd.FramebufferCreate(new Array<Rid> { Texture, depth });
+            _framebuffer = _rd.Framebuffer(Texture, depth);
             _framebufferMask = Texture;
             _framebufferDepth = depth;
             if (!_framebuffer.IsValid)
@@ -132,7 +133,7 @@ public sealed class Engine_PostFxSaturationMask
             };
             var blend = new RDPipelineColorBlendState();
             blend.Attachments.Add(new RDPipelineColorBlendStateAttachment());
-            _pipeline = _rd.RenderPipelineCreate(
+            _pipeline = _rd.RenderPipeline(
                 _shader, format, RenderingDevice.InvalidFormatId, RenderingDevice.RenderPrimitive.Triangles,
                 new RDPipelineRasterizationState(), new RDPipelineMultisampleState(), test, blend);
             _pipelineFormat = format;

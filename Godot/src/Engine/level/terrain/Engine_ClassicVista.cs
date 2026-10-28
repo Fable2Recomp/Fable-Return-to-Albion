@@ -59,7 +59,7 @@ public static class Engine_ClassicVista
         {
             return null;
         }
-        var misted = (ShaderMaterial)page.Duplicate();
+        var misted = Refii.Models.Engine_MaterialCopy.Shallow(page);
         misted.Shader = shader;
         misted.SetMeta(MistedMeta, true);
         misted.SetShaderParameter("ps_g_MistDensitySampler", mist.Density64);
@@ -81,7 +81,7 @@ public static class Engine_ClassicVista
         {
             return null;
         }
-        var lit = (ShaderMaterial)page.Duplicate();
+        var lit = Refii.Models.Engine_MaterialCopy.Shallow(page);
         lit.Shader = shader;
         lit.SetShaderParameter("ps_g_TextureLightmapSampler", lightmap);
         lit.SetShaderParameter("xr_background_lightmap", new Vector4(origin.X, origin.Y, factor.X, factor.Y));

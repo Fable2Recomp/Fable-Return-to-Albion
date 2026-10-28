@@ -459,6 +459,7 @@ public static class Engine_LevelLights
 		Engine_LevelLighting.ReloadConfig();
 		Engine_LevelShadowMaps.ReloadConfig();
 		RefreshAllLightScales();
+		Refii.Models.Engine_ShaderSpecialisation.SettingsChanged();
 	}
 
 	/// <summary>Copies the live placed lights into <paramref name="into"/>, pruning dead ones.</summary>

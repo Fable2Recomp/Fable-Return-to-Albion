@@ -629,7 +629,7 @@ public partial class Engine_ClassicWeather : Node3D
         arrays[(int)Mesh.ArrayType.TexUV] = new Vector2[MaxSegments * 4];
         arrays[(int)Mesh.ArrayType.Index] = indices;
         var mesh = new ArrayMesh();
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays);
         arrays.Dispose();
         mesh.SurfaceSetMaterial(0, material);
 
@@ -723,7 +723,7 @@ public partial class Engine_ClassicWeather : Node3D
                     block.Visible = true;
                     if (roofs && BlockRoofs(origin))
                     {
-                        ShaderMaterial own = _blockMaterials[index] ??= (ShaderMaterial)_snowMaterial!.Duplicate();
+                        ShaderMaterial own = _blockMaterials[index] ??= Refii.Models.Engine_MaterialCopy.Shallow(_snowMaterial!);
                         own.SetShaderParameter(VsClipShapeName, _blockClip);
                         block.MaterialOverride = own;
                         _roofed.Add(own);
@@ -927,7 +927,7 @@ public partial class Engine_ClassicWeather : Node3D
         arrays.Resize((int)Mesh.ArrayType.Max);
         arrays[(int)Mesh.ArrayType.Vertex] = new Vector3[SnowPoints];
         var mesh = new ArrayMesh();
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Points, arrays);
+        Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Points, arrays);
         arrays.Dispose();
         mesh.SurfaceSetMaterial(0, material);
         _snowMesh = mesh;

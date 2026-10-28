@@ -80,6 +80,7 @@ public partial class Engine_BnkTextureLoader : ResourceFormatLoader
 	public override string _GetResourceType(string path) =>
 		Recognises(path) ? "ImageTexture" : string.Empty;
 
+	/// <summary>Uploads one decoded UI image, releasing only its local CPU image afterwards.</summary>
 	public override Variant _Load(
 		string path, string originalPath, bool useSubThreads, int cacheMode)
 	{
@@ -101,7 +102,7 @@ public partial class Engine_BnkTextureLoader : ResourceFormatLoader
 		//
 		// Decode rather than Get: Godot's ResourceLoader is this route's memory tier and it also
 		// FREES what it caches, so the texture must not also be pinned in the library's live map.
-		Image? image = Engine_TexLibrary.Decode(
+		using Image? image = Engine_TexLibrary.Decode(
 			path[PathPrefix.Length..], TexSemantic.Ui, read, out _);
 		if (image is null || image.IsEmpty())
 		{
@@ -109,7 +110,7 @@ public partial class Engine_BnkTextureLoader : ResourceFormatLoader
 			return Variant.CreateFrom((int)Error.FileNotFound);
 		}
 
-		ImageTexture texture = ImageTexture.CreateFromImage(image);
+		ImageTexture texture = Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(image);
 		texture.ResourcePath = path;
 
 		// §7 PUTS THIS PATH FIRST. The HUD, the menus and the front end are priority 0, and they

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using Godot;
 
 namespace Refii.Level;
@@ -83,6 +84,48 @@ public static class Engine_PropFade
 	private static readonly StringName Centre = "xr_tree_centre";
 	private static readonly StringName Alpha = "xr_fade_alpha";
 
+	/// <summary>The fade uniforms a node was given, by this class or a tree's stated band.</summary>
+	private sealed class Held
+	{
+		public bool Banded;
+		public Vector4 FadeIn, FadeOut;
+		public Vector3 Centre;
+		public float? Alpha;
+	}
+
+	/// <summary>
+	/// What each node was given, for <see cref="Copy"/>.
+	/// </summary>
+	/// <remarks>
+	/// Held here rather than read back: `GetInstanceShaderParameter` is a value-returning server
+	/// call, and with Godot's separate render thread it waits until that thread has finished the
+	/// frame it is drawing. Every cast-only twin and proxy a region builds copies its body's band,
+	/// so a page-in paid that wait once per copy's first read in the frame.
+	/// </remarks>
+	private static readonly ConditionalWeakTable<GeometryInstance3D, Held> States = new();
+
+	/// <summary>
+	/// Gives <paramref name="node"/> a fade band: in, out and the point it is measured from. The
+	/// only way a band is written, so <see cref="Copy"/> can hand it on.
+	/// </summary>
+	public static void StateBand(GeometryInstance3D node, Vector4 fadeIn, Vector4 fadeOut, Vector3 centre)
+	{
+		node.SetInstanceShaderParameter(FadeOut, fadeOut);
+		node.SetInstanceShaderParameter(FadeIn, fadeIn);
+		node.SetInstanceShaderParameter(Centre, centre);
+		Held held = States.GetOrCreateValue(node);
+		held.Banded = true;
+		held.FadeIn = fadeIn;
+		held.FadeOut = fadeOut;
+		held.Centre = centre;
+	}
+
+	private static void StateAlpha(GeometryInstance3D node, float alpha)
+	{
+		node.SetInstanceShaderParameter(Alpha, alpha);
+		States.GetOrCreateValue(node).Alpha = alpha;
+	}
+
 	/// <summary>
 	/// States the radius a node's copies dither to, or clears it with zero. A batch measures each
 	/// copy at its origin, the point its cell's spread was taken about, so the cull at radius plus
@@ -97,28 +140,22 @@ public static class Engine_PropFade
 		}
 
 		(float end, float inverseLength, float power) = OutBand(radius);
-		node.SetInstanceShaderParameter(FadeOut, new Vector4(end, inverseLength, power, 0f));
-		node.SetInstanceShaderParameter(FadeIn, Vector4.Zero);
-		node.SetInstanceShaderParameter(Centre,
+		StateBand(node, Vector4.Zero, new Vector4(end, inverseLength, power, 0f),
 			node is MultiMeshInstance3D ? Vector3.Zero : mesh.GetAabb().GetCenter());
 	}
 
 	/// <summary>Gives a cast-only twin or proxy its body's band and arrival, so the shadow follows the copy.</summary>
 	public static void Copy(GeometryInstance3D from, GeometryInstance3D to)
 	{
-		Variant band = from.GetInstanceShaderParameter(FadeOut);
-		if (band.VariantType == Variant.Type.Nil)
+		if (!States.TryGetValue(from, out Held? held) || !held.Banded)
 		{
 			return;
 		}
 
-		to.SetInstanceShaderParameter(FadeOut, band);
-		to.SetInstanceShaderParameter(FadeIn, from.GetInstanceShaderParameter(FadeIn));
-		to.SetInstanceShaderParameter(Centre, from.GetInstanceShaderParameter(Centre));
-		Variant alpha = from.GetInstanceShaderParameter(Alpha);
-		if (alpha.VariantType != Variant.Type.Nil)
+		StateBand(to, held.FadeIn, held.FadeOut, held.Centre);
+		if (held.Alpha is { } alpha)
 		{
-			to.SetInstanceShaderParameter(Alpha, alpha);
+			StateAlpha(to, alpha);
 		}
 	}
 
@@ -149,8 +186,11 @@ public static class Engine_PropFade
 			_ => null,
 		};
 
-		node.SetInstanceShaderParameter(Alpha, 0f);
-		caster?.SetInstanceShaderParameter(Alpha, 0f);
+		StateAlpha(node, 0f);
+		if (caster is not null)
+		{
+			StateAlpha(caster, 0f);
+		}
 		Arrivals.Add(new Arrival(node, caster, System.Diagnostics.Stopwatch.GetTimestamp()));
 	}
 
@@ -175,10 +215,10 @@ public static class Engine_PropFade
 			}
 
 			float alpha = ArrivalFactor((now - arrival.Since) / (double)System.Diagnostics.Stopwatch.Frequency);
-			arrival.Node.SetInstanceShaderParameter(Alpha, alpha);
+			StateAlpha(arrival.Node, alpha);
 			if (arrival.Caster is { } caster && GodotObject.IsInstanceValid(caster))
 			{
-				caster.SetInstanceShaderParameter(Alpha, alpha);
+				StateAlpha(caster, alpha);
 			}
 
 			if (alpha >= 1f)

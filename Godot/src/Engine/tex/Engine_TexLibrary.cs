@@ -194,7 +194,8 @@ public static class Engine_TexLibrary
 			}
 		}
 
-		Image? image = Decode(path, semantic, read, out bool decodedAlpha, out byte[]? source);
+		using var temporary = new Engine_TextureTemporaries();
+		Image? image = temporary.Own(Decode(path, semantic, read, out bool decodedAlpha, out byte[]? source));
 
 		// A failed decode is not cached: a read can fail transiently (a bank not yet readable
 		// during a region change), and a material with no albedo samples the shader's default,
@@ -222,11 +223,11 @@ public static class Engine_TexLibrary
 			EnhanceDecoded(source, image, semantic, decodedAlpha, path, compress: true, cacheOnly: true)
 				is { } generated)
 		{
-			image = generated;
+			image = temporary.Own(generated);
 			enhanced = true;
 		}
 
-		ImageTexture? texture = image is null || image.IsEmpty() ? null : ImageTexture.CreateFromImage(image);
+		ImageTexture? texture = image is null || image.IsEmpty() ? null : temporary.Own(Engine_AndroidTextureUpload.CreateTexture(image));
 
 		lock (Gate)
 		{
@@ -251,6 +252,9 @@ public static class Engine_TexLibrary
 				Read = read,
 				State = enhanced ? EnhancementState.Enhanced : EnhancementState.None,
 			};
+			// The new texture is exclusive until this publication. A racing loser remains
+			// owned by the operation and is disposed with its temporary CPU images.
+			if (texture is not null) temporary.Transfer(texture);
 		}
 
 		hasAlpha = decodedAlpha;
@@ -499,7 +503,7 @@ public static class Engine_TexLibrary
 				continue;
 			}
 
-			texture.SetImage(image);
+			Engine_AndroidTextureUpload.SetImage(texture, image);
 			lock (Gate)
 			{
 				entry.HasAlpha = hasAlpha;
@@ -1011,7 +1015,7 @@ public static class Engine_TexLibrary
 				{
 					return false;
 				}
-				texture = ImageTexture.CreateFromImage(img);
+				texture = Engine_AndroidTextureUpload.CreateTexture(img);
 				hasHeight = height;
 
 				lock (Gate)
@@ -1144,7 +1148,7 @@ public static class Engine_TexLibrary
 		Image? packed = BuildOrmImage(
 			path, normal, id, powerMin, powerMax, aoStrength, metallicStrength, withHeight,
 			read, out bool packedHeight);
-		ImageTexture? built = packed is null || packed.IsEmpty() ? null : ImageTexture.CreateFromImage(packed);
+		ImageTexture? built = packed is null || packed.IsEmpty() ? null : Engine_AndroidTextureUpload.CreateTexture(packed);
 
 		lock (Gate)
 		{
@@ -1185,8 +1189,8 @@ public static class Engine_TexLibrary
 			return null;
 		}
 
-		Image? spec = specular?.GetImage();
-		Image? norm = normal?.GetImage();
+		Image? spec = Refii.Core.Engine_ServerSyncs.Image(specular);
+		Image? norm = Refii.Core.Engine_ServerSyncs.Image(normal);
 		if (spec is null && norm is null)
 		{
 			return null;
@@ -1205,7 +1209,7 @@ public static class Engine_TexLibrary
 		packed.GenerateMipmaps();
 		CompressOrReport(packed, isNormalMap: false, "orm");
 		hasHeight = packedHeight;
-		return packed.IsEmpty() ? null : ImageTexture.CreateFromImage(packed);
+		return packed.IsEmpty() ? null : Engine_AndroidTextureUpload.CreateTexture(packed);
 	}
 
 	/// <summary>
@@ -1488,6 +1492,7 @@ public static class Engine_TexLibrary
 		GD.Print($"[tex] {count} enhancement worker(s), backend {Engine_TexEnhance.BackendId}");
 	}
 
+	/// <summary>Produces owned CPU images off-thread and transfers cleanup to the main-thread completion.</summary>
 	private static void WorkerLoop()
 	{
 		while (true)
@@ -1504,6 +1509,7 @@ public static class Engine_TexLibrary
 			}
 
 			Image? produced = null;
+			long allocFrom = GC.GetAllocatedBytesForCurrentThread();
 			try
 			{
 				produced = job.Kind == JobKind.Enhance
@@ -1514,6 +1520,9 @@ public static class Engine_TexLibrary
 			{
 				GD.PushWarning($"[tex] {job.Kind} failed for {job.Entry.Path}: {e.Message}");
 			}
+
+			Refii.Core.Engine_GcFrames.Note(ref Refii.Core.Engine_GcFrames.TextureWorkerBytes,
+				GC.GetAllocatedBytesForCurrentThread() - allocFrom);
 
 			lock (Gate)
 			{
@@ -1540,7 +1549,7 @@ public static class Engine_TexLibrary
 			Image image = produced;
 			Entry entry = job.Entry;
 			JobKind kind = job.Kind;
-			Completions.Enqueue(() =>
+			Completions.Enqueue(Engine_TextureTemporaries.ReleaseAfter(image, uploaded =>
 			{
 				ImageTexture? target = entry.Target;
 				if (target is null || !GodotObject.IsInstanceValid(target) || image.IsEmpty())
@@ -1554,7 +1563,7 @@ public static class Engine_TexLibrary
 				// The swap, and the reason nothing had to register a callback: every material
 				// holding this Texture2D is holding THIS object, so replacing its image updates
 				// all of them at once. SetImage rather than Update because the size changes.
-				target.SetImage(image);
+				Engine_AndroidTextureUpload.SetImage(target, image);
 				Refii.Core.Engine_TracedMemory.Resize(TracedPool, target.GetRid().Id, (ulong)image.GetDataSize());
 				lock (Gate)
 				{
@@ -1562,7 +1571,7 @@ public static class Engine_TexLibrary
 						? EnhancementState.Enhanced
 						: EnhancementState.None;
 				}
-			});
+			}));
 		}
 	}
 

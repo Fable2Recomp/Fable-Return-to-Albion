@@ -410,7 +410,7 @@ public partial class Engine_DynamicSurfaceInteractions : Node3D
         arrays[(int)Mesh.ArrayType.TexUV2] = ids;
         arrays[(int)Mesh.ArrayType.Index] = indices;
         var mesh = new ArrayMesh();
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays);
         mesh.CustomAabb = new Aabb(Vector3.One * -1f, Vector3.One * 2f);
         var multi = new MultiMesh
         {

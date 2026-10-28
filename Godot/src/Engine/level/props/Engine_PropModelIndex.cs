@@ -92,8 +92,15 @@ public static class Engine_PropModelIndex
                 bucket.Insert(0, asset);
             }
             _lowerPathCache = null;
+            ++Version;
         }
     }
+
+    /// <summary>
+    /// Bumped whenever a lookup may answer differently: the index dropped, or a path registered.
+    /// A caller that keeps an answer keeps the version beside it.
+    /// </summary>
+    public static int Version { get; private set; }
 
     /// <summary>
     /// Drops the index so the next lookup rebuilds it — a bank remount or a level change.
@@ -112,6 +119,7 @@ public static class Engine_PropModelIndex
 
     private static void InvalidateLocked()
     {
+        ++Version;
         _byPathHash = null;
         _byToken = null;
         _byCompactKey = null;
@@ -383,6 +391,11 @@ public static class Engine_PropModelIndex
         List<PropModelAsset> candidates, IReadOnlyList<string> preferredArchives)
     {
         PropModelAsset best = candidates[0];
+        if (candidates.Count == 1)
+        {
+            return best.VirtualPath;
+        }
+
         int bestScore = int.MinValue;
 
         foreach (PropModelAsset candidate in candidates)
@@ -399,29 +412,61 @@ public static class Engine_PropModelIndex
         return best.VirtualPath;
     }
 
+    /// <remarks>
+    /// Compared as if the path were lower-cased with forward slashes, a character at a time
+    /// rather than on a normalised copy: an attached child resolves its model through here twice
+    /// on every drawn frame, and the copy was a new string per candidate each time.
+    /// </remarks>
     private static int ArchiveScore(string archivePath, IReadOnlyList<string> preferred)
     {
-        string normalised = archivePath.Replace('\\', '/').ToLowerInvariant();
-
-        if (normalised.Contains("model_headers", StringComparison.Ordinal))
+        if (archivePath.Contains("model_headers", StringComparison.OrdinalIgnoreCase))
         {
             return -5000;
         }
 
         for (int i = 0; i < preferred.Count; i++)
         {
-            if (normalised.EndsWith(preferred[i], StringComparison.Ordinal))
+            if (EndsWithNormalised(archivePath, preferred[i]))
             {
                 return 4000 - i;
             }
         }
 
-        if (normalised.EndsWith("globals_models.bnk", StringComparison.Ordinal))
+        if (EndsWithNormalised(archivePath, "globals_models.bnk"))
         {
             return 100;
         }
 
-        return normalised.EndsWith("_models.bnk", StringComparison.Ordinal) ? 50 : 0;
+        return EndsWithNormalised(archivePath, "_models.bnk") ? 50 : 0;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="path"/>, lower-cased invariantly with every backslash a forward
+    /// slash, ends with <paramref name="suffix"/> (compared ordinally, as given).
+    /// </summary>
+    internal static bool EndsWithNormalised(string path, string suffix)
+    {
+        if (suffix.Length > path.Length)
+        {
+            return false;
+        }
+
+        int offset = path.Length - suffix.Length;
+        for (int i = 0; i < suffix.Length; i++)
+        {
+            char c = path[offset + i];
+            if (c == '\\')
+            {
+                c = '/';
+            }
+
+            if (char.ToLowerInvariant(c) != suffix[i])
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>

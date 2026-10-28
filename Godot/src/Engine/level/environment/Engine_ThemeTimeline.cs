@@ -396,83 +396,89 @@ public static class Engine_ThemeTimeline
         return o;
     }
 
-    public static SkyTheme BlendSky(SkyTheme a, SkyTheme b, float w)
+    public static SkyTheme BlendSky(SkyTheme a, SkyTheme b, float w) =>
+        BlendSkyInto(a, b, w, new SkyTheme());
+
+    /// <summary>
+    /// <see cref="BlendSky"/> written into <paramref name="o"/>, every field of it, so a kept
+    /// instance comes out as a new one would. Bumps its <see cref="SkyTheme.Revision"/>.
+    /// </summary>
+    public static SkyTheme BlendSkyInto(SkyTheme a, SkyTheme b, float w, SkyTheme o)
     {
         SkyTheme near = w < 0.5f ? a : b;
-        var o = new SkyTheme
-        {
-            HasAny = a.HasAny || b.HasAny,
-            HasSkyColour = a.HasSkyColour || b.HasSkyColour,
-            HasComplementaryColour = a.HasComplementaryColour || b.HasComplementaryColour,
-            HasSunsetColour = a.HasSunsetColour || b.HasSunsetColour,
-            HasFogColour = a.HasFogColour || b.HasFogColour,
-            HasSunIntensity = a.HasSunIntensity || b.HasSunIntensity,
-            HasRayleigh = a.HasRayleigh || b.HasRayleigh,
-            HasMie = a.HasMie || b.HasMie,
-            HasComplementaryBias = a.HasComplementaryBias || b.HasComplementaryBias,
-            HasNearFog = a.HasNearFog || b.HasNearFog,
-            HasFarFog = a.HasFarFog || b.HasFarFog,
-            HasFoggingStart = a.HasFoggingStart || b.HasFoggingStart,
-            HasSunAxis = a.HasSunAxis || b.HasSunAxis,
-            HasMoonAxis = a.HasMoonAxis || b.HasMoonAxis,
-            HasMoonParams = a.HasMoonParams || b.HasMoonParams,
-            HasStarBrightness = a.HasStarBrightness || b.HasStarBrightness,
-            HasMainLightColour = a.HasMainLightColour || b.HasMainLightColour,
-            HasSkyOverlayTexture = near.HasSkyOverlayTexture,
-            HasMoonTexture = near.HasMoonTexture,
-            HasMoonGlareTexture = near.HasMoonGlareTexture,
-            HasSunDiscTexture = near.HasSunDiscTexture,
-            HasSunBeamsTexture = near.HasSunBeamsTexture,
-            HasSunGlareTexture = near.HasSunGlareTexture,
-            HasSunDiscParams = a.HasSunDiscParams || b.HasSunDiscParams,
-            HasSunDiscColour = a.HasSunDiscColour || b.HasSunDiscColour,
-            HasSunBeams = a.HasSunBeams || b.HasSunBeams,
-            HasSunGlare = a.HasSunGlare || b.HasSunGlare,
-            HasMainLightElevation = a.HasMainLightElevation || b.HasMainLightElevation,
+        o.HasAny = a.HasAny || b.HasAny;
+        o.HasSkyColour = a.HasSkyColour || b.HasSkyColour;
+        o.HasComplementaryColour = a.HasComplementaryColour || b.HasComplementaryColour;
+        o.HasSunsetColour = a.HasSunsetColour || b.HasSunsetColour;
+        o.HasFogColour = a.HasFogColour || b.HasFogColour;
+        o.HasSunIntensity = a.HasSunIntensity || b.HasSunIntensity;
+        o.HasRayleigh = a.HasRayleigh || b.HasRayleigh;
+        o.HasMie = a.HasMie || b.HasMie;
+        o.HasComplementaryBias = a.HasComplementaryBias || b.HasComplementaryBias;
+        o.HasNearFog = a.HasNearFog || b.HasNearFog;
+        o.HasFarFog = a.HasFarFog || b.HasFarFog;
+        o.HasFoggingStart = a.HasFoggingStart || b.HasFoggingStart;
+        o.HasSunAxis = a.HasSunAxis || b.HasSunAxis;
+        o.HasMoonAxis = a.HasMoonAxis || b.HasMoonAxis;
+        o.HasMoonParams = a.HasMoonParams || b.HasMoonParams;
+        o.HasStarBrightness = a.HasStarBrightness || b.HasStarBrightness;
+        o.HasMainLightColour = a.HasMainLightColour || b.HasMainLightColour;
+        o.HasSkyOverlayTexture = near.HasSkyOverlayTexture;
+        o.HasMoonTexture = near.HasMoonTexture;
+        o.HasMoonGlareTexture = near.HasMoonGlareTexture;
+        o.HasSunDiscTexture = near.HasSunDiscTexture;
+        o.HasSunBeamsTexture = near.HasSunBeamsTexture;
+        o.HasSunGlareTexture = near.HasSunGlareTexture;
+        o.HasSunDiscParams = a.HasSunDiscParams || b.HasSunDiscParams;
+        o.HasSunDiscColour = a.HasSunDiscColour || b.HasSunDiscColour;
+        o.HasSunBeams = a.HasSunBeams || b.HasSunBeams;
+        o.HasSunGlare = a.HasSunGlare || b.HasSunGlare;
+        o.HasMainLightElevation = a.HasMainLightElevation || b.HasMainLightElevation;
 
-            SunIntensity = Lerp(a.SunIntensity, b.SunIntensity, w),
-            Rayleigh = Lerp(a.Rayleigh, b.Rayleigh, w),
-            Mie = Lerp(a.Mie, b.Mie, w),
-            ComplementaryBias = Lerp(a.ComplementaryBias, b.ComplementaryBias, w),
-            // PRESENCE-WEIGHTED, unlike the plain lerps around them. See `LerpStated`.
-            NearDistance = LerpStated(a.HasNearFog, a.NearDistance, b.HasNearFog, b.NearDistance, w),
-            NearDensity = LerpStated(a.HasNearFog, a.NearDensity, b.HasNearFog, b.NearDensity, w),
-            FarDistance = LerpStated(a.HasFarFog, a.FarDistance, b.HasFarFog, b.FarDistance, w),
-            FarDensity = LerpStated(a.HasFarFog, a.FarDensity, b.HasFarFog, b.FarDensity, w),
-            CloseFogMaxDistance = LerpStated(
-                a.CloseFogMaxDistance > 0f, a.CloseFogMaxDistance,
-                b.CloseFogMaxDistance > 0f, b.CloseFogMaxDistance, w),
-            FoggingStart = LerpStated(
-                a.HasFoggingStart, a.FoggingStart, b.HasFoggingStart, b.FoggingStart, w),
-            SunAxisElevation = Lerp(a.SunAxisElevation, b.SunAxisElevation, w),
-            SunAxisZOffset = Lerp(a.SunAxisZOffset, b.SunAxisZOffset, w),
-            SunAxisXyRotation = Lerp(a.SunAxisXyRotation, b.SunAxisXyRotation, w),
-            MainLightTimeFactor = Lerp(a.MainLightTimeFactor, b.MainLightTimeFactor, w),
-            MoonIntensity = Lerp(a.MoonIntensity, b.MoonIntensity, w),
-            MoonSize = Lerp(a.MoonSize, b.MoonSize, w),
-            MoonGlareIntensity = Lerp(a.MoonGlareIntensity, b.MoonGlareIntensity, w),
-            MoonGlareSize = Lerp(a.MoonGlareSize, b.MoonGlareSize, w),
-            MoonTransparency = Lerp(a.MoonTransparency, b.MoonTransparency, w),
-            MoonAxisElevation = Lerp(a.MoonAxisElevation, b.MoonAxisElevation, w),
-            MoonAxisZOffset = Lerp(a.MoonAxisZOffset, b.MoonAxisZOffset, w),
-            MoonAxisXyRotation = Lerp(a.MoonAxisXyRotation, b.MoonAxisXyRotation, w),
-            StarBrightness = Lerp(a.StarBrightness, b.StarBrightness, w),
-            SunDiscSize = Lerp(a.SunDiscSize, b.SunDiscSize, w),
-            SunDiscIntensity = Lerp(a.SunDiscIntensity, b.SunDiscIntensity, w),
-            SunBeamsWidth = Lerp(a.SunBeamsWidth, b.SunBeamsWidth, w),
-            SunBeamsHeight = Lerp(a.SunBeamsHeight, b.SunBeamsHeight, w),
-            SunBeamsIntensity = Lerp(a.SunBeamsIntensity, b.SunBeamsIntensity, w),
-            SunGlareIntensity = Lerp(a.SunGlareIntensity, b.SunGlareIntensity, w),
-            SunGlareSize = Lerp(a.SunGlareSize, b.SunGlareSize, w),
-            LightRigXyRotation = Lerp(a.LightRigXyRotation, b.LightRigXyRotation, w),
+        o.SunIntensity = Lerp(a.SunIntensity, b.SunIntensity, w);
+        o.Rayleigh = Lerp(a.Rayleigh, b.Rayleigh, w);
+        o.Mie = Lerp(a.Mie, b.Mie, w);
+        o.ComplementaryBias = Lerp(a.ComplementaryBias, b.ComplementaryBias, w);
+        // PRESENCE-WEIGHTED, unlike the plain lerps around them. See `LerpStated`.
+        o.NearDistance = LerpStated(a.HasNearFog, a.NearDistance, b.HasNearFog, b.NearDistance, w);
+        o.NearDensity = LerpStated(a.HasNearFog, a.NearDensity, b.HasNearFog, b.NearDensity, w);
+        o.FarDistance = LerpStated(a.HasFarFog, a.FarDistance, b.HasFarFog, b.FarDistance, w);
+        o.FarDensity = LerpStated(a.HasFarFog, a.FarDensity, b.HasFarFog, b.FarDensity, w);
+        o.CloseFogMaxDistance = LerpStated(
+            a.CloseFogMaxDistance > 0f, a.CloseFogMaxDistance,
+            b.CloseFogMaxDistance > 0f, b.CloseFogMaxDistance, w);
+        o.FoggingStart = LerpStated(
+            a.HasFoggingStart, a.FoggingStart, b.HasFoggingStart, b.FoggingStart, w);
+        o.SunAxisElevation = Lerp(a.SunAxisElevation, b.SunAxisElevation, w);
+        o.SunAxisZOffset = Lerp(a.SunAxisZOffset, b.SunAxisZOffset, w);
+        o.SunAxisXyRotation = Lerp(a.SunAxisXyRotation, b.SunAxisXyRotation, w);
+        o.MainLightTimeFactor = Lerp(a.MainLightTimeFactor, b.MainLightTimeFactor, w);
+        o.MoonIntensity = Lerp(a.MoonIntensity, b.MoonIntensity, w);
+        o.MoonSize = Lerp(a.MoonSize, b.MoonSize, w);
+        o.MoonGlareIntensity = Lerp(a.MoonGlareIntensity, b.MoonGlareIntensity, w);
+        o.MoonGlareSize = Lerp(a.MoonGlareSize, b.MoonGlareSize, w);
+        o.MoonTransparency = Lerp(a.MoonTransparency, b.MoonTransparency, w);
+        o.MoonAxisElevation = Lerp(a.MoonAxisElevation, b.MoonAxisElevation, w);
+        o.MoonAxisZOffset = Lerp(a.MoonAxisZOffset, b.MoonAxisZOffset, w);
+        o.MoonAxisXyRotation = Lerp(a.MoonAxisXyRotation, b.MoonAxisXyRotation, w);
+        o.StarBrightness = Lerp(a.StarBrightness, b.StarBrightness, w);
+        o.SunDiscSize = Lerp(a.SunDiscSize, b.SunDiscSize, w);
+        o.SunDiscIntensity = Lerp(a.SunDiscIntensity, b.SunDiscIntensity, w);
+        o.SunBeamsWidth = Lerp(a.SunBeamsWidth, b.SunBeamsWidth, w);
+        o.SunBeamsHeight = Lerp(a.SunBeamsHeight, b.SunBeamsHeight, w);
+        o.SunBeamsIntensity = Lerp(a.SunBeamsIntensity, b.SunBeamsIntensity, w);
+        o.SunGlareIntensity = Lerp(a.SunGlareIntensity, b.SunGlareIntensity, w);
+        o.SunGlareSize = Lerp(a.SunGlareSize, b.SunGlareSize, w);
+        o.LightRigXyRotation = Lerp(a.LightRigXyRotation, b.LightRigXyRotation, w);
 
-            SkyOverlayTextureHash = near.SkyOverlayTextureHash,
-            MoonTextureHash = near.MoonTextureHash,
-            MoonGlareTextureHash = near.MoonGlareTextureHash,
-            SunDiscTextureHash = near.SunDiscTextureHash,
-            SunBeamsTextureHash = near.SunBeamsTextureHash,
-            SunGlareTextureHash = near.SunGlareTextureHash,
-        };
+        o.SkyOverlayTextureHash = near.SkyOverlayTextureHash;
+        o.MoonTextureHash = near.MoonTextureHash;
+        o.MoonGlareTextureHash = near.MoonGlareTextureHash;
+        o.SunDiscTextureHash = near.SunDiscTextureHash;
+        o.SunBeamsTextureHash = near.SunBeamsTextureHash;
+        o.SunGlareTextureHash = near.SunGlareTextureHash;
+        o.SourceTimeOfDay = -1.0f;
+        o.Revision++;
 
         LerpInto(a.SkyColour, b.SkyColour, w, o.SkyColour);
         LerpInto(a.ComplementaryColour, b.ComplementaryColour, w, o.ComplementaryColour);
@@ -563,29 +569,33 @@ public static class Engine_ThemeTimeline
         return o;
     }
 
-    public static LightingTheme BlendLighting(LightingTheme a, LightingTheme b, float w)
+    public static LightingTheme BlendLighting(LightingTheme a, LightingTheme b, float w) =>
+        BlendLightingInto(a, b, w, new LightingTheme());
+
+    /// <summary>
+    /// <see cref="BlendLighting"/> written into <paramref name="o"/>, every field of it, so a kept
+    /// instance comes out as a new one would.
+    /// </summary>
+    public static LightingTheme BlendLightingInto(LightingTheme a, LightingTheme b, float w, LightingTheme o)
     {
-        var o = new LightingTheme
-        {
-            HasAny = a.HasAny || b.HasAny,
-            HasMainLightColour = a.HasMainLightColour || b.HasMainLightColour,
-            HasMainLightShadowed = a.HasMainLightShadowed || b.HasMainLightShadowed,
-            HasAmbientColour = a.HasAmbientColour || b.HasAmbientColour,
-            HasLightmapColour = a.HasLightmapColour || b.HasLightmapColour,
-            HasDarkeningColour = a.HasDarkeningColour || b.HasDarkeningColour,
+        o.HasAny = a.HasAny || b.HasAny;
+        o.HasMainLightColour = a.HasMainLightColour || b.HasMainLightColour;
+        o.HasMainLightShadowed = a.HasMainLightShadowed || b.HasMainLightShadowed;
+        o.HasAmbientColour = a.HasAmbientColour || b.HasAmbientColour;
+        o.HasLightmapColour = a.HasLightmapColour || b.HasLightmapColour;
+        o.HasDarkeningColour = a.HasDarkeningColour || b.HasDarkeningColour;
 
-            // SunIntensity is NOT blended here — it is registered against the Sky group, not
-            // Lighting, so it rides on SkyTheme and BlendSky already interpolates it.
-            MainLightShadowed = Lerp(a.MainLightShadowed, b.MainLightShadowed, w),
+        // SunIntensity is NOT blended here — it is registered against the Sky group, not
+        // Lighting, so it rides on SkyTheme and BlendSky already interpolates it.
+        o.MainLightShadowed = Lerp(a.MainLightShadowed, b.MainLightShadowed, w);
 
-            // The painted weight rides along. Both ends of a step are folded with the same
-            // painted layers (Reevaluate folds the start AND the end theme), and the frame
-            // evaluation reads PaintedWeight for the authored-ambient take-over and the sky
-            // tether (SkylightWeight = 1 − PaintedWeight); dropped here, every frame between
-            // two re-evaluations would run unpainted.
-            PaintedWeight = Lerp(a.PaintedWeight, b.PaintedWeight, w),
-            SourceTimeOfDay = a.SourceTimeOfDay,
-        };
+        // The painted weight rides along. Both ends of a step are folded with the same
+        // painted layers (Reevaluate folds the start AND the end theme), and the frame
+        // evaluation reads PaintedWeight for the authored-ambient take-over and the sky
+        // tether (SkylightWeight = 1 − PaintedWeight); dropped here, every frame between
+        // two re-evaluations would run unpainted.
+        o.PaintedWeight = Lerp(a.PaintedWeight, b.PaintedWeight, w);
+        o.SourceTimeOfDay = a.SourceTimeOfDay;
 
         LerpInto(a.MainLightColour, b.MainLightColour, w, o.MainLightColour);
         LerpInto(a.AmbientColour, b.AmbientColour, w, o.AmbientColour);

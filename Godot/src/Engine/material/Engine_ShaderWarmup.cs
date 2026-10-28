@@ -447,7 +447,8 @@ public partial class Engine_ShaderWarmup : Node
 				full = full.Substring(0, full.Length - ".remap".Length);
 			}
 
-			if (full.EndsWith(".gdshader", System.StringComparison.Ordinal))
+			// Only the surface shader set this process draws: the full one, or the mobile lite one.
+			if (full.EndsWith(".gdshader", System.StringComparison.Ordinal) && !Engine_ShaderVariant.SkipWarm(full))
 			{
 				_paths.Add(full);
 			}
@@ -640,6 +641,11 @@ public partial class Engine_ShaderWarmup : Node
 			Rotation = new Vector3(-0.9f, 0.4f, 0.0f),
 		});
 
+		// Under `stable_light_counts` the game's draws all pair with several omni and spot
+		// lights; the same fillers here warm that pipeline instead of the lightless one.
+		Refii.Lighting.Engine_StableLightCounts.Configure(Refii.Core.Engine_RefiiConfig.Read(out _));
+		Refii.Lighting.Engine_StableLightCounts.Mount(_viewport);
+
 		_mesh = FullAttributeMesh();
 	}
 
@@ -678,7 +684,7 @@ public partial class Engine_ShaderWarmup : Node
 		};
 
 		var mesh = new ArrayMesh();
-		mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+		Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays);
 		return mesh;
 	}
 }

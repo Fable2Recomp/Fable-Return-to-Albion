@@ -72,6 +72,17 @@ global uniform vec3 atmos_curve;
 /// Whether the region's theme states a Fogging record at all.
 global uniform bool atmos_fog_on;
 
+// Endpoint values are copied from the same atmosphere update as beta/curve. Readiness is
+// cleared before those globals change, and enabled only after all five endpoint writes.
+// Unsupported curves and the diagnostic switch retain the original shader calculations.
+global uniform bool fable_near_fog_precompute;
+global uniform bool atmos_near_ready;
+global uniform vec3 atmos_near_t0;
+global uniform vec3 atmos_near_t1;
+global uniform vec3 atmos_near_t2;
+global uniform vec3 atmos_near_t3;
+global uniform vec3 atmos_near_t4;
+
 /// The remaster's INTERIOR FOG SCALE (`interior_fog_scale`): 1.0 where the level has a sky,
 /// the cvar where it has none. Rides the guest's own blend factor below, so a scaled fog is
 /// the guest's line with a smaller Fx, not a different formula.
@@ -86,6 +97,16 @@ global uniform float fable_interior_fog = 1.0;
 /// guest owns — see Engine_SkyAtmosphere.FogBlendFactor. It is not a fudge factor bolted onto the
 /// side of the model; it is the guest's own damping term with a value we do not yet know.
 global uniform vec2 atmos_factors;
+
+// Explicit globals avoid a dynamically indexed uniform array on Mobile. The near branch
+// supplies only indices zero through four, including the endpoint at the far transition.
+vec3 fable_atmosphere_near_knot(int index) {
+	if (index == 0) { return atmos_near_t0; }
+	if (index == 1) { return atmos_near_t1; }
+	if (index == 2) { return atmos_near_t2; }
+	if (index == 3) { return atmos_near_t3; }
+	return atmos_near_t4;
+}
 
 /// The two terms of the guest's line for this fragment. False when it takes no fog at all.
 ///
@@ -147,16 +168,32 @@ bool fable_atmosphere_terms_for(
 	// is a ring around the eye at FoggingStart, plain at night against an unfogged floor. Past a
 	// few knots the line and the curve agree and the curve is cheaper.
 	vec3 raw;
-	if (dl < knot * 4.0) {
-		// Interpolated as the LUT is: in transmittance, between the knots either side.
+#ifdef FABLE_LITE
+	// LITE: the published knots whenever they are ready (every supported curve), and the far
+	// curve alone otherwise. Only the analytic knot fallback for an unsupported curve, and the
+	// `fable_near_fog_precompute` diagnostic switch, are compiled out.
+	if (dl < knot * 4.0 && atmos_near_ready) {
+#else
+	if (dl < knot * 4.0 && fable_near_fog_precompute && atmos_near_ready) {
+#endif
 		float below = floor(dl / knot) * knot;
-		float depth_below = atmos_curve.x * pow(min(below, atmos_range.y) * atmos_curve.y, atmos_curve.z);
-		float depth_above = atmos_curve.x * pow(min(below + knot, atmos_range.y) * atmos_curve.y, atmos_curve.z);
-		raw = mix(exp(-atmos_beta * depth_below), exp(-atmos_beta * depth_above), (dl - below) / knot);
+		int index = int(floor(dl / knot));
+		raw = mix(fable_atmosphere_near_knot(index), fable_atmosphere_near_knot(index + 1), (dl - below) / knot);
 	} else {
+		// Keep the original far expression and unsupported-state behavior. In particular,
+		// CPU/GPU pow(0,0) behavior is not repaired by the endpoint optimization.
 		float t = min(dl, atmos_range.y) * atmos_curve.y;
 		float optical_depth = atmos_curve.x * pow(max(t, 0.0), atmos_curve.z);
 		raw = exp(-atmos_beta * optical_depth);
+#ifndef FABLE_LITE
+		if (dl < knot * 4.0) {
+			// Interpolated as the LUT is: in transmittance, between the knots either side.
+			float below = floor(dl / knot) * knot;
+			float depth_below = atmos_curve.x * pow(min(below, atmos_range.y) * atmos_curve.y, atmos_curve.z);
+			float depth_above = atmos_curve.x * pow(min(below + knot, atmos_range.y) * atmos_curve.y, atmos_curve.z);
+			raw = mix(exp(-atmos_beta * depth_below), exp(-atmos_beta * depth_above), (dl - below) / knot);
+		}
+#endif
 	}
 
 	// Fx AND Fy FOLDED IN HERE, so that `transmittance` is the EFFECTIVE one and every caller —

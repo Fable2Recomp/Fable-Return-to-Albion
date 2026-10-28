@@ -200,7 +200,7 @@ public partial class Engine_DynamicPrecipitation : Node3D
         arrays[(int)Mesh.ArrayType.Index] = indices;
 
         var mesh = new ArrayMesh();
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays);
         mesh.CustomAabb = new Aabb(new Vector3(-4096f, -4096f, -4096f),
                                    new Vector3(8192f, 8192f, 8192f));
         return mesh;

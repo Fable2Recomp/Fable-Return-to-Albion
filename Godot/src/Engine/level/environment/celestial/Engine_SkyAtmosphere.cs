@@ -227,39 +227,55 @@ public static class Engine_SkyAtmosphere
         0.0056148912f, 0.0063754139f, 0.010514311f,
     };
 
-    public static AtmosphereInputs FromFrame(SkyFrame frame, SkyTheme theme)
+    public static AtmosphereInputs FromFrame(SkyFrame frame, SkyTheme theme) =>
+        FromFrameInto(frame, theme, new AtmosphereInputs());
+
+    [ThreadStatic]
+    private static AtmosphereInputs? _scratchInputs;
+
+    /// <summary>
+    /// <see cref="FromFrame"/> into one instance kept per thread, for a caller that hands it
+    /// straight to <see cref="Compute(AtmosphereInputs, AtmosphereState)"/> and keeps nothing:
+    /// the next call on the thread writes over it.
+    /// </summary>
+    public static AtmosphereInputs FromFrameScratch(SkyFrame frame, SkyTheme theme) =>
+        FromFrameInto(frame, theme, _scratchInputs ??= new AtmosphereInputs());
+
+    /// <summary>
+    /// <see cref="FromFrame"/> written into <paramref name="inputs"/>. Every field it sets is
+    /// set on every call, and the alpha slots of the three sky colours it never sets stay the
+    /// 0 a new instance has, so a kept instance comes out as a new one would.
+    /// </summary>
+    public static AtmosphereInputs FromFrameInto(SkyFrame frame, SkyTheme theme, AtmosphereInputs inputs)
     {
-        var inputs = new AtmosphereInputs
-        {
-            SunIntensity = frame.SkyParams[0],
-            ComplementaryBias = frame.SkyParams[1],
-            BetaRayleighMultiplier = frame.SkyParams[2],
-            BetaMieMultiplier = frame.SkyParams[3],
-            // A MILLION WHEN UNSTATED, which is the guest's own default and means "never fog".
-            // `sub_82A45DD0` constructs the theme with `flt_8209BC58 = 1000000.0` in this slot, so
-            // a Fogging record that names distances but no start does NOT start its fog at the
-            // camera — it has no fog. Defaulting this to zero instead put the gate behind the near
-            // plane and fogged the entire world from the first pixel.
-            FoggingStart = theme.HasFoggingStart
-                ? MathF.Max(theme.FoggingStart, 0f)
-                : UnfoggedStart,
+        inputs.SunIntensity = frame.SkyParams[0];
+        inputs.ComplementaryBias = frame.SkyParams[1];
+        inputs.BetaRayleighMultiplier = frame.SkyParams[2];
+        inputs.BetaMieMultiplier = frame.SkyParams[3];
+        // A MILLION WHEN UNSTATED, which is the guest's own default and means "never fog".
+        // `sub_82A45DD0` constructs the theme with `flt_8209BC58 = 1000000.0` in this slot, so
+        // a Fogging record that names distances but no start does NOT start its fog at the
+        // camera — it has no fog. Defaulting this to zero instead put the gate behind the near
+        // plane and fogged the entire world from the first pixel.
+        inputs.FoggingStart = theme.HasFoggingStart
+            ? MathF.Max(theme.FoggingStart, 0f)
+            : UnfoggedStart;
 
-            CloseFogMaxDistance = MathF.Max(theme.CloseFogMaxDistance, 0f),
+        inputs.CloseFogMaxDistance = MathF.Max(theme.CloseFogMaxDistance, 0f);
 
-            // ALWAYS. The guest has no "is there fog" flag — every theme carries the block, and a
-            // theme that states nothing gets a FoggingStart of a million, which is how absence is
-            // expressed. Gating on the near and far records instead made our own silence mean
-            // something different from the game's.
-            HasFog = true,
+        // ALWAYS. The guest has no "is there fog" flag — every theme carries the block, and a
+        // theme that states nothing gets a FoggingStart of a million, which is how absence is
+        // expressed. Gating on the near and far records instead made our own silence mean
+        // something different from the game's.
+        inputs.HasFog = true;
 
-            // `HasNearFog` and `HasFarFog` are per PAIR rather than per field, so a record stating
-            // a distance but not its density takes the default for both. The shipped themes state
-            // them together.
-            NearDistance = theme.HasNearFog ? theme.NearDistance : DefaultNearDistance,
-            NearDensity = theme.HasNearFog ? theme.NearDensity : DefaultNearDensity,
-            FarDistance = theme.HasFarFog ? theme.FarDistance : DefaultFarDistance,
-            FarDensity = theme.HasFarFog ? theme.FarDensity : DefaultFarDensity,
-        };
+        // `HasNearFog` and `HasFarFog` are per PAIR rather than per field, so a record stating
+        // a distance but not its density takes the default for both. The shipped themes state
+        // them together.
+        inputs.NearDistance = theme.HasNearFog ? theme.NearDistance : DefaultNearDistance;
+        inputs.NearDensity = theme.HasNearFog ? theme.NearDensity : DefaultNearDensity;
+        inputs.FarDistance = theme.HasFarFog ? theme.FarDistance : DefaultFarDistance;
+        inputs.FarDensity = theme.HasFarFog ? theme.FarDensity : DefaultFarDensity;
 
         // White when unstated, which is the constructor's default for slot 19. Our SkyTheme seeds
         // this array with a blue-grey stand-in that predates the fog work; letting that through

@@ -371,7 +371,7 @@ public static class Engine_LightZones
                 {
                     bool isIndoorInstance = (layers & (IndoorMask | IndoorLampHostMask)) != 0u;
                     float instanceAmbient = isIndoorInstance ? Engine_LevelBakedLighting.BuildingInteriorAmbientScale : 1.0f;
-                    geom.SetInstanceShaderParameter(Engine_LevelBakedLighting.Param_ambient_scale, instanceAmbient);
+                    Refii.Core.Engine_InstanceParams.Set(geom, Engine_LevelBakedLighting.Param_ambient_scale, instanceAmbient);
                 }
                 if (node is MeshInstance3D meshNode)
                 {

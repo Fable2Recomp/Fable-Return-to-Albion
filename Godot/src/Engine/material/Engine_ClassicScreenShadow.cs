@@ -1,6 +1,7 @@
 using System;
 using Godot;
 using Godot.Collections;
+using Refii.Core;
 
 namespace Refii.Models;
 
@@ -68,11 +69,11 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
                 _mask = new Texture2Drd();
                 if (RenderingServer.GetRenderingDevice() is { } rd)
                 {
-                    _whiteRid = rd.TextureCreate(new RDTextureFormat
+                    _whiteRid = rd.Texture(new RDTextureFormat
                     {
                         Width = 1, Height = 1, Format = RenderingDevice.DataFormat.R8Unorm,
                         UsageBits = RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanUpdateBit,
-                    }, new RDTextureView(), new Array<byte[]> { new byte[] { 255 } });
+                    }, new RDTextureView(), new byte[] { 255 });
                     _mask.TextureRdRid = _whiteRid;
                 }
             }
@@ -111,13 +112,13 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
             GD.PushError("[classic] screen shadow mask did not initialise (" + ShaderPath + ")");
             return;
         }
-        _shader = _rd.ShaderCreateFromSpirV(file.GetSpirV());
+        _shader = _rd.Shader(file.GetSpirV());
         if (!_shader.IsValid)
         {
             return;
         }
-        _pipeline = _rd.ComputePipelineCreate(_shader);
-        _nearest = _rd.SamplerCreate(new RDSamplerState
+        _pipeline = _rd.ComputePipeline(_shader);
+        _nearest = _rd.Sampler(new RDSamplerState
         {
             MinFilter = RenderingDevice.SamplerFilter.Nearest, MagFilter = RenderingDevice.SamplerFilter.Nearest,
             RepeatU = RenderingDevice.SamplerRepeatMode.ClampToEdge, RepeatV = RenderingDevice.SamplerRepeatMode.ClampToEdge,
@@ -167,7 +168,7 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
         }
         // The SCR1 materials sample the old mask until the deferred re-point below lands.
         Refii.Core.Engine_RdRetire.Retire(_target);
-        _target = _rd!.TextureCreate(new RDTextureFormat
+        _target = _rd!.Texture(new RDTextureFormat
         {
             Width = (uint)size.X, Height = (uint)size.Y, Format = RenderingDevice.DataFormat.R8Unorm,
             UsageBits = RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.StorageBit
@@ -269,6 +270,7 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
             uniforms.Add(block);
             uniforms.Add(Sampled(5, _rotation));
             set = _set.Hold(UniformSetCacheRD.GetCache(_shader, 0, uniforms));
+            GC.KeepAlive(uniforms);
         }
 
         long list = _rd.ComputeListBegin();
@@ -281,17 +283,30 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
 
     public override void _Notification(int what)
     {
-        if (what != NotificationPredelete || _rd is null)
+        if (what != NotificationPredelete)
         {
             return;
         }
-        if (_params.IsValid) _rd.FreeRid(_params);
-        if (_rotation.IsValid) _rd.FreeRid(_rotation);
-        if (_nearest.IsValid) _rd.FreeRid(_nearest);
-        if (_pipeline.IsValid) _rd.FreeRid(_pipeline);
-        if (_shader.IsValid) _rd.FreeRid(_shader);
-        _params = _nearest = _pipeline = _shader = default;
+        Engine_ClassicScreenShadow self = this;
+        Refii.Core.Engine_RdRetire.OnRenderThread(() => self.ReleaseDeviceObjects());
+    }
+
+    /// <summary>Frees the device objects. Render thread (<see cref="Refii.Core.Engine_RdRetire.OnRenderThread"/>).</summary>
+    private void ReleaseDeviceObjects()
+    {
         _ready = false;
+        RenderingDevice? rd = RenderingServer.GetRenderingDevice();
+        if (_rd is null || rd is null)
+        {
+            _rd = null;
+            return;
+        }
+        if (_params.IsValid) rd.FreeRid(_params);
+        if (_rotation.IsValid) rd.FreeRid(_rotation);
+        if (_nearest.IsValid) rd.FreeRid(_nearest);
+        if (_pipeline.IsValid) rd.FreeRid(_pipeline);
+        if (_shader.IsValid) rd.FreeRid(_shader);
+        _params = _rotation = _nearest = _pipeline = _shader = default;
         _rd = null;
     }
 }

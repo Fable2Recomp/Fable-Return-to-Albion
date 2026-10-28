@@ -369,7 +369,7 @@ public static class Engine_ClassicTerrain
         arrays[(int)Mesh.ArrayType.Custom0] = custom;
         arrays[(int)Mesh.ArrayType.Index] = indices;
         var mesh = new ArrayMesh();
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, null, null,
+        Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays, null, null,
             (Mesh.ArrayFormat)((long)Mesh.ArrayCustomFormat.RgbaFloat << (int)Mesh.ArrayFormat.FormatCustom0Shift));
         return mesh;
     }

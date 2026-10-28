@@ -161,6 +161,47 @@ public static partial class Engine_LevelProps
     /// </remarks>
     public const float BatchCellMetres = 32.0f;
 
+    /// <summary>`foliage_cell_metres`: the cube edge ground foliage is batched by; 0 keeps <see cref="BatchCellMetres"/>.</summary>
+    public const string FoliageCellKey = "foliage_cell_metres";
+
+    /// <summary>
+    /// The configured foliage cell (a cvar-set override included, so it applies to the next region
+    /// built), 0 for the shared one. Held to [4, 32] m.
+    /// </summary>
+    /// <remarks>
+    /// WHY FOLIAGE BATCHES FINER. Undergrowth is tier-culled (prop_cull_distance_scale): each copy
+    /// dithers out at its radius (18 m for a small clump under Performance's 0.4), but the cut that
+    /// saves geometry is the batch node's, at the radius plus the batch's spread, and a 32 m cell
+    /// spreads about 23 m. A copy past its radius is discarded pixel by pixel after its vertices
+    /// and triangles have been processed. At Bower Lake the lodcensus counted 1,023 nettle copies
+    /// (124k triangles, no level: 119 a copy is under mesh_auto_lod's floor) in batches reaching
+    /// 45 m. An 8 m cell spreads about 6 m, so its node stops about 24 m out. The picture is the
+    /// same: no copy inside its radius is ever outside its node's range. The cost is more, smaller
+    /// draws, which the S10e has shown it does not mind.
+    /// </remarks>
+    public static float ReadFoliageCellMetres()
+    {
+        try
+        {
+            float metres = Refii.Core.Engine_RefiiConfig.Float(Refii.Core.Engine_RefiiConfig.Read(out _), FoliageCellKey, 0f);
+            return ClampFoliageCell(metres);
+        }
+        catch (Exception)
+        {
+            return 0f;
+        }
+    }
+
+    /// <summary>0 (the shared cell) for an unset, zero or invalid value; otherwise [4, 32] m.</summary>
+    internal static float ClampFoliageCell(float metres) =>
+        float.IsFinite(metres) && metres > 0f ? Math.Clamp(metres, 4f, BatchCellMetres) : 0f;
+
+    /// <summary>The cell a block's placements batch by: the foliage cell for ground foliage when set.</summary>
+    private static float CellMetresFor(PropBlockBuild block, float foliageCells) =>
+        foliageCells > 0f && (block.Foliage || Refii.Models.Engine_MdlFoliage.IsFoliagePath(block.ModelPath))
+            ? foliageCells
+            : BatchCellMetres;
+
     /// <summary>
     /// A cell with this many members or fewer is folded into the <see cref="SparseCellMetres"/>
     /// cell around it. A MultiMesh is one draw in every pass that sees it and never merges
@@ -236,6 +277,9 @@ public static partial class Engine_LevelProps
     /// <summary>A reflection in X, its own inverse: what a reflected batch's node carries for its copies.</summary>
     public static readonly Transform3D BatchMirror = new(
         new Basis(new Vector3(-1f, 0f, 0f), new Vector3(0f, 1f, 0f), new Vector3(0f, 0f, 1f)), Vector3.Zero);
+
+    /// <summary>Floats per batched copy: a Transform3D's twelve and the probe colour's four.</summary>
+    private const int BatchStride = 16;
 
     public static void CoverInstance(MultiMesh batch, Transform3D instance)
     {
@@ -790,6 +834,7 @@ public static partial class Engine_LevelProps
         var missKeys = new Dictionary<ulong, int>();
 
         var container = new Engine_PropStreamer { Name = NodeName };
+        var names = new ChildNames(container);
 
         // The streamer reads the .lmp back out of the bank when it needs a bake, so the saved
         // scene carries the path rather than a million baked colours.
@@ -811,8 +856,9 @@ public static partial class Engine_LevelProps
             }
             else
             {
-                keyNode.Name = UniqueName(container, "SilverKey");
+                keyNode.Name = names.Take("SilverKey");
                 container.AddChild(keyNode);
+                names.Placed(keyNode);
             }
         }
 
@@ -846,7 +892,7 @@ public static partial class Engine_LevelProps
             var single = new MeshInstance3D
             {
                 Layers = block.LayersFor(role),
-                Name = editorHierarchy is not null ? block.Label : UniqueName(container, role == PropRole.Main ? block.Label : $"{block.Label} {role}"),
+                Name = editorHierarchy is not null ? block.Label : names.Take(role == PropRole.Main ? block.Label : $"{block.Label} {role}"),
                 Transform = block.Instances[index],
             };
 
@@ -857,7 +903,7 @@ public static partial class Engine_LevelProps
 
             block.Configure(single, role, range);
             block.MarkCasting(single, role, block.CastingAt(index), range);
-            single.SetMeta(Engine_PropStreamer.ModelPathMeta, modelPath);
+            single.SetMeta(ModelPathMetaName, modelPath);
 
             uint hash = index < block.InstanceHashes.Count ? block.InstanceHashes[index] : 0;
 
@@ -865,7 +911,7 @@ public static partial class Engine_LevelProps
             // that the guest is about to place the same thing itself. The editor ignores it.
             if (hash != 0)
             {
-                single.SetMeta(Engine_PropStreamer.RecordMeta, (long)hash);
+                single.SetMeta(RecordMetaName, (long)hash);
             }
 
             // The guest's order: the `.lmp`'s baked vertex-colour buffer (map manager+4), then the
@@ -895,8 +941,7 @@ public static partial class Engine_LevelProps
             if (role == PropRole.Main && bakeKey != 0 && bakeKeys.Contains(bakeKey))
             {
                 ++keyed;
-                single.SetMeta(
-                    Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta, $"0x{bakeKey:X16}");
+                single.SetMeta(BakeKeyMetaName, $"0x{bakeKey:X16}");
             }
             else if (role == PropRole.Main)
             {
@@ -962,9 +1007,11 @@ public static partial class Engine_LevelProps
             else
             {
                 container.AddChild(single);
+                names.Placed(single);
             }
         }
 
+        float foliageCells = editorHierarchy is null ? ReadFoliageCellMetres() : 0f;
         foreach (string key in order)
         {
             PropBlockBuild block = blocks[key];
@@ -1030,12 +1077,13 @@ public static partial class Engine_LevelProps
             // AND ONE PER STATED RANGE: a batch switches as one node, so placements the file gives
             // different distances cannot share one.
             var cells = new Dictionary<(Vector3I Cell, StatedRange? Range, byte Casting), List<int>>();
+            float cellMetres = CellMetresFor(block, foliageCells);
             foreach (int index in batched)
             {
                 Vector3 at = block.Instances[index].Origin;
-                var cell = (new Vector3I(Mathf.FloorToInt(at.X / BatchCellMetres),
-                    Mathf.FloorToInt(at.Y / BatchCellMetres),
-                    Mathf.FloorToInt(at.Z / BatchCellMetres)),
+                var cell = (new Vector3I(Mathf.FloorToInt(at.X / cellMetres),
+                    Mathf.FloorToInt(at.Y / cellMetres),
+                    Mathf.FloorToInt(at.Z / cellMetres)),
                     index < block.Ranges.Count ? block.Ranges[index] : null,
                     index < block.InstanceCasting.Count ? block.InstanceCasting[index]
                         : Refii.Models.Engine_ClassicShadows.CastsDefault);
@@ -1106,11 +1154,17 @@ public static partial class Engine_LevelProps
                 }
                 multiMesh.CustomAabb = bounds.Grow(ModelReach);
 
+                // THE WHOLE BATCH IS WRITTEN IN C# AND UPLOADED ONCE, below, after the colours: a
+                // `SetInstanceTransform` and a `SetInstanceColor` per copy were two native calls,
+                // each a queued server command under the separate render thread, 38k of them for
+                // a region's 19k batched copies. Slot layout: the transform's twelve floats
+                // (Engine_PropShadow.WriteSlot), then the probe colour's four.
                 var built = new Transform3D[spatialBatch.Count];
+                var slots = new float[spatialBatch.Count * BatchStride];
                 for (int i = 0; i < spatialBatch.Count; i++)
                 {
                     built[i] = toBatch * block.Instances[spatialBatch[i]];
-                    multiMesh.SetInstanceTransform(i, built[i]);
+                    Refii.Level.Engine_PropShadow.WriteSlot(slots, i * BatchStride, built[i]);
                 }
 
                 // Kept beside the batch, so nothing later has to read the buffer back through
@@ -1152,8 +1206,19 @@ public static partial class Engine_LevelProps
                 }
 
                 bool coloured = Refii.Lighting.Engine_LevelBakedLighting.ApplyMultiMeshProbes(
-                    multiMesh, batchedTransforms, probes, bakes, batchedBakeKeys,
+                    slots, BatchStride, batchedTransforms, probes, bakes, batchedBakeKeys,
                     batchedBakeColours);
+
+                // ONE SLOT WRITE FIRST, THEN THE BULK BUFFER, and the order is what keeps the
+                // server off the GPU. A bulk set on a multimesh with no CPU copy leaves it with
+                // none (mesh_storage.cpp `_multimesh_set_buffer`), and then the first single-slot
+                // write (StaticTwins, Engine_PropShadow.SetInstanceTransform), slot read, or the
+                // streamer's later `multimesh_set_mesh` pulls the whole buffer back off the GPU
+                // (`buffer_get_data`, a stall). The single write on a fresh multimesh builds that
+                // copy from zeros, no read; the bulk set then fills it and the GPU buffer
+                // together. The server ends holding the same CPU copy the per-slot fill left it.
+                multiMesh.SetInstanceTransform(0, built[0]);
+                RenderingServer.MultimeshSetBuffer(multiMesh.GetRid(), (ReadOnlySpan<float>)slots);
 
                 // The cell rides in the name: `UniqueName` probes the container once per taken
                 // name, and a model with hundreds of cells under one label is that squared.
@@ -1163,7 +1228,7 @@ public static partial class Engine_LevelProps
                 var node = new MultiMeshInstance3D
                 {
                     Layers = block.LayersFor(role),
-                    Name = editorHierarchy is not null ? batchName : UniqueName(container, batchName),
+                    Name = editorHierarchy is not null ? batchName : names.Take(batchName),
                     Multimesh = multiMesh,
                     Transform = toBatch,
                 };
@@ -1218,6 +1283,7 @@ public static partial class Engine_LevelProps
                 else
                 {
                     container.AddChild(node);
+                    names.Placed(node);
                 }
             }
 
@@ -3133,6 +3199,73 @@ public static partial class Engine_LevelProps
 
     private static long Quantise(float value) =>
         float.IsFinite(value) ? (long)MathF.Round(value * 100f) : 0L;
+
+    // The per-single meta names as StringNames made once: a `const string` passed to SetMeta is
+    // a new native StringName (a lookup in the global table under its lock) on every call. Made
+    // on first use, not in the static initialiser: the tests touch this type with no engine.
+    private static StringName? _modelPathMetaName, _recordMetaName, _bakeKeyMetaName;
+    private static StringName ModelPathMetaName =>
+        _modelPathMetaName ??= Engine_PropStreamer.ModelPathMeta;
+    private static StringName RecordMetaName => _recordMetaName ??= Engine_PropStreamer.RecordMeta;
+    private static StringName BakeKeyMetaName =>
+        _bakeKeyMetaName ??= Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta;
+
+    /// <summary>
+    /// The names taken under the build's container, kept in C#. <see cref="UniqueName"/> asks the
+    /// container once per taken candidate, a NodePath built and a native lookup each time, so a
+    /// label with n singles cost n(n+1)/2 of them; this answers the same question from a set and
+    /// starts each label's count where it left off. The same names come out: `name`, then the
+    /// first free `name (i)` from 2, and names are never freed during the build.
+    /// </summary>
+    /// <remarks>
+    /// A name Godot would rewrite (one of `. : @ / " %`, or empty) is not looked up as itself, so
+    /// those still go through <see cref="UniqueName"/>, and the name the node actually ends with
+    /// is read back after it is added.
+    /// </remarks>
+    private sealed class ChildNames(Node parent)
+    {
+        private readonly HashSet<string> _taken = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, int> _next = new(StringComparer.Ordinal);
+        private bool _readBack;
+
+        public string Take(string name)
+        {
+            _readBack = !Plain(name);
+            if (_readBack)
+            {
+                return UniqueName(parent, name);
+            }
+
+            if (_taken.Add(name))
+            {
+                return name;
+            }
+
+            int i = _next.TryGetValue(name, out int from) ? from : 2;
+            for (; ; i++)
+            {
+                string candidate = $"{name} ({i})";
+                if (_taken.Add(candidate))
+                {
+                    _next[name] = i + 1;
+                    return candidate;
+                }
+            }
+        }
+
+        /// <summary>Call after adding the child named by the last <see cref="Take"/>.</summary>
+        public void Placed(Node child)
+        {
+            if (_readBack)
+            {
+                _taken.Add(child.Name);
+                _readBack = false;
+            }
+        }
+
+        private static bool Plain(string name) =>
+            name.Length != 0 && name.AsSpan().IndexOfAny(".:@/\"%") < 0;
+    }
 
     private static string UniqueName(Node parent, string name)
     {

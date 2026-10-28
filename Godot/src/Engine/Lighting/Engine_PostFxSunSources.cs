@@ -69,6 +69,10 @@ public partial class Engine_PostFxSunSources : Node
 
     private SkyTheme? _lastSky;
     private SkyFrame? _lastFrame;
+
+    // With the references: the sky node rewrites a kept theme and frame in place (SkyTheme.Revision).
+    private int _lastSkyRevision;
+    private int _lastFrameRevision;
     private Vector3 _sunDirection = Vector3.Up;
     private Source _beams;
     private Source _disc;
@@ -97,12 +101,14 @@ public partial class Engine_PostFxSunSources : Node
         SkyFrame? frame = Engine_PostFxParams.Frame;
         if (sky is not null && frame is not null)
         {
-            bool changed = !ReferenceEquals(sky, _lastSky) || !ReferenceEquals(frame, _lastFrame);
+            bool skyChanged = !ReferenceEquals(sky, _lastSky) || sky.Revision != _lastSkyRevision;
+            bool changed = skyChanged ||
+                !ReferenceEquals(frame, _lastFrame) || frame.Revision != _lastFrameRevision;
             bool pending = _attempts < TextureAttempts && Refii.Core.Engine_GuestFrame.HalfRate &&
                 ((sky.HasSunBeamsTexture && !_beams.Texture.IsValid) ||
                     (sky.HasSunDiscTexture && !_disc.Texture.IsValid));
 
-            if (!ReferenceEquals(sky, _lastSky))
+            if (skyChanged)
             {
                 _attempts = 0;
             }
@@ -116,6 +122,8 @@ public partial class Engine_PostFxSunSources : Node
                 Apply(sky, frame);
                 _lastSky = sky;
                 _lastFrame = frame;
+                _lastSkyRevision = sky.Revision;
+                _lastFrameRevision = frame.Revision;
             }
         }
 
@@ -140,7 +148,7 @@ public partial class Engine_PostFxSunSources : Node
         float[] element = Engine_CelestialElements.ElementParams(sky);
         // Reused: thirteen arrays behind that class, and this runs every frame.
         AtmosphereState state = _frameAtmosphere;
-        Engine_SkyAtmosphere.Compute(Engine_SkyAtmosphere.FromFrame(frame, sky), state);
+        Engine_SkyAtmosphere.Compute(Engine_SkyAtmosphere.FromFrameScratch(frame, sky), state);
         float[] tint = state.SunElementColour;
 
         Vector3 sun = Refii.Level.Engine_SkyFrame.ToGodot(frame.SunDirection);
@@ -185,7 +193,7 @@ public partial class Engine_PostFxSunSources : Node
             {
                 return cached.Rd;
             }
-            Rid cachedRd = RenderingServer.TextureGetRdTexture(cached.Texture.GetRid());
+            Rid cachedRd = Refii.Core.Engine_ServerSyncs.RdTexture(cached.Texture.GetRid());
             if (cachedRd.IsValid)
             {
                 _textures[hash] = (cached.Texture, cachedRd);
@@ -198,7 +206,7 @@ public partial class Engine_PostFxSunSources : Node
         Rid rd = default;
         if (texture is not null)
         {
-            rd = RenderingServer.TextureGetRdTexture(texture.GetRid());
+            rd = Refii.Core.Engine_ServerSyncs.RdTexture(texture.GetRid());
             _textures[hash] = (texture, rd);
             return rd;
         }

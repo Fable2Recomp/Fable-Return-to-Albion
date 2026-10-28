@@ -215,7 +215,7 @@ public static class Engine_LightTable
 			using var image = Image.CreateFromData(Capacity, 2, false, Image.Format.Rgbaf, Bytes);
 			if (_texture is null)
 			{
-				_texture = ImageTexture.CreateFromImage(image);
+				_texture = Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(image);
 				RenderingServer.GlobalShaderParameterSet(GlobalName, _texture);
 			}
 			else

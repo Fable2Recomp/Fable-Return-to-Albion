@@ -530,7 +530,7 @@ public partial class Engine_ClassicParticles : Node
             ((long)Mesh.ArrayCustomFormat.RgbaFloat << (int)Mesh.ArrayFormat.FormatCustom0Shift) |
             ((long)Mesh.ArrayCustomFormat.RgbaFloat << (int)Mesh.ArrayFormat.FormatCustom1Shift));
         group.Mesh.ClearSurfaces();
-        group.Mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, _arrays, null, null, flags);
+        Refii.Core.Engine_ArrayMeshes.AddSurface(group.Mesh, Mesh.PrimitiveType.Triangles, _arrays, null, null, flags);
         group.Allocated = quads;
 
         // In place only when the server's layout is the packed one: positions alone at 12 bytes,
@@ -626,7 +626,7 @@ public partial class Engine_ClassicParticles : Node
         group.Key = key;
         if (!Engine_ClassicMaterial.Active)
         {
-            return !group.Displacement && ComposeModern(group, at, textures, blend, oneOne, alphaRef16);
+            return !group.Displacement && ComposeModern(group, at, textures, blend, oneOne, alphaRef16, soft);
         }
 
         var tokens = new List<string>();
@@ -747,10 +747,18 @@ public partial class Engine_ClassicParticles : Node
         return material;
     }
 
+    /// <summary>
+    /// The modern stages' define for a draw without a depth fade: under `fx_no_depth_reads` the
+    /// build has no depth texture (fx_soft's FX_HARD), whose declaration alone splits Mobile's
+    /// render pass. Read when the material is composed; a live change reaches groups composed after it.
+    /// </summary>
+    internal static string HardDefines(bool soft) =>
+        !soft && Refii.Fx.Engine_FxDepthReads.Enabled ? "#define " + Refii.Fx.Engine_FxDepthReads.HardDefine + "\n" : string.Empty;
+
     /// <summary>A group's modern material: the quads on our own particle shader, the same constants as the classic stages.</summary>
-    private bool ComposeModern(Group group, int at, int textures, string blend, bool oneOne, bool alphaRef16)
+    private bool ComposeModern(Group group, int at, int textures, string blend, bool oneOne, bool alphaRef16, bool soft)
     {
-        ShaderMaterial material = ModernMaterial(ModernShader(ModernParticleInclude, string.Empty, blend), _buffer, at + 254, textures, oneOne, alphaRef16);
+        ShaderMaterial material = ModernMaterial(ModernShader(ModernParticleInclude, HardDefines(soft), blend), _buffer, at + 254, textures, oneOne, alphaRef16);
         group.Material = material;
         group.Node.SetSurfaceOverrideMaterial(0, material);
         return true;

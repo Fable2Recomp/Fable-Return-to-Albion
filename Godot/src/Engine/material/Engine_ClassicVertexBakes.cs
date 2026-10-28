@@ -87,7 +87,7 @@ public static class Engine_ClassicVertexBakes
         {
             _registered = true;
             bool declared = false;
-            foreach (StringName name in RenderingServer.GlobalShaderParameterGetList())
+            foreach (StringName name in Refii.Core.Engine_ServerSyncs.GlobalParameters())
             {
                 declared |= name == Global;
             }

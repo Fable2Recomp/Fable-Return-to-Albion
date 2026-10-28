@@ -179,10 +179,12 @@ public static class Engine_LevelBakedLighting
 			return;
 		}
 
-		node.SetMeta(ProbeMetaName, new Godot.Collections.Array<Vector4>
+		var probe = new Godot.Collections.Array<Vector4>
 		{
 			sample.R, sample.G, sample.B,
-		});
+		};
+		node.SetMeta(ProbeMetaName, probe);
+		GC.KeepAlive(probe);
 	}
 
 	/// <summary>
@@ -198,10 +200,12 @@ public static class Engine_LevelBakedLighting
 		float g = Mathf.Pow(((d3dColour >> 8) & 0xFF) / 255.0f, 2.2f) / ShBand0;
 		float b = Mathf.Pow((d3dColour & 0xFF) / 255.0f, 2.2f) / ShBand0;
 
-		node.SetMeta(ProbeMetaName, new Godot.Collections.Array<Vector4>
+		var probe = new Godot.Collections.Array<Vector4>
 		{
 			new Vector4(r, 0f, 0f, 0f), new Vector4(g, 0f, 0f, 0f), new Vector4(b, 0f, 0f, 0f),
-		});
+		};
+		node.SetMeta(ProbeMetaName, probe);
+		GC.KeepAlive(probe);
 	}
 
 	private static float? _ambientScale;
@@ -349,6 +353,50 @@ public static class Engine_LevelBakedLighting
 	private static readonly System.Collections.Generic.Dictionary<string, LightmapContainer?>
 		ContainerCache = new();
 
+	/// <summary>The lightmap containers cached and the bytes of their blobs, for the heap census.</summary>
+	internal static (long Containers, long Bytes) ContainerCensus()
+	{
+		lock (ContainerCache)
+		{
+			long containers = 0, bytes = 0;
+			foreach (LightmapContainer? container in ContainerCache.Values)
+			{
+				if (container is null)
+				{
+					continue;
+				}
+
+				++containers;
+				foreach (TerrainLightmap terrain in container.TerrainLightmapBlobs.Values)
+				{
+					bytes += terrain.Blob.LongLength;
+				}
+
+				foreach (byte[] blob in container.ObjectLightmapBlobs.Values)
+				{
+					bytes += blob.LongLength;
+				}
+
+				foreach (uint[] bakes in container.VertexBakes.Values)
+				{
+					bytes += bakes.LongLength * 4;
+				}
+
+				foreach (uint[] words in container.U32Arrays.Values)
+				{
+					bytes += words.LongLength * 4;
+				}
+
+				foreach (byte[] block in container.Blocks48.Values)
+				{
+					bytes += block.LongLength;
+				}
+			}
+
+			return (containers, bytes);
+		}
+	}
+
 	/// <summary>
 	/// The level's .lmp, loaded once per gdb path and cached.
 	///
@@ -387,6 +435,22 @@ public static class Engine_LevelBakedLighting
 		{
 			ContainerCache.Clear();
 		}
+	}
+
+	/// <summary>Retires the departing region's borrowed probe data, owned relight iterator and object-atlas binding.</summary>
+	/// <remarks>Called on the main thread after outgoing producers stop. Native materials keep
+	/// their own references; no borrowed image, material, texture or node is disposed.</remarks>
+	public static void ReleaseRegionReferences() => ReleaseRegionReferences(() =>
+		RenderingServer.GlobalShaderParameterSet(GlobalPropLightmapsName, default(Variant)));
+
+	/// <summary>Executes the same reference retirement through a native-free publication seam.</summary>
+	/// <param name="clearObjectAtlas">Clears the previous object-atlas global on the rendering main thread.</param>
+	internal static void ReleaseRegionReferences(Action clearObjectAtlas)
+	{
+		ArgumentNullException.ThrowIfNull(clearObjectAtlas);
+		LightProbeField? probe = CurrentProbes;
+		CurrentProbes = null;
+		Refii.Core.Engine_RegionReferences.Release(ref probe, ref _relightWalk, ref _relightFrame, clearObjectAtlas);
 	}
 
 	/// <summary>
@@ -699,8 +763,14 @@ public static class Engine_LevelBakedLighting
 	public static double VertexBakeSum;
 	public static float VertexBakeMax;
 
+	/// <summary>
+	/// One probe colour per batched instance, written into the batch's own buffer (the slot's
+	/// last four floats, behind the transform) rather than through `SetInstanceColor`: the batch
+	/// is uploaded whole once both halves are in (Engine_LevelProps), not instance by instance.
+	/// </summary>
 	public static bool ApplyMultiMeshProbes(
-		MultiMesh multiMesh,
+		float[] buffer,
+		int stride,
 		System.Collections.Generic.IReadOnlyList<Transform3D> instances,
 		LightProbeField? probes,
 		LightmapContainer? bakes = null,
@@ -724,7 +794,7 @@ public static class Engine_LevelBakedLighting
 				authoredColours[i] != 0)
 			{
 				uint c = authoredColours[i];
-				multiMesh.SetInstanceColor(i, new Color(
+				WriteColour(buffer, i * stride + 12, new Color(
 					Mathf.Pow(((c >> 16) & 0xFF) / 255.0f, 2.2f),
 					Mathf.Pow(((c >> 8) & 0xFF) / 255.0f, 2.2f),
 					Mathf.Pow((c & 0xFF) / 255.0f, 2.2f),
@@ -758,10 +828,18 @@ public static class Engine_LevelBakedLighting
 				any = true;
 			}
 
-			multiMesh.SetInstanceColor(i, colour);
+			WriteColour(buffer, i * stride + 12, colour);
 		}
 
 		return any;
+	}
+
+	private static void WriteColour(float[] buffer, int at, Color colour)
+	{
+		buffer[at] = colour.R;
+		buffer[at + 1] = colour.G;
+		buffer[at + 2] = colour.B;
+		buffer[at + 3] = colour.A;
 	}
 
 	/// <summary>
@@ -854,12 +932,11 @@ public static class Engine_LevelBakedLighting
 			Refii.Models.Engine_ClassicTransfer.Apply(node);
 		}
 		long transferred = System.Diagnostics.Stopwatch.GetTimestamp();
-		double toMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
-		LastLightSplit = $"attach {(attached - from) * toMs:0.0}, transfer {(transferred - attached) * toMs:0.0} " +
-			$"(find {(Refii.Models.Engine_ClassicMaterial.AmbientFindTicks - find) * toMs:0.0}, " +
-			$"compose {(Refii.Models.Engine_ClassicMaterial.AmbientComposeTicks - compose) * toMs:0.0}, " +
-			$"duplicate {(Refii.Models.Engine_ClassicMaterial.AmbientDuplicateTicks - duplicate) * toMs:0.0}, " +
-			$"bind {(Refii.Models.Engine_ClassicMaterial.AmbientBindTicks - bind) * toMs:0.0})";
+		_split = new LightSplit(attached - from, transferred - attached,
+			Refii.Models.Engine_ClassicMaterial.AmbientFindTicks - find,
+			Refii.Models.Engine_ClassicMaterial.AmbientComposeTicks - compose,
+			Refii.Models.Engine_ClassicMaterial.AmbientDuplicateTicks - duplicate,
+			Refii.Models.Engine_ClassicMaterial.AmbientBindTicks - bind, -1);
 
 		// HasMeta FIRST, AND IT IS NOT BELT-AND-BRACES. `GetMeta(name, default)` reads as a safe
 		// lookup with a fallback and is not one: Godot returns the fallback only when the fallback
@@ -880,11 +957,11 @@ public static class Engine_LevelBakedLighting
 				// The remaster's ambient scale rides the L0 band only: scaling the directional
 				// L1 bands too would exaggerate the field's tilt, not its level.
 				float probeScale = AmbientScale;
-				node.SetInstanceShaderParameter(Param_probe_r,
+				Refii.Core.Engine_InstanceParams.Set(node, Param_probe_r,
 					new Vector4(r.X * probeScale, r.Y, r.Z, r.W));
-				node.SetInstanceShaderParameter(Param_probe_g,
+				Refii.Core.Engine_InstanceParams.Set(node, Param_probe_g,
 					new Vector4(g.X * probeScale, g.Y, g.Z, g.W));
-				node.SetInstanceShaderParameter(Param_probe_b,
+				Refii.Core.Engine_InstanceParams.Set(node, Param_probe_b,
 					new Vector4(b.X * probeScale, b.Y, b.Z, b.W));
 			}
 		}
@@ -905,16 +982,52 @@ public static class Engine_LevelBakedLighting
 			? AuthoredBakeWeight
 			: 1f;
 
-		node.SetInstanceShaderParameter(Param_lightmap_colour, new Vector4(dial, dial, dial, mode));
+		// `lite_bake_variants`: a static prop's lite surfaces on the build for this mode, before the
+		// mode itself is stated, so a copy is only ever drawn by instances in its own mode.
+		if (staticProp && Refii.Models.Engine_ShaderVariant.Lite)
+		{
+			Refii.Models.Engine_ShaderSpecialisation.ApplyBakeMode(node, (int)MathF.Round(mode));
+		}
+
+		Refii.Core.Engine_InstanceParams.Set(node, Param_lightmap_colour, new Vector4(dial, dial, dial, mode));
 
 		bool isIndoorInstance = (node.Layers & (Engine_LightZones.IndoorMask | Engine_LightZones.IndoorLampHostMask)) != 0u;
 		float instanceAmbient = isIndoorInstance ? BuildingInteriorAmbientScale : 1.0f;
-		node.SetInstanceShaderParameter(Param_ambient_scale, instanceAmbient);
-		LastLightSplit += $", params {(System.Diagnostics.Stopwatch.GetTimestamp() - transferred) * toMs:0.0}";
+		Refii.Core.Engine_InstanceParams.Set(node, Param_ambient_scale, instanceAmbient);
+		_split = _split with { Params = System.Diagnostics.Stopwatch.GetTimestamp() - transferred };
 	}
 
+	/// <summary>The stages of the last <see cref="ApplyInstanceLighting"/>, in stopwatch ticks; Params -1 until it finished.</summary>
+	private readonly record struct LightSplit(
+		long Attach, long Transfer, long Find, long Compose, long Duplicate, long Bind, long Params);
+
+	private static LightSplit _split;
+
 	/// <summary>The last <see cref="ApplyInstanceLighting"/>'s split, for the streamer's slow-step log.</summary>
-	public static string LastLightSplit = string.Empty;
+	/// <remarks>
+	/// Kept as ticks and formatted only when read: every lit instance (each entity relight up to
+	/// three times, every streamed prop, each node of a relight walk) passed through here, and
+	/// built this string for a log line that prints only on a slow step.
+	/// </remarks>
+	public static string LastLightSplit
+	{
+		get
+		{
+			LightSplit split = _split;
+			if (split == default)
+			{
+				return string.Empty;
+			}
+
+			double toMs = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+			string text = $"attach {split.Attach * toMs:0.0}, transfer {split.Transfer * toMs:0.0} " +
+				$"(find {split.Find * toMs:0.0}, " +
+				$"compose {split.Compose * toMs:0.0}, " +
+				$"duplicate {split.Duplicate * toMs:0.0}, " +
+				$"bind {split.Bind * toMs:0.0})";
+			return split.Params >= 0 ? text + $", params {split.Params * toMs:0.0}" : text;
+		}
+	}
 
 	/// <summary>
 	/// Publishes the theme's lighting to every surface, as global shader parameters. Every frame.
@@ -1010,8 +1123,12 @@ public static class Engine_LevelBakedLighting
 	{
 		++LightingGeneration;
 		_relightWalk = Descendants(root).GetEnumerator();
-		_relightFrame = frame;
+		// A copy, not the frame: the walk outlives the frame it was asked on, and the sky node
+		// writes its published frames over again a few frames later.
+		_relightFrame = (_relightCopy ??= new LightingFrame()).CopyFrom(frame);
 	}
+
+	private static LightingFrame? _relightCopy;
 
 	private static System.Collections.Generic.IEnumerator<Node>? _relightWalk;
 	private static LightingFrame? _relightFrame;
@@ -1188,7 +1305,7 @@ public static class Engine_LevelBakedLighting
 				source.GetWidth() / atlasW, source.GetHeight() / atlasH);
 		}
 
-		container.ObjectAtlas = ImageTexture.CreateFromImage(atlas);
+		container.ObjectAtlas = Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(atlas);
 		GD.Print($"[bake] object lightmap atlas: {decoded.Count} texture(s), " +
 			$"{columns * cellW}x{rows * cellH}");
 	}

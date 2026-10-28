@@ -47,8 +47,21 @@ public partial class Engine_LightShadowBudget : Node
 	/// <summary>Shadowed placed lights at once (legacy compatibility; range-based culling is active).</summary>
 	public static int Budget = 0;
 
-	/// <summary>Placed lights kept VISIBLE at once (legacy compatibility; range-based culling is active).</summary>
-	public static int LightBudget = 0;
+	/// <summary>
+	/// Placed lights kept VISIBLE at once, the nearest that can reach; 0 keeps every one within
+	/// <c>placed_light_range</c>. <c>placed_light_limit</c>.
+	/// </summary>
+	/// <remarks>
+	/// Every visible light is shaded on every pixel of every object it reaches, and a town at
+	/// night has dozens in range. Measured at the Bowerstone Market save spot on the S25+ at dusk:
+	/// the nearest 24 took 7% off the GPU's frame work, 16 took 12% and 6 17%, but 16 already
+	/// left lit shop windows across the square dark. Hidden lights fade out and back in, as on
+	/// leaving their range.
+	/// </remarks>
+	public static int LightBudget = ConfiguredLightBudget();
+
+	private static int ConfiguredLightBudget() => Math.Max(0, Refii.Core.Engine_RefiiConfig.Int(
+		Refii.Core.Engine_RefiiConfig.Read(out _), "placed_light_limit", 0));
 
 	/// <summary>Max static world shadow lights at once (legacy compatibility).</summary>
 	public static int MaxStaticWorldShadowLights = 0;
@@ -70,6 +83,7 @@ public partial class Engine_LightShadowBudget : Node
 	{
 		MaxShadowDistance = Engine_LevelLights.PlacedShadowRange();
 		MaxLightDistance = Engine_LevelLights.PlacedLightRange();
+		LightBudget = ConfiguredLightBudget();
 	}
 
 	/// <summary>Debug lever: false hides every placed light regardless of the budget.</summary>
@@ -553,6 +567,8 @@ public partial class Engine_LightShadowBudget : Node
 				if (!f.Casting)
 				{
 					light.ShadowOpacity = 0.0f;
+					// Its map is about to render: lite shaders built without shadow sampling go back.
+					Refii.Models.Engine_ShaderSpecialisation.ShadowCast("a placed light");
 					light.ShadowEnabled = true;
 					f.Casting = true;
 				}

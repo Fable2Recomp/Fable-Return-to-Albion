@@ -183,7 +183,7 @@ public static class Engine_KynapseGraph
         arrays[(int)Mesh.ArrayType.Vertex] = lineVerts;
 
         var mesh = new ArrayMesh();
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Lines, arrays);
+        Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Lines, arrays);
 
         var mat = new StandardMaterial3D
         {

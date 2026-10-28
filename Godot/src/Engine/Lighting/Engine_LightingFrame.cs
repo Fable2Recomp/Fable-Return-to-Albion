@@ -58,6 +58,30 @@ public sealed class LightingFrame
 	/// </summary>
 	public bool HasSky { get; set; } = true;
 
+	/// <summary>
+	/// This frame's values copied into this instance, for a reader that keeps a frame past the
+	/// one it was published on (<see cref="Engine_LevelBakedLighting.QueueRefreshInstanceLighting"/>).
+	/// </summary>
+	public LightingFrame CopyFrom(LightingFrame from)
+	{
+		TimeOfDay = from.TimeOfDay;
+		Array.Copy(from.SunDirection, SunDirection, 3);
+		Array.Copy(from.LightDirection, LightDirection, 3);
+		Array.Copy(from.AmbientReference, AmbientReference, 3);
+		Array.Copy(from.SunColour, SunColour, 3);
+		SunEnergy = from.SunEnergy;
+		SunShadow = from.SunShadow;
+		HasAmbient = from.HasAmbient;
+		Array.Copy(from.AmbientColour, AmbientColour, 3);
+		AmbientEnergy = from.AmbientEnergy;
+		Array.Copy(from.LightmapColour, LightmapColour, 3);
+		Array.Copy(from.DarkeningColour, DarkeningColour, 3);
+		PaintedWeight = from.PaintedWeight;
+		SkylightWeight = from.SkylightWeight;
+		HasSky = from.HasSky;
+		return this;
+	}
+
 	// NO FOG HERE. It is not a lighting-frame value: the theme's Fogging record drives the
 	// atmosphere, which reaches the world through global shader parameters rather than through
 	// Godot's Environment. See `Engine_SkyAtmosphere.SolveFogCurve`.
@@ -320,12 +344,27 @@ public static class Engine_LightingFrame
 		}
 	}
 
-	public static LightingFrame Evaluate(SkyTheme sky, LightingTheme lighting, SkyFrame frame)
+	public static LightingFrame Evaluate(SkyTheme sky, LightingTheme lighting, SkyFrame frame) =>
+		EvaluateInto(sky, lighting, frame, new LightingFrame());
+
+	[ThreadStatic]
+	private static float[]? _skyAmbient;
+
+	[ThreadStatic]
+	private static float[]? _authoredAmbient;
+
+	/// <summary>
+	/// <see cref="Evaluate"/> written into <paramref name="result"/>, so a kept instance comes
+	/// out as a new one would: the three ambient fields only some paths write are put back to a
+	/// new frame's values first, and every other field is written on every path.
+	/// </summary>
+	public static LightingFrame EvaluateInto(
+		SkyTheme sky, LightingTheme lighting, SkyFrame frame, LightingFrame result)
 	{
-		var result = new LightingFrame
-		{
-			TimeOfDay = frame.TimeOfDay,
-		};
+		result.TimeOfDay = frame.TimeOfDay;
+		result.HasAmbient = false;
+		result.AmbientColour[0] = result.AmbientColour[1] = result.AmbientColour[2] = 0f;
+		result.AmbientEnergy = 0f;
 
 		// THE RIG, NOT THE DISC — in FABLE mode. `sub_821DF670` sends the main light's direction
 		// to the same object as MainLightColour and MainLightShadowed (`lwz r3, 8(r31)` three
@@ -449,7 +488,7 @@ public static class Engine_LightingFrame
 			// doing, so a rock under a golden sunset goes golden with it and every surface
 			// (probe-lit, baked or bare) breathes with one source. Cosine-weighted toward the
 			// zenith because that is where a horizontal world mostly looks.
-			var skyAmbient = new float[3];
+			float[] skyAmbient = _skyAmbient ??= new float[3];
 			for (int i = 0; i < 3; i++)
 			{
 				skyAmbient[i] = (frame.SkyTop[i] * 0.65f) + (frame.SkyBottom[i] * 0.35f);
@@ -484,7 +523,7 @@ public static class Engine_LightingFrame
 				MathF.Min(lighting.PaintedWeight, 1f));
 			if (authoredBlend > 0f && lighting.HasAmbientColour)
 			{
-				var authored = new float[3];
+				float[] authored = _authoredAmbient ??= new float[3];
 				Split(lighting.AmbientColour, authored, out float authoredEnergy);
 				for (int i = 0; i < 3; i++)
 				{

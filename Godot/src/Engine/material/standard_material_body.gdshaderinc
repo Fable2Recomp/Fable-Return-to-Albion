@@ -2,10 +2,37 @@
 // render mode: `standard_material.gdshader` draws both sides, `standard_material_culled.gdshader`
 // culls back faces as the guest does. A render mode is fixed per shader file, so the body lives
 // here once.
+//
+// THE MOBILE LITE VARIANT is this same body compiled with defines (material/lite/*.gdshader,
+// chosen at material build by Engine_ShaderVariant under `shader_variant = "lite"`). Each define
+// REMOVES code at compile time — a uniform branch removes nothing from a GPU's register budget:
+//   FABLE_LITE             what is dead or exactly zero in EITHER lighting model: parallax; the
+//                          surface weather and cloud shadow (the variant is refused while they
+//                          are on); the debug views; the shader-cost diagnostic and the zero-work
+//                          A/B switch (its default side kept).
+//   FABLE_LITE_MODERN      (lite/modern/, the modern model only) the modern model's multiply-by-
+//                          zero at fable_unified = 1: the PRT vertex transfer, the probe/vertex
+//                          bakes, their darkening and sky tether — amb3 keeps its 0.35 share.
+//                          Under the fable model that path IS the ambient, so it stays.
+//   FABLE_LITE_NO_ENVMAP   the environment-cube block (a material that binds none).
+//   FABLE_LITE_NO_SPEC     the whole specular path — fetch, ORM reconstruction, reflection and the
+//                          per-light Phong lobe — for a material whose specular colour is zero.
+#ifdef FABLE_LITE_MODERN
+#ifndef FABLE_LITE
+#define FABLE_LITE
+#endif
+#endif
+#ifdef FABLE_LITE_NO_SPEC
+#ifndef FABLE_LITE
+#define FABLE_LITE
+#endif
+#endif
 
 #include "res://src/Engine/material/fable_lighting.gdshaderinc"
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
+#ifndef FABLE_LITE
 #include "res://src/Engine/level/environment/dynamic/dynamic_surface_weather.gdshaderinc"
+#endif
 #ifdef FABLE_TREE_WIND
 #include "res://src/Engine/material/fable_tree_sway.gdshaderinc"
 #endif
@@ -120,6 +147,9 @@ uniform float wind_speed = 1.0;
 /// Lambert without specular, and the ambient darkening only with its own normal map.
 global uniform int fable_light_debug;
 
+// False evaluates the original zero-color work for same-process profiling only.
+global uniform bool fable_zero_specular_work;
+
 uniform bool foliage = false;
 
 /// Repeated scatter (grass, MeshKind 4): the GRASS1 pair, which has no specular and no
@@ -134,6 +164,43 @@ global uniform vec3 fable_wind_direction;
 global uniform vec2 fable_wind_factors;
 
 
+// A MATERIAL'S OWN FLAGS AS CONSTANTS, for a lite build specialised to them
+// (Engine_ShaderSpecialisation, `lite_material_folds`): a flag is a uniform the material sets once
+// at build and never again, so a build drawn only by materials with the flag off can fold it.
+// Unspecialised, each reads its uniform as before.
+#ifdef FABLE_SPEC_NOT_PBR
+#define FABLE_IS_PBR false
+#else
+#define FABLE_IS_PBR is_pbr
+#endif
+#ifdef FABLE_SPEC_NO_ORM
+#define FABLE_HAS_ORM false
+#else
+#define FABLE_HAS_ORM has_orm
+#endif
+#ifdef FABLE_SPEC_NO_EMISSION
+#define FABLE_HAS_EMISSION false
+#else
+#define FABLE_HAS_EMISSION has_emission
+#endif
+#ifdef FABLE_SPEC_NOT_PREMULTIPLIED
+#define FABLE_PREMULTIPLIED false
+#else
+#define FABLE_PREMULTIPLIED premultiplied_alpha
+#endif
+// No normal map: the fetch, the tangent frame and NORMAL_MAP itself go, so Godot drops the
+// tangent and binormal from the vertex stage too.
+#ifdef FABLE_SPEC_NO_NORMAL_MAP
+#define FABLE_HAS_NORMAL false
+#else
+#define FABLE_HAS_NORMAL has_normal
+#endif
+#ifdef FABLE_SPEC_NO_GRASS_BEND
+#define FABLE_GRASS_BEND false
+#else
+#define FABLE_GRASS_BEND (grass_normal_gradient.x > 0.5)
+#endif
+
 /// THE SPECULAR TERMS, HANDED TO `light()`. Godot's `light()` cannot reach a fragment local, and
 /// the guest's specular is Phong over the material's own maps, so the colour and the exponent
 /// travel as varyings — the same arrangement `standard_material_phong` uses.
@@ -143,11 +210,16 @@ global uniform vec2 fable_wind_factors;
 /// diffuse, self-illumination and reflection by `.xyz` before the atmosphere; `.w` is never read.
 instance uniform vec4 entity_tint = vec4(1.0);
 
+#ifndef FABLE_LITE_NO_SPEC
 varying vec3 v_specular;
 varying float v_specular_power;
+#endif
 
 /// The PRT ambient, computed per vertex as the guest's AMB2 vertex shader does; a = present.
+/// Not in FABLE_LITE_MODERN: the modern model multiplies every probe bake by zero.
+#ifndef FABLE_LITE_MODERN
 varying vec4 v_transfer;
+#endif
 
 /// A TREE'S PER-PLACEMENT FADE (`sub_8220AF90`; Engine_PropDrawRange.TreeBand stamps the band):
 /// (start, 1/length, power) in and (end, 1/length, power) out, measured from the main camera to
@@ -155,25 +227,35 @@ varying vec4 v_transfer;
 /// End 0 is no tree band. A TIER-CULLED PROP carries the same out band at its cull radius
 /// (Engine_PropFade.SetRadius, centre = its origin in a batch), so a cell's undergrowth dithers in
 /// copy by copy as each crosses into range instead of appearing with the cell.
-instance uniform vec4 xr_tree_fade_in = vec4(0.0);
-instance uniform vec4 xr_tree_fade_out = vec4(0.0);
-instance uniform vec3 xr_tree_centre = vec3(0.0);
+/// PINNED SLOTS, the same four in shadow_caster.gdshader. A prop's cast-only twin is one instance
+/// holding the caster material (its merged surface) and the body's own material (each alpha-cut
+/// surface it keeps, Engine_ShadowProxy.Build). Godot numbers unhinted instance uniforms in
+/// declaration order, so unpinned the caster had these at 0..3 and the body at 7..10: one slot
+/// set per name, the kept surfaces read slots nobody wrote, and every rebuild warned. 10..13 sit
+/// above this body's own unhinted seven (fable_lighting's six, the tint) and below the classic
+/// shaders' pins (14, 15).
+instance uniform vec4 xr_tree_fade_in : instance_index(10) = vec4(0.0);
+instance uniform vec4 xr_tree_fade_out : instance_index(11) = vec4(0.0);
+instance uniform vec3 xr_tree_centre : instance_index(12) = vec3(0.0);
 /// A PROP'S ARRIVAL: 0 the frame its mesh stood, 1 after Engine_PropFade.ArrivalSeconds, so a copy
 /// the streamer delivers inside its radius dithers in instead of popping. 1 is standing.
-instance uniform float xr_fade_alpha = 1.0;
+instance uniform float xr_fade_alpha : instance_index(13) = 1.0;
 varying float v_tree_fade;
 
 void vertex() {
-#ifdef FABLE_TREE_WIND
-    // A tree carries its wind lanes in CUSTOM1..3 (Engine_MdlTreeStreams), not transfer.
+#ifndef FABLE_LITE_MODERN
+#if defined(FABLE_TREE_WIND) || defined(FABLE_SPEC_NO_PRT)
+    // A tree carries its wind lanes in CUSTOM1..3 (Engine_MdlTreeStreams), not transfer; a
+    // FABLE_SPEC_NO_PRT build draws instances that state another bake mode, or a mesh without CUSTOM0.
     v_transfer = vec4(0.0);
 #else
     v_transfer = fable_transfer(CUSTOM0, CUSTOM1, CUSTOM2, mat3(MODEL_MATRIX));
 #endif
+#endif
     // GRASS1's normal gradient (VS 0453 1314-1371, PS 0487 1279-1287): w = saturate(height x
     // factor + offset) bends the normal toward the instance's up, and the pixel stage bends
     // the vertex normal toward that again by the same w.
-    if (grass_normal_gradient.x > 0.5) {
+    if (FABLE_GRASS_BEND) {
         float w = clamp((VERTEX.y * grass_normal_gradient.y) + grass_normal_gradient.z, 0.0, 1.0);
         vec3 bent = normalize(mix(NORMAL, vec3(0.0, 1.0, 0.0), w));
         NORMAL = normalize(mix(NORMAL, bent, w));
@@ -250,7 +332,8 @@ void fragment() {
     // runs on every surface in the world; the march buys self-occlusion at a cost this does not
     // need to pay for what is fundamentally a derived, band-limited height.
     vec2 uv = UV;
-    if (has_orm && has_height && parallax_scale > 0.0) {
+#ifndef FABLE_LITE
+    if (FABLE_HAS_ORM && has_height && parallax_scale > 0.0) {
         // The view direction in TANGENT space. Godot gives VIEW in view space, and the tangent
         // frame beside it, so the three dots are the change of basis.
         vec3 tangent_view = normalize(vec3(
@@ -264,6 +347,7 @@ void fragment() {
         // infinity — the smear that makes bad parallax obvious.
         uv = UV + (tangent_view.xy * relief * parallax_scale / max(tangent_view.z, 0.4));
     }
+#endif
 
     vec4 alb = texture(albedo_tex, uv);
     // FABLE_SOLID: no discard either — the second thing that refuses the shared shadow material.
@@ -274,9 +358,14 @@ void fragment() {
     }
 #endif
 
+    // Keep the same vertex shader, parallax coordinate and alpha coverage during the diagnostic.
+    // Only the work after coverage is bypassed; this deliberately changes the visible material.
+#ifndef FABLE_LITE
+    if ((fable_shader_cost_diagnostic & 2) == 0) {
+#endif
     // Gamma 2.0 by squaring for legacy assets; standard sRGB linear decode for authored PBR.
     // Alpha stays raw — it was tested above as the artist authored it.
-    if (is_pbr) {
+    if (FABLE_IS_PBR) {
         alb.rgb = mix(
             alb.rgb / 12.92,
             pow((alb.rgb + vec3(0.055)) / 1.055, vec3(2.4)),
@@ -286,7 +375,7 @@ void fragment() {
         alb.rgb *= alb.rgb;
     }
 
-    if (premultiplied_alpha) {
+    if (FABLE_PREMULTIPLIED) {
         alb.rgb /= max(alb.a * alb.a, 1e-6);
     }
 
@@ -336,7 +425,7 @@ void fragment() {
     // reconstructs z the same way, which is why the map can still be handed over whole.
     float ndotn = 1.0;
     vec3 mapped_view = NORMAL;
-    if (has_normal) {
+    if (FABLE_HAS_NORMAL) {
         vec3 nm = texture(normal_tex, uv).rgb;
         NORMAL_MAP = nm;
         vec2 nxy = (nm.xy * 2.0) - 1.0;
@@ -357,6 +446,10 @@ void fragment() {
     vec3 spec_colour = vec3(0.0);
     float spec_power = spec_power_min;
 
+#ifdef FABLE_LITE_NO_SPEC
+    ROUGHNESS = 1.0;
+    SPECULAR = 0.0;
+#else
     if (has_specular) {
         // SQUARED LIKE THE ALBEDO, and by the same line — the guest reads the specular map raw
         // and then `r8.x = r8.x * r8.x` component by component, exactly as it does for the
@@ -372,11 +465,12 @@ void fragment() {
         ROUGHNESS = 1.0;
         SPECULAR = 0.0;
     }
+#endif
 
     // THE PACKED PATH OVERRIDES the values derived above, and only those two — the specular
     // colour computed from spec_colour still stands, because ORM has nowhere to put it.
     float ao = 1.0;
-    if (has_orm) {
+    if (FABLE_HAS_ORM) {
         vec3 orm = texture(orm_tex, uv).rgb;
         ao = orm.r;
         ROUGHNESS = orm.g;
@@ -386,19 +480,21 @@ void fragment() {
     // ORM HAS NOWHERE TO PUT A SPECULAR COLOUR, so the pair is reconstructed from what it does
     // carry: the exponent inverts the `sqrt(2 / (power + 2))` mapping above, and the colour is
     // the dielectric/metal split. Ours, not the guest's — it has no packed path.
+#ifndef FABLE_LITE_NO_SPEC
     v_specular = spec_colour;
     v_specular_power = spec_power;
     // GATED ON THE SPECULAR TOO: the reconstruction only replaces values a specular fetch
     // produced. A normal-only ORM has no exponent to invert, and the 0.04 dielectric floor
     // would hand a specular lobe to a material the guest renders with NONE — its fallback
     // sampler is transparent black.
-    if (has_orm && (has_specular || is_pbr)) {
+    if (FABLE_HAS_ORM && (has_specular || FABLE_IS_PBR)) {
         v_specular_power = clamp(2.0 / max(ROUGHNESS * ROUGHNESS, 1e-4) - 2.0, 1.0, 4096.0);
         v_specular = mix(vec3(0.04), alb.rgb, METALLIC);
     }
+#endif
 
     // GODOT'S INDIRECT SPECULAR IS OFF for legacy materials. For authored PBR, keep real roughness/metallic/AO.
-    if (!is_pbr) {
+    if (!FABLE_IS_PBR) {
         SPECULAR = 0.0;
         METALLIC = 0.0;
         ROUGHNESS = 1.0;
@@ -409,6 +505,7 @@ void fragment() {
     }
 
     vec3 world_normal = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+#ifndef FABLE_LITE
     vec3 weather_weights = surface_weights(fable_world, world_normal);
     surface_material(weather_weights, fable_world, alb.rgb, ROUGHNESS, METALLIC);
     ALBEDO = alb.rgb;
@@ -419,12 +516,34 @@ void fragment() {
         v_specular_power = mix(v_specular_power, mix(70.0, 350.0, weather_weights.z), weather_wet);
         v_specular *= 1.0 - weather_weights.y;
         vec2 ripple = surface_ripple(fable_world) * weather_weights.z;
-        vec3 base_map = has_normal ? texture(normal_tex, uv).rgb : vec3(0.5, 0.5, 1.0);
+        vec3 base_map = FABLE_HAS_NORMAL ? texture(normal_tex, uv).rgb : vec3(0.5, 0.5, 1.0);
         NORMAL_MAP = mix(base_map, vec3(0.5 + ripple.x, 0.5 + ripple.y, 1.0),
             max(weather_weights.z, weather_weights.y * 0.8));
     }
+#endif
+#ifdef FABLE_LITE_MODERN
+    // THE MODERN MODEL'S FILL, AND NOTHING IT MULTIPLIES AWAY. With `fable_unified` = 1,
+    // `fable_ambient` scales every bake but amb3's by max(1 - 1, 0) = 0 — the probe SH, the PRT
+    // transfer, the vertex bakes, their darkening, the tether and the bake AO — so none of it is
+    // compiled. amb3 (mode 4) keeps its 0.35 share, untethered and unoccluded exactly as below.
+    vec3 mapped_world = normalize((INV_VIEW_MATRIX * vec4(mapped_view, 0.0)).xyz);
+    vec3 ambient_half = vec3(0.0);
+    if (FABLE_MODE > 3.5) {
+        vec3 darken = vec3(1.0);
+        if (!grass && (!foliage || FABLE_HAS_NORMAL)) {
+            vec3 amb_ref = normalize(vec3(fable_ambient_ref.x, fable_ambient_ref.z, fable_ambient_ref.y));
+            float bend = 0.5 * (dot(world_normal, amb_ref) + 1.0);
+            vec3 bent = normalize(mix(world_normal, amb_ref, bend));
+            float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
+            darken = mix(fable_darkening, vec3(1.0), nb * nb);
+        }
+        ambient_half = fable_bake_amb3(UV2) * fable_lightmap_rgb() * darken;
+    }
+    EMISSION = alb.rgb * fable_ambient(ambient_half);
+    AO = ao;
+#else
     vec3 bake;
-    if (v_transfer.a > 0.5 && lightmap_colour.w > 0.5 && lightmap_colour.w < 1.5) {
+    if (v_transfer.a > 0.5 && FABLE_MODE > 0.5 && FABLE_MODE < 1.5) {
         // Mode 1 on a mesh that carries its transfer: the guest's PRT, decoded as AMB2 is.
         bake = pow(max(v_transfer.rgb, vec3(0.0)), vec3(FABLE_BAKE_GAMMA));
     } else {
@@ -443,7 +562,7 @@ void fragment() {
     // g_AmbientNormalMapDarkeningColour).
     vec3 mapped_world = normalize((INV_VIEW_MATRIX * vec4(mapped_view, 0.0)).xyz);
     vec3 darken = vec3(1.0);
-    if (!grass && (!foliage || has_normal)) {
+    if (!grass && (!foliage || FABLE_HAS_NORMAL)) {
         vec3 amb_ref = normalize(vec3(fable_ambient_ref.x, fable_ambient_ref.z, fable_ambient_ref.y));
         float bend = 0.5 * (dot(world_normal, amb_ref) + 1.0);
         vec3 bent = normalize(mix(world_normal, amb_ref, bend));
@@ -472,30 +591,33 @@ void fragment() {
     // AUTHORED bake — a baked term already contains its occlusion, and occluding it twice is
     // what split the bridge from the terrain beside it. The probe and flat modes are synthetic
     // ambient with no baked occlusion, so the modernized AO stays legitimate there.
-    float bake_ao = lightmap_colour.w > 2.5 ? 1.0 : ao;
+    float bake_ao = FABLE_MODE > 2.5 ? 1.0 : ao;
     vec3 ambient_half = bake * fable_lightmap_rgb() * darken * bake_ao;
 
     // The sky tether runs POST-LightmapColour (see fable_sky_tether) on every exterior mode;
     // mode 4's amb3 lightmaps are interiors-only and stay authored.
-    if (lightmap_colour.w < 3.5) {
+    if (FABLE_MODE < 3.5) {
         ambient_half = fable_sky_tether(ambient_half);
     }
 
     EMISSION = alb.rgb * fable_ambient(ambient_half);
     // Godot's ambient and GI take the AO the guest's fills took above; 1 in the fable model.
     AO = mix(1.0, ao, fable_unified);
-    if (has_emission) {
+#endif
+    if (FABLE_HAS_EMISSION) {
         // Linear for authored PBR mod assets (is_pbr = true) with authored physical radiance.
         // Squared for legacy assets per guest pixel shader (r3.xyz = r3.xyz * r3.xyz),
         // scaled by material self_illum_scale and global fable_emission_boost for HDR headroom.
         vec3 selfIllum = texture(emission_tex, uv).rgb;
-        if (is_pbr) {
+        if (FABLE_IS_PBR) {
             EMISSION += selfIllum * self_illum_scale;
         } else {
             EMISSION += (selfIllum * selfIllum) * (self_illum_scale * fable_emission_boost);
         }
     }
 
+#ifndef FABLE_LITE_NO_SPEC
+#ifndef FABLE_LITE_NO_ENVMAP
     if (has_envmap) {
         // THE REFLECTION, exactly as the guest builds it:
         //
@@ -520,12 +642,16 @@ void fragment() {
         vec3 env = texture(envmap_tex, reflected).rgb;
         EMISSION += spec_colour * env * env;
     }
+#endif
+#endif
 
     // THE ENTITY TINT, over everything lit so far and under the fog, where the guest's
     // `r1.xyz = r5.xyz * g_StandardMaterialTintColour.xyz` sits.
     ALBEDO *= entity_tint.rgb;
     EMISSION *= entity_tint.rgb;
+#ifndef FABLE_LITE_NO_SPEC
     v_specular *= entity_tint.rgb;
+#endif
 
     // LAST, because it attenuates everything above it. The guest's fog is the final thing its
     // pixel shader does to the colour as well — the only line after it is the global brightness
@@ -552,6 +678,8 @@ void fragment() {
 	// DIFFUSE_LIGHT by ALBEDO after light()), so each mode isolates one half of
 	// `albedo * (direct + bake)`: 1 = bake only, 2 = direct only, 3 = raw albedo,
 	// 4 = the normal-map darken term. Specular still rides modes 1/3/4 — minor.
+	// Not in FABLE_LITE: the views need the full shader (`shader_variant = "full"`).
+#ifndef FABLE_LITE
 	if (fable_light_debug == 1) {
 		ALBEDO = vec3(0.0);
 	} else if (fable_light_debug == 2) {
@@ -592,6 +720,17 @@ void fragment() {
 		EMISSION = (NORMAL * 0.5) + 0.5;
 		ALBEDO = vec3(0.0);
 	}
+    } else {
+        ALBEDO = vec3(0.5);
+        EMISSION = vec3(0.0);
+        NORMAL_MAP = vec3(0.5, 0.5, 1.0);
+        METALLIC = 0.0;
+        ROUGHNESS = 1.0;
+        SPECULAR = 0.0;
+        v_specular = vec3(0.0);
+        v_specular_power = 1.0;
+    }
+#endif
 }
 
 /// THE GUEST'S MODEL, so every family shades by the same rules.
@@ -607,6 +746,7 @@ void fragment() {
 /// "Using 'return' in the 'light' processor function is incorrect" — and a shader that fails to
 /// compile falls back to a default material, which strips every texture in the scene.
 void light() {
+#ifndef FABLE_LITE
     // VIEW 6: the directional light's RAW shadow term, greyscale, on every surface — white
     // is unshadowed, black fully shadowed. The one view that separates "the shadow map does
     // not reach this surface" from "the direct term is too weak for the shadow to show".
@@ -619,7 +759,9 @@ void light() {
         if (LIGHT_IS_DIRECTIONAL) {
             DIFFUSE_LIGHT = vec3((dot(NORMAL, LIGHT) * 0.5) + 0.5);
         }
-    } else if (dot(NORMAL, LIGHT) > 0.0) {
+    } else
+#endif
+    if (dot(NORMAL, LIGHT) > 0.0) {
         // FACING AWAY, BOTH TERMS ARE EXACTLY ZERO — the diffuse's saturate(NdotL) and the
         // specular's saturate(4 NdotL) gate scale finite factors — so the light is skipped there,
         // and wherever its attenuation is zero, without changing a bit of the sum.
@@ -630,10 +772,16 @@ void light() {
             // 0524 is never reached), and a one-light tree has no specular (559 also serves SP1).
             DIFFUSE_LIGHT += fable_direct(NORMAL, LIGHT, atten, LIGHT_COLOR);
             // A black specular colour (no map, grass, a black texel) takes no highlight.
+#ifndef FABLE_LITE_NO_SPEC
+#ifdef FABLE_LITE
             if (!foliage && any(notEqual(v_specular, vec3(0.0)))) {
+#else
+            if (!foliage && (!fable_zero_specular_work || any(notEqual(v_specular, vec3(0.0))))) {
+#endif
                 SPECULAR_LIGHT += fable_specular(
                     NORMAL, LIGHT, VIEW, atten, LIGHT_COLOR, v_specular, v_specular_power);
             }
+#endif
         }
     }
 }

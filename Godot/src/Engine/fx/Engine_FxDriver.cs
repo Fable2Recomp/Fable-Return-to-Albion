@@ -95,8 +95,10 @@ public sealed partial class Engine_FxDriver : Node
     /// <summary>Effects actually stepped last frame, against FableFx.FrozenThisFrame.</summary>
     public static int Stepped;
 
+    /// <summary>Steps the frame and publishes summed effect segments, including zero-work frames.</summary>
     public override void _Process(double delta)
     {
+        using var fxFrame = FableFx.FrameWork.BeginFrame();
         using var _framePhase = Refii.Core.Engine_FramePhases.Measure("fablefx");
 
         // The window's camera, resolved once for the whole list; every system shares it, and

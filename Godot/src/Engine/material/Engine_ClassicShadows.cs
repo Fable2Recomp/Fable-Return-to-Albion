@@ -1,6 +1,7 @@
 using System;
 using Godot;
 using Godot.Collections;
+using Refii.Core;
 
 namespace Refii.Models;
 
@@ -494,7 +495,7 @@ public partial class Engine_ClassicShadows : Node
                 if (!constant.IsValid)
                 {
                     float value = mode == "white" ? 1f : 0f;
-                    constant = _rd.TextureCreate(new RDTextureFormat
+                    constant = _rd.Texture(new RDTextureFormat
                     {
                         Width = 1,
                         Height = 1,
@@ -502,7 +503,7 @@ public partial class Engine_ClassicShadows : Node
                         TextureType = RenderingDevice.TextureType.Type2D,
                         UsageBits = RenderingDevice.TextureUsageBits.SamplingBit
                             | RenderingDevice.TextureUsageBits.CanUpdateBit,
-                    }, new RDTextureView(), new Array<byte[]> { BitConverter.GetBytes(value) });
+                    }, new RDTextureView(), BitConverter.GetBytes(value));
                 }
                 rid = constant;
             }
@@ -524,10 +525,10 @@ public partial class Engine_ClassicShadows : Node
             if (_rd is null) return;
             var file = GD.Load<RDShaderFile>(ShaderPath);
             if (file is null) return;
-            _shader = _rd.ShaderCreateFromSpirV(file.GetSpirV());
+            _shader = _rd.Shader(file.GetSpirV());
             if (!_shader.IsValid) return;
-            _pipeline = _rd.ComputePipelineCreate(_shader);
-            _sampler = _rd.SamplerCreate(new RDSamplerState
+            _pipeline = _rd.ComputePipeline(_shader);
+            _sampler = _rd.Sampler(new RDSamplerState
             {
                 MinFilter = RenderingDevice.SamplerFilter.Nearest,
                 MagFilter = RenderingDevice.SamplerFilter.Nearest,
@@ -546,7 +547,7 @@ public partial class Engine_ClassicShadows : Node
             if (_target.IsValid && size == _targetSize) return;
             // The materials sample the old map until the deferred re-point below lands.
             Refii.Core.Engine_RdRetire.Retire(_target);
-            _target = _rd!.TextureCreate(new RDTextureFormat
+            _target = _rd!.Texture(new RDTextureFormat
             {
                 Width = (uint)size.X,
                 Height = (uint)size.Y,
@@ -570,7 +571,7 @@ public partial class Engine_ClassicShadows : Node
         {
             if (_own.IsValid && size == _ownSize) return;
             Refii.Core.Engine_RdRetire.Retire(_own);
-            _own = _rd!.TextureCreate(new RDTextureFormat
+            _own = _rd!.Texture(new RDTextureFormat
             {
                 Width = (uint)size.X,
                 Height = (uint)size.Y,
@@ -592,31 +593,47 @@ public partial class Engine_ClassicShadows : Node
 
         public override void _Notification(int what)
         {
-            if (what != NotificationPredelete || _rd is null)
+            if (what != NotificationPredelete)
             {
                 return;
             }
+            // The textures let go of the maps first: both go through the server's queue, so the
+            // release below runs after them.
             _texture.TextureRdRid = default;
             _ownTexture.TextureRdRid = default;
-            if (_black.IsValid) _rd.FreeRid(_black);
-            if (_white.IsValid) _rd.FreeRid(_white);
+            Capture self = this;
+            Refii.Core.Engine_RdRetire.OnRenderThread(() => self.ReleaseDeviceObjects());
+        }
+
+        /// <summary>Frees the device objects. Render thread (<see cref="Refii.Core.Engine_RdRetire.OnRenderThread"/>).</summary>
+        private void ReleaseDeviceObjects()
+        {
+            _ready = false;
+            RenderingDevice? rd = RenderingServer.GetRenderingDevice();
+            if (_rd is null || rd is null)
+            {
+                _rd = null;
+                return;
+            }
+            if (_black.IsValid) rd.FreeRid(_black);
+            if (_white.IsValid) rd.FreeRid(_white);
             if (_target.IsValid)
             {
                 Refii.Core.Engine_TracedMemory.Free(Refii.Core.Engine_RdRetire.TracedPool, _target.Id);
-                _rd.FreeRid(_target);
+                rd.FreeRid(_target);
             }
             if (_own.IsValid)
             {
                 Refii.Core.Engine_TracedMemory.Free(Refii.Core.Engine_RdRetire.TracedPool, _own.Id);
-                _rd.FreeRid(_own);
+                rd.FreeRid(_own);
             }
             _own = default;
             Source = default;
-            if (_sampler.IsValid) _rd.FreeRid(_sampler);
-            if (_pipeline.IsValid) _rd.FreeRid(_pipeline);
-            if (_shader.IsValid) _rd.FreeRid(_shader);
+            if (_sampler.IsValid) rd.FreeRid(_sampler);
+            if (_pipeline.IsValid) rd.FreeRid(_pipeline);
+            if (_shader.IsValid) rd.FreeRid(_shader);
+            _black = default; _white = default;
             _target = default; _sampler = default; _pipeline = default; _shader = default;
-            _ready = false;
             _rd = null;
         }
 
@@ -663,7 +680,7 @@ public partial class Engine_ClassicShadows : Node
                 depthUniform.AddId(depth);
                 var outUniform = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 1 };
                 outUniform.AddId(output);
-                set = _set.Hold(UniformSetCacheRD.GetCache(_shader, 0, new Array<RDUniform> { depthUniform, outUniform }));
+                set = _set.Hold(Engine_RdCalls.CachedUniformSet(_shader, 0, depthUniform, outUniform));
             }
             byte[] push = _push;
             BitConverter.TryWriteBytes(push.AsSpan(0), size.X);

@@ -40,6 +40,9 @@ public sealed class SkyFrame
     public float[] SkyParams { get; } = new float[4];
 
     public float[] MainLightColour { get; } = { 1f, 1f, 1f };
+
+    /// <summary>Bumped each time a kept instance is evaluated over in place; see <see cref="SkyTheme.Revision"/>.</summary>
+    public int Revision { get; set; }
 }
 
 public static class Engine_SkyFrame
@@ -68,9 +71,16 @@ public static class Engine_SkyFrame
     /// </summary>
     public static Vector3 ToRegionLocal(float[] d) => new(d[0], d[1], d[2]);
 
-    public static SkyFrame Evaluate(SkyTheme theme, float timeOfDay)
+    public static SkyFrame Evaluate(SkyTheme theme, float timeOfDay) =>
+        EvaluateInto(theme, timeOfDay, new SkyFrame());
+
+    /// <summary>
+    /// <see cref="Evaluate"/> written into <paramref name="frame"/>: every field is written, so a
+    /// kept instance comes out as a new one would. Bumps its <see cref="SkyFrame.Revision"/>.
+    /// </summary>
+    public static SkyFrame EvaluateInto(SkyTheme theme, float timeOfDay, SkyFrame frame)
     {
-        var frame = new SkyFrame();
+        frame.Revision++;
 
         float time = float.IsFinite(timeOfDay) ? timeOfDay : 0.5f;
         time -= MathF.Floor(time);

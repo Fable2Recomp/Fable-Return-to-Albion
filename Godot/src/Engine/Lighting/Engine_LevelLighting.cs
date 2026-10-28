@@ -12,15 +12,24 @@ public static class Engine_LevelLighting
 	/// The sun cascades' reach. An occluder outside every cascade casts nothing, so too short a
 	/// reach lets a low sun or moon light terrain straight through the hills beyond it.
 	/// </summary>
-	/// <remarks>`sun_shadow_distance`: how far the sun's cascades reach by day, in metres.</remarks>
-	public static readonly float SunFarDepth = ReadSunFarDepth();
+	/// <remarks>`sun_shadow_distance`: how far the sun's cascades reach by day, in metres; 0 turns
+	/// the sun's dynamic shadow off altogether, whatever the theme states. Reread on
+	/// <see cref="ReloadConfig"/>, so a changed setting (a dev-menu cvar, a graphics preset switched
+	/// in game) shows at once; <see cref="UpdateSun"/> applies it to the light.</remarks>
+	public static float SunFarDepth => _sunFarDepth ??= ReadSunFarDepth();
+
+	private static float? _sunFarDepth;
+
+	/// <summary>The cascades' depth for building the light: the stated reach, or the default when it is off.</summary>
+	private static float CascadeDepth => SunFarDepth > 0f ? SunFarDepth : 200f;
 
 	private static float ReadSunFarDepth()
 	{
 		try
 		{
-			return Mathf.Clamp(Refii.Core.Engine_RefiiConfig.Float(
-				Refii.Core.Engine_RefiiConfig.Read(out _), "sun_shadow_distance", 200f), 50f, 600f);
+			float depth = Refii.Core.Engine_RefiiConfig.Float(
+				Refii.Core.Engine_RefiiConfig.Read(out _), "sun_shadow_distance", 200f);
+			return depth <= 0f ? 0f : Mathf.Clamp(depth, 50f, 600f);
 		}
 		catch (System.Exception)
 		{
@@ -71,8 +80,13 @@ public static class Engine_LevelLighting
 	/// <summary>A live lever: null follows the day set, true/false forces the sun's shadow.</summary>
 	public static bool? SunShadowOverride;
 
-	/// <summary>Live lever: 2 or 4 cascades regardless of the sun's energy; null follows it.</summary>
+	/// <summary>Live lever: 1 (one orthogonal map), 2 or 4 cascades regardless of the sun's energy; null follows it.</summary>
 	public static int? SunSplitsOverride;
+
+	/// <summary>Live lever: whether the cascades blend across their boundaries; null keeps them blending.</summary>
+	/// <remarks>Blending starts each farther cascade at the camera rather than at the split, so
+	/// everything nearer than the first split is drawn into every cascade.</remarks>
+	public static bool? SunBlendOverride;
 
 	/// <summary>Below this energy the light is the moon and gets the night cascades.</summary>
 	public const float NightEnergy = 0.35f;
@@ -86,10 +100,10 @@ public static class Engine_LevelLighting
 		{
 			Name = SunNodeName,
 			DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel4Splits,
-			DirectionalShadowMaxDistance = SunFarDepth,
-			DirectionalShadowSplit1 = CascadeSplitNear / SunFarDepth,
-			DirectionalShadowSplit2 = CascadeSplitMid / SunFarDepth,
-			DirectionalShadowSplit3 = Mathf.Min(CascadeSplitFar, SunFarDepth * 0.8f) / SunFarDepth,
+			DirectionalShadowMaxDistance = CascadeDepth,
+			DirectionalShadowSplit1 = CascadeSplitNear / CascadeDepth,
+			DirectionalShadowSplit2 = CascadeSplitMid / CascadeDepth,
+			DirectionalShadowSplit3 = Mathf.Min(CascadeSplitFar, CascadeDepth * 0.8f) / CascadeDepth,
 
 			// Cascade boundaries otherwise print as a hard band across the landscape where
 			// the shadow resolution steps — the "seam that does not match up" tracking the
@@ -116,6 +130,7 @@ public static class Engine_LevelLighting
 
 	public static void ReloadConfig()
 	{
+		_sunFarDepth = null;
 		_sunScale = null;
 		_giHalfResolution = null;
 	}
@@ -168,7 +183,7 @@ public static class Engine_LevelLighting
 	/// (Engine_ClassicShadows), so Godot's maps would be drawn and read by nothing.
 	/// </summary>
 	public static bool SunCasts(bool frameShadow) =>
-		SunShadowOverride ?? (frameShadow && !Refii.Models.Engine_ClassicMaterial.Active);
+		SunShadowOverride ?? (frameShadow && SunFarDepth > 0f && !Refii.Models.Engine_ClassicMaterial.Active);
 
 	public static void UpdateSun(DirectionalLight3D light, LightingFrame frame)
 	{
@@ -181,6 +196,11 @@ public static class Engine_LevelLighting
 		}
 		ApplyWeatherSun(light, frame);
 		bool shadows = SunCasts(frame.SunShadow);
+		if (shadows)
+		{
+			// Before the light casts: lite shaders built without shadow sampling go back (lite_shadowless).
+			Refii.Models.Engine_ShaderSpecialisation.ShadowCast("the sun");
+		}
 		if (light.ShadowEnabled != shadows) light.ShadowEnabled = shadows;
 
 		// Exclude town building interiors (IndoorMask / IndoorLampHostMask) from the outdoor
@@ -203,10 +223,12 @@ public static class Engine_LevelLighting
 			? Refii.Level.Engine_DynamicSkyLighting.SunEnergy : frame.SunEnergy;
 		bool isNight = activeEnergy < NightEnergy;
 		int splits = SunSplitsOverride ?? (isNight ? 2 : SunSplits);
-		var mode = splits <= 2
-			? DirectionalLight3D.ShadowMode.Parallel2Splits
+		var mode = splits <= 1 ? DirectionalLight3D.ShadowMode.Orthogonal
+			: splits == 2 ? DirectionalLight3D.ShadowMode.Parallel2Splits
 			: DirectionalLight3D.ShadowMode.Parallel4Splits;
-		float distance = isNight ? Mathf.Min(NightFarDepth, SunFarDepth) : SunFarDepth;
+		bool blend = SunBlendOverride ?? true;
+		if (light.DirectionalShadowBlendSplits != blend) light.DirectionalShadowBlendSplits = blend;
+		float distance = isNight ? Mathf.Min(NightFarDepth, CascadeDepth) : CascadeDepth;
 		if (light.DirectionalShadowMode != mode) light.DirectionalShadowMode = mode;
 		if (light.DirectionalShadowMaxDistance != distance) light.DirectionalShadowMaxDistance = distance;
 		if (light.DirectionalShadowFadeStart != 0.85f) light.DirectionalShadowFadeStart = 0.85f;
@@ -422,7 +444,9 @@ public static class Engine_LevelLighting
 			GD.Print($"[lighting] {Engine_PostFxParams.ModeEnvironment}=off; the post-process chain is not attached");
 		}
 
-		return new Compositor { CompositorEffects = effects };
+		var compositor = new Compositor { CompositorEffects = effects };
+		GC.KeepAlive(effects);
+		return compositor;
 	}
 
 	/// <summary>
