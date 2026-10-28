@@ -292,15 +292,24 @@ public static class RuntimeConfig
             return false;
         }
 
-        return !IsRetiredNativeCategory(definition.Category) || IsDisplayCVar(definition.Name);
+        // Bookkeeping for the presets, not a choice.
+        if (definition.Name == GraphicsPresets.RevisionKey)
+        {
+            return false;
+        }
+
+        return ShouldWriteCVar(definition);
     }
 
     /// <summary>
     /// Whether a setting is written to refii.toml — the same question as showing it. A setting
     /// nobody can act on should not sit in the file implying it does something.
     /// </summary>
+    /// <remarks>The graphics preset and its revision are a phone's (<see cref="GraphicsPresets.Offered"/>):
+    /// a desktop neither shows nor writes them.</remarks>
     public static bool ShouldWriteCVar(RuntimeCVarDefinition definition) =>
-        !IsRetiredNativeCategory(definition.Category) || IsDisplayCVar(definition.Name);
+        ((definition.Name != GraphicsPresets.Key && definition.Name != GraphicsPresets.RevisionKey) || GraphicsPresets.Offered) &&
+        (!IsRetiredNativeCategory(definition.Category) || IsDisplayCVar(definition.Name));
 
     /// <summary>The settings panel's name for everything the player tunes about the picture.</summary>
     public const string DisplayCategory = "Display";

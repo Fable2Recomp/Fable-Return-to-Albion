@@ -280,6 +280,12 @@ public partial class LightingSettingsDialog : Control
 			"Gradually fade and cull distant fixtures beyond the light range to reduce draw calls (default: on)."));
 
 		contentCol.AddChild(BuildSliderSpinRow(
+			"placed_light_limit",
+			"Lit Fixture Limit",
+			"The most placed fixtures lit at once, the nearest first; the rest fade out until near. 0 lights every fixture in range (default: 0; Quality preset on a phone: 24).",
+			0.0, 64.0, 1.0));
+
+		contentCol.AddChild(BuildSliderSpinRow(
 			"placed_light_scale",
 			"Fixture Intensity Scale",
 			"Multiplier on outdoor torch, lamp, and fixture brightness (default: 1.5x).",
@@ -772,6 +778,7 @@ public partial class LightingSettingsDialog : Control
 			"tree_shadow_reach",
 			"placed_light_shadows",
 			"placed_light_fade",
+			"placed_light_limit",
 			"placed_light_scale",
 			"placed_light_reach_scale",
 			"building_interior_ambient_scale",
