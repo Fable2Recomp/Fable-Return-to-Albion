@@ -239,6 +239,10 @@ const RETRY_JITTER: f64 = 0.2;
 /// Sources whose frames are held before they map to a peer. Bounds what an
 /// unmapped sender -- or a flood of them -- can make us hold.
 const ORPHAN_SOURCES_MAX: usize = 64;
+/// How long a source whose frame opened under no peer's keys waits before
+/// its next frame is tried again. Bounds the trial decryptions a stranger --
+/// or a flood of them -- can cost us.
+const ROAM_RETRY: Duration = Duration::from_millis(250);
 /// Our own reachability record (`protocol::peer_key`) is published at each
 /// heartbeat until a DHT node stores it, then refreshed every ten minutes so
 /// new addresses and lost stores recover (kad's own republish is 12 h).
@@ -1379,6 +1383,7 @@ pub async fn spawn(keypair: Keypair, config: EngineConfig) -> Result<EngineHandl
             peer_by_vip: HashMap::new(),
             pending_datagrams: HashMap::new(),
             orphan_frames: HashMap::new(),
+            roam_tried: HashMap::new(),
             punch_deadline: HashMap::new(),
             streams: StreamTable::new(),
             stream_writers: HashMap::new(),
@@ -1568,6 +1573,9 @@ struct Engine {
     /// Inbound frames from an endpoint we have not mapped to a peer yet,
     /// keyed by source address. Delivered once the punch completes.
     orphan_frames: HashMap<SocketAddr, Vec<(Instant, Vec<u8>)>>,
+    /// Unmapped sources whose last frame opened under no ready peer's keys,
+    /// and when (`roam_game_endpoint`).
+    roam_tried: HashMap<SocketAddr, Instant>,
     /// When each in-flight punch stops being worth waiting for.
     punch_deadline: HashMap<PeerId, Instant>,
     /// Live guest TCP connections (§18).
@@ -2666,6 +2674,51 @@ impl Engine {
             queue.retain(|(at, _)| at.elapsed() <= PUNCH_QUEUE_MAX_AGE);
             !queue.is_empty()
         });
+        self.roam_tried.retain(|_, at| at.elapsed() < ROAM_RETRY);
+    }
+
+    /// A data frame from an address no peer is mapped at, tried against the
+    /// keys of every peer whose plane is up. The one it opens under has moved
+    /// to (or is also reachable at) `addr`, and the endpoint follows it there.
+    ///
+    /// THE TWO SIDES CAN LOCK DIFFERENT PATHS. Each keeps the first probe that
+    /// reaches it (§8.4), and on a LAN behind a hairpinning router those race:
+    /// one run had the host lock the joiner at the router's public address
+    /// while the joiner locked the host's LAN address. The joiner then sent
+    /// from its LAN address, which the host had mapped to nobody, so every
+    /// frame -- the join request first -- was held here as an orphan until it
+    /// aged out, and the title gave up ("failed to connect"). The AEAD tag is
+    /// the proof of sender, so following it is safe; the opener only advances
+    /// its replay window on an authentic frame, so a failed trial costs
+    /// nothing but the decryption.
+    fn roam_game_endpoint(&mut self, addr: SocketAddr, frame: &[u8]) -> bool {
+        if self.roam_tried.get(&addr).is_some_and(|at| at.elapsed() < ROAM_RETRY) {
+            return false;
+        }
+
+        let candidates: Vec<PeerId> =
+            self.vip_by_peer.keys().copied().filter(|p| self.plane.ready(p)).collect();
+        for peer in candidates {
+            let Some((src_port, dst_port, data)) = self.open_datagram(peer, frame) else {
+                continue;
+            };
+            let from = self.plane.unmap_endpoint(&peer);
+            self.plane.map_endpoint(peer, addr);
+            self.roam_tried.remove(&addr);
+            tracing::info!(
+                %peer, from = ?from, to = %addr,
+                "game endpoint roamed: authenticated traffic from another path"
+            );
+            // Anything held from this source is older than the frame just
+            // opened; it goes first.
+            self.deliver_orphan_frames(peer, addr);
+            let virtual_ip = self.vip_for(peer);
+            self.emit(Event::Datagram { virtual_ip, src_port, dst_port, data });
+            return true;
+        }
+
+        self.roam_tried.insert(addr, Instant::now());
+        false
     }
 
     /// A punched endpoint is only usable once it is also keyed; before that
@@ -3439,6 +3492,9 @@ impl Engine {
                 // the punch answer. Either way hold rather than drop: this
                 // window is exactly when a join's opening handshake arrives.
                 let mapped = self.plane.peer_at(&addr);
+                if mapped.is_none() && self.roam_game_endpoint(addr, &frame) {
+                    return;
+                }
                 let Some(peer) = mapped.filter(|p| self.plane.has_keys(p)) else {
                     // The two sides complete their punches independently, and
                     // the peer flushes whatever it queued the instant *its*
