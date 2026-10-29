@@ -102,6 +102,9 @@ static std::atomic<uint32_t> g_system_link_port{0};
 // Named rather than anonymous: the C entry points at the foot of this file are
 // outside `rex::` and reach them by name.
 constexpr uint16_t kRefiiCoopPort = 0xEF11;
+/// Fable II's presence port (rexnet.toml: its port-1002 presence INITIAL is what builds the
+/// orbs). Shard-wide, so it never names the co-op peer.
+constexpr uint16_t kFablePresencePort = 1002;
 constexpr std::size_t kRefiiCoopInboxMax = 32;
 std::mutex g_refii_coop_mutex;
 std::deque<std::string> g_refii_coop_inbox;
@@ -511,7 +514,15 @@ void RexNetStartup() {
 
       // Whoever sends us game traffic IS the co-op peer, and that address is
       // where our own channel answers.
-      if (g_refii_coop_peer_vip.exchange(src_vip, std::memory_order_relaxed) != src_vip) {
+      //
+      // EXCEPT THE PRESENCE PORT. Fable II's presence (its orbs) rides port
+      // 1002 and every shard member sends it, in a session or not. Learning
+      // from it moved the peer to a stranger and back twice a second whenever
+      // a third Fable II was on the shard, so half of the host's hero records
+      // went to the wrong address and were never acknowledged.
+      // The session itself is ports 1000 and 1001.
+      if (dst_port != kFablePresencePort &&
+          g_refii_coop_peer_vip.exchange(src_vip, std::memory_order_relaxed) != src_vip) {
         REXLOG_INFO("Refii co-op channel: peer is 10.77.{}.{} (learned from game traffic on port {})",
                     (src_vip >> 8) & 0xFF, src_vip & 0xFF, dst_port);
       }
