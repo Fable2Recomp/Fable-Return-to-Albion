@@ -83,6 +83,7 @@ extern "C" void RefiiCoopSetPartnerDog(uint32_t dog);
 extern "C" void RefiiCoopSetJobWorker(int player);
 extern "C" void RefiiCoopPartnerScreen(int on);
 extern "C" void RefiiCoopSetEstateBuyer(int player);
+extern "C" void RefiiEndRedecorating(PPCContext* ctx, uint8_t* base, uint32_t entity);
 extern "C" void refii_bridge_estate_intent_post(const char* text);
 extern "C" uint32_t refii_household_resolve_uid(PPCContext* ctx, uint8_t* base, uint64_t uid);
 extern "C" void refii_household_context(int32_t on);
@@ -998,6 +999,11 @@ REFII_LUA_NATIVE(NativeHousehold) {
 
 // Core co-op only: Refii._by_uid(uid) — the handle of the living entity with that UniqueID
 // (Refii.uid's "0x…" text), or nil.
+REFII_LUA_NATIVE(NativeEndRedecorating) {
+  RefiiEndRedecorating(&lua.ctx, lua.base, lua.Entity(1));
+  RESULTS(0);
+}
+
 REFII_LUA_NATIVE(NativeByUid) {
   char uid[32];
   lua.String(1, uid, sizeof(uid));
@@ -2043,6 +2049,7 @@ Native g_natives[] = {
     {"_estate_buyer", &NativeEstateBuyer, 0},
     {"_household", &NativeHousehold, 0},
     {"_by_uid", &NativeByUid, 0},
+    {"_end_redecorating", &NativeEndRedecorating, 0},
     {"_followers_two", &NativeFollowersTwo, 0},
     {"_household_context", &NativeHouseholdContext, 0},
     {"_children_two", &NativeChildrenTwo, 0},

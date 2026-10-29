@@ -484,4 +484,6 @@ Godot/src/Engine/level/environment/dynamic/dynamic_cloud_layers.gdshaderinc.uid
 Godot/src/Engine/level/environment/dynamic/dynamic_cloud_density.gdshaderinc.uid
 Godot/src/Engine/level/environment/dynamic/dynamic_cloud_shadow_density.gdshader.uid
 **/test.local.runsettings
+**/gdunit4_testadapter_v5/
+/Godot/tests/Refii.Tests/build/
 

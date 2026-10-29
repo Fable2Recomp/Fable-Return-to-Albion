@@ -4979,6 +4979,19 @@ std::unordered_map<uint32_t, int32_t> g_redecorating;  // building comp67 → pl
 }  // namespace
 
 // TU1 0x8282DFC0.
+extern "C" void RefiiEndRedecorating(PPCContext* ctx, uint8_t* base, uint32_t entity) {
+  if (entity == 0u) return;
+  for (auto it = g_redecorating.begin(); it != g_redecorating.end(); ++it) {
+    if (ComponentOwner(base, it->first) != entity) continue;
+    PPCContext work = *ctx;
+    work.r3.u32 = it->first;
+    work.r4.u32 = 0u;
+    g_redecorating.erase(it);
+    __imp__rex_CECBuilding_SetRedecorating(work, base);
+    return;
+  }
+}
+
 REX_EXTERN(rex_CECBuilding_SetRedecorating) {
   const uint32_t building = ctx.r3.u32;
   const auto found = g_redecorating.find(building);

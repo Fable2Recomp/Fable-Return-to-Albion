@@ -49,6 +49,8 @@ public static class RuntimeCVarsGodot
     public static readonly IReadOnlyList<RuntimeCVarDefinition> Definitions =
         new List<RuntimeCVarDefinition>
         {
+            new("decorate_mode_enabled", ControlsCategory, RuntimeCVarType.Bool, "false",
+                "Enable free furniture placement through an owned home's Redecorate option. Furniture layouts are kept with the character's save."),
             new("materials_modernized", Category, RuntimeCVarType.Bool, "true",
                 "The remaster switch: modernized textures and materials, or the game exactly as " +
                 "it shipped. Off restores the original look — no upscaling, no occlusion, no " +

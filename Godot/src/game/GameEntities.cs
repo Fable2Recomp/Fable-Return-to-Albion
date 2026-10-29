@@ -70,6 +70,44 @@ public partial class GameEntities : Node3D
     public MeshInstance3D? NodeFor(uint address) =>
         _nodes.TryGetValue(address, out MeshInstance3D? node) && GodotObject.IsInstanceValid(node) ? node : null;
 
+    public bool TryDecorationGeometry(uint address, out Mesh mesh, out Transform3D transform, out uint layers)
+    {
+        mesh = null!; transform = default; layers = 0;
+        if (_adoptions.TryGetValue(address, out var adopted) && IsInstanceValid(adopted.Twin.Node) &&
+            adopted.Twin.Node.IsInsideTree() && adopted.Twin.Node.IsVisibleInTree())
+        {
+            if (adopted.Twin.Node is MultiMeshInstance3D { Multimesh: { Mesh: { } batchedMesh } instances } batch &&
+                adopted.Twin.Instance >= 0 && adopted.Twin.Instance < instances.InstanceCount)
+            {
+                mesh = batchedMesh;
+                transform = batch.GlobalTransform * instances.GetInstanceTransform(adopted.Twin.Instance);
+                layers = batch.Layers;
+                return true;
+            }
+            if (adopted.Twin.Node is MeshInstance3D { Mesh: { } drawnMesh } drawn)
+            {
+                mesh = drawnMesh; transform = drawn.GlobalTransform; layers = drawn.Layers;
+                return true;
+            }
+        }
+        if (NodeFor(address) is not { Mesh: { } body } node || !node.IsInsideTree() ||
+            !node.IsVisibleInTree() && !(_batches?.Contains(address) ?? false)) return false;
+        mesh = body; transform = node.GlobalTransform; layers = node.Layers;
+        return true;
+    }
+
+    public bool TryDecorationInterior(uint address, out Mesh mesh, out Transform3D transform)
+    {
+        mesh = null!; transform = default;
+        if (NodeFor(address) is not { } node || !node.IsInsideTree()) return false;
+        if (_interiorMeshesPending.TryGetValue(address, out var interior)) mesh = interior;
+        else if (_multiMeshSplit.TryGetValue(address, out var parts) && parts.Exterior.Length == 0 &&
+            parts.Interior.Length > 0 && node.Mesh is { } body) mesh = body;
+        else return false;
+        transform = node.GlobalTransform;
+        return true;
+    }
+
     /// <summary>
     /// How far an entity is DRAWN from where the guest last stated it — the playhead's blend,
     /// as a world offset. Anything the guest anchors on an entity at its tick (a heart over a
@@ -420,8 +458,9 @@ public partial class GameEntities : Node3D
         _createdThisFrame = 0;
         _dynamicCasterPositions.Clear();
         _createFrom = System.Diagnostics.Stopwatch.GetTimestamp();
-        foreach (HostBridge.GuestEntity entity in entities)
+        foreach (HostBridge.GuestEntity statedEntity in entities)
         {
+            HostBridge.GuestEntity entity = GameDecorate.Appearance(statedEntity);
             if (GameGoldenCock.ObserveGuest(entity)) continue;
             if (GameMorphMirror.ObserveGuest(entity)) continue;
             long prologueFrom = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -922,13 +961,14 @@ public partial class GameEntities : Node3D
             // node itself: a batch draws every instance alike, and a married twin may be one
             // instance of a MultiMesh. The marriage ends for good; the region's copy goes, as
             // it would for an entity destroyed, and this node draws from now on.
-            if (Refii.Entities.Engine_EntityAppearance.NeedsOwnNode(entity.Appearance))
+            if (Refii.Entities.Engine_EntityAppearance.NeedsOwnNode(entity.Appearance) || GameDecorate.Targeted(entity.UniqueId))
             {
                 if (adopted && _adoptions.TryGetValue(entity.Address, out var marriage))
                 {
                     Twins?.Release(marriage.Twin, hide: true);
                     _adoptions.Remove(entity.Address);
                     adopted = false;
+                    node.Visible = true;
                 }
 
                 Unbatch(entity.Address, node);

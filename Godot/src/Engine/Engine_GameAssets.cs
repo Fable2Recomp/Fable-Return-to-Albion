@@ -173,6 +173,8 @@ public partial class Engine_GameAssets : Node
 			catch (Exception exception) { GD.PushError("[golden-cock] " + exception.Message); }
 			try { Refii.Hero.Engine_MorphMirrorRuntime.Attach(mounted, Refii.Hero.Engine_MorphMirrorPlacements.Load()); }
 			catch (Exception exception) { GD.PushError("[morph-mirror] " + exception.Message); }
+			try { Refii.Level.Engine_DecorateCatalog.Attach(mounted); }
+			catch (Exception exception) { GD.PushError("[decorate] " + exception.Message); }
 			Refii.Save.Engine_NewGameRuntime.Attach(mounted);
 		}
 		catch (Exception exception)

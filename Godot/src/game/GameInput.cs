@@ -105,7 +105,7 @@ public partial class GameInput : Node
 		// button while it is up, so the mods see releases then.
 		using (Refii.Core.Engine_FramePhases.Measure("input.mods"))
 		{
-			Refii.Mods.ModInput.Pump(devices && !GamePhotoMode.Active && !GameMorphMirror.OwnsInput);
+			Refii.Mods.ModInput.Pump(devices && !GamePhotoMode.Active && !GameMorphMirror.OwnsInput && !GameDecorate.Active);
 		}
 	}
 
@@ -801,7 +801,7 @@ public partial class GameInput : Node
 		// The owned menus' masks hold the menu owner's pad — every pad until an owner is stated.
 		bool owned = MasksPad(pad);
 		bool masked = owned && MaskMenuInput;
-		bool goldenMenu = GameGoldenCock.OwnsInput || GameMorphMirror.OwnsInput || (owned && HostUiOwnsPad);
+		bool goldenMenu = GameGoldenCock.OwnsInput || GameMorphMirror.OwnsInput || GameDecorate.Active || (owned && HostUiOwnsPad);
 		bool pauseMasked = owned && !masked && MaskPauseInput;
 		bool queryMasked = owned && !masked && !pauseMasked && MaskPauseQueryInput;
 		// The card's mask keeps the sticks and the D-pad live: its screen does not pause the

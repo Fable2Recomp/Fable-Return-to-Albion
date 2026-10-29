@@ -75,7 +75,7 @@ public partial class GamePhotoMode : Node
         {
             if (toggle && GameInput.Playing && GameUi.WorldInteractionAllowed &&
                 !GameDevMenu.WindowOpen && !GameDevMenu.KeyboardCaptured &&
-                !GameGoldenCock.OwnsInput && !GameMorphMirror.OwnsInput &&
+                !GameGoldenCock.OwnsInput && !GameMorphMirror.OwnsInput && !GameDecorate.Active &&
                 GameGoldenCock.SessionAllowsInteraction(CoopSession.State, CoopSession.Side, CoopSession.LocalCoop))
                 Open();
             return;
@@ -157,17 +157,13 @@ public partial class GamePhotoMode : Node
         var mouse = looking ? Input.MouseModeEnum.Captured : Input.MouseModeEnum.Visible;
         if (Input.MouseMode != mouse) Input.MouseMode = mouse;
         Vector2 turn = new(Axis(pad, JoyAxis.RightX), Axis(pad, JoyAxis.RightY));
-        _yaw -= turn.X * seconds * 1.8f + _mouseLook.X * 0.0025f;
-        _pitch = Math.Clamp(_pitch - turn.Y * seconds * 1.8f - _mouseLook.Y * 0.0025f, -1.55f, 1.55f);
-        _mouseLook = Vector2.Zero;
-        Basis basis = Basis.FromEuler(new Vector3(_pitch, _yaw, Mathf.DegToRad(_settings[2])));
         var move = new Vector3(Axis(pad, JoyAxis.LeftX) + KeyAxis(Key.A, Key.D),
             Trigger(pad, JoyAxis.TriggerRight) - Trigger(pad, JoyAxis.TriggerLeft) + KeyAxis(Key.Q, Key.E),
             Axis(pad, JoyAxis.LeftY) + KeyAxis(Key.W, Key.S));
-        if (move.LengthSquared() > 1) move = move.Normalized();
         float speed = _settings[3] * (Held(Key.Shift) || fast ? 3f : Held(Key.Ctrl) ? 0.2f : 1f);
-        _position += (basis.X * move.X + Vector3.Up * move.Y + basis.Z * move.Z) * speed * seconds;
-        _camera!.GlobalTransform = new Transform3D(basis, _position);
+        _camera!.GlobalTransform = Engine_FreeCamera.Step(ref _position, ref _yaw, ref _pitch,
+            move, turn, _mouseLook, seconds, speed, Mathf.DegToRad(_settings[2]));
+        _mouseLook = Vector2.Zero;
     }
 
     public bool Open()

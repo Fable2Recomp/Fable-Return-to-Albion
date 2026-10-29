@@ -134,7 +134,7 @@ public partial class GameWorld : Node3D
 
 		// Photo mode owns the camera: it places it first each frame and restores the guest's
 		// transform when it closes, so the statement below is read again from then on.
-		if (GamePhotoMode.Active)
+        if (GamePhotoMode.Active || GameDecorate.Active)
 		{
 			return;
 		}

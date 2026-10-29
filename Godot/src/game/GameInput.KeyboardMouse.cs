@@ -188,7 +188,7 @@ public partial class GameInput
 	/// </summary>
 	private void UpdateKeyboardMouse(bool devices)
 	{
-		bool menuOwns = GameGoldenCock.OwnsInput || GameMorphMirror.OwnsInput || HostUiOwnsPad || ScreenMenuOwnsInput || CoopScreenOwnsInput ||
+		bool menuOwns = GameGoldenCock.OwnsInput || GameMorphMirror.OwnsInput || GameDecorate.Active || HostUiOwnsPad || ScreenMenuOwnsInput || CoopScreenOwnsInput ||
 			ModalBoxOwnsInput || MenuBoxOwnsInput ||
 			ReceiveItemsOwnsInput || DisplayMessageBoxUp || HostBridge.FrontEndGuiIsUp;
 		Playing = HostBridge.IsInGame && !menuOwns && !MaskPauseInput &&
@@ -249,7 +249,7 @@ public partial class GameInput
 	/// the action that presses that button, in the context that has the input — B is magic in
 	/// the world and back in a menu.
 	/// </summary>
-	public static string? KeyLabel(string button) => GamePhotoMode.Active ? GamePhotoMode.KeyLabel(button) :
+	public static string? KeyLabel(string button) => GameDecorate.Active ? GameDecorate.KeyLabel(button) : GamePhotoMode.Active ? GamePhotoMode.KeyLabel(button) :
 		GameMorphMirror.OwnsInput ? GameMorphMirror.KeyLabel(button) : button switch
 	{
 		"A" => Shown("interact"),

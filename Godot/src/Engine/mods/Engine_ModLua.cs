@@ -120,7 +120,7 @@ public static class ModLua
 	/// <c>RefiiModErrors</c> and never stops the others. The kinds table mirrors
 	/// <see cref="ModApi.Events"/>, which is checked by a test.
 	/// </summary>
-	private static string RuntimePreamble()
+    public static string RuntimePreamble()
 	{
 		var text = new StringBuilder();
 		text.Append("Refii = Refii or {}\n");
