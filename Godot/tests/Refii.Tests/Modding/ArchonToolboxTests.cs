@@ -134,7 +134,7 @@ public class ArchonToolboxTests
 
 	private static string Scratch()
 	{
-		string root = Path.Combine("/home/loreaxe/.cache/refii-scratch/archon", "test-" + Guid.NewGuid().ToString("N"));
+		string root = Path.Combine(Path.GetTempPath(), "refii-scratch", "archon", "test-" + Guid.NewGuid().ToString("N"));
 		Directory.CreateDirectory(root);
 		return root;
 	}
