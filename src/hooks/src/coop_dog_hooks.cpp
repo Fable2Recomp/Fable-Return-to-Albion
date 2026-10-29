@@ -45,6 +45,7 @@ extern "C" int RefiiCoopPartnerDogName(char* out, uint32_t capacity);
 extern "C" void RefiiCoopPartnerScreen(int on);
 extern "C" REX_FUNC(__imp__rex_CECDog_Update);
 extern "C" REX_FUNC(__imp__rex_CECDog_TeleportNearMasterOffScreen);
+extern "C" REX_FUNC(__imp__rex_CECDog_IsMasterInsideBuilding);
 extern "C" uint32_t RefiiGdbRecordId(PPCContext* ctx, uint8_t* base, const char* name);
 extern "C" uint32_t refii_mod_component(uint8_t* base, uint32_t entity, uint32_t id);
 extern "C" uint32_t RefiiCoopPartnerDogKit(uint32_t* definition, int32_t* searching, int32_t* combat,
@@ -352,4 +353,28 @@ REX_EXTERN(rex_CmdLevelChange_PlaceTravellers) {
 
 REX_EXTERN(rex_CECDog_TeleportNearMasterOffScreen) {
   AsPartnerDog(ctx, base, __imp__rex_CECDog_TeleportNearMasterOffScreen);
+}
+
+// A DOG WITH NO MASTER IS NOT INSIDE ANYTHING. `sub_82812E88` (r3 the dog component) locks the
+// master's weak reference at comp+300 and reads the master's flags at +52 with no null test, so
+// an empty or expired reference faults at guest 0x34. Shipped, hero one never went away under
+// their dog. Player two's body does: when a joiner takes their own hero, the host rebuilds player
+// two's entity and the joiner's copy of the partner dog holds an expired master until the next
+// CECDog_Update rebinds it. Asked in that window, the joiner's GameThread died about a second
+// after "Travelling to Oakfield", and the host lost its peer. The
+// Lua callers are guarded in CoopHeroLua (C.DogMasterInsideBuilding); this covers the rest.
+REX_EXTERN(rex_CECDog_IsMasterInsideBuilding) {
+  using refii::vfs::LoadGuestU32;
+  const uint32_t comp = ctx.r3.u32;
+  const uint32_t block = Plausible(comp) ? LoadGuestU32(base, comp + 304u) : 0u;
+  const uint32_t master = Plausible(block) ? LoadGuestU32(base, block) : 0u;
+  if (!Plausible(master)) {
+    static std::atomic<bool> said{false};
+    if (!said.exchange(true, std::memory_order_relaxed)) {
+      REXLOG_INFO("coop dogs: a dog with no master was asked if its master is inside; answered no");
+    }
+    ctx.r3.u64 = 0u;
+    return;
+  }
+  __imp__rex_CECDog_IsMasterInsideBuilding(ctx, base);
 }
