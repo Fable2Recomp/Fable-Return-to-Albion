@@ -5,7 +5,7 @@ namespace Refii.Ui;
 ///
 /// The modal router's openers — `sub_8236FA68` (message and query boxes) and `sub_8236FCA8`
 /// (the numeric adjuster) — take the box's text as an argument and write it into the box's
-/// presentation. They are hooked (src/vfs/src/hooks/display_box_hooks.cpp) and post
+/// presentation. They are hooked (Fable2/src/vfs/src/hooks/display_box_hooks.cpp) and post
 /// `@Modal.Open kind id text` on the GUI call feed, so the owned surfaces draw the text from the
 /// call rather than from the presentation it fills. Keyed by the modal kind and id the latch
 /// states; a box whose open was not stated falls back to its presentation's text.

@@ -1112,7 +1112,7 @@ public sealed class Engine_FxSystem
 
     /// <summary>
     /// <see cref="FxEmitter.Spin"/>, as the guest's hook applies it after each integrator step
-    /// (src/vfs/src/hooks/particle_motion.cpp): the particle's position turned about the emitter's
+    /// (Fable2/src/vfs/src/hooks/particle_motion.cpp): the particle's position turned about the emitter's
     /// own Z axis through its origin by <paramref name="angle"/>, and its velocity with it.
     /// </summary>
     private void Spin(EmitterRuntime rt, ParticleState pt, float angle)

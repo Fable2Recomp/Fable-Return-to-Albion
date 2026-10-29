@@ -67,7 +67,7 @@ public class ModSettingsLuaTests
         string preamble = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_ModLua.cs"));
         AssertThat(preamble.Contains("foreach ((string key, float value) in ModSettings.InForce)", StringComparison.Ordinal)).IsTrue();
         // Both example mods read their settings at the call, so the new value is in effect at once.
-        foreach (string file in Directory.EnumerateFiles(Path.Combine(root, "mods-src", "souls_combat", "mod"), "*.lua"))
+        foreach (string file in Directory.EnumerateFiles(Path.Combine(root, "Fable2", "mods-src", "souls_combat", "mod"), "*.lua"))
         {
             string text = File.ReadAllText(file);
             if (Path.GetFileName(file) is "stamina.lua" or "roll.lua" or "guard.lua" or "mana.lua" or "poise.lua" or "commitment.lua" or "cast_recovery.lua" or "lockon.lua")
@@ -76,7 +76,7 @@ public class ModSettingsLuaTests
             }
         }
 
-        string weaving = File.ReadAllText(Path.Combine(root, "mods-src", "spell_weaving", "mod", "init.lua"));
+        string weaving = File.ReadAllText(Path.Combine(root, "Fable2", "mods-src", "spell_weaving", "mod", "init.lua"));
         AssertThat(weaving.Contains("return Refii.setting(\"spell_weaving.\" .. key, default)", StringComparison.Ordinal)).IsTrue();
     }
 
@@ -85,7 +85,7 @@ public class ModSettingsLuaTests
         string? at = AppContext.BaseDirectory;
         for (int i = 0; i < 12 && at != null; i++)
         {
-            if (File.Exists(Path.Combine(at, "src", "vfs", "include", "core", "refii_mod_events.h")))
+            if (File.Exists(Path.Combine(at, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h")))
             {
                 return at;
             }

@@ -121,7 +121,7 @@ option(REFII_DEV_SKIP_GAMECODE_REBUILD
 option(REFII_BUILD_GENERATED_PAYLOAD
        "DEV ONLY: compile generated/ into librefii_generated here instead of leaving it to the launcher" OFF)
 
-# ONE CONFIG FOLDER PER SUPPORTED EXECUTABLE. versions/<name>/ holds the ReXGlue manifest and
+# ONE CONFIG FOLDER PER SUPPORTED EXECUTABLE. Fable2/versions/<name>/ holds the ReXGlue manifest and
 # config for one build of the game; the hooks bind by the function NAMES those configs share, so
 # the same hook sources compile against either. This picks the one the DEV codegen reads. The
 # launcher picks for a player at install time, from what they installed.
@@ -129,8 +129,25 @@ set(REFII_GAME_VERSION "Fable2TU1" CACHE STRING
     "Which versions/<name> folder the dev codegen reads (Fable2TU1 or Fable2)")
 set_property(CACHE REFII_GAME_VERSION PROPERTY STRINGS Fable2TU1 Fable2)
 set(REFII_GAME_VERSIONS Fable2TU1 Fable2)
+
+# EACH TITLE'S ReXGlue INSTANCE: the libraries staged into bin/<Folder>/ (Engine_Title's
+# InstanceLibraries, plus the module the launcher builds beside them). Every other native is
+# shared and staged into bin/ (cmake/refii_stage_godot.cmake).
+#   Fable2  its host bridge, vfs, Lua runtime and the dev-built module
+#   Fable3  its host bridge (target refiii_hostbridge, OUTPUT_NAME refii_hostbridge); the module
+#           the launcher builds for it is refiii_generated
+set(REFII_TITLE_INSTANCE_FOLDERS Fable2 Fable3)
+set(REFII_TITLE_INSTANCE_TARGETS_Fable2 refii_hostbridge refii_vfs refii_lua refii_generated)
+set(REFII_TITLE_INSTANCE_TARGETS_Fable3 refiii_hostbridge)
+set(REFII_TITLE_INSTANCE_TARGETS
+    ${REFII_TITLE_INSTANCE_TARGETS_Fable2}
+    ${REFII_TITLE_INSTANCE_TARGETS_Fable3})
+# Each title's hook target, staged for the install-time build into bin/recompile/<Folder>/
+# (hooks/ and hook_sources.cmake) by cmake/refii_payload_sdk.cmake.
+set(REFII_TITLE_HOOKS_TARGET_Fable2 refii_hooks)
+set(REFII_TITLE_HOOKS_TARGET_Fable3 refiii_hooks)
 set(REFII_REXGLUE_MANIFEST
-    "${CMAKE_CURRENT_SOURCE_DIR}/versions/${REFII_GAME_VERSION}/refii_manifest.toml")
+    "${CMAKE_CURRENT_SOURCE_DIR}/Fable2/versions/${REFII_GAME_VERSION}/refii_manifest.toml")
 if(NOT EXISTS "${REFII_REXGLUE_MANIFEST}")
     message(FATAL_ERROR "No ReXGlue manifest for REFII_GAME_VERSION=${REFII_GAME_VERSION}: "
                         "${REFII_REXGLUE_MANIFEST}")
@@ -184,6 +201,7 @@ endif()
 include(cmake/refii_rexglue.cmake)
 include(cmake/refii_payload_sdk.cmake)
 include(cmake/refii_godot_export.cmake)
+include(cmake/refii_stage_godot.cmake)
 include(cmake/refii_optimize_rexglue.cmake)
 refii_rexglue_configure_sdk()
 if(REFII_BUILD_GENERATED_PAYLOAD AND NOT REFII_WINDOWS_INSTALL_INPUTS_ONLY)
@@ -283,9 +301,14 @@ option(REFII_BUILD_NATIVE_LUA "Build the native Lua runtime and Lua tools" ON)
 option(REFII_BUILD_SHADER_PIPELINE "Build shader SBK extraction/compilation pipeline tooling" ON)
 
 add_subdirectory(src/extractor)
+# After the extractor, which provides the ZLIB::ZLIB the babel codec links.
+add_subdirectory(src/formats)
+# The shared runtime state, before every title library: refii_lua takes its include directory
+# and refii_vfs links it.
+add_subdirectory(src/runtime)
 if(REFII_BUILD_NATIVE_LUA)
     enable_language(C)
-    add_subdirectory(src/lua)
+    add_subdirectory(Fable2/src/lua)
 endif()
 if(REFII_BUILD_SHADER_PIPELINE)
     add_subdirectory(src/shader)
@@ -326,11 +349,15 @@ if(TARGET SPIRV-Tools-static AND NOT TARGET rex::SPIRV-Tools-static)
     add_library(rex::SPIRV-Tools-static ALIAS SPIRV-Tools-static)
 endif()
 
+# A TITLE library (one of a title's ReXGlue instance, staged into bin/<Title>/) also looks one
+# directory up, where the shared natives it links are staged.
 function(refii_apply_origin_rpath target_name)
     if(UNIX AND NOT APPLE AND TARGET "${target_name}")
         get_target_property(_refii_rpath_target_type "${target_name}" TYPE)
         if(_refii_rpath_target_type STREQUAL "EXECUTABLE")
             set(_refii_rpath "\$ORIGIN;\$ORIGIN/../lib;\$ORIGIN/lib")
+        elseif("${target_name}" IN_LIST REFII_TITLE_INSTANCE_TARGETS)
+            set(_refii_rpath "\$ORIGIN;\$ORIGIN/..;\$ORIGIN/lib")
         else()
             set(_refii_rpath "\$ORIGIN;\$ORIGIN/lib")
         endif()
@@ -450,14 +477,20 @@ if(UNIX AND NOT APPLE)
 endif()
 
 
+# Fable 2's install in the dev tree is assets/Fable2/game (the title folder, Engine_Title).
 set(
     _REFII_PACKAGE_ICON_SOURCE_DEFAULT
-    "${CMAKE_SOURCE_DIR}/assets/game/default.xex.icons/067_X_IMAGEID_GAME.png"
+    "${CMAKE_SOURCE_DIR}/assets/Fable2/game/default.xex.icons/067_X_IMAGEID_GAME.png"
 )
 set(
     _REFII_PACKAGE_ICON_SOURCE_LEGACY_DEFAULT
     "${CMAKE_SOURCE_DIR}/assets/game/default.xex.icons/001_Icon_black_knight.png"
 )
+# The defaults from before titles had folders. A cache still naming one is reset below, the way
+# the black-knight default already is.
+set(_REFII_PACKAGE_ICON_SOURCE_PRE_TITLE_DEFAULT
+    "${CMAKE_SOURCE_DIR}/assets/game/default.xex.icons/067_X_IMAGEID_GAME.png")
+set(_REFII_DEFAULT_XEX_SOURCE_PRE_TITLE_DEFAULT "${CMAKE_SOURCE_DIR}/assets/game/default.xex")
 set(
     REFII_PACKAGE_ICON_SOURCE
     "${_REFII_PACKAGE_ICON_SOURCE_DEFAULT}"
@@ -466,11 +499,21 @@ set(
 )
 set(
     REFII_DEFAULT_XEX_SOURCE
-    "${CMAKE_SOURCE_DIR}/assets/game/default.xex"
+    "${CMAKE_SOURCE_DIR}/assets/Fable2/game/default.xex"
     CACHE FILEPATH
     "default.xex used to generate launcher and package icons"
 )
-if("${REFII_PACKAGE_ICON_SOURCE}" STREQUAL "${_REFII_PACKAGE_ICON_SOURCE_LEGACY_DEFAULT}")
+if("${REFII_DEFAULT_XEX_SOURCE}" STREQUAL "${_REFII_DEFAULT_XEX_SOURCE_PRE_TITLE_DEFAULT}")
+    set(
+        REFII_DEFAULT_XEX_SOURCE
+        "${CMAKE_SOURCE_DIR}/assets/Fable2/game/default.xex"
+        CACHE FILEPATH
+        "default.xex used to generate launcher and package icons"
+        FORCE
+    )
+endif()
+if("${REFII_PACKAGE_ICON_SOURCE}" STREQUAL "${_REFII_PACKAGE_ICON_SOURCE_LEGACY_DEFAULT}" OR
+   "${REFII_PACKAGE_ICON_SOURCE}" STREQUAL "${_REFII_PACKAGE_ICON_SOURCE_PRE_TITLE_DEFAULT}")
     set(
         REFII_PACKAGE_ICON_SOURCE
         "${_REFII_PACKAGE_ICON_SOURCE_DEFAULT}"
@@ -577,19 +620,20 @@ if(TARGET refii-default-xex-icon-extractor
     set(REFII_PACKAGE_ICON_TARGET refii-extract-default-xex-icons)
 endif()
 
-# Before src/vfs and refii_core: both reach the recompiled guest through this loader
+# Before Fable 2's vfs and refii_core: both reach the recompiled guest through this loader
 # rather than linking it, so that a release can be built on a machine that has no game
 # image and therefore no payload.
 add_subdirectory(src/payload)
 
 if(REFII_BUILD_VFS_HOOKS)
-    add_subdirectory(src/vfs)
+    add_subdirectory(Fable2/src/vfs)
 endif()
 
 
 
 if(REFII_BUILD_NATIVE_HOOKS)
-    add_subdirectory(src/hooks)
+    add_subdirectory(Fable2/src/hooks)
+    add_subdirectory(Fable3/src/hooks)
 endif()
 
 refii_rexglue_shadow_source(
@@ -641,6 +685,9 @@ if(REFII_BUILD_GENERATED_PAYLOAD AND NOT REFII_WINDOWS_INSTALL_INPUTS_ONLY)
     set(REFII_GENERATED_SOURCES
         ${GENERATED_SOURCES}
         ${REFII_HOOK_OBJECTS}
+        # The payload's shared sources (src/payload/src/core), as the install-time build
+        # compiles them from payload_core_sources.cmake.
+        $<TARGET_OBJECTS:refii_payload_core>
         # The host ABI entry point, compiled in here exactly as the install-time project
         # compiles it on the player's machine.
         ${REFII_PAYLOAD_EXPORT_SOURCE}
@@ -736,78 +783,8 @@ else()
     endif()
     set(REFII_PAYLOAD_INCLUDE_TARGET refii_hooks)
 endif()
-add_library(refii_host STATIC
-    src/refii_host.cpp
-    # Godot-fed controller input. Lives here rather than in the host bridge because
-    # refii_app.h installs it through RuntimeConfig::input_factory, and the bridge links
-    # refii_host rather than the other way round.
-    src/host_input.cpp
-    # Godot-fed audio output, installed the same way through RuntimeConfig::audio_factory.
-    # Its queue and counters live in refii_vfs, which the host bridge also links — the
-    # bridge and this driver must see one ring, not one each.
-    src/host_audio.cpp
-)
-set_target_properties(refii_host PROPERTIES
-    ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
-    # Linked into refii_hostbridge, which is SHARED so Godot can P/Invoke it. Without
-    # PIC the link fails on an R_X86_64_PC32 relocation a shared object cannot carry.
-    POSITION_INDEPENDENT_CODE ON
-)
-target_include_directories(refii_host
-    PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${CMAKE_CURRENT_SOURCE_DIR}/generated
-)
-if(EXISTS "${REFII_REXGLUE_SHADOW_DIR}/include")
-    target_include_directories(refii_host PUBLIC "${REFII_REXGLUE_SHADOW_DIR}/include")
-endif()
-target_include_directories(refii_host
-    PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/achievement/include"
-)
-# THE BUILD THE CRASH RECORD CAME FROM. A record without one has twice been read as the current
-# release and triaged as a live fault when it was a beta behind (crash records are append-only
-# and survive an in-place upgrade). Stamped at build time, not configure time, so the header
-# names the commit the binary was actually built from; rewritten only when it changes.
-set(REFII_BUILD_ID_DIR "${CMAKE_BINARY_DIR}/refii_build_id")
-add_custom_target(refii_build_id
-    COMMAND "${CMAKE_COMMAND}"
-        "-DREFII_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
-        "-DREFII_OUTPUT=${REFII_BUILD_ID_DIR}/refii_build_id.h"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/refii_build_id.cmake"
-    BYPRODUCTS "${REFII_BUILD_ID_DIR}/refii_build_id.h"
-    COMMENT "Stamping the build id for the crash record"
-    VERBATIM
-)
-add_dependencies(refii_host refii_build_id)
-target_include_directories(refii_host PRIVATE "${REFII_BUILD_ID_DIR}")
-target_compile_definitions(refii_host
-    PUBLIC
-        REFII_SDL3_WINDOW_ENABLED=$<BOOL:${REFII_SDL3_WINDOW_ENABLED}>
-)
-# refii_generated is deliberately absent: the payload is built on the player's machine,
-# so linking it here would make a release unbuildable on any machine without a game
-# image. refii_payload loads it by name instead.
-target_link_libraries(refii_host
-    PUBLIC
-        refii_core
-        refii_payload
-)
-
-# ReXGlue v0.10's rex/ui/imgui_drawer.h includes rex/ui/style.h, which includes imgui.h — so
-# every TU that reaches rex_app.h needs imgui's headers. The include path only: imgui is an
-# OBJECT library already compiled into rexui, and linking it here would duplicate its objects.
-target_include_directories(refii_host PUBLIC
-    $<TARGET_PROPERTY:imgui,INTERFACE_INCLUDE_DIRECTORIES>)
-
-# host_audio.cpp keeps its ring in refii_vfs so the host bridge reads the same one. The
-# link is PUBLIC because refii_vfs exports its include directories and the standalone
-# `refii` executable compiles this translation unit too, so it needs the symbols even
-# though only the embedded path ever constructs the driver.
-if(TARGET refii_vfs)
-    target_link_libraries(refii_host PUBLIC refii_vfs)
-endif()
+# THE ReXGlue APP every title runs: the app, its Godot-fed drivers, the crash-record build id.
+add_subdirectory(src/host)
 
 # AFTER refii_host: the bridge stages the whole dependency closure into Godot/build/<arch>/bin,
 # and `if(TARGET ...)` only sees targets already defined. Added earlier, it silently
@@ -822,14 +799,20 @@ if(NOT ANDROID)
 endif()
 
 if(REFII_BUILD_HOST_BRIDGE)
-    add_subdirectory(src/hostbridge)
+    # The bridge's shared core first: every title's instance links it whole.
+    add_subdirectory(src/hostcore)
+    add_subdirectory(Fable2/src/hostbridge)
+    add_subdirectory(Fable3/src/hostbridge)
 endif()
+
+# After every title's bridge and every shared native it stages.
+refii_define_stage_godot()
 
 # Windows: the Tracy library is optional at run time. Every DLL that imports it delay-loads it, and
 # carries the failure hook that turns a missing file into "profiler not started" rather than a game
 # that will not load — an antivirus quarantining TracyClient.dll must not take the game with it.
 if(WIN32 AND TARGET TracyClient)
-    foreach(_refii_tracy_importer rexruntime refii_core refii_vfs refii_hostbridge refii_lua refii_recompiler)
+    foreach(_refii_tracy_importer rexruntime refii_core refii_runtime refii_vfs refii_hostbridge refiii_hostbridge refii_lua refii_recompiler)
         if(TARGET ${_refii_tracy_importer})
             get_target_property(_refii_tracy_importer_type ${_refii_tracy_importer} TYPE)
             if(_refii_tracy_importer_type STREQUAL "SHARED_LIBRARY")
@@ -862,13 +845,16 @@ if(TARGET refii_generated)
     refii_apply_generated_payload_compile_options(refii_generated)
 endif()
 refii_apply_generated_payload_compile_options(refii_hooks)
+refii_apply_generated_payload_compile_options(refii_payload_core)
 
 
 foreach(_refii_origin_rpath_target
     refii
     refii-launcher
     refii_core
+    refii_runtime
     refii_hostbridge
+    refiii_hostbridge
     refii_recompiler
     refii_generated
     refii_bnk_extractor

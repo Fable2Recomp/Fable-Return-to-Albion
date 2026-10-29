@@ -10,6 +10,7 @@ using System.Text;
 using GdUnit4;
 using static GdUnit4.Assertions;
 using Refii.Host;
+using Refii.Titles.Fable2;
 
 /// <summary>
 /// THE CO-OP LUA IS SAVE-SAFE, held at the bytecode the game runs. A save persists every running
@@ -100,7 +101,7 @@ public class CoopLuaSaveSafeTests
 		string? at = AppContext.BaseDirectory;
 		for (int i = 0; i < 12 && at != null; i++)
 		{
-			if (File.Exists(Path.Combine(at, "Godot", "src", "host", "CoopHeroLua.cs")))
+			if (File.Exists(Path.Combine(at, "Godot", "src", "Titles", "Fable2", "host", "CoopHeroLua.cs")))
 			{
 				return at;
 			}
@@ -120,8 +121,8 @@ public class CoopLuaSaveSafeTests
 	{
 		string core = ConstText("Source");
 		string camera = ConstText("CameraSource");
-		string cock = Refii.Save.Engine_GoldenCockRuntime.ScriptFor("bowerstone_north", "CVector3(1,2,3)");
-		string mirror = Refii.Hero.Engine_MorphMirrorRuntime.ScriptFor("caves/bowerlake/thagscave", "CVector3(1,2,3)", "CVector3(4,5,6)", "CVector3(0,1,0)");
+		string cock = Engine_GoldenCockRuntime.ScriptFor("bowerstone_north", "CVector3(1,2,3)");
+		string mirror = Engine_MorphMirrorRuntime.ScriptFor("caves/bowerlake/thagscave", "CVector3(1,2,3)", "CVector3(4,5,6)", "CVector3(0,1,0)");
 		var chunks = new[] { ("@refii/core_init.lua", core), ("@refii/core_camera.lua", camera), ("@refii/golden-cock", cock), ("@refii/morph-mirror", mirror) };
 
 		var compiled = new List<(string Name, string Text, LuaProto Main)>();

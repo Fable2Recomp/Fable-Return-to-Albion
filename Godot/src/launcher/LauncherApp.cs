@@ -77,6 +77,7 @@ public partial class LauncherApp : Control
 	private BackgroundManager _backgrounds = null!;
 	private Panel _menuBar = null!;
 	private RichTextLabel _wordmark = null!;
+	private MenuButton _gameMenu = null!;
 	private MenuButton _fileMenu = null!;
 	private MenuButton _aboutMenu = null!;
 	private Panel _warningPanel = null!;
@@ -183,12 +184,15 @@ public partial class LauncherApp : Control
 		}
 
 		LoadLauncherConfig();
+		LoadActiveTitle();
 		LauncherTheme.Load();
 
 		// The mods that ship with the app, packed into the mods folder before the Mods panel
-		// first lists it. Installed switched off; never over a copy someone has edited.
+		// first lists it. Installed switched off; never over a copy someone has edited. They are
+		// Fable 2 mods, so they go to Fable 2's folder whichever title is active.
 		foreach (string line in Refii.Mods.ModBundled.Install(
-			Refii.Core.Engine_AppRoot.BundledModsDirectory, Refii.Assets.Engine_GameAssets.ModsRoot))
+			Refii.Core.Engine_AppRoot.BundledModsDirectoryFor(Refii.Core.Engine_Title.Fable2),
+			Refii.Mods.ModWorkspace.GetDefaultModsRoot(Refii.Core.Engine_Title.Fable2.AssetsDirectory)))
 		{
 			GD.Print("[mods] bundled " + line);
 		}
@@ -239,6 +243,9 @@ public partial class LauncherApp : Control
 		_wordmark = GetNode<RichTextLabel>("MenuBar/HeaderCol/Wordmark");
 		_fileMenu = GetNode<MenuButton>("MenuBar/HeaderCol/MenuRow/FileMenu");
 		_aboutMenu = GetNode<MenuButton>("MenuBar/HeaderCol/MenuRow/AboutMenu");
+
+		// THE GAME SWITCH, first in the row: which title everything else on the page is about.
+		_gameMenu = GetNode<MenuButton>("MenuBar/HeaderCol/MenuRow/GameMenu");
 		_warningPanel = GetNode<Panel>("WarningPanel");
 		_warningLabel = GetNode<Label>("WarningPanel/WarningLabel");
 		_actionPanel = GetNode<Panel>("ActionPanel");
@@ -443,6 +450,20 @@ public partial class LauncherApp : Control
 		}
 
 		Ini.Load(writePath);
+	}
+
+	private const string TitleSection = "Launcher";
+	private const string ActiveTitleKey = "ActiveTitle";
+
+	/// <summary>
+	/// The game the launcher installs, builds and plays, as the switch last left it. Read before
+	/// anything resolves an install path, because every path is the active title's.
+	/// </summary>
+	private static void LoadActiveTitle()
+	{
+		Refii.Core.Engine_Title.Active = Refii.Core.Engine_Title.Find(
+			Ini.GetString(ActiveTitleKey, Refii.Core.Engine_Title.Fable2.Key, TitleSection))
+			?? Refii.Core.Engine_Title.Fable2;
 	}
 
 	private void ReapplyWindowTitle()
@@ -673,7 +694,7 @@ public partial class LauncherApp : Control
 		int body = LauncherScale.Font(LauncherTokens.BodySize);
 
 		ApplyFont(_wordmark, LauncherScale.Font(LauncherTokens.WordmarkSize), 2);
-		foreach (MenuButton menu in new[] { _fileMenu, _aboutMenu })
+		foreach (MenuButton menu in new[] { _gameMenu, _fileMenu, _aboutMenu })
 		{
 			ApplySystemFont(menu, body);
 		}
@@ -931,8 +952,7 @@ public partial class LauncherApp : Control
 		_menuBar.AddThemeStyleboxOverride("panel", new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0) });
 
 		_wordmark.BbcodeEnabled = true;
-		_wordmark.Text =
-			"[color=#e8dcc2]FABLE [/color][color=#daa520]2[/color][color=#e8dcc2] RECOMPILED[/color]";
+		ApplyWordmark();
 		_wordmark.MouseFilter = MouseFilterEnum.Ignore;
 		_wordmark.VerticalAlignment = VerticalAlignment.Center;
 		_wordmark.AddThemeColorOverride("font_shadow_color", new Color(0, 0, 0, 0.65f));
@@ -965,7 +985,7 @@ public partial class LauncherApp : Control
 		menuHover.SetCornerRadiusAll(LauncherTokens.RadiusSm);
 		menuHover.SetBorderWidthAll(1);
 
-		foreach (MenuButton menu in new[] { _fileMenu, _aboutMenu })
+		foreach (MenuButton menu in new[] { _gameMenu, _fileMenu, _aboutMenu })
 		{
 			menu.MouseDefaultCursorShape = CursorShape.PointingHand;
 			menu.TextOverrunBehavior = TextServer.OverrunBehavior.NoTrimming;
@@ -1150,10 +1170,84 @@ public partial class LauncherApp : Control
 	/// <summary>Connects shared menus to actions supported by the current platform.</summary>
 	private void WireMenus()
 	{
+		PopulateGameMenu();
 		PopulateMenu(_fileMenu, _phone == null ? FileMenuItems : new[] { "Install from ISO and TU", "Cancel installation", "", "Export logs and saves", "Export saves", "Import save", "", "Show Announcements", "Show Debug Panel", "Close" }, OnFileMenu);
 		PopulateMenu(_aboutMenu, AboutMenuItems, OnAboutMenu);
+		StylePopup(_gameMenu.GetPopup());
 		StylePopup(_fileMenu.GetPopup());
 		StylePopup(_aboutMenu.GetPopup());
+	}
+
+	/// <summary>One radio item per title; the button reads the active one.</summary>
+	private void PopulateGameMenu()
+	{
+		PopupMenu popup = _gameMenu.GetPopup();
+		popup.Clear();
+		for (int i = 0; i < Refii.Core.Engine_Title.All.Count; i++)
+		{
+			popup.AddRadioCheckItem(Refii.Core.Engine_Title.All[i].Name, i);
+		}
+
+		popup.IdPressed += id =>
+		{
+			int index = (int)id;
+			if (index >= 0 && index < Refii.Core.Engine_Title.All.Count)
+			{
+				SwitchTitle(Refii.Core.Engine_Title.All[index]);
+			}
+		};
+
+		RefreshGameMenu();
+	}
+
+	private void RefreshGameMenu()
+	{
+		PopupMenu popup = _gameMenu.GetPopup();
+		for (int i = 0; i < Refii.Core.Engine_Title.All.Count; i++)
+		{
+			popup.SetItemChecked(i, Refii.Core.Engine_Title.All[i] == Refii.Core.Engine_Title.Active);
+		}
+
+		_gameMenu.Text = Refii.Core.Engine_Title.Active.Name;
+	}
+
+	private void ApplyWordmark()
+	{
+		string number = Refii.Core.Engine_Title.Active == Refii.Core.Engine_Title.Fable3 ? "3" : "2";
+		_wordmark.Text =
+			"[color=#e8dcc2]FABLE [/color][color=#daa520]" + number + "[/color][color=#e8dcc2] RECOMPILED[/color]";
+	}
+
+	/// <summary>
+	/// Makes <paramref name="title"/> the game the launcher installs, builds and plays. Refused
+	/// while an install or build runs or the game is up: each works on the title it started with.
+	/// </summary>
+	private void SwitchTitle(Refii.Core.Engine_Title title)
+	{
+		if (title == Refii.Core.Engine_Title.Active)
+		{
+			return;
+		}
+
+		if (_pipeline.Running || _launch.GameIsRunning)
+		{
+			Log("Finish the running install or build, or close the game, before switching to " + title.Name + ".");
+			RefreshGameMenu();
+			return;
+		}
+
+		Refii.Core.Engine_Title.Active = title;
+		Ini.SetString(ActiveTitleKey, title.Key, TitleSection);
+		Ini.Save();
+
+		Installer.InvalidateReinstallStepStatus();
+		Recompile.GameCodeBuild.InvalidateStatus();
+
+		RefreshGameMenu();
+		ApplyWordmark();
+		Log("Switched to " + title.Name + ".");
+		RefreshState();
+		RefreshDebugDrawer();
 	}
 
 	private void StylePopup(PopupMenu popup)
@@ -1262,7 +1356,7 @@ public partial class LauncherApp : Control
 			case "Uninstall":
 				Log(Installer.UninstallManagedFiles(out string uninstallLog)
 					? uninstallLog
-					: "No Fable 2 launcher-managed files to uninstall.");
+					: "No " + Installer.GetGameTitle() + " launcher-managed files to uninstall.");
 				RefreshState();
 				break;
 
@@ -1532,6 +1626,14 @@ public partial class LauncherApp : Control
 			// The whole install runs from here: extract the ISO, install the title update,
 			// generate the game code and compile it.
 			label = "Install " + gameTitle;
+		}
+		// The game is installed but this app has no runtime for it yet (a title whose ReXGlue
+		// instance is not built): nothing the launcher can do will make it playable.
+		else if (!Installer.TitleRuntimeExists())
+		{
+			label = Refii.Core.Engine_Title.Active.RemakeName + " Runtime Not Built";
+			enabled = false;
+			compactFont = true;
 		}
 		else if (Recompile.GameCodeBuild.NeedsBuildCached(out _))
 		{

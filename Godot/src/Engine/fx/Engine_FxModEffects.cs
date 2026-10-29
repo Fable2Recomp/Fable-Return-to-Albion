@@ -429,7 +429,7 @@ public static class Engine_FxModEffects
 	}
 
 	/// <summary>
-	/// What the guest's particle hooks read beside its bank (src/vfs/src/hooks/particle_dress.cpp,
+	/// What the guest's particle hooks read beside its bank (Fable2/src/vfs/src/hooks/particle_dress.cpp,
 	/// particle_motion.cpp) — the model's fields the guest's records have no room for:
 	/// <list type="bullet">
 	/// <item><c>0xHASH scale r g b</c> — a mod effect whose authored <c>scale</c> or <c>tint</c> is not
@@ -585,7 +585,7 @@ public static class Engine_FxModEffects
 		return true;
 	}
 
-	/// <summary>The guest tick's command reading the bank again (src/vfs/src/hooks/mod_commands.cpp).</summary>
+	/// <summary>The guest tick's command reading the bank again (Fable2/src/vfs/src/hooks/mod_commands.cpp).</summary>
 	public const string ReloadCommand = "fx_reload";
 
 	/// <summary>

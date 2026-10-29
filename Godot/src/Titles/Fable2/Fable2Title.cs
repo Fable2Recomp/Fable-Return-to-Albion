@@ -1,0 +1,254 @@
+namespace Refii.Titles.Fable2;
+
+using System.Runtime.CompilerServices;
+using Refii.Core;
+
+/// <summary>
+/// Fable 2 to the shell: its game-level pieces, installed into the shell's registries when it is the
+/// active title (<see cref="Engine_TitleGame"/>).
+/// </summary>
+public sealed class Fable2Title : Engine_TitleGame
+{
+	[ModuleInitializer]
+	internal static void RegisterTitle() => Register(new Fable2Title());
+
+	public override Engine_Title Title => Engine_Title.Fable2;
+
+	private static readonly ArchonModManager Archon = new();
+
+	public override Refii.Mods.Engine_ExternalModManager ExternalMods => Archon;
+
+	protected override void Install()
+	{
+		Fable2PageProviders.Register();
+		Fable2MenuSources.Register();
+		Refii.Ui.Engine_UiVerbs.AddTitleVerbs(Fable2UiVerbs.All);
+		Refii.Ui.Engine_UiHostOptionsPage.Register(Engine_UiVibrationOptions.OpenCommand, _ => Engine_UiVibrationOptions.Page);
+	}
+
+	public override void RegisterUiVerbs(Refii.Ui.Engine_UiCommandSet set) => Fable2UiVerbs.RegisterHandlers(set);
+
+	public override Godot.Node CreateUi() => new GameUi { Name = "GameUi" };
+
+	public override void ApplyUiTemplates(Refii.Ui.Engine_UiTemplateSet set) => Fable2UiTemplates.Apply(set);
+
+	private GamePubGames? _pubGames;
+
+	public override void AddSessionNodes(Godot.Node session)
+	{
+		HostUiSource.Install();
+		Godot.GD.Print("[game] the UI reads the live guest now (Engine_UiSource -> HostUiSource)");
+
+		session.AddChild(new GameCharacterMorphs { Name = "CharacterMorphs" });
+		session.AddChild(new GameMorphMirror { Name = "MorphMirrorInteraction" });
+		session.AddChild(new GameGoldenCock { Name = "GoldenCockInteraction" });
+		session.AddChild(new GameGoldenCockCollision { Name = "GoldenCockCollision" });
+
+		// The pub games watch the guest's published table state; they are not launched from here.
+		_pubGames = new GamePubGames { Name = "GamePubGames" };
+		session.AddChild(_pubGames);
+	}
+
+	public override void Step() => _pubGames?.Poll();
+
+	public override System.Collections.Generic.Dictionary<string, object?>? DebugRequest(
+		string op, System.Text.Json.JsonElement request) => Fable2Debug.Request(op, request);
+
+	public override System.Collections.Generic.IReadOnlyList<string> DebugOps => Fable2Debug.Ops;
+
+	public override bool? GuestVibrationEnabled => Engine_UiVibrationOptions.GuestEnabled();
+
+	public override bool LocalCoop => CoopSession.LocalCoop;
+
+	public override bool OnlineClient => CoopSession.IsClient;
+
+	public override bool PeerJoined => CoopSession.PeerStanding;
+
+	public override bool InteractionOwnsPad => GameGoldenCock.OwnsInput || GameMorphMirror.OwnsInput;
+
+	public override bool InteractionOwnsDevices => GameMorphMirror.OwnsInput;
+
+	public override string? KeyLabel(string button) => GameMorphMirror.KeyLabel(button);
+
+	public override bool WorldInteractionAllowed =>
+		GameUi.WorldInteractionAllowed && !GameGoldenCock.OwnsInput && !GameMorphMirror.OwnsInput &&
+		GameGoldenCock.SessionAllowsInteraction(CoopSession.State, CoopSession.Side, CoopSession.LocalCoop);
+
+	public override bool ApplyCamera(Godot.Camera3D camera) => GameMorphMirror.ApplyCamera(camera);
+
+	public override uint CompanionEntityAddress => Fable2Bridge.GetMinimapLive().Dog;
+
+	public override int HeroMorphPreviewGeneration => GameCharacterMorphs.PreviewGeneration;
+
+	public override bool HeroMorphPreviewHeld => GameMorphMirror.OwnsInput;
+
+	public override float HeroManualTan => GameCharacterMorphs.ManualTan;
+
+	public override bool ObserveEntity(Refii.Host.HostBridge.GuestEntity entity) =>
+		GameGoldenCock.ObserveGuest(entity) || GameMorphMirror.ObserveGuest(entity);
+
+	public override void ObserveHero(Refii.Host.HostBridge.GuestEntity hero, uint frame) =>
+		GameGoldenCockCollision.ObserveHero(hero, frame);
+
+	public override bool WheelClaimsFaceButtons => Engine_UiSpellAssign.Secondary is not null;
+
+	public override void PumpMods(bool guestUp) => Engine_UiModAbilities.Pump(guestUp);
+
+	public override void OnAssetsMounted(Refii.Bnk.BnkFileSystem mounted)
+	{
+		CoopHeroLua.Attach(mounted);
+		Refii.Save.Engine_SaveCompatLua.Attach(mounted, CoopHeroLua.Key);
+		CoopText.Attach(mounted);
+		try { Engine_GoldenCockRuntime.Attach(mounted, Engine_GoldenCockPlacements.Load()); }
+		catch (System.Exception exception) { Godot.GD.PushError("[golden-cock] " + exception.Message); }
+		try { Engine_MorphMirrorRuntime.Attach(mounted, Engine_MorphMirrorPlacements.Load()); }
+		catch (System.Exception exception) { Godot.GD.PushError("[morph-mirror] " + exception.Message); }
+		Engine_NewGameRuntime.Attach(mounted);
+	}
+
+	public override void DressLevel(Godot.Node3D root, Refii.Level.LevelEntry level)
+	{
+		Engine_GoldenCockPlacements.AddToLevel(root, level);
+		Engine_MorphMirrorPlacements.AddToLevel(root, level);
+	}
+
+	public override void CaptureLevelPlacements(Godot.Node3D levelRoot)
+	{
+		if (Engine_GoldenCockPlacements.Capture(levelRoot))
+			Godot.GD.Print("[golden-cock] Saved level placement for the installed game.");
+		if (Engine_MorphMirrorPlacements.Capture(levelRoot))
+			Godot.GD.Print("[morph-mirror] Saved the marked mirror and its set for the installed game.");
+	}
+
+	private static readonly Fable2Props Buildings = new();
+
+	public override Refii.Level.Engine_TitleProps Props => Buildings;
+
+	public override bool IsTitleRecord(uint record) => record == Engine_MorphMirrorRuntime.Record;
+
+	public override bool? AllowsVistaOcean(Refii.Level.LevelEntry level) => Fable2LevelRules.AllowsVistaOcean(level);
+
+	public override Refii.Level.DynamicWeatherRule? WeatherRule(Refii.Level.LevelEntry level) => Fable2LevelRules.WeatherRule(level);
+
+	public override string? CuratedModelForParent(uint parentHash) => Engine_GdbModelHashlist.LookupParentHash(parentHash);
+
+	public override string? CuratedModelForKey(string key) => Engine_GdbModelHashlist.LookupEntityKey(key);
+
+	public override bool HandleBusLine(int kind, string fields)
+	{
+		if (kind != CoopHeroKit.PickKind)
+		{
+			return false;
+		}
+
+		CoopHeroKit.HandlePick(fields);
+		return true;
+	}
+
+	public override Refii.Ui.Engine_UiPopulationTable? PopulationTable(string script) => Engine_UiMenuPopulation.For(script);
+
+	public override string? HeldMenuScript => Engine_UiDyeFlow.Active ? Engine_UiDyeFlow.MenuScript : null;
+
+	public override string? OverrideMenuScript(uint screenId)
+	{
+		if (!Engine_UiDyeFlow.Active)
+		{
+			return null;
+		}
+
+		if (screenId == Engine_UiDyeFlow.ItemsScreen)
+		{
+			return Engine_UiDyeFlow.MenuScript;
+		}
+
+		if (screenId != 0)
+		{
+			Engine_UiDyeFlow.End();
+		}
+
+		return null;
+	}
+
+	public override bool IsModAbilityRow(string command) =>
+		command.StartsWith(Engine_UiModAbilities.BuyAction, System.StringComparison.Ordinal);
+
+	private static readonly System.Collections.Generic.HashSet<string> OwnedHud = new(System.StringComparer.Ordinal)
+	{
+		Engine_UiSpellAssign.ElementName,
+		Engine_UiSpellAssign.ElementName + "2",
+	};
+
+	public override System.Collections.Generic.IReadOnlyCollection<string> HudOwnedSubtrees => OwnedHud;
+
+	private static readonly string[] Pips =
+	{
+		Engine_UiHudExpressionMeter.HeroPip, Engine_UiHudExpressionMeter.HenchmanPip,
+		Engine_UiHudExpressionMeter.BothPip,
+	};
+
+	public override System.Collections.Generic.IReadOnlyList<string> HudPipBindings => Pips;
+
+	public override bool IsFrontEndPresentation(string presentation) => Engine_UiFrontEndScreens.Is(presentation);
+
+	public override string ScreenMovie(uint screenId, Refii.Ui.Engine_UiExpandableMenu.Item? row,
+		Refii.Host.HostBridge.HeroVitals vitals) =>
+		Refii.Ui.Engine_UiTemplates.Screen(screenId)?.Provider == Fable2PageProviders.Abilities
+			? Engine_UiAbilityPage.MovieFor(row, vitals.AbilityLevels)
+			: string.Empty;
+
+	public override int MenuPlayer => Engine_UiPropertySource.MenuPlayer();
+
+	public override int OptionsCursorRow => Engine_UiOptionsPending.Row;
+
+	public override int OptionsCursorIndex(int row) => Engine_UiOptionsPending.IndexOf(row);
+
+	public override void EnterHostOptions(Refii.Ui.Engine_UiHostOptionsPage page) => Engine_UiOptionsPending.EnterHost(page);
+
+	public override void ReloadModData()
+	{
+		Engine_UiSpellAssign.ReloadSecondary();
+		Engine_UiModAbilities.Reload();
+	}
+
+	public override Refii.Game.GameTitleInput Input => Fable2Input.Instance;
+
+	public override System.Collections.Generic.IEnumerable<Refii.Game.GameDevTab> GuestDevTabs()
+	{
+		yield return new GameDevTabGuest();
+	}
+
+	public override uint? PlayerBuilding(int player) =>
+		player == 2 ? Fable2Bridge.PlayerTwoBuilding() : Fable2Bridge.HeroBuilding();
+
+	public override int HighlightWidthTexels => Fable2Bridge.HighlightWidthTexels();
+
+	// The pub games' SWF assets: bitmaps, shapes and fonts under game://FlashGames/.
+
+	public override void IndexLooseData(Refii.Bnk.BnkFileSystem? filesystem, string gameDirectory) =>
+		PubGames.Engine_SwfAssets.Index(filesystem, gameDirectory);
+
+	public override void AddResourceLoaders() => PubGames.Engine_SwfAssets.EnsureLoaders();
+
+	public override void RemoveResourceLoaders() => PubGames.Engine_SwfAssets.RemoveLoaders();
+
+	public override void PrepareEditor()
+	{
+		try
+		{
+			PubGames.Engine_SwfAssets.EnsureLoaders();
+			PubGames.Engine_SwfAssets.EnsureIndexed();
+		}
+		catch (System.Exception exception)
+		{
+			Godot.GD.PushWarning($"[swf] pub games not indexed: {exception.Message}");
+		}
+	}
+
+	public override TitleAssetKind AssetKind(string virtualPath) =>
+		PubGames.Engine_SwfAssets.RecognisesTexture(virtualPath) ? TitleAssetKind.Texture
+		: PubGames.Engine_SwfAssets.RecognisesMesh(virtualPath) ? TitleAssetKind.Mesh
+		: PubGames.Engine_SwfAssets.RecognisesFont(virtualPath) ? TitleAssetKind.Font
+		: TitleAssetKind.None;
+
+	public override Godot.Image? AssetImage(string virtualPath) => PubGames.Engine_SwfAssets.TryGetImage(virtualPath);
+}

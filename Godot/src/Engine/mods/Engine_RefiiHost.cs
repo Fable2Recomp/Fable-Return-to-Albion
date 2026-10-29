@@ -609,11 +609,10 @@ public partial class RefiiHost : Node
 				continue;
 			}
 
-			// An online joiner's weapon pick a native or Lua mod made (refii_mod_equip_weapon): into
-			// the co-op kit, which carries it to the host; never an event.
-			if (kind == CoopHeroKit.PickKind)
+			// The title's own lines (Fable 2: an online joiner's weapon pick a mod made, into its
+			// co-op kit, which carries it to the host); never an event.
+			if (Refii.Core.Engine_TitleGame.Active.HandleBusLine(kind, fields))
 			{
-				CoopHeroKit.HandlePick(fields);
 				continue;
 			}
 

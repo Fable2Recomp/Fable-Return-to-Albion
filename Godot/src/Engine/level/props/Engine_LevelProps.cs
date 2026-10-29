@@ -455,7 +455,7 @@ public static partial class Engine_LevelProps
         var saveMap = new List<KeyValuePair<uint, string>>(saveEntities.Count);
         foreach (SaveEntity entity in saveEntities)
         {
-            if (entity.Record == Refii.Hero.Engine_MorphMirrorRuntime.Record) continue;
+            if (Refii.Core.Engine_TitleGame.Active.IsTitleRecord(entity.Record)) continue;
             saveMap.Add(new KeyValuePair<uint, string>(entity.Record, entity.Name));
         }
 
@@ -487,17 +487,10 @@ public static partial class Engine_LevelProps
             read, Engine_LevelGdb.EngineLevelPath(level, read, gdbPath),
             blocks, order, transformKeys, stats, bakes);
 
-        bool hasExplicitClocktowerBase = false;
-        uint clocktowerBaseHash = Engine_PropModelIndex.PathHash(ClocktowerBasePath);
-        foreach (GdbPlacement placement in placements)
-        {
-            if (placement.ModelPathHash == clocktowerBaseHash ||
-                placement.ModelPathHashes.Contains(clocktowerBaseHash))
-            {
-                hasExplicitClocktowerBase = true;
-                break;
-            }
-        }
+        // The title's own buildings: a stand-in that is really another model, the parts a
+        // building brings, the shells it names by entity alone (Fable 2's Bowerstone market).
+        Engine_TitleProps props = Refii.Core.Engine_TitleGame.Active.Props;
+        bool levelPlacesBase = props.PlacesSubstitutedBase(placements);
 
         PropBuildStats buildStats = stats;
         Dictionary<string, PropBlockBuild> blockMap = blocks;
@@ -542,7 +535,7 @@ public static partial class Engine_LevelProps
 
             bool RejectSubstitute(string candidate, bool containerGuard)
             {
-                if (IsBadMarketSubstitution(entityName, candidate))
+                if (props.RejectSubstitute(entityName, candidate))
                 {
                     return true;
                 }
@@ -565,8 +558,8 @@ public static partial class Engine_LevelProps
             {
                 string entityKey = Engine_PropModelIndex.EntityKey(entityName);
                 string? curated =
-                    Engine_GdbModelHashlist.LookupParentHash(placement.ParentHash) ??
-                    Engine_GdbModelHashlist.LookupEntityKey(entityKey);
+                    Refii.Core.Engine_TitleGame.Active.CuratedModelForParent(placement.ParentHash) ??
+                    Refii.Core.Engine_TitleGame.Active.CuratedModelForKey(entityKey);
 
                 if (curated is not null)
                 {
@@ -611,7 +604,7 @@ public static partial class Engine_LevelProps
                     }
 
                     string shellKey = Engine_PropModelIndex.EntityKey(entityName);
-                    if (IsNoHashShellKey(shellKey) && HasWorldishPosition(placement))
+                    if (props.NoHashShellModel(shellKey) is not null && HasWorldishPosition(placement))
                     {
                         shellCandidates.Add(new ShellCandidate(shellKey, placement));
                     }
@@ -657,17 +650,11 @@ public static partial class Engine_LevelProps
                 continue;
             }
 
-            string? clocktowerPlatformCompanion = null;
-            bool clocktowerAudit = placement.ParentHash == ClocktowerParentHash ||
-                Engine_PropModelIndex.EntityKey(entityName)
-                    .Contains("clocktower", StringComparison.Ordinal);
-            if (clocktowerAudit && !hasExplicitClocktowerBase &&
-                NormalisePath(modelPath).Contains(
-                    "bs_market_platform/bs_market_platform.mdl", StringComparison.Ordinal) &&
-                Engine_PropModelIndex.ResolveByPath(ClocktowerBasePath) is string towerPath)
+            string? substituteCompanion = null;
+            if (props.SubstituteModel(placement, entityName, modelPath, levelPlacesBase, out string? companion) is { } substitute)
             {
-                clocktowerPlatformCompanion = modelPath;
-                modelPath = towerPath;
+                substituteCompanion = companion;
+                modelPath = substitute;
             }
 
             if (IsUniqueEntityShellModel(modelPath) && !HasWorldishPosition(placement))
@@ -732,24 +719,22 @@ public static partial class Engine_LevelProps
                 Refii.Models.Engine_ClassicDisplacement.NoteRecord(placement.Hash);
             }
 
-            bool clocktowerBasePrimary = NormalisePath(modelPath).Contains(
-                "bs_market_clocktower/bs_market_clocktower.mdl", StringComparison.Ordinal);
-            if (clocktowerBasePrimary)
+            if (props.CompanionParts(modelPath, out string partsTag) is { Count: > 0 } parts)
             {
                 uint ownerHash = isEditor ? placement.Hash : 0u;
-                if (clocktowerPlatformCompanion is not null)
+                if (substituteCompanion is not null)
                 {
-                    AppendCompanionInstance("clocktower", clocktowerPlatformCompanion, transform, ownerHash);
+                    AppendCompanionInstance(partsTag, substituteCompanion, transform, ownerHash);
                 }
 
-                foreach (string partPath in ClocktowerPartPaths)
+                foreach (string partPath in parts)
                 {
-                    AppendCompanionInstance("clocktower", partPath, transform, ownerHash);
+                    AppendCompanionInstance(partsTag, partPath, transform, ownerHash);
                 }
             }
         }
 
-        AppendNoHashShells(shellCandidates, blocks, order, transformKeys, stats, isEditor);
+        AppendNoHashShells(props, shellCandidates, blocks, order, transformKeys, stats, isEditor);
         AppendCompanionBlocks(blocks, order, transformKeys, stats, isEditor);
         AppendGmdLayoutChildren(blocks, order, transformKeys, stats, isEditor);
 
@@ -1720,7 +1705,7 @@ public static partial class Engine_LevelProps
             return null;
         }
 
-        string? curated = Engine_GdbModelHashlist.LookupEntityKey(assetKey);
+        string? curated = Refii.Core.Engine_TitleGame.Active.CuratedModelForKey(assetKey);
         if (curated is not null &&
             Engine_PropModelIndex.ResolveByPath(curated) is string curatedHit)
         {
@@ -1791,22 +1776,6 @@ public static partial class Engine_LevelProps
 
     private readonly record struct ShellCandidate(string Key, GdbPlacement Placement);
 
-    public const uint ClocktowerParentHash = 0xD55304DB;
-
-    public const string ClocktowerBasePath =
-        "Art\\Environment\\Regions\\Bowerstone\\Structures\\dotXSI\\" +
-        "BS_Market_ClockTower\\BS_Market_ClockTower.mdl";
-
-    public static readonly string[] ClocktowerPartPaths =
-    {
-        "Art\\Environment\\Regions\\Bowerstone\\Structures\\dotXSI\\" +
-        "BS_Market_ClockTower_Cogs\\BS_Market_ClockTower_Cogs.mdl",
-        "Art\\Environment\\Regions\\Bowerstone\\Structures\\dotXSI\\" +
-        "BS_Market_ClockTower_HourHand\\BS_Market_ClockTower_HourHand.mdl",
-        "Art\\Environment\\Regions\\Bowerstone\\Structures\\dotXSI\\" +
-        "BS_Market_ClockTower_MinuteHand\\BS_Market_ClockTower_MinuteHand.mdl",
-    };
-
     public static string NormalisePath(string path) =>
         path.Replace('\\', '/').ToLowerInvariant();
 
@@ -1821,27 +1790,8 @@ public static partial class Engine_LevelProps
 
         return p.Contains("/exterior.mdl", StringComparison.Ordinal) ||
                p.Contains("/interior.mdl", StringComparison.Ordinal) ||
-               p.Contains("bs_market_gatehouse", StringComparison.Ordinal) ||
-               p.Contains("bs_market_clocktower", StringComparison.Ordinal) ||
-               p.Contains("bs_market_platform", StringComparison.Ordinal) ||
-               p.Contains("bs_market_largeshop", StringComparison.Ordinal) ||
-               p.Contains("bs_market_smallshop", StringComparison.Ordinal) ||
-               p.Contains("bs_market_generalshop", StringComparison.Ordinal) ||
-               p.Contains("bs_market_tavern", StringComparison.Ordinal) ||
-               p.Contains("bs_market_tarotstall", StringComparison.Ordinal) ||
-               p.Contains("bs_townhouse", StringComparison.Ordinal);
+               Refii.Core.Engine_TitleGame.Active.Props.IsUniqueShellModel(p);
     }
-
-    public const string TavernExterior =
-        "art/environment/regions/bowerstone/buildings/dotxsi/" +
-        "bs_market_tavern/bs_market_tavern/exterior.mdl";
-
-    public const string GeneralShopExterior =
-        "art/environment/regions/bowerstone/buildings/dotxsi/" +
-        "bs_market_generalshop/bs_market_generalshop/exterior.mdl";
-
-    public static bool IsNoHashShellKey(string key) =>
-        key is "bsmarkettavern" or "generalstore" or "generalstore1";
 
     public static bool HasWorldishPosition(GdbPlacement p)
     {
@@ -1866,6 +1816,7 @@ public static partial class Engine_LevelProps
     }
 
     private static void AppendNoHashShells(
+        Engine_TitleProps props,
         List<ShellCandidate> candidates,
         Dictionary<string, PropBlockBuild> blocks,
         List<string> order,
@@ -1875,9 +1826,7 @@ public static partial class Engine_LevelProps
     {
         foreach (ShellCandidate candidate in candidates)
         {
-            string exterior = candidate.Key == "bsmarkettavern"
-                ? TavernExterior
-                : GeneralShopExterior;
+            string exterior = props.NoHashShellModel(candidate.Key)!;
 
             GdbPlacement placement = WithBorrowedRotation(candidate, candidates);
             Transform3D transform = BuildTransform(placement);
@@ -2782,17 +2731,14 @@ public static partial class Engine_LevelProps
             return;
         }
 
-        bool isSlumsLevel = level.LevelPath.Contains(
-            "bwsslums", StringComparison.OrdinalIgnoreCase);
+        Engine_TitleProps props = Refii.Core.Engine_TitleGame.Active.Props;
 
         foreach (GdbPlacement p in placements)
         {
             string entityKey = Engine_PropModelIndex.EntityKey(p.EntityName);
-            bool allowSlumsShellAugment = isSlumsLevel && p.ModelPathHash != 0 &&
-                (entityKey.Contains("slumstreethouse", StringComparison.Ordinal) ||
-                 entityKey.Contains("townhouse", StringComparison.Ordinal));
+            bool allowShellAugment = p.ModelPathHash != 0 && props.AugmentsPlacedShell(level, entityKey);
 
-            if (p.Hash == 0 || (p.ModelPathHash != 0 && !allowSlumsShellAugment))
+            if (p.Hash == 0 || (p.ModelPathHash != 0 && !allowShellAugment))
             {
                 continue;
             }
@@ -2986,7 +2932,7 @@ public static partial class Engine_LevelProps
                path.Contains("/art/creatures/", StringComparison.Ordinal);
     }
 
-    private static string CompactText(string value)
+    public static string CompactText(string value)
     {
         var text = new System.Text.StringBuilder(value.Length);
         foreach (char c in value)
@@ -3000,7 +2946,7 @@ public static partial class Engine_LevelProps
         return text.ToString();
     }
 
-    private static bool KeyIsOrNumbered(string key, string baseKey)
+    public static bool KeyIsOrNumbered(string key, string baseKey)
     {
         if (key == baseKey)
         {
@@ -3024,7 +2970,7 @@ public static partial class Engine_LevelProps
         return true;
     }
 
-    private static bool KeyIsOrVariant(string key, string baseKey)
+    public static bool KeyIsOrVariant(string key, string baseKey)
     {
         if (KeyIsOrNumbered(key, baseKey))
         {
@@ -3059,93 +3005,6 @@ public static partial class Engine_LevelProps
                    .Contains("/buildings/", StringComparison.Ordinal) ||
                key.EndsWith("exteriormdl", StringComparison.Ordinal) ||
                key.EndsWith("interiormdl", StringComparison.Ordinal);
-    }
-
-    public static bool IsBadMarketSubstitution(string entityName, string modelPath)
-    {
-        string entityKey = Engine_PropModelIndex.EntityKey(entityName);
-        string rawKey = CompactText(entityName);
-        string modelKey = CompactText(NameOf(modelPath));
-        string modelPathKey = CompactText(modelPath.Replace('\\', '/'));
-
-        bool signEntity =
-            entityKey.Contains("sign", StringComparison.Ordinal) ||
-            rawKey.Contains("sign", StringComparison.Ordinal);
-        bool doorEntity =
-            entityKey.Contains("door", StringComparison.Ordinal) ||
-            rawKey.Contains("door", StringComparison.Ordinal);
-
-        bool generalStoreBuilding =
-            KeyIsOrNumbered(entityKey, "generalstore") ||
-            KeyIsOrNumbered(rawKey, "objectbuildinggeneralstore") ||
-            KeyIsOrNumbered(rawKey, "newobjectbuildinggeneralstore");
-        if (modelPathKey.Contains("bsmarketgeneralshop", StringComparison.Ordinal) &&
-            (modelPathKey.Contains("exterior", StringComparison.Ordinal) ||
-             modelPathKey.Contains("interior", StringComparison.Ordinal)) &&
-            !generalStoreBuilding)
-        {
-            return true;
-        }
-
-        if (generalStoreBuilding && !signEntity &&
-            modelKey.Contains("signgeneralstore", StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        bool tavernBuilding =
-            entityKey.Contains("bsmarkettavern", StringComparison.Ordinal) ||
-            entityKey.Contains("markettavern", StringComparison.Ordinal) ||
-            rawKey.Contains("objectbuildingbsmarkettavern", StringComparison.Ordinal) ||
-            rawKey.Contains("newobjectbuildingbsmarkettavern", StringComparison.Ordinal);
-        if (modelPathKey.Contains("bsmarkettavern", StringComparison.Ordinal) &&
-            !tavernBuilding)
-        {
-            return true;
-        }
-
-        if (tavernBuilding && !signEntity &&
-            (modelKey.Contains("botavernsign", StringComparison.Ordinal) ||
-             modelKey.Contains("tavernsign", StringComparison.Ordinal)))
-        {
-            return true;
-        }
-
-        bool tarotStallBuilding =
-            entityKey.Contains("tarotstall", StringComparison.Ordinal) ||
-            rawKey.Contains("tarotstall", StringComparison.Ordinal);
-        if (tarotStallBuilding && !doorEntity &&
-            modelKey.Contains("tarotstalldoors", StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        bool marketStallBuilding =
-            KeyIsOrVariant(entityKey, "bsopenstall") ||
-            KeyIsOrVariant(entityKey, "bsmarketopenstall") ||
-            KeyIsOrVariant(entityKey, "bsmarketstall") ||
-            rawKey.Contains("objectbuildingbsopenstall", StringComparison.Ordinal) ||
-            rawKey.Contains("objectbuildingbsmarketstall", StringComparison.Ordinal) ||
-            rawKey.Contains("newobjectbuildingbsmarketstall", StringComparison.Ordinal);
-        bool marketStallShellModel =
-            (modelKey.Contains("bsmarketmarketstall", StringComparison.Ordinal) ||
-             modelKey.Contains("bsmarketopenstall", StringComparison.Ordinal) ||
-             modelKey.Contains("bsopenstall", StringComparison.Ordinal)) &&
-            !modelKey.Contains("esashopmarketstall", StringComparison.Ordinal);
-        if (marketStallShellModel && !marketStallBuilding)
-        {
-            return true;
-        }
-
-        if ((generalStoreBuilding || tavernBuilding ||
-             marketStallBuilding || tarotStallBuilding) &&
-            (modelKey.Contains("bstownhouse", StringComparison.Ordinal) ||
-             modelKey.Contains("townhouse", StringComparison.Ordinal)))
-        {
-            return true;
-        }
-
-        return false;
     }
 
     public static string LeafOf(string path)

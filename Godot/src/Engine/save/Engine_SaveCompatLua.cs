@@ -33,7 +33,11 @@ public static class Engine_SaveCompatLua
 
 	public static readonly string Source = Build();
 
-	public static void Attach(BnkFileSystem mounted)
+	/// <summary>
+	/// Appends the stub to the title's core chunk <paramref name="coreChunk"/> (Fable 2's is
+	/// `refii/core_init.lua`), which must already be in the mount: it runs in the same VM pass.
+	/// </summary>
+	public static void Attach(BnkFileSystem mounted, string coreChunk)
 	{
 		if (Refii.Lua.Engine_LuaDecompiler.Available &&
 			!Refii.Lua.Engine_LuaDecompiler.TryCheckSource(Source, "@refii/save-compat", out string error))
@@ -42,11 +46,11 @@ public static class Engine_SaveCompatLua
 			return;
 		}
 
-		string previous = mounted.TryGetFile(Refii.Host.CoopHeroLua.Key, out var core)
+		string previous = mounted.TryGetFile(coreChunk, out var core)
 			? Encoding.UTF8.GetString(core.ReadAllBytes())
 			: string.Empty;
 		byte[] bytes = Encoding.UTF8.GetBytes(previous + "\n" + Source);
-		mounted.AddVirtualFile(Refii.Host.CoopHeroLua.Key, Refii.Host.CoopHeroLua.Key, bytes.Length, () => bytes, "Refii");
+		mounted.AddVirtualFile(coreChunk, coreChunk, bytes.Length, () => bytes, "Refii");
 	}
 
 	private static string Build()

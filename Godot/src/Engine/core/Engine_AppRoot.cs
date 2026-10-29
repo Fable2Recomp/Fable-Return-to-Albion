@@ -181,14 +181,23 @@ public static class Engine_AppRoot
 
 	/// <summary>
 	/// Mods that ship with the app, as source: <c>bundled-mods</c> beside the binary once exported,
-	/// the repo's own <c>mods-src</c> in a dev tree. See <see cref="Refii.Mods.ModBundled"/>.
+	/// the repo's own <c>Fable2/mods-src</c> in a dev tree. See <see cref="Refii.Mods.ModBundled"/>.
 	/// </summary>
-	public static string BundledModsDirectory => IsExported
-		? System.IO.Path.Combine(Path, "bundled-mods")
-		: System.IO.Path.GetFullPath(System.IO.Path.Combine(SafeGetProjectDir(), "..", "mods-src"));
+	public static string BundledModsDirectory => BundledModsDirectoryFor(Engine_Title.Active);
 
-	/// <summary>Player-owned state: the profile, savegames, and derived caches.</summary>
-	public static string SaveDirectory => System.IO.Path.Combine(AssetsDirectory, "save");
+	/// <summary>
+	/// One title's shipped mods: <c>bundled-mods/&lt;Folder&gt;</c> exported, the repo's
+	/// <c>&lt;Folder&gt;/mods-src</c> in a dev tree.
+	/// </summary>
+	public static string BundledModsDirectoryFor(Engine_Title title) => IsExported
+		? System.IO.Path.Combine(Path, "bundled-mods", title.Folder)
+		: System.IO.Path.GetFullPath(System.IO.Path.Combine(SafeGetProjectDir(), "..", title.Folder, "mods-src"));
+
+	/// <summary>
+	/// Player-owned state — the profile and savegames — for the active title:
+	/// <c>assets/&lt;Folder&gt;/save</c> (<see cref="Engine_Title.SaveDirectory"/>).
+	/// </summary>
+	public static string SaveDirectory => Engine_Title.Active.SaveDirectory;
 
 	/// <summary>
 	/// Derived data that can be thrown away and regenerated: <c>&lt;app&gt;/cache</c>.
@@ -207,12 +216,22 @@ public static class Engine_AppRoot
 	/// </remarks>
 	public static string CacheDirectory => System.IO.Path.Combine(Path, "cache");
 
-	/// <summary>Creates the directories the app expects to write into.</summary>
+	/// <summary>
+	/// Moves a pre-title install into its title folder (<see cref="Engine_TitleLayout"/>), then
+	/// creates the directories the app expects to write into.
+	/// </summary>
 	public static void EnsureLayout()
 	{
+		// FIRST: creating the active title's folders before the move would leave it nowhere to go.
+		foreach (string line in Engine_TitleLayout.MigrateLegacyLayout())
+		{
+			GD.Print("[layout] " + line);
+		}
+
 		foreach (string directory in new[]
 		         {
 			         BinDirectory, AssetsDirectory, LogsDirectory, SaveDirectory, CacheDirectory,
+			         Engine_Title.Active.AssetsDirectory, Engine_Title.Active.BinDirectory,
 		         })
 		{
 			try

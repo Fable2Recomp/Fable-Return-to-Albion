@@ -518,7 +518,7 @@ public partial class GameFx : Node3D
             node.Intensity = fx.Intensity * fade;
             node.LightFade = fade;
             // The guest's element scale carries a mod effect's authored scale (the instance hooks,
-            // src/vfs/src/hooks/particle_dress.cpp); this node applies that factor itself
+            // Fable2/src/vfs/src/hooks/particle_dress.cpp); this node applies that factor itself
             // (FxEffect.Scale, Engine_FxSystem), so the size it takes from the guest is the game's.
             node.SizeScale = scale / AuthoredScale(effect);
             node.GuestDrawn = _guestDrawn.Contains(key);

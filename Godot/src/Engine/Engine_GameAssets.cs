@@ -169,16 +169,7 @@ public partial class Engine_GameAssets : Node
 				overlays: Refii.Mods.ModIndex.ToMountOverlays(overlays),
 				updateRoot: Refii.Core.Engine_GameData.UpdateRootFor(GameDirectory));
 			ApplyModOrder(mounted, overlays, order, live);
-			Refii.Host.CoopHeroLua.Attach(mounted);
-			Refii.Save.Engine_SaveCompatLua.Attach(mounted);
-			Refii.Host.CoopText.Attach(mounted);
-			try { Refii.Save.Engine_GoldenCockRuntime.Attach(mounted, Refii.Save.Engine_GoldenCockPlacements.Load()); }
-			catch (Exception exception) { GD.PushError("[golden-cock] " + exception.Message); }
-			try { Refii.Hero.Engine_MorphMirrorRuntime.Attach(mounted, Refii.Hero.Engine_MorphMirrorPlacements.Load()); }
-			catch (Exception exception) { GD.PushError("[morph-mirror] " + exception.Message); }
-			try { Refii.Level.Engine_DecorateCatalog.Attach(mounted); }
-			catch (Exception exception) { GD.PushError("[decorate] " + exception.Message); }
-			Refii.Save.Engine_NewGameRuntime.Attach(mounted);
+			Refii.Core.Engine_TitleGame.Active.OnAssetsMounted(mounted);
 		}
 		catch (Exception exception)
 		{
@@ -314,11 +305,12 @@ public partial class Engine_GameAssets : Node
 	/// <summary>
 	/// Installed mods, beside the player's game data.
 	///
-	/// By convention rather than by config: <c>&lt;app root&gt;/assets/mods</c>, the folder the
-	/// launcher's panel already writes to.
+	/// By convention rather than by config: the active title's <c>assets/mods</c>
+	/// (<c>assets/refiii/mods</c> for Fable 3), the folder the launcher's panel writes to. A mod
+	/// is written against one game, so each title has its own.
 	/// </summary>
 	public static string ModsRoot =>
-		Refii.Mods.ModWorkspace.GetDefaultModsRoot(Refii.Core.Engine_AppRoot.AssetsDirectory);
+		Refii.Mods.ModWorkspace.GetDefaultModsRoot(Refii.Core.Engine_Title.Active.AssetsDirectory);
 
 	/// <summary>Where the fold's report is written for the panel and for a reader of a run.</summary>
 	public static string ResolvedReportPath =>
@@ -460,8 +452,7 @@ public partial class Engine_GameAssets : Node
 			Refii.Mods.ModSettings.Reload();
 			Refii.Mods.ModInput.Reload();
 			Refii.Fx.Engine_FxRecipes.Reload();
-			Refii.Ui.Engine_UiSpellAssign.ReloadSecondary();
-			Refii.Ui.Engine_UiModAbilities.Reload();
+			Refii.Core.Engine_TitleGame.Active.ReloadModData();
 		}
 
 		// Ensure GDB resolvers are bound so composite synthesis can access the unpatched base database:
@@ -660,23 +651,9 @@ public partial class Engine_GameAssets : Node
 			ResourceLoader.AddResourceFormatLoader(_audioLoader);
 		}
 
-		if (_swfTextureLoader is null)
-		{
-			_swfTextureLoader = new Refii.FlashGames.Engine_SwfTextureLoader();
-			ResourceLoader.AddResourceFormatLoader(_swfTextureLoader, atFront: true);
-		}
-
-		if (_swfMeshLoader is null)
-		{
-			_swfMeshLoader = new Refii.FlashGames.Engine_SwfMeshLoader();
-			ResourceLoader.AddResourceFormatLoader(_swfMeshLoader, atFront: true);
-		}
-
-		if (_swfFontLoader is null)
-		{
-			_swfFontLoader = new Refii.FlashGames.Engine_SwfFontLoader();
-			ResourceLoader.AddResourceFormatLoader(_swfFontLoader, atFront: true);
-		}
+		// The title's own asset paths (Fable 2's pub games), ahead of the mount's: one set of
+		// loaders, shared with the editor's.
+		Refii.Core.Engine_TitleGame.Active.AddResourceLoaders();
 	}
 
 	/// <summary>Every <c>.mdl</c> in the mount, for the prop model index.</summary>
@@ -1016,9 +993,6 @@ public partial class Engine_GameAssets : Node
 	private Refii.Entities.Engine_BnkEntityLoader? _entityLoader;
 	private Refii.Fx.Engine_BnkFxLoader? _fxLoader;
 	private Refii.Audio.Engine_BnkAudioLoader? _audioLoader;
-	private Refii.FlashGames.Engine_SwfTextureLoader? _swfTextureLoader;
-	private Refii.FlashGames.Engine_SwfMeshLoader? _swfMeshLoader;
-	private Refii.FlashGames.Engine_SwfFontLoader? _swfFontLoader;
 	private Dictionary<string, string>? _byFileName;
 	private List<Refii.Level.LevelEntry>? _levels;
 

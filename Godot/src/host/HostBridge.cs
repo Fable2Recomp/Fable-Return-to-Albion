@@ -17,7 +17,7 @@ namespace Refii.Host;
 /// </summary>
 public static class HostBridge
 {
-	private const string Library = "refii_hostbridge";
+	internal const string Library = "refii_hostbridge";
 
 	/// <summary>
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
@@ -34,22 +34,6 @@ public static class HostBridge
 		var buffer = new byte[32768];
 		return RefiiHostGetSaveRoot(buffer, (uint)buffer.Length) != 0 ? Decode(buffer) : null;
 	}
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	private static extern ulong RefiiHostGetNewGameState(out uint generation);
-
-	public static (uint Generation, ulong Result) GetNewGameState()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp) return default;
-		ulong result = RefiiHostGetNewGameState(out uint generation);
-		return (generation, result);
-	}
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	private static extern uint RefiiHostGetGoldenCockInteraction();
-
-	public static uint GetGoldenCockInteraction() =>
-		TryGetAbiVersion() is not null && IsGuestUp ? RefiiHostGetGoldenCockInteraction() : 0u;
 
 	private const int MessageCapacity = 512;
 
@@ -259,7 +243,14 @@ public static class HostBridge
 	public static ProbeResult Initialize(string gameDirectory, params string[] arguments)
 	{
 		var message = new byte[MessageCapacity];
-		string packed = arguments is { Length: > 0 } ? string.Join('\n', arguments) : string.Empty;
+
+		// THE TITLE'S SAVES, stated beside its data root: refii.toml is shared by every title, and
+		// a command-line value outranks it, so each title's guest writes into its own folder.
+		var stated = new List<string>(arguments ?? Array.Empty<string>())
+		{
+			"--user_data_root=" + Refii.Core.Engine_AppRoot.SaveDirectory,
+		};
+		string packed = string.Join('\n', stated);
 
 		try
 		{
@@ -742,7 +733,7 @@ public static class HostBridge
 
 	private const int TextureLayerWords = 7;
 
-	private static readonly uint[] _textureLayerWords = new uint[40 * (2 + 8 * TextureLayerWords)];
+	internal static readonly uint[] _textureLayerWords = new uint[40 * (2 + 8 * TextureLayerWords)];
 
 	/// <summary>Run total of composites the hook has seen stated; 0 means it never ran.</summary>
 	public static ulong TextureLayerStatements { get; private set; }
@@ -790,35 +781,8 @@ public static class HostBridge
 	private static readonly Dictionary<uint, (uint Generation, uint Written, GuestTextureComposite[] Composites)>
 		_entityTextureLayers = new();
 
-	/// <summary>
-	/// The layers the guest's own dye builder states for ONE inventory item (worn or not), by
-	/// record id, in the same words a character's composites use — so the menu shows a dyed
-	/// garment through the very compositor that dresses the hero. Empty for an undyed item.
-	/// </summary>
-	public static GuestTextureComposite[] GetItemDyeLayers(uint record, out uint generation)
-	{
-		generation = 0;
-		if (record == 0 || TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return System.Array.Empty<GuestTextureComposite>();
-		}
-
-		uint[] words = _textureLayerWords;
-		uint written;
-		try
-		{
-			written = RefiiHostGetItemDyeLayers(record, words, (uint)words.Length, out generation);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return System.Array.Empty<GuestTextureComposite>();
-		}
-
-		return DecodeTextureLayers(words, written);
-	}
-
 	/// <summary>[original, count | kind &lt;&lt; 16, count x layer words] per texture, as the tables write them.</summary>
-	private static GuestTextureComposite[] DecodeTextureLayers(uint[] words, uint written)
+	internal static GuestTextureComposite[] DecodeTextureLayers(uint[] words, uint written)
 	{
 		if (written == 0)
 		{
@@ -2134,12 +2098,6 @@ public static class HostBridge
 			: new MenuBoxState((int)count, (int)selected, (flags & 1) != 0, (flags & 2) != 0, enabled, (flags & 4) != 0);
 	}
 
-	/// <summary>The QueryBox class — `GUI.DisplayYesNoQuestion` and its two siblings.</summary>
-	public const uint DisplayQueryBoxVtable = 0x820AE688u;
-
-	/// <summary>The NumericAdjuster class — `GUI.DisplayNumericAdjusterParams`.</summary>
-	public const uint DisplayAdjusterVtable = 0x820AE6A8u;
-
 	/// <summary>
 	/// The display box that is up and its class vtable, or null when none is open. See
 	/// <c>RefiiHostGetDisplayBox</c>.
@@ -2161,25 +2119,6 @@ public static class HostBridge
 
 	/// <summary>All seven tab bits — what <see cref="PauseTabsAvailable"/> means by "everything".</summary>
 	public const uint AllPauseTabs = 0x1FCu;
-
-	/// <summary>
-	/// Which pause tabs the guest itself would offer — bit N set means tab N (2..8) is
-	/// available. The guest's own prev/next skips an unavailable tab (`sub_826B83D0`) but its
-	/// push does NOT re-check, so the owned menu must ghost these entries itself. Fails open
-	/// to all-available; unavailability only ever comes from a completed read of the guest's
-	/// own restriction flags (a childhood/cutscene gate on the hero entity).
-	/// </summary>
-	public static uint PauseTabsAvailable() =>
-		TryGetAbiVersion() is null ? AllPauseTabs : RefiiHostPauseTabsAvailable();
-
-	/// <summary>
-	/// True while the abilities screen's spell-assignment blade is up — the guest's own mode
-	/// byte at `screen14+620`, whose only writers are the enter/exit pair. False on the normal
-	/// list AND when the screen object does not exist; the caller needs no distinction, both
-	/// mean "drive the list, not the blade".
-	/// </summary>
-	public static bool AbilitiesAssignmentOpen() =>
-		TryGetAbiVersion() is not null && RefiiHostGetAbilitiesMode() == 1;
 
 	/// <summary>
 	/// The pause-root minimap's quest markers — the C++ container the element mirror could
@@ -2536,31 +2475,6 @@ public static class HostBridge
 	private static uint[]? _morphParts;
 	private static uint[]? _meshParts;
 
-	private static uint[]? _frontEndModelWords;
-
-	/// <summary>
-	/// The front-end model, or null when the front-end GUI is not up — including once the game
-	/// starts, where the guest republishes its GUI global as a base-only instance with no
-	/// screens.
-	/// </summary>
-	public static FrontEndModel? GetFrontEndModel()
-	{
-		if (TryGetAbiVersion() is null)
-		{
-			return null;
-		}
-
-		_frontEndModelWords ??= new uint[11];
-		if (RefiiHostGetFrontEndModel(_frontEndModelWords) == 0)
-		{
-			return null;
-		}
-
-		uint[] w = _frontEndModelWords;
-		return new FrontEndModel(
-			w[0] != 0, w[1], w[2], w[3], w[4] != 0, w[5] != 0, w[6], w[7], w[8] != 0, w[9],
-			w[10]);
-	}
 
 	/// <summary>The guest's camera, in guest world space.</summary>
 	public readonly record struct GuestCamera(
@@ -2686,73 +2600,6 @@ public static class HostBridge
 
 	private static float[]? _playerCameraValues;
 
-	/// <summary>
-	/// The player who owns the open in-game GUI (1 or 2) — the guest's own owner of its pause and
-	/// what opens from it, sampled every guest tick. Meaningful while a menu is open.
-	/// </summary>
-	public static int GetMenuOwner() => TryGetAbiVersion() is null ? 1 : RefiiHostGetMenuOwner();
-
-	/// <summary>
-	/// The players a region exit refused since the last call because their partner was out of
-	/// range (bit 0 player one, bit 1 player two) — the co-op travel rule, once per approach.
-	/// Read-and-clear.
-	/// </summary>
-	public static int TakeExitRefused() => TryGetAbiVersion() is null ? 0 : RefiiHostTakeExitRefused();
-
-	/// <summary>
-	/// Online: this machine's player stands at a region exit waiting for the partner (the co-op
-	/// travel rule) — restated to the peer, which tells its player.
-	/// </summary>
-	public static bool ExitWaiting() => TryGetAbiVersion() is not null && IsGuestUp && RefiiHostGetExitWaiting() != 0;
-
-	/// <summary>
-	/// The online joiner's newest region-exit use: a sequence (0 = none yet) and the exit's guest
-	/// position. Restated to the host, which fires the exit standing there.
-	/// </summary>
-	public static (uint Sequence, float X, float Y, float Z) ExitRequest()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return (0u, 0f, 0f, 0f);
-		}
-
-		float[] at = _exitRequestAt ??= new float[3];
-		uint sequence = RefiiHostGetExitRequest(at);
-		return (sequence, at[0], at[1], at[2]);
-	}
-
-	private static float[]? _exitRequestAt;
-
-	/// <summary>
-	/// The things whose use prompt answers player two this frame — the nearer player's, in co-op
-	/// (coop_hero_hooks.cpp) — into <paramref name="into"/>; returns the count. A pooled world
-	/// icon's <see cref="WorldSprite.Entity"/> is its prompted thing.
-	/// </summary>
-	public static int GetPlayerTwoPrompts(uint[] into) =>
-		TryGetAbiVersion() is null || !IsGuestUp ? 0 : RefiiHostGetPlayerTwoPrompts(into, into.Length);
-
-	/// <summary>The things whose use prompt only player two sees this frame (player one's half hides them).</summary>
-	public static int GetPlayerOneHiddenPrompts(uint[] into) =>
-		TryGetAbiVersion() is null || !IsGuestUp ? 0 : RefiiHostGetPlayerOneHiddenPrompts(into, into.Length);
-
-	/// <summary>Player two's own hold-to-use meter: the fraction 0..1 and whether they hold A.</summary>
-	public static (float Fraction, bool Pressed) GetPlayerTwoHold()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return (0f, false);
-		}
-
-		try
-		{
-			RefiiHostGetPlayerTwoHold(out float fraction, out int pressed);
-			return (fraction, pressed != 0);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return (0f, false);
-		}
-	}
 
 	private static readonly float[] _holdPromptAt = new float[3];
 	private static readonly byte[] _holdPromptTitle = new byte[256];
@@ -2842,116 +2689,7 @@ public static class HostBridge
 		public bool IsShared => (Flags & 64u) != 0u;
 	}
 
-	private static readonly byte[] _properties = new byte[32768];
 
-	/// <summary>A player's properties (1 or 2; 0 the player whose menus are open).</summary>
-	public static List<Property> GetProperties(int player)
-	{
-		var list = new List<Property>();
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return list;
-		}
-
-		uint written;
-		try
-		{
-			written = RefiiHostGetProperties(player, _properties, (uint)_properties.Length);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return list;
-		}
-
-		if (written == 0 || written >= _properties.Length)
-		{
-			return list;
-		}
-
-		foreach (string line in Encoding.UTF8.GetString(_properties, 0, (int)written).Split('\n'))
-		{
-			string[] p = line.Split('\t');
-			if (p.Length >= 7 &&
-				ulong.TryParse(p[0], System.Globalization.NumberStyles.HexNumber, null, out ulong uid) &&
-				uint.TryParse(p[2], out uint flags) && int.TryParse(p[3], out int income) &&
-				int.TryParse(p[4], out int value) &&
-				float.TryParse(p[5], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float condition) &&
-				int.TryParse(p[6], out int cost))
-			{
-				int bought = p.Length >= 8 && int.TryParse(p[7], out int paid) ? paid : 0;
-				list.Add(new Property(uid, p[1], flags, income, value, condition, cost, bought));
-			}
-		}
-
-		return list;
-	}
-
-	/// <summary>
-	/// The oldest property notice: kind 0 disrepair, 1 repaired, 2 not enough gold, 3 nothing to
-	/// repair, 6 a purchase shared with the partner (the building's UID); 4 owed gold paid on return,
-	/// 5 a sale's half paid to the partner (the gold in <c>Uid</c>).
-	/// </summary>
-	public static (int Kind, ulong Uid)? TakePropertyNotice()
-	{
-		if (TryGetAbiVersion() is null)
-		{
-			return null;
-		}
-
-		try
-		{
-			return RefiiHostTakePropertyNotice(out int kind, out ulong uid) != 0 ? (kind, uid) : null;
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return null;
-		}
-	}
-
-	/// <summary>
-	/// The partnership between the two heroes in the game (Fable 3's): 0 none, 1 business partners,
-	/// 2 married; null when both heroes are not here with their identities known.
-	/// </summary>
-	public static int? GetPartnership()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return null;
-		}
-
-		try
-		{
-			return RefiiHostGetPartnership(out int kind) != 0 ? kind : null;
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return null;
-		}
-	}
-
-	private static readonly byte[] _estateIntent = new byte[128];
-
-	/// <summary>
-	/// The oldest household action for the co-op peer to run (<c>&lt;action&gt;:&lt;uid&gt;:&lt;value&gt;</c>):
-	/// a joiner's estate action, gift, furniture level or bed, or the host's kept gift; null when none.
-	/// </summary>
-	public static string? TakeEstateIntent()
-	{
-		if (TryGetAbiVersion() is null)
-		{
-			return null;
-		}
-
-		try
-		{
-			uint written = RefiiHostTakeEstateIntent(_estateIntent, (uint)_estateIntent.Length);
-			return written == 0 ? null : Encoding.UTF8.GetString(_estateIntent, 0, (int)written);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return null;
-		}
-	}
 
 	/// <summary>A player's store value (the same on both co-op machines), or null when unset.</summary>
 	public static float? GetPlayerValue(int player, string key)
@@ -3001,42 +2739,6 @@ public static class HostBridge
 		return hash;
 	}
 
-	/// <summary>How many of an item (by its GDB record name) player <paramref name="player"/>'s hero carries; -1 without the hero.</summary>
-	public static int GetItemCount(int player, string record)
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return -1;
-		}
-
-		try
-		{
-			return RefiiHostGetItemCount(player, Fnv1(record));
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return -1;
-		}
-	}
-
-	/// <summary>Sets the partnership in both heroes' saved values (0 ends it). False when it could not.</summary>
-	public static bool SetPartnership(int kind)
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return false;
-		}
-
-		try
-		{
-			return RefiiHostSetPartnership(kind) != 0;
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return false;
-		}
-	}
-
 	/// <summary>An entity's network id (the guest's 64-bit UID), or 0.</summary>
 	public static ulong GetEntityUid(uint entity)
 	{
@@ -3055,27 +2757,6 @@ public static class HostBridge
 		}
 	}
 
-	/// <summary>
-	/// A villager's opinion of player 1 or 2 by its network id: love, fear, attractiveness,
-	/// morality and respect into <paramref name="axes"/> (five). False when it is not found here.
-	/// </summary>
-	public static bool GetOpinionOfUid(ulong uid, int player, float[] axes)
-	{
-		if (uid == 0ul || axes.Length < 5 || TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return false;
-		}
-
-		try
-		{
-			return RefiiHostGetOpinionOfUid(uid, player, axes) != 0;
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return false;
-		}
-	}
-
 	/// <summary>Whether the guest still wants the movie the host is showing.</summary>
 	public enum MoviePlayback { None = 0, Wanted = 1, EndedByGuest = 2 }
 
@@ -3084,42 +2765,6 @@ public static class HostBridge
 	/// out of frames, the guest by finishing its own decode or by skipping.
 	/// </summary>
 	public static MoviePlayback MovieState() => (MoviePlayback)RefiiHostMovieState();
-
-	/// <summary>
-	/// The 3D object the current in-game menu panel shows, as the guest states it. Null when
-	/// no screen has one spawned.
-	/// </summary>
-	/// <remarks>
-	/// `ScreenId` names which panel it belongs to (8 receive-items, 15 items/weapons, 22 shop,
-	/// 25 gift, 26 selection, 27 decoration) — and therefore which anchor element to hang it
-	/// on. The model hash is the same currency the model index keys on.
-	/// </remarks>
-	public readonly record struct UiPreviewObject(
-		uint ScreenId, uint ModelHash, uint Entity,
-		Vector3 Translation, Vector3 Rotation, float Scale, int RotationAxis,
-		uint Item = 0);
-
-	public static UiPreviewObject? GetUiPreviewObject()
-	{
-		if (TryGetAbiVersion() is null)
-		{
-			return null;
-		}
-
-		var values = new float[8];
-		uint screen = RefiiHostGetUiPreviewObject(
-			out uint hash, out uint entity, values, (uint)values.Length);
-		if (screen == 0 || hash == 0)
-		{
-			return null;
-		}
-
-		return new UiPreviewObject(
-			screen, hash, entity,
-			new Vector3(values[0], values[1], values[2]),
-			new Vector3(values[3], values[4], values[5]),
-			values[6], (int)values[7]);
-	}
 
 	/// <summary>
 	/// The world-icon queue and its two gates — the channel property income travels on.
@@ -3276,71 +2921,8 @@ public static class HostBridge
 	/// </summary>
 	public static uint FrontEndState() => RefiiHostGetFrontEndState();
 
-	/// <summary>
-	/// Which of the three ways the guest lays its loading art out. A normal level load packs the
-	/// 1280x720 image into a square texture in two pieces with the right-hand strip stored
-	/// ROTATED; a fixed-art screen is one plain full-bleed quad.
-	/// </summary>
-	/// <param name="FixedArt">`screen+315` — one quad, plain UVs (inset on 4:3).</param>
-	/// <param name="QuitFade">`screen+310` — the quit-without-save fade; one quad, plain UVs.</param>
-	/// <param name="Narrow">`screen+320` — the 4:3 inset variant.</param>
-	public readonly record struct LoadingLayout(bool FixedArt, bool QuitFade, bool Narrow)
-	{
-		/// <summary>
-		/// True when the art is the two-piece packing that has to be reassembled. A default
-		/// rather than a case, matching `sub_8235FDC0`, which falls through to the two-quad
-		/// path whenever neither flag is set.
-		/// </summary>
-		public bool IsSplit => !FixedArt && !QuitFade;
-	}
-
-	/// <summary>
-	/// The loading screen's TEXT and its spinner clock.
-	/// </summary>
-	/// <param name="TipKey">
-	/// The Babel key of the tip currently up, or 0 when the list is empty. It is a KEY, not a
-	/// string: the guest keeps a list of tag hashes and localises on the fly, so the host
-	/// resolves it through its own Babel database rather than calling into the guest.
-	/// </param>
-	/// <param name="TipIndex">Which tip, and <paramref name="TipCount"/> how many there are.</param>
-	/// <param name="SpinnerFrame">
-	/// The screen's frame counter. The spinner is `counter % 25` into a 5x5 grid — a timed
-	/// flipbook, NOT load progress. The game has no progress bar at all.
-	/// </param>
-	/// <param name="TipsEnabled">`screen+313`.</param>
-	/// <param name="BannerEnabled">`screen+314`.</param>
-	/// <param name="LevelName">The level the banner names.</param>
-	/// <param name="Overlay">Host-set overlay text, usually empty.</param>
-	public readonly record struct LoadingText(
-		uint TipKey, int TipIndex, int TipCount, uint SpinnerFrame,
-		bool TipsEnabled, bool BannerEnabled, string LevelName, string Overlay);
-
-	/// <summary>Reads the loading screen's text state, or null when there is no screen.</summary>
-	public static LoadingText? GetLoadingScreenText()
-	{
-		uint[] words = new uint[6];
-		byte[] buffer = new byte[512];
-		try
-		{
-			if (RefiiHostGetLoadingScreenText(words, buffer, (uint)buffer.Length) == 0)
-			{
-				return null;
-			}
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return null;
-		}
-
-		string level = ReadUtf8(buffer, 0, out int next);
-		string overlay = ReadUtf8(buffer, next, out _);
-
-		return new LoadingText(words[2], (int)words[0], (int)words[1], words[3],
-			words[4] != 0, words[5] != 0, level, overlay);
-	}
-
 	/// <summary>Reads one NUL-terminated UTF-8 string out of a packed buffer.</summary>
-	private static string ReadUtf8(byte[] buffer, int start, out int next)
+	internal static string ReadUtf8(byte[] buffer, int start, out int next)
 	{
 		if (start < 0 || start >= buffer.Length)
 		{
@@ -3358,25 +2940,6 @@ public static class HostBridge
 		return end > start
 			? System.Text.Encoding.UTF8.GetString(buffer, start, end - start)
 			: string.Empty;
-	}
-
-	/// <summary>The loading screen's art layout, or null when no screen object exists.</summary>
-	public static LoadingLayout? GetLoadingScreenLayout()
-	{
-		uint[] words = new uint[3];
-		try
-		{
-			if (RefiiHostGetLoadingScreenLayout(words) == 0)
-			{
-				return null;
-			}
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return null;
-		}
-
-		return new LoadingLayout(words[0] != 0, words[1] != 0, words[2] != 0);
 	}
 
 	/// <summary>
@@ -3434,7 +2997,7 @@ public static class HostBridge
 	public static InGameScreens? GetInGameScreens()
 	{
 		uint[] words = _screenWords ??= new uint[36];
-		if (RefiiHostGetInGameScreen(words) == 0 || GuestAddressToTu1(words[1]) != InGameGuiVtable)
+		if (RefiiHostGetInGameScreen(words) == 0)
 		{
 			_screenCache = null;
 			_screenWordsSeen = null;
@@ -3481,158 +3044,12 @@ public static class HostBridge
 	private static InGameScreens? _screenCache;
 
 	/// <summary>
-	/// The BASE GUI's vtable — the construction the game uses once it is running. Written by
-	/// the base ctor <c>sub_823710A8</c> at 0x8237111C and left in place by
-	/// <c>Game_InitDatabases</c>, where the front end's derived ctor would overwrite it with
-	/// <see cref="FrontEndGuiVtable"/>.
-	/// </summary>
-	private const uint InGameGuiVtable = 0x82001610u;
-
-	/// <summary>
-	/// The front-end GUI's vtable — the class whose slots include the GUI pump at 0x82379170.
-	/// The word at the object's address says which of the two constructions built it.
-	/// </summary>
-	private const uint FrontEndGuiVtable = 0x820A924Cu;
-
-	/// <summary>
 	/// Whether the guest is in game, as the guest states it — <c>byte_83496A5E</c>, set by
 	/// Game_InitDatabases (0x82311648) and cleared by the game mode's shutdown (0x82311860).
 	/// Use this rather than inferring it from the front end disappearing.
 	/// </summary>
 	public static bool IsInGame => RefiiHostIsInGame() != 0;
 
-	/// <summary>
-	/// This player's role in a co-op session, as the network manager states it: 0 no session,
-	/// 1 host, 2 joiner. SOLO READS AS HOST — a single-player game has <c>+52</c> and <c>+53</c>
-	/// set — so 1 is "host or solo", not "co-op host". The manager is <c>g_XrnmNetContext</c>
-	/// (<c>0x83497490</c>; <c>*(*(0x83496AB8)+12)+140</c> is its counted copy, the fallback);
-	/// <c>+52</c> is "in a session", <c>+53</c> host and <c>+54</c> joiner, and the guest's own
-	/// joiner-side front-end teardown is gated on exactly <c>+52 &amp;&amp; +54</c>.
-	/// </summary>
-	public static uint CoopRole => RefiiHostGetCoopRole();
-
-	/// <summary>True when this player joined someone else's session.</summary>
-	public static bool IsCoopJoiner => CoopRole == 2u;
-
-	/// <summary>The co-op screen's two share sliders, 0..1. Both 0.5 until somebody moves one.</summary>
-	public readonly record struct CoopShare(bool Known, float Gold, float Experience);
-
-	/// <summary>
-	/// The shares as the sliders state them: the globals at <c>0x833193D4</c> (gold) and
-	/// <c>0x833193D8</c> (experience). THE GLOBALS ARE THE LIVE VALUE — the co-op manager's own
-	/// copies at <c>+176</c>/<c>+172</c> sit at zero under a centred pip and read as 100/0.
-	/// </summary>
-	public static CoopShare CoopShares()
-	{
-		int known = RefiiHostGetCoopShares(out float gold, out float experience);
-		return new CoopShare(known != 0, gold, experience);
-	}
-
-	/// <summary>The chosen co-op hero save's directory name, or null when none is chosen.</summary>
-	public static string? CoopHeroSaveName()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return null;
-		}
-
-		byte[] buffer = new byte[256];
-		uint written = RefiiHostGetCoopHeroSaveName(buffer, (uint)buffer.Length);
-		return written == 0 ? null : System.Text.Encoding.UTF8.GetString(buffer, 0, (int)Math.Min(written, (uint)buffer.Length - 1));
-	}
-
-	/// <summary>
-	/// The co-op hero save the player chose on the co-op screen, as the guest read it: money,
-	/// gender (2 = male), morality, purity, renown, fifteen ranks, four experience pools, four
-	/// totals. Null until a save is chosen.
-	/// </summary>
-	public static float[]? CoopHeroSave()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return null;
-		}
-
-		var values = new float[28];
-		return RefiiHostGetCoopHeroSave(values, (uint)values.Length) != 0 ? values : null;
-	}
-
-	/// <summary>The hero's face record (component 17) and its tan, fat (0..1) and height (-1..1).</summary>
-	public static (uint Face, float Fat, float Height, float Tan)? HeroLooks()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return null;
-		}
-
-		return RefiiHostGetHeroLooks(out uint face, out float fat, out float height, out float tan) != 0
-			? (face, fat, height, tan)
-			: null;
-	}
-
-	/// <summary>
-	/// The net ids of the item entities player 1 or 2 holds on THIS machine (ABI 135; the full
-	/// 64-bit uid since 170) — what the host sends so a client attaches the replicas rather than
-	/// making its own. Null when the player has no body here; zero for an empty slot.
-	/// </summary>
-	public static (ulong Melee, ulong Ranged)? CoopHeldUids(uint player)
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return null;
-		}
-
-		return RefiiHostGetCoopHeldUids(player, out ulong melee, out ulong ranged) != 0
-			? (melee, ranged)
-			: null;
-	}
-
-	/// <summary>
-	/// The hero's equipped weapons as GDB record ids — the same id space the inventory records
-	/// carry — or null when the hero has no weapon set. 0 in a slot means it is empty.
-	/// </summary>
-	public static (uint Melee, uint Ranged)? HeroWeapons()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return null;
-		}
-
-		return RefiiHostGetHeroWeapons(out uint melee, out uint ranged) != 0 ? (melee, ranged) : null;
-	}
-
-	/// <summary>The co-op session's raw words off the authoritative network manager (ABI 134).</summary>
-	public readonly record struct CoopSessionWords(
-		bool ManagerPresent, bool Session, bool Host, bool Client, bool Lost, bool ClientJoined,
-		uint PeerCount, uint PlayerOne, uint PlayerTwo, bool GameCopyPresent,
-		uint GameMode, uint PlayerTwoPad)
-	{
-		/// <summary>`game+284 == 2` — the guest's own `IsLocalCoopGame` (`sub_82340300`).</summary>
-		public bool LocalCoop => GameMode == 2u;
-	}
-
-	private static uint[]? _coopSessionWords;
-
-	public static CoopSessionWords? CoopSessionRaw()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return null;
-		}
-
-		_coopSessionWords ??= new uint[12];
-		uint count = RefiiHostGetCoopSession(_coopSessionWords, (uint)_coopSessionWords.Length);
-		if (count == 0)
-		{
-			return null;
-		}
-
-		uint[] w = _coopSessionWords;
-		return new CoopSessionWords(
-			w[0] != 0, w[1] != 0, w[2] != 0, w[3] != 0, w[4] != 0, w[5] != 0, w[6], w[7], w[8],
-			w[9] != 0,
-			count >= 12 ? w[10] : 0u, count >= 12 ? w[11] : 0xFFFFFFFFu);
-	}
 
 	/// <summary>
 	/// The two players' live entity addresses (key 1 and key 2: the entity manager's own slots first, the player map second), 0 for
@@ -3647,96 +3064,6 @@ public static class HostBridge
 
 		RefiiHostGetCoopPlayerEntities(out uint one, out uint two);
 		return (one, two);
-	}
-
-	/// <summary>
-	/// The clothing screen's (16) preview mannequin entity — spawned by the guest at screen open
-	/// in the hero's clothes — or null when the screen is not up.
-	/// </summary>
-	public static uint? ClothingMannequin()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return null;
-		}
-
-		try
-		{
-			uint entity = RefiiHostGetClothingMannequin();
-			return entity != 0u ? entity : null;
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return null;
-		}
-	}
-
-	/// <summary>The co-op screen's own state — see <see cref="CoopScreen"/>.</summary>
-	/// <param name="LeftFocus">Player one's focused row (`+44`).</param>
-	/// <param name="LeftAccepted">Player one has accepted (`+48`).</param>
-	/// <param name="RightFocus">Player two's focused pickbox, 0..2 (`+156`).</param>
-	/// <param name="RightAccepted">Player two has accepted (`+160`).</param>
-	/// <param name="PickerOpen">Player two's save picker is up (`+304`).</param>
-	/// <param name="PickerCursor">The picked save, 0-based (`+392`).</param>
-	/// <param name="PickerBaseSlot">The card the first save sits on, 1..3 (`+396`).</param>
-	/// <param name="Saves">The picker's cards, in save order: the guest's finished text and whether
-	/// the save's header parsed (A is refused on one that did not).</param>
-	/// <param name="Closing">The screen is closing (`+268`); it takes no input.</param>
-	public readonly record struct CoopScreenState(
-		int LeftFocus, bool LeftAccepted, int RightFocus, bool RightAccepted, bool PickerOpen,
-		int PickerCursor, int PickerBaseSlot, IReadOnlyList<(string Text, bool Valid)> Saves, bool Closing);
-
-	/// <summary>
-	/// The co-op screen's state, or null when screen 24 is not up. <paramref name="withText"/>
-	/// reads the picker's card text too, which only matters when the picker opens.
-	/// </summary>
-	public static CoopScreenState? CoopScreen(bool withText)
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return null;
-		}
-
-		uint[] words = new uint[10];
-		byte[]? text = withText ? new byte[8192] : null;
-		if (RefiiHostGetCoopScreen(words, (uint)words.Length, text, (uint)(text?.Length ?? 0)) < 10u)
-		{
-			return null;
-		}
-
-		var saves = new List<(string Text, bool Valid)>();
-		int at = 0;
-		for (int i = 0; i < (int)words[7]; ++i)
-		{
-			string line = string.Empty;
-			if (text is not null && at < text.Length && Array.IndexOf(text, (byte)0, at) is var end and >= 0)
-			{
-				line = Encoding.UTF8.GetString(text, at, end - at);
-				at = end + 1;
-			}
-
-			saves.Add((line, i < 32 && (words[8] & (1u << i)) != 0u));
-		}
-
-		return new CoopScreenState(
-			(int)words[0], words[1] != 0u, (int)words[2], words[3] != 0u, words[4] != 0u,
-			(int)words[5], (int)words[6], saves, words[9] != 0u);
-	}
-
-	/// <summary>
-	/// Both co-op screen figures: player two's henchman (`screen+276`) and the player-one mannequin
-	/// the original spawns for the left page (`screen+280`'s preview ticket). An entity is 0 for a
-	/// figure not standing; null when screen 24 is not up.
-	/// </summary>
-	public static (uint Henchman, uint PlayerOne)? CoopFigures()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return null;
-		}
-
-		uint[] words = new uint[4];
-		return RefiiHostGetCoopFigures(words, (uint)words.Length) >= 4u ? (words[0], words[2]) : null;
 	}
 
 	/// <summary>
@@ -3765,32 +3092,6 @@ public static class HostBridge
 		catch (EntryPointNotFoundException)
 		{
 			return false;
-		}
-	}
-
-	/// <summary>
-	/// The HeroState version the pump last APPLIED to a player's body (1 host, 2 joiner), 0 when
-	/// none has been, or when the bridge is down. The receiver acks a version only once this
-	/// reports it.
-	/// </summary>
-	public static uint HeroStateApplied(uint player)
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return 0u;
-		}
-
-		try
-		{
-			return RefiiHostGetHeroStateApplied(player);
-		}
-		catch (DllNotFoundException)
-		{
-			return 0u;
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return 0u;
 		}
 	}
 
@@ -3874,41 +3175,6 @@ public static class HostBridge
 		}
 	}
 
-	/// <summary>
-	/// The next question a co-op script put to the partner (core/coop_consent.cpp): its ticket,
-	/// kind (1 sleep, 2 sex), asking player (1 or 2) and detail (the sleep type); null when none.
-	/// </summary>
-	[ThreadStatic]
-	private static byte[]? _consentText;
-
-	public static (uint Ticket, int Kind, int Asker, int Detail, string Text)? ConsentTake()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return null;
-		}
-
-		try
-		{
-			byte[] text = _consentText ??= new byte[256];
-			if (RefiiHostConsentTake(out uint ticket, out int kind, out int asker, out int detail, text, (uint)text.Length) == 0)
-			{
-				return null;
-			}
-
-			int length = Array.IndexOf(text, (byte)0);
-			return (ticket, kind, asker, detail,
-				System.Text.Encoding.UTF8.GetString(text, 0, length < 0 ? text.Length : length));
-		}
-		catch (DllNotFoundException)
-		{
-			return null;
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return null;
-		}
-	}
 
 	/// <summary>
 	/// The silver keys in the world a player has already taken (core/coop_collectables.cpp): entity
@@ -4011,26 +3277,6 @@ public static class HostBridge
 		catch (EntryPointNotFoundException)
 		{
 			return 0;
-		}
-	}
-
-	/// <summary>The partner's answer to a question from <see cref="ConsentTake"/>.</summary>
-	public static void ConsentGive(uint ticket, bool yes)
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return;
-		}
-
-		try
-		{
-			RefiiHostConsentGive(ticket, yes ? 1 : 0);
-		}
-		catch (DllNotFoundException)
-		{
-		}
-		catch (EntryPointNotFoundException)
-		{
 		}
 	}
 
@@ -4759,49 +4005,6 @@ public static class HostBridge
 		};
 	}
 
-	/// <summary>
-	/// The brightness the guest's camera holds, `G = 1.4 − 0.8·slider` (0.6..1.4, 1.0 at rest):
-	/// the Video page writes it at `S+0x14` (0x829C08A4 commit, plus preview, revert and the
-	/// profile restores), the camera publishes it every frame (0x821A6188) and the tonemap takes
-	/// `pow(colour, G × 0.45454544)` as c78. Null when no camera is up.
-	/// </summary>
-	/// <remarks>
-	/// Six guest sites write the field and none carries it as an argument, so it is read where
-	/// the camera keeps it. Which camera follows `sub_823893C0`: the front end's
-	/// (`dword_83496AC0`, `vt[5]` = `+0xC` → `+0x1C`) while `byte_83496AC4` is set, else the
-	/// game's (`dword_83496AB8`, `vt[5]` = `+0xC` → `+0x6C`); either way `S = *(R+4)`.
-	/// </remarks>
-	public static float? GuestBrightness()
-	{
-		uint frontEnd = PickByBuild(0x83496AC0u, 0x83496928u);
-		uint frontEndUp = PickByBuild(0x83496AC4u, 0x83496925u);
-		uint game = PickByBuild(0x83496AB8u, 0x83496920u);
-
-		static uint Word(uint address) => TryPeekWord(address, out uint value) ? value : 0u;
-		static bool Plausible(uint address) => address >= 0x10000u && address < 0xC0000000u;
-
-		uint aligned = frontEndUp & ~3u;
-		int shift = 24 - (int)((frontEndUp & 3u) * 8u);
-		bool useFrontEnd = Word(frontEnd) != 0 && ((Word(aligned) >> shift) & 0xFFu) != 0;
-
-		uint root = Word(useFrontEnd ? frontEnd : game);
-		if (!Plausible(root))
-		{
-			return null;
-		}
-
-		uint inner = Word(root + 0xC);
-		uint wrapper = Plausible(inner) ? Word(inner + (useFrontEnd ? 0x1Cu : 0x6Cu)) : 0u;
-		uint camera = Plausible(wrapper) ? Word(wrapper + 4) : 0u;
-		if (!Plausible(camera))
-		{
-			return null;
-		}
-
-		float g = System.BitConverter.Int32BitsToSingle((int)Word(camera + 0x14));
-		return float.IsFinite(g) && g is >= 0.5f and <= 1.5f ? g : null;
-	}
-
 	/// <summary>The engine-preloading gate state 7 of CmdLevelChange_Update polls.</summary>
 	public readonly record struct RenderFence(
 		uint Manager, double Submitted, double Deadline, bool Busy,
@@ -4830,15 +4033,6 @@ public static class HostBridge
 							? "scene walk (self-limiting) or a producer we cannot see"
 							: "nothing — the mirror at +600 disagrees with 0x83496E20";
 	}
-
-	/// <summary>
-	/// The loading screen's take-down handshake — see RefiiHostGetLoadingScreen. <c>Fade</c>
-	/// counts 1.0 down to ~0 at 1/15 per render-thread tick; <c>Requested</c> is set by the game
-	/// thread just before it blocks on an INFINITE wait; <c>Done</c> is latched by the render
-	/// thread when it signals. Fade pinned at 1.0 with Requested and no Done is the stall.
-	/// </summary>
-	public readonly record struct LoadingScreen(
-		uint Manager, uint Screen, float Fade, bool Requested, bool Done);
 
 	/// <summary>
 	/// How far the guest has got into starting a game: the GDB manager, the in-game flag,
@@ -5507,46 +4701,6 @@ public static class HostBridge
 	public static uint PostFrontEndAction(string name) => RefiiHostPostFrontEndAction(name);
 
 	/// <summary>
-	/// The load fan's save FILE names in card order (ABI 218): the folder names under the
-	/// content root the cards were enumerated from, so index N of <see cref="GetSaveCards"/> and of
-	/// <see cref="LoadSave"/> is the save named here at N. Empty when the fan is not up.
-	/// </summary>
-	public static List<string> GetSaveCardNames()
-	{
-		var names = new List<string>();
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return names;
-		}
-
-		byte[] buffer = new byte[4096];
-		uint count;
-		try
-		{
-			count = RefiiHostGetSaveCardNames(buffer, (uint)buffer.Length);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return names;
-		}
-
-		int at = 0;
-		for (uint i = 0; i < count && at < buffer.Length; i++)
-		{
-			int end = Array.IndexOf(buffer, (byte)0, at);
-			if (end < 0)
-			{
-				break;
-			}
-
-			names.Add(System.Text.Encoding.UTF8.GetString(buffer, at, end - at));
-			at = end + 1;
-		}
-
-		return names;
-	}
-
-	/// <summary>
 	/// Adds the mouse's camera turn since the last post — degrees at the profile's middle camera
 	/// sensitivity, right and up positive. The guest hands all of it to the local player's active
 	/// camera, through that camera's own ProcessGameAction, and the camera turns it whole in its
@@ -5791,76 +4945,6 @@ public static class HostBridge
 	/// The screen the captured rows belong to, or `Engine_UiMenuSources.AnyScreen` when none —
 	/// the front end, or before the guest is up. See the native side for why the key exists.
 	/// </summary>
-	/// <summary>
-	/// The building entity the guest's own per-frame query finds the HERO standing in, 0 when it
-	/// finds none. Null when the guest is not up, the hero is not built, or the guest did not
-	/// ask this frame — hold what was last read.
-	/// </summary>
-	/// <remarks>
-	/// The query is `sub_828330C8` (through `sub_821D8508`): a ray 10.5 units down from the
-	/// entity, kept when it lands on an entity whose byte +144 has 0x40. `sub_821AA080` runs it
-	/// on the hero to scale the light shafts by `flt_833191F8` indoors. Its answer is cached on
-	/// the hero's component 128 — a weak reference at +12 (node pointer at +16) stamped at +20
-	/// with the frame counter `dword_83319650` — and that cached answer is what is read here.
-	/// Hero: `World = *(*(*(*(0x83496AB8)+12)+88)+4)`, node `*(*(World)+108)`, entity `*node`;
-	/// component: entity+52 bit 0, slot byte at `*(entity+140)+128`, pointer at
-	/// `*(entity+72) + slot*8 + 4` — all as `sub_821AA080` walks them.
-	/// </remarks>
-	public static uint? HeroBuilding()
-	{
-		static uint Word(uint at) => at >= 0x10000u && TryPeekWord(at, out uint w) ? w : 0u;
-
-		uint root = Word(GuestAddress(0x83496AB8u));
-		uint world = Word(Word(Word(root + 12u) + 88u) + 4u);
-		uint hero = Word(Word(Word(world) + 108u));
-		return root == 0 || world == 0 ? null : BuildingOf(hero);
-	}
-
-	/// <summary>
-	/// <see cref="HeroBuilding"/> for player two: the same cached answer on player two's own
-	/// component 128, which the guest fills for either player (`sub_821CC460`, gated by
-	/// `sub_82232778` on P+104 and P+112, queries the owner's component 128 through
-	/// `sub_821D8508`). Null without a player two or an answer this frame.
-	/// </summary>
-	public static uint? PlayerTwoBuilding()
-	{
-		(_, uint two) = CoopPlayerEntities();
-		return two == 0 ? null : BuildingOf(two);
-	}
-
-	/// <summary>The building cached on <paramref name="hero"/>'s component 128 within the last two frames.</summary>
-	private static uint? BuildingOf(uint hero)
-	{
-		static uint Word(uint at) => at >= 0x10000u && TryPeekWord(at, out uint w) ? w : 0u;
-
-		if (hero == 0 || (Word(hero + 52u) & 1u) == 0)
-		{
-			return null;
-		}
-
-		uint slots = Word(hero + 140u);
-		uint table = Word(hero + 72u);
-		if (slots == 0 || table == 0)
-		{
-			return null;
-		}
-
-		uint component = Word(table + ((Word(slots + 128u) >> 24) * 8u) + 4u);
-		if (component == 0)
-		{
-			return null;
-		}
-
-		Span<uint> cache = stackalloc uint[2];
-		int cacheCount = Peek(component + 16u, cache);
-		uint frame = Word(GuestAddress(0x83319650u));
-		if (cacheCount != 2 || frame - cache[1] > 2u)
-		{
-			return null;
-		}
-
-		return cache[0] != 0 ? Word(cache[0]) : 0u;
-	}
 
 	/// <summary>Raw guest words — the debug channel's microscope. Empty when unreadable.</summary>
 	/// <summary>
@@ -5869,7 +4953,7 @@ public static class HostBridge
 	/// <remarks>
 	/// TWO EXECUTABLES ARE SUPPORTED and no guest address is shared between them. Source keeps
 	/// the TU1 address as the name; the table for the other build is the native side's
-	/// (versions/Fable2/guest_addresses.inc). Apply this to LITERALS only: a pointer read from
+	/// (Fable2/versions/Fable2/guest_addresses.inc). Apply this to LITERALS only: a pointer read from
 	/// the guest is already the running build's.
 	/// </remarks>
 	public static uint GuestAddress(uint tu1Address)
@@ -5995,27 +5079,6 @@ public static class HostBridge
 		return words;
 	}
 
-	/// <summary>
-	/// The guest's stated blur width for the targeting highlight, in texels of its
-	/// half-resolution highlight buffer. 0 when the guest is not up or the word is unreadable.
-	/// </summary>
-	/// <remarks>
-	/// `dword_83318558` is the EXECUTE result of the thickness command and is already clamped:
-	/// `sub_822BF690` truncates `flt_83319478 * flt_83496C70` with `fctiwz f13, f0`, then applies
-	/// max(x, 1) (`subf r10, r7, r11`) and min(x, 16) (`add r11, r11, r10`). It has exactly two
-	/// xrefs — that store at 0x822bf6c8 and the read at 0x82197c08 — so it is the whole of the
-	/// guest's width contract, post-clamp. An absolute global, not a struct offset.
-	///
-	/// Peeked rather than exported through the ABI: one word at one fixed address. MAIN THREAD ONLY — the
-	/// post chain runs on the render thread, so the layer samples this in `_Process` and
-	/// publishes the result.
-	/// </remarks>
-	public static int HighlightWidthTexels()
-	{
-		return TryPeekWord(GuestAddress(0x83318558u), out uint word)
-			? (int)Math.Clamp(word, 1u, 16u)
-			: 0;
-	}
 
 	// =================== ReXGlue runtime introspection (debug channel) ===================
 
@@ -6668,16 +5731,6 @@ public static class HostBridge
 	}
 
 	/// <summary>
-	/// One record in the hero's inventory. NOT one item — see <see cref="HostBridge.GetHeroInventory"/>.
-	/// </summary>
-	/// <param name="RecordId">The FNV-1 GDB key. NOT unique across records.</param>
-	/// <param name="Count">How many of this thing the record holds.</param>
-	/// <param name="Category">−1 when the item states none.</param>
-	/// <param name="Viewed">The new-item marker the pause tabs decorate with.</param>
-	public readonly record struct InventoryRecord(
-		uint RecordId, int Count, int Category, bool Viewed);
-
-	/// <summary>
 	/// The hero's vitals, read straight off its components — where a menu's contents come from.
 	/// The `GUI` natives open screens but never populate them.
 	/// </summary>
@@ -6847,20 +5900,6 @@ public static class HostBridge
 	/// </summary>
 	public readonly record struct OptionSliders(
 		bool Known, float Gamma, float Sfx, float Music, float Speech, int Speaker);
-
-	/// <summary>
-	/// One options page as the GUEST holds it while the screen is open: the row its cursor is on
-	/// (<see cref="Cursor"/>, -1 before the page has been shown) and each row widget's own state —
-	/// a pickbox's index in <see cref="Indices"/>, a slider's 0..1 value in <see cref="Values"/>;
-	/// the other kind's slot is noise, the caller knows which rows are which. Pages are in the
-	/// screen's order: 0 Game, 1 Controls, 2 Video, 3 Audio. <see cref="Known"/> false when the
-	/// screen or the page is not live. See `RefiiHostGetOptionsPage` for the guest's layout.
-	/// </summary>
-	public readonly record struct GuestOptionsPage(bool Known, int Cursor, int[] Indices, float[] Values)
-	{
-		public static readonly GuestOptionsPage None =
-			new(false, -1, Array.Empty<int>(), Array.Empty<float>());
-	}
 
 	/// <summary>
 	/// The signature the guest calls back on. See `core/host_asset_reader.h`. `IntPtr` rather
@@ -7143,34 +6182,6 @@ public static class HostBridge
 		}
 	}
 
-	/// <summary>Reads one options page's cursor and row widgets. See <see cref="GuestOptionsPage"/>.</summary>
-	public static GuestOptionsPage GetOptionsPage(int page)
-	{
-		if (page < 0 || TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return GuestOptionsPage.None;
-		}
-
-		try
-		{
-			const uint capacity = 8u;
-			var indices = new int[capacity];
-			var values = new float[capacity];
-			uint rows = RefiiHostGetOptionsPage((uint)page, out int cursor, indices, values, capacity);
-			if (rows == 0u)
-			{
-				return GuestOptionsPage.None;
-			}
-
-			int count = (int)Math.Min(rows, capacity);
-			return new GuestOptionsPage(true, cursor, indices[..count], values[..count]);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return GuestOptionsPage.None;
-		}
-	}
-
 	/// <summary>Reads the options screen's sliders. See <see cref="OptionSliders"/>.</summary>
 	public static OptionSliders GetOptionSliders()
 	{
@@ -7189,32 +6200,6 @@ public static class HostBridge
 			}
 
 			return new OptionSliders(true, gamma, sfx, music, speech, unchecked((int)speaker));
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return default;
-		}
-	}
-
-	/// <summary>Reads the options screen's settings. See <see cref="GameOptions"/>.</summary>
-	public static GameOptions GetOptions()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return default;
-		}
-
-		var words = new uint[6];
-		try
-		{
-			if (RefiiHostGetOptions(words, (uint)words.Length, out float breadcrumb) == 0)
-			{
-				return default;
-			}
-
-			return new GameOptions(
-				true, words[1] != 0u, words[2] != 0u, unchecked((int)words[3]),
-				words[4] != 0u, words[5] != 0u, breadcrumb);
 		}
 		catch (EntryPointNotFoundException)
 		{
@@ -7247,26 +6232,6 @@ public static class HostBridge
 		/// </summary>
 		public bool IsFor(int wanted) =>
 			!string.IsNullOrEmpty(Name) && wanted >= 0 && Index == (uint)wanted;
-	}
-
-	/// <summary>
-	/// Names the region to sample. The pump answers one tick later — it cannot know which row
-	/// is highlighted, and sampling calls eleven guest providers so it has to run over there.
-	/// </summary>
-	public static void SetWorldMapRegion(uint index)
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return;
-		}
-
-		try
-		{
-			RefiiHostSetWorldMapRegion(index);
-		}
-		catch (EntryPointNotFoundException)
-		{
-		}
 	}
 
 	/// <summary>Reads back the sampled region. See <see cref="WorldMapRegion"/>.</summary>
@@ -7311,112 +6276,6 @@ public static class HostBridge
 			Utf8(merchants), stars, Utf8(levelName), levelKey, Utf8(scenario));
 	}
 
-	/// <summary>
-	/// What the world map's minimap page plots from live state — see RefiiHostGetMinimapLive.
-	/// <see cref="Known"/> is false before a level stands.
-	/// </summary>
-	public readonly record struct MinimapLive(
-		uint LevelKey, int MinX, int MinY, int MaxX, int MaxY,
-		uint Dog, bool HasTrailTarget, Vector3 TrailTarget, bool PrimaryQuestHere, uint Hero,
-		uint[] Merchants)
-	{
-		public bool Known => LevelKey != 0u || MaxX != MinX;
-
-		/// <summary>`max(maxX − minX, maxY − minY)` — the page's projection divisor.</summary>
-		public float Extent => System.Math.Max(MaxX - MinX, MaxY - MinY);
-	}
-
-	public static MinimapLive GetMinimapLive()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return default;
-		}
-
-		uint[] words = _minimapWords ??= new uint[13 + 32];
-		try
-		{
-			if (RefiiHostGetMinimapLive(words, (uint)words.Length) == 0u)
-			{
-				return default;
-			}
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return default;
-		}
-
-		static float F(uint word) => System.BitConverter.Int32BitsToSingle(unchecked((int)word));
-		int merchantCount = (int)System.Math.Min(words[12], 32u);
-		var merchants = new uint[merchantCount];
-		System.Array.Copy(words, 13, merchants, 0, merchantCount);
-		return new MinimapLive(
-			words[0], unchecked((int)words[1]), unchecked((int)words[2]),
-			unchecked((int)words[3]), unchecked((int)words[4]),
-			words[5], words[6] != 0u, new Vector3(F(words[7]), F(words[8]), F(words[9])),
-			words[10] != 0u, words[11], merchants);
-	}
-
-	[System.ThreadStatic]
-	private static uint[]? _minimapWords;
-
-	/// <summary>
-	/// Screen 28's one building. The screen's left column is a list of COMMANDS, not of
-	/// properties: there is a single building, resolved when it opens, and nothing to select.
-	///
-	/// Every number is the guest's own answer, because each walks something the host has no
-	/// business reproducing — a prosperity term off a world component, a GDB adjustment array
-	/// matched against <see cref="TypeMask"/>, an occupant-opinion term weighted over five
-	/// personality axes. The PRESENTATION is entirely ours: the star bin, the gold prefix, the
-	/// negative recolour, which Variable row stands and which legend Page 2 carries.
-	///
-	/// <paramref name="Record"/> is the GDB record the text hangs off — NOT the building
-	/// entity's own record. `sub_821DA3B0` takes the entity's def handle, then a property named
-	/// after the component's class, and the entry-ref that yields is this hash.
-	///
-	/// <paramref name="TitleRecord"/> is the hero's current title record (`heroComponent57+92`),
-	/// which is how the guest names the owner of a building the hero owns and is not renting
-	/// out: `HeroTitleComponent.TextTag` through Babel. <paramref name="Occupant"/> is the
-	/// creature name of the tenant, or of the owner when that is not the hero — empty in the
-	/// hero-owned case, because the hero has no creature name.
-	/// </summary>
-	public readonly record struct RealEstate(
-		bool Known, uint Record, uint TypeMask, bool Owned, bool HasTenant,
-		int Value, int Economy, int Decoration, int Income, int SalePrice, int SellingFees,
-		int NotVacant, int OwnerKilled, int HeroOpinion, uint BonusesRecord, string Occupant,
-		uint TitleRecord)
-	{
-		/// <summary>The guest's own "is a business" test — `mask &amp; 0xEFE` at 0x82999CF8.
-		/// Every type but HOME and UNIQUE.</summary>
-		public bool IsBusiness => (TypeMask & 0xEFEu) != 0u;
-
-		/// <summary>Which BuildingType this is: the FIRST set bit, as `sub_8299A550` decodes it.
-		/// 0 HOME, 1 DOCK, 2 FARM, 3 TOWNHALL, 4 WAREHOUSE, 5 SHOP, 6 BAR, 7 BORDELLO, 8 UNIQUE,
-		/// 9 STALL, 10 HOUSE, 11 TEMPLE; -1 when nothing is set.</summary>
-		public int Type
-		{
-			get
-			{
-				for (int bit = 0; bit < 12; ++bit)
-				{
-					if ((TypeMask & (1u << bit)) != 0u)
-					{
-						return bit;
-					}
-				}
-
-				return -1;
-			}
-		}
-
-		/// <summary>`sub_8299AF88`'s bins, over the building's current value.</summary>
-		public int Stars => Value <= 0 ? 0
-			: Value < 5000 ? 1
-			: Value < 12000 ? 2
-			: Value < 26000 ? 3
-			: Value < 55000 ? 4
-			: 5;
-	}
 
 	/// <summary>
 	/// Moves whenever something an open menu lists changes (an ability level, experience, an item,
@@ -7440,81 +6299,6 @@ public static class HostBridge
 		}
 	}
 
-	/// <summary>Names the property under the world map's cursor (0 for none); the pump samples it.</summary>
-	public static void RequestPropertyEstate(ulong uid)
-	{
-		if (TryGetAbiVersion() is null)
-		{
-			return;
-		}
-
-		try
-		{
-			RefiiHostRequestPropertyEstate(uid);
-		}
-		catch (EntryPointNotFoundException)
-		{
-		}
-	}
-
-	/// <summary>
-	/// Screen 28's numbers for the property <paramref name="uid"/>, sampled while its building's
-	/// region is loaded; not <see cref="RealEstate.Known"/> otherwise, or before the pump answers.
-	/// </summary>
-	public static RealEstate GetPropertyEstate(ulong uid)
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp || uid == 0ul)
-		{
-			return default;
-		}
-
-		uint[] words = new uint[15];
-		var occupant = new byte[128];
-		uint known;
-		try
-		{
-			known = RefiiHostGetPropertyEstate(uid, words, (uint)words.Length, occupant, (uint)occupant.Length);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return default;
-		}
-
-		return known == 0u ? default : new RealEstate(
-			true, words[0], words[1], words[2] != 0u, words[3] != 0u,
-			(int)words[4], (int)words[5], (int)words[6], (int)words[7], (int)words[8],
-			(int)words[9], (int)words[10], (int)words[11], (int)words[12], words[13],
-			Utf8(occupant), words[14]);
-	}
-
-	/// <summary>Reads screen 28's building. See <see cref="RealEstate"/>.</summary>
-	public static RealEstate GetRealEstate()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return default;
-		}
-
-		uint[] words = new uint[15];
-		var occupant = new byte[128];
-		uint known;
-		try
-		{
-			known = RefiiHostGetRealEstate(words, (uint)words.Length,
-				occupant, (uint)occupant.Length);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return default;
-		}
-
-		return new RealEstate(
-			known != 0u, words[0], words[1], words[2] != 0u, words[3] != 0u,
-			(int)words[4], (int)words[5], (int)words[6], (int)words[7], (int)words[8],
-			(int)words[9], (int)words[10], (int)words[11], (int)words[12], words[13],
-			Utf8(occupant), words[14]);
-	}
-
 	/// <summary>
 	/// The crime screen's arrest notice. Both strings are already localised — the guest's opener
 	/// composed them through Babel — so they are drawn verbatim, not resolved again.
@@ -7522,71 +6306,8 @@ public static class HostBridge
 	public readonly record struct CrimeScreen(
 		bool Known, int Fine, bool CanPayFine, bool CanServe, string Charge, string Service);
 
-	/// <summary>Reads the crime screen. See <see cref="CrimeScreen"/>.</summary>
-	public static CrimeScreen GetCrimeScreen()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return default;
-		}
-
-		var charge = new byte[512];
-		var service = new byte[512];
-		try
-		{
-			if (RefiiHostGetCrimeScreen(
-					out int fine, out uint flags, charge, (uint)charge.Length,
-					service, (uint)service.Length) == 0)
-			{
-				return default;
-			}
-
-			return new CrimeScreen(
-				true, fine, (flags & 1u) != 0u, (flags & 2u) != 0u,
-				Utf8(charge), Utf8(service));
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return default;
-		}
-	}
-
 	/// <summary>One completed quest, as the logbook's page shows it.</summary>
 	public readonly record struct CompletedQuest(uint Record, int Money, int Renown, string Conclusion);
-
-	/// <summary>
-	/// The hero's completed quests, UNSORTED. The page's order is descending by the GDB property
-	/// `DisplayPriority`, which is a lookup for the caller to do.
-	/// </summary>
-	public static List<CompletedQuest> GetCompletedQuests()
-	{
-		var quests = new List<CompletedQuest>();
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return quests;
-		}
-
-		var conclusion = new byte[64];
-		uint total;
-		try
-		{
-			total = RefiiHostGetCompletedQuests(0u, out _, out _, out _, conclusion, 0u);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return quests;
-		}
-
-		for (uint index = 0; index < total; ++index)
-		{
-			RefiiHostGetCompletedQuests(
-				index, out uint record, out int money, out int renown,
-				conclusion, (uint)conclusion.Length);
-			quests.Add(new CompletedQuest(record, money, renown, Utf8(conclusion)));
-		}
-
-		return quests;
-	}
 
 	/// <summary>
 	/// The guest's expression/job timing meter object (`*(*(GUI+32)+44)`), read for drawing —
@@ -7644,76 +6365,7 @@ public static class HostBridge
 		public bool PipRunning => Known && (ArmedA || ArmedB) && Latched;
 	}
 
-	/// <summary>
-	/// The TopBox manager's front record — see the bridge export. <see cref="Present"/> is false
-	/// with no record up; <see cref="Known"/> is false with no manager reachable.
-	/// </summary>
-	public readonly record struct TopBoxFront(
-		bool Known, bool Present, uint TitleTag, bool ShowA, bool HoldA, bool ShowY, bool HoldY,
-		int Channel, uint NameHash, int LifetimeMs);
 
-	/// <summary>
-	/// The front TopBox record's body provider, as data: <paramref name="Class"/> 0 Babel key,
-	/// 1 key with %1/%2/%3 numbers, 2 key with %s/%1/%2 keys, 3 a literal; see the native.
-	/// </summary>
-	public readonly record struct TopBoxBody(
-		bool Known, bool Present, int Class, uint Key, uint Second, uint Third, uint Fourth,
-		uint TitleTag, uint NameHash, string Literal);
-
-	private static byte[]? _topBoxLiteral;
-
-	public static TopBoxBody GetTopBoxBody()
-	{
-		var words = new uint[8];
-		_topBoxLiteral ??= new byte[1024];
-		uint count;
-		try
-		{
-			count = RefiiHostGetTopBoxBody(words, (uint)words.Length, _topBoxLiteral, (uint)_topBoxLiteral.Length);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return default;
-		}
-
-		if (count < 8u)
-		{
-			return default;
-		}
-
-		int length = System.Array.IndexOf(_topBoxLiteral, (byte)0);
-		string literal = length > 0
-			? System.Text.Encoding.UTF8.GetString(_topBoxLiteral, 0, length)
-			: string.Empty;
-		return new TopBoxBody(true, words[0] != 0u, (int)words[1], words[2], words[3], words[4],
-			words[5], words[6], words[7], literal);
-	}
-
-	[ThreadStatic]
-	private static uint[]? _topBoxFrontWords;
-
-	public static TopBoxFront GetTopBoxFront()
-	{
-		uint[] words = _topBoxFrontWords ??= new uint[9];
-		uint count;
-		try
-		{
-			count = RefiiHostGetTopBoxFront(words, (uint)words.Length);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return default;
-		}
-
-		if (count < 9u)
-		{
-			return default;
-		}
-
-		return new TopBoxFront(
-			true, words[0] != 0u, words[1], words[2] != 0u, words[3] != 0u, words[4] != 0u,
-			words[5] != 0u, (int)words[6], words[7], unchecked((int)words[8]));
-	}
 
 	/// <summary>
 	/// The targeted-citizen readout's own record, as `sub_82176808` rebuilds it each HUD tick.
@@ -7731,101 +6383,8 @@ public static class HostBridge
 		int SlideSet, bool Divorce, float DivorceValue, bool Marry, float MarryValue,
 		float Opinion);
 
-	[ThreadStatic]
-	private static uint[]? _targetedQueryWords;
 
-	public static TargetedQuery GetTargetedQuery()
-	{
-		uint[] words = _targetedQueryWords ??= new uint[12];
-		uint count;
-		try
-		{
-			count = RefiiHostGetTargetedQuery(words, (uint)words.Length);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return default;
-		}
 
-		if (count < 12u)
-		{
-			return default;
-		}
-
-		static float Bits(uint value) => BitConverter.Int32BitsToSingle(unchecked((int)value));
-		return new TargetedQuery(
-			true, words[0] != 0u, words[1], words[3] != 0u, Bits(words[4]), words[5] != 0u,
-			unchecked((int)words[6]), words[7] != 0u, Bits(words[8]), words[9] != 0u,
-			Bits(words[10]), Bits(words[11]));
-	}
-
-	[ThreadStatic]
-	private static uint[]? _playerTwoQueryWords;
-
-	/// <summary>
-	/// PLAYER TWO'S targeted-citizen readout on split screen, in <see cref="TargetedQuery"/>'s
-	/// shape: hero two's own focus target, the guest's gift reads, and the villager's opinion OF
-	/// PLAYER TWO. Marry and divorce are hero one's questions in the guest and are never set.
-	/// </summary>
-	public static TargetedQuery GetPlayerTwoTargetedQuery()
-	{
-		uint[] words = _playerTwoQueryWords ??= new uint[12];
-		uint count;
-		try
-		{
-			count = RefiiHostGetPlayerTwoTargetedQuery(words, (uint)words.Length);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return default;
-		}
-
-		if (count < 12u)
-		{
-			return default;
-		}
-
-		static float Bits(uint value) => BitConverter.Int32BitsToSingle(unchecked((int)value));
-		return new TargetedQuery(
-			true, words[0] != 0u, words[1], words[3] != 0u, Bits(words[4]), words[5] != 0u,
-			unchecked((int)words[6]), words[7] != 0u, Bits(words[8]), words[9] != 0u,
-			Bits(words[10]), Bits(words[11]));
-	}
-
-	/// <summary>Player two's split-screen HUD as the guest's own builders state it for hero two.</summary>
-	/// <param name="Target">The entity the title names, 0 when none.</param>
-	/// <param name="Title">The targeted readout's title (`sub_823C87B0`).</param>
-	/// <param name="Icons">The d-pad's four icon paths: up, left, down, right; empty for none.</param>
-	public readonly record struct PlayerTwoHud(uint Target, string Title, string[] Icons);
-
-	[ThreadStatic]
-	private static byte[]? _playerTwoHudText;
-
-	public static PlayerTwoHud? GetPlayerTwoHud()
-	{
-		byte[] text = _playerTwoHudText ??= new byte[2048];
-		uint target = 0u;
-		try
-		{
-			if (RefiiHostGetPlayerTwoHud(ref target, text, (uint)text.Length) == 0u)
-			{
-				return null;
-			}
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return null;
-		}
-
-		int length = Array.IndexOf(text, (byte)0);
-		string[] lines = System.Text.Encoding.UTF8.GetString(text, 0, length < 0 ? text.Length : length).Split('\n');
-		if (lines.Length < 5)
-		{
-			return null;
-		}
-
-		return new PlayerTwoHud(target, lines[0], new[] { lines[1], lines[2], lines[3], lines[4] });
-	}
 
 	[ThreadStatic]
 	private static float[]? _expressionMeterValues;
@@ -7991,7 +6550,7 @@ public static class HostBridge
 
 	/// <summary>
 	/// A helper call or a query for the guest tick, one line: <c>give_gold 123 50</c>,
-	/// <c>query 7 health 123</c> (the grammar is src/vfs/src/hooks/mod_commands.cpp). A query's
+	/// <c>query 7 health 123</c> (the grammar is Fable2/src/vfs/src/hooks/mod_commands.cpp). A query's
 	/// reply arrives through <see cref="DrainModEvents"/> under kind 1000 as
 	/// <c>id=7,ok=true,current=80,max=120</c>.
 	/// </summary>
@@ -8111,65 +6670,8 @@ public static class HostBridge
 		}
 	}
 
-	/// <summary>Reads the hero's derived state. See <see cref="HeroDerived"/>.</summary>
-	public static HeroDerived GetHeroDerived()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return default;
-		}
-
-		// Twelve words: the bridge fills slots 0..11 and clamps to the capacity given, so a
-		// shorter buffer silently drops the trick count and the flags read below.
-		var words = new uint[12];
-		var values = new float[26];
-		var title = new byte[64];
-		var dog = new byte[64];
-		var stats = new int[124];
-		var tricks = new uint[32];
-		int known;
-		try
-		{
-			known = RefiiHostGetHeroDerived(
-				words, (uint)words.Length, values, (uint)values.Length,
-				title, (uint)title.Length, dog, (uint)dog.Length,
-				stats, (uint)stats.Length, tricks, (uint)tricks.Length);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return default;
-		}
-
-		if (known == 0)
-		{
-			return default;
-		}
-
-		var attractiveness = new float[11];
-		System.Array.Copy(values, 6, attractiveness, 0, 11);
-
-		var spell = new float[6];
-		System.Array.Copy(values, 20, spell, 0, 6);
-
-		return new HeroDerived(
-			true,
-			values[0], values[1], values[2],
-			values[3], values[4], values[5],
-			unchecked((int)words[1]),
-			Utf8(title),
-			attractiveness, values[17],
-			words[2] != 0u,
-			unchecked((int)words[5]), unchecked((int)words[6]),
-			unchecked((int)words[3]), Utf8(dog), words[9],
-			Trim(tricks, words[7]),
-			stats, words[8] != 0u,
-			spell,
-			words[10],
-			words[11]);
-	}
-
 	/// <summary>The used prefix of a fixed buffer — the bridge reports how many it filled.</summary>
-	private static uint[] Trim(uint[] buffer, uint count)
+	internal static uint[] Trim(uint[] buffer, uint count)
 	{
 		uint used = count < (uint)buffer.Length ? count : (uint)buffer.Length;
 		var trimmed = new uint[used];
@@ -8178,7 +6680,7 @@ public static class HostBridge
 	}
 
 	/// <summary>A NUL-terminated buffer from the bridge as a string.</summary>
-	private static string Utf8(byte[] buffer)
+	internal static string Utf8(byte[] buffer)
 	{
 		int length = System.Array.IndexOf(buffer, (byte)0);
 		return length <= 0
@@ -8211,10 +6713,7 @@ public static class HostBridge
 		}
 	}
 
-	/// <summary>
-	/// The hero's companion dog entity address, or 0.
-	/// </summary>
-	public static uint DogEntityAddress() => GetMinimapLive().Dog;
+
 
 	[System.ThreadStatic]
 	private static uint[]? _heroVitalWords;
@@ -8296,74 +6795,6 @@ public static class HostBridge
 		public bool IsShortage => Multiplier > 1f;
 	}
 
-	/// <summary>Every live sale and shortage, in the guest's own order — sales first.</summary>
-	public static List<Sale> GetSaleDetails()
-	{
-		var sales = new List<Sale>();
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return sales;
-		}
-
-		const int max = 32;
-		const int stride = 5;
-		uint[] words = new uint[max * stride];
-		uint found;
-		try
-		{
-			found = RefiiHostGetSales(words, (uint)words.Length);
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return sales;
-		}
-
-		for (uint i = 0; i < found && i < max; ++i)
-		{
-			uint at = i * stride;
-			sales.Add(new Sale(
-				words[at], words[at + 1], words[at + 2], (int)words[at + 3],
-				System.BitConverter.Int32BitsToSingle((int)words[at + 4])));
-		}
-
-		return sales;
-	}
-
-	public static List<(uint NameKey, bool IsShortage)> GetSales()
-	{
-		var sales = new List<(uint, bool)>();
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return sales;
-		}
-
-		const int max = 32;
-		const int stride = 5;
-		uint[] words = new uint[max * stride];
-		uint found;
-		try
-		{
-			found = RefiiHostGetSales(words, (uint)words.Length);
-		}
-		catch (System.DllNotFoundException)
-		{
-			return sales;
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return sales;
-		}
-
-		for (uint i = 0; i < found && i < max; ++i)
-		{
-			float multiplier =
-				System.BitConverter.Int32BitsToSingle((int)words[(i * stride) + 4]);
-			sales.Add((words[i * stride], multiplier > 1f));
-		}
-
-		return sales;
-	}
-
 	/// <summary>
 	/// The fast-travel regions that have at least one active stop — the world map's `Regions`.
 	/// Each is FNV-1 of the region's NAME, which is its own Babel key, so no string crosses the
@@ -8405,214 +6836,6 @@ public static class HostBridge
 		}
 	}
 
-	/// <summary>The other player the logbook is showing: their 124 counters and their name.</summary>
-	public sealed record LogbookOrbView(int[] Stats, string Name);
-
-	/// <summary>
-	/// The player the logbook was opened on from an orb's View Stats, or null when it shows the
-	/// hero — RefiiHostGetLogbookOrbView: the stats object the orb box handed the screen.
-	/// </summary>
-	public static LogbookOrbView? GetLogbookOrbView()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return null;
-		}
-
-		try
-		{
-			var stats = new int[124];
-			var name = new byte[64];
-			if (RefiiHostGetLogbookOrbView(stats, (uint)stats.Length, name, (uint)name.Length) == 0)
-			{
-				return null;
-			}
-
-			int end = System.Array.IndexOf(name, (byte)0);
-			return new LogbookOrbView(stats, System.Text.Encoding.UTF8.GetString(name, 0, end < 0 ? name.Length : end));
-		}
-		catch (System.DllNotFoundException)
-		{
-			return null;
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return null;
-		}
-	}
-
-	public static List<(uint NameHash, uint Ordinal)> GetFastTravelRegions()
-	{
-		var regions = new List<(uint, uint)>();
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return regions;
-		}
-
-		const int max = 64;
-		uint[] words = new uint[max * 2];
-		uint found;
-		try
-		{
-			found = RefiiHostGetFastTravelRegions(words, (uint)words.Length);
-		}
-		catch (System.DllNotFoundException)
-		{
-			return regions;
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return regions;
-		}
-
-		for (uint i = 0; i < found && i < max; ++i)
-		{
-			regions.Add((words[i * 2], words[(i * 2) + 1]));
-		}
-
-		return regions;
-	}
-
-	/// <summary>One entry in the hero's quest log. `RecordId` is the quest DEFINITION's GDB key —
-	/// the same currency the item lists use — and the flags are the guest's own state bytes.</summary>
-	/// <summary>
-	/// One quest as the world map's pages need it. Every number is a plain field on the quest
-	/// object, named by the save serialiser `sub_825237C8`: `Rating` at +28 (the star strip's
-	/// slide, written unclamped), `RewardRenown` +32, `RewardMoney` +36,
-	/// `CurrentObjectiveParameter` +40 (the `%1` every task line substitutes) and
-	/// `DaysRemaining` +44.
-	///
-	/// <paramref name="Primary"/> and <paramref name="Active"/> choose the banner the quest
-	/// page opens with; <paramref name="TaskCount"/> is the length of the task vector at
-	/// +104/+108, whose tags come across separately — see <see cref="GetQuestTasks"/>.
-	/// </summary>
-	public readonly record struct QuestEntry(
-		uint RecordId, bool Unlocked, bool Completed, bool Failed, bool OnWorldMap, bool Viewed,
-		bool Primary, bool Active,
-		int Rating, int RewardRenown, int RewardMoney, int ObjectiveParameter,
-		float DaysRemaining, int TaskCount,
-
-		/// <summary>The entity the quest's objective weak-references (`quest+84`), or 0 — what
-		/// the minimap plots as an "other quest" marker.</summary>
-		uint ObjectiveEntity = 0);
-
-	/// <summary>
-	/// One job's journey — distance and travel time, already worded by the guest's own
-	/// providers. <paramref name="Record"/> says which quest the answer is FOR: the pump replies
-	/// a tick after the ask, so a page that has moved on must not draw the previous row's numbers.
-	/// An empty <paramref name="Travel"/> is a real answer for a job under an hour away.
-	/// </summary>
-	public readonly record struct QuestJourney(
-		bool Known, uint Record, string Distance, string Travel, string Region, string Prompt,
-		string Days)
-	{
-		public bool IsFor(uint record) => Known && Record == record && record != 0u;
-	}
-
-	/// <summary>
-	/// Whether the trail is following a sale or a family member instead of the primary quest —
-	/// the quest log's TrailOverrideInfo at +40. While it is, the world map shows the primary
-	/// quest as merely active (`sub_829A3260`). See RefiiHostGetQuestTrailOverride.
-	/// </summary>
-	public static bool QuestTrailOverridden()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return false;
-		}
-
-		try
-		{
-			return RefiiHostGetQuestTrailOverride() != 0u;
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return false;
-		}
-	}
-
-	/// <summary>Names the quest whose journey the pump should answer for next.</summary>
-	public static void SetQuestTravel(uint record)
-	{
-		if (TryGetAbiVersion() is null)
-		{
-			return;
-		}
-
-		try
-		{
-			RefiiHostSetQuestTravel(record);
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-		}
-	}
-
-	/// <summary>Reads back the journey — see <see cref="QuestJourney"/>.</summary>
-	public static QuestJourney GetQuestTravel()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return default;
-		}
-
-		var distance = new byte[64];
-		var travel = new byte[64];
-		var region = new byte[64];
-		var prompt = new byte[64];
-		var days = new byte[64];
-		try
-		{
-			uint known = RefiiHostGetQuestTravel(
-				out uint record, distance, (uint)distance.Length, travel, (uint)travel.Length,
-				region, (uint)region.Length, prompt, (uint)prompt.Length, days, (uint)days.Length);
-			return new QuestJourney(
-				known != 0u, record, Utf8(distance), Utf8(travel), Utf8(region), Utf8(prompt),
-			Utf8(days));
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return default;
-		}
-	}
-
-	/// <summary>
-	/// One quest's task lines, as Babel TAGS in the guest's own order — the LAST is the current
-	/// task and everything before it is completed. Position is what decides that; the
-	/// `Succeeded` byte beside each tag is stored and never read by the page.
-	/// </summary>
-	public static List<string> GetQuestTasks(uint recordId)
-	{
-		var tasks = new List<string>();
-		if (TryGetAbiVersion() is null || !IsGuestUp || recordId == 0u)
-		{
-			return tasks;
-		}
-
-		var packed = new byte[2048];
-		try
-		{
-			if (RefiiHostGetQuestTasks(recordId, packed, (uint)packed.Length) == 0u)
-			{
-				return tasks;
-			}
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return tasks;
-		}
-
-		foreach (string tag in Utf8(packed).Split('\t'))
-		{
-			if (tag.Length != 0)
-			{
-				tasks.Add(tag);
-			}
-		}
-
-		return tasks;
-	}
-
 	/// <summary>
 	/// The upgrade-furniture screen's targeted piece (screen 26) — its component 68 as the page
 	/// fillers read it, and the building's value multiplier. See <c>Furniture</c> in hero_derived.h.
@@ -8620,323 +6843,7 @@ public static class HostBridge
 	public readonly record struct Furniture(
 		bool Known, bool Gate, int Installed, int Kind, int Type, int[] Values, float Multiplier);
 
-	private static uint[]? _furnitureWords;
 
-	public static Furniture GetFurniture()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return default;
-		}
-
-		uint[] words = _furnitureWords ??= new uint[15];
-		try
-		{
-			if (RefiiHostGetFurniture(words, (uint)words.Length) == 0u)
-			{
-				return default;
-			}
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return default;
-		}
-
-		int count = (int)System.Math.Min(words[5], 8u);
-		var values = new int[count];
-		for (int i = 0; i < count; ++i)
-		{
-			values[i] = unchecked((int)words[7 + i]);
-		}
-
-		return new Furniture(
-			true, words[1] != 0u, unchecked((int)words[2]), unchecked((int)words[3]),
-			unchecked((int)words[4]), values,
-			System.BitConverter.Int32BitsToSingle(unchecked((int)words[6])));
-	}
-
-	/// <summary>
-	/// One quest's task lines' completed flags, index-parallel with <see cref="GetQuestTasks"/>
-	/// (`quest+104` entries, byte +4). Empty when the quest has none or the guest is down.
-	/// </summary>
-	public static bool[] GetQuestTaskStates(uint recordId)
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp || recordId == 0u)
-		{
-			return System.Array.Empty<bool>();
-		}
-
-		var completed = new byte[128];
-		uint count;
-		try
-		{
-			count = RefiiHostGetQuestTaskStates(recordId, completed, (uint)completed.Length);
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return System.Array.Empty<bool>();
-		}
-
-		var states = new bool[System.Math.Min(count, (uint)completed.Length)];
-		for (int i = 0; i < states.Length; ++i)
-		{
-			states[i] = completed[i] != 0;
-		}
-
-		return states;
-	}
-
-	/// <summary>
-	/// The hero's quest log. The world map's Quests and Jobs are this one list filtered
-	/// differently — the split is the definition's GDB `Type` (5 is a Job), which the caller
-	/// resolves because the host has no GDB. Empty when the walk saw the container move.
-	/// </summary>
-	public static List<QuestEntry> GetQuestLog()
-	{
-		var quests = new List<QuestEntry>();
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return quests;
-		}
-
-		const int max = 256;
-		const int stride = 9;
-		uint[] words = new uint[max * stride];
-		uint found;
-		try
-		{
-			found = RefiiHostGetQuestLog(words, (uint)words.Length);
-		}
-		catch (System.DllNotFoundException)
-		{
-			return quests;
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return quests;
-		}
-
-		for (uint i = 0; i < found && i < max; ++i)
-		{
-			uint at = i * stride;
-			uint flags = words[at + 1];
-			quests.Add(new QuestEntry(
-				words[at],
-				(flags & 1u) != 0u,
-				(flags & 2u) != 0u,
-				(flags & 4u) != 0u,
-				(flags & 8u) != 0u,
-				(flags & 16u) != 0u,
-				(flags & 32u) != 0u,
-				(flags & 64u) != 0u,
-				(int)words[at + 2],
-				(int)words[at + 3],
-				(int)words[at + 4],
-				(int)words[at + 5],
-				System.BitConverter.Int32BitsToSingle((int)words[at + 6]),
-				(int)words[at + 7],
-				words[at + 8]));
-		}
-
-		return quests;
-	}
-
-	/// <summary>
-	/// The items the hero is WEARING, by GDB record id — what a clothing list must not offer
-	/// again. Empty when nothing is worn, when the guest is down, and also when the walk saw the
-	/// container move under it (a push reallocates); see the native side.
-	/// </summary>
-	/// <summary>
-	/// One shop row's ASKING PRICE — what the shop charges, which is not the item's worth.
-	/// </summary>
-	/// <param name="Record">The item's GDB record — what the ticket names, read where the price reads it.</param>
-	public readonly record struct ShopPrice(bool Known, uint Ticket, int Price, uint Record)
-	{
-		public bool IsFor(uint ticket) => Known && Ticket == ticket && ticket != 0u;
-	}
-
-	/// <summary>Names the row whose price the pump should answer for next.</summary>
-	public static void SetShopPrice(uint ticket, bool sell)
-	{
-		if (TryGetAbiVersion() is null)
-		{
-			return;
-		}
-
-		try
-		{
-			RefiiHostSetShopPrice(ticket, sell ? 1u : 0u);
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-		}
-	}
-
-	/// <summary>Reads back the asking price — see <see cref="ShopPrice"/>.</summary>
-	public static ShopPrice GetShopPrice()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return default;
-		}
-
-		try
-		{
-			uint known = RefiiHostGetShopPrice(out uint ticket, out int price, out uint record);
-			return new ShopPrice(known != 0u, ticket, price, record);
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return default;
-		}
-	}
-
-	/// <summary>
-	/// ONE family member's page, in the guest's own field order.
-	///
-	/// Ten of the eleven are already-formatted text the collector wrote into the record —
-	/// `sub_829B04E0` sets them with `sub_82425DD0`, which takes formatted text rather than a
-	/// tag — so they are shown as they arrive. <see cref="Region"/> is the exception and IS a
-	/// Babel tag, because the page sets it with `sub_82425F40`.
-	/// </summary>
-	public readonly record struct FamilyDetails(
-		bool Known, string Name, string Children, string Region, string Distance, string Travel,
-		string Note, string DailyUpkeep, string TotalUpkeep, string Happiness,
-		string HomeHappiness, string UpkeepHappiness, string Prompt);
-
-	/// <summary>
-	/// The page for the family member at <paramref name="index"/> — the row's own id, which is
-	/// the ordinal the guest's page indexes by.
-	/// </summary>
-	public static FamilyDetails GetFamilyDetails(uint index)
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return default;
-		}
-
-		const int fields = 12;
-		const int stride = 192;
-		byte[] block = new byte[fields * stride];
-		uint found;
-		try
-		{
-			found = RefiiHostGetFamilyDetails(index, block, stride, fields);
-		}
-		catch (System.DllNotFoundException)
-		{
-			return default;
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return default;
-		}
-
-		if (found == 0u)
-		{
-			return default;
-		}
-
-		string Field(int at)
-		{
-			if (at >= found)
-			{
-				return string.Empty;
-			}
-
-			int start = at * stride;
-			int end = System.Array.IndexOf(block, (byte)0, start, stride);
-			int length = (end < 0 ? start + stride : end) - start;
-			return length > 0 ? Encoding.UTF8.GetString(block, start, length) : string.Empty;
-		}
-
-		return new FamilyDetails(
-			true, Field(0), Field(1), Field(2), Field(3), Field(4), Field(5), Field(6),
-			Field(7), Field(8), Field(9), Field(10), Field(11));
-	}
-
-	/// <summary>
-	/// The world map's family members, in the order the guest's own collector produced them.
-	///
-	/// Sampled by the pump while the world map is up (`sub_8246F020`, freed with
-	/// `sub_826C9450`) rather than walked here — the read goes through an entity-UID map and a
-	/// component-20 name fallback, and the guest already has the function for it.
-	/// </summary>
-	public static List<string> GetFamily()
-	{
-		var family = new List<string>();
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return family;
-		}
-
-		const int max = 32;
-		const int stride = 64;
-		byte[] names = new byte[max * stride];
-		uint found;
-		try
-		{
-			found = RefiiHostGetFamily(names, stride, max);
-		}
-		catch (System.DllNotFoundException)
-		{
-			return family;
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return family;
-		}
-
-		for (uint i = 0; i < found && i < max; ++i)
-		{
-			int start = (int)i * stride;
-			int end = System.Array.IndexOf(names, (byte)0, start, stride);
-			int length = (end < 0 ? start + stride : end) - start;
-			if (length > 0)
-			{
-				family.Add(Encoding.UTF8.GetString(names, start, length));
-			}
-		}
-
-		return family;
-	}
-
-	/// <summary>One garment's dye state, by the guest's own test (<c>sub_826CAFA8</c>).</summary>
-	public readonly record struct DyeState(bool Slot1, bool Slot2, bool Worn);
-
-	private static readonly uint[] _dyeStateWords = new uint[160 * 2];
-
-	/// <summary>
-	/// Which of the hero's garments are dyed, keyed by item record. Sampled on the guest's GUI
-	/// tick, so it is current while a book is open; a record not listed has not been sampled.
-	/// </summary>
-	public static Dictionary<uint, DyeState> GetDyeStates()
-	{
-		var states = new Dictionary<uint, DyeState>();
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return states;
-		}
-
-		uint found;
-		try
-		{
-			found = RefiiHostGetDyeStates(_dyeStateWords, (uint)_dyeStateWords.Length);
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return states;
-		}
-
-		for (uint i = 0; i < found && (i * 2) + 1 < _dyeStateWords.Length; ++i)
-		{
-			uint flags = _dyeStateWords[(i * 2) + 1];
-			states.TryAdd(_dyeStateWords[i * 2],
-				new DyeState((flags & 1u) != 0, (flags & 2u) != 0, (flags & 4u) != 0));
-		}
-
-		return states;
-	}
 
 	public static List<(uint RecordId, int Category)> GetWornItems()
 	{
@@ -8968,89 +6875,6 @@ public static class HostBridge
 		}
 
 		return worn;
-	}
-
-	/// <summary>
-	/// The augment pairs socketed into one inventory record — (PrimaryType, SecondaryType) GDB
-	/// record ids, secondary 0 when there is none — off the item's own instance record, which
-	/// is what `sub_82469AE8` prints on the weapon page. Null when no record of that id carries
-	/// one: the item was never seeded, and the definition's `InitialAugmentations` stand.
-	/// </summary>
-	public static (uint Primary, uint Secondary)[]? GetItemAugments(uint recordId)
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp || recordId == 0u)
-		{
-			return null;
-		}
-
-		const int max = 16;
-		uint[] words = new uint[max * 2];
-		uint found;
-		try
-		{
-			found = RefiiHostGetItemAugments(recordId, words, (uint)words.Length);
-		}
-		catch (System.DllNotFoundException)
-		{
-			return null;
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return null;
-		}
-
-		if (found == uint.MaxValue)
-		{
-			return null;
-		}
-
-		var pairs = new (uint, uint)[System.Math.Min(found, max)];
-		for (int i = 0; i < pairs.Length; ++i)
-		{
-			pairs[i] = (words[i * 2], words[(i * 2) + 1]);
-		}
-
-		return pairs;
-	}
-
-	public static List<InventoryRecord> GetHeroInventory()
-	{
-		var records = new List<InventoryRecord>();
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return records;
-		}
-
-		const int stride = 4;
-		uint count;
-		try
-		{
-			count = RefiiHostGetHeroInventory(null, 0);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return records;
-		}
-
-		if (count == 0)
-		{
-			return records;
-		}
-
-		// The snapshot is published whole on the guest's thread; headroom only for a publish
-		// landing between the probe and the read.
-		var words = new uint[(count + 32u) * stride];
-		uint written = RefiiHostGetHeroInventory(words, (uint)words.Length);
-
-		int usable = (int)Math.Min(written, (uint)(words.Length / stride));
-		for (int i = 0; i < usable; ++i)
-		{
-			int at = i * stride;
-			records.Add(new InventoryRecord(
-				words[at], (int)words[at + 1], (int)words[at + 2], words[at + 3] != 0u));
-		}
-
-		return records;
 	}
 
 	/// <summary>Reads the live fade. See <see cref="ScreenFade"/>.</summary>
@@ -9357,15 +7181,6 @@ public static class HostBridge
 		return streams;
 	}
 
-	/// <summary>
-	/// Which loading screen the guest picked — its type and the texture name it chose. The
-	/// loading screen is NOT a Gameface presentation: `sub_8235F108` submits direct textured
-	/// quads, so this pair is the whole interface. The name is read through an LHString handle
-	/// — two dereferences from `screen+272`; every writer is `sub_822651A0(a1 + 272, ...)`.
-	/// `Body` is reported so a wrong indirection shows an address rather than an empty name.
-	/// </summary>
-	public readonly record struct LoadingArt(uint Type, uint Body, string Name);
-
 	/// <summary>The chosen loading art, or null when there is no loading screen.</summary>
 	public static LoadingArt? GetLoadingScreenArt()
 	{
@@ -9439,19 +7254,17 @@ public static class HostBridge
 			: null;
 	}
 
-	/// <remarks>
-	/// Asked several times a frame (input masking, the button route, the Android host, the UI),
-	/// so it reads into a per-thread buffer rather than <see cref="GetFrontEndRaw"/>'s new array.
-	/// </remarks>
-	public static bool FrontEndGuiIsUp
-	{
-		get
-		{
-			uint[] words = _frontEndScratch ??= new uint[10];
-			return RefiiHostGetFrontEnd(words) != 0 && GuestAddressToTu1(words[9]) == FrontEndGuiVtable;
-		}
-	}
+	/// <summary>
+	/// Whether the GUI the guest has up is its front end's: the title's bridge says which
+	/// construction it published, and only then do <see cref="TryGetFrontEnd"/>'s fields mean
+	/// anything.
+	/// </summary>
+	public static bool FrontEndGuiIsUp => RefiiHostFrontEndGuiIsUp() != 0;
 
+	[DllImport(Library)]
+	private static extern int RefiiHostFrontEndGuiIsUp();
+
+	/// <summary>The front end's ten words, read per thread: asked several times a frame.</summary>
 	[ThreadStatic]
 	private static uint[]? _frontEndScratch;
 
@@ -9778,10 +7591,6 @@ public static class HostBridge
 	private static extern uint RefiiHostMovieState();
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostGetUiPreviewObject(
-		out uint modelHash, out uint entity, [Out] float[] values, uint valueCount);
-
-	[DllImport(Library)]
 	private static extern uint RefiiHostGetWorldSprites(
 		[Out] uint[] words, uint wordCapacity, [Out] float[] values, uint valueCapacity,
 		[Out] byte[] text, uint textCapacity, uint maxIcons);
@@ -9816,61 +7625,19 @@ public static class HostBridge
 	private static extern int RefiiHostGetPlayerCamera(int player, float[] outValues);
 
 	[DllImport(Library)]
-	private static extern int RefiiHostGetMenuOwner();
-
-	[DllImport(Library)]
-	private static extern int RefiiHostTakeExitRefused();
-
-	[DllImport(Library)]
-	private static extern int RefiiHostGetPlayerTwoPrompts(uint[] outThings, int capacity);
-
-	[DllImport(Library)]
-	private static extern int RefiiHostGetPlayerOneHiddenPrompts(uint[] outThings, int capacity);
-
-	[DllImport(Library)]
-	private static extern int RefiiHostGetPlayerTwoHold(out float fraction, out int pressed);
-
-	[DllImport(Library)]
 	private static extern int RefiiHostGetPlayerTwoHoldPrompt([Out] float[] at, [Out] byte[] title, uint capacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetPromptTitles([Out] byte[] text, uint capacity);
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostGetProperties(int player, [Out] byte[] text, uint capacity);
-
-	[DllImport(Library)]
-	private static extern int RefiiHostTakePropertyNotice(out int kind, out ulong uid);
-
-	[DllImport(Library)]
-	private static extern int RefiiHostGetPartnership(out int kind);
-
-	[DllImport(Library)]
-	private static extern int RefiiHostGetItemCount(int player, uint definition);
-
-	[DllImport(Library)]
 	private static extern int RefiiHostGetPlayerValue(int player, [MarshalAs(UnmanagedType.LPUTF8Str)] string key, out float value);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostTakeEstateIntent(byte[] outBuffer, uint capacity);
-
-	[DllImport(Library)]
-	private static extern int RefiiHostSetPartnership(int kind);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetClassicSceneLights([Out] float[] values, uint capacity);
 
 	[DllImport(Library)]
 	private static extern ulong RefiiHostGetEntityUid(uint entity);
-
-	[DllImport(Library)]
-	private static extern int RefiiHostGetOpinionOfUid(ulong uid, int player, [Out] float[] axes);
-
-	[DllImport(Library)]
-	private static extern int RefiiHostGetExitWaiting();
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetExitRequest(float[] outXyz);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetAnimWalkStats(uint[] outWords, uint capacity);
@@ -9886,43 +7653,7 @@ public static class HostBridge
 	private static extern uint RefiiHostIsInGame();
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostGetCoopRole();
-
-	[DllImport(Library)]
-	private static extern int RefiiHostGetCoopShares(out float gold, out float experience);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetCoopHeroSaveName(byte[] outText, uint capacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetSaveCardNames(byte[] outText, uint capacity);
-
-	[DllImport(Library)]
 	private static extern uint RefiiHostGetCoopPlayerEntities(out uint one, out uint two);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetCoopSession(uint[] outWords, uint capacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetCoopHeroSave([Out] float[] outValues, uint valueCount);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetHeroLooks(out uint face, out float fat, out float height, out float tan);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetHeroWeapons(out uint melee, out uint ranged);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetCoopHeldUids(uint player, out ulong melee, out ulong ranged);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetCoopFigures([Out] uint[] outWords, uint capacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetCoopScreen([Out] uint[] outWords, uint capacity, [Out] byte[]? text, uint textCapacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetClothingMannequin();
 
 	[DllImport(Library)]
 	private static extern int RefiiNetCoopSend([MarshalAs(UnmanagedType.LPUTF8Str)] string text);
@@ -9944,9 +7675,6 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern void RefiiNetSyncClose();
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetHeroStateApplied(uint player);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetSimTick();
@@ -9982,15 +7710,6 @@ public static class HostBridge
 	private static extern uint RefiiHostGetExpressionMeter([Out] float[] values, uint capacity);
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostGetTopBoxFront([Out] uint[] words, uint capacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetTargetedQuery([Out] uint[] words, uint capacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetPlayerTwoTargetedQuery([Out] uint[] words, uint capacity);
-
-	[DllImport(Library)]
 	private static extern uint RefiiHostGetDrunkPlayers();
 
 	/// <summary>Which heroes are past the drunk warp's threshold: bit 0 hero one, bit 1 hero two.</summary>
@@ -10009,9 +7728,6 @@ public static class HostBridge
 			return 0u;
 		}
 	}
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetPlayerTwoHud(ref uint target, [Out] byte[] text, uint capacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetHudPulsers([Out] uint[]? hashes, [Out] float[]? phases, uint capacity);
@@ -10057,38 +7773,7 @@ public static class HostBridge
 	private static extern uint RefiiHostGetWornItems(uint[] outWords, uint wordCapacity);
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostGetDyeStates([Out] uint[] outWords, uint wordCapacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetFamily([Out] byte[]? outNames, uint stride, uint capacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetFamilyDetails(
-		uint index, [Out] byte[] outFields, uint stride, uint count);
-
-	[DllImport(Library)]
-	private static extern void RefiiHostSetShopPrice(uint ticket, uint sell);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetShopPrice(out uint outTicket, out int outPrice, out uint outRecord);
-
-	[DllImport(Library)]
 	private static extern uint RefiiHostGetInventoryScreenMode();
-
-	[DllImport(Library)]
-	private static extern int RefiiHostGetLogbookOrbView(int[] stats, uint statsCapacity, byte[] name, uint nameCapacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetQuestLog(uint[] outWords, uint wordCapacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetQuestTrailOverride();
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetFastTravelRegions([Out] uint[]? outWords, uint wordCapacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetSales(uint[] outWords, uint wordCapacity);
 
 	[DllImport(Library)]
 	private static extern void RefiiHostMenuChunkCounters(
@@ -10310,12 +7995,6 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern int RefiiHostPauseTabSelect(uint tab);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostPauseTabsAvailable();
-
-	[DllImport(Library)]
-	private static extern int RefiiHostGetAbilitiesMode();
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetMapMarkers(uint[] outHashes, float[] outValues, uint cap);
@@ -10696,9 +8375,6 @@ public static class HostBridge
 	private static extern int RefiiHostGetFrontEndInit(uint[] outWords);
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostGetFrontEndModel(uint[] outWords);
-
-	[DllImport(Library)]
 	private static extern uint RefiiHostGetUiElements(
 		uint presentation, uint[]? outWords, uint wordCapacity,
 		ushort[]? outText, uint textCapacity);
@@ -10717,30 +8393,6 @@ public static class HostBridge
 		byte[] travel, uint travelCapacity, byte[] counts, uint countsCapacity,
 		byte[] merchants, uint merchantsCapacity, out int outStars,
 		byte[] levelName, uint levelCapacity, out uint outLevelKey, byte[] scenario, uint scenarioCapacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetMinimapLive(uint[] outWords, uint capacity);
-
-	[DllImport(Library)]
-	private static extern void RefiiHostSetWorldMapRegion(uint index);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetQuestTasks(uint recordId, byte[] packed, uint capacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetQuestTaskStates(uint recordId, byte[] completed, uint capacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetFurniture(uint[] words, uint capacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetQueryCard(uint[] words, uint capacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetCoopState(uint[] words, uint capacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetShopFront(uint[] words, uint capacity, byte[] text, uint textCapacity);
 
 	[DllImport(Library)]
 	private static extern void RefiiHostSetHighlightedRow(
@@ -10765,152 +8417,15 @@ public static class HostBridge
 		}
 	}
 
-	/// <summary>The shop's front page as its writer computes it — see <c>ShopFront</c> in hero_derived.h.</summary>
-	public readonly record struct ShopFront(
-		bool Known, bool Trader, bool Crier, bool HasKeeperName, bool Owner, bool SaleKnown,
-		float Stars, float Wealth, float OwnerDiscount, float Love, float Hate, float Fear,
-		float Special, float SaleFactor, int SaleDays,
-		string NameKey, string AnecdoteKey, string KeeperName, string TitleKey);
 
-	private static uint[]? _shopFrontWords;
-	private static byte[]? _shopFrontText;
 
-	public static ShopFront GetShopFront()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return default;
-		}
-
-		uint[] w = _shopFrontWords ??= new uint[11];
-		byte[] text = _shopFrontText ??= new byte[512];
-		System.Array.Clear(text);
-		try
-		{
-			if (RefiiHostGetShopFront(w, (uint)w.Length, text, (uint)text.Length) == 0u)
-			{
-				return default;
-			}
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return default;
-		}
-
-		var pieces = new string[4];
-		int at = 0;
-		for (int i = 0; i < 4; ++i)
-		{
-			int end = System.Array.IndexOf(text, (byte)0, at);
-			if (end < 0)
-			{
-				end = text.Length;
-			}
-
-			pieces[i] = Encoding.UTF8.GetString(text, at, end - at);
-			at = System.Math.Min(end + 1, text.Length);
-		}
-
-		static float F(uint bits) => System.BitConverter.Int32BitsToSingle(unchecked((int)bits));
-		uint flags = w[1];
-		return new ShopFront(
-			true, (flags & 1u) != 0u, (flags & 2u) != 0u, (flags & 4u) != 0u, (flags & 8u) != 0u,
-			(flags & 16u) != 0u, F(w[2]), F(w[3]), F(w[4]), F(w[5]), F(w[6]), F(w[7]), F(w[8]),
-			F(w[9]), unchecked((int)w[10]), pieces[0], pieces[1], pieces[2], pieces[3]);
-	}
-
-	/// <summary>The co-op screen's decision state (screen 24) — see <c>CoopScreen</c> in hero_derived.h.</summary>
-	public readonly record struct CoopPageState(
-		bool Known, int Session, bool OnlineClient, bool RightSignedIn,
-		bool AcceptedLeft, bool AcceptedRight, bool PeerReady, bool Flag297, bool Flag298,
-		bool Child, bool ChildLevel, int UserRightSave, bool SaveChosen,
-		int[] PickSelected, bool[] PickEnabled, int[] PickState, int ProfileLeft, int ProfileRight);
-
-	private static uint[]? _coopWords;
-
-	public static CoopPageState GetCoopState()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return default;
-		}
-
-		uint[] w = _coopWords ??= new uint[22];
-		try
-		{
-			if (RefiiHostGetCoopState(w, (uint)w.Length) == 0u)
-			{
-				return default;
-			}
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return default;
-		}
-
-		return new CoopPageState(
-			true, unchecked((int)w[1]), w[2] != 0u, w[3] != 0u, w[4] != 0u, w[5] != 0u, w[6] != 0u,
-			w[7] != 0u, w[8] != 0u, w[9] != 0u, w[10] != 0u, unchecked((int)w[11]), w[12] != 0u,
-			new[] { unchecked((int)w[13]), unchecked((int)w[14]), unchecked((int)w[15]) },
-			new[] { (w[16] & 1u) != 0u, (w[16] & 2u) != 0u, (w[16] & 4u) != 0u },
-			new[] { unchecked((int)w[17]), unchecked((int)w[18]), unchecked((int)w[19]) },
-			unchecked((int)w[20]), unchecked((int)w[21]));
-	}
-
-	private static uint[]? _queryCardWords;
-
-	/// <summary>The villager card's subject: its component-20 name key and rename byte, or
-	/// unknown — see RefiiHostGetQueryCard.</summary>
-	public static (bool Known, uint NameKey, bool RenameByte) GetQueryCard()
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return default;
-		}
-
-		uint[] words = _queryCardWords ??= new uint[3];
-		try
-		{
-			return RefiiHostGetQueryCard(words, (uint)words.Length) != 0u
-				? (true, words[1], words[2] != 0u)
-				: default;
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return default;
-		}
-	}
-
-	[DllImport(Library)]
-	private static extern void RefiiHostSetQuestTravel(uint record);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetQuestTravel(
-		out uint outRecord, byte[] distance, uint distanceCapacity, byte[] travel,
-		uint travelCapacity, byte[] region, uint regionCapacity, byte[] prompt,
-		uint promptCapacity, byte[] days, uint daysCapacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetRealEstate(
-		uint[] words, uint wordCapacity, byte[] occupant, uint occupantCapacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostUiDataGeneration();
 
 	[DllImport(Library)]
-	private static extern void RefiiHostRequestPropertyEstate(ulong uid);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetPropertyEstate(
-		ulong uid, uint[] words, uint wordCapacity, byte[] occupant, uint occupantCapacity);
-
-	[DllImport(Library)]
 	private static extern int RefiiHostSetPlayerValue(
 		int player, [MarshalAs(UnmanagedType.LPUTF8Str)] string key, float value);
-
-	[DllImport(Library)]
-	private static extern int RefiiHostGetOptions(
-		uint[] words, uint wordCapacity, out float outBreadcrumb);
 
 	[DllImport(Library)]
 	private static extern void RefiiHostSetAssetReader(IntPtr reader);
@@ -10925,20 +8440,6 @@ public static class HostBridge
 	private static extern int RefiiHostGetOptionsSliders(
 		out float outGamma, out float outSfx, out float outMusic, out float outSpeech,
 		out uint outSpeaker);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetOptionsPage(
-		uint page, out int outCursor, int[] indices, float[] values, uint capacity);
-
-	[DllImport(Library)]
-	private static extern int RefiiHostGetCrimeScreen(
-		out int outFine, out uint outFlags, byte[] charge, uint chargeCapacity,
-		byte[] service, uint serviceCapacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetCompletedQuests(
-		uint index, out uint outRecord, out int outMoney, out int outRenown,
-		byte[] outConclusion, uint conclusionCapacity);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetModValue(byte[] key, uint keyLength, out float value);
@@ -10980,13 +8481,6 @@ public static class HostBridge
 	private static extern uint RefiiHostTakeToldTexts(uint[] outWords, uint wordCapacity, ushort[] units, uint unitCapacity);
 
 	[DllImport(Library)]
-	private static extern int RefiiHostConsentTake(out uint ticket, out int kind, out int asker, out int detail,
-		[Out] byte[] text, uint capacity);
-
-	[DllImport(Library)]
-	private static extern void RefiiHostConsentGive(uint ticket, int yes);
-
-	[DllImport(Library)]
 	private static extern int RefiiHostPlayerStateReceive(byte[] message, uint length);
 
 	[DllImport(Library)]
@@ -11005,20 +8499,8 @@ public static class HostBridge
 	private static extern void RefiiHostSetModVerdictMaskHigh(ulong mask);
 
 	[DllImport(Library)]
-	private static extern int RefiiHostGetHeroDerived(
-		uint[] words, uint wordCapacity, float[] values, uint valueCapacity,
-		byte[] titleTag, uint titleCapacity, byte[] dogName, uint dogCapacity,
-		int[] stats, uint statsCapacity, uint[] trickIds, uint trickCapacity);
-
-	[DllImport(Library)]
 	private static extern uint RefiiHostGetHeroVitals(
 		uint[]? outWords, uint wordCapacity, float[]? outValues, uint valueCapacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetHeroInventory(uint[]? outWords, uint wordCapacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetItemAugments(uint recordId, uint[] outWords, uint wordCapacity);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGuestBuild();
@@ -11063,259 +8545,13 @@ public static class HostBridge
 	private static extern int RefiiHostGetVibration(
 		uint userIndex, out uint outLeft, out uint outRight);
 
-	/// <summary>
-	/// What the guest's pub-game manager currently says. §the pub games are the guest's, not ours.
-	/// </summary>
-	/// <remarks>
-	/// The guest drives the whole lifecycle — which game, which variation, which pad and
-	/// language, seeding the bank from the hero's gold, and settling it afterwards. Godot claims
-	/// the games (<see cref="ClaimPubGames"/>), which takes the Scaleform module out of the
-	/// guest's pump (<c>src/vfs/src/hooks/pubgame_pump.cpp</c>): the guest still walks 1 → 2 → 3,
-	/// Godot's game plays while it sits in 3, and the game's own fscommands — posted through
-	/// <see cref="PostPubGameCommand"/> — carry it to 6 and the settle at 9.
-	/// </remarks>
-	public readonly record struct PubGameState(
-		uint Stage, uint Profile, long Gold, long Debt, string Game, string Variation)
-	{
-		/// <summary>The session is up and nobody is drawing it yet.</summary>
-		public bool WantsHost => Stage == RunningStage && Profile != 0;
-
-		/// <summary>The state the session plays in; the pump enters it from 2 once per session.</summary>
-		public const uint RunningStage = 3;
-
-		/// <summary>
-		/// True while a session is live and the host should keep drawing.
-		/// </summary>
-		/// <remarks>
-		/// 3 is play; 4 and 5 are the save a holdings update triggers (the tick saves in 4, the
-		/// pump hands back EndSave in 5); 7 and 8 are the guest ending the session itself. 2 comes
-		/// before the board exists and 6 and 9 after it is gone.
-		/// </remarks>
-		public bool IsLive => Stage is 3 or 4 or 5 or 7 or 8;
-	}
-
-	/// <summary>What Godot's game says, in the guest's fscommand handler's own terms.</summary>
-	/// <remarks>Each is one branch of <c>sub_82EF2AC0</c>; see <c>pubgame_pump.cpp</c>.</remarks>
-	public enum PubGameCommand : uint
-	{
-		PlaySound = 1,
-		PauseSound = 2,
-		Holdings = 3,
-		Points = 4,
-		Rank = 5,
-		SoundVolume = 6,
-		MusicVolume = 7,
-		GameOver = 8,
-	}
-
-	/// <summary>What the pump would have told the movie.</summary>
-	[System.Flags]
-	public enum PubGameEvent : uint
-	{
-		None = 0,
-
-		/// <summary>2 → 3: the session is up.</summary>
-		Running = 1,
-
-		/// <summary>State 5: the save a holdings update started has finished — <c>pubGame.EndSave</c>.</summary>
-		SaveEnded = 2,
-
-		/// <summary>A holdings update arrived outside state 3, so no save follows it.</summary>
-		SaveSkipped = 4,
-
-		/// <summary>State 7: the guest is ending the session — <c>pubGame.EndGame</c>.</summary>
-		EndGame = 8,
-	}
-
-	/// <summary>
-	/// What <c>sub_82EF18A0</c> hands the movie before <c>pubGame.Run</c>.
-	/// </summary>
-	/// <remarks>
-	/// <see cref="Points"/> is the profile's three per-game slots; the game reads the one its
-	/// settings name as <c>gameIndex</c>, and the total is the sum of all three
-	/// (<c>sub_82EE8710</c>). <see cref="SoundVolume"/> and <see cref="MusicVolume"/> are 0..1 —
-	/// the movie is handed <c>(int)(v * 10)</c>. <see cref="Items"/> bit N means
-	/// <c>pubGame.TournamentItemWon(N)</c>.
-	/// </remarks>
-	public readonly record struct PubGameProfile(
-		string Name, long Rank, long[] Points, uint Items, uint Pad,
-		float SoundVolume, float MusicVolume, long StartingGold, long StartingDebt, string Language)
-	{
-		public int TotalPoints => (int)(Points[0] + Points[1] + Points[2]);
-	}
-
-	[ThreadStatic]
-	private static uint[]? _pubGameValues;
-
-	[ThreadStatic]
-	private static byte[]? _pubGameName, _pubGameVariation;
-
-	/// <summary>Reads the manager, or null when the guest is not up.</summary>
-	public static PubGameState? GetPubGame()
-	{
-		if (!IsGuestUp)
-		{
-			return null;
-		}
-
-		// Polled every frame by the Android host: the buffers are kept per thread.
-		uint[] values = _pubGameValues ??= new uint[6];
-		byte[] name = _pubGameName ??= new byte[64];
-		byte[] variation = _pubGameVariation ??= new byte[64];
-
-		try
-		{
-			if (RefiiHostGetPubGame(
-				values, name, (uint)name.Length, variation, (uint)variation.Length) == 0)
-			{
-				return null;
-			}
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return null;
-		}
-
-		// High word first: the guest is big endian and these are int64.
-		long gold = ((long)values[2] << 32) | values[3];
-		long debt = ((long)values[4] << 32) | values[5];
-
-		return new PubGameState(
-			values[0], values[1], gold, debt, Ascii(name), Ascii(variation));
-	}
-
-	/// <summary>Reads what the movie would be handed at start, or null when there is no profile.</summary>
-	public static PubGameProfile? GetPubGameProfile()
-	{
-		if (!IsGuestUp)
-		{
-			return null;
-		}
-
-		var values = new uint[14];
-		var name = new byte[256];
-		var language = new byte[4];
-		try
-		{
-			if (RefiiHostGetPubGameProfile(
-				values, name, (uint)name.Length, language, (uint)language.Length) == 0)
-			{
-				return null;
-			}
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return null;
-		}
-
-		static long Wide(uint high, uint low) => ((long)high << 32) | low;
-
-		int nameLength = System.Array.IndexOf(name, (byte)0);
-		return new PubGameProfile(
-			nameLength <= 0 ? string.Empty : System.Text.Encoding.UTF8.GetString(name, 0, nameLength),
-			Wide(values[0], values[1]),
-			[Wide(values[2], values[3]), Wide(values[4], values[5]), Wide(values[6], values[7])],
-			values[8],
-			values[9],
-			BitConverter.UInt32BitsToSingle(values[10]),
-			BitConverter.UInt32BitsToSingle(values[11]),
-			(int)values[12],
-			(int)values[13],
-			Ascii(language));
-	}
-
-	/// <summary>
-	/// Tells the guest Godot plays the pub games, so its pump never creates the Scaleform movie.
-	/// </summary>
-	public static bool ClaimPubGames(bool claimed)
-	{
-		if (!IsGuestUp)
-		{
-			return false;
-		}
-
-		try
-		{
-			return RefiiHostClaimPubGames(claimed ? 1 : 0) != 0;
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return false;
-		}
-	}
-
-	/// <summary>Hands the guest one fscommand from Godot's game.</summary>
-	public static void PostPubGameCommand(
-		PubGameCommand kind, string? text = null,
-		double n0 = 0, double n1 = 0, double n2 = 0, long i0 = 0, long i1 = 0)
-	{
-		if (!IsGuestUp)
-		{
-			return;
-		}
-
-		try
-		{
-			RefiiHostPostPubGameCommand((uint)kind, text ?? string.Empty, n0, n1, n2, i0, i1);
-		}
-		catch (EntryPointNotFoundException)
-		{
-		}
-	}
-
-	/// <summary>What the pump told the movie since the last call.</summary>
-	public static PubGameEvent TakePubGameEvents()
-	{
-		if (!IsGuestUp)
-		{
-			return PubGameEvent.None;
-		}
-
-		try
-		{
-			return (PubGameEvent)RefiiHostTakePubGameEvents();
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return PubGameEvent.None;
-		}
-	}
-
-	private static string Ascii(byte[] buffer)
+	internal static string Ascii(byte[] buffer)
 	{
 		int length = System.Array.IndexOf(buffer, (byte)0);
 		return length <= 0
 			? string.Empty
 			: System.Text.Encoding.ASCII.GetString(buffer, 0, length);
 	}
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	private static extern int RefiiHostGetPubGame(
-		[Out] uint[] values,
-		[Out] byte[] name,
-		uint nameCapacity,
-		[Out] byte[] variation,
-		uint variationCapacity);
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	private static extern int RefiiHostGetPubGameProfile(
-		[Out] uint[] values,
-		[Out] byte[] name,
-		uint nameCapacity,
-		[Out] byte[] language,
-		uint languageCapacity);
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	private static extern int RefiiHostClaimPubGames(int claimed);
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	private static extern int RefiiHostPostPubGameCommand(
-		uint kind,
-		[MarshalAs(UnmanagedType.LPUTF8Str)] string text,
-		double n0, double n1, double n2, long i0, long i1);
-
-	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	private static extern uint RefiiHostTakePubGameEvents();
 
 	[DllImport(Library)]
 
@@ -11735,19 +8971,11 @@ public static class HostBridge
 	private static extern uint RefiiHostGetEntityAnimState(uint entity, [Out] uint[] outWords, uint wordCapacity, out uint outFlags);
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostGetTopBoxBody(
-		[Out] uint[] outWords, uint capacity, [Out] byte[] outText, uint textCapacity);
-
-	[DllImport(Library)]
 	private static extern uint RefiiHostGetBoneMorphHeight(uint entity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetEntityTextureLayers(
 		uint entity, [Out] uint[] outWords, uint wordCapacity, out uint generation, out ulong statements);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetItemDyeLayers(
-		uint record, [Out] uint[] outWords, uint wordCapacity, out uint generation);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetEntityPartMorphs(
@@ -11812,13 +9040,27 @@ public static class HostBridge
 		[DllImport("refii_hostbridge")]
 		private static extern int RefiiHostGetUiTextureStats(uint presentation, uint[] outWords);
 
-		[DllImport("refii_hostbridge")]
-		private static extern int RefiiHostGetLoadingScreenLayout(uint[] outWords);
 
-		[DllImport("refii_hostbridge")]
-		private static extern int RefiiHostGetLoadingScreenText(
-			uint[] outWords, byte[] text, uint capacity);
 
 		[DllImport("refii_hostbridge")]
 		private static extern int RefiiHostIsGuestUp();
+
+	/// <summary>
+	/// The loading screen's take-down handshake — see RefiiHostGetLoadingScreen. <c>Fade</c>
+	/// counts 1.0 down to ~0 at 1/15 per render-thread tick; <c>Requested</c> is set by the game
+	/// thread just before it blocks on an INFINITE wait; <c>Done</c> is latched by the render
+	/// thread when it signals. Fade pinned at 1.0 with Requested and no Done is the stall.
+	/// </summary>
+	public readonly record struct LoadingScreen(
+		uint Manager, uint Screen, float Fade, bool Requested, bool Done);
+
+
+	/// <summary>
+	/// Which loading screen the guest picked — its type and the texture name it chose. The
+	/// loading screen is NOT a Gameface presentation: `sub_8235F108` submits direct textured
+	/// quads, so this pair is the whole interface. The name is read through an LHString handle
+	/// — two dereferences from `screen+272`; every writer is `sub_822651A0(a1 + 272, ...)`.
+	/// `Body` is reported so a wrong indirection shows an address rather than an empty name.
+	/// </summary>
+	public readonly record struct LoadingArt(uint Type, uint Body, string Name);
 }

@@ -1,7 +1,7 @@
 [gd_scene format=3]
 
 [ext_resource type="Script" path="res://src/game/GameSession.cs" id="1_game"]
-[ext_resource type="Script" path="res://src/tools/DebugMenu.cs" id="2_menu"]
+[ext_resource type="Script" path="res://src/Titles/Fable2/tools/DebugMenu.cs" id="2_menu"]
 
 [node name="GameSession" type="Node"]
 script = ExtResource("1_game")

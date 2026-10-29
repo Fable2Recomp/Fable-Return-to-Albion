@@ -83,16 +83,20 @@ public static class Engine_GameData
 		if (!string.IsNullOrEmpty(fromEnv))
 			yield return fromEnv!;
 
-		// The app root's assets/game first: that is where the installer writes and where an
-		// exported build keeps the player's data. Everything below is a dev-tree fallback.
-		yield return Path.Combine(Engine_AppRoot.AssetsDirectory, "game");
+		// THE ACTIVE TITLE'S data, in every location: assets/game for Fable 2, assets/refiii/game
+		// for Fable 3. A candidate that ignored the title would hand one game the other's banks.
+		string game = Engine_Title.Active.GameDataRelative;
+
+		// The app root's assets first: that is where the installer writes and where an exported
+		// build keeps the player's data. Everything below is a dev-tree fallback.
+		yield return Path.Combine(Engine_AppRoot.AssetsDirectory, game);
 
 		string projectDir = Engine_AppRoot.SafeGetProjectDir();
 		string repoRoot = Path.GetFullPath(Path.Combine(projectDir, ".."));
 
 		// The engine's own two, in its order.
-		yield return Path.Combine(projectDir, "build", "assets", "game");
-		yield return Path.Combine(repoRoot, "assets", "game");
+		yield return Path.Combine(projectDir, "build", "assets", game);
+		yield return Path.Combine(repoRoot, "assets", game);
 
 		// Then a dev tree's build outputs. No config is hardcoded — they vary by
 		// platform and by debug/netplay — so every one is tried, newest irrelevant
@@ -102,7 +106,7 @@ public static class Engine_GameData
 			yield break;
 
 		foreach (string config in Directory.EnumerateDirectories(builds))
-			yield return Path.Combine(config, "bin", "assets", "game");
+			yield return Path.Combine(config, "bin", "assets", game);
 	}
 
 	/// <summary>

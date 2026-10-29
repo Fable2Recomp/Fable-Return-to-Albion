@@ -72,7 +72,7 @@ public partial class InstallDialog : Control
 		column.AddThemeConstantOverride("separation", 10);
 		_frame.AddChild(column);
 
-		Label heading = MakeLabel("Install Fable 2");
+		Label heading = MakeLabel("Install " + Refii.Core.Engine_Title.Active.Name);
 		var headingBar = new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0) };
 		headingBar.BorderColor = LauncherTokens.Gold;
 		headingBar.BorderWidthBottom = 2;
@@ -114,7 +114,7 @@ public partial class InstallDialog : Control
 
 		column.AddChild(MakeLabel("Game ISO"));
 		_isoEdit = AddPathRow(column, () => BrowseForFile(
-			"Select the Fable 2 ISO", new[] { "*.iso ; Disc image" }, _isoEdit));
+			"Select the " + Refii.Core.Engine_Title.Active.Name + " ISO", new[] { "*.iso ; Disc image" }, _isoEdit));
 
 		// The tick decides which build of the game is installed: with the title update the
 		// patch is copied beside the executable and the TU1 config is used; without it the

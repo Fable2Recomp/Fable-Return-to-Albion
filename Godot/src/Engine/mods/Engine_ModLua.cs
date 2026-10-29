@@ -21,7 +21,7 @@ namespace Refii.Mods;
 /// <c>rex_lhLuaScriptSystem_LoadStartupScripts</c> (0x82459280) runs every shipped script except
 /// the cameras'; <c>rex_lhLuaScriptSystem_RunCameraScripts</c> (0x8245A610) runs those when a
 /// player's CameraManager is built — the first level of a session, a save load, a co-op join.
-/// The payload hook runs the composed text right after each (src/vfs/src/hooks/mod_lua_hooks.cpp),
+/// The payload hook runs the composed text right after each (Fable2/src/vfs/src/hooks/mod_lua_hooks.cpp),
 /// so init.lua runs once per session and camera.lua may run several times: it must be
 /// idempotent.</para>
 /// <para>Every enabled mod's file is composed, lowest priority first, into one chunk served at
@@ -82,7 +82,7 @@ public static class ModLua
 
 	/// <summary>
 	/// A mod's Lua for the TITLE and the FRONT END, where there is no game VM: run in the current
-	/// Gameface presentation's own Lua state (src/vfs/src/hooks/mod_frontend_lua.cpp), which is a
+	/// Gameface presentation's own Lua state (Fable2/src/vfs/src/hooks/mod_frontend_lua.cpp), which is a
 	/// different Lua build with no world, no hero and no save. Its own entry point, as a client and
 	/// a server entry point are separate: init.lua patches the game's scripts, which do not exist
 	/// there. What works in it is <see cref="FrontendPreamble"/>'s list.

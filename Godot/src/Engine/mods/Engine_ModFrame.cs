@@ -25,7 +25,8 @@ public static class ModFrame
 		// The mods' settings.json values reach the game once per guest.
 		ModSettings.Pump(guestUp);
 		// The mods' declared abilities reach the engine's purchase once per guest (and after a remount).
-		Refii.Ui.Engine_UiModAbilities.Pump(guestUp);
+		// The mods' title-side declarations (Fable 2's mod abilities), once per guest and after a remount.
+		Refii.Core.Engine_TitleGame.Active.PumpMods(guestUp);
 		ModErrors.Pump();
 
 		// The mods' godot/*.gd scripts run under the host's node while the guest is up and driven.

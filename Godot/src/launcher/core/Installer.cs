@@ -5,8 +5,16 @@ namespace Refii.Launcher.Core;
 
 public static class Installer
 {
-    public static string GetInstallBasePath() =>
+    /// <summary>
+    /// The folder every title installs under (the player's "Set Install Folder"); each title's
+    /// install is its own folder inside it.
+    /// </summary>
+    public static string GetInstallRootPath() =>
         LauncherPaths.ResolveFromLauncherDirectory(Ini.GetString("GamePath", "assets/", "Game"));
+
+    /// <summary>The active title's install: <c>&lt;root&gt;/Fable2/</c>, <c>&lt;root&gt;/Fable3/</c>.</summary>
+    public static string GetInstallBasePath() =>
+        Path.Combine(GetInstallRootPath(), Refii.Core.Engine_Title.Active.Folder) + Path.DirectorySeparatorChar;
 
     public static string GetInstalledExecutablePath() =>
         Path.Combine(Platform.GetExecutableDirectory(), Platform.ExecutableName);
@@ -314,7 +322,7 @@ public static class Installer
     public static string GetGameMarkerPath() =>
         Path.Combine(GetInstallBasePath(), GetGameMarkerRelativePath());
 
-    public static string GetGameTitle() => "Fable 2";
+    public static string GetGameTitle() => Refii.Core.Engine_Title.Active.Name;
 
     public static string GetGameDataDirectoryPath() =>
         Path.Combine(GetInstallBasePath(), GetGameDataDirectoryName());
@@ -532,13 +540,24 @@ public static class Installer
     /// A false answer here means the APP is broken — a bad package, a missing native — and
     /// installing the game cannot fix it. Whether the player's game is installed is
     /// <see cref="AssetsExist"/>, and whether its code is built is
-    /// <c>GameCodeBuild.NeedsBuild</c>.
+    /// <c>GameCodeBuild.NeedsBuild</c>. Whether the active title has a runtime of its own is
+    /// <see cref="TitleRuntimeExists"/>.
     /// </remarks>
     public static bool InstalledBuildExists() =>
         File.Exists(Path.Combine(
             Refii.Core.Engine_AppRoot.BinDirectory,
-            Refii.Core.Engine_NativeLibraries.FileNameFor("refii_hostbridge"))) ||
+            Refii.Core.Engine_NativeLibraries.FileNameFor("refii_core"))) ||
         File.Exists(GetInstalledExecutablePath());
+
+    /// <summary>
+    /// Whether the active title's ReXGlue instance ships with this app: its host bridge in
+    /// <c>bin/&lt;Folder&gt;/</c>. False for a title whose runtime is not built yet, which can be
+    /// installed but not played.
+    /// </summary>
+    public static bool TitleRuntimeExists() =>
+        File.Exists(Path.Combine(
+            Refii.Core.Engine_Title.Active.BinDirectory,
+            Refii.Core.Engine_NativeLibraries.FileNameFor("refii_hostbridge")));
 
     public static bool UninstallManagedFiles(out string log)
     {
@@ -565,7 +584,7 @@ public static class Installer
         }
 
         log = hasRemovedFiles
-            ? removed.ToString().TrimEnd() + "\nFable 2 install removed successfully."
+            ? removed.ToString().TrimEnd() + "\n" + GetGameTitle() + " install removed successfully."
             : string.Empty;
         return hasRemovedFiles;
     }

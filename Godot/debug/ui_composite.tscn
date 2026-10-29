@@ -1,6 +1,6 @@
 [gd_scene load_steps=2 format=3]
 
-[ext_resource type="Script" path="res://src/tools/UiCompositeCheck.cs" id="1_uicomposite"]
+[ext_resource type="Script" path="res://src/Titles/Fable2/tools/UiCompositeCheck.cs" id="1_uicomposite"]
 
 [node name="UiCompositeCheck" type="Node3D"]
 script = ExtResource("1_uicomposite")

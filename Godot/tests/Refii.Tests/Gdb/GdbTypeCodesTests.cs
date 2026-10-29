@@ -9,7 +9,7 @@ using Refii.Gdb;
 /// <summary>
 /// ONE SET OF TYPE CODES. The guest's property types (the byte a schema descriptor carries,
 /// consumed by <c>GDBEntry_GetPropTyped</c> through the shim at 0x8229CE90) are declared twice in
-/// this tree — <see cref="GdbFieldType"/> for the engine and <c>src/vfs/include/gdb/gdb_database.h</c>
+/// this tree — <see cref="GdbFieldType"/> for the engine and <c>src/formats/include/gdb/gdb_database.h</c>
 /// for the native converter — and the native header once had Int and Enum swapped against the
 /// data (BasePrice, Rating and BulletCapacity are stored as 1; WeaponType, Faction and
 /// ReactionType as 5; the guest asks for "BasePrice" as 1 at 0x8296B540 and for "Gender" as 5 at
@@ -37,7 +37,7 @@ public class GdbTypeCodesTests
             return;
         }
 
-        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "gdb", "gdb_database.h"));
+        string header = File.ReadAllText(Path.Combine(root, "src", "formats", "include", "gdb", "gdb_database.h"));
         foreach ((string native, GdbFieldType managed) in new[]
         {
             ("kTypeBool", GdbFieldType.Bool),

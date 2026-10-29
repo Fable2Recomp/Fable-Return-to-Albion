@@ -22,7 +22,7 @@ public static class Engine_UiModMenuCommand
 	/// <summary>Calls a Lua global function: <c>Mod:lua:&lt;function&gt;[:&lt;arg&gt;]</c>.</summary>
 	public const string LuaPrefix = "Mod:lua:";
 
-	/// <summary>The guest command that raises the <c>ModMenuRow</c> event (src/vfs/src/hooks/mod_commands.cpp).</summary>
+	/// <summary>The guest command that raises the <c>ModMenuRow</c> event (Fable2/src/vfs/src/hooks/mod_commands.cpp).</summary>
 	public const string RowCommandVerb = "menu_row";
 
 	public enum Verb

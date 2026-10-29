@@ -11,11 +11,12 @@ using static GdUnit4.Assertions;
 using Godot;
 using Refii.Mods;
 using Refii.Ui;
+using Refii.Titles.Fable2;
 
 /// <summary>
 /// G.17 / G.18 #8 and #10: mod abilities and spell slot picks on the ENGINE path — what the book
 /// and the selectors post (Engine_UiModAbilities, Engine_UiSpellPicks), what the payload answers
-/// (src/vfs/src/hooks/mod_abilities.cpp), the two events (ModAbility 91, SpellPick 92), the HUD's
+/// (Fable2/src/vfs/src/hooks/mod_abilities.cpp), the two events (ModAbility 91, SpellPick 92), the HUD's
 /// each-player copies (Engine_HudModTwins), and the bundled mods built on them (no purchase code,
 /// no settings as a command channel, no "…2" publishes). Pure .NET; no Godot object in the host.
 /// </summary>
@@ -27,7 +28,7 @@ public class ModAbilityPickTests
         string? at = AppContext.BaseDirectory;
         for (int i = 0; i < 12 && at != null; i++)
         {
-            if (File.Exists(Path.Combine(at, "src", "vfs", "include", "core", "refii_mod_events.h")))
+            if (File.Exists(Path.Combine(at, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h")))
             {
                 return at;
             }
@@ -70,17 +71,17 @@ public class ModAbilityPickTests
             return;
         }
 
-        string engine = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_abilities.cpp"));
+        string engine = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_abilities.cpp"));
         foreach (string verb in new[] { "ability_clear", "ability_declare", "ability_buy", "ability_refund", "spell_pick" })
         {
             AssertThat(engine.Contains($"op == \"{verb}\"", StringComparison.Ordinal))
                 .OverrideFailureMessage($"mod_abilities.cpp does not answer {verb}").IsTrue();
         }
 
-        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
         AssertThat(commands.Contains("RunModAbilityCommand(ctx, base, w)", StringComparison.Ordinal)).IsTrue();
         AssertThat(commands.Contains("PumpModAbilities(work, base)", StringComparison.Ordinal)).IsTrue();
-        AssertThat(File.ReadAllText(Path.Combine(root, "src", "vfs", "CMakeLists.txt")).Contains("src/hooks/mod_abilities.cpp")).IsTrue();
+        AssertThat(File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "CMakeLists.txt")).Contains("src/hooks/mod_abilities.cpp")).IsTrue();
 
         // The derived values the page reads are the ones the payload states.
         foreach (string suffix in new[] { ".cost", ".refund", ".afford" })
@@ -182,7 +183,7 @@ public class ModAbilityPickTests
             return;
         }
 
-        string mods = Path.Combine(root, "mods-src");
+        string mods = Path.Combine(root, "Fable2", "mods-src");
         string Read(string path) => File.ReadAllText(Path.Combine(mods, path));
 
         // The purchase is the engine's: no price table, Spend or refund in the mods' native code.

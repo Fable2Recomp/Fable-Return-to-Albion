@@ -163,9 +163,12 @@ endif()
 message(STATUS "Staging natives: ${STAGING_ROOT} -> ${_app}")
 file(COPY "${STAGING_ROOT}/" DESTINATION "${_app}"
     PATTERN "librefii_generated.so" EXCLUDE
+    PATTERN "librefiii_generated.so" EXCLUDE
     PATTERN "dev-skip-rebuild" EXCLUDE
     PATTERN "librefii_generated.dylib" EXCLUDE
+    PATTERN "librefiii_generated.dylib" EXCLUDE
     PATTERN "refii_generated.dll" EXCLUDE
+    PATTERN "refiii_generated.dll" EXCLUDE
     PATTERN "build-info.json" EXCLUDE
     PATTERN "refii.toml" EXCLUDE
     PATTERN "logs" EXCLUDE
@@ -213,9 +216,11 @@ foreach(_entry IN LISTS _packaged_entries)
     endif()
 endforeach()
 
+# Every title's module, in its instance folder and in the flat bin/ of a pre-split staging root.
+file(GLOB_RECURSE _forbidden_modules LIST_DIRECTORIES false
+    "${_app}/bin/*refii_generated.*" "${_app}/bin/*refiii_generated.*")
 foreach(_forbidden
-        "${_app}/bin/librefii_generated.so"
-        "${_app}/bin/refii_generated.dll"
+        ${_forbidden_modules}
         "${_app}/bin/recompile/dev-skip-rebuild")
     if(EXISTS "${_forbidden}")
         message(FATAL_ERROR
@@ -235,33 +240,36 @@ foreach(_leaked
     endif()
 endforeach()
 
-# The per-title metadata DOES ship: assets/metadata/rexnet.toml is ours, not the game's, and
+# The per-title metadata DOES ship: Fable2/metadata/rexnet.toml is ours, not the game's, and
 # it is what the guest reads at XNetStartup for the shard tier, the advertised title id and
 # the presence mappings. The runtime writes a built-in default when an install has none
 # (refii_app.h, RefiiWriteDefaultRexNetConfig), and the shipped copy replaces that default
 # once it is newer, so this is the file that carries the reasoning for each value.
-set(_metadata "${PROJECT_DIR}/../assets/metadata")
+# Staged where the title runs from, assets/Fable2/metadata (the title folder, Engine_Title).
+set(_metadata "${PROJECT_DIR}/../Fable2/metadata")
 if(IS_DIRECTORY "${_metadata}")
-    file(COPY "${_metadata}" DESTINATION "${_app}/assets")
-    message(STATUS "Staged per-title metadata: ${_metadata} -> ${_app}/assets/metadata")
+    file(COPY "${_metadata}/" DESTINATION "${_app}/assets/Fable2/metadata")
+    message(STATUS "Staged per-title metadata: ${_metadata} -> ${_app}/assets/Fable2/metadata")
 endif()
 
-# The mods that ship with the app, as SOURCE: the launcher packs each into assets/mods on first
+# The mods that ship with the app, as SOURCE: the launcher packs each into assets/Fable2/mods on first
 # start (Engine_ModBundled.cs), switched off. Ours, not the game's — mod Lua patches the shipped
 # scripts' tables and never carries a copy of one. Copied whole each time so a mod deleted from
-# mods-src does not linger in the package.
-set(_bundled_mods "${PROJECT_DIR}/../mods-src")
+# Fable2/mods-src does not linger in the package.
+set(_bundled_mods "${PROJECT_DIR}/../Fable2/mods-src")
+# Per title: bundled-mods/Fable2 (Engine_AppRoot.BundledModsDirectoryFor).
+set(_bundled_dir "${_app}/bundled-mods/Fable2")
 if(IS_DIRECTORY "${_bundled_mods}")
     file(REMOVE_RECURSE "${_app}/bundled-mods")
-    file(COPY "${_bundled_mods}/" DESTINATION "${_app}/bundled-mods")
+    file(COPY "${_bundled_mods}/" DESTINATION "${_bundled_dir}")
     # THE LIST IS THE CONTENT. A player unpacks an update over their install, which leaves a
     # file this release deleted lying in bundled-mods/; the launcher packs only what this list
     # names, so a stale file cannot come back as part of the mod.
-    file(GLOB_RECURSE _bundled_files RELATIVE "${_app}/bundled-mods" "${_app}/bundled-mods/*")
+    file(GLOB_RECURSE _bundled_files RELATIVE "${_bundled_dir}" "${_bundled_dir}/*")
     list(SORT _bundled_files)
     list(JOIN _bundled_files "\n" _bundled_list)
-    file(WRITE "${_app}/bundled-mods/manifest.txt" "${_bundled_list}\n")
-    message(STATUS "Staged bundled mods: ${_bundled_mods} -> ${_app}/bundled-mods")
+    file(WRITE "${_bundled_dir}/manifest.txt" "${_bundled_list}\n")
+    message(STATUS "Staged bundled mods: ${_bundled_mods} -> ${_bundled_dir}")
 endif()
 
 if(NOT EXISTS "${_app}/bin")
@@ -307,7 +315,7 @@ if(TOOL_PLATFORM STREQUAL "linux")
     find_program(_strip NAMES llvm-strip strip)
     if(_strip)
         file(GLOB _strippable LIST_DIRECTORIES false
-            "${_app}/bin/*.so")
+            "${_app}/bin/*.so" "${_app}/bin/Fable2/*.so" "${_app}/bin/Fable3/*.so")
         set(_stripped 0)
         foreach(_binary IN LISTS _strippable)
             if(IS_SYMLINK "${_binary}")

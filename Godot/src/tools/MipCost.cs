@@ -35,7 +35,7 @@ public partial class MipCost : Node
 		string dataRoot = Engine_GameData.Resolve();
 		if (dataRoot.Length == 0)
 		{
-			GD.Print("no game data found; set REFII_GAME_DATA or stage assets/game.");
+			GD.Print("no game data found; set REFII_GAME_DATA or stage assets/Fable2/game.");
 			GetTree().Quit(1);
 			return;
 		}

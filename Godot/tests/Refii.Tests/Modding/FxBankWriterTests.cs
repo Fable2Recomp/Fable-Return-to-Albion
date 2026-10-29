@@ -24,7 +24,7 @@ public class FxBankWriterTests
 		string? at = AppContext.BaseDirectory;
 		for (int i = 0; i < 16 && at != null; i++)
 		{
-			string candidate = Path.Combine(at, "assets", "game", "data", "art", "particles", "particle_bank.bnk");
+			string candidate = Path.Combine(at, "assets", "Fable2", "game", "data", "art", "particles", "particle_bank.bnk");
 			if (File.Exists(candidate))
 			{
 				return candidate;

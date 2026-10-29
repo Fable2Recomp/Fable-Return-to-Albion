@@ -3,6 +3,7 @@ namespace Refii.Tests.Ui;
 using GdUnit4;
 using static GdUnit4.Assertions;
 using Refii.Ui;
+using Refii.Titles.Fable2;
 
 /// <summary>
 /// A short fan is slid so the cards shown sit where the full six would. Pure: the offset is

@@ -1,4 +1,5 @@
 using Godot;
+using Refii.Core;
 using Refii.Host;
 
 namespace Refii.Game;
@@ -10,7 +11,7 @@ namespace Refii.Game;
 /// <remarks>
 /// <para>THE GUEST STATES BOTH CAMERAS. With the host's <c>coop_split_screen</c> switch on, local
 /// player two's Player gets a camera manager of their own, ticked straight after player one's and
-/// driven by player two's pad (src/hooks/src/coop_hero_hooks.cpp); the bridge reads each player's
+/// driven by player two's pad (Fable2/src/hooks/src/coop_hero_hooks.cpp); the bridge reads each player's
 /// live block (<c>RefiiHostGetPlayerCamera</c>). Player one's view follows <see cref="GameWorld"/>'s
 /// camera, which stays the window's camera and the one every single-camera system reads; player
 /// two's follows their own stated camera on the bodies' clock and rule, as player one's does.</para>
@@ -75,7 +76,7 @@ public partial class GameSplitView : CanvasLayer
 	/// </summary>
 	public void Follow(Camera3D first)
 	{
-		HostBridge.GuestCamera? second = CoopSession.LocalCoop && Wanted
+		HostBridge.GuestCamera? second = Engine_TitleGame.Active.LocalCoop && Wanted
 			? HostBridge.GetPlayerCamera(2)
 			: null;
 		if (second is not { IsDefault: false } stated ||

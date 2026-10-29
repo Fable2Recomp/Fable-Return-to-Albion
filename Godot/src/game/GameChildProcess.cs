@@ -82,10 +82,18 @@ public static class GameChildProcess
 			arguments.Add("--gpu-profile");
 		}
 
+		// THE TITLE TRAVELS WITH THE PROCESS: the child reads its game from the first variable
+		// (Engine_Title.Active) and the native payload loader opens the module the second names.
+		var environment = new Dictionary<string, string>
+		{
+			[Marker] = "1",
+			[Refii.Core.Engine_Title.EnvironmentVariable] = Refii.Core.Engine_Title.Active.Key,
+			[Refii.Core.Engine_Title.PayloadEnvironmentVariable] = Refii.Core.Engine_Title.Active.ModuleName,
+		};
+
 		// Gen0 budget (32 MB). A gen1 pause is proportional to what survives it, so a smaller
 		// budget trades frequency for shorter pauses. Read by the CLR at start-up, so it rides
 		// the environment; a value already in the environment wins.
-		var environment = new Dictionary<string, string> { [Marker] = "1" };
 		if (System.Environment.GetEnvironmentVariable("DOTNET_GCgen0size") is null)
 		{
 			environment["DOTNET_GCgen0size"] = "0x2000000";

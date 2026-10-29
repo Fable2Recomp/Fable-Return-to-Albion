@@ -11,7 +11,7 @@ namespace Refii.Fx;
 /// entity by its handle. Under the modern look Godot draws it with the node it draws every bank
 /// effect with, <see cref="FableFx"/>. Under the CLASSIC look it is the guest's own particle
 /// instance, spawned on the guest tick by the game's own spawn sequence (<c>fx_play</c>,
-/// src/vfs/src/hooks/mod_commands.cpp) — the mods' effects are in the guest's bank
+/// Fable2/src/vfs/src/hooks/mod_commands.cpp) — the mods' effects are in the guest's bank
 /// (<see cref="Engine_FxModEffects.ComposeGuestBank"/>) — so the guest simulates it and the classic
 /// renderer draws its groups like any other the game plays. Native and Lua requests arrive on the mod bus
 /// under <see cref="RequestKind"/> (<c>refii_mod_play_fx</c>, <c>Refii.play_fx</c>), drained by
@@ -44,7 +44,7 @@ namespace Refii.Fx;
 /// lets a one-shot go when it does; a duration and <see cref="Stop"/> are counted here and end it
 /// with the guest's kill. The TINT goes where the guest keeps a particle's colour, its material's
 /// keyframe table: the instance's emitters are pointed at a tinted copy of their material
-/// (src/vfs/src/hooks/particle_dress.cpp TintFxInstance), on top of the effect's own tint.</para>
+/// (Fable2/src/vfs/src/hooks/particle_dress.cpp TintFxInstance), on top of the effect's own tint.</para>
 /// </remarks>
 public static class Engine_FxPlayer
 {
@@ -170,7 +170,7 @@ public static class Engine_FxPlayer
 	public static int Count => _played.Count;
 
 	/// <summary>
-	/// A spell's effect, as the spell's own update states it (src/vfs/src/hooks/spell_fx_owner.cpp):
+	/// A spell's effect, as the spell's own update states it (Fable2/src/vfs/src/hooks/spell_fx_owner.cpp):
 	/// <c>op='ride',fx=…,on=…</c> — <paramref name="Fx"/> an FX entity or an effect instance that the
 	/// update of the spell entity <paramref name="On"/> placed (the vortex's ground effects, a Blades
 	/// sword's effect entity and its spell-owned instance). Guest addresses, the live-effect feed's own

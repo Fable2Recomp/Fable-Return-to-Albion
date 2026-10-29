@@ -13,13 +13,18 @@
 #   zig/            the bundled toolchain: zig + its lib/ (libc, libc++, MinGW CRT)
 #   include/NN/     the include directories, staged verbatim, one per number
 #   include_dirs.cmake  the list, in the order the compiler saw them
-#   hooks/          the hook sources, compiled into the payload on the player's machine
+#   <Folder>/hooks/ a title's hook sources (<Folder>/hook_sources.cmake), compiled into the payload on
+#                   the player's machine
+#   payload_core/   the payload's shared sources (payload_core_sources.cmake), compiled into
+#                   every title's module
 #   src/            payload_export.cpp
-#   versions/<name>/  refii_manifest.toml + refii_config.toml, one folder per supported executable
+#   versions/<name>/  <key>_manifest.toml + <key>_config.toml (refii for Fable 2, refiii for
+#                     Fable 3), one folder per supported executable
 #
 # NO BINARIES. The generator is refii_recompiler, a library in bin/ beside the runtime it
-# imports, and the libraries the payload links (rexruntime, refii_core, refii_vfs) are the
-# ones in bin/ that the host loads. This directory used to carry a second copy of each and
+# imports, and the libraries the payload links (rexruntime, refii_core, refii_runtime, and a
+# title's refii_vfs) are the ones the host loads. This directory used to carry a second copy of
+# each and
 # a generator executable with its own CRT, and the generator's dependency on a PATH the
 # launcher set is what failed on machines with a restrictive DLL search policy.
 #
@@ -76,7 +81,19 @@ function(refii_stage_payload_sdk)
 
     # The hook sources, compiled at install time rather than shipped as an archive — see
     # refii_stage_hook_sources.cmake for why an archive cannot work on Windows.
-    refii_stage_hook_sources(refii_hooks "${_sdk_dir}" "${CMAKE_SOURCE_DIR}")
+    # EACH TITLE'S OWN, in its own folder: bin/recompile/<Folder>/hooks, laid out relative to
+    # <Folder>/src, and bin/recompile/<Folder>/hook_sources.cmake. The flat bin/recompile/hooks of
+    # builds from before the split is removed so the launcher cannot read another title's.
+    file(REMOVE_RECURSE "${_sdk_dir}/hooks")
+    file(REMOVE "${_sdk_dir}/hook_sources.cmake")
+    foreach(_folder IN LISTS REFII_TITLE_INSTANCE_FOLDERS)
+        if(REFII_TITLE_HOOKS_TARGET_${_folder})
+            refii_stage_hook_sources(${REFII_TITLE_HOOKS_TARGET_${_folder}} "${_sdk_dir}/${_folder}"
+                                     "${CMAKE_SOURCE_DIR}/${_folder}")
+        endif()
+    endforeach()
+    # The payload's shared sources, which every title's module compiles, hooks or not.
+    refii_stage_payload_core_sources("${_sdk_dir}")
 
     # DEV ONLY — see REFII_DEV_SKIP_GAMECODE_REBUILD in the top-level CMakeLists. Written and
     # REMOVED here rather than only written, so turning the option back off takes effect on the
@@ -112,9 +129,13 @@ function(refii_stage_payload_sdk)
         # resolves differently in a dev tree than in an exported app.
         # One folder per supported executable; the launcher reads the one matching the
         # player's install. Removed first so a version dropped from the tree does not linger.
+        # Every title's version folders, side by side: Fable2/versions and Fable3/versions.
         COMMAND ${CMAKE_COMMAND} -E rm -rf "${_sdk_dir}/versions"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_SOURCE_DIR}/versions"
+            "${CMAKE_SOURCE_DIR}/Fable2/versions"
+            "${_sdk_dir}/versions"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/Fable3/versions"
             "${_sdk_dir}/versions"
     )
 

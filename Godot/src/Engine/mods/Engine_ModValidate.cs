@@ -64,8 +64,8 @@ public static partial class ModValidate
 			case Refii.Fx.Engine_FxRecipes.RecipesPath:
 			case Refii.Ui.Engine_HudModPieces.ModHudPath:
 			case Refii.Ui.Engine_UiTemplates.ModTemplatesPath:
-			case Refii.Ui.Engine_UiSpellAssign.SecondaryPath:
-			case Refii.Ui.Engine_UiModAbilities.ModAbilitiesPath:
+			case Engine_ModUiFiles.SpellWheelPath:
+			case Engine_ModUiFiles.AbilitiesPath:
 			case ModWorkspace.ModMetadataFilename:
 				return normalized;
 		}
@@ -193,8 +193,8 @@ public static partial class ModValidate
 				case Refii.Fx.Engine_FxRecipes.RecipesPath: CheckRecipes(doc, root); break;
 				case Refii.Ui.Engine_HudModPieces.ModHudPath: CheckHud(doc, root); break;
 				case Refii.Ui.Engine_UiTemplates.ModTemplatesPath: CheckTemplates(doc, root); break;
-				case Refii.Ui.Engine_UiSpellAssign.SecondaryPath: CheckSpellWheel(doc, root); break;
-				case Refii.Ui.Engine_UiModAbilities.ModAbilitiesPath: CheckAbilities(doc, root); break;
+				case Engine_ModUiFiles.SpellWheelPath: CheckSpellWheel(doc, root); break;
+				case Engine_ModUiFiles.AbilitiesPath: CheckAbilities(doc, root); break;
 			}
 		}
 
@@ -1872,15 +1872,15 @@ public static partial class ModValidate
 			string? store = doc.Text(pick, "store", at, required: true);
 			if (store is { Length: > 0 })
 			{
-				if (store == Refii.Ui.Engine_UiSpellPicks.GameStore)
+				if (store == Engine_ModUiFiles.GameStore)
 				{
 					doc.Error(At(at, "store"), "\"game\" is the slot's own spell, the game's pick; a mod's pick is a player value key");
 				}
-				else if (!PlayerKey(store.Replace(Refii.Ui.Engine_UiSpellPicks.SlotToken, "1", StringComparison.Ordinal)))
+				else if (!PlayerKey(store.Replace(Engine_ModUiFiles.SlotToken, "1", StringComparison.Ordinal)))
 				{
 					doc.Error(At(at, "store"), $"'{store}' is not a player value key (letters, digits, '_', '.', '-', and {{slot}})");
 				}
-				else if (!store.Contains(Refii.Ui.Engine_UiSpellPicks.SlotToken, StringComparison.Ordinal))
+				else if (!store.Contains(Engine_ModUiFiles.SlotToken, StringComparison.Ordinal))
 				{
 					doc.Warn(At(at, "store"), "has no {slot}: one pick serves every slot");
 				}
@@ -1937,7 +1937,7 @@ public static partial class ModValidate
 	/// <summary>Engine_UiModAbilities.Pool's disciplines; any other draws on General.</summary>
 	private static readonly string[] Disciplines = { "Strength", "Skill", "Will", "General" };
 
-	/// <summary>A player store key: letters, digits, '_', '.', '-' (src/vfs/src/core/player_state.cpp KeyChar), at most 120 so the engine's suffixes fit.</summary>
+	/// <summary>A player store key: letters, digits, '_', '.', '-' (src/runtime/src/core/player_state.cpp KeyChar), at most 120 so the engine's suffixes fit.</summary>
 	private static bool PlayerKey(string key) =>
 		key.Length is > 0 and <= 120 && key.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '.' or '-');
 
@@ -2001,7 +2001,7 @@ public static partial class ModValidate
 				doc.Text(ability, key, at);
 			}
 
-			if (doc.Text(ability, "refund", at) is { } refund && refund != Refii.Ui.Engine_UiModAbilities.HalfRefund && refund != "none")
+			if (doc.Text(ability, "refund", at) is { } refund && refund != Engine_ModUiFiles.HalfRefund && refund != "none")
 			{
 				doc.Error(At(at, "refund"), $"'{refund}' is no refund rule: \"half\" (the shipped unlearn) or \"none\"");
 			}

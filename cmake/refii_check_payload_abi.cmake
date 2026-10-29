@@ -1,6 +1,6 @@
 # Fails the build when a payload-side hook imports a C++ symbol from a host library.
 #
-# THE RULE THIS ENFORCES is the one stated at the top of src/vfs/include/core/payload_bridge.h:
+# THE RULE THIS ENFORCES is the one stated at the top of src/runtime/include/core/payload_bridge.h:
 # the payload must import no C++ symbols. refii_generated is compiled on the player's machine
 # by Zig; refii_vfs, refii_core and rexruntime are compiled here by us. A C++ symbol crossing
 # that line binds both ends to one C++ ABI, and on Windows the two disagree in ways no flag
@@ -156,11 +156,12 @@ list(LENGTH _undefined _count)
 message(FATAL_ERROR
     "The payload imports ${_count} C++ symbol(s) from a host library:\n"
     "${_report}\n\n"
-    "Each is defined in refii_vfs/refii_core/rexruntime and called from a hook that compiles "
+    "Each is defined in refii_runtime/refii_vfs/refii_core/rexruntime and called from a hook that compiles "
     "into the payload. That link holds on Linux and CANNOT hold on Windows, where the host is "
     "MSVC-built and the payload is not: it fails at the end of the player's install-time build "
     "as an undefined symbol.\n\n"
-    "Give each one a C entry in src/vfs/include/core/payload_bridge.h, implement it as "
+    "Give each one a C entry in src/runtime/include/core/payload_bridge.h (shared state) or the "
+    "title's own (Fable 2: core/payload_bridge_fable2.h), implement it as "
     "extern \"C\" beside the state it touches, and turn the existing declaration into an "
     "inline wrapper so the call sites do not change -- refii_bridge_publish_world_map_region "
     "and refii::vfs::PublishWorldMapRegion are the worked example.\n\n"

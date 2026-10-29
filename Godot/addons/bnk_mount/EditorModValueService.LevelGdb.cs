@@ -346,7 +346,7 @@ public static partial class EditorModValueService
 
             if (string.IsNullOrWhiteSpace(modelPath))
             {
-                string? curated = Engine_GdbModelHashlist.LookupParentHash(parentArchetypeHash);
+                string? curated = Refii.Core.Engine_TitleGame.Active.CuratedModelForParent(parentArchetypeHash);
                 if (!string.IsNullOrWhiteSpace(curated))
                 {
                     modelPath = Engine_PropModelIndex.ResolveByPath(curated!);

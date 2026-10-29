@@ -165,9 +165,7 @@ public static class Engine_UiDetailPages
 		uint screenId,
 		Engine_UiExpandableMenu.Item? row,
 		Refii.Host.HostBridge.HeroVitals vitals) =>
-		Engine_UiTemplates.Screen(screenId)?.Provider == Engine_UiPageProviders.Abilities
-			? Engine_UiAbilityPage.MovieFor(row, vitals.AbilityLevels)
-			: string.Empty;
+		Refii.Core.Engine_TitleGame.Active.ScreenMovie(screenId, row, vitals);
 
 	/// <summary>
 	/// Components this screen's provider SWITCHES itself — see

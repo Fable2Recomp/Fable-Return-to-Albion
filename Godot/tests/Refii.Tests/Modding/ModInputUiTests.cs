@@ -8,6 +8,7 @@ using GdUnit4;
 using static GdUnit4.Assertions;
 using Godot;
 using Refii.Mods;
+using Refii.Titles.Fable2;
 
 /// <summary>
 /// A mod's input actions rebound in the game (hard_mods_plan H.16): Options › Controls › the mod's
@@ -191,7 +192,7 @@ public class ModInputUiTests
         AssertThat(pages.Contains("Register(Refii.Mods.ModInputUi.OpenCommandPrefix, Refii.Mods.ModInputUi.PageFor);", StringComparison.Ordinal)).IsTrue();
         string sources = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "ui", "Engine_UiMenuSources.cs"));
         AssertThat(sources.Contains("[Refii.Mods.ModInputUi.SourceName] = Refii.Mods.ModInputUi.Rows,", StringComparison.Ordinal)).IsTrue();
-        string templates = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "ui", "Engine_UiGameTemplates.cs"));
+        string templates = File.ReadAllText(Path.Combine(root, "Godot", "src", "Titles", "Fable2", "ui", "Engine_UiGameTemplates.cs"));
         AssertThat(templates.Contains("\"name\": \"ControlsSettings\"", StringComparison.Ordinal)).IsTrue();
         AssertThat(templates.Contains("\"source\": \"mod-controls\"", StringComparison.Ordinal)).IsTrue();
         string input = File.ReadAllText(Path.Combine(root, "Godot", "src", "game", "GameInput.cs"));
@@ -211,7 +212,7 @@ public class ModInputUiTests
         string? at = AppContext.BaseDirectory;
         for (int i = 0; i < 12 && at != null; i++)
         {
-            if (File.Exists(Path.Combine(at, "src", "vfs", "include", "core", "refii_mod_events.h")))
+            if (File.Exists(Path.Combine(at, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h")))
             {
                 return at;
             }

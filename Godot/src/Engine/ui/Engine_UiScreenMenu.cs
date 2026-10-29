@@ -190,7 +190,7 @@ public sealed class Engine_UiScreenMenu
 	/// </summary>
 	public bool FollowDyeFlow()
 	{
-		string script = Engine_UiDyeFlow.Active ? Engine_UiDyeFlow.MenuScript : _boundScript;
+		string script = Refii.Core.Engine_TitleGame.Active.HeldMenuScript ?? _boundScript;
 		if (script.Length == 0 || Engine_UiTemplates.Menu(script) is not { } template)
 		{
 			return false;
@@ -672,18 +672,12 @@ public sealed class Engine_UiScreenMenu
 			PopulationScript = bound;
 		}
 
-		// A HELD DYE TURNS THE ITEMS SCREEN INTO THE DYE LIST, and leaving that screen puts the
-		// dye away — the guest's own state lives on the screen it leaves too.
-		if (Engine_UiDyeFlow.Active)
+		// A MENU THE TITLE HOLDS replaces the screen's own (Fable 2's dye list over the items
+		// screen), and leaving that screen puts it away — the guest's own state lives on the screen
+		// it leaves too.
+		if (Refii.Core.Engine_TitleGame.Active.OverrideMenuScript(ScreenId) is { } held)
 		{
-			if (ScreenId == Engine_UiDyeFlow.ItemsScreen)
-			{
-				PopulationScript = Engine_UiDyeFlow.MenuScript;
-			}
-			else if (ScreenId != 0)
-			{
-				Engine_UiDyeFlow.End();
-			}
+			PopulationScript = held;
 		}
 
 		IReadOnlyList<Engine_ExpandableMenuItems.Button> buttons =
@@ -1133,7 +1127,7 @@ public sealed class Engine_UiScreenMenu
 		// else, and cannot be recovered from a pool that is not laid out yet. The guest's own
 		// solve takes over as soon as it lays the rows out.
 		if (GuestHighlight == 0 &&
-			Engine_UiMenuPopulation.For(PopulationScript) is { HighlightIndex: >= 1 } table)
+			Refii.Core.Engine_TitleGame.Active.PopulationTable(PopulationScript) is { HighlightIndex: >= 1 } table)
 		{
 			Script.Highlight(table.HighlightIndex);
 		}
@@ -1321,9 +1315,9 @@ public sealed class Engine_UiScreenMenu
 		}
 
 		var tableRoots = new List<string>();
-		if (Engine_UiMenuPopulation.For(PopulationScript) is { } table)
+		if (Refii.Core.Engine_TitleGame.Active.PopulationTable(PopulationScript) is { } table)
 		{
-			foreach (Engine_UiMenuPopulation.Entry entry in table.Entries)
+			foreach (Engine_UiPopulationTable.Entry entry in table.Entries)
 			{
 				if (entry.Parent.Length == 0)
 				{
@@ -1751,7 +1745,7 @@ public sealed class Engine_UiScreenMenu
 	/// </summary>
 	/// <summary>Whether the highlighted row is a mod ability's, which has nothing to unlearn.</summary>
 	public bool HighlightedIsModAbility =>
-		Script.Highlighted?.Command?.StartsWith(Engine_UiModAbilities.BuyAction, System.StringComparison.Ordinal) == true;
+		Script.Highlighted?.Command is { } command && Refii.Core.Engine_TitleGame.Active.IsModAbilityRow(command);
 
 	public bool Commit()
 	{
@@ -2014,7 +2008,7 @@ public sealed class Engine_UiScreenMenu
 			(PopulationScript.Length == 0
 				? ", the widget names no population script"
 				: $", population script '{PopulationScript}'" +
-					(Engine_UiMenuPopulation.For(PopulationScript) is { } known
+					(Refii.Core.Engine_TitleGame.Active.PopulationTable(PopulationScript) is { } known
 						? $" ({known.Entries.Count} static entr(y/ies), " +
 							$"HighlightIdx {known.HighlightIndex})"
 						: " — NOT IN THE TRANSLATED SET"));

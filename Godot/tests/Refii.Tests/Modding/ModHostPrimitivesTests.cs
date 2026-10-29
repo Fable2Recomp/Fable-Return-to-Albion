@@ -25,7 +25,7 @@ public class ModHostPrimitivesTests
         string? at = AppContext.BaseDirectory;
         for (int i = 0; i < 12 && at != null; i++)
         {
-            if (File.Exists(Path.Combine(at, "src", "vfs", "include", "core", "refii_mod_events.h")))
+            if (File.Exists(Path.Combine(at, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h")))
             {
                 return at;
             }
@@ -72,7 +72,7 @@ public class ModHostPrimitivesTests
             return;
         }
 
-        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
         foreach (string declared in new[]
                  {
                      "extern \"C\" int32_t refii_mod_input_claim(int32_t player, const char* action, int32_t on);",
@@ -84,23 +84,23 @@ public class ModHostPrimitivesTests
             AssertThat(header.Contains(declared, StringComparison.Ordinal)).OverrideFailureMessage($"{declared} is not in core/refii_mod.h").IsTrue();
         }
 
-        string events = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod_events.h"));
+        string events = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h"));
         AssertThat(events.Contains("const char* command;\n  const char* button;\n};", StringComparison.Ordinal)).IsTrue();
 
-        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
         foreach (string registered in new[] { "{\"input_claim\", &NativeInputClaim, 0}", "{\"hud_icon\", &NativeHudIcon, 0}", "{\"hud_slide\", &NativeHudSlide, 0}", "{\"hud_hold\", &NativeHudHold, 0}" })
         {
             AssertThat(natives.Contains(registered, StringComparison.Ordinal)).OverrideFailureMessage($"{registered} is not registered").IsTrue();
         }
 
-        string api = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        string api = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp"));
         foreach (string op in new[] { "op='input_claim'", "op='hud_icon'", "op='hud_slide'", "op='hud_hold'" })
         {
             AssertThat(api.Contains(op, StringComparison.Ordinal)).OverrideFailureMessage($"{op} is never posted").IsTrue();
         }
 
         // The guest's menu_row command carries the two trailing words and the front-end Lua table has them.
-        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
         AssertThat(commands.Contains("e.command = command.c_str();", StringComparison.Ordinal)).IsTrue();
         AssertThat(commands.Contains("e.button = Name(w, 6);", StringComparison.Ordinal)).IsTrue();
         AssertThat(commands.Contains("mod='%s',command='%s',button='%s'", StringComparison.Ordinal)).IsTrue();

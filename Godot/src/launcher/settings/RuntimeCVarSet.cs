@@ -838,7 +838,7 @@ public static class RuntimeCVarsGodot
                 + "below. Read at launch.",
                 "vertical|Vertical (side by side),horizontal|Horizontal (top and bottom)"),
             new("discord_presence", PresenceCategory, RuntimeCVarType.Bool, "true",
-                "Show \"Playing Fable 2: Return to Albion\" and the level you are in on your "
+                "Show the game you are playing and the level you are in on your "
                 + "Discord profile while Discord is running."),
         }
         .Concat(KeyBindings())

@@ -352,7 +352,7 @@ public partial class Engine_EntityHighlightLayer : Node
         // the render thread and must not reach into the guest.
         if (active)
         {
-            int texels = Refii.Host.HostBridge.HighlightWidthTexels();
+            int texels = Refii.Core.Engine_TitleGame.Active.HighlightWidthTexels;
             if (texels > 0)
             {
                 WidthTexels = texels;

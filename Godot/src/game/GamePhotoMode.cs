@@ -100,10 +100,11 @@ public partial class GamePhotoMode : Node
     /// </summary>
     public static string? OpenRefusal()
     {
-        if (!GameGoldenCock.SessionAllowsInteraction(CoopSession.State, CoopSession.Side, CoopSession.LocalCoop))
-            return "not in co-op";
-        if (!GameInput.Playing || !GameUi.WorldInteractionAllowed || GameDevMenu.WindowOpen ||
-            GameDevMenu.KeyboardCaptured || GameGoldenCock.OwnsInput || GameMorphMirror.OwnsInput || GameDecorate.Active)
+        // The title says whether its world is open to the player's own interactions (co-op,
+        // its own menus, its decorating and mirror modes); the shell adds its own gates.
+        if (!Engine_TitleGame.Active.WorldInteractionAllowed)
+            return "not now";
+        if (!GameInput.Playing || GameDevMenu.WindowOpen || GameDevMenu.KeyboardCaptured)
             return "not now";
         return null;
     }
@@ -446,11 +447,22 @@ public partial class GamePhotoMode : Node
         RefreshSettings();
     }
 
+    /// <summary>The window's title UI, wherever the title added it.</summary>
+    private static IGameTitleUi? FindTitleUi(Node? window)
+    {
+        if (window is null)
+            return null;
+        foreach (Node child in window.GetChildren())
+            if (child is IGameTitleUi ui)
+                return ui;
+        return null;
+    }
+
     private void BuildControls()
     {
         // The game's UI stands beside the session on the desktop, beside this node on Android.
-        var theme = (_session?.GetParent() ?? GetParent())?.GetNodeOrNull<GameUi>("GameUi")?.PhotoModeTheme
-            ?? throw new InvalidOperationException("Fable 2's Photo Mode UI is not ready.");
+        var theme = FindTitleUi(_session?.GetParent() ?? GetParent())?.PhotoModeTheme
+            ?? throw new InvalidOperationException("The title's Photo Mode UI is not ready.");
         _effects = new CanvasLayer { Name = "PhotoFilter", Layer = 120 };
         AddChild(_effects);
         _filter = new ShaderMaterial { Shader = GD.Load<Shader>("res://src/Engine/material/photo_mode.gdshader") };
@@ -538,7 +550,7 @@ public partial class GamePhotoMode : Node
             if (string.IsNullOrWhiteSpace(pictures)) pictures = OS.GetUserDataDir();
             string folder = Path.Combine(pictures, "Refii");
             Directory.CreateDirectory(folder);
-            string path = Path.Combine(folder, $"Fable2_{DateTime.Now:yyyy-MM-dd_HH-mm-ss-fff}_{Guid.NewGuid().ToString("N")[..6]}.png");
+            string path = Path.Combine(folder, $"{Refii.Core.Engine_Title.Active.Folder}_{DateTime.Now:yyyy-MM-dd_HH-mm-ss-fff}_{Guid.NewGuid().ToString("N")[..6]}.png");
             using Image photo = GetViewport().GetTexture().GetImage();
             // An HDR 2D viewport holds linear colour whatever format it reads back in: a float
             // format on the desktop, eight bits on Android's mobile renderer.

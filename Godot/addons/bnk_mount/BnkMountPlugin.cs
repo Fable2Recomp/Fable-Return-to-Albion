@@ -133,12 +133,11 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
         // covered it; moving it out here moved it out of that cover too.
         try
         {
-            Refii.FlashGames.Engine_SwfAssets.EnsureLoaders();
-            Refii.FlashGames.Engine_SwfAssets.EnsureIndexed();
+            Refii.Core.Engine_TitleGame.Active.PrepareEditor();
         }
         catch (Exception exception)
         {
-            GD.PushWarning($"[bnk_mount] pub games not indexed: {exception.Message}");
+            GD.PushWarning($"[bnk_mount] the title's assets not prepared: {exception.Message}");
         }
 
         StartMount();
@@ -183,7 +182,7 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
         RemoveStreamingLabel();
         RemoveGameRoot();
         RemoveLoaders();
-        Refii.FlashGames.Engine_SwfAssets.RemoveLoaders();
+        Refii.Core.Engine_TitleGame.Active.RemoveResourceLoaders();
         RemoveContextMenu();
         RemoveModStudio();
 
@@ -1615,10 +1614,7 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
                 return;
             }
 
-            if (Refii.Save.Engine_GoldenCockPlacements.Capture(levelRoot))
-                GD.Print("[golden-cock] Saved level placement for the installed game.");
-            if (Refii.Hero.Engine_MorphMirrorPlacements.Capture(levelRoot))
-                GD.Print("[morph-mirror] Saved the marked mirror and its set for the installed game.");
+            Refii.Core.Engine_TitleGame.Active.CaptureLevelPlacements(levelRoot);
 
             string activeMod = EditorModExporter.ActiveModName;
             if (string.IsNullOrWhiteSpace(activeMod))
@@ -2918,9 +2914,9 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
         bool isModel = virtualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase);
         bool isAudio = virtualPath.EndsWith(".wav", StringComparison.OrdinalIgnoreCase);
         bool isDatabase = virtualPath.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase);
-        bool isFlash = Refii.FlashGames.Engine_SwfAssets.RecognisesTexture(virtualPath);
-        bool isFlashMesh = Refii.FlashGames.Engine_SwfAssets.RecognisesMesh(virtualPath);
-        bool isFlashFont = Refii.FlashGames.Engine_SwfAssets.RecognisesFont(virtualPath);
+        bool isFlash = Refii.Core.Engine_TitleGame.Active.AssetKind(virtualPath) == Refii.Core.Engine_TitleGame.TitleAssetKind.Texture;
+        bool isFlashMesh = Refii.Core.Engine_TitleGame.Active.AssetKind(virtualPath) == Refii.Core.Engine_TitleGame.TitleAssetKind.Mesh;
+        bool isFlashFont = Refii.Core.Engine_TitleGame.Active.AssetKind(virtualPath) == Refii.Core.Engine_TitleGame.TitleAssetKind.Font;
         if (!isTexture && !isModel && !isAudio && !isDatabase && !isFlash && !isFlashMesh && !isFlashFont)
         {
             GD.Print($"[bnk_mount] {virtualPath}  ({file.Size:N0} bytes, no viewer for this type)");
@@ -3982,13 +3978,13 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
             return;
         }
 
-        if (Refii.FlashGames.Engine_SwfAssets.RecognisesTexture(path))
+        if (Refii.Core.Engine_TitleGame.Active.AssetKind(path) == Refii.Core.Engine_TitleGame.TitleAssetKind.Texture)
         {
             ApplyFlashThumbnail(item, path);
             return;
         }
 
-        if (Refii.FlashGames.Engine_SwfAssets.RecognisesMesh(path))
+        if (Refii.Core.Engine_TitleGame.Active.AssetKind(path) == Refii.Core.Engine_TitleGame.TitleAssetKind.Mesh)
         {
             Texture2D? mesh = GetClassIcon(new[] { "MeshInstance2D", "ArrayMesh", "Mesh" });
             if (mesh is not null)
@@ -4000,7 +3996,7 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
             return;
         }
 
-        if (Refii.FlashGames.Engine_SwfAssets.RecognisesFont(path))
+        if (Refii.Core.Engine_TitleGame.Active.AssetKind(path) == Refii.Core.Engine_TitleGame.TitleAssetKind.Font)
         {
             Texture2D? font = GetClassIcon(new[] { "FontFile", "Font", "Label" });
             if (font is not null)
@@ -4067,7 +4063,7 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
     {
         try
         {
-            Image? source = Refii.FlashGames.Engine_SwfAssets.TryGetImage(virtualPath);
+            Image? source = Refii.Core.Engine_TitleGame.Active.AssetImage(virtualPath);
             if (source is null)
             {
                 return;

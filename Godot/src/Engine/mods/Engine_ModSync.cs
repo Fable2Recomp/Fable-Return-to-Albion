@@ -174,18 +174,20 @@ public static class ModSync
 		}
 
 		var hostNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		Engine_ExternalModManager? external = Refii.Core.Engine_TitleGame.Active.ExternalMods;
 		foreach (ModFingerprint.Mod theirs in host.Mods)
 		{
 			hostNames.Add(theirs.Name);
 			bool enabledHere = ownByName.TryGetValue(theirs.Name, out ModFingerprint.Mod mine) && SameBytes(mine.Sha256, theirs.Sha256);
-			if (ArchonToolbox.IsFingerprintEntry(theirs))
+			if (external is not null && external.IsFingerprintEntry(theirs))
 			{
-				// Loose files and a patched bank in the game data: nothing to download, mount or put
-				// down. The same mod against the same bank here is simply agreed on (it is never a
-				// session entry); anything else blocks the join.
+				// An external manager's mod (Archon's Toolbox: loose files and a patched bank in the
+				// game data): nothing to download, mount or put down. The same mod against the same
+				// data here is simply agreed on (it is never a session entry); anything else blocks
+				// the join.
 				if (!enabledHere)
 				{
-					blocked.Add(ArchonToolbox.BlockedText(theirs, ownByName.ContainsKey(theirs.Name)));
+					blocked.Add(external.BlockedText(theirs, ownByName.ContainsKey(theirs.Name)));
 				}
 
 				continue;
@@ -230,9 +232,9 @@ public static class ModSync
 		{
 			if (!hostNames.Contains(mine.Name))
 			{
-				if (ArchonToolbox.IsFingerprintEntry(mine))
+				if (external is not null && external.IsFingerprintEntry(mine))
 				{
-					blocked.Add(ArchonToolbox.OwnBlockedText(mine));
+					blocked.Add(external.OwnBlockedText(mine));
 				}
 				else if (mine.Native)
 				{

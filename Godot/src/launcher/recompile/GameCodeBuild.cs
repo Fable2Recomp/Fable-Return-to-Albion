@@ -60,6 +60,17 @@ public static class GameCodeBuild
 
 	public static string RecompileDirectory => Path.Combine(BinDirectory, "recompile");
 
+	/// <summary>
+	/// <c>bin/recompile/&lt;Folder&gt;</c>: the active title's own build inputs — its hook sources
+	/// (<c>hooks/</c>) and their list (<c>hook_sources.cmake</c>), staged per title so a build
+	/// never compiles another title's.
+	/// </summary>
+	public static string TitleRecompileDirectory =>
+		Path.Combine(RecompileDirectory, Refii.Core.Engine_Title.Active.Folder);
+
+	/// <summary>The active title's staged hook list, <c>bin/recompile/&lt;Folder&gt;/hook_sources.cmake</c>.</summary>
+	public static string HookSourcesPath => Path.Combine(TitleRecompileDirectory, "hook_sources.cmake");
+
 	/// <summary>The title update beside the installed executable, when the player installed one.</summary>
 	public static string GameTitleUpdatePath =>
 		Path.Combine(Path.GetDirectoryName(GameExecutablePath) ?? string.Empty, "default.xexp");
@@ -72,14 +83,26 @@ public static class GameCodeBuild
 	/// THE TWO ARE DIFFERENT PROGRAMS. The title update is a full relink, so no guest address
 	/// is shared between them; each folder carries its own manifest and config, and the hooks
 	/// bind through the function names the two configs have in common. The generator applies
-	/// the patch whenever it sits beside the executable, so its presence IS the version.
+	/// the patch whenever it sits beside the executable, so its presence IS the version. Each
+	/// title names its own folders (<see cref="Refii.Core.Engine_Title.VersionFolder"/>).
 	/// </remarks>
 	public static string GameVersionName =>
-		File.Exists(GameTitleUpdatePath) ? "Fable2TU1" : "Fable2";
+		Refii.Core.Engine_Title.Active.VersionFolder(File.Exists(GameTitleUpdatePath));
 
 	/// <summary>The ReXGlue manifest and config for the installed game's version.</summary>
 	public static string VersionDirectory =>
 		Path.Combine(RecompileDirectory, "versions", GameVersionName);
+
+	/// <summary>
+	/// A file of the version folder, named by the title's key: <c>refii_config.toml</c> for
+	/// Fable 2, <c>refiii_config.toml</c> for Fable 3.
+	/// </summary>
+	private static string VersionFile(string kind) =>
+		Path.Combine(VersionDirectory, Refii.Core.Engine_Title.Active.Key + "_" + kind + ".toml");
+
+	private static string VersionConfigPath => VersionFile("config");
+
+	private static string VersionManifestPath => VersionFile("manifest");
 
 	/// <summary>The generator's output. Deleted once the module is built.</summary>
 	public static string GeneratedDirectory => Installer.GetGeneratedCodeDirectoryPath();
@@ -89,10 +112,22 @@ public static class GameCodeBuild
 	/// <summary>The executable the installer wrote, not a path of our own.</summary>
 	public static string GameExecutablePath => Installer.GetGameExecutablePath();
 
-	public static string ModulePath =>
-		Path.Combine(BinDirectory, Refii.Core.Engine_NativeLibraries.FileNameFor("refii_generated"));
+	/// <summary>
+	/// The active title's ReXGlue instance: <c>bin/&lt;Folder&gt;/</c>, its host bridge and vfs beside
+	/// the module built here, the shared natives one directory up.
+	/// </summary>
+	public static string TitleBinDirectory => Path.Combine(BinDirectory, Refii.Core.Engine_Title.Active.Folder);
 
-	public static string BuildInfoPath => Path.Combine(BinDirectory, "build-info.json");
+	/// <summary>
+	/// The active title's module, in its instance folder where the payload loader looks for it,
+	/// beside the host bridge that loads it: <c>refii_generated</c> for Fable 2,
+	/// <c>refiii_generated</c> for Fable 3.
+	/// </summary>
+	public static string ModulePath =>
+		Path.Combine(TitleBinDirectory, Refii.Core.Engine_NativeLibraries.FileNameFor(Refii.Core.Engine_Title.Active.ModuleName));
+
+	/// <summary>What the active title's module was built from, beside it.</summary>
+	public static string BuildInfoPath => Path.Combine(TitleBinDirectory, "build-info.json");
 
 	private const string SettingsSection = "Recompile";
 	private const string UseAllCoresKey = "BuildUseAllCores";
@@ -293,8 +328,19 @@ public static class GameCodeBuild
 	/// <summary>
 	/// The hard mods a build compiles: enabled, consented to, highest priority first.
 	/// </summary>
-	private static List<ModNativeSources> NativeModsForBuild(out List<string> withheld) =>
-		NativeModConsent.ForBuild(Refii.Assets.Engine_GameAssets.ModsRoot, out withheld);
+	/// <remarks>
+	/// None for a title without hard mods: a hard mod is written against Fable 2's seams.
+	/// </remarks>
+	private static List<ModNativeSources> NativeModsForBuild(out List<string> withheld)
+	{
+		if (!Refii.Core.Engine_Title.Active.HasHardMods)
+		{
+			withheld = new List<string>();
+			return new List<ModNativeSources>();
+		}
+
+		return NativeModConsent.ForBuild(Refii.Assets.Engine_GameAssets.ModsRoot, out withheld);
+	}
 
 	/// <summary>
 	/// The fingerprint of the native code mods add to this build; empty when they add none.
@@ -588,7 +634,7 @@ public static class GameCodeBuild
 	private static Dictionary<uint, string> ReadConfigFunctionNames()
 	{
 		var names = new Dictionary<uint, string>();
-		string config = Path.Combine(VersionDirectory, "refii_config.toml");
+		string config = VersionConfigPath;
 		if (!File.Exists(config))
 		{
 			return names;
@@ -645,9 +691,15 @@ public static class GameCodeBuild
 		{
 			var files = new List<string>();
 
-			foreach (string relative in new[] { "hooks", "include", "stdcxx" })
+			// The active title's own hooks, never another title's.
+			foreach (string directory in new[]
+				{
+					Path.Combine(TitleRecompileDirectory, "hooks"),
+					Path.Combine(RecompileDirectory, "payload_core"),
+					Path.Combine(RecompileDirectory, "include"),
+					Path.Combine(RecompileDirectory, "stdcxx"),
+				})
 			{
-				string directory = Path.Combine(RecompileDirectory, relative);
 				if (Directory.Exists(directory))
 				{
 					files.AddRange(Directory.EnumerateFiles(
@@ -655,9 +707,13 @@ public static class GameCodeBuild
 				}
 			}
 
-			foreach (string name in new[] { "hook_sources.cmake", "include_dirs.cmake" })
+			foreach (string file in new[]
+				{
+					HookSourcesPath,
+					Path.Combine(RecompileDirectory, "payload_core_sources.cmake"),
+					Path.Combine(RecompileDirectory, "include_dirs.cmake"),
+				})
 			{
-				string file = Path.Combine(RecompileDirectory, name);
 				if (File.Exists(file))
 				{
 					files.Add(file);
@@ -691,7 +747,7 @@ public static class GameCodeBuild
 			foreach (string file in files)
 			{
 				// The PATH is hashed as well as the bytes: renaming a header, or the include
-				// renumbering that moved src/vfs/include from slot 15 to 16, changes what the
+				// renumbering that moved Fable2/src/vfs/include from slot 15 to 16, changes what the
 				// compiler resolves without changing any file's contents.
 				byte[] name = Encoding.UTF8.GetBytes(
 					Path.GetRelativePath(RecompileDirectory, file).Replace('\\', '/') + "\n");
@@ -780,12 +836,16 @@ public static class GameCodeBuild
 	{
 		string recompile = RecompileDirectory;
 
-		return !File.Exists(Path.Combine(BinDirectory,
+		return !File.Exists(Path.Combine(TitleBinDirectory,
 				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_hostbridge"))) ||
 			!File.Exists(Path.Combine(BinDirectory,
 				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_core"))) ||
 			!File.Exists(Path.Combine(BinDirectory,
+				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_runtime"))) ||
+			!File.Exists(Path.Combine(BinDirectory, "Fable2",
 				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_vfs"))) ||
+			!File.Exists(Path.Combine(BinDirectory, "Fable3",
+				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_hostbridge"))) ||
 			!File.Exists(Path.Combine(BinDirectory,
 				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_binkdecode"))) ||
 			!File.Exists(Path.Combine(BinDirectory,
@@ -797,13 +857,17 @@ public static class GameCodeBuild
 				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_recompiler"))) ||
 			FindShippedLibrary("rexruntime").Length == 0 ||
 			FindShippedLibrary("refii_core").Length == 0 ||
-			FindShippedLibrary("refii_vfs").Length == 0 ||
-			!DirectoryHasFiles(Path.Combine(recompile, "hooks")) ||
+			FindShippedLibrary("refii_runtime").Length == 0 ||
+			FindLibrary(Path.Combine(BinDirectory, "Fable2"), "refii_vfs").Length == 0 ||
+			!DirectoryHasFiles(Path.Combine(recompile, "Fable2", "hooks")) ||
+			!DirectoryHasFiles(Path.Combine(recompile, "Fable3", "hooks")) ||
 			!DirectoryHasFiles(Path.Combine(recompile, "include")) ||
 			!File.Exists(Path.Combine(recompile, "include_dirs.cmake")) ||
-			!File.Exists(Path.Combine(recompile, "hook_sources.cmake")) ||
-			!File.Exists(Path.Combine(VersionDirectory, "refii_manifest.toml")) ||
-			!File.Exists(Path.Combine(VersionDirectory, "refii_config.toml")) ||
+			!File.Exists(Path.Combine(recompile, "Fable2", "hook_sources.cmake")) ||
+			!File.Exists(Path.Combine(recompile, "Fable3", "hook_sources.cmake")) ||
+			!File.Exists(Path.Combine(recompile, "payload_core_sources.cmake")) ||
+			!File.Exists(VersionManifestPath) ||
+			!File.Exists(VersionConfigPath) ||
 			!File.Exists(Path.Combine(recompile, "src", "payload_export.cpp")) ||
 			!File.Exists(Path.Combine(recompile, "zig", "zig.exe")) ||
 			!Directory.Exists(Path.Combine(recompile, "zig", "lib"));
@@ -1456,18 +1520,29 @@ public static class GameCodeBuild
 		// exactly as our own build compiles it.
 		sources.Add(Path.Combine(RecompileDirectory, "src", "payload_export.cpp"));
 
+		// THE PAYLOAD CORE, every title's: the rex:: bridge to the host runtime and the guest
+		// yield backoff. Compiled like the hooks, by the player's compiler, into the module.
+		List<string> coreSources = ReadCMakeList(
+			Path.Combine(RecompileDirectory, "payload_core_sources.cmake"), "REFII_PAYLOAD_CORE_SOURCES");
+		if (coreSources.Count == 0)
+		{
+			return new Result(false,
+				"The payload core sources are missing from this install (" + RecompileDirectory +
+				"/payload_core_sources.cmake). Copy the whole extracted folder, not just the executable.");
+		}
+
 		// THE HOOKS ARE COMPILED, NOT LINKED. They are strong PPC overrides that belong
 		// inside the payload, and an archive of them built by OUR compiler cannot link into
 		// a module built by the player's — on Windows those are MSVC and MinGW, whose C++
 		// objects do not mix. Building them from source here makes the whole payload one
 		// compiler's output. See cmake/refii_stage_hook_sources.cmake.
-		List<string> hookSources = ReadCMakeList(
-			Path.Combine(RecompileDirectory, "hook_sources.cmake"), "REFII_HOOK_SOURCES");
+		// Every title has its own, staged under bin/recompile/<Folder>.
+		List<string> hookSources = ReadCMakeList(HookSourcesPath, "REFII_HOOK_SOURCES");
 		if (hookSources.Count == 0)
 		{
 			return new Result(false,
-				"The hook sources are missing from this install (" + RecompileDirectory +
-				"/hook_sources.cmake). Copy the whole extracted folder, not just the executable.");
+				"The hook sources are missing from this install (" + HookSourcesPath +
+				"). Copy the whole extracted folder, not just the executable.");
 		}
 
 		// EVERY LISTED SOURCE MUST BE ON DISK. The manifest and the sources are extracted
@@ -1477,7 +1552,7 @@ public static class GameCodeBuild
 		// reads as a compiler fault in the hook. A fresh Windows install hit exactly this on one
 		// hook source of 85. Named here instead, with the fix.
 		var absentSources = new List<string>();
-		foreach (string source in hookSources)
+		foreach (string source in coreSources.Concat(hookSources))
 		{
 			if (!File.Exists(source))
 			{
@@ -1493,6 +1568,7 @@ public static class GameCodeBuild
 				"the whole zip again over this folder, or reinstall, then build again.");
 		}
 
+		sources.AddRange(coreSources);
 		sources.AddRange(hookSources);
 
 		// HARD MODS: their native sources compile in this same step, after refii's hooks, with the
@@ -1640,7 +1716,7 @@ public static class GameCodeBuild
 	/// </remarks>
 	private static string WriteEffectiveManifest(out string error)
 	{
-		string source = Path.Combine(VersionDirectory, "refii_manifest.toml");
+		string source = VersionManifestPath;
 		if (!File.Exists(source))
 		{
 			error = "The code generation manifest for " + GameVersionName +
@@ -1719,7 +1795,8 @@ public static class GameCodeBuild
 
 			// Inside the generated directory: it is created before this runs and removed
 			// with the sources afterwards, so nothing of the player's install is left behind.
-			string destination = Path.Combine(GeneratedDirectory, "refii_manifest.effective.toml");
+			string destination = Path.Combine(
+				GeneratedDirectory, Refii.Core.Engine_Title.Active.Key + "_manifest.effective.toml");
 			File.WriteAllText(destination, rewritten.ToString());
 			error = string.Empty;
 			return destination;
@@ -2167,7 +2244,7 @@ public static class GameCodeBuild
 						// rex:: symbols librexruntime also defines; exported, the payload's copies
 						// capture the host's own lazily-bound references through the RTLD_GLOBAL
 						// scope and each forwarder recurses into itself until the stack ends.
-						// Mirrors the source-file property in src/hooks/CMakeLists.txt.
+						// Mirrors the source-file property in Fable2/src/hooks/CMakeLists.txt.
 						if (Path.GetFileName(sources[slot]) == "rex_bridge_payload.cpp")
 						{
 							arguments.Add("-fvisibility=hidden");
@@ -2269,6 +2346,7 @@ public static class GameCodeBuild
 	private static async Task<Result> LinkAsync(
 		Toolchain zig, int objectCount, BuildControl control, CancellationToken cancellation)
 	{
+		Directory.CreateDirectory(TitleBinDirectory);
 		var arguments = new List<string> { "-shared", "-o", ModulePath };
 		arguments.InsertRange(0, TargetFlags());
 		if (!OperatingSystem.IsWindows())
@@ -2286,7 +2364,8 @@ public static class GameCodeBuild
 			//
 			// Both entries, matching the dev build: an exported app has the whole native
 			// closure in one directory, a dev tree splits bin/ and lib/.
-			arguments.Add("-Wl,-rpath,$ORIGIN:$ORIGIN/lib");
+			// $ORIGIN/.. for the shared natives: the module sits in the title's bin/<Folder>/.
+			arguments.Add("-Wl,-rpath,$ORIGIN:$ORIGIN/..:$ORIGIN/lib");
 		}
 
 		for (int index = 0; index < objectCount; index++)
@@ -2305,13 +2384,15 @@ public static class GameCodeBuild
 		// library the payload links -- and linking the MSVC-built static one is what dragged
 		// /DEFAULTLIB:msvcrtd into a MinGW link. The refii_bridge_lua_* entry points the payload
 		// needs are among those sources, so they are defined in the payload itself now.
-		foreach (string name in new[] { "rexruntime", "refii_core", "refii_vfs" })
+		// refii_vfs is Fable 2's instance: a title without it links the shared natives alone.
+		foreach (string name in new[] { "rexruntime", "refii_core", "refii_runtime", "refii_vfs" }
+			.Where(name => name != "refii_vfs" || Refii.Core.Engine_Title.Active.Instance.Contains(name)))
 		{
 			string found = FindShippedLibrary(name);
 			if (found.Length == 0)
 			{
 				return new Result(false,
-					"the " + name + " library is missing from " + BinDirectory);
+					"the " + name + " library is missing from " + ShippedLibraryDirectory(name));
 			}
 
 			arguments.Add(found);
@@ -2392,7 +2473,11 @@ public static class GameCodeBuild
 	/// recompile/lib for the link, and the two drifting apart is how the payload once
 	/// imported a four-hour-old runtime while the host loaded the current one.
 	/// </remarks>
-	private static string FindShippedLibrary(string name) => FindLibrary(BinDirectory, name);
+	private static string FindShippedLibrary(string name) => FindLibrary(ShippedLibraryDirectory(name), name);
+
+	/// <summary>A title's instance library is in its folder; every other native is shared, in bin/.</summary>
+	private static string ShippedLibraryDirectory(string name) =>
+		Refii.Core.Engine_Title.InstanceLibraries.Contains(name) ? TitleBinDirectory : BinDirectory;
 
 	/// <summary>
 	/// Finds a library by base name in one directory, in either build configuration.

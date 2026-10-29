@@ -77,7 +77,7 @@ public abstract class Engine_UiHostOptionsPage
 
 	/// <summary>Where the five-row window starts for the open page's cursor.</summary>
 	public static int VisibleStart =>
-		Current is { } page ? page.WindowStart(Engine_UiOptionsPending.Row) : 0;
+		Current is { } page ? page.WindowStart(Refii.Core.Engine_TitleGame.Active.OptionsCursorRow) : 0;
 
 	/// <summary>The window start that keeps <paramref name="selected"/> on its last row once the page scrolls.</summary>
 	public int WindowStart(int selected) =>
@@ -118,9 +118,9 @@ public abstract class Engine_UiHostOptionsPage
 
 		int[] committed = open ? Array.Empty<int>() : page.Read();
 		int Index(int at) => open
-			? Engine_UiOptionsPending.IndexOf(at)
+			? Refii.Core.Engine_TitleGame.Active.OptionsCursorIndex(at)
 			: at < committed.Length ? committed[at] : 0;
-		Paint(book, page.Paint(Index, open, open ? Engine_UiOptionsPending.Row : 0));
+		Paint(book, page.Paint(Index, open, open ? Refii.Core.Engine_TitleGame.Active.OptionsCursorRow : 0));
 	}
 
 	/// <summary>Writes one <see cref="Painted"/> onto the options book over what it already holds.</summary>
@@ -221,14 +221,13 @@ public abstract class Engine_UiHostOptionsPage
 			return false;
 		}
 
-		Engine_UiOptionsPending.EnterHost(page);
+		Refii.Core.Engine_TitleGame.Active.EnterHostOptions(page);
 		return true;
 	}
 
 	static Engine_UiHostOptionsPage()
 	{
 		Register(Engine_UiWeatherOptions.OpenCommand, _ => Engine_UiWeatherOptions.Page);
-		Register(Engine_UiVibrationOptions.OpenCommand, _ => Engine_UiVibrationOptions.Page);
 		Register(Refii.Mods.ModSettingsUi.OpenCommandPrefix, Refii.Mods.ModSettingsUi.PageFor);
 		Register(Refii.Mods.ModInputUi.OpenCommandPrefix, Refii.Mods.ModInputUi.PageFor);
 	}

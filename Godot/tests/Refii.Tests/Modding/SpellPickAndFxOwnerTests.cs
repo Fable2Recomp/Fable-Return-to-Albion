@@ -7,11 +7,12 @@ using System.Text.RegularExpressions;
 using GdUnit4;
 using static GdUnit4.Assertions;
 using Refii.Fx;
+using Refii.Titles.Fable2;
 
 /// <summary>
 /// G.38, G.40, G.42: the game's own spell pick raised at the guest's slot writer
-/// (src/vfs/src/hooks/mod_abilities.cpp), the spell's own update stating which effects are its
-/// (src/vfs/src/hooks/spell_fx_owner.cpp) and the <c>with</c> rule binding exactly that cast
+/// (Fable2/src/vfs/src/hooks/mod_abilities.cpp), the spell's own update stating which effects are its
+/// (Fable2/src/vfs/src/hooks/spell_fx_owner.cpp) and the <c>with</c> rule binding exactly that cast
 /// (<see cref="Engine_FxPlayer.Bind"/>). Pure .NET; no Godot object is constructed.
 /// </summary>
 [TestSuite]
@@ -22,7 +23,7 @@ public class SpellPickAndFxOwnerTests
 		string? at = AppContext.BaseDirectory;
 		for (int i = 0; i < 12 && at != null; i++)
 		{
-			if (File.Exists(Path.Combine(at, "src", "vfs", "include", "core", "refii_mod_events.h")))
+			if (File.Exists(Path.Combine(at, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h")))
 			{
 				return at;
 			}
@@ -111,7 +112,7 @@ public class SpellPickAndFxOwnerTests
 			return;
 		}
 
-		string owner = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "spell_fx_owner.cpp"));
+		string owner = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "spell_fx_owner.cpp"));
 		Match format = Regex.Match(owner, @"""(op='ride',fx=%u,on=%u)""");
 		AssertThat(format.Success).IsTrue();
 		AssertThat(Engine_FxPlayer.ParseRide(format.Groups[1].Value.Replace("%u", "7"))).IsNotNull();
@@ -120,14 +121,14 @@ public class SpellPickAndFxOwnerTests
 			AssertThat(owner.Contains($"REX_EXTERN({hook})")).IsTrue();
 		}
 
-		string abilities = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_abilities.cpp"));
+		string abilities = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_abilities.cpp"));
 		AssertThat(abilities.Contains("REX_EXTERN(rex_CECSpellManager_SetSpellSlot)")).IsTrue();
 		AssertThat(abilities.Contains("e.pick = \"spell\";")).IsTrue();
-		AssertThat(Refii.Ui.Engine_UiSpellPicks.Game.Name).IsEqual("spell");
-		AssertThat(Refii.Ui.Engine_UiSpellPicks.Game.Mod).IsEqual(string.Empty);
+		AssertThat(Engine_UiSpellPicks.Game.Name).IsEqual("spell");
+		AssertThat(Engine_UiSpellPicks.Game.Mod).IsEqual(string.Empty);
 
-		string externs = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "hooks", "ppc_externs.h"));
-		string cmake = File.ReadAllText(Path.Combine(root, "src", "vfs", "CMakeLists.txt"));
+		string externs = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "hooks", "ppc_externs.h"));
+		string cmake = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "CMakeLists.txt"));
 		AssertThat(cmake.Contains("src/hooks/spell_fx_owner.cpp")).IsTrue();
 
 		// Every hook is named in both builds' configs and declared for its original.
@@ -138,8 +139,8 @@ public class SpellPickAndFxOwnerTests
 			["rex_DamoclesSword_Update"] = ("0x825A63A8", "0x82557190"),
 			["rex_FxEntity_PlaceAt"] = ("0x825F86F0", "0x824B8938"),
 		};
-		string tu1 = File.ReadAllText(Path.Combine(root, "versions", "Fable2TU1", "refii_config.toml"));
-		string disc = File.ReadAllText(Path.Combine(root, "versions", "Fable2", "refii_config.toml"));
+		string tu1 = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2TU1", "refii_config.toml"));
+		string disc = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "refii_config.toml"));
 		foreach ((string name, (string t, string d)) in both)
 		{
 			AssertThat(tu1.Contains($"{t} = {{ name = \"{name}\" }}")).OverrideFailureMessage(name + " TU1").IsTrue();

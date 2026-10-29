@@ -12,10 +12,10 @@ using Refii.Mods;
 
 /// <summary>
 /// The guest's side of mod effects and the front end's mod Lua, as far as it is pure logic: the
-/// dress table the particle hooks read (src/vfs/src/hooks/particle_dress.cpp), the bank reload's
+/// dress table the particle hooks read (Fable2/src/vfs/src/hooks/particle_dress.cpp), the bank reload's
 /// trigger, effects carrying pieces through the bank's model and its file form, a recipe's pieces
 /// stated as an effect, and the front-end natives agreeing with the payload's table
-/// (src/vfs/src/hooks/mod_frontend_lua.cpp). No Godot node is constructed.
+/// (Fable2/src/vfs/src/hooks/mod_frontend_lua.cpp). No Godot node is constructed.
 /// </summary>
 [TestSuite]
 public class FxGuestDressTests
@@ -27,7 +27,7 @@ public class FxGuestDressTests
 		string? at = AppContext.BaseDirectory;
 		for (int i = 0; i < 16 && at != null; i++)
 		{
-			if (File.Exists(Path.Combine(at, "src", "vfs", "include", "core", "refii_mod.h")))
+			if (File.Exists(Path.Combine(at, "Fable2", "src", "vfs", "include", "core", "refii_mod.h")))
 			{
 				return at;
 			}
@@ -119,7 +119,7 @@ public class FxGuestDressTests
 		string? root = RepoRoot();
 		if (root is not null)
 		{
-			string reader = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "particle_dress.cpp"));
+			string reader = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "particle_dress.cpp"));
 			AssertThat(reader.Contains("std::strncmp(line, \"spin \", 5)") && reader.Contains("\"%x %f\"")).IsTrue();
 			AssertThat(reader.Contains("std::strncmp(line, \"align \", 6)") && reader.Contains("\"%x %f %f %f %f\"")).IsTrue();
 		}
@@ -133,9 +133,9 @@ public class FxGuestDressTests
 			return;
 		}
 
-		string dress = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "particle_dress.cpp"));
+		string dress = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "particle_dress.cpp"));
 		AssertThat(dress.Contains($"\"{Engine_FxModEffects.DressKey}\"")).IsTrue();
-		string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+		string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
 		AssertThat(commands.Contains($"op == \"{Engine_FxModEffects.ReloadCommand}\"")).IsTrue();
 		AssertThat(commands.Contains($"\"{ModLua.FrontendCommand.Trim()}\"")).IsTrue();
 	}
@@ -215,7 +215,7 @@ public class FxGuestDressTests
 			return;
 		}
 
-		string cpp = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_frontend_lua.cpp"));
+		string cpp = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_frontend_lua.cpp"));
 		var registered = Regex.Matches(cpp, "\\{\"(__refii_\\w+)\", &Native").Select(m => m.Groups[1].Value).ToHashSet();
 		registered.Remove("__refii_need_init");
 		AssertThat(registered.SetEquals(mapped)).OverrideFailureMessage(Msg(string.Join(",", registered) + " vs " + string.Join(",", mapped))).IsTrue();

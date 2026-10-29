@@ -265,6 +265,12 @@ public static class Engine_LevelMesh
 /// <summary>Builds detached region presentation nodes from the game's stated landscape and scenario assets.</summary>
 public static class Engine_LevelScene
 {
+	/// <summary>Meta on every level root: the world it belongs to.</summary>
+	public const string WorldMeta = "refii_level_world";
+
+	/// <summary>Meta on every level root: its level path.</summary>
+	public const string PathMeta = "refii_level_path";
+
     public const string TerrainNodeName = "Terrain";
 
     public const string AdjacentNodeName = "AdjacentTerrain";
@@ -931,8 +937,8 @@ public static class Engine_LevelScene
             Name = level.SceneNodeName,
             Scale = new Vector3(-1f, 1f, 1f),
         };
-        root.SetMeta(Refii.Save.Engine_GoldenCockPlacements.WorldMeta, level.World);
-        root.SetMeta(Refii.Save.Engine_GoldenCockPlacements.PathMeta, level.LevelPath);
+        root.SetMeta(WorldMeta, level.World);
+        root.SetMeta(PathMeta, level.LevelPath);
         if (Refii.Models.Engine_ClassicMaterial.Active)
         {
             // The classic look's editor drive; inert in the game, which pumps the path itself.
@@ -1433,8 +1439,7 @@ public static class Engine_LevelScene
 
         Mark("terrain-join");
 
-        Refii.Save.Engine_GoldenCockPlacements.AddToLevel(root, level);
-        Refii.Hero.Engine_MorphMirrorPlacements.AddToLevel(root, level);
+        Refii.Core.Engine_TitleGame.Active.DressLevel(root, level);
 
         GD.Print($"[level-build] {level}: {clock.ElapsedMilliseconds} ms of construction — " +
             string.Join("  ", phases.ConvertAll(p => $"{p.Name} {p.Ms}ms")));
@@ -2087,62 +2092,9 @@ public static class Engine_LevelScene
             (buried != 0 ? $"; {buried} body(s) entirely under the ground not built" : string.Empty));
     }
 
-    /// <summary>
-    /// Whether a level features an open coastal ocean horizon that should receive the vista ocean sheet.
-    /// Inland cities (e.g. Bowerstone Market/Slums), inland landscapes (Brightwood, Bower Lake, Fairfax,
-    /// Oakfield), and enclosed dungeons/caves do not feature an ocean horizon and must not receive the 5.7 km sheet,
-    /// which would otherwise slice through topography and flood low-lying streets and valleys.
-    /// </summary>
-    public static bool AllowsVistaOcean(LevelEntry level)
-    {
-        string path = (level.LevelPath ?? string.Empty).ToLowerInvariant().Replace('\\', '/');
-        string name = (level.Name ?? string.Empty).ToLowerInvariant();
-        string group = (level.Group ?? string.Empty).ToLowerInvariant();
-
-        // Strip any leading world prefix ("albion/", etc.) for clean prefix matching
-        string localPath = path.StartsWith("albion/") ? path["albion/".Length..] : path;
-
-        // Enclosed caves, tombs, and demon doors never feature an open ocean horizon,
-        // with the exception of coastal exterior transitional paths.
-        bool isEnclosed = localPath.StartsWith("caves/") || localPath.StartsWith("tombs/") || localPath.StartsWith("demondoors/") ||
-                          path.Contains("/caves/") || path.Contains("/tombs/") || path.Contains("/demondoors/");
-        if (isEnclosed && !path.Contains("westcliffexterior") && !path.Contains("bloodstone_assault"))
-        {
-            return false;
-        }
-
-        // Inland landlocked cities, estates, and regions
-        if (path.Contains("bwsmarket") || path.Contains("bwsslums") || path.Contains("bwscemetary") ||
-            path.Contains("bowerstone") || path.Contains("cemetery") ||
-            path.Contains("fairfax") || path.Contains("brightwood") || path.Contains("bowerlake") ||
-            path.Contains("oakfield") || path.Contains("crucible") || path.Contains("dreamworld") ||
-            path.Contains("chamberofseasons") || path.Contains("shrine") || path.Contains("dlc2") ||
-            name.Contains("bwsmarket") || name.Contains("bwsslums") || name.Contains("bowerstone") ||
-            name.Contains("fairfax") || name.Contains("brightwood") || name.Contains("bowerlake") ||
-            group.Contains("bwsmarket") || group.Contains("bwsslums") || group.Contains("fairfax"))
-        {
-            return false;
-        }
-
-        // Coastal maritime regions featuring an open ocean horizon
-        return path.Contains("bloodstone") ||
-               path.Contains("bloodtsone") ||
-               path.Contains("reaver beach") ||
-               path.Contains("ravenscar") ||
-               path.Contains("spire") ||
-               path.Contains("mysteryisland") ||
-               path.Contains("dunecrest") ||
-               path.Contains("westcliff") ||
-               path.Contains("wraithmarsh") ||
-               path.Contains("rookridge") ||
-               name.Contains("bloodstone") ||
-               name.Contains("bloodtsone") ||
-               name.Contains("reaver beach") ||
-               name.Contains("ravenscar") ||
-               name.Contains("spire") ||
-               name.Contains("westcliff") ||
-               name.Contains("wraithmarsh");
-    }
+    /// <summary>Whether the level's vista draws an open ocean horizon: the title's rule; none without one.</summary>
+    public static bool AllowsVistaOcean(LevelEntry level) =>
+        Refii.Core.Engine_TitleGame.Active.AllowsVistaOcean(level) ?? false;
 
     /// <summary>Each stated landscape with its height grid: the stated .ghf, else the .ehf's own.</summary>
     private static List<(StatedLandscape Landscape, GhfHeights? Grid)> DecodeGrids(

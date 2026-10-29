@@ -8,6 +8,7 @@ using GdUnit4;
 using static GdUnit4.Assertions;
 using Refii.Mods;
 using Refii.Save;
+using Refii.Titles.Fable2;
 
 /// <summary>
 /// Mod filtering on the save system, on in-memory data: the sidecar's layered schema round-trips,
@@ -306,7 +307,7 @@ public class ModSaveTests
 		hero.Melee = ModSword;
 		hero.Ranged = GameBow;
 
-		int removed = ModSaveFilter.FilterHero(hero, new HashSet<uint> { ModSword, ModHat });
+		int removed = Fable2KitFilter.FilterHero(hero, new HashSet<uint> { ModSword, ModHat });
 
 		AssertThat(removed).IsEqual(3);
 		AssertThat(hero.Inventory).IsEqual(new List<(uint, int)> { (GamePotion, 3), (GameShirt, 1) });

@@ -9,7 +9,7 @@ namespace Refii.Gdb;
 /// walks the records sequentially and never reads the interpolation deltas, the declaration
 /// indices or the name-table tail's offsets — so a container it accepts can still be one the
 /// game's parser refuses. This reads the file the way the native parser does
-/// (<c>src/vfs/src/gdb/gdb_database.cpp</c>, decompiled from <c>GDBFile_Parse</c> 0x82A016C0):
+/// (<c>src/formats/src/gdb/gdb_database.cpp</c>, decompiled from <c>GDBFile_Parse</c> 0x82A016C0):
 /// every record is reached THROUGH ITS DELTA, every schema through its record, every name through
 /// its hash.
 ///

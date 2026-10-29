@@ -214,7 +214,7 @@ public static class ModWorkspace
 			Title = modName,
 			Version = "1.0.0",
 			Author = "Modder",
-			Description = "Custom mod for Fable 2",
+			Description = "Custom mod for " + Refii.Core.Engine_Title.Active.Name,
 		};
 
 		return F2ModPackage.Create(packagePath, meta, Array.Empty<(string, byte[])>(), out error);

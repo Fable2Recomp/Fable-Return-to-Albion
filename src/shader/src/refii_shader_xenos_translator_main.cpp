@@ -72,7 +72,7 @@ std::filesystem::path LibraryDirectory() {
 /// Where the compiler, its libraries and shader_common.h are at runtime.
 ///
 /// BESIDE THE LIBRARY FIRST. A shipped app stages them as bin/dxc (see
-/// src/hostbridge/CMakeLists.txt); the compile-time paths below name the dev tree's vendored
+/// cmake/refii_stage_godot.cmake); the compile-time paths below name the dev tree's vendored
 /// copies, which exist on no player's machine. A dev tree has no bin/dxc until it is staged,
 /// so it falls through to them.
 const std::filesystem::path& BundledToolDirectory() {

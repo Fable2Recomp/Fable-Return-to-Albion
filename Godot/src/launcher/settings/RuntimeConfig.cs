@@ -126,7 +126,9 @@ public static class RuntimeConfig
         SortedDictionary<string, string> values = ReadValues(configPath);
         bool changed = !File.Exists(configPath);
 
-        string baseRoot = Installer.GetInstallBasePath();
+        // refii.toml is shared by every title, so it is anchored on the shared root; the host
+        // states the active title's data root on the command line, which outranks the config.
+        string baseRoot = Installer.GetInstallRootPath();
         string configDirectory = Path.GetDirectoryName(configPath) ?? string.Empty;
 
         foreach ((string key, string legacyDefault) in AssetRelativeRoots)
@@ -168,7 +170,7 @@ public static class RuntimeConfig
         changed |= UpdateDefaultPath(
             values,
             "cache_root",
-            ToGeneric(Path.Combine(Installer.GetInstallBasePath(), "assets", "save", "cache")),
+            ToGeneric(Path.Combine(Installer.GetInstallRootPath(), "assets", "save", "cache")),
             ToGeneric(Refii.Core.Engine_AppRoot.CacheDirectory));
 
         changed |= AdoptFixtureShadowDefault(values);

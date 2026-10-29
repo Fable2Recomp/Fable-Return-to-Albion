@@ -205,7 +205,7 @@ public partial class RefiiModApi : RefCounted
 		var all = ModNative.ReadEnabled(GetModsRoot()).Where(s => s.ModName != own.ModName).ToList();
 		all.Add(own);
 		Dictionary<string, string> refii = ModNative.ReadOverridesInDirectory(
-			Path.Combine(Engine_AppRoot.BinDirectory, "recompile", "hooks"), ModNative.RefiiOwner);
+			Path.Combine(Engine_AppRoot.BinDirectory, "recompile", Refii.Core.Engine_Title.Active.Folder, "hooks"), ModNative.RefiiOwner);
 		return ModNative.FindConflicts(all, refii)
 			.Where(c => c.First == own.ModName || c.Second == own.ModName)
 			.Select(c => $"{c.Function}: {c.First} replaces it over {c.Second}")
@@ -226,7 +226,7 @@ public partial class RefiiModApi : RefCounted
 		var all = ModNative.ReadEnabled(GetModsRoot()).Where(s => s.ModName != own.ModName).ToList();
 		all.Add(own);
 		Dictionary<string, string> refii = ModNative.ReadOverridesInDirectory(
-			Path.Combine(Engine_AppRoot.BinDirectory, "recompile", "hooks"), ModNative.RefiiOwner);
+			Path.Combine(Engine_AppRoot.BinDirectory, "recompile", Refii.Core.Engine_Title.Active.Folder, "hooks"), ModNative.RefiiOwner);
 		return ModNative.PlanChains(all, refii)
 			.Where(chain => chain.Owners.Contains(own.ModName))
 			.Select(chain => $"{chain.Function}: {string.Join(" → ", chain.Owners)}")
@@ -521,10 +521,10 @@ public partial class RefiiModApi : RefCounted
 	/// (Engine_UiModAbilities); the mod's code reads the level from the player store.
 	/// </summary>
 	public string SetAbility(Godot.Collections.Dictionary ability) =>
-		Upsert(Engine_UiModAbilities.ModAbilitiesPath, "abilities", "name", ability);
+		Upsert(Refii.Mods.Engine_ModUiFiles.AbilitiesPath, "abilities", "name", ability);
 
 	public string RemoveAbility(string name) =>
-		Remove(Engine_UiModAbilities.ModAbilitiesPath, new[] { "abilities" }, "name", name);
+		Remove(Refii.Mods.Engine_ModUiFiles.AbilitiesPath, new[] { "abilities" }, "name", name);
 
 	// ---------------------------------------------------------------------------------------
 	// Menus and screens — ui/templates.json, composed by Engine_UiTemplates

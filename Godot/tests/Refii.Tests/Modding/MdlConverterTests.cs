@@ -997,7 +997,7 @@ public class MdlConverterTests
 		string? at = AppContext.BaseDirectory;
 		for (int i = 0; i < 16 && at != null; i++)
 		{
-			string direct = Path.Combine(at, "assets", "game", "data");
+			string direct = Path.Combine(at, "assets", "Fable2", "game", "data");
 			if (File.Exists(Path.Combine(direct, "Globals", "globals_model_headers.bnk")))
 			{
 				return direct;
@@ -1008,7 +1008,7 @@ public class MdlConverterTests
 			{
 				foreach (string package in Directory.EnumerateDirectories(packages))
 				{
-					string candidate = Path.Combine(package, "assets", "game", "data");
+					string candidate = Path.Combine(package, "assets", "Fable2", "game", "data");
 					if (File.Exists(Path.Combine(candidate, "Globals", "globals_model_headers.bnk")))
 					{
 						return candidate;

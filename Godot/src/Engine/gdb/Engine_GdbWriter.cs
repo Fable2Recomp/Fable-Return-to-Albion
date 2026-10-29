@@ -80,7 +80,7 @@ public sealed class GdbPatchDatabase
 
 /// <summary>
 /// Managed binary GDB writer matching Fable 2's native 'GDB\0' database format
-/// (decompiled from default.xex GDBFile_Parse 0x82A016C0 and mirrored by src/vfs/src/gdb/gdb_database.cpp).
+/// (decompiled from default.xex GDBFile_Parse 0x82A016C0 and mirrored by src/formats/src/gdb/gdb_database.cpp).
 ///
 /// THE INVERSE OF THE PARSER, PROVED ON EVERY WRITE: the bytes are read back through
 /// <see cref="GdbContainerCheck"/> — the guest's read, deltas and all — and compared with what

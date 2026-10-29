@@ -30,7 +30,7 @@ public class QuickslotsLuaTests
         string? at = AppContext.BaseDirectory;
         for (int i = 0; i < 12 && at != null; i++)
         {
-            if (File.Exists(Path.Combine(at, "src", "vfs", "include", "core", "refii_mod_events.h")))
+            if (File.Exists(Path.Combine(at, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h")))
             {
                 return at;
             }
@@ -41,7 +41,7 @@ public class QuickslotsLuaTests
         return null;
     }
 
-    private static string ModFolder(string root) => Path.Combine(root, "mods-src", "quickslots");
+    private static string ModFolder(string root) => Path.Combine(root, "Fable2", "mods-src", "quickslots");
 
     private static string AllLua(string root) => string.Concat(LuaFiles(root).Select(f => f.Text + "\n"));
 

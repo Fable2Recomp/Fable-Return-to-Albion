@@ -34,3 +34,53 @@ set(REFII_PAYLOAD_EXPORT_SOURCE
     ${REFII_PAYLOAD_ROOT}/src/payload_export.cpp
     PARENT_SCOPE
 )
+
+# THE PAYLOAD'S SHARED SOURCES, compiled into every title's module beside the generated code
+# and payload_export.cpp. A title with no hooks of its own builds its module from these alone.
+#
+#   rex_bridge_payload.cpp   payload-side definitions of the rex:: symbols the generated code
+#                            calls, forwarding to the C entries in core/rex_payload_bridge.h
+#                            (defined in refii_runtime). Hidden — see the file header.
+#   guest_yield_backoff.cpp  the back-off policy for the guest's SwitchToThread spin waits,
+#                            keyed on the link register, never on a call site. Payload-side: the
+#                            payload must not import a C++ symbol from a host library.
+#
+# Staged for the install-time build as recompile/payload_core_sources.cmake
+# (REFII_PAYLOAD_CORE_SOURCES), separately from a title's hook_sources.cmake.
+set(REFII_PAYLOAD_CORE_SOURCES
+    ${REFII_PAYLOAD_ROOT}/src/core/rex_bridge_payload.cpp
+    ${REFII_PAYLOAD_ROOT}/src/core/guest_yield_backoff.cpp
+)
+
+add_library(refii_payload_core OBJECT ${REFII_PAYLOAD_CORE_SOURCES})
+set_target_properties(refii_payload_core PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+# The runtime's include directory AHEAD of the SDK's: it carries the payload's
+# rex/thread/mutex.h, which must win over the SDK header of the same name.
+target_include_directories(refii_payload_core
+    PRIVATE
+        ${REFII_RUNTIME_INCLUDE_DIRS}
+)
+target_link_libraries(refii_payload_core
+    PRIVATE
+        rex::runtime
+)
+# The payload logs through C (see the shadowed rex/logging/macros.h) and carries no profiler:
+# TRACY_ENABLE arrives as an INTERFACE define from rex::runtime, so -U undoes it.
+target_compile_definitions(refii_payload_core PRIVATE REFII_PAYLOAD_LOG_BRIDGE=1)
+if(NOT MSVC)
+    target_compile_options(refii_payload_core PRIVATE "-UTRACY_ENABLE" "-UTRACY_MANUAL_LIFETIME" "-UTRACY_DELAYED_INIT" "-UTRACY_ON_DEMAND" "-UTRACY_FIBERS" "-UTRACY_IMPORTS" "-UREXGLUE_ENABLE_PROFILING")
+    # rex_bridge_payload.cpp DEFINES rex:: symbols librexruntime also defines; exported, the
+    # payload's copies would capture the host's references (it is dlopen'd RTLD_GLOBAL) and
+    # refii_bridge_rex_* -> rex::* -> refii_bridge_rex_* recurses. A visibility pragma is not
+    # enough: out-of-line members inherit the class's visibility, so it is the compile option.
+    set_source_files_properties(${REFII_PAYLOAD_ROOT}/src/core/rex_bridge_payload.cpp
+        PROPERTIES COMPILE_OPTIONS "-fvisibility=hidden"
+    )
+endif()
+
+set(REFII_PAYLOAD_CORE_SOURCES
+    ${REFII_PAYLOAD_CORE_SOURCES}
+    PARENT_SCOPE
+)

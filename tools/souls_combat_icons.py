@@ -2,7 +2,7 @@
 """Draws Souls Combat's two HUD orb icons, in the style of Fable 2's health heart, and the
 Stamina ability's card for the abilities book.
 
-    tools/souls_combat_icons.py [out_dir]   (default: mods-src/souls_combat/art/gui/hud)
+    tools/souls_combat_icons.py [out_dir]   (default: Fable2/mods-src/souls_combat/art/gui/hud)
 
 A glossy symbol on a transparent ground, as the heart is: a saturated fill shading from a light
 upper left to a dark lower right, a dark outline, a white specular highlight and a soft shadow.
@@ -130,7 +130,7 @@ def card():
 def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     out_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
-        root, "mods-src", "souls_combat", "art", "gui", "hud")
+        root, "Fable2", "mods-src", "souls_combat", "art", "gui", "hud")
     os.makedirs(out_dir, exist_ok=True)
 
     icons = {
@@ -142,7 +142,7 @@ def main():
         image.save(path)
         print("wrote", path)
 
-    tarot = os.path.join(root, "mods-src", "souls_combat", "art", "gui", "abilitytarot")
+    tarot = os.path.join(root, "Fable2", "mods-src", "souls_combat", "art", "gui", "abilitytarot")
     os.makedirs(tarot, exist_ok=True)
     path = os.path.join(tarot, "souls_combat_stamina.tex.png")
     card().save(path)

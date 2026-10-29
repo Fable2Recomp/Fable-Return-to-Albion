@@ -89,7 +89,14 @@ public static class Engine_NativeLibraries
 				{
 					string bin = Engine_AppRoot.BinDirectory;
 					if (Directory.Exists(bin))
+					{
 						SetDllDirectory(bin);
+
+						// A title's instance loads from bin/<Folder>/ by absolute path, and that
+						// search ignores SetDllDirectory: the shared DLLs it imports from bin/ are
+						// found through this instead.
+						AddDllDirectory(bin);
+					}
 				}
 				catch
 				{
@@ -101,6 +108,9 @@ public static class Engine_NativeLibraries
 	[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
 	[return: MarshalAs(UnmanagedType.Bool)]
 	private static extern bool SetDllDirectory(string? lpPathName);
+
+	[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+	private static extern IntPtr AddDllDirectory(string newDirectory);
 
 	/// <summary>
 	/// Adds a directory to search. Deduplicating, so republishing the project's paths
@@ -157,9 +167,14 @@ public static class Engine_NativeLibraries
 		// the filesystem's, not sorted — so "first found" is nondeterministic and can pick
 		// a stale library whose entry points predate the current ABI. Take the most
 		// recently built one.
+		//
+		// A TITLE'S INSTANCE comes from its own folder (bin/<Folder>/) and nowhere else: a flat
+		// copy in a build output is another title's, or a build from before the split.
+		bool instance = Engine_Title.InstanceLibraries.Contains(name);
 		var found = new List<string>();
-		foreach (string directory in CandidateDirectories())
+		foreach (string searched in CandidateDirectories())
 		{
+			string directory = instance ? Path.Combine(searched, Engine_Title.Active.Folder) : searched;
 			foreach (string fileName in FileNamesFor(name))
 			{
 				string candidate = Path.Combine(directory, fileName);

@@ -14,7 +14,21 @@ public sealed class BnkArchive : IDisposable
 	private const int V3HeaderSize = 9;
 	private const int CompressedChunkSize = 0x8000;
 
-	private readonly Stream _stream;
+	/// <summary>
+	/// Fable 3's bank. The header file is the table alone and the entries' bytes are a second
+	/// file, <c>&lt;bank&gt;.dat</c>, at offsets from its start. The table carries no terminator
+	/// chunk, keys each record by <see cref="Refii.Core.Engine_GameHash.ResourcePath"/>, and
+	/// follows the records with the names in record order.
+	/// </summary>
+	private const uint FormatSeparateData = 4;
+
+	/// <summary>
+	/// After each format-4 name: a 16-byte digest, two u32 sizes and a u32 kind. Nothing here
+	/// reads them.
+	/// </summary>
+	private const int SeparateDataNameTrailer = 28;
+
+	private Stream _stream;
 	private readonly uint _dataBaseOffset;
 	private readonly bool _offsetsAreAbsolute;
 
@@ -23,8 +37,9 @@ public sealed class BnkArchive : IDisposable
 	/// entry of a mapped bank; null when it was opened from a managed copy. Reads through the map
 	/// take no lock and copy nothing but the entry the caller asked for.
 	/// </summary>
-	private readonly BnkMappedRange? _range;
-	private readonly bool _ownsRange;
+	private BnkMappedRange? _range;
+	private bool _ownsRange;
+	private bool _hasData;
 
 	private BnkArchive(
 		string archivePath,
@@ -46,6 +61,8 @@ public sealed class BnkArchive : IDisposable
 		_dataBaseOffset = dataBaseOffset;
 		_offsetsAreAbsolute = offsetsAreAbsolute;
 		Entries = entries;
+		DataIsSeparate = formatVersion == FormatSeparateData;
+		_hasData = !DataIsSeparate;
 	}
 
 	public string ArchivePath { get; }
@@ -61,6 +78,19 @@ public sealed class BnkArchive : IDisposable
 	/// <summary>True when entries are read out of a memory map rather than a stream or a copy.</summary>
 	public bool IsMapped => _range is not null;
 
+	/// <summary>
+	/// The entries' bytes are not in this file but in <c>&lt;bank&gt;.dat</c> (format 4). Until
+	/// <see cref="AttachData"/> supplies them, only the table can be read.
+	/// </summary>
+	public bool DataIsSeparate { get; }
+
+	/// <summary>False only for a separate-data bank whose <c>.dat</c> has not been attached.</summary>
+	public bool HasData => _hasData;
+
+	/// <summary>
+	/// Opens a bank file. A separate-data bank takes its <c>.dat</c> from beside it when that
+	/// file exists; otherwise the caller attaches it.
+	/// </summary>
 	public static bool TryOpen(string path, out BnkArchive? archive, out string error)
 	{
 		archive = null;
@@ -73,15 +103,52 @@ public sealed class BnkArchive : IDisposable
 			stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
 			BnkMappedRange.TryMapFile(stream, out range);
 			archive = Parse(path, stream, range, ownsRange: true);
+			stream = null;
+			range = null;
+
+			string dataPath = path + ".dat";
+			if (archive.DataIsSeparate && File.Exists(dataPath))
+			{
+				stream = new FileStream(
+					dataPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+				BnkMappedRange.TryMapFile(stream, out range);
+				archive.AttachData(stream, range, ownsRange: true);
+			}
+
 			return true;
 		}
 		catch (Exception exception)
 		{
 			range?.Dispose();
 			stream?.Dispose();
+			archive?.Dispose();
+			archive = null;
 			error = exception.Message;
 			return false;
 		}
+	}
+
+	/// <summary>
+	/// Gives a separate-data bank its <c>.dat</c>: <paramref name="stream"/> over the data file's
+	/// bytes, and <paramref name="range"/> mapping the same bytes when they are mapped. The
+	/// archive disposes the stream, and the range when <paramref name="ownsRange"/>.
+	/// </summary>
+	public void AttachData(Stream stream, BnkMappedRange? range, bool ownsRange)
+	{
+		if (!DataIsSeparate)
+		{
+			throw new InvalidOperationException($"{ArchivePath} keeps its data in the bank itself");
+		}
+
+		if (_hasData)
+		{
+			throw new InvalidOperationException($"{ArchivePath} already has its data attached");
+		}
+
+		_stream = stream;
+		_range = range;
+		_ownsRange = ownsRange;
+		_hasData = true;
 	}
 
 	/// <summary>
@@ -161,7 +228,7 @@ public sealed class BnkArchive : IDisposable
 		uint formatWord = BinaryPrimitives.ReadUInt32BigEndian(header[4..]);
 		bool fileDataCompressed = header[8] != 0;
 
-		if (formatWord != 2 && formatWord != 3)
+		if (formatWord != 2 && formatWord != 3 && formatWord != FormatSeparateData)
 		{
 			throw new InvalidDataException(
 				$"unsupported BNK format word 0x{formatWord:x8} in {path}");
@@ -182,6 +249,12 @@ public sealed class BnkArchive : IDisposable
 			dataBaseOffset = 0;
 			offsetsAreAbsolute = true;
 		}
+		else if (formatWord == FormatSeparateData)
+		{
+			tableBytes = ReadCompressedTableChunks(stream, V3HeaderSize, headerPointer, false);
+			dataBaseOffset = 0;
+			offsetsAreAbsolute = true;
+		}
 		else
 		{
 			tableBytes = ReadCompressedTableChunks(stream, V3HeaderSize, headerPointer, true);
@@ -189,7 +262,24 @@ public sealed class BnkArchive : IDisposable
 			offsetsAreAbsolute = false;
 		}
 
-		List<BnkEntry> entries = ParseEntryTable(tableBytes, fileDataCompressed, path);
+		List<BnkEntry> entries = formatWord == FormatSeparateData
+			? ParseSeparateDataEntryTable(tableBytes, fileDataCompressed, path)
+			: ParseEntryTable(tableBytes, fileDataCompressed, path);
+
+		if (formatWord == FormatSeparateData)
+		{
+			// The file was the table and nothing else; the data comes from AttachData.
+			stream.Dispose();
+			if (ownsRange)
+			{
+				range?.Dispose();
+			}
+
+			stream = Stream.Null;
+			range = null;
+			ownsRange = false;
+		}
+
 		return new BnkArchive(
 			path,
 			stream,
@@ -400,6 +490,115 @@ public sealed class BnkArchive : IDisposable
 		return entries;
 	}
 
+	/// <summary>
+	/// The format-4 table:
+	/// <code>
+	/// u32 0, u32 count
+	/// count records: u32 hash, u32 offset, u32 size
+	///                (compressed: + u32 storedSize, u32 chunkCount, chunkCount × u32)
+	/// count names:   u32 length (with the NUL), name, NUL, 28-byte trailer
+	/// </code>
+	/// Name i belongs to record i, and each name is checked against its record's hash, so a
+	/// misaligned table is an error here, not a wrong file later.
+	/// </summary>
+	private static List<BnkEntry> ParseSeparateDataEntryTable(
+		byte[] table, bool fileDataCompressed, string path)
+	{
+		if (table.Length < 8)
+		{
+			throw new InvalidDataException($"decompressed file table is too small for {path}");
+		}
+
+		uint fileCount = BinaryPrimitives.ReadUInt32BigEndian(table.AsSpan(4));
+		int position = 8;
+		var records = new List<(uint Hash, BnkEntry Entry)>((int)Math.Min(fileCount, 1u << 20));
+
+		for (uint index = 0; index < fileCount; ++index)
+		{
+			int recordSize = fileDataCompressed ? 20 : 12;
+			if (position + recordSize > table.Length)
+			{
+				throw new InvalidDataException($"unexpected end of file table in {path}");
+			}
+
+			ReadOnlySpan<byte> record = table.AsSpan(position);
+			uint hash = BinaryPrimitives.ReadUInt32BigEndian(record);
+			uint offset = BinaryPrimitives.ReadUInt32BigEndian(record[4..]);
+			uint size = BinaryPrimitives.ReadUInt32BigEndian(record[8..]);
+			uint storedSize = size;
+			uint[] chunkSizes = Array.Empty<uint>();
+			position += recordSize;
+
+			if (fileDataCompressed)
+			{
+				storedSize = BinaryPrimitives.ReadUInt32BigEndian(record[12..]);
+				uint chunkCount = BinaryPrimitives.ReadUInt32BigEndian(record[16..]);
+				if ((long)position + (long)chunkCount * 4 > table.Length)
+				{
+					throw new InvalidDataException(
+						$"compressed entry chunk table exceeds file table in {path}");
+				}
+
+				chunkSizes = new uint[chunkCount];
+				for (uint chunkIndex = 0; chunkIndex < chunkCount; ++chunkIndex)
+				{
+					chunkSizes[chunkIndex] =
+						BinaryPrimitives.ReadUInt32BigEndian(table.AsSpan(position));
+					position += 4;
+				}
+			}
+
+			records.Add((hash, new BnkEntry
+			{
+				Offset = offset,
+				Size = size,
+				StoredSize = storedSize,
+				IsCompressed = fileDataCompressed,
+				ChunkSizes = chunkSizes,
+			}));
+		}
+
+		var entries = new List<BnkEntry>(records.Count);
+		foreach ((uint hash, BnkEntry record) in records)
+		{
+			if (position + 4 > table.Length)
+			{
+				throw new InvalidDataException($"file table ends before its names in {path}");
+			}
+
+			int storedLength = checked((int)BinaryPrimitives.ReadUInt32BigEndian(table.AsSpan(position)));
+			position += 4;
+			if (storedLength == 0 || position + storedLength + SeparateDataNameTrailer > table.Length)
+			{
+				throw new InvalidDataException($"bank entry name exceeds file table in {path}");
+			}
+
+			int nameLength = Array.IndexOf(table, (byte)0, position, storedLength) is int nul and >= 0
+				? nul - position
+				: storedLength;
+			string name = System.Text.Encoding.UTF8.GetString(table, position, nameLength);
+			position += storedLength + SeparateDataNameTrailer;
+
+			if (Refii.Core.Engine_GameHash.ResourcePath(name) != hash)
+			{
+				throw new InvalidDataException(
+					$"bank entry '{name}' does not match its record's hash 0x{hash:x8} in {path}");
+			}
+
+			entries.Add(new BnkEntry
+			{
+				RelativePath = name.Replace('\\', '/'),
+				Offset = record.Offset,
+				Size = record.Size,
+				StoredSize = record.StoredSize,
+				IsCompressed = record.IsCompressed,
+				ChunkSizes = record.ChunkSizes,
+			});
+		}
+
+		return entries;
+	}
+
 	public long GetEntryDataOffset(BnkEntry entry) =>
 		_offsetsAreAbsolute ? entry.Offset : (long)_dataBaseOffset + entry.Offset;
 
@@ -422,6 +621,12 @@ public sealed class BnkArchive : IDisposable
 
 	public byte[] ReadEntryBytes(BnkEntry entry)
 	{
+		if (!_hasData)
+		{
+			throw new InvalidDataException(
+				$"{entry.RelativePath}: {ArchivePath} keeps its data in {ArchiveName}.bnk.dat, which is not mounted");
+		}
+
 		long dataOffset = GetEntryDataOffset(entry);
 
 		if (!entry.IsCompressed)

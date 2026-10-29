@@ -38,7 +38,7 @@ public static class Engine_GmdLayout
         string path = modelPath.Replace('\\', '/').ToLowerInvariant();
         return path.Contains("/exterior.mdl", StringComparison.Ordinal) ||
                path.Contains("/interior.mdl", StringComparison.Ordinal) ||
-               path.Contains("bs_market_tarotstall/", StringComparison.Ordinal);
+               Refii.Core.Engine_TitleGame.Active.Props.IsShellParent(path);
     }
 
     public static bool ShouldEmit(string assetKey, string resolvedPath)

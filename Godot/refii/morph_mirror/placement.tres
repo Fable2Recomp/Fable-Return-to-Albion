@@ -1,6 +1,6 @@
 [gd_resource type="Resource" format=3 uid="uid://dcyl33ciavp15"]
 
-[ext_resource type="Script" uid="uid://chntspdeckxna" path="res://src/Engine/hero/morph/Engine_MorphMirrorPlacement.cs" id="1_emtk7"]
+[ext_resource type="Script" uid="uid://chntspdeckxna" path="res://src/Titles/Fable2/hero/morph/Engine_MorphMirrorPlacement.cs" id="1_emtk7"]
 
 [resource]
 script = ExtResource("1_emtk7")

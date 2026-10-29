@@ -739,14 +739,12 @@ public sealed class Engine_HudLayout
     }
 
     /// <summary>
-    /// Widgets inside `hud.bgf` that a Godot-owned view draws whole, by element name — both
-    /// players' copies of the will assigner, which share one controller as the guest's do.
+    /// Widgets inside `hud.bgf` that a Godot-owned view draws whole, by element name — the title's
+    /// (Fable 2: both players' copies of the will assigner, which share one controller as the
+    /// guest's do).
     /// </summary>
-    private static readonly HashSet<string> OwnedSubtrees = new(System.StringComparer.Ordinal)
-    {
-        Engine_UiSpellAssign.ElementName,
-        Engine_UiSpellAssign.ElementName + "2",
-    };
+    private static System.Collections.Generic.IReadOnlyCollection<string> OwnedSubtrees =>
+        Refii.Core.Engine_TitleGame.Active.HudOwnedSubtrees;
 
     /// <summary>
     /// Whether a meter binding owns a fill of its own — the test that separates a BAR from a
@@ -803,7 +801,7 @@ public sealed class Engine_HudLayout
 
         for (UiNode? at = screen.Nodes[ordinal]; at is not null; at = at.Parent)
         {
-            if (OwnedSubtrees.Contains(at.Name))
+            if (System.Linq.Enumerable.Contains(OwnedSubtrees, at.Name))
             {
                 return true;
             }

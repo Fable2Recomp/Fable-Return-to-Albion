@@ -38,7 +38,7 @@ public static class NativeModConsent
 	/// <summary>Refii's own hooks, by function, read from the staged sources the build compiles.</summary>
 	public static Dictionary<string, string> RefiiOverrides() =>
 		ModNative.ReadOverridesInDirectory(
-			Path.Combine(GameCodeBuild.RecompileDirectory, "hooks"), ModNative.RefiiOwner);
+			Path.Combine(GameCodeBuild.TitleRecompileDirectory, "hooks"), ModNative.RefiiOwner);
 
 	/// <summary>
 	/// The enabled hard mods a build compiles, highest priority first. <paramref name="withheld"/>

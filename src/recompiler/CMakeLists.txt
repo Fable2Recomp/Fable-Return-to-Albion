@@ -65,5 +65,5 @@ if(NOT WIN32)
     target_link_options(refii_recompiler PRIVATE -Wl,--no-undefined)
 endif()
 
-# Staged into bin/ by refii_stage_godot (src/hostbridge/CMakeLists.txt), which stages the
+# Staged into bin/ by refii_stage_godot (cmake/refii_stage_godot.cmake), which stages the
 # whole native closure in one target so a rebuild of any one library restages it.

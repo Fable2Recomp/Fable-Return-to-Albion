@@ -1,0 +1,22 @@
+# Fable 3, USA / Europe disc (media ID D99E18E7, executable 0.0.0.3, title ID 4D5308D6).
+#
+# The files follow the title's key (refiii, as refii is Fable 2's). The generated C++ project
+# keeps the name refii: it names the generated headers (refii_init.h, refii_pch.h) that
+# payload_export.cpp and the payload build include, for every title alike.
+
+[project]
+sdk_version = "0.10.0"
+name = "refii"
+
+[entrypoint]
+file_path = "../../../assets/Fable3/game/default.xex"
+out_directory_path = "../../../generated"
+includes = [
+  "refiii_config.toml",
+]
+
+# The CRT's pair, the same code as Fable 2's (0x2CC and 0x314 bytes; only the relocated global
+# in setjmp and three call targets in longjmp differ), found by the bodies' register save and
+# restore runs in the Fable 3 IDB.
+longjmp_address = 0x82E31DA0
+setjmp_address = 0x83140BE0

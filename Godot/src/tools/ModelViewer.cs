@@ -62,7 +62,7 @@ public partial class ModelViewer : Node3D
 		string dataRoot = Engine_GameData.Resolve();
 		if (dataRoot.Length == 0)
 		{
-			GD.PrintErr("[viewer] no game data found; set REFII_GAME_DATA or stage assets/game.");
+			GD.PrintErr("[viewer] no game data found; set REFII_GAME_DATA or stage assets/Fable2/game.");
 			GetTree().Quit(1);
 			return;
 		}

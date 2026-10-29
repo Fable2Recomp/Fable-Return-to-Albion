@@ -100,7 +100,10 @@ void ApplyEarlyLogCvarValue(const toml::table& table, std::string_view toml_key,
     return;
   }
 
-  rex::cvar::SetFlagByName(cvar_name, *cvar_value);
+  // AS CONFIG, NOT AS RUNTIME. A config file's value never outranks the command line: a host
+  // that embeds the app states its paths on argv, and a config file beside the HOST's binary
+  // (an exported app keeps refii.toml at its root, beside the executable) must not override them.
+  rex::cvar::SetFlagFromConfig(cvar_name, *cvar_value);
 }
 
 void ApplyEarlyLogCvars(const std::filesystem::path& config_path) {
@@ -179,6 +182,17 @@ bool RexIsEmbeddedHost() {
     return value != nullptr && value[0] == '1';
   }();
   return embedded;
+}
+
+// A fatal start-up error, reported. Standalone it is a message box; EMBEDDED it is the log line
+// alone, and the failure returns to the host, which shows it. A modal raised from inside the host
+// process blocks the host's own main thread (the call is synchronous on Windows) and leaves the
+// player looking at a frozen window instead of the reason.
+void ReportFatal(const std::string& msg) {
+  REXLOG_ERROR("{}", msg);
+  if (!RexIsEmbeddedHost()) {
+    rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+  }
 }
 
 }  // namespace
@@ -369,14 +383,12 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
 
   if (paths.game_data_root.empty()) {
     auto msg = std::string("--game_data_root was not provided.");
-    REXLOG_ERROR("{}", msg);
-    rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+    ReportFatal(msg);
     return false;
   }
   if (!std::filesystem::is_directory(paths.game_data_root)) {
     auto msg = fmt::format("--game_data_root does not exist: {}", paths.game_data_root.string());
-    REXLOG_ERROR("{}", msg);
-    rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+    ReportFatal(msg);
     return false;
   }
 
@@ -443,8 +455,7 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
     auto xex_host = paths.game_data_root / host_tail;
     if (!std::filesystem::is_regular_file(xex_host)) {
       auto msg = fmt::format("Entrypoint XEX not found: {}", xex_host.string());
-      REXLOG_ERROR("{}", msg);
-      rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+      ReportFatal(msg);
       return false;
     }
   }
@@ -452,8 +463,7 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
   status = runtime_->LoadXexImage(xex_image);
   if (XFAILED(status)) {
     auto msg = fmt::format("Failed to load XEX ({}): {:08X}", xex_image, status);
-    REXLOG_ERROR("{}", msg);
-    rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+    ReportFatal(msg);
     return false;
   }
 
@@ -485,8 +495,7 @@ bool ReXApp::SetupPresentation() {
       // Fatal by design: no silent headless fallback.
       auto msg =
           fmt::format("Failed to load GPU plugin '{}'. See log for details.", config_.gpu_plugin);
-      REXLOG_ERROR("{}", msg);
-      rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
+      ReportFatal(msg);
       return false;
     }
   }

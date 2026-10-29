@@ -386,7 +386,7 @@ public sealed class FxEmitter
     /// before it steps the emitter (0x8322d9a8..0x8322d9d4, then `sub_8322F1E0` → slot 26).
     /// The bank's record has no field for it (a standard emitter's file states parameters 2..14
     /// only), so the guest reads it from the dress table beside its bank
-    /// (<see cref="Engine_FxModEffects.DressKey"/>, src/vfs/src/hooks/particle_motion.cpp). 0 for
+    /// (<see cref="Engine_FxModEffects.DressKey"/>, Fable2/src/vfs/src/hooks/particle_motion.cpp). 0 for
     /// every shipped emitter: neither Fable II nor Fable III has a force that turns a particle about
     /// an axis — Fable III's twisters turn their EMITTERS on orbitals (type 3).
     /// </summary>
@@ -497,7 +497,7 @@ public sealed class FxVisual
     /// (+24), spread (+28), random-angle flag (+32), axis (+36..+44), random-axis flag (+48) and
     /// scale (+60, +64), so the guest reads it from the dress table keyed by the SYSTEM's id
     /// (`sub_83220AC8`'s r8 is the system; system+4 its id) and composes it onto r6:r7 before the
-    /// visual is born (src/vfs/src/hooks/particle_motion.cpp). Absent on every shipped visual, which the guest births at
+    /// visual is born (Fable2/src/vfs/src/hooks/particle_motion.cpp). Absent on every shipped visual, which the guest births at
     /// identity — and so does the modern draw: every mesh particle takes this composition.</para>
     /// </summary>
     public bool HasMeshAlign;

@@ -176,8 +176,8 @@ public static class ModSaveStamp
 	/// `sub_824AC94C`), so the filter is what keeps those from ever reaching the guest, and the
 	/// notice says what is left out rather than threatening a crash.
 	///
-	/// ARCHON'S TOOLBOX MODS (<paramref name="archon"/>, the sidecar's own layer) follow under
-	/// their own heading (<see cref="ArchonToolbox.NoticeText"/>) and are NOT filtered: their
+	/// AN EXTERNAL MANAGER'S MODS (<paramref name="external"/>, the title's sidecar layer — Fable 2's
+	/// Archon's Toolbox) follow under their own heading, written by that manager, and are NOT filtered: their
 	/// state is the toolbox runner's script table inside the save's Lua blob — one Pluto object
 	/// graph (TU1 `pluto_persist` 0x82BFAC78: every new object is numbered by the running counter
 	/// `++a1[1]` at 0x82BFAD20 and written as `[1][ref][type]…`, a repeat as `[0][ref]`; a table is
@@ -188,7 +188,7 @@ public static class ModSaveStamp
 	/// and the notice states that their state stays in the save.
 	/// </summary>
 	public static string NoticeText(
-		SaveSidecar.ModsLayer stamp, Diff diff, SaveSidecar.ArchonLayer? archon = null, ArchonToolbox.Diff? archonDiff = null)
+		SaveSidecar.ModsLayer stamp, Diff diff, Engine_ExternalModManager.Diff? external = null)
 	{
 		var missing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		foreach (SaveSidecar.ModEntry mod in diff.Missing)
@@ -232,14 +232,14 @@ public static class ModSaveStamp
 			text.Append("\nWhat a mod not enabled left in the save is kept with it and comes back when that mod is enabled again.\n");
 		}
 
-		if (archon is not null && archonDiff is not null)
+		if (external is not null && external.Notice.Length != 0)
 		{
 			if (text.Length != 0)
 			{
 				text.Append('\n');
 			}
 
-			text.Append(ArchonToolbox.NoticeText(archon, archonDiff));
+			text.Append(external.Notice);
 		}
 
 		return text.ToString();

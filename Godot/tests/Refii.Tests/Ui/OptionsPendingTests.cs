@@ -5,6 +5,7 @@ using GdUnit4;
 using static GdUnit4.Assertions;
 using Refii.Host;
 using Refii.Ui;
+using Refii.Titles.Fable2;
 
 /// <summary>
 /// The options page level. A GUEST page's cursor and values are the guest's, read back through
@@ -58,7 +59,7 @@ public class OptionsPendingTests
 			AssertThat(Engine_UiOptionsPending.IndexOf(0)).IsEqual(-1);
 
 			Engine_UiOptionsPending.Follow(
-				new HostBridge.GuestOptionsPage(true, 3, new[] { 1, 4, 0, 2, 1 }, new float[5]));
+				new Fable2Bridge.GuestOptionsPage(true, 3, new[] { 1, 4, 0, 2, 1 }, new float[5]));
 			AssertThat(Engine_UiOptionsPending.Row).IsEqual(3);
 			AssertThat(Engine_UiOptionsPending.IndexOf(1)).IsEqual(4);
 			AssertThat(Engine_UiOptionsPending.IndexOf(3)).IsEqual(2);
@@ -73,10 +74,10 @@ public class OptionsPendingTests
 			AssertThat(Engine_UiOptionsPending.Open).IsTrue();
 
 			// An unknown reading keeps the last; a cursor the page has not shown yet reads as row 0.
-			Engine_UiOptionsPending.Follow(HostBridge.GuestOptionsPage.None);
+			Engine_UiOptionsPending.Follow(Fable2Bridge.GuestOptionsPage.None);
 			AssertThat(Engine_UiOptionsPending.Row).IsEqual(3);
 			Engine_UiOptionsPending.Follow(
-				new HostBridge.GuestOptionsPage(true, -1, new[] { 0, 0, 0, 0, 0 }, new float[5]));
+				new Fable2Bridge.GuestOptionsPage(true, -1, new[] { 0, 0, 0, 0, 0 }, new float[5]));
 			AssertThat(Engine_UiOptionsPending.Row).IsEqual(0);
 		}
 		finally
@@ -93,7 +94,7 @@ public class OptionsPendingTests
 		{
 			Engine_UiOptionsPending.Enter("Audio");
 			AssertThat(Engine_UiOptionsPending.GuestPageIndex).IsEqual(3);
-			Engine_UiOptionsPending.Follow(new HostBridge.GuestOptionsPage(
+			Engine_UiOptionsPending.Follow(new Fable2Bridge.GuestOptionsPage(
 				true, 1, new[] { 7, 7, 7, 2 }, new[] { 0.25f, 0.5f, 0.75f, 0f }));
 			AssertThat(Engine_UiOptionsPending.Row).IsEqual(1);
 			AssertThat(Engine_UiOptionsPending.SliderValue(0)).IsEqual(0.25f);

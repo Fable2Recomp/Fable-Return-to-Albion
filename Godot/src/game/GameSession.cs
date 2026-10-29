@@ -240,28 +240,17 @@ public partial class GameSession : Node
 			return;
 		}
 
-		// Only after a successful boot: a failed init leaves the UI on the authored stand-in.
-		Refii.Host.HostUiSource.Install();
-		GD.Print("[game] the UI reads the live guest now (Engine_UiSource -> HostUiSource)");
-
 		// Input starts only once the guest is running.
 		AddChild(new GameInput { Name = "GameInput" });
 		AddChild(new GamePhotoMode { Name = "PhotoMode" });
-        AddChild(new GameDecorate { Name = "DecorateMode" });
-		AddChild(new GameCharacterMorphs { Name = "CharacterMorphs" });
-		AddChild(new GameMorphMirror { Name = "MorphMirrorInteraction" });
-		AddChild(new GameGoldenCock { Name = "GoldenCockInteraction" });
-		AddChild(new GameGoldenCockCollision { Name = "GoldenCockCollision" });
 
-		// The pub games watch the guest's published table state; they are not launched from here.
-		_pubGames = new GamePubGames { Name = "GamePubGames" };
-		AddChild(_pubGames);
+		// Only after a successful boot: a failed init leaves the title's UI on its authored
+		// stand-in.
+		Engine_TitleGame.Active.AddSessionNodes(this);
 
 		_driving = true;
 		EmitSignal(SignalName.Started);
 	}
-
-	private GamePubGames? _pubGames;
 
 	/// <summary>
 	/// The guest's simulation rate in steps per second: bone poses at 30 Hz, game tick at 15.
@@ -697,8 +686,8 @@ public partial class GameSession : Node
 			Refii.Models.Engine_MdlMaterial.ReportIfChanged();
 		}
 
-		// After the step: the pub-game manager is written by this frame's guest tick.
-		_pubGames?.Poll();
+		// After the step: what the title reads is written by this frame's guest tick.
+		Engine_TitleGame.Active.Step();
 
 		TraceCamera();
 	}

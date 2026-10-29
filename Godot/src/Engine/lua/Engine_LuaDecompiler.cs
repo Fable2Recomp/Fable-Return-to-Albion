@@ -21,7 +21,7 @@ public enum LuaVerifyResult
 }
 
 /// <summary>
-/// The luadec decompiler and its byte-exact oracle (src/lua/src/tools/luadec), reached through
+/// The luadec decompiler and its byte-exact oracle (Fable2/src/lua/src/tools/luadec), reached through
 /// the refii_luadec host library. The editor decompiles a script-bank entry on demand and checks
 /// an edited copy with the game's own compiler; nothing here touches disk.
 /// </summary>

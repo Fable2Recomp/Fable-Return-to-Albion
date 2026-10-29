@@ -42,8 +42,8 @@ public class FxModEffectsTests
 	private static string Msg(string text) => text.Length == 0 ? "(no detail)" : text;
 
 	private static string? RepoRoot() =>
-		FindUp("src", "vfs", "include", "core", "refii_mod.h") is { } header
-			? Path.GetFullPath(Path.Combine(Path.GetDirectoryName(header)!, "..", "..", "..", ".."))
+		FindUp("Fable2", "src", "vfs", "include", "core", "refii_mod.h") is { } header
+			? Path.GetFullPath(Path.Combine(Path.GetDirectoryName(header)!, "..", "..", "..", "..", ".."))
 			: null;
 
 	// ---- equality by behaviour --------------------------------------------------------------
@@ -139,7 +139,7 @@ public class FxModEffectsTests
 	[TestCase]
 	public void ShippedBankRoundTripsThroughTheFileForm()
 	{
-		string? path = FindUp("assets", "game", "data", "art", "particles", "particle_bank.bnk");
+		string? path = FindUp("assets", "Fable2", "game", "data", "art", "particles", "particle_bank.bnk");
 		if (path is null)
 		{
 			return;  // a tree without the player's game data
@@ -564,8 +564,8 @@ public class FxModEffectsTests
 			return;
 		}
 
-		string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h")) +
-			File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod_events.h"));
+		string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h")) +
+			File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h"));
 		foreach (string native in new[] { "refii_mod_play_fx", "refii_mod_play_fx_on", "refii_mod_stop_fx" })
 		{
 			AssertThat(Regex.IsMatch(header, $@"extern ""C"" \w+ {native}\(")).OverrideFailureMessage(Msg($"{native} is not declared")).IsTrue();
@@ -575,7 +575,7 @@ public class FxModEffectsTests
 		AssertThat(kind.Success).IsTrue();
 		AssertThat(int.Parse(kind.Groups[1].Value)).IsEqual(Engine_FxPlayer.RequestKind);
 
-		string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+		string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
 		AssertThat(natives.Contains("{\"_play_fx\", &NativePlayFx, 0}")).IsTrue();
 		AssertThat(natives.Contains("{\"stop_fx\", &NativeStopFx, 0}")).IsTrue();
 	}

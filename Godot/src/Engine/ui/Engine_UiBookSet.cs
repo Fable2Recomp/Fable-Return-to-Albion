@@ -121,7 +121,7 @@ public sealed class Engine_UiBookSet
 		{
 			uint screenId = template.ScreenId;
 			if (template.ChromeUnits.Count == 0 || template.Presentation.Length == 0 ||
-				Engine_UiFrontEndScreens.Is(template.Presentation) ||
+				Refii.Core.Engine_TitleGame.Active.IsFrontEndPresentation(template.Presentation) ||
 				_bookless.Contains(screenId) || !_prebuildTried.Add(screenId) ||
 				Book(screenId) is not null)
 			{
@@ -374,7 +374,7 @@ public sealed class Engine_UiBookSet
 		{
 			if (id != screenId && GodotObject.IsInstanceValid(other) &&
 				Engine_UiTemplates.Screen(id) is { } sibling &&
-				Engine_UiFrontEndScreens.Is(sibling.Presentation))
+				Refii.Core.Engine_TitleGame.Active.IsFrontEndPresentation(sibling.Presentation))
 			{
 				other.Visible = false;
 			}

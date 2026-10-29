@@ -27,7 +27,7 @@ namespace Refii.Fx;
 /// A PIECE IS GODOT'S DRAWING; THE GUEST HAS NO SUCH KIND, so the guest's bank never carries one and
 /// the classic look never shows one. Every kind is expressible with the bank's own entities, which
 /// the guest simulates and both looks draw — the form an effect that must play everywhere takes
-/// (mods-src/spell_weaving/fx/effects/*.json, each pinned to its piece by SpellWeavingLookTests):
+/// (Fable2/mods-src/spell_weaving/fx/effects/*.json, each pinned to its piece by SpellWeavingLookTests):
 /// <list type="bullet">
 /// <item><c>embers</c> — a standard emitter on a disc (<c>subType</c> 2, <c>spawnRadius</c> = radius)
 /// shooting each particle out from the EDGE (<c>shapeFlagA</c>, <c>shapeFlagB</c>) at the cone's

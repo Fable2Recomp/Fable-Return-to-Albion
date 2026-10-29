@@ -16,6 +16,7 @@ using Refii.Save;
 using Refii.Textures;
 using Refii.Ui;
 using static GdUnit4.Assertions;
+using Refii.Titles.Fable2;
 
 namespace Refii.Tests.Launcher;
 
@@ -250,9 +251,9 @@ public class CharacterMorphTests
         foreach (float zoom in new[] { 0f, 0.25f, 0.5f, 0.75f, 1f })
         {
             float panel = (Engine_UiMorphMirror.Width + 20) / (720 * aspect);
-            float fov = Refii.Game.GameMorphMirror.ZoomFov(60, zoom);
+            float fov = GameMorphMirror.ZoomFov(60, zoom);
             AssertThat(fov >= 20 && fov <= 60).IsTrue();
-            Transform3D camera = Refii.Game.GameMorphMirror.FrameCamera(eye, hero, fov, aspect, panel, zoom, height);
+            Transform3D camera = GameMorphMirror.FrameCamera(eye, hero, fov, aspect, panel, zoom, height);
             AssertThat(camera.Origin).IsEqual(eye);
             Vector3 target = hero + Vector3.Up * Mathf.Lerp(1.15f, height, zoom);
             Vector3 focus = camera.AffineInverse() * target;
@@ -269,10 +270,10 @@ public class CharacterMorphTests
                 AssertThat(x > panel && x < 1).IsTrue();
             }
         }
-        AssertThat(Refii.Game.GameMorphMirror.ZoomFov(60, -10)).IsEqual(60f);
-        AssertThat(Refii.Game.GameMorphMirror.ZoomFov(60, 10)).IsEqual(20f);
-        AssertThat(Refii.Game.GameMorphMirror.ZoomFov(15, 1)).IsEqual(15f);
-        AssertThat(Refii.Game.GameMorphMirror.ZoomFov(float.NaN, float.NaN)).IsEqual(60f);
+        AssertThat(GameMorphMirror.ZoomFov(60, -10)).IsEqual(60f);
+        AssertThat(GameMorphMirror.ZoomFov(60, 10)).IsEqual(20f);
+        AssertThat(GameMorphMirror.ZoomFov(15, 1)).IsEqual(15f);
+        AssertThat(GameMorphMirror.ZoomFov(float.NaN, float.NaN)).IsEqual(60f);
     }
 
     [TestCase]
@@ -288,11 +289,11 @@ public class CharacterMorphTests
         mirror.Rotate(-1, 0, 0.1f);
         AssertThat(mirror.Zoom).IsEqual(zoom);
         AssertThat(mirror.Values()).IsEqual(saved);
-        AssertThat(Refii.Game.GameMorphMirror.ZoomFov(60, mirror.Zoom) < 60).IsTrue();
+        AssertThat(GameMorphMirror.ZoomFov(60, mirror.Zoom) < 60).IsTrue();
         mirror.Reset();
         AssertThat(mirror.Zoom).IsEqual(0f);
         AssertThat(mirror.Rotation).IsEqual(0f);
-        AssertThat(Refii.Game.GameMorphMirror.ZoomFov(60, mirror.Zoom)).IsEqual(60f);
+        AssertThat(GameMorphMirror.ZoomFov(60, mirror.Zoom)).IsEqual(60f);
         AssertThat(mirror.Values()).IsEqual(saved);
         var reopened = new Engine_MorphMirrorSettings(key => saved.GetValueOrDefault(key, ""));
         AssertThat(reopened.Zoom).IsEqual(0f);
@@ -347,7 +348,7 @@ public class CharacterMorphTests
         foreach (float aspect in new[] { 4f / 3f, 16f / 9f, 21f / 9f })
         {
             float panel = (Engine_UiMorphMirror.Width + 20) / (720 * aspect);
-            Transform3D camera = Refii.Game.GameMorphMirror.FrameCamera(eye, hero, 60, aspect, panel);
+            Transform3D camera = GameMorphMirror.FrameCamera(eye, hero, 60, aspect, panel);
             AssertThat(camera.Origin).IsEqual(eye);
             Vector3 chest = camera.AffineInverse() * (hero + Vector3.Up * 1.15f);
             float tan = MathF.Tan(Mathf.DegToRad(30));

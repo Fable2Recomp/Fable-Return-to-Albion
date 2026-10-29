@@ -12,14 +12,18 @@ endif()
 
 set(_recompile "${STAGING_BIN}/recompile")
 set(_required_inputs
-    "${STAGING_BIN}/refii_hostbridge.dll"
+    # Each title's ReXGlue instance, in its title folder.
+    "${STAGING_BIN}/Fable2/refii_hostbridge.dll"
+    "${STAGING_BIN}/Fable2/refii_vfs.dll"
+    "${STAGING_BIN}/Fable3/refii_hostbridge.dll"
+    # The shared natives every instance links.
     "${STAGING_BIN}/refii_core.dll"
-    "${STAGING_BIN}/refii_vfs.dll"
+    "${STAGING_BIN}/refii_runtime.dll"
     "${STAGING_BIN}/refii_binkdecode.dll"
     "${STAGING_BIN}/refii_xmadecode.dll"
     "${STAGING_BIN}/refii_recompiler.dll"
     # The shader pipeline the launcher loads, with the compiler it links and the tool it runs
-    # (src/shader/CMakeLists.txt names them; src/hostbridge/CMakeLists.txt stages them).
+    # (src/shader/CMakeLists.txt names them; cmake/refii_stage_godot.cmake stages them).
     "${STAGING_BIN}/refii_shader_sbk.dll"
     "${STAGING_BIN}/refii_shader_xenos_translator.dll"
     "${STAGING_BIN}/XenosRecomp.dll"
@@ -28,11 +32,15 @@ set(_required_inputs
     "${STAGING_BIN}/dxc/dxc.exe"
     "${STAGING_BIN}/dxc/shader_common.h"
     "${_recompile}/include_dirs.cmake"
-    "${_recompile}/hook_sources.cmake"
+    "${_recompile}/Fable2/hook_sources.cmake"
+    "${_recompile}/Fable3/hook_sources.cmake"
+    "${_recompile}/payload_core_sources.cmake"
     "${_recompile}/versions/Fable2TU1/refii_manifest.toml"
     "${_recompile}/versions/Fable2TU1/refii_config.toml"
     "${_recompile}/versions/Fable2/refii_manifest.toml"
     "${_recompile}/versions/Fable2/refii_config.toml"
+    "${_recompile}/versions/Fable3/refiii_manifest.toml"
+    "${_recompile}/versions/Fable3/refiii_config.toml"
     "${_recompile}/src/payload_export.cpp"
 )
 foreach(_input IN LISTS _required_inputs)
@@ -48,18 +56,21 @@ if(NOT _runtime_dlls)
     message(FATAL_ERROR "The staged Windows RexGlue runtime DLL is missing from ${STAGING_BIN}")
 endif()
 
-# The install-time link reads these from bin/, the same files the host loads.
-foreach(_library rexruntime refii_core refii_vfs)
+# The install-time link reads these from where the host loads them: the shared ones from bin/,
+# a title's own from bin/<Folder>/.
+foreach(_library rexruntime refii_core refii_runtime Fable2/refii_vfs)
+    get_filename_component(_directory "${STAGING_BIN}/${_library}" DIRECTORY)
+    get_filename_component(_name "${_library}" NAME)
     file(GLOB _matches LIST_DIRECTORIES FALSE
-        "${STAGING_BIN}/${_library}.dll"
-        "${STAGING_BIN}/${_library}d.dll"
-        "${STAGING_BIN}/${_library}rd.dll"
-        "${STAGING_BIN}/lib${_library}.dll"
-        "${STAGING_BIN}/lib${_library}d.dll"
-        "${STAGING_BIN}/lib${_library}rd.dll")
+        "${_directory}/${_name}.dll"
+        "${_directory}/${_name}d.dll"
+        "${_directory}/${_name}rd.dll"
+        "${_directory}/lib${_name}.dll"
+        "${_directory}/lib${_name}d.dll"
+        "${_directory}/lib${_name}rd.dll")
     if(NOT _matches)
         message(FATAL_ERROR
-            "Windows install link library is missing from ${STAGING_BIN}: ${_library}")
+            "Windows install link library is missing from ${_directory}: ${_name}")
     endif()
 endforeach()
 

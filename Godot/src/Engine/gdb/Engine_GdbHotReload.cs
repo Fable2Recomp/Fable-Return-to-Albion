@@ -12,7 +12,7 @@ namespace Refii.Gdb;
 /// pointer into it; a title update (<c>X.gdb.tu</c>) is a second file loaded by the same loader
 /// whose records replace the first's in that map. So the composited patches the mount serves
 /// (<see cref="GdbPatchCompositor"/>) reach the running game by having the guest's own loader
-/// read them again: the tick command <c>gdb_reload PATH</c> (src/vfs/src/hooks/gdb_hot_reload.cpp)
+/// read them again: the tick command <c>gdb_reload PATH</c> (Fable2/src/vfs/src/hooks/gdb_hot_reload.cpp)
 /// loads the remounted file and writes its values into every older copy of each record, so an
 /// entity holding an old record pointer sees them too; <c>gdb_revert PATH HASH...</c> maps rows
 /// a patch no longer states back to the base file's records.

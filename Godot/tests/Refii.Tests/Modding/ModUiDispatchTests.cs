@@ -8,6 +8,7 @@ using GdUnit4;
 using static GdUnit4.Assertions;
 using Refii.Mods;
 using Refii.Ui;
+using Refii.Titles.Fable2;
 
 /// <summary>
 /// The rebuilt UI on the surfaces mods use (Part G.18): the one command dispatcher and its
@@ -37,10 +38,10 @@ public class ModUiDispatchTests
     {
         if (Environment.GetEnvironmentVariable("REFII_WRITE_GAME_TEMPLATES") is { Length: > 0 } path)
         {
-            System.IO.File.WriteAllText(path, Engine_UiTemplates.GameTemplatesText());
+            System.IO.File.WriteAllText(path, Fable2UiTemplates.GameTemplatesText());
         }
 
-        string authored = Engine_UiTemplates.AuthoredDefaults().SnapshotText();
+        string authored = Fable2UiTemplates.AuthoredDefaults().SnapshotText();
         string composed = Engine_UiTemplates.ComposeGame().SnapshotText();
         int at = 0;
         while (at < Math.Min(authored.Length, composed.Length) && authored[at] == composed[at])
@@ -55,7 +56,7 @@ public class ModUiDispatchTests
             .IsTrue();
 
         // And the file is what the generator writes now — nothing stale left in it.
-        AssertThat(Engine_UiGameTemplates.Text.Trim().Replace("\r\n", "\n") == Engine_UiTemplates.GameTemplatesText().Trim().Replace("\r\n", "\n")).IsTrue();
+        AssertThat(Engine_UiGameTemplates.Text.Trim().Replace("\r\n", "\n") == Fable2UiTemplates.GameTemplatesText().Trim().Replace("\r\n", "\n")).IsTrue();
     }
 
     [TestCase]
@@ -249,12 +250,12 @@ public class ModUiDispatchTests
     private static Engine_UiCommandSet Dispatcher(List<string> ran)
     {
         var set = new Engine_UiCommandSet();
-        set.Register(Engine_UiVerbs.PauseTab, (argument, context) =>
+        set.Register(Fable2UiVerbs.PauseTab, (argument, context) =>
         {
             ran.Add("tab " + argument + " " + context.Row);
             return Engine_UiCommandResult.Done;
         });
-        set.Register(Engine_UiVerbs.Inventory, (argument, _) =>
+        set.Register(Fable2UiVerbs.Inventory, (argument, _) =>
         {
             ran.Add("inventory " + argument);
             return Engine_UiCommandResult.Done;
@@ -312,7 +313,7 @@ public class ModUiDispatchTests
     {
         var ran = new List<string>();
         Engine_UiCommandSet set = Dispatcher(ran);
-        var theirs = new Engine_UiVerb(Engine_UiVerbs.PauseTab.Name, "x", "x", Array.Empty<Engine_UiCommandList>(), "mod");
+        var theirs = new Engine_UiVerb(Fable2UiVerbs.PauseTab.Name, "x", "x", Array.Empty<Engine_UiCommandList>(), "mod");
         AssertThat(set.Register(theirs, (_, _) => Engine_UiCommandResult.Done)).IsFalse();
 
         var own = new Engine_UiVerb("Bestiary:", "Bestiary:<beast>", "x", Array.Empty<Engine_UiCommandList>(), "mod");
@@ -321,18 +322,18 @@ public class ModUiDispatchTests
         AssertThat(failed.Outcome).IsEqual(Engine_UiCommandOutcome.Refused);
         AssertThat(failed.Message).Contains("boom");
         AssertThat(set.Unregister("Bestiary:", "mod")).IsTrue();
-        AssertThat(set.Unregister(Engine_UiVerbs.PauseTab.Name, "game")).IsFalse();
+        AssertThat(set.Unregister(Fable2UiVerbs.PauseTab.Name, "game")).IsFalse();
     }
 
     [TestCase]
     public void TheGameVerbsAreDescribedOnce()
     {
         AssertThat(Engine_UiVerbs.Game.Select(v => v.Name).Distinct().Count()).IsEqual(Engine_UiVerbs.Game.Count);
-        AssertThat(Engine_UiVerbs.Of("PauseTab:4")).IsEqual(Engine_UiVerbs.PauseTab);
-        AssertThat(Engine_UiVerbs.Of("Inventory:dyeselect:3")).IsEqual(Engine_UiVerbs.Inventory);
+        AssertThat(Engine_UiVerbs.Of("PauseTab:4")).IsEqual(Fable2UiVerbs.PauseTab);
+        AssertThat(Engine_UiVerbs.Of("Inventory:dyeselect:3")).IsEqual(Fable2UiVerbs.Inventory);
         AssertThat(Engine_UiVerbs.Of("Screen:open:1013")).IsEqual(Engine_UiVerbs.OpenScreen);
         AssertThat(Engine_UiVerbs.Of("New Game")).IsNull();
-        AssertThat(Engine_UiVerbs.PauseTab.RunsOn(Engine_UiCommandList.Screen)).IsFalse();
+        AssertThat(Fable2UiVerbs.PauseTab.RunsOn(Engine_UiCommandList.Screen)).IsFalse();
         AssertThat(Engine_UiVerbs.Lua.RunsOn(Engine_UiCommandList.Screen)).IsTrue();
     }
 

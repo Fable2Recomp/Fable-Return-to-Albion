@@ -4,6 +4,7 @@ using GdUnit4;
 using static GdUnit4.Assertions;
 using Refii.Host;
 using Refii.Ui;
+using Refii.Titles.Fable2;
 
 [TestSuite]
 public class CoopNoticesTests

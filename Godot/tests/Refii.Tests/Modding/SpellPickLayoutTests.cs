@@ -7,6 +7,7 @@ using GdUnit4;
 using static GdUnit4.Assertions;
 using Refii.Mods;
 using Refii.Ui;
+using Refii.Titles.Fable2;
 
 /// <summary>
 /// Every mod's spell slot pick on the selectors (Engine_UiSpellPicks): where each pick's icon sits

@@ -11,7 +11,7 @@ namespace Refii.Mods;
 /// </summary>
 /// <remarks>
 /// <para>The release carries each bundled mod as its source tree under
-/// <see cref="Refii.Core.Engine_AppRoot.BundledModsDirectory"/> (the repo's <c>mods-src/</c> in
+/// <see cref="Refii.Core.Engine_AppRoot.BundledModsDirectory"/> (the repo's <c>Fable2/mods-src/</c> in
 /// a dev tree): <c>mod.toml</c> is the package metadata, every other file is an entry at its own
 /// path, README files excepted. Packed here with <see cref="F2ModPackage.Create"/> — the one
 /// writer — rather than by the build, which has no way to write the format.</para>

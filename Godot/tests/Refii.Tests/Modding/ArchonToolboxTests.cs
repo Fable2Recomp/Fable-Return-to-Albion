@@ -8,6 +8,7 @@ using GdUnit4;
 using static GdUnit4.Assertions;
 using Refii.Mods;
 using Refii.Save;
+using Refii.Titles.Fable2;
 
 /// <summary>
 /// Archon's Toolbox on the save system and in co-op: the pure parsers over the toolbox's own
@@ -211,23 +212,32 @@ public class ArchonToolboxTests
 
 	private static ArchonToolbox.Mod Fishing => new("Fishing", "2.0", true, true);
 
+	/// <summary>The external-manager diff the save gate builds from the toolbox's own answer.</summary>
+	private static Engine_ExternalModManager.Diff External(ArchonLayer stamp, ArchonToolbox.Report now)
+	{
+		ArchonToolbox.Diff diff = ArchonToolbox.Compare(stamp, now);
+		return new Engine_ExternalModManager.Diff(diff.Missing.Count, diff.Present, ArchonToolbox.NoticeText(stamp, diff));
+	}
+
 	[TestCase]
 	public void TestStampAndSidecarRoundTrip()
 	{
-		SaveSidecar.ArchonLayer? stamp = ArchonToolbox.Stamp(Applied(Debug, new ArchonToolbox.Mod("Fishing", "2.0", false, true)));
+		ArchonLayer? stamp = ArchonToolbox.Stamp(Applied(Debug, new ArchonToolbox.Mod("Fishing", "2.0", false, true)));
 		AssertThat(stamp).IsNotNull();
 		AssertThat(stamp!.Patched).IsTrue();
 		AssertThat(stamp.Bank).IsEqual(ArchonToolbox.BankPatched10);
 		AssertThat(stamp.Runner).IsEqual("1.04");
 		AssertThat(stamp.Mods.Select(m => m.Label).ToList()).IsEqual(new List<string> { "DebugMenu 1.3" });
 
-		var sidecar = new SaveSidecar { Refii = new SaveSidecar.RefiiLayer { Build = "2" }, Archon = stamp };
+		var sidecar = new SaveSidecar { Refii = new SaveSidecar.RefiiLayer { Build = "2" } };
+		sidecar.Layers[ArchonLayer.Key] = stamp.ToJson();
 		byte[] json = sidecar.ToJson();
 		SaveSidecar back = SaveSidecar.Parse(json);
 		AssertThat(back.Mods).IsNull();
-		AssertThat(back.Archon).IsNotNull();
-		AssertThat(back.Archon!.Patched).IsTrue();
-		AssertThat(back.Archon.Find("debugmenu")!.Version).IsEqual("1.3");
+		ArchonLayer? backLayer = ArchonLayer.FromJson(back.Layers[ArchonLayer.Key]);
+		AssertThat(backLayer).IsNotNull();
+		AssertThat(backLayer!.Patched).IsTrue();
+		AssertThat(backLayer.Find("debugmenu")!.Version).IsEqual("1.3");
 		AssertThat(back.Modded).IsTrue();
 		AssertThat(back.ToJson()).IsEqual(json);
 
@@ -237,16 +247,18 @@ public class ArchonToolboxTests
 
 		// The layer is independent: a reader without it, and a save with the toolbox but no mods, is not modded.
 		SaveSidecar none = SaveSidecar.Parse(System.Text.Encoding.UTF8.GetBytes("{\"schema\":\"refii-save/1\",\"refii\":{\"build\":\"2\"}}"));
-		AssertThat(none.Archon).IsNull();
-		SaveSidecar.ArchonLayer? empty = ArchonToolbox.Stamp(Applied());
+		AssertThat(none.Layers.ContainsKey(ArchonLayer.Key)).IsFalse();
+		ArchonLayer? empty = ArchonToolbox.Stamp(Applied());
 		AssertThat(empty).IsNotNull();
-		AssertThat(new SaveSidecar { Archon = empty }.Modded).IsFalse();
+		var emptySidecar = new SaveSidecar();
+		emptySidecar.Layers[ArchonLayer.Key] = empty!.ToJson();
+		AssertThat(emptySidecar.Modded).IsFalse();
 	}
 
 	[TestCase]
 	public void TestCompareAgainstTheInstallNow()
 	{
-		SaveSidecar.ArchonLayer stamp = ArchonToolbox.Stamp(Applied(Debug, Fishing))!;
+		ArchonLayer stamp = ArchonToolbox.Stamp(Applied(Debug, Fishing))!;
 
 		ArchonToolbox.Diff same = ArchonToolbox.Compare(stamp, Applied(Fishing, Debug));
 		AssertThat(same.Same).IsTrue();
@@ -269,7 +281,7 @@ public class ArchonToolboxTests
 	[TestCase]
 	public void TestNoticeListsTheToolboxModsUnderTheirOwnHeading()
 	{
-		SaveSidecar.ArchonLayer stamp = ArchonToolbox.Stamp(Applied(Debug, Fishing))!;
+		ArchonLayer stamp = ArchonToolbox.Stamp(Applied(Debug, Fishing))!;
 
 		// Present and the same: the heading and the list, nothing marked.
 		string same = ArchonToolbox.NoticeText(stamp, ArchonToolbox.Compare(stamp, Applied(Debug, Fishing)));
@@ -289,11 +301,11 @@ public class ArchonToolboxTests
 		var souls = new ModFingerprint.Mod("souls_combat", "Souls Combat", "0.1.0", ShaA);
 		SaveSidecar.ModsLayer mods = ModSaveStamp.Build(ModFingerprint.From(2, new[] { souls }), new Dictionary<string, IReadOnlyCollection<uint>>());
 		ModSaveStamp.Diff diff = ModSaveStamp.Compare(mods, ModFingerprint.From(2, new[] { souls }));
-		string page = ModSaveStamp.NoticeText(mods, diff, stamp, ArchonToolbox.Compare(stamp, Applied(Debug, Fishing)));
+		string page = ModSaveStamp.NoticeText(mods, diff, External(stamp, Applied(Debug, Fishing)));
 		AssertThat(page).IsEqual("This save was made with these mods:\nSouls Combat 0.1.0\n\n" + same);
 
 		// A save made under the toolbox alone: no Refii heading, only the toolbox's part.
-		string alone = ModSaveStamp.NoticeText(new SaveSidecar.ModsLayer(), ModSaveStamp.Compare(null, ModFingerprint.From(2, Array.Empty<ModFingerprint.Mod>())), stamp, ArchonToolbox.Compare(stamp, Applied(Debug, Fishing)));
+		string alone = ModSaveStamp.NoticeText(new SaveSidecar.ModsLayer(), ModSaveStamp.Compare(null, ModFingerprint.From(2, Array.Empty<ModFingerprint.Mod>())), External(stamp, Applied(Debug, Fishing)));
 		AssertThat(alone).IsEqual(same);
 
 		// Without the toolbox arguments the page reads as before.
@@ -318,11 +330,11 @@ public class ArchonToolboxTests
 		// They count in the digest and the diff, after the player's own mods, and survive the wire.
 		var souls = new ModFingerprint.Mod("souls_combat", "Souls Combat", "0.1.0", ShaA);
 		ModFingerprint plain = ModFingerprint.From(2, new[] { souls });
-		ModFingerprint with = ModFingerprint.WithArchon(plain, entries);
+		ModFingerprint with = ModFingerprint.WithExternal(plain, entries);
 		AssertThat(with.Mods.Count).IsEqual(3);
 		AssertThat(with.Mods[0].Name).IsEqual("souls_combat");
 		AssertThat(with.Digest()).IsNotEqual(plain.Digest());
-		AssertThat(ReferenceEquals(ModFingerprint.WithArchon(plain, new List<ModFingerprint.Mod>()), plain)).IsTrue();
+		AssertThat(ReferenceEquals(ModFingerprint.WithExternal(plain, new List<ModFingerprint.Mod>()), plain)).IsTrue();
 		AssertThat(ModFingerprint.TryDecode(with.Encode(), out ModFingerprint? wire)).IsTrue();
 		AssertThat(wire!.Digest()).IsEqual(with.Digest());
 		AssertThat(wire.Mods[1].Native).IsTrue();
@@ -334,12 +346,12 @@ public class ArchonToolboxTests
 	{
 		var souls = new ModFingerprint.Mod("souls_combat", "Souls Combat", "0.1.0", ShaA, 1024);
 		List<ModFingerprint.Mod> archon = ArchonToolbox.FingerprintEntries(Applied(Debug));
-		ModFingerprint hostSet = ModFingerprint.WithArchon(ModFingerprint.From(2, new[] { souls }), archon);
+		ModFingerprint hostSet = ModFingerprint.WithExternal(ModFingerprint.From(2, new[] { souls }), archon);
 		AssertThat(ModFingerprint.TryDecode(hostSet.Encode(), out ModFingerprint? host)).IsTrue();
 		var installed = new List<ModSync.Item> { new(souls, ModSync.Source.Installed, "/mods/souls.f2mod") };
 
 		// Same toolbox mod on both sides: agreed on, never a session entry.
-		ModSync.Plan same = ModSync.Resolve(host!, ModFingerprint.WithArchon(ModFingerprint.From(2, Array.Empty<ModFingerprint.Mod>()), archon), installed, new List<ModSync.Item>());
+		ModSync.Plan same = ModSync.Resolve(host!, ModFingerprint.WithExternal(ModFingerprint.From(2, Array.Empty<ModFingerprint.Mod>()), archon), installed, new List<ModSync.Item>());
 		AssertThat(same.Ok).IsTrue();
 		AssertThat(same.Order.Select(i => i.Mod.Name).ToList()).IsEqual(new List<string> { "souls_combat" });
 		AssertThat(same.Suspend).IsEmpty();
@@ -355,14 +367,14 @@ public class ArchonToolboxTests
 		// The joiner has it against another bank: blocked as a differing copy.
 		List<ModFingerprint.Mod> other = ArchonToolbox.FingerprintEntries(
 			new ArchonToolbox.Report { Runner = true, Bank = ArchonToolbox.BankState.Patched, BankSha256 = ArchonToolbox.BankPatched1, Mods = { Debug } });
-		ModSync.Plan differs = ModSync.Resolve(host!, ModFingerprint.WithArchon(ModFingerprint.From(2, Array.Empty<ModFingerprint.Mod>()), other), installed, new List<ModSync.Item>());
+		ModSync.Plan differs = ModSync.Resolve(host!, ModFingerprint.WithExternal(ModFingerprint.From(2, Array.Empty<ModFingerprint.Mod>()), other), installed, new List<ModSync.Item>());
 		AssertThat(differs.Ok).IsFalse();
 		AssertThat(differs.Blocked).Contains("your copy differs from the host's");
 
 		// The joiner's own toolbox mod the host does not run: blocked, never suspended.
 		ModFingerprint plainHost = ModFingerprint.From(2, new[] { souls });
 		AssertThat(ModFingerprint.TryDecode(plainHost.Encode(), out ModFingerprint? host2)).IsTrue();
-		ModSync.Plan mine = ModSync.Resolve(host2!, ModFingerprint.WithArchon(ModFingerprint.From(2, new[] { souls }), archon), installed, new List<ModSync.Item>());
+		ModSync.Plan mine = ModSync.Resolve(host2!, ModFingerprint.WithExternal(ModFingerprint.From(2, new[] { souls }), archon), installed, new List<ModSync.Item>());
 		AssertThat(mine.Ok).IsFalse();
 		AssertThat(mine.Blocked).Contains("your Archon's Toolbox: DebugMenu 1.3 is an Archon's Toolbox mod");
 		AssertThat(mine.Blocked).Contains("disable it in Archon's Toolbox");

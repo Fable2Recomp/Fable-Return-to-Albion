@@ -96,22 +96,8 @@ public static class Engine_UiMenuSources
 			["spawn"] = SpawnRows,
 			[Engine_UiAchievementPage.SourceName] = Engine_UiAchievementPage.Rows,
 
-			// THE FIRST DATA-AREA SOURCE. `capture` and `spawn` both watch the guest build its
-			// own menu; this one reads the hero's inventory and the shipped GDB directly, so the
-			// rows exist without a Gameface screen ever having been built.
-			[Engine_UiInventorySource.SourceName] = Engine_UiInventorySource.Rows,
-
-			// The weapons screen's two halves — one category, split by the item's WeaponType.
-			[Engine_UiInventorySource.WeaponsSource] = Engine_UiInventorySource.Weapons,
-
-			// The world map's two halves of one list — see Engine_UiQuestSource.
-			[Engine_UiQuestSource.QuestsSource] = Engine_UiQuestSource.Quests,
-			[Engine_UiQuestSource.JobsSource] = Engine_UiQuestSource.Jobs,
-			[Engine_UiQuestSource.RegionsSource] = Engine_UiQuestSource.Regions,
-			[Engine_UiQuestSource.SalesSource] = Engine_UiQuestSource.Sales,
-			[Engine_UiQuestSource.FamilySource] = Engine_UiQuestSource.Family,
-			[Engine_UiPropertySource.SourceName] = Engine_UiPropertySource.Rows,
-			[Engine_UiAbilitySource.SourceName] = Engine_UiAbilitySource.Rows,
+			// The title's own sources (the hero's inventory, its quests, its shop…) are added when
+			// it installs (RegisterGame).
 
 			// The shell's own screen: mods from the load order on disk, the rest from the live
 			// RexNet node. No guest screen backs any of them.
@@ -131,55 +117,10 @@ public static class Engine_UiMenuSources
 			[Engine_UiNetworkSource.AllSource] = Engine_UiNetworkSource.All,
 			[Engine_UiNetworkSource.HostingSource] = Engine_UiNetworkSource.Hosting,
 
-			// The shop's six groups — the capture's rows with the TRANSACTION stamped on.
-			[ShopSource] = ShopRows,
-
 			// A mod's rows: those a script stated (set_menu_rows) and published values (Engine_UiModRows).
 			[Engine_UiModRows.RowsSource] = Engine_UiModRows.Rows,
 			[Engine_UiModRows.ValuesSource] = Engine_UiModRows.Values,
 		};
-
-	/// <summary>`shop:<group>` — the capture under that group, each row carrying its commit.</summary>
-	public const string ShopSource = "shop";
-
-	/// <summary>The verb a shop row carries — `Shop:buy|sell:&lt;ticket&gt;`, see Engine_UiScreenActions.</summary>
-	public const string ShopAction = "Shop:";
-
-	/// <summary>
-	/// The shop's rows are the capture's, with one thing added: WHICH TRANSACTION THE ROW IS.
-	///
-	/// A shop row's identity is a per-population TICKET, not a record hash — `sub_82880AC8`
-	/// files the item behind a monotonic number and `sub_82880BC0` is the only way back. The
-	/// ticket is what the guest puts in the row's `Float1|Float2`, which is exactly the pair
-	/// the spawn capture already reads as `Id`, so the row arrives holding everything the
-	/// commit needs.
-	///
-	/// Buy or sell is the GROUP, not the row: `sub_82994218` spawns into six parents whose
-	/// names begin `Buy` or `Sell`, and the guest's own UI codes are 30 Buy / 31 Sell against
-	/// the same split. So the command is stamped here rather than guessed at commit time.
-	/// </summary>
-	private static IReadOnlyList<Row> ShopRows(string group)
-	{
-		IReadOnlyList<Row> captured = CaptureRows(group);
-		if (captured.Count == 0)
-		{
-			return captured;
-		}
-
-		bool selling = group.StartsWith("Sell", System.StringComparison.OrdinalIgnoreCase);
-		var rows = new List<Row>(captured.Count);
-		foreach (Row row in captured)
-		{
-			// A row with no ticket cannot be committed — ticket 0 is never issued
-			// (`sub_82880AC8` pre-increments), so it stays a plain row rather than one whose
-			// commit would be dropped by the pump with a puzzling message.
-			rows.Add(row.Id == 0u
-				? row
-				: row with { Command = $"{ShopAction}{(selling ? "sell" : "buy")}:{row.Id}" });
-		}
-
-		return rows;
-	}
 
 	/// <summary>
 	/// Rows of a STATED list (one read off the guest's own `g_Menu`) that unfold into a source's
@@ -204,16 +145,28 @@ public static class Engine_UiMenuSources
 	private static readonly HashSet<string> GameSources = new(Providers.Keys, System.StringComparer.OrdinalIgnoreCase);
 
 	/// <summary>Whether <paramref name="name"/> is one of the game's own sources.</summary>
-	public static bool IsGameSource(string name) => GameSources.Contains(name);
+	public static bool IsGameSource(string name)
+	{
+		Refii.Core.Engine_TitleGame.EnsureInstalled();
+		return GameSources.Contains(name);
+	}
 
 	/// <summary>Adds or replaces a source; the name is the `source` field before the colon, the rest is the argument.</summary>
 	public static void Register(string name, Provider provider) => Providers[name] = provider;
+
+	/// <summary>A title's own source, installed with the title: one of the game's, which a script may not replace.</summary>
+	public static void RegisterGame(string name, Provider provider)
+	{
+		Providers[name] = provider;
+		GameSources.Add(name);
+	}
 
 	private static readonly Row[] None = System.Array.Empty<Row>();
 
 	/// <summary>Rows for one entry's source; <paramref name="entryName"/> is the default argument.</summary>
 	public static IReadOnlyList<Row> Rows(string source, string entryName)
 	{
+		Refii.Core.Engine_TitleGame.EnsureInstalled();
 		if (source.Length == 0)
 		{
 			return None;
@@ -299,7 +252,7 @@ public static class Engine_UiMenuSources
 	}
 
 	/// <summary>`capture`: the children the guest states for <paramref name="parent"/> (raw capture, no hold).</summary>
-	private static IReadOnlyList<Row> CaptureRows(string parent) =>
+	public static IReadOnlyList<Row> CaptureRows(string parent) =>
 		CaptureIsOurs()
 			? SpawnRows(parent, Engine_UiSource.Current.GetMenuRows(out _))
 			: None;

@@ -702,7 +702,7 @@ public static class Engine_FxRecipes
 		foreach ((string mod, string text) in Refii.Mods.ModEntries.ReadEnabledText(RecipesPath))
 		{
 			// THE BUNDLED SOURCE WINS OVER ITS PACKAGE. A mod that ships with the app has its
-			// source tree beside the binary (mods-src in a dev tree, bundled-mods exported), and an
+			// source tree beside the binary (Fable2/mods-src in a dev tree, bundled-mods exported), and an
 			// edit there reaches a running game through `fx-recipes-reload` without a repack —
 			// the loop a look is tuned in. Installed-only mods have no source and read as before.
 			string source = System.IO.Path.Combine(

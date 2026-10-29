@@ -343,25 +343,27 @@ public sealed class ModFingerprint
 		Current(Refii.Assets.Engine_GameAssets.ModsRoot, ModApi.Version);
 
 	/// <summary>
-	/// The set two co-op players compare: <see cref="Current()"/> with the mods running under
-	/// Archon's Toolbox appended (<see cref="ArchonToolbox.FingerprintEntries"/>) — data-only
-	/// entries that count in the digest and the diff but are never synced. The save stamp
-	/// (<see cref="ModSaveStamp.Current"/>) keeps to <see cref="Current()"/>: the toolbox has its
-	/// own layer there.
+	/// The set two co-op players compare: <see cref="Current()"/> with the mods running under the
+	/// title's external mod manager appended (<see cref="Engine_ExternalModManager.FingerprintEntries"/>,
+	/// Archon's Toolbox for Fable 2) — data-only entries that count in the digest and the diff but
+	/// are never synced. The save stamp (<see cref="ModSaveStamp.Current"/>) keeps to
+	/// <see cref="Current()"/>: the manager has its own layer there.
 	/// </summary>
 	public static ModFingerprint CurrentForCoop() =>
-		WithArchon(Current(), ArchonToolbox.FingerprintEntries(ArchonToolbox.Detect()));
+		Refii.Core.Engine_TitleGame.Active.ExternalMods is { } external
+			? WithExternal(Current(), external.FingerprintEntries())
+			: Current();
 
-	/// <summary><paramref name="set"/> with <paramref name="archon"/>'s entries after its own mods.</summary>
-	public static ModFingerprint WithArchon(ModFingerprint set, IReadOnlyList<Mod> archon)
+	/// <summary><paramref name="set"/> with <paramref name="external"/>'s entries after its own mods.</summary>
+	public static ModFingerprint WithExternal(ModFingerprint set, IReadOnlyList<Mod> external)
 	{
-		if (archon.Count == 0)
+		if (external.Count == 0)
 		{
 			return set;
 		}
 
 		var mods = new List<Mod>(set.Mods);
-		mods.AddRange(archon);
+		mods.AddRange(external);
 		return From(set.ApiVersion, mods);
 	}
 

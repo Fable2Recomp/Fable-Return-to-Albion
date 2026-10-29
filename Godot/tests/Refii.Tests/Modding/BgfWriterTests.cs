@@ -34,7 +34,7 @@ public class BgfWriterTests
 		string? at = AppContext.BaseDirectory;
 		for (int i = 0; i < 16 && at != null; i++)
 		{
-			string direct = Path.Combine(at, "assets", "game", "data", "guiscripts.bnk");
+			string direct = Path.Combine(at, "assets", "Fable2", "game", "data", "guiscripts.bnk");
 			if (File.Exists(direct))
 			{
 				return direct;
@@ -45,7 +45,7 @@ public class BgfWriterTests
 			{
 				foreach (string package in Directory.EnumerateDirectories(packages))
 				{
-					string candidate = Path.Combine(package, "assets", "game", "data", "guiscripts.bnk");
+					string candidate = Path.Combine(package, "assets", "Fable2", "game", "data", "guiscripts.bnk");
 					if (File.Exists(candidate))
 					{
 						return candidate;

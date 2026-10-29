@@ -11,7 +11,7 @@ namespace Refii.Core;
 /// <para>THE GUEST IS THE CAMERA'S AUTHORITY; THE MOUSE IS ITS INPUT. Every turn the mouse makes
 /// is posted to the guest, which hands all of it to the local player's active camera before that
 /// camera's next update, and the camera turns it whole in that update — outside the stick's
-/// easing (src/vfs/src/hooks/mouse_look.cpp). Position, framing, collision, lock-on and cuts stay
+/// easing (Fable2/src/vfs/src/hooks/mouse_look.cpp). Position, framing, collision, lock-on and cuts stay
 /// the camera's.</para>
 /// <para>SO THERE IS NOTHING TO PREDICT. At any frame the turn is in exactly one of two places:
 /// taken by an update, and then carried by the camera the guest states after it; or posted and

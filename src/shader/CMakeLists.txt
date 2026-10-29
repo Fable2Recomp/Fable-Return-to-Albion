@@ -185,7 +185,7 @@ if(NOT EXISTS "${REFII_SHADER_DXC_TOOL}")
 endif()
 
 # What the translator needs beside itself at runtime, in two places. refii_stage_godot
-# (src/hostbridge/CMakeLists.txt) stages them; the translator looks for bin/dxc before the
+# (cmake/refii_stage_godot.cmake) stages them; the translator looks for bin/dxc before the
 # compile-time paths above, which name this tree's vendored copies and exist on no player's
 # machine.
 #

@@ -24,6 +24,10 @@ public sealed class BnkFileSystem : IDisposable
     private readonly Dictionary<string, BnkContainer> _containers =
         new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>The <c>.dat</c> files on disk that nested header banks read their data from.</summary>
+    private readonly Dictionary<string, BnkMappedRange> _dataFiles = new(StringComparer.Ordinal);
+    private readonly List<FileStream> _dataFileStreams = new();
+
     // Android keeps a smaller budget for its smaller managed heap; see BnkNestedCachePolicy.
     private static readonly long NestedCacheBudget = BnkNestedCachePolicy.DefaultBytes(Refii.Core.Engine_Platform.IsAndroid);
 
@@ -59,6 +63,8 @@ public sealed class BnkFileSystem : IDisposable
         public required BnkEntry Container;
         /// <summary>The container's bytes in the outer bank's map; null when it must be copied.</summary>
         public BnkMappedRange? Map;
+        /// <summary>Gives a separate-data container its <c>.dat</c> each time it is opened.</summary>
+        public Action<BnkArchive>? AttachData;
         public readonly object LoadLock = new();
         public volatile BnkArchive? Archive;
         public long Bytes;
@@ -85,6 +91,7 @@ public sealed class BnkFileSystem : IDisposable
                         throw new InvalidDataException(error);
                     }
 
+                    slot.AttachData?.Invoke(archive);
                     slot.Archive = archive;
                     System.Threading.Interlocked.Increment(ref NestedLoads);
                     System.Threading.Interlocked.Add(ref NestedMappedBytes, map.Length);
@@ -99,6 +106,7 @@ public sealed class BnkFileSystem : IDisposable
                         throw new InvalidDataException(error);
                     }
 
+                    slot.AttachData?.Invoke(archive);
                     slot.Bytes = container.LongLength;
                     slot.Archive = archive;
                     System.Threading.Interlocked.Increment(ref NestedLoads);
@@ -201,7 +209,7 @@ public sealed class BnkFileSystem : IDisposable
             {
                 filesystem._archives.Add(archive);
                 BnkArchive owner = archive;
-                filesystem.Index(archive, entry => owner.ReadEntryBytes(entry), 0, expandNested);
+                filesystem.Index(archive, entry => owner.ReadEntryBytes(entry), 0, expandNested, gameDirectory);
             }
             else
             {
@@ -223,10 +231,10 @@ public sealed class BnkFileSystem : IDisposable
             filesystem.IndexLoose(gameDirectory, looseExtensions);
         }
 
-        Refii.FlashGames.Engine_SwfAssets.Index(filesystem, gameDirectory);
+        Refii.Core.Engine_TitleGame.Active.IndexLooseData(filesystem, gameDirectory);
 
-        // MODS LAST, so a mod can override anything the game shipped — the pub games' extracted
-        // assets added just above included.
+        // MODS LAST, so a mod can override anything the game shipped — the title's loose data
+        // indexed just above included.
         if (overlays is not null)
         {
             foreach ((string name, string assetRoot) in overlays)
@@ -267,7 +275,7 @@ public sealed class BnkFileSystem : IDisposable
             {
                 _archives.Add(archive);
                 BnkArchive owner = archive;
-                Index(archive, entry => owner.ReadEntryBytes(entry), 0, expandNested, preferNew: true);
+                Index(archive, entry => owner.ReadEntryBytes(entry), 0, expandNested, updateRoot, preferNew: true);
             }
             else
             {
@@ -343,7 +351,7 @@ public sealed class BnkFileSystem : IDisposable
             {
                 _archives.Add(archive);
                 BnkArchive owner = archive;
-                Index(archive, entry => owner.ReadEntryBytes(entry), 0, expandNested, name);
+                Index(archive, entry => owner.ReadEntryBytes(entry), 0, expandNested, assetRoot, name);
             }
             else
             {
@@ -516,6 +524,7 @@ public sealed class BnkFileSystem : IDisposable
         foreach (string path in matches.OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
         {
             if (path.EndsWith(".bnk", StringComparison.OrdinalIgnoreCase) ||
+                IsBankData(path) ||
                 path.EndsWith(".xex", StringComparison.OrdinalIgnoreCase) ||
                 path.EndsWith(".xexp", StringComparison.OrdinalIgnoreCase))
             {
@@ -770,18 +779,38 @@ public sealed class BnkFileSystem : IDisposable
         }
     }
 
+    /// <summary>
+    /// A separate-data bank's <c>.dat</c> is the bank's bytes, not a file of its own: the guest
+    /// reaches it only through the header's bank, so the mount does the same.
+    /// </summary>
+    private static bool IsBankData(string path) =>
+        path.EndsWith(".bnk.dat", StringComparison.OrdinalIgnoreCase);
+
+    /// <param name="dataRoot">The directory the archive's entry names are relative to, where a
+    /// nested header bank's <c>.dat</c> lies when no entry of <paramref name="archive"/> holds it.</param>
     private void Index(
         BnkArchive archive,
         Func<BnkEntry, byte[]> read,
         int depth,
         bool expandNested,
+        string dataRoot,
         string sourceMod = "",
         bool? preferNew = null)
     {
+        Dictionary<string, BnkEntry>? bankData = null;
+        foreach (BnkEntry entry in archive.Entries)
+        {
+            if (IsBankData(entry.RelativePath))
+            {
+                bankData ??= new Dictionary<string, BnkEntry>(StringComparer.OrdinalIgnoreCase);
+                bankData[Normalize(entry.RelativePath)] = entry;
+            }
+        }
+
         foreach (BnkEntry entry in archive.Entries)
         {
             string normalized = Normalize(entry.RelativePath);
-            if (normalized.Length == 0)
+            if (normalized.Length == 0 || IsBankData(normalized))
             {
                 continue;
             }
@@ -789,7 +818,9 @@ public sealed class BnkFileSystem : IDisposable
             bool isNestedBank = normalized.EndsWith(".bnk", StringComparison.OrdinalIgnoreCase);
             if (isNestedBank && expandNested && depth < MaxNestingDepth)
             {
-                if (TryExpandNested(archive, entry, read, depth, normalized, sourceMod))
+                BnkEntry? data = null;
+                bankData?.TryGetValue(normalized + ".dat", out data);
+                if (TryExpandNested(archive, entry, read, depth, normalized, data, dataRoot, sourceMod))
                 {
                     continue;
                 }
@@ -808,6 +839,8 @@ public sealed class BnkFileSystem : IDisposable
         Func<BnkEntry, byte[]> read,
         int depth,
         string normalized,
+        BnkEntry? dataEntry,
+        string dataRoot,
         string sourceMod = "")
     {
         BnkArchive? nested = null;
@@ -843,7 +876,24 @@ public sealed class BnkFileSystem : IDisposable
             }
         }
 
-        var slot = new NestedSlot { Key = normalized, ReadOuter = read, Container = entry, Map = map };
+        Action<BnkArchive>? attach = null;
+        if (nested.DataIsSeparate)
+        {
+            attach = ResolveBankData(archive, read, normalized, dataEntry, dataRoot);
+            if (attach is null)
+            {
+                nested.Dispose();
+                _failures.Add($"{normalized}: its data {normalized}.dat is in no mounted bank and not on disk");
+                return false;
+            }
+
+            attach(nested);
+        }
+
+        var slot = new NestedSlot
+        {
+            Key = normalized, ReadOuter = read, Container = entry, Map = map, AttachData = attach,
+        };
         Func<BnkEntry, byte[]> nestedRead = target => ReadNestedEntry(slot, target);
 
         try
@@ -861,7 +911,7 @@ public sealed class BnkFileSystem : IDisposable
             }
 
             _containers[normalized] = new BnkContainer(normalized, archive.ArchivePath, contents);
-            Index(nested, nestedRead, depth + 1, true, sourceMod);
+            Index(nested, nestedRead, depth + 1, true, dataRoot, sourceMod);
         }
         finally
         {
@@ -888,6 +938,53 @@ public sealed class BnkFileSystem : IDisposable
             new BnkFile(archive.ArchivePath, entry, normalized, read, sourceMod: sourceMod),
             preferNew: sourceMod.Length != 0);
         return true;
+    }
+
+    /// <summary>
+    /// Where a nested header bank's data is: the sibling <c>&lt;bank&gt;.dat</c> entry of the
+    /// bank that holds the header (every nested bank in levels.bnk and streaming.bnk), else the
+    /// file at the header's own path under the data root (globals_textures.bnk's header is in
+    /// levels.bnk, its data on the disc). Null when neither exists.
+    /// </summary>
+    private Action<BnkArchive>? ResolveBankData(
+        BnkArchive outer,
+        Func<BnkEntry, byte[]> readOuter,
+        string normalized,
+        BnkEntry? dataEntry,
+        string dataRoot)
+    {
+        if (dataEntry is not null)
+        {
+            if (outer.TryMapEntry(dataEntry, out BnkMappedRange? map) && map is not null)
+            {
+                return nested => nested.AttachData(map.OpenStream(), map, ownsRange: false);
+            }
+
+            return nested => nested.AttachData(new MemoryStream(readOuter(dataEntry), false), null, ownsRange: false);
+        }
+
+        string diskPath = Path.Combine(dataRoot, normalized + ".dat");
+        if (dataRoot.Length == 0 || !File.Exists(diskPath))
+        {
+            return null;
+        }
+
+        if (!_dataFiles.TryGetValue(diskPath, out BnkMappedRange? file))
+        {
+            var stream = new FileStream(
+                diskPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (!BnkMappedRange.TryMapFile(stream, out file) || file is null)
+            {
+                stream.Dispose();
+                return null;
+            }
+
+            _dataFileStreams.Add(stream);
+            _dataFiles[diskPath] = file;
+        }
+
+        BnkMappedRange whole = file;
+        return nested => nested.AttachData(whole.OpenStream(), whole, ownsRange: false);
     }
 
     private void Insert(string normalized, BnkFile file, bool preferNew = false)
@@ -1010,6 +1107,19 @@ public sealed class BnkFileSystem : IDisposable
         }
 
         _archives.Clear();
+
+        foreach (BnkMappedRange file in _dataFiles.Values)
+        {
+            file.Dispose();
+        }
+
+        foreach (FileStream stream in _dataFileStreams)
+        {
+            stream.Dispose();
+        }
+
+        _dataFiles.Clear();
+        _dataFileStreams.Clear();
     }
 }
 

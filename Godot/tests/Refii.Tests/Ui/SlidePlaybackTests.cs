@@ -57,7 +57,7 @@ public class SlidePlaybackTests
 
 		for (string? at = AppContext.BaseDirectory; at is not null; at = Path.GetDirectoryName(at))
 		{
-			string direct = Path.Combine(at, "assets", "game", "data", "guiscripts.bnk");
+			string direct = Path.Combine(at, "assets", "Fable2", "game", "data", "guiscripts.bnk");
 			if (File.Exists(direct))
 			{
 				return direct;

@@ -4,7 +4,7 @@ blue and one Skill gold, on the same aged parchment Souls Combat's Stamina card 
 
     tools/spell_weaving_icons.py
 
-Writes mods-src/spell_weaving/art/gui/abilitytarot/spell_weaving.tex.png, which a mod's mount
+Writes Fable2/mods-src/spell_weaving/art/gui/abilitytarot/spell_weaving.tex.png, which a mod's mount
 converts to the `.tex` the page loads (Engine_ModImageOverlays). Our own art: nothing here is
 taken from the game.
 """
@@ -168,12 +168,12 @@ def slot_frame():
 
 def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    tarot = os.path.join(root, "mods-src", "spell_weaving", "art", "gui", "abilitytarot")
+    tarot = os.path.join(root, "Fable2", "mods-src", "spell_weaving", "art", "gui", "abilitytarot")
     os.makedirs(tarot, exist_ok=True)
     path = os.path.join(tarot, "spell_weaving.tex.png")
     card().save(path)
     print(path)
-    hud = os.path.join(root, "mods-src", "spell_weaving", "art", "gui", "hud")
+    hud = os.path.join(root, "Fable2", "mods-src", "spell_weaving", "art", "gui", "hud")
     os.makedirs(hud, exist_ok=True)
     path = os.path.join(hud, "spell_weaving_slot.tex.png")
     slot_frame().save(path)

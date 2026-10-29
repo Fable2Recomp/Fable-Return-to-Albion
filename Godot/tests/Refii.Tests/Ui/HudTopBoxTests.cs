@@ -4,6 +4,7 @@ using GdUnit4;
 using static GdUnit4.Assertions;
 using Refii.Host;
 using Refii.Ui;
+using Refii.Titles.Fable2;
 
 /// <summary>
 /// <see cref="Engine_UiHudTopBox.Publish"/>'s visibility rule: the box follows the guest's own
@@ -16,33 +17,33 @@ public class HudTopBoxTests
 {
 	private const uint QuestObjective = 0xCACB859Eu;
 
-	private static readonly HostBridge.TopBoxFront NoManager = default;
+	private static readonly Fable2Bridge.TopBoxFront NoManager = default;
 
-	private static readonly HostBridge.TopBoxFront Empty = new(
+	private static readonly Fable2Bridge.TopBoxFront Empty = new(
 		Known: true, Present: false, TitleTag: 0u, ShowA: false, HoldA: false, ShowY: false,
 		HoldY: false, Channel: 0, NameHash: 0u, LifetimeMs: 0);
 
 	/// <summary>`DisplayInfoBoxParams{DisplayBoxStyle=2, IsHoldAButton=true}` — a quest offer.</summary>
-	private static readonly HostBridge.TopBoxFront HoldToAccept = new(
+	private static readonly Fable2Bridge.TopBoxFront HoldToAccept = new(
 		Known: true, Present: true, TitleTag: 0x1234u, ShowA: true, HoldA: true, ShowY: false,
 		HoldY: false, Channel: 2, NameHash: 0x8D577C0Du, LifetimeMs: -1000);
 
 	/// <summary>`sub_8251D538`'s record: channel 10, 20 s, no buttons.</summary>
-	private static readonly HostBridge.TopBoxFront Objective = new(
+	private static readonly Fable2Bridge.TopBoxFront Objective = new(
 		Known: true, Present: true, TitleTag: 0x5678u, ShowA: false, HoldA: false, ShowY: false,
 		HoldY: false, Channel: 10, NameHash: QuestObjective, LifetimeMs: 20000);
 
 	/// <summary>`sub_826B50B8`'s record: channel 10, never expires, the spell blade's word.</summary>
-	private static readonly HostBridge.TopBoxFront WillName = new(
+	private static readonly Fable2Bridge.TopBoxFront WillName = new(
 		Known: true, Present: true, TitleTag: 0u, ShowA: false, HoldA: false, ShowY: false,
 		HoldY: false, Channel: 10, NameHash: Engine_UiHudTopBox.SpellAssignerInfoHash, LifetimeMs: 0);
 
-	private static readonly HostBridge.TopBoxBody NoBody = default;
+	private static readonly Fable2Bridge.TopBoxBody NoBody = default;
 
 	private static bool? Toggle(Engine_HudValues values, string name) =>
 		values.Visible(Engine_HudValues.Handle.For(name));
 
-	private static void Publish(Engine_HudValues values, HostBridge.TopBoxFront front, bool aHeld = false) =>
+	private static void Publish(Engine_HudValues values, Fable2Bridge.TopBoxFront front, bool aHeld = false) =>
 		Engine_UiHudTopBox.Publish(front, aHeld, false, values, null, null, () => NoBody);
 
 	[Before]

@@ -34,7 +34,7 @@ public static class Engine_UiModMenus
 	/// (<see cref="Engine_UiPropertySource.MenuPlayer"/>): the guest's stated menu owner in local
 	/// co-op, else this machine's player (player two on a joined client).
 	/// </summary>
-	public static int MenuPlayer => Engine_UiPropertySource.MenuPlayer();
+	public static int MenuPlayer => Refii.Core.Engine_TitleGame.Active.MenuPlayer;
 
 	private static Engine_FrontEndMenuView? _focus;
 	private static string _focusRoot = string.Empty;
@@ -334,7 +334,7 @@ public static class Engine_UiModMenus
 
 	/// <summary>
 	/// A row's <c>Mod:lua:</c> call on the next guest tick: in a game, in the game VM (built by
-	/// <c>Game_InitDatabases</c>, src/vfs/src/hooks/mod_lua_hooks.cpp); on the title and the front end,
+	/// <c>Game_InitDatabases</c>, Fable2/src/vfs/src/hooks/mod_lua_hooks.cpp); on the title and the front end,
 	/// in the mods' front-end Lua, the current Gameface presentation's own state running every mod's
 	/// <c>mod/frontend.lua</c> (Refii.Mods.ModLua.FrontendPreamble).
 	/// </summary>

@@ -96,7 +96,11 @@ public partial class GameDevMenu : CanvasLayer
 		Add(new GameDevTabPhases());
 		Add(new GameDevTabGpu());
 		Add(new GameDevTabThreads());
-		Add(new GameDevTabGuest());
+		foreach (GameDevTab tab in Refii.Core.Engine_TitleGame.Active.GuestDevTabs())
+		{
+			Add(tab);
+		}
+
 		Add(new GameDevTabMemory());
 		Add(new GameDevTabMonitors());
 		Add(new GameDevTabScene());

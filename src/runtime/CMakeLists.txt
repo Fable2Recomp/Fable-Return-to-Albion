@@ -1,0 +1,85 @@
+# The shared runtime state: what the host and a title's payload agree on whatever the title.
+#
+# `refii_runtime` is SHARED for the reason refii_vfs is: the two ends of every piece of state
+# here live in different libraries. The HOST writes or reads (the host bridge, the app's audio
+# and input drivers) and the PAYLOAD reads or writes (the generated code's rex:: calls, a
+# title's hooks), and each needs ONE copy process-wide. A static copy in each would have one
+# side filling a queue the other never sees, which is not a link error on Linux.
+#
+# NOT A TITLE LIBRARY. It is staged into bin/ beside rexruntime and refii_core, links no title
+# code, and every title's instance (bin/<Title>/) and payload link the same file.
+#
+# The payload's side of these entries is in src/payload/src/core (REFII_PAYLOAD_CORE_SOURCES),
+# compiled into the module on the player's machine.
+
+set(REFII_RUNTIME_ROOT ${CMAKE_CURRENT_LIST_DIR})
+
+set(REFII_RUNTIME_INCLUDE_DIRS
+    ${REFII_RUNTIME_ROOT}/include
+)
+
+add_library(refii_runtime SHARED
+    # Audio state, shared by three libraries: the voice hooks (the payload), the host audio
+    # driver (refii_host) and the host bridge.
+    ${REFII_RUNTIME_ROOT}/src/core/audio_state.cpp
+    # Host side of the payload's log bridge and of the rex:: calls the generated code makes
+    # (core/rex_payload_bridge.h). The payload is the caller, so these cannot sit in it.
+    ${REFII_RUNTIME_ROOT}/src/core/log_bridge.cpp
+    ${REFII_RUNTIME_ROOT}/src/core/rex_bridge_host.cpp
+    # The queue the host posts onto the guest's tick thread, its counters and the guest frame.
+    ${REFII_RUNTIME_ROOT}/src/core/guest_tick_queue.cpp
+    # The debug channel's guest-render switch: the host sets it, a title's draw hook reads it.
+    ${REFII_RUNTIME_ROOT}/src/core/guest_render_state.cpp
+    # The mouse's camera turn: the host posts, a title's camera hook takes it.
+    ${REFII_RUNTIME_ROOT}/src/core/mouse_look_state.cpp
+    # Hard mods' named values: a mod's hook publishes, Godot reads; Godot sets, the hook reads.
+    ${REFII_RUNTIME_ROOT}/src/core/mod_values.cpp
+    # Mods' per-player values: owned by the machine that plays the hero, the same on both co-op
+    # machines, the saved ones kept beside that hero's save.
+    ${REFII_RUNTIME_ROOT}/src/core/player_state.cpp
+    # Mod events decided on one co-op machine, carried to the other.
+    ${REFII_RUNTIME_ROOT}/src/core/event_relay.cpp
+    # Partner consent: a co-op script asks the other player; the host bridge carries it.
+    ${REFII_RUNTIME_ROOT}/src/core/coop_consent.cpp
+    # The names the game shows for players, by RexNet's rule.
+    ${REFII_RUNTIME_ROOT}/src/core/coop_names.cpp
+    # The host's asset reader: Godot's bank reads, called by the payload.
+    ${REFII_RUNTIME_ROOT}/src/core/host_asset_reader.cpp
+    # The movie the guest states: a title's Bink hooks write it, the host bridge's movie
+    # exports read it.
+    ${REFII_RUNTIME_ROOT}/src/core/movie_state.cpp
+)
+target_include_directories(refii_runtime
+    PUBLIC
+        ${REFII_RUNTIME_INCLUDE_DIRS}
+)
+target_link_libraries(refii_runtime
+    PUBLIC
+        rex::runtime
+)
+
+set_target_properties(refii_runtime PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    OUTPUT_NAME refii_runtime
+    LIBRARY_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"
+    BUILD_RPATH "$ORIGIN"
+    INSTALL_RPATH "$ORIGIN"
+)
+
+# Closed over the runtime: a reference to a title's symbol is a link error here, not a lazy
+# binding that ends the process the first time it runs.
+if(NOT WIN32)
+    target_link_options(refii_runtime PRIVATE -Wl,--no-undefined)
+endif()
+
+if(WIN32)
+    set_target_properties(refii_runtime PROPERTIES
+        WINDOWS_EXPORT_ALL_SYMBOLS ON
+    )
+endif()
+
+set(REFII_RUNTIME_INCLUDE_DIRS
+    ${REFII_RUNTIME_INCLUDE_DIRS}
+    PARENT_SCOPE
+)

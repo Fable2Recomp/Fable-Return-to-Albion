@@ -62,22 +62,18 @@ add_library(refii_bnk_extractor SHARED
     ${REFII_EXTRACTOR_ROOT}/src/bnk_extractor.cpp
     ${REFII_EXTRACTOR_ROOT}/src/default_xex_icon_extractor.cpp
     ${REFII_EXTRACTOR_ROOT}/src/xex_decryptor.cpp
-    # Shared Fable 2 .gdb / .babel <-> CSV codecs; they live in the VFS module
-    # so the runtime override path and the extractor stay in sync. (babel needs
-    # zlib, which this target already links.)
-    ${REFII_EXTRACTOR_ROOT}/../vfs/src/gdb/gdb_database.cpp
-    ${REFII_EXTRACTOR_ROOT}/../vfs/src/babel/babel_database.cpp
 )
 
 target_include_directories(refii_bnk_extractor
     PUBLIC
         ${REFII_EXTRACTOR_ROOT}/include
-        ${REFII_EXTRACTOR_ROOT}/../vfs/include
 )
 
+# The .gdb / .babel <-> CSV codecs, shared with every title's runtime (src/formats).
 target_link_libraries(refii_bnk_extractor
     PUBLIC
         ${REFII_EXTRACTOR_ZLIB_TARGET}
+        refii_formats
 )
 
 # GCC/Clang side of the Debug optimization pin (the MSVC flag rewrite is at

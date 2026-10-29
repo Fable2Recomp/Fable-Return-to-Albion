@@ -14,6 +14,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <vector>
+#include <string>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -29,14 +30,25 @@ namespace {
 
 #if defined(_WIN32)
 using ModuleHandle = HMODULE;
-constexpr const char* kPayloadFileName = "refii_generated.dll";
+constexpr const char* kPayloadPrefix = "";
+constexpr const char* kPayloadExtension = ".dll";
 #elif defined(__APPLE__)
 using ModuleHandle = void*;
-constexpr const char* kPayloadFileName = "librefii_generated.dylib";
+constexpr const char* kPayloadPrefix = "lib";
+constexpr const char* kPayloadExtension = ".dylib";
 #else
 using ModuleHandle = void*;
-constexpr const char* kPayloadFileName = "librefii_generated.so";
+constexpr const char* kPayloadPrefix = "lib";
+constexpr const char* kPayloadExtension = ".so";
 #endif
+
+// THE TITLE'S MODULE. The launcher states which game the process runs by naming its module in
+// REFII_PAYLOAD_MODULE (refiii_generated for Fable 3); a process it did not start runs Fable 2's.
+std::string PayloadFileName() {
+  const char* stated = std::getenv("REFII_PAYLOAD_MODULE");
+  const std::string name = stated != nullptr && *stated != '\0' ? stated : "refii_generated";
+  return std::string(kPayloadPrefix) + name + kPayloadExtension;
+}
 
 struct State {
   ModuleHandle handle = nullptr;
@@ -168,10 +180,11 @@ bool Load(std::string& error) {
   // where an exported app keeps its whole native closure. The others are dev-tree layouts
   // — the standalone executable is in bin/ while the libraries are in lib/, so "beside me"
   // on its own never finds it there.
+  const std::string fileName = PayloadFileName();
   std::vector<std::string> candidates = {
-      directory + "/" + kPayloadFileName,
-      directory + "/../lib/" + kPayloadFileName,
-      directory + "/lib/" + kPayloadFileName,
+      directory + "/" + fileName,
+      directory + "/../lib/" + fileName,
+      directory + "/lib/" + fileName,
   };
   if (!state.requested_path.empty()) {
     candidates = {state.requested_path};

@@ -33,7 +33,7 @@ public static class Engine_UiModRequest
 	/// <summary>The last id either side issues (exact as a Lua number).</summary>
 	public const uint LastBoxId = 0xFFFFFFu;
 
-	/// <summary>The guest command that raises <c>ModMessageBox</c> (src/vfs/src/hooks/mod_commands.cpp).</summary>
+	/// <summary>The guest command that raises <c>ModMessageBox</c> (Fable2/src/vfs/src/hooks/mod_commands.cpp).</summary>
 	public const string AnswerVerb = "box_answer";
 
 	/// <summary>The guest command that raises <c>ModNotice</c>.</summary>

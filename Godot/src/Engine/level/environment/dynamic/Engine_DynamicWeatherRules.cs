@@ -65,43 +65,17 @@ public static class Engine_DynamicWeatherRules
 
     public static DynamicWeatherRule Resolve(LevelEntry level)
     {
-        string name = level.Name.ToLowerInvariant();
         string group = level.Group.ToLowerInvariant();
-        string scenario = level.Scenario.ToLowerInvariant();
 
-        if (name == "bwsslums" && (scenario.Length == 0 || scenario == "defaultscenario"))
+        // A title's own levels first: snow over a childhood, a fixed storm on one coast.
+        if (Refii.Core.Engine_TitleGame.Active.WeatherRule(level) is { } stated)
         {
-            return DynamicWeatherRule.Fixed(DynamicWeatherPreset.Snow, "childhood old town");
-        }
-
-        if (name == "fairfaxcastlegardens" && scenario == "ff_chapter1")
-        {
-            return DynamicWeatherRule.Fixed(DynamicWeatherPreset.Snow, "childhood castle");
-        }
-
-        if (name == "dunecrestnew")
-        {
-            return DynamicWeatherRule.Fixed(DynamicWeatherPreset.Rain, "rookridge");
-        }
-
-        if (name == "mysteryisland")
-        {
-            return scenario switch
-            {
-                "winter" => DynamicWeatherRule.Fixed(DynamicWeatherPreset.Snow, "knothole winter"),
-                "summer" => DynamicWeatherRule.Fixed(DynamicWeatherPreset.Clear, "knothole summer"),
-                _ => DynamicWeatherRule.Theme with { Reason = "knothole theme" },
-            };
+            return stated;
         }
 
         if (group is "caves" or "tombs")
         {
             return DynamicWeatherRule.None;
-        }
-
-        if (group == "demondoors")
-        {
-            return DynamicWeatherRule.Fixed(DynamicWeatherPreset.PartlyCloudy, "demon door realm");
         }
 
         return DynamicWeatherRule.Random;

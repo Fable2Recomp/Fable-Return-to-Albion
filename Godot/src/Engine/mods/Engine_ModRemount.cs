@@ -176,8 +176,7 @@ public static class ModRemount
 		// The readers the main thread walks every frame, reset on it.
 		ModInput.Reload();
 		Refii.Fx.Engine_FxRecipes.Reload();
-		Refii.Ui.Engine_UiSpellAssign.ReloadSecondary();
-		Refii.Ui.Engine_UiModAbilities.Reload();
+		Refii.Core.Engine_TitleGame.Active.ReloadModData();
 		Refii.Ui.Engine_UiTemplates.Reload();
 		report.Refreshed.Add("settings (settings.json), pushed to the game again; the player's choices and live overrides stand");
 		report.Refreshed.Add("input bindings (input.json)");

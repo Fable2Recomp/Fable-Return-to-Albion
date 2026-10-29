@@ -39,7 +39,7 @@ namespace Refii.Mods;
 ///   loaded (`save_loaded`, event 4), through the host's `run_lua` command.
 ///
 /// Player two's hero from a picked save is read host-side (<c>CoopHeroKit</c>) and filtered with
-/// the same record sets (<see cref="FilterKit"/>); online, a joiner's own save loads through
+/// the same record sets by the title; online, a joiner's own save loads through
 /// this gate on the joiner's machine.
 ///
 /// What the guest does with a record it cannot resolve was read in the binary: it tolerates
@@ -60,16 +60,16 @@ public static class ModSaveGate
 	/// <summary>The unfiltered `mainsave.bin` kept beside a filtered one until the next save.</summary>
 	public const string UnfilteredName = "refii_mainsave_unfiltered.bin";
 
-	/// <summary>Where the game's saves are: `assets/save` under the app, by convention.</summary>
+	/// <summary>Where the game's saves are: the active title's `assets/&lt;Folder&gt;/save`, by convention.</summary>
 	public static string UserDataRoot { get; set; } =
-		Path.Combine(Refii.Core.Engine_AppRoot.AssetsDirectory, "save");
+		Refii.Core.Engine_AppRoot.SaveDirectory;
 
 	private static readonly object Lock = new();
 
 	// What the verdict refused and the box is asking about.
 	private sealed record Pending(
 		string Save, string Directory, ModSaveStamp.Diff Diff, string Commit,
-		SaveSidecar.ArchonLayer? Archon, ArchonToolbox.Diff? ArchonDiff, ModFingerprint Current);
+		Engine_ExternalModManager.Diff? External, ModFingerprint Current);
 
 	private static Pending? _pending;
 
@@ -121,7 +121,7 @@ public static class ModSaveGate
 			}
 		}
 
-		string? directory = Engine_SaveHero.FindSaveDirectory(UserDataRoot, save);
+		string? directory = Engine_SaveDirectory.Find(UserDataRoot, save);
 		if (directory is null)
 		{
 			return false;
@@ -159,12 +159,15 @@ public static class ModSaveGate
 			}
 		}
 
-		// ARCHON'S TOOLBOX MODS are the save's own too (the sidecar's archon layer): compared with
-		// the install now, never filtered — their state is inside the save's Lua blob.
-		SaveSidecar.ArchonLayer? archon = sidecar.Archon;
-		ArchonToolbox.Diff? archonDiff = archon is null ? null : ArchonToolbox.Compare(archon, ArchonToolbox.Detect());
-		int archonOwn = archon?.Mods.Count ?? 0;
-		if (own == 0 && archonOwn == 0)
+		// AN EXTERNAL MANAGER'S MODS are the save's own too (the title's sidecar layer — Fable 2's
+		// Archon's Toolbox): compared with the install now, never filtered.
+		Engine_ExternalModManager? external = Refii.Core.Engine_TitleGame.Active.ExternalMods;
+		string? externalLayer = external is not null && sidecar.Layers.TryGetValue(external.Layer, out string? layer)
+			? layer
+			: null;
+		Engine_ExternalModManager.Diff? externalDiff = externalLayer is null ? null : external!.Compare(externalLayer);
+		int externalOwn = externalLayer is null ? 0 : external!.ModCount(externalLayer);
+		if (own == 0 && externalOwn == 0)
 		{
 			// Nothing to ask, so held records of mods enabled again go back here, inside the
 			// start call, before the guest reads the file. A save that is asked about has them
@@ -181,7 +184,7 @@ public static class ModSaveGate
 		// EVERY STAMPED SAVE IS TOLD ABOUT: the player sees which mods it was made with before it
 		// loads, and which of them are not enabled now. Refused once, asked on the page book, and
 		// let through on Continue.
-		var pending = new Pending(save, directory, diff, commit, archon, archonDiff, current);
+		var pending = new Pending(save, directory, diff, commit, externalDiff, current);
 		lock (Lock)
 		{
 			// THE FRONT END STATES THE SAME START TWICE: once under the pump's action, with the
@@ -199,7 +202,7 @@ public static class ModSaveGate
 		}
 
 		GD.Print($"[mod-save] '{save}' was saved under {own} mod(s), {diff.Missing.Count} not enabled now" +
-			(archonOwn == 0 ? string.Empty : $"; {archonOwn} Archon's Toolbox mod(s), {archonDiff!.Missing.Count} not running now{(archonDiff.Present ? string.Empty : " (toolbox not applied)")}") +
+			(externalOwn == 0 ? string.Empty : $"; {externalOwn} {external!.Name} mod(s), {externalDiff!.Missing} not running now{(externalDiff.Present ? string.Empty : $" ({external.Name} not applied)")}") +
 			$" — refused, asking (commit '{pending.Commit}')");
 		Callable.From(() => ShowNotice(stamp)).CallDeferred();
 		return true;
@@ -241,7 +244,7 @@ public static class ModSaveGate
 			return;
 		}
 
-		Engine_UiHostBoxes.AskPage(ModSaveStamp.NoticeTitle, ModSaveStamp.NoticeText(stamp, pending.Diff, pending.Archon, pending.ArchonDiff),
+		Engine_UiHostBoxes.AskPage(ModSaveStamp.NoticeTitle, ModSaveStamp.NoticeText(stamp, pending.Diff, pending.External),
 			onYes: () => Continue(pending), onNo: () => Cancel(pending), key: "mod-save");
 	}
 
@@ -514,7 +517,7 @@ public static class ModSaveGate
 			return;
 		}
 
-		string? directory = Engine_SaveHero.FindSaveDirectory(UserDataRoot, name);
+		string? directory = Engine_SaveDirectory.Find(UserDataRoot, name);
 		if (directory is null)
 		{
 			GD.PushWarning($"[mod-save] save '{name}' (player {player}) written but no folder found under {UserDataRoot}; not stamped");
@@ -543,8 +546,19 @@ public static class ModSaveGate
 		};
 		SaveSidecar.ModsLayer current = ModSaveStamp.Restamp(sidecar.Mods, ModSaveStamp.Current());
 		sidecar.Mods = current.Set.Count != 0 || current.Held.Count != 0 ? current : null;
-		// Archon's Toolbox, as applied to the install now: present or not, re-stamped every save.
-		sidecar.Archon = ArchonToolbox.Stamp(ArchonToolbox.Detect());
+		// The title's external mod manager, as applied to the install now: present or not,
+		// re-stamped every save.
+		if (Refii.Core.Engine_TitleGame.Active.ExternalMods is { } external)
+		{
+			if (external.StampNow() is { } stamped)
+			{
+				sidecar.Layers[external.Layer] = stamped;
+			}
+			else
+			{
+				sidecar.Layers.Remove(external.Layer);
+			}
+		}
 		sidecar.Write(directory);
 
 		// The guest wrote a new main save: the unfiltered copy of the old one is stale.
@@ -577,22 +591,6 @@ public static class ModSaveGate
 
 	// ---------------------------------------------------------------- player two's kit
 
-	/// <summary>
-	/// Player two's hero read off a picked save: the records of the mods its stamp names that are
-	/// not enabled now go. Returns how many entries went.
-	/// </summary>
-	public static int FilterKit(string saveDirectory, Engine_SaveHero.Hero hero)
-	{
-		SaveSidecar sidecar = SaveSidecar.Read(saveDirectory);
-		if (sidecar.Mods is not { } stamp)
-		{
-			return 0;
-		}
-
-		ModSaveStamp.Diff diff = ModSaveStamp.Compare(stamp, ModFingerprint.Current());
-		return diff.Missing.Count == 0 ? 0 : ModSaveFilter.FilterHero(hero, diff.MissingRecords());
-	}
-
 	// ---------------------------------------------------------------- the list and the export
 
 	/// <summary>
@@ -601,7 +599,7 @@ public static class ModSaveGate
 	/// </summary>
 	public static string ExportForConsole(string saveName)
 	{
-		string? directory = saveName.Length == 0 ? null : Engine_SaveHero.FindSaveDirectory(UserDataRoot, saveName);
+		string? directory = saveName.Length == 0 ? null : Engine_SaveDirectory.Find(UserDataRoot, saveName);
 		if (directory is null)
 		{
 			return $"No save named '{saveName}' was found.";
@@ -629,7 +627,7 @@ public static class ModSaveGate
 			return "Copied for Xbox / Xenia to\n" + destination + "\n\n" +
 				(records.Count == 0 ? "The save had no mods: the copy is the same save." :
 					$"{removed} mod entr{(removed == 1 ? "y was" : "ies were")} left out; the original keeps everything.") +
-				"\n\nXenia: put the folder under your profile's 4D5307F1/00000001. Xbox 360: wrap it into a CON package with Velocity or Horizon.";
+				$"\n\nXenia: put the folder under your profile's {Refii.Core.Engine_Title.Active.TitleId:X8}/00000001. Xbox 360: wrap it into a CON package with Velocity or Horizon.";
 		}
 		catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
 		{

@@ -26,6 +26,7 @@ public static class Engine_UiCommands
 				{
 					var set = new Engine_UiCommandSet();
 					Engine_UiScreenActions.RegisterVerbs(set);
+					Refii.Core.Engine_TitleGame.Active.RegisterUiVerbs(set);
 					Engine_UiModMenus.RegisterVerbs(set);
 					set.Register(Engine_UiVerbs.OpenScreen, Engine_UiHostScreens.Open);
 					_set = set;

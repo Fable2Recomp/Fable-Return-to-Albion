@@ -204,7 +204,7 @@ public class SpellWeavingLuaTests
 		string? at = AppContext.BaseDirectory;
 		for (int i = 0; i < 16 && at != null; i++)
 		{
-			string candidate = Path.Combine(at, "mods-src", "spell_weaving");
+			string candidate = Path.Combine(at, "Fable2", "mods-src", "spell_weaving");
 			if (Directory.Exists(Path.Combine(candidate, "fx", "effects")))
 			{
 				return candidate;

@@ -1,6 +1,6 @@
 [gd_scene format=3 uid="uid://dk4pn8vx2mq7b"]
 
-[ext_resource type="Script" path="res://src/tools/HostDrivenCheck.cs" id="1_hostdriven"]
+[ext_resource type="Script" path="res://src/Titles/Fable2/tools/HostDrivenCheck.cs" id="1_hostdriven"]
 
 [node name="HostDrivenCheck" type="Node"]
 script = ExtResource("1_hostdriven")

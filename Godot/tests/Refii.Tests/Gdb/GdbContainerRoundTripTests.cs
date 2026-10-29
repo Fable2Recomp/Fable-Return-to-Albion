@@ -19,14 +19,19 @@ using Refii.Gdb;
 [TestSuite]
 public class GdbContainerRoundTripTests
 {
-    private const string ShippedGlobals = "out/package/Fable 2 Return to Albion/assets/game/data/Globals/globals.gdb";
+    /// <summary>The installed package's copy: its title folder, or the flat layout it had before.</summary>
+    private static readonly string[] ShippedGlobals =
+    {
+        "out/package/Fable 2 Return to Albion/assets/Fable2/game/data/Globals/globals.gdb",
+        "out/package/Fable 2 Return to Albion/assets/game/data/Globals/globals.gdb",
+    };
 
     internal static string? RepoRoot()
     {
         string? at = AppContext.BaseDirectory;
         for (int i = 0; i < 12 && at != null; i++)
         {
-            if (File.Exists(Path.Combine(at, "src", "vfs", "include", "core", "refii_mod_events.h")))
+            if (File.Exists(Path.Combine(at, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h")))
             {
                 return at;
             }
@@ -45,8 +50,16 @@ public class GdbContainerRoundTripTests
             return null;
         }
 
-        string path = Path.Combine(root, ShippedGlobals.Replace('/', Path.DirectorySeparatorChar));
-        return File.Exists(path) ? File.ReadAllBytes(path) : null;
+        foreach (string shipped in ShippedGlobals)
+        {
+            string path = Path.Combine(root, shipped.Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(path))
+            {
+                return File.ReadAllBytes(path);
+            }
+        }
+
+        return null;
     }
 
     /// <summary>A parent, two children (one overriding the parent locally), aliases and names of every type.</summary>

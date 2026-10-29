@@ -38,7 +38,7 @@ public static class Engine_MdlReparse
     private static bool IsMultiInstanceTarget(string virtualPath)
     {
         string p = virtualPath.Replace('\\', '/').ToLowerInvariant();
-        return p.Contains("bs_townhouse_basic_snow_v2", StringComparison.Ordinal) &&
+        return Refii.Core.Engine_TitleGame.Active.Props.IsMultiInstanceModel(p) &&
                (p.Contains("/exterior.mdl", StringComparison.Ordinal) ||
                 p.Contains("/interior.mdl", StringComparison.Ordinal));
     }

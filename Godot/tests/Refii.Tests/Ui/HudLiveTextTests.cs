@@ -3,6 +3,7 @@ namespace Refii.Tests.Ui;
 using GdUnit4;
 using static GdUnit4.Assertions;
 using Refii.Ui;
+using Refii.Titles.Fable2;
 
 /// <summary>
 /// The HUD's live-text paint rule (<see cref="Engine_HudView.LiveTextToPaint"/>): the text stated

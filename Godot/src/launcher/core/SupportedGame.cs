@@ -3,9 +3,9 @@ using System;
 namespace Refii.Launcher.Core;
 
 /// <summary>
-/// The pressings of Fable 2 this build recompiles, and the title update each may be installed
-/// with. The update is the player's choice: the patched and the disc executables each have
-/// their own config under versions/.
+/// The pressings of the active title (<see cref="Refii.Core.Engine_Title.Active"/>) this build
+/// recompiles, and the title update each may be installed with. The update is the player's
+/// choice: the patched and the disc executables each have their own config under versions/.
 /// </summary>
 /// <remarks>
 /// A pressing is accepted only when its code is byte-identical to the one the generated code,
@@ -23,9 +23,13 @@ namespace Refii.Launcher.Core;
 /// </remarks>
 public static class SupportedGame
 {
-	public const string Name = "Fable 2 GOTY";
+	private static Refii.Core.Engine_Title Title => Refii.Core.Engine_Title.Active;
 
-	public const uint TitleId = 0x4D5307F1;
+	private static bool IsFable3 => Title == Refii.Core.Engine_Title.Fable3;
+
+	public static string Name => IsFable3 ? "Fable 3" : "Fable 2 GOTY";
+
+	public static uint TitleId => Title.TitleId;
 
 	/// <summary>One disc pressing: its media id, its executable version and its title update.</summary>
 	public sealed class Pressing
@@ -100,7 +104,27 @@ public static class SupportedGame
 		BaseVersion = 0x0000001B,
 	};
 
-	public static readonly Pressing[] Pressings = { UsaEurope, Russia, France };
+	/// <summary>
+	/// Fable 3's USA / Europe disc (En, Zh, Ko, Pl, Ru, Cs, Hu, Sk), read from its own security
+	/// block and execution info. No title update is supported: there is no config for a patched
+	/// Fable 3 executable yet.
+	/// </summary>
+	public static readonly Pressing Fable3UsaEurope = new()
+	{
+		Name = "USA / Europe",
+		MediaId = new byte[]
+		{
+			0xC3, 0xB3, 0x3A, 0xDB, 0x91, 0x1E, 0x3E, 0xF2,
+			0xEC, 0xF4, 0x45, 0xBA, 0xD9, 0x9E, 0x18, 0xE7,
+		},
+		BaseVersion = 0x00000003,
+	};
+
+	private static readonly Pressing[] Fable2Pressings = { UsaEurope, Russia, France };
+
+	private static readonly Pressing[] Fable3Pressings = { Fable3UsaEurope };
+
+	public static Pressing[] Pressings => IsFable3 ? Fable3Pressings : Fable2Pressings;
 
 	public static string TitleIdText => TitleId.ToString("X8");
 
@@ -168,7 +192,7 @@ public static class SupportedGame
 
 		if (executable.TitleId != TitleId)
 		{
-			error = "This disc image is not Fable 2: its title ID is " +
+			error = "This disc image is not " + Title.Name + ": its title ID is " +
 					executable.TitleId.ToString("X8") + ", and this build needs " + Requirement + ".";
 			return false;
 		}
@@ -176,7 +200,7 @@ public static class SupportedGame
 		Pressing? pressing = FindPressing(executable.MediaId);
 		if (pressing == null)
 		{
-			error = "This is a different pressing of Fable 2: its media ID is " +
+			error = "This is a different pressing of " + Title.Name + ": its media ID is " +
 					executable.ShortMediaIdText + ", and this build only supports media ID " +
 					PressingsText + ".";
 			return false;
@@ -246,7 +270,7 @@ public static class SupportedGame
 		Pressing? pressing = FindPressing(patch.MediaId);
 		if (pressing == null)
 		{
-			error = "This title update is for a different pressing of Fable 2: it names media ID " +
+			error = "This title update is for a different pressing of " + Title.Name + ": it names media ID " +
 					patch.ShortMediaIdText + ", and this build only supports media ID " +
 					PressingsText + ". The ones to fetch are " + TitleUpdatesText + ".";
 			return false;

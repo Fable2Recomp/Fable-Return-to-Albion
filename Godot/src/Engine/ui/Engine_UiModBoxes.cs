@@ -28,7 +28,8 @@ public static class Engine_UiModBoxes
 {
 	/// <summary>Whether this machine plays <paramref name="player"/> (0: whoever owns the menus here).</summary>
 	public static bool PlayedHere(int player) =>
-		Engine_UiModRequest.PlayedHere(player, CoopSession.IsClient, CoopSession.PeerStanding);
+		Engine_UiModRequest.PlayedHere(
+			player, Refii.Core.Engine_TitleGame.Active.OnlineClient, Refii.Core.Engine_TitleGame.Active.PeerJoined);
 
 	/// <summary>The player a request means: its own, or 0 as this machine's menu owner.</summary>
 	public static int Resolve(int player) => player is 1 or 2 ? player : Engine_UiModMenus.MenuPlayer;

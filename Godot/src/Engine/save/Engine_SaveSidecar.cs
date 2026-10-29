@@ -33,10 +33,10 @@ namespace Refii.Save;
 /// - `mods` — "if modded": the stamp (the mod set the save was last written under, with each
 ///   mod's added GDB records and its save-key prefixes) and the records filtered out of the save
 ///   for mods that were missing, held so re-enabling the mod puts them back.
-/// - `archon` — "if Archon's Toolbox": the toolbox was applied to the install when the save was
-///   written (<see cref="Refii.Mods.ArchonToolbox"/>): its patched bank's hash, its runner's
-///   version and the mods enabled in it. Nothing of theirs is held: their state is the runner's
-///   script table inside the save's Pluto blob, which is kept verbatim.
+/// - a TITLE'S LAYERS — a mod manager outside ours that the title's saves can be written under
+///   (<see cref="Refii.Mods.Engine_ExternalModManager"/>; Fable 2's Archon's Toolbox, `archon`),
+///   kept as the JSON that manager wrote (<see cref="Layers"/>). Nothing of theirs is held: their
+///   state is inside the save, which is kept verbatim.
 /// A reader without a layer ignores it; a vanilla save has none; the layers are independent.
 /// The schema name is versioned so later layers can be added.
 ///
@@ -117,43 +117,24 @@ public sealed class SaveSidecar
 		public ModEntry? Find(string name) => Set.Find(m => string.Equals(m.Name, name, StringComparison.OrdinalIgnoreCase));
 	}
 
-	// ---------------------------------------------------------------- the archon layer
-
-	/// <summary>One mod enabled in Archon's Toolbox when the save was written.</summary>
-	public sealed class ArchonMod
-	{
-		public string Name = string.Empty;
-		public string Version = string.Empty;
-
-		public string Label => (Name + " " + Version).Trim();
-	}
-
-	/// <summary>Archon's Toolbox as applied to the install when the save was written.</summary>
-	public sealed class ArchonLayer
-	{
-		/// <summary>The gamescripts_r.bnk SHA-256 (lower-case hex) the save was written under.</summary>
-		public string Bank = string.Empty;
-		/// <summary>The bank carried the toolbox's own patch.</summary>
-		public bool Patched;
-		/// <summary>The runner's version, as runner.lua states it.</summary>
-		public string Runner = string.Empty;
-		/// <summary>The mods installed and enabled in installedmods.lua, in file order.</summary>
-		public List<ArchonMod> Mods = new();
-
-		public ArchonMod? Find(string name) => Mods.Find(m => string.Equals(m.Name, name, StringComparison.OrdinalIgnoreCase));
-	}
-
 	public RefiiLayer? Refii;
 	public ModsLayer? Mods;
-	public ArchonLayer? Archon;
+
+	/// <summary>
+	/// Every layer this file does not know, by key, as its JSON value — a title's external mod
+	/// manager's above all. Read and written back unchanged, so a layer is never lost to a reader
+	/// that does not know it.
+	/// </summary>
+	public Dictionary<string, string> Layers = new(StringComparer.Ordinal);
 
 	/// <summary>
 	/// A save a mod layer stamps: written under at least one mod, holding records, or written with
-	/// mods enabled in Archon's Toolbox.
+	/// mods enabled in the active title's external mod manager.
 	/// </summary>
 	public bool Modded =>
 		(Mods is { } mods && (mods.Set.Count != 0 || mods.Held.Count != 0)) ||
-		(Archon is { } archon && archon.Mods.Count != 0);
+		(global::Refii.Core.Engine_TitleGame.Active.ExternalMods is { } external &&
+		 Layers.TryGetValue(external.Layer, out string? layer) && external.ModCount(layer) != 0);
 
 	// ---------------------------------------------------------------- files
 
@@ -265,23 +246,10 @@ public sealed class SaveSidecar
 				w.WriteEndObject();
 			}
 
-			if (Archon is { } archon)
+			foreach ((string key, string layer) in Layers)
 			{
-				w.WriteStartObject("archon");
-				w.WriteString("bank", archon.Bank);
-				w.WriteBoolean("patched", archon.Patched);
-				w.WriteString("runner", archon.Runner);
-				w.WriteStartArray("mods");
-				foreach (ArchonMod mod in archon.Mods)
-				{
-					w.WriteStartObject();
-					w.WriteString("name", mod.Name);
-					w.WriteString("version", mod.Version);
-					w.WriteEndObject();
-				}
-
-				w.WriteEndArray();
-				w.WriteEndObject();
+				w.WritePropertyName(key);
+				w.WriteRawValue(layer);
 			}
 
 			w.WriteEndObject();
@@ -365,19 +333,12 @@ public sealed class SaveSidecar
 			sidecar.Mods = layer;
 		}
 
-		if (root.TryGetProperty("archon", out JsonElement archon) && archon.ValueKind == JsonValueKind.Object)
+		foreach (JsonProperty layer in root.EnumerateObject())
 		{
-			var layer = new ArchonLayer { Bank = Str(archon, "bank"), Patched = Bool(archon, "patched"), Runner = Str(archon, "runner") };
-			if (archon.TryGetProperty("mods", out JsonElement mods0) && mods0.ValueKind == JsonValueKind.Array)
+			if (layer.Name is not ("schema" or "refii" or "mods"))
 			{
-				foreach (JsonElement m in mods0.EnumerateArray())
-				{
-					var mod = new ArchonMod { Name = Str(m, "name"), Version = Str(m, "version") };
-					if (mod.Name.Length != 0) layer.Mods.Add(mod);
-				}
+				sidecar.Layers[layer.Name] = layer.Value.GetRawText();
 			}
-
-			sidecar.Archon = layer;
 		}
 
 		return sidecar;

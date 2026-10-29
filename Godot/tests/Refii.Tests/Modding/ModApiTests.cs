@@ -8,6 +8,7 @@ using System.Text.RegularExpressions;
 using GdUnit4;
 using static GdUnit4.Assertions;
 using Refii.Mods;
+using Refii.Titles.Fable2;
 
 /// <summary>
 /// The catalog (Engine_ModApi) is held to the header (core/refii_mod_events.h) and to the two
@@ -22,7 +23,7 @@ public class ModApiTests
         string? at = AppContext.BaseDirectory;
         for (int i = 0; i < 12 && at != null; i++)
         {
-            if (File.Exists(Path.Combine(at, "src", "vfs", "include", "core", "refii_mod_events.h")))
+            if (File.Exists(Path.Combine(at, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h")))
             {
                 return at;
             }
@@ -66,7 +67,7 @@ public class ModApiTests
             return;  // a packaged test run without the source tree
         }
 
-        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod_events.h"));
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h"));
         Match version = Regex.Match(header, @"#define REFII_MOD_API_VERSION (\d+)");
         AssertThat(version.Success).IsTrue();
         AssertThat(int.Parse(version.Groups[1].Value)).IsEqual(ModApi.Version);
@@ -112,7 +113,7 @@ public class ModApiTests
 
         foreach (string build in new[] { "Fable2", "Fable2TU1" })
         {
-            string config = File.ReadAllText(Path.Combine(root, "versions", build, "refii_config.toml"));
+            string config = File.ReadAllText(Path.Combine(root, "Fable2", "versions", build, "refii_config.toml"));
             foreach (string function in ModApi.Events.SelectMany(e => e.SeamFunctions).Distinct())
             {
                 AssertThat(config.Contains("\"" + function + "\""))
@@ -133,7 +134,7 @@ public class ModApiTests
 
         // The table text the bus builds per kind (mod_events.cpp LuaFields) is what both Lua and
         // Godot scripts receive: every field the catalog offers them must be in it.
-        string bus = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        string bus = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
         foreach (ModApiEvent e in ModApi.Events)
         {
             string label = "case REFII_EVENT_" + e.LuaName.ToUpperInvariant() + ":";
@@ -232,7 +233,7 @@ public class ModApiTests
 
         // The payload's constants are the catalog's: the Lua reader's groups, the host's words, and
         // the header's count under both (the static_asserts beside them say the same at compile time).
-        string bus = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        string bus = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
         Match bits = Regex.Match(bus, @"constexpr int32_t kLuaMaskBits = (\d+);");
         Match groups = Regex.Match(bus, @"constexpr int32_t kLuaMaskGroups = (\d+);");
         AssertThat(bits.Success && groups.Success).IsTrue();
@@ -242,14 +243,14 @@ public class ModApiTests
         AssertThat(bus.Contains("refii_mod_game_lua_int(&ctx, base, expr, 0, (1 << kLuaMaskBits) - 1, &mask)", StringComparison.Ordinal))
             .OverrideFailureMessage("the Lua reader clamps each group to its bit count").IsTrue();
 
-        string bridge = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "payload_bridge.h"));
+        string bridge = File.ReadAllText(Path.Combine(root, "src", "runtime", "include", "core", "payload_bridge.h"));
         Match words = Regex.Match(bridge, @"#define REFII_MOD_HOST_MASK_WORDS (\d+)");
         AssertThat(words.Success).IsTrue();
         AssertThat(int.Parse(words.Groups[1].Value)).OverrideFailureMessage("REFII_MOD_HOST_MASK_WORDS != ModApi.HostMaskWords").IsEqual(ModApi.HostMaskWords);
-        string values = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "core", "mod_values.cpp"));
+        string values = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
         AssertThat(values.Contains("static_assert(REFII_EVENT_COUNT <= refii::mods::kHostMaskCapacity", StringComparison.Ordinal)).IsTrue();
 
-        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod_events.h"));
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h"));
         Match count = Regex.Match(header, @"REFII_EVENT_COUNT = (\d+)");
         AssertThat(count.Success).IsTrue();
         int kinds = int.Parse(count.Groups[1].Value);
@@ -260,7 +261,7 @@ public class ModApiTests
         string hostBridge = File.ReadAllText(Path.Combine(root, "Godot", "src", "host", "HostBridge.cs"));
         AssertThat(hostBridge.Contains("mask_word event {word} {mask.Word(word):x}", StringComparison.Ordinal)).IsTrue();
         AssertThat(hostBridge.Contains("mask_word verdict {word} {mask.Word(word):x}", StringComparison.Ordinal)).IsTrue();
-        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
         AssertThat(commands.Contains("op == \"mask_word\"", StringComparison.Ordinal)).IsTrue();
         AssertThat(commands.Contains("refii_bridge_mod_set_verdict_mask_word(word, bits)", StringComparison.Ordinal)).IsTrue();
         AssertThat(commands.Contains("refii_bridge_mod_set_host_event_mask_word(word, bits)", StringComparison.Ordinal)).IsTrue();
@@ -277,7 +278,7 @@ public class ModApiTests
 
         // Every verb the guest tick answers (mod_commands.cpp) is in the catalog's Godot section,
         // which the Guide and RefiiModApi.ListGodotHelpers show.
-        string grammar = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string grammar = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
         string godot = string.Join("\n", ModApi.GodotHelpers.Select(h => h.Signature));
         List<string> verbs = Regex.Matches(grammar, "(?:what|op) == \"([a-z_]+)\"")
             .Select(m => m.Groups[1].Value).Distinct().ToList();
@@ -330,7 +331,7 @@ public class ModApiTests
             return;
         }
 
-        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
         foreach (string call in new[] { "refii_mod_player_for(PPCContext* ctx, uint8_t* base, uint32_t entity)", "refii_mod_world_here(uint8_t* base)",
                      "refii_mod_forgive_crimes(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero)",
                      "refii_mod_discovered_crime(PPCContext* ctx, uint8_t* base, uint32_t villager, uint32_t hero)" })
@@ -352,13 +353,13 @@ public class ModApiTests
         // The route (player two's boxes, questions, cameras and Player calls on player two's screen)
         // is defined once, in the core co-op Lua, and exposed as Refii.show_to_player; a question
         // waits through the frozen trampolines only (a saved coroutine resumes into them by name).
-        string lua = File.ReadAllText(Path.Combine(root, "Godot", "src", "host", "CoopHeroLua.cs"));
+        string lua = File.ReadAllText(Path.Combine(root, "Godot", "src", "Titles", "Fable2", "host", "CoopHeroLua.cs"));
         AssertThat(lua.Contains("\"Api.show_to_player\"", StringComparison.Ordinal)).IsTrue();
         AssertThat(lua.Contains("C.Call1 = C.Permanent(function(after, state, fn, ...) return after(state, fn(...)) end, \"Call1\")", StringComparison.Ordinal)).IsTrue();
         AssertThat(lua.Contains("C.Wait1 = C.Permanent(function(poll, state, yield) while true do local done, value = poll(state) if done then return value end yield() end end, \"Wait1\")", StringComparison.Ordinal)).IsTrue();
         AssertThat(Regex.Matches(lua, @"return C\.Call1\(C\.RouteUnpack, nil, C\.Wait1, C\.RouteAnswerPoll, out, coroutine\.yield\)").Count).IsEqual(2);
 
-        string wire = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "event_relay.h"));
+        string wire = File.ReadAllText(Path.Combine(root, "src", "runtime", "include", "core", "event_relay.h"));
         AssertThat(wire.Contains("ps.r=", StringComparison.Ordinal)).IsTrue();
     }
 
@@ -382,7 +383,7 @@ public class ModApiTests
             return;
         }
 
-        string bus = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        string bus = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
         string[] rows = Regex.Matches(bus, @"REFII_RELAY\((\w+), k(?:Player|World)\)")
             .Select(m => m.Groups[1].Value).OrderBy(n => n, StringComparer.Ordinal).ToArray();
         AssertThat(rows).IsEqual(ModApi.Events.Where(e => e.IsRelayed).Select(e => e.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray());
@@ -405,12 +406,12 @@ public class ModApiTests
             return;
         }
 
-        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
         AssertThat(header.Contains("extern \"C\" void refii_mod_wheel_switches_target(uint8_t* base, uint32_t hero);", StringComparison.Ordinal)).IsTrue();
-        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
         AssertThat(natives.Contains("{\"wheel_switches_target\", &NativeWheelSwitchesTarget, 0}", StringComparison.Ordinal)).IsTrue();
         // Souls Combat's toggled lock, now Lua (mod/lockon.lua), states it each tick the lock holds.
-        string souls = string.Concat(Directory.EnumerateFiles(Path.Combine(root, "mods-src", "souls_combat", "mod"), "*.lua").OrderBy(f => f, StringComparer.Ordinal).Select(File.ReadAllText));
+        string souls = string.Concat(Directory.EnumerateFiles(Path.Combine(root, "Fable2", "mods-src", "souls_combat", "mod"), "*.lua").OrderBy(f => f, StringComparer.Ordinal).Select(File.ReadAllText));
         AssertThat(souls.Contains("Refii.wheel_switches_target(hero)", StringComparison.Ordinal)).IsTrue();
     }
 
@@ -437,19 +438,19 @@ public class ModApiTests
             return;
         }
 
-        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
         AssertThat(header.Contains("extern \"C\" int32_t refii_mod_entity_tint(PPCContext* ctx, uint8_t* base, uint32_t entity, float r, float g, float b,", StringComparison.Ordinal)).IsTrue();
         AssertThat(header.Contains("extern \"C\" int32_t refii_mod_entity_untint(PPCContext* ctx, uint8_t* base, uint32_t entity);", StringComparison.Ordinal)).IsTrue();
 
-        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
         AssertThat(natives.Contains("{\"entity_tint\", &NativeEntityTint, 0}", StringComparison.Ordinal)).IsTrue();
         AssertThat(natives.Contains("{\"entity_untint\", &NativeEntityUntint, 0}", StringComparison.Ordinal)).IsTrue();
 
         // The setter is called by its TU1 address, so the disc build needs its row (same 48
         // instructions at 0x82548418).
-        string rows = File.ReadAllText(Path.Combine(root, "versions", "Fable2", "guest_addresses.inc"));
+        string rows = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "guest_addresses.inc"));
         AssertThat(rows.Contains("{0x82573770u, 0x82548418u},", StringComparison.Ordinal)).IsTrue();
-        string api = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        string api = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp"));
         AssertThat(api.Contains("kSetTintVector = 0x82573770u", StringComparison.Ordinal)).IsTrue();
     }
 
@@ -488,9 +489,9 @@ public class ModApiTests
             return;
         }
 
-        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
-        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
-        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
         foreach (string call in calls)
         {
             AssertThat(header.Contains("refii_mod_" + call + "(PPCContext* ctx, uint8_t* base, ", StringComparison.Ordinal)).OverrideFailureMessage("header " + call).IsTrue();
@@ -502,7 +503,7 @@ public class ModApiTests
 
         // Every guest function the helpers call by TU1 address, with the disc address found by its
         // instruction pattern (same size on both builds).
-        string rows = File.ReadAllText(Path.Combine(root, "versions", "Fable2", "guest_addresses.inc"));
+        string rows = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "guest_addresses.inc"));
         string[] expected =
         {
             "{0x82573220u, 0x82547EC8u},",  // SetAlpha
@@ -524,7 +525,7 @@ public class ModApiTests
         }
 
         // Souls Combat's lock is the API's now, in Lua (mod/lockon.lua): no raw force-byte store of its own.
-        string souls = string.Concat(Directory.EnumerateFiles(Path.Combine(root, "mods-src", "souls_combat", "mod"), "*.lua").OrderBy(f => f, StringComparer.Ordinal).Select(File.ReadAllText));
+        string souls = string.Concat(Directory.EnumerateFiles(Path.Combine(root, "Fable2", "mods-src", "souls_combat", "mod"), "*.lua").OrderBy(f => f, StringComparer.Ordinal).Select(File.ReadAllText));
         AssertThat(souls.Contains("Refii.lock_target(", StringComparison.Ordinal)).IsTrue();
         AssertThat(souls.Contains("Refii.release_lock(", StringComparison.Ordinal)).IsTrue();
         AssertThat(souls.Contains("Refii.locked_target(", StringComparison.Ordinal)).IsTrue();
@@ -563,9 +564,9 @@ public class ModApiTests
             return;
         }
 
-        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
-        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
-        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
         foreach (string call in calls)
         {
             string nativeName = call == "play_sound" ? "play_sound_on" : call;
@@ -577,12 +578,12 @@ public class ModApiTests
         // The opinion setter and the deed poster are the hooked names (the events fire); the sound
         // bodies are called by TU1 address, each with its disc row (same instruction sequence,
         // only the relocated globals differ).
-        string api = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        string api = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp"));
         AssertThat(api.Contains("rex_CECOpinionReaction_ModifyAxisValue(work, base);", StringComparison.Ordinal)).IsTrue();
         AssertThat(api.Contains("refii::guest::Address(0x82279B80u)", StringComparison.Ordinal)).IsTrue();
         AssertThat(api.Contains("Action.SetCurrentAction(e, a)", StringComparison.Ordinal)).IsTrue();
         AssertThat(api.Contains("Action.FinishScriptedActions(e)", StringComparison.Ordinal)).IsTrue();
-        string rows = File.ReadAllText(Path.Combine(root, "versions", "Fable2", "guest_addresses.inc"));
+        string rows = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "guest_addresses.inc"));
         string[] expected =
         {
             "{0x821D9608u, 0x821D9258u},",  // the cue player on a sound component (Sound.PlayEvent's body)
@@ -665,7 +666,7 @@ public class ModApiTests
             return;
         }
 
-        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
         foreach (string declared in new[]
                  {
                      "extern \"C\" uint32_t refii_mod_light(uint32_t entity, const float* xyz, const float* rgb, float energy, float range,",
@@ -680,7 +681,7 @@ public class ModApiTests
             AssertThat(header.Contains(declared, StringComparison.Ordinal)).OverrideFailureMessage($"{declared} is not in core/refii_mod.h").IsTrue();
         }
 
-        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
         foreach (string row in new[] { "{\"_light\", &NativeLight, 0}", "{\"light_remove\", &NativeLightRemove, 0}", "{\"send_to_partner\", &NativeSendToPartner, 0}" })
         {
             AssertThat(natives.Contains(row, StringComparison.Ordinal)).OverrideFailureMessage($"{row} is not registered").IsTrue();
@@ -695,19 +696,19 @@ public class ModApiTests
         AssertThat(natives.Contains("options.cone = static_cast<float>(lua.Number(18));", StringComparison.Ordinal)).IsTrue();
         AssertThat(natives.Contains("options.attenuation = static_cast<float>(lua.Number(19));", StringComparison.Ordinal)).IsTrue();
         AssertThat(preamble.Contains("function Refii.light(target, color, energy, range, o)", StringComparison.Ordinal)).IsTrue();
-        string api = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        string api = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp"));
         foreach (string op in new[] { "op='light'", "op='light_off'", "dx=%.9g,dy=%.9g,dz=%.9g,cone=%.9g,atten=%.9g", "\"pm:\" + std::to_string(owned)" })
         {
             AssertThat(api.Contains(op, StringComparison.Ordinal)).OverrideFailureMessage($"{op} is never posted").IsTrue();
         }
 
         // The route's mod lane: the receiver keeps pm: lines apart and the bus drains them on the tick.
-        string relay = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "core", "event_relay.cpp"));
+        string relay = File.ReadAllText(Path.Combine(root, "src", "runtime", "src", "core", "event_relay.cpp"));
         AssertThat(relay.Contains("constexpr std::string_view kModLane = \"pm:\";", StringComparison.Ordinal)).IsTrue();
         AssertThat(relay.Contains("extern \"C\" int32_t refii_bridge_route_take_mod(char* out, uint32_t capacity)", StringComparison.Ordinal)).IsTrue();
-        string bus = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        string bus = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
         AssertThat(bus.Contains("DrainPartnerMessages(ctx, base);", StringComparison.Ordinal)).IsTrue();
-        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
         AssertThat(commands.Contains("op == \"partner_send\"", StringComparison.Ordinal)).IsTrue();
     }
 
@@ -749,9 +750,9 @@ public class ModApiTests
             return;
         }
 
-        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
-        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
-        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
         string host = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_RefiiHost.cs"));
         foreach (string call in actions)
         {
@@ -772,19 +773,22 @@ public class ModApiTests
 
         // One body: the pump's PerformQuickslot is the quick slot's and the API's alike, and the
         // joiner's weapon pick crosses to the co-op kit under its own host kind.
-        string pump = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "guest_tick_pump.cpp"));
-        string api = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_api.cpp"));
-        string events = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod_events.h"));
-        string kit = File.ReadAllText(Path.Combine(root, "Godot", "src", "host", "CoopHeroKit.cs"));
+        string pump = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "guest_tick_pump.cpp"));
+        string api = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        string events = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h"));
+        string kit = File.ReadAllText(Path.Combine(root, "Godot", "src", "Titles", "Fable2", "host", "CoopHeroKit.cs"));
         AssertThat(pump.Contains("bool PerformQuickslot(PPCContext& ctx, uint8_t* base, uint32_t player, uint32_t kind, uint32_t record)", StringComparison.Ordinal)).IsTrue();
         AssertThat(api.Contains("refii::vfs::PerformQuickslot(work, base,", StringComparison.Ordinal)).IsTrue();
         AssertThat(events.Contains("#define REFII_MOD_HOST_HERO_KIND 1005", StringComparison.Ordinal)).IsTrue();
         AssertThat(pump.Contains("refii::mods::PostEvent(REFII_MOD_HOST_HERO_KIND, fields)", StringComparison.Ordinal)).IsTrue();
         AssertThat(kit.Contains("public const int PickKind = 1005;", StringComparison.Ordinal)).IsTrue();
-        AssertThat(host.Contains("CoopHeroKit.HandlePick(fields)", StringComparison.Ordinal)).IsTrue();
+        // The shell hands the title its own bus lines; Fable 2 routes the pick into its co-op kit.
+        string title = File.ReadAllText(Path.Combine(root, "Godot", "src", "Titles", "Fable2", "Fable2Title.cs"));
+        AssertThat(host.Contains("Engine_TitleGame.Active.HandleBusLine(kind, fields)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(title.Contains("CoopHeroKit.HandlePick(fields)", StringComparison.Ordinal)).IsTrue();
 
         // Every guest function called by TU1 address has its disc row.
-        string rows = File.ReadAllText(Path.Combine(root, "versions", "Fable2", "guest_addresses.inc"));
+        string rows = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "guest_addresses.inc"));
         foreach (string row in new[] { "{0x824F1C90u, 0x8261B978u},", "{0x823E0FF8u, 0x823BF9C0u},", "{0x82764DC0u, 0x82741BD8u},", "{0x82323540u, 0x82345978u},", "{0x82A006C8u, 0x829FB978u},", "{0x83496B08u, 0x834968A4u},", "{0x83496DA0u, 0x83496BD0u}," })
         {
             AssertThat(rows.Contains(row, StringComparison.Ordinal)).OverrideFailureMessage(row).IsTrue();
@@ -809,7 +813,7 @@ public class ModApiTests
             return;
         }
 
-        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
         AssertThat(commands.Contains("op == \"wheel_switches_target\"", StringComparison.Ordinal)).IsTrue();
         AssertThat(commands.Contains("RestateWheelSwitches(work, base);", StringComparison.Ordinal)).IsTrue();
         AssertThat(commands.Contains("refii_mod_locked_target(&ctx, base, player) == 0u", StringComparison.Ordinal)).IsTrue();
@@ -879,7 +883,7 @@ public class ModApiTests
             return;
         }
 
-        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
         foreach (string declared in new[]
                  {
                      "extern \"C\" int32_t refii_mod_set_speed_multiplier(uint8_t* base, int32_t player, float factor);",
@@ -898,7 +902,7 @@ public class ModApiTests
             AssertThat(header.Contains(declared, StringComparison.Ordinal)).OverrideFailureMessage($"{declared} is not in core/refii_mod.h").IsTrue();
         }
 
-        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
         foreach (string name in new[]
                  {
                      "set_speed_multiplier", "clear_speed_multiplier", "speed_multiplier", "current_action", "action_elapsed",
@@ -907,7 +911,7 @@ public class ModApiTests
         {
             AssertThat(Regex.IsMatch(natives, "\\{\"" + name + "\", &Native\\w+, 0\\}")).OverrideFailureMessage("natives " + name).IsTrue();
         }
-        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
         foreach (string op in new[] { "set_speed_multiplier", "clear_speed_multiplier", "allow_action_interrupt" })
         {
             AssertThat(commands.Contains("op == \"" + op + "\"", StringComparison.Ordinal)).OverrideFailureMessage("command " + op).IsTrue();
@@ -918,21 +922,21 @@ public class ModApiTests
         }
 
         // The four seams are refii's now: hooked once in the bus, the mods subscribe.
-        string bus = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        string bus = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
         foreach (string seam in new[] { "rex_CPlayer_SetLookAtButtonDown", "rex_VortexComponent_Init", "rex_VortexComponent_Shutdown", "rex_TargetedFireball_Impact" })
         {
             AssertThat(bus.Contains("REX_EXTERN(" + seam + ")", StringComparison.Ordinal)).OverrideFailureMessage("bus " + seam).IsTrue();
         }
         AssertThat(bus.Contains("extern \"C\" int32_t refii_mod_spell_parts(", StringComparison.Ordinal)).IsTrue();
         // Souls Combat is pure Lua now (SoulsCombatLuaTests): the look-at seam reaches it as an event.
-        AssertThat(Directory.Exists(Path.Combine(root, "mods-src", "souls_combat", "native"))).IsFalse();
+        AssertThat(Directory.Exists(Path.Combine(root, "Fable2", "mods-src", "souls_combat", "native"))).IsFalse();
         // Souls Combat's Lua is one file per rule (mod/*.lua, composed through require): read as one.
-        string souls = string.Concat(Directory.EnumerateFiles(Path.Combine(root, "mods-src", "souls_combat", "mod"), "*.lua").OrderBy(f => f, StringComparer.Ordinal).Select(File.ReadAllText));
+        string souls = string.Concat(Directory.EnumerateFiles(Path.Combine(root, "Fable2", "mods-src", "souls_combat", "mod"), "*.lua").OrderBy(f => f, StringComparer.Ordinal).Select(File.ReadAllText));
         AssertThat(souls.Contains("Refii.on(\"look_at_button\"", StringComparison.Ordinal)).IsTrue();
         AssertThat(souls.Contains("REX_EXTERN(", StringComparison.Ordinal)).IsFalse();
         // Spell Weaving is pure Lua now (SpellWeavingLuaTests): the three seams reach it as events.
-        AssertThat(Directory.Exists(Path.Combine(root, "mods-src", "spell_weaving", "native"))).IsFalse();
-        string weaving = File.ReadAllText(Path.Combine(root, "mods-src", "spell_weaving", "mod", "init.lua"));
+        AssertThat(Directory.Exists(Path.Combine(root, "Fable2", "mods-src", "spell_weaving", "native"))).IsFalse();
+        string weaving = File.ReadAllText(Path.Combine(root, "Fable2", "mods-src", "spell_weaving", "mod", "init.lua"));
         foreach (string on in new[] { "Refii.on(\"vortex_started\"", "Refii.on(\"vortex_ended\"", "Refii.on(\"fireball_impact\"", "Refii.spell_parts(" })
         {
             AssertThat(weaving.Contains(on, StringComparison.Ordinal)).OverrideFailureMessage(on).IsTrue();
@@ -940,7 +944,7 @@ public class ModApiTests
 
         // Every guest function the helpers cite as the contract, with the disc address found by
         // its instruction pattern (same size on both builds).
-        string rows = File.ReadAllText(Path.Combine(root, "versions", "Fable2", "guest_addresses.inc"));
+        string rows = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "guest_addresses.inc"));
         foreach (string row in new[]
                  {
                      "{0x823DFF78u, 0x823BE7D0u},",  // Player.SetPlayerMovementSpeedOverridden (stb r4,0x1E(r3))
@@ -1000,7 +1004,7 @@ public class ModApiTests
             return;
         }
 
-        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
         foreach (string declared in new[]
                  {
                      "const char* at;",
@@ -1015,7 +1019,7 @@ public class ModApiTests
             AssertThat(header.Contains(declared, StringComparison.Ordinal)).OverrideFailureMessage($"{declared} is not in core/refii_mod.h").IsTrue();
         }
 
-        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
         foreach (string row in new[] { "{\"_mark\", &NativeMark, 0}", "{\"unmark\", &NativeUnmark, 0}", "{\"fade\", &NativeFade, 0}", "{\"meter\", &NativeMeter, 0}", "{\"meter_remove\", &NativeMeterRemove, 0}" })
         {
             AssertThat(natives.Contains(row, StringComparison.Ordinal)).OverrideFailureMessage($"{row} is not registered").IsTrue();
@@ -1025,7 +1029,7 @@ public class ModApiTests
         string preamble = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_ModLua.cs"));
         AssertThat(preamble.Contains("f[3] or f.z or 0, o.at or ''", StringComparison.Ordinal)).IsTrue();
         AssertThat(preamble.Contains("function Refii.mark(target, icon, text, p)", StringComparison.Ordinal)).IsTrue();
-        string api = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        string api = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp"));
         AssertThat(api.Contains(",at='%s'\"", StringComparison.Ordinal)).IsTrue();
         foreach (string op in new[] { "op='mark'", "op='unmark'", "op='fade'", "op='meter'", "op='meter_remove'" })
         {
@@ -1072,9 +1076,9 @@ public class ModApiTests
             return;
         }
 
-        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
-        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
-        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
         foreach (string call in calls)
         {
             AssertThat(header.Contains("refii_mod_" + call + "(PPCContext* ctx, uint8_t* base, ", StringComparison.Ordinal)).OverrideFailureMessage("header " + call).IsTrue();
@@ -1087,7 +1091,7 @@ public class ModApiTests
 
         // The orders are the shipped scripts' own calls, run in the game VM; the clock's setter is
         // called by TU1 address with its disc row.
-        string api = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        string api = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp"));
         foreach (string entry in new[]
                  {
                      "Follow.FollowEntity(e, t, %.3f)",
@@ -1104,7 +1108,7 @@ public class ModApiTests
         {
             AssertThat(api.Contains(entry, StringComparison.Ordinal)).OverrideFailureMessage(entry).IsTrue();
         }
-        string rows = File.ReadAllText(Path.Combine(root, "versions", "Fable2", "guest_addresses.inc"));
+        string rows = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "guest_addresses.inc"));
         AssertThat(rows.Contains("{0x82515AA0u, 0x8249A790u},", StringComparison.Ordinal)).IsTrue();  // Timing.SetTimeOfDayAbsolute's body
     }
 
@@ -1148,13 +1152,13 @@ public class ModApiTests
         string preamble = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_ModLua.cs"));
         AssertThat(preamble.Contains("function Refii.cast_spell(caster, spell_type, targeted, target, level, pos, dir)", StringComparison.Ordinal)).IsTrue();
         AssertThat(preamble.Contains("return Refii._cast_spell(caster, spell_type, t, target or 0, level or 0, pos ~= nil and 1 or 0,", StringComparison.Ordinal)).IsTrue();
-        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
         AssertThat(natives.Contains("{\"_cast_spell\", &NativeCastSpell, 0}", StringComparison.Ordinal)).IsTrue();
         AssertThat(natives.Contains("{\"spell_serial\", &NativeSpellSerial, 0}", StringComparison.Ordinal)).IsTrue();
         AssertThat(natives.Contains("{\"cast_spell\", &NativeCastSpell, 0}", StringComparison.Ordinal)).IsFalse();
-        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
         AssertThat(commands.Contains("w.size() >= 9 ? pos : nullptr", StringComparison.Ordinal)).IsTrue();
-        string bus = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        string bus = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
         AssertThat(bus.Contains("kLuaTickPeriod", StringComparison.Ordinal)).OverrideFailureMessage("the Lua tick is throttled again").IsFalse();
         AssertThat(bus.Contains("last_verdict", StringComparison.Ordinal)).OverrideFailureMessage("the charge-level memo is back").IsFalse();
         AssertThat(bus.Contains("struct LuaDeferred", StringComparison.Ordinal)).IsTrue();
@@ -1175,17 +1179,17 @@ public class ModApiTests
         string[] written = Regex.Matches(writer, @"case (REFII_EVENT_\w+):").Select(m => m.Groups[1].Value).Distinct().OrderBy(n => n, StringComparer.Ordinal).ToArray();
         AssertThat(gated).IsEqual(written);
         // ... and those are the catalog's writable kinds (by the header's numbering).
-        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod_events.h"));
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h"));
         var kinds = Regex.Matches(header, @"(REFII_EVENT_\w+) = (\d+),").ToDictionary(m => m.Groups[1].Value, m => int.Parse(m.Groups[2].Value));
         int[] gatedKinds = gated.Select(n => kinds[n]).OrderBy(k => k).ToArray();
         int[] catalogKinds = ModApi.WritableFields.Select(w => w.Kind).Distinct().OrderBy(k => k).ToArray();
         AssertThat(gatedKinds).IsEqual(catalogKinds);
         AssertThat(bus.Contains("\"entity=%u,player=%d,action=%u,action_type=%d,action_name='%s'\"", StringComparison.Ordinal)).IsTrue();
         AssertThat(bus.Contains("name='%s',action=%u,action_type=%d,action_name='%s'\"", StringComparison.Ordinal)).IsTrue();
-        string mouse = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mouse_look.cpp"));
+        string mouse = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mouse_look.cpp"));
         AssertThat(mouse.Contains("constexpr uint32_t kWheelStatementTicks = 2u;", StringComparison.Ordinal)).IsTrue();
         // Both mods stand on the closed items.
-        string weaving = File.ReadAllText(Path.Combine(root, "mods-src", "spell_weaving", "mod", "init.lua"));
+        string weaving = File.ReadAllText(Path.Combine(root, "Fable2", "mods-src", "spell_weaving", "mod", "init.lua"));
         AssertThat(weaving.Contains("local spell, serial = Refii.cast_spell(hero, cast.type, true, cast.victim, cast.level, start, facing)", StringComparison.Ordinal)).IsTrue();
         AssertThat(weaving.Contains("spell_parts(serial).spell", StringComparison.Ordinal)).IsFalse();
         AssertThat(weaving.Contains("partner_casts", StringComparison.Ordinal)).IsFalse();
@@ -1193,7 +1197,7 @@ public class ModApiTests
         // The bolt landed inside the partner's own factory call is scaled live, as the native's OnHit did.
         AssertThat(weaving.Contains("casting = { type = cast.type, hero = hero }", StringComparison.Ordinal)).IsTrue();
         AssertThat(weaving.Contains("if e.spell_type ~= casting.type or e.attacker ~= casting.hero or e.spell_serial == nil or e.spell_serial == 0 then", StringComparison.Ordinal)).IsTrue();
-        string souls = string.Concat(Directory.EnumerateFiles(Path.Combine(root, "mods-src", "souls_combat", "mod"), "*.lua").OrderBy(f => f, StringComparer.Ordinal).Select(File.ReadAllText));
+        string souls = string.Concat(Directory.EnumerateFiles(Path.Combine(root, "Fable2", "mods-src", "souls_combat", "mod"), "*.lua").OrderBy(f => f, StringComparer.Ordinal).Select(File.ReadAllText));
         AssertThat(souls.Contains("S.CommittedStrike[p] = e.action", StringComparison.Ordinal)).IsTrue();
         AssertThat(souls.Contains("if strike == nil or e.action ~= strike then", StringComparison.Ordinal)).IsTrue();
         AssertThat(souls.Contains("ten times a second", StringComparison.Ordinal)).IsFalse();
@@ -1274,19 +1278,19 @@ public class ModApiTests
         // The seams: the three new hooks named in both builds, the type reader's row.
         foreach (string build in new[] { "Fable2", "Fable2TU1" })
         {
-            string config = File.ReadAllText(Path.Combine(root, "versions", build, "refii_config.toml"));
+            string config = File.ReadAllText(Path.Combine(root, "Fable2", "versions", build, "refii_config.toml"));
             foreach (string function in new[] { "rex_CActionFactory_CreateFromDefinition", "rex_lhGameFlowGuiMode_Apply", "rex_lhGameFlowGuiMode_Remove", "rex_lhFrontEnd_SetStartGameTarget" })
             {
                 AssertThat(config.Contains("\"" + function + "\"", StringComparison.Ordinal)).OverrideFailureMessage(build + " " + function).IsTrue();
             }
         }
-        string rows = File.ReadAllText(Path.Combine(root, "versions", "Fable2", "guest_addresses.inc"));
+        string rows = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "guest_addresses.inc"));
         AssertThat(rows.Contains("{0x8229DDF0u, 0x8229DB28u},", StringComparison.Ordinal)).IsTrue();  // the definition's field reader
         AssertThat(rows.Contains("{0x8219CD00u, 0x8219CDA8u},", StringComparison.Ordinal)).IsTrue();  // Gameface's lua_pushlstring
-        string bus = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        string bus = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
         AssertThat(bus.Contains("static_assert(kScriptableActionCount == 89", StringComparison.Ordinal)).IsTrue();
         AssertThat(bus.Contains("REX_EXTERN(rex_lhFrontEnd_SetStartGameTarget)", StringComparison.Ordinal)).IsTrue();
-        string frontend = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_frontend_lua.cpp"));
+        string frontend = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_frontend_lua.cpp"));
         foreach (string registered in new[] { "__refii_hash", "__refii_signed_in", "__refii_save_count", "__refii_screen" })
         {
             AssertThat(frontend.Contains("{\"" + registered + "\", &Native", StringComparison.Ordinal)).OverrideFailureMessage(registered).IsTrue();
@@ -1326,37 +1330,37 @@ public class ModApiTests
             return;
         }
 
-        string header = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod_events.h"));
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h"));
         AssertThat(header.Contains("#define REFII_CUTSCENE_FULL 1", StringComparison.Ordinal)).IsTrue();
         AssertThat(header.Contains("#define REFII_CUTSCENE_INTERACTIVE 2", StringComparison.Ordinal)).IsTrue();
         AssertThat(header.Contains("#define REFII_CUTSCENE_LOOK_AT 4", StringComparison.Ordinal)).IsTrue();
-        string modHeader = File.ReadAllText(Path.Combine(root, "src", "vfs", "include", "core", "refii_mod.h"));
+        string modHeader = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
         AssertThat(modHeader.Contains("extern \"C\" int32_t refii_mod_in_cutscene(PPCContext* ctx, uint8_t* base, int32_t player);", StringComparison.Ordinal)).IsTrue();
 
         // The three reads: the game's own full-cutscene query (row for the disc build), the two
         // fields the Player setters write (the same offsets on both builds).
-        string api = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        string api = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp"));
         AssertThat(api.Contains("constexpr uint32_t kForegroundCutscene = 0x3B;", StringComparison.Ordinal)).IsTrue();
         AssertThat(api.Contains("constexpr uint32_t kLookAtCameraMode = 0xC8;", StringComparison.Ordinal)).IsTrue();
         AssertThat(api.Contains("constexpr uint32_t kIsFullCutscenePlaying = 0x823060E0u;", StringComparison.Ordinal)).IsTrue();
-        string rows = File.ReadAllText(Path.Combine(root, "versions", "Fable2", "guest_addresses.inc"));
+        string rows = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "guest_addresses.inc"));
         AssertThat(rows.Contains("{0x823060E0u, 0x82907D08u},", StringComparison.Ordinal)).IsTrue();
         foreach ((string build, string address) in new[] { ("Fable2TU1", "0x823060E0"), ("Fable2", "0x82907D08") })
         {
-            string config = File.ReadAllText(Path.Combine(root, "versions", build, "refii_config.toml"));
+            string config = File.ReadAllText(Path.Combine(root, "Fable2", "versions", build, "refii_config.toml"));
             AssertThat(config.Contains(address + " = { size = 0x6C }", StringComparison.Ordinal))
                 .OverrideFailureMessage($"{build}: GUI.IsFullCutscenePlaying is not a function the recompiler emits").IsTrue();
         }
 
         // The edges: raised from the tick before the Tick event, per kind, read only while someone listens.
-        string bus = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        string bus = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
         int edges = bus.IndexOf("DispatchCutsceneEdges(ctx, base);", StringComparison.Ordinal);
         int tick = bus.IndexOf("TickEvent tick{};", StringComparison.Ordinal);
         AssertThat(edges >= 0 && tick > edges).OverrideFailureMessage("the edges are raised before the Tick event").IsTrue();
         AssertThat(bus.Contains("if (!AnySubscriber(REFII_EVENT_CUTSCENE)) {", StringComparison.Ordinal)).IsTrue();
-        string natives = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
         AssertThat(natives.Contains("{\"in_cutscene\", &NativeInCutscene, 0},", StringComparison.Ordinal)).IsTrue();
-        string commands = File.ReadAllText(Path.Combine(root, "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
         AssertThat(commands.Contains("what == \"in_cutscene\"", StringComparison.Ordinal)).IsTrue();
         string preamble = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_ModLua.cs"));
         AssertThat(preamble.Contains("Refii.CUTSCENE_FULL = ", StringComparison.Ordinal)).IsTrue();

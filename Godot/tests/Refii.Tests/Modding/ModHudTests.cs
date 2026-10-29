@@ -9,6 +9,7 @@ using Godot;
 using Refii.Fx;
 using Refii.Mods;
 using Refii.Ui;
+using Refii.Titles.Fable2;
 
 /// <summary>
 /// The HUD half of the mod API (Part H.2, H.4, H.5): a play at a model helper, the world markers,

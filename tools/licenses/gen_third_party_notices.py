@@ -103,7 +103,7 @@ NATIVE = [
     dict(name="glslang", url="https://github.com/KhronosGroup/glslang", spdx="BSD-3-Clause AND others, see text",
          files=[f"{RX}/glslang/LICENSE.txt"]),
     # --- refii ---------------------------------------------------------------------------------
-    dict(name="Lua 5.1", url="https://www.lua.org", spdx="MIT", files=["src/lua/thirdparty/lua512/COPYRIGHT"]),
+    dict(name="Lua 5.1", url="https://www.lua.org", spdx="MIT", files=["Fable2/src/lua/thirdparty/lua512/COPYRIGHT"]),
     dict(name="zlib", url="https://github.com/madler/zlib", spdx="Zlib", files=["src/extractor/thirdparty/zlib/LICENSE"]),
     dict(name="XenosRecomp", url="https://github.com/hedge-dev/XenosRecomp", spdx="MIT",
          files=["src/shader/thirdparty/XenosRecomp/LICENSE.md"]),

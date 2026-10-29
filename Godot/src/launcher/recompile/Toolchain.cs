@@ -32,7 +32,7 @@ namespace Refii.Launcher.Recompile;
 /// On Windows that native target is the GNU/MinGW ABI, which is the half of Zig that needs
 /// nothing preinstalled; the MSVC ABI would send us back to requiring Visual Studio. That
 /// only holds while the payload imports no C++ symbols from our own libraries, which is
-/// what src/vfs/include/core/payload_bridge.h exists to finish.
+/// what Fable2/src/vfs/include/core/payload_bridge.h exists to finish.
 /// </remarks>
 public readonly record struct Toolchain(string Zig, string Root)
 {

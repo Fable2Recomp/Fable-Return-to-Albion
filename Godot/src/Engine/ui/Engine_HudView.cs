@@ -531,7 +531,7 @@ public sealed partial class Engine_HudView : Node3D
         }
 
         _modMetersGeneration = generation;
-        bool shared = Seat == Engine_UiSeats.Seat.Whole && !LocalPlayerTwo && Refii.Host.CoopSession.LocalCoop;
+        bool shared = Seat == Engine_UiSeats.Seat.Whole && !LocalPlayerTwo && Refii.Core.Engine_TitleGame.Active.LocalCoop;
         _modMeters.Theme = Theme;
         _modMeters.StringBook = Values.Strings;
         _modMeters.Sources = Sources with
@@ -1592,12 +1592,9 @@ public sealed partial class Engine_HudView : Node3D
         return null;
     }
 
-    /// <summary>The three pip anchors, in resolve order. Static so the tick does not allocate.</summary>
-    private static readonly string[] PipBindings =
-    {
-        Engine_UiHudExpressionMeter.HeroPip, Engine_UiHudExpressionMeter.HenchmanPip,
-        Engine_UiHudExpressionMeter.BothPip,
-    };
+    /// <summary>The title's pip anchors, in resolve order; the title holds the list, so the tick does not allocate.</summary>
+    private static System.Collections.Generic.IReadOnlyList<string> PipBindings =>
+        Refii.Core.Engine_TitleGame.Active.HudPipBindings;
 
     /// <summary>
     /// Shows the travelling pip on the element the guest names: the art authored at opacity 0 is
@@ -1613,7 +1610,7 @@ public sealed partial class Engine_HudView : Node3D
             built.PipsResolved = true;
             built.BarLeft = Engine_UiTheme.FindByName(built.Node, "barleft") as Node3D;
             built.BarRight = Engine_UiTheme.FindByName(built.Node, "barright") as Node3D;
-            for (int i = 0; i < PipBindings.Length; ++i)
+            for (int i = 0; i < PipBindings.Count; ++i)
             {
                 built.Pips[i] = PipNode(built, PipBindings[i]);
                 if (built.Pips[i] is null)
@@ -1654,7 +1651,7 @@ public sealed partial class Engine_HudView : Node3D
             }
         }
 
-        for (int index = 0; index < PipBindings.Length; ++index)
+        for (int index = 0; index < PipBindings.Count; ++index)
         {
             string binding = PipBindings[index];
             Node3D? pip = built.Pips[index];

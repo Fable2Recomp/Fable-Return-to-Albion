@@ -10,7 +10,7 @@ namespace Refii.Level;
 /// A REMASTER CHOICE, NOT THE GUEST'S. Its rain and snow have no indoor test at all (see
 /// <see cref="Engine_Weather"/>) and it paints some buildings with the street's own day set,
 /// so it states snow inside them — a Knothole Island shop reads SnowSize 0.53. What it does
-/// state is WHICH BUILDING the hero stands in (<see cref="HostBridge.HeroBuilding"/>), which
+/// state is WHICH BUILDING the hero stands in (<see cref="Refii.Core.Engine_TitleGame.PlayerBuilding"/>), which
 /// it uses to dim its light shafts indoors. That entity's bounds are the dry volume: the
 /// precipitation shaders drop every flake inside <see cref="ToBox"/>, so it still falls
 /// outside the windows. The guest's weather and the dynamic one both read this.
@@ -42,7 +42,7 @@ public static class Engine_WeatherShelter
 
     /// <summary>
     /// <see cref="ToBox"/> for player two's view on split screen: the building player two stands
-    /// in (<see cref="HostBridge.PlayerTwoBuilding"/>). The precipitation shaders take it in player
+    /// in (<see cref="Refii.Core.Engine_TitleGame.PlayerBuilding"/>, player 2). The precipitation shaders take it in player
     /// two's view.
     /// </summary>
     public static Transform3D ToBoxTwo { get; private set; } = Transform3D.Identity;
@@ -64,7 +64,7 @@ public static class Engine_WeatherShelter
         if (_untilSample <= 0f)
         {
             _untilSample = SampleSeconds;
-            if (HostBridge.HeroBuilding() is { } building && building != _building)
+            if (Refii.Core.Engine_TitleGame.Active.PlayerBuilding(1) is { } building && building != _building)
             {
                 _building = building;
                 GD.Print(building != 0
@@ -100,7 +100,7 @@ public static class Engine_WeatherShelter
             return;
         }
 
-        if (HostBridge.PlayerTwoBuilding() is { } building && building != _buildingTwo)
+        if (Refii.Core.Engine_TitleGame.Active.PlayerBuilding(2) is { } building && building != _buildingTwo)
         {
             _buildingTwo = building;
             GD.Print(building != 0

@@ -22,7 +22,7 @@ public class ModValidateTests
         string? at = AppContext.BaseDirectory;
         for (int i = 0; i < 12 && at != null; i++)
         {
-            if (File.Exists(Path.Combine(at, "src", "vfs", "include", "core", "refii_mod_events.h")))
+            if (File.Exists(Path.Combine(at, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h")))
             {
                 return at;
             }
@@ -65,7 +65,7 @@ public class ModValidateTests
         var expected = new Dictionary<string, int> { ["souls_combat"] = 4, ["spell_weaving"] = 22 };
         foreach ((string mod, int kinds) in expected)
         {
-            string folder = Path.Combine(root, "mods-src", mod);
+            string folder = Path.Combine(root, "Fable2", "mods-src", mod);
             var issues = new List<ModIssue>();
             int checkedFiles = 0;
             foreach (string file in Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories))

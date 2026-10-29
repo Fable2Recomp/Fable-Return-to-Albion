@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Godot;
+using Refii.Core;
 using Refii.Host;
 
 namespace Refii.Game;
@@ -538,14 +539,15 @@ public partial class GameEntities : Node3D
 
         Transform3D toWorld = GlobalTransform;
         uint heroAddress = HostBridge.HeroEntityAddress();
-        if (_morphPreviewGeneration != GameCharacterMorphs.PreviewGeneration)
+        Engine_TitleGame title = Engine_TitleGame.Active;
+        if (_morphPreviewGeneration != title.HeroMorphPreviewGeneration)
         {
-            _morphPreviewGeneration = GameCharacterMorphs.PreviewGeneration;
+            _morphPreviewGeneration = title.HeroMorphPreviewGeneration;
             _morphPreviewUntilTick = _ticks + ReconcileTicks * 2;
         }
-        _morphPreviewHero = GameMorphMirror.OwnsInput || _ticks < _morphPreviewUntilTick ? heroAddress : 0u;
+        _morphPreviewHero = title.HeroMorphPreviewHeld || _ticks < _morphPreviewUntilTick ? heroAddress : 0u;
         (uint playerOne, uint playerTwo) = HostBridge.CoopPlayerEntities();
-        uint dogAddress = HostBridge.DogEntityAddress();
+        uint dogAddress = Engine_TitleGame.Active.CompanionEntityAddress;
         _principals = (heroAddress, playerOne, playerTwo, dogAddress);
         uint heroZone = heroAddress != 0u ? HostBridge.GetEntityLightZone(heroAddress) : Refii.Models.Engine_ClassicZones.Outdoors;
         _heroZone = heroZone;
@@ -563,9 +565,9 @@ public partial class GameEntities : Node3D
         _createFrom = System.Diagnostics.Stopwatch.GetTimestamp();
         foreach (HostBridge.GuestEntity statedEntity in entities)
         {
-            HostBridge.GuestEntity entity = GameDecorate.Appearance(statedEntity);
-            if (GameGoldenCock.ObserveGuest(entity)) continue;
-            if (GameMorphMirror.ObserveGuest(entity)) continue;
+            HostBridge.GuestEntity entity = title.Appearance(statedEntity);
+            if (title.ObserveEntity(entity)) continue;
+            long prologueFrom = System.Diagnostics.Stopwatch.GetTimestamp();
             if (entity.Address == heroAddress && heroAddress != 0u && IsUsablePlacement(entity.Position))
             {
                 // THE HERO'S STATED POSITION, in Godot space, for whatever samples the world at
@@ -573,7 +575,7 @@ public partial class GameEntities : Node3D
                 HeroPosition = ToGodot(entity.Position, entity.Rotation).Origin;
                 HeroGuestPosition = entity.Position;
                 HeroGuestRotation = entity.Rotation;
-                GameGoldenCockCollision.ObserveHero(entity, Refii.Core.Engine_GuestFrame.Frame);
+                title.ObserveHero(entity, Refii.Core.Engine_GuestFrame.Frame);
             }
             else if (entity.Address == playerTwo && playerTwo != 0u && IsUsablePlacement(entity.Position))
             {
@@ -3441,7 +3443,7 @@ public partial class GameEntities : Node3D
         hasParts = true;
         _builtParts += built;
         return ComposeParts(parts, TextureLayersOf(address), PartMorphsOf(address),
-            address == _principals.Hero ? GameCharacterMorphs.ManualTan : 0.5f) ??
+            address == _principals.Hero ? Engine_TitleGame.Active.HeroManualTan : 0.5f) ??
             _nodeMesh.GetValueOrDefault(address);
     }
 
@@ -5060,9 +5062,9 @@ public partial class GameEntities : Node3D
             };
         }
 
-        bool hidden = CoopSession.LocalCoop
+        bool hidden = Engine_TitleGame.Active.LocalCoop
             ? taken == 3u
-            : (taken & (CoopSession.IsClient ? 2u : 1u)) != 0u;
+            : (taken & (Engine_TitleGame.Active.OnlineClient ? 2u : 1u)) != 0u;
         return hidden ? 0u : layers;
     }
 

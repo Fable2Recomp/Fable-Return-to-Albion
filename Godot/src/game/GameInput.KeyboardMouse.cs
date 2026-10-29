@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Godot;
+using Refii.Core;
 using Refii.Host;
 using Refii.Ui;
 
@@ -176,10 +177,10 @@ public partial class GameInput
 	public static bool PhotoModeKeyHeld => Down("photo_mode");
 
 	/// <summary>
-	/// The expression wheel and the spell blade are pointed at: the cursor is free while one
-	/// is held, and the camera stands still under it.
+	/// A title overlay is pointed at (Fable 2's expression wheel and spell blade): the cursor is
+	/// free while one is held, and the camera stands still under it.
 	/// </summary>
-	public static bool InOverlay => QuickWheelHeld || SpellsMenuHeld;
+	public static bool InOverlay => Engine_TitleGame.Active.Input.PointerOverlay;
 
 	/// <summary>
 	/// The play state, the mouse capture and the attack mode, once per frame. The cursor is
@@ -188,11 +189,7 @@ public partial class GameInput
 	/// </summary>
 	private void UpdateKeyboardMouse(bool devices)
 	{
-		bool menuOwns = GameGoldenCock.OwnsInput || GameMorphMirror.OwnsInput || GameDecorate.Active || HostUiOwnsPad || ScreenMenuOwnsInput || CoopScreenOwnsInput ||
-			ModalBoxOwnsInput || MenuBoxOwnsInput ||
-			ReceiveItemsOwnsInput || DisplayMessageBoxUp || HostBridge.FrontEndGuiIsUp;
-		Playing = HostBridge.IsInGame && !menuOwns && !MaskPauseInput &&
-			HostBridge.GetPauseState() is not { ModalMode: not 1 };
+		Playing = Engine_TitleGame.Active.Input.WorldHasInput;
 
 		// The open dev menu (F6, the one embedded window; its Tracy panels are its tabs) wants
 		// the cursor. Its own flag, not `GetEmbeddedSubwindows()`: that builds a Godot Array
@@ -223,7 +220,7 @@ public partial class GameInput
 
 		// The look device, for the guest's camera: while it is the mouse, the camera keeps its
 		// heading as the hero moves and a target lock takes the mouse as flicks
-		// (src/vfs/src/hooks/mouse_look.cpp); a pad keeps the shipped camera, and so does touch,
+		// (Fable2/src/vfs/src/hooks/mouse_look.cpp); a pad keeps the shipped camera, and so does touch,
 		// whose drag is posted as the mouse's turn into that camera (GameInput.Touch.cs).
 		HostBridge.SetMouseLookDevice(Engine_UiInputMode.Keycaps && MouseInput);
 
@@ -252,8 +249,8 @@ public partial class GameInput
 	/// the action that presses that button, in the context that has the input — B is magic in
 	/// the world and back in a menu.
 	/// </summary>
-	public static string? KeyLabel(string button) => GameDecorate.Active ? GameDecorate.KeyLabel(button) : GamePhotoMode.Active ? GamePhotoMode.KeyLabel(button) :
-		GameMorphMirror.OwnsInput ? GameMorphMirror.KeyLabel(button) : button switch
+	public static string? KeyLabel(string button) => GamePhotoMode.Active ? GamePhotoMode.KeyLabel(button) :
+		Engine_TitleGame.Active.InteractionOwnsDevices ? Engine_TitleGame.Active.KeyLabel(button) : button switch
 	{
 		"A" => Shown("interact"),
 		"B" => Shown(Playing ? "magic" : "back"),
@@ -307,7 +304,7 @@ public partial class GameInput
 	/// camera sensitivity, posted as it arrives — Godot's relative motion, summed per frame
 	/// (<c>Input.UseAccumulatedInput</c>), with no curve, no averaging and no rate ceiling. The
 	/// guest hands everything posted since its last camera update to the active camera, whole, in
-	/// that update (src/vfs/src/hooks/mouse_look.cpp), with the profile's sensitivity and vertical
+	/// that update (Fable2/src/vfs/src/hooks/mouse_look.cpp), with the profile's sensitivity and vertical
 	/// invert applied as to the stick; Godot draws the part no update has taken yet the frame the
 	/// mouse moves (<see cref="Refii.Core.Engine_MouseLook"/>). The cursor is captured only in play
 	/// (<see cref="UpdateKeyboardMouse"/>), so motion here is always the camera's; horizontal
@@ -337,7 +334,7 @@ public partial class GameInput
 	/// <summary>
 	/// The captured mouse's wheel: each notch posted to the guest, down +1 and up -1 (rightward
 	/// positive). A notch switches the target of a lock a mod states switches by the wheel
-	/// (refii_mod_wheel_switches_target), to the next target right or left (src/vfs/src/hooks/mouse_look.cpp); the
+	/// (refii_mod_wheel_switches_target), to the next target right or left (Fable2/src/vfs/src/hooks/mouse_look.cpp); the
 	/// guest drops it otherwise. A free cursor's wheel is the menus' (<see cref="Engine_UiPointer"/>),
 	/// and nothing else in play reads the wheel.
 	/// </summary>

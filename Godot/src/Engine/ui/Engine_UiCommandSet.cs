@@ -227,11 +227,11 @@ public sealed class Engine_UiCommandSet
 /// </summary>
 public static class Engine_UiVerbs
 {
-	private static readonly Engine_UiCommandList[] Anywhere = Array.Empty<Engine_UiCommandList>();
-	private static readonly Engine_UiCommandList[] PauseOnly = { Engine_UiCommandList.Pause };
-	private static readonly Engine_UiCommandList[] FrontEndOnly = { Engine_UiCommandList.FrontEnd };
+	public static readonly Engine_UiCommandList[] Anywhere = Array.Empty<Engine_UiCommandList>();
+	public static readonly Engine_UiCommandList[] PauseOnly = { Engine_UiCommandList.Pause };
+	public static readonly Engine_UiCommandList[] FrontEndOnly = { Engine_UiCommandList.FrontEnd };
 
-	private static readonly Engine_UiCommandList[] GuestScreen =
+	public static readonly Engine_UiCommandList[] GuestScreen =
 		{ Engine_UiCommandList.Screen, Engine_UiCommandList.Revealed };
 
 	public static readonly Engine_UiVerb Opens = new(Engine_UiModMenuCommand.OpensPrefix, "Opens:<menu>",
@@ -255,33 +255,6 @@ public static class Engine_UiVerbs
 	public static readonly Engine_UiVerb SettingSet = new(Engine_UiScreenActions.SettingSet, "setting:set:<key>=<value>",
 		"writes a config switch", Anywhere);
 
-	public static readonly Engine_UiVerb Inventory = new(Engine_UiInventorySource.InventoryAction, "Inventory:<op>:<record>",
-		"an inventory operation on the simulation (use, equip, gift...), run on the guest's tick", Anywhere);
-
-	public static readonly Engine_UiVerb Quest = new(Engine_UiQuestSource.QuestAction, "Quest:select:<record>",
-		"makes a quest primary through the world map's own answer", Anywhere);
-
-	public static readonly Engine_UiVerb Sale = new(Engine_UiQuestSource.SaleAction, "Sale:<...>",
-		"a world-map sale row's answer", Anywhere);
-
-	public static readonly Engine_UiVerb Ability = new(Engine_UiAbilitySource.AbilityAction, "Ability:learn|unlearn:<1..14>",
-		"buys one level of an ability through the guest's own purchase, or gives one back through its own unlearn (the row's Y asks first)", Anywhere);
-
-	public static readonly Engine_UiVerb Shop = new(Engine_UiMenuSources.ShopAction, "Shop:buy|sell:<ticket>",
-		"a shop row's transaction: the row pushed at the shop screen's own handler by its ticket (30 buys, 31 sells), which asks its own confirm", Anywhere);
-
-	public static readonly Engine_UiVerb PropertyRepair = new(Engine_UiPropertySource.RepairAction, "PropertyRepair:<uid>",
-		"confirms and repairs a property for the menu's player", Anywhere);
-
-	public static readonly Engine_UiVerb PropertyRepairAll = new(Engine_UiPropertySource.RepairAllAction, "PropertyRepairAll",
-		"repairs every property", Anywhere);
-
-	public static readonly Engine_UiVerb Partner = new(Engine_UiPropertySource.PartnerAction, "Partner:<...>",
-		"a property partnership row's answer", Anywhere);
-
-	public static readonly Engine_UiVerb ModBuy = new(Engine_UiModAbilities.BuyAction, "Mod:buy:<ability>",
-		"buys a level of a mod ability (ui/abilities.json) for the row's player: the engine's purchase", Anywhere);
-
 	public static readonly Engine_UiVerb ScreenBack = new(Engine_UiScreenActions.ScreenBack, "screen:back",
 		"closes a guest screen through its own back lever", GuestScreen);
 
@@ -297,34 +270,47 @@ public static class Engine_UiVerbs
 	public static readonly Engine_UiVerb BoxDismiss = new(Engine_UiScreenActions.BoxDismiss, "box:dismiss",
 		"dismisses the display box standing over a screen", GuestScreen);
 
-	public static readonly Engine_UiVerb PauseTab = new(Engine_PauseMenu.TabCommandPrefix, "PauseTab:<tab>",
-		"opens a pause tab through the guest's tab lever (2 map .. 8 options)", PauseOnly);
-
-	public static readonly Engine_UiVerb PauseSaving = new(Engine_PauseMenu.SavingCommandPrefix, "PauseSaving:<0|1|2>",
-		"the guest's saving answer: 0 save and continue, 1 save and quit, 2 quit without saving", PauseOnly);
-
-	public static readonly Engine_UiVerb PauseQuit = new(Engine_PauseMenu.QuitCommandPrefix, "PauseQuit:<1|2>",
-		"the saving answer, then leaves the app when the guest reaches its title", PauseOnly);
-
-	public static readonly Engine_UiVerb PauseCoop = new(Engine_PauseMenu.CoopCommandPrefix, "PauseCoop:<leave|kick>",
-		"player two leaves the co-op game, or the online host kicks them", PauseOnly);
-
-	public static readonly Engine_UiVerb PauseOwned = new(Engine_PauseMenu.OwnedCommandPrefix, "PauseOwned:<id>",
-		"the old spelling of Screen:open:<id>", Anywhere);
-
 	public static readonly Engine_UiVerb QuitToDesktop = new(Engine_FrontEndMenu.QuitToDesktopCommand, "QuitToDesktop",
 		"leaves the app from the title (in a game, PauseQuit: saves first)", FrontEndOnly);
 
 	public static readonly Engine_UiVerb Network = new(Engine_UiNetworkSource.CommandPrefix, "Net:<op>[:<arg>]",
 		"the multiplayer rows' answers (Net:book opens the multiplayer book)", Anywhere);
 
-	/// <summary>Every verb the game registers, for the validator, the Studio and the guide.</summary>
-	public static readonly IReadOnlyList<Engine_UiVerb> Game = new[]
+	/// <summary>The shell's own verbs, which every title answers.</summary>
+	private static readonly Engine_UiVerb[] Shell =
 	{
-		Opens, Lua, OpenScreen, Options, SettingToggle, SettingCycle, SettingSet, Inventory, Quest, Sale, Ability, Shop,
-		PropertyRepair, PropertyRepairAll, Partner, ModBuy, ScreenBack, ScreenDismiss, ScreenUnlearn, ScreenSelect,
-		BoxDismiss, PauseTab, PauseSaving, PauseQuit, PauseCoop, PauseOwned, QuitToDesktop, Network,
+		Opens, Lua, OpenScreen, Options, SettingToggle, SettingCycle, SettingSet, ScreenBack, ScreenDismiss,
+		ScreenUnlearn, ScreenSelect, BoxDismiss, QuitToDesktop, Network,
 	};
+
+	private static readonly List<Engine_UiVerb> TitleVerbs = new();
+
+	/// <summary>A title's own verbs, stated when it installs; a mod may not replace one.</summary>
+	public static void AddTitleVerbs(IEnumerable<Engine_UiVerb> verbs)
+	{
+		lock (TitleVerbs)
+		{
+			TitleVerbs.AddRange(verbs);
+		}
+	}
+
+	/// <summary>
+	/// Every verb the game registers — the shell's, then the active title's — for the validator, the
+	/// Studio and the guide.
+	/// </summary>
+	public static IReadOnlyList<Engine_UiVerb> Game
+	{
+		get
+		{
+			Refii.Core.Engine_TitleGame.EnsureInstalled();
+			lock (TitleVerbs)
+			{
+				var all = new List<Engine_UiVerb>(Shell);
+				all.AddRange(TitleVerbs);
+				return all;
+			}
+		}
+	}
 
 	/// <summary>The game verb a command names, matched as the dispatcher matches (longest prefix), or null.</summary>
 	public static Engine_UiVerb? Of(string command)

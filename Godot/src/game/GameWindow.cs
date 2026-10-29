@@ -1,6 +1,7 @@
 using Refii.Ui;
 using Refii.Host;
 using Godot;
+using Refii.Core;
 
 namespace Refii.Game;
 
@@ -33,7 +34,7 @@ public partial class GameWindow : Node
 	public static bool IsOpen => _current is not null && GodotObject.IsInstanceValid(_current);
 
 	private GameSession? _session;
-	private GameUi? _ui;
+	private IGameTitleUi? _ui;
 	private GameVideo? _video;
 
 	private DisplayServer.WindowMode _launcherMode = DisplayServer.WindowMode.Windowed;
@@ -54,7 +55,7 @@ public partial class GameWindow : Node
 		// EVERY SETTING GOES TO THE MAIN WINDOW, through DisplayServer rather than Window
 		// properties — this node no longer owns a window of its own.
 		const int Main = (int)DisplayServer.MainWindowId;
-		DisplayServer.WindowSetTitle("Fable 2", Main);
+		DisplayServer.WindowSetTitle(Engine_Title.Active.RemakeName, Main);
 
 		// refii.toml owns the window, as it does for the other renderers.
 		GameWindowSettings settings = GameWindowSettings.Load();
@@ -199,8 +200,12 @@ public partial class GameWindow : Node
 
 		// Alongside the session, not inside it: the UI stands up from the shipped assets and
 		// needs no running guest, so a failed boot still shows a screen.
-		_ui = new GameUi { Name = "GameUi" };
-		AddChild(_ui);
+		Node? titleUi = Engine_TitleGame.Active.CreateUi();
+		if (titleUi is not null)
+		{
+			AddChild(titleUi);
+			_ui = titleUi as IGameTitleUi;
+		}
 
 		// The world, drawn through the guest's camera. Added before the UI so the UI and
 		// the videos compose over it.
@@ -216,7 +221,7 @@ public partial class GameWindow : Node
 		// F6: the dev menu — the full diagnostic view behind F5's spot check.
 		AddChild(new GameDevMenu { Name = "GameDevMenu" });
 
-		// Discord: "Playing Fable 2: Return to Albion" and the level the player is in.
+		// Discord: what the player is playing and the level they are in.
 		AddChild(new GamePresence { Name = "GamePresence" });
 
 		// Video over UI: a movie covers the front end and hands it back when it ends.
@@ -231,8 +236,11 @@ public partial class GameWindow : Node
 		};
 
 		// So the UI can draw an embedded movie into the element hosting it: the presentation
-		// and its ordinal map live in GameUi, the decoded frame lives here.
-		_ui.Video = _video;
+		// and its ordinal map live in the title's UI, the decoded frame lives here.
+		if (_ui is not null)
+		{
+			_ui.Video = _video;
+		}
 
 		_session.Stopped += OnSessionStopped;
 
@@ -769,7 +777,7 @@ public partial class GameWindow : Node
 
 		// Leave the window up on failure so the reason is readable; the user closes it.
 		DisplayServer.WindowSetTitle(
-			$"Fable 2 — stopped ({reason})", (int)DisplayServer.MainWindowId);
+			$"{Engine_Title.Active.RemakeName} — stopped ({reason})", (int)DisplayServer.MainWindowId);
 	}
 
 	/// <summary>
