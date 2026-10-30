@@ -70,12 +70,14 @@ public static class CoopHeroKit
 
 	/// <summary>
 	/// This instance's display name, off the node — independent of whether a hero was ever
-	/// captured. A joiner that comes in from the title has a name and no hero.
+	/// captured. A joiner that comes in from the title has a name and no hero. With no display
+	/// name set it is the pseudonym, by RexNet's rule as every other name on screen; the friend
+	/// code it fell back to titled each player's own co-op page with ~70 characters of REXN-….
 	/// </summary>
 	public static string LocalName =>
 		NetBridge.Self() is { } self
 			? (self.DisplayName.Length != 0 ? self.DisplayName
-				: self.FriendCode.Length != 0 ? self.FriendCode
+				: NetBridge.PeerName(self.PeerId) is { Length: > 0 } pseudonym ? pseudonym
 				: "…" + self.PeerId[^Math.Min(8, self.PeerId.Length)..])
 			: string.Empty;
 
