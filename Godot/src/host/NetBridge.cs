@@ -511,6 +511,34 @@ public static class NetBridge
 		}
 	}
 
+	/// <summary>
+	/// The player an orb's Interact asked the guide's gamer card for, as the node resolved them.
+	/// </summary>
+	/// <param name="Request">Counts the asks this run; act on one larger than the last answered.</param>
+	/// <param name="PeerId">Empty when the XUID matched no player the node knows.</param>
+	/// <param name="Name">RexNet's name for them: a friend's own, anyone else's pseudonym.</param>
+	/// <param name="Hosting">They advertise a session we could join.</param>
+	/// <param name="Partner">They are already this game's co-op partner.</param>
+	/// <param name="Xuid">The XUID the guest asked about, in hex — for the log.</param>
+	public readonly record struct GamerCard(
+		uint Request, string PeerId, string Name, bool Friend, bool Hosting, bool Partner, string Xuid = "")
+	{
+		public bool Known => PeerId.Length > 0;
+	}
+
+	/// <summary>The latest gamer card the guest asked for, or null when it has asked for none.</summary>
+	public static GamerCard? LatestGamerCard()
+	{
+		foreach (string[] f in Records(RefiiNetGamerCard, 5))
+		{
+			uint flags = Num(f[3]);
+			return new GamerCard(Num(f[0]), f[1], f[2], (flags & 1u) != 0, (flags & 2u) != 0,
+				(flags & 4u) != 0, f[4]);
+		}
+
+		return null;
+	}
+
 	public static bool PeerAction(string peerId, Act act)
 	{
 		try
@@ -672,6 +700,9 @@ public static class NetBridge
 
 	[DllImport(Library)]
 	private static extern void RefiiNetDiscordEnabled(int enabled);
+
+	[DllImport(Library)]
+	private static extern uint RefiiNetGamerCard(byte[] outText, uint capacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiNetJoinRequests(byte[] outText, uint capacity);

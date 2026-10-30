@@ -2641,7 +2641,13 @@ extern "C" {
 ///     the manager's bounding sphere) and a shadowing spot's map parameters, for the classic
 ///     renderer's light block and spot shadow maps; and RefiiHostGetClassicShadowSpheres — the
 ///     render scene's shadow spheres (category 36) with their last two stated keyframes.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 228; }
+///     The Android port added RefiiHostSetControllerStateTracked,
+///     RefiiHostGetControllerReadReceipt and RefiiHostSetGameModulePath at 228 without a
+///     version bump; desktop builds do not call them.
+/// 229 adds RefiiNetGamerCard — the player an orb's Interact asked the guide's gamer card for
+///     (`XamShowGamerCardUIForXUID`), resolved to a peer, for the shell's Join / Invite question;
+///     RefiiNetPeerAction's join (6) also takes a non-friend's session from the shard beat.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 229; }
 
 /// THE GUEST'S STATEMENTS TO ITS PRESENTATIONS (hooks/gui_slide_hooks.cpp), oldest first: six
 /// words each — kind (1 slide entry, 2 paused, 3 attribute, 4 active), presentation, root name
@@ -21855,6 +21861,83 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiNetPartnerName(char* out, uint32_t capacity)
 #endif
 }
 
+extern "C" uint32_t RefiiGamerCardRequest(uint64_t* xuid);
+
+/// THE GAMER CARD AN ORB ASKED FOR (`XamShowGamerCardUIForXUID`, the orb box's Interact), as
+/// one record: `request \t peer \t name \t flags \t xuid` (the XUID in hex, for the log). `request` counts the asks this run, so the
+/// shell acts on one it has not answered; 0 when the guest has asked for none.
+///
+/// The XUID names its peer — every RexNet XUID is `XuidFromPeer` of one — so it is matched
+/// against the players this node knows: friends, then the shard's members (the orbs of players
+/// who show to everyone), then live connections. `peer` is empty when none matches. The name is
+/// RexNet's (§17.2): a friend's own, anyone else's pseudonym.
+///
+/// flags: 1 a friend, 2 hosting a session we could join (a friend's presence, else the shard
+/// beat's session id), 4 already our co-op partner.
+REFII_HOST_ABI_EXPORT uint32_t RefiiNetGamerCard(char* out, uint32_t capacity) {
+#if defined(REXGLUE_ENABLE_REXNET)
+    uint64_t xuid = 0u;
+    const uint32_t request = RefiiGamerCardRequest(&xuid);
+    rex::net::RexNet* net = Net();
+    if (request == 0u || net == nullptr) {
+        return 0;
+    }
+
+    std::optional<RexNetPeerId> found;
+    std::string name;
+    uint32_t flags = 0u;
+    for (const rex::net::RexNet::FriendInfo& friend_info : net->SnapshotFriends()) {
+        if (rex::net::RexNet::XuidFromPeer(friend_info.peer) == xuid) {
+            found = friend_info.peer;
+            name = friend_info.display_name;
+            flags |= 1u | (friend_info.has_session ? 2u : 0u);
+            break;
+        }
+    }
+    for (const rex::net::RexNet::ShardMember& member : net->SnapshotShardMembers()) {
+        if (rex::net::RexNet::XuidFromPeer(member.peer) == xuid) {
+            if (!found.has_value()) {
+                found = member.peer;
+                name = member.display_name;
+            }
+            flags |= member.has_session ? 2u : 0u;
+            break;
+        }
+    }
+
+    const uint32_t partner = RefiiCoopChannelPeer();
+    for (const rex::net::RexNet::Connection& connection : net->SnapshotConnections()) {
+        if (connection.is_relay || rex::net::RexNet::XuidFromPeer(connection.peer) != xuid) {
+            continue;
+        }
+        if (!found.has_value()) {
+            found = connection.peer;
+            name = connection.display_name;
+        }
+        flags |= partner != 0u && connection.virtual_ip == partner ? 4u : 0u;
+        break;
+    }
+
+    if (found.has_value() && name.empty()) {
+        name = rex::net::Pseudonym(*found);
+    }
+
+    std::string row;
+    FieldNum(row, request, '\t');
+    Field(row, found.has_value() ? PeerText(*found) : std::string(), '\t');
+    Field(row, name, '\t');
+    FieldNum(row, flags, '\t');
+    char xuid_text[17];
+    std::snprintf(xuid_text, sizeof(xuid_text), "%016llX", static_cast<unsigned long long>(xuid));
+    Field(row, xuid_text, '\n');
+    return Emit(row, out, capacity);
+#else
+    (void)out;
+    (void)capacity;
+    return 0;
+#endif
+}
+
 /// Sends a friend request to a `REXN-…` code. The code carries the peer's own display name, so
 /// the shell can show who it is about to add before committing.
 REFII_HOST_ABI_EXPORT int RefiiNetAddFriendByCode(const char* code, const char* note) {
@@ -21889,7 +21972,8 @@ REFII_HOST_ABI_EXPORT int RefiiNetAddFriendByCode(const char* code, const char* 
 }
 
 /// `action`: 0 accept request, 1 dismiss request, 2 remove friend, 3 accept invite,
-/// 4 decline invite, 5 invite this peer to our session, 6 join this peer's session.
+/// 4 decline invite, 5 invite this peer to our session, 6 join this peer's session (a friend's
+/// from their presence, anyone else's from the shard beat their orb rides on).
 ///
 /// 3 AND 6 GO THROUGH `AcceptInvite`, NOT `InviteReply`. Only `AcceptInvite` arms
 /// `pending_accept_`; `InviteReply` just answers the sender. Without the arm, the session
@@ -21932,6 +22016,22 @@ REFII_HOST_ABI_EXPORT int RefiiNetPeerAction(const char* peer_text, int action) 
             // the host peer and the 16-byte session id — and presence already carries both for
             // a friend who is hosting, so nothing new has to be resolved.
             std::optional<rex::net::RexNet::PresenceInfo> presence = net->GetPresence(peer);
+            if (!presence.has_value() || !presence->has_session) {
+                // NOT A FRIEND: an orb of a player who shows to everyone. The shard's beat
+                // carries their session id, and the shard is this title's, so the title is ours.
+                presence.reset();
+                for (const rex::net::RexNet::ShardMember& member : net->SnapshotShardMembers()) {
+                    if (SamePeerId(member.peer, peer) && member.has_session) {
+                        rex::system::KernelState* state = rex::system::kernel_state();
+                        rex::net::RexNet::PresenceInfo shard;
+                        shard.title_id = state != nullptr ? state->title_id() : 0u;
+                        shard.has_session = true;
+                        shard.session_id = member.session_id;
+                        presence = shard;
+                        break;
+                    }
+                }
+            }
             if (!presence.has_value() || !presence->has_session || !NetStillUp(net)) {
                 return 0;
             }
