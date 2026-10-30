@@ -418,6 +418,52 @@ REFII_LUA_NATIVE(NativeSetPosition) {
   RESULTS(1);
 }
 
+REFII_LUA_NATIVE(NativeDecorateRotation) {
+  const uint32_t entity = lua.Entity(1);
+  const uint32_t placement = refii_mod_entity_alive(lua.base, entity) != 0
+                                 ? refii::mods::LoadU32(lua.base, entity + 0x7Cu) : 0u;
+  if (placement < 0x10000u || placement >= 0xC0000000u) {
+    lua.PushNil();
+    RESULTS(1);
+  }
+  PPCContext call = refii::mods::Frame(lua.ctx);
+  if (lua.Type(2) == kTypeNumber) {
+    float q[4];
+    float length = 0;
+    for (int i = 0; i < 4; ++i) {
+      q[i] = static_cast<float>(lua.Number(i + 2));
+      length += q[i] * q[i];
+    }
+    if (!std::isfinite(length) || length < 0.000001f) {
+      lua.PushBoolean(false);
+      RESULTS(1);
+    }
+    uint32_t bits[4];
+    for (int i = 0; i < 4; ++i) {
+      q[i] /= std::sqrt(length);
+      std::memcpy(&bits[i], &q[i], sizeof(float));
+    }
+    call.r4.u64 = (static_cast<uint64_t>(bits[0]) << 32) | bits[1];
+    call.r5.u64 = (static_cast<uint64_t>(bits[2]) << 32) | bits[3];
+    lua.PushBoolean(refii::mods::CallVirtual(call, lua.base, placement, 29));
+    RESULTS(1);
+  }
+  const uint32_t vtable = refii::mods::LoadU32(lua.base, placement);
+  const uint32_t target = vtable >= 0x10000u && vtable < 0xC0000000u
+                              ? refii::mods::LoadU32(lua.base, vtable + 0x44u) : 0u;
+  const uint32_t out = call.r1.u32 + 0x60u;
+  call.r3.u32 = out;
+  call.r4.u32 = placement;
+  if (!refii::mods::CallGuest(call, lua.base, target)) {
+    lua.PushNil();
+    RESULTS(1);
+  }
+  float q[4];
+  for (int i = 0; i < 4; ++i) q[i] = refii::mods::LoadF32(lua.base, out + i * 4u);
+  for (float value : q) lua.PushNumber(value);
+  RESULTS(4);
+}
+
 // Refii.entity_tint(e, r, g, b [, a]): a defaults to 1.
 REFII_LUA_NATIVE(NativeEntityTint) {
   const float a = lua.Type(5) == kTypeNumber ? static_cast<float>(lua.Number(5)) : 1.0f;
@@ -1970,6 +2016,7 @@ Native g_natives[] = {
     {"modify_health", &NativeModifyHealth, 0},
     {"position", &NativePosition, 0},
     {"set_position", &NativeSetPosition, 0},
+    {"_decorate_rotation", &NativeDecorateRotation, 0},
     {"entity_tint", &NativeEntityTint, 0},
     {"entity_untint", &NativeEntityUntint, 0},
     {"entity_alpha", &NativeEntityAlpha, 0},

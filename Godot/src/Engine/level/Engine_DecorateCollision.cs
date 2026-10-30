@@ -9,6 +9,7 @@ public sealed class Engine_DecorateCollision
     private readonly Dictionary<Mesh, (Vector3[] Faces, Aabb[] Chunks)> _meshes = new();
     private readonly HashSet<int> _crossings = new();
     private const int ChunkSize = 96;
+    public bool MovementBlocked { get; private set; }
 
     public void Clear() => _meshes.Clear();
 
@@ -21,9 +22,11 @@ public sealed class Engine_DecorateCollision
     }
 
     public bool Blocked(MeshInstance3D preview, Transform3D source, bool excludeSource, ReadOnlySpan<long> candidates)
+        => Blocked(preview, preview.GlobalTransform, source, excludeSource, candidates);
+
+    private bool Blocked(MeshInstance3D preview, Transform3D pose, Transform3D source, bool excludeSource, ReadOnlySpan<long> candidates)
     {
         if (preview.Mesh is not { } mesh) return true;
-        Transform3D pose = preview.GlobalTransform;
         Aabb bounds = Inset(mesh.GetAabb(), pose);
         Aabb worldBounds = pose * bounds;
         foreach (ulong id in candidates)
@@ -50,6 +53,93 @@ public sealed class Engine_DecorateCollision
             }
         }
         return false;
+    }
+
+    public float LimitMovement(MeshInstance3D preview, Transform3D source, bool excludeSource,
+        Engine_DecorateInterior interior, Transform3D offset, Vector3 from, float yaw, Vector3 to, float turn)
+        => LimitMovement(preview, source, excludeSource, interior, offset, from, new Vector3(0, yaw, 0), to, new Vector3(0, turn, 0), true);
+
+    public float LimitMovement(MeshInstance3D preview, Transform3D source, bool excludeSource,
+        Engine_DecorateInterior interior, Transform3D offset, Vector3 from, float yaw, Vector3 to, float turn,
+        ReadOnlySpan<long> candidates)
+        => LimitMovement(preview, source, excludeSource, interior, offset, from, new Vector3(0, yaw, 0), to, new Vector3(0, turn, 0), true, candidates);
+
+    public float LimitMovement(MeshInstance3D preview, Transform3D source, bool excludeSource,
+        Engine_DecorateInterior interior, Transform3D offset, Vector3 from, Vector3 angles, Vector3 to, Vector3 turn, bool objects)
+    {
+        MovementBlocked = true;
+        if (preview.Mesh is not { } mesh) return 0;
+        Aabb bounds = offset * mesh.GetAabb();
+        float radius = bounds.Position.Abs().Max(bounds.End.Abs()).Length();
+        Aabb sweep = new Aabb(from, Vector3.Zero).Expand(to).Grow(radius);
+        return LimitMovement(preview, source, excludeSource, interior, offset, from, angles, to, turn, objects,
+            objects ? RenderingServer.InstancesCullAabb(sweep, preview.GetWorld3D().Scenario) : Array.Empty<long>());
+    }
+
+    public float LimitMovement(MeshInstance3D preview, Transform3D source, bool excludeSource,
+        Engine_DecorateInterior interior, Transform3D offset, Vector3 from, Vector3 angles, Vector3 to, Vector3 turn,
+        bool objects, ReadOnlySpan<long> candidates)
+    {
+        MovementBlocked = true;
+        if (preview.Mesh is not { } mesh || !from.IsFinite() || !to.IsFinite() || !angles.IsFinite() || !turn.IsFinite()) return 0;
+        MovementBlocked = false;
+        Aabb bounds = mesh.GetAabb(), rotated = offset * bounds;
+        float radius = rotated.Position.Abs().Max(rotated.End.Abs()).Length();
+        Vector3 angle = Engine_DecorateControls.InterpolateAngles(angles, turn, 1) - angles;
+        float distance = from.DistanceTo(to) + angle.Abs().Dot(Vector3.One) * radius;
+        if (distance < 0.000001f) return 1;
+        Vector3 size = offset.Basis.Scale.Abs() * bounds.Size;
+        bool rotating = from.IsEqualApprox(to);
+        float step = Math.Clamp(Math.Min(size.X, Math.Min(size.Y, size.Z)) * 0.25f, 0.005f, 0.05f);
+        int budget = rotating ? 64 : 24;
+        float limit = Math.Min(1, step * budget / distance);
+        int count = Math.Clamp((int)Math.Ceiling(distance * limit / step), 1, budget);
+        bool Reject(Transform3D pose) => !interior.Contains(bounds, pose) || interior.CrossesSurface(bounds, pose);
+        float accepted = 0;
+        for (int i = 1; i <= count; i++)
+        {
+            float fraction = limit * i / count;
+            Transform3D pose = Engine_DecorateControls.Pose(from.Lerp(to, fraction), angles + angle * fraction) * offset;
+            if (Reject(pose) || objects && Blocked(preview, pose, source, excludeSource, candidates))
+            {
+                MovementBlocked = true;
+                float rejected = fraction;
+                for (int j = 0; j < 6; j++)
+                {
+                    float middle = (accepted + rejected) * 0.5f;
+                    pose = Engine_DecorateControls.Pose(from.Lerp(to, middle), angles + angle * middle) * offset;
+                    if (Reject(pose) || objects && Blocked(preview, pose, source, excludeSource, candidates)) rejected = middle;
+                    else accepted = middle;
+                }
+                return accepted;
+            }
+            accepted = fraction;
+        }
+        return accepted;
+    }
+
+    public Vector3 Slide(MeshInstance3D preview, Transform3D source, bool excludeSource,
+        Engine_DecorateInterior interior, Transform3D offset, Vector3 at, Vector3 angles, Vector3 requested, bool objects)
+    {
+        Vector3 delta = requested - at;
+        if (delta.LengthSquared() < 0.000001f || preview.Mesh is not { } mesh) return at;
+        Vector3 center = Engine_DecorateControls.Pose(at, angles) * offset * mesh.GetAabb().GetCenter();
+        if (interior.Surface(center, delta.Normalized(), delta.Length() + mesh.GetAabb().Size.Length() + 1, out _, out Vector3 normal))
+        {
+            Vector3 slide = delta.Slide(normal);
+            float amount = LimitMovement(preview, source, excludeSource, interior, offset, at, angles, at + slide, angles, objects);
+            at += slide * amount;
+        }
+        for (int i = 0; i < 3; i++)
+        {
+            int axis = i == 0 ? 1 : i == 1 ? 0 : 2;
+            Vector3 target = at;
+            target[axis] = requested[axis];
+            float amount = LimitMovement(preview, source, excludeSource, interior, offset, at, angles, target, angles, objects);
+            at = at.Lerp(target, amount);
+        }
+        MovementBlocked = true;
+        return at;
     }
 
     public static Aabb Inset(Aabb bounds, Transform3D pose)

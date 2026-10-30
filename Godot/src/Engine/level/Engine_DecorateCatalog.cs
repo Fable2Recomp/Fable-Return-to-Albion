@@ -14,6 +14,7 @@ public sealed class Engine_DecorateCatalog
     public sealed record Item(uint Card, uint Definition, int Type, int Level, string Model);
     public const string Setting = "decorate_mode_enabled";
     public readonly Dictionary<uint, Item> Items = new();
+    public readonly Dictionary<uint, string> Models = new();
     public readonly HashSet<uint> Furniture = new();
     public readonly Dictionary<uint, int> FurnitureTypes = new();
     public readonly Dictionary<uint, string[]> Movable = new();
@@ -54,6 +55,7 @@ public sealed class Engine_DecorateCatalog
     public static Engine_DecorateCatalog Build(GdbMulti db, IReadOnlyDictionary<uint, string> models, GdbPatchDatabase patch)
     {
         var result = new Engine_DecorateCatalog();
+        foreach (var model in models) result.Models[model.Key] = model.Value;
         var templates = new Dictionary<uint, GdbCursor>();
         var all = new Dictionary<uint, GdbCursor>();
         foreach (var view in db.Views)

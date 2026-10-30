@@ -347,7 +347,8 @@ public class DecorateModeTests
         string source = """
         local events, values, entities = {}, {}, {}
         local writes, creates, destroyed, money = 0, 0, 0, 2
-        local consume, failOwner, rejectMove = true, false, false
+        local consume, failOwner, rejectMove, rejectStore = true, false, false, false
+        local limbo, place = {}, "home"
         local vector = {}
         vector.__index = vector
         function vector:GetX() return self.x end
@@ -360,6 +361,8 @@ public class DecorateModeTests
             local e={id=id,definition=definition,p=p,f=CVector3(0,1,0),alive=true}
             function e:IsAlive() return self.alive end
             function e:GetPosition() return self.p end
+            function e:GetName() return self.name or self.id end
+            function e:SetName(name) self.name=name end
             function e:SetPosition(p) error('generic setter must not move physics furniture') end
             function e:Destroy() self.alive=false destroyed=destroyed+1 end
             entities[#entities+1]=e
@@ -370,8 +373,16 @@ public class DecorateModeTests
         local chair=entity('0000000000000003','old',CVector3(1,2,0))
         chair.inside=house chair.fixed=true
         function GetPlayerHero() return hero end
-        function GetSaveTable() return {} end
-        function LoadScriptSave(data) end
+        function GetSaveTable() return {Limbo=limbo} end
+        function LoadScriptSave(data) limbo=data.Limbo or {} end
+        ScriptFunction={PutEntityInLimbo=function(e)
+            if rejectStore then return end
+            assert(e.alive and not limbo[e.name])
+            limbo[e.name]=e e.alive=false
+        end,CreateEntityFromLimbo=function(name,p)
+            local e=limbo[name]
+            if e then limbo[name]=nil e.alive=true e.p=p end
+        end}
         Physics={TeleportToPosition=function(e,p) writes=writes+1 if not rejectMove and not e.fixed then e.p=p end end,GetFacingVector=function(e) return e.f end,SetFacingVector=function(e,f) e.f=f end}
         OwnedEntity={IsAvailable=function(e) return e.owner~=nil end,GetOwner=function(e) return e.owner end,
             SetOwner=function(e,o) if failOwner then error('owner failure') end e.owner=o end}
@@ -400,10 +411,17 @@ public class DecorateModeTests
         Whereabouts={IsAvailable=function(e) return e.inside~=nil end,GetBuildingWeAreInsideOf=function(e) return e.inside end}
         Refii={on=function(name,fn) events[name]=fn end,publish=function(k,v) values[k]=v end,
             uid=function(e) return fromHandle(e).id end,handle=function(e) return tonumber(e.id,16) end,entity=fromHandle,
-            hash=function(s) return s end,definition=function(e) return fromHandle(e).definition end,level_name=function() return 'home' end,
+            hash=function(s) return s end,definition=function(e) return fromHandle(e).definition end,level_name=function() return place end,
             world_here=function() return true end,value=function() return 1 end,
             item_count=function() return money end,_end_redecorating=function() end,_error=function() end,
             _by_uid=function(id) for _,e in ipairs(entities) do if e.id==id and e.alive then return e end end end}
+        Refii._decorate_rotation=function(handle,x,y,z,w)
+            local e=fromHandle(handle)
+            if x then e.q={x,y,z,w} return true end
+            if e.q then return unpack(e.q) end
+            local yaw=math.atan2(e.f.x,e.f.y)
+            return 0,0,-math.sin(yaw/2),math.cos(yaw/2)
+        end
         RefiiDecorateCatalog={['0x00000064']={definition='new',inventory='card',kind=1}}
         RefiiDecorateFurniture={old=1,new=1}
         RefiiDecorateMovable={old={'moved1'}}
@@ -417,8 +435,8 @@ public class DecorateModeTests
         local vase=entity('0000000000000007','vase',CVector3(3,0,0))
         vase.inside=house
         RefiiDecorateFurniture.vase=13
-        local table=entity('0000000000000008','table',CVector3(4,0,0))
-        table.owner=house
+        local roomTable=entity('0000000000000008','table',CVector3(4,0,0))
+        roomTable.owner=house
         RefiiDecorateFurniture.table=3
         local dead=entity('0000000000000009','vase',CVector3(3,0,0))
         dead.inside=house dead.alive=false
@@ -436,7 +454,7 @@ public class DecorateModeTests
         D.Call('Select',3)
         assert(values['refii.decorate.selected']==1 and values['refii.decorate.uid0']==8)
         D.Call('Cancel')
-        assert(values['refii.decorate.selected']==0 and table.p.x==4)
+        assert(values['refii.decorate.selected']==0 and roomTable.p.x==4)
         D.Call('Select',1)
         D.Call('Commit',2,3,1,0.5)
         assert(chair.alive)
@@ -458,8 +476,57 @@ public class DecorateModeTests
         for i=1,60 do events.tick() end
         assert(not chair.alive and vase.p.x==4)
         start()
-        assert(values['refii.decorate.count']==3 and fixture.alive and outside.alive and table.alive)
-        print('PASS: ownerless decorations, native interior membership, fixtures and neighbouring homes excluded, static copy, dynamic instance preservation, grade-free save/restore')
+        assert(values['refii.decorate.count']==3 and fixture.alive and outside.alive and roomTable.alive)
+        D.Call('Select',1)
+        vase.contents={rareItem=3}
+        rejectStore=true
+        D.Call('Store','0x00000123',1,0,0,0,1,0,0,0,1,0,0,0)
+        settle()
+        assert(vase.alive and values['refii.decorate.status']==3)
+        rejectStore=false
+        D.Call('Store','0x00000123',1,0,0,0,1,0,0,0,1,0,0,0)
+        settle()
+        assert(not vase.alive and values['refii.decorate.storedcount']==1 and values['refii.decorate.count']==2)
+        local storageId=values['refii.decorate.stored1.id']
+        saved=GetSaveTable()
+        local stored=saved.RefiiDecorate.levels.home[tostring(storageId)]
+        assert(stored.stored and stored.model=='0x00000123' and limbo[stored.name].contents.rareItem==3)
+        LoadScriptSave(saved) events.level_loaded()
+        for i=1,60 do events.tick() end
+        start()
+        assert(values['refii.decorate.storedcount']==1 and not vase.alive)
+        D.Call('Take',storageId)
+        assert(values['refii.decorate.selected']==1 and values['refii.decorate.stored']==storageId and not vase.alive)
+        D.Call('Cancel')
+        assert(stored.stored and not vase.alive)
+        D.Call('Take',storageId)
+        failOwner=true vase.owner=house
+        D.Call('Commit',1,1,1,0,0.5,0.5,0.5,0.5)
+        failOwner=false
+        assert(stored.stored and not vase.alive and limbo[stored.name])
+        D.Call('Take',storageId)
+        D.Call('Commit',1,1,1,0,0.5,0.5,0.5,0.5)
+        settle()
+        assert(vase.alive and not stored.stored and not limbo[stored.name] and vase.contents.rareItem==3)
+        assert(stored.qx==0.5 and stored.qy==0.5 and stored.qz==0.5 and stored.qw==0.5)
+        saved=GetSaveTable()
+        vase.q={0,0,0,1}
+        LoadScriptSave(saved) events.level_loaded()
+        for i=1,60 do events.tick() end
+        assert(vase.q[1]==0.5 and vase.q[2]==0.5 and vase.q[3]==0.5 and vase.q[4]==0.5)
+        start()
+        D.Call('Select',1)
+        D.Call('Store','0x00000123',1,0,0,0,1,0,0,0,1,0,0,0)
+        settle()
+        D.Call('End') place='otherhome' start()
+        D.Call('Take',storageId) D.Call('Commit',2,2,1,0,0,0,0,1) settle()
+        saved=GetSaveTable()
+        assert(saved.RefiiDecorate.levels.home[tostring(storageId)].retired)
+        assert(vase.alive and values['refii.decorate.storedcount']==0)
+        local relocated
+        for _,item in pairs(saved.RefiiDecorate.levels.otherhome) do relocated=item end
+        assert(relocated and relocated.uid==vase.id and relocated.qw==1)
+        print('PASS: storage, cancellation, failure rollback, contents, quaternion save/restore, cross-level inventory, ownerless decorations, native interior membership, fixtures and neighbouring homes excluded, static copy, dynamic instance preservation, grade-free save/restore')
         """;
         var start = new System.Diagnostics.ProcessStartInfo(tool)
         {
@@ -622,6 +689,241 @@ public class DecorateModeTests
         AssertThat(moved.IsEqualApprox(after * offset)).IsTrue();
         AssertThat(Engine_DecorateControls.Carry(after, before, moved, 0).IsEqualApprox(piece)).IsTrue();
         AssertThat(Engine_DecorateControls.Carry(before, before, piece, 2).IsEqualApprox(before * (offset + Vector3.Forward * 2))).IsTrue();
+    }
+
+    [TestCase]
+    public void RotationValuesAreRelativeToTheOriginalAngleAndAcceptPreciseInput()
+    {
+        float origin = Mathf.DegToRad(170);
+        AssertThat(Engine_DecorateControls.RotationDegrees(origin, origin)).IsEqualApprox(0, 0.001f);
+        AssertThat(Engine_DecorateControls.TryRotation("25.5", origin, out float yaw)).IsTrue();
+        AssertThat(Engine_DecorateControls.RotationDegrees(yaw, origin)).IsEqualApprox(25.5f, 0.001f);
+        AssertThat(Engine_DecorateControls.TryRotation("-90.1", origin, out yaw)).IsTrue();
+        AssertThat(Engine_DecorateControls.RotationDegrees(yaw, origin)).IsEqualApprox(-90.1f, 0.001f);
+        AssertThat(Engine_DecorateControls.TryRotation("360", origin, out yaw)).IsTrue();
+        AssertThat(Engine_DecorateControls.RotationDegrees(yaw, origin)).IsEqualApprox(0, 0.001f);
+        foreach (string text in new[] { "", "-", ".", "NaN", "Infinity", "1..2", "12,5", "1e40" })
+            AssertThat(Engine_DecorateControls.TryRotation(text, origin, out _)).IsFalse();
+        AssertThat(Engine_DecorateControls.TryRotation("0", float.NaN, out _)).IsFalse();
+    }
+
+    [TestCase]
+    public void AllRotationAxesRoundTripThroughGuestCoordinates()
+    {
+        foreach (Vector3 angles in new[] { new Vector3(0.3f, 0.7f, -0.2f), new Vector3(-0.4f, 2.8f, 1.2f), new Vector3(0, 0.6f, 0) })
+        {
+            Quaternion guest = Engine_DecorateControls.GuestRotation(angles);
+            Vector3 restored = Engine_DecorateControls.Angles(guest);
+            AssertThat(Engine_DecorateControls.Pose(Vector3.Zero, restored).Basis.IsEqualApprox(
+                Engine_DecorateControls.Pose(Vector3.Zero, angles).Basis)).IsTrue();
+        }
+        AssertThat(Engine_DecorateControls.Pose(Vector3.Zero, new Vector3(0, 0.6f, 0)).IsEqualApprox(
+            Engine_DecorateControls.Pose(Vector3.Zero, 0.6f))).IsTrue();
+        AssertThat(Engine_DecorateControls.DragPoint(new Vector3(0, 1, 3), new Vector3(0, 1, -3).Normalized(),
+            Vector3.Zero, Vector3.Back, out Vector3 higher)).IsTrue();
+        AssertThat(higher.Y).IsEqualApprox(2, 0.001f);
+        AssertThat(higher.Z).IsEqualApprox(0, 0.001f);
+    }
+
+    [TestCase]
+    [RequireGodotRuntime]
+    public void WallsStopAndSlideThePreviewWithObjectCollisionDisabled()
+    {
+        var root = new Node3D(); ((SceneTree)Engine.GetMainLoop()).Root.AddChild(root);
+        var collision = new Engine_DecorateCollision();
+        var interior = new Engine_DecorateInterior();
+        var faces = new List<Vector3>(RoomFaces(-5, -5, 10, 10));
+        faces.AddRange(new[] { new Vector3(1, 0, -4), new Vector3(1, 4, -4), new Vector3(1, 4, 4),
+            new Vector3(1, 0, -4), new Vector3(1, 4, 4), new Vector3(1, 0, 4) });
+        interior.Build(faces.ToArray(), Transform3D.Identity);
+        try
+        {
+            using var mesh = new BoxMesh { Size = Vector3.One };
+            var preview = new MeshInstance3D { Mesh = mesh }; root.AddChild(preview);
+            Vector3 from = new(0, 1, 0), target = new(3, 1, 0);
+            float amount = collision.LimitMovement(preview, Transform3D.Identity, false, interior,
+                Transform3D.Identity, from, Vector3.Zero, target, Vector3.Zero, false, Array.Empty<long>());
+            Vector3 at = from.Lerp(target, amount);
+            AssertThat(at.X > 0.5f && at.X < 0.52f).IsTrue();
+            Vector3 requested = at + new Vector3(0.4f, 0.5f, 0.5f);
+            Vector3 slid = collision.Slide(preview, Transform3D.Identity, false, interior, Transform3D.Identity,
+                at, Vector3.Zero, requested, false);
+            AssertThat(slid.X < 0.52f).IsTrue();
+            AssertThat(slid.Y).IsEqualApprox(requested.Y, 0.001f);
+            AssertThat(slid.Z).IsEqualApprox(requested.Z, 0.001f);
+            AssertThat(interior.CrossesSurface(mesh.GetAabb(), new Transform3D(Basis.Identity, slid))).IsFalse();
+            AssertThat(interior.Surface(new Vector3(-2, 1, 0), new Vector3(3, 1, 0).Normalized(), 10, out Vector3 hit, out Vector3 normal)).IsTrue();
+            AssertThat(hit.Y).IsEqualApprox(2, 0.001f);
+            AssertThat(normal.X < -0.99f).IsTrue();
+        }
+        finally { root.Free(); collision.Clear(); }
+    }
+
+    [TestCase]
+    [RequireGodotRuntime]
+    public void CollisionMovementStopsBeforeThinWallsAndAllowsMovingAway()
+    {
+        var root = new Node3D(); ((SceneTree)Engine.GetMainLoop()).Root.AddChild(root);
+        var collision = new Engine_DecorateCollision();
+        var interior = new Engine_DecorateInterior();
+        interior.Build(RoomFaces(-5, -5, 10, 10), Transform3D.Identity);
+        try
+        {
+            using var mesh = new BoxMesh { Size = Vector3.One };
+            using var wallMesh = new BoxMesh { Size = new Vector3(0.02f, 4, 6) };
+            Vector3 from = new(0, 1, 0), to = new(3, 1, 0);
+            var preview = new MeshInstance3D { Mesh = mesh, Position = from }; root.AddChild(preview);
+            var wall = new MeshInstance3D { Mesh = wallMesh, Position = new Vector3(1, 2, 0) }; root.AddChild(wall);
+            long[] candidates = { (long)preview.GetInstanceId(), (long)wall.GetInstanceId() };
+            float fraction = collision.LimitMovement(preview, Transform3D.Identity, false, interior,
+                Transform3D.Identity, from, 0, to, 0, candidates);
+            Vector3 stopped = from.Lerp(to, fraction);
+            AssertThat(stopped.X > 0.48f && stopped.X < 0.51f).IsTrue();
+            preview.Position = stopped;
+            AssertThat(collision.Blocked(preview, Transform3D.Identity, false, candidates)).IsFalse();
+            AssertThat(collision.LimitMovement(preview, Transform3D.Identity, false, interior,
+                Transform3D.Identity, stopped, 0, from, 0, candidates)).IsEqual(1f);
+            float again = collision.LimitMovement(preview, Transform3D.Identity, false, interior,
+                Transform3D.Identity, stopped, 0, to, 0, candidates);
+            AssertThat(stopped.Lerp(to, again).X - stopped.X < 0.005f).IsTrue();
+            wall.Visible = false;
+            Vector3 edge = new(4.4f, 1, 0);
+            fraction = collision.LimitMovement(preview, Transform3D.Identity, false, interior,
+                Transform3D.Identity, edge, 0, new Vector3(6, 1, 0), 0, candidates);
+            AssertThat(edge.Lerp(new Vector3(6, 1, 0), fraction).X < 4.57f).IsTrue();
+        }
+        finally { root.Free(); collision.Clear(); }
+    }
+
+    [TestCase]
+    [RequireGodotRuntime]
+    public void RotationStopsAtObstaclesAndPreservesTheModelsOffset()
+    {
+        var root = new Node3D(); ((SceneTree)Engine.GetMainLoop()).Root.AddChild(root);
+        var collision = new Engine_DecorateCollision();
+        var interior = new Engine_DecorateInterior();
+        interior.Build(RoomFaces(-5, -5, 10, 10), Transform3D.Identity);
+        try
+        {
+            using var mesh = new BoxMesh { Size = new Vector3(2, 1, 0.3f) };
+            using var wallMesh = new BoxMesh { Size = new Vector3(6, 4, 0.02f) };
+            var offset = new Transform3D(Basis.Identity, new Vector3(0.2f, 0.6f, 0));
+            var preview = new MeshInstance3D { Mesh = mesh, Transform = offset }; root.AddChild(preview);
+            var wall = new MeshInstance3D { Mesh = wallMesh, Position = new Vector3(0, 2, 0.9f) }; root.AddChild(wall);
+            long[] candidates = { (long)preview.GetInstanceId(), (long)wall.GetInstanceId() };
+            float fraction = collision.LimitMovement(preview, offset, true, interior, offset,
+                Vector3.Zero, 0, Vector3.Zero, Mathf.Pi / 2, candidates);
+            AssertThat(fraction > 0 && fraction < 1).IsTrue();
+            preview.Transform = Engine_DecorateControls.Pose(Vector3.Zero, Mathf.Pi / 2 * fraction) * offset;
+            AssertThat(collision.Blocked(preview, offset, true, candidates)).IsFalse();
+            wall.Visible = false;
+            AssertThat(collision.LimitMovement(preview, offset, true, interior, offset,
+                Vector3.Zero, 0, Vector3.Zero, Mathf.Pi / 2, candidates)).IsEqual(1f);
+        }
+        finally { root.Free(); collision.Clear(); }
+    }
+
+    [TestCase]
+    [RequireGodotRuntime]
+    public void CollisionEnabledPreviewStopsAtTheBoundaryButTheCameraCanKeepMoving()
+    {
+        var root = new Node3D(); ((SceneTree)Engine.GetMainLoop()).Root.AddChild(root);
+        var decorate = new GameDecorate(); root.AddChild(decorate); decorate.SetProcess(false); decorate.SetProcessInput(false);
+        const BindingFlags fields = BindingFlags.Instance | BindingFlags.NonPublic;
+        void Set(string name, object value) => typeof(GameDecorate).GetField(name, fields)!.SetValue(decorate, value);
+        T Get<T>(string name) => (T)typeof(GameDecorate).GetField(name, fields)!.GetValue(decorate)!;
+        void Call(string name, params object[] args) => typeof(GameDecorate).GetMethod(name, fields)!.Invoke(decorate, args);
+        try
+        {
+            using var mesh = new BoxMesh { Size = Vector3.One };
+            Vector3 position = new(4.3f, 1, 0);
+            var pose = new Transform3D(Basis.Identity, position);
+            Set("_previewCard", Card); Set("_piece", position); Set("_ghostSource", pose);
+            Get<Engine_DecorateInterior>("_interior").Build(RoomFaces(-5, -5, 10, 10), Transform3D.Identity);
+            Call("CreateGhost", mesh, pose, 1u); Call("UpdateGhost"); Call("ToggleCollision");
+            AssertThat(Get<bool>("_acceptedPreview")).IsTrue();
+            var camera = new Transform3D(Basis.Identity, Vector3.Right * 2);
+            Call("CarrySelection", Transform3D.Identity, camera, 0f); Call("UpdateGhost");
+            AssertThat(Get<Vector3>("_piece").X < 4.57f).IsTrue();
+            AssertThat(Get<Vector3>("_piece").X > 4.3f).IsTrue();
+            AssertThat(Get<bool>("_blocked")).IsFalse();
+            AssertThat(((StandardMaterial3D)Get<MeshInstance3D>("_ghost").MaterialOverride).AlbedoColor.G).IsEqual(1f);
+            Call("CarrySelection", camera, Transform3D.Identity, 0f); Call("UpdateGhost");
+            AssertThat(Get<Vector3>("_piece").X < 4.3f).IsTrue();
+            Call("ToggleCollision");
+            Call("CarrySelection", Transform3D.Identity, camera, 0f); Call("UpdateGhost");
+            AssertThat(Get<Vector3>("_piece").X < 4.57f).IsTrue();
+            Set("_piece", new Vector3(0, 1, 0)); Set("_pendingMove", false); Set("_dirty", true);
+            for (int i = 0; i < 5; i++) Call("UpdateGhost");
+            Call("ToggleCollision");
+            Set("_piece", new Vector3(4, 1, 0)); Set("_dirty", true); Call("UpdateGhost");
+            AssertThat(Get<bool>("_pendingMove")).IsTrue();
+            for (int i = 0; i < 4; i++) Call("UpdateGhost");
+            AssertThat(Get<Vector3>("_piece").X).IsEqualApprox(4, 0.001f);
+            AssertThat(Get<bool>("_pendingMove")).IsFalse();
+        }
+        finally { root.Free(); }
+    }
+
+    [TestCase]
+    [RequireGodotRuntime]
+    public void NumericRotationEditingPreviewsCancelsAndConfirmsWithoutPlacing()
+    {
+        var root = new Node3D(); ((SceneTree)Engine.GetMainLoop()).Root.AddChild(root);
+        var decorate = new GameDecorate(); root.AddChild(decorate); decorate.SetProcess(false); decorate.SetProcessInput(false);
+        const BindingFlags fields = BindingFlags.Instance | BindingFlags.NonPublic;
+        void Set(string name, object value) => typeof(GameDecorate).GetField(name, fields)!.SetValue(decorate, value);
+        T Get<T>(string name) => (T)typeof(GameDecorate).GetField(name, fields)!.GetValue(decorate)!;
+        void Call(string name, params object[] args) => typeof(GameDecorate).GetMethod(name, fields)!.Invoke(decorate, args);
+        bool keyboard = Engine_UiInputMode.KeyboardMouse;
+        try
+        {
+            Engine_UiInputMode.KeyboardMouse = true;
+            var art = new Node3D(); root.AddChild(art);
+            art.AddChild(new MeshInstance3D { Name = "MsgFrame", Mesh = new QuadMesh { Size = new Vector2(430, 640) } });
+            var theme = new Engine_UiTheme(); theme.Catalogue(art);
+            var viewport = new SubViewport { Size = new Vector2I(800, 600), OwnWorld3D = true }; root.AddChild(viewport);
+            var camera = new Camera3D { Projection = Camera3D.ProjectionType.Orthogonal, Size = 720,
+                Position = new Vector3(0, 0, 20000), Far = 40000, Current = true }; viewport.AddChild(camera);
+            var ui = new Engine_UiDecorate(); viewport.AddChild(ui); ui.Build(theme);
+            Set("_ui", ui); Set("_uiCamera", camera);
+            using var mesh = new BoxMesh();
+            Set("_previewCard", Card); Set("_rotationOrigin", 0.6f); Set("_rotation", 0.6f);
+            var pose = Engine_DecorateControls.Pose(Vector3.Zero, 0.6f);
+            Set("_ghostSource", pose); Call("CreateGhost", mesh, pose, 1u); Call("UpdateGhost");
+            Call("Refresh");
+            Call("ClickPanel", camera.UnprojectPosition(ui.GlobalPosition + new Vector3(0, 60, 10)));
+            AssertThat(Get<bool>("_editingRotation")).IsTrue();
+            foreach (char c in "25.5")
+            {
+                using var key = new InputEventKey { Pressed = true, Unicode = c };
+                Call("TypeRotation", key);
+            }
+            AssertThat(Engine_DecorateControls.RotationDegrees(Get<float>("_rotation"), 0.6f)).IsEqualApprox(25.5f, 0.001f);
+            AssertThat(Get<MeshInstance3D>("_ghost").GlobalTransform.IsEqualApprox(Engine_DecorateControls.Pose(Vector3.Zero, Get<float>("_rotation")))).IsTrue();
+            Call("Back");
+            AssertThat(Get<float>("_rotation")).IsEqualApprox(0.6f, 0.001f);
+            AssertThat(Get<bool>("_editingRotation")).IsFalse();
+            AssertThat(Get<bool>("_waiting")).IsFalse();
+            Call("BeginRotationEdit"); Call("AdjustRotation", 0.1f); Call("Choose");
+            AssertThat(Engine_DecorateControls.RotationDegrees(Get<float>("_rotation"), 0.6f)).IsEqualApprox(0.1f, 0.001f);
+            AssertThat(Get<bool>("_editingRotation")).IsFalse();
+            AssertThat(Get<bool>("_waiting")).IsFalse();
+            AssertThat(Get<uint>("_previewCard")).IsEqual(Card);
+            Call("BeginRotationEdit");
+            Engine_UiInputMode.KeyboardMouse = false;
+            Call("ProcessRotationInput", 0u);
+            AssertThat(Engine_DecorateControls.RotationDegrees(Get<float>("_rotation"), 0.6f)).IsEqualApprox(0.1f, 0.001f);
+            Engine_UiInputMode.KeyboardMouse = true;
+            AssertThat(Get<bool>("_editingRotation")).IsFalse();
+            AssertThat(Get<bool>("_waiting")).IsFalse();
+            Call("BeginRotationEdit");
+            using var invalid = new InputEventKey { Pressed = true, Unicode = '-' };
+            Call("TypeRotation", invalid); Call("Choose");
+            AssertThat(Get<bool>("_editingRotation")).IsTrue();
+            Call("Back"); Call("Back");
+        }
+        finally { Engine_UiInputMode.KeyboardMouse = keyboard; root.Free(); }
     }
 
     [TestCase]
@@ -1031,7 +1333,12 @@ public class DecorateModeTests
             AssertThat(ui.PanelBounds.Size.Y).IsEqual(640f);
             AssertThat(ui.Hit(new Vector2(-100, 139))).IsEqual(1);
             ui.ShowRows(new[] { "Chair", "Table" }, 1, false, true);
-            AssertThat(ui.PanelBounds.Size.Y).IsEqual(280f);
+            AssertThat(ui.PanelBounds.Size.Y).IsEqual(400f);
+            AssertThat(ui.Hit(new Vector2(-126, 60))).IsEqual(Engine_UiDecorate.PageSize + 10);
+            AssertThat(ui.Hit(new Vector2(0, 60))).IsEqual(Engine_UiDecorate.PageSize + 11);
+            AssertThat(ui.Hit(new Vector2(126, 60))).IsEqual(Engine_UiDecorate.PageSize + 12);
+            AssertThat(ui.Position.Y - ui.PanelBounds.Size.Y / 2).IsEqual(-340f);
+            ui.ShowRotation(25.5f); ui.ShowRotation("-90.1", true);
             AssertThat(ui.Hit(new Vector2(-100, 139))).IsEqual(-1);
             AssertThat(ui.Hit(new Vector2(50, 20))).IsEqual(Engine_UiDecorate.PageSize + 1);
         }

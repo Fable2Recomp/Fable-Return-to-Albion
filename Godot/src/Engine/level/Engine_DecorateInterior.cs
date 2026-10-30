@@ -9,15 +9,26 @@ public sealed class Engine_DecorateInterior
     private readonly Dictionary<Vector2I, List<Triangle>> _columns = new();
     private readonly List<float> _heights = new();
     private Aabb _bounds;
+    private Vector3[] _surfaces = Array.Empty<Vector3>();
+    private Aabb[] _chunks = Array.Empty<Aabb>();
     private readonly record struct Triangle(Vector3 A, Vector3 B, Vector3 C, float Determinant);
     public bool Ready => _columns.Count != 0;
 
-    public void Clear() => _columns.Clear();
+    public void Clear() { _columns.Clear(); _surfaces = Array.Empty<Vector3>(); _chunks = Array.Empty<Aabb>(); }
 
     public void Build(ReadOnlySpan<Vector3> faces, Transform3D transform)
     {
         Clear();
         if (faces.Length < 3 || !transform.IsFinite()) return;
+        _surfaces = new Vector3[faces.Length];
+        for (int i = 0; i < faces.Length; i++) _surfaces[i] = transform * faces[i];
+        _chunks = new Aabb[(faces.Length + 95) / 96];
+        for (int i = 0; i < _chunks.Length; i++)
+        {
+            var chunk = new Aabb(_surfaces[i * 96], Vector3.Zero);
+            for (int j = i * 96 + 1; j < Math.Min(faces.Length, (i + 1) * 96); j++) chunk = chunk.Expand(_surfaces[j]);
+            _chunks[i] = chunk;
+        }
         _bounds = new Aabb(transform * faces[0], Vector3.Zero);
         for (int i = 0; i + 2 < faces.Length; i += 3)
         {
@@ -82,5 +93,47 @@ public sealed class Engine_DecorateInterior
                     if (!Contains(transform * at)) return false;
                 }
         return true;
+    }
+
+    public bool CrossesSurface(Aabb bounds, Transform3D pose)
+    {
+        if (!Ready || !pose.IsFinite() || Math.Abs(pose.Basis.Determinant()) < 0.000001f) return true;
+        bounds = Engine_DecorateCollision.Inset(bounds, pose);
+        Aabb world = pose * bounds;
+        Transform3D inverse = pose.AffineInverse();
+        for (int i = 0; i < _chunks.Length; i++)
+        {
+            if (!world.Intersects(_chunks[i].Grow(0.0001f))) continue;
+            for (int j = i * 96; j + 2 < Math.Min(_surfaces.Length, (i + 1) * 96); j += 3)
+                if (Engine_DecorateCollision.Triangle(bounds, inverse * _surfaces[j], inverse * _surfaces[j + 1], inverse * _surfaces[j + 2])) return true;
+        }
+        return false;
+    }
+
+    public bool Surface(Vector3 origin, Vector3 direction, float limit, out Vector3 point, out Vector3 normal)
+    {
+        point = normal = Vector3.Zero;
+        bool found = false;
+        for (int i = 0; i < _chunks.Length; i++)
+        {
+            if (!_chunks[i].Grow(0.0001f).IntersectsSegment(origin, origin + direction * limit)) continue;
+            for (int j = i * 96; j + 2 < Math.Min(_surfaces.Length, (i + 1) * 96); j += 3)
+            {
+                Vector3 a = _surfaces[j], ab = _surfaces[j + 1] - a, ac = _surfaces[j + 2] - a;
+                Vector3 h = direction.Cross(ac);
+                float det = ab.Dot(h);
+                if (Math.Abs(det) < 0.0000001f) continue;
+                Vector3 delta = origin - a;
+                float u = delta.Dot(h) / det;
+                Vector3 q = delta.Cross(ab);
+                float v = direction.Dot(q) / det, distance = ac.Dot(q) / det;
+                if (u < 0 || v < 0 || u + v > 1 || distance < 0 || distance > limit) continue;
+                limit = distance; point = origin + direction * distance;
+                normal = ab.Cross(ac).Normalized();
+                if (normal.Dot(direction) > 0) normal = -normal;
+                found = true;
+            }
+        }
+        return found;
     }
 }

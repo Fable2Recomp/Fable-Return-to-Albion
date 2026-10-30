@@ -21,7 +21,8 @@ public static class Engine_DecorateRuntime
         RefiiDecorate = {}
         local D = RefiiDecorate
         local saved = {version=1, nextid=1, levels={}}
-        local building, house, level, selected, original, card, selectedEntry
+        local building, house, level, selected, original, card, selectedEntry, storedItem, storedLevel
+        local inventory = {}
         local active, revision, ticks, touched = false, 0, 0, 0
         local room, restored, restoring = {}, {}, {}
         local spawned = false
@@ -45,17 +46,23 @@ public static class Engine_DecorateRuntime
         end
         local function position(e)
             local p, f = e:GetPosition(), Physics.GetFacingVector(e)
-            return {x=p:GetX(), y=p:GetY(), z=p:GetZ(), yaw=math.atan2(f:GetX(), f:GetY())}
+            local result={x=p:GetX(), y=p:GetY(), z=p:GetZ(), yaw=math.atan2(f:GetX(), f:GetY())}
+            if Refii._decorate_rotation then result.qx,result.qy,result.qz,result.qw=Refii._decorate_rotation(Refii.handle(e)) end
+            return result
         end
         local function move(e, p)
             Physics.SetFacingVector(e,CVector3(math.sin(p.yaw),math.cos(p.yaw),0))
             Physics.TeleportToPosition(e,CVector3(p.x,p.y,p.z))
+            if p.qw then
+                if not Refii._decorate_rotation or not Refii._decorate_rotation(Refii.handle(e),p.qx,p.qy,p.qz,p.qw) then error("rotation unavailable") end
+            end
         end
         local function placed(e,p)
             if not alive(e) then return false end
             local actual=position(e)
             return (actual.x-p.x)^2+(actual.y-p.y)^2+(actual.z-p.z)^2<0.0004 and
-                math.cos(actual.yaw-p.yaw)>0.999
+                (p.qw and actual.qw and math.abs(actual.qx*p.qx+actual.qy*p.qy+actual.qz*p.qz+actual.qw*p.qw)>0.999 or
+                not p.qw and math.cos(actual.yaw-p.yaw)>0.999)
         end
         local function movable(e)
             local definitions=RefiiDecorateMovable[key(e)]
@@ -85,17 +92,26 @@ public static class Engine_DecorateRuntime
             id = string.rep("0", math.max(0,16-#id)) .. id
             for i=0,3 do publish(prefix .. i,tonumber(string.sub(id,13-i*4,16-i*4),16) or 0) end
         end
+        local function named(name)
+            local search=SearchTools.StartNewSearch("object")
+            SearchTools.FilterWithName(search,name)
+            return SearchTools.GetSearchResults(search)[1]
+        end
         local function state(status)
             publish("active",active and 1 or 0)
-            publish("selected",(alive(selected) or card) and 1 or 0)
+            publish("selected",(alive(selected) or card or storedItem) and 1 or 0)
             publish("status",status or 0)
             words(uid(selected),"uid")
             words(card,"card")
+            publish("stored",storedItem and tonumber(selectedEntry) or 0)
+            words(storedItem and storedItem.model,"model")
+            if storedItem and storedItem.offset then for i=1,12 do publish("offset"..i,storedItem.offset[i]) end end
             words(house,"house")
             words(string.format("%08x",alive(building) and Refii.handle(building) or 0),"building")
-            if alive(selected) or card then
+            if alive(selected) or card or storedItem then
                 local p=alive(selected) and position(selected) or original
                 publish("x",p.x) publish("y",p.y) publish("z",p.z) publish("yaw",p.yaw)
+                publish("qx",p.qx or 0) publish("qy",p.qy or 0) publish("qz",p.qz or -math.sin(p.yaw/2)) publish("qw",p.qw or math.cos(p.yaw/2))
             end
             revision=revision+1
             publish("revision",revision)
@@ -107,7 +123,7 @@ public static class Engine_DecorateRuntime
         local function belongs(e)
             if not alive(e) or not alive(building) then return false end
             local id=uid(e)
-            for _,item in pairs(entries()) do if item.uid==id and item.house==house then return true end end
+            for _,item in pairs(entries()) do if not item.stored and not item.retired and item.uid==id and item.house==house then return true end end
             if not RefiiDecorateFurniture[key(e)] then return false end
             if OwnedEntity.IsAvailable(e) then
                 local owner=OwnedEntity.GetOwner(e)
@@ -127,6 +143,18 @@ public static class Engine_DecorateRuntime
                     if #room>=1024 then break end
                 end
             end
+            inventory={}
+            for name,list in pairs(saved.levels) do
+                for id,item in pairs(list) do
+                    if item.stored then inventory[#inventory+1]={id=id,item=item,level=name} end
+                end
+            end
+            table.sort(inventory,function(a,b) return tonumber(a.id)<tonumber(b.id) end)
+            publish("storedcount",#inventory)
+            for i,entry in ipairs(inventory) do
+                publish("stored"..i..".id",tonumber(entry.id))
+                publish("stored"..i..".kind",entry.item.kind or 0)
+            end
             publish("count",#room)
             for i,e in ipairs(room) do
                 words(uid(e),"room" .. i .. ".uid")
@@ -139,15 +167,16 @@ public static class Engine_DecorateRuntime
         end
         local function rollback()
             local wasPending=pending
-            if spawned and alive(selected) then selected:Destroy() end
-            if wasPending and not spawned and alive(selected) and original then move(selected,original) end
+            if storedItem and wasPending and alive(selected) then ScriptFunction.PutEntityInLimbo(selected)
+            elseif spawned and alive(selected) then selected:Destroy() end
+            if wasPending and not spawned and not storedItem and alive(selected) and original then move(selected,original) end
             if wasPending and wasPending.source then selected=wasPending.source
             elseif spawned then selected=nil end
             spawned=false pending=nil
         end
         function D.Cancel(quiet)
             rollback()
-            selected, original, card, selectedEntry=nil,nil,nil,nil
+            selected, original, card, selectedEntry, storedItem, storedLevel=nil,nil,nil,nil,nil,nil
             state(quiet and 0 or 6)
         end
         function D.End()
@@ -179,13 +208,46 @@ public static class Engine_DecorateRuntime
             card=id original={x=p:GetX(),y=p:GetY(),z=p:GetZ(),yaw=math.atan2(f:GetX(),f:GetY())}
             state()
         end
-        function D.Commit(x,y,z,yaw)
+        function D.Take(id)
+            D.Cancel(true)
+            for _,entry in ipairs(inventory) do
+                if entry.id==tostring(id) and entry.item.stored then
+                    selectedEntry=entry.id storedItem=entry.item storedLevel=entry.level original=entry.item
+                    state() return
+                end
+            end
+            state(2)
+        end
+        function D.Store(model,...)
             if pending then return end
-            if not active or not alive(building) or (not alive(selected) and not card) then state(1) return end
+            if card or storedItem then D.Cancel() return end
+            if not belongs(selected) or type(model)~="string" then state(1) return end
+            local offset={...}
+            if #offset~=12 then reject("missing preview transform") return end
+            for _,n in ipairs(offset) do if not finite(n) then reject("invalid preview transform") return end end
+            local p=original
+            D.Commit(p.x,p.y,p.z,p.yaw,p.qx,p.qy,p.qz,p.qw)
+            if pending then pending.store=true pending.model=model pending.offset=offset end
+        end
+        function D.Commit(x,y,z,yaw,qx,qy,qz,qw)
+            if pending then return end
+            if not active or not alive(building) or (not alive(selected) and not card and not storedItem) then state(1) return end
             if not finite(x) or not finite(y) or not finite(z) or not finite(yaw) then reject("invalid position or rotation") return end
             local p={x=x,y=y,z=z,yaw=yaw}
+            if qw~=nil then
+                if not finite(qx) or not finite(qy) or not finite(qz) or not finite(qw) then reject("invalid rotation") return end
+                local length=math.sqrt(qx*qx+qy*qy+qz*qz+qw*qw)
+                if length<0.000001 then reject("invalid rotation") return end
+                p.qx=qx/length p.qy=qy/length p.qz=qz/length p.qw=qw/length
+            end
             local request={pose=p,tick=ticks+2}
-            if card then
+            if storedItem then
+                ScriptFunction.CreateEntityFromLimbo(storedItem.name,CVector3(x,y,z))
+                selected=named(storedItem.name)
+                if not alive(selected) then selected=nil reject("stored object unavailable") return end
+                pending=request
+                setOwner(selected,building)
+            elseif card then
                 local hero=GetPlayerHero()
                 local before=Refii.item_count(Refii.handle(hero),card) or 0
                 if before<1 then D.Cancel() state(2) return end
@@ -220,8 +282,26 @@ public static class Engine_DecorateRuntime
                 else Refii._error("decorate placement failed: entity disappeared before confirmation") end
                 rollback() state(3) return
             end
-            local id=selectedEntry or tostring(saved.nextid)
-            local item=selectedEntry and entries()[selectedEntry] or {}
+            local crossLevel=storedItem and storedLevel~=level
+            local id=not crossLevel and selectedEntry or tostring(saved.nextid)
+            local item=storedItem or selectedEntry and entries()[selectedEntry] or {}
+            if crossLevel then
+                local previous=item item={}
+                for k,v in pairs(previous) do item[k]=v end
+            end
+            local identity,record=uid(selected),key(selected)
+            if pending.store then
+                local name="RefiiDecorateStored_"..id
+                local previousName=selected:GetName()
+                selected:SetName(name)
+                local ok=pcall(ScriptFunction.PutEntityInLimbo,selected)
+                if not ok or alive(selected) then
+                    if alive(selected) then selected:SetName(previousName) end
+                    rollback() state(3) return
+                end
+                item.name=name item.model=pending.model item.offset=pending.offset
+                item.kind=RefiiDecorateFurniture[record] or 0
+            end
             if card then
                 local hero=GetPlayerHero()
                 local before=alive(hero) and Refii.item_count(Refii.handle(hero),card) or 0
@@ -235,14 +315,16 @@ public static class Engine_DecorateRuntime
                 item.definition=pending.definition item.upgrade=pending.upgrade
                 pending.source:Destroy()
             end
-            item.uid=uid(selected) item.house=house
-            item.record=key(selected)
+            item.uid=identity item.house=house item.record=record
+            item.stored=pending.store or nil
+            if crossLevel then storedItem.stored=nil storedItem.retired=true end
             item.x=p.x item.y=p.y item.z=p.z item.yaw=p.yaw
+            item.qx=p.qx item.qy=p.qy item.qz=p.qz item.qw=p.qw
             entries()[id]=item
-            if not selectedEntry then saved.nextid=saved.nextid+1 end
+            if not selectedEntry or crossLevel then saved.nextid=saved.nextid+1 end
             restored[id]=true
             spawned=false pending=nil
-            selected,original,card,selectedEntry=nil,nil,nil,nil
+            selected,original,card,selectedEntry,storedItem,storedLevel=nil,nil,nil,nil,nil,nil
             D.Refresh()
             state(5)
         end
@@ -267,7 +349,13 @@ public static class Engine_DecorateRuntime
             for id,item in pairs(list) do
                 if not restored[id] and type(item)=="table" and finite(item.x) and finite(item.y) and finite(item.z) and finite(item.yaw) then
                     local stage=restoring[id]
-                    if stage then
+                    if item.stored or item.retired then
+                        local e=byuid(item.uid)
+                        if alive(e) and key(e)==item.record then e:Destroy() end
+                        local source=item.source and byuid(item.source)
+                        if alive(source) and key(source)==item.sourceRecord then source:Destroy() end
+                        restored[id]=true
+                    elseif stage then
                         if placed(stage.entity,item) then
                             if alive(stage.source) then stage.source:Destroy() end
                             item.uid=uid(stage.entity) item.record=key(stage.entity)
