@@ -6507,9 +6507,14 @@ public partial class GameUi : Node
 			// host keeps sampling: its hero is player one, and that is what the joiner needs.
 			// Record id → def name, off the host's own globals.gdb view — the same lookup the
 			// inventory rows use. `Engine_` is reached from here, never from the host layer.
-			// Where the saves are, by convention — `assets/save` under the app, the same
-			// `user_data_root` the launcher writes into refii.toml.
-			CoopHeroKit.UserDataRoot ??= System.IO.Path.Combine(Engine_AppRoot.AssetsDirectory, "save");
+			// WHERE THE GAME SAVES, not where it saves by default: the emulator's live
+			// `user_data_root`, which refii.toml may set elsewhere, and `assets/save` under the
+			// app only while the guest has not said. The default alone read a joiner's hero
+			// from a stale copy in the app folder while the game saved to the configured root,
+			// so a joiner who had changed outfit arrived at the host in the old one.
+			CoopHeroKit.UserDataRoot = HostBridge.GetSaveRoot() is { Length: > 0 } live
+				? live
+				: CoopHeroKit.UserDataRoot ?? System.IO.Path.Combine(Engine_AppRoot.AssetsDirectory, "save");
 
 			// The shared database directly, not the inventory source's copy of it: that copy is
 			// set on a screen-menu path the host may not have walked yet when the kit is built,
