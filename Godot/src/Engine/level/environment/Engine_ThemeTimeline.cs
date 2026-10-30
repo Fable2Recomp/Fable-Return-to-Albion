@@ -266,6 +266,13 @@ public static class Engine_ThemeTimeline
     public static bool TryExtractLightingBlended(
         IReadOnlyList<byte[]> gdbs, float targetTime, uint daySetHash, out LightingTheme theme)
     {
+        // A Fable 3 painted layer is an .envtheme, whose timelines are continuous in the time:
+        // no keyframe bracket to blend between.
+        if (Engine_EnvironmentTheme.CarriesEnvThemes(gdbs))
+        {
+            return Engine_LightingTheme.TryExtract(gdbs, targetTime, daySetHash, out theme);
+        }
+
         Memo memo = MemoFor(gdbs);
         if (!memo.PaintedTimes.TryGetValue(daySetHash, out List<float>? times))
         {

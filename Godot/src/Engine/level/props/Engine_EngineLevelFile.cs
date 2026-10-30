@@ -16,8 +16,9 @@ public sealed class EngineLevelInstance
 
     /// <summary>
     /// Which sun cascades the instance casts into (Engine_ClassicShadows.Casts*), from the three
-    /// flag bytes as `sub_82AB9CF8` folds them (0x82ABA570): a zero first byte is 0x40 (no
-    /// cast), a non-zero second 0x80 (no distant cast), a non-zero third 0x100 (both faces).
+    /// flag bytes as `sub_82AB9CF8` folds them (0x82ABA570; Fable 3 the same at 0x82CD8498): a
+    /// zero first byte is 0x40 (no cast), a non-zero second 0x80 (no distant cast), a non-zero
+    /// third 0x100 (both faces).
     /// </summary>
     public byte Casting { get; set; } = Refii.Models.Engine_ClassicShadows.CastsDefault;
 
@@ -152,7 +153,27 @@ public static class Engine_EngineLevelFile
 
     public const int Type2InstanceFloats = 20;
 
-    public static EngineLevelFile Parse(byte[]? bytes)
+    /// <summary>The model paths heading a type-2 record: model, shadow, LOD, then Fable 2's unused fourth.</summary>
+    /// <remarks>
+    /// Fable 3 dropped the fourth. Both readers hash the first three to msg+0x70/+0x74/+0x78;
+    /// Fable 2's `sub_82AB9CF8` reads four (0x82AB9D28..0x82AB9D70) and only frees the last,
+    /// Fable 3's `sub_82CD7C50` reads three (0x82CD7C80..0x82CD7CB0). The header states no
+    /// difference (both accept versions 11..12), so the title the bytes came from says which.
+    /// </remarks>
+    public static int Type2PathCountFor(Refii.Core.Engine_Title title) =>
+        title == Refii.Core.Engine_Title.Fable3 ? 3 : 4;
+
+    /// <summary>The paths heading a type-21 record: the model, then Fable 2's LOD.</summary>
+    /// <remarks>
+    /// Fable 2's `sub_82ABA800` reads two (0x82ABA828, 0x82ABA840); Fable 3's `sub_82CD8680`
+    /// reads one (0x82CD86A8) and goes straight to the 64-bit block id.
+    /// </remarks>
+    public static int Type21PathCountFor(Refii.Core.Engine_Title title) =>
+        title == Refii.Core.Engine_Title.Fable3 ? 1 : 2;
+
+    public static EngineLevelFile Parse(byte[]? bytes) => Parse(bytes, Refii.Core.Engine_Title.Active);
+
+    public static EngineLevelFile Parse(byte[]? bytes, Refii.Core.Engine_Title title)
     {
         var file = new EngineLevelFile();
 
@@ -214,7 +235,7 @@ public static class Engine_EngineLevelFile
             switch (type)
             {
                 case 2:
-                    if (!ReadType2(reader, offset, file))
+                    if (!ReadType2(reader, offset, file, title))
                     {
                         return file;
                     }
@@ -260,7 +281,7 @@ public static class Engine_EngineLevelFile
                     break;
 
                 case 21:
-                    if (!ReadType21(reader, offset, file))
+                    if (!ReadType21(reader, offset, file, title))
                     {
                         return file;
                     }
@@ -278,23 +299,26 @@ public static class Engine_EngineLevelFile
         return file;
     }
 
-    private static bool ReadType2(Reader reader, int offset, EngineLevelFile file)
+    private static bool ReadType2(
+        Reader reader, int offset, EngineLevelFile file, Refii.Core.Engine_Title title)
     {
         var block = new EngineLevelBlock { Offset = offset, Type = 2 };
 
-        if (!reader.CString(out string modelPath) ||
-            !reader.CString(out string shadowPath) ||
-            !reader.CString(out string lodPath) ||
-            !reader.CString(out string extraPath))
+        string[] paths = { string.Empty, string.Empty, string.Empty, string.Empty };
+        int pathCount = Type2PathCountFor(title);
+        for (int p = 0; p < pathCount; p++)
         {
-            file.Error = "truncated reading type-2 model paths";
-            return false;
+            if (!reader.CString(out paths[p]))
+            {
+                file.Error = "truncated reading type-2 model paths";
+                return false;
+            }
         }
 
-        block.ModelPath = modelPath;
-        block.ShadowModelPath = shadowPath;
-        block.LodModelPath = lodPath;
-        block.ExtraModelPath = extraPath;
+        block.ModelPath = paths[0];
+        block.ShadowModelPath = paths[1];
+        block.LodModelPath = paths[2];
+        block.ExtraModelPath = paths[3];
 
         if (!reader.U32(out uint instanceCount))
         {
@@ -344,18 +368,29 @@ public static class Engine_EngineLevelFile
         return true;
     }
 
-    private static bool ReadType21(Reader reader, int offset, EngineLevelFile file)
+    private static bool ReadType21(
+        Reader reader, int offset, EngineLevelFile file, Refii.Core.Engine_Title title)
     {
         var block = new EngineLevelBlock { Offset = offset, Type = 21 };
 
-        if (!reader.CString(out string modelPath) || !reader.CString(out string lodPath))
+        if (!reader.CString(out string modelPath))
         {
             file.Error = "truncated reading strings for type 21";
             return false;
         }
 
         block.ModelPath = modelPath;
-        block.LodModelPath = lodPath;
+
+        if (Type21PathCountFor(title) > 1)
+        {
+            if (!reader.CString(out string lodPath))
+            {
+                file.Error = "truncated reading strings for type 21";
+                return false;
+            }
+
+            block.LodModelPath = lodPath;
+        }
 
         if (!reader.U64(out ulong blockHash) || !reader.U8(out byte casts) ||
             !reader.U8(out byte noDistant))
@@ -365,7 +400,8 @@ public static class Engine_EngineLevelFile
         }
 
         block.Hash = blockHash;
-        // The block's two flag bytes (0x82ABA9AC): a zero first is 0x40, a non-zero second 0x80.
+        // The block's two flag bytes (0x82ABA9AC; Fable 3 0x82CD8808): a zero first is 0x40, a
+        // non-zero second 0x80.
         block.Casting = Refii.Models.Engine_ClassicShadows.CastingOf(0x10u |
             (casts == 0 ? 0x40u : 0u) | (noDistant != 0 ? 0x80u : 0u));
 
@@ -409,21 +445,11 @@ public static class Engine_EngineLevelFile
 
             if (file.Version == 11)
             {
-                for (int j = 0; j < 4; j++)
+                if (!ReadType21V11Instance(reader, instance, title))
                 {
-                    if (!reader.F32(out float value))
-                    {
-                        file.Error = "truncated type-21 v11 loop1 body";
-                        return false;
-                    }
-
-                    instance.Values[j] = value;
+                    file.Error = "truncated type-21 v11 loop1 body";
+                    return false;
                 }
-
-                instance.Values[7] = 1f;
-                instance.Values[9] = 1f;
-                instance.Values[10] = 1f;
-                instance.Values[11] = 1f;
             }
             else
             {
@@ -446,23 +472,9 @@ public static class Engine_EngineLevelFile
                 instance.Values[1] = py;
                 instance.Values[2] = pz;
 
-                // The whole rotation, kept. The yaw pair below stays as the fallback for
-                // anything that cannot use a quaternion.
-                instance.Rotation = new System.Numerics.Quaternion(qx, qy, qz, qw);
-
-                float num = 2f * ((qw * qz) + (qx * qy));
-                float den = 1f - (2f * ((qy * qy) + (qz * qz)));
-                float mag = MathF.Sqrt((num * num) + (den * den));
-                if (mag > 1e-6f)
-                {
-                    instance.Values[6] = num / mag;
-                    instance.Values[7] = den / mag;
-                }
-                else
-                {
-                    instance.Values[6] = 0f;
-                    instance.Values[7] = 1f;
-                }
+                // The whole rotation, kept. The yaw pair stays as the fallback for anything that
+                // cannot use a quaternion.
+                SetRotation(instance, new System.Numerics.Quaternion(qx, qy, qz, qw));
 
                 float s = scale > 0f ? scale : 1f;
                 instance.Values[9] = s;
@@ -512,6 +524,85 @@ public static class Engine_EngineLevelFile
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// A type-21 v11 instance: a stated 4x4 matrix, a scale, and in Fable 2 a trailing float4.
+    /// </summary>
+    /// <remarks>
+    /// Four float4 rows (`sub_82DA58E0` x4 in Fable 3's `sub_82CE6498` from 0x82CE6BDC;
+    /// `sub_82A21B78` x4 in Fable 2's `sub_82B202C0` from 0x82B20A8C), then one float the guest
+    /// stores where v12 keeps its scale (0x82CE6E08). Fable 2 reads one more float4 after it
+    /// (0x82B20CBC); Fable 3 does not. The guest transposes the rows into the same 3x4 form the
+    /// v12 quaternion builds, so rows 0..2 are the local axes and row 3's xyz is the position;
+    /// the fourth column is never read. Neither title ships a v11 file today.
+    /// </remarks>
+    private static bool ReadType21V11Instance(
+        Reader reader, EngineLevelInstance instance, Refii.Core.Engine_Title title)
+    {
+        float[] m = new float[16];
+        for (int j = 0; j < m.Length; j++)
+        {
+            if (!reader.F32(out m[j]))
+            {
+                return false;
+            }
+        }
+
+        if (!reader.F32(out _))
+        {
+            return false;
+        }
+
+        if (title != Refii.Core.Engine_Title.Fable3 && !reader.Skip(16))
+        {
+            return false;
+        }
+
+        var x = new System.Numerics.Vector3(m[0], m[1], m[2]);
+        var y = new System.Numerics.Vector3(m[4], m[5], m[6]);
+        var z = new System.Numerics.Vector3(m[8], m[9], m[10]);
+
+        instance.Values[0] = m[12];
+        instance.Values[1] = m[13];
+        instance.Values[2] = m[14];
+
+        float sx = x.Length(), sy = y.Length(), sz = z.Length();
+        instance.Values[9] = sx > 1e-6f ? sx : 1f;
+        instance.Values[10] = sy > 1e-6f ? sy : 1f;
+        instance.Values[11] = sz > 1e-6f ? sz : 1f;
+
+        x /= instance.Values[9];
+        y /= instance.Values[10];
+        z /= instance.Values[11];
+
+        // System.Numerics is row-vector, as the guest's sub_8220C8F0 is: row 1 is the local X.
+        SetRotation(instance, System.Numerics.Quaternion.CreateFromRotationMatrix(new System.Numerics.Matrix4x4(
+            x.X, x.Y, x.Z, 0f,
+            y.X, y.Y, y.Z, 0f,
+            z.X, z.Y, z.Z, 0f,
+            0f, 0f, 0f, 1f)));
+        return true;
+    }
+
+    /// <summary>Keeps the full rotation and reduces it to the yaw sin/cos pair in values[6]/[7].</summary>
+    private static void SetRotation(EngineLevelInstance instance, System.Numerics.Quaternion q)
+    {
+        instance.Rotation = q;
+
+        float num = 2f * ((q.W * q.Z) + (q.X * q.Y));
+        float den = 1f - (2f * ((q.Y * q.Y) + (q.Z * q.Z)));
+        float mag = MathF.Sqrt((num * num) + (den * den));
+        if (mag > 1e-6f)
+        {
+            instance.Values[6] = num / mag;
+            instance.Values[7] = den / mag;
+        }
+        else
+        {
+            instance.Values[6] = 0f;
+            instance.Values[7] = 1f;
+        }
     }
 
     private sealed class Reader

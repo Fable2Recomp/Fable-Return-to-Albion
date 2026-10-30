@@ -100,7 +100,7 @@ public static class ModRowOverlays
 		foreach (ModOverlay overlay in overlays)
 		{
 			string sourcePath = !string.IsNullOrEmpty(overlay.PackagePath) ? overlay.PackagePath : overlay.AssetRoot;
-			if (File.Exists(sourcePath) && sourcePath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+			if (File.Exists(sourcePath) && Refii.Core.Engine_Title.IsModPackagePath(sourcePath))
 			{
 				if (F2ModPackage.TryOpen(sourcePath, out F2ModPackage? pkg, out string openErr) && pkg is not null)
 				{
@@ -417,7 +417,7 @@ public static class ModRowOverlays
 
 		foreach (ModInstall mod in enabledInMountOrder)
 		{
-			if (File.Exists(mod.PackagePath) && mod.PackagePath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+			if (File.Exists(mod.PackagePath) && Refii.Core.Engine_Title.IsModPackagePath(mod.PackagePath))
 			{
 				if (F2ModPackage.TryOpen(mod.PackagePath, out F2ModPackage? pkg, out _) && pkg is not null)
 				{

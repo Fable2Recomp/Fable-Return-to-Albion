@@ -67,6 +67,16 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
     }
 
     private BnkFileSystem? _filesystem;
+
+    /// <summary>
+    /// Every other installed title, mounted beside the active one and addressed as
+    /// <c>@&lt;Folder&gt;/…</c> (Refii.Core.Engine_TitlePath), keyed by folder. A title that is not
+    /// installed is simply absent.
+    /// </summary>
+    private readonly Dictionary<string, (Refii.Core.Engine_Title Title, BnkFileSystem Banks)> _titleMounts =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly List<TreeItem> _titleRoots = new();
     private Refii.Textures.Engine_BnkTextureLoader? _textureLoader;
     private Refii.Models.Engine_BnkMeshLoader? _meshLoader;
     private Refii.Audio.Engine_BnkAudioLoader? _audioLoader;
@@ -93,7 +103,11 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
     private const double StreamingHoldSeconds = 1.0;
     private const double StreamingFadeSeconds = 0.8;
 
-    private static readonly Color GameFolderColor = new(0.36f, 0.85f, 0.47f);
+    /// <summary>The active title's folder colour: its tree is the default one.</summary>
+    private static Color GameFolderColor => TitleColour(Refii.Core.Engine_Title.Active);
+
+    /// <summary>A title's folder colour in the game tree (Engine_Title.EditorFolderColour, 0xRRGGBBAA).</summary>
+    private static Color TitleColour(Refii.Core.Engine_Title title) => new(title.EditorFolderColour);
 
     private static readonly Color StreamingBusyColor = new(1.0f, 0.78f, 0.35f);
 
@@ -212,6 +226,7 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
 
         _filesystem?.Dispose();
         _filesystem = null;
+        DisposeTitleMounts();
         _tree = null;
         _levels = null;
         _injectRetryPending = false;
@@ -533,6 +548,7 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
                 return;
             }
             _filesystem = mounted;
+            MountOtherTitles(version);
             Refii.Gdb.Engine_GameGdb.Invalidate();
             Refii.Gdb.Engine_BnkTextBankLoader.Invalidate();
             Refii.Equipment.Engine_WeaponIndex.Invalidate();
@@ -545,6 +561,84 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
             _mounting = false;
             CallDeferred(nameof(Inject));
         });
+    }
+
+    /// <summary>
+    /// Mounts each installed title other than the active one, plainly (its own mods are not layered
+    /// yet). A title with no data, or whose mount fails, is left out and reported, never fatal.
+    /// </summary>
+    private void MountOtherTitles(int version)
+    {
+        var mounts = new List<(Refii.Core.Engine_Title, BnkFileSystem)>();
+        foreach (Refii.Core.Engine_Title title in Refii.Core.Engine_Title.All)
+        {
+            if (title == Refii.Core.Engine_Title.Active)
+            {
+                continue;
+            }
+
+            string directory = Refii.Core.Engine_GameData.ResolveFor(title);
+            if (directory.Length == 0)
+            {
+                continue;
+            }
+
+            try
+            {
+                mounts.Add((title, BnkFileSystem.Mount(directory)));
+            }
+            catch (Exception exception)
+            {
+                GD.PushWarning($"[bnk_mount] {title.Name}: {exception.Message}");
+            }
+        }
+
+        if (version != System.Threading.Volatile.Read(ref _mountVersion))
+        {
+            foreach ((_, BnkFileSystem banks) in mounts)
+            {
+                banks.Dispose();
+            }
+
+            return;
+        }
+
+        DisposeTitleMounts();
+        foreach ((Refii.Core.Engine_Title title, BnkFileSystem banks) in mounts)
+        {
+            _titleMounts[title.Folder] = (title, banks);
+        }
+    }
+
+    private void DisposeTitleMounts()
+    {
+        foreach ((_, BnkFileSystem banks) in _titleMounts.Values)
+        {
+            banks.Dispose();
+        }
+
+        _titleMounts.Clear();
+    }
+
+    /// <summary>
+    /// The mount a virtual path belongs to and the path within it: a title-prefixed path goes to that
+    /// title's mount (the active title's prefix to the default mount), a bare path to the default one.
+    /// </summary>
+    private (BnkFileSystem? Banks, string Path, Refii.Core.Engine_Title Title) MountFor(string virtualPath)
+    {
+        if (Refii.Core.Engine_TitlePath.TrySplit(virtualPath, out Refii.Core.Engine_Title title, out string rest))
+        {
+            if (title == Refii.Core.Engine_Title.Active)
+            {
+                return (_filesystem, rest, title);
+            }
+
+            return _titleMounts.TryGetValue(title.Folder, out var mount)
+                ? (mount.Banks, rest, title)
+                : (null, rest, title);
+        }
+
+        return (_filesystem, virtualPath, Refii.Core.Engine_Title.Active);
     }
 
     private Tree? ResolveTree()
@@ -579,7 +673,8 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
             }
         }
 
-        if (_filesystem is not null && _filesystem.TryGetFile(normalized, out BnkFile file))
+        (BnkFileSystem? banks, string inTitle, _) = MountFor(normalized);
+        if (banks is not null && banks.TryGetFile(inTitle, out BnkFile file))
         {
             try
             {
@@ -1037,7 +1132,7 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
         RemoveGameRoot();
 
         _gameRoot = tree.CreateItem(root);
-        _gameRoot.SetText(0, RootLabel);
+        _gameRoot.SetText(0, $"{Refii.Core.Engine_Title.Active.Name} · {RootLabel}");
         SetItemMeta(_gameRoot, ContainerMeta);
         _gameRoot.SetSelectable(0, false);
         _gameRoot.SetIcon(0, GetFolderIcon());
@@ -1130,10 +1225,51 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
         {
             _gameRoot.MoveBefore(resRoot);
         }
+
+        // Every other installed title, its own root in its own colour. Only its assets for now: the
+        // database, entity and level views read Fable 2's data model.
+        foreach ((Refii.Core.Engine_Title title, _) in _titleMounts.Values)
+        {
+            Color colour = TitleColour(title);
+            TreeItem titleRoot = tree.CreateItem(root);
+            titleRoot.SetText(0, $"{title.Name} · {RootLabel}");
+            SetItemMeta(titleRoot, ContainerMeta);
+            titleRoot.SetSelectable(0, false);
+            titleRoot.SetIcon(0, GetFolderIcon());
+            titleRoot.SetIconModulate(0, colour);
+            titleRoot.Collapsed = false;
+
+            TreeItem titleAssets = tree.CreateItem(titleRoot);
+            titleAssets.SetText(0, "Assets");
+            SetItemMeta(titleAssets, "bnk:" + Refii.Core.Engine_TitlePath.Make(title, string.Empty));
+            titleAssets.SetSelectable(0, false);
+            titleAssets.SetIcon(0, GetFolderIcon());
+            titleAssets.SetIconModulate(0, colour);
+            AddPlaceholder(tree, titleAssets);
+            titleAssets.Collapsed = true;
+
+            if (resRoot is not null)
+            {
+                titleRoot.MoveBefore(resRoot);
+            }
+
+            _titleRoots.Add(titleRoot);
+        }
     }
 
     private void RemoveGameRoot()
     {
+        foreach (TreeItem titleRoot in _titleRoots)
+        {
+            if (GodotObject.IsInstanceValid(titleRoot))
+            {
+                titleRoot.GetParent()?.RemoveChild(titleRoot);
+                titleRoot.Free();
+            }
+        }
+
+        _titleRoots.Clear();
+
         if (_gameRoot is null || !GodotObject.IsInstanceValid(_gameRoot))
         {
             _gameRoot = null;
@@ -1631,7 +1767,7 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
                 if (result.HasAnyChanges)
                 {
                     GD.Print(
-                        $"[level_edit] Auto-compiled saved scene '{filepath}' into '{activeMod}.f2mod': " +
+                        $"[level_edit] Auto-compiled saved scene '{filepath}' into '{activeMod}{Refii.Core.Engine_Title.Active.ModExtension}': " +
                         $"{result.ModifiedTransformCount} moved, {result.NewPlacementCount} added, " +
                         $"{result.DeletedRecordCount} removed, {result.LayerStateOverrideCount} layer state(s).");
                 }
@@ -2156,7 +2292,7 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
 
         vbox.AddChild(new HSeparator());
 
-        var createLabel = new Label { Text = "Or Create New Mod (.f2mod):" };
+        var createLabel = new Label { Text = $"Or Create New Mod ({Refii.Core.Engine_Title.Active.ModExtension}):" };
         vbox.AddChild(createLabel);
 
         var createRow = new HBoxContainer();
@@ -2188,7 +2324,7 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
                         _modNameEdit.Text = string.Empty;
                         RefreshModNameDialog();
                         ReloadModOverlays();
-                        GD.Print($"[mod_export] Created and activated '{newName}.f2mod'");
+                        GD.Print($"[mod_export] Created and activated '{newName}{Refii.Core.Engine_Title.Active.ModExtension}'");
                     }
                     else
                     {
@@ -3921,39 +4057,45 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
     private void Populate(TreeItem parent, string directory)
     {
         Tree? tree = ResolveTree();
-        if (tree is null || _filesystem is null)
+        (BnkFileSystem? banks, string inTitle, Refii.Core.Engine_Title title) = MountFor(directory);
+        if (tree is null || banks is null)
         {
             return;
         }
 
+        // A path under another title's root keeps that title's prefix, so everything opened from
+        // there resolves against its mount; the active title's tree stays bare, as it always was.
+        bool prefixed = title != Refii.Core.Engine_Title.Active;
+        string Name(string within) => prefixed ? Refii.Core.Engine_TitlePath.Make(title, within) : within;
+        Color colour = TitleColour(title);
         Texture2D folderIcon = GetFolderIcon();
         Texture2D fileIcon = GetFileIcon();
 
-        foreach (string name in _filesystem.EnumerateDirectories(directory))
+        foreach (string name in banks.EnumerateDirectories(inTitle))
         {
-            string child = directory.Length == 0 ? name : directory + "/" + name;
+            string child = inTitle.Length == 0 ? name : inTitle + "/" + name;
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, name);
-            SetItemMeta(item, "bnk:" + child);
+            SetItemMeta(item, "bnk:" + Name(child));
             item.SetSelectable(0, false);
             item.SetIcon(0, folderIcon);
-            item.SetIconModulate(0, GameFolderColor);
+            item.SetIconModulate(0, colour);
             AddPlaceholder(tree, item);
             item.Collapsed = true;
         }
 
-        foreach (string name in _filesystem.EnumerateFiles(directory))
+        foreach (string name in banks.EnumerateFiles(inTitle))
         {
-            string child = directory.Length == 0 ? name : directory + "/" + name;
+            string child = inTitle.Length == 0 ? name : inTitle + "/" + name;
             TreeItem item = tree.CreateItem(parent);
             item.SetText(0, name);
-            SetItemMeta(item, FilePrefix + child);
+            SetItemMeta(item, FilePrefix + Name(child));
             item.SetIcon(0, fileIcon);
-            item.SetIconModulate(0, GameFolderColor);
-            if (_filesystem.TryGetFile(child, out BnkFile file))
+            item.SetIconModulate(0, colour);
+            if (banks.TryGetFile(child, out BnkFile file))
             {
                 item.SetTooltipText(0,
-                    $"game://{child}\n{file.Size:N0} bytes  ·  {file.SourceArchiveName}");
+                    $"game://{Name(child)}\n{file.Size:N0} bytes  ·  {file.SourceArchiveName}");
                 ApplyIcon(item, file);
             }
         }

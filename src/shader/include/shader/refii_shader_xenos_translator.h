@@ -33,7 +33,10 @@ bool TranslateXenosShaderBlob(
     // hardware-tessellation variant artifact (`<blob>.tess.<target>.bin`).
     // The variant seeds r0 from SV_VertexID/SV_InstanceID per the Xenos
     // tessellation input contract; see XenosRecomp/shader_common.h.
-    const std::filesystem::path& tess_output = std::filesystem::path{});
+    const std::filesystem::path& tess_output = std::filesystem::path{},
+    // The title folder the blob came from ("Fable2", "Fable3"). The godot target classifies
+    // the title's own per-draw constants by it; empty states none.
+    const std::string& title = std::string{});
 
 // "none" when nothing was reported, otherwise a compact
 // streams=N,eM=0xNN[,unresolved_eA=N] descriptor for the report column.

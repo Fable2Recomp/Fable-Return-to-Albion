@@ -57,6 +57,8 @@ public static class Engine_MdlLods
             return (0, 0);
         }
 
+        data = info.Body ?? data;
+
         var targets = new List<Target>(surfaces.Count);
         var byKey = new Dictionary<string, Target>();
         bool lightmapped = info.LightmapUvs.Length > 0 && info.SkinnedCount == 0;

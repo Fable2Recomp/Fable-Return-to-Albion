@@ -13,6 +13,12 @@ namespace Refii.Lighting;
 /// 33x65 over 32x64. That relation is also why the guest's two landscape UV constants are the
 /// same number, which is what lets the terrain sample its bake with the plain normalised
 /// heightfield coordinate.
+///
+/// FABLE 3 states no lattice: its heightfield bake is an ordinary <c>.cflmp</c> entry (see
+/// <see cref="LightmapContainer.SharedKeyTable"/>), so the two counts are zero and the
+/// heightfield's own <c>.ehf</c> header states them (resource +0x48/+0x4C, sub_82CB1010).
+/// <see cref="Blob"/> is then the entry's slot-1 colour (sampler 7) and
+/// <see cref="IntensityBlob"/> its slot-0 intensity and occlusion (sampler 3).
 /// </remarks>
 public sealed class TerrainLightmap
 {
@@ -21,6 +27,12 @@ public sealed class TerrainLightmap
     public uint SamplesY { get; init; }
 
     public byte[] Blob { get; init; } = System.Array.Empty<byte>();
+
+    /// <summary>
+    /// Fable 3 only: the texture the landscape binds beside <see cref="Blob"/> on sampler 3
+    /// (`g_TextureAOSampler`, sub_82251848 0x82251920). Empty for Fable 2.
+    /// </summary>
+    public byte[] IntensityBlob { get; init; } = System.Array.Empty<byte>();
 }
 
 public sealed class LightmapContainer
@@ -31,7 +43,34 @@ public sealed class LightmapContainer
 
     public Dictionary<ulong, TerrainLightmap> TerrainLightmapBlobs { get; } = new();
 
+    /// <summary>
+    /// The file keeps ONE table for placements, engine-level instances and heightfields alike, so
+    /// a heightfield's bake is looked up among <see cref="ObjectLightmapBlobs"/>. Set by the Fable 3
+    /// <c>.cflmp</c> reader: the heightfield (sub_82CB0658) and the placement (sub_82C88C88) both
+    /// resolve their key through the same streamer call, sub_82CC8DE0.
+    /// </summary>
+    public bool SharedKeyTable { get; set; }
+
+    /// <summary>
+    /// Fable 2: the object's lightmap. Fable 3: slot 0 of the entry, the texture the title binds on
+    /// sampler 3 (`g_TextureAOSampler`) with its rect in c53 (`g_AOUVMatrix`) — sub_8221DCD0
+    /// 0x8221dd08 for placements, sub_82251848 0x82251920 for landscape.
+    /// </summary>
     public Dictionary<ulong, byte[]> ObjectLightmapBlobs { get; } = new();
+
+    /// <summary>
+    /// Fable 3's SECOND lightmap texture of a placement, by the same key as its first in
+    /// <see cref="ObjectLightmapBlobs"/>. The title binds up to two per lightmapped placement: the
+    /// streamer fills slot 1 only when the entry states one (`*(entry+44) > 0`, sub_82CE53E8) and
+    /// the resident path only behind the object's flag at +932 (sub_82C884C8). Fable 2 has none.
+    /// </summary>
+    /// <remarks>
+    /// Slot 1 is the bake's COLOUR, bound on sampler 7 (`g_TextureLightmapSampler`) with its rect
+    /// in c54 (`g_LightUVMatrix`): sub_8221DCD0 0x8221dd20, sub_82251848 0x82251938. Slot 0 carries
+    /// the intensity (R + 31 B) and the occlusion (G) that scale it; a missing slot is bound as the
+    /// title's 16x16 default — white for slot 0 (sub_82182B70), BLACK for slot 1 (sub_821FABA0).
+    /// </remarks>
+    public Dictionary<ulong, byte[]> ObjectSecondLightmapBlobs { get; } = new();
 
     /// <summary>The region's object lightmaps packed into one texture; built on first use by
     /// <see cref="Engine_LevelBakedLighting.TryGetObjectLightmapRect"/>. The guest binds one
@@ -45,6 +84,9 @@ public sealed class LightmapContainer
     /// renderer. The modern path samples the atlas above instead.
     /// </summary>
     public Dictionary<ulong, Godot.ImageTexture?> ObjectTextures { get; } = new();
+
+    /// <summary>Each <see cref="ObjectSecondLightmapBlobs"/> entry as its own texture, decoded on first use.</summary>
+    public Dictionary<ulong, Godot.ImageTexture?> ObjectSecondTextures { get; } = new();
 
     public Dictionary<ulong, Godot.Rect2> ObjectAtlasRects { get; } = new();
 
@@ -69,6 +111,11 @@ public static class Engine_LightmapFile
 
     public static bool TryParse(byte[] bytes, out LightmapContainer container, out string error)
     {
+        if (Engine_StreamedLightmapFile.IsStreamed(bytes))
+        {
+            return Engine_StreamedLightmapFile.TryParse(bytes, out container, out error);
+        }
+
         container = new LightmapContainer();
         error = string.Empty;
 
@@ -310,6 +357,17 @@ internal sealed class BeReader
             U32(out values[i]);
         }
 
+        return true;
+    }
+
+    public bool Skip(long count)
+    {
+        if (count < 0 || _at + count > _data.Length)
+        {
+            return false;
+        }
+
+        _at += (int)count;
         return true;
     }
 

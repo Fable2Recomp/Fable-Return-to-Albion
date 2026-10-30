@@ -596,9 +596,10 @@ public static class Engine_MdlEngine
     /// six floats plus two bytes are the per-item simulation parameters. <c>simEnd</c> is only
     /// present from file version 36 (<c>if (a4 &gt;= 36)</c> at the guest's read); older files
     /// simulate to the vertex count. The trailing raw vertex block is <c>nv * 16 * sh4</c> bytes
-    /// and absent when the record's vertex stride word is zero.
+    /// and absent when the record's vertex stride word is zero. Fable 3's version-47 block is this
+    /// one with no SH vectors: <see cref="Engine_MdlEngine47"/> reads it with <c>sh4</c> = 0.
     /// </summary>
-    private static bool ReadClothBlock(MdlReader r, MdlInfo info, uint recIndex, uint sh4)
+    internal static bool ReadClothBlock(MdlReader r, MdlInfo info, uint recIndex, uint sh4)
     {
         int start = r.Position;
 

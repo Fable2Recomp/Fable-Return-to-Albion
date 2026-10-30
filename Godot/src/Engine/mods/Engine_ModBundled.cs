@@ -30,8 +30,12 @@ public static class ModBundled
 {
 	private const string MarkerFolder = ".bundled";
 
-	/// <summary>Packs every bundled mod under <paramref name="sourceRoot"/> into <paramref name="modsRoot"/>.</summary>
-	public static List<string> Install(string sourceRoot, string modsRoot)
+	/// <summary>
+	/// Packs every bundled mod under <paramref name="sourceRoot"/> into <paramref name="modsRoot"/> as
+	/// <paramref name="extension"/> packages: the OWNING title's extension, never the active title's —
+	/// the launcher installs every title's shipped mods whichever title is selected.
+	/// </summary>
+	public static List<string> Install(string sourceRoot, string modsRoot, string extension)
 	{
 		var report = new List<string>();
 		if (string.IsNullOrEmpty(sourceRoot) || !Directory.Exists(sourceRoot) || string.IsNullOrEmpty(modsRoot))
@@ -50,7 +54,7 @@ public static class ModBundled
 
 			try
 			{
-				report.Add(InstallOne(tree, name, modsRoot, listed));
+				report.Add(InstallOne(tree, name, modsRoot, extension, listed));
 			}
 			catch (Exception exception)
 			{
@@ -83,13 +87,13 @@ public static class ModBundled
 		return listed;
 	}
 
-	private static string InstallOne(string tree, string name, string modsRoot, HashSet<string>? listed)
+	private static string InstallOne(string tree, string name, string modsRoot, string extension, HashSet<string>? listed)
 	{
 		string metadataText = File.ReadAllText(Path.Combine(tree, ModWorkspace.ModMetadataFilename));
 		List<(string Path, byte[] Bytes)> files = Collect(tree, name, listed);
 		string sourceHash = HashSource(metadataText, files);
 
-		string package = Path.Combine(modsRoot, name + ModWorkspace.PackageExtension);
+		string package = Path.Combine(modsRoot, name + extension);
 		string marker = Path.Combine(modsRoot, MarkerFolder, name + ".sha256");
 		(string packedFrom, string packedAs) = ReadMarker(marker);
 

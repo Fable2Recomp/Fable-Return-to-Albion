@@ -27,6 +27,13 @@ public sealed class GdbPlacement
 
     public bool HasRotation { get; set; }
 
+    /// <summary>
+    /// Fable 3: the rotation is the quaternion (RotX, RotY, RotZ, RotW), not Fable 2's Euler angles.
+    /// </summary>
+    public bool RotationIsQuaternion { get; set; }
+
+    public float RotW { get; set; }
+
     public float Scale { get; set; } = 1f;
 
     public uint ModelPathHash { get; set; }
@@ -61,6 +68,8 @@ public sealed class GdbPlacement
         RotY = RotY,
         RotZ = RotZ,
         HasRotation = HasRotation,
+        RotationIsQuaternion = RotationIsQuaternion,
+        RotW = RotW,
         Scale = Scale,
         ModelPathHash = ModelPathHash,
         ModelPathFilled = ModelPathFilled,
@@ -210,10 +219,14 @@ public static class Engine_GdbPlacements
             RotY = transform.RotY,
             RotZ = transform.RotZ,
             HasRotation = transform.HasRotation,
+            RotationIsQuaternion = transform.RotationIsQuaternion,
+            RotW = transform.RotW,
             Scale = transform.Scale > 0.0001f ? transform.Scale : 1f,
         };
 
-        result.Yaw = result.HasRotation && float.IsFinite(result.RotX) ? result.RotX : 0f;
+        result.Yaw = !result.HasRotation ? 0f
+            : result.RotationIsQuaternion ? GdbTransformMath.QuaternionYaw(result.RotX, result.RotY, result.RotZ, result.RotW)
+            : float.IsFinite(result.RotX) ? result.RotX : 0f;
 
         if (view.TryFindLocalRaw(record, GdbView.HashParent, 6, out uint parent, out _))
         {
@@ -266,6 +279,8 @@ public static class Engine_GdbPlacements
         public float RotY;
         public float RotZ;
         public bool HasRotation;
+        public bool RotationIsQuaternion;
+        public float RotW;
         public float Scale = 1f;
     }
 
@@ -373,6 +388,16 @@ public static class Engine_GdbPlacements
             transform.RotY = ry;
             transform.RotZ = rz;
             transform.HasRotation = true;
+
+            // FABLE 3'S Rotation IS A QUATERNION: `sub_82512D00` reads its X, Y, Z and W, and
+            // `sub_82B12A60` takes the four as a quaternion while |W| <= 1.003, converting X/Y/Z as
+            // Euler angles only beyond it. Fable 2's record has no W.
+            if (Refii.Core.Engine_Title.Active == Refii.Core.Engine_Title.Fable3 &&
+                view.TryReadVecWRef(rotationHash, out float rw) && MathF.Abs(rw) <= 1.003f)
+            {
+                transform.RotW = rw;
+                transform.RotationIsQuaternion = true;
+            }
         }
         else if (view.TryFindLocalRaw(owner, GdbHash.Rotation, (int)GdbFieldType.Float, out uint rawYaw, out _))
         {

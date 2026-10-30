@@ -242,7 +242,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostStart(const char* game_directory, const char*
     // Pass the game directory as an explicit flag, not just positionally.
     //
     // Embedded, GetExecutableFolder() is the HOST's directory — Godot's — so the guest
-    // looks for refii.toml beside the Godot binary, finds none, and falls back to a
+    // looks for its config beside the Godot binary, finds none, and falls back to a
     // relative default ("assets/game") resolved against a working directory that has no
     // game in it. Nothing about the guest's own layout applies once it is a library
     // inside someone else's process, so the host has to say where things are.
@@ -440,7 +440,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const 
 
         // argv[0] then the flags. The game directory goes as an explicit flag, not
         // positionally: embedded, GetExecutableFolder() is the HOST's directory, so the
-        // guest finds no refii.toml of its own and would fall back to a relative default.
+        // guest finds no config of its own and would fall back to a relative default.
         std::vector<std::string> owned;
         owned.emplace_back("refii");
         for (const std::string& argument : SplitArguments(arguments)) {

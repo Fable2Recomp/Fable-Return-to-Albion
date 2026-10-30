@@ -72,19 +72,19 @@ public static class Engine_TexCache
 	/// </remarks>
 	public const int ConverterVersion = 3;
 
-	/// <summary>Where converted textures live: <c>&lt;app&gt;/cache/textures</c>.</summary>
+	/// <summary>Where converted textures live: <c>&lt;app&gt;/cache/&lt;Title&gt;/textures</c>.</summary>
 	/// <remarks>
 	/// THE APP'S OWN CACHE CONTAINER, NOT <c>user://</c> and NOT under assets/save. user:// put it
 	/// in Godot's per-app data directory, outside the install entirely; assets/save put
 	/// regenerable data inside the one folder a player can never regenerate. Anchored on
-	/// <see cref="Refii.Core.Engine_AppRoot.CacheDirectory"/> it is <c>&lt;app&gt;/cache</c>, so
+	/// <see cref="Refii.Core.Engine_Title.CacheDirectory"/> it is <c>&lt;app&gt;/cache/&lt;Title&gt;</c>, so
 	/// deleting that one folder clears everything derived and touches no save.
 	///
 	/// Absolute rather than a Godot virtual path: FileAccess and DirAccess take OS paths, and
 	/// GlobalizePath returns an absolute path unchanged, so every existing call site still works.
 	/// </remarks>
 	public static string CacheRoot =>
-		System.IO.Path.Combine(Refii.Core.Engine_AppRoot.CacheDirectory, "textures");
+		System.IO.Path.Combine(Refii.Core.Engine_Title.Active.CacheDirectory, "textures");
 
 	/// <summary>
 	/// The epoch directory: everything the current decode pipeline produced.

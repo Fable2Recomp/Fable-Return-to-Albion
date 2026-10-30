@@ -62,6 +62,20 @@ public partial class SettingsPanel : VBoxContainer
 	/// </remarks>
 	public void SaveIfDirty() => _model.Save();
 
+	/// <summary>
+	/// The title switched: read that title's config file and list its settings. The launcher
+	/// rebuilds the panel after this (<see cref="Configure"/>), from the reloaded model.
+	/// </summary>
+	public void ReloadForTitle()
+	{
+		if (!_built)
+		{
+			return;
+		}
+
+		_model.Reload();
+	}
+
 	private void Build()
 	{
 		if (_built)

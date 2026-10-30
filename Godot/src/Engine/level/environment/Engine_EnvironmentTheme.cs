@@ -449,9 +449,59 @@ public static class Engine_EnvironmentTheme
         return extractor is not null && extractor.EvaluateClassic(dayFraction, values);
     }
 
+    /// <summary>
+    /// The Fable 3 theme stack a chain carries — the <c>.envtheme</c> documents
+    /// <c>Engine_SkyEnvironment.BuildGdbChain</c> appends, lowest layer first — evaluated at a
+    /// time of day. False when the chain has none.
+    /// </summary>
+    /// <summary>Whether the chain carries <c>.envtheme</c> layers, i.e. is a Fable 3 theme stack.</summary>
+    public static bool CarriesEnvThemes(IReadOnlyList<byte[]> gdbs)
+    {
+        foreach (byte[] bytes in gdbs)
+        {
+            if (bytes is not null && Engine_EnvThemeFile.TryGet(bytes, out _))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public static bool TryEvaluateEnvThemes(
+        IReadOnlyList<byte[]> gdbs, float time, out Engine_EnvThemeFile.Block block)
+    {
+        block = null!;
+        var layers = new List<Engine_EnvThemeFile>();
+        foreach (byte[] bytes in gdbs)
+        {
+            if (bytes is not null && Engine_EnvThemeFile.TryGet(bytes, out Engine_EnvThemeFile file))
+            {
+                layers.Add(file);
+            }
+        }
+
+        if (layers.Count == 0)
+        {
+            return false;
+        }
+
+        block = Engine_EnvThemeFile.Evaluate(layers, time);
+        return true;
+    }
+
     private sealed class Extractor
     {
         private readonly List<GdbView> _views = new();
+
+        /// <summary>
+        /// The chain's <c>.envtheme</c> layers. When a chain carries any, they ARE the theme: the
+        /// Fable 3 manager (<c>sub_8248BDC0</c>) reads <c>LevelSpecificData.EnvironmentTheme</c>
+        /// and nothing in the title reads <c>EnvironmentThemeDaySet</c> — the name is absent from
+        /// its strings and its FNV-1 is never loaded — so the F2-format day sets still shipped in
+        /// <c>environmentthemes.gdb</c> are not consulted.
+        /// </summary>
+        private readonly List<Engine_EnvThemeFile> _envThemes = new();
 
         public float TargetTime { get; set; } = 0.5f;
 
@@ -460,18 +510,34 @@ public static class Engine_EnvironmentTheme
             var extractor = new Extractor();
             foreach (byte[] bytes in gdbs)
             {
+                if (bytes is null)
+                {
+                    continue;
+                }
+
+                if (Engine_EnvThemeFile.TryGet(bytes, out Engine_EnvThemeFile envTheme))
+                {
+                    extractor._envThemes.Add(envTheme);
+                    continue;
+                }
+
                 // Shared: this runs about nine times per re-evaluation over the same blobs.
-                if (bytes is not null && GdbView.TryParseShared(bytes, out GdbView view, out _))
+                if (GdbView.TryParseShared(bytes, out GdbView view, out _))
                 {
                     extractor._views.Add(view);
                 }
             }
 
-            return extractor._views.Count == 0 ? null : extractor;
+            return extractor._views.Count == 0 && extractor._envThemes.Count == 0 ? null : extractor;
         }
 
         public bool ExtractSky(SkyTheme theme)
         {
+            if (_envThemes.Count != 0)
+            {
+                return ApplyEnvThemeSky(theme);
+            }
+
             bool applied = RunChain(
                 theme,
                 (t, r) => ApplySkyThemeRecord(r, (SkyTheme)t),
@@ -493,6 +559,11 @@ public static class Engine_EnvironmentTheme
 
         public bool ExtractWeather(WeatherTheme theme)
         {
+            if (_envThemes.Count != 0)
+            {
+                return ApplyEnvThemeWeather(theme);
+            }
+
             bool applied = RunChain(
                 theme,
                 (t, r) => ApplyWeatherThemeRecord(r, (WeatherTheme)t),
@@ -580,6 +651,11 @@ public static class Engine_EnvironmentTheme
 
         public bool ExtractClouds(CloudTheme theme)
         {
+            if (_envThemes.Count != 0)
+            {
+                return ApplyEnvThemeClouds(theme);
+            }
+
             bool applied = RunChain(
                 theme,
                 (t, r) => ApplyCloudThemeRecord(r, (CloudTheme)t),
@@ -612,6 +688,12 @@ public static class Engine_EnvironmentTheme
         /// </summary>
         public bool ExtractToneMapRecord(uint recordHash, ToneMapTheme theme)
         {
+            // A Fable 3 pushed theme is its own .envtheme, not a record in this chain.
+            if (_envThemes.Count != 0)
+            {
+                return false;
+            }
+
             bool applied = false;
             foreach (RecordRef record in LookupAll(recordHash))
             {
@@ -624,6 +706,11 @@ public static class Engine_EnvironmentTheme
 
         public bool ExtractToneMap(ToneMapTheme theme)
         {
+            if (_envThemes.Count != 0)
+            {
+                return ApplyEnvThemeToneMap(theme);
+            }
+
             bool applied = RunChain(
                 theme,
                 (t, r) => ApplyToneMapThemeRecord(r, (ToneMapTheme)t),
@@ -1168,6 +1255,13 @@ public static class Engine_EnvironmentTheme
 
         public void CollectDaySetTimes(List<float> times)
         {
+            // A Fable 3 theme has no day set: every parameter is its own timeline, evaluated
+            // exactly at the time asked for, so callers take the direct path.
+            if (_envThemes.Count != 0)
+            {
+                return;
+            }
+
             RecordRef daySet = FindDaySet(true);
             if (!daySet.Valid)
             {
@@ -1474,6 +1568,11 @@ public static class Engine_EnvironmentTheme
 
         public bool EvaluateClassic(float dayFraction, float[] output)
         {
+            if (_envThemes.Count != 0)
+            {
+                return EvaluateClassicEnvTheme(dayFraction, output);
+            }
+
             int count = Engine_ClassicThemeParams.Count;
             var global = new float[count * 4];
             var globalFlags = new float[count];
@@ -1687,6 +1786,297 @@ public static class Engine_EnvironmentTheme
             Float(53, 50f); Float(54, 20f); Float(55, 70f); Float(56, 20f);
             Float(57, 0f); Float(58, 1f); Float(59, 70f); Float(60, 0f); Float(61, 0f);
             Float(62, 50f); Float(63, 0f); Float(64, 0f);
+        }
+
+        // THE FABLE 3 STACK, mapped onto the F2 theme structures by the parameter each F3 name
+        // corresponds to (the F3 names are the F2 field names spelled out). Every value is the
+        // guest's block at TargetTime — the stated key, or the title's default where no layer
+        // states one — and a Has flag means a layer STATES it, as it does for a GDB theme.
+
+        private Engine_EnvThemeFile.Block EnvBlock() =>
+            Engine_EnvThemeFile.Evaluate(_envThemes, TargetTime);
+
+        private static bool EnvFloat(Engine_EnvThemeFile.Block block, string name, Action<float> assign)
+        {
+            assign(block.Float(name));
+            return block.IsStated(name);
+        }
+
+        private static bool EnvColour(Engine_EnvThemeFile.Block block, string name, float[] into)
+        {
+            System.Numerics.Vector4 v = block.Vector(name);
+            into[0] = v.X;
+            into[1] = v.Y;
+            into[2] = v.Z;
+            return block.IsStated(name);
+        }
+
+        private static bool EnvTexture(Engine_EnvThemeFile.Block block, string name, Action<uint> assign)
+        {
+            uint hash = block.TextureHash(name);
+            if (hash == 0)
+            {
+                return false;
+            }
+
+            assign(hash);
+            return true;
+        }
+
+        private bool ApplyEnvThemeSky(SkyTheme theme)
+        {
+            Engine_EnvThemeFile.Block b = EnvBlock();
+
+            theme.HasSkyColour = EnvColour(b, "Sky Colour", theme.SkyColour);
+            theme.HasComplementaryColour = EnvColour(b, "Sky Complementary Colour", theme.ComplementaryColour);
+            theme.HasSunsetColour = EnvColour(b, "Sunset Colour", theme.SunsetColour);
+            theme.HasFogColour = EnvColour(b, "Close Fog Colour", theme.FogColour);
+            theme.HasMainLightColour = EnvColour(b, "Main Light Colour", theme.MainLightColour);
+            theme.HasSunDiscColour = EnvColour(b, "Sun Disc Colour", theme.SunDiscColour);
+
+            theme.HasSunIntensity = EnvFloat(b, "Sun Intensity", v => theme.SunIntensity = v);
+            theme.HasRayleigh = EnvFloat(b, "Sky Beta Rayleigh Multiplier", v => theme.Rayleigh = v);
+            theme.HasMie = EnvFloat(b, "Sky Beta Mie Multiplier", v => theme.Mie = v);
+            theme.HasComplementaryBias = EnvFloat(b, "Sky Complementary Colour Bias", v => theme.ComplementaryBias = v);
+
+            theme.HasNearFog = EnvFloat(b, "Near Distance", v => theme.NearDistance = v) |
+                EnvFloat(b, "Near Density", v => theme.NearDensity = v);
+            theme.HasFarFog = EnvFloat(b, "Far Distance", v => theme.FarDistance = v) |
+                EnvFloat(b, "Far Density", v => theme.FarDensity = v);
+            EnvFloat(b, "Close Fog Max Distance", v => theme.CloseFogMaxDistance = v);
+            theme.HasFoggingStart = EnvFloat(b, "Fogging Start", v => theme.FoggingStart = v);
+
+            // F3 has no SunAxisZOffset; its main light is one elevation timeline, so the four
+            // F2 keyframes all carry its value at this time.
+            theme.HasSunAxis = EnvFloat(b, "Sun Axis Elevation", v => theme.SunAxisElevation = v) |
+                EnvFloat(b, "Sun Axis XY Rotation Offset", v => theme.SunAxisXyRotation = v);
+            theme.HasMainLightElevation = EnvFloat(b, "Main Light Elevation", v =>
+            {
+                for (int i = 0; i < 4; i++)
+                {
+                    theme.MainLightElevation[i] = v;
+                }
+            });
+            EnvFloat(b, "Main Light XY Rotation", v => theme.LightRigXyRotation = v);
+            float timeFactor = b.Float("Time Factor");
+            if (float.IsFinite(timeFactor) && timeFactor > 0f)
+            {
+                theme.MainLightTimeFactor = timeFactor;
+            }
+
+            theme.HasMoonParams = EnvFloat(b, "Moon Intensity", v => theme.MoonIntensity = v) |
+                EnvFloat(b, "Moon Size", v => theme.MoonSize = v) |
+                EnvFloat(b, "Moon Glare Intensity", v => theme.MoonGlareIntensity = v) |
+                EnvFloat(b, "Moon Glare Size", v => theme.MoonGlareSize = v) |
+                EnvFloat(b, "Moon Transparency", v => theme.MoonTransparency = v);
+            theme.HasMoonAxis = EnvFloat(b, "Moon Axis Elevation", v => theme.MoonAxisElevation = v) |
+                EnvFloat(b, "Moon Axis XY Rotation Offset", v => theme.MoonAxisXyRotation = v);
+            theme.HasStarBrightness = EnvFloat(b, "Star Brightness", v => theme.StarBrightness = v);
+
+            theme.HasSunDiscParams = EnvFloat(b, "Sun Disc Size", v => theme.SunDiscSize = v) |
+                EnvFloat(b, "Sun Disc Intensity", v => theme.SunDiscIntensity = v);
+            theme.HasSunBeams = EnvFloat(b, "Sun Beams Width", v => theme.SunBeamsWidth = v) |
+                EnvFloat(b, "Sun Beams Height", v => theme.SunBeamsHeight = v) |
+                EnvFloat(b, "Sun Beams Intensity", v => theme.SunBeamsIntensity = v);
+            theme.HasSunGlare = EnvFloat(b, "Sun Glare Intensity", v => theme.SunGlareIntensity = v) |
+                EnvFloat(b, "Sun Glare Size", v => theme.SunGlareSize = v);
+
+            theme.HasSkyOverlayTexture = EnvTexture(b, "Sky Overlay Texture", h => theme.SkyOverlayTextureHash = h);
+            theme.HasMoonTexture = EnvTexture(b, "Moon Texture", h => theme.MoonTextureHash = h);
+            theme.HasMoonGlareTexture = EnvTexture(b, "Moon Glare Texture", h => theme.MoonGlareTextureHash = h);
+            theme.HasSunDiscTexture = EnvTexture(b, "Sun Disc Texture", h => theme.SunDiscTextureHash = h);
+            theme.HasSunBeamsTexture = EnvTexture(b, "Sun Beams Texture", h => theme.SunBeamsTextureHash = h);
+            theme.HasSunGlareTexture = EnvTexture(b, "Sun Glare Texture", h => theme.SunGlareTextureHash = h);
+
+            theme.SourceTimeOfDay = TargetTime - MathF.Floor(TargetTime);
+            theme.HasAny = true;
+            return true;
+        }
+
+        private bool ApplyEnvThemeWeather(WeatherTheme theme)
+        {
+            Engine_EnvThemeFile.Block b = EnvBlock();
+
+            theme.HasRain = EnvFloat(b, "Rain Density", v => theme.RainDensity = v) |
+                EnvFloat(b, "Rain Size", v => theme.RainSize = v);
+            theme.HasSnow = EnvFloat(b, "Snow Fall Speed", v => theme.SnowFallSpeed = v) |
+                EnvFloat(b, "Snow Size", v => theme.SnowSize = v);
+            theme.HasWind = EnvFloat(b, "Wind Strength Minimum", v => theme.WindStrengthMin = v) |
+                EnvFloat(b, "Wind Strength Maximum", v => theme.WindStrengthMax = v) |
+                EnvFloat(b, "Wind Strength Variation", v => theme.WindStrengthVariation = v) |
+                EnvFloat(b, "Wind XY Rotation Minimum", v => theme.WindXyRotationMin = v) |
+                EnvFloat(b, "Wind XY Rotation Maximum", v => theme.WindXyRotationMax = v) |
+                EnvFloat(b, "Wind Elevation Minimum", v => theme.WindElevationMin = v) |
+                EnvFloat(b, "Wind Elevation Maximum", v => theme.WindElevationMax = v) |
+                EnvFloat(b, "Wind Change Frequency", v => theme.WindChangeFrequency = v) |
+                EnvFloat(b, "Wind Change Duration", v => theme.WindChangeDuration = v) |
+                EnvFloat(b, "Wind Direction Variation", v => theme.WindDirectionVariation = v);
+            // "Strength" (block +708) sits where F2's GroundMist group's Strength sits.
+            theme.HasGroundMist = EnvFloat(b, "Strength", v => theme.GroundMistStrength = v);
+
+            theme.SourceTimeOfDay = TargetTime - MathF.Floor(TargetTime);
+            theme.HasAny = theme.HasRain || theme.HasSnow || theme.HasWind || theme.HasGroundMist;
+            return theme.HasAny;
+        }
+
+        /// <summary>F3 carries two cloud layers, "… 1" and "… 2"; no position, and no
+        /// translucency the guest registers.</summary>
+        private bool ApplyEnvThemeClouds(CloudTheme theme)
+        {
+            Engine_EnvThemeFile.Block b = EnvBlock();
+            int count = 0;
+            for (int i = 0; i < 2; i++)
+            {
+                string n = (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                CloudLayerTheme layer = theme.Layers[i];
+                layer.HasDensityMap = EnvTexture(b, "Cloud Texture " + n, h => layer.DensityMapHash = h);
+                layer.HasTransparency = EnvFloat(b, "Cloud Transparency " + n, v => layer.Transparency = v);
+                layer.HasNormalStrength = EnvFloat(b, "Cloud Normal Strength " + n, v => layer.NormalStrength = v);
+                layer.HasHeight = EnvFloat(b, "Cloud Height " + n, v => layer.Height = v);
+                layer.HasAmbient = EnvFloat(b, "Cloud Ambient Light " + n, v => layer.AmbientLight = v);
+                layer.HasBrightness = EnvFloat(b, "Cloud Brightness " + n, v => layer.Brightness = v);
+                layer.HasSize = EnvFloat(b, "Cloud Size X " + n, v => layer.SizeX = v) |
+                    EnvFloat(b, "Cloud Size Y " + n, v => layer.SizeY = v);
+                layer.HasTextureScale = EnvFloat(b, "Cloud Scale X " + n, v => layer.TextureScaleX = v) |
+                    EnvFloat(b, "Cloud Scale Y " + n, v => layer.TextureScaleY = v);
+                layer.HasVelocity = EnvFloat(b, "Cloud Velocity X " + n, v => layer.VelocityX = v) |
+                    EnvFloat(b, "Cloud Velocity Y " + n, v => layer.VelocityY = v);
+                layer.Enabled = layer.HasDensityMap || layer.HasTransparency || layer.HasNormalStrength ||
+                    layer.HasHeight || layer.HasAmbient || layer.HasBrightness || layer.HasSize ||
+                    layer.HasTextureScale || layer.HasVelocity;
+                if (layer.Enabled)
+                {
+                    count++;
+                }
+            }
+
+            theme.LayerCount = count;
+            theme.SourceTimeOfDay = TargetTime - MathF.Floor(TargetTime);
+            theme.HasAny = count != 0;
+            return theme.HasAny;
+        }
+
+        private static readonly (ToneMapParam Param, string Name)[] EnvToneMapNames =
+        {
+            (ToneMapParam.MiddleGray, "Exposure"),
+            (ToneMapParam.Contrast, "Contrast"),
+            (ToneMapParam.ContrastClamping, "Contrast Clamping"),
+            (ToneMapParam.ContrastEnhancement, "Contrast Enhancement"),
+            (ToneMapParam.ContrastEnhancementExponent, "Contrast Enhancement Exponent"),
+            (ToneMapParam.ContrastMaxDeviation, "Contrast Enhancement Max Deviation"),
+            (ToneMapParam.BloomThresholdAvgFactor, "Bloom Threshold"),
+            (ToneMapParam.BloomFactor, "Bloom Strength"),
+            (ToneMapParam.BloomBlurSize, "Bloom Blur Size"),
+            (ToneMapParam.Saturation, "Saturation"),
+            (ToneMapParam.SaturationMasked, "Saturation Masked"),
+            (ToneMapParam.Brightness, "Brightness"),
+            (ToneMapParam.BrightnessMasked, "Brightness Masked"),
+            (ToneMapParam.RadialBlurFactor, "Radial Blur Factor"),
+            (ToneMapParam.DofNearPlane, "Depth of Field Near Plane"),
+            (ToneMapParam.DofNearFocalPlane, "Depth of Field Near Focal Plane"),
+            (ToneMapParam.DofFarFocalPlane, "Depth of Field Far Focal Plane"),
+            (ToneMapParam.DofFarPlane, "Depth of Field Far Plane"),
+            (ToneMapParam.DofNearBlur, "Depth of Field Near Blur Amount"),
+            (ToneMapParam.DofFarBlur, "Depth of Field Far Blur Amount"),
+        };
+
+        /// <summary>The F2 tone-map fields F3 has a parameter for; the rest keep the F2 guest's
+        /// defaults, unmarked. F3's Filmic parameters have no F2 field and stay on the block.</summary>
+        private bool ApplyEnvThemeToneMap(ToneMapTheme theme)
+        {
+            Engine_EnvThemeFile.Block b = EnvBlock();
+            bool any = false;
+            foreach ((ToneMapParam param, string name) in EnvToneMapNames)
+            {
+                theme[param] = b.Float(name);
+                if (b.IsStated(name))
+                {
+                    theme.Present[(int)param] = true;
+                    any = true;
+                }
+            }
+
+            theme.SourceTimeOfDay = TargetTime - MathF.Floor(TargetTime);
+            theme.HasAny = any;
+            return any;
+        }
+
+        /// <summary>The classic block's parameters F3 has a counterpart for, by index.</summary>
+        private static readonly (int Index, string Name)[] ClassicEnvThemeNames =
+        {
+            (0, "Main Light Colour"), (1, "Main Light Shadowed"), (2, "Ambient Colour"),
+            (4, "Ambient Normal Map Darkening"), (5, "Distant Shadow Factor"),
+            (6, "Enable Light Zone Shadow Culling"),
+            (7, "Sun Intensity"), (8, "Sky Beta Rayleigh Multiplier"), (9, "Sky Beta Mie Multiplier"),
+            (10, "Sky Colour"), (11, "Sky Complementary Colour"), (12, "Sky Complementary Colour Bias"),
+            (13, "Sunset Colour"),
+            (14, "Fogging Start"), (15, "Near Distance"), (16, "Near Density"), (17, "Far Distance"),
+            (18, "Far Density"), (19, "Close Fog Colour"), (20, "Close Fog Max Distance"),
+            (22, "Exposure"), (23, "Contrast"), (27, "Contrast Enhancement"),
+            (28, "Contrast Enhancement Exponent"), (29, "Contrast Enhancement Max Deviation"),
+            (30, "Contrast Clamping"), (34, "Bloom Threshold"), (35, "Bloom Strength"),
+            (36, "Bloom Blur Size"), (44, "Saturation"), (45, "Saturation Masked"), (46, "Brightness"),
+            (47, "Brightness Masked"), (48, "Radial Blur Factor"),
+            (53, "Main Light Elevation"), (54, "Main Light Elevation"), (55, "Main Light Elevation"),
+            (56, "Main Light Elevation"), (57, "Main Light XY Rotation"), (58, "Time Factor"),
+            (59, "Sun Axis Elevation"), (61, "Sun Axis XY Rotation Offset"),
+            (62, "Moon Axis Elevation"), (64, "Moon Axis XY Rotation Offset"), (65, "Moon Intensity"),
+            (66, "Moon Size"), (67, "Moon Glare Intensity"), (68, "Moon Glare Size"),
+            (69, "Moon Transparency"), (70, "Star Brightness"),
+            (71, "Snow Size"), (72, "Snow Fall Speed"), (73, "Rain Size"), (74, "Rain Density"),
+            (75, "Hide Occlusion Errors"),
+            (76, "Wind Strength Minimum"), (77, "Wind Strength Maximum"), (78, "Wind Strength Variation"),
+            (79, "Wind XY Rotation Minimum"), (80, "Wind Elevation Minimum"),
+            (81, "Wind XY Rotation Maximum"), (82, "Wind Elevation Maximum"),
+            (83, "Wind Direction Variation"), (84, "Wind Change Frequency"), (85, "Wind Change Duration"),
+            (86, "Depth of Field Near Plane"), (87, "Depth of Field Near Focal Plane"),
+            (88, "Depth of Field Far Focal Plane"), (89, "Depth of Field Far Plane"),
+            (90, "Depth of Field Near Blur Amount"), (91, "Depth of Field Far Blur Amount"),
+            (92, "Sun Disc Size"), (93, "Sun Disc Colour"), (94, "Sun Disc Intensity"),
+            (95, "Sun Beams Width"), (96, "Sun Beams Height"), (97, "Sun Beams Intensity"),
+            (100, "Sun Glare Intensity"), (101, "Sun Glare Size"), (102, "Disable Vista Water"),
+            (133, "Cloud Transparency 1"), (134, "Cloud Height 1"), (135, "Cloud Normal Strength 1"),
+            (137, "Cloud Ambient Light 1"), (138, "Cloud Brightness 1"), (141, "Cloud Size X 1"),
+            (142, "Cloud Size Y 1"), (143, "Cloud Scale X 1"), (144, "Cloud Scale Y 1"),
+            (145, "Cloud Velocity X 1"), (146, "Cloud Velocity Y 1"),
+            (147, "Cloud Transparency 2"), (148, "Cloud Height 2"), (149, "Cloud Normal Strength 2"),
+            (151, "Cloud Ambient Light 2"), (152, "Cloud Brightness 2"), (155, "Cloud Size X 2"),
+            (156, "Cloud Size Y 2"), (157, "Cloud Scale X 2"), (158, "Cloud Scale Y 2"),
+            (159, "Cloud Velocity X 2"), (160, "Cloud Velocity Y 2"),
+            (189, "Strength"),
+        };
+
+        /// <summary>
+        /// The classic block for a Fable 3 stack: the F3 block's value for every index above — a
+        /// colour as (X, Y, Z, 1), its X/Y/Z already carrying the factor; a float as (v, 0, 0, 0)
+        /// — and <see cref="ClassicDefaults"/> for the indices F3 has no parameter for.
+        /// </summary>
+        private bool EvaluateClassicEnvTheme(float dayFraction, float[] output)
+        {
+            int count = Engine_ClassicThemeParams.Count;
+            Array.Clear(output, 0, count * 4);
+            ClassicDefaults(output, new float[count]);
+
+            Engine_EnvThemeFile.Block b = Engine_EnvThemeFile.Evaluate(_envThemes, dayFraction);
+            foreach ((int index, string name) in ClassicEnvThemeNames)
+            {
+                int at = index * 4;
+                if (Engine_ClassicThemeParams.All[index].Type == 3)
+                {
+                    output[at] = b.Float(name);
+                    output[at + 1] = output[at + 2] = output[at + 3] = 0f;
+                }
+                else
+                {
+                    System.Numerics.Vector4 v = b.Vector(name);
+                    output[at] = v.X;
+                    output[at + 1] = v.Y;
+                    output[at + 2] = v.Z;
+                    output[at + 3] = 1f;
+                }
+            }
+
+            return true;
         }
 
         private RecordRef FieldToRecord(GdbField field)

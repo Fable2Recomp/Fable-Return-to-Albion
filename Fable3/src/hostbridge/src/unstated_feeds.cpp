@@ -40,14 +40,6 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* /*out*/, uint32_t 
     return 0;
 }
 
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveLayers(uint32_t* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT int RefiiHostGetActiveScenario(char* /*scenario*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimMask(uint32_t /*node*/, uint8_t* /*out_bytes*/, uint32_t /*capacity*/, uint32_t* /*out_skeleton_id*/) {
     return 0;
 }
@@ -57,98 +49,6 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimPostOps(uint32_t /*entity*/, uint
 }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimWalkStats(uint32_t* /*out_words*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAttachmentGrips(uint32_t* /*out_words*/, uint32_t /*max_records*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAttachments(uint32_t* /*out_words*/, uint32_t /*max_records*/, char* /*out_names*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetBoneMorph(uint32_t /*entity*/, uint32_t* /*out_words*/, uint32_t /*word_capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetBoneMorphHeight(uint32_t /*entity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT int RefiiHostGetCamera(float* /*out*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT int RefiiHostGetCameraPair(float* /*out*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicFrame(float* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicLights(float* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicLocalLights(float* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicMists(float* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicParticles(float* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicSceneLights(float* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicShadowSpheres(float* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicTheme(float* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicThemeTextures(uint32_t* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicTrails(float* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicWeather(float* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCollectedKeys(uint32_t* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopPlayerEntities(uint32_t* /*out_one*/, uint32_t* /*out_two*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCurrentCulture(char* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCurrentLevel(char* /*world*/, char* /*level*/, char* /*entrance*/, uint32_t /*capacity*/, uint32_t* /*out_key*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDeactivatedLayers(uint32_t* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDeadEntities(uint64_t* /*out_uids*/, uint32_t /*max_uids*/) {
     return 0;
 }
 
@@ -172,40 +72,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDrunkPlayers(void) {
     return 0;
 }
 
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* /*out*/, uint32_t /*max_entities*/, uint32_t* /*out_unknown*/, uint32_t* /*out_unknown_vtables*/, uint32_t /*max_unknown_vtables*/, uint32_t* /*out_unknown_vtable_count*/) {
-    return 0;
-}
-
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t /*entity*/, uint32_t* /*out_words*/, uint32_t /*word_capacity*/, uint32_t* /*out_flags*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityBoneNames(uint32_t /*entity*/, char* /*out_names*/, uint32_t /*stride*/, uint32_t /*max_bones*/) {
-    return 0;
-}
-
-/// 0xFFFFFFFF: the entity has no renderable to state a caster word.
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityCasterFlags(uint32_t /*entity*/) {
-    return 0xFFFFFFFFu;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityComponents(uint32_t /*entity*/, uint32_t* /*out_pairs*/, uint32_t /*max_pairs*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityDisplacementParts(uint32_t /*entity*/, uint32_t* /*out_hashes*/, uint32_t /*max_hashes*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT int RefiiHostGetEntityDrawRange(uint32_t /*entity*/, float* /*out_distance*/, float* /*out_fade_factor*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityInteriorMeshes(uint32_t /*entity*/, uint32_t* /*out_hashes*/, uint32_t /*max_hashes*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityLightZone(uint32_t /*entity*/) {
     return 0;
 }
 
@@ -213,39 +80,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityLocomotion(uint32_t /*entity*/,
     return 0;
 }
 
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMeshParts(uint32_t /*entity*/, uint32_t* /*out_hashes*/, uint32_t /*max_hashes*/, uint32_t* /*out_total*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t /*entity*/, uint32_t* /*out_hashes*/, uint32_t /*max_hashes*/, uint32_t* /*out_built*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityPartHides(uint32_t /*entity*/, char* /*out_text*/, uint32_t /*text_capacity*/) {
-    return 0;
-}
-
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityPartMorphs(uint32_t /*entity*/, uint32_t* /*out_words*/, uint32_t /*word_capacity*/, uint32_t* /*out_generation*/, uint64_t* /*out_statements*/) {
     return 0;
 }
 
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityPose(uint32_t /*entity*/, float* /*out_transforms*/, int32_t* /*out_parents*/, uint32_t /*max_bones*/, uint32_t* /*out_space*/, uint32_t* /*out_torn*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityRestPose(uint32_t /*entity*/, float* /*out_transforms*/, int32_t* /*out_parents*/, uint32_t /*max_bones*/) {
-    return 0;
-}
-
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityTextureLayers(uint32_t /*entity*/, uint32_t* /*out_words*/, uint32_t /*word_capacity*/, uint32_t* /*out_generation*/, uint64_t* /*out_statements*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint64_t RefiiHostGetEntityUid(uint32_t /*entity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityWornItems(uint32_t /*entity*/, uint32_t* /*out_words*/, uint32_t /*word_capacity*/) {
     return 0;
 }
 
@@ -277,14 +116,6 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetGameLoopPacer(uint32_t* /*words*/, ui
     return 0;
 }
 
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroVitals(uint32_t* /*words*/, uint32_t /*word_capacity*/, float* /*values*/, uint32_t /*value_capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudMeters(uint32_t* /*out_hashes*/, float* /*out_values*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudPulserStates(uint32_t* /*out_hashes*/, float* /*out_phases*/, uint32_t* /*out_modes*/, uint32_t /*capacity*/) {
     return 0;
 }
@@ -298,10 +129,6 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudScriptMeters(uint32_t* /*out_hashe
 }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudScriptTexts(uint32_t* /*out_hashes*/, uint32_t* /*out_text_ids*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudTexts(uint32_t* /*out_hashes*/, uint32_t /*capacity*/, char* /*text*/, uint32_t /*text_capacity*/) {
     return 0;
 }
 
@@ -323,19 +150,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLanguages(uint32_t* /*out_current*/, 
     return 0;
 }
 
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLevelChange(char* /*world*/, char* /*level*/, char* /*entrance*/, uint32_t /*capacity*/, uint32_t* /*out_state*/, uint32_t* /*out_travel_type*/, uint32_t* /*out_full_load*/) {
-    return 0;
-}
-
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLightHalos(float* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT int RefiiHostGetLoadingScreen(uint32_t* /*out_manager*/, uint32_t* /*out_screen*/, float* /*out_fade*/, uint32_t* /*out_requested*/, uint32_t* /*out_done*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLoadingScreenArt(uint32_t* /*out_type*/, uint32_t* /*out_body*/, char* /*name*/, uint32_t /*capacity*/) {
     return 0;
 }
 
@@ -360,10 +175,6 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMenuScreenId(void) {
 }
 
 REFII_HOST_ABI_EXPORT int RefiiHostGetOptionsSliders(float* /*out_gamma*/, float* /*out_sfx*/, float* /*out_music*/, float* /*out_speech*/, uint32_t* /*out_speaker*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT int RefiiHostGetPauseState(uint32_t* /*out_screen_id*/, uint32_t* /*out_modal_id*/, uint32_t* /*out_modal_mode*/, uint32_t* /*out_current_tab*/) {
     return 0;
 }
 
@@ -401,18 +212,6 @@ REFII_HOST_ABI_EXPORT void RefiiHostGetSceneStreams(uint32_t* out) {
     }
 }
 
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetScreenFade(float* /*out_rgba*/, float* /*out_progress*/, uint32_t* /*out_locked*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSimClock(double* /*out_seconds*/, uint32_t* /*out_tick*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSimTick(void) {
-    return 0;
-}
-
 REFII_HOST_ABI_EXPORT int RefiiHostGetSpellAssign(uint32_t* /*out*/) {
     return 0;
 }
@@ -425,15 +224,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetSpellWheel(uint32_t /*player*/, uint32_t* 
     return 0;
 }
 
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSpotFrustums(float* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
 REFII_HOST_ABI_EXPORT int RefiiHostGetStartLevel(char* /*world*/, char* /*level*/, char* /*entrance*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT int RefiiHostGetStartScenario(char* /*scenario*/, uint32_t /*capacity*/) {
     return 0;
 }
 
@@ -455,10 +246,6 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetThemeBlends(uint32_t* /*out_words*/, 
 }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetThemeStack(uint32_t* /*out_words*/, uint32_t /*max_entries*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTimeOfDay(float* /*out_fraction*/, int32_t* /*out_day*/, int32_t* /*out_frozen*/, int32_t* /*out_moon_phase*/) {
     return 0;
 }
 
@@ -490,10 +277,6 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetVideoPlanes(uint8_t* /*out_y*/, uint32_t /
     return 0;
 }
 
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWeather(float* /*out_snow_size*/, float* /*out_snow_fall_speed*/, float* /*out_rain_size*/, float* /*out_rain_density*/) {
-    return 0;
-}
-
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldIcons(uint32_t* /*out_flags*/, uint32_t* /*out_types*/, uint32_t* /*out_entities*/, uint32_t /*max_icons*/) {
     return 0;
 }
@@ -510,12 +293,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWornItems(uint32_t* /*words*/, uint32
     return 0;
 }
 
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGuestAddress(uint32_t /*tu1_address*/) {
-    return 0;
+// Fable 3 ships one build: every address is its own.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGuestAddress(uint32_t tu1_address) {
+    return tu1_address;
 }
 
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGuestAddressToTu1(uint32_t /*live_address*/) {
-    return 0;
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGuestAddressToTu1(uint32_t live_address) {
+    return live_address;
 }
 
 REFII_HOST_ABI_EXPORT int32_t RefiiHostGuestBuild(void) {
@@ -526,10 +310,6 @@ REFII_HOST_ABI_EXPORT void RefiiHostGuiNativeCounters(uint64_t* out_intercepted,
     Zero(out_intercepted);
     Zero(out_pending);
     Zero(out_named);
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostIsInGame(void) {
-    return 0;
 }
 
 REFII_HOST_ABI_EXPORT void RefiiHostMenuChunkCounters(uint64_t* out_recorded, uint32_t* out_pending, uint64_t* out_dropped) {
@@ -551,8 +331,6 @@ REFII_HOST_ABI_EXPORT void RefiiHostRefreshSaveState(void) {}
 REFII_HOST_ABI_EXPORT void RefiiHostSetGuiPredicate(const char* /*name*/, uint32_t /*kind*/, uint32_t /*bits*/) {}
 
 REFII_HOST_ABI_EXPORT void RefiiHostSetHighlightedRow(uint32_t /*screen*/, int32_t /*event_type*/, int32_t /*id*/, const char* /*name*/, const char* /*label*/) {}
-
-REFII_HOST_ABI_EXPORT void RefiiHostSetWorldBuildPending(uint32_t /*pending*/) {}
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostTakeGuiNativeCalls(char* /*out_utf8*/, uint32_t /*utf8_capacity*/, uint8_t* /*out_kinds*/, uint32_t /*kinds_capacity*/, uint32_t /*max_records*/) {
     return 0;
@@ -585,10 +363,6 @@ REFII_HOST_ABI_EXPORT void RefiiHostUiElementCounters(uint64_t* out_recorded, ui
 }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostWorldIsActive(void) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostWorldIsReady(void) {
     return 0;
 }
 

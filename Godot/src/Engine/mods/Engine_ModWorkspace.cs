@@ -109,7 +109,8 @@ public static class ModWorkspace
 	public const string ModFilesFolderName = "files";
 	public const string ModMetadataFilename = "mod.toml";
 	public const string ModManifestFilename = "manifest.json";
-	public const string PackageExtension = ".f2mod";
+	/// <summary>The active title's package extension (Refii.Core.Engine_Title.ModExtension).</summary>
+	public static string PackageExtension => Refii.Core.Engine_Title.Active.ModExtension;
 
 	public static string GetDefaultModsRoot(string assetsRoot) =>
 		string.IsNullOrEmpty(assetsRoot)
@@ -152,7 +153,7 @@ public static class ModWorkspace
 		string[] files;
 		try
 		{
-			files = Directory.GetFiles(modsRoot, "*.f2mod");
+			files = Directory.GetFiles(modsRoot, $"*{Refii.Core.Engine_Title.Active.ModExtension}");
 		}
 		catch (Exception)
 		{

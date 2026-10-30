@@ -126,7 +126,7 @@ public readonly struct GameWindowSettings
 				FsrSharpness = 0.2f,
 				ScreenSpaceAa = "off",
 				Anisotropic = 4,
-				Source = "defaults (no refii.toml found)",
+				Source = "defaults (no " + Refii.Core.Engine_Title.Active.ConfigFileName + " found)",
 			};
 		}
 

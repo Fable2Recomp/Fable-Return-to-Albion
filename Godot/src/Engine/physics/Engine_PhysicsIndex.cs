@@ -89,7 +89,7 @@ public static class Engine_PhysicsIndex
 
         foreach (MdlClothBlock block in info.ClothBlocks)
         {
-            ClothAsset? asset = Engine_ClothBuilder.Build(bytes, block, sourcePath);
+            ClothAsset? asset = Engine_ClothBuilder.Build(info.Body ?? bytes, block, sourcePath);
             if (asset is not null && asset.Simulates)
             {
                 assets.Add(asset);

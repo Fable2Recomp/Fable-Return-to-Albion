@@ -402,7 +402,12 @@ public static class Engine_SkyEnvironment
         BuildGdbChain(level, read, out _);
 
     public static List<byte[]> BuildGdbChain(
-        LevelEntry level, Func<string, byte[]?> read, out string levelGdbPath)
+        LevelEntry level, Func<string, byte[]?> read, out string levelGdbPath) =>
+        BuildGdbChain(level, read, out levelGdbPath, Refii.Core.Engine_Title.Active);
+
+    public static List<byte[]> BuildGdbChain(
+        LevelEntry level, Func<string, byte[]?> read, out string levelGdbPath,
+        Refii.Core.Engine_Title title)
     {
         var chain = new List<byte[]>();
 
@@ -413,10 +418,15 @@ public static class Engine_SkyEnvironment
         }
 
         AppendSharedGdbs(chain, read);
+        AppendTitleThemes(chain, levelGdb, read, title);
         return chain;
     }
 
-    public static List<byte[]> BuildGdbChain(string levelGdbPath, Func<string, byte[]?> read)
+    public static List<byte[]> BuildGdbChain(string levelGdbPath, Func<string, byte[]?> read) =>
+        BuildGdbChain(levelGdbPath, read, Refii.Core.Engine_Title.Active);
+
+    public static List<byte[]> BuildGdbChain(
+        string levelGdbPath, Func<string, byte[]?> read, Refii.Core.Engine_Title title)
     {
         var chain = new List<byte[]>();
 
@@ -427,7 +437,23 @@ public static class Engine_SkyEnvironment
         }
 
         AppendSharedGdbs(chain, read);
+        AppendTitleThemes(chain, levelGdb, read, title);
         return chain;
+    }
+
+    /// <summary>
+    /// Fable 3 keeps its themes out of the gdbs: the level's stack is <c>envthemebase</c> and the
+    /// <c>.envtheme</c> its <c>LevelSpecificData.EnvironmentTheme</c> names
+    /// (<see cref="Engine_EnvThemeFile.AppendLevelThemes"/>), appended after the gdbs, lowest
+    /// layer first. The theme readers take the stack in place of any day set the gdbs carry.
+    /// </summary>
+    private static void AppendTitleThemes(
+        List<byte[]> chain, byte[]? levelGdb, Func<string, byte[]?> read, Refii.Core.Engine_Title title)
+    {
+        if (title == Refii.Core.Engine_Title.Fable3)
+        {
+            Engine_EnvThemeFile.AppendLevelThemes(levelGdb, read, chain);
+        }
     }
 
     private static void AppendSharedGdbs(List<byte[]> chain, Func<string, byte[]?> read)

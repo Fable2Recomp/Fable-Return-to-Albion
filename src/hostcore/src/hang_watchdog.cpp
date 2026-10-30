@@ -61,6 +61,7 @@
 #include "core/rex_payload_bridge.h"
 
 #ifndef _WIN32
+#include <cerrno>
 #include <csignal>
 #include <ctime>
 #include <dlfcn.h>
@@ -348,26 +349,21 @@ void DescribeAddress(int fd, int index, uintptr_t pc) {
     }
 }
 
-/// Signals the main thread and writes what the handler captured, or why it could not.
-void WriteMainThreadBacktrace(int fd) {
-    const long main_tid = g_main_tid.load();
-    char state[32], wchan[64], sys[128], vctx[32], nvctx[32];
-    TaskState(main_tid, state, sizeof(state), vctx, sizeof(vctx), nvctx, sizeof(nvctx));
-    TaskFile(main_tid, "wchan", wchan, sizeof(wchan));
-    TaskFile(main_tid, "syscall", sys, sizeof(sys));
-    Line(fd, "--- main thread tid=%ld state=%s wchan=%s syscall=%s vctx=%s nvctx=%s\n", main_tid,
-         state, wchan, sys, vctx, nvctx);
-
+/// Signals one thread (the main thread by its pthread, any other by tid) and writes what the
+/// handler captured, or why it could not. `label` names it in the report.
+void WriteThreadBacktrace(int fd, long tid, bool is_main, const char* label) {
     g_capture_count.store(0);
     g_capture_pc.store(0);
     g_capture_sp.store(0);
     g_capture_tid.store(0);
     g_capture_done.store(0);
     g_capture_armed.store(1, std::memory_order_release);
-    const int sent = ::pthread_kill(g_main_pthread, kCaptureSignal);
+    const int sent = is_main
+        ? ::pthread_kill(g_main_pthread, kCaptureSignal)
+        : (::syscall(SYS_tgkill, static_cast<long>(::getpid()), tid, kCaptureSignal) == 0 ? 0 : errno);
     if (sent != 0) {
         g_capture_armed.store(0);
-        Line(fd, "--- main thread backtrace: pthread_kill failed (%d)\n", sent);
+        Line(fd, "--- %s backtrace: signal failed (%d)\n", label, sent);
         return;
     }
 
@@ -380,15 +376,15 @@ void WriteMainThreadBacktrace(int fd) {
 
     if (g_capture_done.load(std::memory_order_acquire) == 0) {
         Line(fd,
-             "--- main thread backtrace: the SIGUSR2 handler did not complete within %llu ms — "
+             "--- %s backtrace: the SIGUSR2 handler did not complete within %llu ms — "
              "the thread is not taking signals (uninterruptible wait, stopped) or backtrace() "
              "itself blocked on the loader lock held by another thread\n",
-             static_cast<unsigned long long>(kCaptureWaitNs / 1000000ull));
+             label, static_cast<unsigned long long>(kCaptureWaitNs / 1000000ull));
         return;
     }
 
     const int count = g_capture_count.load();
-    Line(fd, "--- main thread backtrace: %d frames, handler ran on tid=%ld, pc=0x%lx sp=0x%lx\n",
+    Line(fd, "--- %s backtrace: %d frames, handler ran on tid=%ld, pc=0x%lx sp=0x%lx\n", label,
          count, g_capture_tid.load(), static_cast<unsigned long>(g_capture_pc.load()),
          static_cast<unsigned long>(g_capture_sp.load()));
     Append(fd, "  raw:");
@@ -402,6 +398,18 @@ void WriteMainThreadBacktrace(int fd) {
     for (int i = 0; i < count; ++i) {
         DescribeAddress(fd, i, reinterpret_cast<uintptr_t>(g_capture_frames[i]));
     }
+}
+
+/// The main thread's task state and backtrace.
+void WriteMainThreadBacktrace(int fd) {
+    const long main_tid = g_main_tid.load();
+    char state[32], wchan[64], sys[128], vctx[32], nvctx[32];
+    TaskState(main_tid, state, sizeof(state), vctx, sizeof(vctx), nvctx, sizeof(nvctx));
+    TaskFile(main_tid, "wchan", wchan, sizeof(wchan));
+    TaskFile(main_tid, "syscall", sys, sizeof(sys));
+    Line(fd, "--- main thread tid=%ld state=%s wchan=%s syscall=%s vctx=%s nvctx=%s\n", main_tid,
+         state, wchan, sys, vctx, nvctx);
+    WriteThreadBacktrace(fd, main_tid, true, "main thread");
 }
 
 // ------------------------------------------------------------------------- every thread
@@ -449,6 +457,51 @@ void WriteAllThreads(int fd) {
     }
     ::close(dir);
     Line(fd, "  %d threads\n", listed);
+}
+
+/// EVERY OTHER THREAD'S BACKTRACE, for a stall that has lasted. A main thread blocked on a lock
+/// says only that the lock is held; the holder is on another thread, and a deadlock is only read
+/// from both stacks (the 2026-10-30 Fable 3 shadow bake: main parked in StringName's mutex, the
+/// holder unknown). One thread at a time through the same handler; the watchdog's own thread is
+/// skipped. Module-relative offsets resolve with addr2line against the module named.
+void WriteOtherThreadBacktraces(int fd) {
+    Append(fd, "--- every other thread's backtrace:\n");
+    const int dir = ::open("/proc/self/task", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dir < 0) {
+        Append(fd, "  (cannot open /proc/self/task)\n");
+        return;
+    }
+
+    static char entries[16384];
+    static long tids[512];
+    int count = 0;
+    for (;;) {
+        const long got = ::syscall(SYS_getdents64, dir, entries, sizeof(entries));
+        if (got <= 0) {
+            break;
+        }
+        for (long at = 0; at < got && count < 512;) {
+            const auto* entry = reinterpret_cast<const LinuxDirent64*>(entries + at);
+            at += entry->d_reclen;
+            if (entry->d_name[0] >= '0' && entry->d_name[0] <= '9') {
+                tids[count++] = std::strtol(entry->d_name, nullptr, 10);
+            }
+        }
+    }
+    ::close(dir);
+
+    const long self = static_cast<long>(::syscall(SYS_gettid));
+    const long main_tid = g_main_tid.load();
+    for (int i = 0; i < count; ++i) {
+        if (tids[i] == self || tids[i] == main_tid) {
+            continue;
+        }
+
+        char comm[32], label[64];
+        TaskFile(tids[i], "comm", comm, sizeof(comm));
+        std::snprintf(label, sizeof(label), "thread %ld %s", tids[i], comm);
+        WriteThreadBacktrace(fd, tids[i], false, label);
+    }
 }
 
 // --------------------------------------------------------------------------- the report
@@ -545,6 +598,9 @@ void WriteReport(const char* path, uint32_t ordinal, uint64_t now, uint64_t aliv
     WriteTimeBase(fd);
     WriteMainThreadBacktrace(fd);
     WriteAllThreads(fd);
+    if (ordinal == 2u) {
+        WriteOtherThreadBacktraces(fd);
+    }
     if (g_guest_table_writer != nullptr) {
         Append(fd, "--- guest threads (kernel object table; takes its lock — a report that ends "
                    "here means that lock was held):\n");

@@ -192,6 +192,9 @@ public sealed class Engine_UiFontLibrary
 		_ => (UiFontBucket.Large, pointSize / 24f),
 	};
 
+	/// <summary>The bucket's own font at its authored size, or null when that file did not load.</summary>
+	public UiFont? Get(UiFontBucket bucket) => _fonts.TryGetValue(bucket, out UiFont? font) ? font : null;
+
 	/// <summary>The bucket alone, for naming and diagnostics.</summary>
 	public static UiFontBucket BucketFor(int pointSize) => SelectFor(pointSize).Bucket;
 

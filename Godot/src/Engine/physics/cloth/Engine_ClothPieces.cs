@@ -351,7 +351,7 @@ public static class Engine_ClothPieces
                 continue;
             }
 
-            ClothAsset? asset = Engine_ClothBuilder.Build(bytes, block, modelPath);
+            ClothAsset? asset = Engine_ClothBuilder.Build(info.Body ?? bytes, block, modelPath);
             if (asset is null || !asset.Simulates || asset.Indices.Length < 3)
             {
                 skipped++;

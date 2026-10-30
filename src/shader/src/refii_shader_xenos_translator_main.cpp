@@ -124,6 +124,8 @@ struct Options {
     // Vertex stage only: second dxc pass over the same HLSL with
     // -D REFII_TESSELLATION_VARIANT=1 (the hardware-tessellation variant).
     std::filesystem::path tess_output;
+    // The title folder the blob came from; see TranslateXenosShaderBlob.
+    std::string title;
 };
 
 std::string ToLowerAscii(std::string value) {
@@ -250,7 +252,8 @@ bool TranslateXenosShaderBlobImpl(const Options& options,
         XenosRecompTranslationStats xenos_stats{};
         WriteTranslatorLog(log_path, "phase: xenos_translate_godot_start");
         if (!XenosRecompTranslateEx(input_path.string().c_str(), output_path.string().c_str(), "",
-                                    XENOSRECOMP_DIALECT_GODOT, &xenos_stats, &xenos_error)) {
+                                    XENOSRECOMP_DIALECT_GODOT, options.title.c_str(),
+                                    &xenos_stats, &xenos_error)) {
             set_error(std::string("XenosRecomp failed: ") +
                       (xenos_error != nullptr ? xenos_error : "failed to run"));
             return false;
@@ -444,8 +447,10 @@ bool TranslateXenosShaderBlob(const std::filesystem::path& input,
                              const std::filesystem::path& log_path,
                              std::string* error,
                              XenosMemoryExportStats* memexport_stats,
-                             const std::filesystem::path& tess_output) {
+                             const std::filesystem::path& tess_output,
+                             const std::string& title) {
     Options options;
+    options.title = title;
     options.input = input;
     options.target = ToLowerAscii(TrimAscii(target));
     options.stage = ToLowerAscii(TrimAscii(stage));

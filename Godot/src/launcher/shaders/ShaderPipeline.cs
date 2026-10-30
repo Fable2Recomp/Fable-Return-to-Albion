@@ -27,7 +27,7 @@ internal static class ShaderPipeline
 	private const string Library = "refii_shader_sbk";
 
 	// Mirrors shader/refii_shader_build.h.
-	private const int AbiVersion = 1;
+	private const int AbiVersion = 2;
 	private const int EventProgress = 1;
 	private const int EventLog = 2;
 	private const int ResultOk = 0;
@@ -41,7 +41,8 @@ internal static class ShaderPipeline
 	private static extern int refii_shader_build_v1_abi_version();
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-	private static extern int refii_shader_build_v1_run(
+	private static extern int refii_shader_build_v2_run(
+		[MarshalAs(UnmanagedType.LPUTF8Str)] string title,
 		[MarshalAs(UnmanagedType.LPUTF8Str)] string bankDirectory,
 		[MarshalAs(UnmanagedType.LPUTF8Str)] string outputDirectory,
 		[MarshalAs(UnmanagedType.LPUTF8Str)] string targets,
@@ -59,11 +60,12 @@ internal static class ShaderPipeline
 	/// <paramref name="outputDirectory"/>. Blocks the calling thread for the length of the run;
 	/// <paramref name="step"/> and <paramref name="log"/> are invoked on that thread.
 	/// </summary>
+	/// <param name="title">The title folder the banks belong to (<c>Engine_Title.Folder</c>).</param>
 	/// <param name="targets">"auto" for the host's backend set, or a comma list.</param>
 	/// <param name="control">Consulted at every event: holds the thread while paused, and
 	/// turns a stop into the pipeline unwinding.</param>
 	public static GameCodeBuild.Result Build(
-		string bankDirectory, string outputDirectory, string targets, BuildControl control,
+		string title, string bankDirectory, string outputDirectory, string targets, BuildControl control,
 		Action<Step> step, Action<string> log)
 	{
 		int abi;
@@ -123,8 +125,8 @@ internal static class ShaderPipeline
 		int code;
 		try
 		{
-			code = refii_shader_build_v1_run(
-				bankDirectory, outputDirectory, targets, progress, IntPtr.Zero, error,
+			code = refii_shader_build_v2_run(
+				title, bankDirectory, outputDirectory, targets, progress, IntPtr.Zero, error,
 				(nuint)error.Length);
 		}
 		catch (Exception exception)

@@ -655,7 +655,9 @@ extern "C" {
 ///     the manager's bounding sphere) and a shadowing spot's map parameters, for the classic
 ///     renderer's light block and spot shadow maps; and RefiiHostGetClassicShadowSpheres — the
 ///     render scene's shadow spheres (category 36) with their last two stated keyframes.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 228; }
+/// 229 adds RefiiHostSetConfigPath — the running title's config file, stated by the host
+///     beside the app root, so each title's guest reads its own.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 229; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveRoot(char* output, uint32_t capacity) {
     auto* state = rex::system::kernel_state();
@@ -1047,12 +1049,22 @@ REFII_HOST_ABI_EXPORT void RefiiHostPostModInput(const char* action, uint32_t ac
 /// States which directory owns this install, before the guest is brought up.
 ///
 /// Embedded, GetExecutableFolder() is the HOST's directory — Godot's — so the guest's
-/// refii.toml, saves and cache would land beside whatever binary is hosting it.
+/// config, saves and cache would land beside whatever binary is hosting it.
 ///
 /// Must be called BEFORE RefiiHostInitialize: paths are resolved once, during startup.
 REFII_HOST_ABI_EXPORT void RefiiHostSetAppRoot(const char* root) {
     RefiiSetAppRoot(root != nullptr && root[0] != '\0' ? std::filesystem::path{root}
                                                        : std::filesystem::path{});
+}
+
+/// States the runtime config file the guest loads its cvars from: the running title's own, never
+/// another title's. The host knows which title it started; this core and the runtime serve every
+/// title and name none.
+///
+/// Must be called BEFORE RefiiHostInitialize, with RefiiHostSetAppRoot: paths are resolved once.
+REFII_HOST_ABI_EXPORT void RefiiHostSetConfigPath(const char* path) {
+    RefiiSetConfigPath(path != nullptr && path[0] != '\0' ? std::filesystem::path{path}
+                                                         : std::filesystem::path{});
 }
 
 // ---------------------------------------------------------------------------------

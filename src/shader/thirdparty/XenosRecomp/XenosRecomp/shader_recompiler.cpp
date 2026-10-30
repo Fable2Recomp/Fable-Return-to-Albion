@@ -423,6 +423,43 @@ static constexpr const char* GODOT_MATERIAL_CONSTANT_NAMES[] =
     "g_GlobalAmbientAndDistanceAlpha",
 };
 
+// Fable 3's per-draw constants beyond the set above, matched whole (none of these names is in
+// Fable 2's banks). Each is the drawn object's or its material's, so a host material carries its
+// own; as a frame register it would read whatever the frame texture holds at that register.
+//   g_DynamicSHConstants         PS c128 x9  the object's spherical-harmonic light
+//   g_SpecularLights             PS c120 x8  its nearest specular lights
+//   g_SelfIllumColour            PS c137     its self-illumination tint
+//   g_FresnelLightingPSConstants PS c57 x2   its fresnel terms
+//   g_AOUVMatrix, g_LightUVMatrix  PS c53/c54, VS c8/c43: its AO and lightmap UV transforms
+//   g_Colour1, g_Colour2         PS c48/c137 the material's two tints
+//   g_Gradients1, g_Gradients2   PS c138/c139 the material's gradient ramps
+static constexpr const char* GODOT_MATERIAL_CONSTANT_NAMES_FABLE3[] =
+{
+    "g_DynamicSHConstants",
+    "g_SpecularLights",
+    "g_SelfIllumColour",
+    "g_FresnelLightingPSConstants",
+    "g_AOUVMatrix",
+    "g_LightUVMatrix",
+    "g_Colour1",
+    "g_Colour2",
+    "g_Gradients1",
+    "g_Gradients2",
+};
+
+// The per-title additions, keyed by the title folder the pipeline states (godotTitle).
+struct GodotTitleMaterialConstants
+{
+    const char* title;
+    const char* const* names;
+    size_t count;
+};
+
+static constexpr GodotTitleMaterialConstants GODOT_TITLE_MATERIAL_CONSTANTS[] =
+{
+    { "Fable3", GODOT_MATERIAL_CONSTANT_NAMES_FABLE3, std::size(GODOT_MATERIAL_CONSTANT_NAMES_FABLE3) },
+};
+
 ShaderRecompiler::GodotConstantSource ShaderRecompiler::godotConstantSource(const char* name) const
 {
     const std::string_view view(name);
@@ -432,6 +469,16 @@ ShaderRecompiler::GodotConstantSource ShaderRecompiler::godotConstantSource(cons
     {
         if (view == exact)
             return GodotConstantSource::Material;
+    }
+    for (const GodotTitleMaterialConstants& title : GODOT_TITLE_MATERIAL_CONSTANTS)
+    {
+        if (godotTitle != title.title)
+            continue;
+        for (size_t i = 0; i < title.count; ++i)
+        {
+            if (view == title.names[i])
+                return GodotConstantSource::Material;
+        }
     }
     if (!isPixelShader &&
         (view == "g_WorldViewProjection" || view == "g_WorldTransform" ||

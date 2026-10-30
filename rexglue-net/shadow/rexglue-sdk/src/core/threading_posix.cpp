@@ -18,7 +18,9 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
 #include <cerrno>
 #include <cstddef>
 #include <ctime>
+#include <algorithm>
 #include <deque>
+#include <vector>
 #include <limits>
 #include <memory>
 #include <system_error>
@@ -304,7 +306,7 @@ class PosixConditionBase {
   virtual ~PosixConditionBase() = default;
   virtual bool Signal() = 0;
 
-  WaitResult Wait(std::chrono::milliseconds timeout) {
+  virtual WaitResult Wait(std::chrono::milliseconds timeout) {
     bool executed;
     auto predicate = [this] { return this->signaled(); };
 #if REX_PLATFORM_LINUX && !REX_PLATFORM_ANDROID
@@ -490,6 +492,14 @@ class PosixConditionBase {
 template <typename T>
 class PosixCondition {};
 
+// AN AUTO-RESET EVENT HANDS ITS SIGNAL TO THE LONGEST WAITER, as the Xbox kernel's KeSetEvent does for
+// a synchronization event: a thread already blocked on it is satisfied directly and the signal state
+// stays clear. A flag that any thread may take lets a newcomer steal the wake-up from a queued
+// waiter — and RtlLeaveCriticalSection wakes its waiter through exactly this event, so the thread
+// that just left a critical section re-entered, took its own wake-up, and starved the queued one for
+// as long as it kept leaving and re-entering (Fable 2's 50-200 s and Fable 3's 3 min boot-movie waits:
+// a game thread queued on the 3D Engine's context lock). With nobody blocked the signal is a flag,
+// as before, for multi-object waits, which poll it.
 template <>
 class PosixCondition<Event> : public PosixConditionBase {
  public:
@@ -499,7 +509,12 @@ class PosixCondition<Event> : public PosixConditionBase {
 
   bool Signal() override {
     auto lock = std::unique_lock<std::mutex>(mutex_);
-    signal_ = true;
+    if (!manual_reset_ && !queued_.empty()) {
+      granted_.push_back(queued_.front());
+      queued_.pop_front();
+    } else {
+      signal_ = true;
+    }
     cond_.notify_all();
     return true;
   }
@@ -507,6 +522,48 @@ class PosixCondition<Event> : public PosixConditionBase {
   void Reset() {
     auto lock = std::unique_lock<std::mutex>(mutex_);
     signal_ = false;
+  }
+
+  WaitResult Wait(std::chrono::milliseconds timeout) override {
+    if (manual_reset_) {
+      return PosixConditionBase::Wait(timeout);
+    }
+#if REX_PLATFORM_LINUX
+    auto native_mutex = static_cast<pthread_mutex_t*>(mutex_.native_handle());
+    int lock_result = pthread_mutex_lock(native_mutex);
+    if (lock_result == EOWNERDEAD) {
+      pthread_mutex_consistent(native_mutex);
+    } else if (lock_result != 0) {
+      return WaitResult::kFailed;
+    }
+    std::unique_lock<std::mutex> lock(mutex_, std::adopt_lock);
+#else
+    std::unique_lock<std::mutex> lock(mutex_);
+#endif
+    if (signal_) {
+      signal_ = false;
+      return WaitResult::kSuccess;
+    }
+
+    const uint64_t ticket = next_ticket_++;
+    queued_.push_back(ticket);
+    auto handed = [this, ticket] {
+      return std::find(granted_.begin(), granted_.end(), ticket) != granted_.end();
+    };
+    bool executed;
+    if (timeout == std::chrono::milliseconds::max()) {
+      cond_.wait(lock, handed);
+      executed = true;
+    } else {
+      executed = cond_.wait_for(lock, timeout, handed);
+    }
+
+    if (executed) {
+      granted_.erase(std::find(granted_.begin(), granted_.end(), ticket));
+      return WaitResult::kSuccess;
+    }
+    queued_.erase(std::find(queued_.begin(), queued_.end(), ticket));
+    return WaitResult::kTimeout;
   }
 
  private:
@@ -518,6 +575,11 @@ class PosixCondition<Event> : public PosixConditionBase {
   }
   bool signal_;
   const bool manual_reset_;
+  /// Tickets of the threads blocked in Wait, oldest first; a signal goes to the front one.
+  std::deque<uint64_t> queued_;
+  /// Tickets handed a signal and not yet woken to take it.
+  std::vector<uint64_t> granted_;
+  uint64_t next_ticket_ = 0;
 };
 
 template <>

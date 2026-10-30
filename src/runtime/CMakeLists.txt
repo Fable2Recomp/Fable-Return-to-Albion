@@ -48,6 +48,9 @@ add_library(refii_runtime SHARED
     # The movie the guest states: a title's Bink hooks write it, the host bridge's movie
     # exports read it.
     ${REFII_RUNTIME_ROOT}/src/core/movie_state.cpp
+    # The camera a title states and the host's world-build hold, between its hooks and its
+    # host bridge.
+    ${REFII_RUNTIME_ROOT}/src/core/stated_view.cpp
 )
 target_include_directories(refii_runtime
     PUBLIC

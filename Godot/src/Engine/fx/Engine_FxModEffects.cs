@@ -685,7 +685,7 @@ public static class Engine_FxModEffects
 	{
 		var found = new List<(string Path, string Text)>();
 		string source = !string.IsNullOrEmpty(overlay.PackagePath) ? overlay.PackagePath : overlay.AssetRoot;
-		if (File.Exists(source) && source.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+		if (File.Exists(source) && Refii.Core.Engine_Title.IsModPackagePath(source))
 		{
 			if (!F2ModPackage.TryOpen(source, out F2ModPackage? package, out string error) || package is null)
 			{

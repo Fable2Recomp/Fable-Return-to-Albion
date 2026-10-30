@@ -1097,8 +1097,15 @@ public partial class Engine_GameAssets : Node
 			return string.Empty;
 		}
 
-		return path.StartsWith(PathPrefix, StringComparison.OrdinalIgnoreCase)
+		string bare = path.StartsWith(PathPrefix, StringComparison.OrdinalIgnoreCase)
 			? path[PathPrefix.Length..]
 			: path;
+
+		// This mount is the active title's: its own prefix is a bare path, and another title's
+		// prefix stays on and so resolves to nothing here.
+		return Refii.Core.Engine_TitlePath.TrySplit(bare, out Refii.Core.Engine_Title title, out string rest) &&
+			title == Refii.Core.Engine_Title.Active
+				? rest
+				: bare;
 	}
 }

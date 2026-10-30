@@ -120,6 +120,13 @@ public static class Engine_GmdWriter
         Engine_GmdSkeleton? template,
         IReadOnlyList<GmdAttachment> attachments)
     {
+        // Fable 2's layout only. A Fable 3 template states its nodes as hashes behind a different
+        // header, and writing those as Fable 2 name strings would produce a file neither title reads.
+        if (template is { NodesAreHashed: true })
+        {
+            throw new NotSupportedException("Engine_GmdWriter writes Fable 2's GameMesh layout; this template is Fable 3's");
+        }
+
         using var ms = new MemoryStream();
 
         // 1. 44-byte Header (0x00..0x2B): "GameMesh", version = 3, and 32-byte LOD metadata

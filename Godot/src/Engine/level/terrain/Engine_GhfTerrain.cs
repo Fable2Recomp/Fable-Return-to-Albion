@@ -54,6 +54,16 @@ public static class Engine_GhfTerrain
 
     public const int CellStride = 14;
 
+    /// <summary>Where each 14-byte cell keeps its height: the first word in Fable 2's files.</summary>
+    /// <remarks>
+    /// FABLE 3 MOVED IT TO +8. Same header, same 14-byte stride, but the cell leads with a u16, a
+    /// u32 and a u16 before the height (a census of bowerstonecastle's 673x481 field: every cell
+    /// at +8 is finite, 3.0..117.8; at +0, 998 cells are garbage such as -6.2e26). The header
+    /// states no version, so the title the bytes came from says which layout they are.
+    /// </remarks>
+    public static int HeightOffsetFor(Refii.Core.Engine_Title title) =>
+        title == Refii.Core.Engine_Title.Fable3 ? 8 : 0;
+
     /// <summary>World units between adjacent heightfield samples. Half a unit.</summary>
     /// <remarks>
     /// THIS SETS THE WORLD SCALE FOR EVERYTHING, so it is worth more than a bare literal — terrain
@@ -82,7 +92,10 @@ public static class Engine_GhfTerrain
     public const float CellSize = 0.5f;
 
 
-    public static bool TryDecode(byte[] bankBytes, out GhfHeights heights, out string error)
+    public static bool TryDecode(byte[] bankBytes, out GhfHeights heights, out string error) =>
+        TryDecode(bankBytes, Refii.Core.Engine_Title.Active, out heights, out error);
+
+    public static bool TryDecode(byte[] bankBytes, Refii.Core.Engine_Title title, out GhfHeights heights, out string error)
     {
         heights = null!;
         error = string.Empty;
@@ -126,6 +139,7 @@ public static class Engine_GhfTerrain
         }
 
         long cells = (long)width * height;
+        int heightAt = HeaderSize + HeightOffsetFor(title);
         long need = HeaderSize + (cells * CellStride);
         if (raw.Length < need)
         {
@@ -142,7 +156,7 @@ public static class Engine_GhfTerrain
         // data is not. That is why the check is explicit rather than inferred from the range.
         for (long i = 0; i < cells; i++)
         {
-            float value = ReadF32(raw, (int)(HeaderSize + (i * CellStride)));
+            float value = ReadF32(raw, (int)(heightAt + (i * CellStride)));
             if (!IsSane(value))
             {
                 error = $"cell {i:N0} of {cells:N0} is {value}";

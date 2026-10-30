@@ -45,7 +45,7 @@ public class ModBundledTests
             string mods = Path.Combine(root, "mods");
             string package = Path.Combine(mods, "demo.f2mod");
 
-            AssertThat(ModBundled.Install(Path.Combine(root, "src"), mods)[0]).Contains("installed");
+            AssertThat(ModBundled.Install(Path.Combine(root, "src"), mods, ".f2mod")[0]).Contains("installed");
             AssertThat(F2ModPackage.TryOpen(package, out F2ModPackage? packed, out _)).IsTrue();
             using (packed!)
             {
@@ -54,15 +54,15 @@ public class ModBundledTests
                 AssertThat(packed.TryGetEntry("mod/init.lua", out _)).IsTrue();
             }
 
-            AssertThat(ModBundled.Install(Path.Combine(root, "src"), mods)[0]).Contains("current");
+            AssertThat(ModBundled.Install(Path.Combine(root, "src"), mods, ".f2mod")[0]).Contains("current");
 
             File.WriteAllText(Path.Combine(tree, "mod", "init.lua"), "Demo = 2\n");
-            AssertThat(ModBundled.Install(Path.Combine(root, "src"), mods)[0]).Contains("installed");
+            AssertThat(ModBundled.Install(Path.Combine(root, "src"), mods, ".f2mod")[0]).Contains("installed");
 
             // An edit in the Mod Studio: the next update must not overwrite it.
             F2ModPackage.IncrementalSync(package, new[] { ("mod/extra.lua", new byte[] { 1 }) });
             File.WriteAllText(Path.Combine(tree, "mod", "init.lua"), "Demo = 3\n");
-            AssertThat(ModBundled.Install(Path.Combine(root, "src"), mods)[0]).Contains("left alone");
+            AssertThat(ModBundled.Install(Path.Combine(root, "src"), mods, ".f2mod")[0]).Contains("left alone");
         }
         finally
         {
@@ -84,7 +84,7 @@ public class ModBundledTests
                 "demo/mod.toml\ndemo/README.md\ndemo/mod/init.lua\n");
             string mods = Path.Combine(root, "mods");
 
-            AssertThat(ModBundled.Install(Path.Combine(root, "src"), mods)[0]).Contains("installed");
+            AssertThat(ModBundled.Install(Path.Combine(root, "src"), mods, ".f2mod")[0]).Contains("installed");
             AssertThat(F2ModPackage.TryOpen(Path.Combine(mods, "demo.f2mod"), out F2ModPackage? packed, out _)).IsTrue();
             using (packed!)
             {

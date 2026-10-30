@@ -32,6 +32,11 @@ namespace Refii.Models;
 ///         volume: both per draw, both 1 and 0 here until the frame feed carries them.
 /// Entries are found by token set; a missing permutation steps UP to a superset, as the guest's
 /// own fallback does.
+///
+/// FABLE 3 SELECTS BY ITS OWN TABLES. Its standard, tree and repeated families carry the bank's
+/// Fable 3 axes as tokens (LGHTS, MIST, AMB, SP, ...) and resolve through the guest's index rule
+/// to one exact entry, specialised or _ANY (Engine_ClassicTokensFable3); an _ANY pair reads the
+/// axes from the pixel booleans and the light loop, which every Fable 3 pass sets.
 /// </remarks>
 public static class Engine_ClassicMaterial
 {
@@ -235,6 +240,64 @@ public static class Engine_ClassicMaterial
     }
 
     /// <summary>
+    /// The entry a family's tokens draw with. Under Fable 3 the guest's own table decides
+    /// (Engine_ClassicTokensFable3: an exact entry, or none); otherwise the nearest superset.
+    /// </summary>
+    private static string Find(string stage, string family, IReadOnlyCollection<string> tokens)
+    {
+        if (Engine_ClassicTokensFable3.Active && Engine_ClassicTokensFable3.Handles(family))
+        {
+            string entry = Engine_ClassicTokensFable3.Entry(stage, family, tokens);
+            return entry.Length != 0 && Engine_ClassicShaders.HasEntry(entry) ? entry : string.Empty;
+        }
+        return Engine_ClassicShaders.FindEntry(stage, family, tokens);
+    }
+
+    /// <summary>Fable 3 draws this family through its own selection table.</summary>
+    private static bool Fable3Selected(ShaderMaterial material) =>
+        Engine_ClassicTokensFable3.Active &&
+        Engine_ClassicTokensFable3.Handles(material.GetMeta(FamilyMeta, "STANDARDMATERIAL").AsString());
+
+    /// <summary>
+    /// A Fable 3 material's base draw as tokens (Engine_ClassicTokensFable3 states each axis and
+    /// its source). The base is one light and no mist, as Fable 2's base is BLT1 MIST0; the light
+    /// groups re-key both. The axes the owner states per placement and nothing here feeds yet —
+    /// colour morph (owner+0xD4), static specular (owner+0x2E0), SH lights (owner+0x250), the
+    /// repeated item's collision byte (+0x1F) and the repeated material's wind byte (+338) —
+    /// are 0, and the ambient is the mesh's own (<see cref="Engine_ClassicTokensFable3.AmbientFor"/>,
+    /// unlit by a lightmap: a lightmapped placement re-keys to AMB3 through <see cref="WithAmbient"/>).
+    /// </summary>
+    private static string Fable3Tokens(MdlMaterial material, MdlInfo? info,
+        out List<string> pixelTokens, out List<string> vertexTokens)
+    {
+        string family = Engine_ClassicTokensFable3.FamilyFor(material, info);
+        int ambient = Engine_ClassicTokensFable3.AmbientFor(info?.GlobalLightingMode ?? 0, false);
+        bool specular = Engine_ClassicTokensFable3.SpecularStated(material);
+        switch (family)
+        {
+            case Engine_ClassicTokensFable3.Tree:
+                // A trunk's specular is the texture's alone (0x8221BB8C..0x8221BBAC), which the
+                // white default always fills.
+                pixelTokens = Engine_ClassicTokensFable3.TreePixelTokens(ambient, 1, false, true, material.CanopyFlag);
+                vertexTokens = Engine_ClassicTokensFable3.TreeVertexTokens(ambient, 1, true, material.CanopyFlag);
+                break;
+            case Engine_ClassicTokensFable3.Repeated:
+                // NRM: the normal slot, never empty (`sub_82C7D430`'s flat default).
+                bool grass = info is { GlobalLightingMode: 4 };
+                pixelTokens = Engine_ClassicTokensFable3.RepeatedPixelTokens(1, false, grass, true);
+                vertexTokens = Engine_ClassicTokensFable3.RepeatedVertexTokens(false, grass, true, false);
+                break;
+            default:
+                pixelTokens = Engine_ClassicTokensFable3.StandardPixelTokens(
+                    ambient, 1, false, false, specular, false, false, material.FresnelClass,
+                    material.SelfIllumination.Length != 0, material.EnvironmentMap.Length != 0);
+                vertexTokens = Engine_ClassicTokensFable3.StandardVertexTokens(ambient, false, specular);
+                break;
+        }
+        return family;
+    }
+
+    /// <summary>
     /// The classic renderer is on: the lighting model is "classic" and the player's translated
     /// shaders are present. Without the shaders, "classic" is the authored-ambient model over the
     /// modern materials, which is what it was before the shaders existed.
@@ -260,76 +323,99 @@ public static class Engine_ClassicMaterial
         // `sub_82A9E670`: a zero hash takes the default), so the presence mask `sub_82AA04A0`
         // builds always holds bits 1, 2 and 4: every model surface draws on the NRM1 SP
         // permutation, a missing map reading the default. Only the other four slots can be absent.
+        bool fable3 = Engine_ClassicTokensFable3.Active;
+        if (fable3)
+        {
+            // FABLE 3'S EMPTY SLOTS (`sub_82CBA610`): an empty diffuse or specular name takes the
+            // 16x16 default `sub_82182B70` fills with 0xFF bytes, white; an empty normal the flat
+            // default `sub_82C7D430` (the same bytes as Fable 2's).
+            if (albedo is null && material.Diffuse.Length == 0)
+            {
+                albedo = White();
+            }
+            specular ??= White();
+        }
         albedo ??= DefaultDiffuse();
         specular ??= DefaultSpecular();
         normal ??= DefaultNormal();
-        bool hasNormal = true;
-        bool hasSpecular = true;
-        bool hasSecondaryDiffuse = material.ShaderParams.Length > 0 && material.ShaderParams[0].Length != 0;
-        bool hasLightmap = info is not null && info.LightmapUvs.Length > 0 && info.SkinnedCount == 0;
 
-        // The draw key, then the family key, as tokens. Pixel and vertex shaders of one set
-        // share the family key; the draw key names the light group and the mist.
-        var pixelTokens = new List<string> { "BLT1", "GLT1", "MIST0" };
-        var vertexTokens = new List<string> { "BLT1", "GLT1", "MIST0" };
-        if (hasNormal)
+        List<string> pixelTokens, vertexTokens;
+        string family;
+        bool wind = false;
+        if (fable3)
         {
-            pixelTokens.Add("NRM1");
-            vertexTokens.Add("NRM1");
+            family = Fable3Tokens(material, info, out pixelTokens, out vertexTokens);
         }
-        // Sp is 1, or 2 when the specular texture's header flags carry 0x80 (texture-set +155,
-        // `sub_82AA04A0` 0x82AA04F4); the default specular's flags are 0.
-        if (hasSpecular && hasNormal)
+        else
         {
-            int specularFlags = material.Specular.Length != 0
-                ? Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Specular, Engine_BnkMeshLoader.ReadBytes)
-                : 0;
-            pixelTokens.Add((specularFlags & 0x80) != 0 ? "SP2" : "SP1");
-        }
-        if (hasSecondaryDiffuse)
-        {
-            pixelTokens.Add("SDIF1");
-        }
-        string family = FamilyFor(material, info, pixelTokens, vertexTokens);
-        // The repeated family ships no specular or secondary-diffuse permutations (the bank has
-        // NRM1, GRASS1, WIND1, COLL1 only), and no ambient ones: its instances carry their
-        // bake as the instance colour.
-        bool wind = family == "REPEATEDMATERIAL" && info is { MovementMode: 1 };
-        if (family == "REPEATEDMATERIAL")
-        {
-            pixelTokens.Remove("SP1");
-            pixelTokens.Remove("SP2");
-            pixelTokens.Remove("SDIF1");
-            // NormalParams_Wind: the header's movement byte is 1 (`sub_82B35990`). The vertex
-            // stage only; no pixel shader varies with it.
-            if (wind)
+            bool hasNormal = true;
+            bool hasSpecular = true;
+            bool hasSecondaryDiffuse = material.ShaderParams.Length > 0 && material.ShaderParams[0].Length != 0;
+            bool hasLightmap = info is not null && info.LightmapUvs.Length > 0 && info.SkinnedCount == 0;
+
+            // The draw key, then the family key, as tokens. Pixel and vertex shaders of one set
+            // share the family key; the draw key names the light group and the mist.
+            pixelTokens = new List<string> { "BLT1", "GLT1", "MIST0" };
+            vertexTokens = new List<string> { "BLT1", "GLT1", "MIST0" };
+            if (hasNormal)
             {
-                vertexTokens.Add("WIND1");
+                pixelTokens.Add("NRM1");
+                vertexTokens.Add("NRM1");
             }
-        }
-        if (family == "TREEMATERIAL")
-        {
-            // The tree key (`Render_TreeMaterial_Key` 0x82B17F50) is Nrm | Sp<<1 | Trunk<<2 |
-            // Amb<<3: one specular bit and no secondary diffuse. Asked for SP2 or SDIF1 the bank
-            // had no tree pair and the modern material drew the tree.
-            pixelTokens.Remove("SDIF1");
-            if (pixelTokens.Remove("SP2"))
+            // Sp is 1, or 2 when the specular texture's header flags carry 0x80 (texture-set +155,
+            // `sub_82AA04A0` 0x82AA04F4); the default specular's flags are 0.
+            if (hasSpecular && hasNormal)
             {
-                pixelTokens.Add("SP1");
+                int specularFlags = material.Specular.Length != 0
+                    ? Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Specular, Engine_BnkMeshLoader.ReadBytes)
+                    : 0;
+                pixelTokens.Add((specularFlags & 0x80) != 0 ? "SP2" : "SP1");
             }
-            // A tree takes no .lmp bake (`Render_StaticMesh_ResolveLmpBake` 0x82222F70 has the
-            // static mesh draw as its only caller), so `sub_82219978` gives it AMB2 when the
-            // submesh carries radiance transfer (submesh+124 > 0) and the level has probes. The
-            // shipped trees draw lit at night (warm canopies under a blue ambient), so they take
-            // AMB2; our reader states no transfer for them (ShDescriptor empty), which is the
-            // reader's gap, not the trees'.
-            vertexTokens.Add("AMB2");
-            pixelTokens.Add("AMB2");
-        }
-        else if (hasLightmap && family != "REPEATEDMATERIAL")
-        {
-            vertexTokens.Add("AMB3");
-            pixelTokens.Add("AMB3");
+            if (hasSecondaryDiffuse)
+            {
+                pixelTokens.Add("SDIF1");
+            }
+            family = FamilyFor(material, info, pixelTokens, vertexTokens);
+            // The repeated family ships no specular or secondary-diffuse permutations (the bank has
+            // NRM1, GRASS1, WIND1, COLL1 only), and no ambient ones: its instances carry their
+            // bake as the instance colour.
+            wind = family == "REPEATEDMATERIAL" && info is { MovementMode: 1 };
+            if (family == "REPEATEDMATERIAL")
+            {
+                pixelTokens.Remove("SP1");
+                pixelTokens.Remove("SP2");
+                pixelTokens.Remove("SDIF1");
+                // NormalParams_Wind: the header's movement byte is 1 (`sub_82B35990`). The vertex
+                // stage only; no pixel shader varies with it.
+                if (wind)
+                {
+                    vertexTokens.Add("WIND1");
+                }
+            }
+            if (family == "TREEMATERIAL")
+            {
+                // The tree key (`Render_TreeMaterial_Key` 0x82B17F50) is Nrm | Sp<<1 | Trunk<<2 |
+                // Amb<<3: one specular bit and no secondary diffuse. Asked for SP2 or SDIF1 the bank
+                // had no tree pair and the modern material drew the tree.
+                pixelTokens.Remove("SDIF1");
+                if (pixelTokens.Remove("SP2"))
+                {
+                    pixelTokens.Add("SP1");
+                }
+                // A tree takes no .lmp bake (`Render_StaticMesh_ResolveLmpBake` 0x82222F70 has the
+                // static mesh draw as its only caller), so `sub_82219978` gives it AMB2 when the
+                // submesh carries radiance transfer (submesh+124 > 0) and the level has probes. The
+                // shipped trees draw lit at night (warm canopies under a blue ambient), so they take
+                // AMB2; our reader states no transfer for them (ShDescriptor empty), which is the
+                // reader's gap, not the trees'.
+                vertexTokens.Add("AMB2");
+                pixelTokens.Add("AMB2");
+            }
+            else if (hasLightmap && family != "REPEATEDMATERIAL")
+            {
+                vertexTokens.Add("AMB3");
+                pixelTokens.Add("AMB3");
+            }
         }
 
         // THE TEXTURE STATES THE ALPHA, not the material (`sub_82AA04A0`): the diffuse header's
@@ -342,13 +428,15 @@ public static class Engine_ClassicMaterial
             ? Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Diffuse, Engine_BnkMeshLoader.ReadBytes)
             : 0;
         bool translucent = standard && (textureFlags & 0x80) != 0;
-        if (standard)
+        // Fable 3's standard family has no screen-shadow axis: the opaque and the blended draw
+        // share one pair.
+        if (standard && !fable3)
         {
             pixelTokens.Add("SCR1");
         }
 
-        string pixel = Engine_ClassicShaders.FindEntry("PSHADER", family, pixelTokens);
-        string vertex = Engine_ClassicShaders.FindEntry("VSHADER", family, vertexTokens);
+        string pixel = Find("PSHADER", family, pixelTokens);
+        string vertex = Find("VSHADER", family, vertexTokens);
         if (pixel.Length == 0 || vertex.Length == 0)
         {
             if (!_reportedMissing)
@@ -498,6 +586,12 @@ public static class Engine_ClassicMaterial
             booleans |= 1u << (16 + 5);
         }
         result.SetShaderParameter("xr_booleans", booleans);
+        if (fable3)
+        {
+            // Fable 3 numbers its pixel booleans differently, and an _ANY stage reads its axes
+            // from them and from the light loop (Engine_ClassicTokensFable3).
+            ApplyFable3Axes(result, pixelTokens);
+        }
         if (standard)
         {
             // ALPHATESTENABLE = texture-set +152, ALPHAREF = 128 for a cutout-only texture
@@ -708,8 +802,8 @@ public static class Engine_ClassicMaterial
         string pixel = Retoken(classic.GetMeta(PixelTokensMeta).AsString(), ambient, out List<string> pixelTokens);
         string vertex = Retoken(classic.GetMeta(VertexTokensMeta).AsString(), ambient, out List<string> vertexTokens);
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-        string pixelEntry = Engine_ClassicShaders.FindEntry("PSHADER", family, pixelTokens);
-        string vertexEntry = Engine_ClassicShaders.FindEntry("VSHADER", family, vertexTokens);
+        string pixelEntry = Find("PSHADER", family, pixelTokens);
+        string vertexEntry = Find("VSHADER", family, vertexTokens);
         if (pixelEntry.Length == 0 || vertexEntry.Length == 0)
         {
             return null;
@@ -753,6 +847,10 @@ public static class Engine_ClassicMaterial
         AmbientBindTicks += t4 - t3;
         result.SetMeta(PixelTokensMeta, pixel);
         result.SetMeta(VertexTokensMeta, vertex);
+        if (Fable3Selected(classic))
+        {
+            ApplyFable3Axes(result, pixelTokens);
+        }
         if (extraDefine.Length != 0)
         {
             // The light groups derive from this one: they compose with its defines.
@@ -863,7 +961,13 @@ public static class Engine_ClassicMaterial
         out bool fresh)
     {
         fresh = false;
-        int blt = singleLocal ? 2 : BltByCount[Math.Clamp(lightCount, 0, 7)];
+        // Fable 3 keys its pairs on the group's block count (Engine_ClassicTokensFable3.GroupCount,
+        // the value Engine_ClassicLitInstances.Fable3GroupOf reports per instance), not on the
+        // points/spots/total key word.
+        bool fable3 = Fable3Selected(source);
+        int blt = fable3
+            ? Engine_ClassicTokensFable3.GroupCount(lightCount, singleLocal)
+            : singleLocal ? 2 : BltByCount[Math.Clamp(lightCount, 0, 7)];
         string key = $"{blt}:{pass}:{mist?.Viewport?.GetInstanceId() ?? 0UL}:{tail}";
         Godot.Collections.Dictionary? variants = source.HasMeta(GroupVariantsMeta)
             ? source.GetMeta(GroupVariantsMeta).AsGodotDictionary()
@@ -942,6 +1046,10 @@ public static class Engine_ClassicMaterial
             result.SetShaderParameter("ps_g_MistDensitySampler", mist.Density64);
             result.SetShaderParameter("ps_g_MistHeightSampler", Engine_ClassicMist.FlatHeight);
         }
+        if (fable3)
+        {
+            ApplyFable3Axes(result, pixel.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        }
         if (variants is null)
         {
             variants = new Godot.Collections.Dictionary();
@@ -990,11 +1098,11 @@ public static class Engine_ClassicMaterial
             return source;
         }
         string family = shader.GetMeta(FamilyMeta, "STANDARDMATERIAL").AsString();
-        string pixelEntry = Engine_ClassicShaders.FindEntry("PSHADER", family,
+        string pixelEntry = Find("PSHADER", family,
             shader.GetMeta(PixelTokensMeta).AsString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
         string vertexEntry = shader.HasMeta(VertexEntryMeta)
             ? shader.GetMeta(VertexEntryMeta).AsString()
-            : Engine_ClassicShaders.FindEntry("VSHADER", family,
+            : Find("VSHADER", family,
                 shader.GetMeta(VertexTokensMeta).AsString().Split(' ', StringSplitOptions.RemoveEmptyEntries));
         Shader? composed = pixelEntry.Length == 0 || vertexEntry.Length == 0 ? null : Engine_ClassicShaders.Compose(
             vertexEntry, pixelEntry, renderMode.Replace("cull_back", "cull_disabled").Replace("cull_front", "cull_disabled"),
@@ -1040,10 +1148,10 @@ public static class Engine_ClassicMaterial
         string family = source.GetMeta(FamilyMeta, "STANDARDMATERIAL").AsString();
         string[] pixelTokens = source.GetMeta(PixelTokensMeta).AsString().Split(' ', StringSplitOptions.RemoveEmptyEntries);
         string[] vertexTokens = source.GetMeta(VertexTokensMeta).AsString().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        string pixelEntry = Engine_ClassicShaders.FindEntry("PSHADER", family, pixelTokens);
+        string pixelEntry = Find("PSHADER", family, pixelTokens);
         string vertexEntry = source.HasMeta(VertexEntryMeta)
             ? source.GetMeta(VertexEntryMeta).AsString()
-            : Engine_ClassicShaders.FindEntry("VSHADER", family, vertexTokens);
+            : Find("VSHADER", family, vertexTokens);
         if (pixelEntry.Length == 0 || vertexEntry.Length == 0)
         {
             return null;
@@ -1145,7 +1253,7 @@ public static class Engine_ClassicMaterial
         var tokens = new List<string>(pixelTokens);
         tokens.Remove("SCR1");
         string family = opaque.GetMeta(FamilyMeta).AsString();
-        string pixel = Engine_ClassicShaders.FindEntry("PSHADER", family, tokens);
+        string pixel = Find("PSHADER", family, tokens);
         if (pixel.Length == 0)
         {
             return null;
@@ -1163,6 +1271,14 @@ public static class Engine_ClassicMaterial
         glass.SetMeta(PixelTokensMeta, string.Join(' ', tokens));
         glass.SetMeta(RenderModeMeta, mode);
         glass.SetShaderParameter("xr_spec_constants", 0u);
+        if (Fable3Selected(opaque))
+        {
+            // The transparent draw raises pixel bool 6, g_IsTransparent (`sub_82210CD8`
+            // 0x82210F30: ori 0x40 when the item's flags carry bit 2).
+            glass.SetShaderParameter("xr_booleans",
+                Engine_ClassicTokensFable3.PixelBoolean(Engine_ClassicTokensFable3.IsTransparent));
+            ApplyFable3Axes(glass, tokens);
+        }
         return glass;
     }
 
@@ -1218,6 +1334,22 @@ public static class Engine_ClassicMaterial
         // per pixel, the other way round. Every other family takes the BLT in both.
         vertexEntry = pixelEntry = string.Empty;
         string family = source.GetMeta(FamilyMeta, "STANDARDMATERIAL").AsString();
+        if (Fable3Selected(source))
+        {
+            // Fable 3: the count and the mist are axes of the guest's table in every family; the
+            // vertex stages have no mist axis.
+            List<string> groupPixel = Engine_ClassicTokensFable3.WithLights(
+                source.GetMeta(PixelTokensMeta).AsString().Split(' ', StringSplitOptions.RemoveEmptyEntries), blt, mist);
+            List<string> groupVertex = Engine_ClassicTokensFable3.WithLights(
+                source.GetMeta(VertexTokensMeta).AsString().Split(' ', StringSplitOptions.RemoveEmptyEntries), blt, null);
+            pixel = string.Join(' ', groupPixel);
+            vertex = string.Join(' ', groupVertex);
+            pixelEntry = Find("PSHADER", family, groupPixel);
+            vertexEntry = source.HasMeta(VertexEntryMeta)
+                ? source.GetMeta(VertexEntryMeta).AsString()
+                : Find("VSHADER", family, groupVertex);
+            return pixelEntry.Length != 0 && vertexEntry.Length != 0;
+        }
         string rawPixel = source.GetMeta(PixelTokensMeta).AsString();
         bool tree = family == "TREEMATERIAL";
         bool trunk = tree && rawPixel.Contains("TRUNK1", StringComparison.Ordinal);
@@ -1227,10 +1359,10 @@ public static class Engine_ClassicMaterial
         // its MIST0 vertex stage. Asking for MIST1 here found nothing and left every lit
         // instance inside a volume with neither its mist nor its light groups.
         vertex = RetokenBlt(source.GetMeta(VertexTokensMeta).AsString(), trunk ? 1 : blt, false, out List<string> vertexTokens);
-        pixelEntry = Engine_ClassicShaders.FindEntry("PSHADER", family, pixelTokens);
+        pixelEntry = Find("PSHADER", family, pixelTokens);
         vertexEntry = source.HasMeta(VertexEntryMeta)
             ? source.GetMeta(VertexEntryMeta).AsString()
-            : Engine_ClassicShaders.FindEntry("VSHADER", family, vertexTokens);
+            : Find("VSHADER", family, vertexTokens);
         if (tree && TrunkStage(pixelEntry) != trunk)
         {
             // A canopy must never take a trunk stage (eight varyings against six): no pair.
@@ -1240,7 +1372,7 @@ public static class Engine_ClassicMaterial
         {
             // A family whose vertex stage does not vary with the light count (the landscape
             // ships BLT1 vertex shaders only) keeps its BLT1 vertex shader under any group.
-            vertexEntry = Engine_ClassicShaders.FindEntry("VSHADER", family,
+            vertexEntry = Find("VSHADER", family,
                 RetokenBlt(vertex, 1, false, out List<string> _).Split(' ', StringSplitOptions.RemoveEmptyEntries));
         }
         return pixelEntry.Length != 0 && vertexEntry.Length != 0;
@@ -1278,7 +1410,7 @@ public static class Engine_ClassicMaterial
         int passes = source.HasMeta(SinglePassMeta) ? 1 : 3;
         string defines = source.GetMeta(DefinesMeta, string.Empty).AsString();
         int composed = 0;
-        foreach (int blt in WarmBlts)
+        foreach (int blt in Fable3Selected(source) ? Engine_ClassicTokensFable3.DistinctLightCounts : WarmBlts)
         {
             if (!ResolveGroupShader(source, blt, false, out string _, out string _, out string vertexEntry, out string pixelEntry))
             {
@@ -1296,6 +1428,34 @@ public static class Engine_ClassicMaterial
     }
 
     private static readonly int[] WarmBlts = { 1, 2, 4, 7 };
+
+    /// <summary>
+    /// A Fable 3 pass's run-time axes, which an _ANY stage reads: the pixel booleans for its
+    /// tokens (b0 follows the pass's mist) and the light loop. The loop is the DRAW's: the
+    /// tokens' LGHTS is the group's block count (<see cref="Engine_ClassicTokensFable3.GroupCount"/>,
+    /// the variant key of <see cref="ForLightGroup"/>), and `sub_82C9D8A8` writes it as
+    /// 0x10000 | (n + 3) / 4 — count ceil(n/4), start 0, step 1 — to PS integer constant 0
+    /// (device+0x27E0), g_GeneralLightBlockCount; the tree draw `sub_82C88628` writes the same word
+    /// to VS integer constant 1 (device+0x27A4), the tree LGHTS_ANY vertex stages' copy. Those are
+    /// the title's only integer constants named so, and a stage that declares neither ignores
+    /// them. A transparent draw's b6 stays.
+    /// </summary>
+    private static void ApplyFable3Axes(ShaderMaterial material, IReadOnlyCollection<string> pixelTokens)
+    {
+        uint transparent = Engine_ClassicTokensFable3.PixelBoolean(Engine_ClassicTokensFable3.IsTransparent);
+        Variant held = material.GetShaderParameter("xr_booleans");
+        uint kept = held.VariantType == Variant.Type.Int ? held.AsUInt32() & transparent : 0u;
+        material.SetShaderParameter("xr_booleans", Engine_ClassicTokensFable3.Booleans(pixelTokens) | kept);
+        var loop = new Vector4I(Engine_ClassicTokensFable3.LightBlocks(Engine_ClassicTokensFable3.Lights(pixelTokens)), 0, 1, 0);
+        material.SetShaderParameter(PixelLightBlocks, loop);
+        material.SetShaderParameter(VertexLightBlocks, loop);
+    }
+
+    // The translator names a loop uniform after the microcode's loop id, and the pixel stage's
+    // integer constants sit at ids 16..31: every Fable 3 LGHTS_ANY pixel shader loops on i16
+    // (PS i0, device+0x27E0), every vertex one on i1 (device+0x27A4).
+    private static readonly StringName PixelLightBlocks = "ps_i16";
+    private static readonly StringName VertexLightBlocks = "vs_i1";
 
     private static bool TrunkStage(string entry) => entry.Contains("_TRUNK1", StringComparison.Ordinal);
 

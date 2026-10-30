@@ -1986,10 +1986,10 @@ public static partial class EditorModValueService
         }
         catch (Exception ex)
         {
-            SafeWarn($"[mod_values] Failed to auto-sync .f2mod package for '{modName}': {ex.Message}");
+            SafeWarn($"[mod_values] Failed to auto-sync {Refii.Core.Engine_Title.Active.ModExtension} package for '{modName}': {ex.Message}");
         }
 
-        SafeLog($"[mod_values] Saved overrides for '{detail.Label}' [0x{detail.RecordHash:X8}] to mod '{modName}' (.f2mod)");
+        SafeLog($"[mod_values] Saved overrides for '{detail.Label}' [0x{detail.RecordHash:X8}] to mod '{modName}' ({Refii.Core.Engine_Title.Active.ModExtension})");
 
         // 3. HOT-RELOAD IN-MEMORY OVERLAYS AND REFRESH SCENE NODES
         Engine_GameGdb.Invalidate();
@@ -2298,10 +2298,10 @@ public static partial class EditorModValueService
         }
         catch (Exception ex)
         {
-            SafeWarn($"[mod_values] Failed to auto-sync .f2mod package for '{modName}': {ex.Message}");
+            SafeWarn($"[mod_values] Failed to auto-sync {Refii.Core.Engine_Title.Active.ModExtension} package for '{modName}': {ex.Message}");
         }
 
-        SafeLog($"[mod_values] Saved node/component overrides for [0x{targetNodeHash:X8}] to mod '{modName}' (.f2mod)");
+        SafeLog($"[mod_values] Saved node/component overrides for [0x{targetNodeHash:X8}] to mod '{modName}' ({Refii.Core.Engine_Title.Active.ModExtension})");
 
         Engine_GameGdb.Invalidate();
         Refii.Equipment.Engine_WeaponIndex.Invalidate();
@@ -3364,10 +3364,10 @@ public static partial class EditorModValueService
         }
         catch (Exception ex)
         {
-            SafeWarn($"[mod_values] Failed to auto-sync .f2mod package on revert for '{modName}': {ex.Message}");
+            SafeWarn($"[mod_values] Failed to auto-sync {Refii.Core.Engine_Title.Active.ModExtension} package on revert for '{modName}': {ex.Message}");
         }
 
-        SafeLog($"[mod_values] Reverted overrides for '{detail.Label}' [0x{detail.RecordHash:X8}] in mod '{modName}' (.f2mod)");
+        SafeLog($"[mod_values] Reverted overrides for '{detail.Label}' [0x{detail.RecordHash:X8}] in mod '{modName}' ({Refii.Core.Engine_Title.Active.ModExtension})");
 
         // Hot-reload in-memory overlays and refresh scene nodes:
         Engine_GameGdb.Invalidate();
@@ -4976,7 +4976,7 @@ public static partial class EditorModValueService
                 }
                 catch (Exception ex)
                 {
-                    error = $"Failed to remove ORM textures from .f2mod: {ex.Message}";
+                    error = $"Failed to remove ORM textures from {Refii.Core.Engine_Title.Active.ModExtension}: {ex.Message}";
                     return false;
                 }
 
@@ -5056,7 +5056,7 @@ public static partial class EditorModValueService
             }
             catch (Exception ex)
             {
-                error = $"Failed to write ORM texture and patched model to .f2mod: {ex.Message}";
+                error = $"Failed to write ORM texture and patched model to {Refii.Core.Engine_Title.Active.ModExtension}: {ex.Message}";
                 return false;
             }
 
@@ -5177,7 +5177,7 @@ public static partial class EditorModValueService
         }
         catch (Exception ex)
         {
-            error = $"Failed to write patched model and texture to .f2mod: {ex.Message}";
+            error = $"Failed to write patched model and texture to {Refii.Core.Engine_Title.Active.ModExtension}: {ex.Message}";
             return false;
         }
 

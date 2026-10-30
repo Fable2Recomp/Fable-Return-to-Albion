@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.IO.Compression;
+using Refii.Core;
 
 namespace Refii.Level;
 
@@ -23,7 +24,15 @@ public static class Engine_EhfHeights
     private const int HeaderLength = 63;
     private const uint TexMagic = 0xFFFFFFFEu;
 
-    public static bool TryDecode(byte[] ehf, out GhfHeights heights, out string error)
+    public static bool TryDecode(byte[] ehf, out GhfHeights heights, out string error) =>
+        TryDecode(ehf, Engine_Title.Active, out heights, out error);
+
+    /// <remarks>
+    /// Fable 3 lays each texture behind a length word as a v4 .tex (`Engine_EhfBody.TryReadFable3Blob`).
+    /// The height texture is the same tiled L16 (format 24: 0x28000158 in both titles' format
+    /// tables) with the same [uncompressed][compressed] zlib payload, read straight after the header.
+    /// </remarks>
+    public static bool TryDecode(byte[] ehf, Engine_Title title, out GhfHeights heights, out string error)
     {
         heights = new GhfHeights();
         error = string.Empty;
@@ -52,19 +61,45 @@ public static class Engine_EhfHeights
         }
 
         int heightAt = (int)bodyOffset;
-        if (!TryBlobEnd(ehf, heightAt, bodyEnd, out long normalsAt) ||
-            !TryBlobEnd(ehf, (int)normalsAt, bodyEnd, out long scaleAt) ||
-            scaleAt + 4 > bodyEnd)
+        long scaleAt;
+        uint width;
+        uint height;
+        uint pixelFormat;
+        long table;
+        if (title == Engine_Title.Fable3)
         {
-            error = "could not walk the leading textures";
-            return false;
+            if (!Engine_EhfBody.TryReadFable3Blob(ehf, heightAt, bodyEnd, out EhfTexBlob heightBlob, out _) ||
+                !Engine_EhfBody.TryReadFable3Blob(ehf, heightBlob.End, bodyEnd, out EhfTexBlob normalBlob, out _) ||
+                normalBlob.End + 4 > bodyEnd)
+            {
+                error = "could not walk the leading textures";
+                return false;
+            }
+
+            scaleAt = normalBlob.End;
+            width = (uint)heightBlob.Width;
+            height = (uint)heightBlob.Height;
+            pixelFormat = (uint)heightBlob.PixelFormat;
+            table = heightBlob.Data;
+        }
+        else
+        {
+            if (!TryBlobEnd(ehf, heightAt, bodyEnd, out long normalsAt) ||
+                !TryBlobEnd(ehf, (int)normalsAt, bodyEnd, out scaleAt) ||
+                scaleAt + 4 > bodyEnd)
+            {
+                error = "could not walk the leading textures";
+                return false;
+            }
+
+            width = ReadU32(ehf, heightAt + 0x10);
+            height = ReadU32(ehf, heightAt + 0x14);
+            pixelFormat = ReadU32(ehf, heightAt + 0x18);
+            uint metaSize = ReadU32(ehf, heightAt + 0x20);
+            table = heightAt + metaSize;
         }
 
         float scale = ReadF32(ehf, (int)scaleAt);
-        uint width = ReadU32(ehf, heightAt + 0x10);
-        uint height = ReadU32(ehf, heightAt + 0x14);
-        uint pixelFormat = ReadU32(ehf, heightAt + 0x18);
-        uint metaSize = ReadU32(ehf, heightAt + 0x20);
         if (width != samplesX || height != samplesY)
         {
             error = $"height texture {width}x{height} is not the header's {samplesX}x{samplesY}";
@@ -77,7 +112,6 @@ public static class Engine_EhfHeights
             return false;
         }
 
-        long table = heightAt + metaSize;
         uint rawSize = ReadU32(ehf, (int)table);
         uint compressed = ReadU32(ehf, (int)table + 4);
         long zlibAt = table + 8;

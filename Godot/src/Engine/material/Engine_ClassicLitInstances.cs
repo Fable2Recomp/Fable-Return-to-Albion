@@ -21,6 +21,9 @@ namespace Refii.Models;
 ///
 /// Instances enter through <see cref="Attach"/>, the per-instance lighting seam every prop and
 /// entity already passes, and leave when their node goes.
+///
+/// FABLE 3 (<see cref="ComputeFable3"/>): one group, one pass, up to eight lights chosen and
+/// packed by <see cref="Engine_ClassicLights.Fable3Group"/>.
 /// </remarks>
 public static class Engine_ClassicLitInstances
 {
@@ -56,6 +59,13 @@ public static class Engine_ClassicLitInstances
         public long Layout = long.MinValue;
         public uint Zone;
         public bool BoundsKnown;
+        /// <summary>Fable 3: the node's own box and world-to-local transform, and 1 / its scale, for a point's test.</summary>
+        public Aabb LocalBounds;
+        public Transform3D WorldToLocal = Transform3D.Identity;
+        public float InvScale = 1f;
+        /// <summary>Fable 3: the last assignment's shader key counts and block count.</summary>
+        public Engine_ClassicLights.Fable3Group.Key Key;
+        public int BlockCount;
     }
 
     /// <summary>
@@ -73,6 +83,11 @@ public static class Engine_ClassicLitInstances
     private static readonly Dictionary<ulong, Entry> _entries = new();
     private static readonly List<ulong> _gone = new();
     private static readonly float[] _block = new float[Engine_ClassicRegisters.LightBlockRegisters * 4];
+    private static readonly float[] _block3 = new float[Engine_ClassicLights.Fable3Group.PixelRegisters * 4];
+    private static readonly Engine_ClassicLights.Fable3Group.Stated[] _stated3 =
+        new Engine_ClassicLights.Fable3Group.Stated[Engine_ClassicLights.Fable3Group.MaxLights];
+
+    private static bool Fable3 => Refii.Core.Engine_Title.Active == Refii.Core.Engine_Title.Fable3;
     private static readonly float[] _four = new float[4];
     private static long _frames;
     private static int _lit;
@@ -279,6 +294,11 @@ public static class Engine_ClassicLitInstances
     /// <summary>Packs a shared row from its lights' current values.</summary>
     private static void Write(SharedRow shared)
     {
+        if (Fable3)
+        {
+            WriteFable3(shared);
+            return;
+        }
         Array.Clear(_block);
         int slot = 0;
         _members.Clear();
@@ -303,6 +323,38 @@ public static class Engine_ClassicLitInstances
         Engine_ClassicConstants.SetRowBlock(false, shared.Row, Engine_ClassicRegisters.Vs.LightPositions, Engine_ClassicLights.VertexBlock(_block));
         // g_AtmosphericFactors: every pass is attenuated, the first alone in-scatters.
         _four[0] = 1f; _four[1] = shared.Group == 0 ? 1f : 0f; _four[2] = 0f; _four[3] = 0f;
+        Engine_ClassicConstants.SetRowBlock(true, shared.Row, Engine_ClassicRegisters.Ps.AtmosphericFactors, _four);
+        if (shared.Mist is not null)
+        {
+            Engine_ClassicMist.WriteRegisters(shared.Mist, shared.Row);
+        }
+    }
+
+    /// <summary>
+    /// Fable 3: a shared row's block, packed by `sub_821FC990`'s rule from the lights' current
+    /// values, PS c80..c119 and VS c44..c79. The host has no Fable 3 spot shadow maps, so a
+    /// slot's SpotLightShadowMask is cleared as Fable 2's row clears it when its map is refused
+    /// (Engine_ClassicSpotShadows.WriteRow); its spot lights unshadowed.
+    /// </summary>
+    private static void WriteFable3(SharedRow shared)
+    {
+        _members.Clear();
+        foreach (int index in shared.Lights)
+        {
+            if (_byIndex.TryGetValue(index, out Engine_ClassicLights.Light light))
+            {
+                _stated3[_members.Count] = Engine_ClassicLights.StatedOf(light);
+                _members.Add(light);
+            }
+        }
+        Engine_ClassicLights.Fable3Group.PackGroup(_block3, _members, _stated3);
+        Array.Clear(_block3, Engine_ClassicLights.Fable3Group.SpotLightShadowMask * 4, 8);
+        Engine_ClassicConstants.SetRowBlock(true, shared.Row, Engine_ClassicRegisters.Ps.LightPositions,
+            _block3.AsSpan(0, Engine_ClassicLights.Fable3Group.PixelRegisters * 4));
+        Engine_ClassicConstants.SetRowBlock(false, shared.Row, Engine_ClassicRegisters.Vs.LightPositions,
+            _block3.AsSpan(0, Engine_ClassicLights.Fable3Group.VertexRegisters * 4));
+        // g_AtmosphericFactors: the one pass attenuates and in-scatters.
+        _four[0] = 1f; _four[1] = 1f; _four[2] = 0f; _four[3] = 0f;
         Engine_ClassicConstants.SetRowBlock(true, shared.Row, Engine_ClassicRegisters.Ps.AtmosphericFactors, _four);
         if (shared.Mist is not null)
         {
@@ -393,6 +445,27 @@ public static class Engine_ClassicLitInstances
         }
     }
 
+    /// <summary>
+    /// Fable 3: the shader key counts (points, spots, every light of the draw's mask, before the
+    /// cap) and the block count of the instance's group on its last assignment; false when it
+    /// has none (the frame's group, <see cref="Engine_ClassicLights.Fable3Frame"/>). Main thread.
+    /// </summary>
+    public static bool Fable3GroupOf(GeometryInstance3D node, out Engine_ClassicLights.Fable3Group.Key key, out int blockCount)
+    {
+        lock (_entries)
+        {
+            if (_entries.TryGetValue(node.GetInstanceId(), out Entry? entry) && entry.Groups != 0)
+            {
+                key = entry.Key;
+                blockCount = entry.BlockCount;
+                return true;
+            }
+        }
+        key = default;
+        blockCount = 0;
+        return false;
+    }
+
     /// <summary>Distinct light-set rows live, for the debug channel.</summary>
     public static int SharedRows => _sharedByRow.Count;
 
@@ -410,6 +483,8 @@ public static class Engine_ClassicLitInstances
         public int Groups;
         public bool OnlyDirectional;
         public Engine_ClassicMist.Volume? Mist;
+        public Engine_ClassicLights.Fable3Group.Key Key;
+        public readonly List<Engine_ClassicLights.Light> Set = new();
         public readonly List<Engine_ClassicLights.Light>[] Buckets = { new(), new(), new(), new() };
         public readonly List<Engine_ClassicLights.Light>[] Members = { new(7), new(7), new(7) };
     }
@@ -428,6 +503,14 @@ public static class Engine_ClassicLitInstances
         {
             entry.Bounds = entry.Node.GlobalTransform * Refii.Core.Engine_ServerSyncs.LocalAabb(entry.Node);
             entry.BoundsKnown = true;
+            if (Fable3)
+            {
+                Transform3D world = entry.Node.GlobalTransform;
+                entry.LocalBounds = entry.Node.GetAabb();
+                entry.WorldToLocal = world.AffineInverse();
+                float scale = world.Basis.X.Length();
+                entry.InvScale = scale != 0f ? 1f / scale : 0f;
+            }
         }
     }
 
@@ -467,6 +550,11 @@ public static class Engine_ClassicLitInstances
             ++AssignedThisFrame;
             entry.Layout = long.MinValue;
             entry.Zone = found.Zone;
+            if (Fable3)
+            {
+                entry.Key = found.Key;
+                entry.BlockCount = Engine_ClassicLights.Fable3Group.BlockCount(found.Members[0]);
+            }
             if (Apply(entry, found) && entry.SignatureHash != int.MinValue)
             {
                 entry.Layout = _layout;
@@ -483,6 +571,11 @@ public static class Engine_ClassicLitInstances
     /// </summary>
     private static void Compute(Entry entry, Found found, IReadOnlyList<Engine_ClassicLights.Light> lights)
     {
+        if (Fable3)
+        {
+            ComputeFable3(entry, found, lights);
+            return;
+        }
         Aabb bounds = entry.Bounds;
         Vector3 min = bounds.Position, max = bounds.End;
         uint zone = Engine_ClassicZones.Of(entry.Entity, entry.Record);
@@ -559,6 +652,99 @@ public static class Engine_ClassicLitInstances
         found.Groups = groups;
         found.OnlyDirectional = groups == 1 && buckets[1].Count + buckets[2].Count + buckets[3].Count == 0;
         found.Mist = groups == 0 ? null : Engine_ClassicMist.VolumeFor(bounds);
+    }
+
+    /// <summary>
+    /// Fable 3's per-draw group. The mask is `sub_82207258`'s query against the draw's bounds
+    /// (`sub_82263618`: world box +0, local box +0x20, world-to-local rows +0x40, 1 / scale
+    /// +0x70): a live light whose manager sphere meets the world box (`vcmpgefp. r^2 >= d^2`), whose
+    /// zone L+416 is 0, the draw's 0 or the draw's (0x82207324..0x82207340), and whose vt+92 admits
+    /// the draw — a point its sphere in the draw's local box with the radius over the scale
+    /// (`sub_821E99D8`), a spot the world box inside its planes (`sub_82C86C50`), a directional
+    /// always (`sub_82C13A28`). The group takes that mask less LM+40, the L+343 lights
+    /// (`sub_82215BD8` 0x82215C08..0x82215C18), and selects and packs it as
+    /// <see cref="Engine_ClassicLights.Fable3Group"/> says. A group equal to the frame's is the
+    /// frame row. Deviations, stated: the point test uses the manager sphere (L+288, L+448 x L+320,
+    /// `sub_82CCF180`) for L+112, and the node's mesh box for the guest's mesh bounds; a draw left
+    /// with no light keeps the frame row.
+    /// </summary>
+    private static void ComputeFable3(Entry entry, Found found, IReadOnlyList<Engine_ClassicLights.Light> lights)
+    {
+        Aabb bounds = entry.Bounds;
+        Vector3 min = bounds.Position, max = bounds.End;
+        uint zone = Engine_ClassicZones.Of(entry.Entity, entry.Record);
+        found.Zone = zone;
+        found.Skip = entry.Entity == 0u && entry.Layout == _layout && entry.Zone == zone;
+        if (found.Skip)
+        {
+            return;
+        }
+
+        List<Engine_ClassicLights.Light> set = found.Set;
+        set.Clear();
+        Vector3 localMin = entry.LocalBounds.Position, localMax = entry.LocalBounds.End;
+        foreach (Engine_ClassicLights.Light light in lights)
+        {
+            if (!Engine_ClassicZones.Lights(light.Zone, zone))
+            {
+                continue;
+            }
+            var centre = new Vector3(-light.Position.X, light.Position.Z, light.Position.Y);
+            if ((centre.Clamp(min, max) - centre).LengthSquared() > light.Radius * light.Radius)
+            {
+                continue;
+            }
+            if (light.Type == Engine_ClassicLights.Light.Point)
+            {
+                Vector3 local = entry.WorldToLocal * centre;
+                float radius = light.Radius * entry.InvScale;
+                if ((local.Clamp(localMin, localMax) - local).LengthSquared() > radius * radius)
+                {
+                    continue;
+                }
+            }
+            else if (light.Type == Engine_ClassicLights.Light.Spot &&
+                !Engine_ClassicLights.InFrustum(light.Index,
+                    new Vector3(-max.X, min.Z, min.Y), new Vector3(-min.X, max.Z, max.Y)))
+            {
+                continue;
+            }
+            if (light.Static)
+            {
+                continue;
+            }
+            set.Add(light);
+        }
+
+        found.Key = Engine_ClassicLights.Fable3Group.Count(set);
+        List<Engine_ClassicLights.Light>[] members = found.Members;
+        for (int g = 0; g < MaxGroups; g++)
+        {
+            members[g].Clear();
+        }
+        Engine_ClassicLights.Fable3Group.Select(set, members[0]);
+        int groups = members[0].Count == 0 ? 0 : 1;
+        found.Groups = groups;
+        found.OnlyDirectional = groups == 1 && IsFrameGroup(members[0]);
+        found.Mist = groups == 0 ? null : Engine_ClassicMist.VolumeFor(bounds);
+    }
+
+    /// <summary>Whether a Fable 3 group holds exactly the frame group's lights (so packs its block).</summary>
+    private static bool IsFrameGroup(List<Engine_ClassicLights.Light> group)
+    {
+        IReadOnlyList<int> frame = Engine_ClassicLights.Fable3FrameGroup;
+        if (group.Count != frame.Count)
+        {
+            return false;
+        }
+        for (int i = 0; i < group.Count; i++)
+        {
+            if (group[i].Index != frame[i])
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     /// <summary>
@@ -837,7 +1023,7 @@ public static class Engine_ClassicLitInstances
                 }
                 for (int directional = 0; directional <= 1; directional++)
                 {
-                    for (int total = directional + 1; total <= Math.Min(reached + directional, MaxGroups * 7); total++)
+                    for (int total = directional + 1; total <= Math.Min(reached + directional, MaxPerDraw); total++)
                     {
                         (int[] counts, bool[] single) = Shape(total, directional);
                         if (seen.Add((bases, Tail(counts, single, 0, 0))))
@@ -954,12 +1140,20 @@ public static class Engine_ClassicLitInstances
 
     private static readonly Queue<(Entry Entry, int[] Counts, bool[] Single)> _warm = new();
 
+    /// <summary>The most lights a draw takes: three groups of seven, or Fable 3's one group of eight.</summary>
+    private static int MaxPerDraw => Fable3 ? Engine_ClassicLights.Fable3Group.MaxLights : MaxGroups * 7;
+
     /// <summary>
     /// The groups for <paramref name="total"/> lights, the directional ones first (Assign's
     /// buckets): sevens, and a group of one is a single local light unless it holds the directional.
     /// </summary>
     private static (int[] Counts, bool[] Single) Shape(int total, int directional)
     {
+        if (Fable3)
+        {
+            // One group of up to eight (Engine_ClassicLights.Fable3Group).
+            return (new[] { total }, new[] { total == 1 && directional == 0 });
+        }
         int groups = (total + 6) / 7;
         var counts = new int[groups];
         var single = new bool[groups];

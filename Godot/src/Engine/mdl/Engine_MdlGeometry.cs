@@ -95,8 +95,8 @@ public static class Engine_MdlGeometry
             clothRecords.Add((int)block.RecordIndex);
         }
 
-        return TryBuild(data, info.MeshBuffers, info.Meshes, info.HideRegions, info.Bones.Count,
-            out geometry, clothRecords);
+        return TryBuild(info.Body ?? data, info.MeshBuffers, info.Meshes, info.HideRegions,
+            info.Bones.Count, out geometry, clothRecords);
     }
 
     /// <summary>

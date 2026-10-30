@@ -2,8 +2,8 @@
 //
 // The exports every title shares — the ABI version, the guest's lifecycle, the debug
 // channel, audio, input, time, mods, player state, achievements, RexNet — are
-// refii_hostcore's (src/hostcore), linked whole into this library. Fable 3 states nothing
-// of its own yet: no feeds, and nothing added to the core's lifecycle.
+// refii_hostcore's (src/hostcore), linked whole into this library. Fable 3's own feeds: the world
+// it stands in (level_feed.cpp). It adds nothing to the core's lifecycle yet.
 // The shell's title feeds it cannot answer yet are answered as nothing in unstated_feeds.cpp.
 
 #include "host_core.h"

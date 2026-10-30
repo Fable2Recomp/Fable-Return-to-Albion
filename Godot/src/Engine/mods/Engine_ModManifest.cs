@@ -84,7 +84,7 @@ public sealed class ModManifest
 			Stamp = stamp,
 		};
 
-		if (File.Exists(mod.PackagePath) && mod.PackagePath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+		if (File.Exists(mod.PackagePath) && Refii.Core.Engine_Title.IsModPackagePath(mod.PackagePath))
 		{
 			if (F2ModPackage.TryOpen(mod.PackagePath, out F2ModPackage? package, out _) && package is not null)
 			{
@@ -189,7 +189,7 @@ public sealed class ModManifest
 			yield break;
 		}
 
-		if (File.Exists(assetRoot) && assetRoot.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+		if (File.Exists(assetRoot) && Refii.Core.Engine_Title.IsModPackagePath(assetRoot))
 		{
 			if (F2ModPackage.TryOpen(assetRoot, out F2ModPackage? package, out _) && package is not null)
 			{
@@ -228,7 +228,7 @@ public sealed class ModManifest
 				name.Equals(ModWorkspace.ModManifestFilename, StringComparison.OrdinalIgnoreCase) ||
 				name.EndsWith(".import", StringComparison.OrdinalIgnoreCase) ||
 				name.EndsWith(".uid", StringComparison.OrdinalIgnoreCase) ||
-				name.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase) ||
+				Refii.Core.Engine_Title.IsModPackagePath(name) ||
 				name.EndsWith(".f2zip", StringComparison.OrdinalIgnoreCase) ||
 				name.EndsWith(".bnk", StringComparison.OrdinalIgnoreCase))
 			{

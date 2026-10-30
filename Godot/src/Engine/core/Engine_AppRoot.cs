@@ -27,7 +27,7 @@ namespace Refii.Core;
 ///
 ///   &lt;root&gt;/bin              native libraries, and bin/recompile
 ///   &lt;root&gt;/assets           game, generated, unpacked, save
-///   &lt;root&gt;/refii.toml       runtime config
+///   &lt;root&gt;/&lt;key&gt;.toml       runtime config, one per title (refii.toml, refiii.toml)
 ///   &lt;root&gt;/logs             guest logs
 ///
 /// Exported, that is the executable's own directory. In the editor the executable is
@@ -174,8 +174,11 @@ public static class Engine_AppRoot
 	/// <summary>Everything derived from the player's own game.</summary>
 	public static string AssetsDirectory => System.IO.Path.Combine(Path, "assets");
 
-	/// <summary>The runtime config, written by the launcher and read by the guest.</summary>
-	public static string ConfigPath => System.IO.Path.Combine(Path, "refii.toml");
+	/// <summary>
+	/// The ACTIVE title's runtime config (<see cref="Engine_Title.ConfigPath"/>), written by the
+	/// launcher and read by that title's guest.
+	/// </summary>
+	public static string ConfigPath => Engine_Title.Active.ConfigPath;
 
 	public static string LogsDirectory => System.IO.Path.Combine(Path, "logs");
 
@@ -211,7 +214,8 @@ public static class Engine_AppRoot
 	/// ends up under assets/save because the SDK derives cache_root from user_data_root before
 	/// that default is consulted.
 	///
-	/// Everything regenerable lives here — converted and upscaled textures alike — so clearing
+	/// Everything regenerable lives here, one folder per title (<see cref="Engine_Title.CacheDirectory"/>)
+	/// beside the guest's own shader storage — converted and upscaled textures alike — so clearing
 	/// the app's derived data is one folder, inside the install, and saves are untouched.
 	/// </remarks>
 	public static string CacheDirectory => System.IO.Path.Combine(Path, "cache");

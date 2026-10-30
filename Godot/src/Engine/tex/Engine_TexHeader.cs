@@ -20,9 +20,22 @@ public enum TexPixelFormat
 
 public sealed class TexHeader
 {
+    /// <summary>The smallest header, Fable 2's: what a size check before parsing can rely on.</summary>
     public const int Size = 84;
 
+    /// <summary>
+    /// Fable 3's header (version 4) leads with this magic. The guest's texture streamer gates on
+    /// it (`hdr+0 == 0xABCBBBF3 && hdr+4 == 4` in sub_82D46DB0, Fable 3 IDB).
+    /// </summary>
+    public const uint Fable3Magic = 0xABCBBBF3;
+
+    /// <summary>Fable 3's header, 92 bytes: its first mip starts at offset 0x5C.</summary>
+    public const int Fable3Size = 92;
+
     public int Version;
+
+    /// <summary>This header's own length, where the payload follows it.</summary>
+    public int HeaderSize = Size;
 
     public int PayloadSize;
 
@@ -77,6 +90,10 @@ public sealed class TexHeader
     public static bool LooksLikeHeader(byte[] d) =>
         d.Length >= Size && BinaryPrimitives.ReadInt32BigEndian(d.AsSpan(0, 4)) < 0;
 
+    /// <summary>Fable 3's layout: its magic, then version 4.</summary>
+    public static bool IsFable3Header(byte[] d) =>
+        d.Length >= Fable3Size && BinaryPrimitives.ReadUInt32BigEndian(d.AsSpan(0, 4)) == Fable3Magic;
+
     public static bool TryParse(byte[] d, out TexHeader header, out string error)
     {
         header = default!;
@@ -90,6 +107,33 @@ public sealed class TexHeader
 
         int I32(int off) => BinaryPrimitives.ReadInt32BigEndian(d.AsSpan(off, 4));
 
+        if (IsFable3Header(d))
+        {
+            // Fable 2's fields behind the magic and the version, with the codec moved up beside
+            // the format and one word before the level count. The guest reads them where this does:
+            // the codec at +32 is the transcode format sub_82D6E9C8 switches on (12 an 8-byte block,
+            // 1..3 16-byte), the level count at +40 and the mip offsets from +44 (sub_82D678D0).
+            header = new TexHeader
+            {
+                Version = I32(0x04),
+                HeaderSize = Fable3Size,
+                PayloadSize = I32(0x08),
+                TextureKind = I32(0x0C),
+                Flags = I32(0x10),
+                Width = I32(0x14),
+                Height = I32(0x18),
+                PixelFormat = I32(0x1C),
+                CodecId = I32(0x20),
+                LevelCount = I32(0x28),
+            };
+
+            for (int i = 0; i < 12; i++)
+            {
+                header.LevelOffsets[i] = I32(0x2C + i * 4);
+            }
+        }
+        else
+        {
         header = new TexHeader
         {
             Version = -I32(0x00),
@@ -106,6 +150,7 @@ public sealed class TexHeader
         for (int i = 0; i < 12; i++)
         {
             header.LevelOffsets[i] = I32(0x20 + i * 4);
+        }
         }
 
         if (header.Width <= 0 || header.Height <= 0)

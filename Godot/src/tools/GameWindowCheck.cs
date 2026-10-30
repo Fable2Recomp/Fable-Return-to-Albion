@@ -111,11 +111,11 @@ public partial class GameWindowCheck : Node
 		GameWindowSettings expected = GameWindowSettings.Load();
 		GD.Print($"[window] title={title} size={size} " +
 			$"mode={DisplayServer.WindowGetMode(Main)}");
-		GD.Print($"[window] refii.toml says: {expected}");
+		GD.Print($"[window] {Refii.Core.Engine_Title.Active.ConfigFileName} says: {expected}");
 
 		if (size != expected.Size)
 		{
-			GD.Print($"[window] FAIL — window is {size}, refii.toml asks for {expected.Size}.");
+			GD.Print($"[window] FAIL — window is {size}, {Refii.Core.Engine_Title.Active.ConfigFileName} asks for {expected.Size}.");
 			GetTree().Quit(1);
 			return;
 		}

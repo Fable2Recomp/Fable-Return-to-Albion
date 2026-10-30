@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Refii.Core;
 
 namespace Refii.Level;
 
@@ -47,6 +48,11 @@ public static class Engine_EhfAlbedo
 
     public static bool TryBuild(
         byte[] ehf, int terrainVerticesX, int terrainVerticesZ,
+        out EhfAlbedo albedo, out string error) =>
+        TryBuild(ehf, terrainVerticesX, terrainVerticesZ, Engine_Title.Active, out albedo, out error);
+
+    public static bool TryBuild(
+        byte[] ehf, int terrainVerticesX, int terrainVerticesZ, Engine_Title title,
         out EhfAlbedo albedo, out string error)
     {
         albedo = null!;
@@ -60,14 +66,14 @@ public static class Engine_EhfAlbedo
             return false;
         }
 
-        List<EhfRenderTile> tiles = ParseRenderTiles(ehf, cellsX);
+        List<EhfRenderTile> tiles = ParseRenderTiles(ehf, cellsX, title);
         if (tiles.Count == 0)
         {
             error = "no render tiles in the .ehf";
             return false;
         }
 
-        List<EhfTile> pages = Engine_EhfAtlas.FindTiles(ehf);
+        List<EhfTile> pages = Engine_EhfAtlas.FindTiles(ehf, title);
         if (pages.Count < tiles.Count)
         {
             error = $"{pages.Count} texture pages for {tiles.Count} render tiles";
@@ -81,7 +87,7 @@ public static class Engine_EhfAlbedo
 
         for (int i = 0; i < tiles.Count; i++)
         {
-            if (!Engine_EhfAtlas.TryDecodeAt(ehf, pages[i].Offset, out EhfAtlasImage image, out _))
+            if (!Engine_EhfAtlas.TryDecodeAt(ehf, pages[i].Offset, title, out EhfAtlasImage image, out _))
             {
                 continue;
             }
@@ -106,14 +112,15 @@ public static class Engine_EhfAlbedo
 
         float medianX = Median(ratiosX);
         float medianY = Median(ratiosY);
-        if (medianX < 0.5f || medianY < 0.5f || medianX > 8f || medianY > 8f)
+        int maxScale = MaxTexelsPerCell(title);
+        if (medianX < 0.5f || medianY < 0.5f || medianX > maxScale || medianY > maxScale)
         {
             error = $"tile pages look strip-like (median scale {medianX:0.##}x{medianY:0.##})";
             return false;
         }
 
-        int scaleX = Math.Clamp((int)Math.Round(medianX), 1, 8);
-        int scaleY = Math.Clamp((int)Math.Round(medianY), 1, 8);
+        int scaleX = Math.Clamp((int)Math.Round(medianX), 1, maxScale);
+        int scaleY = Math.Clamp((int)Math.Round(medianY), 1, maxScale);
 
         long width = (long)cellsX * scaleX;
         long height = (long)cellsY * scaleY;
@@ -156,7 +163,16 @@ public static class Engine_EhfAlbedo
         return true;
     }
 
-    public static List<EhfRenderTile> ParseRenderTiles(byte[] ehf, int terrainCellsX)
+    /// <summary>
+    /// Page texels per cell the composite accepts. Fable 3 bakes pages up to 16 texels a cell
+    /// (Isle of Mists, 16 on V), and its pages are the ones the body states rather than a scan's.
+    /// </summary>
+    private static int MaxTexelsPerCell(Engine_Title title) => title == Engine_Title.Fable3 ? 16 : 8;
+
+    public static List<EhfRenderTile> ParseRenderTiles(byte[] ehf, int terrainCellsX) =>
+        ParseRenderTiles(ehf, terrainCellsX, Engine_Title.Active);
+
+    public static List<EhfRenderTile> ParseRenderTiles(byte[] ehf, int terrainCellsX, Engine_Title title)
     {
         var tiles = new List<EhfRenderTile>();
         if (ehf.Length < 63)
@@ -172,8 +188,8 @@ public static class Engine_EhfAlbedo
         }
 
         int cursor = (int)bodyOffset;
-        if (!TrySkipTexBlob(ehf, ref cursor, bodyEnd) ||
-            !TrySkipTexBlob(ehf, ref cursor, bodyEnd) ||
+        if (!TrySkipTexBlob(ehf, ref cursor, bodyEnd, title) ||
+            !TrySkipTexBlob(ehf, ref cursor, bodyEnd, title) ||
             cursor + 8 > bodyEnd)
         {
             return tiles;
@@ -392,8 +408,19 @@ public static class Engine_EhfAlbedo
         return values[values.Count / 2];
     }
 
-    private static bool TrySkipTexBlob(byte[] data, ref int cursor, long limit)
+    private static bool TrySkipTexBlob(byte[] data, ref int cursor, long limit, Engine_Title title)
     {
+        if (title == Engine_Title.Fable3)
+        {
+            if (!Engine_EhfBody.TryReadFable3Blob(data, cursor, limit, out EhfTexBlob blob, out _))
+            {
+                return false;
+            }
+
+            cursor = (int)blob.End;
+            return true;
+        }
+
         long start = cursor;
         if (start + 0x60 > limit || ReadU32(data, (int)start) != 0xFFFFFFFEu)
         {

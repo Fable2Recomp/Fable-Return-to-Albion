@@ -28,6 +28,7 @@ public static class Engine_ClassicShaders
 {
     private static readonly object Gate = new();
     private static bool _scanned;
+    private static Refii.Core.Engine_Title? _scannedTitle;
     private static string _reason = "not scanned";
     private static string _root = string.Empty;
     // Entry name (upper case, as the bank spells it) -> the translated include's path.
@@ -623,7 +624,10 @@ public static class Engine_ClassicShaders
     }
 
     /// <summary>
-    /// Reads the extract manifest once. Rows are tab-separated; the `entry` rows pair an entry
+    /// Reads the ACTIVE TITLE's extract manifest once, again when the title changes: each title's
+    /// Compile Shaders step writes its own bank's translations under its own workspace
+    /// (<c>&lt;assets&gt;/&lt;Title&gt;/unpacked/shaders</c>, ShaderBuild.OutputDirectory), which is where
+    /// Engine_GameData resolves for the active title. Rows are tab-separated; the `entry` rows pair an entry
     /// name with a blob index, and the translated include sits where the pipeline put it:
     /// <c>godot/&lt;bank&gt;/&lt;blob stem&gt;.godot.gdshaderinc</c>, the blob stem being the
     /// blob file's name without its extension.
@@ -632,11 +636,20 @@ public static class Engine_ClassicShaders
     {
         lock (Gate)
         {
-            if (_scanned)
+            if (_scanned && _scannedTitle == Refii.Core.Engine_Title.Active)
             {
                 return;
             }
+            if (_scanned)
+            {
+                // Another title's entries, compositions and lookups name another bank.
+                _entries.Clear();
+                _composed.Clear();
+                _sources.Clear();
+                _found.Clear();
+            }
             _scanned = true;
+            _scannedTitle = Refii.Core.Engine_Title.Active;
 
             string game = Refii.Core.Engine_GameData.Resolve();
             if (game.Length == 0)

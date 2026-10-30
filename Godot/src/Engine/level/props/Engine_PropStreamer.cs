@@ -766,7 +766,7 @@ public partial class Engine_PropStreamer : Node3D
                         GD.Print($"[props] one step took {stepMs:0.0} ms on the main thread " +
                             $"(gc pause {(GC.GetTotalPauseDuration() - stepPause).TotalMilliseconds:0.0}) " +
                             $"(resolve {_stepResolveMs:0.0}, multimesh {_stepMultiMs:0.0}, bounds {_stepBoundsMs:0.0}, assign {_stepAssignMs:0.0}, bake {_stepBakeMs:0.0}, range {_stepRangeMs:0.0}, " +
-                            $"sway {_stepSwayMs:0.0}, light {_stepLightMs:0.0} [{Refii.Lighting.Engine_LevelBakedLighting.LastLightSplit}]): {path}");
+                            $"sway {_stepSwayMs:0.0} [merge wait {_stepMergeWaitMs:0.0}, build {_stepMergeBuildMs:0.0}], light {_stepLightMs:0.0} [{Refii.Lighting.Engine_LevelBakedLighting.LastLightSplit}]): {path}");
                     }
 
                     settled = true;
@@ -915,6 +915,7 @@ public partial class Engine_PropStreamer : Node3D
     private int _readbacksLogged;
     private double _stepBoundsMs;
     private double _stepResolveMs, _stepMultiMs, _stepAssignMs, _stepBakeMs, _stepRangeMs, _stepSwayMs, _stepLightMs;
+    private double _stepMergeWaitMs, _stepMergeBuildMs;
 
     private static double Ms(long from) =>
         (System.Diagnostics.Stopwatch.GetTimestamp() - from) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
@@ -1436,6 +1437,7 @@ public partial class Engine_PropStreamer : Node3D
             // is the remaster's). Trees are unaffected — they do not sway (mode 2 holds still
             // until treematerial exists) and their canopy shadows are stable and worth having.
             long t3 = System.Diagnostics.Stopwatch.GetTimestamp();
+            Refii.Entities.Engine_ShadowProxy.TakeMergeTimes();
             if (Refii.Models.Engine_ClassicMaterial.Active)
             {
                 // Under classic Godot's lights cast nothing; the guest's casters go into the
@@ -1477,6 +1479,7 @@ public partial class Engine_PropStreamer : Node3D
             }
 
             _stepSwayMs = Ms(t3);  // "sway": the shadow-caster hand-off above, named for its first branch
+            (_stepMergeWaitMs, _stepMergeBuildMs) = Refii.Entities.Engine_ShadowProxy.TakeMergeTimes();
 
 
             // LIGHT IT NOW, not at build time. Until this line the node had no material, and

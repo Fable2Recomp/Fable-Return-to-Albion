@@ -651,7 +651,7 @@ public partial class PolymorphicItemGraphView : MarginContainer
         _saveModBtn = new Button
         {
             Text = "Save Node & Component Changes to Mod",
-            TooltipText = "Write modified component properties and localized text tags to the active mod (.f2mod)",
+            TooltipText = $"Write modified component properties and localized text tags to the active mod ({Refii.Core.Engine_Title.Active.ModExtension})",
             SizeFlagsHorizontal = Control.SizeFlags.ExpandFill
         };
         _saveModBtn.Pressed += OnSaveModPressed;
@@ -1980,7 +1980,7 @@ public partial class PolymorphicItemGraphView : MarginContainer
             prop.AssetKind == AssetFieldKind.Model
                 ? "📥 Compiling & Linking 3D Model..."
                 : "📥 Compiling & Linking Texture...",
-            $"Converting '{fileName}' and packaging into '{activeMod}.f2mod'...",
+            $"Converting '{fileName}' and packaging into '{activeMod}{Refii.Core.Engine_Title.Active.ModExtension}'...",
             () =>
             {
                 var compSlot = node.DirectComponents.FirstOrDefault(c => c.ComponentRecordHash == prop.TargetRecordHash);
@@ -2008,7 +2008,7 @@ public partial class PolymorphicItemGraphView : MarginContainer
 
                 ReloadGraphAndReselect(node.RecordHash);
                 ShowStatus(
-                    $"Linked '{fileName}' -> {prop.PropertyName} ({newVirtualPath}) in '{activeMod}.f2mod'.",
+                    $"Linked '{fileName}' -> {prop.PropertyName} ({newVirtualPath}) in '{activeMod}{Refii.Core.Engine_Title.Active.ModExtension}'.",
                     isError: false);
             });
     }
@@ -2029,7 +2029,7 @@ public partial class PolymorphicItemGraphView : MarginContainer
         string fileName = System.IO.Path.GetFileName(sourceFilePath.Replace('\\', '/'));
         RunWithLoadingDialog(
             "🎨 Updating Surface Material Slot...",
-            $"Linking '{fileName}' to Mat {slot.FlatMaterialIndex} · {slot.SlotName} in '{activeMod}.f2mod'...",
+            $"Linking '{fileName}' to Mat {slot.FlatMaterialIndex} · {slot.SlotName} in '{activeMod}{Refii.Core.Engine_Title.Active.ModExtension}'...",
             () =>
             {
                 var compSlot = node.DirectComponents.FirstOrDefault(c => c.ComponentRecordHash == modelProp.TargetRecordHash);
@@ -2401,7 +2401,7 @@ public partial class PolymorphicItemGraphView : MarginContainer
 
         RunWithLoadingDialog(
             "💾 Saving Mod Overrides...",
-            $"Writing GDB component overrides and pruning unused assets in '{activeMod}.f2mod'...",
+            $"Writing GDB component overrides and pruning unused assets in '{activeMod}{Refii.Core.Engine_Title.Active.ModExtension}'...",
             () =>
             {
                 try

@@ -628,7 +628,7 @@ public static class ModSpells
 	{
 		var found = new List<(string Id, string Json, Func<string, byte[]?> Read)>();
 		string sourcePath = !string.IsNullOrEmpty(overlay.PackagePath) ? overlay.PackagePath : overlay.AssetRoot;
-		if (File.Exists(sourcePath) && sourcePath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+		if (File.Exists(sourcePath) && Refii.Core.Engine_Title.IsModPackagePath(sourcePath))
 		{
 			if (!F2ModPackage.TryOpen(sourcePath, out F2ModPackage? package, out string openError) || package is null)
 			{

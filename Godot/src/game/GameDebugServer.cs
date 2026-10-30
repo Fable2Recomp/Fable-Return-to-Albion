@@ -2700,7 +2700,7 @@ public partial class GameDebugServer : Node
 				if (!Refii.Core.Engine_RenderDoc.Armed)
 				{
 					reply["note"] = "RenderDoc is not armed for this run: set renderdoc = true in " +
-						"refii.toml (and renderdoc_path if the install is not on PATH) and relaunch";
+						Refii.Core.Engine_Title.Active.ConfigFileName + " (and renderdoc_path if the install is not on PATH) and relaunch";
 					return Ok(reply);
 				}
 

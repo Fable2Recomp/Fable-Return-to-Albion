@@ -149,7 +149,14 @@ public sealed class BnkArchive : IDisposable
 		_range = range;
 		_ownsRange = ownsRange;
 		_hasData = true;
+		AttachedHeapBytes = range is null && stream is MemoryStream ? stream.Length : 0;
 	}
+
+	/// <summary>
+	/// How much of the attached <c>.dat</c> sits on the managed heap: the whole of it when it was
+	/// copied out of a compressed outer entry, nothing when it is mapped.
+	/// </summary>
+	public long AttachedHeapBytes { get; private set; }
 
 	/// <summary>
 	/// Opens a bank that lives inside a mapped range — a nested container stored uncompressed in

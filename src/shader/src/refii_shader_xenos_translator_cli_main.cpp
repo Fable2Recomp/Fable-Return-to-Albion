@@ -14,10 +14,11 @@ struct Options {
     std::string name;
     std::filesystem::path output;
     std::filesystem::path log_path;
+    std::string title;
 };
 
 bool ParseArguments(int argc, char** argv, Options& options) {
-    if (argc != 11 && argc != 13) {
+    if (argc < 11 || argc > 15 || (argc % 2) == 0) {
         return false;
     }
 
@@ -35,6 +36,8 @@ bool ParseArguments(int argc, char** argv, Options& options) {
             options.output = std::filesystem::path(argv[++index]);
         } else if (argument == "--log" && index + 1 < argc) {
             options.log_path = std::filesystem::path(argv[++index]);
+        } else if (argument == "--title" && index + 1 < argc) {
+            options.title = argv[++index];
         } else {
             return false;
         }
@@ -47,7 +50,8 @@ bool ParseArguments(int argc, char** argv, Options& options) {
 void PrintUsage() {
     std::cerr
         << "usage: refii-shader-xenos-translator --input <blob> --target <vulkan|d3d12|metal> "
-           "--stage <vertex|pixel> --name <entry> --output <file>\n";
+           "--stage <vertex|pixel> --name <entry> --output <file> [--log <file>] "
+           "[--title <Fable2|Fable3>]\n";
 }
 
 }  // namespace
@@ -67,7 +71,10 @@ int main(int argc, char** argv) {
             options.name,
             options.output,
             options.log_path,
-            &error)) {
+            &error,
+            nullptr,
+            std::filesystem::path{},
+            options.title)) {
         std::cerr << "compile failed: " << error << '\n';
         return 1;
     }

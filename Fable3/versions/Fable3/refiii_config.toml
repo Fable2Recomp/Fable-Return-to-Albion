@@ -13,6 +13,21 @@
 # The ring-buffer initialiser (calls VdInitializeRingBuffer and VdEnableRingBufferRPtrWriteBack);
 # Fable3/src/hooks/src/boot_no_gpu.cpp arms the device's no-GPU bit as it returns.
 0x82D20428 = { name = "rex_D3DDevice_InitializeRingBuffer" }
+# InsertCallback (device, cmd, flags, callback, data); the same file runs each callback the GPU
+# interrupt would have.
+0x821D8D08 = { name = "rex_D3DDevice_InsertCallback" }
+# The app object's idle wait (vtable 0x820025C4 slot 3), the one unlocked point of the 3D Engine
+# loop; Fable3/src/hooks/src/present_pacing.cpp paces the present there.
+0x82D32268 = { name = "rex_App_IdleWaitForFlags" }
+# The "Press START" splash's per-frame update (F); Fable3/src/hooks/src/splash_screen.cpp states
+# its state to the host, which draws the screen.
+0x82359848 = { name = "rex_Splash_Update" }
+# The world view (Fable3/src/hooks/src/view_feed.cpp): the render camera's fill from the final
+# camera block, and the 3D Engine's preload gate the level load waits on.
+0x82261CB8 = { name = "rex_View_SetRenderCamera" }
+0x821A9048 = { name = "rex_Camera_Blend" }
+0x822E18E0 = { name = "rex_Engine_IsPreLoading" }
+0x82256AC0 = { name = "rex_GameLoop_HighFrequencyUpdate" }
 # The Bink object's open (B, source, audio, poolAlloc), rect setter (B, int rect[4], ...) and
 # close, every movie player's; and the startup logo player's constructor (P, owner, blob).
 # Fable3/src/hooks/src/movie_player.cpp states them for the host's native playback.
@@ -519,3 +534,20 @@
 0x83129DA8 = { size = 0x60 }
 0x8314A400 = { size = 0x18 }
 0x8314A418 = { size = 0x18 }
+
+# SWITCH TABLES THE GENERATOR SIZES WRONG. Its bounds scan walks back from the bctr to the first
+# cmplwi on the index register, across conditional branches.
+#
+# 0x82D6ECE0, in the texture transcoder sub_82D6E9C8: a 13-entry table (jpt_82D6ECE0) on the
+# transcode format r18, bounded only by `cmplwi cr6,r18,0xC` at 0x82D6EBF8 ahead of the FIRST
+# switch on r18. The scan met a case compare inside that first switch instead and emitted
+# cases 0..2, so format 12 (the Texture Streamer's first texture after the logos) trapped.
+# Targets from the table at 0x82D6ECE4: 0 and 12 an 8-byte step, 1-2 and 3 a 16-byte step,
+# 4-11 the per-channel path.
+[[switch_tables]]
+address = 0x82D6ECE0
+register = 18
+labels = [
+  0x82D6ED18, 0x82D6ED24, 0x82D6ED24, 0x82D6ED3C, 0x82D6F01C, 0x82D6F01C, 0x82D6F01C,
+  0x82D6F01C, 0x82D6F01C, 0x82D6F01C, 0x82D6F01C, 0x82D6F01C, 0x82D6ED18,
+]

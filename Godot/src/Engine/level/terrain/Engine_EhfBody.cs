@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Text;
+using Refii.Core;
+using Refii.Textures;
 
 namespace Refii.Level;
 
@@ -77,6 +79,30 @@ public sealed class EhfBackgroundPatch
     public List<(uint Offset, uint Length)> Pages { get; } = new();
 }
 
+/// <summary>A Fable 3 texture inside an .ehf, located by its own v4 header.</summary>
+public sealed class EhfTexBlob
+{
+    /// <summary>Absolute offset of the v4 header's magic.</summary>
+    public int Header { get; init; }
+
+    public int Width { get; init; }
+
+    public int Height { get; init; }
+
+    public int PixelFormat { get; init; }
+
+    public int Flags { get; init; }
+
+    /// <summary>
+    /// Absolute offset of the payload: the guest reads it straight after the 92-byte header
+    /// (`sub_82D670C0` reads the first size word with no seek, Fable 3 IDB).
+    /// </summary>
+    public int Data { get; init; }
+
+    /// <summary>Absolute offset just past the blob: the header plus the payload size it states (+8).</summary>
+    public long End { get; init; }
+}
+
 public sealed class EhfParsedBody
 {
     public uint ChunkWidth { get; set; }
@@ -112,10 +138,23 @@ public static class Engine_EhfBody
 
     private const uint TexMagic = 0xFFFFFFFEu;
 
-    public static bool TryParse(byte[] ehf, out EhfParsedBody body, out string error)
+    /// <summary>The length word Fable 3 writes before every texture in the body.</summary>
+    private const int Fable3LengthWord = 4;
+
+    public static bool TryParse(byte[] ehf, out EhfParsedBody body, out string error) =>
+        TryParse(ehf, Engine_Title.Active, out body, out error);
+
+    /// <remarks>
+    /// Fable 3 (`sub_82CB1998`) reads the same body as Fable 2 (`sub_82A90628`), field for field,
+    /// with two differences. Every texture goes through `sub_82CB0BD8`, which reads a length word
+    /// before the v4 .tex (see <see cref="TryReadFable3Blob"/>), and each page record states its
+    /// page 4 bytes early (see <see cref="ReadPageTables"/>).
+    /// </remarks>
+    public static bool TryParse(byte[] ehf, Engine_Title title, out EhfParsedBody body, out string error)
     {
         body = new EhfParsedBody();
         error = string.Empty;
+        bool fable3 = title == Engine_Title.Fable3;
 
         if (ehf.Length < HeaderLength || !HasMagic(ehf))
         {
@@ -133,13 +172,13 @@ public static class Engine_EhfBody
 
         var walker = new Walker(ehf, (int)bodyOffset, (int)bodySize);
 
-        if (!SkipTexBlob(walker))
+        if (!SkipTexBlob(walker, fable3))
         {
             error = $"tex[0]: {walker.Error}";
             return false;
         }
 
-        if (!SkipTexBlob(walker))
+        if (!SkipTexBlob(walker, fable3))
         {
             error = $"tex[1]: {walker.Error}";
             return false;
@@ -180,7 +219,7 @@ public static class Engine_EhfBody
             return false;
         }
 
-        if (!ReadWeightMasks(walker, body, out error))
+        if (!(fable3 ? ReadFable3WeightMasks(walker, body, out error) : ReadWeightMasks(walker, body, out error)))
         {
             return false;
         }
@@ -190,7 +229,7 @@ public static class Engine_EhfBody
             return false;
         }
 
-        if (!ReadPaintResources(walker, body, out error))
+        if (!(fable3 ? ReadFable3PaintResources(walker, body, out error) : ReadPaintResources(walker, body, out error)))
         {
             return false;
         }
@@ -200,7 +239,7 @@ public static class Engine_EhfBody
             return false;
         }
 
-        if (!ReadPageTables(walker, body, backgroundCount, out error))
+        if (!ReadPageTables(walker, body, backgroundCount, fable3, out error))
         {
             return false;
         }
@@ -304,11 +343,46 @@ public static class Engine_EhfBody
 
             body.WeightMasks.Add(mask);
 
-            if (!SkipTexBlob(walker))
+            if (!SkipTexBlob(walker, fable3: false))
             {
                 error = $"weight mask: {walker.Error}";
                 return false;
             }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// The background U and V maps: exactly two textures, res+24 and res+32
+    /// (`sub_82CB1998` 0x82CB1D0C..0x82CB1D54), each L16 (format 98) with its rows stored raw.
+    /// </summary>
+    private static bool ReadFable3WeightMasks(Walker walker, EhfParsedBody body, out string error)
+    {
+        error = string.Empty;
+
+        for (int i = 0; i < 2; i++)
+        {
+            if (!SkipFable3Blob(walker, out EhfTexBlob blob))
+            {
+                error = $"weight mask: {walker.Error}";
+                return false;
+            }
+
+            var mask = new EhfPaintResource
+            {
+                Width = (uint)blob.Width,
+                Height = (uint)blob.Height,
+                PixelFormat = (uint)blob.PixelFormat,
+            };
+
+            long dataLength = (long)mask.Width * mask.Height * 2;
+            if (mask.PixelFormat == 98u && blob.Data + dataLength <= blob.End)
+            {
+                mask.Data = walker.Slice(blob.Data - walker.Base, (int)dataLength);
+            }
+
+            body.WeightMasks.Add(mask);
         }
 
         return true;
@@ -434,7 +508,7 @@ public static class Engine_EhfBody
 
             if (resource.PixelFormat == 99u &&
                 Engine_EhfSplat.TryDecodePf99SplatMap(
-                    walker.Data, walker.Base + start, walker.Length - start,
+                    walker.Data, walker.Base + start, walker.Length - start, Engine_Title.Fable2,
                     out byte[] decoded, out int decodedWidth, out int decodedHeight, out _))
             {
                 resource.Data = decoded;
@@ -446,10 +520,62 @@ public static class Engine_EhfBody
                 body.SplatHeight = (uint)decodedHeight;
             }
 
-            if (!SkipTexBlob(walker))
+            if (!SkipTexBlob(walker, fable3: false))
             {
                 error = $"85DB0 tex[{k}]: {walker.Error}";
                 return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool ReadFable3PaintResources(Walker walker, EhfParsedBody body, out string error)
+    {
+        error = string.Empty;
+
+        if (!walker.U32(out uint count))
+        {
+            error = $"85DB0 count: {walker.Error}";
+            return false;
+        }
+
+        if (count > 32)
+        {
+            error = "85DB0 count implausible";
+            return false;
+        }
+
+        for (uint k = 0; k < count; k++)
+        {
+            int start = walker.Position;
+            if (!SkipFable3Blob(walker, out EhfTexBlob blob))
+            {
+                error = $"85DB0 tex[{k}]: {walker.Error}";
+                return false;
+            }
+
+            var resource = new EhfPaintResource
+            {
+                Width = (uint)blob.Width,
+                Height = (uint)blob.Height,
+                PixelFormat = (uint)blob.PixelFormat,
+            };
+
+            body.PaintResources.Add(resource);
+
+            if (resource.PixelFormat == 99u &&
+                Engine_EhfSplat.TryDecodePf99SplatMap(
+                    walker.Data, walker.Base + start, walker.Length - start, Engine_Title.Fable3,
+                    out byte[] decoded, out int decodedWidth, out int decodedHeight, out _))
+            {
+                resource.Data = decoded;
+                resource.Width = (uint)decodedWidth;
+                resource.Height = (uint)decodedHeight;
+
+                body.SplatIndices = decoded;
+                body.SplatWidth = (uint)decodedWidth;
+                body.SplatHeight = (uint)decodedHeight;
             }
         }
 
@@ -588,8 +714,13 @@ public static class Engine_EhfBody
         return true;
     }
 
+    /// <remarks>
+    /// Fable 3's records state the page's length word: `sub_82CF4860` stores offset + 4 and
+    /// length − 4 (0x82CF4A6C `addi r7, r10, 4`, 0x82CF4A70 `addi r6, r8, -4`), so a page
+    /// here is the v4 .tex itself, as it is in Fable 2 (`sub_82B2E2E8` stores both as read).
+    /// </remarks>
     private static bool ReadPageTables(
-        Walker walker, EhfParsedBody body, uint backgroundCount, out string error)
+        Walker walker, EhfParsedBody body, uint backgroundCount, bool fable3, out string error)
     {
         error = string.Empty;
 
@@ -625,7 +756,9 @@ public static class Engine_EhfBody
                 for (uint s = 0; s < subCount; s++)
                 {
                     int at = walker.Position + ((int)s * 8);
-                    pages.Add((walker.PeekU32(at), walker.PeekU32(at + 4)));
+                    pages.Add(fable3
+                        ? (walker.PeekU32(at) + Fable3LengthWord, walker.PeekU32(at + 4) - Fable3LengthWord)
+                        : (walker.PeekU32(at), walker.PeekU32(at + 4)));
                 }
             }
 
@@ -635,8 +768,13 @@ public static class Engine_EhfBody
         return true;
     }
 
-    private static bool SkipTexBlob(Walker walker)
+    private static bool SkipTexBlob(Walker walker, bool fable3)
     {
+        if (fable3)
+        {
+            return SkipFable3Blob(walker, out _);
+        }
+
         int start = walker.Position;
         if (!walker.Need(0x60))
         {
@@ -684,6 +822,84 @@ public static class Engine_EhfBody
         }
 
         walker.Position = (int)next;
+        return true;
+    }
+
+    private static bool SkipFable3Blob(Walker walker, out EhfTexBlob blob)
+    {
+        if (!TryReadFable3Blob(
+                walker.Data, walker.Base + walker.Position, (long)walker.Base + walker.Length,
+                out blob, out string error))
+        {
+            walker.Error = $"{error} (body 0x{walker.Position:x})";
+            return false;
+        }
+
+        walker.Position = (int)(blob.End - walker.Base);
+        return true;
+    }
+
+    /// <summary>
+    /// One texture in a Fable 3 body stream, at <paramref name="at"/>: a length word, then the
+    /// v4 .tex. `sub_82CB0BD8` reads the word (0x82CB0C10..0x82CB0C2C, swapped only under the
+    /// stream's swap flag, which the body stream clears), notes the position, and loads the
+    /// texture with `sub_82D679C0`; the length is used only to skip a texture that failed to load
+    /// (0x82CB0CD4 `add r4, r10, r29`, then the stream's seek at 0x82CB0CE0). The files store it
+    /// little-endian, so the texture's own header is what ends it.
+    /// </summary>
+    public static bool TryReadFable3Blob(
+        byte[] data, long at, long limit, out EhfTexBlob blob, out string error) =>
+        TryReadFable3Tex(data, at + Fable3LengthWord, limit, out blob, out error);
+
+    /// <summary>
+    /// A v4 .tex at <paramref name="at"/> (a page, or a body texture past its length word).
+    /// `sub_82D68618` reads the 23-word header and accepts it only as magic 0xABCBBBF3 version 4
+    /// (0x82D68774..0x82D68788); the payload follows it and its size is the header's +8.
+    /// </summary>
+    public static bool TryReadFable3Tex(
+        byte[] data, long at, long limit, out EhfTexBlob blob, out string error)
+    {
+        blob = null!;
+        error = string.Empty;
+        limit = Math.Min(limit, data.Length);
+
+        if (at < 0 || at + TexHeader.Fable3Size > limit)
+        {
+            error = $"tex header past the end at 0x{at:x}";
+            return false;
+        }
+
+        byte[] head = new byte[TexHeader.Fable3Size];
+        Buffer.BlockCopy(data, (int)at, head, 0, head.Length);
+        if (!TexHeader.IsFable3Header(head))
+        {
+            error = $"bad .tex magic 0x{ReadU32(head, 0):x} at 0x{at:x}";
+            return false;
+        }
+
+        if (!TexHeader.TryParse(head, out TexHeader header, out string why) || header.Version != 4)
+        {
+            error = $"bad v4 .tex header at 0x{at:x}: {(why.Length != 0 ? why : $"version {header.Version}")}";
+            return false;
+        }
+
+        long end = at + header.HeaderSize + (uint)header.PayloadSize;
+        if (end > limit)
+        {
+            error = $"tex blob overruns (pf={header.PixelFormat} end=0x{end:x} limit=0x{limit:x})";
+            return false;
+        }
+
+        blob = new EhfTexBlob
+        {
+            Header = (int)at,
+            Width = header.Width,
+            Height = header.Height,
+            PixelFormat = header.PixelFormat,
+            Flags = header.Flags,
+            Data = (int)at + header.HeaderSize,
+            End = end,
+        };
         return true;
     }
 

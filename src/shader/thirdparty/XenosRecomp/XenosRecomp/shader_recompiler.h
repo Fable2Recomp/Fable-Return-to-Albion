@@ -44,6 +44,9 @@ struct ShaderRecompiler : StringBuffer
     // The Godot dialect's output stem (e.g. "0248_vshader_standardmaterial_blt1_glt1_mist0_amb2"):
     // the family and permutation tokens, which decide a few input mappings.
     std::string godotEntryName;
+    // The title folder the blob came from ("Fable2", "Fable3"), empty when unstated: the per-draw
+    // constants one title adds to the engine's set (godotConstantSource) are keyed by it.
+    std::string godotTitle;
     bool godotTransferShader() const { return godotEntryName.find("amb2") != std::string::npos; }
     bool godotRepeatedShader() const { return godotEntryName.find("repeated") != std::string::npos; }
     bool godotTreeShader() const { return godotEntryName.find("tree") != std::string::npos; }

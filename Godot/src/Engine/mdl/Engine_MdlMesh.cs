@@ -175,7 +175,7 @@ public static int SurfacesWithLods;
         {
             isStub = true;
             error = info.BodyBytesStated > 0
-                ? $"no body entry in any bank: the {Engine_MdlEngine.BodyStart}-byte header " +
+                ? $"no body entry in any bank: the {16 + info.HeaderSize}-byte header " +
                   $"states {info.BodyBytesStated:N0} byte(s) of geometry across " +
                   $"{info.LodCount} LOD(s)"
                 : "header only, no geometry";
@@ -625,6 +625,7 @@ public static int SurfacesWithLods;
         {
             return null;
         }
+        data = info.Body ?? data;
         var blocks = new Godot.Collections.Array();
         foreach (MdlFurBlock block in info.FurBlocks)
         {

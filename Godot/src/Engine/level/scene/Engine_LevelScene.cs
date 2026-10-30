@@ -415,15 +415,8 @@ public static class Engine_LevelScene
                 continue;
             }
 
-            if (source(landscape.Ghf) is not { } ghfBytes ||
-                !Engine_GhfTerrain.TryDecode(ghfBytes, out GhfHeights heights, out _))
-            {
-                GD.Print($"[painted] {level.Name}: {genvPath} present but the heightfield did not decode; no origin");
-                continue;
-            }
-
             if (!Refii.Lighting.Engine_PaintedDaySets.TryParse(
-                    bytes, heights.OriginX, heights.OriginZ, out Refii.Lighting.Engine_PaintedDaySets.Grid grid, out string error))
+                    bytes, out Refii.Lighting.Engine_PaintedDaySets.Grid grid, out string error))
             {
                 GD.Print($"[painted] {level.Name}: {genvPath}: {error}");
                 continue;
@@ -787,6 +780,7 @@ public static class Engine_LevelScene
 
         Func<string, byte[]?>? terrainRead = source;
         var interactionGround = new Engine_LandscapeGround();
+        bool mainGridUnreadable = false;
         List<BuiltLandscape> TerrainWork()
         {
             // Every landscape the .engine_level states is built: the guest gives each type-4
@@ -810,7 +804,8 @@ public static class Engine_LevelScene
                     var chunks = new List<ArrayMesh>();
                     string ghfError = terrainRead is null ? "no reader" : "not in any bank";
                     string name = main ? TerrainNodeName : $"{TerrainNodeName}_{StemOf(landscape.Ghf)}_";
-                    if (terrainRead?.Invoke(landscape.Ghf) is { } ghfBytes &&
+                    byte[]? ghfBytes = terrainRead?.Invoke(landscape.Ghf);
+                    if (ghfBytes is not null &&
                         Engine_GhfTerrain.TryDecode(ghfBytes, out GhfHeights heights, out ghfError))
                     {
                         interactionGround.Add(heights);
@@ -847,6 +842,7 @@ public static class Engine_LevelScene
                     else
                     {
                         GD.Print($"[level] {level}: heightfield {landscape.Ghf} did not decode ({ghfError})");
+                        mainGridUnreadable |= main && ghfBytes is not null;
                     }
 
                     if (!main)
@@ -1308,7 +1304,16 @@ public static class Engine_LevelScene
         if (root.GetNodeOrNull<Engine_SkyEnvironmentNode>(Engine_SkyEnvironment.NodeName) is { } interactionSky)
             interactionSky.InteractionGround = interactionGround;
 
-        if (landscapes.Count == 0 || !landscapes[0].Grid || landscapes[0].Chunks.Count == 0)
+        // PRESENT BUT UNREADABLE IS NOT "NOT MOUNTED YET". A heightfield whose bytes are in the
+        // banks and do not decode will not decode on a retry either, and failing the level for it
+        // left the world loop rebuilding the whole region every few seconds with nothing on screen.
+        // The level stands without its ground and the reason is logged above; only a heightfield
+        // that is not in any bank yet fails the build, so a later frame retries after mounting.
+        if (mainGridUnreadable)
+        {
+            GD.PrintErr($"[level] {level}: standing WITHOUT terrain — {meshPath} is in the banks but did not decode");
+        }
+        else if (landscapes.Count == 0 || !landscapes[0].Grid || landscapes[0].Chunks.Count == 0)
         {
             Finished(level, reads, "build-failed");
             root.QueueFree();
@@ -1480,6 +1485,27 @@ public static class Engine_LevelScene
     /// yet. That is reported rather than dropped in silence, which is how the wrong bake went
     /// unnoticed on the ground in the first place.
     /// </remarks>
+    /// <summary>
+    /// A Fable 3 heightfield bake, composed (<see cref="Engine_LevelBakedLighting.ComposeFable3Bake"/>)
+    /// at one texel per cell. The title spans the bake across the whole heightfield whatever its
+    /// size — g_LandscapeLightmapUVFactor = 0.99609375 / ((samples - 1) * spacing), sub_82CAF990 —
+    /// and the splat samples one texel per cell, so resampled to (samples - 1) per axis the shared
+    /// mapping lands where the title's does, short of the factor's 1/256 inset.
+    /// </summary>
+    private static ImageTexture? ComposeFable3TerrainBake(string ehfPath, TerrainLightmap bake, Func<string, byte[]?> source)
+    {
+        byte[]? ehf = source(ehfPath) ?? source("data/" + ehfPath);
+        if (ehf is null || Refii.Core.Engine_GameGzip.MaybeGunzip(ehf) is not { } plain ||
+            !Engine_EhfHeights.TryReadSize(plain, out int samplesX, out int samplesY) ||
+            samplesX < 2 || samplesY < 2)
+        {
+            return null;
+        }
+
+        return Engine_LevelBakedLighting.ComposeFable3Bake(bake.IntensityBlob, bake.Blob, samplesX - 1, samplesY - 1)
+            is { } composed ? ImageTexture.CreateFromImage(composed) : null;
+    }
+
     private static void BindTerrainLightmaps(
         LevelEntry level,
         List<(string Path, MeshInstance3D Node)> surfaces,
@@ -1549,8 +1575,14 @@ public static class Engine_LevelScene
                     break;
                 }
 
-                ImageTexture? texture = GetTerrainLightmapTexture(
-                    textures, heightfield.LightmapKey, bake.Blob, Engine_LevelBakedLighting.DecodeTexture);
+                if (!decoded.TryGetValue(heightfield.LightmapKey, out ImageTexture? texture))
+                {
+                    texture = lightmaps.SharedKeyTable
+                        ? ComposeFable3TerrainBake(heightfield.Path, bake, source)
+                        : GetTerrainLightmapTexture(
+                            textures, heightfield.LightmapKey, bake.Blob, Engine_LevelBakedLighting.DecodeTexture);
+                    decoded[heightfield.LightmapKey] = texture;
+                }
                 if (texture is null)
                 {
                     GD.Print($"[baked] {level}: lightmap 0x{heightfield.LightmapKey:X16} did not decode");
@@ -1632,9 +1664,9 @@ public static class Engine_LevelScene
                 // the right UV, so say it out loud when it is not — a bake built for a
                 // different lattice is a real failure mode and it looks like bad lighting
                 // rather than like a mismatch.
-                bool cellAligned =
-                    texture.GetWidth() == bake.SamplesX - 1 &&
-                    texture.GetHeight() == bake.SamplesY - 1;
+                bool cellAligned = lightmaps.SharedKeyTable ||
+                    (texture.GetWidth() == bake.SamplesX - 1 &&
+                     texture.GetHeight() == bake.SamplesY - 1);
 
                 if (!reported.Add(heightfield.LightmapKey))
                 {

@@ -95,6 +95,14 @@ public sealed class BnkFileSystem : IDisposable
                     slot.Archive = archive;
                     System.Threading.Interlocked.Increment(ref NestedLoads);
                     System.Threading.Interlocked.Add(ref NestedMappedBytes, map.Length);
+
+                    // A mapped table costs nothing to keep, but its .dat may have been copied out
+                    // of a compressed outer entry: that copy is held, and counted, like any other.
+                    if (archive.AttachedHeapBytes > 0)
+                    {
+                        slot.Bytes = archive.AttachedHeapBytes;
+                        Retain(slot);
+                    }
                 }
                 else if (archive is null)
                 {
@@ -107,7 +115,12 @@ public sealed class BnkFileSystem : IDisposable
                     }
 
                     slot.AttachData?.Invoke(archive);
-                    slot.Bytes = container.LongLength;
+
+                    // THE DATA COUNTS, NOT JUST THE TABLE. A separate-data bank's table is a few KB
+                    // and its .dat, copied out of the outer bank, can be hundreds of MB; counting
+                    // only the table let Fable 3's boot texture sweep hold every level and
+                    // streaming bank it touched — 10.9 GB before the budget saw 1 GB.
+                    slot.Bytes = container.LongLength + archive.AttachedHeapBytes;
                     slot.Archive = archive;
                     System.Threading.Interlocked.Increment(ref NestedLoads);
                     Retain(slot);
@@ -298,7 +311,7 @@ public sealed class BnkFileSystem : IDisposable
             return;
         }
 
-        if (File.Exists(assetRoot) && assetRoot.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+        if (File.Exists(assetRoot) && Refii.Core.Engine_Title.IsModPackagePath(assetRoot))
         {
             if (Refii.Mods.F2ModPackage.TryOpen(assetRoot, out Refii.Mods.F2ModPackage? package, out string pkgError) && package is not null)
             {
@@ -963,10 +976,19 @@ public sealed class BnkFileSystem : IDisposable
             return nested => nested.AttachData(new MemoryStream(readOuter(dataEntry), false), null, ownsRange: false);
         }
 
-        string diskPath = Path.Combine(dataRoot, normalized + ".dat");
-        if (dataRoot.Length == 0 || !File.Exists(diskPath))
+        // Under the data root first; then beside the bank on disk that holds the header. Fable 3's
+        // nested names are relative to the directory levels.bnk is in (`art\gui\gui_textures.bnk`
+        // in data/levels.bnk, its bytes at data/art/gui/gui_textures.bnk.dat), so a mount rooted
+        // above data/ finds the payload only there.
+        string diskPath = dataRoot.Length == 0 ? string.Empty : Path.Combine(dataRoot, normalized + ".dat");
+        if (diskPath.Length == 0 || !File.Exists(diskPath))
         {
-            return null;
+            string? outerDirectory = Path.IsPathRooted(outer.ArchivePath) ? Path.GetDirectoryName(outer.ArchivePath) : null;
+            diskPath = string.IsNullOrEmpty(outerDirectory) ? string.Empty : Path.Combine(outerDirectory, normalized + ".dat");
+            if (diskPath.Length == 0 || !File.Exists(diskPath))
+            {
+                return null;
+            }
         }
 
         if (!_dataFiles.TryGetValue(diskPath, out BnkMappedRange? file))
@@ -1330,8 +1352,8 @@ public sealed class BnkFile
         BnkFile? whole = null;
         BnkFile? mip0 = null;
         BnkFile? rest = null;
-        long mip0Size = parsed.LevelCount >= 2 && parsed.LevelOffsets[1] > Refii.Textures.TexHeader.Size
-            ? parsed.LevelOffsets[1] - Refii.Textures.TexHeader.Size
+        long mip0Size = parsed.LevelCount >= 2 && parsed.LevelOffsets[1] > parsed.HeaderSize
+            ? parsed.LevelOffsets[1] - parsed.HeaderSize
             : -1;
 
         foreach (BnkFile part in parts)
@@ -1421,7 +1443,7 @@ public sealed class BnkFile
     }
 
     private static bool HasTexHeaderMagic(byte[] d) =>
-        d.Length >= 84 && (d[0] & 0x80) != 0 && d[0] == 0xFF;
+        (d.Length >= 84 && (d[0] & 0x80) != 0 && d[0] == 0xFF) || Refii.Textures.TexHeader.IsFable3Header(d);
 
     public override string ToString() => VirtualPath;
 }

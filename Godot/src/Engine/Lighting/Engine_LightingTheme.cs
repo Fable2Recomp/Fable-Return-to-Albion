@@ -126,6 +126,24 @@ public static class Engine_LightingTheme
     public static bool TryExtract(IReadOnlyList<byte[]> gdbs, float targetTime, uint daySetHash, out LightingTheme theme)
     {
         theme = new LightingTheme();
+
+        // FABLE 3 PAINTS MAP IDS, NOT DAY-SET RECORDS (Engine_EnvThemeFile.TryMapTheme): the layer
+        // is that one .envtheme evaluated at the time, stating only the parameters it carries —
+        // the fold (`sub_82228D38`) lerps a stated parameter by the layer weight and leaves the
+        // rest to the layers below.
+        if (Refii.Level.Engine_EnvironmentTheme.CarriesEnvThemes(gdbs))
+        {
+            if (!Refii.Level.Engine_EnvThemeFile.TryMapTheme(daySetHash, out Refii.Level.Engine_EnvThemeFile painted, out _))
+            {
+                return false;
+            }
+
+            float at = float.IsFinite(targetTime) && targetTime >= 0f ? targetTime : 0.5f;
+            ApplyEnvTheme(Refii.Level.Engine_EnvThemeFile.Evaluate(new[] { painted }, at), theme);
+            theme.SourceTimeOfDay = at - MathF.Floor(at);
+            return theme.HasAny;
+        }
+
         var chain = Chain.Create(gdbs);
         if (chain is null)
         {
@@ -148,6 +166,32 @@ public static class Engine_LightingTheme
         // Chain.Overrides.
         theme.HasAny = ApplyThemeRecord(chain, dayTheme, theme, overridesOnly: true);
         return theme.HasAny;
+    }
+
+    /// <summary>
+    /// A Fable 3 theme block into the lighting theme: the block's value for each parameter, stated
+    /// where a layer states it. The colour-with-factor parameters arrive premultiplied (every
+    /// shipped key has max(X,Y,Z) &lt;= W), so X/Y/Z is the colour. Fable 3 has no lightmap colour.
+    /// </summary>
+    private static void ApplyEnvTheme(Refii.Level.Engine_EnvThemeFile.Block block, LightingTheme theme)
+    {
+        static void Colour(Refii.Level.Engine_EnvThemeFile.Block b, string name, float[] into)
+        {
+            System.Numerics.Vector4 v = b.Vector(name);
+            into[0] = v.X;
+            into[1] = v.Y;
+            into[2] = v.Z;
+        }
+
+        Colour(block, "Main Light Colour", theme.MainLightColour);
+        Colour(block, "Ambient Colour", theme.AmbientColour);
+        Colour(block, "Ambient Normal Map Darkening", theme.DarkeningColour);
+        theme.MainLightShadowed = block.Float("Main Light Shadowed");
+        theme.HasMainLightColour = block.IsStated("Main Light Colour");
+        theme.HasAmbientColour = block.IsStated("Ambient Colour");
+        theme.HasDarkeningColour = block.IsStated("Ambient Normal Map Darkening");
+        theme.HasMainLightShadowed = block.IsStated("Main Light Shadowed");
+        theme.HasAny = true;
     }
 
     /// <summary>The keyframe times of one day set, as day fractions, sorted.</summary>
@@ -185,13 +229,23 @@ public static class Engine_LightingTheme
     public static bool TryExtract(IReadOnlyList<byte[]> gdbs, float targetTime, out LightingTheme theme)
     {
         theme = new LightingTheme();
+        float time = float.IsFinite(targetTime) && targetTime >= 0f ? targetTime : 0.5f;
+
+        // FABLE 3 STATES ITS LIGHTING IN THE .envtheme STACK the chain carries, not in a gdb day
+        // set: its levels still hold Fable 2's EnvironmentThemeDaySet field and the old day sets,
+        // which the Fable 3 engine never reads (the binary has no such string).
+        if (Refii.Level.Engine_EnvironmentTheme.TryEvaluateEnvThemes(gdbs, time, out Refii.Level.Engine_EnvThemeFile.Block block))
+        {
+            ApplyEnvTheme(block, theme);
+            return theme.HasAny;
+        }
+
         var chain = Chain.Create(gdbs);
         if (chain is null)
         {
             return false;
         }
 
-        float time = float.IsFinite(targetTime) && targetTime >= 0f ? targetTime : 0.5f;
         bool applied = false;
 
         if (chain.SelectThemeFromDaySet(time, out RecordRef dayTheme, out float dayTime))

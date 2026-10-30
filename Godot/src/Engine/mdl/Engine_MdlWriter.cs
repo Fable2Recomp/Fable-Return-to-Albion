@@ -121,6 +121,15 @@ public static class Engine_MdlWriter
 	public static int TangentOffsetFor(MdlMeshBuffer buffer) => buffer.IsEngineSkinned ? 24 : 16;
 
 	/// <summary>
+	/// The writer edits a version-36 file in place at its buffers' file offsets. A model whose
+	/// buffers were repacked (<see cref="MdlInfo.Body"/>, Fable 3's version 47) has no such
+	/// offsets in its file, and is refused.
+	/// </summary>
+	private const string RepackedRefusal =
+		"this model's buffers were repacked from Fable 3's planar layout; the writer edits a " +
+		"version-36 file in place and cannot rewrite it";
+
+	/// <summary>
 	/// Writes <paramref name="edit"/> into a copy of <paramref name="original"/>.
 	///
 	/// <paramref name="info"/> must be the parse of that same file — its buffer offsets are
@@ -131,6 +140,12 @@ public static class Engine_MdlWriter
 	{
 		result = original;
 		error = string.Empty;
+
+		if (info.Body is not null)
+		{
+			error = RepackedRefusal;
+			return false;
+		}
 
 		if (edit.BufferIndex < 0 || edit.BufferIndex >= info.MeshBuffers.Count)
 		{
@@ -292,6 +307,12 @@ public static class Engine_MdlWriter
 	{
 		result = original;
 		error = string.Empty;
+
+		if (info.Body is not null)
+		{
+			error = RepackedRefusal;
+			return false;
+		}
 
 		if (bufferIndex < 0 || bufferIndex >= info.MeshBuffers.Count)
 		{

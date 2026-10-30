@@ -471,7 +471,8 @@ public partial class GameWorld : Node3D
 			holding.LoadHold = true;
 		}
 
-		bool entitiesPending = _entities is { } feed && !feed.ReadyForRelease;
+		bool entitiesPending = Engine_TitleGame.Active.StatesEntities &&
+			_entities is { } feed && !feed.ReadyForRelease;
 		// THE CLASSIC SHADERS, last: every composition compiled and every light-group shape the
 		// placed fixtures can produce built, so play composes and compiles nothing.
 		string classicWait = Refii.Models.Engine_ClassicLoad.Pump(!propsPending && !entitiesPending);
@@ -1796,6 +1797,7 @@ public partial class GameWorld : Node3D
 		// Characters the draw path cannot reach: a live skeleton and no model hash.
 		int modelless = 0;
 		int modellessWithMorph = 0;
+		byte morphComponent = Engine_Title.Active == Engine_Title.Fable3 ? (byte)20 : (byte)17;
 		string modellessSample = string.Empty;
 
 		foreach (HostBridge.GuestEntity entity in entities)
@@ -1844,9 +1846,10 @@ public partial class GameWorld : Node3D
 			//
 			// An entity with a live skeleton and no model hash is one component 6 cannot
 			// reach: `sub_8257E0C0` returns 0 for a zero hash with no fallback. Their geometry
-			// is the part LIST on CECGraphicAppearanceMorph, component id 17, so whether they
-			// carry id 17 at all decides whether anything can draw them — and that is a
-			// live-memory fact no amount of reading the binary answers.
+			// is the part LIST on CECGraphicAppearanceMorph, component id 17 (Fable 3: 20, its
+			// built list at +0x38/+0x3C), so whether they carry that id at all decides whether
+			// anything can draw them — and that is a live-memory fact no amount of reading the
+			// binary answers.
 			//
 			// Only the ids are read here; the parts themselves come from
 			// RefiiHostGetEntityMorphParts, which knows the component's layout.
@@ -1855,7 +1858,7 @@ public partial class GameWorld : Node3D
 				++modelless;
 
 				byte[] ids = HostBridge.GetEntityComponents(entity.Address);
-				bool hasMorph = System.Array.IndexOf(ids, (byte)17) >= 0;
+				bool hasMorph = System.Array.IndexOf(ids, morphComponent) >= 0;
 				if (hasMorph)
 				{
 					++modellessWithMorph;
@@ -1865,7 +1868,7 @@ public partial class GameWorld : Node3D
 				{
 					modellessSample += $"\n    modelless character 0x{entity.Address:X8} " +
 						$"bones={pose.BoneCount} components=[{string.Join(",", ids)}] " +
-						$"id17={(hasMorph ? "PRESENT" : "absent")}";
+						$"morph{morphComponent}={(hasMorph ? "PRESENT" : "absent")}";
 				}
 			}
 
@@ -1967,11 +1970,11 @@ public partial class GameWorld : Node3D
 			$"neverPosed={Refii.Entities.Engine_EntitySkeleton.NeverPosed}{sample}{chainSample}");
 
 		// Reported separately from the pose counts above, because it says where a character
-		// with no model hash gets its geometry: component 17 is the composite route, and a
+		// with no model hash gets its geometry: the morph component is the composite route, and a
 		// modelless character without it is unreachable by either path.
 		GD.Print($"[guest-modelless] {modelless} of {characters} character(s) have a live " +
 			$"skeleton and NO model hash — nothing can draw them; {modellessWithMorph} of " +
-			$"those carry component 17 (CECGraphicAppearanceMorph){modellessSample}");
+			$"those carry component {morphComponent} (CECGraphicAppearanceMorph){modellessSample}");
 	}
 
 	private int _entityTicks;

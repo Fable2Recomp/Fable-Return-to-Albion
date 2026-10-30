@@ -61,6 +61,18 @@ public partial class ModdingPanel : VBoxContainer
 		Build();
 	}
 
+	/// <summary>
+	/// Rebuilds the panel for the title now active: its mods folder, its packages and its
+	/// extension in every label. The launcher calls it on a title switch.
+	/// </summary>
+	public void ReloadForTitle()
+	{
+		if (_built)
+		{
+			Configure(_font, _fontSize, _style);
+		}
+	}
+
 	private void Build()
 	{
 		if (_built)
@@ -76,12 +88,13 @@ public partial class ModdingPanel : VBoxContainer
 		_rootLabel.Visible = !Phone;
 		AddChild(_rootLabel);
 
+		string extension = Refii.Core.Engine_Title.Active.ModExtension;
 		Label help = MakeLabel(Phone
-			? "Install a mod package (.f2mod) from this phone's storage; the mods that come with " +
+			? $"Install a mod package ({extension}) from this phone's storage; the mods that come with " +
 			  "the app are already listed. A mod is installed disabled: tick it to turn it on. " +
 			  "Higher in the list wins a conflict. Changes apply the next time the game starts. " +
 			  "Mods with native code cannot run on the phone yet."
-			: "Install a mod package (.f2mod) from a file or a link, or drop packages into this " +
+			: $"Install a mod package ({extension}) from a file or a link, or drop packages into this " +
 			"folder. A mod is installed disabled: tick it to turn it on. Enabled mods override " +
 			"matching game records; higher in the list wins a conflict. Changes apply the next " +
 			"time the game starts.");
@@ -94,7 +107,7 @@ public partial class ModdingPanel : VBoxContainer
 
 		var installFile = new Button { Text = "Install from file…" };
 		Apply(installFile);
-		installFile.TooltipText = "Install a .f2mod package from this computer.";
+		installFile.TooltipText = $"Install a {Refii.Core.Engine_Title.Active.ModExtension} package from this computer.";
 		installFile.Pressed += OnInstallFromFile;
 		installRow.AddChild(installFile);
 
@@ -109,7 +122,7 @@ public partial class ModdingPanel : VBoxContainer
 
 		var installUrl = new Button { Text = "Install from URL…" };
 		Apply(installUrl);
-		installUrl.TooltipText = "Download and install a .f2mod package from an https link.";
+		installUrl.TooltipText = $"Download and install a {Refii.Core.Engine_Title.Active.ModExtension} package from an https link.";
 		installUrl.Pressed += OnInstallFromUrl;
 		installRow.AddChild(installUrl);
 
@@ -289,7 +302,7 @@ public partial class ModdingPanel : VBoxContainer
 
 			_order.Enabled.RemoveAll(name => string.Equals(name, mod.Name, StringComparison.OrdinalIgnoreCase));
 			_order.Order.RemoveAll(name => string.Equals(name, mod.Name, StringComparison.OrdinalIgnoreCase));
-			_statusMessage = $"Deleted '{mod.Name}.f2mod'.";
+			_statusMessage = $"Deleted '{mod.Name}{Refii.Core.Engine_Title.Active.ModExtension}'.";
 			SaveEnabledMods();
 		}
 		catch (System.Exception ex)
@@ -351,7 +364,7 @@ public partial class ModdingPanel : VBoxContainer
 			FileMode = FileDialog.FileModeEnum.OpenFile,
 			Access = FileDialog.AccessEnum.Filesystem,
 			Title = "Install Mod Package",
-			Filters = new[] { "*.f2mod ; Refii mod package" },
+			Filters = new[] { $"*{Refii.Core.Engine_Title.Active.ModExtension} ; Refii mod package" },
 			Size = new Vector2I(820, 560),
 		};
 		picker.FileSelected += path => ConfirmInstall(ModInstaller.Inspect(path, _modsRoot), downloaded: false);
@@ -413,12 +426,12 @@ public partial class ModdingPanel : VBoxContainer
 
 		var box = new VBoxContainer();
 		box.AddThemeConstantOverride("separation", 6);
-		var prompt = new Label { Text = "Paste an https link to a .f2mod package:" };
+		var prompt = new Label { Text = $"Paste an https link to a {Refii.Core.Engine_Title.Active.ModExtension} package:" };
 		Apply(prompt);
 		box.AddChild(prompt);
 		var link = new LineEdit
 		{
-			PlaceholderText = "https://example.com/my_mod.f2mod",
+			PlaceholderText = $"https://example.com/my_mod{Refii.Core.Engine_Title.Active.ModExtension}",
 			SizeFlagsHorizontal = SizeFlags.ExpandFill,
 		};
 		Apply(link);
@@ -701,7 +714,7 @@ public partial class ModdingPanel : VBoxContainer
 
 			if (ModWorkspace.CreateModPackage(_modsRoot, modName, out string pkgPath, out string error))
 			{
-				_statusMessage = $"Created '{modName}.f2mod'.";
+				_statusMessage = $"Created '{modName}{Refii.Core.Engine_Title.Active.ModExtension}'.";
 				_order.RegisterMod(modName, enabled: true);
 				SaveEnabledMods();
 				return;
@@ -1079,7 +1092,7 @@ public partial class ModdingPanel : VBoxContainer
 		var deleteBtn = new Button { Text = "🗑" };
 		Apply(deleteBtn);
 		deleteBtn.CustomMinimumSize = Hit(new Vector2(28, 22));
-		deleteBtn.TooltipText = $"Delete '{mod.Name}.f2mod' package.";
+		deleteBtn.TooltipText = $"Delete '{mod.Name}{Refii.Core.Engine_Title.Active.ModExtension}' package.";
 		ModInstall targetMod = mod;
 		deleteBtn.Pressed += () => OnDeleteMod(targetMod);
 		actionsBox.AddChild(deleteBtn);

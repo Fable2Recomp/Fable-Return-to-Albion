@@ -15,11 +15,6 @@ public partial class LauncherApp : Control
 {
 	private const float ArtCreditHeight = 26.0f;
 
-	private static readonly string[] NewsTabs =
-	{
-		"Change Log", "Credits",
-	};
-
 	private static readonly string[] DebugTabs =
 	{
 		"Settings", "Modding", "Install",
@@ -28,10 +23,20 @@ public partial class LauncherApp : Control
 	{
 		"Set Install Folder", "Uninstall", "", "Show Announcements", "Show Debug Panel", "Close",
 	};
-	private static readonly string[] AboutMenuItems =
+	/// <summary>The About menu's entries every title shares, after the title's own.</summary>
+	private static readonly LauncherLink[] SharedAboutLinks =
 	{
-		"Fable 2 Recompiled", "RexGlue",
+		new("RexGlue", "https://github.com/rexglue/rexglue-sdk"),
 	};
+
+	/// <summary>The active title's screen (<see cref="LauncherTitleScreen.Active"/>), as last applied.</summary>
+	private LauncherTitleScreen _screen = null!;
+
+	/// <summary>The info drawer's tabs on the active title's screen.</summary>
+	private IReadOnlyList<LauncherInfoTab> _infoTabList = Array.Empty<LauncherInfoTab>();
+
+	/// <summary>The About menu's entries on the active title's screen, in menu order.</summary>
+	private readonly List<LauncherLink> _aboutLinks = new();
 
 	private bool _commitsLoading = true;
 	private bool _commitsLoaded;
@@ -187,14 +192,19 @@ public partial class LauncherApp : Control
 		LoadActiveTitle();
 		LauncherTheme.Load();
 
-		// The mods that ship with the app, packed into the mods folder before the Mods panel
-		// first lists it. Installed switched off; never over a copy someone has edited. They are
-		// Fable 2 mods, so they go to Fable 2's folder whichever title is active.
-		foreach (string line in Refii.Mods.ModBundled.Install(
-			Refii.Core.Engine_AppRoot.BundledModsDirectoryFor(Refii.Core.Engine_Title.Fable2),
-			Refii.Mods.ModWorkspace.GetDefaultModsRoot(Refii.Core.Engine_Title.Fable2.AssetsDirectory)))
+		// The mods that ship with the app, packed into each title's mods folder before the Mods
+		// panel first lists it. Installed switched off; never over a copy someone has edited. A
+		// title's shipped mods go to that title's folder whichever title is active; a title that
+		// ships none has no folder to read.
+		foreach (Refii.Core.Engine_Title title in Refii.Core.Engine_Title.All)
 		{
-			GD.Print("[mods] bundled " + line);
+			foreach (string line in Refii.Mods.ModBundled.Install(
+				Refii.Core.Engine_AppRoot.BundledModsDirectoryFor(title),
+				Refii.Mods.ModWorkspace.GetDefaultModsRoot(title.AssetsDirectory),
+				title.ModExtension))
+			{
+				GD.Print("[mods] bundled " + line);
+			}
 		}
 
 		_patches = new Patches();
@@ -218,7 +228,7 @@ public partial class LauncherApp : Control
 
 		if (!Engine.IsEditorHint())
 		{
-			DisplayServer.WindowSetTitle(LauncherTheme.WindowTitle);
+			DisplayServer.WindowSetTitle(_screen.WindowTitle);
 			ApplyWindowIcon();
 			WindowEffects.Apply();
 			CallDeferred(MethodName.ReapplyWindowTitle);
@@ -426,7 +436,6 @@ public partial class LauncherApp : Control
 	}
 
 	private const string BundledConfig = "res://assets/launcher/config.cfg";
-	private const string BundledBackground = "res://assets/launcher/backgrounds/01.png";
 
 	private void LoadLauncherConfig()
 	{
@@ -468,7 +477,7 @@ public partial class LauncherApp : Control
 
 	private void ReapplyWindowTitle()
 	{
-		DisplayServer.WindowSetTitle(LauncherTheme.WindowTitle);
+		DisplayServer.WindowSetTitle(_screen.WindowTitle);
 	}
 
 	private static void ApplyWindowIcon()
@@ -515,46 +524,6 @@ public partial class LauncherApp : Control
 
 		// Subtle glyph tracking makes the display face read as crafted at title sizes.
 		return new FontVariation { BaseFont = baseFont, SpacingGlyph = 1 };
-	}
-
-	private Texture2D? LoadBackgroundTexture()
-	{
-		var bundled = ResourceLoader.Load<Texture2D>(BundledBackground);
-		if (bundled is not null)
-		{
-			return bundled;
-		}
-
-		foreach (string root in new[]
-				 {
-					 ProjectSettings.GlobalizePath("res://assets/launcher/backgrounds"),
-					 LauncherPaths.GetLauncherAssetPath("backgrounds"),
-				 })
-		{
-			if (!Directory.Exists(root))
-			{
-				continue;
-			}
-
-			string[] files = Directory.GetFiles(root);
-			Array.Sort(files, StringComparer.OrdinalIgnoreCase);
-			foreach (string file in files)
-			{
-				string extension = Path.GetExtension(file).ToLowerInvariant();
-				if (extension is not (".png" or ".jpg" or ".jpeg" or ".bmp"))
-				{
-					continue;
-				}
-
-				Image image = Image.LoadFromFile(file);
-				if (image is not null)
-				{
-					return ImageTexture.CreateFromImage(image);
-				}
-			}
-		}
-
-		return null;
 	}
 
 	private void BuildStyles()
@@ -944,8 +913,8 @@ public partial class LauncherApp : Control
 
 	private void ApplyStyles()
 	{
-		_backgrounds = new BackgroundManager(_background, _backgroundNext);
-		_backgrounds.Initialize();
+		_screen = LauncherTitleScreen.Active;
+		ApplyBackgrounds();
 
 		// Toolbar: no bar at all. The artwork runs to the top of the window and
 		// the wordmark + menus float over it with a soft shadow for legibility.
@@ -1009,12 +978,12 @@ public partial class LauncherApp : Control
 		noticeBox.ContentMarginLeft = LauncherTokens.Sp4;
 		noticeBox.ContentMarginRight = LauncherTokens.Sp4;
 		_warningPanel.AddThemeStyleboxOverride("panel", noticeBox);
-		// The ini states the notice; when it does not, the line the scene carries stands. This
-		// assigned LauncherTheme.WarningText unconditionally, and its default is the empty
-		// string — no launcher.ini ships one, so the pill drew empty over the artwork.
-		if (LauncherTheme.WarningText.Length != 0)
+		// The title's screen states the notice; when it does not, the line the scene carries
+		// stands. This assigned LauncherTheme.WarningText unconditionally, and its default is the
+		// empty string — no launcher.ini ships one, so the pill drew empty over the artwork.
+		if (_screen.WarningText.Length != 0)
 		{
-			_warningLabel.Text = LauncherTheme.WarningText;
+			_warningLabel.Text = _screen.WarningText;
 		}
 
 		// An ini that states an empty notice means no notice: hide the pill rather than float
@@ -1172,7 +1141,15 @@ public partial class LauncherApp : Control
 	{
 		PopulateGameMenu();
 		PopulateMenu(_fileMenu, _phone == null ? FileMenuItems : new[] { "Install from ISO and TU", "Cancel installation", "", "Export logs and saves", "Export saves", "Import save", "", "Show Announcements", "Show Debug Panel", "Close" }, OnFileMenu);
-		PopulateMenu(_aboutMenu, AboutMenuItems, OnAboutMenu);
+		_aboutMenu.GetPopup().IdPressed += id =>
+		{
+			int index = (int)id;
+			if (index >= 0 && index < _aboutLinks.Count)
+			{
+				Platform.TryOpenUrl(_aboutLinks[index].Url);
+			}
+		};
+		PopulateAboutMenu();
 		StylePopup(_gameMenu.GetPopup());
 		StylePopup(_fileMenu.GetPopup());
 		StylePopup(_aboutMenu.GetPopup());
@@ -1213,9 +1190,69 @@ public partial class LauncherApp : Control
 
 	private void ApplyWordmark()
 	{
-		string number = Refii.Core.Engine_Title.Active == Refii.Core.Engine_Title.Fable3 ? "3" : "2";
-		_wordmark.Text =
-			"[color=#e8dcc2]FABLE [/color][color=#daa520]" + number + "[/color][color=#e8dcc2] RECOMPILED[/color]";
+		_wordmark.Text = _screen.Wordmark;
+	}
+
+	/// <summary>The About menu: the active title's own links, then the shared ones.</summary>
+	private void PopulateAboutMenu()
+	{
+		_aboutLinks.Clear();
+		_aboutLinks.AddRange(_screen.AboutLinks);
+		_aboutLinks.AddRange(SharedAboutLinks);
+
+		PopupMenu popup = _aboutMenu.GetPopup();
+		popup.Clear();
+		for (int i = 0; i < _aboutLinks.Count; i++)
+		{
+			popup.AddItem(_aboutLinks[i].Label, i);
+		}
+	}
+
+	/// <summary>
+	/// The background art and its credit: the title's own, or a plain neutral background when it
+	/// has none. A fresh manager per title, so the slideshow never shows another title's art.
+	/// </summary>
+	private void ApplyBackgrounds()
+	{
+		_backgrounds = new BackgroundManager(_background, _backgroundNext, _screen.Backgrounds);
+		_backgrounds.Initialize();
+		UpdateArtCredit();
+	}
+
+	/// <summary>The info drawer's tabs from the active title's screen; the drawer shows the first.</summary>
+	private void ApplyInfoTabs()
+	{
+		_infoTabList = _screen.InfoTabs;
+		_infoTabs.ClearTabs();
+		foreach (LauncherInfoTab tab in _infoTabList)
+		{
+			_infoTabs.AddTab(tab.Name);
+		}
+
+		_infoTabs.Visible = _infoTabList.Count != 0;
+		RefreshInfoBody();
+	}
+
+	/// <summary>
+	/// Rebuilds the page for the active title: its screen (wordmark, window title, notice, art,
+	/// info drawer, About links), and the settings, modding and install panels, which follow the
+	/// title's own config file, settings and folders.
+	/// </summary>
+	private void ApplyTitleScreen()
+	{
+		_screen = LauncherTitleScreen.Active;
+		ApplyWordmark();
+		ApplyBackgrounds();
+		ApplyInfoTabs();
+		PopulateAboutMenu();
+		if (!Engine.IsEditorHint())
+		{
+			DisplayServer.WindowSetTitle(_screen.WindowTitle);
+		}
+
+		_settingsPanel.ReloadForTitle();
+		_moddingPanel.ReloadForTitle();
+		ApplyScale();
 	}
 
 	/// <summary>
@@ -1242,9 +1279,11 @@ public partial class LauncherApp : Control
 
 		Installer.InvalidateReinstallStepStatus();
 		Recompile.GameCodeBuild.InvalidateStatus();
+		// Read from the title's own config file: the next asset build takes this title's settings.
+		Refii.Textures.Engine_TexSettings.Invalidate();
 
 		RefreshGameMenu();
-		ApplyWordmark();
+		ApplyTitleScreen();
 		Log("Switched to " + title.Name + ".");
 		RefreshState();
 		RefreshDebugDrawer();
@@ -1310,11 +1349,7 @@ public partial class LauncherApp : Control
 	/// <summary>Uses the shared settings drawer with the current platform's installation controls.</summary>
 	private void WireTabs()
 	{
-		_infoTabs.ClearTabs();
-		foreach (string tab in NewsTabs)
-		{
-			_infoTabs.AddTab(tab);
-		}
+		ApplyInfoTabs();
 		_infoTabs.TabChanged += _ =>
 		{
 			RefreshInfoBody();
@@ -1375,19 +1410,6 @@ public partial class LauncherApp : Control
 					GetTree().Quit();
 				}
 
-				break;
-		}
-	}
-
-	private void OnAboutMenu(string item)
-	{
-		switch (item)
-		{
-			case "Fable 2 Recompiled":
-				Platform.TryOpenUrl("https://github.com/rexglue/refii");
-				break;
-			case "RexGlue":
-				Platform.TryOpenUrl("https://github.com/rexglue/rexglue-sdk");
 				break;
 		}
 	}
@@ -1680,9 +1702,9 @@ public partial class LauncherApp : Control
 				_warningLabel.Text = _pipeline.Error;
 				_warningPanel.Visible = true;
 			}
-			else if (LauncherTheme.WarningText.Length != 0)
+			else if (_screen.WarningText.Length != 0)
 			{
-				_warningLabel.Text = LauncherTheme.WarningText;
+				_warningLabel.Text = _screen.WarningText;
 				_warningPanel.Visible = true;
 			}
 			else
@@ -1825,12 +1847,18 @@ public partial class LauncherApp : Control
 			return;
 		}
 
-		string tab = NewsTabs[Mathf.Clamp(_infoTabs.CurrentTab, 0, NewsTabs.Length - 1)];
-		_infoBody.Text = tab switch
+		if (_infoTabList.Count == 0)
 		{
-			"Change Log" => BuildChangeLogText(),
-			"Credits" => BuildCreditsText(),
-			_ => string.Empty,
+			_infoBody.Text = string.Empty;
+			return;
+		}
+
+		LauncherInfoTab tab = _infoTabList[Mathf.Clamp(_infoTabs.CurrentTab, 0, _infoTabList.Count - 1)];
+		_infoBody.Text = tab.Source switch
+		{
+			LauncherInfoSource.ProjectChangeLog => BuildChangeLogText(),
+			LauncherInfoSource.ProjectContributors => BuildCreditsText(),
+			_ => tab.Text,
 		};
 	}
 

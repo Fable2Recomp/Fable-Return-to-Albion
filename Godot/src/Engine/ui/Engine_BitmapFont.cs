@@ -151,13 +151,18 @@ public sealed class Engine_BitmapFont
 			p += 2;
 		}
 
+		// The atlas is a raw .tex: its header, a byte count, the 4bpp texels. Fable 3's header is
+		// its own layout (Refii.Textures.TexHeader): the magic and a version ahead of the same
+		// fields, so the size sits four bytes later and the whole is eight bytes longer.
 		uint texMagic = BinaryPrimitives.ReadUInt32BigEndian(d.AsSpan(p, 4));
-		if (texMagic != TexMagic)
+		bool fable3 = texMagic == Refii.Textures.TexHeader.Fable3Magic;
+		if (texMagic != TexMagic && !fable3)
 			throw new InvalidDataException($"bft: atlas magic {texMagic:X8}, expected {TexMagic:X8}");
 
-		int atlasWidth = checked((int)BinaryPrimitives.ReadUInt32BigEndian(d.AsSpan(p + 0x10, 4)));
-		int atlasHeight = checked((int)BinaryPrimitives.ReadUInt32BigEndian(d.AsSpan(p + 0x14, 4)));
-		p += TexHeaderSize;
+		int sizeAt = fable3 ? 0x14 : 0x10;
+		int atlasWidth = checked((int)BinaryPrimitives.ReadUInt32BigEndian(d.AsSpan(p + sizeAt, 4)));
+		int atlasHeight = checked((int)BinaryPrimitives.ReadUInt32BigEndian(d.AsSpan(p + sizeAt + 4, 4)));
+		p += fable3 ? Refii.Textures.TexHeader.Fable3Size + 4 : TexHeaderSize;
 
 		// 4 bits per pixel.
 		int expected = atlasWidth * atlasHeight / 2;

@@ -43,8 +43,15 @@ public partial class Engine_ClassicSpotShadows : Node
     public const int MapSize = 512;
     public const int MaxMaps = 8;
 
-    /// <summary>The spot transform's first register (g_SpotShadowTransform, PS c32..c35) and the resolution's (c48).</summary>
-    public const int TransformRegister = 32, ResolutionRegister = 48;
+    /// <summary>
+    /// The spot transform's first register (g_SpotLightShadowTransform, PS c32..c35) and the
+    /// resolution's (g_SpotShadowMapResolution, c48), by the title's map. Fable 3's materials read
+    /// neither: only its spotlight_shadowmap_check stages bind the transform (c33) and s9, and no
+    /// Fable 3 stage declares the resolution, so that one is <see cref="Engine_ClassicRegisters.Absent"/>
+    /// and its writes are dropped.
+    /// </summary>
+    public static int TransformRegister => Engine_ClassicRegisters.Ps.SpotLightShadowTransform;
+    public static int ResolutionRegister => Engine_ClassicRegisters.Ps.SpotShadowMapResolution;
 
     private readonly SubViewport?[] _viewports = new SubViewport?[MaxMaps];
     private readonly Camera3D?[] _cameras = new Camera3D?[MaxMaps];
@@ -229,8 +236,8 @@ public partial class Engine_ClassicSpotShadows : Node
             // Row 34/35: the slots' own-map flags.
             System.Array.Clear(block, 34 * 4, 8);
             Engine_ClassicConstants.CopyFrame(true, _frameScratch);
-            Engine_ClassicConstants.SetRowBlock(true, row, TransformRegister, _frameScratch.AsSpan(TransformRegister * 4, 16));
-            Engine_ClassicConstants.SetRowBlock(true, row, ResolutionRegister, _frameScratch.AsSpan(ResolutionRegister * 4, 4));
+            CopyFrameRegisters(row, TransformRegister, 4);
+            CopyFrameRegisters(row, ResolutionRegister, 1);
             return;
         }
         float[,] m = Transform(local);
@@ -248,6 +255,15 @@ public partial class Engine_ClassicSpotShadows : Node
     }
 
     private static readonly float[] _frameScratch = new float[Engine_ClassicConstants.Floats];
+
+    /// <summary>The frame's copy of <paramref name="count"/> registers into a row; none for a register the title lacks.</summary>
+    private static void CopyFrameRegisters(int row, int register, int count)
+    {
+        if (register >= 0)
+        {
+            Engine_ClassicConstants.SetRowBlock(true, row, register, _frameScratch.AsSpan(register * 4, count * 4));
+        }
+    }
 
     /// <summary>The spot's layer this frame, or -1 when every map is taken.</summary>
     private static int Ask(int spot)

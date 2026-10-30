@@ -23,9 +23,20 @@ namespace Refii.Lighting;
 /// ambient: its cells are painted (the market paints three day sets over 243 cells, one of them
 /// a 16 × 12 m patch), and there is no interior flag anywhere.
 ///
-/// File layout (the asset browser writes the same): 12-byte header, be-u32 span x/y, be-u32
-/// width/height, f32 cell size, padded to 32 bytes, then width × height be-u32 hashes. The grid
+/// File layout (the asset browser writes the same): the heightfield's 12-byte header (f32 origin
+/// x/y first), be-u32 span x/y, be-u32 width/height, f32 cell size, then width × height be-u32
+/// hashes. The guest reads the origin and span from the file itself (<c>sub_82354A98</c>: tile
+/// bounds = (int)origin .. (int)origin + span) and the body with <c>sub_8265EF98</c>; the grid
 /// spans the heightfield from its origin, one cell per 4 m.
+///
+/// FABLE 3 PAINTS A SECOND GRID. Its reader (<c>sub_8243D410</c> → <c>sub_828E3CA0</c>) takes the
+/// same header and then TWO width × height be-u32 grids — the first into the vector at tile+12,
+/// the second into the one at tile+28 — and its sampler (<c>sub_82298098</c>) indexes the SECOND
+/// (data at tile+32) with the same cell arithmetic, bounds at tile+44..56. The second grid is the
+/// day-set hash grid; the first is read but not sampled by the painted path. The file states no
+/// version, so the title says which layout it is. A width or height of 0 is a tile that paints
+/// nothing: its bounds still claim the span, so the sampler answers unpainted there (six Fable 3
+/// files, the tabletop vistas among them).
 /// </remarks>
 public sealed class Engine_PaintedDaySets
 {
@@ -38,30 +49,51 @@ public sealed class Engine_PaintedDaySets
     {
         public float OriginX;
         public float OriginZ;
+        public int SpanX;
+        public int SpanZ;
         public float Cell = 4.0f;
         public int Width;
         public int Height;
+
+        /// <summary>The day-set hash per cell: the grid the guest samples.</summary>
         public uint[] Cells = Array.Empty<uint>();
 
-        public float MaxX => OriginX + (Width * Cell);
+        /// <summary>Fable 3's first grid (tile+12), read by the guest but not sampled for day sets.</summary>
+        public uint[] LeadCells = Array.Empty<uint>();
 
-        public float MaxZ => OriginZ + (Height * Cell);
+        public float MaxX => OriginX + SpanX;
+
+        public float MaxZ => OriginZ + SpanZ;
+
+        /// <summary>The guest's tile bounds test: ints, (int)origin up to (int)origin + span.</summary>
+        public bool Contains(float x, float z)
+        {
+            int ix = (int)x;
+            int iz = (int)z;
+            int minX = (int)OriginX;
+            int minZ = (int)OriginZ;
+            return ix >= minX && ix < minX + SpanX && iz >= minZ && iz < minZ + SpanZ;
+        }
 
         public uint Sample(float x, float z)
         {
             // The guest truncates the hero's coordinates to ints before the bounds test and the
             // cell division; inside the bounds the offsets are non-negative, so truncation is floor.
-            int ix = (int)x;
-            int iz = (int)z;
-            int minX = (int)OriginX;
-            int minZ = (int)OriginZ;
-            if (ix < minX || ix >= (int)MaxX || iz < minZ || iz >= (int)MaxZ)
+            if (!Contains(x, z))
             {
                 return None;
             }
 
-            int cell = ((int)((iz - minZ) / Cell) * Width) + (int)((ix - minX) / Cell);
-            return cell >= 0 && cell < Cells.Length ? Cells[cell] : None;
+            int cell = ((int)(((int)z - (int)OriginZ) / Cell) * Width) + (int)(((int)x - (int)OriginX) / Cell);
+            if (cell < 0 || cell >= Cells.Length)
+            {
+                return None;
+            }
+
+            // Hash 0 names no day set: the guest resolves none for it, so it is unpainted, not a
+            // layer. Fable 2 paints no 0; Fable 3 has 35,737 such cells across 32 files.
+            uint hash = Cells[cell];
+            return hash == 0u ? None : hash;
         }
     }
 
@@ -70,6 +102,14 @@ public sealed class Engine_PaintedDaySets
         public uint Hash;
         public float Weight;
         public bool Active;
+
+        /// <summary>
+        /// The layer's own fade times, when its theme states them (Fable 3): <c>sub_82261768</c>
+        /// ramps the entered theme up over its FadeInTime (theme+16, 0x82261a98) and the one it
+        /// leaves down over its FadeOutTime (theme+20, 0x82261970). Null takes the level's.
+        /// </summary>
+        public float? BlendInSeconds;
+        public float? BlendOutSeconds;
     }
 
     private readonly List<Grid> _grids = new();
@@ -102,7 +142,15 @@ public sealed class Engine_PaintedDaySets
         }
     }
 
-    public static bool TryParse(byte[] bytes, float originX, float originZ, out Grid grid, out string error)
+    /// <summary>How many width × height grids follow the header: Fable 3 paints two, the day sets second.</summary>
+    public static int GridsFor(Refii.Core.Engine_Title title) =>
+        title == Refii.Core.Engine_Title.Fable3 ? 2 : 1;
+
+    /// <summary>One .genv at the origin the file states, in the active title's layout.</summary>
+    public static bool TryParse(byte[] bytes, out Grid grid, out string error) =>
+        TryParse(bytes, Refii.Core.Engine_Title.Active, out grid, out error);
+
+    public static bool TryParse(byte[] bytes, Refii.Core.Engine_Title title, out Grid grid, out string error)
     {
         grid = new Grid();
         error = string.Empty;
@@ -112,27 +160,52 @@ public sealed class Engine_PaintedDaySets
             return false;
         }
 
+        float originX = BitConverter.Int32BitsToSingle((int)ReadU32(bytes, 0));
+        float originZ = BitConverter.Int32BitsToSingle((int)ReadU32(bytes, 4));
+        int spanX = (int)ReadU32(bytes, 12);
+        int spanZ = (int)ReadU32(bytes, 16);
         int width = (int)ReadU32(bytes, 20);
         int height = (int)ReadU32(bytes, 24);
         float cell = BitConverter.Int32BitsToSingle((int)ReadU32(bytes, 28));
-        long expected = 32 + (4L * width * height);
-        if (width <= 0 || height <= 0 || width > 4096 || height > 4096 || !(cell > 0f) ||
-            bytes.Length < expected)
+        int grids = GridsFor(title);
+        if (!float.IsFinite(originX) || !float.IsFinite(originZ) || spanX < 0 || spanZ < 0)
         {
-            error = $"grid {width}x{height} cell {cell} needs {expected} bytes, file has {bytes.Length}";
+            error = $"implausible origin ({originX}, {originZ}) or span {spanX}x{spanZ}";
             return false;
         }
 
-        var cells = new uint[width * height];
-        for (int i = 0; i < cells.Length; i++)
+        if (width == 0 || height == 0)
         {
-            cells[i] = ReadU32(bytes, 32 + (4 * i));
+            grid = new Grid { OriginX = originX, OriginZ = originZ, SpanX = spanX, SpanZ = spanZ };
+            return true;
+        }
+
+        long count = (long)width * height;
+        long expected = 32 + (4L * grids * count);
+        if (width < 0 || height < 0 || width > 4096 || height > 4096 || !(cell > 0f) ||
+            bytes.Length < expected)
+        {
+            error = $"grid {width}x{height} x{grids} cell {cell} needs {expected} bytes, file has {bytes.Length}";
+            return false;
+        }
+
+        uint[] ReadGrid(int index)
+        {
+            var values = new uint[count];
+            int at = 32 + (int)(4L * index * count);
+            for (int i = 0; i < values.Length; i++)
+            {
+                values[i] = ReadU32(bytes, at + (4 * i));
+            }
+
+            return values;
         }
 
         grid = new Grid
         {
-            OriginX = originX, OriginZ = originZ, Cell = cell,
-            Width = width, Height = height, Cells = cells,
+            OriginX = originX, OriginZ = originZ, SpanX = spanX, SpanZ = spanZ, Cell = cell,
+            Width = width, Height = height, Cells = ReadGrid(grids - 1),
+            LeadCells = grids > 1 ? ReadGrid(0) : Array.Empty<uint>(),
         };
         return true;
     }
@@ -160,7 +233,7 @@ public sealed class Engine_PaintedDaySets
             }
 
             // The guest returns the FIRST tile whose bounds contain the point, painted or not.
-            if (hero.X >= grid.OriginX && hero.X < grid.MaxX && hero.Z >= grid.OriginZ && hero.Z < grid.MaxZ)
+            if (grid.Contains(hero.X, hero.Z))
             {
                 return None;
             }
@@ -208,11 +281,11 @@ public sealed class Engine_PaintedDaySets
             }
         }
 
-        float stepIn = deltaSeconds / MathF.Max(BlendInSeconds, 1e-3f);
-        float stepOut = deltaSeconds / MathF.Max(BlendOutSeconds, 1e-3f);
         for (int i = _layers.Count - 1; i >= 0; i--)
         {
             Layer layer = _layers[i];
+            float stepIn = deltaSeconds / MathF.Max(layer.BlendInSeconds ?? BlendInSeconds, 1e-3f);
+            float stepOut = deltaSeconds / MathF.Max(layer.BlendOutSeconds ?? BlendOutSeconds, 1e-3f);
             float before = layer.Weight;
             layer.Weight = layer.Active
                 ? MathF.Min(layer.Weight + stepIn, 1f)

@@ -50,9 +50,37 @@ public sealed class LightProbeField
 
     public Vector3[][] Banks { get; set; } = { Array.Empty<Vector3>(), Array.Empty<Vector3>(), Array.Empty<Vector3>(), Array.Empty<Vector3>() };
 
-    public bool HasData =>
-        RootPairKeys.Length > 0 && Banks.Length == 4 && Banks[0].Length > 0 &&
-        DimX > 0 && DimY > 0 && DimZ > 0;
+    /// <summary>Fable 3's probe set (.flpb): where each probe sits, in the guest's axes.</summary>
+    public Vector3[] ProbePositions { get; set; } = Array.Empty<Vector3>();
+
+    /// <summary>
+    /// Fable 3's per-probe order-3 SH, <see cref="ShCoefficients"/> RGB coefficients per probe in
+    /// <c>D3DXSHEvalDirection</c> order — the order sub_82CC2360 evaluates them in (it calls the
+    /// order-3 evaluator, sub_82EC3568, and weights coefficient i by basis value i).
+    /// </summary>
+    public Vector3[] ProbeCoefficients { get; set; } = Array.Empty<Vector3>();
+
+    public const int ShCoefficients = 9;
+
+    /// <summary>
+    /// Fable 3's cell around each probe: cell i answers with probe i. Each cell is the planes
+    /// (xyz normal, w offset) a point must be on the non-negative side of to lie in it.
+    /// </summary>
+    public Vector4[][] CellPlanes { get; set; } = Array.Empty<Vector4[]>();
+
+    public Vector3 CellBoundsMin { get; set; }
+
+    public Vector3 CellBoundsMax { get; set; }
+
+    /// <summary>
+    /// The title samples its cells only with probes and MORE than one cell (sub_82CC2588: the
+    /// count of 176-byte probes non-zero, then `(cells end - begin) >> 5 > 1`).
+    /// </summary>
+    public bool HasCells => ProbeCoefficients.Length > 0 && CellPlanes.Length > 1;
+
+    public bool HasData => HasCells ||
+        (RootPairKeys.Length > 0 && Banks.Length == 4 && Banks[0].Length > 0 &&
+        DimX > 0 && DimY > 0 && DimZ > 0);
 
     public ProbeSample Sample(Vector3 world)
     {
@@ -60,6 +88,11 @@ public sealed class LightProbeField
         if (!HasData)
         {
             return sample;
+        }
+
+        if (HasCells)
+        {
+            return SampleCells(world);
         }
 
         float cellX = CellExtent.X * 32f;
@@ -203,6 +236,71 @@ public sealed class LightProbeField
         sample.R = new Vector4(accR[0] * inv, accR[1] * inv, accR[2] * inv, accR[3] * inv);
         sample.G = new Vector4(accG[0] * inv, accG[1] * inv, accG[2] * inv, accG[3] * inv);
         sample.B = new Vector4(accB[0] * inv, accB[1] * inv, accB[2] * inv, accB[3] * inv);
+    }
+
+    /// <summary>
+    /// Fable 3's lookup: the probe of the first cell that contains the point, unblended.
+    /// </summary>
+    /// <remarks>
+    /// sub_821C1A20 with no cached cell: outside the half-open box of every cell vertex
+    /// (<c>p &lt; min</c> or <c>p &gt;= max</c> on any axis) answers nothing; otherwise the cells are
+    /// tried in file order and a cell holds the point when no plane gives
+    /// <c>dot(plane, (p, 1)) &lt; 0</c> (sub_821C19B0, 0x821c19ec..0x821c19fc); a cell with no
+    /// faces holds nothing. sub_82CC2588 then copies that probe's coefficients out. The title also
+    /// keeps the last cell per object and tries it and its neighbours first — that only finds the
+    /// same cell sooner, so it is not repeated here. The first four coefficients are the L0/L1 the
+    /// sample carries, in the order the Fable 2 banks already use.
+    /// </remarks>
+    private ProbeSample SampleCells(Vector3 p)
+    {
+        var sample = new ProbeSample();
+        if (p.X < CellBoundsMin.X || p.X >= CellBoundsMax.X ||
+            p.Y < CellBoundsMin.Y || p.Y >= CellBoundsMax.Y ||
+            p.Z < CellBoundsMin.Z || p.Z >= CellBoundsMax.Z)
+        {
+            return sample;
+        }
+
+        for (int cell = 0; cell < CellPlanes.Length; cell++)
+        {
+            Vector4[] planes = CellPlanes[cell];
+            if (planes.Length == 0)
+            {
+                continue;
+            }
+
+            bool inside = true;
+            foreach (Vector4 plane in planes)
+            {
+                if ((plane.X * p.X) + (plane.Y * p.Y) + (plane.Z * p.Z) + plane.W < 0f)
+                {
+                    inside = false;
+                    break;
+                }
+            }
+
+            if (!inside)
+            {
+                continue;
+            }
+
+            int first = cell * ShCoefficients;
+            if (first + 3 >= ProbeCoefficients.Length)
+            {
+                return sample;
+            }
+
+            Vector3 c0 = ProbeCoefficients[first];
+            Vector3 c1 = ProbeCoefficients[first + 1];
+            Vector3 c2 = ProbeCoefficients[first + 2];
+            Vector3 c3 = ProbeCoefficients[first + 3];
+            sample.R = new Vector4(c0.X, c1.X, c2.X, c3.X);
+            sample.G = new Vector4(c0.Y, c1.Y, c2.Y, c3.Y);
+            sample.B = new Vector4(c0.Z, c1.Z, c2.Z, c3.Z);
+            return sample;
+        }
+
+        return sample;
     }
 
     private Vector3 CornerWorld(int cx, int cy, int cz, int lx, int ly, int lz) =>
@@ -379,6 +477,111 @@ public static class Engine_LightProbeField
         }
 
         field.Banks = banks;
+        return true;
+    }
+
+    public const uint ProbeSetVersion = 2;
+
+    /// <summary>
+    /// Fable 3's probe set, <c>&lt;scenario&gt;.flpb</c>, into the same field: a list of SH probes
+    /// and one convex cell per probe.
+    /// </summary>
+    /// <remarks>
+    /// Big-endian, as sub_82CC31C8 and sub_82DA8800 read it (Fable 3 IDB):
+    ///
+    ///     u32 version (2 only), u32 probeCount
+    ///     probeCount x { f32[3] position, 9 x f32[3] SH }   each f32[3] via sub_82DA5680; the
+    ///                                                      position to probe+144, the SH to +0
+    ///     u32 cellCount
+    ///     cellCount x { u32 faceCount,
+    ///                   faceCount x { f32[4] plane, u32 n, n x f32[3] vertex },   sub_82DA58E0
+    ///                   u32 linkCount, linkCount x u32 neighbour }
+    ///
+    /// A neighbour is a cell index, or -1..-6 where the face lies on the outer box. The box itself
+    /// is the bounds of every face vertex, gathered once the cells are read (sub_82DA8D70).
+    /// </remarks>
+    public static bool TryParseProbeSet(byte[] bytes, out LightProbeField field, out string error)
+    {
+        field = new LightProbeField();
+        error = string.Empty;
+
+        var reader = new BeReader(bytes);
+        if (!reader.U32(out uint version) || version != ProbeSetVersion)
+        {
+            error = $"unsupported probe set version (accepts {ProbeSetVersion})";
+            return false;
+        }
+
+        const int probeBytes = 4 * 3 * (1 + LightProbeField.ShCoefficients);
+        if (!reader.U32(out uint probeCount) ||
+            (long)probeCount * probeBytes > bytes.Length - reader.Position)
+        {
+            error = "truncated reading probes";
+            return false;
+        }
+
+        var positions = new Vector3[probeCount];
+        var coefficients = new Vector3[probeCount * LightProbeField.ShCoefficients];
+        for (uint i = 0; i < probeCount; i++)
+        {
+            ReadVec3(reader, out positions[i]);
+            for (int c = 0; c < LightProbeField.ShCoefficients; c++)
+            {
+                ReadVec3(reader, out coefficients[(i * LightProbeField.ShCoefficients) + c]);
+            }
+        }
+
+        if (!reader.U32(out uint cellCount) || (long)cellCount * 8 > bytes.Length - reader.Position)
+        {
+            error = "truncated reading cell count";
+            return false;
+        }
+
+        var cells = new Vector4[cellCount][];
+        var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+        var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+        for (uint i = 0; i < cellCount; i++)
+        {
+            if (!reader.U32(out uint faceCount) || (long)faceCount * 20 > bytes.Length - reader.Position)
+            {
+                error = $"truncated cell {i} face count";
+                return false;
+            }
+
+            var planes = new Vector4[faceCount];
+            for (uint f = 0; f < faceCount; f++)
+            {
+                if (!ReadVec3(reader, out Vector3 normal) || !ReadF32(reader, out float offset) ||
+                    !reader.U32(out uint vertexCount) ||
+                    (long)vertexCount * 12 > bytes.Length - reader.Position)
+                {
+                    error = $"truncated cell {i} face {f}";
+                    return false;
+                }
+
+                planes[f] = new Vector4(normal.X, normal.Y, normal.Z, offset);
+                for (uint v = 0; v < vertexCount; v++)
+                {
+                    ReadVec3(reader, out Vector3 vertex);
+                    min = new Vector3(MathF.Min(min.X, vertex.X), MathF.Min(min.Y, vertex.Y), MathF.Min(min.Z, vertex.Z));
+                    max = new Vector3(MathF.Max(max.X, vertex.X), MathF.Max(max.Y, vertex.Y), MathF.Max(max.Z, vertex.Z));
+                }
+            }
+
+            if (!reader.U32(out uint linkCount) || !reader.Skip((long)linkCount * 4))
+            {
+                error = $"truncated cell {i} neighbours";
+                return false;
+            }
+
+            cells[i] = planes;
+        }
+
+        field.ProbePositions = positions;
+        field.ProbeCoefficients = coefficients;
+        field.CellPlanes = cells;
+        field.CellBoundsMin = min;
+        field.CellBoundsMax = max;
         return true;
     }
 

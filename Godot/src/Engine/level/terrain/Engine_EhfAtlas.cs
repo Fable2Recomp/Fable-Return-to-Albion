@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using Refii.Core;
 using Refii.Textures;
 
 namespace Refii.Level;
@@ -35,27 +36,52 @@ public static class Engine_EhfAtlas
     private const uint PfBc3 = 39u;
     private const uint PfBc5 = 40u;
 
-    public static bool TryDecodeAt(byte[] data, int offset, out EhfAtlasImage image, out string error)
+    public static bool TryDecodeAt(byte[] data, int offset, out EhfAtlasImage image, out string error) =>
+        TryDecodeAt(data, offset, Engine_Title.Active, out image, out error);
+
+    /// <param name="offset">The page's .tex header, as <see cref="EhfBackgroundPatch.Pages"/> states it.</param>
+    public static bool TryDecodeAt(
+        byte[] data, int offset, Engine_Title title, out EhfAtlasImage image, out string error)
     {
         image = null!;
         error = string.Empty;
 
-        if (offset < 0 || offset + 0x60 > data.Length)
+        uint width;
+        uint height;
+        uint pixelFormat;
+        long table;
+        if (title == Engine_Title.Fable3)
         {
-            error = "blob header past end of file";
-            return false;
-        }
+            if (!Engine_EhfBody.TryReadFable3Tex(data, offset, data.Length, out EhfTexBlob blob, out error))
+            {
+                return false;
+            }
 
-        if (ReadU32(data, offset) != TexMagic)
+            width = (uint)blob.Width;
+            height = (uint)blob.Height;
+            pixelFormat = (uint)blob.PixelFormat;
+            table = blob.Data;
+        }
+        else
         {
-            error = "not a .tex blob";
-            return false;
-        }
+            if (offset < 0 || offset + 0x60 > data.Length)
+            {
+                error = "blob header past end of file";
+                return false;
+            }
 
-        uint width = ReadU32(data, offset + 0x10);
-        uint height = ReadU32(data, offset + 0x14);
-        uint pixelFormat = ReadU32(data, offset + 0x18);
-        uint mipTable = ReadU32(data, offset + 0x20);
+            if (ReadU32(data, offset) != TexMagic)
+            {
+                error = "not a .tex blob";
+                return false;
+            }
+
+            width = ReadU32(data, offset + 0x10);
+            height = ReadU32(data, offset + 0x14);
+            pixelFormat = ReadU32(data, offset + 0x18);
+            uint mipTable = ReadU32(data, offset + 0x20);
+            table = offset + mipTable;
+        }
 
         if (width == 0 || height == 0 || width > 16384 || height > 16384)
         {
@@ -69,7 +95,6 @@ public static class Engine_EhfAtlas
             return false;
         }
 
-        long table = offset + mipTable;
         if (table + 8 > data.Length)
         {
             error = "mip table past end of file";
@@ -139,8 +164,20 @@ public static class Engine_EhfAtlas
         return true;
     }
 
-    public static List<EhfTile> FindTiles(byte[] data)
+    public static List<EhfTile> FindTiles(byte[] data) => FindTiles(data, Engine_Title.Active);
+
+    /// <summary>
+    /// The finest page of each background patch, in patch order. Fable 3 reads them from the page
+    /// tables the body states (every set is finest first, 2 to 5 pages, each half the last);
+    /// Fable 2 finds them by scanning past the body for three-page sets.
+    /// </summary>
+    public static List<EhfTile> FindTiles(byte[] data, Engine_Title title)
     {
+        if (title == Engine_Title.Fable3)
+        {
+            return StatedTiles(data);
+        }
+
         var all = new List<EhfTile>();
         var primaries = new List<EhfTile>();
 
@@ -206,6 +243,30 @@ public static class Engine_EhfAtlas
         }
 
         return primaries;
+    }
+
+    /// <remarks>A patch with no page keeps its slot with offset −1, so tile i stays patch i.</remarks>
+    private static List<EhfTile> StatedTiles(byte[] data)
+    {
+        var tiles = new List<EhfTile>();
+        if (!Engine_EhfBody.TryParse(data, Engine_Title.Fable3, out EhfParsedBody body, out _))
+        {
+            return tiles;
+        }
+
+        foreach (EhfBackgroundPatch patch in body.BackgroundPatches)
+        {
+            if (patch.Pages.Count == 0 ||
+                !Engine_EhfBody.TryReadFable3Tex(data, patch.Pages[0].Offset, data.Length, out EhfTexBlob page, out _))
+            {
+                tiles.Add(new EhfTile { Offset = -1 });
+                continue;
+            }
+
+            tiles.Add(new EhfTile { Offset = page.Header, Width = page.Width, Height = page.Height });
+        }
+
+        return tiles;
     }
 
     internal static uint TiledX(uint blockOffset, uint widthBlocks, uint texelPitch)

@@ -16,8 +16,11 @@ namespace Refii.Launcher.Core;
 /// <c>ApplyTomlTable</c> on the native side flattens every table into <c>section_key</c> anyway,
 /// so a table buys nothing and changes the key the reader sees.
 ///
-/// The guest reads this same refii.toml (the host bridge states the app root), so it logs
-/// <c>Config: unknown cvar</c> once per key for these: they are not in its registry.
+/// The guest reads this same file — the running title's config, which the host bridge states —
+/// so it logs <c>Config: unknown cvar</c> once per key for these: they are not in its registry.
+///
+/// Each says which title it applies to (<see cref="RuntimeCVarDefinition.OwnerTitle"/>): shared
+/// code reads all but the few below that only Fable 2's own systems read.
 /// </remarks>
 public static class RuntimeCVarsGodot
 {
@@ -45,6 +48,19 @@ public static class RuntimeCVarsGodot
 
     /// <summary>Co-op, beside the runtime's RexNet settings: the panel lists both as one group.</summary>
     public const string MultiplayerCategory = "Multiplayer";
+
+    /// <summary>
+    /// The pub games are Fable 2's (the SWF stack is <c>Titles/Fable2/pubgames</c>; Fable 3's disc
+    /// has no .swf): their raster settings are read by the shared texture settings for that stack only.
+    /// </summary>
+    private static readonly string Fable2PubGames = Refii.Core.Engine_Title.Fable2.Folder;
+
+    /// <summary>
+    /// Local co-op is Fable 2's: split screen takes its second camera only when
+    /// <c>Engine_TitleGame.Active.LocalCoop</c>, which only Fable 2 states, and its screen is
+    /// <c>Titles/Fable2/game/GameUiCoopScreen.cs</c>.
+    /// </summary>
+    private static readonly string Fable2LocalCoop = Refii.Core.Engine_Title.Fable2.Folder;
 
     public static readonly IReadOnlyList<RuntimeCVarDefinition> Definitions =
         new List<RuntimeCVarDefinition>
@@ -101,17 +117,21 @@ public static class RuntimeCVarsGodot
             new("pubgame_vector_shapes", Category, RuntimeCVarType.Bool, "true",
                 "Draw the pub games (Keystone and friends) as vector geometry, so their artwork " +
                 "is sharp at any window size. Off falls back to drawing it into bitmaps at the " +
-                "size it was authored at, which is softer, slower and uses more memory."),
+                "size it was authored at, which is softer, slower and uses more memory.",
+                OwnerTitle: Fable2PubGames),
             new("pubgame_raster_scale_percent", Category, RuntimeCVarType.Int, "100",
                 "How sharply the pub games (Keystone and friends) draw their Flash artwork. " +
                 "100 is the size it was authored at; 0 follows the window. Higher is sharper " +
                 "but slower to load — Keystone measures 4.6 s and 109 MB at 100, and 11.9 s " +
                 "and 348 MB at 250, because the artwork is drawn on the CPU. Ignored unless " +
-                "pubgame_vector_shapes is off."),
+                "pubgame_vector_shapes is off.",
+                OwnerTitle: Fable2PubGames),
             new("developer_menu_enabled", DeveloperCategory, RuntimeCVarType.Bool, "false",
                 "Show the Refii debug overlay in game \u2014 guest state, the save loader and "
                 + "the Lua console. Off is the shipping default; the overlay is a development "
-                + "fixture and draws over the game's own UI."),
+                + "fixture and draws over the game's own UI.",
+                // Read only by Titles/Fable2/game/GameUi.cs.
+                OwnerTitle: Refii.Core.Engine_Title.Fable2.Folder),
             new("display_aspect", DisplayCategory, RuntimeCVarType.String, "16:9",
                 "The shape of the window. Picking one narrows the resolution list below to the "
                 + "sizes that match it, the way a modern game's video options do.",
@@ -831,12 +851,14 @@ public static class RuntimeCVarsGodot
             new(Refii.Game.GameSplitView.SwitchKey, MultiplayerCategory, RuntimeCVarType.Bool, "true",
                 "Local co-op on split screen: each player gets their own camera and their own half "
                 + "of the screen, HUD and menus. Off shares one screen and one camera, as the "
-                + "original game does. Read at launch."),
+                + "original game does. Read at launch.",
+                OwnerTitle: Fable2LocalCoop),
             new(Refii.Game.GameSplitView.OrientationKey, MultiplayerCategory, RuntimeCVarType.String, "vertical",
                 "How split screen divides the window. Vertical puts player one on the left and "
                 + "player two on the right; horizontal puts player one on top and player two "
                 + "below. Read at launch.",
-                "vertical|Vertical (side by side),horizontal|Horizontal (top and bottom)"),
+                "vertical|Vertical (side by side),horizontal|Horizontal (top and bottom)",
+                OwnerTitle: Fable2LocalCoop),
             new("discord_presence", PresenceCategory, RuntimeCVarType.Bool, "true",
                 "Show the game you are playing and the level you are in on your "
                 + "Discord profile while Discord is running."),
@@ -913,12 +935,23 @@ public static class RuntimeCVarsGodot
 /// <see cref="RuntimeCVars.Definitions"/> directly, so a Godot-side setting is a real setting —
 /// it gets a type, a default, a description and a place in the settings panel, and the writer
 /// emits it rather than treating it as debris.
+///
+/// <see cref="All"/> is every title's; <see cref="Active"/> is what the active title's screen
+/// lists and its config file holds. A setting of another title is neither shown nor written.
 /// </remarks>
 public static class RuntimeCVarSet
 {
     private static IReadOnlyList<RuntimeCVarDefinition>? _all;
 
+    /// <summary>Every title's settings: the catalog a key is looked up in.</summary>
     public static IReadOnlyList<RuntimeCVarDefinition> All => _all ??= Build();
+
+    /// <summary>The settings <paramref name="title"/> reads, in <see cref="All"/>'s order.</summary>
+    public static IReadOnlyList<RuntimeCVarDefinition> For(Refii.Core.Engine_Title title) =>
+        All.Where(definition => definition.AppliesTo(title)).ToList();
+
+    /// <summary>The active title's settings (<see cref="Refii.Core.Engine_Title.Active"/>).</summary>
+    public static IReadOnlyList<RuntimeCVarDefinition> Active => For(Refii.Core.Engine_Title.Active);
 
     /// <summary>
     /// Reads the list again: the mods' Controls rows (<see cref="RuntimeCVarsGodot.ModBindings()"/>)

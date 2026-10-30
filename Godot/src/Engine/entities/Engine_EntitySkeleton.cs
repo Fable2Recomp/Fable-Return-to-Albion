@@ -392,7 +392,14 @@ public sealed class Engine_EntitySkeleton
 			anchor = pose.Translation(anchorGuest);
 		}
 
-		float limit = _restReach * 2f + 0.5f;
+		// The bound is the rig's reach at rest, and the guest's own rest is a rest. Fable 3 skeletons
+		// carry bones the model file places elsewhere: model 86BC6DE7's bone 0x4E8B85EC rests at
+		// 1.48 m with scale 2^-15 in the skeleton's own rest (skel+0x9C), against a model reach
+		// of 0.25, so every pose of it — its rest included — was refused.
+		float reach = Engine_Title.Active == Engine_Title.Fable3
+			? Mathf.Max(_restReach, GuestRestReach)
+			: _restReach;
+		float limit = reach * 2f + 0.5f;
 		for (int m = 0; m < _modelToGuest.Length; ++m)
 		{
 			int g = _modelToGuest[m];
@@ -906,7 +913,7 @@ public sealed class Engine_EntitySkeleton
 			}
 		}
 
-		(float bindGap, string bindGapBone) = SetRest(skeleton, rig, modelToGuest, guestRest);
+		(float bindGap, string bindGapBone, float guestReach) = SetRest(skeleton, rig, modelToGuest, guestRest);
 
 		// ONCE PER DISTINCT FINDING, not once per instance.
 		//
@@ -931,6 +938,7 @@ public sealed class Engine_EntitySkeleton
 		{
 			BindGap = bindGap,
 			BindGapBone = bindGapBone,
+			GuestRestReach = guestReach,
 		};
 	}
 
@@ -1712,7 +1720,7 @@ public sealed class Engine_EntitySkeleton
 	/// knowing about — it is real, and it is why the idea was tempting — but it is not a licence
 	/// to use it.
 	/// </summary>
-	private static (float Gap, string Bone) SetRest(
+	private static (float Gap, string Bone, float GuestReach) SetRest(
 		Skeleton3D skeleton, Engine_MdlRig rig, int[] modelToGuest, HostBridge.BonePose? guestRest)
 	{
 		float gap = 0f;
@@ -1802,7 +1810,16 @@ public sealed class Engine_EntitySkeleton
 			skeleton.SetBonePoseScale(m, modelLocal.Basis.Scale);
 		}
 
-		return (gap, gapBone);
+		float guestReach = 0f;
+		if (guestGlobal is not null)
+		{
+			foreach (Transform3D bone in guestGlobal)
+			{
+				guestReach = Mathf.Max(guestReach, bone.Origin.Length());
+			}
+		}
+
+		return (gap, gapBone, guestReach);
 	}
 
 	/// <summary>
@@ -1815,6 +1832,9 @@ public sealed class Engine_EntitySkeleton
 
 	/// <summary>Which bone disagreed most, because a number alone is not actionable.</summary>
 	public string BindGapBone { get; init; } = string.Empty;
+
+	/// <summary>How far any bone of the GUEST's rest sits from its root, composed as its live pose is.</summary>
+	public float GuestRestReach { get; init; }
 
 	/// <summary>
 	/// One bone's transform, in THE MESH'S space.

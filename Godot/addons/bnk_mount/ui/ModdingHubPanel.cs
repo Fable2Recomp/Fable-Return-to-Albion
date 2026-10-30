@@ -487,7 +487,7 @@ public partial class ModdingHubPanel : MarginContainer
             _deleteConfirmDialog.DialogText =
                 $"Are you sure you want to permanently delete mod '{active}'?\n\n" +
                 $"This will remove:\n" +
-                $"• assets/mods/{active}.f2mod\n" +
+                $"• assets/mods/{active}{Refii.Core.Engine_Title.Active.ModExtension}\n" +
                 $"• res://creator/{active}/\n\n" +
                 $"This action cannot be undone.";
             _deleteConfirmDialog.PopupCentered();

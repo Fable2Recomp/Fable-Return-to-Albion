@@ -402,7 +402,7 @@ public partial class ModdingHubHomeView : VBoxContainer
             TreeItem empty = _traversalTree.CreateItem(root);
             empty.SetText(0, "No active mod selected.");
             empty.SetText(1, "Click '+ New Mod' above");
-            empty.SetText(2, "Create a .f2mod package to start authoring overrides.");
+            empty.SetText(2, $"Create a {Refii.Core.Engine_Title.Active.ModExtension} package to start authoring overrides.");
             empty.SetSelectable(0, false);
             empty.SetSelectable(1, false);
             empty.SetSelectable(2, false);

@@ -67,6 +67,12 @@ public static class Engine_LevelIndex
 {
     public const string RegistryPath = "data/scenarios.list";
 
+    /// <summary>
+    /// The same registry at the bank root, where Fable 3 ships it: an entry of levels.bnk named
+    /// <c>scenarios.list</c>, and bank entries get no <c>data/</c> alias.
+    /// </summary>
+    public const string RootRegistryPath = "scenarios.list";
+
     private static readonly Regex LevelLine = new(
         @"level:'([^']+)'\s+(\d+)((?:\s*'[^']*')*)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -272,7 +278,8 @@ public static class Engine_LevelIndex
     {
         var registry = new List<RegisteredLevel>();
 
-        if (!filesystem.TryGetFile(RegistryPath, out BnkFile file))
+        if (!filesystem.TryGetFile(RegistryPath, out BnkFile file) &&
+            !filesystem.TryGetFile(RootRegistryPath, out file))
         {
             return registry;
         }

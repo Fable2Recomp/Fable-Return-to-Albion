@@ -72,6 +72,7 @@ public static class Engine_MdlTransfer
         byte[] data, MdlInfo info, int[] sourceVertices, out float[] weights, out float[] clusterOffsets)
     {
         weights = clusterOffsets = Array.Empty<float>();
+        data = info.Body ?? data;
         uint[] d = info.ShDescriptor;
         if (d.Length < 5 || sourceVertices.Length == 0)
         {
@@ -196,6 +197,7 @@ public static class Engine_MdlTransfer
         out float[] red, out float[] green, out float[] blue)
     {
         red = green = blue = Array.Empty<float>();
+        data = info.Body ?? data;
 
         uint[] d = info.ShDescriptor;
         if (d.Length < 5 || sourceVertices.Length == 0)

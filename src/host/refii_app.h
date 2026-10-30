@@ -125,7 +125,7 @@ RefiiEnsureRuntimeDirectories(const rex::PathConfig &paths) {
           runtime_metadata / entry.path().filename();
       // Copy when absent, and refresh when the shipped copy is newer. These
       // are shipped data rather than user settings (user config lives in
-      // refii.toml), so an updated build must not be shadowed by a stale copy
+      // the title's config file), so an updated build must not be shadowed by a stale copy
       // left over from a previous install.
       std::error_code stat_ec;
       bool stale = !std::filesystem::exists(dst, stat_ec);
@@ -285,17 +285,20 @@ public:
     // WHAT THE HOST STATED WINS, and it is checked first for that reason. Hosted by
     // Godot, GetExecutableFolder() is Godot's directory: the SDK's defaults put the
     // config, the saves and the cache beside whatever binary is hosting us, which in a
-    // dev tree is the user's Godot install. The launcher writes refii.toml at the app
-    // root and the guest has to read that same file.
+    // dev tree is the user's Godot install. The launcher writes the running title's
+    // config at the app root and the guest has to read that same file — the host states
+    // it whole, because its name is the title's and this runtime serves every title.
+    if (const std::filesystem::path &configPath = RefiiGetConfigPath(); !configPath.empty()) {
+      paths.config_path = configPath;
+      RefiiEnsureDirectoryExists(paths.config_path.parent_path());
+    }
     if (const std::filesystem::path &appRoot = RefiiGetAppRoot(); !appRoot.empty()) {
-      paths.config_path = appRoot / "refii.toml";
       if (paths.user_data_root.empty()) {
         paths.user_data_root = appRoot / "assets" / "save";
       }
       if (paths.cache_root.empty()) {
         paths.cache_root = appRoot / "cache";
       }
-      RefiiEnsureDirectoryExists(paths.config_path.parent_path());
     }
 
     auto base = paths.game_data_root;

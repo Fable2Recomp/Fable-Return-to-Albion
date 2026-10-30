@@ -18,7 +18,7 @@ extern "C" {
 // Bumped when a signature or an event's meaning changes. The launcher checks it before the
 // first call so a stale library beside a new launcher fails with a message rather than a
 // wrong argument.
-#define REFII_SHADER_BUILD_ABI_VERSION 1
+#define REFII_SHADER_BUILD_ABI_VERSION 2
 
 // What the pipeline reports while it runs. `detail` is UTF-8 and valid only for the duration
 // of the callback.
@@ -45,19 +45,22 @@ typedef int32_t (*refii_shader_build_progress_fn)(void* user, int32_t event, con
 // The ABI version this library was built with; compare against REFII_SHADER_BUILD_ABI_VERSION.
 int32_t refii_shader_build_v1_abi_version(void);
 
-// Extracts the banks in `bank_dir` (Shaders.sbk and ShadersRelease.sbk) into `output_dir`,
+// Extracts the banks in `bank_dir` (Shaders.sbk and ShadersRelease.sbk, any case) into `output_dir`,
 // translates and compiles every blob for `targets` ("auto" is the host's backend set, or a
 // comma list such as "vulkan,d3d12"), writes extract_manifest.tsv and compile_report.tsv
 // there, and verifies that every blob has an artifact for every target. Stale output under
-// `output_dir` from an earlier run is removed first.
+// `output_dir` from an earlier run is removed first. `title` is the title folder the banks belong
+// to ("Fable2", "Fable3"): it decides the shaders the title's executable adds inline and the
+// title's own per-draw constants.
 //
 // Runs on the calling thread and returns when the pipeline does; `progress` is invoked on
 // that same thread. Returns REFII_SHADER_BUILD_OK on success and REFII_SHADER_BUILD_STOPPED
 // when the callback asked it to stop. On failure, writes a UTF-8 message into `error`
 // (NUL-terminated, truncated to `error_capacity`) and returns REFII_SHADER_BUILD_FAILED.
-int32_t refii_shader_build_v1_run(const char* bank_dir, const char* output_dir,
-                                  const char* targets, refii_shader_build_progress_fn progress,
-                                  void* user, char* error, size_t error_capacity);
+int32_t refii_shader_build_v2_run(const char* title, const char* bank_dir,
+                                  const char* output_dir, const char* targets,
+                                  refii_shader_build_progress_fn progress, void* user, char* error,
+                                  size_t error_capacity);
 
 #ifdef __cplusplus
 }

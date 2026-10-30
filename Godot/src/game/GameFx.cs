@@ -246,7 +246,7 @@ public partial class GameFx : Node3D
         GD.Print(
             $"[game-fx] live effect feed up; drawing is {(_draw ? "ON" : "OFF")} " +
             (classic ? "(classic renderer: the title's particles draw them)"
-                : $"({DrawSettingKey} in {(path.Length != 0 ? path : "refii.toml")})"));
+                : $"({DrawSettingKey} in {(path.Length != 0 ? path : Refii.Core.Engine_Title.Active.ConfigFileName)})"));
 
         // A child, so its step follows this node's _Process in tree order — after the live
         // nodes are placed — and leaves with it on a level change; see Engine_FxDriver.

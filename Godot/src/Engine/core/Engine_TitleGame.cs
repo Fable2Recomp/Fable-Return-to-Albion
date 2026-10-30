@@ -104,6 +104,12 @@ public abstract class Engine_TitleGame
 	/// <summary>Two players share this machine's screen.</summary>
 	public virtual bool LocalCoop => false;
 
+	/// <summary>
+	/// Whether this title's bridge states the guest's entities (the entity walk). A title that does
+	/// not yet has no first entity pass to wait for, so the world's load hold does not wait on one.
+	/// </summary>
+	public virtual bool StatesEntities => true;
+
 	/// <summary>This machine joined another's game online.</summary>
 	public virtual bool OnlineClient => false;
 
@@ -201,6 +207,13 @@ public abstract class Engine_TitleGame
 	public virtual void IndexLooseData(Refii.Bnk.BnkFileSystem? filesystem, string gameDirectory)
 	{
 	}
+
+	/// <summary>
+	/// The mounted paths of the title's two shader banks (the named one and the release one) when
+	/// it ships them inside its banks; null when they are loose files under <c>data/Shaders</c>.
+	/// The shader compile reads them out of the mount into the title's unpacked workspace.
+	/// </summary>
+	public virtual (string Named, string Release)? PackedShaderBanks => null;
 
 	/// <summary>The resource loaders for the title's own asset paths, put in once however often asked.</summary>
 	public virtual void AddResourceLoaders()

@@ -43,7 +43,7 @@ public static class ModGuidePages
 					"Refii Mod Studio lets you inspect, override, and create new Fable II items, weapons, outfits, textures, 3D meshes, and game database records without touching raw hex files.\n\n" +
 					"Every mod is stored in two places while you work in the editor:\n" +
 					"  1. Creator Workspace (res://creator/<YourMod>/): Your editable source folder containing standard .glb 3D models and uncompressed .png textures for Blender, Substance Painter, or Photoshop.\n" +
-					"  2. Compiled Mod Package (assets/mods/<YourMod>.f2mod): The self-contained archive that the game mounts at runtime. Whenever you drag-and-drop a .glb or .png onto a field or click 💾 Save Mod Overrides, Mod Studio automatically compiles your assets into Xbox/Refii formats (.mdl, .mdl.gmd, .tex, mod.gdb.tu, mod.babel.csv) inside your .f2mod package!"),
+					$"  2. Compiled Mod Package (assets/mods/<YourMod>{Refii.Core.Engine_Title.Active.ModExtension}): The self-contained archive that the game mounts at runtime. Whenever you drag-and-drop a .glb or .png onto a field or click 💾 Save Mod Overrides, Mod Studio automatically compiles your assets into Xbox/Refii formats (.mdl, .mdl.gmd, .tex, mod.gdb.tu, mod.babel.csv) inside your {Refii.Core.Engine_Title.Active.ModExtension} package!"),
 				new ModGuideCard(
 					"⚡ The 5-Minute Modding Workflow",
 					0.42f, 0.90f, 0.62f,
@@ -58,7 +58,7 @@ public static class ModGuidePages
 					"  • Want to export individual textures as .png? Expand '▾ 🎨 Surface Material Textures' and click '📤' on any texture slot!\n\n" +
 					"Step 4 — Edit in Blender / DCC & Drag-and-Drop Back (📥):\n" +
 					"  • Open the exported .glb in Blender, Substance 3D, or Maya. You can author full PBR materials (Base Color, Metallic-Roughness, Ambient Occlusion, and Emission) right on your shader nodes!\n" +
-					"  • Drag the saved .glb directly onto the '📥 DROP .GLB' drop zone in the GDB Component Inspector. Mod Studio automatically extracts all embedded PBR textures, channel-packs ORM maps, compiles .mdl geometry, and updates your .f2mod package!\n\n" +
+					$"  • Drag the saved .glb directly onto the '📥 DROP .GLB' drop zone in the GDB Component Inspector. Mod Studio automatically extracts all embedded PBR textures, channel-packs ORM maps, compiles .mdl geometry, and updates your {Refii.Core.Engine_Title.Active.ModExtension} package!\n\n" +
 					"Step 5 — Preview in 3D & Test In-Game:\n" +
 					"  • Click '[ 🔍 Inspect in 3D ]' in the record header to see your updated mesh, textures, and 3D attachment socket gizmos right inside the editor, or launch the game to test it live!"),
 			},
@@ -111,7 +111,7 @@ public static class ModGuidePages
 					"  • Drag-and-Drop onto Model: When you drop your .glb into Mod Studio, the background tools automatically:\n" +
 					"      1. Extract all embedded textures and compile Base Color, Normal, and Emission into Xbox/Refii .tex streams.\n" +
 					"      2. Channel-pack Metallic-Roughness (Green = Roughness, Blue = Metallic) and Occlusion (Red = AO) into unified ORM PNG bytes (Red = AO, Green = Roughness, Blue = Metallic).\n" +
-					"      3. Package mat{i}_diffuse_orm.png and mat{i}_orm.png companion sidecars directly into your .f2mod archive and register them in the engine texture index.\n" +
+					$"      3. Package mat{{i}}_diffuse_orm.png and mat{{i}}_orm.png companion sidecars directly into your {Refii.Core.Engine_Title.Active.ModExtension} archive and register them in the engine texture index.\n" +
 					"      4. Automatically synthesize neutral diffuse textures for untextured PBR surfaces (e.g. solid metallic gold or rough plastic defined solely by factors) so the companion ORM binds seamlessly!\n" +
 					"  • Non-PBR Cleanliness: Models without authored metallic-roughness or occlusion maps are strictly preserved as standard legacy materials (no dummy flat ORMs are generated).\n\n" +
 					"🎨 Dedicated Surface Material Slots & Manual Loose ORM / Emission Assignment:\n" +
@@ -139,7 +139,7 @@ public static class ModGuidePages
 					"How Refii Handles .mdl.gmd Automatically:\n" +
 					"  1. On Export (📤): When you export a model to .glb, Mod Studio reads its .mdl.gmd sidecar and embeds a 'GmdDummies' Empty node hierarchy right inside the .glb (converted from Fable II's Z-Up space to standard glTF +Y Up space).\n" +
 					"  2. In Blender: You see the exact socket Empties (like 'Weapon.Weapon.Hold', 'Weapon.Weapon.Sheath', and 'Weapon.Weapon.ProjectileEmitter') right on your mesh! Keep your mesh aligned with the vanilla template mesh, or move the socket Empties to fit your custom weapon's grip and barrel tip.\n" +
-					"  3. On Import / Drag-and-Drop (📥): When you drag your .glb onto the Model drop zone, Mod Studio extracts any 'GmdDummies' Empties (or any Empty matching a Fable II socket name), converts their transforms back to GameMesh Z-Up space, and writes an updated .mdl.gmd sidecar into your .f2mod package! (If your .glb has no socket Empties, Mod Studio safely preserves the template item's baseline .mdl.gmd sockets)."),
+					$"  3. On Import / Drag-and-Drop (📥): When you drag your .glb onto the Model drop zone, Mod Studio extracts any 'GmdDummies' Empties (or any Empty matching a Fable II socket name), converts their transforms back to GameMesh Z-Up space, and writes an updated .mdl.gmd sidecar into your {Refii.Core.Engine_Title.Active.ModExtension} package! (If your .glb has no socket Empties, Mod Studio safely preserves the template item's baseline .mdl.gmd sockets)."),
 				new ModGuideCard(
 					"🧩 Using the Refii Blender Plugin (res://modding_tools/refii_blender_tools.py)",
 					0.45f, 0.95f, 0.68f,
@@ -198,7 +198,7 @@ public static class ModGuidePages
 					"   • Scans your 3D viewport edits, calculates sparse differences against vanilla baselines, and compiles:\n" +
 					"     - <level>.gdb.tu (sparse transform changes and new placement records)\n" +
 					"     - <level>.save.tu (sparse layer additions, removals, and load-state overrides)\n" +
-					"   • Automatically embeds these compiled Title Updates into your active .f2mod package!\n\n" +
+					$"   • Automatically embeds these compiled Title Updates into your active {Refii.Core.Engine_Title.Active.ModExtension} package!\n\n" +
 					"7. 🔄 Revert to GDB:\n" +
 					"   • Discards uncommitted 3D viewport edits, snaps all moved objects back to their vanilla GDB transforms, restores deleted entities, and removes unsaved new placements."),
 				new ModGuideCard(
@@ -223,7 +223,7 @@ public static class ModGuidePages
 					"  • You can swap visual models by editing 'ModelFile', move the object to another layer, or click '↺ Reset' to undo changes.\n\n" +
 					"Step 6: Click '💾 Save Level to Mod' (DO NOT rely solely on Godot's Ctrl+S!)\n" +
 					"  • Click the '💾 Save Level to Mod' button on the top toolbar.\n" +
-					"  • The compiler analyzes the scene, builds sparse .gdb.tu and .save.tu files, and writes them into your .f2mod package.\n" +
+					$"  • The compiler analyzes the scene, builds sparse .gdb.tu and .save.tu files, and writes them into your {Refii.Core.Engine_Title.Active.ModExtension} package.\n" +
 					"  • Verify the status banner turns green: '✓ Saved [ModName]: X moved, Y added, Z removed'.\n\n" +
 					"Step 7: Test In-Game\n" +
 					"  • Launch Refii! Your mod Title Updates overlay seamlessly over the vanilla game world in real time."),
@@ -268,7 +268,7 @@ public static class ModGuidePages
 					"📜 Modding Lua Scripts & Runtime Hooks",
 					0.85f, 0.65f, 1.0f,
 					"Fable II uses an embedded Lua 5.1 virtual machine to drive quest logic, NPC schedules, combat abilities, and world triggers.\n\n" +
-					"How Lua Modding Works in .f2mod Packages:\n" +
+					$"How Lua Modding Works in {Refii.Core.Engine_Title.Active.ModExtension} Packages:\n" +
 					"  • Entrypoint Script: mod/init.lua runs in the game's VM once per session after the shipped scripts (RefiiModApi.SetModLua); mod/camera.lua after every camera-script load. Patch the shipped tables, never ship an edited copy of a shipped script.\n" +
 					"  • Events: Refii.on(\"hit\", function(e) ... end) subscribes to the mod API's events from Lua — see tab 7 for every event and its fields. return true cancels where the event allows it.\n" +
 					"  • GDB Script References: Many GDB components (such as EntityScriptComponent or QuestComponent) reference Lua script names or state machines that can be inspected and overridden in the GDB Hierarchy tab."),

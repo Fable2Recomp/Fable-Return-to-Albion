@@ -31,7 +31,7 @@ public static class Engine_SwfAssets
     /// cache, and everything regenerable belongs in one folder inside the install.
     /// </remarks>
     public static string CacheDirectory =>
-        System.IO.Path.Combine(Refii.Core.Engine_AppRoot.CacheDirectory, "swf");
+        System.IO.Path.Combine(Refii.Core.Engine_Title.Fable2.CacheDirectory, "swf");
 
     private static readonly string BuildStamp =
         typeof(Engine_SwfAssets).Assembly.ManifestModule.ModuleVersionId.ToString("N")[..8];

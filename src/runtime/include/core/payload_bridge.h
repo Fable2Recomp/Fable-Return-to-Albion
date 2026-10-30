@@ -271,6 +271,25 @@ void refii_bridge_movie_rect(uint32_t player, int32_t left, int32_t top, int32_t
 // - `player` is closing; the host stops reading through it before the guest frees it.
 void refii_bridge_movie_closed(uint32_t player);
 
+// THE VIEW A TITLE STATES (src/runtime/src/core/stated_view.cpp). A title whose hook sees the
+// camera the guest renders the world with states it here, every step; its host bridge reads it
+// back for the shell.
+// - position, up and forward (the guest's world axes) and the horizontal field of view in
+//   radians, `snap` non-zero when the guest cut rather than blended;
+void refii_bridge_camera_stated(const float* position, const float* up, const float* forward,
+                                float horizontal_fov, int32_t snap);
+// - the last stated camera, 11 floats (position, up, forward, horizontal fov, snap); 0 before
+//   any was stated.
+int32_t refii_bridge_camera_read(float* out);
+// - the two cameras the guest blends each step, both in the stated 11-float layout: `live` the
+//   camera this step and `previous` the one latched last step; read back as 22 floats, live first.
+void refii_bridge_camera_pair_stated(const float* live, const float* previous);
+int32_t refii_bridge_camera_pair_read(float* out);
+// THE HOST'S WORLD BUILD: set while Godot builds the level the guest is loading; a title's hook
+// on the guest's own preload gate reads it, so the guest waits in its loading screen.
+void refii_bridge_set_world_build_pending(int32_t pending);
+int32_t refii_bridge_world_build_pending(void);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

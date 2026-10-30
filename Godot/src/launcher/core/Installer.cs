@@ -20,7 +20,7 @@ public static class Installer
         Path.Combine(Platform.GetExecutableDirectory(), Platform.ExecutableName);
 
     /// <summary>
-    /// The runtime config, at the app root.
+    /// The active title's runtime config, at the app root (<see cref="Refii.Core.Engine_Title.ConfigPath"/>).
     /// </summary>
     /// <remarks>
     /// The guest resolves this same file, so it cannot hang off the standalone

@@ -150,9 +150,9 @@ endif()
 # on their machine, into this same directory. build-info.json is its build record.
 #
 # AND WITHOUT THE DEVELOPER'S RUNTIME STATE. The staging root is also the app root a dev
-# tree runs from, so launching the editor writes refii.toml, assets/ and logs/ straight into
-# what we ship. That config carries ABSOLUTE developer paths —
-# game_data_root = "/home/.../Godot/build/x86_64/assets" — and shipping it points every
+# tree runs from, so launching the editor writes each title's config (refii.toml,
+# refiii.toml), assets/ and logs/ straight into what we ship. That config carries ABSOLUTE
+# developer paths — game_data_root = "/home/.../Godot/build/x86_64/assets" — and shipping it points every
 # tester's install at a directory that exists only on this machine. All three are created on
 # first run, so a package must not contain them.
 #
@@ -171,12 +171,13 @@ file(COPY "${STAGING_ROOT}/" DESTINATION "${_app}"
     PATTERN "refiii_generated.dll" EXCLUDE
     PATTERN "build-info.json" EXCLUDE
     PATTERN "refii.toml" EXCLUDE
+    PATTERN "refiii.toml" EXCLUDE
     PATTERN "logs" EXCLUDE
     PATTERN "assets" EXCLUDE
     PATTERN "cache" EXCLUDE
 )
 
-foreach(_dev_state "${_app}/refii.toml" "${_app}/logs" "${_app}/assets")
+foreach(_dev_state "${_app}/refii.toml" "${_app}/refiii.toml" "${_app}/logs" "${_app}/assets")
     if(EXISTS "${_dev_state}")
         file(REMOVE_RECURSE "${_dev_state}")
         message(STATUS "Removed developer runtime state from the package: ${_dev_state}")
@@ -425,4 +426,4 @@ message(STATUS "")
 message(STATUS "Packaged: ${ZIP_PATH} (${_zip_mb} MB)")
 message(STATUS "  folder:  ${_app}")
 message(STATUS "  contents: ${OUT_BINARY}, bin/ (natives + recompile), sdk/ (modding editor)")
-message(STATUS "  the player's game, its recompiled code and refii.toml are created on first run")
+message(STATUS "  the player's game, its recompiled code and each title's config are created on first run")

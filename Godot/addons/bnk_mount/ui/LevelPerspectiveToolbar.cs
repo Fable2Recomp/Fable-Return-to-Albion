@@ -144,7 +144,7 @@ public partial class LevelPerspectiveToolbar : HBoxContainer
         _saveLevelBtn = new Button
         {
             Text = "💾 Save Level to Mod",
-            TooltipText = "Compile moved, added, deleted, and layer-edited GDB records into <level>.gdb.tu and <level>.save.tu in the active .f2mod package",
+            TooltipText = $"Compile moved, added, deleted, and layer-edited GDB records into <level>.gdb.tu and <level>.save.tu in the active {Refii.Core.Engine_Title.Active.ModExtension} package",
         };
         _saveLevelBtn.AddThemeFontSizeOverride("font_size", 11);
         _saveLevelBtn.Pressed += OnSaveLevelPressed;

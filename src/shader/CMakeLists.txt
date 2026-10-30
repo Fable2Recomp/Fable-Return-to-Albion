@@ -3,6 +3,8 @@ set(REFII_SHADER_ROOT ${CMAKE_CURRENT_LIST_DIR})
 set(REFII_SHADER_WORKSPACE_SOURCES
     ${REFII_SHADER_ROOT}/src/sha256.cpp
     ${REFII_SHADER_ROOT}/src/shader_sbk_pipeline.cpp
+    # What each title adds beyond its banks (its executable's inline shaders).
+    ${REFII_SHADER_ROOT}/src/shader_sbk_titles.cpp
     # The C ABI the launcher P/Invokes (include/shader/refii_shader_build.h).
     ${REFII_SHADER_ROOT}/src/refii_shader_build.cpp
 )

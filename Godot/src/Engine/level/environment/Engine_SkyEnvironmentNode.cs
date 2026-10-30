@@ -914,8 +914,19 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         _paintedThemes.Clear();
         if (Painted is { Any: true } painted)
         {
+            bool envThemes = Engine_EnvironmentTheme.CarriesEnvThemes(LightingGdbs);
             foreach (Refii.Lighting.Engine_PaintedDaySets.Layer layer in painted.Layers)
             {
+                // A Fable 3 layer fades on its own theme's times (Engine_PaintedDaySets.Layer).
+                if (envThemes && layer.BlendInSeconds is null &&
+                    Engine_EnvThemeFile.TryMapTheme(layer.Hash, out Engine_EnvThemeFile paintedFile, out string paintedName))
+                {
+                    layer.BlendInSeconds = paintedFile.FadeInTime;
+                    layer.BlendOutSeconds = paintedFile.FadeOutTime;
+                    GD.Print($"[painted] day set 0x{layer.Hash:X8} is the map's {paintedName}: fade in/out " +
+                        $"{paintedFile.FadeInTime:0.#}/{paintedFile.FadeOutTime:0.#} s");
+                }
+
                 if (Engine_ThemeTimeline.TryExtractLightingBlended(
                         LightingGdbs, stepStartTime, layer.Hash, out LightingTheme paintedStart))
                 {
@@ -930,7 +941,9 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                     _paintedThemes[layer.Hash] = null;
                     if (_paintedUnresolved.Add(layer.Hash))
                     {
-                        GD.Print($"[painted] day set 0x{layer.Hash:X8} is painted but no loaded gdb states it");
+                        GD.Print(envThemes
+                            ? $"[painted] day set 0x{layer.Hash:X8} is painted but no EnvironmentThemeMap.txt entry loads for it"
+                            : $"[painted] day set 0x{layer.Hash:X8} is painted but no loaded gdb states it");
                     }
                 }
             }

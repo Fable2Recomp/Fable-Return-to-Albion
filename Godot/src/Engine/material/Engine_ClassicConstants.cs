@@ -56,8 +56,10 @@ public static class Engine_ClassicConstants
         public float[]? Second;
         /// <summary>The uploaded width in texels: 256 for one view, 512 for two.</summary>
         public int Width = Registers;
-        /// <summary>The registers that are the view's own (<see cref="IsViewRegister"/>).</summary>
+        /// <summary>The registers that are the view's own (<see cref="IsViewRegister"/>), for <see cref="MapFor"/>.</summary>
         public readonly bool[] ViewRegisters = new bool[Registers];
+        /// <summary>The register map the view mask and block bounds were taken from.</summary>
+        public Engine_ClassicRegisters.Map? MapFor;
         /// <summary>The uploaded rows: the textures hold rows [0, Height) only (see Publish).</summary>
         public int Height;
         public byte[] Bytes = Array.Empty<byte>();
@@ -66,19 +68,14 @@ public static class Engine_ClassicConstants
         public ImageTexture? Texture;
         /// <summary>First and last register of this stage's per-row light block.</summary>
         public int BlockStart, BlockEnd;
+        public readonly bool Pixel;
+
+        public StageState(bool pixel) => Pixel = pixel;
     }
 
     private static readonly object Gate = new();
-    private static readonly StageState _pixel = new()
-    {
-        BlockStart = Engine_ClassicRegisters.Ps.LightPositions,
-        BlockEnd = Engine_ClassicRegisters.Ps.LightBlockEnd,
-    };
-    private static readonly StageState _vertex = new()
-    {
-        BlockStart = Engine_ClassicRegisters.Vs.LightPositions,
-        BlockEnd = Engine_ClassicRegisters.Vs.LightBlockEnd,
-    };
+    private static readonly StageState _pixel = new(pixel: true);
+    private static readonly StageState _vertex = new(pixel: false);
     private static readonly Stack<int> _freeRows = new();
     /// <summary>The highest row ever taken: rows are handed out lowest first and reused, so the
     /// live ones stay packed below it.</summary>
@@ -88,18 +85,36 @@ public static class Engine_ClassicConstants
     /// <summary>Views the file holds: 1, or 2 on split screen.</summary>
     private static int _views = 1;
 
-    private static StageState Stage(bool pixel) => pixel ? _pixel : _vertex;
-
-    static Engine_ClassicConstants()
+    /// <summary>A stage, its view mask and light block bounds those of the title running.</summary>
+    private static StageState Stage(bool pixel)
     {
-        foreach (int r in Engine_ClassicRegisters.Ps.ViewRegisters)
+        StageState state = pixel ? _pixel : _vertex;
+        Engine_ClassicRegisters.Map map = Engine_ClassicRegisters.Active;
+        if (!ReferenceEquals(state.MapFor, map))
         {
-            _pixel.ViewRegisters[r] = true;
+            lock (Gate)
+            {
+                TakeMap(state, map);
+            }
         }
-        foreach (int r in Engine_ClassicRegisters.Vs.ViewRegisters)
+        return state;
+    }
+
+    /// <summary>The title's view registers and light block into a stage. Caller holds the gate.</summary>
+    private static void TakeMap(StageState state, Engine_ClassicRegisters.Map map)
+    {
+        if (ReferenceEquals(state.MapFor, map))
         {
-            _vertex.ViewRegisters[r] = true;
+            return;
         }
+        System.Array.Clear(state.ViewRegisters);
+        foreach (int r in state.Pixel ? map.Ps.ViewRegisters : map.Vs.ViewRegisters)
+        {
+            state.ViewRegisters[r] = true;
+        }
+        state.BlockStart = state.Pixel ? map.Ps.LightPositions : map.Vs.LightPositions;
+        state.BlockEnd = state.Pixel ? map.Ps.LightBlockEnd : map.Vs.LightBlockEnd;
+        state.MapFor = map;
     }
 
     /// <summary>Whether <paramref name="register"/> of a stage is a view's own (eye, projection, cascades, view-space by-id params).</summary>
@@ -517,6 +532,11 @@ public static class Engine_ClassicConstants
     /// <summary>One register run into one row of one block; true when anything changed. Caller holds the gate.</summary>
     private static bool Write(StageState state, float[] block, int row, int register, ReadOnlySpan<float> values)
     {
+        // A register the title does not declare (Engine_ClassicRegisters.Absent) takes nothing.
+        if (register < 0)
+        {
+            return false;
+        }
         int at = row * Floats + register * 4;
         int length = Math.Min(values.Length, (row + 1) * Floats - at);
         if (length <= 0)

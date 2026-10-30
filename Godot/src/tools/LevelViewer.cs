@@ -228,6 +228,11 @@ public partial class LevelViewer : Node3D
 			{
 				ShadowProbe();
 			}
+
+			if (OS.GetEnvironment("REFII_LEVEL_TILT") is { Length: > 0 } tilt)
+			{
+				TiltReport(tilt);
+			}
 		}
 
 		if (_fogOff)
@@ -2186,6 +2191,64 @@ public partial class LevelViewer : Node3D
 	/// re-written and the constants republished, and the uniforms re-stated late in the warm-up for
 	/// materials built after frame 0.
 	/// </summary>
+	/// <summary>
+	/// REFII_LEVEL_TILT="x,y,z,radius" (Godot coordinates): every drawn mesh or batch instance
+	/// within the radius whose up axis leans more than 10 degrees, nearest first, by node — a
+	/// placement transform read wrong shows here as an upright model lying over.
+	/// </summary>
+	private void TiltReport(string spec)
+	{
+		string[] parts = spec.Split(',');
+		var centre = new Vector3(float.Parse(parts[0], System.Globalization.CultureInfo.InvariantCulture),
+			float.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture),
+			float.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture));
+		float radius = parts.Length > 3 ? float.Parse(parts[3], System.Globalization.CultureInfo.InvariantCulture) : 30f;
+		var hits = new List<(float Distance, string Text)>();
+		void Visit(Node node)
+		{
+			if (node is MultiMeshInstance3D batch && batch.Multimesh is { } mm)
+			{
+				for (int i = 0; i < mm.InstanceCount; i++)
+				{
+					Consider(batch.GlobalTransform * mm.GetInstanceTransform(i), $"{batch.GetPath()}[{i}]");
+				}
+			}
+			else if (node is MeshInstance3D mesh && mesh.Visible)
+			{
+				Consider(mesh.GlobalTransform, mesh.GetPath().ToString());
+			}
+
+			foreach (Node child in node.GetChildren())
+			{
+				Visit(child);
+			}
+		}
+
+		void Consider(Transform3D t, string name)
+		{
+			float distance = t.Origin.DistanceTo(centre);
+			Vector3 up = t.Basis.Y.Normalized();
+			float lean = Mathf.RadToDeg(Mathf.Acos(Mathf.Clamp(up.Dot(Vector3.Up), -1f, 1f)));
+			if (distance <= radius && lean > 10f)
+			{
+				hits.Add((distance, $"{distance,6:0.0} m lean {lean,5:0.0} up ({up.X:0.00},{up.Y:0.00},{up.Z:0.00}) " +
+					$"scale ({t.Basis.Scale.X:0.00},{t.Basis.Scale.Y:0.00},{t.Basis.Scale.Z:0.00}) at {t.Origin} {name}"));
+			}
+		}
+
+		if (_region is not null)
+		{
+			Visit(_region);
+		}
+
+		hits.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+		GD.Print($"[tilt] {hits.Count} leaning instance(s) within {radius} m of {centre}");
+		foreach ((float _, string text) in hits.Take(80))
+		{
+			GD.Print("[tilt] " + text);
+		}
+	}
+
 	private void LabPump()
 	{
 		foreach (Node3D node in _labHidden)

@@ -29,6 +29,7 @@ public static class Engine_MdlTreeStreams
         out float[] pivots, out float[] colour1, out float[] colour2)
     {
         pivots = colour1 = colour2 = Array.Empty<float>();
+        data = info.Body ?? data;
         IReadOnlyList<MdlMeshBuffer> buffers = info.MeshBuffers;
         if (sourceVertices.Length == 0 || buffers.Count == 0)
         {

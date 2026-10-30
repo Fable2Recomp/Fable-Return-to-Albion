@@ -191,18 +191,48 @@ public sealed class Engine_BabelDatabase
 		// section it does not touch is safest carried across byte for byte.
 		db.TailOffset = p;
 
+		// A SPEECH LINK IS 10 BYTES IN FABLE 2 AND 11 IN FABLE 3, under the same magic, so the
+		// stride is the one whose tail ends exactly at the end of the file. Measured on Fable 3's
+		// en-uk book.babel: 57,914 links at 11 bytes, then 3,859 groups and 613 speaker names land
+		// on its last byte; at 10 the groups are read out of the links.
+		Exception? last = null;
+		foreach (int linkStride in SpeechLinkStrides)
+		{
+			db.Groups.Clear();
+			db.SpeakerNames.Clear();
+			try
+			{
+				ReadTail(data, p, linkStride, db);
+				return db;
+			}
+			catch (Exception exception) when (exception is InvalidDataException or OverflowException or ArgumentOutOfRangeException)
+			{
+				last = exception;
+			}
+		}
+
+		throw last is InvalidDataException invalid ? invalid : new InvalidDataException($"babel: tail unreadable: {last?.Message}");
+	}
+
+	/// <summary>The speech-link record sizes the titles use, Fable 2's first.</summary>
+	private static readonly int[] SpeechLinkStrides = { 10, 11 };
+
+	private static void ReadTail(byte[] data, int p, int linkStride, Engine_BabelDatabase db)
+	{
 		p += 4; // max-block-size hint; the engine stores it but never sizes anything from it
 
-		// Speech links (10 bytes each) are skipped; text groups are kept for the screens that
-		// walk one (the credits).
+		// Speech links are skipped; text groups are kept for the screens that walk one (the
+		// credits).
 		int speechLinks = checked((int)ReadU32(data, ref p));
-		p += speechLinks * 10;
+		p = checked(p + speechLinks * linkStride);
 
 		int textGroups = checked((int)ReadU32(data, ref p));
 		for (int i = 0; i < textGroups; i++)
 		{
 			uint group = ReadU32(data, ref p);
 			int members = checked((int)ReadU32(data, ref p));
+			if (members < 0 || members > (data.Length - p) / 4)
+				throw new InvalidDataException($"babel: text group of {members} members at {p}");
 			var memberKeys = new uint[members];
 			for (int m = 0; m < members; m++)
 			{
@@ -217,13 +247,13 @@ public sealed class Engine_BabelDatabase
 		{
 			uint key = ReadU32(data, ref p);
 			int chars = checked((int)ReadU32(data, ref p));
+			if (chars < 0 || chars > (data.Length - p) / 2)
+				throw new InvalidDataException($"babel: speaker name of {chars} chars at {p}");
 			db.SpeakerNames[key] = ReadUtf16Be(data, ref p, chars);
 		}
 
 		if (p != data.Length)
 			throw new InvalidDataException($"babel: {data.Length - p} trailing bytes, expected 0");
-
-		return db;
 	}
 
 	/// <summary>

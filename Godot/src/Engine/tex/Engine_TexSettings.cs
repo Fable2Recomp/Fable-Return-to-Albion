@@ -441,7 +441,7 @@ public static class Engine_TexSettings
 		string path = Engine_RefiiConfig.ResolvePath();
 		if (path.Length == 0)
 		{
-			GD.PushWarning("[tex] no refii.toml to write the upscaling setting to");
+			GD.PushWarning("[tex] no " + Refii.Core.Engine_Title.Active.ConfigFileName + " to write the upscaling setting to");
 			return;
 		}
 
@@ -478,7 +478,7 @@ public static class Engine_TexSettings
 			_loaded = true;
 
 			IReadOnlyDictionary<string, string> values = Engine_RefiiConfig.Read(out string path);
-			_source = path.Length == 0 ? "defaults (no refii.toml found)" : path;
+			_source = path.Length == 0 ? "defaults (no " + Refii.Core.Engine_Title.Active.ConfigFileName + " found)" : path;
 
 			// THE ONE SWITCH: the original game, or the modernized one. Everything below defaults
 			// FROM it rather than to a constant, so a player picks a look rather than assembling

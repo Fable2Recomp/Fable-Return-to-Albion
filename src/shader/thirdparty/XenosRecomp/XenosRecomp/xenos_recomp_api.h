@@ -52,11 +52,16 @@ XENOSRECOMP_API bool XenosRecompTranslateToHlslEx(
 
 // Single-blob translation in the given dialect. The shader common header is read only for
 // HLSL; the Godot output includes its own support file by resource path.
+//
+// `title` is the title folder the blob came from ("Fable2", "Fable3"; NULL or empty for none):
+// the Godot dialect classifies a few constants by it, where two titles state the same engine's
+// shaders with different per-draw blocks. HLSL ignores it.
 XENOSRECOMP_API bool XenosRecompTranslateEx(
     const char* inputPath,
     const char* outputPath,
     const char* shaderCommonPath,
     uint32_t dialect,
+    const char* title,
     XenosRecompTranslationStats* stats,
     const char** errorMessage);
 

@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using Refii.Core;
 
 namespace Refii.Level;
 
@@ -616,6 +617,19 @@ public static class Engine_EhfSplat
         out byte[] indices,
         out int width,
         out int height,
+        out string error) =>
+        TryDecodePf99SplatMap(
+            data, offset, available, Engine_Title.Active, out indices, out width, out height, out error);
+
+    /// <param name="offset">Where the texture starts in the body stream: Fable 3's length word.</param>
+    public static bool TryDecodePf99SplatMap(
+        byte[] data,
+        int offset,
+        int available,
+        Engine_Title title,
+        out byte[] indices,
+        out int width,
+        out int height,
         out string error)
     {
         indices = Array.Empty<byte>();
@@ -623,22 +637,44 @@ public static class Engine_EhfSplat
         height = 0;
         error = string.Empty;
 
-        if (offset < 0 || available < 0x60 || offset + 0x60 > data.Length)
+        uint w;
+        uint h;
+        uint pixelFormat;
+        long tableAt;
+        if (title == Engine_Title.Fable3)
         {
-            error = "splat: blob too small";
-            return false;
-        }
+            if (!Engine_EhfBody.TryReadFable3Blob(
+                    data, offset, (long)offset + available, out EhfTexBlob blob, out string why))
+            {
+                error = $"splat: {why}";
+                return false;
+            }
 
-        if (ReadU32(data, offset) != 0xFFFFFFFEu)
+            w = (uint)blob.Width;
+            h = (uint)blob.Height;
+            pixelFormat = (uint)blob.PixelFormat;
+            tableAt = blob.Data;
+        }
+        else
         {
-            error = "splat: bad magic";
-            return false;
-        }
+            if (offset < 0 || available < 0x60 || offset + 0x60 > data.Length)
+            {
+                error = "splat: blob too small";
+                return false;
+            }
 
-        uint w = ReadU32(data, offset + 0x10);
-        uint h = ReadU32(data, offset + 0x14);
-        uint pixelFormat = ReadU32(data, offset + 0x18);
-        uint metaSize = ReadU32(data, offset + 0x20);
+            if (ReadU32(data, offset) != 0xFFFFFFFEu)
+            {
+                error = "splat: bad magic";
+                return false;
+            }
+
+            w = ReadU32(data, offset + 0x10);
+            h = ReadU32(data, offset + 0x14);
+            pixelFormat = ReadU32(data, offset + 0x18);
+            uint metaSize = ReadU32(data, offset + 0x20);
+            tableAt = offset + metaSize;
+        }
 
         if (pixelFormat != 99u)
         {
@@ -652,7 +688,6 @@ public static class Engine_EhfSplat
             return false;
         }
 
-        long tableAt = offset + metaSize;
         if (tableAt + 8 > data.Length)
         {
             error = "splat: mip table read failed";

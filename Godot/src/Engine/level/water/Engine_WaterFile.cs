@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 
 namespace Refii.Level;
@@ -45,6 +46,22 @@ public static class WaterParam
     public const int GlitterPower = 36;
 
     public const int Count = 37;
+
+    /// <summary>
+    /// Where a version-3 body's 25 floats land: version 2's slots without the detail map (10..17)
+    /// and the diffuse/specular four (30..33). Fable 3's body load (<c>sub_82CF8198</c>) reads 25
+    /// floats into the block whose defaults (<c>sub_82CF6490</c>) are these slots' values — speed 0
+    /// at +16, glitter bend at +96 — and every shipped body states them in this order.
+    /// </summary>
+    public static readonly int[] Version3Slots =
+    {
+        FresnelBias, ReflectionBias,
+        NormalSpeed0X, NormalSpeed0Y, NormalSpeed1X, NormalSpeed1Y,
+        NormalScale0X, NormalScale0Y, NormalScale1X, NormalScale1Y,
+        SurfaceR, SurfaceG, SurfaceB, DeepR, DeepG, DeepB,
+        NormalScale, ReflectionScaleX, ReflectionScaleY, RefractionScaleX, RefractionScaleY,
+        ReflectionStrength, GlitterBend, GlitterStrength, GlitterPower,
+    };
 }
 
 public sealed class WaterTile
@@ -72,6 +89,8 @@ public sealed class WaterBody
 
     public float BaseHeight { get; set; }
 
+    /// <summary>The body's parameters by <see cref="WaterParam"/> slot; a slot the file's version
+    /// does not state is NaN, so <see cref="Param"/> answers its fallback.</summary>
     public float[] Params { get; } = new float[WaterParam.Count];
 
     public string NormalMapPath { get; set; } = string.Empty;
@@ -119,12 +138,33 @@ public static class Engine_WaterFile
 
     private const uint MaxCells = 1024;
 
+    private static readonly int[] Version2Slots = Enumerable.Range(0, WaterParam.Count).ToArray();
+
+    /// <summary>
+    /// The body's float block by the file's own version: 37 in Fable 2's version 2
+    /// (<c>sub_82B30720</c> refuses anything but 2), 25 in Fable 3's version 3 (<c>sub_82CF8198</c>
+    /// refuses anything but 3, then <c>sub_82CF7EE0(stream, W+24, 25)</c>). Everything else in the
+    /// file is laid out the same in both.
+    /// </summary>
+    private static int[]? SlotsFor(uint version) => version switch
+    {
+        2 => Version2Slots,
+        3 => WaterParam.Version3Slots,
+        _ => null,
+    };
+
+    /// <remarks>
+    /// A file of eight bytes — version and a body count of 0 — is a heightfield with no water and
+    /// parses to a scene with no bodies (137 of Fable 3's 251 files, 69 of Fable 2's 184). The
+    /// guest never checks the count: it reads the body at the index its record states, so no
+    /// record names a body of an empty file.
+    /// </remarks>
     public static bool TryParse(byte[] bytes, out WaterScene scene, out string error)
     {
         scene = new WaterScene();
         error = string.Empty;
 
-        if (bytes.Length < 0x0C)
+        if (bytes.Length < 0x08)
         {
             error = "too small for a .water header";
             return false;
@@ -132,7 +172,8 @@ public static class Engine_WaterFile
 
         var reader = new Reader(bytes);
 
-        if (!reader.U32(out uint version) || version != 2)
+        reader.U32(out uint version);
+        if (SlotsFor(version) is not { } slots)
         {
             error = $"unsupported .water version {version}";
             return false;
@@ -140,13 +181,17 @@ public static class Engine_WaterFile
 
         scene.Version = version;
 
-        if (!reader.U32(out uint bodyCount) || bodyCount == 0 || bodyCount > MaxBodyCount)
+        if (!reader.U32(out uint bodyCount) || bodyCount > MaxBodyCount)
         {
             error = $"implausible body count {bodyCount}";
             return false;
         }
 
         scene.BodyCount = bodyCount;
+        if (bodyCount == 0)
+        {
+            return true;
+        }
 
         long tableEnd = 8 + ((long)bodyCount * 4);
         if (tableEnd > bytes.Length)
@@ -174,7 +219,7 @@ public static class Engine_WaterFile
         for (uint k = 0; k < bodyCount; k++)
         {
             var bodyReader = new Reader(bytes) { Position = (int)offsets[k] };
-            if (TryParseBody(bodyReader, out WaterBody body))
+            if (TryParseBody(bodyReader, slots, out WaterBody body))
             {
                 scene.TileCount += (uint)body.Tiles.Count;
                 scene.Bodies.Add(body);
@@ -190,7 +235,7 @@ public static class Engine_WaterFile
         return true;
     }
 
-    private static bool TryParseBody(Reader reader, out WaterBody body)
+    private static bool TryParseBody(Reader reader, int[] slots, out WaterBody body)
     {
         body = new WaterBody();
 
@@ -207,14 +252,15 @@ public static class Engine_WaterFile
         body.ParamA = paramA;
         body.BaseHeight = baseHeight;
 
-        for (int i = 0; i < body.Params.Length; i++)
+        Array.Fill(body.Params, float.NaN);
+        foreach (int slot in slots)
         {
             if (!reader.F32(out float value))
             {
                 return false;
             }
 
-            body.Params[i] = value;
+            body.Params[slot] = value;
         }
 
         if (!reader.Strz(out string normalMap) || !reader.Strz(out string secondaryMap))

@@ -106,6 +106,41 @@ public class TitleLayoutTests
         }
     }
 
+    /// <summary>
+    /// A cache from before titles had cache folders is Fable 2's: its textures, shadow bakes and
+    /// pub-game rasters move into cache/Fable2, and a title folder already there is left alone.
+    /// </summary>
+    [TestCase]
+    public void LegacyCacheMovesIntoFable2()
+    {
+        string root = NewRoot();
+        try
+        {
+            string assets = Path.Combine(root, "assets");
+            string bin = Path.Combine(root, "bin");
+            string cache = Path.Combine(root, "cache");
+            Put(Path.Combine(cache, "textures", "v3", "ab", "abcd.rftx"), "enhanced");
+            Put(Path.Combine(cache, "shadows", "albion", "bwsmarket", "default.shadows"), "bake");
+            Put(Path.Combine(cache, "swf", "shapes.bin"), "swf");
+            Put(Path.Combine(cache, "Fable3", "textures", "v3", "cd", "cdef.rftx"), "fable 3");
+
+            List<string> report = Engine_TitleLayout.MigrateLegacyLayout(assets, bin, repoAssets: null, cache);
+
+            string fable2 = Path.Combine(cache, "Fable2");
+            AssertThat(File.ReadAllText(Path.Combine(fable2, "textures", "v3", "ab", "abcd.rftx"))).IsEqual("enhanced");
+            AssertThat(File.ReadAllText(Path.Combine(fable2, "shadows", "albion", "bwsmarket", "default.shadows"))).IsEqual("bake");
+            AssertThat(File.ReadAllText(Path.Combine(fable2, "swf", "shapes.bin"))).IsEqual("swf");
+            AssertThat(File.ReadAllText(Path.Combine(cache, "Fable3", "textures", "v3", "cd", "cdef.rftx"))).IsEqual("fable 3");
+            AssertThat(Directory.Exists(Path.Combine(cache, "textures"))).IsFalse();
+            AssertThat(report.Count).IsEqual(3);
+            AssertThat(Engine_TitleLayout.MigrateLegacyLayout(assets, bin, repoAssets: null, cache).Count).IsEqual(0);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
     [TestCase]
     public void InterimFable3FolderAndDevRepoDataMove()
     {

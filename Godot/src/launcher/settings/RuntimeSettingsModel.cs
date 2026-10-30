@@ -218,6 +218,10 @@ public sealed class RuntimeSettingsModel
         Reload();
     }
 
+    /// <summary>
+    /// Reads the ACTIVE title's config afresh: the launcher calls this when the title switches, so
+    /// the panel edits that game's file and lists that game's settings.
+    /// </summary>
     public void Reload()
     {
         StatusMessage = string.Empty;
@@ -227,12 +231,12 @@ public sealed class RuntimeSettingsModel
 
         if (!RuntimeConfig.EnsureDefaults(ConfigPath, out string error))
         {
-            StatusMessage = "Failed to prepare refii.toml: " + error;
+            StatusMessage = "Failed to prepare " + System.IO.Path.GetFileName(ConfigPath) + ": " + error;
         }
 
         Values = RuntimeConfig.ReadValues(ConfigPath);
         Refii.Core.Engine_Switches.Invalidate();
-        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All)
+        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.Active)
         {
             if (!Values.ContainsKey(definition.Name))
             {
@@ -256,7 +260,7 @@ public sealed class RuntimeSettingsModel
     {
         if (!RuntimeConfig.WriteValues(ConfigPath, Values, out string error))
         {
-            StatusMessage = "Failed to save refii.toml: " + error;
+            StatusMessage = "Failed to save " + System.IO.Path.GetFileName(ConfigPath) + ": " + error;
             return;
         }
 
@@ -267,7 +271,7 @@ public sealed class RuntimeSettingsModel
     public void ResetAllToDefaults()
     {
         Values.Clear();
-        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All)
+        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.Active)
         {
             Values[definition.Name] = definition.DefaultValue;
         }
@@ -290,7 +294,8 @@ public sealed class RuntimeSettingsModel
         var byCategory = new Dictionary<string, List<RuntimeCVarDefinition>>(StringComparer.Ordinal);
 
         bool showAdvanced = ShowAdvanced || filter.Length != 0;
-        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All)
+        // The active title's settings only; a category none of them fills is not listed.
+        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.Active)
         {
             if (!RuntimeConfig.ShouldShowCVar(definition) || !MatchesFilter(definition, filter))
             {
@@ -379,7 +384,7 @@ public sealed class RuntimeSettingsModel
     }
 
     /// <summary>
-    /// The label a setting is shown under: its refii.toml key as words, so `max_fps` reads
+    /// The label a setting is shown under: its config key as words, so `max_fps` reads
     /// "Max FPS". The key itself is unchanged and still what the file holds.
     /// </summary>
     public static string FormatDisplayName(RuntimeCVarDefinition definition)

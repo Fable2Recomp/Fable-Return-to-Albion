@@ -473,16 +473,35 @@ public static class Engine_ShadowProxy
 	private static ArrayMesh? MergedFor(ArrayMesh source, MeshInstance3D? body, UInt128 hidden, bool skinned, bool always)
 	{
 		Dictionary<(UInt128 Hidden, bool Always), ArrayMesh?> perMask = Cache.GetOrCreateValue(source);
+		long from = System.Diagnostics.Stopwatch.GetTimestamp();
 		lock (perMask)
 		{
+			long locked = System.Diagnostics.Stopwatch.GetTimestamp();
+			_mergeWaitMs += (locked - from) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
 			if (!perMask.TryGetValue((hidden, always), out ArrayMesh? merged))
 			{
 				merged = Build(source, body, hidden, skinned, always);
 				perMask[(hidden, always)] = merged;
+				_mergeBuildMs += (System.Diagnostics.Stopwatch.GetTimestamp() - locked) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
 			}
 
 			return merged;
 		}
+	}
+
+	[ThreadStatic] private static double _mergeWaitMs;
+	[ThreadStatic] private static double _mergeBuildMs;
+
+	/// <summary>
+	/// This thread's time in the caster merge since the last call: waiting for another thread
+	/// building the same mesh, and building it here. Zeroes both.
+	/// </summary>
+	public static (double WaitMs, double BuildMs) TakeMergeTimes()
+	{
+		(double, double) taken = (_mergeWaitMs, _mergeBuildMs);
+		_mergeWaitMs = 0;
+		_mergeBuildMs = 0;
+		return taken;
 	}
 
 	/// <summary>The cast-only mesh, or null when a surface cannot be merged and the body must keep casting.</summary>

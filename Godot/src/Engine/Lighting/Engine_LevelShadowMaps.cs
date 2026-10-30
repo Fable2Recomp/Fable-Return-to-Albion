@@ -172,10 +172,10 @@ public static class Engine_LevelShadowMaps
 
 	/// <summary>
 	/// Directory under which generated static shadow depth atlases are cached.
-	/// Located under <c>&lt;app&gt;/cache/shadows</c> (same derived cache container as textures).
+	/// Located under <c>&lt;app&gt;/cache/&lt;Title&gt;/shadows</c> (same derived cache container as textures).
 	/// </summary>
 	public static string CacheShadowsDirectory =>
-		Path.Combine(Refii.Core.Engine_AppRoot.CacheDirectory, "shadows");
+		Path.Combine(Refii.Core.Engine_Title.Active.CacheDirectory, "shadows");
 
 	/// <summary>
 	/// Computes the relative path segment for a level and scenario (e.g. <c>albion/bwsmarket/defaultscenario.shadows</c>).

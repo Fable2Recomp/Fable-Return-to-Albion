@@ -63,7 +63,7 @@ public static class Engine_LevelManifest
 
             List<string> bucket =
                 EndsWith(line, ".ghf") ? manifest.Ghf :
-                EndsWith(line, ".hfa") || EndsWith(line, ".ama") ||
+                EndsWith(line, ".hfa") || EndsWith(line, ".ama") || IsNumberedAma(line) ||
                 EndsWith(line, ".amm") || EndsWith(line, ".amr") ? manifest.AudioMaps :
                 EndsWith(line, ".hdb") ? manifest.Hdb :
                 EndsWith(line, ".genv") ? manifest.Genv :
@@ -243,4 +243,13 @@ public static class Engine_LevelManifest
 
     private static bool EndsWith(string line, string extension) =>
         line.EndsWith(extension, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Fable 3 splits an audio map into numbered parts: <c>….ama.1</c>, <c>….ama.2</c>, ….</summary>
+    private static bool IsNumberedAma(string line)
+    {
+        int dot = line.LastIndexOf('.');
+        return dot > 4 && dot + 1 < line.Length &&
+            line.AsSpan(dot + 1).IndexOfAnyExcept("0123456789") < 0 &&
+            line.AsSpan(0, dot).EndsWith(".ama", StringComparison.OrdinalIgnoreCase);
+    }
 }

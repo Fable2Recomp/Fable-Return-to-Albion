@@ -71,6 +71,7 @@ public sealed class GdbView
     public const uint HashVecX = 0x050C5D47;
     public const uint HashVecY = 0x050C5D46;
     public const uint HashVecZ = 0x050C5D45;
+    public const uint HashVecW = 0x050C5D48;
 
     private readonly byte[] _bytes;
     private readonly int[] _recordOffsets;
@@ -602,6 +603,20 @@ public sealed class GdbView
         z = BitConverter.Int32BitsToSingle(unchecked((int)rz));
 
         return float.IsFinite(x) && float.IsFinite(y) && float.IsFinite(z);
+    }
+
+    /// <summary>The referenced record's W, the fourth field of Fable 3's quaternion records.</summary>
+    public bool TryReadVecWRef(uint hash, out float w)
+    {
+        w = 0f;
+        if (!TryLookup(hash, out int index) ||
+            !TryFindLocalRaw(index, HashVecW, (int)GdbFieldType.Float, out uint rw, out _))
+        {
+            return false;
+        }
+
+        w = BitConverter.Int32BitsToSingle(unchecked((int)rw));
+        return float.IsFinite(w);
     }
 
     public bool TryReadVec3Ref(uint hash, out float x, out float y, out float z)

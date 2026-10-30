@@ -276,7 +276,7 @@ public static class Engine_TexData
 			return TryDecodeRawSurface(d, header, out surface, out error);
 		}
 
-		int recordOffset = header.LevelOffsets[0] > 0 ? header.LevelOffsets[0] : TexHeader.Size;
+		int recordOffset = header.LevelOffsets[0] > 0 ? header.LevelOffsets[0] : header.HeaderSize;
 		if (recordOffset < 0 || recordOffset >= d.Length)
 		{
 			error = $"header points level 0 at {recordOffset}, outside {d.Length} bytes";
@@ -362,7 +362,7 @@ public static class Engine_TexData
 			return false;
 		}
 
-		int at = TexHeader.Size;
+		int at = header.HeaderSize;
 		if (at + 4 > d.Length)
 		{
 			error = "raw surface: truncated before its byte count";

@@ -7,9 +7,14 @@ using Refii.Launcher.Core;
 namespace Refii.Core;
 
 /// <summary>
-/// Finds and reads <c>refii.toml</c>, the one file a player edits.
+/// Finds and reads the active title's runtime config (<see cref="Engine_Title.ConfigFileName"/>:
+/// <c>refii.toml</c>, <c>refiii.toml</c>), the one file a player edits for that game.
 /// </summary>
 /// <remarks>
+/// ONE FILE PER TITLE, never another's. Every search below looks for the ACTIVE title's file name
+/// and the found path is remembered per title, so a launcher that switches title reads the other
+/// game's file from then on rather than the first one it found.
+///
 /// The locating used to live privately inside <see cref="Refii.Game.GameWindowSettings"/>, which
 /// was fine while the window was the only thing configured from the file. It is here now because
 /// the texture pipeline needs the same file, and a second copy of the search order is a second
@@ -24,14 +29,15 @@ namespace Refii.Core;
 /// </remarks>
 public static class Engine_RefiiConfig
 {
-    /// <summary>The path to <c>refii.toml</c>, or empty when there is not one.</summary>
+    /// <summary>The path to the active title's config, or empty when there is not one.</summary>
     public static string ResolvePath()
     {
+        Engine_Title title = Engine_Title.Active;
         lock (_cacheGate)
         {
-            if (_cachedPath.Length != 0)
+            if (_resolvedPath.Length != 0 && _resolvedFor == title)
             {
-                return _cachedPath;
+                return _resolvedPath;
             }
         }
 
@@ -71,10 +77,11 @@ public static class Engine_RefiiConfig
             if (!string.IsNullOrEmpty(dir)) project = dir;
         }
 
-        candidates.Add(System.IO.Path.Combine(project, "build", "refii.toml"));
-        candidates.Add(System.IO.Path.Combine(project, "refii.toml"));
+        string name = title.ConfigFileName;
+        candidates.Add(System.IO.Path.Combine(project, "build", name));
+        candidates.Add(System.IO.Path.Combine(project, name));
         candidates.Add(System.IO.Path.GetFullPath(
-            System.IO.Path.Combine(project, "..", "refii.toml")));
+            System.IO.Path.Combine(project, "..", name)));
 
         foreach (string candidate in candidates)
         {
@@ -82,7 +89,8 @@ public static class Engine_RefiiConfig
             {
                 lock (_cacheGate)
                 {
-                    _cachedPath = candidate;
+                    _resolvedPath = candidate;
+                    _resolvedFor = title;
                 }
                 return candidate;
             }
@@ -150,7 +158,7 @@ public static class Engine_RefiiConfig
     }
 
     /// <summary>
-    /// Throttled check (at most once per 500 ms) that reloads <c>refii.toml</c> and invalidates
+    /// Throttled check (at most once per 500 ms) that reloads the title's config and invalidates
     /// <see cref="Engine_Switches.Generation"/> if the file was modified on disk (for example, by
     /// the launcher's lighting settings dialog while the game is running).
     /// </summary>
@@ -170,6 +178,8 @@ public static class Engine_RefiiConfig
     private static readonly object _cacheGate = new();
     private static IReadOnlyDictionary<string, string>? _cached;
     private static string _cachedPath = string.Empty;
+    private static string _resolvedPath = string.Empty;
+    private static Engine_Title? _resolvedFor;
     private static DateTime _cachedStamp;
     private static long _lastPollTick = long.MinValue;
     private static readonly SortedDictionary<string, string> _overrides = new(StringComparer.OrdinalIgnoreCase);
@@ -223,7 +233,7 @@ public static class Engine_RefiiConfig
     }
 
     /// <summary>
-    /// Sets a live Godot CVar override in memory (and persists to <c>refii.toml</c> when possible),
+    /// Sets a live Godot CVar override in memory (and persists to the title's config when possible),
     /// then notifies listeners such as <c>Engine_LevelLights</c> and <c>Engine_LevelLighting</c>.
     /// </summary>
     public static bool TrySetGodotCvar(string name, string value)
@@ -231,7 +241,8 @@ public static class Engine_RefiiConfig
         RuntimeCVarDefinition? def = null;
         foreach (RuntimeCVarDefinition candidate in RuntimeCVarsGodot.Definitions)
         {
-            if (candidate.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+            if (candidate.AppliesTo(Engine_Title.Active) &&
+                candidate.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
             {
                 def = candidate;
                 break;
@@ -288,6 +299,11 @@ public static class Engine_RefiiConfig
         IReadOnlyDictionary<string, string> current = Read(out _);
         foreach (RuntimeCVarDefinition def in RuntimeCVarsGodot.Definitions)
         {
+            if (!def.AppliesTo(Engine_Title.Active))
+            {
+                continue;
+            }
+
             string val = current.TryGetValue(def.Name, out string? raw) && raw.Length > 0
                 ? raw.Trim().Trim('"')
                 : def.DefaultValue;

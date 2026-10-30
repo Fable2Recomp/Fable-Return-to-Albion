@@ -65,10 +65,12 @@ static void translateSingleShaderFile(const char* input,
                                       const char* output,
                                       const std::string_view& include,
                                       XenosRecompTranslationStats* stats,
-                                      ShaderDialect dialect = ShaderDialect::Hlsl)
+                                      ShaderDialect dialect = ShaderDialect::Hlsl,
+                                      const char* title = nullptr)
 {
     ShaderRecompiler recompiler;
     recompiler.dialect = dialect;
+    recompiler.godotTitle = title != nullptr ? title : "";
     {
         std::string stem = std::filesystem::path(output).stem().string();
         for (char& c : stem)
@@ -288,6 +290,7 @@ extern "C" bool XenosRecompTranslateEx(
     const char* outputPath,
     const char* shaderCommonPath,
     uint32_t dialect,
+    const char* title,
     XenosRecompTranslationStats* stats,
     const char** errorMessage) {
     thread_local std::string lastError;
@@ -318,7 +321,7 @@ extern "C" bool XenosRecompTranslateEx(
 
     XenosRecompTranslationStats localStats{};
     translateSingleShaderFile(inputPath, outputPath, std::string_view{},
-                              stats != nullptr ? stats : &localStats, ShaderDialect::Godot);
+                              stats != nullptr ? stats : &localStats, ShaderDialect::Godot, title);
     return true;
 }
 

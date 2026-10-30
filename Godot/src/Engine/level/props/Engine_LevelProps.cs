@@ -803,6 +803,17 @@ public static partial class Engine_LevelProps
         // placement leaves its batch — the hall's tiles were batches drawing flat ambient.
         bool classicBakedSingles = Refii.Models.Engine_ClassicMaterial.Active;
 
+        // FABLE 3'S ONLY PER-PLACEMENT BAKE IS THE TEXTURE, and it leaves the batch under every
+        // lighting model. The .cflmp has no vertex bakes and a v47 rigid part no colour stream;
+        // a draw takes Amb 3 when its mesh's GlobalLightingMode (header byte 88, mesh+132) is 2
+        // and the table holds its key (`sub_82C88C88` 0x82c88d14..0x82c88e24), else the probe
+        // or nothing. A MultiMesh instance cannot carry its own lightmap rect.
+        bool lightmappedSingles = bakes is { SharedKeyTable: true };
+        if (lightmappedSingles)
+        {
+            Refii.Lighting.Engine_LevelBakedLighting.AdoptContainer(gdbPath, bakes!);
+        }
+
         // Diagnostics only. A composed key is (modelPathHash << 32 | placementHash); when the
         // whole key misses, the half that still matches something in the .lmp says which half
         // is wrong. Matching neither means the placement is not in the file.
@@ -926,7 +937,16 @@ public static partial class Engine_LevelProps
             if (role == PropRole.Main && bakeKey != 0 && bakeKeys.Contains(bakeKey))
             {
                 ++keyed;
-                single.SetMeta(BakeKeyMetaName, $"0x{bakeKey:X16}");
+                single.SetMeta(
+                    Refii.Lighting.Engine_LevelBakedLighting.BakeKeyMeta, $"0x{bakeKey:X16}");
+
+                // Bound when the mesh stands, under either model (Engine_LevelBakedLighting
+                // .ApplyInstanceLighting): the level's path rides along so the node can find it.
+                if (lightmappedSingles && bakes!.ObjectLightmapBlobs.ContainsKey(bakeKey))
+                {
+                    single.SetMeta(
+                        Refii.Lighting.Engine_LevelBakedLighting.ObjectLightmapLevelMeta, gdbPath);
+                }
             }
             else if (role == PropRole.Main)
             {
@@ -1023,6 +1043,8 @@ public static partial class Engine_LevelProps
                         lightHosts.Contains(block.InstanceHashes[i]));
                 forcedSingle |= classicBakedSingles && i < block.InstanceBakeKeys.Count &&
                     bakeKeys.Contains(block.InstanceBakeKeys[i]);
+                forcedSingle |= lightmappedSingles && i < block.InstanceBakeKeys.Count &&
+                    bakes!.ObjectLightmapBlobs.ContainsKey(block.InstanceBakeKeys[i]);
                 if (forcedSingle)
                 {
                     stats.ForcedSingles++;
@@ -1897,6 +1919,8 @@ public static partial class Engine_LevelProps
         copy.RotX = best.RotX;
         copy.RotY = best.RotY;
         copy.RotZ = best.RotZ;
+        copy.RotW = best.RotW;
+        copy.RotationIsQuaternion = best.RotationIsQuaternion;
         copy.Yaw = best.Yaw;
         copy.HasRotation = true;
         return copy;

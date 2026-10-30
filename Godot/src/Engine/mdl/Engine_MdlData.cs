@@ -1,5 +1,7 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Text;
 
 namespace Refii.Models;
 
@@ -110,6 +112,29 @@ public sealed class MdlMaterial
     /// Exactly 1.0 on all 9,293 shipped records, so the map's own intensity carries the effect.
     /// </remarks>
     public float SelfIlluminationScale { get; set; } = 1.0f;
+
+    /// <summary>
+    /// Fable 3's material property block, by the guest's field name: every float or colour field
+    /// the material's class registers (<c>DiffuseColour</c>, <c>SpecularPower</c>,
+    /// <c>FresnelLightStrength</c>, ...) as the floats the file states. Null for Fable 2, whose
+    /// material record has no such block.
+    /// </summary>
+    public IReadOnlyDictionary<string, float[]>? StatedProperties { get; set; }
+
+    /// <summary>
+    /// Fable 3: the material is the Fresnel class (type 0 or 4 in a model with no instanced
+    /// part; `sub_82C9B0B8` 0x82C9BC74 builds it with `sub_82CEDE20`, vtable 0x82004688). Its
+    /// vtable slot 1 (0x82CEE028) answers material+368 &gt; 0, and +368 is 1.0 from the
+    /// constructor and never read from the file, so every such material draws FR1.
+    /// </summary>
+    public bool FresnelClass { get; set; }
+
+    /// <summary>
+    /// Fable 3: class 1's trailing byte, material+340 (`sub_82CE5158`). The tree selector
+    /// (`sub_8221BAF0` 0x8221BB7C <c>lbz r11, 0x154(r30)</c>) takes the TRUNK0 pair when it is set
+    /// and the TRUNK1 pair when it is clear.
+    /// </summary>
+    public bool CanopyFlag { get; set; }
 }
 
 public sealed class MdlMesh
@@ -176,6 +201,14 @@ public sealed class MdlMeshBuffer
     /// builder emits all seven elements unconditionally, so 36 is not a variant.
     /// </remarks>
     public bool IsEngineTree { get; set; }
+
+    /// <summary>
+    /// Fable 3: an instanced (C) part, the 72-byte object `sub_82CE59A8` builds. The guest draws
+    /// these on the repeated family (`sub_82CE8E50` indexes the same 72-byte records for the
+    /// material `sub_82CE4C78` keys REPEATEDMATERIAL from). Also <see cref="IsEngineRigid"/>: the
+    /// streams are the rigid layout.
+    /// </summary>
+    public bool IsEngineInstanced { get; set; }
 
     /// <summary>
     /// A coarser LOD's rigid part under the header's shared-stream flag: it ships no vertex
@@ -245,13 +278,21 @@ public sealed class MdlInfo
     public bool IsStub { get; set; }
 
     /// <summary>
-    /// Bytes of LOD payload the 104-byte file header says follow it, whether or not they are
+    /// Bytes of LOD payload the file header says follow it, whether or not they are
     /// there. Nonzero on a stub means the header is intact and the BODY BANK ENTRY is missing —
     /// a gap in the shipped data, not a parse that went wrong.
     /// </summary>
     public long BodyBytesStated { get; set; }
 
     public bool IsEngineFormat { get; set; }
+
+    /// <summary>
+    /// The bytes the buffer offsets point into when the reader repacked them; null when they
+    /// point into the file itself. Fable 3's planar vertex blocks are repacked into the version-36
+    /// interleaved layouts here (<see cref="Engine_MdlEngine47"/>), so a consumer pairing
+    /// <see cref="MeshBuffers"/> or <see cref="ClothBlocks"/> with bytes takes <c>Body ?? file</c>.
+    /// </summary>
+    public byte[]? Body { get; set; }
 
     public uint Version { get; set; }
 
@@ -264,6 +305,15 @@ public sealed class MdlInfo
     /// we would have to invent names for.
     /// </remarks>
     public byte MeshKind { get; set; }
+
+    /// <summary>
+    /// Fable 3's header byte 88, the field the guest registers as <c>GlobalLightingMode</c>
+    /// (string 0x820EB2DC): `sub_82D70950` reads it first into the header block at model+132.
+    /// `sub_82C88C88` turns it into the draw's ambient source (owner+0x2F0): 0 and 1 take AMB2, 2
+    /// takes AMB3 when the level's lightmap table holds the placement and AMB0 otherwise; the
+    /// repeated selector `sub_82CE4C78` takes GRASS1 when it is 4. Zero for Fable 2.
+    /// </summary>
+    public byte GlobalLightingMode { get; set; }
 
     /// <summary>How the mesh moves in wind: 0 still, 1 a low plant, 2 a tree.</summary>
     public byte MovementMode { get; set; }
@@ -464,9 +514,46 @@ public static class Engine_MdlData
         info = new MdlInfo();
         error = string.Empty;
 
+        // FABLE 3's MESH FILE, versions 46 and 47, has its own reader and never reaches the ones
+        // below: a header without a body is a stub, as for version 36, and a body that does not
+        // walk to its stated LOD sizes is refused rather than handed to the heuristics.
+        if (Engine_MdlEngine47.IsMeshFile47(data))
+        {
+            if (Engine_MdlEngine47.TryParse(data, info))
+            {
+                return true;
+            }
+
+            info = new MdlInfo();
+            if (Engine_MdlEngine47.TryReadFileHeader(data, info, out long stated47) &&
+                data.Length <= Engine_MdlEngine47.BodyStart)
+            {
+                info.IsStub = true;
+                info.BodyBytesStated = stated47;
+                return true;
+            }
+
+            info = new MdlInfo();
+            error = $"MeshFile version {BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(8, 4))} " +
+                    "does not walk to the LOD sizes its header states";
+            return false;
+        }
+
         if (Engine_MdlEngine.TryParse(data, info))
         {
             return true;
+        }
+
+        // A MESH FILE NEWER THAN ANY READER HERE IS REFUSED, NOT GUESSED AT. The heuristic readers
+        // below size their buffers from counts they find in the bytes; handed a mesh version they
+        // do not know they read garbage counts and allocated without bound — Fable 3's version-47
+        // meshes, before they had a reader, grew one boot texture sweep to 20 GB.
+        if (data.Length >= 12 &&
+            (Encoding.ASCII.GetString(data, 0, 8) is "MeshFile" or "DefMeshF") &&
+            BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(8, 4)) is uint version && version > 36)
+        {
+            error = $"MeshFile version {version} is not read yet";
+            return false;
         }
 
         // A HEADER WITH NO BODY IS A COMPLETE READ, NOT A FAILED ONE.

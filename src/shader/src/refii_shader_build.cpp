@@ -9,6 +9,7 @@
 #include <string>
 
 #include "shader/shader_sbk_pipeline.h"
+#include "shader_sbk_titles.h"
 
 #if defined(_WIN32)
 #define REFII_SHADER_BUILD_EXPORT __declspec(dllexport)
@@ -66,11 +67,20 @@ constexpr const char* kStaleOutput[] = {
     "blobs", "logs", "vulkan", "Vulkan", "d3d12", "D3D12", "metal", "Metal",
 };
 
-int32_t Run(const fs::path& bank_dir, const fs::path& output_dir, const std::string& targets,
-            const Reporter& reporter, char* error, size_t error_capacity) {
+int32_t Run(const std::string& title, const fs::path& bank_dir, const fs::path& output_dir,
+            const std::string& targets, const Reporter& reporter, char* error,
+            size_t error_capacity) {
     using namespace refii::shader;
 
-    if (!fs::exists(bank_dir / "Shaders.sbk")) {
+    // Before anything is removed: a run for no known title must leave the last output alone.
+    if (FindShaderTitle(title) == nullptr) {
+        WriteError(error, error_capacity,
+                   "Unknown shader title '" + title + "' (expected one of " +
+                       DescribeShaderTitles() + ")");
+        return REFII_SHADER_BUILD_FAILED;
+    }
+
+    if (FindShaderBankFile(bank_dir, "Shaders.sbk").empty()) {
         WriteError(error, error_capacity,
                    "Shaders.sbk is not in " + bank_dir.string() +
                        "; the game data is not installed there.");
@@ -83,6 +93,8 @@ int32_t Run(const fs::path& bank_dir, const fs::path& output_dir, const std::str
     fs::create_directories(output_dir);
 
     ShaderSbkBuildOptions options;
+    options.extract.title = title;
+    options.translate.title = title;
     options.extract.input_dir = bank_dir;
     options.extract.extract_out_dir = output_dir;
     options.extract.manifest_path = output_dir / "extract_manifest.tsv";
@@ -149,9 +161,13 @@ REFII_SHADER_BUILD_EXPORT int32_t refii_shader_build_v1_abi_version(void) {
     return REFII_SHADER_BUILD_ABI_VERSION;
 }
 
-REFII_SHADER_BUILD_EXPORT int32_t refii_shader_build_v1_run(
-    const char* bank_dir, const char* output_dir, const char* targets,
+REFII_SHADER_BUILD_EXPORT int32_t refii_shader_build_v2_run(
+    const char* title, const char* bank_dir, const char* output_dir, const char* targets,
     refii_shader_build_progress_fn progress, void* user, char* error, size_t error_capacity) {
+    if (title == nullptr || *title == '\0') {
+        WriteError(error, error_capacity, "no title was given for the shader banks");
+        return REFII_SHADER_BUILD_FAILED;
+    }
     if (bank_dir == nullptr || *bank_dir == '\0') {
         WriteError(error, error_capacity, "no shader bank directory was given");
         return REFII_SHADER_BUILD_FAILED;
@@ -165,7 +181,7 @@ REFII_SHADER_BUILD_EXPORT int32_t refii_shader_build_v1_run(
     // exception crossing that boundary is a process abort with no message.
     try {
         const Reporter reporter(progress, user);
-        return Run(fs::absolute(bank_dir), fs::absolute(output_dir),
+        return Run(title, fs::absolute(bank_dir), fs::absolute(output_dir),
                    (targets != nullptr && *targets != '\0') ? targets : "auto", reporter, error,
                    error_capacity);
     } catch (const StopRequested&) {

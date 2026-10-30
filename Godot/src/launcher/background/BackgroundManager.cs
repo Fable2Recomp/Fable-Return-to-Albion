@@ -7,14 +7,14 @@ using Refii.Launcher.Core;
 
 namespace Refii.Launcher;
 
+/// <summary>
+/// The launcher's background slideshow for one title: that title's art (<see cref="LauncherBackgrounds"/>)
+/// faded between at random intervals, with each image's credit. A title with no art shows a plain
+/// neutral background and no credit.
+/// </summary>
 public sealed class BackgroundManager
 {
-	private static readonly Dictionary<string, string> ArtCredits =
-		new(StringComparer.OrdinalIgnoreCase)
-		{
-			["02"] = "Art by Mirai-Miki",
-		};
-
+	private readonly LauncherBackgrounds? _source;
 	private readonly List<Texture2D> _textures = new();
 	private readonly List<string> _credits = new();
 	private readonly RandomNumberGenerator _random = new();
@@ -33,8 +33,9 @@ public sealed class BackgroundManager
 	public string CurrentCredit { get; private set; } = string.Empty;
 	public float CurrentCreditAlpha { get; private set; }
 
-	public BackgroundManager(TextureRect current, TextureRect next)
+	public BackgroundManager(TextureRect current, TextureRect next, LauncherBackgrounds? source)
 	{
+		_source = source;
 		_current = current;
 		_next = next;
 		_minimumDuration = LauncherTheme.BackgroundMinimumDuration;
@@ -51,24 +52,29 @@ public sealed class BackgroundManager
 			? _minimumDuration
 			: _random.RandfRange(_minimumDuration, _maximumDuration);
 
-	private static string CreditFor(string path)
+	private string CreditFor(string path)
 	{
 		string stem = Path.GetFileNameWithoutExtension(path);
-		return ArtCredits.TryGetValue(stem, out string? credit) ? credit : string.Empty;
+		return _source is not null && _source.Credits.TryGetValue(stem, out string? credit) ? credit : string.Empty;
 	}
 
 	public void Initialize()
 	{
-		LoadBundled();
-		if (_textures.Count == 0)
+		if (_source is not null)
 		{
-			LoadExternal();
+			LoadBundled(_source.BundledDirectory);
+			if (_textures.Count == 0)
+			{
+				LoadExternal(_source.ExternalDirectory);
+			}
 		}
 
+		_timer = 0.0f;
 		_currentIndex = _textures.Count > 0 ? _random.RandiRange(0, _textures.Count - 1) : 0;
 		_nextIndex = _textures.Count > 1 ? (_currentIndex + 1) % _textures.Count : _currentIndex;
 
-		_current.Texture = _textures.Count > 0 ? _textures[_currentIndex] : null;
+		_current.Texture = _textures.Count > 0 ? _textures[_currentIndex] : NeutralBackground();
+		_current.Modulate = Colors.White;
 		_next.Texture = _textures.Count > 1 ? _textures[_nextIndex] : null;
 		_next.Modulate = new Color(1, 1, 1, 0);
 
@@ -76,9 +82,33 @@ public sealed class BackgroundManager
 		CurrentCreditAlpha = CurrentCredit.Length == 0 ? 0.0f : 1.0f;
 	}
 
-	private void LoadBundled()
+	/// <summary>
+	/// The plain background for a title with no art: the launcher's oak, darkening toward the foot
+	/// where the action sits, so the cream text over it keeps its contrast.
+	/// </summary>
+	private static Texture2D NeutralBackground()
 	{
-		using DirAccess? dir = DirAccess.Open("res://assets/launcher/backgrounds");
+		var gradient = new Gradient();
+		gradient.SetColor(0, LauncherTokens.OakRaised);
+		gradient.SetColor(1, new Color(LauncherTokens.Oak, 1.0f).Darkened(0.35f));
+		return new GradientTexture2D
+		{
+			Gradient = gradient,
+			Width = 4,
+			Height = 256,
+			FillFrom = new Vector2(0.5f, 0.0f),
+			FillTo = new Vector2(0.5f, 1.0f),
+		};
+	}
+
+	private void LoadBundled(string directory)
+	{
+		if (directory.Length == 0)
+		{
+			return;
+		}
+
+		using DirAccess? dir = DirAccess.Open(directory);
 		if (dir is null)
 		{
 			return;
@@ -121,8 +151,7 @@ public sealed class BackgroundManager
 
 		foreach (string name in names)
 		{
-			var texture = ResourceLoader.Load<Texture2D>(
-				"res://assets/launcher/backgrounds/" + name);
+			var texture = ResourceLoader.Load<Texture2D>(directory.TrimEnd('/') + "/" + name);
 			if (texture is not null)
 			{
 				_textures.Add(texture);
@@ -131,10 +160,9 @@ public sealed class BackgroundManager
 		}
 	}
 
-	private void LoadExternal()
+	private void LoadExternal(string root)
 	{
-		string root = LauncherPaths.GetLauncherAssetPath("backgrounds");
-		if (!Directory.Exists(root))
+		if (root.Length == 0 || !Directory.Exists(root))
 		{
 			return;
 		}

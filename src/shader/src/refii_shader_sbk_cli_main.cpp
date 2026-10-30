@@ -11,6 +11,8 @@ namespace {
 
 struct Options {
     std::string command;
+    // The title folder the banks belong to (Engine_Title.Folder: Fable2, Fable3).
+    std::string title;
     std::filesystem::path input_dir;
     std::filesystem::path extract_out;
     std::filesystem::path manifest;
@@ -50,7 +52,9 @@ bool ParseCommonBuildFlags(int argc, char** argv, int start_index, Options* opti
 
     for (int i = start_index; i < argc; ++i) {
         const std::string_view argument(argv[i]);
-        if (argument == "--input-dir" && i + 1 < argc) {
+        if (argument == "--title" && i + 1 < argc) {
+            options->title = argv[++i];
+        } else if (argument == "--input-dir" && i + 1 < argc) {
             options->input_dir = std::filesystem::path(argv[++i]);
         } else if (argument == "--extract-out" && i + 1 < argc) {
             options->extract_out = std::filesystem::path(argv[++i]);
@@ -112,13 +116,13 @@ bool ParseArguments(int argc, char** argv, Options* options) {
     }
 
     if (options->command == "extract") {
-        return !options->input_dir.empty() && !options->extract_out.empty() &&
-               !options->manifest.empty();
+        return !options->title.empty() && !options->input_dir.empty() &&
+               !options->extract_out.empty() && !options->manifest.empty();
     }
 
     if (options->command == "translate" || options->command == "compile") {
-        return !options->extract_manifest.empty() && !options->translate_out.empty() &&
-               !options->report.empty();
+        return !options->title.empty() && !options->extract_manifest.empty() &&
+               !options->translate_out.empty() && !options->report.empty();
     }
 
     if (options->command == "probe-xenos") {
@@ -126,7 +130,8 @@ bool ParseArguments(int argc, char** argv, Options* options) {
                (!options->xenos_report.empty() || !options->report.empty());
     }
 
-    return !options->input_dir.empty() && !options->extract_out.empty() &&
+    return !options->title.empty() && !options->input_dir.empty() &&
+           !options->extract_out.empty() &&
            !options->manifest.empty() && !options->extract_manifest.empty() &&
            !options->translate_out.empty() &&
            !options->report.empty();
@@ -134,13 +139,16 @@ bool ParseArguments(int argc, char** argv, Options* options) {
 
 void PrintUsage() {
     std::cerr
-        << "usage: refii-shader-sbk extract --input-dir <dir> --extract-out <dir> --manifest <path>\n"
-        << "       refii-shader-sbk compile --extract-manifest <path> --compile-out <dir> --report <path>\n"
+        << "usage: refii-shader-sbk extract --title <Fable2|Fable3> --input-dir <dir> --extract-out <dir>\n"
+        << "                          --manifest <path>\n"
+        << "       refii-shader-sbk compile --title <Fable2|Fable3> --extract-manifest <path>\n"
+        << "                          --compile-out <dir> --report <path>\n"
         << "                          [--translator <exe>] [--translator-timeout-ms <ms>]\n"
         << "                          [--targets <vulkan|d3d12|metal|auto>]\n"
         << "                          [--dedupe-identical-blobs <on|off>]\n"
         << "                          [--verify-coverage <on|off>]\n"
-        << "       refii-shader-sbk build --input-dir <dir> --extract-out <dir> --manifest <path>\n"
+        << "       refii-shader-sbk build --title <Fable2|Fable3> --input-dir <dir> --extract-out <dir>\n"
+        << "                          --manifest <path>\n"
         << "                          --compile-out <dir> --report <path>\n"
         << "                          [--extract-manifest <path>]\n"
         << "                          [--translator <exe>] [--translator-timeout-ms <ms>]\n"
@@ -151,6 +159,8 @@ void PrintUsage() {
         << "                          (or --report <path>)\n"
         << "\n"
         << "notes:\n"
+        << "- --title is the title folder the banks belong to; it decides the shaders the\n"
+        << "  title's executable adds inline and the title's own per-draw constants.\n"
         << "- `compile` requires --extract-manifest (or --manifest alias).\n"
         << "- `translate` and --translate-out are accepted as legacy aliases.\n"
         << "- `build` defaults --extract-manifest to --manifest when omitted.\n"
@@ -213,6 +223,7 @@ int main(int argc, char** argv) {
 
     if (options.command == "extract") {
         refii::shader::ShaderSbkExtractOptions extract_options;
+        extract_options.title = options.title;
         extract_options.input_dir = options.input_dir;
         extract_options.extract_out_dir = options.extract_out;
         extract_options.manifest_path = options.manifest;
@@ -235,6 +246,7 @@ int main(int argc, char** argv) {
 
     if (options.command == "translate" || options.command == "compile") {
         refii::shader::ShaderSbkTranslateOptions translate_options;
+        translate_options.title = options.title;
         translate_options.extract_manifest_path = options.extract_manifest;
         translate_options.translate_out_dir = options.translate_out;
         translate_options.report_path = options.report;
@@ -288,6 +300,8 @@ int main(int argc, char** argv) {
     }
 
     refii::shader::ShaderSbkBuildOptions build_options;
+    build_options.extract.title = options.title;
+    build_options.translate.title = options.title;
     build_options.extract.input_dir = options.input_dir;
     build_options.extract.extract_out_dir = options.extract_out;
     build_options.extract.manifest_path = options.manifest;

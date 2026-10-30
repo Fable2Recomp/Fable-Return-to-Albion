@@ -551,7 +551,7 @@ public static class GdbPatchCompositor
 
         foreach (ModInstall mod in enabledModsInMountOrder)
         {
-            if (File.Exists(mod.PackagePath) && mod.PackagePath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+            if (File.Exists(mod.PackagePath) && Refii.Core.Engine_Title.IsModPackagePath(mod.PackagePath))
             {
                 if (F2ModPackage.TryOpen(mod.PackagePath, out F2ModPackage? pkg, out _) && pkg is not null)
                 {
@@ -641,7 +641,7 @@ public static class GdbPatchCompositor
     private static GdbPatchDatabase LoadTuPatch(GdbPatchSource source, string subPath, GdbMulti? baseMulti, List<string> refused)
     {
         byte[]? bytes = null;
-        if (source.DiskPath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase))
+        if (Refii.Core.Engine_Title.IsModPackagePath(source.DiskPath))
         {
             if (F2ModPackage.TryOpen(source.DiskPath, out F2ModPackage? pkg, out _) && pkg is not null)
             {
@@ -775,7 +775,7 @@ public static class GdbPatchCompositor
         var sources = new List<GdbPatchSource>(modFiles.Count);
         foreach (var (modName, diskPath) in modFiles)
         {
-            bool packaged = diskPath.EndsWith(".f2mod", StringComparison.OrdinalIgnoreCase);
+            bool packaged = Refii.Core.Engine_Title.IsModPackagePath(diskPath);
             sources.Add(new GdbPatchSource(modName, diskPath, packaged ? subPath : diskPath));
         }
 

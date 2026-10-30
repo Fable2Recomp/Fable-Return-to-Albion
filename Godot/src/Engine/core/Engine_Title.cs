@@ -43,7 +43,8 @@ public sealed class Engine_Title
 
 	private Engine_Title(
 		string key, string name, string remakeName, uint titleId, string folder, string moduleName,
-		string discVersion, string updatedVersion, bool hasHardMods, params string[] instance)
+		string discVersion, string updatedVersion, bool hasHardMods, string modExtension,
+		uint editorFolderColour, params string[] instance)
 	{
 		Instance = new HashSet<string>(instance, StringComparer.Ordinal);
 		Key = key;
@@ -52,6 +53,8 @@ public sealed class Engine_Title
 		TitleId = titleId;
 		Folder = folder;
 		ModuleName = moduleName;
+		ModExtension = modExtension;
+		EditorFolderColour = editorFolderColour;
 		_discVersion = discVersion;
 		_updatedVersion = updatedVersion;
 		HasHardMods = hasHardMods;
@@ -77,6 +80,29 @@ public sealed class Engine_Title
 
 	/// <summary>The compiled module's base name, before the platform's prefix and extension.</summary>
 	public string ModuleName { get; }
+
+	/// <summary>
+	/// The title's mod package extension, dot included: <c>.f2mod</c>, <c>.f3mod</c>. Every title's
+	/// package is the same format; the extension says which game it is for.
+	/// </summary>
+	public string ModExtension { get; }
+
+	/// <summary>The title's folder colour in the editor's game tree, as 0xRRGGBBAA.</summary>
+	public uint EditorFolderColour { get; }
+
+	/// <summary>Whether a path names a mod package of any title.</summary>
+	public static bool IsModPackagePath(string path)
+	{
+		foreach (Engine_Title title in All)
+		{
+			if (path.EndsWith(title.ModExtension, StringComparison.OrdinalIgnoreCase))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
 
 	/// <summary>
 	/// Whether hard mods can build for this title: native mod sources are written against Fable 2's
@@ -107,17 +133,36 @@ public sealed class Engine_Title
 	/// <summary><c>assets/&lt;Folder&gt;/save</c>: the title's saves, achievements and per-player state.</summary>
 	public string SaveDirectory => System.IO.Path.Combine(AssetsDirectory, "save");
 
+	/// <summary>
+	/// <c>cache/&lt;Folder&gt;</c>: everything regenerable from this title's install — converted and
+	/// enhanced textures, shadow bakes. Inside the app's one cache container, so clearing all
+	/// derived data is still one folder and clearing one game's is its own.
+	/// </summary>
+	public string CacheDirectory => System.IO.Path.Combine(Engine_AppRoot.CacheDirectory, Folder);
+
+	/// <summary>
+	/// The title's runtime config file, at the app root: <c>&lt;Key&gt;.toml</c>, so <c>refii.toml</c>
+	/// for Fable 2 and <c>refiii.toml</c> for Fable 3. The one file a player edits for that game:
+	/// the launcher's settings for it, the Godot side's switches and the guest's cvars all come
+	/// from it, and no title reads or writes another's.
+	/// </summary>
+	public string ConfigFileName => Key + ".toml";
+
+	/// <summary><c>&lt;app root&gt;/&lt;ConfigFileName&gt;</c>: where the launcher writes it and the guest reads it.</summary>
+	public string ConfigPath => System.IO.Path.Combine(Engine_AppRoot.Path, ConfigFileName);
+
 	/// <summary>The game data directory relative to an <c>assets/</c> root: <c>Fable2/game</c>.</summary>
 	public string GameDataRelative => System.IO.Path.Combine(Folder, "game");
 
 	public static readonly Engine_Title Fable2 = new(
 		"refii", "Fable 2", "Fable 2 Return to Albion", 0x4D5307F1, "Fable2", "refii_generated",
-		"Fable2", "Fable2TU1", hasHardMods: true, "refii_hostbridge", "refii_vfs", "refii_lua");
+		"Fable2", "Fable2TU1", hasHardMods: true, ".f2mod", 0x5DD978FFu,
+		"refii_hostbridge", "refii_vfs", "refii_lua");
 
 	/// <summary>Fable 3. Its remake has no name yet; it goes by the game's until it does.</summary>
 	public static readonly Engine_Title Fable3 = new(
 		"refiii", "Fable 3", "Fable 3", 0x4D5308D6, "Fable3", "refiii_generated",
-		"Fable3", string.Empty, hasHardMods: false, "refii_hostbridge");
+		"Fable3", string.Empty, hasHardMods: false, ".f3mod", 0xE0474CFFu, "refii_hostbridge");
 
 	public static IReadOnlyList<Engine_Title> All { get; } = new[] { Fable2, Fable3 };
 

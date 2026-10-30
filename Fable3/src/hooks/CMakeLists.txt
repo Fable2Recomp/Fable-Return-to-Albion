@@ -9,6 +9,12 @@ set(REFIII_HOOK_SOURCES
     # The Bink players' open, rect, close and the startup player's skip byte, stated for the
     # host's native playback (core/movie_state.h).
     ${CMAKE_CURRENT_SOURCE_DIR}/src/movie_player.cpp
+    # The present paced to the guest's stated vblank, where the 3D Engine loop holds no lock.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/present_pacing.cpp
+    # The "Press START" splash's state, stated for the host's native screen.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/splash_screen.cpp
+    # The camera the guest renders the world with, and its preload gate held while Godot builds.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/view_feed.cpp
 )
 
 add_library(refiii_hooks OBJECT ${REFIII_HOOK_SOURCES})

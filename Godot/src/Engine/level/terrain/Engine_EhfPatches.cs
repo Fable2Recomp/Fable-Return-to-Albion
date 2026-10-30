@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Refii.Core;
 
 namespace Refii.Level;
 
@@ -27,7 +28,11 @@ public static class Engine_EhfPatches
 
     private const int LatticeDiagonalOffset = 64 + 48;
 
-    public static bool TryBuild(byte[] ehf, out List<EhfVistaPatch> patches, out string error)
+    public static bool TryBuild(byte[] ehf, out List<EhfVistaPatch> patches, out string error) =>
+        TryBuild(ehf, Engine_Title.Active, out patches, out error);
+
+    public static bool TryBuild(
+        byte[] ehf, Engine_Title title, out List<EhfVistaPatch> patches, out string error)
     {
         patches = new List<EhfVistaPatch>();
         error = string.Empty;
@@ -49,8 +54,8 @@ public static class Engine_EhfPatches
         int cursor = (int)bodyOffset;
         long bodyEnd = bodyOffset + bodySize;
 
-        if (!TrySkipTexBlob(ehf, ref cursor, bodyEnd) ||
-            !TrySkipTexBlob(ehf, ref cursor, bodyEnd))
+        if (!TrySkipTexBlob(ehf, ref cursor, bodyEnd, title) ||
+            !TrySkipTexBlob(ehf, ref cursor, bodyEnd, title))
         {
             error = "could not skip the leading texture blobs";
             return false;
@@ -358,8 +363,19 @@ public static class Engine_EhfPatches
 
     private static bool IsSane(float v) => float.IsFinite(v) && MathF.Abs(v) < 1_000_000f;
 
-    private static bool TrySkipTexBlob(byte[] data, ref int cursor, long bodyEnd)
+    private static bool TrySkipTexBlob(byte[] data, ref int cursor, long bodyEnd, Engine_Title title)
     {
+        if (title == Engine_Title.Fable3)
+        {
+            if (!Engine_EhfBody.TryReadFable3Blob(data, cursor, bodyEnd, out EhfTexBlob blob, out _))
+            {
+                return false;
+            }
+
+            cursor = (int)blob.End;
+            return true;
+        }
+
         long start = cursor;
         if (start + 0x60 > bodyEnd || ReadU32(data, (int)start) != 0xFFFFFFFEu)
         {

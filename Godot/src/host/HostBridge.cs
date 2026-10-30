@@ -244,8 +244,8 @@ public static class HostBridge
 	{
 		var message = new byte[MessageCapacity];
 
-		// THE TITLE'S SAVES, stated beside its data root: refii.toml is shared by every title, and
-		// a command-line value outranks it, so each title's guest writes into its own folder.
+		// THE TITLE'S SAVES, stated beside its data root: a command-line value outranks the config,
+		// so each title's guest writes into its own folder whatever its file says.
 		var stated = new List<string>(arguments ?? Array.Empty<string>())
 		{
 			"--user_data_root=" + Refii.Core.Engine_AppRoot.SaveDirectory,
@@ -255,8 +255,10 @@ public static class HostBridge
 		try
 		{
 			// Before the guest comes up: paths are resolved once during its startup, and the
-			// guest would otherwise read refii.toml beside the Godot binary.
+			// guest would otherwise read a config beside the Godot binary. The config is the
+			// running title's own (Engine_Title.ConfigFileName), never another title's.
 			RefiiHostSetAppRoot(Refii.Core.Engine_AppRoot.Path);
+			RefiiHostSetConfigPath(Refii.Core.Engine_AppRoot.ConfigPath);
 
 			int ok = RefiiHostInitialize(gameDirectory, packed, message, (nuint)message.Length);
 			if (ok == 1)
@@ -8581,6 +8583,10 @@ public static class HostBridge
 	[DllImport(Library)]
 	private static extern void RefiiHostSetAppRoot(
 		[MarshalAs(UnmanagedType.LPUTF8Str)] string root);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetConfigPath(
+		[MarshalAs(UnmanagedType.LPUTF8Str)] string path);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostInitialize(

@@ -31,6 +31,12 @@ public static class Engine_TitleLayout
 		"librefii_generated.so", "refii_generated.dll", "librefii_generated.dylib", "build-info.json",
 	};
 
+	/// <summary>What Fable 2 cached directly under <c>cache/</c> before each title had its own.</summary>
+	private static readonly string[] Fable2CacheItems =
+	{
+		"textures", "shadows", "swf",
+	};
+
 	/// <summary>
 	/// Moves the old layout under the app root into the title folders, and returns one line per
 	/// move (or failure) for the log. Safe to call on every start.
@@ -41,14 +47,16 @@ public static class Engine_TitleLayout
 		string? repoAssets = projectDir.Length == 0
 			? null
 			: Path.GetFullPath(Path.Combine(projectDir, "..", "assets"));
-		return MigrateLegacyLayout(Engine_AppRoot.AssetsDirectory, Engine_AppRoot.BinDirectory, repoAssets);
+		return MigrateLegacyLayout(
+			Engine_AppRoot.AssetsDirectory, Engine_AppRoot.BinDirectory, repoAssets, Engine_AppRoot.CacheDirectory);
 	}
 
 	/// <summary>
 	/// The move over explicit roots: the app's <paramref name="assets"/> and <paramref name="bin"/>,
-	/// and a dev tree's repository <paramref name="repoAssets"/> (null when exported).
+	/// a dev tree's repository <paramref name="repoAssets"/> (null when exported), and the app's
+	/// <paramref name="cache"/> (null to leave it).
 	/// </summary>
-	public static List<string> MigrateLegacyLayout(string assets, string bin, string? repoAssets)
+	public static List<string> MigrateLegacyLayout(string assets, string bin, string? repoAssets, string? cache = null)
 	{
 		var report = new List<string>();
 		string fable2Assets = Path.Combine(assets, Engine_Title.Fable2.Folder);
@@ -78,6 +86,14 @@ public static class Engine_TitleLayout
 		foreach (string item in Fable2BinItems)
 		{
 			Move(Path.Combine(bin, item), Path.Combine(bin, Engine_Title.Fable2.Folder, item), report);
+		}
+
+		if (cache is not null)
+		{
+			foreach (string item in Fable2CacheItems)
+			{
+				Move(Path.Combine(cache, item), Path.Combine(cache, Engine_Title.Fable2.Folder, item), report);
+			}
 		}
 
 		return report;

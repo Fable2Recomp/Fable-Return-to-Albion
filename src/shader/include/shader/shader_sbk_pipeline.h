@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace refii::shader {
@@ -45,6 +46,9 @@ struct ShaderSbkBlobMetadata {
 };
 
 struct ShaderSbkExtractOptions {
+    // The title folder the banks belong to ("Fable2", "Fable3"; Engine_Title.Folder). Decides
+    // the shaders the title's executable adds inline. Required.
+    std::string title;
     std::filesystem::path input_dir;
     std::filesystem::path extract_out_dir;
     std::filesystem::path manifest_path;
@@ -60,6 +64,9 @@ struct ShaderSbkExtractSummary {
 };
 
 struct ShaderSbkTranslateOptions {
+    // The title folder the blobs came from; the godot target classifies the title's own
+    // per-draw constants by it. Required (BuildShaderSbkWorkspace takes the extract's when empty).
+    std::string title;
     std::filesystem::path extract_manifest_path;
     std::filesystem::path translate_out_dir;
     std::filesystem::path report_path;
@@ -162,6 +169,11 @@ struct ShaderSbkXenosProbeSummary {
 };
 
 const char* DescribeShaderStage(ShaderStage stage);
+
+// `bank_file` ("Shaders.sbk", "ShadersRelease.sbk") in `directory`, matched ignoring ASCII case:
+// Fable 2 ships the banks as named, Fable 3 in lower case. Empty when there is none.
+std::filesystem::path FindShaderBankFile(const std::filesystem::path& directory,
+                                         std::string_view bank_file);
 
 bool ExtractShaderSbkWorkspace(const ShaderSbkExtractOptions& options,
                                ShaderSbkExtractSummary* summary = nullptr,

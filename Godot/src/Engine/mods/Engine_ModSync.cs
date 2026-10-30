@@ -704,7 +704,8 @@ public static class ModSyncCache
 	/// <summary>How much the cache keeps across sessions.</summary>
 	public const long KeepBytes = 256L * 1024 * 1024;
 
-	public const string Extension = ".f2mod";
+	/// <summary>The active title's package extension: what a cached package is named with.</summary>
+	public static string Extension => Refii.Core.Engine_Title.Active.ModExtension;
 
 	public static string PathFor(string cacheDir, string sha256) =>
 		Path.Combine(cacheDir, sha256.ToLowerInvariant() + Extension);

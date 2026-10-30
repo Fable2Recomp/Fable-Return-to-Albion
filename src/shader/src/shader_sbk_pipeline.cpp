@@ -2,6 +2,7 @@
 #include "shader/refii_shader_xenos_translator.h"
 
 #include "shader/sha256.h"
+#include "shader_sbk_titles.h"
 
 #include <algorithm>
 #include <array>
@@ -31,20 +32,17 @@ namespace {
 constexpr std::string_view kMagic = "ShaderBankFile";
 // sub_82B83378 rejects the bank unless the version dword is exactly 3.
 constexpr std::uint32_t kSupportedBankVersion = 3;
-// sub_82B846B0 resolves a payload id as (chunk = id / 4, slot = id % 4); every
-// chunk therefore begins with a base dword plus this many slot offsets.
+// sub_82B846B0 (Fable 3: sub_82D5D350, 0x82D5D370 / 0x82D5D3AC) resolves a
+// payload id as (chunk = id / 4, slot = id % 4), so a chunk holds at most this many payloads. A bank's last chunk holds what remains
+// (Fable 3's 385 payloads leave one in its 97th): the chunk's own slot table,
+// [base][relative offset x n] with n = (base - 4) / 4, says how many it holds.
 constexpr std::uint32_t kPayloadsPerChunk = 4;
+// The two banks' names as the manifest and the blob directories carry them. On
+// disk they are found ignoring case: Fable 2 ships them as written here, Fable 3
+// (inside levels.bnk) in lower case.
 constexpr std::array<std::string_view, 2> kExpectedBankFiles = {
     "Shaders.sbk",
     "ShadersRelease.sbk",
-};
-constexpr std::size_t kFablePixRenderVideoFramePixelShaderBlobId = 9000;
-constexpr std::string_view kFablePixRenderVideoFramePixelShaderName =
-    "PSHADER_FABLE_PIXRENDER_VIDEO";
-constexpr std::array<std::uint8_t, 36> kFablePixRenderVideoFramePixelShaderBlob = {
-    0x00, 0x00, 0x00, 0x00, 0x10, 0x01, 0xc4, 0x00, 0x22, 0x00, 0x00, 0x00,
-    0xc8, 0x0f, 0x80, 0x00, 0x02, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
 // Authoritative .sbk record layout, decoded from the guest binary
@@ -966,6 +964,45 @@ bool TryParseXenosContainer(const std::vector<std::uint8_t>& bytes,
     return true;
 }
 
+// The title a run states, or an error naming the ones there are. Every driver
+// states one: a title's inline shaders and its per-draw constants depend on it.
+const ShaderTitle* ResolveShaderTitle(std::string_view folder, std::string* error) {
+    const ShaderTitle* title = FindShaderTitle(folder);
+    if (title == nullptr && error != nullptr) {
+        *error = folder.empty()
+                     ? "No title was given for the shader banks (expected one of " +
+                           DescribeShaderTitles() + ")"
+                     : "Unknown shader title '" + std::string(folder) + "' (expected one of " +
+                           DescribeShaderTitles() + ")";
+    }
+    return title;
+}
+
+}  // namespace
+
+std::filesystem::path FindShaderBankFile(const std::filesystem::path& directory,
+                                         std::string_view bank_file) {
+    const std::filesystem::path exact = directory / bank_file;
+    std::error_code ignored;
+    if (std::filesystem::is_regular_file(exact, ignored)) {
+        return exact;
+    }
+    const std::string wanted = ToLowerAscii(std::string(bank_file));
+    std::filesystem::directory_iterator it(directory, ignored);
+    if (ignored) {
+        return {};
+    }
+    for (const std::filesystem::directory_entry& entry : it) {
+        if (entry.is_regular_file(ignored) &&
+            ToLowerAscii(entry.path().filename().string()) == wanted) {
+            return entry.path();
+        }
+    }
+    return {};
+}
+
+namespace {
+
 std::string BuildEntryNameHint(const ParsedEntry& entry) {
     if (!entry.entry_name.empty()) {
         return entry.entry_name;
@@ -988,9 +1025,13 @@ std::filesystem::path BuildBlobOutputPath(const std::filesystem::path& extract_r
     return extract_root / "blobs" / bank_stem / filename.str();
 }
 
-bool AppendFableInlineShaderBlobs(const std::filesystem::path& extract_root,
+// The shaders a title's executable carries inline (shader_sbk_titles.cpp), written
+// beside the bank blobs. Records each blob's bank in `banks_with_blobs`.
+bool AppendTitleInlineShaderBlobs(const ShaderTitle& title,
+                                  const std::filesystem::path& extract_root,
                                   std::vector<ShaderSbkBlobMetadata>* blobs,
                                   std::unordered_set<std::string>* seen_blob_hashes,
+                                  std::unordered_set<std::string>* banks_with_blobs,
                                   std::string* error) {
     if (blobs == nullptr) {
         if (error != nullptr) {
@@ -999,42 +1040,41 @@ bool AppendFableInlineShaderBlobs(const std::filesystem::path& extract_root,
         return false;
     }
 
-    const std::string sha256 = refii::shader::crypto::ComputeSha256Hex(
-        kFablePixRenderVideoFramePixelShaderBlob.data(),
-        kFablePixRenderVideoFramePixelShaderBlob.size());
-    if (seen_blob_hashes != nullptr &&
-        !seen_blob_hashes->insert(sha256).second) {
-        return true;
-    }
-
-    const std::filesystem::path output_path = BuildBlobOutputPath(
-        extract_root,
-        "Shaders.sbk",
-        kFablePixRenderVideoFramePixelShaderBlobId,
-        kFablePixRenderVideoFramePixelShaderName);
-    if (!WriteBinaryFile(output_path,
-                         kFablePixRenderVideoFramePixelShaderBlob.data(),
-                         kFablePixRenderVideoFramePixelShaderBlob.size(),
-                         error)) {
-        if (error != nullptr && !error->empty()) {
-            *error = "Failed to write Fable PixRenderVideoFrame inline shader "
-                     "blob: " +
-                     *error;
+    for (std::size_t i = 0; i < title.inline_blob_count; ++i) {
+        const ShaderTitleInlineBlob& inline_blob = title.inline_blobs[i];
+        const std::string bank_name(inline_blob.bank);
+        if (banks_with_blobs != nullptr) {
+            banks_with_blobs->insert(bank_name);
         }
-        return false;
-    }
 
-    ShaderSbkBlobMetadata metadata;
-    metadata.bank_name = "Shaders.sbk";
-    metadata.blob_index = kFablePixRenderVideoFramePixelShaderBlobId;
-    metadata.source_offset = 0x82093C7Cu;
-    metadata.source_size =
-        static_cast<std::uint32_t>(kFablePixRenderVideoFramePixelShaderBlob.size());
-    metadata.stage = ShaderStage::kPixel;
-    metadata.name_hint = std::string(kFablePixRenderVideoFramePixelShaderName);
-    metadata.output_path = output_path;
-    metadata.sha256 = sha256;
-    blobs->push_back(std::move(metadata));
+        const std::string sha256 =
+            refii::shader::crypto::ComputeSha256Hex(inline_blob.bytes, inline_blob.size);
+        if (seen_blob_hashes != nullptr &&
+            !seen_blob_hashes->insert(sha256).second) {
+            continue;
+        }
+
+        const std::filesystem::path output_path = BuildBlobOutputPath(
+            extract_root, bank_name, inline_blob.blob_id, inline_blob.name);
+        if (!WriteBinaryFile(output_path, inline_blob.bytes, inline_blob.size, error)) {
+            if (error != nullptr && !error->empty()) {
+                *error = "Failed to write " + std::string(title.folder) + "'s inline shader " +
+                         std::string(inline_blob.name) + ": " + *error;
+            }
+            return false;
+        }
+
+        ShaderSbkBlobMetadata metadata;
+        metadata.bank_name = bank_name;
+        metadata.blob_index = inline_blob.blob_id;
+        metadata.source_offset = inline_blob.source_address;
+        metadata.source_size = static_cast<std::uint32_t>(inline_blob.size);
+        metadata.stage = inline_blob.stage;
+        metadata.name_hint = std::string(inline_blob.name);
+        metadata.output_path = output_path;
+        metadata.sha256 = sha256;
+        blobs->push_back(std::move(metadata));
+    }
     return true;
 }
 
@@ -1181,18 +1221,20 @@ bool ExtractBankBlobs(const ParsedBank& bank,
         return false;
     }
 
-    const std::size_t payload_count = chunk_count * kPayloadsPerChunk;
+    // The payload id space: (chunk, slot) for every chunk's four slots. A chunk
+    // that holds fewer leaves the ids past its count unused.
+    const std::size_t payload_id_limit = chunk_count * kPayloadsPerChunk;
 
     // Group entries by the payload they select, preserving bank order so the
     // first entry naming a payload becomes its canonical name.
-    std::vector<std::vector<const ParsedEntry*>> entries_by_payload(payload_count);
+    std::vector<std::vector<const ParsedEntry*>> entries_by_payload(payload_id_limit);
     for (const ParsedEntry& entry : bank.entries) {
-        if (entry.entry_id >= payload_count) {
+        if (entry.entry_id >= payload_id_limit) {
             if (error != nullptr) {
                 *error = "Shader entry " + std::to_string(entry.entry_index) + " of " +
                          bank.bank_name + " selects payload " +
                          std::to_string(entry.entry_id) + " but the bank only holds " +
-                         std::to_string(payload_count);
+                         std::to_string(chunk_count) + " chunks";
             }
             return false;
         }
@@ -1200,123 +1242,137 @@ bool ExtractBankBlobs(const ParsedBank& bank,
     }
 
     std::vector<std::uint8_t> chunk;
-    std::size_t loaded_chunk = std::numeric_limits<std::size_t>::max();
 
-    for (std::size_t payload_id = 0; payload_id < payload_count; ++payload_id) {
-        const std::size_t chunk_index = payload_id / kPayloadsPerChunk;
-        const std::size_t slot = payload_id % kPayloadsPerChunk;
-
-        if (loaded_chunk != chunk_index) {
-            if (!InflateBankChunk(bank, chunk_index, &chunk, error)) {
-                return false;
-            }
-            loaded_chunk = chunk_index;
+    for (std::size_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
+        if (!InflateBankChunk(bank, chunk_index, &chunk, error)) {
+            return false;
         }
 
-        // Chunk header: a base offset followed by one relative offset per slot.
-        const std::size_t header_bytes =
-            static_cast<std::size_t>(kPayloadsPerChunk + 1) * 4u;
-        if (chunk.size() < header_bytes) {
+        // Chunk header: a base offset, which is the header's own size, then one
+        // relative offset per payload the chunk holds.
+        const std::uint32_t base = chunk.size() >= 4 ? ReadBigEndianU32(chunk, 0) : 0u;
+        const std::size_t slot_count = base >= 4 ? (static_cast<std::size_t>(base) - 4u) / 4u : 0u;
+        if (chunk.size() < 8 || base < 8 || (base % 4u) != 0 || base > chunk.size() ||
+            slot_count > kPayloadsPerChunk) {
             if (error != nullptr) {
                 *error = "Shader chunk " + std::to_string(chunk_index) + " of " +
-                         bank.bank_name + " is too small to hold a slot table";
+                         bank.bank_name + " has no well-formed slot table (base " +
+                         std::to_string(base) + ")";
             }
             return false;
         }
 
-        const std::uint32_t base = ReadBigEndianU32(chunk, 0);
-        const std::uint32_t relative = ReadBigEndianU32(chunk, 4 + 4 * slot);
-        const std::size_t payload_offset =
-            static_cast<std::size_t>(base) + static_cast<std::size_t>(relative);
-        if (payload_offset >= chunk.size()) {
-            if (error != nullptr) {
-                *error = "Payload " + std::to_string(payload_id) + " of " +
-                         bank.bank_name + " points past its chunk";
+        // An entry selecting a slot this chunk does not hold has no microcode.
+        for (std::size_t slot = slot_count; slot < kPayloadsPerChunk; ++slot) {
+            const std::size_t unused_id = chunk_index * kPayloadsPerChunk + slot;
+            if (!entries_by_payload[unused_id].empty()) {
+                if (error != nullptr) {
+                    *error = "Shader entry " +
+                             std::to_string(entries_by_payload[unused_id].front()->entry_index) +
+                             " of " + bank.bank_name + " selects payload " +
+                             std::to_string(unused_id) + " but chunk " +
+                             std::to_string(chunk_index) + " holds only " +
+                             std::to_string(slot_count);
+                }
+                return false;
             }
-            return false;
         }
 
-        std::size_t code_offset = 0;
-        std::size_t code_size = 0;
-        std::string locate_error;
-        if (!LocatePayloadMicrocode(
-                chunk, payload_offset, &code_offset, &code_size, &locate_error)) {
-            if (error != nullptr) {
-                *error = "Payload " + std::to_string(payload_id) + " of " +
-                         bank.bank_name + ": " + locate_error;
+        for (std::size_t slot = 0; slot < slot_count; ++slot) {
+            const std::size_t payload_id = chunk_index * kPayloadsPerChunk + slot;
+            const std::uint32_t relative = ReadBigEndianU32(chunk, 4 + 4 * slot);
+            const std::size_t payload_offset =
+                static_cast<std::size_t>(base) + static_cast<std::size_t>(relative);
+            if (payload_offset >= chunk.size()) {
+                if (error != nullptr) {
+                    *error = "Payload " + std::to_string(payload_id) + " of " +
+                             bank.bank_name + " points past its chunk";
+                }
+                return false;
             }
-            return false;
-        }
-        if (code_size == 0) {
-            if (error != nullptr) {
-                *error = "Payload " + std::to_string(payload_id) + " of " +
-                         bank.bank_name + " carries no microcode";
+
+            std::size_t code_offset = 0;
+            std::size_t code_size = 0;
+            std::string locate_error;
+            if (!LocatePayloadMicrocode(
+                    chunk, payload_offset, &code_offset, &code_size, &locate_error)) {
+                if (error != nullptr) {
+                    *error = "Payload " + std::to_string(payload_id) + " of " +
+                             bank.bank_name + ": " + locate_error;
+                }
+                return false;
             }
-            return false;
-        }
-
-        // The declared length must bound a well-formed Xenos container; this is
-        // an independent check on the offsets we just walked.
-        std::size_t container_size = 0;
-        ShaderStage container_stage = ShaderStage::kUnknown;
-        if (!TryParseXenosContainer(
-                chunk, code_offset, &container_size, &container_stage) ||
-            container_size > code_size) {
-            if (error != nullptr) {
-                *error = "Payload " + std::to_string(payload_id) + " of " +
-                         bank.bank_name +
-                         " does not begin with a well-formed Xenos container";
+            if (code_size == 0) {
+                if (error != nullptr) {
+                    *error = "Payload " + std::to_string(payload_id) + " of " +
+                             bank.bank_name + " carries no microcode";
+                }
+                return false;
             }
-            return false;
-        }
 
-        const std::vector<const ParsedEntry*>& owners = entries_by_payload[payload_id];
-        std::string name_hint;
-        ShaderStage stage = container_stage;
-        if (!owners.empty()) {
-            name_hint = BuildEntryNameHint(*owners.front());
-            stage = owners.front()->stage;
-        } else {
-            // Reachable only if a bank ships a payload no entry selects.
-            name_hint = "unreferenced_payload_" + std::to_string(payload_id);
-        }
-
-        const std::string sha256 = refii::shader::crypto::ComputeSha256Hex(
-            chunk.data() + static_cast<std::ptrdiff_t>(code_offset), code_size);
-        if (seen_blob_hashes != nullptr && !seen_blob_hashes->insert(sha256).second) {
-            // Already emitted by an earlier bank describing the same shader set.
-            continue;
-        }
-
-        const std::filesystem::path output_path =
-            BuildBlobOutputPath(extract_root, bank.bank_name, payload_id, name_hint);
-        if (!WriteBinaryFile(output_path,
-                             chunk.data() + static_cast<std::ptrdiff_t>(code_offset),
-                             code_size,
-                             error)) {
-            if (error != nullptr && !error->empty()) {
-                *error = "Failed to write shader payload " +
-                         std::to_string(payload_id) + " from " + bank.bank_name +
-                         ": " + *error;
+            // The declared length must bound a well-formed Xenos container; this is
+            // an independent check on the offsets we just walked.
+            std::size_t container_size = 0;
+            ShaderStage container_stage = ShaderStage::kUnknown;
+            if (!TryParseXenosContainer(
+                    chunk, code_offset, &container_size, &container_stage) ||
+                container_size > code_size) {
+                if (error != nullptr) {
+                    *error = "Payload " + std::to_string(payload_id) + " of " +
+                             bank.bank_name +
+                             " does not begin with a well-formed Xenos container";
+                }
+                return false;
             }
-            return false;
-        }
 
-        ShaderSbkBlobMetadata metadata;
-        metadata.bank_name = bank.bank_name;
-        metadata.blob_index = payload_id;
-        metadata.source_offset = static_cast<std::uint32_t>(code_offset);
-        metadata.source_size = static_cast<std::uint32_t>(code_size);
-        metadata.stage = stage;
-        metadata.name_hint = name_hint;
-        metadata.output_path = output_path;
-        metadata.sha256 = sha256;
-        metadata.chunk_index = static_cast<std::uint32_t>(chunk_index);
-        metadata.alias_count = static_cast<std::uint32_t>(owners.size());
-        blobs->push_back(std::move(metadata));
+            const std::vector<const ParsedEntry*>& owners = entries_by_payload[payload_id];
+            std::string name_hint;
+            ShaderStage stage = container_stage;
+            if (!owners.empty()) {
+                name_hint = BuildEntryNameHint(*owners.front());
+                stage = owners.front()->stage;
+            } else {
+                // Reachable only if a bank ships a payload no entry selects.
+                name_hint = "unreferenced_payload_" + std::to_string(payload_id);
+            }
 
-        if (wrote_blob != nullptr) {
-            *wrote_blob = true;
+            const std::string sha256 = refii::shader::crypto::ComputeSha256Hex(
+                chunk.data() + static_cast<std::ptrdiff_t>(code_offset), code_size);
+            if (seen_blob_hashes != nullptr && !seen_blob_hashes->insert(sha256).second) {
+                // Already emitted by an earlier bank describing the same shader set.
+                continue;
+            }
+
+            const std::filesystem::path output_path =
+                BuildBlobOutputPath(extract_root, bank.bank_name, payload_id, name_hint);
+            if (!WriteBinaryFile(output_path,
+                                 chunk.data() + static_cast<std::ptrdiff_t>(code_offset),
+                                 code_size,
+                                 error)) {
+                if (error != nullptr && !error->empty()) {
+                    *error = "Failed to write shader payload " +
+                             std::to_string(payload_id) + " from " + bank.bank_name +
+                             ": " + *error;
+                }
+                return false;
+            }
+
+            ShaderSbkBlobMetadata metadata;
+            metadata.bank_name = bank.bank_name;
+            metadata.blob_index = payload_id;
+            metadata.source_offset = static_cast<std::uint32_t>(code_offset);
+            metadata.source_size = static_cast<std::uint32_t>(code_size);
+            metadata.stage = stage;
+            metadata.name_hint = name_hint;
+            metadata.output_path = output_path;
+            metadata.sha256 = sha256;
+            metadata.chunk_index = static_cast<std::uint32_t>(chunk_index);
+            metadata.alias_count = static_cast<std::uint32_t>(owners.size());
+            blobs->push_back(std::move(metadata));
+
+            if (wrote_blob != nullptr) {
+                *wrote_blob = true;
+            }
         }
     }
 
@@ -1468,6 +1524,7 @@ bool ReadExtractManifestBlobs(const std::filesystem::path& manifest_path,
 }
 
 bool TranslateShaderBlobWithXenos(const TranslateBlobRecord& blob,
+                                 const std::string& title,
                                  const std::string& target,
                                  const std::filesystem::path& hlsl_path,
                                  const std::filesystem::path& output_path,
@@ -1513,7 +1570,8 @@ bool TranslateShaderBlobWithXenos(const TranslateBlobRecord& blob,
         log_path,
         &translate_error,
         &memexport_stats,
-        tess_output_path);
+        tess_output_path,
+        title);
     if (memexport != nullptr) {
         *memexport = refii::shader::DescribeXenosMemoryExportStats(memexport_stats);
     }
@@ -2038,6 +2096,11 @@ bool ExtractShaderSbkWorkspace(const ShaderSbkExtractOptions& options,
     active_summary->extract_out_dir = extract_out_dir;
     active_summary->manifest_path = manifest_path;
 
+    const ShaderTitle* const title = ResolveShaderTitle(options.title, error);
+    if (title == nullptr) {
+        return false;
+    }
+
     try {
         const std::array<std::string_view, 4> legacy_blob_stems = {
             "shaders",
@@ -2073,10 +2136,10 @@ bool ExtractShaderSbkWorkspace(const ShaderSbkExtractOptions& options,
 
     for (std::size_t bankIndex = 0; bankIndex < kExpectedBankFiles.size(); ++bankIndex) {
         const std::string_view bank_file = kExpectedBankFiles[bankIndex];
-        const std::filesystem::path bank_path = input_dir / bank_file;
-        if (!std::filesystem::exists(bank_path)) {
+        const std::filesystem::path bank_path = FindShaderBankFile(input_dir, bank_file);
+        if (bank_path.empty()) {
             if (error != nullptr) {
-                *error = "Missing required shader bank: " + bank_path.string();
+                *error = "Missing required shader bank: " + (input_dir / bank_file).string();
             }
             return false;
         }
@@ -2100,6 +2163,8 @@ bool ExtractShaderSbkWorkspace(const ShaderSbkExtractOptions& options,
         if (!ParseBank(bank_path, &bank, error)) {
             return false;
         }
+        // The manifest's name, whatever case the file has on disk.
+        bank.bank_name = std::string(bank_file);
         banks.push_back(std::move(bank));
 
         if (progress_callback) {
@@ -2150,11 +2215,10 @@ bool ExtractShaderSbkWorkspace(const ShaderSbkExtractOptions& options,
         }
     }
 
-    if (!AppendFableInlineShaderBlobs(
-            extract_out_dir, &blobs, &seen_blob_hashes, error)) {
+    if (!AppendTitleInlineShaderBlobs(
+            *title, extract_out_dir, &blobs, &seen_blob_hashes, &banks_with_blobs, error)) {
         return false;
     }
-    banks_with_blobs.insert("Shaders.sbk");
 
     if (!WriteExtractManifest(manifest_path, banks, blobs, banks_with_blobs, error)) {
         return false;
@@ -2178,6 +2242,12 @@ bool TranslateExtractedShaderSbk(const ShaderSbkTranslateOptions& options,
     active_summary->translate_out_dir = std::filesystem::absolute(options.translate_out_dir);
     active_summary->report_path = std::filesystem::absolute(options.report_path);
     active_summary->translator_path = options.translator_path;
+
+    const ShaderTitle* const title = ResolveShaderTitle(options.title, error);
+    if (title == nullptr) {
+        return false;
+    }
+    const std::string title_folder(title->folder);
 
     std::vector<TranslateBlobRecord> blobs;
     if (!ReadExtractManifestBlobs(active_summary->extract_manifest_path, &blobs, error)) {
@@ -2353,6 +2423,7 @@ bool TranslateExtractedShaderSbk(const ShaderSbkTranslateOptions& options,
                     }
                     const bool translated = TranslateShaderBlobWithXenos(
                         blob,
+                        title_folder,
                         target,
                         hlsl_path,
                         output_path,
@@ -2512,6 +2583,9 @@ bool BuildShaderSbkWorkspace(const ShaderSbkBuildOptions& options,
     ShaderSbkTranslateOptions translate_options = options.translate;
     if (translate_options.extract_manifest_path.empty()) {
         translate_options.extract_manifest_path = options.extract.manifest_path;
+    }
+    if (translate_options.title.empty()) {
+        translate_options.title = options.extract.title;
     }
 
     if (!TranslateExtractedShaderSbk(

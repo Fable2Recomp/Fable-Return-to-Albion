@@ -21,9 +21,10 @@ public static class GdbTransformMath
             ? placement.Scale
             : 1f;
 
-        Basis basis = placement.HasRotation
-            ? RotationBasis(placement.RotX, placement.RotY, placement.RotZ, scale)
-            : YawBasis(placement.Yaw, scale);
+        Basis basis = !placement.HasRotation ? YawBasis(placement.Yaw, scale)
+            : placement.RotationIsQuaternion
+                ? QuaternionBasis(placement.RotX, placement.RotY, placement.RotZ, placement.RotW, scale)
+                : RotationBasis(placement.RotX, placement.RotY, placement.RotZ, scale);
 
         return new Transform3D(basis, new Vector3(placement.X, placement.Z, placement.Y));
     }
@@ -69,6 +70,57 @@ public static class GdbTransformMath
         }
 
         return ToGodotBasis(m);
+    }
+
+    /// <summary>
+    /// A guest quaternion (Fable 3's placement Rotation) through the same guest matrix and the same
+    /// mapping <see cref="RotationBasis"/> uses: the matrix D3DX builds for it, rows the rotated
+    /// axes, so a yaw-only quaternion gives exactly the Euler yaw's matrix.
+    /// </summary>
+    public static Basis QuaternionBasis(float x, float y, float z, float w, float scale = 1f)
+    {
+        float length = MathF.Sqrt((x * x) + (y * y) + (z * z) + (w * w));
+        if (!float.IsFinite(length) || length < 1e-6f)
+        {
+            return YawBasis(0f, scale);
+        }
+
+        x /= length;
+        y /= length;
+        z /= length;
+        w /= length;
+
+        Span<float> game = stackalloc float[9];
+        game[0] = 1f - (2f * ((y * y) + (z * z)));
+        game[1] = 2f * ((x * y) + (z * w));
+        game[2] = 2f * ((x * z) - (y * w));
+        game[3] = 2f * ((x * y) - (z * w));
+        game[4] = 1f - (2f * ((x * x) + (z * z)));
+        game[5] = 2f * ((y * z) + (x * w));
+        game[6] = 2f * ((x * z) + (y * w));
+        game[7] = 2f * ((y * z) - (x * w));
+        game[8] = 1f - (2f * ((x * x) + (y * y)));
+
+        ReadOnlySpan<int> map = stackalloc int[] { 0, 2, 1 };
+        Span<float> m = stackalloc float[9];
+        for (int row = 0; row < 3; row++)
+        {
+            for (int col = 0; col < 3; col++)
+            {
+                m[(row * 3) + col] = game[(map[row] * 3) + map[col]] * scale;
+            }
+        }
+
+        return ToGodotBasis(m);
+    }
+
+    /// <summary>The heading of a guest quaternion, in the Euler yaw's sense (row 0 = (cos, sin, ·)).</summary>
+    public static float QuaternionYaw(float x, float y, float z, float w)
+    {
+        float m00 = 1f - (2f * ((y * y) + (z * z)));
+        float m01 = 2f * ((x * y) + (z * w));
+        float yaw = MathF.Atan2(m01, m00);
+        return float.IsFinite(yaw) ? yaw : 0f;
     }
 
     public static Basis YawBasis(float yaw, float scale = 1f)

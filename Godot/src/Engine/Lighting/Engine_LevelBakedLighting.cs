@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System;
+using System.Linq;
 using Godot;
 using Refii.Level;
 using Refii.Textures;
@@ -12,9 +13,26 @@ public static class Engine_LevelBakedLighting
 
 	public const string ProbeRelativePath = "LightProbeData/LightProbesData.dat";
 
+	/// <summary>
+	/// Fable 3's two files, both the level path with its extension replaced (sub_82CC2250 and
+	/// sub_82CC30E0 through sub_82D8A698); the names are the globals set at 0x83204760 and
+	/// 0x83204720.
+	/// </summary>
+	public const string StreamedLightmapExtension = ".cflmp";
+
+	public const string ProbeSetExtension = ".flpb";
+
 	public static void TryLoad(
 		string gdbPath,
 		Func<string, byte[]?> read,
+		out LightmapContainer? lightmaps,
+		out LightProbeField? probes) =>
+		TryLoad(gdbPath, read, Refii.Core.Engine_Title.Active, out lightmaps, out probes);
+
+	public static void TryLoad(
+		string gdbPath,
+		Func<string, byte[]?> read,
+		Refii.Core.Engine_Title title,
 		out LightmapContainer? lightmaps,
 		out LightProbeField? probes)
 	{
@@ -23,6 +41,12 @@ public static class Engine_LevelBakedLighting
 
 		if (gdbPath.Length == 0)
 		{
+			return;
+		}
+
+		if (title == Refii.Core.Engine_Title.Fable3)
+		{
+			TryLoadFable3(gdbPath, read, out lightmaps, out probes);
 			return;
 		}
 
@@ -50,6 +74,44 @@ public static class Engine_LevelBakedLighting
 		if (probeBytes is not null)
 		{
 			if (Engine_LightProbeField.TryParse(probeBytes, out LightProbeField field, out string probeError))
+			{
+				probes = field;
+			}
+			else
+			{
+				GD.Print($"[baked] {probePath}: {probeError}");
+			}
+		}
+	}
+
+	private static void TryLoadFable3(
+		string gdbPath,
+		Func<string, byte[]?> read,
+		out LightmapContainer? lightmaps,
+		out LightProbeField? probes)
+	{
+		lightmaps = null;
+		probes = null;
+
+		string lightmapPath = Engine_LevelGdb.SiblingWithExtension(gdbPath, StreamedLightmapExtension);
+		byte[]? lightmapBytes = MaybeGunzip(read(lightmapPath) ?? read("data/" + lightmapPath));
+		if (lightmapBytes is not null)
+		{
+			if (Engine_LightmapFile.TryParse(lightmapBytes, out LightmapContainer container, out string lmError))
+			{
+				lightmaps = container;
+			}
+			else
+			{
+				GD.Print($"[baked] {lightmapPath}: {lmError}");
+			}
+		}
+
+		string probePath = Engine_LevelGdb.SiblingWithExtension(gdbPath, ProbeSetExtension);
+		byte[]? probeBytes = MaybeGunzip(read(probePath) ?? read("data/" + probePath));
+		if (probeBytes is not null)
+		{
+			if (Engine_LightProbeField.TryParseProbeSet(probeBytes, out LightProbeField field, out string probeError))
 			{
 				probes = field;
 			}
@@ -350,6 +412,71 @@ public static class Engine_LevelBakedLighting
 	/// <summary>Metadata key on the props container holding the level's gdb path.</summary>
 	public const string LevelGdbMeta = "level_gdb";
 
+	/// <summary>
+	/// Metadata key on a placement whose texture bake is bound when its mesh stands, holding the
+	/// level's gdb path. Fable 3 states its lightmapped placements this way (Engine_LevelProps);
+	/// removed once resolved, the rect then rides <see cref="LightmapRectMeta"/>.
+	/// </summary>
+	public const string ObjectLightmapLevelMeta = "object_lightmap_level";
+
+	/// <summary>Metadata key holding a bound texture bake's atlas window, as `lightmap_rect` takes it.</summary>
+	public const string LightmapRectMeta = "lightmap_rect";
+
+	private static StringName? _objectLightmapLevelMetaName;
+	private static StringName? _lightmapRectName;
+	private static StringName ObjectLightmapLevelMetaName => _objectLightmapLevelMetaName ??= ObjectLightmapLevelMeta;
+	private static StringName LightmapRectName => _lightmapRectName ??= LightmapRectMeta;
+
+	/// <summary>
+	/// Binds a placement's object lightmap: its atlas window into `lightmap_rect` and bake mode 4.
+	/// False when the container has no texture for the key.
+	/// </summary>
+	public static bool BindObjectLightmap(GeometryInstance3D node, LightmapContainer? container, ulong key)
+	{
+		if (!TryGetObjectLightmapRect(container, key, out Rect2 rect))
+		{
+			return false;
+		}
+
+		var window = new Vector4(rect.Position.X, rect.Position.Y, rect.Size.X, rect.Size.Y);
+		node.SetInstanceShaderParameter(LightmapRectName, window);
+		node.SetMeta(LightmapRectName, window);
+		node.SetMeta(BakeModeMetaName, 4);
+		return true;
+	}
+
+	/// <summary>
+	/// The texture bake a placement was built with (<see cref="ObjectLightmapLevelMeta"/>), bound
+	/// once and re-applied from <see cref="LightmapRectMeta"/> on every later light.
+	/// </summary>
+	private static void ApplyStatedObjectLightmap(GeometryInstance3D node)
+	{
+		if (node.HasMeta(LightmapRectName))
+		{
+			node.SetInstanceShaderParameter(LightmapRectName, node.GetMeta(LightmapRectName));
+			return;
+		}
+
+		if (!node.HasMeta(ObjectLightmapLevelMetaName))
+		{
+			return;
+		}
+
+		string gdbPath = node.GetMeta(ObjectLightmapLevelMetaName).AsString();
+		node.RemoveMeta(ObjectLightmapLevelMetaName);
+
+		string stated = node.HasMeta(BakeKeyMetaName) ? node.GetMeta(BakeKeyMetaName).AsString() : string.Empty;
+		if (stated.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+		{
+			stated = stated[2..];
+		}
+
+		if (ulong.TryParse(stated, System.Globalization.NumberStyles.HexNumber, null, out ulong key) && key != 0)
+		{
+			BindObjectLightmap(node, ContainerFor(gdbPath), key);
+		}
+	}
+
 	private static readonly System.Collections.Generic.Dictionary<string, LightmapContainer?>
 		ContainerCache = new();
 
@@ -426,6 +553,23 @@ public static class Engine_LevelBakedLighting
 				out LightmapContainer? container, out _);
 			ContainerCache[gdbPath] = container;
 			return container;
+		}
+	}
+
+	/// <summary>
+	/// The container the level build already parsed, kept for <see cref="ContainerFor"/> so the
+	/// first placement to bind its bake on the main thread does not parse the file again.
+	/// </summary>
+	public static void AdoptContainer(string gdbPath, LightmapContainer container)
+	{
+		if (gdbPath.Length == 0)
+		{
+			return;
+		}
+
+		lock (ContainerCache)
+		{
+			ContainerCache.TryAdd(gdbPath, container);
 		}
 	}
 
@@ -966,6 +1110,11 @@ public static class Engine_LevelBakedLighting
 			}
 		}
 
+		if (staticProp)
+		{
+			ApplyStatedObjectLightmap(node);
+		}
+
 		// The node's stated mode wins; a probe sample is only the fallback answer.
 		float mode = node.HasMeta(BakeModeMetaName) &&
 			node.GetMeta(BakeModeMetaName) is { VariantType: Variant.Type.Int } stored
@@ -1251,13 +1400,15 @@ public static class Engine_LevelBakedLighting
 		container.ObjectAtlasBuilt = true;
 
 		var decoded = new List<(ulong Key, Image Image)>();
-		int cellW = 1;
-		int cellH = 1;
+		long area = 0;
+		int widest = 1;
 		foreach (KeyValuePair<ulong, byte[]> entry in container.ObjectLightmapBlobs)
 		{
 			// Decoded to an image, never through a texture: `GetImage` on a texture is a GPU
 			// readback that stalls every frame in flight, once per lightmap.
-			Image? image = DecodeImage(entry.Value);
+			Image? image = container.SharedKeyTable
+				? ComposeObjectBake(container, entry.Key, entry.Value)
+				: DecodeImage(entry.Value);
 			if (image is not null && image.IsCompressed())
 			{
 				image.Decompress();
@@ -1269,8 +1420,8 @@ public static class Engine_LevelBakedLighting
 				continue;
 			}
 
-			cellW = Math.Max(cellW, image.GetWidth());
-			cellH = Math.Max(cellH, image.GetHeight());
+			area += (long)image.GetWidth() * image.GetHeight();
+			widest = Math.Max(widest, image.GetWidth());
 			decoded.Add((entry.Key, image));
 		}
 
@@ -1279,35 +1430,60 @@ public static class Engine_LevelBakedLighting
 			return;
 		}
 
-		int columns = (int)Math.Ceiling(Math.Sqrt(decoded.Count));
-		int rows = (decoded.Count + columns - 1) / columns;
-		var atlas = Image.CreateEmpty(
-			columns * cellW, rows * cellH, false, Image.Format.Rgba8);
+		// ROWS OF THE TALLEST FIRST, a row as wide as the square the lightmaps would fill. Fable 2's
+		// are all one size, where this is the plain grid (ceil(sqrt(n)) columns, in key order);
+		// Fable 3's run 32..1024, and a grid of 1024 cells for 337 of them is 1.5 GB.
+		int rowWidth = (int)Math.Ceiling(Math.Sqrt(area) / widest) * widest;
+		List<(ulong Key, Image Image)> order =
+			decoded.OrderByDescending(d => d.Image.GetHeight()).ToList();
 
-		float atlasW = columns * cellW;
-		float atlasH = rows * cellH;
-		for (int i = 0; i < decoded.Count; i++)
+		var places = new Vector2I[order.Count];
+		int penX = 0;
+		int penY = 0;
+		int rowHeight = 0;
+		for (int i = 0; i < order.Count; i++)
 		{
-			Image source = decoded[i].Image;
-			if (source.GetFormat() != Image.Format.Rgba8)
+			int w = order[i].Image.GetWidth();
+			if (penX > 0 && penX + w > rowWidth)
 			{
-				source.Convert(Image.Format.Rgba8);
+				penX = 0;
+				penY += rowHeight;
+				rowHeight = 0;
 			}
 
-			int x = (i % columns) * cellW;
-			int y = (i / columns) * cellH;
+			places[i] = new Vector2I(penX, penY);
+			penX += w;
+			rowHeight = Math.Max(rowHeight, order[i].Image.GetHeight());
+		}
+
+		int atlasHeight = penY + rowHeight;
+		Image.Format atlasFormat = container.SharedKeyTable ? Image.Format.Rgbe9995 : Image.Format.Rgba8;
+		var atlas = Image.CreateEmpty(rowWidth, atlasHeight, false, atlasFormat);
+
+		float atlasW = rowWidth;
+		float atlasH = atlasHeight;
+		for (int i = 0; i < order.Count; i++)
+		{
+			Image source = order[i].Image;
+			if (source.GetFormat() != atlasFormat)
+			{
+				source.Convert(atlasFormat);
+			}
+
+			int x = places[i].X;
+			int y = places[i].Y;
 			atlas.BlitRect(source,
 				new Rect2I(0, 0, source.GetWidth(), source.GetHeight()),
 				new Vector2I(x, y));
 
-			container.ObjectAtlasRects[decoded[i].Key] = new Rect2(
+			container.ObjectAtlasRects[order[i].Key] = new Rect2(
 				x / atlasW, y / atlasH,
 				source.GetWidth() / atlasW, source.GetHeight() / atlasH);
 		}
 
 		container.ObjectAtlas = Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(atlas);
 		GD.Print($"[bake] object lightmap atlas: {decoded.Count} texture(s), " +
-			$"{columns * cellW}x{rows * cellH}");
+			$"{rowWidth}x{atlasHeight}");
 	}
 
 	/// <summary>
@@ -1350,6 +1526,91 @@ public static class Engine_LevelBakedLighting
 		return r.LengthSquared() + g.LengthSquared() + b.LengthSquared() > 0f;
 	}
 
+	/// <summary>
+	/// A Fable 3 bake as the one value the shared shaders read: the light the title's lighting
+	/// shaders add for it, raised to 1/<see cref="FableBakeGamma"/> so their 1.3 decode returns it.
+	/// </summary>
+	/// <remarks>
+	/// THE TITLE'S OWN COMPOSE (landscapematerial_*_amb3 and standardmaterial_*_amb3, register
+	/// names from their constant tables): slot 0 on sampler 3 (g_TextureAOSampler) is
+	/// A, slot 1 on sampler 7 (g_TextureLightmapSampler) is L, both over the same UV —
+	///
+	///     I   = (A.b * 31 + A.r) * g_LightmapFlickeringFactor
+	///     out = Dlin * pow(A.g, g_AOContrast) * (sun + 2 * W * I * L.rgb + W * ambient)
+	///
+	/// so the bake term is 2·I·L with A.g its occlusion; W is the darkening the shaders already
+	/// apply. The flicker factor and AO contrast are per-frame constants not yet read (1 here),
+	/// and the occlusion the title also lays over the sun term is carried by the bake alone.
+	/// A slot the entry does not state takes the title's default: white for slot 0
+	/// (sub_82182B70), black for slot 1 (sub_821FABA0). Stored as RGB9E5: the light is HDR
+	/// (blue carries whole units of intensity) and four bytes a texel.
+	/// </remarks>
+	public static Image? ComposeFable3Bake(byte[]? intensityBlob, byte[]? colourBlob, int width, int height)
+	{
+		Image? Load(byte[]? blob)
+		{
+			if (blob is null || blob.Length == 0 || DecodeImage(blob) is not { } image)
+			{
+				return null;
+			}
+
+			if (image.IsCompressed())
+			{
+				image.Decompress();
+			}
+
+			image.Convert(Image.Format.Rgbaf);
+			if (image.GetWidth() != width || image.GetHeight() != height)
+			{
+				image.Resize(width, height, Image.Interpolation.Bilinear);
+			}
+
+			return image;
+		}
+
+		if (width <= 0 || height <= 0)
+		{
+			return null;
+		}
+
+		Image? colour = Load(colourBlob);
+		if (colour is null)
+		{
+			Image unlit = Image.CreateEmpty(width, height, false, Image.Format.Rgbe9995);
+			return unlit;
+		}
+
+		Image? intensity = Load(intensityBlob);
+		byte[] l = colour.GetData();
+		byte[]? a = intensity?.GetData();
+		var light = new byte[(long)width * height * 12];
+		float inverseGamma = 1f / FableBakeGamma;
+		for (long t = 0; t < (long)width * height; t++)
+		{
+			float ar = 1f, ag = 1f, ab = 1f;
+			if (a is not null)
+			{
+				ar = BitConverter.ToSingle(a, (int)(t * 16));
+				ag = BitConverter.ToSingle(a, (int)(t * 16) + 4);
+				ab = BitConverter.ToSingle(a, (int)(t * 16) + 8);
+			}
+
+			float scale = 2f * ((ab * 31f) + ar) * Math.Clamp(ag, 0f, 1f);
+			for (int c = 0; c < 3; c++)
+			{
+				float value = Math.Max(BitConverter.ToSingle(l, (int)(t * 16) + (c * 4)), 0f) * scale;
+				BitConverter.TryWriteBytes(light.AsSpan((int)(t * 12) + (c * 4), 4), MathF.Pow(value, inverseGamma));
+			}
+		}
+
+		Image composed = Image.CreateFromData(width, height, false, Image.Format.Rgbf, light);
+		composed.Convert(Image.Format.Rgbe9995);
+		return composed;
+	}
+
+	/// <summary>The 1.3 decode `fable_bake` and the terrain splat apply to an authored bake.</summary>
+	private const float FableBakeGamma = 1.3f;
+
 	private static Image? DecodeImage(byte[] blob)
 	{
 		try
@@ -1360,6 +1621,18 @@ public static class Engine_LevelBakedLighting
 		{
 			return null;
 		}
+	}
+
+	/// <summary>A Fable 3 entry's composed bake at its slot-0 size (<see cref="ComposeFable3Bake"/>).</summary>
+	private static Image? ComposeObjectBake(LightmapContainer container, ulong key, byte[] intensityBlob)
+	{
+		if (DecodeImage(intensityBlob) is not { } size)
+		{
+			return null;
+		}
+
+		container.ObjectSecondLightmapBlobs.TryGetValue(key, out byte[]? colour);
+		return ComposeFable3Bake(intensityBlob, colour, size.GetWidth(), size.GetHeight());
 	}
 
 	/// <summary>The object lightmap for a placement key as its own texture, or null when none.</summary>
@@ -1373,8 +1646,31 @@ public static class Engine_LevelBakedLighting
 		{
 			if (!container.ObjectTextures.TryGetValue(key, out ImageTexture? texture))
 			{
-				texture = DecodeTexture(blob);
+				texture = container.SharedKeyTable
+					? (ComposeObjectBake(container, key, blob) is { } composed ? ImageTexture.CreateFromImage(composed) : null)
+					: DecodeTexture(blob);
 				container.ObjectTextures[key] = texture;
+			}
+			return texture;
+		}
+	}
+
+	/// <summary>
+	/// Fable 3: the entry's slot-1 texture, the bake's colour the title binds on sampler 7
+	/// (`g_TextureLightmapSampler`, sub_8221DCD0 0x8221dd20), or null when the entry states none.
+	/// </summary>
+	public static ImageTexture? ObjectSecondLightmapTexture(LightmapContainer? container, ulong key)
+	{
+		if (container is null || !container.ObjectSecondLightmapBlobs.TryGetValue(key, out byte[]? blob))
+		{
+			return null;
+		}
+		lock (container.ObjectSecondTextures)
+		{
+			if (!container.ObjectSecondTextures.TryGetValue(key, out ImageTexture? texture))
+			{
+				texture = DecodeTexture(blob);
+				container.ObjectSecondTextures[key] = texture;
 			}
 			return texture;
 		}
@@ -1403,12 +1699,71 @@ public static class Engine_LevelBakedLighting
 	///
 	/// The guest never searches. It carries the id from the type-4 record into the render
 	/// entity and does a single 64-bit map lookup (<c>sub_82A8EA50</c>), so we do the same.
+	///
+	/// FABLE 3 keeps one table (<see cref="LightmapContainer.SharedKeyTable"/>). The type-4
+	/// message carries the id (sub_82CD8B48 0x82cd8e4c..0x82cd8f58) to the landscape entity's
+	/// +0x110 (sub_82CAFB28 0x82cafd40), which resolves it through the placements' own streamer
+	/// lookup (sub_82CB0658 → sub_82CC8DE0) and binds the entry's two slots on samplers 3 and 7
+	/// (sub_82251848). The colour is slot 1; an entry without one is drawn against the title's
+	/// black default (sub_821FABA0), which is no baked colour, so it serves none here.
 	/// </remarks>
 	public static bool TryGetTerrainLightmap(
 		LightmapContainer container, ulong key, out TerrainLightmap lightmap)
 	{
-		return container.TerrainLightmapBlobs.TryGetValue(key, out lightmap!) &&
-			lightmap.Blob.Length != 0;
+		if (container.TerrainLightmapBlobs.TryGetValue(key, out lightmap!))
+		{
+			return lightmap.Blob.Length != 0;
+		}
+
+		if (container.SharedKeyTable &&
+			container.ObjectSecondLightmapBlobs.TryGetValue(key, out byte[]? colour) &&
+			colour.Length != 0)
+		{
+			container.ObjectLightmapBlobs.TryGetValue(key, out byte[]? intensity);
+			lightmap = new TerrainLightmap
+			{
+				Blob = colour,
+				IntensityBlob = intensity ?? Array.Empty<byte>(),
+			};
+			return true;
+		}
+
+		lightmap = null!;
+		return false;
+	}
+
+	/// <summary>
+	/// Fable 3's <c>g_LandscapeLightmapUVFactor</c> (VS c14) for one heightfield.
+	/// </summary>
+	/// <remarks>
+	/// Built per landscape entity at +0x100 by sub_82CAF990 (0x82caf9f0..0x82cafaec) from the
+	/// heightfield's header — samples X at +0x48, samples Y at +0x4C, metres per sample at +0x50
+	/// (sub_82CB1010) — and uploaded by sub_82251848 (0x8225193c..0x82251980), or zero when the
+	/// landscape has no bake:
+	///
+	///     x = 0.99609375 / ((samplesX - 1) * spacing)
+	///     y = 0.99609375 / ((samplesY - 1) * spacing)
+	///     z = w = 1 / 512
+	///
+	/// The landscape vertex shader (landscapematerial_amb3) applies it as
+	/// <c>uv = (world.xy - g_TexCoordScale.zw) * factor.xy + factor.zw</c>, so the bake spans the
+	/// whole heightfield whatever its size, inset by the 255/256 scale and 1/512 offset. Unlike
+	/// Fable 2's <see cref="LightmapUvFactor"/> it does not depend on the bake's texel count.
+	/// </remarks>
+	public static Vector4 Fable3LightmapUvFactor(int samplesX, int samplesY, float metresPerSample)
+	{
+		if (samplesX <= 1 || samplesY <= 1 || !float.IsFinite(metresPerSample) || metresPerSample <= 0f)
+		{
+			return Vector4.Zero;
+		}
+
+		const float Inset = 0.99609375f;
+		const float Offset = 1f / 512f;
+		return new Vector4(
+			Inset / ((samplesX - 1) * metresPerSample),
+			Inset / ((samplesY - 1) * metresPerSample),
+			Offset,
+			Offset);
 	}
 
 	/// <summary>
@@ -1450,10 +1805,16 @@ public static class Engine_LevelBakedLighting
 			? "lmp=none"
 			: $"lmp=v{lightmaps.Version} terrain={lightmaps.TerrainLightmapBlobs.Count} " +
 			  $"objtex={lightmaps.ObjectLightmapBlobs.Count} vbake={lightmaps.VertexBakes.Count} " +
-			  $"arrays={lightmaps.U32Arrays.Count} blocks={lightmaps.Blocks48.Count}";
+			  $"arrays={lightmaps.U32Arrays.Count} blocks={lightmaps.Blocks48.Count}" +
+			  (lightmaps.ObjectSecondLightmapBlobs.Count > 0
+				  ? $" objtex2={lightmaps.ObjectSecondLightmapBlobs.Count}"
+				  : string.Empty);
 
 		string pr = probes is null
 			? "probes=none"
+			: probes.HasCells
+			? $"probes={probes.ProbePositions.Length} cells={probes.CellPlanes.Length} " +
+			  $"box={probes.CellBoundsMin}..{probes.CellBoundsMax}"
 			: $"probes=dim({probes.DimX}x{probes.DimY}x{probes.DimZ}) roots={probes.RootPairKeys.Length} " +
 			  $"leaves={probes.Leaves.Length / 32} bank0={probes.Banks[0].Length} " +
 			  $"L0={Range(probes.Banks[0])} L1={Range(probes.Banks[1])}";

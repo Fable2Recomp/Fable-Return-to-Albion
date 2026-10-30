@@ -11,6 +11,7 @@
 #include "core/payload_bridge_string.h"
 #include "core/traced_mutex.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <mutex>
@@ -276,10 +277,8 @@ extern "C" uint64_t refii_bridge_rex_query_guest_tick_count(void) {
     }
 
     last_real = real;
-    ticks += advance;
-    if (ticks > real) {
-      ticks = real;
-    }
+    // Never past real time, and never backwards: a clock already ahead holds until real catches up.
+    ticks = std::max(ticks, std::min(ticks + advance, real));
 
     g_virtual_ticks.store(ticks, std::memory_order_relaxed);
     return ticks;
@@ -343,10 +342,14 @@ extern "C" uint64_t refii_bridge_rex_query_guest_tick_count(void) {
   if (real > last_grant && (real - last_grant) > (kGrantWatchdogSteps * step)) {
     const uint64_t seen = g_last_seen_real.load(std::memory_order_relaxed);
     if (real > seen) {
-      ticks += real - seen;
-      if (ticks > real) {
-        ticks = real;
-      }
+      // THE CLOCK NEVER RUNS BACKWARDS. Releasing grants lets it lead real time by up to
+      // `kMaxLeadSteps`; capping a lapse at `real` used to pull such a clock BACK by that lead,
+      // up to 66 ms, the moment the host stalled for `kGrantWatchdogSteps`. The guest's own
+      // fixed-step loops take time as monotonic — Fable 3's startup loop (sub_82312B80) turned a
+      // 17 ms step backwards into a negative owed-step count and spun counting it down for
+      // billions of steps, never reaching the next logo. A clock already ahead holds until real
+      // time catches up.
+      ticks = std::max(ticks, std::min(ticks + (real - seen), real));
 
       g_virtual_ticks.store(ticks, std::memory_order_relaxed);
     }

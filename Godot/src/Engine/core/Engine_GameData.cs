@@ -29,6 +29,19 @@ public static class Engine_GameData
 	public static string Resolve() => ResolveWhere(HasBanks);
 
 	/// <summary>
+	/// A title's data directory, active or not: the same search by that title's folder, without the
+	/// override (which names the active title's data). Empty when that title is not installed.
+	/// </summary>
+	public static string ResolveFor(Engine_Title title)
+	{
+		foreach (string candidate in Candidates(title, includeOverride: false))
+			if (HasBanks(candidate))
+				return candidate;
+
+		return string.Empty;
+	}
+
+	/// <summary>
 	/// The title update's data root beside a game data directory: <c>&lt;assets&gt;/update</c>,
 	/// the directory the runtime mounts as <c>update:</c> (refii_app.h derives it the same way).
 	/// The installer writes the update package's <c>data/tu1_data.bnk</c> under it.
@@ -70,22 +83,22 @@ public static class Engine_GameData
 	/// </remarks>
 	public static string ResolveWhere(Func<string, bool> accepts)
 	{
-		foreach (string candidate in Candidates())
+		foreach (string candidate in Candidates(Engine_Title.Active, includeOverride: true))
 			if (accepts(candidate))
 				return candidate;
 
 		return string.Empty;
 	}
 
-	private static IEnumerable<string> Candidates()
+	private static IEnumerable<string> Candidates(Engine_Title title, bool includeOverride)
 	{
-		string? fromEnv = System.Environment.GetEnvironmentVariable(EnvironmentVariable);
+		string? fromEnv = includeOverride ? System.Environment.GetEnvironmentVariable(EnvironmentVariable) : null;
 		if (!string.IsNullOrEmpty(fromEnv))
 			yield return fromEnv!;
 
 		// THE ACTIVE TITLE'S data, in every location: assets/game for Fable 2, assets/refiii/game
 		// for Fable 3. A candidate that ignored the title would hand one game the other's banks.
-		string game = Engine_Title.Active.GameDataRelative;
+		string game = title.GameDataRelative;
 
 		// The app root's assets first: that is where the installer writes and where an exported
 		// build keeps the player's data. Everything below is a dev-tree fallback.

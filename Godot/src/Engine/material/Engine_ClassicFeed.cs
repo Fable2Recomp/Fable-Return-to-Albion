@@ -25,6 +25,15 @@ namespace Refii.Models;
 public static class Engine_ClassicFeed
 {
     private const int FrameFloats = 148;
+    // Fable 3's frame export appends the lighting globals its constant writers read that Fable 2
+    // has no register for (Fable3/src/hostbridge/src/classic_feed.cpp, RefiiHostGetClassicFrame):
+    // [148..151] the local ambient colour *0x83564BC0, [152] the AO contrast *0x8329D5E4, [153]
+    // the lightmap flicker factor *0x835568B0, [154] the sun shadow light's range scale.
+    private const int Fable3FrameFloats = 155;
+    private const int Fable3LocalAmbient = 148;
+    private const int Fable3AOContrast = 152;
+    private const int Fable3Flicker = 153;
+    private const int Fable3ShadowScale = 154;
     // The theme block's float4s, by the index `sub_83288CA0`'s table gives them.
     private const int ThemeBase = 36;
     private const int ThemeAmbientColour = 2;
@@ -34,6 +43,7 @@ public static class Engine_ClassicFeed
     private const int SunColour = 132;
     private const int SunDirection = 136;
     private static readonly float[] _frame = new float[FrameFloats];
+    private static readonly float[] _fable3Frame = new float[Fable3FrameFloats];
     private static readonly float[] _four = new float[4];
     private static readonly float[] _block = new float[20];
     private static long _frames;
@@ -65,11 +75,12 @@ public static class Engine_ClassicFeed
         Ps(Engine_ClassicRegisters.Ps.SimulationTime, time, time, time, time);
         Vs(Engine_ClassicRegisters.Vs.SimulationTime, time, time, time, time);
 
-        // Constants the passes write as literals.
+        // Constants the passes write as literals (Fable 3's c31: `sub_821B2F40` splats 2.2 from
+        // flt_832A88D8, 0x821B30E4).
         Ps(Engine_ClassicRegisters.Ps.GlobalTextureGammaRamp, 2.2f, 2.2f, 2.2f, 2.2f);
         // g_AtmosphericFactors as `sub_82214FB0` sets it: x = 1 (the pass fogs), y = 1 on the
         // first light group (its in-scatter), 0 on the additive groups; the frame's own row is
-        // a first group.
+        // a first group. Fable 3's first pass writes the same row to c29 (0x821FF664, 0x82001050).
         Ps(Engine_ClassicRegisters.Ps.AtmosphericFactors, 1f, 1f, 0f, 0f);
         // g_FadeBeginDistanceAndRange (PS c15), read by the tree and repeated families only. The
         // tree draw's value when its instance is not fading (`sub_8220AF90`, inst+0x3E == 0):
@@ -78,7 +89,20 @@ public static class Engine_ClassicFeed
         // are not fed yet.
         Ps(Engine_ClassicRegisters.Ps.FadeBeginDistanceAndRange, 0f, 0f, 0f, 1f);
 
-        if (Replay is { } replay && replay.Length >= FrameFloats)
+        bool fable3 = Fable3;
+        if (fable3)
+        {
+            if (Replay is { } replay3 && replay3.Length >= Fable3FrameFloats)
+            {
+                Array.Copy(replay3, _fable3Frame, Fable3FrameFloats);
+            }
+            else if (Replay is not null || Refii.Host.HostBridge.GetClassicFrame(_fable3Frame) < Fable3FrameFloats)
+            {
+                return;
+            }
+            Array.Copy(_fable3Frame, _frame, FrameFloats);
+        }
+        else if (Replay is { } replay && replay.Length >= FrameFloats)
         {
             Array.Copy(replay, _frame, FrameFloats);
         }
@@ -91,38 +115,14 @@ public static class Engine_ClassicFeed
 
         // The theme block when the scene is up, else the globals the passes cached from it.
         bool theme = HasScene();
-        int ambient = theme ? Theme(ThemeAmbientColour) : 0;
-        int lightmap = theme ? Theme(ThemeLightmapColour) : 8;
-        int darkening = theme ? Theme(ThemeDarkeningColour) : 12;
-
-        // Ambient, and the brightness lane every material ends `oC0 *= c20.w` with: for the main
-        // view `*(*(0x8349F848) + 0x41AC)` (`sub_82282320` -> `sub_821B1958`), the title's
-        // adaptive pre-exposure E (`sub_82191C18`). It is the GPU's value (the post chain's
-        // reduce pass), so the lane carries the marker the shaders' constant fetch replaces.
-        Ps(Engine_ClassicRegisters.Ps.GlobalAmbientAndBrightness, _frame[ambient], _frame[ambient + 1], _frame[ambient + 2], ExposureLane);
-        Vs(Engine_ClassicRegisters.Vs.GlobalAmbientAndBrightness, _frame[ambient], _frame[ambient + 1], _frame[ambient + 2], ExposureLane);
-
-        // The main light's travel direction, negated as the passes write it: toward the sun.
-        // Both directional lights of the rig carry it (`sub_821DF670`: +304 =
-        // normalize(-mainLightDir)), but `*(0x834A4D60)` is the first type-11 light in the
-        // registry, which is not always one of them — live it read (0, 1, 0) while the title's
-        // c23 held the sun's. The sun twin's own +304 ([136..138]) is the rig's.
-        int dir = _frame[136] * _frame[136] + _frame[137] * _frame[137] + _frame[138] * _frame[138] > 1e-6f ? 136 : 4;
-        float sx = -_frame[dir], sy = -_frame[dir + 1], sz = -_frame[dir + 2];
-        Ps(Engine_ClassicRegisters.Ps.NormalMapLightAngleConstants, sx, sy, sz, 4f);
-        Vs(Engine_ClassicRegisters.Vs.AmbientLightReferenceDirection, sx, sy, sz, 0f);
-
-        // The lightmap factor with each stage's gamma, and the normal-map darkening colour.
-        Ps(Engine_ClassicRegisters.Ps.LightmapFactorAndGamma, _frame[lightmap], _frame[lightmap + 1], _frame[lightmap + 2], 1.3f);
-        Vs(Engine_ClassicRegisters.Vs.LightmapFactorAndGamma, _frame[lightmap], _frame[lightmap + 1], _frame[lightmap + 2], 2.86f);
-        // `sub_821D1CA0` stores (O[4].xyz, 0): the w is zero, not the theme colour's 1.
-        Ps(Engine_ClassicRegisters.Ps.AmbientNormalMapDarkeningColour, _frame[darkening], _frame[darkening + 1], _frame[darkening + 2], 0f);
-
-        // g_ShadowRangeConstants: three literals and the theme's distant shadow factor
-        // (`sub_821B7128`).
-        float distant = theme ? _frame[Theme(ThemeDistantShadowFactor)] : 1f;
-        Ps(Engine_ClassicRegisters.Ps.ShadowRangeConstants, 20f, 35f, 2f, distant);
-        Refii.Level.Engine_ClassicVistaShadow.Pump(distant);
+        if (fable3)
+        {
+            Fable3Lighting(theme);
+        }
+        else
+        {
+            Fable2Lighting(theme);
+        }
 
         // g_TreeConstants as `sub_82222CE8` writes them (0x82222CE8..0x82222F64): c15 = (R+0x250,
         // 0.63, 0.72, 0.32), c16 = (0.012, 0.06, 0.4, canopy ? 0.035 : -1), c17 = (wind . R+0x180,
@@ -191,6 +191,107 @@ public static class Engine_ClassicFeed
         }
     }
 
+    /// <summary>
+    /// The lighting registers as Fable 2's passes write them (`sub_821B1A88`, `sub_821B16F8`,
+    /// `sub_821D1CA0`, `sub_821B7128`), from the frame block.
+    /// </summary>
+    private static void Fable2Lighting(bool theme)
+    {
+        int ambient = theme ? Theme(ThemeAmbientColour) : 0;
+        int lightmap = theme ? Theme(ThemeLightmapColour) : 8;
+        int darkening = theme ? Theme(ThemeDarkeningColour) : 12;
+
+        // Ambient, and the brightness lane every material ends `oC0 *= c20.w` with: for the main
+        // view `*(*(0x8349F848) + 0x41AC)` (`sub_82282320` -> `sub_821B1958`), the title's
+        // adaptive pre-exposure E (`sub_82191C18`). It is the GPU's value (the post chain's
+        // reduce pass), so the lane carries the marker the shaders' constant fetch replaces.
+        Ps(Engine_ClassicRegisters.Ps.GlobalAmbientAndBrightness, _frame[ambient], _frame[ambient + 1], _frame[ambient + 2], ExposureLane);
+        Vs(Engine_ClassicRegisters.Vs.GlobalAmbientAndBrightness, _frame[ambient], _frame[ambient + 1], _frame[ambient + 2], ExposureLane);
+
+        // The main light's travel direction, negated as the passes write it: toward the sun.
+        // Both directional lights of the rig carry it (`sub_821DF670`: +304 =
+        // normalize(-mainLightDir)), but `*(0x834A4D60)` is the first type-11 light in the
+        // registry, which is not always one of them — live it read (0, 1, 0) while the title's
+        // c23 held the sun's. The sun twin's own +304 ([136..138]) is the rig's.
+        int dir = _frame[136] * _frame[136] + _frame[137] * _frame[137] + _frame[138] * _frame[138] > 1e-6f ? 136 : 4;
+        float sx = -_frame[dir], sy = -_frame[dir + 1], sz = -_frame[dir + 2];
+        Ps(Engine_ClassicRegisters.Ps.NormalMapLightAngleConstants, sx, sy, sz, 4f);
+        Vs(Engine_ClassicRegisters.Vs.AmbientLightReferenceDirection, sx, sy, sz, 0f);
+
+        // The lightmap factor with each stage's gamma, and the normal-map darkening colour.
+        Ps(Engine_ClassicRegisters.Ps.LightmapFactorAndGamma, _frame[lightmap], _frame[lightmap + 1], _frame[lightmap + 2], 1.3f);
+        Vs(Engine_ClassicRegisters.Vs.LightmapFactorAndGamma, _frame[lightmap], _frame[lightmap + 1], _frame[lightmap + 2], 2.86f);
+        // `sub_821D1CA0` stores (O[4].xyz, 0): the w is zero, not the theme colour's 1.
+        Ps(Engine_ClassicRegisters.Ps.AmbientNormalMapDarkeningColour, _frame[darkening], _frame[darkening + 1], _frame[darkening + 2], 0f);
+
+        // g_ShadowRangeConstants: three literals and the theme's distant shadow factor
+        // (`sub_821B7128`).
+        float distant = theme ? _frame[Theme(ThemeDistantShadowFactor)] : 1f;
+        Ps(Engine_ClassicRegisters.Ps.ShadowRangeConstants, 20f, 35f, 2f, distant);
+        Refii.Level.Engine_ClassicVistaShadow.Pump(distant);
+    }
+
+    /// <summary>
+    /// The lighting registers as Fable 3's writers compose them, from the guest's lighting globals
+    /// that `sub_82274678` refreshes each frame from the scene's theme block T = scene+16
+    /// (0x822747C4 `lwz r11,0x14(r29)` / `addi r11,r11,0x10`): 0x83564BA0 = (1, 1, 1, 0)
+    /// (0x82274804), 0x83564BB0 = T+48 the darkening, 0x83564BC0 = T+64 the local ambient colour,
+    /// 0x8329D5E4 = T+92 the AO contrast (0x82274848), 0x835568B0 = 1 + flicker x T+100
+    /// (0x82274880). The rows are `sub_82259C38`'s unless stated.
+    /// </summary>
+    private static void Fable3Lighting(bool theme)
+    {
+        float[] f = _fable3Frame;
+
+        // VS c27 / PS c20 (`sub_82275250`, dword_832A4E50 = 27, dword_832A4E70 = 20): the ambient
+        // light's +208 times the local ambient colour (0x82259C74 `vmulfp128`), each of xyz through
+        // the CRT pow with 1.3 (`sub_821EF7C8`, f2 = dbl_820743B8); the w is the brightness
+        // `sub_822788C0` puts in after it, *(*0x8355F4E0 + 0x436C) on the main view (0x821B3340):
+        // the adaptive exposure, so the marker the shaders' constant fetch replaces.
+        float ar = MathF.Pow(f[0] * f[Fable3LocalAmbient], 1.3f);
+        float ag = MathF.Pow(f[1] * f[Fable3LocalAmbient + 1], 1.3f);
+        float ab = MathF.Pow(f[2] * f[Fable3LocalAmbient + 2], 1.3f);
+        Ps(Engine_ClassicRegisters.Ps.GlobalAmbientAndBrightness, ar, ag, ab, ExposureLane);
+        Vs(Engine_ClassicRegisters.Vs.GlobalAmbientAndBrightness, ar, ag, ab, ExposureLane);
+
+        // The ambient light's +304 negated: VS c19 all four lanes (0x82259E28 `vxor` with the sign
+        // mask), PS c23 (dword_832A4E90 = 23) its xyz with w = 4 (0x82259F68 `vsel`, 0x82259FE4
+        // `vperm` with 0x8206CB5C).
+        Ps(Engine_ClassicRegisters.Ps.NormalMapLightAngleConstants, -f[4], -f[5], -f[6], 4f);
+        Vs(Engine_ClassicRegisters.Vs.AmbientLightReferenceDirection, -f[4], -f[5], -f[6], -f[7]);
+
+        // 0x83564BA0 with each stage's w: VS c18 1 (0x82259D5C, 0x82065480), PS c21 1.3
+        // (0x82259DD4, 0x8206CA3C). PS c22 the darkening with w = 1 (0x82259E74, 0x832A4EB8).
+        Vs(Engine_ClassicRegisters.Vs.LightmapFactorAndGamma, f[8], f[9], f[10], 1f);
+        Ps(Engine_ClassicRegisters.Ps.LightmapFactorAndGamma, f[8], f[9], f[10], 1.3f);
+        Ps(Engine_ClassicRegisters.Ps.AmbientNormalMapDarkeningColour, f[12], f[13], f[14], 1f);
+
+        // PS c32 / c51 the AO contrast and flicker factor splat (0x82259ED0, 0x82259F3C `vspltw`);
+        // the repeated draw's VS c114 / c113 the same by binding 0x115 / 0x167 (0x8220162C,
+        // 0x8220163C), x only: `sub_822018E8` fills y..w from 0x83590CA4, zero.
+        float ao = f[Fable3AOContrast], flicker = f[Fable3Flicker];
+        Ps(Engine_ClassicRegisters.Ps.AOContrast, ao, ao, ao, ao);
+        Vs(Engine_ClassicRegisters.Vs.AOContrast, ao, 0f, 0f, 0f);
+        Ps(Engine_ClassicRegisters.Ps.LightmapFlickeringFactor, flicker, flicker, flicker, flicker);
+        Vs(Engine_ClassicRegisters.Vs.LightmapFlickeringFactor, flicker, 0f, 0f, 0f);
+
+        // PS c12 = VS c112 (`sub_822664B0` from the sun shadow pass, 0x822639A0): (20, 35, 2) x the
+        // shadow light's range scale (0x822664D4..0x822664E4) and scene+96, the theme's distant
+        // shadow factor (0x822664B4 `lfs f11,0x60(r3)`).
+        float scale = f[Fable3ShadowScale];
+        float distant = theme ? _frame[Theme(ThemeDistantShadowFactor)] : 1f;
+        Ps(Engine_ClassicRegisters.Ps.ShadowRangeConstants, 20f * scale, 35f * scale, 2f * scale, distant);
+        Vs(Engine_ClassicRegisters.Vs.ShadowRangeConstants, 20f * scale, 35f * scale, 2f * scale, distant);
+        Refii.Level.Engine_ClassicVistaShadow.Pump(distant);
+
+        // VS c28 g_CameraPixelOffset, added to every world VS's clip xy times w: `sub_821B2F40`
+        // writes the zero row (0x821B32C4..0x821B3304, 0x82001400) while the camera moves
+        // (`sub_82C5E4B0`) and the half-pixel offset only on alternate frames of a still camera
+        // (0x821B3294, dword_83556810 & 1): the jitter its temporal resolve (temporalaa_reproject,
+        // PS c128) accumulates, a pass this host does not run.
+        Vs(Engine_ClassicRegisters.Vs.CameraPixelOffset, 0f, 0f, 0f, 0f);
+    }
+
     /// <summary>The camera the frame is drawn from: the game's, or the editor's 3D view.</summary>
     private static Camera3D? ViewCamera()
     {
@@ -214,8 +315,10 @@ public static class Engine_ClassicFeed
     /// <summary>A recorded frame (148 floats as the native export lays them out) read instead of the bridge.</summary>
     public static float[]? Replay;
 
-    /// <summary>The raw frame as last read, for the debug channel's recorder.</summary>
-    public static float[] RawFrame => _frame;
+    /// <summary>The raw frame as last read, for the debug channel's recorder (Fable 3's with its tail).</summary>
+    public static float[] RawFrame => Fable3 ? _fable3Frame : _frame;
+
+    private static bool Fable3 => Refii.Core.Engine_Title.Active == Refii.Core.Engine_Title.Fable3;
 
     /// <summary>The lighting object's ambient (G+208), the particle draw's g_GlobalAmbient base.</summary>
     public static Vector3 GlobalAmbient => new(_frame[0], _frame[1], _frame[2]);
@@ -272,9 +375,14 @@ public static class Engine_ClassicFeed
             ? new Vector2(mask.X, mask.Y)
             : camera.GetViewport()?.GetVisibleRect().Size ?? new Vector2(1280f, 720f);
         PsView(view, Engine_ClassicRegisters.Ps.TileOffsetSize, 0f, 0f, 1f / MathF.Max(screen.X, 1f), 1f / MathF.Max(screen.Y, 1f));
+        // Fable 3's addressing of the same screen textures, PS c47 g_OneOverRenderTargetSize:
+        // (1 / Width, 1 / Height, 0, 0) of the drawn target's surface (`sub_82C7F130` 0x82C7F1B8,
+        // `sub_821EC290` desc +0x18 / +0x1C).
+        PsView(view, Engine_ClassicRegisters.Ps.OneOverRenderTargetSize, 1f / MathF.Max(screen.X, 1f), 1f / MathF.Max(screen.Y, 1f), 0f, 0f);
 
         // The particle draw's camera (`sub_821CA108`): position, and the view's right and
-        // up columns with w = 10, in the guest's axes.
+        // up columns with w = 10, in the guest's axes. Fable 3's (`sub_82C54220`, bindings 0x12A
+        // up / 0x128 right at 0x82C54590 / 0x82C545A0) carry w = 10 too (0x820E7004).
         Vector3 right = ToGuest(camera.GlobalBasis.X), up = ToGuest(camera.GlobalBasis.Y);
         VsView(view, Engine_ClassicRegisters.Vs.CameraPosition, eye.X, eye.Y, eye.Z, 1f);
         VsView(view, Engine_ClassicRegisters.Vs.CameraRightVector, right.X, right.Y, right.Z, 10f);

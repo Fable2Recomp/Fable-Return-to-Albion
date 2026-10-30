@@ -730,7 +730,7 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// when it serves one, else — with <paramref name="diskFallback"/> — from the data root on disk.
 	/// Null when neither reads. Any thread.
 	/// </summary>
-	private static Engine_BabelDatabase? ReadStrings(string dataRoot, bool diskFallback, out string source)
+	internal static Engine_BabelDatabase? ReadStrings(string dataRoot, bool diskFallback, out string source)
 	{
 		source = string.Empty;
 		byte[]? mountBytes = null;
