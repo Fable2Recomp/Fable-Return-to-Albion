@@ -18,6 +18,13 @@ include_guard(GLOBAL)
 
 # Copies `sources` under `destination`/`subdir`, by their path relative to `source_root`/src, and
 # writes `destination`/`list_file` as `set(<variable> ...)`.
+#
+# A HEADER LISTED AMONG THE TARGET'S SOURCES IS STAGED TOO, beside them, and left out of the
+# list: the player's build compiles the staged copies, so a header a hook includes by its own
+# name (`#include "gui_statements.h"`) exists there only if it is shipped. Fable 3's hooks
+# shipped without theirs and the launcher's build failed on the player's machine with a header
+# the dev build had always found in the tree. The build-time gate
+# (refii_check_staged_includes.cmake) now fails the export on any such include.
 function(_refii_stage_source_list sources destination subdir source_root list_file variable)
     file(REMOVE_RECURSE "${destination}/${subdir}")
     set(_staged "")
@@ -26,7 +33,11 @@ function(_refii_stage_source_list sources destination subdir source_root list_fi
         if(NOT IS_ABSOLUTE "${_source}")
             continue()
         endif()
-        if(NOT _source MATCHES "\\.(cpp|cc|c)$")
+        if(_source MATCHES "\\.(h|hh|hpp|inl)$")
+            set(_compiled FALSE)
+        elseif(_source MATCHES "\\.(cpp|cc|c)$")
+            set(_compiled TRUE)
+        else()
             continue()
         endif()
         if(NOT EXISTS "${_source}")
@@ -41,7 +52,9 @@ function(_refii_stage_source_list sources destination subdir source_root list_fi
         endif()
 
         configure_file("${_source}" "${destination}/${subdir}/${_relative}" COPYONLY)
-        list(APPEND _staged "\${CMAKE_CURRENT_LIST_DIR}/${subdir}/${_relative}")
+        if(_compiled)
+            list(APPEND _staged "\${CMAKE_CURRENT_LIST_DIR}/${subdir}/${_relative}")
+        endif()
     endforeach()
 
     list(LENGTH _staged _count)

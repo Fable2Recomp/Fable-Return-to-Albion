@@ -288,6 +288,24 @@ public static class Engine_UiItemStats
 		return code;
 	}
 
+	/// <summary>
+	/// A definition's augment slots and how many are filled — `NumberOfSlots` against the instance
+	/// pairs (else `InitialAugmentations`), the test `sub_826CA298` makes before it attaches.
+	/// (0, 0) for an item with no `AugmentableComponent`.
+	/// </summary>
+	public static (int Slots, int Filled) AugmentSlotUse(uint definition, IReadOnlyList<(uint Primary, uint Secondary)>? socketed)
+	{
+		GdbMulti? multi = Engine_GameGdb.Database;
+		if (multi is null || definition == 0u || !multi.TryLookup(definition, out GdbCursor at) ||
+			!Engine_AbilityRecords.TryRef(multi, at, AugmentableComponent, out GdbCursor augmentable))
+		{
+			return (0, 0);
+		}
+
+		int slots = Engine_AbilityRecords.IntOrEnumOn(augmentable, "NumberOfSlots");
+		return (slots, (socketed ?? Seeded(multi, augmentable)).Count);
+	}
+
 	/// <summary>The decoder's pip strip holds five; a sixth digit would land past its divisor.</summary>
 	private const int MaxPipSlots = 5;
 

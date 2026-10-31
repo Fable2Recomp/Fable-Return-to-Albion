@@ -71,6 +71,28 @@ public static class Fable2UiVerbs
 				return Engine_UiCommandResult.Done;
 			}
 
+			// An augment is CHOSEN the same way: the press opens the target list.
+			if (action.StartsWith(Engine_UiAugmentFlow.SelectAction, System.StringComparison.Ordinal))
+			{
+				if (uint.TryParse(action[Engine_UiAugmentFlow.SelectAction.Length..], out uint augment))
+				{
+					Engine_UiAugmentFlow.Begin(augment);
+				}
+
+				return Engine_UiCommandResult.Done;
+			}
+
+			// The attach itself goes to the pump; the names are kept now for its verdict's
+			// message, since a successful attach consumes the augment.
+			if (action.StartsWith(Engine_UiAugmentFlow.ApplyAction, System.StringComparison.Ordinal))
+			{
+				string[] pair = action[Engine_UiAugmentFlow.ApplyAction.Length..].Split(':');
+				if (pair.Length == 2 && uint.TryParse(pair[0], out uint augment) && uint.TryParse(pair[1], out uint target))
+				{
+					Engine_UiAugmentFlow.Names = (Engine_UiInventorySource.LabelFor(augment), Engine_UiInventorySource.LabelFor(target));
+				}
+			}
+
 			// A joiner's weapon pick changes the record; the host equips it. The id is decimal.
 			const string equip = Engine_UiInventorySource.InventoryAction + "equip:";
 			if (CoopSession.IsClient && action.StartsWith(equip, System.StringComparison.Ordinal) &&

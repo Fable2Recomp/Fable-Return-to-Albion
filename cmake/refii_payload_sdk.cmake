@@ -149,6 +149,12 @@ function(refii_stage_payload_sdk)
             -DSOURCE_ROOT=${CMAKE_SOURCE_DIR}
             -DGENERATED_ROOT=${CMAKE_SOURCE_DIR}/generated
             -P "${CMAKE_SOURCE_DIR}/cmake/refii_stage_payload_includes.cmake"
+        # THE GATE: everything staged above compiles by include, for every title, or the build
+        # fails here rather than in the launcher on a player's machine.
+        COMMAND ${CMAKE_COMMAND}
+            -DDESTINATION=${_sdk_dir}
+            -DGENERATED_ROOT=${CMAKE_SOURCE_DIR}/generated
+            -P "${CMAKE_SOURCE_DIR}/cmake/refii_check_staged_includes.cmake"
     )
 
     add_custom_target(refii_payload_sdk ALL

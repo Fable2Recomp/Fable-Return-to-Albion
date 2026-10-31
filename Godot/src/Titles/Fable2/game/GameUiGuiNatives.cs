@@ -266,6 +266,24 @@ public partial class GameUi
 			_boxes.InfoBoxEx(
 				call.Argument(0).Text, call.Argument(1).Number, Localise(call, 2)));
 
+		// `@Augment.Result(ok, augment, target)` — the pump's verdict on an attach
+		// (DispatchAugment: `sub_826CA298` itself). The message is the one the guest's handler
+		// raises: `GUI_SCREEN_AUGMENT_APPLIED` with %1 the augment and %2 the weapon, or
+		// `GUI_SCREEN_AUGMENT_FAILED_FULL` with %1 the weapon (0x826d20b0..0x826d21e4). The held
+		// list is put away either way; the items list stands again.
+		_guiNatives.Register("@Augment.Result", call =>
+		{
+			bool ok = call.Argument(0).Boolean;
+			(string augment, string target) = Engine_UiAugmentFlow.Names;
+			string text = ok
+				? Engine_UiGuiText.Substitute(Engine_UiGuiText.Resolve("GUI_SCREEN_AUGMENT_APPLIED", _presentation?.Strings), new[] { augment, target })
+				: Engine_UiGuiText.Substitute(Engine_UiGuiText.Resolve("GUI_SCREEN_AUGMENT_FAILED_FULL", _presentation?.Strings), new[] { target });
+			_boxes.InfoBoxEx("AugmentResult", 6f, text);
+			Engine_UiAugmentFlow.End();
+			_screenMenu?.FollowDyeFlow();
+			_screenMenuView?.Refresh();
+		});
+
 		_guiNatives.Register("RemoveDisplayBox", call =>
 			_boxes.Remove(call.Argument(0).Text));
 

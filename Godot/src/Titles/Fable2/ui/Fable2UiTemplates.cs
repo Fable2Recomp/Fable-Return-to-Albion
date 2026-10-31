@@ -289,6 +289,15 @@ public static class Fable2UiTemplates
 		// TEMPLATE RECORD rather than a special case in the list builder, so any other row on any
 		// other guest menu can be dropped the same way — and put back, from
 		// `user://ui/templates.json`, without a rebuild.
+		// THE AUGMENT LIST IS THE HELD AUGMENT'S TARGETS. Its table authors no rows: every row is
+		// a carried item with a free augment slot (`Engine_UiInventorySource.AugmentTargets`), and
+		// the screen takes the title the guest's own mode gives it (`sub_826D1800` case 83).
+		if (menus.TryGetValue(Engine_UiAugmentFlow.MenuScript, out Engine_UiMenuTemplate? augments))
+		{
+			augments.Title = "GUI_SCREEN_TITLE_AUGMENT";
+			augments.Source = $"{Engine_UiInventorySource.SourceName}:{Engine_UiInventorySource.AugmentOperation}";
+		}
+
 		// THE DYE LIST'S CHILDREN ARE THE HERO'S CLOTHES. The population table authors the seven
 		// category rows; `sub_829B2168` fills them from the inventory (categories 17..24, worn or
 		// not) and adds `Dye Hero Hair` with the hair, beard and moustache that are on.
@@ -808,7 +817,8 @@ public static class Fable2UiTemplates
 						Engine_UiInventorySource.Category.Gifts),
 					ItemCategory("Trophies", CategoryTag + "TROPHIES", "use",
 						Engine_UiInventorySource.Category.Trophies),
-					ItemCategory("Augmentations", CategoryTag + "AUGMENTATIONS", "use",
+					// An augment is CHOSEN, not used: the press holds it and the screen lists its targets.
+					ItemCategory("Augmentations", CategoryTag + "AUGMENTATIONS", "augmentselect",
 						Engine_UiInventorySource.Category.Augmentations),
 					ItemCategory("Dyes", CategoryTag + "DYES", "dyeselect",
 						Engine_UiInventorySource.Category.Dyes),

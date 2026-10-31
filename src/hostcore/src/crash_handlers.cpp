@@ -148,7 +148,13 @@ void ResolvePath() {
     std::filesystem::path dir = ec ? std::filesystem::current_path(ec) : exe.parent_path();
 #endif
     std::filesystem::create_directories(dir / "logs", ec);
-    const std::string path = (dir / "logs" / "refii_crash.log").string();
+    // Named by the title's config file (refii / refiii), so two titles' crashes do not interleave
+    // in one record; refii's when the host stated none.
+    std::string stem = RefiiGetConfigPath().stem().string();
+    if (stem.empty()) {
+        stem = "refii";
+    }
+    const std::string path = (dir / "logs" / (stem + "_crash.log")).string();
     std::snprintf(g_path, sizeof(g_path), "%s", path.c_str());
 }
 

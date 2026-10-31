@@ -62,6 +62,14 @@ public sealed class LaunchController
         string executablePath = Installer.GetInstalledExecutablePath();
         List<string> arguments = _patches.GetPatchLaunchArguments();
 
+        // The game's Godot log, per title and beside its guest logs (logs/godot_refii.log,
+        // logs/godot_refiii.log): the engine flag goes first, ahead of any `--` the patch
+        // arguments carry.
+        string logs = System.IO.Path.Combine(Installer.GetInstallBasePath(), "logs");
+        try { System.IO.Directory.CreateDirectory(logs); } catch (System.Exception) { }
+        arguments.Insert(0, System.IO.Path.Combine(logs, $"godot_{Refii.Core.Engine_Title.Active.Key}.log"));
+        arguments.Insert(0, "--log-file");
+
         if (!Platform.LaunchProcess(
                 Installer.GetInstallBasePath(),
                 executablePath,

@@ -204,6 +204,11 @@ public static class Engine_UiInventorySource
 			return DyeTargets(argument, wanted, records);
 		}
 
+		if (operation == AugmentOperation)
+		{
+			return AugmentTargets(records);
+		}
+
 		// GROUPED ONLY WHEN THE REQUEST SPANS MORE THAN ONE GROUP. A screen that authors its own
 		// category rows asks for one group each — `KeyItems` is eight category integers but a
 		// single group — and must not get a second header nested inside the row it already has.
@@ -540,6 +545,83 @@ public static class Engine_UiInventorySource
 
 	/// <summary>The dye list's operation: rows are what the held dye can go on.</summary>
 	public const string DyeOperation = "dye";
+
+	/// <summary>The augment list's operation: rows are what the held augment can go on.</summary>
+	public const string AugmentOperation = "augment";
+
+	/// <summary>
+	/// THE AUGMENT LIST: every carried item whose definition has an `AugmentableComponent` with a
+	/// slot still free — the test `sub_826CA298` applies before it attaches (`NumberOfSlots`
+	/// against the instance record's pairs, seeded from `InitialAugmentations`). The guest's own
+	/// list is its weapons; the slot test is the authority, so an augmentable accessory lists too.
+	/// A row's pips are its slot code, filled and empty, as the weapons screen draws them.
+	/// </summary>
+	private static IReadOnlyList<Engine_UiMenuSources.Row> AugmentTargets(List<Fable2Bridge.InventoryRecord> records)
+	{
+		uint augment = Engine_UiAugmentFlow.Augment;
+		if (augment == 0u)
+		{
+			return None;
+		}
+
+		var rows = new List<Engine_UiMenuSources.Row>();
+		var seen = new HashSet<uint>();
+		int full = 0;
+		foreach (Fable2Bridge.InventoryRecord record in records)
+		{
+			if (!seen.Add(record.RecordId) || !Listable(record, asked: true))
+			{
+				continue;
+			}
+
+			IReadOnlyList<(uint Primary, uint Secondary)> socketed = Fable2Bridge.GetItemAugments(record.RecordId);
+			(int slots, int filled) = Engine_UiItemStats.AugmentSlotUse(record.RecordId, socketed);
+			if (slots <= 0)
+			{
+				continue;
+			}
+
+			if (filled >= slots)
+			{
+				++full;
+				continue;
+			}
+
+			string tag = NameTagOf(record);
+			rows.Add(new Engine_UiMenuSources.Row(
+				Name: $"{(tag.Length != 0 ? tag : $"Item:{record.RecordId:X8}")}:augment",
+				Label: LabelOf(record, tag),
+				Icon: IconOf(record),
+				EventType: 0,
+				Id: record.RecordId,
+				Rating: Engine_UiItemStats.AugmentSlotCode(record.RecordId, socketed),
+				Committable: false,
+				Ghosted: false,
+				Command: $"{InventoryAction}{AugmentOperation}:{augment}:{record.RecordId}",
+				Group: string.Empty,
+				GroupTag: string.Empty,
+				IsHeader: false,
+				Emphasised: false,
+				Counted: true));
+		}
+
+		Say(AugmentOperation, $"{rows.Count} target row(s) for augment 0x{augment:X8}, {full} full");
+		return rows;
+	}
+
+	/// <summary>A carried item's label by record, as its row shows it; the hex id when it is not carried.</summary>
+	public static string LabelFor(uint recordId)
+	{
+		foreach (Fable2Bridge.InventoryRecord record in Fable2Bridge.GetHeroInventory())
+		{
+			if (record.RecordId == recordId)
+			{
+				return LabelOf(record, NameTagOf(record));
+			}
+		}
+
+		return $"0x{recordId:X8}";
+	}
 
 	private static readonly uint AppearanceComponentField =
 		Engine_GameHash.Fnv1("AppearanceModifierComponent");

@@ -2410,7 +2410,7 @@ public partial class GameUi : Node, IGameTitleUi
 			//
 			// Refresh on the PRESS, not the next sample: a host-owned fold changes the visible
 			// list immediately and the sampling path runs only a few times a second.
-			bool dyeHeld = Engine_UiDyeFlow.Active;
+			bool held = Engine_UiDyeFlow.Active || Engine_UiAugmentFlow.Active;
 
 			// The shared A arm (`sub_826D58F0`) plays the select cue below the root
 			// (`SE_GUI_MENU_BOX_SELECT` 0x826D59B0, skipped when `IsHighlightedItemAtRoot`);
@@ -2423,7 +2423,7 @@ public partial class GameUi : Node, IGameTitleUi
 					Cue(frontEnd: false, "select");
 				}
 
-				if (Engine_UiDyeFlow.Active != dyeHeld)
+				if ((Engine_UiDyeFlow.Active || Engine_UiAugmentFlow.Active) != held)
 				{
 					pressed.FollowDyeFlow();
 				}
@@ -2477,11 +2477,12 @@ public partial class GameUi : Node, IGameTitleUi
 				return true;
 			}
 
-			// B at the top of the dye list puts the dye away and returns to the items; the
-			// guest's screen never left them.
-			if (Engine_UiDyeFlow.Active)
+			// B at the top of a held list (a dye's, an augment's) puts it away and returns to the
+			// items; the guest's screen never left them.
+			if (Engine_UiDyeFlow.Active || Engine_UiAugmentFlow.Active)
 			{
 				Engine_UiDyeFlow.End();
+				Engine_UiAugmentFlow.End();
 				_screenMenu?.FollowDyeFlow();
 				_screenMenuView?.Refresh();
 				return true;

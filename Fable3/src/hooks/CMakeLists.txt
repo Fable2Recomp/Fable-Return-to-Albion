@@ -21,6 +21,10 @@ set(REFIII_HOOK_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/gui_element_hooks.cpp
     # The display boxes and the menu box, stated as the box manager shows and drops them.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/display_box_hooks.cpp
+    # What the UI hooks share (the guest's two string classes, the statement post). Listed with
+    # the sources so the staging ships it beside them: the player's build compiles the staged
+    # copies, and a header only in the tree is not there.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/gui_statements.h
 )
 
 add_library(refiii_hooks OBJECT ${REFIII_HOOK_SOURCES})

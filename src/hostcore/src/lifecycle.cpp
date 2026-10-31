@@ -468,6 +468,11 @@ REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const 
             owned.push_back(argument);
         }
         owned.push_back("--game_data_root=" + directory.string());
+        // The title's config file names its logs: refii.toml -> refii_NNN.log, refiii.toml ->
+        // refiii_NNN.log, in the one logs folder both titles share.
+        if (const std::string stem = RefiiGetConfigPath().stem().string(); !stem.empty()) {
+            owned.push_back("--log_prefix=" + stem);
+        }
 
         std::vector<char*> argv;
         argv.reserve(owned.size());

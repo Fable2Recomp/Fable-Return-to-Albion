@@ -172,6 +172,13 @@ public static class Engine_UiGameTemplates
         }
       ]
     },
+    "AugmentMenu": {
+      "highlight": "",
+      "title": "GUI_SCREEN_TITLE_AUGMENT",
+      "source": "inventory:augment",
+      "rowCommand": "",
+      "entries": []
+    },
     "DyeMenu": {
       "highlight": "",
       "title": "",
@@ -501,7 +508,7 @@ public static class Engine_UiGameTemplates
         {
           "name": "Augmentations",
           "tag": "GUI_SCREEN_INVENTORY_CATEGORIES_AUGMENTATIONS",
-          "source": "inventory:use:7",
+          "source": "inventory:augmentselect:7",
           "icon": "Art\\GUI\\WheelIcons\\icon_world_map.tga",
           "eventType": 301
         },

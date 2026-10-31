@@ -338,7 +338,10 @@ std::filesystem::path metadata_dir;
   auto log_config = rex::BuildLogConfig(log_file_cvar.empty() ? nullptr : log_file_cvar.c_str(),
                                         log_level_str, category_levels);
   if (log_file_cvar.empty()) {
-    log_config.app_name = std::string(GetName());
+    // The title's own prefix when the host states one (refii / refiii), else the app's name:
+    // both titles run from one app and one logs folder.
+    const std::string log_prefix = REXCVAR_GET(log_prefix);
+    log_config.app_name = log_prefix.empty() ? std::string(GetName()) : log_prefix;
     log_config.log_dir = (exe_dir / "logs").string();
   }
 

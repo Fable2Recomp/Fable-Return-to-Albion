@@ -69,7 +69,14 @@ if(EXISTS "${PROJECT_DIR}/tests/Refii.Tests/Refii.Tests.csproj")
             "dotnet was not found, so the unit tests that gate a package cannot run.")
     endif()
 
-    message(STATUS "Running the unit tests before the export")
+    # The suites that need a Godot runtime (GdUnit4's [RequireGodotRuntime]) take it from GODOT_BIN,
+    # and without one GdUnit4 refuses the WHOLE run. The export has already resolved the Godot it
+    # exports with, so that is the runtime the tests get unless the environment named another.
+    if(NOT DEFINED ENV{GODOT_BIN} OR "$ENV{GODOT_BIN}" STREQUAL "")
+        set(ENV{GODOT_BIN} "${GODOT}")
+    endif()
+
+    message(STATUS "Running the unit tests before the export (GODOT_BIN=$ENV{GODOT_BIN})")
     execute_process(
         COMMAND "${_refii_dotnet}" test "${PROJECT_DIR}/tests/Refii.Tests/Refii.Tests.csproj"
                 -c Debug -p:IsTesting=true -p:REFII_NO_TESTS=1

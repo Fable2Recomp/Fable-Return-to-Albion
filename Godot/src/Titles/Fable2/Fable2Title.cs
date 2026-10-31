@@ -170,23 +170,29 @@ public sealed class Fable2Title : Engine_TitleGame
 
 	public override Refii.Ui.Engine_UiPopulationTable? PopulationTable(string script) => Engine_UiMenuPopulation.For(script);
 
-	public override string? HeldMenuScript => Engine_UiDyeFlow.Active ? Engine_UiDyeFlow.MenuScript : null;
+	public override string? HeldMenuScript =>
+		Engine_UiDyeFlow.Active ? Engine_UiDyeFlow.MenuScript
+		: Engine_UiAugmentFlow.Active ? Engine_UiAugmentFlow.MenuScript
+		: null;
 
 	public override string? OverrideMenuScript(uint screenId)
 	{
-		if (!Engine_UiDyeFlow.Active)
+		string? held = HeldMenuScript;
+		if (held is null)
 		{
 			return null;
 		}
 
+		// Both held lists live on the items screen.
 		if (screenId == Engine_UiDyeFlow.ItemsScreen)
 		{
-			return Engine_UiDyeFlow.MenuScript;
+			return held;
 		}
 
 		if (screenId != 0)
 		{
 			Engine_UiDyeFlow.End();
+			Engine_UiAugmentFlow.End();
 		}
 
 		return null;

@@ -62,6 +62,7 @@
 #include "gui/gui_display_box.h"
 #include "hooks/ppc_externs.h"
 #include "gui/gui_told_statements.h"
+#include "core/gui_native_calls.h"
 #include "core/guest_build.h"
 
 // The New Game commit. NOT hooked — the guest's own function is called, so this is the plain
@@ -2660,9 +2661,133 @@ void TryOnMannequin(PPCContext& ctx, uint8_t* base, const PPCContext& saved, uin
               "{} owned piece(s) put on", mannequin, record, put, owned);
 }
 
+/// `Inventory:augment:<augment record>:<target record>` — the items screen's own attach, without
+/// the screen. `sub_826D1800` case 85 (event InventoryItemApplyAugment) calls
+/// `sub_826CA298(inv, &augment, &target)` on two item refs the screen cached: +380 the augment
+/// its case 83 looked up from the pushed id, +396 the highlighted weapon. The function itself
+/// (decompiled): the target's definition must carry an `AugmentableComponent` with
+/// `NumberOfSlots` above the pairs its type-1 extra record holds (created from
+/// `InitialAugmentations` if absent, `sub_823A1FA0`), each of the augment's `PrimaryType` /
+/// `SecondaryType` pairs is appended (`sub_824C9DF0`), and `sub_826CB908` removes one unit of
+/// the augment from the player's own component 13 (`sub_824F12A0`; its first argument is
+/// unused). It returns 1 on success, 0 when the target is full or either ref is empty.
+///
+/// The refs are built as the dye flow builds its own — `sub_824F1C90(ref, inventory, hash)`
+/// registers them on the item. On success the augment item is GONE and the guest's handler
+/// only zeroes its ref (0x826d2090..a8), so that ref is zeroed here too, never released; the
+/// target's is released as the dye flow releases its own. The verdict goes back to Godot as
+/// `@Augment.Result(ok, augment, target)` on the UI cut's queue: the message the guest's handler
+/// would raise (`GUI_SCREEN_AUGMENT_APPLIED` / `_FAILED_FULL`) is the host's to show.
+bool DispatchAugment(PPCContext& ctx, uint8_t* base, const std::string& arguments) {
+  unsigned long values[2] = {0ul, 0ul};
+  const char* cursor = arguments.c_str();
+  for (unsigned long& value : values) {
+    char* end = nullptr;
+    value = std::strtoul(cursor, &end, 10);
+    if (end == cursor) {
+      REXLOG_INFO("Refii guest-tick pump: 'Inventory:augment:{}' is not augment:target — dropped",
+                  arguments);
+      return true;
+    }
+    cursor = *end == ':' ? end + 1 : end;
+  }
+
+  const uint32_t augment_hash = static_cast<uint32_t>(values[0]);
+  const uint32_t target_hash = static_cast<uint32_t>(values[1]);
+
+  const auto verdict = [&](bool ok) {
+    refii::vfs::GuiNativeCall call;
+    call.name = "@Augment.Result";
+    refii::vfs::GuiNativeArgument flag;
+    flag.kind = refii::vfs::GuiNativeArgument::Kind::kBoolean;
+    flag.boolean = ok;
+    call.arguments.push_back(flag);
+    for (uint32_t hash : {augment_hash, target_hash}) {
+      refii::vfs::GuiNativeArgument text;
+      text.kind = refii::vfs::GuiNativeArgument::Kind::kString;
+      char hex[16];
+      std::snprintf(hex, sizeof(hex), "%08X", hash);
+      text.text = hex;
+      call.arguments.push_back(text);
+    }
+    refii::vfs::PostGuiNativeCall(std::move(call));
+  };
+
+  const uint32_t hero = HeroEntity(base);
+  const uint32_t inventory = hero != 0u ? HeroComponent(base, hero, 13u) : 0u;
+  PPCFunc* find = FindGuestFunction(refii::guest::Address(0x824F1C90u));
+  PPCFunc* release = FindGuestFunction(refii::guest::Address(0x82764DC0u));
+  PPCFunc* apply = FindGuestFunction(refii::guest::Address(0x826CA298u));
+  if (inventory == 0u || find == nullptr || release == nullptr || apply == nullptr) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:augment — no hero component 13, or the attach "
+                "calls are not callable here (hero 0x{:08X})", hero);
+    verdict(false);
+    return true;
+  }
+
+  const PPCContext saved = ctx;
+  const uint32_t frame = (ctx.r1.u32 - 0x200u) & ~0xFu;
+  const uint32_t augment_ref = frame + 0x20u;
+  const uint32_t target_ref = frame + 0x40u;
+  for (uint32_t word = 0; word < 4u; ++word) {
+    StoreGuestU32(base, augment_ref + (word * 4u), 0u);
+    StoreGuestU32(base, target_ref + (word * 4u), 0u);
+  }
+
+  const auto call = [&](PPCFunc* function, uint32_t r3, uint32_t r4, uint32_t r5) -> uint32_t {
+    ctx = saved;
+    ctx.r1.u32 = frame;
+    ctx.r3.u32 = r3;
+    ctx.r4.u32 = r4;
+    ctx.r5.u32 = r5;
+    function(ctx, base);
+    const uint32_t result = ctx.r3.u32;
+    ctx = saved;
+    return result;
+  };
+  const auto drop = [&](uint32_t ref) {
+    if (const uint32_t item = LoadGuestU32(base, ref); item != 0u) {
+      call(release, item, ref, 0u);
+    }
+  };
+
+  call(find, augment_ref, inventory, augment_hash);
+  if (LoadGuestU32(base, augment_ref) == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:augment — augment 0x{:08X} is not in the "
+                "hero's inventory", augment_hash);
+    verdict(false);
+    return true;
+  }
+  call(find, target_ref, inventory, target_hash);
+  if (LoadGuestU32(base, target_ref) == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:augment — target 0x{:08X} is not in the "
+                "hero's inventory", target_hash);
+    drop(augment_ref);
+    verdict(false);
+    return true;
+  }
+
+  const bool ok = (call(apply, inventory, augment_ref, target_ref) & 0xFFu) != 0u;
+  REXLOG_INFO("Refii guest-tick pump: Inventory:augment — {} augment 0x{:08X} onto 0x{:08X} "
+              "(sub_826CA298)", ok ? "attached" : "REFUSED", augment_hash, target_hash);
+  if (ok) {
+    for (uint32_t word = 0; word < 4u; ++word) {
+      StoreGuestU32(base, augment_ref + (word * 4u), 0u);
+    }
+  } else {
+    drop(augment_ref);
+  }
+  drop(target_ref);
+  verdict(ok);
+  return true;
+}
+
 bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& body) {
   if (body.rfind("dye:", 0) == 0) {
     return DispatchDye(ctx, base, body.substr(4));
+  }
+  if (body.rfind("augment:", 0) == 0) {
+    return DispatchAugment(ctx, base, body.substr(8));
   }
 
   const std::size_t colon = body.rfind(':');

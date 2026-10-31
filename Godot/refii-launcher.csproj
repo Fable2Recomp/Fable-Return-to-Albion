@@ -139,9 +139,20 @@
        output folders and without the export's runtime identifier, while the publish is still in
        flight. The export then finishes with no .NET assemblies embedded and the game stops at
        ".NET assemblies not found". The gate belongs to the editor/dev build. -->
+  <!-- The Godot runtime the tests marked [RequireGodotRuntime] run in: GODOT_BIN from the
+       environment, else the pinned editor the build fetches into tools/godot
+       (cmake/refii_fetch_godot.cmake). Without one GdUnit4 refuses the whole run. -->
+  <ItemGroup>
+    <RefiiPinnedGodot Include="$(MSBuildThisFileDirectory)../tools/godot/Godot_v*_mono_linux.x86_64" />
+  </ItemGroup>
   <Target Name="RunTestsAfterBuild" AfterTargets="Build" Condition="'$(REFII_NO_TESTS)' != '1' and '$(IsTesting)' != 'true' and '$(Configuration)' != 'ExportDebug' and '$(Configuration)' != 'ExportRelease'">
-    <Message Importance="high" Text="================= [RUNNING UNIT TESTS] =================" />
+    <PropertyGroup>
+      <RefiiGodotBin Condition="'$(GODOT_BIN)' != ''">$(GODOT_BIN)</RefiiGodotBin>
+      <RefiiGodotBin Condition="'$(RefiiGodotBin)' == ''">@(RefiiPinnedGodot->'%(FullPath)')</RefiiGodotBin>
+    </PropertyGroup>
+    <Message Importance="high" Text="================= [RUNNING UNIT TESTS] (GODOT_BIN=$(RefiiGodotBin)) =================" />
     <Exec Command="dotnet test &quot;$(MSBuildThisFileDirectory)tests\Refii.Tests\Refii.Tests.csproj&quot; -c $(Configuration) -p:IsTesting=true -p:REFII_NO_TESTS=1 --logger &quot;console;verbosity=minimal&quot;"
+          EnvironmentVariables="GODOT_BIN=$(RefiiGodotBin)"
           StandardOutputImportance="High"
           StandardErrorImportance="High" />
     <Message Importance="high" Text="========================================================" />
