@@ -10,8 +10,9 @@ namespace Refii.Launcher.Core;
 /// later change to one of them reads back as "custom". Android only (<see cref="Offered"/>).
 /// </summary>
 /// <remarks>
-/// Quality (stored "android") is the phone's default; Performance (stored "android_low") gives
-/// up more to hold 30 FPS once the phone has throttled fully. They were measured on a Galaxy S25+
+/// Balanced (stored "android") is the phone's default; Performance (stored "android_low") gives
+/// up more to hold 30 FPS once the phone has throttled fully, and Quality (stored "android_high")
+/// gives up less, for a phone with headroom at the 30 FPS cap. They were measured on a Galaxy S25+
 /// and a Galaxy S10e in Bowerstone Market, where the phone is held at a fraction of its GPU clock by its own heat,
 /// so every setting is a trade of picture against sustained frame rate (docs/android.md, "Android
 /// graphics preset"). The stored names predate the labels and stay, so existing phones keep their
@@ -38,14 +39,19 @@ public static class GraphicsPresets
     /// young budget and high-load threshold, compacts the large object heap after a load, collapses
     /// constant animation tracks and prepares effect textures on the prefetch thread. 8: Quality
     /// takes those four and the prime core too. 9: both thin the distant trees (tree_card_lod),
-    /// which the launcher had been writing off on every phone.</remarks>
-    public const int Revision = 9;
+    /// which the launcher had been writing off on every phone. Revisions 1-9 call Balanced by its
+    /// earlier label, Quality; the Quality preset after them is a new one, so no phone was on it.
+    /// 10: Quality renders at 60% instead of 67%.</remarks>
+    public const int Revision = 10;
 
-    /// <summary>Quality: the phone's default picture.</summary>
-    public const string Quality = "android";
+    /// <summary>Balanced: the phone's default picture.</summary>
+    public const string Balanced = "android";
 
-    /// <summary>Performance: Quality with the compromises a fully throttled phone needs for 30 FPS.</summary>
+    /// <summary>Performance: Balanced with the compromises a fully throttled phone needs for 30 FPS.</summary>
     public const string Performance = "android_low";
+
+    /// <summary>Quality: Balanced with fewer compromises, for a phone with headroom at 30 FPS.</summary>
+    public const string Quality = "android_high";
 
     /// <summary>Whether this platform offers the presets: Android. Tests stand in for a phone with it.</summary>
     public static bool Offered { get; set; } = Refii.Core.Engine_Platform.IsAndroid;
@@ -61,8 +67,8 @@ public static class GraphicsPresets
     /// a cap of 60 still reads as Performance, and switching preset keeps the player's cap.</remarks>
     public const string AndroidFrameCap = "30";
 
-    /// <summary>The Quality preset's values, in refii.toml spelling.</summary>
-    public static readonly IReadOnlyDictionary<string, string> QualityValues =
+    /// <summary>The Balanced preset's values, in refii.toml spelling.</summary>
+    public static readonly IReadOnlyDictionary<string, string> BalancedValues =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
             // The world at half the screen's resolution; menus and text stay sharp.
@@ -79,8 +85,9 @@ public static class GraphicsPresets
             ["sun_shadows"] = "false",
             ["sun_shadow_distance"] = "80",
             ["sun_shadow_reach_scale"] = "0.5",
-            // Placed lights as the shipped data: Performance's light range (45 m) and Balanced's
-            // shadow range (30 m), and shadows only from the few spot lights marked to cast.
+            // Placed lights as the shipped data: the lighting presets' Performance light range
+            // (45 m) and Balanced shadow range (30 m), and shadows only from the few spot lights
+            // marked to cast.
             // The nearest 24 placed lights lit at once; the far lamps fade out until near. 16
             // already darkened lit shop windows across the Bowerstone square at dusk.
             ["placed_light_limit"] = "24",
@@ -88,8 +95,8 @@ public static class GraphicsPresets
             ["placed_light_range"] = "45.0",
             ["placed_shadow_range"] = "30.0",
             // The rest are the same picture for less work, measured at the Bowerstone Market archway
-            // in daylight on both phones (relaunch-paired, GPU work in Mcycles a frame); kept in
-            // Quality wherever the S25+ showed no difference, for the phones built like the S10e.
+            // at night (00:50) on both phones (relaunch-paired, GPU work in Mcycles a frame); kept in
+            // Balanced wherever the S25+ showed no difference, for the phones built like the S10e.
             // The 10-bit colour buffer: half the bandwidth. S25+ 16.3 -> 15.2 / 15.0 (-7%); an
             // Adreno 640 6%.
             ["hdr_2d"] = "false",
@@ -112,7 +119,7 @@ public static class GraphicsPresets
             // pipeline cache went from worst frames 36.5 / 23.9 ms, p99 25.0 / 21.4, to 21.8 / 21.1,
             // p99 20.8 / 20.0.
             ["stable_light_counts"] = "true",
-            // Lite builds without Godot's shadow sampling while no shadow map renders: Quality's
+            // Lite builds without Godot's shadow sampling while no shadow map renders: Balanced's
             // sun shadow renders wherever the theme casts one, so only Performance takes it.
             ["lite_shadowless"] = "false",
             // Static props' lite surfaces on a build per bake mode: nothing on the S10e.
@@ -154,8 +161,8 @@ public static class GraphicsPresets
             // above, paired relaunches walking the archway, Bowerlake and the square: managed heap
             // 0.83-0.85 against 1.41 GB, PSS -200-400 MB, continue-to-world 97-100 against 108-122 s,
             // archway frames at 50 ms 85-87% against 81-82% and its worst 84 against 150-1153 ms.
-            // The five together on the S25+ (Quality, uncapped, four relaunch pairs at the archway in
-            // daylight): GC pause per 50 s walk 126-155 against 307-363 ms, no gen2 against one,
+            // The five together on the S25+ (Balanced, uncapped, four relaunch pairs at the archway at
+            // night, 00:50): GC pause per 50 s walk 126-155 against 307-363 ms, no gen2 against one,
             // managed heap 1.08-1.16 against 1.33-1.43 GB, the game thread 38-40% of a core against
             // 44-46%; frame rate (~77 fps), frame times and GPU work the same.
             ["android_loh_compaction"] = "true",
@@ -170,19 +177,19 @@ public static class GraphicsPresets
             // Still scenery re-checked on the reconcile cadence; a longer one is measured first.
             ["entity_still_reconcile_scale"] = "1",
             // The far tree models, which ship no coarser level, get two thinned ones: 2.5% off the
-            // S25+'s frame work at Quality, the crowns indistinguishable at the spot. Meant as an
+            // S25+'s frame work at Balanced, the crowns indistinguishable at the spot. Meant as an
             // Android default, but the launcher writes the setting's own default (off) into every
             // phone's refii.toml, so the presets carry it.
             ["tree_card_lod"] = "true",
         };
 
     /// <summary>
-    /// Performance: Quality with the compromises a fully throttled phone needs to hold 30 FPS.
+    /// Performance: Balanced with the compromises a fully throttled phone needs to hold 30 FPS.
     /// Measured at the Bowerstone Market save spot with the S25+ at its floor (GPU ~375-400 of
-    /// 1200 MHz), these together took 28% off the GPU's work per frame against Quality.
+    /// 1200 MHz), these together took 28% off the GPU's work per frame against Balanced.
     /// </summary>
     public static readonly IReadOnlyDictionary<string, string> PerformanceValues =
-        new Dictionary<string, string>(QualityValues, StringComparer.Ordinal)
+        new Dictionary<string, string>(BalancedValues, StringComparer.Ordinal)
         {
             // 30% of the screen's resolution, bilinear: the phone's own pixels are tiny, and on an
             // Adreno 640 the ground's and the models' pixel shading is still half the frame here.
@@ -207,28 +214,69 @@ public static class GraphicsPresets
             ["motion_arrival_fit"] = "true",
         };
 
-    /// <summary>The settings a preset decides: exactly the Quality preset's keys.</summary>
-    public static IEnumerable<string> Members => QualityValues.Keys;
+    /// <summary>
+    /// Quality: Balanced with its distance, shadow and resolution compromises given back toward
+    /// the desktop's, for a phone that holds the 30 FPS cap at Balanced with room to spare. The
+    /// same-picture shortcuts stay as Balanced has them.
+    /// </summary>
+    /// <remarks>
+    /// Measured on the S25+ at the Bowerstone Market archway at noon, relaunch-paired: GPU work
+    /// 12.0-13.7 Mcycles a frame against Balanced's 9.5-9.9 (uncapped 61-65 FPS against 72-78).
+    /// At the 30 FPS cap it missed 0.05-0.4% of frames, as Balanced did: on a cooler over 15 and
+    /// 18 minutes, and without one over 16 minutes at thermal status 3 after 40 minutes uncapped
+    /// (2.9% in the first 2 minutes at the cap, while the GPU clock climbed back). The GPU ran at
+    /// 525 MHz against Balanced's 389-443. Memory and load time are Balanced's. Of the variants,
+    /// 75% resolution cost 4% more and 60% saved 6%, both hard to tell from 67% on the phone (so
+    /// Quality takes 60%), and
+    /// a 100 m sun shadow saved nothing repeatable. The S10e is not a Quality phone: it runs
+    /// Balanced at about 13 FPS.
+    /// </remarks>
+    public static readonly IReadOnlyDictionary<string, string> QualityValues =
+        new Dictionary<string, string>(BalancedValues, StringComparer.Ordinal)
+        {
+            // 60% of the screen's resolution: 1.44 times Balanced's pixels, about 6% less GPU work
+            // than 67% and hard to tell from it on the phone.
+            ["render_scale_percent"] = "60",
+            // Coarser models when the 360 switched to them, small props at the desktop's distances.
+            ["mesh_lod_pixels"] = "1",
+            ["prop_cull_distance_scale"] = "1",
+            // The sun's shadow over half again Balanced's reach, every prop's shadow at its
+            // size tier's full reach.
+            ["sun_shadow_distance"] = "120",
+            ["sun_shadow_reach_scale"] = "1",
+            // The nearest 32 placed lights out to the lighting presets' Balanced light range.
+            ["placed_light_limit"] = "32",
+            ["placed_light_range"] = "65.0",
+        };
+
+    /// <summary>The settings a preset decides: exactly the Balanced preset's keys.</summary>
+    public static IEnumerable<string> Members => BalancedValues.Keys;
 
     /// <summary>The name a player sees for a stored preset.</summary>
     public static string Label(string preset) => preset.ToLowerInvariant() switch
     {
-        Quality => "Quality",
+        Balanced => "Balanced",
         Performance => "Performance",
+        Quality => "Quality",
         _ => "Custom",
     };
 
     /// <summary>The values a named preset writes; null for an unknown name or "custom".</summary>
     public static IReadOnlyDictionary<string, string>? Values(string preset)
     {
-        if (preset.Equals(Quality, StringComparison.OrdinalIgnoreCase))
+        if (preset.Equals(Balanced, StringComparison.OrdinalIgnoreCase))
         {
-            return QualityValues;
+            return BalancedValues;
         }
 
         if (preset.Equals(Performance, StringComparison.OrdinalIgnoreCase))
         {
             return PerformanceValues;
+        }
+
+        if (preset.Equals(Quality, StringComparison.OrdinalIgnoreCase))
+        {
+            return QualityValues;
         }
 
         return null;
@@ -237,7 +285,7 @@ public static class GraphicsPresets
     /// <summary>The preset every member setting matches, or "custom".</summary>
     public static string Current(IReadOnlyDictionary<string, string> values)
     {
-        foreach (string preset in new[] { Performance, Quality })
+        foreach (string preset in new[] { Performance, Balanced, Quality })
         {
             if (Values(preset)!.All(pair => Same(values.TryGetValue(pair.Key, out string? value) ? value : DefaultOf(pair.Key), pair.Value)))
             {

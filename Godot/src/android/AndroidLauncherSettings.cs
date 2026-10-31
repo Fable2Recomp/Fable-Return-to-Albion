@@ -41,14 +41,14 @@ public static class AndroidLauncherSettings
             throw new IOException("Cannot prepare Android launcher paths: " + error);
     }
 
-    /// <summary>Gives a configuration that never chose a graphics preset Quality and the 30 FPS cap.</summary>
+    /// <summary>Gives a configuration that never chose a graphics preset Balanced and the 30 FPS cap.</summary>
     /// <remarks>Runs once: afterwards the key is present, and the player's own choices, the
     /// preset's settings and the cap included, stay exactly as they leave them.</remarks>
     /// <param name="values">The runtime configuration's values, changed in place.</param>
     /// <returns>Whether the preset was applied.</returns>
     public static bool ApplyPresetOnce(System.Collections.Generic.IDictionary<string, string> values)
     {
-        if (values.ContainsKey(GraphicsPresets.Key) || !GraphicsPresets.Apply(GraphicsPresets.Quality, values))
+        if (values.ContainsKey(GraphicsPresets.Key) || !GraphicsPresets.Apply(GraphicsPresets.Balanced, values))
             return false;
         values["max_fps"] = GraphicsPresets.AndroidFrameCap;
         return true;

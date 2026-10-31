@@ -14,9 +14,10 @@ namespace Refii.AndroidRuntime;
 /// LIVE. The host rereads the cap, render scale and mesh LOD from the file
 /// (AndroidGameHost.RefreshRenderScale), and <see cref="ApplyPreset"/> hands the rest to
 /// <see cref="Engine_RefiiConfig.TrySetGodotCvar"/>, whose listeners reload the placed lights,
-/// the sun shadow's reach (Quality casts the sun, Performance does not) and the props' draw
-/// ranges. Vibration is the launcher's <c>controller_vibration</c>, the one switch for the host's
-/// rumble whether it reaches a controller or, played by touch, the phone; GameInput rereads it.
+/// the sun shadow's reach (Balanced and Quality cast the sun, Performance does not) and the
+/// props' draw ranges. Vibration is the launcher's <c>controller_vibration</c>, the one switch
+/// for the host's rumble whether it reaches a controller or, played by touch, the phone;
+/// GameInput rereads it.
 /// </remarks>
 public static class AndroidQuickSettings
 {
@@ -26,7 +27,7 @@ public static class AndroidQuickSettings
     public static readonly int[] FrameCaps = { 20, 30, 60, 0 };
 
     /// <summary>The presets a tap steps through, in order.</summary>
-    public static readonly string[] Presets = { GraphicsPresets.Performance, GraphicsPresets.Quality };
+    public static readonly string[] Presets = { GraphicsPresets.Performance, GraphicsPresets.Balanced, GraphicsPresets.Quality };
 
     /// <summary>The cap after <paramref name="current"/>; one not in the list steps to the first.</summary>
     public static int NextFrameCap(int current)

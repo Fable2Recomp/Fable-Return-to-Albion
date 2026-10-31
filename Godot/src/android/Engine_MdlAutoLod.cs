@@ -22,7 +22,7 @@ namespace Refii.Models;
 /// kept. Skinned surfaces are left alone: their LODs would have to follow the bones. So are
 /// trees, whose leaf cards a simplifier would shrink: they thin by `tree_card_lod`.
 ///
-/// MEASURED, relaunch-paired, uncapped: on the S25+ (Quality) visible triangles 1.90M -> 1.46M
+/// MEASURED, relaunch-paired, uncapped: on the S25+ (Balanced) visible triangles 1.90M -> 1.46M
 /// and GPU cycles -1 to -2%; on the S10e (Performance) 1.54M -> 1.11M and -3.5%. The triangles
 /// it removes are cheap ones, small distant props. No visible change at either spot.
 /// </remarks>

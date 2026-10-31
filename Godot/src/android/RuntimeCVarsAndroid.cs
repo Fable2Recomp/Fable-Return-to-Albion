@@ -12,13 +12,14 @@ public static class RuntimeCVarsAndroid
     /// <summary>The graphics preset and the presets' revision it was written from (<see cref="GraphicsPresets"/>), after <c>display_resolution</c>.</summary>
     public static readonly RuntimeCVarDefinition[] GraphicsPreset =
     {
-        new(GraphicsPresets.Key, DisplayCategory, RuntimeCVarType.String, GraphicsPresets.Quality,
-            "The picture's cost settings as one choice, on a phone. Quality trades distance, "
+        new(GraphicsPresets.Key, DisplayCategory, RuntimeCVarType.String, GraphicsPresets.Balanced,
+            "The picture's cost settings as one choice, on a phone. Balanced trades distance, "
             + "shadows and resolution for a steady frame rate on a phone, which its own heat "
             + "holds well below its peak clock; Performance gives up the sun's shadow and most "
-            + "of the resolution to hold 30 FPS on a phone that has throttled fully. Changing "
-            + "any of those settings afterwards reads as Custom.",
-            "android|Quality,android_low|Performance,custom|Custom"),
+            + "of the resolution to hold 30 FPS on a phone that has throttled fully; Quality "
+            + "gives back resolution, distance and shadow reach on a phone with frames to "
+            + "spare. Changing any of those settings afterwards reads as Custom.",
+            "android_low|Performance,android|Balanced,android_high|Quality,custom|Custom"),
 
         new(GraphicsPresets.RevisionKey, DisplayCategory, RuntimeCVarType.Int, "1",
             "The presets' revision these settings were last written from; a phone still on a "

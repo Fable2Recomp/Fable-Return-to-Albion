@@ -64,14 +64,14 @@ public sealed partial class RuntimeSettingsModel
     }
 
     /// <summary>
-    /// A phone's defaults are its Quality preset at 30 FPS: the settings' own defaults are the
+    /// A phone's defaults are its Balanced preset at 30 FPS: the settings' own defaults are the
     /// desktop picture. Nothing where the presets are not offered.
     /// </summary>
     private void ApplyPhoneDefaults()
     {
         if (GraphicsPresets.Offered)
         {
-            GraphicsPresets.Apply(GraphicsPresets.Quality, Values);
+            GraphicsPresets.Apply(GraphicsPresets.Balanced, Values);
             Values["max_fps"] = GraphicsPresets.AndroidFrameCap;
         }
     }

@@ -38,12 +38,15 @@ public class AndroidQuickSettingsTests
     }
 
     [TestCase]
-    public void TestPresetStepsBetweenPerformanceAndQuality()
+    public void TestPresetStepsThroughPerformanceBalancedAndQuality()
     {
-        AssertThat(AndroidQuickSettings.NextPreset(GraphicsPresets.Performance)).IsEqual(GraphicsPresets.Quality);
+        AssertThat(AndroidQuickSettings.NextPreset(GraphicsPresets.Performance)).IsEqual(GraphicsPresets.Balanced);
+        AssertThat(AndroidQuickSettings.NextPreset(GraphicsPresets.Balanced)).IsEqual(GraphicsPresets.Quality);
         AssertThat(AndroidQuickSettings.NextPreset(GraphicsPresets.Quality)).IsEqual(GraphicsPresets.Performance);
         AssertThat(AndroidQuickSettings.NextPreset(GraphicsPresets.Custom)).IsEqual(GraphicsPresets.Performance);
         AssertThat(AndroidQuickSettings.PresetLabel(GraphicsPresets.Performance)).IsEqual("Preset: Performance");
+        AssertThat(AndroidQuickSettings.PresetLabel(GraphicsPresets.Balanced)).IsEqual("Preset: Balanced");
+        AssertThat(AndroidQuickSettings.PresetLabel(GraphicsPresets.Quality)).IsEqual("Preset: Quality");
     }
 
     [TestCase]
@@ -63,9 +66,9 @@ public class AndroidQuickSettingsTests
             AssertThat(live["render_scale_percent"]).IsEqual("30");
 
             // Switching preset keeps the cap and the settings outside the preset.
-            AndroidQuickSettings.ApplyPreset(config, GraphicsPresets.Quality, (_, _) => { });
+            AndroidQuickSettings.ApplyPreset(config, GraphicsPresets.Balanced, (_, _) => { });
             var values = RuntimeConfig.ReadValues(config);
-            AssertThat(AndroidQuickSettings.Preset(config)).IsEqual(GraphicsPresets.Quality);
+            AssertThat(AndroidQuickSettings.Preset(config)).IsEqual(GraphicsPresets.Balanced);
             AssertThat(values["max_fps"]).IsEqual("60");
             AssertThat(values["sun_shadow_map"]).IsEqual("1024");
             AssertThat(values["log_file"]).IsEqual("x.log");

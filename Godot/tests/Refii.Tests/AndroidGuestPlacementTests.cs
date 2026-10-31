@@ -19,7 +19,7 @@ public sealed class AndroidGuestPlacementTests
         AssertThat(AndroidGuestPlacement.Configured(new Dictionary<string, string> { [AndroidGuestPlacement.Key] = "false" })).IsFalse();
         AssertThat(AndroidGuestPlacement.Configured(new Dictionary<string, string> { [AndroidGuestPlacement.Key] = "true" })).IsTrue();
 
-        AssertThat(GraphicsPresets.QualityValues[AndroidGuestPlacement.Key]).IsEqual("true");
+        AssertThat(GraphicsPresets.BalancedValues[AndroidGuestPlacement.Key]).IsEqual("true");
         AssertThat(GraphicsPresets.PerformanceValues[AndroidGuestPlacement.Key]).IsEqual("true");
     }
 

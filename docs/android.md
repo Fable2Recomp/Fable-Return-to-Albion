@@ -195,13 +195,16 @@ launcher then removes the extracted game copies and builds it no longer uses.
 
 ## Android graphics preset
 
-Launch options has a **Graphics Preset** row on a phone: **Quality**, **Performance** or
-**Custom** (any preset setting changed by hand). A phone starts on Quality with a 30 FPS
-cap; the in-game Options panel switches the preset and the cap. Quality (tuned on the
-S25+) renders at half resolution with the sun's shadows where the theme casts them and
-every same-picture shortcut on; Performance (measured on a throttled S25+, with values
-checked on the S10e) drops to 30% resolution,
-no dynamic sun shadow and the nearest four placed lights. The values and the measurement
+Launch options has a **Graphics Preset** row on a phone: **Performance**, **Balanced**,
+**Quality** or **Custom** (any preset setting changed by hand). A phone starts on Balanced
+with a 30 FPS cap; the in-game Options panel switches the preset and the cap. Balanced
+(tuned on the S25+) renders at half resolution with the sun's shadows where the theme casts
+them and every same-picture shortcut on; Performance (measured on a throttled S25+, with
+values checked on the S10e) drops to 30% resolution, no dynamic sun shadow and the nearest
+four placed lights; Quality, for a phone with frames to spare, renders at 60% of the
+resolution with the 360's model detail, the desktop's prop distances, a longer sun shadow
+and more placed lights. Balanced was labelled Quality before Quality was added; it keeps
+its stored name (`android`), so a phone on it stays on it. The values and the measurement
 behind each are in `Godot/src/launcher/settings/GraphicsPresets.cs`; raising its
 `Revision` makes phones still on a preset take the new values once.
 
