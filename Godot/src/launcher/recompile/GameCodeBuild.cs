@@ -668,6 +668,105 @@ public static class GameCodeBuild
 	}
 
 	/// <summary>
+	/// Removes obsolete files left behind if a player or developer extracted a new release zip
+	/// or copied an updated tree over an existing installation without wiping bin/recompile first.
+	/// </summary>
+	public static void PurgeStaleRecompileArtifacts(string recompile)
+	{
+		try
+		{
+			if (string.IsNullOrEmpty(recompile) || !Directory.Exists(recompile))
+			{
+				return;
+			}
+
+			// 1. Pre-split flat hooks and manifest (replaced by bin/recompile/<Title>/...)
+			string flatHookSources = Path.Combine(recompile, "hook_sources.cmake");
+			if (File.Exists(flatHookSources))
+			{
+				File.Delete(flatHookSources);
+			}
+
+			string flatHooksDir = Path.Combine(recompile, "hooks");
+			if (Directory.Exists(flatHooksDir))
+			{
+				Directory.Delete(flatHooksDir, recursive: true);
+			}
+
+			// 2. Pre-split headers under include/01 that were moved to include/02 (src/runtime)
+			// during the multi-title refactor. If include/01/core/payload_bridge.h exists, clang
+			// resolves it ahead of include/02/core/payload_bridge.h and collides with
+			// payload_bridge_fable2.h, causing enumerator redefinition errors.
+			string inc01 = Path.Combine(recompile, "include", "01");
+			string staleBridge = Path.Combine(inc01, "core", "payload_bridge.h");
+			if (File.Exists(staleBridge))
+			{
+				string[] staleFiles =
+				{
+					Path.Combine(inc01, "core", "payload_bridge.h"),
+					Path.Combine(inc01, "core", "payload_bridge_string.h"),
+					Path.Combine(inc01, "core", "rex_payload_bridge.h"),
+					Path.Combine(inc01, "core", "audio_state.h"),
+					Path.Combine(inc01, "core", "event_relay.h"),
+					Path.Combine(inc01, "core", "guest_yield_backoff.h"),
+					Path.Combine(inc01, "core", "host_asset_reader.h"),
+					Path.Combine(inc01, "core", "mod_values.h"),
+					Path.Combine(inc01, "core", "player_state.h"),
+					Path.Combine(inc01, "core", "precise_sleep.h"),
+					Path.Combine(inc01, "core", "traced_mutex.h"),
+					Path.Combine(inc01, "babel", "babel_database.h"),
+					Path.Combine(inc01, "gdb", "gdb_database.h"),
+					Path.Combine(inc01, "gui", "gui_native_calls.h"),
+					Path.Combine(inc01, "rex", "thread", "mutex.h"),
+				};
+
+				foreach (string file in staleFiles)
+				{
+					if (File.Exists(file))
+					{
+						File.Delete(file);
+					}
+				}
+
+				foreach (string dir in new[]
+				{
+					Path.Combine(inc01, "babel"),
+					Path.Combine(inc01, "gdb"),
+					Path.Combine(inc01, "rex", "thread"),
+					Path.Combine(inc01, "rex"),
+				})
+				{
+					if (Directory.Exists(dir) && !Directory.EnumerateFileSystemEntries(dir).Any())
+					{
+						Directory.Delete(dir);
+					}
+				}
+			}
+
+			// 3. Stale root VFS DLL if a title-specific copy exists under bin/<Title>/
+			if (!string.IsNullOrEmpty(BinDirectory))
+			{
+				string rootVfs = Path.Combine(BinDirectory, "refii_vfs.dll");
+				string fable2Vfs = Path.Combine(BinDirectory, "Fable2", "refii_vfs.dll");
+				if (File.Exists(rootVfs) && File.Exists(fable2Vfs))
+				{
+					File.Delete(rootVfs);
+				}
+
+				string rootLuaLib = Path.Combine(BinDirectory, "refii_lua.lib");
+				if (File.Exists(rootLuaLib))
+				{
+					File.Delete(rootLuaLib);
+				}
+			}
+		}
+		catch
+		{
+			// Best-effort cleanup: never block the build if a file is locked or cannot be deleted
+		}
+	}
+
+	/// <summary>
 	/// A fingerprint of everything the module is COMPILED FROM, computed off the disk.
 	/// </summary>
 	/// <remarks>
@@ -689,6 +788,8 @@ public static class GameCodeBuild
 	{
 		try
 		{
+			PurgeStaleRecompileArtifacts(RecompileDirectory);
+
 			var files = new List<string>();
 
 			// The active title's own hooks, never another title's.
@@ -1437,6 +1538,7 @@ public static class GameCodeBuild
 		//    to make impossible.
 		LogPhase("clean");
 		progress(new Progress("Cleaning the previous game code build...", 0.02f));
+		PurgeStaleRecompileArtifacts(RecompileDirectory);
 		try
 		{
 			if (Directory.Exists(GeneratedDirectory))
