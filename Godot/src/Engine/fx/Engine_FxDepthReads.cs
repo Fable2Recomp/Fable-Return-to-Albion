@@ -16,15 +16,15 @@ namespace Refii.Fx;
 /// One such material in the render list ends the opaque pass on Mobile, copies depth to a texture
 /// and reopens a transparent pass that loads colour and depth back (render_forward_mobile.cpp):
 /// "Render Opaque" and "Render Transparent" instead of "Render Opaque + Transparent". Every
-/// effect particle declared it (fx_soft) and the sun and moon glares do (celestial_overlay), so
-/// the split ran every frame.
+/// effect particle declared it (fx_soft), and the sun and moon glares did (celestial_overlay)
+/// until their occlusion moved to the hardware depth test, so the split ran every frame.
 ///
 /// On: a particle material whose soft distance is zero is built from its shader with FX_HARD,
 /// which compiles the uniform and the fade out (the fade is exactly 1 at zero distance, so the
 /// picture is the same), and a glare that cannot put a pixel on the window's view is hidden
 /// (Engine_CelestialElements; behind the camera its vertex stage collapses it, off screen it has
-/// no pixel), so it leaves the render list instead of drawing nothing in it. A glare in view still
-/// reads depth: that is its occlusion test. Water reads depth and the screen whatever this says.
+/// no pixel), so it leaves the render list instead of drawing nothing in it. Water reads depth and
+/// the screen whatever this says.
 ///
 /// Live: the debug channel's `render` op (`fxNoDepthReads`) re-points every hard-capable effect
 /// material it has seen, and the glares follow on the next frame.

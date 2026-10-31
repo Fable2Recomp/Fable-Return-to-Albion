@@ -22,7 +22,7 @@ public partial class GameInput : Node
 	internal GameInputDevicePolicy? DevicePolicyOverride { get; set; }
 
 	/// <summary>Android retains event edges through slow frame polling; desktop keeps its original sampler.</summary>
-	private bool CapturePhysicalButtons => DevicePolicyOverride?.CapturePhysicalButtons ?? OS.HasFeature("android");
+	private bool CapturePhysicalButtons => DevicePolicyOverride?.CapturePhysicalButtons ?? Engine_Platform.IsAndroid;
 
 	/// <summary>Captures mapped physical button events for Android without dispatching actions; called from <see cref="_Input"/>.</summary>
 	/// <param name="inputEvent">The real Godot joypad event; axes, keyboard and other event types are unchanged.</param>

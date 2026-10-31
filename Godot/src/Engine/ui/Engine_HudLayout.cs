@@ -1187,6 +1187,23 @@ public sealed class Engine_HudLayout
         Nudge(piece => piece.Id == "group.SpellCharging.SpellCharging", new Vector2(units, 0f)) +
         Nudge(piece => piece.Id == "group.SpellCharging2.SpellCharging2", new Vector2(-units, 0f));
 
+    /// <summary>
+    /// The platform's own arrangement, applied beneath the player's file: on Android the d-pad
+    /// lifted clear of the touch controls' Options (<see cref="AndroidDpadLift"/>) and the spell
+    /// charge moved in from the edges, where Spells and Lock stand
+    /// (<see cref="AndroidSpellChargeInset"/>). Nothing elsewhere.
+    /// </summary>
+    public void ApplyPlatformDefaults()
+    {
+        if (!Refii.Core.Engine_Platform.IsAndroid)
+        {
+            return;
+        }
+
+        LiftDpad(AndroidDpadLift);
+        InsetSpellCharge(AndroidSpellChargeInset);
+    }
+
     /// <summary>Moves every piece <paramref name="which"/> picks by <paramref name="delta"/> (reference units, +Y down).</summary>
     private int Nudge(System.Func<Piece, bool> which, Vector2 delta)
     {

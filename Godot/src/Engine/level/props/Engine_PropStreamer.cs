@@ -719,12 +719,11 @@ public partial class Engine_PropStreamer : Node3D
         }
     }
 
-    /// <summary>Stops further prefetch and closes Android bake publication without disposing shared results.</summary>
+    /// <summary>Stops further prefetch and closes bake publication without disposing shared results.</summary>
     public override void _ExitTree()
     {
         _prefetchStop = true;
-        if (Refii.Core.Engine_Platform.IsAndroid)
-            _retirementWorkers.Retire(() => { while (_bakeCompletions.TryDequeue(out _)) { } });
+        _retirementWorkers.Retire(() => { while (_bakeCompletions.TryDequeue(out _)) { } });
         Live.Remove(this);
         PublishProgress();
     }

@@ -1682,7 +1682,6 @@ public partial class GameDebugServer : Node
 				bool? postFxEnabled = Refii.Core.Engine_PresentationPolicy.ReadPostFxRequest(root);
 				bool? fxLegacyLayers = Refii.Lighting.Engine_PostFxRoute.ReadRequest(root);
 				bool? fxNoDepthReads = Refii.Fx.Engine_FxDepthReads.ReadRequest(root);
-				bool? skyGlareCheap = Refii.Level.Engine_SkyCosts.ReadRequest(root, Refii.Level.Engine_SkyCosts.GlareCheapRequestKey);
 				bool? skyRadianceLean = Refii.Level.Engine_SkyCosts.ReadRequest(root, Refii.Level.Engine_SkyCosts.RadianceLeanRequestKey);
 				Refii.Core.Engine_ShaderCeiling.Request? shaderCeiling = Refii.Core.Engine_ShaderCeiling.Parse(root);
 				ShaderCostDiagnostic.ApplyRequest(root, (name, value) => RenderingServer.GlobalShaderParameterSet(name, value));
@@ -1700,7 +1699,6 @@ public partial class GameDebugServer : Node
 				if (postFxEnabled is { } postFx) Refii.Lighting.Engine_PostFxParams.Enabled = postFx;
 				if (fxLegacyLayers is { } legacyLayers) Refii.Lighting.Engine_PostFxRoute.LegacyLayers = legacyLayers;
 				if (fxNoDepthReads is { } noDepthReads) Refii.Fx.Engine_FxDepthReads.Enabled = noDepthReads;
-				if (skyGlareCheap is { } glareCheap) Refii.Level.Engine_SkyCosts.GlareCheap = glareCheap;
 				if (skyRadianceLean is { } radianceLean) Refii.Level.Engine_SkyCosts.RadianceLean = radianceLean;
 				ShaderZeroWork.ApplyRequest(root, (name, value) => RenderingServer.GlobalShaderParameterSet(name, value));
 				if (meshLodThreshold is { } requestedLod)
@@ -2155,7 +2153,6 @@ public partial class GameDebugServer : Node
 					["fxAdditiveLayerPresent"] = Refii.Fx.Engine_FxAdditiveLayer.Present,
 					["fxNoDepthReads"] = Refii.Fx.Engine_FxDepthReads.Enabled,
 					["fxHardCapableMaterials"] = Refii.Fx.Engine_FxDepthReads.AdoptedCount,
-					["skyGlareCheap"] = Refii.Level.Engine_SkyCosts.GlareCheap,
 					["skyRadianceLean"] = Refii.Level.Engine_SkyCosts.RadianceLean,
 					// The held sky's radiance size and its own, applied on the next frame; null when none is held.
 					["skyRadianceHeld"] = Refii.Level.Engine_SkyCosts.LeanRadianceState,

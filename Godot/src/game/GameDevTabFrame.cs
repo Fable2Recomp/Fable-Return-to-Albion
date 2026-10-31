@@ -21,7 +21,7 @@ public partial class GameDevTabFrame : GameDevTab
 	/// <summary>Builds the frame readout and graph using the platform goal independently of presentation caps.</summary>
 	public GameDevTabFrame()
 	{
-		bool android = OS.HasFeature("android");
+		bool android = Engine_Platform.IsAndroid;
 		_graph.Budgets = new[] { ((float)Engine_PresentationPolicy.BudgetMs(android), $"{Engine_PresentationPolicy.TargetFps(android)} fps target") };
 		_graph.Lines.Add(new GameDevGraph.Series { Name = "frame", Colour = new Color(1f, 1f, 1f) });
 		_graph.Lines.Add(new GameDevGraph.Series { Name = "main", Colour = new Color(0.45f, 0.8f, 1f) });
@@ -79,7 +79,7 @@ public partial class GameDevTabFrame : GameDevTab
 
 		_text.Append($"{Engine.GetFramesPerSecond(),4:0} fps    frame {frameMs,6:0.00} ms (peak {framePeak:0.0})    {bound}\n");
 		_text.Append($"main   {mainMs,6:0.00} ms (peak {mainPeak:0.0})   entities {entitiesMs:0.00}   waiting on render {waitMs:0.00}\n");
-		_text.Append($"render cpu {renderCpu,6:0.00} ms   gpu {gpu,6:0.00} ms   {Engine_PresentationPolicy.BudgetLabel(OS.HasFeature("android"))}\n");
+		_text.Append($"render cpu {renderCpu,6:0.00} ms   gpu {gpu,6:0.00} ms   {Engine_PresentationPolicy.BudgetLabel(Engine_Platform.IsAndroid)}\n");
 		_text.Append($"draws  visible {render.VisibleCalls,6}   shadow {render.ShadowCalls,6}   " +
 			$"objects {render.VisibleObjects}   prims {render.VisiblePrims / 1e6:0.0} M");
 		_numbers.Text = _text.ToString();

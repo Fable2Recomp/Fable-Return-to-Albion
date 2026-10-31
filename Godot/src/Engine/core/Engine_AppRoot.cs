@@ -127,7 +127,7 @@ public static class Engine_AppRoot
 		// Android maps res:// and its native libraries from an installed package. Neither
 		// is a writable desktop install tree. Keep user data in the engine-provided private
 		// directory; shipped libraries continue to use the Android linker's package search.
-		if (!IsTestHost && OS.HasFeature("android"))
+		if (!IsTestHost && Engine_Platform.IsAndroid)
 		{
 			string privateRoot = AndroidPrivateRoot(OS.GetUserDataDir());
 			GD.Print($"[android-path] app_root={privateRoot}; config={System.IO.Path.Combine(privateRoot, "refii.toml")}");

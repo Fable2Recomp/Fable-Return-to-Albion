@@ -138,7 +138,7 @@ public partial class LauncherApp : Control
 	/// <summary>Initializes the shared launcher with the backend appropriate to the exported platform.</summary>
 	public override void _Ready()
 	{
-		if (!Engine.IsEditorHint() && OS.HasFeature("android")) { ReadyAndroid(); return; }
+		if (!Engine.IsEditorHint() && Refii.Core.Engine_Platform.IsAndroid) { ReadyAndroid(); return; }
 		CrashReporting.Install();
 		LauncherPaths.OverrideLauncherDirectory = ResolveLauncherDirectory();
 		Platform.RuntimeDirectoryOverride = ResolveRuntimeDirectory();

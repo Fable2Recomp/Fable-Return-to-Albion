@@ -8,15 +8,6 @@ namespace Refii.Level;
 /// The sky's GPU shortcuts, each its own refii.toml key and debug lever, each read at first use.
 /// </summary>
 /// <remarks>
-/// `sky_glare_cheap`: the sun and moon glares (celestial_overlay) take their occlusion in the
-/// vertex stage. It is a 5x5 grid of depth taps around the element's disc whose inputs are
-/// uniforms and the view, so every pixel of the quad computed the same answer: 25 taps, each with
-/// a projection and a divide, per pixel of a quad that can cover most of the screen. Once per
-/// corner (a flat varying) it is 100 taps a frame, and the same picture.
-///
-/// Live: the debug channel's `render` op (`skyGlareCheap`); the glares change build on the next
-/// frame (one pipeline compile the first time).
-///
 /// `sky_radiance_lean`: the sky's radiance map at Godot's smallest size while nothing in the frame
 /// samples it, and the dome's sun written on the atmosphere tick only. Godot re-renders and
 /// re-filters that map whenever the sky material's uniforms are set (sky.cpp: any set marks the
@@ -29,22 +20,6 @@ namespace Refii.Level;
 /// </remarks>
 public static class Engine_SkyCosts
 {
-    public const string GlareCheapKey = "sky_glare_cheap";
-
-    public const string GlareCheapRequestKey = "skyGlareCheap";
-
-    /// <summary>The define celestial_overlay takes its occlusion per vertex under.</summary>
-    public const string VertexOcclusionDefine = "CELESTIAL_VERTEX_OCCLUSION";
-
-    private static bool? _glareCheap;
-
-    /// <summary>Main thread. The setting at first use; the debug channel may change it.</summary>
-    public static bool GlareCheap
-    {
-        get => _glareCheap ??= Configured(GlareCheapKey);
-        set => _glareCheap = value;
-    }
-
     public const string RadianceLeanKey = "sky_radiance_lean";
 
     public const string RadianceLeanRequestKey = "skyRadianceLean";
@@ -174,36 +149,5 @@ public static class Engine_SkyCosts
         if (value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
             throw new ArgumentException(key + " must be a boolean.");
         return value.GetBoolean();
-    }
-
-    private static Shader? _overlayFile;
-    private static Shader? _overlayCheap;
-
-    /// <summary>
-    /// The glares' shader as the setting asks: the file, or its build with the occlusion per
-    /// vertex. Null when the file does not load. Both are made once.
-    /// </summary>
-    public static Shader? Overlay()
-    {
-        if (_overlayFile is null || !GodotObject.IsInstanceValid(_overlayFile))
-        {
-            _overlayFile = GD.Load<Shader>(Engine_CelestialElements.OverlayShaderPath);
-            _overlayCheap = null;
-        }
-
-        if (_overlayFile is null || !GlareCheap)
-        {
-            return _overlayFile;
-        }
-
-        if (_overlayCheap is null || !GodotObject.IsInstanceValid(_overlayCheap))
-        {
-            _overlayCheap = new Shader
-            {
-                Code = Refii.Fx.Engine_FxDepthReads.Compose(_overlayFile.Code, VertexOcclusionDefine),
-            };
-        }
-
-        return _overlayCheap;
     }
 }

@@ -23,8 +23,6 @@ public static class Engine_CelestialElements
     private static readonly StringName Param_element_mode = "element_mode";
     private static readonly StringName Param_element_premultiply = "element_premultiply";
     private static readonly StringName Param_element_tex = "element_tex";
-    private static readonly StringName Param_occlusion_distance = "occlusion_distance";
-    private static readonly StringName Param_occlusion_half = "occlusion_half";
     private static readonly StringName Param_star_brightness = "star_brightness";
     private static readonly StringName Param_star_phase_rate = "star_phase_rate";
     private static readonly StringName Param_star_point_size = "star_point_size";
@@ -401,7 +399,6 @@ public static class Engine_CelestialElements
                 $"sunActive={sunActive}");
         }
 
-        Shader? overlay = null;
         OverlayView view = OverlayView.For(container);
 
         // By index: GetChildren() is a Godot Array, a finalizable handle per frame.
@@ -415,16 +412,6 @@ public static class Engine_CelestialElements
             }
 
             string elementName = Refii.Core.Engine_NodeNames.Of(child);
-            if (elementName is "SunGlare" or "MoonGlare")
-            {
-                // The file, or its build with the occlusion per vertex (sky_glare_cheap).
-                overlay ??= Engine_SkyCosts.Overlay();
-                if (overlay is not null && !ReferenceEquals(material.Shader, overlay))
-                {
-                    material.Shader = overlay;
-                }
-            }
-
             switch (elementName)
             {
                 case "SunBeams":
@@ -473,9 +460,6 @@ public static class Engine_CelestialElements
                         sunTint[0] * element[14],
                         sunTint[1] * element[14],
                         sunTint[2] * element[14], 1f));
-                    material.SetShaderParameter(Param_occlusion_half,
-                        element[6] * SunDiscSizeScale);
-                    material.SetShaderParameter(Param_occlusion_distance, SunDiscDistance);
                     mesh.Visible = sunActive && element[14] >= IntensityGate &&
                         view.MayReach(sun, SunGlareDistance,
                             new Vector2(element[15] * SunGlareSizeScale, element[15] * SunGlareSizeScale));
@@ -528,10 +512,6 @@ public static class Engine_CelestialElements
                     float glareScale = MoonGlareCpuScale * element[2];
                     material.SetShaderParameter(Param_element_colour, new Vector4(
                         glareScale, glareScale, glareScale, 1f));
-                    material.SetShaderParameter(Param_occlusion_half,
-                        element[1] * MoonSizeScale);
-                    material.SetShaderParameter(Param_occlusion_distance,
-                        MoonBillboardDistance);
                     mesh.Visible =
                         element[0] >= IntensityGate && element[2] >= IntensityGate &&
                         view.MayReach(moon, MoonGlareDistance,

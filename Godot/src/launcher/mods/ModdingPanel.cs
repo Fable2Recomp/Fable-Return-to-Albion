@@ -40,7 +40,7 @@ public partial class ModdingPanel : VBoxContainer
 	/// The Android launcher. The phone has no folder to open, no editor and no Mod Studio, and its
 	/// phone compiler builds no mod's native code yet, so those mods cannot be enabled there.
 	/// </summary>
-	private static bool Phone => !Engine.IsEditorHint() && OS.HasFeature("android");
+	private static bool Phone => !Engine.IsEditorHint() && Refii.Core.Engine_Platform.IsAndroid;
 
 	public void Configure(Font? font, int fontSize, SmartStyle style)
 	{

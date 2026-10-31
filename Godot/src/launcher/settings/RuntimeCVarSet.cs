@@ -473,11 +473,6 @@ public static class RuntimeCVarsGodot
                 + "a phone's GPU can draw the world and its see-through surfaces in one pass with no "
                 + "depth copy. The same picture. The debug channel's render op (fxNoDepthReads) flips it live."),
 
-            new("sky_glare_cheap", DisplayCategory, RuntimeCVarType.Bool, "false",
-                "Sky: the sun and moon glares test whether the world hides their disc once per "
-                + "corner of the glare instead of once per pixel it covers, 25 depth reads each. "
-                + "The same picture. The debug channel's render op (skyGlareCheap) flips it live."),
-
             new("sky_radiance_lean", DisplayCategory, RuntimeCVarType.Bool, "false",
                 "Sky: the sky's reflection map, which nothing samples under the game's own lighting "
                 + "on a phone, is kept at its smallest size, and the dome's sun is moved 15 times a "

@@ -90,13 +90,7 @@ public partial class KeystoneHost : Node, IPubGameSession
     public KeystoneOverlayManager Overlays => _overlays;
 
     /// <summary>The board's timelines freed with it, when <c>pubgame_release_on_close</c> is on.</summary>
-    public override void _Notification(int what)
-    {
-        if (what == NotificationPredelete && Engine_TexSettings.PubGameReleaseOnClose)
-        {
-            _sceneUi?.Release();
-        }
-    }
+    public override void _Notification(int what) => _sceneUi?.ReleaseOnPredelete(what);
 
     public override void _Ready()
     {

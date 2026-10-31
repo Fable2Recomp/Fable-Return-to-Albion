@@ -126,8 +126,6 @@ public static class GraphicsPresets
             // so Mobile can keep one render pass: 0 at the Bowerstone archway on the S10e, with no
             // glare or water in view; left for where they are.
             ["fx_no_depth_reads"] = "false",
-            // The glares' occlusion once per corner instead of per pixel: 0 at the same spot.
-            ["sky_glare_cheap"] = "false",
             // Every surface kind drawn under the loading screen, so the pipelines a first walk would
             // compile at their first draw are compiled at load. S25+ (ubershaders on), a 40 s walk
             // from the Bowerstone Market archway with no pipeline cache: worst frames 539 ms and

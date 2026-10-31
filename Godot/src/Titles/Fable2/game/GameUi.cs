@@ -2898,7 +2898,7 @@ public partial class GameUi : Node, IGameTitleUi
 		// Android that authoring pass would build and retain thousands of unused UI nodes
 		// before the world loads. Actual menu/HUD construction still requests its own book.
 		Engine_UiComponentLibrary.Result? exported = Engine_UiComponentLibrary.ExportAtStartup(
-			OS.HasFeature("android"),
+			Engine_Platform.IsAndroid,
 			() => Engine_UiComponentLibrary.ExportAll(name => _presentation.PatternBookFor(name)));
 		if (exported is { } result)
 			GD.Print($"[ui-components] {result} -> {Engine_UiComponentLibrary.Root}");
@@ -2909,13 +2909,9 @@ public partial class GameUi : Node, IGameTitleUi
 		// player's file. Both only move pieces, so the banks stay the source of what a piece IS.
 		DirAccess.MakeDirRecursiveAbsolute("user://hud");
 		int modArranged = _hud.Layout.ApplyModLayout();
-		// Android lifts the d-pad clear of the touch controls' Options below it and moves the spell
-		// charge in from the edges, where Spells and Lock stand — beneath the player's file.
-		if (OS.HasFeature("android"))
-		{
-			_hud.Layout.LiftDpad(Engine_HudLayout.AndroidDpadLift);
-			_hud.Layout.InsetSpellCharge(Engine_HudLayout.AndroidSpellChargeInset);
-		}
+		// The platform's own arrangement (Android: clear of the touch controls), beneath the
+		// player's file.
+		_hud.Layout.ApplyPlatformDefaults();
 
 		// The derived arrangement, written out for the player's layout tool and for modders: the
 		// piece ids are the contract for BOTH override files. It is the arrangement BENEATH the
