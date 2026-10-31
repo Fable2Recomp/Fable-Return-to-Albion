@@ -172,8 +172,7 @@ public sealed class Fable2Title : Engine_TitleGame
 
 	public override string? HeldMenuScript =>
 		Engine_UiDyeFlow.Active ? Engine_UiDyeFlow.MenuScript
-		: Engine_UiAugmentFlow.Active ? Engine_UiAugmentFlow.MenuScript
-		: null;
+		: Engine_UiAugmentFlow.HeldScript;
 
 	public override string? OverrideMenuScript(uint screenId)
 	{

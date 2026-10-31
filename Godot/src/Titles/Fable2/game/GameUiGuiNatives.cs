@@ -284,6 +284,22 @@ public partial class GameUi
 			_screenMenuView?.Refresh();
 		});
 
+		// `@Augment.Removed(ok, remover, target)` — the pump's verdict on a strip
+		// (DispatchAugment: `sub_826CA840` itself). `GUI_SCREEN_AUGMENT_REMOVED_SUCCESS` /
+		// `_FAIL`, %1 the weapon (0x826d23ac, 0x826d2484); the remover is not consumed.
+		_guiNatives.Register("@Augment.Removed", call =>
+		{
+			bool ok = call.Argument(0).Boolean;
+			(_, string target) = Engine_UiAugmentFlow.Names;
+			string text = Engine_UiGuiText.Substitute(
+				Engine_UiGuiText.Resolve(ok ? "GUI_SCREEN_AUGMENT_REMOVED_SUCCESS" : "GUI_SCREEN_AUGMENT_REMOVED_FAIL", _presentation?.Strings),
+				new[] { target });
+			_boxes.InfoBoxEx("AugmentResult", 6f, text);
+			Engine_UiAugmentFlow.End();
+			_screenMenu?.FollowDyeFlow();
+			_screenMenuView?.Refresh();
+		});
+
 		_guiNatives.Register("RemoveDisplayBox", call =>
 			_boxes.Remove(call.Argument(0).Text));
 

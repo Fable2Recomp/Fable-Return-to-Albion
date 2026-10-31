@@ -179,6 +179,13 @@ public static class Engine_UiGameTemplates
       "rowCommand": "",
       "entries": []
     },
+    "AugmentRemoveMenu": {
+      "highlight": "",
+      "title": "GUI_SCREEN_AUGMENT_REMOVAL_TITLE",
+      "source": "inventory:augmentremove",
+      "rowCommand": "",
+      "entries": []
+    },
     "DyeMenu": {
       "highlight": "",
       "title": "",

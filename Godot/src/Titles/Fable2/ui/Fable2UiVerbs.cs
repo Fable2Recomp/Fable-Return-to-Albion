@@ -82,11 +82,23 @@ public static class Fable2UiVerbs
 				return Engine_UiCommandResult.Done;
 			}
 
-			// The attach itself goes to the pump; the names are kept now for its verdict's
-			// message, since a successful attach consumes the augment.
-			if (action.StartsWith(Engine_UiAugmentFlow.ApplyAction, System.StringComparison.Ordinal))
+			// A remover the same way, for the strip list.
+			if (action.StartsWith(Engine_UiAugmentFlow.SelectRemoverAction, System.StringComparison.Ordinal))
 			{
-				string[] pair = action[Engine_UiAugmentFlow.ApplyAction.Length..].Split(':');
+				if (uint.TryParse(action[Engine_UiAugmentFlow.SelectRemoverAction.Length..], out uint remover))
+				{
+					Engine_UiAugmentFlow.BeginRemove(remover);
+				}
+
+				return Engine_UiCommandResult.Done;
+			}
+
+			// The attach or strip itself goes to the pump; the names are kept now for its
+			// verdict's message, since a successful attach consumes the augment.
+			if (action.StartsWith(Engine_UiAugmentFlow.ApplyAction, System.StringComparison.Ordinal) ||
+				action.StartsWith(Engine_UiAugmentFlow.RemoveAction, System.StringComparison.Ordinal))
+			{
+				string[] pair = action[(action.IndexOf(':', Engine_UiInventorySource.InventoryAction.Length) + 1)..].Split(':');
 				if (pair.Length == 2 && uint.TryParse(pair[0], out uint augment) && uint.TryParse(pair[1], out uint target))
 				{
 					Engine_UiAugmentFlow.Names = (Engine_UiInventorySource.LabelFor(augment), Engine_UiInventorySource.LabelFor(target));

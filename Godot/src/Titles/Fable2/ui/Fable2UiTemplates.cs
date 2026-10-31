@@ -298,6 +298,13 @@ public static class Fable2UiTemplates
 			augments.Source = $"{Engine_UiInventorySource.SourceName}:{Engine_UiInventorySource.AugmentOperation}";
 		}
 
+		// The remover's list, the same way (`sub_826D1800` case 310 retitles the screen).
+		if (menus.TryGetValue(Engine_UiAugmentFlow.RemoveMenuScript, out Engine_UiMenuTemplate? strips))
+		{
+			strips.Title = "GUI_SCREEN_AUGMENT_REMOVAL_TITLE";
+			strips.Source = $"{Engine_UiInventorySource.SourceName}:{Engine_UiInventorySource.AugmentRemoveOperation}";
+		}
+
 		// THE DYE LIST'S CHILDREN ARE THE HERO'S CLOTHES. The population table authors the seven
 		// category rows; `sub_829B2168` fills them from the inventory (categories 17..24, worn or
 		// not) and adds `Dye Hero Hair` with the hair, beard and moustache that are on.
@@ -818,7 +825,7 @@ public static class Fable2UiTemplates
 					ItemCategory("Trophies", CategoryTag + "TROPHIES", "use",
 						Engine_UiInventorySource.Category.Trophies),
 					// An augment is CHOSEN, not used: the press holds it and the screen lists its targets.
-					ItemCategory("Augmentations", CategoryTag + "AUGMENTATIONS", "augmentselect",
+					ItemCategory("Augmentations", CategoryTag + "AUGMENTATIONS", Engine_UiInventorySource.AugmentSelectOperation,
 						Engine_UiInventorySource.Category.Augmentations),
 					ItemCategory("Dyes", CategoryTag + "DYES", "dyeselect",
 						Engine_UiInventorySource.Category.Dyes),

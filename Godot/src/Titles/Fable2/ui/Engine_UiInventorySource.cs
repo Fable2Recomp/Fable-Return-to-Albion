@@ -209,6 +209,11 @@ public static class Engine_UiInventorySource
 			return AugmentTargets(records);
 		}
 
+		if (operation == AugmentRemoveOperation)
+		{
+			return AugmentRemoveTargets(records);
+		}
+
 		// GROUPED ONLY WHEN THE REQUEST SPANS MORE THAN ONE GROUP. A screen that authors its own
 		// category rows asks for one group each — `KeyItems` is eight category integers but a
 		// single group — and must not get a second header nested inside the row it already has.
@@ -256,6 +261,16 @@ public static class Engine_UiInventorySource
 			// record (`sub_824F1C90`) — an outfit with nothing to put on is not offered. One row
 			// per outfit: a second copy of the same suit would dress the hero identically.
 			string rowOperation = operation;
+
+			// AN AUGMENT REMOVER IS CHOSEN LIKE AN AUGMENT, BUT FOR THE OTHER LIST. It sits in
+			// the same category; `sub_826CEEF0` tells them apart by `IsAugmentRemover`.
+			if (operation == AugmentSelectOperation &&
+				TryItemField(record.RecordId, RemoverField, (int)GdbFieldType.Bool, out uint remover) &&
+				remover != 0u)
+			{
+				rowOperation = RemoverSelectOperation;
+			}
+
 			if (record.Category == Category.Suits && operation == WearOperation)
 			{
 				if (!outfits.Add(record.RecordId))
@@ -548,6 +563,78 @@ public static class Engine_UiInventorySource
 
 	/// <summary>The augment list's operation: rows are what the held augment can go on.</summary>
 	public const string AugmentOperation = "augment";
+
+	/// <summary>The remove list's operation: rows are what the held remover can strip.</summary>
+	public const string AugmentRemoveOperation = "augmentremove";
+
+	/// <summary>An Augmentations row's operation: the press holds the augment (guest event 83).</summary>
+	public const string AugmentSelectOperation = "augmentselect";
+
+	/// <summary>
+	/// An Augmentations row's operation for an item whose `InventoryItemComponent` states
+	/// `IsAugmentRemover`: the press holds the remover (guest event 310, picked over 83 by
+	/// `sub_826CEEF0` on exactly this field).
+	/// </summary>
+	public const string RemoverSelectOperation = "augmentremoverselect";
+
+	private static readonly uint RemoverField = Engine_GameHash.Fnv1("IsAugmentRemover");
+	private static readonly uint RemovableField = Engine_GameHash.Fnv1("CanHaveAugmentsRemoved");
+
+	/// <summary>
+	/// THE REMOVE LIST: every carried item whose `InventoryItemComponent` states
+	/// `CanHaveAugmentsRemoved` and whose instance record holds at least one pair — the gate
+	/// `sub_829B10A8` applies before it spawns a 311 row, and the test `sub_826CA840` makes
+	/// before it strips (a weapon with no record, or an empty one, is refused). A strip takes
+	/// EVERY pair back into the inventory, seeded ones included: there is no per-pair rule.
+	/// </summary>
+	private static IReadOnlyList<Engine_UiMenuSources.Row> AugmentRemoveTargets(List<Fable2Bridge.InventoryRecord> records)
+	{
+		uint remover = Engine_UiAugmentFlow.Remover;
+		if (remover == 0u)
+		{
+			return None;
+		}
+
+		var rows = new List<Engine_UiMenuSources.Row>();
+		var seen = new HashSet<uint>();
+		int empty = 0;
+		foreach (Fable2Bridge.InventoryRecord record in records)
+		{
+			if (!seen.Add(record.RecordId) || !Listable(record, asked: true) ||
+				!TryItemField(record.RecordId, RemovableField, (int)GdbFieldType.Bool, out uint removable) ||
+				removable == 0u)
+			{
+				continue;
+			}
+
+			(uint Primary, uint Secondary)[]? socketed = Fable2Bridge.GetItemAugments(record.RecordId);
+			if (socketed is null || socketed.Length == 0)
+			{
+				++empty;
+				continue;
+			}
+
+			string tag = NameTagOf(record);
+			rows.Add(new Engine_UiMenuSources.Row(
+				Name: $"{(tag.Length != 0 ? tag : $"Item:{record.RecordId:X8}")}:augmentremove",
+				Label: LabelOf(record, tag),
+				Icon: IconOf(record),
+				EventType: 0,
+				Id: record.RecordId,
+				Rating: Engine_UiItemStats.AugmentSlotCode(record.RecordId, socketed),
+				Committable: false,
+				Ghosted: false,
+				Command: $"{InventoryAction}{AugmentRemoveOperation}:{remover}:{record.RecordId}",
+				Group: string.Empty,
+				GroupTag: string.Empty,
+				IsHeader: false,
+				Emphasised: false,
+				Counted: true));
+		}
+
+		Say(AugmentRemoveOperation, $"{rows.Count} strip row(s) for remover 0x{remover:X8}, {empty} without an augment");
+		return rows;
+	}
 
 	/// <summary>
 	/// THE AUGMENT LIST: every carried item whose definition has an `AugmentableComponent` with a
@@ -1007,6 +1094,17 @@ public static class Engine_UiInventorySource
 		int colon = argument.IndexOf(':');
 		if (colon < 0)
 		{
+			// THE AUGMENT LISTS NAME NO CATEGORIES: their rows are whatever carries a free
+			// slot, or an augment to strip, so `inventory:augment` is the whole request. Read
+			// as a category list it parsed to nothing, and nothing means EVERY category — the
+			// held list came up as the items screen's nineteen groups.
+			if (argument == AugmentOperation || argument == AugmentRemoveOperation)
+			{
+				string bare = argument;
+				argument = string.Empty;
+				return bare;
+			}
+
 			return string.Empty;
 		}
 

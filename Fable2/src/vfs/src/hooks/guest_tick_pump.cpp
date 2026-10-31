@@ -2661,48 +2661,57 @@ void TryOnMannequin(PPCContext& ctx, uint8_t* base, const PPCContext& saved, uin
               "{} owned piece(s) put on", mannequin, record, put, owned);
 }
 
-/// `Inventory:augment:<augment record>:<target record>` — the items screen's own attach, without
-/// the screen. `sub_826D1800` case 85 (event InventoryItemApplyAugment) calls
-/// `sub_826CA298(inv, &augment, &target)` on two item refs the screen cached: +380 the augment
-/// its case 83 looked up from the pushed id, +396 the highlighted weapon. The function itself
-/// (decompiled): the target's definition must carry an `AugmentableComponent` with
-/// `NumberOfSlots` above the pairs its type-1 extra record holds (created from
+/// `Inventory:augment:<augment>:<target>` and `Inventory:augmentremove:<remover>:<target>` — the
+/// items screen's own attach and strip, without the screen. `sub_826D1800` case 85 (apply) calls
+/// `sub_826CA298(inv, &augment, &target)` and case 311 (remove) `sub_826CA840(inv, &remover,
+/// &target)`, each on two item refs the screen cached: +380 the item its case 83 / 310 looked up
+/// from the pushed id, +396 the highlighted weapon.
+///
+/// `sub_826CA298` (decompiled): the target's definition must carry an `AugmentableComponent`
+/// with `NumberOfSlots` above the pairs its type-1 extra record holds (created from
 /// `InitialAugmentations` if absent, `sub_823A1FA0`), each of the augment's `PrimaryType` /
 /// `SecondaryType` pairs is appended (`sub_824C9DF0`), and `sub_826CB908` removes one unit of
 /// the augment from the player's own component 13 (`sub_824F12A0`; its first argument is
-/// unused). It returns 1 on success, 0 when the target is full or either ref is empty.
+/// unused). Returns 1 on success, 0 when the target is full or either ref is empty.
+///
+/// `sub_826CA840` (decompiled): both refs non-null (0x826ca854, 0x826ca860) and the target's
+/// type-1 record holds at least one pair (0x826ca8a4), else 0; every pair is turned back into an
+/// `ObjectAugmentation*` inventory item (`sub_826CBCB8` names it, `sub_826CBAD8` adds it,
+/// 0x826cab04..10), an equipped weapon's live effects are re-applied (0x826cab48..50), and the
+/// record is emptied (0x826cab58). The remover ref is never read again: nothing consumes it.
 ///
 /// The refs are built as the dye flow builds its own — `sub_824F1C90(ref, inventory, hash)`
-/// registers them on the item. On success the augment item is GONE and the guest's handler
-/// only zeroes its ref (0x826d2090..a8), so that ref is zeroed here too, never released; the
-/// target's is released as the dye flow releases its own. The verdict goes back to Godot as
-/// `@Augment.Result(ok, augment, target)` on the UI cut's queue: the message the guest's handler
-/// would raise (`GUI_SCREEN_AUGMENT_APPLIED` / `_FAILED_FULL`) is the host's to show.
-bool DispatchAugment(PPCContext& ctx, uint8_t* base, const std::string& arguments) {
+/// registers them on the item. On a successful attach the augment item is GONE and the guest's
+/// handler only zeroes its ref (0x826d2090..a8), so that ref is zeroed here too, never released;
+/// every other ref is released as the dye flow releases its own. The verdict goes back to Godot
+/// as `@Augment.Result` / `@Augment.Removed` `(ok, item, target)` on the UI cut's queue: the
+/// message the guest's handler would raise is the host's to show.
+bool DispatchAugment(PPCContext& ctx, uint8_t* base, const std::string& arguments, bool remove) {
+  const char* verb = remove ? "augmentremove" : "augment";
   unsigned long values[2] = {0ul, 0ul};
   const char* cursor = arguments.c_str();
   for (unsigned long& value : values) {
     char* end = nullptr;
     value = std::strtoul(cursor, &end, 10);
     if (end == cursor) {
-      REXLOG_INFO("Refii guest-tick pump: 'Inventory:augment:{}' is not augment:target — dropped",
+      REXLOG_INFO("Refii guest-tick pump: 'Inventory:{}:{}' is not item:target — dropped", verb,
                   arguments);
       return true;
     }
     cursor = *end == ':' ? end + 1 : end;
   }
 
-  const uint32_t augment_hash = static_cast<uint32_t>(values[0]);
+  const uint32_t item_hash = static_cast<uint32_t>(values[0]);
   const uint32_t target_hash = static_cast<uint32_t>(values[1]);
 
   const auto verdict = [&](bool ok) {
     refii::vfs::GuiNativeCall call;
-    call.name = "@Augment.Result";
+    call.name = remove ? "@Augment.Removed" : "@Augment.Result";
     refii::vfs::GuiNativeArgument flag;
     flag.kind = refii::vfs::GuiNativeArgument::Kind::kBoolean;
     flag.boolean = ok;
     call.arguments.push_back(flag);
-    for (uint32_t hash : {augment_hash, target_hash}) {
+    for (uint32_t hash : {item_hash, target_hash}) {
       refii::vfs::GuiNativeArgument text;
       text.kind = refii::vfs::GuiNativeArgument::Kind::kString;
       char hex[16];
@@ -2717,20 +2726,20 @@ bool DispatchAugment(PPCContext& ctx, uint8_t* base, const std::string& argument
   const uint32_t inventory = hero != 0u ? HeroComponent(base, hero, 13u) : 0u;
   PPCFunc* find = FindGuestFunction(refii::guest::Address(0x824F1C90u));
   PPCFunc* release = FindGuestFunction(refii::guest::Address(0x82764DC0u));
-  PPCFunc* apply = FindGuestFunction(refii::guest::Address(0x826CA298u));
-  if (inventory == 0u || find == nullptr || release == nullptr || apply == nullptr) {
-    REXLOG_INFO("Refii guest-tick pump: Inventory:augment — no hero component 13, or the attach "
-                "calls are not callable here (hero 0x{:08X})", hero);
+  PPCFunc* act = FindGuestFunction(refii::guest::Address(remove ? 0x826CA840u : 0x826CA298u));
+  if (inventory == 0u || find == nullptr || release == nullptr || act == nullptr) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:{} — no hero component 13, or the calls are "
+                "not callable here (hero 0x{:08X})", verb, hero);
     verdict(false);
     return true;
   }
 
   const PPCContext saved = ctx;
   const uint32_t frame = (ctx.r1.u32 - 0x200u) & ~0xFu;
-  const uint32_t augment_ref = frame + 0x20u;
+  const uint32_t item_ref = frame + 0x20u;
   const uint32_t target_ref = frame + 0x40u;
   for (uint32_t word = 0; word < 4u; ++word) {
-    StoreGuestU32(base, augment_ref + (word * 4u), 0u);
+    StoreGuestU32(base, item_ref + (word * 4u), 0u);
     StoreGuestU32(base, target_ref + (word * 4u), 0u);
   }
 
@@ -2751,31 +2760,32 @@ bool DispatchAugment(PPCContext& ctx, uint8_t* base, const std::string& argument
     }
   };
 
-  call(find, augment_ref, inventory, augment_hash);
-  if (LoadGuestU32(base, augment_ref) == 0u) {
-    REXLOG_INFO("Refii guest-tick pump: Inventory:augment — augment 0x{:08X} is not in the "
-                "hero's inventory", augment_hash);
+  call(find, item_ref, inventory, item_hash);
+  if (LoadGuestU32(base, item_ref) == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:{} — item 0x{:08X} is not in the hero's "
+                "inventory", verb, item_hash);
     verdict(false);
     return true;
   }
   call(find, target_ref, inventory, target_hash);
   if (LoadGuestU32(base, target_ref) == 0u) {
-    REXLOG_INFO("Refii guest-tick pump: Inventory:augment — target 0x{:08X} is not in the "
-                "hero's inventory", target_hash);
-    drop(augment_ref);
+    REXLOG_INFO("Refii guest-tick pump: Inventory:{} — target 0x{:08X} is not in the hero's "
+                "inventory", verb, target_hash);
+    drop(item_ref);
     verdict(false);
     return true;
   }
 
-  const bool ok = (call(apply, inventory, augment_ref, target_ref) & 0xFFu) != 0u;
-  REXLOG_INFO("Refii guest-tick pump: Inventory:augment — {} augment 0x{:08X} onto 0x{:08X} "
-              "(sub_826CA298)", ok ? "attached" : "REFUSED", augment_hash, target_hash);
-  if (ok) {
+  const bool ok = (call(act, inventory, item_ref, target_ref) & 0xFFu) != 0u;
+  REXLOG_INFO("Refii guest-tick pump: Inventory:{} — {} 0x{:08X} {} 0x{:08X} ({})", verb,
+              ok ? (remove ? "stripped" : "attached") : "REFUSED", item_hash,
+              remove ? "from" : "onto", target_hash, remove ? "sub_826CA840" : "sub_826CA298");
+  if (ok && !remove) {
     for (uint32_t word = 0; word < 4u; ++word) {
-      StoreGuestU32(base, augment_ref + (word * 4u), 0u);
+      StoreGuestU32(base, item_ref + (word * 4u), 0u);
     }
   } else {
-    drop(augment_ref);
+    drop(item_ref);
   }
   drop(target_ref);
   verdict(ok);
@@ -2787,7 +2797,10 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
     return DispatchDye(ctx, base, body.substr(4));
   }
   if (body.rfind("augment:", 0) == 0) {
-    return DispatchAugment(ctx, base, body.substr(8));
+    return DispatchAugment(ctx, base, body.substr(8), /*remove=*/false);
+  }
+  if (body.rfind("augmentremove:", 0) == 0) {
+    return DispatchAugment(ctx, base, body.substr(14), /*remove=*/true);
   }
 
   const std::size_t colon = body.rfind(':');
