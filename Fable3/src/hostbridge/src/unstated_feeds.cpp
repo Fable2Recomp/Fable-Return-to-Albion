@@ -306,12 +306,6 @@ REFII_HOST_ABI_EXPORT int32_t RefiiHostGuestBuild(void) {
     return 0;
 }
 
-REFII_HOST_ABI_EXPORT void RefiiHostGuiNativeCounters(uint64_t* out_intercepted, uint32_t* out_pending, uint32_t* out_named) {
-    Zero(out_intercepted);
-    Zero(out_pending);
-    Zero(out_named);
-}
-
 REFII_HOST_ABI_EXPORT void RefiiHostMenuChunkCounters(uint64_t* out_recorded, uint32_t* out_pending, uint64_t* out_dropped) {
     Zero(out_recorded);
     Zero(out_pending);
@@ -328,13 +322,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostPauseTabSelect(uint32_t /*tab*/) {
 
 REFII_HOST_ABI_EXPORT void RefiiHostRefreshSaveState(void) {}
 
-REFII_HOST_ABI_EXPORT void RefiiHostSetGuiPredicate(const char* /*name*/, uint32_t /*kind*/, uint32_t /*bits*/) {}
-
 REFII_HOST_ABI_EXPORT void RefiiHostSetHighlightedRow(uint32_t /*screen*/, int32_t /*event_type*/, int32_t /*id*/, const char* /*name*/, const char* /*label*/) {}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostTakeGuiNativeCalls(char* /*out_utf8*/, uint32_t /*utf8_capacity*/, uint8_t* /*out_kinds*/, uint32_t /*kinds_capacity*/, uint32_t /*max_records*/) {
-    return 0;
-}
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostTakeMenuChunks(char* /*out_utf8*/, uint32_t /*utf8_capacity*/, uint8_t* /*out_kinds*/, uint32_t /*kinds_capacity*/, uint32_t /*max_records*/) {
     return 0;

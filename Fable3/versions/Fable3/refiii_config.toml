@@ -35,6 +35,27 @@
 0x82C3D538 = { name = "rex_BinkPlayer_SetDestRect" }
 0x82C3D450 = { name = "rex_BinkPlayer_Close" }
 0x8230B0F0 = { name = "rex_StartupMoviePlayer_Ctor" }
+# The UI cut's seam (Fable3/src/hooks/src/gui_natives.cpp): the Lua C-precall every native call
+# passes through (&base_ci, L, nresults, funcTV, newTop, pc), and the namespace registration's
+# name hook (namespace slot, L, name) that binds each implementation to its `GUI.*` name.
+0x82214E40 = { name = "rex_luaD_precallC" }
+0x82359150 = { name = "rex_lhLuaNamespace_RegisterFunctionHash" }
+# The Gameface element API every Fable 3 menu, box and HUD screen is written through
+# (Fable3/src/hooks/src/gui_element_hooks.cpp): the dotted-path resolver (path, parent,
+# presentation) and the setters — state (elem, pres, int), opacity (elem, pres, f1), a text box's
+# string commit (box, &string) and a text tag (elem, tagId).
+0x82819E40 = { name = "rex_GuiElement_Resolve" }
+0x8227DA00 = { name = "rex_GuiElement_SetState" }
+0x82819420 = { name = "rex_GuiElement_SetOpacity" }
+0x82B45268 = { name = "rex_GuiTextBox_Commit" }
+0x82819288 = { name = "rex_GuiElement_SetTextTag" }
+# The box manager's queue tick (queue) — the one place a display box becomes the showing box and
+# the one exit that drops it — and the menu box's open (MB), input (MB, ev, pad) and close (MB)
+# (Fable3/src/hooks/src/display_box_hooks.cpp).
+0x822878B0 = { name = "rex_BoxQueue_Update" }
+0x825FA220 = { name = "rex_MenuBox_Open" }
+0x825FA030 = { name = "rex_MenuBox_Input" }
+0x825FA420 = { name = "rex_MenuBox_Close" }
 # FUNCTIONS THE GENERATOR DID NOT FIND: reached only through a pointer or only as a tail-branch
 # target, with no .pdata entry. Found in the Fable 3 IDB against the built module's own symbol
 # list: every IDA function it lacks (multiple-inheritance adjustor thunks, `addi r3,r3,-N; b`, the

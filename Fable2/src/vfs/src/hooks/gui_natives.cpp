@@ -26,7 +26,7 @@
 
 #include "vfs_hooks_private.h"
 #include "core/guest_state.h"
-#include "gui/gui_native_calls.h"
+#include "core/gui_native_calls.h"
 #include "hooks/ppc_externs.h"
 
 namespace {

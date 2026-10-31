@@ -1,9 +1,12 @@
-// The ~120 `GUI.*` natives, captured with their arguments at the game VM's `luaD_precall`
-// (recognised by implementation pointer). See docs/ui_native_cut.md. Taking a call does not
-// suppress it — the guest's implementation still runs; suppression is opt-in per native.
+// The `GUI.*` natives a title's game Lua VM calls, captured with their arguments at that VM's
+// `luaD_precall` (recognised by implementation pointer) — see docs/ui_native_cut.md. SHARED STATE,
+// in librefii_runtime: a title's hooks (the payload, on the guest's threads) post through the
+// refii_bridge_gui_native_* C entries, and the shared host exports (src/hostcore) drain. Taking a
+// call does not suppress it — the guest's implementation still runs; suppression is opt-in per
+// native. The contract is the VM's: a name, its arguments as the stack held them.
 
-#ifndef REFII_VFS_GUI_GUI_NATIVE_CALLS_H
-#define REFII_VFS_GUI_GUI_NATIVE_CALLS_H
+#ifndef REFII_RUNTIME_CORE_GUI_NATIVE_CALLS_H
+#define REFII_RUNTIME_CORE_GUI_NATIVE_CALLS_H
 
 #include <cstddef>
 #include <cstdint>
@@ -11,7 +14,7 @@
 #include <string>
 #include <vector>
 
-#include "core/payload_bridge_fable2.h"
+#include "core/payload_bridge.h"
 
 namespace refii::vfs {
 
@@ -263,4 +266,4 @@ void GuiNativeCounters(uint64_t* out_intercepted, uint32_t* out_pending, uint32_
 
 }  // namespace refii::vfs
 
-#endif  // REFII_VFS_GUI_GUI_NATIVE_CALLS_H
+#endif  // REFII_RUNTIME_CORE_GUI_NATIVE_CALLS_H

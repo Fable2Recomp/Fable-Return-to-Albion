@@ -20,7 +20,7 @@
 #include "vfs_hooks_private.h"
 #include "core/guest_state.h"
 #include "core/payload_bridge_fable2.h"
-#include "gui/gui_native_calls.h"
+#include "core/gui_native_calls.h"
 #include "hooks/ppc_externs.h"
 #include "core/guest_build.h"
 

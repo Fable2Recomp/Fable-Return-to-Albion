@@ -1,4 +1,4 @@
-#include "gui/gui_native_calls.h"
+#include "core/gui_native_calls.h"
 
 #include <atomic>
 #include <mutex>

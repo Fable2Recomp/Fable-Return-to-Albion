@@ -20,4 +20,12 @@ public sealed class Fable3UiSource : Engine_UiSource
 	public override Dictionary<uint, float> GetHudMeters() => HostBridge.GetHudMeters();
 
 	public override Dictionary<uint, string> GetHudTexts() => HostBridge.GetHudTexts();
+
+	/// <summary>
+	/// The `GUI.*` calls Fable 3's game VM made since the last take, with their arguments: the
+	/// UI cut's seam (Fable3/src/hooks/src/gui_natives.cpp posts, the shared core drains).
+	/// </summary>
+	public override List<Engine_UiModel.GuiNativeCall> TakeGuiNativeCalls() => HostBridge.TakeGuiNativeCalls();
+
+	public override (ulong Intercepted, uint Pending, uint Named) GuiNativeCounters() => HostBridge.GuiNativeCounters();
 }

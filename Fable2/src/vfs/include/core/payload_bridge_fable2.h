@@ -291,17 +291,6 @@ uint32_t refii_bridge_requested_shop_price(int32_t* sell);
 void refii_bridge_publish_shop_price(const void* price);
 void refii_bridge_publish_clothing_mannequin(uint32_t entity);
 
-void refii_bridge_note_gui_native_registration(uint32_t implementation,
-                                               const char* name, size_t length);
-int32_t refii_bridge_gui_native_name_for(uint32_t implementation,
-                                         char* out, size_t capacity, size_t* out_length);
-int32_t refii_bridge_gui_natives_registered(void);
-uint32_t refii_bridge_gui_native_answer_for(uint32_t implementation, uint32_t* out_bits);
-void refii_bridge_note_gui_native_entry(uint32_t implementation);
-uint32_t refii_bridge_current_gui_native_entry(void);
-
-void refii_bridge_post_gui_native_call(const uint8_t* blob, size_t length);
-
 // What the guest TELLS a presentation's elements (hooks/gui_slide_hooks.cpp posts, the host bridge
 // drains — gui/gui_told_statements.cpp). `kind` 1 slide entry, 2 paused, 3 attribute, 4 active,
 // 5 texture; `a`/`b` per kind. A text is its UTF-16 units, copied.

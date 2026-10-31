@@ -58,13 +58,11 @@ set(REFII_VFS_RUNTIME_SOURCES
     # Player two's split-screen HUD: the pump states it, the host bridge reads it.
     ${REFII_VFS_ROOT}/src/core/coop_hud_two.cpp
     ${REFII_VFS_ROOT}/src/core/hero_partners.cpp
-    # The UI cut's arrival queue: the intercepted `GUI.*` calls and their arguments. Same rule
-    # as the pump's queue above and for the same direction of travel — the PAYLOAD posts (the
-    # luaD_precall hook compiles into refii_generated) and the HOST BRIDGE drains, so a copy in
-    # each library would have the hook filling one queue while the bridge reads another empty
-    # one. That is not a link error on Linux, which is what makes it worth stating here.
-    ${REFII_VFS_ROOT}/src/gui/gui_native_calls.cpp
-    # The told-statement queues (hooks/gui_slide_hooks.cpp pushes, the bridge takes): same rule.
+    # The told-statement queues (hooks/gui_slide_hooks.cpp pushes, the bridge takes): the PAYLOAD
+    # posts and the HOST BRIDGE drains, so a copy in each library would have the hook filling one
+    # queue while the bridge reads another empty one. That is not a link error on Linux, which is
+    # what makes it worth stating here. (The GUI native call queue itself is shared state in
+    # refii_runtime, src/runtime/src/core/gui_native_calls.cpp.)
     ${REFII_VFS_ROOT}/src/gui/gui_told_statements.cpp
     ${REFII_VFS_ROOT}/src/gui/gui_menu_chunks.cpp
     ${REFII_VFS_ROOT}/src/gui/gui_element_state.cpp

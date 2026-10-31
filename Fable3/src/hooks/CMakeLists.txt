@@ -15,6 +15,12 @@ set(REFIII_HOOK_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/splash_screen.cpp
     # The camera the guest renders the world with, and its preload gate held while Godot builds.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/view_feed.cpp
+    # The UI cut's seam: the `GUI.*` natives the game VM calls, with their arguments, for the host.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/gui_natives.cpp
+    # The Gameface elements the guest writes (resolver + state/opacity/text setters), stated by path.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/gui_element_hooks.cpp
+    # The display boxes and the menu box, stated as the box manager shows and drops them.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/display_box_hooks.cpp
 )
 
 add_library(refiii_hooks OBJECT ${REFIII_HOOK_SOURCES})

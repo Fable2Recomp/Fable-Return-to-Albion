@@ -271,6 +271,27 @@ void refii_bridge_movie_rect(uint32_t player, int32_t left, int32_t top, int32_t
 // - `player` is closing; the host stops reading through it before the guest frees it.
 void refii_bridge_movie_closed(uint32_t player);
 
+// THE UI CUT'S SEAM (src/runtime/src/core/gui_native_calls.cpp; C++ API core/gui_native_calls.h).
+// A title's hook on its game Lua VM's `luaD_precall` recognises a `GUI.*` native by the
+// IMPLEMENTATION pointer behind the thunk and posts the call with its arguments; its hook on the
+// VM's registration names each implementation first. The shared host exports drain the calls and
+// hold the host's answers to predicates the host owns.
+// - a `GUI` registration binds `implementation` under `name`;
+void refii_bridge_note_gui_native_registration(uint32_t implementation,
+                                               const char* name, size_t length);
+// - the first name bound to `implementation` (0 when it is not a GUI native);
+int32_t refii_bridge_gui_native_name_for(uint32_t implementation,
+                                         char* out, size_t capacity, size_t* out_length);
+// - whether any GUI registration has landed, so the call hook skips the boot storm;
+int32_t refii_bridge_gui_natives_registered(void);
+// - the host's answer for `implementation`: 0 none, 1 boolean, 2 float, 3 suppress;
+uint32_t refii_bridge_gui_native_answer_for(uint32_t implementation, uint32_t* out_bits);
+// - the implementation whose thunk is about to run on this thread, and its read-back;
+void refii_bridge_note_gui_native_entry(uint32_t implementation);
+uint32_t refii_bridge_current_gui_native_entry(void);
+// - one intercepted call, flattened by core/gui_native_calls.h's blob codec.
+void refii_bridge_post_gui_native_call(const uint8_t* blob, size_t length);
+
 // THE VIEW A TITLE STATES (src/runtime/src/core/stated_view.cpp). A title whose hook sees the
 // camera the guest renders the world with states it here, every step; its host bridge reads it
 // back for the shell.

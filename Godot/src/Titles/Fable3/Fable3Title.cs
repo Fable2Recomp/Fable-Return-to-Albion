@@ -30,6 +30,9 @@ public sealed class Fable3Title : Engine_TitleGame
 		layer.AddChild(new Fable3Strings { Name = "Strings" });
 		// Before the HUD, whose screen fade covers it.
 		layer.AddChild(new Fable3TopBox { Name = "TopBox" });
+		var natives = new Fable3GuiNatives { Name = "GuiNatives" };
+		layer.AddChild(natives);
+		layer.AddChild(new Fable3Boxes(natives) { Name = "Boxes" });
 		layer.AddChild(new Fable3Hud { Name = "Hud" });
 		_splash = new Fable3Splash { Name = "Splash" };
 		layer.AddChild(_splash);

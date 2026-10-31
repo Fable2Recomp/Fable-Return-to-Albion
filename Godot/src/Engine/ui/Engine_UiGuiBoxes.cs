@@ -568,6 +568,26 @@ public sealed class Engine_UiGuiBoxes
 	}
 
 	/// <summary>
+	/// Drops one box the guest stated gone — for a title whose box manager states the box itself
+	/// (Fable 3's `@Box.Close`), not a name.
+	/// </summary>
+	public bool Remove(Box box)
+	{
+		if (!_boxes.Remove(box))
+		{
+			return false;
+		}
+
+		if (box.Kind == BoxKind.Adjuster)
+		{
+			Adjusting = null;
+		}
+
+		++Generation;
+		return true;
+	}
+
+	/// <summary>
 	/// `GUI.SetCounter(name, tag, v1, v2)` — sets or updates in place. `sub_823CC240` walks a
 	/// fixed pool and, on a name match, inherits the existing counter's live UI element handles
 	/// (`a2[5] = *(v10+20)`) before replacing the record, so a repeat call keeps the widget.

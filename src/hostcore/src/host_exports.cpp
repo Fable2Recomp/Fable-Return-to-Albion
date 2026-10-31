@@ -100,6 +100,7 @@ void FlushLogging();
 #include "core/event_relay.h"
 #include "core/player_state.h"
 #include "core/guest_tick_queue.h"
+#include "core/gui_native_calls.h"
 #include "core/mouse_look_state.h"
 #include "core/movie_state.h"
 
@@ -884,6 +885,155 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetRequestedVideoName(char* out, uint32_
     }
 
     return refii::movie::RequestedName(out, capacity);
+}
+
+// ---------------------------------------------------------------- the UI cut's seam
+// Shared: every title's game Lua VM has a `GUI` namespace, and a title's luaD_precall hook posts
+// the calls into core/gui_native_calls.cpp; these drain and answer them for whichever title runs.
+
+/// Answers one `GUI` predicate from the host, by name.
+///
+/// `kind` is 0 to clear (the guest's implementation runs again), 1 boolean, 2 float. `bits` is
+/// 0/1 for a boolean and the float's raw bits for a float.
+REFII_HOST_ABI_EXPORT void RefiiHostSetGuiPredicate(const char* name, uint32_t kind,
+                                                    uint32_t bits) {
+    if (name == nullptr) {
+        return;
+    }
+
+    refii::vfs::SetGuiNativeAnswer(name, static_cast<refii::vfs::GuiNativeAnswerKind>(kind), bits);
+}
+
+/// Drains the `GUI.*` native calls intercepted since the last drain.
+///
+/// Each call arrives with the name the script used and the values it passed, before the
+/// guest's own implementation has touched them. The encoding is flat: `out_utf8` receives
+/// NUL-separated fields, `out_kinds` one byte per field. Each record is:
+///
+///     name \0 arg0 \0 arg1 \0 ... \0
+///
+/// with `out_kinds` holding the record's argument count followed by one kind byte per argument
+/// (0 none, 1 number, 2 boolean, 3 string, 4 other). Numbers arrive as decimal text and
+/// booleans as "0"/"1".
+///
+/// `lua_Number` is `float` in this title: the payload reads `*(float*)tv`, and taking eight
+/// bytes as a double gives plausible garbage.
+///
+/// Returns the number of records written. Zero means nothing was called, which is the normal
+/// answer on most frames.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostTakeGuiNativeCalls(char* out_utf8, uint32_t utf8_capacity,
+                                                           uint8_t* out_kinds,
+                                                           uint32_t kinds_capacity,
+                                                           uint32_t max_records) {
+    if (out_utf8 == nullptr || out_kinds == nullptr || utf8_capacity == 0 || kinds_capacity == 0) {
+        return 0;
+    }
+
+    std::vector<refii::vfs::GuiNativeCall> calls = refii::vfs::TakeGuiNativeCalls();
+    uint32_t written = 0;
+    uint32_t text_at = 0;
+    uint32_t kind_at = 0;
+
+    const auto put = [&](const std::string& field) {
+        if (text_at + field.size() + 1u > utf8_capacity) {
+            return false;
+        }
+        std::memcpy(out_utf8 + text_at, field.data(), field.size());
+        text_at += static_cast<uint32_t>(field.size());
+        out_utf8[text_at++] = '\0';
+        return true;
+    };
+
+    for (const refii::vfs::GuiNativeCall& call : calls) {
+        if (written >= max_records) {
+            break;
+        }
+        if (kind_at + 1u + call.arguments.size() > kinds_capacity) {
+            break;
+        }
+
+        const uint32_t text_mark = text_at;
+        const uint32_t kind_mark = kind_at;
+        bool ok = put(call.name);
+        out_kinds[kind_at++] = static_cast<uint8_t>(call.arguments.size());
+
+        // A table argument spends more than one kind byte, so each write tests for itself and
+        // a record that runs out of either buffer is rolled back whole.
+        const auto put_kind = [&](refii::vfs::GuiNativeArgument::Kind kind) {
+            if (kind_at >= kinds_capacity) {
+                return false;
+            }
+            out_kinds[kind_at++] = static_cast<uint8_t>(kind);
+            return true;
+        };
+
+        for (const refii::vfs::GuiNativeArgument& argument : call.arguments) {
+            if (!ok) break;
+            ok = put_kind(argument.kind);
+            if (!ok) break;
+            switch (argument.kind) {
+                case refii::vfs::GuiNativeArgument::Kind::kNumber:
+                    ok = put(fmt::format("{}", argument.number));
+                    break;
+                case refii::vfs::GuiNativeArgument::Kind::kBoolean:
+                    ok = put(argument.boolean ? "1" : "0");
+                    break;
+                case refii::vfs::GuiNativeArgument::Kind::kString:
+                    ok = put(argument.text);
+                    break;
+                case refii::vfs::GuiNativeArgument::Kind::kTable:
+                    // The field COUNT as a text field, then name/kind/value per field — the
+                    // same flat two-buffer shape the rest of the record uses.
+                    ok = put(fmt::format("{}", argument.fields.size()));
+                    for (const refii::vfs::GuiNativeArgument::Field& field : argument.fields) {
+                        if (!ok) break;
+                        ok = put(field.name) && put_kind(field.kind);
+                        if (!ok) break;
+                        switch (field.kind) {
+                            case refii::vfs::GuiNativeArgument::Kind::kNumber:
+                                ok = put(fmt::format("{}", field.number));
+                                break;
+                            case refii::vfs::GuiNativeArgument::Kind::kBoolean:
+                                ok = put(field.boolean ? "1" : "0");
+                                break;
+                            case refii::vfs::GuiNativeArgument::Kind::kString:
+                                ok = put(field.text);
+                                break;
+                            default:
+                                ok = put(std::string());
+                                break;
+                        }
+                    }
+                    break;
+                default:
+                    ok = put(std::string());
+                    break;
+            }
+        }
+
+        if (!ok) {
+            // A record is all or nothing: half a call would attach the wrong argument list to
+            // a name, so the partial write is rolled back and the drain stops here.
+            text_at = text_mark;
+            kind_at = kind_mark;
+            break;
+        }
+
+        ++written;
+    }
+
+    return written;
+}
+
+/// Counters for the UI cut's own report: how many native calls have been intercepted, how many
+/// are waiting, and how many `GUI` names the registration hook resolved.
+///
+/// `named` is 0 until `RegisterGUI` has run and settles at the registered count, which
+/// separates "nothing intercepted" from "the namespace was never seen".
+REFII_HOST_ABI_EXPORT void RefiiHostGuiNativeCounters(uint64_t* out_intercepted,
+                                                      uint32_t* out_pending,
+                                                      uint32_t* out_named) {
+    refii::vfs::GuiNativeCounters(out_intercepted, out_pending, out_named);
 }
 
 /// The sound of the movie the guest last opened, as the guest stated it: `out_sound` 0 for a
