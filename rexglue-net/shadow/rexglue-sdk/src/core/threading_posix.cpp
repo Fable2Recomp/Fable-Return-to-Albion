@@ -530,7 +530,7 @@ class PosixCondition<Event> : public PosixConditionBase {
     if (manual_reset_) {
       return PosixConditionBase::Wait(timeout);
     }
-#if REX_PLATFORM_LINUX
+#if REX_PLATFORM_LINUX && !REX_PLATFORM_ANDROID
     auto native_mutex = static_cast<pthread_mutex_t*>(mutex_.native_handle());
     int lock_result = pthread_mutex_lock(native_mutex);
     if (lock_result == EOWNERDEAD) {
