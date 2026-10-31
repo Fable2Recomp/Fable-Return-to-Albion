@@ -4,7 +4,7 @@ using System.IO;
 namespace Refii.Textures;
 
 /// <summary>One prepared texture upload on disk: width, height, Godot image format, mipmaps and
-/// the payload, as <see cref="Engine_AndroidTextureUpload.PrepareAhead"/> made it.</summary>
+/// the payload, as <see cref="Engine_TextureUpload.PrepareAhead"/> made it.</summary>
 /// <remarks>
 /// Kept for the BC to ASTC transcode of the pub-game boards, so a cold board load reads the
 /// ASTC payload instead of rewriting every block again. The caller keys the file name (source

@@ -63,8 +63,7 @@ public static class RuntimeCVarsGodot
     private static readonly string Fable2LocalCoop = Refii.Core.Engine_Title.Fable2.Folder;
 
     public static readonly IReadOnlyList<RuntimeCVarDefinition> Definitions =
-        new List<RuntimeCVarDefinition>
-        {
+        [
             new("decorate_mode_enabled", ControlsCategory, RuntimeCVarType.Bool, "false",
                 "Enable free furniture placement through an owned home's Redecorate option. Furniture layouts are kept with the character's save."),
             new("materials_modernized", Category, RuntimeCVarType.Bool, "true",
@@ -141,17 +140,7 @@ public static class RuntimeCVarsGodot
                 "The window size, chosen from the sizes that fit the aspect ratio above. This "
                 + "replaces typing a width and a height by hand."),
 
-            new(GraphicsPresets.Key, DisplayCategory, RuntimeCVarType.String, GraphicsPresets.Quality,
-                "The picture's cost settings as one choice, on a phone. Quality trades distance, "
-                + "shadows and resolution for a steady frame rate on a phone, which its own heat "
-                + "holds well below its peak clock; Performance gives up the sun's shadow and most "
-                + "of the resolution to hold 30 FPS on a phone that has throttled fully. Changing "
-                + "any of those settings afterwards reads as Custom.",
-                "android|Quality,android_low|Performance,custom|Custom"),
-
-            new(GraphicsPresets.RevisionKey, DisplayCategory, RuntimeCVarType.Int, "1",
-                "The presets' revision these settings were last written from; a phone still on a "
-                + "named preset takes that preset's newer values once, on its next start."),
+            ..RuntimeCVarsAndroid.GraphicsPreset,
 
             new("max_fps", DisplayCategory, RuntimeCVarType.Int, "0",
                 "Frame rate cap. 0 is uncapped, which with vsync off will run the GPU as hard "
@@ -185,11 +174,7 @@ public static class RuntimeCVarsGodot
                 + "game update and the draw rather than their sum. Godot marks this mode "
                 + "experimental; off follows Godot's default. Takes effect at the next launch."),
 
-            new("android_render_thread", DisplayCategory, RuntimeCVarType.Bool, "false",
-                "Android: run Godot's renderer on its own thread. Its own key, not render_thread: "
-                + "the launcher has written the desktop key's default (true) into every Android "
-                + "config already. Needs an engine with the render-thread fixes (Godot 4.7.1 stock "
-                + "crashes on resume with it). Takes effect at the next launch."),
+            ..RuntimeCVarsAndroid.RenderThread,
 
             new("gpu_profile", DisplayCategory, RuntimeCVarType.Bool, "false",
                 "Print Godot's own per-pass GPU profile once a second to the log: shadows, "
@@ -327,90 +312,7 @@ public static class RuntimeCVarsGodot
                 + "added to that. Negative is sharper and grainier, positive is softer; -0.75 to "
                 + "0 is the useful range."),
 
-            new("shader_variant", DisplayCategory, RuntimeCVarType.String, "full",
-                "Android: the surface shaders. 'lite' compiles out what the phone never draws "
-                + "(weather, debug views, parallax, specular and cube work where none applies, flat "
-                + "terrain's cliff projection), which frees GPU registers; 'lite_flat' also drops the "
-                + "ground's bump. The desktop always draws 'full'. Applies at the next launch.",
-                "full|Full,lite|Lite,lite_flat|Lite, flat ground"),
-
-            new("lite_shadowless", DisplayCategory, RuntimeCVarType.Bool, "false",
-                "Android, lite shaders: compile out Godot's shadow sampling while the settings render "
-                + "no shadow map (sun_shadow_distance 0, placed_light_shadows off). The first light "
-                + "that casts, or a setting that would cast, puts the shadowed shaders back for the "
-                + "session (a pause of a few seconds while they recompile). Applies at the next launch."),
-
-            new("lite_bake_variants", DisplayCategory, RuntimeCVarType.Bool, "false",
-                "Android, lite shaders: a static prop draws with a shader built for its own baked "
-                + "lighting (lightmap, vertex bake, none), with the other modes and the PRT transfer "
-                + "compiled out. The same picture; up to five builds of each surface shader. Applies at "
-                + "the next launch."),
-
-            new("lite_material_folds", DisplayCategory, RuntimeCVarType.Bool, "false",
-                "Android, lite shaders: each model material's fixed switches (authored PBR, ORM, "
-                + "self-illumination, premultiplied alpha, grass bend, and its normal map) are compiled "
-                + "into its shader instead of read at draw. A surface without a normal map stops "
-                + "carrying tangents too. The same picture; a few more shader builds. Applies at the next launch."),
-
-            new("lite_terrain_single_fetch", DisplayCategory, RuntimeCVarType.Bool, "false",
-                "Android, lite ground: the fallback for ground no layer is painted on is drawn by the "
-                + "splat loop's own layer fetch instead of a second copy of it, a smaller shader with "
-                + "the same result. Applies at the next launch."),
-
-            new("prop_far_shading_metres", DisplayCategory, RuntimeCVarType.Double, "0",
-                "Android, lite shaders: props whose nearest point is farther than this many metres draw "
-                + "without their normal map, which is below a pixel there at a low render scale; 0 is "
-                + "off, 30 is the suggested distance. Batches of several materials stay as they are. "
-                + "Takes effect live; set before the level loads so the loading screen also prepares "
-                + "the far shaders."),
-
-            new("android_pipeline_warmup", DisplayCategory, RuntimeCVarType.Bool, "false",
-                "Android: under each level's loading screen, every surface the level draws is drawn "
-                + "once more beside the camera under each light count it can meet in play (none, one "
-                + "or several omni and spot lights), so walking compiles no pipelines. A longer load "
-                + "and some driver memory for each pipeline; applies at the next level load."),
-
-            new("android_guest_prime_core", DisplayCategory, RuntimeCVarType.Bool, "false",
-                "Android, CPU: the game's simulation thread is held on the phone's fastest cores "
-                + "(those with the highest maximum clock: one on a Snapdragon 855, two on an 8 Elite) "
-                + "and given a higher priority, instead of moving between the big and the little "
-                + "cores. The same game; it runs nearer full speed where that thread is the limit. "
-                + "Takes effect at the next launch."),
-
-            new("android_dotnet_gc", DisplayCategory, RuntimeCVarType.String, "",
-                "Android, memory: .NET garbage collector settings, as space-separated NAME=VALUE "
-                + "pairs in the runtime's own spelling (hexadecimal values), each set as a DOTNET_ "
-                + "variable before the runtime starts. GCgen0size=2000000 gives the youngest "
-                + "generation a 32 MB budget (a few MB by default: about 2.7 MB on a Galaxy S10e), so "
-                + "collections come roughly a tenth as often; GCHighMemPercent=61 moves the memory load at which it starts "
-                + "compacting to save memory from 90% to 97% (a phone in a game sits near 90%); "
-                + "gcConcurrent=0 turns background collection off. Only GC names "
-                + "are taken. Empty leaves the defaults. Takes effect at the next launch; the desktop "
-                + "reads DOTNET_ variables from its own environment and ignores it."),
-
-            new("android_host_off_prime", DisplayCategory, RuntimeCVarType.Bool, "false",
-                "Android, CPU: every thread but the game's simulation thread is kept off the phone's "
-                + "fastest cores, so that thread has them to itself instead of sharing them with "
-                + "Godot's own threads. The same game; the rest of the work runs on the other cores. "
-                + "Takes effect at the next launch."),
-
-            new("android_guest_real_clock", DisplayCategory, RuntimeCVarType.Bool, "false",
-                "Android, CPU: the game reads the real clock directly, instead of through the "
-                + "desktop's stepped clock with a lock on every read. The same game at the same "
-                + "speed, with less waiting between its threads. Takes effect at the next launch."),
-
-            new("hdr_2d", DisplayCategory, RuntimeCVarType.Bool, "true",
-                "Android: the world's colour in half floats (on) or 10 bits (off). Off halves the "
-                + "colour bandwidth for highlights that clip a little sooner; a change pauses the game "
-                + "a few seconds while the GPU's pipelines are rebuilt. The desktop ignores it."),
-
-            new("motion_arrival_fit", DisplayCategory, RuntimeCVarType.Bool, "false",
-                "Motion: walking characters and the camera are drawn along a line fitted through "
-                + "the last few positions the game stated, timed by when each arrived, a tenth of "
-                + "a second behind, instead of by the game tick each was stamped with. For a game "
-                + "running slow or unevenly (Android), where the stamps are half a tick out and a "
-                + "walk went in stop-go steps; costs about 40 ms more latency. Live through the "
-                + "debug channel (render motionArrivalFit)."),
+            ..RuntimeCVarsAndroid.Tuning,
 
             new("entity_skip_index", DisplayCategory, RuntimeCVarType.Bool, "false",
                 "CPU: the entity walk answers the props, markers and still scenery that have not "
@@ -425,10 +327,7 @@ public static class RuntimeCVarsGodot
                 + "(its lighting after a time-of-day change, a part swapped) shows up to that many "
                 + "times later. Live."),
 
-            new("android_loh_compaction", DisplayCategory, RuntimeCVarType.Bool, "false",
-                "Android, memory: when a level has finished loading, the app's large memory blocks "
-                + "are compacted as on the desktop, giving back the gaps the load left. A slightly "
-                + "longer pause at the end of the loading screen; nothing changes in play."),
+            ..RuntimeCVarsAndroid.LohCompaction,
 
             new("loh_compaction_defer_seconds", DisplayCategory, RuntimeCVarType.Int, "0",
                 "Memory: the compaction of the app's large memory blocks after a load (always on the "
@@ -455,17 +354,7 @@ public static class RuntimeCVarsGodot
                 + "the batches' bounds and step-alpha writes trimmed. The debug channel's render op "
                 + "(fxFastPaths) flips it live."),
 
-            new("fx_prefetch_prepare", DisplayCategory, RuntimeCVarType.Bool, "false",
-                "Android, effects: the background read of the effect textures also converts each "
-                + "one for a GPU without the game's compressed formats, instead of the game doing it "
-                + "on the frame an effect first appears. The same picture; the waiting textures take "
-                + "more memory until used. Takes effect at the next launch."),
-
-            new("canvas_lean", DisplayCategory, RuntimeCVarType.Bool, "false",
-                "Android 2D: the touch controls drawn in the UI layer's screen pass instead of one "
-                + "of their own while nothing shows between the two, and a screen fade too faint to "
-                + "change a pixel not drawn. The same picture; the debug channel's render op "
-                + "(canvasLean) flips it live."),
+            ..RuntimeCVarsAndroid.EffectsAndCanvas,
 
             new("fx_no_depth_reads", DisplayCategory, RuntimeCVarType.Bool, "false",
                 "Effects without a soft edge are drawn by shaders that do not declare the scene's "
@@ -599,17 +488,7 @@ public static class RuntimeCVarsGodot
                 + "0 lights every one within placed_light_range. Each lit light is shaded on "
                 + "everything it reaches, so a town at night costs a phone most in its far lamps. "
                 + "Not the retired placed_light_budget: range culling still applies first."),
-            new("stable_light_counts", LightingCategory, RuntimeCVarType.Bool, "false",
-                "Android: zero-energy, never-shaded lights paired with every object, so each draw "
-                + "keeps the same light count as lamps come and go and Godot compiles no new "
-                + "pipeline for it (a hitch of up to seconds on Adreno). The same picture; turning "
-                + "it on recompiles each material once. The debug channel's render op "
-                + "(stableLightCounts) flips it live."),
-            new("stable_light_counts_sentinel", LightingCategory, RuntimeCVarType.Bool, "false",
-                "With stable_light_counts: one filler of each type kept in the light buffer, so an "
-                + "object no lamp reaches shades a defined light that adds nothing instead of an "
-                + "unwritten entry. Costs two cheap light evaluations per pixel; only for when the "
-                + "plain fillers show a stray light. Live as stableLightSentinel."),
+            ..RuntimeCVarsAndroid.StableLightCounts,
             new("placed_light_fade", LightingCategory, RuntimeCVarType.Bool, "true",
                 "Whether a placed light fades out and stops drawing past its authored camera "
                 + "cutoff, as the 360 did. Off keeps every fixture lit at any distance; its "
@@ -783,11 +662,7 @@ public static class RuntimeCVarsGodot
                 "0|Off,1|Bake and ambient only,2|Direct light only,3|Raw albedo,"
                 + "4|Normal-map darkening,5|Bake mode,6|Sun shadow term,7|Sun NdotL (signed),"
                 + "8|View-space normal,9|Direct light on white"),
-            new("debug_gc_stress_ms", DeveloperCategory, RuntimeCVarType.Int, "0",
-                "Android, testing: a background thread forces a garbage collection of the young "
-                + "generations every this many milliseconds, to make crash windows that need a "
-                + "collection at the wrong moment show up in a few loads. Slows the game; 0 is off. "
-                + "Takes effect at the next launch."),
+            ..RuntimeCVarsAndroid.GcStress,
             new("hitch_log_ms", DeveloperCategory, RuntimeCVarType.Int, "200",
                 "Testing: a frame slower than this many milliseconds is written to the log with "
                 + "what moved during it and what it made for the first time (effect textures, "
@@ -862,9 +737,8 @@ public static class RuntimeCVarsGodot
             new("discord_presence", PresenceCategory, RuntimeCVarType.Bool, "true",
                 "Show the game you are playing and the level you are in on your "
                 + "Discord profile while Discord is running."),
-        }
-        .Concat(KeyBindings())
-        .ToList();
+            ..KeyBindings(),
+        ];
 
     /// <summary>
     /// One setting per keyboard and mouse action, from the game's own table so the defaults live

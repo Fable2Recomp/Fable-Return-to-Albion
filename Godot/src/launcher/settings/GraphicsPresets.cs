@@ -50,6 +50,11 @@ public static class GraphicsPresets
     /// <summary>Whether this platform offers the presets: Android. Tests stand in for a phone with it.</summary>
     public static bool Offered { get; set; } = Refii.Core.Engine_Platform.IsAndroid;
 
+    /// <summary>Whether refii.toml holds the setting as far as the presets decide (<c>RuntimeConfig.ShouldWriteCVar</c>).</summary>
+    /// <remarks>The graphics preset and its revision are a phone's (<see cref="Offered"/>):
+    /// a desktop neither shows nor writes them.</remarks>
+    public static bool ShouldWrite(string name) => (name != Key && name != RevisionKey) || Offered;
+
     /// <summary>The frame cap (<c>max_fps</c>) a phone starts with, set beside the preset, not in it.</summary>
     /// <remarks>An even 30 rather than an uneven 25-40 that heats the phone into lower clocks. Kept
     /// out of the presets so the in-game Options panel can change either without the other:

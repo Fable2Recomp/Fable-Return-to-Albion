@@ -61,8 +61,10 @@ public sealed record AndroidTextureUploadPolicy(bool Android, bool Bc1, bool Bc2
 /// S10e stall disappeared with this adaptation; the precise GC wait cycle was not proven.
 /// Errors remain enabled. Supported BC images
 /// retain their compressed upload. Only temporary duplicates change, preserving source/cache
-/// images and existing alpha metadata. No RenderingDevice query occurs on texture workers.</remarks>
-public static class Engine_AndroidTextureUpload
+/// images and existing alpha metadata. No RenderingDevice query occurs on texture workers.
+/// Shared code reaches the upload calls through <see cref="Engine_TextureUpload"/>, once
+/// <see cref="Policy"/> is the captured Android one.</remarks>
+public static class AndroidTextureUpload
 {
     private static AndroidTextureUploadPolicy _policy = new(false, true, true, true, true, true, true);
     private static int _initialized;
@@ -144,12 +146,6 @@ public static class Engine_AndroidTextureUpload
     /// <returns>Godot's normal layered creation result.</returns>
     public static Error CreateLayered(ImageTextureLayered texture, Godot.Collections.Array<Image> images)
     {
-        if (!Policy.Android)
-        {
-            Error created = texture.CreateFromImages(images);
-            GC.KeepAlive(images);
-            return created;
-        }
         var temporary = new List<Image>();
         var prepared = new Godot.Collections.Array<Image>();
         // Array<T> exposes its same underlying native Array through this conversion;

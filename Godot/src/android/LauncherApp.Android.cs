@@ -13,6 +13,13 @@ public partial class LauncherApp
     private AndroidPhoneLauncher? _phone;
     private string _phoneStatus = "";
 
+    /// <summary>The File menu on a phone: installation and save transfer instead of the install folder.</summary>
+    private static readonly string[] AndroidFileMenuItems =
+    {
+        "Install from ISO and TU", "Cancel installation", "", "Export logs and saves", "Export saves", "Import save", "",
+        "Show Announcements", "Show Debug Panel", "Close",
+    };
+
     /// <summary>Builds the original launcher with private Android settings and self-contained installation actions.</summary>
     private void ReadyAndroid()
     {
@@ -103,6 +110,59 @@ public partial class LauncherApp
         if (_consoleLines.Count >= 80) _consoleLines.RemoveAt(0);
         _consoleLines.Add(_phoneStatus);
         RefreshAndroidState();
+    }
+
+    /// <summary>Handles the phone's own File menu entries (<see cref="AndroidFileMenuItems"/>), including worker cancellation.</summary>
+    /// <param name="item">Selected visible menu label.</param>
+    /// <returns>False for an entry the shared menu handles.</returns>
+    private bool OnAndroidFileMenu(string item)
+    {
+        switch (item)
+        {
+            case "Install from ISO and TU":
+                _settingsTabs.CurrentTab = 2; RefreshDebugDrawer(); ShowSettingsDrawer(); return true;
+            case "Cancel installation":
+                _phone?.CancelInstallation(); return true;
+            case "Export saves":
+                _phone?.Export(AndroidLogBundle.Contents.Saves); return true;
+            case "Export logs and saves":
+                _phone?.Export(AndroidLogBundle.Contents.LogsAndSaves); return true;
+            case "Import save":
+                _phone?.ImportSave(); return true;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>Shows shared launch settings or the phone's installation controls.</summary>
+    /// <returns>False when there is no phone backend and the desktop drawer applies.</returns>
+    private bool RefreshAndroidDrawer()
+    {
+        if (_phone == null) return false;
+        _settingsPanel.Visible = _settingsTabs.CurrentTab == 0;
+        _moddingPanel.Visible = _settingsTabs.CurrentTab == 1;
+        _phone.Visible = _settingsTabs.CurrentTab == 2;
+        _reinstallPanel.Hide();
+        return true;
+    }
+
+    /// <summary>Shows the Android installation progress log in the info drawer's Installation tab.</summary>
+    /// <returns>False when another tab, or the desktop, is showing.</returns>
+    private bool ShowAndroidInstallationLog()
+    {
+        if (_phone == null || _infoTabs.CurrentTab != 2) return false;
+        _infoBody.Text = string.Join("\n", _consoleLines).Replace("[", "[lb]", StringComparison.Ordinal);
+        return true;
+    }
+
+    /// <summary>Scales the phone's installation controls in place of the desktop's install panel.</summary>
+    /// <param name="body">Current responsive launcher body size.</param>
+    /// <returns>False when there is no phone backend and the desktop install panel is configured.</returns>
+    private bool ScaleAndroidInstallation(int body)
+    {
+        if (_phone == null) return false;
+        StyleAndroidInstallation(_phone, body);
+        return true;
     }
 
     /// <summary>Applies the shared drawer's readable text style to every hosted installation control.</summary>

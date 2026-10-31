@@ -37,11 +37,6 @@ namespace Refii.Game;
 /// </summary>
 public partial class GameDebugServer : Node
 {
-	/// <summary>Whether this node installs frame samplers; desktop callers retain the default ownership.</summary>
-	/// <remarks>Android installs its pair independently before adding an optional listener and
-	/// sets this false, keeping clock/draw sampling independent of network startup or failure.</remarks>
-	public bool OwnsFrameSampling { get; init; } = true;
-
 	/// <summary>Host-owned profiling uniforms; retained across level reloads and reset by process startup.</summary>
 	private static readonly Refii.Core.Engine_ShaderZeroWorkControls ShaderZeroWork = new();
 	private static readonly Refii.Core.Engine_ShaderCostDiagnostic ShaderCostDiagnostic = new();
@@ -1051,19 +1046,13 @@ public partial class GameDebugServer : Node
 					});
 				}
 
-				(bool handheldRunning, float handheldAmplitude) = GameInput.HandheldRumbleReadout();
 				return Ok(new Dictionary<string, object?>
 				{
 					// Both gates: the guest's byte_8331924F and the launcher's controller_vibration.
 					["guestSwitch"] = Refii.Core.Engine_TitleGame.Active.GuestVibrationEnabled,
 					["launcherSwitch"] = GameInput.ControllerVibration,
 					["pads"] = pads,
-					// Pad 0 on the phone's own vibrator, played by touch on Android.
-					["handheld"] = new Dictionary<string, object?>
-					{
-						["running"] = handheldRunning,
-						["amplitude"] = handheldAmplitude,
-					},
+					["handheld"] = HandheldRumble(),
 				});
 			}
 

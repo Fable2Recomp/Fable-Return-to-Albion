@@ -17,12 +17,21 @@ co-op work, with the gaps listed at the end.
 
 - **Native.** The runtime and host build with the NDK behind `if(ANDROID)` in CMake
   (`cmake/refii_android_toolchain.cmake`, `cmake/refii_android.cmake`, and the shadow SDK's
-  `thirdparty/sdl_android.cmake`); the shadow SDK gains POSIX/Android paths for threads,
-  fibers, input and the window. Desktop builds take the same sources.
-- **C#.** Android code lives in `Godot/src/android`, and the NativeAOT export's MSBuild
-  settings in `Godot/src/android/Android.targets`. Shared code asks
+  `thirdparty/sdl_android.cmake`). Phone-only native code sits in `*_android` files beside
+  the shared ones (`lifecycle_android.cpp`, `babel_text_hooks_android.cpp`,
+  `refii_app_android.h`, the shadow SDK's `threading_owner_lifetime_android.h`), and the
+  shadow SDK gains POSIX/Android paths for threads, fibers, input and the window. Desktop
+  builds take the same sources.
+- **C#.** Android code lives in `Godot/src/android` (Fable 2's own in
+  `Godot/src/Titles/Fable2/android`), mostly as `partial` files of the shared classes it
+  extends; the shared file keeps a one-line call where the phone code was. Textures upload
+  through `Engine_TextureUpload`, which hands a phone's images to `AndroidTextureUpload`.
+  The NativeAOT export's MSBuild settings are in `Godot/src/android/Android.targets`. Shared
+  code asks
   `Engine_Platform.IsAndroid`, not `OperatingSystem.IsAndroid()`, which is false under
   NativeAOT's linux-bionic.
+- **Shaders.** The lite variants include the same shader bodies as the desktop; what they
+  leave out is behind `#ifdef FABLE_LITE` in those bodies, not in second copies.
 - **Settings.** Every setting the port added defaults to the desktop's existing behaviour.
   The Android [graphics presets](#android-graphics-preset) turn them on, and a desktop
   neither shows nor writes the presets.

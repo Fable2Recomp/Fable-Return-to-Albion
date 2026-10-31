@@ -227,7 +227,7 @@ public static class Engine_TexLibrary
 			enhanced = true;
 		}
 
-		ImageTexture? texture = image is null || image.IsEmpty() ? null : temporary.Own(Engine_AndroidTextureUpload.CreateTexture(image));
+		ImageTexture? texture = image is null || image.IsEmpty() ? null : temporary.Own(Engine_TextureUpload.CreateTexture(image));
 
 		lock (Gate)
 		{
@@ -503,7 +503,7 @@ public static class Engine_TexLibrary
 				continue;
 			}
 
-			Engine_AndroidTextureUpload.SetImage(texture, image);
+			Engine_TextureUpload.SetImage(texture, image);
 			lock (Gate)
 			{
 				entry.HasAlpha = hasAlpha;
@@ -1015,7 +1015,7 @@ public static class Engine_TexLibrary
 				{
 					return false;
 				}
-				texture = Engine_AndroidTextureUpload.CreateTexture(img);
+				texture = Engine_TextureUpload.CreateTexture(img);
 				hasHeight = height;
 
 				lock (Gate)
@@ -1148,7 +1148,7 @@ public static class Engine_TexLibrary
 		Image? packed = BuildOrmImage(
 			path, normal, id, powerMin, powerMax, aoStrength, metallicStrength, withHeight,
 			read, out bool packedHeight);
-		ImageTexture? built = packed is null || packed.IsEmpty() ? null : Engine_AndroidTextureUpload.CreateTexture(packed);
+		ImageTexture? built = packed is null || packed.IsEmpty() ? null : Engine_TextureUpload.CreateTexture(packed);
 
 		lock (Gate)
 		{
@@ -1209,7 +1209,7 @@ public static class Engine_TexLibrary
 		packed.GenerateMipmaps();
 		CompressOrReport(packed, isNormalMap: false, "orm");
 		hasHeight = packedHeight;
-		return packed.IsEmpty() ? null : Engine_AndroidTextureUpload.CreateTexture(packed);
+		return packed.IsEmpty() ? null : Engine_TextureUpload.CreateTexture(packed);
 	}
 
 	/// <summary>
@@ -1563,7 +1563,7 @@ public static class Engine_TexLibrary
 				// The swap, and the reason nothing had to register a callback: every material
 				// holding this Texture2D is holding THIS object, so replacing its image updates
 				// all of them at once. SetImage rather than Update because the size changes.
-				Engine_AndroidTextureUpload.SetImage(target, image);
+				Engine_TextureUpload.SetImage(target, image);
 				Refii.Core.Engine_TracedMemory.Resize(TracedPool, target.GetRid().Id, (ulong)image.GetDataSize());
 				lock (Gate)
 				{

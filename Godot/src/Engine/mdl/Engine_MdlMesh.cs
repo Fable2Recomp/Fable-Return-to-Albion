@@ -98,9 +98,6 @@ public static int SurfacesWithLods;
     /// </summary>
     public static int SurfacesWithoutLods;
 
-    /// <summary>Thinned tree levels added (Engine_TreeCardLods). Run total.</summary>
-    public static int TreeCardLevels;
-
     /// <summary>Levels handed to Godot, over all surfaces. Run total.</summary>
     public static int LodLevelsAttached;
 
@@ -391,34 +388,8 @@ public static int SurfacesWithLods;
                 }
             }
 
-            // A tree that ships no coarser level (the 360's `_LOD1` far trees) gets thinned
-            // ones under `tree_card_lod`: the same boughs with fewer leaf cards (Engine_TreeCardLods).
-            if (lods is null && info.MovementMode == 2 && Engine_TreeCardLods.Enabled)
-            {
-                Vector3 low = vertices[0], high = vertices[0];
-                foreach (Vector3 v in vertices)
-                {
-                    low = low.Min(v);
-                    high = high.Max(v);
-                }
-
-                Vector3 span = high - low;
-                foreach ((float key, int[] level) in Engine_TreeCardLods.Build(
-                    indices, vertices.Length, System.MathF.Max(span.X, System.MathF.Max(span.Y, span.Z)),
-                    Engine_TreeCardLods.FarLevelsEnabled))
-                {
-                    lods ??= new Godot.Collections.Dictionary();
-                    lods[key] = level;
-                    ++TreeCardLevels;
-                }
-            }
-
-            // Still none and not a tree (trees thin only by their cards, above): generated levels on a phone
-            // (Engine_MdlAutoLod, `mesh_auto_lod`). After the card thinning, which suits a leaf card better.
-            if (lods is null && !geo.HasBones && info.MovementMode != 2 && Engine_MdlAutoLod.Enabled)
-            {
-                lods = Engine_MdlAutoLod.Generate(vertices, normals, indices);
-            }
+            // Still no level: a tree's thinned cards or generated ones, when set (Engine_MdlExtraLods).
+            lods ??= Engine_MdlExtraLods.For(info, geo, vertices, normals, indices);
 
             // The model's radiance transfer, expanded per vertex: CUSTOM0..2 are the red, green
             // and blue transfer vectors the shader dots with the entity's probe. Absent on a

@@ -86,7 +86,7 @@ public static class AndroidGpuTextureContainer
 }
 
 /// <summary>Optional, separately prepared Android GPU variants; never a replacement for shared CPU decoding.</summary>
-public static class Engine_AndroidGpuTextureCache
+public static class AndroidGpuTextureCache
 {
     /// <summary>All output-changing inputs, combined with source bytes and the shared decoder version.</summary>
     public const string Recipe = "android-gpu/astc4x4-unorm/rgba-identity/godot-4.7.1-medium/albedo/full-authored-tail/v1";
@@ -127,7 +127,7 @@ public static class Engine_AndroidGpuTextureCache
     /// <returns>A caller-disposed ASTC image on a valid hit, otherwise null for normal fallback.</returns>
     public static Image? TryLoad(ReadOnlySpan<byte> source, TexSemantic semantic, Image original, bool hasAlpha)
     {
-        AndroidTextureUploadPolicy policy = Engine_AndroidTextureUpload.Policy;
+        AndroidTextureUploadPolicy policy = AndroidTextureUpload.Policy;
         if (!Eligible(policy.Android, policy.Astc4x4, semantic, Engine_TexEnhance.Enabled,
             OS.GetEnvironment("REFII_TEX_NO_MIPS") == "1", original.GetFormat())) return null;
         var descriptor = new AndroidGpuTextureDescriptor(original.GetWidth(), original.GetHeight(),

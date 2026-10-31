@@ -109,7 +109,7 @@ public partial class AndroidGameHost : Node3D
             GetViewport().Msaa3D = Viewport.Msaa.Disabled;
             GetViewport().UseTaa = false;
             Engine_RenderStats.Track(GetViewport());
-            Engine_AndroidTextureUpload.InitializeOnMainThread();
+            AndroidTextureUpload.InitializeOnMainThread();
             string runtimeConfig = Path.Combine(root, "refii.toml");
             if (!File.Exists(runtimeConfig))
                 File.WriteAllText(runtimeConfig, "sun_shadow_map = 1024\nsun_shadow_splits = 2\nshader_warmup_enabled = false\n");
@@ -410,15 +410,15 @@ public partial class AndroidGameHost : Node3D
                     scope = "gpu_passes.available proves captured timestamps; managed arguments may omit packaged --gpu-profile; debug channel is startup opt-in"
                 },
                 audio = sink == null ? null : DescribeAudio(sink),
-                texture_policy = Engine_AndroidTextureUpload.Policy,
-                prepared_texture_images = Engine_AndroidTextureUpload.PreparedImages,
-                texture_upload_payloads = Engine_AndroidTextureUpload.Uploads,
+                texture_policy = AndroidTextureUpload.Policy,
+                prepared_texture_images = AndroidTextureUpload.PreparedImages,
+                texture_upload_payloads = AndroidTextureUpload.Uploads,
                 texture_upload_scope = "Cumulative successful upload payload, including replacements; not live VRAM or driver allocation bytes",
                 hero_texture_morph = Refii.Hero.Engine_HeroTextureMorph.CacheMetrics,
                 hero_texture_morph_scope = "Current decoded dictionary top-level managed RGBA and composite texture references; excludes active callers, temporary Images and textures retained only by live materials; CompositesBuilt is cumulative",
-                prepared_gpu_albedos = new { hits = Engine_AndroidGpuTextureCache.Hits,
-                    misses = Engine_AndroidGpuTextureCache.Misses, invalid = Engine_AndroidGpuTextureCache.Invalid,
-                    payload_bytes = Engine_AndroidGpuTextureCache.PayloadBytes },
+                prepared_gpu_albedos = new { hits = AndroidGpuTextureCache.Hits,
+                    misses = AndroidGpuTextureCache.Misses, invalid = AndroidGpuTextureCache.Invalid,
+                    payload_bytes = AndroidGpuTextureCache.PayloadBytes },
                 automatic_frontend_actions = false,
                 touch_controls = new { enabled = _touch?.ControlsEnabled ?? false,
                     context = (_touch?.CurrentContext ?? TouchContext.Hidden).ToString(),
@@ -470,20 +470,20 @@ public partial class AndroidGameHost : Node3D
     }
 
     /// <summary>Installs the host's single frame-sampler pair and an optional private loopback debug channel.</summary>
-    /// <remarks>Android owns sampling even if the listener cannot bind. Its debug server opts out
-    /// of sampler ownership so clocks and draw-end callbacks are registered once. Neither path
+    /// <remarks>Android owns sampling even if the listener cannot bind. Its debug server installs
+    /// no samplers of its own, so clocks and draw-end callbacks are registered once. Neither path
     /// creates GameSession or initializes, steps or shuts down a native guest. The channel
     /// is read once at startup; an environment variable alone cannot opt Android into it.</remarks>
     private void ConfigureProfiling()
     {
         _profiling = AndroidProfilingOptions.Read(_userDirectory, OS.GetCmdlineArgs());
-        _profiling.InstallFrameSampling((handshake, ownsFrameSampling) =>
+        _profiling.InstallFrameSampling((handshake, _) =>
         {
             // Do not inherit a desktop/public handshake destination or arbitrary debug port.
             // GameDebugServer binds only 127.0.0.1, scans from 8787 and publishes pid/boot identity.
             SetEnvironment("REFII_DEBUG_HANDSHAKE", handshake);
             SetEnvironment("REFII_DEBUG_PORT", "8787");
-            AddChild(new GameDebugServer { Name = "GameDebugServer", OwnsFrameSampling = ownsFrameSampling });
+            AddChild(new GameDebugServer { Name = "GameDebugServer" });
         }, () =>
         {
             AddChild(new Engine_FrameStartNode { Name = "FrameStart" });

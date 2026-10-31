@@ -48,10 +48,8 @@ public partial class Engine_PropStreamer : Node3D
             {
                 UpdateAllVisibilityRanges();
             }
-            else if (name.Equals(Engine_PropDrawRange.TreeFarReachKey, StringComparison.OrdinalIgnoreCase) ||
-                name.Equals(Engine_PropDrawRange.TreeLodBiasKey, StringComparison.OrdinalIgnoreCase))
+            else if (Engine_TreeReach.RefreshLive(name))
             {
-                Engine_PropDrawRange.RefreshLive();
                 UpdateAllVisibilityRanges();
             }
         };
@@ -408,11 +406,9 @@ public partial class Engine_PropStreamer : Node3D
         {
             Engine_PropFade.SetRadius(instance, mesh, radius);
         }
-        else if (instance.HasMeta(Engine_PropDrawRange.TreeFarModelMeta) &&
-            instance.LodBias != Engine_PropDrawRange.TreeLodBias)
+        else
         {
-            // A far tree's levels drop only leaf cards (tree_card_lod): tree_lod_bias lets them switch sooner.
-            instance.LodBias = Engine_PropDrawRange.TreeLodBias;
+            Engine_TreeReach.ApplyLodBias(instance);
         }
     }
 
@@ -516,25 +512,6 @@ public partial class Engine_PropStreamer : Node3D
     /// Re-evaluates visibility ranges on all streamed props across all live streamers
     /// (e.g. when <c>prop_cull_distance_scale</c> is updated at runtime).
     /// </summary>
-    /// <summary>A batch's instance transforms read back from its buffer (one render-thread sync).</summary>
-    private static Transform3D[] BatchTransforms(MultiMesh batch)
-    {
-        int count = batch.InstanceCount;
-        float[] buffer = count > 0 ? Refii.Core.Engine_ServerSyncs.Buffer(batch) : Array.Empty<float>();
-        int stride = count > 0 ? buffer.Length / count : 0;
-        var placed = new Transform3D[stride >= 12 ? count : 0];
-        for (int i = 0; i < placed.Length; i++)
-        {
-            int o = i * stride;
-            placed[i] = new Transform3D(
-                new Vector3(buffer[o], buffer[o + 4], buffer[o + 8]),
-                new Vector3(buffer[o + 1], buffer[o + 5], buffer[o + 9]),
-                new Vector3(buffer[o + 2], buffer[o + 6], buffer[o + 10]),
-                new Vector3(buffer[o + 3], buffer[o + 7], buffer[o + 11]));
-        }
-        return placed;
-    }
-
     public static void UpdateAllVisibilityRanges()
     {
         lock (Live)
@@ -1428,16 +1405,7 @@ public partial class Engine_PropStreamer : Node3D
 
             long t2 = System.Diagnostics.Stopwatch.GetTimestamp();
             ApplyVisibilityRange(instance, mesh);
-            if (Engine_BuildingOccluders.Enabled)
-            {
-                Vector3 size = mesh.GetAabb().Size;
-                if (IsBuilding(instance, path, MathF.Max(size.X, MathF.Max(size.Y, size.Z))))
-                {
-                    Engine_BuildingOccluders.Add(instance, mesh, instance is MultiMeshInstance3D placed
-                        ? Engine_PropShadow.StatedTransforms(placed.Multimesh) ?? BatchTransforms(placed.Multimesh)
-                        : null);
-                }
-            }
+            AddBuildingOccluder(instance, mesh, path);
             Refii.Models.Engine_ClassicBillboards.Register(instance, mesh);
             Engine_PropFarShading.Register(instance, mesh);
             if (instance is MeshInstance3D displaced && displaced.HasMeta(RecordMeta))

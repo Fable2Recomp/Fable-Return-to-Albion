@@ -256,9 +256,7 @@ public static class Engine_EhfPages
         float chunk = 32f * heights.Spacing;
         var material = new ShaderMaterial
         {
-            Shader = Refii.Models.Engine_ShaderVariant.Lite
-                ? Refii.Models.Engine_ShaderSpecialisation.Load(Refii.Models.Engine_ShaderVariant.PageTerrainPath)
-                : GD.Load<Shader>(Refii.Models.Engine_ShaderVariant.PageTerrainPath),
+            Shader = Engine_TerrainSplatMaterial.PageShader(),
         };
         material.SetShaderParameter("page_mode", true);
         if (!image.IsEmpty())

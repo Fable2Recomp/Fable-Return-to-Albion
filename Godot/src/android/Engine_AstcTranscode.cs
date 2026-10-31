@@ -6,7 +6,7 @@ namespace Refii.Textures;
 /// <summary>Rewrites BC1 and BC3 blocks as ASTC 4x4 blocks, one for one, on the CPU.</summary>
 /// <remarks>
 /// FOR GPUS WITHOUT BC. Adreno 6xx (the Galaxy S10e's 640) samples no BC format, so Godot's
-/// fallback, and <see cref="Engine_AndroidTextureUpload"/> before this, expanded every BC1
+/// fallback, and <see cref="AndroidTextureUpload"/> before this, expanded every BC1
 /// texture to RGBA8 (8x its size) and every BC3 to RGBA8 (4x). ASTC 4x4 is 16 bytes a block
 /// like BC3, so BC1 doubles and BC3 keeps its size. No search: the BC endpoints become the
 /// ASTC endpoints and each BC index its weight.

@@ -819,14 +819,6 @@ public partial class Engine_ClassicParticles : Node
         return material;
     }
 
-    /// <summary>
-    /// The modern stages' define for a draw without a depth fade: under `fx_no_depth_reads` the
-    /// build has no depth texture (fx_soft's FX_HARD), whose declaration alone splits Mobile's
-    /// render pass. Read when the material is composed; a live change reaches groups composed after it.
-    /// </summary>
-    internal static string HardDefines(bool soft) =>
-        !soft && Refii.Fx.Engine_FxDepthReads.Enabled ? "#define " + Refii.Fx.Engine_FxDepthReads.HardDefine + "\n" : string.Empty;
-
     /// <summary>A group's modern material: the quads on our own particle shader, the same constants as the classic stages.</summary>
     private bool ComposeModern(Group group, int at, int textures, string blend, bool oneOne, bool alphaRef16, bool soft)
     {

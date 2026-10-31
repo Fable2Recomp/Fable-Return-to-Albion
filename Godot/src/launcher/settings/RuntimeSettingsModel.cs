@@ -6,7 +6,7 @@ using Godot;
 
 namespace Refii.Launcher.Core;
 
-public sealed class RuntimeSettingsModel
+public sealed partial class RuntimeSettingsModel
 {
     public string ConfigPath { get; private set; } = string.Empty;
     public SortedDictionary<string, string> Values { get; private set; } = new(StringComparer.Ordinal);
@@ -156,55 +156,6 @@ public sealed class RuntimeSettingsModel
         }
     }
 
-    /// <summary>The graphics preset the current values match, or "custom".</summary>
-    public string CurrentGraphicsPreset() => GraphicsPresets.Current(Values);
-
-    /// <summary>Writes a named graphics preset into its settings and saves.</summary>
-    public void ApplyGraphicsPreset(string presetName)
-    {
-        if (GraphicsPresets.Apply(presetName, Values))
-        {
-            Values["lighting_preset"] = CurrentLightingPreset();
-            Save();
-        }
-    }
-
-    /// <summary>Records which preset the values now match after one of its settings changed.</summary>
-    /// <returns>True when the setting belongs to the graphics preset.</returns>
-    public bool RefreshGraphicsPreset(string changedSetting)
-    {
-        if (!GraphicsPresets.Offered || !GraphicsPresets.Members.Contains(changedSetting))
-        {
-            return false;
-        }
-
-        Values[GraphicsPresets.Key] = CurrentGraphicsPreset();
-        Save();
-        return true;
-    }
-
-    /// <summary>
-    /// Records which preset the values now match after settings changed outside the panel's own
-    /// rows (the lighting dialog saves several preset settings at once). Without it a hand edit
-    /// there kept the stored preset's name, and the next preset revision overwrote the edit.
-    /// </summary>
-    public void RefreshGraphicsPreset()
-    {
-        if (!GraphicsPresets.Offered)
-        {
-            return;
-        }
-
-        string current = CurrentGraphicsPreset();
-        if (Values.TryGetValue(GraphicsPresets.Key, out string? stored) && stored == current)
-        {
-            return;
-        }
-
-        Values[GraphicsPresets.Key] = current;
-        Save();
-    }
-
     private bool _initialized;
 
     public void Initialize()
@@ -250,10 +201,7 @@ public sealed class RuntimeSettingsModel
             Values["placed_light_range"] = (parsedLr <= 1.1 ? 40.0 : parsedLr >= 1.9 ? 80.0 : 60.0).ToString("0.0", CultureInfo.InvariantCulture);
         }
         Values["lighting_preset"] = CurrentLightingPreset();
-        if (GraphicsPresets.Offered)
-        {
-            Values[GraphicsPresets.Key] = CurrentGraphicsPreset();
-        }
+        ReadGraphicsPreset();  // the phone's, RuntimeSettingsModel.GraphicsPreset.cs
     }
 
     public void Save()
@@ -276,13 +224,7 @@ public sealed class RuntimeSettingsModel
             Values[definition.Name] = definition.DefaultValue;
         }
 
-        // A phone's defaults are its Quality preset at 30 FPS: the settings' own defaults are the
-        // desktop picture.
-        if (GraphicsPresets.Offered)
-        {
-            GraphicsPresets.Apply(GraphicsPresets.Quality, Values);
-            Values["max_fps"] = GraphicsPresets.AndroidFrameCap;
-        }
+        ApplyPhoneDefaults();
         Values["lighting_preset"] = CurrentLightingPreset();
         Save();
     }

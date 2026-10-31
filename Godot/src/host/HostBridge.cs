@@ -15,7 +15,7 @@ namespace Refii.Host;
 /// P/Invoke over <c>refii_hostbridge</c>, the C ABI that hosts the recompiled guest in
 /// Godot's own process: Godot renders, the guest is a simulation server behind a null D3D9 device.
 /// </summary>
-public static class HostBridge
+public static partial class HostBridge
 {
 	internal const string Library = "refii_hostbridge";
 
@@ -1206,27 +1206,6 @@ public static class HostBridge
 			(uint)userIndex, connected ? 1 : 0, buttons, leftTrigger, rightTrigger,
 			thumbLx, thumbLy, thumbRx, thumbRy);
 
-	/// <summary>Publishes an Android physical phase tag without conflating current analog packet updates with consumption.</summary>
-	/// <param name="userIndex">The existing guest controller slot.</param>
-	/// <param name="connected">Whether the selected pad is connected.</param>
-	/// <param name="buttons">Already-filtered XInput button bits.</param>
-	/// <param name="leftTrigger">Current left trigger, in Xbox units.</param>
-	/// <param name="rightTrigger">Current right trigger, in Xbox units.</param>
-	/// <param name="thumbLx">Current left-stick X.</param>
-	/// <param name="thumbLy">Current left-stick Y.</param>
-	/// <param name="thumbRx">Current right-stick X.</param>
-	/// <param name="thumbRy">Current right-stick Y.</param>
-	/// <param name="receiptToken">Stable physical phase identity; zero requests no acknowledgment.</param>
-	internal static void SetControllerStateTracked(int userIndex, bool connected, uint buttons,
-		uint leftTrigger, uint rightTrigger, int thumbLx, int thumbLy, int thumbRx, int thumbRy,
-		ulong receiptToken) => RefiiHostSetControllerStateTracked((uint)userIndex, connected ? 1 : 0,
-			buttons, leftTrigger, rightTrigger, thumbLx, thumbLy, thumbRx, thumbRy, receiptToken);
-
-	/// <summary>Returns the exact phase last copied by a successful non-null guest XInput state read.</summary>
-	/// <param name="userIndex">The existing guest controller slot.</param>
-	/// <returns>A monotonically acknowledged phase tag; selecting or stepping alone never acknowledges it.</returns>
-	internal static ulong GetControllerReadReceipt(int userIndex) => RefiiHostGetControllerReadReceipt((uint)userIndex);
-
 	/// <summary>
 	/// Copies the current Bink frame as RGBA8. Pass null to probe the size; width/height are
 	/// reported either way.
@@ -1247,15 +1226,6 @@ public static class HostBridge
 	/// </summary>
 	public static byte[]? GetRequestedVideo(out uint generation) =>
 		GetRequestedVideo(out generation, uint.MaxValue);
-
-	/// <summary>Probes an embedded Bink request without allocating or copying its guest-memory buffer.</summary>
-	/// <param name="generation">The shared request generation, including unnamed startup logos.</param>
-	/// <returns>The live embedded buffer size, or zero for no buffer/name-only requests.</returns>
-	public static uint GetRequestedVideoSize(out uint generation)
-	{
-		int ok = RefiiHostGetRequestedVideo(null, 0, out uint size, out generation);
-		return ok != 0 ? size : 0;
-	}
 
 	/// <summary>
 	/// The requested movie's bytes, or null without a copy when its generation is still
@@ -8554,14 +8524,6 @@ public static class HostBridge
 	private static extern void RefiiHostSetControllerState(
 		uint userIndex, int connected, uint buttons, uint leftTrigger, uint rightTrigger,
 		int thumbLx, int thumbLy, int thumbRx, int thumbRy);
-
-	[DllImport(Library)]
-	private static extern void RefiiHostSetControllerStateTracked(uint userIndex, int connected,
-		uint buttons, uint leftTrigger, uint rightTrigger, int thumbLx, int thumbLy,
-		int thumbRx, int thumbRy, ulong receiptToken);
-
-	[DllImport(Library)]
-	private static extern ulong RefiiHostGetControllerReadReceipt(uint userIndex);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetVibration(

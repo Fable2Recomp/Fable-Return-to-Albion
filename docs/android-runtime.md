@@ -90,7 +90,7 @@ be absolute filesystem paths; unknown or mistyped fields stop the boot with an e
   `RefiiGuestAudioEffect` on a `GuestAudio` bus takes the guest's frames on Godot's audio
   thread. Godot's Android driver is stereo at 44.1 kHz, so the effect folds 5.1 to stereo
   and resamples 48 to 44.1 kHz.
-- **Textures.** `Engine_AndroidTextureUpload` reads the GPU's formats once. Where BC is not
+- **Textures.** `AndroidTextureUpload` reads the GPU's formats once. Where BC is not
   sampled but ASTC is (Adreno 6xx, the S10e), `Engine_AstcTranscode` rewrites BC1/BC3 as
   ASTC 4x4 on the CPU instead of expanding them to RGBA8. An optional PC-prepared ASTC
   albedo cache (`runtime/gpu-textures/astc4x4-v1`) is used when present and falls back to
