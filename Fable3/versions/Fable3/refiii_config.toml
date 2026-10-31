@@ -77,6 +77,10 @@
 0x825FA220 = { name = "rex_MenuBox_Open" }
 0x825FA030 = { name = "rex_MenuBox_Input" }
 0x825FA420 = { name = "rex_MenuBox_Close" }
+# The render scene's object add (scene, object): Fable3/src/hooks/src/scene_guard.cpp skips an add to
+# a scene the 3D Engine has already destroyed (a new game destroys the front end's while objects
+# queued for it are still being added).
+0x82258F00 = { name = "rex_Scene_AddObject" }
 # The camera manager's per-tick update (manager): the active mode's Lua FrameUpdate runs inside
 # it, so Fable3/src/hooks/src/mouse_look.cpp hands the mouse's turn to that mode before it and
 # states what the mode made of it after. The mode's GameAction receiver (mode, {action, x, y}),

@@ -23,6 +23,8 @@ set(REFIII_HOOK_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/gui_element_hooks.cpp
     # The display boxes and the menu box, stated as the box manager shows and drops them.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/display_box_hooks.cpp
+    # No object added to a render scene the 3D Engine has already destroyed.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/scene_guard.cpp
     # The world: a level's up and down, each effect's creation, placement and end, each decal.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/world_hooks.cpp
     # Each character's appearance: the morph target lists and texture commands its draw virtual
