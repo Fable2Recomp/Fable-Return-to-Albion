@@ -119,8 +119,8 @@ public sealed class AndroidTouchControlsTests
         foreach (string id in new[] { "A", "X", "Y", "B", "LT" })
             AssertThat(controls.First(c => c.Id == id).Bounds.Position.Y > rowBottom).IsTrue();
         // Spells and Lock stand at the side edges, mirrored, on their triggers' sides (Lock left,
-        // Spells right), halfway down from the Menu pill to B: clear of the camera's middle and of
-        // a corner's or an edge-centred punch-hole camera.
+        // Spells right), a third of the way down: clear of the camera's middle and of a corner's or
+        // an edge-centred punch-hole camera.
         foreach (float scale in new[] { AndroidTouchLayout.MinScale, 1f, AndroidTouchLayout.MaxScale })
         {
             var scaled = AndroidTouchLayout.Build(Phone, scale, TouchContext.World);
@@ -134,8 +134,6 @@ public sealed class AndroidTouchControlsTests
             foreach (string face in new[] { "A", "B", "X", "Y" })
                 AssertThat(Overlaps(spellsControl, scaled.First(c => c.Id == face))).IsFalse();
         }
-        Rect2 menuPill = controls.First(c => c.Id == "Start").Bounds, magic = controls.First(c => c.Id == "B").Bounds;
-        AssertThat(Mathf.Abs(controls.First(c => c.Id == "RT").Bounds.GetCenter().Y - (menuPill.End.Y + magic.Position.Y) * 0.5f) < 0.5f).IsTrue();
         // A latched Emotes is tapped closed where it was tapped open.
         AssertThat(AndroidTouchLayout.Build(Phone, 1f, TouchContext.Wheel).First(c => c.Id == "Back").Bounds)
             .IsEqual(controls.First(c => c.Id == "Back").Bounds);

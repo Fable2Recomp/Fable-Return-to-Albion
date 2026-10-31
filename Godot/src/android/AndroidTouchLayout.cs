@@ -244,10 +244,9 @@ public static class AndroidTouchLayout
         // The camera mode (the right stick's click) is a double tap on the camera side (AndroidTouchPad).
         // SPELLS AND LOCK STAND AT THE SIDE EDGES, MIRRORED, on their triggers' sides as a controller
         // has them: Lock (LT) under the left thumb, Spells (RT) under the right, each found by feel
-        // at its edge and clear of the camera drag over the middle of the screen. Halfway down from
-        // the Menu pill to B: below a corner's punch-hole camera and above the one a phone centres
-        // on a side edge, and in line with the right thumb's reach from B. On the left that is
-        // where the HUD's spell-charge meter runs, so Android moves the meter in
+        // at its edge and clear of the camera drag over the middle of the screen. A third of the way
+        // down: below a corner's punch-hole camera and above the one a phone centres on a side edge.
+        // On the left that is where the HUD's spell-charge meter runs, so Android moves the meter in
         // (Engine_HudLayout.InsetSpellCharge). Between the HUD's
         // health above and B below, the pair shrinks rather than covering either at the largest
         // scales. Each keeps its place with the game's spell menu open, so a latch is tapped closed
@@ -255,10 +254,7 @@ public static class AndroidTouchLayout
         float hud = h / 720f;
         float edgeLow = HudHealthBottom * hud + 8f * u, edgeHigh = Inner(276f).Y - face - 16f * k;
         float edgeRadius = Mathf.Min(54f * k, (edgeHigh - edgeLow) * 0.5f);
-        float bTop = Inner(276f).Y - face;
-        float edgeY = Mathf.Clamp((top + pillH + bTop) * 0.5f, edgeLow + edgeRadius, edgeHigh - edgeRadius);
-        // A menu's tabs keep the height they had: a third of the way down.
-        float tabsY = Mathf.Clamp(h * EdgeHeight, edgeLow + edgeRadius, edgeHigh - edgeRadius);
+        float edgeY = Mathf.Clamp(h * EdgeHeight, edgeLow + edgeRadius, edgeHigh - edgeRadius);
         float edgeX = OptionsInset * u + edgeRadius;
         if ((world && can.SpellMenu) || wheel)
         {
@@ -280,7 +276,7 @@ public static class AndroidTouchLayout
             // the previous tab on the left, the next on the right, each a chevron pointing its way.
             // Above the menus' D-pad, which stands below them on the left, however large the scale.
             float dpadTop = optionsPill.Position.Y - DPadClearance * u - 2f * MenuDPadReach * u;
-            float tabY = Mathf.Max(top + pillH + gap + edgeRadius, Mathf.Min(tabsY, dpadTop - gap - edgeRadius));
+            float tabY = Mathf.Max(top + pillH + gap + edgeRadius, Mathf.Min(edgeY, dpadTop - gap - edgeRadius));
             if (pub)
             {
                 // A pub game's shoulders stand there too, lettered as its legend names them: LB the
@@ -446,7 +442,7 @@ public static class AndroidTouchLayout
     public const float MenuDPadReach = 125f;
 
     /// <summary>
-    /// How far down the screen a menu's tab buttons stand, as a fraction of its height: clear of a
+    /// How far down the screen Spells and Lock stand, as a fraction of its height: clear of a
     /// corner's punch-hole camera and of one centred on a side edge.
     /// </summary>
     public const float EdgeHeight = 0.33f;
