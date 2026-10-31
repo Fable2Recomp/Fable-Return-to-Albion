@@ -48,6 +48,12 @@ public partial class AndroidPhoneLauncher : Control
     public bool IsInstalling => _task != null;
     /// <summary>Whether a completed installation or previous runtime is available to play.</summary>
     public bool HasPlayableInstall => _result != null || _runtime != null;
+    /// <summary>Whether the playable module was built from another APK's compiler bundle and must be built again
+    /// before it is played (<see cref="IsStale"/>); the launcher's button offers Build Game Code, as on desktop.</summary>
+    public bool NeedsBuild { get; private set; }
+
+    /// <summary>Starts the game-code build from the shared launcher's Build Game Code button.</summary>
+    public void BuildFromLauncher() => StartCompile();
     /// <summary>Physical prepared or active game path shared with the original launcher's automatic runtime settings.</summary>
     public string? InstalledGameRoot => _prepared?.GameRoot ?? _runtime?.GameRoot;
 
@@ -173,15 +179,15 @@ public partial class AndroidPhoneLauncher : Control
             _message = _result != null ? "Your compiled installation is ready to play." : _selected.Length > 0
                 ? "Game files are ready. Compile to finish installation."
                 : (TakesUpdate ? "Choose your ISO, then its TU file." : "Choose your ISO.") + " Original files stay untouched.";
-            // AN UPDATE THAT CHANGES THE GAME CODE REBUILDS IT. The module is compiled on the phone
+            // AN UPDATE THAT CHANGES THE GAME CODE ASKS FOR A BUILD. The module is compiled on the phone
             // from the APK's bundle (hooks, version configs, headers), so a new APK can leave the
             // installed module behind; played anyway, it ran without the update's native fixes
             // (a co-op crash fix in a game hook did nothing until the module was compiled again).
+            // The build starts when the player chooses it, as desktop's Build Game Code does.
             if (HasPlayableInstall && _selected.Length > 0 && _native.Length > 0 && IsStale(_result, ApkBundleIdentity()))
             {
-                _message = "This update changes the game's code, so it is being compiled again on this phone. " +
-                    "Your saves are kept. Cancel to play the previous build meanwhile.";
-                Callable.From(StartCompile).CallDeferred();
+                NeedsBuild = true;
+                _message = "This update changes the game's code. Saves are kept.";
             }
         }
         catch (Exception error) { _message = error.Message; }
@@ -214,7 +220,7 @@ public partial class AndroidPhoneLauncher : Control
             var task = _task;
             _task = null;
             DisplayServer.ScreenSetKeepOn(_keepScreenOn);
-            try { _result = task.GetAwaiter().GetResult(); _message = _verificationOnly
+            try { _result = task.GetAwaiter().GetResult(); NeedsBuild = false; _message = _verificationOnly
                 ? $"Existing phone-compiled module verified. Select {PlayLabel} to use it."
                 : $"Installation compiled and verified. Temporary copies and build files removed. Select {PlayLabel}."; }
             catch (OperationCanceledException) { _message = "Compilation cancelled. Your installed game is preserved."; }

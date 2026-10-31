@@ -120,7 +120,7 @@ public partial class LauncherApp
     {
         if (_phone == null) return;
         bool running = _phone.IsInstalling;
-        _primaryButton.Text = AndroidLauncherProgress.Label(running, _phone.HasPlayableInstall, _phone.Status);
+        _primaryButton.Text = AndroidLauncherProgress.Label(running, _phone.HasPlayableInstall, _phone.Status, _phone.NeedsBuild);
         _primaryButton.Disabled = running;
         _progressTrack.Visible = running;
         _progressTrack.Position = _primaryButton.Position;
@@ -139,7 +139,8 @@ public partial class LauncherApp
     private void PrimaryAndroid()
     {
         if (_phone == null || _phone.IsInstalling) return;
-        if (_phone.HasPlayableInstall) { _settingsPanel.SaveIfDirty(); _phone.PlayFromLauncher(); }
+        if (_phone.NeedsBuild) { _settingsPanel.SaveIfDirty(); _phone.BuildFromLauncher(); }
+        else if (_phone.HasPlayableInstall) { _settingsPanel.SaveIfDirty(); _phone.PlayFromLauncher(); }
         else { _settingsTabs.CurrentTab = 2; RefreshDebugDrawer(); ShowSettingsDrawer(); }
     }
 
