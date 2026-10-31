@@ -1,7 +1,7 @@
 # Android host runtime
 
 How the Android app is put together. Building and installing it are in
-[the Android guide](../../docs/android.md).
+[the Android guide](android.md).
 
 ## Structure
 

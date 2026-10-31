@@ -17,15 +17,9 @@ endif()
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Android's compile and link settings for every target: cmake/refii_android_toolchain.cmake.
 if(ANDROID)
-    if(NOT CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
-        message(FATAL_ERROR "Refii's Android runtime currently supports arm64-v8a only")
-    endif()
-    # NDK r28 libc++ lacks the std::chrono::clock_time_conversion primary template that
-    # cross-platform headers specialize; force-include the same shim the payload SDK uses.
-    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-include>"
-        "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/src/payload/src/libcxx_chrono_shim.h>")
-    add_link_options("LINKER:-z,max-page-size=16384" "LINKER:-z,common-page-size=16384")
+    include(cmake/refii_android_toolchain.cmake)
 endif()
 
 if(CMAKE_CONFIGURATION_TYPES)

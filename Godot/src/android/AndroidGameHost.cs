@@ -87,7 +87,7 @@ public partial class AndroidGameHost : Node3D
         {
             string configPath = Path.Combine(_userDirectory, AndroidRuntimeOptions.FileName);
             if (!File.Exists(configPath))
-                throw new FileNotFoundException("Supply private android-runtime.json before booting; see Godot/docs/android-runtime.md", configPath);
+                throw new FileNotFoundException("Supply private android-runtime.json before booting; see docs/android-runtime.md", configPath);
             _options = AndroidRuntimeOptions.Parse(File.ReadAllText(configPath), _userDirectory);
             string root = Path.Combine(_userDirectory, "runtime");
             SetEnvironment(Engine_AppRoot.EnvironmentVariable, root);

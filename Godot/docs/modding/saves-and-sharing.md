@@ -7,7 +7,6 @@ save without breaking it.
 
 - [Sharing a mod](#sharing-a-mod)
 - [Installing a mod](#installing-a-mod)
-  - [On Android](#on-android)
 - [Co-op: the same mods on both sides](#co-op-the-same-mods-on-both-sides)
 - [Mod sync in co-op](#mod-sync-in-co-op)
   - [What the joiner does with the host's set](#what-the-joiner-does-with-the-hosts-set)
@@ -45,20 +44,6 @@ Refused: not a `.f2mod`; over 2 GB; an entry with an absolute path, a drive, `.`
 character in its path, or whose bytes lie outside the file; a name that is not letters, digits,
 spaces, `_ - .`; a link that is not https, or that redirects more than 5 times or to anything but
 https.
-
-### On Android
-
-The phone app has the same **Modding** tab. **Install from file…** opens Android's document picker,
-and the chosen `.f2mod` is checked and installed as above, named after the file (or after the
-package's title in lower case when the picker gives no name: `Toggle Sprint` → `toggle_sprint`).
-The mods in the repo's `mods-src/` come installed with the app, switched off. There is no folder
-to open, no URL install and no editor.
-
-A soft mod runs on the phone as on a PC: its files, rows, images, Lua, `settings.json`,
-`input.json` and `godot/*.gd`. **A hard mod cannot be enabled on the phone**: the phone compiles
-the game without any mod's `native/` sources, so the tab marks it *not on phone*. Mod actions
-bound to keys need a keyboard connected to the phone; the touch controls have no buttons for
-them yet.
 
 ## Co-op: the same mods on both sides
 
