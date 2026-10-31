@@ -46,7 +46,8 @@ public class ModFrameTests
 	public void TheFramePumpsEveryPiece()
 	{
 		string text = Source("Engine/mods/Engine_ModFrame.cs");
-		foreach (string piece in new[] { "ModSettings.Pump(guestUp)", "Engine_UiModAbilities.Pump(guestUp)", "ModErrors.Pump()",
+		// The title-side declarations (Fable 2's mod abilities) are the title's pump, not a shell piece.
+		foreach (string piece in new[] { "ModSettings.Pump(guestUp)", "Engine_TitleGame.Active.PumpMods(guestUp)", "ModErrors.Pump()",
 			"ModGodot.Pump(session, driven && guestUp)", "ModGodot.Stop()" })
 		{
 			AssertThat(text.Contains(piece)).OverrideFailureMessage("ModFrame lost " + piece).IsTrue();

@@ -7,6 +7,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Text;
 using static GdUnit4.Assertions;
+using Refii.Titles.Fable2;
 
 namespace Refii.Tests;
 
@@ -64,7 +65,7 @@ public sealed class AndroidBundledModsTests
             string target = Path.Combine(root, "bundled-mods"), mods = Path.Combine(root, "mods");
             AndroidBundledMods.Unpack(Zip(("quicksave/mod.toml", "name = \"Quicksave\""), ("quicksave/mod/init.lua", "-- q"),
                 ("manifest.txt", "quicksave/mod.toml\nquicksave/mod/init.lua\n")), target);
-            List<string> report = ModBundled.Install(target, mods);
+            List<string> report = ModBundled.Install(target, mods, Refii.Core.Engine_Title.Fable2.ModExtension);
             AssertThat(report.Count).IsEqual(1);
             AssertThat(File.Exists(Path.Combine(mods, "quicksave.f2mod"))).IsTrue();
             AssertThat(ModLoadOrder.Read(mods).Enabled.Contains("quicksave")).IsFalse();

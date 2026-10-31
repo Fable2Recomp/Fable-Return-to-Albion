@@ -196,7 +196,6 @@ public partial class GamePubGames : Node
 
 		PubGame? game = _session?.Game;
 		DialogUp = (game?.OverlayManager as OverlayManager)?.AbsorbingInput == true;
-		if ((events & (HostBridge.PubGameEvent.SaveEnded | HostBridge.PubGameEvent.SaveSkipped)) != 0)
 		if ((events & (Fable2Bridge.PubGameEvent.SaveEnded | Fable2Bridge.PubGameEvent.SaveSkipped)) != 0)
 		{
 			_link.SaveEnded(game);
@@ -583,7 +582,7 @@ public partial class GamePubGames : Node
 
 		public override void _Draw()
 		{
-			Rect2 stage = Refii.FlashGames.Framework.PubGameStageFit.Placed;
+			Rect2 stage = Refii.Titles.Fable2.PubGames.Framework.PubGameStageFit.Placed;
 			Vector2 screen = GetViewportRect().Size;
 			if (stage.Size.X <= 0f)
 			{

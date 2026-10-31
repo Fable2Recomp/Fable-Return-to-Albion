@@ -4,7 +4,7 @@
 [ext_resource type="Script" path="res://src/game/GamePerfOverlay.cs" id="2_perf"]
 [ext_resource type="Script" path="res://src/game/GameDevMenu.cs" id="3_dev"]
 [ext_resource type="Script" path="res://src/android/AndroidDiagnosticButtons.cs" id="4_buttons"]
-[ext_resource type="Script" path="res://src/android/AndroidTouchControls.cs" id="5_touch"]
+[ext_resource type="Script" path="res://src/Titles/Fable2/android/AndroidTouchControls.cs" id="5_touch"]
 
 [node name="AndroidGame" type="Node3D"]
 script = ExtResource("1_android")

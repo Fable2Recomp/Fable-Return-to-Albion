@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using GdUnit4;
 using Refii.Ui;
 using static GdUnit4.Assertions;
+using Refii.Titles.Fable2;
 
 namespace Refii.Tests;
 
@@ -125,8 +126,8 @@ public sealed class PauseMenuActivationTests
     public void SourcedPauseTabsAreNotEmptySubmenus()
     {
         var template = new Engine_UiMenuTemplate { Name = "pause-tab-unit" };
-        template.Entries.Add(Engine_UiTemplates.Tab("Map", "Map", Engine_PauseMenu.TabMap));
-        template.Entries.Add(Engine_UiTemplates.Tab("Options", "Options", Engine_PauseMenu.TabOptions));
+        template.Entries.Add(Fable2UiTemplates.Tab("Map", "Map", Engine_PauseMenu.TabMap));
+        template.Entries.Add(Fable2UiTemplates.Tab("Options", "Options", Engine_PauseMenu.TabOptions));
         Engine_FrontEndMenu menu = template.Build();
         foreach (Engine_UiExpandableMenu.Item item in menu.Roots)
         {
@@ -217,15 +218,15 @@ public sealed class PauseMenuActivationTests
         saving.Children.Add(new() { Name = "SaveAndContinue", Tag = "Save and Continue", Command = "PauseSaving:0" });
         saving.Children.Add(new() { Name = "SaveAndQuit", Tag = "Save and Quit", Command = "PauseSaving:1" });
         template.Entries.Add(saving);
-        template.Entries.Add(Engine_UiTemplates.Tab("Map", "Map", Engine_PauseMenu.TabMap));
-        template.Entries.Add(Engine_UiTemplates.Tab("Abilities", "Abilities", Engine_PauseMenu.TabAbilities));
-        template.Entries.Add(Engine_UiTemplates.Tab("Items", "Items", Engine_PauseMenu.TabItems));
-        template.Entries.Add(Engine_UiTemplates.Tab("Weapons", "Weapons", Engine_PauseMenu.TabWeapons));
-        template.Entries.Add(Engine_UiTemplates.Tab("Clothing", "Clothing", Engine_PauseMenu.TabClothing));
-        template.Entries.Add(Engine_UiTemplates.Tab("Logbook", "Logbook", Engine_PauseMenu.TabLogbook));
+        template.Entries.Add(Fable2UiTemplates.Tab("Map", "Map", Engine_PauseMenu.TabMap));
+        template.Entries.Add(Fable2UiTemplates.Tab("Abilities", "Abilities", Engine_PauseMenu.TabAbilities));
+        template.Entries.Add(Fable2UiTemplates.Tab("Items", "Items", Engine_PauseMenu.TabItems));
+        template.Entries.Add(Fable2UiTemplates.Tab("Weapons", "Weapons", Engine_PauseMenu.TabWeapons));
+        template.Entries.Add(Fable2UiTemplates.Tab("Clothing", "Clothing", Engine_PauseMenu.TabClothing));
+        template.Entries.Add(Fable2UiTemplates.Tab("Logbook", "Logbook", Engine_PauseMenu.TabLogbook));
         template.Entries.Add(new() { Name = "Achievements", Tag = "Achievements", HostOnly = true, Command = "PauseOwned:1013" });
         template.Entries.Add(new() { Name = "Multiplayer", Tag = "Multiplayer", HostOnly = true, Command = "PauseOwned:1014" });
-        template.Entries.Add(Engine_UiTemplates.Tab("Options", "Options", Engine_PauseMenu.TabOptions));
+        template.Entries.Add(Fable2UiTemplates.Tab("Options", "Options", Engine_PauseMenu.TabOptions));
         return template.Build();
     }
 }

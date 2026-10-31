@@ -1575,14 +1575,13 @@ public static class Engine_LevelScene
                     break;
                 }
 
-                if (!decoded.TryGetValue(heightfield.LightmapKey, out ImageTexture? texture))
-                {
-                    texture = lightmaps.SharedKeyTable
-                        ? ComposeFable3TerrainBake(heightfield.Path, bake, source)
-                        : GetTerrainLightmapTexture(
-                            textures, heightfield.LightmapKey, bake.Blob, Engine_LevelBakedLighting.DecodeTexture);
-                    decoded[heightfield.LightmapKey] = texture;
-                }
+                // One texture per key for the build (GetTerrainLightmapTexture): Fable 3's shared-key
+                // table composes its page from the bake, Fable 2's decodes the blob.
+                ImageTexture? texture = lightmaps.SharedKeyTable
+                    ? GetTerrainLightmapTexture(textures, heightfield.LightmapKey, bake.Blob,
+                        _ => ComposeFable3TerrainBake(heightfield.Path, bake, source))
+                    : GetTerrainLightmapTexture(
+                        textures, heightfield.LightmapKey, bake.Blob, Engine_LevelBakedLighting.DecodeTexture);
                 if (texture is null)
                 {
                     GD.Print($"[baked] {level}: lightmap 0x{heightfield.LightmapKey:X16} did not decode");

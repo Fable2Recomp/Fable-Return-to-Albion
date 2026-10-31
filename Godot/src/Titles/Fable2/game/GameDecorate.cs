@@ -8,7 +8,9 @@ using Refii.Host;
 using Refii.Level;
 using Refii.Ui;
 
-namespace Refii.Game;
+namespace Refii.Titles.Fable2;
+
+using Refii.Game;
 
 public partial class GameDecorate : Node
 {
@@ -117,7 +119,7 @@ public partial class GameDecorate : Node
         if (_poll <= 0)
         {
             _poll = 0.1;
-            uint generation = HostBridge.GetNewGameState().Generation;
+            uint generation = Fable2Bridge.GetNewGameState().Generation;
             if (generation != _generation) { Close(false); RefreshHighlights.Clear(); }
             _generation = generation;
             _guestRequested = Read("active") == 1;

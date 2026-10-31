@@ -5,6 +5,7 @@ using Refii.AndroidRuntime;
 using Refii.Bnk;
 using Refii.Launcher.Core;
 using static GdUnit4.Assertions;
+using Refii.Titles.Fable2;
 
 namespace Refii.Tests;
 
@@ -21,7 +22,7 @@ public sealed class AndroidUpdateBankTests
         Directory.CreateDirectory(Path.Combine(game, "data"));
         // An empty pub-games folder keeps the Flash index on this fixture; without one, Mount falls back to
         // an installed game on the machine and decodes its art through Godot, which the test host cannot.
-        Directory.CreateDirectory(Path.Combine(game, "data", Refii.FlashGames.PubGamesCatalog.FolderName));
+        Directory.CreateDirectory(Path.Combine(game, "data", Refii.Titles.Fable2.PubGames.PubGamesCatalog.FolderName));
         Directory.CreateDirectory(mod);
         try
         {

@@ -28,9 +28,10 @@ public partial class AndroidGameHost : Node3D
     private GameWorld? _world;
     private GameAudio? _audio;
     private GameInput? _input;
-    private GameUi? _ui;
-    private GamePubGames? _pubGames;
-    private AndroidTouchControls? _touch;
+    private Node? _uiNode;
+    private IGameTitleUi? _ui;
+    private Control? _touchNode;
+    private IAndroidTouchControls? _touch;
     private CanvasLayer? _uiLayer;
     private bool? _canvasLeanSetting;
     private Label? _status;
@@ -71,7 +72,8 @@ public partial class AndroidGameHost : Node3D
         GetTree().QuitOnGoBack = false;
         _userDirectory = OS.GetUserDataDir();
         BuildStatusOverlay();
-        _touch = GetNodeOrNull<AndroidTouchControls>("AndroidTouchLayer/AndroidTouchControls");
+        _touchNode = GetNodeOrNull<Control>("AndroidTouchLayer/AndroidTouchControls");
+        _touch = _touchNode as IAndroidTouchControls;
         if (_touch != null && GetNodeOrNull<AndroidDiagnosticButtons>("AndroidDiagnosticButtons") is { } diagnostics)
         {
             _touch.PassThrough = diagnostics.Rects;
@@ -80,7 +82,7 @@ public partial class AndroidGameHost : Node3D
             diagnostics.SettingsWritten = RefreshRenderScale;
         }
         if (_touch != null)
-            AddChild(new AndroidCanvasLean { Name = "CanvasLean", Touch = _touch, Target = UiLayer });
+            AddChild(new AndroidCanvasLean { Name = "CanvasLean", Touch = _touchNode, Target = UiLayer });
         try
         {
             string configPath = Path.Combine(_userDirectory, AndroidRuntimeOptions.FileName);
@@ -184,7 +186,7 @@ public partial class AndroidGameHost : Node3D
                 AttachFrontEnd();
                 FollowFrontEnd();
                 // The guest steps on its own thread: its pub-game manager is read once a frame.
-                _pubGames?.Poll();
+                Engine_TitleGame.Active.Step();
                 if (_world == null && HostBridge.IsInGame)
                 {
                     _world = new GameWorld { Name = "GameWorld" };
@@ -237,19 +239,19 @@ public partial class AndroidGameHost : Node3D
             bool wasAway = _guest?.Away == true;
             if (_guest != null) _guest.Away = false;
             if (_ui != null && AndroidSystemKeys.PauseOnReturn(wasAway, HostPanelUp, GameInput.Playing, GameInput.InOverlay,
-                    BoardUp, GamePubGames.DialogUp))
+                    BoardUp, Engine_TitleGame.Active.InteractionDialogUp))
                 _pauseOnReturn = PauseOnReturnDelay;
         }
         else if (what == NotificationWMGoBackRequest)
         {
             switch (AndroidSystemKeys.Back(_ui != null, HostPanelUp, GameInput.Playing, GameInput.InOverlay,
-                BoardUp, GamePubGames.DialogUp))
+                BoardUp, Engine_TitleGame.Active.InteractionDialogUp))
             {
                 case AndroidBack.Pause: GameInput.PressOnce(GameInput.PadStart); break;
                 case AndroidBack.BackOut: GameInput.PressOnce(GameInput.PadB); break;
                 case AndroidBack.ClosePanel:
                     if (GamePhotoMode.Active) GamePhotoMode.RequestBack();
-                    else GameMorphMirror.RequestBack();
+                    else Engine_TitleGame.Active.RequestBack();
                     break;
             }
         }
@@ -262,15 +264,15 @@ public partial class AndroidGameHost : Node3D
         _pauseOnReturn -= delta;
         if (_pauseOnReturn >= 0) return;
         if (AndroidSystemKeys.PauseOnReturn(true, HostPanelUp, GameInput.Playing, GameInput.InOverlay,
-                BoardUp, GamePubGames.DialogUp))
+                BoardUp, Engine_TitleGame.Active.InteractionDialogUp))
             GameInput.PressOnce(GameInput.PadStart);
     }
 
     /// <summary>Whether photo mode or the mirror owns the screen.</summary>
-    private static bool HostPanelUp => GamePhotoMode.Active || GameMorphMirror.OwnsInput;
+    private static bool HostPanelUp => GamePhotoMode.Active || Engine_TitleGame.Active.InteractionOwnsDevices;
 
-    /// <summary>Whether a pub game's board is on screen: a press once reaches it through its own pad (GamePubGames.TouchPad).</summary>
-    private static bool BoardUp => GamePubGames.Showing.Length != 0;
+    /// <summary>Whether a title board (Fable 2's pub-game table) is on screen: a press once reaches it through its own pad.</summary>
+    private static bool BoardUp => Engine_TitleGame.Active.InteractionBoardUp;
 
     /// <summary>Registers the shared mount only after production texture loaders have been installed.</summary>
     private void OnMounted(int count)
@@ -286,27 +288,22 @@ public partial class AndroidGameHost : Node3D
     private void AttachFrontEnd()
     {
         if (_ui != null || _guest == null) return;
-        HostUiSource.Install();
         _input = new GameInput { Name = "GameInput", ControllerStateSink = _guest.PublishController,
             DevicesEnabled = _focused };
         AddChild(_input);
         // Preserve the production order: the menu consumes the same physical sample whose
         // filtered guest packet was published by GameInput earlier in this frame.
-        _ui = new GameUi { Name = "GameUi" };
-        AddChild(_ui);
-        // The pub games, which the desktop's GameSession adds: unclaimed, the guest would play its
-        // own Scaleform movie unseen behind the loading screen (GamePubGames).
-        _pubGames = new GamePubGames { Name = "GamePubGames" };
-        AddChild(_pubGames);
+        _uiNode = Engine_TitleGame.Active.CreateUi();
+        _ui = _uiNode as IGameTitleUi;
+        if (_uiNode != null) AddChild(_uiNode);
         // Photo mode, which the desktop's GameSession adds: here it holds this host's own guest thread.
         AndroidNativeSession guest = _guest;
         AddChild(new GamePhotoMode { Name = "PhotoMode", HoldGuest = held => guest.Held = held });
-        // The hero's saved morphs and Murgo's mirror, which the desktop's GameSession adds too.
-        AddChild(new GameCharacterMorphs { Name = "CharacterMorphs" });
-        AddChild(new GameMorphMirror { Name = "MorphMirrorInteraction" });
-        // The Golden Cock and the prop's collision, as on the desktop; its dialog holds this host's guest.
-        AddChild(new GameGoldenCock { Name = "GoldenCockInteraction", HoldGuest = held => guest.Held = held });
-        AddChild(new GameGoldenCockCollision { Name = "GoldenCockCollision" });
+        // The title's own session nodes, which the desktop's GameSession adds: its live UI source,
+        // its interactions (a dialog of theirs holds this host's guest too) and, for Fable 2, the
+        // pub games — unclaimed, the guest would play its own Scaleform movie unseen behind the
+        // loading screen.
+        Engine_TitleGame.Active.AddSessionNodes(this, held => guest.Held = held);
     }
 
     /// <summary>Mirrors real guest UI state; navigation and Load Game come only from the player's input.</summary>
@@ -557,7 +554,7 @@ public partial class AndroidGameHost : Node3D
     private CanvasLayer? UiLayer()
     {
         if (_uiLayer is not null && GodotObject.IsInstanceValid(_uiLayer)) return _uiLayer;
-        return _uiLayer = _ui is not null && GodotObject.IsInstanceValid(_ui) ? _ui.GetNodeOrNull<CanvasLayer>("UiLayer") : null;
+        return _uiLayer = _uiNode is not null && GodotObject.IsInstanceValid(_uiNode) ? _uiNode.GetNodeOrNull<CanvasLayer>("UiLayer") : null;
     }
 
     /// <summary>

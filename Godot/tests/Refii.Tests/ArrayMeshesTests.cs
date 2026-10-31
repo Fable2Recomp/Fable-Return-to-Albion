@@ -19,7 +19,7 @@ public sealed class ArrayMeshesTests
     public void NoCodeCallsAddSurfaceFromArraysDirectly()
     {
         var call = new Regex(@"\.AddSurfaceFromArrays\(");
-        string[] offenders = new[] { "src", "FlashGames" }
+        string[] offenders = new[] { "src" }
             .SelectMany(dir => Directory.EnumerateFiles(Path.Combine(GodotRoot(), dir), "*.cs", SearchOption.AllDirectories))
             .Where(path => Path.GetFileName(path) != "Engine_ArrayMeshes.cs")
             .Where(path => File.ReadLines(path).Any(line => !line.TrimStart().StartsWith("//") && call.IsMatch(line)))

@@ -37,7 +37,17 @@
 #include <unordered_map>
 #include <vector>
 
+#if defined(__ANDROID__)
+// Godot owns the Activity and entry point; this library explicitly readies SDL.
+#define SDL_MAIN_HANDLED 1
+#include <SDL3/SDL_main.h>
+#endif
 #include <SDL3/SDL_events.h>
+#include <SDL3/SDL_hints.h>
+#include <SDL3/SDL_error.h>
+#if defined(__ANDROID__)
+#include <rex/main_android.h>
+#endif
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -433,10 +443,21 @@ REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const 
     }
 
     try {
+#if defined(__ANDROID__)
+        // The optional Android services must exist before the runtime creates guest memory and threads.
+        rex::InitializeAndroidPlatform();
+#endif
 #ifdef __linux__
         ReclaimAbandonedGuestArenas();
 #endif
         ApplyEmbeddedEnvironment();
+#if defined(__ANDROID__)
+        // Godot owns the Android Activity and rendering. The embedded guest needs only SDL's event
+        // queue, so SDL's separate Java host is never initialised.
+        SDL_SetHint("SDL_VIDEO_DRIVER", "dummy");
+        SDL_SetHint("SDL_AUDIO_DRIVER", "dummy");
+        SDL_SetMainReady();
+#endif
 
         // argv[0] then the flags. The game directory goes as an explicit flag, not
         // positionally: embedded, GetExecutableFolder() is the HOST's directory, so the
@@ -459,7 +480,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const 
 
         hosted.context = std::make_unique<rex::ui::SDLWindowedAppContext>();
         if (!hosted.context->Initialize()) {
-            hosted.status = "SDL context init failed";
+            hosted.status = std::string("SDL context init failed: ") + SDL_GetError();
             WriteOut(hosted.status, out, capacity);
             return 0;
         }

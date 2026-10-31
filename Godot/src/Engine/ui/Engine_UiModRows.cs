@@ -102,7 +102,7 @@ public static class Engine_UiModRows
 	/// list takes a sourced row's label as its text, so the tag is resolved here.
 	/// </summary>
 	public static string BookLabel(string label) =>
-		Engine_UiGuiText.Resolve(label, Engine_UiInventorySource.Strings);
+		Engine_UiGuiText.Resolve(label, Refii.Core.Engine_TitleGame.Active.Strings);
 
 	/// <summary>The stated rows as menu rows; <paramref name="label"/> turns a stated label into the row's text (as stated when null).</summary>
 	public static List<Engine_UiMenuSources.Row> ToRows(IReadOnlyList<Stated> stated, Func<string, string>? label = null)

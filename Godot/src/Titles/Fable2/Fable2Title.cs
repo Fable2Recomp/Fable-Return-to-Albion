@@ -34,14 +34,16 @@ public sealed class Fable2Title : Engine_TitleGame
 
 	private GamePubGames? _pubGames;
 
-	public override void AddSessionNodes(Godot.Node session)
+	public override void AddSessionNodes(Godot.Node session, System.Action<bool>? holdGuest = null)
 	{
 		HostUiSource.Install();
 		Godot.GD.Print("[game] the UI reads the live guest now (Engine_UiSource -> HostUiSource)");
 
+		session.AddChild(new GameDecorate { Name = "DecorateMode" });
 		session.AddChild(new GameCharacterMorphs { Name = "CharacterMorphs" });
 		session.AddChild(new GameMorphMirror { Name = "MorphMirrorInteraction" });
-		session.AddChild(new GameGoldenCock { Name = "GoldenCockInteraction" });
+		// Its dialog holds the host's guest where the host asks (the Android host's own thread).
+		session.AddChild(new GameGoldenCock { Name = "GoldenCockInteraction", HoldGuest = holdGuest });
 		session.AddChild(new GameGoldenCockCollision { Name = "GoldenCockCollision" });
 
 		// The pub games watch the guest's published table state; they are not launched from here.
@@ -64,17 +66,36 @@ public sealed class Fable2Title : Engine_TitleGame
 
 	public override bool PeerJoined => CoopSession.PeerStanding;
 
-	public override bool InteractionOwnsPad => GameGoldenCock.OwnsInput || GameMorphMirror.OwnsInput;
+	public override bool InteractionOwnsPad => GameGoldenCock.OwnsInput || GameMorphMirror.OwnsInput || GameDecorate.Active;
 
-	public override bool InteractionOwnsDevices => GameMorphMirror.OwnsInput;
+	public override bool InteractionOwnsDevices => GameMorphMirror.OwnsInput || GameDecorate.Active;
 
-	public override string? KeyLabel(string button) => GameMorphMirror.KeyLabel(button);
+	public override string? KeyLabel(string button) =>
+		GameDecorate.Active ? GameDecorate.KeyLabel(button) : GameMorphMirror.KeyLabel(button);
 
 	public override bool WorldInteractionAllowed =>
-		GameUi.WorldInteractionAllowed && !GameGoldenCock.OwnsInput && !GameMorphMirror.OwnsInput &&
+		GameUi.WorldInteractionAllowed && !GameGoldenCock.OwnsInput && !GameMorphMirror.OwnsInput && !GameDecorate.Active &&
 		GameGoldenCock.SessionAllowsInteraction(CoopSession.State, CoopSession.Side, CoopSession.LocalCoop);
 
-	public override bool ApplyCamera(Godot.Camera3D camera) => GameMorphMirror.ApplyCamera(camera);
+	// Decorating owns the camera too: it places it itself while it is up.
+	public override bool ApplyCamera(Godot.Camera3D camera) => GameMorphMirror.ApplyCamera(camera) || GameDecorate.Active;
+
+	public override bool InteractionBoardUp => GamePubGames.Showing.Length != 0;
+
+	public override string? UseItemAction(uint record) => $"{Engine_UiInventorySource.InventoryAction}use:{record}";
+
+	public override string? FindSaveDirectory(string saveRoot, string save) => Engine_SaveHero.FindSaveDirectory(saveRoot, save);
+
+	public override Refii.Text.Engine_BabelDatabase? Strings => Engine_UiInventorySource.Strings;
+
+	public override bool InteractionDialogUp => GamePubGames.DialogUp;
+
+	public override void RequestBack() => GameMorphMirror.RequestBack();
+
+	public override Refii.Host.HostBridge.GuestEntity Appearance(Refii.Host.HostBridge.GuestEntity entity) =>
+		GameDecorate.Appearance(entity);
+
+	public override bool WantsOwnNode(Refii.Host.HostBridge.GuestEntity entity) => GameDecorate.Targeted(entity.UniqueId);
 
 	public override uint CompanionEntityAddress => Fable2Bridge.GetMinimapLive().Dog;
 
@@ -103,6 +124,8 @@ public sealed class Fable2Title : Engine_TitleGame
 		catch (System.Exception exception) { Godot.GD.PushError("[golden-cock] " + exception.Message); }
 		try { Engine_MorphMirrorRuntime.Attach(mounted, Engine_MorphMirrorPlacements.Load()); }
 		catch (System.Exception exception) { Godot.GD.PushError("[morph-mirror] " + exception.Message); }
+		try { Refii.Level.Engine_DecorateCatalog.Attach(mounted); }
+		catch (System.Exception exception) { Godot.GD.PushError("[decorate] " + exception.Message); }
 		Engine_NewGameRuntime.Attach(mounted);
 	}
 

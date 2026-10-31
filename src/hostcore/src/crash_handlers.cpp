@@ -16,7 +16,11 @@
 #include <csignal>
 #ifndef _WIN32
 #include <dlfcn.h>
+// Bionic's execinfo API starts at API33. The API31 build keeps fault addresses and the guest
+// stack without importing unavailable host APIs.
+#if !defined(__ANDROID__) || __ANDROID_API__ >= 33
 #include <execinfo.h>
+#endif
 #include <fcntl.h>
 #include <sys/syscall.h>
 #include <sys/resource.h>
@@ -105,6 +109,13 @@ void FlushLogging();
 using namespace refii::hostcore;
 
 #if defined(__GNUC__) || defined(__clang__)
+#if defined(__aarch64__) && !defined(_WIN32)
+extern "C" int refii_guarded_copy(void* dst, const void* src, std::size_t size);
+extern "C" const char refii_guarded_copy_end[];
+#endif
+#if defined(__ANDROID__)
+const std::filesystem::path& RefiiGetAppRoot();
+#endif
 #pragma GCC visibility push(hidden)
 #endif
 namespace refii::hostcore {
@@ -117,14 +128,25 @@ namespace crash {
 char g_path[4096] = {};
 
 
-/// Beside the guest log: `ReXApp::OnInitialize` logs to `exe_dir/logs`.
+/// Beside the guest log (`ReXApp::OnInitialize` logs to `exe_dir/logs`); under the host's own
+/// writable root on Android.
 void ResolvePath() {
     if (g_path[0] != '\0') {
         return;
     }
     std::error_code ec;
+#if defined(__ANDROID__)
+    // Android's /proc/self/exe is app_process64 under /system/bin, so an executable-relative
+    // crash path is unwritable. The host states its private root before initialization
+    // (RefiiHostSetAppRoot); stderr stays the fallback while it is unset.
+    std::filesystem::path dir = RefiiGetAppRoot();
+    if (dir.empty()) {
+        return;
+    }
+#else
     std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
     std::filesystem::path dir = ec ? std::filesystem::current_path(ec) : exe.parent_path();
+#endif
     std::filesystem::create_directories(dir / "logs", ec);
     const std::string path = (dir / "logs" / "refii_crash.log").string();
     std::snprintf(g_path, sizeof(g_path), "%s", path.c_str());
@@ -221,9 +243,15 @@ void WriteRecord(const char* line, uintptr_t pc) {
         DescribeAddress(fd, pc);
     }
     DescribeGuestThread(fd);
+#if !defined(__ANDROID__) || __ANDROID_API__ >= 33
     void* frames[64];
     const int count = ::backtrace(frames, 64);
     ::backtrace_symbols_fd(frames, count, fd);
+#else
+    // A crash diagnostic must not keep the library from loading on API31: Android resolves
+    // strong imports eagerly, before any of this runs.
+    Append(fd, "  host backtrace unavailable on Android API<33; fault PC and guest frames retained\n");
+#endif
     ::close(fd);
 }
 
@@ -394,7 +422,28 @@ void Chain(int sig, const struct sigaction& to, siginfo_t* info, void* context) 
     ::signal(sig, SIG_DFL);
 }
 
+#if defined(__aarch64__)
+/// A fault inside `refii_guarded_copy` (guest_access.cpp) returns 0 from it: the copy is a leaf,
+/// so the link register still holds its caller. Returning through sigreturn restores the mask.
+bool FixupGuardedCopy(void* context) {
+    auto* ucontext = static_cast<ucontext_t*>(context);
+    const uintptr_t pc = static_cast<uintptr_t>(ucontext->uc_mcontext.pc);
+    if (pc < reinterpret_cast<uintptr_t>(&refii_guarded_copy) ||
+        pc >= reinterpret_cast<uintptr_t>(refii_guarded_copy_end)) {
+        return false;
+    }
+    ucontext->uc_mcontext.regs[0] = 0;
+    ucontext->uc_mcontext.pc = ucontext->uc_mcontext.regs[30];
+    return true;
+}
+#endif
+
 void LastResort(int sig, siginfo_t* info, void* context) {
+#if defined(__aarch64__)
+    if ((sig == SIGSEGV || sig == SIGBUS) && FixupGuardedCopy(context)) {
+        return;
+    }
+#endif
     const uintptr_t pc = ProgramCounter(context);
     const uintptr_t address = reinterpret_cast<uintptr_t>(info != nullptr ? info->si_addr : nullptr);
 
@@ -436,9 +485,15 @@ void LastResort(int sig, siginfo_t* info, void* context) {
 }
 
 /// The exits nothing else reports: a plain `exit()`, SIGTERM/SIGINT/SIGQUIT, and
-/// SIGPIPE/SIGSYS/SIGTRAP/SIGXCPU/SIGXFSZ, whose default action dies without a word.
-/// Recorded, then handed on unchanged.
-constexpr int kExtraSignals[] = {SIGTERM, SIGINT, SIGQUIT, SIGPIPE, SIGSYS, SIGTRAP, SIGXCPU,
+/// SIGPIPE/SIGSYS/SIGTRAP/SIGXFSZ/SIGHUP and (not on Android) SIGXCPU, whose default action dies
+/// without a word. Recorded, then handed on unchanged.
+// Android Mono uses self-delivered SIGXCPU to resume suspended managed threads. Its handler is
+// left alone: a diagnostic here can take a lock a suspended thread holds, and those GC signals
+// must not consume the fault budget.
+constexpr int kExtraSignals[] = {SIGTERM, SIGINT, SIGQUIT, SIGPIPE, SIGSYS, SIGTRAP,
+#if !defined(__ANDROID__)
+                                 SIGXCPU,
+#endif
                                  SIGXFSZ, SIGHUP};
 
 void OnExit() {
@@ -724,7 +779,8 @@ void InstallEmbeddedFailureHandlers() {
     g_previous_unhandled_filter = ::SetUnhandledExceptionFilter(SaveTracyOnUnhandled);
 #endif
 
-#ifndef _WIN32
+#if !defined(_WIN32) && (!defined(__ANDROID__) || __ANDROID_API__ >= 33)
+    // Bionic only supplies execinfo from API33; API31 keeps its PC and guest-frame diagnostics.
     // backtrace() loads libgcc_s on its first call, through the dynamic loader and the
     // heap. Taken here, on a healthy thread, so the call inside a signal handler is a walk
     // and nothing more.
@@ -738,11 +794,26 @@ void InstallEmbeddedFailureHandlers() {
     // process-wide — it is the only one that sees a guest worker die. The default action is
     // restored and the signal re-raised here rather than left to abort()'s own second raise,
     // so a SIGABRT that arrived any other way ends the process too.
+    // On POSIX the handler it replaced is restored (on Windows, the default) before the re-raise:
+    // that keeps Android's debuggerd in the chain, whose tombstone carries the native backtrace
+    // this report cannot take below API 33.
+#ifdef _WIN32
     std::signal(SIGABRT, [](int) {
         ReportEmbeddedFailure("SIGABRT", {});
         std::signal(SIGABRT, SIG_DFL);
         std::raise(SIGABRT);
     });
+#else
+    static struct sigaction previous_abort {};
+    struct sigaction on_abort {};
+    on_abort.sa_handler = [](int) {
+        ReportEmbeddedFailure("SIGABRT", {});
+        sigaction(SIGABRT, &previous_abort, nullptr);
+        std::raise(SIGABRT);
+    };
+    sigemptyset(&on_abort.sa_mask);
+    sigaction(SIGABRT, &on_abort, &previous_abort);
+#endif
 
     std::set_terminate([]() {
         std::string detail;

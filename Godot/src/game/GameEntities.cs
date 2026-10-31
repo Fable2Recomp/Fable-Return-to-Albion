@@ -567,7 +567,6 @@ public partial class GameEntities : Node3D
         {
             HostBridge.GuestEntity entity = title.Appearance(statedEntity);
             if (title.ObserveEntity(entity)) continue;
-            long prologueFrom = System.Diagnostics.Stopwatch.GetTimestamp();
             if (entity.Address == heroAddress && heroAddress != 0u && IsUsablePlacement(entity.Position))
             {
                 // THE HERO'S STATED POSITION, in Godot space, for whatever samples the world at
@@ -1142,7 +1141,7 @@ public partial class GameEntities : Node3D
             // node itself: a batch draws every instance alike, and a married twin may be one
             // instance of a MultiMesh. The marriage ends for good; the region's copy goes, as
             // it would for an entity destroyed, and this node draws from now on.
-            if (Refii.Entities.Engine_EntityAppearance.NeedsOwnNode(entity.Appearance) || GameDecorate.Targeted(entity.UniqueId))
+            if (Refii.Entities.Engine_EntityAppearance.NeedsOwnNode(entity.Appearance) || Engine_TitleGame.Active.WantsOwnNode(entity))
             {
                 if (adopted && _adoptions.TryGetValue(entity.Address, out var marriage))
                 {

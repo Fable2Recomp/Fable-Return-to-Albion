@@ -14,6 +14,7 @@ using Refii.Game;
 using Refii.Ui;
 using System.Reflection;
 using static GdUnit4.Assertions;
+using Refii.Titles.Fable2;
 
 namespace Refii.Tests.Launcher;
 

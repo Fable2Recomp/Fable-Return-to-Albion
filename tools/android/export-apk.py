@@ -269,16 +269,16 @@ BUNDLED_MODS = "bundled-mods.zip"
 
 
 def bundled_mod_files(source: Path) -> list[Path]:
-    """Git's inventory of mods-src: the mods that ship with the app, as their source."""
+    """Git's inventory of Fable2/mods-src: the mods that ship with the app, as their source."""
     names = subprocess.check_output(["git", "ls-files", "-z", "--cached", "--others",
-        "--exclude-standard", "--", "mods-src"], cwd=source).decode("utf-8").split("\0")
+        "--exclude-standard", "--", "Fable2/mods-src"], cwd=source).decode("utf-8").split("\0")
     result = []
     for name in sorted(set(filter(None, names))):
         relative = safe_relative(name)
-        if relative.parts[0] != "mods-src" or len(relative.parts) < 3:
-            raise ValueError("Bundled mod file outside a mods-src/<mod>/ folder: " + name)
+        if relative.parts[:2] != ("Fable2", "mods-src") or len(relative.parts) < 4:
+            raise ValueError("Bundled mod file outside a Fable2/mods-src/<mod>/ folder: " + name)
         path = source.joinpath(*relative.parts)
-        validate_source_path(source, path, source / "mods-src")
+        validate_source_path(source, path, source / "Fable2" / "mods-src")
         if path.is_file():
             result.append(path)
     return result

@@ -56,7 +56,7 @@ public abstract class Engine_TitleGame
 	/// Once the guest is up: the title's own nodes — its interactions, its feeds — added to the
 	/// session, and its UI pointed at the live guest.
 	/// </summary>
-	public virtual void AddSessionNodes(Godot.Node session)
+	public virtual void AddSessionNodes(Godot.Node session, System.Action<bool>? holdGuest = null)
 	{
 	}
 
@@ -136,6 +136,17 @@ public abstract class Engine_TitleGame
 	/// <summary>A title interaction places the camera this frame; true when it did.</summary>
 	public virtual bool ApplyCamera(Godot.Camera3D camera) => false;
 
+	/// <summary>A title board is on screen and takes the pad itself (Fable 2's pub-game table).</summary>
+	public virtual bool InteractionBoardUp => false;
+
+	/// <summary>A title dialog is absorbing the input (a pub game's own prompt).</summary>
+	public virtual bool InteractionDialogUp => false;
+
+	/// <summary>The system's Back reached a title panel that owns the screen: the title closes it.</summary>
+	public virtual void RequestBack()
+	{
+	}
+
 	// ---------------------------------------------------------------- the entity feed
 
 	/// <summary>Bumped when the title changes the hero's look for a preview, so its body is rebuilt.</summary>
@@ -167,6 +178,12 @@ public abstract class Engine_TitleGame
 
 	/// <summary>A live entity the title draws or answers itself; true when the shell should skip it.</summary>
 	public virtual bool ObserveEntity(Refii.Host.HostBridge.GuestEntity entity) => false;
+
+	/// <summary>
+	/// A live entity the title wants on a node of its own rather than in a batch (one it is moving
+	/// or previewing), whatever its stated look says.
+	/// </summary>
+	public virtual bool WantsOwnNode(Refii.Host.HostBridge.GuestEntity entity) => false;
 
 	/// <summary>The hero's entity, once per frame it is placed.</summary>
 	public virtual void ObserveHero(Refii.Host.HostBridge.GuestEntity hero, uint frame)
@@ -316,6 +333,15 @@ public abstract class Engine_TitleGame
 	/// <summary>The movie a screen's detail page plays for a row, or empty.</summary>
 	public virtual string ScreenMovie(uint screenId, Refii.Ui.Engine_UiExpandableMenu.Item? row,
 		Refii.Host.HostBridge.HeroVitals vitals) => string.Empty;
+
+	/// <summary>The title's menu action that uses an inventory record (a mod's use_item), or null.</summary>
+	public virtual string? UseItemAction(uint record) => null;
+
+	/// <summary>The folder of a named save under a save root, as the title lays its saves out; null when it has none.</summary>
+	public virtual string? FindSaveDirectory(string saveRoot, string save) => null;
+
+	/// <summary>The title's string book in the running culture, for shared consumers resolving a Babel tag; null before it is read.</summary>
+	public virtual Refii.Text.Engine_BabelDatabase? Strings => null;
 
 	/// <summary>The player whose menus are open on this machine (0 when the title has no such notion).</summary>
 	public virtual int MenuPlayer => 0;

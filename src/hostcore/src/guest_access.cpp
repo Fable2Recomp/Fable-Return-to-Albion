@@ -94,6 +94,47 @@ void FlushLogging();
 
 #include "host_abi.h"
 #include "host_core.h"
+
+#if defined(__aarch64__) && !defined(_WIN32)
+/// Copies `size` bytes and returns 1. A leaf with no stack frame, so a fault on either access
+/// can be answered by returning 0 to the caller (`fault::FixupGuardedCopy` in crash_handlers.cpp).
+/// Unaligned accesses are fine on normal memory, which guest memory is.
+extern "C" int refii_guarded_copy(void* dst, const void* src, std::size_t size);
+extern "C" const char refii_guarded_copy_end[];
+asm(R"(
+    .text
+    .p2align 4
+    .globl refii_guarded_copy
+    .hidden refii_guarded_copy
+    .type refii_guarded_copy, %function
+refii_guarded_copy:
+    cmp x2, #16
+    b.lo 2f
+1:  ldp x3, x4, [x1], #16
+    stp x3, x4, [x0], #16
+    sub x2, x2, #16
+    cmp x2, #16
+    b.hs 1b
+2:  tbz x2, #3, 3f
+    ldr x3, [x1], #8
+    str x3, [x0], #8
+3:  tbz x2, #2, 4f
+    ldr w3, [x1], #4
+    str w3, [x0], #4
+4:  tbz x2, #1, 5f
+    ldrh w3, [x1], #2
+    strh w3, [x0], #2
+5:  tbz x2, #0, 6f
+    ldrb w3, [x1]
+    strb w3, [x0]
+6:  mov w0, #1
+    ret
+    .globl refii_guarded_copy_end
+    .hidden refii_guarded_copy_end
+refii_guarded_copy_end:
+    .size refii_guarded_copy, refii_guarded_copy_end - refii_guarded_copy
+)");
+#endif
 #include "host_tracy.h"
 #include "hang_watchdog.h"
 #include "core/traced_mutex.h"
@@ -200,7 +241,7 @@ constexpr std::size_t kGuardSlots = 64;
 GuardSlot g_guard_slots[kGuardSlots];
 thread_local GuardSlot* t_guard_slot = nullptr;
 
-GuardSlot* GuardSlotForThisThread() {
+[[maybe_unused]] GuardSlot* GuardSlotForThisThread() {
     if (t_guard_slot != nullptr) {
         return t_guard_slot;
     }
@@ -227,6 +268,21 @@ sigjmp_buf* GuardForFaultingThread() {
     return nullptr;
 }
 
+#if defined(__aarch64__)
+/// The ARM64 guard costs one call. The walks make thousands of small reads a frame, and on
+/// Android a `sigsetjmp` per read (bionic fetches its setjmp cookie and saves every callee-saved
+/// register) plus the dynamic-TLS slot lookup was 37% of the entity walker's samples and a tenth
+/// of the main thread's. `refii_guarded_copy` is a leaf with no frame: a fault inside it is
+/// answered by the handler setting the return value to 0 and the pc to the link register,
+/// which is the same `false` the jump delivered, without a jump target per read.
+bool CopyGuestBytesGuarded(const uint8_t* source, void* out, std::size_t size) {
+    return refii_guarded_copy(out, source, size) != 0;
+}
+
+bool StoreGuestBytesGuarded(uint8_t* target, const void* value, std::size_t size) {
+    return refii_guarded_copy(target, value, size) != 0;
+}
+#else
 bool CopyGuestBytesGuarded(const uint8_t* source, void* out, std::size_t size) {
     GuardSlot* slot = GuardSlotForThisThread();
     if (slot == nullptr) {
@@ -262,6 +318,7 @@ bool StoreGuestBytesGuarded(uint8_t* target, const void* value, std::size_t size
     slot->guard = previous;
     return ok;
 }
+#endif  // __aarch64__
 #endif
 
 /// The first few unreadable reads are worth naming: this is the read that used to take

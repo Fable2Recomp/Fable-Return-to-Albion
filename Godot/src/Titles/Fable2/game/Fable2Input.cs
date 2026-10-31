@@ -18,7 +18,7 @@ public sealed class Fable2Input : GameTitleInput
 {
 	public static Fable2Input Instance { get; } = new();
 
-	public override void PublishPad(int pad, bool connected, PadState seen, PadState guest)
+	public override Published PublishPad(int pad, bool connected, PadState seen, PadState guest)
 	{
 		if (pad == 0)
 		{
@@ -32,7 +32,7 @@ public sealed class Fable2Input : GameTitleInput
 			_spellsWasDown = spells;
 		}
 
-		SetMasked(pad, connected, guest);
+		Published published = SetMasked(pad, connected, guest);
 
 		if (pad == 0)
 		{
@@ -51,6 +51,32 @@ public sealed class Fable2Input : GameTitleInput
 		{
 			PublishMenu(pad, seen.Buttons, seen.LeftX, seen.LeftY, seen.RightX, seen.RightY);
 		}
+
+		return published;
+	}
+
+	public override object? Describe() => new
+	{
+		menu_mask = MaskMenuInput, pause_mask = MaskPauseInput, query_mask = MaskPauseQueryInput,
+		card_mask = MaskReceiveItemsInput, box_mask = MaskMenuBoxInput, screen_mask = MaskScreenMenuInput,
+		denied_button_bits = _maskBits[0], held_across_unmask = _heldAcrossUnmask[0],
+		menu_direction = MenuDirection, menu_horizontal = MenuHorizontal,
+		accept_edge = MenuAcceptPressed, back_edge = MenuBackPressed,
+	};
+
+	/// <summary>Keys a pending Android tap to the guest's screens and modals and this title's host ownership — highlights and animation never invalidate a held input.</summary>
+	internal override GameInputButtonRoute ButtonRoute()
+	{
+		bool found = HostBridge.TryGetFrontEnd(out var screen, out uint state, out _, out _, out _, out _);
+		Engine_UiModel.PauseState? pause = HostBridge.GetPauseState();
+		uint flags = (PauseMenuSwallowsBack ? 1u : 0) | (FrontEndSwallowsBack ? 2u : 0) |
+			(ModalBoxOwnsInput ? 4u : 0) | (DisplayMessageBoxUp ? 8u : 0) |
+			(ReceiveItemsOwnsInput ? 16u : 0) | (MenuBoxOwnsInput ? 32u : 0) |
+			(ScreenMenuOwnsInput ? 64u : 0) | (FrontEndDrive.ListUp ? 128u : 0) |
+			(FrontEndDrive.CardUp ? 256u : 0) | (FrontEndDrive.WarningUp ? 512u : 0);
+		return new(found, found ? (uint)screen : 0, found ? state : 0,
+			pause?.ScreenId ?? uint.MaxValue, pause?.ModalId ?? 0, pause?.ModalMode ?? 0,
+			pause?.CurrentTab ?? 0, flags);
 	}
 
 	/// <summary>Pad 0 is player one's; local player two's own pad is theirs.</summary>
@@ -129,7 +155,7 @@ public sealed class Fable2Input : GameTitleInput
 	/// guest until released. See <see cref="SetMasked"/>.</summary>
 	private static readonly uint[] _heldAcrossUnmask = new uint[MaxControllers];
 
-	private static void SetMasked(int pad, bool connected, PadState state)
+	private Published SetMasked(int pad, bool connected, PadState state)
 	{
 		uint buttons = state.Buttons;
 
@@ -185,7 +211,8 @@ public sealed class Fable2Input : GameTitleInput
 		_heldAcrossUnmask[pad] &= buttons;
 		_maskBits[pad] = maskBits;
 
-		HostBridge.SetControllerState(
+		// The shell publishes it (GameInput.Deliver): the transport is the shell's, the mask the title's.
+		return new Published(new GameControllerPacket(
 			pad, connected,
 			filter(buttons) & ~wheelBits & ~_heldAcrossUnmask[pad],
 			goldenMenu ? (byte)0 : state.LeftTrigger, goldenMenu ? (byte)0 : state.RightTrigger,
@@ -201,7 +228,10 @@ public sealed class Fable2Input : GameTitleInput
 			// negated at 0x825ADD28) and nothing for the horizontal. Applied only while the stick
 			// is the camera's — never under a menu, which reads it as a direction.
 			goldenMenu || cardMasked ? 0 : (InvertCameraX && !menuMask ? -state.RightX : state.RightX),
-			goldenMenu || cardMasked ? 0 : state.RightY);
+			goldenMenu || cardMasked ? 0 : state.RightY),
+			maskBits,
+			filter(state.PhysicalButtons) & ~wheelBits & ~_heldAcrossUnmask[pad],
+			filter(state.OtherButtons) & ~wheelBits & ~_heldAcrossUnmask[pad]);
 	}
 
 	/// <summary>

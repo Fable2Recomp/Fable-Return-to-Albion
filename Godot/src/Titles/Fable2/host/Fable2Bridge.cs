@@ -2292,6 +2292,12 @@ public static class Fable2Bridge
 	}
 
 	/// <summary>Reads the manager, or null when the guest is not up.</summary>
+	[System.ThreadStatic]
+	private static uint[]? _pubGameValues;
+
+	[System.ThreadStatic]
+	private static byte[]? _pubGameName, _pubGameVariation;
+
 	public static PubGameState? GetPubGame()
 	{
 		if (!IsGuestUp)
@@ -2299,9 +2305,10 @@ public static class Fable2Bridge
 			return null;
 		}
 
-		var values = new uint[6];
-		var name = new byte[64];
-		var variation = new byte[64];
+		// Polled every frame by the Android host: the buffers are kept per thread.
+		uint[] values = _pubGameValues ??= new uint[6];
+		byte[] name = _pubGameName ??= new byte[64];
+		byte[] variation = _pubGameVariation ??= new byte[64];
 
 		try
 		{

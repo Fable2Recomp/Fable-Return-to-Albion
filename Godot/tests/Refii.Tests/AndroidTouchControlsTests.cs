@@ -3,7 +3,8 @@ using System.Linq;
 using GdUnit4;
 using Godot;
 using Refii.AndroidRuntime;
-using Refii.FlashGames.Framework;
+using Refii.Titles.Fable2;
+using Refii.Titles.Fable2.PubGames.Framework;
 using Refii.Game;
 using Refii.Ui;
 using static GdUnit4.Assertions;
@@ -925,18 +926,19 @@ public sealed class AndroidTouchControlsTests
     }
 
     /// <summary>
-    /// The Android host adds the pub games, as the desktop's GameSession does, and reads the guest's
-    /// table each frame: without them the guest plays its own movie unseen, a black screen.
+    /// The Android host takes the title's session nodes (Fable 2's pub games among them), as the
+    /// desktop's GameSession does, and steps the title each frame so it reads the guest's table:
+    /// without them the guest plays its own movie unseen, a black screen.
     /// </summary>
     [TestCase]
     public void TheAndroidHostPlaysThePubGames()
     {
         string source = HostSource();
         int attach = source.IndexOf("private void AttachFrontEnd()", System.StringComparison.Ordinal);
-        int added = source.IndexOf("new GamePubGames", System.StringComparison.Ordinal);
+        int added = source.IndexOf("Engine_TitleGame.Active.AddSessionNodes(", System.StringComparison.Ordinal);
         AssertThat(attach >= 0 && added > attach).IsTrue();
         int follow = source.IndexOf("FollowFrontEnd();", System.StringComparison.Ordinal);
-        int poll = source.IndexOf("_pubGames?.Poll();", System.StringComparison.Ordinal);
+        int poll = source.IndexOf("Engine_TitleGame.Active.Step();", System.StringComparison.Ordinal);
         AssertThat(follow >= 0 && poll > follow && poll < attach).IsTrue();
     }
 

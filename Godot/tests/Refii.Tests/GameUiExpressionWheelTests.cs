@@ -2,6 +2,7 @@ using GdUnit4;
 using Godot;
 using Refii.Game;
 using static GdUnit4.Assertions;
+using Refii.Titles.Fable2;
 
 namespace Refii.Tests;
 

@@ -28,4 +28,7 @@ public interface IGameTitleUi
 
 	/// <summary>The theme photo mode's own panel is drawn in, or null until the UI has one.</summary>
 	Engine_UiTheme? PhotoModeTheme { get; }
+
+	/// <summary>The UI's own account of its interactive state, for the Android host's debug report.</summary>
+	object? DescribeInteractiveUi() => null;
 }

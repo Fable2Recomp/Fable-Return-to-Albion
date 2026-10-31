@@ -101,6 +101,7 @@ void FlushLogging();
 #include "core/player_state.h"
 #include "core/guest_tick_queue.h"
 #include "core/gui_native_calls.h"
+#include "refii_payload/payload.h"
 #include "core/mouse_look_state.h"
 #include "core/movie_state.h"
 
@@ -658,7 +659,12 @@ extern "C" {
 ///     render scene's shadow spheres (category 36) with their last two stated keyframes.
 /// 229 adds RefiiHostSetConfigPath — the running title's config file, stated by the host
 ///     beside the app root, so each title's guest reads its own.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 229; }
+/// 230 carries two independent 229s: Fable 3's RefiiHostSetConfigPath above, and the lua branch's
+///     Android port — RefiiHostSetControllerStateTracked, RefiiHostGetControllerReadReceipt,
+///     RefiiHostSetGameModulePath — and RefiiNetGamerCard (the player an orb's Interact asked the
+///     guide's gamer card for, resolved to a peer for the shell's Join / Invite question;
+///     RefiiNetPeerAction's join also takes a non-friend's session from the shard beat).
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 230; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveRoot(char* output, uint32_t capacity) {
     auto* state = rex::system::kernel_state();
@@ -1211,6 +1217,15 @@ REFII_HOST_ABI_EXPORT void RefiiHostSetAppRoot(const char* root) {
 /// another title's. The host knows which title it started; this core and the runtime serve every
 /// title and name none.
 ///
+/// Selects the user's own game module (Android's private copy) before guest initialization.
+/// Returns zero with a diagnostic for an invalid path or a change after a load attempt.
+REFII_HOST_ABI_EXPORT int RefiiHostSetGameModulePath(const char* path, char* out, std::size_t capacity) {
+    std::string error;
+    const bool success = refii::payload::SetModulePath(path != nullptr ? path : "", error);
+    WriteOut(success ? "game module path selected" : error, out, capacity);
+    return success ? 1 : 0;
+}
+
 /// Must be called BEFORE RefiiHostInitialize, with RefiiHostSetAppRoot: paths are resolved once.
 REFII_HOST_ABI_EXPORT void RefiiHostSetConfigPath(const char* path) {
     RefiiSetConfigPath(path != nullptr && path[0] != '\0' ? std::filesystem::path{path}
@@ -1305,19 +1320,8 @@ REFII_HOST_ABI_EXPORT void RefiiHostSetVoicePlaybackOwned(int owned) {
     refii::vfs::SetVoiceCaptureOwnsOutput(owned != 0);
 }
 
-/// Publishes one controller's state, in XInput terms, for the guest to read.
-///
-/// Godot owns input the same way it owns the window: it reads the real device and pushes
-/// a snapshot here, and the guest's XInput calls are served from it. Translating to Xbox
-/// vocabulary happens once, on the way in.
-///
-/// `buttons` is a mask of X_INPUT_GAMEPAD_* bits; triggers are 0..255; thumbsticks are
-/// -32768..32767 with +Y up, which is the Xbox convention and NOT Godot's screen-space
-/// one — the caller flips it.
-///
-/// Safe to call every frame from the host's main thread while the guest reads on its
-/// own; the slot is a seqlock, so neither side blocks the other.
-REFII_HOST_ABI_EXPORT void RefiiHostSetControllerState(uint32_t user_index, int connected, uint32_t buttons,
+/// The host's arguments as a clamped ControllerState.
+static refii::host::ControllerState HostControllerState(int connected, uint32_t buttons,
                                  uint32_t left_trigger, uint32_t right_trigger,
                                  int32_t thumb_lx, int32_t thumb_ly, int32_t thumb_rx,
                                  int32_t thumb_ry) {
@@ -1336,8 +1340,44 @@ REFII_HOST_ABI_EXPORT void RefiiHostSetControllerState(uint32_t user_index, int 
     state.thumb_ly = clamp_axis(thumb_ly);
     state.thumb_rx = clamp_axis(thumb_rx);
     state.thumb_ry = clamp_axis(thumb_ry);
+    return state;
+}
 
-    refii::host::PublishControllerState(user_index, state);
+/// Publishes one controller's state, in XInput terms, for the guest to read.
+///
+/// Godot owns input the same way it owns the window: it reads the real device and pushes
+/// a snapshot here, and the guest's XInput calls are served from it. Translating to Xbox
+/// vocabulary happens once, on the way in.
+///
+/// `buttons` is a mask of X_INPUT_GAMEPAD_* bits; triggers are 0..255; thumbsticks are
+/// -32768..32767 with +Y up, which is the Xbox convention and NOT Godot's screen-space
+/// one — the caller flips it.
+///
+/// Safe to call every frame from the host's main thread while the guest reads on its
+/// own. The desktop keeps its seqlock; Android takes a small native snapshot lock so the
+/// state and its optional consumption tag have one coherent lifetime.
+REFII_HOST_ABI_EXPORT void RefiiHostSetControllerState(uint32_t user_index, int connected, uint32_t buttons,
+                                 uint32_t left_trigger, uint32_t right_trigger,
+                                 int32_t thumb_lx, int32_t thumb_ly, int32_t thumb_rx,
+                                 int32_t thumb_ry) {
+    refii::host::PublishControllerState(user_index, HostControllerState(connected, buttons,
+        left_trigger, right_trigger, thumb_lx, thumb_ly, thumb_rx, thumb_ry));
+}
+
+/// Android's physical-phase publication. The tag is independent of analog packet updates; it is
+/// acknowledged only after the input system copies a non-null state.
+REFII_HOST_ABI_EXPORT void RefiiHostSetControllerStateTracked(uint32_t user_index, int connected,
+                                 uint32_t buttons, uint32_t left_trigger, uint32_t right_trigger,
+                                 int32_t thumb_lx, int32_t thumb_ly, int32_t thumb_rx,
+                                 int32_t thumb_ry, uint64_t receipt_token) {
+    refii::host::PublishControllerStateTracked(user_index, HostControllerState(connected, buttons,
+        left_trigger, right_trigger, thumb_lx, thumb_ly, thumb_rx, thumb_ry), receipt_token);
+}
+
+/// The last successful non-null state-copy receipt (capabilities, vibration, NULL queries and
+/// service-step counts excluded).
+REFII_HOST_ABI_EXPORT uint64_t RefiiHostGetControllerReadReceipt(uint32_t user_index) {
+    return refii::host::ControllerReadReceipt(user_index);
 }
 
 /// The guest's SIMULATION TICK, as the guest itself counts it.

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using GdUnit4;
 using Refii.Ui;
 using static GdUnit4.Assertions;
+using Refii.Titles.Fable2;
 
 namespace Refii.Tests;
 
@@ -86,7 +87,7 @@ public sealed class UiComponentStartupTests
 
         // Use the real pure menu factory after admission, not a Godot view or a native scene.
         var menuTemplate = new Engine_UiMenuTemplate { Name = "pause-lifecycle" };
-        menuTemplate.Entries.Add(Engine_UiTemplates.Tab("Options", "Options", Engine_PauseMenu.TabOptions));
+        menuTemplate.Entries.Add(Fable2UiTemplates.Tab("Options", "Options", Engine_PauseMenu.TabOptions));
         Engine_FrontEndMenu menu = menuTemplate.Build();
         AssertThat(menu.Activate()).IsEqual("PauseTab:8");
         AssertThat(menu.Back()).IsFalse();

@@ -7,7 +7,7 @@ using System.Security.Cryptography;
 
 namespace Refii.AndroidRuntime;
 
-/// <summary>The mods that ship with the APK: <c>mods-src</c> zipped by the export, unpacked to
+/// <summary>The mods that ship with the APK: <c>Fable2/mods-src</c> zipped by the export, unpacked to
 /// <c>runtime/bundled-mods</c> and packed into the mods folder switched off, as the desktop launcher does.</summary>
 /// <remarks>The desktop release carries the trees as files beside the binary; an APK's resources
 /// are not files, so tools/android/export-apk.py zips them with the release's <c>manifest.txt</c>.
@@ -30,7 +30,7 @@ public static class AndroidBundledMods
     {
         if (!Godot.FileAccess.FileExists(Resource)) return new List<string>();
         Unpack(Godot.FileAccess.GetFileAsBytes(Resource), target);
-        return ModBundled.Install(target, modsRoot);
+        return ModBundled.Install(target, modsRoot, Refii.Core.Engine_Title.Active.ModExtension);
     }
 
     /// <summary>Replaces <paramref name="target"/> with the archive's trees unless it already holds this archive.</summary>

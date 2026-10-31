@@ -5,7 +5,9 @@ using Refii.Game;
 using Refii.Host;
 using Refii.Ui;
 
-namespace Refii.AndroidRuntime;
+namespace Refii.Titles.Fable2;
+
+using Refii.AndroidRuntime;
 
 /// <summary>
 /// The touch controls: the pad drawn on the glass, so the game plays from the phone's screen
@@ -28,7 +30,7 @@ namespace Refii.AndroidRuntime;
 /// <para>Settings, in refii.toml: <c>touch_controls</c> (on), <c>touch_scale</c> (1.0),
 /// <c>touch_opacity</c> (0.5) and <c>touch_look_sensitivity</c> (1.0).</para>
 /// </remarks>
-public partial class AndroidTouchControls : Control
+public partial class AndroidTouchControls : Control, IAndroidTouchControls
 {
     private readonly AndroidTouchPad _pad = new();
     private readonly AndroidTouchPointer _pointer = new();
@@ -309,7 +311,7 @@ public partial class AndroidTouchControls : Control
     private TouchHero Hero(double delta)
     {
         // A villager's Y prompt comes and goes as the hero looks about: read every frame.
-        HostBridge.TargetedQuery query = HostBridge.GetTargetedQuery();
+        HostBridge.TargetedQuery query = Fable2Bridge.GetTargetedQuery();
         bool villager = query.Known && query.Present && query.Button;
         _heroClock -= delta;
         if (_heroClock > 0.0)
@@ -318,7 +320,7 @@ public partial class AndroidTouchControls : Control
         }
 
         _heroClock = 0.5;
-        bool ranged = HostBridge.HeroWeapons() is not { } weapons || weapons.Ranged != 0u;
+        bool ranged = Fable2Bridge.HeroWeapons() is not { } weapons || weapons.Ranged != 0u;
         int? spells = Engine_UiSpellAssignSet.HeroSpellTypes;
         _hero = new TouchHero(ranged, spells is not { } known || known >= 1, Engine_UiSpellAssignSet.SpellsMenuCanOpen, villager);
         return _hero;

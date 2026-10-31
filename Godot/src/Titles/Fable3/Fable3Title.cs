@@ -44,6 +44,8 @@ public sealed class Fable3Title : Engine_TitleGame
 		return layer;
 	}
 
+	public override Refii.Text.Engine_BabelDatabase? Strings => Fable3Strings.Current;
+
 	public override bool HandleBusLine(int kind, string fields)
 	{
 		if (kind != Fable3Splash.StateKind)

@@ -76,11 +76,7 @@ public partial class GameInput : Node
 		{
 			devices, selected_pad0_device = _padDevice[0], focused = HasInputFocus(),
 			raw_packet = LastRawPacket, filtered_packet = LastFilteredPacket,
-			menu_mask = MaskMenuInput, pause_mask = MaskPauseInput, query_mask = MaskPauseQueryInput,
-			card_mask = MaskReceiveItemsInput, box_mask = MaskMenuBoxInput, screen_mask = MaskScreenMenuInput,
-			denied_button_bits = _maskBits[0], held_across_unmask = _heldAcrossUnmask[0],
-			menu_direction = MenuDirection, menu_horizontal = MenuHorizontal,
-			accept_edge = MenuAcceptPressed, back_edge = MenuBackPressed,
+			title_input = Engine_TitleGame.Active.Input.Describe(),
 			physical_button_capture = CapturePhysicalButtons, captured_button_overflows = _buttonCapture.Overflows,
 			touch_mode = Engine_UiInputMode.Touch, touch_hold = Touch,
 			pointer_free = Engine_UiPointer.Free, pointer_canvas = Engine_UiPointer.Canvas?.ToString(),
@@ -791,8 +787,64 @@ public partial class GameInput : Node
 			Refii.Mods.ModInput.Withhold(player, ref state.Buttons, ref state.LeftTrigger, ref state.RightTrigger);
 		}
 
-		Engine_TitleGame.Active.Input.PublishPad(pad, connected, state, state);
+		Deliver(pad, connected, state, Engine_TitleGame.Active.Input.PublishPad(pad, connected, state, state));
 	}
+
+	/// <summary>
+	/// Publishes a pad the title has masked, through the one transport hosting the guest: the
+	/// direct bridge on the desktop, the owner's mailbox (<see cref="ControllerStateSink"/>) on
+	/// Android. Pad 0 keeps the raw and filtered samples for the debug channel and, when the
+	/// physical buttons are captured, the phase publication the mailbox retains until the guest
+	/// has read it.
+	/// </summary>
+	private void Deliver(int pad, bool connected, PadState state, GameTitleInput.Published published)
+	{
+		GameControllerPacket packet = published.Packet;
+		if (pad == 0)
+		{
+			if (CapturePhysicalButtons && ControllerStateSink != null)
+			{
+				if (_deliveryCaptureGeneration != _buttonCapture.ContextGeneration ||
+					_deliveryMask != published.MaskBits || _deliveryPad0 != _padDevice[0])
+				{
+					++_deliveryEpoch;
+					_deliveryCaptureGeneration = _buttonCapture.ContextGeneration;
+					_deliveryMask = published.MaskBits;
+					_deliveryPad0 = _padDevice[0];
+				}
+
+				bool focus = HasInputFocus();
+				// An immutable record: an unchanged sample is the last one again, not a new copy.
+				GameControllerPhysicalPublication? physical = LastFilteredPacket?.Physical;
+				if (physical is null || physical.Epoch != _deliveryEpoch || physical.Enabled != focus ||
+					physical.Buttons != published.PhysicalButtons || physical.OtherButtons != published.OtherButtons)
+				{
+					physical = new GameControllerPhysicalPublication(_deliveryEpoch, focus, published.PhysicalButtons, published.OtherButtons);
+				}
+
+				packet = packet with { Physical = physical };
+			}
+
+			if (LastRawPacket is not { } raw || raw.Pad != pad || raw.Connected != connected ||
+				raw.Buttons != state.Buttons || raw.LeftTrigger != state.LeftTrigger ||
+				raw.RightTrigger != state.RightTrigger || raw.LeftX != state.LeftX ||
+				raw.LeftY != state.LeftY || raw.RightX != state.RightX || raw.RightY != state.RightY ||
+				raw.Physical is not null)
+			{
+				LastRawPacket = new GameControllerPacket(pad, connected, state.Buttons,
+					state.LeftTrigger, state.RightTrigger, state.LeftX, state.LeftY, state.RightX, state.RightY);
+			}
+
+			LastFilteredPacket = packet;
+		}
+
+		GameControllerTransport.Publish(packet, ControllerStateSink, PublishNativePacket);
+	}
+
+	/// <summary>The desktop's transport: the bridge call, as it always was.</summary>
+	private static void PublishNativePacket(GameControllerPacket packet) =>
+		HostBridge.SetControllerState(packet.Pad, packet.Connected, packet.Buttons,
+			packet.LeftTrigger, packet.RightTrigger, packet.LeftX, packet.LeftY, packet.RightX, packet.RightY);
 
 	/// <summary>
 
@@ -841,17 +893,7 @@ public partial class GameInput : Node
 	/// <returns>A changes-only identity; highlights and animation progress deliberately do not invalidate a held input.</returns>
 	private GameInputButtonRoute ReadButtonRoute()
 	{
-		if (DevicePolicyOverride is { } policy) return policy.Route;
-		bool found = HostBridge.TryGetFrontEnd(out var screen, out uint state, out _, out _, out _, out _);
-		Engine_UiModel.PauseState? pause = HostBridge.GetPauseState();
-		uint flags = (PauseMenuSwallowsBack ? 1u : 0) | (FrontEndSwallowsBack ? 2u : 0) |
-			(ModalBoxOwnsInput ? 4u : 0) | (DisplayMessageBoxUp ? 8u : 0) |
-			(ReceiveItemsOwnsInput ? 16u : 0) | (MenuBoxOwnsInput ? 32u : 0) |
-			(ScreenMenuOwnsInput ? 64u : 0) | (FrontEndDrive.ListUp ? 128u : 0) |
-			(FrontEndDrive.CardUp ? 256u : 0) | (FrontEndDrive.WarningUp ? 512u : 0);
-		return new(found, found ? (uint)screen : 0, found ? state : 0,
-			pause?.ScreenId ?? uint.MaxValue, pause?.ModalId ?? 0, pause?.ModalMode ?? 0,
-			pause?.CurrentTab ?? 0, flags);
+		return DevicePolicyOverride is { } policy ? policy.Route : Engine_TitleGame.Active.Input.ButtonRoute();
 	}
 
 	/// <summary>Said once per focus change, not once per frame.</summary>
@@ -959,7 +1001,7 @@ public partial class GameInput : Node
 
 		// The title takes it from here: what the guest sees, and what its own host menus read
 		// (`seen` is every source folded, before the mods withhold anything).
-		Engine_TitleGame.Active.Input.PublishPad(0, connected: true, seen, state);
+		Deliver(0, connected: true, state, Engine_TitleGame.Active.Input.PublishPad(0, connected: true, seen, state));
 	}
 
 	/// <summary>

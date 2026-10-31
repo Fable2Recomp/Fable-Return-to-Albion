@@ -9,6 +9,7 @@ using Refii.Game;
 using Refii.Save;
 using Refii.Ui;
 using static GdUnit4.Assertions;
+using Refii.Titles.Fable2;
 
 namespace Refii.Tests;
 
@@ -25,18 +26,24 @@ public sealed class AndroidGoldenCockTests
 
     private static readonly string[] Hosts = { "game/GameSession.cs", "android/AndroidGameHost.cs" };
 
-    /// <summary>Both game hosts create the interaction and the collision; Android's holds its own guest.</summary>
+    /// <summary>
+    /// Both game hosts take the title's session nodes, and Fable 2's add the interaction and the
+    /// collision; Android hands the title its own guest to hold.
+    /// </summary>
     [TestCase]
     public void EveryHostAddsTheGoldenCock()
     {
         foreach (string host in Hosts)
         {
             string text = Source(host);
-            AssertThat(text.Contains("new GameGoldenCock {")).OverrideFailureMessage(host + " has no Golden Cock").IsTrue();
-            AssertThat(text.Contains("new GameGoldenCockCollision {")).OverrideFailureMessage(host + " has no Golden Cock collision").IsTrue();
+            AssertThat(text.Contains("Engine_TitleGame.Active.AddSessionNodes(")).OverrideFailureMessage(host + " takes no title session nodes").IsTrue();
         }
 
-        AssertThat(Source("android/AndroidGameHost.cs").Contains("HoldGuest = held => guest.Held = held });")).IsTrue();
+        string title = Source("Titles/Fable2/Fable2Title.cs");
+        AssertThat(title.Contains("new GameGoldenCock {")).OverrideFailureMessage("Fable2Title has no Golden Cock").IsTrue();
+        AssertThat(title.Contains("new GameGoldenCockCollision {")).OverrideFailureMessage("Fable2Title has no Golden Cock collision").IsTrue();
+        AssertThat(title.Contains("HoldGuest = holdGuest")).IsTrue();
+        AssertThat(Source("android/AndroidGameHost.cs").Contains("AddSessionNodes(this, held => guest.Held = held)")).IsTrue();
     }
 
     /// <summary>With no session and no photo mode, nothing holds the guest: the cock may open and its prop collides.</summary>

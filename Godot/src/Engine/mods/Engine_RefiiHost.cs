@@ -845,7 +845,7 @@ public partial class RefiiHost : Node
 		bool hex = text.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
 		return uint.TryParse(hex ? text[2..] : text, hex ? NumberStyles.HexNumber : NumberStyles.Integer,
 				CultureInfo.InvariantCulture, out uint record) && record != 0u
-			? $"{Refii.Ui.Engine_UiInventorySource.InventoryAction}use:{record}"
+			? Refii.Core.Engine_TitleGame.Active.UseItemAction(record)
 			: null;
 	}
 
@@ -979,7 +979,7 @@ public partial class RefiiHost : Node
 			save = _currentSave;
 		}
 
-		return save.Length == 0 ? null : Engine_SaveHero.FindSaveDirectory(SaveRoot(), save);
+		return save.Length == 0 ? null : Refii.Core.Engine_TitleGame.Active.FindSaveDirectory(SaveRoot(), save);
 	}
 
 	/// <summary>A quickload is over (its level stands, or it never will): the save folder gets its own files back.</summary>
@@ -1030,7 +1030,7 @@ public partial class RefiiHost : Node
 			}
 		}
 
-		if (save.Length == 0 || Engine_SaveHero.FindSaveDirectory(SaveRoot(), save) is not { } directory ||
+		if (save.Length == 0 || Refii.Core.Engine_TitleGame.Active.FindSaveDirectory(SaveRoot(), save) is not { } directory ||
 			!SaveSnapshots.IsStaged(directory))
 		{
 			return;

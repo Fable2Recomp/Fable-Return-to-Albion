@@ -1,6 +1,8 @@
 using Godot;
 
-namespace Refii.Game;
+namespace Refii.Titles.Fable2;
+
+using Refii.Game;
 
 /// <summary>Bounded read-only diagnostics for Android's production frontend, pause root and screen menus.</summary>
 public partial class GameUi
@@ -41,7 +43,7 @@ public partial class GameUi
                 visible = saveCards.Visible, visible_in_tree = saveCards.InTree,
                 cursor = _saveCardView!.Cursor
             },
-            input_drive = GameInput.FrontEndDrive
+            input_drive = Fable2Input.FrontEndDrive
         };
     }
 

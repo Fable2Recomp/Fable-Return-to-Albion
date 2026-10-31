@@ -2012,7 +2012,12 @@ public static class Fable2UiTemplates
 	/// <see cref="Engine_PauseMenu.ApplyTabAvailability"/> ghosts an unavailable tab from
 	/// `RefiiHostPauseTabsAvailable`, the guest's `sub_826B83D0` read directly.
 	/// </summary>
-	private static Engine_UiMenuEntry Tab(string name, string tag, uint tab, string when = "") => new()
+	/// <param name="name">The guest's tab identity, also used to source any nested rows.</param>
+	/// <param name="tag">The fallback localized label before the guest states its decoration.</param>
+	/// <param name="tab">The native pause-tab lever's id.</param>
+	/// <param name="when">The row condition the entry is built under; empty always holds.</param>
+	/// <returns>A command row whose optional source does not make it an empty submenu.</returns>
+	internal static Engine_UiMenuEntry Tab(string name, string tag, uint tab, string when = "") => new()
 	{
 		Name = name,
 		Tag = tag,
