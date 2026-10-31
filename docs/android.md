@@ -44,6 +44,23 @@ Shared C# that runs on Android must also work under NativeAOT: no reflection-bas
 System.Text.Json (use `Engine_Json` and the source-generated contexts), no OpenSSL (hash
 through `Engine_Hash`, no HTTPS), and no thread started from a module initializer.
 
+## Where Android code goes
+
+- Phone-only C# goes in `Godot/src/android` (one title's own in `Godot/src/Titles/<title>/android`), as a
+  `partial` file of the shared class or a helper of its own. The shared file keeps at most a one-line
+  call, gated by `Engine_Platform.IsAndroid`.
+- Phone-only native code goes in a `*_android.cpp/.h` beside the shared file, added under `if(ANDROID)`;
+  Android build settings go in `cmake/refii_android*.cmake` and `Godot/src/android/Android.targets`.
+- Nothing is copied to separate it. The lite shaders are the full shaders plus defines, built by
+  `Engine_ShaderVariant`; `FABLE_LITE` blocks inside the shared shader bodies are the exception that
+  avoids second copies.
+- Android docs go in `docs/`: `Godot/docs` ships in every install's SDK.
+
+`AndroidSeparationTests` holds this: it counts the lines in each shared file that name the phone
+against `Godot/tests/Refii.Tests/AndroidSeparationBaseline.txt` and fails when one goes up. A hook that
+really has to stay in a shared file raises that file's count in the same commit (or run the tests with
+`REFII_WRITE_ANDROID_BASELINE=1`), so it shows up in review.
+
 ## Build the APK
 
 `tools/android/build-apk.py` builds a signed APK (an export of Godot's debug template) in
