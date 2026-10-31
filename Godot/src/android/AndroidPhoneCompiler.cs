@@ -24,8 +24,16 @@ public static class AndroidPhoneCompiler
     /// <param name="NativeDirectory">Read-only APK native library directory, containing executable tools.</param>
     /// <param name="GameDirectory">Installed game containing the user's default.xex and optional default.xexp.</param>
     /// <param name="PrivateDirectory">Parent for unique private compilation attempts.</param>
+    /// <param name="Title">The game being compiled; Fable 2 when unset.</param>
     public sealed record Request(string BundleDirectory, string NativeDirectory,
-        string GameDirectory, string PrivateDirectory);
+        string GameDirectory, string PrivateDirectory, Refii.Core.Engine_Title? Title = null)
+    {
+        /// <summary>Whether this compiles Fable 3: its own version config, hooks, includes, bridge and link set.</summary>
+        internal bool IsFable3 => Title == Refii.Core.Engine_Title.Fable3;
+
+        /// <summary>The bridge the module is loaded after: Fable 3's is librefiii_hostbridge.so (cmake/refii_android.cmake).</summary>
+        internal string HostBridge => IsFable3 ? "librefiii_hostbridge.so" : "librefii_hostbridge.so";
+    }
 
     /// <summary>Validated output of a completed attempt; no active installation is replaced.</summary>
     /// <param name="Directory">Attempt directory, also retained after failures for diagnostics.</param>
@@ -226,6 +234,10 @@ public static class AndroidPhoneCompiler
         public string[] Includes { get; set; } = Array.Empty<string>();
         /// <summary>Public hook source paths, relative to the bundle.</summary>
         public string[] Hooks { get; set; } = Array.Empty<string>();
+        /// <summary>Fable 3's include directories (refiii_hooks'), in its build's order.</summary>
+        public string[] Fable3Includes { get; set; } = Array.Empty<string>();
+        /// <summary>Fable 3's hook source paths, relative to the bundle; empty in a bundle from before Fable 3.</summary>
+        public string[] Fable3Hooks { get; set; } = Array.Empty<string>();
         /// <summary>Hashes of all extracted public build inputs.</summary>
         public Dictionary<string, string> Files { get; set; } = new();
         /// <summary>Hashes of the matched APK runtime closure and executable tools.</summary>
@@ -268,6 +280,19 @@ public static class AndroidPhoneCompiler
         foreach (string path in new[] { "src/payload/src/payload_export.cpp", "tools/android/payload_abi_guard.h",
                      "versions/Fable2/refii_manifest.toml", "versions/Fable2TU1/refii_manifest.toml" })
             if (!manifest.Files.ContainsKey(path)) throw new InvalidDataException("Missing build input: " + path);
+        if (request.IsFable3)
+        {
+            if (manifest.Fable3Hooks.Length == 0 || manifest.Fable3Includes.Length == 0 ||
+                !manifest.Files.ContainsKey("versions/Fable3/refiii_manifest.toml") ||
+                !manifest.NativeFiles.ContainsKey(request.HostBridge))
+                throw new InvalidDataException("This APK's compiler bundle cannot build Fable 3");
+            foreach (string path in manifest.Fable3Includes)
+                if (!System.IO.Directory.Exists(Below(request.BundleDirectory, path)))
+                    throw new InvalidDataException("Missing include directory: " + path);
+            foreach (string path in manifest.Fable3Hooks)
+                if (!manifest.Files.ContainsKey(path) || !path.EndsWith(".cpp", StringComparison.Ordinal))
+                    throw new InvalidDataException("Unverified hook source: " + path);
+        }
         return manifest;
     }
 
@@ -293,11 +318,13 @@ public static class AndroidPhoneCompiler
         foreach (string name in new[] { "default.xex", "default.xexp" })
             if (File.Exists(Path.Combine(request.GameDirectory, name)))
                 File.Copy(Path.Combine(request.GameDirectory, name), Path.Combine(input, name), false);
-        string version = File.Exists(Path.Combine(input, "default.xexp")) ? "Fable2TU1" : "Fable2";
+        // Fable 3 has one executable (no title update config); its files follow its key (refiii_*.toml).
+        string version = request.IsFable3 ? "Fable3" : File.Exists(Path.Combine(input, "default.xexp")) ? "Fable2TU1" : "Fable2";
+        string key = (request.Title ?? Refii.Core.Engine_Title.Fable2).Key;
         string generated = Path.Combine(attempt, "generated");
         string config = Below(request.BundleDirectory, "versions/" + version);
-        File.Copy(Path.Combine(config, "refii_config.toml"), Path.Combine(attempt, "refii_config.toml"), false);
-        string manifest = File.ReadAllText(Path.Combine(config, "refii_manifest.toml"));
+        File.Copy(Path.Combine(config, key + "_config.toml"), Path.Combine(attempt, key + "_config.toml"), false);
+        string manifest = File.ReadAllText(Path.Combine(config, key + "_manifest.toml"));
         manifest = RewriteAssignment(manifest, "file_path", Path.Combine(input, "default.xex"));
         manifest = RewriteAssignment(manifest, "out_directory_path", generated);
         string manifestPath = Path.Combine(attempt, "refii_manifest.toml");
@@ -340,7 +367,7 @@ public static class AndroidPhoneCompiler
         progress("Precompiling game headers");
         await Run("librefii_clang.so", flags.Concat(new[] { "-x", "c++-header",
             Path.Combine(generated, "refii_pch.h"), "-o", pch }).ToArray()).ConfigureAwait(false);
-        var all = units.Concat(bundle.Hooks.Select(path => Below(request.BundleDirectory, path)))
+        var all = units.Concat((request.IsFable3 ? bundle.Fable3Hooks : bundle.Hooks).Select(path => Below(request.BundleDirectory, path)))
             .Append(Below(request.BundleDirectory, "src/payload/src/payload_export.cpp")).ToArray();
         var objects = new List<string>();
         for (int i = 0; i < all.Length; i++)
@@ -359,11 +386,14 @@ public static class AndroidPhoneCompiler
             "-Wl,-z,common-page-size=16384", ModuleLocalCalls,
             "-Wl,-soname,librefii_generated.so", "-L" + request.NativeDirectory,
             "-Wl,-rpath-link," + request.NativeDirectory }).Concat(objects)
-            .Concat(new[] { "-lrefii_core", "-lrefii_runtime", "-lrefii_lua", "-lrefii_vfs", "-lrexruntime", "-o", module }).ToArray();
+            // Lua and the VFS are Fable 2's instance; Fable 3's module links the shared natives alone, as on desktop.
+            .Concat(request.IsFable3
+                ? new[] { "-lrefii_core", "-lrefii_runtime", "-lrexruntime", "-o", module }
+                : new[] { "-lrefii_core", "-lrefii_runtime", "-lrefii_lua", "-lrefii_vfs", "-lrexruntime", "-o", module }).ToArray();
         await Run("librefii_clang.so", link).ConfigureAwait(false);
         ValidateModule(File.ReadAllBytes(module));
         bool nativeLoad = Refii.Core.Engine_Platform.IsAndroid && execute == null && verifyLoad == null;
-        if (!(verifyLoad?.Invoke(module) ?? (!nativeLoad || VerifyLoadedModule(module, request.NativeDirectory))))
+        if (!(verifyLoad?.Invoke(module) ?? (!nativeLoad || VerifyLoadedModule(module, request.NativeDirectory, request.HostBridge))))
             throw new InvalidDataException("Compiled module failed its loader check; private output retained: " + attempt);
         cancellation.ThrowIfCancellationRequested();
         if (nativeLoad)
@@ -386,12 +416,12 @@ public static class AndroidPhoneCompiler
     /// <returns>Whether the payload descriptor accessor returns a non-null pointer.</returns>
     /// <remarks>No descriptor fields are marshalled, registration function is called, guest is started,
     /// configuration is changed or save is read. Verified handles remain pinned for engine lifetime.</remarks>
-    private static bool VerifyLoadedModule(string module, string nativeDirectory)
+    private static bool VerifyLoadedModule(string module, string nativeDirectory, string hostBridge = "librefii_hostbridge.so")
     {
         // Runtime-first lookup preserves the SDK's global flag/function owners;
         // loading the payload as the root closure can interpose its bridge wrappers.
         LoadEvent(module, "runtime_preload_begin");
-        string runtime = Below(nativeDirectory, "librefii_hostbridge.so");
+        string runtime = Below(nativeDirectory, hostBridge);
         LoadedRuntime.Verify(runtime, Hash(runtime));
         LoadEvent(module, "runtime_preload_returned");
         bool verified = LoadedModules.Verify(module, Hash(module));
@@ -526,7 +556,8 @@ public static class AndroidPhoneCompiler
             flags.Add("-U" + macro);
         if (version == "Fable2") flags.Add("-DREFII_GUEST_BUILD_UNPATCHED=1");
         if (lseAtomics) flags.Add("-march=armv8.2-a");
-        foreach (string path in bundle.Includes) flags.Add("-I" + Below(request.BundleDirectory, path));
+        foreach (string path in version == "Fable3" ? bundle.Fable3Includes : bundle.Includes)
+            flags.Add("-I" + Below(request.BundleDirectory, path));
         return flags;
     }
 

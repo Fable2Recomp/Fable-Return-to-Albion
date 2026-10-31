@@ -29,6 +29,7 @@ public partial class AndroidGameHost : Node3D
     private GameAudio? _audio;
     private GameInput? _input;
     private Node? _uiNode;
+    private bool _frontEndAttached;
     private IGameTitleUi? _ui;
     private Control? _touchNode;
     private IAndroidTouchControls? _touch;
@@ -85,7 +86,7 @@ public partial class AndroidGameHost : Node3D
             AddChild(new AndroidCanvasLean { Name = "CanvasLean", Touch = _touchNode, Target = UiLayer });
         try
         {
-            string configPath = Path.Combine(_userDirectory, AndroidRuntimeOptions.FileName);
+            string configPath = Path.Combine(AndroidRuntimeOptions.TitleDirectory(_userDirectory), AndroidRuntimeOptions.FileName);
             if (!File.Exists(configPath))
                 throw new FileNotFoundException("Supply private android-runtime.json before booting; see docs/android-runtime.md", configPath);
             _options = AndroidRuntimeOptions.Parse(File.ReadAllText(configPath), _userDirectory);
@@ -110,7 +111,7 @@ public partial class AndroidGameHost : Node3D
             GetViewport().UseTaa = false;
             Engine_RenderStats.Track(GetViewport());
             AndroidTextureUpload.InitializeOnMainThread();
-            string runtimeConfig = Path.Combine(root, "refii.toml");
+            string runtimeConfig = Path.Combine(root, Engine_Title.Active.ConfigFileName);
             if (!File.Exists(runtimeConfig))
                 File.WriteAllText(runtimeConfig, "sun_shadow_map = 1024\nsun_shadow_splits = 2\nshader_warmup_enabled = false\n");
             var seeded = Refii.Launcher.Core.RuntimeConfig.ReadValues(runtimeConfig);
@@ -287,7 +288,10 @@ public partial class AndroidGameHost : Node3D
     /// <summary>Installs production menus and the input sink after one successful native initialization.</summary>
     private void AttachFrontEnd()
     {
-        if (_ui != null || _guest == null) return;
+        // Once. Not "until _ui is set": only Fable 2's UI is an IGameTitleUi, so for Fable 3 _ui stays
+        // null and every frame built another whole UI, input node and photo mode.
+        if (_frontEndAttached || _guest == null) return;
+        _frontEndAttached = true;
         _input = new GameInput { Name = "GameInput", ControllerStateSink = _guest.PublishController,
             DevicesEnabled = _focused };
         AddChild(_input);

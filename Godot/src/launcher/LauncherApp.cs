@@ -1286,7 +1286,7 @@ public partial class LauncherApp : Control
 			return;
 		}
 
-		if (_pipeline.Running || _launch.GameIsRunning)
+		if (_pipeline.Running || _launch.GameIsRunning || AndroidInstalling)
 		{
 			Log("Finish the running install or build, or close the game, before switching to " + title.Name + ".");
 			RefreshGameMenu();
@@ -1304,6 +1304,7 @@ public partial class LauncherApp : Control
 
 		RefreshGameMenu();
 		ApplyTitleScreen();
+		ReloadAndroidTitle();  // the phone's installation controls, LauncherApp.Android.cs
 		Log("Switched to " + title.Name + ".");
 		RefreshState();
 		RefreshDebugDrawer();

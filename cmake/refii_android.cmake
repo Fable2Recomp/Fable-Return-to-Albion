@@ -19,6 +19,16 @@ endfunction()
 if(TARGET refii_hooks)
     refii_android_payload_contract(refii_hooks)
 endif()
+if(TARGET refiii_hooks)
+    refii_android_payload_contract(refiii_hooks)
+endif()
+
+# Fable 3's bridge keeps Fable 2's file name on desktop, where each title's sits in its own
+# bin/<Folder>/. An APK's natives are one flat folder, so on Android Fable 3's is
+# librefiii_hostbridge.so (its key, as Fable 2's is refii); src/android resolves it by title.
+if(TARGET refiii_hostbridge)
+    set_target_properties(refiii_hostbridge PROPERTIES OUTPUT_NAME refiii_hostbridge)
+endif()
 
 if(REFII_ANDROID_GENERATED_DIR)
     if(REFII_BUILD_GENERATED_PAYLOAD)

@@ -310,6 +310,9 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
     /// </summary>
     private TouchHero Hero(double delta)
     {
+        // Fable 3 plays on these controls too, and its bridge has none of Fable 2's hero queries:
+        // every button stays offered.
+        if (Refii.Core.Engine_Title.Active != Refii.Core.Engine_Title.Fable2) return _hero;
         // A villager's Y prompt comes and goes as the hero looks about: read every frame.
         HostBridge.TargetedQuery query = Fable2Bridge.GetTargetedQuery();
         bool villager = query.Known && query.Present && query.Button;

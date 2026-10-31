@@ -105,10 +105,10 @@ def pack(repo: Path, native: Path, tools_from: Path, out: Path, built_from: Path
     data, tools = out / 'data', out / 'native'
     # The earlier bundle's checkout files go: a header the checkout has since moved would otherwise stay
     # on the include path ahead of its new copy.
-    for relative in ('src', 'Fable2', 'tools', 'rexglue-net', 'versions'):
+    for relative in ('src', 'Fable2', 'Fable3', 'tools', 'rexglue-net', 'versions'):
         if (data / relative).exists():
             shutil.rmtree(data / relative)
-    for relative in ('src', 'Fable2/src', 'tools/android', 'rexglue-net/shadow/rexglue-sdk/include'):
+    for relative in ('src', 'Fable2/src', 'Fable3/src', 'tools/android', 'rexglue-net/shadow/rexglue-sdk/include'):
         if (repo / relative).is_dir():
             copy_headers(repo / relative, data / relative)
     shadow = build / 'rexglue-sdk-shadow'
@@ -118,36 +118,51 @@ def pack(repo: Path, native: Path, tools_from: Path, out: Path, built_from: Path
                  data / 'sdk-generated/thirdparty/sdl3/include-revision')
 
     # The payload hooks the phone compiles beside the generated game code, in the build's order, and the
-    # payload's shared sources (refii_payload_core), which the module also needs.
+    # payload's shared sources (refii_payload_core), which the module also needs. Fable 2's hooks
+    # (refii_hooks) and Fable 3's (refiii_hooks) are separate lists, each with its own include
+    # directories; the phone compiles the one for the title it installs.
     recipe = json.loads((data / 'bundle.json').read_text(encoding='utf-8'))
     commands = json.loads((build / 'compile_commands.json').read_text(encoding='utf-8'))
     hooks = []
     includes = []
+    fable3_hooks = []
+    fable3_includes = []
     for row in commands:
         command = row.get('command', '')
-        if (('refii_hooks.dir' not in command and 'refii_payload_core.dir' not in command)
-                or not row['file'].endswith('.cpp')):
+        shared = 'refii_payload_core.dir' in command
+        fable2 = shared or 'refii_hooks.dir' in command
+        fable3 = shared or 'refiii_hooks.dir' in command
+        if not (fable2 or fable3) or not row['file'].endswith('.cpp'):
             continue
         for include in hook_includes(row['command'], repo, built_from, build):
-            if include not in includes:
+            if fable2 and include not in includes:
                 includes.append(include)
+            if fable3 and include not in fable3_includes:
+                fable3_includes.append(include)
         source = Path(row['file']).resolve()
         relative = next((source.relative_to(root).as_posix() for root in (repo.resolve(), (built_from or repo).resolve())
                          if source.is_relative_to(root)), None)
         if relative is None or not (repo / relative).is_file():
             raise ValueError('Payload hook outside this checkout: ' + row['file'])
-        hooks.append(relative)
+        if fable2:
+            hooks.append(relative)
+        if fable3:
+            fable3_hooks.append(relative)
         (data / relative).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(repo / relative, data / relative)
     if not hooks:
         raise ValueError('No payload hook compile commands in ' + str(build / 'compile_commands.json'))
+    if not any('refiii_hooks.dir' in row.get('command', '') for row in commands):
+        raise ValueError('No Fable 3 hook compile commands (refiii_hooks) in ' + str(build / 'compile_commands.json'))
     recipe['Hooks'] = hooks + ['sdk/thirdparty/fmt/src/format.cpp']
+    recipe['Fable3Hooks'] = fable3_hooks + ['sdk/thirdparty/fmt/src/format.cpp']
     # The hooks' include directories as this build compiled them, in its order: the earlier bundle's list
     # predates the title split's Fable2/src headers.
-    missing = [include for include in includes if not (data / include).is_dir()]
+    missing = [include for include in includes + fable3_includes if not (data / include).is_dir()]
     if missing:
         raise ValueError('Hook include directories missing from the bundle: ' + ', '.join(missing))
     recipe['Includes'] = includes
+    recipe['Fable3Includes'] = fable3_includes
     (data / 'sdk/thirdparty/fmt/src').mkdir(parents=True, exist_ok=True)
     shutil.copyfile(shadow / 'thirdparty/fmt/src/format.cc', data / 'sdk/thirdparty/fmt/src/format.cpp')
     shutil.copyfile(repo / 'src/payload/src/payload_export.cpp', data / 'src/payload/src/payload_export.cpp')
@@ -157,6 +172,10 @@ def pack(repo: Path, native: Path, tools_from: Path, out: Path, built_from: Path
         for name in ('refii_manifest.toml', 'refii_config.toml'):
             (data / 'versions' / version).mkdir(parents=True, exist_ok=True)
             shutil.copyfile(versions / version / name, data / 'versions' / version / name)
+    # Fable 3's, named for its key (refiii_*.toml), at versions/Fable3.
+    (data / 'versions' / 'Fable3').mkdir(parents=True, exist_ok=True)
+    for name in ('refiii_manifest.toml', 'refiii_config.toml'):
+        shutil.copyfile(repo / 'Fable3' / 'versions' / 'Fable3' / name, data / 'versions' / 'Fable3' / name)
 
     # The runtime libraries from this build; the tools stay as they came.
     manifest = json.loads((native / 'native-manifest.json').read_text(encoding='utf-8'))

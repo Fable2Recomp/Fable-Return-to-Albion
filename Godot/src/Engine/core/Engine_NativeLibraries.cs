@@ -22,7 +22,7 @@ namespace Refii.Core;
 /// This class stays engine-free — Godot-side code publishes the project-relative
 /// directories through <see cref="AddSearchPath"/>.
 /// </summary>
-public static class Engine_NativeLibraries
+public static partial class Engine_NativeLibraries
 {
 	/// <summary>
 	/// Directories to search, in preference order.
@@ -171,6 +171,8 @@ public static class Engine_NativeLibraries
 		// A TITLE'S INSTANCE comes from its own folder (bin/<Folder>/) and nowhere else: a flat
 		// copy in a build output is another title's, or a build from before the split.
 		bool instance = Engine_Title.InstanceLibraries.Contains(name);
+		if (instance && TryResolveAndroidInstance(name, out IntPtr android))  // the phone's, Engine_NativeLibraries.Android.cs
+			return android;
 		var found = new List<string>();
 		foreach (string searched in CandidateDirectories())
 		{

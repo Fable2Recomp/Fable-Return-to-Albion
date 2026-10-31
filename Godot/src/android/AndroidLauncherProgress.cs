@@ -14,7 +14,8 @@ public static class AndroidLauncherProgress
     /// <param name="status">Actual worker stage or failure.</param>
     /// <returns>The original launcher's primary button label.</returns>
     public static string Label(bool running, bool playable, string status) => running
-        ? ProgressLabel.BuildButtonLabel("Installing", status) : playable ? "Play Fable 2" : "Install Fable 2";
+        ? ProgressLabel.BuildButtonLabel("Installing", status)
+        : (playable ? "Play " : "Install ") + Refii.Core.Engine_Title.Active.Name;
 
     /// <summary>Returns measured current-stage progress; unknown-duration stages remain indeterminate.</summary>
     /// <param name="status">Real copy/extraction percentage or source-unit count.</param>

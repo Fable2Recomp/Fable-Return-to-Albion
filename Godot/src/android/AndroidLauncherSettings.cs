@@ -14,7 +14,7 @@ public static class AndroidLauncherSettings
     public static void Prepare(string runtimeRoot, string? gameRoot)
     {
         string root = AndroidRuntimeOptions.PhysicalPath(runtimeRoot, "runtime root");
-        string config = Path.Combine(root, "refii.toml");
+        string config = Path.Combine(root, Refii.Core.Engine_Title.Active.ConfigFileName);
         var values = RuntimeConfig.ReadValues(config);
         bool changed = false;
         // Native automatic logging uses the executable folder, which is /system/bin
@@ -71,7 +71,7 @@ public static class AndroidLauncherSettings
     /// <returns>Whether the path is exactly an owned installation's game child.</returns>
     private static bool OwnedGamePath(string path, string runtimeRoot)
     {
-        string parent = Path.GetDirectoryName(runtimeRoot) ?? runtimeRoot;
+        string parent = AndroidRuntimeOptions.TitleDirectory(Path.GetDirectoryName(runtimeRoot) ?? runtimeRoot);
         string relative = Path.GetRelativePath(Path.Combine(parent, "phone-installs"), path).Replace('\\', '/');
         return Regex.IsMatch(relative, @"\Ainstall-[0-9a-f]{32}/game\z", RegexOptions.CultureInvariant);
     }

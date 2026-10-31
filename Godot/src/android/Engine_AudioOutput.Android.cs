@@ -8,7 +8,7 @@ public partial class Engine_AudioOutput
 {
 	/// <summary>The bridge's file as <c>/proc/self/maps</c> names it; see <see cref="MappedPath"/>.</summary>
 	private static string? AndroidBridgePath() =>
-		MappedPath(FileSystemMaps(), Engine_NativeLibraries.FileNameFor(BridgeLibrary));
+		MappedPath(FileSystemMaps(), Engine_NativeLibraries.AndroidFileNameFor(BridgeLibrary));
 
 	/// <summary>
 	/// The file a library is mapped from, read off <c>/proc/self/maps</c>.
