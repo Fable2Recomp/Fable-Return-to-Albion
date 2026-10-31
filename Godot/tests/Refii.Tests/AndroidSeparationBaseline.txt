@@ -19,6 +19,7 @@
 29	Godot/src/Engine/material/standard_material_body.gdshaderinc
 1	Godot/src/Engine/tex/Engine_TexSettings.cs
 1	Godot/src/Engine/tex/Engine_TextureUpload.cs
+1	Godot/src/Engine/ui/Engine_UiTheme.cs
 1	Godot/src/Titles/Fable2/game/GamePubGames.cs
 1	Godot/src/Titles/Fable2/game/GameUi.cs
 2	Godot/src/game/GameDevTabFrame.cs
