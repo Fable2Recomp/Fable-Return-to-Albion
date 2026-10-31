@@ -7,10 +7,13 @@ using Refii.Game;
 namespace Refii.AndroidRuntime;
 
 /// <summary>
-/// The Options panel: photo mode, the frame cap, the graphics preset, vibration, the F5/F6 diagnostics and Export as
-/// touch buttons, folded behind the touch controls' Options button so the corner they stood in is the
-/// HUD's again. Hidden until Options is tapped. Export unfolds into Logs and saves, and Saves; a
-/// save is imported from the launcher only, never while the game runs (AndroidSaveTransfer).
+/// The Options panel: photo mode, the frame cap, vibration, the F5/F6 diagnostics and Export as touch
+/// buttons, and beside them the Graphics column: the preset and the settings that change the picture
+/// (<see cref="AndroidGraphicsOptions"/>), each stepped with - and +. Folded behind the touch controls'
+/// Options button so the corner they stood in is the HUD's again; hidden until Options is tapped. Both
+/// columns are see-through, so a change shows in the world behind them as it applies, and stepping the
+/// preset moves every row it sets. Export unfolds into Logs and saves, and Saves; a save is imported
+/// from the launcher only, never while the game runs (AndroidSaveTransfer).
 /// </summary>
 public partial class AndroidDiagnosticButtons : CanvasLayer
 {
@@ -24,7 +27,10 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
     private Button? _export;
     private Button? _exportSaves;
     private Button? _exportBoth;
-    private VBoxContainer? _panel;
+    private HBoxContainer? _panel;
+    private PanelContainer? _graphics;
+    private Control? _overOptions;
+    private readonly List<GraphicsRow> _rows = new();
     private Rect2 _options;
 
     /// <summary>The live refii.toml; empty until the host has prepared it.</summary>
@@ -42,8 +48,13 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         _actions = new AndroidDiagnosticActions(
             GetParent().GetNode<GamePerfOverlay>("GamePerfOverlay").Toggle,
             GetParent().GetNode<GameDevMenu>("GameDevMenu").Toggle);
-        _panel = new VBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
+        _panel = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
         _panel.AddThemeConstantOverride("separation", 10);
+        var column = new VBoxContainer
+        {
+            MouseFilter = Control.MouseFilterEnum.Ignore, SizeFlagsVertical = Control.SizeFlags.ShrinkEnd,
+        };
+        column.AddThemeConstantOverride("separation", 10);
         _frameCap = CreateButton(AndroidQuickSettings.FrameCapLabel(0));
         _preset = CreateButton(AndroidQuickSettings.PresetLabel(Refii.Launcher.Core.GraphicsPresets.Custom));
         _vibration = CreateButton(AndroidQuickSettings.VibrationLabel(true));
@@ -64,17 +75,68 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         _export.Pressed += ToggleExportChoices;
         _exportSaves.Pressed += ExportSaves;
         _exportBoth.Pressed += ExportBoth;
-        _panel.AddChild(_photo);
-        _panel.AddChild(_frameCap);
-        _panel.AddChild(_preset);
-        _panel.AddChild(_vibration);
-        _panel.AddChild(_performance);
-        _panel.AddChild(_debug);
-        _panel.AddChild(_export);
-        _panel.AddChild(_exportBoth);
-        _panel.AddChild(_exportSaves);
+        column.AddChild(_photo);
+        column.AddChild(_frameCap);
+        column.AddChild(_vibration);
+        column.AddChild(_performance);
+        column.AddChild(_debug);
+        column.AddChild(_export);
+        column.AddChild(_exportBoth);
+        column.AddChild(_exportSaves);
+        // Room for the Options button under the buttons; the Graphics column beside them, right of
+        // the View pill, reaches down to Options' bottom edge.
+        column.AddChild(_overOptions = new Control { MouseFilter = Control.MouseFilterEnum.Ignore });
+        _panel.AddChild(column);
+        _panel.AddChild(_graphics = CreateGraphics(_preset));
         ShowExportChoices(false);
         AddChild(_panel);
+    }
+
+    /// <summary>One graphics row: its setting, the value's text, and the - and + buttons with their taps.</summary>
+    private sealed record GraphicsRow(AndroidGraphicsOption Option, Label Value, Button Less, Button More, Action StepLess, Action StepMore);
+
+    /// <summary>The Graphics column: the preset button, then one row per setting, its name over its impact.</summary>
+    private PanelContainer CreateGraphics(Button preset)
+    {
+        var box = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop, SizeFlagsVertical = Control.SizeFlags.ShrinkEnd };
+        box.AddThemeStyleboxOverride("panel", SeeThrough(0.35f, 14f));
+        var rows = new VBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
+        rows.AddThemeConstantOverride("separation", 6);
+        preset.CustomMinimumSize = new Vector2(450, 52);
+        rows.AddChild(preset);
+        foreach (AndroidGraphicsOption option in AndroidGraphicsOptions.All)
+        {
+            var line = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
+            line.AddThemeConstantOverride("separation", 8);
+            Button less = CreateStepButton("-"), more = CreateStepButton("+");
+            var label = new VBoxContainer
+            {
+                MouseFilter = Control.MouseFilterEnum.Ignore, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+                Alignment = BoxContainer.AlignmentMode.Center,
+            };
+            label.AddThemeConstantOverride("separation", 0);
+            var name = new Label { Text = option.Name };
+            var impact = new Label { Text = AndroidGraphicsOptions.ImpactLabel(option.Impact) };
+            var value = new Label { CustomMinimumSize = new Vector2(96, 0), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+            name.AddThemeFontSizeOverride("font_size", 18);
+            impact.AddThemeFontSizeOverride("font_size", 13);
+            impact.AddThemeColorOverride("font_color", ImpactColor(option.Impact));
+            value.AddThemeFontSizeOverride("font_size", 18);
+            label.AddChild(name);
+            label.AddChild(impact);
+            line.AddChild(less);
+            line.AddChild(label);
+            line.AddChild(value);
+            line.AddChild(more);
+            rows.AddChild(line);
+            var row = new GraphicsRow(option, value, less, more, () => StepGraphics(option, -1), () => StepGraphics(option, 1));
+            less.Pressed += row.StepLess;
+            more.Pressed += row.StepMore;
+            _rows.Add(row);
+        }
+
+        box.AddChild(rows);
+        return box;
     }
 
     /// <summary>Opens the panel above <paramref name="options"/> (left edges aligned), or closes it.</summary>
@@ -91,13 +153,17 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         Place();
     }
 
-    /// <summary>Stands the panel above Options with its bottom 10 units clear, as tall as its shown buttons.</summary>
+    /// <summary>
+    /// Stands the buttons above Options with their bottom 10 units clear, and the Graphics column beside
+    /// them down to Options' bottom edge, each as tall as what it shows.
+    /// </summary>
     private void Place()
     {
         if (!Visible || _panel is not { } panel) return;
+        if (_overOptions is { } room) room.CustomMinimumSize = new Vector2(0, _options.Size.Y);
         panel.Size = Vector2.Zero;
         Vector2 size = panel.GetCombinedMinimumSize();
-        panel.Position = new Vector2(_options.Position.X, _options.Position.Y - size.Y - 10f);
+        panel.Position = new Vector2(_options.Position.X, _options.End.Y - size.Y);
     }
 
     /// <summary>The buttons' screen rectangles: the touch controls leave a finger landing there to the buttons.</summary>
@@ -105,7 +171,8 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
     {
         if (!Visible) yield break;
         if (_frameCap is { } frameCap) yield return frameCap.GetGlobalRect();
-        if (_preset is { } preset) yield return preset.GetGlobalRect();
+        // The whole Graphics column, so a finger between its buttons doesn't turn the camera.
+        if (_graphics is { } graphics) yield return graphics.GetGlobalRect();
         if (_vibration is { } vibration) yield return vibration.GetGlobalRect();
         if (_performance is { } performance) yield return performance.GetGlobalRect();
         if (_debug is { } debug) yield return debug.GetGlobalRect();
@@ -164,6 +231,12 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         config, AndroidQuickSettings.NextPreset(AndroidQuickSettings.Preset(config)),
         (name, value) => Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(name, value)));
 
+    /// <summary>Steps one graphics setting, applying it to the running game.</summary>
+    private void StepGraphics(AndroidGraphicsOption option, int direction) => Write(config =>
+        AndroidQuickSettings.SetGraphics(config, option.Key,
+            AndroidGraphicsOptions.Step(option, AndroidQuickSettings.Value(config, option.Key), direction),
+            (name, value) => Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(name, value)));
+
     /// <summary>Turns the game's rumble on the phone (or a controller) off or on, from the next frame.</summary>
     private void ToggleVibration() => Write(config =>
     {
@@ -207,6 +280,13 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
             _frameCap.Text = AndroidQuickSettings.FrameCapLabel(AndroidQuickSettings.FrameCap(config));
             _preset.Text = AndroidQuickSettings.PresetLabel(AndroidQuickSettings.Preset(config));
             _vibration.Text = AndroidQuickSettings.VibrationLabel(AndroidQuickSettings.Vibration(config));
+            foreach (GraphicsRow row in _rows)
+            {
+                string value = AndroidQuickSettings.Value(config, row.Option.Key);
+                row.Value.Text = AndroidGraphicsOptions.Label(row.Option, value);
+                row.Less.Disabled = !AndroidGraphicsOptions.CanStep(row.Option, value, -1);
+                row.More.Disabled = !AndroidGraphicsOptions.CanStep(row.Option, value, 1);
+            }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -226,7 +306,53 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
             MouseFilter = Control.MouseFilterEnum.Stop,
         };
         button.AddThemeFontSizeOverride("font_size", 20);
+        SeeThroughButton(button);
         return button;
+    }
+
+    /// <summary>The impact line's colour: red for high, amber for medium, green for low.</summary>
+    private static Color ImpactColor(AndroidGraphicsImpact impact) => impact switch
+    {
+        AndroidGraphicsImpact.High => new Color(1f, 0.55f, 0.5f),
+        AndroidGraphicsImpact.Medium => new Color(1f, 0.82f, 0.45f),
+        _ => new Color(0.6f, 0.9f, 0.6f),
+    };
+
+    /// <summary>A graphics row's - or + button: wide and finger-tall, see-through.</summary>
+    private static Button CreateStepButton(string text)
+    {
+        var button = new Button
+        {
+            Text = text, FocusMode = Control.FocusModeEnum.None,
+            CustomMinimumSize = new Vector2(76, 52),
+            MouseFilter = Control.MouseFilterEnum.Stop,
+        };
+        button.AddThemeFontSizeOverride("font_size", 28);
+        SeeThroughButton(button);
+        return button;
+    }
+
+    /// <summary>Gives a button see-through states, so the world shows behind the panel.</summary>
+    private static void SeeThroughButton(Button button)
+    {
+        button.AddThemeStyleboxOverride("normal", SeeThrough(0.45f, 10f));
+        button.AddThemeStyleboxOverride("hover", SeeThrough(0.45f, 10f));
+        button.AddThemeStyleboxOverride("pressed", SeeThrough(0.7f, 10f));
+        button.AddThemeStyleboxOverride("disabled", SeeThrough(0.2f, 10f));
+    }
+
+    /// <summary>A dark rounded box at <paramref name="alpha"/> with a faint gold edge.</summary>
+    private static StyleBoxFlat SeeThrough(float alpha, float margin)
+    {
+        var box = new StyleBoxFlat
+        {
+            BgColor = new Color(0.07f, 0.06f, 0.05f, alpha),
+            BorderColor = new Color(0.85f, 0.7f, 0.4f, 0.45f),
+        };
+        box.SetBorderWidthAll(1);
+        box.SetCornerRadiusAll(10);
+        box.SetContentMarginAll(margin);
+        return box;
     }
 
     /// <summary>Disconnects taps and releases bindings when leaving the game scene.</summary>
@@ -242,6 +368,12 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         if (_export is not null) _export.Pressed -= ToggleExportChoices;
         if (_exportSaves is not null) _exportSaves.Pressed -= ExportSaves;
         if (_exportBoth is not null) _exportBoth.Pressed -= ExportBoth;
+        foreach (GraphicsRow row in _rows)
+        {
+            row.Less.Pressed -= row.StepLess;
+            row.More.Pressed -= row.StepMore;
+        }
+        _rows.Clear();
         _actions.Dispose();
         _actions = null;
     }

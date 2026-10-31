@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Refii.Core;
 using Refii.Launcher.Core;
 
@@ -102,6 +103,26 @@ public static class AndroidQuickSettings
         {
             live(key, value);
         }
+    }
+
+    /// <summary>A setting's configured value, unquoted; absent is the setting's default.</summary>
+    public static string Value(string config, string key) =>
+        RuntimeConfig.ReadValues(config).TryGetValue(key, out string? value)
+            ? value.Trim().Trim('"')
+            : RuntimeCVarSet.All.FirstOrDefault(definition => definition.Name == key)?.DefaultValue ?? "";
+
+    /// <summary>
+    /// Writes one graphics setting and passes it to <paramref name="live"/>. The stored preset becomes the one
+    /// the settings now make, "custom" when they match none, as a change in the launcher stores it.
+    /// </summary>
+    /// <exception cref="IOException">The file could not be written.</exception>
+    public static void SetGraphics(string config, string key, string value, Action<string, string> live)
+    {
+        SortedDictionary<string, string> values = RuntimeConfig.ReadValues(config);
+        values[key] = value;
+        values[GraphicsPresets.Key] = GraphicsPresets.Current(values);
+        Write(config, values);
+        live(key, value);
     }
 
     private static void Write(string config, IReadOnlyDictionary<string, string> values)

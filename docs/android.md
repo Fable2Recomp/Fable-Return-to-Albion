@@ -197,7 +197,11 @@ launcher then removes the extracted game copies and builds it no longer uses.
 
 Launch options has a **Graphics Preset** row on a phone: **Performance**, **Balanced**,
 **Quality** or **Custom** (any preset setting changed by hand). A phone starts on Balanced
-with a 30 FPS cap; the in-game Options panel switches the preset and the cap. Balanced
+with a 30 FPS cap; the in-game Options panel switches the preset and the cap, and its
+see-through Graphics column steps the settings that change the picture and apply at once
+(render scale, model detail, prop distance, sun shadows and their reach, lamps lit, lamp range
+and shadows, bloom; `Godot/src/android/AndroidGraphicsOptions.cs`). Stepping the preset moves
+every row it sets; changing a row makes it Custom. A coloured line under each row's name says how much it costs. Balanced
 (tuned on the S25+) renders at half resolution with the sun's shadows where the theme casts
 them and every same-picture shortcut on; Performance (measured on a throttled S25+, with
 values checked on the S10e) drops to 30% resolution, no dynamic sun shadow and the nearest
