@@ -635,7 +635,7 @@ public static class ModSync
 				return null;
 			}
 
-			string actual = Convert.ToHexString(SHA256.HashData(_bytes)).ToLowerInvariant();
+			string actual = Convert.ToHexString(Refii.Core.Engine_Hash.Sha256(_bytes)).ToLowerInvariant();
 			return actual == Sha256 && SameBytes(actual, shortSha) ? _bytes : null;
 		}
 	}

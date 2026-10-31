@@ -15,6 +15,8 @@
 #include <rex/system/flags.h>
 #include <rex/system/kernel_state.h>
 
+#include <atomic>
+
 #include <imgui.h>
 
 REXCVAR_DEFINE_BOOL(headless, false, "Kernel",
@@ -558,6 +560,21 @@ u32 XamShowAchievementsUIEx_entry(u32 user_index, u32 unused) {
   return X_ERROR_SUCCESS;
 }
 
+// THE GAMER CARD IS GODOT'S TOO. An orb's Interact (the orb box's first row) asks the guide for
+// the other player's card, which on the console carried Join Game and Invite to Game. The XUID
+// is kept for the host with a count beside it (`RefiiGamerCardRequest`); the host names the peer
+// that XUID was derived from and asks the player there. Nothing blocks, and the guest reads no
+// answer: it never waited on the card either.
+std::atomic<uint64_t> g_gamer_card_xuid{0};
+std::atomic<uint32_t> g_gamer_card_requests{0};
+
+void RequestGamerCard(uint32_t user_index, uint64_t xuid) {
+  REXKRNL_INFO("XamShowGamerCardUIForXUID(user {}, xuid {:016X}): asked of the host", user_index,
+               xuid);
+  g_gamer_card_xuid.store(xuid, std::memory_order_relaxed);
+  g_gamer_card_requests.fetch_add(1u, std::memory_order_release);
+}
+
 u32 XamShowPartyUI_entry(u32 r3, u32 r4) {
   return X_ERROR_FUNCTION_FAILED;
 }
@@ -590,6 +607,27 @@ REX_EXPORT(__imp__XamShowAchievementsUI, rex::kernel::xam::XamShowAchievementsUI
 REX_EXPORT(__imp__XamShowAchievementsUIEx, rex::kernel::xam::XamShowAchievementsUIEx_entry)
 REX_EXPORT(__imp__XamShowCommunitySessionsUI, rex::kernel::xam::XamShowCommunitySessionsUI_entry)
 REX_EXPORT(__imp__XamShowMessageBoxUIEx, rex::kernel::xam::XamShowMessageBoxUIEx_entry)
+// RAW, NOT REX_EXPORT: the export glue reads every integer argument as its register's low word
+// (`ArgTranslator::GetIntegerArgumentValue`), and the XUID is all 64 bits of r4 — through the
+// glue an orb's player arrived as 0x0000000020120108, the half every RexNet XUID shares.
+REX_HOOK_RAW(__imp__XamShowGamerCardUIForXUID) {
+  (void)base;
+  rex::kernel::xam::RequestGamerCard(ctx.r3.u32, ctx.r4.u64);
+  ctx.r3.u64 = 0u;  // X_ERROR_SUCCESS
+}
+static rex::ppc::detail::PPCFuncRegistrar _ppc_reg___imp__XamShowGamerCardUIForXUID(
+    "__imp__XamShowGamerCardUIForXUID", &__imp__XamShowGamerCardUIForXUID);
+
+/// How many gamer cards the guest has asked for this run, and the XUID of the latest. The host
+/// keeps the count it last answered and acts on a larger one.
+extern "C" uint32_t RefiiGamerCardRequest(uint64_t* xuid) {
+  const uint32_t requests =
+      rex::kernel::xam::g_gamer_card_requests.load(std::memory_order_acquire);
+  if (xuid != nullptr) {
+    *xuid = rex::kernel::xam::g_gamer_card_xuid.load(std::memory_order_relaxed);
+  }
+  return requests;
+}
 
 REX_EXPORT_STUB(__imp__XamIsGuideDisabled);
 REX_EXPORT_STUB(__imp__XamIsMessageBoxActive);
@@ -630,7 +668,6 @@ REX_EXPORT_STUB(__imp__XamShowFriendsUIp);
 REX_EXPORT_STUB(__imp__XamShowGameInviteUI);
 REX_EXPORT_STUB(__imp__XamShowGameVoiceChannelUI);
 REX_EXPORT_STUB(__imp__XamShowGamerCardUI);
-REX_EXPORT_STUB(__imp__XamShowGamerCardUIForXUID);
 REX_EXPORT_STUB(__imp__XamShowGamerCardUIForXUIDp);
 REX_EXPORT_STUB(__imp__XamShowGamesUI);
 REX_EXPORT_STUB(__imp__XamShowGenericOnlineAppUI);

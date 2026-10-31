@@ -1,0 +1,61 @@
+diff --git a/modules/mono/glue/runtime_interop.cpp b/modules/mono/glue/runtime_interop.cpp
+index 2026407..80ffc8b 100644
+--- a/modules/mono/glue/runtime_interop.cpp
++++ b/modules/mono/glue/runtime_interop.cpp
+@@ -54,6 +54,19 @@
+ #endif
+ 
+ #ifdef __cplusplus
++// The managed side disposes StringName, NodePath, Array, Dictionary and a Variant's disposer through
++// `NativeValue.DangerousSelfRef`: p_self points into the managed object and is not pinned. A
++// compacting GC on another thread can move that object while the destructor runs, and the
++// destructors read the field again after their refcount drop (StringName's after taking the
++// global table lock), so they then see another object's bytes. Read the value once, into native
++// storage, and destroy that copy. Nothing is written back: the caller clears its own field.
++template <typename T>
++static void _destroy_off_managed_heap(T *p_self) {
++	alignas(T) uint8_t storage[sizeof(T)];
++	memcpy(storage, (const void *)p_self, sizeof(T));
++	reinterpret_cast<T *>(storage)->~T();
++}
++
+ extern "C" {
+ #endif
+ 
+@@ -1023,7 +1036,7 @@ void godotsharp_packed_color_array_destroy(PackedColorArray *p_self) {
+ }
+ 
+ void godotsharp_variant_destroy(Variant *p_self) {
+-	p_self->~Variant();
++	_destroy_off_managed_heap(p_self);
+ }
+ 
+ void godotsharp_string_destroy(String *p_self) {
+@@ -1031,11 +1044,11 @@ void godotsharp_string_destroy(String *p_self) {
+ }
+ 
+ void godotsharp_string_name_destroy(StringName *p_self) {
+-	p_self->~StringName();
++	_destroy_off_managed_heap(p_self);
+ }
+ 
+ void godotsharp_node_path_destroy(NodePath *p_self) {
+-	p_self->~NodePath();
++	_destroy_off_managed_heap(p_self);
+ }
+ 
+ void godotsharp_signal_destroy(Signal *p_self) {
+@@ -1047,11 +1060,11 @@ void godotsharp_callable_destroy(Callable *p_self) {
+ }
+ 
+ void godotsharp_array_destroy(Array *p_self) {
+-	p_self->~Array();
++	_destroy_off_managed_heap(p_self);
+ }
+ 
+ void godotsharp_dictionary_destroy(Dictionary *p_self) {
+-	p_self->~Dictionary();
++	_destroy_off_managed_heap(p_self);
+ }
+ 
+ // Array

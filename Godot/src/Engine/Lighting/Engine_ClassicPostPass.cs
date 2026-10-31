@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Text;
 using Godot;
 using Godot.Collections;
+using Refii.Core;
 
 namespace Refii.Lighting;
 
@@ -166,14 +167,14 @@ public sealed class Engine_ClassicPostPass
         pass._bytes = new byte[pass._values.Length * 4];
 
         var source = new RDShaderSource { SourceCompute = code, Language = RenderingDevice.ShaderLanguage.Glsl };
-        RDShaderSpirV spirv = rd.ShaderCompileSpirVFromSource(source);
+        RDShaderSpirV spirv = rd.CompileSpirV(source);
         if (spirv.CompileErrorCompute.Length != 0)
         {
             error = $"{pixelEntry} failed to compile: {spirv.CompileErrorCompute}";
             return null;
         }
-        pass._shader = rd.ShaderCreateFromSpirV(spirv, pixelEntry);
-        pass._pipeline = pass._shader.IsValid ? rd.ComputePipelineCreate(pass._shader) : default;
+        pass._shader = rd.Shader(spirv, pixelEntry);
+        pass._pipeline = pass._shader.IsValid ? rd.ComputePipeline(pass._shader) : default;
         pass._constantsBuffer = rd.StorageBufferCreate((uint)pass._bytes.Length, pass._bytes);
         if (!pass._pipeline.IsValid || !pass._constantsBuffer.IsValid)
         {
@@ -392,6 +393,7 @@ public sealed class Engine_ClassicPostPass
                 _bound[4 + i * 2] = textures[i].Texture;
             }
             _set = rd.UniformSetCreate(uniforms, _shader, 0);
+            GC.KeepAlive(uniforms);
             _bound[0] = target;
             _bound[1] = state;
         }
@@ -447,6 +449,7 @@ public sealed class Engine_ClassicPostPass
                 _bound[7 + i * 2] = textures[i].Texture;
             }
             _set = rd.UniformSetCreate(uniforms, _shader, 0);
+            GC.KeepAlive(uniforms);
             _bound[0] = target;
             _bound[1] = state;
             _bound[2] = frame;

@@ -11491,6 +11491,7 @@
 0x826F9A50 = { name = "rex_ActionKnockdownStabResponse_Start" }
 0x821DD3B0 = { name = "rex_lhCamera_ScreenBlock" }
 0x822AE210 = { name = "rex_CECDog_Update" }
+0x82812E88 = { name = "rex_CECDog_IsMasterInsideBuilding" }
 0x82518490 = { name = "rex_lhRegionManager_FindRegionOwningLevel" }
 0x82537128 = { name = "rex_lhGuiReceiveItemsScreen_OnScreenAction" }
 0x82541F30 = { name = "rex_CECSpellManager_SetSpellSlot" }

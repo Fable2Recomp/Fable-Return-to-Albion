@@ -69,6 +69,14 @@ public readonly struct GameWindowSettings
 	/// <summary>`anisotropic_filtering`: 0, 2, 4, 8 or 16 samples.</summary>
 	public int Anisotropic { get; init; }
 
+	/// <summary>`hdr_2d`: the world's colour buffer in half floats (Godot's default); off it is
+	/// 10-bit, half the bandwidth. Applied by the Android host only.</summary>
+	public bool Hdr2D { get; init; }
+
+	/// <summary>`canvas_lean`: the 2D pass's same-picture shortcuts (Engine_CanvasLean). Applied by
+	/// the Android host only.</summary>
+	public bool CanvasLean { get; init; }
+
 	/// <summary>`debanding`: noise over smooth gradients.</summary>
 	public bool Debanding { get; init; }
 
@@ -87,9 +95,25 @@ public readonly struct GameWindowSettings
 	/// <summary>Where the values came from, for the log line that explains the window.</summary>
 	public string Source { get; init; }
 
+	/// <summary>Loads the conventional runtime configuration using the shared path and read cache.</summary>
+	/// <returns>The configured settings, or the existing no-file defaults.</returns>
 	public static GameWindowSettings Load()
 	{
 		string path = Engine_RefiiConfig.ResolvePath();
+		IReadOnlyDictionary<string, string> values = path.Length == 0
+			? new Dictionary<string, string>()
+			: Engine_RefiiConfig.Read(out _);
+		return FromValues(values, path);
+	}
+
+	/// <summary>Parses the shared runtime settings without locating files or calling native Godot APIs.</summary>
+	/// <param name="values">Values read by the runtime TOML parser.</param>
+	/// <param name="path">The source configuration path; empty preserves the historical no-file defaults.</param>
+	/// <returns>The same normalized settings used by the desktop window and Android render-scale policy.</returns>
+	public static GameWindowSettings FromValues(IReadOnlyDictionary<string, string> values, string path)
+	{
+		ArgumentNullException.ThrowIfNull(values);
+		ArgumentNullException.ThrowIfNull(path);
 		if (path.Length == 0)
 		{
 			return new GameWindowSettings
@@ -105,8 +129,6 @@ public readonly struct GameWindowSettings
 				Source = "defaults (no refii.toml found)",
 			};
 		}
-
-		IReadOnlyDictionary<string, string> values = Engine_RefiiConfig.Read(out _);
 
 		// `display_resolution` IS THE SIZE — one "WIDTHxHEIGHT" string chosen from the launcher's
 		// aspect and resolution dropdowns, rather than a width and a height typed separately and
@@ -177,6 +199,8 @@ public readonly struct GameWindowSettings
 			ScreenSpaceAa = Engine_RefiiConfig.String(values, "screen_space_aa", "off").Trim().ToLowerInvariant(),
 			Taa = Engine_RefiiConfig.Bool(values, "taa", false),
 			Anisotropic = Engine_RefiiConfig.Int(values, "anisotropic_filtering", 4),
+			Hdr2D = Engine_RefiiConfig.Bool(values, "hdr_2d", true),
+			CanvasLean = Engine_RefiiConfig.Bool(values, Refii.Ui.Engine_CanvasLean.Key, false),
 			Debanding = Engine_RefiiConfig.Bool(values, "debanding", false),
 			Hdr = Engine_RefiiConfig.Bool(values, "hdr_output", false),
 			HdrReferenceNits = Math.Max(0f, Engine_RefiiConfig.Float(values, "hdr_reference_nits", 0f)),

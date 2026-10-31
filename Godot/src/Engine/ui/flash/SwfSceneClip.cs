@@ -45,12 +45,15 @@ public sealed class SwfSceneClip : IPubClip
             ? (int)node.GetMeta(Engine_SwfScene.CharacterMeta)
             : -1;
 
+        // A clip of a library sprite reads its character's shared timeline; only the stage's own
+        // clips, which are never duplicated, still carry theirs as metadata.
+        SwfSceneUi.SharedTimeline? shared = scene.TimelineOf(_characterId);
         _table = node.HasMeta(Engine_SwfScene.TimelineMeta)
             ? node.GetMeta(Engine_SwfScene.TimelineMeta).AsGodotArray()
-            : null;
+            : shared?.Table;
         _stops = node.HasMeta(Engine_SwfScene.StopFramesMeta)
             ? node.GetMeta(Engine_SwfScene.StopFramesMeta).AsInt32Array()
-            : Array.Empty<int>();
+            : shared?.Stops ?? Array.Empty<int>();
 
         if (_table is not null && TotalFrames > 1 && Array.IndexOf(_stops, 1) < 0)
         {
@@ -661,21 +664,30 @@ public sealed class SwfSceneClip : IPubClip
         _scene.SetTicking(this, playing);
     }
 
+    /// <summary>Drops this clip's reference to its timeline; see <see cref="SwfSceneUi.Release"/>.</summary>
+    internal void ReleaseTimeline()
+    {
+        _playing = false;
+        _table?.Dispose();
+    }
+
     private void RebuildFrame(int frame)
     {
         _frame = frame;
-        if (_table is null || frame < 1 || frame > _table.Count)
+        if (_scene.Released || _table is null || frame < 1 || frame > _table.Count)
         {
             return;
         }
 
         EnsureChildren();
-        Godot.Collections.Array placements = _table[frame - 1].AsGodotArray();
+        // Every As* below is a fresh wrapper holding its own reference until the finalizer runs;
+        // a playing board makes them every frame, so they are disposed as soon as they are read.
+        using Godot.Collections.Array placements = _table[frame - 1].AsGodotArray();
 
         var wanted = new HashSet<int>();
         foreach (Variant item in placements)
         {
-            Godot.Collections.Dictionary place = item.AsGodotDictionary();
+            using Godot.Collections.Dictionary place = item.AsGodotDictionary();
             int depth = place[Engine_SwfScene.PlaceDepth].AsInt32();
             int character = place[Engine_SwfScene.PlaceCharacter].AsInt32();
             wanted.Add(depth);
@@ -738,9 +750,11 @@ public sealed class SwfSceneClip : IPubClip
 
     private int FrameOfLabel(string label)
     {
-        if (_node.HasMeta(Engine_SwfScene.LabelsMeta))
+        Godot.Collections.Dictionary? labels = _node.HasMeta(Engine_SwfScene.LabelsMeta)
+            ? _node.GetMeta(Engine_SwfScene.LabelsMeta).AsGodotDictionary()
+            : _scene.TimelineOf(_characterId)?.Labels;
+        if (labels is not null)
         {
-            Godot.Collections.Dictionary labels = _node.GetMeta(Engine_SwfScene.LabelsMeta).AsGodotDictionary();
             if (labels.ContainsKey(label))
             {
                 return labels[label].AsInt32();

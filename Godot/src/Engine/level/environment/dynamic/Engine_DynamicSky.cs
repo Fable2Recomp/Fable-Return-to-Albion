@@ -271,7 +271,7 @@ public static class Engine_DynamicSky
 
         bool hasTime = false;
         bool hasLightning = false;
-        foreach (StringName name in RenderingServer.GlobalShaderParameterGetList())
+        foreach (StringName name in Refii.Core.Engine_ServerSyncs.GlobalParameters())
         {
             hasTime |= name == SkyTimeGlobal;
             hasLightning |= name == LightningGlobal;

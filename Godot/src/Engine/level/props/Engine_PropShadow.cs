@@ -115,7 +115,7 @@ public static class Engine_PropShadow
 		}
 		else
 		{
-			float[] buffer = count > 0 ? source.Buffer : System.Array.Empty<float>();
+			float[] buffer = count > 0 ? Refii.Core.Engine_ServerSyncs.Buffer(source) : System.Array.Empty<float>();
 			int stride = count > 0 ? buffer.Length / count : 0;
 			if (stride < 12)
 			{

@@ -29,4 +29,14 @@ void ff_blockdsp_init_x86(struct BlockDSPContext *c) { (void)c; }
 void ff_hpeldsp_init_x86(struct HpelDSPContext *c, int flags) { (void)c; (void)flags; }
 void ff_binkdsp_init_x86(struct BinkDSPContext *c) { (void)c; }
 
+#if defined(__aarch64__)
+// The bundled FFmpeg subset also omits AArch64 hpel NEON assembly. hpeldsp.c
+// installs every portable C function before calling this optional accelerator.
+// Preserve those functions rather than introduce unresolved NEON entry points.
+void ff_hpeldsp_init_aarch64(struct HpelDSPContext *c, int flags) {
+    (void)c;
+    (void)flags;
+}
+#endif
+
 }  // extern "C"

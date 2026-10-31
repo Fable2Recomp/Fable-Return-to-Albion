@@ -514,7 +514,7 @@ public static class Engine_LevelMarkers
         arrays[(int)Mesh.ArrayType.Vertex] = vertices;
 
         var mesh = new ArrayMesh();
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.LineStrip, arrays);
+        Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.LineStrip, arrays);
 
         var node = new MeshInstance3D
         {
@@ -579,7 +579,7 @@ public static class Engine_LevelMarkers
         arrays[(int)Mesh.ArrayType.Normal] = normals;
 
         var mesh = new ArrayMesh();
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays);
         return mesh;
     }
 

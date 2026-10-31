@@ -7,6 +7,7 @@ save without breaking it.
 
 - [Sharing a mod](#sharing-a-mod)
 - [Installing a mod](#installing-a-mod)
+  - [On Android](#on-android)
 - [Co-op: the same mods on both sides](#co-op-the-same-mods-on-both-sides)
 - [Mod sync in co-op](#mod-sync-in-co-op)
   - [What the joiner does with the host's set](#what-the-joiner-does-with-the-hosts-set)
@@ -18,6 +19,7 @@ save without breaking it.
   - [When a save is loaded](#when-a-save-is-loaded)
   - [Copies for an Xbox 360 or Xenia](#copies-for-an-xbox-360-or-xenia)
   - [For a mod author](#for-a-mod-author)
+  - [Snapshots: a quicksave and a quickload](#snapshots-a-quicksave-and-a-quickload)
 
 ## Sharing a mod
 
@@ -43,6 +45,20 @@ Refused: not a `.f2mod`; over 2 GB; an entry with an absolute path, a drive, `.`
 character in its path, or whose bytes lie outside the file; a name that is not letters, digits,
 spaces, `_ - .`; a link that is not https, or that redirects more than 5 times or to anything but
 https.
+
+### On Android
+
+The phone app has the same **Modding** tab. **Install from file…** opens Android's document picker,
+and the chosen `.f2mod` is checked and installed as above, named after the file (or after the
+package's title in lower case when the picker gives no name: `Toggle Sprint` → `toggle_sprint`).
+The mods in the repo's `mods-src/` come installed with the app, switched off. There is no folder
+to open, no URL install and no editor.
+
+A soft mod runs on the phone as on a PC: its files, rows, images, Lua, `settings.json`,
+`input.json` and `godot/*.gd`. **A hard mod cannot be enabled on the phone**: the phone compiles
+the game without any mod's `native/` sources, so the tab marks it *not on phone*. Mod actions
+bound to keys need a keyboard connected to the phone; the touch controls have no buttons for
+them yet.
 
 ## Co-op: the same mods on both sides
 
@@ -227,3 +243,27 @@ everything. The Load Game list marks a stamped save: *Mods: Souls Combat 0.1.0*.
   game's `HeroAbility` stats: the game's loader has no bound on that index.
 - **Keep record ids stable across versions.** A new version is not a missing mod: a save stamped
   with 0.1.0 loads under 0.2.0 unfiltered and is re-stamped on the next save.
+
+### Snapshots: a quicksave and a quickload
+
+A Godot script can keep its own copies of the hero's save and load one back without a trip to the
+title (RefiiHost, see [the calls](reference-calls.md#members-and-signals)). The Quicksave mod is
+built on them.
+
+- **Taking one.** Have the game save first, the way it saves itself: from Lua,
+  `AutoSaveGame(true, true)` when `Player.IsAbleToSaveGame(GetPlayerHero())` allows it. When
+  `save_written` arrives with `player` 1, `save_snapshot("<mod>.<name>")` copies every file of the
+  save folder to `user_data_root/<xuid>/refii-snapshots/<save>/<mod>.<name>/`, beside the title's
+  own `4D5307F1/`, so the Load Game list never shows it. A key holds one copy; taking it again
+  replaces it once the new copy is whole.
+- **Loading one.** `load_snapshot(key)` loads it through the game's own fail-quest reload
+  (`LoadFailQuestSave`, the region-lock box's "reload"): the same load-from-save a Continue runs,
+  with the loading screen, in the running game. The snapshot's files go into the save folder for
+  the load, its main save also as `failquestsave.bin`. Once `level_loaded` arrives the folder gets
+  its own files back: the player's main save and the quest's fail-quest save are as they were, and
+  a file the game wrote meanwhile is kept. A load the game never finishes is put back after three
+  minutes, and a hold a crash left behind is put back before that save next starts.
+- **Per save.** A snapshot belongs to the save it was taken from. `snapshot_time` and
+  `load_snapshot` answer for the save the session started or last wrote, so another hero never
+  loads it.
+- **Alone only.** `load_snapshot` refuses in co-op: the partner's game would not follow the load.

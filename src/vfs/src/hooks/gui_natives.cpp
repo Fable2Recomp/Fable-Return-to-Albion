@@ -276,6 +276,9 @@ REX_EXTERN(rex_luaD_precall) {
                 // `lua_touserdata(L, -10003)`, the same pointer chase already done here.
                 refii::vfs::NoteGuiNativeEntry(implementation);
 
+#if !defined(__ANDROID__)
+                // Diagnostics only: a mutex and a map write per GUI native call. Not on Android,
+                // where the guest is CPU-bound.
                 static std::mutex mutex;
                 static std::unordered_map<uint32_t, uint32_t> seen;
                 std::lock_guard<std::mutex> lock(mutex);
@@ -285,6 +288,7 @@ REX_EXTERN(rex_luaD_precall) {
                                 *name, implementation,
                                 static_cast<uint32_t>(seen.size()));
                 }
+#endif
             }
         }
     }

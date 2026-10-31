@@ -47,7 +47,7 @@ public partial class GameEntities : Node3D
 
 
     /// <summary>Nodes by guest entity address, so a moved entity is updated rather than rebuilt.</summary>
-    /// <summary>The live feed node, for the debug channel's levers.</summary>
+    /// <summary>The live feed node, for the debug channel's levers; retired when that owner leaves the tree.</summary>
     public static GameEntities? Current;
 
     /// <summary>
@@ -271,8 +271,70 @@ public partial class GameEntities : Node3D
 
     private int _inFlight;
 
+    /// <summary>Tracks producers independently of this departing node and closes its completion channel on exit.</summary>
+    private readonly Refii.Core.Engine_RegionWorkers _retirementWorkers = new();
+
+    /// <summary>Releases the static owner without invalidating meshes borrowed by another consumer.</summary>
+    /// <remarks>Region teardown detaches this node before queuing its deletion. Leaving the
+    /// managed instance in Current would root its mesh/composite dictionaries through the next
+    /// build, or indefinitely at the title screen. A departing older feed must not clear a newer
+    /// one. In-flight workers may retain this instance until their asset work completes; they do
+    /// not publish Current. Android also closes and drains this owner's completion channel;
+    /// workers remain tracked through their final publication attempt, without disposing shared results.</remarks>
+    public override void _ExitTree()
+    {
+        GameCurrentOwner.Retire(ref Current, this);
+        if (Refii.Core.Engine_Platform.IsAndroid)
+            _retirementWorkers.Retire(() => { while (_completions.TryDequeue(out _)) { } });
+    }
+
+    /// <summary>The walk's refii.toml levers follow a live `cvar-set` from the first feed on.</summary>
+    public override void _EnterTree()
+    {
+        // The bodies' and the camera's timeline rule is read with the walk's levers.
+        Refii.Core.Engine_TickTimeline.Configure(Refii.Core.Engine_RefiiConfig.Read(out _));
+        if (!_walkConfigHooked)
+        {
+            _walkConfigHooked = true;
+            Refii.Core.Engine_RefiiConfig.OnConfigChanged += (name, _) => ReloadWalkConfig(name);
+        }
+    }
+
+    private static bool _walkConfigHooked;
+
+    /// <summary>Re-reads one of the walk's own refii.toml levers after a live change to it.</summary>
+    private static void ReloadWalkConfig(string name)
+    {
+        switch (name)
+        {
+            case "entity_skip_index":
+                SkipIndexEnabled = Refii.Core.Engine_RefiiConfig.Bool(
+                    Refii.Core.Engine_RefiiConfig.Read(out _), name, false);
+                break;
+            case Refii.Core.Engine_TickTimeline.ArrivalFitKey:
+                Refii.Core.Engine_TickTimeline.Configure(Refii.Core.Engine_RefiiConfig.Read(out _));
+                break;
+            case "entity_still_reconcile_scale":
+                StillReconcileScale = ReadStillReconcileScale();
+                break;
+            case "far_rig_pose_hz":
+                FarRigPoseHz = Refii.Entities.Engine_FarRigPoseRate.Clamp(Refii.Core.Engine_RefiiConfig.Float(
+                    Refii.Core.Engine_RefiiConfig.Read(out _), name, 0f));
+                break;
+            case "entity_create_budget_ms":
+                EntityCreateBudgetMs = ReadEntityCreateBudgetMs();
+                break;
+            case "far_rig_pose_spread":
+                FarRigPoseSpread = Refii.Core.Engine_RefiiConfig.Bool(
+                    Refii.Core.Engine_RefiiConfig.Read(out _), name, true);
+                break;
+        }
+    }
+
+    /// <summary>Feeds entities and publishes successful clip work summed across this frame.</summary>
     public override void _Process(double delta)
 	{
+		using var clipFrame = Refii.Animations.Engine_ClipAnimator.FrameWork.BeginFrame();
 		using (Refii.Core.Engine_FramePhases.Measure("entities_process"))
 		{
 			RefreshCollectedKeys(delta);
@@ -341,6 +403,15 @@ public partial class GameEntities : Node3D
         _tickCompletedThisWalk = feedTick != _feedTickApplied;
         _feedTickApplied = feedTick;
 
+        // The far rigs' real-time rate (`far_rig_pose_hz`), measured between tick steps: the only
+        // walks a far rig writes on either way.
+        _farRigHz = FarRigPoseHz;
+        if (_tickCompletedThisWalk)
+        {
+            _farRigFromSeconds = _farRigToSeconds;
+            _farRigToSeconds = Time.GetTicksUsec() * 1e-6;
+        }
+
         // The walk kicked at frame start (GameWindow) is taken here; without one — the lever
         // off, or no kick this frame — it is walked synchronously.
         List<HostBridge.GuestEntity> entities;
@@ -376,6 +447,7 @@ public partial class GameEntities : Node3D
         long clipTicks = 0;
         int posedWritten = 0;
         int posedHalfRate = 0;
+        int farHeld = 0;
         long prologueTicks = 0;
         long skipTicks = 0;
         int pastPrologue = 0;
@@ -434,6 +506,36 @@ public partial class GameEntities : Node3D
             UnbatchAll();
         }
 
+        // THE SKIP INDEX (`entity_skip_index`): the last walk's skip verdicts answer this one's
+        // unchanged entities without the lookups their paths are made of. Started afresh when the
+        // lever or a global the paths read moves; a parent bone taken since the last walk undoes
+        // its child's verdict, the one input that changes outside the child's own path every walk.
+        bool skipIndex = SkipIndexEnabled;
+        int skipEpoch = !skipIndex ? 0 : 1 |
+            (Refii.Entities.Engine_EntityBatches.Enabled ? 2 : 0) |
+            (Refii.Lighting.Engine_LightingFrame.ModernModel ? 4 : 0);
+        if (skipEpoch != _skipEpoch)
+        {
+            _skipEpoch = skipEpoch;
+            _skipIndex.Clear();
+        }
+
+        if (skipIndex && _attachments.Version != _skipAttachmentsVersion)
+        {
+            _skipAttachmentsVersion = _attachments.Version;
+            foreach (uint child in _attachments.Children)
+            {
+                _skipIndex.Invalidate(child);
+            }
+        }
+
+        _skipIndex.BeginWalk();
+
+        // An indexed verdict's re-check, on the reconcile cadence or a multiple of it
+        // (`entity_still_reconcile_scale`). A multiple: every walk due on it is due on the cadence
+        // too, so the walk that re-checks takes the full path exactly as a reconcile would.
+        int stillReconcileTicks = ReconcileTicks * StillReconcileScale;
+
         Transform3D toWorld = GlobalTransform;
         uint heroAddress = HostBridge.HeroEntityAddress();
         if (_morphPreviewGeneration != GameCharacterMorphs.PreviewGeneration)
@@ -456,6 +558,7 @@ public partial class GameEntities : Node3D
             PlayerTwoPosition = null;
         }
         _createdThisFrame = 0;
+        _createTicksThisFrame = 0;
         _dynamicCasterPositions.Clear();
         _createFrom = System.Diagnostics.Stopwatch.GetTimestamp();
         foreach (HostBridge.GuestEntity statedEntity in entities)
@@ -463,7 +566,6 @@ public partial class GameEntities : Node3D
             HostBridge.GuestEntity entity = GameDecorate.Appearance(statedEntity);
             if (GameGoldenCock.ObserveGuest(entity)) continue;
             if (GameMorphMirror.ObserveGuest(entity)) continue;
-            long prologueFrom = System.Diagnostics.Stopwatch.GetTimestamp();
             if (entity.Address == heroAddress && heroAddress != 0u && IsUsablePlacement(entity.Position))
             {
                 // THE HERO'S STATED POSITION, in Godot space, for whatever samples the world at
@@ -477,6 +579,30 @@ public partial class GameEntities : Node3D
             {
                 PlayerTwoPosition = ToGodot(entity.Position, entity.Rotation).Origin;
             }
+
+            // ANSWERED BY THE LAST WALK'S VERDICT. Unchanged, off its reconcile cadence and no
+            // principal is everything the three skip paths below ask of the statement (the empty
+            // path's longer cadence divides by this one); what else they read is the verdict's to
+            // keep (Engine_EntitySkipIndex). Its counts are the path's; what it owns and draws is
+            // asked of the index by Retire and the reconcile. Untimed: it lands in "rest".
+            if (skipIndex && !entity.Changed && entity.Address != _morphPreviewHero &&
+                !IsPrincipal(entity.Address) && !Due(entity.Address, stillReconcileTicks) &&
+                _skipIndex.TryHit(entity.Address, entity.UniqueId, out Refii.Entities.Engine_EntitySkipIndex.Kind verdict))
+            {
+                ++_prologueSkipped;
+                if (verdict != Refii.Entities.Engine_EntitySkipIndex.Kind.Nothing)
+                {
+                    ++_withModel;
+                    if (verdict == Refii.Entities.Engine_EntitySkipIndex.Kind.Still)
+                    {
+                        ++_unchangedSkipped;
+                    }
+                }
+
+                continue;
+            }
+
+            long prologueFrom = System.Diagnostics.Stopwatch.GetTimestamp();
 
             // NOTHING TO DRAW, ALREADY KNOWN. Most entities are triggers, markers and
             // sound emitters: no model hash, no composite parts, no mesh records. The two part
@@ -495,6 +621,11 @@ public partial class GameEntities : Node3D
                 {
                     _guestPositions[entity.Address] = entity.Position;
                     _guestRotations[entity.Address] = entity.Rotation;
+                }
+                if (skipIndex)
+                {
+                    _skipIndex.Park(entity.Address, entity.UniqueId,
+                        Refii.Entities.Engine_EntitySkipIndex.Kind.Nothing, 0u, null);
                 }
                 ++_prologueSkipped;
                 skipTicks += System.Diagnostics.Stopwatch.GetTimestamp() - prologueFrom;
@@ -517,16 +648,25 @@ public partial class GameEntities : Node3D
                 !entity.Changed && !Due(entity.Address, ReconcileTicks) &&
                 (adoptedStill || (_batches?.Contains(entity.Address) ?? false)))
             {
+                string? stillKey = null;
                 if (!adoptedStill)
                 {
                     if (entity.RecordHash != 0)
                     {
                         _drawnRecords.Add(entity.RecordHash);
                     }
-                    if (ModelKeyFor(entity.ModelHash) is { } stillKey)
+                    stillKey = ModelKeyFor(entity.ModelHash);
+                    if (stillKey is not null)
                     {
                         _drawnKeys.Add((entity.Address, stillKey));
                     }
+                }
+
+                if (skipIndex)
+                {
+                    _skipIndex.Park(entity.Address, entity.UniqueId,
+                        adoptedStill ? Refii.Entities.Engine_EntitySkipIndex.Kind.Adopted : Refii.Entities.Engine_EntitySkipIndex.Kind.Batched,
+                        adoptedStill ? 0u : entity.RecordHash, stillKey);
                 }
 
                 _seen.Add(entity.Address);
@@ -534,6 +674,13 @@ public partial class GameEntities : Node3D
                 ++_prologueSkipped;
                 skipTicks += System.Diagnostics.Stopwatch.GetTimestamp() - prologueFrom;
                 continue;
+            }
+
+            // Past the skips that need nothing of the node: the still-node skip below writes its
+            // own verdict, and anything else has none.
+            if (skipIndex)
+            {
+                _skipIndex.Unpark(entity.Address);
             }
 
             Mesh mesh = null!;
@@ -550,13 +697,15 @@ public partial class GameEntities : Node3D
             {
                 node = fastNode;
                 mesh = fastMesh;
+                string? fastKey = null;
                 if (!adopted)
                 {
                     if (entity.RecordHash != 0)
                     {
                         _drawnRecords.Add(entity.RecordHash);
                     }
-                    if (ModelKeyFor(entity.ModelHash) is { } fastKey)
+                    fastKey = ModelKeyFor(entity.ModelHash);
+                    if (fastKey is not null)
                     {
                         _drawnKeys.Add((entity.Address, fastKey));
                     }
@@ -571,7 +720,13 @@ public partial class GameEntities : Node3D
                 {
                     ++_unchangedSkipped;
                     ++_prologueSkipped;
-                    NoteStill(entity, node, mesh, adopted);
+                    // A verdict only while NoteStill has nothing to count: a prop walking toward its
+                    // batch is counted every walk, and is indexed once it is batched.
+                    if (NoteStill(entity, node, mesh, adopted) && skipIndex)
+                    {
+                        _skipIndex.Park(entity.Address, entity.UniqueId, Refii.Entities.Engine_EntitySkipIndex.Kind.Still,
+                            adopted ? 0u : entity.RecordHash, fastKey);
+                    }
                     skipTicks += System.Diagnostics.Stopwatch.GetTimestamp() - prologueFrom;
                     continue;
                 }
@@ -750,12 +905,28 @@ public partial class GameEntities : Node3D
                 // region cannot stall on one slow creation) and a maximum; the rest wait a frame.
                 // Under the load hold the larger load budget applies: nothing is on screen, and
                 // a deferred node would appear after the player has control.
+                //
+                // IN PLAY the clock runs from the walk's start, so the walk itself counts against
+                // the frame's 2 ms. UNDER THE HOLD only the creations count: in Bowerstone the
+                // walk's prologue alone is ~15 ms on the S10e, so a clock from the walk's start
+                // had spent the 12 ms before the first creation and every held frame made the
+                // minimum 8 nodes; ~3,500 nodes took ~430 frames and the hold with them.
                 int maxCreations = LoadHold ? MaxCreationsPerLoadFrame : MaxCreationsPerFrame;
                 double createMs = LoadHold ? CreateMillisecondsPerLoadFrame : CreateMillisecondsPerFrame;
-                if (_createdThisFrame >= MinCreationsPerFrame &&
-                    (_createdThisFrame >= maxCreations ||
-                        (System.Diagnostics.Stopwatch.GetTimestamp() - _createFrom) * 1000.0 /
-                            System.Diagnostics.Stopwatch.Frequency >= createMs))
+                long spentTicks = LoadHold
+                    ? _createTicksThisFrame
+                    : System.Diagnostics.Stopwatch.GetTimestamp() - _createFrom;
+                // IN PLAY WITH `entity_create_budget_ms` set, the creations' own time against it
+                // and a minimum of one (Engine_EntityCreateBudget): no frame makes eight slow
+                // creations together because the walk had already spent the 2 ms.
+                double budgetMs = EntityCreateBudgetMs;
+                bool defer = !LoadHold && budgetMs > 0.0
+                    ? Refii.Entities.Engine_EntityCreateBudget.Defer(_createdThisFrame, maxCreations,
+                        _createTicksThisFrame * 1000.0 / System.Diagnostics.Stopwatch.Frequency, budgetMs)
+                    : _createdThisFrame >= MinCreationsPerFrame &&
+                        (_createdThisFrame >= maxCreations ||
+                            spentTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency >= createMs);
+                if (defer)
                 {
                     ++_creationsDeferred;
                     ++_awaitingCreate;
@@ -765,6 +936,7 @@ public partial class GameEntities : Node3D
 
                 ++_createdThisFrame;
                 created = true;
+                long createFrom = System.Diagnostics.Stopwatch.GetTimestamp();
                 if (entity.Address == heroAddress && heroAddress != 0u)
                 {
                     GD.Print($"[game-entities] hero {heroAddress:X8} node created on tick {_ticks}" +
@@ -829,7 +1001,9 @@ public partial class GameEntities : Node3D
                 LightEntity(node);
 
                 bool ranged = StateDrawRange(entity.Address, node);
-                if (!TryRig(entity.Address, node, mesh))
+                // The proxy is synced once, at the end: a sync here would build it before the
+                // range, cloth and hidden clusters below change its state, and build it again there.
+                if (!TryRig(entity.Address, node, mesh, syncProxy: false))
                 {
                     // No skeleton = dressing: it gets the region's prop policies — its stated
                     // range, else a screen-size cull — and a shadow reach keyed on its size.
@@ -868,6 +1042,11 @@ public partial class GameEntities : Node3D
                 }
                 Refii.Entities.Engine_ShadowProxy.Sync(node);
                 SyncInteriorMesh(entity, node, adopted);
+                long createTicks = System.Diagnostics.Stopwatch.GetTimestamp() - createFrom;
+                _createTicksThisFrame += createTicks;
+                Refii.Core.Engine_LoadTimeline.Add(Refii.Core.Engine_LoadTimeline.Category.EntityCreate,
+                    createTicks);
+                Refii.Core.Engine_SpikeNotes.Since(Refii.Core.Engine_SpikeNotes.Kind.EntityCreate, createFrom);
             }
             else
             {
@@ -976,6 +1155,13 @@ public partial class GameEntities : Node3D
 
             Refii.Entities.Engine_EntityAppearance.Apply(node, entity.Appearance, IsPrincipal(entity.Address));
             _lastLook[entity.Address] = entity.Appearance;
+
+            // A hero's head goes while the camera is in it (first person): its cutout hair and hat
+            // ignore the fade (Engine_FirstPersonHead). Once per skeleton; the check is a child lookup.
+            if (IsHero(entity.Address) && _skeletons.TryGetValue(entity.Address, out var heroRig))
+            {
+                Refii.Entities.Engine_FirstPersonHead.Ensure(heroRig.Node);
+            }
 
             // The stated targeting highlight goes ABOVE the unchanged-entity skip: the guest
             // ramps its colour over several ticks on a target that may not move. Cheap when
@@ -1244,8 +1430,13 @@ public partial class GameEntities : Node3D
                         eyeDistanceSq <= PoseFullRateRadius * PoseFullRateRadius;
                     Refii.Entities.Engine_ShadowSkeletons.SetEveryFrame(
                         rig.Node, principal || (_movers.Contains(entity.Address) && fullRate));
-                    bool neverPosed = !_boneWriteAskedMs.ContainsKey(entity.Address);
-                    writeBones = (inView && (fullRate || FarRigPosesThisStep(entity.Address))) || neverPosed;
+                    bool neverPosed = !_boneWriteAskedMs.TryGetValue(entity.Address, out ulong askedMs);
+                    writeBones = (inView && (fullRate || FarRigPosesThisStep(entity.Address, nowMs - askedMs))) || neverPosed;
+                    if (inView && !writeBones)
+                    {
+                        ++farHeld;
+                    }
+
                     if (writeBones)
                     {
                         _boneWriteAskedMs[entity.Address] = nowMs;
@@ -1322,7 +1513,6 @@ public partial class GameEntities : Node3D
         foreach ((uint address, MeshInstance3D posedNode, Refii.Entities.Engine_EntitySkeleton posedRig, Transform3D stated) in _afterPose)
         {
             StateVisibleExtent(address, posedNode, posedRig);
-            SampleTrace(address, posedNode, stated, posedRig);
 
             if (_reports < 10)
             {
@@ -1366,7 +1556,9 @@ public partial class GameEntities : Node3D
         {
             // The prologue, skip and drawn spans are timed too; "rest" is only what no section covers.
             double loopMs = poseMs + placeMs + (prologueTicks + skipTicks + drawnTicks) * toMs;
-            GD.Print($"[entities] {entities.Count} entity(s), {posed} posed ({posedWritten} written, {posedHalfRate} of them at the guest's half rate): " +
+            GD.Print($"[entities] {entities.Count} entity(s), {posed} posed ({posedWritten} written, {posedHalfRate} of them at the " +
+                (_farRigHz > 0f ? $"far rate of {_farRigHz:0.#} Hz{(FarRigPoseSpread ? ", spread" : string.Empty)}" : "guest's half rate") +
+                $", {farHeld} far in view held): " +
                 $"pose {poseMs:0.00}ms (read {Refii.Entities.Engine_EntitySkeleton.ReadMs:0.00}, " +
                 $"write {Refii.Entities.Engine_EntitySkeleton.WriteMs:0.00}, " +
                 $"{Refii.Entities.Engine_EntitySkeleton.WritesSkipped} settled), " +
@@ -1374,8 +1566,14 @@ public partial class GameEntities : Node3D
                 $"— of {LastLoopMs:0.00}ms in the loop | " +
                 $"clip {clipTicks * toMs:0.00} | " +
                 $"prologue {prologueTicks * toMs:0.00} ({entities.Count - _prologueSkipped} walked) + {skipTicks * toMs:0.00} ({_prologueSkipped} skipped: nothing to draw, or still and adopted/batched) " +
-                $"{pastPrologue} past it | drawn {drawnTicks * toMs:0.00}");
+                $"{pastPrologue} past it | drawn {drawnTicks * toMs:0.00}" +
+                (skipIndex ? $" | skip index {_skipIndex.Hits} of the skipped ({_skipIndex.Count} held), in rest" : string.Empty));
         }
+        FarRigsWritten = posedHalfRate;
+        FarRigsHeld = farHeld;
+        SkipIndexHits = _skipIndex.Hits;
+        SkipIndexHeld = _skipIndex.Count;
+        _skipIndex.EndWalk();
         Retire();
         Refii.Core.Engine_FramePhases.Lap("ent.retire", ref lap);
         RetryRigs();
@@ -1473,7 +1671,8 @@ public partial class GameEntities : Node3D
             }
 
             // The gate is a method group over a set whose contents change, not the field, so
-            // one cached delegate serves the whole run.
+            // one cached delegate serves the whole run. The skip index's hits are drawn too.
+            _skipIndex.AddDrawn(_drawnRecords, _drawnKeys);
             Twins.Reconcile(
                 _liveRecords, _drawnRecords, !HostBridge.EntitiesTruncated,
                 deactivated is null ? null : _layerIsDeactivated ??= _deactivatedLayers.Contains);
@@ -1895,13 +2094,11 @@ public partial class GameEntities : Node3D
             // an unresolved child exactly there.
             uint parent = _attachments.ParentOf(child);
             Transform3D placed = stated;
-            string? childModel = ChildModelPathOf(node);
-            bool isFurniture = IsFurnitureEntity(node);
+            (string? childModel, bool isFurniture) = ChildFactsOf(child, node);
             bool onBone = !isFurniture &&
                 _nodes.TryGetValue(parent, out MeshInstance3D? parentNode) &&
                 _skeletons.TryGetValue(parent, out Refii.Entities.Engine_EntitySkeleton? rig) &&
-                _attachments.TryPlace(child, stated, StatedOf(parent, parentNode.Transform),
-                    parentNode.Transform, rig, PartPaths(parentNode), out placed, isFurniture, childModel);
+                PlaceOnParent(child, stated, parent, parentNode, rig, isFurniture, childModel, out placed);
             if (!onBone)
             {
                 ++AttachedOnStated;
@@ -1951,11 +2148,56 @@ public partial class GameEntities : Node3D
         foreach (uint child in _unfollowed)
         {
             _followers.Remove(child);
+            _childFacts.Remove(child);
             _written.Remove(child);
             _justDetached.Add(child);
+            _skipIndex.Invalidate(child);
         }
 
         _unfollowed.Clear();
+    }
+
+    /// <summary>
+    /// A child's model path and furniture verdict, as <see cref="ChildModelPathOf"/> and
+    /// <see cref="IsFurnitureEntity"/> answer them, kept while the node, the mesh it shows and the
+    /// model index are the ones they were read from.
+    /// </summary>
+    /// <remarks>
+    /// Both answers are made of the node's entity metadata (written once, at creation), the model
+    /// index and the mesh, and <see cref="PlaceAttached"/> asked them on every drawn frame for
+    /// every attached child: four metadata crossings and two index lookups a child a frame, to
+    /// read the same two values. The shown mesh is read to validate (one crossing); a different
+    /// mesh, node or index version asks again.
+    /// </remarks>
+    private (string? Model, bool Furniture) ChildFactsOf(uint child, MeshInstance3D node)
+    {
+        Mesh? shown = node.Mesh;
+        int version = Refii.Level.Engine_PropModelIndex.Version;
+        if (_childFacts.TryGetValue(child, out ChildFacts known) &&
+            ReferenceEquals(known.Node, node) && ReferenceEquals(known.Shown, shown) &&
+            known.IndexVersion == version)
+        {
+            return (known.Model, known.Furniture);
+        }
+
+        string? model = ChildModelPathOf(node);
+        bool furniture = IsFurnitureEntity(node);
+        _childFacts[child] = new ChildFacts(node, shown, version, model, furniture);
+        return (model, furniture);
+    }
+
+    private readonly record struct ChildFacts(MeshInstance3D Node, Mesh? Shown, int IndexVersion, string? Model, bool Furniture);
+
+    /// <summary><see cref="ChildFactsOf"/>'s answers, by child address; dropped with the follower.</summary>
+    private readonly Dictionary<uint, ChildFacts> _childFacts = new();
+
+    /// <summary>The child on its parent's bone; the parent's transform read once (a crossing).</summary>
+    private bool PlaceOnParent(uint child, Transform3D stated, uint parent, MeshInstance3D parentNode,
+        Refii.Entities.Engine_EntitySkeleton rig, bool isFurniture, string? childModel, out Transform3D placed)
+    {
+        Transform3D parentPlacement = parentNode.Transform;
+        return _attachments.TryPlace(child, stated, StatedOf(parent, parentPlacement),
+            parentPlacement, rig, PartPaths(parentNode), out placed, isFurniture, childModel);
     }
 
     /// <summary>Attached children whose shadow casts through a following proxy, by address.</summary>
@@ -2124,7 +2366,7 @@ public partial class GameEntities : Node3D
         Refii.Entities.Engine_HiddenClusters.SetDisplacedSurfaces(node, mask);
     }
 
-    private bool TryRig(uint address, MeshInstance3D node, Mesh mesh)
+    private bool TryRig(uint address, MeshInstance3D node, Mesh mesh, bool syncProxy = true)
     {
         // THE MODEL'S OWN BONE TABLE IS THE SKELETON. The mesh's bone indices address it, so
         // building in any other numbering binds every vertex to the wrong bone; the guest is
@@ -2144,8 +2386,15 @@ public partial class GameEntities : Node3D
         node.Skin = skeleton.Skin;
         _skeletons[address] = skeleton;
 
+        // A prop rigged late (RetryRigs) was a still verdict; it poses from the next walk.
+        _skipIndex.Invalidate(address);
+
         // The proxy casts on THIS skeleton and skin, or its shadow stands in the bind pose.
-        Refii.Entities.Engine_ShadowProxy.Sync(node);
+        // A creation syncs it once, after the rest of its setup.
+        if (syncProxy)
+        {
+            Refii.Entities.Engine_ShadowProxy.Sync(node);
+        }
 
         if (_alignReports < RigReportLimit)
         {
@@ -2417,6 +2666,7 @@ public partial class GameEntities : Node3D
     /// </summary>
     private void FillDrawnPlaces()
     {
+        _skipIndex.AddDrawn(_drawnRecords, _drawnKeys);
         _drawnPlaces.Clear();
         foreach ((uint address, string modelKey) in _drawnKeys)
         {
@@ -2542,7 +2792,7 @@ public partial class GameEntities : Node3D
                 ["visible"] = node.Visible,
                 ["rigged"] = _skeletons.ContainsKey(address),
                 ["adopted"] = _adoptions.ContainsKey(address),
-                ["seen"] = _seen.Contains(address),
+                ["seen"] = _seen.Contains(address) || _skipIndex.Owns(address),
             });
         }
 
@@ -2945,7 +3195,8 @@ public partial class GameEntities : Node3D
     /// <summary>Drops nodes for entities the guest no longer reports.</summary>
     private void Retire()
     {
-        if (_nodes.Count == _seen.Count)
+        // The skip index's owned hits are this walk's too; they are not in `_seen`.
+        if (_nodes.Count == _seen.Count + _skipIndex.OwnedHits)
         {
             return;
         }
@@ -2955,7 +3206,7 @@ public partial class GameEntities : Node3D
         _gone.Clear();
         foreach (KeyValuePair<uint, MeshInstance3D> pair in _nodes)
         {
-            if (!_seen.Contains(pair.Key))
+            if (!_seen.Contains(pair.Key) && !_skipIndex.Owns(pair.Key))
             {
                 _gone.Add(pair.Key);
             }
@@ -3016,6 +3267,7 @@ public partial class GameEntities : Node3D
             _relit.Remove(address);
             _attachments.Forget(address);
             _followers.Remove(address);
+            _childFacts.Remove(address);
             _justDetached.Remove(address);
 
             // And the retry, which would otherwise keep asking the guest about an entity it
@@ -3417,6 +3669,53 @@ public partial class GameEntities : Node3D
     /// <summary>Prologues answered from <see cref="_nothingToDraw"/> this walk.</summary>
     private int _prologueSkipped;
 
+    /// <summary>
+    /// `entity_skip_index`: whether the walk answers unchanged entities from the last walk's skip
+    /// verdicts (<see cref="Refii.Entities.Engine_EntitySkipIndex"/>) rather than re-running the
+    /// lookups of the skip paths. Off by default; the debug channel's `render entitySkipIndex=`
+    /// switches it live, and the next walk starts the index afresh.
+    /// </summary>
+    /// <remarks>
+    /// The same entities are skipped, owned, drawn and counted either way. Every verdict is also
+    /// re-asked on the entity's reconcile cadence (one walk in <see cref="ReconcileTicks"/>), so
+    /// one an input outside the hooks undid would hold for half a second at worst.
+    /// </remarks>
+    public static bool SkipIndexEnabled = Refii.Core.Engine_RefiiConfig.Bool(
+        Refii.Core.Engine_RefiiConfig.Read(out _), "entity_skip_index", false);
+
+    /// <summary>
+    /// `entity_still_reconcile_scale`: how many reconcile periods an entity answered from the skip
+    /// index waits before it is re-checked against the game (1, the default, is every period;
+    /// clamped to 1-8). Live through the config hook.
+    /// </summary>
+    /// <remarks>
+    /// Only what the index answers: entities with no rig, unchanged since the last walk, not a
+    /// principal. Anything the game states anew (a move, a look) still takes the full path at once;
+    /// what waits longer is what only the reconcile reads, for scenery standing still: a garment or
+    /// part list changed without a stated change, its light zone, its relight after the level's
+    /// lighting changes. At 4 that is two seconds where one is now. Each reconcile of a still prop
+    /// is the whole prologue and placement (guest reads among them), ~1 in 30 of ~4,000 props per
+    /// walk in Bowerstone.
+    /// </remarks>
+    public static int StillReconcileScale = ReadStillReconcileScale();
+
+    private static int ReadStillReconcileScale() =>
+        System.Math.Clamp(Refii.Core.Engine_RefiiConfig.Int(
+            Refii.Core.Engine_RefiiConfig.Read(out _), "entity_still_reconcile_scale", 1), 1, 8);
+
+    /// <summary>The last walk's entities answered from the skip index, and the verdicts held after it.</summary>
+    public static int SkipIndexHits;
+
+    public static int SkipIndexHeld;
+
+    private readonly Refii.Entities.Engine_EntitySkipIndex _skipIndex = new();
+
+    /// <summary>The lever and the batching globals the index was filled under; a change clears it.</summary>
+    private int _skipEpoch;
+
+    /// <summary>The attachment table the index last undid children for.</summary>
+    private int _skipAttachmentsVersion = -1;
+
     /// <summary>Entities the loop left alone because their statement had not moved; run total.</summary>
     public static long UnchangedSkipped => _unchangedSkippedTotal;
 
@@ -3438,7 +3737,8 @@ public partial class GameEntities : Node3D
     /// <summary>The same two limits while the world holds the guest behind its loading screen.</summary>
     private const int MaxCreationsPerLoadFrame = 2048;
 
-    private const double CreateMillisecondsPerLoadFrame = 12.0;
+    /// <remarks>Creation time only (see the budget check); the prop streamer takes 100 ms a held frame.</remarks>
+    private const double CreateMillisecondsPerLoadFrame = 40.0;
 
     /// <summary>Set by the world while it holds the guest for the region build.</summary>
     public bool LoadHold { get; set; }
@@ -3478,14 +3778,18 @@ public partial class GameEntities : Node3D
     /// married to a static twin (that node is hidden already), not highlighted, and only under the
     /// unified lighting model.
     /// </summary>
-    private void NoteStill(HostBridge.GuestEntity entity, MeshInstance3D node, Mesh mesh, bool adopted)
+    /// <returns>
+    /// True when it did nothing and will keep doing nothing while the prop, its node and the
+    /// batching levers stay as they are: the skip index may answer the prop's next walks.
+    /// </returns>
+    private bool NoteStill(HostBridge.GuestEntity entity, MeshInstance3D node, Mesh mesh, bool adopted)
     {
         // A target's silhouette is drawn from its node, and this branch is where an unchanged
         // prop that has just been targeted is seen.
         if (entity.Highlighted || !entity.Appearance.IsConstructed)
         {
             Unbatch(entity.Address, node);
-            return;
+            return false;
         }
 
         if (adopted || !Refii.Entities.Engine_EntityBatches.Enabled ||
@@ -3494,7 +3798,7 @@ public partial class GameEntities : Node3D
             _interiorNodes.ContainsKey(entity.Address) ||
             MeshHasCloth(mesh) || Refii.Physics.Engine_ClothBody.Of(node) is not null)
         {
-            return;
+            return true;
         }
 
         int still = _still.GetValueOrDefault(entity.Address) + 1;
@@ -3503,7 +3807,7 @@ public partial class GameEntities : Node3D
             !_written.TryGetValue(entity.Address, out (MeshInstance3D Node, Transform3D Drawn) placed) ||
             !ReferenceEquals(placed.Node, node))
         {
-            return;
+            return false;
         }
 
         if (_batches is null)
@@ -3518,6 +3822,8 @@ public partial class GameEntities : Node3D
         {
             node.Visible = false;
         }
+
+        return false;
     }
 
     /// <summary>Back to a node, if it was batched; the still count starts again either way.</summary>
@@ -3559,12 +3865,18 @@ public partial class GameEntities : Node3D
     /// </summary>
     private (uint Hero, uint One, uint Two, uint Dog) _principals;
 
+    private bool IsHero(uint address) =>
+        address != 0u && (address == _principals.Hero || address == _principals.One || address == _principals.Two);
+
     private bool IsPrincipal(uint address) =>
         address != 0u && (address == _principals.Hero || address == _principals.One || address == _principals.Two || address == _principals.Dog);
 
     private int _createdThisFrame;
 
     private long _createFrom;
+
+    /// <summary>Ticks this frame's walk spent creating nodes, what the load budget counts.</summary>
+    private long _createTicksThisFrame;
     private static long _creationsDeferred;
 
     /// <summary>Entities that waited a frame for their node because the frame's creations were spent; run total.</summary>
@@ -3754,7 +4066,7 @@ public partial class GameEntities : Node3D
     {
         // Already building, or the pipe is full and this retries next frame. NOT added to the
         // job set in the full case: leaving it out is what makes the retry possible.
-        if (_compositeJobs.Contains(key) || _inFlight >= MaxInFlightBuilds)
+        if (_retirementWorkers.Retired || _compositeJobs.Contains(key) || _inFlight >= MaxInFlightBuilds)
         {
             return;
         }
@@ -3762,7 +4074,7 @@ public partial class GameEntities : Node3D
         _compositeJobs.Add(key);
         ++_inFlight;
 
-        System.Threading.Tasks.Task.Run(() =>
+        _retirementWorkers.TryQueue(() =>
         {
             ArrayMesh? assembled = null;
             int resolved = 0;
@@ -3804,7 +4116,7 @@ public partial class GameEntities : Node3D
                     (trace.Length != 0 ? $" {trace[0].Trim()}" : string.Empty);
             }
 
-            _completions.Enqueue(() =>
+            _retirementWorkers.TryPublish(() => _completions.Enqueue(() =>
             {
                 _compositeJobs.Remove(key);
                 --_inFlight;
@@ -3837,7 +4149,7 @@ public partial class GameEntities : Node3D
 
                 _compositePartsDrawn += resolved;
                 _compositePartsMissing += missing;
-            });
+            }));
         });
     }
 
@@ -3888,7 +4200,7 @@ public partial class GameEntities : Node3D
     /// <summary>Loads one model off this thread, once.</summary>
     private void QueueMeshBuild(uint modelHash, string path)
     {
-        if (_meshJobs.Contains(modelHash) || _inFlight >= MaxInFlightBuilds)
+        if (_retirementWorkers.Retired || _meshJobs.Contains(modelHash) || _inFlight >= MaxInFlightBuilds)
         {
             return;
         }
@@ -3896,7 +4208,7 @@ public partial class GameEntities : Node3D
         _meshJobs.Add(modelHash);
         ++_inFlight;
 
-        System.Threading.Tasks.Task.Run(() =>
+        _retirementWorkers.TryQueue(() =>
         {
             Mesh? mesh = null;
             string? error = null;
@@ -3911,7 +4223,7 @@ public partial class GameEntities : Node3D
                 error = $"{e.GetType().Name}: {e.Message}";
             }
 
-            _completions.Enqueue(() =>
+            _retirementWorkers.TryPublish(() => _completions.Enqueue(() =>
             {
                 _meshJobs.Remove(modelHash);
                 --_inFlight;
@@ -3946,7 +4258,7 @@ public partial class GameEntities : Node3D
                 }
 
                 _meshes[modelHash] = mesh;
-            });
+            }));
         });
     }
 
@@ -4542,7 +4854,8 @@ public partial class GameEntities : Node3D
     }
 
     /// <summary>
-    /// Whether a rig outside <see cref="PoseFullRateRadius"/> writes its bones this step.
+    /// Whether a rig outside <see cref="PoseFullRateRadius"/> writes its bones this step;
+    /// <paramref name="sinceWriteMs"/> since it last did.
     /// </summary>
     /// <remarks>
     /// The guest's divider (0x8220D67C) skips the step whenever the animation LOD is not 3 and the
@@ -4553,8 +4866,57 @@ public partial class GameEntities : Node3D
     /// re-renders when any caster in its pool is written, and halves interleaved by address give
     /// every lamp's pool a write on every guest frame. On the guest's phase a pool of far rigs is
     /// written on alternate guest frames and its map re-renders at 15 Hz.
+    ///
+    /// Under 30 fps every walk completes a tick, so that divider divides nothing. With
+    /// <see cref="FarRigPoseHz"/> set, a far rig writes at that rate in real time instead, still
+    /// only on tick steps (<see cref="Refii.Entities.Engine_FarRigPoseRate"/>); spread across the
+    /// far rigs by address unless <see cref="FarRigPoseSpread"/> is off, which keeps the guest's one
+    /// phase for the shadow pools above.
     /// </remarks>
-    private bool FarRigPosesThisStep(uint address) => _tickCompletedThisWalk;
+    private bool FarRigPosesThisStep(uint address, ulong sinceWriteMs) =>
+        _farRigHz <= 0f
+            ? _tickCompletedThisWalk
+            : Refii.Entities.Engine_FarRigPoseRate.Due(_tickCompletedThisWalk, _farRigFromSeconds,
+                _farRigToSeconds, _farRigHz, FarRigPoseSpread, address, sinceWriteMs);
+
+    /// <summary>
+    /// `entity_create_budget_ms`: in play, the milliseconds of creation a frame may spend, at
+    /// least one creation a frame (<see cref="Refii.Entities.Engine_EntityCreateBudget"/>); 0 (the
+    /// default) keeps the minimum of 8 and the 2 ms from the walk's start. Live through `cvar-set`.
+    /// </summary>
+    public static double EntityCreateBudgetMs = ReadEntityCreateBudgetMs();
+
+    private static double ReadEntityCreateBudgetMs() =>
+        Refii.Entities.Engine_EntityCreateBudget.Clamp(Refii.Core.Engine_RefiiConfig.Float(
+            Refii.Core.Engine_RefiiConfig.Read(out _), "entity_create_budget_ms", 0f));
+
+    /// <summary>
+    /// `far_rig_pose_hz`: the far rigs' write rate in real time; 0 (the default) leaves them on the
+    /// guest's tick step. Clamped to 4-30 Hz (<see cref="Refii.Entities.Engine_FarRigPoseRate.Clamp"/>).
+    /// Live through the debug channel's `render farRigPoseHz=`.
+    /// </summary>
+    public static float FarRigPoseHz = Refii.Entities.Engine_FarRigPoseRate.Clamp(Refii.Core.Engine_RefiiConfig.Float(
+        Refii.Core.Engine_RefiiConfig.Read(out _), "far_rig_pose_hz", 0f));
+
+    /// <summary>
+    /// `far_rig_pose_spread`: with a far rate set, each far rig on its own phase (the default), so
+    /// the cost is the same on every walk; off, all on one, so a lamp's shadow pool of far rigs
+    /// re-renders at the rate. `render farRigPoseSpread=`.
+    /// </summary>
+    public static bool FarRigPoseSpread = Refii.Core.Engine_RefiiConfig.Bool(
+        Refii.Core.Engine_RefiiConfig.Read(out _), "far_rig_pose_spread", true);
+
+    /// <summary>The last walk's far rigs written, and those in view that held their pose.</summary>
+    public static int FarRigsWritten;
+
+    public static int FarRigsHeld;
+
+    /// <summary>This walk's far rate, and the seconds at the previous tick step's walk and this one's.</summary>
+    private float _farRigHz;
+
+    private double _farRigFromSeconds;
+
+    private double _farRigToSeconds;
 
     /// <summary>Whether this walk's guest frame completed a game tick; see FarRigPosesThisStep.</summary>
     private bool _tickCompletedThisWalk = true;
@@ -4843,6 +5205,15 @@ public partial class GameEntities : Node3D
         }
         Refii.Entities.Engine_ShadowSkeletons.EndWalk();
         Refii.Core.Engine_FramePhases.Lap("ent.drawn.shadows", ref lap);
+
+        // The trace reads what this frame put on screen, walk frame or not: sampling only after a
+        // walk's poses missed every frame that only resampled, a third of them at 20 fps.
+        if (_traceRemaining > 0 && _nodes.TryGetValue(_traceAddress, out MeshInstance3D? traced) &&
+            IsInstanceValid(traced))
+        {
+            _skeletons.TryGetValue(_traceAddress, out Refii.Entities.Engine_EntitySkeleton? tracedRig);
+            SampleTrace(_traceAddress, traced, StatedOf(_traceAddress, traced.Transform), tracedRig);
+        }
     }
 
     private void ResampleMovers()
@@ -4974,6 +5345,8 @@ public partial class GameEntities : Node3D
         // Only observe on a new placement or after 4 ticks have elapsed without movement:
         // ambient civilian NPCs often update placement every 2nd or 3rd game tick (7.5 Hz / 5 Hz),
         // so observing an unchanged intermediate tick (tick - NewestTick < 4.0) would zero velocity mid-stride.
+        // Under `motion_arrival_fit` a moving body's timeline times this statement by the frame
+        // that draws it rather than by the stamp (Engine_ArrivalFit); the observation rule is the same.
         if (moved || (_tickCompletedThisWalk && tick - body.NewestTick >= 4.0))
         {
             body.Observe(tick, stated);
@@ -5005,7 +5378,7 @@ public partial class GameEntities : Node3D
 
     private uint _traceAddress;
     private int _traceRemaining;
-    private readonly List<(ulong Usec, uint Tick, Vector3 Drawn, Vector3 Stated, Vector3 Hip)> _trace = new();
+    private readonly List<(ulong Usec, uint Tick, Vector3 Drawn, Vector3 Stated, Vector3 Hip, double Newest, double DrawTick)> _trace = new();
 
     /// <summary>
     /// Starts recording one entity's drawn origin, stated origin and hip bone per frame — the
@@ -5022,7 +5395,7 @@ public partial class GameEntities : Node3D
     public List<Dictionary<string, object?>> TraceReport()
     {
         var rows = new List<Dictionary<string, object?>>();
-        foreach ((ulong usec, uint tick, Vector3 drawn, Vector3 stated, Vector3 hip) in _trace)
+        foreach ((ulong usec, uint tick, Vector3 drawn, Vector3 stated, Vector3 hip, double newest, double drawTick) in _trace)
         {
             rows.Add(new Dictionary<string, object?>
             {
@@ -5031,6 +5404,10 @@ public partial class GameEntities : Node3D
                 ["drawn"] = new[] { drawn.X, drawn.Y, drawn.Z },
                 ["stated"] = new[] { stated.X, stated.Y, stated.Z },
                 ["hip"] = new[] { hip.X, hip.Y, hip.Z },
+                // The body's newest statement's stamp beside the frame's draw point: how far behind
+                // its own history the body was drawn.
+                ["newest"] = double.IsFinite(newest) ? newest : null,
+                ["drawTick"] = drawTick,
             });
         }
 
@@ -5053,8 +5430,9 @@ public partial class GameEntities : Node3D
             hip = (node.Transform * rig.Node.GetBoneGlobalPose(bone)).Origin;
         }
 
+        double newest = _bodies.TryGetValue(address, out Refii.Core.Engine_TickTimeline? body) ? body.NewestTick : double.NaN;
         _trace.Add((Godot.Time.GetTicksUsec(), Refii.Host.HostBridge.SimTick,
-            node.Transform.Origin, stated.Origin, hip));
+            node.Transform.Origin, stated.Origin, hip, newest, Refii.Entities.Engine_DrawnFrame.DrawTick));
     }
 
     private SubViewport? _closeup;
@@ -5442,7 +5820,7 @@ public partial class GameEntities : Node3D
 
             if (mesh.SurfaceGetMaterial(surface) is ShaderMaterial material)
             {
-                row["shader"] = material.Shader?.ResourcePath ?? string.Empty;
+                row["shader"] = Refii.Models.Engine_ShaderSpecialisation.PathOf(material.Shader);
                 foreach (string parameter in new[]
                     { "albedo_tex", "normal_tex", "specular_tex", "emission_tex", "orm_tex" })
                 {

@@ -57,7 +57,7 @@ public static class Engine_MdlSurfaceArrays
 		ArrayMesh mesh, Mesh.PrimitiveType primitive, Godot.Collections.Array arrays,
 		Godot.Collections.Dictionary? lods)
 	{
-		mesh.AddSurfaceFromArrays(primitive, arrays, null, lods, Engine_MdlTransfer.FormatOf(arrays));
+		Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, primitive, arrays, null, lods, Engine_MdlTransfer.FormatOf(arrays));
 		int added = mesh.GetSurfaceCount() - 1;
 		Record(mesh, added, arrays.Duplicate(false), LevelsOf(lods));
 		return added;
@@ -89,6 +89,33 @@ public static class Engine_MdlSurfaceArrays
 		}
 
 		return levels.Length == 0 ? null : levels;
+	}
+
+	/// <summary>
+	/// Records only a surface's level table (key and triangle count), for a builder that adds its
+	/// surface itself and keeps no arrays: the ground's chunks (`terrain_lod`). Without it the
+	/// lodcensus counts such a surface at full detail at any distance.
+	/// </summary>
+	public static void RecordLevels(Mesh mesh, int surface, Godot.Collections.Dictionary? lods)
+	{
+		if (LevelsOf(lods) is not { } packed)
+		{
+			return;
+		}
+
+		lock (Gate)
+		{
+			Godot.Collections.Array levels = mesh.HasMeta(LodsMeta)
+				? mesh.GetMeta(LodsMeta).AsGodotArray()
+				: new Godot.Collections.Array();
+			while (levels.Count <= surface)
+			{
+				levels.Add(default(Variant));
+			}
+
+			levels[surface] = packed;
+			mesh.SetMeta(LodsMeta, levels);
+		}
 	}
 
 	/// <summary>Edge key and triangle count per level, ascending, packed in pairs.</summary>
@@ -139,7 +166,7 @@ public static class Engine_MdlSurfaceArrays
 				$"was never recorded; read back from the GPU for {caller}");
 		}
 
-		Godot.Collections.Array read = mesh.SurfaceGetArrays(surface);
+		Godot.Collections.Array read = Refii.Core.Engine_ServerSyncs.SurfaceArrays(mesh, surface);
 		Record(mesh, surface, read.Duplicate(false), null);
 		return read;
 	}

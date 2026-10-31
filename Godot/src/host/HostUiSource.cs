@@ -21,6 +21,10 @@ public sealed class HostUiSource : Engine_UiSource
 	public override List<Engine_UiModel.UiElement>? GetUiElements(uint presentation = 0) =>
 		HostBridge.GetUiElements(presentation);
 
+	public override bool FillUiElements(
+		uint presentation, List<Engine_UiModel.UiElement> into, List<Engine_UiModel.UiElement>? previous) =>
+		HostBridge.FillUiElements(presentation, into, previous);
+
 	public override uint GetUiElementCount(uint presentation = 0) =>
 		HostBridge.GetUiElementCount(presentation);
 
@@ -143,6 +147,18 @@ public sealed class HostUiSource : Engine_UiSource
 
 	public override Dictionary<uint, float> GetHudScriptMeters() =>
 		HostBridge.GetHudScriptMeters();
+
+	public override bool FillHud(Dictionary<uint, float> meters,
+		Dictionary<uint, Refii.Ui.Engine_UiSource.HudPulser> pulsers, Dictionary<uint, string> texts,
+		Dictionary<uint, float> scriptMeters, Dictionary<uint, uint> scriptTexts)
+	{
+		HostBridge.FillHudMeters(meters);
+		HostBridge.FillHudPulsers(pulsers);
+		HostBridge.FillHudTexts(texts);
+		HostBridge.FillHudScriptMeters(scriptMeters);
+		HostBridge.FillHudScriptTexts(scriptTexts);
+		return true;
+	}
 
 	public override Engine_UiModel.SaveState GetSaveState() => HostBridge.GetSaveState();
 

@@ -88,6 +88,13 @@ public sealed class Engine_FrontEndMenu
 		HighlightIndex >= 0 && HighlightIndex < Visible.Count ? Visible[HighlightIndex] : null;
 
 	/// <summary>
+	/// Whether the highlighted row accepts A: explicit ghosting and a fold animation refuse
+	/// every route, including host commands and screen openers. Automatic ghosting is visual
+	/// only, as in the guest's SelectMenuItem; an empty category can be populated on demand.
+	/// </summary>
+	public bool CanActivate => !Model.Animating && Highlighted is { Ghosted: false };
+
+	/// <summary>
 	/// The entry whose children are showing, or null.
 	///
 	/// Derived rather than stored: openness is per item (`IsOpen`), the way the script keeps it,
@@ -392,16 +399,26 @@ public sealed class Engine_FrontEndMenu
 	}
 
 	/// <summary>
-	/// Activates the highlighted entry. Returns the NAME to dispatch to the guest, or null when
-	/// the press is not a dispatch — expanding a submenu, opening one, opening a screen, or a
-	/// host-only entry; the caller tells them apart by the entry it activated.
+	/// Activates an accepted highlighted entry. Returns its command or guest identity, or null
+	/// for a refused press, a group toggle or a screen opener. Host-only commands obey the
+	/// same acceptance gate. Call the overload with an output to distinguish an accepted opener.
 	///
 	/// An entry that opens something must not also dispatch: <see cref="Item.Submenu"/> and
 	/// <see cref="Item.Opens"/> return null too, not just <see cref="Item.Children"/>.
 	/// </summary>
-	public string? Activate()
+	public string? Activate() => Activate(out _);
+
+	/// <summary>
+	/// Activates once and identifies a screen opened by that same press. A fold can move the
+	/// highlight onto a child, so the view must not infer an opener from the new highlight.
+	/// </summary>
+	/// <param name="screenToOpen">The accepted leaf's surface after storage guards pass;
+	/// null for refusals, group toggles and command dispatches.</param>
+	/// <returns>The command or guest identity to dispatch, or null when no command fired.</returns>
+	public string? Activate(out string? screenToOpen)
 	{
-		if (Highlighted is not { } item)
+		screenToOpen = null;
+		if (!CanActivate || Highlighted is not { } item)
 		{
 			return null;
 		}
@@ -428,6 +445,11 @@ public sealed class Engine_FrontEndMenu
 			if (item.Opens == HeroCardScreen)
 			{
 				Warning = NewGameRefusal();
+			}
+
+			if (Warning is null)
+			{
+				screenToOpen = item.Opens;
 			}
 
 			return null;

@@ -1,0 +1,9 @@
+{
+	"slot4": { "label": "Hotbar slot 4", "keys": ["4"] },
+	"slot5": { "label": "Hotbar slot 5", "keys": ["5"] },
+	"slot6": { "label": "Hotbar slot 6", "keys": ["6"] },
+	"slot7": { "label": "Hotbar slot 7", "keys": ["7"] },
+	"slot8": { "label": "Hotbar slot 8", "keys": ["8"] },
+	"slot9": { "label": "Hotbar slot 9", "keys": ["9"] },
+	"slot0": { "label": "Hotbar slot 0", "keys": ["0"] }
+}

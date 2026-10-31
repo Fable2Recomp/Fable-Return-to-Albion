@@ -8,6 +8,7 @@ public partial class Engine_UiPhotoMode : Node3D
 {
     public const float Width = 460;
     public const float Height = 592;
+    public const float HelpHeight = 384;
     private static readonly Color Ink = new(0.16f, 0.12f, 0.08f);
     private static readonly Color SelectedInk = new(0.45f, 0.13f, 0.07f);
     private readonly MeshInstance3D[] _names = new MeshInstance3D[8];
@@ -17,6 +18,10 @@ public partial class Engine_UiPhotoMode : Node3D
     private Engine_UiTheme _theme = null!;
     private Node3D _panel = null!, _helpDialog = null!;
     private MeshInstance3D _status = null!;
+    private MeshInstance3D _band = null!;
+
+    /// <summary>The first setting's height, and the step to the next, in the panel's units.</summary>
+    private const float FirstRowY = 152, RowStep = 32;
     private int _inputGeneration = -1;
     public bool HelpOpen { get; private set; }
 
@@ -28,11 +33,14 @@ public partial class Engine_UiPhotoMode : Node3D
         AddChild(_panel);
         AddChild(_helpDialog);
         Frame(_panel, Height);
+        // Behind the settings' text, so the selected one stands out (ShowSettings moves it).
+        _band = Engine_UiTheme.SelectionBand(new Vector2(424, 30));
+        _panel.AddChild(_band);
         Label("Photo Mode", 28, new Vector2(0, 230), 380, 1, SelectedInk);
         Label("Game paused", 16, new Vector2(0, 200), 380, 1);
         for (int i = 0; i < 8; i++)
         {
-            float y = 152 - i * 32;
+            float y = FirstRowY - i * RowStep;
             _names[i] = Label(Engine_PhotoMode.Settings[i], 19, new Vector2(-190, y), 192);
             _values[i] = Label("", 18, new Vector2(110, y), 126, 1);
             Label("<", 20, new Vector2(32, y), 30, 1);
@@ -46,7 +54,7 @@ public partial class Engine_UiPhotoMode : Node3D
         Action(19, "b_img", "Back", new Vector2(24, -174));
         Action(20, "back.img", "Controls", new Vector2(-85, -216));
         _status = Label("Photos: Pictures / Refii", 13, new Vector2(0, -254), 380, 1);
-        Frame(_helpDialog, 384);
+        Frame(_helpDialog, HelpHeight);
         Label("Controls", 26, new Vector2(0, 140), 380, 1, SelectedInk, _helpDialog);
         for (int i = 0; i < _help.Length; i++)
             _help[i] = Label("", 16, new Vector2(-184, 94 - i * 28), 368, parent: _helpDialog);
@@ -95,13 +103,20 @@ public partial class Engine_UiPhotoMode : Node3D
             _theme.Paint(_values[i], settings.Display(i), 18, color, horizontalAlign: 1, boxWidth: 126);
             _values[i].Scale = Vector3.One * Math.Min(1, 126 / Math.Max(_values[i].GetAabb().Size.X, 1));
         }
+
+        _band.Position = new Vector3(8, FirstRowY - settings.Selected * RowStep, 5);
     }
 
     public void RefreshDevice()
     {
         if (_inputGeneration == Engine_UiInputMode.Generation) return;
         _inputGeneration = Engine_UiInputMode.Generation;
-        string[] help = Engine_UiInputMode.KeyboardMouse
+        string[] help = Engine_UiInputMode.Touch
+            ? new[] { "Left thumb  Move     Drag  Look", "Raise / Lower  Up and down",
+                "D-pad  Choose and adjust a setting", "Take photo  Saves to Pictures / Refii",
+                "Hide UI  A clear view; tap to bring it back", "Reset  Back to where the camera was",
+                "Back  Exit Photo Mode" }
+            : Engine_UiInputMode.KeyboardMouse
             ? new[] { "WASD  Move     Hold RMB  Look", "Q / E  Lower / raise     Wheel  Zoom",
                 "Shift  Faster     Ctrl  Slower", "Arrows  Select / adjust", "PgUp / PgDn  Change filter",
                 "Enter  Take photo     R  Reset", "H  Hide UI     F11  Exit Photo Mode" }

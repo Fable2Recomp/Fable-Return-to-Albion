@@ -29,6 +29,9 @@ public partial class Engine_EntityInstance : MeshInstance3D
         }
 
         EnsureMesh();
+        // Godot processes every node that overrides _Process; in game this one never has work,
+        // and hundreds of instances per region each cost a native-to-managed call a frame.
+        SetProcess(false);
     }
 
     public override void _Process(double delta)

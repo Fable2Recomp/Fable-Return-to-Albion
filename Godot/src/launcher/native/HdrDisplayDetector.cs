@@ -137,7 +137,7 @@ public static class HdrDisplayDetector
             return QueryWindowsDisplay();
         }
 
-        if (OperatingSystem.IsLinux())
+        if (Refii.Core.Engine_Platform.IsDesktopLinux)
         {
             return QueryLinuxDisplay();
         }

@@ -103,7 +103,7 @@ public sealed class ModFingerprint
 				.Append(mod.Sha256.ToLowerInvariant()).Append('\n');
 		}
 
-		byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(canonical.ToString()));
+		byte[] hash = Refii.Core.Engine_Hash.Sha256(Encoding.UTF8.GetBytes(canonical.ToString()));
 		return Convert.ToHexString(hash, 0, 8).ToLowerInvariant();
 	}
 
@@ -488,7 +488,7 @@ public sealed class ModFingerprint
 			try
 			{
 				using FileStream stream = File.OpenRead(packagePath);
-				sha = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+				sha = Convert.ToHexString(Refii.Core.Engine_Hash.Sha256(stream)).ToLowerInvariant();
 			}
 			catch (Exception)
 			{

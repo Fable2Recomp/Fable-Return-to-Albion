@@ -50,6 +50,11 @@
 #include <rex/runtime.h>
 #include <rex/net/pseudonym.h>
 #include <rex/net/rexnet.h>
+
+REXCVAR_DEFINE_STRING(rexnet_connect, "", "RexNet",
+                      "Peers to dial directly at startup: comma-separated host:port or "
+                      "multiaddrs. For a friend the DHT does not find, such as a phone on "
+                      "mobile data reaching a PC whose rexnet_listen_port is forwarded.");
 #endif
 
 #if REX_PLATFORM_WIN32
@@ -97,6 +102,9 @@ static std::atomic<uint32_t> g_system_link_port{0};
 // Named rather than anonymous: the C entry points at the foot of this file are
 // outside `rex::` and reach them by name.
 constexpr uint16_t kRefiiCoopPort = 0xEF11;
+/// Fable II's presence port (rexnet.toml: its port-1002 presence INITIAL is what builds the
+/// orbs). Shard-wide, so it never names the co-op peer.
+constexpr uint16_t kFablePresencePort = 1002;
 constexpr std::size_t kRefiiCoopInboxMax = 32;
 std::mutex g_refii_coop_mutex;
 std::deque<std::string> g_refii_coop_inbox;
@@ -375,6 +383,18 @@ void RexNetStartup() {
       return;
     }
 
+    // Direct dials the player configured, for peers discovery cannot reach.
+    const std::string connect = REXCVAR_GET(rexnet_connect);
+    for (size_t pos = 0; pos < connect.size();) {
+      size_t comma = connect.find(',', pos);
+      if (comma == std::string::npos)
+        comma = connect.size();
+      if (comma > pos) {
+        rexnet->ConnectManual(connect.substr(pos, comma - pos));
+      }
+      pos = comma + 1;
+    }
+
     // Inbound game datagrams -> the guest UDP socket bound to that port.
     // Guest TCP (§18): route stream events onto the sockets that own them.
     rexnet->SetStreamSinks(
@@ -494,7 +514,15 @@ void RexNetStartup() {
 
       // Whoever sends us game traffic IS the co-op peer, and that address is
       // where our own channel answers.
-      if (g_refii_coop_peer_vip.exchange(src_vip, std::memory_order_relaxed) != src_vip) {
+      //
+      // EXCEPT THE PRESENCE PORT. Fable II's presence (its orbs) rides port
+      // 1002 and every shard member sends it, in a session or not. Learning
+      // from it moved the peer to a stranger and back twice a second whenever
+      // a third Fable II was on the shard, so half of the host's hero records
+      // went to the wrong address and were never acknowledged.
+      // The session itself is ports 1000 and 1001.
+      if (dst_port != kFablePresencePort &&
+          g_refii_coop_peer_vip.exchange(src_vip, std::memory_order_relaxed) != src_vip) {
         REXLOG_INFO("Refii co-op channel: peer is 10.77.{}.{} (learned from game traffic on port {})",
                     (src_vip >> 8) & 0xFF, src_vip & 0xFF, dst_port);
       }
@@ -2208,6 +2236,7 @@ uint16_t RefiiSyncChannelPort(void) { return rex::kRefiiSyncPort; }
 /// Idempotent while connecting or open. 0 when RexNet is down or no peer has
 /// been seen; the outcome is read back through RefiiSyncChannelState.
 int RefiiSyncChannelConnect(void) {
+#if REXGLUE_ENABLE_REXNET
   auto* rexnet = rex::net::RexNet::shared();
   const uint32_t peer = rex::g_refii_coop_peer_vip.load(std::memory_order_relaxed);
   if (rexnet == nullptr || peer == 0) {
@@ -2224,6 +2253,10 @@ int RefiiSyncChannelConnect(void) {
   }
   rexnet->StreamConnect(peer, rex::kRefiiSyncPort, rex::kRefiiSyncPort);
   return 1;
+#else
+  // Built without RexNet (-DREXGLUE_ENABLE_REXNET=OFF): there is no stream to open.
+  return 0;
+#endif  // REXGLUE_ENABLE_REXNET
 }
 
 /// 0 idle, 1 connecting, 2 open, 3 closed by the peer, 4 connect failed, 5 inbox overflowed.
@@ -2245,12 +2278,16 @@ int RefiiSyncChannelSend(const uint8_t* data, uint32_t len) {
     }
     stream = rex::g_refii_sync_stream;
   }
+#if REXGLUE_ENABLE_REXNET
   auto* rexnet = rex::net::RexNet::shared();
   if (rexnet == nullptr) {
     return 0;
   }
   rexnet->StreamSend(stream, data, len);
   return 1;
+#else
+  return 0;
+#endif  // REXGLUE_ENABLE_REXNET
 }
 
 /// Takes up to `capacity` received bytes, in order. Returns the byte count.
@@ -2279,11 +2316,13 @@ void RefiiSyncChannelClose(void) {
     rex::g_refii_sync_state = 0;
     rex::g_refii_sync_inbox.clear();
   }
+#if REXGLUE_ENABLE_REXNET
   if (stream != 0) {
     if (auto* rexnet = rex::net::RexNet::shared()) {
       rexnet->StreamClose(stream);
     }
   }
+#endif  // REXGLUE_ENABLE_REXNET
 }
 
 }  // extern "C"

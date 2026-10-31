@@ -6,8 +6,8 @@ using Refii.Ui;
 namespace Refii.Game;
 
 /// <summary>
-/// Fable 3's co-op join flow in the world: the join and leave notices, the "press START" invitation
-/// and a Discord ask-to-join raised as a question, all in the game's own boxes.
+/// Fable 3's co-op join flow in the world: the join and leave notices, the "press START" invitation,
+/// a Discord ask-to-join and an orb's gamer card raised as questions, all in the game's own boxes.
 /// </summary>
 /// <remarks>
 /// THE TRANSITIONS ARE THE ONES <see cref="DriveCoopHeroChannel"/> ALREADY READS — the phase seen
@@ -72,6 +72,7 @@ public partial class GameUi
 				!CoopSession.IsClient;
 			_coopNotices.Pads(new List<int>(Input.GetConnectedJoypads()), open);
 			DriveJoinQuestion(inGame);
+			DriveGamerCard(inGame, open);
 
 			// Friends' greetings (their orb emotes), told as they arrive; the stated status goes
 			// out once a run so friends see it without the page ever being opened.
@@ -173,6 +174,55 @@ public partial class GameUi
 			() => AnswerJoinAsk(userId, true),
 			() => AnswerJoinAsk(userId, false),
 			JoinAskKey(userId));
+	}
+
+	/// <summary>The last gamer-card ask (<see cref="NetBridge.GamerCard.Request"/>) answered.</summary>
+	private uint _gamerCardAnswered;
+
+	/// <summary>
+	/// An orb's Interact: the gamer card it asked for, raised as the card's Join Game or Invite to
+	/// Game question (<see cref="Engine_UiGamerCard"/>), or told as a notice when it offers
+	/// neither. <paramref name="open"/> is whether this game has a seat for a joiner.
+	/// </summary>
+	private void DriveGamerCard(bool inGame, bool open)
+	{
+		if (NetBridge.LatestGamerCard() is not { } card || card.Request == _gamerCardAnswered)
+		{
+			return;
+		}
+
+		_gamerCardAnswered = card.Request;
+		if (!inGame)
+		{
+			return;
+		}
+
+		bool canInvite = open && NetBridge.HostState() is { Hosting: true };
+		Engine_UiGamerCard.Offer offer = Engine_UiGamerCard.Decide(card, canInvite);
+		string text = Engine_UiGamerCard.Text(offer, card.Name);
+		GD.Print($"[coop-notice] gamer card {card.Request}: xuid {card.Xuid} -> '{card.Name}' {card.PeerId} " +
+			$"(friend {card.Friend}, hosting {card.Hosting}, partner {card.Partner}) -> {offer}");
+		if (!Engine_UiGamerCard.Asks(offer))
+		{
+			_coopNotices.Tell(text);
+			return;
+		}
+
+		string peer = card.PeerId;
+		string name = card.Name;
+		Engine_UiHostBoxes.Ask(text, answer =>
+			{
+				if (answer != 0)
+				{
+					return;
+				}
+
+				bool sent = NetBridge.PeerAction(peer,
+					offer == Engine_UiGamerCard.Offer.Join ? NetBridge.Act.Join : NetBridge.Act.Invite);
+				GD.Print($"[coop-notice] gamer card {offer} {name}: {(sent ? "sent" : "refused by the node")}");
+				_coopNotices.Tell(Engine_UiGamerCard.Outcome(offer, name, sent));
+			},
+			Engine_UiGamerCard.Accept(offer), null, "gamercard:" + peer);
 	}
 
 	/// <summary>The in-world question's answer, through the same store the page answers with.</summary>

@@ -102,6 +102,14 @@ public sealed class SkyTheme
     public uint SunDiscTextureHash { get; set; }
     public uint SunBeamsTextureHash { get; set; }
     public uint SunGlareTextureHash { get; set; }
+
+    /// <summary>
+    /// Bumped each time a kept instance is blended over in place
+    /// (<see cref="Engine_ThemeTimeline.BlendSkyInto"/>). With the reference, what says two reads
+    /// saw the same theme: a cache keyed on the reference alone would take a rewritten one for
+    /// the one it saw.
+    /// </summary>
+    public int Revision { get; set; }
 }
 
 public sealed class WeatherTheme

@@ -6,8 +6,8 @@ using Refii.Core;
 namespace Refii.Game;
 
 /// <summary>
-/// The live performance readout, toggled with F5: frame rate, frame time, the main thread's own
-/// work, the render thread's CPU and GPU time, draw calls, video memory, GC, and Godot's per-pass
+/// The live performance readout, toggled with F5: frame rate, frame time, the CPU and GPU clocks
+/// and their thermal caps where the platform publishes them, the main thread's own work, the render thread's CPU and GPU time, draw calls, video memory, GC, and Godot's per-pass
 /// GPU split when the engine is capturing it (`gpu_profile = true`).
 /// </summary>
 /// <remarks>
@@ -23,7 +23,11 @@ public partial class GamePerfOverlay : CanvasLayer
 	private const double RefreshSeconds = 0.25;
 
 	private Label? _label;
+	private PanelContainer? _panel;
 	private double _sinceRefresh;
+
+	/// <summary>The panel's distance from the usable screen's top-left corner, in canvas units.</summary>
+	private static readonly Vector2 Inset = new(12, 12);
 	private bool _measuring;
 	private readonly StringBuilder _text = new(768);
 
@@ -34,9 +38,10 @@ public partial class GamePerfOverlay : CanvasLayer
 
 		var panel = new PanelContainer
 		{
-			Position = new Vector2(12, 12),
+			Position = Inset,
 			MouseFilter = Control.MouseFilterEnum.Ignore,
 		};
+		_panel = panel;
 		var style = new StyleBoxFlat
 		{
 			BgColor = new Color(0, 0, 0, 0.6f),
@@ -62,10 +67,17 @@ public partial class GamePerfOverlay : CanvasLayer
 	{
 		if (@event is InputEventKey { Pressed: true, Echo: false, Keycode: Key.F5 })
 		{
-			Visible = !Visible;
-			_sinceRefresh = RefreshSeconds;
+			Toggle();
 			GetViewport().SetInputAsHandled();
 		}
+	}
+
+	/// <summary>Toggles the existing readout from a keyboard or Android diagnostic button.</summary>
+	public void Toggle()
+	{
+		Visible = !Visible;
+		_sinceRefresh = RefreshSeconds;
+		PlaceInSafeArea(GetViewport());
 	}
 
 	public override void _Process(double delta)
@@ -89,9 +101,63 @@ public partial class GamePerfOverlay : CanvasLayer
 		}
 
 		_sinceRefresh = 0.0;
+		PlaceInSafeArea(viewport);
 		_label.Text = Compose(viewport);
 	}
 
+	/// <summary>
+	/// Keeps the panel inside the display's safe area: a phone's camera cutout sits in the top-left
+	/// corner in one landscape orientation and moves to the other side when the phone is turned
+	/// round, so the area is read again at every refresh. The safe area is in screen pixels; the
+	/// panel lives on the stretched canvas, so it is scaled into canvas units first. A screen with no
+	/// cutout reports the whole window and the panel stays where it always was.
+	/// </summary>
+	private void PlaceInSafeArea(Viewport viewport)
+	{
+		if (_panel is null)
+		{
+			return;
+		}
+
+		Rect2I safe = DisplayServer.GetDisplaySafeArea();
+		Vector2I window = DisplayServer.WindowGetSize();
+		Vector2 canvas = viewport.GetVisibleRect().Size;
+		if (window.X <= 0 || window.Y <= 0)
+		{
+			_panel.Position = Inset;
+			return;
+		}
+
+		Vector2I offset = SafeAreaOffset(safe, new Rect2I(DisplayServer.WindowGetPosition(), window));
+		var toCanvas = new Vector2(canvas.X / window.X, canvas.Y / window.Y);
+		_panel.Position = Inset + new Vector2(offset.X * toCanvas.X, offset.Y * toCanvas.Y);
+	}
+
+	/// <summary>
+	/// How far into the window the safe area starts, in screen pixels. Both rectangles are in the
+	/// desktop's coordinates, which on a phone start at the window's corner and on a desktop with
+	/// several monitors do not: there the safe area is the primary screen's usable rectangle, at
+	/// (2560, 1440) when that screen sits right of and below another, and taken as it is it put
+	/// the panel outside the window. Only the part of the safe area the window shows counts, so a
+	/// window on another screen, or one smaller than the area, keeps the panel at its corner.
+	/// </summary>
+	internal static Vector2I SafeAreaOffset(Rect2I safe, Rect2I window)
+	{
+		if (safe.Size.X <= 0 || safe.Size.Y <= 0 || window.Size.X <= 0 || window.Size.Y <= 0)
+		{
+			return Vector2I.Zero;
+		}
+
+		Rect2I shown = window.Intersection(safe);
+		if (shown.Size.X <= 0 || shown.Size.Y <= 0)
+		{
+			return Vector2I.Zero;
+		}
+
+		return shown.Position - window.Position;
+	}
+
+	/// <summary>Formats measured performance and the platform goal independently of presentation caps.</summary>
 	private string Compose(Viewport viewport)
 	{
 		(double frameMs, double framePeak) = Engine_FramePhases.Get("frame_total");
@@ -117,6 +183,11 @@ public partial class GamePerfOverlay : CanvasLayer
 		}
 
 		_text.Append($"{fps:0} fps   {frameMs:0.0} ms  (peak {framePeak:0})\n");
+		// The clocks the frame rate was made at: a warm phone runs at a fraction of them.
+		foreach (string line in Engine_DeviceClocks.Format(Engine_DeviceClocks.Read()))
+		{
+			_text.Append(line).Append('\n');
+		}
 		_text.Append($"main  {processMs:0.0} ms   entities {entitiesMs:0.0}   waiting on render {waitMs:0.0}\n");
 		_text.Append($"render cpu {renderCpu:0.0} ms   gpu {renderGpu:0.0} ms   ");
 		_text.Append(Bound(processMs, renderCpu, renderGpu)).Append('\n');

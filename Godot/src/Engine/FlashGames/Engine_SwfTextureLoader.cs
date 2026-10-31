@@ -42,7 +42,7 @@ public partial class Engine_SwfTextureLoader : ResourceFormatLoader
             return Variant.CreateFrom((int)Error.FileNotFound);
         }
 
-        ImageTexture texture = ImageTexture.CreateFromImage(image);
+        ImageTexture texture = Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(image);
         texture.TakeOverPath(path);
         return texture;
     }

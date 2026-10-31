@@ -105,7 +105,7 @@ public sealed class ClothPatch
 
             // No compression flag: positions stay float3 and the normal/tangent block is two
             // u16 pairs per vertex, which is the layout Pack writes.
-            mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+            Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays);
             int added = mesh.GetSurfaceCount() - 1;
             if (piece.Material is not null)
             {

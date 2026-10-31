@@ -16,6 +16,9 @@ namespace Refii.FlashGames.Framework;
 /// </remarks>
 public static class PubGameStageFit
 {
+    /// <summary>The screen rectangle the last stage was placed in; empty before the first.</summary>
+    public static Rect2 Placed { get; private set; }
+
     public static float Scale(Vector2 viewport, Vector2 stage)
     {
         if (Mathf.IsEqualApprox(stage.X, 1800f) && Mathf.IsEqualApprox(stage.Y, 1300f))
@@ -33,5 +36,6 @@ public static class PubGameStageFit
         int height = (int)(stage.Y * scale);
         view.Scale = new Vector2(scale, scale);
         view.Position = new Vector2(((int)viewport.X - width) / 2, ((int)viewport.Y - height) / 2);
+        Placed = new Rect2(view.Position, new Vector2(width, height));
     }
 }

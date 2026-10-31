@@ -2,7 +2,10 @@ namespace Refii.Tests.Modding;
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Reflection;
+using System.Text.RegularExpressions;
 using GdUnit4;
 using static GdUnit4.Assertions;
 using Godot;
@@ -11,7 +14,7 @@ using Refii.Mods;
 /// <summary>
 /// The GDScript bridge (Engine_RefiiHost) is held to the catalog: one signal per event, named by
 /// its Lua name, in kind order; and the bus's field text parses to the typed Dictionary a script
-/// reads.
+/// reads; and every short form the catalog and the guide write is a method a script can call.
 /// </summary>
 [TestSuite]
 public class RefiiHostTests
@@ -69,5 +72,164 @@ public class RefiiHostTests
         AssertThat(ModGodot.IsGodotScriptPath("godot/hud.png")).IsFalse();
         AssertThat(ModGodot.IsGodotScriptPath("mod/init.lua")).IsFalse();
         AssertThat(ModGodot.IsGodotScriptPath("hud.gd")).IsFalse();
+    }
+
+    // use_item posts the Items page's own action, by the record's hash in decimal (the pump's
+    // DispatchInventoryAction reads it with strtoul base 10).
+    [TestCase]
+    public void UseItemPostsTheInventoryUseAction()
+    {
+        AssertThat(RefiiHost.UseItemAction("0xCE6B8E0F")).IsEqual("Inventory:use:3463155215");
+        AssertThat(RefiiHost.UseItemAction("0xce6b8e0f")).IsEqual("Inventory:use:3463155215");
+        AssertThat(RefiiHost.UseItemAction("3463155215")).IsEqual("Inventory:use:3463155215");
+        AssertThat(RefiiHost.UseItemAction(" 0x1 ")).IsEqual("Inventory:use:1");
+    }
+
+    [TestCase]
+    public void UseItemRefusesWhatIsNotARecord()
+    {
+        AssertThat(RefiiHost.UseItemAction(string.Empty)).IsNull();
+        AssertThat(RefiiHost.UseItemAction("0x0")).IsNull();
+        AssertThat(RefiiHost.UseItemAction("0")).IsNull();
+        AssertThat(RefiiHost.UseItemAction("potion")).IsNull();
+        AssertThat(RefiiHost.UseItemAction("0x1FFFFFFFF")).IsNull();
+        AssertThat(RefiiHost.UseItemAction("-5")).IsNull();
+    }
+
+    // Godot's script bridge registers no C# default and dispatches by name and argument count:
+    // host.notice("T", "x") reaches a method only if one takes exactly two arguments. A default
+    // here would read as callable from C# and fail from GDScript ("Nonexistent function").
+    [TestCase]
+    public void NoMemberTakesACSharpDefault()
+    {
+        foreach (MethodInfo method in typeof(RefiiHost).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+        {
+            foreach (ParameterInfo parameter in method.GetParameters())
+            {
+                AssertThat(parameter.IsOptional)
+                    .OverrideFailureMessage($"RefiiHost.{method.Name}'s '{parameter.Name}' has a C# default, which a script cannot leave off: add an overload")
+                    .IsFalse();
+            }
+        }
+    }
+
+    [TestCase]
+    public void TheShortFormsAreOverloads()
+    {
+        AssertThat(Arities("notice")).IsEqual(new[] { 2, 3, 4 });
+        AssertThat(Arities("in_cutscene")).IsEqual(new[] { 0, 1, 2 });
+        AssertThat(Arities("cutscene_kinds")).IsEqual(new[] { 0, 1 });
+        AssertThat(Arities("message_box")).IsEqual(new[] { 3, 4 });
+        AssertThat(Arities("menu_box")).IsEqual(new[] { 3, 4, 5 });
+        AssertThat(Arities("mark")).IsEqual(new[] { 2, 3, 4 });
+        AssertThat(Arities("fade")).IsEqual(new[] { 2, 3 });
+        AssertThat(Arities("meter")).IsEqual(new[] { 4, 5, 6 });
+        AssertThat(Arities("light")).IsEqual(new[] { 4, 5 });
+        AssertThat(Arities("open_menu")).IsEqual(new[] { 1, 2 });
+        AssertThat(Arities("open_screen")).IsEqual(new[] { 1, 2 });
+        AssertThat(Arities("set_menu_rows")).IsEqual(new[] { 2, 3 });
+        AssertThat(Arities("send_to_partner")).IsEqual(new[] { 2, 3 });
+        AssertThat(Arities("entity_tint")).IsEqual(new[] { 4, 5 });
+        AssertThat(Arities("lock_target")).IsEqual(new[] { 1, 2 });
+        AssertThat(Arities("wheel_switches_target")).IsEqual(new[] { 1, 2 });
+        AssertThat(Arities("apply_status")).IsEqual(new[] { 3, 4, 5 });
+        AssertThat(Arities("knockback")).IsEqual(new[] { 4, 5 });
+        AssertThat(Arities("play_sound")).IsEqual(new[] { 2, 3 });
+        AssertThat(Arities("play_sound_at")).IsEqual(new[] { 4, 5 });
+        AssertThat(Arities("stop_sound")).IsEqual(new[] { 2, 3 });
+        AssertThat(Arities("play_animation")).IsEqual(new[] { 2, 3, 4, 5 });
+        AssertThat(Arities("npc_follow")).IsEqual(new[] { 2, 3 });
+        AssertThat(Arities("set_weather")).IsEqual(new[] { 1, 2, 3 });
+    }
+
+    // Each Godot helper signature, "name(a, b = 0) -> r / other(c)": every argument count from the
+    // required ones to all of them is a method of that name.
+    [TestCase]
+    public void EveryCatalogShortFormIsCallable()
+    {
+        foreach (ModApiHelper helper in ModApi.GodotHelpers)
+        {
+            foreach (string part in helper.Signature.Split(" / "))
+            {
+                Match call = CallForm.Match(part.Split(" ->")[0].Trim());
+                if (call.Success && ModApi.GodotMethodNames(part).Any())
+                {
+                    AssertCallable(call, $"the catalog's '{helper.Signature}'");
+                }
+            }
+        }
+    }
+
+    // The guide writes the Godot calls as "name(a, b = 0)" or "host.name(a)" in its text and
+    // tables (Lua's Refii.name and native refii_mod_name are other surfaces): each must resolve.
+    [TestCase]
+    public void EveryGuideShortFormIsCallable()
+    {
+        string? folder = GuideFolder();
+        if (folder is null)
+        {
+            return;
+        }
+
+        var names = typeof(RefiiHost).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            .Select(m => m.Name).ToHashSet();
+        int seen = 0;
+        foreach (string path in Directory.GetFiles(folder, "*.md"))
+        {
+            string text = Regex.Replace(File.ReadAllText(path), "```.*?```", string.Empty, RegexOptions.Singleline);
+            foreach (Match span in Regex.Matches(text, "`([^`\n]+)`"))
+            {
+                foreach (Match call in GuideCall.Matches(span.Groups[1].Value))
+                {
+                    // "name(...)" names a call without stating its arguments.
+                    if (names.Contains(call.Groups["name"].Value) && !call.Groups["args"].Value.Contains("..."))
+                    {
+                        AssertCallable(call, $"{Path.GetFileName(path)}'s `{span.Groups[1].Value}`");
+                        seen++;
+                    }
+                }
+            }
+        }
+
+        AssertThat(seen > 40).OverrideFailureMessage($"only {seen} Godot calls found in the guide").IsTrue();
+    }
+
+    private static readonly Regex CallForm = new(@"^(?<name>\w+)\((?<args>[^()\[\]{}]*)\)$");
+
+    // A call not reached through another surface's prefix (Refii., a C++ scope or member): bare or host.
+    private static readonly Regex GuideCall = new(@"(?<![\w.:>])(?:host\.)?(?<name>[a-z_][a-z0-9_]*)\((?<args>[^()\[\]{}`]*)\)");
+
+    private static int[] Arities(string name) =>
+        typeof(RefiiHost).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            .Where(m => m.Name == name).Select(m => m.GetParameters().Length).OrderBy(n => n).ToArray();
+
+    private static void AssertCallable(Match call, string where)
+    {
+        string name = call.Groups["name"].Value;
+        string[] args = call.Groups["args"].Value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        int required = args.Count(a => !a.Contains('='));
+        int[] arities = Arities(name);
+        for (int n = required; n <= args.Length; n++)
+        {
+            AssertThat(arities.Contains(n))
+                .OverrideFailureMessage($"{where}: a script calling {name} with {n} argument(s) finds no method (RefiiHost has {string.Join(", ", arities)})")
+                .IsTrue();
+        }
+    }
+
+    private static string? GuideFolder()
+    {
+        string? at = AppContext.BaseDirectory;
+        for (int i = 0; i < 12 && at != null; i++)
+        {
+            if (File.Exists(Path.Combine(at, "src", "vfs", "include", "core", "refii_mod_events.h")))
+            {
+                return Path.Combine(at, "Godot", ModGuide.ProjectFolder);
+            }
+
+            at = Path.GetDirectoryName(at);
+        }
+
+        return null;
     }
 }

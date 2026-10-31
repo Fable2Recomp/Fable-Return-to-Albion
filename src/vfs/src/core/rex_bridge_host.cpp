@@ -298,12 +298,18 @@ extern "C" uint64_t refii_bridge_rex_query_guest_tick_count(void) {
     if (current != 0u && !watchdog_due &&
         g_pending_steps.load(std::memory_order_relaxed) == 0u) {
       g_last_seen_real.store(real, std::memory_order_relaxed);
+#if !defined(__ANDROID__)
+      // Diagnostics only, and a cache line every guest thread's clock read would write: not
+      // on Android, where the guest is CPU-bound (the read share then reports zero).
       g_fast_reads.fetch_add(1u, std::memory_order_relaxed);
+#endif
       return current;
     }
   }
 
+#if !defined(__ANDROID__)
   g_locked_reads.fetch_add(1u, std::memory_order_relaxed);
+#endif
   std::lock_guard lock(g_time_mutex);
   uint64_t ticks = g_virtual_ticks.load(std::memory_order_relaxed);
   if (ticks == 0u) {

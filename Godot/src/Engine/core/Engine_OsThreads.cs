@@ -68,7 +68,7 @@ public static class Engine_OsThreads
 		}
 
 		// .NET reports Android as its own OS, not Linux; its /proc is the same.
-		if (!OperatingSystem.IsLinux() && !OperatingSystem.IsAndroid())
+		if (!OperatingSystem.IsLinux() && !Refii.Core.Engine_Platform.IsAndroid)
 		{
 			return double.NaN;
 		}

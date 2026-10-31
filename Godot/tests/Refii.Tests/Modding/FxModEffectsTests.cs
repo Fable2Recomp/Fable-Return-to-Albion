@@ -552,7 +552,8 @@ public class FxModEffectsTests
 		{
 			foreach (string name in ModApi.GodotMethodNames(h.Signature))
 			{
-				AssertThat(typeof(RefiiHost).GetMethod(name, BindingFlags.Public | BindingFlags.Instance) is not null)
+				// By name: overloads of different arity (use_item) make GetMethod ambiguous.
+				AssertThat(typeof(RefiiHost).GetMethods(BindingFlags.Public | BindingFlags.Instance).Any(m => m.Name == name))
 					.OverrideFailureMessage(Msg($"RefiiHost has no '{name}' ({h.Signature})")).IsTrue();
 			}
 		}

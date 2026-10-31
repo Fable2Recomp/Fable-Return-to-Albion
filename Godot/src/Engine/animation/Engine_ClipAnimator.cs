@@ -18,6 +18,9 @@ namespace Refii.Animations;
 /// </summary>
 public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 {
+	/// <summary>The main thread's pose write (clip.publish), summed across all rigs once per entity
+	/// frame; the other three phases are not timed yet and report 0.</summary>
+	internal static readonly Refii.Core.Engine_FrameWork FrameWork = new("clip.prepare", "clip.sampleblend", "clip.post", "clip.publish");
 	private sealed class Built
 	{
 		/// <summary>Only on the resource path (<see cref="ManagedClipSampling"/> off).</summary>
@@ -73,6 +76,44 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	/// <summary>Above this many shared clips the least recently taken half is dropped.</summary>
 	private const int SharedClipCap = 2048;
 
+	/// <summary>The shared clips held and the bytes of their key arrays, for the heap census.</summary>
+	/// <remarks>A clip's tracks share one times array, counted once. Clips dropped from the table
+	/// but still held by a rig are not counted.</remarks>
+	internal static (long Clips, long Bytes) SharedCensus()
+	{
+		lock (SharedClips)
+		{
+			long clips = 0, bytes = 0;
+			foreach (SharedClip? clip in SharedClips.Values)
+			{
+				if (clip is null)
+				{
+					continue;
+				}
+
+				++clips;
+				var times = new HashSet<float[]>(ReferenceEqualityComparer.Instance);
+				for (int i = 0; i < clip.Rotations.Length; i++)
+				{
+					Keys rotation = clip.Rotations[i];
+					Keys position = clip.Positions[i];
+					bytes += rotation.Rotations.LongLength * 16 + position.Positions.LongLength * 12;
+					if (times.Add(rotation.Times))
+					{
+						bytes += rotation.Times.LongLength * 4;
+					}
+
+					if (times.Add(position.Times))
+					{
+						bytes += position.Times.LongLength * 4;
+					}
+				}
+			}
+
+			return (clips, bytes);
+		}
+	}
+
 	/// <summary>One track's keys, plus the cursor that makes a monotonic playhead O(1).</summary>
 	private sealed class Keys
 	{
@@ -80,6 +121,10 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		public Quaternion[] Rotations = System.Array.Empty<Quaternion>();
 		public Vector3[] Positions = System.Array.Empty<Vector3>();
 		public int Cursor;
+
+		/// <summary>The track was decoded with more than one key, before any collapse: what
+		/// makes a clip static is its decoded key count, not how it is stored.</summary>
+		public bool Animated;
 
 		/// <summary>The key index whose span contains <paramref name="t"/>, and the blend.</summary>
 		/// <remarks>
@@ -976,7 +1021,12 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			}
 
 			Folded();
-			_done.Wait();
+			if (!_done.IsSet)
+			{
+				long waitFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+				_done.Wait();
+				Refii.Core.Engine_SpikeNotes.Since(Refii.Core.Engine_SpikeNotes.Kind.PoseWait, waitFrom);
+			}
 			foreach (Engine_ClipAnimator rig in _rigs)
 			{
 				rig._inBatch = false;
@@ -1001,6 +1051,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	/// <summary>The thread pool's entry: this rig's fold, for its <see cref="PoseBatch"/>.</summary>
 	void System.Threading.IThreadPoolWorkItem.Execute()
 	{
+		long allocFrom = System.GC.GetAllocatedBytesForCurrentThread();
 		try
 		{
 			Fold();
@@ -1011,6 +1062,8 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		}
 		finally
 		{
+			Refii.Core.Engine_GcFrames.Note(ref Refii.Core.Engine_GcFrames.PoseBatchBytes,
+				System.GC.GetAllocatedBytesForCurrentThread() - allocFrom);
 			_batch!.Folded();
 		}
 	}
@@ -1499,6 +1552,8 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	/// <summary><see cref="Apply"/>'s last part, on the main thread: the folded pose onto the skeleton.</summary>
 	public void Write()
 	{
+		// Fold may run off the main thread, and FrameWork is main-thread owned: only the write is timed.
+		long workAt = System.Diagnostics.Stopwatch.GetTimestamp();
 		int bones = _foldBones;
 		float alpha = _foldAlpha;
 		float topShare = _foldTopShare;
@@ -1577,6 +1632,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			NoteWatch(moved, alpha, topShare, _channels.Count, movedBones);
 		}
 
+		FrameWork.Lap(3, ref workAt);
 		_hasWritten = true;
 		_writtenChannelCount = _channels.Count;
 		foreach (Channel c in _channels.Values)
@@ -2459,7 +2515,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 			built.RotationTrack[b] = track;
 			built.RotationKeys[b] = shared.Rotations[track];
-			if (shared.Rotations[track].Times.Length > 1)
+			if (shared.Rotations[track].Animated)
 			{
 				mappedStatic = false;
 			}
@@ -2469,7 +2525,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			{
 				built.PositionTrack[b] = track;
 				built.PositionKeys[b] = shared.Positions[track];
-				if (shared.Positions[track].Times.Length > 1)
+				if (shared.Positions[track].Animated)
 				{
 					mappedStatic = false;
 				}
@@ -2478,6 +2534,60 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 		built.IsStatic |= mappedStatic;
 		return built;
+	}
+
+	/// <summary>
+	/// `anim_collapse_constant_tracks` (default off): a decoded track whose keys are all exactly
+	/// equal is kept as its first key alone. Read once, at the first clip decoded.
+	/// </summary>
+	/// <remarks>
+	/// The decoder resamples every track at every frame, so a two-second clip of an 80-bone rig
+	/// holds 60 keys per bone whether the bone moves or not: 28 bytes a key, a few hundred KB a
+	/// clip, and up to <see cref="SharedClipCap"/> clips shared, all in gen2. Most bones keep
+	/// their bind translation and many (fingers, face, held props) keep their rotation for the
+	/// whole clip. A one-key track samples as that key; the full track interpolated between equal
+	/// keys gave the same translation exactly and the same rotation to the last bit of a slerp.
+	/// The clip's static flag still comes from the decoded key counts (<see cref="Keys.Animated"/>).
+	/// </remarks>
+	private static readonly bool CollapseConstantTracks = ReadCollapseConstantTracks();
+
+	private static bool ReadCollapseConstantTracks()
+	{
+		try
+		{
+			return Refii.Core.Engine_RefiiConfig.Bool(
+				Refii.Core.Engine_RefiiConfig.Read(out _), "anim_collapse_constant_tracks", false);
+		}
+		catch (System.Exception)
+		{
+			return false;
+		}
+	}
+
+	private static bool Constant(Quaternion[] keys)
+	{
+		for (int k = 1; k < keys.Length; k++)
+		{
+			if (keys[k] != keys[0])
+			{
+				return false;
+			}
+		}
+
+		return keys.Length > 1;
+	}
+
+	private static bool Constant(Vector3[] keys)
+	{
+		for (int k = 1; k < keys.Length; k++)
+		{
+			if (keys[k] != keys[0])
+			{
+				return false;
+			}
+		}
+
+		return keys.Length > 1;
 	}
 
 	private static readonly HashSet<SharedKey> SharedPending = new();
@@ -2496,6 +2606,8 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 		int tracks = decoded.Times.Length;
 		bool isStatic = true;
+		bool collapse = CollapseConstantTracks;
+		float[]? firstTime = null;
 		var shared = new SharedClip
 		{
 			Length = decoded.Length,
@@ -2505,13 +2617,38 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		};
 		for (int i = 0; i < tracks; ++i)
 		{
-			if (decoded.Times[i].Length > 1)
+			float[] times = decoded.Times[i];
+			bool animated = times.Length > 1;
+			if (animated)
 			{
 				isStatic = false;
 			}
 
-			shared.Rotations[i] = new Keys { Times = decoded.Times[i], Rotations = decoded.Rotations[i] };
-			shared.Positions[i] = new Keys { Times = decoded.Times[i], Positions = decoded.Positions[i] };
+			Quaternion[] rotations = decoded.Rotations[i];
+			Vector3[] positions = decoded.Positions[i];
+			if (collapse && animated && Constant(rotations))
+			{
+				shared.Rotations[i] = new Keys
+				{
+					Times = firstTime ??= new[] { times[0] }, Rotations = new[] { rotations[0] }, Animated = true,
+				};
+			}
+			else
+			{
+				shared.Rotations[i] = new Keys { Times = times, Rotations = rotations, Animated = animated };
+			}
+
+			if (collapse && animated && Constant(positions))
+			{
+				shared.Positions[i] = new Keys
+				{
+					Times = firstTime ??= new[] { times[0] }, Positions = new[] { positions[0] }, Animated = true,
+				};
+			}
+			else
+			{
+				shared.Positions[i] = new Keys { Times = times, Positions = positions, Animated = animated };
+			}
 		}
 
 		shared.IsStatic = isStatic;
@@ -2551,6 +2688,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			{
 				SharedPending.Add(id);
 				pending = true;
+				Refii.Core.Engine_SpikeNotes.Note(Refii.Core.Engine_SpikeNotes.Kind.ClipDecodeQueued);
 				_ = System.Threading.Tasks.Task.Run(() =>
 				{
 					SharedClip? asyncShared = DecodeToSharedClip(clip, id.Decoder);
@@ -2573,6 +2711,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		SharedClip? builtShared = DecodeToSharedClip(clip, id.Decoder);
 		long elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - t0;
 
+		Refii.Core.Engine_SpikeNotes.Note(Refii.Core.Engine_SpikeNotes.Kind.ClipDecode, elapsed);
 		lock (SharedClips)
 		{
 			_decodeBudgetTicks += elapsed;

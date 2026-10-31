@@ -550,9 +550,30 @@ public sealed class Engine_StaticTwins
                 long[] records = batched.HasMeta(Refii.Level.Engine_PropStreamer.RecordsMeta)
                     ? batched.GetMeta(Refii.Level.Engine_PropStreamer.RecordsMeta).AsInt64Array()
                     : System.Array.Empty<long>();
-                for (int i = 0; i < mesh.InstanceCount; i++)
+
+                // FROM THE BUILD'S RECORD, not the server. `GetInstanceTransform` is a value-
+                // returning server call: with the separate render thread each one waits for that
+                // thread, and this loop runs once per batched instance at the mount (the market's
+                // foliage alone is ten thousand). The record holds exactly the floats the build
+                // wrote, and every later write goes through Engine_PropShadow.SetInstanceTransform,
+                // which keeps it in step; a batch built elsewhere still asks the server.
+                int count = mesh.InstanceCount;
+                Transform3D[]? stated = Refii.Level.Engine_PropShadow.StatedTransforms(mesh);
+                for (int i = 0; i < count; i++)
                 {
-                    var twin = new Twin(batched, i, mesh.GetInstanceTransform(i));
+                    Transform3D placed;
+                    if (stated is not null)
+                    {
+                        placed = stated[i];
+                    }
+                    else
+                    {
+                        long from = Refii.Core.Engine_ServerSyncs.Begin();
+                        placed = mesh.GetInstanceTransform(i);
+                        Refii.Core.Engine_ServerSyncs.End(Refii.Core.Engine_ServerSyncs.Site.MultimeshTransform, from);
+                    }
+
+                    var twin = new Twin(batched, i, placed);
                     AddByModel(batched, twin);
                     if (i < records.Length && records[i] != 0L)
                     {

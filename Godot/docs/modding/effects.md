@@ -208,6 +208,8 @@ entity or at a world point:
 | Lua | `Refii.light(target, color, energy, range [, o])` · `Refii.light_remove(id)` |
 | Godot | `light(target, color, energy, range, options)` · `light_remove(id)` · `lights()` |
 
+From GDScript, `options` may be left off: `light(target, color, energy, range)`.
+
 ```lua
 local torch = Refii.light(e.victim, {1, 0.6, 0.25}, 1.5, 6, { at = "Weapon.Weapon.Top", flicker = 0.3 })
 Refii.light({x, y, z}, {0.4, 0.6, 1}, 2, 8)

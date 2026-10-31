@@ -28,6 +28,19 @@ public static class Engine_EntityAppearance
 
     private static readonly StringName TintParameter = "entity_tint";
 
+    /// <summary>
+    /// The tints <see cref="Apply"/> last wrote on each node, modern then classic (null where it
+    /// wrote none), for <see cref="MirrorToCloth"/>.
+    /// </summary>
+    /// <remarks>
+    /// Held here rather than read back: `GetInstanceShaderParameter` is a value-returning server
+    /// call, and with Godot's separate render thread it waits until that thread has finished the
+    /// frame it is drawing. A clothed body mirrors its look on every change — each frame of a
+    /// fade — so the read cost a whole render frame of overlap per fading entity.
+    /// </remarks>
+    private static readonly Dictionary<GeometryInstance3D, (Vector4 Modern, Vector4? Classic)> Tints =
+        new(ReferenceEqualityComparer.Instance);
+
     /// <summary>The 7e3 scene ceiling over the exposure at rest: 31.875 / 4.</summary>
     private const float SceneCeilingTint = 31.875f / 4f;
 
@@ -84,11 +97,47 @@ public static class Engine_EntityAppearance
             return;
         }
         cloth.Transparency = node.Transparency;
-        cloth.SetInstanceShaderParameter(TintParameter, node.GetInstanceShaderParameter(TintParameter));
+        // A node never tinted holds no value, and Nil puts the cloth's back to the default too.
+        bool tinted = Tints.TryGetValue(node, out (Vector4 Modern, Vector4? Classic) tint);
+        ClothTint written = ClothTints.GetOrCreateValue(cloth);
+        written.Modern = MirrorTint(cloth, TintParameter, tinted ? tint.Modern : null, written.Modern);
         if (Refii.Models.Engine_ClassicMaterial.Active)
         {
-            cloth.SetInstanceShaderParameter(ClassicTintParameter, node.GetInstanceShaderParameter(ClassicTintParameter));
+            written.Classic = MirrorTint(cloth, ClassicTintParameter, tinted ? tint.Classic : null, written.Classic);
         }
+    }
+
+    /// <summary>Which tints this class has written on each cloth, so an untinted cloth is not reset.</summary>
+    private sealed class ClothTint
+    {
+        public bool Modern;
+        public bool Classic;
+    }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<GeometryInstance3D, ClothTint> ClothTints = new();
+
+    /// <summary>
+    /// One tint onto a cloth; returns whether the cloth now holds one of ours.
+    /// </summary>
+    /// <remarks>
+    /// NIL ONLY TO TAKE OURS BACK. Writing nil is `set_instance_shader_parameter`'s default path,
+    /// which asks the server for the default first (a render-thread sync, Engine_InstanceParams)
+    /// and leaves the cloth exactly where a cloth never written stands. Only this method writes a
+    /// cloth's tint, so one it never tinted is already there and is left alone.
+    /// </remarks>
+    private static bool MirrorTint(GeometryInstance3D cloth, StringName parameter, Vector4? tint, bool held)
+    {
+        if (tint is { } value)
+        {
+            cloth.SetInstanceShaderParameter(parameter, value);
+            return true;
+        }
+
+        if (held)
+        {
+            Refii.Core.Engine_InstanceParams.Set(cloth, parameter, default(Variant));
+        }
+        return false;
     }
 
     public static void Apply(MeshInstance3D node, in HostBridge.EntityAppearance look, bool principal)
@@ -121,6 +170,7 @@ public static class Engine_EntityAppearance
         if (!GodotObject.IsInstanceValid(node))
         {
             Applied.Remove(node);
+            Tints.Remove(node);
             return;
         }
 
@@ -141,18 +191,25 @@ public static class Engine_EntityAppearance
             // ghost became a blinding glow. Capping the lane at 31.875 / 4 keeps every tint the
             // title can actually show and touches only the over-range ones (qo240, qo900 ghosts,
             // qo860/qo170/qo890 at 9..12). Classic clamps the export itself instead.
-            node.SetInstanceShaderParameter(TintParameter,
-                new Vector4(
-                    Mathf.Min(look.TintLanes.X, SceneCeilingTint),
-                    Mathf.Min(look.TintLanes.Y, SceneCeilingTint),
-                    Mathf.Min(look.TintLanes.Z, SceneCeilingTint), 1f));
+            var modern = new Vector4(
+                Mathf.Min(look.TintLanes.X, SceneCeilingTint),
+                Mathf.Min(look.TintLanes.Y, SceneCeilingTint),
+                Mathf.Min(look.TintLanes.Z, SceneCeilingTint), 1f);
+            Refii.Core.Engine_InstanceParams.Set(node, TintParameter, modern);
             // The classic shaders read the same tint as the title's PS c49 (the instance's
             // +240, which this appearance setter fills).
+            Vector4? classic = null;
             if (Refii.Models.Engine_ClassicMaterial.Active)
             {
-                node.SetInstanceShaderParameter(ClassicTintParameter,
-                    new Vector4(look.TintLanes.X, look.TintLanes.Y, look.TintLanes.Z, 1f));
+                classic = new Vector4(look.TintLanes.X, look.TintLanes.Y, look.TintLanes.Z, 1f);
+                node.SetInstanceShaderParameter(ClassicTintParameter, classic.Value);
             }
+            else if (Tints.TryGetValue(node, out (Vector4 Modern, Vector4? Classic) held))
+            {
+                // Not written this time, so the node still holds the earlier one.
+                classic = held.Classic;
+            }
+            Tints[node] = (modern, classic);
         }
 
         MirrorToCloth(node);
@@ -246,6 +303,7 @@ public static class Engine_EntityAppearance
     public static void Forget(MeshInstance3D node)
     {
         Applied.Remove(node);
+        Tints.Remove(node);
         Overlays.Remove(node);
         if (Masked.Remove(node))
         {
@@ -257,6 +315,7 @@ public static class Engine_EntityAppearance
     public static void ForgetAll()
     {
         Applied.Clear();
+        Tints.Clear();
         Masked.Clear();
         Overlays.Clear();
         MaskedCount = 0;

@@ -333,14 +333,8 @@ public partial class GameSession : Node
 
 	private void session_processBody(double delta)
 	{
-		// The mods' settings.json values reach the game once per guest.
-		Refii.Mods.ModSettings.Pump(Refii.Host.HostBridge.IsGuestUp);
-		// The mods' declared abilities reach the engine's purchase once per guest (and after a remount).
-		Refii.Ui.Engine_UiModAbilities.Pump(Refii.Host.HostBridge.IsGuestUp);
-		Refii.Mods.ModErrors.Pump();
-
-		// The mods' godot/*.gd scripts run under this node while the guest is up and driven.
-		Refii.Mods.ModGodot.Pump(this, _driving && Refii.Host.HostBridge.IsGuestUp);
+		// The mods' settings, abilities and errors, and their godot/*.gd scripts under this node.
+		Refii.Mods.ModFrame.Pump(this, Refii.Host.HostBridge.IsGuestUp, _driving);
 
 		// The views drawn this frame (split screen's two cameras), for the feeds that follow a camera.
 		Refii.Models.Engine_ClassicViews.Begin(GetViewport()?.GetCamera3D());
@@ -799,7 +793,7 @@ public partial class GameSession : Node
 		Refii.Models.Engine_MdlMaterial.ReportIfChanged();
 
 		// The mod scripts and their singleton go before the guest does.
-		Refii.Mods.ModGodot.Stop();
+		Refii.Mods.ModFrame.Stop();
 
 		// Guest threads left live at process exit abort the process. Raw version, not
 		// `TryGetAbiVersion`: that one reports the refusal latch, set exactly when the guest

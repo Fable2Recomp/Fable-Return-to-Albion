@@ -19,6 +19,7 @@ public sealed class FxPlacement
     public float MaxVisibilityDistance;
 }
 
+/// <summary>Simulates bank particles and submits their unchanged visual batches to Godot.</summary>
 public sealed class Engine_FxSystem
 {
     public const int TrailHistory = 48;
@@ -71,7 +72,9 @@ public sealed class Engine_FxSystem
         public float[]? Base;
         public float[] AxisBody = new float[3];
         public float Rot0;
-        public float[][] Hist = new float[TrailHistory][];
+
+        /// <summary>The trail's past positions, newest first; made the first time a trail emitter spawns this particle.</summary>
+        public float[][]? Hist;
         public int HistCount;
     }
 
@@ -237,6 +240,25 @@ public sealed class Engine_FxSystem
         public float BeamJerkTimer;
 
         public List<ParticleState> Particles { get; } = new();
+
+        /// <summary>
+        /// The highest alpha any of <see cref="Visuals"/> can draw a particle at before its fade
+        /// (<see cref="Engine_FxFastPaths.AlphaCeiling"/>); NaN until the fast emit first asks.
+        /// </summary>
+        public float AlphaCeiling = float.NaN;
+
+        /// <summary>
+        /// The particles as the last step left them, for the fast emit's whole-emitter test
+        /// (<see cref="DrawsNothing"/>): their box in Godot's axes, whether every coordinate is
+        /// finite and every intensity zero. Written by a step taken with the fast paths on, for
+        /// <see cref="SummaryCount"/> particles; any other step and a rebase drop it.
+        /// </summary>
+        public bool SummaryValid;
+        public int SummaryCount;
+        public bool SummaryFinite;
+        public bool SummaryDark;
+        public Vector3 SummaryLo;
+        public Vector3 SummaryHi;
     }
 
     private sealed class InstanceState
@@ -657,6 +679,12 @@ public sealed class Engine_FxSystem
     public static long SkipZeroAlpha;
 
     public static long EmittedBillboards;
+
+    /// <summary>Of <see cref="SkipZeroAlpha"/>, those the fast emit rejected on fade × intensity alone.</summary>
+    public static long SkipEarly;
+
+    /// <summary>Emitters the fast emit passed over whole: every particle dark or past the fade.</summary>
+    public static long SkipEmitters;
 
     /// <summary>Emitters added to the transform chain (fewer than two children).</summary>
     public static long ChainedNoVisuals;
@@ -1235,6 +1263,7 @@ public sealed class Engine_FxSystem
         pt.HistCount = 0;
         if (rt.Trail)
         {
+            pt.Hist ??= new float[TrailHistory][];
             float[] head = pt.Hist[0] ??= new float[3];
             head[0] = pt.Pos[0]; head[1] = pt.Pos[1]; head[2] = pt.Pos[2];
             pt.HistCount = 1;
@@ -1247,7 +1276,17 @@ public sealed class Engine_FxSystem
     // Pooled particles. A particle lives for seconds, so a fresh one (object, four vectors, a
     // history array per trail step) would be promoted out of gen0. Dead particles return here
     // and are rented back with their arrays; only the scalar state is reset.
-    private readonly Stack<ParticleState> _particlePool = new();
+    //
+    // One pool per thread, shared by every system on it, rather than one per system: effects
+    // come and go as the camera moves (a new system per guest effect), and a system's own pool
+    // began empty and died with it, so every particle of every new effect was a new object
+    // that lived long enough to be promoted and then had to be collected from an older
+    // generation. Systems step on the main thread; the pool is per thread so a tool stepping
+    // one elsewhere cannot share it.
+    [ThreadStatic]
+    private static Stack<ParticleState>? s_particlePool;
+
+    private static Stack<ParticleState> _particlePool => s_particlePool ??= new Stack<ParticleState>();
     private readonly float[] _spawnOff = new float[3];
     private readonly float[] _spawnDir = new float[3];
     private readonly float[] _spawnO = new float[3];
@@ -1431,6 +1470,7 @@ public sealed class Engine_FxSystem
                 }
 
                 held.Particles.Clear();
+                held.SummaryValid = false;
             }
         }
         else
@@ -1492,10 +1532,12 @@ public sealed class Engine_FxSystem
 
         float[] v0l = _tickV0L;
         float[] v0w = _tickV0W;
+        bool summarize = Engine_FxFastPaths.Enabled;
         foreach (EmitterRuntime rt in inst.Emitters)
         {
             FxEmitter d = rt.Def!;
             int fOld = (int)rt.Age;
+            rt.SummaryValid = false;
 
             Array.Copy(rt.PosW, rt.PrevPos, 3);
             UpdateChain(rt.Chain, inst, rt.PlacePos, rt.PlaceRot, rt.Scale, rt.PosW, rt.RotW);
@@ -1590,6 +1632,9 @@ public sealed class Engine_FxSystem
             bool hasP14 = !d.Generic[14].IsEmpty;
             bool hasVec0 = !d.Vec0.IsEmpty;
             VisualRuntime? v0 = nvis > 0 ? rt.Visuals[0] : null;
+            float lx = float.PositiveInfinity, ly = float.PositiveInfinity, lz = float.PositiveInfinity;
+            float ux = float.NegativeInfinity, uy = float.NegativeInfinity, uz = float.NegativeInfinity;
+            bool finite = true, dark = true;
             foreach (ParticleState pt in rt.Particles)
             {
                 if (rt.LoopCount != 0 && rt.LoopEnd <= pt.Age)
@@ -1645,11 +1690,12 @@ public sealed class Engine_FxSystem
                 if (rt.Trail)
                 {
                     int hn = Math.Min(pt.HistCount + 1, TrailHistory);
-                    float[]? spare = pt.Hist[hn - 1];
-                    for (int k = hn - 1; k > 0; k--) pt.Hist[k] = pt.Hist[k - 1];
+                    float[][] hist = pt.Hist ??= new float[TrailHistory][];
+                    float[]? spare = hist[hn - 1];
+                    for (int k = hn - 1; k > 0; k--) hist[k] = hist[k - 1];
                     float[] head = spare ?? new float[3];
                     head[0] = pt.Pos[0]; head[1] = pt.Pos[1]; head[2] = pt.Pos[2];
-                    pt.Hist[0] = head;
+                    hist[0] = head;
                     pt.HistCount = hn;
                 }
 
@@ -1666,6 +1712,26 @@ public sealed class Engine_FxSystem
                         if (clk % rsFrames == 0) RollSize(v0, pt);
                     }
                 }
+
+                if (summarize)
+                {
+                    // Where the step left it, in Godot's axes as the emit reads it.
+                    float x = pt.Pos[0], y = pt.Pos[2], z = pt.Pos[1];
+                    finite &= float.IsFinite(x) && float.IsFinite(y) && float.IsFinite(z);
+                    lx = MathF.Min(lx, x); ly = MathF.Min(ly, y); lz = MathF.Min(lz, z);
+                    ux = MathF.Max(ux, x); uy = MathF.Max(uy, y); uz = MathF.Max(uz, z);
+                    dark &= pt.Intensity == 0f;
+                }
+            }
+
+            if (summarize)
+            {
+                rt.SummaryLo = new Vector3(lx, ly, lz);
+                rt.SummaryHi = new Vector3(ux, uy, uz);
+                rt.SummaryFinite = finite;
+                rt.SummaryDark = dark;
+                rt.SummaryCount = rt.Particles.Count;
+                rt.SummaryValid = true;
             }
         }
 
@@ -1774,6 +1840,7 @@ public sealed class Engine_FxSystem
             foreach (EmitterRuntime rt in inst.Emitters)
             {
                 if (rt.Def is null || rt.Def.AttachToRoot) continue;
+                rt.SummaryValid = false;
                 foreach (ParticleState pt in rt.Particles)
                 {
                     Vector3 pos = delta * new Vector3(pt.Pos[0], pt.Pos[2], pt.Pos[1]);
@@ -1784,7 +1851,7 @@ public sealed class Engine_FxSystem
                     pt.Vel[0] = vel.X; pt.Vel[1] = vel.Z; pt.Vel[2] = vel.Y;
                     for (int k = 0; k < pt.HistCount; k++)
                     {
-                        float[]? h = pt.Hist[k];
+                        float[]? h = pt.Hist![k];
                         if (h is null) continue;
                         Vector3 hp = delta * new Vector3(h[0], h[2], h[1]);
                         h[0] = hp.X; h[1] = hp.Z; h[2] = hp.Y;
@@ -2023,6 +2090,27 @@ public sealed class Engine_FxSystem
     /// </summary>
     public static bool FadeOut = true;
 
+    /// <summary>
+    /// Whether no particle of the emitter can be drawn from <paramref name="cam"/>, from the
+    /// summary its last step wrote: each one's fade × intensity term is then exactly zero, which
+    /// with a finite <paramref name="ceiling"/> rejects it (and zeroes a ribbon's every point).
+    /// Dark: every intensity zero against a finite fade. Past the fade-out: the box's nearest point
+    /// beyond the far fade with rounding to spare.
+    /// </summary>
+    private bool DrawsNothing(EmitterRuntime rt, Vector3 cam, float ceiling)
+    {
+        if (!rt.SummaryValid || rt.SummaryCount != rt.Particles.Count || rt.SummaryCount == 0 ||
+            !rt.SummaryFinite || !float.IsFinite(ceiling) || !cam.IsFinite())
+            return false;
+
+        bool fades = _distanceFade && rt.Def is not null;
+        float[] fade = rt.Fade;
+        if (fades && !(float.IsFinite(fade[0]) && float.IsFinite(fade[1]) && float.IsFinite(fade[2]) && float.IsFinite(fade[3])))
+            return false;
+        if (rt.SummaryDark) return true;
+        return fades && FadeOut && Engine_FxFastPaths.BeyondFadeOut(rt.SummaryLo, rt.SummaryHi, cam, fade[3]);
+    }
+
     private float DistanceFadeFactor(EmitterRuntime rt, Vector3 p, Vector3 cam)
     {
         if (!_distanceFade || rt.Def is null) return 1f;
@@ -2034,6 +2122,21 @@ public sealed class Engine_FxSystem
         return fi * fo;
     }
 
+    /// <summary>
+    /// Test seam: each non-empty batch of the last <see cref="Assemble"/> (or emit, after its
+    /// sort), keyed "texture|mode|sat|soft|z", with its blend mode.
+    /// </summary>
+    internal IEnumerable<(string Key, string Mode, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> Vertices)> AssembledBatches()
+    {
+        foreach (KeyValuePair<DrawKey, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)>> batch in _batches)
+        {
+            if (batch.Value.Count == 0) continue;
+            DrawKey k = batch.Key;
+            yield return ($"{k.Texture}|{k.Mode}|{k.Sat}|{k.Soft.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}|{k.ZOrder}", k.Mode, batch.Value);
+        }
+    }
+
+    /// <summary>Assembles and submits effect geometry; narrow timings accumulate across the driver frame.</summary>
     public void EmitGeometry(
         ArrayMesh mesh,
         Func<string, VisualBatchMaterial?> materialLookup,
@@ -2045,132 +2148,17 @@ public sealed class Engine_FxSystem
         ArrayMesh? addMesh = null,
         bool sceneQuads = true)
     {
+        long workAt = System.Diagnostics.Stopwatch.GetTimestamp();
+        // One reading for the whole emit: the debug channel can flip it between frames.
+        bool fast = Engine_FxFastPaths.Enabled;
+        _emitFast = fast;
         BeginSurfaces(mesh);
         if (dispMesh is not null) BeginSurfaces(dispMesh);
         if (addMesh is not null) BeginSurfaces(addMesh);
-        foreach (MeshInstanceData data in meshOut.Values) data.Instances.Clear();
-
-        // Pooled: the batch lists, the trail scratch and the key order live with the system.
+        Assemble(cameraPosition, cameraRight, cameraUp, meshOut, sceneQuads, fast);
         Dictionary<DrawKey, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)>> batches = _batches;
-        foreach (List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> pooled in batches.Values) pooled.Clear();
-        // The delegate is cached: converting a method to a Func allocates, and this is used once
-        // per ribbon inside the particle loop.
-        System.Func<VisualRuntime, int, List<(Vector3, Vector2, Color, Vector2, Vector4)>> Sink =
-            _sink ??= SinkFor;
 
-        List<Vector3> pts = _pts;
-        List<float> ages = _ages;
-        List<Vector4> motions = _motions;
-        foreach (InstanceState inst in _instances)
-        {
-            foreach (EmitterRuntime rt in inst.Emitters)
-            {
-                int nvis = rt.Visuals.Count;
-                if (rt.Trail && rt.TrailVisuals.Count != 0)
-                {
-                    foreach (ParticleState pt in rt.Particles)
-                    {
-                        pts.Clear(); ages.Clear(); motions.Clear();
-                        float rateClass = inst.Step > 1 ? 1f : 0f;
-                        for (int k = 0; k < pt.HistCount; k++)
-                        {
-                            float hage = k * inst.Step;
-                            if (rt.TrailLife > 0f && hage >= rt.TrailLife) break;
-                            float[]? h = pt.Hist[k];
-                            if (h is null) break;
-                            pts.Add(ToGodot(h)); ages.Add(hage);
-
-                            // The history shifts one slot a step, so between steps every point
-                            // flows from the slot behind it to its own: the trail slides.
-                            float[]? behind = k + 1 < pt.HistCount ? pt.Hist[k + 1] : null;
-                            Vector3 flow = behind is null ? Vector3.Zero : ToGodot(h) - ToGodot(behind);
-                            motions.Add(new Vector4(flow.X, flow.Y, flow.Z, rateClass));
-                        }
-
-                        EmitRibbon(Sink, rt, rt.TrailVisuals, pts, ages, motions, cameraPosition, false, inst.Lit, pt.Intensity);
-                    }
-                }
-
-                if (rt.Ribbon)
-                {
-                    pts.Clear(); ages.Clear(); motions.Clear();
-                    float ribbonIntensity = 1f;
-                    float chainClass = inst.Step > 1 ? 1f : 0f;
-                    foreach (ParticleState pt in rt.Particles)
-                    {
-                        pts.Add(ToGodot(pt.Pos)); ages.Add(pt.KeyAge); ribbonIntensity = pt.Intensity;
-                        Vector3 moved = pt.HasPrev ? ToGodot(pt.Pos) - ToGodot(pt.PrevPos) : Vector3.Zero;
-                        motions.Add(new Vector4(moved.X, moved.Y, moved.Z, chainClass));
-                    }
-
-                    EmitRibbon(Sink, rt, rt.Visuals, pts, ages, motions, cameraPosition, true, inst.Lit, ribbonIntensity);
-                    continue;
-                }
-
-                foreach (ParticleState pt in rt.Particles)
-                {
-                    if (nvis == 0) continue;
-                    Vector3 ppos = ToGodot(pt.Pos);
-                    float tLife = pt.Life > 0f ? Math.Clamp(pt.KeyAge / pt.Life, 0f, 1f) : 0f;
-                    int segB = nvis <= 1 ? 0 : Math.Clamp(pt.Seg, 1, nvis - 1);
-                    int segA = Math.Max(segB - 1, 0);
-                    VisualRuntime va = rt.Visuals[segA];
-                    VisualRuntime? vb = nvis > 1 && segB > segA ? rt.Visuals[segB] : null;
-                    float w = 0f;
-                    if (vb is not null) w = Math.Clamp((pt.KeyAge - va.DelayFrames) * vb.InvSpan, 0f, 1f);
-                    float Lerp(float x, float y) => x + ((y - x) * w);
-
-                    float hx = (vb is not null ? Lerp(va.HalfX, vb.HalfX) : va.HalfX) * pt.FlickX * (vb is not null ? Lerp(va.GlobalScaleX, vb.GlobalScaleX) : va.GlobalScaleX) * _sizeScale;
-                    float hy = (vb is not null ? Lerp(va.HalfY, vb.HalfY) : va.HalfY) * pt.FlickY * (vb is not null ? Lerp(va.GlobalScaleY, vb.GlobalScaleY) : va.GlobalScaleY) * _sizeScale;
-                    if (hx <= 0f || hy <= 0f) { ++SkipZeroSize; continue; }
-                    float si = va.BlendMode == "disp" ? 1f : (vb is not null ? Lerp(va.SelfIllum, vb.SelfIllum) : va.SelfIllum);
-                    // One scratch, not one per particle: both emitters copy it into a Color
-                    // before returning, so reuse is safe.
-                    float[] col = _emitCol;
-                    col[0] = inst.Lit[0] + (((vb is not null ? Lerp(va.Colour[0], vb.Colour[0]) : va.Colour[0]) - inst.Lit[0]) * si);
-                    col[1] = inst.Lit[1] + (((vb is not null ? Lerp(va.Colour[1], vb.Colour[1]) : va.Colour[1]) - inst.Lit[1]) * si);
-                    col[2] = inst.Lit[2] + (((vb is not null ? Lerp(va.Colour[2], vb.Colour[2]) : va.Colour[2]) - inst.Lit[2]) * si);
-                    col[0] *= _tint[0] * inst.Tint[0];
-                    col[1] *= _tint[1] * inst.Tint[1];
-                    col[2] *= _tint[2] * inst.Tint[2];
-                    float a = vb is not null ? Lerp(va.Alpha, vb.Alpha) : va.Alpha;
-                    // The instance intensity is an alpha term: 0038 `r5.w = fade × FadeOut.z`
-                    // (binding 321.z = the batch's intensity), `oColor0.w = r5.w × keyframe.a`;
-                    // the pixel shader then multiplies rgb by that alpha as well.
-                    a *= DistanceFadeFactor(rt, ppos, cameraPosition) * pt.Intensity;
-                    if (a <= 0.003f) { ++SkipZeroAlpha; continue; }
-
-                    // The last step's displacement, and whether this emitter steps at half rate:
-                    // a particle is drawn at `centre - motion x (1 - alpha)` between steps.
-                    Vector4 motion = pt.HasPrev
-                        ? new Vector4(pt.Pos[0] - pt.PrevPos[0], pt.Pos[2] - pt.PrevPos[2], pt.Pos[1] - pt.PrevPos[1],
-                            inst.Step > 1 ? 1f : 0f)
-                        : new Vector4(0f, 0f, 0f, inst.Step > 1 ? 1f : 0f);
-
-                    if (va.IsMesh)
-                    {
-                        EmitMeshParticle(va, vb, w, pt, a, col, meshOut, motion);
-                        continue;
-                    }
-                    if (!sceneQuads && va.BlendMode != "disp")
-                    {
-                        continue;
-                    }
-
-                    if (vb is not null && vb.Texture != va.Texture)
-                    {
-                        EmitBillboard(Sink(va, rt.ZOrder), va, ppos, pt, hx, hy, col, a * (1f - w), tLife, cameraRight, cameraUp, motion);
-                        EmitBillboard(Sink(vb, rt.ZOrder), vb, ppos, pt, hx, hy, col, a * w, tLife, cameraRight, cameraUp, motion);
-                    }
-                    else
-                    {
-                        ++EmittedBillboards;
-                        EmitBillboard(Sink(va, rt.ZOrder), va, ppos, pt, hx, hy, col, a, tLife, cameraRight, cameraUp, motion);
-                    }
-                }
-            }
-        }
-
+        FableFx.FrameWork.Lap(6, ref workAt);
         List<DrawKey> keys = _keys;
         keys.Clear();
         foreach (DrawKey k in batches.Keys) keys.Add(k);
@@ -2179,7 +2167,19 @@ public sealed class Engine_FxSystem
         {
             List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> list = batches[key];
             if (list.Count == 0) continue;
-            SortQuadsBackToFront(list, cameraPosition);
+            long sortAt = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (!fast)
+            {
+                SortQuadsBackToFront(list, cameraPosition);
+            }
+            else if ((sceneQuads || key.Mode == "disp") && !Engine_FxFastPaths.OrderIndependent(key.Mode))
+            {
+                // FAST: only a batch that is drawn and whose blend depends on order is sorted, and
+                // into the scratch list rather than back into the batch.
+                list = Engine_FxFastPaths.SortQuadsBackToFront(list, cameraPosition, _fastSorted, _order, ref _sortKeys);
+            }
+
+            FableFx.FrameWork.Lap(10, ref sortAt);
             if (DebugEmit && list.Count > 0) GD.Print($"[fx-emit] {key.Texture} mode={key.Mode} sat={key.Sat} soft={key.Soft} z={key.ZOrder} verts={list.Count} v0={list[0].Pos} uv0={list[0].Uv} c0={list[0].Col} v1={list[1].Pos} v2={list[2].Pos}");
             if (key.Mode == "disp")
             {
@@ -2218,6 +2218,207 @@ public sealed class Engine_FxSystem
         EndSurfaces(mesh);
         if (dispMesh is not null) EndSurfaces(dispMesh);
         if (addMesh is not null) EndSurfaces(addMesh);
+        FableFx.FrameWork.Lap(7, ref workAt);
+    }
+
+    /// <summary>
+    /// Every particle of every instance into the pooled batches and the mesh-instance lists,
+    /// against the camera's position and axes. Pure arithmetic, no Godot object: what
+    /// <see cref="EmitGeometry"/> flushes, and what the tests compare with the fast paths on and off.
+    /// </summary>
+    /// <param name="fast">
+    /// <see cref="Engine_FxFastPaths.Enabled"/> for this emit: a particle's fade and alpha are
+    /// tested before its size and colour are computed, and most are rejected there. A particle
+    /// that is drawn computes every term as before.
+    /// </param>
+    internal void Assemble(
+        Vector3 cameraPosition,
+        Vector3 cameraRight,
+        Vector3 cameraUp,
+        Dictionary<string, MeshInstanceData> meshOut,
+        bool sceneQuads,
+        bool fast)
+    {
+        foreach (MeshInstanceData data in meshOut.Values) data.Instances.Clear();
+
+        // Pooled: the batch lists, the trail scratch and the key order live with the system.
+        foreach (List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> pooled in _batches.Values) pooled.Clear();
+        // The delegate is cached: converting a method to a Func allocates, and this is used once
+        // per ribbon inside the particle loop.
+        System.Func<VisualRuntime, int, List<(Vector3, Vector2, Color, Vector2, Vector4)>> Sink =
+            _sink ??= SinkFor;
+
+        List<Vector3> pts = _pts;
+        List<float> ages = _ages;
+        List<Vector4> motions = _motions;
+        foreach (InstanceState inst in _instances)
+        {
+            foreach (EmitterRuntime rt in inst.Emitters)
+            {
+                int nvis = rt.Visuals.Count;
+                if (rt.Trail && rt.TrailVisuals.Count != 0)
+                {
+                    foreach (ParticleState pt in rt.Particles)
+                    {
+                        pts.Clear(); ages.Clear(); motions.Clear();
+                        float rateClass = inst.Step > 1 ? 1f : 0f;
+                        for (int k = 0; k < pt.HistCount; k++)
+                        {
+                            float hage = k * inst.Step;
+                            if (rt.TrailLife > 0f && hage >= rt.TrailLife) break;
+                            float[]? h = pt.Hist![k];
+                            if (h is null) break;
+                            pts.Add(ToGodot(h)); ages.Add(hage);
+
+                            // The history shifts one slot a step, so between steps every point
+                            // flows from the slot behind it to its own: the trail slides.
+                            float[]? behind = k + 1 < pt.HistCount ? pt.Hist![k + 1] : null;
+                            Vector3 flow = behind is null ? Vector3.Zero : ToGodot(h) - ToGodot(behind);
+                            motions.Add(new Vector4(flow.X, flow.Y, flow.Z, rateClass));
+                        }
+
+                        EmitRibbon(Sink, rt, rt.TrailVisuals, pts, ages, motions, cameraPosition, false, inst.Lit, pt.Intensity);
+                    }
+                }
+
+                // The fast emit's ceiling on this emitter's keyframe alpha, folded once per emitter.
+                float alphaCeiling = float.PositiveInfinity;
+                if (fast && nvis != 0)
+                {
+                    if (float.IsNaN(rt.AlphaCeiling))
+                    {
+                        float[] alphas = new float[nvis];
+                        for (int i = 0; i < nvis; i++) alphas[i] = rt.Visuals[i].Alpha;
+                        rt.AlphaCeiling = Engine_FxFastPaths.AlphaCeiling(alphas);
+                    }
+
+                    alphaCeiling = rt.AlphaCeiling;
+                }
+
+                // FAST, WHOLE EMITTER: every particle dark, or all of them past the fade-out, by the
+                // box the last step left them in. Each would be rejected below on its fade term
+                // (a ribbon's every point at alpha zero), so none of them is read.
+                if (fast && DrawsNothing(rt, cameraPosition, alphaCeiling))
+                {
+                    ++SkipEmitters;
+                    if (!rt.Ribbon)
+                    {
+                        SkipZeroAlpha += rt.Particles.Count;
+                        SkipEarly += rt.Particles.Count;
+                    }
+
+                    continue;
+                }
+
+                if (rt.Ribbon)
+                {
+                    pts.Clear(); ages.Clear(); motions.Clear();
+                    float ribbonIntensity = 1f;
+                    float chainClass = inst.Step > 1 ? 1f : 0f;
+                    foreach (ParticleState pt in rt.Particles)
+                    {
+                        pts.Add(ToGodot(pt.Pos)); ages.Add(pt.KeyAge); ribbonIntensity = pt.Intensity;
+                        Vector3 moved = pt.HasPrev ? ToGodot(pt.Pos) - ToGodot(pt.PrevPos) : Vector3.Zero;
+                        motions.Add(new Vector4(moved.X, moved.Y, moved.Z, chainClass));
+                    }
+
+                    EmitRibbon(Sink, rt, rt.Visuals, pts, ages, motions, cameraPosition, true, inst.Lit, ribbonIntensity);
+                    continue;
+                }
+
+                foreach (ParticleState pt in rt.Particles)
+                {
+                    if (nvis == 0) continue;
+                    Vector3 ppos = ToGodot(pt.Pos);
+
+                    // FAST: the fade × intensity term first. It is the same product the alpha
+                    // takes below, and against the emitter's highest keyframe alpha it alone
+                    // rejects most particles (an effect at zero intensity, one past its fade) before
+                    // a keyframe is even chosen.
+                    float fadeTerm = 0f;
+                    if (fast)
+                    {
+                        fadeTerm = DistanceFadeFactor(rt, ppos, cameraPosition) * pt.Intensity;
+                        if (Engine_FxFastPaths.RejectedByFade(alphaCeiling, fadeTerm))
+                        {
+                            ++SkipZeroAlpha;
+                            ++SkipEarly;
+                            continue;
+                        }
+                    }
+
+                    float tLife = pt.Life > 0f ? Math.Clamp(pt.KeyAge / pt.Life, 0f, 1f) : 0f;
+                    int segB = nvis <= 1 ? 0 : Math.Clamp(pt.Seg, 1, nvis - 1);
+                    int segA = Math.Max(segB - 1, 0);
+                    VisualRuntime va = rt.Visuals[segA];
+                    VisualRuntime? vb = nvis > 1 && segB > segA ? rt.Visuals[segB] : null;
+                    float w = 0f;
+                    if (vb is not null) w = Math.Clamp((pt.KeyAge - va.DelayFrames) * vb.InvSpan, 0f, 1f);
+                    float Lerp(float x, float y) => x + ((y - x) * w);
+
+                    // FAST: the whole alpha test before the size and colour; a particle that passes
+                    // has the same alpha bit for bit (`a × term` either way). One that fails here
+                    // counts as zero alpha even when its size is zero too.
+                    float a = 0f;
+                    if (fast)
+                    {
+                        a = (vb is not null ? Lerp(va.Alpha, vb.Alpha) : va.Alpha) * fadeTerm;
+                        if (a <= 0.003f) { ++SkipZeroAlpha; continue; }
+                    }
+
+                    float hx = (vb is not null ? Lerp(va.HalfX, vb.HalfX) : va.HalfX) * pt.FlickX * (vb is not null ? Lerp(va.GlobalScaleX, vb.GlobalScaleX) : va.GlobalScaleX) * _sizeScale;
+                    float hy = (vb is not null ? Lerp(va.HalfY, vb.HalfY) : va.HalfY) * pt.FlickY * (vb is not null ? Lerp(va.GlobalScaleY, vb.GlobalScaleY) : va.GlobalScaleY) * _sizeScale;
+                    if (hx <= 0f || hy <= 0f) { ++SkipZeroSize; continue; }
+                    float si = va.BlendMode == "disp" ? 1f : (vb is not null ? Lerp(va.SelfIllum, vb.SelfIllum) : va.SelfIllum);
+                    // One scratch, not one per particle: both emitters copy it into a Color
+                    // before returning, so reuse is safe.
+                    float[] col = _emitCol;
+                    col[0] = inst.Lit[0] + (((vb is not null ? Lerp(va.Colour[0], vb.Colour[0]) : va.Colour[0]) - inst.Lit[0]) * si);
+                    col[1] = inst.Lit[1] + (((vb is not null ? Lerp(va.Colour[1], vb.Colour[1]) : va.Colour[1]) - inst.Lit[1]) * si);
+                    col[2] = inst.Lit[2] + (((vb is not null ? Lerp(va.Colour[2], vb.Colour[2]) : va.Colour[2]) - inst.Lit[2]) * si);
+                    col[0] *= _tint[0] * inst.Tint[0];
+                    col[1] *= _tint[1] * inst.Tint[1];
+                    col[2] *= _tint[2] * inst.Tint[2];
+                    if (!fast)
+                    {
+                        a = vb is not null ? Lerp(va.Alpha, vb.Alpha) : va.Alpha;
+                        // The instance intensity is an alpha term: 0038 `r5.w = fade × FadeOut.z`
+                        // (binding 321.z = the batch's intensity), `oColor0.w = r5.w × keyframe.a`;
+                        // the pixel shader then multiplies rgb by that alpha as well.
+                        a *= DistanceFadeFactor(rt, ppos, cameraPosition) * pt.Intensity;
+                        if (a <= 0.003f) { ++SkipZeroAlpha; continue; }
+                    }
+
+                    // The last step's displacement, and whether this emitter steps at half rate:
+                    // a particle is drawn at `centre - motion x (1 - alpha)` between steps.
+                    Vector4 motion = pt.HasPrev
+                        ? new Vector4(pt.Pos[0] - pt.PrevPos[0], pt.Pos[2] - pt.PrevPos[2], pt.Pos[1] - pt.PrevPos[1],
+                            inst.Step > 1 ? 1f : 0f)
+                        : new Vector4(0f, 0f, 0f, inst.Step > 1 ? 1f : 0f);
+
+                    if (va.IsMesh)
+                    {
+                        EmitMeshParticle(va, vb, w, pt, a, col, meshOut, motion);
+                        continue;
+                    }
+                    if (!sceneQuads && va.BlendMode != "disp")
+                    {
+                        continue;
+                    }
+
+                    if (vb is not null && vb.Texture != va.Texture)
+                    {
+                        EmitBillboard(Sink(va, rt.ZOrder), va, ppos, pt, hx, hy, col, a * (1f - w), tLife, cameraRight, cameraUp, motion);
+                        EmitBillboard(Sink(vb, rt.ZOrder), vb, ppos, pt, hx, hy, col, a * w, tLife, cameraRight, cameraUp, motion);
+                    }
+                    else
+                    {
+                        ++EmittedBillboards;
+                        EmitBillboard(Sink(va, rt.ZOrder), va, ppos, pt, hx, hy, col, a, tLife, cameraRight, cameraUp, motion);
+                    }
+                }
+            }
+        }
     }
 
     private void EmitPass(ArrayMesh mesh, Func<string, VisualBatchMaterial?> materialLookup, DrawKey key, string pass, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> list)
@@ -2307,9 +2508,31 @@ public sealed class Engine_FxSystem
 
         /// <summary>The box last written to the mesh, so an unchanged one is not written again.</summary>
         public Aabb? StatedBox;
+
+        /// <summary>The fast emit's box, as its exact corners until the surfaces end (<see cref="Engine_FxFastPaths.Bounds"/>).</summary>
+        public Vector3 Lo;
+        public Vector3 Hi;
+
+        /// <summary>
+        /// Which step-alpha uniforms the surfaces' moving vertices read: bit 0 full rate, bit 1
+        /// half rate (<see cref="MotionClasses"/>). Both until a fast emit has looked.
+        /// </summary>
+        public int Motion = 3;
     }
 
+    /// <summary><see cref="Engine_FxFastPaths.Enabled"/> as the emit in progress read it.</summary>
+    private bool _emitFast;
+
     private readonly Dictionary<ArrayMesh, SurfaceSlots> _slots = new();
+
+    /// <summary>
+    /// Which of the step-alpha uniforms the last emit's surfaces on <paramref name="mesh"/> read:
+    /// bit 0 when a full-rate vertex moved on its last step, bit 1 a half-rate one. A vertex that
+    /// did not move is drawn where it is whatever the uniform says. Both (3) when the emit did not
+    /// look (fast paths off); 0 for a mesh never emitted into.
+    /// </summary>
+    internal int MotionClasses(ArrayMesh? mesh) =>
+        mesh is not null && _slots.TryGetValue(mesh, out SurfaceSlots? slots) ? slots.Motion : 0;
 
     private SurfaceSlots SlotsOf(ArrayMesh mesh)
     {
@@ -2329,6 +2552,7 @@ public sealed class Engine_FxSystem
         SurfaceSlots slots = SlotsOf(mesh);
         slots.HasBounds = false;
         slots.MaxOffset = 0f;
+        slots.Motion = _emitFast ? 0 : 3;
         if (!InPlaceLayout.Supported)
         {
             mesh.ClearSurfaces();
@@ -2357,6 +2581,11 @@ public sealed class Engine_FxSystem
         if (InPlaceLayout.Supported)
         {
             TrimSurfaces(mesh, slots, slots.Used);
+        }
+
+        if (_emitFast && slots.HasBounds)
+        {
+            slots.Bounds = new Aabb(slots.Lo, slots.Hi - slots.Lo);
         }
 
         // The whole quad, stated. Surfaces written in place keep the bounds they were built with,
@@ -2401,11 +2630,23 @@ public sealed class Engine_FxSystem
         }
     }
 
+    /// <summary>Accumulates unchanged bounds and submits each particle batch through a retained surface.</summary>
     private void Flush(ArrayMesh mesh, Material material, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> list)
     {
         int n = list.Count;
         SurfaceSlots slots = SlotsOf(mesh);
-        for (int i = 0; i < n; i++)
+        long boundsAt = System.Diagnostics.Stopwatch.GetTimestamp();
+        bool bounded = false;
+        if (_emitFast)
+        {
+            // FAST: plain minimum and maximum, one square root per batch.
+            Engine_FxFastPaths.Bounds(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(list),
+                ref slots.Lo, ref slots.Hi, ref slots.HasBounds, ref slots.MaxOffset, ref slots.Motion);
+            bounded = true;
+        }
+
+        bounded = bounded || Engine_FxGeometryWork.TryBounds(list, ref slots.Bounds, ref slots.HasBounds, ref slots.MaxOffset);
+        for (int i = 0; !bounded && i < n; i++)
         {
             (Vector3 p, _, _, Vector2 off, _) = list[i];
             if (!slots.HasBounds)
@@ -2427,6 +2668,8 @@ public sealed class Engine_FxSystem
                 slots.MaxOffset = reach;
             }
         }
+
+        FableFx.FrameWork.Lap(11, ref boundsAt);
 
         if (!InPlaceLayout.Supported)
         {
@@ -2508,8 +2751,10 @@ public sealed class Engine_FxSystem
     private byte[] _vertexBytes = System.Array.Empty<byte>();
     private byte[] _attributeBytes = System.Array.Empty<byte>();
 
+    /// <summary>Packs and uploads a reusable surface, timing CPU packing separately from engine submission.</summary>
     private void WriteInPlace(ArrayMesh mesh, int surface, int capacity, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> list)
     {
+        long workAt = System.Diagnostics.Stopwatch.GetTimestamp();
         int n = list.Count;
         int stride = InPlaceLayout.AttributeStride;
         int vertexBytes = capacity * 12;
@@ -2528,7 +2773,9 @@ public sealed class Engine_FxSystem
         // The tail repeats the last vertex with no colour: zero-area triangles.
         Vector3 lastPos = list[n - 1].Pos;
         Vector2 lastUv = list[n - 1].Uv;
-        for (int i = 0; i < capacity; i++)
+        bool packed = Engine_FxSurfacePacker.TryPack(vertices, attributes, list, capacity,
+            stride, colourAt, InPlaceLayout.ColourBytes, uvAt, uv2At, motionAt);
+        for (int i = 0; !packed && i < capacity; i++)
         {
             Vector3 pos;
             Vector2 uv;
@@ -2568,14 +2815,18 @@ public sealed class Engine_FxSystem
             System.Runtime.InteropServices.MemoryMarshal.Write(a.Slice(motionAt, 16), in motion);
         }
 
+        FableFx.FrameWork.Lap(8, ref workAt);
         Rid rid = mesh.GetRid();
         RenderingServer.MeshSurfaceUpdateVertexRegion(rid, surface, 0, (ReadOnlySpan<byte>)vertices);
         RenderingServer.MeshSurfaceUpdateAttributeRegion(rid, surface, 0, (ReadOnlySpan<byte>)attributes);
+        Refii.Core.Engine_SpikeNotes.Upload(vertices.Length + attributes.Length);
+        FableFx.FrameWork.Lap(9, ref workAt);
     }
 
     /// <summary>Builds one surface of <paramref name="padded"/> vertices from the batch.</summary>
     private void FlushBuild(ArrayMesh mesh, Material material, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> list, int padded)
     {
+        long builtFrom = System.Diagnostics.Stopwatch.GetTimestamp();
         int n = list.Count;
         if (!FlushPool.TryGetValue(padded, out FlushArrays? arraysFor))
         {
@@ -2630,7 +2881,7 @@ public sealed class Engine_FxSystem
         // DisposablesTracker; left to the finalizer, all four survive their first GC. Disposed
         // here they die in gen0; the Array holds its own reference to the packed data.
         Variant vPositions = positions, vUvs = uvs, vColours = colours, vOffsets = offsets, vMotion = motions;
-        Godot.Collections.Array arrays = _surfaceArrays;
+        Godot.Collections.Array arrays = _surfaceArrays ??= MakeSurfaceArrays();
         arrays[(int)Mesh.ArrayType.Vertex] = vPositions;
         arrays[(int)Mesh.ArrayType.TexUV] = vUvs;
         arrays[(int)Mesh.ArrayType.Color] = vColours;
@@ -2641,18 +2892,21 @@ public sealed class Engine_FxSystem
         vColours.Dispose();
         vOffsets.Dispose();
         vMotion.Dispose();
-        // The defaults for the last two build a fresh Array and Dictionary per call.
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, _noBlendShapes, _noLods, MotionFormat);
+        Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays, null, null, MotionFormat);
         mesh.SurfaceSetMaterial(mesh.GetSurfaceCount() - 1, material);
+        Refii.Core.Engine_SpikeNotes.Since(Refii.Core.Engine_SpikeNotes.Kind.FxSurfaceBuild, builtFrom);
     }
 
-    private static readonly Godot.Collections.Array _surfaceArrays = MakeSurfaceArrays();
+    /// <summary>
+    /// Made at the first flush rather than with the class: a static Godot object in an initializer
+    /// would reach the engine on the first touch of any static here, and the tests assemble
+    /// geometry with no engine running.
+    /// </summary>
+    private static Godot.Collections.Array? _surfaceArrays;
 
     /// <summary>CUSTOM0 as four floats: the motion the billboard shader draws between steps by.</summary>
     private static readonly Mesh.ArrayFormat MotionFormat =
         (Mesh.ArrayFormat)((long)Mesh.ArrayCustomFormat.RgbaFloat << (int)Mesh.ArrayFormat.FormatCustom0Shift);
-    private static readonly Godot.Collections.Array<Godot.Collections.Array> _noBlendShapes = new();
-    private static readonly Godot.Collections.Dictionary _noLods = new();
 
     /// <summary>Vertices per flush bucket: 16 quads.</summary>
     private const int FlushBucket = 96;
@@ -2678,6 +2932,11 @@ public sealed class Engine_FxSystem
     private static readonly List<(float D, int Q)> _order = new();
     private static readonly List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> _sorted = new();
 
+    /// <summary>The fast sort's output and packed keys (<see cref="Engine_FxFastPaths.SortQuadsBackToFront"/>), shared the same way.</summary>
+    private static readonly List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> _fastSorted = new();
+    private static ulong[] _sortKeys = System.Array.Empty<ulong>();
+
+    /// <summary>Retains the original particle distance ordering and per-vertex list copy.</summary>
     private static void SortQuadsBackToFront(List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> verts, Vector3 eye)
     {
         int quads = verts.Count / 6;

@@ -324,7 +324,7 @@ public partial class Engine_ClassicDisplacement : Node
             arrays[(int)Mesh.ArrayType.TexUV] = uvs;
             arrays[(int)Mesh.ArrayType.Index] = new[] { 1, 0, 2, 2, 0, 3 };
             var mesh = new ArrayMesh();
-            mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+            Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays);
             arrays.Dispose();
             MeshInstance3D node = _quadNodes[i] ??= NewQuad();
             node.Mesh = mesh;

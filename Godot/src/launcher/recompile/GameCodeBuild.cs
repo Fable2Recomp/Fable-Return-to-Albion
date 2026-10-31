@@ -685,7 +685,7 @@ public static class GameCodeBuild
 				Path.GetRelativePath(RecompileDirectory, a).Replace('\\', '/'),
 				Path.GetRelativePath(RecompileDirectory, b).Replace('\\', '/')));
 
-			using var sha = SHA256.Create();
+			using var sha = Refii.Core.Engine_Hash.CreateSha256();
 			var buffer = new byte[64 * 1024];
 
 			foreach (string file in files)
@@ -755,7 +755,7 @@ public static class GameCodeBuild
 			// The executable AND its title update: the generator recompiles the patched image
 			// when the patch is present, so adding or removing it changes the code produced
 			// without changing a byte of default.xex.
-			using var sha = SHA256.Create();
+			using var sha = Refii.Core.Engine_Hash.CreateSha256();
 			byte[] executable = File.ReadAllBytes(GameExecutablePath);
 			sha.TransformBlock(executable, 0, executable.Length, null, 0);
 			byte[] update = File.Exists(GameTitleUpdatePath)

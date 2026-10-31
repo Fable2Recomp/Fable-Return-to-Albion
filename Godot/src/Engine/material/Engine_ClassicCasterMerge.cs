@@ -327,7 +327,7 @@ public static class Engine_ClassicCasterMerge
                 one[(int)Mesh.ArrayType.Bones] = groups[cull].Bones.ToArray();
                 one[(int)Mesh.ArrayType.Weights] = groups[cull].Weights.ToArray();
             }
-            result.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, one, null,
+            Refii.Core.Engine_ArrayMeshes.AddSurface(result, Mesh.PrimitiveType.Triangles, one, null,
                 Refii.Entities.Engine_ShadowProxy.MergedLods(groups[cull].Levels), weightLayout);
             result.SurfaceSetMaterial(result.GetSurfaceCount() - 1, Depth[cull].Value);
         }

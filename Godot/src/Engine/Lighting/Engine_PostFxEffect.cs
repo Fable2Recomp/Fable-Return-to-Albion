@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using Godot;
 using Godot.Collections;
+using Refii.Core;
 
 namespace Refii.Lighting;
 
+/// <summary>Runs the compute post-effects chain only on compatible scene-color images.</summary>
 [Tool]
 public partial class Engine_PostFxEffect : CompositorEffect
 {
@@ -73,6 +75,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     /// <summary>The exposure global this chain's view reads.</summary>
     private string ExposureGlobal => View == 0 ? GlobalExposureName : GlobalExposureSecondName;
+    private readonly Engine_RenderBufferTelemetry _renderBuffers = new();
+
+    /// <summary>Player one's world renderer-reported extents; null until its compositor has rendered.</summary>
+    internal static Engine_RenderBufferTelemetry.Sample? RenderBuffers => _publishers[0]?._renderBuffers.Latest;
 
     private sealed class KeyedSet
     {
@@ -84,10 +90,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
         public bool Matches(RenderingDevice rd, Rid a, Rid b) =>
             Set.IsValid && a == _a && b == _b && rd.UniformSetIsValid(Set);
 
-        public void Replace(RenderingDevice rd, Rid a, Rid b, Rid shader, Array<RDUniform> uniforms)
+        public void Replace(RenderingDevice rd, Rid a, Rid b, Rid shader, RDUniform[] uniforms)
         {
             Release(rd);
-            Set = rd.UniformSetCreate(uniforms, shader, 0);
+            Set = rd.UniformSet(uniforms, shader, 0);
             _a = a;
             _b = b;
         }
@@ -268,14 +274,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
     private bool _measuredAny;
     private bool _materialDisabledWritten;
     private double _lastFrameSeconds;
-    private Rid _checkedColour;
-    private Engine_PostFxModel.ColourRoute _colourRoute;
+    private readonly ColourLayerContract _colourContract = new();
+    private Engine_PostFxModel.ColourRoute _colourRoute = Engine_PostFxModel.ColourRoute.Unusable;
 
-    /// <summary>
-    /// The chain's own full-size rgba16f colour for <see cref="Engine_PostFxModel.ColourRoute.Staged"/>:
-    /// storage-capable where the scene's MSAA resolve target is not. Allocated on first staged
-    /// frame, freed with the other size-bound targets.
-    /// </summary>
+    /// <summary>Owned full-size storage image for MSAA resolve and post-effects copy-back.</summary>
     private Rid _staging;
 
     public static void RegisterGlobals()
@@ -382,7 +384,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         // The sprite-array binding must always hold something valid; before the halo feed has
         // resolved any authored sprite it binds this single white texel (every published layer
         // is -1 then, so the shader never actually samples it).
-        _haloFallbackArray = _rd.TextureCreate(
+        _haloFallbackArray = _rd.Texture(
             new RDTextureFormat
             {
                 Width = 1,
@@ -394,9 +396,9 @@ public partial class Engine_PostFxEffect : CompositorEffect
                     RenderingDevice.TextureUsageBits.CanUpdateBit,
             },
             new RDTextureView(),
-            new Array<byte[]> { new byte[] { 255, 255, 255, 255 } });
+            new byte[] { 255, 255, 255, 255 });
 
-        _linearSampler = _rd.SamplerCreate(new RDSamplerState
+        _linearSampler = _rd.Sampler(new RDSamplerState
         {
             MinFilter = RenderingDevice.SamplerFilter.Linear,
             MagFilter = RenderingDevice.SamplerFilter.Linear,
@@ -404,7 +406,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             RepeatU = RenderingDevice.SamplerRepeatMode.ClampToEdge,
             RepeatV = RenderingDevice.SamplerRepeatMode.ClampToEdge,
         });
-        _nearestSampler = _rd.SamplerCreate(new RDSamplerState
+        _nearestSampler = _rd.Sampler(new RDSamplerState
         {
             MinFilter = RenderingDevice.SamplerFilter.Nearest,
             MagFilter = RenderingDevice.SamplerFilter.Nearest,
@@ -443,7 +445,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             return;
         }
 
-        _reduceSet = _rd.UniformSetCreate(new Array<RDUniform>
+        _reduceSet = _rd.UniformSet(new RDUniform[]
         {
             Buffer(_histogramBuffer, 0),
             Buffer(_stateBuffer, 1),
@@ -496,14 +498,14 @@ public partial class Engine_PostFxEffect : CompositorEffect
             return false;
         }
 
-        shader = _rd!.ShaderCreateFromSpirV(spirv);
+        shader = _rd!.Shader(spirv);
         if (!shader.IsValid)
         {
             GD.PrintErr($"[postfx] {path}: shader creation failed; chain disabled");
             return false;
         }
 
-        pipeline = _rd.ComputePipelineCreate(shader);
+        pipeline = _rd!.ComputePipeline(shader);
         if (!pipeline.IsValid)
         {
             GD.PrintErr($"[postfx] {path}: compute pipeline creation failed; chain disabled");
@@ -530,8 +532,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
                 (readable ? RenderingDevice.TextureUsageBits.CanCopyFromBit : 0),
         };
 
-        Array<byte[]>? data = initial is null ? null : new Array<byte[]> { initial };
-        return _rd!.TextureCreate(textureFormat, new RDTextureView(), data);
+        return _rd!.Texture(textureFormat, new RDTextureView(), initial);
     }
 
     private void EnsureTargets(Vector2I size)
@@ -576,12 +577,12 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Engine_PostFxModel.FixedGaussianWeights(
             _quarterSize.Y * SigmaPerQuarterHeight * DofSigmaScale, _dofWeightsV);
 
-        _histogramSet = _rd!.UniformSetCreate(new Array<RDUniform>
+        _histogramSet = _rd!.UniformSet(new RDUniform[]
         {
             Image(_quarter, 0),
             Buffer(_histogramBuffer, 1),
         }, _histogramShader, 0);
-        _brightcutSet = _rd.UniformSetCreate(new Array<RDUniform>
+        _brightcutSet = _rd!.UniformSet(new RDUniform[]
         {
             Image(_quarter, 0),
             Image(_rays[0], 1),
@@ -592,7 +593,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }, _brightcutShader, 0);
         for (int i = 0; i < 2; i++)
         {
-            _radialSets[i] = _rd.UniformSetCreate(new Array<RDUniform>
+            _radialSets[i] = _rd!.UniformSet(new RDUniform[]
             {
                 Sampler(_nearestSampler, _rays[i], 0),
                 Image(_rays[1 - i], 1),
@@ -606,7 +607,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         _gaussDofVSet = GaussSet(_dof[0], _dof[1]);
     }
 
-    private Rid GaussSet(Rid src, Rid dst) => _rd!.UniformSetCreate(new Array<RDUniform>
+    private Rid GaussSet(Rid src, Rid dst) => _rd!.UniformSet(new RDUniform[]
     {
         Image(src, 0),
         Image(dst, 1),
@@ -710,6 +711,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
         _disposed = true;
         _ready = false;
+        Engine_PostFxRoute.Withdraw(this);
 
         if (View is >= 0 and < 2 && ReferenceEquals(_publishers[View], this))
         {
@@ -806,6 +808,9 @@ public partial class Engine_PostFxEffect : CompositorEffect
         _rd = null;
     }
 
+    /// <summary>Captures actual buffer extents and runs compatible post effects on the render thread.</summary>
+    /// <param name="effectCallbackType">Godot's compositor stage.</param>
+    /// <param name="renderData">Ephemeral native data, never retained outside this callback.</param>
     public override void _RenderCallback(int effectCallbackType, RenderData renderData)
     {
         if (!_ready || _rd is null)
@@ -819,6 +824,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
 
         Vector2I size = buffers.GetInternalSize();
+        Vector2I target = buffers.GetTargetSize();
+        _renderBuffers.Publish(size.X, size.Y, target.X, target.Y, buffers.GetViewCount(), DateTime.UtcNow);
         if (size.X <= 0 || size.Y <= 0)
         {
             return;
@@ -1030,46 +1037,112 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
     }
 
-    /// <summary>
-    /// Decides, once per colour layer, how the chain reaches it (see
-    /// <see cref="Engine_PostFxModel.ChooseColourRoute"/>). Re-evaluated whenever the scene
-    /// buffers are rebuilt, which a resize or an MSAA change does.
-    /// </summary>
-    /// <param name="buffers">The scene buffers of the frame being rendered.</param>
-    /// <returns>Whether the chain can run this frame.</returns>
+    /// <summary>The route and bounded diagnostic for a newly inspected scene-color image.</summary>
+    /// <param name="Route">Direct storage, MSAA staging, or neutral-exposure fallback.</param>
+    /// <param name="ReportRefusal">This effect has not yet reported an incompatible image.</param>
+    internal readonly record struct ColourLayerDecision(Engine_PostFxModel.ColourRoute Route, bool ReportRefusal)
+    {
+        /// <summary>Whether either direct dispatch or the MSAA staging path is permitted.</summary>
+        internal bool Usable => Route != Engine_PostFxModel.ColourRoute.Unusable;
+    }
+
+    /// <summary>Caches actual image routes and bounds fallback logging across buffer replacements.</summary>
+    /// <remarks>Both scene and MSAA RID identities participate in the cache. Mobile attachments
+    /// without storage or a valid resolve/copy-back path keep neutral exposure. Missing images
+    /// must never trigger native format queries or reuse a previously permitted route.</remarks>
+    internal sealed class ColourLayerContract
+    {
+        private ulong _colourId;
+        private ulong _msaaId;
+        private bool _haveColour;
+        private Engine_PostFxModel.ColourRoute _route = Engine_PostFxModel.ColourRoute.Unusable;
+        private bool _reportedRefusal;
+
+        /// <summary>Returns dispatch permission for a cached non-MSAA image.</summary>
+        /// <param name="colourId">Renderer RID identity, or zero for no image.</param>
+        /// <param name="usable">Whether the cached route allows dispatch.</param>
+        /// <returns>True when inspection is unnecessary.</returns>
+        internal bool TryGet(ulong colourId, out bool usable)
+        {
+            bool cached = TryGetRoute(colourId, 0, out var route);
+            usable = route != Engine_PostFxModel.ColourRoute.Unusable;
+            return cached;
+        }
+
+        /// <summary>Returns a cached route for both renderer images, explicitly refusing an absent scene image.</summary>
+        /// <param name="colourId">Scene image identity, or zero when absent.</param>
+        /// <param name="msaaId">Multisampled image identity, or zero when absent/disabled.</param>
+        /// <param name="route">The cached route, or Unusable when absent or not cached.</param>
+        /// <returns>True when no native inspection is needed.</returns>
+        internal bool TryGetRoute(ulong colourId, ulong msaaId, out Engine_PostFxModel.ColourRoute route)
+        {
+            route = Engine_PostFxModel.ColourRoute.Unusable;
+            if (colourId == 0) return true;
+            if (!_haveColour || _colourId != colourId || _msaaId != msaaId) return false;
+            route = _route;
+            return true;
+        }
+
+        /// <summary>Records actual format/usage flags and requests at most one refusal diagnostic per lifetime.</summary>
+        /// <param name="colourId">Scene image identity.</param>
+        /// <param name="format">Actual scene image format.</param>
+        /// <param name="usage">Actual scene image creation usage.</param>
+        /// <param name="msaaUsage">Actual MSAA usage, or null without a valid source.</param>
+        /// <param name="msaaId">MSAA source identity, or zero without a valid source.</param>
+        /// <returns>The route and bounded diagnostic request.</returns>
+        internal ColourLayerDecision Inspect(ulong colourId, RenderingDevice.DataFormat format,
+            RenderingDevice.TextureUsageBits usage, RenderingDevice.TextureUsageBits? msaaUsage = null,
+            ulong msaaId = 0)
+        {
+            if (colourId == 0) return new(Engine_PostFxModel.ColourRoute.Unusable, false);
+            _colourId = colourId;
+            _msaaId = msaaId;
+            _haveColour = true;
+            _route = Engine_PostFxModel.ChooseColourRoute(format, usage, msaaId != 0 ? msaaUsage : null);
+            bool report = _route == Engine_PostFxModel.ColourRoute.Unusable && !_reportedRefusal;
+            _reportedRefusal |= report;
+            return new(_route, report);
+        }
+    }
+
+    /// <summary>Checks direct/staged scene-color eligibility before allocating compute targets.</summary>
+    /// <param name="buffers">Current scene and MSAA images.</param>
+    /// <returns>Whether dispatch is permitted; otherwise the callback writes neutral exposure.</returns>
     private bool ColourLayerUsable(RenderSceneBuffersRD buffers)
     {
         Rid colour = buffers.GetColorLayer(0);
-        if (colour == _checkedColour)
+        Rid msaa = colour.IsValid && buffers.GetMsaa3D() != RenderingServer.ViewportMsaa.Disabled
+            ? buffers.GetColorLayer(0, true) : default;
+        if (_colourContract.TryGetRoute(colour.Id, msaa.Id, out var cached))
         {
-            return _colourRoute != Engine_PostFxModel.ColourRoute.Unusable;
+            _colourRoute = cached;
+            PublishRoute();
+            return cached != Engine_PostFxModel.ColourRoute.Unusable;
         }
 
-        _checkedColour = colour;
-        RDTextureFormat colourFormat = _rd!.TextureGetFormat(colour);
-        RenderingDevice.TextureUsageBits? msaaUsage = null;
-        if (buffers.GetMsaa3D() != RenderingServer.ViewportMsaa.Disabled)
-        {
-            msaaUsage = _rd.TextureGetFormat(buffers.GetColorLayer(0, true)).UsageBits;
-        }
-
-        _colourRoute = Engine_PostFxModel.ChooseColourRoute(colourFormat.Format, colourFormat.UsageBits, msaaUsage);
-
-        // New scene buffers may be a new size; the staging copy is re-made on the next staged frame.
+        RDTextureFormat image = _rd!.TextureGetFormat(colour);
+        RenderingDevice.TextureUsageBits? msaaUsage = msaa.IsValid
+            ? _rd.TextureGetFormat(msaa).UsageBits : null;
+        ColourLayerDecision decision = _colourContract.Inspect(
+            colour.Id, image.Format, image.UsageBits, msaaUsage, msaa.Id);
+        _colourRoute = decision.Route;
+        PublishRoute();
+        // Buffer replacements can change dimensions; staging belongs only to those images.
         Free(ref _staging);
-        switch (_colourRoute)
-        {
-            case Engine_PostFxModel.ColourRoute.Staged:
-                GD.Print($"[postfx] colour layer is not a storage image (usage {colourFormat.UsageBits}); " +
-                    "running the chain on a staged copy resolved from MSAA");
-                break;
-            case Engine_PostFxModel.ColourRoute.Unusable:
-                GD.PrintErr($"[postfx] colour layer is {colourFormat.Format} (usage {colourFormat.UsageBits}, " +
-                    $"msaa usage {msaaUsage?.ToString() ?? "none"}); the chain cannot reach it and is disabled");
-                break;
-        }
+        if (decision.ReportRefusal)
+            GD.Print($"[postfx] colour layer is {image.Format}, usage {image.UsageBits}; " +
+                "no storage or MSAA resolve/copy-back route; using neutral exposure");
+        return decision.Usable;
+    }
 
-        return _colourRoute != Engine_PostFxModel.ColourRoute.Unusable;
+    /// <summary>View 0's route, for the layers only this chain brings to the screen
+    /// (<see cref="Engine_PostFxRoute"/>).</summary>
+    private void PublishRoute()
+    {
+        if (View == 0)
+        {
+            Engine_PostFxRoute.Publish(this, _colourRoute);
+        }
     }
 
     /// <summary>
@@ -1211,7 +1284,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         RenderingDevice rd = _rd!;
         if (!set.Matches(rd, colour, layer))
         {
-            set.Replace(rd, colour, layer, _addlayerShader, new Array<RDUniform>
+            set.Replace(rd, colour, layer, _addlayerShader, new RDUniform[]
             {
                 Image(colour, 0),
                 Sampler(_linearSampler, layer, 1),
@@ -1397,7 +1470,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         RenderingDevice rd = _rd!;
         if (!_highlightPrepSet.Matches(rd, layer, _glow[0]))
         {
-            _highlightPrepSet.Replace(rd, layer, _glow[0], _highlightPrepShader, new Array<RDUniform>
+            _highlightPrepSet.Replace(rd, layer, _glow[0], _highlightPrepShader, new RDUniform[]
             {
                 Sampler(_nearestSampler, layer, 0),
                 Image(_glow[0], 1),
@@ -1422,7 +1495,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         RenderingDevice rd = _rd!;
         if (!set.Matches(rd, src, dst))
         {
-            set.Replace(rd, src, dst, _highlightShader, new Array<RDUniform>
+            set.Replace(rd, src, dst, _highlightShader, new RDUniform[]
             {
                 Sampler(_nearestSampler, src, 0),
                 Image(dst, 1),
@@ -1451,7 +1524,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         RenderingDevice rd = _rd!;
         if (!_highlightCompositeSet.Matches(rd, colour, layer))
         {
-            _highlightCompositeSet.Replace(rd, colour, layer, _highlightCompositeShader, new Array<RDUniform>
+            _highlightCompositeSet.Replace(rd, colour, layer, _highlightCompositeShader, new RDUniform[]
             {
                 Image(colour, 0),
                 Sampler(_nearestSampler, depth, 1),
@@ -1484,7 +1557,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         RenderingDevice rd = _rd!;
         if (!_downscale4Set.Matches(rd, colour, default))
         {
-            _downscale4Set.Replace(rd, colour, default, _downscale4Shader, new Array<RDUniform>
+            _downscale4Set.Replace(rd, colour, default, _downscale4Shader, new RDUniform[]
             {
                 Image(colour, 0),
                 Image(_quarter, 1),
@@ -1512,7 +1585,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         RenderingDevice rd = _rd!;
         if (!_sunlayerSet.Matches(rd, depth, disc.Texture))
         {
-            _sunlayerSet.Replace(rd, depth, disc.Texture, _sunlayerShader, new Array<RDUniform>
+            _sunlayerSet.Replace(rd, depth, disc.Texture, _sunlayerShader, new RDUniform[]
             {
                 Sampler(_nearestSampler, depth, 0),
                 Sampler(_linearSampler, disc.Texture, 1),
@@ -1652,7 +1725,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
         if (!_halolayerSet.Matches(rd, depth, spriteArray))
         {
-            _halolayerSet.Replace(rd, depth, spriteArray, _halolayerShader, new Array<RDUniform>
+            _halolayerSet.Replace(rd, depth, spriteArray, _halolayerShader, new RDUniform[]
             {
                 Sampler(_nearestSampler, depth, 0),
                 Image(_occl, 1),
@@ -1716,7 +1789,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         RenderingDevice rd = _rd!;
         if (!_dofDownscaleSet.Matches(rd, colour, depth))
         {
-            _dofDownscaleSet.Replace(rd, colour, depth, _dofDownscaleShader, new Array<RDUniform>
+            _dofDownscaleSet.Replace(rd, colour, depth, _dofDownscaleShader, new RDUniform[]
             {
                 Image(colour, 0),
                 Image(_dof[1], 1),
@@ -1762,7 +1835,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         RenderingDevice rd = _rd!;
         if (!_compositeSet.Matches(rd, colour, depth))
         {
-            _compositeSet.Replace(rd, colour, depth, _compositeShader, new Array<RDUniform>
+            _compositeSet.Replace(rd, colour, depth, _compositeShader, new RDUniform[]
             {
                 Image(colour, 0),
                 Buffer(_stateBuffer, 1),
@@ -1837,7 +1910,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             for (int i = 0; i < TrapRingDepth; i++)
             {
                 FreeSet(ref _trapRingSets[i]);
-                _trapRingSets[i] = rd.UniformSetCreate(new Array<RDUniform>
+                _trapRingSets[i] = rd.UniformSet(new RDUniform[]
                 {
                     Image(colour, 0),
                     Image(_trapRing[i], 1),

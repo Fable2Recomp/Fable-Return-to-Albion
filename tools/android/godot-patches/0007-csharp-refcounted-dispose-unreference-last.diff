@@ -1,0 +1,55 @@
+diff --git a/modules/mono/glue/runtime_interop.cpp b/modules/mono/glue/runtime_interop.cpp
+--- a/modules/mono/glue/runtime_interop.cpp
++++ b/modules/mono/glue/runtime_interop.cpp
+@@ -209,28 +209,34 @@
+ 	// Unsafe refcount decrement. The managed instance also counts as a reference.
+ 	// See: CSharpLanguage::alloc_instance_binding_data(Object *p_object)
+ 	CSharpLanguage::get_singleton()->pre_unsafe_unreference(rc);
+-	if (rc->unreference()) {
+-		memdelete(rc);
+-	} else {
+-		void *data = CSharpLanguage::get_existing_instance_binding(rc);
+ 
+-		if (data) {
+-			// The binding is read under the lock its replacement takes (create_managed below), so
+-			// the "swapped handle" chosen here is not a wrapper another thread has just made.
+-			MutexLock lock(CSharpLanguage::get_singleton()->get_language_bind_mutex());
+-			CSharpScriptBinding &script_binding = ((RBMap<Object *, CSharpScriptBinding>::Element *)data)->get();
+-			if (script_binding.inited) {
+-				if (!script_binding.gchandle.is_released()) {
+-					if (rc->get_reference_count() == 1 && script_binding.gchandle.is_weak()) {
+-						// The GCHandle is just swapped, so get the swapped handle to release
+-						// See: CSharpLanguage::_instance_binding_reference_callback(void *p_token, void *p_binding, GDExtensionBool p_reference)
+-						p_gchandle_to_free = script_binding.gchandle.get_intptr();
+-					}
+-					CSharpLanguage::release_binding_gchandle_thread_safe(p_gchandle_to_free, script_binding);
++	// Everything that reads the object happens while this reference still keeps it alive, and
++	// the reference goes last. After it, another thread may hold the only one left (the
++	// rendering server's command queue keeps a Ref<Image> for a texture update until it runs)
++	// and delete the object at any moment: reading the binding then locked a destroyed mutex.
++	void *data = CSharpLanguage::get_existing_instance_binding(rc);
++
++	if (data) {
++		// The binding is read under the lock its replacement takes (create_managed below), so
++		// the "swapped handle" chosen here is not a wrapper another thread has just made.
++		MutexLock lock(CSharpLanguage::get_singleton()->get_language_bind_mutex());
++		CSharpScriptBinding &script_binding = ((RBMap<Object *, CSharpScriptBinding>::Element *)data)->get();
++		if (script_binding.inited) {
++			if (!script_binding.gchandle.is_released()) {
++				// Two references before this one goes: one left after it.
++				if (rc->get_reference_count() == 2 && script_binding.gchandle.is_weak()) {
++					// The GCHandle is just swapped, so get the swapped handle to release
++					// See: CSharpLanguage::_instance_binding_reference_callback(void *p_token, void *p_binding, GDExtensionBool p_reference)
++					p_gchandle_to_free = script_binding.gchandle.get_intptr();
+ 				}
++				CSharpLanguage::release_binding_gchandle_thread_safe(p_gchandle_to_free, script_binding);
+ 			}
+ 		}
+ 	}
++
++	if (rc->unreference()) {
++		memdelete(rc);
++	}
+ }
+ 
+ int32_t godotsharp_internal_signal_awaiter_connect(Object *p_source, StringName *p_signal, Object *p_target, GCHandleIntPtr p_awaiter_handle_ptr) {

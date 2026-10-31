@@ -43,6 +43,13 @@ public sealed class Engine_UiElementState
 	{
 		public List<Engine_UiModel.UiElement> Elements = new();
 
+		/// <summary>
+		/// The list the next walk fills, then swapped with <see cref="Elements"/>: a re-walk
+		/// allocates no list (a screen's is past the large-object threshold), and the list a
+		/// caller was handed stays as it was through the next walk, as a fresh one did.
+		/// </summary>
+		public List<Engine_UiModel.UiElement> Spare = new();
+
 		/// <summary>Element address to walk ordinal — the join the feed needs.</summary>
 		public readonly Dictionary<uint, int> Ordinal = new();
 
@@ -64,6 +71,17 @@ public sealed class Engine_UiElementState
 	}
 
 	private readonly Dictionary<uint, Screen> _screens = new();
+
+	/// <summary>The frame a drain is keyed on: Godot's own, or a test's clock.</summary>
+	private readonly System.Func<ulong> _frame;
+
+	public Engine_UiElementState()
+		: this(Engine.GetProcessFrames)
+	{
+	}
+
+	/// <summary>A cache on its own frame clock, so it is testable without the engine.</summary>
+	internal Engine_UiElementState(System.Func<ulong> frame) => _frame = frame;
 
 	private ulong _drainedOn = ulong.MaxValue;
 
@@ -161,7 +179,7 @@ public sealed class Engine_UiElementState
 	/// </summary>
 	public void Drain()
 	{
-		ulong frame = Engine.GetProcessFrames();
+		ulong frame = _frame();
 		if (_drainedOn == frame)
 		{
 			return;
@@ -322,22 +340,32 @@ public sealed class Engine_UiElementState
 
 		screen.ElementsStale = false;
 
-		List<Engine_UiModel.UiElement>? walked =
-			Engine_UiSource.Current.GetUiElements(presentation);
+		List<Engine_UiModel.UiElement> walked = screen.Spare;
+		bool read = Engine_UiSource.Current.FillUiElements(presentation, walked, screen.Elements);
 		++screen.Walks;
 		++_walked;
 
-		if (walked is null)
+		if (!read)
 		{
-			screen.Elements = new List<Engine_UiModel.UiElement>();
+			screen.Spare = screen.Elements;
+			screen.Elements = walked;
+			walked.Clear();
 			screen.Ordinal.Clear();
 			screen.Values.Clear();
 			screen.Present.Clear();
 			screen.Matrices.Clear();
+
+			// AN EMPTY WALK IS NOT A SEED. The guest rebuilds a tree in place — a box built at the
+			// address a screen just gave up — and a read in between finds nothing. Kept as the
+			// answer, it stood forever: the count probe skips an empty cache and no write can name
+			// an element it never saw, so the crime screen's Community Service notice was never
+			// drawn or answered and the game stayed paused.
+			screen.ElementsStale = true;
 			return screen;
 		}
 
 		bool resized = screen.Elements.Count != walked.Count;
+		screen.Spare = screen.Elements;
 		screen.Elements = walked;
 		screen.Ordinal.Clear();
 		for (int i = 0; i < screen.Elements.Count; ++i)

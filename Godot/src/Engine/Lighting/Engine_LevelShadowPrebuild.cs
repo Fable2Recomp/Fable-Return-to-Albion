@@ -260,7 +260,7 @@ public static class Engine_LevelShadowPrebuild
 			}
 
 			string json = File.ReadAllText(ManifestPath);
-			ShadowBakeManifest? manifest = JsonSerializer.Deserialize<ShadowBakeManifest>(json);
+			ShadowBakeManifest? manifest = JsonSerializer.Deserialize(json, Engine_JsonContext.Default.ShadowBakeManifest);
 			if (manifest is null)
 			{
 				return true;
@@ -285,7 +285,7 @@ public static class Engine_LevelShadowPrebuild
 			}
 
 			string json = File.ReadAllText(ManifestPath);
-			ShadowBakeManifest? manifest = JsonSerializer.Deserialize<ShadowBakeManifest>(json);
+			ShadowBakeManifest? manifest = JsonSerializer.Deserialize(json, Engine_JsonContext.Default.ShadowBakeManifest);
 			if (manifest is null)
 			{
 				return false;
@@ -321,7 +321,7 @@ public static class Engine_LevelShadowPrebuild
 				ShadowMapVersion = Engine_LevelShadowMaps.Version,
 			};
 
-			string json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true });
+			string json = JsonSerializer.Serialize(manifest, Engine_JsonContext.Indented.ShadowBakeManifest);
 			File.WriteAllText(ManifestPath, json);
 		}
 		catch (Exception ex)

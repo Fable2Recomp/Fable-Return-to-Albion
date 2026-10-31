@@ -438,6 +438,29 @@ public class ModUiDispatchTests
         AssertThat(Engine_UiModRows.Parse(RefiiHost.ParseFieldsPlain("op='open_screen',screen=0")).HasValue).IsFalse();
     }
 
+    // A stated label is "a Babel tag or literal": the list draws a sourced row's label as text, so
+    // the rows source resolves it, and a name alone stands in for an empty label before that.
+    [TestCase]
+    public void StatedRowLabelsResolveThroughTheBook()
+    {
+        var book = new Dictionary<string, string> { ["INV_ITEM_POTION_HEALTH_1_NAME"] = "Health Potion" };
+        var stated = new List<Engine_UiModRows.Stated>
+        {
+            new("p1", "INV_ITEM_POTION_HEALTH_1_NAME", "Mod:lua:hotbar.assign:1", false),
+            new("p2", "4   Inferno", null, false),
+            new("POTION", string.Empty, null, false),
+        };
+
+        List<Engine_UiMenuSources.Row> rows = Engine_UiModRows.ToRows(stated,
+            label => book.TryGetValue(label, out string? text) ? text : label);
+        AssertThat(rows.Select(r => r.Label).ToList()).ContainsExactly("Health Potion", "4   Inferno", "POTION");
+        AssertThat(rows[0].Command).IsEqual("Mod:lua:hotbar.assign:1");
+
+        // As stated with no resolver, and the book's resolver keeps a literal with no book loaded.
+        AssertThat(Engine_UiModRows.ToRows(stated)[0].Label).IsEqual("INV_ITEM_POTION_HEALTH_1_NAME");
+        AssertThat(Engine_UiGuiText.Resolve("4   Inferno", null)).IsEqual("4   Inferno");
+    }
+
     [TestCase]
     public void SetMenuRowsLuaCompiles()
     {

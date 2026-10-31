@@ -373,6 +373,32 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     /// <summary>The per-instance bake dial the region was last lit with; NaN until it has been.</summary>
     private float _instanceDial = float.NaN;
 
+    /// <summary>
+    /// THE PER-FRAME SKY IS WRITTEN INTO KEPT INSTANCES, three of each in turn, rather than made
+    /// anew every frame: the blended theme, the sky frame and the lighting frame
+    /// <see cref="TrackBodies"/> publishes. A reader holds what it read for the frame it read
+    /// it on, so the one published and the one before stay whole while the third is written.
+    /// The readers that keep one longer copy it (the queued re-light) or key on its revision
+    /// as well as the reference (the celestial element cache, the post-FX sun sources).
+    /// </summary>
+    private const int PublishedRing = 3;
+
+    private readonly SkyTheme[] _themeRing = { new(), new(), new() };
+    private readonly SkyFrame[] _frameRing = { new(), new(), new() };
+    private readonly LightingFrame[] _lightingRing = { new(), new(), new() };
+    private int _themeSlot;
+    private int _frameSlot;
+    private int _lightingSlot;
+
+    /// <summary>The step's lighting blend, read only within the frame it is made on.</summary>
+    private readonly LightingTheme _lightingBlend = new();
+
+    private static T NextSlot<T>(T[] ring, ref int slot)
+    {
+        slot = (slot + 1) % PublishedRing;
+        return ring[slot];
+    }
+
     private static float WrapForward(float from, float to)
     {
         float d = to - from;
@@ -410,17 +436,32 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         float w = StepWeight();
         if (_skyStepStart is { } skyStart && _skyStepEnd is { } skyEnd && w > 0f)
         {
-            Theme = Engine_ThemeTimeline.BlendSky(skyStart, skyEnd, w);
+            Theme = Engine_ThemeTimeline.BlendSkyInto(
+                skyStart, skyEnd, w, NextSlot(_themeRing, ref _themeSlot));
         }
 
-        SkyFrame frame = Engine_SkyFrame.Evaluate(Theme, _dayFraction);
+        SkyFrame frame = Engine_SkyFrame.EvaluateInto(
+            Theme, _dayFraction, NextSlot(_frameRing, ref _frameSlot));
         _frame = frame;
         TickAtmosphere(delta, w, frame);
 
+        // EVERY SKY-MATERIAL WRITE RE-RENDERS THE SKY'S RADIANCE MAP: Godot marks the material's
+        // uniform set updated on any set, the same value or not, and the sky reflection dirty with
+        // it (sky.cpp). So the sun is written only when it has moved; under sky_radiance_lean only
+        // the atmosphere tick above writes it (ApplyDomeUniforms), at 15 Hz.
         Vector3 dome = Engine_SkyFrame.ToDome(frame.SunDirection);
         if (Environment?.Sky?.SkyMaterial is ShaderMaterial material)
         {
-            material.SetShaderParameter(Param_sun_engine, dome);
+            if (Engine_SkyCosts.RadianceLean)
+            {
+                _sunEngineMaterial = null;
+            }
+            else if (!ReferenceEquals(material, _sunEngineMaterial) || dome != _sunEngine)
+            {
+                material.SetShaderParameter(Param_sun_engine, dome);
+                _sunEngineMaterial = material;
+                _sunEngine = dome;
+            }
         }
 
         RenderingServer.GlobalShaderParameterSet(Global_atmos_sun, dome);
@@ -429,7 +470,13 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             Environment?.Sky?.SkyMaterial is ShaderMaterial dynamicMaterial)
         {
             Vector3 moon = Engine_SkyFrame.ToGodot(frame.MoonDirection);
-            dynamicMaterial.SetShaderParameter(Param_moon_phase, MoonPhaseNow / 8f);
+            float moonPhase = MoonPhaseNow / 8f;
+            if (!ReferenceEquals(dynamicMaterial, _moonPhaseMaterial) || moonPhase != _moonPhase)
+            {
+                _moonPhaseMaterial = dynamicMaterial;
+                _moonPhase = moonPhase;
+                dynamicMaterial.SetShaderParameter(Param_moon_phase, moonPhase);
+            }
             if (moon != _lastMoon)
             {
                 _lastMoon = moon;
@@ -444,7 +491,8 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
         if (LightingNow(w) is { } lightingNow && ResolveSun() is { } sun)
         {
-            LightingFrame lighting = Engine_LightingFrame.Evaluate(Theme, lightingNow, frame);
+            LightingFrame lighting = Engine_LightingFrame.EvaluateInto(
+                Theme, lightingNow, frame, NextSlot(_lightingRing, ref _lightingSlot));
             Lighting = lighting;
             if (Current != this) Engine_LevelLighting.UpdateSun(sun, lighting);
             if (Environment is not null)
@@ -453,6 +501,12 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             }
 
             RelightIfDialMoved(lighting);
+        }
+
+        // After the lighting has said what the environment samples.
+        if (Environment is not null)
+        {
+            Engine_SkyCosts.ApplyRadiance(Environment);
         }
     }
 
@@ -468,7 +522,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         LightingTheme now = _lightingStepEnd is { } end && w > 0f
-            ? Engine_ThemeTimeline.BlendLighting(start, end, w)
+            ? Engine_ThemeTimeline.BlendLightingInto(start, end, w, _lightingBlend)
             : start;
 
         if (Painted is { Any: true } painted)
@@ -530,6 +584,9 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         {
             return;
         }
+
+        // The dome uniforms write the sun too: the per-frame write must not trust its record.
+        _sunEngineMaterial = null;
 
         (AtmosphereState domeState, ImageTexture domeLut) =
             Engine_SkyEnvironment.ComputeDome(frame, Theme, _domeLut);
@@ -823,6 +880,8 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         {
             Engine_DynamicSky.ApplyFrame(dynamicMaterial, frame, Theme);
             dynamicMaterial.SetShaderParameter(Param_moon_phase, MoonPhaseNow / 8f);
+            _sunEngineMaterial = null;
+            _moonPhaseMaterial = null;
             _dynamicSky ??= new Engine_DynamicSkyDriver();
             if (LightingGdbs.Count != 0 &&
                 Engine_EnvironmentTheme.TryExtractWeather(LightingGdbs, out WeatherTheme dynamicWeather))
@@ -966,6 +1025,15 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     private Engine_DynamicThunder? _dynamicThunder;
     private Engine_DynamicCloudShadows? _dynamicCloudShadowCaster;
     private Vector3 _lastMoon = new(float.NaN, 0, 0);
+
+    /// <summary>The sky material `sun_engine` was last written to per frame, and the value; null
+    /// to write on the next frame whatever it holds.</summary>
+    private ShaderMaterial? _sunEngineMaterial;
+    private Vector3 _sunEngine;
+
+    /// <summary>The same for the dynamic sky's `moon_phase`.</summary>
+    private ShaderMaterial? _moonPhaseMaterial;
+    private float _moonPhase = float.NaN;
 
     private bool SkyIsDynamic =>
         Environment?.Sky?.SkyMaterial is ShaderMaterial { Shader: { } shader } &&
@@ -1431,7 +1499,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         var texture = material.GetShaderParameter(Param_cloud_density).As<Texture2D>();
-        Image? image = texture?.GetImage();
+        Image? image = Refii.Core.Engine_ServerSyncs.Image(texture);
         if (image is null)
         {
             _cloudAlpha[index] = map;

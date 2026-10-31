@@ -42,6 +42,8 @@ if(REFII_HOOK_SOURCES)
     target_include_directories(refii_hooks
         PRIVATE
             ${REFII_HOOK_INCLUDE_DIRS}
+            # Hook sources include Tracy's disabled macros even when profiling is off.
+            ${REXSDK_DIR}/thirdparty/tracy/public
     )
     target_link_libraries(refii_hooks
         PRIVATE

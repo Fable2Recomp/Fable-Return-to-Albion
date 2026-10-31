@@ -203,7 +203,7 @@ public static class Engine_ClassicSkyElements
             arrays.Resize((int)Mesh.ArrayType.Max);
             arrays[(int)Mesh.ArrayType.Vertex] = new Vector3[StarCount];
             var mesh = new ArrayMesh();
-            mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Points, arrays);
+            Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Points, arrays);
             arrays.Dispose();
             node = new MeshInstance3D
             {

@@ -126,6 +126,11 @@ public static class Engine_SwfAssets
         public Texture2D? Placeholder;
 
         public Image? Enhanced;
+
+        /// <summary>The enhanced image as the texture upload takes it (an unsupported BC image
+        /// transcoded or expanded), made ahead on a worker by <see cref="PrepareBitmaps"/> and
+        /// handed to the first <see cref="TextureFor"/>, which owns it from then on.</summary>
+        public Image? Upload;
     }
 
     private sealed class MeshEntry
@@ -550,13 +555,174 @@ public static class Engine_SwfAssets
             library.Add((symbol.Id, symbol.Name));
         }
 
-        PackedScene? scene = Engine_SwfScene.Build(
-            document, game.Swf.FrameRate, stage, game.Folder, SceneKey(gameFolder), library,
-            partsFor: id => Parts(game, id),
-            fontFor: id => FontFor(game, id));
+        PrepareBitmaps(game);
+        PackedScene? scene;
+        try
+        {
+            scene = Engine_SwfScene.Build(
+                document, game.Swf.FrameRate, stage, game.Folder, SceneKey(gameFolder), library,
+                partsFor: id => Parts(game, id),
+                fontFor: id => FontFor(game, id));
+        }
+        finally
+        {
+            ReleaseUploads(game);
+        }
 
         SaveParts(game);
         return scene;
+    }
+
+    /// <summary>
+    /// Decodes the game's bitmaps on worker threads before the build asks for them one at a time
+    /// on the main thread: the DDS substitute or SWF JPEG/lossless decode and, on Android, the
+    /// BC to ASTC transcode (<see cref="Refii.Textures.Engine_AndroidTextureUpload.PrepareAhead"/>).
+    /// </summary>
+    /// <remarks>CPU work on private images only; every texture is still created on the calling
+    /// thread by <see cref="TextureFor"/>, from the same pixels it would have made itself. Bitmaps
+    /// whose texture is already loaded are skipped. With enhancement on, the enhanced image may
+    /// come from an upscaler, so only the decode runs ahead and the rest stays where it was.</remarks>
+    private static void PrepareBitmaps(Game game)
+    {
+        var pending = new List<string>(game.TexturePaths.Count);
+        lock (Gate)
+        {
+            foreach (string path in game.TexturePaths.Values)
+            {
+                if (Bitmaps.ContainsKey(path) && !ResourceLoader.HasCached(PathPrefix + path))
+                {
+                    pending.Add(path);
+                }
+            }
+        }
+
+        if (pending.Count == 0)
+        {
+            return;
+        }
+
+        bool enhance = Refii.Textures.Engine_TexEnhance.Enabled;
+        string uploads = ProjectSettings.GlobalizePath(CacheDirectory);
+        int cachedUploads = 0;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        System.Threading.Tasks.Parallel.ForEach(pending,
+            new System.Threading.Tasks.ParallelOptions
+            {
+                MaxDegreeOfParallelism = Math.Max(1, System.Environment.ProcessorCount - 1),
+            },
+            path =>
+            {
+                if (enhance)
+                {
+                    TryGetImage(path);
+                    return;
+                }
+
+                Image? image = TryGetEnhancedImage(path);
+                if (image is null)
+                {
+                    return;
+                }
+
+                Image upload = PrepareUpload(image, uploads, ref cachedUploads);
+                Bitmap bitmap;
+                lock (Gate)
+                {
+                    bitmap = Bitmaps[path];
+                }
+
+                lock (bitmap)
+                {
+                    if (bitmap.Upload is null && ReferenceEquals(bitmap.Enhanced, image))
+                    {
+                        bitmap.Upload = upload;
+                    }
+                    else if (!ReferenceEquals(upload, image))
+                    {
+                        upload.Dispose();
+                    }
+                }
+            });
+        GD.Print($"[swf] {game.Folder}: {pending.Count} bitmaps prepared ahead in {clock.Elapsed.TotalMilliseconds:0} ms" +
+                 $" ({cachedUploads} ASTC from the cache)");
+    }
+
+    /// <summary>
+    /// <see cref="Refii.Textures.Engine_AndroidTextureUpload.PrepareAhead"/>, with its BC to ASTC
+    /// transcode kept on disk across launches: <c>astc_&lt;hash&gt;_&lt;format&gt;_&lt;size&gt;_&lt;build&gt;.bin</c>
+    /// in <see cref="CacheDirectory"/>, keyed by the BC payload's own hash, its format, size and
+    /// mipmaps, and the build (which carries the transcoder).
+    /// </summary>
+    /// <remarks>Only an image the policy sends to ASTC is looked up; anything else, and any file
+    /// that is missing, short or describes another image, is prepared as before. Only an ASTC
+    /// result is written: the transcoder's RGBA8 fallback is not kept.</remarks>
+    private static Image PrepareUpload(Image image, string directory, ref int cached)
+    {
+        Image.Format source = image.GetFormat();
+        if (Refii.Textures.Engine_AndroidTextureUpload.Policy.Target(source) != Image.Format.Astc4X4)
+        {
+            return Refii.Textures.Engine_AndroidTextureUpload.PrepareAhead(image);
+        }
+
+        int width = image.GetWidth(), height = image.GetHeight();
+        bool mipmaps = image.HasMipmaps();
+        string path = Path.Combine(directory,
+            $"astc_{Digest(image.GetData())}_{source}_{width}x{height}{(mipmaps ? "m" : string.Empty)}_{BuildStamp}.bin");
+        byte[]? data = Refii.Textures.Engine_PreparedImageFile.TryRead(
+            path, width, height, (int)Image.Format.Astc4X4, mipmaps);
+        if (data is not null)
+        {
+            var read = new Image();
+            read.SetData(width, height, mipmaps, Image.Format.Astc4X4, data);
+            if (!read.IsEmpty())
+            {
+                System.Threading.Interlocked.Increment(ref cached);
+                return read;
+            }
+
+            read.Dispose();
+        }
+
+        Image upload = Refii.Textures.Engine_AndroidTextureUpload.PrepareAhead(image);
+        if (!ReferenceEquals(upload, image) && upload.GetFormat() == Image.Format.Astc4X4)
+        {
+            Refii.Textures.Engine_PreparedImageFile.TryWrite(
+                path, width, height, (int)Image.Format.Astc4X4, mipmaps, upload.GetData());
+        }
+
+        return upload;
+    }
+
+    /// <summary>Drops the prepared uploads the build never asked for.</summary>
+    private static void ReleaseUploads(Game game)
+    {
+        foreach (string path in game.TexturePaths.Values)
+        {
+            Bitmap? bitmap;
+            lock (Gate)
+            {
+                if (!Bitmaps.TryGetValue(path, out bitmap))
+                {
+                    continue;
+                }
+            }
+
+            Image? upload = TakeUpload(bitmap);
+            if (upload is not null && !ReferenceEquals(upload, bitmap.Enhanced))
+            {
+                upload.Dispose();
+            }
+        }
+    }
+
+    private static Image? TakeUpload(Bitmap bitmap)
+    {
+        lock (bitmap)
+        {
+            Image? upload = bitmap.Upload;
+            bitmap.Upload = null;
+            return upload;
+        }
     }
 
     public static void SaveCaches(string gameFolder)
@@ -1072,13 +1238,34 @@ public static class Engine_SwfAssets
             return ResourceLoader.Load<Texture2D>(full, "Texture2D");
         }
 
-        Image? image = TryGetEnhancedImage(path);
+        Bitmap? bitmap;
+        lock (Gate)
+        {
+            Bitmaps.TryGetValue(path, out bitmap);
+        }
+
+        // Made ahead by PrepareBitmaps: the same pixels CreateTexture would prepare, so it finds
+        // nothing left to do. Disposed here when it is a private copy, as CreateTexture would.
+        Image? upload = bitmap is null ? null : TakeUpload(bitmap);
+        Image? image = upload ?? TryGetEnhancedImage(path);
         if (image is null)
         {
             return null;
         }
 
-        ImageTexture texture = ImageTexture.CreateFromImage(image);
+        ImageTexture texture;
+        try
+        {
+            texture = Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(image);
+        }
+        finally
+        {
+            if (upload is not null && !ReferenceEquals(upload, bitmap!.Enhanced))
+            {
+                upload.Dispose();
+            }
+        }
+
         texture.TakeOverPath(full);
         return texture;
     }
@@ -1104,7 +1291,7 @@ public static class Engine_SwfAssets
             if (bitmap.Placeholder is null)
             {
                 Image? image = SwfBitmaps.Decode(bitmap.Tag, bitmap.Tables, out _, out _);
-                bitmap.Placeholder = image is null ? null : ImageTexture.CreateFromImage(image);
+                bitmap.Placeholder = image is null ? null : Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(image);
             }
 
             return bitmap.Placeholder;
@@ -1213,7 +1400,7 @@ public static class Engine_SwfAssets
 
     private static string Digest(byte[] bytes)
     {
-        byte[] hash = System.Security.Cryptography.SHA1.HashData(bytes);
+        byte[] hash = Refii.Core.Engine_Hash.Sha1(bytes);
         return Convert.ToHexString(hash, 0, 8).ToLowerInvariant();
     }
 

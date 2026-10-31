@@ -129,8 +129,22 @@ public partial class Engine_PostFxHalos : Node
 		}
 	}
 
+	/// <summary>
+	/// Ensures the tree's main-thread halo publisher exists once the owning context is attached.
+	/// </summary>
+	/// <param name="context">An effect or celestial owner; detached region-build nodes are valid.</param>
+	/// <remarks>
+	/// Region construction publishes sky glare from a worker before its nodes enter the tree.
+	/// GetTree on that detached owner emits a Godot error. Leave the pending registry intact:
+	/// the owner's next attached celestial update retries this method and samples those values.
+	/// </remarks>
 	public static void Ensure(Node context)
 	{
+		if (!context.IsInsideTree())
+		{
+			return;
+		}
+
 		if (RenderingServer.GetRenderingDevice() is null)
 		{
 			return;
@@ -334,7 +348,7 @@ public partial class Engine_PostFxHalos : Node
 		}
 
 		float layer = -1f;
-		Image? image = sprite.GetImage();
+		Image? image = Refii.Core.Engine_ServerSyncs.Image(sprite);
 		if (image is not null && !image.IsEmpty())
 		{
 			if (image.IsCompressed())
@@ -412,7 +426,7 @@ public partial class Engine_PostFxHalos : Node
 		}
 
 		var array = new Texture2DArray();
-		if (array.CreateFromImages(images) != Error.Ok)
+		if (Refii.Textures.Engine_AndroidTextureUpload.CreateLayered(array, images) != Error.Ok)
 		{
 			GD.PrintErr("[postfx] halo sprite array creation failed");
 			return;

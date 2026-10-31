@@ -426,7 +426,7 @@ public static class Engine_ClassicLitInstances
         }
         if (!entry.BoundsKnown || entry.Entity != 0u)
         {
-            entry.Bounds = entry.Node.GlobalTransform * entry.Node.GetAabb();
+            entry.Bounds = entry.Node.GlobalTransform * Refii.Core.Engine_ServerSyncs.LocalAabb(entry.Node);
             entry.BoundsKnown = true;
         }
     }
@@ -817,7 +817,7 @@ public static class Engine_ClassicLitInstances
                 {
                     continue;
                 }
-                Aabb bounds = entry.Node.GlobalTransform * entry.Node.GetAabb();
+                Aabb bounds = entry.Node.GlobalTransform * Refii.Core.Engine_ServerSyncs.LocalAabb(entry.Node);
                 int reached = 0;
                 foreach ((Vector3 centre, float reach) in fixtures)
                 {

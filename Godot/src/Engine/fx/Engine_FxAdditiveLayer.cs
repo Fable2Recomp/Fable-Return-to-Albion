@@ -24,7 +24,9 @@ namespace Refii.Fx;
 /// (<see cref="TrySnapshot"/>) and adds it into the colour buffer with
 /// <c>fable_postfx_addlayer.glsl</c>. Without the post chain the layer would never reach the
 /// screen, so <see cref="Present"/> is false then and FableFx draws ONE/ONE particles into
-/// the scene.
+/// the scene. That includes a chain that is attached and enabled but refuses the colour layer,
+/// as it always does on the Mobile renderer without MSAA (<see cref="Refii.Lighting.Engine_PostFxRoute"/>);
+/// the viewport then stays Disabled.
 ///
 /// ONE INSTANCE PER VIEW (<see cref="Refii.Core.Engine_Views"/>). View 0 mirrors the window's
 /// camera, or player one's view while the screen is split; view 1 exists only while split and
@@ -95,10 +97,12 @@ public partial class Engine_FxAdditiveLayer : Node
     /// </summary>
     public Image? Capture() => _viewport?.GetTexture()?.GetImage();
 
-    /// <summary>Whether ONE/ONE particles should be drawn on the layer this frame.</summary>
+    /// <summary>Whether ONE/ONE particles should be drawn on the layer this frame: the layer is up
+    /// and the post chain both runs and can reach the colour layer to add it in.</summary>
     public static bool Present =>
         _current is not null && GodotObject.IsInstanceValid(_current) && _current.IsInsideTree() &&
         _current._enabled && _current._usable && Refii.Lighting.Engine_PostFxParams.Enabled &&
+        Refii.Lighting.Engine_PostFxRoute.LayersReachScreen &&
         RenderingServer.GetRenderingDevice() is not null;
 
     /// <summary>Called by a system that put ONE/ONE geometry on the layer this frame.</summary>
@@ -328,7 +332,10 @@ public partial class Engine_FxAdditiveLayer : Node
 
         if ((main.CullMask & LayerMask) != 0) main.CullMask &= ~LayerMask;
 
-        bool active = _enabled && Engine.GetProcessFrames() - _activeFrame <= 1;
+        // Nothing routes here while the chain cannot composite the layer, but a particle notified
+        // on the frame the route closed must not keep it rendering.
+        bool active = _enabled && Refii.Lighting.Engine_PostFxRoute.LayersReachScreen &&
+            Engine.GetProcessFrames() - _activeFrame <= 1;
         _viewport.RenderTargetUpdateMode = active ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
 
         Rid rd = default;

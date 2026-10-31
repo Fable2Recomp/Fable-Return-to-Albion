@@ -483,6 +483,39 @@ Godot/src/Engine/level/environment/dynamic/Engine_DynamicCloudShadows.cs.uid
 Godot/src/Engine/level/environment/dynamic/dynamic_cloud_layers.gdshaderinc.uid
 Godot/src/Engine/level/environment/dynamic/dynamic_cloud_density.gdshaderinc.uid
 Godot/src/Engine/level/environment/dynamic/dynamic_cloud_shadow_density.gdshader.uid
+
+# Android source lives under Godot/src/android; Gradle templates and all private
+# inputs/results are generated into separate output roots, never publication.
+/Godot/android/build/
+/Godot/android/.build_version
+/Godot/android/plugins/
+/Godot/.gradle/
+/android-local/
+/android-output/
+/android-private/
+*.apk
+*.aab
+*.apks
+*.keystore
+*.jks
+local.properties
+android-runtime.json
+librefii_generated.so
+# Backstops for accidentally copied private Android import/codegen inputs.
+*.xex
+*.xexp
+*.bnk
+*.iso
+*.bik
+*.refii
+mainsave.bin
+herosave.bin
+refii_recomp.*.cpp
+refii_recomp.h
+native-manifest.json
+private-module-manifest.json
+PRIVATE-import-manifest.json
+
 **/test.local.runsettings
 **/gdunit4_testadapter_v5/
 /Godot/tests/Refii.Tests/build/

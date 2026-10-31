@@ -9,6 +9,7 @@ using Refii.Launcher.Updates;
 
 namespace Refii.Launcher;
 
+/// <summary>Shared desktop and Android launcher presentation with platform-specific install and Play backends.</summary>
 [Tool]
 public partial class LauncherApp : Control
 {
@@ -127,8 +128,10 @@ public partial class LauncherApp : Control
 		}
 	}
 
+	/// <summary>Initializes the shared launcher with the backend appropriate to the exported platform.</summary>
 	public override void _Ready()
 	{
+		if (!Engine.IsEditorHint() && OS.HasFeature("android")) { ReadyAndroid(); return; }
 		CrashReporting.Install();
 		LauncherPaths.OverrideLauncherDirectory = ResolveLauncherDirectory();
 		Platform.RuntimeDirectoryOverride = ResolveRuntimeDirectory();
@@ -664,6 +667,7 @@ public partial class LauncherApp : Control
 	/// Fluid type + spacing: re-applies every font size from LauncherScale so the
 	/// whole UI scales like a responsive site. Runs on every resize.
 	/// </summary>
+	/// <summary>Scales the shared panels without initializing desktop installation actions on Android.</summary>
 	private void ApplyScale()
 	{
 		int body = LauncherScale.Font(LauncherTokens.BodySize);
@@ -692,8 +696,9 @@ public partial class LauncherApp : Control
 		// Panel content (settings, modding, reinstall) is uniform body text:
 		// refresh the panels' stored size and re-apply to existing nodes.
 		_settingsPanel.Configure(null, body, _infoStyle);
+        if (_phone != null) StyleAndroidInstallation(_phone, body);
 		_moddingPanel.Configure(null, body, _infoStyle);
-		_reinstallPanel.Configure(null, body, _infoStyle);
+		if (_phone == null) _reinstallPanel.Configure(null, body, _infoStyle);
 		ScaleFonts(_settingsPanel, body);
 		ScaleFonts(_moddingPanel, body);
 		ScaleFonts(_reinstallPanel, body);
@@ -892,7 +897,7 @@ public partial class LauncherApp : Control
 		{
 			0 => _settingsPanel,
 			1 => _moddingPanel,
-			2 => _reinstallPanel,
+			2 => (Control?)_phone ?? _reinstallPanel,
 			_ => _settingsPanel,
 		};
 
@@ -1128,6 +1133,8 @@ public partial class LauncherApp : Control
 		_infoTab.Visible = false; // hidden while info drawer is open
 		_settingsTab.Visible = false; // hidden while debug drawer is open
 
+		if (_phone == null)
+		{
 		_reinstallPanel.ReinstallRequested += StartInstallFlow;
 		_reinstallPanel.BuildGameCodeRequested += StartGameCodeBuild;
 		_reinstallPanel.PauseBuildRequested += OnPauseBuildPressed;
@@ -1135,13 +1142,15 @@ public partial class LauncherApp : Control
 		_reinstallPanel.StopBuildRequested += OnStopBuildPressed;
 		_reinstallPanel.CompileShadersRequested += StartShaderBuild;
 		_reinstallPanel.BuildModernizedAssetsRequested += StartAssetPrebuild;
+		}
 
 		ApplyScale();
 	}
 
+	/// <summary>Connects shared menus to actions supported by the current platform.</summary>
 	private void WireMenus()
 	{
-		PopulateMenu(_fileMenu, FileMenuItems, OnFileMenu);
+		PopulateMenu(_fileMenu, _phone == null ? FileMenuItems : new[] { "Install from ISO and TU", "Cancel installation", "", "Export logs and saves", "Export saves", "Import save", "", "Show Announcements", "Show Debug Panel", "Close" }, OnFileMenu);
 		PopulateMenu(_aboutMenu, AboutMenuItems, OnAboutMenu);
 		StylePopup(_fileMenu.GetPopup());
 		StylePopup(_aboutMenu.GetPopup());
@@ -1204,6 +1213,7 @@ public partial class LauncherApp : Control
 		};
 	}
 
+	/// <summary>Uses the shared settings drawer with the current platform's installation controls.</summary>
 	private void WireTabs()
 	{
 		_infoTabs.ClearTabs();
@@ -1229,10 +1239,22 @@ public partial class LauncherApp : Control
 		};
 	}
 
+	/// <summary>Handles explicit launcher menu selections and Android worker cancellation.</summary>
+	/// <param name="item">Selected visible menu label.</param>
 	private void OnFileMenu(string item)
 	{
 		switch (item)
 		{
+			case "Install from ISO and TU":
+				_settingsTabs.CurrentTab = 2; RefreshDebugDrawer(); ShowSettingsDrawer(); break;
+			case "Cancel installation":
+				_phone?.CancelInstallation(); break;
+			case "Export saves":
+				_phone?.Export(Refii.AndroidRuntime.AndroidLogBundle.Contents.Saves); break;
+			case "Export logs and saves":
+				_phone?.Export(Refii.AndroidRuntime.AndroidLogBundle.Contents.LogsAndSaves); break;
+			case "Import save":
+				_phone?.ImportSave(); break;
 			case "Set Install Folder":
 				ShowInstallFolderDialog();
 				break;
@@ -1464,8 +1486,10 @@ public partial class LauncherApp : Control
 		}
 	}
 
+	/// <summary>Displays progress and the primary action using the active platform backend.</summary>
 	private void RefreshState()
 	{
+		if (_phone != null) { RefreshAndroidState(); return; }
 		bool assetsExist = Installer.AssetsExist();
 		bool installedBuildExists = Installer.InstalledBuildExists();
 		bool canDownloadBuild = ManagedDownloads.HasDownloadSource();
@@ -1646,8 +1670,16 @@ public partial class LauncherApp : Control
 		RefreshState();
 	}
 
+	/// <summary>Shows shared launch settings or platform installation controls.</summary>
 	private void RefreshDebugDrawer()
 	{
+		if (_phone != null)
+		{
+			_settingsPanel.Visible = _settingsTabs.CurrentTab == 0;
+			_moddingPanel.Visible = _settingsTabs.CurrentTab == 1;
+			_phone.Visible = _settingsTabs.CurrentTab == 2;
+			_reinstallPanel.Hide(); return;
+		}
 		if (_settingsTabs is null)
 		{
 			return;
@@ -1678,10 +1710,16 @@ public partial class LauncherApp : Control
 		}
 	}
 
+	/// <summary>Shows the selected announcements, credits or Android installation progress log.</summary>
 	private void RefreshInfoBody()
 	{
 		if (_infoTabs is null || _infoBody is null)
 		{
+			return;
+		}
+		if (_phone != null && _infoTabs.CurrentTab == 2)
+		{
+			_infoBody.Text = string.Join("\n", _consoleLines).Replace("[", "[lb]", StringComparison.Ordinal);
 			return;
 		}
 
@@ -1812,8 +1850,10 @@ public partial class LauncherApp : Control
 		CallDeferred(nameof(RefreshInfoBody));
 	}
 
+	/// <summary>Routes the user's primary action to the platform's installation or game launch path.</summary>
 	private void OnPrimaryPressed()
 	{
+		if (_phone != null) { PrimaryAndroid(); return; }
 		if (Engine.IsEditorHint())
 		{
 			return;
@@ -2165,8 +2205,11 @@ public partial class LauncherApp : Control
 		AnimateIn(dialog);
 	}
 
+	/// <summary>Updates shared presentation and observes platform progress without owning the background worker.</summary>
+	/// <param name="delta">Frame interval in seconds.</param>
 	public override void _Process(double delta)
 	{
+		if (_phone != null) { ProcessAndroid(delta); return; }
 		// NOTHING TO DRIVE IN THE CHILD. `_Ready` returns before the launcher is built there,
 		// so `_launch`, `_patches` and every panel are still null — this whole method would
 		// dereference them. The game's own nodes do the work in that process. The same holds

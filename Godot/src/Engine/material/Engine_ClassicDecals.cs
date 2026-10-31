@@ -259,7 +259,7 @@ public partial class Engine_ClassicDecals : Node
         arrays[(int)Mesh.ArrayType.Vertex] = new Vector3[Points];
         arrays[(int)Mesh.ArrayType.Index] = indices;
         _grid = new ArrayMesh();
-        _grid.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        Refii.Core.Engine_ArrayMeshes.AddSurface(_grid, Mesh.PrimitiveType.Triangles, arrays);
         arrays.Dispose();
         return true;
     }

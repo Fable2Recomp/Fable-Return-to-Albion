@@ -94,6 +94,9 @@ public sealed class GdbView
 
     public int RecordCount => _recordOffsets.Length;
 
+    /// <summary>The blob and the offset table this view holds, in bytes, for the heap census.</summary>
+    internal long HeldBytes => _bytes.LongLength + _recordOffsets.LongLength * 4;
+
     public int SchemaBase { get; }
 
     public int HashBase { get; }

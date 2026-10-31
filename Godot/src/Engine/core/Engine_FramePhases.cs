@@ -274,7 +274,22 @@ public static class Engine_FramePhases
 	private static bool _haveCounters;
 
 	/// <summary>A frame over this is logged with its counters, not only kept in the list.</summary>
-	public static double HitchLogThresholdMs = 200.0;
+	/// <remarks>`hitch_log_ms` in refii.toml (default 200): lower it to see the 80-150 ms frames a
+	/// walk through town has, each with what it did for the first time (Engine_SpikeNotes).</remarks>
+	public static double HitchLogThresholdMs = ReadHitchLogThreshold();
+
+	private static double ReadHitchLogThreshold()
+	{
+		try
+		{
+			int ms = Engine_RefiiConfig.Int(Engine_RefiiConfig.Read(out _), "hitch_log_ms", 200);
+			return ms > 0 ? ms : 200.0;
+		}
+		catch (System.Exception)
+		{
+			return 200.0;
+		}
+	}
 
 	/// <summary>
 	/// Logs a frame over <see cref="HitchLogThresholdMs"/> with what moved during it. Called
@@ -314,7 +329,8 @@ public static class Engine_FramePhases
 				$" | objects {now.ObjectsDrawn:0} ({now.ObjectsDrawn - was.ObjectsDrawn:+0;-0})" +
 				$" prims {now.Primitives / 1e6:0.0}M" +
 				$" | resources {now.Resources:0} ({now.Resources - was.Resources:+0;-0}) nodes {now.Nodes:0} ({now.Nodes - was.Nodes:+0;-0})" +
-				$" | updates: {Engine_InstanceUpdates.LastFrameSummary()}");
+				$" | updates: {Engine_InstanceUpdates.LastFrameSummary()}" +
+				$" | events: {Engine_SpikeNotes.LastFrameSummary()}");
 		}
 
 		_previousCounters = now;
@@ -325,9 +341,11 @@ public static class Engine_FramePhases
 	public static void MarkFrameStart()
 	{
 		long now = Stopwatch.GetTimestamp();
+		Engine_LoadTimeline.FrameStart(now);
+		double totalMs = 0.0;
 		if (_frameStart != 0)
 		{
-			double totalMs = (now - _frameStart) * 1000.0 / Stopwatch.Frequency;
+			totalMs = (now - _frameStart) * 1000.0 / Stopwatch.Frequency;
 			Record("frame_total", totalMs);
 
 			// Before the index moves on: the phases still hold the finished frame's values.
@@ -336,6 +354,7 @@ public static class Engine_FramePhases
 				// The instance-update window closes with the frame, so the hitch line below can
 				// name what this frame wrote into the scene.
 				Engine_InstanceUpdates.EndFrame();
+				Engine_SpikeNotes.EndFrame();
 				CatchHitch(totalMs);
 				LogHitch(totalMs);
 			}
@@ -345,12 +364,14 @@ public static class Engine_FramePhases
 			using (Gate.Hold())
 			{
 				Engine_InstanceUpdates.EndFrame();
+				Engine_SpikeNotes.EndFrame();
 				LogHitch(0.0);
 			}
 		}
 
 		_markCount = 0;
 		++_frameIndex;
+		Engine_GcFrames.FrameStart(_frameIndex, totalMs);
 		FrameAlive?.Invoke(_frameIndex);
 		SampleSteadyGc(now);
 
@@ -443,6 +464,7 @@ public static class Engine_FramePhases
 	public static void MarkFrameEnd()
 	{
 		_processEnd = Stopwatch.GetTimestamp();
+		Engine_LoadTimeline.FrameEnd(_processEnd);
 		if (_frameStart != 0)
 		{
 			Record("process_total", (_processEnd - _frameStart) * 1000.0 / Stopwatch.Frequency);
@@ -548,6 +570,7 @@ public sealed partial class Engine_FrameStartNode : Godot.Node
 	public override void _Ready()
 	{
 		ProcessPriority = int.MinValue;
+		Engine_ServerSyncs.MarkMainThread();
 		Godot.RenderingServer.Singleton.FramePostDraw += Engine_FramePhases.MarkDrawEnd;
 	}
 

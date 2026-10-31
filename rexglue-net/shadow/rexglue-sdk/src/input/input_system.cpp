@@ -10,6 +10,7 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 
 #include <rex/dbg.h>
@@ -37,11 +38,27 @@ namespace {
 // flag and never reads this value.
 constexpr uint32_t kSyntheticOrdinal = UINT32_MAX;
 
+// Registration happens before the guest starts. A release publishes the complete
+// native observer tuple; no managed callback or additional lock is used while copying.
+std::atomic<InputSystem*> observed_system{nullptr};
+std::atomic<StateCopyObserver> state_copy_observer{nullptr};
+std::atomic<void*> state_copy_context{nullptr};
+
 }  // namespace
 
 InputSystem::InputSystem(rex::ui::Window* window) : window_(window) {}
 
-InputSystem::~InputSystem() = default;
+InputSystem::~InputSystem() {
+  InputSystem* expected = this;
+  observed_system.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
+}
+
+void SetInputStateCopyObserver(InputSystem* system, StateCopyObserver observer, void* context) {
+  observed_system.store(nullptr, std::memory_order_release);
+  state_copy_context.store(context, std::memory_order_relaxed);
+  state_copy_observer.store(observer, std::memory_order_relaxed);
+  observed_system.store(observer ? system : nullptr, std::memory_order_release);
+}
 
 X_STATUS InputSystem::Setup() {
   return X_STATUS_SUCCESS;
@@ -228,6 +245,9 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
 
   X_INPUT_STATE merged = {};
   bool any = false;
+  InputDriver* sole_driver = nullptr;
+  DeviceId sole_device = DeviceId::kInvalid;
+  uint32_t contributors = 0;
   for (DeviceId id : ids) {
     auto* driver = DriverForDevice(id);
     if (!driver) {
@@ -238,6 +258,9 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
       continue;
     }
     active_devices_.Observe(user_index, id, state.gamepad);
+    ++contributors;
+    sole_driver = driver;
+    sole_device = id;
     if (!any) {
       merged = state;
       any = true;
@@ -251,6 +274,13 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
   }
   if (out_state) {
     *out_state = merged;
+    // NULL-state availability queries deliberately do not acknowledge input. A
+    // future multi-driver merge cannot pretend that a host publication was copied.
+    if (contributors == 1 && observed_system.load(std::memory_order_acquire) == this) {
+      if (auto observer = state_copy_observer.load(std::memory_order_relaxed)) {
+        observer(state_copy_context.load(std::memory_order_relaxed), sole_driver, sole_device, *out_state);
+      }
+    }
   }
   return X_ERROR_SUCCESS;
 }

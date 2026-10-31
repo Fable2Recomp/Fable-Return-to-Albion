@@ -1,6 +1,7 @@
 using System;
 using Godot;
 using Godot.Collections;
+using Refii.Core;
 
 namespace Refii.Fx;
 
@@ -84,11 +85,11 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
         var file = GD.Load<RDShaderFile>(ShaderPath);
         if (file is null) return;
         RDShaderSpirV spirv = file.GetSpirV();
-        _shader = _rd.ShaderCreateFromSpirV(spirv);
+        _shader = _rd.Shader(spirv);
         if (!_shader.IsValid) return;
-        _pipeline = _rd.ComputePipelineCreate(_shader);
+        _pipeline = _rd.ComputePipeline(_shader);
         var samplerState = new RDSamplerState { MinFilter = RenderingDevice.SamplerFilter.Nearest, MagFilter = RenderingDevice.SamplerFilter.Nearest, RepeatU = RenderingDevice.SamplerRepeatMode.ClampToEdge, RepeatV = RenderingDevice.SamplerRepeatMode.ClampToEdge };
-        _sampler = _rd.SamplerCreate(samplerState);
+        _sampler = _rd.Sampler(samplerState);
         _ready = _pipeline.IsValid && _sampler.IsValid;
     }
 
@@ -105,7 +106,7 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
             TextureType = RenderingDevice.TextureType.Type2D,
             UsageBits = RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.CanUpdateBit,
         };
-        _target = _rd!.TextureCreate(format, new RDTextureView());
+        _target = _rd!.Texture(format, new RDTextureView());
         _targetSize = size;
         Rid rid = _target;
         int view = View;
@@ -160,23 +161,32 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
             _textures[View] = null;
         }
 
-        if (_rd is null)
+        Engine_FxDepthCaptureEffect self = this;
+        Refii.Core.Engine_RdRetire.OnRenderThread(() => self.ReleaseDeviceObjects());
+    }
+
+    /// <summary>Frees the device objects. Render thread (<see cref="Refii.Core.Engine_RdRetire.OnRenderThread"/>).</summary>
+    private void ReleaseDeviceObjects()
+    {
+        _ready = false;
+        RenderingDevice? rd = RenderingServer.GetRenderingDevice();
+        if (_rd is null || rd is null)
         {
+            _rd = null;
             return;
         }
 
         // Freed in creation order's reverse, and each guarded: a device that has already gone
         // leaves every RID invalid, and freeing an invalid one is its own error.
-        if (_target.IsValid) _rd.FreeRid(_target);
-        if (_sampler.IsValid) _rd.FreeRid(_sampler);
-        if (_pipeline.IsValid) _rd.FreeRid(_pipeline);
-        if (_shader.IsValid) _rd.FreeRid(_shader);
+        if (_target.IsValid) rd.FreeRid(_target);
+        if (_sampler.IsValid) rd.FreeRid(_sampler);
+        if (_pipeline.IsValid) rd.FreeRid(_pipeline);
+        if (_shader.IsValid) rd.FreeRid(_shader);
 
         _target = default;
         _sampler = default;
         _pipeline = default;
         _shader = default;
-        _ready = false;
         _rd = null;
     }
 
@@ -199,8 +209,7 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
             depthUniform.AddId(depth);
             var outUniform = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 1 };
             outUniform.AddId(_target);
-            var uniforms = new Array<RDUniform> { depthUniform, outUniform };
-            set = _set.Hold(UniformSetCacheRD.GetCache(_shader, 0, uniforms));
+            set = _set.Hold(Engine_RdCalls.CachedUniformSet(_shader, 0, depthUniform, outUniform));
         }
         BitConverter.TryWriteBytes(_push.AsSpan(0), size.X);
         BitConverter.TryWriteBytes(_push.AsSpan(4), size.Y);

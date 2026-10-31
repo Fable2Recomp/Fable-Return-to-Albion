@@ -421,7 +421,7 @@ public static class Engine_ClassicConstants
         // The globals are declared in project.godot; added here as well so a tool scene that
         // runs without the project's list still resolves them.
         bool hasPixel = false, hasVertex = false;
-        foreach (StringName name in RenderingServer.GlobalShaderParameterGetList())
+        foreach (StringName name in Refii.Core.Engine_ServerSyncs.GlobalParameters())
         {
             hasPixel |= name == PixelGlobal;
             hasVertex |= name == VertexGlobal;

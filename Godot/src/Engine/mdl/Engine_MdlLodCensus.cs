@@ -10,10 +10,13 @@ namespace Refii.Models;
 /// mesh — beside what the guest's own per-object rule would have drawn.
 /// </summary>
 /// <remarks>
-/// GODOT'S PICK, REPRODUCED. `render_forward_clustered.cpp` takes the distance from the camera to
+/// GODOT'S PICK, REPRODUCED. Godot 4.7.1 Mobile and Forward+ take the distance from the camera to
 /// the NEAREST POINT of the instance's world box, times the projection's `get_lod_multiplier()`
-/// (2 / P[0][0]); `mesh_surface_get_lod` walks the levels in ascending key and keeps each whose
-/// `key · model scale / that` is under the viewport threshold (`mesh_lod_threshold / width`). The
+/// (2 / P[0][0]) divided by the global rendering/scaling_3d/scale; `mesh_surface_get_lod`
+/// walks the levels in ascending key and keeps each whose
+/// `key · model scale / that` is under the viewport threshold (`mesh_lod_threshold / width`).
+/// Width is the actual Window or SubViewport size, not a logical canvas override, the
+/// stretch-adjusted Window texture accessor or a scaled 3D buffer. The
 /// model scale is the transform's largest axis times `lod_bias`. Shadow passes pick with the same
 /// main-camera distance, so this is their level too.
 ///
@@ -80,13 +83,18 @@ public static class Engine_MdlLodCensus
 		}
 
 		Projection projection = camera.GetCameraProjection();
-		float width = viewport.GetVisibleRect().Size.X;
+		Vector2 physicalSize = viewport is Window window ? window.Size
+			: viewport is SubViewport sub ? sub.Size : viewport.GetVisibleRect().Size;
+		Vector2 textureAccessorSize = viewport.GetTexture().GetSize();
+		Vector2 logicalSize = viewport.GetVisibleRect().Size;
+		float width = physicalSize.X;
+		float projectScale = ProjectSettings.GetSetting("rendering/scaling_3d/scale", 1.0f).AsSingle();
 		var view = new View
 		{
 			Eye = camera.GlobalPosition,
 			Frustum = camera.GetFrustum().ToArray(),
-			Multiplier = 2f / projection.X.X,
-			Threshold = viewport.MeshLodThreshold / Mathf.Max(width, 1f),
+			Multiplier = Engine_MeshLodPolicy.DistanceMultiplier(projection.X.X, projectScale),
+			Threshold = Engine_MeshLodPolicy.NormalizedThreshold(viewport.MeshLodThreshold, width),
 			CullMask = camera.CullMask,
 		};
 
@@ -110,6 +118,15 @@ public static class Engine_MdlLodCensus
 		{
 			["meshLodThreshold"] = viewport.MeshLodThreshold,
 			["viewportWidth"] = width,
+			["viewportHeight"] = physicalSize.Y,
+			["logicalWidth"] = logicalSize.X,
+			["logicalHeight"] = logicalSize.Y,
+			["viewportExtentScope"] = "Actual CanvasItems Window.Size or SubViewport.Size; not an internal 3D buffer readback",
+			["viewportTextureAccessorWidth"] = textureAccessorSize.X,
+			["viewportTextureAccessorHeight"] = textureAccessorSize.Y,
+			["project3DScale"] = projectScale,
+			["lodDistanceMultiplier"] = view.Multiplier,
+			["normalizedThreshold"] = view.Threshold,
 			["total"] = Row("all", all),
 			["owners"] = owners.OrderByDescending(p => p.Value.Triangles).Select(p => Row(p.Key, p.Value)).ToList(),
 			["meshes"] = meshes.OrderByDescending(p => p.Value.Triangles).Take(40).Select(p => Row(p.Key, p.Value)).ToList(),

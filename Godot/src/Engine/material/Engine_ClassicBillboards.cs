@@ -191,6 +191,7 @@ public partial class Engine_ClassicBillboards : Node
             // The impostor is the model's full detail, not the LOD Godot would pick for 256 pixels.
             MeshLodThreshold = 0f,
         };
+        var effects = new Godot.Collections.Array<CompositorEffect> { mips };
         var camera = new Camera3D
         {
             Name = cameraName,
@@ -208,9 +209,10 @@ public partial class Engine_ClassicBillboards : Node
             // The mips are made inside the capture's render, ahead of the main view's depth pre-pass.
             Compositor = new Compositor
             {
-                CompositorEffects = new Godot.Collections.Array<CompositorEffect> { mips },
+                CompositorEffects = effects,
             },
         };
+        GC.KeepAlive(effects);
         viewport.AddChild(camera);
         AddChild(viewport);
         return new Atlas { Viewport = viewport, Camera = camera, Mips = mips };
@@ -595,7 +597,7 @@ public partial class Engine_ClassicBillboards : Node
         arrays[(int)Mesh.ArrayType.Custom0] = custom;
         arrays[(int)Mesh.ArrayType.Index] = indices;
         var mesh = new ArrayMesh();
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays, null, null,
+        Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays, null, null,
             Mesh.ArrayFormat.FormatCustom0 | (Mesh.ArrayFormat)((int)Mesh.ArrayCustomFormat.RgbaFloat << (int)Mesh.ArrayFormat.FormatCustom0Shift));
         arrays.Dispose();
         // The stage lifts each card by up to its radius and spreads it by as much.
@@ -794,7 +796,7 @@ public partial class Engine_ClassicBillboards : Node
                 {
                     return Vector4.Zero;
                 }
-                Color first = batch.GetInstanceColor(0);
+                Color first = Refii.Core.Engine_ServerSyncs.InstanceColor(batch, 0);
                 return new Vector4(first.R * ambient.X, first.G * ambient.Y, first.B * ambient.Z, 1f);
             }
             return ambient;
@@ -878,7 +880,7 @@ public partial class Engine_ClassicBillboards : Node
         {
             return held;
         }
-        var copy = (ShaderMaterial)own.Duplicate();
+        var copy = Refii.Models.Engine_MaterialCopy.Shallow(own);
         copy.SetShaderParameter(ScreenShadow, Engine_ClassicScreenShadow.White);
         if (copy.GetShaderParameter(XrBooleansName).VariantType != Variant.Type.Nil)
         {

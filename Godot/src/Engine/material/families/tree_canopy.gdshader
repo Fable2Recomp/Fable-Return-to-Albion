@@ -19,6 +19,8 @@ shader_type spatial;
 render_mode cull_disabled, unshaded;
 
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
+// This family does not include fable_lighting; declare the same opt-in diagnostic global here.
+global uniform int fable_shader_cost_diagnostic;
 
 uniform sampler2D albedo_tex : source_color, filter_linear_mipmap, hint_default_white;
 
@@ -76,6 +78,8 @@ void fragment() {
 		discard;
 	}
 
+	// Keep alpha cutouts and the existing unshaded render mode when pricing canopy fragment work.
+	if ((fable_shader_cost_diagnostic & 4) == 0) {
 	// UN-PREMULTIPLIED IN SQUARED SPACE: the guest computes `rgb*rgb` and `a*a` and divides, which
 	// is `(rgb/a)^2`. Algebraically the same as un-premultiplying first, but the guard matters —
 	// a zero alpha here is a texel the discard above already removed.
@@ -128,5 +132,8 @@ void fragment() {
 	// reads EMISSION — putting the result there instead draws a black canopy, which looks exactly
 	// like a failed texture bind and would have cost a run to diagnose.
 	ALBEDO = colour;
+	} else {
+		ALBEDO = vec3(0.5);
+	}
 	ALPHA = 1.0;
 }

@@ -457,12 +457,23 @@ Surface::TypeFlags VulkanPresenter::GetSupportedSurfaceTypes() const {
       GetSurfaceTypesSupportedByInstance(vulkan_device_->vulkan_instance()->extensions());
   static bool logged_gates = false;
   if (!logged_gates) {
+    bool native_surface_extension = false;
+#if REX_PLATFORM_ANDROID
+    native_surface_extension =
+        vulkan_device_->vulkan_instance()->extensions().ext_KHR_android_surface;
+#elif REX_PLATFORM_GNU_LINUX
+    native_surface_extension =
+        vulkan_device_->vulkan_instance()->extensions().ext_KHR_xcb_surface;
+#elif REX_PLATFORM_WIN32
+    native_surface_extension =
+        vulkan_device_->vulkan_instance()->extensions().ext_KHR_win32_surface;
+#endif
     REXLOG_INFO(
         "VulkanPresenter::GetSupportedSurfaceTypes device_swapchain={} "
-        "instance_types=0x{:X} instance_khr_surface={} instance_xcb={}",
+        "instance_types=0x{:X} instance_khr_surface={} instance_native_surface={}",
         device_swapchain, static_cast<uint32_t>(instance_types),
         vulkan_device_->vulkan_instance()->extensions().ext_KHR_surface,
-        vulkan_device_->vulkan_instance()->extensions().ext_KHR_xcb_surface);
+        native_surface_extension);
     REXLOG_INFO("VulkanInstance READER layout base={} ext_field={} "
                 "sizeof_instance={} sizeof_functions={} sizeof_extensions={}",
                 static_cast<const void*>(vulkan_device_->vulkan_instance()),

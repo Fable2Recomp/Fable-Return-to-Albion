@@ -260,6 +260,7 @@ public static class ModSettings
 		}
 
 		file.StoreString(Json.Stringify(root, "\t"));
+		GC.KeepAlive(root);
 	}
 
 	/// <summary>

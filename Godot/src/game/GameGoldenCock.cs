@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Godot;
 using Refii.Host;
@@ -11,8 +12,7 @@ public partial class GameGoldenCock : Node
     private static readonly HashSet<Engine_GoldenCock> Actors = new();
     private static GameGoldenCock? _current;
     private Engine_NewGameDialog? _dialog;
-    private GameSession? _session;
-    private bool _wasPaused;
+    private GuestHold? _hold;
     private bool _attempted;
     private bool _waiting;
     private ulong _sequence;
@@ -24,6 +24,50 @@ public partial class GameGoldenCock : Node
     public static bool OwnsInput => _current?._dialog is { IsOpen: true };
     public static Engine_NewGameDialog? ActiveMenu => OwnsInput ? _current!._dialog : null;
     public static void CancelMenu() => _current?.Close();
+
+    /// <summary>
+    /// For a host that steps its guest without a <see cref="GameSession"/> (Android's own session
+    /// thread): holds the guest still while true, as <see cref="GameSession.Paused"/> does. Null on
+    /// the desktop, where the session is held.
+    /// </summary>
+    public Action<bool>? HoldGuest { get; set; }
+
+    /// <summary>
+    /// Whether nothing holds the guest still: no paused session on the desktop, and no session at
+    /// all on a host that steps its own guest (Android), where photo mode is what holds it.
+    /// </summary>
+    public static bool GuestRuns => GameSession.Current is not { Paused: true } && !GamePhotoMode.Active;
+
+    /// <summary>
+    /// The dialog's hold on the guest: taken when it opens, let go while the transition runs and
+    /// taken again if that fails, and on close returned once to how it was. A close with nothing
+    /// held lets nothing go, for photo mode may hold Android's guest meanwhile.
+    /// </summary>
+    public sealed class GuestHold
+    {
+        private readonly Action<bool> _set;
+        private readonly bool _was;
+        private bool _released;
+
+        public GuestHold(Action<bool> set, bool was)
+        {
+            _set = set;
+            _was = was;
+            set(true);
+        }
+
+        public void Set(bool held)
+        {
+            if (!_released) _set(held);
+        }
+
+        public void Release()
+        {
+            if (_released) return;
+            _released = true;
+            _set(_was);
+        }
+    }
 
     public static bool MenuAllowsInteraction(Engine_UiModel.PauseState? state) =>
         state is null || state is { ScreenId: (uint)Engine_UiModel.InGameScreen.None, ModalMode: 1 };
@@ -74,7 +118,7 @@ public partial class GameGoldenCock : Node
         if (_interaction == interaction) return;
         _interaction = interaction;
         bool available = !OwnsInput && !_attempted && Actors.Count > 0 && GameUi.WorldInteractionAllowed &&
-            GameSession.Current is { Paused: false } && HostBridge.IsInGame &&
+            GuestRuns && HostBridge.IsInGame &&
             !GameInput.ScreenMenuOwnsInput && !GameInput.ModalBoxOwnsInput && !GameInput.MenuBoxOwnsInput &&
             !GameInput.ReceiveItemsOwnsInput && !GameInput.DisplayMessageBoxUp && !GameDevMenu.KeyboardCaptured &&
             SessionAllowsInteraction(CoopSession.State, CoopSession.Side, CoopSession.LocalCoop) &&
@@ -113,12 +157,13 @@ public partial class GameGoldenCock : Node
         }
     }
 
+    /// <summary>Holds the guest still and opens the dialog: the session's pause on the desktop, the host's own hold elsewhere.</summary>
     private void Open()
     {
-        _session = GameSession.Current;
-        if (_session is null) return;
-        _wasPaused = _session.Paused;
-        _session.Paused = true;
+        if (HoldGuest is { } hold) _hold = new GuestHold(hold, false);
+        else if (GameSession.Current is { } session)
+            _hold = new GuestHold(held => { if (GodotObject.IsInstanceValid(session)) session.Paused = held; }, session.Paused);
+        else return;
         _dialog ??= new Engine_NewGameDialog();
         _dialog.Open(Choose);
     }
@@ -141,20 +186,20 @@ public partial class GameGoldenCock : Node
         _waiting = true;
         _remaining = 30;
         _dialog!.ShowWorking();
-        if (_session is not null) _session.Paused = false;
+        _hold?.Set(false);
     }
 
     private void TransitionFailed(string message)
     {
-        if (_session is not null) _session.Paused = true;
+        _hold?.Set(true);
         _dialog!.ShowTransitionFailure(message);
     }
 
     private void Close()
     {
         _dialog?.Dismiss();
-        if (_session is not null && GodotObject.IsInstanceValid(_session)) _session.Paused = _wasPaused;
-        _session = null;
+        _hold?.Release();
+        _hold = null;
         _waiting = false;
     }
 

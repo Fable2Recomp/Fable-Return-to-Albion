@@ -120,6 +120,11 @@ public static class Engine_UiKeyGlyphs
 	public static Texture2D Wrap(string virtualPath, Texture2D original)
 	{
 		string key = virtualPath.Replace('\\', '/').ToLowerInvariant();
+		if (key.EndsWith("art/gui/persistant/abyx.tex", StringComparison.Ordinal))
+		{
+			PadAtlas = original;
+		}
+
 		if (ButtonFor(key) is not { } button)
 		{
 			return original;
@@ -130,7 +135,7 @@ public static class Engine_UiKeyGlyphs
 			return known.Texture;
 		}
 
-		Image? image = original.GetImage();
+		Image? image = Refii.Core.Engine_ServerSyncs.Image(original);
 		if (image is null || image.IsEmpty())
 		{
 			return original;
@@ -143,15 +148,15 @@ public static class Engine_UiKeyGlyphs
 			Button = button,
 		};
 		_proxies[key] = proxy;
-		Draw(proxy, Engine_UiInputMode.KeyboardMouse);
+		Draw(proxy, Engine_UiInputMode.Keycaps);
 
 		// The enhancer swaps a sharper image into the original later; the pad art follows it.
 		// (Keyboard mode keeps its keycap — the atlas cells are redrawn on the next switch.)
 		original.Changed += () =>
 		{
-			if (!Engine_UiInputMode.KeyboardMouse)
+			if (!Engine_UiInputMode.Keycaps)
 			{
-				Draw(proxy, Engine_UiInputMode.KeyboardMouse);
+				Draw(proxy, Engine_UiInputMode.Keycaps);
 			}
 		};
 
@@ -164,7 +169,7 @@ public static class Engine_UiKeyGlyphs
 	/// </summary>
 	public static void Update()
 	{
-		bool keys = Engine_UiInputMode.KeyboardMouse;
+		bool keys = Engine_UiInputMode.Keycaps;
 		string signature = keys ? "kbm" : "pad";
 		if (keys)
 		{
@@ -233,7 +238,7 @@ public static class Engine_UiKeyGlyphs
 
 	private static void Draw(Proxy proxy, bool keys)
 	{
-		Image? pad = proxy.Original.GetImage();
+		Image? pad = Refii.Core.Engine_ServerSyncs.Image(proxy.Original);
 		if (pad is null || pad.IsEmpty())
 		{
 			return;
@@ -330,6 +335,72 @@ public static class Engine_UiKeyGlyphs
 		private static byte Channel(float c) => (byte)Math.Clamp(c * 255.0, 0.0, 255.0);
 	}
 
+	/// <summary>The keycaps' dark plate — the colour the touch controls' plates share, so both read as the game's.</summary>
+	public static Color PlateColour => CapFill;
+
+	/// <summary>The keycaps' gold rim and lettering.</summary>
+	public static Color TrimColour => CapRim;
+
+	/// <summary>
+	/// The controller's own button art, `art/gui/persistant/abyx.tex`, as the UI loaded it — null
+	/// until it has. Its upper half is the four buttons, columns A, B, Y, X, idle above pressed.
+	/// </summary>
+	public static Texture2D? PadAtlas { get; private set; }
+
+	/// <summary>The atlas cell drawing <paramref name="button"/> (A, B, X or Y), in texels, or null for any other.</summary>
+	public static Rect2? PadAtlasCell(string button, bool pressed)
+	{
+		int column = Array.IndexOf(AtlasColumns, button);
+		if (PadAtlas is not { } atlas || column < 0)
+		{
+			return null;
+		}
+
+		float w = atlas.GetWidth() / 4f, h = atlas.GetHeight() / 4f;
+		return new Rect2(column * w, pressed ? h : 0f, w, h);
+	}
+
+	/// <summary>
+	/// <paramref name="text"/> in the game's own font, <paramref name="pixelHeight"/> tall, in
+	/// <paramref name="colour"/> over a one-pixel <paramref name="shadow"/> — for host UI drawn
+	/// outside the guest's screens. Null until the UI has loaded the font.
+	/// </summary>
+	public static Image? TextImage(string text, int pixelHeight, Color colour, Color shadow)
+	{
+		if (Fonts?.For(18) is not { } selection || text.Length == 0 || pixelHeight <= 0)
+		{
+			return null;
+		}
+
+		Engine_BitmapFont font = selection.Font.Font;
+		EnsureFontAtlas(font);
+		if (_atlas is null)
+		{
+			return null;
+		}
+
+		float height = font.LineHeight + 1;
+		float scale = pixelHeight / height;
+		int pad = Math.Max(2, pixelHeight / 12);
+		var canvas = new Canvas((int)Math.Ceiling(font.MeasureWidth(text) * scale) + (pad * 2), pixelHeight + (pad * 2));
+		foreach ((float dx, float dy, Color ink) in new[] { (1f, 1f, shadow), (0f, 0f, colour) })
+		{
+			float penX = pad + dx;
+			foreach (char c in text)
+			{
+				BitmapGlyph g = font.GetGlyph(c);
+				float left = penX + (g.LeftBearing * scale);
+				penX = left + (g.PostAdvance * scale);
+				if (g.DrawWidth > 0)
+				{
+					BlitGlyph(canvas, g, left, pad + dy, g.DrawWidth * scale, height * scale, ink);
+				}
+			}
+		}
+
+		return canvas.ToImage(mipmaps: true);
+	}
+
 	private static readonly Color CapFill = new(0.10f, 0.09f, 0.07f, 0.92f);
 	private static readonly Color CapRim = new(1f, 224f / 255f, 128f / 255f, 1f);
 	private static readonly Color CapPressed = new(0.22f, 0.19f, 0.12f, 0.95f);
@@ -387,14 +458,9 @@ public static class Engine_UiKeyGlyphs
 	private static int _atlasStride;
 	private static Engine_BitmapFont? _atlasFont;
 
-	private static void DrawLabel(Canvas image, Rect2I cap, string label)
+	/// <summary>Decodes a font's atlas into coverage once per font (<see cref="_atlas"/>).</summary>
+	private static void EnsureFontAtlas(Engine_BitmapFont font)
 	{
-		if (Fonts?.For(18) is not { } selection || label.Length == 0)
-		{
-			return;
-		}
-
-		Engine_BitmapFont font = selection.Font.Font;
 		if (!ReferenceEquals(_atlasFont, font))
 		{
 			_atlasFont = font;
@@ -424,7 +490,17 @@ public static class Engine_UiKeyGlyphs
 				_atlasStride = stride;
 			}
 		}
+	}
 
+	private static void DrawLabel(Canvas image, Rect2I cap, string label)
+	{
+		if (Fonts?.For(18) is not { } selection || label.Length == 0)
+		{
+			return;
+		}
+
+		Engine_BitmapFont font = selection.Font.Font;
+		EnsureFontAtlas(font);
 		if (_atlas is null)
 		{
 			return;
@@ -446,13 +522,13 @@ public static class Engine_UiKeyGlyphs
 				continue;
 			}
 
-			BlitGlyph(image, g, left, top, g.DrawWidth * scale, height * scale);
+			BlitGlyph(image, g, left, top, g.DrawWidth * scale, height * scale, CapRim);
 		}
 	}
 
 	/// <summary>Draws one glyph's coverage as the rim colour, sampled bilinearly.</summary>
 	private static void BlitGlyph(Canvas image, BitmapGlyph g, float left, float top,
-		float width, float height)
+		float width, float height, Color colour)
 	{
 		int x0 = Math.Max(0, (int)Math.Floor(left));
 		int x1 = Math.Min(image.Width, (int)Math.Ceiling(left + width));
@@ -474,7 +550,7 @@ public static class Engine_UiKeyGlyphs
 				}
 
 				Color under = image.Get(x, y);
-				Color blended = under.Lerp(CapRim, coverage);
+				Color blended = under.Lerp(colour, coverage);
 				blended.A = Math.Max(under.A, coverage);
 				image.Set(x, y, blended);
 			}

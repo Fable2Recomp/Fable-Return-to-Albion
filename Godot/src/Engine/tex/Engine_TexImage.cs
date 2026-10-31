@@ -473,13 +473,14 @@ public static class Engine_TexImage
 		}
 
 		var images = new Godot.Collections.Array<Image>();
+		using Godot.Collections.Array imageStorage = (Godot.Collections.Array)images;
 		foreach (Image face in faces)
 		{
 			images.Add(face);
 		}
 
 		var cubemap = new Cubemap();
-		Error created = cubemap.CreateFromImages(images);
+		Error created = Refii.Textures.Engine_AndroidTextureUpload.CreateLayered(cubemap, images);
 		if (created != Error.Ok)
 		{
 			error = $"Cubemap.CreateFromImages: {created}";
@@ -492,11 +493,12 @@ public static class Engine_TexImage
 	public static ImageTexture? TryCreateTexture(byte[] texBytes, out string error) =>
 		TryCreateTexture(texBytes, out _, out error);
 
+	/// <summary>Uploads a decoded texture and releases the exclusively owned CPU image.</summary>
 	public static ImageTexture? TryCreateTexture(
 		byte[] texBytes, out bool hasAlpha, out string error)
 	{
 		Image? image = TryCreateImage(texBytes, out hasAlpha, out error);
-		return image is null || image.IsEmpty() ? null : ImageTexture.CreateFromImage(image);
+		return image is null || image.IsEmpty() ? null : Engine_AndroidTextureUpload.CreateTexture(image);
 	}
 
 	public static bool Bc1HasPunchThrough(byte[] blocks)

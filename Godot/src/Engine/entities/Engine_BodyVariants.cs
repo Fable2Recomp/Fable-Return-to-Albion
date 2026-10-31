@@ -107,7 +107,7 @@ public static class Engine_BodyVariants
 			kept++;
 			Material? material = source.SurfaceGetMaterial(s);
 			if (material is ShaderMaterial { Shader: { } shader } &&
-				MergeableShaders.Contains(shader.ResourcePath) &&
+				MergeableShaders.Contains(Refii.Models.Engine_ShaderVariant.FullPathOf(Refii.Models.Engine_ShaderSpecialisation.PathOf(shader))) &&
 				source.SurfaceGetPrimitiveType(s) == Mesh.PrimitiveType.Triangles)
 			{
 				string layout = LayoutOf(source, s);
@@ -166,6 +166,8 @@ public static class Engine_BodyVariants
 		{
 			variant.SetMeta(Refii.Models.Engine_MdlTransfer.SurfaceDescriptorsMeta, keptDescriptors);
 			variant.SetMeta(Refii.Models.Engine_MdlTransfer.SurfaceTablesMeta, keptTables);
+			GC.KeepAlive(keptDescriptors);
+			GC.KeepAlive(keptTables);
 		}
 		foreach (Godot.StringName whole in new[] { Refii.Models.Engine_MdlTransfer.DescriptorMeta, Refii.Models.Engine_MdlTransfer.TableMeta })
 		{

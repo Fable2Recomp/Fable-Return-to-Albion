@@ -73,6 +73,8 @@ public static class Engine_ModernFur
         if (!Engine_ClassicMaterial.Active && node is MeshInstance3D mesh && mesh.Mesh is ArrayMesh source &&
             source.HasMeta(Engine_MdlMesh.FurMeta))
         {
+            // Before the lighting this call precedes is written: Share reads it back (Engine_InstanceParams).
+            Refii.Core.Engine_InstanceParams.Watch(mesh);
             Pending.Enqueue(mesh);
         }
     }
@@ -238,7 +240,9 @@ public static class Engine_ModernFur
     {
         foreach (StringName name in Shared)
         {
-            Variant value = furred.Source.GetInstanceShaderParameter(name);
+            // As written through Engine_InstanceParams; a parameter not written since the
+            // source was watched is still asked of the server.
+            Variant value = Refii.Core.Engine_InstanceParams.Get(furred.Source, name);
             if (value.VariantType != Variant.Type.Nil)
             {
                 furred.Shell.SetInstanceShaderParameter(name, value);

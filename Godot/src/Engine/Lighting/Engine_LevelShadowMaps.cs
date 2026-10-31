@@ -1037,6 +1037,23 @@ public static class Engine_LevelShadowMaps
 	private static readonly ConcurrentDictionary<string, Vector3[]?> ModelTriangleCache =
 		new(StringComparer.OrdinalIgnoreCase);
 
+	/// <summary>The bound static shadow atlas's texels, for the heap census.</summary>
+	internal static (long Atlases, long Bytes) AtlasCensus() =>
+		Current is { } atlas ? (1, atlas.Texels.LongLength * 2) : (0, 0);
+
+	/// <summary>The bake's per-model triangle soups still cached, for the heap census.</summary>
+	internal static (long Models, long Bytes) TriangleCensus()
+	{
+		long models = 0, bytes = 0;
+		foreach (Vector3[]? triangles in ModelTriangleCache.Values)
+		{
+			++models;
+			bytes += (triangles?.LongLength ?? 0) * 12;
+		}
+
+		return (models, bytes);
+	}
+
 	/// <summary>
 	/// Extracts all static world triangles (terrain + static shadow-casting props) and placed
 	/// lights for <paramref name="level"/> and bakes a <see cref="StaticShadowMapContainer"/>.

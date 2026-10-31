@@ -1,0 +1,19 @@
+diff --git a/platform/android/java_godot_lib_jni.cpp b/platform/android/java_godot_lib_jni.cpp
+index e9dbcc2..7be08fb 100644
+--- a/platform/android/java_godot_lib_jni.cpp
++++ b/platform/android/java_godot_lib_jni.cpp
+@@ -238,6 +238,14 @@ JNIEXPORT jboolean JNICALL Java_org_godotengine_godot_GodotLib_setup(JNIEnv *env
+ 
+ JNIEXPORT void JNICALL Java_org_godotengine_godot_GodotLib_resize(JNIEnv *env, jclass clazz, jobject p_surface, jint p_width, jint p_height) {
+ 	if (os_android) {
++		// With the separate render thread (thread_model = 2) the last frame queued may still be
++		// recording or presenting into the swapchain reset_window() frees and re-creates; this
++		// runs on the main thread between steps, so it must wait for the render thread to drain.
++		// Under Safe, sync() only flushes commands other threads queued, as the next step would.
++		if (step.get() > STEP_SETUP && RenderingServer::get_singleton()) {
++			RenderingServer::get_singleton()->sync();
++		}
++
+ 		os_android->set_display_size(Size2i(p_width, p_height));
+ 
+ 		// No need to reset the surface during startup

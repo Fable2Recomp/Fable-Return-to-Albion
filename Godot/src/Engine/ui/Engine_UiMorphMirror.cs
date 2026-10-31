@@ -16,7 +16,11 @@ public partial class Engine_UiMorphMirror : Node3D
     private readonly Rect2[] _hits = new Rect2[23];
     private Engine_UiTheme _theme = null!;
     private MeshInstance3D _status = null!;
+    private MeshInstance3D _band = null!;
     private int _count;
+
+    /// <summary>The first row's height, and the step to the next, in the panel's units.</summary>
+    private const float FirstRowY = 177, RowStep = 32;
 
     public void Build(Engine_UiTheme theme)
     {
@@ -27,11 +31,14 @@ public partial class Engine_UiMorphMirror : Node3D
         Vector2 center = bounds.GetCenter() - new Vector2(GlobalPosition.X, GlobalPosition.Y);
         frame.Scale = new Vector3(Width / bounds.Size.X, Height / bounds.Size.Y, 1);
         frame.Position = new Vector3(-center.X * frame.Scale.X, -center.Y * frame.Scale.Y, 0);
+        // Behind the rows' text, so the selected row stands out (ShowSettings moves it).
+        _band = Engine_UiTheme.SelectionBand(new Vector2(446, 30));
+        AddChild(_band);
         Label(this, "Murgo's Mirror", 28, new Vector2(0, 259), 400, 1, SelectedInk);
         Label(this, "Shape your appearance", 17, new Vector2(0, 224), 400, 1);
         for (int i = 0; i < _rows.Length; i++)
         {
-            float y = 177 - i * 32;
+            float y = FirstRowY - i * RowStep;
             _rows[i] = new Node3D();
             AddChild(_rows[i]);
             _names[i] = Label(_rows[i], "", 18, new Vector2(-204, y), 212);
@@ -80,6 +87,8 @@ public partial class Engine_UiMorphMirror : Node3D
             _theme.Paint(_values[i], settings.Display(i), 17, color, horizontalAlign: 1, boxWidth: 128);
             _values[i].Scale = Vector3.One * Math.Min(1, 128 / Math.Max(_values[i].GetAabb().Size.X, 1));
         }
+        _band.Visible = settings.Selected >= 0 && settings.Selected < _count;
+        _band.Position = new Vector3(10, FirstRowY - settings.Selected * RowStep, 5);
         SetStatus(_count == 1 ? "Turn automatic morphs off to customise" : "");
     }
 

@@ -281,7 +281,7 @@ public partial class Engine_ClassicSkyDome : MeshInstance3D
         arrays[(int)Mesh.ArrayType.Vertex] = positions;
         arrays[(int)Mesh.ArrayType.Index] = indices;
         var mesh = new ArrayMesh();
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays);
         mesh.CustomAabb = new Aabb(new Vector3(-8192f, -8192f, -8192f), new Vector3(16384f, 16384f, 16384f));
         return mesh;
     }

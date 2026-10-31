@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Godot;
 using Refii.Host;
+using Refii.Save;
 
 namespace Refii.Mods;
 
@@ -26,6 +27,12 @@ namespace Refii.Mods;
 /// test holds to <see cref="ModApi.Events"/>, in kind order. A Dictionary value is an int
 /// (entity ids, players, kinds), a float, a bool or a String; an entity is a number, compared
 /// with <c>hero(player)</c>.
+/// <para>
+/// No member takes a C# default parameter: Godot's script bridge registers none and dispatches
+/// by name and argument count, so a GDScript call that leaves one off finds no method. Each
+/// documented short form (<c>notice(title, text)</c> for <c>notice(title, text, seconds = 0,
+/// player = 0)</c>) is an overload of its own, held to the catalog and the guide by RefiiHostTests.
+/// </para>
 /// </remarks>
 [GlobalClass]
 public partial class RefiiHost : Node
@@ -148,6 +155,13 @@ public partial class RefiiHost : Node
 
 	/// <summary>A <see cref="menu_box"/>'s answer: the id it returned and the chosen option's index (-1 for none).</summary>
 	[Signal] public delegate void menu_box_answeredEventHandler(long id, long option);
+
+	/// <summary>
+	/// A save the guest has written, whole: <c>save</c> (its folder name, <c>Hero000</c>) and
+	/// <c>player</c> (1, or 2 for player two's own package). Godot only — the moment a
+	/// <see cref="save_snapshot"/> of the new save can be taken.
+	/// </summary>
+	[Signal] public delegate void save_writtenEventHandler(Godot.Collections.Dictionary e);
 
 	/// <summary>The per-event signal names, in kind order: the static twin of the catalog's Lua names.</summary>
 	public static readonly string[] SignalNames =
@@ -404,6 +418,9 @@ public partial class RefiiHost : Node
 			}
 
 			// The engine's own verdict first: the save gate (start_game), which no script sees.
+			// Before it, the save being started is named for the snapshots, and a quickload's hold a
+			// crash left behind is put back, so the game reads the player's own files.
+			SnapshotsOnStartGame(kind, plain);
 			bool cancel = ModSaveGate.Verdict(kind, plain);
 			if (handlers.Length == 0)
 			{
@@ -432,6 +449,8 @@ public partial class RefiiHost : Node
 					cancel = true;
 				}
 			}
+			// Godot reads e through each handler; see Refii.Core.Engine_ArrayMeshes.
+			GC.KeepAlive(e);
 
 			if (e.TryGetValue("cancel", out Variant cancelled) && cancelled.VariantType == Variant.Type.Bool && cancelled.AsBool())
 			{
@@ -524,6 +543,12 @@ public partial class RefiiHost : Node
 			HostBridge.SetModEventMask(mask);
 		}
 
+		// A quickload whose level never stood (a load the guest refused): the folder goes back anyway.
+		if (_staged is not null && Time.GetTicksMsec() - _stagedAt > StagedTimeoutMs)
+		{
+			FinishSnapshotLoad($"no level in {StagedTimeoutMs / 1000} s");
+		}
+
 		// One question a frame while a script is loaded: the co-op state the sync getters answer.
 		if (!mask.IsZero && (_coopStateQuery == 0 || ++_coopStateWait > CoopStateRetryFrames))
 		{
@@ -538,7 +563,23 @@ public partial class RefiiHost : Node
 			if (kind == ModSaveGate.SaveWrittenKind)
 			{
 				ModSaveGate.OnSaveWritten(fields);
+				Godot.Collections.Dictionary written = SaveWrittenFields(fields);
+				if (written["player"].AsInt64() == 1 && written["save"].AsString().Length != 0)
+				{
+					lock (SnapshotLock)
+					{
+						_currentSave = written["save"].AsString();
+					}
+				}
+
+				EmitSignal(SignalName.save_written, written);
 				continue;
+			}
+
+			// A quickload's level stands: the save folder gets its own files back.
+			if (kind == LevelLoadedKind && _staged is not null)
+			{
+				FinishSnapshotLoad("the level is up");
 			}
 
 			// A save's Lua table loaded: a filtered load drops the missing mods' keys now.
@@ -616,6 +657,7 @@ public partial class RefiiHost : Node
 				}
 
 				EmitSignal(SignalName.reply, id, result);
+				GC.KeepAlive(result);
 				continue;
 			}
 
@@ -641,6 +683,7 @@ public partial class RefiiHost : Node
 			}
 
 			EmitSignal(SignalName.mod_event, _nameByKind[kind].ToString(), e);
+			GC.KeepAlive(e);
 		}
 
 		Refii.Fx.Engine_FxPlayer.Pump(delta);
@@ -684,13 +727,23 @@ public partial class RefiiHost : Node
 	{
 		// The engine's own want: a filtered load drops the missing mods' RefiiModSave keys on
 		// save_loaded (ModSaveGate), scripts or none.
+		// A quickload in flight waits for level_loaded to put the save folder back (load_snapshot).
 		ModEventMask own = ModSaveGate.WantsSaveLoaded ? new ModEventMask().With(ModSaveGate.SaveLoadedKind) : new ModEventMask();
+		if (_staged is not null)
+		{
+			own = own.With(LevelLoadedKind);
+		}
+
 		if (ScriptsRoot is null || !IsInstanceValid(ScriptsRoot) || ScriptsRoot.GetChildCount() == 0)
 		{
 			return own;
 		}
 
 		ModEventMask mask = ModSaveGate.WantsSaveLoaded ? HeroKinds.With(ModSaveGate.SaveLoadedKind) : HeroKinds;
+		if (_staged is not null)
+		{
+			mask = mask.With(LevelLoadedKind);
+		}
 		if (GetSignalConnectionList(SignalName.mod_event).Count != 0)
 		{
 			for (int kind = 0; kind < _nameByKind.Length; kind++)
@@ -774,6 +827,227 @@ public partial class RefiiHost : Node
 	/// <summary>Adds one of an item definition (its GDB record hash: the "0x…" string the events carry, or a number) to an entity's inventory.</summary>
 	public void add_item(long entity, Variant definition) => Post($"add_item {entity} {Arg(definition)}");
 
+	/// <summary>
+	/// Uses one of an item definition (the "0x…" string the events carry, or a number) from this
+	/// machine's hero's inventory, as the Items page's Use does — the guest's own use, with no menu
+	/// open: a potion drinks, food is eaten, an `item_used` event fires. Nothing happens when the
+	/// hero carries none or the item states no use. False when the definition does not parse.
+	/// </summary>
+	public bool use_item(Variant definition) =>
+		UseItemAction(Arg(definition)) is { } action && HostBridge.PostFrontEndAction(action) != 0;
+
+	/// <summary>
+	/// The tick pump's action <see cref="use_item"/> posts for a definition ("0x…" or decimal):
+	/// <c>Inventory:use:&lt;record, decimal&gt;</c>, the Items page's own; null when it does not parse.
+	/// </summary>
+	public static string? UseItemAction(string definition)
+	{
+		string text = definition.Trim();
+		bool hex = text.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
+		return uint.TryParse(hex ? text[2..] : text, hex ? NumberStyles.HexNumber : NumberStyles.Integer,
+				CultureInfo.InvariantCulture, out uint record) && record != 0u
+			? $"{Refii.Ui.Engine_UiInventorySource.InventoryAction}use:{record}"
+			: null;
+	}
+
+	// ---- save snapshots: what a quicksave and a quickload are made of (SaveSnapshots) ------
+
+	/// <summary>The level_loaded kind: a quickload's save folder is put back when it arrives.</summary>
+	private const int LevelLoadedKind = 24;
+
+	/// <summary>How long a quickload may take to stand its level before the folder goes back anyway.</summary>
+	private const ulong StagedTimeoutMs = 180_000;
+
+	private static readonly object SnapshotLock = new();
+
+	/// <summary>Player one's save as the game last started or wrote it (its folder name); empty before either.</summary>
+	private static string _currentSave = string.Empty;
+
+	/// <summary>The save folder a quickload has staged, until its level stands; null when none is in flight.</summary>
+	private static string? _staged;
+	private static ulong _stagedAt;
+
+	/// <summary>
+	/// Copies this machine's player-one save, as it stands on disk, to the snapshot under
+	/// <paramref name="key"/> (<c>"&lt;mod&gt;.&lt;name&gt;"</c>), replacing the last one. Kept beside
+	/// the save, never in the load list. Take it on <c>save_written</c>, after the game's own save.
+	/// False before the session has started or written a save, for a bad key, or when the copy fails.
+	/// </summary>
+	public bool save_snapshot(string key)
+	{
+		if (CurrentSaveDirectory() is not { } directory)
+		{
+			GD.PushWarning($"[mods] save_snapshot('{key}'): no save started or written yet");
+			return false;
+		}
+
+		if (!SaveSnapshots.Take(directory, key, DateTime.UtcNow, out string error))
+		{
+			GD.PushWarning($"[mods] save_snapshot('{key}'): {error}");
+			return false;
+		}
+
+		GD.Print($"[mods] snapshot '{key}' of save '{System.IO.Path.GetFileName(directory)}' taken");
+		return true;
+	}
+
+	/// <summary>When the current save's snapshot under <paramref name="key"/> was taken, unix seconds; 0 when there is none.</summary>
+	public long snapshot_time(string key) =>
+		CurrentSaveDirectory() is { } directory && SaveSnapshots.Taken(directory, key) is { } taken
+			? new DateTimeOffset(taken).ToUnixTimeSeconds()
+			: 0;
+
+	/// <summary>
+	/// Loads the current save's snapshot under <paramref name="key"/> back into the running game:
+	/// the guest's own in-game reload (<c>LoadFailQuestSave</c>), loading screen and all, with the
+	/// save folder's own files put back once the level stands — the player's main save and the
+	/// quest's fail-quest save are left as they were. False in co-op, with no snapshot, or while a
+	/// load is in flight.
+	/// </summary>
+	public bool load_snapshot(string key)
+	{
+		if (_coopMode != 0)
+		{
+			GD.PushWarning($"[mods] load_snapshot('{key}'): not in co-op");
+			return false;
+		}
+
+		lock (SnapshotLock)
+		{
+			if (_staged is not null)
+			{
+				return false;
+			}
+		}
+
+		if (CurrentSaveDirectory() is not { } directory)
+		{
+			GD.PushWarning($"[mods] load_snapshot('{key}'): no save started or written yet");
+			return false;
+		}
+
+		if (!SaveSnapshots.Stage(directory, key, out string error))
+		{
+			GD.PushWarning($"[mods] load_snapshot('{key}'): {error}");
+			return false;
+		}
+
+		lock (SnapshotLock)
+		{
+			_staged = directory;
+			_stagedAt = Time.GetTicksMsec();
+		}
+
+		if (!Post("run_lua LoadFailQuestSave()"))
+		{
+			FinishSnapshotLoad("the load was not posted");
+			return false;
+		}
+
+		GD.Print($"[mods] snapshot '{key}' of save '{System.IO.Path.GetFileName(directory)}' loading");
+		return true;
+	}
+
+	/// <summary>A written package's fields (<c>player=N,name='X'</c>) as <c>save_written</c> carries them.</summary>
+	public static (string Save, int Player) ParseSaveWritten(string fields)
+	{
+		string save = string.Empty;
+		int player = 0;
+		foreach ((string key, object value) in ParseFieldsPlain(fields))
+		{
+			if (key == "name" && value is string s) save = s;
+			if (key == "player" && value is long l) player = (int)l;
+		}
+
+		return (save, player);
+	}
+
+	private static Godot.Collections.Dictionary SaveWrittenFields(string fields)
+	{
+		(string save, int player) = ParseSaveWritten(fields);
+		return new Godot.Collections.Dictionary { ["save"] = save, ["player"] = player };
+	}
+
+	/// <summary>The game's live save root (the emulator's user_data_root), else the configured one.</summary>
+	private static string SaveRoot() =>
+		HostBridge.GetSaveRoot() is { Length: > 0 } live ? live : ModSaveGate.UserDataRoot;
+
+	private static string? CurrentSaveDirectory()
+	{
+		string save;
+		lock (SnapshotLock)
+		{
+			save = _currentSave;
+		}
+
+		return save.Length == 0 ? null : Engine_SaveHero.FindSaveDirectory(SaveRoot(), save);
+	}
+
+	/// <summary>A quickload is over (its level stands, or it never will): the save folder gets its own files back.</summary>
+	private static void FinishSnapshotLoad(string reason)
+	{
+		string? directory;
+		lock (SnapshotLock)
+		{
+			directory = _staged;
+			_staged = null;
+		}
+
+		if (directory is null)
+		{
+			return;
+		}
+
+		try
+		{
+			int restored = SaveSnapshots.Restore(directory);
+			GD.Print($"[mods] snapshot load of save '{System.IO.Path.GetFileName(directory)}' over ({reason}): {restored} save file(s) put back");
+		}
+		catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException)
+		{
+			GD.PushWarning($"[mods] snapshot load of '{directory}': the save folder could not be put back: {e.Message}");
+		}
+	}
+
+	/// <summary>
+	/// On the guest thread, inside start_game: names the save being started for the snapshots, and
+	/// puts back a quickload's hold a crash left in that save's folder before the game reads it.
+	/// </summary>
+	private static void SnapshotsOnStartGame(int kind, IReadOnlyList<KeyValuePair<string, object>> fields)
+	{
+		if (kind != ModSaveGate.StartGameKind)
+		{
+			return;
+		}
+
+		string save = fields.FirstOrDefault(f => f.Key == "save").Value as string ?? string.Empty;
+		lock (SnapshotLock)
+		{
+			// Empty for a new game: no snapshot until its first save.
+			_currentSave = save;
+			if (_staged is not null)
+			{
+				return;
+			}
+		}
+
+		if (save.Length == 0 || Engine_SaveHero.FindSaveDirectory(SaveRoot(), save) is not { } directory ||
+			!SaveSnapshots.IsStaged(directory))
+		{
+			return;
+		}
+
+		try
+		{
+			int restored = SaveSnapshots.Restore(directory);
+			GD.Print($"[mods] save '{save}': a quickload's hold left by an earlier session put back ({restored} file(s))");
+		}
+		catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException)
+		{
+			GD.PushWarning($"[mods] save '{save}': a quickload's hold could not be put back: {e.Message}");
+		}
+	}
+
 	/// <summary>Gives experience to one of an entity's pools.</summary>
 	public void give_experience(long entity, int pool, float amount) =>
 		Post($"give_experience {entity} {pool} {Num(amount)}");
@@ -804,8 +1078,11 @@ public partial class RefiiHost : Node
 	/// multipliers of its lit colour, 1 untouched, above 1 brighter; both looks draw it and co-op
 	/// replicates it. <paramref name="a"/> is stored, never drawn: opacity is not the tint's.
 	/// </summary>
-	public void entity_tint(long entity, float r, float g, float b, float a = 1f) =>
+	public void entity_tint(long entity, float r, float g, float b, float a) =>
 		Post($"entity_tint {entity} {Num(r)} {Num(g)} {Num(b)} {Num(a)}");
+
+	/// <summary>The short form, <c>a = 1</c>: the script bridge passes no C# default.</summary>
+	public void entity_tint(long entity, float r, float g, float b) => entity_tint(entity, r, g, b, 1f);
 
 	/// <summary>Puts an entity's tint back to the constructor's {1, 1, 1, 1} (refii_mod_entity_untint).</summary>
 	public void entity_untint(long entity) => Post($"entity_untint {entity}");
@@ -831,7 +1108,10 @@ public partial class RefiiHost : Node
 	/// (refii_mod_lock_target): the game's force byte, look-at flag and SetTarget, what a held LT
 	/// states. <c>query locked_target P</c> answers the target held.
 	/// </summary>
-	public void lock_target(int player, long entity = 0) => Post($"lock_target {player} {entity}");
+	public void lock_target(int player, long entity) => Post($"lock_target {player} {entity}");
+
+	/// <summary>The short form, <c>entity = 0</c>: the script bridge passes no C# default.</summary>
+	public void lock_target(int player) => lock_target(player, 0);
 
 	/// <summary>Ends the lock lock_target stated for player 1 or 2 (refii_mod_release_lock); a held LT is the trigger's.</summary>
 	public void release_lock(int player) => Post($"release_lock {player}");
@@ -846,8 +1126,11 @@ public partial class RefiiHost : Node
 	/// never switches target and each wheel notch is one switch; a pad is untouched. False for a
 	/// bad handle.
 	/// </summary>
-	public bool wheel_switches_target(long handle, bool on = true) =>
+	public bool wheel_switches_target(long handle, bool on) =>
 		handle > 0 && handle <= uint.MaxValue && Post($"wheel_switches_target {handle} {(on ? 1 : 0)}");
+
+	/// <summary>The short form, <c>on = true</c>: the script bridge passes no C# default.</summary>
+	public bool wheel_switches_target(long handle) => wheel_switches_target(handle, true);
 
 	/// <summary>Switches a player's locked target to the next one left or right (refii_mod_switch_target), the camera's own flick.</summary>
 	public void switch_target(int player, bool left) => Post($"switch_target {player} {(left ? 1 : 0)}");
@@ -878,8 +1161,14 @@ public partial class RefiiHost : Node
 	/// 3 burning (4, a vortex, is refused), at spell level 0..4, from <paramref name="source"/> (0:
 	/// the entity itself; chaos takes its direction from it). The status_effect event fires.
 	/// </summary>
-	public void apply_status(long entity, int kind, float seconds, int level = 0, long source = 0) =>
+	public void apply_status(long entity, int kind, float seconds, int level, long source) =>
 		Post($"apply_status {entity} {kind} {Num(seconds)} {level} {source}");
+
+	/// <summary>The short form, <c>source = 0</c>: the script bridge passes no C# default.</summary>
+	public void apply_status(long entity, int kind, float seconds, int level) => apply_status(entity, kind, seconds, level, 0);
+
+	/// <summary>The short form, <c>level = 0, source = 0</c>: the script bridge passes no C# default.</summary>
+	public void apply_status(long entity, int kind, float seconds) => apply_status(entity, kind, seconds, 0, 0);
 
 	/// <summary>Ends a status through the game's own remover (refii_mod_clear_status). <c>query has_status E KIND</c> asks.</summary>
 	public void clear_status(long entity, int kind) => Post($"clear_status {entity} {kind}");
@@ -906,8 +1195,11 @@ public partial class RefiiHost : Node
 	/// Knocks an entity down and away along a direction scaled by force (refii_mod_knockback): a
 	/// Force Push's own hit with no damage and no attacker through the game's one hit receiver.
 	/// </summary>
-	public void knockback(long entity, float x, float y, float z, float force = 1f) =>
+	public void knockback(long entity, float x, float y, float z, float force) =>
 		Post($"knockback {entity} {Num(x)} {Num(y)} {Num(z)} {Num(force)}");
+
+	/// <summary>The short form, <c>force = 1</c>: the script bridge passes no C# default.</summary>
+	public void knockback(long entity, float x, float y, float z) => knockback(entity, x, y, z, 1f);
 
 	/// <summary>Staggers an entity: the flinch a 0-damage melee tap plays (refii_mod_stagger).</summary>
 	public void stagger(long entity) => Post($"stagger {entity}");
@@ -918,16 +1210,25 @@ public partial class RefiiHost : Node
 	/// position when it has none. <paramref name="tag"/> is what stop_sound matches. The cue's own
 	/// volume applies; cue names are the audio banks' event names (docs/modding/gameplay.md, Sound).
 	/// </summary>
-	public void play_sound(string cue, long entity, string tag = "") =>
+	public void play_sound(string cue, long entity, string tag) =>
 		Post($"play_sound {Word(cue)} {entity} {TagWord(tag)}");
 
+	/// <summary>The short form, <c>tag = ""</c>: the script bridge passes no C# default.</summary>
+	public void play_sound(string cue, long entity) => play_sound(cue, entity, "");
+
 	/// <summary>Plays an audio cue at a world point on an emitter of the API's own (refii_mod_play_sound_at; eight kept, the oldest freed).</summary>
-	public void play_sound_at(string cue, float x, float y, float z, string tag = "") =>
+	public void play_sound_at(string cue, float x, float y, float z, string tag) =>
 		Post($"play_sound_at {Word(cue)} {Num(x)} {Num(y)} {Num(z)} {TagWord(tag)}");
 
+	/// <summary>The short form, <c>tag = ""</c>: the script bridge passes no C# default.</summary>
+	public void play_sound_at(string cue, float x, float y, float z) => play_sound_at(cue, x, y, z, "");
+
 	/// <summary>Stops the voices under a tag on an entity's emitter, or with entity 0 on the point emitters, fading over milliseconds (refii_mod_stop_sound).</summary>
-	public void stop_sound(long entity, string tag, int fade_ms = 0) =>
+	public void stop_sound(long entity, string tag, int fade_ms) =>
 		Post($"stop_sound {entity} {TagWord(tag)} {fade_ms}");
+
+	/// <summary>The short form, <c>fade_ms = 0</c>: the script bridge passes no C# default.</summary>
+	public void stop_sound(long entity, string tag) => stop_sound(entity, tag, 0);
 
 	/// <summary>Starts a music cue through SoundTools.PlayMusic's own body (refii_mod_play_music): the MUSIC_* cues the quests start.</summary>
 	public void play_music(string name) => Post($"play_music {Word(name)}");
@@ -941,8 +1242,17 @@ public partial class RefiiHost : Node
 	/// SpeedMultiplier, BlendInTime — wrapped in a BATCH of <paramref name="loops"/> above 1. The
 	/// game's evaluator plays it and the pose feed shows it; a higher-priority action keeps the body.
 	/// </summary>
-	public void play_animation(long entity, string name, int loops = 1, float blend_seconds = 0.1f, float speed = 1f) =>
+	public void play_animation(long entity, string name, int loops, float blend_seconds, float speed) =>
 		Post($"play_animation {entity} {Word(name)} {loops} {Num(blend_seconds)} {Num(speed)}");
+
+	/// <summary>The short form, <c>speed = 1</c>: the script bridge passes no C# default.</summary>
+	public void play_animation(long entity, string name, int loops, float blend_seconds) => play_animation(entity, name, loops, blend_seconds, 1f);
+
+	/// <summary>The short form, <c>blend_seconds = 0.1, speed = 1</c>: the script bridge passes no C# default.</summary>
+	public void play_animation(long entity, string name, int loops) => play_animation(entity, name, loops, 0.1f, 1f);
+
+	/// <summary>The short form, <c>loops = 1, blend_seconds = 0.1, speed = 1</c>: the script bridge passes no C# default.</summary>
+	public void play_animation(long entity, string name) => play_animation(entity, name, 1, 0.1f, 1f);
 
 	/// <summary>Ends an entity's scripted actions, the played animation among them (refii_mod_stop_animation: Action.FinishScriptedActions).</summary>
 	public void stop_animation(long entity) => Post($"stop_animation {entity}");
@@ -967,7 +1277,10 @@ public partial class RefiiHost : Node
 	/// An NPC follows a target as a quest's Follow.FollowEntity orders it (refii_mod_npc_follow):
 	/// the follow component's own entry, radius the quests' 2 by default; BehaviourFollow walks it.
 	/// </summary>
-	public void npc_follow(long entity, long target, float radius = 2f) => Post($"npc_follow {entity} {target} {Num(radius)}");
+	public void npc_follow(long entity, long target, float radius) => Post($"npc_follow {entity} {target} {Num(radius)}");
+
+	/// <summary>The short form, <c>radius = 2</c>: the script bridge passes no C# default.</summary>
+	public void npc_follow(long entity, long target) => npc_follow(entity, target, 2f);
 
 	/// <summary>An NPC walks to a point as a quest's ScriptFunction.StartScriptControlledMovement orders it (refii_mod_npc_go_to); not waited for.</summary>
 	public void npc_go_to(long entity, float x, float y, float z) => Post($"npc_go_to {entity} {Num(x)} {Num(y)} {Num(z)}");
@@ -999,8 +1312,14 @@ public partial class RefiiHost : Node
 	/// (refii_mod_set_weather: EnvironmentTheme.BlendToEnvironmentTheme(theme, weight, seconds); the
 	/// weather_theme event fires). The Dynamic Sky's own weather override is the host's switch, not this.
 	/// </summary>
-	public void set_weather(string theme, float weight = 1f, float seconds = 1f) =>
+	public void set_weather(string theme, float weight, float seconds) =>
 		Post($"set_weather {Word(theme)} {Num(weight)} {Num(seconds)}");
+
+	/// <summary>The short form, <c>seconds = 1</c>: the script bridge passes no C# default.</summary>
+	public void set_weather(string theme, float weight) => set_weather(theme, weight, 1f);
+
+	/// <summary>The short form, <c>weight = 1, seconds = 1</c>: the script bridge passes no C# default.</summary>
+	public void set_weather(string theme) => set_weather(theme, 1f, 1f);
 
 	/// <summary>A name on a command line: no spaces (a space becomes '_'); empty is "-".</summary>
 	private static string Word(string name) =>
@@ -1095,10 +1414,19 @@ public partial class RefiiHost : Node
 	/// 2, <see cref="ModApi.CutsceneLookAt"/> 4 (the game gave that player's held LT a camera). One
 	/// guest tick behind, like every signal; <c>query in_cutscene P</c> asks the guest now.
 	/// </summary>
-	public int cutscene_kinds(int player = 0) => _cutscene.Kinds(player);
+	public int cutscene_kinds(int player) => _cutscene.Kinds(player);
+
+	/// <summary>The short form, <c>player = 0</c>: the script bridge passes no C# default.</summary>
+	public int cutscene_kinds() => cutscene_kinds(0);
 
 	/// <summary>Whether any of <paramref name="kinds"/> (bits; all three by default) holds for player 1 or 2 (0: either): <see cref="cutscene_kinds"/>.</summary>
-	public bool in_cutscene(int player = 0, int kinds = ModApi.CutsceneAll) => _cutscene.In(player, kinds);
+	public bool in_cutscene(int player, int kinds) => _cutscene.In(player, kinds);
+
+	/// <summary>The short form, <c>kinds = ModApi.CutsceneAll</c>: the script bridge passes no C# default.</summary>
+	public bool in_cutscene(int player) => in_cutscene(player, ModApi.CutsceneAll);
+
+	/// <summary>The short form, <c>player = 0, kinds = ModApi.CutsceneAll</c>: the script bridge passes no C# default.</summary>
+	public bool in_cutscene() => in_cutscene(0, ModApi.CutsceneAll);
 
 	/// <summary>Refii.coop_mode as the guest last answered: 0 alone, 1 local co-op, 2 online hosting, 3 online joined.</summary>
 	public int coop_mode() => _coopMode;
@@ -1150,8 +1478,11 @@ public partial class RefiiHost : Node
 	/// play or on the title, as a list of its own that takes the pad and closes on B. False when no
 	/// template has that name or the player is played on the other machine (which opens it there).
 	/// </summary>
-	public bool open_menu(string name, long player = 0) =>
+	public bool open_menu(string name, long player) =>
 		Refii.Ui.Engine_UiModMenus.OpenFor(name, (int)Math.Clamp(player, 0, 2));
+
+	/// <summary>The short form, <c>player = 0</c>: the script bridge passes no C# default.</summary>
+	public bool open_menu(string name) => open_menu(name, 0);
 
 	/// <summary>
 	/// States the rows of a menu list for <paramref name="player"/> (1 or 2; 0, the default, for every
@@ -1161,7 +1492,7 @@ public partial class RefiiHost : Node
 	/// tag or literal, <c>command</c> any row verb (<c>Mod:lua:</c>, <c>Opens:</c>, <c>Screen:open:</c>,
 	/// a registered command). An empty array clears the list.
 	/// </summary>
-	public void set_menu_rows(string menu, Godot.Collections.Array rows, long player = 0)
+	public void set_menu_rows(string menu, Godot.Collections.Array rows, long player)
 	{
 		var stated = new List<Refii.Ui.Engine_UiModRows.Stated>();
 		foreach (Variant row in rows)
@@ -1187,6 +1518,9 @@ public partial class RefiiHost : Node
 		Refii.Ui.Engine_UiModRows.Set(menu, stated, (int)Math.Clamp(player, 0, 2));
 	}
 
+	/// <summary>The short form, <c>player = 0</c>: the script bridge passes no C# default.</summary>
+	public void set_menu_rows(string menu, Godot.Collections.Array rows) => set_menu_rows(menu, rows, 0);
+
 	/// <summary>
 	/// Opens a host-owned screen by id for <paramref name="player"/> (0, the default, for whoever owns
 	/// the menus here) — the <c>Screen:open:&lt;id&gt;</c> verb, as a row on the list with the input
@@ -1195,9 +1529,12 @@ public partial class RefiiHost : Node
 	/// the pause book, so it opens while the pause list has the input. False when it did not open
 	/// (the log says why) or the player is played on the other machine.
 	/// </summary>
-	public bool open_screen(long screen, long player = 0) =>
+	public bool open_screen(long screen, long player) =>
 		screen is > 0 and <= uint.MaxValue &&
 		Refii.Ui.Engine_UiModRows.OpenScreen((uint)screen, (int)Math.Clamp(player, 0, 2));
+
+	/// <summary>The short form, <c>player = 0</c>: the script bridge passes no C# default.</summary>
+	public bool open_screen(long screen) => open_screen(screen, 0);
 
 	/// <summary>
 	/// Registers a ROW VERB every list runs (<c>Refii.Ui.Engine_UiCommands</c>): a row whose command is
@@ -1337,7 +1674,7 @@ public partial class RefiiHost : Node
 	/// the <c>mod_message_box</c> event carry: 0 for A, 1 for B, -1 when another box replaced it or
 	/// the player is played on the other machine. One question and one notice stand at a time.
 	/// </summary>
-	public long message_box(string title, string text, Godot.Collections.Array<string> buttons, long player = 0)
+	public long message_box(string title, string text, Godot.Collections.Array<string> buttons, long player)
 	{
 		long id = NextBoxId();
 		void Answered(int button)
@@ -1361,6 +1698,9 @@ public partial class RefiiHost : Node
 			Caption(0), Caption(1), buttons.Count >= 2, Answered);
 		return id;
 	}
+
+	/// <summary>The short form, <c>player = 0</c>: the script bridge passes no C# default.</summary>
+	public long message_box(string title, string text, Godot.Collections.Array<string> buttons) => message_box(title, text, buttons, 0);
 
 	/// <summary>The next box id, shared by message_box, notice and menu_box (Godot's half of the id space).</summary>
 	private long NextBoxId()
@@ -1400,7 +1740,7 @@ public partial class RefiiHost : Node
 	/// 0 once it has shown and gone, -1 when it never showed (its player is played on the other
 	/// machine, which shows it there).
 	/// </summary>
-	public long notice(string title, string text, double seconds = 0, long player = 0)
+	public long notice(string title, string text, double seconds, long player)
 	{
 		long id = NextBoxId();
 		Refii.Ui.Engine_UiModBoxes.Notice((uint)id, (int)Math.Clamp(player, 0, 2), title, text,
@@ -1414,6 +1754,12 @@ public partial class RefiiHost : Node
 		return id;
 	}
 
+	/// <summary>The short form, <c>player = 0</c>: the script bridge passes no C# default.</summary>
+	public long notice(string title, string text, double seconds) => notice(title, text, seconds, 0);
+
+	/// <summary>The short form, <c>seconds = 0, player = 0</c>: the script bridge passes no C# default.</summary>
+	public long notice(string title, string text) => notice(title, text, 0, 0);
+
 	/// <summary>
 	/// Puts up a menu box in the game's own menu box art (the Golden Cock's), on the front end and in
 	/// game, for <paramref name="player"/> (1 or 2; 0, the default, for whoever owns the menus here):
@@ -1423,7 +1769,7 @@ public partial class RefiiHost : Node
 	/// the chosen option's index, -1 for B, another box replacing it, or a player played on the
 	/// other machine. One menu box stands at a time.
 	/// </summary>
-	public long menu_box(string title, string text, Godot.Collections.Array<string> options, long player = 0, bool cancelable = true)
+	public long menu_box(string title, string text, Godot.Collections.Array<string> options, long player, bool cancelable)
 	{
 		long id = NextBoxId();
 		Refii.Ui.Engine_UiModBoxes.MenuBox((uint)id, (int)Math.Clamp(player, 0, 2), title, text, MenuOptions(options),
@@ -1437,6 +1783,12 @@ public partial class RefiiHost : Node
 		return id;
 	}
 
+	/// <summary>The short form, <c>cancelable = true</c>: the script bridge passes no C# default.</summary>
+	public long menu_box(string title, string text, Godot.Collections.Array<string> options, long player) => menu_box(title, text, options, player, true);
+
+	/// <summary>The short form, <c>player = 0, cancelable = true</c>: the script bridge passes no C# default.</summary>
+	public long menu_box(string title, string text, Godot.Collections.Array<string> options) => menu_box(title, text, options, 0, true);
+
 	/// <summary>The ModNotice event's Godot surface, raised where the notice went (the channel is Godot's).</summary>
 	internal void RaiseModNotice(uint id, int outcome, int player)
 	{
@@ -1448,6 +1800,7 @@ public partial class RefiiHost : Node
 		};
 		EmitSignal(SignalName.mod_notice, e);
 		EmitSignal(SignalName.mod_event, "mod_notice", e);
+		GC.KeepAlive(e);
 	}
 
 	/// <summary>The ModMenuBox event's Godot surface, raised where the box was answered.</summary>
@@ -1461,6 +1814,7 @@ public partial class RefiiHost : Node
 		};
 		EmitSignal(SignalName.mod_menu_box, e);
 		EmitSignal(SignalName.mod_event, "mod_menu_box", e);
+		GC.KeepAlive(e);
 	}
 
 	/// <summary>
@@ -1478,6 +1832,7 @@ public partial class RefiiHost : Node
 		};
 		EmitSignal(SignalName.mod_message_box, e);
 		EmitSignal(SignalName.mod_event, "mod_message_box", e);
+		GC.KeepAlive(e);
 	}
 
 	/// <summary>
@@ -1528,6 +1883,7 @@ public partial class RefiiHost : Node
 		};
 		EmitSignal(SignalName.menu_screen, e);
 		EmitSignal(SignalName.mod_event, "menu_screen", e);
+		GC.KeepAlive(e);
 	}
 
 	// ---- effects: Godot draws them (Engine_FxPlayer) --------------------------------------------
@@ -1568,7 +1924,7 @@ public partial class RefiiHost : Node
 	/// and goes with the entity. Returns the id <see cref="light_remove"/> takes; 0 for an unknown
 	/// handle or target.
 	/// </summary>
-	public long light(Variant target, Variant color, double energy, double range, Godot.Collections.Dictionary? options = null)
+	public long light(Variant target, Variant color, double energy, double range, Godot.Collections.Dictionary? options)
 	{
 		uint handle = 0;
 		var point = Vector3.Zero;
@@ -1655,6 +2011,9 @@ public partial class RefiiHost : Node
 			handle, point, new Color(rgb.X, rgb.Y, rgb.Z), (float)energy, (float)range, offset, at, flicker, direction, cone, attenuation);
 	}
 
+	/// <summary>The short form, <c>options = null</c>: the script bridge passes no C# default.</summary>
+	public long light(Variant target, Variant color, double energy, double range) => light(target, color, energy, range, null);
+
 	/// <summary>Removes a mod light by any surface's id (native, Lua or Godot); false when none stands under it.</summary>
 	public bool light_remove(long id) => id > 0 && id <= uint.MaxValue && Refii.Lighting.Engine_ModLights.Remove((uint)id);
 
@@ -1668,7 +2027,7 @@ public partial class RefiiHost : Node
 	/// outside an online session (alone or in local co-op there is no partner machine), for a bad
 	/// name, or a payload over the limit.
 	/// </summary>
-	public bool send_to_partner(string mod, string name, string payload = "")
+	public bool send_to_partner(string mod, string name, string payload)
 	{
 		if (_coopMode < 2 || string.IsNullOrEmpty(mod) || string.IsNullOrEmpty(name) ||
 			mod.Length > 32 || name.Length > 32 || mod.Contains(' ') || name.Contains(' '))
@@ -1684,6 +2043,9 @@ public partial class RefiiHost : Node
 
 		return Post($"partner_send {mod} {name} {Convert.ToBase64String(bytes)}");
 	}
+
+	/// <summary>The short form, <c>payload = ""</c>: the script bridge passes no C# default.</summary>
+	public bool send_to_partner(string mod, string name) => send_to_partner(mod, name, "");
 
 	/// <summary>
 	/// The mod lights standing: id, entity (handle, 0 for a point), r, g, b, energy, range, x, y, z
@@ -1723,7 +2085,7 @@ public partial class RefiiHost : Node
 	/// distance curve. Returns the id <see cref="unmark"/> takes; 0 for no icon and no text, or an
 	/// unknown handle. A marker on an entity goes with the entity.
 	/// </summary>
-	public long mark(Variant target, string icon, string text = "", long player = 0)
+	public long mark(Variant target, string icon, string text, long player)
 	{
 		uint handle = 0;
 		var point = Vector3.Zero;
@@ -1757,6 +2119,12 @@ public partial class RefiiHost : Node
 		return Refii.Ui.Engine_HudModMarkers.Add((int)Math.Clamp(player, 0, 2), handle, point, icon ?? string.Empty, text ?? string.Empty);
 	}
 
+	/// <summary>The short form, <c>player = 0</c>: the script bridge passes no C# default.</summary>
+	public long mark(Variant target, string icon, string text) => mark(target, icon, text, 0);
+
+	/// <summary>The short form, <c>text = "", player = 0</c>: the script bridge passes no C# default.</summary>
+	public long mark(Variant target, string icon) => mark(target, icon, "", 0);
+
 	/// <summary>Removes a marker by any surface's id; false when none stands under it.</summary>
 	public bool unmark(long id) => id > 0 && id <= uint.MaxValue && Refii.Ui.Engine_HudModMarkers.Remove((uint)id);
 
@@ -1786,12 +2154,15 @@ public partial class RefiiHost : Node
 	/// once): a host-drawn layer over that player's half (their whole window alone or online),
 	/// independent of the game's own fade, which level changes own. False for a player not played here.
 	/// </summary>
-	public bool fade(long player, bool to_black, double seconds = 0)
+	public bool fade(long player, bool to_black, double seconds)
 	{
 		int who = (int)Math.Clamp(player, 0, 2);
 		return Refii.Ui.Engine_UiModBoxes.PlayedHere(who) &&
 			Refii.Ui.Engine_UiModFade.Request(who, to_black, double.IsFinite(seconds) ? (float)seconds : 0f);
 	}
+
+	/// <summary>The short form, <c>seconds = 0</c>: the script bridge passes no C# default.</summary>
+	public bool fade(long player, bool to_black) => fade(player, to_black, 0);
 
 	/// <summary>A player's mod fade as it stands: alpha (0 clear .. 1 black), target, seconds of the last request.</summary>
 	public Godot.Collections.Dictionary fade_state(long player)
@@ -1807,8 +2178,14 @@ public partial class RefiiHost : Node
 	/// default), "boss" (wide, red, centred) or "timer" (narrow). Meters stack under the top of the
 	/// player's screen in the order first shown; the same id restates it in place. False for no id.
 	/// </summary>
-	public bool meter(string id, string label, double value, double max, long player = 0, string style = "") =>
+	public bool meter(string id, string label, double value, double max, long player, string style) =>
 		Refii.Ui.Engine_HudModMeters.Set(id, (int)Math.Clamp(player, 0, 2), label ?? string.Empty, (float)value, (float)max, style ?? string.Empty);
+
+	/// <summary>The short form, <c>style = ""</c>: the script bridge passes no C# default.</summary>
+	public bool meter(string id, string label, double value, double max, long player) => meter(id, label, value, max, player, "");
+
+	/// <summary>The short form, <c>player = 0, style = ""</c>: the script bridge passes no C# default.</summary>
+	public bool meter(string id, string label, double value, double max) => meter(id, label, value, max, 0, "");
 
 	/// <summary>Removes the meter from every player's HUD; false when none stands under the id.</summary>
 	public bool meter_remove(string id) => Refii.Ui.Engine_HudModMeters.Remove(id ?? string.Empty);
@@ -1823,8 +2200,11 @@ public partial class RefiiHost : Node
 	/// still fire. Cleared when the mods' Lua reloads and when the game goes down. False for an
 	/// action no enabled mod declares.
 	/// </summary>
-	public bool claim_input(long player, string action, bool on = true) =>
+	public bool claim_input(long player, string action, bool on) =>
 		player is >= 0 and <= 2 && ModInput.Claim((int)player, action ?? string.Empty, on);
+
+	/// <summary>The short form, <c>on = true</c>: the script bridge passes no C# default.</summary>
+	public bool claim_input(long player, string action) => claim_input(player, action, true);
 
 	/// <summary>Whether <paramref name="action"/> is claimed for <paramref name="player"/> (1 or 2).</summary>
 	public bool input_claimed(long player, string action) =>
@@ -1860,8 +2240,11 @@ public partial class RefiiHost : Node
 		Refii.Ui.Engine_UiHudOverrides.SetSlide((int)player, element ?? string.Empty, (int)slide);
 
 	/// <summary>Holds a HUD piece visible (its owner chain kept on its shown slides) for a player, or lets it go. False for no name.</summary>
-	public bool hud_hold(long player, string piece, bool on = true) =>
+	public bool hud_hold(long player, string piece, bool on) =>
 		player is >= 0 and <= 2 && Refii.Ui.Engine_UiHudOverrides.SetHold((int)player, piece ?? string.Empty, on);
+
+	/// <summary>The short form, <c>on = true</c>: the script bridge passes no C# default.</summary>
+	public bool hud_hold(long player, string piece) => hud_hold(player, piece, true);
 
 	/// <summary>The overrides standing for <paramref name="player"/>: <c>icons</c> (element → texture), <c>slides</c> (element → slide), <c>holds</c> (pieces).</summary>
 	public Godot.Collections.Dictionary hud_overrides(long player)

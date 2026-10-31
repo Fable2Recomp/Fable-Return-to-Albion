@@ -24,12 +24,16 @@ add_library(rexcore OBJECT
 )
 add_library(rex::core ALIAS rexcore)
 
-if(APPLE)
+if(APPLE OR ANDROID)
     # Apple's libc++ still gates std::jthread/std::stop_token behind the
     # experimental-library feature flag. Only timer_queue.cpp uses them, and
     # neither type crosses a header boundary.
     set_source_files_properties(timer_queue.cpp PROPERTIES
         COMPILE_OPTIONS "-fexperimental-library")
+    if(ANDROID)
+        # r28 supplies the matching stop-token support archive; only this private TU uses it.
+        target_link_libraries(rexcore PRIVATE c++experimental)
+    endif()
 endif()
 
 # Platform-specific sources
@@ -98,7 +102,16 @@ target_include_directories(rexcore PRIVATE
     ${PROJECT_SOURCE_DIR}/thirdparty/cli11/include
 )
 
-if(APPLE)
+if(ANDROID)
+    enable_language(ASM)
+    target_sources(rexcore PRIVATE
+        main_android.cpp
+        filesystem_android.cpp
+        ${PROJECT_SOURCE_DIR}/thirdparty/boost_context_android/make_arm64_aapcs_elf_gas.S
+        ${PROJECT_SOURCE_DIR}/thirdparty/boost_context_android/jump_arm64_aapcs_elf_gas.S)
+    # pthread lives in Bionic and librt does not exist as a separate Android library.
+    target_link_libraries(rexcore PRIVATE android log dl)
+elseif(APPLE)
     target_link_libraries(rexcore PRIVATE pthread)
 elseif(UNIX)
     target_link_libraries(rexcore PRIVATE pthread rt dl)

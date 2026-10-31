@@ -18,6 +18,7 @@
 #include "core/player_state.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -130,6 +131,11 @@ struct State {
   std::string root;
   refii::players::SaveRootResolver resolver = nullptr;
 };
+
+/// `State::owned`, written under the mutex, so the guest's per-tick call that nearly always
+/// restates the same mask and the per-call readers skip the lock (Android only, where the guest
+/// is CPU-bound).
+std::atomic<uint32_t> g_owned_mirror{3u};
 
 uint32_t NewEpoch() {
   static uint32_t counter = 0;
@@ -624,6 +630,11 @@ extern "C" void refii_bridge_player_write(int32_t player, const char* key, size_
 }
 
 extern "C" void refii_bridge_player_set_owned(uint32_t mask) {
+#if defined(__ANDROID__)
+  if ((mask & 3u) == g_owned_mirror.load(std::memory_order_acquire)) {
+    return;
+  }
+#endif
   State& s = Tables();
   std::lock_guard lock(s.mutex);
   mask &= 3u;
@@ -650,12 +661,17 @@ extern "C" void refii_bridge_player_set_owned(uint32_t mask) {
   REXLOG_INFO("Refii player state: this machine plays {}{}", (mask & 1u) != 0u ? "player one " : "",
               (mask & 2u) != 0u ? "player two" : (mask == 0u ? "no player" : ""));
   s.owned = mask;
+  g_owned_mirror.store(mask, std::memory_order_release);
 }
 
 extern "C" uint32_t refii_bridge_player_owned(void) {
+#if defined(__ANDROID__)
+  return g_owned_mirror.load(std::memory_order_acquire);
+#else
   State& s = Tables();
   std::lock_guard lock(s.mutex);
   return s.owned;
+#endif
 }
 
 extern "C" void refii_bridge_player_new_hero(int32_t player) {

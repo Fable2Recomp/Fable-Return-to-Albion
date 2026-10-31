@@ -20,7 +20,7 @@ public partial class GameDevTabMonitors : GameDevTab
 	private string? _custom;
 
 	private static readonly Performance.Monitor[] All =
-		(Performance.Monitor[])System.Enum.GetValues(typeof(Performance.Monitor));
+		System.Enum.GetValues<Performance.Monitor>();
 
 	public GameDevTabMonitors()
 	{

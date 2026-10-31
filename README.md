@@ -27,6 +27,11 @@ checks both files before it copies anything and refuses any disc or title update
 pairs above. This restriction will be eased as we eventually support more versions closer to
 release.
 
+An experimental **Android ARM64** port (Android 12 or newer) installs your own game
+on the phone and compiles it there, and plays with a controller or touch controls.
+See [the Android guide](docs/android.md) to build the APK (one step:
+`tools/android/build-apk.py`) and install it.
+
 ## Features
 
 - **The original game, running natively.** The recompiled game code drives the simulation. It is

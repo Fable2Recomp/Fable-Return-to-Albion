@@ -1161,6 +1161,50 @@ public sealed class Engine_HudLayout
         Array.Empty<Engine_HudModLayout.Conflict>();
 
     /// <summary>
+    /// How far Android lifts the d-pad, in reference units: clear of the touch controls' Options
+    /// button below it, so a thumb pressing Down does not catch Options.
+    /// </summary>
+    public const float AndroidDpadLift = 56f;
+
+    /// <summary>
+    /// Raises every d-pad piece (<see cref="IsDpad"/>) by <paramref name="units"/>, together so the
+    /// slots stay in their ring. A platform's default, applied beneath the player's own file.
+    /// </summary>
+    /// <returns>How many pieces moved.</returns>
+    public int LiftDpad(float units) => Nudge(IsDpad, new Vector2(0f, -units));
+
+    /// <summary>
+    /// How far Android moves the spell-charge meters in from the side edges, in reference units:
+    /// the touch controls' Spells and Lock buttons stand at the edges there.
+    /// </summary>
+    public const float AndroidSpellChargeInset = 120f;
+
+    /// <summary>
+    /// Moves player one's spell-charge meter (down the left edge) in by <paramref name="units"/>,
+    /// and player two's (down the right) by the same, mirrored. A platform's default, applied
+    /// beneath the player's own file.
+    /// </summary>
+    /// <returns>How many pieces moved.</returns>
+    public int InsetSpellCharge(float units) =>
+        Nudge(piece => piece.Id == "group.SpellCharging.SpellCharging", new Vector2(units, 0f)) +
+        Nudge(piece => piece.Id == "group.SpellCharging2.SpellCharging2", new Vector2(-units, 0f));
+
+    /// <summary>Moves every piece <paramref name="which"/> picks by <paramref name="delta"/> (reference units, +Y down).</summary>
+    private int Nudge(System.Func<Piece, bool> which, Vector2 delta)
+    {
+        int moved = 0;
+        foreach (Piece piece in _pieces.ToArray())
+        {
+            if (which(piece) && Reposition(piece.Id, piece.Anchor, piece.Offset + delta))
+            {
+                ++moved;
+            }
+        }
+
+        return moved;
+    }
+
+    /// <summary>
     /// Moves every named piece. An id matching no piece is reported, since that is what a renamed
     /// binding looks like. Returns how many pieces moved.
     /// </summary>
@@ -1228,6 +1272,7 @@ public sealed class Engine_HudLayout
         }
 
         file.StoreString(Json.Stringify(root, "\t"));
+        GC.KeepAlive(root);
         return true;
     }
 }

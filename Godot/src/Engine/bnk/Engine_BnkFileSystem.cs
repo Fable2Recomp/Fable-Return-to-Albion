@@ -24,7 +24,8 @@ public sealed class BnkFileSystem : IDisposable
     private readonly Dictionary<string, BnkContainer> _containers =
         new(StringComparer.OrdinalIgnoreCase);
 
-    private const long NestedCacheBudget = 1024L << 20;
+    // Android keeps a smaller budget for its smaller managed heap; see BnkNestedCachePolicy.
+    private static readonly long NestedCacheBudget = BnkNestedCachePolicy.DefaultBytes(Refii.Core.Engine_Platform.IsAndroid);
 
     /// <summary>
     /// What the nested-bank cache is actually doing: managed bytes resident, containers loaded,
@@ -845,7 +846,7 @@ public sealed class BnkFileSystem : IDisposable
         var slot = new NestedSlot { Key = normalized, ReadOuter = read, Container = entry, Map = map };
         Func<BnkEntry, byte[]> nestedRead = target => ReadNestedEntry(slot, target);
 
-        using (nested)
+        try
         {
             ++NestedArchiveCount;
             var contents = new List<BnkFile>(nested.Entries.Count);
@@ -861,6 +862,25 @@ public sealed class BnkFileSystem : IDisposable
 
             _containers[normalized] = new BnkContainer(normalized, archive.ArchivePath, contents);
             Index(nested, nestedRead, depth + 1, true, sourceMod);
+        }
+        finally
+        {
+            // A MAPPED CONTAINER IS KEPT OPEN FROM HERE. Its table is the one just parsed, whose
+            // entries the files above already hold, and reading it copies nothing but the entry
+            // asked for. Closed, its first read parsed the table again: a second set of entries
+            // and path strings for every region bank the game touched, kept for the session,
+            // and the parse paid on that first read.
+            if (map is null)
+            {
+                nested.Dispose();
+            }
+        }
+
+        if (map is not null)
+        {
+            slot.Archive = nested;
+            System.Threading.Interlocked.Increment(ref NestedLoads);
+            System.Threading.Interlocked.Add(ref NestedMappedBytes, map.Length);
         }
 
         Insert(

@@ -32,26 +32,17 @@ uniform float occlusion_distance = 1900.0;
 
 varying vec3 v_colour;
 
-void vertex() {
-	vec3 dir_view = (VIEW_MATRIX * vec4(normalize(element_dir), 0.0)).xyz;
-	float facing = -dir_view.z;
-
-	if (facing <= 0.0) {
-		POSITION = vec4(0.0, 0.0, -10.0, 1.0);
-		v_colour = vec3(0.0);
-	} else {
-		vec3 view_pos = (dir_view * element_distance) +
-		                vec3(VERTEX.x * element_half.x, VERTEX.y * element_half.y, 0.0);
-		vec4 clip = PROJECTION_MATRIX *
-		            vec4(view_pos.xy, min(view_pos.z, -0.01), 1.0);
-
-		float far_depth = step(0.5, -PROJECTION_MATRIX[2][2]);
-		POSITION = vec4(clip.xy / clip.w,
-		                mix(far_depth, 1.0 - far_depth, element_depth_bias), 1.0);
-
-		v_colour = element_colour.rgb * pow(facing, element_facing_power);
-	}
-}
+// CELESTIAL_VERTEX_OCCLUSION (`sky_glare_cheap`): the occlusion below is the same for every pixel
+// of the quad (its inputs are uniforms and the view), so the vertex stage takes it once per
+// corner, 100 taps a frame, instead of 25 per pixel; a flat varying carries it, and the four
+// corners agree to the bit. The depth texture has one level and is read nearest, so the vertex
+// stage's explicit level 0 is the fragment stage's read.
+#ifdef CELESTIAL_VERTEX_OCCLUSION
+varying flat float v_geom;
+#define OVERLAY_DEPTH_TAP(uv) textureLod(depth_tex, (uv), 0.0).r
+#else
+#define OVERLAY_DEPTH_TAP(uv) texture(depth_tex, (uv)).r
+#endif
 
 // NO FAIL-OPEN EARLY EXIT. This function IS the depth test for this shader — the render mode
 // disables the hardware one — so returning "fully visible" when the occlusion radius is zero draws
@@ -91,7 +82,7 @@ float geometry_visibility(mat4 view_matrix, mat4 projection_matrix) {
 			vec2 ndc = clamp(clip.xy / clip.w, vec2(-1.0), vec2(1.0));
 
 			vec2 uv = (ndc * 0.5) + vec2(0.5);
-			float scene_depth = texture(depth_tex, uv).r;
+			float scene_depth = OVERLAY_DEPTH_TAP(uv);
 			total++;
 			if (abs(scene_depth - far_value) <= 0.0000001) {
 				open++;
@@ -104,12 +95,41 @@ float geometry_visibility(mat4 view_matrix, mat4 projection_matrix) {
 	return total == 0 ? 0.0 : float(open) / float(total);
 }
 
+void vertex() {
+	vec3 dir_view = (VIEW_MATRIX * vec4(normalize(element_dir), 0.0)).xyz;
+	float facing = -dir_view.z;
+
+	if (facing <= 0.0) {
+		POSITION = vec4(0.0, 0.0, -10.0, 1.0);
+		v_colour = vec3(0.0);
+	} else {
+		vec3 view_pos = (dir_view * element_distance) +
+		                vec3(VERTEX.x * element_half.x, VERTEX.y * element_half.y, 0.0);
+		vec4 clip = PROJECTION_MATRIX *
+		            vec4(view_pos.xy, min(view_pos.z, -0.01), 1.0);
+
+		float far_depth = step(0.5, -PROJECTION_MATRIX[2][2]);
+		POSITION = vec4(clip.xy / clip.w,
+		                mix(far_depth, 1.0 - far_depth, element_depth_bias), 1.0);
+
+		v_colour = element_colour.rgb * pow(facing, element_facing_power);
+	}
+
+#ifdef CELESTIAL_VERTEX_OCCLUSION
+	v_geom = geometry_visibility(VIEW_MATRIX, PROJECTION_MATRIX);
+#endif
+}
+
 // Additive in linear — see celestial_additive.gdshader for why no background-estimate
 // correction belongs here. The occlusion term does: it is this shader's
 // reason to exist, and it scales the element's own contribution rather than the space it is
 // composed in.
 void fragment() {
+#ifdef CELESTIAL_VERTEX_OCCLUSION
+	float geom = v_geom;
+#else
 	float geom = geometry_visibility(VIEW_MATRIX, PROJECTION_MATRIX);
+#endif
 	float vis = clamp(geom * element_vis, 0.0, 1.0);
 	// No output squaring — the celestial family squares nothing. The vis^2 falloff stays: the
 	// occlusion is OUR stand-in for the guest's offscreen resolve, not part of its shader.

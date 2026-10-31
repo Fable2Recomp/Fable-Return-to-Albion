@@ -18,6 +18,7 @@ public sealed class TextureMorphEntry
     public TextureMorphBlend Blend { get; init; }
 }
 
+/// <summary>Composites the guest's stated appearance layers while retaining reusable decoded sources.</summary>
 public static class Engine_HeroTextureMorph
 {
     /// <summary>Composites kept before the cache is dropped; a dragged slider makes one per value.</summary>
@@ -38,6 +39,10 @@ public static class Engine_HeroTextureMorph
 
     private static readonly object MorphLock = new();
 
+    // Work started by a departing entity may finish after the region's cache references retire.
+    // Its result remains usable by that caller, but must not root the departed region again.
+    private static long _textureEpoch;
+
     private static readonly Dictionary<string, ImageTexture> Composited =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -48,24 +53,70 @@ public static class Engine_HeroTextureMorph
 
     private static List<TextureMorphPair>? _pairs;
 
+    /// <summary>One consistent observation of retained cache references, excluding active callers and native GPU allocation.</summary>
+    /// <param name="DecodedEntries">Decoded-source entries, including failed decodes with empty payloads.</param>
+    /// <param name="DecodedRgbaBytes">Managed top-level RGBA bytes currently referenced by the decoded dictionary.</param>
+    /// <param name="CompositedEntries">Texture references currently held by the composite dictionary, not all live material references.</param>
+    /// <param name="CompositesBuilt">Cumulative construction count, including composites no longer held by the dictionary.</param>
+    public readonly record struct CacheSnapshot(
+        int DecodedEntries, long DecodedRgbaBytes, int CompositedEntries, long CompositesBuilt);
+
+    /// <summary>Samples current retained RGBA and texture-reference counts without decoding, evicting or querying Godot.</summary>
+    /// <remarks>This is a cache footprint, not live VRAM or native Image memory. Active callers may retain
+    /// values after a clear, and live materials may retain textures absent from the dictionary.</remarks>
+    public static CacheSnapshot CacheMetrics
+    {
+        get
+        {
+            lock (MorphLock)
+            {
+                long bytes = 0;
+                foreach (DecodedTexture decoded in DecodedCache.Values)
+                    bytes += decoded.Rgba.LongLength;
+                return new(DecodedCache.Count, bytes, Composited.Count, CompositesBuilt);
+            }
+        }
+    }
+
+    /// <summary>Replaces the catalogue resolver and invalidates appearance sources and textures.</summary>
+    /// <param name="resolver">Resolver for the current mounted game, or null when unmounted.</param>
     public static void SetResolver(Func<string, byte[]?>? resolver)
     {
         lock (MorphLock)
         {
             _resolver = resolver;
             _pairs = null;
+            ++_textureEpoch;
             Composited.Clear();
             DecodedCache.Clear();
+            _decodedBytes = 0;
         }
     }
 
+    /// <summary>Invalidates the catalogue and texture references without disposing borrowers.</summary>
     public static void Invalidate()
     {
         lock (MorphLock)
         {
             _pairs = null;
+            ++_textureEpoch;
             Composited.Clear();
             DecodedCache.Clear();
+            _decodedBytes = 0;
+        }
+    }
+
+    /// <summary>Drops retired-region RGBA and composite cache references while preserving the mounted morph catalogue.</summary>
+    /// <remarks>Live materials and active callers retain their borrowed textures. An epoch rejects cache
+    /// publication by work already in flight, avoiding a second root after the retirement boundary.</remarks>
+    public static void ReleaseRegionTextures()
+    {
+        lock (MorphLock)
+        {
+            ++_textureEpoch;
+            Composited.Clear();
+            DecodedCache.Clear();
+            _decodedBytes = 0;
         }
     }
 
@@ -223,7 +274,7 @@ public static class Engine_HeroTextureMorph
                     {
                         own = material.HasMeta(Refii.Models.Engine_ClassicMaterial.ClassicMeta)
                             ? Refii.Models.Engine_ClassicMaterial.InstanceCopy(material)
-                            : (ShaderMaterial)material.Duplicate();
+                            : Refii.Models.Engine_MaterialCopy.Shallow(material);
                     }
                 }
 
@@ -309,6 +360,11 @@ public static class Engine_HeroTextureMorph
     /// contributes its bump, masked by that same diffuse alpha. Null when the result is the
     /// original texture itself.
     /// </summary>
+    /// <param name="original">Guest hash of the material's original texture.</param>
+    /// <param name="layers">Ordered guest composite layers, or null for no replacement layers.</param>
+    /// <param name="overlays">Guest overlays whose diffuse alpha masks colour or normal contributions.</param>
+    /// <param name="normalSlot">Whether to composite bump sources under the diffuse coverage mask.</param>
+    /// <returns>A borrowed texture, or null when no valid composite is needed. Retirement never disposes this borrow.</returns>
     public static Texture2D? Composite(
         uint original,
         Refii.Host.HostBridge.GuestTextureLayer[]? layers,
@@ -350,9 +406,10 @@ public static class Engine_HeroTextureMorph
         }
 
         string cacheKey = key.ToString();
-
+        long epoch;
         lock (MorphLock)
         {
+            epoch = _textureEpoch;
             if (Composited.TryGetValue(cacheKey, out ImageTexture? cached))
             {
                 return cached;
@@ -360,7 +417,7 @@ public static class Engine_HeroTextureMorph
         }
 
         string? basePath = Engine_TexPathIndex.Resolve(layers.Length != 0 ? layers[0].Texture : original);
-        DecodedTexture? source = basePath is null ? null : Decode(basePath);
+        DecodedTexture? source = basePath is null ? null : Decode(basePath, epoch);
         if (source is null || !source.Ok)
         {
             return null;
@@ -378,7 +435,7 @@ public static class Engine_HeroTextureMorph
         for (int i = 1; i < layers.Length; i++)
         {
             string? path = Engine_TexPathIndex.Resolve(layers[i].Texture);
-            decoded[i] = path is null ? null : Decode(path);
+            decoded[i] = path is null ? null : Decode(path, epoch);
             if (decoded[i] is { Ok: true } layerTexture)
             {
                 width = Math.Max(width, layerTexture.Width);
@@ -420,7 +477,7 @@ public static class Engine_HeroTextureMorph
             }
 
             string? maskPath = Engine_TexPathIndex.Resolve(overlay.Texture);
-            DecodedTexture? mask = maskPath is null ? null : Decode(maskPath);
+            DecodedTexture? mask = maskPath is null ? null : Decode(maskPath, epoch);
             if (mask is null || !mask.Ok)
             {
                 continue;
@@ -430,7 +487,7 @@ public static class Engine_HeroTextureMorph
             if (normalSlot)
             {
                 string? bumpPath = Engine_TexPathIndex.Resolve(overlay.Bump);
-                colour = bumpPath is null ? null : Decode(bumpPath);
+                colour = bumpPath is null ? null : Decode(bumpPath, epoch);
             }
 
             if (colour is not null && colour.Ok)
@@ -444,6 +501,8 @@ public static class Engine_HeroTextureMorph
 
         lock (MorphLock)
         {
+            if (epoch != _textureEpoch)
+                return texture;
             if (Composited.Count >= CompositedLimit)
             {
                 Composited.Clear();
@@ -707,6 +766,10 @@ public static class Engine_HeroTextureMorph
         return active;
     }
 
+    /// <summary>Builds or reuses a texture for catalogued swap/additive/alpha appearance layers.</summary>
+    /// <param name="textureName">The original virtual texture path.</param>
+    /// <param name="active">Ordered active morph entries keyed by original texture hash.</param>
+    /// <returns>A borrowed cached texture, or null when no composite is required or its base cannot decode.</returns>
     public static Texture2D? Resolve(
         string textureName, Dictionary<uint, List<TextureMorphEntry>> active)
     {
@@ -758,16 +821,17 @@ public static class Engine_HeroTextureMorph
         }
 
         string cacheKey = key.ToString();
-
+        long epoch;
         lock (MorphLock)
         {
+            epoch = _textureEpoch;
             if (Composited.TryGetValue(cacheKey, out ImageTexture? cached))
             {
                 return cached;
             }
         }
 
-        DecodedTexture source = Decode(baseName);
+        DecodedTexture source = Decode(baseName, epoch);
         if (!source.Ok)
         {
             return null;
@@ -779,7 +843,7 @@ public static class Engine_HeroTextureMorph
         int height = Math.Max(MinimumCompositeSize, source.Height);
         foreach ((string path, TextureMorphEntry entry) in layers)
         {
-            DecodedTexture decodedLayer = Decode(path);
+            DecodedTexture decodedLayer = Decode(path, epoch);
             if (decodedLayer.Ok)
             {
                 decodedLayers.Add((decodedLayer, entry));
@@ -838,6 +902,8 @@ public static class Engine_HeroTextureMorph
 
         lock (MorphLock)
         {
+            if (epoch != _textureEpoch)
+                return texture;
             if (Composited.Count >= CompositedLimit)
             {
                 Composited.Clear();
@@ -857,21 +923,30 @@ public static class Engine_HeroTextureMorph
     /// the chain and block-compressed the way the library compresses its own (BC5 for a
     /// normal, BC1/BC3 otherwise).
     /// </summary>
+    /// <param name="rgba">Owned composite pixel bytes.</param>
+    /// <param name="width">Composite width in pixels.</param>
+    /// <param name="height">Composite height in pixels.</param>
+    /// <param name="normalMap">Whether mip generation renormalizes the normal vectors.</param>
+    /// <returns>The uploaded texture using the Android format fallback when needed.</returns>
     private static ImageTexture ToTexture(byte[] rgba, int width, int height, bool normalMap)
     {
-        Image image = Image.CreateFromData(width, height, false, Image.Format.Rgba8, rgba);
+        using Image image = Image.CreateFromData(width, height, false, Image.Format.Rgba8, rgba);
         image.GenerateMipmaps(normalMap);
         Engine_TexImage.CompressBlocks(image, normalMap);
-        return ImageTexture.CreateFromImage(image);
+        return Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(image);
     }
 
-    private static DecodedTexture Decode(string path)
+    /// <summary>Retains top-level managed RGBA while releasing the newly decoded native Image after extraction.</summary>
+    /// <param name="path">Virtual path identifying the reusable source.</param>
+    /// <param name="epoch">Texture-cache generation in which the borrowing composite began.</param>
+    /// <returns>A borrowed decoded value, including a cached failed decode.</returns>
+    private static DecodedTexture Decode(string path, long epoch)
     {
         string key = path.Replace('\\', '/');
 
         lock (MorphLock)
         {
-            if (DecodedCache.TryGetValue(key, out DecodedTexture? cached))
+            if (epoch == _textureEpoch && DecodedCache.TryGetValue(key, out DecodedTexture? cached))
             {
                 return cached;
             }
@@ -884,7 +959,7 @@ public static class Engine_HeroTextureMorph
         {
             try
             {
-                Image? image = Engine_TexImage.TryCreateImage(bytes, out bool hasAlpha, out _);
+                using Image? image = Engine_TexImage.TryCreateImage(bytes, out bool hasAlpha, out _);
 
                 if (image is not null)
                 {
@@ -900,10 +975,52 @@ public static class Engine_HeroTextureMorph
 
         lock (MorphLock)
         {
-            DecodedCache[key] = value;
+            if (epoch == _textureEpoch)
+            {
+                if (SourceBudgetBytes > 0)
+                {
+                    _decodedBytes += value.Rgba.LongLength;
+                    if (_decodedBytes > SourceBudgetBytes)
+                    {
+                        DecodedCache.Clear();
+                        _decodedBytes = value.Rgba.LongLength;
+                    }
+                }
+
+                DecodedCache[key] = value;
+            }
         }
 
         return value;
+    }
+
+    /// <summary>
+    /// `hero_texture_sources_mb` (default 0, unbounded): the decoded sources kept for the next
+    /// composite, in MB. Past it the kept sources are dropped and the next composite decodes its
+    /// own again. Read once.
+    /// </summary>
+    /// <remarks>
+    /// Each source is the RGBA top mip of a base, layer, mask or bump texture, 1-4 MB and on the
+    /// large object heap, and within a region every distinct source any layered character used
+    /// stays (a crowded market holds many). They save a later composite the decode, on the
+    /// entity build's worker, and nothing else: the composite itself is uploaded and cached apart.
+    /// </remarks>
+    private static readonly long SourceBudgetBytes = ReadSourceBudget();
+
+    /// <summary>Bytes in the decoded sources since they were last cleared, when budgeted.</summary>
+    private static long _decodedBytes;
+
+    private static long ReadSourceBudget()
+    {
+        try
+        {
+            return Math.Max(0, Refii.Core.Engine_RefiiConfig.Int(
+                Refii.Core.Engine_RefiiConfig.Read(out _), "hero_texture_sources_mb", 0)) * 1048576L;
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
     }
 
     private static void Fill(DecodedTexture value, Image image)

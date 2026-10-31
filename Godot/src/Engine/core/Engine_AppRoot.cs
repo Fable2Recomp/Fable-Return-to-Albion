@@ -33,6 +33,8 @@ namespace Refii.Core;
 /// Exported, that is the executable's own directory. In the editor the executable is
 /// Godot's own binary, which is not our tree, so it is the per-architecture staging root
 /// the native build already writes — the same shape, one level in.
+/// Android uses OS.GetUserDataDir because its installed package is immutable; the same
+/// layout beneath that private root keeps config, assets, saves, logs, and caches writable.
 /// </remarks>
 public static class Engine_AppRoot
 {
@@ -122,6 +124,16 @@ public static class Engine_AppRoot
 			return Normalize(explicitRoot!);
 		}
 
+		// Android maps res:// and its native libraries from an installed package. Neither
+		// is a writable desktop install tree. Keep user data in the engine-provided private
+		// directory; shipped libraries continue to use the Android linker's package search.
+		if (!IsTestHost && OS.HasFeature("android"))
+		{
+			string privateRoot = AndroidPrivateRoot(OS.GetUserDataDir());
+			GD.Print($"[android-path] app_root={privateRoot}; config={System.IO.Path.Combine(privateRoot, "refii.toml")}");
+			return privateRoot;
+		}
+
 		if (IsExported)
 		{
 			// The executable's directory. Deliberately NOT res://: with an embedded PCK
@@ -140,6 +152,17 @@ public static class Engine_AppRoot
 		// named libraries and a shared directory can only ever hold one of them.
 		string project = SafeGetProjectDir();
 		return Normalize(System.IO.Path.Combine(project, "build", ArchFolder));
+	}
+
+	/// <summary>Validates the Android engine's app-private writable directory.</summary>
+	/// <param name="userDataDirectory">The physical pathname supplied by OS.GetUserDataDir.</param>
+	/// <returns>The normalized root used by assets, saves, caches, logs, and launcher config.</returns>
+	/// <exception cref="ArgumentException">The engine returned no private directory.</exception>
+	internal static string AndroidPrivateRoot(string userDataDirectory)
+	{
+		if (string.IsNullOrWhiteSpace(userDataDirectory))
+			throw new ArgumentException("Android private data directory is unavailable.", nameof(userDataDirectory));
+		return Normalize(userDataDirectory);
 	}
 
 	private static string Normalize(string path) =>

@@ -254,6 +254,7 @@ public static class Engine_EntityInspect
             }
 
             node.SetMeta("property", details);
+            GC.KeepAlive(details);
             bound = true;
         }
 

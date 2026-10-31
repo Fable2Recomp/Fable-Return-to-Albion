@@ -460,7 +460,7 @@ public static class Engine_ClassicCasters
         }
         if (entry.CentreStale)
         {
-            entry.LocalCentre = entry.Node.GetAabb().GetCenter();
+            entry.LocalCentre = Refii.Core.Engine_ServerSyncs.LocalAabb(entry.Node).GetCenter();
             entry.CentreStale = false;
         }
         entry.Placed = world;
@@ -528,7 +528,7 @@ public static class Engine_ClassicCasters
             // A batch joins whole, at its copies' built places; a later move of any copy takes it out.
             Transform3D world = node.GlobalTransform;
             entry.Cell = Engine_ClassicCasterCells.Join(entry.Instance, batchShape.Groups, default, world,
-                (Transform3D[])built.Clone(), world * node.GetAabb().GetCenter(), entry.Layers, entry.Shown, World);
+                (Transform3D[])built.Clone(), world * Refii.Core.Engine_ServerSyncs.LocalAabb(node).GetCenter(), entry.Layers, entry.Shown, World);
             Batched[batch.GetInstanceId()] = entry;
         }
         if (entry.Merged is not null)

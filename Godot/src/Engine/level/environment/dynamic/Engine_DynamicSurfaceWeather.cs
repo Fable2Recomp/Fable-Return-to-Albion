@@ -43,7 +43,7 @@ public static class Engine_DynamicSurfaceWeather
     public static void EnsureGlobals()
     {
         if (!Engine.IsEditorHint()) return;
-        var names = RenderingServer.GlobalShaderParameterGetList();
+        var names = Refii.Core.Engine_ServerSyncs.GlobalParameters();
         var definitions = new (string Name, RenderingServer.GlobalShaderParameterType Type, Variant Value)[]
         {
             ("dynamic_surface_weather", RenderingServer.GlobalShaderParameterType.Vec4, Vector4.Zero),

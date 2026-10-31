@@ -14,9 +14,16 @@
 // everything standing on it takes all three, and a street whose buildings darken at dusk over
 // a path that does not reads as "the lighting is broken" rather than as two models.
 
+// FABLE_LITE (the mobile lite variant, Engine_ShaderVariant) compiles out the dynamic sky's cloud
+// shadow on the sun, in either lighting model: the variant is refused while cloud shadows or
+// surface weather are on.
+#ifndef FABLE_LITE
 #include "res://src/Engine/level/environment/dynamic/dynamic_cloud_receiver.gdshaderinc"
+#endif
 
 instance uniform vec4 probe_r = vec4(0.0);
+// Opt-in cost diagnostic: 1 terrain, 2 standard fragment, 4 canopy fragment, 8 vertex PRT; 0 is normal.
+global uniform int fable_shader_cost_diagnostic;
 instance uniform vec4 probe_g = vec4(0.0);
 instance uniform vec4 probe_b = vec4(0.0);
 
@@ -31,6 +38,23 @@ instance uniform vec4 probe_b = vec4(0.0);
 // undecoded — see `fable_bake`. Mode 2 differs from mode 3 by the vertex shader's extra 2.2, not
 // by having no transfer at all.
 instance uniform vec4 lightmap_colour = vec4(1.0, 1.0, 1.0, 0.0);
+
+// THE BAKE MODE AS A CONSTANT, for a lite build specialised to one (Engine_ShaderSpecialisation,
+// `lite_bake_variants`): the instances drawing it all state that mode, so every branch on it
+// folds at compile time. Unspecialised, it is the instance's own `lightmap_colour.w`.
+#if defined(FABLE_SPEC_BAKE_AMB3)
+#define FABLE_MODE 4.0
+#elif defined(FABLE_SPEC_BAKE_COLOR_DOUBLE)
+#define FABLE_MODE 3.0
+#elif defined(FABLE_SPEC_BAKE_COLOR_SINGLE)
+#define FABLE_MODE 2.0
+#elif defined(FABLE_SPEC_BAKE_PROBE)
+#define FABLE_MODE 1.0
+#elif defined(FABLE_SPEC_BAKE_NONE)
+#define FABLE_MODE 0.0
+#else
+#define FABLE_MODE lightmap_colour.w
+#endif
 
 /// Per-instance ambient scale: 1.0 for outdoor surfaces, scaled down by
 /// `building_interior_ambient_scale` for interior building architecture, indoor props,
@@ -190,6 +214,10 @@ vec3 fable_probe_bake(vec3 world_normal) {
 ///
 /// A mesh without the channels reads zeros, which no lit vertex holds: its mean is never zero.
 vec4 fable_transfer(vec4 tr, vec4 tg, vec4 tb, mat3 model) {
+	// Diagnostic only: price the custom vertex PRT path independently of material fragment work.
+#ifndef FABLE_LITE
+	if ((fable_shader_cost_diagnostic & 8) != 0) { return vec4(0.0); }
+#endif
 	float present = step(1e-6, dot(abs(tr) + abs(tg) + abs(tb), vec4(1.0)));
 	mat3 turn = mat3(normalize(model[0]), normalize(model[1]), normalize(model[2]));
 	vec3 lr = turn * vec3(-tr.w, tr.z, tr.y);
@@ -225,8 +253,19 @@ float fable_authored_bake_weight() {
 	return w * fable_interior_bake;
 }
 
+/// The amb3 TEXTURE bake on its own — `fable_bake`'s mode 4, and the one bake the modern model
+/// still emits (its 0.35 share in `fable_ambient`), so the lite variant calls it directly.
+vec3 fable_bake_amb3(vec2 lightmap_uv) {
+	// Not an interior test: `fable_sky_ambient.w` is the sky TETHER, published by
+	// `Engine_LevelLighting` and 0 in the fable model. It decides model, not roof.
+	float tethered = fable_sky_ambient.w > 0.0 ? 1.0 : fable_authored_bake_weight();
+	vec2 at = lightmap_rect.xy + lightmap_uv * lightmap_rect.zw;
+	return tethered * pow(max(texture(fable_prop_lightmaps, at).rgb, vec3(0.0)),
+		vec3(FABLE_BAKE_GAMMA));
+}
+
 vec3 fable_bake(vec3 world_normal, vec4 vertex_colour, vec2 lightmap_uv) {
-	float mode = lightmap_colour.w;
+	float mode = FABLE_MODE;
 
 	// The remaster weight rides the AUTHORED bakes (modes 2/3/4). The probe field stays at
 	// full strength — it is the ambient a dynamic thing stands in, not a painted picture of
@@ -243,12 +282,7 @@ vec3 fable_bake(vec3 world_normal, vec4 vertex_colour, vec2 lightmap_uv) {
 		// it cannot see, and it has no live sun to hand its look to — the modern model's lower
 		// bake weight would simply darken it. The tether being active IS the modern signal, so
 		// interiors ride at full authored strength there; fable mode keeps the dial for both.
-		// Not an interior test: `fable_sky_ambient.w` is the sky TETHER, published by
-		// `Engine_LevelLighting` and 0 in the fable model. It decides model, not roof.
-		float tethered = fable_sky_ambient.w > 0.0 ? 1.0 : authored;
-		vec2 at = lightmap_rect.xy + lightmap_uv * lightmap_rect.zw;
-		return tethered * pow(max(texture(fable_prop_lightmaps, at).rgb, vec3(0.0)),
-			vec3(FABLE_BAKE_GAMMA));
+		return fable_bake_amb3(lightmap_uv);
 	}
 
 	if (mode > 2.5) {
@@ -321,7 +355,7 @@ global uniform float fable_emission_boost = 1.0;
 global uniform vec3 fable_fill_floor = vec3(0.0);
 
 vec3 fable_ambient(vec3 bake) {
-	float is_amb3 = step(3.5, lightmap_colour.w);
+	float is_amb3 = step(3.5, FABLE_MODE);
 	return (bake * max(1.0 - fable_unified, is_amb3 * 0.35)) +
 		(fable_ambient_colour + fable_fill_floor) * fable_ambient_scale;
 }
@@ -457,7 +491,11 @@ float fable_sample_static_shadow(vec3 light_to_world, float d, vec3 atlas_rect) 
 
 float fable_attenuation(float godot_attenuation, bool directional, float specular_amount, vec3 world) {
 	if (directional) {
+#ifdef FABLE_LITE
+		return godot_attenuation;
+#else
 		return godot_attenuation * surface_cloud_transmission(world);
+#endif
 	}
 
 	int slot = int(specular_amount * 0.5 + 0.5) - 2;

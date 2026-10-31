@@ -203,7 +203,7 @@ public static class Engine_Clouds
         arrays[(int)Mesh.ArrayType.Index] = indices;
 
         var mesh = new ArrayMesh();
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays);
         mesh.SurfaceSetName(0, "CloudLayer");
         return mesh;
     }

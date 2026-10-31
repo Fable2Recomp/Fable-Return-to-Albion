@@ -224,6 +224,8 @@ Objects are addresses natively.
 
 `Engine.get_singleton("RefiiHost")` in a mod's `godot/*.gd`. Entities are handles, as in Lua.
 See [Godot scripts](events.md#godot-scripts) for signals, verdicts and how queries answer.
+An argument written `name = value` may be left off, from the right: `notice(title, text)` is
+`notice(title, text, 0, 0)` and `in_cutscene()` is `in_cutscene(0, 7)`.
 
 ### Members and signals
 
@@ -263,6 +265,7 @@ See [Godot scripts](events.md#godot-scripts) for signals, verdicts and how queri
 | `register_source(name, rows) -> bool` | a ROW SOURCE every list's template may name (`"source": "<name>[:<argument>]"` on an entry or a menu): `rows(argument)` returns an Array of Dictionaries, one row each — `name` (required), `label`, `icon`, `command` (the verb the row runs on A), `rating` (0..10), `ghosted`, `group` (a header the row sits under), `emphasised`, `counted`, `unviewed`. Called whenever the list is built or re-sourced. The game's sources stay the game's |
 | `register_condition(name, holds) -> bool` | a ROW CONDITION entries may name in `when`: `holds()` answers whether the rows naming it show, asked when a list is built. The game's conditions stay the game's |
 | `on_verdict(event, callable) -> bool` · `remove_verdict(event, callable)` | a [verdict](events.md#verdicts) handler inside the seam |
+| `save_snapshot(key) -> bool` · `snapshot_time(key) -> int` · `load_snapshot(key) -> bool` · signal `save_written(e)` | a copy of this machine's player-one save under `key` (`"<mod>.<name>"`), kept beside the save and never in the load list: `save_snapshot` copies the save as it stands on disk — take it on `save_written` (`save`, `player`), after the game's own save; `snapshot_time` answers when it was taken (unix seconds, 0 for none); `load_snapshot` loads it back in the running game through the game's own fail-quest reload and puts the save folder's own files back once the level stands. False before a save is started or written, for a bad key or no snapshot; `load_snapshot` also in co-op and while a load is in flight. See [Snapshots](saves-and-sharing.md#snapshots-a-quicksave-and-a-quickload) |
 | `node_for(handle) -> Node3D` | the node Godot draws the entity with, or null; parent to it, never move it |
 | `world_here() -> bool` | answers at once from the last `coop_state` |
 
@@ -277,6 +280,7 @@ later on `reply(id, result)`; every verb is in [Commands and queries](reference-
 | `modify_health(entity, delta, attacker)` | changes health, attributed to `attacker` (0 for none) |
 | `set_health(entity, value)` | sets current health |
 | `add_item(entity, definition)` | one of an item definition (its GDB record hash) into the inventory |
+| `use_item(definition) -> bool` | uses one of an item definition (`"0x…"` or a number) from this machine's hero's inventory, as the Items page's Use does, with no menu open: a potion drinks, food is eaten, `item_used` fires. Nothing happens when the hero carries none or the item states no use; false when the definition does not parse |
 | `give_experience(entity, pool, amount)` / `spend_experience(...)` | one experience pool |
 | `cast_spell(caster, type, targeted, target, level)` · `cast_spell_at(caster, type, targeted, target, level, pos, dir)` | a cast as `caster`; `target` 0 for none, level 0..4; `cast_spell_at` starts it at `pos` (Vector3, guest axes) facing `dir`, as `refii_mod_cast_spell`'s pos / dir (the line: `cast_spell C T TARGETED TARGET LEVEL [X Y Z [DX DY DZ]]`) |
 | `set_position(entity, x, y, z)` | moves an entity |

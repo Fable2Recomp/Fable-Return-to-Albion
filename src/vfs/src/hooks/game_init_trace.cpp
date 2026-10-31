@@ -67,7 +67,17 @@ REFII_TRACE_GAME_INIT_CALL(rex_lhGDBDefRegistry_RegisterEntriesFromDef)
 REFII_TRACE_GAME_INIT_CALL(rex_lhDynamicRewards_LoadSettings)
 REFII_TRACE_GAME_INIT_CALL(rex_lhSpeechFrequency_LoadLifetimeSettings)
 REFII_TRACE_GAME_INIT_CALL(rex_lhInputMap_LoadFromGameData)
+// Not one-shot: every string concatenation in the game runs through it, so on Android, where
+// the guest is CPU-bound, it passes straight through instead of paying two atomic exchanges per
+// call for two lines logged once at boot.
+#if defined(__ANDROID__)
+REX_EXTERN(rex_lhCharString_CtorConcat) {
+    REX_FUNC_PROLOGUE();
+    __imp__rex_lhCharString_CtorConcat(ctx, base);
+}
+#else
 REFII_TRACE_GAME_INIT_CALL(rex_lhCharString_CtorConcat)
+#endif
 
 // One level deeper. sub_82459280 (the gameplay Lua bring-up at 0x82311318) is entered and
 // never returns, and it is NOT our hook — the stall is identical with

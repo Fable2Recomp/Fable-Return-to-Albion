@@ -1,0 +1,34 @@
+diff --git a/modules/mono/csharp_script.cpp b/modules/mono/csharp_script.cpp
+--- a/modules/mono/csharp_script.cpp
++++ b/modules/mono/csharp_script.cpp
+@@ -1287,6 +1287,17 @@
+ 
+ 			// Release the current weak handle and replace it with a strong handle.
+ 
++			// Under the lock the binding's release takes (release_binding_gchandle_thread_safe), and
++			// checked again under it: the thread dropping or taking this reference is not the one
++			// disposing the wrapper (the render thread's command queue keeps a Ref<Image> until the
++			// update runs; the finalizer releases while the main thread takes a cached resource).
++			// Unlocked, both freed the same GCHandle, and the handle table then gave that slot to
++			// two later handles: one object's wrapper lookup returned another object.
++			MutexLock release_lock(CSharpLanguage::get_singleton()->script_gchandle_release_mutex);
++			if (!script_binding.inited || gchandle.is_released() || !gchandle.is_weak()) {
++				return false; // Released or swapped by another thread meanwhile
++			}
++
+ 			GCHandleIntPtr old_gchandle = gchandle.get_intptr();
+ 			gchandle.handle = { nullptr }; // No longer owns the handle (released by swap function)
+ 
+@@ -1311,6 +1322,12 @@
+ 
+ 			// Release the current strong handle and replace it with a weak handle.
+ 
++			// Locked and checked again, as for the strong swap above.
++			MutexLock release_lock(CSharpLanguage::get_singleton()->script_gchandle_release_mutex);
++			if (!script_binding.inited || gchandle.is_released() || gchandle.is_weak()) {
++				return refcount == 0; // Released or swapped by another thread meanwhile
++			}
++
+ 			GCHandleIntPtr old_gchandle = gchandle.get_intptr();
+ 			gchandle.handle = { nullptr }; // No longer owns the handle (released by swap function)
+ 

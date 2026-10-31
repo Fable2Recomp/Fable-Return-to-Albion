@@ -1,0 +1,249 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Runtime.CompilerServices;
+using System.Text.Json;
+using GdUnit4;
+using Refii.Core;
+using Refii.Models;
+using static GdUnit4.Assertions;
+
+namespace Refii.Tests;
+
+/// <summary>The `shaderCeiling` lever: its request policy, and the replacement source it builds from the real shaders.</summary>
+[TestSuite]
+public sealed class ShaderCeilingTests
+{
+    private static string Root([CallerFilePath] string source = "") =>
+        Path.GetFullPath(Path.Combine(Path.GetDirectoryName(source)!, "../.."));
+
+    private static string? Read(string resPath)
+    {
+        string path = Path.Combine(Root(), resPath["res://".Length..]);
+        return File.Exists(path) ? File.ReadAllText(path).Replace("\r\n", "\n") : null;
+    }
+
+    private static Engine_ShaderCeilingSource.Built Build(string resPath, bool cut) =>
+        Engine_ShaderCeilingSource.Build(Read(resPath)!, resPath, Read, cut, (0.5f, 0.4f, 0.3f))
+        ?? throw new InvalidOperationException(resPath);
+
+    private static Engine_ShaderCeiling.Request? Parse(string json)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        return Engine_ShaderCeiling.Parse(document.RootElement);
+    }
+
+    /// <summary>Each request states the whole ceiling; `all` fills what it does not name; bad values throw.</summary>
+    [TestCase]
+    public void ParsesTheWholeCeiling()
+    {
+        AssertThat(Parse("{\"op\":\"render\"}") is null).IsTrue();
+
+        Engine_ShaderCeiling.Request object_ = Parse("{\"shaderCeiling\":{\"props\":\"flat\",\"trees\":\"flatcut\",\"entities\":\"hide\"}}")!.Value;
+        AssertThat(object_.Modes[(int)Engine_ShaderCeiling.Category.Props] == Engine_ShaderCeiling.Mode.Flat).IsTrue();
+        AssertThat(object_.Modes[(int)Engine_ShaderCeiling.Category.Trees] == Engine_ShaderCeiling.Mode.FlatCut).IsTrue();
+        AssertThat(object_.Modes[(int)Engine_ShaderCeiling.Category.Terrain] == Engine_ShaderCeiling.Mode.Off).IsTrue();
+        AssertThat(object_.Modes[(int)Engine_ShaderCeiling.Category.Entities] == Engine_ShaderCeiling.Mode.Hide).IsTrue();
+        AssertThat(object_.Unshaded).IsFalse();
+
+        Engine_ShaderCeiling.Request all = Parse("{\"shaderCeiling\":{\"all\":\"flat\",\"terrain\":\"off\"}}")!.Value;
+        AssertThat(all.Modes[(int)Engine_ShaderCeiling.Category.Entities] == Engine_ShaderCeiling.Mode.Flat).IsTrue();
+        AssertThat(all.Modes[(int)Engine_ShaderCeiling.Category.Terrain] == Engine_ShaderCeiling.Mode.Off).IsTrue();
+
+        Engine_ShaderCeiling.Request unshaded = Parse("{\"shaderCeiling\":\"unshaded\"}")!.Value;
+        AssertThat(unshaded.Unshaded).IsTrue();
+        AssertThat(Array.TrueForAll(unshaded.Modes, m => m == Engine_ShaderCeiling.Mode.Off)).IsTrue();
+        AssertThat(Array.TrueForAll(Parse("{\"shaderCeiling\":\"off\"}")!.Value.Modes, m => m == Engine_ShaderCeiling.Mode.Off)).IsTrue();
+
+        foreach (string bad in new[] { "{\"shaderCeiling\":3}", "{\"shaderCeiling\":\"dim\"}", "{\"shaderCeiling\":{\"water\":\"flat\"}}", "{\"shaderCeiling\":{\"props\":\"unshaded\"}}" })
+        {
+            bool threw = false;
+            try
+            {
+                Parse(bad);
+            }
+            catch (JsonException)
+            {
+                threw = true;
+            }
+            AssertThat(threw).IsTrue();
+        }
+    }
+
+    /// <summary>A swaying tree keeps its sway and, cut, its scissor; the PRT transfer and the lighting go.</summary>
+    [TestCase]
+    public void TreeKeepsItsSwayAndItsCutout()
+    {
+        Engine_ShaderCeilingSource.Built tree = Build("res://src/Engine/material/lite/standard_material_tree_lite.gdshader", cut: true);
+        AssertThat(tree.KeptVertex).IsTrue();
+        AssertThat(tree.Cut).IsTrue();
+        AssertThat(tree.Code.Contains("VERTEX = fable_tree_sway(VERTEX, CUSTOM1, MODEL_MATRIX);")).IsTrue();
+        AssertThat(tree.Code.Contains("if (alpha_scissor_on && fable_ceiling_texel.a < alpha_scissor_threshold)")).IsTrue();
+        AssertThat(tree.Code.Contains("render_mode unshaded, blend_mix, depth_draw_opaque, cull_disabled;")).IsTrue();
+        AssertThat(tree.Code.Contains("fable_transfer")).IsFalse();
+        AssertThat(tree.Code.Contains("fable_world =")).IsFalse();
+        AssertThat(tree.Code.Contains("void light()")).IsFalse();
+        AssertThat(tree.Code.Contains("#include")).IsFalse();
+
+        Engine_ShaderCeilingSource.Built flat = Build("res://src/Engine/material/lite/standard_material_tree_lite.gdshader", cut: false);
+        AssertThat(flat.Code.Contains("discard")).IsFalse();
+        AssertThat(flat.AlphaTested).IsTrue();
+    }
+
+    /// <summary>The wind's WIND1 offset stays; its PRT varying goes, and with it the transfer function.</summary>
+    [TestCase]
+    public void WindKeepsTheOffsetNotTheTransfer()
+    {
+        Engine_ShaderCeilingSource.Built wind = Build("res://src/Engine/material/standard_material_wind.gdshader", cut: false);
+        AssertThat(wind.KeptVertex).IsTrue();
+        AssertThat(wind.Code.Contains("VERTEX += inverse(mat3(MODEL_MATRIX)) * world_offset;")).IsTrue();
+        AssertThat(wind.Code.Contains("v_transfer =")).IsFalse();
+        AssertThat(wind.Code.Contains("vec4 fable_transfer(")).IsFalse();
+        // Every declaration stays, so the material's parameters bind as they did.
+        AssertThat(wind.Code.Contains("uniform sampler2D albedo_tex")).IsTrue();
+        AssertThat(wind.Code.Contains("instance uniform float xr_fade_alpha")).IsTrue();
+    }
+
+    /// <summary>A still surface draws on Godot's own vertex stage, with its cull word.</summary>
+    [TestCase]
+    public void StillSurfacesTakeThePlainVertex()
+    {
+        Engine_ShaderCeilingSource.Built culled = Build("res://src/Engine/material/lite/standard_material_culled_lite.gdshader", cut: true);
+        AssertThat(culled.KeptVertex).IsFalse();
+        AssertThat(culled.AlphaTested).IsFalse();
+        AssertThat(culled.Code.Contains("void vertex()")).IsFalse();
+        AssertThat(culled.Code.Contains("cull_back")).IsTrue();
+        AssertThat(culled.Code.Contains("discard")).IsFalse();
+
+        Engine_ShaderCeilingSource.Built terrain = Build("res://src/Engine/level/terrain/lite/terrain_splat_lite.gdshader", cut: false);
+        AssertThat(terrain.KeptVertex).IsFalse();
+        AssertThat(terrain.Code.Contains("render_mode unshaded, cull_disabled;")).IsTrue();
+        AssertThat(terrain.Code.Contains("uniform sampler2DArray material_weight")).IsTrue();
+    }
+
+    /// <summary>A surface that writes ALPHA stays in the transparent list; the canopy's test is its own.</summary>
+    [TestCase]
+    public void AlphaWritersStayTransparent()
+    {
+        Engine_ShaderCeilingSource.Built canopy = Build("res://src/Engine/material/families/tree_canopy.gdshader", cut: true);
+        AssertThat(canopy.WritesAlpha).IsTrue();
+        AssertThat(canopy.Code.Contains("ALPHA = 1.0;")).IsTrue();
+        AssertThat(canopy.Code.Contains("if ((fable_ceiling_texel.a * alpha_scale) < alpha_threshold)")).IsTrue();
+
+        Engine_ShaderCeilingSource.Built glass = Build("res://src/Engine/material/standard_material_translucent.gdshader", cut: false);
+        AssertThat(glass.WritesAlpha).IsTrue();
+        AssertThat(glass.Code.Contains("blend_premul_alpha")).IsTrue();
+        AssertThat(glass.Code.Contains("depth_draw_never")).IsTrue();
+    }
+
+    /// <summary>Includes resolve once and relative to their file; conditionals and `#if` evaluate as Godot's do.</summary>
+    [TestCase]
+    public void PreprocessesLikeGodot()
+    {
+        var files = new Dictionary<string, string>
+        {
+            ["res://a/b.gdshaderinc"] = "#include \"c.gdshaderinc\"\nfloat b() { return 1.0; }\n",
+            ["res://a/c.gdshaderinc"] = "// c\nconst float C = 2.0; /* gone */\n",
+        };
+        string code = "shader_type spatial;\n#define ON\n#include \"res://a/b.gdshaderinc\"\n#include \"res://a/c.gdshaderinc\"\n" +
+            "#ifdef ON\nfloat yes;\n#else\nfloat no;\n#endif\n#if CURRENT_RENDERER == RENDERER_MOBILE && !defined(OFF)\nfloat mobile;\n#endif\n";
+        string active = Engine_ShaderCeilingSource.Preprocess(code, "res://x.gdshader", p => files.TryGetValue(p, out string? t) ? t : null);
+        AssertThat(active.Split("const float C").Length).IsEqual(2);
+        AssertThat(active.Contains("float yes;")).IsTrue();
+        AssertThat(active.Contains("float no;")).IsFalse();
+        AssertThat(active.Contains("float mobile;")).IsTrue();
+        AssertThat(active.Contains("gone")).IsFalse();
+        AssertThat(Engine_ShaderCeilingSource.Resolve("res://a/b/c.gdshader", "../d.gdshaderinc")).IsEqual("res://a/d.gdshaderinc");
+    }
+    /// <summary>A `+` mode names its words, per category or for all; a word must look like one.</summary>
+    [TestCase]
+    public void ParsesRenderModeWords()
+    {
+        Engine_ShaderCeiling.Request request = Parse("{\"shaderCeiling\":{\"all\":\"+shadows_disabled\",\"terrain\":\"+shadows_disabled, ambient_light_disabled\",\"trees\":\"off\"}}")!.Value;
+        AssertThat(request.Modes[(int)Engine_ShaderCeiling.Category.Props] == Engine_ShaderCeiling.Mode.RenderModes).IsTrue();
+        AssertThat(string.Join(",", request.Words[(int)Engine_ShaderCeiling.Category.Entities]!)).IsEqual("shadows_disabled");
+        AssertThat(string.Join(",", request.Words[(int)Engine_ShaderCeiling.Category.Terrain]!)).IsEqual("shadows_disabled,ambient_light_disabled");
+        AssertThat(request.Modes[(int)Engine_ShaderCeiling.Category.Trees] == Engine_ShaderCeiling.Mode.Off).IsTrue();
+        AssertThat(request.Words[(int)Engine_ShaderCeiling.Category.Trees] is null).IsTrue();
+
+        bool threw = false;
+        try
+        {
+            Parse("{\"shaderCeiling\":{\"props\":\"+shadows disabled;\"}}");
+        }
+        catch (JsonException)
+        {
+            threw = true;
+        }
+        AssertThat(threw).IsTrue();
+    }
+
+    /// <summary>The words merge into the top-level shader's own render_mode; the include and the rest stay as written.</summary>
+    [TestCase]
+    public void RenderModesMergeIntoTheTopLevelShader()
+    {
+        const string path = "res://src/Engine/material/lite/standard_material_lite.gdshader";
+        string code = Engine_ShaderCeilingSource.WithRenderModes(
+            Read(path)!, path, Read, new[] { "shadows_disabled", "ambient_light_disabled", "cull_disabled" })!;
+        AssertThat(code.Contains("render_mode blend_mix, depth_draw_opaque, cull_disabled, shadows_disabled, ambient_light_disabled;")).IsTrue();
+        AssertThat(code.Split("render_mode").Length).IsEqual(2);
+        AssertThat(code.Contains("#include \"res://src/Engine/material/standard_material_body.gdshaderinc\"")).IsTrue();
+        AssertThat(code.Contains("#define FABLE_LITE")).IsTrue();
+
+        // Already stated: nothing to change. A clash with the shader's own group: refused.
+        AssertThat(Engine_ShaderCeilingSource.WithRenderModes(Read(path)!, path, Read, new[] { "cull_disabled" }) is null).IsTrue();
+        bool threw = false;
+        try
+        {
+            Engine_ShaderCeilingSource.WithRenderModes(Read(path)!, path, Read, new[] { "cull_back" });
+        }
+        catch (FormatException)
+        {
+            threw = true;
+        }
+        AssertThat(threw).IsTrue();
+
+        // A render_mode stated only by an include gets one of its own beside it; relative includes become absolute.
+        var files = new Dictionary<string, string> { ["res://a/body.gdshaderinc"] = "render_mode cull_back;\nvoid fragment() {}\n" };
+        string included = Engine_ShaderCeilingSource.WithRenderModes(
+            "shader_type spatial;\n#include \"body.gdshaderinc\"\n", "res://a/top.gdshader",
+            p => files.TryGetValue(p, out string? t) ? t : null, new[] { "shadows_disabled", "cull_back" })!;
+        AssertThat(included).IsEqual("shader_type spatial;\nrender_mode shadows_disabled;\n#include \"res://a/body.gdshaderinc\"\n");
+    }
+    /// <summary>`define:NAME` lands in the top-level text before the first include; a name already defined is skipped.</summary>
+    [TestCase]
+    public void DefinesLandBeforeTheBody()
+    {
+        Engine_ShaderCeiling.Request request = Parse("{\"shaderCeiling\":{\"props\":\"+shadows_disabled,define:FABLE_SOLID\"}}")!.Value;
+        AssertThat(string.Join(",", request.Words[(int)Engine_ShaderCeiling.Category.Props]!)).IsEqual("shadows_disabled,define:FABLE_SOLID");
+
+        const string path = "res://src/Engine/material/lite/standard_material_tree_lite.gdshader";
+        string code = Engine_ShaderCeilingSource.WithRenderModes(
+            Read(path)!, path, Read, new[] { "shadows_disabled", "define:FABLE_SOLID" })!;
+        AssertThat(code.Contains("render_mode blend_mix, depth_draw_opaque, cull_disabled, shadows_disabled;")).IsTrue();
+        int define = code.IndexOf("#define FABLE_SOLID\n", StringComparison.Ordinal);
+        AssertThat(define > code.IndexOf("#define FABLE_TREE_WIND", StringComparison.Ordinal)).IsTrue();
+        AssertThat(define < code.IndexOf("#include", StringComparison.Ordinal)).IsTrue();
+
+        // The culled shaders are FABLE_SOLID already: nothing to change.
+        const string culled = "res://src/Engine/material/lite/standard_material_culled_lite.gdshader";
+        AssertThat(Engine_ShaderCeilingSource.WithRenderModes(Read(culled)!, culled, Read, new[] { "define:FABLE_SOLID" }) is null).IsTrue();
+
+        // No include: after the render mode.
+        AssertThat(Engine_ShaderCeilingSource.WithRenderModes(
+            "shader_type spatial;\nrender_mode cull_back;\nvoid fragment() {}\n", "res://x.gdshader", _ => null, new[] { "define:X" }))
+            .IsEqual("shader_type spatial;\nrender_mode cull_back;\n#define X\n\nvoid fragment() {}\n");
+    }
+
+    /// <summary>The census: which standard shaders compile a discard, and which carry the scissor gate.</summary>
+    [TestCase]
+    public void InspectsDiscards()
+    {
+        Engine_ShaderCeilingSource.Facts Facts(string path) => Engine_ShaderCeilingSource.Inspect(Read(path)!, path, Read);
+        AssertThat(Facts("res://src/Engine/material/lite/standard_material_lite.gdshader") == new Engine_ShaderCeilingSource.Facts(true, true)).IsTrue();
+        AssertThat(Facts("res://src/Engine/material/lite/standard_material_tree_lite.gdshader").Discards).IsTrue();
+        AssertThat(Facts("res://src/Engine/material/lite/standard_material_culled_lite.gdshader") == new Engine_ShaderCeilingSource.Facts(false, true)).IsTrue();
+        AssertThat(Facts("res://src/Engine/material/families/tree_canopy.gdshader") == new Engine_ShaderCeilingSource.Facts(true, false)).IsTrue();
+        AssertThat(Facts("res://src/Engine/level/terrain/lite/terrain_splat_lite.gdshader").Discards).IsFalse();
+    }
+}

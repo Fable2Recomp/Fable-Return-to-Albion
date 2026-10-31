@@ -81,6 +81,18 @@ public partial class GameWorld : Node3D
 	private Camera3D _camera = null!;
 	private GameSplitView _split = null!;
 	private bool _reported;
+	private bool _applicationPaused;
+
+	/// <summary>Pauses only Android retirement's active deadline when the application stops drawing in the background.</summary>
+	/// <param name="what">Godot's application lifecycle notification.</param>
+	public override void _Notification(int what)
+	{
+		if (!Refii.Core.Engine_Platform.IsAndroid) return;
+		if (what != NotificationApplicationPaused && what != NotificationApplicationResumed) return;
+		_applicationPaused = what == NotificationApplicationPaused;
+		if (_retirement?.SetApplicationPaused(_applicationPaused, Time.GetTicksMsec() / 1000.0) == RegionRetirementWork.Failed)
+			GD.PrintErr("[region-retirement] " + _retirement.Status.Error + "; next build remains blocked; relaunch the app to recover");
+	}
 
 	public override void _Ready()
 	{
@@ -127,8 +139,11 @@ public partial class GameWorld : Node3D
 			return;
 		}
 
+		if (!PumpRegionRetirement()) return;
+
 		FollowGuestIntoTheWorld();
 		ReleaseWhenPropsHaveStreamed();
+		PumpDeferredCompaction();
 		TraceEntities();
 		if (GameMorphMirror.ApplyCamera(_camera)) return;
 
@@ -263,7 +278,8 @@ public partial class GameWorld : Node3D
 			// On the bodies' clock and rule (Engine_TickTimeline): moved by the stated motion
 			// every frame, steered toward the guest's blend at the world's draw point. The fov
 			// rides the same timeline; the guest blends it in the same call, `stfs f10, 0x30(r31)`
-			// at `0x82290058`.
+			// at `0x82290058`. Under `motion_arrival_fit` the same line draws a moving camera from
+			// its statements' arrival instants instead (Engine_ArrivalFit), as it draws the bodies.
 			_cameraLine.Observe(cameraTick, stated, fov);
 			drawn = _cameraLine.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec,
 				Refii.Entities.Engine_DrawnFrame.DrawTick);
@@ -458,7 +474,11 @@ public partial class GameWorld : Node3D
 		// THE CLASSIC SHADERS, last: every composition compiled and every light-group shape the
 		// placed fixtures can produce built, so play composes and compiles nothing.
 		string classicWait = Refii.Models.Engine_ClassicLoad.Pump(!propsPending && !entitiesPending);
-		bool pending = propsPending || entitiesPending || classicWait.Length != 0;
+		// THEN THE LIGHT-COUNT PIPELINES (`android_pipeline_warmup`, Mobile only): every surface
+		// the level holds drawn beside the camera under each light count play can give it.
+		string pipelineWait = Refii.Models.Engine_PipelineWarmup.Pump(this,
+			!propsPending && !entitiesPending && classicWait.Length == 0);
+		bool pending = propsPending || entitiesPending || classicWait.Length != 0 || pipelineWait.Length != 0;
 		_readyFrames = pending ? 0 : _readyFrames + 1;
 		if (!pending && _readyFrames < ReleaseSettleFrames)
 		{
@@ -476,7 +496,8 @@ public partial class GameWorld : Node3D
 			{
 				GD.Print($"[game-world] still holding the guest for {_standing}: " +
 					$"{done}/{total} prop(s) streamed ({settling} bake(s) or variant(s) to apply), " +
-					$"classic waiting on {(classicWait.Length != 0 ? classicWait : "nothing")}, entities waiting on " +
+					$"classic waiting on {(classicWait.Length != 0 ? classicWait : "nothing")}, " +
+					(pipelineWait.Length != 0 ? $"pipeline warm-up waiting on {pipelineWait}, " : "") + "entities waiting on " +
 					$"{(_entities is { } e ? e.ReleaseWait : "no feed")}, {_readyFrames} settle frame(s) " +
 					$"after {_propHoldFrames} frame(s)");
 			}
@@ -493,7 +514,9 @@ public partial class GameWorld : Node3D
 		}
 
 		_holdingForProps = false;
+		Refii.Core.Engine_LoadTimeline.Released();
 		Refii.Models.Engine_ClassicLoad.End();
+		Refii.Models.Engine_PipelineWarmup.End();
 		// The title clears its tone-map history for as long as a level streams
 		// (`sub_82181B68`), so the first frame after the load snaps the statistics; a cave
 		// theme with EXPOSURE_SPEED 0 then holds that snap.
@@ -540,6 +563,9 @@ public partial class GameWorld : Node3D
 		if (held && !WorldBuildHeld)
 		{
 			_heldSince = System.Diagnostics.Stopwatch.GetTimestamp();
+			// A compaction still owed by the last release runs under this loading screen, before
+			// the next build's buffers land on top of the old gaps.
+			RunDeferredCompaction("the next load");
 		}
 
 		WorldBuildHeld = held;
@@ -547,17 +573,120 @@ public partial class GameWorld : Node3D
 	}
 
 	/// <summary>
-	/// Compacts the large-object heap once, at the end of a region load.
+	/// Collects temporary region-load buffers, compacting the large-object heap where supported.
 	/// </summary>
 	/// <remarks>
 	/// Bank containers, mesh arrays and texture buffers exceed the 85 KB threshold, so a region
 	/// load churns the LOH, which .NET sweeps but never compacts unless asked; the gaps stay
 	/// committed. Done here because a compacting gen2 is a long pause and the player is already
 	/// waiting: the load has finished and the guest is not yet released. Never during play.
+	/// Android's .NET 9 Mono runtime rejects CompactOnce: its large-object collector does not
+	/// implement that policy. Use its ordinary collection at the same load boundary instead,
+	/// so memory cleanup cannot turn a successfully presented region into an exception.
+	///
+	/// `android_loh_compaction` (default off): Android compacts too. The Mono note above predates
+	/// the NativeAOT export, whose GC is the desktop's and takes CompactOnce. On the S10e the large
+	/// object heap stood at 630-890 MB in game, the phone at 91% memory load; a region load's
+	/// mesh, texture and bank buffers leave it full of gaps that stay committed, and only a
+	/// compaction gives them back. The cost is a longer pause here, under the loading screen. A
+	/// runtime that refuses the setting (Mono) takes the ordinary collection as before.
 	/// </remarks>
 	private static void CompactLargeObjectHeap()
 	{
 		long before = System.GC.GetTotalMemory(false);
+		if (Refii.Core.Engine_Platform.IsAndroid && !AndroidCompactsLargeObjects())
+		{
+			// android_loh_compaction is off (the default), or the runtime refused CompactOnce (Mono's
+			// GCSettings setter throws PlatformNotSupportedException). Collect the unreferenced decode
+			// buffers without promising LOH compaction, and
+			// report only the measured live bytes rather than desktop committed-heap semantics.
+			System.GC.Collect();
+			GD.Print($"[game-world] collected region-load buffers without LOH compaction: " +
+				$"{before / 1048576.0:0} MB -> {System.GC.GetTotalMemory(false) / 1048576.0:0} MB live");
+			if (Refii.Level.LevelReads.LastCompleted is { } reads)
+				GD.Print($"[level-reads] release boundary; completed-build snapshot (not live bytes): {reads}");
+			return;
+		}
+
+		int deferSeconds = DeferSeconds();
+		if (deferSeconds > 0)
+		{
+			_compactionDue = System.Diagnostics.Stopwatch.GetTimestamp() +
+				deferSeconds * System.Diagnostics.Stopwatch.Frequency;
+			_compactionPauseFrames = 0;
+			GD.Print($"[game-world] large-object heap compaction deferred: at the first pause menu, " +
+				$"the next load, or in {deferSeconds} s ({before / 1048576.0:0} MB live)");
+			return;
+		}
+
+		Compact(before);
+	}
+
+	/// <summary>
+	/// `loh_compaction_defer_seconds` (default 0, the compaction at the release): when above 0,
+	/// the release's compaction waits for a moment the player is not watching the world move —
+	/// the pause menu standing for <see cref="CompactionPauseFrames"/> frames (so it has been
+	/// drawn and the freeze lands on a still screen), or the next load's hold — and runs after
+	/// that many seconds of play at the latest, so the memory always comes back. The S10e's
+	/// release line: 1.6-1.9 s for 1201 -> 884 MB live, the last stretch before the world shows.
+	/// </summary>
+	private static int DeferSeconds()
+	{
+		try
+		{
+			return System.Math.Max(0, Refii.Core.Engine_RefiiConfig.Int(
+				Refii.Core.Engine_RefiiConfig.Read(out _), DeferSecondsKey, 0));
+		}
+		catch (System.Exception)
+		{
+			return 0;
+		}
+	}
+
+	public const string DeferSecondsKey = "loh_compaction_defer_seconds";
+
+	/// <summary>Frames the pause root stands before the owed compaction runs under it.</summary>
+	private const int CompactionPauseFrames = 3;
+
+	/// <summary>When the owed compaction runs at the latest, as a Stopwatch timestamp; 0 for none owed.</summary>
+	private static long _compactionDue;
+
+	private static int _compactionPauseFrames;
+
+	/// <summary>One frame of play: the owed compaction, if the pause menu stands or its time is up.</summary>
+	private static void PumpDeferredCompaction()
+	{
+		if (_compactionDue == 0 || WorldBuildHeld)
+		{
+			return;
+		}
+
+		_compactionPauseFrames = HostBridge.GetPauseState() is { RootActive: true } ? _compactionPauseFrames + 1 : 0;
+		if (_compactionPauseFrames >= CompactionPauseFrames)
+		{
+			RunDeferredCompaction("the pause menu");
+		}
+		else if (System.Diagnostics.Stopwatch.GetTimestamp() >= _compactionDue)
+		{
+			RunDeferredCompaction("its deadline");
+		}
+	}
+
+	private static void RunDeferredCompaction(string when)
+	{
+		if (_compactionDue == 0)
+		{
+			return;
+		}
+
+		_compactionDue = 0;
+		GD.Print($"[game-world] running the deferred large-object heap compaction at {when}");
+		Compact(System.GC.GetTotalMemory(false));
+	}
+
+	private static void Compact(long before)
+	{
+		long started = System.Diagnostics.Stopwatch.GetTimestamp();
 		System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
 			System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
 		System.GC.Collect(2, System.GCCollectionMode.Aggressive, blocking: true, compacting: true);
@@ -565,7 +694,39 @@ public partial class GameWorld : Node3D
 		System.GCMemoryInfo info = System.GC.GetGCMemoryInfo();
 		GD.Print($"[game-world] compacted the large-object heap: " +
 			$"{before / 1048576.0:0} MB -> {System.GC.GetTotalMemory(false) / 1048576.0:0} MB live, " +
-			$"{info.TotalCommittedBytes / 1048576.0:0} MB committed");
+			$"{info.TotalCommittedBytes / 1048576.0:0} MB committed, " +
+			$"{System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds:0} ms");
+	}
+
+	/// <summary>`android_loh_compaction`, and whether this runtime takes CompactOnce at all.</summary>
+	private static bool AndroidCompactsLargeObjects()
+	{
+		bool wanted;
+		try
+		{
+			wanted = Refii.Core.Engine_RefiiConfig.Bool(
+				Refii.Core.Engine_RefiiConfig.Read(out _), "android_loh_compaction", false);
+		}
+		catch (System.Exception)
+		{
+			return false;
+		}
+
+		if (!wanted)
+		{
+			return false;
+		}
+
+		try
+		{
+			System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
+				System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+			return true;
+		}
+		catch (System.PlatformNotSupportedException)
+		{
+			return false;
+		}
 	}
 
 	/// <summary>The last two cameras the guest stated; the playhead is shared.</summary>
@@ -728,6 +889,111 @@ public partial class GameWorld : Node3D
 
 	private System.Diagnostics.Stopwatch? _buildClock;
 
+	/// <summary>Last Android retirement observations; these are diagnostics, not proof of complete reclamation.</summary>
+	/// <param name="Gate">Ordering, deadline and producer observation.</param>
+	/// <param name="ManagedBeforeBytes">Managed live-byte estimate before reference retirement.</param>
+	/// <param name="ManagedAfterBytes">Latest estimate after a pass or completion.</param>
+	/// <param name="TextureBeforeBytes">Renderer-reported texture bytes before retirement.</param>
+	/// <param name="TextureAfterBytes">Latest renderer-reported texture bytes.</param>
+	/// <param name="BufferBeforeBytes">Renderer-reported buffer bytes before retirement.</param>
+	/// <param name="BufferAfterBytes">Latest renderer-reported buffer bytes.</param>
+	public readonly record struct RegionRetirementDiagnostics(GameRegionRetirement.Snapshot Gate,
+		long ManagedBeforeBytes, long ManagedAfterBytes, long TextureBeforeBytes, long TextureAfterBytes,
+		long BufferBeforeBytes, long BufferAfterBytes);
+
+	/// <summary>The latest value-only Android gate observation, preserving a completed gate until the next transition.</summary>
+	public RegionRetirementDiagnostics? RetirementStatus => _retirement is null ? null : new(
+		_retirement.Status, _retirementManagedBefore, _retirementManagedAfter,
+		_retirementTextureBefore, _retirementTextureAfter, _retirementBufferBefore, _retirementBufferAfter);
+
+	private GameRegionRetirement? _retirement;
+	private System.Threading.Tasks.Task? _retiringBuild;
+	private System.Threading.Tasks.Task? _retirementCollection;
+	private long _retirementManagedBefore, _retirementManagedAfter;
+	private long _retirementTextureBefore, _retirementTextureAfter;
+	private long _retirementBufferBefore, _retirementBufferAfter;
+
+	/// <summary>Holds native preload while the old region and its producers retire, without blocking the Godot loop on finalizers.</summary>
+	private bool PumpRegionRetirement()
+	{
+		if (_retirement is null || !_retirement.Status.NewBuildBlocked) return true;
+		ulong frame = unchecked((uint)Engine.GetFramesDrawn());
+		int workers = Refii.Core.Engine_RegionWorkers.GlobalActive;
+		if (_retiringBuild is { IsCompleted: false }) ++workers;
+		else
+		{
+			_retiringBuild = null;
+			if (_builtRegion is { } abandoned)
+			{
+				_builtRegion = null;
+				abandoned.QueueFree();
+				_retirement.RequireDeletionFrame(frame);
+				GD.Print("[region-retirement] queued the abandoned worker's detached region for deletion");
+			}
+			_buildError = string.Empty;
+		}
+		bool finished = _retirementCollection is { IsCompleted: true };
+		string error = string.Empty;
+		if (finished)
+		{
+			try { _retirementCollection!.GetAwaiter().GetResult(); }
+			catch (System.Exception exception) { error = $"collection failed: {exception.GetType().Name}: {exception.Message}"; }
+			_retirementCollection = null;
+			ObserveRetirementMemory();
+			GD.Print($"[region-retirement] pass {_retirement.Status.FinalizerPasses + 1}: managed {_retirementManagedAfter} B, " +
+				$"textures {_retirementTextureAfter} B, buffers {_retirementBufferAfter} B; renderer counters, not OS residency");
+		}
+		RegionRetirementWork work = _retirement.Advance(frame, Time.GetTicksMsec() / 1000.0, workers, finished, error);
+		if (work is RegionRetirementWork.ClearAndCollect or RegionRetirementWork.Collect)
+		{
+			try
+			{
+				if (work == RegionRetirementWork.ClearAndCollect) Refii.Core.Engine_LevelCaches.ReleaseRegion();
+				// Waiting on the finalizer thread from _Process can block engine progress needed by
+				// native destructors. A separate task permits rendered frames while it finishes.
+				_retirementCollection = System.Threading.Tasks.Task.Run(() =>
+				{
+					System.GC.Collect();
+					System.GC.WaitForPendingFinalizers();
+				});
+			}
+			catch (System.Exception exception)
+			{
+				_retirementCollection = System.Threading.Tasks.Task.FromException(exception);
+			}
+		}
+		else if (work == RegionRetirementWork.Complete)
+		{
+			ObserveRetirementMemory();
+			GD.Print($"[region-retirement] completed in {_retirement.Status.ElapsedSeconds:0.00}s after {_retirement.Status.FinalizerPasses} pass(es): " +
+				$"managed {_retirementManagedBefore}->{_retirementManagedAfter} B, textures {_retirementTextureBefore}->{_retirementTextureAfter} B, " +
+				$"buffers {_retirementBufferBefore}->{_retirementBufferAfter} B; unreferenced retirement measured, allocation release not guaranteed");
+			bool inGame = HostBridge.IsInGame;
+			HostBridge.LevelChange? change = inGame ? HostBridge.GetLevelChange() : null;
+			HostBridge.CurrentLevel? current = inGame ? HostBridge.GetCurrentLevel() : null;
+			uint? currentKey = current is { } destination && destination.Level.Length != 0 ? destination.Key : null;
+			uint? fullLoadState = change is { FullLoad: true } command ? command.State : null;
+			bool preserve = GameRegionRetirement.PreservePreloadHold(inGame, currentKey, _torndownKey, fullLoadState);
+			SetWorldBuildHeld(preserve);
+			GD.Print(preserve ? "[region-retirement] destination exists; preload hold transfers to its build" :
+				"[region-retirement] released preload hold so the guest can advance to a destination or title");
+			return true;
+		}
+		else if (work == RegionRetirementWork.Failed)
+		{
+			GD.PrintErr("[region-retirement] " + _retirement.Status.Error + "; next build remains blocked; relaunch the app to recover");
+		}
+		return false;
+	}
+
+	/// <summary>Captures main-thread scalar counters without retaining native resources or reading back pixels.</summary>
+	private void ObserveRetirementMemory()
+	{
+		_retirementManagedAfter = System.GC.GetTotalMemory(false);
+		_retirementTextureAfter = (long)Performance.GetMonitor(Performance.Monitor.RenderTextureMemUsed);
+		_retirementBufferAfter = (long)Performance.GetMonitor(Performance.Monitor.RenderBufferMemUsed);
+	}
+
 	/// <summary>
 	/// Kicks off the region build on a worker thread.
 	///
@@ -737,6 +1003,7 @@ public partial class GameWorld : Node3D
 	/// </summary>
 	private void StartBuild(Refii.Assets.Engine_GameAssets assets, HostBridge.StartLevel start)
 	{
+		if (_retirement?.Status.NewBuildBlocked == true) return;
 		string world = start.World;
 		string level = start.Level;
 		_buildingLevel = $"{world}/{level}";
@@ -752,12 +1019,16 @@ public partial class GameWorld : Node3D
 		GD.Print($"[game-world] building {world}/{level} on a worker thread; " +
 			"the guest waits in its own loading screen");
 
+		Refii.Core.Engine_LoadTimeline.Open($"build {world}/{level}");
 		_build = System.Threading.Tasks.Task.Run(() =>
 		{
+			long buildFrom = System.Diagnostics.Stopwatch.GetTimestamp();
 			try
 			{
 				_builtRegion = assets.BuildLevelNode(world, level, out string error);
 				_buildError = error;
+				Refii.Core.Engine_LoadTimeline.Add(Refii.Core.Engine_LoadTimeline.Category.RegionBuild,
+					System.Diagnostics.Stopwatch.GetTimestamp() - buildFrom);
 			}
 			catch (System.Exception e)
 			{
@@ -847,6 +1118,10 @@ public partial class GameWorld : Node3D
 		// different one.
 		if (!HostBridge.IsInGame)
 		{
+			// A completed boundary can have kept the destination fence while assets were
+			// unavailable. Its later title edge must release it even with no mounted region.
+			if (Refii.Core.Engine_Platform.IsAndroid && _retirement is { } gate && !gate.Status.NewBuildBlocked)
+				SetWorldBuildHeld(false);
 			if (_loaded || _build is not null)
 			{
 				GD.Print($"[game-world] the guest has left the game — taking " +
@@ -967,6 +1242,7 @@ public partial class GameWorld : Node3D
 			GD.Print($"[game-world] the guest is in {here.World}/{here.Level} but {_standing} " +
 				$"is standing (key 0x{_standingKey:X8} -> 0x{here.Key:X8}) — taking it down");
 			TearDownRegion();
+			if (Refii.Core.Engine_Platform.IsAndroid) return;
 		}
 
 		var start = new HostBridge.StartLevel(here.World, here.Level, here.Entrance);
@@ -1165,6 +1441,7 @@ public partial class GameWorld : Node3D
 		_readyFrames = 0;
 		AddChild(region);
 		Refii.Models.Engine_ClassicLoad.Begin(region);
+		Refii.Models.Engine_PipelineWarmup.Begin();
 
 		SetStreamBudget(region, HeldStreamMsPerFrame);
 
@@ -1203,7 +1480,11 @@ public partial class GameWorld : Node3D
 		// The container is handed to GameEntities alive. Freeing it here and passing the freed
 		// node on the next statement leaves nothing for the one-at-a-time retirement to do —
 		// `IsInstanceValid` is already false when the first entity arrives.
+		Refii.Core.Engine_LoadTimeline.Mark("mounted");
+		long twinsFrom = System.Diagnostics.Stopwatch.GetTimestamp();
 		var twins = Refii.Entities.Engine_StaticTwins.Build(region);
+		Refii.Core.Engine_LoadTimeline.Add(Refii.Core.Engine_LoadTimeline.Category.StaticTwins,
+			System.Diagnostics.Stopwatch.GetTimestamp() - twinsFrom, twins.Instances);
 		GD.Print($"[game-world] the guest owns entities here; {twins.Instances} static " +
 			$"drawable(s) across {twins.Records} `.save` record(s) are waiting to be retired");
 
@@ -1222,6 +1503,11 @@ public partial class GameWorld : Node3D
 		// It censuses by default and draws only under REFII_FX_LIVE=1; see GameFx.
 		_fx = new GameFx { Name = "GameFx" };
 		AddChild(_fx);
+
+		// Zero-energy lights paired with every mesh, so Mobile's per-draw pipeline stops
+		// changing with the lamps in reach (`stable_light_counts`, off unless configured).
+		Refii.Lighting.Engine_StableLightCounts.Configure(Refii.Core.Engine_RefiiConfig.Read(out _));
+		Refii.Lighting.Engine_StableLightCounts.Mount(this);
 		GD.Print($"[game-world] built and mounted {start.World}/{start.Level}");
 	}
 
@@ -1238,12 +1524,25 @@ public partial class GameWorld : Node3D
 	/// to crash a Godot frame from managed code. The nodes are detached immediately so nothing
 	/// finds them again in the meantime, and reclaimed at the end of the frame.
 	///
-	/// The caches these regions share are NOT cleared here. They are keyed on the asset path,
-	/// every level that names the same model wants the same mesh, and dropping them would make
-	/// a level change pay full decode cost for scenery it already has in memory.
+	/// Desktop clears caches at its existing boundary. Android defers the clear until outgoing
+	/// producers and queued native deletion retire; bounded collection/finalizer passes precede
+	/// the next build. Borrowed resources are never disposed here.
 	/// </summary>
 	private void TearDownRegion()
 	{
+		bool android = Refii.Core.Engine_Platform.IsAndroid;
+		if (android)
+		{
+			_retirement = new GameRegionRetirement(unchecked((uint)Engine.GetFramesDrawn()), Time.GetTicksMsec() / 1000.0, _applicationPaused);
+			_retiringBuild = _build;
+			ObserveRetirementMemory();
+			_retirementManagedBefore = _retirementManagedAfter;
+			_retirementTextureBefore = _retirementTextureAfter;
+			_retirementBufferBefore = _retirementBufferAfter;
+			SetWorldBuildHeld(true);
+			GD.Print($"[region-retirement] started: managed {_retirementManagedBefore} B, textures {_retirementTextureBefore} B, " +
+				$"buffers {_retirementBufferBefore} B; {_standing}");
+		}
 		if (_entities is not null)
 		{
 			RemoveChild(_entities);
@@ -1278,12 +1577,9 @@ public partial class GameWorld : Node3D
 			_region = null;
 		}
 
-		// THE REGION'S CACHES GO WITH THE REGION. Six dictionaries keyed by asset path outlive
-		// the node that built them, and none had a caller for the clear it already defined, so
-		// every region ever visited stayed resident for the session. AFTER the region is freed,
-		// so anything the old materials held is already gone and only unreferenced entries are
-		// actually released.
-		Refii.Core.Engine_LevelCaches.ReleaseRegion();
+		// QueueFree has not completed here. Android measures a separate retirement boundary;
+		// desktop retains its established timing. Dictionary clears do not guarantee GPU release.
+		if (!android) Refii.Core.Engine_LevelCaches.ReleaseRegion();
 
 		// REMEMBERED BEFORE IT IS CLEARED. Everything below forgets what was standing, and the
 		// one thing the next build must not do is recreate it.
@@ -1295,6 +1591,7 @@ public partial class GameWorld : Node3D
 		_waitingForGuest = false;
 		_holdingForProps = false;
 		Refii.Models.Engine_ClassicLoad.End();
+		Refii.Models.Engine_PipelineWarmup.End();
 		Refii.Models.Engine_ClassicLoad.Abandon();
 		Refii.Models.Engine_ClassicVertexBakes.Clear();
 		Refii.Models.Engine_ClassicPrtRows.Clear();
@@ -1308,9 +1605,9 @@ public partial class GameWorld : Node3D
 		// A teardown can land while a build is in flight — the guest changing its mind mid-load.
 		// The next StartBuild re-asserts it, so clearing here cannot let the guest through early
 		// but does guarantee no hold survives a region that no longer exists.
-		SetWorldBuildHeld(false);
+		if (!android) SetWorldBuildHeld(false);
 		_build = null;
-		_builtRegion = null;
+		if (!android) _builtRegion = null;
 		_buildError = string.Empty;
 
 		// The once-only reports are once PER REGION, not once per run. Left latched, the second

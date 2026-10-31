@@ -294,7 +294,9 @@ public partial class Engine_ClassicFur : Node
             // Alpha test, reference 16 (the shells' cut).
             pass.SetShaderParameter("xr_spec_constants", 2u);
             pass.SetShaderParameter("xr_alpha_threshold", 16f / 255f);
-            pass.SetMeta("fur_slices", new Godot.Collections.Array<ImageTexture>(slices));
+            var furSlices = new Godot.Collections.Array<ImageTexture>(slices);
+            pass.SetMeta("fur_slices", furSlices);
+            GC.KeepAlive(furSlices);
             furred.Passes[i] = pass;
         }
         furred.Shell = new MeshInstance3D
@@ -556,7 +558,7 @@ public partial class Engine_ClassicFur : Node
         arrays[(int)Mesh.ArrayType.TexUV] = uvs;
         arrays[(int)Mesh.ArrayType.Index] = new[] { 0, 1, 2, 0, 2, 3 };
         _clipQuad = new ArrayMesh();
-        _clipQuad.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
+        Refii.Core.Engine_ArrayMeshes.AddSurface(_clipQuad, Mesh.PrimitiveType.Triangles, arrays);
         arrays.Dispose();
         return _clipQuad;
     }
@@ -1037,7 +1039,7 @@ public partial class Engine_ClassicFur : Node
                 format |= Mesh.ArrayFormat.FlagUse8BoneWeights;
             }
         }
-        into.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, shell, null, null, format);
+        Refii.Core.Engine_ArrayMeshes.AddSurface(into, Mesh.PrimitiveType.Triangles, shell, null, null, format);
         shell.Dispose();
     }
 
@@ -1068,7 +1070,9 @@ public partial class Engine_ClassicFur : Node
             return held;
         }
         var array = new Texture2DArray();
-        array.CreateFromImages(new Godot.Collections.Array<Image>(SliceImages(falloff)));
+        var slices = new Godot.Collections.Array<Image>(SliceImages(falloff));
+        array.CreateFromImages(slices);
+        GC.KeepAlive(slices);
         SliceArraysByFalloff[falloff] = array;
         return array;
     }

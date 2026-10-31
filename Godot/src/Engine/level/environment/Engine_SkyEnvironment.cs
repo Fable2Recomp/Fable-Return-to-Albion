@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
 using Godot;
+using Refii.Core;
 
 namespace Refii.Level;
 
+/// <summary>Builds the region's sky and publishes its shared atmosphere state to world materials.</summary>
 public static class Engine_SkyEnvironment
 {
     private static readonly StringName BetaMieName = "beta_mie";
@@ -143,14 +145,22 @@ public static class Engine_SkyEnvironment
     /// As above, writing the table into <paramref name="reuse"/> when given one, so a dome
     /// re-evaluated many times a second updates one texture rather than creating one each time.
     /// </summary>
+    [ThreadStatic]
+    private static byte[]? _lutBytes;
+
     public static (AtmosphereState State, ImageTexture Lut) ComputeDome(
         SkyFrame frame, SkyTheme theme, ImageTexture? reuse)
     {
-        AtmosphereInputs inputs = Engine_SkyAtmosphere.FromFrame(frame, theme);
+        AtmosphereInputs inputs = Engine_SkyAtmosphere.FromFrameScratch(frame, theme);
         AtmosphereState state = Engine_SkyAtmosphere.Compute(inputs);
         float[] lut = Engine_SkyAtmosphere.BuildInScatterLut(state);
 
-        var bytes = new byte[lut.Length * sizeof(float)];
+        // The dynamic sky re-evaluates the dome at 15 Hz: the byte copy is kept per thread (Godot
+        // copies it into the image), and an image that only updated the kept texture is released
+        // here rather than left to its finalizer.
+        byte[] bytes = _lutBytes is { } kept && kept.Length == lut.Length * sizeof(float)
+            ? kept
+            : _lutBytes = new byte[lut.Length * sizeof(float)];
         Buffer.BlockCopy(lut, 0, bytes, 0, bytes.Length);
         var image = Image.CreateFromData(
             Engine_SkyAtmosphere.LutWidth, 1, false, Image.Format.Rgbaf, bytes);
@@ -158,10 +168,11 @@ public static class Engine_SkyEnvironment
             reuse.GetHeight() == image.GetHeight())
         {
             reuse.Update(image);
+            image.Dispose();
             return (state, reuse);
         }
 
-        return (state, ImageTexture.CreateFromImage(image));
+        return (state, Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(image));
     }
 
     public static void ApplyDomeUniforms(
@@ -204,10 +215,28 @@ public static class Engine_SkyEnvironment
         SkyFrame frame, SkyTheme theme, AtmosphereState state, ImageTexture lut) =>
         ApplyAtmosphereGlobals(frame, theme, state, lut, report: true);
 
+    /// <summary>Publishes one atmosphere update, including guarded immutable near-fog endpoints.</summary>
+    /// <param name="frame">The evaluated sky orientation used by the dome and fog.</param>
+    /// <param name="theme">The resolved region theme; the supplied state already contains its fog curve.</param>
+    /// <param name="state">The atmosphere state whose copied values seed both analytic and precomputed paths.</param>
+    /// <param name="lut">The in-scatter texture shared with the dome.</param>
     /// <param name="report">False for the continuous tick, which would print every change.</param>
     public static void ApplyAtmosphereGlobals(
         SkyFrame frame, SkyTheme theme, AtmosphereState state, ImageTexture lut, bool report)
     {
+        // A render thread seeing any part of this update must fall back until all endpoint
+        // copies are queued. This also leaves fallback selected if later publication fails.
+        RenderingServer.GlobalShaderParameterSet(Engine_NearFogKnots.ReadyGlobal, false);
+        var beta = new Vector3(
+            state.BetaRayleigh[0] + state.BetaMie[0],
+            state.BetaRayleigh[1] + state.BetaMie[1],
+            state.BetaRayleigh[2] + state.BetaMie[2]);
+        var curve = new Vector3(state.FogOpticalDepthAtFar, state.FogRecipFarRange, state.FogExponent);
+        var range = new Vector4(state.ScatteringMisc[0], Engine_SkyAtmosphere.MaxFogDistance, state.ScatteringMisc[2], 0f);
+        bool hasFog = state.HasFog;
+        NearFogSnapshot nearFog = Engine_NearFogKnots.Create(hasFog, beta.X, beta.Y, beta.Z,
+            curve.X, curve.Y, curve.Z, range.Y);
+
         // ONLY WHEN IT IS A DIFFERENT TEXTURE. Setting a sampler global queues EVERY material
         // that reads it for a uniform-set rebuild (`MaterialStorage::global_shader_parameter_set`,
         // the `texture_materials` loop) — every lit surface in the region. At the atmosphere's
@@ -249,6 +278,12 @@ public static class Engine_SkyEnvironment
             Engine_SkyAtmosphere.FogBlendFactor, Engine_SkyAtmosphere.FogColourFactor));
 
         RenderingServer.GlobalShaderParameterSet(AtmosFogOnName, state.HasFog);
+
+        // Publish invalidates independently as well, so the same tested publisher is safe
+        // for initial loads, theme transitions, fog-free levels and later region reloads.
+        Engine_NearFogKnots.Publish(nearFog,
+            static (name, rgb) => RenderingServer.GlobalShaderParameterSet(name, new Vector3(rgb.Red, rgb.Green, rgb.Blue)),
+            static (name, ready) => RenderingServer.GlobalShaderParameterSet(name, ready));
 
         if (report)
         {

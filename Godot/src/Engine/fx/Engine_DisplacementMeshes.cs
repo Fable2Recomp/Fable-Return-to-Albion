@@ -135,15 +135,28 @@ public static class Engine_DisplacementMeshes
         }
     }
 
-    /// <summary>fx_mesh_disp over the mesh's own diffuse (its first surface's albedo).</summary>
+    private static readonly Dictionary<ulong, ShaderMaterial> MeshMaterials = new();
+
+    /// <summary>
+    /// fx_mesh_disp over the mesh's own diffuse (its first surface's albedo); one per albedo, as
+    /// the material holds nothing else and is never written after it is made. The material keeps
+    /// its albedo alive, so the key's instance id is never reused while it is held.
+    /// </summary>
     private static ShaderMaterial MaterialFor(Mesh mesh)
     {
-        _shader ??= GD.Load<Shader>(FableFx.MeshDispShaderPath);
-        var material = new ShaderMaterial { Shader = _shader };
-        if (mesh.GetSurfaceCount() > 0 && mesh.SurfaceGetMaterial(0) is ShaderMaterial source &&
-            source.GetShaderParameter(AlbedoName).As<Texture2D>() is { } albedo)
+        Texture2D? albedo = mesh.GetSurfaceCount() > 0 && mesh.SurfaceGetMaterial(0) is ShaderMaterial source
+            ? source.GetShaderParameter(AlbedoName).As<Texture2D>()
+            : null;
+        ulong key = albedo?.GetInstanceId() ?? 0ul;
+        if (!MeshMaterials.TryGetValue(key, out ShaderMaterial? material))
         {
-            material.SetShaderParameter(AlbedoName, albedo);
+            _shader ??= GD.Load<Shader>(FableFx.MeshDispShaderPath);
+            material = new ShaderMaterial { Shader = _shader };
+            if (albedo is not null)
+            {
+                material.SetShaderParameter(AlbedoName, albedo);
+            }
+            MeshMaterials[key] = material;
         }
         return material;
     }

@@ -1,6 +1,7 @@
 using System;
 using Godot;
 using Godot.Collections;
+using Refii.Core;
 
 namespace Refii.Models;
 
@@ -48,13 +49,13 @@ public partial class Engine_ClassicImpostorMips : CompositorEffect
             GD.PushError("[classic] impostor mips did not initialise (" + ShaderPath + ")");
             return;
         }
-        _shader = _rd.ShaderCreateFromSpirV(file.GetSpirV());
+        _shader = _rd.Shader(file.GetSpirV());
         if (!_shader.IsValid)
         {
             return;
         }
-        _pipeline = _rd.ComputePipelineCreate(_shader);
-        _linear = _rd.SamplerCreate(new RDSamplerState
+        _pipeline = _rd.ComputePipeline(_shader);
+        _linear = _rd.Sampler(new RDSamplerState
         {
             MinFilter = RenderingDevice.SamplerFilter.Linear, MagFilter = RenderingDevice.SamplerFilter.Linear,
             RepeatU = RenderingDevice.SamplerRepeatMode.ClampToEdge, RepeatV = RenderingDevice.SamplerRepeatMode.ClampToEdge,
@@ -75,7 +76,7 @@ public partial class Engine_ClassicImpostorMips : CompositorEffect
             _views[mip] = default;
         }
         Refii.Core.Engine_RdRetire.Retire(_target);
-        _target = _rd!.TextureCreate(new RDTextureFormat
+        _target = _rd!.Texture(new RDTextureFormat
         {
             Width = (uint)size.X, Height = (uint)size.Y, Mipmaps = Mips,
             Format = RenderingDevice.DataFormat.R16G16B16A16Sfloat,
@@ -90,7 +91,7 @@ public partial class Engine_ClassicImpostorMips : CompositorEffect
         Refii.Core.Engine_TracedMemory.Alloc(Refii.Core.Engine_RdRetire.TracedPool, _target.Id, bytes);
         for (int mip = 0; mip < Mips; mip++)
         {
-            _views[mip] = _rd.TextureCreateSharedFromSlice(new RDTextureView(), _target, 0, (uint)mip, 1,
+            _views[mip] = _rd!.TextureSharedFromSlice(new RDTextureView(), _target, 0, (uint)mip, 1,
                 RenderingDevice.TextureSliceType.Slice2D);
         }
         _targetSize = size;
@@ -136,7 +137,7 @@ public partial class Engine_ClassicImpostorMips : CompositorEffect
                 above.AddId(read);
                 var below = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 1 };
                 below.AddId(_views[mip]);
-                set = key.Hold(UniformSetCacheRD.GetCache(_shader, 0, new Array<RDUniform> { above, below }));
+                set = key.Hold(Engine_RdCalls.CachedUniformSet(_shader, 0, above, below));
             }
             long list = _rd.ComputeListBegin();
             _rd.ComputeListBindComputePipeline(list, _pipeline);
@@ -146,36 +147,49 @@ public partial class Engine_ClassicImpostorMips : CompositorEffect
         }
     }
 
-    private void FreeTarget()
+    private void FreeTarget(RenderingDevice rd)
     {
         for (int mip = 0; mip < Mips; mip++)
         {
             if (_views[mip].IsValid)
             {
-                _rd!.FreeRid(_views[mip]);
+                rd.FreeRid(_views[mip]);
                 _views[mip] = default;
             }
         }
         if (_target.IsValid)
         {
             Refii.Core.Engine_TracedMemory.Free(Refii.Core.Engine_RdRetire.TracedPool, _target.Id);
-            _rd!.FreeRid(_target);
+            rd.FreeRid(_target);
             _target = default;
         }
     }
 
     public override void _Notification(int what)
     {
-        if (what != NotificationPredelete || _rd is null)
+        if (what != NotificationPredelete)
         {
             return;
         }
-        FreeTarget();
-        if (_linear.IsValid) _rd.FreeRid(_linear);
-        if (_pipeline.IsValid) _rd.FreeRid(_pipeline);
-        if (_shader.IsValid) _rd.FreeRid(_shader);
-        _linear = _pipeline = _shader = default;
+        Engine_ClassicImpostorMips self = this;
+        Refii.Core.Engine_RdRetire.OnRenderThread(() => self.ReleaseDeviceObjects());
+    }
+
+    /// <summary>Frees the device objects. Render thread (<see cref="Refii.Core.Engine_RdRetire.OnRenderThread"/>).</summary>
+    private void ReleaseDeviceObjects()
+    {
         _ready = false;
+        RenderingDevice? rd = RenderingServer.GetRenderingDevice();
+        if (_rd is null || rd is null)
+        {
+            _rd = null;
+            return;
+        }
+        FreeTarget(rd);
+        if (_linear.IsValid) rd.FreeRid(_linear);
+        if (_pipeline.IsValid) rd.FreeRid(_pipeline);
+        if (_shader.IsValid) rd.FreeRid(_shader);
+        _linear = _pipeline = _shader = default;
         _rd = null;
     }
 }

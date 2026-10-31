@@ -1,0 +1,29 @@
+{
+	"menus": {
+		"pause-root": {
+			"patch": true,
+			"entries": [
+				{ "name": "hotbar.menu", "tag": "HOTBAR_MENU", "opens": "hotbar.slots", "hostOnly": true }
+			]
+		},
+		"hotbar.slots": {
+			"title": "HOTBAR_MENU",
+			"source": "rows"
+		},
+		"hotbar.kind": {
+			"title": "HOTBAR_KIND",
+			"entries": [
+				{ "name": "spells", "tag": "HOTBAR_KIND_SPELLS", "opens": "hotbar.pick" },
+				{ "name": "expressions", "tag": "HOTBAR_KIND_EXPRESSIONS", "opens": "hotbar.pick" },
+				{ "name": "food", "tag": "HOTBAR_KIND_FOOD", "opens": "hotbar.pick" },
+				{ "name": "potions", "tag": "HOTBAR_KIND_POTIONS", "opens": "hotbar.pick" },
+				{ "name": "items", "tag": "HOTBAR_KIND_ITEMS", "opens": "hotbar.pick" },
+				{ "name": "clear", "tag": "HOTBAR_KIND_CLEAR", "command": "Mod:lua:Hotbar.clear" }
+			]
+		},
+		"hotbar.pick": {
+			"title": "HOTBAR_PICK",
+			"source": "rows"
+		}
+	}
+}

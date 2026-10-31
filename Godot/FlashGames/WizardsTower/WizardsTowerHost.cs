@@ -87,6 +87,15 @@ public partial class WizardsTowerHost : Node, IPubGameSession
 
     PubGame? IPubGameSession.Game => _game;
 
+    /// <summary>The board's timelines freed with it, when <c>pubgame_release_on_close</c> is on.</summary>
+    public override void _Notification(int what)
+    {
+        if (what == NotificationPredelete && Engine_TexSettings.PubGameReleaseOnClose)
+        {
+            _sceneUi?.Release();
+        }
+    }
+
     public override void _Ready()
     {
         Engine_TexEnhance.EnsureRegistered();

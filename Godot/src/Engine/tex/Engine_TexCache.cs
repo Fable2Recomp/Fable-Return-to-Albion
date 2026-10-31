@@ -174,7 +174,7 @@ public static class Engine_TexCache
 	/// </remarks>
 	public static string BaseKey(ReadOnlySpan<byte> source)
 	{
-		using IncrementalHash sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+		using Refii.Core.Engine_Hash.Incremental sha = Refii.Core.Engine_Hash.CreateIncrementalSha256();
 
 		Span<byte> tail = stackalloc byte[4];
 		BitConverter.TryWriteBytes(tail, ConverterVersion);
@@ -204,7 +204,7 @@ public static class Engine_TexCache
 		// Incremental rather than one concatenated buffer: the source is the large part, and
 		// copying it to prepend sixteen bytes doubles the peak allocation of every decode for
 		// nothing.
-		using IncrementalHash sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+		using Refii.Core.Engine_Hash.Incremental sha = Refii.Core.Engine_Hash.CreateIncrementalSha256();
 
 		Span<byte> tail = stackalloc byte[16];
 		BitConverter.TryWriteBytes(tail[..4], (int)semantic);
@@ -227,7 +227,7 @@ public static class Engine_TexCache
 	/// </summary>
 	public static string DerivedKey(string recipe, ReadOnlySpan<byte> source, ReadOnlySpan<byte> second = default)
 	{
-		using IncrementalHash sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+		using Refii.Core.Engine_Hash.Incremental sha = Refii.Core.Engine_Hash.CreateIncrementalSha256();
 
 		Span<byte> tail = stackalloc byte[8];
 		BitConverter.TryWriteBytes(tail[..4], ConverterVersion);

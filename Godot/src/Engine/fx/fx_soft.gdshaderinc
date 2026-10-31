@@ -1,8 +1,16 @@
 uniform float fx_soft_inv = 0.0;
+// FX_HARD (Engine_FxDepthReads, for a material whose soft distance is zero): no depth uniform at
+// all. Godot counts the DECLARATION as a depth read, and on Mobile one such material splits the
+// frame's render pass and copies depth. The fade is 1 there either way.
+#ifndef FX_HARD
 uniform sampler2D fx_depth_tex : hint_depth_texture, filter_nearest;
+#endif
 
 /// The ease over squared distance to the scene behind, scaled by `inv` (1 / the soft distance); 0 = off.
 float fx_soft_fade_by(float inv, float out_alpha, vec3 view_pos, vec2 screen_uv, mat4 inv_proj, mat4 inv_view) {
+#ifdef FX_HARD
+	return 1.0;
+#else
 	if (inv <= 0.0) {
 		return 1.0;
 	}
@@ -23,6 +31,7 @@ float fx_soft_fade_by(float inv, float out_alpha, vec3 view_pos, vec2 screen_uv,
 	}
 	float t = clamp(2.0 * (1.0 - x), 0.0, 1.0);
 	return 1.0 - 0.5 * t * t * t * t;
+#endif
 }
 
 float fx_soft_fade(float out_alpha, vec3 view_pos, vec2 screen_uv, mat4 inv_proj, mat4 inv_view) {

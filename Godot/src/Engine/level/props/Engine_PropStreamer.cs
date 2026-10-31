@@ -48,6 +48,12 @@ public partial class Engine_PropStreamer : Node3D
             {
                 UpdateAllVisibilityRanges();
             }
+            else if (name.Equals(Engine_PropDrawRange.TreeFarReachKey, StringComparison.OrdinalIgnoreCase) ||
+                name.Equals(Engine_PropDrawRange.TreeLodBiasKey, StringComparison.OrdinalIgnoreCase))
+            {
+                Engine_PropDrawRange.RefreshLive();
+                UpdateAllVisibilityRanges();
+            }
         };
     }
 
@@ -180,6 +186,9 @@ public partial class Engine_PropStreamer : Node3D
     }
 
     private volatile bool _prefetchStop;
+
+    /// <summary>Counts outgoing vertex-bake producers through completion publication, independently of native node deletion.</summary>
+    private readonly Refii.Core.Engine_RegionWorkers _retirementWorkers = new();
 
     private void StartPrefetch()
     {
@@ -378,6 +387,12 @@ public partial class Engine_PropStreamer : Node3D
         {
             Engine_PropFade.SetRadius(instance, mesh, radius);
         }
+        else if (instance.HasMeta(Engine_PropDrawRange.TreeFarModelMeta) &&
+            instance.LodBias != Engine_PropDrawRange.TreeLodBias)
+        {
+            // A far tree's levels drop only leaf cards (tree_card_lod): tree_lod_bias lets them switch sooner.
+            instance.LodBias = Engine_PropDrawRange.TreeLodBias;
+        }
     }
 
     /// <summary>
@@ -480,6 +495,25 @@ public partial class Engine_PropStreamer : Node3D
     /// Re-evaluates visibility ranges on all streamed props across all live streamers
     /// (e.g. when <c>prop_cull_distance_scale</c> is updated at runtime).
     /// </summary>
+    /// <summary>A batch's instance transforms read back from its buffer (one render-thread sync).</summary>
+    private static Transform3D[] BatchTransforms(MultiMesh batch)
+    {
+        int count = batch.InstanceCount;
+        float[] buffer = count > 0 ? Refii.Core.Engine_ServerSyncs.Buffer(batch) : Array.Empty<float>();
+        int stride = count > 0 ? buffer.Length / count : 0;
+        var placed = new Transform3D[stride >= 12 ? count : 0];
+        for (int i = 0; i < placed.Length; i++)
+        {
+            int o = i * stride;
+            placed[i] = new Transform3D(
+                new Vector3(buffer[o], buffer[o + 4], buffer[o + 8]),
+                new Vector3(buffer[o + 1], buffer[o + 5], buffer[o + 9]),
+                new Vector3(buffer[o + 2], buffer[o + 6], buffer[o + 10]),
+                new Vector3(buffer[o + 3], buffer[o + 7], buffer[o + 11]));
+        }
+        return placed;
+    }
+
     public static void UpdateAllVisibilityRanges()
     {
         lock (Live)
@@ -555,9 +589,10 @@ public partial class Engine_PropStreamer : Node3D
         workers = Math.Min(workers, distinct.Count);
 
         int cursor = -1;
+        var trackedWorkers = new Refii.Core.Engine_RegionWorkers();
         for (int w = 0; w < workers; ++w)
         {
-            System.Threading.Tasks.Task.Run(() =>
+            trackedWorkers.TryQueue(() =>
             {
                 for (;;)
                 {
@@ -663,9 +698,12 @@ public partial class Engine_PropStreamer : Node3D
         }
     }
 
+    /// <summary>Stops further prefetch and closes Android bake publication without disposing shared results.</summary>
     public override void _ExitTree()
     {
         _prefetchStop = true;
+        if (Refii.Core.Engine_Platform.IsAndroid)
+            _retirementWorkers.Retire(() => { while (_bakeCompletions.TryDequeue(out _)) { } });
         Live.Remove(this);
         PublishProgress();
     }
@@ -679,6 +717,8 @@ public partial class Engine_PropStreamer : Node3D
         }
 
         Engine_PropFade.Tick();
+        Engine_PropFarShading.Tick(GetViewport()?.GetCamera3D());
+        Engine_BuildingOccluders.Pump();
 
         long drainFrom = System.Diagnostics.Stopwatch.GetTimestamp();
         DrainVertexBakes();
@@ -717,7 +757,9 @@ public partial class Engine_PropStreamer : Node3D
                     long stepFrom = System.Diagnostics.Stopwatch.GetTimestamp();
                     TimeSpan stepPause = GC.GetTotalPauseDuration();
                     Step(instance, ready, knownFailure);
-                    double stepMs = (System.Diagnostics.Stopwatch.GetTimestamp() - stepFrom) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                    long stepTicks = System.Diagnostics.Stopwatch.GetTimestamp() - stepFrom;
+                    Refii.Core.Engine_LoadTimeline.Add(Refii.Core.Engine_LoadTimeline.Category.PropStep, stepTicks);
+                    double stepMs = stepTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
                     Refii.Core.Engine_FramePhases.Record("props.step", stepMs, plot: false);
                     if (stepMs > 8.0 && _slowStepsLogged++ < 48)
                     {
@@ -756,7 +798,9 @@ public partial class Engine_PropStreamer : Node3D
                     // and log slow loads by path.
                     long from = System.Diagnostics.Stopwatch.GetTimestamp();
                     Step(instance, null, false);
-                    double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - from) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                    long syncLoadTicks = System.Diagnostics.Stopwatch.GetTimestamp() - from;
+                    Refii.Core.Engine_LoadTimeline.Add(Refii.Core.Engine_LoadTimeline.Category.PropSyncLoad, syncLoadTicks);
+                    double ms = syncLoadTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
                     Refii.Core.Engine_FramePhases.Record("props.sync_load", ms, plot: true);
                     if (ms > 4.0 && _syncLoadsLogged++ < 24)
                     {
@@ -971,7 +1015,7 @@ public partial class Engine_PropStreamer : Node3D
         // run in the completion on the main thread.
         ulong nodeId = node.GetInstanceId();
         ++_bakesInFlight;
-        System.Threading.Tasks.Task.Run(() =>
+        _retirementWorkers.TryQueue(() =>
         {
             Color[][]? built = null;
             Refii.Lighting.LightmapContainer? container = null;
@@ -986,7 +1030,7 @@ public partial class Engine_PropStreamer : Node3D
                 GD.PushWarning($"[props] vertex bake failed: {e.GetType().Name}: {e.Message}");
             }
 
-            _bakeCompletions.Enqueue((nodeId, container, key, mesh, built));
+            _retirementWorkers.TryPublish(() => _bakeCompletions.Enqueue((nodeId, container, key, mesh, built)));
         });
     }
 
@@ -1057,6 +1101,8 @@ public partial class Engine_PropStreamer : Node3D
                 node, RegionLighting(), staticProp: true);
             double lightMs = Ms(lightFrom);
             Refii.Lighting.Engine_GiRefresh.StaticGeometryArrived(node);
+            Refii.Core.Engine_LoadTimeline.Add(Refii.Core.Engine_LoadTimeline.Category.PropBake,
+                System.Diagnostics.Stopwatch.GetTimestamp() - itemFrom);
 
             // The budget below can only stop the next item, so a single slow apply is logged
             // with its mesh/light split.
@@ -1312,7 +1358,7 @@ public partial class Engine_PropStreamer : Node3D
                     GD.Print($"[props] batch bounds read back from the render thread ({count} instance(s), " +
                         $"{(Engine_PropShadow.HasRecord(multi.Multimesh) ? "record length differs" : "no record")}): {path}");
                 }
-                float[] buffer = count > 0 ? multi.Multimesh.Buffer : Array.Empty<float>();
+                float[] buffer = count > 0 ? Refii.Core.Engine_ServerSyncs.Buffer(multi.Multimesh) : Array.Empty<float>();
                 int stride = count > 0 ? buffer.Length / count : 0;
                 if (stride >= 12)
                 {
@@ -1361,7 +1407,18 @@ public partial class Engine_PropStreamer : Node3D
 
             long t2 = System.Diagnostics.Stopwatch.GetTimestamp();
             ApplyVisibilityRange(instance, mesh);
+            if (Engine_BuildingOccluders.Enabled)
+            {
+                Vector3 size = mesh.GetAabb().Size;
+                if (IsBuilding(instance, path, MathF.Max(size.X, MathF.Max(size.Y, size.Z))))
+                {
+                    Engine_BuildingOccluders.Add(instance, mesh, instance is MultiMeshInstance3D placed
+                        ? Engine_PropShadow.StatedTransforms(placed.Multimesh) ?? BatchTransforms(placed.Multimesh)
+                        : null);
+                }
+            }
             Refii.Models.Engine_ClassicBillboards.Register(instance, mesh);
+            Engine_PropFarShading.Register(instance, mesh);
             if (instance is MeshInstance3D displaced && displaced.HasMeta(RecordMeta))
             {
                 uint displacedRecord = (uint)displaced.GetMeta(RecordMeta).AsInt64();

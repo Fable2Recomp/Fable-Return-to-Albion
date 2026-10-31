@@ -37,6 +37,15 @@ namespace Refii.Game;
 /// </summary>
 public partial class GameDebugServer : Node
 {
+	/// <summary>Whether this node installs frame samplers; desktop callers retain the default ownership.</summary>
+	/// <remarks>Android installs its pair independently before adding an optional listener and
+	/// sets this false, keeping clock/draw sampling independent of network startup or failure.</remarks>
+	public bool OwnsFrameSampling { get; init; } = true;
+
+	/// <summary>Host-owned profiling uniforms; retained across level reloads and reset by process startup.</summary>
+	private static readonly Refii.Core.Engine_ShaderZeroWorkControls ShaderZeroWork = new();
+	private static readonly Refii.Core.Engine_ShaderCostDiagnostic ShaderCostDiagnostic = new();
+
 	/// <summary>
 	/// `REFII_DEBUG_PORT=1` (or a port number) turns the channel on; so does `debug_channel =
 	/// true` in the package config, which is how a launch from the launcher gets one.
@@ -244,7 +253,7 @@ public partial class GameDebugServer : Node
 				line["threads"] = threads;
 			}
 
-			System.IO.File.AppendAllText(path, JsonSerializer.Serialize(line) + "\n");
+			System.IO.File.AppendAllText(path, Refii.Core.Engine_Json.Serialize(line) + "\n");
 		}
 		catch (System.Exception)
 		{
@@ -319,6 +328,7 @@ public partial class GameDebugServer : Node
 	public static uint Buttons(int pad) =>
 		pad == _pressPad && _pressFrames > 0 && --_pressFrames >= 0 ? _pressed : 0u;
 
+	/// <summary>Installs any owned samplers before attempting the opt-in loopback listener.</summary>
 	public override void _Ready()
 	{
 		if (!Wanted)
@@ -384,7 +394,7 @@ public partial class GameDebugServer : Node
 			}
 
 			System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(HandshakePath)!);
-			System.IO.File.WriteAllText(HandshakePath, JsonSerializer.Serialize(handshake));
+			System.IO.File.WriteAllText(HandshakePath, Refii.Core.Engine_Json.Serialize(handshake));
 		}
 		catch (System.Exception error)
 		{
@@ -432,6 +442,7 @@ public partial class GameDebugServer : Node
 		{
 			SampleSimRebase();
 			ProcessBody(delta);
+			ShaderCeiling.Tick(GetTree().Root);
 		}
 	}
 
@@ -503,6 +514,15 @@ public partial class GameDebugServer : Node
 	/// <summary>The marker a deferred op returns: no reply now, ServeWaits sends it later.</summary>
 	private static readonly Dictionary<string, object?> Deferred = new() { ["__deferred"] = true };
 
+	/// <summary>
+	/// A reply's numbers as they are: a measure with nothing to divide by yet reads as its named
+	/// literal ("Infinity", "NaN") instead of failing the whole reply, as metrics did on the S10e.
+	/// </summary>
+	private static readonly JsonSerializerOptions ReplyOptions = new()
+	{
+		NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals,
+	};
+
 	private void Respond(StreamPeerTcp client, string request)
 	{
 		string reply;
@@ -514,12 +534,12 @@ public partial class GameDebugServer : Node
 				return;
 			}
 
-			reply = JsonSerializer.Serialize(answered);
+			reply = Refii.Core.Engine_Json.Serialize(answered, ReplyOptions);
 		}
 		catch (System.Exception error)
 		{
 			// A bad request must never take the game down with it — this is a debug channel.
-			reply = JsonSerializer.Serialize(new Dictionary<string, object?>
+			reply = Refii.Core.Engine_Json.Serialize(new Dictionary<string, object?>
 			{
 				["ok"] = false,
 				["error"] = error.Message,
@@ -1039,12 +1059,19 @@ public partial class GameDebugServer : Node
 					});
 				}
 
+				(bool handheldRunning, float handheldAmplitude) = GameInput.HandheldRumbleReadout();
 				return Ok(new Dictionary<string, object?>
 				{
 					// Both gates: the guest's byte_8331924F and the launcher's controller_vibration.
 					["guestSwitch"] = Refii.Ui.Engine_UiVibrationOptions.GuestEnabled(),
 					["launcherSwitch"] = GameInput.ControllerVibration,
 					["pads"] = pads,
+					// Pad 0 on the phone's own vibrator, played by touch on Android.
+					["handheld"] = new Dictionary<string, object?>
+					{
+						["running"] = handheldRunning,
+						["amplitude"] = handheldAmplitude,
+					},
 				});
 			}
 
@@ -1302,7 +1329,7 @@ public partial class GameDebugServer : Node
 
 						if (client.GetStatus() == StreamPeerTcp.Status.Connected)
 						{
-							client.PutData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(body) + "\n"));
+							client.PutData(Encoding.UTF8.GetBytes(Refii.Core.Engine_Json.Serialize(body) + "\n"));
 						}
 					}, out string refused))
 				{
@@ -1355,6 +1382,16 @@ public partial class GameDebugServer : Node
 					["protect"] = info.Protect,
 					["writable"] = (info.Protect & 2u) != 0,
 				});
+			}
+
+			case "heapcensus":
+			{
+				// The MANAGED heap (`heap` is the guest's): the GC's split by generation and the
+				// known caches counted. `{"op":"heapcensus","collect":true}` first runs a blocking
+				// compacting gen2 (large objects compacted too, a long pause) and adds the live split.
+				bool collect = root.TryGetProperty("collect", out JsonElement collectValue) &&
+					collectValue.ValueKind == JsonValueKind.True;
+				return Ok(Refii.Core.Engine_HeapCensus.Describe(collect));
 			}
 
 			case "probe":
@@ -1569,6 +1606,8 @@ public partial class GameDebugServer : Node
 					["visualsBuiltEmpty"] = Refii.Fx.Engine_FxSystem.BuiltButEmpty,
 					["emitZeroSize"] = Refii.Fx.Engine_FxSystem.SkipZeroSize,
 					["emitZeroAlpha"] = Refii.Fx.Engine_FxSystem.SkipZeroAlpha,
+					["emitEarlyReject"] = Refii.Fx.Engine_FxSystem.SkipEarly,
+					["emitEmitterRejects"] = Refii.Fx.Engine_FxSystem.SkipEmitters,
 					["emitBillboards"] = Refii.Fx.Engine_FxSystem.EmittedBillboards,
 					["batchMaterialHits"] = Refii.Fx.Engine_FxSystem.BatchMaterialHits,
 					["batchMaterialMisses"] = Refii.Fx.Engine_FxSystem.BatchMaterialMisses,
@@ -1600,6 +1639,8 @@ public partial class GameDebugServer : Node
 					["size"] = layer is null ? "none" : $"{layer.Size.X}x{layer.Size.Y}",
 					["gain"] = Refii.Fx.Engine_FxAdditiveLayer.Gain,
 					["postfxEnabled"] = Refii.Lighting.Engine_PostFxParams.Enabled,
+					["postFxRoute"] = Refii.Lighting.Engine_PostFxRoute.Current.ToString(),
+					["fxLegacyLayers"] = Refii.Lighting.Engine_PostFxRoute.LegacyLayers,
 				};
 
 				if (layer is not null && layer.Capture() is { } image && !image.IsEmpty())
@@ -1639,6 +1680,39 @@ public partial class GameDebugServer : Node
 
 			case "render":
 			{
+				// Validate before changing any render lever; zero requests full mesh detail.
+				float? meshLodThreshold = Refii.Models.Engine_MeshLodPolicy.ReadProfilerThreshold(root);
+				bool? fxPackedWrites = Refii.Fx.Engine_FxSurfacePacker.ReadRequest(root);
+				bool? fxBulkGeometry = Refii.Fx.Engine_FxGeometryWork.ReadRequest(root);
+				bool? fxFastPaths = Refii.Fx.Engine_FxFastPaths.ReadRequest(root);
+				(bool? stableLightCounts, bool? stableLightSentinel) = Refii.Lighting.Engine_StableLightCounts.ReadRequest(root);
+				bool? canvasLean = Refii.Ui.Engine_CanvasLean.ReadRequest(root);
+				bool? postFxEnabled = Refii.Core.Engine_PresentationPolicy.ReadPostFxRequest(root);
+				bool? fxLegacyLayers = Refii.Lighting.Engine_PostFxRoute.ReadRequest(root);
+				bool? fxNoDepthReads = Refii.Fx.Engine_FxDepthReads.ReadRequest(root);
+				bool? skyGlareCheap = Refii.Level.Engine_SkyCosts.ReadRequest(root, Refii.Level.Engine_SkyCosts.GlareCheapRequestKey);
+				bool? skyRadianceLean = Refii.Level.Engine_SkyCosts.ReadRequest(root, Refii.Level.Engine_SkyCosts.RadianceLeanRequestKey);
+				Refii.Core.Engine_ShaderCeiling.Request? shaderCeiling = Refii.Core.Engine_ShaderCeiling.Parse(root);
+				ShaderCostDiagnostic.ApplyRequest(root, (name, value) => RenderingServer.GlobalShaderParameterSet(name, value));
+				ApplyTreeDistanceDiagnostic(root);
+				// A category drawn flat, flat with its cutouts, or hidden, to split its cost into
+				// geometry and pixels: `"shaderCeiling":{"props":"flat","trees":"flatcut"}`.
+				if (shaderCeiling is { } ceiling) ApplyShaderCeiling(ceiling);
+				if (fxPackedWrites is { } packedWrites) Refii.Fx.Engine_FxSurfacePacker.Enabled = packedWrites;
+				if (fxBulkGeometry is { } bulkGeometry) Refii.Fx.Engine_FxGeometryWork.Enabled = bulkGeometry;
+				if (fxFastPaths is { } fastPaths) Refii.Fx.Engine_FxFastPaths.Enabled = fastPaths;
+				// Re-pairs every instance: each material on screen compiles its new combination once.
+				if (stableLightSentinel is { } sentinel) Refii.Lighting.Engine_StableLightCounts.Sentinel = sentinel;
+				if (stableLightCounts is { } stableCounts) Refii.Lighting.Engine_StableLightCounts.Enabled = stableCounts;
+				if (canvasLean is { } lean) Refii.Ui.Engine_CanvasLean.Enabled = lean;
+				if (postFxEnabled is { } postFx) Refii.Lighting.Engine_PostFxParams.Enabled = postFx;
+				if (fxLegacyLayers is { } legacyLayers) Refii.Lighting.Engine_PostFxRoute.LegacyLayers = legacyLayers;
+				if (fxNoDepthReads is { } noDepthReads) Refii.Fx.Engine_FxDepthReads.Enabled = noDepthReads;
+				if (skyGlareCheap is { } glareCheap) Refii.Level.Engine_SkyCosts.GlareCheap = glareCheap;
+				if (skyRadianceLean is { } radianceLean) Refii.Level.Engine_SkyCosts.RadianceLean = radianceLean;
+				ShaderZeroWork.ApplyRequest(root, (name, value) => RenderingServer.GlobalShaderParameterSet(name, value));
+				if (meshLodThreshold is { } requestedLod)
+					GetViewport().MeshLodThreshold = requestedLod;
 				// LIVE LEVERS for bisecting a frame: each is optional; the reply is the state.
 				if (root.TryGetProperty("shadowBudget", out JsonElement sb) && sb.ValueKind == JsonValueKind.Number)
 				{
@@ -1676,6 +1750,15 @@ public partial class GameDebugServer : Node
 					(entityBatchLever.ValueKind == JsonValueKind.True || entityBatchLever.ValueKind == JsonValueKind.False))
 				{
 					Refii.Entities.Engine_EntityBatches.Enabled = entityBatchLever.ValueKind == JsonValueKind.True;
+				}
+
+				// The entity walk's skip index (`entity_skip_index`): unchanged entities answered from the
+				// last walk's skip verdicts. The same entities are drawn either way; the next walk starts
+				// the index afresh.
+				if (root.TryGetProperty("entitySkipIndex", out JsonElement skipIndexLever) &&
+					(skipIndexLever.ValueKind == JsonValueKind.True || skipIndexLever.ValueKind == JsonValueKind.False))
+				{
+					GameEntities.SkipIndexEnabled = skipIndexLever.ValueKind == JsonValueKind.True;
 				}
 
 				if (root.TryGetProperty("fxVisible", out JsonElement fxVisibleLever) &&
@@ -1817,9 +1900,29 @@ public partial class GameDebugServer : Node
 					GameEntities.PoseFullRateRadius = (float)pfr.GetDouble();
 				}
 
+				// The far rigs' write rate in real time (`far_rig_pose_hz`, clamped to 4-30; 0 leaves them
+				// on the guest's tick step, which is every walk under 30 fps), and whether each far rig
+				// keeps its own phase (`far_rig_pose_spread`) or all share one.
+				if (root.TryGetProperty("farRigPoseHz", out JsonElement farHz) && farHz.ValueKind == JsonValueKind.Number)
+				{
+					GameEntities.FarRigPoseHz = Refii.Entities.Engine_FarRigPoseRate.Clamp((float)farHz.GetDouble());
+				}
+
+				if (root.TryGetProperty("farRigPoseSpread", out JsonElement farSpread) &&
+					(farSpread.ValueKind == JsonValueKind.True || farSpread.ValueKind == JsonValueKind.False))
+				{
+					GameEntities.FarRigPoseSpread = farSpread.ValueKind == JsonValueKind.True;
+				}
+
 				// Sample clips from the managed key cache, or from the `Animation` resource. Same
 				// arithmetic either way (every track is Linear, and Godot's linear Quaternion case is
 				// slerp), so a difference on screen means the cache is wrong.
+				// Diagnostic A/B lever: retain the same reader and native simulation while
+				// comparing early worker scheduling with the synchronous fallback.
+				if (root.TryGetProperty("asyncEntityWalk", out JsonElement asyncWalk)
+					&& asyncWalk.ValueKind is JsonValueKind.True or JsonValueKind.False)
+					Refii.Host.HostEntityWalk.Enabled = asyncWalk.GetBoolean();
+
 				if (root.TryGetProperty("managedClips", out JsonElement mc)
 					&& mc.ValueKind != JsonValueKind.Null)
 				{
@@ -1831,9 +1934,87 @@ public partial class GameDebugServer : Node
 					Refii.Lighting.Engine_LevelLighting.SunSplitsOverride = sp.ValueKind == JsonValueKind.Number ? sp.GetInt32() : null;
 				}
 
+				// Variable rate shading over the whole view, to price it: `"vrs":0` off, 1 for 2x2, 2 for 4x4,
+				// 3 for 1x1 in the middle third and 2x2 around it. Adreno prefers a fragment density map.
+				if (root.TryGetProperty("vrs", out JsonElement vrsLever) && vrsLever.ValueKind == JsonValueKind.Number)
+				{
+					int vrs = vrsLever.GetInt32();
+					Viewport view = GetViewport();
+					if (vrs <= 0)
+					{
+						view.VrsMode = Viewport.VrsModeEnum.Disabled;
+					}
+					else
+					{
+						var rates = Image.CreateEmpty(48, 27, false, Image.Format.Rgb8);
+						Color coarse = vrs == 2 ? Color.Color8(170, 170, 0) : Color.Color8(85, 85, 0);
+						rates.Fill(coarse);
+						if (vrs == 3)
+						{
+							rates.FillRect(new Rect2I(16, 9, 16, 9), Color.Color8(0, 0, 0));
+						}
+						view.VrsTexture = ImageTexture.CreateFromImage(rates);
+						view.VrsUpdateMode = Viewport.VrsUpdateModeEnum.Once;
+						view.VrsMode = Viewport.VrsModeEnum.Texture;
+					}
+				}
+
+				// The 2D canvas in HDR, which also makes Mobile's 3D buffer RGBA16F: `"hdr2d":false`.
+				if (root.TryGetProperty("hdr2d", out JsonElement hdr2dLever) &&
+					hdr2dLever.ValueKind is JsonValueKind.True or JsonValueKind.False)
+				{
+					GetViewport().UseHdr2D = hdr2dLever.ValueKind == JsonValueKind.True;
+				}
+
+				if (root.TryGetProperty("sunBlend", out JsonElement sunBlendLever))
+				{
+					Refii.Lighting.Engine_LevelLighting.SunBlendOverride = sunBlendLever.ValueKind == JsonValueKind.Null ? null : sunBlendLever.GetBoolean();
+				}
+
+				// The regions' grid terrain as a sun caster, to price it: `"terrainShadow":false`.
+				if (root.TryGetProperty("terrainShadow", out JsonElement ts) &&
+					ts.ValueKind is JsonValueKind.True or JsonValueKind.False)
+				{
+					var cast = ts.ValueKind == JsonValueKind.True
+						? GeometryInstance3D.ShadowCastingSetting.On
+						: GeometryInstance3D.ShadowCastingSetting.Off;
+					foreach (Node terrain in GetTree().Root.FindChildren(
+						Refii.Level.Engine_LevelScene.TerrainNodeName, "Node3D", true, false))
+					{
+						foreach (MeshInstance3D chunk in Refii.Level.Engine_LevelScene.TerrainChunksOf(terrain.GetParent()))
+						{
+							chunk.CastShadow = cast;
+						}
+					}
+				}
+
 				if (root.TryGetProperty("sunShadow", out JsonElement ss))
 				{
 					Refii.Lighting.Engine_LevelLighting.SunShadowOverride = ss.ValueKind == JsonValueKind.Null ? null : ss.GetBoolean();
+				}
+
+				// The world's texture sampling, to price it: mip bias and anisotropic level (0, 2, 4, 8, 16).
+				if (root.TryGetProperty("mipBias", out JsonElement mb) && mb.ValueKind == JsonValueKind.Number)
+				{
+					GetViewport().TextureMipmapBias = mb.GetSingle();
+				}
+				if (root.TryGetProperty("aniso", out JsonElement an) && an.ValueKind == JsonValueKind.Number)
+				{
+					GetViewport().AnisotropicFilteringLevel = an.GetInt32() switch
+					{
+						>= 16 => Viewport.AnisotropicFiltering.Anisotropy16X,
+						>= 8 => Viewport.AnisotropicFiltering.Anisotropy8X,
+						>= 4 => Viewport.AnisotropicFiltering.Anisotropy4X,
+						>= 2 => Viewport.AnisotropicFiltering.Anisotropy2X,
+						_ => Viewport.AnisotropicFiltering.Disabled,
+					};
+				}
+
+				// Occlusion culling from the buildings' occluders (`occlusion_culling`), off and back on.
+				if (root.TryGetProperty("occlusionCulling", out JsonElement oc) &&
+					(oc.ValueKind == JsonValueKind.True || oc.ValueKind == JsonValueKind.False))
+				{
+					GetViewport().UseOcclusionCulling = oc.ValueKind == JsonValueKind.True;
 				}
 
 				if (root.TryGetProperty("reflections", out JsonElement rf) && rf.ValueKind != JsonValueKind.Null)
@@ -1913,6 +2094,15 @@ public partial class GameDebugServer : Node
 					Refii.Core.Engine_TickClock.Disciplined = cf.GetBoolean();
 				}
 
+				// Bodies and the camera drawn by a line fitted through their statements' arrival times
+				// (`motion_arrival_fit`), switchable live: a moving thing hands over at the drawn
+				// transform it is at. The `camera` op reports `arrivalFits` and `arrivalStops`.
+				if (root.TryGetProperty("motionArrivalFit", out JsonElement maf) &&
+					maf.ValueKind is JsonValueKind.True or JsonValueKind.False)
+				{
+					Refii.Core.Engine_TickTimeline.ArrivalFit = maf.GetBoolean();
+				}
+
 				// The guest's own clock, switchable live. Off falls back to the estimators, kept only for
 				// comparison.
 				if (root.TryGetProperty("clockHost", out JsonElement ch) && ch.ValueKind != JsonValueKind.Null)
@@ -1943,9 +2133,47 @@ public partial class GameDebugServer : Node
 					SetTestLights(System.Math.Clamp(tl.GetInt32(), 0, 512));
 				}
 
-				return Ok(new Dictionary<string, object?>
+				return Ok(FiniteRenderTelemetry(new Dictionary<string, object?>
 				{
 					["testLights"] = _testLights.Count,
+					["shaderZeroSpecular"] = ShaderZeroWork.Specular,
+					["shaderCostDiagnostic"] = ShaderCostDiagnostic.Mask,
+					["treeDiagnosticDistance"] = _treeDistanceDiagnostic.Metres,
+					["treeDiagnosticHiddenNodes"] = _treeDistanceDiagnostic.Hidden,
+					["shaderCeiling"] = ShaderCeiling.Describe(),
+					["shaderZeroCliff"] = ShaderZeroWork.Cliff,
+					["shaderNearFog"] = ShaderZeroWork.NearFog,
+					["shaderSparseTerrain"] = ShaderZeroWork.SparseTerrain,
+					["fxPackedWrites"] = Refii.Fx.Engine_FxSurfacePacker.Enabled,
+					["fxBulkGeometry"] = Refii.Fx.Engine_FxGeometryWork.Enabled,
+					["fxFastPaths"] = Refii.Fx.Engine_FxFastPaths.Enabled,
+					["stableLightCounts"] = Refii.Lighting.Engine_StableLightCounts.Enabled,
+					["stableLightSentinel"] = Refii.Lighting.Engine_StableLightCounts.Sentinel,
+					["stableLightFillers"] = Refii.Lighting.Engine_StableLightCounts.Standing,
+					// The share takes effect at the next frame's draw; canvascensus shows it.
+					["canvasLean"] = Refii.Ui.Engine_CanvasLean.Enabled,
+					["canvasLeanSharedInto"] = Refii.Ui.Engine_CanvasLean.SharedInto,
+					["canvasLeanBlocker"] = Refii.Ui.Engine_CanvasLean.Blocker,
+					["postFxEnabled"] = Refii.Lighting.Engine_PostFxParams.Enabled,
+					["postFxChainRequested"] = Refii.Lighting.Engine_PostFxParams.ChainRequested,
+					// Whether the chain can reach the colour layer (Unknown / Usable / Unusable): the
+					// additive and highlight layers draw only when Usable, unless fxLegacyLayers.
+					["postFxRoute"] = Refii.Lighting.Engine_PostFxRoute.Current.ToString(),
+					["fxLegacyLayers"] = Refii.Lighting.Engine_PostFxRoute.LegacyLayers,
+					["fxAdditiveLayerPresent"] = Refii.Fx.Engine_FxAdditiveLayer.Present,
+					["fxNoDepthReads"] = Refii.Fx.Engine_FxDepthReads.Enabled,
+					["fxHardCapableMaterials"] = Refii.Fx.Engine_FxDepthReads.AdoptedCount,
+					["skyGlareCheap"] = Refii.Level.Engine_SkyCosts.GlareCheap,
+					["skyRadianceLean"] = Refii.Level.Engine_SkyCosts.RadianceLean,
+					// The held sky's radiance size and its own, applied on the next frame; null when none is held.
+					["skyRadianceHeld"] = Refii.Level.Engine_SkyCosts.LeanRadianceState,
+					["meshLodThreshold"] = GetViewport().MeshLodThreshold,
+					["viewportPhysicalSize"] = new { width = GetTree().Root.Size.X, height = GetTree().Root.Size.Y },
+					// Window's ViewportTexture accessor includes canvas stretch; not the RS or internal 3D extent.
+					["viewportTextureAccessorSize"] = new { width = GetViewport().GetTexture().GetWidth(), height = GetViewport().GetTexture().GetHeight() },
+					["viewportTextureAccessorScope"] = "raw Window ViewportTexture accessor, may include canvas stretch; not internal3D or RenderingServer extent",
+					["project3dScale"] = ProjectSettings.GetSetting("rendering/scaling_3d/scale", 1f).AsSingle(),
+					["cameraPose"] = CaptureCameraTelemetry(),
 					["shadowReach"] = Refii.Lighting.Engine_ShadowReach.Enabled,
 					["shadowSuppressed"] = Refii.Lighting.Engine_ShadowReach.Suppressed,
 					["shadowConsidered"] = Refii.Lighting.Engine_ShadowReach.Considered,
@@ -1963,6 +2191,9 @@ public partial class GameDebugServer : Node
 					["entityBatchCount"] = Refii.Entities.Engine_EntityBatches.Batches,
 					["entityBatchPromotions"] = Refii.Entities.Engine_EntityBatches.Promotions,
 					["entityBatchDemotions"] = Refii.Entities.Engine_EntityBatches.Demotions,
+					["entitySkipIndex"] = GameEntities.SkipIndexEnabled,
+					["entitySkipIndexHits"] = GameEntities.SkipIndexHits,
+					["entitySkipIndexHeld"] = GameEntities.SkipIndexHeld,
 					["bodyVariants"] = Refii.Entities.Engine_BodyVariants.Enabled,
 					["bodyVariantsBuilt"] = Refii.Entities.Engine_BodyVariants.Built,
 					["bodyVariantSurfacesRemoved"] = Refii.Entities.Engine_BodyVariants.SurfacesRemoved,
@@ -1997,7 +2228,15 @@ public partial class GameDebugServer : Node
 					["lightFlickerRadius"] = Refii.Lighting.Engine_LightFlicker.RadiusEpsilon,
 					["lightRangeScale"] = Refii.Lighting.Engine_LevelLights.RangeScale,
 					["poseFullRate"] = GameEntities.PoseFullRateRadius,
+					["farRigPoseHz"] = GameEntities.FarRigPoseHz,
+					["farRigPoseSpread"] = GameEntities.FarRigPoseSpread,
+					["farRigsWritten"] = GameEntities.FarRigsWritten,
+					["farRigsHeld"] = GameEntities.FarRigsHeld,
 					["managedClips"] = Refii.Animations.Engine_ClipAnimator.ManagedClipSampling,
+					["asyncEntityWalk"] = Refii.Host.HostEntityWalk.Enabled,
+					["asyncEntityWalkTaken"] = Refii.Host.HostEntityWalk.Taken,
+					["asyncEntityWalkWaited"] = Refii.Host.HostEntityWalk.Waited,
+					["asyncEntityWalkTorn"] = Refii.Host.HostEntityWalk.TornWalks,
 					["flickerRadiusWrites"] = Refii.Lighting.Engine_LightFlicker.RadiusWrites,
 					["flickerRadiusCandidates"] = Refii.Lighting.Engine_LightFlicker.RadiusCandidates,
 					["hero"] = GameEntities.HeroPosition is { } hero
@@ -2010,15 +2249,24 @@ public partial class GameDebugServer : Node
 					["painted"] = Refii.Level.Engine_SkyEnvironmentNode.Current?.Painted?.Describe(),
 					["sunShadow"] = Refii.Lighting.Engine_LevelLighting.SunShadowOverride,
 					["sunSplits"] = Refii.Lighting.Engine_LevelLighting.SunSplitsOverride,
+					["sunBlend"] = Refii.Lighting.Engine_LevelLighting.SunBlendOverride,
+					["vrs"] = GetViewport().VrsMode.ToString(),
+					["hdr2d"] = GetViewport().UseHdr2D,
 					["reflections"] = Refii.Level.Engine_WaterReflection.Enabled,
+					["occlusionCulling"] = GetViewport().UseOcclusionCulling,
+					["mipBias"] = GetViewport().TextureMipmapBias,
+					["aniso"] = GetViewport().AnisotropicFilteringLevel.ToString(),
+					["occluders"] = Refii.Level.Engine_BuildingOccluders.Placed,
+					["occluderTriangles"] = Refii.Level.Engine_BuildingOccluders.Triangles,
 					["reflectionCadence"] = Refii.Level.Engine_WaterReflection.Cadence,
 					["vsync"] = DisplayServer.WindowGetVsyncMode((int)DisplayServer.MainWindowId).ToString(),
 					["maxFps"] = Engine.MaxFps,
 					["clockFit"] = Refii.Core.Engine_TickClock.Disciplined,
+					["motionArrivalFit"] = Refii.Core.Engine_TickTimeline.ArrivalFit,
 					["playheadVsNewest"] = Refii.Core.Engine_TickClock.PlayheadVsNewest,
 					["refreshHz"] = DisplayServer.ScreenGetRefreshRate(
 						DisplayServer.WindowGetCurrentScreen((int)DisplayServer.MainWindowId)),
-				});
+				}));
 			}
 
 			case "guestrender":
@@ -2407,6 +2655,13 @@ public partial class GameDebugServer : Node
 					: Refii.Core.Engine_DrawCensus.Describe(world, camera));
 			}
 
+			case "canvascensus":
+			{
+				// The 2D pass by viewport and CanvasLayer: visible items, the pixels they cover, their
+				// materials and screen reads, and each layer's pass priced: `{"op":"canvascensus"}`.
+				return Ok(Refii.Ui.Engine_CanvasCensus.Describe(GetTree()));
+			}
+
 			case "lodcensus":
 			{
 				// The main view's triangles by owner and mesh, at the level Godot picks and at the
@@ -2423,6 +2678,76 @@ public partial class GameDebugServer : Node
 				// Godot's per-pass GPU timings: the split of `renderGpuMs`. Present only while the
 				// engine captures timestamps (`gpu_profile = true` in refii.toml).
 				return Ok(Refii.Core.Engine_GpuPasses.Report());
+			}
+
+			case "gcframes":
+			{
+				// One row per frame from the GC frame ring (Engine_GcFrames): what the main thread and
+				// every thread allocated, which frames held a collection and what it paused. Ask once
+				// with no `since` for the newest frame, walk, then ask again with that frame as
+				// `since`: the window's rows come back without polling during it.
+				long since = root.TryGetProperty("since", out JsonElement sinceValue) &&
+					sinceValue.TryGetInt64(out long after) ? after : long.MaxValue;
+				bool withRows = root.TryGetProperty("rows", out JsonElement rowsValue) &&
+					rowsValue.ValueKind == JsonValueKind.True;
+				var reply = new Dictionary<string, object?>
+				{
+					["frame"] = Refii.Core.Engine_GcFrames.LatestFrame,
+					["workers"] = Refii.Core.Engine_GcFrames.Workers(),
+				};
+
+				if (since != long.MaxValue)
+				{
+					List<Refii.Core.Engine_GcFrames.Row> rows = Refii.Core.Engine_GcFrames.RowsSince(since);
+					reply["summary"] = Refii.Core.Engine_GcFrames.Summarise(rows);
+					var collections = new List<object?>();
+					foreach (Refii.Core.Engine_GcFrames.Collection c in Refii.Core.Engine_GcFrames.CollectionsSince(since))
+					{
+						collections.Add(Refii.Core.Engine_GcFrames.Describe(c));
+					}
+
+					reply["collections"] = collections;
+					if (withRows)
+					{
+						// Columns rather than objects: a 40 s walk is 800 rows. All double, the array
+						// type the other replies already serialize.
+						var frames = new double[rows.Count];
+						var ms = new double[rows.Count];
+						var mainKB = new double[rows.Count];
+						var totalKB = new double[rows.Count];
+						var gens = new double[rows.Count];
+						var pauseMs = new double[rows.Count];
+						for (int i = 0; i < rows.Count; ++i)
+						{
+							Refii.Core.Engine_GcFrames.Row r = rows[i];
+							frames[i] = r.Frame;
+							ms[i] = System.Math.Round(r.FrameMs, 2);
+							mainKB[i] = System.Math.Round(r.MainBytes / 1024.0, 1);
+							totalKB[i] = System.Math.Round(r.TotalBytes / 1024.0, 1);
+							gens[i] = r.Gen2 > 0 ? 2 : r.Gen1 > 0 ? 1 : r.Gen0 > 0 ? 0 : -1;
+							pauseMs[i] = System.Math.Round(r.PauseMs, 2);
+						}
+
+						reply["rows"] = new Dictionary<string, object?>
+						{
+							["frame"] = frames,
+							["ms"] = ms,
+							["mainKB"] = mainKB,
+							["totalKB"] = totalKB,
+							["gen"] = gens,
+							["pauseMs"] = pauseMs,
+						};
+					}
+				}
+
+				return Ok(reply);
+			}
+
+			case "framephases":
+			{
+				// Read CPU phases independently: an unavailable number elsewhere in the larger
+				// metrics reply must not hide the main-thread evidence needed on Android.
+				return Ok(Refii.Core.Engine_FramePhases.Report());
 			}
 
 			case "capture":
@@ -2555,6 +2880,19 @@ public partial class GameDebugServer : Node
 						? $"{where.DisplayName} ({where.LevelKey})"
 						: "none",
 
+					// The last load, from leaving the front end: marks (s), frames split into our
+					// process time and the engine's (sync/draw), each streamed kind's items and
+					// time, and the server syncs our code made meanwhile; `atRelease` holds the
+					// same totals at the hold's release (Engine_LoadTimeline).
+					["load"] = Refii.Core.Engine_LoadTimeline.Report(),
+					// Every value-returning RenderingServer call our code made since start, by
+					// site: count and wait, all threads and main (Engine_ServerSyncs).
+					["serverSyncs"] = Refii.Core.Engine_ServerSyncs.Report(),
+					// ShaderMaterial copies made without the server, and Godot duplicates taken
+					// instead (Engine_MaterialCopy; the latter are MaterialDuplicate above), with
+					// each fallback's reason, caller (file.member) and the uniform that decided it.
+					["materialCopies"] = Refii.Models.Engine_MaterialCopy.Report(),
+
 					// Paths that render a surface white. Run totals; nonzero means the path fired.
 					["whitePaths"] = new Dictionary<string, object?>
 					{
@@ -2676,7 +3014,9 @@ public partial class GameDebugServer : Node
 					["mdlLods"] = new Dictionary<string, object?>
 					{
 						["surfacesWithLods"] = Refii.Models.Engine_MdlMesh.SurfacesWithLods,
+						["terrainSurfacesWithLods"] = Refii.Level.Engine_LevelMesh.SurfacesWithLods,
 						["surfacesWithoutLods"] = Refii.Models.Engine_MdlMesh.SurfacesWithoutLods,
+						["surfacesWithGeneratedLods"] = Refii.Models.Engine_MdlAutoLod.Generated,
 						["levelsAttached"] = Refii.Models.Engine_MdlMesh.LodLevelsAttached,
 						["levelsDropped"] = Refii.Models.Engine_MdlMesh.LodLevelsDropped,
 					},
@@ -2702,28 +3042,7 @@ public partial class GameDebugServer : Node
 					// The shadow proxies' own skeletons: how many stand, and how often they are
 					// mirrored on guest frames versus every frame (the principals).
 					["shadowSkeletons"] = Refii.Entities.Engine_ShadowSkeletons.Report(),
-					["gc"] = new Dictionary<string, object?>
-					{
-						["gen0"] = System.GC.CollectionCount(0),
-						["gen1"] = System.GC.CollectionCount(1),
-						["gen2"] = System.GC.CollectionCount(2),
-						["pauseMsTotal"] = System.GC.GetTotalPauseDuration().TotalMilliseconds,
-						["allocatedMB"] = System.GC.GetTotalAllocatedBytes() / 1048576.0,
-						["steadyAllocMBPerSec"] = System.Math.Round(Refii.Core.Engine_FramePhases.SteadyAllocMBPerSec, 2),
-						["steadyGen0PerMin"] = System.Math.Round(Refii.Core.Engine_FramePhases.SteadyGen0PerMin, 1),
-						["steadyGen2PerMin"] = System.Math.Round(Refii.Core.Engine_FramePhases.SteadyGen2PerMin, 2),
-						["heapMB"] = System.GC.GetGCMemoryInfo().HeapSizeBytes / 1048576.0,
-						["gen0MB"] = System.GC.GetGCMemoryInfo().GenerationInfo[0].SizeAfterBytes / 1048576.0,
-						["gen1MB"] = System.GC.GetGCMemoryInfo().GenerationInfo[1].SizeAfterBytes / 1048576.0,
-						["gen2MB"] = System.GC.GetGCMemoryInfo().GenerationInfo[2].SizeAfterBytes / 1048576.0,
-						["lohMB"] = System.GC.GetGCMemoryInfo().GenerationInfo[3].SizeAfterBytes / 1048576.0,
-						["lastPauseMs"] = System.GC.GetGCMemoryInfo().PauseDurations[0].TotalMilliseconds,
-						// Committed, not just live: the gap between this and `heapMB` is large-object
-						// fragmentation.
-						["committedMB"] = System.Math.Round(
-							System.GC.GetGCMemoryInfo().TotalCommittedBytes / 1048576.0, 1),
-						["lastPromotedMB"] = System.GC.GetGCMemoryInfo().PromotedBytes / 1048576.0,
-					},
+					["gc"] = GcReport(),
 					["tickClock"] = new Dictionary<string, object?>
 					{
 						// World playback rate. The draw point is `(now - origin)/period - latency`, so drift in
@@ -2824,6 +3143,14 @@ public partial class GameDebugServer : Node
 					["entityWalk"] = new Dictionary<string, object?>
 					{
 						["unchangedSkipped"] = GameEntities.UnchangedSkipped,
+						// The last walk's entities answered from the skip index, and the verdicts it holds.
+						["skipIndex"] = GameEntities.SkipIndexEnabled,
+						["skipIndexHits"] = GameEntities.SkipIndexHits,
+						["skipIndexHeld"] = GameEntities.SkipIndexHeld,
+						// The last walk's far rigs (beyond poseFullRate) written, and those in view held.
+						["farRigPoseHz"] = GameEntities.FarRigPoseHz,
+						["farRigsWritten"] = GameEntities.FarRigsWritten,
+						["farRigsHeld"] = GameEntities.FarRigsHeld,
 						["creationsDeferred"] = GameEntities.CreationsDeferred,
 						["lastWalkChanged"] = Refii.Host.HostBridge.LastWalkChanged,
 						["lastWalkCount"] = Refii.Host.HostBridge.LastWalkCount,
@@ -2915,7 +3242,7 @@ public partial class GameDebugServer : Node
 					var text = new StringBuilder();
 					foreach (PadFrame frame in tape)
 					{
-						text.AppendLine(JsonSerializer.Serialize(frame));
+						text.AppendLine(JsonSerializer.Serialize(frame, Refii.Core.Engine_JsonContext.Default.PadFrame));
 					}
 
 					System.IO.File.WriteAllText(path, text.ToString());
@@ -2943,7 +3270,7 @@ public partial class GameDebugServer : Node
 					{
 						if (line.Length != 0)
 						{
-							frames.Add(JsonSerializer.Deserialize<PadFrame>(line));
+							frames.Add(JsonSerializer.Deserialize(line, Refii.Core.Engine_JsonContext.Default.PadFrame));
 						}
 					}
 
@@ -3219,6 +3546,11 @@ public partial class GameDebugServer : Node
 					["timelineSnaps"] = Refii.Core.Engine_TickTimeline.Snaps,
 					["timelineSaturated"] = Refii.Core.Engine_TickTimeline.Saturated,
 					["pace"] = Refii.Core.Engine_DrawAdvance.Pace,
+					// `motion_arrival_fit`: whether it is on, the moving bodies (and camera) it draws
+					// now, and the stops it has settled.
+					["motionArrivalFit"] = Refii.Core.Engine_TickTimeline.ArrivalFit,
+					["arrivalFits"] = Refii.Core.Engine_ArrivalFit.Live,
+					["arrivalStops"] = Refii.Core.Engine_ArrivalFit.Stops,
 					// The guest's stated pause: whether the drawn world is held this frame, how
 					// many frames this hold has lasted, and the run totals.
 					["guestPaused"] = Refii.Core.Engine_StatedPause.Latched,
@@ -3350,13 +3682,54 @@ public partial class GameDebugServer : Node
 					{
 						"ping", "state", "rows", "frontend", "elements", "peek", "threads",
 						"objects", "perf", "exports", "cvars", "cvar-set", "vfs", "sockets",
-						"menu", "action", "call", "lua", "call-result", "poke", "heap",
+						"menu", "action", "call", "lua", "call-result", "poke", "heap", "heapcensus",
 						"probe", "guestlog", "mark", "metrics", "input-record", "input-replay",
 						"wait", "log", "shot", "flicker", "press", "gdb", "achievements",
 						"gpuprofile", "capture", "goldencock", "hang",
 					},
 				};
 		}
+	}
+
+	/// <summary>Reads the active drawn camera on the main thread, without camera or input setters.</summary>
+	/// <returns>Finite global axes and available active-region/guest mappings, or null without a valid camera.</returns>
+	private Dictionary<string, object?>? CaptureCameraTelemetry()
+	{
+		Camera3D? camera = GetViewport().GetCamera3D();
+		if (camera is null || !GodotObject.IsInstanceValid(camera) || !camera.IsInsideTree()) return null;
+		Node3D? region = null;
+		var sky = Refii.Level.Engine_SkyEnvironmentNode.Current;
+		if (sky is not null && GodotObject.IsInstanceValid(sky) && sky.IsInsideTree() &&
+			sky.GetParent() is Node3D candidate && GodotObject.IsInstanceValid(candidate) &&
+			candidate.IsInsideTree() && candidate.GetParent() is GameWorld world &&
+			ReferenceEquals(camera.GetParent(), world)) region = candidate;
+		return GameCameraTelemetry.Describe(camera.GlobalTransform, camera.Fov,
+			region?.GlobalTransform, usesGuestWorldMap: region is not null);
+	}
+
+	/// <summary>Copies render telemetry and represents unavailable floating-point fields as JSON null.</summary>
+	/// <remarks>The clock fit is NaN before its first sample and OS-dependent measurements may be
+	/// unavailable. Strict JSON rejects NaN and infinity; reporting null preserves that distinction
+	/// from a measured zero, although most replies now send them as named literals (ReplyOptions).
+	/// Render's fields have scalar values or separately validated finite camera objects, so only
+	/// its top-level floats need adaptation here.</remarks>
+	/// <param name="source">Borrowed render fields; its values and dictionary remain unchanged.</param>
+	/// <returns>A detached scalar dictionary retaining finite values, their types and explicit nulls.</returns>
+	internal static Dictionary<string, object?> FiniteRenderTelemetry(
+		IReadOnlyDictionary<string, object?> source)
+	{
+		System.ArgumentNullException.ThrowIfNull(source);
+		var snapshot = new Dictionary<string, object?>(source.Count, System.StringComparer.Ordinal);
+		foreach ((string key, object? value) in source)
+		{
+			snapshot[key] = value switch
+			{
+				double number when !double.IsFinite(number) => null,
+				float number when !float.IsFinite(number) => null,
+				_ => value,
+			};
+		}
+		return snapshot;
 	}
 
 	/// <summary>
@@ -3719,7 +4092,7 @@ public partial class GameDebugServer : Node
 			}
 
 			wait.Client.PutData(Encoding.UTF8.GetBytes(
-				JsonSerializer.Serialize(Ok(reply)) + "\n"));
+				Refii.Core.Engine_Json.Serialize(Ok(reply)) + "\n"));
 			_waits.RemoveAt(i);
 		}
 	}
@@ -3871,6 +4244,61 @@ public partial class GameDebugServer : Node
 			["width"] = image.GetWidth(),
 			["height"] = image.GetHeight(),
 			["saved"] = error == Error.Ok,
+		};
+	}
+
+	/// <summary>
+	/// The metrics reply's `gc` block: run totals, the last collection, the last 200 frames
+	/// folded (bytes per frame, frames with a collection), and the GC's own configuration.
+	/// </summary>
+	private static Dictionary<string, object?> GcReport()
+	{
+		System.GCMemoryInfo info = System.GC.GetGCMemoryInfo();
+		System.ReadOnlySpan<System.GCGenerationInfo> generations = info.GenerationInfo;
+		long latest = Refii.Core.Engine_GcFrames.LatestFrame;
+		var recent = new List<object?>();
+		List<Refii.Core.Engine_GcFrames.Collection> collections =
+			Refii.Core.Engine_GcFrames.CollectionsSince(latest - 200);
+		foreach (Refii.Core.Engine_GcFrames.Collection c in collections)
+		{
+			recent.Add(Refii.Core.Engine_GcFrames.Describe(c));
+		}
+
+		return new Dictionary<string, object?>
+		{
+			["gen0"] = System.GC.CollectionCount(0),
+			["gen1"] = System.GC.CollectionCount(1),
+			["gen2"] = System.GC.CollectionCount(2),
+			["pauseMsTotal"] = System.GC.GetTotalPauseDuration().TotalMilliseconds,
+			["allocatedMB"] = System.GC.GetTotalAllocatedBytes() / 1048576.0,
+			["steadyAllocMBPerSec"] = System.Math.Round(Refii.Core.Engine_FramePhases.SteadyAllocMBPerSec, 2),
+			["steadyGen0PerMin"] = System.Math.Round(Refii.Core.Engine_FramePhases.SteadyGen0PerMin, 1),
+			["steadyGen2PerMin"] = System.Math.Round(Refii.Core.Engine_FramePhases.SteadyGen2PerMin, 2),
+			["heapMB"] = info.HeapSizeBytes / 1048576.0,
+			["gen0MB"] = generations[0].SizeAfterBytes / 1048576.0,
+			["gen1MB"] = generations[1].SizeAfterBytes / 1048576.0,
+			["gen2MB"] = generations[2].SizeAfterBytes / 1048576.0,
+			["lohMB"] = generations[3].SizeAfterBytes / 1048576.0,
+			["lastPauseMs"] = info.PauseDurations[0].TotalMilliseconds,
+			// Committed, not just live: the gap between this and `heapMB` is large-object
+			// fragmentation.
+			["committedMB"] = System.Math.Round(info.TotalCommittedBytes / 1048576.0, 1),
+			["lastPromotedMB"] = info.PromotedBytes / 1048576.0,
+			// The GC's own view of the phone's memory. At or over the high-load threshold (90% of
+			// physical by default; GCHighMemPercent moves it) it treats memory as scarce: a
+			// collection with enough gen2 fragmentation to reclaim is escalated to a compacting
+			// full one. Android keeps MemAvailable low by design, so a phone can sit above it.
+			["memoryLoadPercent"] = info.TotalAvailableMemoryBytes > 0
+				? System.Math.Round(100.0 * info.MemoryLoadBytes / info.TotalAvailableMemoryBytes, 1) : null,
+			["highMemoryLoadPercent"] = info.TotalAvailableMemoryBytes > 0
+				? System.Math.Round(100.0 * info.HighMemoryLoadThresholdBytes / info.TotalAvailableMemoryBytes, 1) : null,
+			["totalAvailableMB"] = info.TotalAvailableMemoryBytes / 1048576,
+			// The last 200 frames (about 7 s at the phone's 30 FPS cap) from the frame ring.
+			["recentFrames"] = Refii.Core.Engine_GcFrames.Summarise(
+				Refii.Core.Engine_GcFrames.RowsSince(latest - 200)),
+			["recentCollections"] = recent,
+			["workers"] = Refii.Core.Engine_GcFrames.Workers(),
+			["config"] = Refii.Core.Engine_GcFrames.Configuration(),
 		};
 	}
 

@@ -198,7 +198,9 @@ public partial class GameInput
 		// the cursor. Its own flag, not `GetEmbeddedSubwindows()`: that builds a Godot Array
 		// every frame, a finalizable handle for the collector.
 		bool windowOpen = GameDevMenu.WindowOpen;
-		bool capture = MouseInput && MouseLock && devices && Playing && !InOverlay && !windowOpen && !GameDevMenu.KeyboardCaptured;
+		// A finger is not a mouse to capture: the touch controls own the screen in play.
+		bool capture = MouseInput && MouseLock && devices && Playing && !InOverlay && !windowOpen && !GameDevMenu.KeyboardCaptured &&
+			!Engine_UiInputMode.Touch;
 		Godot.Input.MouseModeEnum wanted =
 			capture ? Godot.Input.MouseModeEnum.Captured : Godot.Input.MouseModeEnum.Visible;
 		if (Godot.Input.MouseMode != wanted)
@@ -221,8 +223,9 @@ public partial class GameInput
 
 		// The look device, for the guest's camera: while it is the mouse, the camera keeps its
 		// heading as the hero moves and a target lock takes the mouse as flicks
-		// (src/vfs/src/hooks/mouse_look.cpp); a pad keeps the shipped camera.
-		HostBridge.SetMouseLookDevice(Engine_UiInputMode.KeyboardMouse && MouseInput);
+		// (src/vfs/src/hooks/mouse_look.cpp); a pad keeps the shipped camera, and so does touch,
+		// whose drag is posted as the mouse's turn into that camera (GameInput.Touch.cs).
+		HostBridge.SetMouseLookDevice(Engine_UiInputMode.Keycaps && MouseInput);
 
 		Engine_UiKeyGlyphs.LabelFor ??= KeyLabel;
 		using (Refii.Core.Engine_FramePhases.Measure("input.glyphs"))

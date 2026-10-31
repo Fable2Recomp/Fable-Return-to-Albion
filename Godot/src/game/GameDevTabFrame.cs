@@ -6,7 +6,7 @@ namespace Refii.Game;
 
 /// <summary>
 /// The frame at a glance: the headline numbers, a per-frame graph of frame / main / render CPU /
-/// GPU time against the 120 fps budget, and the worst frames caught with the phases in them.
+/// GPU time against the platform performance target, and the worst frames caught with the phases in them.
 /// </summary>
 public partial class GameDevTabFrame : GameDevTab
 {
@@ -18,8 +18,11 @@ public partial class GameDevTabFrame : GameDevTab
 	private readonly StringBuilder _text = new(1024);
 	private bool _measuring;
 
+	/// <summary>Builds the frame readout and graph using the platform goal independently of presentation caps.</summary>
 	public GameDevTabFrame()
 	{
+		bool android = OS.HasFeature("android");
+		_graph.Budgets = new[] { ((float)Engine_PresentationPolicy.BudgetMs(android), $"{Engine_PresentationPolicy.TargetFps(android)} fps target") };
 		_graph.Lines.Add(new GameDevGraph.Series { Name = "frame", Colour = new Color(1f, 1f, 1f) });
 		_graph.Lines.Add(new GameDevGraph.Series { Name = "main", Colour = new Color(0.45f, 0.8f, 1f) });
 		_graph.Lines.Add(new GameDevGraph.Series { Name = "render cpu", Colour = new Color(1f, 0.75f, 0.3f) });
@@ -53,6 +56,7 @@ public partial class GameDevTabFrame : GameDevTab
 			(float)render.GpuMs);
 	}
 
+	/// <summary>Displays measured frame costs against a diagnostic budget without assuming resolution or pacing.</summary>
 	public override void Refresh()
 	{
 		Engine_RenderStats.Sample render = Engine_RenderStats.Of(GameViewportNode);
@@ -75,7 +79,7 @@ public partial class GameDevTabFrame : GameDevTab
 
 		_text.Append($"{Engine.GetFramesPerSecond(),4:0} fps    frame {frameMs,6:0.00} ms (peak {framePeak:0.0})    {bound}\n");
 		_text.Append($"main   {mainMs,6:0.00} ms (peak {mainPeak:0.0})   entities {entitiesMs:0.00}   waiting on render {waitMs:0.00}\n");
-		_text.Append($"render cpu {renderCpu,6:0.00} ms   gpu {gpu,6:0.00} ms   budget 8.33 ms (1440p @ 120)\n");
+		_text.Append($"render cpu {renderCpu,6:0.00} ms   gpu {gpu,6:0.00} ms   {Engine_PresentationPolicy.BudgetLabel(OS.HasFeature("android"))}\n");
 		_text.Append($"draws  visible {render.VisibleCalls,6}   shadow {render.ShadowCalls,6}   " +
 			$"objects {render.VisibleObjects}   prims {render.VisiblePrims / 1e6:0.0} M");
 		_numbers.Text = _text.ToString();

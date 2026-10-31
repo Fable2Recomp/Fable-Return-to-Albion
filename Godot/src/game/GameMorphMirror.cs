@@ -44,6 +44,40 @@ public partial class GameMorphMirror : Node
     private bool _ignoreActive;
 
     public static bool OwnsInput => _current?._settings is not null;
+
+    /// <summary>The turn a touchscreen drag has asked for since the last frame, as mouse pixels.</summary>
+    private static float _touchTurn;
+
+    /// <summary>
+    /// A drag on the touchscreen, as a fraction of the screen's height, turning the hero as the
+    /// mouse's right-drag does: a swipe the screen's height is about half a turn.
+    /// </summary>
+    public static void PostTouchTurn(float screens) => _touchTurn += screens * TouchTurnPerScreen;
+
+    private static bool _backRequested;
+
+    /// <summary>Presses the mirror's B once, from outside the pad: the phone's back gesture.</summary>
+    public static void RequestBack() => _backRequested = true;
+
+    /// <summary>Mouse pixels a screen-height touch drag stands for (Engine_MorphMirrorSettings turns 0.008 rad each).</summary>
+    public const float TouchTurnPerScreen = 400f;
+
+    /// <summary>
+    /// The open mirror panel's rectangle in the root viewport's units, for a touch layer to leave a
+    /// finger there to the panel; null while the mirror is closed or closing.
+    /// </summary>
+    public static Rect2? PanelRect => _current is { _settings: not null, _closing: false } mirror
+        ? PanelRectFor(mirror.GetViewport().GetVisibleRect().Size)
+        : null;
+
+    /// <summary>Where the panel stands in a viewport of <paramref name="size"/>, matching <see cref="Resize"/>: at the left edge.</summary>
+    public static Rect2 PanelRectFor(Vector2 size)
+    {
+        float width = Math.Max(Engine_UiMorphMirror.Width + 40, 720 * size.X / Math.Max(1, size.Y));
+        float unit = width == Engine_UiMorphMirror.Width + 40 ? size.X / width : size.Y / 720f;
+        return new Rect2(20f * unit, (size.Y - Engine_UiMorphMirror.Height * unit) / 2f,
+            Engine_UiMorphMirror.Width * unit, Engine_UiMorphMirror.Height * unit);
+    }
     public static void Register(Engine_MorphMirror actor) => _actor = actor;
     public static void Unregister(Engine_MorphMirror actor)
     {
@@ -121,7 +155,8 @@ public partial class GameMorphMirror : Node
     }
 
     private static bool CanOpen() => _actor?.Placement is { Enabled: true } && IsInstanceValid(_actor) &&
-        GameSession.Current is { Paused: false } && GameUi.WorldInteractionAllowed && !GamePhotoMode.Active &&
+        // Not paused: the desktop's session, or no session at all on a host that steps its own guest (Android).
+        GameSession.Current is not { Paused: true } && GameUi.WorldInteractionAllowed && !GamePhotoMode.Active &&
         !GameGoldenCock.OwnsInput && !GameInput.HostUiOwnsPad && !GameDevMenu.KeyboardCaptured &&
         GameGoldenCock.SessionAllowsInteraction(CoopSession.State, CoopSession.Side, CoopSession.LocalCoop) &&
         GameGoldenCock.MenuAllowsInteraction(HostBridge.GetPauseState());
@@ -131,7 +166,8 @@ public partial class GameMorphMirror : Node
         try
         {
             _camera = GetViewport().GetCamera3D() ?? throw new InvalidOperationException("The game camera is unavailable.");
-            var theme = GameSession.Current?.GetParent().GetNodeOrNull<GameUi>("GameUi")?.PhotoModeTheme
+            // The game's UI stands beside the session on the desktop, beside this node on Android.
+            var theme = (GameSession.Current?.GetParent() ?? GetParent())?.GetNodeOrNull<GameUi>("GameUi")?.PhotoModeTheme
                 ?? throw new InvalidOperationException("The native mirror menu is unavailable.");
             _originalTransform = _camera.GlobalTransform;
             _originalFov = _camera.Fov;
@@ -268,9 +304,10 @@ public partial class GameMorphMirror : Node
     {
         if (!focused) { EndDrag(); _mouseZoom = 0; return; }
         int pad = GameInput.JoypadForPad(0);
-        _settings!.Rotate(pad >= 0 ? Input.GetJoyAxis(pad, JoyAxis.RightX) : 0, _mouseTurn, (float)delta);
+        _settings!.Rotate(pad >= 0 ? Input.GetJoyAxis(pad, JoyAxis.RightX) : 0, _mouseTurn + _touchTurn, (float)delta);
         _settings.ZoomBy(pad >= 0 ? -Input.GetJoyAxis(pad, JoyAxis.RightY) : 0, _mouseZoom, (float)delta);
         _mouseTurn = 0;
+        _touchTurn = 0;
         _mouseZoom = 0;
         UpdateZoom(delta);
         _rotationPoll -= delta;
@@ -336,8 +373,10 @@ public partial class GameMorphMirror : Node
     public override void _Input(InputEvent input)
     {
         if (_settings is null) return;
-        if (input is InputEventKey { Pressed: true } or InputEventMouseButton { Pressed: true } ||
-            input is InputEventMouseMotion moved && moved.Relative.LengthSquared() > 4) Engine_UiInputMode.KeyboardMouse = true;
+        // The touchscreen's pointer (the emulation device) is touch, not the mouse: it keeps the touch layout.
+        bool touchPointer = input is InputEventMouse && input.Device == InputEvent.DeviceIdEmulation;
+        if (!touchPointer && (input is InputEventKey { Pressed: true } or InputEventMouseButton { Pressed: true } ||
+            input is InputEventMouseMotion moved && moved.Relative.LengthSquared() > 4)) Engine_UiInputMode.KeyboardMouse = true;
         else if (input is InputEventJoypadButton { Pressed: true } ||
             input is InputEventJoypadMotion axis && Math.Abs(axis.AxisValue) > 0.5f) Engine_UiInputMode.KeyboardMouse = false;
         if (!_closing && GetWindow().HasFocus())
@@ -378,13 +417,15 @@ public partial class GameMorphMirror : Node
         bool Down(Key key, JoyButton button) => Input.IsPhysicalKeyPressed(key) || pad >= 0 && Input.IsJoyButtonPressed(pad, button);
         uint buttons = 0;
         if (Down(Key.Enter, JoyButton.A)) buttons |= 1;
-        if (Down(Key.Escape, JoyButton.B)) buttons |= 2;
+        if (Down(Key.Escape, JoyButton.B) || _backRequested) buttons |= 2;
+        _backRequested = false;
         if (Down(Key.R, JoyButton.X)) buttons |= 4;
         if (Down(Key.Up, JoyButton.DpadUp)) buttons |= 16;
         if (Down(Key.Down, JoyButton.DpadDown)) buttons |= 32;
         if (Down(Key.Left, JoyButton.DpadLeft)) buttons |= 64;
         if (Down(Key.Right, JoyButton.DpadRight)) buttons |= 128;
-        return buttons;
+        // The touch controls' D-pad: the same navigation bits as photo mode's.
+        return buttons | GamePhotoMode.TouchDPad();
     }
 
     public override void _ExitTree()

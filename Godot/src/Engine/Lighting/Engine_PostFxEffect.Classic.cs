@@ -1,6 +1,7 @@
 using System;
 using Godot;
 using Godot.Collections;
+using Refii.Core;
 
 namespace Refii.Lighting;
 
@@ -122,22 +123,22 @@ public partial class Engine_PostFxEffect
         string lut = ClassicLutShader
             .Replace("{SIZE}", Engine_PostFxModel.CurveSize.ToString(System.Globalization.CultureInfo.InvariantCulture))
             .Replace("{LUT}", Engine_PostFxState.Lut.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        RDShaderSpirV spirv = rd.ShaderCompileSpirVFromSource(new RDShaderSource { SourceCompute = lut, Language = RenderingDevice.ShaderLanguage.Glsl });
+        RDShaderSpirV spirv = rd.CompileSpirV(new RDShaderSource { SourceCompute = lut, Language = RenderingDevice.ShaderLanguage.Glsl });
         if (spirv.CompileErrorCompute.Length == 0)
         {
-            _cLutShader = rd.ShaderCreateFromSpirV(spirv, "classic_tone_lut");
-            _cLutPipeline = _cLutShader.IsValid ? rd.ComputePipelineCreate(_cLutShader) : default;
+            _cLutShader = rd.Shader(spirv, "classic_tone_lut");
+            _cLutPipeline = _cLutShader.IsValid ? rd.ComputePipeline(_cLutShader) : default;
         }
         else if (error.Length == 0)
         {
             error = "the tone table copy failed to compile: " + spirv.CompileErrorCompute;
         }
 
-        spirv = rd.ShaderCompileSpirVFromSource(new RDShaderSource { SourceCompute = ClassicCopyShader, Language = RenderingDevice.ShaderLanguage.Glsl });
+        spirv = rd.CompileSpirV(new RDShaderSource { SourceCompute = ClassicCopyShader, Language = RenderingDevice.ShaderLanguage.Glsl });
         if (spirv.CompileErrorCompute.Length == 0)
         {
-            _cCopyShader = rd.ShaderCreateFromSpirV(spirv, "classic_hdr_copy");
-            _cCopyPipeline = _cCopyShader.IsValid ? rd.ComputePipelineCreate(_cCopyShader) : default;
+            _cCopyShader = rd.Shader(spirv, "classic_hdr_copy");
+            _cCopyPipeline = _cCopyShader.IsValid ? rd.ComputePipeline(_cCopyShader) : default;
         }
         else if (error.Length == 0)
         {
@@ -162,7 +163,7 @@ public partial class Engine_PostFxEffect
         if (!_cLut.IsValid)
         {
             _cLut = CreateTexture(Engine_PostFxModel.CurveSize, 1, RenderingDevice.DataFormat.R32Sfloat);
-            _cLutSet = rd.UniformSetCreate(new Array<RDUniform> { Image(_cLut, 0), Buffer(_stateBuffer, 1) }, _cLutShader, 0);
+            _cLutSet = rd.UniformSet(new RDUniform[] { Image(_cLut, 0), Buffer(_stateBuffer, 1) }, _cLutShader, 0);
         }
         if (_cSize == _fullSize && _cHdr.IsValid)
         {
@@ -172,7 +173,7 @@ public partial class Engine_PostFxEffect
         _cSize = _fullSize;
         _cHdr = CreateTexture(_fullSize.X, _fullSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
         _cLum = CreateTexture(_quarterSize.X, _quarterSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
-        _cHistogramSet = rd.UniformSetCreate(new Array<RDUniform> { Image(_cLum, 0), Buffer(_histogramBuffer, 1) }, _histogramShader, 0);
+        _cHistogramSet = rd.UniformSet(new RDUniform[] { Image(_cLum, 0), Buffer(_histogramBuffer, 1) }, _histogramShader, 0);
     }
 
     private void FreeClassicTargets()
@@ -386,7 +387,7 @@ public partial class Engine_PostFxEffect
 
         if (!_cCopySet.Matches(_rd, colour, _cHdr))
         {
-            _cCopySet.Replace(_rd, colour, _cHdr, _cCopyShader, new Array<RDUniform> { Image(colour, 0), Image(_cHdr, 1) });
+            _cCopySet.Replace(_rd, colour, _cHdr, _cCopyShader, new RDUniform[] { Image(colour, 0), Image(_cHdr, 1) });
         }
         Dispatch(_cCopyPipeline, _cCopySet.Set, null, (size.X + 7) / 8, (size.Y + 7) / 8);
 
@@ -478,11 +479,11 @@ public partial class Engine_PostFxEffect
         _cSunBeams = Engine_ClassicPostPass.Build(rd, "PSHADER_SUNBEAMS", NoFixups, string.Empty, out error, Engine_ClassicPostPass.Kind.Sprite);
         _cMoonBloom = _cSunBeams is null ? null : Engine_ClassicPostPass.Build(rd, "PSHADER_MOONBLOOM", NoFixups, string.Empty, out error, Engine_ClassicPostPass.Kind.Sprite);
         Engine_ClassicPostPass? disc = _cMoonBloom is null ? null : Engine_ClassicPostPass.Build(rd, "PSHADER_SUNDISC", NoFixups, string.Empty, out error, Engine_ClassicPostPass.Kind.Sprite);
-        RDShaderSpirV spirv = rd.ShaderCompileSpirVFromSource(new RDShaderSource { SourceCompute = ClassicVisibilityShader, Language = RenderingDevice.ShaderLanguage.Glsl });
+        RDShaderSpirV spirv = rd.CompileSpirV(new RDShaderSource { SourceCompute = ClassicVisibilityShader, Language = RenderingDevice.ShaderLanguage.Glsl });
         if (spirv.CompileErrorCompute.Length == 0)
         {
-            _cVisShader = rd.ShaderCreateFromSpirV(spirv, "classic_sky_visibility");
-            _cVisPipeline = _cVisShader.IsValid ? rd.ComputePipelineCreate(_cVisShader) : default;
+            _cVisShader = rd.Shader(spirv, "classic_sky_visibility");
+            _cVisPipeline = _cVisShader.IsValid ? rd.ComputePipeline(_cVisShader) : default;
         }
         if (disc is null || !_cVisPipeline.IsValid)
         {
@@ -495,7 +496,7 @@ public partial class Engine_PostFxEffect
         BitConverter.TryWriteBytes(one.AsSpan(0), 1f);
         BitConverter.TryWriteBytes(one.AsSpan(4), 1f);
         _cVisibility = CreateTexture(2, 1, RenderingDevice.DataFormat.R32Sfloat, one);
-        _cVisSet = rd.UniformSetCreate(new Array<RDUniform> { Image(_cVisibility, 0), Buffer(_cCounters, 1) }, _cVisShader, 0);
+        _cVisSet = rd.UniformSet(new RDUniform[] { Image(_cVisibility, 0), Buffer(_cCounters, 1) }, _cVisShader, 0);
         _cSunDisc = disc;
 
         // Each view's chain counts its own sun and moon, so each publishes into its view's global.
@@ -698,14 +699,14 @@ public partial class Engine_PostFxEffect
                 return;
             }
             _cDepthTried = true;
-            RDShaderSpirV spirv = rd.ShaderCompileSpirVFromSource(new RDShaderSource { SourceCompute = ClassicDepthCopyShader, Language = RenderingDevice.ShaderLanguage.Glsl });
+            RDShaderSpirV spirv = rd.CompileSpirV(new RDShaderSource { SourceCompute = ClassicDepthCopyShader, Language = RenderingDevice.ShaderLanguage.Glsl });
             if (spirv.CompileErrorCompute.Length != 0)
             {
                 GD.Print($"[postfx] the scene depth copy failed to compile: {spirv.CompileErrorCompute}");
                 return;
             }
-            _cDepthShader = rd.ShaderCreateFromSpirV(spirv, "classic_scene_depth");
-            _cDepthPipeline = rd.ComputePipelineCreate(_cDepthShader);
+            _cDepthShader = rd.Shader(spirv, "classic_scene_depth");
+            _cDepthPipeline = rd.ComputePipeline(_cDepthShader);
         }
         if (!_cSceneDepth.IsValid || _cSceneDepthSize != size)
         {
@@ -728,7 +729,7 @@ public partial class Engine_PostFxEffect
         if (!_cDepthSet.Matches(rd, depth, _cSceneDepth))
         {
             _cDepthSet.Replace(rd, depth, _cSceneDepth, _cDepthShader,
-                new Array<RDUniform> { Sampler(_nearestSampler, depth, 0), Image(_cSceneDepth, 1) });
+                new RDUniform[] { Sampler(_nearestSampler, depth, 0), Image(_cSceneDepth, 1) });
         }
         Dispatch(_cDepthPipeline, _cDepthSet.Set, null, (size.X + 7) / 8, (size.Y + 7) / 8);
     }
@@ -875,7 +876,7 @@ public partial class Engine_PostFxEffect
         rd.BufferUpdate(_cDecalParams, 0, (uint)_cDecalBytes.Length, _cDecalBytes);
         if (!_cDecalSet.Matches(rd, depth, _cDecalPoints))
         {
-            _cDecalSet.Replace(rd, depth, _cDecalPoints, _cDecalShader, new Array<RDUniform>
+            _cDecalSet.Replace(rd, depth, _cDecalPoints, _cDecalShader, new RDUniform[]
             {
                 Image(_cDecalPoints, 0),
                 Sampler(_nearestSampler, depth, 1),
@@ -913,14 +914,14 @@ public partial class Engine_PostFxEffect
         }
         _cDecalTried = true;
         RenderingDevice rd = _rd!;
-        RDShaderSpirV spirv = rd.ShaderCompileSpirVFromSource(new RDShaderSource { SourceCompute = ClassicDecalShader, Language = RenderingDevice.ShaderLanguage.Glsl });
+        RDShaderSpirV spirv = rd.CompileSpirV(new RDShaderSource { SourceCompute = ClassicDecalShader, Language = RenderingDevice.ShaderLanguage.Glsl });
         if (spirv.CompileErrorCompute.Length != 0)
         {
             GD.Print($"[postfx] the decal projection failed to compile: {spirv.CompileErrorCompute}");
             return false;
         }
-        _cDecalShader = rd.ShaderCreateFromSpirV(spirv, "classic_decals");
-        _cDecalPipeline = rd.ComputePipelineCreate(_cDecalShader);
+        _cDecalShader = rd.Shader(spirv, "classic_decals");
+        _cDecalPipeline = rd.ComputePipeline(_cDecalShader);
         _cDecalPoints = CreateTexture(Refii.Models.Engine_ClassicDecals.Points, Refii.Models.Engine_ClassicDecals.Slots * 2,
             RenderingDevice.DataFormat.R32G32B32A32Sfloat);
         _cDecalParams = rd.StorageBufferCreate((uint)_cDecalBytes.Length, _cDecalBytes);

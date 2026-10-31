@@ -203,7 +203,7 @@ public partial class Engine_ClassicParticles
         var arrays = new Godot.Collections.Array();
         arrays.Resize((int)Mesh.ArrayType.Max);
         arrays[(int)Mesh.ArrayType.Vertex] = new Vector3[vertices];
-        trail.Mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.TriangleStrip, arrays);
+        Refii.Core.Engine_ArrayMeshes.AddSurface(trail.Mesh, Mesh.PrimitiveType.TriangleStrip, arrays);
         arrays.Dispose();
         if (trail.Material is not null)
         {
@@ -318,7 +318,7 @@ public partial class Engine_ClassicParticles
                 return false;
             }
             ShaderMaterial modern = ModernMaterial(
-                ModernShader(ModernTrailInclude, doubled ? "#define FX_TRAIL_DOUBLE\n" : string.Empty, blend),
+                ModernShader(ModernTrailInclude, (doubled ? "#define FX_TRAIL_DOUBLE\n" : string.Empty) + HardDefines(soft), blend),
                 _trailBuffer, at + 208, textures, oneOne, alphaRef16);
             return UseTrailMaterial(trail, modern);
         }

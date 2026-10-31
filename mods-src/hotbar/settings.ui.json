@@ -1,0 +1,8 @@
+{
+	"show": { "label": "Show the hotbar", "type": "toggle",
+	          "description": "The keys work either way." },
+	"size": { "label": "Size", "type": "slider", "min": 0.6, "max": 1.6, "step": 0.1,
+	          "description": "How big the slots are drawn." },
+	"lift": { "label": "Height above the bottom", "type": "slider", "min": 0, "max": 200, "step": 10,
+	          "description": "Raise the bar to clear the subtitles." }
+}

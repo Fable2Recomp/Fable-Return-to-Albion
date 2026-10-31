@@ -127,7 +127,10 @@ public partial class GameDevMenu : CanvasLayer
 	private static bool IsToggle(InputEvent @event) =>
 		@event is InputEventKey { Pressed: true, Echo: false, Keycode: Key.F6 };
 
-	private bool Open => _window is { Visible: true };
+	/// <summary>Whether the diagnostic window is currently visible.</summary>
+	public bool IsOpen => _window is { Visible: true };
+
+	private bool Open => IsOpen;
 
 	private void Close()
 	{
@@ -148,6 +151,14 @@ public partial class GameDevMenu : CanvasLayer
 			return;
 		}
 
+		Toggle();
+		GetViewport().SetInputAsHandled();
+	}
+
+	/// <summary>Uses the same open, refresh and keyboard-release lifecycle for keyboard and touch.</summary>
+	public void Toggle()
+	{
+		if (_window is null) return;
 		if (Open)
 		{
 			Close();
@@ -162,8 +173,10 @@ public partial class GameDevMenu : CanvasLayer
 			}
 		}
 
-		GetViewport().SetInputAsHandled();
 	}
+
+	/// <summary>Releases keyboard capture when the scene owning the diagnostic window ends.</summary>
+	public override void _ExitTree() => KeyboardCaptured = false;
 
 	public override void _Process(double delta)
 	{

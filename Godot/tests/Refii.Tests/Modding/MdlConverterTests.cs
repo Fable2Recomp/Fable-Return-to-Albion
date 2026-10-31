@@ -803,7 +803,7 @@ public class MdlConverterTests
 	[TestCase]
 	public void TheMountServesAModsGlbAsTheModel()
 	{
-		string scratch = Path.Combine("/home/loreaxe/.cache/refii-scratch/mdl", "mount-" + Guid.NewGuid().ToString("N"));
+		string scratch = Path.Combine(Path.GetTempPath(), "refii-scratch", "mdl", "mount-" + Guid.NewGuid().ToString("N"));
 		string mod = Path.Combine(scratch, "mod");
 		Directory.CreateDirectory(Path.Combine(mod, "art", "models"));
 		try
