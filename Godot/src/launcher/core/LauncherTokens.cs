@@ -33,6 +33,8 @@ public static class LauncherTokens
 	public static readonly Color ParchmentGlassStrong = new Color(Parchment, 0.92f);
 	public static readonly Color OakGlass = new Color(Oak, 0.62f);
 	public static readonly Color InkGlass = new Color(0.10f, 0.08f, 0.05f, 0.72f);
+	/// <summary>The header card: a light, neutral grey wash that keeps cream text readable over any artwork.</summary>
+	public static readonly Color SlateGlass = new Color(0.22f, 0.22f, 0.22f, 0.68f);
 
 	// Spacing, 4px grid.
 	public const int Sp1 = 4;

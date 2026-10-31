@@ -19,7 +19,7 @@ public sealed class Fable2LauncherScreen : LauncherTitleScreen
 	public override Engine_Title Title => Engine_Title.Fable2;
 
 	public override string Wordmark =>
-		"[color=#e8dcc2]FABLE [/color][color=#daa520]2[/color][color=#e8dcc2] RECOMPILED[/color]";
+		"[color=#e8dcc2]FABLE [/color][color=#daa520]2[/color][color=#e8dcc2]: RETURN TO ALBION[/color]";
 
 	/// <summary>The launcher ini's <c>[Window] Title</c>, which ships as Fable 2's.</summary>
 	public override string WindowTitle => LauncherTheme.WindowTitle;
@@ -31,6 +31,7 @@ public sealed class Fable2LauncherScreen : LauncherTitleScreen
 		new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 		{
 			["02"] = "Art by Mirai-Miki",
+			["03"] = "Art by ♡ 𝐼𝓂𝓎 ♡",
 		};
 
 	public override LauncherBackgrounds Backgrounds => new(
@@ -48,7 +49,7 @@ public sealed class Fable2LauncherScreen : LauncherTitleScreen
 
 	private static readonly LauncherLink[] Links =
 	{
-		new("Fable 2 Recompiled", "https://github.com/rexglue/refii"),
+		new("Fable 2: Return to Albion", "https://github.com/Fable2Recomp/Fable2Remake"),
 	};
 
 	public override IReadOnlyList<LauncherLink> AboutLinks => Links;

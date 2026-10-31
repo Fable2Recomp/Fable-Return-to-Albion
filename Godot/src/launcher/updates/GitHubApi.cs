@@ -25,16 +25,16 @@ public static class GitHubApi
     }
 
     public static string GetRepositoryName() =>
-        Ini.GetString("Name", "Fable2Recomp/refii", "Github");
+        Ini.GetString("Name", "Fable2Recomp/Fable2Remake", "Github");
 
     public static string GetRepositoryBranch() =>
-        Ini.GetString("Branch", "master", "Github");
+        Ini.GetString("Branch", "main", "Github");
 
     public static string GetProjectTitle() =>
-        Ini.GetString("ProjectTitle", "Fable 2 Recompiled", "About");
+        Ini.GetString("ProjectTitle", "Fable 2: Return to Albion", "About");
 
     public static string GetProjectPage() =>
-        Ini.GetString("ProjectPage", "https://github.com/Fable2Recomp/refii", "About");
+        Ini.GetString("ProjectPage", "https://github.com/Fable2Recomp/Fable2Remake", "About");
 
     public static async Task<List<GitCommit>?> FetchCommitsAsync(string repo, string branch)
     {

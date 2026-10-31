@@ -81,6 +81,7 @@ public partial class LauncherApp : Control
 	private TextureRect _backgroundNext = null!;
 	private BackgroundManager _backgrounds = null!;
 	private Panel _menuBar = null!;
+	private VBoxContainer _headerCol = null!;
 	private RichTextLabel _wordmark = null!;
 	private MenuButton _gameMenu = null!;
 	private MenuButton _fileMenu = null!;
@@ -250,6 +251,7 @@ public partial class LauncherApp : Control
 		_background = GetNode<TextureRect>("Background");
 		_backgroundNext = GetNode<TextureRect>("BackgroundNext");
 		_menuBar = GetNode<Panel>("MenuBar");
+		_headerCol = GetNode<VBoxContainer>("MenuBar/HeaderCol");
 		_wordmark = GetNode<RichTextLabel>("MenuBar/HeaderCol/Wordmark");
 		_fileMenu = GetNode<MenuButton>("MenuBar/HeaderCol/MenuRow/FileMenu");
 		_aboutMenu = GetNode<MenuButton>("MenuBar/HeaderCol/MenuRow/AboutMenu");
@@ -578,6 +580,19 @@ public partial class LauncherApp : Control
 
 	private static StyleBoxTexture EdgeFaded(Color color) =>
 		HorizontalFade(color, EdgeFadeOffsets, EdgeFadeAlphas);
+
+	/// <summary>The floating parchment-glass card every launcher surface is: a gold hairline, soft corners, a drop shadow.</summary>
+	private static StyleBoxFlat GlassCard()
+	{
+		var box = new StyleBoxFlat { BgColor = LauncherTokens.ParchmentGlass };
+		box.BorderColor = new Color(LauncherTokens.Gold, 0.45f);
+		box.SetBorderWidthAll(1);
+		box.SetCornerRadiusAll(LauncherTokens.RadiusMd);
+		box.ShadowColor = new Color(0, 0, 0, 0.4f);
+		box.ShadowSize = 18;
+		box.ShadowOffset = new Vector2(0, 6);
+		return box;
+	}
 
 	private static StyleBoxFlat Fill(Color color, Color? border = null)
 	{
@@ -916,11 +931,21 @@ public partial class LauncherApp : Control
 		_screen = LauncherTitleScreen.Active;
 		ApplyBackgrounds();
 
-		// Toolbar: no bar at all. The artwork runs to the top of the window and
-		// the wordmark + menus float over it with a soft shadow for legibility.
-		_menuBar.AddThemeStyleboxOverride("panel", new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0) });
+		// THE HEADER IS A CARD: the wordmark and the three menus sit on a light grey
+		// translucent wash, sized to their content (see ApplyLayout) rather than a bar across
+		// the window, so the cream text reads over any artwork. Grey, not the parchment of the
+		// drawers: the header's text is cream and gold, and stays so.
+		StyleBoxFlat headerCard = GlassCard();
+		headerCard.BgColor = LauncherTokens.SlateGlass;
+		headerCard.BorderColor = new Color(1, 1, 1, 0.22f);
+		_menuBar.AddThemeStyleboxOverride("panel", headerCard);
 
 		_wordmark.BbcodeEnabled = true;
+		// The wordmark's width IS the card's: its minimum follows the text (the scene's fixed
+		// 300 px was for a bar that never measured it), one line, never wrapped.
+		_wordmark.FitContent = true;
+		_wordmark.AutowrapMode = TextServer.AutowrapMode.Off;
+		_wordmark.CustomMinimumSize = new Vector2(0, _wordmark.CustomMinimumSize.Y);
 		ApplyWordmark();
 		_wordmark.MouseFilter = MouseFilterEnum.Ignore;
 		_wordmark.VerticalAlignment = VerticalAlignment.Center;
@@ -1026,13 +1051,7 @@ public partial class LauncherApp : Control
 		_artCredit.AddThemeConstantOverride("shadow_offset_x", 1);
 
 		// Announcements Drawer (Left Side):
-		var infoBox = new StyleBoxFlat { BgColor = LauncherTokens.ParchmentGlass };
-		infoBox.BorderColor = new Color(LauncherTokens.Gold, 0.45f);
-		infoBox.SetBorderWidthAll(1);
-		infoBox.SetCornerRadiusAll(LauncherTokens.RadiusMd);
-		infoBox.ShadowColor = new Color(0, 0, 0, 0.4f);
-		infoBox.ShadowSize = 18;
-		infoBox.ShadowOffset = new Vector2(0, 6);
+		StyleBoxFlat infoBox = GlassCard();
 		infoBox.ContentMarginLeft = LauncherTokens.Sp6;
 		infoBox.ContentMarginRight = LauncherTokens.Sp6;
 		infoBox.ContentMarginTop = LauncherTokens.Sp4;
@@ -1242,6 +1261,9 @@ public partial class LauncherApp : Control
 	{
 		_screen = LauncherTitleScreen.Active;
 		ApplyWordmark();
+		// The header card is sized to the wordmark, which just changed; measured once the label
+		// has laid the new text out.
+		CallDeferred(MethodName.ApplyLayout);
 		ApplyBackgrounds();
 		ApplyInfoTabs();
 		PopulateAboutMenu();
@@ -1464,8 +1486,13 @@ public partial class LauncherApp : Control
 
 		LauncherLayout layout = LauncherLayout.Build(Vector2.Zero, viewport, _menuBarHeight);
 
-		_menuBar.Position = Vector2.Zero;
-		_menuBar.Size = new Vector2(viewport.X, _menuBarHeight);
+		// The header card hugs its content: the wordmark row and the menu row, plus the
+		// HeaderCol's own inset on both sides, floating off the corner like the other cards.
+		float headerInset = _headerCol.OffsetLeft;
+		float cardGap = LauncherScale.Px(12.0f);
+		_menuBar.Position = new Vector2(cardGap, cardGap);
+		_menuBar.Size = new Vector2(
+			_headerCol.GetCombinedMinimumSize().X + (headerInset * 2.0f), _menuBarHeight);
 
 		// Edge tabs: glued to their window edge, vertically centered.
 		_infoTab.OffsetTop = -LauncherScale.Px(44.0f);
