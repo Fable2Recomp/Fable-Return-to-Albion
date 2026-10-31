@@ -8,18 +8,19 @@ using Godot;
 namespace Refii.Models;
 
 /// <summary>
-/// Lite shaders SPECIALISED at material build: a lite wrapper file (material/lite/*, terrain/lite/*)
-/// recompiled with extra defines or render modes, as a shader built in code. One shader per
-/// (file, defines); every material with the same facts shares it.
+/// Lite shaders SPECIALISED at material build: a lite build (Engine_ShaderVariant's paths, made from
+/// the full shader by <see cref="LoadFile"/>) recompiled with extra defines or render modes, as a
+/// shader built in code. One shader per (build, defines); every material with the same facts
+/// shares it.
 /// </summary>
 /// <remarks>
-/// WHY NOT MORE FILES. The wrappers are three lines each, and the specialisations multiply: a file
-/// per combination would be hundreds of copies of the same three lines. The wrapper's own text is
-/// the source (its `Code`), the defines go in before its `#include`, and Godot's preprocessor does
-/// the rest, so a specialised build is the wrapper's body with code removed and nothing else.
+/// WHY NOT FILES. The specialisations multiply: a file per combination would be hundreds of copies
+/// of the same few lines. The lite build's own text is the source (its `Code`), the defines go in
+/// before its `#include`, and Godot's preprocessor does the rest, so a specialised build is the
+/// body with code removed and nothing else.
 ///
-/// WHAT IS NOT A FILE ANY MORE. A built shader has no ResourcePath; <see cref="PathOf"/> answers
-/// with the wrapper it was built from, and every caller that picked a build by path asks it.
+/// WHAT IS NOT A FILE. A built shader has no ResourcePath; <see cref="PathOf"/> answers with the
+/// lite build's path it was made from, and every caller that picks a build by path asks it.
 ///
 /// Each specialisation has its own refii.toml key, read once at the first lite material build, so
 /// the phone can A/B each by relaunch. All of them apply only under `shader_variant = "lite"`.
@@ -85,6 +86,39 @@ public static class Engine_ShaderSpecialisation
     private static readonly Dictionary<string, Built> ByKey = new(StringComparer.Ordinal);
 
     private static readonly ConditionalWeakTable<Shader, Built> ByShader = new();
+
+    private static readonly Dictionary<string, Shader> LiteBuilds = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The shader <paramref name="path"/> names: the file, or for a lite build
+    /// (<see cref="Engine_ShaderVariant.IsBuild"/>) its full shader's text with the lite defines,
+    /// made once and named by that path (<see cref="PathOf"/>). Null when the file does not load.
+    /// </summary>
+    public static Shader? LoadFile(string path)
+    {
+        if (!Engine_ShaderVariant.IsBuild(path))
+        {
+            return GD.Load<Shader>(path);
+        }
+
+        lock (Gate)
+        {
+            if (LiteBuilds.TryGetValue(path, out Shader? hit))
+            {
+                return hit;
+            }
+
+            if (GD.Load<Shader>(Engine_ShaderVariant.FullPathOf(path)) is not { } full)
+            {
+                return null;
+            }
+
+            var shader = new Shader { Code = Engine_ShaderVariant.Compose(full.Code, path) };
+            LiteBuilds[path] = shader;
+            ByShader.Add(shader, new Built { Path = path, Source = shader.Code, Defines = Array.Empty<string>(), Shader = shader });
+            return shader;
+        }
+    }
 
     /// <summary>The wrapper file a shader stands for: its own path, or the one it was built from.</summary>
     public static string PathOf(Shader? shader)
@@ -152,7 +186,7 @@ public static class Engine_ShaderSpecialisation
         bool shadowless = Shadowless;
         if (sorted.Length == 0 && !shadowless)
         {
-            return file ?? GD.Load<Shader>(path);
+            return file ?? LoadFile(path);
         }
 
         string key = path + "\n" + string.Join("\n", sorted);
@@ -163,7 +197,7 @@ public static class Engine_ShaderSpecialisation
                 return hit.Shader;
             }
 
-            file ??= GD.Load<Shader>(path);
+            file ??= LoadFile(path);
             if (file is null)
             {
                 return null;

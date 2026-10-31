@@ -35,6 +35,11 @@ namespace Refii.Models;
 /// built with, so changing the key — or any of those settings — takes a relaunch, which is also
 /// how the two sets are A/B'd.
 ///
+/// NOT FILES. A lite build is its full shader's own text with the defines in front of the body's
+/// #include (<see cref="Compose"/>), made in code (Engine_ShaderSpecialisation.LoadFile). The
+/// paths below name the builds, so everything that picks one by path keeps working, and no copy of
+/// a full shader's render mode can drift from it.
+///
 /// "lite_flat" is "lite" with the terrain's layer normal maps and cavity also compiled out: a
 /// LOOK change, offered separately for that reason. Plain "lite" already compiles them out
 /// where they are not bound (`terrain_normal_maps = false`), where removing them changes nothing.
@@ -177,33 +182,69 @@ public static class Engine_ShaderVariant
     public const string TerrainFlatNoCliffPath = TerrainLite + "terrain_splat_lite_flat_nocliff.gdshader";
     public const string TerrainPagePath = TerrainLite + "terrain_splat_lite_page.gdshader";
 
+    /// <summary>A lite build: the full shader it is made from and the defines it adds.</summary>
+    private readonly record struct Build(string Full, string[] Defines);
+
+    private static readonly Dictionary<string, Build> Builds = BuildBuilds();
+
     private static readonly Dictionary<string, string> FullOf = BuildFullOf();
+
+    private static Dictionary<string, Build> BuildBuilds()
+    {
+        var map = new Dictionary<string, Build>(StringComparer.Ordinal);
+        foreach ((string full, ModelSet set) in Models)
+        {
+            map[set.Lite] = new(full, new[] { "FABLE_LITE", "FABLE_LITE_NO_ENVMAP" });
+            map[set.NoSpec] = new(full, new[] { "FABLE_LITE_NO_SPEC" });
+            if (set.Env is { } env)
+            {
+                map[env] = new(full, new[] { "FABLE_LITE" });
+            }
+        }
+
+        map[TerrainLitePath] = new(TerrainFullPath, new[] { "FABLE_LITE" });
+        map[TerrainLiteNoCliffPath] = new(TerrainFullPath, new[] { "FABLE_LITE", "FABLE_LITE_NO_CLIFF" });
+        map[TerrainFlatPath] = new(TerrainFullPath, new[] { "FABLE_LITE", "FABLE_LITE_FLAT_TERRAIN" });
+        map[TerrainFlatNoCliffPath] = new(TerrainFullPath, new[] { "FABLE_LITE", "FABLE_LITE_FLAT_TERRAIN", "FABLE_LITE_NO_CLIFF" });
+        map[TerrainPagePath] = new(TerrainFullPath, new[] { "FABLE_TERRAIN_PAGE" });
+
+        // The modern-model builds: the same, with the bakes dropped too.
+        foreach ((string lite, Build build) in new List<KeyValuePair<string, Build>>(map))
+        {
+            map[lite.Replace("/lite/", "/lite/modern/", StringComparison.Ordinal)] =
+                new(build.Full, [.. build.Defines, "FABLE_LITE_MODERN"]);
+        }
+
+        return map;
+    }
 
     private static Dictionary<string, string> BuildFullOf()
     {
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach ((string full, ModelSet set) in Models)
+        foreach ((string lite, Build build) in Builds)
         {
-            map[set.Lite] = full;
-            map[set.NoSpec] = full;
-            if (set.Env is { } env)
-            {
-                map[env] = full;
-            }
-        }
-
-        foreach (string terrain in new[] { TerrainLitePath, TerrainLiteNoCliffPath, TerrainFlatPath, TerrainFlatNoCliffPath, TerrainPagePath })
-        {
-            map[terrain] = TerrainFullPath;
-        }
-
-        // The modern-model builds stand for the same full shaders.
-        foreach ((string lite, string full) in new List<KeyValuePair<string, string>>(map))
-        {
-            map[lite.Replace("/lite/", "/lite/modern/", StringComparison.Ordinal)] = full;
+            map[lite] = build.Full;
         }
 
         return map;
+    }
+
+    /// <summary>Whether <paramref name="path"/> names a lite build (made in code, not a file).</summary>
+    public static bool IsBuild(string path) => Builds.ContainsKey(path);
+
+    /// <summary>
+    /// The text of the lite build <paramref name="path"/>: <paramref name="fullCode"/> (its full
+    /// shader's) with the build's defines ahead of the body's #include, in order. Pure.
+    /// </summary>
+    public static string Compose(string fullCode, string path)
+    {
+        string code = fullCode;
+        foreach (string define in Builds[path].Defines)
+        {
+            code = Refii.Fx.Engine_FxDepthReads.Compose(code, define);
+        }
+
+        return code;
     }
 
     /// <summary>Every lite shader file, both sets, for the compile check.</summary>

@@ -19,6 +19,13 @@ public sealed class ShaderCeilingTests
 
     private static string? Read(string resPath)
     {
+        if (Refii.Models.Engine_ShaderVariant.IsBuild(resPath))
+        {
+            return Read(Refii.Models.Engine_ShaderVariant.FullPathOf(resPath)) is { } full
+                ? Refii.Models.Engine_ShaderVariant.Compose(full, resPath)
+                : null;
+        }
+
         string path = Path.Combine(Root(), resPath["res://".Length..]);
         return File.Exists(path) ? File.ReadAllText(path).Replace("\r\n", "\n") : null;
     }

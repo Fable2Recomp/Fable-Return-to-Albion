@@ -122,6 +122,12 @@ public partial class Engine_ShaderWarmup : Node
 	{
 		_startedMs = Time.GetTicksMsec();
 		Collect(ShaderRoot);
+		// The mobile lite builds are made in code, not files the scan finds.
+		if (Engine_ShaderVariant.Lite)
+		{
+			_paths.AddRange(Engine_ShaderVariant.ActiveVariantPaths);
+		}
+
 		_paths.Sort();
 
 		if (_paths.Count == 0)
@@ -380,7 +386,7 @@ public partial class Engine_ShaderWarmup : Node
 	/// </summary>
 	private void Warm(string path)
 	{
-		if (ResourceLoader.Load(path, "Shader") is not Shader shader)
+		if (Engine_ShaderSpecialisation.LoadFile(path) is not { } shader)
 		{
 			GD.PrintErr($"[shader-warmup] could not load {path}");
 			return;

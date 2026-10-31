@@ -261,7 +261,7 @@ public static partial class Engine_MdlMaterial
         Shader? loaded;
         if (Godot.OS.GetThreadCallerId() == Godot.OS.GetMainThreadId())
         {
-            loaded = GD.Load<Shader>(path);
+            loaded = Engine_ShaderSpecialisation.LoadFile(path);
         }
         else
         {
@@ -274,7 +274,7 @@ public static partial class Engine_MdlMaterial
                         return first;
                     }
                 }
-                loaded = GD.Load<Shader>(path);
+                loaded = Engine_ShaderSpecialisation.LoadFile(path);
                 lock (ShaderLock)
                 {
                     _shaders.TryAdd(path, loaded);

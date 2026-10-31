@@ -28,7 +28,7 @@ public static partial class Engine_TerrainSplatMaterial
             {
                 if (Refii.Models.Engine_ShaderVariant.IsTerrainSplat(path))
                 {
-                    _ = GD.Load<Shader>(path);
+                    _ = Refii.Models.Engine_ShaderSpecialisation.LoadFile(path);
                 }
             }
         }

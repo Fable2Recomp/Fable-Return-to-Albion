@@ -12,9 +12,14 @@ namespace Refii.Tests;
 [TestSuite]
 public sealed class ShaderVariantTests
 {
-    private static string Source(string resPath, [CallerFilePath] string source = "") =>
+    private static string FileText(string resPath, [CallerFilePath] string source = "") =>
         File.ReadAllText(Path.GetFullPath(Path.Combine(
             Path.GetDirectoryName(source)!, "../..", resPath["res://".Length..]))).Replace("\r\n", "\n");
+
+    /// <summary>A shader's text: the file, or a lite build made from its full shader's file.</summary>
+    private static string Source(string resPath) => Engine_ShaderVariant.IsBuild(resPath)
+        ? Engine_ShaderVariant.Compose(FileText(Engine_ShaderVariant.FullPathOf(resPath)), resPath)
+        : FileText(resPath);
 
     private static string Line(string code, string prefix) =>
         code.Split('\n').FirstOrDefault(l => l.StartsWith(prefix, StringComparison.Ordinal)) ?? string.Empty;
