@@ -14,7 +14,7 @@ class GeneratorCompatibilityTests(unittest.TestCase):
     def check_lifecycle(self, existing_pch, legacy_weak=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            config = root / "source/versions/Fable2TU1"
+            config = root / "source/Fable2/versions/Fable2TU1"
             config.mkdir(parents=True)
             (config / "refii_config.toml").write_text("# synthetic public config\n")
             (config / "refii_manifest.toml").write_text('file_path = "old"\nout_directory_path = "old"\n')
@@ -46,3 +46,24 @@ class GeneratorCompatibilityTests(unittest.TestCase):
 
     def test_legacy_weak_alias_declaration_keeps_generated_header_unchanged(self):
         self.check_lifecycle(False, legacy_weak=True)
+
+    def test_fable3_reads_its_own_configs(self):
+        """Fable 3's configs are Fable3/versions/Fable3/refiii_*.toml; the manifest points at the private copy."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / "source/Fable3/versions/Fable3"
+            config.mkdir(parents=True)
+            (config / "refiii_config.toml").write_text("# synthetic Fable 3 config\n")
+            (config / "refiii_manifest.toml").write_text('file_path = "old"\nout_directory_path = "old"\n')
+            game = root / "game"
+            game.mkdir()
+            (game / "default.xex").write_bytes(b"synthetic input, not an executable")
+            def generated_run(*args):
+                generated = root / "out/private-codegen/generated"
+                generated.mkdir()
+                (generated / "refii_pch.h").write_text("// existing PCH\n")
+            with patch.object(native, "run", side_effect=generated_run):
+                native.generate_private(root / "source", game, root / "generator.exe", root / "out", "Fable3", [])
+            private = root / "out/private-codegen"
+            self.assertEqual((private / "refiii_config.toml").read_text(), "# synthetic Fable 3 config\n")
+            self.assertIn((private / "input/default.xex").as_posix(), (private / "refii_manifest.toml").read_text())
