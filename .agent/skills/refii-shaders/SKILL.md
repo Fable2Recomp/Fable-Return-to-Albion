@@ -146,3 +146,16 @@ When reviewing or writing shaders, verify against this checklist:
 - [ ] **No display curve in intermediate passes**: Reinhard, ACES, Filmic, and sRGB transforms belong **only** in `fable_postfx_composite.glsl`.
 - [ ] **Always support `is_pbr`**: When adding a new surface or particle shader, expose `uniform bool is_pbr = false;` to allow modern modded PBR assets to pass linear physical data.
 - [ ] **Automated Tests**: Any new tonemapping or radiance logic must have unit tests added in `Godot/tests/Refii.Tests/Lighting/HdrTonemapTests.cs`.
+
+---
+
+## 5. Strict Separation Between Modern and Classic Pipelines
+
+Refii provides two distinct rendering pipelines toggled at runtime by `Engine_ClassicMaterial.Active` (`r_classic_material`):
+
+1. **Modern Pipeline (`Engine_ClassicMaterial.Active == false`)**:
+   - **Color Space**: Unclamped scene-referred linear HDR (`RGBA16F`). All Modern surface, water, sky, and particle shaders (`fx_particle*.gdshader`, `water.gdshader`, `fable_*.gdshader`) must output unclamped linear radiance (`max(col, vec3(0.0))`) with zero `[0, 1]` upper clamping or intermediate sRGB re-encoding.
+   - **Subsystems**: Uses Modern subsystems exclusively (`FableFx` / `Engine_FxSystem`, `Engine_DisplacementMeshes` + `Engine_FxDisplacement`, `Engine_ModernWater`, `Engine_ModernRain`, `Engine_ModernDrunk`, `FablePostFxEffect`).
+2. **Classic Pipeline (`Engine_ClassicMaterial.Active == true`)**:
+   - **Color Space**: Faithful Xbox 360 2008 fixed-point / gamma-space emulation (`Engine_Classic*` subsystems and `classic_*.gdshader`).
+   - **Isolation Rule**: Never route Modern mode rendering or adoption through `Engine_Classic*` classes (`Engine_ClassicParticles`, `Engine_ClassicDisplacement`, `Engine_ClassicCasters`, `Engine_ClassicWater`, etc.). Every `Engine_Classic*` adoption/registration/pump entry point must guard on `Engine_ClassicMaterial.Active`. Shared math, parsing, or interpolation helpers must live in mode-agnostic utilities (`Engine_GuestFrame`, `Engine_FxBank`, `Engine_FxMeshes`).

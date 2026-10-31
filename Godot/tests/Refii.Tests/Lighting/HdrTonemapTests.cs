@@ -729,11 +729,11 @@ public class HdrTonemapTests
         }
     }
 
-    /// <summary>Scene bloom ships OFF: the runtime default and the launcher's cvar default are one number, 0.</summary>
+    /// <summary>Scene bloom ships at 0.25: the runtime default and the launcher's cvar default are one number, 0.25.</summary>
     [TestCase]
-    public void TestBloomScaleDefaultIsZeroEverywhere()
+    public void TestBloomScaleDefaultIsOneEverywhere()
     {
-        AssertThat(Refii.Lighting.Engine_PostFxParams.BloomGainDefault).IsEqual(0.0f);
+        AssertThat(Refii.Lighting.Engine_PostFxParams.BloomGainDefault).IsEqual(0.25f);
         var bloomDef = System.Linq.Enumerable.First(
             Refii.Launcher.Core.RuntimeCVarSet.All,
             d => d.Name == "bloom_scale");
@@ -802,44 +802,65 @@ public class HdrTonemapTests
     public void TestFilmicInteriorDarkLiftMultiplierPreservesFableAndLiftsFilmic()
     {
         bool prevInterior = Refii.Lighting.Engine_LightingFrame.CurrentInterior;
+        uint prevHeroZone = Refii.Lighting.Engine_LightZones.HeroZone;
         try
         {
             Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("lighting_model", "modern");
-            Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("interior_dark_lift", "1.5");
+            Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("interior_dark_lift", "1.0");
             Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("modern_dark_lift", "1.0");
 
-            // 1. Interior with Fable tonemapper -> stays at 1.5x:
+            // 1. Cave interior (CurrentInterior = true) at normalized 1.0 CVar:
+            //    Fable tonemapper -> FableInteriorLiftBaseline (1.25x)
+            //    Filmic tonemapper ("filmic" or "all") -> FilmicInteriorLiftBaseline (1.75x)
+            AssertThat(Refii.Lighting.Engine_PostFxParams.FableInteriorLiftBaseline).IsEqualApprox(1.25f, 1e-4f);
+            AssertThat(Refii.Lighting.Engine_PostFxParams.FilmicInteriorLiftBaseline).IsEqualApprox(1.75f, 1e-4f);
             Refii.Lighting.Engine_LightingFrame.CurrentInterior = true;
+            Refii.Lighting.Engine_LightZones.HeroZone = Refii.Models.Engine_ClassicZones.Outdoors;
             Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("modern_tone_curve", "fable");
             AssertThat(Refii.Lighting.Engine_PostFxParams.FilmicCurve).IsFalse();
-            AssertThat(Refii.Lighting.Engine_PostFxParams.DarkLift).IsEqualApprox(1.5f, 1e-4f);
+            AssertThat(Refii.Lighting.Engine_PostFxParams.DarkLift)
+                .IsEqualApprox(Refii.Lighting.Engine_PostFxParams.FableInteriorLiftBaseline, 1e-4f);
+            AssertThat(Refii.Lighting.Engine_PostFxParams.DarkLiftOnsetNow).IsEqualApprox(1.0f, 1e-4f);
 
-            // 2. Interior with Filmic tonemapper ("filmic" or "all") -> automatically lifted to 2.5x:
             Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("modern_tone_curve", "filmic");
             AssertThat(Refii.Lighting.Engine_PostFxParams.FilmicCurve).IsTrue();
-            AssertThat(Refii.Lighting.Engine_PostFxParams.DarkLift).IsEqualApprox(2.5f, 1e-4f);
+            AssertThat(Refii.Lighting.Engine_PostFxParams.DarkLift)
+                .IsEqualApprox(Refii.Lighting.Engine_PostFxParams.FilmicInteriorLiftBaseline, 1e-4f);
 
             Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("modern_tone_curve", "all");
             AssertThat(Refii.Lighting.Engine_PostFxParams.FilmicCurve).IsTrue();
-            AssertThat(Refii.Lighting.Engine_PostFxParams.DarkLift).IsEqualApprox(2.5f, 1e-4f);
+            AssertThat(Refii.Lighting.Engine_PostFxParams.DarkLift)
+                .IsEqualApprox(Refii.Lighting.Engine_PostFxParams.FilmicInteriorLiftBaseline, 1e-4f);
 
-            // 3. Exterior -> stays at modern_dark_lift (1.0x) for both Fable and Filmic,
-            //    while building_interior_ambient_scale scales from 0.5x (Fable) to 2.5x (Filmic):
+            // 2. Town building interior in outdoor level (CurrentInterior = false, IsViewerIndoors = true):
+            //    Full-screen post-fx dark lift is NOT applied per-building to avoid threshold popping;
+            //    stays at modern_dark_lift and DarkLiftOnset.
             Refii.Lighting.Engine_LightingFrame.CurrentInterior = false;
-            Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("building_interior_ambient_scale", "0.5");
-            AssertThat(Refii.Lighting.Engine_PostFxParams.DarkLift).IsEqualApprox(1.0f, 1e-4f);
-            AssertThat(Refii.Lighting.Engine_LevelBakedLighting.BuildingInteriorAmbientScale).IsEqualApprox(2.5f, 1e-4f);
-
+            Refii.Lighting.Engine_LightZones.HeroZone = 0x1E65CC19u; // Indoors (tavern zone)
             Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("modern_tone_curve", "fable");
-            AssertThat(Refii.Lighting.Engine_LevelBakedLighting.BuildingInteriorAmbientScale).IsEqualApprox(0.5f, 1e-4f);
+            AssertThat(Refii.Lighting.Engine_PostFxParams.DarkLift).IsEqualApprox(1.0f, 1e-4f);
+            AssertThat(Refii.Lighting.Engine_PostFxParams.DarkLiftOnsetNow)
+                .IsEqualApprox(Refii.Lighting.Engine_PostFxParams.DarkLiftOnset, 1e-4f);
+
+            Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("modern_tone_curve", "filmic");
+            AssertThat(Refii.Lighting.Engine_PostFxParams.DarkLift).IsEqualApprox(1.0f, 1e-4f);
+            AssertThat(Refii.Lighting.Engine_PostFxParams.DarkLiftOnsetNow)
+                .IsEqualApprox(Refii.Lighting.Engine_PostFxParams.DarkLiftOnset, 1e-4f);
+
+            // 3. Exterior (CurrentInterior = false, HeroZone = Outdoors) -> stays at modern_dark_lift (1.0x):
+            Refii.Lighting.Engine_LightZones.HeroZone = Refii.Models.Engine_ClassicZones.Outdoors;
+            AssertThat(Refii.Lighting.Engine_PostFxParams.DarkLift).IsEqualApprox(1.0f, 1e-4f);
+            AssertThat(Refii.Lighting.Engine_PostFxParams.DarkLiftOnsetNow)
+                .IsEqualApprox(Refii.Lighting.Engine_PostFxParams.DarkLiftOnset, 1e-4f);
         }
         finally
         {
             Refii.Lighting.Engine_LightingFrame.CurrentInterior = prevInterior;
+            Refii.Lighting.Engine_LightZones.HeroZone = prevHeroZone;
             Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("modern_tone_curve", "fable");
-            Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("interior_dark_lift", "1.5");
+            Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("interior_dark_lift", "1.0");
             Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("modern_dark_lift", "1.0");
-            Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("building_interior_ambient_scale", "0.5");
+            Refii.Core.Engine_RefiiConfig.TrySetGodotCvar("building_interior_ambient_scale", "1.0");
         }
     }
 
@@ -879,12 +900,20 @@ public class HdrTonemapTests
         AssertThat(CalculateHaloDistanceScale(viewDist: 35.0f, fadeEnabled: true)).IsEqualApprox(0.15f, 1e-4f);
         AssertThat(CalculateHaloDistanceScale(viewDist: 75.0f, fadeEnabled: true)).IsEqualApprox(0.15f, 1e-4f);
 
-        // 4. Sky halos (d >= 250m, e.g. MoonGlare at 1000m) -> strictly exempt, 100% full extent:
+        // 4. Sky halos (d >= 250m, e.g. MoonGlare at 1000m) -> strictly exempt, 100% full extent and radiance:
         AssertThat(CalculateHaloDistanceScale(viewDist: 250.0f, fadeEnabled: true)).IsEqual(1.0f);
         AssertThat(CalculateHaloDistanceScale(viewDist: 1000.0f, fadeEnabled: true)).IsEqual(1.0f);
+        AssertThat(CalculateHaloColourAtten(viewDist: 250.0f, fadeEnabled: true)).IsEqual(1.0f);
+        AssertThat(CalculateHaloColourAtten(viewDist: 1000.0f, fadeEnabled: true)).IsEqual(1.0f);
 
-        // 5. When fade is disabled -> always 1.0 regardless of distance:
+        // 5. Radiance distance attenuation for local fixtures (< 250m) prevents 60m+ full-energy orbs:
+        AssertThat(CalculateHaloColourAtten(viewDist: 3.0f, fadeEnabled: true)).IsGreater(0.90f);
+        AssertThat(CalculateHaloColourAtten(viewDist: 20.0f, fadeEnabled: true)).IsLess(0.25f);
+        AssertThat(CalculateHaloColourAtten(viewDist: 60.0f, fadeEnabled: true)).IsLess(0.04f);
+
+        // 6. When fade is disabled -> always 1.0 regardless of distance:
         AssertThat(CalculateHaloDistanceScale(viewDist: 50.0f, fadeEnabled: false)).IsEqual(1.0f);
+        AssertThat(CalculateHaloColourAtten(viewDist: 50.0f, fadeEnabled: false)).IsEqual(1.0f);
     }
 
     [TestCase]
@@ -930,6 +959,15 @@ public class HdrTonemapTests
         return sizeScale;
     }
 
+    private static float CalculateHaloColourAtten(float viewDist, bool fadeEnabled)
+    {
+        if (fadeEnabled && viewDist < 250.0f)
+        {
+            return 1.0f / (1.0f + 0.008f * viewDist * viewDist);
+        }
+        return 1.0f;
+    }
+
     private static float CalculateFxParticleDistanceFade(float viewDist)
     {
         float distFade = 1.0f;
@@ -939,5 +977,107 @@ public class HdrTonemapTests
             distFade = 1.0f + (0.35f - 1.0f) * (t * t * (3.0f - 2.0f * t));
         }
         return distFade;
+    }
+
+    [TestCase]
+    public void TestSplineOverrideRedirectsWeaponSparkleChain()
+    {
+        var bank = new Refii.Fx.FxBank();
+
+        var splineEmitter = new Refii.Fx.FxEmitter
+        {
+            TypeId = 5,
+            IsSpline = true,
+            SplinePoints = new[]
+            {
+                new[] { 0f, 0f, -10f },
+                new[] { 0f, 0f, 10f },
+            },
+            SplineRate = 0.5f,
+            SplineStraight = true,
+            SplineRandomGenerator = true,
+        };
+
+        var childEmitter = new Refii.Fx.FxEmitter
+        {
+            TypeId = 0,
+            HasMotion = true,
+            MaxActive = 32f,
+            InitialNum = 8f,
+        };
+        childEmitter.Generic[2].DefaultValue = 4f; // Spawn rate
+        childEmitter.Generic[8].DefaultValue = 1f; // Size
+
+        var sysSpline = new Refii.Fx.FxSystemDef { Id = 1, Mode = 1, ChildCount = 1 };
+        var sysChild = new Refii.Fx.FxSystemDef
+        {
+            Id = 2,
+            Mode = 1,
+            ChildCount = 2,
+            LastStartFrames = 30,
+        };
+        sysChild.Visuals.Add(new Refii.Fx.FxVisual
+        {
+            Texture = "sparkle",
+            DelayFrames = 30,
+            InvSpan = 1f / 30f,
+        });
+
+        bank.Emitters.Add(splineEmitter);
+        bank.Emitters.Add(childEmitter);
+        bank.Systems.Add(sysSpline);
+        bank.Systems.Add(sysChild);
+
+        var effect = new Refii.Fx.FxEffect
+        {
+            NameHash = 0x64D9750Bu,
+            Name = "FX_64D9750B",
+            UpdateFrequency = 0,
+        };
+        effect.Parts.Add(new Refii.Fx.FxEffectPart(Emitter: 0, System: 0, Group: 0, Vector: 0));
+        effect.Parts.Add(new Refii.Fx.FxEffectPart(Emitter: 1, System: 1, Group: 0, Vector: 0));
+        bank.Effects.Add(effect);
+        bank.Reindex();
+
+        var fx = new Refii.Fx.Engine_FxSystem();
+        var placement = new Refii.Fx.FxPlacement { EffectHash = 0x64D9750Bu };
+        fx.Build(bank, new[] { placement });
+        AssertThat(placement.Resolved).IsTrue();
+
+        // Override the spline to follow a gun barrel line from (2, 3, 4) to (2, 3, 6) in Godot node-local space:
+        ReadOnlySpan<Vector3> barrelPts = stackalloc Vector3[]
+        {
+            new Vector3(2f, 3f, 4f),
+            new Vector3(2f, 3f, 6f),
+        };
+        fx.SetSplineOverride(barrelPts);
+        fx.Update(1f / 30f);
+
+        int count = 0;
+        foreach (Vector3 pos in fx.ParticlePositions())
+        {
+            count++;
+            AssertThat(pos.X).IsEqualApprox(2f, 1e-4f);
+            AssertThat(pos.Y).IsEqualApprox(3f, 1e-4f);
+            AssertThat(pos.Z).IsBetween(4f, 6f);
+        }
+        AssertThat(count).IsGreater(0);
+    }
+
+    [TestCase]
+    public void TestClassicDisplacementGuardRejectsModernMode()
+    {
+        string? prevEnv = System.Environment.GetEnvironmentVariable("REFII_LIGHTING_MODEL");
+        try
+        {
+            System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", "modern");
+            AssertThat(Refii.Lighting.Engine_LightingFrame.ModernModel).IsTrue();
+            AssertThat(Refii.Models.Engine_ClassicMaterial.Active).IsFalse();
+            AssertThat(Refii.Models.Engine_ClassicDisplacement.AdoptRecord(0x12345678u, null!, null!)).IsFalse();
+        }
+        finally
+        {
+            System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", prevEnv);
+        }
     }
 }

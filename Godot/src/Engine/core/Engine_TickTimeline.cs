@@ -110,6 +110,7 @@ public sealed class Engine_TickTimeline
 	private double _previousStamp;
 	private double _stamp;
 	private Quaternion _previousRotation;
+	private Quaternion _newestRotation = Quaternion.Identity;
 	private Vector3 _spinAxis = Vector3.Up;
 	private float _spinAngle;
 	private Vector3 _velocity;
@@ -155,7 +156,8 @@ public sealed class Engine_TickTimeline
 		_stamp = tick;
 		Newest = sample;
 		NewestScalar = scalar;
-		_previousRotation = sample.Basis.GetRotationQuaternion();
+		_newestRotation = sample.Basis.GetRotationQuaternion();
+		_previousRotation = _newestRotation;
 		_spinAxis = Vector3.Up;
 		_spinAngle = 0f;
 		_velocity = Vector3.Zero;
@@ -205,6 +207,7 @@ public sealed class Engine_TickTimeline
 		_previous = Turned(_previous);
 		Newest = Turned(Newest);
 		_previousRotation = (rotation * _previousRotation).Normalized();
+		_newestRotation = (rotation * _newestRotation).Normalized();
 		_position = pivot + (turn * (_position - pivot));
 		_rotation = (rotation * _rotation).Normalized();
 		_velocity = turn * _velocity;
@@ -248,8 +251,9 @@ public sealed class Engine_TickTimeline
 
 		Newest = sample;
 		NewestScalar = scalar;
+		_newestRotation = sample.Basis.GetRotationQuaternion();
 		_previousRotation = _previous.Basis.GetRotationQuaternion();
-		Quaternion delta = (_previousRotation.Inverse() * sample.Basis.GetRotationQuaternion()).Normalized();
+		Quaternion delta = (_previousRotation.Inverse() * _newestRotation).Normalized();
 		if (delta.W < 0f)
 		{
 			delta = -delta;
@@ -330,7 +334,7 @@ public sealed class Engine_TickTimeline
 	/// <summary>Whether the drawn transform has come to rest on the newest stated one.</summary>
 	public bool Settled =>
 		_velocity == Vector3.Zero && _spinAngle <= 1e-6f && _scalarRate == 0.0 &&
-		_position == Newest.Origin && _rotation.AngleTo(Newest.Basis.GetRotationQuaternion()) < 1e-4f &&
+		_position == Newest.Origin && _rotation.AngleTo(_newestRotation) < 1e-3f &&
 		_drawnScalar == NewestScalar;
 
 	/// <summary>Moves the drawn transform to this frame and answers it.</summary>
@@ -372,6 +376,9 @@ public sealed class Engine_TickTimeline
 			drawTick - _stamp > (_stillWhenUnchanged ? maxSpan + Lead : (1.5 * maxSpan) + 1.0);
 		if (overdue)
 		{
+			_previous = Newest;
+			_previousRotation = _newestRotation;
+			_previousScalar = NewestScalar;
 			_velocity = Vector3.Zero;
 			_spinAngle = 0f;
 			_spinRate = 0.0;
@@ -394,7 +401,9 @@ public sealed class Engine_TickTimeline
 			? 1.0
 			: System.Math.Clamp((drawTick - _previousStamp) / span, -1.0 / span, 1.0 + Lead);
 		Vector3 target = _previous.Origin.Lerp(Newest.Origin, (float)alpha);
-		Quaternion turn = _previousRotation * SafeAngleAxis(_spinAxis, (float)(_spinAngle * alpha));
+		Quaternion turn = _spinAngle > 1e-6f
+			? _previousRotation * SafeAngleAxis(_spinAxis, (float)(_spinAngle * alpha))
+			: _newestRotation;
 		float scalarTarget = Mathf.Lerp(_previousScalar, NewestScalar, (float)alpha);
 
 		double pull = 1.0 - System.Math.Exp(-Gain * seconds);
@@ -445,14 +454,14 @@ public sealed class Engine_TickTimeline
 		// Settle exactly on a thing that stopped: no motion stated, and within a hair of its place.
 		// The corrections approach their target and never reach it, so without this a body that
 		// once moved would be re-placed every frame for ever.
-		if (_velocity == Vector3.Zero && error.LengthSquared() < 1e-8f)
+		if (_velocity == Vector3.Zero && (Newest.Origin - _position).LengthSquared() < 1e-6f)
 		{
 			_position = Newest.Origin;
 		}
 
-		if (_spinAngle <= 1e-6f && _rotation.AngleTo(turn) < 1e-4f)
+		if (_spinAngle <= 1e-6f && _rotation.AngleTo(_newestRotation) < 1e-3f)
 		{
-			_rotation = turn;
+			_rotation = _newestRotation;
 		}
 
 		if (_scalarRate == 0.0 && Mathf.Abs(scalarTarget - _drawnScalar) < 1e-4f)

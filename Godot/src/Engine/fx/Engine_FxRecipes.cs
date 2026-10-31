@@ -1181,6 +1181,11 @@ public static class Engine_FxRecipes
 /// <summary>A recipe's light: an omni light that wavers by <see cref="Flicker"/> of its energy.</summary>
 public partial class Engine_FxRecipeLight : OmniLight3D
 {
+	public Engine_FxRecipeLight()
+	{
+		LightVolumetricFogEnergy = 0.0f;
+	}
+
 	public float BaseEnergy { get; set; } = 1f;
 
 	public float Flicker { get; set; }

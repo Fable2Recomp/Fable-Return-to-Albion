@@ -41,15 +41,20 @@ public partial class Engine_FxMeshTwins : Node
         public bool Displaces;
         public bool Attached;
         public long Seen;
+        public readonly Refii.Core.Engine_TickTimeline Timeline = new(stillWhenUnchanged: false);
+        public Vector3 ScaleRatio = Vector3.One;
     }
 
     private readonly float[] _buffer = new float[1 + MaxMeshes * HostBridge.FxMeshFloats];
     private readonly Dictionary<uint, Particle> _particles = new();
+    private readonly HashSet<uint> _moving = new();
+    private readonly List<uint> _settled = new();
     private readonly List<uint> _gone = new();
     private readonly Dictionary<uint, Mesh?> _meshes = new();
     private readonly HashSet<uint> _loading = new();
     private readonly ConcurrentQueue<(uint Hash, Mesh? Mesh)> _loaded = new();
     private long _frames;
+    private ulong _lastHostFrame = ulong.MaxValue;
 
     /// <summary>The live instance.</summary>
     public static Engine_FxMeshTwins? Instance { get; private set; }
@@ -77,6 +82,13 @@ public partial class Engine_FxMeshTwins : Node
     /// <summary>Follows the effects' mesh twins. Main thread, before the displacement pump.</summary>
     public void Pump(Camera3D camera)
     {
+        ulong hostFrame = Engine.GetProcessFrames();
+        if (hostFrame == _lastHostFrame)
+        {
+            return;
+        }
+        _lastHostFrame = hostFrame;
+
         bool meshArrived = false;
         while (_loaded.TryDequeue(out (uint Hash, Mesh? Mesh) done))
         {
@@ -86,9 +98,11 @@ public partial class Engine_FxMeshTwins : Node
         }
 
         // Guest FX mesh twins only advance on 30 Hz guest frames; skip the P/Invoke and
-        // transform/material rebuild on intermediate display frames unless a mesh just loaded.
+        // material rebuild on intermediate display frames unless a mesh just loaded, while
+        // still advancing moving mesh particles smoothly at display rate.
         if (!Refii.Core.Engine_GuestFrame.Changed && FeedLive && !meshArrived)
         {
+            AdvanceMoving();
             return;
         }
 
@@ -146,7 +160,7 @@ public partial class Engine_FxMeshTwins : Node
                 ToGodot(Guest(new Vector3(1f, 0f, 0f))) - origin,
                 ToGodot(Guest(new Vector3(0f, 0f, 1f))) - origin,
                 ToGodot(Guest(new Vector3(0f, -1f, 0f))) - origin);
-            particle.Node.GlobalTransform = new Transform3D(basis, origin);
+            particle.Node.GlobalTransform = ObserveParticleTransform(descriptor, particle, basis, origin);
 
             // Alpha x the twin's distance fade.
             float alpha = _buffer[at + 19];
@@ -195,8 +209,103 @@ public partial class Engine_FxMeshTwins : Node
         foreach (uint descriptor in _gone)
         {
             _particles.Remove(descriptor);
+            _moving.Remove(descriptor);
         }
         Drawn = drawn;
+    }
+
+    private Transform3D ObserveParticleTransform(uint descriptor, Particle particle, Basis basis, Vector3 origin)
+    {
+        float sx = basis.Column0.Length();
+        float sy = basis.Column1.Length();
+        float sz = basis.Column2.Length();
+        if (!origin.IsFinite() || sx < 1e-5f || sy < 1e-5f || sz < 1e-5f)
+        {
+            _moving.Remove(descriptor);
+            return new Transform3D(basis, origin);
+        }
+
+        Vector3 c0 = basis.Column0 / sx;
+        Vector3 c1 = basis.Column1 / sy;
+        Vector3 c2 = basis.Column2 / sz;
+        if (c0.Cross(c1).Dot(c2) < 0f)
+        {
+            sz = -sz;
+            c2 = -c2;
+        }
+
+        var unitSample = new Transform3D(new Basis(c0, c1, c2).Orthonormalized(), origin);
+        particle.ScaleRatio = new Vector3(1f, sy / sx, sz / sx);
+        uint tick = Refii.Core.Engine_TickClock.GuestGameTick;
+        if (particle.Timeline.Empty ||
+            particle.Timeline.Newest.Origin.DistanceSquaredTo(origin) >
+                Refii.Core.Engine_TickTimeline.TeleportMetres * Refii.Core.Engine_TickTimeline.TeleportMetres ||
+            (tick > particle.Timeline.NewestTick && tick - particle.Timeline.NewestTick > 8.0))
+        {
+            particle.Timeline.Reset(tick, unitSample, sx);
+        }
+        else
+        {
+            particle.Timeline.Observe(tick, unitSample, sx);
+        }
+
+        if (particle.Timeline.Settled)
+        {
+            _moving.Remove(descriptor);
+            return new Transform3D(basis, origin);
+        }
+
+        _moving.Add(descriptor);
+        return SampleParticleTimeline(particle);
+    }
+
+    private void AdvanceMoving()
+    {
+        if (_moving.Count == 0)
+        {
+            return;
+        }
+
+        _settled.Clear();
+        foreach (uint descriptor in _moving)
+        {
+            if (!_particles.TryGetValue(descriptor, out Particle? particle) ||
+                !GodotObject.IsInstanceValid(particle.Node))
+            {
+                _settled.Add(descriptor);
+                continue;
+            }
+
+            if (particle.Timeline.Settled)
+            {
+                _settled.Add(descriptor);
+                continue;
+            }
+
+            particle.Node.GlobalTransform = SampleParticleTimeline(particle);
+            if (particle.Timeline.Settled)
+            {
+                _settled.Add(descriptor);
+            }
+        }
+
+        foreach (uint descriptor in _settled)
+        {
+            _moving.Remove(descriptor);
+        }
+    }
+
+    private static Transform3D SampleParticleTimeline(Particle particle)
+    {
+        Transform3D drawn = particle.Timeline.Advance(
+            Refii.Entities.Engine_DrawnFrame.NowUsec,
+            Refii.Entities.Engine_DrawnFrame.DrawTick);
+        Vector3 scale = particle.ScaleRatio * particle.Timeline.DrawnScalar;
+        var scaledBasis = new Basis(
+            drawn.Basis.Column0 * scale.X,
+            drawn.Basis.Column1 * scale.Y,
+            drawn.Basis.Column2 * scale.Z);
+        return new Transform3D(scaledBasis, drawn.Origin);
     }
 
     /// <summary>

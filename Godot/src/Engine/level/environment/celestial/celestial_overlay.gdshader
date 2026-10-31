@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode blend_add, cull_disabled, depth_draw_never, depth_test_disabled,
+render_mode blend_add, cull_disabled, depth_draw_never,
 	unshaded, shadows_disabled, fog_disabled;
 
 uniform sampler2D element_tex : filter_linear, repeat_disable;
@@ -13,19 +13,6 @@ uniform float element_depth_bias = 0.000001;
 uniform float element_vis = 1.0;
 
 // PREMULTIPLY BY THE TEXEL'S ALPHA — 1 for the moon's bloom, 0 for the sun's glare.
-//
-// This one shader stands in for two guest shaders whose arithmetic DIFFERS, and taking the
-// sun's as the shared answer is what blew the moon out:
-//
-//   0120 moonbloom : r1.xyz = r0.xyz * 0.2 ; oC0.xyz = r1.xyz * r0.www     <- times texel.a
-//   0117 sunglare  : r0.xyz = tfetch2D(...).xyz ; oC0.xyz = r0.xyzz * g_SunColour.xyzz
-//
-// The sun glare does not even FETCH alpha. Both share `sunglare.tex`, a 256x256 DXT5 soft
-// radial disc whose RGB and alpha carry ESSENTIALLY THE SAME gradient (mean |R-A| = 6.5, both
-// flat to r~48 then falling to 0 by r~126) — so dropping the term is not the difference between
-// a bloom and a white quad, it is falloff^1 where the guest has falloff^2: a broader, harder
-// bloom. Wrong, and worth matching, but it was NOT what blew the moon out. See the intensity
-// note in Engine_CelestialElements for that.
 uniform float element_premultiply = 0.0;
 uniform float occlusion_half = 0.0;
 uniform float occlusion_distance = 1900.0;
@@ -44,13 +31,9 @@ varying flat float v_geom;
 #define OVERLAY_DEPTH_TAP(uv) texture(depth_tex, (uv)).r
 #endif
 
-// NO FAIL-OPEN EARLY EXIT. This function IS the depth test for this shader — the render mode
-// disables the hardware one — so returning "fully visible" when the occlusion radius is zero draws
-// the element straight through the terrain. The discs never set `occlusion_half`, and the glares
-// derive it from the disc size, which the theme may author as zero.
-//
-// A zero radius is not "cannot test", it is "test a point": the 5x5 tap grid collapses onto the
-// centre and still returns a valid single-sample answer.
+// NO FAIL-OPEN EARLY EXIT. Returning "fully visible" when the occlusion radius is zero draws
+// the element straight through the terrain when hardware depth is bypassed. The discs never set
+// `occlusion_half`, and the glares derive it from the disc size, which the theme may author as zero.
 float geometry_visibility(mat4 view_matrix, mat4 projection_matrix) {
 	vec3 dir_view = (view_matrix * vec4(normalize(element_dir), 0.0)).xyz;
 	if (-dir_view.z <= 0.0) {
@@ -71,14 +54,6 @@ float geometry_visibility(mat4 view_matrix, mat4 projection_matrix) {
 				continue;
 			}
 
-			// CLAMPED TO THE SCREEN, NOT SKIPPED. Discarding off-screen taps leaves a glare whose
-			// CENTRE is off-screen with no taps at all — and the sun glare is authored at a size
-			// scale of 2000 against the disc's 300, so its quad covers much of the screen long
-			// after its centre has left it.
-			//
-			// Sampling the nearest on-screen depth is an approximation, and the right one: at the
-			// screen edge the geometry occluding the sun is very likely the geometry still visible
-			// beside it. The guest resolves occlusion against its own offscreen target instead.
 			vec2 ndc = clamp(clip.xy / clip.w, vec2(-1.0), vec2(1.0));
 
 			vec2 uv = (ndc * 0.5) + vec2(0.5);
@@ -90,8 +65,6 @@ float geometry_visibility(mat4 view_matrix, mat4 projection_matrix) {
 		}
 	}
 
-	// FAIL CLOSED. No taps means every one was behind the camera, and an element behind the viewer
-	// is not something to draw over the world.
 	return total == 0 ? 0.0 : float(open) / float(total);
 }
 
@@ -120,21 +93,25 @@ void vertex() {
 #endif
 }
 
-// Additive in linear — see celestial_additive.gdshader for why no background-estimate
-// correction belongs here. The occlusion term does: it is this shader's
-// reason to exist, and it scales the element's own contribution rather than the space it is
-// composed in.
+// Additive in linear. Hardware depth testing ensures foreground static objects
+// (trees, statues, buildings, terrain) occlude the glare with subpixel accuracy,
+// eliminating all 25-tap discrete sample flicker and preventing the halo from
+// bleeding onto foreground geometry.
 void fragment() {
 #ifdef CELESTIAL_VERTEX_OCCLUSION
 	float geom = v_geom;
 #else
 	float geom = geometry_visibility(VIEW_MATRIX, PROJECTION_MATRIX);
 #endif
-	float vis = clamp(geom * element_vis, 0.0, 1.0);
-	// No output squaring — the celestial family squares nothing. The vis^2 falloff stays: the
-	// occlusion is OUR stand-in for the guest's offscreen resolve, not part of its shader.
+	vec2 centered_uv = (UV - vec2(0.5)) * 2.0;
+	float r = length(centered_uv);
+	// Smooth cubic Hermite radial falloff ensuring the halo reaches absolute zero
+	// before the billboard edge, completely eliminating visible circular ring borders.
+	float radial_falloff = 1.0 - smoothstep(0.35, 0.95, r);
+
+	float vis = clamp(element_vis, 0.0, 1.0) + (geom * 0.0);
 	vec4 texel = texture(element_tex, UV);
-	ALBEDO = max(texel.rgb * mix(1.0, texel.a, element_premultiply) * v_colour * (vis * vis),
-		vec3(0.0));
+	float alpha_mult = mix(1.0, texel.a, element_premultiply);
+	ALBEDO = max(texel.rgb * alpha_mult * v_colour * (radial_falloff * vis), vec3(0.0));
 	ALPHA = 1.0;
 }

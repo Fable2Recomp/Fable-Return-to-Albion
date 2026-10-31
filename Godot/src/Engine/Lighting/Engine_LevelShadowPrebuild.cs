@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.Text.Json;
 using System.Threading;
 using Godot;
 using Refii.Assets;
@@ -16,24 +15,21 @@ namespace Refii.Lighting;
 
 /// <summary>
 /// Warmup-screen background prebuild pass for static octahedral shadow depth atlases (<c>.shadows</c>).
-/// Verifies a persistent manifest file (<c>&lt;app&gt;/cache/shadows/shadow_bake_manifest.json</c>) to
-/// avoid re-baking when CVar reach scales and shadow resolution are unchanged.
+/// Inspects the self-contained binary header of each scenario's <c>.shadows</c> file to
+/// avoid re-baking when resolution, lights per map, and CVar reach scales are unchanged.
 /// </summary>
 public static class Engine_LevelShadowPrebuild
 {
-	public readonly record struct Progress(int Done, int Total, int Built, int UpToDate, int Failed, string Current);
-
-	public sealed class ShadowBakeManifest
+	internal sealed class ShadowBakeManifest
 	{
-		public int Version { get; set; } = 1;
 		public int Resolution { get; set; }
+		public int LightsPerMap { get; set; }
 		public float PlacedReachScale { get; set; }
-		public float BuildingInteriorReachScale { get; set; }
-		public uint ShadowMapVersion { get; set; }
+		public float InteriorReachScale { get; set; }
+		public int ShadowMapVersion { get; set; }
 	}
 
-	public static string ManifestPath =>
-		Path.Combine(Engine_LevelShadowMaps.CacheShadowsDirectory, "shadow_bake_manifest.json");
+	public readonly record struct Progress(int Done, int Total, int Built, int UpToDate, int Failed, string Current);
 
 	/// <summary>
 	/// Runs the static shadow prebuild sweep across all discovered levels and scenarios.
@@ -64,10 +60,22 @@ public static class Engine_LevelShadowPrebuild
 		}
 
 		int resolution = Engine_LevelShadowMaps.ConfiguredAtlasResolution;
+		int lightsPerMap = Engine_LevelShadowMaps.ConfiguredLightsPerMap;
 		float placedReach = Engine_LevelLights.PlacedRange;
 		float interiorReach = Engine_LevelLights.BuildingInteriorReachScale;
 
-		bool reachValid = IsReachScaleValid(placedReach, interiorReach);
+		// Clean up any legacy manifest file if present
+		try
+		{
+			string legacyManifest = Path.Combine(Engine_LevelShadowMaps.CacheShadowsDirectory, "shadow_bake_manifest.json");
+			if (File.Exists(legacyManifest))
+			{
+				File.Delete(legacyManifest);
+			}
+		}
+		catch (Exception)
+		{
+		}
 
 		// Collect all valid level scenario work items
 		var scenarios = new List<(LevelEntry Entry, string ScenarioName)>();
@@ -94,29 +102,27 @@ public static class Engine_LevelShadowPrebuild
 
 		report?.Invoke(new Progress(0, total, 0, 0, 0, "Checking static shadows..."));
 
-		// Fast check: if reach scale is valid and all scenario files exist with matching resolution in header, early exit
-		if (reachValid)
+		// Fast check: verify every scenario file exists and matches current settings directly in its header
+		bool allExistAndValid = true;
+		foreach ((LevelEntry level, string scenario) in scenarios)
 		{
-			bool allExistAndValid = true;
-			foreach ((LevelEntry level, string scenario) in scenarios)
+			var entry = CloneWithScenario(level, scenario);
+			Engine_LevelGdb.TryRead(entry, read, out string gdbPath);
+			string diskPath = Engine_LevelShadowMaps.GetShadowMapDiskPath(entry, gdbPath);
+			if (!Engine_LevelShadowMaps.IsFileValid(diskPath, resolution, lightsPerMap, placedReach, interiorReach))
 			{
-				var entry = CloneWithScenario(level, scenario);
-				string diskPath = Engine_LevelShadowMaps.GetShadowMapDiskPath(entry);
-				if (!Engine_LevelShadowMaps.IsFileValid(diskPath, resolution))
-				{
-					allExistAndValid = false;
-					break;
-				}
+				allExistAndValid = false;
+				break;
 			}
+		}
 
-			if (allExistAndValid)
-			{
-				upToDate = total;
-				done = total;
-				Progress fast = new(done, total, built, upToDate, failed, "All static shadows up to date");
-				report?.Invoke(fast);
-				return fast;
-			}
+		if (allExistAndValid)
+		{
+			upToDate = total;
+			done = total;
+			Progress fast = new(done, total, built, upToDate, failed, "All static shadows up to date");
+			report?.Invoke(fast);
+			return fast;
 		}
 
 		// Ensure cache shadows directory exists
@@ -157,7 +163,7 @@ public static class Engine_LevelShadowPrebuild
 			Engine_LevelGdb.TryRead(scenarioEntry, read, out string gdbPath);
 			string diskPath = Engine_LevelShadowMaps.GetShadowMapDiskPath(scenarioEntry, gdbPath);
 
-			if (reachValid && Engine_LevelShadowMaps.IsFileValid(diskPath, resolution))
+			if (Engine_LevelShadowMaps.IsFileValid(diskPath, resolution, lightsPerMap, placedReach, interiorReach))
 			{
 				done++;
 				upToDate++;
@@ -167,7 +173,7 @@ public static class Engine_LevelShadowPrebuild
 
 			report?.Invoke(new Progress(done, total, built, upToDate, failed, $"Baking {scenarioEntry.Name} ({scenario})..."));
 
-			string geoSig = $"{scenarioEntry.HeightfieldPath}|{gdbPath}|{resolution}";
+			string geoSig = $"{scenarioEntry.HeightfieldPath}|{gdbPath}|{resolution}|{lightsPerMap}";
 			StaticShadowMapContainer? container = null;
 
 			if (gdbPath.Length != 0 && bakedGeometryCache.TryGetValue(geoSig, out var cached))
@@ -180,6 +186,9 @@ public static class Engine_LevelShadowPrebuild
 					scenarioEntry,
 					read,
 					resolution,
+					lightsPerMap,
+					placedReach,
+					interiorReach,
 					out StaticShadowMapContainer? baked,
 					out string resolvedGdb,
 					out int tris,
@@ -188,7 +197,7 @@ public static class Engine_LevelShadowPrebuild
 					container = baked;
 					if (resolvedGdb.Length != 0)
 					{
-						bakedGeometryCache[$"{scenarioEntry.HeightfieldPath}|{resolvedGdb}|{resolution}"] =
+						bakedGeometryCache[$"{scenarioEntry.HeightfieldPath}|{resolvedGdb}|{resolution}|{lightsPerMap}"] =
 							(container, tris);
 					}
 				}
@@ -223,12 +232,6 @@ public static class Engine_LevelShadowPrebuild
 			report?.Invoke(new Progress(done, total, built, upToDate, failed, scenarioEntry.Name));
 		}
 
-		// Write new manifest if not cancelled
-		if (!cancel.IsCancellationRequested && failed == 0)
-		{
-			WriteManifest(resolution, placedReach, interiorReach);
-		}
-
 		Progress result = new(done, total, built, upToDate, failed, "Static shadows prebuild complete");
 		report?.Invoke(result);
 		return result;
@@ -249,84 +252,4 @@ public static class Engine_LevelShadowPrebuild
 			MainEhfPath = source.MainEhfPath,
 			Variant = source.Variant,
 		};
-
-	public static bool IsReachScaleValid(float placedReach, float interiorReach)
-	{
-		try
-		{
-			if (!File.Exists(ManifestPath))
-			{
-				return true;
-			}
-
-			string json = File.ReadAllText(ManifestPath);
-			ShadowBakeManifest? manifest = JsonSerializer.Deserialize(json, Engine_JsonContext.Default.ShadowBakeManifest);
-			if (manifest is null)
-			{
-				return true;
-			}
-
-			return MathF.Abs(manifest.PlacedReachScale - placedReach) < 1e-3f &&
-			       MathF.Abs(manifest.BuildingInteriorReachScale - interiorReach) < 1e-3f;
-		}
-		catch (Exception)
-		{
-			return true;
-		}
-	}
-
-	public static bool IsManifestValid(int resolution, float placedReach, float interiorReach)
-	{
-		try
-		{
-			if (!File.Exists(ManifestPath))
-			{
-				return false;
-			}
-
-			string json = File.ReadAllText(ManifestPath);
-			ShadowBakeManifest? manifest = JsonSerializer.Deserialize(json, Engine_JsonContext.Default.ShadowBakeManifest);
-			if (manifest is null)
-			{
-				return false;
-			}
-
-			return manifest.Resolution == resolution &&
-			       manifest.ShadowMapVersion == Engine_LevelShadowMaps.Version &&
-			       MathF.Abs(manifest.PlacedReachScale - placedReach) < 1e-3f &&
-			       MathF.Abs(manifest.BuildingInteriorReachScale - interiorReach) < 1e-3f;
-		}
-		catch (Exception)
-		{
-			return false;
-		}
-	}
-
-	public static void WriteManifest(int resolution, float placedReach, float interiorReach)
-	{
-		try
-		{
-			string? dir = Path.GetDirectoryName(ManifestPath);
-			if (!string.IsNullOrEmpty(dir))
-			{
-				Directory.CreateDirectory(dir);
-			}
-
-			var manifest = new ShadowBakeManifest
-			{
-				Version = 1,
-				Resolution = resolution,
-				PlacedReachScale = placedReach,
-				BuildingInteriorReachScale = interiorReach,
-				ShadowMapVersion = Engine_LevelShadowMaps.Version,
-			};
-
-			string json = JsonSerializer.Serialize(manifest, Engine_JsonContext.Indented.ShadowBakeManifest);
-			File.WriteAllText(ManifestPath, json);
-		}
-		catch (Exception ex)
-		{
-			GD.PrintErr($"[shadow-prebuild] failed to write manifest: {ex.Message}");
-		}
-	}
 }

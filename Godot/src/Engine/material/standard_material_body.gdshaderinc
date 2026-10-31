@@ -381,6 +381,9 @@ void fragment() {
 
     ALBEDO = alb.rgb;
 #ifdef FABLE_TRANSLUCENT
+    if (alb.a <= 0.001) {
+        discard;
+    }
     ALPHA = alb.a;
 #endif
 

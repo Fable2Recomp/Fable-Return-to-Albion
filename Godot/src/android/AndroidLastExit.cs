@@ -133,23 +133,23 @@ public static class AndroidLastExit
     {
         var text = new StringBuilder();
         if (exits.Count == 0) return "No exit recorded by Android.\n";
-        text.Append(KeyPrefix).AppendLine(Key(exits[0]));
+        text.Append(KeyPrefix).Append(Key(exits[0])).Append('\n');
         for (int i = 0; i < exits.Count; i++)
         {
             Exit exit = exits[i];
-            text.AppendLine()
-                .Append("[").Append(i).Append("] ").AppendLine(i == 0 ? "newest" : "earlier")
-                .Append("reason: ").Append(ReasonName(exit.Reason)).Append(" (").Append(exit.Reason).AppendLine(")")
-                .Append("status: ").AppendLine(StatusText(exit.Reason, exit.Status))
-                .Append("importance: ").Append(ImportanceName(exit.Importance)).Append(" (").Append(exit.Importance).AppendLine(")")
-                .Append("pss: ").Append(exit.PssKb).AppendLine(" kB")
-                .Append("rss: ").Append(exit.RssKb).AppendLine(" kB")
-                .Append("time: ").Append(FormatTime(exit.TimestampMs)).Append(" (").Append(exit.TimestampMs).AppendLine(")")
-                .Append("process: ").Append(exit.ProcessName).Append(" pid ").Append(exit.Pid).AppendLine()
-                .Append("description: ").AppendLine(exit.Description)
-                .Append("android: ").AppendLine(exit.Detail);
+            text.Append('\n')
+                .Append("[").Append(i).Append("] ").Append(i == 0 ? "newest" : "earlier").Append('\n')
+                .Append("reason: ").Append(ReasonName(exit.Reason)).Append(" (").Append(exit.Reason).Append(")\n")
+                .Append("status: ").Append(StatusText(exit.Reason, exit.Status)).Append('\n')
+                .Append("importance: ").Append(ImportanceName(exit.Importance)).Append(" (").Append(exit.Importance).Append(")\n")
+                .Append("pss: ").Append(exit.PssKb).Append(" kB\n")
+                .Append("rss: ").Append(exit.RssKb).Append(" kB\n")
+                .Append("time: ").Append(FormatTime(exit.TimestampMs)).Append(" (").Append(exit.TimestampMs).Append(")\n")
+                .Append("process: ").Append(exit.ProcessName).Append(" pid ").Append(exit.Pid).Append('\n')
+                .Append("description: ").Append(exit.Description).Append('\n')
+                .Append("android: ").Append(exit.Detail).Append('\n');
         }
-        if (traceNote.Length > 0) text.AppendLine().Append("trace: ").AppendLine(traceNote);
+        if (traceNote.Length > 0) text.Append('\n').Append("trace: ").Append(traceNote).Append('\n');
         return text.ToString();
     }
 

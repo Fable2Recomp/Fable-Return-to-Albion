@@ -3685,6 +3685,14 @@ public partial class GameUi : Node, IGameTitleUi
 	/// <summary>The aiming object each player's reticule setter last stated (`@Reticule`,
 	/// hooks/reticule_hooks.cpp); 0 before any. Its `+0x90` is the aim point.</summary>
 	private readonly uint[] _reticuleObject = new uint[2];
+	private readonly uint[] _lastReticuleObject = new uint[2];
+
+	/// <summary>Smoothly interpolates each player's 15 Hz 3D aim anchor on Godot's clock to match the camera's draw tick.</summary>
+	private readonly Refii.Core.Engine_TickTimeline[] _reticuleAnchorLines =
+	{
+		new(stillWhenUnchanged: true),
+		new(stillWhenUnchanged: true),
+	};
 
 	/// <summary>Each player's reticule anchor last read whole inside one mouse account, and that account's sequence.</summary>
 	private readonly Vector3?[] _aimAnchor = new Vector3?[2];
@@ -3712,6 +3720,10 @@ public partial class GameUi : Node, IGameTitleUi
 			: 0u;
 		if (hud == 0u || _spriteWindow.X <= 0f || _spriteWindow.Y <= 0f)
 		{
+			_lastReticuleObject[0] = 0u;
+			_lastReticuleObject[1] = 0u;
+			_aimAnchor[0] = null;
+			_aimAnchor[1] = null;
 			_reticule.Feed(0, null);
 			_reticule.Feed(1, null);
 			_reticuleTwo?.Feed(0, null);
@@ -3742,6 +3754,8 @@ public partial class GameUi : Node, IGameTitleUi
 
 		System.Span<uint> record = stackalloc uint[14];
 		System.Span<uint> anchor = stackalloc uint[3];
+		uint cameraTick = Refii.Core.Engine_TickClock.GuestGameTick;
+		bool stepComplete = Refii.Core.Engine_GuestFrame.Changed;
 		for (int player = 0; player < 2; ++player)
 		{
 			int recCount = HostBridge.Peek(hud + (64u * (uint)player), record);
@@ -3754,9 +3768,38 @@ public partial class GameUi : Node, IGameTitleUi
 			uint? sequenceAfter = turnsWithView ? HostBridge.GetMouseLook()?.Sequence : null;
 			if (recCount != 14 || (record[0] >> 24) == 0u || ancCount != 3)
 			{
+				_lastReticuleObject[player] = 0u;
+				_aimAnchor[player] = null;
 				_reticule.Feed(player, null);
 				_reticuleTwo?.Feed(player, null);
 				continue;
+			}
+
+			// Stated aim anchor from guest memory (updated on 15 Hz game ticks).
+			var stated = new Vector3(F(anchor[0]), F(anchor[1]), F(anchor[2]));
+			Refii.Core.Engine_TickTimeline line = _reticuleAnchorLines[player];
+			bool objectChanged = _reticuleObject[player] != _lastReticuleObject[player];
+			_lastReticuleObject[player] = _reticuleObject[player];
+
+			if (objectChanged || line.Empty ||
+				line.Newest.Origin.DistanceSquaredTo(stated) >
+					Refii.Core.Engine_TickTimeline.TeleportMetres * Refii.Core.Engine_TickTimeline.TeleportMetres)
+			{
+				line.Reset(cameraTick, new Transform3D(Basis.Identity, stated));
+			}
+			else if (stepComplete)
+			{
+				line.Observe(cameraTick, new Transform3D(Basis.Identity, stated));
+			}
+
+			// On Godot's clock: smoothly interpolate the aim anchor in world space to match
+			// the camera's draw tick, eliminating the 15 Hz drift-and-snap judder.
+			if (!turnsWithView && !line.Empty)
+			{
+				Transform3D drawn = line.Advance(
+					Refii.Entities.Engine_DrawnFrame.NowUsec,
+					Refii.Entities.Engine_DrawnFrame.DrawTick);
+				stated = drawn.Origin;
 			}
 
 			// The mouse's aim turns with the view: the anchor is turned by the turn drawn ahead of
@@ -3764,7 +3807,6 @@ public partial class GameUi : Node, IGameTitleUi
 			// The anchor must be the one stated with the account the camera was drawn from: one read
 			// across a camera update already carries a turn still drawn ahead, so the last anchor read
 			// inside that account stands in for it.
-			var stated = new Vector3(F(anchor[0]), F(anchor[1]), F(anchor[2]));
 			if (turnsWithView)
 			{
 				if (sequenceBefore is { } before && before == sequenceAfter &&
@@ -3863,7 +3905,8 @@ public partial class GameUi : Node, IGameTitleUi
 				new Vector2(((left + right) * 0.5f) - (guestWidth * 0.5f), ((top + bottom) * 0.5f) - (guestHeight * 0.5f)),
 				(right - left) * 0.5f,
 				d[at + 5],
-				F(d[at + 6]));
+				F(d[at + 6]),
+				F(d[at + 7]));
 		}
 
 		view.Feed(new Engine_HudSlowTimeDial.Dial(F(dial[3]), Segment(dial, 0), Segment(dial, 1)));

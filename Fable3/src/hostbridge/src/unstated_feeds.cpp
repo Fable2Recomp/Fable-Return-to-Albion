@@ -306,6 +306,10 @@ REFII_HOST_ABI_EXPORT int32_t RefiiHostGuestBuild(void) {
     return 0;
 }
 
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostInstallWeaponAugmentHook(void) {
+    return 0;
+}
+
 REFII_HOST_ABI_EXPORT void RefiiHostMenuChunkCounters(uint64_t* out_recorded, uint32_t* out_pending, uint64_t* out_dropped) {
     Zero(out_recorded);
     Zero(out_pending);

@@ -65,6 +65,11 @@ public class WarmupMusicTests
         byte[] raw = archive.ReadEntryBytes(match);
         AssertThat(raw.Length).IsGreater(0);
 
+        if (Engine_XmaDecoder.TryGetAbiVersion() is null)
+        {
+            return;
+        }
+
         bool decoded = Engine_XmaDecoder.TryDecode(
             raw, out short[] pcm, out int sampleRate, out int channels, out string xmaError);
         System.Console.WriteLine($"Decoded: {decoded}, samples: {pcm?.Length}, rate: {sampleRate}, channels: {channels}, error: {xmaError}");

@@ -33,9 +33,10 @@ uniform int fur_layer = 1;
 uniform float fur_occlusion = 0.0;
 
 // Per furred instance, per frame: N, and L for its distance.
+// `entity_tint` is declared first so its instance uniform slot index (6) matches `standard_material_body.gdshaderinc`.
+instance uniform vec4 entity_tint = vec4(1.0);
 instance uniform float fur_shells = 16.0;
 instance uniform float fur_length = 0.0;
-instance uniform vec4 entity_tint = vec4(1.0);
 
 varying vec2 v_fur_uv;
 varying float v_occlusion;

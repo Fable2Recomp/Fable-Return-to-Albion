@@ -372,5 +372,5 @@ pubgame_raster_scale_percent = 100
 # pubgame_release_on_close = true
 
 # Atlas resolution for pre-baked static fixture shadow maps (2048, 4096, 8192). Changing this triggers a re-bake during the startup warmup screen.
-static_shadow_resolution = 8192
+static_shadow_resolution = 2048
 

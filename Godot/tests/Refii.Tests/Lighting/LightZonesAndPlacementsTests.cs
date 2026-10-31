@@ -237,6 +237,7 @@ public class LightZonesAndPlacementsTests
         AssertThat(Engine_LightZones.Zoned(defaultOutdoorLayers, chamberZone))
             .IsEqual(defaultOutdoorLayers);
         Engine_LightingFrame.CurrentInterior = false;
+        System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", null);
     }
 
     [TestCase]
@@ -246,28 +247,38 @@ public class LightZonesAndPlacementsTests
         System.Environment.SetEnvironmentVariable("REFII_SUN_SHADOWS", "1");
         System.Environment.SetEnvironmentVariable("REFII_INTERIOR_NEUTRAL", "0");
         System.Environment.SetEnvironmentVariable("REFII_INTERIOR_AMBIENT", "1");
-        var skyTheme = new SkyTheme();
-        var skyFrame = new SkyFrame();
-        skyFrame.MainLightDirection[1] = 0.7f;
-        skyFrame.MainLightDirection[2] = 0.7f;
-        // Black sky dome (SkyTop = 0, SkyBottom = 0), as in ThagsCave.
-        Array.Clear(skyFrame.SkyTop, 0, skyFrame.SkyTop.Length);
-        Array.Clear(skyFrame.SkyBottom, 0, skyFrame.SkyBottom.Length);
-        var lighting = new LightingTheme
+        try
         {
-            HasMainLightColour = true,
-            HasAmbientColour = true,
-        };
-        lighting.MainLightColour[0] = 1.0f;
-        lighting.MainLightColour[1] = 0.58f;
-        lighting.MainLightColour[2] = 0.0f;
-        lighting.AmbientColour[0] = 0.05f;
-        lighting.AmbientColour[1] = 0.05f;
-        lighting.AmbientColour[2] = 0.05f;
+            var skyTheme = new SkyTheme();
+            var skyFrame = new SkyFrame();
+            skyFrame.MainLightDirection[1] = 0.7f;
+            skyFrame.MainLightDirection[2] = 0.7f;
+            // Black sky dome (SkyTop = 0, SkyBottom = 0), as in ThagsCave.
+            Array.Clear(skyFrame.SkyTop, 0, skyFrame.SkyTop.Length);
+            Array.Clear(skyFrame.SkyBottom, 0, skyFrame.SkyBottom.Length);
+            var lighting = new LightingTheme
+            {
+                HasMainLightColour = true,
+                HasAmbientColour = true,
+            };
+            lighting.MainLightColour[0] = 1.0f;
+            lighting.MainLightColour[1] = 0.58f;
+            lighting.MainLightColour[2] = 0.0f;
+            lighting.AmbientColour[0] = 0.05f;
+            lighting.AmbientColour[1] = 0.05f;
+            lighting.AmbientColour[2] = 0.05f;
 
-        LightingFrame frame = Engine_LightingFrame.Evaluate(skyTheme, lighting, skyFrame);
-        AssertThat(frame.HasSky).IsFalse();
-        AssertThat(frame.SkylightWeight).IsEqual(0.0f);
+            LightingFrame frame = Engine_LightingFrame.Evaluate(skyTheme, lighting, skyFrame);
+            AssertThat(frame.HasSky).IsFalse();
+            AssertThat(frame.SkylightWeight).IsEqual(0.0f);
+        }
+        finally
+        {
+            System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", null);
+            System.Environment.SetEnvironmentVariable("REFII_SUN_SHADOWS", null);
+            System.Environment.SetEnvironmentVariable("REFII_INTERIOR_NEUTRAL", null);
+            System.Environment.SetEnvironmentVariable("REFII_INTERIOR_AMBIENT", null);
+        }
     }
 
     [TestCase]
@@ -416,7 +427,7 @@ public class LightZonesAndPlacementsTests
     }
 
     [TestCase]
-    public void BuildingInteriorAndUnattachedLightScales_IsolateTownBuildingsFromCaves()
+    public void BuildingInteriorLightScales_IsolateTownBuildingsFromCaves()
     {
         Engine_LightingFrame.CurrentInterior = false;
 
@@ -432,68 +443,60 @@ public class LightZonesAndPlacementsTests
         AssertThat((indoorDynamicMask & Engine_LightZones.IndoorMask) != 0u).IsTrue();
         AssertThat((indoorDynamicMask & Engine_LevelLights.EntityCasterLayerMask) != 0u).IsTrue();
 
-        // 2. Live CVar tuning via Engine_RefiiConfig.TrySetGodotCvar updates building interior and unattached scales.
+        // 2. Live CVar tuning via Engine_RefiiConfig.TrySetGodotCvar updates building interior scales.
         AssertThat(Engine_RefiiConfig.TrySetGodotCvar("placed_light_scale", "1.5")).IsTrue();
         AssertThat(Engine_RefiiConfig.TrySetGodotCvar("placed_light_reach_scale", "1.5")).IsTrue();
         AssertThat(Engine_RefiiConfig.TrySetGodotCvar("building_interior_light_scale", "0.5")).IsTrue();
         AssertThat(Engine_RefiiConfig.TrySetGodotCvar("building_interior_reach_scale", "1.0")).IsTrue();
-        AssertThat(Engine_RefiiConfig.TrySetGodotCvar("unattached_light_scale", "0.2")).IsTrue();
         AssertThat(Engine_RefiiConfig.TrySetGodotCvar("building_interior_ambient_scale", "0.25")).IsTrue();
 
-        // 2a. Outdoor attached fixture uses placed_light_scale (1.5) and placed_light_reach_scale (1.5).
+        // 2a. Outdoor fixture uses ModernBaseEnergyScale (2.0) * placed_light_scale (1.5) = 3.0x and ModernBaseReachScale (1.5) * placed_light_reach_scale (1.5) = 2.25x.
         Engine_LevelLights.ComputeEffectiveLightValues(
             rawIntensity: 10.0f,
             rawRange: 8.0f,
             isIndoorLight: false,
-            isUnattached: false,
             out float outdoorEnergy,
             out float outdoorRange);
-        AssertThat(Mathf.IsEqualApprox(outdoorEnergy, 15.0f, 0.001f)).IsTrue();
-        AssertThat(Mathf.IsEqualApprox(outdoorRange, 12.0f, 0.001f)).IsTrue();
+        AssertThat(Mathf.IsEqualApprox(outdoorEnergy, 30.0f, 0.001f)).IsTrue();
+        AssertThat(Mathf.IsEqualApprox(outdoorRange, 18.0f, 0.001f)).IsTrue();
 
-        // 2b. Town building indoor attached fixture uses placed_light_scale (1.5) * building_interior_light_scale (0.5) = 0.75x, and placed_light_reach_scale (1.5) * reach (1.0) = 1.5x.
+        // 2b. Town building indoor fixture uses ModernBaseEnergyScale (2.0) * placed_light_scale (1.5) * building_interior_light_scale (0.5) = 1.5x, and ModernBaseReachScale (1.5) * placed_light_reach_scale (1.5) * reach (1.0) = 2.25x.
         Engine_LevelLights.ComputeEffectiveLightValues(
             rawIntensity: 10.0f,
             rawRange: 8.0f,
             isIndoorLight: true,
-            isUnattached: false,
             out float indoorEnergy,
             out float indoorRange);
-        AssertThat(Mathf.IsEqualApprox(indoorEnergy, 7.5f, 0.001f)).IsTrue();
-        AssertThat(Mathf.IsEqualApprox(indoorRange, 12.0f, 0.001f)).IsTrue();
+        AssertThat(Mathf.IsEqualApprox(indoorEnergy, 15.0f, 0.001f)).IsTrue();
+        AssertThat(Mathf.IsEqualApprox(indoorRange, 18.0f, 0.001f)).IsTrue();
 
-        // 2c. Town building indoor unattached floating light multiplies indoor energy (7.5) * unattached_light_scale (0.2) = 1.5.
-        Engine_LevelLights.ComputeEffectiveLightValues(
-            rawIntensity: 10.0f,
-            rawRange: 8.0f,
-            isIndoorLight: true,
-            isUnattached: true,
-            out float unattachedIndoorEnergy,
-            out _);
-        AssertThat(Mathf.IsEqualApprox(unattachedIndoorEnergy, 1.5f, 0.001f)).IsTrue();
-
-        // 2d. A level with no sky (CurrentInterior = true) takes every placed light AS STATED:
-        //     no placed, building-interior or unattached scale — the authored bakes carry the
-        //     room and were painted against the shipped torch.
+        // 2c. A level with no sky (CurrentInterior = true) applies ModernBaseEnergyScale * placed_light_scale and
+        //     ModernBaseReachScale * placed_light_reach_scale, while ignoring building_interior_*.
         Engine_LightingFrame.CurrentInterior = true;
         Engine_LevelLights.ComputeEffectiveLightValues(
             rawIntensity: 10.0f,
             rawRange: 8.0f,
             isIndoorLight: true,
-            isUnattached: true,
             out float caveEnergy,
             out float caveRange);
-        AssertThat(Mathf.IsEqualApprox(caveEnergy, 10.0f, 0.001f)).IsTrue();
-        AssertThat(Mathf.IsEqualApprox(caveRange, 8.0f, 0.001f)).IsTrue();
+        AssertThat(Mathf.IsEqualApprox(caveEnergy, 30.0f, 0.001f)).IsTrue();
+        AssertThat(Mathf.IsEqualApprox(caveRange, 18.0f, 0.001f)).IsTrue();
 
         Engine_LightingFrame.CurrentInterior = false;
-        Engine_RefiiConfig.TrySetGodotCvar("building_interior_light_scale", "0.65");
-        Engine_RefiiConfig.TrySetGodotCvar("unattached_light_scale", "0.35");
+        Engine_RefiiConfig.TrySetGodotCvar("placed_light_scale", "1.0");
+        Engine_RefiiConfig.TrySetGodotCvar("placed_light_reach_scale", "1.0");
+        Engine_RefiiConfig.TrySetGodotCvar("building_interior_light_scale", "1.0");
+
+        // Verify vanilla 1.0x baseline defaults:
+        AssertThat(Mathf.IsEqualApprox(Engine_LevelLights.PlacedScale, 1.0f, 0.001f)).IsTrue();
+        AssertThat(Mathf.IsEqualApprox(Engine_LevelLights.PlacedRange, 1.0f, 0.001f)).IsTrue();
+        AssertThat(Mathf.IsEqualApprox(Engine_LevelLights.BuildingInteriorLightScale, 1.0f, 0.001f)).IsTrue();
 
         // 3. fable_ambient_scale per-instance decoupling check
         Engine_RefiiConfig.TrySetGodotCvar("modern_tone_curve", "fable");
         AssertThat(Mathf.IsEqualApprox(Engine_LevelBakedLighting.BuildingInteriorAmbientScale, 0.25f, 0.001f)).IsTrue();
-        Engine_RefiiConfig.TrySetGodotCvar("building_interior_ambient_scale", "0.5");
+        Engine_RefiiConfig.TrySetGodotCvar("building_interior_ambient_scale", "1.0");
+        AssertThat(Mathf.IsEqualApprox(Engine_LevelBakedLighting.BuildingInteriorAmbientScale, 1.0f, 0.001f)).IsTrue();
         bool outdoorIsIndoor = (1u & (Engine_LightZones.IndoorMask | Engine_LightZones.IndoorLampHostMask)) != 0u;
         AssertThat(outdoorIsIndoor).IsFalse();
         bool indoorIsIndoor = (Engine_LightZones.IndoorMask & (Engine_LightZones.IndoorMask | Engine_LightZones.IndoorLampHostMask)) != 0u;
@@ -508,5 +511,542 @@ public class LightZonesAndPlacementsTests
         // every time a cascade scrolls as the player moves back and forth.
         AssertThat(Engine_LevelLights.PlacedLightBakeMode).IsEqual(Light3D.BakeMode.Dynamic);
         AssertThat(Engine_LevelLights.PlacedLightBakeMode).IsNotEqual(Light3D.BakeMode.Static);
+    }
+
+    [TestCase]
+    public void SyntheticFlameLights_ClustersMultiFlameFixturesAndCentersAtCentroid_AndKeepsSeparateFixturesDistinct()
+    {
+        Engine_LevelFx.ClearCaches();
+
+        var db = new GdbPatchDatabase();
+
+        const string flameDummy = "Prop.FX.Particle.FX_Candle_Flame_01.par";
+        uint flameDummyHash = Engine_GameHash.Fnv1(flameDummy);
+        db.Names[flameDummyHash] = flameDummy;
+
+        const string lanternDummy = "Prop.FX.Particle.FXENV_Lamp_Flame_01.par";
+        uint lanternDummyHash = Engine_GameHash.Fnv1(lanternDummy);
+        db.Names[lanternDummyHash] = lanternDummy;
+
+        // Model skeleton mock with attachments
+        const string candleModel = "Art/Environment/Shared assets/Lights/dotXSI/RS_TOG_Candle_V1.mdl";
+        const string lanternModel = "Art/Environment/Shared assets/Lights/dotXSI/RS_Hanging_Lantern.mdl";
+
+        var candleGmd = Engine_GmdSkeleton.CreateForTesting(
+            names: Array.Empty<string>(),
+            parents: Array.Empty<int>(),
+            locals: Array.Empty<Transform3D>(),
+            attachments: new[]
+            {
+                new GmdAttachment(flameDummy, Transform3D.Identity, -1)
+            });
+        Engine_LevelFx.InjectGmdForTesting(candleModel, candleGmd);
+
+        var lanternGmd = Engine_GmdSkeleton.CreateForTesting(
+            names: Array.Empty<string>(),
+            parents: Array.Empty<int>(),
+            locals: Array.Empty<Transform3D>(),
+            attachments: new[]
+            {
+                new GmdAttachment(lanternDummy, Transform3D.Identity, -1)
+            });
+        Engine_LevelFx.InjectGmdForTesting(lanternModel, lanternGmd);
+
+        var modelPaths = new Dictionary<uint, string>();
+        var placements = new List<GdbPlacement>();
+
+        // 1. Fixture A: 5 candle placements on a stand within 0.25m horizontal radius at Y = 45.0
+        Vector3[] candleOffsets =
+        {
+            new(-0.15f, 0.0f, -0.10f),
+            new(0.12f, 0.02f, -0.14f),
+            new(0.00f, -0.01f, 0.16f),
+            new(-0.11f, 0.01f, 0.12f),
+            new(0.14f, -0.02f, 0.08f)
+        };
+        Vector3 fixtureACenter = new Vector3(348.65f, 45.28f, 166.92f);
+        Vector3 expectedFixtureACentroid = Vector3.Zero;
+
+        uint fxItemCandleHash = 0x30000001u;
+        var fxItemCandle = new GdbPatchEntry(fxItemCandleHash, 0x01);
+        fxItemCandle.Properties.Add(new GdbPatchProperty(Engine_LevelFx.ParticleEmitter, GdbFieldType.String, 0x6E4BB265u));
+        fxItemCandle.Properties.Add(new GdbPatchProperty(Engine_LevelFx.DummyObject, GdbFieldType.String, flameDummyHash));
+        db.Entries.Add(fxItemCandle);
+
+        for (int i = 0; i < candleOffsets.Length; i++)
+        {
+            uint candleHash = (uint)(0x31000000 + i);
+            var candleRec = new GdbPatchEntry(candleHash, 0x01);
+            candleRec.Properties.Add(new GdbPatchProperty(Engine_LevelFx.ParticleEmitter, GdbFieldType.Reference, fxItemCandleHash));
+            db.Entries.Add(candleRec);
+
+            Vector3 pos = fixtureACenter + candleOffsets[i];
+            expectedFixtureACentroid += pos;
+
+            (float fx, float fy, float fz) = GdbTransformMath.ToFablePosition(pos);
+            placements.Add(new GdbPlacement
+            {
+                Hash = candleHash,
+                EntityName = $"Candle_{i}",
+                X = fx,
+                Y = fy,
+                Z = fz
+            });
+            modelPaths[candleHash] = candleModel;
+        }
+        expectedFixtureACentroid /= candleOffsets.Length;
+
+        // 2. Fixture B: An adjacent lantern placed 1.5m away horizontally (should NOT cluster with Fixture A)
+        uint lanternHash = 0x32000001u;
+        uint fxItemLanternHash = 0x30000002u;
+        var fxItemLantern = new GdbPatchEntry(fxItemLanternHash, 0x01);
+        fxItemLantern.Properties.Add(new GdbPatchProperty(Engine_LevelFx.ParticleEmitter, GdbFieldType.String, 0x48A6D808u));
+        fxItemLantern.Properties.Add(new GdbPatchProperty(Engine_LevelFx.DummyObject, GdbFieldType.String, lanternDummyHash));
+        db.Entries.Add(fxItemLantern);
+
+        var lanternRec = new GdbPatchEntry(lanternHash, 0x01);
+        lanternRec.Properties.Add(new GdbPatchProperty(Engine_LevelFx.ParticleEmitter, GdbFieldType.Reference, fxItemLanternHash));
+        db.Entries.Add(lanternRec);
+
+        Vector3 lanternPos = fixtureACenter + new Vector3(1.5f, 0.0f, 0.0f);
+        (float lx, float ly, float lz) = GdbTransformMath.ToFablePosition(lanternPos);
+        placements.Add(new GdbPlacement
+        {
+            Hash = lanternHash,
+            EntityName = "Adjacent_Lantern",
+            X = lx,
+            Y = ly,
+            Z = lz
+        });
+        modelPaths[lanternHash] = lanternModel;
+
+        // 3. Fixture C: An elevated ceiling lamp directly above Fixture A by 1.8m (vertical tier check)
+        uint highLampHash = 0x33000001u;
+        var highLampRec = new GdbPatchEntry(highLampHash, 0x01);
+        highLampRec.Properties.Add(new GdbPatchProperty(Engine_LevelFx.ParticleEmitter, GdbFieldType.Reference, fxItemLanternHash));
+        db.Entries.Add(highLampRec);
+
+        Vector3 highLampPos = fixtureACenter + new Vector3(0.0f, 1.8f, 0.0f);
+        (float hx, float hy, float hz) = GdbTransformMath.ToFablePosition(highLampPos);
+        placements.Add(new GdbPlacement
+        {
+            Hash = highLampHash,
+            EntityName = "High_Lamp",
+            X = hx,
+            Y = hy,
+            Z = hz
+        });
+        modelPaths[highLampHash] = lanternModel;
+
+        byte[] bytes = GdbWriter.Serialize(db);
+        AssertThat(GdbView.TryParse(bytes, out GdbView view, out _)).IsTrue();
+
+        var hosts = new HashSet<uint>();
+        List<Engine_LevelLights.ResolvedLightInstance> resolved = Engine_LevelLights.ResolvePlacements(
+            view,
+            new List<GdbView>(),
+            placements,
+            modelPaths,
+            hosts,
+            out int dup,
+            out int dupElsewhere);
+
+        // Verification:
+        // Fixture A (5 candles) merged into 1 light.
+        // Fixture B (lantern 1.5m away) emitted 1 light.
+        // Fixture C (elevated lamp 1.8m up) emitted 1 light.
+        // Total lights resolved should be exactly 3!
+        AssertThat(resolved.Count).IsEqual(3);
+
+        // Find the clustered light for Fixture A (member of 0x31000000..0x31000004)
+        Engine_LevelLights.ResolvedLightInstance candleLight =
+            resolved.Find(r => r.Entity >= 0x31000000u && r.Entity <= 0x31000004u);
+        AssertThat(candleLight.Entity).IsNotEqual(0u);
+
+        // Verify the clustered light is placed at the exact centroid
+        AssertThat(candleLight.Transform.Origin.DistanceTo(expectedFixtureACentroid))
+            .IsLess(0.001f);
+
+        // Verify all 5 candle fixtures, the lantern, and the high lamp are all protected in hosts
+        for (int i = 0; i < candleOffsets.Length; i++)
+        {
+            AssertThat(hosts.Contains((uint)(0x31000000 + i))).IsTrue();
+        }
+        AssertThat(hosts.Contains(lanternHash)).IsTrue();
+        AssertThat(hosts.Contains(highLampHash)).IsTrue();
+
+        Engine_LevelFx.ClearCaches();
+    }
+
+    [TestCase]
+    public void DynamicColorAndTypeClustering_CollapsesAuthoredCandles_WhilePreservingAdjacentBlueFlame()
+    {
+        Engine_LevelFx.ClearCaches();
+
+        var db = new GdbPatchDatabase();
+
+        // Warm candle color: RGB (255, 160, 40)
+        const uint warmColorHash = 0x40000001u;
+        var warmColor = new GdbPatchEntry(warmColorHash, 0x01);
+        warmColor.Properties.Add(new GdbPatchProperty(Engine_LevelLights.Red, GdbFieldType.Int, 255));
+        warmColor.Properties.Add(new GdbPatchProperty(Engine_LevelLights.Green, GdbFieldType.Int, 160));
+        warmColor.Properties.Add(new GdbPatchProperty(Engine_LevelLights.Blue, GdbFieldType.Int, 40));
+        db.Entries.Add(warmColor);
+
+        // Blue ritual flame color: RGB (50, 130, 255)
+        const uint blueColorHash = 0x40000002u;
+        var blueColor = new GdbPatchEntry(blueColorHash, 0x01);
+        blueColor.Properties.Add(new GdbPatchProperty(Engine_LevelLights.Red, GdbFieldType.Int, 50));
+        blueColor.Properties.Add(new GdbPatchProperty(Engine_LevelLights.Green, GdbFieldType.Int, 130));
+        blueColor.Properties.Add(new GdbPatchProperty(Engine_LevelLights.Blue, GdbFieldType.Int, 255));
+        db.Entries.Add(blueColor);
+
+        // Authored warm candle light component
+        const uint warmCompHash = 0x40000010u;
+        var warmComp = new GdbPatchEntry(warmCompHash, 0x01);
+        warmComp.Properties.Add(new GdbPatchProperty(Engine_LevelLights.LightType, GdbFieldType.Int, Engine_LevelLights.LightTypePoint));
+        warmComp.Properties.Add(new GdbPatchProperty(Engine_LevelLights.Range, GdbFieldType.Float, FloatBits(7.5f)));
+        warmComp.Properties.Add(new GdbPatchProperty(Engine_LevelLights.Intensity, GdbFieldType.Float, FloatBits(1.05f)));
+        warmComp.Properties.Add(new GdbPatchProperty(Engine_LevelLights.Colour, GdbFieldType.Reference, warmColorHash));
+        warmComp.Properties.Add(new GdbPatchProperty(Engine_LevelLights.AttachToEntityPosition, GdbFieldType.Bool, 1u));
+        db.Entries.Add(warmComp);
+
+        // Authored blue ritual flame light component
+        const uint blueCompHash = 0x40000020u;
+        var blueComp = new GdbPatchEntry(blueCompHash, 0x01);
+        blueComp.Properties.Add(new GdbPatchProperty(Engine_LevelLights.LightType, GdbFieldType.Int, Engine_LevelLights.LightTypePoint));
+        blueComp.Properties.Add(new GdbPatchProperty(Engine_LevelLights.Range, GdbFieldType.Float, FloatBits(7.5f)));
+        blueComp.Properties.Add(new GdbPatchProperty(Engine_LevelLights.Intensity, GdbFieldType.Float, FloatBits(1.25f)));
+        blueComp.Properties.Add(new GdbPatchProperty(Engine_LevelLights.Colour, GdbFieldType.Reference, blueColorHash));
+        blueComp.Properties.Add(new GdbPatchProperty(Engine_LevelLights.AttachToEntityPosition, GdbFieldType.Bool, 1u));
+        db.Entries.Add(blueComp);
+
+        var placements = new List<GdbPlacement>();
+        Vector3 altarOrigin = new Vector3(-317.0f, 43.3f, 155.9f);
+        Vector3[] warmCandleOffsets =
+        {
+            new(0.0f, 0.0f, 0.0f),
+            new(0.85f, 0.05f, 0.20f),
+            new(-0.70f, -0.04f, 0.55f),
+            new(0.35f, 0.02f, -0.90f),
+        };
+
+        for (int i = 0; i < warmCandleOffsets.Length; i++)
+        {
+            uint entHash = (uint)(0x41000000 + i);
+            var rec = new GdbPatchEntry(entHash, 0x01);
+            rec.Properties.Add(new GdbPatchProperty(Engine_LevelLights.GraphicAppearanceLightComponent, GdbFieldType.Reference, warmCompHash));
+            db.Entries.Add(rec);
+
+            Vector3 pos = altarOrigin + warmCandleOffsets[i];
+            (float fx, float fy, float fz) = GdbTransformMath.ToFablePosition(pos);
+            placements.Add(new GdbPlacement
+            {
+                Hash = entHash,
+                EntityName = $"HallOfLight_Candle_{i}",
+                X = fx,
+                Y = fy,
+                Z = fz,
+            });
+        }
+
+        // Place the blue flame right next to the candles (0.4m away horizontally)
+        const uint blueEntHash = 0x42000001u;
+        var blueRec = new GdbPatchEntry(blueEntHash, 0x01);
+        blueRec.Properties.Add(new GdbPatchProperty(Engine_LevelLights.GraphicAppearanceLightComponent, GdbFieldType.Reference, blueCompHash));
+        db.Entries.Add(blueRec);
+
+        Vector3 bluePos = altarOrigin + new Vector3(0.40f, 0.0f, 0.10f);
+        (float bfx, float bfy, float bfz) = GdbTransformMath.ToFablePosition(bluePos);
+        placements.Add(new GdbPlacement
+        {
+            Hash = blueEntHash,
+            EntityName = "HallOfLight_BlueFlame",
+            X = bfx,
+            Y = bfy,
+            Z = bfz,
+        });
+
+        byte[] bytes = GdbWriter.Serialize(db);
+        AssertThat(GdbView.TryParse(bytes, out GdbView view, out _)).IsTrue();
+
+        var hosts = new HashSet<uint>();
+        List<Engine_LevelLights.ResolvedLightInstance> resolved = Engine_LevelLights.ResolvePlacements(
+            view,
+            new List<GdbView>(),
+            placements,
+            modelPaths: null,
+            hosts,
+            out _,
+            out _);
+
+        // All 4 warm candles collapse into 1 centroid light, while the blue flame remains separate (total = 2).
+        AssertThat(resolved.Count).IsEqual(2);
+        AssertThat(resolved.Exists(r => r.Entity == blueEntHash)).IsTrue();
+        AssertThat(resolved.Exists(r => r.Entity == 0x41000000u)).IsTrue();
+    }
+
+    [TestCase]
+    public void EvaluateLightingFrame_AtNightInModernMode_AlignsLightDirectionWithMoonAndDefaultBloomIs025()
+    {
+        System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", "modern");
+        var skyTheme = new SkyTheme();
+        var lighting = new LightingTheme
+        {
+            HasMainLightColour = true,
+        };
+        lighting.MainLightColour[0] = 0.25f;
+        lighting.MainLightColour[1] = 0.30f;
+        lighting.MainLightColour[2] = 0.45f;
+
+        var skyFrame = new SkyFrame();
+        // Sun is below the horizon at night:
+        skyFrame.SunDirection[0] = 0.0f;
+        skyFrame.SunDirection[1] = -0.6f;
+        skyFrame.SunDirection[2] = 0.8f;
+
+        // MainLightDirection points elsewhere:
+        skyFrame.MainLightDirection[0] = 0.5f;
+        skyFrame.MainLightDirection[1] = 0.5f;
+        skyFrame.MainLightDirection[2] = 0.7071f;
+
+        // Moon is above the horizon at (-0.3, 0.6, 0.7416) in Fable coordinates -> ToGodot = (+0.3, 0.6, 0.7416):
+        skyFrame.MoonDirection[0] = -0.3f;
+        skyFrame.MoonDirection[1] = 0.6f;
+        skyFrame.MoonDirection[2] = 0.7416198f;
+        skyFrame.SkyTop[0] = 0.05f;
+        skyFrame.SkyTop[1] = 0.08f;
+        skyFrame.SkyTop[2] = 0.14f;
+
+        LightingFrame evaluated = Engine_LightingFrame.Evaluate(skyTheme, lighting, skyFrame);
+        Vector3 expectedMoon = Engine_SkyFrame.ToGodot(skyFrame.MoonDirection).Normalized();
+        AssertThat(Mathf.IsEqualApprox(evaluated.LightDirection[0], expectedMoon.X, 1e-4f)).IsTrue();
+        AssertThat(Mathf.IsEqualApprox(evaluated.LightDirection[1], expectedMoon.Y, 1e-4f)).IsTrue();
+        AssertThat(Mathf.IsEqualApprox(evaluated.LightDirection[2], expectedMoon.Z, 1e-4f)).IsTrue();
+
+        AssertThat(Mathf.IsEqualApprox(Engine_PostFxParams.BloomGainDefault, 0.25f, 1e-5f)).IsTrue();
+        System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", null);
+    }
+
+    [TestCase]
+    public void EvaluateLightingFrame_AtNightInModernMode_MoonBelowHorizon_HasZeroSunEnergyAndNoShadow()
+    {
+        System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", "modern");
+        try
+        {
+            var skyTheme = new SkyTheme();
+            var lighting = new LightingTheme
+            {
+                HasMainLightColour = true,
+            };
+            lighting.MainLightColour[0] = 0.8f;
+            lighting.MainLightColour[1] = 0.5f;
+            lighting.MainLightColour[2] = 0.2f;
+
+            var skyFrame = new SkyFrame();
+            // Sun is below horizon:
+            skyFrame.SunDirection[0] = 0.0f;
+            skyFrame.SunDirection[1] = -0.5f;
+            skyFrame.SunDirection[2] = 0.866f;
+
+            // Legacy light rig points high in the sky:
+            skyFrame.MainLightDirection[0] = 0.3f;
+            skyFrame.MainLightDirection[1] = 0.7f;
+            skyFrame.MainLightDirection[2] = 0.6f;
+
+            // Moon is also below horizon:
+            skyFrame.MoonDirection[0] = 0.0f;
+            skyFrame.MoonDirection[1] = -0.3f;
+            skyFrame.MoonDirection[2] = -0.95f;
+
+            LightingFrame evaluated = Engine_LightingFrame.Evaluate(skyTheme, lighting, skyFrame);
+            AssertThat(evaluated.SunEnergy).IsEqual(0.0f);
+            AssertThat(evaluated.SunShadow).IsFalse();
+        }
+        finally
+        {
+            System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", null);
+        }
+    }
+
+    [TestCase]
+    public void EvaluateLightingFrame_AtNightInModernMode_MoonLowOnHorizon_AlignsWithMoon()
+    {
+        System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", "modern");
+        try
+        {
+            var skyTheme = new SkyTheme();
+            var lighting = new LightingTheme
+            {
+                HasMainLightColour = true,
+            };
+            lighting.MainLightColour[0] = 0.5f;
+            lighting.MainLightColour[1] = 0.5f;
+            lighting.MainLightColour[2] = 0.8f;
+
+            var skyFrame = new SkyFrame();
+            // Sun well below horizon:
+            skyFrame.SunDirection[0] = 0.0f;
+            skyFrame.SunDirection[1] = -0.5f;
+            skyFrame.SunDirection[2] = 0.866f;
+
+            // Legacy rig high in sky:
+            skyFrame.MainLightDirection[0] = 0.5f;
+            skyFrame.MainLightDirection[1] = 0.7f;
+            skyFrame.MainLightDirection[2] = 0.5f;
+
+            // Moon is low above horizon (e.g. elevation 0.04 in Fable coords -> ToGodot elevation 0.04):
+            skyFrame.MoonDirection[0] = -0.7f;
+            skyFrame.MoonDirection[1] = 0.04f;
+            skyFrame.MoonDirection[2] = 0.713f;
+
+            LightingFrame evaluated = Engine_LightingFrame.Evaluate(skyTheme, lighting, skyFrame);
+            Vector3 expectedMoon = Engine_SkyFrame.ToGodot(skyFrame.MoonDirection).Normalized();
+            AssertThat(Mathf.IsEqualApprox(evaluated.LightDirection[0], expectedMoon.X, 1e-4f)).IsTrue();
+            AssertThat(Mathf.IsEqualApprox(evaluated.LightDirection[1], expectedMoon.Y, 1e-4f)).IsTrue();
+            AssertThat(Mathf.IsEqualApprox(evaluated.LightDirection[2], expectedMoon.Z, 1e-4f)).IsTrue();
+            AssertThat(evaluated.SunEnergy > 0f).IsTrue();
+        }
+        finally
+        {
+            System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", null);
+        }
+    }
+
+    [TestCase]
+    public void EngineSkyFrame_InModernMode_SkipsMainLightDirection()
+    {
+        System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", "modern");
+        try
+        {
+            var theme = new SkyTheme();
+            SkyFrame frame = Engine_SkyFrame.Evaluate(theme, 0.5f);
+            AssertThat(frame.MainLightDirection[0]).IsEqual(0f);
+            AssertThat(frame.MainLightDirection[1]).IsEqual(0f);
+            AssertThat(frame.MainLightDirection[2]).IsEqual(0f);
+        }
+        finally
+        {
+            System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", null);
+        }
+    }
+
+    [TestCase]
+    public void EvaluateLightingFrame_InClassicMode_UsesMainLightDirectionAtNight()
+    {
+        System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", "fable");
+        try
+        {
+            var skyTheme = new SkyTheme();
+            var lighting = new LightingTheme
+            {
+                HasMainLightColour = true,
+            };
+            lighting.MainLightColour[0] = 0.5f;
+            lighting.MainLightColour[1] = 0.5f;
+            lighting.MainLightColour[2] = 0.5f;
+
+            var skyFrame = new SkyFrame();
+            skyFrame.SunDirection[0] = 0.0f;
+            skyFrame.SunDirection[1] = -0.5f;
+            skyFrame.SunDirection[2] = 0.866f;
+
+            skyFrame.MainLightDirection[0] = 0.4f;
+            skyFrame.MainLightDirection[1] = 0.6f;
+            skyFrame.MainLightDirection[2] = 0.69f;
+
+            skyFrame.MoonDirection[0] = -0.3f;
+            skyFrame.MoonDirection[1] = 0.2f;
+            skyFrame.MoonDirection[2] = 0.9f;
+
+            LightingFrame evaluated = Engine_LightingFrame.Evaluate(skyTheme, lighting, skyFrame);
+            AssertThat(Mathf.IsEqualApprox(evaluated.LightDirection[0], skyFrame.MainLightDirection[0], 1e-4f)).IsTrue();
+            AssertThat(Mathf.IsEqualApprox(evaluated.LightDirection[1], skyFrame.MainLightDirection[1], 1e-4f)).IsTrue();
+            AssertThat(Mathf.IsEqualApprox(evaluated.LightDirection[2], skyFrame.MainLightDirection[2], 1e-4f)).IsTrue();
+            AssertThat(evaluated.SunEnergy > 0f).IsTrue();
+        }
+        finally
+        {
+            System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", null);
+        }
+    }
+
+    [TestCase]
+    public void NewLampOnStick_WithoutParticleEmitterInGdb_ReceivesCandleFlameFx()
+    {
+        Engine_LevelFx.ClearCaches();
+
+        var db = new GdbPatchDatabase();
+
+        // 1. NewLamp_on_stick placement lacking CECParticleEmitter / CECParticleAttacher in GDB
+        uint lampHash = 0xE5B4B895u;
+        var lampRec = new GdbPatchEntry(lampHash, 0x01);
+        db.Entries.Add(lampRec);
+
+        var lampPlacement = new GdbPlacement
+        {
+            Hash = lampHash,
+            EntityName = "NewLamp_on_stick_1",
+            ParentHash = Engine_LevelFx.LampOnStickTemplate,
+            X = 323.58f,
+            Y = 42.57f,
+            Z = 154.54f
+        };
+
+        // 2. Ordinary prop without FX
+        uint benchHash = 0x12345678u;
+        var benchRec = new GdbPatchEntry(benchHash, 0x01);
+        db.Entries.Add(benchRec);
+
+        var benchPlacement = new GdbPlacement
+        {
+            Hash = benchHash,
+            EntityName = "Bench_Wood_01",
+            ParentHash = 0x99999999u,
+            X = 320.0f,
+            Y = 40.0f,
+            Z = 150.0f
+        };
+
+        AssertThat(Engine_LevelFx.IsLampOnStickPlacement(lampPlacement)).IsTrue();
+        AssertThat(Engine_LevelFx.IsLampOnStickPlacement(benchPlacement)).IsFalse();
+
+        byte[] bytes = GdbWriter.Serialize(db);
+        AssertThat(GdbView.TryParse(bytes, out GdbView view, out _)).IsTrue();
+
+        // 1. Lamp without GDB particle emitter resolves to synthetic candle flame at Prop.Layout.Light
+        List<Engine_LevelFx.FxAttachment> lampAttachments =
+            Engine_LevelFx.ResolvePlacementAttachments(lampPlacement, new List<GdbView> { view });
+        AssertThat(lampAttachments.Count).IsEqual(1);
+        AssertThat(lampAttachments[0].Effect).IsEqual(Engine_LevelFx.CandleFlame);
+        AssertThat(lampAttachments[0].Dummy).IsEqual("Prop.Layout.Light");
+
+        // 2. Ordinary prop without FX resolves to 0 attachments
+        List<Engine_LevelFx.FxAttachment> benchAttachments =
+            Engine_LevelFx.ResolvePlacementAttachments(benchPlacement, new List<GdbView> { view });
+        AssertThat(benchAttachments.Count).IsEqual(0);
+
+        // 3. Regression test: if a lamp already carries an authored GDB particle emitter, it does NOT synthesize duplicates
+        const string customDummy = "Prop.FX.Particle.Custom_Flame.par";
+        uint customDummyHash = Engine_GameHash.Fnv1(customDummy);
+        db.Names[customDummyHash] = customDummy;
+
+        uint fxItemHash = 0x50000001u;
+        var fxItem = new GdbPatchEntry(fxItemHash, 0x01);
+        fxItem.Properties.Add(new GdbPatchProperty(Engine_LevelFx.ParticleEmitter, GdbFieldType.String, 0x11223344u));
+        fxItem.Properties.Add(new GdbPatchProperty(Engine_LevelFx.DummyObject, GdbFieldType.String, customDummyHash));
+        db.Entries.Add(fxItem);
+
+        lampRec.Properties.Add(new GdbPatchProperty(Engine_LevelFx.ParticleEmitter, GdbFieldType.Reference, fxItemHash));
+        byte[] authoredBytes = GdbWriter.Serialize(db);
+        AssertThat(GdbView.TryParse(authoredBytes, out GdbView authoredView, out _)).IsTrue();
+
+        List<Engine_LevelFx.FxAttachment> authoredLampAttachments =
+            Engine_LevelFx.ResolvePlacementAttachments(lampPlacement, new List<GdbView> { authoredView });
+        AssertThat(authoredLampAttachments.Count).IsEqual(1);
+        AssertThat(authoredLampAttachments[0].Effect).IsEqual(0x11223344u);
+        AssertThat(authoredLampAttachments[0].Dummy).IsEqual(customDummy);
+
+        Engine_LevelFx.ClearCaches();
     }
 }

@@ -17,10 +17,16 @@
 // how far the effect is between its steps. The particle is drawn on the segment it just moved
 // along: centre - motion x (1 - alpha). A mesh without CUSTOM0 reads zero and draws as before.
 //
+// UNCLAMPED LINEAR HDR COLOUR. Godot's `Mesh.ArrayType.Color` is packed into 8-bit RGBA8 UNORM
+// (`[0..1]`), which clamps Modern mode's linear HDR lighting (`inst.Lit`) and recipe/mod tints
+// (`Tint`). Instead, `Engine_FxSystem` passes 32-bit float RGBA in `CUSTOM1` (`RgbaFloat`), which
+// is forwarded into the `COLOR` float varying here.
+//
 instance uniform float fx_step_alpha = 1.0;
 instance uniform float fx_step_alpha_half = 1.0;
 
 void vertex() {
+	COLOR = CUSTOM1;
 	float alpha = mix(fx_step_alpha, fx_step_alpha_half, CUSTOM0.w);
 	VERTEX -= CUSTOM0.xyz * (1.0 - alpha);
 	mat3 to_node = inverse(mat3(MODEL_MATRIX));

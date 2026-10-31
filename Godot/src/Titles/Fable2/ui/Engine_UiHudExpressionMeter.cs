@@ -1,3 +1,5 @@
+using System;
+
 namespace Refii.Titles.Fable2;
 
 using Refii.Ui;
@@ -41,7 +43,7 @@ public static class Engine_UiHudExpressionMeter
 	/// running meter's pip and adds the new one), which the shared screen drew as `BothPip`; each
 	/// player's own screen shows their own marker.
 	/// </param>
-	public static void Publish(Refii.Host.HostBridge.ExpressionMeter meter, Engine_HudView hud,
+	public static void Publish(Refii.Host.HostBridge.ExpressionMeter meter, IEvaluatedExpressionHud hud,
 		bool mine = true, int ownPip = 0)
 	{
 		Engine_HudValues values = hud.Values;
@@ -78,6 +80,8 @@ public static class Engine_UiHudExpressionMeter
 		if (!meter.PipRunning || !on)
 		{
 			hud.ExpressionPip = null;
+			hud.PipLastPosition = float.NaN;
+			hud.PipDrawn = float.NaN;
 			return;
 		}
 
@@ -90,36 +94,56 @@ public static class Engine_UiHudExpressionMeter
 
 		// DEGREES, stated: `(pos * 0.01 * 130) - 65` at 0x823D1050..0x823D1054, so 0 is the arc's
 		// left end, 50 its apex and 100 its right end — a 130° sweep.
-		hud.ExpressionPip = (binding, (Smoothed(meter) * 1.3f) - 65f);
+		hud.ExpressionPip = (binding, (Smoothed(meter, hud) * 1.3f) - 65f);
 	}
 
-	private static float _lastPosition = float.NaN;
-	private static ulong _lastChangeUsec;
-
 	/// <summary>
-	/// The pip between guest steps. The guest advances +16 by `speed · dt` once per 30 Hz step
+	/// The pip between guest steps. The guest advances +16 by `speed · dt` once per 15/30 Hz step
 	/// (`sub_822ACBF8`: bounce at 0 and 100 by negating the speed), and a display running
-	/// faster sees it hop. Carry the guest's own speed forward from the last stated value for
-	/// the time since it changed; a stated value always wins the moment it arrives.
+	/// faster sees it hop. Carry the guest's own speed forward from the last stated value on
+	/// Godot's clock, smoothly reflecting at boundaries [0, 100].
 	/// </summary>
-	private static float Smoothed(Refii.Host.HostBridge.ExpressionMeter meter)
+	private static float Smoothed(Refii.Host.HostBridge.ExpressionMeter meter, IEvaluatedExpressionHud hud)
 	{
-		ulong now = Godot.Time.GetTicksUsec();
-		if (meter.Position != _lastPosition)
+		ulong now = Refii.Entities.Engine_DrawnFrame.NowUsec;
+		if (meter.Position != hud.PipLastPosition)
 		{
-			_lastPosition = meter.Position;
-			_lastChangeUsec = now;
+			hud.PipLastPosition = meter.Position;
+			hud.PipLastUsec = now;
+			if (float.IsNaN(hud.PipDrawn) || Math.Abs(hud.PipDrawn - meter.Position) > 15f)
+			{
+				hud.PipDrawn = meter.Position;
+			}
+			else
+			{
+				hud.PipDrawn = (hud.PipDrawn * 0.35f) + (meter.Position * 0.65f);
+			}
+
+			return hud.PipDrawn;
+		}
+
+		if (meter.Speed == 0f || float.IsNaN(hud.PipDrawn))
+		{
 			return meter.Position;
 		}
 
-		float elapsed = (now - _lastChangeUsec) * 1e-6f;
-		if (elapsed > 0.1f)
+		float elapsed = (now - hud.PipLastUsec) * 1e-6f;
+		if (elapsed > 0.15f)
 		{
 			return meter.Position;  // a held pip is held, not extrapolated
 		}
 
-		float ahead = meter.Position + meter.Speed * elapsed;
-		return Godot.Mathf.Clamp(ahead, 0f, 100f);
+		float ahead = hud.PipDrawn + (meter.Speed * elapsed);
+		if (ahead > 100f)
+		{
+			ahead = Math.Max(0f, 200f - ahead);
+		}
+		else if (ahead < 0f)
+		{
+			ahead = Math.Min(100f, -ahead);
+		}
+
+		return ahead;
 	}
 
 	private static void State(Engine_HudValues values, string name, bool on) =>

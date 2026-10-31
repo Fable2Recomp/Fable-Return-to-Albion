@@ -132,8 +132,9 @@ public sealed class ShaderCeilingTests
 
         Engine_ShaderCeilingSource.Built glass = Build("res://src/Engine/material/standard_material_translucent.gdshader", cut: false);
         AssertThat(glass.WritesAlpha).IsTrue();
-        AssertThat(glass.Code.Contains("blend_premul_alpha")).IsTrue();
+        AssertThat(glass.Code.Contains("blend_mix")).IsTrue();
         AssertThat(glass.Code.Contains("depth_draw_never")).IsTrue();
+        AssertThat(glass.Code.Contains("cull_disabled")).IsTrue();
     }
 
     /// <summary>Includes resolve once and relative to their file; conditionals and `#if` evaluate as Godot's do.</summary>

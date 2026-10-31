@@ -19,7 +19,22 @@ public sealed class FxPlacement
     public float MaxVisibilityDistance;
 }
 
-/// <summary>Simulates bank particles and submits their unchanged visual batches to Godot.</summary>
+/// <summary>
+/// The Modern renderer's native particle simulation and geometry builder, used by <see cref="FableFx"/>.
+/// </summary>
+/// <remarks>
+/// SEPARATION OF CONCERNS BETWEEN RENDERER MODES.
+/// - Modern mode (<c>Engine_ClassicMaterial.Active == false</c>) uses <see cref="FableFx"/> and
+///   <see cref="Engine_FxSystem"/> exclusively across the full 0..200m range: 30 Hz simulation,
+///   persistent particle state with GPU sub-step interpolation (<c>fx_billboard.gdshaderinc</c>),
+///   unclamped 32-bit float linear HDR vertex colours (<c>CUSTOM1</c>), dynamic FX lights,
+///   ribbons/trails, and mod/recipe overlays.
+/// - Classic mode (<c>Engine_ClassicMaterial.Active == true</c>) uses
+///   <see cref="Refii.Models.Engine_ClassicParticles"/> exclusively to render the guest's 50m
+///   <c>CParticleGroupRenderTwin</c> quad streams with translated Xenos microcode shaders.
+/// - Both systems remain strictly separated at runtime while sharing pure static math, matrix
+///   decomposition, and keyframe-table helpers hosted on this class.
+/// </remarks>
 public sealed class Engine_FxSystem
 {
     public const int TrailHistory = 48;
@@ -37,10 +52,10 @@ public sealed class Engine_FxSystem
         public float[] Pos = new float[3];
 
         /// <summary>
-        /// Where the particle was at the start of the last simulation step, and whether that is
-        /// known (false for a particle born in that step). The billboard shader draws between the
-        /// two by the effect's sub-step fraction, so particles move at the display's rate while the
-        /// simulation keeps the authored 30 frames a second.
+        /// Where the particle was at the start of the last simulation step (or its birth point on
+        /// its first step). The billboard shader draws between <see cref="PrevPos"/> and
+        /// <see cref="Pos"/> by the effect's sub-step fraction, so particles move at the display's
+        /// refresh rate while the simulation keeps the authored 30 frames a second.
         /// </summary>
         public float[] PrevPos = new float[3];
         public bool HasPrev;
@@ -274,6 +289,7 @@ public sealed class Engine_FxSystem
         public float Time;
         public int Frame;
         public int Step = 1;
+        public float AuthoredStep = 1f;
         public float DtSec = 1f / 30f;
         public float SharedRand = -1f;
         public List<EmitterRuntime> Emitters { get; } = new();
@@ -333,6 +349,7 @@ public sealed class Engine_FxSystem
     }
 
     private float _sizeScale = 1f;
+    private float[][]? _splineOverride;
 
     /// <summary>The live size scale — the guest's element+412: folded into the keyframe global
     /// scales (binding 338) at draw time, and multiplied into the spawn-shape offset and the
@@ -340,6 +357,58 @@ public sealed class Engine_FxSystem
     public void SetSizeScale(float scale) =>
         _sizeScale = float.IsFinite(scale) && scale > 0f ? scale : 1f;
     public void SetDistanceFade(bool on) => _distanceFade = on;
+
+    /// <summary>
+    /// Overrides the control points of any Type 5 spline chain node (<c>CParticleSplineNode</c>,
+    /// <c>vtable 0x820058C8</c>) with runtime endpoints in this effect node's local Godot space
+    /// (corresponding to the guest's <c>sub_8322E858</c> override used by multi-dummy weapon
+    /// augmentations such as <c>FX_64D9750B</c> and <c>FX_B0BF62DC</c>). Pass an empty span to
+    /// clear the override and revert to the bank's authored spline points.
+    /// </summary>
+    public void SetSplineOverride(ReadOnlySpan<Vector3> nodeLocalPoints)
+    {
+        if (nodeLocalPoints.Length < 2)
+        {
+            _splineOverride = null;
+            return;
+        }
+
+        bool wasNull = _splineOverride is null;
+        if (_splineOverride is null || _splineOverride.Length != nodeLocalPoints.Length)
+        {
+            _splineOverride = new float[nodeLocalPoints.Length][];
+            for (int i = 0; i < _splineOverride.Length; i++)
+            {
+                _splineOverride[i] = new float[3];
+            }
+        }
+
+        for (int i = 0; i < nodeLocalPoints.Length; i++)
+        {
+            Vector3 p = nodeLocalPoints[i];
+            // Godot node-local (x, y, z) -> simulation space (x, z, y) so ToGodot(sim) = (x, y, z).
+            _splineOverride[i][0] = p.X;
+            _splineOverride[i][1] = p.Z;
+            _splineOverride[i][2] = p.Y;
+        }
+
+        if (wasNull)
+        {
+            foreach (InstanceState inst in _instances)
+            {
+                if (inst.Frame != 0)
+                {
+                    continue;
+                }
+
+                foreach (EmitterRuntime rt in inst.Emitters)
+                {
+                    UpdateChain(rt.Chain, inst, rt.PlacePos, rt.PlaceRot, rt.Scale, rt.PosW, rt.RotW);
+                    Array.Copy(rt.PosW, rt.PrevPos, 3);
+                }
+            }
+        }
+    }
     public int TotalSpawned { get; private set; }
 
     private static void QuatToMat(float[] q, float[] m)
@@ -632,7 +701,10 @@ public sealed class Engine_FxSystem
                         if (node.T < 0f) node.T = d.SplineRandomStart && inst.SharedRand >= 0f ? inst.SharedRand : 0f;
                         float tt = node.T;
                         if (d.SplineRandomGenerator) tt = Frand();
-                        SplineEval(d.SplinePoints, d.SplineLooped, d.SplineStraight, tt, lp);
+                        float[][] splinePoints = _splineOverride ?? d.SplinePoints;
+                        bool looped = _splineOverride is null && d.SplineLooped;
+                        bool straight = _splineOverride is not null || d.SplineStraight;
+                        SplineEval(splinePoints, looped, straight, tt, lp);
                         node.T += inst.Step * d.SplineRate * node.Dir;
                         if (node.T < 0f || node.T > 1f)
                         {
@@ -854,13 +926,17 @@ public sealed class Engine_FxSystem
             }
 
             Array.Copy(eff.Tint, inst.Tint, 3);
-            // The field IS the guest's group index into its two rate columns, copied verbatim
-            // with no clamp: `desc+32` to `def+60` to `inst+12`. Group 0 updates at 15 Hz with
-            // dt 1/15 and advances 2 authored frames; group 1 at 30 Hz with dt 1/30 and 1 frame.
-            // Anything above 1 reads PAST the guest's own arrays, so it is folded to group 1
-            // here rather than reproduced.
-            inst.Step = eff.UpdateFrequency >= 1 ? 1 : 2;
-            inst.DtSec = eff.UpdateFrequency >= 1 ? 1f / 30f : 1f / 15f;
+            // On Xbox 360, `UpdateFrequency == 0` was a 15 Hz simulation LOD (`dt = 1/15`, advancing
+            // 2 authored frames per update) while `UpdateFrequency >= 1` ticked at 30 Hz (`dt = 1/30`,
+            // advancing 1 authored frame per update). In Modern mode (`FableFx`), stepping at 15 Hz
+            // caused visible 66.7ms keyframe stepping on short-lived particles (e.g. weapon sparkles)
+            // and coarse polygonal gravity arcs (e.g. fountains). We step all emitters at full 30 Hz
+            // (`Step = 1`, `DtSec = 1/30f`) while recording `AuthoredStep` (`2` for group 0, `1` for
+            // group 1) so per-step drag, spawn spread, spin spread, and flipbook speed preserve their
+            // exact authored per-second rates.
+            inst.AuthoredStep = eff.UpdateFrequency >= 1 ? 1f : 2f;
+            inst.Step = 1;
+            inst.DtSec = 1f / 30f;
 
             var chain = new List<ChainNode>();
             int curChain = -1;
@@ -1098,12 +1174,19 @@ public sealed class Engine_FxSystem
         {
             FxEmitter d = rt.Def!;
             int pf = (int)pt.Age;
-            float k = 1f - ((1f - d.Generic[14].EvalFrame(pf)) * (1f / step));
+            float k = 1f - ((1f - d.Generic[14].EvalFrame(pf)) * (1f / inst.AuthoredStep));
             if (hasVec0) k *= k;
             (float v1x, float v1y, float v1z) = d.Vec1.EvalFrame(pf);
             float invStep = 1f / step;
             vpx = pt.Vel[0] * invStep; vpy = pt.Vel[1] * invStep; vpz = pt.Vel[2] * invStep;
-            pt.Vel[0] *= v1x * k; pt.Vel[1] *= v1y * k; pt.Vel[2] *= v1z * k;
+            float mx = v1x * k, my = v1y * k, mz = v1z * k;
+            if (inst.AuthoredStep > 1f && step == 1f)
+            {
+                mx = rt.VelMul[0] != 0f ? MathF.CopySign(MathF.Sqrt(MathF.Abs(rt.VelMul[0] * mx)), mx) / rt.VelMul[0] : 0f;
+                my = rt.VelMul[1] != 0f ? MathF.CopySign(MathF.Sqrt(MathF.Abs(rt.VelMul[1] * my)), my) / rt.VelMul[1] : 0f;
+                mz = rt.VelMul[2] != 0f ? MathF.CopySign(MathF.Sqrt(MathF.Abs(rt.VelMul[2] * mz)), mz) / rt.VelMul[2] : 0f;
+            }
+            pt.Vel[0] *= mx; pt.Vel[1] *= my; pt.Vel[2] *= mz;
         }
 
         pt.Pos[0] += vpx; pt.Pos[1] += vpy; pt.Pos[2] += vpz;
@@ -1150,8 +1233,9 @@ public sealed class Engine_FxSystem
         pt.FlickY = v0.FlickerBaseY + (r2 * v0.FlickerSpreadY);
     }
 
-    private void InitParticleVisual(EmitterRuntime rt, ParticleState pt, float step)
+    private void InitParticleVisual(EmitterRuntime rt, ParticleState pt, float step, float authoredStep = 1f)
     {
+        float spreadScale = authoredStep > 0f ? step / authoredStep : 1f;
         pt.Seg = 0;
         pt.LoopIter = 0;
         pt.HasBase = false;
@@ -1192,7 +1276,7 @@ public sealed class Engine_FxSystem
 
             pt.FlickX = v0.HasRandScale ? v0.RsMin + (Frand() * v0.RsRange) : 1f;
             pt.FlickY = pt.FlickX;
-            float w = (step * v0.OrSpeed) + (Frand() * v0.OrSpread);
+            float w = (step * v0.OrSpeed) + (Frand() * v0.OrSpread * spreadScale);
             pt.Spin = w;
             pt.SpinNext = w;
             return;
@@ -1203,7 +1287,7 @@ public sealed class Engine_FxSystem
         pt.Rot = v0.RotInitialRandom ? Frand() * TwoPi : 0f;
         if (v0.HasFlicker) RollSize(v0, pt);
         float rr = Frand();
-        float sp = (step * v0.RotSpeed) + ((rr * v0.RotSpread) - (v0.RotSpread * 0.5f));
+        float sp = (step * v0.RotSpeed) + (((rr * v0.RotSpread) - (v0.RotSpread * 0.5f)) * spreadScale);
         pt.Spin = sp;
         pt.SpinNext = sp;
     }
@@ -1245,6 +1329,10 @@ public sealed class Engine_FxSystem
         // The shape offset takes the element's SetScale too: `sub_82A03D58` 0x82a03ec8
         // `vmaddfp v0, v7, v6, v8` = offset × splat(node+0x19C) + the lerped position.
         for (int k = 0; k < 3; k++) pt.Pos[k] = (off[k] * rt.Scale * _sizeScale) + ((rt.PosW[k] - rt.PrevPos[k]) * frac) + rt.PrevPos[k];
+        // Record the birth position into PrevPos before the initial StepParticle advance so newly
+        // spawned particles interpolate smoothly from their spawn point across their very first step.
+        pt.PrevPos[0] = pt.Pos[0]; pt.PrevPos[1] = pt.Pos[1]; pt.PrevPos[2] = pt.Pos[2];
+        pt.HasPrev = true;
 
         int f = (int)rt.Age;
         float dts = inst.DtSec;
@@ -1257,9 +1345,9 @@ public sealed class Engine_FxSystem
         bool hasP14 = !d.Generic[14].IsEmpty;
         bool hasVec0 = !d.Vec0.IsEmpty;
         StepParticle(inst, rt, pt, hasAttr, hasP14, hasVec0);
-        pt.Life = rt.LoopCount == -1 ? (d.UseLife ? d.LifetimeFrames : -1f) : rt.LifeFrames;
+        pt.Life = d.UseLife ? d.LifetimeFrames : (rt.LoopCount == -1 ? -1f : rt.LifeFrames);
 
-        InitParticleVisual(rt, pt, inst.Step);
+        InitParticleVisual(rt, pt, inst.Step, inst.AuthoredStep);
         pt.HistCount = 0;
         if (rt.Trail)
         {
@@ -1431,7 +1519,7 @@ public sealed class Engine_FxSystem
         while (rt.Particles.Count < n)
         {
             ParticleState pt = RentParticle();
-            pt.Life = rt.LoopCount == -1 ? (d.UseLife ? d.LifetimeFrames : -1f) : rt.LifeFrames;
+            pt.Life = d.UseLife ? d.LifetimeFrames : (rt.LoopCount == -1 ? -1f : rt.LifeFrames);
             InitParticleVisual(rt, pt, inst.Step);
             rt.Particles.Add(pt);
             TotalSpawned++;
@@ -1530,6 +1618,7 @@ public sealed class Engine_FxSystem
             return;
         }
 
+        float spreadScale = inst.AuthoredStep > 0f ? step / inst.AuthoredStep : 1f;
         float[] v0l = _tickV0L;
         float[] v0w = _tickV0W;
         bool summarize = Engine_FxFastPaths.Enabled;
@@ -1546,7 +1635,16 @@ public sealed class Engine_FxSystem
             (float v1x, float v1y, float v1z) = d.Vec1.EvalFrame(fOld);
             float m12 = d.Generic[12].EvalFrame(fOld);
             float m13 = d.Generic[13].EvalFrame(fOld);
-            rt.VelMul[0] = m13 * v1x * m12; rt.VelMul[1] = m13 * v1y * m12; rt.VelMul[2] = m13 * v1z * m12;
+            float vm0 = m13 * v1x * m12;
+            float vm1 = m13 * v1y * m12;
+            float vm2 = m13 * v1z * m12;
+            if (d.Generic[14].IsEmpty && inst.AuthoredStep > 1f && step == 1f)
+            {
+                vm0 = MathF.CopySign(MathF.Sqrt(MathF.Abs(vm0)), vm0);
+                vm1 = MathF.CopySign(MathF.Sqrt(MathF.Abs(vm1)), vm1);
+                vm2 = MathF.CopySign(MathF.Sqrt(MathF.Abs(vm2)), vm2);
+            }
+            rt.VelMul[0] = vm0; rt.VelMul[1] = vm1; rt.VelMul[2] = vm2;
 
             (v0l[0], v0l[1], v0l[2]) = d.Vec0.EvalFrame(fOld);
             MatVec(rt.RotW, v0l, v0w);
@@ -1599,7 +1697,7 @@ public sealed class Engine_FxSystem
 
             if (windowOpen)
             {
-                float spread = d.Generic[3].EvalFrame(f) * step;
+                float spread = d.Generic[3].EvalFrame(f) * (rt.Mode != 3 ? inst.AuthoredStep : step);
                 float r = Frand() * spread;
                 float rate = d.Generic[2].EvalFrame(f);
                 if (rt.Mode != 3) { r *= step; rate *= step; }
@@ -1661,12 +1759,12 @@ public sealed class Engine_FxSystem
                     if (vk.IsMesh)
                     {
                         pt.Spin = pt.SpinNext;
-                        pt.SpinNext = (step * vk.OrSpeed) + (Frand() * vk.OrSpread);
+                        pt.SpinNext = (step * vk.OrSpeed) + (Frand() * vk.OrSpread * spreadScale);
                     }
                     else if (vp.RotSpeed != vk.RotSpeed)
                     {
                         pt.Spin = pt.SpinNext;
-                        pt.SpinNext = (step * vk.RotSpeed) + ((Frand() * vk.RotSpread) - (vk.RotSpread * 0.5f));
+                        pt.SpinNext = (step * vk.RotSpeed) + (((Frand() * vk.RotSpread) - (vk.RotSpread * 0.5f)) * spreadScale);
                     }
                 }
 
@@ -1679,7 +1777,7 @@ public sealed class Engine_FxSystem
                 {
                     float fcsA = rt.Visuals[ka].FrameSpeed;
                     float fcsB = rt.Visuals[kb].FrameSpeed;
-                    float fade = fcsA + ((fcsB - fcsA) * t);
+                    float fade = (fcsA + ((fcsB - fcsA) * t)) * spreadScale;
                     for (int j = 0; j < 4; j++)
                     {
                         float fr = pt.TexFrame[j] + fade;
@@ -1760,9 +1858,18 @@ public sealed class Engine_FxSystem
     /// <summary>Simulation steps taken by the last <see cref="Update"/>, over every instance.</summary>
     public int LastSteps { get; private set; }
 
+    /// <summary>
+    /// True when the last <see cref="Update"/> rebased detached world-space particles because the
+    /// effect node's global transform moved (e.g. weapon sparkles or character aura following an
+    /// animated skeleton bone between simulation steps). <see cref="FableFx.Step"/> must re-emit
+    /// geometry on that frame so the GPU vertices match the moved <c>MODEL_MATRIX</c>.
+    /// </summary>
+    public bool LastRebased { get; private set; }
+
     public void Update(float dt, Transform3D? nodeGlobal = null, bool lightsOnly = false)
     {
         LastSteps = 0;
+        LastRebased = false;
         if (!lightsOnly && nodeGlobal is { } current)
         {
             if (_previousGlobal is { } previous && _detachedParticles)
@@ -1835,14 +1942,24 @@ public sealed class Engine_FxSystem
 
     private void Rebase(Transform3D delta)
     {
+        bool rebasedAny = false;
         foreach (InstanceState inst in _instances)
         {
             foreach (EmitterRuntime rt in inst.Emitters)
             {
                 if (rt.Def is null || rt.Def.AttachToRoot) continue;
+                // Transform the emitter's stored world position into the new node-local space so
+                // `Array.Copy(rt.PosW, rt.PrevPos, 3)` on the next `Tick` preserves the true
+                // previous emitter world position and `SpawnOne` interpolates `frac` smoothly
+                // along a moving weapon blade.
+                Vector3 emitterPos = delta * new Vector3(rt.PosW[0], rt.PosW[2], rt.PosW[1]);
+                rt.PosW[0] = emitterPos.X; rt.PosW[1] = emitterPos.Z; rt.PosW[2] = emitterPos.Y;
+                Vector3 emitterPrev = delta * new Vector3(rt.PrevPos[0], rt.PrevPos[2], rt.PrevPos[1]);
+                rt.PrevPos[0] = emitterPrev.X; rt.PrevPos[1] = emitterPrev.Z; rt.PrevPos[2] = emitterPrev.Y;
                 rt.SummaryValid = false;
                 foreach (ParticleState pt in rt.Particles)
                 {
+                    rebasedAny = true;
                     Vector3 pos = delta * new Vector3(pt.Pos[0], pt.Pos[2], pt.Pos[1]);
                     pt.Pos[0] = pos.X; pt.Pos[1] = pos.Z; pt.Pos[2] = pos.Y;
                     Vector3 prev = delta * new Vector3(pt.PrevPos[0], pt.PrevPos[2], pt.PrevPos[1]);
@@ -1859,6 +1976,23 @@ public sealed class Engine_FxSystem
                 }
             }
         }
+
+        if (rebasedAny)
+        {
+            LastRebased = true;
+        }
+    }
+
+    /// <summary>
+    /// Every live particle's current and previous position in Godot space, for offline tools and
+    /// headless unit tests.
+    /// </summary>
+    public IEnumerable<(Vector3 PrevPos, Vector3 Pos, bool HasPrev)> ParticleMotionStates()
+    {
+        foreach (InstanceState inst in _instances)
+            foreach (EmitterRuntime rt in inst.Emitters)
+                foreach (ParticleState pt in rt.Particles)
+                    yield return (ToGodot(pt.PrevPos), ToGodot(pt.Pos), pt.HasPrev);
     }
 
     /// <summary>Every live particle's position in Godot space, for the offline tools.</summary>
@@ -2170,7 +2304,10 @@ public sealed class Engine_FxSystem
             long sortAt = System.Diagnostics.Stopwatch.GetTimestamp();
             if (!fast)
             {
-                SortQuadsBackToFront(list, cameraPosition);
+                if (!Engine_FxFastPaths.OrderIndependent(key.Mode))
+                {
+                    SortQuadsBackToFront(list, cameraPosition);
+                }
             }
             else if ((sceneQuads || key.Mode == "disp") && !Engine_FxFastPaths.OrderIndependent(key.Mode))
             {
@@ -2277,7 +2414,7 @@ public sealed class Engine_FxSystem
                             motions.Add(new Vector4(flow.X, flow.Y, flow.Z, rateClass));
                         }
 
-                        EmitRibbon(Sink, rt, rt.TrailVisuals, pts, ages, motions, cameraPosition, false, inst.Lit, pt.Intensity);
+                        EmitRibbon(Sink, rt, rt.TrailVisuals, pts, ages, motions, cameraPosition, false, inst.Lit, inst.Tint, pt.Intensity);
                     }
                 }
 
@@ -2322,7 +2459,7 @@ public sealed class Engine_FxSystem
                         motions.Add(new Vector4(moved.X, moved.Y, moved.Z, chainClass));
                     }
 
-                    EmitRibbon(Sink, rt, rt.Visuals, pts, ages, motions, cameraPosition, true, inst.Lit, ribbonIntensity);
+                    EmitRibbon(Sink, rt, rt.Visuals, pts, ages, motions, cameraPosition, true, inst.Lit, inst.Tint, ribbonIntensity);
                     continue;
                 }
 
@@ -2469,7 +2606,12 @@ public sealed class Engine_FxSystem
     {
         public Vector3[] Positions = System.Array.Empty<Vector3>();
         public Vector2[] Uvs = System.Array.Empty<Vector2>();
-        public Color[] Colours = System.Array.Empty<Color>();
+
+        /// <summary>
+        /// CUSTOM1, four 32-bit floats a vertex: unclamped linear HDR RGBA colour (bypassing Godot's
+        /// 8-bit RGBA8 compression on <see cref="Mesh.ArrayType.Color"/>).
+        /// </summary>
+        public float[] Colours = System.Array.Empty<float>();
         public Vector2[] Offsets = System.Array.Empty<Vector2>();
 
         /// <summary>CUSTOM0, four floats a vertex: the last step's displacement and the rate class.</summary>
@@ -2499,6 +2641,10 @@ public sealed class Engine_FxSystem
     private sealed class SurfaceSlots
     {
         public readonly List<int> Capacity = new();
+        public readonly List<int> LastWritten = new();
+        public readonly List<Material?> Material = new();
+        public readonly List<byte[]> VertexBytes = new();
+        public readonly List<byte[]> AttributeBytes = new();
         public int Used;
         public Aabb Bounds;
         public bool HasBounds;
@@ -2566,12 +2712,21 @@ public sealed class Engine_FxSystem
         int existing = mesh.GetSurfaceCount();
         if (slots.Capacity.Count > existing)
         {
-            slots.Capacity.RemoveRange(existing, slots.Capacity.Count - existing);
+            int removeCount = slots.Capacity.Count - existing;
+            slots.Capacity.RemoveRange(existing, removeCount);
+            slots.LastWritten.RemoveRange(existing, removeCount);
+            slots.Material.RemoveRange(existing, removeCount);
+            slots.VertexBytes.RemoveRange(existing, removeCount);
+            slots.AttributeBytes.RemoveRange(existing, removeCount);
         }
         else if (slots.Capacity.Count < existing)
         {
             mesh.ClearSurfaces();
             slots.Capacity.Clear();
+            slots.LastWritten.Clear();
+            slots.Material.Clear();
+            slots.VertexBytes.Clear();
+            slots.AttributeBytes.Clear();
         }
     }
 
@@ -2626,7 +2781,12 @@ public sealed class Engine_FxSystem
 
         if (slots.Capacity.Count > keep)
         {
-            slots.Capacity.RemoveRange(keep, slots.Capacity.Count - keep);
+            int removeCount = slots.Capacity.Count - keep;
+            slots.Capacity.RemoveRange(keep, removeCount);
+            slots.LastWritten.RemoveRange(keep, removeCount);
+            slots.Material.RemoveRange(keep, removeCount);
+            slots.VertexBytes.RemoveRange(keep, removeCount);
+            slots.AttributeBytes.RemoveRange(keep, removeCount);
         }
     }
 
@@ -2686,8 +2846,12 @@ public sealed class Engine_FxSystem
 
         if (slot < slots.Capacity.Count && slots.Capacity[slot] >= n)
         {
-            WriteInPlace(mesh, slot, slots.Capacity[slot], list);
-            mesh.SurfaceSetMaterial(slot, material);
+            WriteInPlace(mesh, slots, slot, slots.Capacity[slot], list);
+            if (!ReferenceEquals(slots.Material[slot], material))
+            {
+                mesh.SurfaceSetMaterial(slot, material);
+                slots.Material[slot] = material;
+            }
             return;
         }
 
@@ -2702,6 +2866,10 @@ public sealed class Engine_FxSystem
 
         FlushBuild(mesh, material, list, capacity);
         slots.Capacity.Add(capacity);
+        slots.LastWritten.Add(0);
+        slots.Material.Add(material);
+        slots.VertexBytes.Add(System.Array.Empty<byte>());
+        slots.AttributeBytes.Add(System.Array.Empty<byte>());
         InPlaceLayout.Learn(mesh, slot, capacity);
     }
 
@@ -2713,11 +2881,10 @@ public sealed class Engine_FxSystem
 
         public static bool Known;
         public static int AttributeStride;
-        public static int ColourOffset;
-        public static int ColourBytes;
         public static int UvOffset;
         public static int Uv2Offset;
         public static int Custom0Offset;
+        public static int Custom1Offset;
 
         public static void Learn(ArrayMesh mesh, int surface, int capacity)
         {
@@ -2729,92 +2896,81 @@ public sealed class Engine_FxSystem
             RenderingServer.ArrayFormat format = (RenderingServer.ArrayFormat)mesh.SurfaceGetFormat(surface);
             int vertexStride = (int)RenderingServer.MeshSurfaceGetFormatVertexStride(format, capacity);
             AttributeStride = (int)RenderingServer.MeshSurfaceGetFormatAttributeStride(format, capacity);
-            ColourOffset = (int)RenderingServer.MeshSurfaceGetFormatOffset(format, capacity, (int)Mesh.ArrayType.Color);
             UvOffset = (int)RenderingServer.MeshSurfaceGetFormatOffset(format, capacity, (int)Mesh.ArrayType.TexUV);
             Uv2Offset = (int)RenderingServer.MeshSurfaceGetFormatOffset(format, capacity, (int)Mesh.ArrayType.TexUV2);
             Custom0Offset = (int)RenderingServer.MeshSurfaceGetFormatOffset(format, capacity, (int)Mesh.ArrayType.Custom0);
-            ColourBytes = UvOffset - ColourOffset;
+            Custom1Offset = (int)RenderingServer.MeshSurfaceGetFormatOffset(format, capacity, (int)Mesh.ArrayType.Custom1);
 
-            // Position as three floats, colour as RGBA8 or four floats, both UVs as two floats:
-            // anything else (compressed attributes) keeps the rebuild-every-frame path.
+            // Position as three floats, both UVs as two floats, CUSTOM0 (motion) and CUSTOM1
+            // (unclamped linear HDR RGBA colour) as four 32-bit floats each.
             Supported = vertexStride == 12 &&
-                (ColourBytes == 4 || ColourBytes == 16) &&
                 Uv2Offset - UvOffset == 8 &&
                 Custom0Offset - Uv2Offset == 8 &&
-                AttributeStride == Custom0Offset + 16;
+                Custom1Offset - Custom0Offset == 16 &&
+                AttributeStride == Custom1Offset + 16;
             Known = true;
             GD.Print($"[fx] in-place surface writes {(Supported ? "ON" : "OFF")}: vertex stride {vertexStride}, " +
-                $"attribute stride {AttributeStride}, colour +{ColourOffset}/{ColourBytes}B, uv +{UvOffset}, uv2 +{Uv2Offset}, custom0 +{Custom0Offset}");
+                $"attribute stride {AttributeStride}, uv +{UvOffset}, uv2 +{Uv2Offset}, custom0 +{Custom0Offset}, custom1(hdr-col) +{Custom1Offset}");
         }
     }
 
-    private byte[] _vertexBytes = System.Array.Empty<byte>();
-    private byte[] _attributeBytes = System.Array.Empty<byte>();
-
     /// <summary>Packs and uploads a reusable surface, timing CPU packing separately from engine submission.</summary>
-    private void WriteInPlace(ArrayMesh mesh, int surface, int capacity, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> list)
+    private static void WriteInPlace(
+        ArrayMesh mesh,
+        SurfaceSlots slots,
+        int surface,
+        int capacity,
+        List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> list)
     {
         long workAt = System.Diagnostics.Stopwatch.GetTimestamp();
         int n = list.Count;
         int stride = InPlaceLayout.AttributeStride;
         int vertexBytes = capacity * 12;
         int attributeBytes = capacity * stride;
-        if (_vertexBytes.Length < vertexBytes) _vertexBytes = new byte[vertexBytes];
-        if (_attributeBytes.Length < attributeBytes) _attributeBytes = new byte[attributeBytes];
+        byte[] vBuf = slots.VertexBytes[surface];
+        byte[] aBuf = slots.AttributeBytes[surface];
+        int prevWritten = slots.LastWritten[surface];
+        if (vBuf.Length < vertexBytes || aBuf.Length < attributeBytes)
+        {
+            vBuf = new byte[vertexBytes];
+            aBuf = new byte[attributeBytes];
+            slots.VertexBytes[surface] = vBuf;
+            slots.AttributeBytes[surface] = aBuf;
+            prevWritten = 0;
+        }
 
-        Span<byte> vertices = _vertexBytes.AsSpan(0, vertexBytes);
-        Span<byte> attributes = _attributeBytes.AsSpan(0, attributeBytes);
-        int colourAt = InPlaceLayout.ColourOffset;
-        bool colour8 = InPlaceLayout.ColourBytes == 4;
+        Span<byte> vertices = vBuf.AsSpan(0, vertexBytes);
+        Span<byte> attributes = aBuf.AsSpan(0, attributeBytes);
         int uvAt = InPlaceLayout.UvOffset;
         int uv2At = InPlaceLayout.Uv2Offset;
         int motionAt = InPlaceLayout.Custom0Offset;
+        int colourAt = InPlaceLayout.Custom1Offset;
 
-        // The tail repeats the last vertex with no colour: zero-area triangles.
-        Vector3 lastPos = list[n - 1].Pos;
-        Vector2 lastUv = list[n - 1].Uv;
-        bool packed = Engine_FxSurfacePacker.TryPack(vertices, attributes, list, capacity,
-            stride, colourAt, InPlaceLayout.ColourBytes, uvAt, uv2At, motionAt);
-        for (int i = 0; !packed && i < capacity; i++)
+        for (int i = 0; i < n; i++)
         {
-            Vector3 pos;
-            Vector2 uv;
-            Color col;
-            Vector2 off;
-            Vector4 motion;
-            if (i < n)
-            {
-                (pos, uv, col, off, motion) = list[i];
-            }
-            else
-            {
-                pos = lastPos;
-                uv = lastUv;
-                col = new Color(0f, 0f, 0f, 0f);
-                off = Vector2.Zero;
-                motion = Vector4.Zero;
-            }
-
+            (Vector3 pos, Vector2 uv, Color col, Vector2 off, Vector4 motion) = list[i];
             System.Runtime.InteropServices.MemoryMarshal.Write(vertices.Slice(i * 12, 12), in pos);
             Span<byte> a = attributes.Slice(i * stride, stride);
-            if (colour8)
-            {
-                // Godot's own conversion: each channel ×255, clamped, truncated to a byte.
-                a[colourAt + 0] = (byte)Math.Clamp(col.R * 255f, 0f, 255f);
-                a[colourAt + 1] = (byte)Math.Clamp(col.G * 255f, 0f, 255f);
-                a[colourAt + 2] = (byte)Math.Clamp(col.B * 255f, 0f, 255f);
-                a[colourAt + 3] = (byte)Math.Clamp(col.A * 255f, 0f, 255f);
-            }
-            else
-            {
-                System.Runtime.InteropServices.MemoryMarshal.Write(a.Slice(colourAt, 16), in col);
-            }
-
             System.Runtime.InteropServices.MemoryMarshal.Write(a.Slice(uvAt, 8), in uv);
             System.Runtime.InteropServices.MemoryMarshal.Write(a.Slice(uv2At, 8), in off);
             System.Runtime.InteropServices.MemoryMarshal.Write(a.Slice(motionAt, 16), in motion);
+            // Direct 16-byte IEEE float write into CUSTOM1: preserves unclamped linear HDR colours.
+            System.Runtime.InteropServices.MemoryMarshal.Write(a.Slice(colourAt, 16), in col);
         }
 
+        // Only clear newly unused tail vertices between n and prevWritten; all remaining tail
+        // vertices up to capacity are already zeroed (degenerate zero-area triangles).
+        if (n < prevWritten)
+        {
+            int clearEnd = System.Math.Min(prevWritten, capacity);
+            if (clearEnd > n)
+            {
+                vertices.Slice(n * 12, (clearEnd - n) * 12).Clear();
+                attributes.Slice(n * stride, (clearEnd - n) * stride).Clear();
+            }
+        }
+
+        slots.LastWritten[surface] = n;
         FableFx.FrameWork.Lap(8, ref workAt);
         Rid rid = mesh.GetRid();
         RenderingServer.MeshSurfaceUpdateVertexRegion(rid, surface, 0, (ReadOnlySpan<byte>)vertices);
@@ -2834,7 +2990,7 @@ public sealed class Engine_FxSystem
             {
                 Positions = new Vector3[padded],
                 Uvs = new Vector2[padded],
-                Colours = new Color[padded],
+                Colours = new float[padded * 4],
                 Offsets = new Vector2[padded],
                 Motion = new float[padded * 4],
             };
@@ -2843,15 +2999,55 @@ public sealed class Engine_FxSystem
 
         Vector3[] positions = arraysFor.Positions;
         Vector2[] uvs = arraysFor.Uvs;
-        Color[] colours = arraysFor.Colours;
+        float[] colours = arraysFor.Colours;
         Vector2[] offsets = arraysFor.Offsets;
         float[] motions = arraysFor.Motion;
+        PackSurfaceBatch(list, padded, positions, uvs, colours, offsets, motions);
+
+        // Each packed-array Variant carries a finalizable Disposer registered in GodotSharp's
+        // DisposablesTracker; left to the finalizer, all four survive their first GC. Disposed
+        // here they die in gen0; the Array holds its own reference to the packed data.
+        Variant vPositions = positions, vUvs = uvs, vColours = colours, vOffsets = offsets, vMotion = motions;
+        Godot.Collections.Array arrays = _surfaceArrays ??= MakeSurfaceArrays();
+        arrays[(int)Mesh.ArrayType.Vertex] = vPositions;
+        arrays[(int)Mesh.ArrayType.TexUV] = vUvs;
+        arrays[(int)Mesh.ArrayType.TexUV2] = vOffsets;
+        arrays[(int)Mesh.ArrayType.Custom0] = vMotion;
+        arrays[(int)Mesh.ArrayType.Custom1] = vColours;
+        vPositions.Dispose();
+        vUvs.Dispose();
+        vColours.Dispose();
+        vOffsets.Dispose();
+        vMotion.Dispose();
+        Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays, null, null, SurfaceCustomFormat);
+        mesh.SurfaceSetMaterial(mesh.GetSurfaceCount() - 1, material);
+        Refii.Core.Engine_SpikeNotes.Since(Refii.Core.Engine_SpikeNotes.Kind.FxSurfaceBuild, builtFrom);
+    }
+
+    /// <summary>
+    /// Packs a batch of emitted vertices into the float streams uploaded to <c>VERTEX</c>,
+    /// <c>UV</c>, <c>UV2</c>, <c>CUSTOM0</c> (motion), and <c>CUSTOM1</c> (unclamped linear HDR
+    /// RGBA colour). Exposed for headless unit testing without <see cref="RenderingServer"/>.
+    /// </summary>
+    public static void PackSurfaceBatch(
+        IReadOnlyList<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> list,
+        int padded,
+        Span<Vector3> positions,
+        Span<Vector2> uvs,
+        Span<float> colours,
+        Span<Vector2> offsets,
+        Span<float> motions)
+    {
+        int n = list.Count;
         for (int i = 0; i < n; i++)
         {
             (Vector3 pos, Vector2 uv, Color col, Vector2 off, Vector4 motion) = list[i];
             positions[i] = pos;
             uvs[i] = uv;
-            colours[i] = col;
+            colours[(i * 4) + 0] = col.R;
+            colours[(i * 4) + 1] = col.G;
+            colours[(i * 4) + 2] = col.B;
+            colours[(i * 4) + 3] = col.A;
             offsets[i] = off;
             motions[(i * 4) + 0] = motion.X;
             motions[(i * 4) + 1] = motion.Y;
@@ -2863,12 +3059,14 @@ public sealed class Engine_FxSystem
         {
             Vector3 lastPos = positions[n - 1];
             Vector2 lastUv = uvs[n - 1];
-            var none = new Color(0f, 0f, 0f, 0f);
             for (int i = n; i < padded; i++)
             {
                 positions[i] = lastPos;
                 uvs[i] = lastUv;
-                colours[i] = none;
+                colours[(i * 4) + 0] = 0f;
+                colours[(i * 4) + 1] = 0f;
+                colours[(i * 4) + 2] = 0f;
+                colours[(i * 4) + 3] = 0f;
                 offsets[i] = Vector2.Zero;
                 motions[(i * 4) + 0] = 0f;
                 motions[(i * 4) + 1] = 0f;
@@ -2876,25 +3074,6 @@ public sealed class Engine_FxSystem
                 motions[(i * 4) + 3] = 0f;
             }
         }
-
-        // Each packed-array Variant carries a finalizable Disposer registered in GodotSharp's
-        // DisposablesTracker; left to the finalizer, all four survive their first GC. Disposed
-        // here they die in gen0; the Array holds its own reference to the packed data.
-        Variant vPositions = positions, vUvs = uvs, vColours = colours, vOffsets = offsets, vMotion = motions;
-        Godot.Collections.Array arrays = _surfaceArrays ??= MakeSurfaceArrays();
-        arrays[(int)Mesh.ArrayType.Vertex] = vPositions;
-        arrays[(int)Mesh.ArrayType.TexUV] = vUvs;
-        arrays[(int)Mesh.ArrayType.Color] = vColours;
-        arrays[(int)Mesh.ArrayType.TexUV2] = vOffsets;
-        arrays[(int)Mesh.ArrayType.Custom0] = vMotion;
-        vPositions.Dispose();
-        vUvs.Dispose();
-        vColours.Dispose();
-        vOffsets.Dispose();
-        vMotion.Dispose();
-        Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays, null, null, MotionFormat);
-        mesh.SurfaceSetMaterial(mesh.GetSurfaceCount() - 1, material);
-        Refii.Core.Engine_SpikeNotes.Since(Refii.Core.Engine_SpikeNotes.Kind.FxSurfaceBuild, builtFrom);
     }
 
     /// <summary>
@@ -2904,9 +3083,14 @@ public sealed class Engine_FxSystem
     /// </summary>
     private static Godot.Collections.Array? _surfaceArrays;
 
-    /// <summary>CUSTOM0 as four floats: the motion the billboard shader draws between steps by.</summary>
-    private static readonly Mesh.ArrayFormat MotionFormat =
-        (Mesh.ArrayFormat)((long)Mesh.ArrayCustomFormat.RgbaFloat << (int)Mesh.ArrayFormat.FormatCustom0Shift);
+    /// <summary>
+    /// CUSTOM0 and CUSTOM1 as four 32-bit floats each: CUSTOM0 holds sub-step motion, CUSTOM1
+    /// holds unclamped linear HDR RGBA vertex colour.
+    /// </summary>
+    private static readonly Mesh.ArrayFormat SurfaceCustomFormat =
+        (Mesh.ArrayFormat)(
+            ((long)Mesh.ArrayCustomFormat.RgbaFloat << (int)Mesh.ArrayFormat.FormatCustom0Shift) |
+            ((long)Mesh.ArrayCustomFormat.RgbaFloat << (int)Mesh.ArrayFormat.FormatCustom1Shift));
 
     /// <summary>Vertices per flush bucket: 16 quads.</summary>
     private const int FlushBucket = 96;
@@ -3116,7 +3300,7 @@ public sealed class Engine_FxSystem
 
     private void EmitRibbon(
         Func<VisualRuntime, int, List<(Vector3, Vector2, Color, Vector2, Vector4)>> sink, EmitterRuntime rt, List<VisualRuntime> vis,
-        List<Vector3> pts, List<float> ages, List<Vector4> motions, Vector3 eye, bool constWidth, float[] lit, float intensity)
+        List<Vector3> pts, List<float> ages, List<Vector4> motions, Vector3 eye, bool constWidth, float[] lit, float[] instTint, float intensity)
     {
         int n = pts.Count;
         if (n < 2 || vis.Count == 0) return;
@@ -3128,6 +3312,7 @@ public sealed class Engine_FxSystem
         float[] attrA = RentF(ref _ribAttrA, n);
         Vector3[] attrC = RentV(ref _ribAttrC, n);
         int[] attrTex = RentI(ref _ribAttrTex, n);
+        float tr = _tint[0] * instTint[0], tg = _tint[1] * instTint[1], tb = _tint[2] * instTint[2];
         for (int k = 0; k < n; k++)
         {
             float age = ages[k];
@@ -3140,9 +3325,9 @@ public sealed class Engine_FxSystem
             attrW[k] = (constWidth ? vis[0].TrailWidth * 0.5f : (va.TrailWidth + ((vb.TrailWidth - va.TrailWidth) * w)) * 0.5f) * _sizeScale;
             float si = va.SelfIllum + ((vb.SelfIllum - va.SelfIllum) * w);
             attrC[k] = new Vector3(
-                lit[0] + ((va.Colour[0] + ((vb.Colour[0] - va.Colour[0]) * w) - lit[0]) * si),
-                lit[1] + ((va.Colour[1] + ((vb.Colour[1] - va.Colour[1]) * w) - lit[1]) * si),
-                lit[2] + ((va.Colour[2] + ((vb.Colour[2] - va.Colour[2]) * w) - lit[2]) * si));
+                (lit[0] + ((va.Colour[0] + ((vb.Colour[0] - va.Colour[0]) * w) - lit[0]) * si)) * tr,
+                (lit[1] + ((va.Colour[1] + ((vb.Colour[1] - va.Colour[1]) * w) - lit[1]) * si)) * tg,
+                (lit[2] + ((va.Colour[2] + ((vb.Colour[2] - va.Colour[2]) * w) - lit[2]) * si)) * tb);
             attrA[k] = (va.Alpha + ((vb.Alpha - va.Alpha) * w)) * DistanceFadeFactor(rt, pts[k], eye) * intensity;
             attrTex[k] = sa;
         }
@@ -3198,6 +3383,224 @@ public sealed class Engine_FxSystem
             list.Add((rp[j + 1] + rside[j + 1], new Vector2(u1, 0f), c1, Vector2.Zero, rm[j + 1]));
             list.Add((rp[j + 1] - rside[j + 1], new Vector2(u1, 1f), c1, Vector2.Zero, rm[j + 1]));
         }
+    }
+
+    /// <summary>Whether the guest has faded this effect's emitters out by distance.</summary>
+    public static bool ShouldCullByFade(float lightFade) => lightFade <= 0.001f;
+
+    /// <summary>
+    /// Whether this effect should skip host particle geometry emission (either because the guest
+    /// faded it out by distance or because the guest is drawing its particles and no displacement
+    /// or un-twinned mesh particles remain on the host).
+    /// </summary>
+    public static bool ShouldRunLightsOnly(
+        bool guestDrawn,
+        bool hasDisplacement,
+        bool guestMeshTwins,
+        bool hasMeshParticles,
+        float lightFade) =>
+        ShouldCullByFade(lightFade) || (guestDrawn && !hasDisplacement && (guestMeshTwins || !hasMeshParticles));
+
+    /// <summary>
+    /// Whether `_addMesh` may be populated on this step. When `guestDrawn` is true (even if
+    /// `_hasDisplacement` keeps `FableFx` stepping for `_dispMesh`), `_addMesh` must be treated as
+    /// null and cleared so no frame-0 fallback additive surfaces remain frozen on screen.
+    /// </summary>
+    public static bool ShouldUseAdditiveMesh(bool guestDrawn, bool hasAddMesh, bool additiveLayerPresent) =>
+        !guestDrawn && hasAddMesh && additiveLayerPresent;
+
+    /// <summary>
+    /// Fills the 20-entry shader keyframe tables from the up-to-19 keyframes in the material header,
+    /// padding trailing slots with the final keyframe (`sub_821CA108` at `0x821CA250..0x821CA264`).
+    /// </summary>
+    public static void FillGuestKeyframeTables(
+        ReadOnlySpan<float> buffer,
+        int baseOffset,
+        int keys,
+        float scale,
+        Span<Vector4> colours,
+        Span<Vector4> scales,
+        Span<Vector4> globalScales)
+    {
+        keys = Math.Clamp(keys, 0, 19);
+        int count = Math.Min(20, Math.Min(colours.Length, Math.Min(scales.Length, globalScales.Length)));
+        for (int k = 0; k < count; k++)
+        {
+            if (k < keys)
+            {
+                int o = baseOffset + k * 10;
+                colours[k] = new Vector4(buffer[o], buffer[o + 1], buffer[o + 2], buffer[o + 3]);
+                scales[k] = new Vector4(buffer[o + 4], buffer[o + 5], buffer[o + 8], buffer[o + 9]);
+                globalScales[k] = new Vector4(buffer[o + 6] * scale, buffer[o + 7] * scale, 0f, 0f);
+            }
+            else if (keys > 0)
+            {
+                colours[k] = colours[keys - 1];
+                scales[k] = scales[keys - 1];
+                globalScales[k] = globalScales[keys - 1];
+            }
+            else
+            {
+                colours[k] = Vector4.Zero;
+                scales[k] = Vector4.Zero;
+                globalScales[k] = Vector4.Zero;
+            }
+        }
+    }
+
+    /// <summary>Near freeze distance used under Classic or when Modern lighting is inactive.</summary>
+    public const float ClassicFreezeDistance = 50f;
+
+    /// <summary>
+    /// Extended in-frustum simulation reach under Modern lighting so distant flames in view (50..200 m)
+    /// keep animating instead of freezing after the guest withdraws its 50 m render twin.
+    /// </summary>
+    public const float ModernFreezeDistance = 200f;
+
+    /// <summary>Active in-frustum simulation distance for <see cref="FableFx"/>.</summary>
+    public static float EffectiveFreezeDistance(bool modernModel) =>
+        modernModel ? ModernFreezeDistance : ClassicFreezeDistance;
+
+    /// <summary>
+    /// Builds <c>vs_g_FadeOutDistanceInfo</c> (<c>R+384</c> slots <c>f2, f3, f4</c>). When
+    /// <paramref name="disableDistanceFade"/> is true (Modern renderer + Modern lighting, matching
+    /// <c>Engine_FxSystem.FadeOut == false</c>), disables the Xbox 360 pre-50 m alpha ramp while
+    /// preserving the emitter's intensity multiplier <paramref name="f4"/> in <c>.z</c>.
+    /// </summary>
+    public static Vector4 BuildGuestFadeOutInfo(float f2, float f3, float f4, bool disableDistanceFade) =>
+        disableDistanceFade
+            ? new Vector4(1e6f, 1f, f4, 0f)
+            : new Vector4(f3, f3 > f2 ? 1f / (f3 - f2) : 1f, f4, 0f);
+
+    /// <summary>
+    /// Proper right-handed (<c>det = +1</c>) Godot entity-mesh basis corresponding to an unrotated
+    /// guest world placement (<c>rows = I</c>). Safe for <see cref="Refii.Core.Engine_TickTimeline"/>
+    /// quaternion slerp without losing handedness.
+    /// </summary>
+    public static Basis EntityGuestIdentity =>
+        new(new Vector3(-1f, 0f, 0f), Vector3.Up, new Vector3(0f, 0f, -1f));
+
+    /// <summary>
+    /// Simulation (<c>FableFx</c>) basis corresponding to an unrotated guest world placement
+    /// (<c>det = -1</c>, axis swap <c>(x, z, y)</c>).
+    /// </summary>
+    public static Basis FxGuestIdentity =>
+        new(new Vector3(-1f, 0f, 0f), Vector3.Up, new Vector3(0f, 0f, 1f));
+
+    /// <summary>
+    /// Converts between <c>GameEntities</c> mesh space (<c>det = +1</c>) and <c>FableFx</c>
+    /// simulation space (<c>det = -1</c>) by negating basis column 2 (self-inverse involution,
+    /// matching <c>Engine_LevelFx.SimFromMesh = diag(1, 1, -1)</c>).
+    /// </summary>
+    public static Transform3D EntityMeshToFxTransform(Transform3D entityWorld) =>
+        new(new Basis(entityWorld.Basis.Column0, entityWorld.Basis.Column1, -entityWorld.Basis.Column2), entityWorld.Origin);
+
+    /// <summary>Converts a <c>FableFx</c> simulation transform (<c>det = -1</c>) into proper <c>SO(3)</c> entity-mesh space (<c>det = +1</c>).</summary>
+    public static Transform3D FxToEntityMeshTransform(Transform3D fxWorld) =>
+        EntityMeshToFxTransform(fxWorld);
+
+    /// <summary>
+    /// True when a 16-float row-major guest matrix (<c>R+320</c>) is bit-exact 4x4 identity at the
+    /// world origin — the signature of a world-space emitter whose particle positions are already
+    /// baked in guest world coordinates.
+    /// </summary>
+    public static bool IsExactGuestIdentity4x4(ReadOnlySpan<float> m) =>
+        m.Length >= 16 &&
+        m[0] == 1f && m[1] == 0f && m[2] == 0f && m[3] == 0f &&
+        m[4] == 0f && m[5] == 1f && m[6] == 0f && m[7] == 0f &&
+        m[8] == 0f && m[9] == 0f && m[10] == 1f && m[11] == 0f &&
+        m[12] == 0f && m[13] == 0f && m[14] == 0f && m[15] == 1f;
+
+    private static Vector3 SwapGuestGodot(Vector3 v) => new(-v.X, v.Z, v.Y);
+
+    /// <summary>
+    /// Decomposes a guest row-major 4x4 world matrix (<c>R+320</c>) into an orthonormal right-handed
+    /// (<c>det = +1</c>) entity-mesh <see cref="Transform3D"/> suitable for <see cref="Refii.Core.Engine_TickTimeline"/>
+    /// plus per-row guest scale <c>(sx, sy, sz)</c>.
+    /// </summary>
+    public static bool TryDecomposeGuestWorldMatrix(
+        ReadOnlySpan<float> m,
+        out Transform3D entityWorld,
+        out Vector3 guestScale,
+        out bool identityBasis)
+    {
+        entityWorld = Transform3D.Identity;
+        guestScale = Vector3.One;
+        identityBasis = false;
+        if (m.Length < 16)
+        {
+            return false;
+        }
+
+        var r0 = new Vector3(m[0], m[1], m[2]);
+        var r1 = new Vector3(m[4], m[5], m[6]);
+        var r2 = new Vector3(m[8], m[9], m[10]);
+        var pos = new Vector3(m[12], m[13], m[14]);
+        if (!r0.IsFinite() || !r1.IsFinite() || !r2.IsFinite() || !pos.IsFinite() || pos.LengthSquared() >= 1e12f)
+        {
+            return false;
+        }
+
+        identityBasis = r0 == new Vector3(1f, 0f, 0f) &&
+                        r1 == new Vector3(0f, 1f, 0f) &&
+                        r2 == new Vector3(0f, 0f, 1f);
+        if (identityBasis)
+        {
+            entityWorld = new Transform3D(EntityGuestIdentity, SwapGuestGodot(pos));
+            return true;
+        }
+
+        float sx = r0.Length();
+        float sy = r1.Length();
+        float sz = r2.Length();
+        if (sx < 1e-5f || sy < 1e-5f || sz < 1e-5f)
+        {
+            return false;
+        }
+
+        Vector3 u0 = r0 / sx;
+        Vector3 u1 = r1 / sy;
+        Vector3 u2 = r2 / sz;
+        float det = u0.Cross(u1).Dot(u2);
+        if (!float.IsFinite(det) || MathF.Abs(det) < 0.01f)
+        {
+            return false;
+        }
+
+        if (det < 0f)
+        {
+            sz = -sz;
+            u2 = -u2;
+        }
+
+        var basis = new Basis(SwapGuestGodot(u0), SwapGuestGodot(u2), -SwapGuestGodot(u1)).Orthonormalized();
+        guestScale = new Vector3(sx, sy, sz);
+        entityWorld = new Transform3D(basis, SwapGuestGodot(pos));
+        return true;
+    }
+
+    /// <summary>
+    /// Recomposes an orthonormal right-handed entity-mesh <see cref="Transform3D"/> and guest per-row
+    /// scale back into the 3 transposed <c>vs_g_MatWorld</c> column vectors (<c>sub_82270CD0</c>).
+    /// </summary>
+    public static void ComposeGuestMatWorldColumns(
+        Transform3D entityWorld,
+        Vector3 guestScale,
+        Span<Vector4> outColumns)
+    {
+        if (outColumns.Length < 3)
+        {
+            return;
+        }
+
+        Vector3 r0 = SwapGuestGodot(entityWorld.Basis.Column0) * guestScale.X;
+        Vector3 r1 = SwapGuestGodot(-entityWorld.Basis.Column2) * guestScale.Y;
+        Vector3 r2 = SwapGuestGodot(entityWorld.Basis.Column1) * guestScale.Z;
+        Vector3 pos = SwapGuestGodot(entityWorld.Origin);
+
+        outColumns[0] = new Vector4(r0.X, r1.X, r2.X, pos.X);
+        outColumns[1] = new Vector4(r0.Y, r1.Y, r2.Y, pos.Y);
+        outColumns[2] = new Vector4(r0.Z, r1.Z, r2.Z, pos.Z);
     }
 }
 

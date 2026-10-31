@@ -110,6 +110,7 @@ public sealed partial class Engine_FxDriver : Node
         {
             cameraPos = camera.GlobalPosition;
             cameraTransform = camera.GlobalTransform;
+            FableFx.PrepareFrame(camera);
         }
         Stepped = 0;
 

@@ -698,6 +698,12 @@ public static class Engine_TerrainSplatMaterial
 
         if (!compressed)
         {
+            for (int i = 0; i < built.Length; i++)
+            {
+                built[i]?.Dispose();
+                built[i] = null!;
+            }
+
             System.Threading.Tasks.Parallel.For(0, slices.Length, i =>
             {
                 Image image = temporary.Own(Image.CreateFromData(
@@ -907,6 +913,7 @@ public static class Engine_TerrainSplatMaterial
         }
 
         GD.Print($"[terrain] layer mask: {layers / (double)area:0.00} layers a texel on average, at most {widest} of {planes}");
-        return ImageTexture.CreateFromImage(Image.CreateFromData(width, height, false, Image.Format.Rgba8, bytes));
+        using Image maskImage = Image.CreateFromData(width, height, false, Image.Format.Rgba8, bytes);
+        return ImageTexture.CreateFromImage(maskImage);
     }
 }

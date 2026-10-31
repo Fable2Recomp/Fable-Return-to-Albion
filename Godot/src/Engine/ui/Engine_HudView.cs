@@ -5,6 +5,17 @@ using Refii.Core;
 
 namespace Refii.Ui;
 
+/// <summary>Target contract for the timing meter to publish its state and pip onto.</summary>
+public interface IEvaluatedExpressionHud
+{
+    Engine_HudValues Values { get; }
+    int ExpressionBand { get; set; }
+    (string Binding, float Degrees)? ExpressionPip { get; set; }
+    float PipLastPosition { get; set; }
+    ulong PipLastUsec { get; set; }
+    float PipDrawn { get; set; }
+}
+
 /// <summary>
 /// The rebuilt HUD, drawn by Godot from a layout, the artist's pieces and the guest's numbers.
 /// <see cref="Engine_HudLayout"/> says where a piece goes, <see cref="Engine_HudArt"/> what it
@@ -15,7 +26,7 @@ namespace Refii.Ui;
 /// which changes with the window.
 /// </summary>
 [Tool]
-public sealed partial class Engine_HudView : Node3D
+public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
 {
     private Engine_HudModPieces? _modPieces;
 
@@ -1543,6 +1554,15 @@ public sealed partial class Engine_HudView : Node3D
     /// </summary>
     public (string Binding, float Degrees)? ExpressionPip { get; set; }
 
+    /// <summary>Last stated pip position for smooth extrapolation between guest ticks.</summary>
+    public float PipLastPosition { get; set; } = float.NaN;
+
+    /// <summary>Timestamp (usec) of last stated pip position change.</summary>
+    public ulong PipLastUsec { get; set; }
+
+    /// <summary>Smoothly rendered pip position along the 0..100 track.</summary>
+    public float PipDrawn { get; set; } = float.NaN;
+
     /// <summary>Which pip elements the built HUD actually contains, and which it does not.</summary>
     public static readonly System.Collections.Generic.HashSet<string> PipAnchorsFound = new();
 
@@ -2651,10 +2671,11 @@ public sealed partial class Engine_HudView : Node3D
         }
 
         // On the guest's frame, or while anything is moving on Godot's clock (a gliding meter, a
-        // running pulser): the guest publishes per HF tick, and the walk below crosses into
-        // every piece's node.
+        // running pulser, an active expression pip): the guest publishes per HF tick, and the walk
+        // below crosses into every piece's node.
         // A resized window re-places every piece even while the guest is not stepping.
         if (_refreshed && !Refii.Core.Engine_GuestFrame.Changed && !Values.Seeking &&
+            ExpressionPip == _placedPip &&
             Window == _placedWindow && Seat == _placedSeat && frame == _placedFrame &&
             (Seat == Engine_UiSeats.Seat.Whole ||
                 (Suppressed == _placedSuppressed && ExpressionPlayers == _placedExpression)))
@@ -2670,6 +2691,7 @@ public sealed partial class Engine_HudView : Node3D
         _placedFrame = frame;
         _placedSuppressed = Suppressed;
         _placedExpression = ExpressionPlayers;
+        _placedPip = ExpressionPip;
         _refreshed = true;
         ++Walks;
         long walkMark = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -3070,6 +3092,8 @@ public sealed partial class Engine_HudView : Node3D
     private bool _placedSuppressed;
 
     private int _placedExpression = 1;
+
+    private (string Binding, float Degrees)? _placedPip;
 
     /// <summary>The log tag: player two's view says so, or its lines read as player one's.</summary>
     private string Tag => Seat == Engine_UiSeats.Seat.PlayerTwo ? "[hud p2]" : "[hud]";

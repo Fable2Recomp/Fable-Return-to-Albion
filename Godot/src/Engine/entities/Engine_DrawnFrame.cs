@@ -57,7 +57,9 @@ public static class Engine_DrawnFrame
 	/// of the guest's world; sampling the wall clock per subject would spread them across the
 	/// frame's duration. Falls back to the live clock before the first stamp.
 	/// </summary>
-	public static ulong NowUsec => _now != 0UL ? _now : Godot.Time.GetTicksUsec();
+	public static ulong NowUsec => _now != 0UL
+		? _now
+		: (ulong)((System.Diagnostics.Stopwatch.GetTimestamp() * 1_000_000.0) / System.Diagnostics.Stopwatch.Frequency);
 
 	private static ulong _now;
 

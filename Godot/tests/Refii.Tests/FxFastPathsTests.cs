@@ -492,9 +492,10 @@ public sealed class FxFastPathsTests
 				AssertThat(v.Pos.X >= lo.X && v.Pos.Y >= lo.Y && v.Pos.Z >= lo.Z && v.Pos.X <= hi.X && v.Pos.Y <= hi.Y && v.Pos.Z <= hi.Z).IsTrue();
 		}
 
-		// A full-rate and a half-rate placement: both uniforms are read, and named so.
+		// In Modern mode, all emitters step at full 30 Hz (Step = 1) while preserving AuthoredStep
+		// for per-second drag and spread, so moving vertices belong to rate class 1 (full-rate).
 		AssertThat(classes).IsEqual(expectedClasses);
-		AssertThat(classes).IsEqual(3);
+		AssertThat(classes).IsEqual(1);
 
 		var box = new Aabb(lo, hi - lo);
 		AssertThat((box.Position - original.Position).Length() < 1e-4f && (box.End - original.End).Length() < 1e-4f)

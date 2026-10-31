@@ -107,8 +107,10 @@ public static class AndroidLogBundle
         relative.Add("phone-installer-state.json");
         relative.Add("android-status.json");
         return relative
-            .Select(path => new Entry(Path.Combine(userDirectory, path.Replace('/', Path.DirectorySeparatorChar)), "files/" + path))
-            .Where(entry => exists(entry.Source)).ToList();
+            .Select(path => (Entry: new Entry(Path.Combine(userDirectory, path.Replace('/', Path.DirectorySeparatorChar)), "files/" + path), RawPath: path))
+            .Where(item => exists(item.Entry.Source) || exists(Path.Combine(userDirectory, item.RawPath)))
+            .Select(item => item.Entry)
+            .ToList();
     }
 
     /// <summary>Every file in the save folder but its <see cref="PrivateSaveFolder"/>, as <c>files/runtime/assets/save/...</c>.</summary>
@@ -357,7 +359,7 @@ public static class AndroidLogBundle
                 .Append(File.Exists(library) ? $"  module {new FileInfo(library).Length / (1024 * 1024)} MB, written {Utc(File.GetLastWriteTimeUtc(library))}" : "  no module")
                 .AppendLine(File.Exists(Path.Combine(build, "completed.json")) ? ", completed" : ", not completed");
         }
-        return text.ToString();
+        return text.ToString().Replace("\r\n", "\n");
     }
 
     /// <summary>Whether the last compiled module was built from this APK's bundle, read from the installer state.</summary>

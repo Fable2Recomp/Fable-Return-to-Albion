@@ -359,19 +359,24 @@ public partial class GameSession : Node
 					}
 					Refii.Fx.Engine_FxMeshTwins.Instance?.Pump(modernEye);
 					Refii.Fx.FableFx.GuestMeshTwins = Refii.Fx.Engine_FxMeshTwins.FeedLive;
-					// The guest's particle groups and trails on our own shaders; GameFx stands down only
-					// the effects whose groups are drawn here (FableFx.GuestDrawn), every other keeps its own.
-					if (Refii.Models.Engine_ClassicParticles.Instance is null)
-					{
-						AddChild(new Refii.Models.Engine_ClassicParticles { Name = "GuestParticles" });
-					}
-					Refii.Models.Engine_ClassicParticles.Instance?.Pump(modernEye);
+					// SEPARATION OF CONCERNS BETWEEN MODERN AND CLASSIC PARTICLE SYSTEMS:
+					// - Modern mode (!Engine_ClassicMaterial.Active) uses FableFx + Engine_FxSystem exclusively
+					//   across the entire 0..200m range (simulated at 30 Hz with GPU sub-step interpolation and
+					//   unclamped linear HDR colours).
+					// - Classic mode (Engine_ClassicMaterial.Active) uses Engine_ClassicParticles exclusively,
+					//   pumped below via Engine_ClassicPath.Pump.
+					// Keeping the two runtime systems separate by renderer mode avoids split-brain 50m handoffs
+					// while sharing pure static math/table helpers on Engine_FxSystem.
 					Refii.Models.Engine_ModernFur.Pump(modernEye);
 					if (guestFrame)
 					{
 						Refii.Fx.Engine_ModernDrunk.Pump(this);
-						Refii.Fx.Engine_DisplacementMeshes.Pump();
 					}
+					else if (Refii.Fx.Engine_ModernDrunk.Drawn > 0)
+					{
+						Refii.Fx.Engine_FxDisplacement.NotifyActive();
+					}
+					Refii.Fx.Engine_DisplacementMeshes.Pump();
 				}
 			}
 		}

@@ -86,6 +86,24 @@ public static class Engine_EntityAppearance
     private static readonly StringName ClassicTintParameter = "ps_g_StandardMaterialTintColour";
 
     /// <summary>
+    /// Returns the modern tint vector for <paramref name="node"/> from the C# appearance cache
+    /// without querying <c>RenderingServer</c>. Returns <see cref="Vector4.One"/> when constructed.
+    /// </summary>
+    public static Vector4 GetModernTint(MeshInstance3D node)
+    {
+        if (Applied.TryGetValue(node, out HostBridge.EntityAppearance look))
+        {
+            return new Vector4(
+                Mathf.Min(look.TintLanes.X, SceneCeilingTint),
+                Mathf.Min(look.TintLanes.Y, SceneCeilingTint),
+                Mathf.Min(look.TintLanes.Z, SceneCeilingTint),
+                1f);
+        }
+
+        return Vector4.One;
+    }
+
+    /// <summary>
     /// The body's fade and tint onto its cloth. The guest draws the cloth as part of the body, so
     /// it takes the same c49 tint and the same blend; here the cloth is a child node of its own
     /// and would otherwise stay untinted and opaque under a fading, tinted body.
@@ -212,6 +230,16 @@ public static class Engine_EntityAppearance
             Tints[node] = (modern, classic);
         }
 
+        if (look.IsConstructed)
+        {
+            Applied.Remove(node);
+            Tints.Remove(node);
+        }
+        else
+        {
+            Applied[node] = look;
+        }
+
         MirrorToCloth(node);
 
         // THE OVERLAY: SetSaturationMask (+196) marks the node's pixels for the post-process,
@@ -245,15 +273,6 @@ public static class Engine_EntityAppearance
             {
                 Overlays[node] = overlay;
             }
-        }
-
-        if (look.IsConstructed)
-        {
-            Applied.Remove(node);
-        }
-        else
-        {
-            Applied[node] = look;
         }
     }
 

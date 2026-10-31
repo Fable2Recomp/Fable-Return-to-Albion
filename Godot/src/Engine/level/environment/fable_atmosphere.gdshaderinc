@@ -84,9 +84,14 @@ global uniform vec3 atmos_near_t3;
 global uniform vec3 atmos_near_t4;
 
 /// The remaster's INTERIOR FOG SCALE (`interior_fog_scale`): 1.0 where the level has a sky,
-/// the cvar where it has none. Rides the guest's own blend factor below, so a scaled fog is
-/// the guest's line with a smaller Fx, not a different formula.
+/// the cvar where it has none. Scales optical depth in the Beer-Lambert exponent so values > 1.0
+/// physically thicken the fog without clamping or inverting transmittance.
 global uniform float fable_interior_fog = 1.0;
+
+/// View-space Z depth (`VolumetricFogLength`, e.g. 128.0m) up to which Godot's built-in 3D
+/// Volumetric Fog integrates near-to-mid-field atmosphere in Modern mode; 0.0 when disabled or
+/// in Classic mode.
+global uniform float fable_volumetric_fog_end = 0.0;
 
 /// The guest's `g_AtmosphericFactors` — x scales the whole fog blend, y scales the fog colour.
 ///
@@ -128,17 +133,25 @@ bool fable_atmosphere_terms_for(
 		return false;
 	}
 
-	// The gate. Not a fade — the guest's `if (p0)` has no else branch, and the curve reaches zero
-	// optical depth here anyway, so the edge is continuous rather than a step.
-	float d = length(view_vertex) - atmos_range.x;
+	float radial_dist = length(view_vertex);
+	float d = radial_dist - atmos_range.x;
 	if (d <= 0.0) {
 		return false;
 	}
 
+	float fog_scale = max(fable_interior_fog, 0.0);
+	if (fog_scale <= 0.0) {
+		return false;
+	}
+
+	const float knot = 7.8125;
+	float dl = max(d - (0.5 * knot), 0.0);
+
 	// The world direction from the eye toward this fragment, then into the axes the dome works in.
+	// Godot (x, y, z) maps to the guest's dome axes as (-x, z, y) — matching sky.gdshader and sky_dome.gdshaderinc.
 	vec3 world_dir = normalize((inv_view * vec4(view_vertex, 0.0)).xyz);
 	float sun_dot = clamp(
-		dot(normalize(atmos_sun), vec3(world_dir.x, world_dir.z, world_dir.y)), 0.0, 1.0);
+		dot(normalize(atmos_sun), vec3(-world_dir.x, world_dir.z, world_dir.y)), 0.0, 1.0);
 	// Clamped to the edge texel centres: a global sampler takes no hint and Godot's default
 	// REPEATS, so at u = 0 linear filtering would blend in the sun-facing end texel. The guest's
 	// tfetch1D addresses this LUT with clamp.
@@ -157,16 +170,6 @@ bool fable_atmosphere_terms_for(
 	// (i x 7.8125, Engine_ClassicAtmosphere) and the fetch filters about texel CENTRES, so the
 	// guest's fog at distance d is the curve at d - 3.906 — exactly clear for the first 3.9 units
 	// past FoggingStart, where the unshifted curve already put up to a fifth too much depth.
-	const float knot = 7.8125;
-	float dl = max(d - (0.5 * knot), 0.0);
-
-	// THE GUEST'S FIRST LUT KNOTS, reproduced because the look needs them. `sub_821FE040` bakes
-	// the curve at `i * 7.8125` units past FoggingStart (0x821FE21C..0x821FE234: the integer texel
-	// index times 7.8125) and the pixel shader reads it linearly filtered, so between two knots
-	// the guest's fog is a straight line. The themes' exponents run near 0.3, where the power law
-	// itself climbs half of its first knot's depth within the first 0.7 units — drawn as stated it
-	// is a ring around the eye at FoggingStart, plain at night against an unfogged floor. Past a
-	// few knots the line and the curve agree and the curve is cheaper.
 	vec3 raw;
 #ifdef FABLE_LITE
 	// LITE: the published knots whenever they are ready (every supported curve), and the far
@@ -179,21 +182,35 @@ bool fable_atmosphere_terms_for(
 		float below = floor(dl / knot) * knot;
 		int index = int(floor(dl / knot));
 		raw = mix(fable_atmosphere_near_knot(index), fable_atmosphere_near_knot(index + 1), (dl - below) / knot);
+		if (abs(fog_scale - 1.0) > 1e-4) {
+			raw = pow(max(raw, vec3(1e-6)), vec3(fog_scale));
+		}
 	} else {
 		// Keep the original far expression and unsupported-state behavior. In particular,
 		// CPU/GPU pow(0,0) behavior is not repaired by the endpoint optimization.
 		float t = min(dl, atmos_range.y) * atmos_curve.y;
-		float optical_depth = atmos_curve.x * pow(max(t, 0.0), atmos_curve.z);
+		float optical_depth = atmos_curve.x * pow(max(t, 0.0), atmos_curve.z) * fog_scale;
 		raw = exp(-atmos_beta * optical_depth);
 #ifndef FABLE_LITE
 		if (dl < knot * 4.0) {
 			// Interpolated as the LUT is: in transmittance, between the knots either side.
 			float below = floor(dl / knot) * knot;
-			float depth_below = atmos_curve.x * pow(min(below, atmos_range.y) * atmos_curve.y, atmos_curve.z);
-			float depth_above = atmos_curve.x * pow(min(below + knot, atmos_range.y) * atmos_curve.y, atmos_curve.z);
+			float depth_below = atmos_curve.x * pow(min(below, atmos_range.y) * atmos_curve.y, atmos_curve.z) * fog_scale;
+			float depth_above = atmos_curve.x * pow(min(below + knot, atmos_range.y) * atmos_curve.y, atmos_curve.z) * fog_scale;
 			raw = mix(exp(-atmos_beta * depth_below), exp(-atmos_beta * depth_above), (dl - below) / knot);
 		}
 #endif
+	}
+
+	// When Godot's built-in 3D Volumetric Fog uniform medium is active (`fable_volumetric_fog_end > 0.0`),
+	// `fable_volumetric_fog_end` stores the uniform 3D scattering medium's base density `sigma_vol`
+	// integrated across the `0 .. 128m` froxel frustum from the camera (`radial_dist`).
+	// Subtract the full froxel optical depth (`sigma_vol * min(radial_dist, 128.0)`) so near-field 3D
+	// volumetric fog never compounds onto the distance analytic fog curve.
+	if (fable_volumetric_fog_end > 0.0) {
+		float vol_dist = clamp(radial_dist, 0.0, 128.0);
+		vec3 cancel_depth = vec3(fable_volumetric_fog_end * vol_dist);
+		raw = min(raw * exp(cancel_depth), vec3(1.0));
 	}
 
 	// Fx AND Fy FOLDED IN HERE, so that `transmittance` is the EFFECTIVE one and every caller —
@@ -205,7 +222,7 @@ bool fable_atmosphere_terms_for(
 	//
 	// so the surface's factor is `1 - Fx*(1-T)` and the added term carries Fy. Written this way the
 	// apply below is a plain lerp and no caller has to know the algebra.
-	transmittance = vec3(1.0) - (atmos_factors.x * fable_interior_fog * (vec3(1.0) - raw));
+	transmittance = vec3(1.0) - (atmos_factors.x * (vec3(1.0) - raw));
 	fog_colour = (close_fog_blend ? mix(close_fog, sky, clamp(d * atmos_range.z, 0.0, 1.0)) : sky) * atmos_factors.y;
 	return true;
 }

@@ -111,7 +111,7 @@ global uniform sampler2D fable_light_table;
 
 /// Pre-baked static world shadow atlas (octahedral R16F depth in metres), published by
 /// Engine_LightTable when a level's `.shadows` container is loaded.
-global uniform sampler2D fable_static_shadow_atlas : filter_nearest;
+global uniform sampler2DArray fable_static_shadow_atlas : filter_nearest;
 
 /// The fragment's world position, assigned at the end of every including shader's vertex().
 varying vec3 fable_world;
@@ -426,29 +426,14 @@ vec3 fable_ambient(vec3 bake) {
 /// and clears exactly seven slots, and `sub_82B1EE68` buckets the gathered count through the table
 /// at 0x833216F4 = {1,1,2,4,4,7,7,7,0} to pick the BLT1/2/4/7 permutation.
 ///
-/// The guest's distance falloff — `saturate(1 - d/range)`, linear, one radius — and the shadow.
+/// Godot's native distance falloff (`OmniAttenuation = 1.0` / `SpotAttenuation = 1.0`,
+/// `((1 - (d/R)^4)^2) / d`, clamped at <= 1.0 for d < 1m) and static shadow atlas lookup.
 ///
-/// Fable's ramp is linear and Godot's is not: at half range the guest is at 0.50 and Godot at
-/// 0.88, so on Godot's curve every torch reads as a far larger, flatter pool than the original.
-///
-/// Godot folds the shadow into ATTENUATION — `omni_attenuation * shadow` and
-/// `spot_attenuation * shadow` in scene_forward_lights_inc.glsl — and hands `light()` no
-/// position, so from ATTENUATION alone the distance and the shadow cannot be told apart. A placed
-/// light therefore carries a record (see `fable_light_table`): the distance is MEASURED, the
-/// guest's ramp follows from it, and dividing ATTENUATION by Godot's own window at that distance
-/// leaves the shadow — and, for a spot, the cone, which at SpotAngleAttenuation = 1 is already the
-/// guest's `(cos - K)/(1 - K)`. The window is the zero-decay form `(1 - (d/r)^4)^2`, which is why
-/// Engine_LevelLights pins OmniAttenuation and SpotAttenuation to 0.
-///
-/// A light without a record — an FX light, or anything at Godot's default specular — is
-/// unshadowed by construction, so its ATTENUATION is the window alone and inverts in closed form:
-/// d/r = (1 - sqrt(A))^(1/4), exact to 3e-14. That inversion is NOT valid once a shadow is
-/// multiplied in, which is why every light that can cast is registered.
-///
-///
-/// The guest's seven-light cap is NOT reproduced: the ramp reaches exactly zero at the range, so
-/// the cap only changes the picture where more than seven radii overlap one point — the worst
-/// overlap in the shipped set is 11, and only 4 of 81 lit levels exceed 7 anywhere.
+/// Placed lights carry a record in `fable_light_table` so `fable_attenuation` can sample the
+/// baked octahedral static shadow atlas (`fable_static_shadow_atlas`) and enforce the live
+/// flickering radius (`row1.x`) without moving the node's spatial AABB when shrinking.
+/// Unregistered lights (FX lights, spell lights, mod lights) use `clamp(godot_attenuation, 0.0, 1.0)`
+/// directly.
 vec2 fable_octahedral_uv(vec3 dir) {
 	vec3 n = dir / max(abs(dir.x) + abs(dir.y) + abs(dir.z), 1e-6);
 	vec2 oct = n.z >= 0.0
@@ -457,14 +442,14 @@ vec2 fable_octahedral_uv(vec3 dir) {
 	return oct * 0.5 + 0.5;
 }
 
-float fable_sample_static_shadow(vec3 light_to_world, float d, vec3 atlas_rect) {
+float fable_sample_static_shadow(vec3 light_to_world, float d, vec3 atlas_rect, float layer) {
 	if (atlas_rect.z <= 0.0 || d <= 1e-4) {
 		return 1.0;
 	}
 
 	vec2 tile_uv = fable_octahedral_uv(light_to_world);
 	vec2 uv = atlas_rect.xy + tile_uv * atlas_rect.z;
-	vec2 texel_size = 1.0 / vec2(textureSize(fable_static_shadow_atlas, 0));
+	vec2 texel_size = 1.0 / vec2(textureSize(fable_static_shadow_atlas, 0).xy);
 
 	// Receiver depth bias (the baker already applies slope-scale normal bias per texel).
 	float bias = max(0.03, d * 0.015);
@@ -476,10 +461,15 @@ float fable_sample_static_shadow(vec3 light_to_world, float d, vec3 atlas_rect) 
 	vec2 f = fract(st);
 	vec2 base_uv = (floor(st) + 0.5) * texel_size;
 
-	float d00 = textureLod(fable_static_shadow_atlas, base_uv, 0.0).r;
-	float d10 = textureLod(fable_static_shadow_atlas, base_uv + vec2(texel_size.x, 0.0), 0.0).r;
-	float d01 = textureLod(fable_static_shadow_atlas, base_uv + vec2(0.0, texel_size.y), 0.0).r;
-	float d11 = textureLod(fable_static_shadow_atlas, base_uv + texel_size, 0.0).r;
+	vec3 uv00 = vec3(base_uv, layer);
+	vec3 uv10 = vec3(base_uv + vec2(texel_size.x, 0.0), layer);
+	vec3 uv01 = vec3(base_uv + vec2(0.0, texel_size.y), layer);
+	vec3 uv11 = vec3(base_uv + texel_size, layer);
+
+	float d00 = textureLod(fable_static_shadow_atlas, uv00, 0.0).r;
+	float d10 = textureLod(fable_static_shadow_atlas, uv10, 0.0).r;
+	float d01 = textureLod(fable_static_shadow_atlas, uv01, 0.0).r;
+	float d11 = textureLod(fable_static_shadow_atlas, uv11, 0.0).r;
 
 	float s00 = smoothstep(receiver - 0.06, receiver, d00);
 	float s10 = smoothstep(receiver - 0.06, receiver, d10);
@@ -498,34 +488,45 @@ float fable_attenuation(float godot_attenuation, bool directional, float specula
 #endif
 	}
 
+	// Clamp Godot's native attenuation (`OmniAttenuation = 1.0` / `SpotAttenuation = 1.0`) to 1.0
+	// so surfaces closer than 1m (`1/d > 1`) never blow out, while distances >= 1m follow Godot's
+	// native `((1 - (d/R)^4)^2) / d` falloff and dynamic entity shadow map.
+	float atten = clamp(godot_attenuation, 0.0, 1.0);
+	if (atten <= 1e-4) {
+		return 0.0;
+	}
+
 	int slot = int(specular_amount * 0.5 + 0.5) - 2;
-	if (slot >= 0 && slot < textureSize(fable_light_table, 0).x) {
+	if (slot >= 0 && slot < 1000) {
 		vec4 record = texelFetch(fable_light_table, ivec2(slot, 0), 0);
 		float d = distance(world, record.xyz);
-
-		// TWO RADII. record.w is the NODE's range: it is what Godot's window below was computed
-		// with, so it is what undoes it. The guest's ramp runs over the radius it STATES, which for
-		// a flickering torch breathes every step and lives in the table's second row — the node
-		// keeps the flicker's envelope so its bounds never move (see Engine_LightTable.Stated).
-		// Past the stated radius the ramp is zero and so is the product: no window to undo.
 		vec4 row1 = texelFetch(fable_light_table, ivec2(slot, 1), 0);
 		float stated = row1.x;
-		float ramp = clamp(1.0 - d / max(stated, 1e-3), 0.0, 1.0);
-		if (ramp <= 0.0) {
+		if (d >= stated) {
 			return 0.0;
 		}
 
-		float ratio = clamp(d / max(record.w, 1e-3), 0.0, 1.0);
-		float window = 1.0 - (ratio * ratio * ratio * ratio);
-		window *= window;
-		float rest = clamp(godot_attenuation / max(window, 1e-4), 0.0, 1.0);
-		float static_shadow = fable_sample_static_shadow(world - record.xyz, d, row1.yzw);
-		return ramp * rest * static_shadow;
+		// When a flickering light breathes inward below its node range (`stated < record.w`),
+		// smoothly window the falloff to zero at `stated`.
+		if (stated < record.w - 1e-3) {
+			float r_s = clamp(d / max(stated, 1e-3), 0.0, 1.0);
+			float w_s = 1.0 - (r_s * r_s * r_s * r_s);
+			w_s *= w_s;
+			float r_n = clamp(d / max(record.w, 1e-3), 0.0, 1.0);
+			float w_n = 1.0 - (r_n * r_n * r_n * r_n);
+			w_n *= w_n;
+			atten *= clamp(w_s / max(w_n, 1e-4), 0.0, 1.0);
+			if (atten <= 1e-4) {
+				return 0.0;
+			}
+		}
+
+		vec4 row2 = texelFetch(fable_light_table, ivec2(slot, 2), 0);
+		float static_shadow = fable_sample_static_shadow(world - record.xyz, d, row1.yzw, row2.x);
+		return atten * static_shadow;
 	}
 
-	float a = clamp(godot_attenuation, 0.0, 1.0);
-	float ratio = pow(max(1.0 - sqrt(a), 0.0), 0.25);
-	return clamp(1.0 - ratio, 0.0, 1.0);
+	return atten;
 }
 
 /// +1 when the interpolated normal is on the side of the surface THE CAMERA SEES, -1 when it is

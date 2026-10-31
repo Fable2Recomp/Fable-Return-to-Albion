@@ -99,13 +99,16 @@ public sealed class Engine_ClipPlayhead
 		double span = 1.0;
 		if (Started && cut && previous == current && tick > _stamp)
 		{
-			double elapsed = System.Math.Clamp(tick - _stamp, 1.0, 4.0);
-			double inferred = Gap(current - _current) / elapsed;
-			if (inferred >= -RestartSeconds && inferred < RestartSeconds)
+			if (System.Math.Abs(Rate) > 1e-3)
 			{
-				cut = false;
-				previous = _current;
-				span = elapsed;
+				double elapsed = System.Math.Clamp(tick - _stamp, 1.0, 4.0);
+				double inferred = Gap(current - _current) / elapsed;
+				if (inferred >= -RestartSeconds && inferred < RestartSeconds)
+				{
+					cut = false;
+					previous = _current;
+					span = elapsed;
+				}
 			}
 		}
 		else if (Started && !cut && System.Math.Abs(Gap(previous - _current)) < 1e-4)
@@ -120,11 +123,27 @@ public sealed class Engine_ClipPlayhead
 			}
 		}
 
-		double step = Gap(current - previous) / span;
-		if (!(step >= -RestartSeconds) || step >= RestartSeconds)
+		double step;
+		if ((!Started || System.Math.Abs(_current) > 1e-4) && !cut && rawPrevious == 0.0 && current > 1.5 / TicksPerSecond)
 		{
-			step = 0.0;
+			// A newly spawned locomotion footstep leaf (`WalkFootstep` / `WalkFootstepMirror`) or
+			// phase-offset clip enters mid-stride (`current = 0.177 .. 0.256s` or higher) while its
+			// constructor-initialized `previous` slot (`node + 28`) is still `0.0`. Treating
+			// `current - 0.0` as the per-tick step sets `Rate = 3x..4x` and `_previous = 0.0`,
+			// anchoring `Time` at `~0.0s` (`200ms` behind the guest) on `alpha ~ 0` and forcing
+			// `+25%` saturated catch-up across the entire step. Seed a normal 1x tick step so
+			// `Reference(drawTick)` starts in exact sub-tick phase lockstep from frame 1.
+			step = 1.0 / TicksPerSecond;
 			cut = true;
+		}
+		else
+		{
+			step = Gap(current - previous) / span;
+			if (!(step >= -RestartSeconds) || step >= RestartSeconds)
+			{
+				step = 0.0;
+				cut = true;
+			}
 		}
 
 		_statedPrevious = rawPrevious;

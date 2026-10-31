@@ -153,6 +153,8 @@ public static class Engine_LightingFrame
 
 	private static float InteriorCvar(string name, string env, float fallback, float min, float max)
 	{
+		CheckGeneration();
+
 		// One config read per second at most: the post-effect asks every frame. Two threads
 		// come through here — the main thread via ConfigureEnvironment and the render thread
 		// via the post-effect's DarkLift — so the cache is read and written under its lock.
@@ -201,15 +203,12 @@ public static class Engine_LightingFrame
 	public static bool CurrentInterior { get; set; }
 
 	/// <summary>
-	/// THE INTERIOR DARK LIFT (`interior_dark_lift`): the tone floor divisor in levels with no
-	/// sky. The guest clamps the histogram average to 0.15 raw before forming the curve's key,
-	/// so a room whose raw mean sits far under that is rendered dark by design; a lift of N lets
-	/// the floor fall to 0.15/N for such a frame. 1.5 compensates for the unoccluded floor share
-	/// in enclosed sky-less levels so caves match the classic model's exposure. Outdoors keeps
-	/// `modern_dark_lift`.
+	/// THE INTERIOR DARK LIFT (`interior_dark_lift`): normalized multiplier (1.0 = calibrated
+	/// baseline for the active tone curve) on the exposure floor lift in sky-less cave levels.
+	/// Outdoors uses `modern_dark_lift`.
 	/// </summary>
 	public static float InteriorDarkLift =>
-		InteriorCvar("interior_dark_lift", "REFII_INTERIOR_DARK_LIFT", 1.5f, 1f, 16f);
+		InteriorCvar("interior_dark_lift", "REFII_INTERIOR_DARK_LIFT", 1.0f, 0.25f, 16f);
 
 	/// <summary>How far the interior ambient lift is pulled toward neutral (0 = theme chroma).</summary>
 	public static float InteriorAmbientNeutral =>
@@ -220,12 +219,18 @@ public static class Engine_LightingFrame
 		InteriorCvar("interior_bake_scale", "REFII_INTERIOR_BAKE", 1f, 0.1f, 16f);
 
 	/// <summary>
-	/// The interior FOG scale on the guest's blend factor. The cave records state both fog
-	/// distances as zero, which the guest's LUT bake floors to 1 and 10 m — 86% fog at 50 m
-	/// toward a near-black brown — and the 360 reference shows no such wall.
+	/// Multiplier on the authored fog optical depth in sky-less cave and interior levels
+	/// (`interior_fog_scale`; 1.0 = shipped authored fog curve, 0 = off, >1 = denser).
 	/// </summary>
 	public static float InteriorFogScale =>
-		InteriorCvar("interior_fog_scale", "REFII_INTERIOR_FOG", 0.2f, 0f, 1f);
+		InteriorCvar("interior_fog_scale", "REFII_INTERIOR_FOG", 1.0f, 0f, 32f);
+
+	/// <summary>
+	/// Multiplier on the authored fog optical depth in sky-lit outdoor levels
+	/// (`outdoor_fog_scale`; 1.0 = shipped authored fog curve, 0 = off, >1 = denser).
+	/// </summary>
+	public static float OutdoorFogScale =>
+		InteriorCvar("outdoor_fog_scale", "REFII_OUTDOOR_FOG", 1.0f, 0f, 32f);
 
 	/// <summary>
 	/// THE REMASTER'S INTERIOR AMBIENT (`interior_ambient_scale`; 1.0 = shipped), on the theme's
@@ -259,6 +264,7 @@ public static class Engine_LightingFrame
 
 	private static int _switchesGen = -1;
 	private static bool? _modernAmbient;
+	private static bool? _volumetricFog;
 
 	private static void CheckGeneration()
 	{
@@ -269,6 +275,11 @@ public static class Engine_LightingFrame
 			_switchesGen = gen;
 			_modernAmbient = null;
 			_sunShadows = null;
+			_volumetricFog = null;
+			lock (_cvarCache)
+			{
+				_cvarCache.Clear();
+			}
 		}
 	}
 
@@ -291,10 +302,13 @@ public static class Engine_LightingFrame
 	{
 		get
 		{
-			string forced = System.Environment.GetEnvironmentVariable("REFII_LIGHTING_MODEL") ?? string.Empty;
-			if (forced.Length != 0)
+			if (Refii.Core.Engine_AppRoot.IsTestHost)
 			{
-				return !IsClassic(forced);
+				string forcedTest = System.Environment.GetEnvironmentVariable("REFII_LIGHTING_MODEL") ?? string.Empty;
+				if (forcedTest.Length != 0)
+				{
+					return !IsClassic(forcedTest);
+				}
 			}
 
 			CheckGeneration();
@@ -302,9 +316,17 @@ public static class Engine_LightingFrame
 			{
 				try
 				{
-					_modernAmbient = !Refii.Core.Engine_RefiiConfig.Read(out _)
-						.TryGetValue("lighting_model", out string? model) ||
-						!IsClassic(model);
+					string forced = System.Environment.GetEnvironmentVariable("REFII_LIGHTING_MODEL") ?? string.Empty;
+					if (forced.Length != 0)
+					{
+						_modernAmbient = !IsClassic(forced);
+					}
+					else
+					{
+						_modernAmbient = !Refii.Core.Engine_RefiiConfig.Read(out _)
+							.TryGetValue("lighting_model", out string? model) ||
+							!IsClassic(model);
+					}
 				}
 				catch (Exception)
 				{
@@ -344,6 +366,35 @@ public static class Engine_LightingFrame
 		}
 	}
 
+	/// <summary>
+	/// Whether Godot's 3D Volumetric Fog is enabled in the modern lighting model (`volumetric_fog`;
+	/// true by default).
+	/// </summary>
+	public static bool VolumetricFogEnabled
+	{
+		get
+		{
+			CheckGeneration();
+			if (_volumetricFog is null)
+			{
+				try
+				{
+					string forced = System.Environment.GetEnvironmentVariable("REFII_VOLUMETRIC_FOG") ?? string.Empty;
+					_volumetricFog = forced.Length != 0
+						? !forced.Equals("0", StringComparison.OrdinalIgnoreCase) && !forced.Equals("false", StringComparison.OrdinalIgnoreCase)
+						: Refii.Core.Engine_RefiiConfig.Bool(
+							Refii.Core.Engine_RefiiConfig.Read(out _), "volumetric_fog", true);
+				}
+				catch (Exception)
+				{
+					_volumetricFog = true;
+				}
+			}
+
+			return _volumetricFog.Value;
+		}
+	}
+
 	public static LightingFrame Evaluate(SkyTheme sky, LightingTheme lighting, SkyFrame frame) =>
 		EvaluateInto(sky, lighting, frame, new LightingFrame());
 
@@ -372,22 +423,9 @@ public static class Engine_LightingFrame
 		// deliberately different in the shipped data: across the themes they disagree on 209 of
 		// 348 samples, worst case 156.5 degrees — invisible on the 360, whose shadowing was
 		// baked, so nothing ever revealed where the rig pointed.
-		Array.Copy(frame.MainLightDirection, result.SunDirection, 3);
-		Array.Copy(frame.MainLightDirection, result.AmbientReference, 3);
-
-		// THE MODERN MODEL LIGHTS FROM THE VISIBLE SUN. The remaster's live shadows made the
-		// authored rig/disc disagreement legible for the first time — shadows falling away from
-		// the sun the player can SEE reads as a bug, whatever the data says.
 		//
-		// THE VISIBLE disc's world direction is `Engine_SkyFrame.ToGodot(frame.SunDirection)`
-		// — proven at the consumer, not assumed: the celestial shader transforms `element_dir`
-		// by VIEW_MATRIX alone (celestial.gdshader:16), so the uniform IS a world vector, and
-		// the uniform is set from exactly that conversion. ToGodot only negates X ([1] stays
-		// the elevation). A first version copied the frame RAW and lit every level from the
-		// east/west MIRROR of its visible sun — near-right when the sun's X was small, plainly
-		// wrong when it was not, which read as "levels out of sync". UpdateSun consumes this as
-		// a GLOBAL transform, the same world space. The rig's authored colour, energy and
-		// shadow gate are kept; only the AIM follows the disc.
+		// In Modern Model, the Xbox 360 light rig is completely disabled; early-out and do not
+		// copy or use frame.MainLightDirection.
 		if (ModernModel)
 		{
 			Vector3 disc = Refii.Level.Engine_SkyFrame.ToGodot(frame.SunDirection);
@@ -398,6 +436,16 @@ public static class Engine_LightingFrame
 				result.SunDirection[1] = disc.Y;
 				result.SunDirection[2] = disc.Z;
 			}
+			else
+			{
+				result.SunDirection[0] = result.SunDirection[1] = result.SunDirection[2] = 0f;
+			}
+			Array.Copy(result.SunDirection, result.AmbientReference, 3);
+		}
+		else
+		{
+			Array.Copy(frame.MainLightDirection, result.SunDirection, 3);
+			Array.Copy(frame.MainLightDirection, result.AmbientReference, 3);
 		}
 
 		float[] sunRgb = lighting.HasMainLightColour ? lighting.MainLightColour : frame.MainLightColour;
@@ -452,17 +500,44 @@ public static class Engine_LightingFrame
 		// disc set snapped the light and every shadow twice a day. In the fable model the disc IS
 		// the rig, so the rig branch only runs with the rig below the horizon and stays at zero.
 		float discUp = result.SunDirection[1];
-		float rigUp = frame.MainLightDirection[1];
-		if (discUp > 0f)
+		if (ModernModel)
 		{
-			result.SunEnergy = sunEnergy * MathF.Min(discUp / HorizonFade, 1f);
+			// In Modern Model, the scene's directional light strictly follows visible celestial
+			// bodies: the Sun while above the horizon, and the Moon while it is dark. The Xbox 360
+			// light rig is completely disabled and never used. When neither celestial body is above
+			// the horizon, celestial directional energy is exactly zero.
+			if (discUp > 0f)
+			{
+				Array.Copy(result.SunDirection, result.LightDirection, 3);
+				result.SunEnergy = sunEnergy * MathF.Min(discUp / HorizonFade, 1f);
+			}
+			else
+			{
+				Vector3 moon = Refii.Level.Engine_SkyFrame.ToGodot(frame.MoonDirection);
+				if (moon.LengthSquared() > 1e-8f)
+				{
+					moon = moon.Normalized();
+				}
+
+				result.LightDirection[0] = moon.X;
+				result.LightDirection[1] = moon.Y;
+				result.LightDirection[2] = moon.Z;
+
+				float nightUp = moon.Y;
+				result.SunEnergy = nightUp > 0f
+					? sunEnergy * MathF.Min(nightUp / HorizonFade, 1f) * MathF.Min(-discUp / HorizonFade, 1f)
+					: 0f;
+			}
 		}
 		else
 		{
 			Array.Copy(frame.MainLightDirection, result.LightDirection, 3);
-			result.SunEnergy = rigUp > 0f
-				? sunEnergy * MathF.Min(rigUp / HorizonFade, 1f) * MathF.Min(-discUp / HorizonFade, 1f)
-				: 0f;
+			float rigUp = frame.MainLightDirection[1];
+			result.SunEnergy = (discUp > 0f)
+				? sunEnergy * MathF.Min(discUp / HorizonFade, 1f)
+				: (rigUp > 0f
+					? sunEnergy * MathF.Min(rigUp / HorizonFade, 1f) * MathF.Min(-discUp / HorizonFade, 1f)
+					: 0f);
 		}
 
 		// THE THEME FIELD IS THE GUEST'S SHADOW GATE, AND 0 REALLY MEANS NO SUN SHADOW.
@@ -476,7 +551,7 @@ public static class Engine_LightingFrame
 		//
 		// The colour test is the guest's too: |MainLightColour|^2 > 1e-4 (`vmsum3fp128` at
 		// 0x821D1F30). Modernised, we keep that test and drop the authored flag.
-		result.SunShadow = sunEnergy > 0.01f
+		result.SunShadow = result.SunEnergy > 0.01f
 			&& (SunShadowsModernized || (lighting.HasMainLightShadowed
 				&& lighting.MainLightShadowed > 0.5f));
 
@@ -506,6 +581,8 @@ public static class Engine_LightingFrame
 			if (!result.HasAmbient)
 			{
 				hasSky = false;
+				result.SunEnergy = 0f;
+				result.SunShadow = false;
 				if (lighting.HasAmbientColour)
 				{
 					Split(lighting.AmbientColour, result.AmbientColour, out float authoredEnergy);

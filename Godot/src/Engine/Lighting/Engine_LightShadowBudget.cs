@@ -129,7 +129,7 @@ public partial class Engine_LightShadowBudget : Node
 	public const int LightSlack = 12;
 
 	/// <summary>Metres from the eye within which a light is in view whatever the frustum says.</summary>
-	public const float NearEligibleMetres = 45.0f;
+	public const float NearEligibleMetres = 12.0f;
 
 	/// <summary>A light whose pool reaches this far past the eye is in view whatever the frustum says.</summary>
 	public const float NearEligibleBeyondRange = 4.0f;
@@ -173,6 +173,18 @@ public partial class Engine_LightShadowBudget : Node
 		/// <summary>The shadow caster mask last stated to the node.</summary>
 		public uint ShadowMask;
 
+		/// <summary>Cached linear RGB tint of the light.</summary>
+		public Vector3 LinearColor;
+
+		/// <summary>Cached volumetric fog scattering multiplier for this fixture.</summary>
+		public float VolumetricFogScale;
+
+		/// <summary>World forward axis (-GlobalBasis.Z) for spotlights; zero for omni lights.</summary>
+		public Vector3 SpotDir;
+
+		/// <summary>Cosine of spotlight half-angle; -2.0f for omni lights.</summary>
+		public float SpotCosHalfAngle;
+
 		// This pass.
 		public bool InTree;
 		public Vector3 At;
@@ -206,8 +218,17 @@ public partial class Engine_LightShadowBudget : Node
 	private static int _count;
 	private static readonly Dictionary<Light3D, int> _index = new();
 	private static Candidate[] _candidates = new Candidate[64];
+	private static readonly Candidate[] _shaftCandidates = new Candidate[256];
+	private static readonly Engine_VolumetricLightShafts.ShaftLightInput[] _shaftInputs =
+		new Engine_VolumetricLightShafts.ShaftLightInput[Engine_VolumetricLightShafts.MaxShaftLights];
+	private static readonly Engine_VolumetricLightShafts.MistVolumeSnapshot[] _mistInputs =
+		new Engine_VolumetricLightShafts.MistVolumeSnapshot[Engine_VolumetricLightShafts.MaxMistVolumes];
+	private static readonly Engine_VolumetricLightShafts.VolumetricCapsule[] _capsuleInputs =
+		new Engine_VolumetricLightShafts.VolumetricCapsule[Engine_VolumetricLightShafts.MaxCapsules];
 	private static int _metaGeneration = -1;
 	private static int _zoneGeneration = -1;
+	private static int _shaftMediumGen = -1;
+	private static int _shaftAtlasGen = -1;
 
 	private static readonly Dictionary<Light3D, float> _fading = new();
 	private static readonly Dictionary<Light3D, float> _visibilityTarget = new();
@@ -231,6 +252,7 @@ public partial class Engine_LightShadowBudget : Node
 	// in the test host (ReloadConfig). The metas are read only when the fixture set is rebuilt.
 	private const string AuthoredShadowName = Engine_LevelLights.AuthoredShadowMeta;
 	private const string BaseEnergyName = Engine_LevelLights.BaseEnergyMeta;
+	private const string VolumetricFogScaleName = Engine_LevelLights.VolumetricFogScaleMeta;
 
 	/// <summary>Current smooth visibility fade factor in [0, 1] for <paramref name="light"/>.</summary>
 	public static float VisibilityFactorOf(Light3D light) =>
@@ -280,17 +302,22 @@ public partial class Engine_LightShadowBudget : Node
 			Fade((float)delta);
 		}
 
+		// The world's primary camera: the window's under one view, the first split view's under
+		// two; player two's is Engine_Views.Second.
+		Camera3D? camera = Refii.Core.Engine_Views.Primary(GetViewport()?.GetCamera3D());
+
 		_since += delta;
 		if (_since < Interval)
 		{
+			if (camera is not null)
+			{
+				UpdateVolumetricLightShafts(camera);
+			}
 			return;
 		}
 
 		_since = 0;
 
-		// The world's primary camera: the window's under one view, the first split view's under
-		// two; player two's is Engine_Views.Second.
-		Camera3D? camera = Refii.Core.Engine_Views.Primary(GetViewport()?.GetCamera3D());
 		if (camera is null)
 		{
 			return;
@@ -329,13 +356,26 @@ public partial class Engine_LightShadowBudget : Node
 			Vector3 cameraDir = -_views[v].GlobalBasis.Z;
 			cameraMoved |= eye.DistanceSquaredTo(_lastCameraPos[v]) > 0.04f ||
 				cameraDir.DistanceSquaredTo(_lastCameraDir[v]) > 0.005f;
-			_lastCameraPos[v] = eye;
-			_lastCameraDir[v] = cameraDir;
 		}
 
-		if (!cameraMoved && _count > 0 && _wantedCount > 0)
+		bool dirty = _metaGeneration != Engine_LevelLights.LightMetaGeneration ||
+			_zoneGeneration != Engine_LightZones.Generation ||
+			_shaftMediumGen != Engine_VolumetricLightShafts.MediumGeneration ||
+			_shaftAtlasGen != Engine_LevelShadowMaps.AtlasGeneration;
+
+		if (!cameraMoved && !dirty && _count > 0 && _wantedCount > 0)
 		{
+			UpdateVolumetricLightShafts(camera);
 			return;
+		}
+
+		_shaftMediumGen = Engine_VolumetricLightShafts.MediumGeneration;
+		_shaftAtlasGen = Engine_LevelShadowMaps.AtlasGeneration;
+
+		for (int v = 0; v < views; v++)
+		{
+			_lastCameraPos[v] = _views[v].GlobalPosition;
+			_lastCameraDir[v] = -_views[v].GlobalBasis.Z;
 		}
 
 		using (Refii.Core.Engine_FramePhases.Measure("budget.rank"))
@@ -345,6 +385,7 @@ public partial class Engine_LightShadowBudget : Node
 			{
 				_count = 0;
 				_index.Clear();
+				Engine_VolumetricLightShafts.HideVolume();
 				return;
 			}
 
@@ -355,7 +396,134 @@ public partial class Engine_LightShadowBudget : Node
 		using (Refii.Core.Engine_FramePhases.Measure("budget.apply"))
 		{
 			Apply();
+			UpdateVolumetricLightShafts(camera);
 		}
+	}
+
+	private void UpdateVolumetricLightShafts(Camera3D camera)
+	{
+		bool hasMist = (Refii.Level.Engine_ModernMist.Instance?.Drawn ?? 0) > 0;
+		if (!Engine_VolumetricLightShafts.HasActiveMedium && !hasMist)
+		{
+			Engine_VolumetricLightShafts.HideVolume();
+			return;
+		}
+
+		bool classic = Refii.Models.Engine_ClassicMaterial.Active;
+		if (classic || !LightsEnabled || _count == 0)
+		{
+			Engine_VolumetricLightShafts.HideVolume();
+			return;
+		}
+
+		Vector3 eye = camera.GlobalPosition;
+		Plane[] frustum = _frustumPlanes[0];
+		FrustumOf(camera, frustum);
+		uint heroZone = ZoneOfView(0);
+		bool interior = Engine_LightingFrame.CurrentInterior;
+		bool viewerIndoors = interior || Engine_LightZones.IsIndoors(heroZone);
+
+		int candidateCount = 0;
+		for (int i = 0; i < _count; i++)
+		{
+			ref Fixture f = ref _fixtures[i];
+			if (!f.InTree || !f.Shown || f.BaseEnergy <= 0.0001f)
+			{
+				continue;
+			}
+
+			bool isIndoorLight = f.IndoorBit;
+			if (ShouldCullForBuildingZone(viewerIndoors, interior, isIndoorLight, f.Zone, heroZone))
+			{
+				continue;
+			}
+
+			float dist = eye.DistanceTo(f.At);
+			float maxDist = Engine_VolumetricLightShafts.MaxFogRangeMetres + f.Range;
+			bool inFrustum = NearEligible(dist, f.Range) ||
+				SphereInView(frustum, frustum.Length, f.At, f.Range + LightFrustumMargin);
+			if (dist > maxDist || !inFrustum)
+			{
+				continue;
+			}
+
+			if (candidateCount < _shaftCandidates.Length)
+			{
+				_shaftCandidates[candidateCount++] = new Candidate { Fixture = i, Key = dist };
+			}
+		}
+
+		if (candidateCount == 0)
+		{
+			Engine_VolumetricLightShafts.HideVolume();
+			return;
+		}
+
+		if (candidateCount > 1)
+		{
+			Array.Sort(_shaftCandidates, 0, candidateCount, CandidateOrder.Instance);
+		}
+
+		int mistCount = Refii.Level.Engine_ModernMist.Instance?.SnapshotVolumes(_mistInputs) ?? 0;
+		int capsuleCount = Refii.Game.GameEntities.SnapshotVolumetricCasters(
+			eye, Engine_VolumetricLightShafts.MaxFogRangeMetres, _capsuleInputs);
+		ReadOnlySpan<Engine_VolumetricLightShafts.VolumetricCapsule> capsuleSpan =
+			_capsuleInputs.AsSpan(0, capsuleCount);
+
+		int outCount = 0;
+		for (int c = 0; c < candidateCount && outCount < Engine_VolumetricLightShafts.MaxShaftLights; c++)
+		{
+			ref Fixture f = ref _fixtures[_shaftCandidates[c].Fixture];
+			if (!GodotObject.IsInstanceValid(f.Node))
+			{
+				continue;
+			}
+
+			float dist = _shaftCandidates[c].Key;
+			float maxDist = Engine_VolumetricLightShafts.MaxFogRangeMetres + f.Range;
+			float distFade = Mathf.Clamp((maxDist - dist) / 8.0f, 0.0f, 1.0f);
+			float liveEnergy = f.Node.LightEnergy * distFade;
+			if (liveEnergy <= 0.0001f)
+			{
+				continue;
+			}
+
+			Engine_LightTable.TryGetLightShaftData(f.Node, f.Range, out float statedRange, out Vector4 atlasRect);
+			bool indoorFromOutside = !interior && !viewerIndoors && f.IndoorBit;
+			if (indoorFromOutside && atlasRect.Z <= 0.0f)
+			{
+				continue;
+			}
+
+			uint casterMask = capsuleCount > 0
+				? Engine_VolumetricLightShafts.ComputeLightCapsuleMask(f.At, statedRange, capsuleSpan)
+				: 0u;
+
+			_shaftInputs[outCount++] = new Engine_VolumetricLightShafts.ShaftLightInput(
+				Position: f.At,
+				StatedRange: statedRange,
+				NodeRange: f.Range,
+				LinearColor: f.LinearColor,
+				Energy: liveEnergy,
+				FogEnergyScale: f.VolumetricFogScale,
+				AtlasRect: atlasRect,
+				IndoorFromOutside: indoorFromOutside,
+				SpotDir: f.SpotDir,
+				SpotCosHalfAngle: f.SpotCosHalfAngle,
+				CasterMask: casterMask);
+		}
+
+		if (outCount == 0)
+		{
+			Engine_VolumetricLightShafts.HideVolume();
+			return;
+		}
+
+		Engine_VolumetricLightShafts.Update(
+			eye,
+			_shaftInputs.AsSpan(0, outCount),
+			_mistInputs.AsSpan(0, mistCount),
+			capsuleSpan);
 	}
 
 	/// <summary>
@@ -420,6 +588,23 @@ public partial class Engine_LightShadowBudget : Node
 				fixture.Zone = Engine_LightZones.ZoneOf(light);
 				fixture.IndoorBit = (light.LightCullMask & 1u) == 0u;
 				fixture.ShadowMask = light.ShadowCasterMask;
+				Color lin = Engine_LightColour.Linear(light);
+				fixture.LinearColor = new Vector3(lin.R, lin.G, lin.B);
+				fixture.VolumetricFogScale = light.HasMeta(VolumetricFogScaleName)
+					? (float)light.GetMeta(VolumetricFogScaleName).AsDouble()
+					: Engine_LevelLights.DefaultVolumetricFogScale;
+				if (light is SpotLight3D spot)
+				{
+					fixture.SpotCosHalfAngle = MathF.Cos(Mathf.DegToRad(Math.Clamp(spot.SpotAngle, 1.0f, 89.0f)));
+					fixture.SpotDir = light.IsInsideTree()
+						? (-light.GlobalBasis.Z).Normalized()
+						: (-light.Transform.Basis.Z).Normalized();
+				}
+				else
+				{
+					fixture.SpotCosHalfAngle = -2.0f;
+					fixture.SpotDir = Vector3.Zero;
+				}
 				next[i] = fixture;
 			}
 
@@ -443,6 +628,10 @@ public partial class Engine_LightShadowBudget : Node
 				f.At = f.Node.GlobalPosition;
 				f.Shown = f.Node.Visible;
 				f.Casting = f.Node.ShadowEnabled;
+				if (!f.Omni && f.SpotDir.LengthSquared() < 0.5f)
+				{
+					f.SpotDir = (-f.Node.GlobalBasis.Z).Normalized();
+				}
 			}
 
 			f.VisibleBy = 0;
@@ -472,7 +661,9 @@ public partial class Engine_LightShadowBudget : Node
 
 		for (int v = 0; v < views; v++)
 		{
-			ChooseVisible(v, _views[v].GlobalPosition, _frustumPlanes[v], classic, nowMs);
+			uint zone = ZoneOfView(v);
+			bool viewerIndoors = Engine_LightingFrame.CurrentInterior || Engine_LightZones.IsIndoors(zone);
+			ChooseVisible(v, _views[v].GlobalPosition, _frustumPlanes[v], viewerIndoors, zone, classic, nowMs);
 		}
 
 		// Shadows: range and view-frustum governed. Placed lights cast dynamic entities only (static world is baked).
@@ -556,7 +747,7 @@ public partial class Engine_LightShadowBudget : Node
 				uint desiredMask = Engine_LevelLights.CasterMaskOf(
 					includeDynamicEntities: true,
 					isIndoorLight: !classic && f.IndoorBit,
-					includeStaticWorld: classic);
+					includeStaticWorld: classic || (!f.Omni && f.Authored));
 
 				if (f.ShadowMask != desiredMask)
 				{
@@ -596,9 +787,10 @@ public partial class Engine_LightShadowBudget : Node
 	/// With a <see cref="LightBudget"/> the nearest fill it, the ones already visible first while
 	/// they rank within <see cref="LightSlack"/> of it.
 	/// </summary>
-	private static void ChooseVisible(int view, Vector3 eye, Plane[] frustum, bool classic, ulong nowMs)
+	private static void ChooseVisible(int view, Vector3 eye, Plane[] frustum, bool viewerIndoors, uint heroZone, bool classic, ulong nowMs)
 	{
 		byte bit = (byte)(1 << view);
+		bool interior = Engine_LightingFrame.CurrentInterior;
 		int n = 0;
 		for (int i = 0; i < _count; i++)
 		{
@@ -608,8 +800,15 @@ public partial class Engine_LightShadowBudget : Node
 				continue;
 			}
 
+			bool isIndoorLight = !classic && f.IndoorBit;
+			if (ShouldCullForBuildingZone(viewerIndoors, interior, isIndoorLight, f.Zone, heroZone))
+			{
+				continue;
+			}
+
 			float distance = eye.DistanceTo(f.At);
-			if (distance > MaxLightDistance + f.Range || distance > f.FadeEnd)
+			float maxDist = f.FadeEnd < float.MaxValue ? f.FadeEnd : MaxLightDistance + f.Range;
+			if (distance > maxDist)
 			{
 				continue;
 			}
@@ -717,9 +916,11 @@ public partial class Engine_LightShadowBudget : Node
 				continue;
 			}
 
-			// Dynamic entity presence gating: if static world shadows are baked, placed lights only cast dynamic entities.
-			// A light with no characters/entities within its reach cannot cast dynamic shadows and should not allocate shadow maps.
-			if (!classic && !Refii.Game.GameEntities.HasDynamicCasterNear(f.At, f.Range))
+			// Dynamic entity presence gating: static world shadows and volumetric shafts for both omni
+			// and spot lights are served by `fable_static_shadow_atlas`, so placed lights only need live
+			// Godot shadow maps when a dynamic character/entity caster is inside their radius.
+			float casterRadius = f.Casting ? f.Range + 1.5f : f.Range;
+			if (!classic && !Refii.Game.GameEntities.HasDynamicCasterNear(f.At, casterRadius))
 			{
 				continue;
 			}
@@ -771,10 +972,28 @@ public partial class Engine_LightShadowBudget : Node
 		}
 
 		int cubes = 0;
+		int cubeReach = SaturatingAdd(cubeBudget, 2);
+		int chosenRank = 0;
+		for (int c = 0; c < n && cubes < cubeBudget && chosenRank < cubeReach; c++)
+		{
+			ref Fixture f = ref _fixtures[_candidates[c].Fixture];
+			if ((f.WantedBy & bit) == 0)
+			{
+				continue;
+			}
+
+			chosenRank++;
+			if (f.Casting && f.Node is OmniLight3D { OmniShadowMode: OmniLight3D.ShadowMode.Cube })
+			{
+				f.CubeBy |= bit;
+				cubes++;
+			}
+		}
+
 		for (int c = 0; c < n && cubes < cubeBudget; c++)
 		{
 			ref Fixture f = ref _fixtures[_candidates[c].Fixture];
-			if ((f.WantedBy & bit) != 0)
+			if ((f.WantedBy & bit) != 0 && (f.CubeBy & bit) == 0)
 			{
 				f.CubeBy |= bit;
 				cubes++;

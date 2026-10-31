@@ -81,6 +81,8 @@ public sealed partial class Engine_HudReticule : Node3D
 	private readonly Texture2D?[] _textures = new Texture2D?[Names.Length];
 	private readonly bool[] _resolved = new bool[Names.Length];
 	private readonly Vector2?[] _last = new Vector2?[2];
+	private readonly float[] _drawnIntro = new float[2];
+	private readonly float[] _drawnProgress = new float[2];
 
 	public override void _Ready()
 	{
@@ -144,6 +146,8 @@ public sealed partial class Engine_HudReticule : Node3D
 			if (_aims[player] is not { } aim || (OnlyPlayer >= 0 && player != OnlyPlayer))
 			{
 				_last[player] = null;
+				_drawnIntro[player] = 0f;
+				_drawnProgress[player] = 0f;
 				Hide(player);
 				continue;
 			}
@@ -163,8 +167,12 @@ public sealed partial class Engine_HudReticule : Node3D
 				continue;
 			}
 
-			float t = Mathf.Clamp(aim.Counter * 0.25f, 0f, 1f);
-			float m = Mathf.Min(aim.Progress, t);
+			float targetT = Mathf.Clamp(aim.Counter * 0.25f, 0f, 1f);
+			_drawnIntro[player] = Mathf.MoveToward(_drawnIntro[player], targetT, (float)delta * 4f);
+			float t = _drawnIntro[player];
+
+			_drawnProgress[player] = Mathf.MoveToward(_drawnProgress[player], aim.Progress, (float)delta * 2.5f);
+			float m = Mathf.Min(_drawnProgress[player], t);
 			float r = ((1f - m) * 18f) + 8f;
 			float s = ((1f - t) * 12f) + 12f;
 			float k = ((1f - t) * 1.25f) + 1f;

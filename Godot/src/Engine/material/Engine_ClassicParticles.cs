@@ -11,6 +11,15 @@ namespace Refii.Models;
 /// shaders.
 /// </summary>
 /// <remarks>
+/// SEPARATION OF CONCERNS BETWEEN RENDERER MODES.
+/// Classic mode (<c>Engine_ClassicMaterial.Active == true</c>) uses <see cref="Engine_ClassicParticles"/>
+/// exclusively (pumped from <see cref="Engine_ClassicPath.Pump"/>). Modern mode
+/// (<c>Engine_ClassicMaterial.Active == false</c>) uses <see cref="Refii.Fx.FableFx"/> and
+/// <see cref="Refii.Fx.Engine_FxSystem"/> exclusively across the full 0..200m range with 30 Hz
+/// simulation, GPU sub-step interpolation, and unclamped linear HDR colours. Both systems remain
+/// separate at runtime while sharing pure static math and keyframe-table helpers on
+/// <see cref="Refii.Fx.Engine_FxSystem"/>.
+///
 /// THE STATED DATA. The sim hands each group's twin its records, material and bounds
 /// (<c>sub_821D8EA8</c>) and its transform (<c>sub_821D9D40</c>); the title's draw
 /// (<c>sub_821CA790</c>) binds those 48-byte records as a QUADLIST stream of four vertices a
@@ -65,6 +74,18 @@ public partial class Engine_ClassicParticles : Node
         public int SnapshotLength;
         public int StaticHash;
         public readonly float[] World = new float[16];
+        public uint Owner;
+        public readonly Refii.Core.Engine_TickTimeline Timeline = new(stillWhenUnchanged: false);
+        public Transform3D RawEntityWorld = Transform3D.Identity;
+        public Vector3 WorldScale = Vector3.One;
+        public bool RawIdentityBasis = true;
+        public bool ExactIdentity4x4 = true;
+        public bool HasWorldSample;
+        public bool BoneAttached;
+        public bool? DisableDistanceFadeSent;
+        public Aabb StatedAabb;
+        public Vector3 StatedOrigin;
+        public Vector3 AppliedAabbDelta;
         public ShaderMaterial? Live;
         /// <summary>A displacement group: drawn into the displacement target, not the scene.</summary>
         public bool Displacement;
@@ -145,6 +166,8 @@ public partial class Engine_ClassicParticles : Node
     private static readonly List<ShaderMaterial> _chain = new();
 
     private readonly Dictionary<uint, Group> _groups = new();
+    private readonly HashSet<uint> _movingGroups = new();
+    private readonly List<uint> _settledGroups = new();
     private readonly List<uint> _gone = new();
     private readonly Dictionary<string, Texture2D?> _textures = new();
     private readonly float[] _buffer = new float[1 << 20];
@@ -266,21 +289,52 @@ public partial class Engine_ClassicParticles : Node
 
     private uint _lastUsed;
     private bool _lastModern;
+    private ulong _lastHostFrame = ulong.MaxValue;
 
     /// <summary>Reads the groups and rebuilds their meshes and constants. Main thread, once a frame, after the lit instances.</summary>
     public void Pump(Camera3D camera)
     {
-        ++_frames;
-        bool modern = !Engine_ClassicMaterial.Active;
-        if (modern)
+        ulong hostFrame = Engine.GetProcessFrames();
+        if (hostFrame == _lastHostFrame)
         {
-            // The main view leaves layers past 20 out; the particles' own layer joins it.
-            if ((camera.CullMask & Layer) == 0)
-            {
-                camera.CullMask |= Layer;
-            }
+            return;
         }
-        else if (!Engine_ClassicShaders.HasEntry(VertexEntry))
+        _lastHostFrame = hostFrame;
+
+        // Separation of concerns: Engine_ClassicParticles only runs in Classic mode.
+        // Modern mode uses FableFx + Engine_FxSystem exclusively. If the user toggles from
+        // Classic mode to Modern mode at runtime, retire any live classic groups/trails.
+        if (!Engine_ClassicMaterial.Active)
+        {
+            if (_groups.Count != 0 || _trails.Count != 0 || DrawnOwners.Count != 0)
+            {
+                DrawnOwners.Clear();
+                foreach (Group group in _groups.Values)
+                {
+                    group.Node.QueueFree();
+                    group.Release();
+                }
+                _groups.Clear();
+                _movingGroups.Clear();
+                foreach (Trail trail in _trails.Values)
+                {
+                    trail.Node.QueueFree();
+                    trail.Colours.Dispose();
+                    trail.SelfIllum.Dispose();
+                    trail.World.Dispose();
+                    trail.UvScales.Dispose();
+                }
+                _trails.Clear();
+                _movingTrails.Clear();
+                _particles = 0;
+                _skippedDisplacement = 0;
+            }
+            return;
+        }
+
+        ++_frames;
+        bool modern = false;
+        if (!Engine_ClassicShaders.HasEntry(VertexEntry))
         {
             if (!_reportedMissing)
             {
@@ -321,6 +375,7 @@ public partial class Engine_ClassicParticles : Node
                     }
                 }
             }
+            AdvanceMovingGroups();
             PumpTrails(camera, default, guestStepped: false, inverseVpChanged);
             return;
         }
@@ -379,10 +434,10 @@ public partial class Engine_ClassicParticles : Node
             }
             if (Compose(group, at, changed))
             {
-                Constants(group, at, viewport, changed);
-                _particles += count;
                 uint owner = BitConverter.SingleToUInt32Bits(_buffer[at + 7]);
-                if (guestStepped && modern && owner != 0u && count > 0)
+                Constants(address, group, owner, at, viewport, changed);
+                _particles += count;
+                if (guestStepped && modern && owner != 0u && count > 0 && !group.Displacement)
                 {
                     DrawnOwners.Add(owner);
                 }
@@ -409,6 +464,7 @@ public partial class Engine_ClassicParticles : Node
             foreach (uint address in _gone)
             {
                 _groups.Remove(address);
+                _movingGroups.Remove(address);
             }
         }
 
@@ -454,6 +510,7 @@ public partial class Engine_ClassicParticles : Node
                 group.Indices[i + 5] = v + 3;
             }
         }
+
         // THE SIM'S RECORD IS NOT THE STREAM. The ring copy `sub_822BED88` (verified, TU1:
         // `li r6,0x10` / `li r7,0x20`, 0x822bf3cc..0x822bf43c) builds each 48-byte vertex from
         // the record: POSITION = record +16 (the position); TEXCOORD0 = (+8 size x, +12 size y,
@@ -505,8 +562,11 @@ public partial class Engine_ClassicParticles : Node
         Vector3 b = ToGuestBounds(_buffer[at + 8], _buffer[at + 9], _buffer[at + 10]);
         Vector3 min = a.Min(b) - new Vector3(4f, 4f, 4f);
         Vector3 max = a.Max(b) + new Vector3(4f, 4f, 4f);
-        group.Mesh.CustomAabb = new Aabb(min, max - min);
-        group.Node.CustomAabb = new Aabb(min, max - min);
+        var statedBox = new Aabb(min, max - min);
+        group.StatedAabb = statedBox;
+        group.AppliedAabbDelta = Vector3.Zero;
+        group.Mesh.CustomAabb = statedBox;
+        group.Node.CustomAabb = statedBox;
     }
 
     /// <summary>A new surface of <paramref name="quads"/> quads, and whether its streams are the layout <see cref="Upload"/> packs.</summary>
@@ -556,10 +616,22 @@ public partial class Engine_ClassicParticles : Node
         System.Runtime.InteropServices.MemoryMarshal.AsBytes(group.Vertices.AsSpan(0, vertexCount))
             .CopyTo(group.VertexBytes);
         Span<float> attributes = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(group.AttributeBytes.AsSpan());
+        Span<float> custom0 = group.Custom0;
+        Span<float> custom1 = group.Custom1;
+        int attrIdx = 0;
+        int cIdx = 0;
         for (int v = 0; v < vertexCount; v++)
         {
-            group.Custom0.AsSpan(v * 4, 4).CopyTo(attributes.Slice(v * 8, 4));
-            group.Custom1.AsSpan(v * 4, 4).CopyTo(attributes.Slice(v * 8 + 4, 4));
+            attributes[attrIdx]     = custom0[cIdx];
+            attributes[attrIdx + 1] = custom0[cIdx + 1];
+            attributes[attrIdx + 2] = custom0[cIdx + 2];
+            attributes[attrIdx + 3] = custom0[cIdx + 3];
+            attributes[attrIdx + 4] = custom1[cIdx];
+            attributes[attrIdx + 5] = custom1[cIdx + 1];
+            attributes[attrIdx + 6] = custom1[cIdx + 2];
+            attributes[attrIdx + 7] = custom1[cIdx + 3];
+            attrIdx += 8;
+            cIdx += 4;
         }
         Rid mesh = group.Mesh.GetRid();
         RenderingServer.MeshSurfaceUpdateVertexRegion(mesh, 0, 0, (ReadOnlySpan<byte>)group.VertexBytes.AsSpan(0, vertexCount * 12));
@@ -802,24 +874,18 @@ public partial class Engine_ClassicParticles : Node
         return "blend_mix";
     }
 
-    private static bool Same(float[] snapshot, float[] buffer, int at, int length)
-    {
-        for (int i = 0; i < length; i++)
-        {
-            if (snapshot[i] != buffer[at + i])
-            {
-                return false;
-            }
-        }
-        return true;
-    }
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static bool Same(float[] snapshot, float[] buffer, int at, int length) =>
+        snapshot.AsSpan(0, length).SequenceEqual(buffer.AsSpan(at, length));
 
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private int HashRange(int at, int count)
     {
+        ReadOnlySpan<uint> words = System.Runtime.InteropServices.MemoryMarshal.Cast<float, uint>(_buffer.AsSpan(at, count));
         uint hash = 2166136261u;
-        for (int i = 0; i < count; i++)
+        for (int i = 0; i < words.Length; i++)
         {
-            hash = (hash ^ BitConverter.SingleToUInt32Bits(_buffer[at + i])) * 16777619u;
+            hash = (hash ^ words[i]) * 16777619u;
         }
         return (int)hash;
     }
@@ -846,15 +912,18 @@ public partial class Engine_ClassicParticles : Node
     /// are written when they change; the transform when it moves; a soft group's view inverse
     /// when the camera moves. A fixed-axis group (M+56) takes its own axes (XR_VS_CONST).
     /// </summary>
-    private void Constants(Group group, int at, Vector2 viewport, bool changed)
+    private void Constants(uint address, Group group, uint owner, int at, Vector2 viewport, bool changed)
     {
-        if (!changed && !Engine_ClassicMaterial.Active && ReferenceEquals(group.Live, group.Material) && group.Material is not null)
+        bool disableDistanceFade = !Engine_ClassicMaterial.Active && Refii.Lighting.Engine_LightingFrame.ModernModel;
+        bool fadeModeChanged = group.DisableDistanceFadeSent != disableDistanceFade;
+        if (!changed && !fadeModeChanged && !Engine_ClassicMaterial.Active && ReferenceEquals(group.Live, group.Material) && group.Material is not null)
         {
             if (_buffer[at + 42] > 0f && group.InverseVpSent != _inverseVp.Version)
             {
                 group.InverseVpSent = _inverseVp.Version;
                 group.Material.SetShaderParameter(PsInverseViewProjectionName, _inverseVp.Value);
             }
+            ObserveGroupWorld(address, group, owner, at, liveChanged: false, recordsChanged: false);
             return;
         }
 
@@ -862,15 +931,17 @@ public partial class Engine_ClassicParticles : Node
         Chain(group);
         bool liveChanged = !ReferenceEquals(liveBefore, group.Live);
 
-        if (changed || liveChanged)
+        if (changed || liveChanged || fadeModeChanged)
         {
-            int staticHash = HashRange(at + 12, 9) ^ (HashRange(at + 38, 16) * 3) ^ (HashRange(at + 64, 270) * 7) ^ (int)group.TextureSignature ^ (int)(group.TextureSignature >> 32);
-            if (staticHash != group.StaticHash || liveChanged)
+            int staticHash = HashRange(at + 12, 9) ^ (HashRange(at + 38, 16) * 3) ^ (HashRange(at + 64, 270) * 7) ^
+                (int)group.TextureSignature ^ (int)(group.TextureSignature >> 32) ^ (disableDistanceFade ? 0x5BD1E995 : 0);
+            if (staticHash != group.StaticHash || liveChanged || fadeModeChanged)
             {
                 group.StaticHash = staticHash;
+                group.DisableDistanceFadeSent = disableDistanceFade;
                 float f0 = _buffer[at + 12], f1 = _buffer[at + 13], f2 = _buffer[at + 14], f3 = _buffer[at + 15], f4 = _buffer[at + 16];
                 var fadeIn = new Vector4(f0, f1, f1 > f0 ? 1f / (f1 - f0) : 0f, 0f);
-                var fadeOut = new Vector4(f3, f3 > f2 ? 1f / (f3 - f2) : 1f, f4, 0f);
+                Vector4 fadeOut = Refii.Fx.Engine_FxSystem.BuildGuestFadeOutInfo(f2, f3, f4, disableDistanceFade);
                 // The modern shader adds the scene's ambient itself; it takes the material's own here.
                 Vector3 ambient = Engine_ClassicMaterial.Active ? Engine_ClassicFeed.GlobalAmbient : Vector3.Zero;
                 if (_buffer[at + 54] == 0f)
@@ -879,22 +950,7 @@ public partial class Engine_ClassicParticles : Node
                 }
                 float scale = _buffer[at + 17];
                 int keys = Math.Clamp((int)_buffer[at + 50], 0, 19);
-                for (int k = 0; k < MaxKeyframes; k++)
-                {
-                    if (k < keys)
-                    {
-                        int o = at + 64 + k * 10;
-                        _colours[k] = new Vector4(_buffer[o], _buffer[o + 1], _buffer[o + 2], _buffer[o + 3]);
-                        _scales[k] = new Vector4(_buffer[o + 4], _buffer[o + 5], _buffer[o + 8], _buffer[o + 9]);
-                        _globalScales[k] = new Vector4(_buffer[o + 6] * scale, _buffer[o + 7] * scale, 0f, 0f);
-                    }
-                    else
-                    {
-                        _colours[k] = Vector4.Zero;
-                        _scales[k] = Vector4.Zero;
-                        _globalScales[k] = Vector4.Zero;
-                    }
-                }
+                Refii.Fx.Engine_FxSystem.FillGuestKeyframeTables(_buffer, at + 64, keys, scale, _colours, _scales, _globalScales);
                 int textures = Math.Clamp((int)_buffer[at + 38], 0, 4);
                 var starts = Vector4.Zero;
                 var invDeltas = Vector4.Zero;
@@ -975,33 +1031,9 @@ public partial class Engine_ClassicParticles : Node
                     }
                 }
             }
-
-            // g_MatWorld: the columns of the group's row-major transform (R+320), as the title
-            // transposes it (sub_82270CD0) for the shader's dot(c72+i, position).
-            bool moved = liveChanged;
-            for (int i = 0; i < 16; i++)
-            {
-                if (group.World[i] != _buffer[at + 21 + i])
-                {
-                    moved = true;
-                    group.World[i] = _buffer[at + 21 + i];
-                }
-            }
-            if (moved)
-            {
-                for (int i = 0; i < 3; i++)
-                {
-                    _world[i] = new Vector4(group.World[i], group.World[4 + i], group.World[8 + i], group.World[12 + i]);
-                }
-                // One Variant per transform the sim actually moves; a new material on the same
-                // transform takes the held one.
-                group.WorldRows.Take(_world);
-                foreach (ShaderMaterial m in _chain)
-                {
-                    m.SetShaderParameter(VsMatWorldName, group.WorldRows.Value);
-                }
-            }
         }
+
+        ObserveGroupWorld(address, group, owner, at, liveChanged, changed);
 
         if (_buffer[at + 42] > 0f && (liveChanged || group.InverseVpSent != _inverseVp.Version))
         {
@@ -1010,6 +1042,193 @@ public partial class Engine_ClassicParticles : Node
             {
                 m.SetShaderParameter(PsInverseViewProjectionName, _inverseVp.Value);
             }
+        }
+    }
+
+    private void ObserveGroupWorld(uint address, Group group, uint owner, int at, bool liveChanged, bool recordsChanged)
+    {
+        group.Owner = owner;
+        bool rawChanged = !group.HasWorldSample;
+        for (int i = 0; i < 16; i++)
+        {
+            float v = _buffer[at + 21 + i];
+            if (group.World[i] != v)
+            {
+                rawChanged = true;
+                group.World[i] = v;
+            }
+        }
+
+        if (rawChanged)
+        {
+            ReadOnlySpan<float> m16 = group.World;
+            group.ExactIdentity4x4 = Refii.Fx.Engine_FxSystem.IsExactGuestIdentity4x4(m16);
+            group.HasWorldSample = Refii.Fx.Engine_FxSystem.TryDecomposeGuestWorldMatrix(
+                m16, out group.RawEntityWorld, out group.WorldScale, out group.RawIdentityBasis);
+        }
+
+        if (recordsChanged && group.HasWorldSample)
+        {
+            group.StatedOrigin = group.RawEntityWorld.Origin;
+        }
+
+        uint tick = Refii.Core.Engine_TickClock.GuestGameTick;
+        if (group.HasWorldSample &&
+            Refii.Game.GameFx.Current?.TryResolveBoneAttachedWorld(
+                owner, group.RawEntityWorld, group.RawIdentityBasis, group.ExactIdentity4x4,
+                out Transform3D boneEntity) == true)
+        {
+            group.BoneAttached = true;
+            if (group.Node.SortingOffset != 0f)
+            {
+                group.Node.SortingOffset = 0f;
+            }
+            group.Timeline.Reset(tick, boneEntity);
+            _movingGroups.Add(address);
+            ApplyGroupWorld(group, boneEntity, forceUpload: liveChanged);
+            return;
+        }
+
+        if (group.HasWorldSample && !group.ExactIdentity4x4)
+        {
+            if (group.Node.SortingOffset != 0f)
+            {
+                group.Node.SortingOffset = 0f;
+            }
+            if (group.BoneAttached ||
+                group.Timeline.Empty ||
+                group.Timeline.Newest.Origin.DistanceSquaredTo(group.RawEntityWorld.Origin) >
+                    Refii.Core.Engine_TickTimeline.TeleportMetres * Refii.Core.Engine_TickTimeline.TeleportMetres ||
+                (tick > group.Timeline.NewestTick && tick - group.Timeline.NewestTick > 8.0))
+            {
+                group.BoneAttached = false;
+                group.Timeline.Reset(tick, group.RawEntityWorld);
+            }
+            else
+            {
+                group.Timeline.Observe(tick, group.RawEntityWorld);
+            }
+
+            Transform3D drawnEntity = group.Timeline.Settled
+                ? group.RawEntityWorld
+                : group.Timeline.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec, Refii.Entities.Engine_DrawnFrame.DrawTick);
+
+            if (group.Timeline.Settled)
+            {
+                _movingGroups.Remove(address);
+            }
+            else
+            {
+                _movingGroups.Add(address);
+            }
+
+            ApplyGroupWorld(group, drawnEntity, forceUpload: liveChanged || rawChanged);
+            return;
+        }
+
+        group.BoneAttached = false;
+        _movingGroups.Remove(address);
+        bool isTranslucentAmbience = group.ExactIdentity4x4 && group.Material is { RenderPriority: 0 };
+        float sortOffset = isTranslucentAmbience ? (float)(address & 0xFF) * 1e-5f : 0f;
+        if (MathF.Abs(group.Node.SortingOffset - sortOffset) > 1e-7f)
+        {
+            group.Node.SortingOffset = sortOffset;
+        }
+        if (liveChanged || rawChanged)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                _world[i] = new Vector4(group.World[i], group.World[4 + i], group.World[8 + i], group.World[12 + i]);
+            }
+            SendGroupWorldColumns(group, _world, forceUpload: liveChanged);
+        }
+    }
+
+    private void AdvanceMovingGroups()
+    {
+        if (_movingGroups.Count == 0)
+        {
+            return;
+        }
+
+        _settledGroups.Clear();
+        ulong nowUsec = Refii.Entities.Engine_DrawnFrame.NowUsec;
+        double drawTick = Refii.Entities.Engine_DrawnFrame.DrawTick;
+        foreach (uint address in _movingGroups)
+        {
+            if (!_groups.TryGetValue(address, out Group? group) || !GodotObject.IsInstanceValid(group.Node))
+            {
+                _settledGroups.Add(address);
+                continue;
+            }
+
+            if (group.BoneAttached)
+            {
+                if (Refii.Game.GameFx.Current?.TryResolveBoneAttachedWorld(
+                        group.Owner, group.RawEntityWorld, group.RawIdentityBasis, group.ExactIdentity4x4,
+                        out Transform3D boneEntity) == true)
+                {
+                    ApplyGroupWorld(group, boneEntity, forceUpload: false);
+                }
+                continue;
+            }
+
+            if (group.Timeline.Settled)
+            {
+                _settledGroups.Add(address);
+                continue;
+            }
+
+            Transform3D drawnEntity = group.Timeline.Advance(nowUsec, drawTick);
+            ApplyGroupWorld(group, drawnEntity, forceUpload: false);
+            if (group.Timeline.Settled)
+            {
+                _settledGroups.Add(address);
+            }
+        }
+
+        foreach (uint address in _settledGroups)
+        {
+            _movingGroups.Remove(address);
+        }
+    }
+
+    private void ApplyGroupWorld(Group group, Transform3D drawnEntity, bool forceUpload)
+    {
+        Refii.Fx.Engine_FxSystem.ComposeGuestMatWorldColumns(drawnEntity, group.WorldScale, _world);
+        SendGroupWorldColumns(group, _world, forceUpload);
+
+        if (group.StatedAabb.Size != Vector3.Zero)
+        {
+            Vector3 delta = drawnEntity.Origin - group.StatedOrigin;
+            if (delta.DistanceSquaredTo(group.AppliedAabbDelta) > 0.04f)
+            {
+                group.AppliedAabbDelta = delta;
+                var shifted = new Aabb(group.StatedAabb.Position + delta, group.StatedAabb.Size);
+                group.Mesh.CustomAabb = shifted;
+                group.Node.CustomAabb = shifted;
+            }
+        }
+    }
+
+    private static void SendGroupWorldColumns(Group group, Vector4[] columns, bool forceUpload)
+    {
+        bool worldMoved = group.WorldRows.Take(columns);
+        if (!worldMoved && !forceUpload)
+        {
+            return;
+        }
+
+        if (!Engine_ClassicMaterial.Active && ReferenceEquals(group.Live, group.Material))
+        {
+            group.Material?.SetShaderParameter(VsMatWorldName, group.WorldRows.Value);
+            return;
+        }
+
+        Chain(group);
+        foreach (ShaderMaterial m in _chain)
+        {
+            m.SetShaderParameter(VsMatWorldName, group.WorldRows.Value);
         }
     }
 

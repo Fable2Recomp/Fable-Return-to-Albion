@@ -53,6 +53,52 @@ public partial class Engine_ModernMist : Node3D
     /// <summary>Volumes drawn at the last pump.</summary>
     public int Drawn { get; private set; }
 
+    /// <summary>
+    /// Copies up to <see cref="MaxVolumes"/> currently visible mist volumes into <paramref name="dst"/>
+    /// with live time-scrolled procedural noise UV parameters for the volumetric light-shaft compute pass.
+    /// </summary>
+    public int SnapshotVolumes(System.Span<Refii.Lighting.Engine_VolumetricLightShafts.MistVolumeSnapshot> dst)
+    {
+        if (Drawn <= 0 || dst.IsEmpty)
+        {
+            return 0;
+        }
+
+        float timeSec = Time.GetTicksMsec() * 0.001f;
+        int limit = System.Math.Min(Drawn, _drawn.Count);
+        int outCount = 0;
+        for (int i = 0; i < limit && outCount < dst.Length; i++)
+        {
+            DrawnMist d = _drawn[i];
+            if (!d.Visible || d.Extinction <= 1e-5f)
+            {
+                continue;
+            }
+
+            Vector3 half = d.Size * 0.5f;
+            Vector3 min = d.Position - half;
+            Vector3 max = d.Position + half;
+            var scaleOffset = new Vector4(
+                d.Remap.X * d.Motion.X,
+                d.Remap.Y * d.Motion.Y,
+                (d.Remap.Z * d.Motion.X) + (timeSec * d.Motion.Z),
+                (d.Remap.W * d.Motion.Y) + (timeSec * d.Motion.Z));
+
+            dst[outCount++] = new Refii.Lighting.Engine_VolumetricLightShafts.MistVolumeSnapshot(
+                Min: min,
+                Extinction: d.Extinction,
+                Max: max,
+                Flatten: d.Flatten,
+                LinearAlbedo: new Vector3(
+                    System.MathF.Max(d.Albedo.X, 0f),
+                    System.MathF.Max(d.Albedo.Y, 0f),
+                    System.MathF.Max(d.Albedo.Z, 0f)),
+                NoiseScaleOffset: scaleOffset);
+        }
+
+        return outCount;
+    }
+
     public override void _ExitTree()
     {
         if (ReferenceEquals(Instance, this))
@@ -131,9 +177,23 @@ public partial class Engine_ModernMist : Node3D
             }
             if (count != 0 && Engine_SkyEnvironmentNode.Current?.Environment is { } environment)
             {
-                // The volumes are the only fog: the global density stays at zero.
+                bool worldVolumetric = Refii.Lighting.Engine_LightingFrame.ModernModel &&
+                                       Refii.Lighting.Engine_LightingFrame.VolumetricFogEnabled;
                 environment.VolumetricFogEnabled = true;
-                environment.VolumetricFogDensity = 0f;
+                if (!worldVolumetric)
+                {
+                    // The volumes are the only fog when world volumetric fog is off; global density stays at zero.
+                    environment.VolumetricFogDensity = 0f;
+                }
+            }
+            else if (count == 0 && Engine_SkyEnvironmentNode.Current?.Environment is { } envOff)
+            {
+                bool worldVolumetric = Refii.Lighting.Engine_LightingFrame.ModernModel &&
+                                       Refii.Lighting.Engine_LightingFrame.VolumetricFogEnabled;
+                if (!worldVolumetric)
+                {
+                    envOff.VolumetricFogEnabled = false;
+                }
             }
         }
     }

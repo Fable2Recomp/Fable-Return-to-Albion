@@ -55,10 +55,22 @@ public partial class Engine_ClassicParticles
         public bool Soft;
         public float[] Snapshot = Array.Empty<float>();
         public int SnapshotLength;
+        public uint Owner;
+        public readonly float[] RawWorld = new float[16];
+        public readonly Refii.Core.Engine_TickTimeline Timeline = new(stillWhenUnchanged: false);
+        public Transform3D RawEntityWorld = Transform3D.Identity;
+        public Vector3 WorldScale = Vector3.One;
+        public bool RawIdentityBasis = true;
+        public bool ExactIdentity4x4 = true;
+        public bool HasWorldSample;
+        public bool BoneAttached;
+        public bool? DisableDistanceFadeSent;
     }
 
     private readonly float[] _trailBuffer = new float[1 << 19];
     private readonly Dictionary<uint, Trail> _trails = new();
+    private readonly HashSet<uint> _movingTrails = new();
+    private readonly List<uint> _settledTrails = new();
     private readonly List<uint> _trailsGone = new();
     private readonly Vector4[] _trailColours = new Vector4[20];
     private readonly Vector4[] _trailSelfIllum = new Vector4[20];
@@ -79,6 +91,7 @@ public partial class Engine_ClassicParticles
 
         if (!guestStepped)
         {
+            AdvanceMovingTrails();
             if (!cameraZChanged && !inverseVpChanged)
             {
                 return;
@@ -135,9 +148,10 @@ public partial class Engine_ClassicParticles
             }
             if (ComposeTrail(trail, at, changed))
             {
-                // The trail's particle-system instance (header [38]): its effect stands down in FableFx.
+                // The trail's particle-system instance (header [38]): its effect stands down in FableFx
+                // only if this trail is a visible material (displacement trails must not suppress visible flame geometry).
                 uint owner = BitConverter.SingleToUInt32Bits(_trailBuffer[at + 38]);
-                if (!Engine_ClassicMaterial.Active && owner != 0u)
+                if (!Engine_ClassicMaterial.Active && owner != 0u && !trail.Displaces)
                 {
                     DrawnOwners.Add(owner);
                 }
@@ -150,7 +164,7 @@ public partial class Engine_ClassicParticles
                     StripMesh(trail, (int)_trailBuffer[at + 5]);
                     StreamTexture(trail, at + TrailHeader, points);
                 }
-                TrailConstants(trail, at, camera, viewport, changed);
+                TrailConstants(address, trail, owner, at, camera, viewport, changed);
             }
             at += length;
         }
@@ -171,6 +185,7 @@ public partial class Engine_ClassicParticles
         foreach (uint address in _trailsGone)
         {
             _trails.Remove(address);
+            _movingTrails.Remove(address);
         }
     }
 
@@ -416,7 +431,7 @@ public partial class Engine_ClassicParticles
         return true;
     }
 
-    private void TrailConstants(Trail trail, int at, Camera3D camera, Vector2 viewport, bool changed)
+    private void TrailConstants(uint address, Trail trail, uint owner, int at, Camera3D camera, Vector2 viewport, bool changed)
     {
         ShaderMaterial? m = trail.Material;
         if (m is null)
@@ -426,13 +441,17 @@ public partial class Engine_ClassicParticles
         bool doubled = _trailBuffer[at + 1] == 3f;
         bool fresh = !ReferenceEquals(trail.SentTo, m);
         trail.SentTo = m;
+        bool disableDistanceFade = !Engine_ClassicMaterial.Active && Refii.Lighting.Engine_LightingFrame.ModernModel;
+        bool fadeModeChanged = trail.DisableDistanceFadeSent != disableDistanceFade;
 
-        if (changed || fresh)
+        if (changed || fresh || fadeModeChanged)
         {
+            trail.DisableDistanceFadeSent = disableDistanceFade;
             float f0 = _trailBuffer[at + 12], f1 = _trailBuffer[at + 13], f2 = _trailBuffer[at + 14],
                 f3 = _trailBuffer[at + 15], f4 = _trailBuffer[at + 16];
             m.SetShaderParameter(TrailFadeInDistanceInfoName, new Vector4(f0, f1, f1 > f0 ? 1f / (f1 - f0) : 0f, 0f));
-            m.SetShaderParameter(TrailFadeOutDistanceInfoName, new Vector4(f3, f3 > f2 ? 1f / (f3 - f2) : 1f, f4, 0f));
+            m.SetShaderParameter(TrailFadeOutDistanceInfoName,
+                Refii.Fx.Engine_FxSystem.BuildGuestFadeOutInfo(f2, f3, f4, disableDistanceFade));
             // The modern shader adds the scene's ambient itself; it takes the material's own here.
             Vector3 ambient = Engine_ClassicMaterial.Active ? Engine_ClassicFeed.GlobalAmbient : Vector3.Zero;
             if (_trailBuffer[at + 54] == 0f)
@@ -442,7 +461,8 @@ public partial class Engine_ClassicParticles
             m.SetShaderParameter(TrailGlobalAmbientName, new Vector4(ambient.X, ambient.Y, ambient.Z, 1f));
 
             // c337 / c340 from the stride-28 keyframes (K+0..12 colour, K+16 the double trail's
-            // scale, K+20 self-illum, K+24 start time), 19 at most into the shader's 20.
+            // scale, K+20 self-illum, K+24 start time), 19 at most into the shader's 20, padded
+            // with the last key (`sub_821CA6C8`).
             int keys = Math.Clamp((int)_trailBuffer[at + 50], 0, 19);
             for (int k = 0; k < _trailColours.Length; k++)
             {
@@ -452,6 +472,11 @@ public partial class Engine_ClassicParticles
                     _trailColours[k] = new Vector4(_trailBuffer[o], _trailBuffer[o + 1], _trailBuffer[o + 2], _trailBuffer[o + 3]);
                     _trailSelfIllum[k] = new Vector4(_trailBuffer[o + 5], _trailBuffer[o + 6],
                         doubled ? _trailBuffer[o + 4] : 1f, 0f);
+                }
+                else if (keys > 0)
+                {
+                    _trailColours[k] = _trailColours[keys - 1];
+                    _trailSelfIllum[k] = _trailSelfIllum[keys - 1];
                 }
                 else
                 {
@@ -469,17 +494,6 @@ public partial class Engine_ClassicParticles
             }
             m.SetShaderParameter(TrailParticleTrailPropertiesName,
                 new Vector4(_trailBuffer[at + 8], _trailBuffer[at + 9], _trailBuffer[at + 10], 0f));
-
-            // g_MatWorld: the columns of the row-major transform R+320, as for the quads.
-            for (int i = 0; i < 3; i++)
-            {
-                _trailWorld[i] = new Vector4(_trailBuffer[at + 17 + i], _trailBuffer[at + 21 + i],
-                    _trailBuffer[at + 25 + i], _trailBuffer[at + 29 + i]);
-            }
-            if (trail.World.Take(_trailWorld) || fresh)
-            {
-                m.SetShaderParameter(VsMatWorldName, trail.World.Value);
-            }
 
             // The pixel side, as for the quads.
             int textures = Math.Clamp((int)_trailBuffer[at + 48], 0, 4);
@@ -519,6 +533,8 @@ public partial class Engine_ClassicParticles
             }
         }
 
+        ObserveTrailWorld(address, trail, owner, at, m, fresh);
+
         trail.CameraAligned = !doubled && _trailBuffer[at + 33] == 0f;
         if (trail.CameraAxisSent != trail.CameraAligned)
         {
@@ -556,6 +572,150 @@ public partial class Engine_ClassicParticles
                 trail.InverseVpSent = _inverseVp.Version;
                 m.SetShaderParameter(PsInverseViewProjectionName, _inverseVp.Value);
             }
+        }
+    }
+
+    private void ObserveTrailWorld(uint address, Trail trail, uint owner, int at, ShaderMaterial m, bool fresh)
+    {
+        trail.Owner = owner;
+        bool rawChanged = !trail.HasWorldSample;
+        for (int i = 0; i < 16; i++)
+        {
+            float v = _trailBuffer[at + 17 + i];
+            if (trail.RawWorld[i] != v)
+            {
+                rawChanged = true;
+                trail.RawWorld[i] = v;
+            }
+        }
+
+        if (rawChanged)
+        {
+            ReadOnlySpan<float> m16 = trail.RawWorld;
+            trail.ExactIdentity4x4 = Refii.Fx.Engine_FxSystem.IsExactGuestIdentity4x4(m16);
+            trail.HasWorldSample = Refii.Fx.Engine_FxSystem.TryDecomposeGuestWorldMatrix(
+                m16, out trail.RawEntityWorld, out trail.WorldScale, out trail.RawIdentityBasis);
+        }
+
+        uint tick = Refii.Core.Engine_TickClock.GuestGameTick;
+        if (trail.HasWorldSample &&
+            Refii.Game.GameFx.Current?.TryResolveBoneAttachedWorld(
+                owner, trail.RawEntityWorld, trail.RawIdentityBasis, trail.ExactIdentity4x4,
+                out Transform3D boneEntity) == true)
+        {
+            trail.BoneAttached = true;
+            trail.Timeline.Reset(tick, boneEntity);
+            _movingTrails.Add(address);
+            ApplyTrailWorld(trail, m, boneEntity, fresh);
+            return;
+        }
+
+        if (trail.HasWorldSample && !trail.ExactIdentity4x4)
+        {
+            if (trail.BoneAttached ||
+                trail.Timeline.Empty ||
+                trail.Timeline.Newest.Origin.DistanceSquaredTo(trail.RawEntityWorld.Origin) >
+                    Refii.Core.Engine_TickTimeline.TeleportMetres * Refii.Core.Engine_TickTimeline.TeleportMetres ||
+                (tick > trail.Timeline.NewestTick && tick - trail.Timeline.NewestTick > 8.0))
+            {
+                trail.BoneAttached = false;
+                trail.Timeline.Reset(tick, trail.RawEntityWorld);
+            }
+            else
+            {
+                trail.Timeline.Observe(tick, trail.RawEntityWorld);
+            }
+
+            Transform3D drawnEntity = trail.Timeline.Settled
+                ? trail.RawEntityWorld
+                : trail.Timeline.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec, Refii.Entities.Engine_DrawnFrame.DrawTick);
+
+            if (trail.Timeline.Settled)
+            {
+                _movingTrails.Remove(address);
+            }
+            else
+            {
+                _movingTrails.Add(address);
+            }
+
+            ApplyTrailWorld(trail, m, drawnEntity, fresh || rawChanged);
+            return;
+        }
+
+        trail.BoneAttached = false;
+        _movingTrails.Remove(address);
+        if (fresh || rawChanged)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                _trailWorld[i] = new Vector4(trail.RawWorld[i], trail.RawWorld[4 + i],
+                    trail.RawWorld[8 + i], trail.RawWorld[12 + i]);
+            }
+            if (trail.World.Take(_trailWorld) || fresh)
+            {
+                m.SetShaderParameter(VsMatWorldName, trail.World.Value);
+            }
+        }
+    }
+
+    private void AdvanceMovingTrails()
+    {
+        if (_movingTrails.Count == 0)
+        {
+            return;
+        }
+
+        _settledTrails.Clear();
+        ulong nowUsec = Refii.Entities.Engine_DrawnFrame.NowUsec;
+        double drawTick = Refii.Entities.Engine_DrawnFrame.DrawTick;
+        foreach (uint address in _movingTrails)
+        {
+            if (!_trails.TryGetValue(address, out Trail? trail) ||
+                trail.Material is not { } m ||
+                !GodotObject.IsInstanceValid(trail.Node))
+            {
+                _settledTrails.Add(address);
+                continue;
+            }
+
+            if (trail.BoneAttached)
+            {
+                if (Refii.Game.GameFx.Current?.TryResolveBoneAttachedWorld(
+                        trail.Owner, trail.RawEntityWorld, trail.RawIdentityBasis, trail.ExactIdentity4x4,
+                        out Transform3D boneEntity) == true)
+                {
+                    ApplyTrailWorld(trail, m, boneEntity, fresh: false);
+                }
+                continue;
+            }
+
+            if (trail.Timeline.Settled)
+            {
+                _settledTrails.Add(address);
+                continue;
+            }
+
+            Transform3D drawnEntity = trail.Timeline.Advance(nowUsec, drawTick);
+            ApplyTrailWorld(trail, m, drawnEntity, fresh: false);
+            if (trail.Timeline.Settled)
+            {
+                _settledTrails.Add(address);
+            }
+        }
+
+        foreach (uint address in _settledTrails)
+        {
+            _movingTrails.Remove(address);
+        }
+    }
+
+    private void ApplyTrailWorld(Trail trail, ShaderMaterial m, Transform3D drawnEntity, bool fresh)
+    {
+        Refii.Fx.Engine_FxSystem.ComposeGuestMatWorldColumns(drawnEntity, trail.WorldScale, _trailWorld);
+        if (trail.World.Take(_trailWorld) || fresh)
+        {
+            m.SetShaderParameter(VsMatWorldName, trail.World.Value);
         }
     }
 

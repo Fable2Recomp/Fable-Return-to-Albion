@@ -20,13 +20,25 @@ public sealed class StaticShadowMapContainer
 {
 	public required int AtlasSize { get; init; }
 
-	/// <summary>Maps 64-bit light key ((entity &lt;&lt; 32) | index) to (AtlasU, AtlasV, AtlasScale).</summary>
-	public required Dictionary<ulong, Vector3> LightRects { get; init; }
+	/// <summary>Number of slices/layers in the octahedral shadow depth atlas array.</summary>
+	public int SliceCount { get; init; } = 1;
 
-	/// <summary>IEEE 754 binary16 (half-float) depth texels, row-major (AtlasSize * AtlasSize).</summary>
-	public required ushort[] Texels { get; init; }
+	/// <summary>Max lights packed per map slice.</summary>
+	public int LightsPerMap { get; init; } = 16;
 
-	public ImageTexture? RuntimeTexture { get; set; }
+	/// <summary>The <c>placed_light_reach_scale</c> CVar multiplier used during baking.</summary>
+	public float PlacedReachScale { get; init; } = 1.0f;
+
+	/// <summary>The <c>building_interior_reach_scale</c> CVar multiplier used during baking.</summary>
+	public float BuildingInteriorReachScale { get; init; } = 1.0f;
+
+	/// <summary>Maps 64-bit light key ((entity &lt;&lt; 32) | index) to (AtlasU, AtlasV, AtlasScale, SliceIndex).</summary>
+	public required Dictionary<ulong, Vector4> LightRects { get; init; }
+
+	/// <summary>IEEE 754 binary16 (half-float) depth texels, row-major (SliceCount * AtlasSize * AtlasSize).</summary>
+	public required ushort[] Texels { get; set; }
+
+	public Texture2DArray? RuntimeTextureArray { get; set; }
 }
 
 /// <summary>
@@ -36,10 +48,54 @@ public sealed class StaticShadowMapContainer
 public static class Engine_LevelShadowMaps
 {
 	public const uint Magic = 0x4D534652u; // "RFSM" little-endian
-	public const uint Version = 1u;
+	public const uint Version = 2u;
 	public const int DefaultAtlasResolution = 2048;
+	public const int DefaultLightsPerMap = 36;
 
 	private static int? _configuredAtlasResolution;
+	private static int? _configuredLightsPerMap;
+
+	/// <summary>
+	/// Automatically selects the optimal number of static fixture lights packed per shadow map
+	/// slice for a given <paramref name="atlasResolution"/> preset (2K -> 36 [6x6], 4K/8K -> 64 [8x8]).
+	/// </summary>
+	public static int GetLightsPerMapForResolution(int atlasResolution)
+	{
+		if (atlasResolution >= 4096)
+		{
+			return 64; // 8x8 grid: 512x512 per light at 4K, 1024x1024 per light at 8K
+		}
+
+		if (atlasResolution >= 2048)
+		{
+			return 36; // 6x6 grid: 341x341 per light at 2K
+		}
+
+		return 16; // 4x4 grid for sub-2K test atlases
+	}
+
+	/// <summary>
+	/// Returns the effective lights-per-map for <paramref name="atlasResolution"/>, honouring the
+	/// optional <c>REFII_SHADOW_LIGHTS_PER_MAP</c> environment override when present.
+	/// </summary>
+	public static int GetConfiguredLightsPerMapForResolution(int atlasResolution)
+	{
+		try
+		{
+			string? env = System.Environment.GetEnvironmentVariable("REFII_SHADOW_LIGHTS_PER_MAP");
+			if (!string.IsNullOrEmpty(env) &&
+			    int.TryParse(env, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int envLpm) &&
+			    envLpm >= 1)
+			{
+				return Math.Clamp(envLpm, 1, 256);
+			}
+		}
+		catch (Exception)
+		{
+		}
+
+		return GetLightsPerMapForResolution(atlasResolution);
+	}
 
 	/// <summary>
 	/// Configured static shadow map resolution read from <c>static_shadow_resolution</c> CVar (defaults to 2048).
@@ -52,8 +108,9 @@ public static class Engine_LevelShadowMaps
 			{
 				try
 				{
-					string env = OS.GetEnvironment("REFII_SHADOW_RES");
-					if (int.TryParse(env, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int envRes) &&
+					string? env = System.Environment.GetEnvironmentVariable("REFII_SHADOW_RES");
+					if (!string.IsNullOrEmpty(env) &&
+					    int.TryParse(env, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int envRes) &&
 					    envRes >= 64)
 					{
 						_configuredAtlasResolution = Math.Clamp(envRes, 64, 16384);
@@ -76,14 +133,27 @@ public static class Engine_LevelShadowMaps
 		}
 	}
 
+	/// <summary>
+	/// Automatically selected max static shadow lights packed per map slice for <see cref="ConfiguredAtlasResolution"/>.
+	/// </summary>
+	public static int ConfiguredLightsPerMap
+	{
+		get
+		{
+			_configuredLightsPerMap ??= GetConfiguredLightsPerMapForResolution(ConfiguredAtlasResolution);
+			return _configuredLightsPerMap.Value;
+		}
+	}
+
 	public static void ReloadConfig()
 	{
 		_configuredAtlasResolution = null;
+		_configuredLightsPerMap = null;
 	}
 	public const float MaxHalfDepth = 65504.0f;
 	private const ushort MaxHalfDepthBits = 0x7BFF; // 65504.0 in IEEE 754 half-float
 
-	private static ImageTexture? _fallbackTexture;
+	private static Texture2DArray? _fallbackTextureArray;
 
 	public static StaticShadowMapContainer? Current { get; private set; }
 
@@ -243,33 +313,39 @@ public static class Engine_LevelShadowMaps
 	}
 
 	/// <summary>
-	/// Serializes a <see cref="StaticShadowMapContainer"/> into the compact <c>.shadows</c> binary format.
+	/// Serializes a <see cref="StaticShadowMapContainer"/> into the compact <c>.shadows</c> binary format (Version 2).
 	/// </summary>
 	public static byte[] Serialize(StaticShadowMapContainer container)
 	{
 		int lightCount = container.LightRects.Count;
-		int texelBytes = container.AtlasSize * container.AtlasSize * sizeof(ushort);
-		int totalBytes = 16 + lightCount * 20 + texelBytes;
+		int sliceCount = Math.Max(1, container.SliceCount);
+		int texelBytes = sliceCount * container.AtlasSize * container.AtlasSize * sizeof(ushort);
+		int totalBytes = 32 + lightCount * 24 + texelBytes;
 		byte[] buffer = new byte[totalBytes];
 		Span<byte> span = buffer.AsSpan();
 
 		BinaryPrimitives.WriteUInt32LittleEndian(span.Slice(0, 4), Magic);
 		BinaryPrimitives.WriteUInt32LittleEndian(span.Slice(4, 4), Version);
 		BinaryPrimitives.WriteUInt32LittleEndian(span.Slice(8, 4), (uint)container.AtlasSize);
-		BinaryPrimitives.WriteUInt32LittleEndian(span.Slice(12, 4), (uint)lightCount);
+		BinaryPrimitives.WriteUInt32LittleEndian(span.Slice(12, 4), (uint)sliceCount);
+		BinaryPrimitives.WriteUInt32LittleEndian(span.Slice(16, 4), (uint)lightCount);
+		BinaryPrimitives.WriteUInt32LittleEndian(span.Slice(20, 4), (uint)container.LightsPerMap);
+		BinaryPrimitives.WriteSingleLittleEndian(span.Slice(24, 4), container.PlacedReachScale);
+		BinaryPrimitives.WriteSingleLittleEndian(span.Slice(28, 4), container.BuildingInteriorReachScale);
 
 		var sortedKeys = new List<ulong>(container.LightRects.Keys);
 		sortedKeys.Sort();
 
-		int offset = 16;
+		int offset = 32;
 		foreach (ulong key in sortedKeys)
 		{
-			Vector3 rect = container.LightRects[key];
+			Vector4 rect = container.LightRects[key];
 			BinaryPrimitives.WriteUInt64LittleEndian(span.Slice(offset, 8), key);
 			BinaryPrimitives.WriteSingleLittleEndian(span.Slice(offset + 8, 4), rect.X);
 			BinaryPrimitives.WriteSingleLittleEndian(span.Slice(offset + 12, 4), rect.Y);
 			BinaryPrimitives.WriteSingleLittleEndian(span.Slice(offset + 16, 4), rect.Z);
-			offset += 20;
+			BinaryPrimitives.WriteSingleLittleEndian(span.Slice(offset + 20, 4), rect.W);
+			offset += 24;
 		}
 
 		ReadOnlySpan<byte> rawTexels = MemoryMarshal.AsBytes(container.Texels.AsSpan());
@@ -279,6 +355,7 @@ public static class Engine_LevelShadowMaps
 
 	/// <summary>
 	/// Deserializes a <see cref="StaticShadowMapContainer"/> from raw <c>.shadows</c> bytes.
+	/// Supports both Version 2 (32-byte header with multi-slice) and Version 1 (16-byte header legacy).
 	/// </summary>
 	public static bool TryDeserialize(
 		ReadOnlySpan<byte> bytes,
@@ -302,66 +379,139 @@ public static class Engine_LevelShadowMaps
 		}
 
 		uint version = BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(4, 4));
-		if (version != Version)
+		if (version != 1u && version != 2u)
 		{
 			error = $"unsupported version {version}";
 			return false;
 		}
 
-		int atlasSize = (int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(8, 4));
-		int lightCount = (int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(12, 4));
-		if (atlasSize <= 0 || atlasSize > 16384 || lightCount < 0 || lightCount > 65536)
+		if (version == 2u)
 		{
-			error = $"invalid header dimensions (atlas={atlasSize}, lights={lightCount})";
-			return false;
+			if (bytes.Length < 32)
+			{
+				error = "file truncated (< 32-byte header v2)";
+				return false;
+			}
+
+			int atlasSize = (int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(8, 4));
+			int sliceCount = (int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(12, 4));
+			int lightCount = (int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(16, 4));
+			int lightsPerMap = (int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(20, 4));
+			float placedReach = BinaryPrimitives.ReadSingleLittleEndian(bytes.Slice(24, 4));
+			float interiorReach = BinaryPrimitives.ReadSingleLittleEndian(bytes.Slice(28, 4));
+
+			if (atlasSize <= 0 || atlasSize > 16384 || sliceCount <= 0 || sliceCount > 256 || lightCount < 0 || lightCount > 65536)
+			{
+				error = $"invalid header dimensions (atlas={atlasSize}, slices={sliceCount}, lights={lightCount})";
+				return false;
+			}
+
+			long expectedBytes = 32L + lightCount * 24L + (long)sliceCount * atlasSize * atlasSize * sizeof(ushort);
+			if (bytes.Length < expectedBytes)
+			{
+				error = $"truncated payload (got {bytes.Length} bytes, expected {expectedBytes})";
+				return false;
+			}
+
+			var rects = new Dictionary<ulong, Vector4>(lightCount);
+			int offset = 32;
+			for (int i = 0; i < lightCount; i++)
+			{
+				ulong key = BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(offset, 8));
+				float u = BinaryPrimitives.ReadSingleLittleEndian(bytes.Slice(offset + 8, 4));
+				float v = BinaryPrimitives.ReadSingleLittleEndian(bytes.Slice(offset + 12, 4));
+				float scale = BinaryPrimitives.ReadSingleLittleEndian(bytes.Slice(offset + 16, 4));
+				float layer = BinaryPrimitives.ReadSingleLittleEndian(bytes.Slice(offset + 20, 4));
+				rects[key] = new Vector4(u, v, scale, layer);
+				offset += 24;
+			}
+
+			int totalTexels = sliceCount * atlasSize * atlasSize;
+			var texels = new ushort[totalTexels];
+			bytes.Slice(offset, totalTexels * sizeof(ushort)).CopyTo(MemoryMarshal.AsBytes(texels.AsSpan()));
+
+			container = new StaticShadowMapContainer
+			{
+				AtlasSize = atlasSize,
+				SliceCount = sliceCount,
+				LightsPerMap = lightsPerMap,
+				PlacedReachScale = placedReach,
+				BuildingInteriorReachScale = interiorReach,
+				LightRects = rects,
+				Texels = texels,
+			};
+			return true;
 		}
-
-		long expectedBytes = 16L + lightCount * 20L + (long)atlasSize * atlasSize * sizeof(ushort);
-		if (bytes.Length < expectedBytes)
+		else
 		{
-			error = $"truncated payload (got {bytes.Length} bytes, expected {expectedBytes})";
-			return false;
+			// Version 1 legacy format
+			int atlasSize = (int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(8, 4));
+			int lightCount = (int)BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(12, 4));
+			if (atlasSize <= 0 || atlasSize > 16384 || lightCount < 0 || lightCount > 65536)
+			{
+				error = $"invalid header dimensions (atlas={atlasSize}, lights={lightCount})";
+				return false;
+			}
+
+			long expectedBytes = 16L + lightCount * 20L + (long)atlasSize * atlasSize * sizeof(ushort);
+			if (bytes.Length < expectedBytes)
+			{
+				error = $"truncated payload (got {bytes.Length} bytes, expected {expectedBytes})";
+				return false;
+			}
+
+			var rects = new Dictionary<ulong, Vector4>(lightCount);
+			int offset = 16;
+			for (int i = 0; i < lightCount; i++)
+			{
+				ulong key = BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(offset, 8));
+				float u = BinaryPrimitives.ReadSingleLittleEndian(bytes.Slice(offset + 8, 4));
+				float v = BinaryPrimitives.ReadSingleLittleEndian(bytes.Slice(offset + 12, 4));
+				float scale = BinaryPrimitives.ReadSingleLittleEndian(bytes.Slice(offset + 16, 4));
+				rects[key] = new Vector4(u, v, scale, 0.0f);
+				offset += 20;
+			}
+
+			int texelCount = atlasSize * atlasSize;
+			var texels = new ushort[texelCount];
+			bytes.Slice(offset, texelCount * sizeof(ushort)).CopyTo(MemoryMarshal.AsBytes(texels.AsSpan()));
+
+			container = new StaticShadowMapContainer
+			{
+				AtlasSize = atlasSize,
+				SliceCount = 1,
+				LightsPerMap = Math.Max(1, lightCount),
+				PlacedReachScale = 1.0f,
+				BuildingInteriorReachScale = 1.0f,
+				LightRects = rects,
+				Texels = texels,
+			};
+			return true;
 		}
-
-		var rects = new Dictionary<ulong, Vector3>(lightCount);
-		int offset = 16;
-		for (int i = 0; i < lightCount; i++)
-		{
-			ulong key = BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(offset, 8));
-			float u = BinaryPrimitives.ReadSingleLittleEndian(bytes.Slice(offset + 8, 4));
-			float v = BinaryPrimitives.ReadSingleLittleEndian(bytes.Slice(offset + 12, 4));
-			float scale = BinaryPrimitives.ReadSingleLittleEndian(bytes.Slice(offset + 16, 4));
-			rects[key] = new Vector3(u, v, scale);
-			offset += 20;
-		}
-
-		int texelCount = atlasSize * atlasSize;
-		var texels = new ushort[texelCount];
-		bytes.Slice(offset, texelCount * sizeof(ushort)).CopyTo(MemoryMarshal.AsBytes(texels.AsSpan()));
-
-		container = new StaticShadowMapContainer
-		{
-			AtlasSize = atlasSize,
-			LightRects = rects,
-			Texels = texels,
-		};
-		return true;
 	}
 
 	/// <summary>
-	/// Reads only the 16-byte binary header from a <c>.shadows</c> file on disk without allocating or loading texels.
+	/// Reads the binary header from a <c>.shadows</c> file on disk without allocating or loading texels.
 	/// </summary>
 	public static bool TryReadHeader(
 		string filePath,
 		out uint magic,
 		out uint version,
 		out int atlasSize,
-		out int lightCount)
+		out int sliceCount,
+		out int lightCount,
+		out int lightsPerMap,
+		out float placedReach,
+		out float interiorReach)
 	{
 		magic = 0;
 		version = 0;
 		atlasSize = 0;
+		sliceCount = 0;
 		lightCount = 0;
+		lightsPerMap = 0;
+		placedReach = 0f;
+		interiorReach = 0f;
 
 		if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
 		{
@@ -376,8 +526,9 @@ public static class Engine_LevelShadowMaps
 				return false;
 			}
 
-			Span<byte> header = stackalloc byte[16];
-			if (fs.Read(header) != 16)
+			Span<byte> header = stackalloc byte[32];
+			int bytesRead = fs.Read(header);
+			if (bytesRead < 16)
 			{
 				return false;
 			}
@@ -385,7 +536,27 @@ public static class Engine_LevelShadowMaps
 			magic = BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(0, 4));
 			version = BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(4, 4));
 			atlasSize = (int)BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(8, 4));
-			lightCount = (int)BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(12, 4));
+
+			if (version == 1u)
+			{
+				sliceCount = 1;
+				lightCount = (int)BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(12, 4));
+				lightsPerMap = Math.Max(1, lightCount);
+				placedReach = 1.0f;
+				interiorReach = 1.0f;
+				return true;
+			}
+
+			if (bytesRead < 32)
+			{
+				return false;
+			}
+
+			sliceCount = (int)BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(12, 4));
+			lightCount = (int)BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(16, 4));
+			lightsPerMap = (int)BinaryPrimitives.ReadUInt32LittleEndian(header.Slice(20, 4));
+			placedReach = BinaryPrimitives.ReadSingleLittleEndian(header.Slice(24, 4));
+			interiorReach = BinaryPrimitives.ReadSingleLittleEndian(header.Slice(28, 4));
 			return true;
 		}
 		catch (Exception)
@@ -395,10 +566,39 @@ public static class Engine_LevelShadowMaps
 	}
 
 	/// <summary>
-	/// Checks whether a <c>.shadows</c> file exists and is valid for the given expected resolution and version.
-	/// Inspects the 16-byte header and verifies exact file length to guarantee payload integrity.
+	/// Backward-compatible 4-field header reader.
 	/// </summary>
-	public static bool IsFileValid(string filePath, int expectedResolution, uint expectedVersion = Version)
+	public static bool TryReadHeader(
+		string filePath,
+		out uint magic,
+		out uint version,
+		out int atlasSize,
+		out int lightCount)
+	{
+		bool ok = TryReadHeader(
+			filePath,
+			out magic,
+			out version,
+			out atlasSize,
+			out _,
+			out lightCount,
+			out _,
+			out _,
+			out _);
+		return ok;
+	}
+
+	/// <summary>
+	/// Checks whether a <c>.shadows</c> file exists and was baked with the exact specified settings.
+	/// Inspects the header and verifies exact file length to guarantee payload integrity.
+	/// </summary>
+	public static bool IsFileValid(
+		string filePath,
+		int expectedResolution,
+		int expectedLightsPerMap,
+		float expectedPlacedReach,
+		float expectedInteriorReach,
+		uint expectedVersion = Version)
 	{
 		if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
 		{
@@ -408,22 +608,36 @@ public static class Engine_LevelShadowMaps
 		try
 		{
 			var fi = new FileInfo(filePath);
-			if (fi.Length < 16)
+			if (fi.Length < 32)
 			{
 				return false;
 			}
 
-			if (!TryReadHeader(filePath, out uint magic, out uint version, out int atlasSize, out int lightCount))
+			if (!TryReadHeader(
+				filePath,
+				out uint magic,
+				out uint version,
+				out int atlasSize,
+				out int sliceCount,
+				out int lightCount,
+				out int lightsPerMap,
+				out float placedReach,
+				out float interiorReach))
 			{
 				return false;
 			}
 
-			if (magic != Magic || version != expectedVersion || atlasSize != expectedResolution)
+			if (magic != Magic || version != expectedVersion ||
+			    atlasSize != expectedResolution ||
+			    lightsPerMap != expectedLightsPerMap ||
+			    sliceCount <= 0 ||
+			    MathF.Abs(placedReach - expectedPlacedReach) >= 1e-3f ||
+			    MathF.Abs(interiorReach - expectedInteriorReach) >= 1e-3f)
 			{
 				return false;
 			}
 
-			long expectedBytes = 16L + lightCount * 20L + (long)atlasSize * atlasSize * sizeof(ushort);
+			long expectedBytes = 32L + lightCount * 24L + (long)sliceCount * atlasSize * atlasSize * sizeof(ushort);
 			return fi.Length == expectedBytes;
 		}
 		catch (Exception)
@@ -431,6 +645,18 @@ public static class Engine_LevelShadowMaps
 			return false;
 		}
 	}
+
+	/// <summary>
+	/// Checks whether a <c>.shadows</c> file exists and matches current CVar settings.
+	/// </summary>
+	public static bool IsFileValid(string filePath, int expectedResolution, uint expectedVersion = Version)
+		=> IsFileValid(
+			filePath,
+			expectedResolution,
+			GetConfiguredLightsPerMapForResolution(expectedResolution),
+			Engine_LevelLights.PlacedRange,
+			Engine_LevelLights.BuildingInteriorReachScale,
+			expectedVersion);
 
 	/// <summary>
 	/// Loads and binds the scenario's <c>.shadows</c> file if present on disk, or binds a neutral
@@ -482,28 +708,53 @@ public static class Engine_LevelShadowMaps
 
 		if (raw is null)
 		{
-			Current = null;
-			Engine_LightTable.RebindShadowMap(null);
-			BindAtlasTexture(null);
+			Clear();
 			GD.Print($"[shadow-map] {level}: no baked static shadow map at {resolvedLocation}");
 			return;
 		}
 
 		if (!TryDeserialize(raw, out StaticShadowMapContainer container, out string error))
 		{
-			Current = null;
-			Engine_LightTable.RebindShadowMap(null);
-			BindAtlasTexture(null);
+			Clear();
 			GD.Print($"[shadow-map] {level}: failed to read {resolvedLocation} ({error})");
 			return;
 		}
 
+		StaticShadowMapContainer? previous = Current;
 		Current = container;
+		if (previous is not null && !ReferenceEquals(previous, container))
+		{
+			previous.Texels = Array.Empty<ushort>();
+			previous.RuntimeTextureArray = null;
+		}
+
 		Engine_LightTable.RebindShadowMap(container);
 		BindAtlasTexture(container);
 		GD.Print(
 			$"[shadow-map] {level}: loaded {container.AtlasSize}x{container.AtlasSize} static shadow atlas " +
 			$"({container.LightRects.Count} lights) from {resolvedLocation}");
+	}
+
+	/// <summary>
+	/// Releases the active static shadow map container, unbinds its GPU texture array in favour of
+	/// the 4x4 fallback atlas, and clears cached model triangles.
+	/// </summary>
+	public static void Clear()
+	{
+		ModelTriangleCache.Clear();
+		StaticShadowMapContainer? previous = Current;
+		Current = null;
+		if (previous is not null)
+		{
+			previous.Texels = Array.Empty<ushort>();
+			previous.RuntimeTextureArray = null;
+		}
+
+		Engine_LightTable.RebindShadowMap(null);
+		if (!Refii.Core.Engine_AppRoot.IsTestHost)
+		{
+			BindAtlasTexture(null);
+		}
 	}
 
 	private static byte[]? TryReadShadowMapBytes(string resPath)
@@ -529,6 +780,21 @@ public static class Engine_LevelShadowMaps
 		return null;
 	}
 
+	private static Texture2DArray? _boundAtlasTextureArray;
+
+	private static void ReleasePreviousBoundAtlas(Texture2DArray? replacement)
+	{
+		Texture2DArray? previous = _boundAtlasTextureArray;
+		_boundAtlasTextureArray = replacement;
+		if (previous is not null &&
+		    !ReferenceEquals(previous, replacement) &&
+		    !ReferenceEquals(previous, _fallbackTextureArray) &&
+		    GodotObject.IsInstanceValid(previous))
+		{
+			previous.Dispose();
+		}
+	}
+
 	private static void BindAtlasTexture(StaticShadowMapContainer? container)
 	{
 		if (OS.GetThreadCallerId() == OS.GetMainThreadId())
@@ -545,29 +811,90 @@ public static class Engine_LevelShadowMaps
 	{
 		if (container is null)
 		{
-			if (_fallbackTexture is null)
+			if (_fallbackTextureArray is null || !GodotObject.IsInstanceValid(_fallbackTextureArray))
 			{
 				ushort[] fill = new ushort[16];
 				Array.Fill(fill, MaxHalfDepthBits);
 				byte[] bytes = new byte[32];
 				MemoryMarshal.AsBytes(fill.AsSpan()).CopyTo(bytes);
 				using var img = Image.CreateFromData(4, 4, false, Image.Format.Rh, bytes);
-				_fallbackTexture = ImageTexture.CreateFromImage(img);
+				var array = new Texture2DArray();
+				var images = new Godot.Collections.Array<Image> { img };
+				array.CreateFromImages(images);
+				images.Clear();
+				_fallbackTextureArray = array;
 			}
 
+			ActiveAtlasRdRid = RenderingServer.TextureGetRdTexture(_fallbackTextureArray.GetRid());
+			ActiveAtlasSize = 4;
+			AtlasGeneration++;
 			RenderingServer.GlobalShaderParameterSet(
-				Engine_LightTable.ShadowAtlasGlobalName, _fallbackTexture);
+				Engine_LightTable.ShadowAtlasGlobalName, _fallbackTextureArray);
+			ReleasePreviousBoundAtlas(null);
 			return;
 		}
 
-		byte[] rawBytes = new byte[container.Texels.Length * sizeof(ushort)];
-		MemoryMarshal.AsBytes(container.Texels.AsSpan()).CopyTo(rawBytes);
-		using var image = Image.CreateFromData(
-			container.AtlasSize, container.AtlasSize, false, Image.Format.Rh, rawBytes);
-		ImageTexture texture = ImageTexture.CreateFromImage(image);
-		container.RuntimeTexture = texture;
-		RenderingServer.GlobalShaderParameterSet(Engine_LightTable.ShadowAtlasGlobalName, texture);
+		int sliceCount = Math.Max(1, container.SliceCount);
+		int sliceTexelCount = container.AtlasSize * container.AtlasSize;
+		int sliceByteCount = sliceTexelCount * sizeof(ushort);
+		if (container.Texels.Length < sliceCount * sliceTexelCount)
+		{
+			return;
+		}
+
+		var sliceImages = new Godot.Collections.Array<Image>();
+		var textureArray = new Texture2DArray();
+		Error err;
+		try
+		{
+			for (int s = 0; s < sliceCount; s++)
+			{
+				byte[] rawBytes = new byte[sliceByteCount];
+				MemoryMarshal.AsBytes(container.Texels.AsSpan(s * sliceTexelCount, sliceTexelCount)).CopyTo(rawBytes);
+				var img = Image.CreateFromData(
+					container.AtlasSize, container.AtlasSize, false, Image.Format.Rh, rawBytes);
+				sliceImages.Add(img);
+			}
+
+			err = textureArray.CreateFromImages(sliceImages);
+		}
+		finally
+		{
+			for (int i = 0; i < sliceImages.Count; i++)
+			{
+				sliceImages[i]?.Dispose();
+			}
+
+			sliceImages.Clear();
+		}
+
+		// Free the CPU half-float array (up to 256+ MB at 4K) now that slices are on the GPU.
+		container.Texels = Array.Empty<ushort>();
+
+		if (err == Error.Ok)
+		{
+			container.RuntimeTextureArray = textureArray;
+			ActiveAtlasRdRid = RenderingServer.TextureGetRdTexture(textureArray.GetRid());
+			ActiveAtlasSize = Math.Max(1, container.AtlasSize);
+			AtlasGeneration++;
+			RenderingServer.GlobalShaderParameterSet(Engine_LightTable.ShadowAtlasGlobalName, textureArray);
+			ReleasePreviousBoundAtlas(textureArray);
+		}
+		else
+		{
+			textureArray.Dispose();
+			GD.PrintErr($"[shadow-map] failed to create Texture2DArray from {sliceCount} slices: {err}");
+		}
 	}
+
+	/// <summary>RenderingDevice texture RID of the currently bound <c>fable_static_shadow_atlas</c> <see cref="Texture2DArray"/>.</summary>
+	public static Rid ActiveAtlasRdRid { get; private set; }
+
+	/// <summary>Width/height in texels of the currently bound <c>fable_static_shadow_atlas</c> <see cref="Texture2DArray"/>.</summary>
+	public static int ActiveAtlasSize { get; private set; } = 4;
+
+	/// <summary>Incremented whenever the bound static shadow atlas changes.</summary>
+	public static int AtlasGeneration { get; private set; }
 
 	// ============================================================================================
 	// Offline BVH & Parallel Octahedral Raytracer
@@ -903,62 +1230,69 @@ public static class Engine_LevelShadowMaps
 
 	/// <summary>
 	/// Bakes a <see cref="StaticShadowMapContainer"/> from a pre-built <see cref="BvhTree"/> and a
-	/// list of shadow-casting lights. Exposed for direct unit testing as well as level baking.
+	/// list of shadow-casting lights, partitioned across multiple atlas slices according to <paramref name="lightsPerMap"/>.
 	/// </summary>
 	public static StaticShadowMapContainer BakeFromBvh(
 		BvhTree worldBvh,
 		IReadOnlyList<BakeLightSpec> lights,
-		int atlasResolution)
+		int atlasResolution,
+		int lightsPerMap,
+		float placedReachScale,
+		float interiorReachScale)
 	{
 		atlasResolution = Math.Clamp(atlasResolution, 64, 16384);
-		var texels = new ushort[atlasResolution * atlasResolution];
+		lightsPerMap = Math.Clamp(lightsPerMap, 1, 256);
+
+		int sliceCount = Math.Max(1, (int)MathF.Ceiling((float)lights.Count / lightsPerMap));
+		int sliceTexelCount = atlasResolution * atlasResolution;
+		var texels = new ushort[sliceCount * sliceTexelCount];
 		Array.Fill(texels, MaxHalfDepthBits);
-		var rects = new Dictionary<ulong, Vector3>(lights.Count);
+		var rects = new Dictionary<ulong, Vector4>(lights.Count);
 
 		if (lights.Count == 0)
 		{
 			return new StaticShadowMapContainer
 			{
 				AtlasSize = atlasResolution,
+				SliceCount = 1,
+				LightsPerMap = lightsPerMap,
+				PlacedReachScale = placedReachScale,
+				BuildingInteriorReachScale = interiorReachScale,
 				LightRects = rects,
 				Texels = texels,
 			};
 		}
 
-		int gridSide = (int)MathF.Ceiling(MathF.Sqrt(lights.Count));
-		int rawTileSize = atlasResolution / Math.Max(1, gridSide);
-		int tileTotalSize = Math.Clamp(rawTileSize, 16, 512);
-		int innerSize = tileTotalSize - 2;
-		int tilesPerRow = Math.Max(1, atlasResolution / tileTotalSize);
+		int tilesPerRow = Math.Max(1, (int)MathF.Ceiling(MathF.Sqrt(lightsPerMap)));
+		int tileTotalSize = atlasResolution / tilesPerRow;
+		int innerSize = Math.Max(2, tileTotalSize - 2);
 
 		float invAtlas = 1.0f / atlasResolution;
 		float rectScale = innerSize * invAtlas;
 
 		for (int i = 0; i < lights.Count; i++)
 		{
-			int tileX = (i % tilesPerRow) * tileTotalSize;
-			int tileY = (i / tilesPerRow) * tileTotalSize;
-			if (tileY + tileTotalSize > atlasResolution)
-			{
-				break;
-			}
+			int sliceIndex = i / lightsPerMap;
+			int localIndex = i % lightsPerMap;
+			int tileX = (localIndex % tilesPerRow) * tileTotalSize;
+			int tileY = (localIndex / tilesPerRow) * tileTotalSize;
 
-			rects[lights[i].Key] = new Vector3(
+			rects[lights[i].Key] = new Vector4(
 				(tileX + 1.0f) * invAtlas,
 				(tileY + 1.0f) * invAtlas,
-				rectScale);
+				rectScale,
+				sliceIndex);
 		}
 
 		float texelAngle = 2.0f / Math.Max(1, innerSize);
 
 		Parallel.For(0, lights.Count, i =>
 		{
-			int tileX = (i % tilesPerRow) * tileTotalSize;
-			int tileY = (i / tilesPerRow) * tileTotalSize;
-			if (tileY + tileTotalSize > atlasResolution)
-			{
-				return;
-			}
+			int sliceIndex = i / lightsPerMap;
+			int localIndex = i % lightsPerMap;
+			int tileX = (localIndex % tilesPerRow) * tileTotalSize;
+			int tileY = (localIndex / tilesPerRow) * tileTotalSize;
+			int sliceOffset = sliceIndex * sliceTexelCount;
 
 			BakeLightSpec light = lights[i];
 			Vector3 rangeVec = new(light.MaxRange, light.MaxRange, light.MaxRange);
@@ -976,7 +1310,7 @@ public static class Engine_LevelShadowMaps
 			for (int iy = 0; iy < innerSize; iy++)
 			{
 				int py = tileY + 1 + iy;
-				int rowOffset = py * atlasResolution;
+				int rowOffset = sliceOffset + py * atlasResolution;
 				float v = (iy + 0.5f) * invInner;
 
 				for (int ix = 0; ix < innerSize; ix++)
@@ -1019,8 +1353,8 @@ public static class Engine_LevelShadowMaps
 					int srcIx = Math.Clamp((int)MathF.Floor(wrapped.X * innerSize), 0, innerSize - 1);
 					int srcIy = Math.Clamp((int)MathF.Floor(wrapped.Y * innerSize), 0, innerSize - 1);
 
-					int srcIdx = (tileY + 1 + srcIy) * atlasResolution + (tileX + 1 + srcIx);
-					int dstIdx = (tileY + by) * atlasResolution + (tileX + bx);
+					int srcIdx = sliceOffset + (tileY + 1 + srcIy) * atlasResolution + (tileX + 1 + srcIx);
+					int dstIdx = sliceOffset + (tileY + by) * atlasResolution + (tileX + bx);
 					texels[dstIdx] = texels[srcIdx];
 				}
 			}
@@ -1029,10 +1363,29 @@ public static class Engine_LevelShadowMaps
 		return new StaticShadowMapContainer
 		{
 			AtlasSize = atlasResolution,
+			SliceCount = sliceCount,
+			LightsPerMap = lightsPerMap,
+			PlacedReachScale = placedReachScale,
+			BuildingInteriorReachScale = interiorReachScale,
 			LightRects = rects,
 			Texels = texels,
 		};
 	}
+
+	/// <summary>
+	/// Bakes a <see cref="StaticShadowMapContainer"/> from a pre-built <see cref="BvhTree"/> using configured CVars.
+	/// </summary>
+	public static StaticShadowMapContainer BakeFromBvh(
+		BvhTree worldBvh,
+		IReadOnlyList<BakeLightSpec> lights,
+		int atlasResolution)
+		=> BakeFromBvh(
+			worldBvh,
+			lights,
+			atlasResolution,
+			GetConfiguredLightsPerMapForResolution(atlasResolution),
+			Engine_LevelLights.PlacedRange,
+			Engine_LevelLights.BuildingInteriorReachScale);
 
 	private static readonly ConcurrentDictionary<string, Vector3[]?> ModelTriangleCache =
 		new(StringComparer.OrdinalIgnoreCase);
@@ -1062,6 +1415,9 @@ public static class Engine_LevelShadowMaps
 		LevelEntry level,
 		Func<string, byte[]?> read,
 		int atlasResolution,
+		int lightsPerMap,
+		float placedReachScale,
+		float interiorReachScale,
 		out StaticShadowMapContainer? container,
 		out string gdbPath,
 		out int triangleCount,
@@ -1209,9 +1565,32 @@ public static class Engine_LevelShadowMaps
 
 		triangleCount = worldTriangles.Count;
 		var bvh = new BvhTree(worldTriangles);
-		container = BakeFromBvh(bvh, bakeLights, atlasResolution);
+		container = BakeFromBvh(bvh, bakeLights, atlasResolution, lightsPerMap, placedReachScale, interiorReachScale);
 		return true;
 	}
+
+	/// <summary>
+	/// Extracts all static world triangles and placed lights using configured CVars.
+	/// </summary>
+	public static bool BakeScenario(
+		LevelEntry level,
+		Func<string, byte[]?> read,
+		int atlasResolution,
+		out StaticShadowMapContainer? container,
+		out string gdbPath,
+		out int triangleCount,
+		out string error)
+		=> BakeScenario(
+			level,
+			read,
+			atlasResolution,
+			GetConfiguredLightsPerMapForResolution(atlasResolution),
+			Engine_LevelLights.PlacedRange,
+			Engine_LevelLights.BuildingInteriorReachScale,
+			out container,
+			out gdbPath,
+			out triangleCount,
+			out error);
 
 	public static bool IsStructuralLightHostModel(string modelPath)
 	{

@@ -78,6 +78,12 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     /// </summary>
     private readonly Dictionary<uint, (LightingTheme Start, LightingTheme? End)?> _paintedThemes = new();
 
+    /// <summary>
+    /// Each painted day set's sky/fog theme at both ends of the current step, by hash; folded
+    /// every frame at the layer's live weight (<see cref="SkyNow"/>).
+    /// </summary>
+    private readonly Dictionary<uint, (SkyTheme Start, SkyTheme? End)?> _paintedSkyThemes = new();
+
     public ToneMapTheme? ToneMap => _toneMapTheme;
 
     public SkyFrame? Frame => _frame;
@@ -432,12 +438,11 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             return;
         }
 
-        // Between the step's two themes, by the clock — see _skyStepEnd.
+        // Between the step's two themes, by the clock — see _skyStepEnd — with painted layers folded.
         float w = StepWeight();
-        if (_skyStepStart is { } skyStart && _skyStepEnd is { } skyEnd && w > 0f)
+        if (SkyNow(w) is { } skyNow)
         {
-            Theme = Engine_ThemeTimeline.BlendSkyInto(
-                skyStart, skyEnd, w, NextSlot(_themeRing, ref _themeSlot));
+            Theme = skyNow;
         }
 
         SkyFrame frame = Engine_SkyFrame.EvaluateInto(
@@ -508,6 +513,39 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         {
             Engine_SkyCosts.ApplyRadiance(Environment);
         }
+    }
+
+    /// <summary>
+    /// The level day set's sky/fog theme at weight <paramref name="w"/> through the step, with every
+    /// painted layer folded over it at its live weight — the guest's fold (<c>sub_8218EAF8</c>).
+    /// </summary>
+    private SkyTheme? SkyNow(float w)
+    {
+        if (_skyStepStart is not { } start)
+        {
+            return Theme;
+        }
+
+        SkyTheme now = _skyStepEnd is { } end && w > 0f
+            ? Engine_ThemeTimeline.BlendSkyInto(start, end, w, NextSlot(_themeRing, ref _themeSlot))
+            : start;
+
+        if (Painted is { Any: true } painted)
+        {
+            foreach (Refii.Lighting.Engine_PaintedDaySets.Layer layer in painted.Layers)
+            {
+                if (layer.Weight > 0f &&
+                    _paintedSkyThemes.TryGetValue(layer.Hash, out var stated) && stated is { } pair)
+                {
+                    SkyTheme layerNow = pair.End is { } layerEnd && w > 0f
+                        ? Engine_ThemeTimeline.BlendSky(pair.Start, layerEnd, w)
+                        : pair.Start;
+                    now = Engine_EnvironmentTheme.FoldPaintedSky(now, layerNow, layer.Weight);
+                }
+            }
+        }
+
+        return now;
     }
 
     /// <summary>
@@ -816,10 +854,31 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             }
         }
 
-        float w = StepWeight();
-        if (_skyStepStart is { } skyStart && _skyStepEnd is { } skyEnd && w > 0f)
+        _paintedSkyThemes.Clear();
+        if (LightingGdbs.Count != 0 && Painted is { Any: true } paintedSky)
         {
-            Theme = Engine_ThemeTimeline.BlendSky(skyStart, skyEnd, w);
+            foreach (Refii.Lighting.Engine_PaintedDaySets.Layer layer in paintedSky.Layers)
+            {
+                if (Engine_ThemeTimeline.TryExtractSkyBlended(
+                        LightingGdbs, stepStartTime, layer.Hash, out SkyTheme paintedSkyStart))
+                {
+                    _paintedSkyThemes[layer.Hash] = (paintedSkyStart,
+                        Engine_ThemeTimeline.TryExtractSkyBlended(
+                            LightingGdbs, stepEndTime, layer.Hash, out SkyTheme paintedSkyEnd)
+                            ? paintedSkyEnd
+                            : null);
+                }
+                else
+                {
+                    _paintedSkyThemes[layer.Hash] = null;
+                }
+            }
+        }
+
+        float w = StepWeight();
+        if (SkyNow(w) is { } skyNow)
+        {
+            Theme = skyNow;
         }
 
         SkyFrame frame = Engine_SkyFrame.Evaluate(Theme, _dayFraction);

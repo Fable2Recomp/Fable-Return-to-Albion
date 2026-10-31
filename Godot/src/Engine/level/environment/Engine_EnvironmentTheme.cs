@@ -17,6 +17,11 @@ public sealed class SkyTheme
     public bool HasComplementaryBias { get; set; }
     public bool HasNearFog { get; set; }
     public bool HasFarFog { get; set; }
+    public bool HasNearDistance { get; set; }
+    public bool HasNearDensity { get; set; }
+    public bool HasFarDistance { get; set; }
+    public bool HasFarDensity { get; set; }
+    public bool HasCloseFogMaxDistance { get; set; }
     public bool HasFoggingStart { get; set; }
     public bool HasSunAxis { get; set; }
     public bool HasMoonAxis { get; set; }
@@ -45,12 +50,12 @@ public sealed class SkyTheme
     public float Rayleigh { get; set; } = 1.0f;
     public float Mie { get; set; } = 1.0f;
     public float ComplementaryBias { get; set; } = 0.35f;
-    public float NearDistance { get; set; }
-    public float NearDensity { get; set; }
-    public float FarDistance { get; set; }
-    public float FarDensity { get; set; }
-    public float CloseFogMaxDistance { get; set; }
-    public float FoggingStart { get; set; }
+    public float NearDistance { get; set; } = 10f;
+    public float NearDensity { get; set; } = 0.3f;
+    public float FarDistance { get; set; } = 100f;
+    public float FarDensity { get; set; } = 0.3f;
+    public float CloseFogMaxDistance { get; set; } = 100f;
+    public float FoggingStart { get; set; } = 1000000f;
     public float SunAxisElevation { get; set; } = 26.0f;
     public float SunAxisZOffset { get; set; }
     public float SunAxisXyRotation { get; set; }
@@ -347,6 +352,146 @@ public static class Engine_EnvironmentTheme
         return extractor.ExtractSky(theme);
     }
 
+        /// <summary>
+        /// The sky/fog theme of ONE day set, by its record hash — a painted layer's.
+        /// Takes only the fields the record actually OVERRIDES, not those it inherits, so folding
+        /// it over the level's own theme leaves unstated fields intact (<c>sub_82A44B88</c>).
+        /// </summary>
+        public static bool TryExtractSky(
+            IReadOnlyList<byte[]> gdbs, float targetTime, uint daySetHash, out SkyTheme theme)
+        {
+            theme = new SkyTheme();
+            var extractor = Extractor.Create(gdbs);
+            if (extractor is null)
+            {
+                return false;
+            }
+
+            extractor.TargetTime = float.IsFinite(targetTime) && targetTime >= 0f ? targetTime : 0.5f;
+            return extractor.ExtractSkyPainted(daySetHash, theme);
+        }
+
+        /// <summary>The keyframe times of one day set for sky/fog extraction, sorted.</summary>
+        public static List<float> DaySetTimes(IReadOnlyList<byte[]> gdbs, uint daySetHash) =>
+            Refii.Lighting.Engine_LightingTheme.DaySetTimes(gdbs, daySetHash);
+
+        /// <summary>
+        /// Folds a painted day set's <see cref="SkyTheme"/> over the running theme by its layer
+        /// weight, the way <c>sub_82197938</c> lerps each layer over the accumulated result.
+        /// Fields the painted theme does not state keep the base.
+        /// </summary>
+        public static SkyTheme FoldPaintedSky(SkyTheme into, SkyTheme painted, float weight)
+        {
+            float w = Math.Clamp(weight, 0f, 1f);
+            if (w <= 0f || !painted.HasAny)
+            {
+                return into;
+            }
+
+            SkyTheme near = w < 0.5f ? into : painted;
+            var o = new SkyTheme
+            {
+                HasAny = into.HasAny || painted.HasAny,
+                HasSkyColour = into.HasSkyColour || painted.HasSkyColour,
+                HasComplementaryColour = into.HasComplementaryColour || painted.HasComplementaryColour,
+                HasSunsetColour = into.HasSunsetColour || painted.HasSunsetColour,
+                HasFogColour = into.HasFogColour || painted.HasFogColour,
+                HasSunIntensity = into.HasSunIntensity || painted.HasSunIntensity,
+                HasRayleigh = into.HasRayleigh || painted.HasRayleigh,
+                HasMie = into.HasMie || painted.HasMie,
+                HasComplementaryBias = into.HasComplementaryBias || painted.HasComplementaryBias,
+                HasNearFog = into.HasNearFog || painted.HasNearFog,
+                HasFarFog = into.HasFarFog || painted.HasFarFog,
+                HasNearDistance = into.HasNearDistance || painted.HasNearDistance,
+                HasNearDensity = into.HasNearDensity || painted.HasNearDensity,
+                HasFarDistance = into.HasFarDistance || painted.HasFarDistance,
+                HasFarDensity = into.HasFarDensity || painted.HasFarDensity,
+                HasCloseFogMaxDistance = into.HasCloseFogMaxDistance || painted.HasCloseFogMaxDistance,
+                HasFoggingStart = into.HasFoggingStart || painted.HasFoggingStart,
+                HasSunAxis = into.HasSunAxis || painted.HasSunAxis,
+                HasMoonAxis = into.HasMoonAxis || painted.HasMoonAxis,
+                HasMoonParams = into.HasMoonParams || painted.HasMoonParams,
+                HasStarBrightness = into.HasStarBrightness || painted.HasStarBrightness,
+                HasMainLightColour = into.HasMainLightColour || painted.HasMainLightColour,
+                HasSkyOverlayTexture = painted.HasSkyOverlayTexture && w >= 0.5f ? true : into.HasSkyOverlayTexture,
+                HasMoonTexture = painted.HasMoonTexture && w >= 0.5f ? true : into.HasMoonTexture,
+                HasMoonGlareTexture = painted.HasMoonGlareTexture && w >= 0.5f ? true : into.HasMoonGlareTexture,
+                HasSunDiscTexture = painted.HasSunDiscTexture && w >= 0.5f ? true : into.HasSunDiscTexture,
+                HasSunBeamsTexture = painted.HasSunBeamsTexture && w >= 0.5f ? true : into.HasSunBeamsTexture,
+                HasSunGlareTexture = painted.HasSunGlareTexture && w >= 0.5f ? true : into.HasSunGlareTexture,
+                HasSunDiscParams = into.HasSunDiscParams || painted.HasSunDiscParams,
+                HasSunDiscColour = into.HasSunDiscColour || painted.HasSunDiscColour,
+                HasSunBeams = into.HasSunBeams || painted.HasSunBeams,
+                HasSunGlare = into.HasSunGlare || painted.HasSunGlare,
+                HasMainLightElevation = into.HasMainLightElevation || painted.HasMainLightElevation,
+                SourceTimeOfDay = into.SourceTimeOfDay,
+
+                SunIntensity = FoldScalar(into.SunIntensity, painted.SunIntensity, painted.HasSunIntensity, w),
+                Rayleigh = FoldScalar(into.Rayleigh, painted.Rayleigh, painted.HasRayleigh, w),
+                Mie = FoldScalar(into.Mie, painted.Mie, painted.HasMie, w),
+                ComplementaryBias = FoldScalar(into.ComplementaryBias, painted.ComplementaryBias, painted.HasComplementaryBias, w),
+                NearDistance = FoldScalar(into.NearDistance, painted.NearDistance, painted.HasNearDistance, w),
+                NearDensity = FoldScalar(into.NearDensity, painted.NearDensity, painted.HasNearDensity, w),
+                FarDistance = FoldScalar(into.FarDistance, painted.FarDistance, painted.HasFarDistance, w),
+                FarDensity = FoldScalar(into.FarDensity, painted.FarDensity, painted.HasFarDensity, w),
+                CloseFogMaxDistance = FoldScalar(into.CloseFogMaxDistance, painted.CloseFogMaxDistance, painted.HasCloseFogMaxDistance, w),
+                FoggingStart = FoldScalar(into.FoggingStart, painted.FoggingStart, painted.HasFoggingStart, w),
+                SunAxisElevation = FoldScalar(into.SunAxisElevation, painted.SunAxisElevation, painted.HasSunAxis, w),
+                SunAxisZOffset = FoldScalar(into.SunAxisZOffset, painted.SunAxisZOffset, painted.HasSunAxis, w),
+                SunAxisXyRotation = FoldScalar(into.SunAxisXyRotation, painted.SunAxisXyRotation, painted.HasSunAxis, w),
+                MainLightTimeFactor = into.MainLightTimeFactor,
+                MoonIntensity = FoldScalar(into.MoonIntensity, painted.MoonIntensity, painted.HasMoonParams, w),
+                MoonSize = FoldScalar(into.MoonSize, painted.MoonSize, painted.HasMoonParams, w),
+                MoonGlareIntensity = FoldScalar(into.MoonGlareIntensity, painted.MoonGlareIntensity, painted.HasMoonParams, w),
+                MoonGlareSize = FoldScalar(into.MoonGlareSize, painted.MoonGlareSize, painted.HasMoonParams, w),
+                MoonTransparency = FoldScalar(into.MoonTransparency, painted.MoonTransparency, painted.HasMoonParams, w),
+                MoonAxisElevation = FoldScalar(into.MoonAxisElevation, painted.MoonAxisElevation, painted.HasMoonAxis, w),
+                MoonAxisZOffset = FoldScalar(into.MoonAxisZOffset, painted.MoonAxisZOffset, painted.HasMoonAxis, w),
+                MoonAxisXyRotation = FoldScalar(into.MoonAxisXyRotation, painted.MoonAxisXyRotation, painted.HasMoonAxis, w),
+                StarBrightness = FoldScalar(into.StarBrightness, painted.StarBrightness, painted.HasStarBrightness, w),
+                SunDiscSize = FoldScalar(into.SunDiscSize, painted.SunDiscSize, painted.HasSunDiscParams, w),
+                SunDiscIntensity = FoldScalar(into.SunDiscIntensity, painted.SunDiscIntensity, painted.HasSunDiscParams, w),
+                SunBeamsWidth = FoldScalar(into.SunBeamsWidth, painted.SunBeamsWidth, painted.HasSunBeams, w),
+                SunBeamsHeight = FoldScalar(into.SunBeamsHeight, painted.SunBeamsHeight, painted.HasSunBeams, w),
+                SunBeamsIntensity = FoldScalar(into.SunBeamsIntensity, painted.SunBeamsIntensity, painted.HasSunBeams, w),
+                SunGlareIntensity = FoldScalar(into.SunGlareIntensity, painted.SunGlareIntensity, painted.HasSunGlare, w),
+                SunGlareSize = FoldScalar(into.SunGlareSize, painted.SunGlareSize, painted.HasSunGlare, w),
+                LightRigXyRotation = into.LightRigXyRotation,
+
+                SkyOverlayTextureHash = painted.HasSkyOverlayTexture && w >= 0.5f ? painted.SkyOverlayTextureHash : into.SkyOverlayTextureHash,
+                MoonTextureHash = painted.HasMoonTexture && w >= 0.5f ? painted.MoonTextureHash : into.MoonTextureHash,
+                MoonGlareTextureHash = painted.HasMoonGlareTexture && w >= 0.5f ? painted.MoonGlareTextureHash : into.MoonGlareTextureHash,
+                SunDiscTextureHash = painted.HasSunDiscTexture && w >= 0.5f ? painted.SunDiscTextureHash : into.SunDiscTextureHash,
+                SunBeamsTextureHash = painted.HasSunBeamsTexture && w >= 0.5f ? painted.SunBeamsTextureHash : into.SunBeamsTextureHash,
+                SunGlareTextureHash = painted.HasSunGlareTexture && w >= 0.5f ? painted.SunGlareTextureHash : into.SunGlareTextureHash,
+            };
+
+            FoldColour(into.SkyColour, painted.SkyColour, painted.HasSkyColour, w, o.SkyColour);
+            FoldColour(into.ComplementaryColour, painted.ComplementaryColour, painted.HasComplementaryColour, w, o.ComplementaryColour);
+            FoldColour(into.SunsetColour, painted.SunsetColour, painted.HasSunsetColour, w, o.SunsetColour);
+            FoldColour(into.FogColour, painted.FogColour, painted.HasFogColour, w, o.FogColour);
+            FoldColour(into.MainLightColour, painted.MainLightColour, painted.HasMainLightColour, w, o.MainLightColour);
+            FoldColour(into.SunDiscColour, painted.SunDiscColour, painted.HasSunDiscColour, w, o.SunDiscColour);
+            for (int i = 0; i < 4; i++)
+            {
+                o.MainLightElevation[i] = FoldScalar(
+                    into.MainLightElevation[i], painted.MainLightElevation[i], painted.HasMainLightElevation, w);
+            }
+
+            return o;
+        }
+
+        private static float FoldScalar(float a, float b, bool stated, float w) =>
+            stated ? a + ((b - a) * w) : a;
+
+        private static void FoldColour(float[] a, float[] b, bool stated, float w, float[] target)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                target[i] = stated ? a[i] + ((b[i] - a[i]) * w) : a[i];
+            }
+        }
+
     public static bool TryExtractWeather(IReadOnlyList<byte[]> gdbs, out WeatherTheme theme)
     {
         theme = new WeatherTheme();
@@ -557,6 +702,76 @@ public static class Engine_EnvironmentTheme
             return applied;
         }
 
+        public bool ExtractSkyPainted(uint daySetHash, SkyTheme theme)
+        {
+            RecordRef daySet = LookupFirst(daySetHash);
+            if (!daySet.Valid || !SelectThemeFromDaySet(daySet, out RecordRef dayTheme, out float dayTime))
+            {
+                return false;
+            }
+
+            theme.SourceTimeOfDay = dayTime;
+            theme.HasAny = ApplySkyThemeRecord(dayTheme, theme, overridesOnly: true);
+            return theme.HasAny;
+        }
+
+        private bool Stated(RecordRef record, bool overridesOnly, params (uint Hash, byte Type)[] fields)
+        {
+            if (!overridesOnly)
+            {
+                return true;
+            }
+
+            foreach ((uint hash, byte type) in fields)
+            {
+                if (hash != 0 && CountField(record, hash, type) >= 2)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private int CountField(RecordRef record, uint fieldHash, byte expectedType)
+        {
+            if (!record.Valid || record.Db >= _views.Count)
+            {
+                return 0;
+            }
+
+            int count = 0;
+            RecordRef current = record;
+            var seen = new HashSet<long>();
+
+            for (int depth = 0; depth < 64; depth++)
+            {
+                long key = ((long)current.Db << 48) ^ current.Index;
+                if (!seen.Add(key))
+                {
+                    return count;
+                }
+
+                if (FindLocalField(current, fieldHash, expectedType, out _) && ++count >= 2)
+                {
+                    return count;
+                }
+
+                if (!FindLocalField(current, GdbView.HashParent, 0xFF, out GdbField parent))
+                {
+                    return count;
+                }
+
+                current = FieldToRecord(parent);
+                if (!current.Valid)
+                {
+                    return count;
+                }
+            }
+
+            return count;
+        }
+
         public bool ExtractWeather(WeatherTheme theme)
         {
             if (_envThemes.Count != 0)
@@ -595,57 +810,91 @@ public static class Engine_EnvironmentTheme
         {
             bool applied = false;
 
+            if (sharedGlobalsMayApply)
+            {
+                bool globalApplied = false;
+                foreach (RecordRef level in LookupAllInDb(EnvHash.LevelData, 0))
+                {
+                    globalApplied |= applyField(theme, level, EnvHash.EnvThemeGlobal);
+                }
+
+                if (!globalApplied)
+                {
+                    RecordRef owner = FirstRecordWithFieldInDb(EnvHash.EnvThemeGlobal, 0);
+                    if (owner.Valid)
+                    {
+                        globalApplied |= applyField(theme, owner, EnvHash.EnvThemeGlobal);
+                    }
+                }
+
+                if (!globalApplied)
+                {
+                    foreach (RecordRef global in LookupAllInDb(EnvHash.EnvThemeGlobal, 0))
+                    {
+                        globalApplied |= applyRecord(theme, global);
+                    }
+                }
+
+                if (!globalApplied)
+                {
+                    foreach (RecordRef global in LookupAll(EnvHash.EnvThemeGlobal))
+                    {
+                        if (applyRecord(theme, global))
+                        {
+                            globalApplied = true;
+                            break;
+                        }
+                    }
+                }
+
+                applied |= globalApplied;
+            }
+
+            bool dayApplied = false;
             RecordRef daySet = FindDaySet(true);
             if (daySet.Valid && SelectThemeFromDaySet(daySet, out RecordRef dayTheme, out float time))
             {
                 setTime(time);
-                applied |= applyRecord(theme, dayTheme);
+                dayApplied = applyRecord(theme, dayTheme);
             }
 
-            if (!applied)
+            if (!dayApplied && !sharedGlobalsMayApply)
             {
                 foreach (RecordRef level in LookupAllInDb(EnvHash.LevelData, 0))
                 {
-                    applied |= applyField(theme, level, EnvHash.EnvThemeGlobal);
+                    dayApplied |= applyField(theme, level, EnvHash.EnvThemeGlobal);
                 }
-            }
 
-            if (!applied)
-            {
-                RecordRef owner = FirstRecordWithFieldInDb(EnvHash.EnvThemeGlobal, 0);
-                if (owner.Valid)
+                if (!dayApplied)
                 {
-                    applied |= applyField(theme, owner, EnvHash.EnvThemeGlobal);
+                    RecordRef owner = FirstRecordWithFieldInDb(EnvHash.EnvThemeGlobal, 0);
+                    if (owner.Valid)
+                    {
+                        dayApplied |= applyField(theme, owner, EnvHash.EnvThemeGlobal);
+                    }
                 }
-            }
 
-            if (!applied)
-            {
-                foreach (RecordRef global in LookupAllInDb(EnvHash.EnvThemeGlobal, 0))
+                if (!dayApplied)
                 {
-                    applied |= applyRecord(theme, global);
+                    foreach (RecordRef global in LookupAllInDb(EnvHash.EnvThemeGlobal, 0))
+                    {
+                        dayApplied |= applyRecord(theme, global);
+                    }
                 }
             }
 
-            if (!applied)
+            if (!dayApplied)
             {
                 daySet = FindDaySet(false);
                 if (daySet.Valid &&
                     SelectThemeFromDaySet(daySet, out RecordRef fallbackTheme, out float fallbackTime))
                 {
                     setTime(fallbackTime);
-                    applied |= applyRecord(theme, fallbackTheme);
+                    dayApplied = applyRecord(theme, fallbackTheme);
                 }
             }
 
-            if (!applied && sharedGlobalsMayApply)
-            {
-                foreach (RecordRef global in LookupAll(EnvHash.EnvThemeGlobal))
-                {
-                    applied |= applyRecord(theme, global);
-                }
-            }
-
+            applied |= dayApplied;
             return applied;
         }
 
@@ -723,7 +972,7 @@ public static class Engine_EnvironmentTheme
 
             theme.HasAny = applied;
 
-            if (Godot.OS.GetEnvironment("REFII_FOG_TRACE") == "1")
+            if (System.Environment.GetEnvironmentVariable("REFII_FOG_TRACE") == "1")
             {
                 var sb = new System.Text.StringBuilder("[tone-trace] stated:");
                 for (int i = 0; i < ToneMapTheme.ParamCount; i++)
@@ -945,7 +1194,7 @@ public static class Engine_EnvironmentTheme
             return false;
         }
 
-        private bool ApplySkyThemeRecord(RecordRef themeRecord, SkyTheme theme)
+        private bool ApplySkyThemeRecord(RecordRef themeRecord, SkyTheme theme, bool overridesOnly = false)
         {
             if (!themeRecord.Valid)
             {
@@ -955,28 +1204,32 @@ public static class Engine_EnvironmentTheme
             bool any = false;
 
             RecordRef sky = ResolveRecordField(themeRecord, EnvHash.Sky);
-            any |= sky.Valid ? ApplySkyRecord(sky, theme) : ApplySkyRecord(themeRecord, theme);
+            any |= sky.Valid ? ApplySkyRecord(sky, theme, overridesOnly) : ApplySkyRecord(themeRecord, theme, overridesOnly);
 
             RecordRef fog = ResolveRecordField(themeRecord, EnvHash.Fogging);
-            any |= fog.Valid ? ApplyFogRecord(fog, theme) : ApplyFogRecord(themeRecord, theme);
+            any |= fog.Valid ? ApplyFogRecord(fog, theme, overridesOnly) : ApplyFogRecord(themeRecord, theme, overridesOnly);
 
             RecordRef sun = ResolveRecordField(themeRecord, EnvHash.SunRecord);
             if (sun.Valid)
             {
-                any |= ApplySunRecord(sun, theme);
+                any |= ApplySunRecord(sun, theme, overridesOnly);
             }
             else if (sky.Valid)
             {
-                any |= ApplySunRecord(sky, theme);
+                any |= ApplySunRecord(sky, theme, overridesOnly);
             }
 
             RecordRef lighting = ResolveRecordField(themeRecord, EnvHash.Lighting);
             if (lighting.Valid)
             {
                 var colour = new float[3];
-                if (ReadColourRecordField(lighting, EnvHash.MainLightColour, colour) ||
+                if (Stated(lighting, overridesOnly,
+                        (EnvHash.MainLightColour, (byte)6), (EnvHash.MainLightColourRed, (byte)3),
+                        (EnvHash.MainLightColourGreen, (byte)3), (EnvHash.MainLightColourBlue, (byte)3),
+                        (EnvHash.MainLightColourFactor, (byte)3)) &&
+                    (ReadColourRecordField(lighting, EnvHash.MainLightColour, colour) ||
                     ReadFlatColour(lighting, EnvHash.MainLightColourRed, EnvHash.MainLightColourGreen,
-                        EnvHash.MainLightColourBlue, EnvHash.MainLightColourFactor, colour))
+                        EnvHash.MainLightColourBlue, EnvHash.MainLightColourFactor, colour)))
                 {
                     Array.Copy(colour, theme.MainLightColour, 3);
                     theme.HasMainLightColour = true;
@@ -987,17 +1240,18 @@ public static class Engine_EnvironmentTheme
                 // registers MainLightElevation0/6/12/18, TimeFactor and LightRigXYRotation
                 // against the "Lighting" group and only SunAxis* against "Sky".
                 any |= Param(lighting, EnvHash.MainLightElevation0,
-                    v => { theme.HasMainLightElevation = true; theme.MainLightElevation[0] = v; });
+                    v => { theme.HasMainLightElevation = true; theme.MainLightElevation[0] = v; }, overridesOnly);
                 any |= Param(lighting, EnvHash.MainLightElevation6,
-                    v => { theme.HasMainLightElevation = true; theme.MainLightElevation[1] = v; });
+                    v => { theme.HasMainLightElevation = true; theme.MainLightElevation[1] = v; }, overridesOnly);
                 any |= Param(lighting, EnvHash.MainLightElevation12,
-                    v => { theme.HasMainLightElevation = true; theme.MainLightElevation[2] = v; });
+                    v => { theme.HasMainLightElevation = true; theme.MainLightElevation[2] = v; }, overridesOnly);
                 any |= Param(lighting, EnvHash.MainLightElevation18,
-                    v => { theme.HasMainLightElevation = true; theme.MainLightElevation[3] = v; });
+                    v => { theme.HasMainLightElevation = true; theme.MainLightElevation[3] = v; }, overridesOnly);
                 any |= Param(lighting, EnvHash.LightRigXyRotation,
-                    v => theme.LightRigXyRotation = v);
+                    v => theme.LightRigXyRotation = v, overridesOnly);
 
-                if (ReadFloat(lighting, EnvHash.TimeFactor, out float lightingTimeFactor) &&
+                if (Stated(lighting, overridesOnly, (EnvHash.TimeFactor, (byte)3)) &&
+                    ReadFloat(lighting, EnvHash.TimeFactor, out float lightingTimeFactor) &&
                     float.IsFinite(lightingTimeFactor) && lightingTimeFactor > 0f)
                 {
                     theme.MainLightTimeFactor = lightingTimeFactor;
@@ -1007,7 +1261,7 @@ public static class Engine_EnvironmentTheme
             return any;
         }
 
-        private bool ApplySkyRecord(RecordRef sky, SkyTheme theme)
+        private bool ApplySkyRecord(RecordRef sky, SkyTheme theme, bool overridesOnly = false)
         {
             if (!sky.Valid)
             {
@@ -1017,75 +1271,91 @@ public static class Engine_EnvironmentTheme
             bool any = false;
             var colour = new float[3];
 
-            if (ReadColourRecordField(sky, EnvHash.SkyColour, colour) ||
+            if (Stated(sky, overridesOnly,
+                    (EnvHash.SkyColour, (byte)6), (EnvHash.SkyColourRed, (byte)3),
+                    (EnvHash.SkyColourGreen, (byte)3), (EnvHash.SkyColourBlue, (byte)3),
+                    (EnvHash.SkyColourFactor, (byte)3)) &&
+                (ReadColourRecordField(sky, EnvHash.SkyColour, colour) ||
                 ReadFlatColour(sky, EnvHash.SkyColourRed, EnvHash.SkyColourGreen,
-                    EnvHash.SkyColourBlue, EnvHash.SkyColourFactor, colour))
+                    EnvHash.SkyColourBlue, EnvHash.SkyColourFactor, colour)))
             {
                 Array.Copy(colour, theme.SkyColour, 3);
                 theme.HasSkyColour = true;
                 any = true;
             }
 
-            if (ReadColourRecordField(sky, EnvHash.SkyComplementaryColour, colour) ||
+            if (Stated(sky, overridesOnly,
+                    (EnvHash.SkyComplementaryColour, (byte)6), (EnvHash.SkyComplementaryColourRed, (byte)3),
+                    (EnvHash.SkyComplementaryColourGreen, (byte)3), (EnvHash.SkyComplementaryColourBlue, (byte)3),
+                    (EnvHash.SkyComplementaryColourFactor, (byte)3)) &&
+                (ReadColourRecordField(sky, EnvHash.SkyComplementaryColour, colour) ||
                 ReadFlatColour(sky, EnvHash.SkyComplementaryColourRed,
                     EnvHash.SkyComplementaryColourGreen, EnvHash.SkyComplementaryColourBlue,
-                    EnvHash.SkyComplementaryColourFactor, colour))
+                    EnvHash.SkyComplementaryColourFactor, colour)))
             {
                 Array.Copy(colour, theme.ComplementaryColour, 3);
                 theme.HasComplementaryColour = true;
                 any = true;
             }
 
-            if (ReadColourRecordField(sky, EnvHash.SunsetColour, colour) ||
+            if (Stated(sky, overridesOnly,
+                    (EnvHash.SunsetColour, (byte)6), (EnvHash.SunsetColourRed, (byte)3),
+                    (EnvHash.SunsetColourGreen, (byte)3), (EnvHash.SunsetColourBlue, (byte)3),
+                    (EnvHash.SunsetColourFactor, (byte)3)) &&
+                (ReadColourRecordField(sky, EnvHash.SunsetColour, colour) ||
                 ReadFlatColour(sky, EnvHash.SunsetColourRed, EnvHash.SunsetColourGreen,
-                    EnvHash.SunsetColourBlue, EnvHash.SunsetColourFactor, colour))
+                    EnvHash.SunsetColourBlue, EnvHash.SunsetColourFactor, colour)))
             {
                 Array.Copy(colour, theme.SunsetColour, 3);
                 theme.HasSunsetColour = true;
                 any = true;
             }
 
-            any |= Param(sky, EnvHash.SunIntensity, v => { theme.HasSunIntensity = true; theme.SunIntensity = v; });
-            any |= Param(sky, EnvHash.SkyBetaRayleighMultiplier, v => { theme.HasRayleigh = true; theme.Rayleigh = v; });
-            any |= Param(sky, EnvHash.SkyBetaMieMultiplier, v => { theme.HasMie = true; theme.Mie = v; });
-            any |= Param(sky, EnvHash.SkyComplementaryColourBias, v => { theme.HasComplementaryBias = true; theme.ComplementaryBias = v; });
-            any |= Param(sky, EnvHash.SunAxisElevation, v => { theme.HasSunAxis = true; theme.SunAxisElevation = v; });
-            any |= Param(sky, EnvHash.SunAxisZOffset, v => { theme.HasSunAxis = true; theme.SunAxisZOffset = v; });
-            any |= Param(sky, EnvHash.SunAxisXyRotationOffset, v => { theme.HasSunAxis = true; theme.SunAxisXyRotation = v; });
+            any |= Param(sky, EnvHash.SunIntensity, v => { theme.HasSunIntensity = true; theme.SunIntensity = v; }, overridesOnly);
+            any |= Param(sky, EnvHash.SkyBetaRayleighMultiplier, v => { theme.HasRayleigh = true; theme.Rayleigh = v; }, overridesOnly);
+            any |= Param(sky, EnvHash.SkyBetaMieMultiplier, v => { theme.HasMie = true; theme.Mie = v; }, overridesOnly);
+            any |= Param(sky, EnvHash.SkyComplementaryColourBias, v => { theme.HasComplementaryBias = true; theme.ComplementaryBias = v; }, overridesOnly);
+            any |= Param(sky, EnvHash.SunAxisElevation, v => { theme.HasSunAxis = true; theme.SunAxisElevation = v; }, overridesOnly);
+            any |= Param(sky, EnvHash.SunAxisZOffset, v => { theme.HasSunAxis = true; theme.SunAxisZOffset = v; }, overridesOnly);
+            any |= Param(sky, EnvHash.SunAxisXyRotationOffset, v => { theme.HasSunAxis = true; theme.SunAxisXyRotation = v; }, overridesOnly);
 
-            if (ReadFloat(sky, EnvHash.TimeFactor, out float timeFactor) &&
+            if (Stated(sky, overridesOnly, (EnvHash.TimeFactor, (byte)3)) &&
+                ReadFloat(sky, EnvHash.TimeFactor, out float timeFactor) &&
                 float.IsFinite(timeFactor) && timeFactor > 0f)
             {
                 theme.MainLightTimeFactor = timeFactor;
             }
 
-            any |= Texture(sky, EnvHash.SkyOverlayTexture,
-                h => { theme.HasSkyOverlayTexture = true; theme.SkyOverlayTextureHash = h; });
-            any |= Texture(sky, EnvHash.MoonTexture,
-                h => { theme.HasMoonTexture = true; theme.MoonTextureHash = h; });
-            any |= Texture(sky, EnvHash.MoonGlareTexture,
-                h => { theme.HasMoonGlareTexture = true; theme.MoonGlareTextureHash = h; });
-            any |= Texture(sky, EnvHash.DiscTexture,
-                h => { theme.HasSunDiscTexture = true; theme.SunDiscTextureHash = h; });
-            any |= Texture(sky, EnvHash.SunBeamsTexture,
-                h => { theme.HasSunBeamsTexture = true; theme.SunBeamsTextureHash = h; });
-            any |= Texture(sky, EnvHash.GlareTexture,
-                h => { theme.HasSunGlareTexture = true; theme.SunGlareTextureHash = h; });
+            if (!overridesOnly)
+            {
+                any |= Texture(sky, EnvHash.SkyOverlayTexture,
+                    h => { theme.HasSkyOverlayTexture = true; theme.SkyOverlayTextureHash = h; });
+                any |= Texture(sky, EnvHash.MoonTexture,
+                    h => { theme.HasMoonTexture = true; theme.MoonTextureHash = h; });
+                any |= Texture(sky, EnvHash.MoonGlareTexture,
+                    h => { theme.HasMoonGlareTexture = true; theme.MoonGlareTextureHash = h; });
+                any |= Texture(sky, EnvHash.DiscTexture,
+                    h => { theme.HasSunDiscTexture = true; theme.SunDiscTextureHash = h; });
+                any |= Texture(sky, EnvHash.SunBeamsTexture,
+                    h => { theme.HasSunBeamsTexture = true; theme.SunBeamsTextureHash = h; });
+                any |= Texture(sky, EnvHash.GlareTexture,
+                    h => { theme.HasSunGlareTexture = true; theme.SunGlareTextureHash = h; });
+            }
 
-            any |= Param(sky, EnvHash.MoonIntensity, v => { theme.HasMoonParams = true; theme.MoonIntensity = v; });
-            any |= Param(sky, EnvHash.MoonSize, v => { theme.HasMoonParams = true; theme.MoonSize = v; });
-            any |= Param(sky, EnvHash.MoonGlareIntensity, v => { theme.HasMoonParams = true; theme.MoonGlareIntensity = v; });
-            any |= Param(sky, EnvHash.MoonGlareSize, v => { theme.HasMoonParams = true; theme.MoonGlareSize = v; });
-            any |= Param(sky, EnvHash.MoonTransparency, v => { theme.HasMoonParams = true; theme.MoonTransparency = v; });
-            any |= Param(sky, EnvHash.MoonAxisElevation, v => { theme.HasMoonAxis = true; theme.MoonAxisElevation = v; });
-            any |= Param(sky, EnvHash.MoonAxisZOffset, v => { theme.HasMoonAxis = true; theme.MoonAxisZOffset = v; });
-            any |= Param(sky, EnvHash.MoonAxisXyRotationOffset, v => { theme.HasMoonAxis = true; theme.MoonAxisXyRotation = v; });
-            any |= Param(sky, EnvHash.StarBrightness, v => { theme.HasStarBrightness = true; theme.StarBrightness = v; });
+            any |= Param(sky, EnvHash.MoonIntensity, v => { theme.HasMoonParams = true; theme.MoonIntensity = v; }, overridesOnly);
+            any |= Param(sky, EnvHash.MoonSize, v => { theme.HasMoonParams = true; theme.MoonSize = v; }, overridesOnly);
+            any |= Param(sky, EnvHash.MoonGlareIntensity, v => { theme.HasMoonParams = true; theme.MoonGlareIntensity = v; }, overridesOnly);
+            any |= Param(sky, EnvHash.MoonGlareSize, v => { theme.HasMoonParams = true; theme.MoonGlareSize = v; }, overridesOnly);
+            any |= Param(sky, EnvHash.MoonTransparency, v => { theme.HasMoonParams = true; theme.MoonTransparency = v; }, overridesOnly);
+            any |= Param(sky, EnvHash.MoonAxisElevation, v => { theme.HasMoonAxis = true; theme.MoonAxisElevation = v; }, overridesOnly);
+            any |= Param(sky, EnvHash.MoonAxisZOffset, v => { theme.HasMoonAxis = true; theme.MoonAxisZOffset = v; }, overridesOnly);
+            any |= Param(sky, EnvHash.MoonAxisXyRotationOffset, v => { theme.HasMoonAxis = true; theme.MoonAxisXyRotation = v; }, overridesOnly);
+            any |= Param(sky, EnvHash.StarBrightness, v => { theme.HasStarBrightness = true; theme.StarBrightness = v; }, overridesOnly);
 
             return any;
         }
 
-        private bool ApplySunRecord(RecordRef sun, SkyTheme theme)
+        private bool ApplySunRecord(RecordRef sun, SkyTheme theme, bool overridesOnly = false)
         {
             if (!sun.Valid)
             {
@@ -1094,36 +1364,43 @@ public static class Engine_EnvironmentTheme
 
             bool any = false;
 
-            any |= Param(sun, EnvHash.DiscSize, v => { theme.HasSunDiscParams = true; theme.SunDiscSize = v; });
-            any |= Param(sun, EnvHash.DiscIntensity, v => { theme.HasSunDiscParams = true; theme.SunDiscIntensity = v; });
+            any |= Param(sun, EnvHash.DiscSize, v => { theme.HasSunDiscParams = true; theme.SunDiscSize = v; }, overridesOnly);
+            any |= Param(sun, EnvHash.DiscIntensity, v => { theme.HasSunDiscParams = true; theme.SunDiscIntensity = v; }, overridesOnly);
 
             var colour = new float[3];
-            if (ReadColourRecordField(sun, EnvHash.DiscColour, colour) ||
+            if (Stated(sun, overridesOnly,
+                    (EnvHash.DiscColour, (byte)6), (EnvHash.DiscColourRed, (byte)3),
+                    (EnvHash.DiscColourGreen, (byte)3), (EnvHash.DiscColourBlue, (byte)3),
+                    (EnvHash.DiscColourFactor, (byte)3)) &&
+                (ReadColourRecordField(sun, EnvHash.DiscColour, colour) ||
                 ReadFlatColour(sun, EnvHash.DiscColourRed, EnvHash.DiscColourGreen,
-                    EnvHash.DiscColourBlue, EnvHash.DiscColourFactor, colour))
+                    EnvHash.DiscColourBlue, EnvHash.DiscColourFactor, colour)))
             {
                 Array.Copy(colour, theme.SunDiscColour, 3);
                 theme.HasSunDiscColour = true;
                 any = true;
             }
 
-            any |= Param(sun, EnvHash.SunBeamsWidth, v => { theme.HasSunBeams = true; theme.SunBeamsWidth = v; });
-            any |= Param(sun, EnvHash.SunBeamsHeight, v => { theme.HasSunBeams = true; theme.SunBeamsHeight = v; });
-            any |= Param(sun, EnvHash.SunBeamsIntensity, v => { theme.HasSunBeams = true; theme.SunBeamsIntensity = v; });
-            any |= Param(sun, EnvHash.GlareIntensity, v => { theme.HasSunGlare = true; theme.SunGlareIntensity = v; });
-            any |= Param(sun, EnvHash.GlareSize, v => { theme.HasSunGlare = true; theme.SunGlareSize = v; });
+            any |= Param(sun, EnvHash.SunBeamsWidth, v => { theme.HasSunBeams = true; theme.SunBeamsWidth = v; }, overridesOnly);
+            any |= Param(sun, EnvHash.SunBeamsHeight, v => { theme.HasSunBeams = true; theme.SunBeamsHeight = v; }, overridesOnly);
+            any |= Param(sun, EnvHash.SunBeamsIntensity, v => { theme.HasSunBeams = true; theme.SunBeamsIntensity = v; }, overridesOnly);
+            any |= Param(sun, EnvHash.GlareIntensity, v => { theme.HasSunGlare = true; theme.SunGlareIntensity = v; }, overridesOnly);
+            any |= Param(sun, EnvHash.GlareSize, v => { theme.HasSunGlare = true; theme.SunGlareSize = v; }, overridesOnly);
 
-            any |= Texture(sun, EnvHash.DiscTexture,
-                h => { theme.HasSunDiscTexture = true; theme.SunDiscTextureHash = h; });
-            any |= Texture(sun, EnvHash.SunBeamsTexture,
-                h => { theme.HasSunBeamsTexture = true; theme.SunBeamsTextureHash = h; });
-            any |= Texture(sun, EnvHash.GlareTexture,
-                h => { theme.HasSunGlareTexture = true; theme.SunGlareTextureHash = h; });
+            if (!overridesOnly)
+            {
+                any |= Texture(sun, EnvHash.DiscTexture,
+                    h => { theme.HasSunDiscTexture = true; theme.SunDiscTextureHash = h; });
+                any |= Texture(sun, EnvHash.SunBeamsTexture,
+                    h => { theme.HasSunBeamsTexture = true; theme.SunBeamsTextureHash = h; });
+                any |= Texture(sun, EnvHash.GlareTexture,
+                    h => { theme.HasSunGlareTexture = true; theme.SunGlareTextureHash = h; });
+            }
 
             return any;
         }
 
-        private bool ApplyFogRecord(RecordRef fog, SkyTheme theme)
+        private bool ApplyFogRecord(RecordRef fog, SkyTheme theme, bool overridesOnly = false)
         {
             if (!fog.Valid)
             {
@@ -1133,23 +1410,27 @@ public static class Engine_EnvironmentTheme
             bool any = false;
             var colour = new float[3];
 
-            if (ReadColourRecordField(fog, EnvHash.CloseFogColour, colour) ||
+            if (Stated(fog, overridesOnly,
+                    (EnvHash.CloseFogColour, (byte)6), (EnvHash.CloseFogColourRed, (byte)3),
+                    (EnvHash.CloseFogColourGreen, (byte)3), (EnvHash.CloseFogColourBlue, (byte)3),
+                    (EnvHash.CloseFogColourFactor, (byte)3)) &&
+                (ReadColourRecordField(fog, EnvHash.CloseFogColour, colour) ||
                 ReadFlatColour(fog, EnvHash.CloseFogColourRed, EnvHash.CloseFogColourGreen,
-                    EnvHash.CloseFogColourBlue, EnvHash.CloseFogColourFactor, colour))
+                    EnvHash.CloseFogColourBlue, EnvHash.CloseFogColourFactor, colour)))
             {
                 Array.Copy(colour, theme.FogColour, 3);
                 theme.HasFogColour = true;
                 any = true;
             }
 
-            any |= Param(fog, EnvHash.NearDistance, v => { theme.NearDistance = v; theme.HasNearFog = true; });
-            any |= Param(fog, EnvHash.NearDensity, v => { theme.NearDensity = v; theme.HasNearFog = true; });
-            any |= Param(fog, EnvHash.FarDistance, v => { theme.FarDistance = v; theme.HasFarFog = true; });
-            any |= Param(fog, EnvHash.FarDensity, v => { theme.FarDensity = v; theme.HasFarFog = true; });
-            any |= Param(fog, EnvHash.CloseFogMaxDistance, v => theme.CloseFogMaxDistance = v);
-            any |= Param(fog, EnvHash.FoggingStart, v => { theme.FoggingStart = v; theme.HasFoggingStart = true; });
+            any |= Param(fog, EnvHash.NearDistance, v => { theme.NearDistance = v; theme.HasNearFog = true; theme.HasNearDistance = true; }, overridesOnly);
+            any |= Param(fog, EnvHash.NearDensity, v => { theme.NearDensity = v; theme.HasNearFog = true; theme.HasNearDensity = true; }, overridesOnly);
+            any |= Param(fog, EnvHash.FarDistance, v => { theme.FarDistance = v; theme.HasFarFog = true; theme.HasFarDistance = true; }, overridesOnly);
+            any |= Param(fog, EnvHash.FarDensity, v => { theme.FarDensity = v; theme.HasFarFog = true; theme.HasFarDensity = true; }, overridesOnly);
+            any |= Param(fog, EnvHash.CloseFogMaxDistance, v => { theme.CloseFogMaxDistance = v; theme.HasCloseFogMaxDistance = true; }, overridesOnly);
+            any |= Param(fog, EnvHash.FoggingStart, v => { theme.FoggingStart = v; theme.HasFoggingStart = true; }, overridesOnly);
 
-            if (Godot.OS.GetEnvironment("REFII_FOG_TRACE") == "1")
+            if (System.Environment.GetEnvironmentVariable("REFII_FOG_TRACE") == "1")
             {
                 Godot.GD.Print("[fog-trace] Fogging record states:" +
                     (ReadFloat(fog, EnvHash.NearDistance, out float nd) ? $" NearDistance={nd}" : " NearDistance=-") +
@@ -1230,9 +1511,10 @@ public static class Engine_EnvironmentTheme
             return any;
         }
 
-        private bool Param(RecordRef record, uint hash, Action<float> assign)
+        private bool Param(RecordRef record, uint hash, Action<float> assign, bool overridesOnly = false)
         {
-            if (!ReadFloat(record, hash, out float value))
+            if (!Stated(record, overridesOnly, (hash, (byte)3)) ||
+                !ReadFloat(record, hash, out float value))
             {
                 return false;
             }
@@ -1546,12 +1828,18 @@ public static class Engine_EnvironmentTheme
                     return false;
                 }
 
+                bool hasParent = FindLocalField(current, GdbView.HashParent, 0xFF, out GdbField parent);
+                if (depth > 0 && !hasParent)
+                {
+                    return false;
+                }
+
                 if (FindLocalField(current, fieldHash, expectedType, out found))
                 {
                     return true;
                 }
 
-                if (!FindLocalField(current, GdbView.HashParent, 0xFF, out GdbField parent))
+                if (!hasParent)
                 {
                     return false;
                 }
@@ -2179,6 +2467,6 @@ public static class Engine_EnvironmentTheme
         }
 
         private static float ToLinearInput(float value) =>
-            Math.Clamp(value * (1f / 255f), 0f, 1f);
+            MathF.Max(value * (1f / 255f), 0f);
     }
 }

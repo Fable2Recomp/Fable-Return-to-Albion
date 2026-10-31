@@ -14,6 +14,8 @@ uniform float fx_alpha_ref = 1.0;
 uniform float fx_soft_inv = 0.0;
 global uniform sampler2D fx_scene_depth;
 global uniform float fx_scene_depth_valid;
+global uniform float fable_emission_boost = 1.0;
+uniform bool is_pbr = false;
 #include "res://src/Engine/core/views.gdshaderinc"
 
 float soft_fade(float out_alpha, vec3 view_pos, vec2 screen_uv, float scene_z, mat4 inv_proj, mat4 inv_view) {
@@ -63,6 +65,7 @@ void fragment() {
 		dist_fade = mix(1.0, 0.35, t * t * (3.0 - 2.0 * t));
 	}
 
-	ALBEDO = COLOR.a * COLOR.rgb * texel.rgb * texel.rgb * (fade * dist_fade);
+	vec3 tex_rgb = is_pbr ? texel.rgb : (texel.rgb * texel.rgb * mix(1.0, max(fable_emission_boost, 1.0), dist_fade));
+	ALBEDO = max(COLOR.a * COLOR.rgb * tex_rgb * (fade * dist_fade), vec3(0.0));
 	ALPHA = 1.0;
 }

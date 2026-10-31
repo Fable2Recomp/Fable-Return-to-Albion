@@ -40,9 +40,9 @@ public sealed partial class Engine_HudSlowTimeDial : Node3D
 
 	/// <summary>
 	/// One sprite segment as the guest states it: its centre and half extent in guest pixels
-	/// (relative to the backbuffer centre, y down), its texture hash and its stated angle.
+	/// (relative to the backbuffer centre, y down), its texture hash, stated angle and angular velocity.
 	/// </summary>
-	public readonly record struct Segment(Vector2 Centre, float HalfExtent, uint Texture, float Angle);
+	public readonly record struct Segment(Vector2 Centre, float HalfExtent, uint Texture, float Angle, float Velocity = 0f);
 
 	/// <summary>The dial this frame: the shared alpha (0..0.8) and its two segments, either of
 	/// which is null while its sprite is not built.</summary>
@@ -64,6 +64,8 @@ public sealed partial class Engine_HudSlowTimeDial : Node3D
 	private readonly MeshInstance3D[] _quads = new MeshInstance3D[Segments];
 	private readonly ShaderMaterial[] _materials = new ShaderMaterial[Segments];
 	private readonly Dictionary<uint, Texture2D?> _textures = new();
+	private readonly float[] _drawnAngle = { float.NaN, float.NaN };
+	private readonly float[] _lastStatedAngle = { float.NaN, float.NaN };
 
 	public override void _Ready()
 	{
@@ -114,6 +116,8 @@ public sealed partial class Engine_HudSlowTimeDial : Node3D
 	{
 		if (_dial is not { } dial || dial.Alpha <= 0.004f)
 		{
+			_drawnAngle[0] = float.NaN;
+			_drawnAngle[1] = float.NaN;
 			HideSegments();
 			return;
 		}
@@ -125,12 +129,30 @@ public sealed partial class Engine_HudSlowTimeDial : Node3D
 			MeshInstance3D quad = _quads[i];
 			if (stated is not { } segment || segment.HalfExtent <= 0f)
 			{
+				_drawnAngle[i] = float.NaN;
 				quad.Visible = false;
 				continue;
 			}
 
+			if (float.IsNaN(_drawnAngle[i]) || segment.Angle != _lastStatedAngle[i])
+			{
+				_lastStatedAngle[i] = segment.Angle;
+				if (float.IsNaN(_drawnAngle[i]) || Mathf.Abs(_drawnAngle[i] - segment.Angle) > 0.5f)
+				{
+					_drawnAngle[i] = segment.Angle;
+				}
+				else
+				{
+					_drawnAngle[i] = Mathf.Lerp(_drawnAngle[i], segment.Angle, 0.5f);
+				}
+			}
+			else if (segment.Velocity != 0f)
+			{
+				_drawnAngle[i] += segment.Velocity * (float)delta;
+			}
+
 			// Guest screen space is y down; the canvas is y up, so y and the turn both flip.
-			float angle = Mathf.DegToRad(BaseDegrees[i]) + segment.Angle;
+			float angle = Mathf.DegToRad(BaseDegrees[i]) + _drawnAngle[i];
 			quad.Position = new Vector3(segment.Centre.X * scale, -segment.Centre.Y * scale, 0f);
 			quad.Rotation = new Vector3(0f, 0f, -angle);
 			quad.Scale = new Vector3(2f * segment.HalfExtent * scale, 2f * segment.HalfExtent * scale, 1f);

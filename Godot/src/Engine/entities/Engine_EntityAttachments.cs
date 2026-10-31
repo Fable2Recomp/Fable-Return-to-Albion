@@ -86,6 +86,13 @@ public sealed class Engine_EntityAttachments
 
 		public bool DummyResolved;
 
+		/// <summary>
+		/// True only when <see cref="ResolveDummy"/> fell back to <see cref="TryResolveFocalBone"/>
+		/// because no part GMD named the dummy, so <see cref="Mount"/> needs a one-shot rest offset
+		/// solved from the guest bone pose.
+		/// </summary>
+		public bool FocalFallback;
+
 		/// <summary>Whether the stated composition was compared with a solve, for the log.</summary>
 		public bool Compared;
 
@@ -296,6 +303,20 @@ public sealed class Engine_EntityAttachments
 	public uint ParentOf(uint child) =>
 		_byChild.TryGetValue(child, out Record? record) ? record.Parent : 0u;
 
+	/// <summary>Enumerates child entities attached to the given parent entity.</summary>
+	public List<uint> ChildrenOfParent(uint parent)
+	{
+		var result = new List<uint>();
+		foreach (Record record in _byChild.Values)
+		{
+			if (record.Parent == parent)
+			{
+				result.Add(record.Child);
+			}
+		}
+		return result;
+	}
+
 	public int Count => _byChild.Count;
 
 	/// <summary>
@@ -310,7 +331,7 @@ public sealed class Engine_EntityAttachments
 	/// is a fraction of a tick behind bakes that fraction into the offset for good.
 	/// </param>
 	public bool TryPlace(uint child, Transform3D childStated, Transform3D parentStated,
-		Transform3D parentPlacement, Engine_EntitySkeleton parentRig, string[] parentParts,
+		Transform3D parentPlacement, Engine_EntitySkeleton? parentRig, string[] parentParts,
 		out Transform3D placed, bool isFurniture = false, string? childModelPath = null)
 	{
 		placed = childStated;
@@ -354,11 +375,35 @@ public sealed class Engine_EntityAttachments
 				return false;
 			}
 
-			Transform3D mount = use.Bone >= 0 && use.Bone < parentRig.BoneCount
+			if (use.Bone < 0 && parentRig is not null &&
+			    use.Dummy.StartsWith("Character.", System.StringComparison.OrdinalIgnoreCase))
+			{
+				return false;
+			}
+
+			if (use.FocalFallback && parentRig is not null && use.Bone >= 0 && !record.Solved &&
+			    parentRig.TryGuestBoneGlobal(record.Parent, use.Bone, out Transform3D guestBone))
+			{
+				Transform3D from = parentStated * guestBone;
+				if (from.Origin.IsFinite() && Mathf.Abs(from.Basis.Determinant()) > 1e-6f)
+				{
+					Transform3D candidate = from.AffineInverse() * childStated;
+					if (candidate.Origin.IsFinite() && candidate.Origin.Length() < 4f)
+					{
+						if (use.Mount.IsEqualApprox(Transform3D.Identity))
+						{
+							use.Mount = candidate * use.Grip.AffineInverse();
+						}
+						record.Solved = true;
+					}
+				}
+			}
+
+			Transform3D mount = parentRig is not null && use.Bone >= 0 && use.Bone < parentRig.BoneCount
 				? parentRig.Node.GetBoneGlobalPose(use.Bone) * use.Mount
 				: use.Mount;
 			placed = parentPlacement * mount * use.Grip;
-			if (use == record && !record.Compared && ++record.Placements >= 10)
+			if (parentRig is not null && use == record && !record.Compared && ++record.Placements >= 10)
 			{
 				Compare(record, childStated, parentStated, parentRig, parentParts, mount);
 			}
@@ -366,6 +411,11 @@ public sealed class Engine_EntityAttachments
 			++Placed;
 			++PlacedStated;
 			return true;
+		}
+
+		if (parentRig is null)
+		{
+			return false;
 		}
 
 		if (!record.Solved)
@@ -531,6 +581,53 @@ public sealed class Engine_EntityAttachments
 			}
 		}
 
+		if (TryResolveFocalBone(record.Dummy, rig, out int focalBone))
+		{
+			record.Bone = focalBone;
+			return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// Resolves character focal attachment dummies (head, mouth, chest, eyes) that do not
+	/// have dedicated entries in `.mdl.gmd` attachment tables to skeleton bones.
+	/// </summary>
+	private static bool TryResolveFocalBone(string dummy, Engine_EntitySkeleton? rig, out int bone)
+	{
+		bone = -1;
+		if (rig is null || string.IsNullOrEmpty(dummy))
+		{
+			return false;
+		}
+
+		if (dummy.StartsWith("Character.Focal.", System.StringComparison.OrdinalIgnoreCase))
+		{
+			string sub = dummy.Substring("Character.Focal.".Length);
+			if (sub.StartsWith("Mouth", System.StringComparison.OrdinalIgnoreCase) ||
+			    sub.StartsWith("Head", System.StringComparison.OrdinalIgnoreCase))
+			{
+				return rig.TryBone("Shadow_Head", out bone) || rig.TryBone("Head", out bone);
+			}
+
+			if (sub.StartsWith("Chest", System.StringComparison.OrdinalIgnoreCase) ||
+			    sub.StartsWith("Torso", System.StringComparison.OrdinalIgnoreCase))
+			{
+				return rig.TryBone("Shadow_Chest", out bone) || rig.TryBone("Chest", out bone);
+			}
+
+			if (sub.StartsWith("Eye.L", System.StringComparison.OrdinalIgnoreCase))
+			{
+				return rig.TryBone("Shadow_L_Eye", out bone) || rig.TryBone("Shadow_Head", out bone);
+			}
+
+			if (sub.StartsWith("Eye.R", System.StringComparison.OrdinalIgnoreCase))
+			{
+				return rig.TryBone("Shadow_R_Eye", out bone) || rig.TryBone("Shadow_Head", out bone);
+			}
+		}
+
 		return false;
 	}
 
@@ -639,9 +736,10 @@ public sealed class Engine_EntityAttachments
 	/// every gmd node between it and the first node the live skeleton has (`sub_8223D148` climbs
 	/// child first). The first part gmd that names the dummy wins, as the guest's comp17 walk does.
 	/// </summary>
-	private static void ResolveDummy(Record record, Engine_EntitySkeleton rig, string[] parentParts)
+	private static void ResolveDummy(Record record, Engine_EntitySkeleton? rig, string[] parentParts)
 	{
 		record.DummyResolved = true;
+		record.FocalFallback = false;
 		record.Bone = -1;
 		record.Mount = Transform3D.Identity;
 		foreach (string part in parentParts)
@@ -655,7 +753,7 @@ public sealed class Engine_EntityAttachments
 			Transform3D chain = local;
 			for (int guard = 0; node >= 0 && node < gmd.Names.Length && guard < 64; ++guard)
 			{
-				if (rig.TryBone(gmd.Names[node], out int bone))
+				if (rig is not null && rig.TryBone(gmd.Names[node], out int bone))
 				{
 					record.Bone = bone;
 					break;
@@ -667,6 +765,13 @@ public sealed class Engine_EntityAttachments
 
 			record.Mount = chain;
 			return;
+		}
+
+		if (record.Bone < 0 && TryResolveFocalBone(record.Dummy, rig, out int focalBone))
+		{
+			record.Bone = focalBone;
+			record.Mount = Transform3D.Identity;
+			record.FocalFallback = true;
 		}
 	}
 

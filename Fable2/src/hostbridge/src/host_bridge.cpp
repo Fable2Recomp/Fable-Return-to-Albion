@@ -4338,17 +4338,26 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
         const float limit = readf(node + 0x108u);
         const bool emitting = remaining != 0u && (finite == 0u || age <= limit);
 
-        // Alive comes from the effect's stated working count. The node's handle is its effect.
+        // Alive comes from the effect's stated working count in `0x8349E480`. When `sub_83234338`
+        // stops or finishes an effect, it erases the record from `0x8349E480` and sets
+        // `*(node_handle + 0x2C)` to `0xFFFFFFFF`, while the owning game component may keep the
+        // instance and its `0x8349E490` nodes pooled with stale `remaining` / `live_particles`
+        // fields. Any effect absent from the live registry is retired.
         const uint32_t node_handle = read32(node + 0xE8u);
         const uint32_t live_particles = read32(node + 0x154u);
         bool alive = emitting || live_particles != 0u;
-        if (registry_count != 0u && plausible(node_handle)) {
-            for (uint32_t probe = 0u; probe < registry_count; ++probe) {
-                const uint32_t at = (registry_hint + probe) % registry_count;
-                if (registry[at].instance == node_handle) {
-                    registry_hint = at;
-                    alive = registry[at].working != 0u;
-                    break;
+        if (plausible(node_handle)) {
+            if (read32(node_handle + 0x2Cu) == 0xFFFFFFFFu) {
+                alive = false;
+            } else if (registry_count != 0u) {
+                alive = false;
+                for (uint32_t probe = 0u; probe < registry_count; ++probe) {
+                    const uint32_t at = (registry_hint + probe) % registry_count;
+                    if (registry[at].instance == node_handle) {
+                        registry_hint = at;
+                        alive = registry[at].working != 0u;
+                        break;
+                    }
                 }
             }
         }
@@ -4390,8 +4399,25 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
         // all share this handle, and without it the host draws the whole effect once per node.
         const uint32_t handle = node_handle;
         row[16] = handle;
+
+        // Whether this node owns a guest render twin (`CParticleGroup` at `*(node+0x16C)` for
+        // `0x82006718` billboard emitters, or `CTrailGroup` at `*(node+0x1CC)` for `0x82006CD0`
+        // trail emitters), even on frames where the twin currently holds 0 active quads.
+        const uint32_t node_vt = read32(node);
+        bool has_guest_twin = false;
+        if (node_vt == refii::guest::Address(0x82006718u)) {
+            const uint32_t holder = read32(node + 0x16Cu);
+            has_guest_twin = plausible(holder) &&
+                             read32(holder) == refii::guest::Address(0x82001AC0u) &&
+                             plausible(read32(holder + 8u));
+        } else if (node_vt == refii::guest::Address(0x82006CD0u)) {
+            const uint32_t trail = read32(node + 0x1CCu);
+            has_guest_twin = plausible(trail) &&
+                             read32(trail) == refii::guest::Address(0x82001AA8u);
+        }
+
         row[2] = (alive || is_root ? 1u : 0u) | (read8(node + 0xB0u) != 0u ? 2u : 0u) |
-                 (emitting ? 4u : 0u) | (is_root ? 8u : 0u);
+                 (emitting ? 4u : 0u) | (is_root ? 8u : 0u) | (has_guest_twin ? 16u : 0u);
         row[3] = live_particles;
 
         // The effect's intensity, `handle+52`. `sub_832323E0(inst, f)` stores it there
@@ -4479,6 +4505,48 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
                 uint32_t bits;
                 std::memcpy(&bits, world + r * 4 + c, sizeof(bits));
                 row[7 + r * 3 + c] = bits;
+            }
+        }
+
+        // Runtime spline override endpoints on Type 5 `CParticleSplineNode` (`vtable 0x820058C8`).
+        // Multi-dummy weapon effects (`CAugmentationComponent::Update` -> `sub_8256A508` ->
+        // `sub_8256AB08` -> `sub_8322E858`) set the effect root's rotation to identity at
+        // `point[0]` ("Weapon.Weapon.Hold") and write the world-space dummy endpoints into the
+        // spline node's override vector (`begin` at +0x14C, `end` at +0x150, 16-byte stride) with
+        // override flag `*(uint8_t*)(node + 0x158) = 1`. Non-root spline nodes do not use
+        // `row[7..15]` (`Rows`) or `row[18]` (`Scale`), so we export 2..3 override world points in
+        // `row[7..15]` and the point count in `row[18]` without changing `ActiveFxWords = 22`.
+        if (!is_root && node_vt == refii::guest::Address(0x820058C8u) &&
+            read8(node + 0x158u) != 0u) {
+            const uint32_t sp_begin = read32(node + 0x14Cu);
+            const uint32_t sp_end = read32(node + 0x150u);
+            if (plausible(sp_begin) && sp_end > sp_begin && ((sp_end - sp_begin) & 0xFu) == 0u) {
+                const uint32_t sp_count = (sp_end - sp_begin) >> 4;
+                if (sp_count >= 2u && sp_count <= 3u) {
+                    float pts[9] = {};
+                    bool sp_finite = true;
+                    for (uint32_t p = 0u; p < sp_count; ++p) {
+                        for (uint32_t axis = 0u; axis < 3u; ++axis) {
+                            const float v = readf(sp_begin + p * 16u + axis * 4u);
+                            if (!std::isfinite(v)) {
+                                sp_finite = false;
+                            }
+                            pts[p * 3u + axis] = v;
+                        }
+                    }
+                    if (sp_finite) {
+                        row[2] |= 32u;
+                        const float count_f = static_cast<float>(sp_count);
+                        uint32_t count_bits;
+                        std::memcpy(&count_bits, &count_f, sizeof(count_bits));
+                        row[18] = count_bits;
+                        for (int i = 0; i < 9; ++i) {
+                            uint32_t bits;
+                            std::memcpy(&bits, &pts[i], sizeof(bits));
+                            row[7 + i] = bits;
+                        }
+                    }
+                }
             }
         }
 
@@ -6622,6 +6690,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimPostOps(uint32_t entity, uint32_t
     const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
     const auto read32 = [&](uint32_t at) { return GuestWordAt(base, at); };
     const auto read8 = [&](uint32_t at) { return GuestByteAt(base, at); };
+    const auto readf = [&](uint32_t at) {
+        const uint32_t bits = read32(at);
+        float value = 0.0f;
+        std::memcpy(&value, &bits, sizeof(float));
+        return value;
+    };
     if (!plausible(entity)) {
         return 0u;
     }
@@ -6688,18 +6762,37 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimPostOps(uint32_t entity, uint32_t
                     stack[depth++] = child;
                 }
             };
-            switch (read32(node + 20u)) {
+            const uint32_t node_type = read32(node + 20u);
+            switch (node_type) {
                 case 1u:
-                case 6u:
-                    push(read32(node + 24u));
-                    push(read32(node + 28u));
+                case 6u: {
+                    float t = readf(node + 32u);
+                    if (!std::isfinite(t)) {
+                        t = 0.0f;
+                    }
+                    t = std::clamp(t, 0.0f, 1.0f);
+                    if (node_type == 6u) {
+                        t = t * t * (3.0f - 2.0f * t);
+                    }
+                    if (t <= 0.0001f) {
+                        push(read32(node + 24u));
+                    } else if (t >= 0.9999f) {
+                        push(read32(node + 28u));
+                    } else {
+                        push(read32(node + 24u));
+                        push(read32(node + 28u));
+                    }
                     break;
+                }
                 case 2u: {
                     const uint32_t begin = read32(node + 28u);
                     const uint32_t end = read32(node + 32u);
                     if (plausible(begin) && end >= begin && end - begin <= 4u * 64u) {
                         for (uint32_t at = begin; at + 4u <= end; at += 4u) {
-                            push(read32(at));
+                            const uint32_t child = read32(at);
+                            if (plausible(child) && readf(child + 16u) > 1e-5f) {
+                                push(child);
+                            }
                         }
                     }
                     break;
@@ -7518,7 +7611,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
     bool net_extrapolate = false;
     float net_alpha = 0.0f;
     const auto flatten = [&](uint32_t root, float weight, uint32_t priority, uint32_t track, uint32_t uid,
-                             bool is_winner = false, bool is_runner = false) {
+                             bool is_winner = false, bool is_runner = false,
+                             bool is_suppressed_sibling = false) {
         int depth = 0;
         stack[depth++] = Frame{root, weight, false, 0u};
         int steps = 0;
@@ -7561,9 +7655,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
                     // this read lands anywhere in the frame); the animator keeps its own timeline
                     // for such a clip and converges on these values.
                     // Bits 4 & 5 (16 & 32): explicit winner and runner flags from the guest's pick.
+                    // Bit 6 (64): active Track 3 facial/mood overlay suppressed by a higher-priority
+                    // carry overlay (`IdleHoldBeerLoop`) on the same track.
                     out[4] = (read8(frame.node + 36u) != 0u ? 1u : 0u) | (frame.additive ? 2u : 0u) |
                              (overlay_list ? 4u : 0u) | (net_extrapolate ? 8u : 0u) |
                              (is_winner ? 16u : 0u) | (is_runner ? 32u : 0u) |
+                             (is_suppressed_sibling ? 64u : 0u) |
                              ((priority & 0xFFu) << 8) | ((track & 0xFFu) << 16);
                     out[5] = uid;
                     out[6] = ramp_in_bits;
@@ -7577,9 +7674,29 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
                 }
                 case 1u:
                 case 6u: {
-                    const float t = readf(frame.node + 32u);
-                    push(read32(frame.node + 24u), frame.weight * (1.0f - t), frame.additive, frame.mask);
-                    push(read32(frame.node + 28u), frame.weight * t, frame.additive, frame.mask);
+                    float t = readf(frame.node + 32u);
+                    if (!std::isfinite(t)) {
+                        t = 0.0f;
+                    }
+                    t = std::clamp(t, 0.0f, 1.0f);
+                    if (type == 6u) {
+                        t = t * t * (3.0f - 2.0f * t);
+                    }
+                    // Match `Engine_Animation_EvalBlendNode` (`0x822DC980` lines 484..519):
+                    // when `min(t, 1 - t) * weight <= 0.0001f`, the guest prunes the zero-weight
+                    // branch and evaluates only `node + 28` (`t >= 0.5f`) or `node + 24` (`t < 0.5f`).
+                    // Emitting dead `weight = 0` leaves after a footstep crossfade reaches `t = 1.0`
+                    // kept stale footstep channels and slot indices alive on the host.
+                    if (std::min(t, 1.0f - t) * frame.weight <= 0.0001f) {
+                        if (t >= 0.5f) {
+                            push(read32(frame.node + 28u), frame.weight, frame.additive, frame.mask);
+                        } else {
+                            push(read32(frame.node + 24u), frame.weight, frame.additive, frame.mask);
+                        }
+                    } else {
+                        push(read32(frame.node + 24u), frame.weight * (1.0f - t), frame.additive, frame.mask);
+                        push(read32(frame.node + 28u), frame.weight * t, frame.additive, frame.mask);
+                    }
                     break;
                 }
                 case 2u: {
@@ -7599,16 +7716,38 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
                         const uint32_t child = read32(at);
                         if (plausible(child)) {
                             const float w = readf(child + 16u);
-                            push(child, total > 1e-6f ? frame.weight * (w / total) : 0.0f, frame.additive, frame.mask);
+                            const float cw = total > 1e-6f ? frame.weight * (w / total) : 0.0f;
+                            if (cw > 1e-5f) {
+                                push(child, cw, frame.additive, frame.mask);
+                            }
                         }
                     }
                     break;
                 }
                 case 3u: {
-                    push(read32(frame.node + 28u), frame.weight, frame.additive, frame.mask);
+                    const uint32_t base_child = read32(frame.node + 28u);
                     const uint32_t layer = read32(frame.node + 24u);
+                    push(base_child, frame.weight, frame.additive, frame.mask);
                     if (plausible(layer)) {
-                        push(layer, frame.weight * readf(layer + 16u), true, frame.mask);
+                        const bool same_clip_leaf =
+                            base_child == layer ||
+                            (plausible(base_child) && read32(base_child + 20u) == 0u &&
+                             read32(layer + 20u) == 0u &&
+                             read32(base_child + 24u) == read32(layer + 24u));
+                        float node_w = readf(frame.node + 16u);
+                        if (!std::isfinite(node_w)) {
+                            node_w = 1.0f;
+                        }
+                        node_w = std::clamp(node_w, 0.0f, 1.0f);
+                        float layer_w = readf(layer + 16u);
+                        if (!std::isfinite(layer_w)) {
+                            layer_w = 1.0f;
+                        }
+                        layer_w = std::clamp(layer_w, 0.0f, 1.0f);
+                        const float effective_w = frame.weight * node_w * layer_w;
+                        if (!same_clip_leaf && effective_w > 1e-4f) {
+                            push(layer, effective_w, true, frame.mask);
+                        }
                     }
                     break;
                 }
@@ -7619,7 +7758,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
                     push(read32(frame.node + 24u), frame.weight, frame.additive, frame.node);
                     break;
                 case 5u:
-                    push(read32(frame.node + 28u), frame.weight, frame.additive, frame.mask);
+                    // `Engine_Animation_EvalBlendNode` (`0x822DC980` at `0x822DD404`):
+                    // Type-5 is the Delta Subtraction node (`pose(+28) (-) ref(+24)` via `0x82B72F50`),
+                    // which sets `*out_is_additive = 1`.
+                    push(read32(frame.node + 28u), frame.weight, true, frame.mask);
                     break;
                 default:
                     break;
@@ -7691,6 +7833,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
             }
         }
 
+        uint32_t track3_high_prio_winner = 0u;
+        float track3_winner_weight = 0.0f;
+        uint32_t track3_winner_prev_bits = 0u;
+        uint32_t track3_winner_cur_bits = 0u;
+        uint32_t track3_suppressed_sibling = 0u;
+
         node = read32(sentinel);
         for (uint32_t i = 0u; i < size && plausible(node) && node != sentinel; ++i) {
             const uint32_t record = read32(node + 8u);
@@ -7705,14 +7853,26 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
             if (state == 2u && (!overlay ? record != runner_up : false)) {
                 continue;
             }
+            const uint32_t exported_prio = read32(record + 8u);
+            const uint32_t rec_track = read32(record + 12u);
             const float weight = readf(record + 20u);
             if (weight <= 1e-4f) {
                 if (!overlay && record == winner) {
                     // Retain winner even if cur weight is 0.0f on its opening tick,
                     // so the host registers the channel and folds runner_up -> winner.
                 } else {
+                    if (overlay && state == 0u && rec_track == 3u && exported_prio == 1u &&
+                        plausible(read32(record + 36u))) {
+                        track3_suppressed_sibling = record;
+                    }
                     continue;
                 }
+            }
+            if (overlay && rec_track == 3u && exported_prio >= 2u && weight > track3_winner_weight) {
+                track3_high_prio_winner = record;
+                track3_winner_weight = weight;
+                track3_winner_prev_bits = read32(record + 24u);
+                track3_winner_cur_bits = read32(record + 20u);
             }
             record_prev_bits = read32(record + 24u);
             record_cur_bits = read32(record + 20u);
@@ -7721,11 +7881,27 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
             overlay_list = overlay;
             priority_mask = read32(record + 16u);
 
-            const uint32_t exported_prio = read32(record + 8u);
             const bool is_winner = !overlay && record == winner;
             const bool is_runner = !overlay && record == runner_up;
-            flatten(read32(record + 36u), weight <= 1e-4f ? 1e-4f : weight, exported_prio, read32(record + 12u), read32(record + 32u),
-                    is_winner, is_runner);
+            flatten(read32(record + 36u), weight <= 1e-4f ? 1e-4f : weight, exported_prio, rec_track, read32(record + 32u),
+                    is_winner, is_runner, false);
+        }
+
+        // When a priority >= 2 carry overlay (`IdleHoldBeerLoop`) wins Track 3, `sub_821F3C28`
+        // holds the NPC's active priority 1 Track 3 facial/mood overlay (`IdleHappy`) at weight 0
+        // even though `Engine_Animation_StepControllerRecords` (`0x8221D308`) continues advancing
+        // its playhead every tick. Export the newest active Track 3 sibling so `Engine_ClipAnimator`
+        // can animate facial bones where the carry overlay only bakes static 1-keyframe tracks.
+        if (overlay && track3_high_prio_winner != 0u && track3_suppressed_sibling != 0u) {
+            record_prev_bits = track3_winner_prev_bits;
+            record_cur_bits = track3_winner_cur_bits;
+            ramp_in_bits = ramp_seconds(read32(track3_suppressed_sibling + 40u));
+            ramp_out_bits = ramp_seconds(read32(track3_suppressed_sibling + 48u));
+            overlay_list = true;
+            priority_mask = read32(track3_suppressed_sibling + 16u) | read32(track3_high_prio_winner + 16u);
+            flatten(read32(track3_suppressed_sibling + 36u), track3_winner_weight,
+                    read32(track3_suppressed_sibling + 8u), 3u,
+                    read32(track3_suppressed_sibling + 32u), false, false, true);
         }
     };
 
@@ -8479,6 +8655,67 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDebugCallResult(uint64_t* out_seq, ui
     return refii::vfs::DebugCallResult(out_seq, out_addr, out_r3, out_note, note_capacity);
 }
 
+
+extern "C++" {
+namespace remaster {
+
+REXCVAR_DEFINE_BOOL(fx_weapon_augment_always_active, true, "Gameplay",
+                    "Keep weapon augmentation particle effects active and playing continuously while moving (walking/running).")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+PPCFunc* g_original_CAugmentation_MovementCheck = nullptr;
+
+void Hook_CAugmentation_MovementCheck(PPCContext& ctx, uint8_t* base) {
+    if (!REXCVAR_GET(fx_weapon_augment_always_active)) {
+        if (g_original_CAugmentation_MovementCheck != nullptr) {
+            g_original_CAugmentation_MovementCheck(ctx, base);
+        }
+        return;
+    }
+
+    const uint32_t comp = ctx.r3.u32;
+    if (comp < 0x10000u || comp >= 0xC0000000u) {
+        ctx.r3.u32 = 0;
+        return;
+    }
+
+    const uint32_t weapon = GuestWordAt(base, comp + 4u);
+    if (weapon < 0x10000u || weapon >= 0xC0000000u) {
+        ctx.r3.u32 = 0;
+        return;
+    }
+
+    // Check weapon entity flag: bit 13 at +52 (sub_825A0098: (*(_DWORD *)(weapon + 52) >> 13) & 1)
+    const uint32_t flags = GuestWordAt(base, weapon + 52u);
+    if (((flags >> 13) & 1u) != 0u) {
+        ctx.r3.u32 = 0;
+        return;
+    }
+
+    // Weapon is equipped and active: keep the effect alive continuously during movement
+    ctx.r3.u32 = 1u;
+}
+
+void InstallWeaponAugmentationHook() {
+    rex::Runtime* runtime = rex::Runtime::instance();
+    if (runtime == nullptr || runtime->function_dispatcher() == nullptr) {
+        return;
+    }
+
+    const uint32_t addr = refii::guest::Address(0x825A0098u);
+    PPCFunc* original = runtime->function_dispatcher()->GetFunction(addr);
+    if (original != nullptr && g_original_CAugmentation_MovementCheck == nullptr) {
+        g_original_CAugmentation_MovementCheck = original;
+        runtime->function_dispatcher()->SetFunction(addr, Hook_CAugmentation_MovementCheck);
+    }
+}
+}  // namespace remaster
+}  // extern "C++"
+
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostInstallWeaponAugmentHook(void) {
+    remaster::InstallWeaponAugmentationHook();
+    return remaster::g_original_CAugmentation_MovementCheck != nullptr ? 1u : 0u;
+}
 
 /// The SCREEN the captured rows belong to, or 0xFFFFFFFF when no in-game screen states one.
 ///
@@ -17312,6 +17549,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroStateApplied(uint32_t player) {
 namespace {
 
 void Fable2Initialized() {
+    remaster::InstallWeaponAugmentationHook();
     // THE FAST-ARM WATCHER. The guest's D3D device creation reads the no-GPU latch ONCE,
     // tens of milliseconds after publishing the device pointer; armed first, boot proceeds —
     // read first, the guest takes the "a GPU exists" path and parks in a ring wait forever.

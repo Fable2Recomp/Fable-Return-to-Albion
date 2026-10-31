@@ -92,6 +92,20 @@ public sealed class Engine_GmdSkeleton
         return header;
     }
 
+    public static Engine_GmdSkeleton CreateForTesting(
+        string[] names,
+        int[] parents,
+        Transform3D[] locals,
+        GmdAttachment[] attachments)
+    {
+        var hashes = new uint[names.Length];
+        for (int i = 0; i < names.Length; i++)
+        {
+            hashes[i] = Engine_MdlEngine47.Crc32Lh(names[i]);
+        }
+        return new(names, parents, locals, attachments, hashes, false);
+    }
+
     private Engine_GmdSkeleton(
         string[] names,
         int[] parents,

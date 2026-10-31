@@ -52,7 +52,7 @@ public static class Engine_AppRoot
 		var other => other.ToString().ToLowerInvariant(),
 	};
 
-	public static bool IsTestHost =>
+	public static readonly bool IsTestHost =
 		AppDomain.CurrentDomain.FriendlyName.Contains("testhost", StringComparison.OrdinalIgnoreCase) ||
 		System.Environment.CommandLine.Contains("testhost", StringComparison.OrdinalIgnoreCase);
 

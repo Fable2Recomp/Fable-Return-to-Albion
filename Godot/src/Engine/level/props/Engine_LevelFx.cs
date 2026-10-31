@@ -49,6 +49,42 @@ public static class Engine_LevelFx
     public const uint SilverKeyTemplateDynamic = 0xEA7C60E5;
 
     /// <summary>
+    /// FNV-1 of "NewLamp_on_stick" entity template — Lionhead's outdoor lantern placements in Ravenscar (chapter3_good)
+    /// that have an authored light dummy ('Prop.Layout.Light') but lack a ParticleEmitter component in GDB.
+    /// </summary>
+    public const uint LampOnStickTemplate = 0xB4BD3E22;
+
+    /// <summary>
+    /// Candle flame particle effect (0x6E4BB265 = FX_Candle_Flame_01) used as visible flame source for
+    /// lanterns lacking authored GDB particle emitters.
+    /// </summary>
+    public const uint CandleFlame = 0x6E4BB265;
+
+    /// <summary>
+    /// Checks whether a placement is a "NewLamp_on_stick" lantern fixture based on parent template or entity name prefix.
+    /// </summary>
+    public static bool IsLampOnStickPlacement(GdbPlacement placement) =>
+        placement.ParentHash == LampOnStickTemplate ||
+        (placement.EntityName is not null && placement.EntityName.StartsWith("NewLamp_on_stick", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Returns all visual particle effect attachments for a placement, including authored GDB
+    /// attachments and engine-level fallbacks for known base-game omissions (such as NewLamp_on_stick
+    /// lanterns lacking authored particle emitters in GDB).
+    /// </summary>
+    public static List<FxAttachment> ResolvePlacementAttachments(
+        GdbPlacement placement,
+        List<GdbView> views)
+    {
+        List<FxAttachment> authored = HuntFxAttachments(placement.Hash, views);
+        if (authored.Count == 0 && IsLampOnStickPlacement(placement))
+        {
+            authored.Add(new FxAttachment(CandleFlame, "Prop.Layout.Light", Vector3.Zero, false));
+        }
+        return authored;
+    }
+
+    /// <summary>
     /// The two template entries a silver key is placed from. Matched on the placement's PARENT,
     /// which is the identity the data states.
     ///
@@ -131,7 +167,7 @@ public static class Engine_LevelFx
             return 0;
         }
 
-        FxBank? bank = FableFx.SharedBank();
+        FxBank? bank = _bankOverrideForTesting ?? FableFx.SharedBank();
         if (bank is null)
         {
             return 0;
@@ -403,7 +439,7 @@ public static class Engine_LevelFx
             // the data made redundant: the ordinary walk resolves that same effect for them, and
             // going around it cost the keys the `OffsetFromDummy` their data states and the
             // orientation rule every other attachment obeys.
-            foreach (FxAttachment attachment in HuntFxAttachments(placement.Hash, views))
+            foreach (FxAttachment attachment in ResolvePlacementAttachments(placement, views))
             {
                 if (attachment.Effect == 0 || attachment.Effect == Null ||
                     bank.FindByHash(attachment.Effect) is null)
@@ -1026,9 +1062,24 @@ public static class Engine_LevelFx
 
     private static readonly Dictionary<string, Engine_GmdSkeleton?> GmdCache = new();
 
+    private static FxBank? _bankOverrideForTesting;
+
+    /// <summary>Injects an FxBank override for testing FX spawning without loading files from disk.</summary>
+    public static void InjectBankForTesting(FxBank? bank) => _bankOverrideForTesting = bank;
+
+    /// <summary>Injects a GMD skeleton for testing dummy attachment resolution without loading files from disk.</summary>
+    public static void InjectGmdForTesting(string modelPath, Engine_GmdSkeleton? skeleton)
+    {
+        lock (GmdCache)
+        {
+            GmdCache[modelPath] = skeleton;
+        }
+    }
+
     /// <summary>Drops the per-model rig and skeleton lookups; keyed by path, so region-scoped.</summary>
     public static void ClearCaches()
     {
+        _bankOverrideForTesting = null;
         lock (RigCache)
         {
             RigCache.Clear();

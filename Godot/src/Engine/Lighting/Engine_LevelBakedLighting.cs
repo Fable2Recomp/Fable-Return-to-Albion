@@ -310,10 +310,9 @@ public static class Engine_LevelBakedLighting
 	}
 
 	/// <summary>
-	/// `building_interior_ambient_scale`: scales down the outdoor sky/theme ambient when the viewer
-	/// is inside an enclosed building in an outdoor level (caves and sky-less levels are unaffected).
-	/// When the Filmic (ACES) tone curve is active, applies <see cref="Engine_PostFxParams.FilmicBuildingInteriorAmbientScale"/>
-	/// (`5.0x`) so the default `0.5` scales to `2.5` automatically.
+	/// `building_interior_ambient_scale`: multiplier on the ambient floor inside an enclosed
+	/// building in an outdoor level (1.0 = vanilla default; caves and sky-less levels are
+	/// unaffected and use `interior_ambient_scale`).
 	/// </summary>
 	public static float BuildingInteriorAmbientScale
 	{
@@ -327,34 +326,43 @@ public static class Engine_LevelBakedLighting
 					_buildingInteriorAmbientScale = System.Math.Clamp(
 						Refii.Core.Engine_RefiiConfig.Float(
 							Refii.Core.Engine_RefiiConfig.Read(out _),
-							"building_interior_ambient_scale", 0.5f),
+							"building_interior_ambient_scale", 1.0f),
 						0.0f, 4.0f);
 				}
 				catch (System.Exception)
 				{
-					_buildingInteriorAmbientScale = 0.5f;
+					_buildingInteriorAmbientScale = 1.0f;
 				}
 			}
 
-			float scale = _buildingInteriorAmbientScale.Value;
-			if (Engine_PostFxParams.FilmicBuildingInterior)
-			{
-				scale = System.Math.Clamp(
-					scale * Engine_PostFxParams.FilmicBuildingInteriorAmbientScale,
-					0.0f, 8.0f);
-			}
-
-			return scale;
+			return _buildingInteriorAmbientScale.Value;
 		}
 	}
 
 	/// <summary>
-	/// Effective ambient scale for the current frame: applies <see cref="BuildingInteriorAmbientScale"/>
-	/// on top of <see cref="AmbientScale"/> only when inside a building in an outdoor (sky-bearing) level.
+	/// Base ambient multiplier applied in Modern mode when the Filmic tone curve is active,
+	/// compensating for the Filmic S-curve's stronger midtone compression while keeping the
+	/// normalized <c>ambient_light_scale</c> CVar default at <c>1.0</c>.
+	/// </summary>
+	public const float FilmicBaseAmbientScale = 2.0f;
+
+	/// <summary>
+	/// Active tone-curve ambient multiplier: <see cref="FilmicBaseAmbientScale"/> (<c>2.0x</c>) in
+	/// Modern mode when <see cref="Engine_PostFxParams.FilmicCurve"/> is active, <c>1.0x</c> otherwise.
+	/// </summary>
+	public static float ActiveToneCurveAmbientScale =>
+		Engine_LightingFrame.ModernModel && Engine_PostFxParams.FilmicCurve
+			? FilmicBaseAmbientScale
+			: 1.0f;
+
+	/// <summary>
+	/// Effective ambient scale for the current frame: applies <see cref="ActiveToneCurveAmbientScale"/>
+	/// and <see cref="BuildingInteriorAmbientScale"/> on top of <see cref="AmbientScale"/> when inside
+	/// a building in an outdoor (sky-bearing) level.
 	/// </summary>
 	public static float EffectiveAmbientScale(LightingFrame? frame)
 	{
-		float scale = AmbientScale;
+		float scale = AmbientScale * ActiveToneCurveAmbientScale;
 		bool isCaveLevel = Engine_LightingFrame.CurrentInterior || (frame is not null && !frame.HasSky);
 		if (!isCaveLevel && Engine_LightZones.IsViewerIndoors)
 		{
@@ -393,7 +401,7 @@ public static class Engine_LevelBakedLighting
 
 				// Diagnostic override, unclamped: REFII_AMBIENT_SCALE=<f>. The clamp above is the
 				// launcher's range; an instrument run needs to go past it to find the level.
-				if (float.TryParse(OS.GetEnvironment("REFII_AMBIENT_SCALE"),
+				if (float.TryParse(System.Environment.GetEnvironmentVariable("REFII_AMBIENT_SCALE"),
 						System.Globalization.NumberStyles.Float,
 						System.Globalization.CultureInfo.InvariantCulture, out float forced) &&
 					forced > 0f)
@@ -575,8 +583,46 @@ public static class Engine_LevelBakedLighting
 
 	public static void ClearContainerCache()
 	{
+		if (!Refii.Core.Engine_AppRoot.IsTestHost)
+		{
+			try
+			{
+				RenderingServer.GlobalShaderParameterSet(GlobalPropLightmapsName, default(Variant));
+			}
+			catch
+			{
+			}
+		}
+
 		lock (ContainerCache)
 		{
+			foreach (LightmapContainer? container in ContainerCache.Values)
+			{
+				if (container is null)
+				{
+					continue;
+				}
+
+				if (container.ObjectAtlas is not null && GodotObject.IsInstanceValid(container.ObjectAtlas))
+				{
+					container.ObjectAtlas.Dispose();
+					container.ObjectAtlas = null;
+				}
+
+				lock (container.ObjectTextures)
+				{
+					foreach (ImageTexture? tex in container.ObjectTextures.Values)
+					{
+						if (tex is not null && GodotObject.IsInstanceValid(tex))
+						{
+							tex.Dispose();
+						}
+					}
+
+					container.ObjectTextures.Clear();
+				}
+			}
+
 			ContainerCache.Clear();
 		}
 	}
@@ -1146,6 +1192,55 @@ public static class Engine_LevelBakedLighting
 		_split = _split with { Params = System.Diagnostics.Stopwatch.GetTimestamp() - transferred };
 	}
 
+	/// <summary>
+	/// Evaluates <paramref name="node"/>'s instance lighting parameters directly from its metadata
+	/// and layer mask without calling <c>GetInstanceShaderParameter</c> (which stalls the main thread
+	/// on <c>RenderingServer</c> whenever a parameter is unset).
+	/// </summary>
+	public static void ReadInstanceLighting(
+		GeometryInstance3D node,
+		bool staticProp,
+		out bool hasProbe,
+		out Vector4 probeR,
+		out Vector4 probeG,
+		out Vector4 probeB,
+		out Vector4 lightmapColour,
+		out float ambientScale)
+	{
+		hasProbe = false;
+		probeR = Vector4.Zero;
+		probeG = Vector4.Zero;
+		probeB = Vector4.Zero;
+
+		using Variant probeMeta = node.HasMeta(ProbeMetaName) ? node.GetMeta(ProbeMetaName) : default;
+		if (probeMeta.VariantType == Variant.Type.Array)
+		{
+			using Godot.Collections.Array probe = probeMeta.AsGodotArray();
+			if (probe.Count == 3)
+			{
+				hasProbe = true;
+				Vector4 r = probe[0].AsVector4(), g = probe[1].AsVector4(), b = probe[2].AsVector4();
+				float probeScale = AmbientScale;
+				probeR = new Vector4(r.X * probeScale, r.Y, r.Z, r.W);
+				probeG = new Vector4(g.X * probeScale, g.Y, g.Z, g.W);
+				probeB = new Vector4(b.X * probeScale, b.Y, b.Z, b.W);
+			}
+		}
+
+		float mode = node.HasMeta(BakeModeMetaName) &&
+			node.GetMeta(BakeModeMetaName) is { VariantType: Variant.Type.Int } stored
+				? stored.AsInt32()
+				: (hasProbe ? 1f : 0f);
+
+		float dial = staticProp && DialProbeLitProps && mode > 0.5f && mode < 1.5f
+			? AuthoredBakeWeight
+			: 1f;
+
+		lightmapColour = new Vector4(dial, dial, dial, mode);
+		bool isIndoorInstance = (node.Layers & (Engine_LightZones.IndoorMask | Engine_LightZones.IndoorLampHostMask)) != 0u;
+		ambientScale = isIndoorInstance ? BuildingInteriorAmbientScale : 1.0f;
+	}
+
 	/// <summary>The stages of the last <see cref="ApplyInstanceLighting"/>, in stopwatch ticks; Params -1 until it finished.</summary>
 	private readonly record struct LightSplit(
 		long Attach, long Transfer, long Find, long Compose, long Duplicate, long Bind, long Params);
@@ -1196,7 +1291,7 @@ public static class Engine_LevelBakedLighting
 		float ar = 0f, ag = 0f, ab = 0f;
 		if (frame is not null && frame.HasAmbient)
 		{
-			float ambientScale = AmbientScale;
+			float ambientScale = AmbientScale * ActiveToneCurveAmbientScale;
 			ar = frame.AmbientColour[0] * frame.AmbientEnergy * ambientScale;
 			ag = frame.AmbientColour[1] * frame.AmbientEnergy * ambientScale;
 			ab = frame.AmbientColour[2] * frame.AmbientEnergy * ambientScale;
@@ -1458,27 +1553,34 @@ public static class Engine_LevelBakedLighting
 
 		int atlasHeight = penY + rowHeight;
 		Image.Format atlasFormat = container.SharedKeyTable ? Image.Format.Rgbe9995 : Image.Format.Rgba8;
-		var atlas = Image.CreateEmpty(rowWidth, atlasHeight, false, atlasFormat);
+		using var atlas = Image.CreateEmpty(rowWidth, atlasHeight, false, atlasFormat);
 
 		float atlasW = rowWidth;
 		float atlasH = atlasHeight;
 		for (int i = 0; i < order.Count; i++)
 		{
 			Image source = order[i].Image;
-			if (source.GetFormat() != atlasFormat)
+			try
 			{
-				source.Convert(atlasFormat);
+				if (source.GetFormat() != atlasFormat)
+				{
+					source.Convert(atlasFormat);
+				}
+
+				int x = places[i].X;
+				int y = places[i].Y;
+				atlas.BlitRect(source,
+					new Rect2I(0, 0, source.GetWidth(), source.GetHeight()),
+					new Vector2I(x, y));
+
+				container.ObjectAtlasRects[order[i].Key] = new Rect2(
+					x / atlasW, y / atlasH,
+					source.GetWidth() / atlasW, source.GetHeight() / atlasH);
 			}
-
-			int x = places[i].X;
-			int y = places[i].Y;
-			atlas.BlitRect(source,
-				new Rect2I(0, 0, source.GetWidth(), source.GetHeight()),
-				new Vector2I(x, y));
-
-			container.ObjectAtlasRects[order[i].Key] = new Rect2(
-				x / atlasW, y / atlasH,
-				source.GetWidth() / atlasW, source.GetHeight() / atlasH);
+			finally
+			{
+				source.Dispose();
+			}
 		}
 
 		container.ObjectAtlas = Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(atlas);

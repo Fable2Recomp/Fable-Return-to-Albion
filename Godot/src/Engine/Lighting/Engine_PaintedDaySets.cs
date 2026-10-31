@@ -128,6 +128,11 @@ public sealed class Engine_PaintedDaySets
 
     public int PaintedCells { get; private set; }
 
+    private readonly Dictionary<uint, int> _cellCounts = new();
+
+    /// <summary>Cell counts per painted day-set hash across all added grids.</summary>
+    public IReadOnlyDictionary<uint, int> CellCounts => _cellCounts;
+
     public float MaxWeight
     {
         get
@@ -218,7 +223,39 @@ public sealed class Engine_PaintedDaySets
             if (cell != None)
             {
                 PaintedCells++;
+                _cellCounts[cell] = _cellCounts.TryGetValue(cell, out int n) ? n + 1 : 1;
             }
+        }
+    }
+
+    /// <summary>
+    /// Seeds the initial active painted layer when the region first stands up: if a single painted
+    /// day set covers the majority (>= 50%) of all painted cells in the region (such as Wraithmarsh's
+    /// <c>EnvThemeWraithMarsh_DaySet</c> at 95.6% or Bowerstone Market's <c>EnvThemeTownBowerstone_DaySet</c>
+    /// at 86.0%), starts it at weight 1.0 so the region immediately has its painted atmosphere and
+    /// lighting even before the hero's position is sampled.
+    /// </summary>
+    public void SeedDominantLayer()
+    {
+        if (_layers.Count != 0 || PaintedCells <= 0)
+        {
+            return;
+        }
+
+        uint bestHash = None;
+        int bestCount = 0;
+        foreach ((uint hash, int count) in _cellCounts)
+        {
+            if (count > bestCount)
+            {
+                bestCount = count;
+                bestHash = hash;
+            }
+        }
+
+        if (bestHash != None && bestCount * 2 >= PaintedCells)
+        {
+            _layers.Add(new Layer { Hash = bestHash, Weight = 1.0f, Active = true });
         }
     }
 

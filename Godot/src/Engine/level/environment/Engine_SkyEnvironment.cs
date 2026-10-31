@@ -215,6 +215,24 @@ public static class Engine_SkyEnvironment
         SkyFrame frame, SkyTheme theme, AtmosphereState state, ImageTexture lut) =>
         ApplyAtmosphereGlobals(frame, theme, state, lut, report: true);
 
+    public static float FogOpticalDepthScale
+    {
+        get
+        {
+            if (_lastAtmosphereState is not { } s || !s.HasFog)
+            {
+                return 0f;
+            }
+
+            return s.FogOpticalDepthAtFar;
+        }
+    }
+
+    private static AtmosphereState? _lastAtmosphereState;
+
+    /// <summary>The most recently published <see cref="AtmosphereState"/> for the standing region.</summary>
+    public static AtmosphereState? LastAtmosphereState => _lastAtmosphereState;
+
     /// <summary>Publishes one atmosphere update, including guarded immutable near-fog endpoints.</summary>
     /// <param name="frame">The evaluated sky orientation used by the dome and fog.</param>
     /// <param name="theme">The resolved region theme; the supplied state already contains its fog curve.</param>
@@ -224,6 +242,8 @@ public static class Engine_SkyEnvironment
     public static void ApplyAtmosphereGlobals(
         SkyFrame frame, SkyTheme theme, AtmosphereState state, ImageTexture lut, bool report)
     {
+        _lastAtmosphereState = state;
+
         // A render thread seeing any part of this update must fall back until all endpoint
         // copies are queued. This also leaves fallback selected if later publication fails.
         RenderingServer.GlobalShaderParameterSet(Engine_NearFogKnots.ReadyGlobal, false);
@@ -236,7 +256,6 @@ public static class Engine_SkyEnvironment
         bool hasFog = state.HasFog;
         NearFogSnapshot nearFog = Engine_NearFogKnots.Create(hasFog, beta.X, beta.Y, beta.Z,
             curve.X, curve.Y, curve.Z, range.Y);
-
         // ONLY WHEN IT IS A DIFFERENT TEXTURE. Setting a sampler global queues EVERY material
         // that reads it for a uniform-set rebuild (`MaterialStorage::global_shader_parameter_set`,
         // the `texture_materials` loop) — every lit surface in the region. At the atmosphere's

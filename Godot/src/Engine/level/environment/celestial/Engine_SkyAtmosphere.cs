@@ -261,7 +261,9 @@ public static class Engine_SkyAtmosphere
             ? MathF.Max(theme.FoggingStart, 0f)
             : UnfoggedStart;
 
-        inputs.CloseFogMaxDistance = MathF.Max(theme.CloseFogMaxDistance, 0f);
+        inputs.CloseFogMaxDistance = theme.HasCloseFogMaxDistance
+            ? MathF.Max(theme.CloseFogMaxDistance, 0f)
+            : DefaultFarDistance;
 
         // ALWAYS. The guest has no "is there fog" flag — every theme carries the block, and a
         // theme that states nothing gets a FoggingStart of a million, which is how absence is
@@ -269,13 +271,10 @@ public static class Engine_SkyAtmosphere
         // something different from the game's.
         inputs.HasFog = true;
 
-        // `HasNearFog` and `HasFarFog` are per PAIR rather than per field, so a record stating
-        // a distance but not its density takes the default for both. The shipped themes state
-        // them together.
-        inputs.NearDistance = theme.HasNearFog ? theme.NearDistance : DefaultNearDistance;
-        inputs.NearDensity = theme.HasNearFog ? theme.NearDensity : DefaultNearDensity;
-        inputs.FarDistance = theme.HasFarFog ? theme.FarDistance : DefaultFarDistance;
-        inputs.FarDensity = theme.HasFarFog ? theme.FarDensity : DefaultFarDensity;
+        inputs.NearDistance = theme.HasNearDistance ? theme.NearDistance : DefaultNearDistance;
+        inputs.NearDensity = theme.HasNearDensity ? theme.NearDensity : DefaultNearDensity;
+        inputs.FarDistance = theme.HasFarDistance ? theme.FarDistance : DefaultFarDistance;
+        inputs.FarDensity = theme.HasFarDensity ? theme.FarDensity : DefaultFarDensity;
 
         // White when unstated, which is the constructor's default for slot 19. Our SkyTheme seeds
         // this array with a blue-grey stand-in that predates the fog work; letting that through
@@ -538,6 +537,39 @@ public static class Engine_SkyAtmosphere
         }
 
         return outRgba;
+    }
+
+    /// <summary>
+    /// Evaluates the solved in-scatter LUT at normalized sun-angle parameter <paramref name="t"/> in [0, 1]
+    /// without allocating a table array. Output values are unclamped linear scene-referred radiance.
+    /// </summary>
+    public static void SampleInScatter(AtmosphereState state, float t, out float r, out float g, out float b)
+    {
+        t = Math.Clamp(t, 0f, 1f);
+        float onePlusT2 = (t * t) + 1f;
+        float hgDenominator = MathF.Pow(MathF.Max(state.LutHg[1] - (state.LutHg[2] * t), 1e-4f), 1.5f);
+        float tCos = t * state.LutCosSunElevation;
+        float hgRatio = state.LutHg[0] / hgDenominator;
+        float colourFactor = Math.Clamp((t * 0.5f) + state.LutBiasPlusHalf, 0f, 1f);
+
+        float EvalChannel(int c, float rampCoeff)
+        {
+            float betaSum = state.BetaRayleigh[c] + state.BetaMie[c];
+            if (betaSum <= 1e-8f)
+            {
+                return 0f;
+            }
+
+            float phase = (state.LutBetaMiePhase[c] * hgRatio) + (state.LutBetaRayleighPhase[c] * onePlusT2);
+            float ramp = (rampCoeff * tCos) + 1f;
+            float colour = ((state.LutColourA[c] - state.LutColourB[c]) * colourFactor) + state.LutColourB[c];
+            float scaled = ramp * state.LutScale[c] * state.LutScale[3];
+            return scaled * (phase / betaSum) * colour;
+        }
+
+        r = EvalChannel(0, 0f);
+        g = EvalChannel(1, 0.3f - 1f);
+        b = EvalChannel(2, 0.1f - 1f);
     }
 
     public static float SunElevationAngle(float[] sunDirection)

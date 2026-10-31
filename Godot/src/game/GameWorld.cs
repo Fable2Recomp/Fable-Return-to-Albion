@@ -542,9 +542,10 @@ public partial class GameWorld : Node3D
 				$"mesh, reconciled its copies and drew {ReleaseSettleFrames} settled frame(s) after " +
 				$"{_propHoldFrames} frame(s) — releasing the guest; " +
 				(_entities?.DescribeHero() ?? "no entity feed"));
-			CompactLargeObjectHeap();
-			Refii.Core.Engine_FramePhases.ResetMetrics();
 		}
+
+		CompactLargeObjectHeap();
+		Refii.Core.Engine_FramePhases.ResetMetrics();
 	}
 
 	/// <summary>
@@ -575,23 +576,21 @@ public partial class GameWorld : Node3D
 	}
 
 	/// <summary>
-	/// Collects temporary region-load buffers, compacting the large-object heap where supported.
+	/// Compacts the large-object heap and runs Godot <see cref="RefCounted"/> finalizers so
+	/// unreferenced GPU textures, shadow map atlases, meshes and materials are released from VRAM.
 	/// </summary>
 	/// <remarks>
 	/// Bank containers, mesh arrays and texture buffers exceed the 85 KB threshold, so a region
 	/// load churns the LOH, which .NET sweeps but never compacts unless asked; the gaps stay
-	/// committed. Done here because a compacting gen2 is a long pause and the player is already
-	/// waiting: the load has finished and the guest is not yet released. Never during play.
-	/// Android's .NET 9 Mono runtime rejects CompactOnce: its large-object collector does not
-	/// implement that policy. Use its ordinary collection at the same load boundary instead,
-	/// so memory cleanup cannot turn a successfully presented region into an exception.
+	/// committed. Furthermore, Godot's C# <see cref="RefCounted"/> wrappers (<see cref="Texture2D"/>,
+	/// <see cref="Texture2DArray"/>, <see cref="ArrayMesh"/>, <see cref="ShaderMaterial"/>) only
+	/// decrement their native <see cref="RenderingServer"/> refcounts when their finalizers run,
+	/// so <see cref="GC.WaitForPendingFinalizers"/> followed by a second collection is required
+	/// to reclaim VRAM across level transitions.
 	///
-	/// `android_loh_compaction` (default off): Android compacts too. The Mono note above predates
-	/// the NativeAOT export, whose GC is the desktop's and takes CompactOnce. On the S10e the large
-	/// object heap stood at 630-890 MB in game, the phone at 91% memory load; a region load's
-	/// mesh, texture and bank buffers leave it full of gaps that stay committed, and only a
-	/// compaction gives them back. The cost is a longer pause here, under the loading screen. A
-	/// runtime that refuses the setting (Mono) takes the ordinary collection as before.
+	/// `android_loh_compaction` (default off): Android compacts too. The Mono runtime rejects
+	/// CompactOnce, while the NativeAOT export takes CompactOnce. A runtime that refuses the
+	/// setting takes the ordinary collection as before.
 	/// </remarks>
 	private static void CompactLargeObjectHeap()
 	{
@@ -692,6 +691,11 @@ public partial class GameWorld : Node3D
 		System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
 			System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
 		System.GC.Collect(2, System.GCCollectionMode.Aggressive, blocking: true, compacting: true);
+		System.GC.WaitForPendingFinalizers();
+		System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
+			System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+		System.GC.Collect(2, System.GCCollectionMode.Aggressive, blocking: true, compacting: true);
+		System.GC.WaitForPendingFinalizers();
 
 		System.GCMemoryInfo info = System.GC.GetGCMemoryInfo();
 		GD.Print($"[game-world] compacted the large-object heap: " +
@@ -1532,6 +1536,8 @@ public partial class GameWorld : Node3D
 	/// </summary>
 	private void TearDownRegion()
 	{
+		Refii.Level.Engine_PropStreamer.StopAll();
+
 		bool android = Refii.Core.Engine_Platform.IsAndroid;
 		if (android)
 		{
@@ -1581,7 +1587,16 @@ public partial class GameWorld : Node3D
 
 		// QueueFree has not completed here. Android measures a separate retirement boundary;
 		// desktop retains its established timing. Dictionary clears do not guarantee GPU release.
-		if (!android) Refii.Core.Engine_LevelCaches.ReleaseRegion();
+		if (!android)
+		{
+			Refii.Core.Engine_LevelCaches.ReleaseRegion();
+
+			// QueueFree() destroys the native nodes at the end of the frame. Running a deferred GC +
+			// finalizer pass right after the delete queue flushes ensures the outgoing region's
+			// Texture2D, Texture2DArray, ArrayMesh and ShaderMaterial RefCounted wrappers release
+			// their VRAM before the incoming region mounts and streams.
+			Callable.From(CompactLargeObjectHeap).CallDeferred();
+		}
 
 		// REMEMBERED BEFORE IT IS CLEARED. Everything below forgets what was standing, and the
 		// one thing the next build must not do is recreate it.

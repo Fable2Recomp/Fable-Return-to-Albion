@@ -192,6 +192,12 @@ public sealed class Engine_HudValues
 
         /// <summary>What the C++ registry last published for this name, to detect a change.</summary>
         public float? Polled;
+
+        /// <summary>When this meter last saw a new target value, for cadence tracking.</summary>
+        public ulong StatedUsec;
+
+        /// <summary>Smoothed duration (seconds) between updates for this meter.</summary>
+        public float MeasuredPeriod;
     }
 
     /// <summary>
@@ -218,31 +224,7 @@ public sealed class Engine_HudValues
     }
 
     /// <summary>`sub_82265D20`, mode 0, for every stated meter.</summary>
-    private void AdvanceMeters(float dt)
-    {
-        foreach (Seek seek in _statedMeters.Values)
-        {
-            if (seek.Current == seek.Target)
-            {
-                continue;
-            }
-
-            if (seek.Rate == 0f)
-            {
-                seek.Current = seek.Target;
-                continue;
-            }
-
-            float next = seek.Current + (seek.Rate * dt);
-            if ((seek.Rate > 0f && next > seek.Target) || (seek.Rate < 0f && next < seek.Target))
-            {
-                next = seek.Target;
-                seek.Rate = 0f;
-            }
-
-            seek.Current = next;
-        }
-    }
+    private void AdvanceMeters(float dt) => AdvanceSeeks(_statedMeters.Values, dt);
 
     /// <summary>
     /// `GUI.SetDPadCenter(bool)`: whether the quick ring is drawn centred. The visible effect is
@@ -579,18 +561,40 @@ public sealed class Engine_HudValues
     /// </summary>
     private void FollowPolled()
     {
+        ulong now = Refii.Entities.Engine_DrawnFrame.NowUsec;
+        float defaultPeriod = (float)(Refii.Core.Engine_TickClock.TickUsec * 1e-6);
+
         foreach ((uint hash, float value) in _meters)
         {
             if (!_polledMeters.TryGetValue(hash, out Seek? seek))
             {
-                _polledMeters[hash] = new Seek { Current = value, Target = value };
+                _polledMeters[hash] = new Seek
+                {
+                    Current = value,
+                    Target = value,
+                    StatedUsec = now,
+                    MeasuredPeriod = defaultPeriod,
+                };
                 continue;
             }
 
             if (value != seek.Target)
             {
+                if (seek.StatedUsec != 0)
+                {
+                    float elapsed = (now - seek.StatedUsec) * 1e-6f;
+                    if (elapsed >= 0.02f && elapsed <= 0.25f)
+                    {
+                        seek.MeasuredPeriod = seek.MeasuredPeriod > 0f
+                            ? (seek.MeasuredPeriod * 0.5f) + (elapsed * 0.5f)
+                            : elapsed;
+                    }
+                }
+
+                seek.StatedUsec = now;
                 seek.Target = value;
-                seek.Rate = (value - seek.Current) / GuestFrameSeconds;
+                float duration = seek.MeasuredPeriod > 0f ? seek.MeasuredPeriod : defaultPeriod;
+                seek.Rate = (value - seek.Current) / duration;
             }
         }
 
@@ -602,7 +606,6 @@ public sealed class Engine_HudValues
             }
         }
 
-        ulong now = Refii.Entities.Engine_DrawnFrame.NowUsec;
         foreach ((uint hash, float phase) in _pulsers)
         {
             // A STOPPED pulser holds at its stated phase (0: the tick the guest's stop applied).

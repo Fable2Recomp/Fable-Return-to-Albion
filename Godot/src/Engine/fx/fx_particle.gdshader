@@ -33,8 +33,9 @@ void fragment() {
 	// only the ADDITIVE layer is bounded. Clamping here pinned smoke to a fixed fraction of
 	// display white whatever the scene around it was doing.
 	if (fable_exposure_valid <= 0.5) {
-		rgb = clamp(rgb * fx_exposure, 0.0, 1.0);
+		rgb *= fx_exposure;
 	}
+	rgb = max(rgb, vec3(0.0));
 	ALBEDO = rgb * fade;
 	ALPHA = texel.a * COLOR.a * fade;
 }

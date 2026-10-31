@@ -562,6 +562,7 @@ public partial class GameEntities : Node3D
         _createdThisFrame = 0;
         _createTicksThisFrame = 0;
         _dynamicCasterPositions.Clear();
+        _dynamicCasterAddresses.Clear();
         _createFrom = System.Diagnostics.Stopwatch.GetTimestamp();
         foreach (HostBridge.GuestEntity statedEntity in entities)
         {
@@ -698,6 +699,11 @@ public partial class GameEntities : Node3D
             {
                 node = fastNode;
                 mesh = fastMesh;
+                if (IsUsablePlacement(entity.Position))
+                {
+                    _guestPositions[entity.Address] = entity.Position;
+                    _guestRotations[entity.Address] = entity.Rotation;
+                }
                 string? fastKey = null;
                 if (!adopted)
                 {
@@ -978,7 +984,7 @@ public partial class GameEntities : Node3D
                 if (IsUsablePlacement(entity.Position) && _attachments.ParentOf(entity.Address) == 0u)
                 {
                     Transform3D initialTransform = Refii.Entities.Engine_EntityAppearance.Scaled(
-                        Drawn(entity, ToGodot(entity.Position, entity.Rotation)), entity.Appearance);
+                        ToGodot(entity.Position, entity.Rotation), entity.Appearance);
                     node.Transform = initialTransform;
                     _written[entity.Address] = (node, initialTransform);
                 }
@@ -1248,8 +1254,16 @@ public partial class GameEntities : Node3D
 
                 if (!attachedChild && moved)
                 {
-                    Place(entity.Address, node!,
-                        Refii.Entities.Engine_EntityAppearance.Scaled(Drawn(entity, stated), entity.Appearance));
+                    if (created && _written.ContainsKey(entity.Address))
+                    {
+                        _ = Drawn(entity, stated);
+                        Refii.Entities.Engine_ShadowSkeletons.Placed(node!);
+                    }
+                    else
+                    {
+                        Place(entity.Address, node!,
+                            Refii.Entities.Engine_EntityAppearance.Scaled(Drawn(entity, stated), entity.Appearance));
+                    }
                 }
 
                 bool dueReconcile = Due(entity.Address, ReconcileTicks);
@@ -1335,6 +1349,7 @@ public partial class GameEntities : Node3D
             placeTicks += poseFrom - placeFrom;
             bool hasSkeleton = _skeletons.TryGetValue(entity.Address, out
                 Refii.Entities.Engine_EntitySkeleton? rig);
+            bool writeBones = false;
             if (hasSkeleton && rig is not null)
             {
                 // HOST ANIMATION AND THE POSE FEED ARE MUTUALLY EXCLUSIVE. Both write every
@@ -1342,9 +1357,9 @@ public partial class GameEntities : Node3D
                 // whichever wrote last this frame, per bone, which looks like a rig tearing
                 // rather than like a configuration mistake. Following the guest's bones is
                 // still the default; host animation is opted into per run.
-                bool writeBones = false;
                 if (HostAnimation)
                 {
+                    writeBones = true;
                     DriveLocomotion(entity.Address, node, rig);
                 }
                 else
@@ -1421,6 +1436,7 @@ public partial class GameEntities : Node3D
                     if (inView || principal)
                     {
                         _dynamicCasterPositions.Add(rigAt);
+                        _dynamicCasterAddresses.Add(entity.Address);
                     }
 
                     // Principals and actively moving full-rate rigs keep their shadow skeleton
@@ -1495,7 +1511,7 @@ public partial class GameEntities : Node3D
             long afterPoseEntity = System.Diagnostics.Stopwatch.GetTimestamp();
             poseTicks += afterPoseEntity - poseFrom;
 
-            if ((moved || hasSkeleton) && _adoptions.TryGetValue(entity.Address, out var married))
+            if ((moved || writeBones) && _adoptions.TryGetValue(entity.Address, out var married))
             {
                 long twinFrom = System.Diagnostics.Stopwatch.GetTimestamp();
                 Refii.Entities.Engine_StaticTwins.Drive(married.Twin, AdoptedWorld(entity.Address, node));
@@ -2121,6 +2137,7 @@ public partial class GameEntities : Node3D
             Refii.Entities.Engine_ShadowSkeletons.SetFollowerEveryFrame(node, principalHolder);
 
             _followers[child] = node;
+            _attachedStated[child] = stated;
             Place(child, node, placed);
             _bodies.Remove(child);  // it is not being blended; do not blend back to it
         }
@@ -2149,6 +2166,7 @@ public partial class GameEntities : Node3D
         foreach (uint child in _unfollowed)
         {
             _followers.Remove(child);
+            _attachedStated.Remove(child);
             _childFacts.Remove(child);
             _written.Remove(child);
             _justDetached.Add(child);
@@ -2156,6 +2174,114 @@ public partial class GameEntities : Node3D
         }
 
         _unfollowed.Clear();
+    }
+
+    /// <summary>
+    /// Places a non-mesh attached child entity (such as a particle emitter entity hung on a
+    /// character or weapon dummy via <c>CECObjectAttachment</c>) onto its parent's live host
+    /// bone/dummy pose for this display frame.
+    /// </summary>
+    public bool TryPlaceAttachedEntity(uint child, Transform3D childStated, out Transform3D placed)
+    {
+        placed = childStated;
+        if (child == 0u)
+        {
+            return false;
+        }
+
+        uint parent = _attachments.ParentOf(child);
+        if (parent == 0u ||
+            !_nodes.TryGetValue(parent, out MeshInstance3D? parentNode) ||
+            !GodotObject.IsInstanceValid(parentNode))
+        {
+            return false;
+        }
+
+        _skeletons.TryGetValue(parent, out Refii.Entities.Engine_EntitySkeleton? rig);
+        return _attachments.TryPlace(
+            child,
+            childStated,
+            StatedOf(parent, parentNode.Transform),
+            parentNode.Transform,
+            rig,
+            PartPaths(parentNode),
+            out placed,
+            isFurniture: false,
+            childModelPath: null);
+    }
+
+    /// <summary>
+    /// Returns both the guest's stated placement and the host's currently drawn placement for
+    /// <paramref name="address"/> (in <c>GameEntities</c> local / entity-mesh space), including
+    /// attached follower entities such as weapons mounted on a character's <c>Skeleton3D</c>.
+    /// </summary>
+    public bool TryGetStatedAndDrawnTransform(uint address, out Transform3D stated, out Transform3D drawn)
+    {
+        if (address != 0u &&
+            _nodes.TryGetValue(address, out MeshInstance3D? node) &&
+            GodotObject.IsInstanceValid(node))
+        {
+            drawn = _written.TryGetValue(address, out (MeshInstance3D Node, Transform3D Drawn) w)
+                ? w.Drawn
+                : node.Transform;
+            stated = StatedOf(address, drawn);
+            return true;
+        }
+
+        stated = Transform3D.Identity;
+        drawn = Transform3D.Identity;
+        return false;
+    }
+
+    /// <summary>
+    /// Attempts to place an effect that is attached either to an entity directly (as child)
+    /// or to a target character/weapon (<paramref name="attachedTarget"/>). When
+    /// <paramref name="attachedTarget"/> is itself an attached follower (such as the Hero's gun
+    /// or melee weapon), or has attached children, maps the effect from the target's stated
+    /// placement to its live drawn placement on the host skeleton.
+    /// </summary>
+    public bool TryPlaceAttachedEffect(uint owner, uint attachedTarget, Transform3D effectStated, out Transform3D placed)
+    {
+        if (owner != 0u && TryPlaceAttachedEntity(owner, effectStated, out placed))
+        {
+            return true;
+        }
+
+        if (attachedTarget != 0u)
+        {
+            List<uint> children = _attachments.ChildrenOfParent(attachedTarget);
+            float bestDistanceSq = 16f; // within 4 metres
+            uint bestChild = 0u;
+            foreach (uint child in children)
+            {
+                Vector3 childOrigin = TryGuestPosition(child, out Vector3 childGuestPos)
+                    ? GameWorld.GuestToGodot(childGuestPos)
+                    : StatedOf(child, effectStated).Origin;
+                float distSq = childOrigin.DistanceSquaredTo(effectStated.Origin);
+                if (distSq < bestDistanceSq)
+                {
+                    bestDistanceSq = distSq;
+                    bestChild = child;
+                }
+            }
+
+            if (bestChild != 0u && TryPlaceAttachedEntity(bestChild, effectStated, out placed))
+            {
+                return true;
+            }
+
+            // Direct target entity (e.g. a multi-dummy weapon augmentation effect where
+            // `attachedTarget` is the Weapon entity itself, detached from `CECObjectAttachment`
+            // by `sub_825EC7E0` so `CParticleEmitterComponent` can drive its dummy spline points).
+            if (TryGetStatedAndDrawnTransform(attachedTarget, out Transform3D targetStated, out Transform3D targetDrawn))
+            {
+                placed = targetDrawn * (targetStated.AffineInverse() * effectStated);
+                return true;
+            }
+        }
+
+        placed = effectStated;
+        return false;
     }
 
     /// <summary>
@@ -2204,6 +2330,9 @@ public partial class GameEntities : Node3D
     /// <summary>Attached children whose shadow casts through a following proxy, by address.</summary>
     private readonly Dictionary<uint, MeshInstance3D> _followers = new();
 
+    /// <summary>The guest's stated placement for each attached follower before <see cref="PlaceAttached"/> moves its node onto the host bone.</summary>
+    private readonly Dictionary<uint, Transform3D> _attachedStated = new();
+
     /// <summary>Entities that detached from their parent this tick and must not be skipped by prologue checks.</summary>
     private readonly HashSet<uint> _justDetached = new();
 
@@ -2214,9 +2343,11 @@ public partial class GameEntities : Node3D
     /// being drawn at. Falls back to the drawn transform for an entity with no history yet.
     /// </summary>
     private Transform3D StatedOf(uint address, Transform3D drawn) =>
-        _bodies.TryGetValue(address, out Refii.Core.Engine_TickTimeline? body)
-            ? body.Newest
-            : drawn;
+        _attachedStated.TryGetValue(address, out Transform3D attachedStated)
+            ? attachedStated
+            : _bodies.TryGetValue(address, out Refii.Core.Engine_TickTimeline? body)
+                ? body.Newest
+                : drawn;
 
     /// <summary><see cref="PartPaths"/> per mesh, computed once.</summary>
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Mesh, string[]> _partPathsByMesh = new();
@@ -2501,15 +2632,12 @@ public partial class GameEntities : Node3D
 
         _drawRanges[address] = stated;
         Refii.Level.Engine_PropDrawRange.StampEntity(node, stated);
-        // The same D cuts its shadow hard (`sub_8221E5F0`), from the eye.
-        Refii.Models.Engine_ClassicCasters.Mark(node, CastingOf(address, node),
-            Refii.Level.Engine_PropDrawRange.Reach(stated));
-        Refii.Models.Engine_ClassicCasters.Register(node, dynamic: true);
-        if (!Refii.Models.Engine_ClassicMaterial.Active && node is MeshInstance3D body &&
-            Refii.Models.Engine_ClassicCasters.NeverCasts(body))
+        if (Refii.Models.Engine_ClassicMaterial.Active)
         {
-            // Modern: the flag arrives after the body's proxy was made.
-            Refii.Entities.Engine_ShadowProxy.Sync(body);
+            // The same D cuts its shadow hard (`sub_8221E5F0`), from the eye.
+            Refii.Models.Engine_ClassicCasters.Mark(node, CastingOf(address, node),
+                Refii.Level.Engine_PropDrawRange.Reach(stated));
+            Refii.Models.Engine_ClassicCasters.Register(node, dynamic: true);
         }
         return true;
     }
@@ -3268,6 +3396,7 @@ public partial class GameEntities : Node3D
             _relit.Remove(address);
             _attachments.Forget(address);
             _followers.Remove(address);
+            _attachedStated.Remove(address);
             _childFacts.Remove(address);
             _justDetached.Remove(address);
 
@@ -4590,6 +4719,184 @@ public partial class GameEntities : Node3D
     /// <summary>Active dynamic character positions from the last walk that can cast dynamic shadows.</summary>
     private static readonly List<Vector3> _dynamicCasterPositions = new();
 
+    /// <summary>Active dynamic character guest addresses from the last walk for display-rate volumetric capsule snapshots.</summary>
+    private static readonly List<uint> _dynamicCasterAddresses = new();
+
+    /// <summary>Cached local AABBs by Mesh instance ID so display-rate capsule snapshots avoid repeated C++ GetAabb() calls.</summary>
+    private readonly Dictionary<ulong, Aabb> _meshAabbCache = new();
+
+    /// <summary>Cached local AABBs by guest entity address and node reference so display-rate capsule snapshots avoid per-frame C++ GetMesh() interop.</summary>
+    private readonly Dictionary<uint, (MeshInstance3D Node, Aabb Box)> _entityAabbCache = new();
+
+    /// <summary>
+    /// Emits up to <paramref name="dst"/>.Length world-space soft volumetric shadow capsules for
+    /// visible dynamic characters within <paramref name="maxDistance"/> of <paramref name="eye"/>,
+    /// reading display-rate interpolated transforms from <c>_written</c> with zero per-entity C++ interop.
+    /// </summary>
+    public static int SnapshotVolumetricCasters(
+        Vector3 eye,
+        float maxDistance,
+        System.Span<Refii.Lighting.Engine_VolumetricLightShafts.VolumetricCapsule> dst)
+    {
+        if (dst.IsEmpty || maxDistance <= 0f)
+        {
+            return 0;
+        }
+
+        GameEntities? self = Current;
+        if (self is null || !GodotObject.IsInstanceValid(self) || !self.Visible)
+        {
+            if (HeroPosition.HasValue && HeroPosition.Value.DistanceSquaredTo(eye) <= maxDistance * maxDistance)
+            {
+                Vector3 h = HeroPosition.Value;
+                dst[0] = new Refii.Lighting.Engine_VolumetricLightShafts.VolumetricCapsule(
+                    SegA: h + new Vector3(0f, 0.30f, 0f),
+                    Radius: 0.28f,
+                    SegB: h + new Vector3(0f, 1.65f, 0f),
+                    Feather: 0.14f);
+                return 1;
+            }
+
+            return 0;
+        }
+
+        return self.SnapshotVolumetricCastersCore(eye, maxDistance, dst);
+    }
+
+    private int SnapshotVolumetricCastersCore(
+        Vector3 eye,
+        float maxDistance,
+        System.Span<Refii.Lighting.Engine_VolumetricLightShafts.VolumetricCapsule> dst)
+    {
+        Transform3D toWorld = IsInsideTree() ? GlobalTransform : Transform;
+        float maxDistSq = maxDistance * maxDistance;
+        int outCount = 0;
+
+        // Pass 0: Principals first (Hero, PlayerTwo, Dog) so they always claim capsule slots.
+        // Pass 1: Remaining visible NPCs/creatures from _dynamicCasterAddresses.
+        for (int pass = 0; pass < 2 && outCount < dst.Length; pass++)
+        {
+            for (int i = 0; i < _dynamicCasterAddresses.Count && outCount < dst.Length; i++)
+            {
+                uint addr = _dynamicCasterAddresses[i];
+                bool isHeroOrP2 = addr != 0u && (addr == _principals.Hero || addr == _principals.One || addr == _principals.Two);
+                bool isDog = addr != 0u && addr == _principals.Dog;
+                bool isPrincipal = isHeroOrP2 || isDog;
+                if ((pass == 0) != isPrincipal)
+                {
+                    continue;
+                }
+
+                if (!_written.TryGetValue(addr, out (MeshInstance3D Node, Transform3D Drawn) written))
+                {
+                    continue;
+                }
+
+                Transform3D world = toWorld * written.Drawn;
+                Vector3 origin = world.Origin;
+                if (!origin.IsFinite() || origin.DistanceSquaredTo(eye) > maxDistSq)
+                {
+                    continue;
+                }
+
+                Vector3 scale = written.Drawn.Basis.Scale.Abs();
+                Aabb localBox;
+                if (_entityAabbCache.TryGetValue(addr, out (MeshInstance3D Node, Aabb Box) cached) &&
+                    ReferenceEquals(cached.Node, written.Node))
+                {
+                    localBox = cached.Box;
+                }
+                else
+                {
+                    localBox = new Aabb(new Vector3(-0.3f, 0f, -0.3f), new Vector3(0.6f, 1.8f, 0.6f));
+                    if (GodotObject.IsInstanceValid(written.Node) && written.Node.Mesh is { } mesh)
+                    {
+                        ulong meshId = mesh.GetInstanceId();
+                        if (!_meshAabbCache.TryGetValue(meshId, out localBox))
+                        {
+                            localBox = mesh.GetAabb();
+                            if (!localBox.Position.IsFinite() || !localBox.Size.IsFinite() || localBox.Size.LengthSquared() < 1e-4f)
+                            {
+                                localBox = new Aabb(new Vector3(-0.3f, 0f, -0.3f), new Vector3(0.6f, 1.8f, 0.6f));
+                            }
+
+                            _meshAabbCache[meshId] = localBox;
+                        }
+                    }
+
+                    _entityAabbCache[addr] = (written.Node, localBox);
+                }
+
+                Vector3 size = (localBox.Size * scale).Abs();
+                float height = System.Math.Clamp(localBox.End.Y * scale.Y, 0.35f, 5.5f);
+                Vector3 up = world.Basis.Y.Normalized();
+                Vector3 right = world.Basis.X.Normalized();
+                Vector3 forward = world.Basis.Z.Normalized();
+
+                if (isHeroOrP2)
+                {
+                    // Articulated torso+head capsule plus lower-body stride volume.
+                    float rTorso = System.Math.Clamp(System.MathF.Min(size.X, size.Z) * 0.28f, 0.22f, 0.38f);
+                    dst[outCount++] = new Refii.Lighting.Engine_VolumetricLightShafts.VolumetricCapsule(
+                        SegA: origin + (up * (height * 0.36f)),
+                        Radius: rTorso,
+                        SegB: origin + (up * System.MathF.Max(height - 0.14f, 0.75f)),
+                        Feather: rTorso * 0.48f);
+
+                    if (outCount + 1 < dst.Length)
+                    {
+                        float rLeg = rTorso * 0.58f;
+                        Vector3 hipOffset = right * (rTorso * 0.42f);
+                        dst[outCount++] = new Refii.Lighting.Engine_VolumetricLightShafts.VolumetricCapsule(
+                            SegA: origin + hipOffset + (up * 0.12f),
+                            Radius: rLeg,
+                            SegB: origin + hipOffset + (up * (height * 0.48f)),
+                            Feather: rLeg * 0.50f);
+                        dst[outCount++] = new Refii.Lighting.Engine_VolumetricLightShafts.VolumetricCapsule(
+                            SegA: origin - hipOffset + (up * 0.12f),
+                            Radius: rLeg,
+                            SegB: origin - hipOffset + (up * (height * 0.48f)),
+                            Feather: rLeg * 0.50f);
+                    }
+                }
+                else if (isDog || size.Z > size.Y * 1.18f)
+                {
+                    // Quadruped horizontal spine capsule.
+                    float bodyRadius = System.Math.Clamp(height * 0.32f, 0.16f, 0.48f);
+                    float halfLen = System.Math.Clamp(size.Z * 0.34f, 0.20f, 1.20f);
+                    Vector3 center = origin + (up * (height * 0.55f));
+                    dst[outCount++] = new Refii.Lighting.Engine_VolumetricLightShafts.VolumetricCapsule(
+                        SegA: center - (forward * halfLen),
+                        Radius: bodyRadius,
+                        SegB: center + (forward * halfLen),
+                        Feather: bodyRadius * 0.50f);
+                }
+                else
+                {
+                    // Biped NPC / creature vertical body capsule.
+                    float rBody = System.Math.Clamp(System.MathF.Min(size.X, size.Z) * 0.30f, 0.20f, 0.65f);
+                    dst[outCount++] = new Refii.Lighting.Engine_VolumetricLightShafts.VolumetricCapsule(
+                        SegA: origin + (up * (rBody * 0.85f)),
+                        Radius: rBody,
+                        SegB: origin + (up * System.MathF.Max(height - (rBody * 0.50f), rBody + 0.20f)),
+                        Feather: rBody * 0.48f);
+                }
+            }
+        }
+
+        if (outCount == 0 && HeroPosition.HasValue && HeroPosition.Value.DistanceSquaredTo(eye) <= maxDistSq)
+        {
+            Vector3 h = HeroPosition.Value;
+            dst[outCount++] = new Refii.Lighting.Engine_VolumetricLightShafts.VolumetricCapsule(
+                SegA: h + new Vector3(0f, 0.30f, 0f),
+                Radius: 0.28f,
+                SegB: h + new Vector3(0f, 1.65f, 0f),
+                Feather: 0.14f);
+        }
+
+        return outCount;
+    }
+
     /// <summary>
     /// Whether any dynamic character caster (hero, companion dog, moving/visible NPC) is within
     /// reach (<paramref name="radius"/> + 1.5m) of the given position. Used by the shadow budget to avoid
@@ -5086,22 +5393,17 @@ public partial class GameEntities : Node3D
                 continue;
             }
 
-            // `GetFrustum` allocates a fresh wrapper every call and takes no buffer, so it is
-            // called once per view per drawn frame (the walk and ResampleAnimation both ask) and
-            // copied into the view's planes.
-            Godot.Collections.Array<Plane> planes = camera.GetFrustum();
-            if (view.Planes.Length != planes.Count)
-            {
-                view.Planes = new Plane[planes.Count];
-            }
-
-            for (int p = 0; p < planes.Count; p++)
-            {
-                view.Planes[p] = planes[p];
-            }
-
-            // Disposed, not left to the finalizer: an undisposed wrapper survives its first GC.
-            ((Godot.Collections.Array)planes).Dispose();
+            // Extract the six outward-facing frustum planes directly from projection + transform
+            // without allocating a Godot.Collections.Array<Plane> wrapper via GetFrustum().
+            Projection projection = camera.GetCameraProjection();
+            Transform3D camTransform = camera.GetCameraTransform();
+            Plane[] planes = view.Planes;
+            planes[0] = camTransform * projection.GetProjectionPlane(Projection.Planes.Near);
+            planes[1] = camTransform * projection.GetProjectionPlane(Projection.Planes.Far);
+            planes[2] = camTransform * projection.GetProjectionPlane(Projection.Planes.Left);
+            planes[3] = camTransform * projection.GetProjectionPlane(Projection.Planes.Top);
+            planes[4] = camTransform * projection.GetProjectionPlane(Projection.Planes.Right);
+            planes[5] = camTransform * projection.GetProjectionPlane(Projection.Planes.Bottom);
 
             view.Camera = camera;
             view.PlanesFrame = frame;
@@ -5115,7 +5417,7 @@ public partial class GameEntities : Node3D
     private sealed class PoseView
     {
         public Vector3 Eye;
-        public Plane[] Planes = System.Array.Empty<Plane>();
+        public readonly Plane[] Planes = new Plane[6];
         public Camera3D? Camera;
         public ulong PlanesFrame = ulong.MaxValue;
     }

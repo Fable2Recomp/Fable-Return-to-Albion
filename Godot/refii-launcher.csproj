@@ -144,6 +144,7 @@
        (cmake/refii_fetch_godot.cmake). Without one GdUnit4 refuses the whole run. -->
   <ItemGroup>
     <RefiiPinnedGodot Include="$(MSBuildThisFileDirectory)../tools/godot/Godot_v*_mono_linux.x86_64" />
+    <RefiiPinnedGodot Include="$(MSBuildThisFileDirectory)../tools/godot/Godot_v*_mono_win64_console.exe" />
   </ItemGroup>
   <Target Name="RunTestsAfterBuild" AfterTargets="Build" Condition="'$(REFII_NO_TESTS)' != '1' and '$(IsTesting)' != 'true' and '$(Configuration)' != 'ExportDebug' and '$(Configuration)' != 'ExportRelease'">
     <PropertyGroup>

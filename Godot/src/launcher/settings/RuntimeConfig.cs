@@ -176,6 +176,7 @@ public static class RuntimeConfig
             ToGeneric(Refii.Core.Engine_AppRoot.CacheDirectory));
 
         changed |= AdoptFixtureShadowDefault(values);
+        changed |= AdoptVolumetricFogAndInteriorFogDefault(values);
 
         if (!File.Exists(configPath))
         {
@@ -222,6 +223,32 @@ public static class RuntimeConfig
 
         values["placed_light_shadows_world"] = "false";
         values["placed_light_shadows"] = "true";
+        return true;
+    }
+
+    /// <summary>
+    /// `interior_fog_scale` was previously defaulted to 0.2 as a workaround for the GDB root
+    /// schema prototype inheritance bug (`Fogging` record `0xD3516348` returning 0.0 for unstated
+    /// distances). With authentic per-level fog extraction restored, the normalized default is 1.0.
+    /// ONE SHOT: `volumetric_fog` arrived in the same change, so its absence in an existing
+    /// refii.toml marks a file from before and upgrades an untouched 0.2 to 1.0 once.
+    /// </summary>
+    private static bool AdoptVolumetricFogAndInteriorFogDefault(IDictionary<string, string> values)
+    {
+        if (values.Count == 0 || values.ContainsKey("volumetric_fog"))
+        {
+            return false;
+        }
+
+        values["volumetric_fog"] = "true";
+        if (values.TryGetValue("interior_fog_scale", out string? scale) &&
+            float.TryParse(scale.Trim(), System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out float parsed) &&
+            MathF.Abs(parsed - 0.2f) < 1e-4f)
+        {
+            values["interior_fog_scale"] = "1.0";
+        }
+
         return true;
     }
 

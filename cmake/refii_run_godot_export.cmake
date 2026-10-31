@@ -169,6 +169,8 @@ endif()
 # of the zip, with the SWF shapes three times over under three build hashes.
 message(STATUS "Staging natives: ${STAGING_ROOT} -> ${_app}")
 file(COPY "${STAGING_ROOT}/" DESTINATION "${_app}"
+    PATTERN "*refii_generated.*" EXCLUDE
+    PATTERN "*refiii_generated.*" EXCLUDE
     PATTERN "librefii_generated.so" EXCLUDE
     PATTERN "librefiii_generated.so" EXCLUDE
     PATTERN "dev-skip-rebuild" EXCLUDE
@@ -176,6 +178,8 @@ file(COPY "${STAGING_ROOT}/" DESTINATION "${_app}"
     PATTERN "librefiii_generated.dylib" EXCLUDE
     PATTERN "refii_generated.dll" EXCLUDE
     PATTERN "refiii_generated.dll" EXCLUDE
+    PATTERN "refii_generated.pdb" EXCLUDE
+    PATTERN "refiii_generated.pdb" EXCLUDE
     PATTERN "build-info.json" EXCLUDE
     PATTERN "refii.toml" EXCLUDE
     PATTERN "refiii.toml" EXCLUDE

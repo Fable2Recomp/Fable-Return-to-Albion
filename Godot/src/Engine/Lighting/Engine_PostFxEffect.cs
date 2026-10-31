@@ -33,6 +33,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
     public const string HighlightPrepShaderPath = "res://src/Engine/Lighting/fable_postfx_highlightprep.glsl";
     public const string HighlightCompositeShaderPath = "res://src/Engine/Lighting/fable_postfx_highlightcomposite.glsl";
     public const string HaloLayerShaderPath = "res://src/Engine/Lighting/fable_postfx_halolayer.glsl";
+    public const string VolumetricShaftsShaderPath = "res://src/Engine/Lighting/fable_postfx_volumetric_shafts.glsl";
+    public const string VolumetricUpsampleShaderPath = "res://src/Engine/Lighting/fable_postfx_volumetric_upsample.glsl";
 
     public const string GlobalExposureName = "fable_exposure_tex";
 
@@ -63,6 +65,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
     public const int HighlightFloats = 12;
     public const int HighlightBufferBytes =
         Refii.Entities.Engine_EntityHighlightLayer.Slots * HighlightFloats * sizeof(float);
+
+    public const int ShaftBufferVec4s = 458;
+    public const int ShaftBufferFloats = ShaftBufferVec4s * 4;
+    public const int ShaftBufferBytes = ShaftBufferFloats * sizeof(float);
 
     public const float BloomSigmaScale = 2.2f;
     public const float DofSigmaScale = 2.0f;
@@ -165,6 +171,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
     private Rid _highlightBuffer;
     private Rid _halolayerShader;
     private Rid _halolayerPipeline;
+    private Rid _volShaftsShader;
+    private Rid _volShaftsPipeline;
+    private Rid _volUpsampleShader;
+    private Rid _volUpsamplePipeline;
     private Rid _brightcutShader;
     private Rid _brightcutPipeline;
     private Rid _gaussShader;
@@ -179,6 +189,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
     private Rid _paramsBuffer;
     private Rid _haloBuffer;
     private Rid _haloFallbackArray;
+    private Rid _shaftBuffer;
+    private Rid _shadowFallbackArray;
     private Rid _linearSampler;
     private Rid _nearestSampler;
     private Rid _exposureRd;
@@ -192,6 +204,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
     private readonly Rid[] _rays = new Rid[2];
     private readonly Rid[] _bloom = new Rid[2];
     private readonly Rid[] _dof = new Rid[2];
+    private readonly Rid[] _shaftHalf = new Rid[2];
+    private readonly Rid[] _shaftDepthHalf = new Rid[2];
 
     /// <summary>The highlight blur's ping-pong, at the layer's own half resolution: the guest
     /// counts its blur width in texels of that buffer, so blurring at any other size would
@@ -232,6 +246,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
     private readonly KeyedSet _glowVSet = new();
     private readonly KeyedSet _highlightPrepSet = new();
     private readonly KeyedSet _highlightCompositeSet = new();
+    private readonly KeyedSet[] _volShaftsSets = { new(), new() };
+    private readonly KeyedSet[] _volUpsampleSets = { new(), new() };
     private readonly float[] _highlightScratch = new float[Refii.Entities.Engine_EntityHighlightLayer.Slots * HighlightFloats];
     private readonly byte[] _highlightBytes = new byte[HighlightBufferBytes];
     private readonly Refii.Entities.Engine_EntityHighlightLayer.Target[] _highlightTargets =
@@ -241,6 +257,25 @@ public partial class Engine_PostFxEffect : CompositorEffect
     private readonly byte[] _pushWide = new byte[WidePushBytes];
     private readonly byte[] _pushGauss = new byte[GaussPushBytes];
     private readonly byte[] _pushSun = new byte[48];
+    private readonly byte[] _pushShafts = new byte[40];
+    private readonly byte[] _pushShaftUpsample = new byte[48];
+    private readonly float[] _shaftScratch = new float[ShaftBufferFloats];
+    private readonly byte[] _shaftBytes = new byte[ShaftBufferBytes];
+    private readonly Engine_VolumetricLightShafts.ShaftLightInput[] _shaftLightScratch =
+        new Engine_VolumetricLightShafts.ShaftLightInput[Engine_VolumetricLightShafts.MaxShaftLights];
+    private readonly Engine_VolumetricLightShafts.MistVolumeSnapshot[] _shaftMistScratch =
+        new Engine_VolumetricLightShafts.MistVolumeSnapshot[Engine_VolumetricLightShafts.MaxMistVolumes];
+    private readonly Engine_VolumetricLightShafts.VolumetricCapsule[] _shaftCapsuleScratch =
+        new Engine_VolumetricLightShafts.VolumetricCapsule[Engine_VolumetricLightShafts.MaxCapsules];
+
+    private int _shaftPingPong;
+    private bool _shaftHistoryValid;
+    private Vector3 _prevShaftCamOrigin;
+    private Vector3 _prevShaftForward;
+    private Vector3 _prevShaftRight;
+    private Vector3 _prevShaftUp;
+    private float _prevShaftPx;
+    private float _prevShaftPy;
 
     private readonly float[] _bloomWeightsH = new float[Engine_PostFxModel.GaussianTaps];
     private readonly float[] _bloomWeightsV = new float[Engine_PostFxModel.GaussianTaps];
@@ -375,11 +410,36 @@ public partial class Engine_PostFxEffect : CompositorEffect
             return;
         }
 
+        _ = TryBuild(VolumetricShaftsShaderPath, out _volShaftsShader, out _volShaftsPipeline);
+        _ = TryBuild(VolumetricUpsampleShaderPath, out _volUpsampleShader, out _volUpsamplePipeline);
+
         _histogramBuffer = _rd.StorageBufferCreate(HistogramBytes, new byte[HistogramBytes]);
         _stateBuffer = _rd.StorageBufferCreate(StateBytes, Engine_PostFxState.SeedBytes());
         _paramsBuffer = _rd.UniformBufferCreate(ParamsBytes, new byte[ParamsBytes]);
         _haloBuffer = _rd.StorageBufferCreate(HaloBufferBytes, new byte[HaloBufferBytes]);
         _highlightBuffer = _rd.StorageBufferCreate(HighlightBufferBytes, new byte[HighlightBufferBytes]);
+        _shaftBuffer = _rd.StorageBufferCreate(ShaftBufferBytes, new byte[ShaftBufferBytes]);
+
+        byte[] shadowFallbackBytes = new byte[32];
+        for (int i = 0; i < 16; i++)
+        {
+            shadowFallbackBytes[2 * i] = 0x00;
+            shadowFallbackBytes[(2 * i) + 1] = 0x78; // 0x7800 = 32768.0f in IEEE-754 binary16
+        }
+
+        _shadowFallbackArray = _rd.TextureCreate(
+            new RDTextureFormat
+            {
+                Width = 4,
+                Height = 4,
+                ArrayLayers = 1,
+                Format = RenderingDevice.DataFormat.R16Sfloat,
+                TextureType = RenderingDevice.TextureType.Type2DArray,
+                UsageBits = RenderingDevice.TextureUsageBits.SamplingBit |
+                    RenderingDevice.TextureUsageBits.CanUpdateBit,
+            },
+            new RDTextureView(),
+            new Array<byte[]> { shadowFallbackBytes });
 
         // The sprite-array binding must always hold something valid; before the halo feed has
         // resolved any authored sprite it binds this single white texel (every published layer
@@ -437,7 +497,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
 
         bool ready = _histogramBuffer.IsValid && _stateBuffer.IsValid && _paramsBuffer.IsValid &&
-            _haloBuffer.IsValid && _highlightBuffer.IsValid && _haloFallbackArray.IsValid && _linearSampler.IsValid &&
+            _haloBuffer.IsValid && _highlightBuffer.IsValid && _haloFallbackArray.IsValid &&
+            _shaftBuffer.IsValid && _shadowFallbackArray.IsValid && _linearSampler.IsValid &&
             _nearestSampler.IsValid && _exposureRd.IsValid;
         if (!ready)
         {
@@ -545,7 +606,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
         FreeTargets();
         _fullSize = size;
         _quarterSize = new Vector2I(Math.Max(size.X / 4, 1), Math.Max(size.Y / 4, 1));
-        _halfSize = new Vector2I(Math.Max(size.X / 2, 1), Math.Max(size.Y / 2, 1));
+        int shaftDiv = Math.Max(size.X, size.Y) > 2560 ? 4 : 2;
+        _halfSize = new Vector2I(Math.Max(size.X / shaftDiv, 1), Math.Max(size.Y / shaftDiv, 1));
 
         _quarter = CreateTexture(_quarterSize.X, _quarterSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
         _satMask?.Resize(size);
@@ -555,7 +617,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
             _rays[i] = CreateTexture(_quarterSize.X, _quarterSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
             _bloom[i] = CreateTexture(_quarterSize.X, _quarterSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
             _dof[i] = CreateTexture(_quarterSize.X, _quarterSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
+            _shaftHalf[i] = CreateTexture(_halfSize.X, _halfSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
+            _shaftDepthHalf[i] = CreateTexture(_halfSize.X, _halfSize.Y, RenderingDevice.DataFormat.R16Sfloat);
         }
+
+        _shaftHistoryValid = false;
 
         if (_trapRatio > 0f)
         {
@@ -639,6 +705,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
             _glowVSet.Release(_rd);
             _highlightPrepSet.Release(_rd);
             _highlightCompositeSet.Release(_rd);
+            for (int i = 0; i < 2; i++)
+            {
+                _volShaftsSets[i].Release(_rd);
+                _volUpsampleSets[i].Release(_rd);
+            }
         }
 
         for (int i = 0; i < TrapRingDepth; i++)
@@ -659,6 +730,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
                 Free(ref _bloom[i]);
                 Free(ref _dof[i]);
                 Free(ref _glow[i]);
+                Free(ref _shaftHalf[i]);
+                Free(ref _shaftDepthHalf[i]);
             }
         }
         else
@@ -675,8 +748,12 @@ public partial class Engine_PostFxEffect : CompositorEffect
                 _bloom[i] = default;
                 _dof[i] = default;
                 _glow[i] = default;
+                _shaftHalf[i] = default;
+                _shaftDepthHalf[i] = default;
             }
         }
+
+        _shaftHistoryValid = false;
 
         _glowSize = default;
         _glowLayer = default;
@@ -770,6 +847,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Free(ref _linearSampler);
         Free(ref _haloFallbackArray);
         Free(ref _haloBuffer);
+        Free(ref _shadowFallbackArray);
+        Free(ref _shaftBuffer);
         Free(ref _highlightBuffer);
         Free(ref _paramsBuffer);
         Free(ref _stateBuffer);
@@ -786,6 +865,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Free(ref _highlightPrepPipeline);
         Free(ref _highlightCompositePipeline);
         Free(ref _halolayerPipeline);
+        Free(ref _volShaftsPipeline);
+        Free(ref _volUpsamplePipeline);
         Free(ref _downscale4Pipeline);
         Free(ref _histogramPipeline);
         Free(ref _reducePipeline);
@@ -802,6 +883,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Free(ref _highlightPrepShader);
         Free(ref _highlightCompositeShader);
         Free(ref _halolayerShader);
+        Free(ref _volShaftsShader);
+        Free(ref _volUpsampleShader);
         Free(ref _downscale4Shader);
         Free(ref _histogramShader);
         Free(ref _reduceShader);
@@ -929,6 +1012,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
             {
                 AddLayer(colour, size, additive);
             }
+
+            VolumetricShafts(colour, depth, size, camBasis, camOrigin, projection);
 
             Downscale4(colour, size);
 
@@ -1262,6 +1347,194 @@ public partial class Engine_PostFxEffect : CompositorEffect
     private void Reduce()
     {
         Dispatch(_reducePipeline, _reduceSet, null, 1, 1);
+    }
+
+    private void VolumetricShafts(
+        Rid colour, Rid depth, Vector2I size, Basis camBasis, Vector3 camOrigin, Projection projection)
+    {
+        if (Engine_PostFxParams.VolumetricShaftScale <= 1e-4f ||
+            !_volShaftsPipeline.IsValid || !_volUpsamplePipeline.IsValid ||
+            !_shaftHalf[0].IsValid || !_shaftHalf[1].IsValid ||
+            !Engine_VolumetricLightShafts.TrySnapshot(
+                _shaftLightScratch,
+                out int lightCount,
+                _shaftMistScratch,
+                out int mistCount,
+                _shaftCapsuleScratch,
+                out int capsuleCount,
+                out Vector3 medScattering,
+                out float medExtinction,
+                out float medAnisotropy,
+                out float fogStart))
+        {
+            _shaftHistoryValid = false;
+            return;
+        }
+
+        float px = MathF.Abs(projection.X.X);
+        float py = MathF.Abs(projection.Y.Y);
+        if (px <= 1e-8f || py <= 1e-8f)
+        {
+            _shaftHistoryValid = false;
+            return;
+        }
+
+        RenderingDevice rd = _rd!;
+        Rid shadowAtlas = Engine_LevelShadowMaps.ActiveAtlasRdRid;
+        int atlasRes = Engine_LevelShadowMaps.ActiveAtlasSize;
+        if (!shadowAtlas.IsValid)
+        {
+            shadowAtlas = _shadowFallbackArray;
+            atlasRes = 4;
+        }
+
+        Vector3 forward = (-camBasis.Z).Normalized();
+        Vector3 right = camBasis.X.Normalized();
+        Vector3 up = camBasis.Y.Normalized();
+        Projection inverse = projection.Inverse();
+        float invAtlasSize = 1.0f / Math.Max(atlasRes, 1);
+
+        float[] s = _shaftScratch;
+        Set(s, 0, camOrigin.X, camOrigin.Y, camOrigin.Z, fogStart);
+        Set(s, 1, forward.X, forward.Y, forward.Z, px);
+        Set(s, 2, right.X, right.Y, right.Z, py);
+        Set(s, 3, up.X, up.Y, up.Z, medExtinction);
+        Set(s, 4, medScattering.X, medScattering.Y, medScattering.Z, medAnisotropy);
+        Set(s, 5, _prevShaftCamOrigin.X, _prevShaftCamOrigin.Y, _prevShaftCamOrigin.Z, _shaftHistoryValid ? 1.0f : 0.0f);
+        Set(s, 6, _prevShaftForward.X, _prevShaftForward.Y, _prevShaftForward.Z, _prevShaftPx);
+        Set(s, 7, _prevShaftRight.X, _prevShaftRight.Y, _prevShaftRight.Z, _prevShaftPy);
+        Set(s, 8, _prevShaftUp.X, _prevShaftUp.Y, _prevShaftUp.Z, invAtlasSize);
+        Set(s, 9, inverse.Z.Z, inverse.W.Z, inverse.Z.W, inverse.W.W);
+
+        const int baseLights = 10;
+        for (int i = 0; i < lightCount; i++)
+        {
+            ref readonly Engine_VolumetricLightShafts.ShaftLightInput l = ref _shaftLightScratch[i];
+            float fluxScale = l.Energy * l.FogEnergyScale;
+            float nodeRange = MathF.Max(l.NodeRange, 0.01f);
+            float statedRange = MathF.Max(l.StatedRange, 0.01f);
+            float invStatedR2 = 1.0f / (statedRange * statedRange);
+            int slot = baseLights + (i * 5);
+            Set(s, slot + 0, l.Position.X, l.Position.Y, l.Position.Z, nodeRange);
+            Set(s, slot + 1,
+                l.LinearColor.X * fluxScale,
+                l.LinearColor.Y * fluxScale,
+                l.LinearColor.Z * fluxScale,
+                l.SpotCosHalfAngle);
+            Set(s, slot + 2, l.AtlasRect.X, l.AtlasRect.Y, l.AtlasRect.Z, l.AtlasRect.W);
+            Set(s, slot + 3, l.SpotDir.X, l.SpotDir.Y, l.SpotDir.Z, nodeRange);
+            Set(s, slot + 4,
+                l.IndoorFromOutside ? 1.0f : 0.0f,
+                l.CasterMask & 0xFFFFu,
+                l.CasterMask >> 16,
+                invStatedR2);
+        }
+
+        const int baseMists = 330;
+        for (int m = 0; m < mistCount; m++)
+        {
+            ref readonly Engine_VolumetricLightShafts.MistVolumeSnapshot mv = ref _shaftMistScratch[m];
+            int slot = baseMists + (m * 4);
+            Set(s, slot + 0, mv.Min.X, mv.Min.Y, mv.Min.Z, mv.Extinction);
+            Set(s, slot + 1, mv.Max.X, mv.Max.Y, mv.Max.Z, mv.Flatten);
+            Set(s, slot + 2, mv.LinearAlbedo.X, mv.LinearAlbedo.Y, mv.LinearAlbedo.Z, 0.0f);
+            Set(s, slot + 3,
+                mv.NoiseScaleOffset.X,
+                mv.NoiseScaleOffset.Y,
+                mv.NoiseScaleOffset.Z,
+                mv.NoiseScaleOffset.W);
+        }
+
+        const int baseCapsules = 394;
+        for (int c = 0; c < capsuleCount; c++)
+        {
+            ref readonly Engine_VolumetricLightShafts.VolumetricCapsule cap = ref _shaftCapsuleScratch[c];
+            int slot = baseCapsules + (c * 2);
+            Set(s, slot + 0, cap.SegA.X, cap.SegA.Y, cap.SegA.Z, cap.Radius);
+            Set(s, slot + 1, cap.SegB.X, cap.SegB.Y, cap.SegB.Z, cap.Feather);
+        }
+
+        System.Buffer.BlockCopy(s, 0, _shaftBytes, 0, ShaftBufferBytes);
+        rd.BufferUpdate(_shaftBuffer, 0, ShaftBufferBytes, _shaftBytes);
+
+        int currIdx = _shaftPingPong & 1;
+        int prevIdx = 1 - currIdx;
+        _shaftPingPong ^= 1;
+
+        KeyedSet shaftSet = _volShaftsSets[currIdx];
+        if (!shaftSet.Matches(rd, depth, shadowAtlas))
+        {
+            shaftSet.Replace(rd, depth, shadowAtlas, _volShaftsShader, new[]
+            {
+                Sampler(_nearestSampler, depth, 0),
+                Sampler(_linearSampler, shadowAtlas, 1),
+                Sampler(_linearSampler, _shaftHalf[prevIdx], 2),
+                Sampler(_nearestSampler, _shaftDepthHalf[prevIdx], 3),
+                Image(_shaftHalf[currIdx], 4),
+                Image(_shaftDepthHalf[currIdx], 5),
+                Buffer(_shaftBuffer, 6),
+            });
+        }
+
+        Span<byte> pushShaft = _pushShafts;
+        BitConverter.TryWriteBytes(pushShaft.Slice(0, 4), _halfSize.X);
+        BitConverter.TryWriteBytes(pushShaft.Slice(4, 4), _halfSize.Y);
+        BitConverter.TryWriteBytes(pushShaft.Slice(8, 4), size.X);
+        BitConverter.TryWriteBytes(pushShaft.Slice(12, 4), size.Y);
+        BitConverter.TryWriteBytes(pushShaft.Slice(16, 4), lightCount);
+        BitConverter.TryWriteBytes(pushShaft.Slice(20, 4), mistCount);
+        BitConverter.TryWriteBytes(pushShaft.Slice(24, 4), capsuleCount);
+        BitConverter.TryWriteBytes(pushShaft.Slice(28, 4), (int)(_frameIndex & 0x7FFFFFFF));
+        BitConverter.TryWriteBytes(pushShaft.Slice(32, 4), Engine_PostFxParams.VolumetricShaftScale);
+        BitConverter.TryWriteBytes(pushShaft.Slice(36, 4), 0.0f);
+
+        Dispatch(
+            _volShaftsPipeline,
+            shaftSet.Set,
+            _pushShafts,
+            (_halfSize.X + 7) / 8,
+            (_halfSize.Y + 7) / 8);
+
+        KeyedSet upsampleSet = _volUpsampleSets[currIdx];
+        if (!upsampleSet.Matches(rd, colour, depth))
+        {
+            upsampleSet.Replace(rd, colour, depth, _volUpsampleShader, new[]
+            {
+                Image(colour, 0),
+                Sampler(_nearestSampler, depth, 1),
+                Sampler(_nearestSampler, _shaftHalf[currIdx], 2),
+                Sampler(_nearestSampler, _shaftDepthHalf[currIdx], 3),
+            });
+        }
+
+        Span<byte> pushUp = _pushShaftUpsample;
+        BitConverter.TryWriteBytes(pushUp.Slice(0, 4), size.X);
+        BitConverter.TryWriteBytes(pushUp.Slice(4, 4), size.Y);
+        BitConverter.TryWriteBytes(pushUp.Slice(8, 4), _halfSize.X);
+        BitConverter.TryWriteBytes(pushUp.Slice(12, 4), _halfSize.Y);
+        BitConverter.TryWriteBytes(pushUp.Slice(16, 4), inverse.Z.Z);
+        BitConverter.TryWriteBytes(pushUp.Slice(20, 4), inverse.W.Z);
+        BitConverter.TryWriteBytes(pushUp.Slice(24, 4), inverse.Z.W);
+        BitConverter.TryWriteBytes(pushUp.Slice(28, 4), inverse.W.W);
+        BitConverter.TryWriteBytes(pushUp.Slice(32, 4), 1.0f / px);
+        BitConverter.TryWriteBytes(pushUp.Slice(36, 4), 1.0f / py);
+        BitConverter.TryWriteBytes(pushUp.Slice(40, 4), Engine_VolumetricLightShafts.MaxFogRangeMetres);
+        BitConverter.TryWriteBytes(pushUp.Slice(44, 4), 0.0f);
+
+        Dispatch(
+            _volUpsamplePipeline,
+            upsampleSet.Set,
+            _pushShaftUpsample,
+            (size.X + 7) / 8,
+            (size.Y + 7) / 8);
+
+        _prevShaftCamOrigin = camOrigin;
+        _prevShaftForward = forward;
+        _prevShaftRight = right;
+        _prevShaftUp = up;
+        _prevShaftPx = px;
+        _prevShaftPy = py;
+        _shaftHistoryValid = true;
     }
 
     /// <summary>
@@ -1676,13 +1949,16 @@ public partial class Engine_PostFxEffect : CompositorEffect
             float x = ((offset.Dot(right) * px / facing) + 1.0f) * 0.5f;
             float y = (1.0f - (offset.Dot(up) * py / facing)) * 0.5f;
 
-            // Smoothly shrink local fixture halos with view distance so distant lanterns/torches
-            // do not maintain oversized halos on screen. Sky halos (facing >= 250m) keep 100% full extent.
+            // Smoothly shrink local fixture halos and attenuate their radiance with view distance
+            // so distant lanterns/torches at 60m+ read as subtle warm pinpoints rather than
+            // full-energy bloom orbs. Sky halos (facing >= 250m) keep 100% full extent and radiance.
             float sizeScale = 1.0f;
+            float colourAtten = 1.0f;
             if (Engine_PostFxParams.HaloDistanceFade && facing < 250.0f)
             {
                 float t = Math.Clamp((facing - 6.0f) / 29.0f, 0.0f, 1.0f);
                 sizeScale = 1.0f + (0.15f - 1.0f) * (t * t * (3.0f - 2.0f * t));
+                colourAtten = 1.0f / (1.0f + 0.008f * facing * facing);
             }
 
             float halfExtent = halo.WorldHalf * sizeScale;
@@ -1694,14 +1970,15 @@ public partial class Engine_PostFxEffect : CompositorEffect
                 continue;
             }
 
+            float effectiveBoost = boost * colourAtten;
             int at = count * HaloFloats;
             _haloScratch[at] = x;
             _haloScratch[at + 1] = y;
             _haloScratch[at + 2] = hx;
             _haloScratch[at + 3] = hy;
-            _haloScratch[at + 4] = halo.Colour.X * boost;
-            _haloScratch[at + 5] = halo.Colour.Y * boost;
-            _haloScratch[at + 6] = halo.Colour.Z * boost;
+            _haloScratch[at + 4] = halo.Colour.X * effectiveBoost;
+            _haloScratch[at + 5] = halo.Colour.Y * effectiveBoost;
+            _haloScratch[at + 6] = halo.Colour.Z * effectiveBoost;
             _haloScratch[at + 7] = facing;
             _haloScratch[at + 8] = halo.Layer;
             _haloScratch[at + 9] = 0f;

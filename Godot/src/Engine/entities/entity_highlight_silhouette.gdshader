@@ -17,11 +17,21 @@ global uniform float fx_scene_depth_valid;
 #include "res://src/Engine/core/views.gdshaderinc"
 
 uniform float slot = 0.0;
+uniform sampler2D albedo_tex : hint_default_white, filter_linear_mipmap;
+uniform bool alpha_scissor_on = false;
+uniform float alpha_scissor_threshold = 0.5;
 
 /// `c255.x` in the guest's pixel shader: how far behind the scene a silhouette pixel may lie.
 const float OcclusionTolerance = 0.15;
 
 void fragment() {
+	if (alpha_scissor_on) {
+		float a = texture(albedo_tex, UV).a;
+		if (a < alpha_scissor_threshold) {
+			discard;
+		}
+	}
+
 	float visible = 1.0;
 	if (fx_scene_depth_valid > 0.5) {
 		float z = REFII_SCENE_DEPTH(SCREEN_UV).r;

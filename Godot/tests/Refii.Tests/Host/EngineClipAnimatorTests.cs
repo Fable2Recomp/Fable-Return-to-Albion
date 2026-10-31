@@ -94,4 +94,178 @@ public class EngineClipAnimatorTests
         }
         AssertThat(lastShare).IsEqual(1f);
     }
+
+    [TestCase]
+    public void TestIntraRecordFootstepNewLeafShareStartsAtZero()
+    {
+        // When a new footstep leaf (e.g. WalkFootstepMirror with share 0.1517) appears inside an
+        // already-active primary locomotion record (uid=870, recordCurrent=1.0), its SharePrevious
+        // must start at 0f so the sum of shares at pairAt=0 is 1.0 (outgoing) + 0.0 (incoming) = 1.0
+        // rather than jumping to 1.1517 at tick start.
+        var (recPrev, sharePrev) = Engine_ClipAnimator.InitialChannelPair(
+            recordAlreadyActive: true,
+            leafRecordPrevious: 0.8667f,
+            leafRecordCurrent: 1.0f,
+            leafShare: 0.1517f);
+        AssertThat(recPrev).IsEqual(1.0f);
+        AssertThat(sharePrev).IsEqual(0.0f);
+
+        // When a brand-new record Uid appears (recordAlreadyActive = false), it preserves the
+        // leaf's stated RecordPrevious and starts at leafShare.
+        var (newRecPrev, newSharePrev) = Engine_ClipAnimator.InitialChannelPair(
+            recordAlreadyActive: false,
+            leafRecordPrevious: 0.0f,
+            leafRecordCurrent: 0.2f,
+            leafShare: 1.0f);
+        AssertThat(newRecPrev).IsEqual(0.0f);
+        AssertThat(newSharePrev).IsEqual(1.0f);
+    }
+
+    [TestCase]
+    public void TestUnseenChannelInActiveRecordDropsWithoutGhosting()
+    {
+        // When a footstep leaf finishes its Type-1 lerp inside a persistent locomotion Uid that is
+        // still seen in the snapshot and its interpolated weight has reached 0, it must be dropped
+        // immediately rather than ramping out as a 3rd ghost footstep channel.
+        AssertThat(Engine_ClipAnimator.ShouldDropUnseenChannelInActiveRecord(
+            recordStillSeen: true, hadPendingClip: false)).IsTrue();
+
+        // While drawTick lags SimTick (pairAt < 0) and the unseen sibling channel still has
+        // non-zero interpolated share (e.g. 0.65 complementing the incoming sibling's 0.35),
+        // it must NOT be dropped yet or the surviving sibling would snap from 0.35 to 1.0.
+        AssertThat(Engine_ClipAnimator.ShouldDropUnseenChannelInActiveRecord(
+            recordStillSeen: true,
+            hadPendingClip: false,
+            interpolatedWeight: 0.65f,
+            shareCurrent: 0f,
+            pairAt: -0.65,
+            hasOlder: true,
+            olderShareCurrent: 0.65f)).IsFalse();
+
+        // Once pairAt reaches >= 0 and interpolatedWeight reaches 0, it drops cleanly.
+        AssertThat(Engine_ClipAnimator.ShouldDropUnseenChannelInActiveRecord(
+            recordStillSeen: true,
+            hadPendingClip: false,
+            interpolatedWeight: 0f,
+            shareCurrent: 0f,
+            pairAt: 0.05,
+            hasOlder: true,
+            olderShareCurrent: 0f)).IsTrue();
+
+        // If a leaf in the snapshot was skipped due to async background decoding, keep existing
+        // channels of that Uid alive until the decode completes.
+        AssertThat(Engine_ClipAnimator.ShouldDropUnseenChannelInActiveRecord(
+            recordStillSeen: true, hadPendingClip: true)).IsFalse();
+
+        // When an entire record Uid disappears from the snapshot (record-to-record handoff),
+        // allow its channels to ramp out normally over BlendOut.
+        AssertThat(Engine_ClipAnimator.ShouldDropUnseenChannelInActiveRecord(
+            recordStillSeen: false, hadPendingClip: false)).IsFalse();
+    }
+
+    [TestCase]
+    public void TestPostOpMode2AppliedBeforeOverlayDoesNotAmplifyOverlayArmBend()
+    {
+        // Reproduce live villager 0x4293B7B0 (WalkFootstepTurn45RMirror + MoodPoseScared1Loop):
+        // Primary walk forearm Z-bend ~ -20.7 deg, lookRec target Z-bend ~ -20.7 deg,
+        // lookRec mode = 2: t + w * (q - t) with w = 2.229, MoodPoseScared1Loop Z-bend ~ -49.1 deg at w_ov = 0.50.
+        Quaternion qWalk = Quaternion.FromEuler(new Vector3(0f, 0f, Mathf.DegToRad(-20.7f)));
+        Quaternion qTarget = Quaternion.FromEuler(new Vector3(0f, 0f, Mathf.DegToRad(-20.7f)));
+        Quaternion qOverlay = Quaternion.FromEuler(new Vector3(0f, 0f, Mathf.DegToRad(-49.1f)));
+        float lookWeight = 2.229f;
+        float overlayWeight = 0.50f;
+
+        // Correct Guest order (0x82229960 / 0x822DC980): apply lookRec to primary walk pose first,
+        // then Slerp upper-body overlay on top.
+        Quaternion postPrimary = Engine_ClipAnimator.EvaluatePostOpBone(qWalk, qTarget, mode: 2, weight: lookWeight);
+        Quaternion guestOrderPose = postPrimary.Slerp(qOverlay, overlayWeight);
+        float guestOrderZDeg = Mathf.RadToDeg(guestOrderPose.GetEuler().Z);
+
+        // Old broken Host order: Slerp overlay first, then apply mode=2 lookRec (which amplified
+        // the overlay's arm raise by 2.229x to ~ -64 deg).
+        Quaternion overlayFirst = qWalk.Slerp(qOverlay, overlayWeight);
+        Quaternion brokenOrderPose = Engine_ClipAnimator.EvaluatePostOpBone(overlayFirst, qTarget, mode: 2, weight: lookWeight);
+        float brokenOrderZDeg = Mathf.RadToDeg(brokenOrderPose.GetEuler().Z);
+
+        // Guest order stays near -34.9 deg (halfway between -20.7 and -49.1), whereas broken order
+        // over-bends past -52 deg.
+        AssertThat(Mathf.Abs(guestOrderZDeg - (-34.9f)) < 1.0f).IsTrue();
+        AssertThat(brokenOrderZDeg < -50.0f).IsTrue();
+    }
+
+    [TestCase]
+    public void TestMidStrideFootstepPlayheadSpawnStartsInPhaseLockstep()
+    {
+        // Live trace of 0x4289F630: WalkFootstep enters mid-stride at current=0.207 while
+        // constructor-initialized previous=0.0, with drawTick lagging tick by 1.0 (alpha = 0).
+        var playhead = new Engine_ClipPlayhead();
+        playhead.Observe(
+            previous: 0.0,
+            current: 0.207,
+            tick: 100u,
+            length: 0.733,
+            loop: false,
+            cut: false,
+            drawTick: 99.0);
+
+        AssertThat(Math.Abs(playhead.Rate - 1.0) < 1e-4).IsTrue();
+        double expectedStart = 0.207 - (1.0 / 15.0);
+        AssertThat(Math.Abs(playhead.Time - expectedStart) < 1e-4).IsTrue();
+
+        // At the midway render frame (alpha = 0.5, drawTick = 99.5), Reference(99.5) is 0.207 - 0.5/15.
+        var midPlayhead = new Engine_ClipPlayhead();
+        midPlayhead.Observe(0.0, 0.207, 100u, 0.733, false, false, 99.5);
+        AssertThat(Math.Abs(midPlayhead.Time - (0.207 - (0.5 / 15.0))) < 1e-4).IsTrue();
+
+        // Next guest tick (101) shifts 0.207 into previous and steps current to 0.27367:
+        // Reference(100.0) is now 0.207, matching a 1x playhead that advanced by 1 tick with zero jump.
+        playhead.Observe(
+            previous: 0.207,
+            current: 0.207 + (1.0 / 15.0),
+            tick: 101u,
+            length: 0.733,
+            loop: false,
+            cut: false,
+            drawTick: 100.0);
+        AssertThat(Math.Abs(playhead.Rate - 1.0) < 1e-4).IsTrue();
+    }
+
+    [TestCase]
+    public void TestStaticVisemeCutsDoNotInferNonZeroPlaybackRate()
+    {
+        // Phonemes (trk=7) sets discrete 1/30s static viseme frames with previous == current (cut = true).
+        var playhead = new Engine_ClipPlayhead();
+        playhead.Observe(0.0667, 0.0667, 50u, 0.3667, false, cut: true, drawTick: 49.2);
+        AssertThat(playhead.Rate).IsEqual(0.0);
+        AssertThat(Math.Abs(playhead.Time - 0.0667) < 1e-5).IsTrue();
+
+        // Switching to the next discrete viseme at tick 51 must snap to 0.1000 with Rate == 0.0
+        // rather than inferring Rate = 0.5 and scrubbing across unrelated mouth shapes.
+        playhead.Observe(0.1000, 0.1000, 51u, 0.3667, false, cut: true, drawTick: 50.2);
+        AssertThat(playhead.Rate).IsEqual(0.0);
+        AssertThat(Math.Abs(playhead.Time - 0.1000) < 1e-5).IsTrue();
+    }
+
+    [TestCase]
+    public void TestCanReuseUnseenChannelRejectsDyingFootstepFromPreviousStride()
+    {
+        // Outgoing WalkFootstep channel at 0.522s must NOT be reused when a brand-new WalkFootstep
+        // leaf spawns mid-stride at PreviousTime=0.0s, Time=0.207s.
+        AssertThat(Engine_ClipAnimator.CanReuseUnseenChannel(
+            statedTime: 0.522f,
+            leafPreviousTime: 0.0f,
+            leafTime: 0.207f,
+            clipLength: 0.733f,
+            loop: false,
+            isStatic: false)).IsFalse();
+
+        // Continuing WalkFootstep channel where PreviousTime matches StatedTime MUST be reused.
+        AssertThat(Engine_ClipAnimator.CanReuseUnseenChannel(
+            statedTime: 0.207f,
+            leafPreviousTime: 0.207f,
+            leafTime: 0.278f,
+            clipLength: 0.733f,
+            loop: false,
+            isStatic: false)).IsTrue();
+    }
 }

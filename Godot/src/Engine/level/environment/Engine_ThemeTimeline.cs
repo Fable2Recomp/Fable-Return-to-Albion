@@ -40,6 +40,7 @@ public static class Engine_ThemeTimeline
         public readonly Dictionary<uint, List<float>> PaintedTimes = new();
 
         public readonly Dictionary<(uint Hash, float Time), LightingTheme> PaintedLighting = new();
+        public readonly Dictionary<(uint Hash, float Time), SkyTheme> PaintedSky = new();
     }
 
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<object, Memo>
@@ -323,6 +324,63 @@ public static class Engine_ThemeTimeline
         return ok;
     }
 
+    /// <summary>
+    /// The sky/fog theme of ONE PAINTED day set at a time, blended between its own keyframes
+    /// exactly as the level day set is; keyed by the day-set record hash the grid holds.
+    /// </summary>
+    public static bool TryExtractSkyBlended(
+        IReadOnlyList<byte[]> gdbs, float targetTime, uint daySetHash, out SkyTheme theme)
+    {
+        Memo memo = MemoFor(gdbs);
+        if (!memo.PaintedTimes.TryGetValue(daySetHash, out List<float>? times))
+        {
+            times = Engine_LightingTheme.DaySetTimes(gdbs, daySetHash);
+            memo.PaintedTimes[daySetHash] = times;
+        }
+
+        if (times.Count == 0)
+        {
+            theme = new SkyTheme();
+            return false;
+        }
+
+        if (times.Count < 2)
+        {
+            return CachedPaintedSky(gdbs, daySetHash, times[0], out theme);
+        }
+
+        Bracket bracket = Resolve(times, targetTime);
+        bool okA = CachedPaintedSky(gdbs, daySetHash, bracket.TimeA, out SkyTheme a);
+        bool okB = CachedPaintedSky(gdbs, daySetHash, bracket.TimeB, out SkyTheme b);
+        if (!okA || !okB)
+        {
+            theme = okA ? a : b;
+            return okA || okB;
+        }
+
+        theme = BlendSky(a, b, bracket.Weight);
+        theme.SourceTimeOfDay = targetTime - MathF.Floor(targetTime);
+        return true;
+    }
+
+    private static bool CachedPaintedSky(
+        IReadOnlyList<byte[]> gdbs, uint daySetHash, float time, out SkyTheme theme)
+    {
+        Memo memo = MemoFor(gdbs);
+        if (memo.PaintedSky.TryGetValue((daySetHash, time), out theme!))
+        {
+            return true;
+        }
+
+        bool ok = Engine_EnvironmentTheme.TryExtractSky(gdbs, time, daySetHash, out theme);
+        if (ok)
+        {
+            memo.PaintedSky[(daySetHash, time)] = theme;
+        }
+
+        return ok;
+    }
+
     public static bool TryExtractToneMapBlended(
         IReadOnlyList<byte[]> gdbs, float targetTime, out ToneMapTheme theme)
     {
@@ -424,6 +482,11 @@ public static class Engine_ThemeTimeline
         o.HasComplementaryBias = a.HasComplementaryBias || b.HasComplementaryBias;
         o.HasNearFog = a.HasNearFog || b.HasNearFog;
         o.HasFarFog = a.HasFarFog || b.HasFarFog;
+        o.HasNearDistance = a.HasNearDistance || b.HasNearDistance;
+        o.HasNearDensity = a.HasNearDensity || b.HasNearDensity;
+        o.HasFarDistance = a.HasFarDistance || b.HasFarDistance;
+        o.HasFarDensity = a.HasFarDensity || b.HasFarDensity;
+        o.HasCloseFogMaxDistance = a.HasCloseFogMaxDistance || b.HasCloseFogMaxDistance;
         o.HasFoggingStart = a.HasFoggingStart || b.HasFoggingStart;
         o.HasSunAxis = a.HasSunAxis || b.HasSunAxis;
         o.HasMoonAxis = a.HasMoonAxis || b.HasMoonAxis;
@@ -446,14 +509,14 @@ public static class Engine_ThemeTimeline
         o.Rayleigh = Lerp(a.Rayleigh, b.Rayleigh, w);
         o.Mie = Lerp(a.Mie, b.Mie, w);
         o.ComplementaryBias = Lerp(a.ComplementaryBias, b.ComplementaryBias, w);
-        // PRESENCE-WEIGHTED, unlike the plain lerps around them. See `LerpStated`.
-        o.NearDistance = LerpStated(a.HasNearFog, a.NearDistance, b.HasNearFog, b.NearDistance, w);
-        o.NearDensity = LerpStated(a.HasNearFog, a.NearDensity, b.HasNearFog, b.NearDensity, w);
-        o.FarDistance = LerpStated(a.HasFarFog, a.FarDistance, b.HasFarFog, b.FarDistance, w);
-        o.FarDensity = LerpStated(a.HasFarFog, a.FarDensity, b.HasFarFog, b.FarDensity, w);
+        // PRESENCE-WEIGHTED, unlike the plain lerps around them. See LerpStated.
+        o.NearDistance = LerpStated(a.HasNearDistance, a.NearDistance, b.HasNearDistance, b.NearDistance, w);
+        o.NearDensity = LerpStated(a.HasNearDensity, a.NearDensity, b.HasNearDensity, b.NearDensity, w);
+        o.FarDistance = LerpStated(a.HasFarDistance, a.FarDistance, b.HasFarDistance, b.FarDistance, w);
+        o.FarDensity = LerpStated(a.HasFarDensity, a.FarDensity, b.HasFarDensity, b.FarDensity, w);
         o.CloseFogMaxDistance = LerpStated(
-            a.CloseFogMaxDistance > 0f, a.CloseFogMaxDistance,
-            b.CloseFogMaxDistance > 0f, b.CloseFogMaxDistance, w);
+            a.HasCloseFogMaxDistance, a.CloseFogMaxDistance,
+            b.HasCloseFogMaxDistance, b.CloseFogMaxDistance, w);
         o.FoggingStart = LerpStated(
             a.HasFoggingStart, a.FoggingStart, b.HasFoggingStart, b.FoggingStart, w);
         o.SunAxisElevation = Lerp(a.SunAxisElevation, b.SunAxisElevation, w);

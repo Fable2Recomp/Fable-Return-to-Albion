@@ -188,7 +188,7 @@ public partial class Engine_ClassicDisplacement : Node
     /// </summary>
     public static bool AdoptRecord(uint record, MeshInstance3D node, Mesh mesh)
     {
-        if (record == 0u || !Records.ContainsKey(record))
+        if (!Engine_ClassicMaterial.Active || record == 0u || !Records.ContainsKey(record))
         {
             return false;
         }

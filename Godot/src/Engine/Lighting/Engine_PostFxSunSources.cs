@@ -171,12 +171,16 @@ public partial class Engine_PostFxSunSources : Node
         };
 
         Rid discTexture = sky.HasSunDiscTexture ? LoadTexture(sky.SunDiscTextureHash) : default;
+        float discR = element[8] * element[7] * tint[0];
+        float discG = element[9] * element[7] * tint[1];
+        float discB = element[10] * element[7] * tint[2];
         _discEnabled = discTexture.IsValid && sunActive &&
-            element[7] >= Engine_CelestialElements.IntensityGate;
+            element[7] >= Engine_CelestialElements.IntensityGate &&
+            (discR + discG + discB) > 1e-5f;
         _disc = new Source
         {
             Texture = discTexture,
-            Colour = new Vector3(element[8] * element[7], element[9] * element[7], element[10] * element[7]),
+            Colour = new Vector3(discR, discG, discB),
             Half = new Vector2(
                 element[6] * Engine_CelestialElements.SunDiscSizeScale,
                 element[6] * Engine_CelestialElements.SunDiscSizeScale),

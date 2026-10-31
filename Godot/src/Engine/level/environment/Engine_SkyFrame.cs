@@ -136,7 +136,6 @@ public static class Engine_SkyFrame
         // keeps -cos(a)sin(e), adds SunAxisZOffset and normalises. That is why the disc can sit on
         // the horizon while the light still comes from 70 degrees up.
         float f = time * timeFactor;
-        float elevation = BlendElevation(theme, f) * toRadians;
 
         float a = f * twoPi;
         float b = (theme.HasSunAxis ? theme.SunAxisElevation : 26f) * toRadians;
@@ -146,27 +145,38 @@ public static class Engine_SkyFrame
         float cb = MathF.Cos(b), sb = MathF.Sin(b);
         float cc = MathF.Cos(c), sc = MathF.Sin(c);
 
-        // Row 0 of Rz(a).Ry(b).Rz(c) — the orbit axis, already unit length because it is a row of
-        // a rotation matrix, which is why the guest's `sub_82260C08` normalise here is a no-op.
-        float axisX = (ca * cb * cc) - (sa * sc);
-        float axisY = (ca * cb * sc) + (sa * cc);
+        // In Modern Model, the Xbox 360 light rig is completely disabled; early-out to avoid
+        // computing BlendElevation, orbit trig, and vector normalization.
+        if (!Refii.Lighting.Engine_LightingFrame.ModernModel)
+        {
+            float elevation = BlendElevation(theme, f) * toRadians;
 
-        float cosElevation = MathF.Cos(elevation);
+            // Row 0 of Rz(a).Ry(b).Rz(c) — the orbit axis, already unit length because it is a row of
+            // a rotation matrix, which is why the guest's `sub_82260C08` normalise here is a no-op.
+            float axisX = (ca * cb * cc) - (sa * sc);
+            float axisY = (ca * cb * sc) + (sa * cc);
 
-        // NO SECOND NORMALISE OF (x, y). This used to rescale the pair to unit length in the
-        // ground plane before applying cos(E), which forces the result's elevation to be exactly
-        // E. The guest does not: it takes axis.x and axis.y straight off the unit 3D axis, so
-        // their length is sqrt(1 - axis.z^2) and the true elevation rides slightly above E
-        // wherever the orbit is tilted. Verified at 0x821DFB18 and 0x821DFB50, which load the
-        // axis components back unmodified and multiply each by cos(E).
-        //
-        // Our SunDirection is (groundX, up, groundZ) — the vertical is component [1], where the
-        // guest's is [2]. Same vector, our axis order.
-        Normalise(
-            cosElevation * axisX,
-            MathF.Sin(elevation),
-            cosElevation * axisY,
-            frame.MainLightDirection);
+            float cosElevation = MathF.Cos(elevation);
+
+            // NO SECOND NORMALISE OF (x, y). This used to rescale the pair to unit length in the
+            // ground plane before applying cos(E), which forces the result's elevation to be exactly
+            // E. The guest does not: it takes axis.x and axis.y straight off the unit 3D axis, so
+            // their length is sqrt(1 - axis.z^2) and the true elevation rides slightly above E
+            // wherever the orbit is tilted. Verified at 0x821DFB18 and 0x821DFB50, which load the
+            // axis components back unmodified and multiply each by cos(E).
+            //
+            // Our SunDirection is (groundX, up, groundZ) — the vertical is component [1], where the
+            // guest's is [2]. Same vector, our axis order.
+            Normalise(
+                cosElevation * axisX,
+                MathF.Sin(elevation),
+                cosElevation * axisY,
+                frame.MainLightDirection);
+        }
+        else
+        {
+            frame.MainLightDirection[0] = frame.MainLightDirection[1] = frame.MainLightDirection[2] = 0f;
+        }
 
         // The disc's own azimuth, and its own Z.
         float discC = c + (theme.SunAxisXyRotation * toRadians);
@@ -220,7 +230,7 @@ public static class Engine_SkyFrame
     }
 
     private static float Finite(float value, float fallback) =>
-        float.IsFinite(value) ? Math.Clamp(value, 0f, 4f) : fallback;
+        float.IsFinite(value) ? MathF.Max(value, 0f) : fallback;
 
     /// <summary>
     /// The main light's elevation in DEGREES for a day fraction, cosine-blended across the four

@@ -310,7 +310,7 @@ fable_light_table={
 "value": ""
 }
 fable_static_shadow_atlas={
-"type": "sampler2D",
+"type": "sampler2DArray",
 "value": ""
 }
 xr_ps_constants={
@@ -376,4 +376,8 @@ dynamic_cloud_mask={
 dynamic_cloud_projection={
 "type": "vec4",
 "value": Vector4(0, 0, 1, 0)
+}
+fable_volumetric_fog_end={
+"type": "float",
+"value": 0.0
 }

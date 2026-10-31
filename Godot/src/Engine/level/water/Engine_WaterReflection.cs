@@ -224,6 +224,35 @@ public sealed partial class Engine_WaterReflection : Node
     public override void _ExitTree()
     {
         Refii.Core.Engine_Views.ViewsChanged -= SyncViews;
+        foreach (Body body in _bodies)
+        {
+            foreach (ShaderMaterial reader in body.Readers)
+            {
+                if (!GodotObject.IsInstanceValid(reader))
+                {
+                    continue;
+                }
+
+                if (!reader.HasMeta(Engine_ClassicWater.Meta))
+                {
+                    reader.SetShaderParameter("planar_reflection", false);
+                    reader.SetShaderParameter("reflection_tex", default(Variant));
+                    reader.SetShaderParameter(SecondEnabledName, false);
+                    reader.SetShaderParameter(SecondTextureName, default(Variant));
+                }
+                else
+                {
+                    BindMirror(reader, null);
+                    BindMirror(reader, null, Engine_ClassicWater.ReflectionSamplerSecond);
+                }
+            }
+
+            body.Readers.Clear();
+            body.Sharers.Clear();
+        }
+
+        _bodies.Clear();
+        _view = null;
     }
 
     /// <summary>One mirror's viewport and camera, parented here; <paramref name="view"/> seeds its range.</summary>
@@ -634,7 +663,7 @@ public sealed partial class Engine_WaterReflection : Node
     /// The mirror as g_ReflectionSampler on every pass of a classic water material: the core
     /// and the blended fringe it chains (Engine_ClassicWater) both sample it.
     /// </summary>
-    private static void BindMirror(ShaderMaterial material, Texture2D mirror) =>
+    private static void BindMirror(ShaderMaterial material, Texture2D? mirror) =>
         BindMirror(material, mirror, Engine_ClassicWater.ReflectionSampler);
 
     /// <summary>The same for a named sampler: the reflection's second-view twin takes player two's mirror.</summary>

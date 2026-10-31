@@ -117,3 +117,21 @@ Key practices to apply and audit for:
 - **Loop Consolidation & Zero-Allocation Hot Paths**: Merge multiple passes over the same collection into a single loop, reuse pre-allocated buffers/collections, and skip clearing large arrays when a feature/layer is inactive.
 - *Refer to the `refii-performance` skill (`.agent/skills/refii-performance/SKILL.md`) for detailed C# and C++ optimization patterns.*
 
+---
+
+## 6. Modern vs. Classic Rendering Pipelines & Linear HDR Space
+
+Refii supports two distinct rendering modes controlled by `Engine_ClassicMaterial.Active`:
+
+1. **Strict Separation of Concerns Between Modern and Classic Pipelines**:
+   - **Modern Mode (`!Engine_ClassicMaterial.Active`)**: Uses Godot 4 native spatial/compute shaders (`standard_material*.gdshader`, `terrain_splat.gdshader`, `water.gdshader`, `fx_particle*.gdshader`), host particle simulation (`FableFx` + `Engine_FxSystem` across the full `0..200m` range with 30 Hz simulation and GPU sub-step interpolation), Modern displacement (`Engine_FxDisplacement` + `Engine_DisplacementMeshes`), Modern shadow reach/proxies (`Engine_ShadowReach`, `Engine_ShadowProxy`), and Modern decals/mist (`Engine_ModernDecals`, `Engine_ModernMist`).
+   - **Classic Mode (`Engine_ClassicMaterial.Active`)**: Uses translated Xbox 360 Xenos microcode shaders (`Engine_ClassicShaders`), guest particle quad streams (`Engine_ClassicParticles`), Classic sun-cascade worlds (`Engine_ClassicCasters`, `Engine_ClassicShadows`), Classic tree impostor billboards (`Engine_ClassicBillboards`), and Classic displacement targets (`Engine_ClassicDisplacement`).
+   - **Rule**: Never route Modern mode runtime systems through Classic mode pipelines (or vice versa), and never split a single subsystem across both modes by distance. Share pure static math, matrix decomposition, or data/table helpers where appropriate (DRY), while keeping runtime state, viewports, layers, and scene nodes strictly gated by `Engine_ClassicMaterial.Active`.
+
+2. **Modern Pipeline Operates in Unclamped Scene-Referred Linear HDR Space (`[0, inf)`)**:
+   - Every surface, sky, water, lighting, and particle shader in Modern mode operates in **unexposed, scene-referred linear HDR radiance space (`[0, inf)`)**.
+   - **No Intermediate Clamping or sRGB Transfer Curves**: Never clamp intermediate colours, lighting, or particle radiance to `[0.0, 1.0]` (`clamp(..., 0.0, 1.0)`, `min(..., 1.0)`) and never apply sRGB / gamma-2.2 display transfer curves inside element or surface shaders. Guard only against negative or non-finite values (`max(rgb, vec3(0.0))`).
+   - **Global Exposure & Display Transfer**: Auto-exposure (`S_APPLIED_FRAME`), bloom composition, Fable CDF/Reinhard/filmic tone mapping, and the final display gamma toe happen **once globally** at the end of the post-processing compute chain (`fable_postfx_reduce.glsl` -> `fable_postfx_composite.glsl`).
+   - *Refer to the `refii-shaders` skill (`.agent/skills/refii-shaders/SKILL.md`) for detailed shader rules, legacy gamma-2.0 texture decoding (`texel.rgb * texel.rgb`), and PBR mod asset isolation (`is_pbr`).*
+
+

@@ -84,7 +84,7 @@ public static class Engine_LightZones
     public static bool Active => !Refii.Models.Engine_ClassicMaterial.Active;
 
     /// <summary>The hero's current CECBuilding light zone (0 if unknown, 1 if outdoors, >1 if inside a building).</summary>
-    public static uint HeroZone { get; private set; } = Refii.Models.Engine_ClassicZones.Outdoors;
+    public static uint HeroZone { get; set; } = Refii.Models.Engine_ClassicZones.Outdoors;
 
     /// <summary>Whether the hero is currently inside a building zone or the level is an interior.</summary>
     public static bool IsViewerIndoors => Engine_LightingFrame.CurrentInterior || IsIndoors(HeroZone);

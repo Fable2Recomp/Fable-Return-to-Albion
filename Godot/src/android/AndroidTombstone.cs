@@ -101,10 +101,10 @@ public static class AndroidTombstone
         text.Append("signal: ").Append(report.Signal);
         if (report.Code.Length > 0) text.Append(" (").Append(report.Code).Append(')');
         if (report.FaultAddress is { } fault) text.Append(", fault address 0x").Append(fault.ToString("x", CultureInfo.InvariantCulture));
-        text.AppendLine();
-        if (report.AbortMessage.Length > 0) text.Append("abort message: ").AppendLine(report.AbortMessage);
-        foreach (string cause in report.Causes) text.Append("cause: ").AppendLine(cause);
-        text.Append("thread: ").Append(report.ThreadId).Append(" \"").Append(report.ThreadName).AppendLine("\"");
+        text.Append('\n');
+        if (report.AbortMessage.Length > 0) text.Append("abort message: ").Append(report.AbortMessage).Append('\n');
+        foreach (string cause in report.Causes) text.Append("cause: ").Append(cause).Append('\n');
+        text.Append("thread: ").Append(report.ThreadId).Append(" \"").Append(report.ThreadName).Append("\"\n");
         for (int i = 0; i < report.Frames.Count && i < maxFrames; i++)
         {
             Frame frame = report.Frames[i];
@@ -112,9 +112,9 @@ public static class AndroidTombstone
                 .Append(" pc ").Append(frame.RelativePc.ToString("x16", CultureInfo.InvariantCulture))
                 .Append("  ").Append(frame.File);
             if (frame.Function.Length > 0) text.Append("  ").Append(frame.Function).Append('+').Append(frame.Offset);
-            text.AppendLine();
+            text.Append('\n');
         }
-        if (report.Frames.Count > maxFrames) text.Append("  (").Append(report.Frames.Count - maxFrames).AppendLine(" more)");
+        if (report.Frames.Count > maxFrames) text.Append("  (").Append(report.Frames.Count - maxFrames).Append(" more)\n");
         return text.ToString();
     }
 

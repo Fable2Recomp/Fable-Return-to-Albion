@@ -235,7 +235,7 @@ public partial class Engine_FxDisplacement : Node
 
         if (size == _size) return;
         _size = size;
-        _viewport.Size = size;
+        _viewport.Size = new Vector2I(Math.Max(1, size.X / 2), Math.Max(1, size.Y / 2));
         float s = 0.5f * ((size.X / 1280f) + (size.Y / 720f)) * 255f * Strength;
         _apply?.SetShaderParameter("disp_pixel_scale", new Vector2(s, s));
     }

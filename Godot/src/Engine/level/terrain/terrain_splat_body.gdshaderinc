@@ -830,19 +830,22 @@ void light() {
 #endif
 	if (dot(NORMAL, LIGHT) > 0.0) {
 		// Facing away the term is exactly zero (saturate(NdotL) scales finite factors): skipped.
-		float gate = LIGHT_IS_DIRECTIONAL
-			? clamp(8.0 * dot(NORMAL, LIGHT), 0.0, 1.0)
-			: 1.0;
-		DIFFUSE_LIGHT += gate * fable_direct(
-			NORMAL, LIGHT,
-			fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world),
-			LIGHT_COLOR);
+		float atten = fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world);
+		if (atten > 0.0) {
+			float gate = LIGHT_IS_DIRECTIONAL
+				? clamp(8.0 * dot(NORMAL, LIGHT), 0.0, 1.0)
+				: 1.0;
+			DIFFUSE_LIGHT += gate * fable_direct(
+				NORMAL, LIGHT,
+				atten,
+				LIGHT_COLOR);
 #ifndef FABLE_LITE
-		if (v_weather_specular > 0.001) {
-			SPECULAR_LIGHT += fable_specular(NORMAL, LIGHT, VIEW,
-				fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world),
-				LIGHT_COLOR, vec3(0.04 * v_weather_specular), v_weather_power);
-		}
+			if (v_weather_specular > 0.001) {
+				SPECULAR_LIGHT += fable_specular(NORMAL, LIGHT, VIEW,
+					atten,
+					LIGHT_COLOR, vec3(0.04 * v_weather_specular), v_weather_power);
+			}
 #endif
+		}
 	}
 }

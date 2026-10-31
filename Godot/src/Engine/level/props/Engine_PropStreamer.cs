@@ -115,12 +115,33 @@ public partial class Engine_PropStreamer : Node3D
 
     public static event Action<int, int>? ProgressChanged;
 
+    private static int _cacheGeneration;
+
     public static void ClearCache()
     {
         lock (Cache)
         {
+            _cacheGeneration++;
             Cache.Clear();
             Failed.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Stops all live streamers' background prefetch workers immediately before a region teardown.
+    /// </summary>
+    public static void StopAll()
+    {
+        lock (Live)
+        {
+            for (int i = Live.Count - 1; i >= 0; i--)
+            {
+                Engine_PropStreamer streamer = Live[i];
+                if (GodotObject.IsInstanceValid(streamer))
+                {
+                    streamer._prefetchStop = true;
+                }
+            }
         }
     }
 
@@ -1572,8 +1593,10 @@ public partial class Engine_PropStreamer : Node3D
         // half, and the worst a race there can do is build the same mesh twice and keep the
         // second, which costs one allocation and is otherwise indistinguishable.
         object gate;
+        int startGeneration;
         lock (Cache)
         {
+            startGeneration = _cacheGeneration;
             if (Cache.TryGetValue(virtualPath, out ArrayMesh? cached) &&
                 GodotObject.IsInstanceValid(cached))
             {
@@ -1645,13 +1668,16 @@ public partial class Engine_PropStreamer : Node3D
             {
                 lock (Cache)
                 {
-                    if (mesh is not null)
+                    if (_cacheGeneration == startGeneration)
                     {
-                        Cache[virtualPath] = mesh;
-                    }
-                    else
-                    {
-                        Failed[virtualPath] = (present, reason);
+                        if (mesh is not null)
+                        {
+                            Cache[virtualPath] = mesh;
+                        }
+                        else
+                        {
+                            Failed[virtualPath] = (present, reason);
+                        }
                     }
 
                     InFlight.Remove(virtualPath);

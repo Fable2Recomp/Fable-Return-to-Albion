@@ -29,8 +29,12 @@ public static class Engine_ModernFur
     private static readonly StringName SlicesName = "fur_slices";
     private static readonly StringName AlbedoName = "albedo_tex";
     private static readonly StringName PbrName = "is_pbr";
-    /// <summary>The source's lighting instance uniforms the shells share (fable_lighting, the entity tint).</summary>
-    private static readonly StringName[] Shared = { "probe_r", "probe_g", "probe_b", "lightmap_colour", "entity_tint", "fable_ambient_scale" };
+    private static readonly StringName ProbeRName = "probe_r";
+    private static readonly StringName ProbeGName = "probe_g";
+    private static readonly StringName ProbeBName = "probe_b";
+    private static readonly StringName LightmapColourName = "lightmap_colour";
+    private static readonly StringName EntityTintName = "entity_tint";
+    private static readonly StringName AmbientScaleName = "fable_ambient_scale";
 
     /// <summary>Frames between copies of the source's lighting uniforms.</summary>
     private const int ShareFrames = 15;
@@ -45,6 +49,14 @@ public static class Engine_ModernFur
         public int Stagger;
         public int LastShells = -1;
         public float LastLength = -1f;
+        public bool SharedOnce;
+        public bool LastHasProbe;
+        public Vector4 LastProbeR;
+        public Vector4 LastProbeG;
+        public Vector4 LastProbeB;
+        public Vector4 LastLightmapColour;
+        public Vector4 LastEntityTint = Vector4.One;
+        public float LastAmbientScale = -1f;
     }
 
     private static readonly System.Collections.Concurrent.ConcurrentQueue<MeshInstance3D> Pending = new();
@@ -235,18 +247,52 @@ public static class Engine_ModernFur
         }
     }
 
-    /// <summary>The source's ambient probe, bake mode and tint, onto the shells.</summary>
+    /// <summary>The source's ambient probe, bake mode and tint, onto the shells without calling GetInstanceShaderParameter.</summary>
     private static void Share(Furred furred)
     {
-        foreach (StringName name in Shared)
+        Refii.Lighting.Engine_LevelBakedLighting.ReadInstanceLighting(
+            furred.Source,
+            staticProp: false,
+            out bool hasProbe,
+            out Vector4 probeR,
+            out Vector4 probeG,
+            out Vector4 probeB,
+            out Vector4 lightmapColour,
+            out float ambientScale);
+
+        if (hasProbe && (!furred.LastHasProbe ||
+            furred.LastProbeR != probeR ||
+            furred.LastProbeG != probeG ||
+            furred.LastProbeB != probeB))
         {
-            // As written through Engine_InstanceParams; a parameter not written since the
-            // source was watched is still asked of the server.
-            Variant value = Refii.Core.Engine_InstanceParams.Get(furred.Source, name);
-            if (value.VariantType != Variant.Type.Nil)
-            {
-                furred.Shell.SetInstanceShaderParameter(name, value);
-            }
+            furred.LastHasProbe = true;
+            furred.LastProbeR = probeR;
+            furred.LastProbeG = probeG;
+            furred.LastProbeB = probeB;
+            furred.Shell.SetInstanceShaderParameter(ProbeRName, probeR);
+            furred.Shell.SetInstanceShaderParameter(ProbeGName, probeG);
+            furred.Shell.SetInstanceShaderParameter(ProbeBName, probeB);
         }
+
+        if (!furred.SharedOnce || furred.LastLightmapColour != lightmapColour)
+        {
+            furred.LastLightmapColour = lightmapColour;
+            furred.Shell.SetInstanceShaderParameter(LightmapColourName, lightmapColour);
+        }
+
+        if (!furred.SharedOnce || MathF.Abs(furred.LastAmbientScale - ambientScale) > 1e-4f)
+        {
+            furred.LastAmbientScale = ambientScale;
+            furred.Shell.SetInstanceShaderParameter(AmbientScaleName, ambientScale);
+        }
+
+        Vector4 tint = Refii.Entities.Engine_EntityAppearance.GetModernTint(furred.Source);
+        if (furred.LastEntityTint != tint)
+        {
+            furred.LastEntityTint = tint;
+            furred.Shell.SetInstanceShaderParameter(EntityTintName, tint);
+        }
+
+        furred.SharedOnce = true;
     }
 }

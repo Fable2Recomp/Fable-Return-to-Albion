@@ -307,15 +307,16 @@ public partial class Engine_LightFlicker : Node
 		light.WrittenRadiusScale = scale;
 		float reach = light.BaseRange * Refii.Lighting.Engine_LevelLights.RangeScale;
 
-		// THE NODE HOLDS THE ENVELOPE, THE TABLE HOLDS THE BREATH. The phase is clamped to
-		// [-1, 1], so `1 + RadiusRange` is the largest radius this light can state; the node
-		// sits there and is written only when that changes (the live range scale). The radius
-		// of THIS step goes to the light table, which is what the shader ramps over.
+		// THE NODE HOLDS THE BASE REACH, THE TABLE HOLDS THE BREATH. Under Godot's native
+		// falloff (`OmniAttenuation = 1.0`), permanently inflating OmniRange to the maximum
+		// flicker envelope (`reach * (1 + RadiusRange)`) inflated the outer boundary of every
+		// flickering torch by +21%. Keeping OmniRange at `reach` and updating the stated radius
+		// in `Engine_LightTable` preserves the authored baseline reach while allowing inward
+		// flicker breathing without per-frame AABB churn.
 		var omniNode = (OmniLight3D)light.Node;
-		float envelope = reach * (1.0f + MathF.Abs(light.RadiusRange));
-		if (MathF.Abs(omniNode.OmniRange - envelope) > 1e-4f)
+		if (MathF.Abs(omniNode.OmniRange - reach) > 1e-4f)
 		{
-			omniNode.OmniRange = envelope;
+			omniNode.OmniRange = reach;
 			RadiusWrites++;
 			Refii.Lighting.Engine_LevelLights.BumpLightMetaGeneration();
 		}

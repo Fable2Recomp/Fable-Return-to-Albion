@@ -3,7 +3,7 @@ shader_type spatial;
 // `shader_variant = "lite"`); no environment-cube code: for a material that binds no cube, or has no specular map to weight one.
 // Safe under either lighting model; the bakes stay.
 // What each define drops: standard_material_body.gdshaderinc. The render mode must match the source's.
-render_mode blend_premul_alpha, depth_draw_never, cull_back;
+render_mode blend_mix, depth_draw_never, cull_disabled;
 
 #define FABLE_TRANSLUCENT
 #define FABLE_LITE

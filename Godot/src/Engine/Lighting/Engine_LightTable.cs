@@ -40,15 +40,15 @@ public static class Engine_LightTable
 	/// <summary>Deterministic 64-bit light key ((entity &lt;&lt; 32) | index) for each slot.</summary>
 	private static readonly ulong[] Keys = new ulong[Capacity];
 
-	/// <summary>Per-slot octahedral shadow atlas rect (AtlasU, AtlasV, AtlasScale).</summary>
-	private static readonly Vector3[] AtlasRects = new Vector3[Capacity];
+	/// <summary>Per-slot octahedral shadow atlas rect (AtlasU, AtlasV, AtlasScale, SliceIndex).</summary>
+	private static readonly Vector4[] AtlasRects = new Vector4[Capacity];
 
 	private static StaticShadowMapContainer? _boundShadowMap;
 
-	/// <summary>Two rows of Capacity texels: (x, y, z, Godot's range), then (the STATED range, atlasU, atlasV, atlasScale).</summary>
-	private static readonly float[] Data = new float[Capacity * 4 * 2];
+	/// <summary>Three rows of Capacity texels: (x, y, z, Godot's range), (the STATED range, atlasU, atlasV, atlasScale), then (atlasLayer, 0, 0, 0).</summary>
+	private static readonly float[] Data = new float[Capacity * 4 * 3];
 
-	private static readonly byte[] Bytes = new byte[Capacity * 16 * 2];
+	private static readonly byte[] Bytes = new byte[Capacity * 16 * 3];
 
 	/// <summary>
 	/// The radius the guest STATES for a light this frame, where it differs from the node's. A
@@ -84,9 +84,35 @@ public static class Engine_LightTable
 		}
 	}
 
+	/// <summary>
+	/// Reads <paramref name="light"/>'s stated falloff radius and baked octahedral static shadow
+	/// atlas rect (<c>AtlasU, AtlasV, AtlasScale, SliceIndex</c>) in O(1) via its <c>LightSpecular</c> slot.
+	/// </summary>
+	public static bool TryGetLightShaftData(Light3D light, float nodeRange, out float statedRange, out Vector4 atlasRect)
+	{
+		int slot = (int)MathF.Round(light.LightSpecular - SlotBase);
+		lock (Gate)
+		{
+			if (slot >= 0 && slot < Capacity && ReferenceEquals(Slots[slot], light))
+			{
+				statedRange = Stated[slot] > 0f ? Stated[slot] : nodeRange;
+				atlasRect = !Refii.Models.Engine_ClassicMaterial.Active ? AtlasRects[slot] : Vector4.Zero;
+				return true;
+			}
+		}
+
+		statedRange = nodeRange;
+		atlasRect = Vector4.Zero;
+		return false;
+	}
+
+	private static Image? _image;
+
 	private static ImageTexture? _texture;
 
 	private static int _live;
+
+	private static int _highWaterSlot = -1;
 
 	/// <summary>Registered lights still alive at the last refresh.</summary>
 	public static int Live => _live;
@@ -100,12 +126,12 @@ public static class Engine_LightTable
 		lock (Gate)
 		{
 			_boundShadowMap = container;
-			for (int slot = 0; slot < Capacity; slot++)
+			for (int slot = 0; slot <= _highWaterSlot; slot++)
 			{
 				ulong key = Keys[slot];
 				AtlasRects[slot] = container is not null && key != 0ul &&
-					container.LightRects.TryGetValue(key, out Vector3 rect)
-					? rect : Vector3.Zero;
+					container.LightRects.TryGetValue(key, out Vector4 rect)
+					? rect : Vector4.Zero;
 			}
 		}
 	}
@@ -129,8 +155,13 @@ public static class Engine_LightTable
 				Stated[slot] = 0f;
 				Keys[slot] = lightKey;
 				AtlasRects[slot] = _boundShadowMap is not null && lightKey != 0ul &&
-					_boundShadowMap.LightRects.TryGetValue(lightKey, out Vector3 rect)
-					? rect : Vector3.Zero;
+					_boundShadowMap.LightRects.TryGetValue(lightKey, out Vector4 rect)
+					? rect : Vector4.Zero;
+				if (slot > _highWaterSlot)
+				{
+					_highWaterSlot = slot;
+				}
+
 				light.LightSpecular = slot + SlotBase;
 				return true;
 			}
@@ -153,7 +184,8 @@ public static class Engine_LightTable
 
 		lock (Gate)
 		{
-			for (int slot = 0; slot < Capacity; slot++)
+			int maxActiveSlot = -1;
+			for (int slot = 0; slot <= _highWaterSlot; slot++)
 			{
 				Light3D? light = Slots[slot];
 				float x = 0f, y = 0f, z = 0f, range = 0f;
@@ -165,22 +197,26 @@ public static class Engine_LightTable
 						Slots[slot] = null;
 						Stated[slot] = 0f;
 						Keys[slot] = 0ul;
-						AtlasRects[slot] = Vector3.Zero;
+						AtlasRects[slot] = Vector4.Zero;
 					}
-					else if (light.IsInsideTree())
+					else
 					{
-						Vector3 at = light.GlobalPosition;
-						x = at.X;
-						y = at.Y;
-						z = at.Z;
-						range = light is OmniLight3D omni ? omni.OmniRange
-							: light is SpotLight3D spot ? spot.SpotRange : 0f;
-						live++;
+						maxActiveSlot = slot;
+						if (light.IsInsideTree())
+						{
+							Vector3 at = light.GlobalPosition;
+							x = at.X;
+							y = at.Y;
+							z = at.Z;
+							range = light is OmniLight3D omni ? omni.OmniRange
+								: light is SpotLight3D spot ? spot.SpotRange : 0f;
+							live++;
+						}
 					}
 				}
 
 				float stated = range > 0f && Stated[slot] > 0f ? Stated[slot] : range;
-				Vector3 rect = useStaticShadows && range > 0f ? AtlasRects[slot] : Vector3.Zero;
+				Vector4 rect = useStaticShadows && range > 0f ? AtlasRects[slot] : Vector4.Zero;
 				int second = (Capacity + slot) * 4;
 				if (Data[second] != stated ||
 				    Data[second + 1] != rect.X ||
@@ -191,6 +227,16 @@ public static class Engine_LightTable
 					Data[second + 1] = rect.X;
 					Data[second + 2] = rect.Y;
 					Data[second + 3] = rect.Z;
+					changed = true;
+				}
+
+				int third = (Capacity * 2 + slot) * 4;
+				if (Data[third] != rect.W)
+				{
+					Data[third] = rect.W;
+					Data[third + 1] = 0f;
+					Data[third + 2] = 0f;
+					Data[third + 3] = 0f;
 					changed = true;
 				}
 
@@ -205,6 +251,7 @@ public static class Engine_LightTable
 				}
 			}
 
+			_highWaterSlot = maxActiveSlot;
 			_live = live;
 			if (!changed && _texture is not null)
 			{
@@ -212,15 +259,23 @@ public static class Engine_LightTable
 			}
 
 			Buffer.BlockCopy(Data, 0, Bytes, 0, Bytes.Length);
-			using var image = Image.CreateFromData(Capacity, 2, false, Image.Format.Rgbaf, Bytes);
+			if (_image is null)
+			{
+				_image = Image.CreateFromData(Capacity, 3, false, Image.Format.Rgbaf, Bytes);
+			}
+			else
+			{
+				_image.SetData(Capacity, 3, false, Image.Format.Rgbaf, Bytes);
+			}
+
 			if (_texture is null)
 			{
-				_texture = Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(image);
+				_texture = Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(_image);
 				RenderingServer.GlobalShaderParameterSet(GlobalName, _texture);
 			}
 			else
 			{
-				_texture.Update(image);
+				_texture.Update(_image);
 			}
 		}
 	}

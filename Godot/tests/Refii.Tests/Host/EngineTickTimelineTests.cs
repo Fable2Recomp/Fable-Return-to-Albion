@@ -121,4 +121,26 @@ public class EngineTickTimelineTests
         AssertThat(mid2.Origin.X).IsGreater(mid1.Origin.X);
         AssertThat(mid3.Origin.X).IsGreater(mid2.Origin.X);
     }
+
+    [TestCase]
+    public void TestOverdueRotationAndPositionSettlesToNewest()
+    {
+        var timeline = new Engine_TickTimeline(stillWhenUnchanged: true);
+        timeline.Reset(10.0, Transform3D.Identity);
+
+        var rotatedTarget = new Transform3D(new Basis(Vector3.Up, 0.45f), new Vector3(0.4f, 0f, -0.2f));
+        timeline.Observe(11.0, rotatedTarget);
+
+        ulong usec = 1_000_000UL;
+        // Advance past the overdue threshold (drawTick > 11.0 + 1.0 + Lead) without further Observe calls.
+        for (int i = 1; i <= 120 && !timeline.Settled; i++)
+        {
+            usec += 16_666UL;
+            double drawTick = 11.0 + (i * 0.25);
+            timeline.Advance(usec, drawTick);
+        }
+
+        AssertThat(timeline.Settled).IsTrue();
+        AssertThat(timeline.Newest.Origin.IsEqualApprox(new Vector3(0.4f, 0f, -0.2f))).IsTrue();
+    }
 }

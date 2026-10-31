@@ -28,10 +28,12 @@ public static class Engine_EntityHighlight
     public readonly record struct Lit(Node3D Node, uint Word, int Slot);
 
     /// <summary>Marks the proxies we add, so they are never mistaken for the entity's own.</summary>
-    private static readonly StringName MadeMeta = "refii_highlight_silhouette";
+    private static StringName? _madeMeta;
+    private static StringName MadeMeta => _madeMeta ??= new StringName("refii_highlight_silhouette");
 
     /// <summary>The slot a mesh's proxy currently draws; 0 when it has none.</summary>
-    private static readonly StringName SlotMeta = "refii_highlight_slot";
+    private static StringName? _slotMeta;
+    private static StringName SlotMeta => _slotMeta ??= new StringName("refii_highlight_slot");
 
     private const string ShaderPath = "res://src/Engine/entities/entity_highlight_silhouette.gdshader";
 
@@ -57,6 +59,12 @@ public static class Engine_EntityHighlight
 
     private static readonly ShaderMaterial?[] SlotMaterials = new ShaderMaterial?[Engine_EntityHighlightLayer.Slots + 1];
 
+    private static readonly Dictionary<(int Slot, ulong TextureId), ShaderMaterial> AlphaMaterials = new();
+
+    private const string AlphaScissorParam = "alpha_scissor_on";
+    private const string AlbedoTexParam = "albedo_tex";
+    private const string AlphaScissorThresholdParam = "alpha_scissor_threshold";
+
     public static void BeginWalk() => HighlightedThisFrame = 0;
 
     /// <summary>Forgets which subtrees are lit. For a level change, where the nodes go away.</summary>
@@ -64,6 +72,7 @@ public static class Engine_EntityHighlight
     {
         Lits.Clear();
         LitNodes.Clear();
+        AlphaMaterials.Clear();
     }
 
     /// <summary>
@@ -223,8 +232,90 @@ public static class Engine_EntityHighlight
             proxy.Mesh = mesh.Mesh;
         }
 
-        proxy.MaterialOverride = SlotMaterial(slot);
+        int surfaceCount = mesh.Mesh?.GetSurfaceCount() ?? 0;
+        bool hasCutout = false;
+        for (int s = 0; s < surfaceCount; ++s)
+        {
+            Material? source = mesh.GetSurfaceOverrideMaterial(s) ?? mesh.Mesh?.SurfaceGetMaterial(s);
+            if (TryGetAlphaCutout(source, out _, out _))
+            {
+                hasCutout = true;
+                break;
+            }
+        }
+
+        if (!hasCutout)
+        {
+            for (int s = 0; s < surfaceCount; ++s)
+            {
+                proxy.SetSurfaceOverrideMaterial(s, null);
+            }
+            proxy.MaterialOverride = SlotMaterial(slot);
+        }
+        else
+        {
+            proxy.MaterialOverride = null;
+            for (int s = 0; s < surfaceCount; ++s)
+            {
+                Material? source = mesh.GetSurfaceOverrideMaterial(s) ?? mesh.Mesh?.SurfaceGetMaterial(s);
+                if (TryGetAlphaCutout(source, out Texture2D? albedo, out float threshold) && albedo is not null)
+                {
+                    proxy.SetSurfaceOverrideMaterial(s, AlphaSlotMaterial(slot, albedo, threshold));
+                }
+                else
+                {
+                    proxy.SetSurfaceOverrideMaterial(s, SlotMaterial(slot));
+                }
+            }
+        }
+
         proxy.Visible = true;
+    }
+
+    public static float ClampCutoutThreshold(float srcThreshold) =>
+        srcThreshold > 0.9f ? 0.5f : srcThreshold;
+
+    public static bool TryGetAlphaCutout(
+        Material? material, out Texture2D? albedo, out float threshold)
+    {
+        albedo = null;
+        threshold = 0.5f;
+        if (material is not ShaderMaterial sm)
+        {
+            return false;
+        }
+
+        if (sm.GetShaderParameter(AlphaScissorParam) is { VariantType: Variant.Type.Bool } sc && sc.AsBool())
+        {
+            albedo = sm.GetShaderParameter(AlbedoTexParam).As<Texture2D>();
+            if (albedo is not null)
+            {
+                if (sm.GetShaderParameter(AlphaScissorThresholdParam) is { VariantType: Variant.Type.Float } th)
+                {
+                    threshold = ClampCutoutThreshold(th.AsSingle());
+                }
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static ShaderMaterial AlphaSlotMaterial(int slot, Texture2D albedo, float threshold)
+    {
+        ulong texId = albedo.GetInstanceId();
+        if (AlphaMaterials.TryGetValue((slot, texId), out ShaderMaterial? cached))
+        {
+            return cached;
+        }
+
+        var material = new ShaderMaterial { Shader = GD.Load<Shader>(ShaderPath) };
+        material.SetShaderParameter("slot", (float)slot);
+        material.SetShaderParameter(AlbedoTexParam, albedo);
+        material.SetShaderParameter(AlphaScissorParam, true);
+        material.SetShaderParameter(AlphaScissorThresholdParam, threshold);
+        AlphaMaterials[(slot, texId)] = material;
+        return material;
     }
 
     private static MeshInstance3D? Existing(MeshInstance3D mesh)

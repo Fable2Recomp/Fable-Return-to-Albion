@@ -102,6 +102,10 @@ public static class Engine_ClassicCasters
     /// <summary>States how a node casts, for <see cref="Register"/> to read once its mesh is in.</summary>
     public static void Mark(Node node, byte casting, float reach)
     {
+        if (!Engine_ClassicMaterial.Active)
+        {
+            return;
+        }
         node.SetMeta(CastingMeta, (int)casting);
         node.SetMeta(ReachMeta, reach);
     }

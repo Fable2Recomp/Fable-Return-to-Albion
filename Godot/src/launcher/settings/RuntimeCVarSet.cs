@@ -673,34 +673,26 @@ public static class RuntimeCVarsGodot
                 + "this factor, and leaves daylight and ordinary night alone. 1 follows the original."),
             new("placed_light_range", LightingCategory, RuntimeCVarType.Double, "65.0",
                 "Maximum distance from the eye in metres beyond which placed fixture lights fade and cull (Performance: 45m, Balanced: 65m, Quality: 85m)."),
-            new("placed_light_scale", LightingCategory, RuntimeCVarType.Double, "1.5",
-                "Multiplier on torch, lamp and fixture light intensity. The authored fixtures "
-                + "throw modest pools — a tall lamp post barely reaches the ground — "
-                + "so the remaster brightens them. 1.0 follows the shipped data exactly. "
-                + "Levels with no sky (caves, halls) always keep the shipped intensity: their "
-                + "authored bakes were painted against it."),
-            new("placed_light_reach_scale", LightingCategory, RuntimeCVarType.Double, "1.5",
-                "Multiplier on outdoor torch, lamp and fixture radius (reach). 1.5 expands "
-                + "outdoor street lamps so they reach the ground; 1.0 uses the shipped radius. "
-                + "Levels with no sky always keep the shipped radius."),
-            new("building_interior_ambient_scale", LightingCategory, RuntimeCVarType.Double, "0.5",
-                "Multiplier on outdoor sky and theme ambient inside town buildings in outdoor "
-                + "levels (taverns, shops, houses). Caves and sky-less levels are unaffected "
-                + "and use interior_ambient_scale instead."),
-            new("building_interior_light_scale", LightingCategory, RuntimeCVarType.Double, "0.65",
+            new("placed_light_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "Multiplier on torch, lamp and fixture light intensity. 1.0 is the vanilla "
+                + "baseline following the shipped data; higher values brighten fixtures."),
+            new("placed_light_reach_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "Multiplier on torch, lamp and fixture radius (reach). 1.0 is the "
+                + "vanilla baseline using the shipped radius; higher values expand reach."),
+            new("building_interior_ambient_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "Multiplier on ambient fill inside town buildings in outdoor levels "
+                + "(taverns, shops, houses). 1.0 is the vanilla baseline. Caves and sky-less "
+                + "levels are unaffected and use interior_ambient_scale instead."),
+            new("building_interior_light_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
                 "Multiplier on placed light intensity inside town buildings in outdoor levels. "
-                + "Town interiors pack many overlapping lamps into small rooms; scaling them "
-                + "down prevents washed-out walls and restores shadow contrast. Caves are unaffected."),
+                + "1.0 is the vanilla baseline. Caves are unaffected."),
             new("building_interior_reach_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
                 "Multiplier on placed light radius (reach) inside town buildings in outdoor "
                 + "levels. 1.0 preserves the authored room reach without over-overlapping. "
                 + "Caves are unaffected."),
-            new("unattached_light_scale", LightingCategory, RuntimeCVarType.Double, "0.35",
-                "Multiplier on placed OmniLight3D and SpotLight3D nodes in outdoor levels that "
-                + "are not attached to a 3D light fixture or flame dummy (floating fill lights). "
-                + "Set to 0.0 to disable unattached lights completely. Caves are unaffected."),
             new("static_shadow_resolution", LightingCategory, RuntimeCVarType.Int, "2048",
                 "Atlas resolution for pre-baked static fixture shadow maps (2048, 4096, 8192). "
+                + "Automatically selects the optimal lights-per-slice grid for each preset (36 at 2K, 64 at 4K/8K). "
                 + "Changing this triggers a re-bake during the startup warmup screen.",
                 "2048|2048 (Default),4096|4096 (High),8192|8192 (Ultra)"),
             new("lighting_model", LightingCategory, RuntimeCVarType.String, "modern",
@@ -712,9 +704,9 @@ public static class RuntimeCVarsGodot
                 + "ticked during install — and, where a shader has not been built, the authored "
                 + "day-set ambient exactly as the 360 read it.",
                 "modern|Modern,classic|Classic"),
-            new("bloom_scale", LightingCategory, RuntimeCVarType.Double, "0.0",
-                "Multiplier on the scene's bloom in the modern compositor. 0.0, the default, "
-                + "draws no bloom; 1.0 matches the original Fable 2 amount; higher values "
+            new("bloom_scale", LightingCategory, RuntimeCVarType.Double, "0.25",
+                "Multiplier on the scene's bloom in the modern compositor. 0.25, the default, "
+                + "balances scene bloom with volumetric fog scattering; 0.0 disables scene bloom; higher values "
                 + "increase the dreamy glow. The sun, the moon and lamp halos glow regardless."),
             new("halo_distance_fade", LightingCategory, RuntimeCVarType.Bool, "true",
                 "Gradually attenuate the bloom halos of distant point light fixtures (street lamps, "
@@ -745,15 +737,24 @@ public static class RuntimeCVarsGodot
                 + "themes blur everything past their far plane, twenty metres in a cave, "
                 + "which reads as a soft picture on a modern display. The fable model "
                 + "always applies it."),
-            new("interior_dark_lift", LightingCategory, RuntimeCVarType.Double, "1.5",
-                "The cap on the exposure gain in levels with no sky: the frame is lifted by "
-                + "the tone floor (0.15) over its raw mean, up to this value. 1.5 compensates "
-                + "for the unoccluded floor share in enclosed caves so their brightness matches "
-                + "the classic model. Outdoors uses modern_dark_lift. Modern model only."),
-            new("interior_fog_scale", LightingCategory, RuntimeCVarType.Double, "0.2",
-                "How much of the authored fog a level with no sky keeps. The cave records "
-                + "state a fog that walls off everything past ten metres; the 360 reference "
-                + "shows the far walls. 1.0 is the shipped fog, 0 removes it. Modern model only."),
+            new("interior_dark_lift", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "Normalized multiplier (1.0 = calibrated baseline for the active tone curve) "
+                + "on the exposure floor lift in sky-less cave levels; outdoors uses modern_dark_lift. Modern model only."),
+            new("interior_fog_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "Multiplier on authored fog optical depth in sky-less cave and interior levels. "
+                + "1.0 matches the base game's authored fog curve, 0 removes it, values above 1.0 "
+                + "thicken the fog exponentially. Modern model only."),
+            new("outdoor_fog_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "Multiplier on authored fog optical depth in outdoor sky-lit levels. "
+                + "1.0 matches the base game's authored fog curve, 0 removes it, values above 1.0 "
+                + "thicken the fog exponentially. Modern model only."),
+            new("volumetric_shaft_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "Multiplier on volumetric light-shaft in-scattering radiance across placed and dynamic lights (not celestial sun/moon rays). "
+                + "1.0 is calibrated baseline, 0 disables placed light shafts, values above 1.0 intensify shafts without changing atmosphere fog density. Modern model only."),
+            new("volumetric_fog", LightingCategory, RuntimeCVarType.Bool, "true",
+                "Whether the modern model uses Godot's 3D Volumetric Fog in the near-to-mid field "
+                + "so dynamic lights, spot shadows, and sun cascades scatter through the fog and "
+                + "produce volumetric light shafts. Modern model only."),
             new("baked_light_weight", LightingCategory, RuntimeCVarType.Double, "0.45",
                 "FABLE MODEL ONLY: the modern model lights every surface from Godot's ambient and GI and emits no authored bake. One weight on every AUTHORED exterior bake — the terrain lightmap and prop "
                 + "vertex colours — so adjacent surfaces scale together. Lower hands the look "
@@ -815,6 +816,10 @@ public static class RuntimeCVarsGodot
                 + "The original composited that layer scaled by its framebuffer brightness; "
                 + "1.0 adds it as scene radiance. Raise it if fire and the quest trail read "
                 + "too faint in daylight; the debug channel's `fxlayer` command changes it live."),
+            new("fx_weapon_augment_always_active", Category, RuntimeCVarType.Bool, "true",
+                "Keep weapon augmentation particle effects (sparkles, elemental glows) active and playing continuously "
+                + "while moving (walking and running) rather than stopping like the original 2008 release. Default is on.",
+                OwnerTitle: Refii.Core.Engine_Title.Fable2.Folder),
             new("postfx_dump_period", DeveloperCategory, RuntimeCVarType.Int, "0",
                 "Print the tone-mapping histogram, the adapted bounds, the exposure and the "
                 + "bloom coverage every N frames. 0 is off. This reads back from the GPU and "

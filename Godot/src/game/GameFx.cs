@@ -45,6 +45,48 @@ public partial class GameFx : Node3D
     /// <summary>Each effect's root placement this frame, by handle.</summary>
     private readonly Dictionary<uint, Transform3D> _roots = new();
 
+    /// <summary>Whether each effect's root rows are exact guest identity (unrotated / FollowOrientation == 0).</summary>
+    private readonly Dictionary<uint, bool> _rootIdentity = new();
+
+    /// <summary>Owner entity address per effect key this frame, when non-zero.</summary>
+    private readonly Dictionary<uint, uint> _ownerByKey = new();
+
+    /// <summary>Target entity address the effect is attached to, when non-zero.</summary>
+    private readonly Dictionary<uint, uint> _attachedByKey = new();
+
+    /// <summary>Maps each live particle-system instance pointer (<c>fx.Instance</c>) to its effect key.</summary>
+    private readonly Dictionary<uint, uint> _keyByInstance = new();
+
+    /// <summary>
+    /// Bone-attached effects resolved directly onto their host character/weapon pose this display frame
+    /// (in proper <c>SO(3)</c> entity-mesh space), keyed by effect handle.
+    /// </summary>
+    private readonly Dictionary<uint, (Transform3D StatedEntityRoot, Transform3D BoneEntityRoot, bool Unrotated)> _boneRoots = new();
+
+    /// <summary>Runtime Type 5 spline override points in Godot world space, keyed by effect handle.</summary>
+    private readonly Dictionary<uint, Vector3[]> _statedSplineByKey = new();
+
+    /// <summary>Weapon/entity-local spline override points for attached multi-dummy effects, persisted across the handle's lifetime.</summary>
+    private readonly Dictionary<uint, (uint Target, Vector3[] LocalPoints)> _weaponSplineByKey = new();
+
+    /// <summary>Drawn Godot world-space spline override points resolved onto the live host weapon/entity this frame.</summary>
+    private readonly Dictionary<uint, Vector3[]> _drawnSplineByKey = new();
+
+    private sealed class WeaponAugmentTracker
+    {
+        public uint RootKey;
+        public uint EffectHash;
+        public uint TargetEntity;
+        public Vector3[] LocalPoints = System.Array.Empty<Vector3>();
+        public FableFx? Node;
+        public float Intensity = 1f;
+        public float SizeScale = 1f;
+        public float LightFade = 1f;
+    }
+
+    /// <summary>Active weapon augmentation effects tracked continuously across locomotion by (TargetEntity, EffectHash).</summary>
+    private readonly Dictionary<(uint Target, uint Effect), WeaponAugmentTracker> _activeWeaponFx = new();
+
     /// <summary>Each effect's (scale, fade) this frame, from its first standard emitter node.</summary>
     private readonly Dictionary<uint, (float Scale, float Fade)> _emitterState = new();
 
@@ -61,6 +103,15 @@ public partial class GameFx : Node3D
     /// <summary>This walk's effects the guest draws itself (<see cref="FableFx.GuestDrawn"/>).</summary>
     private readonly HashSet<uint> _guestDrawn = new();
 
+    /// <summary>Effect hashes confirmed to be drawn by guest particle/trail twins across bursts.</summary>
+    private readonly HashSet<uint> _guestDrawnEffects = new();
+
+    /// <summary>Pooled candidate root keys for CECObjectAttachment bone resolution (zero per-tick allocation).</summary>
+    private readonly HashSet<uint> _candidateAttachmentKeys = new();
+
+    /// <summary>Scratch buffer for transforming world-space spline override endpoints into node-local space.</summary>
+    private readonly Vector3[] _localSplineScratch = new Vector3[3];
+
     /// <summary>Every effect hash the guest has played, and how many instances carried it.</summary>
     private readonly Dictionary<uint, int> _census = new();
 
@@ -72,6 +123,9 @@ public partial class GameFx : Node3D
 
     /// <summary>Whether the guest has ever reported a live effect.</summary>
     private bool _everSawAny;
+
+    private readonly List<(FableFx Node, double RetireTime)> _retiringNodes = new();
+    private bool _weaponHookInstalled;
 
     /// <summary>Roughly ten seconds at 60fps.</summary>
     private const int SilenceTicks = 600;
@@ -109,6 +163,8 @@ public partial class GameFx : Node3D
         {
             Current = null;
         }
+
+        _activeWeaponFx.Clear();
     }
 
     /// <summary>
@@ -277,6 +333,25 @@ public partial class GameFx : Node3D
         _ticks++;
         _tickNow = Refii.Core.Engine_TickClock.GuestGameTick;
 
+        if (!_weaponHookInstalled && HostBridge.IsGuestUp)
+        {
+            _weaponHookInstalled = HostBridge.InstallWeaponAugmentHook();
+        }
+
+        // Clean up retired nodes that have completed particle decay
+        for (int i = _retiringNodes.Count - 1; i >= 0; i--)
+        {
+            var (rNode, rTime) = _retiringNodes[i];
+            if (!IsInstanceValid(rNode) || rNode.DebugAlive == 0 || (_tickNow - rTime) > 1.5)
+            {
+                if (IsInstanceValid(rNode))
+                {
+                    rNode.QueueFree();
+                }
+                _retiringNodes.RemoveAt(i);
+            }
+        }
+
         // On the guest's frame: the effect list is the guest's statement and only moves when
         // the guest does; between two, the last list stands.
         bool refreshed = Refii.Core.Engine_GuestFrame.Changed || _liveFx.Count == 0;
@@ -305,17 +380,42 @@ public partial class GameFx : Node3D
         Engine_FxRecipes.Begin();
         _seen.Clear();
         _counted.Clear();
-        RefreshStated();
+        if (refreshed)
+        {
+            RefreshStated();
+        }
 
         // The placement is the root's. Every type-vector of an effect hangs off a synthetic root
         // whose transform is what the guest's positioners wrote; a child node's world transform
         // adds its own chain motion (e.g. a spline node's random point per tick), which our
         // simulation applies itself. Collected first: the root need not precede its children.
+        // Note: `_ownerByKey`, `_attachedByKey`, and `_weaponSplineByKey` are persisted for the
+        // lifetime of `rootKey` (cleaned up on handle recycle or retirement) because temporary
+        // multi-dummy emitter entities (`CParticleEmitterComponent`, `sub_8256AD38`) destroy their
+        // entity as soon as emission ends while the `CFxParticleEffectHandle` remains alive until
+        // its particles fade out.
         _roots.Clear();
+        _rootIdentity.Clear();
+        _keyByInstance.Clear();
+        _boneRoots.Clear();
+        _statedSplineByKey.Clear();
+        _drawnSplineByKey.Clear();
         _emitterState.Clear();
         foreach (HostBridge.ActiveFx fx in live)
         {
             uint rootKey = fx.Handle != 0 ? fx.Handle : fx.Instance;
+            if (fx.Instance != 0)
+            {
+                _keyByInstance[fx.Instance] = rootKey;
+            }
+            if (fx.Owner != 0)
+            {
+                _ownerByKey[rootKey] = fx.Owner;
+            }
+            if (fx.Attached != 0)
+            {
+                _attachedByKey[rootKey] = fx.Attached;
+            }
             if (fx.Root)
             {
                 // A root nobody has positioned is identity at the origin: the node ctor
@@ -324,16 +424,47 @@ public partial class GameFx : Node3D
                     fx.Position != Vector3.Zero && !_roots.ContainsKey(rootKey))
                 {
                     _roots[rootKey] = ToGodot(fx.Position, fx.Rows);
+                    _rootIdentity[rootKey] = IsExactGuestIdentityRows(fx.Rows);
                 }
 
                 continue;
+            }
+
+            FxEmitter? emitterDef = bank?.EmitterForType(fx.NameHash);
+
+            // Runtime spline override endpoints on a Type 5 `CParticleSplineNode` (`sub_8322E858`),
+            // exported by `RefiiHostGetActiveFx` in `fx.Rows[0..count-1]` with `fx.Scale = count`.
+            if (emitterDef is { TypeId: 5 } &&
+                float.IsFinite(fx.Scale) && fx.Scale is >= 2f and <= 3.5f &&
+                !_statedSplineByKey.ContainsKey(rootKey))
+            {
+                int spCount = Math.Clamp((int)MathF.Round(fx.Scale), 2, 3);
+                bool finitePts = fx.Rows.Length >= spCount;
+                for (int p = 0; p < spCount && finitePts; p++)
+                {
+                    if (!fx.Rows[p].IsFinite() || fx.Rows[p].Length() >= MaxFxReach)
+                    {
+                        finitePts = false;
+                    }
+                }
+
+                if (finitePts)
+                {
+                    var pts = new Vector3[spCount];
+                    for (int p = 0; p < spCount; p++)
+                    {
+                        pts[p] = ToGodot(fx.Rows[p]);
+                    }
+
+                    _statedSplineByKey[rootKey] = pts;
+                }
             }
 
             // Scale and fade live on the element, and only a standard emitter's slots mean
             // anything (a spline or light node's +412 holds something else). The bank says which
             // type a node is.
             if (!_emitterState.ContainsKey(rootKey) &&
-                bank?.EmitterForType(fx.NameHash) is { TypeId: 0 or 9 } &&
+                emitterDef is { TypeId: 0 or 9 } &&
                 float.IsFinite(fx.Scale) && fx.Scale > 0f && fx.Scale < 100f &&
                 float.IsFinite(fx.Fade))
             {
@@ -341,17 +472,88 @@ public partial class GameFx : Node3D
             }
         }
 
-        // The effects whose particle groups the guest is drawing itself (modern renderer): one
-        // owned group is enough, the guest draws an effect's groups together.
-        _guestDrawn.Clear();
-        System.Collections.Generic.HashSet<uint> owners = Refii.Models.Engine_ClassicParticles.DrawnOwners;
-        if (owners.Count != 0)
+        // Resolve CECObjectAttachment bone mounts (e.g. Hero's Halo on Character.Focal.Mouth,
+        // flaming weapons, handheld torches, spell hand-charge effects) and multi-dummy weapon
+        // spline overrides (`FX_64D9750B` gun sparkles, `FX_B0BF62DC` melee sparkles) directly
+        // against the host's freshly posed Skeleton3D and weapon nodes so Modern mode (`FableFx`)
+        // locks 1:1 to the drawn body/weapon on the exact same display frame with zero tick lag.
+        if (GameEntities.Current is { } entities &&
+            (_ownerByKey.Count != 0 || _attachedByKey.Count != 0 || _weaponSplineByKey.Count != 0))
         {
-            foreach (HostBridge.ActiveFx fx in live)
+            _candidateAttachmentKeys.Clear();
+            _candidateAttachmentKeys.UnionWith(_ownerByKey.Keys);
+            _candidateAttachmentKeys.UnionWith(_attachedByKey.Keys);
+            _candidateAttachmentKeys.UnionWith(_weaponSplineByKey.Keys);
+            foreach (uint rootKey in _candidateAttachmentKeys)
             {
-                if (owners.Contains(fx.Instance))
+                _ownerByKey.TryGetValue(rootKey, out uint owner);
+                _attachedByKey.TryGetValue(rootKey, out uint attached);
+
+                if (attached != 0u &&
+                    _statedSplineByKey.TryGetValue(rootKey, out Vector3[]? statedSpline) &&
+                    entities.TryGetStatedAndDrawnTransform(attached, out Transform3D targetStated, out _))
                 {
-                    _guestDrawn.Add(fx.Handle != 0 ? fx.Handle : fx.Instance);
+                    Transform3D toTargetLocal = targetStated.AffineInverse();
+                    if (!_weaponSplineByKey.TryGetValue(rootKey, out var cached) ||
+                        cached.Target != attached ||
+                        cached.LocalPoints.Length != statedSpline.Length)
+                    {
+                        cached = (attached, new Vector3[statedSpline.Length]);
+                    }
+
+                    for (int i = 0; i < statedSpline.Length; i++)
+                    {
+                        cached.LocalPoints[i] = toTargetLocal * statedSpline[i];
+                    }
+
+                    _weaponSplineByKey[rootKey] = cached;
+                }
+
+                if (_weaponSplineByKey.TryGetValue(rootKey, out (uint Target, Vector3[] LocalPoints) weaponSpline) &&
+                    entities.TryGetStatedAndDrawnTransform(weaponSpline.Target, out _, out Transform3D currentTargetDrawn))
+                {
+                    var drawnPts = new Vector3[weaponSpline.LocalPoints.Length];
+                    for (int i = 0; i < drawnPts.Length; i++)
+                    {
+                        drawnPts[i] = currentTargetDrawn * weaponSpline.LocalPoints[i];
+                    }
+
+                    _drawnSplineByKey[rootKey] = drawnPts;
+                }
+
+                if (!_roots.TryGetValue(rootKey, out Transform3D statedFxRoot))
+                {
+                    continue;
+                }
+
+                Transform3D statedEntityRoot = Engine_FxSystem.FxToEntityMeshTransform(statedFxRoot);
+                if (entities.TryPlaceAttachedEffect(owner, attached, statedEntityRoot, out Transform3D placedEntityRoot))
+                {
+                    _boneRoots[rootKey] = (statedEntityRoot, placedEntityRoot, false);
+                }
+            }
+        }
+
+        // SEPARATION OF CONCERNS BETWEEN MODERN AND CLASSIC PARTICLE SYSTEMS:
+        // - Modern mode (`!Engine_ClassicMaterial.Active`) uses `FableFx` + `Engine_FxSystem`
+        //   exclusively for all billboard, ribbon, trail, displacement, and light effects across
+        //   0..200m (`GuestDrawn = false`). `GameSession._Process` already pumps `Engine_ClassicViews`
+        //   and `Engine_FxMeshTwins` once per frame before `GameFx._Process`.
+        // - Classic mode (`Engine_ClassicMaterial.Active`) uses `Engine_ClassicParticles` exclusively
+        //   (pumped from `Engine_ClassicPath.Pump`), while sharing pure static math/table helpers
+        //   on `Engine_FxSystem`.
+        _guestDrawn.Clear();
+        if (Refii.Models.Engine_ClassicMaterial.Active)
+        {
+            System.Collections.Generic.HashSet<uint> owners = Refii.Models.Engine_ClassicParticles.DrawnOwners;
+            if (owners.Count != 0)
+            {
+                foreach (HostBridge.ActiveFx fx in live)
+                {
+                    if (owners.Contains(fx.Instance))
+                    {
+                        _guestDrawn.Add(fx.Handle != 0 ? fx.Handle : fx.Instance);
+                    }
                 }
             }
         }
@@ -451,6 +653,9 @@ public partial class GameFx : Node3D
                 (!_effectOf.TryGetValue(key, out uint was) || was != effect))
             {
                 _timelines.Remove(key);
+                _ownerByKey.Remove(key);
+                _attachedByKey.Remove(key);
+                _weaponSplineByKey.Remove(key);
                 _nodes.Remove(key);
                 if (IsInstanceValid(node))
                 {
@@ -462,17 +667,33 @@ public partial class GameFx : Node3D
 
             if (node is null)
             {
-                long madeFrom = System.Diagnostics.Stopwatch.GetTimestamp();
-                node = new FableFx
+                if (fx.Attached != 0u &&
+                    _activeWeaponFx.TryGetValue((fx.Attached, effect), out var active) &&
+                    active.Node is not null &&
+                    IsInstanceValid(active.Node))
                 {
-                    Name = $"LiveFx_{key:X8}",
+                    if (active.RootKey != key)
+                    {
+                        _nodes.Remove(active.RootKey);
+                        active.RootKey = key;
+                    }
+                    node = active.Node;
+                    _nodes[key] = node;
+                }
+                else
+                {
+                    long madeFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+                    node = new FableFx
+                    {
+                        Name = $"LiveFx_{key:X8}",
 
-                    // Hash token form: the guest stores only the FNV-1 of the name.
-                    EffectName = $"FX_{effect:X8}",
-                };
-                _nodes[key] = node;
-                AddChild(node);
-                Refii.Core.Engine_SpikeNotes.Since(Refii.Core.Engine_SpikeNotes.Kind.FxNode, madeFrom);
+                        // Hash token form: the guest stores only the FNV-1 of the name.
+                        EffectName = $"FX_{effect:X8}",
+                    };
+                    _nodes[key] = node;
+                    AddChild(node);
+                    Refii.Core.Engine_SpikeNotes.Since(Refii.Core.Engine_SpikeNotes.Kind.FxNode, madeFrom);
+                }
             }
 
             _effectOf[key] = effect;
@@ -508,11 +729,42 @@ public partial class GameFx : Node3D
             // Written only when it moved: a node write propagates an instance update to every
             // surface, light and mesh under the effect, and a standing effect's smoothed
             // placement is the same transform every frame.
-            Transform3D smoothed = Smoothed(key, placed);
+            Transform3D smoothed;
+            Vector3[]? activeWorldSpline = null;
+            if (_drawnSplineByKey.TryGetValue(key, out Vector3[]? drawnSpline) && drawnSpline.Length >= 2)
+            {
+                _timelines.Remove(key);
+                // Keep the guest's identity root orientation (`placed.Basis`) while anchoring the
+                // origin at the first weapon dummy (`drawnSpline[0]`) so `SetSplineOverride` maps
+                // the spline segment along the drawn weapon barrel/blade.
+                smoothed = new Transform3D(placed.Basis, drawnSpline[0]);
+                activeWorldSpline = drawnSpline;
+            }
+            else if (_boneRoots.TryGetValue(key, out var bonePlacement))
+            {
+                _timelines.Remove(key);
+                smoothed = Engine_FxSystem.EntityMeshToFxTransform(bonePlacement.BoneEntityRoot);
+                _statedSplineByKey.TryGetValue(key, out activeWorldSpline);
+            }
+            else
+            {
+                smoothed = Smoothed(key, placed, refreshed);
+                _statedSplineByKey.TryGetValue(key, out activeWorldSpline);
+            }
             if (!node.Transform.IsEqualApprox(smoothed))
             {
                 Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
                 node.Transform = smoothed;
+            }
+            if (activeWorldSpline is { Length: >= 2 })
+            {
+                Transform3D toNodeLocal = smoothed.AffineInverse();
+                for (int i = 0; i < activeWorldSpline.Length; i++)
+                {
+                    _localSplineScratch[i] = toNodeLocal * activeWorldSpline[i];
+                }
+
+                node.SetSplineOverride(_localSplineScratch.AsSpan(0, activeWorldSpline.Length));
             }
             (float scale, float fade) = _emitterState.TryGetValue(key, out var state) ? state : (1f, 1f);
             node.Intensity = fx.Intensity * fade;
@@ -521,8 +773,103 @@ public partial class GameFx : Node3D
             // Fable2/src/vfs/src/hooks/particle_dress.cpp); this node applies that factor itself
             // (FxEffect.Scale, Engine_FxSystem), so the size it takes from the guest is the game's.
             node.SizeScale = scale / AuthoredScale(effect);
-            node.GuestDrawn = _guestDrawn.Contains(key);
+            if (_guestDrawn.Contains(key))
+            {
+                _guestDrawnEffects.Add(effect);
+            }
+            node.GuestDrawn |= _guestDrawn.Contains(key);
             Engine_FxRecipes.Apply(node, effect, fx.Owner, fx.Attached, fx.Handle);
+
+            if (fx.Attached != 0u && _weaponSplineByKey.TryGetValue(key, out var wSpline) && wSpline.LocalPoints.Length >= 2)
+            {
+                if (!_activeWeaponFx.TryGetValue((fx.Attached, effect), out var tracker))
+                {
+                    tracker = new WeaponAugmentTracker
+                    {
+                        RootKey = key,
+                        EffectHash = effect,
+                        TargetEntity = fx.Attached,
+                        LocalPoints = wSpline.LocalPoints,
+                        Node = node,
+                    };
+                    _activeWeaponFx[(fx.Attached, effect)] = tracker;
+                }
+                else
+                {
+                    tracker.RootKey = key;
+                    tracker.LocalPoints = wSpline.LocalPoints;
+                    tracker.Node = node;
+                }
+
+                tracker.Intensity = node.Intensity;
+                tracker.LightFade = node.LightFade;
+                tracker.SizeScale = node.SizeScale;
+            }
+        }
+
+        // CONTINUOUS WEAPON AUGMENTATION FX UPDATES ACROSS LOCOMOTION:
+        // When hero movement begins, guest `sub_825A0098` destroys the transient particle
+        // instance in guest memory, causing `live` to omit it. We keep active weapon augmentations
+        // continuously alive, looping, and rigidly locked to the drawn weapon model on every
+        // display frame as long as their weapon target entity is equipped and drawn.
+        if (GameEntities.Current is { } drawnEntities && _activeWeaponFx.Count != 0)
+        {
+            List<(uint Target, uint Effect)>? deadWeaponFx = null;
+            foreach (var (weaponKey, tracker) in _activeWeaponFx)
+            {
+                if (!drawnEntities.TryGetStatedAndDrawnTransform(tracker.TargetEntity, out _, out Transform3D currentTargetDrawn) ||
+                    tracker.Node is null ||
+                    !IsInstanceValid(tracker.Node) ||
+                    !tracker.Node.IsInsideTree() ||
+                    tracker.LocalPoints.Length < 2)
+                {
+                    (deadWeaponFx ??= new()).Add(weaponKey);
+                    continue;
+                }
+
+                // Protect node from retirement across hero locomotion:
+                _seen.Add(tracker.RootKey);
+                _absent.Remove(tracker.RootKey);
+
+                // Calculate the world-space dummy points on this exact display frame:
+                var drawnPts = new Vector3[tracker.LocalPoints.Length];
+                for (int i = 0; i < drawnPts.Length; i++)
+                {
+                    drawnPts[i] = currentTargetDrawn * tracker.LocalPoints[i];
+                }
+
+                // Anchored at the first weapon dummy, matching the simulation's world-aligned basis:
+                Transform3D smoothed = new Transform3D(GuestIdentity, drawnPts[0]);
+                if (!tracker.Node.Transform.IsEqualApprox(smoothed))
+                {
+                    Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
+                    tracker.Node.Transform = smoothed;
+                }
+
+                // Map local spline override endpoints relative to the updated node:
+                Transform3D toNodeLocal = smoothed.AffineInverse();
+                for (int i = 0; i < drawnPts.Length; i++)
+                {
+                    _localSplineScratch[i] = toNodeLocal * drawnPts[i];
+                }
+                tracker.Node.SetSplineOverride(_localSplineScratch.AsSpan(0, drawnPts.Length));
+
+                tracker.Node.Loop = true;
+                tracker.Node.Intensity = tracker.Intensity;
+                tracker.Node.LightFade = tracker.LightFade;
+                tracker.Node.SizeScale = tracker.SizeScale;
+            }
+
+            if (deadWeaponFx is not null)
+            {
+                foreach (var k in deadWeaponFx)
+                {
+                    if (_activeWeaponFx.Remove(k, out var tracker) && IsInstanceValid(tracker?.Node))
+                    {
+                        tracker!.Node.Loop = false;
+                    }
+                }
+            }
         }
 
         // One absence is not a retirement. A walk that fills its buffer stops at the cap, and the
@@ -585,9 +932,35 @@ public partial class GameFx : Node3D
             _absent.Remove(instance);
             _timelines.Remove(instance);
             _effectOf.Remove(instance);
+            _ownerByKey.Remove(instance);
+            _attachedByKey.Remove(instance);
+            _weaponSplineByKey.Remove(instance);
+
+            (uint Target, uint Effect)? deadWeaponKey = null;
+            foreach (var (wKey, tracker) in _activeWeaponFx)
+            {
+                if (tracker.RootKey == instance)
+                {
+                    deadWeaponKey = wKey;
+                    break;
+                }
+            }
+            if (deadWeaponKey is not null)
+            {
+                _activeWeaponFx.Remove(deadWeaponKey.Value);
+            }
+
             if (_nodes.Remove(instance, out FableFx? node) && IsInstanceValid(node))
             {
-                node.QueueFree();
+                if (node.DebugAlive > 0)
+                {
+                    node.Loop = false;
+                    _retiringNodes.Add((node, _tickNow));
+                }
+                else
+                {
+                    node.QueueFree();
+                }
             }
         }
     }
@@ -601,25 +974,88 @@ public partial class GameFx : Node3D
     private static float AuthoredScale(uint effect) =>
         FableFx.SharedBank()?.FindByHash(effect) is { Scale: > 0.0001f } e ? e.Scale : 1f;
 
-    private Transform3D Smoothed(uint key, Transform3D stated)
+    /// <summary>
+    /// Resolves a guest particle group's or trail's world transform (in entity-mesh <c>SO(3)</c> space)
+    /// directly onto its attached host bone/dummy pose when its effect is hung on a parent entity via
+    /// <c>CECObjectAttachment</c>. World-space emitters (<paramref name="exactIdentity4x4"/>) are
+    /// skipped because their particle positions are already baked in world space.
+    /// </summary>
+    public bool TryResolveBoneAttachedWorld(
+        uint ownerInstance,
+        Transform3D rawGroupEntityWorld,
+        bool rawIdentityBasis,
+        bool exactIdentity4x4,
+        out Transform3D resolvedEntityWorld)
     {
+        resolvedEntityWorld = rawGroupEntityWorld;
+        if (exactIdentity4x4 ||
+            ownerInstance == 0u ||
+            !_keyByInstance.TryGetValue(ownerInstance, out uint rootKey) ||
+            !_boneRoots.TryGetValue(rootKey, out (Transform3D StatedEntityRoot, Transform3D BoneEntityRoot, bool Unrotated) bone))
+        {
+            return false;
+        }
+
+        // Guard against world-space groups whose origin sits near (0, 0, 0) far from the character:
+        // any local-space emitter group belonging to this effect sits within a few metres of its root.
+        if (rawGroupEntityWorld.Origin.DistanceSquaredTo(bone.StatedEntityRoot.Origin) > 16f)
+        {
+            return false;
+        }
+
+        // For any local-space (`AttachToRoot`) emitter node, `sub_8322F1E0` -> `sub_8322EEC8` writes
+        // `sub_832295F0(root_node)` directly into the render twin (`R + 320`, `rawGroupEntityWorld`),
+        // while `sub_8322D988` already bakes the emitter child's local offset into the particle
+        // vertices in root space. Because the 15 Hz particle step runs before `CECObjectAttachment`
+        // updates the child entity (`bone.StatedEntityRoot`), `rawGroupEntityWorld` is simply the
+        // stale root from the last 15 Hz particle step — never compose `StatedEntityRoot^-1 * rawGroupEntityWorld`
+        // or it will cancel out the character's movement since the last particle step.
+        resolvedEntityWorld = new Transform3D(
+            rawIdentityBasis ? Engine_FxSystem.EntityGuestIdentity : bone.BoneEntityRoot.Basis,
+            bone.BoneEntityRoot.Origin);
+        return true;
+    }
+
+    private static bool IsExactGuestIdentityRows(Vector3[] rows) =>
+        rows.Length >= 3 &&
+        rows[0] == new Vector3(1f, 0f, 0f) &&
+        rows[1] == new Vector3(0f, 1f, 0f) &&
+        rows[2] == new Vector3(0f, 0f, 1f);
+
+    private Transform3D Smoothed(uint key, Transform3D stated, bool refreshed)
+    {
+        // Hold proper right-handed SO(3) (det = +1) transforms in Engine_TickTimeline so quaternion
+        // slerp never drops FableFx's axis-swap reflection (det = -1).
+        Transform3D entityStated = Engine_FxSystem.FxToEntityMeshTransform(stated);
         if (!_timelines.TryGetValue(key, out Refii.Core.Engine_TickTimeline? timeline))
         {
             timeline = new Refii.Core.Engine_TickTimeline(stillWhenUnchanged: false);
-            timeline.Reset(_tickNow, stated);
+            timeline.Reset(_tickNow, entityStated);
             _timelines[key] = timeline;
             return stated;
         }
 
-        if (timeline.Newest.Origin.DistanceTo(stated.Origin) > 4f ||
+        if (timeline.Newest.Origin.DistanceTo(entityStated.Origin) > 4f ||
             (_tickNow > timeline.NewestTick && _tickNow - timeline.NewestTick > 8))
         {
-            timeline.Reset(_tickNow, stated);
+            timeline.Reset(_tickNow, entityStated);
             return stated;
         }
 
-        timeline.Observe(_tickNow, stated);
-        return timeline.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec, Refii.Entities.Engine_DrawnFrame.DrawTick);
+        if (refreshed)
+        {
+            timeline.Observe(_tickNow, entityStated);
+        }
+
+        if (timeline.Settled)
+        {
+            return stated;
+        }
+
+        Transform3D entityDrawn = timeline.Advance(
+            Refii.Entities.Engine_DrawnFrame.NowUsec,
+            Refii.Entities.Engine_DrawnFrame.DrawTick);
+        return Engine_FxSystem.EntityMeshToFxTransform(entityDrawn);
     }
 
     /// <summary>The census, printed only when the distinct-effect count moves.</summary>

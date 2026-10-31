@@ -326,7 +326,7 @@ public static class HostBridge
 		int Priority, int Track, uint Uid, float BlendIn, float BlendOut,
 		bool Overlay, uint Mask, uint PriorityMask,
 		float RecordPrevious, float RecordCurrent, bool Network = false,
-		bool IsWinner = false, bool IsRunner = false);
+		bool IsWinner = false, bool IsRunner = false, bool SuppressedTrackSibling = false);
 
 	private const int AnimLeafWords = 12;
 
@@ -1108,7 +1108,8 @@ public static class HostBridge
 				System.BitConverter.Int32BitsToSingle((int)_animWords[at + 11]),
 				(f & 8) != 0,
 				(f & 16) != 0,
-				(f & 32) != 0));
+				(f & 32) != 0,
+				(f & 64) != 0));
 		}
 
 		return (int)leaves;
@@ -3721,7 +3722,13 @@ public static class HostBridge
 		uint Owner = 0,
 
 		/// <summary>The entity the effect's own entity was attached to, or 0.</summary>
-		uint Attached = 0);
+		uint Attached = 0,
+
+		/// <summary>
+		/// Whether this node owns a guest render twin (<c>CParticleGroup</c> or <c>CTrailGroup</c>),
+		/// even when its active quad count is currently 0.
+		/// </summary>
+		bool HasGuestTwin = false);
 
 	/// <summary>
 	/// Every particle effect the guest is currently playing, in world space — the only route
@@ -3761,6 +3768,8 @@ public static class HostBridge
 			float by = Bits(_activeFx[at + 5]);
 			float bz = Bits(_activeFx[at + 6]);
 
+			bool isRoot = (flags & 8u) != 0;
+			bool isSplineOverride = (flags & 32u) != 0;
 			effects.Add(new ActiveFx(
 				_activeFx[at + 0],
 				_activeFx[at + 16],
@@ -3770,13 +3779,14 @@ public static class HostBridge
 				(flags & 2u) != 0,
 				_activeFx[at + 3],
 				new Vector3(bx, by, bz),
-				GuestRows(_activeFx, at + 7, RowSlot((int)i)),
-				(flags & 8u) != 0,
+				GuestRows(_activeFx, at + 7, RowSlot((int)i), normalize: isRoot && !isSplineOverride),
+				isRoot,
 				Bits(_activeFx[at + 17]),
 				Bits(_activeFx[at + 18]),
 				Bits(_activeFx[at + 19]),
 				_activeFx[at + 20],
-				_activeFx[at + 21]));
+				_activeFx[at + 21],
+				(flags & 16u) != 0));
 		}
 
 		return effects;
@@ -3801,12 +3811,12 @@ public static class HostBridge
 	}
 
 	/// <summary>
-	/// Rows 0..2 of the guest's world matrix, normalised, in GUEST axes. The rows carry the
-	/// node's scale (<c>sub_8222E678</c> pre-multiplies each by its scale lane), hence the
-	/// normalise. Row 0 is the image of the guest's local X, row 1 of Y, row 2 of Z; converting
-	/// to Godot's axes is the caller's job.
+	/// Rows 0..2 of the guest's world matrix, normalised when <paramref name="normalize"/> is true,
+	/// in GUEST axes. Root nodes carry the node's scale (<c>sub_8222E678</c> pre-multiplies each
+	/// basis row by its scale lane), hence the normalise; non-root spline override nodes carry
+	/// world-space spline endpoints in <c>row[7..15]</c> and must not be normalised.
 	/// </summary>
-	private static Vector3[] GuestRows(uint[] words, int at, Vector3[] rows)
+	public static Vector3[] GuestRows(uint[] words, int at, Vector3[] rows, bool normalize = true)
 	{
 		for (int r = 0; r < 3; r++)
 		{
@@ -3814,7 +3824,9 @@ public static class HostBridge
 				Bits(words[at + (r * 3) + 0]),
 				Bits(words[at + (r * 3) + 1]),
 				Bits(words[at + (r * 3) + 2]));
-			rows[r] = row.LengthSquared() > 1e-8f ? row.Normalized() : Vector3.Zero;
+			rows[r] = !normalize
+				? row
+				: (row.LengthSquared() > 1e-8f ? row.Normalized() : Vector3.Zero);
 		}
 
 		return rows;
@@ -5570,6 +5582,11 @@ public static class HostBridge
 	/// <summary>One deliberate guest word write. Refused on unwritable or untracked pages.</summary>
 	public static bool Poke(uint addr, uint value) =>
 		TryGetAbiVersion() is not null && IsGuestUp && RefiiHostPoke(addr, value) != 0;
+
+	/// <summary>Installs the remaster hook on guest <c>CAugmentationComponent</c> locomotion check (<c>sub_825A0098</c>)
+	/// so weapon sparkles and augmentation effects remain active while walking and running.</summary>
+	public static bool InstallWeaponAugmentHook() =>
+		TryGetAbiVersion() is not null && IsGuestUp && RefiiHostInstallWeaponAugmentHook() != 0;
 
 	/// <summary>Arms a recording probe on a guest function start. Slot, or a negative refusal:
 	/// -1 all slots used, -2 not a recompiled function start, -3 no runtime.</summary>
@@ -7902,6 +7919,9 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostPoke(uint addr, uint value);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostInstallWeaponAugmentHook();
 
 	[DllImport(Library)]
 	private static extern int RefiiHostProbeSet(uint addr);

@@ -203,6 +203,13 @@ public static class Engine_LevelLighting
 		}
 		if (light.ShadowEnabled != shadows) light.ShadowEnabled = shadows;
 
+		float sunDayFactor = Math.Clamp(frame.SunDirection[1] / 0.20f, 0.0f, 1.0f);
+		float desiredVolumetricEnergy = frame.HasSky ? Mathf.Lerp(0.85f, 4.0f, sunDayFactor) : 0.0f;
+		if (MathF.Abs(light.LightVolumetricFogEnergy - desiredVolumetricEnergy) > 0.001f)
+		{
+			light.LightVolumetricFogEnergy = desiredVolumetricEnergy;
+		}
+
 		// Exclude town building interiors (IndoorMask / IndoorLampHostMask) from the outdoor
 		// directional sun/moon light so sunlight never leaks through walls or roofs onto indoor
 		// geometry when sun shadows are disabled or beyond cascade depth.
@@ -493,7 +500,7 @@ public static class Engine_LevelLighting
 		set => _giHalfResolution = value;
 	}
 
-	private static void ConfigureGlobalIllumination(Godot.Environment environment, bool unified)
+	private static void ConfigureGlobalIllumination(Godot.Environment environment, bool unified, bool hasSky)
 	{
 		// A renderer-wide switch, not the environment's; written only when it changes.
 		bool half = GiHalfResolution;
@@ -517,7 +524,7 @@ public static class Engine_LevelLighting
 		environment.SdfgiMinCellSize = 0.2f;
 		environment.SdfgiYScale = Godot.Environment.SdfgiyScale.Scale75Percent;
 		environment.SdfgiUseOcclusion = true;
-		environment.SdfgiReadSkyLight = true;
+		environment.SdfgiReadSkyLight = hasSky;
 		environment.SdfgiBounceFeedback = 0.5f;
 		environment.SdfgiEnergy = 1.0f;
 	}
@@ -540,20 +547,18 @@ public static class Engine_LevelLighting
 		//            and both take the bounce of the lights that are actually there.
 		//   fable  — the guest: the shaders emit the 360's own fills and Godot's ambient has no
 		//            energy, which is what `ambient_light_disabled` used to guarantee.
-		// NO SKY, NO GI: a cave or hall states no main light, so there is no sky light for the
-		// GI to trace and no sun for it to bounce; its fill IS the authored bake (vertex
-		// colours and lightmaps under the placement id, `sub_82219978`) plus the flat ambient,
-		// and the torches are live. The outdoor stand-in (a terrain-texel mean × LightmapColour,
-		// below) has no business in a room, so a sky-less level takes the guest's own fill
-		// under the modern model too, with the modern torches on top.
-		bool unified = Engine_LightingFrame.ModernModel && frame.HasSky;
+		// In sky-less caves (`!frame.HasSky`), `unified` remains active in the modern model so
+		// Godot's SDFGI (`SdfgiReadSkyLight = false`) traces and bounces the cave's dynamic
+		// torches, braziers and emissive surfaces, while `fable_fill_floor` provides the cave
+		// theme's `LightmapColour` ambient share.
+		bool unified = Engine_LightingFrame.ModernModel;
 		RenderingServer.GlobalShaderParameterSet(FableUnifiedName, unified ? 1.0f : 0.0f);
-		ConfigureGlobalIllumination(environment, unified);
+		ConfigureGlobalIllumination(environment, unified, frame.HasSky);
 
 		// Sky reflections are not part of this: the materials carry their own environment map.
 		environment.ReflectedLightSource = Godot.Environment.ReflectionSource.Disabled;
 
-		// NO SKY, MODERN MODEL: the bakes are the light. See fable_interior in the shader.
+		// NO SKY, MODERN MODEL: interior dials apply where the theme states no main light.
 		// A painted day set is not a roof: painted sets author mood over OUTDOOR cells and the
 		// data has no interior flag (`Engine_PaintedDaySets`). Gating on SkylightWeight
 		// (`hasSky ? 1 - PaintedWeight : 0`) flipped the whole screen when PaintedWeight clamped
@@ -576,23 +581,32 @@ public static class Engine_LevelLighting
 				Engine_LightingFrame.MeanAuthoredBake * frame.LightmapColour[1],
 				Engine_LightingFrame.MeanAuthoredBake * frame.LightmapColour[2],
 			};
-			float peak = MathF.Max(sky[0], MathF.Max(sky[1], sky[2]));
-			environment.AmbientLightSource = Godot.Environment.AmbientSource.Color;
-			environment.AmbientLightColor = peak > 0f
-				? new Color(sky[0] / peak, sky[1] / peak, sky[2] / peak)
-				: Colors.Black;
-			// The GI's half of the bake; the other half is the flat floor below.
-			float traced = 1f - Engine_LightingFrame.ModernFloorShare;
-			environment.AmbientLightEnergy = peak * traced * ambientScale;
+			if (frame.HasSky)
+			{
+				float peak = MathF.Max(sky[0], MathF.Max(sky[1], sky[2]));
+				environment.AmbientLightSource = Godot.Environment.AmbientSource.Color;
+				environment.AmbientLightColor = peak > 0f
+					? Engine_LightColour.ForGodot(new Color(sky[0] / peak, sky[1] / peak, sky[2] / peak))
+					: Colors.Black;
+				// The GI's half of the bake; the other half is the flat floor below.
+				float traced = 1f - Engine_LightingFrame.ModernFloorShare;
+				environment.AmbientLightEnergy = peak * traced * ambientScale;
+			}
+			else
+			{
+				// NONE MEANS NONE, not "whatever was here". The Environment outlives the region that
+				// last configured it, and a frame with no sky must not keep the previous region's
+				// sky ambient (b175). SDFGI in caves traces the dynamic lights alone.
+				environment.AmbientLightSource = Godot.Environment.AmbientSource.Disabled;
+				environment.AmbientLightEnergy = 0f;
+			}
+
 			float floor = Engine_LightingFrame.ModernFloorShare * ambientScale;
 			RenderingServer.GlobalShaderParameterSet(FableFillFloorName,
 				new Vector3(sky[0] * floor, sky[1] * floor, sky[2] * floor));
 		}
 		else
 		{
-			// NONE MEANS NONE, not "whatever was here". The Environment outlives the region that
-			// last configured it, and a frame with no ambient used to leave the previous
-			// region's in place — a cave entered from a sunset kept the sunset (b175).
 			environment.AmbientLightSource = Godot.Environment.AmbientSource.Disabled;
 			environment.AmbientLightEnergy = 0f;
 			RenderingServer.GlobalShaderParameterSet(FableFillFloorName, Vector3.Zero);
@@ -614,8 +628,17 @@ public static class Engine_LevelLighting
 		// The bent-normal reference: the rig's sun direction, dome convention like `atmos_sun`.
 		RenderingServer.GlobalShaderParameterSet(FableAmbientRefName,
 			Refii.Level.Engine_SkyFrame.ToDome(frame.AmbientReference));
+		float interiorContrastFactor = interior
+			? ComputeInteriorFogContrastFactor(
+				Refii.Level.Engine_SkyEnvironment.LastAtmosphereState,
+				frame)
+			: 1.0f;
+		float effectiveFogScale = interior
+			? Engine_LightingFrame.InteriorFogScale * interiorContrastFactor
+			: Engine_LightingFrame.OutdoorFogScale;
+
 		RenderingServer.GlobalShaderParameterSet(FableInteriorFogName,
-			interior ? Engine_LightingFrame.InteriorFogScale : 1.0f);
+			effectiveFogScale);
 		RenderingServer.GlobalShaderParameterSet(FableInteriorBakeName,
 			interior ? Engine_LightingFrame.InteriorBakeScale : 1.0f);
 		RenderingServer.GlobalShaderParameterSet(FableSkyAmbientName, new Vector4(
@@ -631,16 +654,225 @@ public static class Engine_LevelLighting
 		// below, which reads as the world going dark with distance rather than as two fogs.
 		environment.FogEnabled = false;
 
-		// NO GODOT FOG, DELIBERATELY. Fable's fog is not a depth ramp and `Environment` cannot be
-		// configured into one that resembles it: the transmittance is per channel (Rayleigh is
-		// about 3.5x stronger in blue than in red, which is most of the look), the colour it
-		// converges on is the sky's in-scatter in the view direction rather than a constant, and
-		// the two density values the theme states are control points that solve a power law, not
-		// the ends of a lerp — several shipped themes state a near density HIGHER than the far
-		// one, which a ramp cannot represent at all.
-		//
-		// It lives in the surface shaders instead, which is where the guest puts it too. See
-		// `fable_atmosphere.gdshaderinc` and `Engine_SkyAtmosphere.SolveFogCurve`.
+		// GODOT 3D VOLUMETRIC FOG (0..128m 32-bit float uniform medium) + FULL-RANGE FABLE ATMOSPHERE (0..2000m).
+		// Note: Custom `FogVolume` shaders (`shader_type fog;`) are quantized into integer `R32I` (`* 1024`)
+		// and `R11G11B10` (`EMISSION * DENSITY / 4 * 2047`) atomics in Godot 4's `volumetric_fog.glsl`,
+		// which truncates physical distance fog densities (`~0.001 m^-1`) to 0.
+		// By contrast, `Godot.Environment`'s built-in `VolumetricFogDensity`, `VolumetricFogAlbedo`, and
+		// `VolumetricFogEmission` are passed as 32-bit float uniforms (`params.base_density`,
+		// `params.base_scattering`, `params.base_emission`) directly into `volumetric_fog_process.glsl`
+		// (`RGBA16F` float), completely bypassing integer truncation!
+		// Meanwhile, `fable_atmosphere.gdshaderinc` runs in full 32-bit float per pixel across all distances
+		// (`0..2000m`), dividing out `exp(-VolumetricFogDensity * min(view_z, 128m))` so near-field surfaces
+		// are never double-fogged.
+		const float VolumetricFogEndMetres = 128.0f;
+		bool useVolumetricFog = unified && Engine_LightingFrame.VolumetricFogEnabled;
+		bool activeVolumetric = useVolumetricFog && effectiveFogScale > 0.0f;
+		float volBaseDensity = 0.0f;
+		Color volAlbedo = Colors.White;
+		Color volLinearTint = Colors.White;
+		Color volEmission = Colors.Black;
+		float volEmissionEnergy = 0.0f;
+
+		if (activeVolumetric &&
+			Refii.Level.Engine_SkyEnvironment.LastAtmosphereState is { HasFog: true } atmosState)
+		{
+			volBaseDensity = ComputeVolumetricMediumParameters(
+				atmosState,
+				effectiveFogScale,
+				out volAlbedo,
+				out volLinearTint,
+				out volEmission,
+				out volEmissionEnergy);
+		}
+
+		bool hasMistVolumes = (Refii.Level.Engine_ModernMist.Instance?.Drawn ?? 0) > 0;
+		if (volBaseDensity > 1e-5f)
+		{
+			float fogStart = Refii.Level.Engine_SkyEnvironment.LastAtmosphereState is { HasFog: true } fs
+				? MathF.Max(fs.ScatteringMisc[0], 0.0f)
+				: 0.0f;
+			float startAtten = 1.0f / (1.0f + fogStart * 0.045f);
+			environment.VolumetricFogEnabled = true;
+			environment.VolumetricFogDensity = volBaseDensity;
+			environment.VolumetricFogAlbedo = volAlbedo;
+			environment.VolumetricFogEmission = volEmission;
+			environment.VolumetricFogEmissionEnergy = interior ? volEmissionEnergy : (volEmissionEnergy * startAtten * 0.45f);
+			environment.VolumetricFogLength = VolumetricFogEndMetres;
+			environment.VolumetricFogDetailSpread = 2.0f;
+			environment.VolumetricFogAnisotropy = 0.65f;
+			environment.VolumetricFogAmbientInject = interior ? 0.15f : 0.20f;
+			environment.VolumetricFogGIInject = interior ? 0.85f : 0.30f;
+			environment.VolumetricFogSkyAffect = interior ? 1.0f : 0.45f;
+			environment.VolumetricFogTemporalReprojectionEnabled = true;
+			environment.VolumetricFogTemporalReprojectionAmount = 0.90f;
+			Engine_VolumetricLightShafts.SetMedium(MathF.Max(volBaseDensity, 0.0022f), volLinearTint, 0.65f, fogStart);
+		}
+		else if (activeVolumetric)
+		{
+			environment.VolumetricFogEnabled = hasMistVolumes;
+			environment.VolumetricFogDensity = 0.0f;
+			environment.VolumetricFogEmissionEnergy = 0.0f;
+			environment.VolumetricFogLength = VolumetricFogEndMetres;
+			environment.VolumetricFogDetailSpread = 2.0f;
+			environment.VolumetricFogAnisotropy = 0.65f;
+			environment.VolumetricFogAmbientInject = interior ? 0.15f : 0.20f;
+			environment.VolumetricFogGIInject = interior ? 0.85f : 0.30f;
+			environment.VolumetricFogSkyAffect = interior ? 1.0f : 0.45f;
+			environment.VolumetricFogTemporalReprojectionEnabled = true;
+			environment.VolumetricFogTemporalReprojectionAmount = 0.90f;
+			Engine_VolumetricLightShafts.SetMedium(0.0022f, Colors.White, 0.65f, 0.0f);
+		}
+		else
+		{
+			environment.VolumetricFogEnabled = false;
+			environment.VolumetricFogDensity = 0.0f;
+			Engine_VolumetricLightShafts.SetMedium(0.0f, Colors.Black, 0.65f);
+		}
+
+		RenderingServer.GlobalShaderParameterSet(FableVolumetricFogEndName, volBaseDensity);
+	}
+
+	/// <summary>
+	/// Computes the interior cave fog contrast transfer factor (<c>kappa</c>) for sky-less caves
+	/// in Modern mode. High-albedo / low-density caves like Howling Halls (<c>palacecave</c>,
+	/// <c>CloseFogColour</c> luma <c>0.704</c> vs <c>AmbientColour</c> luma <c>0.068</c>, ratio <c>10.3x</c>)
+	/// relied on near-black unlit cave walls in Classic Fable 2 for their fog contrast, whereas
+	/// high-density / low-albedo caves like Guild Cave (<c>thagscave</c>, <c>CloseFogColour</c> luma
+	/// <c>0.089</c> vs <c>AmbientColour</c> luma <c>0.050</c>, ratio <c>1.78x</c>) carry their visibility
+	/// directly in <c>FarDensity = 4.0</c>.
+	/// </summary>
+	public static float ComputeInteriorFogContrastFactor(
+		Refii.Level.AtmosphereState? state,
+		LightingFrame frame)
+	{
+		if (state is null || !state.HasFog || state.ScatteringMisc[0] >= 500000.0f)
+		{
+			return 1.0f;
+		}
+
+		float closeLuma =
+			(0.2126f * state.FogCloseColour[0]) +
+			(0.7152f * state.FogCloseColour[1]) +
+			(0.0722f * state.FogCloseColour[2]);
+		float ambR = frame.AmbientColour[0] * frame.AmbientEnergy;
+		float ambG = frame.AmbientColour[1] * frame.AmbientEnergy;
+		float ambB = frame.AmbientColour[2] * frame.AmbientEnergy;
+		float ambLuma = MathF.Max(
+			(0.2126f * ambR) + (0.7152f * ambG) + (0.0722f * ambB),
+			0.02f);
+
+		float ratio = closeLuma / (2.5f * ambLuma);
+		return Math.Clamp(ratio, 1.0f, 4.5f);
+	}
+
+	/// <summary>
+	/// Derives Godot's 32-bit float <c>Environment.VolumetricFog*</c> uniform medium parameters
+	/// from the solved <see cref="Refii.Level.AtmosphereState"/>.
+	/// </summary>
+	public static float ComputeVolumetricMediumParameters(
+		Refii.Level.AtmosphereState state,
+		float effectiveFogScale,
+		out Color albedo,
+		out Color emission,
+		out float emissionEnergy) =>
+		ComputeVolumetricMediumParameters(
+			state,
+			effectiveFogScale,
+			out albedo,
+			out _,
+			out emission,
+			out emissionEnergy);
+
+	/// <summary>
+	/// Derives Godot's 32-bit float <c>Environment.VolumetricFog*</c> uniform medium parameters
+	/// and the unclamped linear scattering tint from the solved <see cref="Refii.Level.AtmosphereState"/>.
+	/// </summary>
+	public static float ComputeVolumetricMediumParameters(
+		Refii.Level.AtmosphereState state,
+		float effectiveFogScale,
+		out Color albedo,
+		out Color linearTint,
+		out Color emission,
+		out float emissionEnergy)
+	{
+		albedo = Colors.White;
+		linearTint = Colors.White;
+		emission = Colors.Black;
+		emissionEnergy = 0.0f;
+
+		if (!state.HasFog || effectiveFogScale <= 0.0f || state.ScatteringMisc[0] >= 500000.0f)
+		{
+			return 0.0f;
+		}
+
+		// Evaluate representative optical depth over both the near-camera span (20m) and mid-field
+		// span (50m) past FoggingStart so concave/steep near-field fog curves (e.g. Hall of Light
+		// `templeoflight`, Howling Halls `palacecave`, elevated Wraithmarsh `wraithmarsh`) retain
+		// full close-range 3D volumetric presence while clear daytime towns stay light haze.
+		const float nearSpan = 20.0f;
+		const float refSpan = 50.0f;
+		float tNear = MathF.Min(nearSpan, Refii.Level.Engine_SkyAtmosphere.MaxFogDistance) * state.FogRecipFarRange;
+		float t = MathF.Min(refSpan, Refii.Level.Engine_SkyAtmosphere.MaxFogDistance) * state.FogRecipFarRange;
+		if (t <= 0.0f || state.FogOpticalDepthAtFar <= 0.0f)
+		{
+			return 0.0f;
+		}
+
+		float opticalDepth20 = state.FogOpticalDepthAtFar * MathF.Pow(tNear, state.FogExponent) * effectiveFogScale;
+		float opticalDepth50 = state.FogOpticalDepthAtFar * MathF.Pow(t, state.FogExponent) * effectiveFogScale;
+		float betaR = state.BetaRayleigh[0] + state.BetaMie[0];
+		float betaG = state.BetaRayleigh[1] + state.BetaMie[1];
+		float betaB = state.BetaRayleigh[2] + state.BetaMie[2];
+		float betaLuma = (0.2126f * betaR) + (0.7152f * betaG) + (0.0722f * betaB);
+
+		// Attenuate uniform 0..128m froxel density when the level authors a positive FoggingStart
+		// (e.g. Bowerstone Market FoggingStart ~ 20m) so the clear near-camera zone is respected,
+		// while FoggingStart = 0..5m levels (Howling Halls, Wraithmarsh, Hall of Light) keep full close fog.
+		float fogStart = MathF.Max(state.ScatteringMisc[0], 0.0f);
+		float startFactor = 1.0f / (1.0f + fogStart * 0.045f);
+		float opticalRate = MathF.Max(opticalDepth20 / nearSpan, opticalDepth50 / refSpan);
+		float sigma = Math.Clamp((betaLuma * opticalRate) * 0.52f * startFactor, 0.0f, 0.028f);
+		if (sigma <= 1e-6f)
+		{
+			return 0.0f;
+		}
+
+		float closeR = MathF.Max(state.FogCloseColour[0], 0.0f);
+		float closeG = MathF.Max(state.FogCloseColour[1], 0.0f);
+		float closeB = MathF.Max(state.FogCloseColour[2], 0.0f);
+
+		// Blend CloseFogColour with the solved sky in-scatter LUT at representative near-field
+		// distance (16m * 1/CloseFogMaxDistance) whenever the sky LUT is brighter than CloseFogColour,
+		// so levels like Hall of Light (`templeoflight`) and Wraithmarsh retain their full near-field
+		// in-scatter luminance in scene-referred HDR space without dimming caves like Howling Halls
+		// where CloseFogColour carries the near-field fog brightness.
+		Refii.Level.Engine_SkyAtmosphere.SampleInScatter(state, 0.50f, out float skyR, out float skyG, out float skyB);
+		skyR = MathF.Max(skyR, 0.0f);
+		skyG = MathF.Max(skyG, 0.0f);
+		skyB = MathF.Max(skyB, 0.0f);
+		float skyBlend = Math.Clamp(16.0f * state.ScatteringMisc[2], 0.0f, 1.0f);
+
+		float r = MathF.Max(closeR, Mathf.Lerp(closeR, skyR, skyBlend));
+		float g = MathF.Max(closeG, Mathf.Lerp(closeG, skyG, skyBlend));
+		float b = MathF.Max(closeB, Mathf.Lerp(closeB, skyB, skyBlend));
+		float peak = MathF.Max(r, MathF.Max(g, b));
+
+		if (peak > 1e-4f)
+		{
+			linearTint = new Color(r / peak, g / peak, b / peak);
+			// Blend 65% of the authored fog tint into the scattering albedo so dynamic
+			// lights take on the atmosphere's hue while still allowing warm torches to tint cool fog.
+			Color normTint = new(
+				Mathf.Lerp(1.0f, linearTint.R, 0.65f),
+				Mathf.Lerp(1.0f, linearTint.G, 0.65f),
+				Mathf.Lerp(1.0f, linearTint.B, 0.65f));
+			albedo = Engine_LightColour.ForGodot(normTint);
+			emission = Engine_LightColour.ForGodot(linearTint);
+			emissionEnergy = peak * Refii.Level.Engine_SkyAtmosphere.FogColourFactor;
+		}
+
+		return sigma;
 	}
 
 	/// <summary>
@@ -694,4 +926,6 @@ public static class Engine_LevelLighting
 	private static StringName FableInteriorFogName => _fableInteriorFogName ??= "fable_interior_fog";
 	private static StringName FableInteriorBakeName => _fableInteriorBakeName ??= "fable_interior_bake";
 	private static StringName FableSkyAmbientName => _fableSkyAmbientName ??= "fable_sky_ambient";
+	private static StringName? _fableVolumetricFogEndName;
+	private static StringName FableVolumetricFogEndName => _fableVolumetricFogEndName ??= "fable_volumetric_fog_end";
 }

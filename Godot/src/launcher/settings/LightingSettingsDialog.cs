@@ -288,25 +288,25 @@ public partial class LightingSettingsDialog : Control
 		contentCol.AddChild(BuildSliderSpinRow(
 			"placed_light_scale",
 			"Fixture Intensity Scale",
-			"Multiplier on outdoor torch, lamp, and fixture brightness (default: 1.5x).",
+			"Multiplier on outdoor torch, lamp, and fixture brightness (default: 1.0x).",
 			0.2, 3.0, 0.05));
 
 		contentCol.AddChild(BuildSliderSpinRow(
 			"placed_light_reach_scale",
 			"Fixture Reach Scale",
-			"Multiplier on outdoor torch, lamp, and fixture radius (default: 1.5x).",
+			"Multiplier on outdoor torch, lamp, and fixture radius (default: 1.0x).",
 			0.25, 3.0, 0.05));
 
 		contentCol.AddChild(BuildSliderSpinRow(
 			"building_interior_ambient_scale",
 			"Building Interior Ambient Scale",
-			"Scales down ambient light inside town buildings in outdoor levels so rooms are not washed out (default: 0.5x; caves unaffected).",
+			"Multiplier on ambient fill inside town buildings in outdoor levels (default: 1.0x; caves unaffected).",
 			0.0, 2.0, 0.05));
 
 		contentCol.AddChild(BuildSliderSpinRow(
 			"building_interior_light_scale",
 			"Building Interior Light Scale",
-			"Multiplier on placed light intensity inside town buildings in outdoor levels (default: 0.65x; caves unaffected).",
+			"Multiplier on placed light intensity inside town buildings in outdoor levels (default: 1.0x; caves unaffected).",
 			0.0, 3.0, 0.05));
 
 		contentCol.AddChild(BuildSliderSpinRow(
@@ -315,16 +315,10 @@ public partial class LightingSettingsDialog : Control
 			"Multiplier on placed light radius inside town buildings in outdoor levels (default: 1.0x; caves unaffected).",
 			0.25, 3.0, 0.05));
 
-		contentCol.AddChild(BuildSliderSpinRow(
-			"unattached_light_scale",
-			"Unattached Floating Light Scale",
-			"Multiplier on placed OmniLight3D/SpotLight3D nodes not connected to any 3D light fixture in outdoor levels (0.0 disables them; default: 0.35x; caves unaffected).",
-			0.0, 2.0, 0.05));
-
 		contentCol.AddChild(BuildOptionRow(
 			"static_shadow_resolution",
 			"Static Shadow Resolution",
-			"Atlas size for pre-baked static fixture shadows (2048=balanced, 4096=sharp, 8192=ultra). Modifying will trigger a re-bake during the startup warmup screen.",
+			"Atlas size for pre-baked static fixture shadows (2048=balanced 6x6 grid, 4096=sharp 8x8 grid, 8192=ultra 8x8 grid). Modifying will trigger a re-bake during the startup warmup screen.",
 			new[] { "2048", "4096", "8192" },
 			new[] { "2048 (Default)", "4096 (High)", "8192 (Ultra)" }));
 
@@ -345,7 +339,7 @@ public partial class LightingSettingsDialog : Control
 		contentCol.AddChild(BuildSliderSpinRow(
 			"bloom_scale",
 			"Bloom Intensity Scale",
-			"Multiplier on the scene's bloom in the modern compositor (default: 0, off; 1.0x is the original's). The sun, moon and lamp halos glow regardless.",
+			"Multiplier on the scene's bloom in the modern compositor (default: 1.0x; 0.0 turns scene bloom off). The sun, moon and lamp halos glow regardless.",
 			0.0, 2.0, 0.05));
 
 		contentCol.AddChild(BuildSliderSpinRow(
@@ -381,14 +375,19 @@ public partial class LightingSettingsDialog : Control
 		contentCol.AddChild(BuildSliderSpinRow(
 			"interior_dark_lift",
 			"Interior Dark Frame Lift",
-			"Exposure compensation cap for pitch-dark caves and interior chambers (default: 1.5).",
-			1.0, 16.0, 0.25));
+			"Normalized exposure floor lift for sky-less caves and interior chambers (default: 1.0).",
+			0.25, 8.0, 0.05));
 
 		contentCol.AddChild(BuildSliderSpinRow(
 			"interior_fog_scale",
 			"Interior Fog Density",
-			"Atmospheric fog density multiplier inside caves and interiors (default: 0.2).",
-			0.0, 1.0, 0.05));
+			"Atmospheric fog density multiplier inside caves and interiors (default: 1.0).",
+			0.0, 4.0, 0.05));
+
+		contentCol.AddChild(BuildCheckBoxRow(
+			"volumetric_fog",
+			"3D Volumetric Fog & Light Rays",
+			"Enables Godot's 3D Volumetric Fog so sun shadows and dynamic lights scatter through the atmosphere (default: on)."));
 
 		contentCol.AddChild(BuildSliderSpinRow(
 			"fx_additive_gain",
@@ -784,7 +783,6 @@ public partial class LightingSettingsDialog : Control
 			"building_interior_ambient_scale",
 			"building_interior_light_scale",
 			"building_interior_reach_scale",
-			"unattached_light_scale",
 			"static_shadow_resolution",
 			"gi_half_resolution",
 			"ambient_light_scale",

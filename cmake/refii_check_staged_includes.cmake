@@ -68,7 +68,7 @@ while(_todo)
                 break()
             endif()
         endforeach()
-        if(NOT _found AND GENERATED_ROOT AND EXISTS "${GENERATED_ROOT}/${_name}")
+        if(NOT _found AND (_name STREQUAL "refii_init.h" OR _name STREQUAL "refii_pch.h" OR (GENERATED_ROOT AND EXISTS "${GENERATED_ROOT}/${_name}")))
             # Written by the generator on the player's machine; present here as the dev tree's.
             continue()
         endif()

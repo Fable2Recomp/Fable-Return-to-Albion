@@ -442,6 +442,7 @@ public static class Engine_LevelScene
         }
 
         Engine_LightingTheme.ReadPaintedBlendTimes(gdbs, out painted.BlendInSeconds, out painted.BlendOutSeconds);
+        painted.SeedDominantLayer();
         var parts = new List<string>();
         foreach ((uint hash, int count) in sets)
         {
@@ -1196,18 +1197,6 @@ public static class Engine_LevelScene
                     if (sky is not null)
                     {
                         Engine_LevelLighting.ConfigureEnvironment(sky.Environment, lightingFrame);
-
-                        if (hasMist)
-                        {
-                            // THE MIST VOLUMES ARE THE ONLY FOG. Godot's volumetric fog has a
-                            // level-wide density of its own (default 0.05) that fills every cubic
-                            // metre once the effect is enabled, lit by every torch — which is
-                            // what turned the guild hall into an orange soup. The authored mist
-                            // is a set of placed FogVolumes; the global density is not authored
-                            // and goes to zero.
-                            sky.Environment.VolumetricFogEnabled = true;
-                            sky.Environment.VolumetricFogDensity = 0f;
-                        }
                     }
 
                     if (sky is Engine_SkyEnvironmentNode skyNode)
@@ -1215,6 +1204,10 @@ public static class Engine_LevelScene
                         skyNode.LightingGdbs.AddRange(gdbs);
                         skyNode.Sun = sun;
                         skyNode.Painted = LoadPaintedDaySets(level, stated, source, gdbs);
+                        if (skyNode.Painted is { Any: true })
+                        {
+                            skyNode.Reevaluate();
+                        }
                     }
 
                     // BOTH THE STATED FIELDS AND THE SOLVED CURVE. The two densities are control
@@ -2346,9 +2339,10 @@ public static class Engine_LevelScene
 
                 var material = new FogMaterial();
                 material.Density = vol.Density;
-                var linearCol = new Color(vol.Colour[0], vol.Colour[1], vol.Colour[2]);
-                material.Albedo = linearCol.LinearToSrgb();
-                material.Emission = (linearCol * 0.25f).LinearToSrgb();
+                material.Albedo = Refii.Lighting.Engine_LightColour.ForGodot(
+                    new Color(vol.Colour[0], vol.Colour[1], vol.Colour[2]));
+                material.Emission = Refii.Lighting.Engine_LightColour.ForGodot(
+                    new Color(vol.Colour[0] * 0.25f, vol.Colour[1] * 0.25f, vol.Colour[2] * 0.25f));
                 if (vol.Falloff > 0f)
                 {
                     material.HeightFalloff = vol.Falloff;

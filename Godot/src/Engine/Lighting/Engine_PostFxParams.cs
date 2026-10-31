@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Godot;
 using Refii.Level;
 
@@ -46,13 +47,17 @@ public static class Engine_PostFxParams
     private static string? _toneCurve;
     private static float? _darkLift;
     /// <summary>What `bloom_scale` is when the config does not state it (RuntimeCVarSet agrees):
-    /// 0, no scene bloom. The dial scales the bright pass alone; the glow layer (sun, moon,
-    /// fixture halos) joins the bloom buffer unscaled, so the sun glows at 0. 1.0 is the
-    /// title's own amount.</summary>
-    public const float BloomGainDefault = 0.0f;
+    /// 0.25, calibrated to complement 3D volumetric scattering without overwhelming the scene.
+    /// The dial scales the bright pass alone; the glow layer (sun, moon, fixture halos) joins
+    /// the bloom buffer unscaled.</summary>
+    public const float BloomGainDefault = 0.25f;
+
+    /// <summary>What `volumetric_shaft_scale` is when the config does not state it: 1.0.</summary>
+    public const float VolumetricShaftScaleDefault = 1.0f;
 
     private static float? _bloomGain;
     private static bool? _haloDistanceFade;
+    private static float? _volumetricShaftScale;
 
     private static void CheckGeneration()
     {
@@ -66,6 +71,7 @@ public static class Engine_PostFxParams
             _darkLift = null;
             _bloomGain = null;
             _haloDistanceFade = null;
+            _volumetricShaftScale = null;
         }
     }
 
@@ -109,25 +115,6 @@ public static class Engine_PostFxParams
                 "filmic" => Engine_LightZones.IsViewerIndoors,
                 _ => false,
             };
-        }
-    }
-
-    /// <summary>
-    /// True when the modern scene-referred pipeline uses the Filmic (ACES) tone curve inside
-    /// town buildings ("filmic" or "all").
-    /// </summary>
-    public static bool FilmicBuildingInterior
-    {
-        get
-        {
-            if (!Engine_LightingFrame.ModernModel)
-            {
-                return false;
-            }
-
-            CheckGeneration();
-            _toneCurve ??= ReadString("modern_tone_curve", "fable").ToLowerInvariant();
-            return _toneCurve is "all" or "filmic";
         }
     }
 
@@ -213,6 +200,48 @@ public static class Engine_PostFxParams
     }
 
     /// <summary>
+    /// Multiplier on volumetric light-shaft in-scattering radiance across placed and dynamic lights
+    /// (<c>volumetric_shaft_scale</c> or <c>light_shaft_scale</c> in config, default <see cref="VolumetricShaftScaleDefault"/>).
+    /// Does not affect celestial sun/moon rays.
+    /// </summary>
+    public static float VolumetricShaftScale
+    {
+        get
+        {
+            CheckGeneration();
+            if (_volumetricShaftScale is null)
+            {
+                float value = VolumetricShaftScaleDefault;
+                try
+                {
+                    IReadOnlyDictionary<string, string> config = Refii.Core.Engine_RefiiConfig.Read(out _);
+                    if (config.TryGetValue("volumetric_shaft_scale", out string? s) ||
+                        config.TryGetValue("light_shaft_scale", out s))
+                    {
+                        if (float.TryParse(s, System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out float parsed))
+                        {
+                            value = parsed;
+                        }
+                    }
+                }
+                catch (System.Exception)
+                {
+                }
+
+                _volumetricShaftScale = System.Math.Clamp(value, 0.0f, 16.0f);
+            }
+
+            return _volumetricShaftScale.Value;
+        }
+        set
+        {
+            CheckGeneration();
+            _volumetricShaftScale = System.Math.Clamp(value, 0.0f, 16.0f);
+        }
+    }
+
+    /// <summary>
     /// Whether bloom halos from distant point light fixtures are smoothly attenuated with distance
     /// (`halo_distance_fade` in config, default true).
     /// </summary>
@@ -245,19 +274,18 @@ public static class Engine_PostFxParams
     public const float DarkLiftOnset = 10.0f;
 
     /// <summary>
-    /// Built-in interior dark-lift multiplier when the Filmic (ACES) tone curve is active in
-    /// sky-less interiors (`2.5 / 1.5 = 1.6667x`). Fable tonemapping includes the cumulative
-    /// histogram (`fable_cdf_pw`) midtone lift so `interior_dark_lift = 1.5` suffices, whereas
-    /// Filmic evaluates ACES directly without the CDF lift and needs ~2.5x in interiors.
+    /// Calibrated baseline dark-lift divisor in sky-less caves when <c>interior_dark_lift = 1.0</c>
+    /// under the Fable tone curve (<c>1.25x</c>), compensating for the Xbox 360's raw
+    /// <c>1 / (smWhite - smBlack)^2</c> Reinhard boost alongside interior SDFGI bounce.
     /// </summary>
-    public const float FilmicInteriorLiftScale = 2.5f / 1.5f;
+    public const float FableInteriorLiftBaseline = 1.25f;
 
     /// <summary>
-    /// Built-in town building interior ambient multiplier when the Filmic (ACES) tone curve is
-    /// active (`2.5 / 0.5 = 5.0x`), scaling the default `building_interior_ambient_scale = 0.5`
-    /// up to `2.5` inside enclosed town buildings in outdoor levels.
+    /// Calibrated baseline dark-lift divisor in sky-less caves when <c>interior_dark_lift = 1.0</c>
+    /// under the Filmic (ACES) tone curve (<c>1.75x</c>), which evaluates ACES directly without the
+    /// cumulative histogram (<c>fable_cdf_pw</c>) midtone lift alongside interior SDFGI bounce.
     /// </summary>
-    public const float FilmicBuildingInteriorAmbientScale = 2.5f / 0.5f;
+    public const float FilmicInteriorLiftBaseline = 1.75f;
 
     /// <summary>
     /// THE REMASTER'S ONE EXPOSURE LEVER. The guest's tone curve normalises a frame by its
@@ -278,16 +306,11 @@ public static class Engine_PostFxParams
                 return 1.0f;
             }
 
-            // No sky: the interior lift, live. Outdoors keeps the launcher's modern_dark_lift.
+            // No sky: the cave interior lift, normalized so 1.0 applies the calibrated baseline for the active curve.
             if (Engine_LightingFrame.CurrentInterior)
             {
-                float lift = Engine_LightingFrame.InteriorDarkLift;
-                if (FilmicCurve)
-                {
-                    lift = System.Math.Clamp(lift * FilmicInteriorLiftScale, 1.0f, 16.0f);
-                }
-
-                return lift;
+                float baseline = FilmicCurve ? FilmicInteriorLiftBaseline : FableInteriorLiftBaseline;
+                return System.Math.Clamp(Engine_LightingFrame.InteriorDarkLift * baseline, 1.0f, 16.0f);
             }
 
             CheckGeneration();
@@ -319,9 +342,8 @@ public static class Engine_PostFxParams
 
     /// <summary>
     /// The onset in force: outdoors the lift only begins a decade under the floor (night stays
-    /// night); with no sky it begins AT the floor, so a room's key follows its real mean down
-    /// to floor / lift. The guild hall at 0.018 raw sat between the two and got no lift at all
-    /// under the outdoor onset.
+    /// night); in caves it begins AT the floor, so a room's key follows its real mean down
+    /// to floor / lift.
     /// </summary>
     public static float DarkLiftOnsetNow =>
         Engine_LightingFrame.CurrentInterior ? 1.0f : DarkLiftOnset;

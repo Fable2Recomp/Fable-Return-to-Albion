@@ -391,6 +391,8 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 	/// <summary>How many times each (record, clip) has been seen so far in the leaf walk.</summary>
 	private readonly Dictionary<ulong, int> _keyOccurrences = new();
+	private readonly HashSet<uint> _activeRecordUids = new();
+	private readonly HashSet<uint> _seenRecordUids = new();
 	private readonly List<ChannelKey> _dropped = new();
 	public int Driven;
 	public string LastFallback = string.Empty;
@@ -647,14 +649,21 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		}
 
 		// EVENTS IN: every stated leaf finds or starts its channel and sets its target.
+		_activeRecordUids.Clear();
+		_seenRecordUids.Clear();
 		foreach (Channel c in _channels.Values)
 		{
+			if (c.Weight > 1e-4f || c.Seen)
+			{
+				_activeRecordUids.Add(c.Leaf.Uid);
+			}
 			c.Seen = false;
 		}
 
 		// The world's draw point, read once: every clip on the rig is steered toward it.
 		double drawTick = Refii.Entities.Engine_DrawnFrame.DrawTick;
 		int order = -1;
+		bool hadPendingClip = false;
 		_keyOccurrences.Clear();
 		foreach (HostBridge.GuestAnimLeaf leaf in _leaves)
 		{
@@ -668,26 +677,93 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 				++SkippedNonFiniteLeaves;
 				continue;
 			}
-			Built? built = Ensure(leaf.Key);
+			Built? built = Ensure(leaf.Key, out bool pendingClip);
 			if (built is null)
 			{
+				if (pendingClip)
+				{
+					hadPendingClip = true;
+					continue;
+				}
 				++FallbackUnknownClip;
 				LastFallback = $"unknown clip {leaf.Key:X8}";
 				return false;
 			}
 
+			_seenRecordUids.Add(leaf.Uid);
 			ulong baseKey = PlayheadKey(leaf);
-			int at = _keyOccurrences.TryGetValue(baseKey, out int seen) ? seen : 0;
-			_keyOccurrences[baseKey] = at + 1;
-			var key = new ChannelKey(leaf.Uid, leaf.Key, at);
-			if (!_channels.TryGetValue(key, out Channel? channel))
+			int occ = _keyOccurrences.TryGetValue(baseKey, out int seen) ? seen : 0;
+			_keyOccurrences[baseKey] = occ + 1;
+			var key = new ChannelKey(leaf.Uid, leaf.Key, occ);
+			if (_channels.TryGetValue(key, out Channel? channel) &&
+				(channel.Seen || !CanReuseUnseenChannel(
+					channel.StatedTime, leaf.PreviousTime, leaf.Time,
+					built.Length, leaf.Loop, built.IsStatic)))
 			{
-				channel = new Channel
+				channel = null;
+			}
+
+			if (channel is null)
+			{
+				float bestDiff = float.MaxValue;
+				foreach ((ChannelKey ck, Channel cand) in _channels)
 				{
-					Leaf = leaf, Built = built, StatedTime = leaf.Time, Time = leaf.Time,
-					Weight = 0f, LastUsec = now,
-				};
-				_channels[key] = channel;
+					if (ck.Uid == leaf.Uid && ck.Clip == leaf.Key && !cand.Seen &&
+						cand.Leaf.Additive == leaf.Additive && cand.Leaf.Overlay == leaf.Overlay &&
+						CanReuseUnseenChannel(
+							cand.StatedTime, leaf.PreviousTime, leaf.Time,
+							built.Length, leaf.Loop, built.IsStatic))
+					{
+						float diff = Mathf.Abs(cand.StatedTime - leaf.PreviousTime);
+						if (diff < bestDiff)
+						{
+							bestDiff = diff;
+							channel = cand;
+						}
+					}
+				}
+
+				if (channel is null)
+				{
+					int freeAt = occ;
+					while (_channels.ContainsKey(new ChannelKey(leaf.Uid, leaf.Key, freeAt)))
+					{
+						++freeAt;
+					}
+					key = new ChannelKey(leaf.Uid, leaf.Key, freeAt);
+					channel = new Channel
+					{
+						Leaf = leaf, Built = built, StatedTime = leaf.Time, Time = leaf.Time,
+						Weight = 0f, LastUsec = now,
+					};
+					_channels[key] = channel;
+				}
+			}
+			else
+			{
+				// Check if another unseen slot for the same (Uid, Key) is a much closer playhead match
+				// (happens when the guest inserts a new self-crossfade leaf at index 0 and shifts the
+				// older playing leaf to index 1).
+				float curDiff = Mathf.Abs(channel.StatedTime - leaf.PreviousTime);
+				if (curDiff > 0.1f)
+				{
+					foreach ((ChannelKey ck, Channel cand) in _channels)
+					{
+						if (ck.Uid == leaf.Uid && ck.Clip == leaf.Key && !cand.Seen &&
+							cand.Leaf.Additive == leaf.Additive && cand.Leaf.Overlay == leaf.Overlay &&
+							CanReuseUnseenChannel(
+								cand.StatedTime, leaf.PreviousTime, leaf.Time,
+								built.Length, leaf.Loop, built.IsStatic))
+						{
+							float diff = Mathf.Abs(cand.StatedTime - leaf.PreviousTime);
+							if (diff + 0.05f < curDiff)
+							{
+								curDiff = diff;
+								channel = cand;
+							}
+						}
+					}
+				}
 			}
 
 			// A second statement of the same occurrence cannot happen with the occurrence index
@@ -748,14 +824,18 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			//    (`WalkFootstep` + `WalkFootstepMirror` / `WalkFootstepTurn*`, blend node types 1/2/6)
 			//    trade `leaf.Weight` at 15 Hz while the parent record's weight stays `1.0`. Joining and
 			//    interpolating `SharePrevious -> ShareCurrent` across the tick prevents 15 Hz stepping
-			//    between locomotion blend-tree children.
+			//    between locomotion blend-tree children. When a new footstep leaf appears inside an
+			//    already-active record Uid (`_activeRecordUids.Contains(leaf.Uid)`), its `SharePrevious`
+			//    starts at `0f` so it ramps smoothly from `0 -> leafShare` across the tick while the
+			//    outgoing footstep leaf ramps from `1 -> 1 - leafShare`.
 			if (channel.WeightPairTick == uint.MaxValue)
 			{
 				channel.WeightPairTick = tick;
 				channel.HasOlder = false;
-				channel.RecordPrevious = leaf.RecordPrevious;
+				bool recordAlreadyActive = _activeRecordUids.Contains(leaf.Uid);
+				(channel.RecordPrevious, channel.SharePrevious) = InitialChannelPair(
+					recordAlreadyActive, leaf.RecordPrevious, leaf.RecordCurrent, leafShare);
 				channel.RecordCurrent = leaf.RecordCurrent;
-				channel.SharePrevious = leafShare;
 				channel.ShareCurrent = leafShare;
 			}
 			else if (tick != channel.WeightPairTick)
@@ -801,8 +881,45 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 				float share = LeafShareAt(c, pairAt);
 				c.Weight = share * drawn;
 			}
+			else if (_seenRecordUids.Contains(c.Leaf.Uid) && !hadPendingClip)
+			{
+				// If this channel's parent record Uid is STILL active in `_seenRecordUids`, the guest
+				// pruned this leaf inside the record's internal blend tree (e.g. a `Type-1` footstep
+				// lerp reached `t = 1.0`). Because `drawTick` lags `SimTick` (`pairAt < 0`), the
+				// surviving sibling channel is still interpolating its share toward `1.0` across the
+				// lagged tick. Step this unseen sibling's target share to `0f` on the new tick so its
+				// `LeafShareAt(c, pairAt)` finishes interpolating to `0f` in lockstep with the surviving
+				// sibling, and drop it the instant its interpolated share reaches `0f`.
+				if (tick != c.WeightPairTick)
+				{
+					c.HasOlder = tick == c.WeightPairTick + 1u;
+					c.OlderPrevious = c.RecordPrevious;
+					c.OlderCurrent = c.RecordCurrent;
+					c.OlderSharePrevious = c.SharePrevious;
+					c.OlderShareCurrent = c.ShareCurrent;
+					c.RecordPrevious = c.RecordCurrent;
+					c.SharePrevious = c.ShareCurrent;
+					c.ShareCurrent = 0f;
+					c.WeightPairTick = tick;
+				}
+				float drawn = RecordWeightAt(c, pairAt);
+				float share = LeafShareAt(c, pairAt);
+				c.Weight = share * drawn;
+				if (ShouldDropUnseenChannelInActiveRecord(
+					recordStillSeen: true, hadPendingClip: false,
+					c.Weight, c.ShareCurrent, pairAt, c.HasOlder, c.OlderShareCurrent))
+				{
+					_dropped.Add(key);
+					continue;
+				}
+			}
 			else
 			{
+				if (ShouldDropUnseenChannelInActiveRecord(_seenRecordUids.Contains(c.Leaf.Uid), hadPendingClip))
+				{
+					_dropped.Add(key);
+					continue;
+				}
 				float rate = 1f / Mathf.Max(c.BlendOut, 0.15f);
 				c.Weight = Mathf.MoveToward(c.Weight, 0f, rate * dt);
 				if (c.Weight <= 1e-4f)
@@ -822,6 +939,12 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		foreach (ChannelKey key in _dropped)
 		{
 			_channels.Remove(key);
+		}
+
+		if (totalWeight <= 1e-5f && hadPendingClip && _hasWritten)
+		{
+			LastFallback = string.Empty;
+			return true;
 		}
 
 		// The clips are current now; the pose is the expensive half and the caller may not want
@@ -1122,6 +1245,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 					System.Array.Clear(_positionWeight, 0, bones);
 					_overlays.Clear();
 					Sample(only.Built, only.Time, 1f, false, _rotation, _rotationWeight, _position, _positionWeight, bones);
+					PostOpsApplied = ApplyPostOpsForRecord(only.Leaf.Uid, _rotation, _rotationWeight, bones);
 					goto FinalizePose;
 				}
 			}
@@ -1397,8 +1521,18 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			// a third primary never reaches the pose in the guest either
 		}
 
+		// Apply the primary record's aim and look post-ops (`+8` aim, `+12` look) to the inner
+		// primary pose BEFORE crossfading with `runnerUid` and BEFORE layering upper-body overlays.
+		// In `Engine_Animation_WrapPrimaryRecordWithOverlays` (`0x82229960`), the guest attaches
+		// `aimRec` and `lookRec` (`mode = 2: t + w * (q - t)` with `w ~ 2.2`) to the primary walk
+		// record's root node and wraps overlays (`MoodPoseScared1Loop`, `MoodPoseAngry1Loop`)
+		// around it as outer `Type-3` / `Type-1` nodes; running `lookRec` after overlays multiplied
+		// the mood overlay forearm bend by `~2.2x`.
+		PostOpsApplied = ApplyPostOpsForRecord(topUid, _rotation, _rotationWeight, bones);
+
 		if (partnerSampled)
 		{
+			PostOpsApplied += ApplyPostOpsForRecord(runnerUid, _layerRotation, _layerRotationWeight, bones);
 			// crossfade(partner = A, top = B, t = topShare): result = slerp(A, B, t).
 			for (int b = 0; b < bones; ++b)
 			{
@@ -1428,6 +1562,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		{
 			_overlays.Sort((a, b) =>
 				a.Leaf.Track != b.Leaf.Track ? a.Leaf.Track.CompareTo(b.Leaf.Track)
+				: a.Leaf.SuppressedTrackSibling != b.Leaf.SuppressedTrackSibling ? a.Leaf.SuppressedTrackSibling.CompareTo(b.Leaf.SuppressedTrackSibling)
 				: a.Leaf.Priority != b.Leaf.Priority ? a.Leaf.Priority.CompareTo(b.Leaf.Priority)
 				: a.Leaf.Uid.CompareTo(b.Leaf.Uid));
 		}
@@ -1436,21 +1571,40 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		// then the layer blends onto the body per bone at mask[bone]/255 times the record's
 		// weight. Bones the layer's clips do not cover are its rest pose, as the guest samples
 		// them; the mask is what keeps them off the body.
+		int trackWinnerTrack = -1;
+		int trackWinnerStart = -1;
+		int trackWinnerEnd = -1;
 		for (int i = 0; i < _overlays.Count;)
 		{
 			uint uid = _overlays[i].Leaf.Uid;
+			int track = _overlays[i].Leaf.Track;
+			bool suppressedSibling = _overlays[i].Leaf.SuppressedTrackSibling;
 			int j = i;
 			float layerWeight = 0f;
+			float recordCap = 0f;
 			uint maskNode = 0;
 			while (j < _overlays.Count && _overlays[j].Leaf.Uid == uid)
 			{
-				layerWeight += _overlays[j].Weight * _overlays[j].OverlayFade;
+				Channel ov = _overlays[j];
+				layerWeight += ov.Weight * ov.OverlayFade;
+				float cap = RecordWeightAt(ov, pairAt) * ov.OverlayFade;
+				if (cap > recordCap)
+				{
+					recordCap = cap;
+				}
 				if (maskNode == 0)
 				{
-					maskNode = _overlays[j].Leaf.Mask;
+					maskNode = ov.Leaf.Mask;
 				}
 
 				++j;
+			}
+
+			if (!suppressedSibling)
+			{
+				trackWinnerTrack = track;
+				trackWinnerStart = i;
+				trackWinnerEnd = j;
 			}
 
 			System.Array.Clear(_layerRotationWeight, 0, bones);
@@ -1463,7 +1617,8 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			}
 
 			byte[] mask = MaskTaken(uid, maskNode);
-			float w = Mathf.Clamp(layerWeight, 0f, 1f);
+			float effectiveLayerWeight = recordCap > 1e-5f ? Mathf.Min(layerWeight, recordCap) : layerWeight;
+			float w = Mathf.Clamp(effectiveLayerWeight, 0f, 1f);
 
 			// THE HIP'S CHILDREN STAY PUT. When an overlay's mask covers Shadow_Hip the guest
 			// (`sub_8220CB18`, 0x8220CC20..) remembers the hip's local transform, applies the
@@ -1471,12 +1626,45 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			// Shadow_SpineControl so its world placement is unchanged — the spine follows the
 			// overlay's hip rotation, the legs do not swing with it.
 			int hip = _hipBone;
-			bool compensateHip = hip >= 0 && (mask.Length == 0 || (hip < _modelToGuest.Length &&
+			bool compensateHip = !suppressedSibling && hip >= 0 && (mask.Length == 0 || (hip < _modelToGuest.Length &&
 				_modelToGuest[hip] >= 0 && _modelToGuest[hip] < mask.Length && mask[_modelToGuest[hip]] != 0));
 			Transform3D hipOld = compensateHip ? PoseOf(hip) : Transform3D.Identity;
 
 			for (int b = 0; b < bones; ++b)
 			{
+				if (suppressedSibling)
+				{
+					bool siblingAnimatesBone = false;
+					for (int k = i; k < j; ++k)
+					{
+						if (HasAnimatedRotationTrack(_overlays[k].Built, b))
+						{
+							siblingAnimatesBone = true;
+							break;
+						}
+					}
+					if (!siblingAnimatesBone)
+					{
+						continue;
+					}
+					if (trackWinnerTrack == track && trackWinnerStart >= 0)
+					{
+						bool winnerAnimatesBone = false;
+						for (int k = trackWinnerStart; k < trackWinnerEnd; ++k)
+						{
+							if (HasAnimatedRotationTrack(_overlays[k].Built, b))
+							{
+								winnerAnimatesBone = true;
+								break;
+							}
+						}
+						if (winnerAnimatesBone)
+						{
+							continue;
+						}
+					}
+				}
+
 				float wb = w;
 				if (mask.Length != 0)
 				{
@@ -1543,7 +1731,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		}
 
 		ApplyMorph(bones);
-		ApplyPostOps();
 		_foldTopShare = topShare;
 		_foldTopKey = top?.Leaf.Key ?? 0u;
 		_foldRestBones = restBones;
@@ -1924,12 +2111,14 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	/// would double a head turn during a crossfade.
 	/// </summary>
 	/// <summary>
-	/// The strongest record's aim and look ops, read on the main thread (the bridge refills one
-	/// set of buffers per call) and copied out for <see cref="ApplyPostOps"/>.
+	/// Copies each active record's aim and look post-ops on the main thread (the bridge refills one
+	/// set of buffers per call) so <see cref="ApplyPostOpsForRecord"/> can apply each primary
+	/// record's post-ops to its own pose before overlays are layered on top.
 	/// </summary>
 	private void TakePostOps()
 	{
 		_postKinds = 0;
+		_takenPostOpCount = 0;
 		HostBridge.GuestPostOps? ops = HostBridge.GetAnimPostOps(_entity);
 		if (ops is not { } post || post.Ops.Count == 0)
 		{
@@ -1938,57 +2127,121 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 		for (int kind = 0; kind < 2; kind++)
 		{
-			HostBridge.GuestPostOp? best = null;
-			foreach (HostBridge.GuestPostOp op in post.Ops)
-			{
-				if (op.Kind == kind && op.RecordWeight > 1e-4f &&
-					(best is null || op.RecordWeight > best.Value.RecordWeight))
-				{
-					best = op;
-				}
-			}
+			int[] srcChain = kind == 0 ? post.AimBones : post.LookBones;
+			int n = System.Math.Min(srcChain.Length, 6);
+			int[] dstChain = _postChain[kind] ??= new int[6];
+			System.Array.Copy(srcChain, dstChain, n);
+			_postChainLen[kind] = n;
+		}
 
-			if (best is not { } chosen || chosen.Mode == 0)
+		foreach (HostBridge.GuestPostOp op in post.Ops)
+		{
+			if (op.Mode == 0 || op.RecordWeight <= 1e-4f || (uint)op.Kind >= 2u)
 			{
 				continue;
 			}
 
-			int[] chain = kind == 0 ? post.AimBones : post.LookBones;
-			int n = System.Math.Min(chain.Length, chosen.Targets.Length);
-			int[] dstChain = _postChain[kind] ??= new int[6];
-			Quaternion[] dstTarget = _postTarget[kind] ??= new Quaternion[6];
-			n = System.Math.Min(n, 6);
-			System.Array.Copy(chain, dstChain, n);
-			System.Array.Copy(chosen.Targets, dstTarget, n);
-			_postCount[kind] = n;
-			_postMode[kind] = chosen.Mode;
-			_postWeight[kind] = chosen.Weight;
-			_postKinds |= 1 << kind;
+			int slot = -1;
+			for (int i = 0; i < _takenPostOpCount; i++)
+			{
+				if (_postOpUid[i] == op.RecordUid && _postOpKind[i] == op.Kind)
+				{
+					slot = i;
+					break;
+				}
+			}
+
+			if (slot < 0)
+			{
+				if (_takenPostOpCount >= MaxTakenPostOps)
+				{
+					continue;
+				}
+				slot = _takenPostOpCount++;
+			}
+			else if (op.RecordWeight <= _postOpRecordWeight[slot])
+			{
+				continue;
+			}
+
+			int chainLen = _postChainLen[op.Kind];
+			int count = System.Math.Min(chainLen, System.Math.Min(op.Targets.Length, 6));
+			Quaternion[] dstTarget = _postOpTargets[slot] ??= new Quaternion[6];
+			System.Array.Copy(op.Targets, dstTarget, count);
+			_postOpUid[slot] = op.RecordUid;
+			_postOpKind[slot] = op.Kind;
+			_postOpMode[slot] = op.Mode;
+			_postOpWeight[slot] = op.Weight;
+			_postOpRecordWeight[slot] = op.RecordWeight;
+			_postOpTargetCount[slot] = count;
+			_postKinds |= 1 << op.Kind;
 		}
 	}
 
+	private const int MaxTakenPostOps = 8;
 	private int _postKinds;
+	private int _takenPostOpCount;
 	private readonly int[]?[] _postChain = new int[]?[2];
-	private readonly Quaternion[]?[] _postTarget = new Quaternion[]?[2];
-	private readonly int[] _postCount = new int[2];
-	private readonly int[] _postMode = new int[2];
-	private readonly float[] _postWeight = new float[2];
+	private readonly int[] _postChainLen = new int[2];
+	private readonly uint[] _postOpUid = new uint[MaxTakenPostOps];
+	private readonly int[] _postOpKind = new int[MaxTakenPostOps];
+	private readonly int[] _postOpMode = new int[MaxTakenPostOps];
+	private readonly float[] _postOpWeight = new float[MaxTakenPostOps];
+	private readonly float[] _postOpRecordWeight = new float[MaxTakenPostOps];
+	private readonly int[] _postOpTargetCount = new int[MaxTakenPostOps];
+	private readonly Quaternion[]?[] _postOpTargets = new Quaternion[]?[MaxTakenPostOps];
 
 	/// <summary>
-	/// THE GUEST'S AIM AND LOOK, after the fold. `sub_822DC980` ends every node's evaluation
-	/// by rewriting the skeleton's aim chain (5 bones) and look chain (6 bones) from the
-	/// per-bone 4-vectors its IK stated on the node's records (+8 aim, +12 look), through
-	/// `sub_822D9738`: with q the bone's folded local rotation and t the stated vector, q is
-	/// negated when q·t &lt; 0, then by the record's mode — 1: q + w·t, 2: t + w·(q − t),
-	/// 3: q + w·(t − q), 4: q + w·(q⊗t − q), otherwise t — and the result normalised (vmaddfp is A×C+B).
-	/// Component-wise, so the Y-up conjugation commutes with it and the host applies the same
-	/// arithmetic to its own local pose. Only the strongest record's ops count per chain: the
-	/// guest applies each record's inside that record's evaluation, and stacking two here
-	/// would double a head turn during a crossfade.
+	/// Evaluates a single bone's post-op rotation according to `sub_822D9738` (`0x822D9738`):
+	/// aligns hemisphere (`q · t &lt; 0` negates `q`), applies mode 1..4 component-wise, and
+	/// normalizes the result.
 	/// </summary>
-	private void ApplyPostOps()
+	public static Quaternion EvaluatePostOpBone(Quaternion currentPose, Quaternion targetPose, int mode, float weight)
 	{
-		PostOpsApplied = 0;
+		if (!targetPose.IsFinite() || targetPose.LengthSquared() < 1e-8f)
+		{
+			return currentPose;
+		}
+
+		Quaternion q = currentPose;
+		if (q.Dot(targetPose) < 0f)
+		{
+			q = -q;
+		}
+
+		// Mode 4's helper (`sub_82233200`) is a quaternion product: the stated vector is a
+		// DELTA applied in the bone's own frame, and the pose moves toward q⊗t by w.
+		Quaternion r = mode switch
+		{
+			1 => q + targetPose * weight,
+			2 => targetPose + (q - targetPose) * weight,
+			3 => q + (targetPose - q) * weight,
+			4 => q + (q * targetPose - q) * weight,
+			_ => targetPose,
+		};
+		if (!r.IsFinite() || r.LengthSquared() < 1e-8f)
+		{
+			return currentPose;
+		}
+
+		return r.Normalized();
+	}
+
+	/// <summary>
+	/// THE GUEST'S AIM AND LOOK, applied per primary record BEFORE overlays (`sub_82229960` /
+	/// `sub_822DC980`). `sub_822DC980` ends the primary record's root node evaluation by rewriting
+	/// the skeleton's aim chain (5 bones) and look chain (6 bones) from the per-bone 4-vectors its
+	/// IK stated on the node's records (+8 aim, +12 look), through `sub_822D9738`, before the outer
+	/// overlay `Type-3` / `Type-1` wrappers blend upper-body overlays on top.
+	/// </summary>
+	private int ApplyPostOpsForRecord(uint recordUid, Quaternion[] rotation, float[] rotationWeight, int bones)
+	{
+		if (_postKinds == 0 || _takenPostOpCount == 0)
+		{
+			return 0;
+		}
+
+		int applied = 0;
 		for (int kind = 0; kind < 2; kind++)
 		{
 			if ((_postKinds & (1 << kind)) == 0)
@@ -1996,15 +2249,31 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 				continue;
 			}
 
+			int matchSlot = -1;
+			for (int s = 0; s < _takenPostOpCount; s++)
+			{
+				if (_postOpKind[s] == kind && (_postOpUid[s] == recordUid || _postOpUid[s] == 0u))
+				{
+					matchSlot = s;
+					break;
+				}
+			}
+
+			if (matchSlot < 0)
+			{
+				continue;
+			}
+
 			int[] chain = _postChain[kind]!;
-			Quaternion[] targets = _postTarget[kind]!;
-			float w = _postWeight[kind];
-			int mode = _postMode[kind];
-			for (int i = 0; i < _postCount[kind]; i++)
+			Quaternion[] targets = _postOpTargets[matchSlot]!;
+			float w = _postOpWeight[matchSlot];
+			int mode = _postOpMode[matchSlot];
+			int count = _postOpTargetCount[matchSlot];
+			for (int i = 0; i < count; i++)
 			{
 				int guest = chain[i];
 				int b = guest >= 0 && guest < _guestToModel.Length ? _guestToModel[guest] : -1;
-				if (b < 0)
+				if (b < 0 || b >= bones)
 				{
 					continue;
 				}
@@ -2015,32 +2284,14 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 					continue;
 				}
 
-				t = Engine_AnimSkeleton.ToYUp(t);
-				Quaternion q = _finalRotation[b];
-				if (q.Dot(t) < 0f)
-				{
-					q = -q;
-				}
-
-				// Mode 4's helper (`sub_82233200`) is a quaternion product: the stated vector is a
-				// DELTA applied in the bone's own frame, and the pose moves toward q⊗t by w.
-				Quaternion r = mode switch
-				{
-					1 => q + t * w,
-					2 => t + (q - t) * w,
-					3 => q + (t - q) * w,
-					4 => q + (q * t - q) * w,
-					_ => t,
-				};
-				if (!r.IsFinite() || r.LengthSquared() < 1e-8f)
-				{
-					continue;
-				}
-
-				_finalRotation[b] = r.Normalized();
-				PostOpsApplied++;
+				Quaternion current = rotationWeight[b] > 0f ? rotation[b].Normalized() : _restRotation[b];
+				rotation[b] = EvaluatePostOpBone(current, Engine_AnimSkeleton.ToYUp(t), mode, w);
+				rotationWeight[b] = 1f;
+				applied++;
 			}
 		}
+
+		return applied;
 	}
 
 	/// <summary>The morph record, re-read every <see cref="MorphRefreshSeconds"/> on the main thread.</summary>
@@ -2167,25 +2418,41 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		return new Transform3D(new Basis(q), p);
 	}
 
+	private static bool HasAnimatedRotationTrack(Built built, int bone)
+	{
+		if (bone < 0 || bone >= built.RotationTrack.Length)
+		{
+			return false;
+		}
+		int rt = built.RotationTrack[bone];
+		if (rt < 0)
+		{
+			return false;
+		}
+		if (built.KeysLifted)
+		{
+			return built.RotationKeys[bone].Times is { Length: > 1 };
+		}
+		return built.Animation is { } anim && anim.TrackGetKeyCount(rt) > 1;
+	}
+
 	private static void Accumulate(ref Quaternion sum, ref float sumWeight, Quaternion q, float weight)
 	{
 		if (sumWeight <= 0f)
 		{
-			sum = q;
+			sum = q.Normalized();
 			sumWeight = weight;
 			return;
 		}
 
-		// Weighted nlerp with hemisphere alignment: enough for the small angles between the
-		// clips a tree blends at once, and stable for any count of them.
-		Quaternion aligned = sum.Dot(q) < 0f ? new Quaternion(-q.X, -q.Y, -q.Z, -q.W) : q;
+		// Normalized spherical interpolation with hemisphere alignment, matching the guest's
+		// `sub_82293278` quaternion blend across 2-leaf and 3-leaf locomotion trees.
+		Quaternion baseQ = sum.Normalized();
+		Quaternion unitQ = q.Normalized();
+		Quaternion aligned = baseQ.Dot(unitQ) < 0f ? new Quaternion(-unitQ.X, -unitQ.Y, -unitQ.Z, -unitQ.W) : unitQ;
 		float total = sumWeight + weight;
-		float t = weight / total;
-		sum = new Quaternion(
-			sum.X + (aligned.X - sum.X) * t,
-			sum.Y + (aligned.Y - sum.Y) * t,
-			sum.Z + (aligned.Z - sum.Z) * t,
-			sum.W + (aligned.W - sum.W) * t);
+		float t = Mathf.Clamp(weight / total, 0f, 1f);
+		sum = baseQ.Slerp(aligned, t);
 		sumWeight = total;
 	}
 
@@ -2239,10 +2506,71 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	/// value: a hard cut. A network replica's pair is the sender's packet extrapolated, so equal
 	/// halves there are a stall, not a cut.
 	/// </summary>
+	/// <summary>
+	/// Computes the initial `(RecordPrevious, SharePrevious)` pair for a newly created channel
+	/// on its first observed tick. When <paramref name="recordAlreadyActive"/> is true (a new
+	/// footstep or variation leaf was inserted into an already-playing record Uid), the record's
+	/// previous weight is already at `recordCurrent` and the new leaf's share ramps smoothly from
+	/// `0 -> leafShare` across the tick instead of jumping to `leafShare` at `pairAt = 0`.
+	/// </summary>
+	public static (float RecordPrevious, float SharePrevious) InitialChannelPair(
+		bool recordAlreadyActive, float leafRecordPrevious, float leafRecordCurrent, float leafShare)
+	{
+		float recPrev = recordAlreadyActive ? leafRecordCurrent : leafRecordPrevious;
+		float sharePrev = (recordAlreadyActive && leafShare < 0.999f) ? 0f : leafShare;
+		return (recPrev, sharePrev);
+	}
+
+	/// <summary>
+	/// Returns true when an unseen channel (`!c.Seen`) should be dropped immediately rather than
+	/// ramping out via `BlendOut`: if its parent record Uid is still active in the current guest
+	/// snapshot (<paramref name="recordStillSeen"/>), no clip in the snapshot was skipped due to
+	/// async background decoding (<paramref name="hadPendingClip"/>), and its lagged intra-record
+	/// share interpolation (`LeafShareAt`) has reached `0`.
+	/// </summary>
+	public static bool ShouldDropUnseenChannelInActiveRecord(
+		bool recordStillSeen,
+		bool hadPendingClip,
+		float interpolatedWeight = 0f,
+		float shareCurrent = 0f,
+		double pairAt = 1.0,
+		bool hasOlder = false,
+		float olderShareCurrent = 0f) =>
+		recordStillSeen && !hadPendingClip &&
+		interpolatedWeight <= 1e-4f &&
+		shareCurrent <= 1e-4f &&
+		(pairAt >= 0.0 || !hasOlder || olderShareCurrent <= 1e-4f);
+
+	/// <summary>
+	/// Returns true when an unseen channel in `_channels` (`!cand.Seen`) is a valid continuation
+	/// of <paramref name="leafTime"/> / <paramref name="leafPreviousTime"/> rather than a dying
+	/// channel from an earlier stride (e.g. an outgoing `WalkFootstep` at `0.522s` when a new
+	/// `WalkFootstep` spawns at `0.207s` with `PreviousTime = 0.0s`).
+	/// </summary>
+	public static bool CanReuseUnseenChannel(
+		float statedTime, float leafPreviousTime, float leafTime,
+		float clipLength, bool loop, bool isStatic)
+	{
+		if (isStatic || clipLength <= 0.05f || leafPreviousTime == leafTime)
+		{
+			return true;
+		}
+		float diffPrev = Mathf.Abs(statedTime - leafPreviousTime);
+		float diffCur = Mathf.Abs(statedTime - leafTime);
+		if (loop && clipLength > 0f)
+		{
+			diffPrev = Mathf.Min(diffPrev, Mathf.Abs(diffPrev - clipLength));
+			diffCur = Mathf.Min(diffCur, Mathf.Abs(diffCur - clipLength));
+		}
+		float limit = (float)Engine_ClipPlayhead.RestartSeconds;
+		return diffPrev < limit || diffCur < 1e-3f;
+	}
+
 	private static void ObservePlayhead(Channel c, HostBridge.GuestAnimLeaf leaf, uint tick, double drawTick)
 	{
 		// Every read goes to the playhead, which tells a new tick from the same pair read again.
 		c.PlayheadTick = tick;
+		c.StatedTime = leaf.Time;
 		bool cut = !leaf.Network && leaf.PreviousTime == leaf.Time;
 		c.Playhead.Observe(leaf.PreviousTime, leaf.Time, tick, c.Built.Length, leaf.Loop, cut, drawTick);
 	}
@@ -2442,8 +2770,9 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		return rows;
 	}
 
-	private Built? Ensure(uint key)
+	private Built? Ensure(uint key, out bool pending)
 	{
+		pending = false;
 		if (_clips.TryGetValue(key, out Built? built))
 		{
 			// The A/B lever turned off after a shared build: that build has no resource to read.
@@ -2455,7 +2784,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 		if (ManagedClipSampling)
 		{
-			built = BuildShared(key, out bool pending);
+			built = BuildShared(key, out pending);
 			if (pending)
 			{
 				return null;

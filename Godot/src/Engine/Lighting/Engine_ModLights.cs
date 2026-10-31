@@ -347,9 +347,10 @@ public static class Engine_ModLights
 			BaseEnergy = power,
 			Flicker = float.IsFinite(flicker) ? Math.Clamp(flicker, 0f, 1f) : 0f,
 			SpotRange = reach,
-			SpotAttenuation = 0.0f,
+			SpotAttenuation = 1.0f,
 			SpotAngle = ConeDegrees(cone),
 			SpotAngleAttenuation = float.IsFinite(attenuation) && attenuation > 0f ? attenuation : 1f,
+			LightVolumetricFogEnergy = 0.0f,
 			ShadowEnabled = false,
 			Visible = !Refii.Models.Engine_ClassicMaterial.Active,
 		};
@@ -403,7 +404,7 @@ public static class Engine_ModLights
 			BaseEnergy = power,
 			Flicker = float.IsFinite(flicker) ? Math.Clamp(flicker, 0f, 1f) : 0f,
 			OmniRange = reach,
-			OmniAttenuation = 0.0f,
+			OmniAttenuation = 1.0f,
 			ShadowEnabled = false,
 			Visible = !Refii.Models.Engine_ClassicMaterial.Active,
 		};

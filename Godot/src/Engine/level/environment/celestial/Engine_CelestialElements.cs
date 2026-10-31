@@ -57,9 +57,9 @@ public static class Engine_CelestialElements
     public const float MoonBloomSizeScale = 400.0f;
     public const float MoonBloomShaderScale = 0.2f;
 
-    public const float MoonGlareDistance = 1000.0f;
+    public const float MoonGlareDistance = 4000.0f;
 
-    public const float MoonGlareSizeScale = 300.0f;
+    public const float MoonGlareSizeScale = 700.0f;
 
     public const float SunDiscDistance = 1900.0f;
 
