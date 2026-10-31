@@ -108,7 +108,6 @@ public static class Engine_DeviceClocks
             line.Append(" MHz");
             if (s.GpuMaxMhz > 0) line.Append(CultureInfo.InvariantCulture, $" (max {s.GpuMaxMhz})");
         }
-        if (s.Throttled) line.Append("   [throttled]");
         yield return line.ToString();
 
         var heat = new StringBuilder();
