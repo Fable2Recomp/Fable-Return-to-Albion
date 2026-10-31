@@ -274,6 +274,9 @@ public static class Engine_ShaderSpecialisation
 
     private static string _shadowedBecause = string.Empty;
 
+    /// <summary>Why the shadowed builds must come back, while they wait for a loading screen; null when nothing waits.</summary>
+    private static string? _waiting;
+
     /// <summary>
     /// Whether the lite shaders are being built without Godot's shadow sampling: `lite_shadowless`
     /// is on and the settings render no shadow map — the sun has no cascades
@@ -284,13 +287,19 @@ public static class Engine_ShaderSpecialisation
     /// `shadow_opacity > 0.001`, which is zero for a light that casts nothing, so the shadow term is
     /// 1 either way; compiled out, the cascade select and the PCF taps stop costing registers.
     ///
-    /// AND IT IS DROPPED THE MOMENT IT STOPS HOLDING, for the rest of the session: a setting that
-    /// would render shadows (an Options change, a preset switch, a cvar) or ANY light starting to
-    /// cast — the sun (<see cref="Refii.Lighting.Engine_LevelLighting.UpdateSun"/>), or one of the
-    /// shipped spots that cast even with placed shadows off (Engine_LightShadowBudget) — puts every
-    /// built shader back on its wrapper's own code. The materials keep their shader object, so they
-    /// all recompile shadowed at once (a pipeline stall of a few seconds, once). A placed light
-    /// fades its shadow in from opacity 0, which covers the recompile.
+    /// AND IT IS DROPPED ONCE IT STOPS HOLDING, for the rest of the session: a setting that would
+    /// render shadows (an Options change, a preset switch, a cvar) or ANY light about to cast — the
+    /// sun (<see cref="Refii.Lighting.Engine_LevelLighting.UpdateSun"/>), or one of the shipped spots
+    /// that cast even with placed shadows off (Engine_LightShadowBudget) — puts every built shader
+    /// back on its wrapper's own code. The materials keep their shader object, so they all recompile
+    /// shadowed in one frame, and that frame is long: with cold caches the 29 shaders' compile and
+    /// their 232 pipelines took 20.8 s on the S25+ (12.6 s with the shader cache warm) and 38.6 s on
+    /// the S10e, a game that looks hung; under 1 s with both caches warm.
+    ///
+    /// SO THE REBUILD WAITS FOR A LOADING SCREEN (<see cref="LoadingScreen"/>), where a long frame is
+    /// not seen, and the lights hold their shadows off until it has run (<see cref="ShadowCast"/>
+    /// answers false). The Options panel offers it at once instead (<see cref="RebuildNow"/>), saying
+    /// first that the game will pause.
     /// </remarks>
     public static bool Shadowless
     {
@@ -331,22 +340,54 @@ public static class Engine_ShaderSpecialisation
         : placedShadows ? "placed_light_shadows is on"
         : string.Empty;
 
-    /// <summary>A light is about to cast: the shadowed builds come back, for good.</summary>
-    public static void ShadowCast(string light)
+    /// <summary>
+    /// A light is about to cast. With the shaders built without shadow sampling, the rebuild that brings
+    /// them back waits for a loading screen, and the light must not cast until it has run.
+    /// </summary>
+    /// <returns>Whether the light may cast now.</returns>
+    public static bool ShadowCast(string light)
     {
-        if (_shadowless == true)
-        {
-            Restore($"{light} casts a shadow");
-        }
+        if (_shadowless != true) return true;
+        Wait($"{light} casts a shadow");
+        return false;
     }
 
-    /// <summary>The settings changed: if they could now render shadows, the shadowed builds come back.</summary>
+    /// <summary>The settings changed: if they could now render shadows, the shadowed builds wait for a loading screen.</summary>
     public static void SettingsChanged()
     {
         if (_shadowless == true && ShadowsPossible(out string why))
         {
-            Restore(why);
+            Wait(why);
         }
+    }
+
+    /// <summary>Whether the shadowed builds are waiting for a loading screen, the lights holding their shadows off.</summary>
+    public static bool RebuildWaiting => _waiting is not null;
+
+    /// <summary>A loading screen is up: a waiting rebuild runs now, where its long frame is not seen.</summary>
+    public static void LoadingScreen()
+    {
+        if (_waiting is { } why) Restore(why);
+    }
+
+    /// <summary>Runs a waiting rebuild at once, for a player who chose to pause for it (the Options panel).</summary>
+    public static void RebuildNow()
+    {
+        if (_waiting is { } why) Restore(why + ", rebuilt now from Options");
+    }
+
+    /// <summary>Sets whether the shaders are built without shadow sampling, nothing waiting: for the tests.</summary>
+    internal static void SetShadowlessForTests(bool? shadowless)
+    {
+        _shadowless = shadowless;
+        _waiting = null;
+    }
+
+    private static void Wait(string why)
+    {
+        if (_waiting is not null) return;
+        _waiting = why;
+        GD.Print($"[shader] lite_shadowless: the shadowed builds wait for a loading screen ({why}); shadows held off until then");
     }
 
     private static void Restore(string why)
@@ -361,6 +402,7 @@ public static class Engine_ShaderSpecialisation
 
             _shadowless = false;
             _shadowedBecause = why;
+            _waiting = null;
             shaders.AddRange(ByKey.Values);
         }
 

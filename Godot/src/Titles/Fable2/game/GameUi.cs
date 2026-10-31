@@ -7682,6 +7682,9 @@ public partial class GameUi : Node, IGameTitleUi
 			{
 				_books.PrebuildOne();
 			}
+
+			// The phone's shadowed shaders, waiting for a frame nobody sees (lite_shadowless).
+			Refii.Models.Engine_ShaderSpecialisation.LoadingScreen();
 		}
 
 		// THE HOST'S EMBEDDED PREVIEW dies with the page that asked for it. The ask is

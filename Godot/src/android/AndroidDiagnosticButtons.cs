@@ -35,6 +35,9 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
     private HBoxContainer? _panel;
     private PanelContainer? _graphics;
     private PanelContainer? _about;
+    private PanelContainer? _rebuild;
+    private Label? _rebuildText;
+    private Button? _rebuildNow;
     private Label? _aboutText;
     private string? _aboutKey;
     private Control? _overOptions;
@@ -106,6 +109,7 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         _panel.AddChild(column);
         _panel.AddChild(_graphics = CreateGraphics(_preset));
         _panel.AddChild(_about = CreateAbout());
+        _panel.AddChild(_rebuild = CreateRebuild());
         ShowExportChoices(false);
         AddChild(_panel);
         // The two menus Options opens stand on their own layers, beside this one, so they show with
@@ -223,6 +227,42 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         return about;
     }
 
+    /// <summary>
+    /// The box that stands while the phone's shadowed shaders wait for a loading screen
+    /// (Engine_ShaderSpecialisation.RebuildWaiting): it says shadows come on there, and offers the rebuild
+    /// now, a pause of seconds (tens of seconds on an older phone with cold caches).
+    /// </summary>
+    private PanelContainer CreateRebuild()
+    {
+        PanelContainer box = AndroidSeeThrough.Panel(0.6f);
+        box.SizeFlagsVertical = Control.SizeFlags.ShrinkBegin;
+        box.Visible = false;
+        var body = new VBoxContainer();
+        body.AddThemeConstantOverride("separation", 8);
+        _rebuildText = new Label { CustomMinimumSize = new Vector2(300, 0), AutowrapMode = TextServer.AutowrapMode.WordSmart };
+        _rebuildText.AddThemeFontSizeOverride("font_size", 18);
+        _rebuildNow = AndroidSeeThrough.Button("Rebuild now", new Vector2(300, 52), 20);
+        _rebuildNow.Pressed += RebuildNow;
+        body.AddChild(_rebuildText);
+        body.AddChild(_rebuildNow);
+        box.AddChild(body);
+        return box;
+    }
+
+    /// <summary>Says the game will pause, lets that frame draw, then rebuilds the shadowed shaders.</summary>
+    private async void RebuildNow()
+    {
+        if (_rebuildText is null || _rebuildNow is null) return;
+        _rebuildText.Text = "Rebuilding the shaders with shadows. The game pauses for a moment (up to a minute on an older phone).";
+        _rebuildNow.Disabled = true;
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        Refii.Models.Engine_ShaderSpecialisation.RebuildNow();
+        if (!IsInstanceValid(this)) return;
+        _rebuildNow.Disabled = false;
+        ShowSettings();
+    }
+
     /// <summary>Shows what <paramref name="option"/> does beside the column, or hides it when it is already shown.</summary>
     private void ToggleAbout(AndroidGraphicsOption option)
     {
@@ -272,6 +312,7 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         // The whole Graphics column, so a finger between its buttons doesn't turn the camera.
         if (_graphics is { } graphics) yield return graphics.GetGlobalRect();
         if (_about is { Visible: true } about) yield return about.GetGlobalRect();
+        if (_rebuild is { Visible: true } rebuild) yield return rebuild.GetGlobalRect();
         if (_vibration is { } vibration) yield return vibration.GetGlobalRect();
         if (_performance is { } performance) yield return performance.GetGlobalRect();
         if (_debug is { } debug) yield return debug.GetGlobalRect();
@@ -373,6 +414,15 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
             _photo.Text = refusal is null ? "Photo Mode" : $"Photo Mode ({refusal})";
         }
 
+        if (_rebuild is not null && _rebuildText is not null)
+        {
+            bool waiting = Refii.Models.Engine_ShaderSpecialisation.RebuildWaiting;
+            if (waiting && !_rebuild.Visible)
+                _rebuildText.Text = "Shadows need a one-time shader rebuild. They come on at the next loading screen.";
+            _rebuild.Visible = waiting;
+            Place();
+        }
+
         if (ConfigPath?.Invoke() is not { Length: > 0 } config || _frameCap is null || _preset is null || _vibration is null) return;
         try
         {
@@ -443,6 +493,7 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         if (_photo is not null) _photo.Pressed -= OpenPhotoMode;
         if (_remapButton is not null) _remapButton.Pressed -= OpenRemap;
         if (_editButton is not null) _editButton.Pressed -= OpenEditor;
+        if (_rebuildNow is not null) _rebuildNow.Pressed -= RebuildNow;
         if (_export is not null) _export.Pressed -= ToggleExportChoices;
         if (_exportSaves is not null) _exportSaves.Pressed -= ExportSaves;
         if (_exportBoth is not null) _exportBoth.Pressed -= ExportBoth;
