@@ -44,6 +44,28 @@ internal struct Engine_AnimReader
         return true;
     }
 
+    public uint U8()
+    {
+        if (!Need(1))
+        {
+            return 0;
+        }
+
+        return _data[_pos++];
+    }
+
+    public uint U16()
+    {
+        if (!Need(2))
+        {
+            return 0;
+        }
+
+        uint value = ((uint)_data[_pos] << 8) | _data[_pos + 1];
+        _pos += 2;
+        return value;
+    }
+
     public uint U32()
     {
         if (!Need(4))

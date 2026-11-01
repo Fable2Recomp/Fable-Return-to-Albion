@@ -1389,18 +1389,19 @@ public partial class GameEntities : Node3D
                     // otherwise its pose is HELD and its clips keep running. The first write is
                     // unconditional: a held pose needs a pose to hold.
                     bool measurable = haveEye && (node.IsInsideTree() || _written.ContainsKey(entity.Address));
-                    Vector3 rigAt = Vector3.Zero;
+                    Transform3D rigWorld = Transform3D.Identity;
                     if (measurable)
                     {
                         if (_written.TryGetValue(entity.Address, out (MeshInstance3D Node, Transform3D Drawn) written))
                         {
-                            rigAt = toWorld * written.Drawn.Origin;
+                            rigWorld = toWorld * written.Drawn;
                         }
                         else
                         {
-                            rigAt = toWorld * node.Transform.Origin;
+                            rigWorld = toWorld * node.Transform;
                         }
                     }
+                    Vector3 rigAt = measurable ? rigWorld.Origin : Vector3.Zero;
                     float eyeDistanceSq = measurable ? NearestEyeDistanceSq(rigAt) : 0f;
 
                     // Distance is a RATE, never a cutoff. `sub_822142E8` gates on the view cone
@@ -1426,12 +1427,7 @@ public partial class GameEntities : Node3D
                         }
                     }
 
-                    float reach = DrawnReach(entity.Address) + ReachSlackMetres;
-                    int reaching = measurable && !principal
-                        ? ViewsReaching(entity.Address, rigAt, reach)
-                        : EveryView;
-                    bool inView = principal ||
-                        (reaching != 0 && RigInView(entity.Address, measurable, rigAt, reaching, nowMs));
+                    bool inView = principal || PosedThisTick(entity.Address, measurable, rigWorld, nowMs);
 
                     if (inView || principal)
                     {
@@ -3377,6 +3373,7 @@ public partial class GameEntities : Node3D
             // a freed skeleton reachable and pose it every frame.
             _skeletons.Remove(address);
             _rigSeenMs.Remove(address);
+            _viewSpheres.Remove(address);
             _boneWriteAskedMs.Remove(address);
             _lastLit.Remove(address);
             _eyes.Remove(address);
@@ -3658,6 +3655,8 @@ public partial class GameEntities : Node3D
         {
             extParts = known.Exterior;
             intParts = known.Interior;
+            // The records the last refresh stated, so the census counts cached frames too.
+            total = extParts.Length + intParts.Length;
         }
         else
         {
@@ -5110,7 +5109,8 @@ public partial class GameEntities : Node3D
             return true;
         }
 
-        Vector3 rigAt = toWorld * last.Drawn.Origin;
+        Transform3D rigWorld = toWorld * last.Drawn;
+        Vector3 rigAt = rigWorld.Origin;
         // Rigs beyond PoseFullRateRadius of every eye pose only on the guest's 15 Hz tick step
         // (FarRigPosesThisStep), not on intermediate between-walk frames.
         if (NearestEyeDistanceSq(rigAt) > PoseFullRateRadius * PoseFullRateRadius)
@@ -5118,9 +5118,28 @@ public partial class GameEntities : Node3D
             return false;
         }
 
+        return PosedThisTick(address, true, rigWorld, nowMs);
+    }
+
+    /// <summary>
+    /// Whether a non-principal rig is posed now: the guest's own gate where the title states it
+    /// (<see cref="HostBridge.GetEntityPoseGate"/>: Fable 3's sub_82205E00 — its view test of the
+    /// entity's bounds, SetAsAlwaysInView, the heroes), else the shell's view test of where the
+    /// guest's pose puts the rig (<see cref="RigInView"/>). A cutscene prop is moved to the
+    /// cutscene's origin and its clip carries it metres from there, so the origin is no measure
+    /// of where it is drawn. <paramref name="rigWorld"/> is the rig node's world transform.
+    /// </summary>
+    private bool PosedThisTick(uint address, bool measurable, Transform3D rigWorld, ulong nowMs)
+    {
+        if (HostBridge.GetEntityPoseGate(address) is bool stated)
+        {
+            return stated;
+        }
+
+        Vector3 rigAt = rigWorld.Origin;
         float reach = DrawnReach(address) + ReachSlackMetres;
-        int reaching = ViewsReaching(address, rigAt, reach);
-        return reaching != 0 && RigInView(address, true, rigAt, reaching, nowMs);
+        int reaching = measurable ? ViewsReaching(address, rigAt, reach) : EveryView;
+        return reaching != 0 && RigInView(address, measurable, rigWorld, reaching, nowMs);
     }
 
     /// <summary>
@@ -5230,12 +5249,16 @@ public partial class GameEntities : Node3D
     private bool _tickCompletedThisWalk = true;
 
     /// <summary>
-    /// The guest's visibility gate for posing (`sub_822142E8`): in the frustum of one of the
-    /// <paramref name="views"/> (a bit per view) now, or seen within <see cref="RigHoldMs"/>. An
-    /// unmeasurable rig (not in the tree yet) and a rig never written both count as in view. A
-    /// margin covers a body whose origin is just off screen.
+    /// The shell's visibility gate for posing, for a title that states none: the sphere around
+    /// the guest's published pose (<see cref="HostBridge.GetEntityViewSphere"/>, placed by
+    /// <paramref name="rigWorld"/>) reaches into the frustum of one of the <paramref name="views"/>
+    /// (a bit per view) now, or was seen within <see cref="RigHoldMs"/>. Without a stated sphere
+    /// the rig's origin is tested. An unmeasurable rig (not in the tree yet) and a rig never
+    /// written both count as in view. The margin covers the skin past the bones (past the origin
+    /// without a sphere); the sphere holds the model origin, so a rig the origin test passed
+    /// still passes.
     /// </summary>
-    private bool RigInView(uint address, bool measurable, Vector3 at, int views, ulong nowMs)
+    private bool RigInView(uint address, bool measurable, Transform3D rigWorld, int views, ulong nowMs)
     {
         if (!measurable || _poseViewCount == 0 || !_rigSeenMs.ContainsKey(address))
         {
@@ -5243,23 +5266,18 @@ public partial class GameEntities : Node3D
             return true;
         }
 
+        (Vector3 Centre, float Radius) sphere = (rigWorld.Origin, 0f);
+        if (ViewSphereOf(address) is { } stated)
+        {
+            sphere = Refii.Entities.Engine_ViewSphere.ToWorld(
+                rigWorld, Refii.Entities.Engine_EntitySkeleton.Swizzle(stated.Centre), stated.Radius);
+        }
+
         bool inside = false;
         for (int i = 0; i < _poseViewCount && !inside; ++i)
         {
-            if ((views & (1 << i)) == 0)
-            {
-                continue;
-            }
-
-            inside = true;
-            foreach (Plane plane in _poseViews[i].Planes)
-            {
-                if (plane.DistanceTo(at) > RigViewMargin)
-                {
-                    inside = false;
-                    break;
-                }
-            }
+            inside = (views & (1 << i)) != 0 &&
+                Refii.Entities.Engine_ViewSphere.InsideAll(_poseViews[i].Planes, sphere.Centre, sphere.Radius, RigViewMargin);
         }
 
         if (inside)
@@ -5270,6 +5288,27 @@ public partial class GameEntities : Node3D
 
         return nowMs - _rigSeenMs[address] <= RigHoldMs;
     }
+
+    /// <summary>
+    /// The guest's stated view sphere for a rig (model space), read once per guest frame: the
+    /// published pose changes only when the guest steps.
+    /// </summary>
+    private (Vector3 Centre, float Radius)? ViewSphereOf(uint address)
+    {
+        uint frame = Refii.Core.Engine_GuestFrame.Frame;
+        if (_viewSpheres.TryGetValue(address, out (uint Frame, (Vector3 Centre, float Radius)? Sphere) cached) &&
+            cached.Frame == frame)
+        {
+            return cached.Sphere;
+        }
+
+        (Vector3 Centre, float Radius)? sphere = HostBridge.GetEntityViewSphere(address);
+        _viewSpheres[address] = (frame, sphere);
+        return sphere;
+    }
+
+    /// <summary>Each rig's stated view sphere and the guest frame it was read on.</summary>
+    private readonly Dictionary<uint, (uint Frame, (Vector3 Centre, float Radius)? Sphere)> _viewSpheres = new();
 
     /// <summary>
     /// An entity's render layers: the fixture rule (Engine_LevelLights.EntityLayersOf), in its

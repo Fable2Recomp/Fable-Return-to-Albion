@@ -19,6 +19,10 @@
 # The app object's idle wait (vtable 0x820025C4 slot 3), the one unlocked point of the 3D Engine
 # loop; Fable3/src/hooks/src/present_pacing.cpp paces the present there.
 0x82D32268 = { name = "rex_App_IdleWaitForFlags" }
+# The app object's input tick (vtable 0x820025C4 slot 5, a thunk to the input system at app+0x24),
+# called once per HF step by the game loop at 0x821CBD74; Fable3/src/hooks/src/game_tick_pump.cpp
+# drains the host's posted work there and times the step.
+0x82188728 = { name = "rex_App_TickInput" }
 # The "Press START" splash's per-frame update (F); Fable3/src/hooks/src/splash_screen.cpp states
 # its state to the host, which draws the screen.
 0x82359848 = { name = "rex_Splash_Update" }
@@ -49,6 +53,23 @@
 0x82819420 = { name = "rex_GuiElement_SetOpacity" }
 0x82B45268 = { name = "rex_GuiTextBox_Commit" }
 0x82819288 = { name = "rex_GuiElement_SetTextTag" }
+# The timeline position (elem, pres, f1 = value; the meters' fraction * 1000, sub_8281AD48) and
+# the text set from a tag NAME (elem, &name) that assigns box+0x88 without the commit above.
+0x8281A5D8 = { name = "rex_GuiElement_SetTime" }
+0x828191A8 = { name = "rex_GuiElement_SetTextName" }
+# The HUD registry filer (registry, element, presentation) and the attribute-string getter (out,
+# element, presentation, attribute name) it calls: the elements the registries key by their
+# .bgf attribute (TextName, ToggleName, …) never pass the path resolver, and this names them.
+0x82B9A108 = { name = "rex_GuiRegistry_File" }
+0x828183C8 = { name = "rex_GuiElement_AttributeString" }
+# The presentation's root element getter (presentation, 0 = the current screen's): the screen
+# ticks write its state directly (sub_825C3A78 at 0x825C3D10 / 0x825C3EC8), never through a path.
+0x82819DB8 = { name = "rex_GuiPresentation_Root" }
+# The element's local position (elem, pres, f1 x, f2 y, f3 z) — the guest-laid-out text boxes' lines
+# (sub_82920610) and the HUD icons' screen-edge clamp (sub_82B51B58) — and its texture by path
+# (&path, elem) — the interaction buttons' glyphs (sub_82961340, sub_829614A0).
+0x82818580 = { name = "rex_GuiElement_SetPosition" }
+0x82818EF0 = { name = "rex_GuiElement_SetTexture" }
 # The box manager's queue tick (queue) — the one place a display box becomes the showing box and
 # the one exit that drops it — and the menu box's open (MB), input (MB, ev, pad) and close (MB)
 # (Fable3/src/hooks/src/display_box_hooks.cpp).
@@ -56,6 +77,89 @@
 0x825FA220 = { name = "rex_MenuBox_Open" }
 0x825FA030 = { name = "rex_MenuBox_Input" }
 0x825FA420 = { name = "rex_MenuBox_Close" }
+# The camera manager's per-tick update (manager): the active mode's Lua FrameUpdate runs inside
+# it, so Fable3/src/hooks/src/mouse_look.cpp hands the mouse's turn to that mode before it and
+# states what the mode made of it after. The mode's GameAction receiver (mode, {action, x, y}),
+# the registry-ref push (holder, L) that puts the mode's camera table on the stack, and the Lua
+# getfield/setfield (L, idx, name) the hook reads and writes the camera's fields with.
+0x82255FB8 = { name = "rex_CameraManager_Update" }
+0x82769E88 = { name = "rex_CameraMode_ProcessGameAction" }
+0x82242B40 = { name = "rex_LuaRef_Push" }
+0x822A7B58 = { name = "rex_lua_getfield" }
+0x822A7C90 = { name = "rex_lua_setfield" }
+# The per-game-tick Lua GC driver (L holder, force); Fable3/src/hooks/src/lua_gc_slice.cpp runs
+# its time-boxed loop against the real clock.
+0x8226DDB8 = { name = "rex_lhLua_GcSliceStep" }
+# The world (Fable3/src/hooks/src/world_hooks.cpp): the level manager's post-load pass (mgr, run
+# by the loader sub_82348AD0 on its success at 0x82348CBC) and its unload (mgr, flag); the
+# particle command wrappers — create (int* handle, name hash), start (handle), scene (handle,
+# scene), position (handle; v1), position and velocity (handle; v1, v2), orientation (handle; v1),
+# kill (handle), kill by scene (scene, callback); the decal render command's executor (cmd), a
+# render twin releasing its decals (twin) and the decal list's clear; the render scene's add
+# (message, scene, ring; returns the object id — the drunk warp's full-screen quad is stated by
+# its message class) and remove (id, ring).
+0x8234B7E0 = { name = "rex_LevelManager_LevelLoaded" }
+0x82349120 = { name = "rex_LevelManager_Unload" }
+0x8318FDB8 = { name = "rex_ParticleSystem_Create" }
+0x8318FD60 = { name = "rex_ParticleSystem_Start" }
+0x8318FCF8 = { name = "rex_ParticleSystem_SetScene" }
+0x8318FB30 = { name = "rex_ParticleSystem_SetPosition" }
+0x8318FAA0 = { name = "rex_ParticleSystem_SetPositionAndVelocity" }
+0x8318F9D0 = { name = "rex_ParticleSystem_SetOrientation" }
+0x8318F8B0 = { name = "rex_ParticleSystem_Kill" }
+0x8318F510 = { name = "rex_ParticleSystem_KillScene" }
+0x82C3F2A8 = { name = "rex_Decal_ExecuteRenderCommand" }
+0x82CA0CA0 = { name = "rex_RenderTwin_ReleaseDecals" }
+0x82C734B0 = { name = "rex_Decal_ClearAll" }
+0x82257228 = { name = "rex_RenderScene_AddObject" }
+0x82C3C148 = { name = "rex_RenderScene_RemoveObject" }
+# The loading screen's quads, cut (Fable3/src/hooks/src/loading_screen_scene.cpp): Godot draws the
+# screen. Its per-frame update (ls, engine), its quad builders (one quad; a text run) and the twin
+# create they call (desc, f1 time, scene, requested id, ...), which inside a builder answers its
+# own "nothing made" result.
+0x823022D0 = { name = "rex_LoadingScreen_Update" }
+0x82302EB8 = { name = "rex_LoadingScreen_BuildQuad" }
+0x82305CC0 = { name = "rex_LoadingScreen_BuildTextQuads" }
+0x821F17B0 = { name = "rex_RenderTwin_Create" }
+# Character appearance (Fable3/src/hooks/src/appearance_hooks.cpp): CECGraphicAppearanceMorph's
+# draw virtual (this = comp20+12, the entity at this-8), its part rebuild (comp20), the morph
+# descriptor's constructor (desc, flags, {model hash, weight} list, ...) and the serialisers of the
+# per-render-instance texture command (type 33: opcode 11 replaces a texture) and of the dye's
+# colour-mask command (type 30).
+0x8222C190 = { name = "rex_GraphicAppearanceMorph_Draw" }
+0x82774448 = { name = "rex_GraphicAppearanceMorph_RebuildParts" }
+0x82C4BB20 = { name = "rex_MorphDescriptor_Ctor" }
+0x82C4B140 = { name = "rex_TextureCommand_Serialise" }
+0x82C4C0E8 = { name = "rex_ColourMaskCommand_Serialise" }
+# Cloth (Fable3/src/hooks/src/cloth_hooks.cpp): the publish of one cloth piece's simulated pose to
+# its vertex buffer (item: waits for the step, lerps by the fade, builds normals and tangents,
+# writes the buffer) and the sim item's destroy (item).
+0x82269870 = { name = "rex_ClothItem_Publish" }
+0x82CB4D60 = { name = "rex_ClothItem_Destroy" }
+# The CRT's double-precision math, answered by the host's libm (Fable3/src/hooks/src/crt_math.cpp;
+# each matched to Fable 2's routine by entry signature and size, see that file).
+0x821EF7C8 = { name = "rex_pow" }
+0x82E2C110 = { name = "rex_atan2" }
+0x821FC448 = { name = "rex_fmod" }
+0x821E1DF8 = { name = "rex_sin" }
+0x821E1F58 = { name = "rex_cos" }
+0x82255458 = { name = "rex_tan" }
+0x821EF240 = { name = "rex_exp" }
+0x822461D0 = { name = "rex_log" }
+0x8225B6D8 = { name = "rex_asin" }
+0x82254920 = { name = "rex_atan" }
+0x821F0B80 = { name = "rex_floor" }
+0x821A1428 = { name = "rex_ceil" }
+# The file system (Fable3/src/hooks/src/vfs_hooks.cpp): the root CCompositeFileSystem's Open
+# (out, fs, name, mode; vtable 0x820FB1FC slot 4) and Exists (fs, name; slot 11), which every
+# named and hashed open reaches; the name object's hash (name; cached at +0x1C), the
+# CMemoryFile factory (out, size, id) the host's override is served in, and the reference
+# reset (T** slot: release *slot, clear it) the replaced file is dropped through.
+0x82D881D8 = { name = "rex_VfsComposite_Open" }
+0x82D88488 = { name = "rex_VfsComposite_Exists" }
+0x822D7768 = { name = "rex_VfsName_Hash" }
+0x82D8D960 = { name = "rex_VfsMemoryFile_Create" }
+0x8313CEA0 = { name = "rex_VfsRef_Reset" }
 # FUNCTIONS THE GENERATOR DID NOT FIND: reached only through a pointer or only as a tail-branch
 # target, with no .pdata entry. Found in the Fable 3 IDB against the built module's own symbol
 # list: every IDA function it lacks (multiple-inheritance adjustor thunks, `addi r3,r3,-N; b`, the

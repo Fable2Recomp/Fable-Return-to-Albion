@@ -164,10 +164,56 @@ public static partial class Engine_MdlMaterial
     /// two do not look like the same world. The albedo sampler defaults to white, so binding
     /// nothing is a neutral surface rather than a black one.
     /// </summary>
-    public static Material? Fallback()
+    public static Material? Fallback(MdlMaterial? record = null)
     {
-        Shader? shader = LiteFallbackShader() ?? Shared();
-        return shader is null ? null : new ShaderMaterial { Shader = shader };
+        // No textures: no specular colour, so the lite set's no-specular build draws it exactly.
+        // BACK FACES CULLED, as every opaque textured surface is (TryCreateShared takes
+        // SharedCulled: the guest's view-wide CCW cull stands for a standard material). An
+        // untextured surface drawn two-sided shows its back face where the title shows nothing —
+        // the occlusion walls Fable 3 places inside its real walls (occlusionwall.mdl, a single
+        // untextured 'Material') stood in the castle rooms as white walls for exactly that.
+        string family = Engine_ShaderFamily.CullBackFaces ? Engine_ShaderFamily.StandardCulledPath : Engine_ShaderFamily.StandardPath;
+        Shader? shader = LiteFallbackShader(family) ?? SharedCulled();
+        if (shader is null)
+        {
+            return null;
+        }
+        var material = new ShaderMaterial { Shader = shader };
+        // Fable 3 draws an empty texture set as its 16x16 white default (sub_82CBA610: sub_82182B70
+        // at 0x82CBA6D0) times the material's DiffuseColour (material+160, (1,1,1,1) from the
+        // constructor sub_82CEE200 0x82CEE298), so a stated colour is the surface's colour: bound
+        // here as a one-texel albedo, the white default already being the sampler's own.
+        if (record?.StatedProperties is { } stated && stated.TryGetValue("DiffuseColour", out float[]? colour) &&
+            colour.Length >= 3 && StatedColourTexture(colour) is { } albedo)
+        {
+            material.SetShaderParameter("albedo_tex", albedo);
+        }
+        return material;
+    }
+
+    private static readonly Dictionary<(float, float, float, float), ImageTexture> _statedColours = new();
+
+    /// <summary>A one-texel texture of a stated colour, shared per colour; null for white.</summary>
+    private static ImageTexture? StatedColourTexture(float[] colour)
+    {
+        float a = colour.Length > 3 ? colour[3] : 1f;
+        var key = (colour[0], colour[1], colour[2], a);
+        if (key == (1f, 1f, 1f, 1f))
+        {
+            return null;
+        }
+        lock (_statedColours)
+        {
+            if (_statedColours.TryGetValue(key, out ImageTexture? known))
+            {
+                return known;
+            }
+            var image = Image.CreateEmpty(1, 1, false, Image.Format.Rgbaf);
+            image.SetPixel(0, 0, new Color(key.Item1, key.Item2, key.Item3, a));
+            ImageTexture texture = ImageTexture.CreateFromImage(image);
+            _statedColours[key] = texture;
+            return texture;
+        }
     }
 
     /// <summary>

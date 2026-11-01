@@ -252,17 +252,20 @@ foreach(_leaked
     endif()
 endforeach()
 
-# The per-title metadata DOES ship: Fable2/metadata/rexnet.toml is ours, not the game's, and
+# The per-title metadata DOES ship: <Title>/metadata/rexnet.toml is ours, not the game's, and
 # it is what the guest reads at XNetStartup for the shard tier, the advertised title id and
 # the presence mappings. The runtime writes a built-in default when an install has none
 # (refii_app.h, RefiiWriteDefaultRexNetConfig), and the shipped copy replaces that default
 # once it is newer, so this is the file that carries the reasoning for each value.
-# Staged where the title runs from, assets/Fable2/metadata (the title folder, Engine_Title).
-set(_metadata "${PROJECT_DIR}/../Fable2/metadata")
-if(IS_DIRECTORY "${_metadata}")
-    file(COPY "${_metadata}/" DESTINATION "${_app}/assets/Fable2/metadata")
-    message(STATUS "Staged per-title metadata: ${_metadata} -> ${_app}/assets/Fable2/metadata")
-endif()
+# Staged where each title runs from, assets/<Title>/metadata (the title folder, Engine_Title;
+# refii_app.h seeds it from there into the runtime's metadata folder on every launch).
+foreach(_title Fable2 Fable3)
+    set(_metadata "${PROJECT_DIR}/../${_title}/metadata")
+    if(IS_DIRECTORY "${_metadata}")
+        file(COPY "${_metadata}/" DESTINATION "${_app}/assets/${_title}/metadata")
+        message(STATUS "Staged per-title metadata: ${_metadata} -> ${_app}/assets/${_title}/metadata")
+    endif()
+endforeach()
 
 # The mods that ship with the app, as SOURCE: the launcher packs each into assets/Fable2/mods on first
 # start (Engine_ModBundled.cs), switched off. Ours, not the game's — mod Lua patches the shipped

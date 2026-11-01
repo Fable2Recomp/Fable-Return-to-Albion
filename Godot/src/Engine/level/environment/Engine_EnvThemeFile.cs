@@ -484,12 +484,15 @@ public sealed class Engine_EnvThemeFile
         List<MapEntry> map = ReadMap(mapBytes);
         RememberMap(map, read);
         bool any = false;
+        uint baseId = 0;
+        uint levelId = 0;
 
         foreach (MapEntry entry in map)
         {
             if (string.Equals(entry.Name, BaseThemeName, StringComparison.OrdinalIgnoreCase))
             {
                 any |= AppendTheme(entry, read, chain);
+                baseId = entry.Id;
                 break;
             }
         }
@@ -501,12 +504,42 @@ public sealed class Engine_EnvThemeFile
                 if (entry.Id == id)
                 {
                     any |= AppendTheme(entry, read, chain);
+                    levelId = entry.Id;
                     break;
                 }
             }
         }
 
+        lock (MapLock)
+        {
+            _baseThemeId = baseId;
+            _levelThemeId = levelId;
+        }
+
         return any;
+    }
+
+    private static uint _baseThemeId;
+    private static uint _levelThemeId;
+
+    /// <summary>
+    /// Whether a map id names a theme the chain <see cref="AppendLevelThemes"/> built already
+    /// carries at full weight: the base (<c>envthemebase</c>, the guest's "Global Layer") or the
+    /// level's own (its "Level Layer"), both pushed at weight 1 by <c>sub_82268600</c>
+    /// (0x82268654, 0x82268794). A reader folding the guest's stated layers over that chain
+    /// skips these two: folding the base again at 1 would undo the level's overrides.
+    /// </summary>
+    public static bool IsLevelStackTheme(uint id)
+    {
+        if (id == 0)
+        {
+            return false;
+        }
+
+        lock (MapLock)
+        {
+            return id == _baseThemeId || id == _levelThemeId;
+        }
     }
 
     private static readonly object MapLock = new();

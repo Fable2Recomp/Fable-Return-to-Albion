@@ -26,6 +26,28 @@ public sealed partial class Engine_HudLayout
     /// </summary>
     public const string SnapshotPath = "user://hud/layout.snapshot.json";
 
+    /// <summary>
+    /// Where a title's HUD files live: its arrangement, its snapshot and its piece-art overrides.
+    /// Fable 2 keeps the unscoped `user://hud` its players' saved arrangements are already in;
+    /// every later title gets its own folder beneath it, by the title's folder name — the same
+    /// per-title split as `assets/&lt;Folder&gt;` and `cache/&lt;Folder&gt;` — so one title's
+    /// snapshot never overwrites another's.
+    /// </summary>
+    public static string FolderFor(Refii.Core.Engine_Title title) =>
+        title == Refii.Core.Engine_Title.Fable2 ? "user://hud" : $"user://hud/{title.Folder}";
+
+    /// <summary>A title's player arrangement (<see cref="LayoutPath"/> for Fable 2).</summary>
+    public static string LayoutPathFor(Refii.Core.Engine_Title title) => FolderFor(title) + "/layout.json";
+
+    /// <summary>A title's snapshot of the arrangement beneath the player's (<see cref="SnapshotPath"/> for Fable 2).</summary>
+    public static string SnapshotPathFor(Refii.Core.Engine_Title title) => FolderFor(title) + "/layout.snapshot.json";
+
+    /// <summary>The running title's player arrangement — what the editor and the player's tool write.</summary>
+    public static string ActiveLayoutPath => LayoutPathFor(Refii.Core.Engine_Title.Active);
+
+    /// <summary>The running title's snapshot.</summary>
+    public static string ActiveSnapshotPath => SnapshotPathFor(Refii.Core.Engine_Title.Active);
+
     /// <summary>The snapshot's top-level field naming which arrangement it holds.</summary>
     public const string SnapshotLayerKey = "layer";
 
@@ -127,25 +149,42 @@ public sealed partial class Engine_HudLayout
     public const string ExpressionMeterName = "ExpressionMeter";
 
     /// <summary>
+    /// One widget cut WHOLE (a `group.` piece): the component <paramref name="Name"/> directly
+    /// under <paramref name="Parent"/> — null takes Fable 2's two root containers, `Layer` and
+    /// `UpperElements` — with <paramref name="Label"/> in its id. A fixed <paramref name="Anchor"/>
+    /// wins; else <paramref name="AnchorFromContents"/> snaps from where the subtree's art sits
+    /// (the mean of its drawn elements), else from the component's own authored position.
+    /// </summary>
+    /// <remarks>
+    /// The contents rule is for a file whose widgets are authored at the canvas origin with their
+    /// art placed beneath (Fable 3's `hud.bgf`: `TopBoxRefined`, `Subtitles`, `dpad` all sit at or
+    /// near 0,0), where snapping from the root's own position puts every widget on the centre
+    /// anchor and nothing reaches the edges of a wider display.
+    /// </remarks>
+    public readonly record struct GroupSubtree(
+        string Name, string Label, Anchor? Anchor, float Depth,
+        bool AnchorFromContents = false, string? Parent = null);
+
+    /// <summary>
     /// The subtrees cut whole: element name under `Layer`, id label, a fixed anchor (null snaps
     /// from the authored position) and the depth. The wheel sits in front of what it opens over.
     /// </summary>
-    private static readonly (string Name, string Label, Anchor? Anchor, float Depth)[] GroupSubtrees =
+    private static readonly GroupSubtree[] GroupSubtrees =
     {
-        (ExpressionWheelName, "ExpressionWheel", null, 0.5f),
-        (QuestBoxName, "QuestBox", Anchor.TopCentre, 0f),
+        new(ExpressionWheelName, "ExpressionWheel", null, 0.5f),
+        new(QuestBoxName, "QuestBox", Anchor.TopCentre, 0f),
 
         // The timing meter (expressions, the job minigames). Its three pips carry no binding and
         // no slide: the guest's meter object (`*(GUI+32)+44`, started by `StartExpressionMeterPip`
         // → `sub_82307050`) writes their positions onto the elements, so they only move inside a
         // unit that follows every element beneath it.
-        (ExpressionMeterName, "ExpressionMeter", null, 0.5f),
+        new(ExpressionMeterName, "ExpressionMeter", null, 0.5f),
 
         // The job chain multiplier (`Layer/JobMultiplier`), a whole unit with no binding: the
         // guest's `SetJobMultiplierLevel` (`sub_823CAC20`) writes `<gold_img>%d` onto
         // `Group.Text` and plays the root's slides (1 from off, 2 up, 3 down, 4/5 off) itself, so
         // following its live element state is the whole job.
-        ("JobMultiplier", "JobMultiplier", null, 0.5f),
+        new("JobMultiplier", "JobMultiplier", null, 0.5f),
 
         // THE HEALTH READOUT IS ONE WIDGET, and cutting it per binding is what detached it.
         // `Layer/UpperElements/PlayerHealth` holds five bound elements — the `TopBox` toggle on
@@ -174,8 +213,8 @@ public sealed partial class Engine_HudLayout
         // OUR NUMBERS, not the file's. They belong in the layout template with the rest, and
         // the saved arrangement overrides them anyway once one exists — these are the defaults
         // a fresh install gets.
-        ("PlayerHealth", "PlayerHealth", Anchor.TopLeft, 0f),
-        ("CoopHealth", "CoopHealth", Anchor.TopRight, 0f),
+        new("PlayerHealth", "PlayerHealth", Anchor.TopLeft, 0f),
+        new("CoopHealth", "CoopHealth", Anchor.TopRight, 0f),
 
         // THE TARGETED-CITIZEN READOUT, for the same reason. `Layer/TargetedQuery` is one
         // component holding the name, the opinion slider, the mood-face pairs and the
@@ -187,7 +226,7 @@ public sealed partial class Engine_HudLayout
         //
         // The wide dark band behind it IS authored and correct: `BoxAndBar/TopBox` spans
         // x -641.7..+641.7 at opacity 70. That one is the guest's, not ours.
-        ("TargetedQuery", "TargetedQuery", Anchor.TopCentre, 0f),
+        new("TargetedQuery", "TargetedQuery", Anchor.TopCentre, 0f),
 
         // The spell-charge meter, one per player, placed whole. `Layer/SpellCharging` is authored
         // at rot.z -1.5708 x 0.8, so its five pips (`Group/Spell5..Spell1`, 80 apart on the
@@ -200,14 +239,14 @@ public sealed partial class Engine_HudLayout
         // (2 assigned, 1 empty), `sub_825E9D58` marks the completed level (4 newest, 3 earlier),
         // `sub_825E9EA0` sets each `Icon` to the spell on that level, and the fill is the meter
         // `PlayerSpellcharge{n}`. `SpellCharging2` is the henchman's, mirrored at +390.
-        ("SpellCharging", "SpellCharging", null, 0f),
-        ("SpellCharging2", "SpellCharging2", null, 0f),
+        new("SpellCharging", "SpellCharging", null, 0f),
+        new("SpellCharging2", "SpellCharging2", null, 0f),
 
         // The LT look-at prompt, `Layer/LookAt`: icon, text and glow with NO binding, so it is cut
         // whole. The guest drives it through element state alone — `sub_82595F98` writes the
         // prompt onto `Text` (`sub_82425DD0`) and plays slide 2/4/5 (8 off) through
         // `sub_82596270`.
-        ("LookAt", "LookAt", null, 0f),
+        new("LookAt", "LookAt", null, 0f),
     };
 
     /// <summary>
@@ -444,10 +483,19 @@ public sealed partial class Engine_HudLayout
     /// fraction, that fraction snaps to the nearest edge or centre, and the remainder is the
     /// offset. The result is the starting arrangement and is meant to be edited.
     /// </summary>
+    /// <param name="groups">
+    /// The widgets the title cuts whole. Null is Fable 2's `hud.bgf` — its group table, its shipped
+    /// arrangement (<see cref="Arrangement"/>) and its own-reader widgets
+    /// (<see cref="AddWidgets"/>), none of which name anything in another title's file. A title that
+    /// states its groups states its whole arrangement: no Fable 2 placement or widget is added.
+    /// </param>
     public static Engine_HudLayout FromBindings(
-        Engine_UiScreen screen, Engine_UiBindings bindings, Engine_UiWidescreen? wide = null)
+        Engine_UiScreen screen, Engine_UiBindings bindings, Engine_UiWidescreen? wide = null,
+        IReadOnlyList<GroupSubtree>? groups = null)
     {
         var layout = new Engine_HudLayout();
+        IReadOnlyDictionary<string, (Anchor Anchor, Vector2 Offset)> arrangement =
+            groups is null ? Arrangement : NoArrangement;
 
         // THE WIDE LAYOUT DECIDES THE ANCHORS. Every position in `hud.bgf` is the 4:3 one; the
         // 16:9 arrangement rides beside it as the parent's `widescreenXPos/YPos/WidescreenXWidth`
@@ -603,7 +651,7 @@ public sealed partial class Engine_HudLayout
             // drops that subtree.
             contains.TryGetValue(binding.ElementOrdinal, out HashSet<string>? strip);
             const bool placed = true;
-            if (Arrangement.TryGetValue(id, out (Anchor Anchor, Vector2 Offset) put))
+            if (arrangement.TryGetValue(id, out (Anchor Anchor, Vector2 Offset) put))
             {
                 anchor = put.Anchor;
                 offset = put.Offset;
@@ -639,7 +687,8 @@ public sealed partial class Engine_HudLayout
         //   writes TopTitle/TopMain box-relative) and sizes the slab through the TopBoxX/TopBoxY
         //   meters (`sub_823FE638`, from the measured text); its buttons ride the TopBoxX tracks
         //   and its faders are the guest's stated opacity.
-        foreach ((string name, string label, Anchor? fixedAnchor, float depth) in GroupSubtrees)
+        foreach ((string name, string label, Anchor? fixedAnchor, float depth, bool fromContents, string? parent)
+            in groups ?? GroupSubtrees)
         {
             for (int i = 0; i < screen.Nodes.Length; ++i)
             {
@@ -651,16 +700,19 @@ public sealed partial class Engine_HudLayout
                 // matched nothing for it — a group that never forms leaves the per-binding
                 // pieces standing, which looks like the layout working.
                 if (node.Type != BgfElementType.Component || node.Name != name ||
-                    node.Parent?.Name is not ("Layer" or "UpperElements"))
+                    (parent is null
+                        ? node.Parent?.Name is not ("Layer" or "UpperElements")
+                        : node.Parent?.Name != parent))
                 {
                     continue;
                 }
 
                 Vector2 canvas = CanvasPositionWide(node);
-                Anchor anchor = fixedAnchor ?? SnapAnchor(canvas);
+                Anchor anchor = fixedAnchor ??
+                    (fromContents && ContentsCentre(node) is { } contents ? SnapAnchor(contents) : SnapAnchor(canvas));
                 string id = $"group.{label}.{name}";
                 Vector2 offset = OffsetFrom(anchor, canvas);
-                if (Arrangement.TryGetValue(id, out (Anchor Anchor, Vector2 Offset) put))
+                if (arrangement.TryGetValue(id, out (Anchor Anchor, Vector2 Offset) put))
                 {
                     anchor = put.Anchor;
                     offset = put.Offset;
@@ -686,7 +738,7 @@ public sealed partial class Engine_HudLayout
         // An arrangement entry that matches nothing is a renamed binding, and would otherwise be
         // silent — the piece just would not appear, which looks like the guest not lighting it.
         var stranded = new List<string>();
-        foreach (string id in Arrangement.Keys)
+        foreach (string id in arrangement.Keys)
         {
             if (!layout._pieces.Exists(p => p.Id == id))
             {
@@ -702,8 +754,43 @@ public sealed partial class Engine_HudLayout
 
         AbsorbIntoGroups(screen, layout._pieces);
         ReportNesting(screen, layout._pieces);
-        layout.AddWidgets();
+        if (groups is null)
+        {
+            layout.AddWidgets();
+        }
+
         return layout;
+    }
+
+    /// <summary>No shipped placements: a title that states its own groups.</summary>
+    private static readonly Dictionary<string, (Anchor Anchor, Vector2 Offset)> NoArrangement = new();
+
+    /// <summary>
+    /// The mean canvas position (wide layout applied) of the elements under <paramref name="root"/>
+    /// that draw something — a quad or a text — or null when none does.
+    /// </summary>
+    private static Vector2? ContentsCentre(UiNode root)
+    {
+        Vector2 sum = Vector2.Zero;
+        int count = 0;
+        var pending = new Stack<UiNode>();
+        pending.Push(root);
+        while (pending.Count > 0)
+        {
+            UiNode at = pending.Pop();
+            if (at.Quad is not null || at.Text is not null)
+            {
+                sum += CanvasPositionWide(at);
+                ++count;
+            }
+
+            foreach (UiNode child in at.Children)
+            {
+                pending.Push(child);
+            }
+        }
+
+        return count == 0 ? null : sum / count;
     }
 
     /// <summary>

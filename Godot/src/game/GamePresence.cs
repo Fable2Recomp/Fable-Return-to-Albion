@@ -7,15 +7,22 @@ using Refii.Launcher.Core;
 namespace Refii.Game;
 
 /// <summary>
-/// Discord Rich Presence: "Playing Fable 2: Return to Albion", with the level the player is
-/// standing in — Bowerstone Market, Rookridge — as the first line.
+/// Discord Rich Presence: "Playing &lt;the title's remake&gt;", with the level the player is
+/// standing in — Bowerstone Market, Rookridge; Bowerstone Castle — as the first line.
 /// </summary>
 /// <remarks>
 /// THE NODE OWNS DISCORD. RexNet speaks to the Discord client itself — the connection, the
 /// party, the join secret, the join when a friend accepts, and the friendship that a join
-/// makes — from the application id in the title's <c>rexnet.toml</c>. This node only states
-/// the two lines Discord shows and whether a joiner is admitted right now, which are the
-/// things the game knows and the node does not.
+/// makes — from the application id in the title's <c>rexnet.toml</c>
+/// (<c>&lt;Folder&gt;/metadata/rexnet.toml</c>, staged as <c>assets/&lt;Folder&gt;/metadata</c>).
+/// This node only states the two lines Discord shows and whether a joiner is admitted right
+/// now, which are the things the game knows and the node does not.
+///
+/// THE GAME'S NAME IS THE APPLICATION'S. Discord shows "Playing &lt;application name&gt;" from
+/// the id alone, so each title's name on Discord is the name of its own application
+/// (<see cref="Refii.Core.Engine_Title.RemakeName"/> for the one that has one); a title whose
+/// <c>rexnet.toml</c> leaves the id empty has no presence at all rather than another title's.
+/// The two lines stated here are the same for every title: both games are set in Albion.
 ///
 /// The place is <see cref="GameWhereabouts.Current"/>, the level the guest states it is in,
 /// so the line is right on every transition that reloads a level. Joinable is the guest's own
@@ -80,7 +87,7 @@ public partial class GamePresence : Node
 
 		NetBridge.DiscordActivity(wanted.Details, wanted.State, wanted.Joinable);
 		_stated = wanted;
-		GD.Print($"[presence] {wanted.Details} — {wanted.State}" +
+		GD.Print($"[presence] {Refii.Core.Engine_Title.Active.RemakeName}: {wanted.Details} — {wanted.State}" +
 			(wanted.Joinable == true ? " (joinable)" : string.Empty));
 	}
 

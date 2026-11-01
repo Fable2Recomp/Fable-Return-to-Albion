@@ -20,7 +20,12 @@
 //               directional mask (sub_822327E8)
 //   light       +4 type (8 point, 9 spot, 10 directional, 11 global), +80/+96 AABB, +112 sphere,
 //               +176 shadow object, +208 colour, +224 flicker brightness, +288 position,
-//               +304 direction, +320 range, +324 cone, +328/+332 fade, +340/+341/+342 shadow
+//               +304 direction (what every packer reads: directional sub_82288FF0 0x8228902c
+//               `lvx128 v10,r3,r7` r7 = 304, sub_82C758C0 0x82c758fc, spot sub_82C86E68
+//               0x82c86ebc, all negated by sign xor; set from the descriptor's +128 by
+//               sub_8229B940; the sky rig's command 4 writes +76 (sub_821A80A8 0x821a8114) and
+//               no reader of +76 was found in the light classes), +320 range, +324 cone,
+//               +328/+332 fade, +340/+341/+342 shadow
 //               bytes, +343 skip, +416 zone, +420/+424 cone cos and 1/(1-cos), +428 1/range,
 //               +432 flicker walk, +444 intensity (packer 0x82224000
 //               `li r6,0x1BC`), +448 range scale, +484 caster, +560 spot planes (count +816)

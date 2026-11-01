@@ -162,7 +162,8 @@ public sealed class Engine_Title
 	/// <summary>Fable 3. Its remake has no name yet; it goes by the game's until it does.</summary>
 	public static readonly Engine_Title Fable3 = new(
 		"refiii", "Fable 3", "Fable 3", 0x4D5308D6, "Fable3", "refiii_generated",
-		"Fable3", string.Empty, hasHardMods: false, ".f3mod", 0xE0474CFFu, "refii_hostbridge");
+		"Fable3", string.Empty, hasHardMods: false, ".f3mod", 0xE0474CFFu, "refii_hostbridge",
+		"refii_vfs");
 
 	public static IReadOnlyList<Engine_Title> All { get; } = new[] { Fable2, Fable3 };
 

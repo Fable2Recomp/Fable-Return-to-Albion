@@ -18,8 +18,8 @@
 // tick sub_82274950 at 0x82274A4C) composes `TopTitle` and `TopMain` as paragraphs and writes each
 // into the text registry (sub_82920BC8 -> sub_82920278 -> sub_82733F30), and the button labels
 // `RightTopButton` / `LeftTopButton` straight into it (0x8217DD30 / 0x8217DE14). Its visibility
-// goes to the toggle and slide registries [9] and [10], which hold no readable state; the manager
-// states it instead — see RefiiHostGetFable3TopBox.
+// goes to the toggle and slide registries [9] and [10]; the shared HUD view draws it from the
+// element statements (Titles/Fable3/Fable3Hud.cs), as it does every other hud.bgf widget.
 
 #include <cstdint>
 #include <cstring>
@@ -236,78 +236,6 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetScreenFade(float* out_rgba, float* ou
     if (out_progress != nullptr) *out_progress = t;
     if (out_locked != nullptr) *out_locked = GuestByteAt(base, fade + 0x21u);
     return fade;
-}
-
-/// The TopBox as its manager M = `*(H+0x4C)` holds it (SetTopBoxHidden 0x82519C38: `lwz r10,0x4C(r10)`
-/// off H). Eight words:
-///   [0] up: M+2 && !M+0 && !M+1. The publisher sets M+2 when it shows the front record
-///       (`stb` at 0x8217D99C, slide 2 at 0x8217DEC8); sub_824B6F60 clears it in the tick the front
-///       record changes, as it plays the hide slide (0x824B701C); M+0 / M+1 are the hidden flags
-///       (SetTopBoxHidden `stb r3,0(r10)` at 0x82519C6C, then the hide slide).
-///   [1] the front record's title key, rec+4 (the publisher's `sub_8230DA98(textDB, rec+4)` at
-///       0x8217DA20 decides the title; when false it never rewrites `TopTitle`).
-///   [2] its body key: the provider `*(rec+8)`'s +4. Every provider class (vtables 0x82091E58,
-///       0x82091E60, 0x82091E68, 0x82091E70; getters sub_824B42D8 / 4418 / 45E8 / 46E0) starts
-///       from `sub_8230DCA8(textDB, provider+4)`, which yields no string for an absent key, so
-///       the body is empty exactly when the book has no string for it. No title and no body is
-///       the button-only box, which rewrites neither `TopTitle` nor `TopMain` (0x8217DA64).
-///   [3] A shown (rec+28), [4] A is a hold (rec+29), [5] Y shown (rec+31), [6] Y is a hold
-///       (rec+32): the publisher's button count 1 + A + Y (0x8217DC44..0x8217DC60) and its
-///       meter toggles (0x8217DD3C..0x8217DD50, 0x8217DE40).
-///   [7] M, 0 when there is none.
-/// The front record is sub_82194270's: the last record of the first non-empty channel, channels
-/// a vector at M+0x4C..M+0x50, each a vector of record pointers at +4..+8.
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFable3TopBox(uint32_t* out_words, uint32_t capacity) {
-    constexpr uint32_t kWords = 8u;
-    if (out_words == nullptr || capacity < kWords) {
-        return 0u;
-    }
-    for (uint32_t i = 0; i < kWords; ++i) {
-        out_words[i] = 0u;
-    }
-
-    const uint8_t* base = GuestBase();
-    if (base == nullptr) {
-        return 0u;
-    }
-
-    const uint32_t hud = Word(base, Word(base, kGuiManager) + 0x20u);
-    const uint32_t manager = Word(base, hud + 0x4Cu);
-    if (!Plausible(manager)) {
-        return 0u;
-    }
-
-    uint32_t record = 0u;
-    const uint32_t channels_end = Word(base, manager + 0x50u);
-    uint32_t channel = Word(base, manager + 0x4Cu);
-    for (uint32_t guard = 0; Plausible(channel) && channel != channels_end && guard < 64u; ++guard, channel += 4u) {
-        const uint32_t queue = Word(base, channel);
-        const uint32_t begin = Word(base, queue + 4u);
-        const uint32_t end = Word(base, queue + 8u);
-        if (Plausible(begin) && end > begin && ((end - begin) & ~3u) != 0u) {
-            record = Word(base, end - 4u);
-            if (record != 0u) {
-                break;
-            }
-        }
-    }
-
-    const bool hidden = GuestByteAt(base, manager + 0u) != 0u || GuestByteAt(base, manager + 1u) != 0u;
-    const bool published = GuestByteAt(base, manager + 2u) != 0u;
-    out_words[7] = manager;
-    if (!Plausible(record)) {
-        return kWords;
-    }
-
-    out_words[0] = (published && !hidden) ? 1u : 0u;
-    out_words[1] = GuestWordAt(base, record + 4u);
-    const uint32_t provider = Word(base, record + 8u);
-    out_words[2] = Plausible(provider) ? GuestWordAt(base, provider + 4u) : 0u;
-    out_words[3] = GuestByteAt(base, record + 28u);
-    out_words[4] = GuestByteAt(base, record + 29u);
-    out_words[5] = GuestByteAt(base, record + 31u);
-    out_words[6] = GuestByteAt(base, record + 32u);
-    return kWords;
 }
 
 }  // extern "C"

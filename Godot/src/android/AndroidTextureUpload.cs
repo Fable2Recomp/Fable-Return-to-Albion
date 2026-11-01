@@ -109,6 +109,17 @@ public static class AndroidTextureUpload
         Image prepared = Prepare(image);
         try
         {
+            // A transcode or expand that came back empty would raise Godot's
+            // `p_image.is_null() || p_image->is_empty()` with no name attached; upload the
+            // decoded image as it is and say which one it was.
+            if (prepared.IsEmpty() && !image.IsEmpty())
+            {
+                GD.PushWarning($"[tex] upload prepared an EMPTY image from {image.GetWidth()}x{image.GetHeight()} " +
+                    $"{image.GetFormat()} (mips {image.HasMipmaps()}); uploading the decoded image instead");
+                prepared.Dispose();
+                prepared = image;
+            }
+
             ImageTexture texture = ImageTexture.CreateFromImage(prepared);
             RecordUpload(TextureUploadKind.Create2D, image, prepared);
             return texture;
@@ -134,6 +145,17 @@ public static class AndroidTextureUpload
         Image prepared = Prepare(image);
         try
         {
+            // As in CreateTexture: an empty prepared image is named here, never handed to
+            // the server (`_texture_2d_update` refuses it without saying which texture).
+            if (prepared.IsEmpty())
+            {
+                GD.PushWarning($"[tex] replace prepared an EMPTY image from {image.GetWidth()}x{image.GetHeight()} " +
+                    $"{image.GetFormat()} (mips {image.HasMipmaps()}); the texture keeps its previous image");
+                if (image.IsEmpty()) return;
+                prepared.Dispose();
+                prepared = image;
+            }
+
             texture.SetImage(prepared);
             RecordUpload(TextureUploadKind.Replace2D, image, prepared);
         }

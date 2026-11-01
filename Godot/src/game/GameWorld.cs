@@ -1532,6 +1532,14 @@ public partial class GameWorld : Node3D
 		var modellessComponents = new System.Collections.Generic.Dictionary<byte, int>();
 		int modellessSampled = 0;
 
+		// Fable 3 only: the sampled modelless entities that are neither a light (component 8,
+		// CECGraphicAppearanceLight, whose render part is never a mesh) nor a composite
+		// character (component 20, CECGraphicAppearanceMorph), listed by address with their
+		// whole component signature — the ones still to be explained.
+		bool listRemainder = Engine_Title.Active == Engine_Title.Fable3;
+		var modellessRemainder = new System.Text.StringBuilder();
+		int modellessRemainderCount = 0;
+
 		foreach (HostBridge.GuestEntity entity in entities)
 		{
 			if (entity.ModelHash == 0)
@@ -1541,10 +1549,18 @@ public partial class GameWorld : Node3D
 				if (modellessSampled < 512)
 				{
 					++modellessSampled;
-					foreach (byte id in HostBridge.GetEntityComponents(entity.Address))
+					byte[] ids = HostBridge.GetEntityComponents(entity.Address);
+					foreach (byte id in ids)
 					{
 						modellessComponents.TryGetValue(id, out int seen);
 						modellessComponents[id] = seen + 1;
+					}
+
+					if (listRemainder && System.Array.IndexOf(ids, (byte)8) < 0 &&
+						System.Array.IndexOf(ids, (byte)20) < 0)
+					{
+						++modellessRemainderCount;
+						modellessRemainder.Append($"\n    0x{entity.Address:X8} components=[{string.Join(",", ids)}]");
 					}
 				}
 
@@ -1588,6 +1604,12 @@ public partial class GameWorld : Node3D
 			GD.Print($"[guest-entities] modelless sample {modellessSampled} entity(s), " +
 				$"{modellessComponents.Count} distinct component id(s) — most common: " +
 				string.Join(" ", top));
+			if (listRemainder)
+			{
+				GD.Print($"[guest-modelless] {modellessRemainderCount} of {modellessSampled} sampled " +
+					$"modelless entity(s) are neither a light (component 8) nor a composite " +
+					$"(component 20):{modellessRemainder}");
+			}
 		}
 
 		TracePoses(entities);
@@ -1816,11 +1838,14 @@ public partial class GameWorld : Node3D
 			$"neverPosed={Refii.Entities.Engine_EntitySkeleton.NeverPosed}{sample}{chainSample}");
 
 		// Reported separately from the pose counts above, because it says where a character
-		// with no model hash gets its geometry: the morph component is the composite route, and a
-		// modelless character without it is unreachable by either path.
+		// with no model hash gets its geometry: the morph component is the composite route
+		// (drawn from its part records, by design), and only a modelless character WITHOUT it
+		// is unreachable by either path.
+		int unreachable = modelless - modellessWithMorph;
 		GD.Print($"[guest-modelless] {modelless} of {characters} character(s) have a live " +
-			$"skeleton and NO model hash — nothing can draw them; {modellessWithMorph} of " +
-			$"those carry component {morphComponent} (CECGraphicAppearanceMorph){modellessSample}");
+			$"skeleton and no model hash; {modellessWithMorph} carry component {morphComponent} " +
+			$"(CECGraphicAppearanceMorph) and draw as composites, {unreachable} name no mesh " +
+			$"by any route{modellessSample}");
 	}
 
 	private int _entityTicks;

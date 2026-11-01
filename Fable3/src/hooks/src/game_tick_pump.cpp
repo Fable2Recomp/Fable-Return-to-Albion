@@ -1,0 +1,177 @@
+// refii - Fable 3's guest tick pump: the host's posted work, run on the guest's own tick thread,
+// and the HF step it rides, timed.
+//
+// THE TICK. The main loop sub_821CB758 (the FE component's Update sub_8250F160 and the
+// MainGameComponent's both run it) is a fixed-step accumulator on the guest's mftb clock
+// (sub_8220A360): HF rate dbl_8329EA50 = 30.0, game-tick rate dbl_8329EA48 = 15.0, so every second
+// HF step is a GameTick (steps per tick = 2, 0x821CB848..5C; the GameTick/HFOnlyTick split at
+// 0x821CBB54). Owed <= 0 -> NtYieldExecution (sub_830FF0C8 at 0x821CC0B0) and re-read; owed > 1
+// -> one step and re-base to now, backlog discarded (0x821CBB1C..30). Under the host's driven
+// time base that is one step per granted step, then yield: the contract Fable 2's loop meets at
+// 0x82276FA4, met here by the loop itself. Nothing in the loop reads the pad: its only exits are
+// app slot 4 (app+0x2C, 0x8217B7A8) and the component's quit bytes +180/+181/+187.
+//
+// THE SITE. Once per HF step, at 0x821CBD74, the loop calls slot 5 (+0x14) of the app object
+// *dword_83566A78 (vtable 0x820025C4; a second copy at 0x820EA180): sub_82188728, an eight-
+// instruction thunk to slot 2 of the input system at app+0x24 (lwz r3,0x24(r3); beqlr; lwz
+// r11,0(r3); lwz r10,8(r11); mtctr; bctr). Those two vtable words are the pointer's only homes
+// in the image, so this runs exactly once per HF step, in every state the loop runs, and nowhere
+// else: Fable 2's sub_822C1BD0 seam (Fable2/src/vfs/src/hooks/guest_tick_pump.cpp).
+//
+// THE STEP'S COST. The guest's own step timings (component+136 game tick, +144 the rest, written
+// at 0x821CBE60 and 0x821CC0A4) are differences of the mftb clock, which the host freezes between
+// grants, so they cannot measure a stall. The wall time between two visits here is one whole HF
+// step as the host sees it; a step that the lead cap withheld costs nothing here, a step blocked
+// in the guest (the scene ring full in sub_821F4F30, a stream wait, a lock) shows as the gap.
+//
+// THE STALL'S SITE. A blocked thread cannot sample itself, so each step is stated to the shared
+// step sampler (core/payload_bridge.h, src/runtime/src/core/guest_step_sampler.cpp) on this
+// thread's own PPCContext; a host thread walks the guest back chain once the step has run 250 ms,
+// and the step's stall line below carries those frames, innermost first.
+
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+
+#include <rex/logging.h>
+#include <rex/ppc.h>
+
+#include "core/payload_bridge.h"
+
+REX_EXTERN(__imp__rex_App_TickInput);
+
+namespace {
+
+using Clock = std::chrono::steady_clock;
+
+/// The game loop's call site; the thunk is reached from no other loop today, but the step clock
+/// is only meaningful when the caller is the step.
+constexpr uint32_t kGameLoopReturn = 0x821CBD78u;
+
+/// A step the host grants every 33 ms; a gap of this much is a guest that stopped stepping.
+constexpr auto kStallThreshold = std::chrono::milliseconds(250);
+constexpr auto kStallLogSpacing = std::chrono::seconds(2);
+constexpr uint64_t kSummaryEverySteps = 1800u;  // a minute at 30 Hz
+
+double Milliseconds(Clock::duration d) {
+  return std::chrono::duration<double, std::milli>(d).count();
+}
+
+constexpr uint32_t kMaxFrames = 12u;
+
+/// "0x82... < 0x82... < ..." or "" when the step was never sampled.
+void FormatFrames(const uint32_t* frames, uint32_t count, char* out, size_t capacity) {
+  size_t used = 0;
+  for (uint32_t i = 0; i < count && used + 14 < capacity; ++i) {
+    used += static_cast<size_t>(
+        std::snprintf(out + used, capacity - used, "%s0x%08X", i == 0 ? "" : " < ", frames[i]));
+  }
+  out[used < capacity ? used : capacity - 1] = '\0';
+}
+
+/// Actions the host posted (core/guest_tick_queue.h). Fable 3 implements none yet: each is named
+/// in the log and dropped, never deferred, so the queue cannot hold a name forever.
+void DrainPostedActions() {
+  const uint32_t taken = refii_bridge_guest_tick_pump_begin_drain();
+  for (uint32_t i = 0; i < taken; ++i) {
+    char name[128];
+    const size_t needed = refii_bridge_guest_tick_pump_taken_action(i, name, sizeof(name));
+    name[sizeof(name) - 1] = '\0';
+    REXLOG_WARN("Refii guest-tick pump: action '{}'{} has no Fable 3 implementation; dropped",
+                name, needed >= sizeof(name) ? "..." : "");
+  }
+  refii_bridge_guest_tick_pump_end_drain();
+}
+
+struct StepClock {
+  Clock::time_point last{};
+  Clock::time_point last_stall_log{};
+  uint64_t steps = 0;
+  uint64_t suppressed = 0;
+  Clock::duration window_total{};
+  Clock::duration window_max{};
+  Clock::duration window_input_max{};
+  uint64_t window_over_100ms = 0;
+  uint64_t window_steps = 0;
+
+  /// `frames`/`frame_count`: the sampler's walk of the step that just ended, when it stalled.
+  void Observe(Clock::time_point now, Clock::duration input, const uint32_t* frames,
+               uint32_t frame_count) {
+    if (last != Clock::time_point{}) {
+      const Clock::duration step = now - last;
+      ++window_steps;
+      window_total += step;
+      if (step > window_max) {
+        window_max = step;
+      }
+      if (step > std::chrono::milliseconds(100)) {
+        ++window_over_100ms;
+      }
+      if (step >= kStallThreshold) {
+        if (now - last_stall_log >= kStallLogSpacing) {
+          char site[kMaxFrames * 14 + 1];
+          FormatFrames(frames, frame_count, site, sizeof(site));
+          REXLOG_WARN("Refii pace: HF step {} blocked {:.0f} ms at {} (input update {:.1f} ms; "
+                      "{} more stalls since the last line)",
+                      steps, Milliseconds(step), frame_count != 0u ? site : "(not sampled)",
+                      Milliseconds(input), suppressed);
+          last_stall_log = now;
+          suppressed = 0;
+        } else {
+          ++suppressed;
+        }
+      }
+    }
+    if (input > window_input_max) {
+      window_input_max = input;
+    }
+    last = now;
+    ++steps;
+
+    if (steps % kSummaryEverySteps == 0u && window_steps != 0u) {
+      REXLOG_INFO("Refii pace: {} HF steps, mean {:.1f} ms, max {:.0f} ms, {} over 100 ms; "
+                  "input update max {:.1f} ms",
+                  window_steps, Milliseconds(window_total) / static_cast<double>(window_steps),
+                  Milliseconds(window_max), window_over_100ms, Milliseconds(window_input_max));
+      window_total = {};
+      window_max = {};
+      window_input_max = {};
+      window_over_100ms = 0;
+      window_steps = 0;
+    }
+  }
+};
+
+StepClock g_step_clock;
+
+}  // namespace
+
+REX_EXTERN(rex_App_TickInput) {
+  const bool from_game_loop = ctx.lr == kGameLoopReturn;
+
+  const uint64_t tick = refii_bridge_guest_tick_pump_observe_tick();
+  if (tick == 0u || tick == 600u || tick == 6000u || tick == 60000u) {
+    REXLOG_INFO("Refii guest-tick pump: tick {} on the guest tick thread (drained {})", tick + 1,
+                refii_bridge_guest_tick_pump_drained());
+  }
+
+  // A fault on this thread needs a stack to run its handler on; guest threads get none.
+  refii_bridge_ensure_alternate_signal_stack();
+
+  DrainPostedActions();
+
+  const Clock::time_point before = Clock::now();
+  __imp__rex_App_TickInput(ctx, base);
+
+  if (from_game_loop) {
+    const Clock::time_point after = Clock::now();
+    // The step that ends here is the one the sampler may have walked; the one beginning is
+    // stated on this thread's own context, which the sampler reads while it is blocked.
+    uint32_t frames[kMaxFrames];
+    const uint32_t frame_count =
+        refii_bridge_guest_step_end(g_step_clock.steps, frames, kMaxFrames);
+    g_step_clock.Observe(after, after - before, frames, frame_count);
+    refii_bridge_guest_step_begin(&ctx, base, g_step_clock.steps);
+  }
+}

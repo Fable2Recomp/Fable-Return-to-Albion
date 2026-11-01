@@ -947,6 +947,8 @@ public static class GameCodeBuild
 				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_vfs"))) ||
 			!File.Exists(Path.Combine(BinDirectory, "Fable3",
 				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_hostbridge"))) ||
+			!File.Exists(Path.Combine(BinDirectory, "Fable3",
+				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_vfs"))) ||
 			!File.Exists(Path.Combine(BinDirectory,
 				Refii.Core.Engine_NativeLibraries.FileNameFor("refii_binkdecode"))) ||
 			!File.Exists(Path.Combine(BinDirectory,
@@ -960,6 +962,7 @@ public static class GameCodeBuild
 			FindShippedLibrary("refii_core").Length == 0 ||
 			FindShippedLibrary("refii_runtime").Length == 0 ||
 			FindLibrary(Path.Combine(BinDirectory, "Fable2"), "refii_vfs").Length == 0 ||
+			FindLibrary(Path.Combine(BinDirectory, "Fable3"), "refii_vfs").Length == 0 ||
 			!DirectoryHasFiles(Path.Combine(recompile, "Fable2", "hooks")) ||
 			!DirectoryHasFiles(Path.Combine(recompile, "Fable3", "hooks")) ||
 			!DirectoryHasFiles(Path.Combine(recompile, "include")) ||
@@ -2486,7 +2489,8 @@ public static class GameCodeBuild
 		// library the payload links -- and linking the MSVC-built static one is what dragged
 		// /DEFAULTLIB:msvcrtd into a MinGW link. The refii_bridge_lua_* entry points the payload
 		// needs are among those sources, so they are defined in the payload itself now.
-		// refii_vfs is Fable 2's instance: a title without it links the shared natives alone.
+		// refii_vfs is a title's instance library, linked from bin/<Folder>/ when the active
+		// title's instance names it (each title's is its own: Fable2/src/vfs, Fable3/src/vfs).
 		foreach (string name in new[] { "rexruntime", "refii_core", "refii_runtime", "refii_vfs" }
 			.Where(name => name != "refii_vfs" || Refii.Core.Engine_Title.Active.Instance.Contains(name)))
 		{

@@ -233,8 +233,11 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetStartScenario(char* scenario, uint32_t cap
 
 /// The world's game tick and its clock. The tick is what GetWorldFrame states (sub_82209868):
 /// `*(*(*(Game+0x1C)+4)+0x100)` while Game+0xBA is set, else 0 — incremented once per world update
-/// (0x821C53C4, 0x826ED31C). The rate is GetTickRate's (sub_82241980: `dbl_8329EA48`, 15.0), so the
-/// clock is tick / rate. 0 when no world is standing, outputs untouched.
+/// (0x821C53C4, 0x826ED31C; both paths of the world component's slot 6, vtable 0x820AA2F0). The
+/// rate is GetTickRate's (sub_82241980: `dbl_8329EA48`, 15.0), so the clock is tick / rate. The
+/// main loop sub_821CB758 runs two HF steps (`dbl_8329EA50`, 30.0) per tick, the ratio the shell's
+/// lead cap assumes (GameSession: half a game tick per granted step). 0 when no world is standing,
+/// outputs untouched.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSimClock(double* out_seconds, uint32_t* out_tick) {
     const uint8_t* base = GuestBase();
     const uint32_t game = base == nullptr ? 0u : WorldGame(base);

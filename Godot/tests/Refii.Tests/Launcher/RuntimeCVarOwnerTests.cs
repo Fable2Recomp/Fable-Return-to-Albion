@@ -176,6 +176,7 @@ public class RuntimeCVarOwnerTests
 				 {
 					 "vfs_trace_vfs", "vfs_loose_asset_root", "lua_trace_script_loads", "developer_menu_enabled",
 					 "pubgame_vector_shapes", "pubgame_raster_scale_percent", "coop_split_screen",
+					 "decorate_mode_enabled",
 				 })
 		{
 			AssertThat(fable2.Any(d => d.Name == fable2Only)).OverrideFailureMessage(fable2Only + " missing from Fable 2").IsTrue();
@@ -186,6 +187,7 @@ public class RuntimeCVarOwnerTests
 				 {
 					 "log_level", "user_language", "camera_invert_y", "lighting_preset", "hdr_output",
 					 "display_resolution", "mouse_input", "texture_upscaling_enabled",
+					 "mouse_sensitivity", "discord_presence", "fx_live_effects",
 				 })
 		{
 			AssertThat(fable2.Any(d => d.Name == shared)).OverrideFailureMessage(shared + " missing from Fable 2").IsTrue();

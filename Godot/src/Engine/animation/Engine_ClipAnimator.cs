@@ -433,6 +433,13 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 	/// <summary>Each record's position in the guest's list — the runner-up's tie-break.</summary>
 	private readonly Dictionary<uint, int> _recordOrder = new();
+
+	/// <summary>
+	/// Partner records beyond the heaviest, when the guest's partner is a SET (Fable 3,
+	/// `sub_826BC358`: every primary below the top takes a greedy share, normalised). Empty for
+	/// Fable 2, whose partner is one record.
+	/// </summary>
+	private readonly HashSet<uint> _extraRunners = new();
 	private readonly List<Channel> _overlays = new();
 
 	/// <summary>Shadow_Hip's model bone, or -1; its children bar Shadow_SpineControl.</summary>
@@ -1316,6 +1323,10 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 		int Order(uint uid) => _recordOrder.GetValueOrDefault(uid, int.MaxValue);
 
+		// FABLE 3 STATES ITS WHOLE PICK (Fable3/src/hostbridge/src/anim_feed.cpp): the top, every
+		// member of its partner SET, and each one's share of the fold as its weight pair.
+		bool statesPartnerSet = Refii.Core.Engine_Title.Active == Refii.Core.Engine_Title.Fable3;
+
 		// The runner is picked deterministically: if an explicit guest IsRunner leaf exists, elect it;
 		// otherwise select by weight and list order.
 		//
@@ -1324,6 +1335,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		// equal weights the record nearest the head survives; the winner scan runs backward.
 		uint runnerUid = 0;
 		float runnerWeight = 0f;
+		_extraRunners.Clear();
 		foreach (Channel c in _channels.Values)
 		{
 			if (c.Leaf.Uid == topUid || c.Leaf.Additive || c.Leaf.Overlay)
@@ -1332,13 +1344,42 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			}
 			if (c.Leaf.IsRunner && c.Weight > 1e-4f)
 			{
-				runnerUid = c.Leaf.Uid;
-				runnerWeight = _recordWeight.GetValueOrDefault(runnerUid);
-				break;
+				if (!statesPartnerSet)
+				{
+					runnerUid = c.Leaf.Uid;
+					runnerWeight = _recordWeight.GetValueOrDefault(runnerUid);
+					break;
+				}
+
+				// THE PARTNER IS A SET: the heaviest member names it, every member samples into it
+				// at its share, and its weight is the set's sum.
+				if (runnerUid == 0 || _recordWeight.GetValueOrDefault(c.Leaf.Uid) > _recordWeight.GetValueOrDefault(runnerUid))
+				{
+					if (runnerUid != 0)
+					{
+						_extraRunners.Add(runnerUid);
+					}
+					runnerUid = c.Leaf.Uid;
+				}
+				else if (c.Leaf.Uid != runnerUid)
+				{
+					_extraRunners.Add(c.Leaf.Uid);
+				}
 			}
 		}
 
-		if (runnerUid == 0)
+		if (statesPartnerSet && runnerUid != 0)
+		{
+			runnerWeight = _recordWeight.GetValueOrDefault(runnerUid);
+			foreach (uint uid in _extraRunners)
+			{
+				runnerWeight += _recordWeight.GetValueOrDefault(uid);
+			}
+		}
+
+		// A title that states its whole pick names every primary it draws; a record it did not
+		// name is not drawn, so nothing is elected in its place.
+		if (runnerUid == 0 && !statesPartnerSet)
 		{
 			foreach ((uint uid, float w) in _recordWeight)
 			{
@@ -1383,8 +1424,12 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			topShare = 1f;
 		}
 
-		if (topShare >= 0.98333f) topShare = 1f;
-		if (topShare <= 0.016667f) topShare = 0f;
+		// The guest's short-circuits. Fable 2 (`sub_82211660`): the top alone at 0.98333, the
+		// partner alone at 0.016667. Fable 3: no partner is built when `|w − 1| < 0.05`
+		// (`sub_821EB068`) and the crossfade node keeps one side when `min(w, 1 − w) ≤ 0.05`
+		// (`sub_8222AEF8` case 1, 0x8222b4e0).
+		if (topShare >= (statesPartnerSet ? 0.95f : 0.98333f)) topShare = 1f;
+		if (topShare <= (statesPartnerSet ? 0.05f : 0.016667f)) topShare = 0f;
 
 		// How far the crossfade ratio moved in one frame; a step moves every bone by that
 		// fraction of the distance between two clips. Reported.
@@ -1489,7 +1534,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 				// slerp toward the child by mask × weight, whole-body when no mask node sits
 				// above it. That is the overlay path here; the first-frame delta this once
 				// applied was an invention.
-				if (c.Weight > 1e-4f && haveTop && (leaf.Uid == topUid || leaf.Uid == runnerUid))
+				if (c.Weight > 1e-4f && haveTop && (leaf.Uid == topUid || leaf.Uid == runnerUid || _extraRunners.Contains(leaf.Uid)))
 				{
 					c.OverlayFade = 1f;
 					_overlays.Add(c);
@@ -1506,7 +1551,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 					Sample(built, time, weight, false, _rotation, _rotationWeight, _position, _positionWeight, bones);
 				}
 			}
-			else if (leaf.Uid == runnerUid && topShare < 1f)
+			else if ((leaf.Uid == runnerUid || _extraRunners.Contains(leaf.Uid)) && topShare < 1f)
 			{
 				// THE PARTNER, kept apart: the guest's type-1 node SLERPs partner against top by the
 				// top's own weight (`sub_82293278`, w > 0.5), which an nlerp of the two into one
@@ -1770,10 +1815,26 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		bool shadowNow = Refii.Entities.Engine_ShadowSkeletons.WriteNow(_skeleton, out Skeleton3D? shadow);
 		bool shadowAll = shadowNow && _shadowStale;
 		// The skeleton takes rotation and translation; the scale binds through the skin (see
-		// ApplyMorph), and only when the record was re-read.
+		// ApplyMorph), and only when the record was re-read. `_finalScale` is the morph's factor
+		// (One without one); the bone's OWN scale under it is the guest's, as its pose stated it
+		// (Engine_EntitySkeleton.GuestScale) — a Fable 3 rig collapses helper bones to 3e-5 and
+		// scales others to 4.5, and binding One over those un-collapses them: the hand spike and
+		// the foot lump of the first clip-driven run. Fable 2's own scales are One, so its skin
+		// takes exactly the morph factor as before.
 		if (_scaleDirty && Rig is { } rig)
 		{
-			rig.SetBoneScales(_finalScale);
+			_skinScale ??= new Vector3[bones];
+			if (_skinScale.Length != bones)
+			{
+				_skinScale = new Vector3[bones];
+			}
+
+			for (int b = 0; b < bones; ++b)
+			{
+				_skinScale[b] = rig.GuestScale(b) * _finalScale[b];
+			}
+
+			rig.SetBoneScales(_skinScale);
 			_scaleDirty = false;
 		}
 
@@ -2390,6 +2451,9 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	}
 
 	private bool _morphWasApplied;
+
+	/// <summary>The skin's scale per bone: the guest's own times the morph factor, composed on each push.</summary>
+	private Vector3[]? _skinScale;
 
 	/// <summary>Set when <see cref="_finalScale"/> was re-read, so the rig's skin takes it once.</summary>
 	private bool _scaleDirty;

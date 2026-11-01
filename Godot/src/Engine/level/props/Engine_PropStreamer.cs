@@ -89,6 +89,12 @@ public partial class Engine_PropStreamer : Node3D
     /// <summary>Failures whose bytes are there and would not decode — a reader defect.</summary>
     private int _undecodable;
 
+    /// <summary>
+    /// Header-only models: the header bank has the name, no body bank does. Not a defect of
+    /// ours or of the data — the guest cannot draw them either (<see cref="HeaderOnly"/>).
+    /// </summary>
+    private int _headerOnly;
+
     private bool _reported;
 
     /// <summary>
@@ -876,7 +882,9 @@ public partial class Engine_PropStreamer : Node3D
                 (_failed == 0
                     ? string.Empty
                     : $", {_failed} failed ({_absent} absent from every bank, " +
-                      $"{_undecodable} present but would not decode)"));
+                      $"{_undecodable} present but would not decode, {_headerOnly} header-only" +
+                      " — no body in any bank, so the guest's composite bank drops the name and" +
+                      " the retail game draws nothing for them either)"));
         }
     }
 
@@ -1305,7 +1313,12 @@ public partial class Engine_PropStreamer : Node3D
                 // rather than reading one, which is a different defect from a model that is
                 // there and will not decode. The two were indistinguishable and the counts
                 // got attributed to the parser.
-                if (present)
+                bool headerOnly = IsHeaderOnly(path);
+                if (headerOnly)
+                {
+                    _headerOnly++;
+                }
+                else if (present)
                 {
                     _undecodable++;
                 }
@@ -1316,7 +1329,9 @@ public partial class Engine_PropStreamer : Node3D
 
                 if (_failed <= 32)
                 {
-                    GD.Print($"[props] stream failed ({(present ? why : "absent from every bank")}): {path}");
+                    GD.Print(headerOnly
+                        ? $"[props] header only, the retail game draws nothing for it either ({why}): {path}"
+                        : $"[props] stream failed ({(present ? why : "absent from every bank")}): {path}");
                 }
 
                 return;
@@ -1530,6 +1545,32 @@ public partial class Engine_PropStreamer : Node3D
 
     private static readonly Dictionary<string, (bool Present, string Reason)> Failed = new();
 
+    /// <summary>
+    /// The failed paths whose header is in a bank and whose body is in none.
+    ///
+    /// THE GUEST DRAWS NOTHING FOR THESE TOO. Fable 3 joins the two entries in its VFS, not in
+    /// the mesh code: <c>startup.vfsconfig</c> declares a <c>Composite</c> of the header bank
+    /// (<c>globals_model_headers</c>, Required) and <c>globals/globals_models.bnk</c> (Required),
+    /// and the composite's table keeps a name only when EVERY required part has it
+    /// (<c>sub_82D90320</c>, emitted on <c>v24 &amp;&amp; v25 &gt;= a1[10]</c>, <c>v24</c> cleared
+    /// at 0x82D90628 when a required part's index is 0). The bare header bank is in a
+    /// <c>Group Mountable="false"</c>, reachable by id alone. So the global resolver has no row
+    /// for the name, <c>sub_8312EF08</c> returns 0 (0x8312EF94), <c>sub_82C9E428</c> returns 0
+    /// (0x82C9E518) without a log line, and the mesh object keeps LOD count 0: every renderer
+    /// null-checks it (<c>sub_821FDA80</c> 0x821FDBF8) and draws nothing. 2,147 of the 6,920
+    /// shipped headers are like this. Fable 2's are the same kind of hole, with its own count.
+    /// </summary>
+    private static readonly HashSet<string> HeaderOnly = new();
+
+    /// <summary>Whether a failed path is header-only (see <see cref="HeaderOnly"/>).</summary>
+    public static bool IsHeaderOnly(string path)
+    {
+        lock (Cache)
+        {
+            return HeaderOnly.Contains(path);
+        }
+    }
+
     private static readonly Dictionary<string, object> InFlight = new();
 
     private static (bool Present, string Reason) FailureOf(string path)
@@ -1607,6 +1648,7 @@ public partial class Engine_PropStreamer : Node3D
             }
 
             ArrayMesh? mesh = null;
+            bool headerOnly = false;
             try
             {
                 byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(virtualPath);
@@ -1620,7 +1662,7 @@ public partial class Engine_PropStreamer : Node3D
 
                 // The reader says WHY it gave up; discarding that leaves the fifteen or so models a
                 // level fails to load with no reason recorded anywhere.
-                mesh = Engine_MdlMesh.TryCreateMesh(bytes, virtualPath, out reason, out _);
+                mesh = Engine_MdlMesh.TryCreateMesh(bytes, virtualPath, out reason, out headerOnly);
                 if (mesh is null)
                 {
                     reason = reason.Length != 0 ? reason : "no reason given";
@@ -1644,6 +1686,10 @@ public partial class Engine_PropStreamer : Node3D
                         else
                         {
                             Failed[virtualPath] = (present, reason);
+                            if (headerOnly)
+                            {
+                                HeaderOnly.Add(virtualPath);
+                            }
                         }
                     }
 

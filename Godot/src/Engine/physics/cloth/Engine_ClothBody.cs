@@ -32,6 +32,13 @@ namespace Refii.Physics;
 ///
 /// The parent's copies of the driven surfaces are hidden through <see cref="Refii.Entities.Engine_HiddenClusters"/>,
 /// which owns the surface hiding for the body; this node draws them instead.
+///
+/// A TITLE WHOSE GUEST STATES ITS CLOTH (<see cref="Refii.Host.HostBridge.ClothStated"/>: Fable 3)
+/// is never simulated here. Each frame the body takes the pieces the guest's draw published for
+/// its entity (Fable3/src/hooks/src/cloth_hooks.cpp), joined by model and record, and draws their
+/// vertices blended between the last pose of the previous game tick and the newest at the shared
+/// draw tick (<see cref="Engine_ClothStated"/>). A piece the guest did not draw as cloth in its last
+/// frame shows the parent's own skinned surfaces, as the guest then draws its skinned submesh.
 /// </summary>
 [Tool]
 [GlobalClass]
@@ -122,12 +129,52 @@ public partial class Engine_ClothBody : MeshInstance3D
 
     private Aabb _bounds;
 
+    /// <summary>Whether the guest states this body's pose (<see cref="Refii.Host.HostBridge.ClothStated"/>).</summary>
+    private bool _stated;
+
+    /// <summary>Per piece, the guest's stated pose as last read, in the stated mode.</summary>
+    private readonly List<StatedPose> _statedPoses = new();
+
+    /// <summary>The surfaces of the pieces the guest draws as cloth now, in the stated mode.</summary>
+    private UInt128 _statedDrawn;
+
+    /// <summary>Whether this body logged the guest's statement: its first drawn piece, an unjoined one.</summary>
+    private bool _statedLogged;
+
+    private bool _unjoinedLogged;
+
+    private static Refii.Host.HostBridge.GuestClothPiece[] _statedRows =
+        new Refii.Host.HostBridge.GuestClothPiece[32];
+
+    /// <summary>The entity a body's parent stands for: GameEntities' meta on the entity node.</summary>
+    private static readonly StringName EntityAddressMeta = "entity_address";
+
+    /// <summary>One piece's stated pose: the published buffers, their ticks and the drawn arrays.</summary>
+    private sealed class StatedPose
+    {
+        public uint Model;
+        public uint Key;
+        public uint Sequence;
+        public uint Tick;
+        public uint PreviousTick;
+        public float Fraction = -1.0f;
+        public bool Drawn;
+        public float[] Current = Array.Empty<float>();
+        public float[] Previous = Array.Empty<float>();
+        public int PreviousCount;
+        public PhysVec4[] Positions = Array.Empty<PhysVec4>();
+        public PhysVec4[] Normals = Array.Empty<PhysVec4>();
+        public PhysVec4[] Tangents = Array.Empty<PhysVec4>();
+        public PhysVec4 Min;
+        public PhysVec4 Max;
+    }
+
     [Export]
     public bool Simulate { get; set; } = true;
 
     public IReadOnlyList<ClothInstance> Instances => _instances;
 
-    public int PieceCount => _instances.Count;
+    public int PieceCount => _pieces.Count;
 
     public UInt128 DrivenMask => _patch?.DrivenMask ?? UInt128.Zero;
 
@@ -159,9 +206,11 @@ public partial class Engine_ClothBody : MeshInstance3D
             return null;
         }
 
-        // A morphed model carries no cloth definition in the guest (its record copies drop the
-        // pointer), so its garments draw GPU-skinned; the same here.
-        if (source.HasMeta(Refii.Hero.Engine_HeroBodyMorph.MorphedMeta))
+        // A morphed model carries no cloth definition in Fable 2's guest (its record copies drop
+        // the pointer), so its garments draw GPU-skinned; the same here. A title whose guest states
+        // its cloth says itself which pieces it draws.
+        bool stated = Refii.Host.HostBridge.ClothStated;
+        if (!stated && source.HasMeta(Refii.Hero.Engine_HeroBodyMorph.MorphedMeta))
         {
             return null;
         }
@@ -208,7 +257,7 @@ public partial class Engine_ClothBody : MeshInstance3D
             VisibilityRangeFadeMode = node.VisibilityRangeFadeMode,
         };
 
-        body.Bind(source, pieces, patch);
+        body.Bind(source, pieces, patch, stated);
         node.AddChild(body);
         body.Owner = node.Owner ?? node;
         if (!rigged)
@@ -220,7 +269,8 @@ public partial class Engine_ClothBody : MeshInstance3D
         // Under classic the cloth casts into the guest's cascades with the body it is part of.
         Refii.Models.Engine_ClassicCasters.Register(body, dynamic: true);
 
-        Refii.Entities.Engine_HiddenClusters.SetClothSurfaces(node, patch.DrivenMask);
+        // A stated body drives no surface until the guest draws a piece as cloth.
+        Refii.Entities.Engine_HiddenClusters.SetClothSurfaces(node, stated ? UInt128.Zero : patch.DrivenMask);
         return body;
     }
 
@@ -238,15 +288,40 @@ public partial class Engine_ClothBody : MeshInstance3D
         body.QueueFree();
     }
 
-    private void Bind(ArrayMesh source, List<ClothPiece> pieces, ClothPatch patch)
+    private void Bind(ArrayMesh source, List<ClothPiece> pieces, ClothPatch patch, bool stated)
     {
         _source = source;
         _patch = patch;
+        _stated = stated;
         _pieces.Clear();
         _instances.Clear();
         _drawn.Clear();
         _inverseRest.Clear();
         _usedBones.Clear();
+        _statedPoses.Clear();
+        _statedDrawn = UInt128.Zero;
+
+        if (stated)
+        {
+            foreach (ClothPiece piece in pieces)
+            {
+                int count = piece.Asset.VertexCount;
+                _pieces.Add(piece);
+                _statedPoses.Add(new StatedPose
+                {
+                    Model = Refii.Level.Engine_PropModelIndex.PathHash(piece.ModelPath),
+                    Positions = new PhysVec4[count],
+                    Normals = new PhysVec4[count],
+                    Tangents = new PhysVec4[count],
+                });
+            }
+
+            Mesh = patch.Built;
+            Visible = false;
+            GD.Print($"[cloth] {source.ResourceName}: {_pieces.Count} piece(s) bound to the guest's own cloth " +
+                $"(no host solve), standing in for {PopCount(patch.DrivenMask)} body surface(s) while it draws them");
+            return;
+        }
 
         foreach (ClothPiece piece in pieces)
         {
@@ -402,6 +477,16 @@ public partial class Engine_ClothBody : MeshInstance3D
     {
         long mainFrom = System.Diagnostics.Stopwatch.GetTimestamp();
 
+        if (_stated)
+        {
+            if (_patch is not null && GetParent() is MeshInstance3D statedParent)
+            {
+                DrawStated(statedParent);
+            }
+
+            return;
+        }
+
         if (_patch is null || _instances.Count == 0 || GetParent() is not MeshInstance3D parent)
         {
             Collect();
@@ -497,6 +582,179 @@ public partial class Engine_ClothBody : MeshInstance3D
         _job = Task.Run(_solve ??= Solve);
         System.Threading.Interlocked.Increment(ref _stepped);
         System.Threading.Interlocked.Add(ref _mainTicks, System.Diagnostics.Stopwatch.GetTimestamp() - mainFrom);
+    }
+
+    /// <summary>
+    /// The stated mode's frame: the guest's pieces for this body's entity, each matched to a body
+    /// piece by its model hash, record and vertex count; a piece the guest drew as cloth is blended
+    /// at the draw tick and packed, one the guest did not leaves its surfaces to the parent.
+    /// Main thread; nothing runs off it.
+    /// </summary>
+    private void DrawStated(MeshInstance3D parent)
+    {
+        if (!Bound(Refii.Entities.Engine_BodyVariants.SourceMesh(parent)))
+        {
+            Visible = false;
+            return;
+        }
+
+        uint entity = parent.HasMeta(EntityAddressMeta) ? (uint)parent.GetMeta(EntityAddressMeta).AsInt64() : 0u;
+        int rows = entity != 0u ? Refii.Host.HostBridge.GetEntityClothPieces(entity, _statedRows) : 0;
+        double drawTick = Refii.Entities.Engine_DrawnFrame.DrawTick;
+
+        UInt128 drawn = UInt128.Zero;
+        bool packed = false;
+        int joined = 0;
+        for (int i = 0; i < _pieces.Count; i++)
+        {
+            ClothPiece piece = _pieces[i];
+            StatedPose pose = _statedPoses[i];
+            int row = -1;
+            for (int r = 0; r < rows; r++)
+            {
+                Refii.Host.HostBridge.GuestClothPiece candidate = _statedRows[r];
+                if (candidate.Model == pose.Model && candidate.VertexCount == piece.Asset.VertexCount &&
+                    Engine_ClothStated.Record(candidate.Skinned, candidate.Slot, piece.RigidRecords) == piece.Record)
+                {
+                    row = r;
+                    break;
+                }
+            }
+
+            joined += row >= 0 ? 1 : 0;
+            pose.Drawn = row >= 0 && _statedRows[row].Drawn &&
+                ((pose.Key == _statedRows[row].Key && pose.Sequence != 0u) || Fetch(pose, _statedRows[row]));
+            if (!pose.Drawn)
+            {
+                continue;
+            }
+
+            Refii.Host.HostBridge.GuestClothPiece stated = _statedRows[row];
+            bool fresh = (stated.Key != pose.Key || stated.Sequence != pose.Sequence) && Fetch(pose, stated);
+            float t = Engine_ClothStated.Fraction(drawTick, pose.PreviousTick, pose.Tick);
+            if (fresh || t != pose.Fraction)
+            {
+                (pose.Min, pose.Max) = Engine_ClothStated.Blend(
+                    pose.Previous.AsSpan(0, pose.PreviousCount * Refii.Host.HostBridge.ClothVertexFloats),
+                    pose.Current, t, piece.Asset.VertexCount, pose.Positions, pose.Normals, pose.Tangents);
+                _patch!.Pack(i, pose.Positions, pose.Normals, pose.Tangents);
+                pose.Fraction = t;
+                packed = true;
+            }
+
+            drawn |= piece.HiddenSurfaces;
+        }
+
+        if (joined < rows && !_unjoinedLogged)
+        {
+            _unjoinedLogged = true;
+            for (int r = 0; r < rows; r++)
+            {
+                Refii.Host.HostBridge.GuestClothPiece p = _statedRows[r];
+                GD.Print($"[cloth] {_source?.ResourceName}: entity 0x{entity:X8} states piece model 0x{p.Model:X8} " +
+                    $"{(p.Skinned ? "skinned" : "rigid")} slot {p.Slot}, {p.VertexCount} verts — " +
+                    $"{joined} of {rows} joined to the body's {_pieces.Count} block(s)");
+            }
+        }
+
+        if (drawn != UInt128.Zero && !_statedLogged)
+        {
+            _statedLogged = true;
+            int count = 0;
+            foreach (StatedPose pose in _statedPoses)
+            {
+                count += pose.Drawn ? 1 : 0;
+            }
+
+            GD.Print($"[cloth] {_source?.ResourceName}: the guest states {rows} piece(s) for entity 0x{entity:X8}, " +
+                $"{count} drawn as cloth from its own simulation");
+        }
+
+        if (drawn != _statedDrawn)
+        {
+            _statedDrawn = drawn;
+            Refii.Entities.Engine_HiddenClusters.SetClothSurfaces(parent, drawn);
+        }
+
+        if (packed)
+        {
+            _patch!.Upload();
+            ApplyStatedBounds();
+        }
+
+        Visible = drawn != UInt128.Zero && parent.IsVisibleInTree();
+        SyncCollapse();
+    }
+
+    /// <summary>Reads a piece's published poses; false when the bridge no longer has them.</summary>
+    private static bool Fetch(StatedPose pose, in Refii.Host.HostBridge.GuestClothPiece stated)
+    {
+        int floats = stated.VertexCount * Refii.Host.HostBridge.ClothVertexFloats;
+        if (pose.Current.Length < floats)
+        {
+            pose.Current = new float[floats];
+            pose.Previous = new float[floats];
+        }
+
+        if (Refii.Host.HostBridge.GetClothPieceVertices(stated.Key, false, pose.Current, out uint tick) != stated.VertexCount)
+        {
+            return false;
+        }
+
+        pose.PreviousCount = 0;
+        pose.PreviousTick = 0u;
+        if (stated.PreviousTick != 0u &&
+            Refii.Host.HostBridge.GetClothPieceVertices(stated.Key, true, pose.Previous, out uint previousTick) == stated.VertexCount)
+        {
+            pose.PreviousCount = stated.VertexCount;
+            pose.PreviousTick = previousTick;
+        }
+
+        pose.Tick = tick;
+        pose.Key = stated.Key;
+        pose.Sequence = stated.Sequence;
+        pose.Fraction = -1.0f;
+        return true;
+    }
+
+    /// <summary>The stated mode's bounds: the drawn pieces' positions, in the model's space.</summary>
+    private void ApplyStatedBounds()
+    {
+        bool any = false;
+        var min = Vector3.Zero;
+        var max = Vector3.Zero;
+        foreach (StatedPose pose in _statedPoses)
+        {
+            if (!pose.Drawn)
+            {
+                continue;
+            }
+
+            var lo = new Vector3(pose.Min.X, pose.Min.Y, pose.Min.Z);
+            var hi = new Vector3(pose.Max.X, pose.Max.Y, pose.Max.Z);
+            if (!lo.IsFinite() || !hi.IsFinite() || lo.X > hi.X)
+            {
+                continue;
+            }
+
+            min = any ? min.Min(lo) : lo;
+            max = any ? max.Max(hi) : hi;
+            any = true;
+        }
+
+        if (!any)
+        {
+            return;
+        }
+
+        var bounds = new Aabb(min, (max - min).Max(new Vector3(0.01f, 0.01f, 0.01f)));
+        if (_bounds.Size != Vector3.Zero && _bounds.Encloses(bounds))
+        {
+            return;
+        }
+
+        _bounds = bounds.Grow(0.25f);
+        CustomAabb = _bounds;
     }
 
     private bool HasWindResponse()
@@ -877,7 +1135,10 @@ public partial class Engine_ClothBody : MeshInstance3D
         return bone >= 0 && bone < skeleton.GetBoneCount() ? bone : -1;
     }
 
-    /// <summary>A piece whose surfaces a garment hides on the body is hidden here too.</summary>
+    /// <summary>
+    /// A piece whose surfaces a garment hides on the body is hidden here too, and in the stated mode
+    /// so is a piece the guest does not draw as cloth now (its surfaces are the parent's again).
+    /// </summary>
     private void SyncCollapse()
     {
         if (_patch is null || GetParent() is not MeshInstance3D parent)
@@ -886,27 +1147,45 @@ public partial class Engine_ClothBody : MeshInstance3D
         }
 
         UInt128 collapsed = Refii.Entities.Engine_HiddenClusters.ClusterMask(parent);
-        if (collapsed == _appliedCollapse)
+        UInt128 hidden = UInt128.Zero;
+        for (int s = 0; s < _patch.SurfaceCount && s < _pieces.Count && s < 128; s++)
+        {
+            UInt128 mine = _pieces[s].HiddenSurfaces;
+            bool hide = (mine != UInt128.Zero && (collapsed & mine) == mine) ||
+                (_stated && !_statedPoses[s].Drawn);
+            if (hide)
+            {
+                hidden |= UInt128.One << s;
+            }
+        }
+
+        if (hidden == _appliedCollapse)
         {
             return;
         }
 
-        for (int s = 0; s < _patch.SurfaceCount && s < _pieces.Count; s++)
+        for (int s = 0; s < _patch.SurfaceCount && s < _pieces.Count && s < 128; s++)
         {
-            UInt128 mine = _pieces[s].HiddenSurfaces;
-            bool hide = mine != UInt128.Zero && (collapsed & mine) == mine;
-            bool was = mine != UInt128.Zero && (_appliedCollapse & mine) == mine;
-            if (hide != was)
+            UInt128 bit = UInt128.One << s;
+            if ((hidden & bit) != (_appliedCollapse & bit))
             {
-                SetSurfaceOverrideMaterial(s, hide ? Refii.Entities.Engine_HiddenClusters.CollapsedMaterial : null);
+                SetSurfaceOverrideMaterial(s, (hidden & bit) != UInt128.Zero
+                    ? Refii.Entities.Engine_HiddenClusters.CollapsedMaterial
+                    : null);
             }
         }
 
-        _appliedCollapse = collapsed;
+        _appliedCollapse = hidden;
     }
 
     public void ResetToSkinned()
     {
+        if (_stated)
+        {
+            // The guest resets its own pieces; the next publish carries the reset pose.
+            return;
+        }
+
         Collect();
         foreach (ClothInstance instance in _instances)
         {
@@ -945,6 +1224,16 @@ public partial class Engine_ClothBody : MeshInstance3D
                 float residual = 0f;
                 float weight = 0f;
                 var models = new List<string>();
+                int statedDrawn = 0;
+                for (int i = 0; i < body._statedPoses.Count; i++)
+                {
+                    bodyVerts += body._pieces[i].Asset.VertexCount;
+                    statedDrawn += body._statedPoses[i].Drawn ? 1 : 0;
+                    string leaf = body._pieces[i].ModelPath;
+                    int slash = leaf.LastIndexOf('/');
+                    models.Add(slash < 0 ? leaf : leaf[(slash + 1)..]);
+                }
+
                 for (int i = 0; i < body._instances.Count; i++)
                 {
                     ClothInstance inst = body._instances[i];
@@ -968,7 +1257,9 @@ public partial class Engine_ClothBody : MeshInstance3D
                 {
                     ["node"] = body.GetParent()?.Name.ToString() ?? string.Empty,
                     ["models"] = models,
-                    ["pieces"] = body._instances.Count,
+                    ["pieces"] = body._pieces.Count,
+                    ["stated"] = body._stated,
+                    ["statedDrawn"] = statedDrawn,
                     ["vertices"] = bodyVerts,
                     ["visible"] = body.Visible,
                     ["rigged"] = body._skeleton is not null,
@@ -1018,7 +1309,7 @@ public partial class Engine_ClothBody : MeshInstance3D
     public override Godot.Collections.Array<Godot.Collections.Dictionary> _GetPropertyList()
     {
         var list = new Godot.Collections.Array<Godot.Collections.Dictionary>();
-        if (_instances.Count == 0)
+        if (_pieces.Count == 0)
         {
             return list;
         }
@@ -1031,7 +1322,7 @@ public partial class Engine_ClothBody : MeshInstance3D
             { "hint_string", string.Empty },
         });
 
-        for (int i = 0; i < _instances.Count; i++)
+        for (int i = 0; i < _pieces.Count; i++)
         {
             list.Add(new Godot.Collections.Dictionary
             {
@@ -1049,17 +1340,20 @@ public partial class Engine_ClothBody : MeshInstance3D
         string name = property.ToString();
         if (!name.StartsWith("Piece ", StringComparison.Ordinal) ||
             !int.TryParse(name["Piece ".Length..], out int index) ||
-            index < 1 || index > _instances.Count)
+            index < 1 || index > _pieces.Count)
         {
             return default;
         }
 
-        ClothInstance instance = _instances[index - 1];
-        ClothAsset? asset = instance.Asset;
-        if (asset is null)
+        ClothAsset asset = _pieces[index - 1].Asset;
+        if (_stated)
         {
-            return default;
+            StatedPose pose = _statedPoses[index - 1];
+            return $"{asset.VertexCount} verts, record {_pieces[index - 1].Record}, stated by the guest, " +
+                (pose.Drawn ? $"drawn as cloth (publish {pose.Sequence}, tick {pose.Tick})" : "drawn skinned by the body");
         }
+
+        ClothInstance instance = _instances[index - 1];
 
         return $"{asset.VertexCount} verts, {asset.EdgeCount} edges, sim [{asset.SimBegin}..{asset.SimEnd}), " +
             $"{asset.Spheres.Length}s/{asset.Planes.Length}p/{asset.Capsules.Length}c/{asset.Boxes.Length}b " +

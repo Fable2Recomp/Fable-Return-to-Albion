@@ -159,8 +159,10 @@ public static class Engine_AnimCatalog
         byte[]? toc = ReadAnimFile(Engine_AnimBank.TocPath, Engine_AnimBank.TocExtension);
         if (toc is null)
         {
-            GD.PushWarning($"[anim] no {Engine_AnimBank.TocExtension} in the mounted archives");
-            return false;
+            // No table of contents: the clips are loose AnimFile v8 files (Fable 3's .csa), each
+            // carrying its own header and skeleton, keyed by the hash of its path.
+            _tried = true;
+            return LoadCsaClipsLocked();
         }
 
         _tried = true;
@@ -194,6 +196,124 @@ public static class Engine_AnimCatalog
         _ready = true;
         GD.Print($"[anim] catalog ready with {Clips.Count} clip(s)");
         BeginBindings();
+        return true;
+    }
+
+    /// <summary>
+    /// The catalog from loose AnimFile v8 clips (Fable 3's .csa, Engine_CsaFile): every one is
+    /// read, parsed and laid end to end in one blob the decoder addresses by offset, exactly as
+    /// Fable 2's animation_data is. The guest keys a clip by the hash of its bank path
+    /// (sub_82D3AD68 opens the VFS entry by that hash; sub_8312F3D8 hashes the path), so Key0 is
+    /// Engine_GameHash.ResourcePath of the virtual path, the value a clip leaf carries at +48 and
+    /// RefiiHostGetEntityAnimState exports. The tracks are the clip's own skeleton, named by hash
+    /// as Engine_MdlEngine47 names the model's bones.
+    /// </summary>
+    /// <remarks>
+    /// The same path is shipped twice, in fable2_anims.bnk and a low-memory fable2_lmanims.bnk
+    /// variant with fewer tiers and bones (hero spell: 189 bones against 35). The two hash alike,
+    /// so of two parses of one path the one with more bones is kept; the guest's tier choice
+    /// between them is its memory budget, not a different animation.
+    /// </remarks>
+    private static bool LoadCsaClipsLocked()
+    {
+        var chosen = new Dictionary<uint, (string Path, byte[] Bytes, Engine_CsaFile.Clip Clip)>();
+        int seen = 0;
+        int rejected = 0;
+
+        foreach (string path in AllFilePaths())
+        {
+            if (!path.EndsWith(Engine_CsaFile.Extension, System.StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            seen++;
+            byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(path);
+            string error = "unreadable";
+            if (bytes is null || !Engine_CsaFile.TryParse(bytes, out Engine_CsaFile.Clip parsed, out error))
+            {
+                rejected++;
+                if (rejected <= 8)
+                {
+                    GD.PushWarning($"[anim] {path}: {error}");
+                }
+
+                continue;
+            }
+
+            uint key = Refii.Core.Engine_GameHash.ResourcePath(path);
+            if (chosen.TryGetValue(key, out var existing) && existing.Clip.Bones.Count >= parsed.Bones.Count)
+            {
+                continue;
+            }
+
+            chosen[key] = (path, bytes, parsed);
+        }
+
+        if (chosen.Count == 0)
+        {
+            GD.PushWarning($"[anim] no {Engine_AnimBank.TocExtension} and no {Engine_CsaFile.Extension} in the mounted archives");
+            return false;
+        }
+
+        long total = 0;
+        foreach (var entry in chosen.Values)
+        {
+            total += entry.Bytes.Length;
+        }
+
+        var blob = new byte[total];
+        int cursor = 0;
+        foreach ((uint key, (string path, byte[] bytes, Engine_CsaFile.Clip parsed)) in chosen)
+        {
+            System.Buffer.BlockCopy(bytes, 0, blob, cursor, bytes.Length);
+
+            var clip = new AnimClip
+            {
+                Key0 = key,
+                Key1 = parsed.Tiers.Count != 0 ? parsed.Tiers[^1].Hash : 0u,
+                DataOffset = (uint)cursor,
+                DataSizeBytes = (uint)bytes.Length,
+                TocFrameCount = (uint)parsed.FrameCount,
+                Fps = parsed.Fps,
+                Name = System.IO.Path.GetFileNameWithoutExtension(path.Replace('\\', '/')),
+            };
+
+            foreach (Engine_CsaFile.Event csaEvent in parsed.Events)
+            {
+                clip.Events.Add(new AnimEvent { Time = csaEvent.Time, Name = csaEvent.Name });
+            }
+
+            var bones = new List<AnimTrackBone>(parsed.Bones.Count);
+            foreach (Engine_CsaFile.Bone bone in parsed.Bones)
+            {
+                bones.Add(new AnimTrackBone { Name = Engine_CsaFile.BoneName(bone.NameHash), Parent = bone.Parent });
+            }
+
+            clip.TrackMap = bones;
+            Clips.Add(clip);
+            cursor += bytes.Length;
+        }
+
+        if (!Data.Open(blob))
+        {
+            Clips.Clear();
+            return false;
+        }
+
+        for (int i = 0; i < Clips.Count; i++)
+        {
+            ByKey[Clips[i].Key0] = Clips[i];
+            IndexByKey[Clips[i].Key0] = i;
+        }
+
+        // The model-to-clip bindings come from Fable 2's GDB AnimationPairs scan; Fable 3's are
+        // not read yet, so the editor's per-model clip list stays empty and the live feed, which
+        // names its clips by key, needs none.
+        _boundTried = true;
+        _ready = true;
+        GD.Print($"[anim] catalog ready with {Clips.Count} AnimFile v8 clip(s) from {seen} file(s), " +
+            $"{rejected} rejected, {total} bytes");
         return true;
     }
 

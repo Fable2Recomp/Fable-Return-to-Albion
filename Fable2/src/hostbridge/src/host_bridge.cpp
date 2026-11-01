@@ -5777,17 +5777,8 @@ REFII_HOST_ABI_EXPORT void RefiiHostGetInitMarkers(uint32_t* out) {
 /// about in it. The predicate's first line is `if (*(BYTE*)(comp3 + 202)) return 1;`
 /// (0x82214308): the shipped `SetAsAlwaysInView` script property. Set on every live entity
 /// that has the component; the guest then evaluates and converts each frame.
-/// REFII_ALWAYS_IN_VIEW=0 leaves the guest's cull alone.
 uint32_t g_always_in_view_set = 0;
 static void KeepAnimatedInView(uint8_t* base, uint32_t entity) {
-    static const bool enabled = [] {
-        const char* value = std::getenv("REFII_ALWAYS_IN_VIEW");
-        return value == nullptr || std::string_view(value) != "0";
-    }();
-    if (!enabled) {
-        return;
-    }
-
     constexpr uint8_t kVisibilityId = 3u;
     const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
     const auto read8 = [base](uint32_t at) { return GuestByteAt(base, at); };
@@ -6981,6 +6972,148 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityLightZone(uint32_t entity) {
     }
     const uint32_t renderable = EntityComponent(base, entity, 3u);
     return renderable != 0u ? GuestWordAt(base, renderable + 0xD0u) : 1u;
+}
+
+/// THE ENTITY'S OWN LIGHTING ZONE, the renderable's `+0xD0` with no CECBuilding override: what
+/// a light hosted on the entity lights from. `CECGraphicAppearanceLight` builds its light
+/// descriptors from the renderable's zone word (`sub_825C2108` 0x825C23A4: `*(a3 + 52)` of the
+/// renderable's zone block) and re-sends it through `sub_825C2060`, forcing 0 only for its own
+/// IgnoreZoning byte (+126, 0x825C2074) — never the static-mesh definition-hash zone that
+/// RefiiHostGetEntityLightZone reports for a CECBuilding's own geometry. Returns 1 for an entity
+/// with no renderable; the IgnoreZoning answer stays with the light's record on the host side,
+/// as for RefiiHostGetEntityLightZone.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityOwnLightZone(uint32_t entity) {
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr || entity < 0x10000u || entity >= 0xC0000000u) {
+        return 1u;
+    }
+    const uint32_t renderable = EntityComponent(base, entity, 3u);
+    return renderable != 0u ? GuestWordAt(base, renderable + 0xD0u) : 1u;
+}
+
+/// WHETHER THE GUEST POSES A RIG THIS TICK: 2, not stated. Fable 2's view gate is
+/// `sub_822142E8(GA, GA+0x28)` (`bl` 0x8220D4A4 in `sub_8220D1B8`; disc `sub_82214420` from
+/// `sub_8220D2F0`), GA = component 3: GA+0xCA -> yes (0x82214308) before anything else; else
+/// GA+0x68 < GA+0x28² and, with byte_833194A9 and a proxy at GA+0x18, engine+0x70 - proxy+8
+/// (engine = *(*(*(*(0x83496AB8)+0xC)+0x68)+4), vtable 0x82001CCC slot 4 `sub_8220C1A0`) > 30 ->
+/// no, < 4 -> yes; then GA+0xCB. GA+0x68/+0xCB are refreshed only past the +0xCA return
+/// (`sub_822141A8` 0x82214324). KeepAnimatedInView (above) writes GA+0xCA = 1 on every live
+/// entity with the component, so the gate answers our own write and its view terms are frozen:
+/// reading it back would state the bridge, not the guest. Fable 3 answers from its gate
+/// (Fable3/src/hostbridge/src/pose_gate_feed.cpp).
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityPoseGate(uint32_t) {
+    return 2u;
+}
+
+/// THE GUEST'S CLOTH: not stated (0xFFFFFFFF), so the shell keeps its own solver for Fable 2.
+/// Fable 2's binary has the publish Fable 3's bridge states (Fable3/src/hooks/src/cloth_hooks.cpp):
+/// the cloth draw publishes each sim item through `sub_8229F0B8(item)` — item+532 the published byte,
+/// a wait on the item's event at item+536 (`sub_821969C8`, 0x8229F0E8), the fade lerp below
+/// item+528 = 1.0 between item+56 and item+60 (0x8229F144), then the normals and the vertex buffer.
+/// Stating it here would replace the shell's solver for Fable 2 and change what it draws, which
+/// is the user's call, not this export's.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityClothPieces(uint32_t, uint32_t*, uint32_t) {
+    return 0xFFFFFFFFu;
+}
+
+/// Fable 2 states no cloth vertices (RefiiHostGetEntityClothPieces).
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClothPieceVertices(uint32_t, uint32_t, float*, uint32_t,
+                                                              uint32_t* out_tick) {
+    if (out_tick != nullptr) {
+        *out_tick = 0u;
+    }
+    return 0u;
+}
+
+/// WHERE THE GUEST'S POSE PUTS A RIG: the sphere around its published bones, for the shell's
+/// view test when the title states no pose gate. The guest's own view term is not it:
+/// `sub_82239D98` (refresh 0x822142CC) tests the placement's physics body, placement+0x7C slot
+/// 0x60 (`sub_828D4110`: `lwz r3,0x20(r3)`; `sub_828FD4A0`: none), its shape copied by
+/// `sub_821F2630` (centre +0x30, radius +0x40), else the placement position as a point (slot
+/// 0x40, `sub_821DC0C8`). Both follow the placement, and a cutscene prop's placement is parked at
+/// the cutscene origin while its clip carries the bones metres away.
+///
+/// The bones are the published block (`sub_821F56F8` at 0x8220DBF0 after `sub_82204FF0`,
+/// model space after `sub_821F57D0`): holder `*(comp6+0x24)`, block `*holder`, tag block+8 ==
+/// skel+0x14 (skel = comp6+0x94), 48-byte elements at `*(block+0x10)` with the translation at
+/// +0x10, count `(skel+0x30 - skel+0x2C) >> 3` — as RefiiHostReadEntityRig reads them. The
+/// guest poses every rig with live clips (KeepAnimatedInView above), so the block is current.
+///
+/// `out` = centre xyz in the rig's MODEL space (the space the shell draws the skeleton in) and
+/// the radius in metres. The model origin is always inside, so the sphere covers the origin the
+/// shell tested before. Returns 1 when stated, 0 with no published pose.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityViewSphere(uint32_t entity, float* out) {
+    constexpr uint8_t kAnimatedMeshId = 6u;
+    constexpr uint32_t kMaxBones = 256u;
+    constexpr float kMaxReach = 1000.0f;
+
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr || out == nullptr || entity < 0x10000u || entity >= 0xC0000000u) {
+        return 0u;
+    }
+
+    const auto plausible = [](uint32_t address) { return address >= 0x10000u && address < 0xC0000000u; };
+    const uint32_t component = EntityComponent(base, entity, kAnimatedMeshId);
+    const uint32_t skeleton = component != 0u ? GuestWordAt(base, component + 0x94u) : 0u;
+    const uint32_t holder = component != 0u ? GuestWordAt(base, component + 0x24u) : 0u;
+    if (!plausible(skeleton) || !plausible(holder)) {
+        return 0u;
+    }
+
+    const uint32_t published = GuestWordAt(base, holder);
+    if (!plausible(published) || GuestWordAt(base, published + 8u) != GuestWordAt(base, skeleton + 0x14u)) {
+        return 0u;
+    }
+
+    const uint32_t buffer = GuestWordAt(base, published + 0x10u);
+    const uint32_t table_begin = GuestWordAt(base, skeleton + 0x2Cu);
+    const uint32_t table_finish = GuestWordAt(base, skeleton + 0x30u);
+    if (!plausible(buffer) || table_finish <= table_begin) {
+        return 0u;
+    }
+
+    const uint32_t bones = std::min((table_finish - table_begin) >> 3, kMaxBones);
+    static thread_local uint8_t block[kMaxBones * 48u];
+    if (!CopyGuest(base, buffer, block, (size_t)bones * 48u) || GuestWordAt(base, holder) != published) {
+        return 0u;  // swapped during the copy; the next call reads the new block
+    }
+
+    float points[kMaxBones + 1u][3] = {{0.0f, 0.0f, 0.0f}};
+    float low[3] = {0.0f, 0.0f, 0.0f};
+    float high[3] = {0.0f, 0.0f, 0.0f};
+    for (uint32_t i = 0u; i < bones; ++i) {
+        for (uint32_t axis = 0u; axis < 3u; ++axis) {
+            uint32_t bits = 0u;
+            std::memcpy(&bits, block + i * 48u + 0x10u + axis * 4u, sizeof(bits));
+            bits = __builtin_bswap32(bits);
+            float value = 0.0f;
+            std::memcpy(&value, &bits, sizeof(value));
+            if (!std::isfinite(value) || std::fabs(value) > kMaxReach) {
+                return 0u;  // not a model-space pose
+            }
+
+            points[i + 1u][axis] = value;
+            low[axis] = std::min(low[axis], value);
+            high[axis] = std::max(high[axis], value);
+        }
+    }
+
+    const float centre[3] = {(low[0] + high[0]) * 0.5f, (low[1] + high[1]) * 0.5f, (low[2] + high[2]) * 0.5f};
+    float radius_sq = 0.0f;
+    for (uint32_t i = 0u; i <= bones; ++i) {
+        const float dx = points[i][0] - centre[0];
+        const float dy = points[i][1] - centre[1];
+        const float dz = points[i][2] - centre[2];
+        radius_sq = std::max(radius_sq, dx * dx + dy * dy + dz * dz);
+    }
+
+    out[0] = centre[0];
+    out[1] = centre[1];
+    out[2] = centre[2];
+    out[3] = std::sqrt(radius_sq);
+    return 1u;
 }
 
 /// THE STATED SHADOW CASTING. The renderable (component 3) holds its definition's flag word at

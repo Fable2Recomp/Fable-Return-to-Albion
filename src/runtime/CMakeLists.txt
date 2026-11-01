@@ -28,6 +28,8 @@ add_library(refii_runtime SHARED
     ${REFII_RUNTIME_ROOT}/src/core/rex_bridge_host.cpp
     # The queue the host posts onto the guest's tick thread, its counters and the guest frame.
     ${REFII_RUNTIME_ROOT}/src/core/guest_tick_queue.cpp
+    # A title's tick pump states each step; a host thread walks a stalled step's guest back chain.
+    ${REFII_RUNTIME_ROOT}/src/core/guest_step_sampler.cpp
     # The debug channel's guest-render switch: the host sets it, a title's draw hook reads it.
     ${REFII_RUNTIME_ROOT}/src/core/guest_render_state.cpp
     # The mouse's camera turn: the host posts, a title's camera hook takes it.
@@ -54,6 +56,15 @@ add_library(refii_runtime SHARED
     # The camera a title states and the host's world-build hold, between its hooks and its
     # host bridge.
     ${REFII_RUNTIME_ROOT}/src/core/stated_view.cpp
+    # The world a title states between its hooks and its host bridge: its levels' up and down,
+    # its effects by handle, its decals.
+    ${REFII_RUNTIME_ROOT}/src/core/stated_world.cpp
+    # The appearance a title states between its hooks and its host bridge: each character part's
+    # morph targets and each original texture's layers.
+    ${REFII_RUNTIME_ROOT}/src/core/stated_appearance.cpp
+    # The cloth a title states between its hooks and its host bridge: each piece's drawn vertices
+    # as the guest's draw publishes them.
+    ${REFII_RUNTIME_ROOT}/src/core/stated_cloth.cpp
 )
 target_include_directories(refii_runtime
     PUBLIC

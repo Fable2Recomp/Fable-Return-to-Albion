@@ -49,11 +49,11 @@ public static partial class Engine_MdlMaterial
     }
 
     /// <summary>
-    /// The fallback's lite build, or null under "full". No textures: no specular colour, so the
+    /// The fallback's lite build of <paramref name="family"/>, or null under "full". No textures: no specular colour, so the
     /// lite set's no-specular build draws it exactly.
     /// </summary>
-    private static Shader? LiteFallbackShader() =>
-        Engine_ShaderVariant.ModelPath(Engine_ShaderFamily.StandardPath, false, false, false, false) is { } lite
+    private static Shader? LiteFallbackShader(string family) =>
+        Engine_ShaderVariant.ModelPath(family, false, false, false, false) is { } lite
             ? Engine_ShaderSpecialisation.Load(lite, null, LoadShared(lite))
             : null;
 

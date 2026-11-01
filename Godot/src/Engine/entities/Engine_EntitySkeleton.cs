@@ -277,6 +277,14 @@ public sealed class Engine_EntitySkeleton
 	/// Indexed by model bone; a shorter span leaves the rest at their last value. Only binds
 	/// whose scale moved are rewritten, so a settled rig costs a comparison per bone.
 	/// </summary>
+	/// <summary>
+	/// The guest's own scale for model bone <paramref name="model"/>, as its newest pose stated it
+	/// (One before any pose). A Fable 3 rig scales bones of its own — 141 of 12,869 live bones,
+	/// 3e-5 (collapsed) to 4.5 — and a scale written over them must start from this, never One.
+	/// </summary>
+	public Vector3 GuestScale(int model) =>
+		model >= 0 && model < _newestScale.Length ? _newestScale[model] : Vector3.One;
+
 	public void SetBoneScales(ReadOnlySpan<Vector3> scales)
 	{
 		int bones = Math.Min(scales.Length, _inverseRest.Length);
@@ -1898,7 +1906,7 @@ public sealed class Engine_EntitySkeleton
 	}
 
 	/// <summary>The mesh's own map applied to a vector: <c>(x, y, z) -&gt; (x, z, -y)</c>.</summary>
-	private static Vector3 Swizzle(Vector3 guest) => new(guest.X, guest.Z, -guest.Y);
+	internal static Vector3 Swizzle(Vector3 guest) => new(guest.X, guest.Z, -guest.Y);
 
 	/// <summary>
 	/// One bone's rotation, mapped into the mesh's space.
