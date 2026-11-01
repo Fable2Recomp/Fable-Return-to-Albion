@@ -71,7 +71,9 @@ public partial class GameDecorate : Node
     private uint _previewCard;
     private double _ghostPoll;
     private bool HasSelection => _selectedUid != 0 || _previewCard != 0 || _storedId != 0;
-    private GameSession? _session;
+    /// <summary>The node that hosts the play: the desktop's GameSession, or the host this was added
+    /// to where the guest is stepped without one (Android), as the mirror and photo mode allow.</summary>
+    private Node? _session;
     private Camera3D? _camera, _uiCamera;
     private CanvasLayer? _layer;
     private SubViewportContainer? _container;
@@ -125,7 +127,7 @@ public partial class GameDecorate : Node
             _guestRequested = Read("active") == 1;
             if (Active && (!_guestRequested || !_enabled)) { Close(_guestRequested); return; }
             if (!Active && _enabled && _guestRequested && !GamePhotoMode.Active && !GameMorphMirror.OwnsInput &&
-                GameUi.WorldInteractionAllowed && GameSession.Current is { Paused: false }) Open();
+                GameUi.WorldInteractionAllowed && GameSession.Current is not { Paused: true }) Open();
             if (Active)
             {
                 int revision = (int)Read("revision");
@@ -779,8 +781,8 @@ public partial class GameDecorate : Node
 
     private void Open()
     {
-        if (Active || GameSession.Current is not { Paused: false } session || GetViewport().GetCamera3D() is not { } camera) return;
-        _session = session; _camera = camera; _original = camera.GlobalTransform; _mouseMode = Input.MouseMode;
+        if (Active || GameSession.Current is { Paused: true } || GetViewport().GetCamera3D() is not { } camera) return;
+        _session = (Node?)GameSession.Current ?? GetParent(); _camera = camera; _original = camera.GlobalTransform; _mouseMode = Input.MouseMode;
         var angles = _original.Basis.GetEuler(); _yaw = angles.Y; _pitch = angles.X;
         _position = _original.Origin;
         _held = uint.MaxValue; _revision = -1; _waiting = false; _room = true; _row = 0; _touch = 0; _uiHidden = false; _aimPoll = 0;
@@ -807,7 +809,7 @@ public partial class GameDecorate : Node
 
     private void BuildUi()
     {
-        var theme = _session?.GetParent().GetNodeOrNull<GameUi>("GameUi")?.PhotoModeTheme
+        var theme = (GameSession.Current?.GetParent() ?? _session)?.GetNodeOrNull<GameUi>("GameUi")?.PhotoModeTheme
             ?? throw new InvalidOperationException("Fable 2's native UI is not ready.");
         _layer = new CanvasLayer { Name = "DecorateControls", Layer = 121 }; AddChild(_layer);
         _container = new SubViewportContainer { Stretch = true, MouseFilter = Control.MouseFilterEnum.Ignore }; _layer.AddChild(_container);
