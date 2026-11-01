@@ -155,7 +155,7 @@ public partial class Fable3WorldIcons : SubViewportContainer
 			_culture = Engine_GameCulture.Current;
 			_sprites.Theme = new Engine_UiTheme
 			{
-				Fonts = Engine_UiFontLibrary.Load(Refii.Core.Engine_GameData.Resolve(), _culture),
+				Fonts = Fable3Fonts.For(_culture),
 				Strings = Fable3Strings.Current,
 				Textures = Fable3Art.Load,
 			};

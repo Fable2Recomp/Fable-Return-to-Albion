@@ -133,14 +133,9 @@ public partial class Fable3Splash : Control
 		_logoShadow = Texture(Frontend + "fable_iii_logoshadow.tex");
 		_icon = Texture(StartIcon);
 
-		string data = Refii.Core.Engine_GameData.Resolve();
-		Engine_UiFontLibrary fonts = Engine_UiFontLibrary.Load(data, Engine_GameCulture.Current);
+		Engine_UiFontLibrary fonts = Fable3Fonts.For(Engine_GameCulture.Current);
 		_normal = fonts.Get(UiFontBucket.Normal);
 		_small = fonts.Get(UiFontBucket.Small);
-		foreach (string failure in fonts.Failures)
-		{
-			GD.PushWarning("[fable3-splash] font: " + failure);
-		}
 
 		Engine_BabelDatabase? strings = Fable3Strings.Current;
 		_start = Text(strings, "TEXT_GUI_SPLASH_SCREEN_START");
