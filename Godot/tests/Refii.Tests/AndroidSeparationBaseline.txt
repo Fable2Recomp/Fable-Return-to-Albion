@@ -12,6 +12,7 @@
 1	Godot/src/Engine/core/Engine_LevelCaches.cs
 1	Godot/src/Engine/core/Engine_OsThreads.cs
 1	Godot/src/Engine/core/Engine_ShaderCeiling.cs
+1	Godot/src/Engine/entities/Engine_EntityHighlightLayer.cs
 2	Godot/src/Engine/level/environment/fable_atmosphere.gdshaderinc
 1	Godot/src/Engine/level/index/Engine_LevelReads.cs
 43	Godot/src/Engine/level/terrain/terrain_splat_body.gdshaderinc
