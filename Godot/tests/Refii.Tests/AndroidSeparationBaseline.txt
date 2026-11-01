@@ -27,7 +27,6 @@
 1	Godot/src/game/GameTracy.cs
 4	Godot/src/game/GameWorld.cs
 1	Godot/src/launcher/LauncherApp.cs
-1	Godot/src/launcher/settings/GraphicsPresets.cs
 3	rexglue-net/shadow/rexglue-sdk/CMakeLists.txt
 1	rexglue-net/shadow/rexglue-sdk/include/rex/chrono/chrono.h
 1	rexglue-net/shadow/rexglue-sdk/include/rex/chrono/chrono_steady_cast.h
