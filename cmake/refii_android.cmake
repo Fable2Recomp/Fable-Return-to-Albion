@@ -29,11 +29,15 @@ if(TARGET refii_payload_core)
     refii_android_payload_contract(refii_payload_core)
 endif()
 
-# Fable 3's bridge keeps Fable 2's file name on desktop, where each title's sits in its own
-# bin/<Folder>/. An APK's natives are one flat folder, so on Android Fable 3's is
-# librefiii_hostbridge.so (its key, as Fable 2's is refii); src/android resolves it by title.
+# Fable 3's bridge and VFS keep Fable 2's file names on desktop, where each title's sit in its own
+# bin/<Folder>/. An APK's natives are one flat folder, so on Android Fable 3's are
+# librefiii_hostbridge.so and librefiii_vfs.so (its key, as Fable 2's is refii); src/android
+# resolves the bridge by title, and Fable 3's module names its VFS itself (DT_NEEDED).
 if(TARGET refiii_hostbridge)
     set_target_properties(refiii_hostbridge PROPERTIES OUTPUT_NAME refiii_hostbridge)
+endif()
+if(TARGET refiii_vfs)
+    set_target_properties(refiii_vfs PROPERTIES OUTPUT_NAME refiii_vfs)
 endif()
 
 if(REFII_ANDROID_GENERATED_DIR)
@@ -64,11 +68,11 @@ if(REFII_ANDROID_GENERATED_DIR)
         message(FATAL_ERROR "Private Android source preparation returned no verified source directory")
     endif()
     include("${_refii_prepared_generated}/sources.cmake")
-    # Fable 3's module takes its own hooks and links the shared natives alone, as the phone
-    # compiler and the desktop build do; Fable 2's takes its hooks, Lua and the VFS.
+    # Fable 3's module takes its own hooks and links the shared natives and its VFS, as the phone
+    # compiler and the desktop build do; Fable 2's takes its hooks, Lua and its VFS.
     if(REFII_ANDROID_GAME_TITLE STREQUAL "Fable3")
         set(_refii_android_hooks refiii_hooks)
-        set(_refii_android_module_libraries refii_runtime)
+        set(_refii_android_module_libraries refii_runtime refiii_vfs)
     else()
         set(_refii_android_hooks refii_hooks)
         set(_refii_android_module_libraries ${REFII_LUA_LIBRARIES} ${REFII_VFS_LIBRARIES})

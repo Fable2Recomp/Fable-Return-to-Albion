@@ -284,7 +284,8 @@ public static class AndroidPhoneCompiler
         {
             if (manifest.Fable3Hooks.Length == 0 || manifest.Fable3Includes.Length == 0 ||
                 !manifest.Files.ContainsKey("versions/Fable3/refiii_manifest.toml") ||
-                !manifest.NativeFiles.ContainsKey(request.HostBridge))
+                !manifest.NativeFiles.ContainsKey(request.HostBridge) ||
+                !manifest.NativeFiles.ContainsKey(Fable3Vfs))
                 throw new InvalidDataException("This APK's compiler bundle cannot build Fable 3");
             foreach (string path in manifest.Fable3Includes)
                 if (!System.IO.Directory.Exists(Below(request.BundleDirectory, path)))
@@ -388,7 +389,7 @@ public static class AndroidPhoneCompiler
             "-Wl,-rpath-link," + request.NativeDirectory }).Concat(objects)
             // Lua and the VFS are Fable 2's instance; Fable 3's module links the shared natives alone, as on desktop.
             .Concat(request.IsFable3
-                ? new[] { "-lrefii_core", "-lrefii_runtime", "-lrexruntime", "-o", module }
+                ? new[] { "-lrefii_core", "-lrefii_runtime", "-lrefiii_vfs", "-lrexruntime", "-o", module }
                 : new[] { "-lrefii_core", "-lrefii_runtime", "-lrefii_lua", "-lrefii_vfs", "-lrexruntime", "-o", module }).ToArray();
         await Run("librefii_clang.so", link).ConfigureAwait(false);
         ValidateModule(File.ReadAllBytes(module));
@@ -483,6 +484,9 @@ public static class AndroidPhoneCompiler
     /// one entry the host resolves are unchanged; only data symbols keep interposition. This also keeps
     /// rex_bridge_payload.cpp's forwarders module-internal, as -fvisibility=hidden does on desktop.</remarks>
     internal const string ModuleLocalCalls = "-Wl,-Bsymbolic-functions";
+
+    /// <summary>Fable 3's VFS, which its module links (refiii_vfs; librefiii_vfs.so in the APK, cmake/refii_android.cmake).</summary>
+    internal const string Fable3Vfs = "librefiii_vfs.so";
 
     /// <summary>Bounds optimizer work for generated registration without changing calls or their order.</summary>
     /// <param name="source">Fresh generator output containing only the known registration function.</param>

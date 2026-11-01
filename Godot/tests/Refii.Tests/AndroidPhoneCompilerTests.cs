@@ -350,6 +350,8 @@ public sealed class AndroidPhoneCompilerTests
         AssertThat(flags3.Contains("-DREFII_GUEST_BUILD_UNPATCHED=1")).IsFalse();
         AssertThat(fable2.HostBridge).IsEqual("librefii_hostbridge.so");
         AssertThat(fable3.HostBridge).IsEqual("librefiii_hostbridge.so");
+        // Fable 3's module links its VFS, which the APK ships under its own key beside Fable 2's.
+        AssertThat(AndroidPhoneCompiler.Fable3Vfs).IsEqual("librefiii_vfs.so");
     }
 
     /// <summary>Fable 2's installs stay in the app's data directory; Fable 3's get a folder of their own.</summary>

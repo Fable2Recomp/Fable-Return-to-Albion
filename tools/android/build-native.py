@@ -143,7 +143,7 @@ def stage_closure(build: Path, destination: Path, ndk_bin: Path) -> list[dict]:
     # Lua is a payload dependency even when the host bridge has no direct
     # DT_NEEDED edge to it. Bink/XMA are loaded through managed P/Invoke.
     pending = ["librefii_hostbridge.so", "librefiii_hostbridge.so", "librefii_lua.so",
-               "librefii_binkdecode.so", "librefii_xmadecode.so"]
+               "librefiii_vfs.so", "librefii_binkdecode.so", "librefii_xmadecode.so"]
     staged = {}
     destination.mkdir(parents=True, exist_ok=True)
     while pending:
@@ -255,9 +255,10 @@ def main() -> int:
         run(configure, output / "configure.log", commands)
         if args.configure_only:
             return 0
-        # Fable 3's bridge (librefiii_hostbridge.so, cmake/refii_android.cmake) and its hooks, built
-        # here only so a hook that does not compile for ARM64 fails now rather than on the phone.
-        targets = ["refii_hostbridge", "refiii_hostbridge", "refiii_hooks", "refii_lua",
+        # Fable 3's bridge and VFS (librefiii_hostbridge.so, librefiii_vfs.so, cmake/refii_android.cmake),
+        # which the APK ships, and its hooks, built here only so a hook that does not compile for
+        # ARM64 fails now rather than on the phone.
+        targets = ["refii_hostbridge", "refiii_hostbridge", "refiii_vfs", "refiii_hooks", "refii_lua",
                    "refii_binkdecode", "refii_xmadecode"]
         if args.selftests:
             targets += ["refii_android_platform_selftest", "refii_android_fiber_selftest",
