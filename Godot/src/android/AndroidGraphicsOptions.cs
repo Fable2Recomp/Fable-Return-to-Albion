@@ -26,8 +26,8 @@ public sealed record AndroidGraphicsOption(
 /// picture and that the running game picks up at once. The host rereads the render scale and mesh LOD
 /// (AndroidGameHost.RefreshRenderScale); the rest reach their readers through
 /// <see cref="Refii.Core.Engine_RefiiConfig.TrySetGodotCvar"/> (placed lights, the sun shadow's depth and
-/// reach, the props' draw ranges, the bloom). Settings read only at launch (the characters' draw distance,
-/// the trees' shadow reach and thinned crowns) are left to the launcher.
+/// reach, the props' draw ranges, the trees' far reach, the bloom). Settings read only at launch (the
+/// characters' draw distance, the trees' shadow reach and thinned crowns) are left to the launcher.
 /// </summary>
 public static class AndroidGraphicsOptions
 {
@@ -54,6 +54,11 @@ public static class AndroidGraphicsOptions
             "How far small props (crates, produce, furniture, fences) are drawn, as a share of the desktop's distances. All draws every prop at any distance.",
             new[] { "0.4", "0.6", "0.8", "1", "1.5", "2", "0" },
             v => v == 0 ? "All" : Number(v * 100) + "%"),
+        // 0 keeps every tree's stated reach (up to about a kilometre).
+        new("tree_far_reach", "Tree distance", AndroidGraphicsImpact.Medium,
+            "How far away trees are still drawn, in metres. Far trees are many small triangles, which an older phone's GPU pays for whatever the resolution; closer cuts the distant tree line.",
+            new[] { "250", "300", "350", "500", "0" },
+            v => v == 0 ? "All" : Number(v) + " m"),
         new("sun_shadow_distance", "Sun shadows", AndroidGraphicsImpact.High,
             "How far from you the sun and moon cast moving shadows, in metres; night uses half. Off removes them, a large saving.",
             new[] { "0", "50", "80", "100", "120", "160", "200" },

@@ -34,6 +34,8 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
     private Button? _exportBoth;
     private HBoxContainer? _panel;
     private PanelContainer? _graphics;
+    private ScrollContainer? _graphicsScroll;
+    private VBoxContainer? _graphicsList;
     private PanelContainer? _about;
     private PanelContainer? _rebuild;
     private Label? _rebuildText;
@@ -176,6 +178,16 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         rows.AddThemeConstantOverride("separation", 6);
         preset.CustomMinimumSize = new Vector2(510, 52);
         rows.AddChild(preset);
+        // The settings scroll under the preset once they outgrow the room above Options (Place sizes it):
+        // a drag that starts on a row's name scrolls, since the names let the press through to it.
+        _graphicsScroll = new ScrollContainer
+        {
+            MouseFilter = Control.MouseFilterEnum.Pass, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
+        };
+        _graphicsList = new VBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        _graphicsList.AddThemeConstantOverride("separation", 6);
+        _graphicsScroll.AddChild(_graphicsList);
+        rows.AddChild(_graphicsScroll);
         foreach (AndroidGraphicsOption option in AndroidGraphicsOptions.All)
         {
             var line = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
@@ -202,7 +214,7 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
             line.AddChild(value);
             line.AddChild(more);
             line.AddChild(info);
-            rows.AddChild(line);
+            _graphicsList.AddChild(line);
             var row = new GraphicsRow(option, value, less, more, info,
                 () => StepGraphics(option, -1), () => StepGraphics(option, 1), () => ToggleAbout(option));
             less.Pressed += row.StepLess;
@@ -289,14 +301,25 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         Place();
     }
 
+    /// <summary>The space the Graphics column leaves above it, in canvas units.</summary>
+    private const float TopMargin = 8f;
+
     /// <summary>
     /// Stands the buttons above Options with their bottom 10 units clear, and the Graphics column beside
-    /// them down to Options' bottom edge, each as tall as what it shows.
+    /// them down to Options' bottom edge, each as tall as what it shows; the column's settings scroll when
+    /// they would rise past <see cref="TopMargin"/>.
     /// </summary>
     private void Place()
     {
         if (!Visible || _panel is not { } panel) return;
         if (_overOptions is { } room) room.CustomMinimumSize = new Vector2(0, _options.Size.Y);
+        if (_graphics is { } graphics && _graphicsScroll is { } scroll && _graphicsList is { } list)
+        {
+            // As tall as its rows, or as the room above Options' bottom edge allows with a margin.
+            float around = graphics.GetCombinedMinimumSize().Y - scroll.CustomMinimumSize.Y;
+            float rows = list.GetCombinedMinimumSize().Y;
+            scroll.CustomMinimumSize = new Vector2(0, Math.Max(0f, Math.Min(rows, _options.End.Y - TopMargin - around)));
+        }
         panel.Size = Vector2.Zero;
         Vector2 size = panel.GetCombinedMinimumSize();
         panel.Position = new Vector2(_options.Position.X, _options.End.Y - size.Y);
