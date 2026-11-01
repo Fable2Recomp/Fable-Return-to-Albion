@@ -185,7 +185,7 @@ public class AndroidLogBundleTests
     /// <summary>A save folder as the phone holds one: a hero, the achievements and the RexNet identity.</summary>
     internal static void WriteSave(string user, string marker)
     {
-        string save = Path.Combine(user, "runtime", "assets", "save");
+        string save = AndroidLogBundle.SaveDirectory(user);
         string hero = Path.Combine(save, "E0C3DF3F20120108", "4D5307F1");
         Directory.CreateDirectory(Path.Combine(hero, "Headers", "00000001"));
         Directory.CreateDirectory(Path.Combine(hero, "00000001", "Hero000"));
@@ -278,7 +278,7 @@ public class AndroidLogBundleTests
         try
         {
             WriteSave(user, "a");
-            main = Path.Combine(user, "runtime", "assets", "save", "E0C3DF3F20120108", "4D5307F1", "00000001", "Hero000", "mainsave.bin");
+            main = Path.Combine(AndroidLogBundle.SaveDirectory(user), "E0C3DF3F20120108", "4D5307F1", "00000001", "Hero000", "mainsave.bin");
             File.SetUnixFileMode(main, UnixFileMode.None);
             bool failed = false;
             try { AndroidLogBundle.Write(downloads, user, "", new DateTime(2026, 10, 30), contents: AndroidLogBundle.Contents.Saves); }

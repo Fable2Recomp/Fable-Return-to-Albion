@@ -501,7 +501,7 @@ public sealed class AndroidPhoneCompilerTests
                 Manifest.Files[path] = Hash(file);
             }
             foreach (string name in new[] { "librefii_clang.so", "librefii_lld.so", "librefii_codegen.so", "librefii_core.so",
-                         "librefii_hostbridge.so", "librexruntime.so", "librefii_lua.so", "librefii_vfs.so", "libc++_shared.so" })
+                         "librefii_runtime.so", "librefii_hostbridge.so", "librexruntime.so", "librefii_lua.so", "librefii_vfs.so", "libc++_shared.so" })
             {
                 string file = Path.Combine(Request.NativeDirectory, name);
                 File.WriteAllText(file, "synthetic tool");

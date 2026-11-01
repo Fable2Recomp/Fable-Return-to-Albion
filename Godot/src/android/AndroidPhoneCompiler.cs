@@ -256,7 +256,8 @@ public static class AndroidPhoneCompiler
         foreach (var pair in manifest.Files) Verify(request.BundleDirectory, pair.Key, pair.Value);
         foreach (var pair in manifest.NativeFiles) Verify(request.NativeDirectory, pair.Key, pair.Value);
         foreach (string name in new[] { "librefii_clang.so", "librefii_lld.so", "librefii_codegen.so",
-                     "librefii_core.so", "librefii_hostbridge.so", "librexruntime.so", "librefii_lua.so", "librefii_vfs.so", "libc++_shared.so" })
+                     "librefii_core.so", "librefii_runtime.so", "librefii_hostbridge.so", "librexruntime.so",
+                     "librefii_lua.so", "librefii_vfs.so", "libc++_shared.so" })
             if (!manifest.NativeFiles.ContainsKey(name)) throw new InvalidDataException("Unverified tool/runtime: " + name);
         foreach (string path in manifest.Includes)
             if (!System.IO.Directory.Exists(Below(request.BundleDirectory, path)))
@@ -358,7 +359,7 @@ public static class AndroidPhoneCompiler
             "-Wl,-z,common-page-size=16384", ModuleLocalCalls,
             "-Wl,-soname,librefii_generated.so", "-L" + request.NativeDirectory,
             "-Wl,-rpath-link," + request.NativeDirectory }).Concat(objects)
-            .Concat(new[] { "-lrefii_core", "-lrefii_lua", "-lrefii_vfs", "-lrexruntime", "-o", module }).ToArray();
+            .Concat(new[] { "-lrefii_core", "-lrefii_runtime", "-lrefii_lua", "-lrefii_vfs", "-lrexruntime", "-o", module }).ToArray();
         await Run("librefii_clang.so", link).ConfigureAwait(false);
         ValidateModule(File.ReadAllBytes(module));
         bool nativeLoad = Refii.Core.Engine_Platform.IsAndroid && execute == null && verifyLoad == null;

@@ -29,8 +29,15 @@ public static class AndroidLogBundle
     /// <summary>What an export holds.</summary>
     public enum Contents { Logs, Saves, LogsAndSaves }
 
-    /// <summary>The save folder under the app's data directory, as the native session passes it to the game.</summary>
+    /// <summary>The save folder's name in an export: where the saves were before the title split, so an export
+    /// from either side of it imports on the other.</summary>
     public const string SaveFolder = "runtime/assets/save";
+
+    /// <summary>The save folder on the phone: Fable 2's own (<c>runtime/assets/Fable2/save</c>), where the
+    /// native session points the game.</summary>
+    /// <param name="userDirectory">The app's data directory.</param>
+    public static string SaveDirectory(string userDirectory) =>
+        Path.Combine(userDirectory, "runtime", "assets", Refii.Core.Engine_Title.Fable2.Folder, "save");
 
     /// <summary>The save folder's own folder that never leaves the phone: the RexNet identity key and friend lists.</summary>
     public const string PrivateSaveFolder = "rexnet";
@@ -118,7 +125,7 @@ public static class AndroidLogBundle
     /// <remarks>Symbolic links are not followed: the save folder is the app's own and holds none.</remarks>
     public static List<Entry> SelectSaveEntries(string userDirectory)
     {
-        string root = Path.Combine(userDirectory, SaveFolder.Replace('/', Path.DirectorySeparatorChar));
+        string root = SaveDirectory(userDirectory);
         var entries = new List<Entry>();
         if (!Directory.Exists(root)) return entries;
         var pending = new Stack<string>();

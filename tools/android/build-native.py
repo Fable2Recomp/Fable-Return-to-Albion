@@ -93,7 +93,9 @@ def generate_private(source: Path, game: Path, generator: Path, output: Path,
             shutil.copyfile(path, inputs / name)
     if not (inputs / "default.xex").is_file():
         raise ValueError("Game directory must contain the privately supplied default.xex")
-    config_root = source / "versions" / version
+    # Since the title split the version configs are under Fable2/ (pack-phone-bundle.py reads them the same way).
+    versions = source / "Fable2" / "versions" if (source / "Fable2" / "versions").is_dir() else source / "versions"
+    config_root = versions / version
     shutil.copyfile(config_root / "refii_config.toml", private / "refii_config.toml")
     manifest = (config_root / "refii_manifest.toml").read_text(encoding="utf-8")
     manifest = re.sub(r"(?m)^file_path\s*=.*$", 'file_path = ' + json.dumps((inputs / "default.xex").as_posix()), manifest)
@@ -263,11 +265,11 @@ def main() -> int:
         libraries = stage_closure(build, output / "native", ndk_bin)
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
         dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=source, text=True).strip())
-        headers = [source / "src/vfs/include/rex/thread/mutex.h",
+        headers = [source / "src/runtime/include/rex/thread/mutex.h",
                    source / "tools/android/payload_abi_guard.h",
                    source / "rexglue-net/shadow/rexglue-sdk/include/rex/thread/fiber.h",
                    source / "rexglue-net/shadow/rexglue-sdk/include/rex/platform/fpscr.h",
-                   source / "src/vfs/include/core/rex_payload_bridge.h",
+                   source / "src/runtime/include/core/rex_payload_bridge.h",
                    sdk / "include/rex/ppc/context.h"]
         identity = {str(path.relative_to(source)) if source in path.parents else str(path): sha256(path)
                     for path in headers if path.is_file()}

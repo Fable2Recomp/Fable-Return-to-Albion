@@ -285,14 +285,14 @@ def bundled_mod_files(source: Path) -> list[Path]:
 
 
 def stage_bundled_mods(source: Path, project: Path) -> dict:
-    """Zip mods-src into the staged project as res://bundled-mods.zip, with the release's manifest.txt.
+    """Zip Fable2/mods-src into the staged project as res://bundled-mods.zip, with the release's manifest.txt.
 
     The desktop release ships the same trees as bundled-mods/ (cmake/refii_run_godot_export.cmake);
     the Android launcher unpacks the zip and packs each mod into assets/mods, switched off
     (Engine_ModBundled.cs). Source, not .f2mod packages: a package is the player's own and
     never enters an APK. Fixed timestamps keep the archive's bytes a function of the sources.
     """
-    root = source / "mods-src"
+    root = source / "Fable2" / "mods-src"
     files = bundled_mod_files(source)
     listed = [p.relative_to(root).as_posix() for p in files]
     target = project / BUNDLED_MODS

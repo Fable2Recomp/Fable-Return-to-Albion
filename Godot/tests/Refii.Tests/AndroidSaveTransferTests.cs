@@ -20,7 +20,7 @@ public class AndroidSaveTransferTests
         return path;
     }
 
-    private static string Save(string user) => Path.Combine(user, "runtime", "assets", "save");
+    private static string Save(string user) => AndroidLogBundle.SaveDirectory(user);
 
     private static string MainSave(string user) =>
         Path.Combine(Save(user), "E0C3DF3F20120108", "4D5307F1", "00000001", "Hero000", "mainsave.bin");
@@ -51,7 +51,7 @@ public class AndroidSaveTransferTests
     }
 
     private static string[] Leftovers(string user) =>
-        Directory.EnumerateDirectories(Path.Combine(user, "runtime", "assets"))
+        Directory.EnumerateDirectories(Path.GetDirectoryName(Save(user))!)
             .Select(Path.GetFileName).OfType<string>().Where(name => name != "save").ToArray();
 
     [TestCase]

@@ -105,7 +105,7 @@ class BuildApkTests(unittest.TestCase):
 class PackPhoneBundleTests(unittest.TestCase):
     def test_the_host_abi_is_read_from_the_bridge_source(self):
         with tempfile.TemporaryDirectory() as temp:
-            source = Path(temp) / 'src/hostbridge/src/host_bridge.cpp'
+            source = Path(temp) / 'src/hostcore/src/host_exports.cpp'
             source.parent.mkdir(parents=True)
             source.write_text('REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 228; }\n')
             self.assertEqual(packer.host_abi(Path(temp)), 228)
