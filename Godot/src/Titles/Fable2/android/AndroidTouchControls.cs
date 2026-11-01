@@ -50,6 +50,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
     private TouchHero _laidOutHero = TouchHero.Everything;
     private bool _laidOutPhotoPanel = true;
     private string _laidOutPubGame = string.Empty;
+    private int _laidOutCustom = -1;
 
     /// <summary>The spells the touch spell picker offers while it is open, or null while it is closed.</summary>
     private IReadOnlyList<(int Will, string Name)>? _pickerSpells, _laidOutPicker;
@@ -65,6 +66,9 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
 
     /// <summary>Whether the controls are switched on (`touch_controls`).</summary>
     public bool ControlsEnabled => _enabled;
+
+    /// <inheritdoc/>
+    public IReadOnlyList<TouchControl> LaidOut => _pad.Controls;
 
     /// <summary>The context the controls are laid out for, for the status report.</summary>
     public TouchContext CurrentContext => _pad.Context;
@@ -194,7 +198,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
 
         if (context != _laidOutContext || size != _laidOutSize || _scale != _laidOutScale || slotsMoved ||
             hero != _laidOutHero || photoPanel != _laidOutPhotoPanel || _pickerSpells != _laidOutPicker ||
-            pubGame != _laidOutPubGame)
+            pubGame != _laidOutPubGame || AndroidTouchCustomLayout.Version != _laidOutCustom)
         {
             _laidOutContext = context;
             _laidOutSize = size;
@@ -204,7 +208,9 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
             _laidOutPhotoPanel = photoPanel;
             _laidOutPicker = _pickerSpells;
             _laidOutPubGame = pubGame;
-            IReadOnlyList<TouchControl> controls = AndroidTouchLayout.Build(size, _scale, context, slots, hero, photoPanel, pubGame);
+            _laidOutCustom = AndroidTouchCustomLayout.Version;
+            IReadOnlyList<TouchControl> controls = AndroidTouchCustomLayout.Apply(
+                AndroidTouchLayout.Build(size, _scale, context, slots, hero, photoPanel, pubGame), size, context);
             if (_pickerSpells is { } offered)
             {
                 // Modal while it stands: the picker and its backdrop take every touch first.
@@ -394,6 +400,10 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
 
         return false;
     }
+
+    /// <inheritdoc/>
+    /// <remarks>Past refii.toml's reload check (half a second), not at once: a read now would find the cached file.</remarks>
+    public void RereadSettingsSoon() => _settingsClock = System.Math.Min(_settingsClock, 0.6);
 
     /// <summary>Re-reads the touch settings now and then: the launcher writes refii.toml while the game runs.</summary>
     private void ReadSettings(bool force)

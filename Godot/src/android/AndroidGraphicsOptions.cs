@@ -15,10 +15,11 @@ public enum AndroidGraphicsImpact { Low, Medium, High }
 /// <param name="Key">The setting's key in refii.toml.</param>
 /// <param name="Name">The row's name.</param>
 /// <param name="Impact">How much the setting moves the frame rate across its steps.</param>
+/// <param name="About">What the setting does, for the row's ? button.</param>
 /// <param name="Steps">The values in order, as written to the file.</param>
 /// <param name="Show">The text for a value; one off the steps reads as written.</param>
 public sealed record AndroidGraphicsOption(
-    string Key, string Name, AndroidGraphicsImpact Impact, string[] Steps, Func<double, string> Show);
+    string Key, string Name, AndroidGraphicsImpact Impact, string About, string[] Steps, Func<double, string> Show);
 
 /// <summary>
 /// The graphics settings the in-game Options panel offers besides the preset: those that change the
@@ -32,33 +33,51 @@ public static class AndroidGraphicsOptions
 {
     /// <summary>The rows, top to bottom.</summary>
     /// <remarks>The impacts are from the phone measurements in GraphicsPresets: the render scale is
-    /// most of the GPU's work (Quality's 60% against Balanced's 50% about +15%, 30% the largest part of
-    /// Performance's 28%); the sun shadow off is about 12% alone; eight lit lamps to four took 8% on an
-    /// Adreno 640; every lamp that casts renders its own shadow map. Model detail and prop distance
-    /// are the rest of Quality's +25-30% over Balanced. The shadow reach, lamp range and bloom moved
-    /// nothing measurable.</remarks>
+    /// most of the GPU's work (on the S25+, 60% saved about 6% against 67%, and 30% is the largest part
+    /// of Performance's 28% off Balanced); the sun shadow off is about 12% alone; eight lit lamps to four
+    /// took 8% on an Adreno 640; every lamp that casts renders its own shadow map. Model detail and prop
+    /// distance are most of the rest of Quality's +25-30% over Balanced. The shadow reach, lamp range and
+    /// bloom moved nothing measurable.</remarks>
     public static readonly AndroidGraphicsOption[] All =
     {
-        new("render_scale_percent", "Render scale", AndroidGraphicsImpact.High, new[] { "30", "40", "50", "60", "67", "75", "85", "100" },
+        new("render_scale_percent", "Render scale", AndroidGraphicsImpact.High,
+            "How many pixels the world is drawn with, as a share of the screen's; menus and text stay sharp. The biggest single cost: lower is softer and faster.",
+            new[] { "30", "40", "50", "60", "67", "75", "85", "100" },
             v => Number(v) + "%"),
         // Larger is coarser: a model's coarser levels from further in.
-        new("mesh_lod_pixels", "Model detail", AndroidGraphicsImpact.Medium, new[] { "4", "2", "1", "0.5" },
+        new("mesh_lod_pixels", "Model detail", AndroidGraphicsImpact.Medium,
+            "How soon models switch to their simpler versions as they get further away. Low switches early (plainer distant models, faster); Ultra keeps full detail furthest.",
+            new[] { "4", "2", "1", "0.5" },
             v => v switch { 4 => "Low", 2 => "Medium", 1 => "High", 0.5 => "Ultra", _ => Number(v) }),
         // 0 lifts the size culling altogether.
-        new("prop_cull_distance_scale", "Prop distance", AndroidGraphicsImpact.Medium, new[] { "0.4", "0.6", "0.8", "1", "1.5", "2", "0" },
+        new("prop_cull_distance_scale", "Prop distance", AndroidGraphicsImpact.Medium,
+            "How far small props (crates, produce, furniture, fences) are drawn, as a share of the desktop's distances. All draws every prop at any distance.",
+            new[] { "0.4", "0.6", "0.8", "1", "1.5", "2", "0" },
             v => v == 0 ? "All" : Number(v * 100) + "%"),
-        new("sun_shadow_distance", "Sun shadows", AndroidGraphicsImpact.High, new[] { "0", "50", "80", "100", "120", "160", "200" },
+        new("sun_shadow_distance", "Sun shadows", AndroidGraphicsImpact.High,
+            "How far from you the sun and moon cast moving shadows, in metres; night uses half. Off removes them, a large saving.",
+            new[] { "0", "50", "80", "100", "120", "160", "200" },
             v => v == 0 ? "Off" : Number(v) + " m"),
-        new("sun_shadow_reach_scale", "Shadow reach", AndroidGraphicsImpact.Low, new[] { "0.5", "0.75", "1" },
+        new("sun_shadow_reach_scale", "Shadow reach", AndroidGraphicsImpact.Low,
+            "How far small and medium props cast the sun's shadow, as a share of their full reach. Large landscape shadows stay either way.",
+            new[] { "0.5", "0.75", "1" },
             v => Number(v * 100) + "%"),
         // 0 lights every one within the range.
-        new("placed_light_limit", "Lamps lit", AndroidGraphicsImpact.Medium, new[] { "4", "8", "16", "24", "32", "48", "0" },
+        new("placed_light_limit", "Lamps lit", AndroidGraphicsImpact.Medium,
+            "How many of the nearest lamps, torches and fires are lit at once; the rest fade out until you come near. All lights every one in range.",
+            new[] { "4", "8", "16", "24", "32", "48", "0" },
             v => v == 0 ? "All" : Number(v)),
-        new("placed_light_range", "Lamp range", AndroidGraphicsImpact.Low, new[] { "30", "45", "65", "85" },
+        new("placed_light_range", "Lamp range", AndroidGraphicsImpact.Low,
+            "How far away a lamp or torch still lights its surroundings, in metres.",
+            new[] { "30", "45", "65", "85" },
             v => Number(v) + " m"),
-        new("placed_light_shadows", "Lamp shadows", AndroidGraphicsImpact.High, new[] { "false", "true" },
+        new("placed_light_shadows", "Lamp shadows", AndroidGraphicsImpact.High,
+            "Lets lamps and torches near you cast moving shadows. Each one draws its own shadow map, so it costs a lot.",
+            new[] { "false", "true" },
             v => v != 0 ? "On" : "Off"),
-        new("bloom_scale", "Bloom", AndroidGraphicsImpact.Low, new[] { "0", "0.25", "0.5", "1" },
+        new("bloom_scale", "Bloom", AndroidGraphicsImpact.Low,
+            "The soft glow around bright light. The sun, the moon and lamp halos glow either way.",
+            new[] { "0", "0.25", "0.5", "1" },
             v => v switch { 0 => "Off", 0.25 => "Low", 0.5 => "Medium", 1 => "High", _ => Number(v) }),
     };
 

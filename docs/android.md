@@ -201,7 +201,12 @@ with a 30 FPS cap; the in-game Options panel switches the preset and the cap, an
 see-through Graphics column steps the settings that change the picture and apply at once
 (render scale, model detail, prop distance, sun shadows and their reach, lamps lit, lamp range
 and shadows, bloom; `Godot/src/android/AndroidGraphicsOptions.cs`). Stepping the preset moves
-every row it sets; changing a row makes it Custom. A coloured line under each row's name says how much it costs. Balanced
+every row it sets; changing a row makes it Custom. Each row's ? says what the setting does, and a coloured line under its
+name says how much it costs. Options also opens **Controller buttons** (tap a game button, then
+press the controller's button for it; the two swap; saved as `android-controller-map.json`) and
+**Edit touch controls** (the layout of the kind of screen it is opened on, the world, menus or a
+pub game, each its own: drag a control to move it, Smaller and Bigger to resize it, Reset screen,
+and named presets of every screen; saved as `android-touch-layouts.json`), both beside `refii.toml`. Balanced
 (tuned on the S25+) renders at half resolution with the sun's shadows where the theme casts
 them and every same-picture shortcut on; Performance (measured on a throttled S25+, with
 values checked on the S10e) drops to 30% resolution, no dynamic sun shadow and the nearest

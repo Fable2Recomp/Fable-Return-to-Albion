@@ -79,6 +79,8 @@ public partial class AndroidGameHost : Node3D
         {
             _touch.PassThrough = diagnostics.Rects;
             _touch.OptionsPressed = diagnostics.Toggle;
+            diagnostics.Touch = _touch;
+            GameInput.HostUiRects = diagnostics.Rects;
             diagnostics.ConfigPath = () => _runtimeConfig;
             diagnostics.SettingsWritten = RefreshRenderScale;
         }
@@ -245,6 +247,8 @@ public partial class AndroidGameHost : Node3D
         }
         else if (what == NotificationWMGoBackRequest)
         {
+            // Options and the menus it opens close first: a way out whatever a touch did.
+            if (GetNodeOrNull<AndroidDiagnosticButtons>("AndroidDiagnosticButtons")?.CloseTop() == true) return;
             switch (AndroidSystemKeys.Back(_ui != null, HostPanelUp, GameInput.Playing, GameInput.InOverlay,
                 BoardUp, Engine_TitleGame.Active.InteractionDialogUp))
             {

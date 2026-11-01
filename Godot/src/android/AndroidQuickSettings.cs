@@ -125,6 +125,22 @@ public static class AndroidQuickSettings
         live(key, value);
     }
 
+    /// <summary>The touch controls' opacity key, which they reread every couple of seconds.</summary>
+    public const string TouchOpacityKey = "touch_opacity";
+
+    /// <summary>The touch controls' opacity, 0.1 to 1; absent is the launcher's 0.5.</summary>
+    public static float TouchOpacity(string config) =>
+        Math.Clamp(Engine_RefiiConfig.Float(RuntimeConfig.ReadValues(config), TouchOpacityKey, 0.5f), 0.1f, 1f);
+
+    /// <summary>Writes the touch controls' opacity, stepped to tenths and kept within 0.1 to 1.</summary>
+    /// <exception cref="IOException">The file could not be written.</exception>
+    public static void SetTouchOpacity(string config, float opacity)
+    {
+        SortedDictionary<string, string> values = RuntimeConfig.ReadValues(config);
+        values[TouchOpacityKey] = Math.Clamp(MathF.Round(opacity, 1), 0.1f, 1f).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+        Write(config, values);
+    }
+
     private static void Write(string config, IReadOnlyDictionary<string, string> values)
     {
         if (!RuntimeConfig.WriteValues(config, values, out string error))

@@ -275,7 +275,7 @@ public partial class GameInput : Node
 				return;
 			}
 
-			Engine_UiPointer.Feed(@event);
+			if (!OnHostUi(@event)) Engine_UiPointer.Feed(@event);
 			if (!IsTouchPointer(@event))
 			{
 				FeedMouseMotion(@event);
@@ -635,10 +635,12 @@ public partial class GameInput : Node
 		/// <param name="buttons">Ordinary desktop polling or the Android event-retained sample.</param>
 		public void Merge(int joypad, uint buttons)
 		{
+			uint leftTrigger = Trigger(joypad, JoyAxis.TriggerLeft), rightTrigger = Trigger(joypad, JoyAxis.TriggerRight);
+			RemapPad(ref buttons, ref leftTrigger, ref rightTrigger);
 			Buttons |= buttons;
 			PhysicalButtons |= buttons;
-			LeftTrigger = System.Math.Max(LeftTrigger, Trigger(joypad, JoyAxis.TriggerLeft));
-			RightTrigger = System.Math.Max(RightTrigger, Trigger(joypad, JoyAxis.TriggerRight));
+			LeftTrigger = System.Math.Max(LeftTrigger, leftTrigger);
+			RightTrigger = System.Math.Max(RightTrigger, rightTrigger);
 			LeftX = Dominant(LeftX, Axis(joypad, JoyAxis.LeftX));
 			// Negated: Godot's stick Y is screen-space (down positive), the Xbox's is up-positive.
 			LeftY = Dominant(LeftY, -Axis(joypad, JoyAxis.LeftY));

@@ -25,10 +25,18 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
     private Button? _vibration;
     private Button? _photo;
     private Button? _export;
+    private Button? _remapButton;
+    private Button? _editButton;
+    private AndroidPadRemapMenu? _remap;
+    private AndroidTouchEditor? _editor;
+    private bool _savedLoaded;
     private Button? _exportSaves;
     private Button? _exportBoth;
     private HBoxContainer? _panel;
     private PanelContainer? _graphics;
+    private PanelContainer? _about;
+    private Label? _aboutText;
+    private string? _aboutKey;
     private Control? _overOptions;
     private readonly List<GraphicsRow> _rows = new();
     private Rect2 _options;
@@ -38,6 +46,9 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
 
     /// <summary>Runs after a tap writes a setting, so the host applies it now rather than at its next poll.</summary>
     public Action? SettingsWritten { get; set; }
+
+    /// <summary>The title's touch controls, for the touch editor; null with none.</summary>
+    public IAndroidTouchControls? Touch { get; set; }
 
     /// <summary>Builds the panel, hidden; <see cref="Toggle"/> opens it under Options.</summary>
     public override void _Ready()
@@ -61,6 +72,8 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         _performance = CreateButton("Stats (F5)");
         _debug = CreateButton("Debug (F6)");
         _photo = CreateButton("Photo Mode");
+        _remapButton = CreateButton("Controller buttons...");
+        _editButton = CreateButton("Edit touch controls...");
         _export = CreateButton(ExportLabel);
         _exportBoth = CreateButton(ExportChoiceLabel(AndroidLogBundle.Contents.LogsAndSaves));
         _exportSaves = CreateButton(ExportChoiceLabel(AndroidLogBundle.Contents.Saves));
@@ -72,6 +85,8 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         _performance.Pressed += _actions.TogglePerformance;
         _debug.Pressed += _actions.ToggleDebug;
         _photo.Pressed += OpenPhotoMode;
+        _remapButton.Pressed += OpenRemap;
+        _editButton.Pressed += OpenEditor;
         _export.Pressed += ToggleExportChoices;
         _exportSaves.Pressed += ExportSaves;
         _exportBoth.Pressed += ExportBoth;
@@ -80,6 +95,8 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         column.AddChild(_vibration);
         column.AddChild(_performance);
         column.AddChild(_debug);
+        column.AddChild(_remapButton);
+        column.AddChild(_editButton);
         column.AddChild(_export);
         column.AddChild(_exportBoth);
         column.AddChild(_exportSaves);
@@ -88,27 +105,79 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         column.AddChild(_overOptions = new Control { MouseFilter = Control.MouseFilterEnum.Ignore });
         _panel.AddChild(column);
         _panel.AddChild(_graphics = CreateGraphics(_preset));
+        _panel.AddChild(_about = CreateAbout());
         ShowExportChoices(false);
         AddChild(_panel);
+        // The two menus Options opens stand on their own layers, beside this one, so they show with
+        // the panel closed.
+        _remap = new AndroidPadRemapMenu { Name = "AndroidPadRemapMenu", ConfigPath = () => ConfigPath?.Invoke() ?? "" };
+        _editor = new AndroidTouchEditor
+        {
+            Name = "AndroidTouchEditor", Controls = () => Touch?.LaidOut ?? Array.Empty<TouchControl>(),
+            Screen = () => Touch?.CurrentContext ?? TouchContext.World,
+            ConfigPath = () => ConfigPath?.Invoke() ?? "", OpacityWritten = () => Touch?.RereadSettingsSoon(),
+        };
+        GetParent().CallDeferred(Node.MethodName.AddChild, _remap);
+        GetParent().CallDeferred(Node.MethodName.AddChild, _editor);
+    }
+
+    /// <summary>Once the host has prepared refii.toml, reads the controller map and touch layouts saved beside it.</summary>
+    public override void _Process(double delta)
+    {
+        if (_savedLoaded || ConfigPath?.Invoke() is not { Length: > 0 } config) return;
+        _savedLoaded = true;
+        string folder = Path.GetDirectoryName(config) ?? "";
+        AndroidPadRemap.Load(Path.Combine(folder, AndroidPadRemap.FileName));
+        AndroidTouchCustomLayout.Load(Path.Combine(folder, AndroidTouchCustomLayout.FileName));
+    }
+
+    /// <summary>
+    /// The back gesture's first stop: closes the touch editor or the remap menu, else the panel. A way out
+    /// that never depends on a touch reaching a button.
+    /// </summary>
+    /// <returns>Whether something closed, so back goes no further.</returns>
+    public bool CloseTop()
+    {
+        if (_editor is { Visible: true } editor) editor.Close();
+        else if (_remap is { Visible: true } remap) remap.Close();
+        else if (Visible) Visible = false;
+        else return false;
+        return true;
+    }
+
+    /// <summary>Opens the controller remap menu, closing the panel.</summary>
+    private void OpenRemap()
+    {
+        Visible = false;
+        _remap?.Open();
+    }
+
+    /// <summary>Opens the touch control editor, closing the panel.</summary>
+    private void OpenEditor()
+    {
+        Visible = false;
+        _editor?.Open();
     }
 
     /// <summary>One graphics row: its setting, the value's text, and the - and + buttons with their taps.</summary>
-    private sealed record GraphicsRow(AndroidGraphicsOption Option, Label Value, Button Less, Button More, Action StepLess, Action StepMore);
+    private sealed record GraphicsRow(AndroidGraphicsOption Option, Label Value, Button Less, Button More, Button Info,
+        Action StepLess, Action StepMore, Action ShowInfo);
 
     /// <summary>The Graphics column: the preset button, then one row per setting, its name over its impact.</summary>
     private PanelContainer CreateGraphics(Button preset)
     {
         var box = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop, SizeFlagsVertical = Control.SizeFlags.ShrinkEnd };
-        box.AddThemeStyleboxOverride("panel", SeeThrough(0.35f, 14f));
+        box.AddThemeStyleboxOverride("panel", AndroidSeeThrough.Box(0.35f, 14f));
         var rows = new VBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
         rows.AddThemeConstantOverride("separation", 6);
-        preset.CustomMinimumSize = new Vector2(450, 52);
+        preset.CustomMinimumSize = new Vector2(510, 52);
         rows.AddChild(preset);
         foreach (AndroidGraphicsOption option in AndroidGraphicsOptions.All)
         {
             var line = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
             line.AddThemeConstantOverride("separation", 8);
             Button less = CreateStepButton("-"), more = CreateStepButton("+");
+            Button info = AndroidSeeThrough.Button("?", new Vector2(48, 52), 22);
             var label = new VBoxContainer
             {
                 MouseFilter = Control.MouseFilterEnum.Ignore, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
@@ -128,15 +197,40 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
             line.AddChild(label);
             line.AddChild(value);
             line.AddChild(more);
+            line.AddChild(info);
             rows.AddChild(line);
-            var row = new GraphicsRow(option, value, less, more, () => StepGraphics(option, -1), () => StepGraphics(option, 1));
+            var row = new GraphicsRow(option, value, less, more, info,
+                () => StepGraphics(option, -1), () => StepGraphics(option, 1), () => ToggleAbout(option));
             less.Pressed += row.StepLess;
             more.Pressed += row.StepMore;
+            info.Pressed += row.ShowInfo;
             _rows.Add(row);
         }
 
         box.AddChild(rows);
         return box;
+    }
+
+    /// <summary>The box beside the Graphics column that says what a setting does, hidden until a row's ? is tapped.</summary>
+    private PanelContainer CreateAbout()
+    {
+        PanelContainer about = AndroidSeeThrough.Panel(0.6f);
+        about.SizeFlagsVertical = Control.SizeFlags.ShrinkEnd;
+        about.Visible = false;
+        _aboutText = new Label { CustomMinimumSize = new Vector2(300, 0), AutowrapMode = TextServer.AutowrapMode.WordSmart };
+        _aboutText.AddThemeFontSizeOverride("font_size", 18);
+        about.AddChild(_aboutText);
+        return about;
+    }
+
+    /// <summary>Shows what <paramref name="option"/> does beside the column, or hides it when it is already shown.</summary>
+    private void ToggleAbout(AndroidGraphicsOption option)
+    {
+        if (_about is null || _aboutText is null) return;
+        _aboutKey = _aboutKey == option.Key ? null : option.Key;
+        _about.Visible = _aboutKey is not null;
+        _aboutText.Text = $"{option.Name}\n{option.About}\n{AndroidGraphicsOptions.ImpactLabel(option.Impact)}";
+        Place();
     }
 
     /// <summary>Opens the panel above <paramref name="options"/> (left edges aligned), or closes it.</summary>
@@ -149,6 +243,8 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         {
             ShowExportChoices(false);
             ShowSettings();
+            _aboutKey = null;
+            if (_about is not null) _about.Visible = false;
         }
         Place();
     }
@@ -169,15 +265,18 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
     /// <summary>The buttons' screen rectangles: the touch controls leave a finger landing there to the buttons.</summary>
     public IEnumerable<Rect2> Rects()
     {
+        foreach (Rect2 rect in _remap?.Rects() ?? Array.Empty<Rect2>()) yield return rect;
+        foreach (Rect2 rect in _editor?.Rects() ?? Array.Empty<Rect2>()) yield return rect;
         if (!Visible) yield break;
         if (_frameCap is { } frameCap) yield return frameCap.GetGlobalRect();
         // The whole Graphics column, so a finger between its buttons doesn't turn the camera.
         if (_graphics is { } graphics) yield return graphics.GetGlobalRect();
+        if (_about is { Visible: true } about) yield return about.GetGlobalRect();
         if (_vibration is { } vibration) yield return vibration.GetGlobalRect();
         if (_performance is { } performance) yield return performance.GetGlobalRect();
         if (_debug is { } debug) yield return debug.GetGlobalRect();
         if (_photo is { } photo) yield return photo.GetGlobalRect();
-        foreach (Button? button in new[] { _export, _exportBoth, _exportSaves })
+        foreach (Button? button in new[] { _remapButton, _editButton, _export, _exportBoth, _exportSaves })
             if (button is { Visible: true }) yield return button.GetGlobalRect();
     }
 
@@ -306,7 +405,7 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
             MouseFilter = Control.MouseFilterEnum.Stop,
         };
         button.AddThemeFontSizeOverride("font_size", 20);
-        SeeThroughButton(button);
+        AndroidSeeThrough.Style(button);
         return button;
     }
 
@@ -328,31 +427,8 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
             MouseFilter = Control.MouseFilterEnum.Stop,
         };
         button.AddThemeFontSizeOverride("font_size", 28);
-        SeeThroughButton(button);
+        AndroidSeeThrough.Style(button);
         return button;
-    }
-
-    /// <summary>Gives a button see-through states, so the world shows behind the panel.</summary>
-    private static void SeeThroughButton(Button button)
-    {
-        button.AddThemeStyleboxOverride("normal", SeeThrough(0.45f, 10f));
-        button.AddThemeStyleboxOverride("hover", SeeThrough(0.45f, 10f));
-        button.AddThemeStyleboxOverride("pressed", SeeThrough(0.7f, 10f));
-        button.AddThemeStyleboxOverride("disabled", SeeThrough(0.2f, 10f));
-    }
-
-    /// <summary>A dark rounded box at <paramref name="alpha"/> with a faint gold edge.</summary>
-    private static StyleBoxFlat SeeThrough(float alpha, float margin)
-    {
-        var box = new StyleBoxFlat
-        {
-            BgColor = new Color(0.07f, 0.06f, 0.05f, alpha),
-            BorderColor = new Color(0.85f, 0.7f, 0.4f, 0.45f),
-        };
-        box.SetBorderWidthAll(1);
-        box.SetCornerRadiusAll(10);
-        box.SetContentMarginAll(margin);
-        return box;
     }
 
     /// <summary>Disconnects taps and releases bindings when leaving the game scene.</summary>
@@ -365,6 +441,8 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         if (_performance is not null) _performance.Pressed -= _actions.TogglePerformance;
         if (_debug is not null) _debug.Pressed -= _actions.ToggleDebug;
         if (_photo is not null) _photo.Pressed -= OpenPhotoMode;
+        if (_remapButton is not null) _remapButton.Pressed -= OpenRemap;
+        if (_editButton is not null) _editButton.Pressed -= OpenEditor;
         if (_export is not null) _export.Pressed -= ToggleExportChoices;
         if (_exportSaves is not null) _exportSaves.Pressed -= ExportSaves;
         if (_exportBoth is not null) _exportBoth.Pressed -= ExportBoth;
@@ -372,6 +450,7 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         {
             row.Less.Pressed -= row.StepLess;
             row.More.Pressed -= row.StepMore;
+            row.Info.Pressed -= row.ShowInfo;
         }
         _rows.Clear();
         _actions.Dispose();
