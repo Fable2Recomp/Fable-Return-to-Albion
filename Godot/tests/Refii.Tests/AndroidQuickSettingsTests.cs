@@ -38,12 +38,14 @@ public class AndroidQuickSettingsTests
     }
 
     [TestCase]
-    public void TestPresetStepsThroughPerformanceBalancedAndQuality()
+    public void TestPresetStepsThroughUltraPerformancePerformanceBalancedAndQuality()
     {
+        AssertThat(AndroidQuickSettings.NextPreset(GraphicsPresets.UltraPerformance)).IsEqual(GraphicsPresets.Performance);
         AssertThat(AndroidQuickSettings.NextPreset(GraphicsPresets.Performance)).IsEqual(GraphicsPresets.Balanced);
         AssertThat(AndroidQuickSettings.NextPreset(GraphicsPresets.Balanced)).IsEqual(GraphicsPresets.Quality);
-        AssertThat(AndroidQuickSettings.NextPreset(GraphicsPresets.Quality)).IsEqual(GraphicsPresets.Performance);
-        AssertThat(AndroidQuickSettings.NextPreset(GraphicsPresets.Custom)).IsEqual(GraphicsPresets.Performance);
+        AssertThat(AndroidQuickSettings.NextPreset(GraphicsPresets.Quality)).IsEqual(GraphicsPresets.UltraPerformance);
+        AssertThat(AndroidQuickSettings.NextPreset(GraphicsPresets.Custom)).IsEqual(GraphicsPresets.UltraPerformance);
+        AssertThat(AndroidQuickSettings.PresetLabel(GraphicsPresets.UltraPerformance)).IsEqual("Preset: Ultra Performance");
         AssertThat(AndroidQuickSettings.PresetLabel(GraphicsPresets.Performance)).IsEqual("Preset: Performance");
         AssertThat(AndroidQuickSettings.PresetLabel(GraphicsPresets.Balanced)).IsEqual("Preset: Balanced");
         AssertThat(AndroidQuickSettings.PresetLabel(GraphicsPresets.Quality)).IsEqual("Preset: Quality");
@@ -56,13 +58,13 @@ public class AndroidQuickSettingsTests
         try
         {
             var live = new Dictionary<string, string>();
-            AndroidQuickSettings.ApplyPreset(config, GraphicsPresets.Performance, (k, v) => live[k] = v);
+            AndroidQuickSettings.ApplyPreset(config, GraphicsPresets.UltraPerformance, (k, v) => live[k] = v);
             AndroidQuickSettings.SetFrameCap(config, 60);
 
             // A cap of 60 still reads as Performance, and every preset setting went to the game.
-            AssertThat(AndroidQuickSettings.Preset(config)).IsEqual(GraphicsPresets.Performance);
+            AssertThat(AndroidQuickSettings.Preset(config)).IsEqual(GraphicsPresets.UltraPerformance);
             AssertThat(AndroidQuickSettings.FrameCap(config)).IsEqual(60);
-            AssertThat(live.Count).IsEqual(GraphicsPresets.PerformanceValues.Count);
+            AssertThat(live.Count).IsEqual(GraphicsPresets.UltraPerformanceValues.Count);
             AssertThat(live["render_scale_percent"]).IsEqual("30");
 
             // Switching preset keeps the cap and the settings outside the preset.
@@ -148,7 +150,7 @@ public class AndroidQuickSettingsTests
             AssertThat(AndroidQuickSettings.Preset(config)).IsEqual(GraphicsPresets.Balanced);
             // Stepping the preset moves every row it sets; the rest (bloom) and the cap stay.
             AndroidQuickSettings.SetGraphics(config, "bloom_scale", "0.5", (_, _) => { });
-            AndroidQuickSettings.ApplyPreset(config, GraphicsPresets.Performance, (_, _) => { });
+            AndroidQuickSettings.ApplyPreset(config, GraphicsPresets.UltraPerformance, (_, _) => { });
             AssertThat(AndroidQuickSettings.Value(config, "render_scale_percent")).IsEqual("30");
             AssertThat(AndroidQuickSettings.Value(config, "sun_shadow_distance")).IsEqual("0");
             AssertThat(AndroidQuickSettings.Value(config, "placed_light_limit")).IsEqual("4");

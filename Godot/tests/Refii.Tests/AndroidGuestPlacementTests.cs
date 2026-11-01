@@ -20,7 +20,7 @@ public sealed class AndroidGuestPlacementTests
         AssertThat(AndroidGuestPlacement.Configured(new Dictionary<string, string> { [AndroidGuestPlacement.Key] = "true" })).IsTrue();
 
         AssertThat(GraphicsPresets.BalancedValues[AndroidGuestPlacement.Key]).IsEqual("true");
-        AssertThat(GraphicsPresets.PerformanceValues[AndroidGuestPlacement.Key]).IsEqual("true");
+        AssertThat(GraphicsPresets.UltraPerformanceValues[AndroidGuestPlacement.Key]).IsEqual("true");
     }
 
     /// <summary>The S10e's one prime A76, a two-prime-core layout like the 8 Elite's, and nothing where all cores are alike.</summary>

@@ -389,7 +389,7 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
     private void StepFrameCap() => Write(config => AndroidQuickSettings.SetFrameCap(
         config, AndroidQuickSettings.NextFrameCap(AndroidQuickSettings.FrameCap(config))));
 
-    /// <summary>Steps the graphics preset through Performance, Balanced and Quality, applying it to the running game.</summary>
+    /// <summary>Steps the graphics preset through Ultra Performance, Performance, Balanced and Quality, applying it to the running game.</summary>
     private void StepPreset() => Write(config => AndroidQuickSettings.ApplyPreset(
         config, AndroidQuickSettings.NextPreset(AndroidQuickSettings.Preset(config)),
         (name, value) => Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(name, value)));

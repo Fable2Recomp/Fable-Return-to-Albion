@@ -10,13 +10,14 @@ namespace Refii.Launcher.Core;
 /// later change to one of them reads back as "custom". Android only (<see cref="Offered"/>).
 /// </summary>
 /// <remarks>
-/// Balanced (stored "android") is the phone's default; Performance (stored "android_low") gives
-/// up more to hold 30 FPS once the phone has throttled fully, and Quality (stored "android_high")
-/// gives up less, for a phone with headroom at the 30 FPS cap. They were measured on a Galaxy S25+
+/// Balanced (stored "android") is the phone's default; Ultra Performance (stored "android_low")
+/// gives up everything but the look of the game for frame rate, Performance (stored "android_mid")
+/// sits between the two, and Quality (stored "android_high") gives up less, for a phone with
+/// headroom at the 30 FPS cap. They were measured on a Galaxy S25+
 /// and a Galaxy S10e in Bowerstone Market, where the phone is held at a fraction of its GPU clock by its own heat,
 /// so every setting is a trade of picture against sustained frame rate (docs/android.md, "Android
 /// graphics preset"). The stored names predate the labels and stay, so existing phones keep their
-/// choice. A setting outside the sets is untouched. On a desktop the preset is neither shown nor
+/// choice: "android_low" was labelled Performance until the middle preset took that name. A setting outside the sets is untouched. On a desktop the preset is neither shown nor
 /// written, and changing a member setting records nothing.
 /// </remarks>
 public static class GraphicsPresets
@@ -41,14 +42,19 @@ public static class GraphicsPresets
     /// takes those four and the prime core too. 9: both thin the distant trees (tree_card_lod),
     /// which the launcher had been writing off on every phone. Revisions 1-9 call Balanced by its
     /// earlier label, Quality; the Quality preset after them is a new one, so no phone was on it.
-    /// 10: Quality renders at 60% instead of 67%.</remarks>
-    public const int Revision = 10;
+    /// 10: Quality renders at 60% instead of 67%. 11: Performance ends trees at 300 m, switches the
+    /// far trees' and the ground's coarser levels at half the distance, leaves the ground's normal
+    /// maps out, and draws half the undergrowth.</remarks>
+    public const int Revision = 11;
 
     /// <summary>Balanced: the phone's default picture.</summary>
     public const string Balanced = "android";
 
-    /// <summary>Performance: Balanced with the compromises a fully throttled phone needs for 30 FPS.</summary>
-    public const string Performance = "android_low";
+    /// <summary>Ultra Performance: the most frame rate that still looks like the game.</summary>
+    public const string UltraPerformance = "android_low";
+
+    /// <summary>Performance: between Ultra Performance and Balanced, for a phone that runs Balanced at half its cap.</summary>
+    public const string Performance = "android_mid";
 
     /// <summary>Quality: Balanced with fewer compromises, for a phone with headroom at 30 FPS.</summary>
     public const string Quality = "android_high";
@@ -120,7 +126,7 @@ public static class GraphicsPresets
             // p99 20.8 / 20.0.
             ["stable_light_counts"] = "true",
             // Lite builds without Godot's shadow sampling while no shadow map renders: Balanced's
-            // sun shadow renders wherever the theme casts one, so only Performance takes it.
+            // sun shadow renders wherever the theme casts one, so only the two Performance presets take it.
             ["lite_shadowless"] = "false",
             // Static props' lite surfaces on a build per bake mode: nothing on the S10e.
             ["lite_bake_variants"] = "false",
@@ -170,7 +176,7 @@ public static class GraphicsPresets
             ["fx_prefetch_prepare"] = "true",
             // Bodies and the camera drawn along a line through their statements' arrival times: on the
             // S25+, whose world runs at full speed, out-and-back walks toggled live in three pairs moved
-            // no evenness figure, and it costs ~40 ms of latency. Performance only.
+            // no evenness figure, and it costs ~40 ms of latency. The two Performance presets only.
             ["motion_arrival_fit"] = "false",
             // Far characters on the game's own half rate; a real-time rate is measured first.
             ["far_rig_pose_hz"] = "0",
@@ -181,14 +187,23 @@ public static class GraphicsPresets
             // Android default, but the launcher writes the setting's own default (off) into every
             // phone's refii.toml, so the presets carry it.
             ["tree_card_lod"] = "true",
+            // Every tree to its stated reach (about a kilometre), the far trees' and the ground's
+            // levels on the shared mesh_lod_pixels rule, and the ground's layer normal maps bound:
+            // the settings' own defaults, which Performance trades away.
+            ["tree_far_reach"] = "0",
+            ["tree_lod_bias"] = "1",
+            ["terrain_lod_bias"] = "1",
+            ["terrain_normal_maps"] = "true",
+            ["foliage_density"] = "1",
         };
 
     /// <summary>
-    /// Performance: Balanced with the compromises a fully throttled phone needs to hold 30 FPS.
-    /// Measured at the Bowerstone Market save spot with the S25+ at its floor (GPU ~375-400 of
-    /// 1200 MHz), these together took 28% off the GPU's work per frame against Balanced.
+    /// Ultra Performance: Balanced with every compromise that still looks like the game, for the
+    /// most frame rate (labelled Performance until revision 11). Measured at the Bowerstone Market
+    /// save spot with the S25+ at its floor (GPU ~375-400 of 1200 MHz), these together took 28%
+    /// off the GPU's work per frame against Balanced.
     /// </summary>
-    public static readonly IReadOnlyDictionary<string, string> PerformanceValues =
+    public static readonly IReadOnlyDictionary<string, string> UltraPerformanceValues =
         new Dictionary<string, string>(BalancedValues, StringComparer.Ordinal)
         {
             // 30% of the screen's resolution, bilinear: the phone's own pixels are tiny, and on an
@@ -212,6 +227,54 @@ public static class GraphicsPresets
             // and lurches 3/0/1/2 per ~115 frames against 10/32/22/22, and its step against the
             // camera's ~20% against ~49%.
             ["motion_arrival_fit"] = "true",
+            // Trees end at 300 m instead of about a kilometre, the far trees' thinned crowns and the
+            // ground's coarser levels come in at half the distance. On the S10e at Bower Lake (noon,
+            // standing, GPU work toggled live in four alternating pairs) the three together took
+            // 11% off the frame (39.6 -> 35.1 Mcycles); the trees past 300 m alone 7.6%, and there
+            // the countryside's trees are half the frame. The far hills keep a thinner tree line.
+            // 250 m saved 14% but bared them; 350 m saved 2%.
+            ["tree_far_reach"] = "300",
+            ["tree_lod_bias"] = "0.5",
+            ["terrain_lod_bias"] = "0.5",
+            // The ground's layer normal maps left out: about 275 MB of video memory in Bowerstone on
+            // an Adreno 640, which holds them uncompressed, for a bump hard to see at 30%. An 8 GB
+            // phone runs out of memory on long sessions; no GPU time either way.
+            ["terrain_normal_maps"] = "false",
+            // Half the undergrowth's clumps, evenly: 7.5% off the S10e's frame at Bower Lake, where
+            // the nettles are alpha-cut cards stacked up close. The trees stay whole.
+            ["foliage_density"] = "0.5",
+        };
+
+    /// <summary>
+    /// Performance: between Ultra Performance and Balanced. Ultra Performance's shadowless
+    /// shaders and lighter ground, with more of the resolution, the lights and the distance back.
+    /// </summary>
+    /// <remarks>
+    /// On the S10e, where Ultra Performance runs about 20 FPS and Balanced about 10: at noon,
+    /// standing, toggled live in three alternating pairs, these together cost 32% more GPU work than
+    /// Ultra Performance at the Bowerstone Market archway (20.3 -> 26.5 Mcycles a frame) and 42% more
+    /// at Bower Lake (30.2 -> 42.9), against Balanced's roughly 120% more at the archway.
+    /// </remarks>
+    public static readonly IReadOnlyDictionary<string, string> PerformanceValues =
+        new Dictionary<string, string>(UltraPerformanceValues, StringComparer.Ordinal)
+        {
+            // 40% of the screen's resolution, 1.78 times Ultra Performance's pixels: +19% at the
+            // archway, +21% at Bower Lake, most of the preset's cost and most of what it shows.
+            // 35% cost +10% / +12%.
+            ["render_scale_percent"] = "40",
+            // The nearest eight placed lights: +6% in town, nothing in the countryside.
+            ["placed_light_limit"] = "8",
+            // Small props to half their tiered distances, and the coarser models a little later:
+            // +4% / +2%, and +2% / +1%.
+            ["prop_cull_distance_scale"] = "0.5",
+            ["mesh_lod_pixels"] = "3",
+            // Every tree to its stated reach, the far trees' and the ground's coarser levels at three
+            // quarters of the distance: +8% / +12%. A far reach of 400 m costs the same as all.
+            ["tree_far_reach"] = "0",
+            ["tree_lod_bias"] = "0.75",
+            ["terrain_lod_bias"] = "0.75",
+            // Three quarters of the undergrowth's clumps.
+            ["foliage_density"] = "0.75",
         };
 
     /// <summary>
@@ -256,6 +319,7 @@ public static class GraphicsPresets
     public static string Label(string preset) => preset.ToLowerInvariant() switch
     {
         Balanced => "Balanced",
+        UltraPerformance => "Ultra Performance",
         Performance => "Performance",
         Quality => "Quality",
         _ => "Custom",
@@ -267,6 +331,11 @@ public static class GraphicsPresets
         if (preset.Equals(Balanced, StringComparison.OrdinalIgnoreCase))
         {
             return BalancedValues;
+        }
+
+        if (preset.Equals(UltraPerformance, StringComparison.OrdinalIgnoreCase))
+        {
+            return UltraPerformanceValues;
         }
 
         if (preset.Equals(Performance, StringComparison.OrdinalIgnoreCase))
@@ -285,7 +354,7 @@ public static class GraphicsPresets
     /// <summary>The preset every member setting matches, or "custom".</summary>
     public static string Current(IReadOnlyDictionary<string, string> values)
     {
-        foreach (string preset in new[] { Performance, Balanced, Quality })
+        foreach (string preset in new[] { UltraPerformance, Performance, Balanced, Quality })
         {
             if (Values(preset)!.All(pair => Same(values.TryGetValue(pair.Key, out string? value) ? value : DefaultOf(pair.Key), pair.Value)))
             {

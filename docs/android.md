@@ -195,9 +195,10 @@ launcher then removes the extracted game copies and builds it no longer uses.
 
 ## Android graphics preset
 
-Launch options has a **Graphics Preset** row on a phone: **Performance**, **Balanced**,
-**Quality** or **Custom** (any preset setting changed by hand). A phone starts on Balanced
-with a 30 FPS cap; the in-game Options panel switches the preset and the cap, and its
+Launch options has a **Graphics Preset** row on a phone: **Ultra Performance**,
+**Performance**, **Balanced**, **Quality** or **Custom** (any preset setting changed by hand).
+A phone starts on Balanced with a 30 FPS cap, or on Ultra Performance if its GPU is an Adreno
+older than the 700s (with a 20 FPS cap below the 650); the in-game Options panel switches the preset and the cap, and its
 see-through Graphics column steps the settings that change the picture and apply at once
 (render scale, model detail, prop distance, sun shadows and their reach, lamps lit, lamp range
 and shadows, bloom; `Godot/src/android/AndroidGraphicsOptions.cs`). Stepping the preset moves
@@ -208,13 +209,15 @@ press the controller's button for it; the two swap; saved as `android-controller
 pub game, each its own: drag a control to move it, Smaller and Bigger to resize it, Reset screen,
 and named presets of every screen; saved as `android-touch-layouts.json`), both beside `refii.toml`. Balanced
 (tuned on the S25+) renders at half resolution with the sun's shadows where the theme casts
-them and every same-picture shortcut on; Performance (measured on a throttled S25+, with
-values checked on the S10e) drops to 30% resolution, no dynamic sun shadow and the nearest
-four placed lights; Quality, for a phone with frames to spare, renders at 60% of the
+them and every same-picture shortcut on; Ultra Performance (measured on a throttled S25+ and
+on the S10e) drops to 30% resolution, no dynamic sun shadow, the nearest four placed lights,
+trees to 300 m and half the undergrowth; Performance sits between the two, without the sun's
+shadow but with more of the resolution, lights and distance back; Quality, for a phone with frames to spare, renders at 60% of the
 resolution with the 360's model detail, the desktop's prop distances, a longer sun shadow
-and more placed lights. Balanced was labelled Quality before Quality was added; it keeps
-its stored name (`android`), so a phone on it stays on it. The values and the measurement
-behind each are in `Godot/src/launcher/settings/GraphicsPresets.cs`; raising its
+and more placed lights. Balanced was labelled Quality before Quality was added, and Ultra
+Performance was labelled Performance before the middle preset; each keeps its stored name
+(`android`, `android_low`), so a phone on it stays on it. The values and the measurement
+behind each are in `Godot/src/android/GraphicsPresets.cs`; raising its
 `Revision` makes phones still on a preset take the new values once.
 
 ## A game module compiled on a PC

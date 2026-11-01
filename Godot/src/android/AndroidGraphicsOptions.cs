@@ -34,7 +34,7 @@ public static class AndroidGraphicsOptions
     /// <summary>The rows, top to bottom.</summary>
     /// <remarks>The impacts are from the phone measurements in GraphicsPresets: the render scale is
     /// most of the GPU's work (on the S25+, 60% saved about 6% against 67%, and 30% is the largest part
-    /// of Performance's 28% off Balanced); the sun shadow off is about 12% alone; eight lit lamps to four
+    /// of Ultra Performance's 28% off Balanced); the sun shadow off is about 12% alone; eight lit lamps to four
     /// took 8% on an Adreno 640; every lamp that casts renders its own shadow map. Model detail and prop
     /// distance are most of the rest of Quality's +25-30% over Balanced. The shadow reach, lamp range and
     /// bloom moved nothing measurable.</remarks>

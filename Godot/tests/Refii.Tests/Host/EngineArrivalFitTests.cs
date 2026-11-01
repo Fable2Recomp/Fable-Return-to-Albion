@@ -285,11 +285,11 @@ public class EngineArrivalFitTests
 		// Phones: Performance on (the S10e's paired walks), Balanced and Quality off (the S25+ runs at full speed
 		// and measured nothing for its latency); a phone still on Performance takes it on its next
 		// start (revision 6).
-		AssertThat(GraphicsPresets.PerformanceValues[Engine_TickTimeline.ArrivalFitKey]).IsEqual("true");
+		AssertThat(GraphicsPresets.UltraPerformanceValues[Engine_TickTimeline.ArrivalFitKey]).IsEqual("true");
 		AssertThat(GraphicsPresets.BalancedValues[Engine_TickTimeline.ArrivalFitKey]).IsEqual("false");
 		AssertThat(GraphicsPresets.QualityValues[Engine_TickTimeline.ArrivalFitKey]).IsEqual("false");
 		AssertThat(GraphicsPresets.Revision).IsGreaterEqual(6);
-		var phone = new Dictionary<string, string> { [GraphicsPresets.Key] = GraphicsPresets.Performance, [GraphicsPresets.RevisionKey] = "5" };
+		var phone = new Dictionary<string, string> { [GraphicsPresets.Key] = GraphicsPresets.UltraPerformance, [GraphicsPresets.RevisionKey] = "5" };
 		AssertThat(GraphicsPresets.Upgrade(phone)).IsTrue();
 		AssertThat(phone[Engine_TickTimeline.ArrivalFitKey]).IsEqual("true");
 

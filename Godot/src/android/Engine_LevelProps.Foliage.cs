@@ -13,7 +13,7 @@ public static partial class Engine_LevelProps
     /// </summary>
     /// <remarks>
     /// WHY FOLIAGE BATCHES FINER. Undergrowth is tier-culled (prop_cull_distance_scale): each copy
-    /// dithers out at its radius (18 m for a small clump under Performance's 0.4), but the cut that
+    /// dithers out at its radius (18 m for a small clump under Ultra Performance's 0.4), but the cut that
     /// saves geometry is the batch node's, at the radius plus the batch's spread, and a 32 m cell
     /// spreads about 23 m. A copy past its radius is discarded pixel by pixel after its vertices
     /// and triangles have been processed. At Bower Lake the lodcensus counted 1,023 nettle copies

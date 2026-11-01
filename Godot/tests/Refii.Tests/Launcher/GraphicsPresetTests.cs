@@ -36,7 +36,7 @@ public class GraphicsPresetTests
     public void TestEveryPresetThinsTheDistantTrees()
     {
         AssertThat(GraphicsPresets.BalancedValues["tree_card_lod"]).IsEqual("true");
-        AssertThat(GraphicsPresets.PerformanceValues["tree_card_lod"]).IsEqual("true");
+        AssertThat(GraphicsPresets.UltraPerformanceValues["tree_card_lod"]).IsEqual("true");
         AssertThat(GraphicsPresets.QualityValues["tree_card_lod"]).IsEqual("true");
     }
 
@@ -109,7 +109,7 @@ public class GraphicsPresetTests
     public void TestAPhoneGetsBalancedOnceAndKeepsThePlayersChoice()
     {
         var fresh = new Dictionary<string, string> { ["render_scale_percent"] = "59" };
-        AssertThat(AndroidLauncherSettings.ApplyPresetOnce(fresh)).IsTrue();
+        AssertThat(AndroidLauncherSettings.ApplyPresetOnce(fresh, "Adreno (TM) 830")).IsTrue();
         AssertThat(fresh[GraphicsPresets.Key]).IsEqual("android");
         AssertThat(GraphicsPresets.Current(fresh)).IsEqual("android");
 
@@ -118,6 +118,22 @@ public class GraphicsPresetTests
         AssertThat(AndroidLauncherSettings.ApplyPresetOnce(chosen)).IsFalse();
         AssertThat(chosen["render_scale_percent"]).IsEqual("80");
         AssertThat(chosen.Count).IsEqual(2);
+    }
+
+    [TestCase]
+    public void TestAnOlderAdrenoStartsOnPerformance()
+    {
+        AssertThat(AndroidLauncherSettings.FirstPreset("Adreno (TM) 640")).IsEqual((GraphicsPresets.UltraPerformance, "20"));
+        AssertThat(AndroidLauncherSettings.FirstPreset("Adreno (TM) 660")).IsEqual((GraphicsPresets.UltraPerformance, GraphicsPresets.AndroidFrameCap));
+        AssertThat(AndroidLauncherSettings.FirstPreset("Adreno (TM) 740")).IsEqual((GraphicsPresets.Balanced, GraphicsPresets.AndroidFrameCap));
+        AssertThat(AndroidLauncherSettings.FirstPreset("Adreno (TM) 830")).IsEqual((GraphicsPresets.Balanced, GraphicsPresets.AndroidFrameCap));
+        AssertThat(AndroidLauncherSettings.FirstPreset("Mali-G715")).IsEqual((GraphicsPresets.Balanced, GraphicsPresets.AndroidFrameCap));
+        AssertThat(AndroidLauncherSettings.FirstPreset("")).IsEqual((GraphicsPresets.Balanced, GraphicsPresets.AndroidFrameCap));
+
+        var s10e = new Dictionary<string, string>();
+        AssertThat(AndroidLauncherSettings.ApplyPresetOnce(s10e, "Adreno (TM) 640")).IsTrue();
+        AssertThat(GraphicsPresets.Current(s10e)).IsEqual(GraphicsPresets.UltraPerformance);
+        AssertThat(s10e["max_fps"]).IsEqual("20");
     }
 
     [TestCase]
@@ -150,7 +166,7 @@ public class GraphicsPresetTests
 
         // Choosing a preset records the revision it was written from.
         var chosen = new Dictionary<string, string>();
-        GraphicsPresets.Apply(GraphicsPresets.Performance, chosen);
+        GraphicsPresets.Apply(GraphicsPresets.UltraPerformance, chosen);
         AssertThat(GraphicsPresets.Upgrade(chosen)).IsFalse();
     }
 
@@ -175,25 +191,53 @@ public class GraphicsPresetTests
 
         // The arrival fit stays Performance's alone; the five are the same in both presets.
         AssertThat(quality["motion_arrival_fit"]).IsEqual("false");
-        AssertThat(GraphicsPresets.PerformanceValues["motion_arrival_fit"]).IsEqual("true");
+        AssertThat(GraphicsPresets.UltraPerformanceValues["motion_arrival_fit"]).IsEqual("true");
         foreach (string key in new[] { "android_guest_prime_core", "android_dotnet_gc", "android_loh_compaction",
                                        "anim_collapse_constant_tracks", "fx_prefetch_prepare" })
         {
-            AssertThat(GraphicsPresets.PerformanceValues[key]).IsEqual(GraphicsPresets.BalancedValues[key]);
+            AssertThat(GraphicsPresets.UltraPerformanceValues[key]).IsEqual(GraphicsPresets.BalancedValues[key]);
         }
     }
 
     [TestCase]
-    public void TestThePresetsArePerformanceBalancedAndQuality()
+    public void TestAPerformancePhoneTakesTheTreeAndGroundSettingsAtRevision11()
+    {
+        var phone = new Dictionary<string, string>
+        {
+            [GraphicsPresets.Key] = GraphicsPresets.UltraPerformance, [GraphicsPresets.RevisionKey] = "10",
+        };
+        AssertThat(GraphicsPresets.Revision).IsGreaterEqual(11);
+        AssertThat(GraphicsPresets.Upgrade(phone)).IsTrue();
+        AssertThat(phone["tree_far_reach"]).IsEqual("300");
+        AssertThat(phone["tree_lod_bias"]).IsEqual("0.5");
+        AssertThat(phone["terrain_lod_bias"]).IsEqual("0.5");
+        AssertThat(phone["terrain_normal_maps"]).IsEqual("false");
+        AssertThat(phone["foliage_density"]).IsEqual("0.5");
+        AssertThat(GraphicsPresets.Current(phone)).IsEqual(GraphicsPresets.UltraPerformance);
+
+        // Balanced keeps the settings' own defaults, so a Balanced phone without the keys stays on it.
+        var balanced = new Dictionary<string, string>();
+        GraphicsPresets.Apply(GraphicsPresets.Balanced, balanced);
+        foreach (string key in new[] { "tree_far_reach", "tree_lod_bias", "terrain_lod_bias", "terrain_normal_maps", "foliage_density" })
+        {
+            balanced.Remove(key);
+        }
+        AssertThat(GraphicsPresets.Current(balanced)).IsEqual(GraphicsPresets.Balanced);
+    }
+
+    [TestCase]
+    public void TestThePresetsAreUltraPerformancePerformanceBalancedAndQuality()
     {
         RuntimeCVarDefinition definition = RuntimeCVarSet.All.First(d => d.Name == GraphicsPresets.Key);
         AssertThat(definition.DefaultValue).IsEqual("android");
         RuntimeCVarOption[] options = RuntimeSettingsModel.OptionsFor(definition, new Dictionary<string, string>()).ToArray();
-        AssertThat(options.Select(option => option.Value).ToArray()).IsEqual(new[] { "android_low", "android", "android_high", "custom" });
-        AssertThat(options.Select(option => option.Label).ToArray()).IsEqual(new[] { "Performance", "Balanced", "Quality", "Custom" });
+        AssertThat(options.Select(option => option.Value).ToArray()).IsEqual(new[] { "android_low", "android_mid", "android", "android_high", "custom" });
+        AssertThat(options.Select(option => option.Label).ToArray()).IsEqual(new[] { "Ultra Performance", "Performance", "Balanced", "Quality", "Custom" });
         // The stored names predate the labels: a phone on "android" before Quality was renamed is on Balanced.
         AssertThat(GraphicsPresets.Label("android")).IsEqual("Balanced");
-        AssertThat(GraphicsPresets.Label("android_low")).IsEqual("Performance");
+        // "android_low" was Performance until the middle preset took the name: a phone on it keeps its values.
+        AssertThat(GraphicsPresets.Label("android_low")).IsEqual("Ultra Performance");
+        AssertThat(GraphicsPresets.Label("android_mid")).IsEqual("Performance");
         AssertThat(GraphicsPresets.Label("android_high")).IsEqual("Quality");
         AssertThat(RuntimeConfig.ShouldShowCVar(definition)).IsTrue();
 
@@ -229,7 +273,7 @@ public class GraphicsPresetTests
     }
 
     [TestCase]
-    public void TestPerformanceIsBalancedWithItsCompromises()
+    public void TestUltraPerformanceIsBalancedWithItsCompromises()
     {
         var model = new RuntimeSettingsModel();
         model.ApplyGraphicsPreset("android_low");
@@ -238,11 +282,42 @@ public class GraphicsPresetTests
         AssertThat(model.Values["sun_shadow_distance"]).IsEqual("0");
         // The settings it does not change are Balanced's.
         AssertThat(model.Values["entity_draw_distance_scale"]).IsEqual(GraphicsPresets.BalancedValues["entity_draw_distance_scale"]);
-        AssertThat(GraphicsPresets.PerformanceValues.Keys.OrderBy(k => k).ToArray())
+        AssertThat(GraphicsPresets.UltraPerformanceValues.Keys.OrderBy(k => k).ToArray())
             .IsEqual(GraphicsPresets.BalancedValues.Keys.OrderBy(k => k).ToArray());
 
         model.ApplyGraphicsPreset("android");
         AssertThat(model.CurrentGraphicsPreset()).IsEqual("android");
+    }
+
+    [TestCase]
+    public void TestPerformanceSitsBetweenUltraPerformanceAndBalanced()
+    {
+        var model = new RuntimeSettingsModel();
+        model.ApplyGraphicsPreset("android_mid");
+        AssertThat(model.CurrentGraphicsPreset()).IsEqual("android_mid");
+        AssertThat(GraphicsPresets.PerformanceValues.Keys.OrderBy(k => k).ToArray())
+            .IsEqual(GraphicsPresets.BalancedValues.Keys.OrderBy(k => k).ToArray());
+
+        // Every number it sets lies between the two (inclusive), each setting's cost rising or falling with it;
+        // a far reach of 0 is the whole reach.
+        static double At(IReadOnlyDictionary<string, string> preset, string key) =>
+            key == "tree_far_reach" && preset[key] == "0" ? double.MaxValue
+                : double.Parse(preset[key], System.Globalization.CultureInfo.InvariantCulture);
+        foreach ((string key, string value) in GraphicsPresets.PerformanceValues)
+        {
+            if (!double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out _))
+            {
+                continue;
+            }
+
+            double low = At(GraphicsPresets.UltraPerformanceValues, key), high = At(GraphicsPresets.BalancedValues, key);
+            AssertThat(At(GraphicsPresets.PerformanceValues, key)).OverrideFailureMessage(key)
+                .IsBetween(System.Math.Min(low, high), System.Math.Max(low, high));
+        }
+
+        // The shadowless picture is Ultra Performance's.
+        AssertThat(GraphicsPresets.PerformanceValues["sun_shadow_distance"]).IsEqual("0");
+        AssertThat(GraphicsPresets.PerformanceValues["lite_shadowless"]).IsEqual("true");
     }
 
     [TestCase]
