@@ -7744,8 +7744,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
     bool net_extrapolate = false;
     float net_alpha = 0.0f;
     const auto flatten = [&](uint32_t root, float weight, uint32_t priority, uint32_t track, uint32_t uid,
-                             bool is_winner = false, bool is_runner = false,
-                             bool is_suppressed_sibling = false) {
+                             bool is_winner = false, bool is_runner = false) {
         int depth = 0;
         stack[depth++] = Frame{root, weight, false, 0u};
         int steps = 0;
@@ -7788,12 +7787,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
                     // this read lands anywhere in the frame); the animator keeps its own timeline
                     // for such a clip and converges on these values.
                     // Bits 4 & 5 (16 & 32): explicit winner and runner flags from the guest's pick.
-                    // Bit 6 (64): active Track 3 facial/mood overlay suppressed by a higher-priority
-                    // carry overlay (`IdleHoldBeerLoop`) on the same track.
                     out[4] = (read8(frame.node + 36u) != 0u ? 1u : 0u) | (frame.additive ? 2u : 0u) |
                              (overlay_list ? 4u : 0u) | (net_extrapolate ? 8u : 0u) |
                              (is_winner ? 16u : 0u) | (is_runner ? 32u : 0u) |
-                             (is_suppressed_sibling ? 64u : 0u) |
                              ((priority & 0xFFu) << 8) | ((track & 0xFFu) << 16);
                     out[5] = uid;
                     out[6] = ramp_in_bits;
@@ -7908,6 +7904,23 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
         if (!plausible(sentinel) || size == 0u || size > 64u) {
             return;
         }
+
+        // Walk the guest linked list once and cache valid record pointers on the stack so
+        // winner/runner selection and flattening never re-traverse guest list nodes.
+        uint32_t records[64];
+        uint32_t record_count = 0u;
+        uint32_t node = read32(sentinel);
+        for (uint32_t i = 0u; i < size && plausible(node) && node != sentinel; ++i) {
+            const uint32_t record = read32(node + 8u);
+            node = read32(node);
+            if (plausible(record)) {
+                records[record_count++] = record;
+            }
+        }
+        if (record_count == 0u) {
+            return;
+        }
+
         // One primary wins: the guest's own pick.
         //
         // `sub_822013A8` walks this list, skips records whose state (+28) is 2, and keeps the
@@ -7923,62 +7936,45 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
         int32_t winner_priority = -1;
         uint32_t runner_up = 0u;
         float runner_up_weight = 0.0f;
-        uint32_t node = read32(sentinel);
-        for (uint32_t i = 0u; i < size && plausible(node) && node != sentinel; ++i) {
-            const uint32_t record = read32(node + 8u);
-            node = read32(node);
-            if (!plausible(record) || read32(record + 28u) == 2u) {
-                continue;
-            }
-
-            const int32_t priority = static_cast<int32_t>(read32(record + 8u));
-            if (priority >= winner_priority) {
-                winner_priority = priority;
-                winner = record;
-            }
-        }
-
-        // The runner-up must clear 1e-4 to exist at all (0x82238070..0x82238074); below that
-        // `sub_82237F90` emits nothing and the winner is used alone.
-        // Optimization: if size <= 1, no second record exists in the list so skip the walk.
-        if (!overlay && winner != 0u && size > 1u) {
-            node = read32(sentinel);
-            for (uint32_t i = 0u; i < size && plausible(node) && node != sentinel; ++i) {
-                const uint32_t record = read32(node + 8u);
-                node = read32(node);
-                // No state filter here, matching the guest: the runner-up scan `sub_82237F90`
-                // (0x82237FD8..0x82238048) excludes only the winner's node and never tests +0x1C.
-                // It ranks by +0x14 alone, forward with a strict `>`, so the first record wins
-                // equal weights.
-                if (!plausible(record) || record == winner) {
+        if (!overlay) {
+            for (uint32_t i = 0u; i < record_count; ++i) {
+                const uint32_t record = records[i];
+                if (read32(record + 28u) == 2u) {
                     continue;
                 }
-
-                const float other = readf(record + 20u);
-                if (other > runner_up_weight) {
-                    runner_up_weight = other;
-                    runner_up = record;
+                const int32_t priority = static_cast<int32_t>(read32(record + 8u));
+                if (priority >= winner_priority) {
+                    winner_priority = priority;
+                    winner = record;
                 }
             }
 
-            if (runner_up_weight <= 1e-4f) {
-                runner_up = 0u;
+            // The runner-up must clear 1e-4 to exist at all (0x82238070..0x82238074); below that
+            // `sub_82237F90` emits nothing and the winner is used alone.
+            if (winner != 0u && record_count > 1u) {
+                for (uint32_t i = 0u; i < record_count; ++i) {
+                    const uint32_t record = records[i];
+                    // No state filter here, matching the guest: the runner-up scan `sub_82237F90`
+                    // (0x82237FD8..0x82238048) excludes only the winner's node and never tests +0x1C.
+                    // It ranks by +0x14 alone, forward with a strict `>`, so the first record wins
+                    // equal weights.
+                    if (record == winner) {
+                        continue;
+                    }
+                    const float other = readf(record + 20u);
+                    if (other > runner_up_weight) {
+                        runner_up_weight = other;
+                        runner_up = record;
+                    }
+                }
+                if (runner_up_weight <= 1e-4f) {
+                    runner_up = 0u;
+                }
             }
         }
 
-        uint32_t track3_high_prio_winner = 0u;
-        float track3_winner_weight = 0.0f;
-        uint32_t track3_winner_prev_bits = 0u;
-        uint32_t track3_winner_cur_bits = 0u;
-        uint32_t track3_suppressed_sibling = 0u;
-
-        node = read32(sentinel);
-        for (uint32_t i = 0u; i < size && plausible(node) && node != sentinel; ++i) {
-            const uint32_t record = read32(node + 8u);
-            node = read32(node);
-            if (!plausible(record)) {
-                continue;
-            }
+        for (uint32_t i = 0u; i < record_count; ++i) {
+            const uint32_t record = records[i];
             if (!overlay && record != winner && record != runner_up) {
                 continue;
             }
@@ -7994,18 +7990,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
                     // Retain winner even if cur weight is 0.0f on its opening tick,
                     // so the host registers the channel and folds runner_up -> winner.
                 } else {
-                    if (overlay && state == 0u && rec_track == 3u && exported_prio == 1u &&
-                        plausible(read32(record + 36u))) {
-                        track3_suppressed_sibling = record;
-                    }
                     continue;
                 }
-            }
-            if (overlay && rec_track == 3u && exported_prio >= 2u && weight > track3_winner_weight) {
-                track3_high_prio_winner = record;
-                track3_winner_weight = weight;
-                track3_winner_prev_bits = read32(record + 24u);
-                track3_winner_cur_bits = read32(record + 20u);
             }
             record_prev_bits = read32(record + 24u);
             record_cur_bits = read32(record + 20u);
@@ -8017,24 +8003,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
             const bool is_winner = !overlay && record == winner;
             const bool is_runner = !overlay && record == runner_up;
             flatten(read32(record + 36u), weight <= 1e-4f ? 1e-4f : weight, exported_prio, rec_track, read32(record + 32u),
-                    is_winner, is_runner, false);
-        }
-
-        // When a priority >= 2 carry overlay (`IdleHoldBeerLoop`) wins Track 3, `sub_821F3C28`
-        // holds the NPC's active priority 1 Track 3 facial/mood overlay (`IdleHappy`) at weight 0
-        // even though `Engine_Animation_StepControllerRecords` (`0x8221D308`) continues advancing
-        // its playhead every tick. Export the newest active Track 3 sibling so `Engine_ClipAnimator`
-        // can animate facial bones where the carry overlay only bakes static 1-keyframe tracks.
-        if (overlay && track3_high_prio_winner != 0u && track3_suppressed_sibling != 0u) {
-            record_prev_bits = track3_winner_prev_bits;
-            record_cur_bits = track3_winner_cur_bits;
-            ramp_in_bits = ramp_seconds(read32(track3_suppressed_sibling + 40u));
-            ramp_out_bits = ramp_seconds(read32(track3_suppressed_sibling + 48u));
-            overlay_list = true;
-            priority_mask = read32(track3_suppressed_sibling + 16u) | read32(track3_high_prio_winner + 16u);
-            flatten(read32(track3_suppressed_sibling + 36u), track3_winner_weight,
-                    read32(track3_suppressed_sibling + 8u), 3u,
-                    read32(track3_suppressed_sibling + 32u), false, false, true);
+                    is_winner, is_runner);
         }
     };
 

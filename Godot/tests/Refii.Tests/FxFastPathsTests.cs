@@ -568,4 +568,96 @@ public sealed class FxFastPathsTests
 		}
 		finally { Engine_FxFastPaths.Enabled = before; }
 	}
+
+	/// <summary>
+	/// Self-illuminated effects (<c>SelfIllum == 1</c>) report <c>NeedsSceneLight == false</c> and
+	/// skip <c>AmbientProvider</c>, and flickering FX lights keep <c>BaseRange</c> stable while
+	/// breathing <c>Range</c> and <c>Energy</c>.
+	/// </summary>
+	[TestCase]
+	public void SelfIllumGatingAndLightBaseRangeStability()
+	{
+		var bank = new FxBank { Ok = true };
+		FxEmitter motionEmitter = Emitter(4f, 0.5f);
+		var lightEmitter = new FxEmitter { TypeId = 7, MaxActive = 1, AttachToRoot = true };
+		for (int i = 0; i < 28; i++)
+		{
+			lightEmitter.Generic[i] = Engine_FxBank.MakeTimeline(i, i switch
+			{
+				15 => new[] { (0f, 8.0f) }, // LightRange = 8.0
+				16 => new[] { (0f, 2.0f) }, // LightIntensity = 2.0
+				19 => new[] { (0f, 0.25f) }, // Radius flicker range
+				20 => new[] { (0f, 0.25f) }, // Brightness flicker range
+				21 => new[] { (0f, 0.5f) }, // Flicker rate
+				_ => Array.Empty<(float, float)>(),
+			});
+		}
+		lightEmitter.Vec0 = Engine_FxBank.MakeVecTimeline(0, Array.Empty<(float, float, float, float)>());
+		lightEmitter.Vec1 = Engine_FxBank.MakeVecTimeline(1, Array.Empty<(float, float, float, float)>());
+		lightEmitter.Vec2 = Engine_FxBank.MakeVecTimeline(2, Array.Empty<(float, float, float, float)>());
+		lightEmitter.LightColour = Engine_FxBank.MakeVecTimeline(3, new[] { (0f, 1f, 0.8f, 0.4f) });
+		Engine_FxBank.LinkParameters(lightEmitter);
+
+		var selfIllumSys = new FxSystemDef { Mode = 1, LoopCount = -1, LastStartFrames = 30, ChildCount = 2 };
+		selfIllumSys.Visuals.Add(new FxVisual
+		{
+			HasTexture = true, Texture = "art/fx/pfx_textures/spark.tex",
+			SelfIllum = 1.0f,
+		});
+
+		var litSys = new FxSystemDef { Mode = 1, LoopCount = -1, LastStartFrames = 30, ChildCount = 2 };
+		litSys.Visuals.Add(new FxVisual
+		{
+			HasTexture = true, Texture = "art/fx/pfx_textures/smoke.tex",
+			SelfIllum = 0.0f,
+		});
+
+		bank.Emitters.Add(motionEmitter);
+		bank.Emitters.Add(lightEmitter);
+		bank.Systems.Add(selfIllumSys);
+		bank.Systems.Add(litSys);
+
+		var unlitEffect = new FxEffect { NameHash = FxBank.Fnv1Lower("fx_self_illum"), Name = "fx_self_illum", UpdateFrequency = 1 };
+		unlitEffect.Parts.Add(new FxEffectPart(0, 0, 1, 0));
+		unlitEffect.Parts.Add(new FxEffectPart(1, -1, 1, 1));
+		bank.Effects.Add(unlitEffect);
+
+		var sceneLitEffect = new FxEffect { NameHash = FxBank.Fnv1Lower("fx_scene_lit"), Name = "fx_scene_lit", UpdateFrequency = 1 };
+		sceneLitEffect.Parts.Add(new FxEffectPart(0, 1, 1, 0));
+		bank.Effects.Add(sceneLitEffect);
+
+		int ambientCalls = 0;
+		var prevProvider = Engine_FxSystem.AmbientProvider;
+		try
+		{
+			Engine_FxSystem.AmbientProvider = (_, lit) =>
+			{
+				ambientCalls++;
+				lit[0] = 0.5f; lit[1] = 0.5f; lit[2] = 0.5f;
+			};
+
+			var selfIllumRuntime = new Engine_FxSystem();
+			selfIllumRuntime.Build(bank, new[] { new FxPlacement { EffectName = "fx_self_illum" } });
+			AssertThat(selfIllumRuntime.NeedsSceneLight).IsFalse();
+			AssertThat(ambientCalls).IsEqual(0);
+
+			// Step the flickering FX light and verify BaseRange stays fixed at 8.0 while Range/Energy flicker:
+			for (int step = 0; step < 10; step++)
+			{
+				selfIllumRuntime.Update(1f / 30f, Transform3D.Identity);
+				Engine_FxSystem.FxLightState ls = selfIllumRuntime.LightAt(0);
+				AssertThat(MathF.Abs(ls.BaseRange - 8.0f) < 1e-4f).IsTrue();
+				AssertThat(ls.Range > 0f).IsTrue();
+			}
+
+			var sceneLitRuntime = new Engine_FxSystem();
+			sceneLitRuntime.Build(bank, new[] { new FxPlacement { EffectName = "fx_scene_lit" } });
+			AssertThat(sceneLitRuntime.NeedsSceneLight).IsTrue();
+			AssertThat(ambientCalls).IsEqual(1);
+		}
+		finally
+		{
+			Engine_FxSystem.AmbientProvider = prevProvider;
+		}
+	}
 }

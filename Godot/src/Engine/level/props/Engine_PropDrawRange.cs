@@ -80,9 +80,9 @@ public static class Engine_PropDrawRange
 
 	/// <summary>
 	/// Whether a TreeMesh's shadow stops at its stated S (`tree_shadow_reach = "stated"`, the
-	/// 360's rule) or its `_shadow` model casts at any distance the cascades reach ("full").
+	/// 360's rule) or uses the extended remaster reach ("full").
 	/// </summary>
-	public static readonly bool TreeShadowStated = ReadTreeShadowStated();
+	public static bool TreeShadowStated { get; internal set; } = ReadTreeShadowStated();
 
 	/// <summary>`prop_draw_distance_scale`: every stated distance, times this. 1 is the 360.</summary>
 	public static readonly float DistanceScale = ReadFloat("prop_draw_distance_scale", 1f, 0.25f, 8f);
@@ -264,6 +264,28 @@ public static class Engine_PropDrawRange
 		return ApplyStated(node, stated);
 	}
 
+	/// <summary>`tree_far_reach`: the farthest any tree model draws, in metres; 0 keeps the stated reach.</summary>
+	public const string TreeFarReachKey = Engine_TreeReach.TreeFarReachKey;
+
+	/// <summary>`tree_far_reach` as last read: at start-up, then on each live change.</summary>
+	public static float TreeFarReach => Engine_TreeReach.TreeFarReach;
+
+	/// <summary>
+	/// Node metadata on a tree node that draws the tree out to its far reach: its `_LOD1` model, or a
+	/// main model with none. A main model that hands over to a `_LOD1` at L does not carry it.
+	/// </summary>
+	public const string TreeFarModelMeta = Engine_TreeReach.TreeFarModelMeta;
+
+	/// <summary>`tree_lod_bias`: Godot's lod_bias on the far tree models; 1 keeps the shared mesh_lod_pixels rule.</summary>
+	public const string TreeLodBiasKey = Engine_TreeReach.TreeLodBiasKey;
+
+	/// <summary>`tree_lod_bias` as last read.</summary>
+	public static float TreeLodBias => Engine_TreeReach.TreeLodBias;
+
+	/// <summary>A tree node's band and range with its far end pulled in to reach metres.</summary>
+	internal static (float[] Band, float[] Stated) CapTreeReach(float[] band, float[] stated, float reach) =>
+		Engine_TreeReach.CapTreeReach(band, stated, reach);
+
 	/// <summary>Applies <paramref name="stated"/> ({begin, begin margin, end, end margin, fade}).</summary>
 	public static bool ApplyStated(GeometryInstance3D node, float[] stated)
 	{
@@ -352,7 +374,7 @@ public static class Engine_PropDrawRange
 			: null;
 	}
 
-	private static bool Describe(
+	internal static bool Describe(
 		StatedRange r, PropModelClass modelClass, PropRole role, bool hasLod, out float[] stated)
 	{
 		stated = System.Array.Empty<float>();
@@ -414,8 +436,13 @@ public static class Engine_PropDrawRange
 				return stated[2] > stated[0];
 
 			default:
-				// Cast-only: the guest's cut is S. "full" leaves the cascades to decide.
-				stated = new[] { 0f, 0f, TreeShadowStated ? r.Shadow : 0f, 0f, 0f };
+				// Cast-only: the guest's cut is S. In remaster "full" mode, extend tree shadows
+				// generously (2x stated S, clamped to 100..150 m) so trees down the street and across
+				// parks cast full shadows without drawing tree shadow meshes 300..2,000 m away.
+				float shadowReach = TreeShadowStated
+					? r.Shadow
+					: Mathf.Clamp(r.Shadow > 0f ? r.Shadow * 2f : 120f, 100f, 150f);
+				stated = new[] { 0f, 0f, shadowReach, 0f, 0f };
 				return !TreeShadowStated || r.Shadow > 0f;
 		}
 	}

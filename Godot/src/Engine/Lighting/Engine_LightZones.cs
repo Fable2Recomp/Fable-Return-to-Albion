@@ -236,7 +236,7 @@ public static class Engine_LightZones
 
         _lastInterior = Engine_LightingFrame.CurrentInterior;
         ++_frame;
-        if (Refii.Core.Engine_GuestFrame.Changed)
+        if (Refii.Core.Engine_GuestFrame.Changed && Refii.Game.GameEntities.Current is null)
         {
             uint hero = Refii.Host.HostBridge.HeroEntityAddress();
             if (hero != 0u)

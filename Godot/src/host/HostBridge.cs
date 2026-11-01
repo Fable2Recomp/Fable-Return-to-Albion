@@ -326,7 +326,7 @@ public static partial class HostBridge
 		int Priority, int Track, uint Uid, float BlendIn, float BlendOut,
 		bool Overlay, uint Mask, uint PriorityMask,
 		float RecordPrevious, float RecordCurrent, bool Network = false,
-		bool IsWinner = false, bool IsRunner = false, bool SuppressedTrackSibling = false);
+		bool IsWinner = false, bool IsRunner = false);
 
 	private const int AnimLeafWords = 12;
 
@@ -395,7 +395,7 @@ public static partial class HostBridge
 		}
 
 		uint[] words = _postOpWords ??= new uint[13 + 64 * 29];
-		System.Array.Clear(words);
+		System.Array.Clear(words, 0, 13);
 		uint count;
 		try
 		{
@@ -444,7 +444,6 @@ public static partial class HostBridge
 			Quaternion[] targets = ops.Count < _postTargets.Length
 				? (_postTargets[ops.Count] ??= new Quaternion[6])
 				: new Quaternion[6];
-			System.Array.Clear(targets);
 			for (int b = 0; b < bones; b++)
 			{
 				int q = at + 5 + 4 * b;
@@ -1389,8 +1388,7 @@ public static partial class HostBridge
 				System.BitConverter.Int32BitsToSingle((int)_animWords[at + 11]),
 				(f & 8) != 0,
 				(f & 16) != 0,
-				(f & 32) != 0,
-				(f & 64) != 0));
+				(f & 32) != 0));
 		}
 
 		return (int)leaves;

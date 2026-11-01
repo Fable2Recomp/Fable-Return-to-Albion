@@ -355,6 +355,28 @@ public sealed class Engine_EntitySkeleton
 	/// <summary>This rig's own change ratio, for the per-rig report.</summary>
 	public (int Changes, int Applies) ChangeCounts => (_myChanges, _myApplies);
 
+	/// <summary>True once at least one valid guest pose has been accepted into the pose ring.</summary>
+	public bool HasAppliedPose => _poses.Count > 0;
+
+	/// <summary>
+	/// Returns true when a bone's translation or rotation moved between two pose samples.
+	/// Uses hemisphere-aware component difference on the quaternion rather than raw
+	/// <c>curRot.Dot(prevRot)</c>, because slightly unnormalized guest quaternions
+	/// (<c>|q|² != 1</c>) satisfy <c>|q · q| &lt; 1 - 1e-6</c> even when <c>curRot == prevRot</c>
+	/// bit-for-bit, which previously forced stationary props to re-pose on 100% of frames.
+	/// </summary>
+	public static bool HasBonePoseChanged(Vector3 prevPos, Vector3 curPos, Quaternion prevRot, Quaternion curRot)
+	{
+		if (curPos.DistanceSquaredTo(prevPos) > 1e-8f)
+		{
+			return true;
+		}
+
+		float dot = prevRot.Dot(curRot);
+		float lenSq = prevRot.LengthSquared() * curRot.LengthSquared();
+		return lenSq > 1e-12f && (dot * dot) < (1f - 1e-6f) * lenSq;
+	}
+
 	/// <summary>Consecutive local reads held right now.</summary>
 	public int LocalReads => _localReads;
 
@@ -1284,8 +1306,7 @@ public sealed class Engine_EntitySkeleton
 			Vector3 now = pose.Translation(g);
 			Quaternion rotation = pose.Rotation(g);
 			if (_lastTranslationValid && !changed &&
-				(now.DistanceSquaredTo(_lastTranslation[g]) > 1e-8f ||
-				 Mathf.Abs(rotation.Dot(_lastRotation[g])) < 1f - 1e-6f))
+				HasBonePoseChanged(_lastTranslation[g], now, _lastRotation[g], rotation))
 			{
 				changed = true;
 				++PoseChanges;

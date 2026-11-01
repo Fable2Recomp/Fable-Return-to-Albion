@@ -119,8 +119,14 @@ public partial class GameWindow : Node
 		// 3D SCALING LEAVES THE UI ALONE. Godot renders the 3D world at this fraction and
 		// upscales it into a full-resolution frame, so the HUD, the books and every glyph stay
 		// native — which is the whole reason to prefer this over resizing the window.
+		// When Fullscreen is true, DisplayServer.WindowSetMode(Fullscreen) forces the OS window
+		// to native monitor resolution (screen), so if the user configured a sub-native resolution
+		// in settings.Size, fold that ratio into Scaling3DScale so 3D renders at the requested resolution.
 		Viewport view = GetViewport();
-		view.Scaling3DScale = settings.RenderScale;
+		float fullscreenScale = settings.Fullscreen && screen.Y > 0 && settings.Size.Y > 0 && settings.Size.Y < screen.Y
+			? (float)settings.Size.Y / screen.Y
+			: 1f;
+		view.Scaling3DScale = Mathf.Clamp(settings.RenderScale * fullscreenScale, 0.25f, 2.0f);
 		// SCALED WITH HEIGHT: the mesh LOD keys are the guest's switch distances at 720 lines
 		// (Engine_MdlLods), and Godot's threshold is in pixels, so 1 here follows the 360 at
 		// any resolution.

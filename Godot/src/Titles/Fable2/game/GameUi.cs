@@ -324,6 +324,11 @@ public partial class GameUi : Node, IGameTitleUi
 
 	public override void _Ready()
 	{
+		// Run after GameWorld and GameEntities (ProcessPriority = 0) so camera transforms and
+		// interpolated NPC body/head anchors are already placed for this frame, and right before
+		// Engine_HudWorldSprites and Engine_HudReticule (ProcessPriority = 880).
+		ProcessPriority = 875;
+
 		// THE MOVEMENT SOUND, for every list in one place: the guest's own slide sounds
 		// (`SE_GUI_SLIDE_MENU_UP/DOWN`) on the front end's emitter out of a game and the in-game
 		// GUI's in one — the same arms its own lists fire (`sub_826A26E8` 0x826A2734/0x826A2760
@@ -2945,6 +2950,7 @@ public partial class GameUi : Node, IGameTitleUi
 			Seat = Engine_UiSeats.Seat.PlayerTwo,
 			Suppressed = true,
 			Visible = false,
+			ProcessMode = ProcessModeEnum.Disabled,
 		};
 		_presentation.AddChild(_hudTwo);
 		_hudTwo.Build();
@@ -2981,6 +2987,7 @@ public partial class GameUi : Node, IGameTitleUi
 			Position = new Vector3(0f, 0f, 50f),
 			ResolveTexture = _worldIcons.ResolveTexture,
 			Visible = false,
+			ProcessMode = ProcessModeEnum.Disabled,
 		};
 		_worldIconsTwo.Bind(screen);
 		MountHudWidget(Engine_HudWidgets.WorldIcons, true, _worldIconsTwo);
@@ -3009,6 +3016,7 @@ public partial class GameUi : Node, IGameTitleUi
 			ResolveTexture = _worldSprites.ResolveTexture,
 			SightView = 1,
 			Visible = false,
+			ProcessMode = ProcessModeEnum.Disabled,
 		};
 		MountHudWidget(Engine_HudWidgets.WorldSprites, true, _worldSpritesTwo);
 
@@ -3034,6 +3042,7 @@ public partial class GameUi : Node, IGameTitleUi
 			ResolveTexture = _reticule.ResolveTexture,
 			OnlyPlayer = 1,
 			Visible = false,
+			ProcessMode = ProcessModeEnum.Disabled,
 		};
 		MountHudWidget(Engine_HudWidgets.Reticule, true, _reticuleTwo);
 
@@ -3058,6 +3067,7 @@ public partial class GameUi : Node, IGameTitleUi
 			Position = new Vector3(0f, 0f, 50f),
 			ResolveTexture = _slowTimeDial.ResolveTexture,
 			Visible = false,
+			ProcessMode = ProcessModeEnum.Disabled,
 		};
 		MountHudWidget(Engine_HudWidgets.SlowTimeDial, true, _slowTimeDialTwo);
 
@@ -3086,7 +3096,13 @@ public partial class GameUi : Node, IGameTitleUi
 		if (_hudTwo is not null && GodotObject.IsInstanceValid(_hudTwo))
 		{
 			_hudTwo.Window = window;
-			_hudTwo.Suppressed = !split || _fullCutscene || _hudAddress == 0;
+			bool suppressed = !split || _fullCutscene || _hudAddress == 0;
+			_hudTwo.Suppressed = suppressed;
+			ProcessModeEnum hudTwoMode = suppressed ? ProcessModeEnum.Disabled : ProcessModeEnum.Inherit;
+			if (_hudTwo.ProcessMode != hudTwoMode)
+			{
+				_hudTwo.ProcessMode = hudTwoMode;
+			}
 		}
 
 		_spells.Window = window;
@@ -3694,28 +3710,60 @@ public partial class GameUi : Node, IGameTitleUi
 	private readonly Vector3?[] _aimAnchor = new Vector3?[2];
 	private readonly uint[] _aimAnchorSequence = new uint[2];
 
+	private uint _cachedReticuleHud;
+	private float _cachedReticuleGuestHeight = 720f;
+	private readonly bool[] _cachedReticuleActive = new bool[2];
+	private readonly float[] _cachedReticuleProgress = new float[2];
+	private readonly Color[] _cachedReticuleColour = new Color[2];
+	private readonly uint[] _cachedReticuleMode = new uint[2];
+	private readonly int[] _cachedReticuleCounter = new int[2];
+
 	/// <summary>
 	/// Feeds the reticule each frame: the record at `*(*(GUI+32)+72)` (+64 for player two) for
 	/// active, progress, colour, mode and the intro counter, and the stated object's `+0x90` for
 	/// the aim point. Runs after <see cref="DriveWorldSprites"/>, which captured the camera.
 	/// </summary>
-	private void DriveReticule()
+	private void DriveReticule(bool guestFrame = true)
 	{
 		if (_reticule is null || !GodotObject.IsInstanceValid(_reticule))
 		{
 			return;
 		}
 
-		System.Span<uint> root = stackalloc uint[9];
-		uint hud = HostBridge.IsInGame &&
-			HostBridge.TryPeekWord(HostBridge.GuestAddress(0x83496B08u), out uint gui) &&
-			HostBridge.Peek(gui, root) == 9 &&
-			HostBridge.GuestAddressToTu1(root[0]) == 0x82001610u &&
-			HostBridge.TryPeekWord(root[8] + 72u, out uint hudAddr)
-			? hudAddr
-			: 0u;
+		bool split = Engine_Views.Split;
+		bool needPoll = guestFrame ||
+			_reticuleObject[0] != _lastReticuleObject[0] ||
+			(split && _reticuleObject[1] != _lastReticuleObject[1]);
+
+		if (!needPoll && !_cachedReticuleActive[0] && (!split || !_cachedReticuleActive[1]))
+		{
+			return;
+		}
+
+		if (needPoll)
+		{
+			System.Span<uint> root = stackalloc uint[9];
+			_cachedReticuleHud = HostBridge.IsInGame &&
+				HostBridge.TryPeekWord(HostBridge.GuestAddress(0x83496B08u), out uint gui) &&
+				HostBridge.Peek(gui, root) == 9 &&
+				HostBridge.GuestAddressToTu1(root[0]) == 0x82001610u &&
+				HostBridge.TryPeekWord(root[8] + 72u, out uint hudAddr)
+				? hudAddr
+				: 0u;
+			if (_cachedReticuleHud != 0u)
+			{
+				// The guest's backbuffer, `qword_834A5FE8` — the pixels its petal sizes are stated in.
+				System.Span<uint> backbuffer = stackalloc uint[2];
+				int bbCount = HostBridge.Peek(HostBridge.GuestAddress(0x834A5FE8u), backbuffer);
+				_cachedReticuleGuestHeight = bbCount == 2 && backbuffer[1] != 0u ? backbuffer[1] : 720f;
+			}
+		}
+
+		uint hud = _cachedReticuleHud;
 		if (hud == 0u || _spriteWindow.X <= 0f || _spriteWindow.Y <= 0f)
 		{
+			_cachedReticuleActive[0] = false;
+			_cachedReticuleActive[1] = false;
 			_lastReticuleObject[0] = 0u;
 			_lastReticuleObject[1] = 0u;
 			_aimAnchor[0] = null;
@@ -3727,10 +3775,7 @@ public partial class GameUi : Node, IGameTitleUi
 			return;
 		}
 
-		// The guest's backbuffer, `qword_834A5FE8` — the pixels its petal sizes are stated in.
-		System.Span<uint> backbuffer = stackalloc uint[2];
-		int bbCount = HostBridge.Peek(HostBridge.GuestAddress(0x834A5FE8u), backbuffer);
-		float guestHeight = bbCount == 2 && backbuffer[1] != 0u ? backbuffer[1] : 720f;
+		float guestHeight = _cachedReticuleGuestHeight;
 		// Each layer in its own seat: player one's (the whole window's) and, while split, player
 		// two's. The petals clamp inside their own half, and an aim outside it is clamped rather
 		// than dropped — so the projection is unclipped.
@@ -3738,12 +3783,21 @@ public partial class GameUi : Node, IGameTitleUi
 		_reticule.CanvasHalfExtent = seat.Extent * 0.5f;
 		_reticule.UnitsPerGuestPixel = seat.UnitsPerGuestPixel(guestHeight);
 		_reticule.Place ??= guest => PlaceIn(_spriteViews[0], guest, 0u, clip: false)?.Canvas;
-		if (_reticuleTwo is not null && GodotObject.IsInstanceValid(_reticuleTwo))
+		if (split && _reticuleTwo is not null && GodotObject.IsInstanceValid(_reticuleTwo))
 		{
 			Engine_UiSeats.Frame theirs = _spriteViews[1].Frame;
 			_reticuleTwo.CanvasHalfExtent = theirs.Extent * 0.5f;
 			_reticuleTwo.UnitsPerGuestPixel = theirs.UnitsPerGuestPixel(guestHeight);
 			_reticuleTwo.Place ??= guest => PlaceIn(_spriteViews[1], guest, 0u, clip: false)?.Canvas;
+		}
+
+		if (!split && _cachedReticuleActive[1])
+		{
+			_cachedReticuleActive[1] = false;
+			_lastReticuleObject[1] = 0u;
+			_aimAnchor[1] = null;
+			_reticule.Feed(1, null);
+			_reticuleTwo?.Feed(1, null);
 		}
 
 		static float F(uint word) => System.BitConverter.Int32BitsToSingle(unchecked((int)word));
@@ -3752,41 +3806,64 @@ public partial class GameUi : Node, IGameTitleUi
 		System.Span<uint> anchor = stackalloc uint[3];
 		uint cameraTick = Refii.Core.Engine_TickClock.GuestGameTick;
 		bool stepComplete = Refii.Core.Engine_GuestFrame.Changed;
-		for (int player = 0; player < 2; ++player)
+		int playerCount = split ? 2 : 1;
+		for (int player = 0; player < playerCount; ++player)
 		{
-			int recCount = HostBridge.Peek(hud + (64u * (uint)player), record);
 			bool turnsWithView = _reticuleObject[player] != 0u &&
 				_reticuleObject[player] == Refii.Game.GameWorld.MouseLookAim;
-			uint? sequenceBefore = turnsWithView ? HostBridge.GetMouseLook()?.Sequence : null;
-			int ancCount = _reticuleObject[player] != 0u
-				? HostBridge.Peek(_reticuleObject[player] + 0x90u, anchor)
-				: 0;
-			uint? sequenceAfter = turnsWithView ? HostBridge.GetMouseLook()?.Sequence : null;
-			if (recCount != 14 || (record[0] >> 24) == 0u || ancCount != 3)
+			Refii.Core.Engine_TickTimeline line = _reticuleAnchorLines[player];
+
+			if (needPoll)
 			{
-				_lastReticuleObject[player] = 0u;
-				_aimAnchor[player] = null;
-				_reticule.Feed(player, null);
-				_reticuleTwo?.Feed(player, null);
+				int recCount = HostBridge.Peek(hud + (64u * (uint)player), record);
+				uint? sequenceBefore = turnsWithView ? HostBridge.GetMouseLook()?.Sequence : null;
+				int ancCount = _reticuleObject[player] != 0u
+					? HostBridge.Peek(_reticuleObject[player] + 0x90u, anchor)
+					: 0;
+				uint? sequenceAfter = turnsWithView ? HostBridge.GetMouseLook()?.Sequence : null;
+				if (recCount != 14 || (record[0] >> 24) == 0u || ancCount != 3)
+				{
+					_cachedReticuleActive[player] = false;
+					_lastReticuleObject[player] = 0u;
+					_aimAnchor[player] = null;
+					_reticule.Feed(player, null);
+					_reticuleTwo?.Feed(player, null);
+					continue;
+				}
+
+				_cachedReticuleActive[player] = true;
+				_cachedReticuleProgress[player] = F(record[3]);
+				_cachedReticuleColour[player] = new Color(F(record[4]), F(record[5]), F(record[6]), F(record[7]));
+				_cachedReticuleMode[player] = record[8];
+				_cachedReticuleCounter[player] = unchecked((int)record[13]);
+
+				// Stated aim anchor from guest memory (updated on 15 Hz game ticks).
+				var statedPoll = new Vector3(F(anchor[0]), F(anchor[1]), F(anchor[2]));
+				bool objectChanged = _reticuleObject[player] != _lastReticuleObject[player];
+				_lastReticuleObject[player] = _reticuleObject[player];
+
+				if (objectChanged || line.Empty)
+				{
+					line.Reset(cameraTick, new Transform3D(Basis.Identity, statedPoll));
+				}
+				else if (stepComplete)
+				{
+					line.Observe(cameraTick, new Transform3D(Basis.Identity, statedPoll));
+				}
+
+				if (turnsWithView && sequenceBefore is { } before && before == sequenceAfter &&
+					before == Refii.Game.GameWorld.MouseLookSequence)
+				{
+					_aimAnchor[player] = statedPoll;
+					_aimAnchorSequence[player] = before;
+				}
+			}
+			else if (!_cachedReticuleActive[player])
+			{
 				continue;
 			}
 
-			// Stated aim anchor from guest memory (updated on 15 Hz game ticks).
-			var stated = new Vector3(F(anchor[0]), F(anchor[1]), F(anchor[2]));
-			Refii.Core.Engine_TickTimeline line = _reticuleAnchorLines[player];
-			bool objectChanged = _reticuleObject[player] != _lastReticuleObject[player];
-			_lastReticuleObject[player] = _reticuleObject[player];
-
-			if (objectChanged || line.Empty ||
-				line.Newest.Origin.DistanceSquaredTo(stated) >
-					Refii.Core.Engine_TickTimeline.TeleportMetres * Refii.Core.Engine_TickTimeline.TeleportMetres)
-			{
-				line.Reset(cameraTick, new Transform3D(Basis.Identity, stated));
-			}
-			else if (stepComplete)
-			{
-				line.Observe(cameraTick, new Transform3D(Basis.Identity, stated));
-			}
+			Vector3 stated = line.Empty ? Vector3.Zero : line.Newest.Origin;
 
 			// On Godot's clock: smoothly interpolate the aim anchor in world space to match
 			// the camera's draw tick, eliminating the 15 Hz drift-and-snap judder.
@@ -3805,13 +3882,6 @@ public partial class GameUi : Node, IGameTitleUi
 			// inside that account stands in for it.
 			if (turnsWithView)
 			{
-				if (sequenceBefore is { } before && before == sequenceAfter &&
-					before == Refii.Game.GameWorld.MouseLookSequence)
-				{
-					_aimAnchor[player] = stated;
-					_aimAnchorSequence[player] = before;
-				}
-
 				if (_aimAnchor[player] is { } kept &&
 					_aimAnchorSequence[player] == Refii.Game.GameWorld.MouseLookSequence)
 				{
@@ -3823,10 +3893,10 @@ public partial class GameUi : Node, IGameTitleUi
 
 			var aim = new Engine_HudReticule.Aim(
 				stated,
-				F(record[3]),
-				new Color(F(record[4]), F(record[5]), F(record[6]), F(record[7])),
-				record[8],
-				unchecked((int)record[13]));
+				_cachedReticuleProgress[player],
+				_cachedReticuleColour[player],
+				_cachedReticuleMode[player],
+				_cachedReticuleCounter[player]);
 			_reticule.Feed(player, aim);
 			_reticuleTwo?.Feed(player, aim);
 		}
@@ -3933,6 +4003,7 @@ public partial class GameUi : Node, IGameTitleUi
 			if (!_worldSpritesCleared)
 			{
 				_worldSpritesCleared = true;
+				_worldSpritesBuiltOnce = false;
 				_lastRawWorldSprites = null;
 				// The mods' HUD state goes with the game: markers, meters and fades are a session's.
 				Engine_HudModMarkers.Clear();
@@ -3985,11 +4056,12 @@ public partial class GameUi : Node, IGameTitleUi
 			guestFrame || _lastRawWorldSprites is null
 				? (_lastRawWorldSprites = HostBridge.GetWorldSprites())
 				: _lastRawWorldSprites;
-		bool rebuildSprites = guestFrame || sprites.Count == 0;
+		bool rebuildSprites = guestFrame || !_worldSpritesBuiltOnce;
 		System.Collections.Generic.List<Engine_HudWorldSprites.Sprite> spritesTwo =
 			_worldSpriteListTwo ??= new System.Collections.Generic.List<Engine_HudWorldSprites.Sprite>();
 		if (rebuildSprites)
 		{
+			_worldSpritesBuiltOnce = true;
 			sprites.Clear();
 			spritesTwo.Clear();
 		}
@@ -4042,21 +4114,21 @@ public partial class GameUi : Node, IGameTitleUi
 				// GetPlayerOneHiddenPrompts): player one's by their layer, player two's by theirs.
 				bool prompt = sprite.Type is not (52u or 53u);
 				Vector2? placed = split && sprite.Type == 52u
-					? ProjectOffScreenMarker(_spriteViews[1], sprite.Anchor) is { } theirs
+					? ProjectOffScreenMarker(_spriteViews[1], sprite.Anchor, sprite.Entity) is { } theirs
 						? (Vector2?)_spriteViews[0].Frame.FromCanvas(_spriteViews[1].Frame.ToCanvas(theirs))
 						: null
 					: sprite.Type is 52u or 53u
-						? ProjectOffScreenMarker(_spriteViews[0], sprite.Anchor)
+						? ProjectOffScreenMarker(_spriteViews[0], sprite.Anchor, sprite.Entity)
 						: split && _promptsOneHidden.Contains(sprite.Entity)
 							? null
-							: ProjectWorldSprite(sprite.Anchor);
+							: ProjectWorldSprite(sprite.Anchor, sprite.Entity);
 				if (sprite.Slot >= 0 && placed is { } canvas)
 				{
 					pooled[sprite.Slot] = canvas;
 				}
 
 				if (split && prompt && sprite.Slot >= 0 && _promptsTwo.Contains(sprite.Entity) &&
-					ProjectWorldSpriteIn(_spriteViews[1], sprite.Anchor) is { } theirsAt)
+					ProjectWorldSpriteIn(_spriteViews[1], sprite.Anchor, sprite.Entity) is { } theirsAt)
 				{
 					pooledTwo[sprite.Slot] = theirsAt;
 				}
@@ -4139,6 +4211,7 @@ public partial class GameUi : Node, IGameTitleUi
 
 	/// <summary>Whether player two's sprite layer holds this split's sprites.</summary>
 	private bool _worldSpritesTwoFed;
+	private bool _worldSpritesBuiltOnce;
 
 	private System.Func<Vector3, float?>? _markerDistanceOne;
 	private System.Func<Vector3, float?>? _markerDistanceTwo;
@@ -4294,9 +4367,18 @@ public partial class GameUi : Node, IGameTitleUi
 
 		static void ShowLayer(Node3D? layer, bool visible)
 		{
-			if (layer is not null && GodotObject.IsInstanceValid(layer) && layer.Visible != visible)
+			if (layer is not null && GodotObject.IsInstanceValid(layer))
 			{
-				layer.Visible = visible;
+				if (layer.Visible != visible)
+				{
+					layer.Visible = visible;
+				}
+
+				ProcessModeEnum targetMode = visible ? ProcessModeEnum.Inherit : ProcessModeEnum.Disabled;
+				if (layer.ProcessMode != targetMode)
+				{
+					layer.ProcessMode = targetMode;
+				}
 			}
 		}
 	}
@@ -4372,10 +4454,12 @@ public partial class GameUi : Node, IGameTitleUi
 	/// outside player one's view is parked far off the canvas: the pooled icon it places would
 	/// otherwise fall back to the guest's own projection, which is for the whole screen.
 	/// </summary>
-	private Vector2? ProjectWorldSprite(Vector3 guest) => ProjectWorldSpriteIn(_spriteViews[0], guest);
+	private Vector2? ProjectWorldSprite(Vector3 guest) => ProjectWorldSpriteIn(_spriteViews[0], guest, 0u);
+
+	private Vector2? ProjectWorldSprite(Vector3 guest, uint entity) => ProjectWorldSpriteIn(_spriteViews[0], guest, entity);
 
 	/// <summary><see cref="ProjectWorldSprite"/> through one view's camera, into that view's seat.</summary>
-	private static Vector2? ProjectWorldSpriteIn(SpriteView view, Vector3 guest)
+	private static Vector2? ProjectWorldSpriteIn(SpriteView view, Vector3 guest, uint entity = 0u)
 	{
 		if (view.Camera is not { } camera || !GodotObject.IsInstanceValid(camera))
 		{
@@ -4384,7 +4468,10 @@ public partial class GameUi : Node, IGameTitleUi
 
 		// The WORLD's conversion, not the model handedness: the anchor is a guest world
 		// point with its up-lift on guest Z, and `(x, y, -z)` put that lift into depth.
-		Vector3 world = GameWorld.GuestToGodot(guest);
+		// When an entity is bound, ride its host-interpolated body and head bone (WorldAnchorFor).
+		Vector3 world = entity != 0u && GameEntities.Current is { } entities
+			? entities.WorldAnchorFor(entity, guest)
+			: GameWorld.GuestToGodot(guest);
 		if (camera.IsPositionBehind(world))
 		{
 			return null;
@@ -4408,7 +4495,7 @@ public partial class GameUi : Node, IGameTitleUi
 	/// vector math is not reproduced — the reflected point is extended to the edge instead. On
 	/// a half, "the screen" is that half.
 	/// </summary>
-	private Vector2? ProjectOffScreenMarker(SpriteView view, Vector3 guest)
+	private Vector2? ProjectOffScreenMarker(SpriteView view, Vector3 guest, uint entity = 0u)
 	{
 		if (view.Camera is not { } camera || !GodotObject.IsInstanceValid(camera) ||
 			view.Viewport.X <= 0f || view.Viewport.Y <= 0f)
@@ -4416,7 +4503,9 @@ public partial class GameUi : Node, IGameTitleUi
 			return null;
 		}
 
-		Vector3 world = GameWorld.GuestToGodot(guest);
+		Vector3 world = entity != 0u && GameEntities.Current is { } entities
+			? entities.WorldAnchorFor(entity, guest)
+			: GameWorld.GuestToGodot(guest);
 		Transform3D eye = camera.GlobalTransform;
 		Vector3 local = eye.AffineInverse() * world;
 		bool behind = local.Z > -0.01f;
@@ -4739,7 +4828,7 @@ public partial class GameUi : Node, IGameTitleUi
 	private void DriveWorldIcons(bool guestFrame = true)
 	{
 		DriveWorldSprites(guestFrame);
-		DriveReticule();
+		DriveReticule(guestFrame);
 		if (guestFrame)
 		{
 			DriveSlowTimeDial();
@@ -4800,7 +4889,8 @@ public partial class GameUi : Node, IGameTitleUi
 			{
 				uint[]? iconTextures = SampleHudTextures(elements.Count);
 				_worldIcons.Sample(elements, iconTextures);
-				if (_worldIconsTwo is not null && GodotObject.IsInstanceValid(_worldIconsTwo))
+				if ((Engine_Views.Split || _holdPromptTwo is not null) &&
+					_worldIconsTwo is not null && GodotObject.IsInstanceValid(_worldIconsTwo))
 				{
 					_worldIconsTwo.Sample(elements, iconTextures);
 				}

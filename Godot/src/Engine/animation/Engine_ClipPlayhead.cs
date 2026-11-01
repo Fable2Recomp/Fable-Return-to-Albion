@@ -30,14 +30,14 @@ public sealed class Engine_ClipPlayhead
 	public const double RestartSeconds = 4.0 / 15.0;
 
 	/// <summary>How fast an error is closed: the fraction left after one second is e^-Gain.</summary>
-	private const double Gain = 6.0;
+	private const double Gain = 4.0;
 
 	/// <summary>
 	/// The most the drawn speed may differ from the stated rate while closing an error, as a
 	/// fraction of the rate (and of one clip second per second when the rate is near zero, so a
 	/// paused clip still settles onto the guest's frame).
 	/// </summary>
-	public const double MaxCorrection = 0.25;
+	public const double MaxCorrection = 0.08;
 
 	/// <summary>How far past its stated pair the reference runs on before it holds, in ticks.</summary>
 	private const double MaxLeadTicks = 2.5;
@@ -198,9 +198,81 @@ public sealed class Engine_ClipPlayhead
 		if (Started && !Refii.Core.Engine_StatedPause.Latched)
 		{
 			Time += Rate / TicksPerSecond * Refii.Core.Engine_DrawAdvance.Ticks(seconds, Refii.Entities.Engine_DrawnFrame.NowUsec, drawTick);
+			if (!_loop && _length > 0.0 && Time >= _length)
+			{
+				Time = _length;
+				Rate = 0.0;
+			}
 		}
 
 		return Time;
+	}
+
+	/// <summary>
+	/// Observes a prop clip (doors, chests, clocks, signs, cogs) so the Host drives its playhead
+	/// autonomously via <see cref="Freewheel"/> without 15 Hz phase-error micro-corrections.
+	/// One-shot prop transitions (<c>!loop</c>) seed a <c>1.0x</c> rate as soon as triggered near
+	/// the start of the clip and run smoothly to completion on the Host clock.
+	/// </summary>
+	public void ObserveProp(double previous, double current, uint tick, double length, bool loop, double drawTick)
+	{
+		if (Started && previous == _statedPrevious && current == _current)
+		{
+			return;
+		}
+
+		_length = length;
+		_loop = loop && length > 0.0;
+		bool hardReset = !Started || (!loop && Started && current < Time - 0.15 && current < length * 0.5);
+		double span = Started && tick > _stamp ? System.Math.Clamp(tick - _stamp, 1.0, 4.0) : 1.0;
+		double delta = previous != current
+			? Gap(current - previous)
+			: (Started && tick > _stamp ? Gap(current - _current) / span : 0.0);
+
+		_statedPrevious = previous;
+		_current = current;
+		_stamp = tick;
+
+		if (!loop)
+		{
+			// A one-shot prop animation (e.g. door Open/Close, chest Open) runs at 1.0x on the Host
+			// until it reaches the end of the clip; a door spawned already at the end of its clip
+			// (current >= length - 0.05) stays settled at rest.
+			bool spawnedAtEnd = !Started && length > 0.0 && current >= length - 0.05 && previous >= length - 0.05;
+			if (hardReset)
+			{
+				Time = spawnedAtEnd ? current : System.Math.Min(previous, current);
+				Rate = spawnedAtEnd ? 0.0 : 1.0;
+				Error = 0.0;
+				Started = true;
+			}
+			else if (length > 0.0 && Time >= length)
+			{
+				Rate = 0.0;
+			}
+			else
+			{
+				Rate = 1.0;
+			}
+			return;
+		}
+
+		if (delta > -RestartSeconds && delta < RestartSeconds && System.Math.Abs(delta) > 1e-7)
+		{
+			Rate = delta * TicksPerSecond;
+		}
+		else if (!Started)
+		{
+			Rate = 1.0;
+		}
+
+		if (!Started)
+		{
+			_previous = current - (Rate / TicksPerSecond);
+			Time = Reference(drawTick);
+			Error = 0.0;
+			Started = true;
+		}
 	}
 
 	/// <summary>

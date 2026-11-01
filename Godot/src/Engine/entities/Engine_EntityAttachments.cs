@@ -307,14 +307,21 @@ public sealed class Engine_EntityAttachments
 	public List<uint> ChildrenOfParent(uint parent)
 	{
 		var result = new List<uint>();
+		ChildrenOfParent(parent, result);
+		return result;
+	}
+
+	/// <summary>Fills <paramref name="into"/> with child entities attached to <paramref name="parent"/> without allocating.</summary>
+	public void ChildrenOfParent(uint parent, List<uint> into)
+	{
+		into.Clear();
 		foreach (Record record in _byChild.Values)
 		{
 			if (record.Parent == parent)
 			{
-				result.Add(record.Child);
+				into.Add(record.Child);
 			}
 		}
-		return result;
 	}
 
 	public int Count => _byChild.Count;

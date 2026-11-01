@@ -671,11 +671,16 @@ public partial class FableFx : Node3D
 			// placed light through one path (`sub_821F0A50`: the same range, cutoff and ramp
 			// slots, the same falloff), so `placed_light_range` and `placed_light_scale` apply
 			// to both. 1.0 on both is the shipped data; Modern mode applies the 1.5x base reach scale.
+			// Hold `OmniRange` at the keyframe's `BaseRange` so the Godot node's AABB does not
+			// re-pair in the BVH on every random-walk flicker step, and fold the subtle flicker
+			// radius breathing into `lightEnergy`.
 			float modernBaseReach = Refii.Lighting.Engine_LightingFrame.ModernModel
 				? Refii.Lighting.Engine_LevelLights.ModernBaseReachScale
 				: 1.0f;
-			float omniRange = range * modernBaseReach * Refii.Lighting.Engine_LevelLights.PlacedRange;
-			float lightEnergy = energy * LightFade * ExposureScale * Refii.Lighting.Engine_LevelLights.PlacedScale;
+			float baseRange = state.BaseRange > 0f ? state.BaseRange : range;
+			float omniRange = baseRange * modernBaseReach * Refii.Lighting.Engine_LevelLights.PlacedRange;
+			float radiusFactor = baseRange > 1e-4f ? Math.Clamp(range / baseRange, 0.5f, 1.5f) : 1.0f;
+			float lightEnergy = energy * radiusFactor * LightFade * ExposureScale * Refii.Lighting.Engine_LevelLights.PlacedScale;
 
 			// THE GUEST REACHES ZERO AT Cutoff, ramping over the Ramp metres inside it —
 			// intensity × clamp((min(Cutoff, 1000) − dist) / Ramp, 0, 1) in `sub_821F0A50`
@@ -701,31 +706,35 @@ public partial class FableFx : Node3D
 			}
 
 			bool changed = false;
+			bool spatialChanged = false;
 			if (!cache.Applied || !cache.Visible)
 			{
 				light.Visible = true;
 				cache.Visible = true;
 				changed = true;
+				spatialChanged = true;
 			}
 
-			if (!cache.Applied || cache.Position.DistanceSquaredTo(state.Position) > 1e-6f)
+			if (!cache.Applied || cache.Position.DistanceSquaredTo(state.Position) > 1e-4f)
 			{
 				light.Position = state.Position;
 				cache.Position = state.Position;
 				changed = true;
+				spatialChanged = true;
 			}
 
-			if (!cache.Applied || MathF.Abs(cache.OmniRange - omniRange) > 1e-4f)
+			if (!cache.Applied || MathF.Abs(cache.OmniRange - omniRange) > 1e-2f)
 			{
 				light.OmniRange = omniRange;
 				cache.OmniRange = omniRange;
 				changed = true;
+				spatialChanged = true;
 			}
 
 			if (!cache.Applied ||
-				MathF.Abs(cache.Colour.R - state.Colour.R) > 1e-4f ||
-				MathF.Abs(cache.Colour.G - state.Colour.G) > 1e-4f ||
-				MathF.Abs(cache.Colour.B - state.Colour.B) > 1e-4f)
+				MathF.Abs(cache.Colour.R - state.Colour.R) > 1e-3f ||
+				MathF.Abs(cache.Colour.G - state.Colour.G) > 1e-3f ||
+				MathF.Abs(cache.Colour.B - state.Colour.B) > 1e-3f)
 			{
 				// Encoded, because Godot decodes it (see Engine_LightColour).
 				Refii.Lighting.Engine_LightColour.Apply(light, state.Colour);
@@ -733,7 +742,7 @@ public partial class FableFx : Node3D
 				changed = true;
 			}
 
-			if (!cache.Applied || MathF.Abs(cache.LightEnergy - lightEnergy) > 1e-4f)
+			if (!cache.Applied || MathF.Abs(cache.LightEnergy - lightEnergy) > 1e-3f)
 			{
 				light.LightEnergy = lightEnergy;
 				cache.LightEnergy = lightEnergy;
@@ -768,7 +777,10 @@ public partial class FableFx : Node3D
 			{
 				cache.Applied = true;
 				_lightCache[i] = cache;
-				Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Light);
+				if (spatialChanged)
+				{
+					Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Light);
+				}
 			}
 		}
 
@@ -1177,6 +1189,11 @@ public partial class FableFx : Node3D
 	/// </summary>
 	private void ApplyLit()
 	{
+		if (!_system.NeedsSceneLight)
+		{
+			return;
+		}
+
 		float r = 1f, g = 1f, b = 1f;
 
 		// Asked every 30 frames while absent, not every step (each query allocates a wrapper);

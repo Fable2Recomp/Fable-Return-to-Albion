@@ -28,6 +28,7 @@ public partial class Engine_FirstPersonHead : SkeletonModifier3D
 
 	private int _head = -1;
 	private int _bone = -1;
+	private bool _shrunk;
 
 	/// <summary>Gives <paramref name="skeleton"/> a head hider unless it has one; false when it has no head bone.</summary>
 	public static bool Ensure(Skeleton3D skeleton)
@@ -66,9 +67,15 @@ public partial class Engine_FirstPersonHead : SkeletonModifier3D
 		}
 
 		Vector3 eyes = skeleton.GlobalTransform * skeleton.GetBoneGlobalPose(_head).Origin;
-		if (eyes.DistanceTo(camera.GlobalPosition) < Radius)
+		if (!Refii.Game.GameWorld.WorldBuildHeld && eyes.DistanceTo(camera.GlobalPosition) < Radius)
 		{
 			skeleton.SetBonePoseScale(_bone, Vector3.One * 0.001f);
+			_shrunk = true;
+		}
+		else if (_shrunk || skeleton.GetBonePoseScale(_bone) != Vector3.One)
+		{
+			skeleton.SetBonePoseScale(_bone, Vector3.One);
+			_shrunk = false;
 		}
 	}
 

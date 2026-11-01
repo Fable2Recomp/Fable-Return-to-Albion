@@ -857,12 +857,20 @@ public sealed partial class Engine_FxSystem
         return v;
     }
 
+    /// <summary>
+    /// True when at least one visual or trail visual in this system has <c>SelfIllum &lt; 0.999f</c>
+    /// and therefore mixes in scene lighting (<c>inst.Lit</c>). Fully self-illuminated effects
+    /// (<c>SelfIllum &gt;= 1.0f</c>) multiply <c>inst.Lit</c> by zero and can skip <c>SceneLightAt</c>.
+    /// </summary>
+    public bool NeedsSceneLight { get; private set; }
+
     public void Build(FxBank bank, IEnumerable<FxPlacement> placements)
     {
         _instances.Clear();
         ResolvedCount = 0;
         _detachedParticles = false;
         _previousGlobal = null;
+        NeedsSceneLight = false;
 
         foreach (FxPlacement p in placements)
         {
@@ -884,7 +892,6 @@ public sealed partial class Engine_FxSystem
             var placePos = new[] { p.Pos[0] + (sc * rsk[0]), p.Pos[1] + (sc * rsk[1]), p.Pos[2] + (sc * rsk[2]) };
             Array.Copy(placePos, inst.PlacePos, 3);
             inst.Lit[0] = inst.Lit[1] = inst.Lit[2] = 1f;
-            AmbientProvider?.Invoke(placePos, inst.Lit);
             Array.Copy(placeRot, inst.PlaceRot, 9);
             inst.Scale = sc;
 
@@ -1046,14 +1053,35 @@ public sealed partial class Engine_FxSystem
                 chain.Add(node);
             }
 
+            bool instNeedsSceneLight = false;
             for (int ei = 0; ei < inst.Emitters.Count; ei++)
             {
                 EmitterRuntime rt = inst.Emitters[ei];
+                if (!instNeedsSceneLight)
+                {
+                    foreach (VisualRuntime v in rt.Visuals)
+                    {
+                        if (v.SelfIllum < 0.999f) { instNeedsSceneLight = true; break; }
+                    }
+                    if (!instNeedsSceneLight)
+                    {
+                        foreach (VisualRuntime v in rt.TrailVisuals)
+                        {
+                            if (v.SelfIllum < 0.999f) { instNeedsSceneLight = true; break; }
+                        }
+                    }
+                }
                 for (int ai = 0; ai < inst.Attractors.Count; ai++)
                 {
                     AttractorRuntime at = inst.Attractors[ai];
                     if (at.Global || rt.PositionalInteractable) rt.Attractors.Add(ai);
                 }
+            }
+
+            if (instNeedsSceneLight)
+            {
+                NeedsSceneLight = true;
+                AmbientProvider?.Invoke(placePos, inst.Lit);
             }
 
             if (inst.Emitters.Count != 0 || inst.Lights.Count != 0)
@@ -2061,15 +2089,17 @@ public sealed partial class Engine_FxSystem
         ResolvedCount = 0;
         _previousGlobal = null;
         _detachedParticles = false;
+        NeedsSceneLight = false;
     }
 
     /// <summary>
     /// Range is the falloff radius (param 15); Cutoff the camera distance at which the guest's
     /// intensity reaches zero (param 17, capped 1000); Ramp the width of that fade inside the
     /// cutoff (param 18); ConeAngle the spot half-angle in radians (param 24, spots only —
-    /// zero means no cone).
+    /// zero means no cone); BaseRange is the un-flickered keyframe range so the host node's AABB
+    /// remains stable across flicker steps.
     /// </summary>
-    public readonly record struct FxLightState(Vector3 Position, Color Colour, float Range, float Energy, float Cutoff, float Ramp, float ConeAngle);
+    public readonly record struct FxLightState(Vector3 Position, Color Colour, float Range, float Energy, float Cutoff, float Ramp, float ConeAngle, float BaseRange = 0f);
 
     public int LightCount
     {
@@ -2102,7 +2132,8 @@ public sealed partial class Engine_FxSystem
                     before.Energy + ((now.Energy - before.Energy) * a),
                     now.Cutoff,
                     now.Ramp,
-                    now.ConeAngle);
+                    now.ConeAngle,
+                    before.BaseRange + ((now.BaseRange - before.BaseRange) * a));
             }
         }
 
@@ -2121,6 +2152,7 @@ public sealed partial class Engine_FxSystem
         float brightness = Math.Clamp(1f + (phase * d.Generic[20].EvalFrame(f)), 0f, 2f);
         float radius = d.TypeId == 7 ? 1f + (phase * d.Generic[19].EvalFrame(f)) : 1f;
         float energy = d.LightIntensity.EvalFrame(f) * brightness;
+        float baseRange = MathF.Max(0f, d.LightRange.EvalFrame(f));
 
         // Not scaled by the effect's scale: `sub_8323FA50` hands param 15 to the proxy
         // unmultiplied (`fmr f1, f30` → `stfs f31, 0x90`), and the colour path is
@@ -2128,11 +2160,12 @@ public sealed partial class Engine_FxSystem
         return new FxLightState(
             ToGodot(worldPos),
             new Color(r, g, b),
-            MathF.Max(0f, d.LightRange.EvalFrame(f) * radius),
+            MathF.Max(0f, baseRange * radius),
             energy,
             d.LightCutoff.EvalFrame(f),
             d.LightFadeRamp.EvalFrame(f),
-            d.LightConeAngle.EvalFrame(f));
+            d.LightConeAngle.EvalFrame(f),
+            baseRange);
     }
 
     /// <summary>

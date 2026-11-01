@@ -75,26 +75,26 @@ public static class Engine_TreeReach
 	{
 		try
 		{
-			float bias = Refii.Core.Engine_RefiiConfig.Float(Refii.Core.Engine_RefiiConfig.Read(out _), TreeLodBiasKey, 1f);
-			return float.IsFinite(bias) && bias > 0f ? Mathf.Clamp(bias, 0.1f, 4f) : 1f;
+			float bias = Refii.Core.Engine_RefiiConfig.Float(Refii.Core.Engine_RefiiConfig.Read(out _), TreeLodBiasKey, 0.65f);
+			return float.IsFinite(bias) && bias > 0f ? Mathf.Clamp(bias, 0.1f, 4f) : 0.65f;
 		}
 		catch (System.Exception)
 		{
-			return 1f;
+			return 0.65f;
 		}
 	}
 
-	/// <summary>The configured `tree_far_reach` (a cvar-set override included), or 0.</summary>
+	/// <summary>The configured `tree_far_reach` (a cvar-set override included), defaulting to 400 m.</summary>
 	private static float ReadTreeFarReach()
 	{
 		try
 		{
-			float metres = Refii.Core.Engine_RefiiConfig.Float(Refii.Core.Engine_RefiiConfig.Read(out _), TreeFarReachKey, 0f);
+			float metres = Refii.Core.Engine_RefiiConfig.Float(Refii.Core.Engine_RefiiConfig.Read(out _), TreeFarReachKey, 400f);
 			return metres > 0f && float.IsFinite(metres) ? metres : 0f;
 		}
 		catch (System.Exception)
 		{
-			return 0f;
+			return 400f;
 		}
 	}
 

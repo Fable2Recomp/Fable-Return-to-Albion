@@ -417,9 +417,17 @@ public static class Engine_ShadowProxy
 			: (body.Layers & ~Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask);
 
 		// The body's screen-size cull is the caster's too: a range is per instance, not inherited.
-		proxy.VisibilityRangeEnd = body.VisibilityRangeEnd;
-		proxy.VisibilityRangeEndMargin = body.VisibilityRangeEndMargin;
-		proxy.VisibilityRangeFadeMode = body.VisibilityRangeFadeMode;
+		// For skinned proxies (NPCs, doors, chests, tables) whose body has no explicit draw cutoff,
+		// cap the shadow proxy at 75 m so distant entities do not render into the far sun cascade.
+		proxy.VisibilityRangeEnd = body.VisibilityRangeEnd > 0f
+			? body.VisibilityRangeEnd
+			: (skinned ? 75f : 0f);
+		proxy.VisibilityRangeEndMargin = body.VisibilityRangeEnd > 0f
+			? body.VisibilityRangeEndMargin
+			: (skinned ? 8f : 0f);
+		proxy.VisibilityRangeFadeMode = body.VisibilityRangeEnd > 0f
+			? body.VisibilityRangeFadeMode
+			: GeometryInstance3D.VisibilityRangeFadeModeEnum.Disabled;
 		// And its dither band, where a tier-culled prop has one: the shadow fades with the body.
 		Refii.Level.Engine_PropFade.Copy(body, proxy);
 

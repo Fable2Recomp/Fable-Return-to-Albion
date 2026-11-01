@@ -113,7 +113,7 @@ public partial class Engine_LightFlicker : Node
 				light.BaseRange = (float)light.Node.GetMeta(Engine_LevelLights.AuthoredRangeMeta).AsDouble();
 			}
 			light.WrittenRadiusScale = -1.0f;
-			Apply(light, light.Phase);
+			Apply(light, light.Phase, updateTableRadius: true);
 		}
 	}
 
@@ -239,13 +239,17 @@ public partial class Engine_LightFlicker : Node
 		}
 
 		float between = (float)Math.Clamp(_carried / WalkSeconds, 0.0, 1.0);
+		bool stepped = steps > 0;
 		foreach (Flickering light in _lights)
 		{
 			if (IsInstanceValid(light.Node) && light.Node.Visible)
 			{
 				++Updates;
 				++RadiusCandidates;
-				Apply(light, light.PreviousPhase + ((light.Phase - light.PreviousPhase) * between));
+				Apply(
+					light,
+					light.PreviousPhase + ((light.Phase - light.PreviousPhase) * between),
+					updateTableRadius: stepped || light.WrittenRadiusScale < 0.0f);
 			}
 		}
 	}
@@ -261,6 +265,11 @@ public partial class Engine_LightFlicker : Node
 	{
 		foreach (Flickering light in _lights)
 		{
+			if (!IsInstanceValid(light.Node) || !light.Node.Visible)
+			{
+				continue;
+			}
+
 			// The guest's walk, in its own order: draw uniformly from [0, 2), subtract the current
 			// phase and one, scale by the rate and the normalised step, and add.
 			//
@@ -279,17 +288,21 @@ public partial class Engine_LightFlicker : Node
 	}
 
 	/// <summary>Writes one light's brightness and radius at a walk state.</summary>
-	private static void Apply(Flickering light, float phase)
+	private static void Apply(Flickering light, float phase, bool updateTableRadius = true)
 	{
 		// `821f0c4c fmadds f11, f13, f27, f0` — phase * BrightnessRange + 1, straight onto the
 		// light's colour scale. The floor is ours: the guest stores the product unclamped at
 		// this point, and with the shipped ranges (0.05 to 0.23) it cannot go negative anyway,
 		// but a modded value past 1.0 would otherwise drive the energy through zero.
 		float fade = Engine_LightShadowBudget.VisibilityFactorOf(light.Node);
-		light.Node.LightEnergy =
+		float newEnergy =
 			light.BaseEnergy * fade * MathF.Max(1.0f + (phase * light.BrightnessRange), 0.0f);
+		if (MathF.Abs(light.Node.LightEnergy - newEnergy) > 1e-3f)
+		{
+			light.Node.LightEnergy = newEnergy;
+		}
 
-		if (!light.FlickersRadius)
+		if (!light.FlickersRadius || !updateTableRadius)
 		{
 			return;
 		}
@@ -298,8 +311,9 @@ public partial class Engine_LightFlicker : Node
 		// is a different number from the brightness one. The two ranges are authored
 		// separately (0.21 and 0.23 on the shipped torches) and share only the walk.
 		float scale = MathF.Max(1.0f + (phase * light.RadiusRange), 0.01f);
-		if (RadiusEpsilon > 0.0f
-			&& MathF.Abs(scale - light.WrittenRadiusScale) < RadiusEpsilon)
+		float minEpsilon = MathF.Max(RadiusEpsilon, 0.005f);
+		if (light.WrittenRadiusScale >= 0.0f
+			&& MathF.Abs(scale - light.WrittenRadiusScale) < minEpsilon)
 		{
 			return;
 		}
