@@ -23,6 +23,7 @@
 1	Godot/src/Engine/ui/Engine_UiTheme.cs
 1	Godot/src/Titles/Fable2/game/GamePubGames.cs
 1	Godot/src/Titles/Fable2/game/GameUi.cs
+1	Godot/src/Titles/Fable2/ui/Engine_UiSpellAssignSet.cs
 2	Godot/src/game/GameDevTabFrame.cs
 2	Godot/src/game/GameDevTabTracy.cs
 1	Godot/src/game/GameEntities.cs

@@ -70,6 +70,7 @@ public static class AndroidTouchCustomLayout
         TouchContext.PubGame => "Pub games",
         TouchContext.Photo => "Photo mode",
         TouchContext.Mirror => "The mirror",
+        TouchContext.Decorate => "Decorating",
         _ => screen.ToString(),
     };
 

@@ -73,8 +73,8 @@ public sealed class AndroidTouchControlsTests
         AssertThat(world).NotContains("RS");
         AssertThat(menu).Contains("A", "B", "X", "Y", "LB", "RB", "Start", "DPad", "Options");
         AssertThat(menu).NotContains("Stick", "Look", "LT", "RT");
-        AssertThat(wheel).Contains("RT", "Back", "A", "B", "DPad");
-        AssertThat(wheel).NotContains("Stick", "Look");
+        AssertThat(wheel).Contains("Back", "A", "B", "DPad");
+        AssertThat(wheel).NotContains("Stick", "Look", "RT");
     }
 
     /// <summary>
@@ -91,9 +91,14 @@ public sealed class AndroidTouchControlsTests
             .First(c => c.Id == "Y");
         AssertThat(villagerY.Caption).IsEqual("Info");
         AssertThat(villagerY.Bounds).IsEqual(AndroidTouchLayout.Build(Phone, 1f, TouchContext.World).First(c => c.Id == "Y").Bounds);
-        AssertThat(Ids(new TouchHero(true, false, false))).NotContains("B", "RT");
-        AssertThat(Ids(new TouchHero(true, true, false))).NotContains("RT");
+        AssertThat(Ids(new TouchHero(true, false, false))).NotContains("B");
         AssertThat(Ids(TouchHero.Everything)).Contains("Y", "B", "RT", "LT");
+
+        // Spells stands for every hero, its hold drawing in the experience orbs, and keeps its name.
+        TouchControl Spells(TouchHero hero) => AndroidTouchLayout.Build(Phone, 1f, TouchContext.World, hero: hero).First(c => c.Id == "RT");
+        AssertThat(Spells(new TouchHero(true, false, false)).Caption).IsEqual("Spells");
+        AssertThat(Spells(new TouchHero(true, true, false)).Caption).IsEqual("Spells");
+        AssertThat(Spells(TouchHero.Everything).Caption).IsEqual("Spells");
 
         // Hiding one moves no other.
         TouchControl x = AndroidTouchLayout.Build(Phone, 1f, TouchContext.World, hero: new TouchHero(false, false, false)).First(c => c.Id == "X");
@@ -164,7 +169,7 @@ public sealed class AndroidTouchControlsTests
     public void LatchedOpenersStayPutInTheWheel()
     {
         AndroidTouchPad world = Pad(TouchContext.World), wheel = Pad(TouchContext.Wheel);
-        foreach (string id in new[] { "RT", "Back", "DPad" })
+        foreach (string id in new[] { "Back", "DPad" })
             AssertThat(Centre(wheel, id)).IsEqual(Centre(world, id));
     }
 
@@ -306,21 +311,20 @@ public sealed class AndroidTouchControlsTests
         AssertThat(release.Update(true, false, 0.6)).IsTrue();    // the guest never opened it
     }
 
-    /// <summary>A latched Lock ends as the wheel, which has no Lock, opens; a latched Spells survives the wheel it opens and ends when a menu opens.</summary>
+    /// <summary>A latched Lock ends as the wheel, which has no Lock, opens; a latched Emotes survives the wheel it opens and ends when a menu opens.</summary>
     [TestCase]
     public void LatchesEndWithThePlay()
     {
         AndroidTouchPad pad = Pad(TouchContext.World);
-        // Spells latches on a hold (a tap is the touch picker's), Lock on a tap.
-        pad.Down(0, Centre(pad, "RT"), 0.0);
-        pad.Up(0, Centre(pad, "RT"), 0.4);
+        pad.Down(0, Centre(pad, "Back"), 0.0);
+        pad.Up(0, Centre(pad, "Back"), 0.05);
         pad.Down(0, Centre(pad, "LT"), 0.5);
         pad.Up(0, Centre(pad, "LT"), 0.55);
         pad.SetLayout(TouchContext.Wheel, AndroidTouchLayout.Build(Phone, 1f, TouchContext.Wheel), System.Array.Empty<Rect2>());
-        AssertThat(pad.Sample(0.7).RightTrigger).IsEqual(255u);
+        AssertThat(pad.Sample(0.7).Buttons & GameInput.PadBack).IsEqual(GameInput.PadBack);
         AssertThat(pad.Sample(0.7).LeftTrigger).IsEqual(0u);
         pad.SetLayout(TouchContext.Menu, AndroidTouchLayout.Build(Phone, 1f, TouchContext.Menu), System.Array.Empty<Rect2>());
-        AssertThat(pad.Sample(0.8).RightTrigger).IsEqual(0u);
+        AssertThat(pad.Sample(0.8).Buttons & GameInput.PadBack).IsEqual(0u);
     }
 
     /// <summary>The stick starts outside the guest's own dead zone, is full at the ring, and sprints past it.</summary>
@@ -483,6 +487,49 @@ public sealed class AndroidTouchControlsTests
     }
 
     /// <summary>
+    /// Decorating flies the camera as photo mode does; a held piece adds Place, Turn and Item, all
+    /// on the screen and none over another; a hidden panel gives a Panel button to bring it back.
+    /// </summary>
+    [TestCase]
+    public void DecoratingFliesTheCameraAndWorksTheHeldPiece()
+    {
+        AssertThat(AndroidTouchLayout.Build(Phone, 1f, TouchContext.Decorate).Select(c => c.Id).ToArray())
+            .ContainsExactly("Lower", "Raise", "Stick", "Look");
+        AssertThat(AndroidTouchLayout.Build(Phone, 1f, TouchContext.Decorate, photoPanel: false).Select(c => c.Id).ToArray())
+            .ContainsExactly("Panel", "Lower", "Raise", "Stick", "Look");
+        var placing = AndroidTouchLayout.Build(Phone, 1f, TouchContext.Decorate, placing: true);
+        AssertThat(placing.Select(c => c.Id).ToArray())
+            .ContainsExactly("Place", "TurnLeft", "TurnRight", "ItemDown", "ItemUp", "Lower", "Raise", "Stick", "Look");
+        var buttons = placing.Where(c => c.Kind is not (TouchControlKind.Stick or TouchControlKind.Look)).ToList();
+        foreach (TouchControl button in buttons)
+        {
+            AssertThat(new Rect2(Vector2.Zero, Phone).Encloses(button.Bounds)).IsTrue();
+            AssertThat(buttons.Any(other => other != button && Overlaps(button, other))).IsFalse();
+        }
+
+        AssertThat(placing.First(c => c.Id == "Place").Bits).IsEqual(GameInput.PadA);
+        AssertThat(placing.First(c => c.Id == "Raise").Trigger).IsEqual(TouchTrigger.Right);
+    }
+
+    /// <summary>A tap on the room while decorating is reported with where it landed; a drag only turns the camera.</summary>
+    [TestCase]
+    public void DecoratingReportsATapWhereItLands()
+    {
+        AndroidTouchPad pad = Pad(TouchContext.Decorate);
+        var at = new Vector2(1000f, 300f);
+        pad.Down(0, at, 0.0);
+        pad.Up(0, at, 0.1);
+        AssertThat(pad.TakeActions().ToArray()).ContainsExactly(AndroidTouchLayout.DecorateTap);
+        AssertThat(pad.LastTap).IsEqual(at);
+
+        pad.Down(1, at, 1.0);
+        pad.Move(1, at + new Vector2(80f, 0f), new Vector2(80f, 0f));
+        pad.Up(1, at + new Vector2(80f, 0f), 1.1);
+        AssertThat(pad.TakeActions().Count).IsEqual(0);
+        AssertThat(pad.TakeLook()).IsEqual(new Vector2(80f, 0f));
+    }
+
+    /// <summary>
     /// A finger on the photo panel is the panel's even where the stick zone lies under it, and a
     /// tap on the camera brings a hidden panel back instead of clicking the right stick.
     /// </summary>
@@ -556,10 +603,10 @@ public sealed class AndroidTouchControlsTests
 
     /// <summary>
     /// Spells: a tap is the touch picker's and presses nothing; a hold presses RT once it is one,
-    /// opening the game's own menu, and latches it open until Spells is tapped again.
+    /// drawing in the experience orbs, and lets go with the finger.
     /// </summary>
     [TestCase]
-    public void SpellsTapsForThePickerAndHoldsForTheMenu()
+    public void SpellsTapsForThePickerAndHoldsForTheTrigger()
     {
         AndroidTouchPad pad = Pad(TouchContext.World);
         Vector2 spells = Centre(pad, "RT");
@@ -571,13 +618,13 @@ public sealed class AndroidTouchControlsTests
 
         pad.Down(0, spells, 1.0);
         AssertThat(pad.Sample(1.1).RightTrigger).IsEqual(0u);
+        AssertThat(pad.HoldProgress("RT", 1.15)).IsEqual(0.5f);
         AssertThat(pad.Sample(1.35).RightTrigger).IsEqual(255u);
+        AssertThat(pad.HoldProgress("RT", 1.35)).IsEqual(1f);
         pad.Up(0, spells, 1.5);
         AssertThat(pad.TakeActions().Count).IsEqual(0);
-        AssertThat(pad.Sample(1.6).RightTrigger).IsEqual(255u);
-        pad.Down(0, spells, 2.0);
-        pad.Up(0, spells, 2.1);
-        AssertThat(pad.Sample(2.2).RightTrigger).IsEqual(0u);
+        AssertThat(pad.Sample(1.6).RightTrigger).IsEqual(0u);
+        AssertThat(pad.HoldProgress("RT", 1.6)).IsEqual(0f);
     }
 
     /// <summary>

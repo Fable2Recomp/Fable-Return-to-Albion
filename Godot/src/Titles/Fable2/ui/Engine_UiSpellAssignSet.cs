@@ -219,7 +219,7 @@ public sealed partial class Engine_UiSpellAssignSet
 
 		if (_wheel is not null && GodotObject.IsInstanceValid(_wheel))
 		{
-			_wheel.Visible = wheelUp;
+			_wheel.Visible = wheelUp && !(Refii.Core.Engine_Platform.IsAndroid && TouchHidesWheel);
 			if (wheelUp)
 			{
 				// THE CURSOR IS THE GUEST'S. Its widget at `*(*(GUI+32)+92)` moves row and cell

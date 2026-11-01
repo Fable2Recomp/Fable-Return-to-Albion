@@ -90,7 +90,11 @@ public sealed class Fable2Title : Engine_TitleGame
 
 	public override bool InteractionDialogUp => GamePubGames.DialogUp;
 
-	public override void RequestBack() => GameMorphMirror.RequestBack();
+	public override void RequestBack()
+	{
+		if (GameDecorate.Active) GameDecorate.RequestBack();
+		else GameMorphMirror.RequestBack();
+	}
 
 	public override Refii.Host.HostBridge.GuestEntity Appearance(Refii.Host.HostBridge.GuestEntity entity) =>
 		GameDecorate.Appearance(entity);

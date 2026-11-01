@@ -135,7 +135,7 @@ public partial class Engine_UiDecorate : Node3D
         _rotationRow.Visible = placing && !HelpOpen;
         _actions[9]!.Visible = placing && !HelpOpen;
         _headingText = HelpOpen ? "Controls" : placing ? "Preview only — confirm to place"
-            : room ? target.Length > 0 ? target : _controller ? "Aim at an object and press A" : "Click an object to select it"
+            : room ? target.Length > 0 ? target : _controller ? "Aim at an object and press A" : Engine_UiInputMode.Touch ? TouchHint : "Click an object to select it"
             : "Furniture inventory";
         PaintHeading();
         int first = selected / PageSize * PageSize;
@@ -156,7 +156,7 @@ public partial class Engine_UiDecorate : Node3D
     {
         HelpOpen = open;
         _help.Visible = open;
-        string text = Engine_UiInputMode.KeyboardMouse
+        string text = Engine_UiInputMode.Touch ? TouchHelp : Engine_UiInputMode.KeyboardMouse
             ? "Click / Enter   Select or confirm\nMouse   Move preview\nWASD   Camera   /   RMB   Look\nQ / E   Camera down / up\nWheel   Move closer / farther\nComma / period   Rotate 45 degrees\nZ / C   Rotate   /   F / R   Item height\nClick X / Y / Z   Edit rotation\nEnter   Accept angle   /   Esc   Cancel\nShift   Faster   /   Ctrl   Slower\nDelete   Put away\nTab   Furniture inventory\nK   Collision on / off\nU   Hide UI   /   H   Controls\nF10   Exit Decorate mode"
             : "Left stick   Move camera\nRight stick   Look around\nLT / RT   Camera down / up\nA   Select / confirm   /   B   Cancel\nLB / RB   Rotate preview\nD-pad up / down   Push / pull item\nD-pad left   Collision on / off\nY   Put away   /   Hold L3   Faster\nX   Furniture inventory\nView   Controls   /   R3   Hide UI\nMenu   Exit Decorate mode";
         _theme.Paint(_help, text, 15, Ink, verticalAlign: 0, boxWidth: 356);

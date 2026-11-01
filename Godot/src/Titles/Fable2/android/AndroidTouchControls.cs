@@ -49,11 +49,21 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
     private (Vector2 Centre, float Reach)? _laidOutSlots;
     private TouchHero _laidOutHero = TouchHero.Everything;
     private bool _laidOutPhotoPanel = true;
+    private bool _laidOutPlacing;
+
+    /// <summary>The finger decorating has taken, dragging the held piece (GameDecorate.TouchGrab), or -1.</summary>
+    private int _grabFinger = -1;
     private string _laidOutPubGame = string.Empty;
     private int _laidOutCustom = -1;
 
     /// <summary>The spells the touch spell picker offers while it is open, or null while it is closed.</summary>
     private IReadOnlyList<(int Will, string Name)>? _pickerSpells, _laidOutPicker;
+
+    /// <summary>
+    /// Whether a touch hold on Spells is hiding the game's spell wheel: from the finger landing
+    /// until the guest has closed the wheel the trigger opened, so it never flashes up on release.
+    /// </summary>
+    private bool _hidingWheel;
 
     /// <summary>The will icons drawn so far, loaded once each.</summary>
     private readonly Dictionary<int, Texture2D?> _willIcons = new();
@@ -116,6 +126,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
             _pointer.Cancel();
             FlushPointer();
             GameInput.Touch = default;
+            _grabFinger = -1;
         }
     }
 
@@ -133,13 +144,27 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
                 if (touch.Pressed)
                 {
                     Engine_UiInputMode.Touch = true;
-                    _pad.Down(touch.Index, touch.Position, Now);
+                    if (GrabsPiece(touch.Position))
+                    {
+                        _grabFinger = touch.Index;
+                    }
+                    else
+                    {
+                        _pad.Down(touch.Index, touch.Position, Now);
+                    }
+                }
+                else if (touch.Index == _grabFinger)
+                {
+                    _grabFinger = -1;
                 }
                 else
                 {
                     _pad.Up(touch.Index, touch.Position, Now);
                 }
 
+                break;
+            case InputEventScreenDrag drag when drag.Index == _grabFinger:
+                GameDecorate.TouchDrag(drag.Position);
                 break;
             case InputEventScreenDrag drag:
                 _pad.Move(drag.Index, drag.Position, drag.Relative);
@@ -151,6 +176,16 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
         GetViewport().SetInputAsHandled();
         FlushPointer();
     }
+
+    /// <summary>
+    /// Whether a finger landing at <paramref name="at"/> takes the held piece while decorating: on
+    /// it, and on no button or panel, which keep their fingers.
+    /// </summary>
+    private bool GrabsPiece(Vector2 at) =>
+        _pad.Context == TouchContext.Decorate && _grabFinger < 0 &&
+        !_passThrough.Any(rect => rect.HasPoint(at)) &&
+        !_pad.Controls.Any(control => control.Kind is not (TouchControlKind.Stick or TouchControlKind.Look) && control.Hit(at)) &&
+        GameDecorate.TouchGrab(at);
 
     public override void _Process(double delta)
     {
@@ -183,12 +218,17 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
         {
             _passThrough.Add(mirrorPanel);
         }
+        else if (context == TouchContext.Decorate && GameDecorate.PanelRect is { } decoratePanel)
+        {
+            _passThrough.Add(decoratePanel);
+        }
 
         (Vector2 Centre, float Reach)? slots = ItemSlots(size);
         bool slotsMoved = slots is { } fresh && (_laidOutSlots is not { } was ||
             fresh.Centre.DistanceTo(was.Centre) > 2f || Mathf.Abs(fresh.Reach - was.Reach) > 2f);
         TouchHero hero = Hero(delta);
-        bool photoPanel = GamePhotoMode.PanelShown;
+        bool photoPanel = context == TouchContext.Decorate ? GameDecorate.PanelShown : GamePhotoMode.PanelShown;
+        bool placing = context == TouchContext.Decorate && GameDecorate.Placing;
         string pubGame = GamePubGames.Showing;
         if (context != TouchContext.World)
         {
@@ -197,7 +237,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
         }
 
         if (context != _laidOutContext || size != _laidOutSize || _scale != _laidOutScale || slotsMoved ||
-            hero != _laidOutHero || photoPanel != _laidOutPhotoPanel || _pickerSpells != _laidOutPicker ||
+            hero != _laidOutHero || photoPanel != _laidOutPhotoPanel || placing != _laidOutPlacing || _pickerSpells != _laidOutPicker ||
             pubGame != _laidOutPubGame || AndroidTouchCustomLayout.Version != _laidOutCustom)
         {
             _laidOutContext = context;
@@ -206,11 +246,12 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
             _laidOutSlots = slots;
             _laidOutHero = hero;
             _laidOutPhotoPanel = photoPanel;
+            _laidOutPlacing = placing;
             _laidOutPicker = _pickerSpells;
             _laidOutPubGame = pubGame;
             _laidOutCustom = AndroidTouchCustomLayout.Version;
             IReadOnlyList<TouchControl> controls = AndroidTouchCustomLayout.Apply(
-                AndroidTouchLayout.Build(size, _scale, context, slots, hero, photoPanel, pubGame), size, context);
+                AndroidTouchLayout.Build(size, _scale, context, slots, hero, photoPanel, pubGame, placing), size, context);
             if (_pickerSpells is { } offered)
             {
                 // Modal while it stands: the picker and its backdrop take every touch first.
@@ -231,10 +272,19 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
             {
                 GamePhotoMode.ShowPanel();
             }
+            else if (action == AndroidTouchLayout.DecorateTap)
+            {
+                GameDecorate.TouchTap(_pad.LastTap);
+            }
+            else if (action == "Panel")
+            {
+                GameDecorate.ShowPanel();
+            }
             else if (action == "RT")
             {
-                // Spells tapped: the touch picker, or closed again when it is already open.
-                _pickerSpells = _pickerSpells is null ? OfferedSpells() : null;
+                // Spells tapped: the touch picker, or closed again when it is already open. With
+                // fewer than two spells there is nothing to choose: the button is only the hold.
+                _pickerSpells = _pickerSpells is null && Engine_UiSpellAssignSet.SpellsMenuCanOpen ? OfferedSpells() : null;
             }
             else if (action.StartsWith(AndroidTouchLayout.SpellPrefix, System.StringComparison.Ordinal) &&
                 int.TryParse(action.Substring(AndroidTouchLayout.SpellPrefix.Length), out int will))
@@ -263,6 +313,16 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
 
         double now = Now;
         TouchPadOutput output = _pad.Sample(now);
+        _hidingWheel = _pad.Touching("RT") || (_hidingWheel && Engine_UiSpellAssignSet.GuestWheelOpen);
+        Engine_UiSpellAssignSet.TouchHidesWheel = _hidingWheel;
+        if (_hidingWheel && Engine_UiSpellAssignSet.GuestWheelOpen)
+        {
+            // THE HIDDEN WHEEL STILL TAKES THE PAD: the stick turns its carousel, which assigns as
+            // it turns, and X and Y pick partners. Under a touch hold only the trigger reaches the
+            // game, so nothing is chosen unseen; the orbs come in all the same.
+            output = output with { Buttons = 0u, LeftTrigger = 0u, LeftX = 0, LeftY = 0 };
+        }
+
         GameInput.Touch = new GameInput.TouchHold(output.Buttons, output.LeftTrigger, output.RightTrigger,
             output.LeftX, output.LeftY);
         Vector2 look = _pad.TakeLook();
@@ -275,6 +335,10 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
             else if (GameMorphMirror.OwnsInput)
             {
                 GameMorphMirror.PostTouchTurn(look.X / size.Y * _lookSensitivity);
+            }
+            else if (GameDecorate.Active)
+            {
+                GameDecorate.PostTouchLook(look / size.Y, _lookSensitivity);
             }
             else
             {
@@ -380,12 +444,18 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
             return TouchContext.Mirror;
         }
 
+        if (GameDecorate.Active)
+        {
+            return TouchContext.Decorate;
+        }
+
         if (!GameInput.Playing)
         {
             return TouchContext.Menu;
         }
 
-        return GameInput.InOverlay ? TouchContext.Wheel : TouchContext.World;
+        // The trigger a Spells hold sends is the overlay's own flag: the play keeps its layout.
+        return GameInput.InOverlay && !_hidingWheel ? TouchContext.Wheel : TouchContext.World;
     }
 
     private static bool AnyKnownJoypad()
@@ -719,6 +789,28 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
                     DrawTextureRect(spellIcon, control.Bounds.Grow(-radius * 0.2f), false,
                         Colors.White with { A = Mathf.Min(1f, alpha + 0.45f) });
                 }
+                else
+                {
+                    // No spell to show: three orbs, what the hold draws in.
+                    foreach ((float x, float y, float r) in new[] { (-0.22f, 0.12f, 0.17f), (0.2f, 0.16f, 0.13f), (0f, -0.2f, 0.15f) })
+                    {
+                        DrawCircle(centre + new Vector2(x, y) * radius, r * radius, ink);
+                    }
+                }
+
+                // THE HOLD IS THE TRIGGER, WHICH DRAWS IN THE ORBS: a ring fills round the button
+                // as a press becomes a hold, and stays full while it is one.
+                float hold = _pad.HoldProgress(control.Id, Now);
+                if (hold > 0f)
+                {
+                    DrawArc(centre, radius + 4f * unit, -Mathf.Pi * 0.5f, -Mathf.Pi * 0.5f + Mathf.Tau * hold, 48,
+                        (hold >= 1f ? AndroidTouchLayout.YellowY : trim) with { A = Mathf.Min(1f, alpha + 0.5f) }, 5f * unit, true);
+                }
+
+                // What the hold does, as large as the name and over the button, where the room is:
+                // under it stand the name and then B.
+                DrawText(AndroidTouchLayout.OrbsHint, new Vector2(centre.X, control.Bounds.Position.Y - 26f * unit), 18f * unit,
+                    trim with { A = Mathf.Min(1f, alpha + 0.35f) }, fallback, top: true);
             }
             else if (control.Id is "LB" or "RB")
             {
