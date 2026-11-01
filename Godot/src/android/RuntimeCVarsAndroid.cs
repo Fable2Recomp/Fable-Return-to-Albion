@@ -106,6 +106,11 @@ public static class RuntimeCVarsAndroid
             + "Godot's own threads. The same game; the rest of the work runs on the other cores. "
             + "Takes effect at the next launch."),
 
+        new("foliage_density", DisplayCategory, RuntimeCVarType.Double, "1",
+            "The share of ground foliage (nettles, bracken, grass clumps) drawn, from 0.25 to 1. Each "
+            + "clump is kept or left out by where it stands, so the cover thins evenly. Applies to the "
+            + "next area loaded."),
+
         new("android_guest_real_clock", DisplayCategory, RuntimeCVarType.Bool, "false",
             "Android, CPU: the game reads the real clock directly, instead of through the "
             + "desktop's stepped clock with a lock on every read. The same game at the same "
