@@ -576,7 +576,7 @@ public static class Engine_SwfAssets
     /// <summary>
     /// Decodes the game's bitmaps on worker threads before the build asks for them one at a time
     /// on the main thread: the DDS substitute or SWF JPEG/lossless decode and, on Android, the
-    /// BC to ASTC transcode (<see cref="Refii.Textures.Engine_TextureUpload.PrepareAhead"/>).
+    /// BC to ASTC transcode (<see cref="Refii.Textures.Engine_AndroidTextureUpload.PrepareAhead"/>).
     /// </summary>
     /// <remarks>CPU work on private images only; every texture is still created on the calling
     /// thread by <see cref="TextureFor"/>, from the same pixels it would have made itself. Bitmaps
@@ -624,7 +624,7 @@ public static class Engine_SwfAssets
                     return;
                 }
 
-                Image upload = Refii.Textures.AndroidAstcDiskCache.PrepareAhead(image, uploads, BuildStamp, Digest, ref cachedUploads);
+                Image upload = PrepareUpload(image, uploads, ref cachedUploads);
                 Bitmap bitmap;
                 lock (Gate)
                 {
@@ -645,6 +645,52 @@ public static class Engine_SwfAssets
             });
         GD.Print($"[swf] {game.Folder}: {pending.Count} bitmaps prepared ahead in {clock.Elapsed.TotalMilliseconds:0} ms" +
                  $" ({cachedUploads} ASTC from the cache)");
+    }
+
+    /// <summary>
+    /// <see cref="Refii.Textures.Engine_AndroidTextureUpload.PrepareAhead"/>, with its BC to ASTC
+    /// transcode kept on disk across launches: <c>astc_&lt;hash&gt;_&lt;format&gt;_&lt;size&gt;_&lt;build&gt;.bin</c>
+    /// in <see cref="CacheDirectory"/>, keyed by the BC payload's own hash, its format, size and
+    /// mipmaps, and the build (which carries the transcoder).
+    /// </summary>
+    /// <remarks>Only an image the policy sends to ASTC is looked up; anything else, and any file
+    /// that is missing, short or describes another image, is prepared as before. Only an ASTC
+    /// result is written: the transcoder's RGBA8 fallback is not kept.</remarks>
+    private static Image PrepareUpload(Image image, string directory, ref int cached)
+    {
+        Image.Format source = image.GetFormat();
+        if (Refii.Textures.Engine_AndroidTextureUpload.Policy.Target(source) != Image.Format.Astc4X4)
+        {
+            return Refii.Textures.Engine_AndroidTextureUpload.PrepareAhead(image);
+        }
+
+        int width = image.GetWidth(), height = image.GetHeight();
+        bool mipmaps = image.HasMipmaps();
+        string path = Path.Combine(directory,
+            $"astc_{Digest(image.GetData())}_{source}_{width}x{height}{(mipmaps ? "m" : string.Empty)}_{BuildStamp}.bin");
+        byte[]? data = Refii.Textures.Engine_PreparedImageFile.TryRead(
+            path, width, height, (int)Image.Format.Astc4X4, mipmaps);
+        if (data is not null)
+        {
+            var read = new Image();
+            read.SetData(width, height, mipmaps, Image.Format.Astc4X4, data);
+            if (!read.IsEmpty())
+            {
+                System.Threading.Interlocked.Increment(ref cached);
+                return read;
+            }
+
+            read.Dispose();
+        }
+
+        Image upload = Refii.Textures.Engine_AndroidTextureUpload.PrepareAhead(image);
+        if (!ReferenceEquals(upload, image) && upload.GetFormat() == Image.Format.Astc4X4)
+        {
+            Refii.Textures.Engine_PreparedImageFile.TryWrite(
+                path, width, height, (int)Image.Format.Astc4X4, mipmaps, upload.GetData());
+        }
+
+        return upload;
     }
 
     /// <summary>Drops the prepared uploads the build never asked for.</summary>
@@ -1210,7 +1256,7 @@ public static class Engine_SwfAssets
         ImageTexture texture;
         try
         {
-            texture = Refii.Textures.Engine_TextureUpload.CreateTexture(image);
+            texture = Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(image);
         }
         finally
         {
@@ -1245,7 +1291,7 @@ public static class Engine_SwfAssets
             if (bitmap.Placeholder is null)
             {
                 Image? image = SwfBitmaps.Decode(bitmap.Tag, bitmap.Tables, out _, out _);
-                bitmap.Placeholder = image is null ? null : Refii.Textures.Engine_TextureUpload.CreateTexture(image);
+                bitmap.Placeholder = image is null ? null : Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(image);
             }
 
             return bitmap.Placeholder;

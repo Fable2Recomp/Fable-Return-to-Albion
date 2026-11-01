@@ -43,8 +43,6 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
 #include <rex/logging.h>
 #include <rex/thread/timer_queue.h>
 
-#include "threading_owner_lifetime_android.h"
-
 #include <sched.h>
 
 #if REX_PLATFORM_ANDROID
@@ -615,7 +613,21 @@ class PosixCondition<Semaphore> : public PosixConditionBase {
   const uint32_t maximum_count_;
 };
 
-// The owner's lifetime, tracked on Android only (threading_owner_lifetime_android.h).
+#if REX_PLATFORM_ANDROID
+// A weak token is immune to thread-id reuse and expires for ordinary C++
+// threads as well as runtime workers. Runtime exit paths clear it before
+// publishing their thread as signaled, so zero-time waits observe abandonment.
+struct AndroidOwnerLifetime {};
+thread_local std::shared_ptr<AndroidOwnerLifetime> android_owner_lifetime;
+static std::shared_ptr<AndroidOwnerLifetime> CurrentAndroidOwnerLifetime() {
+  if (!android_owner_lifetime) {
+    android_owner_lifetime = std::make_shared<AndroidOwnerLifetime>();
+  }
+  return android_owner_lifetime;
+}
+static void ReleaseAndroidOwnerLifetime() { android_owner_lifetime.reset(); }
+#endif
+
 template <>
 class PosixCondition<Mutant> : public PosixConditionBase {
  public:
@@ -623,7 +635,9 @@ class PosixCondition<Mutant> : public PosixConditionBase {
     if (initial_owner) {
       count_ = 1;
       owner_ = std::this_thread::get_id();
-      owner_lifetime_.Claim();
+#if REX_PLATFORM_ANDROID
+      owner_lifetime_ = CurrentAndroidOwnerLifetime();
+#endif
     }
   }
 
@@ -631,7 +645,11 @@ class PosixCondition<Mutant> : public PosixConditionBase {
 
   bool Release() {
     auto lock = std::unique_lock<std::mutex>(mutex_);
-    if (owner_ == std::this_thread::get_id() && count_ > 0 && !owner_lifetime_.expired()) {
+    if (owner_ == std::this_thread::get_id() && count_ > 0
+#if REX_PLATFORM_ANDROID
+        && !owner_lifetime_.expired()
+#endif
+        ) {
       --count_;
       // Free to be acquired by another thread
       if (count_ == 0) {
@@ -646,21 +664,29 @@ class PosixCondition<Mutant> : public PosixConditionBase {
 
  private:
   inline bool signaled() const override {
-    return count_ == 0 || owner_ == std::this_thread::get_id() || owner_lifetime_.expired();
+    return count_ == 0 || owner_ == std::this_thread::get_id()
+#if REX_PLATFORM_ANDROID
+           || owner_lifetime_.expired()
+#endif
+        ;
   }
   inline void post_execution() override {
+#if REX_PLATFORM_ANDROID
     if (abandoned()) {
       count_ = 0;
     }
-    owner_lifetime_.Claim();
+    owner_lifetime_ = CurrentAndroidOwnerLifetime();
+#endif
     count_++;
     owner_ = std::this_thread::get_id();
   }
   uint32_t count_;
   std::thread::id owner_;
+#if REX_PLATFORM_ANDROID
   bool abandoned() const override { return count_ > 0 && owner_lifetime_.expired(); }
-  bool poll_owner_lifetime() const override { return MutantOwnerLifetime::kPolled; }
-  MutantOwnerLifetime owner_lifetime_;
+  bool poll_owner_lifetime() const override { return true; }
+  std::weak_ptr<AndroidOwnerLifetime> owner_lifetime_;
+#endif
 };
 
 template <>
@@ -1091,8 +1117,8 @@ class PosixCondition<Thread> : public PosixConditionBase {
       throw std::system_error(std::make_error_code(std::errc::operation_not_supported),
                               "Android cross-thread termination");
     }
+    ReleaseAndroidOwnerLifetime();
 #endif
-    MutantOwnerLifetime::ReleaseCurrentThread();
     {
       std::unique_lock<std::mutex> lock(state_mutex_);
       if (state_ == State::kFinished) {
@@ -1641,7 +1667,9 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
 
   start_routine();
 
-  MutantOwnerLifetime::ReleaseCurrentThread();
+#if REX_PLATFORM_ANDROID
+  ReleaseAndroidOwnerLifetime();
+#endif
 
   {
     std::unique_lock<std::mutex> lock(thread->handle_.state_mutex_);
@@ -1708,7 +1736,9 @@ void Thread::Exit(int exit_code) {
     current_thread_->Terminate(exit_code);
   } else {
     // Should only happen with the main thread
-    MutantOwnerLifetime::ReleaseCurrentThread();
+#if REX_PLATFORM_ANDROID
+    ReleaseAndroidOwnerLifetime();
+#endif
     pthread_exit(reinterpret_cast<void*>(exit_code));
   }
   // Function must not return

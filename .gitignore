@@ -486,7 +486,10 @@ Godot/src/Engine/level/environment/dynamic/dynamic_cloud_shadow_density.gdshader
 
 # Android source lives under Godot/src/android; Gradle templates and all private
 # inputs/results are generated into separate output roots, never publication.
-# The Godot project's own Android outputs are in Godot/.gitignore.
+/Godot/android/build/
+/Godot/android/.build_version
+/Godot/android/plugins/
+/Godot/.gradle/
 /android-local/
 /android-output/
 /android-private/
@@ -505,7 +508,6 @@ librefii_generated.so
 *.iso
 *.bik
 *.refii
-!/Godot/assets/save/achievements.refii
 mainsave.bin
 herosave.bin
 refii_recomp.*.cpp

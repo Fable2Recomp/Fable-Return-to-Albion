@@ -87,9 +87,18 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 		public string? ShownOpinion { get; set; }
 		public Color ShownRgb { get; set; } = Colors.Transparent;
 		public bool Used { get; set; }
+		public Vector2 LastCanvas { get; set; } = new(float.NaN, float.NaN);
+		public Vector3 LastSight { get; set; } = new(float.NaN, float.NaN, float.NaN);
+		public float LastPieceScale { get; set; } = float.NaN;
+		public float LastSize { get; set; } = float.NaN;
+		public float LastTitleHeight { get; set; } = float.NaN;
+		public Color LastColour { get; set; } = new(float.NaN, float.NaN, float.NaN, float.NaN);
 	}
 
 	private readonly Dictionary<uint, Drawn> _drawn = new();
+
+	/// <summary>Number of currently live world sprites tracked by this layer.</summary>
+	public int ActiveCount => _drawn.Count;
 
 	private static readonly Shader MarkerShader =
 		GD.Load<Shader>("res://src/Engine/ui/ui_world_marker.gdshader");
@@ -247,6 +256,15 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 
 	public override void _Process(double delta)
 	{
+		if (_drawn.Count == 0)
+		{
+			if (_reported.Length != 0 && _reported != "none")
+			{
+				Report(0);
+			}
+			return;
+		}
+
 		_lastCanvas = null;
 		int shown = 0;
 		foreach (Drawn drawn in _drawn.Values)
@@ -257,50 +275,90 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 				: null;
 			if (placed is not { } at)
 			{
-				drawn.Node.Visible = false;
+				if (drawn.Node.Visible)
+				{
+					drawn.Node.Visible = false;
+				}
 				continue;
 			}
 
 			++shown;
 			_lastCanvas ??= (sprite.Anchor, at.Canvas, sprite.Scale, sprite.Colour);
-			drawn.Node.Visible = true;
-			drawn.Node.Position = new Vector3(at.Canvas.X, at.Canvas.Y, 0f);
-			drawn.Node.Scale = new Vector3(PieceScale, PieceScale, 1f);
-			drawn.Icon.Visible = sprite.Texture is not null || sprite.TextureHash != 0u;
+			if (!drawn.Node.Visible)
+			{
+				drawn.Node.Visible = true;
+			}
+			if (!drawn.LastCanvas.IsEqualApprox(at.Canvas))
+			{
+				drawn.LastCanvas = at.Canvas;
+				drawn.Node.Position = new Vector3(at.Canvas.X, at.Canvas.Y, 0f);
+			}
+			if (!Mathf.IsEqualApprox(drawn.LastPieceScale, PieceScale))
+			{
+				drawn.LastPieceScale = PieceScale;
+				drawn.Node.Scale = new Vector3(PieceScale, PieceScale, 1f);
+			}
+
+			bool iconVisible = sprite.Texture is not null || sprite.TextureHash != 0u;
+			if (drawn.Icon.Visible != iconVisible)
+			{
+				drawn.Icon.Visible = iconVisible;
+			}
 
 			float size = Mathf.Max(IconSize * sprite.Scale, 0.001f);
 			float titleHeight = sprite.Title.Length > 0 ? TextSize : 0f;
-			drawn.Icon.Scale = new Vector3(size, size, 1f);
-			drawn.Icon.Position = new Vector3(0f, titleHeight + (size * 0.5f), 0f);
-			drawn.Title.Position = new Vector3(0f, titleHeight * 0.5f, 1f);
-			drawn.Opinion.Position = new Vector3((size * 0.5f) + 4f, titleHeight + (size * 0.5f), 1f);
-			// The badge sits in the icon's middle, sized with it.
-			float badgeScale = size / IconSize;
-			drawn.Badge.Visible = sprite.Badge.Length != 0;
-			drawn.Badge.Position = new Vector3(0f, titleHeight + (size * 0.5f), 2f);
-			drawn.Badge.Scale = new Vector3(badgeScale, badgeScale, 1f);
+			bool badgeVisible = sprite.Badge.Length != 0;
+			if (drawn.Badge.Visible != badgeVisible)
+			{
+				drawn.Badge.Visible = badgeVisible;
+			}
 
-			drawn.IconMaterial.SetShaderParameter(Param_tint, new Color(0.7f, 0.7f, 0.7f, sprite.Colour.A));
-			drawn.IconMaterial.SetShaderParameter(Param_sight, at.Sight);
+			if (!Mathf.IsEqualApprox(drawn.LastSize, size) || !Mathf.IsEqualApprox(drawn.LastTitleHeight, titleHeight))
+			{
+				drawn.LastSize = size;
+				drawn.LastTitleHeight = titleHeight;
+				drawn.Icon.Scale = new Vector3(size, size, 1f);
+				drawn.Icon.Position = new Vector3(0f, titleHeight + (size * 0.5f), 0f);
+				drawn.Title.Position = new Vector3(0f, titleHeight * 0.5f, 1f);
+				drawn.Opinion.Position = new Vector3((size * 0.5f) + 4f, titleHeight + (size * 0.5f), 1f);
+				// The badge sits in the icon's middle, sized with it.
+				float badgeScale = size / IconSize;
+				drawn.Badge.Position = new Vector3(0f, titleHeight + (size * 0.5f), 2f);
+				drawn.Badge.Scale = new Vector3(badgeScale, badgeScale, 1f);
+			}
+
+			bool colourChanged = !drawn.LastColour.IsEqualApprox(sprite.Colour);
+			bool sightChanged = !drawn.LastSight.IsEqualApprox(at.Sight);
+			if (colourChanged)
+			{
+				drawn.LastColour = sprite.Colour;
+				drawn.IconMaterial.SetShaderParameter(Param_tint, new Color(0.7f, 0.7f, 0.7f, sprite.Colour.A));
+			}
+			if (sightChanged)
+			{
+				drawn.LastSight = at.Sight;
+				drawn.IconMaterial.SetShaderParameter(Param_sight, at.Sight);
+			}
+
 			// The marker material carries the text's colour: `Paint`'s own material, which held
 			// it, was replaced.
 			Color ink = sprite.Colour;
 			if (drawn.TitleMaterial is { } title)
 			{
-				title.SetShaderParameter(Param_tint, ink);
-				title.SetShaderParameter(Param_sight, at.Sight);
+				if (colourChanged) title.SetShaderParameter(Param_tint, ink);
+				if (sightChanged) title.SetShaderParameter(Param_sight, at.Sight);
 			}
 
 			if (drawn.OpinionMaterial is { } opinion)
 			{
-				opinion.SetShaderParameter(Param_tint, ink);
-				opinion.SetShaderParameter(Param_sight, at.Sight);
+				if (colourChanged) opinion.SetShaderParameter(Param_tint, ink);
+				if (sightChanged) opinion.SetShaderParameter(Param_sight, at.Sight);
 			}
 
 			if (drawn.BadgeMaterial is { } badge)
 			{
-				badge.SetShaderParameter(Param_tint, new Color(1f, 1f, 1f, sprite.Colour.A));
-				badge.SetShaderParameter(Param_sight, at.Sight);
+				if (colourChanged) badge.SetShaderParameter(Param_tint, new Color(1f, 1f, 1f, sprite.Colour.A));
+				if (sightChanged) badge.SetShaderParameter(Param_sight, at.Sight);
 			}
 		}
 

@@ -525,23 +525,6 @@ public static class Engine_EnvironmentTheme
         return extractor is not null && extractor.ExtractToneMapRecord(recordHash, theme);
     }
 
-    /// <summary>
-    /// The tone mapping ONE Fable 3 theme states at a time of day — the <c>.envtheme</c> a
-    /// pushed map id resolves to (<see cref="Engine_EnvThemeFile.TryMapTheme"/>), evaluated at
-    /// <paramref name="time"/> alone. Only the parameters the theme itself keyframes are marked
-    /// present (<c>Block.IsStated</c>), so a fold over the chain's own tone map leaves the rest
-    /// alone, as the guest's <c>sub_82228D38</c> does for a parameter a layer does not state.
-    /// </summary>
-    public static bool TryExtractToneMapEnvTheme(Engine_EnvThemeFile file, float time, ToneMapTheme theme)
-    {
-        for (int i = 0; i < ToneMapTheme.ParamCount; i++)
-        {
-            theme.Present[i] = false;
-        }
-
-        return Extractor.ApplyEnvThemeToneMap(Engine_EnvThemeFile.Evaluate(new[] { file }, time), time, theme);
-    }
-
     public static bool TryExtractToneMap(IReadOnlyList<byte[]> gdbs, out ToneMapTheme theme) =>
         TryExtractToneMap(gdbs, 0.5f, out theme);
 
@@ -2287,10 +2270,9 @@ public static class Engine_EnvironmentTheme
 
         /// <summary>The F2 tone-map fields F3 has a parameter for; the rest keep the F2 guest's
         /// defaults, unmarked. F3's Filmic parameters have no F2 field and stay on the block.</summary>
-        private bool ApplyEnvThemeToneMap(ToneMapTheme theme) => ApplyEnvThemeToneMap(EnvBlock(), TargetTime, theme);
-
-        internal static bool ApplyEnvThemeToneMap(Engine_EnvThemeFile.Block b, float time, ToneMapTheme theme)
+        private bool ApplyEnvThemeToneMap(ToneMapTheme theme)
         {
+            Engine_EnvThemeFile.Block b = EnvBlock();
             bool any = false;
             foreach ((ToneMapParam param, string name) in EnvToneMapNames)
             {
@@ -2302,7 +2284,7 @@ public static class Engine_EnvironmentTheme
                 }
             }
 
-            theme.SourceTimeOfDay = time - MathF.Floor(time);
+            theme.SourceTimeOfDay = TargetTime - MathF.Floor(TargetTime);
             theme.HasAny = any;
             return any;
         }

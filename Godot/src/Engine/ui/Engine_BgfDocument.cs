@@ -882,15 +882,9 @@ public sealed class Engine_BgfDocument
 	/// call made LAST is the state on screen. <paramref name="order"/> ranks owners by when
 	/// their stated slide last changed; owners are applied ascending, so the most recent
 	/// write lands last. Null keeps document order.
-	///
-	/// <paramref name="ancestorsLast"/> breaks a tie (owners whose slide never changed) by applying
-	/// a component's descendants before it, so an ancestor's slide decides a child component's own
-	/// active bit at rest — a child's slides each name the child itself `active`, and in document
-	/// order that self-entry overrides the parent slide that switched the child off. See
-	/// <see cref="Engine_UiElementResolve.AncestorsWinAtRest"/>.
 	/// </summary>
 	public BgfSlideState ComputeSlideState(
-		Func<int, BgfSlide[], BgfSlide?>? choose, Func<int, int>? order, bool ancestorsLast = false)
+		Func<int, BgfSlide[], BgfSlide?>? choose, Func<int, int>? order)
 	{
 		// Start from the element's OWN authored state, not "everything visible": slides turn
 		// things on and off from there, and an element no slide mentions keeps its own bit.
@@ -904,9 +898,7 @@ public sealed class Engine_BgfDocument
 		SlideGroup[] groups = Grouped().Groups;
 		if (order is not null)
 		{
-			groups = ancestorsLast
-				? groups.OrderBy(group => order(group.Owner)).ThenByDescending(group => group.Owner).ToArray()
-				: groups.OrderBy(group => order(group.Owner)).ThenBy(group => group.Owner).ToArray();
+			groups = groups.OrderBy(group => order(group.Owner)).ThenBy(group => group.Owner).ToArray();
 		}
 
 		foreach (SlideGroup group in groups)

@@ -292,21 +292,6 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
     /// </summary>
     public IReadOnlyList<int>? LiveSlides { get; set; }
 
-    /// <summary>
-    /// Whether the title states each element's TIMELINE POSITION (<see cref="LiveTimes"/>) — set
-    /// before <see cref="Build"/>. A group piece then binds the tracks of every meter and pulser
-    /// beneath it INCLUDING its own root's, each scrubbed at the time stated for its element ahead
-    /// of the published value. Fable 3's element API states it (`sub_8281A5D8`, the meters'
-    /// `fraction × 1000`); Fable 2 publishes values only and leaves this off.
-    /// </summary>
-    public bool StatesTimes { get; set; }
-
-    /// <summary>
-    /// The guest's stated timeline position per element ordinal (0..1000), null where it states
-    /// none — read only when <see cref="StatesTimes"/>.
-    /// </summary>
-    public IReadOnlyList<float?>? LiveTimes { get; set; }
-
     /// <summary>The name of the slide the guest states for an element, or empty.</summary>
     private string LiveSlideName(int ordinal)
     {
@@ -340,13 +325,9 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
     /// <summary>One playhead track bound to a node of a piece's clone.</summary>
     /// <param name="Value">A nested meter's own handle inside a group piece; null = the piece's.</param>
     /// <param name="Pulse">Whether that nested value is a pulser phase rather than a meter.</param>
-    /// <param name="TimeOrdinal">
-    /// The element whose STATED timeline position (<see cref="LiveTimes"/>) scrubs this track ahead
-    /// of the value, or -1 (every view whose title does not state <see cref="StatesTimes"/>).
-    /// </param>
     private sealed record BoundTrack(
         BgfAnimation Animation, Node3D Node, Engine_UiTimeline.Target Target, float Base,
-        Engine_HudValues.Handle? Value = null, bool Pulse = false, int TimeOrdinal = -1);
+        Engine_HudValues.Handle? Value = null, bool Pulse = false);
 
     /// <summary>
     /// One element's time window on a scrubbed timeline, at its clone-binding slot. The value
@@ -354,7 +335,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
     /// </summary>
     private sealed record BoundWindow(
         int Slot, Engine_UiTimeline.Window Window,
-        Engine_HudValues.Handle? Value = null, bool Pulse = false, int TimeOrdinal = -1);
+        Engine_HudValues.Handle? Value = null, bool Pulse = false);
 
     /// <summary>One built piece, with what it needs to be driven and placed.</summary>
     private sealed class Built
@@ -1500,7 +1481,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
             (unplaced == 0
                 ? string.Empty
                 : $"; {unplaced} bound piece(s) inventoried but UNPLACED — " +
-                  $"see {Engine_HudLayout.ActiveSnapshotPath} to position them") +
+                  $"see {Engine_HudLayout.SnapshotPath} to position them") +
             (missing.Count == 0 ? string.Empty : $"; NO ART: {string.Join(", ", missing)}"));
     }
 
@@ -2394,27 +2375,20 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                 // That coupling is the ORIGINAL's layout decision, and layout is ours: we place
                 // this widget, so nothing else may move it. `Engine_UiLiveValues` already keeps
                 // this same list for the same reason.
-                //
-                // A title that states times scrubs them too: its guest positions a laid-out box's
-                // slab and lines inside the group by those meters' timelines (Fable 3's TopBox,
-                // subtitles and counters), and the group's own place is still the layout's.
-                if (Engine_UiBindings.IsLayoutMeter(binding.Name) && !StatesTimes)
+                if (Engine_UiBindings.IsLayoutMeter(binding.Name))
                 {
                     continue;
                 }
 
-                // The root's own meter belongs to the group when the title states times: its
-                // element's timeline is scrubbed at the stated position, as every nested one is.
                 if ((binding.Kind != Engine_UiBindings.Kind.Meter && !pulse) ||
-                    (binding.ElementOrdinal == built.Piece.ElementOrdinal && !StatesTimes) ||
+                    binding.ElementOrdinal == built.Piece.ElementOrdinal ||
                     !InSubtree(screen, binding.ElementOrdinal, built.Piece.ElementOrdinal))
                 {
                     continue;
                 }
 
                 BindOwnedTracks(built, screen, binding.ElementOrdinal,
-                    Engine_HudValues.Handle.For(KeyedName(built, binding)), pulse,
-                    StatesTimes ? binding.ElementOrdinal : -1);
+                    Engine_HudValues.Handle.For(KeyedName(built, binding)), pulse);
             }
 
             return;
@@ -2434,8 +2408,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
     /// clone, scrubbed by <paramref name="value"/> (null: the piece's own value).
     /// </summary>
     private void BindOwnedTracks(
-        Built built, Engine_UiScreen screen, int element, Engine_HudValues.Handle? value, bool pulse,
-        int timeOrdinal = -1)
+        Built built, Engine_UiScreen screen, int element, Engine_HudValues.Handle? value, bool pulse)
     {
         foreach ((BgfAnimation animation, Engine_UiTimeline.Target target) in
             Engine_UiTimeline.Tracks(screen, element))
@@ -2476,7 +2449,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                 _ => 0f,
             };
 
-            built.Tracks.Add(new BoundTrack(animation, node, target, baseline, value, pulse, timeOrdinal));
+            built.Tracks.Add(new BoundTrack(animation, node, target, baseline, value, pulse));
         }
 
         int source = built.StateOf(element);
@@ -2490,7 +2463,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                 continue;
             }
 
-            built.Windows.Add(new BoundWindow(slot, window, value, pulse, timeOrdinal));
+            built.Windows.Add(new BoundWindow(slot, window, value, pulse));
 
             // At rest until a value arrives, as the tracks are: t = 0.
             built.Binding.Gate(slot, window.IsOpen(0f));
@@ -2536,11 +2509,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
     {
         foreach (BoundTrack track in built.Tracks)
         {
-            if (StatedTime(built, track.TimeOrdinal) is { } stated)
-            {
-                ApplyTrack(built, track, at, stated);
-            }
-            else if (track.Value is { } handle && NestedTime(built, handle, track.Pulse) is { } time)
+            if (track.Value is { } handle && NestedTime(built, handle, track.Pulse) is { } time)
             {
                 ApplyTrack(built, track, at, time);
             }
@@ -2548,32 +2517,11 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
 
         foreach (BoundWindow window in built.Windows)
         {
-            if (StatedTime(built, window.TimeOrdinal) is { } stated)
-            {
-                built.Binding.Gate(window.Slot, window.Window.IsOpen(stated));
-            }
-            else if (window.Value is { } handle && NestedTime(built, handle, window.Pulse) is { } time)
+            if (window.Value is { } handle && NestedTime(built, handle, window.Pulse) is { } time)
             {
                 built.Binding.Gate(window.Slot, window.Window.IsOpen(time));
             }
         }
-    }
-
-    /// <summary>
-    /// The timeline position the title states for an element (<see cref="LiveTimes"/>), through a
-    /// keyed piece's source, or null: no stated times, no element, or none stated for it.
-    /// </summary>
-    private float? StatedTime(Built built, int ordinal)
-    {
-        if (ordinal < 0 || LiveTimes is not { } times)
-        {
-            return null;
-        }
-
-        int source = built.StateOf(ordinal);
-        return source >= 0 && source < times.Count && times[source] is { } time
-            ? Mathf.Clamp(time, 0f, 1000f)
-            : null;
     }
 
     /// <summary>Whether an element sits at or under a piece's root element.</summary>

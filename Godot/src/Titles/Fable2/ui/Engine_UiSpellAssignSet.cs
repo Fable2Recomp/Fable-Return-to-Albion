@@ -19,7 +19,7 @@ using Refii.Ui;
 /// B is still the guest's: the blade's open state is its mode byte at `screen14+620`, with
 /// exactly two writers, and closing it is `sub_826C25C0` through the screen's own handler.
 /// </summary>
-public sealed partial class Engine_UiSpellAssignSet
+public sealed class Engine_UiSpellAssignSet
 {
 	/// <summary>The host the widgets are parented to and take their art from.</summary>
 	public Engine_UiPresentationHost? Host { get; set; }
@@ -61,7 +61,60 @@ public sealed partial class Engine_UiSpellAssignSet
 	/// <summary>This frame's assignment sample, taken once and shared by both hosts.</summary>
 	private Engine_UiModel.SpellAssignState _spells;
 
-	// The touch Spells button's state and picker: android/Engine_UiSpellAssignSet.Touch.cs.
+	/// <summary>
+	/// Whether the guest would open its spells menu now: it refuses below two spell types awarded
+	/// and purchased at power level 0 (`sub_826B4448`, see <see cref="Follow"/>). True while the
+	/// state is unknown, so nothing is hidden on a guess. The touch controls show their Spells
+	/// button only while this holds — a hero with one spell casts it with B and has nothing to choose.
+	/// </summary>
+	public static bool SpellsMenuCanOpen => HeroSpellTypes is not { } types || types >= 2;
+
+	/// <summary>The spell types the hero can cast at power level 0, or null while unknown.</summary>
+	public static int? HeroSpellTypes { get; private set; }
+
+	/// <summary>
+	/// This frame's spell slots, as the selectors read them: what each power level holds and may
+	/// hold. Not <c>Known</c> until the hero's spell manager has been sampled.
+	/// </summary>
+	public static Engine_UiModel.SpellAssignState HeroSpells { get; internal set; }
+
+	/// <summary>The host the selectors take their art from, for <see cref="WillIcon"/> and <see cref="WillName"/>.</summary>
+	private static Engine_UiPresentationHost? _artHost;
+
+	/// <summary>A will's icon, the selectors' own (`art\gui\wheelicons\abilities`), or null before the art loads.</summary>
+	public static Texture2D? WillIcon(int will) =>
+		will >= 0 && will < Engine_UiScreenConstants.Wills.Length && _artHost is { } host
+			? host.LoadTexture(Engine_UiScreenConstants.WillIconFolder + Engine_UiScreenConstants.Wills[will].Icon + ".tex")
+			: null;
+
+	/// <summary>A will's name in the game's text, as the selectors label it; empty before the text loads.</summary>
+	public static string WillName(int will) =>
+		will >= 0 && will < Engine_UiScreenConstants.Wills.Length &&
+		_artHost?.PatternBookFor(WheelPresentation) is { } book
+			? book.Resolve(Engine_UiScreenConstants.Wills[will].Tag)
+			: string.Empty;
+
+	/// <summary>
+	/// Puts one will in every power level that offers it, as A does on the selectors (the slot's
+	/// will carried down into every later slot that offers it): B then casts it however far it is
+	/// charged. Each slot goes through the guest's own assignment, so the game saves it as a choice.
+	/// </summary>
+	/// <returns>How many slots changed.</returns>
+	public static int ChooseForEveryLevel(int will, int player = 1)
+	{
+		Engine_UiModel.SpellAssignState spells = HeroSpells;
+		int changed = 0;
+		for (int slot = 0; spells.Known && slot < Engine_UiModel.SpellAssignState.Slots; ++slot)
+		{
+			if (spells.Offers(slot, will) && spells.On(slot) != will)
+			{
+				Engine_UiSource.Current.AssignSpell(slot, will, player);
+				++changed;
+			}
+		}
+
+		return changed;
+	}
 
 	/// <summary>Auto-repeat clocks for the blade, one per axis — see <see cref="Engine_UiScreenLevel"/>.</summary>
 	private Engine_UiNavigationClock? _vertical;
@@ -143,7 +196,9 @@ public sealed partial class Engine_UiSpellAssignSet
 		}
 
 		_spells = Engine_UiSource.Current.GetSpellAssign();
-		PublishForTouch();
+		HeroSpellTypes = _spells.Known ? _spells.Choices(0).Count : null;
+		HeroSpells = _spells;
+		_artHost = Host;
 		TrackAssigned();
 
 		// THE BLADE IS THE GUEST'S. Its widget (`screen14+200`, bound by `sub_826C2480` at

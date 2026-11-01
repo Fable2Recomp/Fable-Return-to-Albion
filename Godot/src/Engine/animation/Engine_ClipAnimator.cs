@@ -53,6 +53,21 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		/// prop Idle or marker poses), so advancing playhead time never changes the sampled bone pose.
 		/// </summary>
 		public bool IsStatic;
+
+		/// <summary>
+		/// True when at least one facial bone track in this clip poses a facial bone away from the
+		/// raw skeleton bind pose (<c>_restRotation</c>). False for carry/body clips like
+		/// <c>IdleHoldBeerLoop</c> and <c>SitHoldBeerLoop</c> that either omit facial tracks or bake
+		/// 1-keyframe unposed bind-pose tracks across facial bones.
+		/// </summary>
+		public bool HasPosedFace;
+
+		/// <summary>
+		/// True when <see cref="HasPosedFace"/> is true and at least one facial bone track has
+		/// multi-keyframe animation (<see cref="Keys.Animated"/>), such as blinking, smiling, or
+		/// head/mouth micro-movement in <c>IdleHappy</c>.
+		/// </summary>
+		public bool HasAnimatedFace;
 	}
 
 	/// <summary>
@@ -202,7 +217,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	/// Only linear tracks are lifted: the managed sample reproduces Godot's linear case and
 	/// nothing else, so any other interpolation keeps using the resource.
 	/// </remarks>
-	private static void LiftKeys(Built built)
+	private static void LiftKeys(Built built, bool[] isFacialBone, Quaternion[] restRotation, int jawBone, int leftEyeBone, int rightEyeBone)
 	{
 		if (built.KeysLifted)
 		{
@@ -217,6 +232,8 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 		built.RotationKeys = new Keys[built.RotationTrack.Length];
 		built.PositionKeys = new Keys[built.PositionTrack.Length];
+		bool hasPosedFace = false;
+		bool anyFacialAnimated = false;
 
 		for (int b = 0; b < built.RotationTrack.Length; ++b)
 		{
@@ -228,7 +245,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			}
 
 			int n = built.Animation.TrackGetKeyCount(rt);
-			var keys = new Keys { Times = new float[n], Rotations = new Quaternion[n] };
+			var keys = new Keys { Times = new float[n], Rotations = new Quaternion[n], Animated = n > 1 };
 			for (int i = 0; i < n; ++i)
 			{
 				keys.Times[i] = (float)built.Animation.TrackGetKeyTime(rt, i);
@@ -236,6 +253,20 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			}
 
 			built.RotationKeys[b] = keys;
+			if (b < isFacialBone.Length && isFacialBone[b] && b < restRotation.Length)
+			{
+				if (keys.Animated && !Constant(keys.Rotations))
+				{
+					anyFacialAnimated = true;
+				}
+
+				if (!hasPosedFace &&
+					(b == jawBone || b == leftEyeBone || b == rightEyeBone || anyFacialAnimated) &&
+					IsFacialTrackPosed(keys.Rotations, restRotation[b]))
+				{
+					hasPosedFace = true;
+				}
+			}
 		}
 
 		for (int b = 0; b < built.PositionTrack.Length; ++b)
@@ -248,7 +279,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			}
 
 			int n = built.Animation.TrackGetKeyCount(pt);
-			var keys = new Keys { Times = new float[n], Positions = new Vector3[n] };
+			var keys = new Keys { Times = new float[n], Positions = new Vector3[n], Animated = n > 1 };
 			for (int i = 0; i < n; ++i)
 			{
 				keys.Times[i] = (float)built.Animation.TrackGetKeyTime(pt, i);
@@ -257,6 +288,37 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 			built.PositionKeys[b] = keys;
 		}
+
+		built.HasPosedFace = hasPosedFace;
+		built.HasAnimatedFace = hasPosedFace && anyFacialAnimated;
+	}
+
+	/// <summary>
+	/// Returns true when at least one keyframe in <paramref name="trackRotations"/> rotates a
+	/// facial bone away from its raw skeleton bind pose (<paramref name="restRotation"/>) by more
+	/// than ~1.15° (<c>|dot| &lt; 0.9998f</c>). Carry/body clips like <c>IdleHoldBeerLoop</c> and
+	/// <c>SitHoldBeerLoop</c> export 1-keyframe unposed bind-pose tracks on all 66 facial bones
+	/// (<c>|dot| == 1.0</c>), whereas every posed idle, walk, mood, or phoneme clip rotates the
+	/// eyes (<c>~8.5°</c>) and jaw (<c>~7.3°</c>) into a natural expression.
+	/// </summary>
+	public static bool IsFacialTrackPosed(Quaternion[]? trackRotations, Quaternion restRotation)
+	{
+		if (trackRotations is null || trackRotations.Length == 0)
+		{
+			return false;
+		}
+
+		Quaternion restUnit = restRotation.Normalized();
+		for (int i = 0; i < trackRotations.Length; ++i)
+		{
+			float dot = Mathf.Abs(trackRotations[i].Normalized().Dot(restUnit));
+			if (dot < 0.9998f)
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/// <summary>The clip's rotation for one bone, from the key cache when it has one.</summary>
@@ -319,25 +381,22 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		public float RecordCurrent;
 
 		/// <summary>
-		/// The leaf's intra-record blend-tree share (`TargetWeight / RecordCurrent`), interpolated
-		/// across each tick so locomotion steering blends (`WalkFootstep` + `WalkFootstepTurn*`)
-		/// do not step in a 15 Hz staircase when the parent record's weight is a constant 1.0.
+		/// The leaf's intra-record blend-tree share (<c>TargetWeight / RecordCurrent</c>), smoothed
+		/// continuously on the Host clock so locomotion footstep transitions (<c>WalkFootstep</c> +
+		/// <c>WalkFootstepMirror</c> / <c>WalkFootstepTurn*</c>) never lag behind the playhead or step
+		/// at 15 Hz.
 		/// </summary>
-		public float SharePrevious = 1f;
+		public float SmoothedShare = 1f;
 
-		public float ShareCurrent = 1f;
+		public float TargetShare = 1f;
+		public float ShareStepRate = 4f;
 
 		/// <summary>
-		/// The record's and leaf-share's pairs one tick earlier, and the tick the current pair was
-		/// read on. A draw point that the world's playhead carries back across a tick that landed
-		/// early is still inside the earlier pair; drawn from the newer one at a clamped 0 it
-		/// jumped to that pair's start.
+		/// The record's weight pair one tick earlier, and the tick the current pair was read on.
 		/// </summary>
 		public float OlderPrevious;
 
 		public float OlderCurrent;
-		public float OlderSharePrevious = 1f;
-		public float OlderShareCurrent = 1f;
 		public bool HasOlder;
 		public uint WeightPairTick = uint.MaxValue;
 
@@ -433,19 +492,164 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 	/// <summary>Each record's position in the guest's list — the runner-up's tie-break.</summary>
 	private readonly Dictionary<uint, int> _recordOrder = new();
-
-	/// <summary>
-	/// Partner records beyond the heaviest, when the guest's partner is a SET (Fable 3,
-	/// `sub_826BC358`: every primary below the top takes a greedy share, normalised). Empty for
-	/// Fable 2, whose partner is one record.
-	/// </summary>
-	private readonly HashSet<uint> _extraRunners = new();
 	private readonly List<Channel> _overlays = new();
 
 	/// <summary>Shadow_Hip's model bone, or -1; its children bar Shadow_SpineControl.</summary>
 	private int _hipBone = -1;
 
 	private readonly List<int> _hipChildren = new();
+
+	/// <summary>Animated humanoid happy/idle facial loop (`IdleHappy`, 7.67s), used as primary Host-driven ambient facial source when an NPC is in a body-only carry idle (`IdleHoldBeerLoop`, `SitHoldBeerLoop`).</summary>
+	private const uint PrimaryAmbientFaceClipKey = 0xE903635Fu;
+
+	/// <summary>Fallback humanoid standing idle clip (`IdleStand1`), used as ambient facial source when `IdleHappy` is not yet decoded.</summary>
+	private const uint DefaultAmbientFaceClipKey = 0xB742E730u;
+
+	private int _headBone = -1;
+	private int _faceRootBone = -1;
+	private int _jawBone = -1;
+	private int _leftEyeBone = -1;
+	private int _rightEyeBone = -1;
+	private readonly bool _hasFacialRig;
+	private readonly bool[] _isFacialBone;
+	private Quaternion _neutralJawRotation = Quaternion.Identity;
+	private Quaternion _neutralLeftEyeRotation = Quaternion.Identity;
+	private Quaternion _neutralRightEyeRotation = Quaternion.Identity;
+	private Built? _ambientFaceClip;
+	private float _ambientFaceTime;
+	private bool _ambientFaceTimeSeeded;
+	private ulong _lastFrameUsec;
+
+	/// <summary>True when this animator drives a character or creature rig rather than a simple prop (door, chest, clock, sign).</summary>
+	public bool IsCharacterRig => _hasFacialRig || _skeleton.GetBoneCount() >= 20;
+
+	/// <summary>
+	/// Identifies all facial bones on <paramref name="skeleton"/>. In Godot <c>.mdl</c> rigs
+	/// (<c>CH_HeroMale_Morph_Body_Rig_Asset</c>), <c>"Shadow_FaceRoot"</c> is absent and all 62
+	/// facial bones (<c>"Shadow_jaw"</c> with lowercase <c>'j'</c>, <c>"Shadow_m_mouth_*"</c>,
+	/// <c>"Shadow_L_Eye"</c>, <c>"Shadow_R_Eye"</c>, etc.) are parented directly under
+	/// <c>"Shadow_Head"</c>. Excludes attachment dummies (<c>Focal_*</c>, <c>Carry_*</c>, <c>FX_*</c>)
+	/// and hair/ponytail/ear chains.
+	/// </summary>
+	public static bool[] ComputeFacialBoneMask(
+		Skeleton3D skeleton,
+		out int headBone,
+		out int faceRootBone,
+		out int jawBone,
+		out int leftEyeBone,
+		out int rightEyeBone)
+	{
+		int bones = skeleton.GetBoneCount();
+		var boneNames = new string[bones];
+		var boneParents = new int[bones];
+		for (int b = 0; b < bones; ++b)
+		{
+			boneNames[b] = skeleton.GetBoneName(b);
+			boneParents[b] = skeleton.GetBoneParent(b);
+		}
+
+		return ComputeFacialBoneMask(
+			boneNames,
+			boneParents,
+			out headBone,
+			out faceRootBone,
+			out jawBone,
+			out leftEyeBone,
+			out rightEyeBone);
+	}
+
+	public static bool[] ComputeFacialBoneMask(
+		ReadOnlySpan<string> boneNames,
+		ReadOnlySpan<int> boneParents,
+		out int headBone,
+		out int faceRootBone,
+		out int jawBone,
+		out int leftEyeBone,
+		out int rightEyeBone)
+	{
+		int bones = boneNames.Length;
+		var mask = new bool[bones];
+		headBone = -1;
+		faceRootBone = -1;
+		jawBone = -1;
+		leftEyeBone = -1;
+		rightEyeBone = -1;
+		for (int b = 0; b < bones; ++b)
+		{
+			string name = boneNames[b];
+			if (string.Equals(name, "Shadow_Head", StringComparison.OrdinalIgnoreCase))
+			{
+				headBone = b;
+			}
+			else if (string.Equals(name, "Shadow_FaceRoot", StringComparison.OrdinalIgnoreCase))
+			{
+				faceRootBone = b;
+			}
+			else if (string.Equals(name, "Shadow_jaw", StringComparison.OrdinalIgnoreCase))
+			{
+				jawBone = b;
+			}
+			else if (string.Equals(name, "Shadow_L_Eye", StringComparison.OrdinalIgnoreCase))
+			{
+				leftEyeBone = b;
+			}
+			else if (string.Equals(name, "Shadow_R_Eye", StringComparison.OrdinalIgnoreCase))
+			{
+				rightEyeBone = b;
+			}
+		}
+
+		int facialAnchor = faceRootBone >= 0 ? faceRootBone : headBone;
+		if (facialAnchor < 0)
+		{
+			return mask;
+		}
+
+		for (int b = 0; b < bones; ++b)
+		{
+			if (b == headBone)
+			{
+				continue;
+			}
+
+			string boneName = boneNames[b];
+			if (!boneName.StartsWith("Shadow_", StringComparison.OrdinalIgnoreCase) &&
+				b != faceRootBone)
+			{
+				continue;
+			}
+
+			bool underAnchor = false;
+			bool nonFacialBranch = false;
+			int p = b;
+			while (p >= 0 && p < boneParents.Length)
+			{
+				if (p == facialAnchor)
+				{
+					underAnchor = true;
+					break;
+				}
+
+				string pName = boneNames[p];
+				if (pName.Contains("Ponytail", StringComparison.OrdinalIgnoreCase) ||
+					pName.Contains("Hair", StringComparison.OrdinalIgnoreCase) ||
+					pName.Contains("Ear", StringComparison.OrdinalIgnoreCase))
+				{
+					nonFacialBranch = true;
+					break;
+				}
+
+				p = boneParents[p];
+			}
+
+			if (underAnchor && !nonFacialBranch)
+			{
+				mask[b] = true;
+			}
+		}
+
+		return mask;
+	}
 
 	public Engine_ClipAnimator(Skeleton3D skeleton, string skeletonName, int[] modelToGuest)
 	{
@@ -484,16 +688,44 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		_restRotation = new Quaternion[bones];
 		_restPosition = new Vector3[bones];
 		_parents = new int[bones];
+		var boneNames = new string[bones];
 		for (int b = 0; b < bones; ++b)
 		{
 			Transform3D rest = skeleton.GetBoneRest(b);
 			_restRotation[b] = rest.Basis.GetRotationQuaternion();
 			_restPosition[b] = rest.Origin;
 			_parents[b] = skeleton.GetBoneParent(b);
-			if (skeleton.GetBoneName(b) == "Shadow_Hip")
+			string boneName = skeleton.GetBoneName(b);
+			boneNames[b] = boneName;
+			if (string.Equals(boneName, "Shadow_Hip", StringComparison.OrdinalIgnoreCase))
 			{
 				_hipBone = b;
 			}
+		}
+
+		_isFacialBone = ComputeFacialBoneMask(
+			boneNames,
+			_parents,
+			out _headBone,
+			out _faceRootBone,
+			out _jawBone,
+			out _leftEyeBone,
+			out _rightEyeBone);
+		_hasFacialRig = _jawBone >= 0 && (_leftEyeBone >= 0 || _rightEyeBone >= 0);
+		if (_jawBone >= 0)
+		{
+			Vector3 euler = _restRotation[_jawBone].GetEuler();
+			_neutralJawRotation = Quaternion.FromEuler(new Vector3(euler.X, euler.Y, Mathf.DegToRad(4.5f)));
+		}
+		if (_leftEyeBone >= 0)
+		{
+			Vector3 euler = _restRotation[_leftEyeBone].GetEuler();
+			_neutralLeftEyeRotation = Quaternion.FromEuler(new Vector3(euler.X, euler.Y, Mathf.DegToRad(-90.0f)));
+		}
+		if (_rightEyeBone >= 0)
+		{
+			Vector3 euler = _restRotation[_rightEyeBone].GetEuler();
+			_neutralRightEyeRotation = Quaternion.FromEuler(new Vector3(euler.X, euler.Y, Mathf.DegToRad(-90.0f)));
 		}
 
 		if (_hipBone >= 0)
@@ -630,6 +862,14 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 		if (count == 0 || !Engine_AnimCatalog.EnsureLoaded())
 		{
+			if (count == 0 && !IsCharacterRig && (_hasWritten || Rig is { HasAppliedPose: true, IsSettled: true }))
+			{
+				IsSettled = true;
+				LastMovedBones = 0;
+				LastFallback = string.Empty;
+				_wroteFrame = Godot.Engine.GetProcessFrames();
+				return true;
+			}
 			++FallbackNoLeaves;
 			LastFallback = count == 0 ? "no leaves" : "catalog not loaded";
 			return false;
@@ -637,6 +877,10 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 		// The frame's instant, not this rig's, so every rig samples at the same time.
 		ulong now = Refii.Entities.Engine_DrawnFrame.NowUsec;
+		float frameDt = _lastFrameUsec == 0UL || now <= _lastFrameUsec
+			? 0f
+			: Mathf.Min((now - _lastFrameUsec) * 1e-6f, 0.25f);
+		_lastFrameUsec = now;
 		// One counter for every stamp: the clip playhead rides the same game tick the poses and
 		// placements do. `dword_83319650` skips (`821d46e8` branches past its own increment).
 		uint tick = Refii.Core.Engine_TickClock.GuestGameTick;
@@ -695,6 +939,15 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 				++FallbackUnknownClip;
 				LastFallback = $"unknown clip {leaf.Key:X8}";
 				return false;
+			}
+
+			if (_hasFacialRig && !leaf.Overlay && !leaf.Additive && leaf.Loop &&
+				built.HasPosedFace && built.Length >= 0.5f)
+			{
+				if (_ambientFaceClip is null || (!_ambientFaceClip.HasAnimatedFace && built.HasAnimatedFace))
+				{
+					_ambientFaceClip = built;
+				}
 			}
 
 			_seenRecordUids.Add(leaf.Uid);
@@ -783,13 +1036,9 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 				// Assigned, not summed: both leaves belong to the same record and carry the same
 				// pair. Summing it would double the denominator and halve every share.
 				channel.RecordCurrent = leaf.RecordCurrent;
-				channel.ShareCurrent = channel.RecordCurrent > 1e-5f
+				channel.TargetShare = channel.RecordCurrent > 1e-5f
 					? channel.TargetWeight / channel.RecordCurrent
 					: 1f;
-				if (!channel.HasOlder)
-				{
-					channel.SharePrevious = channel.ShareCurrent;
-				}
 				if (leaf.Weight > channel.Leaf.Weight)
 				{
 					channel.Leaf = leaf;
@@ -802,9 +1051,11 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			channel.Seen = true;
 			channel.Order = order;
 			channel.TargetWeight = leaf.Weight;
+			if (leaf.BlendIn > 0f) channel.BlendIn = leaf.BlendIn;
+			if (leaf.BlendOut > 0f) channel.BlendOut = Mathf.Max(leaf.BlendOut, 0.15f);
 			float leafShare = leaf.RecordCurrent > 1e-5f ? leaf.Weight / leaf.RecordCurrent : 1f;
 
-			// CONTINUOUS WEIGHT & INTRA-RECORD SHARE INTERPOLATION (DO NOT REVERT TO RAW leaf.RecordPrevious):
+			// CONTINUOUS WEIGHT & HOST-DRIVEN INTRA-RECORD SHARE INTERPOLATION (DO NOT REVERT TO RAW leaf.RecordPrevious):
 			//
 			// 1. Civilian NPC MoodPose*Loop Stale `record+24u` Bug in Guest (`default.xex`):
 			//    Every civilian NPC carries a 160-bone `MoodPose*Loop` overlay (`MoodPoseScared1Loop`,
@@ -813,60 +1064,75 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			//    (`step = 2/15 = 0.133333`) reaches its steady-state target weight (e.g. `record+28u =
 			//    0.387514`), the guest stops stepping the ramp and leaves `record+24u` (`leaf.RecordPrevious`)
 			//    permanently parked one step lower (`0.254181`) on every single subsequent game tick.
-			//    Blindly assigning `channel.RecordPrevious = leaf.RecordPrevious` every tick caused the
-			//    host to ramp `MoodPose*Loop` from `0.254 -> 0.388` across each 66.7 ms tick (`pairAt: 0 -> 1`)
-			//    and then snap-jump backward by `-0.1333` on every 15 Hz tick boundary (`pairAt = 0.0`).
-			//    While standing idle, either a full-weight overlay overrides Track 3 or the pose delta
-			//    between `Idle` and `MoodPose*Loop` is negligible; while walking (`WalkFootstep`),
-			//    `MoodPose*Loop` blends directly over 93 spine/limb bones, producing a 6x bone-motion
-			//    spike every 66.7 ms (the civilian walking stutter).
 			//    Joining `channel.RecordPrevious = channel.RecordCurrent` on each new tick enforces C0
-			//    continuity across tick boundaries: when a ramp is genuinely moving (`0.254 -> 0.388 -> 0.521`),
-			//    the previous tick's `RecordCurrent` (`0.388`) already equals the new tick's `leaf.RecordPrevious`;
-			//    when the ramp is at steady state (`0.388` on both ticks), `RecordPrevious` and `RecordCurrent`
-			//    both equal `0.388`, completely eliminating the 15 Hz sawtooth snap.
+			//    continuity across tick boundaries and completely eliminates the 15 Hz sawtooth snap.
 			//
-			// 2. Intra-Record Locomotion Blend Tree Share (`SharePrevious -> ShareCurrent`):
-			//    When a character steers while walking, multiple clips inside the same primary record
+			// 2. Host-Driven Intra-Record Locomotion Share (`SmoothedShare -> TargetShare`):
+			//    When a character walks or steers, multiple clips inside the same primary record
 			//    (`WalkFootstep` + `WalkFootstepMirror` / `WalkFootstepTurn*`, blend node types 1/2/6)
-			//    trade `leaf.Weight` at 15 Hz while the parent record's weight stays `1.0`. Joining and
-			//    interpolating `SharePrevious -> ShareCurrent` across the tick prevents 15 Hz stepping
-			//    between locomotion blend-tree children. When a new footstep leaf appears inside an
-			//    already-active record Uid (`_activeRecordUids.Contains(leaf.Uid)`), its `SharePrevious`
-			//    starts at `0f` so it ramps smoothly from `0 -> leafShare` across the tick while the
-			//    outgoing footstep leaf ramps from `1 -> 1 - leafShare`.
+			//    trade `leaf.Weight` while the parent record's weight stays `1.0`. Stepping `SmoothedShare`
+			//    toward `TargetShare` directly on the Host clock (`dt`) keeps intra-record footstep
+			//    crossfades in phase with the Host-advanced playheads without 2-tick `pairAt` lag.
 			if (channel.WeightPairTick == uint.MaxValue)
 			{
 				channel.WeightPairTick = tick;
 				channel.HasOlder = false;
 				bool recordAlreadyActive = _activeRecordUids.Contains(leaf.Uid);
-				(channel.RecordPrevious, channel.SharePrevious) = InitialChannelPair(
+				(channel.RecordPrevious, channel.SmoothedShare) = InitialChannelPair(
 					recordAlreadyActive, leaf.RecordPrevious, leaf.RecordCurrent, leafShare);
 				channel.RecordCurrent = leaf.RecordCurrent;
-				channel.ShareCurrent = leafShare;
+				channel.TargetShare = leafShare;
+				channel.ShareStepRate = ComputeShareStepRate(channel.SmoothedShare, leafShare, channel.BlendIn);
 			}
 			else if (tick != channel.WeightPairTick)
 			{
 				channel.HasOlder = tick == channel.WeightPairTick + 1u;
 				channel.OlderPrevious = channel.RecordPrevious;
 				channel.OlderCurrent = channel.RecordCurrent;
-				channel.OlderSharePrevious = channel.SharePrevious;
-				channel.OlderShareCurrent = channel.ShareCurrent;
 				channel.RecordPrevious = channel.RecordCurrent;
 				channel.RecordCurrent = leaf.RecordCurrent;
-				channel.SharePrevious = channel.ShareCurrent;
-				channel.ShareCurrent = leafShare;
+				channel.TargetShare = leafShare;
+				channel.ShareStepRate = ComputeShareStepRate(channel.SmoothedShare, leafShare, channel.BlendIn);
 				channel.WeightPairTick = tick;
 			}
 			else
 			{
 				channel.RecordCurrent = leaf.RecordCurrent;
-				channel.ShareCurrent = leafShare;
+				channel.TargetShare = leafShare;
 			}
 
-			if (leaf.BlendIn > 0f) channel.BlendIn = leaf.BlendIn;
-			if (leaf.BlendOut > 0f) channel.BlendOut = Mathf.Max(leaf.BlendOut, 0.15f);
-			ObservePlayhead(channel, leaf, tick, drawTick);
+			ObservePlayhead(channel, leaf, tick, drawTick, !IsCharacterRig);
+		}
+
+		if (_hasFacialRig)
+		{
+			if (!_ambientFaceTimeSeeded)
+			{
+				_ambientFaceTimeSeeded = true;
+				_ambientFaceTime = ((_entity * 2654435761u) & 0x3FFu) * 0.007f;
+			}
+
+			if (_ambientFaceClip is null || !_ambientFaceClip.HasAnimatedFace)
+			{
+				Built? primaryFace = Ensure(PrimaryAmbientFaceClipKey, out _);
+				if (primaryFace is { HasPosedFace: true })
+				{
+					_ambientFaceClip = primaryFace;
+				}
+				else if (_ambientFaceClip is null)
+				{
+					Built? defaultFace = Ensure(DefaultAmbientFaceClipKey, out _);
+					if (defaultFace is { HasPosedFace: true })
+					{
+						_ambientFaceClip = defaultFace;
+					}
+				}
+			}
+
+			if (_ambientFaceClip is { Length: > 0f } amb)
+			{
+				_ambientFaceTime = (_ambientFaceTime + frameDt) % amb.Length;
+			}
 		}
 
 		// On the guest's ticks: a seen channel's weight and playhead are the stated per-tick
@@ -885,36 +1151,37 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			if (c.Seen)
 			{
 				float drawn = RecordWeightAt(c, pairAt);
-				float share = LeafShareAt(c, pairAt);
-				c.Weight = share * drawn;
+				bool hasSibling = HasSiblingInRecord(c.Leaf.Uid, c);
+				c.SmoothedShare = !hasSibling && c.TargetShare >= 0.999f
+					? 1f
+					: Mathf.MoveToward(c.SmoothedShare, c.TargetShare, c.ShareStepRate * dt);
+				c.Weight = c.SmoothedShare * drawn;
 			}
 			else if (_seenRecordUids.Contains(c.Leaf.Uid) && !hadPendingClip)
 			{
 				// If this channel's parent record Uid is STILL active in `_seenRecordUids`, the guest
 				// pruned this leaf inside the record's internal blend tree (e.g. a `Type-1` footstep
-				// lerp reached `t = 1.0`). Because `drawTick` lags `SimTick` (`pairAt < 0`), the
-				// surviving sibling channel is still interpolating its share toward `1.0` across the
-				// lagged tick. Step this unseen sibling's target share to `0f` on the new tick so its
-				// `LeafShareAt(c, pairAt)` finishes interpolating to `0f` in lockstep with the surviving
-				// sibling, and drop it the instant its interpolated share reaches `0f`.
+				// lerp reached `t = 1.0`). Step this unseen sibling's target share to `0f` on the Host
+				// clock so it finishes ramping out smoothly while its surviving sibling ramps to `1.0`.
 				if (tick != c.WeightPairTick)
 				{
 					c.HasOlder = tick == c.WeightPairTick + 1u;
 					c.OlderPrevious = c.RecordPrevious;
 					c.OlderCurrent = c.RecordCurrent;
-					c.OlderSharePrevious = c.SharePrevious;
-					c.OlderShareCurrent = c.ShareCurrent;
 					c.RecordPrevious = c.RecordCurrent;
-					c.SharePrevious = c.ShareCurrent;
-					c.ShareCurrent = 0f;
+					c.TargetShare = 0f;
+					c.ShareStepRate = ComputeShareStepRate(c.SmoothedShare, 0f, c.BlendOut);
 					c.WeightPairTick = tick;
 				}
 				float drawn = RecordWeightAt(c, pairAt);
-				float share = LeafShareAt(c, pairAt);
-				c.Weight = share * drawn;
+				bool hasSibling = HasSiblingInRecord(c.Leaf.Uid, c);
+				c.SmoothedShare = hasSibling
+					? Mathf.MoveToward(c.SmoothedShare, 0f, c.ShareStepRate * dt)
+					: 0f;
+				c.Weight = c.SmoothedShare * drawn;
 				if (ShouldDropUnseenChannelInActiveRecord(
 					recordStillSeen: true, hadPendingClip: false,
-					c.Weight, c.ShareCurrent, pairAt, c.HasOlder, c.OlderShareCurrent))
+					c.Weight, c.SmoothedShare))
 				{
 					_dropped.Add(key);
 					continue;
@@ -936,7 +1203,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 				}
 			}
 
-			Advance(c, dt, drawTick);
+			Advance(c, dt, drawTick, !IsCharacterRig);
 			if (!c.Leaf.Additive)
 			{
 				totalWeight += c.Weight;
@@ -964,6 +1231,14 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 		if (totalWeight <= 1e-5f)
 		{
+			if (!IsCharacterRig && (_hasWritten || Rig is { HasAppliedPose: true, IsSettled: true }))
+			{
+				IsSettled = true;
+				LastMovedBones = 0;
+				LastFallback = string.Empty;
+				_wroteFrame = Godot.Engine.GetProcessFrames();
+				return true;
+			}
 			++FallbackNoLeaves;
 			LastFallback = "zero weight";
 			return false;
@@ -1036,7 +1311,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		// Once their pose has been written to both the live skeleton and (when present) its shadow
 		// skeleton, and no channel's sampled time, weight, or list order has changed, folding on the
 		// ThreadPool and calling Write() at display rate produces zero bone changes.
-		if (_hasWritten && !_scaleDirty && !_hasMorph && _postKinds == 0 &&
+		if (!_hasFacialRig && _hasWritten && !_scaleDirty && !_hasMorph && _postKinds == 0 &&
 			_channels.Count == _writtenChannelCount && _channels.Count > 0 &&
 			!(Refii.Entities.Engine_ShadowSkeletons.WriteNow(_skeleton, out _) && _shadowStale))
 		{
@@ -1076,8 +1351,16 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			}
 		}
 
-		RefreshMorph(bones);
-		TakePostOps();
+		if (IsCharacterRig)
+		{
+			RefreshMorph(bones);
+			TakePostOps(frameDt);
+		}
+		else
+		{
+			_hasMorph = false;
+			_postKinds = 0;
+		}
 		_foldBones = bones;
 		_foldPairAt = pairAt;
 		_foldAlpha = alpha;
@@ -1253,6 +1536,10 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 					_overlays.Clear();
 					Sample(only.Built, only.Time, 1f, false, _rotation, _rotationWeight, _position, _positionWeight, bones);
 					PostOpsApplied = ApplyPostOpsForRecord(only.Leaf.Uid, _rotation, _rotationWeight, bones);
+					if (_hasFacialRig && (!only.Built.HasPosedFace || (_jawBone >= 0 && _rotationWeight[_jawBone] <= 0f)))
+					{
+						ApplyAmbientFacePose(bones);
+					}
 					goto FinalizePose;
 				}
 			}
@@ -1323,10 +1610,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 		int Order(uint uid) => _recordOrder.GetValueOrDefault(uid, int.MaxValue);
 
-		// FABLE 3 STATES ITS WHOLE PICK (Fable3/src/hostbridge/src/anim_feed.cpp): the top, every
-		// member of its partner SET, and each one's share of the fold as its weight pair.
-		bool statesPartnerSet = Refii.Core.Engine_Title.Active == Refii.Core.Engine_Title.Fable3;
-
 		// The runner is picked deterministically: if an explicit guest IsRunner leaf exists, elect it;
 		// otherwise select by weight and list order.
 		//
@@ -1335,7 +1618,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		// equal weights the record nearest the head survives; the winner scan runs backward.
 		uint runnerUid = 0;
 		float runnerWeight = 0f;
-		_extraRunners.Clear();
 		foreach (Channel c in _channels.Values)
 		{
 			if (c.Leaf.Uid == topUid || c.Leaf.Additive || c.Leaf.Overlay)
@@ -1344,42 +1626,13 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			}
 			if (c.Leaf.IsRunner && c.Weight > 1e-4f)
 			{
-				if (!statesPartnerSet)
-				{
-					runnerUid = c.Leaf.Uid;
-					runnerWeight = _recordWeight.GetValueOrDefault(runnerUid);
-					break;
-				}
-
-				// THE PARTNER IS A SET: the heaviest member names it, every member samples into it
-				// at its share, and its weight is the set's sum.
-				if (runnerUid == 0 || _recordWeight.GetValueOrDefault(c.Leaf.Uid) > _recordWeight.GetValueOrDefault(runnerUid))
-				{
-					if (runnerUid != 0)
-					{
-						_extraRunners.Add(runnerUid);
-					}
-					runnerUid = c.Leaf.Uid;
-				}
-				else if (c.Leaf.Uid != runnerUid)
-				{
-					_extraRunners.Add(c.Leaf.Uid);
-				}
+				runnerUid = c.Leaf.Uid;
+				runnerWeight = _recordWeight.GetValueOrDefault(runnerUid);
+				break;
 			}
 		}
 
-		if (statesPartnerSet && runnerUid != 0)
-		{
-			runnerWeight = _recordWeight.GetValueOrDefault(runnerUid);
-			foreach (uint uid in _extraRunners)
-			{
-				runnerWeight += _recordWeight.GetValueOrDefault(uid);
-			}
-		}
-
-		// A title that states its whole pick names every primary it draws; a record it did not
-		// name is not drawn, so nothing is elected in its place.
-		if (runnerUid == 0 && !statesPartnerSet)
+		if (runnerUid == 0)
 		{
 			foreach ((uint uid, float w) in _recordWeight)
 			{
@@ -1424,12 +1677,8 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			topShare = 1f;
 		}
 
-		// The guest's short-circuits. Fable 2 (`sub_82211660`): the top alone at 0.98333, the
-		// partner alone at 0.016667. Fable 3: no partner is built when `|w − 1| < 0.05`
-		// (`sub_821EB068`) and the crossfade node keeps one side when `min(w, 1 − w) ≤ 0.05`
-		// (`sub_8222AEF8` case 1, 0x8222b4e0).
-		if (topShare >= (statesPartnerSet ? 0.95f : 0.98333f)) topShare = 1f;
-		if (topShare <= (statesPartnerSet ? 0.05f : 0.016667f)) topShare = 0f;
+		if (topShare >= 0.98333f) topShare = 1f;
+		if (topShare <= 0.016667f) topShare = 0f;
 
 		// How far the crossfade ratio moved in one frame; a step moves every bone by that
 		// fraction of the distance between two clips. Reported.
@@ -1534,7 +1783,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 				// slerp toward the child by mask × weight, whole-body when no mask node sits
 				// above it. That is the overlay path here; the first-frame delta this once
 				// applied was an invention.
-				if (c.Weight > 1e-4f && haveTop && (leaf.Uid == topUid || leaf.Uid == runnerUid || _extraRunners.Contains(leaf.Uid)))
+				if (c.Weight > 1e-4f && haveTop && (leaf.Uid == topUid || leaf.Uid == runnerUid))
 				{
 					c.OverlayFade = 1f;
 					_overlays.Add(c);
@@ -1545,18 +1794,18 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			float time = c.Time;
 			if (leaf.Uid == topUid)
 			{
-				float weight = topRecordWeight > 1e-5f ? c.Weight / topRecordWeight : LeafShareAt(c, pairAt);
+				float weight = topRecordWeight > 1e-5f ? c.Weight / topRecordWeight : c.SmoothedShare;
 				if (weight > 1e-5f)
 				{
 					Sample(built, time, weight, false, _rotation, _rotationWeight, _position, _positionWeight, bones);
 				}
 			}
-			else if ((leaf.Uid == runnerUid || _extraRunners.Contains(leaf.Uid)) && topShare < 1f)
+			else if (leaf.Uid == runnerUid && topShare < 1f)
 			{
 				// THE PARTNER, kept apart: the guest's type-1 node SLERPs partner against top by the
 				// top's own weight (`sub_82293278`, w > 0.5), which an nlerp of the two into one
 				// accumulator only approximates.
-				float weight = runnerRecordWeight > 1e-5f ? c.Weight / runnerRecordWeight : LeafShareAt(c, pairAt);
+				float weight = runnerRecordWeight > 1e-5f ? c.Weight / runnerRecordWeight : c.SmoothedShare;
 				if (weight > 1e-5f)
 				{
 					Sample(built, time, weight, false, _layerRotation, _layerRotationWeight, _layerPosition, _layerPositionWeight, bones);
@@ -1574,6 +1823,14 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		// around it as outer `Type-3` / `Type-1` nodes; running `lookRec` after overlays multiplied
 		// the mood overlay forearm bend by `~2.2x`.
 		PostOpsApplied = ApplyPostOpsForRecord(topUid, _rotation, _rotationWeight, bones);
+
+		// When the primary record leaves facial bones unposed (e.g. `IdleHoldBeerLoop` or
+		// `SitHoldBeerLoop`), populate the facial base pose from the Host-driven ambient facial
+		// source BEFORE crossfading with `runnerUid` and BEFORE layering facial/mood overlays.
+		if (_hasFacialRig && _jawBone >= 0 && _rotationWeight[_jawBone] <= 0f)
+		{
+			ApplyAmbientFacePose(bones);
+		}
 
 		if (partnerSampled)
 		{
@@ -1602,12 +1859,10 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			}
 		}
 
-
 		if (_overlays.Count > 1)
 		{
 			_overlays.Sort((a, b) =>
 				a.Leaf.Track != b.Leaf.Track ? a.Leaf.Track.CompareTo(b.Leaf.Track)
-				: a.Leaf.SuppressedTrackSibling != b.Leaf.SuppressedTrackSibling ? a.Leaf.SuppressedTrackSibling.CompareTo(b.Leaf.SuppressedTrackSibling)
 				: a.Leaf.Priority != b.Leaf.Priority ? a.Leaf.Priority.CompareTo(b.Leaf.Priority)
 				: a.Leaf.Uid.CompareTo(b.Leaf.Uid));
 		}
@@ -1616,22 +1871,19 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		// then the layer blends onto the body per bone at mask[bone]/255 times the record's
 		// weight. Bones the layer's clips do not cover are its rest pose, as the guest samples
 		// them; the mask is what keeps them off the body.
-		int trackWinnerTrack = -1;
-		int trackWinnerStart = -1;
-		int trackWinnerEnd = -1;
 		for (int i = 0; i < _overlays.Count;)
 		{
 			uint uid = _overlays[i].Leaf.Uid;
-			int track = _overlays[i].Leaf.Track;
-			bool suppressedSibling = _overlays[i].Leaf.SuppressedTrackSibling;
 			int j = i;
 			float layerWeight = 0f;
 			float recordCap = 0f;
 			uint maskNode = 0;
+			bool overlayHasPosedFace = false;
 			while (j < _overlays.Count && _overlays[j].Leaf.Uid == uid)
 			{
 				Channel ov = _overlays[j];
 				layerWeight += ov.Weight * ov.OverlayFade;
+				overlayHasPosedFace |= ov.Built.HasPosedFace;
 				float cap = RecordWeightAt(ov, pairAt) * ov.OverlayFade;
 				if (cap > recordCap)
 				{
@@ -1643,13 +1895,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 				}
 
 				++j;
-			}
-
-			if (!suppressedSibling)
-			{
-				trackWinnerTrack = track;
-				trackWinnerStart = i;
-				trackWinnerEnd = j;
 			}
 
 			System.Array.Clear(_layerRotationWeight, 0, bones);
@@ -1671,43 +1916,16 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			// Shadow_SpineControl so its world placement is unchanged — the spine follows the
 			// overlay's hip rotation, the legs do not swing with it.
 			int hip = _hipBone;
-			bool compensateHip = !suppressedSibling && hip >= 0 && (mask.Length == 0 || (hip < _modelToGuest.Length &&
+			bool compensateHip = hip >= 0 && (mask.Length == 0 || (hip < _modelToGuest.Length &&
 				_modelToGuest[hip] >= 0 && _modelToGuest[hip] < mask.Length && mask[_modelToGuest[hip]] != 0));
 			Transform3D hipOld = compensateHip ? PoseOf(hip) : Transform3D.Identity;
 
 			for (int b = 0; b < bones; ++b)
 			{
-				if (suppressedSibling)
+				if (b < _isFacialBone.Length && _isFacialBone[b] &&
+					(!overlayHasPosedFace || _layerRotationWeight[b] <= 0f))
 				{
-					bool siblingAnimatesBone = false;
-					for (int k = i; k < j; ++k)
-					{
-						if (HasAnimatedRotationTrack(_overlays[k].Built, b))
-						{
-							siblingAnimatesBone = true;
-							break;
-						}
-					}
-					if (!siblingAnimatesBone)
-					{
-						continue;
-					}
-					if (trackWinnerTrack == track && trackWinnerStart >= 0)
-					{
-						bool winnerAnimatesBone = false;
-						for (int k = trackWinnerStart; k < trackWinnerEnd; ++k)
-						{
-							if (HasAnimatedRotationTrack(_overlays[k].Built, b))
-							{
-								winnerAnimatesBone = true;
-								break;
-							}
-						}
-						if (winnerAnimatesBone)
-						{
-							continue;
-						}
-					}
+					continue;
 				}
 
 				float wb = w;
@@ -1815,26 +2033,10 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		bool shadowNow = Refii.Entities.Engine_ShadowSkeletons.WriteNow(_skeleton, out Skeleton3D? shadow);
 		bool shadowAll = shadowNow && _shadowStale;
 		// The skeleton takes rotation and translation; the scale binds through the skin (see
-		// ApplyMorph), and only when the record was re-read. `_finalScale` is the morph's factor
-		// (One without one); the bone's OWN scale under it is the guest's, as its pose stated it
-		// (Engine_EntitySkeleton.GuestScale) — a Fable 3 rig collapses helper bones to 3e-5 and
-		// scales others to 4.5, and binding One over those un-collapses them: the hand spike and
-		// the foot lump of the first clip-driven run. Fable 2's own scales are One, so its skin
-		// takes exactly the morph factor as before.
+		// ApplyMorph), and only when the record was re-read.
 		if (_scaleDirty && Rig is { } rig)
 		{
-			_skinScale ??= new Vector3[bones];
-			if (_skinScale.Length != bones)
-			{
-				_skinScale = new Vector3[bones];
-			}
-
-			for (int b = 0; b < bones; ++b)
-			{
-				_skinScale[b] = rig.GuestScale(b) * _finalScale[b];
-			}
-
-			rig.SetBoneScales(_skinScale);
+			rig.SetBoneScales(_finalScale);
 			_scaleDirty = false;
 		}
 
@@ -2058,6 +2260,11 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	{
 		for (int b = 0; b < bones; ++b)
 		{
+			if (!built.HasPosedFace && b < _isFacialBone.Length && _isFacialBone[b])
+			{
+				continue;
+			}
+
 			// BONE 0 IS IDENTITY IN THE GUEST'S POSE — rotation, translation AND scale. After
 			// sampling, `sub_82208040` (0x82208140..78) overwrites bone 0 with (0,0,0,1) / zero /
 			// one unconditionally, and `sub_821F57D0` does it again before composing model
@@ -2093,6 +2300,57 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 				position[b] = positionWeight[b] > 0f ? position[b] + p * weight : p * weight;
 				positionWeight[b] += weight;
 			}
+		}
+	}
+
+	/// <summary>
+	/// Fills unposed facial bones (<see cref="_isFacialBone"/>) from the rig's Host-driven ambient
+	/// facial clip (<c>IdleStand1</c> or the rig's last looping facial clip), or falls back to
+	/// neutral parallel eye and relaxed jaw rotations while the ambient clip is still decoding.
+	/// </summary>
+	private void ApplyAmbientFacePose(int bones)
+	{
+		if (_ambientFaceClip is { HasPosedFace: true } amb)
+		{
+			for (int b = 0; b < bones; ++b)
+			{
+				if (b >= _isFacialBone.Length || !_isFacialBone[b] || _rotationWeight[b] > 0f)
+				{
+					continue;
+				}
+
+				int rt = b < amb.RotationTrack.Length ? amb.RotationTrack[b] : -1;
+				if (rt >= 0)
+				{
+					_rotation[b] = SampleRotation(amb, b, rt, _ambientFaceTime);
+					_rotationWeight[b] = 1f;
+				}
+
+				int pt = b < amb.PositionTrack.Length ? amb.PositionTrack[b] : -1;
+				if (pt >= 0 && _parents![b] >= 0 && _positionWeight[b] <= 0f)
+				{
+					_position[b] = SamplePosition(amb, b, pt, _ambientFaceTime);
+					_positionWeight[b] = 1f;
+				}
+			}
+
+			return;
+		}
+
+		if (_jawBone >= 0 && _jawBone < bones && _rotationWeight[_jawBone] <= 0f)
+		{
+			_rotation[_jawBone] = _neutralJawRotation;
+			_rotationWeight[_jawBone] = 1f;
+		}
+		if (_leftEyeBone >= 0 && _leftEyeBone < bones && _rotationWeight[_leftEyeBone] <= 0f)
+		{
+			_rotation[_leftEyeBone] = _neutralLeftEyeRotation;
+			_rotationWeight[_leftEyeBone] = 1f;
+		}
+		if (_rightEyeBone >= 0 && _rightEyeBone < bones && _rotationWeight[_rightEyeBone] <= 0f)
+		{
+			_rotation[_rightEyeBone] = _neutralRightEyeRotation;
+			_rotationWeight[_rightEyeBone] = 1f;
 		}
 	}
 
@@ -2172,17 +2430,27 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	/// would double a head turn during a crossfade.
 	/// </summary>
 	/// <summary>
-	/// Copies each active record's aim and look post-ops on the main thread (the bridge refills one
-	/// set of buffers per call) so <see cref="ApplyPostOpsForRecord"/> can apply each primary
-	/// record's post-ops to its own pose before overlays are layered on top.
+	/// Copies each active record's aim and look post-ops on the main thread and smoothly filters
+	/// target quaternions and weights on the Host clock (<paramref name="dt"/>) so 15 Hz guest
+	/// updates to upper-body <c>lookRec</c> (<c>mode = 2</c>, <c>w ~ 2.22</c> on the 6 arm/shoulder
+	/// bones) never snap at 15 Hz tick boundaries.
 	/// </summary>
-	private void TakePostOps()
+	private void TakePostOps(float dt)
 	{
 		_postKinds = 0;
-		_takenPostOpCount = 0;
+		for (int i = 0; i < MaxTakenPostOps; i++)
+		{
+			_postOpSeen[i] = false;
+		}
+
 		HostBridge.GuestPostOps? ops = HostBridge.GetAnimPostOps(_entity);
 		if (ops is not { } post || post.Ops.Count == 0)
 		{
+			for (int i = 0; i < MaxTakenPostOps; i++)
+			{
+				_postOpActive[i] = false;
+			}
+			_takenPostOpCount = 0;
 			return;
 		}
 
@@ -2203,40 +2471,112 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			}
 
 			int slot = -1;
-			for (int i = 0; i < _takenPostOpCount; i++)
+			for (int i = 0; i < MaxTakenPostOps; i++)
 			{
-				if (_postOpUid[i] == op.RecordUid && _postOpKind[i] == op.Kind)
+				if ((_postOpSeen[i] || _postOpActive[i]) &&
+					_postOpUid[i] == op.RecordUid && _postOpKind[i] == op.Kind)
 				{
 					slot = i;
 					break;
 				}
 			}
 
-			if (slot < 0)
+			if (slot >= 0)
 			{
-				if (_takenPostOpCount >= MaxTakenPostOps)
+				if (_postOpSeen[slot] && op.RecordWeight <= _postOpRecordWeight[slot])
 				{
 					continue;
 				}
-				slot = _takenPostOpCount++;
 			}
-			else if (op.RecordWeight <= _postOpRecordWeight[slot])
+			else
 			{
-				continue;
+				for (int i = 0; i < MaxTakenPostOps; i++)
+				{
+					if (!_postOpSeen[i] && !_postOpActive[i])
+					{
+						slot = i;
+						break;
+					}
+				}
+				if (slot < 0)
+				{
+					for (int i = 0; i < MaxTakenPostOps; i++)
+					{
+						if (!_postOpSeen[i])
+						{
+							slot = i;
+							break;
+						}
+					}
+				}
+				if (slot < 0)
+				{
+					continue;
+				}
+				_postOpActive[slot] = false;
 			}
+
+			bool wasActive = _postOpActive[slot] && !_postOpSeen[slot];
+			float blend = !wasActive || dt <= 0f
+				? 1f
+				: Mathf.Clamp(1f - Mathf.Exp(-18f * dt), 0f, 1f);
 
 			int chainLen = _postChainLen[op.Kind];
 			int count = System.Math.Min(chainLen, System.Math.Min(op.Targets.Length, 6));
 			Quaternion[] dstTarget = _postOpTargets[slot] ??= new Quaternion[6];
-			System.Array.Copy(op.Targets, dstTarget, count);
+			for (int b = 0; b < count; b++)
+			{
+				Quaternion next = op.Targets[b];
+				dstTarget[b] = !wasActive || b >= _postOpTargetCount[slot]
+					? next
+					: SmoothPostOpTarget(dstTarget[b], next, blend);
+			}
+
 			_postOpUid[slot] = op.RecordUid;
 			_postOpKind[slot] = op.Kind;
 			_postOpMode[slot] = op.Mode;
-			_postOpWeight[slot] = op.Weight;
+			_postOpWeight[slot] = wasActive ? Mathf.Lerp(_postOpWeight[slot], op.Weight, blend) : op.Weight;
 			_postOpRecordWeight[slot] = op.RecordWeight;
 			_postOpTargetCount[slot] = count;
+			_postOpSeen[slot] = true;
 			_postKinds |= 1 << op.Kind;
 		}
+
+		int maxSlot = 0;
+		for (int i = 0; i < MaxTakenPostOps; i++)
+		{
+			_postOpActive[i] = _postOpSeen[i];
+			if (_postOpSeen[i])
+			{
+				maxSlot = i + 1;
+			}
+		}
+		_takenPostOpCount = maxSlot;
+	}
+
+	/// <summary>
+	/// Smoothly interpolates a post-op bone target quaternion toward <paramref name="target"/>
+	/// on the Host clock with hemisphere alignment.
+	/// </summary>
+	public static Quaternion SmoothPostOpTarget(Quaternion current, Quaternion target, float blend)
+	{
+		if (!target.IsFinite() || target.LengthSquared() < 1e-8f)
+		{
+			return target;
+		}
+		if (!current.IsFinite() || current.LengthSquared() < 1e-8f || blend >= 0.9999f)
+		{
+			return target.Normalized();
+		}
+
+		Quaternion c = current.Normalized();
+		Quaternion t = target.Normalized();
+		if (c.Dot(t) < 0f)
+		{
+			t = -t;
+		}
+
+		return c.Slerp(t, Mathf.Clamp(blend, 0f, 1f));
 	}
 
 	private const int MaxTakenPostOps = 8;
@@ -2250,6 +2590,8 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	private readonly float[] _postOpWeight = new float[MaxTakenPostOps];
 	private readonly float[] _postOpRecordWeight = new float[MaxTakenPostOps];
 	private readonly int[] _postOpTargetCount = new int[MaxTakenPostOps];
+	private readonly bool[] _postOpActive = new bool[MaxTakenPostOps];
+	private readonly bool[] _postOpSeen = new bool[MaxTakenPostOps];
 	private readonly Quaternion[]?[] _postOpTargets = new Quaternion[]?[MaxTakenPostOps];
 
 	/// <summary>
@@ -2313,7 +2655,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			int matchSlot = -1;
 			for (int s = 0; s < _takenPostOpCount; s++)
 			{
-				if (_postOpKind[s] == kind && (_postOpUid[s] == recordUid || _postOpUid[s] == 0u))
+				if (_postOpActive[s] && _postOpKind[s] == kind && (_postOpUid[s] == recordUid || _postOpUid[s] == 0u))
 				{
 					matchSlot = s;
 					break;
@@ -2452,9 +2794,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 	private bool _morphWasApplied;
 
-	/// <summary>The skin's scale per bone: the guest's own times the morph factor, composed on each push.</summary>
-	private Vector3[]? _skinScale;
-
 	/// <summary>Set when <see cref="_finalScale"/> was re-read, so the rig's skin takes it once.</summary>
 	private bool _scaleDirty;
 
@@ -2482,23 +2821,27 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		return new Transform3D(new Basis(q), p);
 	}
 
-	private static bool HasAnimatedRotationTrack(Built built, int bone)
+	private bool HasSiblingInRecord(uint uid, Channel self)
 	{
-		if (bone < 0 || bone >= built.RotationTrack.Length)
+		foreach (Channel other in _channels.Values)
 		{
-			return false;
+			if (!ReferenceEquals(other, self) && other.Leaf.Uid == uid &&
+				other.Leaf.Overlay == self.Leaf.Overlay && other.Leaf.Additive == self.Leaf.Additive)
+			{
+				return true;
+			}
 		}
-		int rt = built.RotationTrack[bone];
-		if (rt < 0)
-		{
-			return false;
-		}
-		if (built.KeysLifted)
-		{
-			return built.RotationKeys[bone].Times is { Length: > 1 };
-		}
-		return built.Animation is { } anim && anim.TrackGetKeyCount(rt) > 1;
+
+		return false;
 	}
+
+	/// <summary>
+	/// Computes the Host-clock step rate (<c>share / second</c>) for an intra-record blend-tree
+	/// share transition so 15 Hz footstep crossfades track the guest's target share rate while
+	/// honoring a minimum blend rate from <paramref name="blendSeconds"/>.
+	/// </summary>
+	public static float ComputeShareStepRate(float currentShare, float targetShare, float blendSeconds) =>
+		Mathf.Max(Mathf.Abs(targetShare - currentShare) * 15f, 1f / Mathf.Max(blendSeconds, 0.133f));
 
 	private static void Accumulate(ref Quaternion sum, ref float sumWeight, Quaternion q, float weight)
 	{
@@ -2589,21 +2932,17 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	/// Returns true when an unseen channel (`!c.Seen`) should be dropped immediately rather than
 	/// ramping out via `BlendOut`: if its parent record Uid is still active in the current guest
 	/// snapshot (<paramref name="recordStillSeen"/>), no clip in the snapshot was skipped due to
-	/// async background decoding (<paramref name="hadPendingClip"/>), and its lagged intra-record
-	/// share interpolation (`LeafShareAt`) has reached `0`.
+	/// async background decoding (<paramref name="hadPendingClip"/>), and its Host-smoothed
+	/// intra-record share (<paramref name="smoothedShare"/>) has reached `0`.
 	/// </summary>
 	public static bool ShouldDropUnseenChannelInActiveRecord(
 		bool recordStillSeen,
 		bool hadPendingClip,
 		float interpolatedWeight = 0f,
-		float shareCurrent = 0f,
-		double pairAt = 1.0,
-		bool hasOlder = false,
-		float olderShareCurrent = 0f) =>
+		float smoothedShare = 0f) =>
 		recordStillSeen && !hadPendingClip &&
 		interpolatedWeight <= 1e-4f &&
-		shareCurrent <= 1e-4f &&
-		(pairAt >= 0.0 || !hasOlder || olderShareCurrent <= 1e-4f);
+		smoothedShare <= 1e-4f;
 
 	/// <summary>
 	/// Returns true when an unseen channel in `_channels` (`!cand.Seen`) is a valid continuation
@@ -2630,11 +2969,16 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		return diffPrev < limit || diffCur < 1e-3f;
 	}
 
-	private static void ObservePlayhead(Channel c, HostBridge.GuestAnimLeaf leaf, uint tick, double drawTick)
+	private static void ObservePlayhead(Channel c, HostBridge.GuestAnimLeaf leaf, uint tick, double drawTick, bool isPropRig = false)
 	{
 		// Every read goes to the playhead, which tells a new tick from the same pair read again.
 		c.PlayheadTick = tick;
 		c.StatedTime = leaf.Time;
+		if (isPropRig && !leaf.Network)
+		{
+			c.Playhead.ObserveProp(leaf.PreviousTime, leaf.Time, tick, c.Built.Length, leaf.Loop, drawTick);
+			return;
+		}
 		bool cut = !leaf.Network && leaf.PreviousTime == leaf.Time;
 		c.Playhead.Observe(leaf.PreviousTime, leaf.Time, tick, c.Built.Length, leaf.Loop, cut, drawTick);
 	}
@@ -2725,19 +3069,9 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			? Mathf.Lerp(c.OlderPrevious, c.OlderCurrent, (float)System.Math.Clamp(pairAt + 1.0, 0.0, 1.0))
 			: Mathf.Lerp(c.RecordPrevious, c.RecordCurrent, (float)System.Math.Clamp(pairAt, 0.0, 1.0));
 
-	/// <summary>
-	/// The leaf's intra-record blend-tree share at the draw point, interpolated across the tick
-	/// exactly like <see cref="RecordWeightAt"/> so locomotion steering trees (`WalkFootstep` +
-	/// `WalkFootstepTurn*`) blend smoothly instead of stepping at 15 Hz.
-	/// </summary>
-	private static float LeafShareAt(Channel c, double pairAt) =>
-		pairAt < 0.0 && c.HasOlder
-			? Mathf.Lerp(c.OlderSharePrevious, c.OlderShareCurrent, (float)System.Math.Clamp(pairAt + 1.0, 0.0, 1.0))
-			: Mathf.Lerp(c.SharePrevious, c.ShareCurrent, (float)System.Math.Clamp(pairAt, 0.0, 1.0));
-
 	/// <summary>The clip time to sample now: the playhead moved by this frame's real time, wrapped
 	/// for a looping clip and clamped short of the end otherwise.</summary>
-	private static void Advance(Channel c, double seconds, double drawTick)
+	private static void Advance(Channel c, double seconds, double drawTick, bool isPropRig = false)
 	{
 		float length = c.Built.Length;
 		if (length <= 0f)
@@ -2749,7 +3083,9 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		// A leaf the guest no longer states has no position left to follow: it runs on at its
 		// last rate while it ramps out. Steered toward its last pair, which stops moving, it was
 		// held back at the speed limit and then snapped — a pop on every locomotion change.
-		double t = c.Seen ? c.Playhead.Advance(seconds, drawTick) : c.Playhead.Freewheel(seconds, drawTick);
+		// Non-character prop rigs (doors, chests, clocks, shop signs) also advance autonomously
+		// via Freewheel on the Host clock once triggered.
+		double t = (c.Seen && !isPropRig) ? c.Playhead.Advance(seconds, drawTick) : c.Playhead.Freewheel(seconds, drawTick);
 		if (c.Leaf.Loop)
 		{
 			t %= length;
@@ -2898,6 +3234,8 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		System.Array.Fill(built.RotationTrack, -1);
 		System.Array.Fill(built.PositionTrack, -1);
 		bool mappedStatic = true;
+		bool hasPosedFace = false;
+		bool anyFacialAnimated = false;
 		for (int track = 0; track < map.Length; ++track)
 		{
 			int b = map[track];
@@ -2911,6 +3249,19 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			if (shared.Rotations[track].Animated)
 			{
 				mappedStatic = false;
+			}
+			if (b < _isFacialBone.Length && _isFacialBone[b] &&
+				b < _restRotation.Length && IsFacialTrackPosed(shared.Rotations[track].Rotations, _restRotation[b]))
+			{
+				bool rotAnimated = !Constant(shared.Rotations[track].Rotations);
+				if (rotAnimated)
+				{
+					anyFacialAnimated = true;
+				}
+				if (b == _jawBone || b == _leftEyeBone || b == _rightEyeBone || anyFacialAnimated)
+				{
+					hasPosedFace = true;
+				}
 			}
 
 			int parent = _parents is not null && b < _parents.Length ? _parents[b] : _skeleton.GetBoneParent(b);
@@ -2926,6 +3277,8 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		}
 
 		built.IsStatic |= mappedStatic;
+		built.HasPosedFace = hasPosedFace;
+		built.HasAnimatedFace = hasPosedFace && anyFacialAnimated;
 		return built;
 	}
 
@@ -3145,7 +3498,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			built.PositionTrack[b] = animation.FindTrack(path, Animation.TrackType.Position3D);
 		}
 
-		LiftKeys(built);
+		LiftKeys(built, _isFacialBone, _restRotation, _jawBone, _leftEyeBone, _rightEyeBone);
 		return built;
 	}
 

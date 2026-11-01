@@ -36,6 +36,12 @@ public partial class ModdingPanel : VBoxContainer
 	private List<ModDependencyProblem> _dependencyProblems = new();
 	private readonly Dictionary<string, ModTally> _tallies = new();
 
+	/// <summary>
+	/// The Android launcher. The phone has no folder to open, no editor and no Mod Studio, and its
+	/// phone compiler builds no mod's native code yet, so those mods cannot be enabled there.
+	/// </summary>
+	private static bool Phone => !Engine.IsEditorHint() && OS.HasFeature("android");
+
 	public void Configure(Font? font, int fontSize, SmartStyle style)
 	{
 		_font = font;
@@ -83,8 +89,12 @@ public partial class ModdingPanel : VBoxContainer
 		AddChild(_rootLabel);
 
 		string extension = Refii.Core.Engine_Title.Active.ModExtension;
-		Label help = MakeLabel(Phone ? PhoneHelp(extension) :
-			$"Install a mod package ({extension}) from a file or a link, or drop packages into this " +
+		Label help = MakeLabel(Phone
+			? $"Install a mod package ({extension}) from this phone's storage; the mods that come with " +
+			  "the app are already listed. A mod is installed disabled: tick it to turn it on. " +
+			  "Higher in the list wins a conflict. Changes apply the next time the game starts. " +
+			  "Mods with native code cannot run on the phone yet."
+			: $"Install a mod package ({extension}) from a file or a link, or drop packages into this " +
 			"folder. A mod is installed disabled: tick it to turn it on. Enabled mods override " +
 			"matching game records; higher in the list wins a conflict. Changes apply the next " +
 			"time the game starts.");
@@ -101,7 +111,14 @@ public partial class ModdingPanel : VBoxContainer
 		installFile.Pressed += OnInstallFromFile;
 		installRow.AddChild(installFile);
 
-		if (BuildPhoneInstallRow(installRow)) return;  // ModdingPanel.Android.cs
+		if (Phone)
+		{
+			// The refresh rides on the install row; the rest of the desktop's buttons have nothing
+			// to open on a phone.
+			installRow.AddChild(RefreshButton());
+			AddStatusAndList();
+			return;
+		}
 
 		var installUrl = new Button { Text = "Install from URL…" };
 		Apply(installUrl);
@@ -336,7 +353,11 @@ public partial class ModdingPanel : VBoxContainer
 	/// <summary>Picks a .f2mod on this computer and shows what it is before installing it.</summary>
 	private void OnInstallFromFile()
 	{
-		if (Phone) { OnInstallFromPhone(); return; }
+		if (Phone)
+		{
+			OnInstallFromPhone();
+			return;
+		}
 
 		var picker = new FileDialog
 		{
@@ -356,6 +377,36 @@ public partial class ModdingPanel : VBoxContainer
 		};
 		DialogHost().AddChild(picker);
 		picker.PopupCentered();
+	}
+
+	/// <summary>
+	/// Picks a .f2mod in Android's document picker, copies it into <c>.cache/downloads/</c> (the
+	/// picker gives a content URI, not a path) and shows what it is before installing it.
+	/// </summary>
+	private void OnInstallFromPhone()
+	{
+		Error error = DisplayServer.FileDialogShow("Install Mod Package", "", "", false,
+			DisplayServer.FileDialogMode.OpenFile,
+			// A .f2mod has no MIME type Android knows: show every document and let the installer check it.
+			new[] { "*.f2mod;Refii mod package;*/*" },
+			Callable.From<bool, string[], int>((selected, paths, _) =>
+			{
+				if (!selected || paths.Length != 1)
+				{
+					return;
+				}
+
+				string uri = paths[0];
+				Callable.From(() => ConfirmInstall(
+					Refii.AndroidRuntime.AndroidModPicker.Fetch(uri, _modsRoot,
+						target => Refii.AndroidRuntime.AndroidModPicker.CopyDocument(uri, target)),
+					downloaded: true)).CallDeferred();
+			}));
+		if (error != Error.Ok)
+		{
+			_statusMessage = "The Android document picker could not open: " + error;
+			Rebuild();
+		}
 	}
 
 	/// <summary>
@@ -766,7 +817,13 @@ public partial class ModdingPanel : VBoxContainer
 				}
 			}
 
-			if (pressed && RefuseNativeModOnPhone(check, captured)) return;
+			if (pressed && Phone && _native.ContainsKey(captured.Name))
+			{
+				check.SetPressedNoSignal(false);
+				_statusMessage = $"'{captured.Name}' has native code, which the phone cannot build into the game yet.";
+				Rebuild();
+				return;
+			}
 
 			if (pressed && _native.TryGetValue(captured.Name, out ModNativeSources? native) &&
 				!NativeModConsent.IsGranted(native))
@@ -904,7 +961,13 @@ public partial class ModdingPanel : VBoxContainer
 		_tallies.TryGetValue(mod.Name, out ModTally? tally);
 		if (Phone && nativeSources != null)
 		{
-			statusControl = NotOnPhoneLabel();
+			// The phone compiler builds refii's own hooks only, so a native mod's code would be
+			// missing from the game while its data and Lua loaded around it.
+			var phoneLabel = MakeLabel("⛔ not on phone");
+			phoneLabel.AddThemeColorOverride("font_color", new Color(0.95f, 0.3f, 0.25f));
+			phoneLabel.HorizontalAlignment = HorizontalAlignment.Center;
+			phoneLabel.TooltipText = "This mod has native code, which the phone cannot build into the game yet.";
+			statusControl = phoneLabel;
 		}
 		else if (enabled && nativeSources != null && !NativeModConsent.IsGranted(nativeSources))
 		{
@@ -1117,6 +1180,9 @@ public partial class ModdingPanel : VBoxContainer
 			control.MouseDefaultCursorShape = CursorShape.PointingHand;
 		}
 	}
+
+	/// <summary>A row control's size, grown on the phone to a fingertip (twice the text height).</summary>
+	private Vector2 Hit(Vector2 size) => Phone ? size.Max(new Vector2(_fontSize * 2, _fontSize * 2)) : size;
 
 	private Label MakeLabel(string text)
 	{

@@ -32,6 +32,17 @@ public partial class GamePhotoMode : Node
     /// <summary>Whether a photo is being taken: every overlay must be off the screen.</summary>
     public static bool Capturing { get; private set; }
 
+    /// <summary>Whether the photo panel (or its controls help) is on the screen.</summary>
+    public static bool PanelShown { get; private set; }
+
+    /// <summary>
+    /// The shown panel's rectangle in the root viewport's units, for a touch layer to leave a finger
+    /// there to the panel; null while it is hidden.
+    /// </summary>
+    public static Rect2? PanelRect { get; private set; }
+
+    private static bool _openRequested, _showRequested;
+    private static Vector2 _touchLook;
     private readonly Engine_PhotoMode _settings = new();
     private readonly List<CanvasLayer> _hiddenLayers = new();
     private GameSession? _session;
@@ -43,8 +54,8 @@ public partial class GamePhotoMode : Node
     /// </summary>
     public Action<bool>? HoldGuest { get; set; }
 
-    /// <summary>Photo mode's hold on the guest, released as it closes.</summary>
-    private GameGuestHold? _hold;
+    /// <summary>Lets the guest run again as it was before photo mode held it.</summary>
+    private Action? _release;
     private Camera3D? _camera;
     private Transform3D _originalTransform;
     private float _originalFov;
@@ -74,6 +85,14 @@ public partial class GamePhotoMode : Node
         "Start" => "F11", "Back" => "C", _ => null
     };
 
+    /// <summary>Opens photo mode on the next frame, where L3 + R3 or F11 would (a touch button).</summary>
+    public static void RequestOpen() => _openRequested = true;
+
+    private static bool _backRequested;
+
+    /// <summary>Presses photo mode's B once, from outside the pad: the phone's back gesture.</summary>
+    public static void RequestBack() => _backRequested = true;
+
     /// <summary>
     /// Why photo mode would not open now, or null when it would: it holds the world still, which a
     /// co-op session (a joined peer, a client, two local players) cannot, nor a cutscene, a menu or
@@ -88,6 +107,32 @@ public partial class GamePhotoMode : Node
         if (!GameInput.Playing || GameDevMenu.WindowOpen || GameDevMenu.KeyboardCaptured)
             return "not now";
         return null;
+    }
+
+    /// <summary>Brings the hidden panel back (a tap on the touchscreen, where the pad has Y).</summary>
+    public static void ShowPanel() => _showRequested = true;
+
+    /// <summary>
+    /// A camera drag on the touchscreen, as a fraction of the screen's height, turning the photo
+    /// camera as <see cref="GameInput.PostTouchLook"/> turns the game's: right turns right, up looks up.
+    /// </summary>
+    public static void PostTouchLook(Vector2 screens, float sensitivity) =>
+        _touchLook += new Vector2(Mathf.DegToRad(GameInput.TouchYawPerScreen) * (GameInput.InvertCameraX ? -1f : 1f),
+            Mathf.DegToRad(GameInput.TouchPitchPerScreen)) * screens * sensitivity;
+
+    /// <summary>
+    /// Where the panel stands in a viewport of <paramref name="size"/>, matching
+    /// <see cref="ResizeControls"/> and <see cref="Engine_UiPhotoMode.Layout"/>: the settings at the
+    /// left edge, the controls help in the middle.
+    /// </summary>
+    public static Rect2 PanelRectFor(Vector2 size, bool help)
+    {
+        float aspect = size.X / Math.Max(size.Y, 1);
+        bool narrow = aspect < (Engine_UiPhotoMode.Width + 40) / 720;
+        float unit = narrow ? size.X / (Engine_UiPhotoMode.Width + 40) : size.Y / 720f;
+        float height = help ? Engine_UiPhotoMode.HelpHeight : Engine_UiPhotoMode.Height;
+        float left = help ? (size.X - Engine_UiPhotoMode.Width * unit) / 2f : 20f * unit;
+        return new Rect2(left, (size.Y - height * unit) / 2f, Engine_UiPhotoMode.Width * unit, height * unit);
     }
 
     public override void _Ready()
@@ -151,8 +196,13 @@ public partial class GamePhotoMode : Node
         _nativeControls?.RefreshDevice();
         Engine_UiKeyGlyphs.Update();
         ResizeControls();
-        // A tap on the camera from the touch controls (GamePhotoMode.Touch.cs).
-        ShowRequestedPanel();
+        if (_showRequested)
+        {
+            // A tap on the camera: back from the controls help, or the hidden panel shown again.
+            _showRequested = false;
+            if (_nativeControls?.HelpOpen == true) SetHelpOpen(false);
+            else if (_controls is { Visible: false }) ToggleControls();
+        }
         StatePanel();
         if (HandleHelpActions(pressed)) return;
         if ((pressed & 1) != 0) _ = Capture();
@@ -208,12 +258,15 @@ public partial class GamePhotoMode : Node
         if (Input.MouseMode != mouse) Input.MouseMode = mouse;
         Vector2 turn = new(Axis(pad, JoyAxis.RightX), Axis(pad, JoyAxis.RightY));
         // A touchscreen drag turns by its own angle; the pad and mouse turn inside Engine_FreeCamera.Step.
-        ApplyTouchLook();
-        // The touch controls' stick and Raise/Lower (GamePhotoMode.Touch.cs).
-        (float touchX, float touchY, float touchZ) = TouchMove();
-        var move = new Vector3(Axis(pad, JoyAxis.LeftX) + KeyAxis(Key.A, Key.D) + touchX,
-            Trigger(pad, JoyAxis.TriggerRight) - Trigger(pad, JoyAxis.TriggerLeft) + KeyAxis(Key.Q, Key.E) + touchY,
-            Axis(pad, JoyAxis.LeftY) + KeyAxis(Key.W, Key.S) + touchZ);
+        _yaw -= _touchLook.X;
+        _pitch = Math.Clamp(_pitch - _touchLook.Y, -1.55f, 1.55f);
+        _touchLook = Vector2.Zero;
+        // The touch controls' stick and Raise/Lower, in the guest's units (stick up positive).
+        GameInput.TouchHold touch = GameInput.Touch;
+        var move = new Vector3(Axis(pad, JoyAxis.LeftX) + KeyAxis(Key.A, Key.D) + touch.LeftX / 32767f,
+            Trigger(pad, JoyAxis.TriggerRight) - Trigger(pad, JoyAxis.TriggerLeft) + KeyAxis(Key.Q, Key.E) +
+                (touch.RightTrigger - (float)touch.LeftTrigger) / 255f,
+            Axis(pad, JoyAxis.LeftY) + KeyAxis(Key.W, Key.S) - touch.LeftY / 32767f);
         float speed = _settings[3] * (Held(Key.Shift) || fast ? 3f : Held(Key.Ctrl) ? 0.2f : 1f);
         _camera!.GlobalTransform = Engine_FreeCamera.Step(ref _position, ref _yaw, ref _pitch,
             move, turn, _mouseLook, seconds, speed, Mathf.DegToRad(_settings[2]));
@@ -251,8 +304,7 @@ public partial class GamePhotoMode : Node
         try
         {
             if (HostBridge.TryGetAbiVersion() is not null) GameInput.ReleaseForPhotoMode();
-            // The session's pause on the desktop, the host's own hold elsewhere.
-            _hold = GameGuestHold.Take(HoldGuest, session) ?? throw new InvalidOperationException("no game session");
+            Hold(session);
             Engine_StatedPause.HostHold = true;
             HideLayers(GetTree().Root);
             BuildControls();
@@ -266,6 +318,24 @@ public partial class GamePhotoMode : Node
             GD.PushError($"[photo-mode] {exception.Message}");
             return false;
         }
+    }
+
+    /// <summary>Holds the guest still: the session's pause on the desktop, the host's own hold elsewhere.</summary>
+    private void Hold(GameSession? session)
+    {
+        if (HoldGuest is { } hold)
+        {
+            hold(true);
+            _release = () => hold(false);
+            return;
+        }
+
+        bool wasPaused = session!.Paused;
+        session.Paused = true;
+        _release = () =>
+        {
+            if (IsInstanceValid(session)) session.Paused = wasPaused;
+        };
     }
 
     private void HideLayers(Node node)
@@ -300,8 +370,8 @@ public partial class GamePhotoMode : Node
             if (IsInstanceValid(layer)) layer.Visible = true;
         _hiddenLayers.Clear();
         Engine_StatedPause.HostHold = false;
-        _hold?.Release();
-        _hold = null;
+        _release?.Invoke();
+        _release = null;
         Input.MouseMode = _mouseMode;
         if (HostBridge.TryGetAbiVersion() is not null) GameInput.ReleaseForPhotoMode();
         _session = null;
@@ -454,6 +524,14 @@ public partial class GamePhotoMode : Node
         StatePanel();
     }
 
+    /// <summary>States where the panel stands for the touch layer (<see cref="PanelRect"/>).</summary>
+    private void StatePanel()
+    {
+        PanelShown = Active && !_capturing && _controls is { Visible: true } && _nativeControls is not null;
+        Rect2? rect = PanelShown ? PanelRectFor(GetViewport().GetVisibleRect().Size, _nativeControls!.HelpOpen) : null;
+        PanelRect = rect;
+    }
+
     private async Task Capture()
     {
         if (!Active || _capturing || _controls is null || _nativeControls?.HelpOpen == true) return;
@@ -533,5 +611,19 @@ public partial class GamePhotoMode : Node
         if (Held(Key.Bracketright)) buttons |= 2048;
         if (Held(Key.C) || Pad(pad, JoyButton.Back)) buttons |= ControlsButton;
         return buttons | TouchDPad();
+    }
+
+    /// <summary>
+    /// The touch controls' D-pad, as the navigation bits: up and down choose a setting, left and
+    /// right adjust it, held to repeat — the pad's own D-pad, under a thumb on a phone.
+    /// </summary>
+    internal static uint TouchDPad()
+    {
+        uint touch = GameInput.Touch.Buttons, bits = 0;
+        if ((touch & GameInput.PadUp) != 0) bits |= 16;
+        if ((touch & GameInput.PadDown) != 0) bits |= 32;
+        if ((touch & GameInput.PadLeft) != 0) bits |= 64;
+        if ((touch & GameInput.PadRight) != 0) bits |= 128;
+        return bits;
     }
 }

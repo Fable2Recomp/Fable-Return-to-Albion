@@ -217,18 +217,6 @@ public sealed class SwfSceneUi
     internal bool Released { get; private set; }
 
     /// <summary>
-    /// A host's <c>_Notification</c>: <see cref="Release"/> as the board is freed, when
-    /// <c>pubgame_release_on_close</c> is on.
-    /// </summary>
-    public void ReleaseOnPredelete(int what)
-    {
-        if (what == GodotObject.NotificationPredelete && Refii.Textures.Engine_TexSettings.PubGameReleaseOnClose)
-        {
-            Release();
-        }
-    }
-
-    /// <summary>
     /// Lets go of every timeline this stage holds, for a board that is being freed.
     /// </summary>
     /// <remarks>

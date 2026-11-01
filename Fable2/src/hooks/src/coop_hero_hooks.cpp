@@ -726,7 +726,7 @@ std::mutex g_peer_mutex;
 std::array<uint8_t, kCameraBlockBytes> g_peer_received{};
 bool g_peer_have = false;
 /// `g_peer_have`, set with it under the mutex, so a frame with no session and no peer view to
-/// clear takes no lock.
+/// clear takes no lock (Android only, where the guest is CPU-bound).
 std::atomic<bool> g_peer_have_hint{false};
 
 /// 16-aligned guest buffer: the block the getter hands out, then the cone built from it.
@@ -763,7 +763,11 @@ uint32_t NetManager(uint8_t* base) {
 bool IsSessionHost(uint8_t* base) {
   const uint32_t net = NetManager(base);
   const bool session = Plausible(net) && refii::vfs::LoadGuestU8(base, net + 0x34u) != 0u;
+#if defined(__ANDROID__)
   if (!session && g_peer_have_hint.load(std::memory_order_acquire)) {
+#else
+  if (!session) {
+#endif
     std::lock_guard<std::mutex> lock(g_peer_mutex);
     g_peer_have = false;
     g_peer_have_hint.store(false, std::memory_order_release);

@@ -98,6 +98,9 @@ public static int SurfacesWithLods;
     /// </summary>
     public static int SurfacesWithoutLods;
 
+    /// <summary>Thinned tree levels added (Engine_TreeCardLods). Run total.</summary>
+    public static int TreeCardLevels;
+
     /// <summary>Levels handed to Godot, over all surfaces. Run total.</summary>
     public static int LodLevelsAttached;
 
@@ -140,24 +143,10 @@ public static int SurfacesWithLods;
                 return;
             }
         }
-        // A RECORD THAT NAMES NO TEXTURE IS THE DATA'S STATEMENT, NOT A READER'S MISS. Fable 3's
-        // texture set reader (sub_82CBA610) binds an empty path to a procedural default: the
-        // diffuse and specular to the 16x16 white (sub_82182B70, 0x82CBA6D0 / 0x82CBA8F8), the
-        // normal to the flat (255,127,127) (sub_82C7D430, 0x82C7D4C4), the environment map and
-        // slot 4 to null (0x82CBAB78 / 0x82CBAC64); the mesh still draws, DiffuseColour (default
-        // (1,1,1,1), sub_82CEE200 0x82CEE298) over white. 223 of the 11,276 shipped v47 materials
-        // are like this, 221 of them with no DiffuseColour stated. Said once as the stated
-        // contract, so the next reader does not go looking for a sampler the file never named.
-        bool namesNothing = record is not null &&
-            record.Diffuse.Length == 0 && record.Normal.Length == 0 && record.Specular.Length == 0 &&
-            record.SelfIllumination.Length == 0 && record.EnvironmentMap.Length == 0;
         GD.Print(record is null
             ? $"[material] UNTEXTURED {model} '{surface}': no material record"
-            : namesNothing
-                ? $"[material] untextured by the data {model} '{surface}': the texture set names no " +
-                  "texture; the guest binds its white and flat-normal defaults and draws DiffuseColour"
-                : $"[material] UNTEXTURED {model} '{surface}': diffuse '{record.Diffuse}' normal '{record.Normal}' " +
-                  $"specular '{record.Specular}' self-illum '{record.SelfIllumination}' envmap '{record.EnvironmentMap}'");
+            : $"[material] UNTEXTURED {model} '{surface}': diffuse '{record.Diffuse}' normal '{record.Normal}' " +
+              $"specular '{record.Specular}' self-illum '{record.SelfIllumination}' envmap '{record.EnvironmentMap}'");
     }
 
     /// <summary>Surfaces refused for a non-finite or absurd vertex. Run total.</summary>
@@ -182,22 +171,13 @@ public static int SurfacesWithLods;
         // bytes of LOD payload follow it, and when the banks carry no body entry for the name
         // there is nothing for any reader to decode. Print the shortfall so the next reader can
         // tell a hole in the shipped data from a decoder that gave up.
-        //
-        // THE GUEST DRAWS NOTHING FOR THEM EITHER. Fable 3 joins header and body in its VFS: a
-        // Composite bank of the header bank and globals_models.bnk, both Required, whose table
-        // keeps a name only when every required part has it (sub_82D90320; the emit condition
-        // `v24 && v25 >= a1[10]`, v24 cleared at 0x82D90628 for a part with index 0). The open
-        // then finds no row (sub_8312EF08 returns 0 at 0x8312EF94, sub_82C9E428 at 0x82C9E518),
-        // the mesh keeps LOD count 0 and each renderer null-checks it (sub_821FDA80 0x821FDBF8).
-        // Fable 2's header-only names are the same kind of hole.
         if (info.IsStub)
         {
             isStub = true;
             error = info.BodyBytesStated > 0
                 ? $"no body entry in any bank: the {16 + info.HeaderSize}-byte header " +
                   $"states {info.BodyBytesStated:N0} byte(s) of geometry across " +
-                  $"{info.LodCount} LOD(s), which the shipped banks never cooked in; the guest's " +
-                  "composite bank drops the name and draws nothing"
+                  $"{info.LodCount} LOD(s)"
                 : "header only, no geometry";
             return null;
         }
@@ -216,15 +196,6 @@ public static int SurfacesWithLods;
 
         var mesh = new ArrayMesh();
         int added = 0;
-
-        // Fable 3's header byte 88 is the mesh's GlobalLightingMode (sub_82D70950 0x82D709B8 ->
-        // mesh+132; the twin's sub_82C88C88 reads it: 1 probe-lit 0x82C88CC8, 2 lightmap
-        // 0x82C88D14, 4 grass). Carried for the classic draw's lighting choice; Fable 2's byte 88
-        // lies inside its own, differently laid-out tail, so only a v46+ header states it.
-        if (info.Version >= 46)
-        {
-            mesh.SetMeta(Refii.Lighting.Engine_LevelBakedLighting.Fable3LightingModeMeta, (int)info.GlobalLightingMode);
-        }
 
         // The model's own vertex numbering, surface by surface in the order they are added, so
         // anything the file states per vertex can still be looked up after splitting and
@@ -420,8 +391,34 @@ public static int SurfacesWithLods;
                 }
             }
 
-            // Still no level: a tree's thinned cards or generated ones, when set (Engine_MdlExtraLods).
-            lods ??= Engine_MdlExtraLods.For(info, geo, vertices, normals, indices);
+            // A tree that ships no coarser level (the 360's `_LOD1` far trees) gets thinned
+            // ones under `tree_card_lod`: the same boughs with fewer leaf cards (Engine_TreeCardLods).
+            if (lods is null && info.MovementMode == 2 && Engine_TreeCardLods.Enabled)
+            {
+                Vector3 low = vertices[0], high = vertices[0];
+                foreach (Vector3 v in vertices)
+                {
+                    low = low.Min(v);
+                    high = high.Max(v);
+                }
+
+                Vector3 span = high - low;
+                foreach ((float key, int[] level) in Engine_TreeCardLods.Build(
+                    indices, vertices.Length, System.MathF.Max(span.X, System.MathF.Max(span.Y, span.Z)),
+                    Engine_TreeCardLods.FarLevelsEnabled))
+                {
+                    lods ??= new Godot.Collections.Dictionary();
+                    lods[key] = level;
+                    ++TreeCardLevels;
+                }
+            }
+
+            // Still none and not a tree (trees thin only by their cards, above): generated levels on a phone
+            // (Engine_MdlAutoLod, `mesh_auto_lod`). After the card thinning, which suits a leaf card better.
+            if (lods is null && !geo.HasBones && info.MovementMode != 2 && Engine_MdlAutoLod.Enabled)
+            {
+                lods = Engine_MdlAutoLod.Generate(vertices, normals, indices);
+            }
 
             // The model's radiance transfer, expanded per vertex: CUSTOM0..2 are the red, green
             // and blue transfer vectors the shader dots with the entity's probe. Absent on a
@@ -515,7 +512,7 @@ public static int SurfacesWithLods;
             if (material is null)
             {
                 ReportFallback(virtualPath, geo.Name, geo.Material);
-                material = Engine_MdlMaterial.Fallback(geo.Material);
+                material = Engine_MdlMaterial.Fallback();
             }
             if (material is not null)
             {

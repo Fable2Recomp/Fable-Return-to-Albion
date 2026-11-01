@@ -3,14 +3,6 @@ using System.Collections.Generic;
 
 namespace Refii.Textures;
 
-/// <summary>
-/// Texture path by the guest's texture id. The id is <see cref="Refii.Core.Engine_GameHash.ResourcePath"/>
-/// of the bank entry's name (Fable 2 `sub_822CA588`, Fable 3 `sub_8312F3D8`: FNV-1 over the
-/// lower-cased, backslashed `art\…\x.tex`), and a format-4 bank keys its records by that same hash,
-/// so the mount's entry names ARE the table: <c>Engine_GameAssets</c> feeds every <c>.tex</c> of the
-/// mounted banks for whichever title is active, and a lookup resolves either title's ids through
-/// this one index.
-/// </summary>
 public static class Engine_TexPathIndex
 {
     public const uint NullHash = 0x811C9DC5u;
@@ -64,8 +56,18 @@ public static class Engine_TexPathIndex
         }
     }
 
-    /// <summary>The guest's id for a texture path: FNV-1 of its lower-cased, backslashed spelling.</summary>
-    public static uint PathHash(string path) => Refii.Core.Engine_GameHash.ResourcePath(path);
+    public static uint PathHash(string path)
+    {
+        uint hash = NullHash;
+        foreach (char c in path.ToLowerInvariant())
+        {
+            byte b = (byte)(c == '/' ? '\\' : c);
+            hash *= 0x01000193u;
+            hash ^= b;
+        }
+
+        return hash;
+    }
 
     public static int Count
     {

@@ -936,6 +936,10 @@ public partial class Engine_LightShadowBudget : Node
 				f.Zone,
 				heroZone,
 				f.Casting);
+			if (score >= float.MaxValue)
+			{
+				continue;
+			}
 
 			f.ScoredBy |= bit;
 			_candidates[n++] = new Candidate { Fixture = i, Key = score };

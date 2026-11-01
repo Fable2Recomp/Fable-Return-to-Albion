@@ -98,7 +98,7 @@ public partial class Engine_BinkVideo : Resource
 			}
 		}
 
-		return Refii.Textures.Engine_TextureUpload.CreateTexture(
+		return Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(
 			Image.CreateFromData(decoder.Width, decoder.Height, false, Image.Format.Rgb8, rgb));
 	}
 

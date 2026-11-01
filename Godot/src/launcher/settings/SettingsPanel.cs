@@ -26,6 +26,8 @@ public partial class SettingsPanel : VBoxContainer
 	private Label _statusLabel = null!;
 	private LineEdit _filterEdit = null!;
 	private OptionButton _lookOption = null!;
+	private OptionButton? _graphicsPresetOption;
+	private List<RuntimeCVarOption> _graphicsPresetOptions = new();
 	private CheckBox _advancedCheck = null!;
 	private VBoxContainer _list = null!;
 	private bool _built;
@@ -561,6 +563,80 @@ public partial class SettingsPanel : VBoxContainer
 		grid.AddChild(advDefault);
 	}
 
+	/// <summary>
+	/// The graphics preset as a dropdown: picking one writes its settings, and Custom is shown,
+	/// not offered, once a setting it decides no longer matches.
+	/// </summary>
+	private void AddGraphicsPresetRow(GridContainer grid, RuntimeCVarDefinition definition)
+	{
+		Label name = MakeLabel(RuntimeSettingsModel.FormatDisplayName(definition));
+		name.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseNameColumnWidth), 0);
+		name.SizeFlagsHorizontal = SizeFlags.Fill;
+		name.VerticalAlignment = VerticalAlignment.Center;
+		name.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
+		name.TooltipText = RuntimeSettingsModel.FormatDescription(definition);
+		grid.AddChild(name);
+
+		_graphicsPresetOptions = RuntimeSettingsModel.OptionsFor(definition, _model.Values);
+		var option = new OptionButton
+		{
+			FitToLongestItem = false,
+			TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
+			SizeFlagsHorizontal = SizeFlags.ExpandFill,
+			CustomMinimumSize = new Vector2(LauncherScale.Px(BaseEditorColumnWidth), 0),
+		};
+		Apply(option);
+		foreach (RuntimeCVarOption entry in _graphicsPresetOptions)
+		{
+			option.AddItem(entry.Label);
+		}
+
+		option.ItemSelected += index =>
+		{
+			string chosen = _graphicsPresetOptions[(int)index].Value;
+			if (chosen == GraphicsPresets.Custom)
+			{
+				return;
+			}
+			_model.ApplyGraphicsPreset(chosen);
+			_statusLabel.Text = _model.StatusMessage;
+			Rebuild();
+		};
+		grid.AddChild(option);
+		_graphicsPresetOption = option;
+		ShowGraphicsPreset();
+
+		string defaultText = _graphicsPresetOptions.Find(o => o.Value == definition.DefaultValue)?.Label
+			?? definition.DefaultValue;
+		Label defaultLabel = MakeLabel(defaultText);
+		defaultLabel.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseDefaultColumnWidth), 0);
+		defaultLabel.SizeFlagsHorizontal = SizeFlags.Fill;
+		defaultLabel.VerticalAlignment = VerticalAlignment.Center;
+		defaultLabel.AddThemeColorOverride("font_color", _style.TextDisabled);
+		grid.AddChild(defaultLabel);
+	}
+
+	/// <summary>Selects the preset the values match, without rebuilding the rows being edited.</summary>
+	private void ShowGraphicsPreset()
+	{
+		if (_graphicsPresetOption is not { } option || !IsInstanceValid(option))
+		{
+			return;
+		}
+
+		string current = _model.CurrentGraphicsPreset();
+		int index = _graphicsPresetOptions.FindIndex(o => o.Value == current);
+		int custom = _graphicsPresetOptions.FindIndex(o => o.Value == GraphicsPresets.Custom);
+		if (custom >= 0)
+		{
+			option.SetItemDisabled(custom, current != GraphicsPresets.Custom);
+		}
+		if (index >= 0)
+		{
+			option.Selected = index;
+		}
+	}
+
 	private void AddHdrRows(GridContainer grid, RuntimeCVarDefinition definition)
 	{
 		string current = _model.GetValueOrDefault(definition.Name, definition.DefaultValue);
@@ -638,7 +714,10 @@ public partial class SettingsPanel : VBoxContainer
 	{
 		_model.Values[definition.Name] = value;
 		_model.Save();
-		RefreshGraphicsPreset(definition.Name);  // SettingsPanel.GraphicsPreset.cs
+		if (_model.RefreshGraphicsPreset(definition.Name))
+		{
+			ShowGraphicsPreset();
+		}
 		_statusLabel.Text = _model.StatusMessage;
 
 		// The resolution list is derived from the aspect AND the monitor — it is filtered to

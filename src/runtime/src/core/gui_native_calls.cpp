@@ -139,7 +139,7 @@ std::mutex& AnswersMutex() {
 thread_local uint32_t t_entry = 0;
 
 /// How many answers are held, so a call with none held (nearly always) skips both locks. Kept
-/// under `AnswersMutex`; read lock-free.
+/// under `AnswersMutex`; read lock-free only on Android, where the guest is CPU-bound.
 std::atomic<size_t> g_answer_count{0};
 
 }  // namespace
@@ -170,11 +170,13 @@ extern "C" uint32_t refii_bridge_gui_native_answer_for(uint32_t implementation,
         return none;
     }
 
+#if defined(__ANDROID__)
     // The same answer the empty check below gives, without the two locks every thunk call
     // would otherwise take.
     if (g_answer_count.load(std::memory_order_acquire) == 0u) {
         return none;
     }
+#endif
 
     std::lock_guard<std::mutex> names(NamesMutex());
     auto found = Names().find(implementation);

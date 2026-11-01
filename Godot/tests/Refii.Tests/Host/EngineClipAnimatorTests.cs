@@ -125,32 +125,25 @@ public class EngineClipAnimatorTests
     public void TestUnseenChannelInActiveRecordDropsWithoutGhosting()
     {
         // When a footstep leaf finishes its Type-1 lerp inside a persistent locomotion Uid that is
-        // still seen in the snapshot and its interpolated weight has reached 0, it must be dropped
+        // still seen in the snapshot and its Host-smoothed share has reached 0, it must be dropped
         // immediately rather than ramping out as a 3rd ghost footstep channel.
         AssertThat(Engine_ClipAnimator.ShouldDropUnseenChannelInActiveRecord(
             recordStillSeen: true, hadPendingClip: false)).IsTrue();
 
-        // While drawTick lags SimTick (pairAt < 0) and the unseen sibling channel still has
-        // non-zero interpolated share (e.g. 0.65 complementing the incoming sibling's 0.35),
-        // it must NOT be dropped yet or the surviving sibling would snap from 0.35 to 1.0.
+        // While the unseen sibling channel still has non-zero smoothed share complementing the
+        // incoming sibling, it must NOT be dropped yet or the surviving sibling would snap to 1.0.
         AssertThat(Engine_ClipAnimator.ShouldDropUnseenChannelInActiveRecord(
             recordStillSeen: true,
             hadPendingClip: false,
             interpolatedWeight: 0.65f,
-            shareCurrent: 0f,
-            pairAt: -0.65,
-            hasOlder: true,
-            olderShareCurrent: 0.65f)).IsFalse();
+            smoothedShare: 0.65f)).IsFalse();
 
-        // Once pairAt reaches >= 0 and interpolatedWeight reaches 0, it drops cleanly.
+        // Once smoothedShare and interpolatedWeight reach 0, it drops cleanly.
         AssertThat(Engine_ClipAnimator.ShouldDropUnseenChannelInActiveRecord(
             recordStillSeen: true,
             hadPendingClip: false,
             interpolatedWeight: 0f,
-            shareCurrent: 0f,
-            pairAt: 0.05,
-            hasOlder: true,
-            olderShareCurrent: 0f)).IsTrue();
+            smoothedShare: 0f)).IsTrue();
 
         // If a leaf in the snapshot was skipped due to async background decoding, keep existing
         // channels of that Uid alive until the decode completes.
@@ -161,6 +154,41 @@ public class EngineClipAnimatorTests
         // allow its channels to ramp out normally over BlendOut.
         AssertThat(Engine_ClipAnimator.ShouldDropUnseenChannelInActiveRecord(
             recordStillSeen: false, hadPendingClip: false)).IsFalse();
+    }
+
+    [TestCase]
+    public void TestIsFacialTrackPosedDetectsUnposedCarryIdles()
+    {
+        // Raw skeleton bind pose for Shadow_L_Eye (-99.6 deg) and Shadow_Jaw (-2.7 deg):
+        Quaternion restLeftEye = Quaternion.FromEuler(new Vector3(0f, 0f, Mathf.DegToRad(-99.6f)));
+        Quaternion restJaw = Quaternion.FromEuler(new Vector3(0f, 0f, Mathf.DegToRad(-2.7f)));
+
+        // IdleHoldBeerLoop (0x3207C71E / 0xE4BD3CF7) and SitHoldBeerLoop (0x509F78EA) bake
+        // 1-keyframe tracks identical to raw bind pose (0.00 deg delta): must be recognized as unposed.
+        var unposedEyeTrack = new[] { restLeftEye };
+        var unposedJawTrack = new[] { restJaw, -restJaw };
+        AssertThat(Engine_ClipAnimator.IsFacialTrackPosed(unposedEyeTrack, restLeftEye)).IsFalse();
+        AssertThat(Engine_ClipAnimator.IsFacialTrackPosed(unposedJawTrack, restJaw)).IsFalse();
+
+        // IdleStand1 (0xB742E730) and WalkFootstep rotate Shadow_L_Eye to ~ -90 deg (+9.6 deg delta)
+        // and Shadow_Jaw to ~ +4.6 deg (+7.3 deg delta): must be recognized as posed.
+        var posedEyeTrack = new[] { Quaternion.FromEuler(new Vector3(0f, 0f, Mathf.DegToRad(-90.0f))) };
+        var posedJawTrack = new[] { Quaternion.FromEuler(new Vector3(0f, 0f, Mathf.DegToRad(4.6f))) };
+        AssertThat(Engine_ClipAnimator.IsFacialTrackPosed(posedEyeTrack, restLeftEye)).IsTrue();
+        AssertThat(Engine_ClipAnimator.IsFacialTrackPosed(posedJawTrack, restJaw)).IsTrue();
+    }
+
+    [TestCase]
+    public void TestSmoothPostOpTargetInterpolatesOnHostClock()
+    {
+        // Upper-body lookRec updates at 15 Hz; between ticks, SmoothPostOpTarget must smoothly
+        // Slerp toward the new target with hemisphere alignment rather than snapping or flipping.
+        Quaternion prevTarget = Quaternion.FromEuler(new Vector3(0f, 0f, Mathf.DegToRad(-20.0f)));
+        Quaternion nextTarget = -Quaternion.FromEuler(new Vector3(0f, 0f, Mathf.DegToRad(-32.0f))); // opposite hemisphere
+
+        Quaternion mid = Engine_ClipAnimator.SmoothPostOpTarget(prevTarget, nextTarget, blend: 0.25f);
+        float zDeg = Mathf.RadToDeg(mid.GetEuler().Z);
+        AssertThat(zDeg < -21.0f && zDeg > -25.0f).IsTrue();
     }
 
     [TestCase]

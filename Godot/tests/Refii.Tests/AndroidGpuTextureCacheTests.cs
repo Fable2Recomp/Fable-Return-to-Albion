@@ -32,15 +32,15 @@ public sealed class AndroidGpuTextureCacheTests
     public void SemanticAndDeviceEligibilityIsConservative()
     {
         foreach (Image.Format format in new[] { Image.Format.Dxt1, Image.Format.Dxt5, Image.Format.Rgba8 })
-            AssertThat(AndroidGpuTextureCache.Eligible(true, true, TexSemantic.Albedo, false, false, format)).IsTrue();
+            AssertThat(Engine_AndroidGpuTextureCache.Eligible(true, true, TexSemantic.Albedo, false, false, format)).IsTrue();
         foreach (TexSemantic semantic in Enum.GetValues<TexSemantic>())
             if (semantic != TexSemantic.Albedo)
-                AssertThat(AndroidGpuTextureCache.Eligible(true, true, semantic, false, false, Image.Format.Dxt1)).IsFalse();
-        AssertThat(AndroidGpuTextureCache.Eligible(false, true, TexSemantic.Albedo, false, false, Image.Format.Dxt1)).IsFalse();
-        AssertThat(AndroidGpuTextureCache.Eligible(true, false, TexSemantic.Albedo, false, false, Image.Format.Dxt1)).IsFalse();
-        AssertThat(AndroidGpuTextureCache.Eligible(true, true, TexSemantic.Albedo, true, false, Image.Format.Dxt1)).IsFalse();
-        AssertThat(AndroidGpuTextureCache.Eligible(true, true, TexSemantic.Albedo, false, true, Image.Format.Dxt1)).IsFalse();
-        AssertThat(AndroidGpuTextureCache.Eligible(true, true, TexSemantic.Albedo, false, false, Image.Format.RgtcRg)).IsFalse();
+                AssertThat(Engine_AndroidGpuTextureCache.Eligible(true, true, semantic, false, false, Image.Format.Dxt1)).IsFalse();
+        AssertThat(Engine_AndroidGpuTextureCache.Eligible(false, true, TexSemantic.Albedo, false, false, Image.Format.Dxt1)).IsFalse();
+        AssertThat(Engine_AndroidGpuTextureCache.Eligible(true, false, TexSemantic.Albedo, false, false, Image.Format.Dxt1)).IsFalse();
+        AssertThat(Engine_AndroidGpuTextureCache.Eligible(true, true, TexSemantic.Albedo, true, false, Image.Format.Dxt1)).IsFalse();
+        AssertThat(Engine_AndroidGpuTextureCache.Eligible(true, true, TexSemantic.Albedo, false, true, Image.Format.Dxt1)).IsFalse();
+        AssertThat(Engine_AndroidGpuTextureCache.Eligible(true, true, TexSemantic.Albedo, false, false, Image.Format.RgtcRg)).IsFalse();
     }
 
     /// <summary>Source bytes, recipe and converter version select a separate namespace from CPU decodes.</summary>
@@ -49,12 +49,12 @@ public sealed class AndroidGpuTextureCacheTests
     {
         byte[] original = { 1, 2, 3, 4 };
         byte[] changed = { 1, 2, 3, 5 };
-        string key = AndroidGpuTextureCache.Key(original);
+        string key = Engine_AndroidGpuTextureCache.Key(original);
         AssertThat(key.Length).IsEqual(64);
-        AssertThat(key).IsEqual(Engine_TexCache.DerivedKey(AndroidGpuTextureCache.Recipe, original));
+        AssertThat(key).IsEqual(Engine_TexCache.DerivedKey(Engine_AndroidGpuTextureCache.Recipe, original));
         AssertThat(key == Engine_TexCache.BaseKey(original)).IsFalse();
-        AssertThat(key == AndroidGpuTextureCache.Key(changed)).IsFalse();
-        AssertThat(key == Engine_TexCache.DerivedKey(AndroidGpuTextureCache.Recipe + "-changed", original)).IsFalse();
+        AssertThat(key == Engine_AndroidGpuTextureCache.Key(changed)).IsFalse();
+        AssertThat(key == Engine_TexCache.DerivedKey(Engine_AndroidGpuTextureCache.Recipe + "-changed", original)).IsFalse();
     }
 
     /// <summary>A valid single-face RFTX round trip preserves exact mip bytes and leaves the caller's stream open.</summary>
@@ -115,10 +115,10 @@ public sealed class AndroidGpuTextureCacheTests
         var expected = new AndroidGpuTextureDescriptor(8, 4, true, false);
         byte[] originalPayload = Raw(expected), modPayload = Raw(expected);
         modPayload[0] ^= 0x7f;
-        var prepared = new Dictionary<string, byte[]> { [AndroidGpuTextureCache.Key(original)] = Container(expected, originalPayload) };
+        var prepared = new Dictionary<string, byte[]> { [Engine_AndroidGpuTextureCache.Key(original)] = Container(expected, originalPayload) };
         AssertThat(Resolve(prepared, original, expected)).IsEqual(Convert.ToHexString(originalPayload));
         AssertThat(Resolve(prepared, modded, expected)).IsEqual("ordinary-fallback");
-        prepared[AndroidGpuTextureCache.Key(modded)] = Container(expected, modPayload);
+        prepared[Engine_AndroidGpuTextureCache.Key(modded)] = Container(expected, modPayload);
         AssertThat(Resolve(prepared, modded, expected)).IsEqual(Convert.ToHexString(modPayload));
         AssertThat(Resolve(prepared, original, expected)).IsEqual(Convert.ToHexString(originalPayload));
         AssertThat(Resolve(prepared, original, expected with { Mipmaps = false })).IsEqual("ordinary-fallback");
@@ -127,7 +127,7 @@ public sealed class AndroidGpuTextureCacheTests
     /// <summary>Models the production source-key lookup and strict parse without constructing native images.</summary>
     private static string Resolve(Dictionary<string, byte[]> prepared, byte[] source, AndroidGpuTextureDescriptor expected)
     {
-        if (!prepared.TryGetValue(AndroidGpuTextureCache.Key(source), out byte[]? bytes)) return "ordinary-fallback";
+        if (!prepared.TryGetValue(Engine_AndroidGpuTextureCache.Key(source), out byte[]? bytes)) return "ordinary-fallback";
         using var input = new MemoryStream(bytes);
         return AndroidGpuTextureContainer.TryRead(input, expected, out byte[] payload) ? Convert.ToHexString(payload) : "ordinary-fallback";
     }

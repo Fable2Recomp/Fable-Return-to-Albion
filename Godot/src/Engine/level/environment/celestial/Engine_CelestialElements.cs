@@ -4,7 +4,7 @@ using Godot;
 
 namespace Refii.Level;
 
-public static partial class Engine_CelestialElements
+public static class Engine_CelestialElements
 {
     // Shader parameter names as StringNames: a string literal converts to a fresh
     // finalizable StringName on every call.
@@ -23,6 +23,8 @@ public static partial class Engine_CelestialElements
     private static readonly StringName Param_element_mode = "element_mode";
     private static readonly StringName Param_element_premultiply = "element_premultiply";
     private static readonly StringName Param_element_tex = "element_tex";
+    private static readonly StringName Param_occlusion_distance = "occlusion_distance";
+    private static readonly StringName Param_occlusion_half = "occlusion_half";
     private static readonly StringName Param_star_brightness = "star_brightness";
     private static readonly StringName Param_star_phase_rate = "star_phase_rate";
     private static readonly StringName Param_star_point_size = "star_point_size";
@@ -399,6 +401,7 @@ public static partial class Engine_CelestialElements
                 $"sunActive={sunActive}");
         }
 
+        Shader? overlay = null;
         OverlayView view = OverlayView.For(container);
 
         // By index: GetChildren() is a Godot Array, a finalizable handle per frame.
@@ -412,6 +415,16 @@ public static partial class Engine_CelestialElements
             }
 
             string elementName = Refii.Core.Engine_NodeNames.Of(child);
+            if (elementName is "SunGlare" or "MoonGlare")
+            {
+                // The file, or its build with the occlusion per vertex (sky_glare_cheap).
+                overlay ??= Engine_SkyCosts.Overlay();
+                if (overlay is not null && !ReferenceEquals(material.Shader, overlay))
+                {
+                    material.Shader = overlay;
+                }
+            }
+
             switch (elementName)
             {
                 case "SunBeams":
@@ -460,6 +473,9 @@ public static partial class Engine_CelestialElements
                         sunTint[0] * element[14],
                         sunTint[1] * element[14],
                         sunTint[2] * element[14], 1f));
+                    material.SetShaderParameter(Param_occlusion_half,
+                        element[6] * SunDiscSizeScale);
+                    material.SetShaderParameter(Param_occlusion_distance, SunDiscDistance);
                     mesh.Visible = sunActive && element[14] >= IntensityGate &&
                         view.MayReach(sun, SunGlareDistance,
                             new Vector2(element[15] * SunGlareSizeScale, element[15] * SunGlareSizeScale));
@@ -512,6 +528,10 @@ public static partial class Engine_CelestialElements
                     float glareScale = MoonGlareCpuScale * element[2];
                     material.SetShaderParameter(Param_element_colour, new Vector4(
                         glareScale, glareScale, glareScale, 1f));
+                    material.SetShaderParameter(Param_occlusion_half,
+                        element[1] * MoonSizeScale);
+                    material.SetShaderParameter(Param_occlusion_distance,
+                        MoonBillboardDistance);
                     mesh.Visible =
                         element[0] >= IntensityGate && element[2] >= IntensityGate &&
                         view.MayReach(moon, MoonGlareDistance,
@@ -750,6 +770,52 @@ public static partial class Engine_CelestialElements
         }
 
         return texture;
+    }
+
+    /// <summary>
+    /// The window's view, for hiding a depth-reading overlay (the glares) that cannot put a pixel
+    /// on it under `fx_no_depth_reads`. Its material declares the depth texture, so while it is in
+    /// the render list Mobile splits the frame's pass and copies depth even when its vertex stage
+    /// collapses it; hidden, it leaves the list. Only where the window's camera is the one view
+    /// that draws it: not on split screen, and not while water is in view, whose mirrors reflect
+    /// the sky from another eye (water reads depth itself, so nothing is lost there).
+    /// </summary>
+    private readonly struct OverlayView
+    {
+        /// <summary>NDC units added on every side: a frame's camera turn, as the camera may move
+        /// after this runs.</summary>
+        public const float Margin = 0.5f;
+
+        /// <summary>Facing kept below zero for the same reason (about three degrees).</summary>
+        public const float FacingMargin = 0.05f;
+
+        private readonly bool _cull;
+        private readonly Basis _toView;
+        private readonly Projection _projection;
+
+        private OverlayView(Basis toView, Projection projection)
+        {
+            _cull = true;
+            _toView = toView;
+            _projection = projection;
+        }
+
+        public static OverlayView For(Node3D container)
+        {
+            if (!Refii.Fx.Engine_FxDepthReads.Enabled || Refii.Core.Engine_Views.Split ||
+                Engine_WaterReflection.WaterInView ||
+                container.GetViewport()?.GetCamera3D() is not { } camera || !camera.IsInsideTree())
+            {
+                return default;
+            }
+
+            return new OverlayView(camera.GlobalTransform.Basis.Inverse(), camera.GetCameraProjection());
+        }
+
+        /// <summary>Whether the overlay toward <paramref name="direction"/> may draw; always when not culling.</summary>
+        public bool MayReach(Vector3 direction, float distance, Vector2 half) =>
+            !_cull || direction.LengthSquared() <= 1e-12f ||
+            Engine_CelestialOverlayReach.MayReach(_toView * direction.Normalized(), distance, half, _projection, Margin, FacingMargin);
     }
 
     private static MeshInstance3D Billboard(

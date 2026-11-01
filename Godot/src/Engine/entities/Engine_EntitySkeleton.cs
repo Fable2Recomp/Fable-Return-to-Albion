@@ -277,14 +277,6 @@ public sealed class Engine_EntitySkeleton
 	/// Indexed by model bone; a shorter span leaves the rest at their last value. Only binds
 	/// whose scale moved are rewritten, so a settled rig costs a comparison per bone.
 	/// </summary>
-	/// <summary>
-	/// The guest's own scale for model bone <paramref name="model"/>, as its newest pose stated it
-	/// (One before any pose). A Fable 3 rig scales bones of its own — 141 of 12,869 live bones,
-	/// 3e-5 (collapsed) to 4.5 — and a scale written over them must start from this, never One.
-	/// </summary>
-	public Vector3 GuestScale(int model) =>
-		model >= 0 && model < _newestScale.Length ? _newestScale[model] : Vector3.One;
-
 	public void SetBoneScales(ReadOnlySpan<Vector3> scales)
 	{
 		int bones = Math.Min(scales.Length, _inverseRest.Length);
@@ -354,6 +346,28 @@ public sealed class Engine_EntitySkeleton
 
 	/// <summary>This rig's own change ratio, for the per-rig report.</summary>
 	public (int Changes, int Applies) ChangeCounts => (_myChanges, _myApplies);
+
+	/// <summary>True once at least one valid guest pose has been accepted into the pose ring.</summary>
+	public bool HasAppliedPose => _poses.Count > 0;
+
+	/// <summary>
+	/// Returns true when a bone's translation or rotation moved between two pose samples.
+	/// Uses hemisphere-aware component difference on the quaternion rather than raw
+	/// <c>curRot.Dot(prevRot)</c>, because slightly unnormalized guest quaternions
+	/// (<c>|q|² != 1</c>) satisfy <c>|q · q| &lt; 1 - 1e-6</c> even when <c>curRot == prevRot</c>
+	/// bit-for-bit, which previously forced stationary props to re-pose on 100% of frames.
+	/// </summary>
+	public static bool HasBonePoseChanged(Vector3 prevPos, Vector3 curPos, Quaternion prevRot, Quaternion curRot)
+	{
+		if (curPos.DistanceSquaredTo(prevPos) > 1e-8f)
+		{
+			return true;
+		}
+
+		float dot = prevRot.Dot(curRot);
+		float lenSq = prevRot.LengthSquared() * curRot.LengthSquared();
+		return lenSq > 1e-12f && (dot * dot) < (1f - 1e-6f) * lenSq;
+	}
 
 	/// <summary>Consecutive local reads held right now.</summary>
 	public int LocalReads => _localReads;
@@ -1284,8 +1298,7 @@ public sealed class Engine_EntitySkeleton
 			Vector3 now = pose.Translation(g);
 			Quaternion rotation = pose.Rotation(g);
 			if (_lastTranslationValid && !changed &&
-				(now.DistanceSquaredTo(_lastTranslation[g]) > 1e-8f ||
-				 Mathf.Abs(rotation.Dot(_lastRotation[g])) < 1f - 1e-6f))
+				HasBonePoseChanged(_lastTranslation[g], now, _lastRotation[g], rotation))
 			{
 				changed = true;
 				++PoseChanges;
@@ -1906,7 +1919,7 @@ public sealed class Engine_EntitySkeleton
 	}
 
 	/// <summary>The mesh's own map applied to a vector: <c>(x, y, z) -&gt; (x, z, -y)</c>.</summary>
-	internal static Vector3 Swizzle(Vector3 guest) => new(guest.X, guest.Z, -guest.Y);
+	private static Vector3 Swizzle(Vector3 guest) => new(guest.X, guest.Z, -guest.Y);
 
 	/// <summary>
 	/// One bone's rotation, mapped into the mesh's space.

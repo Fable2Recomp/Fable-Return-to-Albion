@@ -6,7 +6,7 @@ using Refii.Textures;
 
 namespace Refii.Models;
 
-public static partial class Engine_MdlMaterial
+public static class Engine_MdlMaterial
 {
     /// <summary>Set on a material that sways in the wind (`wind_amplitude` > 0): a local flag, unlike the parameter.</summary>
     public static readonly StringName WindMetaName = "sways_in_wind";
@@ -164,56 +164,13 @@ public static partial class Engine_MdlMaterial
     /// two do not look like the same world. The albedo sampler defaults to white, so binding
     /// nothing is a neutral surface rather than a black one.
     /// </summary>
-    public static Material? Fallback(MdlMaterial? record = null)
+    public static Material? Fallback()
     {
         // No textures: no specular colour, so the lite set's no-specular build draws it exactly.
-        // BACK FACES CULLED, as every opaque textured surface is (TryCreateShared takes
-        // SharedCulled: the guest's view-wide CCW cull stands for a standard material). An
-        // untextured surface drawn two-sided shows its back face where the title shows nothing —
-        // the occlusion walls Fable 3 places inside its real walls (occlusionwall.mdl, a single
-        // untextured 'Material') stood in the castle rooms as white walls for exactly that.
-        string family = Engine_ShaderFamily.CullBackFaces ? Engine_ShaderFamily.StandardCulledPath : Engine_ShaderFamily.StandardPath;
-        Shader? shader = LiteFallbackShader(family) ?? SharedCulled();
-        if (shader is null)
-        {
-            return null;
-        }
-        var material = new ShaderMaterial { Shader = shader };
-        // Fable 3 draws an empty texture set as its 16x16 white default (sub_82CBA610: sub_82182B70
-        // at 0x82CBA6D0) times the material's DiffuseColour (material+160, (1,1,1,1) from the
-        // constructor sub_82CEE200 0x82CEE298), so a stated colour is the surface's colour: bound
-        // here as a one-texel albedo, the white default already being the sampler's own.
-        if (record?.StatedProperties is { } stated && stated.TryGetValue("DiffuseColour", out float[]? colour) &&
-            colour.Length >= 3 && StatedColourTexture(colour) is { } albedo)
-        {
-            material.SetShaderParameter("albedo_tex", albedo);
-        }
-        return material;
-    }
-
-    private static readonly Dictionary<(float, float, float, float), ImageTexture> _statedColours = new();
-
-    /// <summary>A one-texel texture of a stated colour, shared per colour; null for white.</summary>
-    private static ImageTexture? StatedColourTexture(float[] colour)
-    {
-        float a = colour.Length > 3 ? colour[3] : 1f;
-        var key = (colour[0], colour[1], colour[2], a);
-        if (key == (1f, 1f, 1f, 1f))
-        {
-            return null;
-        }
-        lock (_statedColours)
-        {
-            if (_statedColours.TryGetValue(key, out ImageTexture? known))
-            {
-                return known;
-            }
-            var image = Image.CreateEmpty(1, 1, false, Image.Format.Rgbaf);
-            image.SetPixel(0, 0, new Color(key.Item1, key.Item2, key.Item3, a));
-            ImageTexture texture = ImageTexture.CreateFromImage(image);
-            _statedColours[key] = texture;
-            return texture;
-        }
+        Shader? shader = Engine_ShaderVariant.ModelPath(Engine_ShaderFamily.StandardPath, false, false, false, false) is { } lite
+            ? Engine_ShaderSpecialisation.Load(lite, null, LoadShared(lite)) ?? Shared()
+            : Shared();
+        return shader is null ? null : new ShaderMaterial { Shader = shader };
     }
 
     /// <summary>
@@ -228,7 +185,124 @@ public static partial class Engine_MdlMaterial
         LoadShared(Engine_ShaderFamily.StandardWindPath);
         LoadShared(Engine_ShaderFamily.StandardTreePath);
         LoadShared(Engine_ShaderFamily.TreeCanopyPath);
-        WarmLiteShaders();
+        if (Engine_ShaderVariant.Lite)
+        {
+            foreach (string lite in Engine_ShaderVariant.ActiveVariantPaths)
+            {
+                if (!Engine_ShaderVariant.IsTerrainSplat(lite))
+                {
+                    LoadShared(lite);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// What the lite variant needs to know about a built material to pick its shader build — the
+    /// specular map, the cube, authored PBR — as bits (1, 2, 4), and for its specialised builds
+    /// (Engine_ShaderSpecialisation) the flags it sets once and never again: <see cref="FactNormal"/>,
+    /// <see cref="FactEmission"/>, <see cref="FactOrm"/>, <see cref="FactPremultiplied"/>,
+    /// <see cref="FactGrassBend"/>, kept per pass. Meta rather than a parameter
+    /// read: an unset parameter's read is a round trip to the render thread. Set only under
+    /// `shader_variant = "lite"`, and copied with the material into a translucent second pass.
+    /// </summary>
+    private static readonly StringName LiteFactsMeta = "lite_variant_facts";
+
+    private const int FactNormal = 8, FactEmission = 16, FactOrm = 32, FactPremultiplied = 64, FactGrassBend = 128;
+
+    /// <summary>Sets or clears fact bits on a lite pass (a no-op off lite).</summary>
+    private static void SetFacts(ShaderMaterial pass, int bits, bool on)
+    {
+        if (pass.HasMeta(LiteFactsMeta))
+        {
+            int facts = pass.GetMeta(LiteFactsMeta).AsInt32();
+            pass.SetMeta(LiteFactsMeta, on ? facts | bits : facts & ~bits);
+        }
+    }
+
+    /// <summary>
+    /// Moves a finished modern material, and its next passes, onto the lite build of the shader it
+    /// ended up with (after the wind, tree and vegetation swaps). A no-op under "full".
+    /// </summary>
+    private static void ApplyShaderVariant(Material built, Refii.Models.MdlInfo info)
+    {
+        if (!Engine_ShaderVariant.Lite)
+        {
+            return;
+        }
+
+        bool vegetation = IsVegetationDrawPath(info);
+        bool foliage = vegetation && info.MeshKind == 1;
+        bool grass = vegetation && info.MeshKind == 4;
+        for (Material? pass = built; pass is ShaderMaterial shaded; pass = shaded.NextPass)
+        {
+            if (shaded.Shader is not { } current || !shaded.HasMeta(LiteFactsMeta))
+            {
+                continue;
+            }
+
+            int facts = shaded.GetMeta(LiteFactsMeta).AsInt32();
+            if (Engine_ShaderVariant.ModelPath(
+                    current.ResourcePath,
+                    specularMap: (facts & 1) != 0 && !grass,
+                    envmap: (facts & 2) != 0,
+                    pbr: (facts & 4) != 0,
+                    foliage) is { } path &&
+                LoadShared(path) is { } lite)
+            {
+                shaded.Shader = lite;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Moves a finished lite material's passes onto their specialised builds
+    /// (Engine_ShaderSpecialisation): the same wrapper with code compiled out that this material,
+    /// or this process's settings, prove dead. A no-op unless a specialisation key is on.
+    /// </summary>
+    private static void ApplySpecialisation(Material built)
+    {
+        if (!Engine_ShaderVariant.Lite || !Engine_ShaderSpecialisation.Any)
+        {
+            return;
+        }
+
+        for (Material? pass = built; pass is ShaderMaterial shaded; pass = shaded.NextPass)
+        {
+            if (shaded.Shader is not { } current || !shaded.HasMeta(LiteFactsMeta))
+            {
+                continue;
+            }
+
+            string path = Engine_ShaderSpecialisation.PathOf(current);
+            if (Engine_ShaderVariant.FullPathOf(path) == path)
+            {
+                continue;
+            }
+
+            if (Engine_ShaderSpecialisation.Load(path, SpecialisationDefines(shaded), LoadShared(path)) is { } special)
+            {
+                shaded.Shader = special;
+            }
+        }
+    }
+
+    /// <summary>The defines this material's own facts allow (Engine_ShaderSpecialisation.FoldDefines).</summary>
+    private static IEnumerable<string> SpecialisationDefines(ShaderMaterial pass)
+    {
+        if (!Engine_ShaderSpecialisation.MaterialFolds)
+        {
+            return Array.Empty<string>();
+        }
+
+        int facts = pass.GetMeta(LiteFactsMeta).AsInt32();
+        return Engine_ShaderSpecialisation.FoldDefines(
+            pbr: (facts & 4) != 0,
+            orm: (facts & FactOrm) != 0,
+            emission: (facts & FactEmission) != 0,
+            premultiplied: (facts & FactPremultiplied) != 0,
+            normalMap: (facts & FactNormal) != 0,
+            grassBend: (facts & FactGrassBend) != 0);
     }
 
     /// <summary>
@@ -307,7 +381,7 @@ public static partial class Engine_MdlMaterial
         Shader? loaded;
         if (Godot.OS.GetThreadCallerId() == Godot.OS.GetMainThreadId())
         {
-            loaded = Engine_ShaderSpecialisation.LoadFile(path);
+            loaded = GD.Load<Shader>(path);
         }
         else
         {
@@ -320,7 +394,7 @@ public static partial class Engine_MdlMaterial
                         return first;
                     }
                 }
-                loaded = Engine_ShaderSpecialisation.LoadFile(path);
+                loaded = GD.Load<Shader>(path);
                 lock (ShaderLock)
                 {
                     _shaders.TryAdd(path, loaded);
@@ -669,8 +743,8 @@ public static partial class Engine_MdlMaterial
             Interlocked.Increment(ref _withEnvmap);
         }
 
-        // The lite variant's facts, before the duplicate below so the blended pass carries them too.
-        CaptureLiteFacts(result, specular, envmap, normal, emissive);
+        bool liteIsPbr = false;
+        bool liteHasOrm = false;
 
         // The packed ORM, when the player has asked for it, or an authored PBR ORM map exists.
         // The specular map feeds roughness and metallic; the NORMAL map feeds AO and height;
@@ -707,7 +781,8 @@ public static partial class Engine_MdlMaterial
                 result.SetShaderParameter("orm_tex", orm);
                 result.SetShaderParameter("has_orm", true);
                 result.SetShaderParameter("is_pbr", isPbr);
-                SetFacts(result, isPbr ? FactOrm | FactPbr : FactOrm, true);
+                liteIsPbr = isPbr;
+                liteHasOrm = true;
 
                 // Whether a height was actually SOLVED into the alpha. The heightless sentinel
                 // is opaque white — half a texel of permanent positive relief if the shader ever
@@ -750,6 +825,15 @@ public static partial class Engine_MdlMaterial
         RequestEnhanced(material.Normal, TexSemantic.Normal, normal);
         RequestEnhanced(material.SelfIllumination, TexSemantic.SelfIllumination, emissive);
         RequestEnhanced(material.Specular, TexSemantic.Specular, specular);
+
+        // Before the duplicate below, so the blended pass carries the same facts.
+        if (Engine_ShaderVariant.Lite)
+        {
+            result.SetMeta(LiteFactsMeta,
+                (specular is not null ? 1 : 0) | (envmap is not null ? 2 : 0) | (liteIsPbr ? 4 : 0) |
+                (normal is not null ? FactNormal : 0) | (emissive is not null ? FactEmission : 0) |
+                (liteHasOrm ? FactOrm : 0));
+        }
 
         if (translucent && LoadShared(Engine_ShaderFamily.StandardTranslucentPath) is { } blended)
         {

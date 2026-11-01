@@ -66,11 +66,20 @@ public partial class GameFx : Node3D
     /// <summary>Runtime Type 5 spline override points in Godot world space, keyed by effect handle.</summary>
     private readonly Dictionary<uint, Vector3[]> _statedSplineByKey = new();
 
+    /// <summary>Pooled world-space spline arrays keyed by effect handle to avoid per-frame allocations.</summary>
+    private readonly Dictionary<uint, Vector3[]> _statedSplinePool = new();
+
     /// <summary>Weapon/entity-local spline override points for attached multi-dummy effects, persisted across the handle's lifetime.</summary>
     private readonly Dictionary<uint, (uint Target, Vector3[] LocalPoints)> _weaponSplineByKey = new();
 
     /// <summary>Drawn Godot world-space spline override points resolved onto the live host weapon/entity this frame.</summary>
     private readonly Dictionary<uint, Vector3[]> _drawnSplineByKey = new();
+
+    /// <summary>Pooled drawn spline arrays keyed by effect handle to avoid per-frame allocations.</summary>
+    private readonly Dictionary<uint, Vector3[]> _drawnSplinePool = new();
+
+    /// <summary>Scratch buffer for weapon augmentation world-space spline endpoints.</summary>
+    private readonly Vector3[] _weaponWorldSplineScratch = new Vector3[3];
 
     private sealed class WeaponAugmentTracker
     {
@@ -248,11 +257,11 @@ public partial class GameFx : Node3D
 
     public static long WalkedPlacements;
 
-    /// <summary>Pulls the stated transforms in for this walk.</summary>
+    /// <summary>Pulls the stated transforms in for this walk when diagnostic reporting is enabled.</summary>
     private void RefreshStated()
     {
         _stated.Clear();
-        if (Refii.Host.HostBridge.GetStatedFx(_statedRows) == 0)
+        if (!_report || Refii.Host.HostBridge.GetStatedFx(_statedRows) == 0)
         {
             return;
         }
@@ -353,9 +362,17 @@ public partial class GameFx : Node3D
         }
 
         // On the guest's frame: the effect list is the guest's statement and only moves when
-        // the guest does; between two, the last list stands.
+        // the guest does; between two, the last list stands and only host-attached bone/weapon
+        // effects and unsettled moving world effects need display-rate transform updates.
         bool refreshed = Refii.Core.Engine_GuestFrame.Changed || _liveFx.Count == 0;
-        List<HostBridge.ActiveFx> live = refreshed ? HostBridge.GetActiveFx(_liveFx) : _liveFx;
+        if (!refreshed)
+        {
+            StepIntermediateDisplayFrame();
+            Report();
+            return;
+        }
+
+        List<HostBridge.ActiveFx> live = HostBridge.GetActiveFx(_liveFx);
         NodesRead = live.Count;
         if (live.Count > _peakLive)
         {
@@ -380,10 +397,7 @@ public partial class GameFx : Node3D
         Engine_FxRecipes.Begin();
         _seen.Clear();
         _counted.Clear();
-        if (refreshed)
-        {
-            RefreshStated();
-        }
+        RefreshStated();
 
         // The placement is the root's. Every type-vector of an effect hangs off a synthetic root
         // whose transform is what the guest's positioners wrote; a child node's world transform
@@ -450,7 +464,11 @@ public partial class GameFx : Node3D
 
                 if (finitePts)
                 {
-                    var pts = new Vector3[spCount];
+                    if (!_statedSplinePool.TryGetValue(rootKey, out Vector3[]? pts) || pts.Length != spCount)
+                    {
+                        pts = new Vector3[spCount];
+                        _statedSplinePool[rootKey] = pts;
+                    }
                     for (int p = 0; p < spCount; p++)
                     {
                         pts[p] = ToGodot(fx.Rows[p]);
@@ -477,62 +495,7 @@ public partial class GameFx : Node3D
         // spline overrides (`FX_64D9750B` gun sparkles, `FX_B0BF62DC` melee sparkles) directly
         // against the host's freshly posed Skeleton3D and weapon nodes so Modern mode (`FableFx`)
         // locks 1:1 to the drawn body/weapon on the exact same display frame with zero tick lag.
-        if (GameEntities.Current is { } entities &&
-            (_ownerByKey.Count != 0 || _attachedByKey.Count != 0 || _weaponSplineByKey.Count != 0))
-        {
-            _candidateAttachmentKeys.Clear();
-            _candidateAttachmentKeys.UnionWith(_ownerByKey.Keys);
-            _candidateAttachmentKeys.UnionWith(_attachedByKey.Keys);
-            _candidateAttachmentKeys.UnionWith(_weaponSplineByKey.Keys);
-            foreach (uint rootKey in _candidateAttachmentKeys)
-            {
-                _ownerByKey.TryGetValue(rootKey, out uint owner);
-                _attachedByKey.TryGetValue(rootKey, out uint attached);
-
-                if (attached != 0u &&
-                    _statedSplineByKey.TryGetValue(rootKey, out Vector3[]? statedSpline) &&
-                    entities.TryGetStatedAndDrawnTransform(attached, out Transform3D targetStated, out _))
-                {
-                    Transform3D toTargetLocal = targetStated.AffineInverse();
-                    if (!_weaponSplineByKey.TryGetValue(rootKey, out var cached) ||
-                        cached.Target != attached ||
-                        cached.LocalPoints.Length != statedSpline.Length)
-                    {
-                        cached = (attached, new Vector3[statedSpline.Length]);
-                    }
-
-                    for (int i = 0; i < statedSpline.Length; i++)
-                    {
-                        cached.LocalPoints[i] = toTargetLocal * statedSpline[i];
-                    }
-
-                    _weaponSplineByKey[rootKey] = cached;
-                }
-
-                if (_weaponSplineByKey.TryGetValue(rootKey, out (uint Target, Vector3[] LocalPoints) weaponSpline) &&
-                    entities.TryGetStatedAndDrawnTransform(weaponSpline.Target, out _, out Transform3D currentTargetDrawn))
-                {
-                    var drawnPts = new Vector3[weaponSpline.LocalPoints.Length];
-                    for (int i = 0; i < drawnPts.Length; i++)
-                    {
-                        drawnPts[i] = currentTargetDrawn * weaponSpline.LocalPoints[i];
-                    }
-
-                    _drawnSplineByKey[rootKey] = drawnPts;
-                }
-
-                if (!_roots.TryGetValue(rootKey, out Transform3D statedFxRoot))
-                {
-                    continue;
-                }
-
-                Transform3D statedEntityRoot = Engine_FxSystem.FxToEntityMeshTransform(statedFxRoot);
-                if (entities.TryPlaceAttachedEffect(owner, attached, statedEntityRoot, out Transform3D placedEntityRoot))
-                {
-                    _boneRoots[rootKey] = (statedEntityRoot, placedEntityRoot, false);
-                }
-            }
-        }
+        UpdateAttachedPlacements(latchNewWeaponSplines: true, applyToNodes: false);
 
         // SEPARATION OF CONCERNS BETWEEN MODERN AND CLASSIC PARTICLE SYSTEMS:
         // - Modern mode (`!Engine_ClassicMaterial.Active`) uses `FableFx` + `Engine_FxSystem`
@@ -656,6 +619,8 @@ public partial class GameFx : Node3D
                 _ownerByKey.Remove(key);
                 _attachedByKey.Remove(key);
                 _weaponSplineByKey.Remove(key);
+                _statedSplinePool.Remove(key);
+                _drawnSplinePool.Remove(key);
                 _nodes.Remove(key);
                 if (IsInstanceValid(node))
                 {
@@ -726,46 +691,7 @@ public partial class GameFx : Node3D
                 ++WalkedPlacements;
             }
 
-            // Written only when it moved: a node write propagates an instance update to every
-            // surface, light and mesh under the effect, and a standing effect's smoothed
-            // placement is the same transform every frame.
-            Transform3D smoothed;
-            Vector3[]? activeWorldSpline = null;
-            if (_drawnSplineByKey.TryGetValue(key, out Vector3[]? drawnSpline) && drawnSpline.Length >= 2)
-            {
-                _timelines.Remove(key);
-                // Keep the guest's identity root orientation (`placed.Basis`) while anchoring the
-                // origin at the first weapon dummy (`drawnSpline[0]`) so `SetSplineOverride` maps
-                // the spline segment along the drawn weapon barrel/blade.
-                smoothed = new Transform3D(placed.Basis, drawnSpline[0]);
-                activeWorldSpline = drawnSpline;
-            }
-            else if (_boneRoots.TryGetValue(key, out var bonePlacement))
-            {
-                _timelines.Remove(key);
-                smoothed = Engine_FxSystem.EntityMeshToFxTransform(bonePlacement.BoneEntityRoot);
-                _statedSplineByKey.TryGetValue(key, out activeWorldSpline);
-            }
-            else
-            {
-                smoothed = Smoothed(key, placed, refreshed);
-                _statedSplineByKey.TryGetValue(key, out activeWorldSpline);
-            }
-            if (!node.Transform.IsEqualApprox(smoothed))
-            {
-                Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
-                node.Transform = smoothed;
-            }
-            if (activeWorldSpline is { Length: >= 2 })
-            {
-                Transform3D toNodeLocal = smoothed.AffineInverse();
-                for (int i = 0; i < activeWorldSpline.Length; i++)
-                {
-                    _localSplineScratch[i] = toNodeLocal * activeWorldSpline[i];
-                }
-
-                node.SetSplineOverride(_localSplineScratch.AsSpan(0, activeWorldSpline.Length));
-            }
+            ApplyNodePlacement(key, node, placed, refreshed: true);
             (float scale, float fade) = _emitterState.TryGetValue(key, out var state) ? state : (1f, 1f);
             node.Intensity = fx.Intensity * fade;
             node.LightFade = fade;
@@ -807,70 +733,7 @@ public partial class GameFx : Node3D
             }
         }
 
-        // CONTINUOUS WEAPON AUGMENTATION FX UPDATES ACROSS LOCOMOTION:
-        // When hero movement begins, guest `sub_825A0098` destroys the transient particle
-        // instance in guest memory, causing `live` to omit it. We keep active weapon augmentations
-        // continuously alive, looping, and rigidly locked to the drawn weapon model on every
-        // display frame as long as their weapon target entity is equipped and drawn.
-        if (GameEntities.Current is { } drawnEntities && _activeWeaponFx.Count != 0)
-        {
-            List<(uint Target, uint Effect)>? deadWeaponFx = null;
-            foreach (var (weaponKey, tracker) in _activeWeaponFx)
-            {
-                if (!drawnEntities.TryGetStatedAndDrawnTransform(tracker.TargetEntity, out _, out Transform3D currentTargetDrawn) ||
-                    tracker.Node is null ||
-                    !IsInstanceValid(tracker.Node) ||
-                    !tracker.Node.IsInsideTree() ||
-                    tracker.LocalPoints.Length < 2)
-                {
-                    (deadWeaponFx ??= new()).Add(weaponKey);
-                    continue;
-                }
-
-                // Protect node from retirement across hero locomotion:
-                _seen.Add(tracker.RootKey);
-                _absent.Remove(tracker.RootKey);
-
-                // Calculate the world-space dummy points on this exact display frame:
-                var drawnPts = new Vector3[tracker.LocalPoints.Length];
-                for (int i = 0; i < drawnPts.Length; i++)
-                {
-                    drawnPts[i] = currentTargetDrawn * tracker.LocalPoints[i];
-                }
-
-                // Anchored at the first weapon dummy, matching the simulation's world-aligned basis:
-                Transform3D smoothed = new Transform3D(GuestIdentity, drawnPts[0]);
-                if (!tracker.Node.Transform.IsEqualApprox(smoothed))
-                {
-                    Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
-                    tracker.Node.Transform = smoothed;
-                }
-
-                // Map local spline override endpoints relative to the updated node:
-                Transform3D toNodeLocal = smoothed.AffineInverse();
-                for (int i = 0; i < drawnPts.Length; i++)
-                {
-                    _localSplineScratch[i] = toNodeLocal * drawnPts[i];
-                }
-                tracker.Node.SetSplineOverride(_localSplineScratch.AsSpan(0, drawnPts.Length));
-
-                tracker.Node.Loop = true;
-                tracker.Node.Intensity = tracker.Intensity;
-                tracker.Node.LightFade = tracker.LightFade;
-                tracker.Node.SizeScale = tracker.SizeScale;
-            }
-
-            if (deadWeaponFx is not null)
-            {
-                foreach (var k in deadWeaponFx)
-                {
-                    if (_activeWeaponFx.Remove(k, out var tracker) && IsInstanceValid(tracker?.Node))
-                    {
-                        tracker!.Node.Loop = false;
-                    }
-                }
-            }
-        }
+        UpdateActiveWeaponFx();
 
         // One absence is not a retirement. A walk that fills its buffer stops at the cap, and the
         // guest appends new nodes at the end of its vector and retires by swap-with-last, so
@@ -880,7 +743,7 @@ public partial class GameFx : Node3D
         // The grace is counted in refreshed walks, not display frames (the list only moves on the
         // guest's frame). It is bounded: never retiring while saturated would leak a host node
         // for every effect the guest drops.
-        if (_draw && refreshed)
+        if (_draw)
         {
             Retire();
         }
@@ -895,6 +758,231 @@ public partial class GameFx : Node3D
         }
 
         Report();
+    }
+
+    /// <summary>
+    /// Fast path for intermediate display frames (<c>!Engine_GuestFrame.Changed</c>): updates only
+    /// host-attached bone/weapon effects and unsettled moving world timelines without re-walking
+    /// the guest buffer or churning dictionaries.
+    /// </summary>
+    private void StepIntermediateDisplayFrame()
+    {
+        if (!_draw)
+        {
+            return;
+        }
+
+        UpdateAttachedPlacements(latchNewWeaponSplines: false, applyToNodes: true);
+        UpdateActiveWeaponFx();
+
+        foreach (var (key, timeline) in _timelines)
+        {
+            if (timeline.Settled ||
+                !_nodes.TryGetValue(key, out FableFx? node) ||
+                !IsInstanceValid(node) ||
+                !_roots.TryGetValue(key, out Transform3D placed))
+            {
+                continue;
+            }
+
+            Transform3D smoothed = Smoothed(key, placed, refreshed: false);
+            if (!node.Transform.IsEqualApprox(smoothed))
+            {
+                Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
+                node.Transform = smoothed;
+                if (_statedSplineByKey.TryGetValue(key, out Vector3[]? activeWorldSpline) && activeWorldSpline.Length >= 2)
+                {
+                    Transform3D toNodeLocal = smoothed.AffineInverse();
+                    for (int i = 0; i < activeWorldSpline.Length; i++)
+                    {
+                        _localSplineScratch[i] = toNodeLocal * activeWorldSpline[i];
+                    }
+
+                    node.SetSplineOverride(_localSplineScratch.AsSpan(0, activeWorldSpline.Length));
+                }
+            }
+        }
+    }
+
+    private void UpdateAttachedPlacements(bool latchNewWeaponSplines, bool applyToNodes)
+    {
+        if (GameEntities.Current is not { } entities ||
+            (_ownerByKey.Count == 0 && _attachedByKey.Count == 0 && _weaponSplineByKey.Count == 0))
+        {
+            return;
+        }
+
+        if (latchNewWeaponSplines)
+        {
+            _candidateAttachmentKeys.Clear();
+            _candidateAttachmentKeys.UnionWith(_ownerByKey.Keys);
+            _candidateAttachmentKeys.UnionWith(_attachedByKey.Keys);
+            _candidateAttachmentKeys.UnionWith(_weaponSplineByKey.Keys);
+        }
+
+        foreach (uint rootKey in _candidateAttachmentKeys)
+        {
+            _ownerByKey.TryGetValue(rootKey, out uint owner);
+            _attachedByKey.TryGetValue(rootKey, out uint attached);
+
+            if (latchNewWeaponSplines &&
+                attached != 0u &&
+                _statedSplineByKey.TryGetValue(rootKey, out Vector3[]? statedSpline) &&
+                (!_weaponSplineByKey.TryGetValue(rootKey, out var cached) ||
+                 cached.Target != attached ||
+                 cached.LocalPoints.Length != statedSpline.Length) &&
+                entities.TryGetStatedAndDrawnTransform(attached, out Transform3D targetStated, out _))
+            {
+                Transform3D toTargetLocal = targetStated.AffineInverse();
+                cached = (attached, new Vector3[statedSpline.Length]);
+                for (int i = 0; i < statedSpline.Length; i++)
+                {
+                    cached.LocalPoints[i] = toTargetLocal * statedSpline[i];
+                }
+
+                _weaponSplineByKey[rootKey] = cached;
+            }
+
+            if (_weaponSplineByKey.TryGetValue(rootKey, out (uint Target, Vector3[] LocalPoints) weaponSpline) &&
+                entities.TryGetStatedAndDrawnTransform(weaponSpline.Target, out _, out Transform3D currentTargetDrawn))
+            {
+                if (!_drawnSplinePool.TryGetValue(rootKey, out Vector3[]? drawnPts) ||
+                    drawnPts.Length != weaponSpline.LocalPoints.Length)
+                {
+                    drawnPts = new Vector3[weaponSpline.LocalPoints.Length];
+                    _drawnSplinePool[rootKey] = drawnPts;
+                }
+                for (int i = 0; i < drawnPts.Length; i++)
+                {
+                    drawnPts[i] = currentTargetDrawn * weaponSpline.LocalPoints[i];
+                }
+
+                _drawnSplineByKey[rootKey] = drawnPts;
+            }
+
+            if (!_roots.TryGetValue(rootKey, out Transform3D statedFxRoot))
+            {
+                continue;
+            }
+
+            Transform3D statedEntityRoot = Engine_FxSystem.FxToEntityMeshTransform(statedFxRoot);
+            if (entities.TryPlaceAttachedEffect(owner, attached, statedEntityRoot, out Transform3D placedEntityRoot))
+            {
+                _boneRoots[rootKey] = (statedEntityRoot, placedEntityRoot, false);
+            }
+
+            if (applyToNodes &&
+                _nodes.TryGetValue(rootKey, out FableFx? node) &&
+                IsInstanceValid(node))
+            {
+                ApplyNodePlacement(rootKey, node, statedFxRoot, refreshed: false);
+            }
+        }
+    }
+
+    private void ApplyNodePlacement(uint key, FableFx node, Transform3D placed, bool refreshed)
+    {
+        Transform3D smoothed;
+        Vector3[]? activeWorldSpline = null;
+        if (_drawnSplineByKey.TryGetValue(key, out Vector3[]? drawnSpline) && drawnSpline.Length >= 2)
+        {
+            _timelines.Remove(key);
+            smoothed = new Transform3D(placed.Basis, drawnSpline[0]);
+            activeWorldSpline = drawnSpline;
+        }
+        else if (_boneRoots.TryGetValue(key, out var bonePlacement))
+        {
+            _timelines.Remove(key);
+            smoothed = Engine_FxSystem.EntityMeshToFxTransform(bonePlacement.BoneEntityRoot);
+            _statedSplineByKey.TryGetValue(key, out activeWorldSpline);
+        }
+        else
+        {
+            smoothed = Smoothed(key, placed, refreshed);
+            _statedSplineByKey.TryGetValue(key, out activeWorldSpline);
+        }
+
+        if (!node.Transform.IsEqualApprox(smoothed))
+        {
+            Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
+            node.Transform = smoothed;
+        }
+
+        if (activeWorldSpline is { Length: >= 2 })
+        {
+            Transform3D toNodeLocal = smoothed.AffineInverse();
+            for (int i = 0; i < activeWorldSpline.Length; i++)
+            {
+                _localSplineScratch[i] = toNodeLocal * activeWorldSpline[i];
+            }
+
+            node.SetSplineOverride(_localSplineScratch.AsSpan(0, activeWorldSpline.Length));
+        }
+    }
+
+    private void UpdateActiveWeaponFx()
+    {
+        if (GameEntities.Current is not { } drawnEntities || _activeWeaponFx.Count == 0)
+        {
+            return;
+        }
+
+        List<(uint Target, uint Effect)>? deadWeaponFx = null;
+        foreach (var (weaponKey, tracker) in _activeWeaponFx)
+        {
+            if (!drawnEntities.TryGetStatedAndDrawnTransform(tracker.TargetEntity, out _, out Transform3D currentTargetDrawn) ||
+                tracker.Node is null ||
+                !IsInstanceValid(tracker.Node) ||
+                !tracker.Node.IsInsideTree() ||
+                tracker.LocalPoints.Length < 2)
+            {
+                (deadWeaponFx ??= new()).Add(weaponKey);
+                continue;
+            }
+
+            // Protect node from retirement across hero locomotion:
+            _seen.Add(tracker.RootKey);
+            _absent.Remove(tracker.RootKey);
+
+            // Calculate the world-space dummy points on this exact display frame without heap allocation:
+            int ptCount = Math.Min(tracker.LocalPoints.Length, _weaponWorldSplineScratch.Length);
+            for (int i = 0; i < ptCount; i++)
+            {
+                _weaponWorldSplineScratch[i] = currentTargetDrawn * tracker.LocalPoints[i];
+            }
+
+            // Anchored at the first weapon dummy, matching the simulation's world-aligned basis:
+            Transform3D smoothed = new Transform3D(GuestIdentity, _weaponWorldSplineScratch[0]);
+            if (!tracker.Node.Transform.IsEqualApprox(smoothed))
+            {
+                Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
+                tracker.Node.Transform = smoothed;
+            }
+
+            // Map local spline override endpoints relative to the updated node:
+            Transform3D toNodeLocal = smoothed.AffineInverse();
+            for (int i = 0; i < ptCount; i++)
+            {
+                _localSplineScratch[i] = toNodeLocal * _weaponWorldSplineScratch[i];
+            }
+            tracker.Node.SetSplineOverride(_localSplineScratch.AsSpan(0, ptCount));
+
+            tracker.Node.Loop = true;
+            tracker.Node.Intensity = tracker.Intensity;
+            tracker.Node.LightFade = tracker.LightFade;
+            tracker.Node.SizeScale = tracker.SizeScale;
+        }
+
+        if (deadWeaponFx is not null)
+        {
+            foreach (var k in deadWeaponFx)
+            {
+                if (_activeWeaponFx.Remove(k, out var tracker) && IsInstanceValid(tracker?.Node))
+                {
+                    tracker!.Node.Loop = false;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -935,6 +1023,8 @@ public partial class GameFx : Node3D
             _ownerByKey.Remove(instance);
             _attachedByKey.Remove(instance);
             _weaponSplineByKey.Remove(instance);
+            _statedSplinePool.Remove(instance);
+            _drawnSplinePool.Remove(instance);
 
             (uint Target, uint Effect)? deadWeaponKey = null;
             foreach (var (wKey, tracker) in _activeWeaponFx)

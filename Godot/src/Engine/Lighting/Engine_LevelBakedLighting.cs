@@ -7,7 +7,7 @@ using Refii.Textures;
 
 namespace Refii.Lighting;
 
-public static partial class Engine_LevelBakedLighting
+public static class Engine_LevelBakedLighting
 {
 	public const string LightmapExtension = ".lmp";
 
@@ -202,37 +202,6 @@ public static partial class Engine_LevelBakedLighting
 	/// and then never sampled — every piece of foliage in the region silently lost its bake.
 	/// </summary>
 	public const string BakeModeMeta = "bake_mode";
-
-	/// <summary>
-	/// Metadata key a Fable 3 mesh carries for its header's <c>GlobalLightingMode</c> (header
-	/// byte 88, <c>MdlInfo.GlobalLightingMode</c>), set on the ArrayMesh by its builder.
-	/// </summary>
-	public const string Fable3LightingModeMeta = "fable3_lighting_mode";
-
-	private static StringName? _fable3LightingModeMetaName;
-
-	private static StringName Fable3LightingModeMetaName => _fable3LightingModeMetaName ??= Fable3LightingModeMeta;
-
-	/// <summary>
-	/// Whether the classic draw of this node takes NO probe: a Fable 3 mesh in GlobalLightingMode
-	/// 0. Only mode 1 samples the probe field (`sub_82210AE0` 0x82210b70: `*(mesh + 132) == 1`
-	/// gates `sub_821F3018`); mode 0 draws the same AMB2 pair (`sub_82C88C88` 0x82c88ce4..e8)
-	/// with the SH constant entry 371 taken from the owner's block or, without one, the static
-	/// all-zero block `unk_83564C50` (`sub_8220D668` 0x8220d738..0x8220d754; no writer in the
-	/// binary). Classic only: the modern model's `fable_bake` is one lighting model for every
-	/// title and keeps the probe term. False when the mesh states no mode.
-	/// </summary>
-	private static bool UnlitByMeshMode(GeometryInstance3D node)
-	{
-		if (!Refii.Models.Engine_ClassicMaterial.Active || node is not MeshInstance3D { Mesh: { } mesh })
-		{
-			return false;
-		}
-
-		return mesh.HasMeta(Fable3LightingModeMetaName) &&
-			mesh.GetMeta(Fable3LightingModeMetaName) is { VariantType: Variant.Type.Int } stated &&
-			stated.AsInt32() == 0;
-	}
 
 	/// <summary>
 	/// The order-2 SH band-0 constant, <c>1 / (2 * sqrt(PI))</c>, from
@@ -656,6 +625,22 @@ public static partial class Engine_LevelBakedLighting
 
 			ContainerCache.Clear();
 		}
+	}
+
+	/// <summary>Retires the departing region's borrowed probe data, owned relight iterator and object-atlas binding.</summary>
+	/// <remarks>Called on the main thread after outgoing producers stop. Native materials keep
+	/// their own references; no borrowed image, material, texture or node is disposed.</remarks>
+	public static void ReleaseRegionReferences() => ReleaseRegionReferences(() =>
+		RenderingServer.GlobalShaderParameterSet(GlobalPropLightmapsName, default(Variant)));
+
+	/// <summary>Executes the same reference retirement through a native-free publication seam.</summary>
+	/// <param name="clearObjectAtlas">Clears the previous object-atlas global on the rendering main thread.</param>
+	internal static void ReleaseRegionReferences(Action clearObjectAtlas)
+	{
+		ArgumentNullException.ThrowIfNull(clearObjectAtlas);
+		LightProbeField? probe = CurrentProbes;
+		CurrentProbes = null;
+		Refii.Core.Engine_RegionReferences.Release(ref probe, ref _relightWalk, ref _relightFrame, clearObjectAtlas);
 	}
 
 	/// <summary>
@@ -1180,7 +1165,7 @@ public static partial class Engine_LevelBakedLighting
 		float mode = node.HasMeta(BakeModeMetaName) &&
 			node.GetMeta(BakeModeMetaName) is { VariantType: Variant.Type.Int } stored
 				? stored.AsInt32()
-				: (probeValid && !UnlitByMeshMode(node) ? 1f : 0f);
+				: (probeValid ? 1f : 0f);
 
 		// THE INSTANCE CARRIES ONLY WHAT IS ITS OWN: the dial and the bake mode. The theme's
 		// factor multiplies the bake for every mode — `bake * lightmap_colour.rgb *
@@ -1245,7 +1230,7 @@ public static partial class Engine_LevelBakedLighting
 		float mode = node.HasMeta(BakeModeMetaName) &&
 			node.GetMeta(BakeModeMetaName) is { VariantType: Variant.Type.Int } stored
 				? stored.AsInt32()
-				: (hasProbe && !UnlitByMeshMode(node) ? 1f : 0f);
+				: (hasProbe ? 1f : 0f);
 
 		float dial = staticProp && DialProbeLitProps && mode > 0.5f && mode < 1.5f
 			? AuthoredBakeWeight
@@ -1598,7 +1583,7 @@ public static partial class Engine_LevelBakedLighting
 			}
 		}
 
-		container.ObjectAtlas = Refii.Textures.Engine_TextureUpload.CreateTexture(atlas);
+		container.ObjectAtlas = Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(atlas);
 		GD.Print($"[bake] object lightmap atlas: {decoded.Count} texture(s), " +
 			$"{rowWidth}x{atlasHeight}");
 	}
@@ -1648,24 +1633,16 @@ public static partial class Engine_LevelBakedLighting
 	/// shaders add for it, raised to 1/<see cref="FableBakeGamma"/> so their 1.3 decode returns it.
 	/// </summary>
 	/// <remarks>
-	/// THE TITLE'S OWN COMPOSE, read from the translated PSHADER_STANDARDMATERIAL_*_AMB3_* (the
-	/// Fable 3 bank's 0215, `godot/shaders/0215_pshader_standardmaterial_lghts1_mist0_amb3_…`):
-	/// slot 0 on sampler 3 (ps_g_TextureAOSampler, UV `r5.xy * g_AOUVMatrix.xy + .zw` = c53) is
-	/// A, slot 1 on sampler 7 (ps_g_TextureLightmapSampler, UV by g_LightUVMatrix = c54) is L —
+	/// THE TITLE'S OWN COMPOSE (landscapematerial_*_amb3 and standardmaterial_*_amb3, register
+	/// names from their constant tables): slot 0 on sampler 3 (g_TextureAOSampler) is
+	/// A, slot 1 on sampler 7 (g_TextureLightmapSampler) is L, both over the same UV —
 	///
-	///     r0.y = r7.z * c254.y + r7.x            I  = A.b * 31 + A.r      (c254.y = 0x41F80000 = 31)
-	///     r2.x = c51.x * r0.y                    I *= g_LightmapFlickeringFactor (c51)
-	///     r0.w = exp2(c32.x * log2(|r7.y|))      pow(A.g, g_AOContrast)  (c32)
-	///     r4   = r2.x * r9                       I * L
-	///     r7   = 2 * W * r4 * r0.w               W = ndl² * (1 - c22) + c22, the darkening
-	///     out  = Dlin * (… + r7 + W * c20 * r0.w …)
+	///     I   = (A.b * 31 + A.r) * g_LightmapFlickeringFactor
+	///     out = Dlin * pow(A.g, g_AOContrast) * (sun + 2 * W * I * L.rgb + W * ambient)
 	///
 	/// so the bake term is 2·I·L with A.g its occlusion; W is the darkening the shaders already
-	/// apply. The flicker factor and AO contrast are per-frame constants (Engine_ClassicFeed
-	/// publishes them to c51/c32 for the classic draw; this texture takes them as 1), and the
-	/// occlusion the title also lays over the sun term is carried by the bake alone. The two
-	/// slots are fetched at their OWN rects (c53 / c54): this compose resizes L onto A's grid,
-	/// exact while both rects cover the same texel extent, as the shipped per-object pairs do.
+	/// apply. The flicker factor and AO contrast are per-frame constants not yet read (1 here),
+	/// and the occlusion the title also lays over the sun term is carried by the bake alone.
 	/// A slot the entry does not state takes the title's default: white for slot 0
 	/// (sub_82182B70), black for slot 1 (sub_821FABA0). Stored as RGB9E5: the light is HDR
 	/// (blue carries whole units of intensity) and four bytes a texel.

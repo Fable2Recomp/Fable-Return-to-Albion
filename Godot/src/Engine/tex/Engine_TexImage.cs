@@ -480,7 +480,7 @@ public static class Engine_TexImage
 		}
 
 		var cubemap = new Cubemap();
-		Error created = Refii.Textures.Engine_TextureUpload.CreateLayered(cubemap, images);
+		Error created = Refii.Textures.Engine_AndroidTextureUpload.CreateLayered(cubemap, images);
 		if (created != Error.Ok)
 		{
 			error = $"Cubemap.CreateFromImages: {created}";
@@ -498,7 +498,7 @@ public static class Engine_TexImage
 		byte[] texBytes, out bool hasAlpha, out string error)
 	{
 		Image? image = TryCreateImage(texBytes, out hasAlpha, out error);
-		return image is null || image.IsEmpty() ? null : Engine_TextureUpload.CreateTexture(image);
+		return image is null || image.IsEmpty() ? null : Engine_AndroidTextureUpload.CreateTexture(image);
 	}
 
 	public static bool Bc1HasPunchThrough(byte[] blocks)

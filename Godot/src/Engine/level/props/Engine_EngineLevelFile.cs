@@ -128,16 +128,7 @@ public sealed class EngineLevelFile
     /// <summary>The level's heightfields, in file order, each with its lightmap id.</summary>
     public List<EngineLevelHeightfield> Heightfields { get; } = new();
 
-    /// <summary>
-    /// Type-5 records: one .water per record, loaded by `sub_82AB9818` (0x82abb374). Fable 3's
-    /// record is the same path string alone (`sub_82CD8B48` 0x82CD8F7C reads one string, then
-    /// `sub_82CB3ED0(level, path, 1)` with the ZERO vector unk_82001400 in v1 at 0x82CD8F88), so
-    /// the file's patch centres and body height stand as written. The offset `sub_82CF8198` adds
-    /// (v1.xy onto each patch's first two floats at 0x82CF8820, v1.z onto the body height at
-    /// 0x82CF86C4) is non-zero only through the Lua native `LoadEngineDataForRegion` (level
-    /// command 23, `sub_824CE950`), which loads `Fable3\Maps\&lt;region&gt;` — the map table's water,
-    /// not a level's.
-    /// </summary>
+    /// <summary>Type-5 records: one .water per record, loaded by `sub_82AB9818` (0x82abb374).</summary>
     public List<string> WaterPaths { get; } = new();
 
     /// <summary>Type-32 records: one .mist per record, loaded by `sub_82AB99F8` (0x82abb3a0).</summary>

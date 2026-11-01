@@ -6,7 +6,7 @@ using Refii.Textures;
 namespace Refii.Level;
 
 /// <summary>Builds the shared terrain arrays and their detached, conservative weight support.</summary>
-public static partial class Engine_TerrainSplatMaterial
+public static class Engine_TerrainSplatMaterial
 {
     private static readonly Engine_TerrainWeightRegistry<ShaderMaterial> WeightSupports = new();
 
@@ -36,11 +36,82 @@ public static partial class Engine_TerrainSplatMaterial
     }
     public const string ShaderPath = Refii.Models.Engine_ShaderVariant.TerrainFullPath;
 
+    /// <summary>
+    /// On a mobile-lite splat: the level's cliff band (offset, scale) and whether any layer
+    /// states a cliff at all (z = 1). What <see cref="ForChunk"/> proves a chunk flat against.
+    /// </summary>
+    private static readonly StringName CliffBandMeta = "lite_cliff_band";
+
+    /// <summary>On a chunk mesh: the smallest |n.y| of its vertex normals (Engine_LevelMesh).</summary>
+    public static readonly StringName MinUpMeta = "terrain_min_up";
+
+    /// <summary>One no-cliff copy per lite splat: the same parameters and textures, the shader
+    /// without its cliff block. Shallow, so no texture is duplicated.</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ShaderMaterial, ShaderMaterial> NoCliff = new();
+
     /// <summary>Loads the splat shaders this process can use, on the caller's (main) thread.</summary>
     public static void WarmShaders()
     {
         _ = GD.Load<Shader>(ShaderPath);
-        WarmLiteShaders();
+        if (Refii.Models.Engine_ShaderVariant.Lite)
+        {
+            foreach (string path in Refii.Models.Engine_ShaderVariant.ActiveVariantPaths)
+            {
+                if (Refii.Models.Engine_ShaderVariant.IsTerrainSplat(path))
+                {
+                    _ = GD.Load<Shader>(path);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The material one terrain chunk draws with: the landscape's own, or — under the lite
+    /// variant — its no-cliff copy when no pixel of the chunk can take a cliff.
+    /// </summary>
+    /// <remarks>
+    /// EXACT, NOT A THRESHOLD GUESS. The shader's slope weight is
+    /// `1 - saturate(|n.y| x scale + offset)`, and an interpolated, renormalised normal never has a
+    /// smaller |n.y| than the smallest of its triangle's vertices (all on one side of the
+    /// horizon). So a chunk whose every vertex has `|n.y| x scale + offset >= 1` has a slope
+    /// weight of exactly zero at every pixel, the cliff mix is `mix(ground, cliff, 0)`, and
+    /// dropping the block changes no bit. The margin covers Godot's normal compression. A level
+    /// whose layers state no cliff (every material's z = 0) is flat everywhere.
+    /// </remarks>
+    internal static Material? ForChunk(Material? material, ArrayMesh mesh)
+    {
+        if (material is not ShaderMaterial splat || !splat.HasMeta(CliffBandMeta) ||
+            Refii.Models.Engine_ShaderVariant.TerrainNoCliffPath(Refii.Models.Engine_ShaderSpecialisation.PathOf(splat.Shader)) is not { } noCliffPath)
+        {
+            return material;
+        }
+
+        Vector3 band = splat.GetMeta(CliffBandMeta).AsVector3();
+        bool flat = band.Z < 0.5f;
+        if (!flat && band.Y > 0f && mesh.HasMeta(MinUpMeta))
+        {
+            const float CompressionMargin = 0.002f;
+            float minUp = mesh.GetMeta(MinUpMeta).AsSingle() - CompressionMargin;
+            flat = (minUp * band.Y) + band.X >= 1f;
+        }
+
+        if (!flat)
+        {
+            return material;
+        }
+
+        return NoCliff.GetValue(splat, source =>
+        {
+            var copy = Refii.Models.Engine_MaterialCopy.Shallow(source);
+            // The same specialisations as the splat it copies (Engine_ShaderSpecialisation).
+            if (Refii.Models.Engine_ShaderSpecialisation.Load(
+                    noCliffPath, Refii.Models.Engine_ShaderSpecialisation.DefinesOf(source.Shader)) is { } shader)
+            {
+                copy.Shader = shader;
+            }
+
+            return copy;
+        });
     }
 
     public delegate byte[]? ReadAsset(string virtualPath);
@@ -127,7 +198,11 @@ public static partial class Engine_TerrainSplatMaterial
 
         // The layers' normal maps, which the .ehf has always named and nothing has ever loaded.
         // A missing pair leaves the shader's flat default, which costs a sample and nothing else.
-        bool normalMaps = NormalMapsWanted();
+        // `terrain_normal_maps = false` leaves them out on purpose, cavity and parallax with them,
+        // for their video memory: 275 MB in Bowerstone on the S10e, whose GPU samples no BC and
+        // holds them as RG8. It saved no measurable GPU time there.
+        // "lite_flat" draws the ground without them, so it does not upload them either.
+        bool normalMaps = NormalMapsEnabled() && !Refii.Models.Engine_ShaderVariant.FlatTerrain;
         Texture2DArray? baseNormalArray = !normalMaps ? null :
             BuildColourArray(data.BaseNormalSlices, data.SliceSize, isNormalMap: true);
         Texture2DArray? detailNormalArray = !normalMaps ? null :
@@ -189,6 +264,7 @@ public static partial class Engine_TerrainSplatMaterial
         // (res+84, res+88; Engine_ClassicTerrain reads the same pair). The landscape pixel shader
         // takes ground = saturate(|n.up| x scale + offset) (blob 0197 1285) — a per-level slope,
         // not one hard-coded band.
+        Vector2 cliffBand = new(-8f, 10f);
         if (ehf.Length >= 55)
         {
             float cliffOffset = BitConverter.Int32BitsToSingle((ehf[47] << 24) | (ehf[48] << 16) | (ehf[49] << 8) | ehf[50]);
@@ -196,6 +272,7 @@ public static partial class Engine_TerrainSplatMaterial
             if (float.IsFinite(cliffOffset) && float.IsFinite(cliffScale) && cliffScale != 0f)
             {
                 material.SetShaderParameter("cliff_blend", new Vector2(cliffOffset, cliffScale));
+                cliffBand = new Vector2(cliffOffset, cliffScale);
             }
         }
 
@@ -220,8 +297,27 @@ public static partial class Engine_TerrainSplatMaterial
         material.SetShaderParameter("material_params", parameters);
         RecordWeightSupport(material, data);
 
-        ApplyLite(material, data, parameters,
-            baseNormalArray is not null && detailNormalArray is not null && normalCount != 0);
+        // THE MOBILE LITE BUILD (Engine_ShaderVariant): the same parameters on a shader with the
+        // modern model's multiplied-away work compiled out — and without the normal-map and cavity
+        // code wherever they were not bound, where dropping it is exact.
+        if (Refii.Models.Engine_ShaderVariant.Lite)
+        {
+            bool normalsBound = baseNormalArray is not null && detailNormalArray is not null && normalCount != 0;
+            if (Refii.Models.Engine_ShaderSpecialisation.Load(
+                    Refii.Models.Engine_ShaderVariant.TerrainPath(normalsBound),
+                    Refii.Models.Engine_ShaderSpecialisation.TerrainDefines) is { } lite)
+            {
+                material.Shader = lite;
+            }
+
+            bool anyCliff = false;
+            for (int i = 0; i < data.MaterialCount && i < parameters.Length; i++)
+            {
+                anyCliff |= parameters[i].Z > 0f;
+            }
+
+            material.SetMeta(CliffBandMeta, new Vector3(cliffBand.X, cliffBand.Y, anyCliff ? 1f : 0f));
+        }
 
         GD.Print(
             $"[terrain] splat: {data.ChunkWidth}x{data.ChunkHeight} chunks, " +
@@ -350,6 +446,25 @@ public static partial class Engine_TerrainSplatMaterial
 
     private static long _sharedBytes;
 
+    /// <summary>
+    /// Drops the decoded splat sources. They are raw RGBA byte arrays of the ENHANCED result —
+    /// 16 MB for a 2048 source — and the budget above only sheds them when a later region
+    /// overflows it, so a region left standing holds its own for the rest of the session.
+    /// </summary>
+    /// <summary>`terrain_normal_maps`: whether the ground binds its layers' normal maps (and the
+    /// cavity and parallax derived from them). Read at each terrain build; default on.</summary>
+    internal static bool NormalMapsEnabled()
+    {
+        try
+        {
+            return Refii.Core.Engine_RefiiConfig.Bool(Refii.Core.Engine_RefiiConfig.Read(out _), "terrain_normal_maps", true);
+        }
+        catch (Exception)
+        {
+            return true;
+        }
+    }
+
     /// <summary>The decoded splat sources held and their bytes, for the heap census.</summary>
     internal static (long Entries, long Bytes) SharedCensus()
     {
@@ -359,11 +474,6 @@ public static partial class Engine_TerrainSplatMaterial
         }
     }
 
-    /// <summary>
-    /// Drops the decoded splat sources. They are raw RGBA byte arrays of the ENHANCED result —
-    /// 16 MB for a 2048 source — and the budget above only sheds them when a later region
-    /// overflows it, so a region left standing holds its own for the rest of the session.
-    /// </summary>
     public static void ClearSharedCache()
     {
         lock (Shared)
@@ -616,7 +726,7 @@ public static partial class Engine_TerrainSplatMaterial
         }
 
         var array = new Texture2DArray();
-        return Refii.Textures.Engine_TextureUpload.CreateLayered(array, images) == Error.Ok ? array : null;
+        return Refii.Textures.Engine_AndroidTextureUpload.CreateLayered(array, images) == Error.Ok ? array : null;
     }
 
     /// <summary>
@@ -711,7 +821,7 @@ public static partial class Engine_TerrainSplatMaterial
         }
 
         var array = new Texture2DArray();
-        return Refii.Textures.Engine_TextureUpload.CreateLayered(array, images) == Error.Ok ? array : null;
+        return Refii.Textures.Engine_AndroidTextureUpload.CreateLayered(array, images) == Error.Ok ? array : null;
     }
 
     /// <summary>Uploads owned R8 weight images and releases their CPU wrappers and native array afterwards.</summary>
@@ -741,7 +851,7 @@ public static partial class Engine_TerrainSplatMaterial
         }
 
         var array = new Texture2DArray();
-        return Refii.Textures.Engine_TextureUpload.CreateLayered(array, images) == Error.Ok ? array : null;
+        return Refii.Textures.Engine_AndroidTextureUpload.CreateLayered(array, images) == Error.Ok ? array : null;
     }
 
     /// <summary>

@@ -172,7 +172,7 @@ public static class Engine_SkyEnvironment
             return (state, reuse);
         }
 
-        return (state, Refii.Textures.Engine_TextureUpload.CreateTexture(image));
+        return (state, Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(image));
     }
 
     public static void ApplyDomeUniforms(

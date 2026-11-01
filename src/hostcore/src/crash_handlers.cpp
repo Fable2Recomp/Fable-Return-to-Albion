@@ -16,7 +16,11 @@
 #include <csignal>
 #ifndef _WIN32
 #include <dlfcn.h>
-#include "host_backtrace.h"
+// Bionic's execinfo API starts at API33. The API31 build keeps fault addresses and the guest
+// stack without importing unavailable host APIs.
+#if !defined(__ANDROID__) || __ANDROID_API__ >= 33
+#include <execinfo.h>
+#endif
 #include <fcntl.h>
 #include <sys/syscall.h>
 #include <sys/resource.h>
@@ -245,7 +249,7 @@ void WriteRecord(const char* line, uintptr_t pc) {
         DescribeAddress(fd, pc);
     }
     DescribeGuestThread(fd);
-#if REFII_HOST_BACKTRACE
+#if !defined(__ANDROID__) || __ANDROID_API__ >= 33
     void* frames[64];
     const int count = ::backtrace(frames, 64);
     ::backtrace_symbols_fd(frames, count, fd);
@@ -781,7 +785,8 @@ void InstallEmbeddedFailureHandlers() {
     g_previous_unhandled_filter = ::SetUnhandledExceptionFilter(SaveTracyOnUnhandled);
 #endif
 
-#if REFII_HOST_BACKTRACE
+#if !defined(_WIN32) && (!defined(__ANDROID__) || __ANDROID_API__ >= 33)
+    // Bionic only supplies execinfo from API33; API31 keeps its PC and guest-frame diagnostics.
     // backtrace() loads libgcc_s on its first call, through the dynamic loader and the
     // heap. Taken here, on a healthy thread, so the call inside a signal handler is a walk
     // and nothing more.

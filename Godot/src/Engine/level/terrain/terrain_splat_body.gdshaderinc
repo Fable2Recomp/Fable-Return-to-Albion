@@ -1,12 +1,11 @@
 // The ground's whole shader, included by terrain_splat.gdshader and by the mobile lite variants
-// (terrain_splat.gdshader plus defines, built by Engine_ShaderVariant and chosen by
-// Engine_TerrainSplatMaterial under `shader_variant = "lite"`). Each
+// (lite/*.gdshader, chosen by Engine_TerrainSplatMaterial under `shader_variant = "lite"`). Each
 // define REMOVES code at compile time:
 //   FABLE_LITE               dead or exactly zero in EITHER lighting model: parallax; the surface
 //                            weather and its specular; the debug views; the shader-cost diagnostic
 //                            and the zero-work A/B switches (their default sides kept); the vista
 //                            page branch.
-//   FABLE_LITE_MODERN        (the modern model only) the lightmap fetch, darkening
+//   FABLE_LITE_MODERN        (lite/modern/, the modern model only) the lightmap fetch, darkening
 //                            and tether, which `fable_unified` = 1 multiplies by zero (the ground is
 //                            never amb3). Under the fable model they are the ground's ambient.
 //   FABLE_LITE_NO_CLIFF      the cliff triplanar block, for a chunk whose every normal is inside

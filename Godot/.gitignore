@@ -4,9 +4,3 @@
 # Exported game builds — artifacts, not source
 Fable 2 Return to Albion.x86_64
 Fable 2 Return to Albion.sh
-
-# The Android export: Godot's installed Gradle template and its Gradle cache
-/android/build/
-/android/.build_version
-/android/plugins/
-/.gradle/

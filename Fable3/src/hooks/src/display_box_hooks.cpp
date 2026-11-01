@@ -70,18 +70,6 @@ constexpr uint32_t kVtInfoCard = 0x820D71CCu;
 constexpr uint32_t kVtButtonBox = 0x820D87F4u;
 constexpr uint32_t kVtWeddingPicker = 0x820D85A4u;
 
-/// The box-manager SCREENS, by vtable: each class's slot 7 returns its box type (`li r3, N` at
-/// the function the vtable's +28 names) and its constructor stores the vtable — Options
-/// 0x8209D230 (sub_825C95F0 at 0x825c9680, type 15), hero status 0x820C345C (0x8252188c, 13),
-/// promises 0x820AFD94 (0x827a32e0, 12), stats 0x820C2E28 (0x8296d310, 20), quest summary
-/// 0x820C3214 (0x829735f8, 27), king's schedule 0x820C30E0 (0x82972da8, 25).
-constexpr uint32_t kVtOptions = 0x8209D230u;
-constexpr uint32_t kVtHeroStatus = 0x820C345Cu;
-constexpr uint32_t kVtPromises = 0x820AFD94u;
-constexpr uint32_t kVtStats = 0x820C2E28u;
-constexpr uint32_t kVtQuestSummary = 0x820C3214u;
-constexpr uint32_t kVtKingsSchedule = 0x820C30E0u;
-
 constexpr uint32_t kMenuSelected = 0u;
 constexpr uint32_t kMenuOpen = 12u;
 constexpr uint32_t kMenuCancelled = 13u;
@@ -104,12 +92,6 @@ const char* KindOf(uint32_t vtable) {
     case kVtInfoCard: return "card";
     case kVtButtonBox: return "buttons";
     case kVtWeddingPicker: return "picker";
-    case kVtOptions: return "screen:options";
-    case kVtHeroStatus: return "screen:herostatus";
-    case kVtPromises: return "screen:promises";
-    case kVtStats: return "screen:stats";
-    case kVtQuestSummary: return "screen:quests";
-    case kVtKingsSchedule: return "screen:schedule";
     default: return "unknown";
   }
 }

@@ -62,7 +62,7 @@ public sealed class AndroidGoldenCockTests
     public void TheDialogHoldsTheGuestUntilItCloses()
     {
         var holds = new List<bool>();
-        var hold = new GameGuestHold(holds.Add, false);
+        var hold = new GameGoldenCock.GuestHold(holds.Add, false);
         AssertThat(holds).ContainsExactly(true);
         hold.Set(false);
         hold.Set(true);
@@ -73,7 +73,7 @@ public sealed class AndroidGoldenCockTests
 
         // The desktop's session, paused before the dialog opened, stays paused after it.
         var paused = new List<bool>();
-        new GameGuestHold(paused.Add, true).Release();
+        new GameGoldenCock.GuestHold(paused.Add, true).Release();
         AssertThat(paused).ContainsExactly(true, true);
     }
 

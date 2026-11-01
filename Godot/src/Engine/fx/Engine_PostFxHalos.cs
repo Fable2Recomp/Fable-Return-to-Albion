@@ -426,7 +426,7 @@ public partial class Engine_PostFxHalos : Node
 		}
 
 		var array = new Texture2DArray();
-		if (Refii.Textures.Engine_TextureUpload.CreateLayered(array, images) != Error.Ok)
+		if (Refii.Textures.Engine_AndroidTextureUpload.CreateLayered(array, images) != Error.Ok)
 		{
 			GD.PrintErr("[postfx] halo sprite array creation failed");
 			return;

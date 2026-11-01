@@ -8,7 +8,6 @@
 
 // For the cvar bridge below: TakeString turns the caller-buffer getter back into a
 // std::string on THIS side's heap, which is where rex::cvar's getter has to return one.
-#include "core/guest_step_sampler.h"
 #include "core/payload_bridge_string.h"
 #include "core/traced_mutex.h"
 
@@ -109,22 +108,7 @@ thread_local uint64_t t_real_slice_base = 0;
 constexpr uint64_t kGuestHfStepsPerSecond = 30u;
 
 /// How long without a grant before time resumes on its own, in HF steps.
-///
-/// The watchdog also fires the moment a title's tick pump reports its HF step open for longer
-/// than one step (core/guest_step_sampler.h): the game thread is then blocked on another guest
-/// thread, and the host is withholding grants because that very tick is not moving. Frozen,
-/// the clock stops the thread it waits on — Fable 3's scene-stream consumer is gated on the
-/// frame clock (sub_822A21A8, `dbl_8330E498[slot] < T` from mftb stamps) and its loading
-/// screen fades on mftb (sub_823022D0) — so each such wait cost the whole 8-step lapse before
-/// it could even start (r2: fence 1464 ms, fade 898 ms). A title that states no steps keeps the
-/// 8-step rule.
 constexpr uint64_t kGrantWatchdogSteps = 8u;
-
-/// Whether the watchdog is due: silence for `kGrantWatchdogSteps`, or a stated step blocked.
-bool WatchdogDue(uint64_t real, uint64_t seen_grant, uint64_t step) {
-  return (real > seen_grant && (real - seen_grant) > (kGrantWatchdogSteps * step)) ||
-         refii::pace::StepBlocked(real, step);
-}
 
 /// How far the virtual clock may lead real time, in HF steps — enough for a catch-up burst.
 constexpr uint64_t kMaxLeadSteps = 2u;
@@ -308,7 +292,8 @@ extern "C" uint64_t refii_bridge_rex_query_guest_tick_count(void) {
   {
     const uint64_t seen_grant = g_last_grant_real.load(std::memory_order_relaxed);
     const uint64_t current = g_virtual_ticks.load(std::memory_order_relaxed);
-    const bool watchdog_due = WatchdogDue(real, seen_grant, step);
+    const bool watchdog_due =
+        real > seen_grant && (real - seen_grant) > (kGrantWatchdogSteps * step);
     if (current != 0u && !watchdog_due &&
         g_pending_steps.load(std::memory_order_relaxed) == 0u) {
       g_last_seen_real.store(real, std::memory_order_relaxed);
@@ -354,7 +339,7 @@ extern "C" uint64_t refii_bridge_rex_query_guest_tick_count(void) {
   // Watchdog: with no grant for `kGrantWatchdogSteps`, time resumes at the real rate so guest
   // threads on timed waits are not frozen while the host is not stepping.
   const uint64_t last_grant = g_last_grant_real.load(std::memory_order_relaxed);
-  if (WatchdogDue(real, last_grant, step)) {
+  if (real > last_grant && (real - last_grant) > (kGrantWatchdogSteps * step)) {
     const uint64_t seen = g_last_seen_real.load(std::memory_order_relaxed);
     if (real > seen) {
       // THE CLOCK NEVER RUNS BACKWARDS. Releasing grants lets it lead real time by up to

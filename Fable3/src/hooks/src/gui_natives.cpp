@@ -80,21 +80,12 @@ constexpr uint32_t kTableNodeMask = 4u;
 constexpr uint32_t kTableNodes = 8u;
 constexpr uint32_t kNodeSize = 24u;
 constexpr uint32_t kNodeValue = 8u;
-// The array part: luaH_getnum sub_82215838 reads `*(t+12)[8 * (i - 1)]` when `i - 1 <
-// *(t+16)` (0x82215850..0x8221585C) — the TValue array at +12, its size at +16.
-constexpr uint32_t kTableArray = 12u;
-constexpr uint32_t kTableArraySize = 16u;
 
 /// Bounds: eight covers every `GUI` native's arity (DisplayMenuBox is the widest); a misread
 /// top or mask cannot walk the heap.
 constexpr uint32_t kMaxArguments = 8u;
 constexpr uint32_t kMaxTagLength = 128u;
 constexpr uint32_t kMaxTableNodes = 256u;
-constexpr uint32_t kMaxTableArray = 64u;
-/// Nested tables flatten into dotted names (`ListOfOptions.1.TextTag`): OpenInteractionMode's
-/// table holds the button slots at the top and the list rows one array level down.
-constexpr uint32_t kMaxTableDepth = 3u;
-constexpr size_t kMaxTableFields = 256u;
 
 /// The name hook's namespace census reports after the registration storm, not at the first call.
 constexpr uint64_t kCensusAfterCalls = 2000u;
@@ -189,86 +180,51 @@ uint32_t ImplementationFor(const uint8_t* base, uint32_t function_tvalue) {
   return 0u;
 }
 
-/// One table entry under `name`, into the flat field list; a nested table recurses with the
-/// name as its prefix. Fields are name-only, as the natives read their tables by key.
-void ReadTableValue(const uint8_t* base, const std::string& name, uint32_t tag, uint32_t value, uint32_t depth,
-                    refii::vfs::GuiNativeArgument& argument);
-
-/// The entries of a table argument: the array part in index order (names `1`, `2`, …), then the
-/// named entries by node scan — the hash is a pointer hash (0x82214958..0x8221496C), so no bucket
-/// can be computed host-side.
-void ReadTableFields(const uint8_t* base, uint32_t table, const std::string& prefix, uint32_t depth,
-                     refii::vfs::GuiNativeArgument& argument) {
-  if (!Plausible(table) || depth > kMaxTableDepth) {
+/// The named entries of a table argument, by node scan: the hash is a pointer hash
+/// (0x82214958..0x8221496C), so no bucket can be computed host-side. The array part is skipped;
+/// the natives read their tables by key.
+void ReadTableFields(const uint8_t* base, uint32_t table, refii::vfs::GuiNativeArgument& argument) {
+  if (!Plausible(table)) {
     return;
   }
-
-  const uint32_t array = LoadGuestU32(base, table + kTableArray);
-  const uint32_t array_size = LoadGuestU32(base, table + kTableArraySize);
-  if (Plausible(array) && array_size <= kMaxTableArray) {
-    for (uint32_t i = 0; i < array_size && argument.fields.size() < kMaxTableFields; ++i) {
-      const uint32_t slot = array + (i * kTValueSize);
-      const uint32_t tag = LoadGuestU32(base, slot + kTValueTag);
-      if (tag == kLuaTNil) {
-        continue;
-      }
-      ReadTableValue(base, prefix + std::to_string(i + 1u), tag, LoadGuestU32(base, slot), depth, argument);
-    }
-  }
-
   const uint32_t count = LoadGuestU32(base, table + kTableNodeMask) + 1u;
   const uint32_t nodes = LoadGuestU32(base, table + kTableNodes);
   if (count == 0u || count > kMaxTableNodes || !Plausible(nodes)) {
     return;
   }
 
-  for (uint32_t i = 0; i < count && argument.fields.size() < kMaxTableFields; ++i) {
+  for (uint32_t i = 0; i < count; ++i) {
     const uint32_t node = nodes + (i * kNodeSize);
-    const uint32_t key_tag = LoadGuestU32(base, node + kTValueTag);
-    std::string name;
-    if (key_tag == kLuaTString) {
-      name = ReadLuaString(base, LoadGuestU32(base, node), kMaxTagLength);
-    } else if (key_tag == kLuaTNumber) {
-      // An integer key the array part did not hold (a sparse list).
-      const float key = FloatFromBits(LoadGuestU32(base, node));
-      if (key >= 1.0f && key < 1.0e6f && key == static_cast<float>(static_cast<int32_t>(key))) {
-        name = std::to_string(static_cast<int32_t>(key));
-      }
-    }
-    if (name.empty()) {
+    if (LoadGuestU32(base, node + kTValueTag) != kLuaTString) {
       continue;
     }
-    ReadTableValue(base, prefix + name, LoadGuestU32(base, node + kNodeValue + kTValueTag),
-                   LoadGuestU32(base, node + kNodeValue), depth, argument);
-  }
-}
+    refii::vfs::GuiNativeArgument::Field field;
+    field.name = ReadLuaString(base, LoadGuestU32(base, node), kMaxTagLength);
+    if (field.name.empty()) {
+      continue;
+    }
 
-void ReadTableValue(const uint8_t* base, const std::string& name, uint32_t tag, uint32_t value, uint32_t depth,
-                    refii::vfs::GuiNativeArgument& argument) {
-  if (tag == kLuaTTable) {
-    ReadTableFields(base, value, name + ".", depth + 1u, argument);
-    return;
+    const uint32_t tag = LoadGuestU32(base, node + kNodeValue + kTValueTag);
+    const uint32_t value = LoadGuestU32(base, node + kNodeValue);
+    switch (tag) {
+      case kLuaTBoolean:
+        field.kind = refii::vfs::GuiNativeArgument::Kind::kBoolean;
+        field.boolean = value != 0u;
+        break;
+      case kLuaTNumber:
+        field.kind = refii::vfs::GuiNativeArgument::Kind::kNumber;
+        field.number = FloatFromBits(value);
+        break;
+      case kLuaTString:
+        field.kind = refii::vfs::GuiNativeArgument::Kind::kString;
+        field.text = ReadLuaString(base, value, kMaxTagLength);
+        break;
+      default:
+        field.kind = refii::vfs::GuiNativeArgument::Kind::kOther;
+        break;
+    }
+    argument.fields.push_back(std::move(field));
   }
-  refii::vfs::GuiNativeArgument::Field field;
-  field.name = name;
-  switch (tag) {
-    case kLuaTBoolean:
-      field.kind = refii::vfs::GuiNativeArgument::Kind::kBoolean;
-      field.boolean = value != 0u;
-      break;
-    case kLuaTNumber:
-      field.kind = refii::vfs::GuiNativeArgument::Kind::kNumber;
-      field.number = FloatFromBits(value);
-      break;
-    case kLuaTString:
-      field.kind = refii::vfs::GuiNativeArgument::Kind::kString;
-      field.text = ReadLuaString(base, value, kMaxTagLength);
-      break;
-    default:
-      field.kind = refii::vfs::GuiNativeArgument::Kind::kOther;
-      break;
-  }
-  argument.fields.push_back(std::move(field));
 }
 
 refii::vfs::GuiNativeArgument ReadArgument(const uint8_t* base, uint32_t slot) {
@@ -293,7 +249,7 @@ refii::vfs::GuiNativeArgument ReadArgument(const uint8_t* base, uint32_t slot) {
       break;
     case kLuaTTable:
       argument.kind = refii::vfs::GuiNativeArgument::Kind::kTable;
-      ReadTableFields(base, value, std::string(), 0u, argument);
+      ReadTableFields(base, value, argument);
       break;
     default:
       // Entities (userdata handles) and functions: the shape is recorded, the value means

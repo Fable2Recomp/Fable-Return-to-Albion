@@ -364,8 +364,8 @@ public partial class UiLayoutEditor : VBoxContainer
 }
 
 /// <summary>
-/// The player's arrangement: the running title's <c>layout.json</c> (<see cref="Engine_HudLayout.ActiveLayoutPath"/>)
-/// over the pieces the game last snapshotted (<see cref="Engine_HudLayout.ActiveSnapshotPath"/>): each
+/// The player's arrangement: <c>user://hud/layout.json</c> (<see cref="Engine_HudLayout.LayoutPath"/>)
+/// over the pieces the game last snapshotted (<see cref="Engine_HudLayout.SnapshotPath"/>): each
 /// piece's place beneath the player's file — shipped, then the enabled mods' layout in load order —
 /// which is where "back to the place beneath" returns it. A save writes only the entries the editor
 /// changed; the file's other entries and fields stay.
@@ -379,12 +379,12 @@ public static class PlayerHudLayoutTarget
 	/// older build wrote over it: its places are the player's own until the game runs once more.
 	/// </summary>
 	public static bool SnapshotIsBeneath() =>
-		Engine_HudLayoutEdit.SnapshotIsBeneath(ReadText(Engine_HudLayout.ActiveSnapshotPath));
+		Engine_HudLayoutEdit.SnapshotIsBeneath(ReadText(Engine_HudLayout.SnapshotPath));
 
 	/// <summary>The snapshot's pieces (each at its place beneath the player's file) and the player's own entries; null without a snapshot.</summary>
 	public static (List<HudLayoutPiece> Pieces, Dictionary<string, Engine_HudModLayout.Move> Stated)? Load()
 	{
-		string snapshot = ReadText(Engine_HudLayout.ActiveSnapshotPath);
+		string snapshot = ReadText(Engine_HudLayout.SnapshotPath);
 		if (snapshot.Length == 0)
 		{
 			return null;
@@ -408,7 +408,7 @@ public static class PlayerHudLayoutTarget
 			}
 		}
 
-		Dictionary<string, Engine_HudModLayout.Move> stated = Engine_HudModLayout.ParsePlayerFile(ReadText(Engine_HudLayout.ActiveLayoutPath));
+		Dictionary<string, Engine_HudModLayout.Move> stated = Engine_HudModLayout.ParsePlayerFile(ReadText(Engine_HudLayout.LayoutPath));
 		foreach (string id in stated.Keys.Where(id => pieces.All(p => p.Id != id)).ToList())
 		{
 			// The game moves only pieces the build has; an entry for one it lacks is kept but not listed.
@@ -426,12 +426,12 @@ public static class PlayerHudLayoutTarget
 			return string.Empty;
 		}
 
-		DirAccess.MakeDirRecursiveAbsolute(Engine_HudLayout.FolderFor(Refii.Core.Engine_Title.Active));
-		string text = Engine_HudLayoutEdit.Apply(ReadText(Engine_HudLayout.ActiveLayoutPath), Engine_HudModLayout.PlayerSection, changes);
-		using FileAccess? file = FileAccess.Open(Engine_HudLayout.ActiveLayoutPath, FileAccess.ModeFlags.Write);
+		DirAccess.MakeDirRecursiveAbsolute("user://hud");
+		string text = Engine_HudLayoutEdit.Apply(ReadText(Engine_HudLayout.LayoutPath), Engine_HudModLayout.PlayerSection, changes);
+		using FileAccess? file = FileAccess.Open(Engine_HudLayout.LayoutPath, FileAccess.ModeFlags.Write);
 		if (file is null)
 		{
-			return $"cannot write {Engine_HudLayout.ActiveLayoutPath}: {FileAccess.GetOpenError()}";
+			return $"cannot write {Engine_HudLayout.LayoutPath}: {FileAccess.GetOpenError()}";
 		}
 
 		file.StoreString(text);

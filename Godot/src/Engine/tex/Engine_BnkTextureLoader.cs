@@ -110,7 +110,7 @@ public partial class Engine_BnkTextureLoader : ResourceFormatLoader
 			return Variant.CreateFrom((int)Error.FileNotFound);
 		}
 
-		ImageTexture texture = Refii.Textures.Engine_TextureUpload.CreateTexture(image);
+		ImageTexture texture = Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(image);
 		texture.ResourcePath = path;
 
 		// §7 PUTS THIS PATH FIRST. The HUD, the menus and the front end are priority 0, and they

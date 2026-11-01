@@ -18,7 +18,7 @@ namespace Refii.Core;
 /// for producers and queued node deletion before clearing, then measures bounded collection and
 /// finalizer passes. Desktop keeps its existing clear timing. Never Dispose borrowed entries.
 /// </remarks>
-public static partial class Engine_LevelCaches
+public static class Engine_LevelCaches
 {
 	/// <summary>Drops every region-scoped cache. Idempotent.</summary>
 	public static void ReleaseRegion() => ReleaseRegion(Refii.Core.Engine_Platform.IsAndroid);
@@ -42,6 +42,11 @@ public static partial class Engine_LevelCaches
 		Refii.Level.Engine_PropFarShading.Forget();
 		Refii.Level.Engine_BuildingOccluders.Clear();
 		Refii.Entities.Engine_EntityAttachments.ClearCaches();
-		if (android) ReleaseAndroidRegion();  // Engine_LevelCaches.Android.cs
+		if (android)
+		{
+			Refii.Hero.Engine_HeroTextureMorph.ReleaseRegionTextures();
+			Refii.Physics.Engine_ClothPieces.Invalidate();
+			Refii.Lighting.Engine_LevelBakedLighting.ReleaseRegionReferences();
+		}
 	}
 }

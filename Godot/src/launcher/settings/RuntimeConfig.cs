@@ -336,8 +336,10 @@ public static class RuntimeConfig
     /// Whether a setting is written to the title's config — the same question as showing it. A setting
     /// nobody can act on should not sit in the file implying it does something.
     /// </summary>
+    /// <remarks>The graphics preset and its revision are a phone's (<see cref="GraphicsPresets.Offered"/>):
+    /// a desktop neither shows nor writes them.</remarks>
     public static bool ShouldWriteCVar(RuntimeCVarDefinition definition) =>
-        GraphicsPresets.ShouldWrite(definition.Name) &&
+        ((definition.Name != GraphicsPresets.Key && definition.Name != GraphicsPresets.RevisionKey) || GraphicsPresets.Offered) &&
         (!IsRetiredNativeCategory(definition.Category) || IsDisplayCVar(definition.Name));
 
     /// <summary>The settings panel's name for everything the player tunes about the picture.</summary>

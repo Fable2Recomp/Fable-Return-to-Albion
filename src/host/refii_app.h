@@ -28,7 +28,6 @@
 
 #include "host_audio.h"
 #include "host_input.h"
-#include "refii_app_android.h"
 
 #include <algorithm>
 #include <span>
@@ -199,9 +198,9 @@ public:
     // to be windowless, and it is the same shape as the window: Godot reads the real
     // device and the guest is served a snapshot.
     //
-    // The NOP driver stays behind ours as the fallback the SDK always installs, so a
-    // guest asking about pad 4 gets the same answer it always did (Android's own rule:
-    // refii_app_android.h).
+    // Desktop retains the SDK's NOP fallback. Android gameplay uses the host driver
+    // alone: NOP otherwise contributes a second always-successful user-zero state
+    // and defeats exact single-driver copy receipts. Tool mode retains its fallback.
     config.input_factory =
         [](bool tool_mode) -> std::unique_ptr<rex::system::IInputSystem> {
       // X_STATUS_SUCCESS is a macro that casts to an unqualified X_STATUS, so it can
@@ -213,15 +212,23 @@ public:
         auto host_driver =
             std::make_unique<refii::host::HostInputDriver>(nullptr, 0);
         if (host_driver->Setup() == X_STATUS_SUCCESS) {
-          refii::host::ObserveHostStateCopies(input.get(), host_driver.get());
+#ifdef __ANDROID__
+          rex::input::SetInputStateCopyObserver(input.get(),
+              &refii::host::HostInputDriver::ObserveStateCopy, host_driver.get());
+#endif
           input->AddDriver(std::move(host_driver));
         }
       }
 
-      if (refii::host::KeepsNopFallback(tool_mode)) {
+#ifdef __ANDROID__
+      if (tool_mode) {
         input->AddDriver(
             std::make_unique<rex::input::nop::NopInputDriver>(nullptr, 1));
       }
+#else
+      input->AddDriver(
+          std::make_unique<rex::input::nop::NopInputDriver>(nullptr, 1));
+#endif
       // THE POLICY IS NOT OPTIONAL. The v0.10 InputSystem answers every query
       // DEVICE_NOT_CONNECTED until an assignment maps device ordinals to guest users;
       // the SDK's own factory ends the same way. SlotAssignment: ordinal N feeds
@@ -329,12 +336,23 @@ public:
     if (base.filename() == "game") {
       base = base.parent_path();
     }
-    // A flat game dump (refii_app_android.h) is its own game and update root.
-    const bool direct_game_root = refii::host::IsFlatGameDump(base);
+#if defined(__ANDROID__)
+    // A privately imported Android dump can be a flat directory of any name,
+    // with default.xex/default.xexp beside data/. Preserve the normal assets/
+    // game + assets/update layout when the supplied base contains no XEX.
+    std::error_code direct_game_error;
+    const bool direct_game_root = std::filesystem::is_regular_file(
+        base / "default.xex", direct_game_error);
     paths.game_data_root = direct_game_root ? base : base / "game";
     if (paths.update_data_root.empty()) {
       paths.update_data_root = direct_game_root ? base : base / "update";
     }
+#else
+    paths.game_data_root = base / "game";
+    if (paths.update_data_root.empty()) {
+      paths.update_data_root = base / "update";
+    }
+#endif
 
     // EVERY LAUNCH. The guest reads rexnet.toml from under game_data_root and nothing else
     // puts one there; while this ran only under the AppImage and Flatpak packagings (since

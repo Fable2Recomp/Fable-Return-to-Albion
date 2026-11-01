@@ -37,6 +37,11 @@ namespace Refii.Game;
 /// </summary>
 public partial class GameDebugServer : Node
 {
+	/// <summary>Whether this node installs frame samplers; desktop callers retain the default ownership.</summary>
+	/// <remarks>Android installs its pair independently before adding an optional listener and
+	/// sets this false, keeping clock/draw sampling independent of network startup or failure.</remarks>
+	public bool OwnsFrameSampling { get; init; } = true;
+
 	/// <summary>Host-owned profiling uniforms; retained across level reloads and reset by process startup.</summary>
 	private static readonly Refii.Core.Engine_ShaderZeroWorkControls ShaderZeroWork = new();
 	private static readonly Refii.Core.Engine_ShaderCostDiagnostic ShaderCostDiagnostic = new();
@@ -1046,13 +1051,19 @@ public partial class GameDebugServer : Node
 					});
 				}
 
+				(bool handheldRunning, float handheldAmplitude) = GameInput.HandheldRumbleReadout();
 				return Ok(new Dictionary<string, object?>
 				{
 					// Both gates: the guest's byte_8331924F and the launcher's controller_vibration.
 					["guestSwitch"] = Refii.Core.Engine_TitleGame.Active.GuestVibrationEnabled,
 					["launcherSwitch"] = GameInput.ControllerVibration,
 					["pads"] = pads,
-					["handheld"] = HandheldRumble(),
+					// Pad 0 on the phone's own vibrator, played by touch on Android.
+					["handheld"] = new Dictionary<string, object?>
+					{
+						["running"] = handheldRunning,
+						["amplitude"] = handheldAmplitude,
+					},
 				});
 			}
 
@@ -1671,6 +1682,7 @@ public partial class GameDebugServer : Node
 				bool? postFxEnabled = Refii.Core.Engine_PresentationPolicy.ReadPostFxRequest(root);
 				bool? fxLegacyLayers = Refii.Lighting.Engine_PostFxRoute.ReadRequest(root);
 				bool? fxNoDepthReads = Refii.Fx.Engine_FxDepthReads.ReadRequest(root);
+				bool? skyGlareCheap = Refii.Level.Engine_SkyCosts.ReadRequest(root, Refii.Level.Engine_SkyCosts.GlareCheapRequestKey);
 				bool? skyRadianceLean = Refii.Level.Engine_SkyCosts.ReadRequest(root, Refii.Level.Engine_SkyCosts.RadianceLeanRequestKey);
 				Refii.Core.Engine_ShaderCeiling.Request? shaderCeiling = Refii.Core.Engine_ShaderCeiling.Parse(root);
 				ShaderCostDiagnostic.ApplyRequest(root, (name, value) => RenderingServer.GlobalShaderParameterSet(name, value));
@@ -1688,6 +1700,7 @@ public partial class GameDebugServer : Node
 				if (postFxEnabled is { } postFx) Refii.Lighting.Engine_PostFxParams.Enabled = postFx;
 				if (fxLegacyLayers is { } legacyLayers) Refii.Lighting.Engine_PostFxRoute.LegacyLayers = legacyLayers;
 				if (fxNoDepthReads is { } noDepthReads) Refii.Fx.Engine_FxDepthReads.Enabled = noDepthReads;
+				if (skyGlareCheap is { } glareCheap) Refii.Level.Engine_SkyCosts.GlareCheap = glareCheap;
 				if (skyRadianceLean is { } radianceLean) Refii.Level.Engine_SkyCosts.RadianceLean = radianceLean;
 				ShaderZeroWork.ApplyRequest(root, (name, value) => RenderingServer.GlobalShaderParameterSet(name, value));
 				if (meshLodThreshold is { } requestedLod)
@@ -2142,6 +2155,7 @@ public partial class GameDebugServer : Node
 					["fxAdditiveLayerPresent"] = Refii.Fx.Engine_FxAdditiveLayer.Present,
 					["fxNoDepthReads"] = Refii.Fx.Engine_FxDepthReads.Enabled,
 					["fxHardCapableMaterials"] = Refii.Fx.Engine_FxDepthReads.AdoptedCount,
+					["skyGlareCheap"] = Refii.Level.Engine_SkyCosts.GlareCheap,
 					["skyRadianceLean"] = Refii.Level.Engine_SkyCosts.RadianceLean,
 					// The held sky's radiance size and its own, applied on the next frame; null when none is held.
 					["skyRadianceHeld"] = Refii.Level.Engine_SkyCosts.LeanRadianceState,

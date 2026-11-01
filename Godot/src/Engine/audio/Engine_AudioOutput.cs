@@ -63,7 +63,7 @@ public partial class Engine_AudioOutput : Node
 		// frame geometry. Godot must open THAT file: a different copy is a second module with
 		// its own, empty ring.
 		string? library = Engine_NativeLibraries.LoadedPath(BridgeLibrary)
-			?? (Refii.Core.Engine_Platform.IsAndroid ? AndroidBridgePath() : null);  // Engine_AudioOutput.Android.cs
+			?? (Refii.Core.Engine_Platform.IsAndroid ? MappedPath(FileSystemMaps(), Engine_NativeLibraries.FileNameFor(BridgeLibrary)) : null);
 		if (library is null)
 		{
 			GD.PushError("[audio] the host bridge is not loaded, so the guest's output cannot be installed");
@@ -203,6 +203,38 @@ public partial class Engine_AudioOutput : Node
 
 		GD.PushError($"[audio] loading {library} as a GDExtension: {status}");
 		return false;
+	}
+
+	/// <summary>
+	/// The file a library is mapped from, read off <c>/proc/self/maps</c>.
+	///
+	/// Android loads the shipped bridge through its linker's package search, not the resolver,
+	/// so <see cref="Engine_NativeLibraries.LoadedPath"/> has nothing. The mapping names the
+	/// extracted file the process already holds, which is the one Godot must open.
+	/// </summary>
+	internal static string? MappedPath(string? maps, string fileName)
+	{
+		if (string.IsNullOrEmpty(maps))
+			return null;
+
+		foreach (string line in maps.Split('\n'))
+		{
+			int slash = line.IndexOf('/');
+			if (slash < 0)
+				continue;
+
+			string path = line[slash..].TrimEnd();
+			if (path.EndsWith("/" + fileName, StringComparison.Ordinal))
+				return path;
+		}
+
+		return null;
+	}
+
+	private static string? FileSystemMaps()
+	{
+		try { return System.IO.File.ReadAllText("/proc/self/maps"); }
+		catch (Exception) { return null; }
 	}
 
 	/// <summary>

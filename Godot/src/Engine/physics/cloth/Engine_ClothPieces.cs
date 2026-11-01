@@ -31,15 +31,6 @@ public sealed class ClothPiece
     public int[] BoneRemap { get; init; } = Array.Empty<int>();
 
     public string ModelPath { get; init; } = string.Empty;
-
-    /// <summary>The record the block belongs to, in the model's record order; -1 when unknown.</summary>
-    public int Record { get; init; } = -1;
-
-    /// <summary>
-    /// The model's rigid record count (its first LOD's): the records after them are the skinned
-    /// list, which a guest's skinned instance numbers from zero (<see cref="Engine_ClothStated.Record"/>).
-    /// </summary>
-    public int RigidRecords { get; init; }
 }
 
 /// <summary>
@@ -128,8 +119,6 @@ public static class Engine_ClothPieces
                     MaterialSurface = piece.MaterialSurface,
                     BoneRemap = remap is null ? piece.BoneRemap : Compose(piece.BoneRemap, remap),
                     ModelPath = path,
-                    Record = piece.Record,
-                    RigidRecords = piece.RigidRecords,
                 });
             }
         }
@@ -377,8 +366,6 @@ public static class Engine_ClothPieces
                 MaterialSurface = materialSurface,
                 BoneRemap = identity,
                 ModelPath = modelPath,
-                Record = record,
-                RigidRecords = (int)info.RigidCount,
             });
         }
 

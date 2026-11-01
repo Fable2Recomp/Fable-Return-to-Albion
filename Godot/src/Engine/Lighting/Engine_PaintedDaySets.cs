@@ -279,193 +279,12 @@ public sealed class Engine_PaintedDaySets
         return None;
     }
 
-    private readonly List<Refii.Host.HostBridge.GuestThemeLayer> _guestRows = new();
-
-    private readonly HashSet<uint> _guestRowsSeen = new();
-
-    private bool _feedLogged;
-
-    private bool _feedAnswered;
-
-    private readonly HashSet<uint> _rowIds = new();
-
-    private readonly HashSet<uint> _lastRowIds = new();
-
-    /// <summary>Whether the layers are the guest's own statement (Fable 3) rather than this sampler's.</summary>
-    public bool GuestStated { get; private set; }
-
-    /// <summary>
-    /// FABLE 3 STATES ITS LAYERS, so they are taken, not re-derived. The guest's theme manager
-    /// rebuilds its compose list every world tick — base, level, the painted layer under the hero
-    /// at the weight its own fade has reached (<c>sub_82261768</c>), the script and spell layers —
-    /// and <c>RefiiHostGetThemeStack</c> states that list in fold order (Fable3
-    /// lighting_feed.cpp). The base and level rows are the chain already evaluated at full weight
-    /// (<see cref="Refii.Level.Engine_EnvThemeFile.IsLevelStackTheme"/>); every other row becomes a
-    /// layer at the guest's weight. Sampling the grid here and ramping the weights on this
-    /// machine's clock was a mirror of that, and it drifted: the sampled position, the fade
-    /// clock and a guest that steps at 40 % of real time all made the sun come on over a room the
-    /// guest still had dark. False only in the editor, where the grid sampler stands in; in game a
-    /// feed that answers nothing yet (no world, a level build) is "no layers yet", never the sampler.
-    /// </summary>
-    private bool TryTakeGuestLayers(out float moved)
-    {
-        moved = 0f;
-        // THE SAMPLER NEVER RUNS FOR FABLE 3 OUTSIDE THE EDITOR. The guest alone says which
-        // painted layers are up; while it says nothing — before its first tick, and for the
-        // whole of a level build and tear-down, when the feed answers 0 rows — the answer is
-        // "no layers yet" and whatever it last stated is held. Run r2 (2026-11-01): a fresh
-        // instance for BowerstoneCastle saw 0 rows during the load, fell through to the grid
-        // sampler, and ran its own `entering day set 0x5B2C2333` / `faded out` fade for the
-        // whole load — the mirror this method exists to remove.
-        if (Refii.Core.Engine_Title.Active != Refii.Core.Engine_Title.Fable3)
-        {
-            return false;
-        }
-
-        if (Engine.IsEditorHint())
-        {
-            return false;
-        }
-
-        if (!Refii.Host.HostBridge.IsInGame)
-        {
-            return true;
-        }
-
-        Refii.Host.HostBridge.ThemeStack(_guestRows);
-
-        // The raw feed, once when first asked in game and once more when it first answers, so a
-        // run that takes nothing says whether the bridge or this reader is the reason.
-        if (!_feedLogged || (!_feedAnswered && _guestRows.Count != 0))
-        {
-            _feedLogged = true;
-            _feedAnswered |= _guestRows.Count != 0;
-            var rows = new List<string>();
-            foreach (Refii.Host.HostBridge.GuestThemeLayer row in _guestRows)
-            {
-                rows.Add($"0x{row.RecordHash:X8}={row.Weight:0.00}/{row.Target:0.00}" +
-                    (Refii.Level.Engine_EnvThemeFile.IsLevelStackTheme(row.RecordHash) ? "(base)" : string.Empty));
-            }
-
-            GD.Print($"[painted] fable3 theme feed: {_guestRows.Count} row(s) [{string.Join(" ", rows)}]");
-        }
-
-        if (_guestRows.Count == 0)
-        {
-            return true;
-        }
-
-        // THE GUEST REBUILDS ITS LIST EVERY TICK, so one read can land on a half-built list. The
-        // weights of the layers already held are always taken; a change in WHICH layers are held
-        // is taken only once two consecutive reads agree on it, which costs one host frame.
-        _rowIds.Clear();
-        foreach (Refii.Host.HostBridge.GuestThemeLayer row in _guestRows)
-        {
-            if (row.RecordHash != 0 && !Refii.Level.Engine_EnvThemeFile.IsLevelStackTheme(row.RecordHash) &&
-                float.IsFinite(row.Weight) && row.Weight > 0f)
-            {
-                _rowIds.Add(row.RecordHash);
-            }
-        }
-
-        bool sameAsHeld = _rowIds.Count == _layers.Count;
-        if (sameAsHeld)
-        {
-            foreach (Layer layer in _layers)
-            {
-                sameAsHeld &= _rowIds.Contains(layer.Hash);
-            }
-        }
-
-        bool sameAsLastRead = _rowIds.SetEquals(_lastRowIds);
-        _lastRowIds.Clear();
-        _lastRowIds.UnionWith(_rowIds);
-        bool takeSet = GuestStated ? sameAsHeld || sameAsLastRead : true;
-
-        if (!GuestStated)
-        {
-            GuestStated = true;
-            moved += 1f;
-        }
-
-        foreach (Layer layer in _layers)
-        {
-            layer.Active = !takeSet;
-        }
-
-        bool newId = false;
-        foreach (Refii.Host.HostBridge.GuestThemeLayer row in _guestRows)
-        {
-            if (!_rowIds.Contains(row.RecordHash))
-            {
-                continue;
-            }
-
-            if (!takeSet)
-            {
-                foreach (Layer layer in _layers)
-                {
-                    if (layer.Hash == row.RecordHash)
-                    {
-                        layer.Weight = MathF.Min(row.Weight, 1f);
-                    }
-                }
-
-                continue;
-            }
-
-            Layer? found = null;
-            foreach (Layer layer in _layers)
-            {
-                if (layer.Hash == row.RecordHash && !layer.Active)
-                {
-                    found = layer;
-                    break;
-                }
-            }
-
-            if (found is null)
-            {
-                found = new Layer { Hash = row.RecordHash };
-                _layers.Add(found);
-                moved += 1f;
-                newId |= _guestRowsSeen.Add(row.RecordHash);
-            }
-
-            found.Active = true;
-            float weight = MathF.Min(row.Weight, 1f);
-            moved += MathF.Abs(weight - found.Weight);
-            found.Weight = weight;
-        }
-
-        for (int i = _layers.Count - 1; i >= 0; i--)
-        {
-            if (!_layers[i].Active)
-            {
-                moved += 1f;
-                _layers.RemoveAt(i);
-            }
-        }
-
-        if (newId)
-        {
-            GD.Print($"[painted] the guest states its layers: {Describe()}");
-        }
-
-        return true;
-    }
-
     /// <summary>
     /// One tick of the guest's blend at a real delta. Returns how much the weights moved,
     /// plus 1.0 for every layer added or erased, so the caller can re-evaluate in steps.
     /// </summary>
     public float Tick(Vector3? hero, float deltaSeconds)
     {
-        if (TryTakeGuestLayers(out float stated))
-        {
-            return stated;
-        }
-
         float moved = 0f;
         foreach (Layer layer in _layers)
         {
@@ -528,10 +347,8 @@ public sealed class Engine_PaintedDaySets
             parts.Add($"0x{layer.Hash:X8}={layer.Weight:0.00}{(layer.Active ? "*" : string.Empty)}");
         }
 
-        return GuestStated
-            ? $"guest-stated layers=[{string.Join(" ", parts)}]"
-            : $"grids={_grids.Count} painted={PaintedCells} layers=[{string.Join(" ", parts)}] " +
-                $"blend in/out={BlendInSeconds:0.#}/{BlendOutSeconds:0.#}s";
+        return $"grids={_grids.Count} painted={PaintedCells} layers=[{string.Join(" ", parts)}] " +
+            $"blend in/out={BlendInSeconds:0.#}/{BlendOutSeconds:0.#}s";
     }
 
     private static uint ReadU32(byte[] d, int at) =>
