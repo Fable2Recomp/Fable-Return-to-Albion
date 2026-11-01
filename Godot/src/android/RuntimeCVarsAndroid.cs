@@ -49,9 +49,10 @@ public static class RuntimeCVarsAndroid
 
         new("lite_shadowless", DisplayCategory, RuntimeCVarType.Bool, "false",
             "Android, lite shaders: compile out Godot's shadow sampling while the settings render "
-            + "no shadow map (sun_shadow_distance 0, placed_light_shadows off). The first light "
-            + "that casts, or a setting that would cast, puts the shadowed shaders back for the "
-            + "session (a pause of a few seconds while they recompile). Applies at the next launch."),
+            + "no shadow map (sun_shadow_distance 0, placed_light_shadows off); the few spot lights "
+            + "that cast even then cast nothing. A setting that would cast puts the shadowed shaders "
+            + "back for the session at the next level load (a pause while they recompile). Applies "
+            + "at the next launch."),
 
         new("lite_bake_variants", DisplayCategory, RuntimeCVarType.Bool, "false",
             "Android, lite shaders: a static prop draws with a shader built for its own baked "

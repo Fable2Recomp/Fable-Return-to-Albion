@@ -755,7 +755,7 @@ public partial class Engine_LightShadowBudget : Node
 					f.ShadowMask = desiredMask;
 				}
 
-				// Its map is about to render: lite shaders built without shadow sampling go back first.
+				// Its map is about to render, unless the lite shaders are built without shadow sampling (lite_shadowless).
 				if (!f.Casting && Refii.Models.Engine_ShaderSpecialisation.ShadowCast("a placed light"))
 				{
 					light.ShadowOpacity = 0.0f;

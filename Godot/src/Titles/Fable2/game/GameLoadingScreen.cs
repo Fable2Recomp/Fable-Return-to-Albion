@@ -185,6 +185,13 @@ public partial class GameLoadingScreen : Node
 	/// <summary>True while a loading screen is on screen, for a caller that wants to know.</summary>
 	public bool IsShowing { get; private set; }
 
+	/// <summary>
+	/// True while the screen up is a level load's: the painted sheet, or our cover over a world
+	/// build. Not a save's "Saving content" (fixed art), which comes down in a few seconds, nor a
+	/// screen whose layout has not answered yet.
+	/// </summary>
+	public bool IsLevelLoad => IsShowing && (_layout is { IsSplit: true } || GameWorld.CoverHeld);
+
 	/// <summary>What the last poll saw, for the log line.</summary>
 	private string _reported = string.Empty;
 

@@ -441,7 +441,7 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         {
             bool waiting = Refii.Models.Engine_ShaderSpecialisation.RebuildWaiting;
             if (waiting && !_rebuild.Visible)
-                _rebuildText.Text = "Shadows need a one-time shader rebuild. They come on at the next loading screen.";
+                _rebuildText.Text = "Shadows need a one-time shader rebuild. They come on at the next level load.";
             _rebuild.Visible = waiting;
             Place();
         }
