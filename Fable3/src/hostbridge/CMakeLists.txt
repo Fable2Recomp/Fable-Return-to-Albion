@@ -17,9 +17,29 @@ add_library(refiii_hostbridge SHARED
     ${CMAKE_CURRENT_LIST_DIR}/src/entity_feed.cpp
     # The HUD the guest states: its element registries (texts, meters) and the screen fade.
     ${CMAKE_CURRENT_LIST_DIR}/src/hud_feed.cpp
+    # The world icons, emotion choices and interaction mode the guest's HUD holds, read live.
+    ${CMAKE_CURRENT_LIST_DIR}/src/icon_feed.cpp
+    # The options the guest runs with (applied gamma and audio), its languages, and the Options
+    # screen's object while it shows.
+    ${CMAKE_CURRENT_LIST_DIR}/src/options_feed.cpp
     # The classic renderer's sources: frame constants, theme, lights, shadow spheres, mists,
     # weather, particles and trails.
     ${CMAKE_CURRENT_LIST_DIR}/src/classic_feed.cpp
+    # The lighting the guest states: its environment theme stack, layer by layer at its weights.
+    ${CMAKE_CURRENT_LIST_DIR}/src/lighting_feed.cpp
+    # The clips each rig plays: the animation manager's records and their render trees.
+    ${CMAKE_CURRENT_LIST_DIR}/src/anim_feed.cpp
+    # The world the guest's entry points state (Fable3/src/hooks/src/world_hooks.cpp): the level's
+    # standing, the live effects and their placement, the decals.
+    ${CMAKE_CURRENT_LIST_DIR}/src/world_feed.cpp
+    # Each character's appearance as its hooks state it (Fable3/src/hooks/src/appearance_hooks.cpp):
+    # the parts' morph targets and the textures replaced on them.
+    ${CMAKE_CURRENT_LIST_DIR}/src/appearance_feed.cpp
+    # Whether the guest poses each rig this tick (sub_82205E00), so the shell holds what it holds.
+    ${CMAKE_CURRENT_LIST_DIR}/src/pose_gate_feed.cpp
+    # Each entity's cloth pieces as the guest's draw publishes them (Fable3/src/hooks/src/
+    # cloth_hooks.cpp), joined to the entity by its render handles.
+    ${CMAKE_CURRENT_LIST_DIR}/src/cloth_feed.cpp
 )
 
 # The whole core, --no-undefined and OUTPUT_NAME refii_hostbridge (src/hostcore/CMakeLists.txt).

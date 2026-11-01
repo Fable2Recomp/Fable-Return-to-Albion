@@ -105,10 +105,10 @@ public static class Engine_LevelLighting
 			DirectionalShadowSplit2 = CascadeSplitMid / CascadeDepth,
 			DirectionalShadowSplit3 = Mathf.Min(CascadeSplitFar, CascadeDepth * 0.8f) / CascadeDepth,
 
-			// Blending starts each farther cascade at the camera rather than at the split,
-			// which forces every near caster into every cascade. Disabled by default; overridable
-			// via SunBlendOverride.
-			DirectionalShadowBlendSplits = false,
+			// Cascade boundaries otherwise print as a hard band across the landscape where
+			// the shadow resolution steps — the "seam that does not match up" tracking the
+			// camera's distance rather than any geometry. The blend dithers across it.
+			DirectionalShadowBlendSplits = true,
 			DirectionalShadowFadeStart = 0.85f,
 
 			// NO CASCADES IN A REFLECTION: the reflected bit never selects a caster, so a mirror
@@ -233,7 +233,7 @@ public static class Engine_LevelLighting
 		var mode = splits <= 1 ? DirectionalLight3D.ShadowMode.Orthogonal
 			: splits == 2 ? DirectionalLight3D.ShadowMode.Parallel2Splits
 			: DirectionalLight3D.ShadowMode.Parallel4Splits;
-		bool blend = SunBlendOverride ?? false;
+		bool blend = SunBlendOverride ?? true;
 		if (light.DirectionalShadowBlendSplits != blend) light.DirectionalShadowBlendSplits = blend;
 		float distance = isNight ? Mathf.Min(NightFarDepth, CascadeDepth) : CascadeDepth;
 		if (light.DirectionalShadowMode != mode) light.DirectionalShadowMode = mode;

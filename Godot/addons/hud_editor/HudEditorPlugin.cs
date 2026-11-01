@@ -64,7 +64,7 @@ public partial class HudEditorPlugin : EditorPlugin
 		{
 			_dock.Load(System.Array.Empty<HudLayoutPiece>(), new System.Collections.Generic.Dictionary<string, Refii.Ui.Engine_HudModLayout.Move>());
 			_dock.CallDeferred(UiLayoutEditor.MethodName.SetStatus,
-				$"No snapshot at {Refii.Ui.Engine_HudLayout.SnapshotPath} yet. Run the game once — it writes the derived layout there on boot.");
+				$"No snapshot at {Refii.Ui.Engine_HudLayout.ActiveSnapshotPath} yet. Run the game once — it writes the derived layout there on boot.");
 			return;
 		}
 
@@ -72,7 +72,7 @@ public partial class HudEditorPlugin : EditorPlugin
 		if (!PlayerHudLayoutTarget.SnapshotIsBeneath())
 		{
 			_dock.CallDeferred(UiLayoutEditor.MethodName.SetStatus,
-				$"{Refii.Ui.Engine_HudLayout.SnapshotPath} was written by an older build over your own layout, so " +
+				$"{Refii.Ui.Engine_HudLayout.ActiveSnapshotPath} was written by an older build over your own layout, so " +
 				"\"back to the place beneath\" returns a piece to where your file put it. Run the game once to refresh it.");
 		}
 	}
@@ -97,7 +97,7 @@ public partial class HudEditorPlugin : EditorPlugin
 		_dock.SetStatus(changes.Empty
 			? "Nothing to save."
 			: $"Saved {changes.Set.Count} moved and {changes.Removed.Count} reverted piece(s) to " +
-				$"{Refii.Ui.Engine_HudLayout.LayoutPath}. The game applies it on boot.");
+				$"{Refii.Ui.Engine_HudLayout.ActiveLayoutPath}. The game applies it on boot.");
 	}
 }
 #endif

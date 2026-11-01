@@ -933,7 +933,7 @@ public static class Engine_HeroTextureMorph
         using Image image = Image.CreateFromData(width, height, false, Image.Format.Rgba8, rgba);
         image.GenerateMipmaps(normalMap);
         Engine_TexImage.CompressBlocks(image, normalMap);
-        return Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(image);
+        return Refii.Textures.Engine_TextureUpload.CreateTexture(image);
     }
 
     /// <summary>Retains top-level managed RGBA while releasing the newly decoded native Image after extraction.</summary>

@@ -517,7 +517,7 @@ public static class Engine_TexSettings
 			_pubGameVectorShapes =
 				Engine_RefiiConfig.Bool(values, "pubgame_vector_shapes", true);
 			_pubGameReleaseOnClose = Engine_RefiiConfig.Bool(
-				values, "pubgame_release_on_close", !Engine_AppRoot.IsTestHost && OS.HasFeature("android"));
+				values, "pubgame_release_on_close", !Engine_AppRoot.IsTestHost && Engine_Platform.IsAndroid);
 			// 0 means "decide for me", and the decision depends on whether upscaling is on, so it
 			// is resolved AFTER the environment overrides below rather than here.
 			_budgetMegabytes = Engine_RefiiConfig.Int(values, "texture_cache_max_mb", 0);

@@ -14,7 +14,7 @@ namespace Refii.Game;
 /// controls silently stopped working the moment Godot took over drawing — the settings
 /// panel would still offer them and nothing would happen.
 /// </summary>
-public readonly struct GameWindowSettings
+public readonly partial struct GameWindowSettings
 {
 	/// <summary>Fallback when the file says nothing. Matches the guest's own default mode.</summary>
 	public static readonly Vector2I DefaultSize = new(1280, 720);
@@ -68,14 +68,6 @@ public readonly struct GameWindowSettings
 
 	/// <summary>`anisotropic_filtering`: 0, 2, 4, 8 or 16 samples.</summary>
 	public int Anisotropic { get; init; }
-
-	/// <summary>`hdr_2d`: the world's colour buffer in half floats (Godot's default); off it is
-	/// 10-bit, half the bandwidth. Applied by the Android host only.</summary>
-	public bool Hdr2D { get; init; }
-
-	/// <summary>`canvas_lean`: the 2D pass's same-picture shortcuts (Engine_CanvasLean). Applied by
-	/// the Android host only.</summary>
-	public bool CanvasLean { get; init; }
 
 	/// <summary>`debanding`: noise over smooth gradients.</summary>
 	public bool Debanding { get; init; }
@@ -199,15 +191,13 @@ public readonly struct GameWindowSettings
 			ScreenSpaceAa = Engine_RefiiConfig.String(values, "screen_space_aa", "off").Trim().ToLowerInvariant(),
 			Taa = Engine_RefiiConfig.Bool(values, "taa", false),
 			Anisotropic = Engine_RefiiConfig.Int(values, "anisotropic_filtering", 4),
-			Hdr2D = Engine_RefiiConfig.Bool(values, "hdr_2d", true),
-			CanvasLean = Engine_RefiiConfig.Bool(values, Refii.Ui.Engine_CanvasLean.Key, false),
 			Debanding = Engine_RefiiConfig.Bool(values, "debanding", false),
 			Hdr = Engine_RefiiConfig.Bool(values, "hdr_output", false),
 			HdrReferenceNits = Math.Max(0f, Engine_RefiiConfig.Float(values, "hdr_reference_nits", 0f)),
 			HdrPeakNits = Math.Max(0f, Engine_RefiiConfig.Float(values, "hdr_peak_nits", 0f)),
 			Borderless = Engine_RefiiConfig.Bool(values, "borderless", false),
 			Source = source,
-		};
+		}.WithAndroidHostValues(values); // hdr_2d and canvas_lean: GameWindowSettings.Android.cs
 	}
 
 	/// <summary>

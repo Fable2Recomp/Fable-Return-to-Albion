@@ -109,10 +109,6 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 
 		/// <summary>The button's pressed look, which the `FillWorldIconButton` toggle raises.</summary>
 		public Node3D? Pressed { get; set; }
-		public Vector2 LastOrigin { get; set; } = new(float.NaN, float.NaN);
-		public float LastPieceScale { get; set; } = float.NaN;
-		public float LastScrubT { get; set; } = float.NaN;
-		public bool? LastScrubPressed { get; set; }
 	}
 
 	private readonly List<Slot> _slots = new();
@@ -496,16 +492,8 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 			Vector2 origin = new Vector2(x, y) - (PieceScale * slot.Scale * slot.Pivot);
 			if (float.IsFinite(origin.X) && float.IsFinite(origin.Y))
 			{
-				if (!slot.LastOrigin.IsEqualApprox(origin))
-				{
-					slot.LastOrigin = origin;
-					slot.Node.Position = new Vector3(origin.X, origin.Y, 0f);
-				}
-				if (!Mathf.IsEqualApprox(slot.LastPieceScale, PieceScale))
-				{
-					slot.LastPieceScale = PieceScale;
-					slot.Node.Scale = new Vector3(PieceScale, PieceScale, 1f);
-				}
+				slot.Node.Position = new Vector3(origin.X, origin.Y, 0f);
+				slot.Node.Scale = new Vector3(PieceScale, PieceScale, 1f);
 			}
 		}
 	}
@@ -553,7 +541,7 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 			int index = PoolIndexOf(slot.Name);
 			if (index < 0 || !canvasBySlot.TryGetValue(index, out Vector2 at))
 			{
-				if (hideUntracked && slot.Node.Visible)
+				if (hideUntracked)
 				{
 					slot.Node.Visible = false;
 				}
@@ -561,7 +549,7 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 				continue;
 			}
 
-			if (hideUntracked && !slot.Node.Visible)
+			if (hideUntracked)
 			{
 				slot.Node.Visible = true;
 			}
@@ -569,16 +557,8 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 			Vector2 origin = at - (PieceScale * slot.Scale * slot.Pivot);
 			if (float.IsFinite(origin.X) && float.IsFinite(origin.Y))
 			{
-				if (!slot.LastOrigin.IsEqualApprox(origin))
-				{
-					slot.LastOrigin = origin;
-					slot.Node.Position = new Vector3(origin.X, origin.Y, 0f);
-				}
-				if (!Mathf.IsEqualApprox(slot.LastPieceScale, PieceScale))
-				{
-					slot.LastPieceScale = PieceScale;
-					slot.Node.Scale = new Vector3(PieceScale, PieceScale, 1f);
-				}
+				slot.Node.Position = new Vector3(origin.X, origin.Y, 0f);
+				slot.Node.Scale = new Vector3(PieceScale, PieceScale, 1f);
 			}
 		}
 	}
@@ -686,13 +666,6 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 
 	private static void Scrub(Slot slot, float t, bool pressed)
 	{
-		if (Mathf.IsEqualApprox(slot.LastScrubT, t) && slot.LastScrubPressed == pressed)
-		{
-			return;
-		}
-		slot.LastScrubT = t;
-		slot.LastScrubPressed = pressed;
-
 		foreach ((Node3D node, BgfAnimation animation, Engine_UiTimeline.Target target) in slot.Tracks)
 		{
 			if (GodotObject.IsInstanceValid(node))

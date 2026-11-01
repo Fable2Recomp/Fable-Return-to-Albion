@@ -68,6 +68,12 @@ public sealed class LightProbeField
     /// </summary>
     public Vector4[][] CellPlanes { get; set; } = Array.Empty<Vector4[]>();
 
+    /// <summary>
+    /// Fable 3's neighbour list per cell (the .flpb link list, cell+20..+24 once loaded): the
+    /// cells whose probes blend with the containing cell's. A negative index is no neighbour.
+    /// </summary>
+    public int[][] CellLinks { get; set; } = Array.Empty<int[]>();
+
     public Vector3 CellBoundsMin { get; set; }
 
     public Vector3 CellBoundsMax { get; set; }
@@ -239,17 +245,24 @@ public sealed class LightProbeField
     }
 
     /// <summary>
-    /// Fable 3's lookup: the probe of the first cell that contains the point, unblended.
+    /// Fable 3's lookup: the containing cell's probe blended with its linked neighbours' by
+    /// inverse square distance.
     /// </summary>
     /// <remarks>
-    /// sub_821C1A20 with no cached cell: outside the half-open box of every cell vertex
+    /// THE CELL. sub_821C1A20 with no cached cell: outside the half-open box of every cell vertex
     /// (<c>p &lt; min</c> or <c>p &gt;= max</c> on any axis) answers nothing; otherwise the cells are
     /// tried in file order and a cell holds the point when no plane gives
     /// <c>dot(plane, (p, 1)) &lt; 0</c> (sub_821C19B0, 0x821c19ec..0x821c19fc); a cell with no
-    /// faces holds nothing. sub_82CC2588 then copies that probe's coefficients out. The title also
-    /// keeps the last cell per object and tries it and its neighbours first — that only finds the
-    /// same cell sooner, so it is not repeated here. The first four coefficients are the L0/L1 the
-    /// sample carries, in the order the Fable 2 banks already use.
+    /// faces holds nothing. The title also keeps the last cell per object and tries it and its
+    /// neighbours first — that only finds the same cell sooner, so it is not repeated here.
+    ///
+    /// THE BLEND. sub_821C22B0 (0x821c231c..0x821c247c): no containing cell writes nothing; else
+    /// the containing cell's probe at weight <c>1 / |p - probe.pos|^2</c> (position at record+144,
+    /// 0x821c237c..0x821c2394) plus every neighbour the cell links to at cell+20..+24, indices
+    /// &gt;= 0 only (0x821c23e4..0x821c2430), at the same rule, divided by the summed weight
+    /// (sub_821C18D8 at 0x821c246c; sub_821C24A0 scales a record, sub_82CC1C50 adds 9 float4).
+    /// The first four coefficients are the L0/L1 the sample carries, in the order the Fable 2 banks
+    /// already use.
     /// </remarks>
     private ProbeSample SampleCells(Vector3 p)
     {
@@ -261,6 +274,7 @@ public sealed class LightProbeField
             return sample;
         }
 
+        int containing = -1;
         for (int cell = 0; cell < CellPlanes.Length; cell++)
         {
             Vector4[] planes = CellPlanes[cell];
@@ -279,28 +293,65 @@ public sealed class LightProbeField
                 }
             }
 
-            if (!inside)
+            if (inside)
             {
-                continue;
+                containing = cell;
+                break;
             }
+        }
 
-            int first = cell * ShCoefficients;
-            if (first + 3 >= ProbeCoefficients.Length)
-            {
-                return sample;
-            }
-
-            Vector3 c0 = ProbeCoefficients[first];
-            Vector3 c1 = ProbeCoefficients[first + 1];
-            Vector3 c2 = ProbeCoefficients[first + 2];
-            Vector3 c3 = ProbeCoefficients[first + 3];
-            sample.R = new Vector4(c0.X, c1.X, c2.X, c3.X);
-            sample.G = new Vector4(c0.Y, c1.Y, c2.Y, c3.Y);
-            sample.B = new Vector4(c0.Z, c1.Z, c2.Z, c3.Z);
+        if (containing < 0)
+        {
             return sample;
         }
 
+        var r = Vector4.Zero;
+        var g = Vector4.Zero;
+        var b = Vector4.Zero;
+        float summed = 0f;
+        AccumulateProbe(containing, p, ref r, ref g, ref b, ref summed);
+        if (containing < CellLinks.Length)
+        {
+            foreach (int neighbour in CellLinks[containing])
+            {
+                if (neighbour >= 0 && neighbour != containing)
+                {
+                    AccumulateProbe(neighbour, p, ref r, ref g, ref b, ref summed);
+                }
+            }
+        }
+
+        if (summed <= 0f)
+        {
+            return sample;
+        }
+
+        float inv = 1f / summed;
+        sample.R = r * inv;
+        sample.G = g * inv;
+        sample.B = b * inv;
         return sample;
+    }
+
+    /// <summary>One probe's L0/L1 at the guest's inverse-square-distance weight (sub_821C22B0).</summary>
+    private void AccumulateProbe(int probe, Vector3 p, ref Vector4 r, ref Vector4 g, ref Vector4 b, ref float summed)
+    {
+        int first = probe * ShCoefficients;
+        if (probe < 0 || probe >= ProbePositions.Length || first + 3 >= ProbeCoefficients.Length)
+        {
+            return;
+        }
+
+        Vector3 d = ProbePositions[probe] - p;
+        float w = 1f / MathF.Max((d.X * d.X) + (d.Y * d.Y) + (d.Z * d.Z), DistanceEpsilon);
+        Vector3 c0 = ProbeCoefficients[first];
+        Vector3 c1 = ProbeCoefficients[first + 1];
+        Vector3 c2 = ProbeCoefficients[first + 2];
+        Vector3 c3 = ProbeCoefficients[first + 3];
+        r += new Vector4(c0.X, c1.X, c2.X, c3.X) * w;
+        g += new Vector4(c0.Y, c1.Y, c2.Y, c3.Y) * w;
+        b += new Vector4(c0.Z, c1.Z, c2.Z, c3.Z) * w;
+        summed += w;
     }
 
     private Vector3 CornerWorld(int cx, int cy, int cz, int lx, int ly, int lz) =>
@@ -538,6 +589,7 @@ public static class Engine_LightProbeField
         }
 
         var cells = new Vector4[cellCount][];
+        var links = new int[cellCount][];
         var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
         var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
         for (uint i = 0; i < cellCount; i++)
@@ -568,18 +620,29 @@ public static class Engine_LightProbeField
                 }
             }
 
-            if (!reader.U32(out uint linkCount) || !reader.Skip((long)linkCount * 4))
+            if (!reader.U32(out uint linkCount) || (long)linkCount * 4 > bytes.Length - reader.Position)
             {
                 error = $"truncated cell {i} neighbours";
                 return false;
             }
 
+            // The neighbours the guest blends with (sub_821C22B0, 0x821c23e4..0x821c2430): signed
+            // cell indices, a negative one no neighbour.
+            var neighbours = new int[linkCount];
+            for (uint n = 0; n < linkCount; n++)
+            {
+                reader.U32(out uint raw);
+                neighbours[n] = unchecked((int)raw);
+            }
+
             cells[i] = planes;
+            links[i] = neighbours;
         }
 
         field.ProbePositions = positions;
         field.ProbeCoefficients = coefficients;
         field.CellPlanes = cells;
+        field.CellLinks = links;
         field.CellBoundsMin = min;
         field.CellBoundsMax = max;
         return true;

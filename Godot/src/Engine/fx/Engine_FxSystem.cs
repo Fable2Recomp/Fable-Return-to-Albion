@@ -35,7 +35,7 @@ public sealed class FxPlacement
 /// - Both systems remain strictly separated at runtime while sharing pure static math, matrix
 ///   decomposition, and keyframe-table helpers hosted on this class.
 /// </remarks>
-public sealed class Engine_FxSystem
+public sealed partial class Engine_FxSystem
 {
     public const int TrailHistory = 48;
     public const float RateToPerSec = 30f;
@@ -209,7 +209,7 @@ public sealed class Engine_FxSystem
         public bool HasPrev;
     }
 
-    private sealed class EmitterRuntime
+    private sealed partial class EmitterRuntime
     {
         public FxEmitter? Def;
         public List<VisualRuntime> Visuals { get; } = new();
@@ -255,25 +255,6 @@ public sealed class Engine_FxSystem
         public float BeamJerkTimer;
 
         public List<ParticleState> Particles { get; } = new();
-
-        /// <summary>
-        /// The highest alpha any of <see cref="Visuals"/> can draw a particle at before its fade
-        /// (<see cref="Engine_FxFastPaths.AlphaCeiling"/>); NaN until the fast emit first asks.
-        /// </summary>
-        public float AlphaCeiling = float.NaN;
-
-        /// <summary>
-        /// The particles as the last step left them, for the fast emit's whole-emitter test
-        /// (<see cref="DrawsNothing"/>): their box in Godot's axes, whether every coordinate is
-        /// finite and every intensity zero. Written by a step taken with the fast paths on, for
-        /// <see cref="SummaryCount"/> particles; any other step and a rebase drop it.
-        /// </summary>
-        public bool SummaryValid;
-        public int SummaryCount;
-        public bool SummaryFinite;
-        public bool SummaryDark;
-        public Vector3 SummaryLo;
-        public Vector3 SummaryHi;
     }
 
     private sealed class InstanceState
@@ -752,12 +733,6 @@ public sealed class Engine_FxSystem
 
     public static long EmittedBillboards;
 
-    /// <summary>Of <see cref="SkipZeroAlpha"/>, those the fast emit rejected on fade × intensity alone.</summary>
-    public static long SkipEarly;
-
-    /// <summary>Emitters the fast emit passed over whole: every particle dark or past the fade.</summary>
-    public static long SkipEmitters;
-
     /// <summary>Emitters added to the transform chain (fewer than two children).</summary>
     public static long ChainedNoVisuals;
 
@@ -882,20 +857,12 @@ public sealed class Engine_FxSystem
         return v;
     }
 
-    /// <summary>
-    /// True when at least one visual or trail visual in this system has <c>SelfIllum &lt; 0.999f</c>
-    /// and therefore mixes in scene lighting (<c>inst.Lit</c>). Fully self-illuminated effects
-    /// (<c>SelfIllum &gt;= 1.0f</c>) multiply <c>inst.Lit</c> by zero and can skip <c>SceneLightAt</c>.
-    /// </summary>
-    public bool NeedsSceneLight { get; private set; }
-
     public void Build(FxBank bank, IEnumerable<FxPlacement> placements)
     {
         _instances.Clear();
         ResolvedCount = 0;
         _detachedParticles = false;
         _previousGlobal = null;
-        NeedsSceneLight = false;
 
         foreach (FxPlacement p in placements)
         {
@@ -917,6 +884,7 @@ public sealed class Engine_FxSystem
             var placePos = new[] { p.Pos[0] + (sc * rsk[0]), p.Pos[1] + (sc * rsk[1]), p.Pos[2] + (sc * rsk[2]) };
             Array.Copy(placePos, inst.PlacePos, 3);
             inst.Lit[0] = inst.Lit[1] = inst.Lit[2] = 1f;
+            AmbientProvider?.Invoke(placePos, inst.Lit);
             Array.Copy(placeRot, inst.PlaceRot, 9);
             inst.Scale = sc;
 
@@ -1078,35 +1046,14 @@ public sealed class Engine_FxSystem
                 chain.Add(node);
             }
 
-            bool instNeedsSceneLight = false;
             for (int ei = 0; ei < inst.Emitters.Count; ei++)
             {
                 EmitterRuntime rt = inst.Emitters[ei];
-                if (!instNeedsSceneLight)
-                {
-                    foreach (VisualRuntime v in rt.Visuals)
-                    {
-                        if (v.SelfIllum < 0.999f) { instNeedsSceneLight = true; break; }
-                    }
-                    if (!instNeedsSceneLight)
-                    {
-                        foreach (VisualRuntime v in rt.TrailVisuals)
-                        {
-                            if (v.SelfIllum < 0.999f) { instNeedsSceneLight = true; break; }
-                        }
-                    }
-                }
                 for (int ai = 0; ai < inst.Attractors.Count; ai++)
                 {
                     AttractorRuntime at = inst.Attractors[ai];
                     if (at.Global || rt.PositionalInteractable) rt.Attractors.Add(ai);
                 }
-            }
-
-            if (instNeedsSceneLight)
-            {
-                NeedsSceneLight = true;
-                AmbientProvider?.Invoke(placePos, inst.Lit);
             }
 
             if (inst.Emitters.Count != 0 || inst.Lights.Count != 0)
@@ -1758,9 +1705,7 @@ public sealed class Engine_FxSystem
             bool hasP14 = !d.Generic[14].IsEmpty;
             bool hasVec0 = !d.Vec0.IsEmpty;
             VisualRuntime? v0 = nvis > 0 ? rt.Visuals[0] : null;
-            float lx = float.PositiveInfinity, ly = float.PositiveInfinity, lz = float.PositiveInfinity;
-            float ux = float.NegativeInfinity, uy = float.NegativeInfinity, uz = float.NegativeInfinity;
-            bool finite = true, dark = true;
+            ParticleSummary summary = ParticleSummary.Begin();
             foreach (ParticleState pt in rt.Particles)
             {
                 if (rt.LoopCount != 0 && rt.LoopEnd <= pt.Age)
@@ -1839,26 +1784,10 @@ public sealed class Engine_FxSystem
                     }
                 }
 
-                if (summarize)
-                {
-                    // Where the step left it, in Godot's axes as the emit reads it.
-                    float x = pt.Pos[0], y = pt.Pos[2], z = pt.Pos[1];
-                    finite &= float.IsFinite(x) && float.IsFinite(y) && float.IsFinite(z);
-                    lx = MathF.Min(lx, x); ly = MathF.Min(ly, y); lz = MathF.Min(lz, z);
-                    ux = MathF.Max(ux, x); uy = MathF.Max(uy, y); uz = MathF.Max(uz, z);
-                    dark &= pt.Intensity == 0f;
-                }
+                if (summarize) summary.Add(pt);
             }
 
-            if (summarize)
-            {
-                rt.SummaryLo = new Vector3(lx, ly, lz);
-                rt.SummaryHi = new Vector3(ux, uy, uz);
-                rt.SummaryFinite = finite;
-                rt.SummaryDark = dark;
-                rt.SummaryCount = rt.Particles.Count;
-                rt.SummaryValid = true;
-            }
+            if (summarize) summary.Store(rt);
         }
 
         if (_loop && inst.Time > 1.5f)
@@ -2132,17 +2061,15 @@ public sealed class Engine_FxSystem
         ResolvedCount = 0;
         _previousGlobal = null;
         _detachedParticles = false;
-        NeedsSceneLight = false;
     }
 
     /// <summary>
     /// Range is the falloff radius (param 15); Cutoff the camera distance at which the guest's
     /// intensity reaches zero (param 17, capped 1000); Ramp the width of that fade inside the
     /// cutoff (param 18); ConeAngle the spot half-angle in radians (param 24, spots only —
-    /// zero means no cone); BaseRange is the un-flickered keyframe range so the host node's AABB
-    /// remains stable across flicker steps.
+    /// zero means no cone).
     /// </summary>
-    public readonly record struct FxLightState(Vector3 Position, Color Colour, float Range, float Energy, float Cutoff, float Ramp, float ConeAngle, float BaseRange = 0f);
+    public readonly record struct FxLightState(Vector3 Position, Color Colour, float Range, float Energy, float Cutoff, float Ramp, float ConeAngle);
 
     public int LightCount
     {
@@ -2175,8 +2102,7 @@ public sealed class Engine_FxSystem
                     before.Energy + ((now.Energy - before.Energy) * a),
                     now.Cutoff,
                     now.Ramp,
-                    now.ConeAngle,
-                    before.BaseRange + ((now.BaseRange - before.BaseRange) * a));
+                    now.ConeAngle);
             }
         }
 
@@ -2195,7 +2121,6 @@ public sealed class Engine_FxSystem
         float brightness = Math.Clamp(1f + (phase * d.Generic[20].EvalFrame(f)), 0f, 2f);
         float radius = d.TypeId == 7 ? 1f + (phase * d.Generic[19].EvalFrame(f)) : 1f;
         float energy = d.LightIntensity.EvalFrame(f) * brightness;
-        float baseRange = MathF.Max(0f, d.LightRange.EvalFrame(f));
 
         // Not scaled by the effect's scale: `sub_8323FA50` hands param 15 to the proxy
         // unmultiplied (`fmr f1, f30` → `stfs f31, 0x90`), and the colour path is
@@ -2203,12 +2128,11 @@ public sealed class Engine_FxSystem
         return new FxLightState(
             ToGodot(worldPos),
             new Color(r, g, b),
-            MathF.Max(0f, baseRange * radius),
+            MathF.Max(0f, d.LightRange.EvalFrame(f) * radius),
             energy,
             d.LightCutoff.EvalFrame(f),
             d.LightFadeRamp.EvalFrame(f),
-            d.LightConeAngle.EvalFrame(f),
-            baseRange);
+            d.LightConeAngle.EvalFrame(f));
     }
 
     /// <summary>
@@ -2256,27 +2180,6 @@ public sealed class Engine_FxSystem
     /// camera stays either way.
     /// </summary>
     public static bool FadeOut = true;
-
-    /// <summary>
-    /// Whether no particle of the emitter can be drawn from <paramref name="cam"/>, from the
-    /// summary its last step wrote: each one's fade × intensity term is then exactly zero, which
-    /// with a finite <paramref name="ceiling"/> rejects it (and zeroes a ribbon's every point).
-    /// Dark: every intensity zero against a finite fade. Past the fade-out: the box's nearest point
-    /// beyond the far fade with rounding to spare.
-    /// </summary>
-    private bool DrawsNothing(EmitterRuntime rt, Vector3 cam, float ceiling)
-    {
-        if (!rt.SummaryValid || rt.SummaryCount != rt.Particles.Count || rt.SummaryCount == 0 ||
-            !rt.SummaryFinite || !float.IsFinite(ceiling) || !cam.IsFinite())
-            return false;
-
-        bool fades = _distanceFade && rt.Def is not null;
-        float[] fade = rt.Fade;
-        if (fades && !(float.IsFinite(fade[0]) && float.IsFinite(fade[1]) && float.IsFinite(fade[2]) && float.IsFinite(fade[3])))
-            return false;
-        if (rt.SummaryDark) return true;
-        return fades && FadeOut && Engine_FxFastPaths.BeyondFadeOut(rt.SummaryLo, rt.SummaryHi, cam, fade[3]);
-    }
 
     private float DistanceFadeFactor(EmitterRuntime rt, Vector3 p, Vector3 cam)
     {
@@ -2342,11 +2245,9 @@ public sealed class Engine_FxSystem
                     SortQuadsBackToFront(list, cameraPosition);
                 }
             }
-            else if ((sceneQuads || key.Mode == "disp") && !Engine_FxFastPaths.OrderIndependent(key.Mode))
+            else
             {
-                // FAST: only a batch that is drawn and whose blend depends on order is sorted, and
-                // into the scratch list rather than back into the batch.
-                list = Engine_FxFastPaths.SortQuadsBackToFront(list, cameraPosition, _fastSorted, _order, ref _sortKeys);
+                list = FastSorted(list, key.Mode, cameraPosition, sceneQuads);
             }
 
             FableFx.FrameWork.Lap(10, ref sortAt);
@@ -2451,34 +2352,10 @@ public sealed class Engine_FxSystem
                     }
                 }
 
-                // The fast emit's ceiling on this emitter's keyframe alpha, folded once per emitter.
-                float alphaCeiling = float.PositiveInfinity;
-                if (fast && nvis != 0)
-                {
-                    if (float.IsNaN(rt.AlphaCeiling))
-                    {
-                        float[] alphas = new float[nvis];
-                        for (int i = 0; i < nvis; i++) alphas[i] = rt.Visuals[i].Alpha;
-                        rt.AlphaCeiling = Engine_FxFastPaths.AlphaCeiling(alphas);
-                    }
-
-                    alphaCeiling = rt.AlphaCeiling;
-                }
-
-                // FAST, WHOLE EMITTER: every particle dark, or all of them past the fade-out, by the
-                // box the last step left them in. Each would be rejected below on its fade term
-                // (a ribbon's every point at alpha zero), so none of them is read.
-                if (fast && DrawsNothing(rt, cameraPosition, alphaCeiling))
-                {
-                    ++SkipEmitters;
-                    if (!rt.Ribbon)
-                    {
-                        SkipZeroAlpha += rt.Particles.Count;
-                        SkipEarly += rt.Particles.Count;
-                    }
-
-                    continue;
-                }
+                // The fast emit's early rejections (Engine_FxSystem.FastPaths.cs): a whole emitter
+                // here, a particle on its fade term and then on its alpha below.
+                float alphaCeiling = fast ? FastAlphaCeiling(rt) : float.PositiveInfinity;
+                if (fast && FastSkipsEmitter(rt, cameraPosition, alphaCeiling)) continue;
 
                 if (rt.Ribbon)
                 {
@@ -2501,21 +2378,8 @@ public sealed class Engine_FxSystem
                     if (nvis == 0) continue;
                     Vector3 ppos = ToGodot(pt.Pos);
 
-                    // FAST: the fade × intensity term first. It is the same product the alpha
-                    // takes below, and against the emitter's highest keyframe alpha it alone
-                    // rejects most particles (an effect at zero intensity, one past its fade) before
-                    // a keyframe is even chosen.
                     float fadeTerm = 0f;
-                    if (fast)
-                    {
-                        fadeTerm = DistanceFadeFactor(rt, ppos, cameraPosition) * pt.Intensity;
-                        if (Engine_FxFastPaths.RejectedByFade(alphaCeiling, fadeTerm))
-                        {
-                            ++SkipZeroAlpha;
-                            ++SkipEarly;
-                            continue;
-                        }
-                    }
+                    if (fast && FastRejectsFade(rt, ppos, cameraPosition, pt.Intensity, alphaCeiling, out fadeTerm)) continue;
 
                     float tLife = pt.Life > 0f ? Math.Clamp(pt.KeyAge / pt.Life, 0f, 1f) : 0f;
                     int segB = nvis <= 1 ? 0 : Math.Clamp(pt.Seg, 1, nvis - 1);
@@ -2526,15 +2390,8 @@ public sealed class Engine_FxSystem
                     if (vb is not null) w = Math.Clamp((pt.KeyAge - va.DelayFrames) * vb.InvSpan, 0f, 1f);
                     float Lerp(float x, float y) => x + ((y - x) * w);
 
-                    // FAST: the whole alpha test before the size and colour; a particle that passes
-                    // has the same alpha bit for bit (`a × term` either way). One that fails here
-                    // counts as zero alpha even when its size is zero too.
                     float a = 0f;
-                    if (fast)
-                    {
-                        a = (vb is not null ? Lerp(va.Alpha, vb.Alpha) : va.Alpha) * fadeTerm;
-                        if (a <= 0.003f) { ++SkipZeroAlpha; continue; }
-                    }
+                    if (fast && FastRejectsAlpha(vb is not null ? Lerp(va.Alpha, vb.Alpha) : va.Alpha, fadeTerm, out a)) continue;
 
                     float hx = (vb is not null ? Lerp(va.HalfX, vb.HalfX) : va.HalfX) * pt.FlickX * (vb is not null ? Lerp(va.GlobalScaleX, vb.GlobalScaleX) : va.GlobalScaleX) * _sizeScale;
                     float hy = (vb is not null ? Lerp(va.HalfY, vb.HalfY) : va.HalfY) * pt.FlickY * (vb is not null ? Lerp(va.GlobalScaleY, vb.GlobalScaleY) : va.GlobalScaleY) * _sizeScale;
@@ -2671,7 +2528,7 @@ public sealed class Engine_FxSystem
     /// rebuilt when a batch outgrows it. Capacities are 96 vertices times a power of two; the
     /// unused tail is degenerate.
     /// </summary>
-    private sealed class SurfaceSlots
+    private sealed partial class SurfaceSlots
     {
         public readonly List<int> Capacity = new();
         public readonly List<int> LastWritten = new();
@@ -2687,31 +2544,9 @@ public sealed class Engine_FxSystem
 
         /// <summary>The box last written to the mesh, so an unchanged one is not written again.</summary>
         public Aabb? StatedBox;
-
-        /// <summary>The fast emit's box, as its exact corners until the surfaces end (<see cref="Engine_FxFastPaths.Bounds"/>).</summary>
-        public Vector3 Lo;
-        public Vector3 Hi;
-
-        /// <summary>
-        /// Which step-alpha uniforms the surfaces' moving vertices read: bit 0 full rate, bit 1
-        /// half rate (<see cref="MotionClasses"/>). Both until a fast emit has looked.
-        /// </summary>
-        public int Motion = 3;
     }
 
-    /// <summary><see cref="Engine_FxFastPaths.Enabled"/> as the emit in progress read it.</summary>
-    private bool _emitFast;
-
     private readonly Dictionary<ArrayMesh, SurfaceSlots> _slots = new();
-
-    /// <summary>
-    /// Which of the step-alpha uniforms the last emit's surfaces on <paramref name="mesh"/> read:
-    /// bit 0 when a full-rate vertex moved on its last step, bit 1 a half-rate one. A vertex that
-    /// did not move is drawn where it is whatever the uniform says. Both (3) when the emit did not
-    /// look (fast paths off); 0 for a mesh never emitted into.
-    /// </summary>
-    internal int MotionClasses(ArrayMesh? mesh) =>
-        mesh is not null && _slots.TryGetValue(mesh, out SurfaceSlots? slots) ? slots.Motion : 0;
 
     private SurfaceSlots SlotsOf(ArrayMesh mesh)
     {
@@ -2771,10 +2606,7 @@ public sealed class Engine_FxSystem
             TrimSurfaces(mesh, slots, slots.Used);
         }
 
-        if (_emitFast && slots.HasBounds)
-        {
-            slots.Bounds = new Aabb(slots.Lo, slots.Hi - slots.Lo);
-        }
+        if (_emitFast) EndFastBounds(slots);
 
         // The whole quad, stated. Surfaces written in place keep the bounds they were built with,
         // and a rebuilt surface's box covers only the particle centres, so the mesh states this
@@ -2829,15 +2661,7 @@ public sealed class Engine_FxSystem
         int n = list.Count;
         SurfaceSlots slots = SlotsOf(mesh);
         long boundsAt = System.Diagnostics.Stopwatch.GetTimestamp();
-        bool bounded = false;
-        if (_emitFast)
-        {
-            // FAST: plain minimum and maximum, one square root per batch.
-            Engine_FxFastPaths.Bounds(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(list),
-                ref slots.Lo, ref slots.Hi, ref slots.HasBounds, ref slots.MaxOffset, ref slots.Motion);
-            bounded = true;
-        }
-
+        bool bounded = _emitFast && FastBounds(slots, list);
         bounded = bounded || Engine_FxGeometryWork.TryBounds(list, ref slots.Bounds, ref slots.HasBounds, ref slots.MaxOffset);
         for (int i = 0; !bounded && i < n; i++)
         {
@@ -3148,10 +2972,6 @@ public sealed class Engine_FxSystem
     /// <summary>Sort scratch, shared: geometry is emitted on the main thread only.</summary>
     private static readonly List<(float D, int Q)> _order = new();
     private static readonly List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> _sorted = new();
-
-    /// <summary>The fast sort's output and packed keys (<see cref="Engine_FxFastPaths.SortQuadsBackToFront"/>), shared the same way.</summary>
-    private static readonly List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> _fastSorted = new();
-    private static ulong[] _sortKeys = System.Array.Empty<ulong>();
 
     /// <summary>Retains the original particle distance ordering and per-vertex list copy.</summary>
     private static void SortQuadsBackToFront(List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> verts, Vector3 eye)

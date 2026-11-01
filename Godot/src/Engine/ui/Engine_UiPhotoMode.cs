@@ -112,10 +112,7 @@ public partial class Engine_UiPhotoMode : Node3D
         if (_inputGeneration == Engine_UiInputMode.Generation) return;
         _inputGeneration = Engine_UiInputMode.Generation;
         string[] help = Engine_UiInputMode.Touch
-            ? new[] { "Left thumb  Move     Drag  Look", "Raise / Lower  Up and down",
-                "D-pad  Choose and adjust a setting", "Take photo  Saves to Pictures / Refii",
-                "Hide UI  A clear view; tap to bring it back", "Reset  Back to where the camera was",
-                "Back  Exit Photo Mode" }
+            ? TouchHelp() // android/Engine_UiPhotoMode.Touch.cs
             : Engine_UiInputMode.KeyboardMouse
             ? new[] { "WASD  Move     Hold RMB  Look", "Q / E  Lower / raise     Wheel  Zoom",
                 "Shift  Faster     Ctrl  Slower", "Arrows  Select / adjust", "PgUp / PgDn  Change filter",

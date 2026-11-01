@@ -43,23 +43,6 @@ public static class Engine_LightTable
 	/// <summary>Per-slot octahedral shadow atlas rect (AtlasU, AtlasV, AtlasScale, SliceIndex).</summary>
 	private static readonly Vector4[] AtlasRects = new Vector4[Capacity];
 
-	/// <summary>
-	/// True when a registered light's world position and base node range are fixed in the level
-	/// (unless <see cref="Engine_LevelLights.LightMetaGeneration"/> bumps), allowing <see cref="Refresh"/>
-	/// to read <see cref="CachedPositions"/> and <see cref="CachedRanges"/> in pure C# without per-frame
-	/// Godot C++ interop. Note: the Godot <see cref="Light3D.LightBakeMode"/> on the node itself MUST
-	/// remain <see cref="Light3D.BakeMode.Dynamic"/> so SDFGI never accumulates static energy on walls.
-	/// </summary>
-	private static readonly bool[] FixedPlacement = new bool[Capacity];
-
-	private static readonly bool[] HasCachedTransform = new bool[Capacity];
-
-	private static readonly Vector3[] CachedPositions = new Vector3[Capacity];
-
-	private static readonly float[] CachedRanges = new float[Capacity];
-
-	private static int _lastMetaGeneration = -1;
-
 	private static StaticShadowMapContainer? _boundShadowMap;
 
 	/// <summary>Three rows of Capacity texels: (x, y, z, Godot's range), (the STATED range, atlasU, atlasV, atlasScale), then (atlasLayer, 0, 0, 0).</summary>
@@ -83,8 +66,7 @@ public static class Engine_LightTable
 		int slot = (int)MathF.Round(light.LightSpecular - SlotBase);
 		lock (Gate)
 		{
-			if (slot >= 0 && slot < Capacity && ReferenceEquals(Slots[slot], light) &&
-			    MathF.Abs(Stated[slot] - range) > 1e-3f)
+			if (slot >= 0 && slot < Capacity && ReferenceEquals(Slots[slot], light))
 			{
 				Stated[slot] = range;
 			}
@@ -100,29 +82,6 @@ public static class Engine_LightTable
 			return slot >= 0 && slot < Capacity && ReferenceEquals(Slots[slot], light) && Stated[slot] > 0f
 				? Stated[slot] : nodeRange;
 		}
-	}
-
-	/// <summary>
-	/// Reads <paramref name="light"/>'s cached world position and effective falloff radius in O(1)
-	/// without crossing C# to C++ interop when the slot has already cached its transform.
-	/// </summary>
-	public static bool TryGetCachedLightSample(Light3D light, out Vector3 position, out float effectiveRange)
-	{
-		int slot = (int)MathF.Round(light.LightSpecular - SlotBase);
-		lock (Gate)
-		{
-			if (slot >= 0 && slot < Capacity && ReferenceEquals(Slots[slot], light) && HasCachedTransform[slot])
-			{
-				position = CachedPositions[slot];
-				float nodeRange = CachedRanges[slot];
-				effectiveRange = Stated[slot] > 0f ? Stated[slot] : nodeRange;
-				return true;
-			}
-		}
-
-		position = Vector3.Zero;
-		effectiveRange = 0f;
-		return false;
 	}
 
 	/// <summary>
@@ -181,7 +140,7 @@ public static class Engine_LightTable
 	/// Gives <paramref name="light"/> a texel and writes its slot into LightSpecular. False when
 	/// the table is full, in which case the light keeps Godot's default and the shader inverts.
 	/// </summary>
-	public static bool Register(Light3D light, ulong lightKey = 0ul, bool fixedPlacement = false)
+	public static bool Register(Light3D light, ulong lightKey = 0ul)
 	{
 		lock (Gate)
 		{
@@ -195,10 +154,6 @@ public static class Engine_LightTable
 				Slots[slot] = light;
 				Stated[slot] = 0f;
 				Keys[slot] = lightKey;
-				FixedPlacement[slot] = fixedPlacement;
-				HasCachedTransform[slot] = false;
-				CachedPositions[slot] = Vector3.Zero;
-				CachedRanges[slot] = 0f;
 				AtlasRects[slot] = _boundShadowMap is not null && lightKey != 0ul &&
 					_boundShadowMap.LightRects.TryGetValue(lightKey, out Vector4 rect)
 					? rect : Vector4.Zero;
@@ -226,12 +181,9 @@ public static class Engine_LightTable
 		bool changed = false;
 		int live = 0;
 		bool useStaticShadows = !Refii.Models.Engine_ClassicMaterial.Active;
-		int metaGen = Engine_LevelLights.LightMetaGeneration;
 
 		lock (Gate)
 		{
-			bool metaChanged = metaGen != _lastMetaGeneration;
-			_lastMetaGeneration = metaGen;
 			int maxActiveSlot = -1;
 			for (int slot = 0; slot <= _highWaterSlot; slot++)
 			{
@@ -245,25 +197,12 @@ public static class Engine_LightTable
 						Slots[slot] = null;
 						Stated[slot] = 0f;
 						Keys[slot] = 0ul;
-						FixedPlacement[slot] = false;
-						HasCachedTransform[slot] = false;
-						CachedPositions[slot] = Vector3.Zero;
-						CachedRanges[slot] = 0f;
 						AtlasRects[slot] = Vector4.Zero;
 					}
 					else
 					{
 						maxActiveSlot = slot;
-						if (FixedPlacement[slot] && HasCachedTransform[slot] && !metaChanged)
-						{
-							Vector3 at = CachedPositions[slot];
-							x = at.X;
-							y = at.Y;
-							z = at.Z;
-							range = CachedRanges[slot];
-							live++;
-						}
-						else if (light.IsInsideTree())
+						if (light.IsInsideTree())
 						{
 							Vector3 at = light.GlobalPosition;
 							x = at.X;
@@ -271,9 +210,6 @@ public static class Engine_LightTable
 							z = at.Z;
 							range = light is OmniLight3D omni ? omni.OmniRange
 								: light is SpotLight3D spot ? spot.SpotRange : 0f;
-							CachedPositions[slot] = at;
-							CachedRanges[slot] = range;
-							HasCachedTransform[slot] = true;
 							live++;
 						}
 					}
@@ -334,7 +270,7 @@ public static class Engine_LightTable
 
 			if (_texture is null)
 			{
-				_texture = Refii.Textures.Engine_AndroidTextureUpload.CreateTexture(_image);
+				_texture = Refii.Textures.Engine_TextureUpload.CreateTexture(_image);
 				RenderingServer.GlobalShaderParameterSet(GlobalName, _texture);
 			}
 			else

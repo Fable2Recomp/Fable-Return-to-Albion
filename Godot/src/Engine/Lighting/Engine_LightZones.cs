@@ -236,7 +236,7 @@ public static class Engine_LightZones
 
         _lastInterior = Engine_LightingFrame.CurrentInterior;
         ++_frame;
-        if (Refii.Core.Engine_GuestFrame.Changed && Refii.Game.GameEntities.Current is null)
+        if (Refii.Core.Engine_GuestFrame.Changed)
         {
             uint hero = Refii.Host.HostBridge.HeroEntityAddress();
             if (hero != 0u)
@@ -277,12 +277,19 @@ public static class Engine_LightZones
             {
                 // Static placed lights never move between buildings; re-poll outdoor (Zone == 1)
                 // lights during initial streaming in case their CECBuilding registers late.
+                //
+                // THE LIGHT TAKES ITS HOST'S OWN ZONE. Fable 3's CECGraphicAppearanceLight builds
+                // each light descriptor from the renderable's zone word, not the static-mesh
+                // building override (`sub_827983C0` 0x82798414: `+154 ? 0 : *(block + 60)`, the
+                // renderable's +0xF4), so a light on a CECBuilding entity is zoned by rend+0xF4
+                // (RefiiHostGetEntityOwnLightZone). Fable 2 keeps the override path it was
+                // verified against; ResolveLightZone's record-hash rule covers its lamp hosts.
                 if (Refii.Models.Engine_ClassicZones.TryEntityOf(lit.Record, out uint host))
                 {
-                    uint resolved = ResolveLightZone(
-                        lit.Record,
-                        Refii.Host.HostBridge.GetEntityLightZone(host),
-                        lit.IgnoreZoning);
+                    uint hostZone = Refii.Core.Engine_Title.Active == Refii.Core.Engine_Title.Fable3
+                        ? Refii.Host.HostBridge.GetEntityOwnLightZone(host)
+                        : Refii.Host.HostBridge.GetEntityLightZone(host);
+                    uint resolved = ResolveLightZone(lit.Record, hostZone, lit.IgnoreZoning);
                     if (resolved != 0u && resolved != lit.Zone)
                     {
                         lit.Zone = resolved;

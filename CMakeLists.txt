@@ -17,15 +17,9 @@ endif()
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Android's compile and link settings for every target: cmake/refii_android_toolchain.cmake.
 if(ANDROID)
-    if(NOT CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
-        message(FATAL_ERROR "Refii's Android runtime currently supports arm64-v8a only")
-    endif()
-    # NDK r28 libc++ lacks the std::chrono::clock_time_conversion primary template that
-    # cross-platform headers specialize; force-include the same shim the payload SDK uses.
-    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-include>"
-        "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/src/payload/src/libcxx_chrono_shim.h>")
-    add_link_options("LINKER:-z,max-page-size=16384" "LINKER:-z,common-page-size=16384")
+    include(cmake/refii_android_toolchain.cmake)
 endif()
 
 if(CMAKE_CONFIGURATION_TYPES)
@@ -134,11 +128,12 @@ set(REFII_GAME_VERSIONS Fable2TU1 Fable2)
 # InstanceLibraries, plus the module the launcher builds beside them). Every other native is
 # shared and staged into bin/ (cmake/refii_stage_godot.cmake).
 #   Fable2  its host bridge, vfs, Lua runtime and the dev-built module
-#   Fable3  its host bridge (target refiii_hostbridge, OUTPUT_NAME refii_hostbridge); the module
-#           the launcher builds for it is refiii_generated
+#   Fable3  its host bridge and vfs (targets refiii_hostbridge and refiii_vfs, OUTPUT_NAMEs
+#           refii_hostbridge and refii_vfs); the module the launcher builds for it is
+#           refiii_generated
 set(REFII_TITLE_INSTANCE_FOLDERS Fable2 Fable3)
 set(REFII_TITLE_INSTANCE_TARGETS_Fable2 refii_hostbridge refii_vfs refii_lua refii_generated)
-set(REFII_TITLE_INSTANCE_TARGETS_Fable3 refiii_hostbridge)
+set(REFII_TITLE_INSTANCE_TARGETS_Fable3 refiii_hostbridge refiii_vfs)
 set(REFII_TITLE_INSTANCE_TARGETS
     ${REFII_TITLE_INSTANCE_TARGETS_Fable2}
     ${REFII_TITLE_INSTANCE_TARGETS_Fable3})
@@ -627,6 +622,9 @@ add_subdirectory(src/payload)
 
 if(REFII_BUILD_VFS_HOOKS)
     add_subdirectory(Fable2/src/vfs)
+    # Fable 3's: before its hooks, which include its C ABI, and its bridge, whose staging
+    # (REFII_TITLE_INSTANCE_TARGETS_Fable3) sees only targets that already exist.
+    add_subdirectory(Fable3/src/vfs)
 endif()
 
 
@@ -861,6 +859,7 @@ foreach(_refii_origin_rpath_target
     refii_lua
     refii_luadec
     refii_vfs
+    refiii_vfs
     refii-shader-sbk
     refii-shader-xenos-translator
     glfw

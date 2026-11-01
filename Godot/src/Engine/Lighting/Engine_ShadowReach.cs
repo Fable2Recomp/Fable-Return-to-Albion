@@ -317,7 +317,7 @@ public partial class Engine_ShadowReach : Node
 			Aabb meshAabb = mesh.GetAabb();
 			Aabb local = mi.CustomAabb.Size != Vector3.Zero ? mi.CustomAabb : meshAabb;
 			worldBounds = mi.GlobalTransform * local;
-			Vector3 itemSize = meshAabb.Size * mi.GlobalTransform.Basis.Scale.Abs();
+			Vector3 itemSize = (mi.GlobalTransform * meshAabb).Size;
 			longestItemAxis = Mathf.Max(itemSize.X, Mathf.Max(itemSize.Y, itemSize.Z));
 			return true;
 		}

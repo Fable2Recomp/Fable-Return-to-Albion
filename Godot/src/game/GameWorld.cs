@@ -82,19 +82,6 @@ public partial class GameWorld : Node3D
 	private Camera3D _camera = null!;
 	private GameSplitView _split = null!;
 	private bool _reported;
-	private bool _applicationPaused;
-
-	/// <summary>Pauses only Android retirement's active deadline when the application stops drawing in the background.</summary>
-	/// <param name="what">Godot's application lifecycle notification.</param>
-	public override void _Notification(int what)
-	{
-		if (!Refii.Core.Engine_Platform.IsAndroid) return;
-		if (what != NotificationApplicationPaused && what != NotificationApplicationResumed) return;
-		_applicationPaused = what == NotificationApplicationPaused;
-		if (_retirement?.SetApplicationPaused(_applicationPaused, Time.GetTicksMsec() / 1000.0) == RegionRetirementWork.Failed)
-			GD.PrintErr("[region-retirement] " + _retirement.Status.Error + "; next build remains blocked; relaunch the app to recover");
-	}
-
 	public override void _Ready()
 	{
 		_camera = new Camera3D
@@ -587,25 +574,13 @@ public partial class GameWorld : Node3D
 	/// decrement their native <see cref="RenderingServer"/> refcounts when their finalizers run,
 	/// so <see cref="GC.WaitForPendingFinalizers"/> followed by a second collection is required
 	/// to reclaim VRAM across level transitions.
-	///
-	/// `android_loh_compaction` (default off): Android compacts too. The Mono runtime rejects
-	/// CompactOnce, while the NativeAOT export takes CompactOnce. A runtime that refuses the
-	/// setting takes the ordinary collection as before.
 	/// </remarks>
 	private static void CompactLargeObjectHeap()
 	{
 		long before = System.GC.GetTotalMemory(false);
-		if (Refii.Core.Engine_Platform.IsAndroid && !AndroidCompactsLargeObjects())
+		// Android compacts only under `android_loh_compaction` (GameWorld.Android.cs).
+		if (Refii.Core.Engine_Platform.IsAndroid && CollectWithoutCompaction(before))
 		{
-			// android_loh_compaction is off (the default), or the runtime refused CompactOnce (Mono's
-			// GCSettings setter throws PlatformNotSupportedException). Collect the unreferenced decode
-			// buffers without promising LOH compaction, and
-			// report only the measured live bytes rather than desktop committed-heap semantics.
-			System.GC.Collect();
-			GD.Print($"[game-world] collected region-load buffers without LOH compaction: " +
-				$"{before / 1048576.0:0} MB -> {System.GC.GetTotalMemory(false) / 1048576.0:0} MB live");
-			if (Refii.Level.LevelReads.LastCompleted is { } reads)
-				GD.Print($"[level-reads] release boundary; completed-build snapshot (not live bytes): {reads}");
 			return;
 		}
 
@@ -702,37 +677,6 @@ public partial class GameWorld : Node3D
 			$"{before / 1048576.0:0} MB -> {System.GC.GetTotalMemory(false) / 1048576.0:0} MB live, " +
 			$"{info.TotalCommittedBytes / 1048576.0:0} MB committed, " +
 			$"{System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds:0} ms");
-	}
-
-	/// <summary>`android_loh_compaction`, and whether this runtime takes CompactOnce at all.</summary>
-	private static bool AndroidCompactsLargeObjects()
-	{
-		bool wanted;
-		try
-		{
-			wanted = Refii.Core.Engine_RefiiConfig.Bool(
-				Refii.Core.Engine_RefiiConfig.Read(out _), "android_loh_compaction", false);
-		}
-		catch (System.Exception)
-		{
-			return false;
-		}
-
-		if (!wanted)
-		{
-			return false;
-		}
-
-		try
-		{
-			System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
-				System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
-			return true;
-		}
-		catch (System.PlatformNotSupportedException)
-		{
-			return false;
-		}
 	}
 
 	/// <summary>The last two cameras the guest stated; the playhead is shared.</summary>
@@ -895,111 +839,6 @@ public partial class GameWorld : Node3D
 
 	private System.Diagnostics.Stopwatch? _buildClock;
 
-	/// <summary>Last Android retirement observations; these are diagnostics, not proof of complete reclamation.</summary>
-	/// <param name="Gate">Ordering, deadline and producer observation.</param>
-	/// <param name="ManagedBeforeBytes">Managed live-byte estimate before reference retirement.</param>
-	/// <param name="ManagedAfterBytes">Latest estimate after a pass or completion.</param>
-	/// <param name="TextureBeforeBytes">Renderer-reported texture bytes before retirement.</param>
-	/// <param name="TextureAfterBytes">Latest renderer-reported texture bytes.</param>
-	/// <param name="BufferBeforeBytes">Renderer-reported buffer bytes before retirement.</param>
-	/// <param name="BufferAfterBytes">Latest renderer-reported buffer bytes.</param>
-	public readonly record struct RegionRetirementDiagnostics(GameRegionRetirement.Snapshot Gate,
-		long ManagedBeforeBytes, long ManagedAfterBytes, long TextureBeforeBytes, long TextureAfterBytes,
-		long BufferBeforeBytes, long BufferAfterBytes);
-
-	/// <summary>The latest value-only Android gate observation, preserving a completed gate until the next transition.</summary>
-	public RegionRetirementDiagnostics? RetirementStatus => _retirement is null ? null : new(
-		_retirement.Status, _retirementManagedBefore, _retirementManagedAfter,
-		_retirementTextureBefore, _retirementTextureAfter, _retirementBufferBefore, _retirementBufferAfter);
-
-	private GameRegionRetirement? _retirement;
-	private System.Threading.Tasks.Task? _retiringBuild;
-	private System.Threading.Tasks.Task? _retirementCollection;
-	private long _retirementManagedBefore, _retirementManagedAfter;
-	private long _retirementTextureBefore, _retirementTextureAfter;
-	private long _retirementBufferBefore, _retirementBufferAfter;
-
-	/// <summary>Holds native preload while the old region and its producers retire, without blocking the Godot loop on finalizers.</summary>
-	private bool PumpRegionRetirement()
-	{
-		if (_retirement is null || !_retirement.Status.NewBuildBlocked) return true;
-		ulong frame = unchecked((uint)Engine.GetFramesDrawn());
-		int workers = Refii.Core.Engine_RegionWorkers.GlobalActive;
-		if (_retiringBuild is { IsCompleted: false }) ++workers;
-		else
-		{
-			_retiringBuild = null;
-			if (_builtRegion is { } abandoned)
-			{
-				_builtRegion = null;
-				abandoned.QueueFree();
-				_retirement.RequireDeletionFrame(frame);
-				GD.Print("[region-retirement] queued the abandoned worker's detached region for deletion");
-			}
-			_buildError = string.Empty;
-		}
-		bool finished = _retirementCollection is { IsCompleted: true };
-		string error = string.Empty;
-		if (finished)
-		{
-			try { _retirementCollection!.GetAwaiter().GetResult(); }
-			catch (System.Exception exception) { error = $"collection failed: {exception.GetType().Name}: {exception.Message}"; }
-			_retirementCollection = null;
-			ObserveRetirementMemory();
-			GD.Print($"[region-retirement] pass {_retirement.Status.FinalizerPasses + 1}: managed {_retirementManagedAfter} B, " +
-				$"textures {_retirementTextureAfter} B, buffers {_retirementBufferAfter} B; renderer counters, not OS residency");
-		}
-		RegionRetirementWork work = _retirement.Advance(frame, Time.GetTicksMsec() / 1000.0, workers, finished, error);
-		if (work is RegionRetirementWork.ClearAndCollect or RegionRetirementWork.Collect)
-		{
-			try
-			{
-				if (work == RegionRetirementWork.ClearAndCollect) Refii.Core.Engine_LevelCaches.ReleaseRegion();
-				// Waiting on the finalizer thread from _Process can block engine progress needed by
-				// native destructors. A separate task permits rendered frames while it finishes.
-				_retirementCollection = System.Threading.Tasks.Task.Run(() =>
-				{
-					System.GC.Collect();
-					System.GC.WaitForPendingFinalizers();
-				});
-			}
-			catch (System.Exception exception)
-			{
-				_retirementCollection = System.Threading.Tasks.Task.FromException(exception);
-			}
-		}
-		else if (work == RegionRetirementWork.Complete)
-		{
-			ObserveRetirementMemory();
-			GD.Print($"[region-retirement] completed in {_retirement.Status.ElapsedSeconds:0.00}s after {_retirement.Status.FinalizerPasses} pass(es): " +
-				$"managed {_retirementManagedBefore}->{_retirementManagedAfter} B, textures {_retirementTextureBefore}->{_retirementTextureAfter} B, " +
-				$"buffers {_retirementBufferBefore}->{_retirementBufferAfter} B; unreferenced retirement measured, allocation release not guaranteed");
-			bool inGame = HostBridge.IsInGame;
-			HostBridge.LevelChange? change = inGame ? HostBridge.GetLevelChange() : null;
-			HostBridge.CurrentLevel? current = inGame ? HostBridge.GetCurrentLevel() : null;
-			uint? currentKey = current is { } destination && destination.Level.Length != 0 ? destination.Key : null;
-			uint? fullLoadState = change is { FullLoad: true } command ? command.State : null;
-			bool preserve = GameRegionRetirement.PreservePreloadHold(inGame, currentKey, _torndownKey, fullLoadState);
-			SetWorldBuildHeld(preserve);
-			GD.Print(preserve ? "[region-retirement] destination exists; preload hold transfers to its build" :
-				"[region-retirement] released preload hold so the guest can advance to a destination or title");
-			return true;
-		}
-		else if (work == RegionRetirementWork.Failed)
-		{
-			GD.PrintErr("[region-retirement] " + _retirement.Status.Error + "; next build remains blocked; relaunch the app to recover");
-		}
-		return false;
-	}
-
-	/// <summary>Captures main-thread scalar counters without retaining native resources or reading back pixels.</summary>
-	private void ObserveRetirementMemory()
-	{
-		_retirementManagedAfter = System.GC.GetTotalMemory(false);
-		_retirementTextureAfter = (long)Performance.GetMonitor(Performance.Monitor.RenderTextureMemUsed);
-		_retirementBufferAfter = (long)Performance.GetMonitor(Performance.Monitor.RenderBufferMemUsed);
-	}
-
 	/// <summary>
 	/// Kicks off the region build on a worker thread.
 	///
@@ -1009,7 +848,7 @@ public partial class GameWorld : Node3D
 	/// </summary>
 	private void StartBuild(Refii.Assets.Engine_GameAssets assets, HostBridge.StartLevel start)
 	{
-		if (_retirement?.Status.NewBuildBlocked == true) return;
+		if (RetirementBlocksBuild) return;
 		string world = start.World;
 		string level = start.Level;
 		_buildingLevel = $"{world}/{level}";
@@ -1124,10 +963,7 @@ public partial class GameWorld : Node3D
 		// different one.
 		if (!HostBridge.IsInGame)
 		{
-			// A completed boundary can have kept the destination fence while assets were
-			// unavailable. Its later title edge must release it even with no mounted region.
-			if (Refii.Core.Engine_Platform.IsAndroid && _retirement is { } gate && !gate.Status.NewBuildBlocked)
-				SetWorldBuildHeld(false);
+			if (Refii.Core.Engine_Platform.IsAndroid) ReleaseRetiredFence();
 			if (_loaded || _build is not null)
 			{
 				GD.Print($"[game-world] the guest has left the game — taking " +
@@ -1248,6 +1084,7 @@ public partial class GameWorld : Node3D
 			GD.Print($"[game-world] the guest is in {here.World}/{here.Level} but {_standing} " +
 				$"is standing (key 0x{_standingKey:X8} -> 0x{here.Key:X8}) — taking it down");
 			TearDownRegion();
+			// Android builds the destination once the old region has retired (GameWorld.Android.cs).
 			if (Refii.Core.Engine_Platform.IsAndroid) return;
 		}
 
@@ -1530,27 +1367,16 @@ public partial class GameWorld : Node3D
 	/// to crash a Godot frame from managed code. The nodes are detached immediately so nothing
 	/// finds them again in the meantime, and reclaimed at the end of the frame.
 	///
-	/// Desktop clears caches at its existing boundary. Android defers the clear until outgoing
-	/// producers and queued native deletion retire; bounded collection/finalizer passes precede
-	/// the next build. Borrowed resources are never disposed here.
+	/// THE TEARDOWN POLICY: desktop releases the region's caches and build hold here, in
+	/// <see cref="ReleaseRegionAtOnce"/>; Android retires the region over the next frames
+	/// instead, from <see cref="BeginRegionRetirement"/> (GameWorld.Android.cs).
 	/// </summary>
 	private void TearDownRegion()
 	{
 		Refii.Level.Engine_PropStreamer.StopAll();
 
 		bool android = Refii.Core.Engine_Platform.IsAndroid;
-		if (android)
-		{
-			_retirement = new GameRegionRetirement(unchecked((uint)Engine.GetFramesDrawn()), Time.GetTicksMsec() / 1000.0, _applicationPaused);
-			_retiringBuild = _build;
-			ObserveRetirementMemory();
-			_retirementManagedBefore = _retirementManagedAfter;
-			_retirementTextureBefore = _retirementTextureAfter;
-			_retirementBufferBefore = _retirementBufferAfter;
-			SetWorldBuildHeld(true);
-			GD.Print($"[region-retirement] started: managed {_retirementManagedBefore} B, textures {_retirementTextureBefore} B, " +
-				$"buffers {_retirementBufferBefore} B; {_standing}");
-		}
+		if (android) BeginRegionRetirement();
 		if (_entities is not null)
 		{
 			RemoveChild(_entities);
@@ -1587,16 +1413,7 @@ public partial class GameWorld : Node3D
 
 		// QueueFree has not completed here. Android measures a separate retirement boundary;
 		// desktop retains its established timing. Dictionary clears do not guarantee GPU release.
-		if (!android)
-		{
-			Refii.Core.Engine_LevelCaches.ReleaseRegion();
-
-			// QueueFree() destroys the native nodes at the end of the frame. Running a deferred GC +
-			// finalizer pass right after the delete queue flushes ensures the outgoing region's
-			// Texture2D, Texture2DArray, ArrayMesh and ShaderMaterial RefCounted wrappers release
-			// their VRAM before the incoming region mounts and streams.
-			Callable.From(CompactLargeObjectHeap).CallDeferred();
-		}
+		if (!android) ReleaseRegionAtOnce();
 
 		// REMEMBERED BEFORE IT IS CLEARED. Everything below forgets what was standing, and the
 		// one thing the next build must not do is recreate it.
@@ -1618,13 +1435,7 @@ public partial class GameWorld : Node3D
 		}
 
 		_entityWaitFrames = 0;
-
-		// A teardown can land while a build is in flight — the guest changing its mind mid-load.
-		// The next StartBuild re-asserts it, so clearing here cannot let the guest through early
-		// but does guarantee no hold survives a region that no longer exists.
-		if (!android) SetWorldBuildHeld(false);
 		_build = null;
-		if (!android) _builtRegion = null;
 		_buildError = string.Empty;
 
 		// The once-only reports are once PER REGION, not once per run. Left latched, the second
@@ -1645,6 +1456,26 @@ public partial class GameWorld : Node3D
 		// Per region for the same reason: a run total cannot say whether the level now standing
 		// is the one whose models are not arriving.
 		Refii.Models.Engine_BnkMeshLoader.ResetEmptyMeshCounts();
+	}
+
+	/// <summary>
+	/// Desktop's teardown, in one place: the region's caches, its VRAM, and the build hold.
+	/// </summary>
+	private void ReleaseRegionAtOnce()
+	{
+		Refii.Core.Engine_LevelCaches.ReleaseRegion();
+
+		// QueueFree() destroys the native nodes at the end of the frame. Running a deferred GC +
+		// finalizer pass right after the delete queue flushes ensures the outgoing region's
+		// Texture2D, Texture2DArray, ArrayMesh and ShaderMaterial RefCounted wrappers release
+		// their VRAM before the incoming region mounts and streams.
+		Callable.From(CompactLargeObjectHeap).CallDeferred();
+
+		// A teardown can land while a build is in flight — the guest changing its mind mid-load.
+		// The next StartBuild re-asserts it, so clearing here cannot let the guest through early
+		// but does guarantee no hold survives a region that no longer exists.
+		SetWorldBuildHeld(false);
+		_builtRegion = null;
 	}
 
 	/// <summary>
@@ -1701,6 +1532,14 @@ public partial class GameWorld : Node3D
 		var modellessComponents = new System.Collections.Generic.Dictionary<byte, int>();
 		int modellessSampled = 0;
 
+		// Fable 3 only: the sampled modelless entities that are neither a light (component 8,
+		// CECGraphicAppearanceLight, whose render part is never a mesh) nor a composite
+		// character (component 20, CECGraphicAppearanceMorph), listed by address with their
+		// whole component signature — the ones still to be explained.
+		bool listRemainder = Engine_Title.Active == Engine_Title.Fable3;
+		var modellessRemainder = new System.Text.StringBuilder();
+		int modellessRemainderCount = 0;
+
 		foreach (HostBridge.GuestEntity entity in entities)
 		{
 			if (entity.ModelHash == 0)
@@ -1710,10 +1549,18 @@ public partial class GameWorld : Node3D
 				if (modellessSampled < 512)
 				{
 					++modellessSampled;
-					foreach (byte id in HostBridge.GetEntityComponents(entity.Address))
+					byte[] ids = HostBridge.GetEntityComponents(entity.Address);
+					foreach (byte id in ids)
 					{
 						modellessComponents.TryGetValue(id, out int seen);
 						modellessComponents[id] = seen + 1;
+					}
+
+					if (listRemainder && System.Array.IndexOf(ids, (byte)8) < 0 &&
+						System.Array.IndexOf(ids, (byte)20) < 0)
+					{
+						++modellessRemainderCount;
+						modellessRemainder.Append($"\n    0x{entity.Address:X8} components=[{string.Join(",", ids)}]");
 					}
 				}
 
@@ -1757,6 +1604,12 @@ public partial class GameWorld : Node3D
 			GD.Print($"[guest-entities] modelless sample {modellessSampled} entity(s), " +
 				$"{modellessComponents.Count} distinct component id(s) — most common: " +
 				string.Join(" ", top));
+			if (listRemainder)
+			{
+				GD.Print($"[guest-modelless] {modellessRemainderCount} of {modellessSampled} sampled " +
+					$"modelless entity(s) are neither a light (component 8) nor a composite " +
+					$"(component 20):{modellessRemainder}");
+			}
 		}
 
 		TracePoses(entities);
@@ -1985,11 +1838,14 @@ public partial class GameWorld : Node3D
 			$"neverPosed={Refii.Entities.Engine_EntitySkeleton.NeverPosed}{sample}{chainSample}");
 
 		// Reported separately from the pose counts above, because it says where a character
-		// with no model hash gets its geometry: the morph component is the composite route, and a
-		// modelless character without it is unreachable by either path.
+		// with no model hash gets its geometry: the morph component is the composite route
+		// (drawn from its part records, by design), and only a modelless character WITHOUT it
+		// is unreachable by either path.
+		int unreachable = modelless - modellessWithMorph;
 		GD.Print($"[guest-modelless] {modelless} of {characters} character(s) have a live " +
-			$"skeleton and NO model hash — nothing can draw them; {modellessWithMorph} of " +
-			$"those carry component {morphComponent} (CECGraphicAppearanceMorph){modellessSample}");
+			$"skeleton and no model hash; {modellessWithMorph} carry component {morphComponent} " +
+			$"(CECGraphicAppearanceMorph) and draw as composites, {unreachable} name no mesh " +
+			$"by any route{modellessSample}");
 	}
 
 	private int _entityTicks;

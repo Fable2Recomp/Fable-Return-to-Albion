@@ -345,12 +345,26 @@ public sealed class Engine_AnimDecoder
 
         for (uint b = 0; b < header.BoneCount; b++)
         {
-            if (b >= header.BoneOffsets.Length)
+            // Fable 2 seeks each bone to its directory entry; a Fable 3 body has no directory and
+            // the cursor simply runs on (sub_821D4480: one cursor, `v54`, across every bone), so
+            // a channel that cannot be walked ends the block rather than the bone.
+            if (header.Sequential)
             {
-                break;
+                if (reader.CursorBits >= (uint)reader.Size * 8u)
+                {
+                    break;
+                }
+            }
+            else
+            {
+                if (b >= header.BoneOffsets.Length)
+                {
+                    break;
+                }
+
+                reader.SeekBits(header.BoneOffsets[b]);
             }
 
-            reader.SeekBits(header.BoneOffsets[b]);
             reader.Read(8);
             uint countSel = reader.Read(2);
 
@@ -363,11 +377,6 @@ public sealed class Engine_AnimDecoder
                 }
             }
 
-            if (aborted)
-            {
-                continue;
-            }
-
             for (uint e = 0; e < countSel && !aborted; e++)
             {
                 if (!DecodeChannel(header, ref reader, outBlock, blockIndex, uint.MaxValue, uint.MaxValue))
@@ -375,10 +384,203 @@ public sealed class Engine_AnimDecoder
                     aborted = true;
                 }
             }
+
+            if (aborted && header.Sequential)
+            {
+                break;
+            }
+        }
+
+        RelocaliseModelSpaceTracks(header, outBlock);
+        return true;
+    }
+
+    /// <summary>
+    /// THE HANDS AND FEET ARE STORED IN MODEL SPACE. A Fable 3 body names up to four tracks at
+    /// body+6..+9 (the biped's {8, 12, 15, 19}: hands and feet) whose samples are the bone's
+    /// MODEL-space transform — a hand at hip height, ±0.27 m from the spine, in idle_rf_var001
+    /// frame 0 — not a local one; the guest's <c>sub_82D4B428</c> composes the parent chain to
+    /// the root with <c>sub_8222AD80</c> (0x82d4b... loop until the parent tag is 255) and then
+    /// <c>sub_82D4AFD8</c> brings the bone under it: <c>q = conj(parent) ⊗ q</c>,
+    /// <c>t = conj(parent)·(t − parent.t)</c>. Left as stored, a Godot skeleton that composes
+    /// locals put each hand a metre from the wrist. Done per sample here, so every consumer of a
+    /// decoded block sees locals, as it does for every other track.
+    /// </summary>
+    private static void RelocaliseModelSpaceTracks(Engine_AnimDataFile.ClipHeader header, Block block)
+    {
+        // The block's own BoneCount is stamped by Decode only after this returns (a fresh slot
+        // reads 0 here); the header's count is what sized the block's data.
+        if (header.ModelSpaceTracks.Length == 0 || header.Parents.Length == 0)
+        {
+            return;
+        }
+
+        Span<float> parentQ = stackalloc float[4];
+        Span<float> parentT = stackalloc float[3];
+        Span<float> q = stackalloc float[4];
+        Span<float> t = stackalloc float[3];
+
+        for (int f = 0; f < SamplesPerBlock; f++)
+        {
+            foreach (int track in header.ModelSpaceTracks)
+            {
+                if (track <= 0 || track >= header.Parents.Length || (uint)track >= header.BoneCount)
+                {
+                    continue;
+                }
+
+                int parent = header.Parents[track];
+                if (parent < 0 || (uint)parent >= header.BoneCount)
+                {
+                    continue;
+                }
+
+                if (!ComposeToRoot(header, block, parent, f, parentQ, parentT))
+                {
+                    continue;
+                }
+
+                int at = (track * SamplesPerBlock + f) * FloatsPerBoneFrame;
+                for (int i = 0; i < 4; i++)
+                {
+                    q[i] = block.Data[at + i];
+                }
+
+                for (int i = 0; i < 3; i++)
+                {
+                    t[i] = block.Data[at + 4 + i];
+                }
+
+                Localise(parentQ, parentT, q, t);
+                for (int i = 0; i < 4; i++)
+                {
+                    block.Data[at + i] = q[i];
+                }
+
+                for (int i = 0; i < 3; i++)
+                {
+                    block.Data[at + 4 + i] = t[i];
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The model-space transform of <paramref name="bone"/> at sample <paramref name="f"/>: the
+    /// chain's locals composed root-first, parent ∘ child, with no scale term (<c>sub_82D4E7C0</c>
+    /// and <c>sub_8222AD80</c> read quaternion and translation only). False when a model-space
+    /// track sits on the chain itself, whose local is not known until its own pass.
+    /// </summary>
+    private static bool ComposeToRoot(
+        Engine_AnimDataFile.ClipHeader header, Block block, int bone, int f, Span<float> outQ, Span<float> outT)
+    {
+        Span<int> chain = stackalloc int[256];
+        int depth = 0;
+        for (int b = bone; b >= 0 && depth < chain.Length; b = header.Parents[b])
+        {
+            if ((uint)b >= header.BoneCount || Array.IndexOf(header.ModelSpaceTracks, b) >= 0)
+            {
+                return false;
+            }
+
+            chain[depth++] = b;
+        }
+
+        outQ[0] = 0f;
+        outQ[1] = 0f;
+        outQ[2] = 0f;
+        outQ[3] = 1f;
+        outT[0] = 0f;
+        outT[1] = 0f;
+        outT[2] = 0f;
+
+        Span<float> childQ = stackalloc float[4];
+        Span<float> childT = stackalloc float[3];
+        for (int i = depth - 1; i >= 0; i--)
+        {
+            int at = (chain[i] * SamplesPerBlock + f) * FloatsPerBoneFrame;
+            for (int k = 0; k < 4; k++)
+            {
+                childQ[k] = block.Data[at + k];
+            }
+
+            for (int k = 0; k < 3; k++)
+            {
+                childT[k] = block.Data[at + 4 + k];
+            }
+
+            Compose(outQ, outT, childQ, childT);
         }
 
         return true;
     }
+
+    /// <summary>parent ∘ child in place: q = p ⊗ c, t = p.t + rotate(p.q, c.t).</summary>
+    internal static void Compose(Span<float> pq, Span<float> pt, ReadOnlySpan<float> cq, ReadOnlySpan<float> ct)
+    {
+        Span<float> rotated = stackalloc float[3];
+        Rotate(pq, ct, rotated);
+        pt[0] += rotated[0];
+        pt[1] += rotated[1];
+        pt[2] += rotated[2];
+
+        float x = pq[3] * cq[0] + pq[0] * cq[3] + pq[1] * cq[2] - pq[2] * cq[1];
+        float y = pq[3] * cq[1] - pq[0] * cq[2] + pq[1] * cq[3] + pq[2] * cq[0];
+        float z = pq[3] * cq[2] + pq[0] * cq[1] - pq[1] * cq[0] + pq[2] * cq[3];
+        float w = pq[3] * cq[3] - pq[0] * cq[0] - pq[1] * cq[1] - pq[2] * cq[2];
+        pq[0] = x;
+        pq[1] = y;
+        pq[2] = z;
+        pq[3] = w;
+    }
+
+    /// <summary>A model-space (q, t) under the parent's model-space (pq, pt), in place.</summary>
+    internal static void Localise(ReadOnlySpan<float> pq, ReadOnlySpan<float> pt, Span<float> q, Span<float> t)
+    {
+        Span<float> conj = stackalloc float[4];
+        conj[0] = -pq[0];
+        conj[1] = -pq[1];
+        conj[2] = -pq[2];
+        conj[3] = pq[3];
+
+        Span<float> delta = stackalloc float[3];
+        delta[0] = t[0] - pt[0];
+        delta[1] = t[1] - pt[1];
+        delta[2] = t[2] - pt[2];
+        Rotate(conj, delta, t);
+
+        float x = conj[3] * q[0] + conj[0] * q[3] + conj[1] * q[2] - conj[2] * q[1];
+        float y = conj[3] * q[1] - conj[0] * q[2] + conj[1] * q[3] + conj[2] * q[0];
+        float z = conj[3] * q[2] + conj[0] * q[1] - conj[1] * q[0] + conj[2] * q[3];
+        float w = conj[3] * q[3] - conj[0] * q[0] - conj[1] * q[1] - conj[2] * q[2];
+        q[0] = x;
+        q[1] = y;
+        q[2] = z;
+        q[3] = w;
+    }
+
+    /// <summary>v rotated by the unit quaternion q (xyzw): v + 2·w·(q×v) + 2·q×(q×v).</summary>
+    private static void Rotate(ReadOnlySpan<float> q, ReadOnlySpan<float> v, Span<float> result)
+    {
+        float cx = q[1] * v[2] - q[2] * v[1];
+        float cy = q[2] * v[0] - q[0] * v[2];
+        float cz = q[0] * v[1] - q[1] * v[0];
+        float ccx = q[1] * cz - q[2] * cy;
+        float ccy = q[2] * cx - q[0] * cz;
+        float ccz = q[0] * cy - q[1] * cx;
+        result[0] = v[0] + 2f * (q[3] * cx + ccx);
+        result[1] = v[1] + 2f * (q[3] * cy + ccy);
+        result[2] = v[2] + 2f * (q[3] * cz + ccz);
+    }
+
+    /// <summary>
+    /// Whether a channel is stored at the translation width (24 bits) rather than the unit width
+    /// (16): translation channels 4..6 always; the extra channels past the seventh
+    /// (<c>channel == uint.MaxValue</c>) only in a Fable 3 body (sub_821D4480 reads them with
+    /// `v54 += 24`; every one of the 1,672 shipped clips that has one closes on 24, none on 16).
+    /// </summary>
+    private static bool WorldWidth(Engine_AnimDataFile.ClipHeader header, uint channel) =>
+        channel == uint.MaxValue ? header.WideExtraChannels : channel >= 4;
 
     private static void WriteChannelConstant(Block block, uint bone, uint channel, float value)
     {
@@ -415,7 +617,7 @@ public sealed class Engine_AnimDecoder
 
             case 2:
             {
-                bool useWorld = channel >= 4 && channel != uint.MaxValue;
+                bool useWorld = WorldWidth(header, channel);
                 uint raw = reader.Read(useWorld ? 24u : 16u);
                 float value = useWorld ? DequantWorld24(raw) : DequantUnit(raw);
                 WriteChannelConstant(block, bone, channel, value);
@@ -424,8 +626,7 @@ public sealed class Engine_AnimDecoder
 
             case 3:
                 return DecodeMode3(
-                    header, ref reader, block, blockIndex, bone, channel,
-                    channel >= 4 && channel != uint.MaxValue);
+                    header, ref reader, block, blockIndex, bone, channel, WorldWidth(header, channel));
 
             default:
                 return false;

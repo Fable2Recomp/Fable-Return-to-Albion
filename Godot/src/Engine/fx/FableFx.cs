@@ -111,24 +111,6 @@ public partial class FableFx : Node3D
 	private readonly Dictionary<string, Engine_FxSystem.MeshInstanceData> _meshData = new();
 	private readonly Dictionary<string, MultiMeshInstance3D> _meshNodes = new();
 
-	/// <summary>
-	/// A mesh-particle node's whole buffer as the fast paths last sent it
-	/// (<see cref="Engine_FxFastPaths.WriteInstance"/>), so it goes in one server call and a frame
-	/// between steps rewrites only the transforms that move.
-	/// </summary>
-	private sealed class MeshBuffer
-	{
-		public float[] Data = System.Array.Empty<float>();
-
-		/// <summary>Instances drawn, as last set; -1 when the original path set it.</summary>
-		public int Visible = -1;
-
-		/// <summary>Whether <see cref="Data"/> is what the server holds.</summary>
-		public bool Sent;
-	}
-
-	private readonly Dictionary<string, MeshBuffer> _meshBuffers = new();
-
 	private MeshInstance3D? _surface;
 	private ArrayMesh? _mesh;
 
@@ -689,16 +671,11 @@ public partial class FableFx : Node3D
 			// placed light through one path (`sub_821F0A50`: the same range, cutoff and ramp
 			// slots, the same falloff), so `placed_light_range` and `placed_light_scale` apply
 			// to both. 1.0 on both is the shipped data; Modern mode applies the 1.5x base reach scale.
-			// Hold `OmniRange` at the keyframe's `BaseRange` so the Godot node's AABB does not
-			// re-pair in the BVH on every random-walk flicker step, and fold the subtle flicker
-			// radius breathing into `lightEnergy`.
 			float modernBaseReach = Refii.Lighting.Engine_LightingFrame.ModernModel
 				? Refii.Lighting.Engine_LevelLights.ModernBaseReachScale
 				: 1.0f;
-			float baseRange = state.BaseRange > 0f ? state.BaseRange : range;
-			float omniRange = baseRange * modernBaseReach * Refii.Lighting.Engine_LevelLights.PlacedRange;
-			float radiusFactor = baseRange > 1e-4f ? Math.Clamp(range / baseRange, 0.5f, 1.5f) : 1.0f;
-			float lightEnergy = energy * radiusFactor * LightFade * ExposureScale * Refii.Lighting.Engine_LevelLights.PlacedScale;
+			float omniRange = range * modernBaseReach * Refii.Lighting.Engine_LevelLights.PlacedRange;
+			float lightEnergy = energy * LightFade * ExposureScale * Refii.Lighting.Engine_LevelLights.PlacedScale;
 
 			// THE GUEST REACHES ZERO AT Cutoff, ramping over the Ramp metres inside it —
 			// intensity × clamp((min(Cutoff, 1000) − dist) / Ramp, 0, 1) in `sub_821F0A50`
@@ -724,35 +701,31 @@ public partial class FableFx : Node3D
 			}
 
 			bool changed = false;
-			bool spatialChanged = false;
 			if (!cache.Applied || !cache.Visible)
 			{
 				light.Visible = true;
 				cache.Visible = true;
 				changed = true;
-				spatialChanged = true;
 			}
 
-			if (!cache.Applied || cache.Position.DistanceSquaredTo(state.Position) > 1e-4f)
+			if (!cache.Applied || cache.Position.DistanceSquaredTo(state.Position) > 1e-6f)
 			{
 				light.Position = state.Position;
 				cache.Position = state.Position;
 				changed = true;
-				spatialChanged = true;
 			}
 
-			if (!cache.Applied || MathF.Abs(cache.OmniRange - omniRange) > 1e-2f)
+			if (!cache.Applied || MathF.Abs(cache.OmniRange - omniRange) > 1e-4f)
 			{
 				light.OmniRange = omniRange;
 				cache.OmniRange = omniRange;
 				changed = true;
-				spatialChanged = true;
 			}
 
 			if (!cache.Applied ||
-				MathF.Abs(cache.Colour.R - state.Colour.R) > 1e-3f ||
-				MathF.Abs(cache.Colour.G - state.Colour.G) > 1e-3f ||
-				MathF.Abs(cache.Colour.B - state.Colour.B) > 1e-3f)
+				MathF.Abs(cache.Colour.R - state.Colour.R) > 1e-4f ||
+				MathF.Abs(cache.Colour.G - state.Colour.G) > 1e-4f ||
+				MathF.Abs(cache.Colour.B - state.Colour.B) > 1e-4f)
 			{
 				// Encoded, because Godot decodes it (see Engine_LightColour).
 				Refii.Lighting.Engine_LightColour.Apply(light, state.Colour);
@@ -760,7 +733,7 @@ public partial class FableFx : Node3D
 				changed = true;
 			}
 
-			if (!cache.Applied || MathF.Abs(cache.LightEnergy - lightEnergy) > 1e-3f)
+			if (!cache.Applied || MathF.Abs(cache.LightEnergy - lightEnergy) > 1e-4f)
 			{
 				light.LightEnergy = lightEnergy;
 				cache.LightEnergy = lightEnergy;
@@ -795,10 +768,7 @@ public partial class FableFx : Node3D
 			{
 				cache.Applied = true;
 				_lightCache[i] = cache;
-				if (spatialChanged)
-				{
-					Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Light);
-				}
+				Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Light);
 			}
 		}
 
@@ -836,7 +806,8 @@ public partial class FableFx : Node3D
 		// its centre along the axes of the view it is drawn through, so a turn does not rebuild
 		// geometry and each split-screen view faces its own camera. The axes here still build
 		// what depends on the camera's position (ribbon sides, the back-to-front sort).
-		// The fast paths publish after the emit instead, against what it left on each surface.
+		// The fast paths publish after the emit instead, against what it left on each surface
+		// (their steps are in FableFx.FastPaths.cs).
 		bool fast = Engine_FxFastPaths.Enabled;
 		if (!fast)
 		{
@@ -925,18 +896,15 @@ public partial class FableFx : Node3D
 			}
 
 			int count = data.Instances.Count;
-			MeshBuffer buffer = MeshBufferOf(path);
 			// The guest's own mesh twins are drawn (Engine_FxMeshTwins): these simulated copies stand
 			// down, displacement meshes excepted (no modern displacement twin yet).
 			if (GuestMeshTwins && !data.Displacement)
 			{
-				if (!fast || buffer.Visible != 0)
+				if (MeshBufferStandsDown(path, fast))
 				{
 					multi.VisibleInstanceCount = 0;
 				}
 
-				buffer.Visible = fast ? 0 : -1;
-				buffer.Sent = false;
 				continue;
 			}
 			int capacity = multi.InstanceCount;
@@ -949,12 +917,11 @@ public partial class FableFx : Node3D
 			multi.VisibleInstanceCount = count;
 			if (fast)
 			{
-				WriteMeshBuffer(multi, buffer, data, capacity, count);
+				WriteMeshBuffer(multi, path, data, capacity, count);
 				continue;
 			}
 
-			buffer.Visible = -1;
-			buffer.Sent = false;
+			ForgetMeshBuffer(path);
 			for (int i = 0; i < count; i++)
 			{
 				(Transform3D transform, Color colour, Vector4 motion) = data.Instances[i];
@@ -980,50 +947,6 @@ public partial class FableFx : Node3D
 		return transform;
 	}
 
-	private MeshBuffer MeshBufferOf(string path)
-	{
-		if (!_meshBuffers.TryGetValue(path, out MeshBuffer? buffer))
-		{
-			buffer = new MeshBuffer();
-			_meshBuffers[path] = buffer;
-		}
-
-		return buffer;
-	}
-
-	/// <summary>
-	/// FAST: an emit's mesh particles in one `multimesh_set_buffer` instead of a transform and a
-	/// colour call per instance: the same floats in the server's layout, the undrawn tail a copy of
-	/// the first instance (never drawn, and inside the box the drawn ones make).
-	/// </summary>
-	private void WriteMeshBuffer(MultiMesh multi, MeshBuffer buffer, Engine_FxSystem.MeshInstanceData data, int capacity, int count)
-	{
-		int floats = capacity * Engine_FxFastPaths.MeshInstanceStride;
-		if (buffer.Data.Length != floats)
-		{
-			buffer.Data = new float[floats];
-		}
-
-		buffer.Visible = count;
-		buffer.Sent = false;
-		if (count == 0)
-		{
-			return;
-		}
-
-		Span<float> floatsOut = buffer.Data;
-		for (int i = 0; i < count; i++)
-		{
-			(Transform3D transform, Color colour, Vector4 motion) = data.Instances[i];
-			Engine_FxFastPaths.WriteInstance(floatsOut, i, Between(transform, motion), colour);
-		}
-
-		Engine_FxFastPaths.FillTail(floatsOut, count);
-		Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
-		RenderingServer.MultimeshSetBuffer(multi.GetRid(), (ReadOnlySpan<float>)floatsOut);
-		buffer.Sent = true;
-	}
-
 	/// <summary>
 	/// Mesh particles moved between steps on the frames that do not re-emit: their transforms are
 	/// the MultiMesh's own, so the draw between steps is written here rather than in a shader.
@@ -1042,36 +965,9 @@ public partial class FableFx : Node3D
 				continue;
 			}
 
-			if (fast && _meshBuffers.TryGetValue(path, out MeshBuffer? sent) && sent.Sent)
+			if (PlaceFromMeshBuffer(path, data, multi, fast))
 			{
-				Span<float> floats = sent.Data;
-				int drawn = Math.Min(data.Instances.Count, sent.Visible);
-				bool moved = false;
-				for (int i = 0; i < drawn; i++)
-				{
-					(Transform3D transform, _, Vector4 motion) = data.Instances[i];
-					if (motion.X == 0f && motion.Y == 0f && motion.Z == 0f)
-					{
-						continue;
-					}
-
-					Engine_FxFastPaths.WriteTransform(floats, i, Between(transform, motion));
-					moved = true;
-				}
-
-				if (moved)
-				{
-					Engine_FxFastPaths.FillTail(floats, sent.Visible);
-					Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
-					RenderingServer.MultimeshSetBuffer(multi.GetRid(), (ReadOnlySpan<float>)floats);
-				}
-
 				continue;
-			}
-
-			if (_meshBuffers.TryGetValue(path, out MeshBuffer? placed))
-			{
-				placed.Sent = false;
 			}
 
 			int count = Math.Min(data.Instances.Count, multi.VisibleInstanceCount);
@@ -1281,11 +1177,6 @@ public partial class FableFx : Node3D
 	/// </summary>
 	private void ApplyLit()
 	{
-		if (!_system.NeedsSceneLight)
-		{
-			return;
-		}
-
 		float r = 1f, g = 1f, b = 1f;
 
 		// Asked every 30 frames while absent, not every step (each query allocates a wrapper);
@@ -1368,16 +1259,6 @@ public partial class FableFx : Node3D
 	private float _publishedAlphaHalf = -1f;
 
 	/// <summary>
-	/// The fast paths' step alphas as each target last received them: full and half for the
-	/// scene surface, the additive and the displacement instance. NaN is not yet sent.
-	/// </summary>
-	private readonly float[] _stepSent = { float.NaN, float.NaN, float.NaN, float.NaN, float.NaN, float.NaN };
-
-	/// <summary>The layer instances <see cref="_stepSent"/> describes: a new one starts unsent.</summary>
-	private Rid _stepSentAdd;
-	private Rid _stepSentDisp;
-
-	/// <summary>
 	/// How far between its simulation steps this effect is drawn — the billboard shader draws
 	/// each particle on the segment it last moved along (`fx_billboard.gdshaderinc`). Every
 	/// frame, because it changes every frame; nothing is re-emitted for it.
@@ -1392,7 +1273,7 @@ public partial class FableFx : Node3D
 		float alpha = _system.StepAlpha;
 		float half = _system.StepAlphaHalf;
 		// What the fast paths recorded no longer holds once this path writes.
-		System.Array.Fill(_stepSent, float.NaN);
+		ForgetStepSent();
 		if (MathF.Abs(alpha - _publishedAlpha) < 1e-3f && MathF.Abs(half - _publishedAlphaHalf) < 1e-3f)
 		{
 			return;
@@ -1415,75 +1296,6 @@ public partial class FableFx : Node3D
 		{
 			_dispInstance.SetShaderParameter(StepAlphaParam, alpha);
 			_dispInstance.SetShaderParameter(StepAlphaHalfParam, half);
-		}
-	}
-
-
-	/// <summary>
-	/// FAST: <see cref="PublishStepAlpha"/> after the emit, per target and per uniform. A vertex
-	/// that did not move on its last step is drawn where it is whatever the uniform holds, so a
-	/// surface is sent only the uniforms its moving vertices read (most effects step at one rate:
-	/// one of the two), and only a value it does not already hold. A surface with no moving vertex,
-	/// and one with nothing on it, is sent nothing.
-	/// </summary>
-	private void PublishStepAlphaFast()
-	{
-		float alpha = _system.StepAlpha;
-		float half = _system.StepAlphaHalf;
-
-		// The original path compares against its own record; it must not skip after this one wrote.
-		_publishedAlpha = float.NaN;
-		if (_surface is not null && IsInstanceValid(_surface))
-		{
-			int classes = _system.MotionClasses(_mesh);
-			if ((classes & 1) != 0 && _stepSent[0] != alpha)
-			{
-				_surface.SetInstanceShaderParameter(StepAlphaParam, alpha);
-				_stepSent[0] = alpha;
-			}
-
-			if ((classes & 2) != 0 && _stepSent[1] != half)
-			{
-				_surface.SetInstanceShaderParameter(StepAlphaHalfParam, half);
-				_stepSent[1] = half;
-			}
-		}
-
-		if (_emitAddActive && _addInstance is not null)
-		{
-			if (_stepSentAdd != _addInstance.Rid)
-			{
-				_stepSentAdd = _addInstance.Rid;
-				_stepSent[2] = _stepSent[3] = float.NaN;
-			}
-
-			PublishLayerStep(_addInstance, _system.MotionClasses(_addMesh), alpha, half, 2);
-		}
-
-		if (_emitDispActive && _dispInstance is not null)
-		{
-			if (_stepSentDisp != _dispInstance.Rid)
-			{
-				_stepSentDisp = _dispInstance.Rid;
-				_stepSent[4] = _stepSent[5] = float.NaN;
-			}
-
-			PublishLayerStep(_dispInstance, _system.MotionClasses(_dispMesh), alpha, half, 4);
-		}
-	}
-
-	private void PublishLayerStep(Engine_FxLayerInstance instance, int classes, float alpha, float half, int slot)
-	{
-		if ((classes & 1) != 0 && _stepSent[slot] != alpha)
-		{
-			instance.SetShaderParameter(StepAlphaParam, alpha);
-			_stepSent[slot] = alpha;
-		}
-
-		if ((classes & 2) != 0 && _stepSent[slot + 1] != half)
-		{
-			instance.SetShaderParameter(StepAlphaHalfParam, half);
-			_stepSent[slot + 1] = half;
 		}
 	}
 
@@ -1886,7 +1698,7 @@ public partial class FableFx : Node3D
 		{
 			try
 			{
-				var ready = Engine_AndroidTextureUpload.CreateTexture(prefetched);
+				var ready = Engine_TextureUpload.CreateTexture(prefetched);
 				SharedTextures[name] = ready;
 				Refii.Core.Engine_SpikeNotes.Since(Refii.Core.Engine_SpikeNotes.Kind.FxTexture, madeFrom);
 				return ready;
@@ -1939,7 +1751,7 @@ public partial class FableFx : Node3D
 	/// image on the main thread. On a GPU without BC (Adreno 6xx) that is the BC-to-ASTC
 	/// transcode, per block, of every effect texture, on the frame an effect first emits.
 	/// </summary>
-	/// <remarks>The same bytes reach the texture: Engine_AndroidTextureUpload.Prepare runs on the
+	/// <remarks>The same bytes reach the texture: Engine_TextureUpload.PrepareAhead runs on the
 	/// prefetch thread instead of the main one. A BC1 image waits at twice its size (ASTC 4x4 is
 	/// 16 bytes a block to BC1's 8) until its first use.</remarks>
 	private static readonly bool PrefetchPrepares = ReadPrefetchPrepares();
@@ -2022,7 +1834,7 @@ public partial class FableFx : Node3D
 
 					if (prepare)
 					{
-						Image ready = Engine_AndroidTextureUpload.PrepareAhead(image);
+						Image ready = Engine_TextureUpload.PrepareAhead(image);
 						if (!ReferenceEquals(ready, image))
 						{
 							image.Dispose();

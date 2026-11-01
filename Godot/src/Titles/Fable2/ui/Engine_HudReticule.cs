@@ -78,9 +78,6 @@ public sealed partial class Engine_HudReticule : Node3D
 	private readonly Aim?[] _aims = new Aim?[2];
 	private readonly MeshInstance3D[,] _quads = new MeshInstance3D[2, Petals];
 	private readonly ShaderMaterial[,] _materials = new ShaderMaterial[2, Petals];
-	private readonly Color[,] _lastTint = new Color[2, Petals];
-	private readonly Texture2D?[,] _lastTexture = new Texture2D?[2, Petals];
-	private readonly bool[] _hidden = { true, true };
 	private readonly Texture2D?[] _textures = new Texture2D?[Names.Length];
 	private readonly bool[] _resolved = new bool[Names.Length];
 	private readonly Vector2?[] _last = new Vector2?[2];
@@ -182,8 +179,6 @@ public sealed partial class Engine_HudReticule : Node3D
 			float scale = UnitsPerGuestPixel * PieceScale;
 			var tint = new Color(aim.Colour.R, aim.Colour.G, aim.Colour.B, aim.Colour.A * t);
 			Texture2D? texture = TextureFor(aim.Mode);
-			bool visible = tint.A > 0.004f;
-			_hidden[player] = !visible;
 
 			for (int i = 0; i < Petals; ++i)
 			{
@@ -195,20 +190,12 @@ public sealed partial class Engine_HudReticule : Node3D
 				quad.Position = new Vector3(centre.X + offset.X, centre.Y + offset.Y, 0f);
 				quad.Rotation = new Vector3(0f, 0f, -(angle + Mathf.Pi));
 				quad.Scale = new Vector3(2f * k * s * scale, 2f * s * scale, 1f);
-				if (quad.Visible != visible)
-				{
-					quad.Visible = visible;
-				}
+				quad.Visible = tint.A > 0.004f;
 
 				ShaderMaterial material = _materials[player, i];
-				if (!_lastTint[player, i].IsEqualApprox(tint))
+				material.SetShaderParameter(Param_tint, tint);
+				if (texture is not null)
 				{
-					_lastTint[player, i] = tint;
-					material.SetShaderParameter(Param_tint, tint);
-				}
-				if (texture is not null && !ReferenceEquals(_lastTexture[player, i], texture))
-				{
-					_lastTexture[player, i] = texture;
 					material.SetShaderParameter(Param_tex, texture);
 				}
 			}
@@ -217,11 +204,6 @@ public sealed partial class Engine_HudReticule : Node3D
 
 	private void Hide(int player)
 	{
-		if (_hidden[player])
-		{
-			return;
-		}
-		_hidden[player] = true;
 		for (int i = 0; i < Petals; ++i)
 		{
 			_quads[player, i].Visible = false;

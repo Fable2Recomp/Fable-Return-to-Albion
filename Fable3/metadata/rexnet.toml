@@ -1,0 +1,37 @@
+# RexNet per-title configuration for Fable III (design spec §11.1). Read by the guest at
+# XNetStartup from assets/Fable3/metadata (seeded into the runtime folder by refii_app.h,
+# RefiiEnsureRuntimeDirectories, as Fable2/metadata/rexnet.toml is for Fable II).
+
+[game]
+# Fable III's online co-op is invite driven (Live friends, no public lobby browser).
+session_model = "private-invite"
+# XRNM runs its own reliability; the game plane must stay unreliable (§6).
+game_channel = "unreliable"
+# 0 = advertise the id from the XEX header (0x4D5308D6, Engine_Title.Fable3.TitleId). Fable II
+# needed the XEX's own id for its friend-record compare (Fable2/metadata/rexnet.toml); the
+# Fable III compare has not been read yet, and the header id is the one every peer agrees on.
+advertised_title_id = 0
+
+# Discord Rich Presence. THE GAME'S NAME ON DISCORD IS THE APPLICATION'S NAME: Discord shows
+# "Playing <application name>" from the id alone, and the host states only the two lines under it
+# (Godot/src/game/GamePresence.cs). Fable II's application is named "Fable 2: Return to Albion",
+# so sharing its id would announce every Fable III session as Fable II. Fable III needs its own
+# application in the developer portal, named for the Fable III remake (Engine_Title.Fable3.RemakeName
+# is "Fable 3" until the remake is named), with one art asset keyed `logo`. UNSET until then:
+# RexNet::ConfigureDiscordLocked leaves Discord off while application_id is empty, so presence is
+# simply absent for Fable III rather than wrong.
+[discord]
+application_id = ""
+details = "Fable 3"
+state = "Exploring Albion"
+large_image = "logo"
+large_text = "Fable 3"
+
+# Ambient "Connected" tier (§17.3): passive presence shared by everyone playing Fable III, up to
+# 255 per shard. Fable III's own use of the friend enumerator for its orbs has not been read; the
+# surfacing is what Fable II needs and the loader's default is off, so it is stated here as for
+# Fable II until the Fable III binary says otherwise.
+[shard]
+enabled = true
+cap = 255
+surface_as_friends = true

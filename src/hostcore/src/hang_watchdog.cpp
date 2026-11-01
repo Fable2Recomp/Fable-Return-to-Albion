@@ -65,11 +65,7 @@
 #include <csignal>
 #include <ctime>
 #include <dlfcn.h>
-// Bionic's execinfo API starts at API33; the API31 Android bridge reports the stalled thread's
-// PC and SP without its native frames (as host_bridge.cpp's crash report does).
-#if !defined(__ANDROID__) || __ANDROID_API__ >= 33
-#include <execinfo.h>
-#endif
+#include "host_backtrace.h"
 #include <fcntl.h>
 #include <pthread.h>
 #include <sys/stat.h>
@@ -148,9 +144,9 @@ constexpr uint64_t kCaptureWaitNs = 3ull * 1000000000ull;
 constexpr int kCaptureSignal = SIGUSR2;  // free: the SDK's thread signals are SIGRTMIN+n on Linux
 constexpr int kMaxFrames = 128;
 
-/// backtrace() where the platform has it; no frames on Android below API33.
+/// backtrace() where the platform has it (host_backtrace.h); no frames elsewhere.
 int CaptureFrames(void** frames, int capacity) {
-#if !defined(__ANDROID__) || __ANDROID_API__ >= 33
+#if REFII_HOST_BACKTRACE
     return ::backtrace(frames, capacity);
 #else
     (void)frames;

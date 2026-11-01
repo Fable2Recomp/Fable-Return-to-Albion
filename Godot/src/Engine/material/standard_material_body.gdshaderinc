@@ -3,14 +3,14 @@
 // culls back faces as the guest does. A render mode is fixed per shader file, so the body lives
 // here once.
 //
-// THE MOBILE LITE VARIANT is this same body compiled with defines (material/lite/*.gdshader,
-// chosen at material build by Engine_ShaderVariant under `shader_variant = "lite"`). Each define
+// THE MOBILE LITE VARIANT is this same body compiled with defines (each full shader plus defines,
+// built and chosen at material build by Engine_ShaderVariant under `shader_variant = "lite"`). Each define
 // REMOVES code at compile time — a uniform branch removes nothing from a GPU's register budget:
 //   FABLE_LITE             what is dead or exactly zero in EITHER lighting model: parallax; the
 //                          surface weather and cloud shadow (the variant is refused while they
 //                          are on); the debug views; the shader-cost diagnostic and the zero-work
 //                          A/B switch (its default side kept).
-//   FABLE_LITE_MODERN      (lite/modern/, the modern model only) the modern model's multiply-by-
+//   FABLE_LITE_MODERN      (the modern model only) the modern model's multiply-by-
 //                          zero at fable_unified = 1: the PRT vertex transfer, the probe/vertex
 //                          bakes, their darkening and sky tether — amb3 keeps its 0.35 share.
 //                          Under the fable model that path IS the ambient, so it stays.

@@ -12,9 +12,14 @@ namespace Refii.Tests;
 [TestSuite]
 public sealed class ShaderSpecialisationTests
 {
-    private static string Source(string resPath, [CallerFilePath] string source = "") =>
-        File.ReadAllText(Path.GetFullPath(Path.Combine(
+    private static string File(string resPath, [CallerFilePath] string source = "") =>
+        System.IO.File.ReadAllText(Path.GetFullPath(Path.Combine(
             Path.GetDirectoryName(source)!, "../..", resPath["res://".Length..]))).Replace("\r\n", "\n");
+
+    /// <summary>A shader's text: the file, or a lite build made from its full shader's file.</summary>
+    private static string Source(string resPath) => Engine_ShaderVariant.IsBuild(resPath)
+        ? Engine_ShaderVariant.Compose(File(Engine_ShaderVariant.FullPathOf(resPath)), resPath)
+        : File(resPath);
 
     /// <summary>Nothing asked: the wrapper's own text, byte for byte.</summary>
     [TestCase]

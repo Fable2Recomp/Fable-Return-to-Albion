@@ -41,7 +41,7 @@ public partial class ShaderCheck : Node
 		// The mobile lite builds too: the same bodies under other defines, so each can break alone.
 		foreach (string path in System.Linq.Enumerable.Concat(Shaders, Refii.Models.Engine_ShaderVariant.AllVariantPaths))
 		{
-			var shader = GD.Load<Shader>(path);
+			var shader = Refii.Models.Engine_ShaderSpecialisation.LoadFile(path);
 			if (shader is null)
 			{
 				GD.Print($"[shader] LOAD FAILED {path}");

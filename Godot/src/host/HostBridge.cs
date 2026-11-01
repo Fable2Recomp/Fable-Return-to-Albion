@@ -15,7 +15,7 @@ namespace Refii.Host;
 /// P/Invoke over <c>refii_hostbridge</c>, the C ABI that hosts the recompiled guest in
 /// Godot's own process: Godot renders, the guest is a simulation server behind a null D3D9 device.
 /// </summary>
-public static class HostBridge
+public static partial class HostBridge
 {
 	internal const string Library = "refii_hostbridge";
 
@@ -326,7 +326,7 @@ public static class HostBridge
 		int Priority, int Track, uint Uid, float BlendIn, float BlendOut,
 		bool Overlay, uint Mask, uint PriorityMask,
 		float RecordPrevious, float RecordCurrent, bool Network = false,
-		bool IsWinner = false, bool IsRunner = false);
+		bool IsWinner = false, bool IsRunner = false, bool SuppressedTrackSibling = false);
 
 	private const int AnimLeafWords = 12;
 
@@ -395,7 +395,7 @@ public static class HostBridge
 		}
 
 		uint[] words = _postOpWords ??= new uint[13 + 64 * 29];
-		System.Array.Clear(words, 0, 13);
+		System.Array.Clear(words);
 		uint count;
 		try
 		{
@@ -444,6 +444,7 @@ public static class HostBridge
 			Quaternion[] targets = ops.Count < _postTargets.Length
 				? (_postTargets[ops.Count] ??= new Quaternion[6])
 				: new Quaternion[6];
+			System.Array.Clear(targets);
 			for (int b = 0; b < bones; b++)
 			{
 				int q = at + 5 + 4 * b;
@@ -542,6 +543,211 @@ public static class HostBridge
 			return 1u;
 		}
 	}
+
+	/// <summary>
+	/// The entity's OWN lighting zone (RefiiHostGetEntityOwnLightZone): its renderable's zone
+	/// word with no static-mesh building override — what a light hosted on the entity lights
+	/// from. Falls back to <see cref="GetEntityLightZone"/> on a native library that predates
+	/// the call.
+	/// </summary>
+	public static uint GetEntityOwnLightZone(uint entity)
+	{
+		if (entity == 0 || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return 1u;
+		}
+
+		if (_ownLightZoneMissing)
+		{
+			return GetEntityLightZone(entity);
+		}
+
+		try
+		{
+			return RefiiHostGetEntityOwnLightZone(entity);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_ownLightZoneMissing = true;
+			return GetEntityLightZone(entity);
+		}
+	}
+
+	private static bool _ownLightZoneMissing;
+
+	/// <summary>
+	/// Whether the guest poses this entity's rig on its current tick (RefiiHostGetEntityPoseGate):
+	/// true posed, false held, null when the title does not state it (Fable 2, no world, a native
+	/// library that predates the call) and the shell's own view test decides.
+	/// </summary>
+	public static bool? GetEntityPoseGate(uint entity)
+	{
+		if (entity == 0 || _poseGateMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		try
+		{
+			return RefiiHostGetEntityPoseGate(entity) switch
+			{
+				0u => false,
+				1u => true,
+				_ => null,
+			};
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_poseGateMissing = true;
+			return null;
+		}
+	}
+
+	private static bool _poseGateMissing;
+
+	/// <summary>
+	/// One cloth piece the guest states for an entity (RefiiHostGetEntityClothPieces): its key for
+	/// <see cref="GetClothPieceVertices"/>, the model hash of the part it belongs to, its proxy's
+	/// slot in that model's rigid list or, <see cref="Skinned"/>, skinned list, whether the guest
+	/// drew it as cloth in its current or last render frame (otherwise the record draws its own
+	/// skinned submesh), its vertex count, a sequence that moves with every publish, and the game
+	/// ticks of its current pose and of the pose kept for the previous tick (0 when none).
+	/// </summary>
+	public readonly record struct GuestClothPiece(
+		uint Key, uint Model, int Slot, bool Skinned, bool Drawn, int VertexCount, uint Sequence,
+		uint Tick, uint PreviousTick);
+
+	/// <summary>Words per piece in RefiiHostGetEntityClothPieces' rows.</summary>
+	public const int ClothPieceWords = 8;
+
+	/// <summary>Floats per vertex in RefiiHostGetClothPieceVertices: position, normal, tangent.</summary>
+	public const int ClothVertexFloats = 12;
+
+	private const uint ClothNotStated = 0xFFFFFFFFu;
+
+	private static bool? _clothStated;
+
+	private static uint[] _clothWords = new uint[32 * ClothPieceWords];
+
+	/// <summary>
+	/// Whether the title's bridge states its guest's cloth (Fable 3) or leaves it to the shell's own
+	/// solver (Fable 2 answers "not stated"). Asked once; a bridge that cannot be asked, or that
+	/// predates the call, states nothing.
+	/// </summary>
+	public static bool ClothStated
+	{
+		get
+		{
+			if (_clothStated is { } known)
+			{
+				return known;
+			}
+
+			if (TryGetAbiVersion() is null)
+			{
+				return false;
+			}
+
+			try
+			{
+				_clothStated = RefiiHostGetEntityClothPieces(0u, _clothWords, 1u) != ClothNotStated;
+			}
+			catch (EntryPointNotFoundException)
+			{
+				_clothStated = false;
+			}
+
+			return _clothStated.Value;
+		}
+	}
+
+	/// <summary>
+	/// The cloth pieces the guest states for <paramref name="entity"/>, written into
+	/// <paramref name="into"/>; returns how many. 0 when the title states none.
+	/// </summary>
+	public static int GetEntityClothPieces(uint entity, GuestClothPiece[] into)
+	{
+		if (entity == 0 || into.Length == 0 || !ClothStated || !IsGuestUp)
+		{
+			return 0;
+		}
+
+		if (_clothWords.Length < into.Length * ClothPieceWords)
+		{
+			_clothWords = new uint[into.Length * ClothPieceWords];
+		}
+
+		uint rows = RefiiHostGetEntityClothPieces(entity, _clothWords, (uint)into.Length);
+		return rows == ClothNotStated ? 0 : DecodeClothPieces(_clothWords, (int)rows, into);
+	}
+
+	/// <summary>RefiiHostGetEntityClothPieces' rows, decoded. Pure: the unit tests drive it.</summary>
+	public static int DecodeClothPieces(ReadOnlySpan<uint> words, int rows, Span<GuestClothPiece> into)
+	{
+		int count = Math.Min(Math.Min(rows, into.Length), words.Length / ClothPieceWords);
+		for (int i = 0; i < count; i++)
+		{
+			ReadOnlySpan<uint> row = words.Slice(i * ClothPieceWords, ClothPieceWords);
+			into[i] = new GuestClothPiece(
+				Key: row[0],
+				Model: row[1],
+				Slot: (int)row[2],
+				Skinned: (row[3] & 1u) != 0u,
+				Drawn: (row[3] & 2u) != 0u,
+				VertexCount: (int)row[4],
+				Sequence: row[5],
+				Tick: row[6],
+				PreviousTick: row[7]);
+		}
+
+		return count;
+	}
+
+	/// <summary>
+	/// One stated piece's vertices, <see cref="ClothVertexFloats"/> floats each, in the model's own
+	/// space (the file's Z-up): the current pose, or <paramref name="previous"/> the last pose of the
+	/// previous game tick. Returns the vertex count, 0 when the piece or pose is not there.
+	/// </summary>
+	public static int GetClothPieceVertices(uint key, bool previous, float[] into, out uint tick)
+	{
+		tick = 0u;
+		if (key == 0 || !ClothStated || !IsGuestUp)
+		{
+			return 0;
+		}
+
+		return (int)RefiiHostGetClothPieceVertices(
+			key, previous ? 1u : 0u, into, (uint)(into.Length / ClothVertexFloats), out tick);
+	}
+
+	/// <summary>
+	/// The sphere around the guest's published pose of this entity's rig
+	/// (RefiiHostGetEntityViewSphere): centre in the rig's model space, radius in metres, the model
+	/// origin always inside. Null when the title states none (Fable 3, whose pose gate is stated
+	/// instead), the rig has no published pose, or the native library predates the call.
+	/// </summary>
+	public static (Vector3 Centre, float Radius)? GetEntityViewSphere(uint entity)
+	{
+		if (entity == 0 || _viewSphereMissing || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		try
+		{
+			return RefiiHostGetEntityViewSphere(entity, _viewSphere) == 1u
+				? (new Vector3(_viewSphere[0], _viewSphere[1], _viewSphere[2]), _viewSphere[3])
+				: null;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_viewSphereMissing = true;
+			return null;
+		}
+	}
+
+	private static bool _viewSphereMissing;
+	private static readonly float[] _viewSphere = new float[4];
 
 	/// <summary>One built part of a composite character: its model hash, its cluster sort
 	/// layer, whether it is a body part, and the cluster names it covers.</summary>
@@ -782,7 +988,25 @@ public static class HostBridge
 	private static readonly Dictionary<uint, (uint Generation, uint Written, GuestTextureComposite[] Composites)>
 		_entityTextureLayers = new();
 
-	/// <summary>[original, count | kind &lt;&lt; 16, count x layer words] per texture, as the tables write them.</summary>
+	/// <summary>
+	/// Row kind 3, Fable 3's dye (`sub_827771B0`: command +4 original, +8 "ColourMask" texture,
+	/// +12..15 colour 1, +16 strength 1, +20..23 colour 2, +24 strength 2). The hook stages it as
+	/// two rows {mask, 0, strength, tinted, colour, 0, 0}; the decoder folds them into the
+	/// original's composite as masked layers (mode 4: coverage = the mask's alpha x strength) whose
+	/// colour is the dye. The colour word is the component's four bytes B, G, R, A in memory order
+	/// (`sub_82632420` stores r8/r7/r6 at +0/+1/+2 and 0xFF at +3, 0x82632518..2C; the engine's
+	/// colour serialiser `sub_82D343E0` writes Blue +0, Green +1, Red +2) — the <see cref="GuestTextureLayer.Tint"/>
+	/// order already.
+	/// </summary>
+	private const uint ColourMaskKind = 3u;
+
+	private const int ColourMaskMode = 4;
+
+	/// <summary>
+	/// [original, count | kind &lt;&lt; 16, count x layer words] per texture, as the tables write
+	/// them. Kinds: 0 composite, 1 overlay, 2 wildcard swap, 3 colour mask (folded, see
+	/// <see cref="ColourMaskKind"/>).
+	/// </summary>
 	internal static GuestTextureComposite[] DecodeTextureLayers(uint[] words, uint written)
 	{
 		if (written == 0)
@@ -792,9 +1016,11 @@ public static class HostBridge
 
 		// Counted first, allocated once: a list grown and then copied was two arrays per decode.
 		int total = 0;
+		int colourMasks = 0;
 		for (int at = 0; at + 2 <= written;)
 		{
 			int count = (int)(words[at + 1] & 0xFFFF);
+			uint kind = words[at + 1] >> 16;
 			at += 2;
 			if (count <= 0 || at + count * TextureLayerWords > written)
 			{
@@ -802,17 +1028,26 @@ public static class HostBridge
 			}
 
 			at += count * TextureLayerWords;
-			++total;
+			if (kind == ColourMaskKind)
+			{
+				++colourMasks;
+			}
+			else
+			{
+				++total;
+			}
 		}
 
-		if (total == 0)
+		if (total == 0 && colourMasks == 0)
 		{
 			return System.Array.Empty<GuestTextureComposite>();
 		}
 
 		var composites = new GuestTextureComposite[total];
+		List<(uint Original, GuestTextureLayer[] Masks)>? masks =
+			colourMasks == 0 ? null : new List<(uint, GuestTextureLayer[])>(colourMasks);
 		int filled = 0;
-		for (int at = 0; filled < total;)
+		for (int at = 0; filled + (masks?.Count ?? 0) < total + colourMasks;)
 		{
 			uint original = words[at];
 			int count = (int)(words[at + 1] & 0xFFFF);
@@ -825,7 +1060,7 @@ public static class HostBridge
 				int w = at + i * TextureLayerWords;
 				layers[i] = new GuestTextureLayer(
 					words[w],
-					(int)words[w + 1],
+					kind == ColourMaskKind ? ColourMaskMode : (int)words[w + 1],
 					BitConverter.Int32BitsToSingle((int)words[w + 2]),
 					words[w + 3] != 0,
 					words[w + 4],
@@ -834,10 +1069,57 @@ public static class HostBridge
 			}
 
 			at += count * TextureLayerWords;
-			composites[filled++] = new GuestTextureComposite(original, layers, kind == 1u, kind == 2u);
+			if (kind == ColourMaskKind)
+			{
+				masks!.Add((original, layers));
+			}
+			else
+			{
+				composites[filled++] = new GuestTextureComposite(original, layers, kind == 1u, kind == 2u);
+			}
 		}
 
-		return composites;
+		return masks is null ? composites : FoldColourMasks(composites, masks);
+	}
+
+	/// <summary>
+	/// Each colour mask goes over the composite that replaces its original (the guest sorts both
+	/// commands under that original, `sub_8277EC88`), else over the original itself as a plain base.
+	/// </summary>
+	private static GuestTextureComposite[] FoldColourMasks(
+		GuestTextureComposite[] composites, List<(uint Original, GuestTextureLayer[] Masks)> masks)
+	{
+		var folded = new List<GuestTextureComposite>(composites);
+		foreach ((uint original, GuestTextureLayer[] maskLayers) in masks)
+		{
+			int target = -1;
+			for (int i = 0; i < folded.Count; i++)
+			{
+				if (folded[i].Original == original && !folded[i].Overlay && !folded[i].Wildcard)
+				{
+					target = i;
+					break;
+				}
+			}
+
+			GuestTextureLayer[] under = target >= 0
+				? folded[target].Layers
+				: new[] { new GuestTextureLayer(original, 0, 1f, false, 0, 0) };
+			var layers = new GuestTextureLayer[under.Length + maskLayers.Length];
+			under.CopyTo(layers, 0);
+			maskLayers.CopyTo(layers, under.Length);
+
+			if (target >= 0)
+			{
+				folded[target] = folded[target] with { Layers = layers };
+			}
+			else
+			{
+				folded.Add(new GuestTextureComposite(original, layers));
+			}
+		}
+
+		return folded.ToArray();
 	}
 
 	/// <summary>One bone's skeletal morph: a translation offset and a scale, guest bone index.</summary>
@@ -1107,7 +1389,8 @@ public static class HostBridge
 				System.BitConverter.Int32BitsToSingle((int)_animWords[at + 11]),
 				(f & 8) != 0,
 				(f & 16) != 0,
-				(f & 32) != 0));
+				(f & 32) != 0,
+				(f & 64) != 0));
 		}
 
 		return (int)leaves;
@@ -1204,27 +1487,6 @@ public static class HostBridge
 			(uint)userIndex, connected ? 1 : 0, buttons, leftTrigger, rightTrigger,
 			thumbLx, thumbLy, thumbRx, thumbRy);
 
-	/// <summary>Publishes an Android physical phase tag without conflating current analog packet updates with consumption.</summary>
-	/// <param name="userIndex">The existing guest controller slot.</param>
-	/// <param name="connected">Whether the selected pad is connected.</param>
-	/// <param name="buttons">Already-filtered XInput button bits.</param>
-	/// <param name="leftTrigger">Current left trigger, in Xbox units.</param>
-	/// <param name="rightTrigger">Current right trigger, in Xbox units.</param>
-	/// <param name="thumbLx">Current left-stick X.</param>
-	/// <param name="thumbLy">Current left-stick Y.</param>
-	/// <param name="thumbRx">Current right-stick X.</param>
-	/// <param name="thumbRy">Current right-stick Y.</param>
-	/// <param name="receiptToken">Stable physical phase identity; zero requests no acknowledgment.</param>
-	internal static void SetControllerStateTracked(int userIndex, bool connected, uint buttons,
-		uint leftTrigger, uint rightTrigger, int thumbLx, int thumbLy, int thumbRx, int thumbRy,
-		ulong receiptToken) => RefiiHostSetControllerStateTracked((uint)userIndex, connected ? 1 : 0,
-			buttons, leftTrigger, rightTrigger, thumbLx, thumbLy, thumbRx, thumbRy, receiptToken);
-
-	/// <summary>Returns the exact phase last copied by a successful non-null guest XInput state read.</summary>
-	/// <param name="userIndex">The existing guest controller slot.</param>
-	/// <returns>A monotonically acknowledged phase tag; selecting or stepping alone never acknowledges it.</returns>
-	internal static ulong GetControllerReadReceipt(int userIndex) => RefiiHostGetControllerReadReceipt((uint)userIndex);
-
 	/// <summary>
 	/// Copies the current Bink frame as RGBA8. Pass null to probe the size; width/height are
 	/// reported either way.
@@ -1245,15 +1507,6 @@ public static class HostBridge
 	/// </summary>
 	public static byte[]? GetRequestedVideo(out uint generation) =>
 		GetRequestedVideo(out generation, uint.MaxValue);
-
-	/// <summary>Probes an embedded Bink request without allocating or copying its guest-memory buffer.</summary>
-	/// <param name="generation">The shared request generation, including unnamed startup logos.</param>
-	/// <returns>The live embedded buffer size, or zero for no buffer/name-only requests.</returns>
-	public static uint GetRequestedVideoSize(out uint generation)
-	{
-		int ok = RefiiHostGetRequestedVideo(null, 0, out uint size, out generation);
-		return ok != 0 ? size : 0;
-	}
 
 	/// <summary>
 	/// The requested movie's bytes, or null without a copy when its generation is still
@@ -8554,14 +8807,6 @@ public static class HostBridge
 		int thumbLx, int thumbLy, int thumbRx, int thumbRy);
 
 	[DllImport(Library)]
-	private static extern void RefiiHostSetControllerStateTracked(uint userIndex, int connected,
-		uint buttons, uint leftTrigger, uint rightTrigger, int thumbLx, int thumbLy,
-		int thumbRx, int thumbRy, ulong receiptToken);
-
-	[DllImport(Library)]
-	private static extern ulong RefiiHostGetControllerReadReceipt(uint userIndex);
-
-	[DllImport(Library)]
 	private static extern int RefiiHostGetVibration(
 		uint userIndex, out uint outLeft, out uint outRight);
 
@@ -9019,6 +9264,22 @@ public static class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetEntityLightZone(uint entity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityOwnLightZone(uint entity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityPoseGate(uint entity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityClothPieces(uint entity, [Out] uint[] outWords, uint maxPieces);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetClothPieceVertices(
+		uint key, uint previous, [Out] float[] outFloats, uint maxVertices, out uint outTick);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityViewSphere(uint entity, [Out] float[] sphere);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetEntityCasterFlags(uint entity);

@@ -172,7 +172,9 @@ public class TitleBoundaryTests
 		AssertThat(root).OverrideFailureMessage("repo root not found").IsNotNull();
 
 		var bound = new HashSet<string>(StringComparer.Ordinal);
-		foreach (Match match in ManagedImport.Matches(File.ReadAllText(Path.Combine(root!, "Godot", "src", "host", "HostBridge.cs"))))
+		string bridge = File.ReadAllText(Path.Combine(root!, "Godot", "src", "host", "HostBridge.cs")) +
+			File.ReadAllText(Path.Combine(root!, "Godot", "src", "android", "HostBridge.Android.cs"));
+		foreach (Match match in ManagedImport.Matches(bridge))
 		{
 			Match entry = Regex.Match(match.Groups["args"].Value, @"EntryPoint\s*=\s*""(\w+)""");
 			bound.Add(entry.Success ? entry.Groups[1].Value : match.Groups["name"].Value);

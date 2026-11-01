@@ -1209,6 +1209,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
     private readonly System.Collections.Generic.List<Refii.Host.HostBridge.GuestThemeLayer> _guestLayers = new();
     private readonly System.Collections.Generic.Dictionary<uint, ToneMapTheme?> _guestLayerThemes = new();
+    private readonly System.Collections.Generic.Dictionary<uint, Engine_EnvThemeFile?> _guestLayerFiles = new();
     private ToneMapTheme? _guestBlend;
     private ToneMapTheme? _guestScripted;
 
@@ -1264,6 +1265,19 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             return baseTheme;
         }
 
+        // FABLE 3 FOLDS GROUP BY GROUP. Its stack rows arrive in `sub_82228D38`'s order — base,
+        // level, painted, the fixed layers — each at the weight it reaches the fold at, and the
+        // guest lerps the running value to each group's value at the GROUP weight (0x82228e58),
+        // never averaging the groups together. The base and level rows are the chain this node
+        // already evaluated (Engine_EnvThemeFile.IsLevelStackTheme), so only the layers above
+        // them fold here, in order. Fable 3 has no separate script list (ThemeBlends is empty).
+        if (Engine_EnvironmentTheme.CarriesEnvThemes(LightingGdbs))
+        {
+            Refii.Host.HostBridge.ThemeStack(_guestLayers);
+            _guestBlend ??= new ToneMapTheme();
+            return ComposeGuestStack(baseTheme, _guestLayers, _guestBlend);
+        }
+
         Refii.Host.HostBridge.ThemeBlends(_guestLayers);
         _guestScripted ??= new ToneMapTheme();
         ToneMapTheme composed = ComposeGuestLayer(baseTheme, _guestLayers, _guestScripted);
@@ -1271,6 +1285,54 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         Refii.Host.HostBridge.ThemeStack(_guestLayers);
         _guestBlend ??= new ToneMapTheme();
         return ComposeGuestLayer(composed, _guestLayers, _guestBlend);
+    }
+
+    /// <summary>
+    /// Fable 3's stack over <paramref name="baseTheme"/>: each row above the base and level
+    /// layers, in fold order, lerps every parameter its theme states to the theme's value at the
+    /// row's weight (`sub_82228D38` 0x82228e58; exact for a one-theme group, a multi-theme group
+    /// taken theme after theme as lighting_feed.cpp states). Returns the base itself when no
+    /// row folds, else <paramref name="into"/>.
+    /// </summary>
+    private ToneMapTheme ComposeGuestStack(
+        ToneMapTheme baseTheme, System.Collections.Generic.List<Refii.Host.HostBridge.GuestThemeLayer> layers,
+        ToneMapTheme into)
+    {
+        bool any = false;
+        foreach (Refii.Host.HostBridge.GuestThemeLayer layer in layers)
+        {
+            if (layer.Weight <= 0f || Engine_EnvThemeFile.IsLevelStackTheme(layer.RecordHash) ||
+                GuestThemeFor(layer.RecordHash) is not { } theme)
+            {
+                continue;
+            }
+
+            if (!any)
+            {
+                into.CopyFrom(baseTheme);
+                any = true;
+            }
+
+            float weight = Mathf.Clamp(layer.Weight, 0f, 1f);
+            for (int field = 0; field < ToneMapTheme.ParamCount; field++)
+            {
+                if (!theme.Present[field])
+                {
+                    continue;
+                }
+
+                into.V[field] = Mathf.Lerp(into.V[field], theme.V[field], weight);
+                into.Present[field] = true;
+            }
+        }
+
+        if (!any)
+        {
+            return baseTheme;
+        }
+
+        into.HasAny = true;
+        return into;
     }
 
     /// <summary>
@@ -1323,9 +1385,42 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         return into;
     }
 
-    /// <summary>One pushed theme's stated tone mapping, extracted once per record hash.</summary>
+    /// <summary>
+    /// One pushed theme's stated tone mapping. Fable 2: a gdb record by its hash, extracted once.
+    /// Fable 3: the row is an <c>EnvironmentThemeMap.txt</c> id (Engine_EnvThemeFile.TryMapTheme —
+    /// the theme stack holds map entries, never gdb records), and its <c>.envtheme</c> is
+    /// keyframed over the day, so it is re-evaluated at the current day fraction on every call;
+    /// the file is resolved once per id.
+    /// </summary>
     private ToneMapTheme? GuestThemeFor(uint recordHash)
     {
+        if (Engine_EnvironmentTheme.CarriesEnvThemes(LightingGdbs))
+        {
+            if (!_guestLayerFiles.TryGetValue(recordHash, out Engine_EnvThemeFile? file))
+            {
+                file = Engine_EnvThemeFile.TryMapTheme(recordHash, out Engine_EnvThemeFile mapped, out string name)
+                    ? mapped
+                    : null;
+                _guestLayerFiles[recordHash] = file;
+                GD.Print(file is null
+                    ? $"[postfx] guest pushed theme {recordHash:X8}: no EnvironmentThemeMap.txt entry loads for it, not blended"
+                    : $"[postfx] guest pushed theme {recordHash:X8} is the map's {name}: tone mapping follows its keys");
+            }
+
+            if (file is null)
+            {
+                return null;
+            }
+
+            if (!_guestLayerThemes.TryGetValue(recordHash, out ToneMapTheme? evaluated) || evaluated is null)
+            {
+                evaluated = new ToneMapTheme();
+                _guestLayerThemes[recordHash] = evaluated;
+            }
+
+            return Engine_EnvironmentTheme.TryExtractToneMapEnvTheme(file, _dayFraction, evaluated) ? evaluated : null;
+        }
+
         if (!_guestLayerThemes.TryGetValue(recordHash, out ToneMapTheme? theme))
         {
             theme = Engine_EnvironmentTheme.TryExtractToneMapRecord(LightingGdbs, recordHash, out ToneMapTheme stated)

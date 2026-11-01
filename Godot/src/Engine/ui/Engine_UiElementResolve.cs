@@ -51,6 +51,16 @@ public sealed class Engine_UiElementResolve
 		ResolveCanvas();
 	}
 
+	/// <summary>
+	/// Whether, among owners whose slide never changed, an ancestor's slide is applied after its
+	/// descendants' (`Engine_BgfDocument.ComputeSlideState`, `ancestorsLast`).
+	/// A title whose guest's active bits are sampled (Fable 2) needs no tie rule — the guest's own
+	/// bit is folded in as `active`; a title that only states its slide writes (Fable 3) resolves
+	/// the rest state from the slides alone, where the parent's gate must hold over a child's own
+	/// self-activating entry. Set before the first <see cref="Apply"/>.
+	/// </summary>
+	public bool AncestorsWinAtRest { get; init; }
+
 	/// <summary>Whether each element draws: its own gate, its slide, and its parents'.</summary>
 	public bool[] Drawn { get; }
 
@@ -224,7 +234,7 @@ public sealed class Engine_UiElementResolve
 				}
 
 				return null;
-			}, owner => owner >= 0 && owner < _slideStamp.Length ? _slideStamp[owner] : 0);
+			}, owner => owner >= 0 && owner < _slideStamp.Length ? _slideStamp[owner] : 0, AncestorsWinAtRest);
 
 			for (int i = 0; i < nodes.Length; ++i)
 			{

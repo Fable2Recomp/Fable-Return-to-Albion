@@ -159,6 +159,10 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     # The guest's XAudio shims, mirrored so Godot can play each voice itself.
     ${REFII_VFS_ROOT}/src/hooks/xaudio_voices.cpp
 )
+if(ANDROID)
+    # The phone's lock-free double-free guard, in place of babel_text_hooks.cpp's.
+    list(APPEND REFII_VFS_PPC_HOOK_SOURCES ${REFII_VFS_ROOT}/src/hooks/babel_text_hooks_android.cpp)
+endif()
 
 set(REFII_VFS_HOOK_PARTS
     ${REFII_VFS_ROOT}/include/vfs_hooks_private.h

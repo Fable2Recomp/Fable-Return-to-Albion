@@ -16,11 +16,22 @@ co-op work, with the gaps listed at the end.
 ## What it changes outside Android
 
 - **Native.** The runtime and host build with the NDK behind `if(ANDROID)` in CMake
-  (`cmake/refii_android.cmake`); the shadow SDK gains POSIX/Android paths for threads,
-  fibers, input and the window. Desktop builds take the same sources.
-- **C#.** Android code lives in `Godot/src/android`. Shared code asks
+  (`cmake/refii_android_toolchain.cmake`, `cmake/refii_android.cmake`, and the shadow SDK's
+  `thirdparty/sdl_android.cmake`). Phone-only native code sits in `*_android` files beside
+  the shared ones (`lifecycle_android.cpp`, `babel_text_hooks_android.cpp`,
+  `refii_app_android.h`, the shadow SDK's `threading_owner_lifetime_android.h`), and the
+  shadow SDK gains POSIX/Android paths for threads, fibers, input and the window. Desktop
+  builds take the same sources.
+- **C#.** Android code lives in `Godot/src/android` (Fable 2's own in
+  `Godot/src/Titles/Fable2/android`), mostly as `partial` files of the shared classes it
+  extends; the shared file keeps a one-line call where the phone code was. Textures upload
+  through `Engine_TextureUpload`, which hands a phone's images to `AndroidTextureUpload`.
+  The NativeAOT export's MSBuild settings are in `Godot/src/android/Android.targets`. Shared
+  code asks
   `Engine_Platform.IsAndroid`, not `OperatingSystem.IsAndroid()`, which is false under
   NativeAOT's linux-bionic.
+- **Shaders.** The lite variants include the same shader bodies as the desktop; what they
+  leave out is behind `#ifdef FABLE_LITE` in those bodies, not in second copies.
 - **Settings.** Every setting the port added defaults to the desktop's existing behaviour.
   The Android [graphics presets](#android-graphics-preset) turn them on, and a desktop
   neither shows nor writes the presets.
@@ -152,8 +163,14 @@ launcher then removes the extracted game copies and builds it no longer uses.
   controller (`GameInput.Touch`). The back gesture pauses or backs out; leaving the app
   holds the game.
 - **Mods.** The launcher's Modding tab is the desktop's Modding panel; the APK bundles
-  `mods-src/` switched off. Hard mods (with `native/` sources) cannot be built on the phone
-  and are refused, and mod actions bound to keys need a keyboard.
+  `mods-src/` switched off. **Install from file…** opens Android's document picker, and the
+  chosen `.f2mod` is checked and installed as on a PC, named after the file (or after the
+  package's title in lower case when the picker gives no name: `Toggle Sprint` →
+  `toggle_sprint`). There is no folder to open, no URL install and no editor. A soft mod runs
+  as on a PC: its files, rows, images, Lua, `settings.json`, `input.json` and `godot/*.gd`.
+  Hard mods (with `native/` sources) cannot be built on the phone, so the tab marks them
+  *not on phone* and refuses them. Mod actions bound to keys need a keyboard; the touch
+  controls have no buttons for them yet.
 - **Co-op.** RexNet needs the `--rexnet` native build and `--netplay` export (both in
   `build-apk.py`). With RexNet up the game signs in with the RexNet profile, so earlier
   saves need copying into it. Join from the main menu's Multiplayer, or with Interact on
@@ -177,7 +194,7 @@ For development the game module can instead be generated and compiled on a PC:
 `build-native.py --game-directory <extracted game>` builds `librefii_generated.so`,
 `prepare-import.py` packs it with a save and `android-runtime.json`, and the app loads it
 from its own files. `tools/android/NATIVE.md` covers the native build, the SDK overlays and
-the module's ABI checks; `Godot/docs/android-runtime.md` covers the runtime's private
+the module's ABI checks; [android-runtime.md](android-runtime.md) covers the runtime's private
 configuration and diagnostics.
 
 ## Known gaps

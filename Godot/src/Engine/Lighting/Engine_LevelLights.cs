@@ -593,7 +593,7 @@ public static class Engine_LevelLights
 		ulong frame = Refii.Core.Engine_AppRoot.IsTestHost ? ulong.MaxValue : Engine.GetProcessFrames();
 		lock (FxRegistry)
 		{
-			if (frame == ulong.MaxValue || _fxLightCacheFrame == ulong.MaxValue || frame - _fxLightCacheFrame >= 4)
+			if (frame == ulong.MaxValue || frame != _fxLightCacheFrame)
 			{
 				if (FxRegistry.Count > _fxLightSamples.Length)
 				{
@@ -604,32 +604,21 @@ public static class Engine_LevelLights
 				for (int i = FxRegistry.Count - 1; i >= 0; i--)
 				{
 					Light3D node = FxRegistry[i];
-					if (!GodotObject.IsInstanceValid(node))
+					if (!GodotObject.IsInstanceValid(node) || !node.IsInsideTree())
 					{
 						FxRegistry.RemoveAt(i);
 						continue;
 					}
 
-					if (!Engine_LightTable.TryGetCachedLightSample(node, out Vector3 pos, out float range))
+					float range = node is SpotLight3D spot ? spot.SpotRange
+						: node is OmniLight3D omni ? omni.OmniRange : 0f;
+					if (range <= 0f)
 					{
-						if (!node.IsInsideTree())
-						{
-							FxRegistry.RemoveAt(i);
-							continue;
-						}
-
-						range = node is SpotLight3D spot ? spot.SpotRange
-							: node is OmniLight3D omni ? omni.OmniRange : 0f;
-						if (range <= 0f)
-						{
-							continue;
-						}
-
-						// A flickering light's node holds its envelope; its falloff is the stated radius.
-						range = Engine_LightTable.StatedRangeOf(node, range);
-						pos = node.GlobalPosition;
+						continue;
 					}
 
+					// A flickering light's node holds its envelope; its falloff is the stated radius.
+					range = Engine_LightTable.StatedRangeOf(node, range);
 					float energy = node.LightEnergy;
 					if (range <= 0f || energy <= 0f)
 					{
@@ -638,7 +627,7 @@ public static class Engine_LevelLights
 
 					Color c = Engine_LightColour.Linear(node);
 					_fxLightSamples[count++] = new FxLightSample(
-						pos,
+						node.GlobalPosition,
 						range,
 						range * range,
 						new Vector3(c.R * energy, c.G * energy, c.B * energy));
@@ -1781,7 +1770,7 @@ public static class Engine_LevelLights
 
 		// Registered in the light table, so the shader measures the distance and takes the shadow
 		// on its own instead of inverting an attenuation the shadow is multiplied into.
-		Engine_LightTable.Register(node, ComposeLightKey(entity, index), fixedPlacement: true);
+		Engine_LightTable.Register(node, ComposeLightKey(entity, index));
 
 		// FADEDISTANCE IS THE CAMERA'S, NOT THE LIGHT'S, and reading it as a second radius is the
 		// mistake the numbers themselves rule out: the shipped fixtures state Range 8 with

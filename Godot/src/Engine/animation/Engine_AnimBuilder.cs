@@ -341,6 +341,19 @@ public static class Engine_AnimBuilder
             List<int> options = Options(candidates, norm);
             if (options.Count == 0)
             {
+                // A hashed skeleton (Fable 3, names "0x%08X" from Engine_MdlEngine47) roots its
+                // clips on a bone the model names differently (clip root 0x2897988D, hero model
+                // root 0x4A91790F; every child hash agrees), so an unmatched hashed ROOT track is
+                // the skeleton's root, as a "locator" track is. Named skeletons keep their rule.
+                if (bone.Parent < 0 && norm.StartsWith("0x", StringComparison.Ordinal))
+                {
+                    resolved[track] = FirstRoot(skeleton, resolved, track);
+                    if (resolved[track] >= 0)
+                    {
+                        matched++;
+                    }
+                }
+
                 continue;
             }
 

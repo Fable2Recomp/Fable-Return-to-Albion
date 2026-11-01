@@ -137,6 +137,12 @@ public static class Engine_SkyFrame
         // the horizon while the light still comes from 70 degrees up.
         float f = time * timeFactor;
 
+        if (Refii.Core.Engine_Title.Active == Refii.Core.Engine_Title.Fable3)
+        {
+            EvaluateFable3Rig(theme, f, frame);
+            return frame;
+        }
+
         float a = f * twoPi;
         float b = (theme.HasSunAxis ? theme.SunAxisElevation : 26f) * toRadians;
         float c = theme.LightRigXyRotation * toRadians;
@@ -259,6 +265,80 @@ public static class Engine_SkyFrame
         float phase = wrapped - (quadrant * 0.25f);
         float weight = MathF.Cos(phase * 4.0f * MathF.PI);
         return ((weight * (current - next)) + (next + current)) * 0.5f;
+    }
+
+    /// <summary>
+    /// Fable 3's rig has NO ORBIT TILT: the sky owner's update <c>sub_822488A0</c> spins only the
+    /// azimuth with the day and takes each elevation straight from the evaluated theme.
+    /// </summary>
+    /// <remarks>
+    /// With <c>A = 2pi . TimeFactor . t</c> (T'+104 at 0x82248ab8, t = the day fraction *(TM+4)
+    /// at 0x822489d8), each vector is <c>(1,0,0) . Ry(theta) . Rz(phi)</c> =
+    /// <c>(cos theta cos phi, cos theta sin phi, -sin theta)</c> (the Ry block 0x82248a84..0x82248b48,
+    /// the Rz block 0x82248b78..0x82248c18, base <c>unk_82001120</c> = (1,0,0,0)), Z up:
+    ///   main light  theta = -(Main Light Elevation)       phi = A + Main Light XY Rotation   (0x82248a08, 0x82248b68)
+    ///   sun disc    theta = +(Sun Axis Elevation)         phi = A + Sun Axis XY Rotation Offset (0x82248a14, 0x82248dc4)
+    ///   moon        theta = +(Moon Axis Elevation)        phi = A + Moon Axis XY Rotation Offset (0x82249020)
+    /// The main light's theta is negated, so its vector rises at the stated elevation; it is handed
+    /// to the light twin negated again as the travel direction (light+76, sub_821A80A8 case 4).
+    /// A level turns its sun off by stating Main Light Colour black, never by the rig: there is
+    /// no sun flag, and <c>bws_castle_interior_nolight</c> states (0,0,0,0). Sunrise and sunset
+    /// are keyframed elevations and colours, not the orbit.
+    ///
+    /// The disc and moon take their stated elevation as height above the horizon as the light
+    /// does (toward the body). Their raw sign in the guest is the opposite of the light's, and
+    /// whether that payload is "toward" or "travel" is settled by the sky shader, which was not
+    /// traced: the two readings differ by the body's azimuth turning 180 degrees and its height
+    /// flipping below the horizon, and a 70-degree sun under the ground all day is not what the
+    /// theme means. Confirm against S+96 (sub_822745D0 case 29) live before relying on the
+    /// disc's azimuth to the degree.
+    ///
+    /// Our vectors are (groundX, up, groundZ): the guest's z is our [1], its x/y our [0]/[2].
+    /// </remarks>
+    private static void EvaluateFable3Rig(SkyTheme theme, float f, SkyFrame frame)
+    {
+        const float toRadians = MathF.PI / 180f;
+        float a = f * MathF.PI * 2f;
+
+        float lightPhi = a + (theme.LightRigXyRotation * toRadians);
+        float lightTheta = BlendElevation(theme, f) * toRadians;
+        if (!Refii.Lighting.Engine_LightingFrame.ModernModel)
+        {
+            Normalise(
+                MathF.Cos(lightTheta) * MathF.Cos(lightPhi),
+                MathF.Sin(lightTheta),
+                MathF.Cos(lightTheta) * MathF.Sin(lightPhi),
+                frame.MainLightDirection);
+        }
+        else
+        {
+            frame.MainLightDirection[0] = frame.MainLightDirection[1] = frame.MainLightDirection[2] = 0f;
+        }
+
+        float discPhi = a + (theme.SunAxisXyRotation * toRadians);
+        float discTheta = (theme.HasSunAxis ? theme.SunAxisElevation : 70f) * toRadians;
+        Normalise(
+            MathF.Cos(discTheta) * MathF.Cos(discPhi),
+            MathF.Sin(discTheta),
+            MathF.Cos(discTheta) * MathF.Sin(discPhi),
+            frame.SunDirection);
+
+        if (theme.HasMoonAxis)
+        {
+            float moonPhi = a + (theme.MoonAxisXyRotation * toRadians);
+            float moonTheta = theme.MoonAxisElevation * toRadians;
+            Normalise(
+                MathF.Cos(moonTheta) * MathF.Cos(moonPhi),
+                MathF.Sin(moonTheta),
+                MathF.Cos(moonTheta) * MathF.Sin(moonPhi),
+                frame.MoonDirection);
+        }
+        else
+        {
+            frame.MoonDirection[0] = -frame.SunDirection[0];
+            frame.MoonDirection[1] = -frame.SunDirection[1];
+            frame.MoonDirection[2] = -frame.SunDirection[2];
+        }
     }
 
     private static void Normalise(float x, float y, float z, float[] target)

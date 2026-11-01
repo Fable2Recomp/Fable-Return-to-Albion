@@ -40,6 +40,14 @@ void refii_bridge_note_voice_channel_volumes(uint32_t handle, const float* gains
                                              uint32_t count);
 void refii_bridge_note_voice_pcm(uint32_t handle, const void* pcm, uint32_t byte_count);
 
+// Guest step sampler (src/core/guest_step_sampler.cpp). A title's tick pump states the step it
+// is starting, on the calling guest thread's own PPCContext and arena base; a host thread walks
+// that context's guest back chain once the step has run 250 ms. End closes the step and hands
+// back the frames sampled for it (innermost first), 0 when it never stalled.
+void refii_bridge_guest_step_begin(const void* ppc_context, const void* guest_base,
+                                   uint64_t step);
+uint32_t refii_bridge_guest_step_end(uint64_t step, uint32_t* out_frames, uint32_t capacity);
+
 // Guest tick queue. The host POSTS and the title's tick pump DRAINS, so the queue and the
 // counters live in refii_runtime (src/core/guest_tick_queue.cpp) and the payload reaches them
 // here. Observe returns the tick count BEFORE the increment, so the pump's first tick is 0.
@@ -310,6 +318,121 @@ int32_t refii_bridge_camera_pair_read(float* out);
 // on the guest's own preload gate reads it, so the guest waits in its loading screen.
 void refii_bridge_set_world_build_pending(int32_t pending);
 int32_t refii_bridge_world_build_pending(void);
+
+// THE WORLD A TITLE STATES (src/runtime/src/core/stated_world.cpp): what its hooks see the guest's
+// own entry points called with; its host bridge reads each back for the shell.
+// - a level manager's level, up at its loader's success and down at its unload, by the manager
+//   the guest passed (several stand at once; Fable 3's front end keeps a GUI world and the game).
+void refii_bridge_level_stated(uint32_t manager, int32_t up);
+int32_t refii_bridge_level_is_up(uint32_t manager);
+// - an effect, by the handle the guest keys it on: created with its effect name hash, started,
+//   given a render scene, placed (the four VMX lanes of the position / orientation argument, in
+//   the recompiler's lane order), killed, or killed with every effect of a scene.
+void refii_bridge_fx_created(uint32_t handle, uint32_t name_hash);
+void refii_bridge_fx_started(uint32_t handle);
+void refii_bridge_fx_scene(uint32_t handle, uint32_t scene);
+void refii_bridge_fx_position(uint32_t handle, const float* lanes);
+void refii_bridge_fx_orientation(uint32_t handle, const float* lanes);
+void refii_bridge_fx_killed(uint32_t handle);
+void refii_bridge_fx_scene_killed(uint32_t scene);
+//   Read back as rows of REFII_STATED_FX_WORDS words: handle, name hash, sequence (the last
+//   statement's), flags, four position lanes, four orientation lanes. Returns the rows written;
+//   the count is the statements since boot (0 until a hook has stated one).
+#define REFII_STATED_FX_WORDS 12u
+#define REFII_STATED_FX_STARTED 1u
+#define REFII_STATED_FX_PLACED 2u
+#define REFII_STATED_FX_ORIENTED 4u
+uint32_t refii_bridge_fx_rows(uint32_t* out_words, uint32_t word_capacity);
+uint32_t refii_bridge_fx_statement_count(void);
+// - a decal, in the 15 words Fable 2's decal hook states (the shell's RefiiHostGetDecals row
+//   head): [0] serial, assigned here, [1] owner twin, [2] texture name hash, [3..6] position,
+//   [7..10] direction, [11] [12] half sizes, [13] life, [14] flag. The guest keeps 50, a new one
+//   replacing the oldest; a clear drops them all, an owner's teardown drops its own. Read oldest
+//   first; `out_serial` moves whenever the set changed.
+#define REFII_WORLD_DECAL_WORDS 15u
+void refii_bridge_world_decal_stated(const uint32_t* words);
+void refii_bridge_world_decals_cleared(void);
+void refii_bridge_world_decals_dropped(uint32_t owner);
+uint32_t refii_bridge_world_decals_read(uint32_t* out, uint32_t capacity, uint32_t* out_serial);
+// - a displacement quad: a render object of type 29 (the drunk warp's full-screen quad in both
+//   titles), in the 14 words its message 35 carries — [0..3] x0 y0 x1 y1 (ints, pixels), [4] z,
+//   [5] rotation, [6..13] the four corners' uv — keyed by the id the scene allotted the object,
+//   with the scene it was added to. Removed by that id. Read back as rows of 2 + 14 words
+//   [id, scene, words...].
+#define REFII_WORLD_QUAD_WORDS 14u
+void refii_bridge_world_quad_stated(uint32_t id, uint32_t scene, const uint32_t* words);
+void refii_bridge_world_quad_removed(uint32_t id);
+uint32_t refii_bridge_world_quads_read(uint32_t* out, uint32_t capacity);
+// - an FX mesh particle's render object: the id the scene allotted it, with the guest address of
+//   the descriptor the effect's mesh renderer added it from (the host reads the descriptor and
+//   the twin the id names). Removed by that id. Ids at or past REFII_WORLD_FX_MESH_IDS are not
+//   kept. Read back as [id, descriptor] pairs, ascending id; returns the pairs written.
+#define REFII_WORLD_FX_MESH_IDS 65536u
+void refii_bridge_world_fx_mesh_stated(uint32_t id, uint32_t descriptor);
+void refii_bridge_world_fx_mesh_removed(uint32_t id);
+uint32_t refii_bridge_world_fx_meshes_read(uint32_t* out_pairs, uint32_t pair_capacity);
+
+// THE APPEARANCE A TITLE STATES (src/runtime/src/core/stated_appearance.cpp): what its hooks see
+// a character's draw virtual hand its renderer, read back by its host bridge in Fable 2's rows
+// (Fable2/src/hostbridge/src/host_bridge.cpp: RefiiHostGetEntityPartMorphs / -TextureLayers).
+// - a part's morph targets: `pairs` is `count` x {target model hash, weight float bits}, the
+//   list the guest built after its own entry {base, 1 - sum}; count 0 states the part unmorphed.
+//   Read back per morphed part as [base, count, count x (target, weight bits)].
+#define REFII_PART_MORPH_PARTS 24u
+#define REFII_PART_MORPH_TARGETS 8u
+void refii_bridge_part_morph_stated(uint32_t entity, uint32_t base_model, const uint32_t* pairs,
+                                    uint32_t count);
+uint32_t refii_bridge_part_morphs_read(uint32_t entity, uint32_t* out, uint32_t capacity,
+                                       uint32_t* out_generation, uint64_t* out_statements);
+// - a character's texture work, per ORIGINAL texture, in Fable 2's layer words: 0 texture, 1 blend
+//   mode, 2 weight (float bits), 3 has-tint, 4 tint bytes B G R A, 5 brightness (float bits),
+//   6 bump texture. Kinds as Fable 2 states them (0 composite with layer 0 the base, 1 overlay,
+//   2 whole-entity swap) plus 3, a COLOUR MASK (Fable 3's dye: two layers, each the mask texture
+//   at weight 1 with a dye colour as the tint and its DyeBrightness as the brightness). A rebuild
+//   is staged between `begin` and
+//   `end` and published whole, so a read never sees half of one.
+#define REFII_TEXTURE_LAYER_WORDS 7u
+#define REFII_TEXTURE_LAYERS_PER_TEXTURE 8u
+#define REFII_TEXTURE_LAYER_TEXTURES 40u
+#define REFII_TEXTURE_LAYER_KIND_COLOUR_MASK 3u
+void refii_bridge_texture_layers_begin(uint32_t entity);
+void refii_bridge_texture_layers_end(uint32_t entity);
+void refii_bridge_texture_layers_stated(uint32_t entity, uint32_t original, uint32_t kind,
+                                        const uint32_t* layers, uint32_t count);
+//   Read back as [original, count | kind << 16, count x REFII_TEXTURE_LAYER_WORDS] per texture;
+//   `kind_mask` bit k keeps kind k. `out_statements` is the run total of statements.
+uint32_t refii_bridge_texture_layers_read(uint32_t entity, uint32_t* out, uint32_t capacity,
+                                          uint32_t kind_mask, uint32_t* out_generation,
+                                          uint64_t* out_statements);
+
+// THE CLOTH A TITLE STATES (src/runtime/src/core/stated_cloth.cpp): each cloth piece's drawn
+// vertices as its hook sees the guest's draw publish them, keyed by the piece (the guest's sim
+// item), read back by its host bridge per entity.
+// - a publish: the render instance's handle the piece belongs to, the record slot of its proxy in
+//   that instance, flags (REFII_CLOTH_SKINNED: the instance's records are the skinned list), the
+//   guest render frame and game tick it was published on, and `vertex_count` vertices of
+//   REFII_CLOTH_VERTEX_FLOATS floats each — position xyz 1, normal xyz 0, tangent xyzw — in the
+//   model's own space, as the guest writes its vertex buffer. A publish stamped with a new tick
+//   keeps the piece's last pose as the previous tick's.
+// - a drop: the piece is gone (its sim item destroyed).
+#define REFII_CLOTH_VERTEX_FLOATS 12u
+#define REFII_CLOTH_MAX_VERTICES 8192u
+#define REFII_CLOTH_SKINNED 1u
+void refii_bridge_cloth_published(uint32_t key, uint32_t handle, uint32_t slot, uint32_t flags,
+                                  uint32_t frame, uint32_t tick, const float* vertices,
+                                  uint32_t vertex_count);
+void refii_bridge_cloth_dropped(uint32_t key);
+//   Read back: the pieces of any of `handles`, as rows of REFII_CLOTH_PIECE_WORDS words — key,
+//   handle, slot, flags, vertex count, frame, sequence (moves per publish), current tick, previous
+//   tick (0 when none is kept) — and one pose's vertices (`previous` non-zero for the previous
+//   tick's), returning the vertex count, 0 when the piece or pose is not there.
+#define REFII_CLOTH_PIECE_WORDS 9u
+uint32_t refii_bridge_cloth_pieces(const uint32_t* handles, uint32_t handle_count,
+                                   uint32_t* out_words, uint32_t max_pieces);
+uint32_t refii_bridge_cloth_vertices(uint32_t key, uint32_t previous, float* out_floats,
+                                     uint32_t max_vertices, uint32_t* out_tick,
+                                     uint32_t* out_sequence);
+uint64_t refii_bridge_cloth_publish_count(void);
 
 #ifdef __cplusplus
 }  // extern "C"
