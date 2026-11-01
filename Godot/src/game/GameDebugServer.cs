@@ -2574,6 +2574,14 @@ public partial class GameDebugServer : Node
 					: Refii.Core.Engine_DrawCensus.Describe(world, camera));
 			}
 
+			case "instanceuniforms":
+			{
+				// The instances holding a slot of Godot's instance-uniform buffer, by owner, against
+				// its capacity: `{"op":"instanceuniforms"}`. The whole tree, so a scene without
+				// GameEntities (the phone's) is counted too.
+				return Ok(Refii.Core.Engine_InstanceUniformCensus.Describe(GetTree().Root));
+			}
+
 			case "canvascensus":
 			{
 				// The 2D pass by viewport and CanvasLayer: visible items, the pixels they cover, their
