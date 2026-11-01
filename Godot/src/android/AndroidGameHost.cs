@@ -68,6 +68,7 @@ public partial class AndroidGameHost : Node3D
     {
         AndroidNativeLog.StartPump();
         AndroidLastExit.RecordOnce();
+        KeepInMemoryWhileAway();
         ProcessPriority = -100;
         // The back gesture is the game's (AndroidSystemKeys), never Godot's quit.
         GetTree().QuitOnGoBack = false;
@@ -219,6 +220,18 @@ public partial class AndroidGameHost : Node3D
 
     /// <summary>The mod scripts and their singleton go before the guest does.</summary>
     public override void _ExitTree() => Refii.Mods.ModFrame.Stop();
+
+    /// <summary>
+    /// Starts RefiiPlayService while the game is in front (Android refuses the start from the background):
+    /// its foreground-service rank keeps the low-memory killer off the game while another app is in front.
+    /// Without it an 8 GB phone killed a 4.5 GB game 3 s after Home (adj 700).
+    /// </summary>
+    private static void KeepInMemoryWhileAway()
+    {
+        if (!Engine.HasSingleton("RefiiInstall")) return;
+        string error = Engine.GetSingleton("RefiiInstall").Call("play", Engine_Title.Active.Name).AsString();
+        if (error.Length > 0) GD.PushWarning("[android] the game is not kept in memory in the background: " + error);
+    }
 
     /// <summary>
     /// Releases held input and holds the guest while the app is away, coming back to the pause

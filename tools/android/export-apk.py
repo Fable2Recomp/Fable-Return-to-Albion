@@ -64,7 +64,7 @@ def stage_install_service(project: Path) -> None:
     app = root.find("application")
     if app is None:
         raise ValueError("Android template has no application")
-    for name in ("FOREGROUND_SERVICE", "FOREGROUND_SERVICE_DATA_SYNC", "WAKE_LOCK"):
+    for name in ("FOREGROUND_SERVICE", "FOREGROUND_SERVICE_DATA_SYNC", "FOREGROUND_SERVICE_SPECIAL_USE", "WAKE_LOCK"):
         permission = "android.permission." + name
         if not any(row.get(android + "name") == permission for row in root.findall("uses-permission")):
             ET.SubElement(root, "uses-permission", {android + "name": permission})
@@ -72,6 +72,11 @@ def stage_install_service(project: Path) -> None:
         raise ValueError("Installer service already staged")
     ET.SubElement(app, "service", {android + "name": "com.godot.game.refii.RefiiInstallService",
         android + "exported": "false", android + "stopWithTask": "false", android + "foregroundServiceType": "dataSync"})
+    # A running game, kept at the foreground-service rank while another app is in front.
+    play = ET.SubElement(app, "service", {android + "name": "com.godot.game.refii.RefiiPlayService",
+        android + "exported": "false", android + "stopWithTask": "true", android + "foregroundServiceType": "specialUse"})
+    ET.SubElement(play, "property", {android + "name": "android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE",
+        android + "value": "Keeps a running game in memory while another app is in front"})
     ET.SubElement(app, "meta-data", {android + "name": "org.godotengine.plugin.v2.RefiiInstall",
         android + "value": "com.godot.game.refii.RefiiInstallPlugin"})
     ET.register_namespace("android", "http://schemas.android.com/apk/res/android")
@@ -79,7 +84,7 @@ def stage_install_service(project: Path) -> None:
     tree.write(manifest, encoding="utf-8", xml_declaration=True)
     destination = project / "android/build/src/main/java/com/godot/game/refii"
     destination.mkdir(parents=True, exist_ok=False)
-    for name in ("RefiiInstallPlugin.java", "RefiiInstallService.java"):
+    for name in ("RefiiInstallPlugin.java", "RefiiInstallService.java", "RefiiPlayService.java"):
         shutil.copyfile(project / "src/android/installer" / name, destination / name)
 
 

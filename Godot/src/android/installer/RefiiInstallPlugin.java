@@ -27,6 +27,16 @@ public final class RefiiInstallPlugin extends GodotPlugin {
         } catch (RuntimeException error) { return error.toString(); }
     }
 
+    /** Keeps the running game's process from being the first one Android kills while it is in the background. */
+    @UsedByGodot public String play(String title) {
+        try {
+            Activity activity = getActivity();
+            if (activity == null) return "Android activity is unavailable";
+            activity.startForegroundService(new Intent(activity, RefiiPlayService.class).putExtra("title", title));
+            return "";
+        } catch (RuntimeException error) { return error.toString(); }
+    }
+
     /**
      * RexNet finds co-op peers on the LAN through mDNS, which Android's Wi-Fi drops unless an app
      * holds a multicast lock. Held only while the game is in front, and only in a netplay export,

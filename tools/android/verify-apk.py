@@ -62,7 +62,8 @@ def permission_policy(info: str, debug_network: bool = False, phone_installer: b
     if netplay:
         expected |= NETPLAY_PERMISSIONS
     if phone_installer:
-        expected |= {"android.permission.FOREGROUND_SERVICE", "android.permission.FOREGROUND_SERVICE_DATA_SYNC", "android.permission.WAKE_LOCK"}
+        expected |= {"android.permission.FOREGROUND_SERVICE", "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+                     "android.permission.FOREGROUND_SERVICE_SPECIAL_USE", "android.permission.WAKE_LOCK"}
     requested = set(actual) | set(implied)
     missing, unexpected = sorted(expected - set(actual)), sorted(requested - expected)
     return dict(passed=not missing and not unexpected, debug_network=debug_network, netplay=netplay, phone_installer=phone_installer,
