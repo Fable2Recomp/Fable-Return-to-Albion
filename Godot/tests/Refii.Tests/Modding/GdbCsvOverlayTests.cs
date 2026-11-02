@@ -383,8 +383,13 @@ public class GdbCsvOverlayTests
         {
             string file = Path.Combine(tempDir, "data", "Globals", "globals.gdb");
             File.WriteAllBytes(file, new byte[] { 1 });
-            AssertThat(Engine_GameGdb.FindIgnoringCase(tempDir, "data/globals/globals.gdb")).IsEqual(file);
-            AssertThat(Engine_GameGdb.FindIgnoringCase(Path.Combine(tempDir, "data"), "GLOBALS/Globals.GDB")).IsEqual(file);
+            // A case-blind filesystem (Windows, macOS) answers the exact path in the query's own
+            // spelling; a case-sensitive one walks the segments and returns the disk's.
+            StringComparison spelling = OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+            string found = Engine_GameGdb.FindIgnoringCase(tempDir, "data/globals/globals.gdb") ?? string.Empty;
+            AssertThat(string.Equals(Path.GetFullPath(found), file, spelling)).IsTrue();
+            found = Engine_GameGdb.FindIgnoringCase(Path.Combine(tempDir, "data"), "GLOBALS/Globals.GDB") ?? string.Empty;
+            AssertThat(string.Equals(Path.GetFullPath(found), file, spelling)).IsTrue();
             AssertThat(Engine_GameGdb.FindIgnoringCase(tempDir, "data/globals/missing.gdb")).IsNull();
             AssertThat(Engine_GameGdb.FindIgnoringCase(tempDir, "nothere/globals.gdb")).IsNull();
             AssertThat(Engine_GameGdb.FindIgnoringCase(tempDir, "data/globals")).IsNull();
