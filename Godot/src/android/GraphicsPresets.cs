@@ -44,8 +44,9 @@ public static class GraphicsPresets
     /// earlier label, Quality; the Quality preset after them is a new one, so no phone was on it.
     /// 10: Quality renders at 60% instead of 67%. 11: Performance ends trees at 300 m, switches the
     /// far trees' and the ground's coarser levels at half the distance, leaves the ground's normal
-    /// maps out, and draws half the undergrowth.</remarks>
-    public const int Revision = 11;
+    /// maps out, and draws half the undergrowth. 12: each preset's render scale goes up a step: Ultra
+    /// Performance 40%, Performance 50%, Balanced 60%, Quality 67%.</remarks>
+    public const int Revision = 12;
 
     /// <summary>Balanced: the phone's default picture.</summary>
     public const string Balanced = "android";
@@ -77,8 +78,8 @@ public static class GraphicsPresets
     public static readonly IReadOnlyDictionary<string, string> BalancedValues =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            // The world at half the screen's resolution; menus and text stay sharp.
-            ["render_scale_percent"] = "50",
+            // The world at 60% of the screen's resolution; menus and text stay sharp.
+            ["render_scale_percent"] = "60",
             // The 360's own distances: characters at their stated range, trees shadowing only as
             // far as the level file says. Coarser models a little sooner than the 360 switched.
             ["entity_draw_distance_scale"] = "1",
@@ -206,9 +207,9 @@ public static class GraphicsPresets
     public static readonly IReadOnlyDictionary<string, string> UltraPerformanceValues =
         new Dictionary<string, string>(BalancedValues, StringComparer.Ordinal)
         {
-            // 30% of the screen's resolution, bilinear: the phone's own pixels are tiny, and on an
+            // 40% of the screen's resolution, bilinear: the phone's own pixels are tiny, and on an
             // Adreno 640 the ground's and the models' pixel shading is still half the frame here.
-            ["render_scale_percent"] = "30",
+            ["render_scale_percent"] = "40",
             // No dynamic sun shadow at all, even where the theme casts one: about 12% alone.
             ["sun_shadow_distance"] = "0",
             // The nearest four placed lights: each lit one is shaded on everything it reaches, and
@@ -258,10 +259,10 @@ public static class GraphicsPresets
     public static readonly IReadOnlyDictionary<string, string> PerformanceValues =
         new Dictionary<string, string>(UltraPerformanceValues, StringComparer.Ordinal)
         {
-            // 40% of the screen's resolution, 1.78 times Ultra Performance's pixels: +19% at the
-            // archway, +21% at Bower Lake, most of the preset's cost and most of what it shows.
-            // 35% cost +10% / +12%.
-            ["render_scale_percent"] = "40",
+            // 50% of the screen's resolution, 1.56 times Ultra Performance's pixels. At 40% against
+            // 30% this step cost +19% at the archway and +21% at Bower Lake on an Adreno 640, most
+            // of the preset's cost and most of what it shows.
+            ["render_scale_percent"] = "50",
             // The nearest eight placed lights: +6% in town, nothing in the countryside.
             ["placed_light_limit"] = "8",
             // Small props to half their tiered distances, and the coarser models a little later:
@@ -297,9 +298,8 @@ public static class GraphicsPresets
     public static readonly IReadOnlyDictionary<string, string> QualityValues =
         new Dictionary<string, string>(BalancedValues, StringComparer.Ordinal)
         {
-            // 60% of the screen's resolution: 1.44 times Balanced's pixels, about 6% less GPU work
-            // than 67% and hard to tell from it on the phone.
-            ["render_scale_percent"] = "60",
+            // 67% of the screen's resolution, 1.25 times Balanced's pixels.
+            ["render_scale_percent"] = "67",
             // Coarser models when the 360 switched to them, small props at the desktop's distances.
             ["mesh_lod_pixels"] = "1",
             ["prop_cull_distance_scale"] = "1",

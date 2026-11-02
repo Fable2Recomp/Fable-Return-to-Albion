@@ -184,6 +184,16 @@ public partial class GameInput
 		return false;
 	}
 
+	/// <summary>How strong the rumble is, joypad and phone alike: the phone's <c>vibration_strength</c> as a fraction; full on the desktop.</summary>
+	public static float VibrationStrength { get; private set; } = 1f;
+
+	/// <summary>Reads <see cref="VibrationStrength"/> with the other control settings.</summary>
+	private static void ReadVibrationStrength(System.Collections.Generic.IReadOnlyDictionary<string, string> values) =>
+		VibrationStrength = Engine_Platform.IsAndroid
+			? Mathf.Clamp(Engine_RefiiConfig.Int(values, Refii.AndroidRuntime.AndroidQuickSettings.VibrationStrengthKey,
+				Refii.AndroidRuntime.AndroidQuickSettings.VibrationStrengthDefault), 1, 100) / 100f
+			: 1f;
+
 	/// <summary>One device's buttons and triggers through the player's controller remap; unchanged on the desktop.</summary>
 	private static void RemapPad(ref uint buttons, ref uint leftTrigger, ref uint rightTrigger)
 	{
@@ -241,7 +251,7 @@ public partial class GameInput
 		switch (verdict)
 		{
 			case Engine_HandheldRumble.Verdict.Pulse:
-				Input.VibrateHandheld(Engine_HandheldRumble.PulseMs, _handheldRumble.Amplitude);
+				Input.VibrateHandheld(Engine_HandheldRumble.PulseMs, _handheldRumble.Amplitude * VibrationStrength);
 				break;
 			case Engine_HandheldRumble.Verdict.Stop:
 				Input.VibrateHandheld(Engine_HandheldRumble.StopMs, Engine_HandheldRumble.StopAmplitude);

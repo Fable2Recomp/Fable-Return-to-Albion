@@ -38,13 +38,10 @@ public class AndroidQuickSettingsTests
     }
 
     [TestCase]
-    public void TestPresetStepsThroughUltraPerformancePerformanceBalancedAndQuality()
+    public void TestOptionsOffersUltraPerformancePerformanceBalancedAndQuality()
     {
-        AssertThat(AndroidQuickSettings.NextPreset(GraphicsPresets.UltraPerformance)).IsEqual(GraphicsPresets.Performance);
-        AssertThat(AndroidQuickSettings.NextPreset(GraphicsPresets.Performance)).IsEqual(GraphicsPresets.Balanced);
-        AssertThat(AndroidQuickSettings.NextPreset(GraphicsPresets.Balanced)).IsEqual(GraphicsPresets.Quality);
-        AssertThat(AndroidQuickSettings.NextPreset(GraphicsPresets.Quality)).IsEqual(GraphicsPresets.UltraPerformance);
-        AssertThat(AndroidQuickSettings.NextPreset(GraphicsPresets.Custom)).IsEqual(GraphicsPresets.UltraPerformance);
+        AssertThat(AndroidQuickSettings.Presets).ContainsExactly(
+            GraphicsPresets.UltraPerformance, GraphicsPresets.Performance, GraphicsPresets.Balanced, GraphicsPresets.Quality);
         AssertThat(AndroidQuickSettings.PresetLabel(GraphicsPresets.UltraPerformance)).IsEqual("Preset: Ultra Performance");
         AssertThat(AndroidQuickSettings.PresetLabel(GraphicsPresets.Performance)).IsEqual("Preset: Performance");
         AssertThat(AndroidQuickSettings.PresetLabel(GraphicsPresets.Balanced)).IsEqual("Preset: Balanced");
@@ -65,7 +62,7 @@ public class AndroidQuickSettingsTests
             AssertThat(AndroidQuickSettings.Preset(config)).IsEqual(GraphicsPresets.UltraPerformance);
             AssertThat(AndroidQuickSettings.FrameCap(config)).IsEqual(60);
             AssertThat(live.Count).IsEqual(GraphicsPresets.UltraPerformanceValues.Count);
-            AssertThat(live["render_scale_percent"]).IsEqual("30");
+            AssertThat(live["render_scale_percent"]).IsEqual("40");
 
             // Switching preset keeps the cap and the settings outside the preset.
             AndroidQuickSettings.ApplyPreset(config, GraphicsPresets.Balanced, (_, _) => { });
@@ -79,23 +76,51 @@ public class AndroidQuickSettingsTests
     }
 
     [TestCase]
-    public void TestVibrationIsTheLaunchersRumbleSwitch()
+    public void TestTheFpsCounterIsOffUntilTurnedOn()
     {
-        // Absent is on, as the launcher's default; a tap flips it and keeps the rest of the file.
         string config = Config("max_fps = 30\n");
         try
         {
-            AssertThat(AndroidQuickSettings.Vibration(config)).IsTrue();
-            AndroidQuickSettings.SetVibration(config, false);
+            AssertThat(AndroidQuickSettings.FpsCounter(config)).IsFalse();
+            AndroidQuickSettings.SetFpsCounter(config, true);
+            AssertThat(AndroidQuickSettings.FpsCounter(config)).IsTrue();
+            AssertThat(RuntimeConfig.ReadValues(config)["fps_counter"]).IsEqual("true");
+            AssertThat(RuntimeConfig.ReadValues(config)["max_fps"]).IsEqual("30");
+            AssertThat(AndroidQuickSettings.FpsCounterLabel(true)).IsEqual("FPS counter: On");
+            AssertThat(AndroidQuickSettings.FpsCounterLabel(false)).IsEqual("FPS counter: Off");
+        }
+        finally { File.Delete(config); }
+    }
+
+    [TestCase]
+    public void TestVibrationStepsThroughStrengthsAndOff()
+    {
+        // Absent is half strength, as the launcher's defaults; a tap steps 100, 75, 50, 25, off and
+        // keeps the rest of the file.
+        string config = Config("max_fps = 30\n");
+        try
+        {
+            AssertThat(AndroidQuickSettings.VibrationLevel(config)).IsEqual(50);
+            AssertThat(AndroidQuickSettings.NextVibrationLevel(100)).IsEqual(75);
+            AssertThat(AndroidQuickSettings.NextVibrationLevel(25)).IsEqual(0);
+            AssertThat(AndroidQuickSettings.NextVibrationLevel(0)).IsEqual(100);
+            AssertThat(AndroidQuickSettings.NextVibrationLevel(60)).IsEqual(100);
+            AndroidQuickSettings.SetVibrationLevel(config, 50);
             var values = RuntimeConfig.ReadValues(config);
-            // The key GameInput gates its rumble on, joypad and phone alike.
-            AssertThat(values["controller_vibration"]).IsEqual("false");
+            // The keys GameInput reads for its rumble, joypad and phone alike.
+            AssertThat(values["controller_vibration"]).IsEqual("true");
+            AssertThat(values["vibration_strength"]).IsEqual("50");
             AssertThat(values["max_fps"]).IsEqual("30");
-            AssertThat(AndroidQuickSettings.Vibration(config)).IsFalse();
-            AssertThat(AndroidQuickSettings.VibrationLabel(false)).IsEqual("Vibration: Off");
-            AndroidQuickSettings.SetVibration(config, true);
-            AssertThat(AndroidQuickSettings.Vibration(config)).IsTrue();
-            AssertThat(AndroidQuickSettings.VibrationLabel(true)).IsEqual("Vibration: On");
+            AssertThat(AndroidQuickSettings.VibrationLabel(50)).IsEqual("Vibration: 50%");
+            // Off is the switch; the strength stays for when it is turned back on.
+            AndroidQuickSettings.SetVibrationLevel(config, 0);
+            values = RuntimeConfig.ReadValues(config);
+            AssertThat(values["controller_vibration"]).IsEqual("false");
+            AssertThat(values["vibration_strength"]).IsEqual("50");
+            AssertThat(AndroidQuickSettings.VibrationLevel(config)).IsEqual(0);
+            AssertThat(AndroidQuickSettings.VibrationLabel(0)).IsEqual("Vibration: Off");
+            AndroidQuickSettings.SetVibrationLevel(config, 100);
+            AssertThat(AndroidQuickSettings.VibrationLevel(config)).IsEqual(100);
         }
         finally { File.Delete(config); }
     }
@@ -137,7 +162,7 @@ public class AndroidQuickSettingsTests
         try
         {
             AndroidQuickSettings.ApplyPreset(config, GraphicsPresets.Balanced, (_, _) => { });
-            AssertThat(AndroidQuickSettings.Value(config, "render_scale_percent")).IsEqual("50");
+            AssertThat(AndroidQuickSettings.Value(config, "render_scale_percent")).IsEqual("60");
             // A row goes to the file and the game, and the preset reads Custom, stored as the launcher stores it.
             var live = new Dictionary<string, string>();
             AndroidQuickSettings.SetGraphics(config, "render_scale_percent", "67", (k, v) => live[k] = v);
@@ -146,12 +171,12 @@ public class AndroidQuickSettingsTests
             AssertThat(AndroidQuickSettings.Preset(config)).IsEqual(GraphicsPresets.Custom);
             AssertThat(RuntimeConfig.ReadValues(config)[GraphicsPresets.Key].Trim('"')).IsEqual(GraphicsPresets.Custom);
             // Back to the preset's value, it is that preset again.
-            AndroidQuickSettings.SetGraphics(config, "render_scale_percent", "50", (_, _) => { });
+            AndroidQuickSettings.SetGraphics(config, "render_scale_percent", "60", (_, _) => { });
             AssertThat(AndroidQuickSettings.Preset(config)).IsEqual(GraphicsPresets.Balanced);
             // Stepping the preset moves every row it sets; the rest (bloom) and the cap stay.
             AndroidQuickSettings.SetGraphics(config, "bloom_scale", "0.5", (_, _) => { });
             AndroidQuickSettings.ApplyPreset(config, GraphicsPresets.UltraPerformance, (_, _) => { });
-            AssertThat(AndroidQuickSettings.Value(config, "render_scale_percent")).IsEqual("30");
+            AssertThat(AndroidQuickSettings.Value(config, "render_scale_percent")).IsEqual("40");
             AssertThat(AndroidQuickSettings.Value(config, "sun_shadow_distance")).IsEqual("0");
             AssertThat(AndroidQuickSettings.Value(config, "placed_light_limit")).IsEqual("4");
             AssertThat(AndroidQuickSettings.Value(config, "bloom_scale")).IsEqual("0.5");

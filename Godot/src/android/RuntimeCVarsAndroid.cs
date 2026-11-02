@@ -27,6 +27,23 @@ public static class RuntimeCVarsAndroid
             + "named preset takes that preset's newer values once, on its next start."),
     };
 
+    /// <summary>The frame rate in the corner of the screen (<see cref="Refii.AndroidRuntime.AndroidFpsCounter"/>), after <c>max_fps</c>.</summary>
+    public static readonly RuntimeCVarDefinition[] FpsCounter =
+    {
+        new("fps_counter", DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android: show the frame rate, small, in the top left corner of the screen. Options "
+            + "in the game turns it on and off."),
+    };
+
+    /// <summary>The rumble's strength (<see cref="Refii.Game.GameInput.VibrationStrength"/>), after <c>controller_vibration</c>.</summary>
+    public static readonly RuntimeCVarDefinition[] VibrationStrength =
+    {
+        new(Refii.AndroidRuntime.AndroidQuickSettings.VibrationStrengthKey, ControlsCategory, RuntimeCVarType.Int, "50",
+            "Android: how strong the rumble is, as a percentage of what the game asks for, on the "
+            + "phone's vibrator played by touch and on a controller. controller_vibration turns it "
+            + "off. Options in the game steps it."),
+    };
+
     /// <summary>Godot's render thread on Android, after <c>render_thread</c>.</summary>
     public static readonly RuntimeCVarDefinition[] RenderThread =
     {

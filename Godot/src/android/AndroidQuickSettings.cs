@@ -27,7 +27,7 @@ public static class AndroidQuickSettings
     /// shows every frame for three refreshes, where a missed 30 alternates two and three.</remarks>
     public static readonly int[] FrameCaps = { 20, 30, 60, 0 };
 
-    /// <summary>The presets a tap steps through, in order.</summary>
+    /// <summary>The presets Options offers, in order.</summary>
     public static readonly string[] Presets = { GraphicsPresets.UltraPerformance, GraphicsPresets.Performance, GraphicsPresets.Balanced, GraphicsPresets.Quality };
 
     /// <summary>The cap after <paramref name="current"/>; one not in the list steps to the first.</summary>
@@ -35,13 +35,6 @@ public static class AndroidQuickSettings
     {
         int at = Array.IndexOf(FrameCaps, Math.Max(0, current));
         return FrameCaps[(at + 1) % FrameCaps.Length];
-    }
-
-    /// <summary>The preset after <paramref name="current"/>; Custom steps to the first.</summary>
-    public static string NextPreset(string current)
-    {
-        int at = Array.FindIndex(Presets, p => p.Equals(current, StringComparison.OrdinalIgnoreCase));
-        return Presets[(at + 1) % Presets.Length];
     }
 
     /// <summary>The cap's button text.</summary>
@@ -60,19 +53,57 @@ public static class AndroidQuickSettings
     /// <summary>The rumble switch's key, shared with the launcher's Controls settings.</summary>
     public const string VibrationKey = "controller_vibration";
 
-    /// <summary>The vibration button's text.</summary>
-    public static string VibrationLabel(bool on) => on ? "Vibration: On" : "Vibration: Off";
+    /// <summary>The FPS counter button's text.</summary>
+    public static string FpsCounterLabel(bool on) => on ? "FPS counter: On" : "FPS counter: Off";
 
-    /// <summary>Whether rumble is on; absent is on, as the launcher's default.</summary>
-    public static bool Vibration(string config) =>
-        Engine_RefiiConfig.Bool(RuntimeConfig.ReadValues(config), VibrationKey, true);
+    /// <summary>Whether the frame rate shows in the corner (<see cref="AndroidFpsCounter"/>); absent is off.</summary>
+    public static bool FpsCounter(string config) =>
+        Engine_RefiiConfig.Bool(RuntimeConfig.ReadValues(config), AndroidFpsCounter.Key, false);
 
-    /// <summary>Writes <paramref name="on"/> as <c>controller_vibration</c>.</summary>
+    /// <summary>Writes <paramref name="on"/> as <c>fps_counter</c>.</summary>
     /// <exception cref="IOException">The file could not be written.</exception>
-    public static void SetVibration(string config, bool on)
+    public static void SetFpsCounter(string config, bool on)
     {
         SortedDictionary<string, string> values = RuntimeConfig.ReadValues(config);
-        values[VibrationKey] = on ? "true" : "false";
+        values[AndroidFpsCounter.Key] = on ? "true" : "false";
+        Write(config, values);
+    }
+
+    /// <summary>The rumble's strength, a percentage, shared with the launcher's Controls settings.</summary>
+    public const string VibrationStrengthKey = "vibration_strength";
+
+    /// <summary>The rumble's strength until the player picks another: half, which a phone's vibrator plays firmly enough.</summary>
+    public const int VibrationStrengthDefault = 50;
+
+    /// <summary>The strengths a tap steps through, in order; 0 is off.</summary>
+    public static readonly int[] VibrationLevels = { 100, 75, 50, 25, 0 };
+
+    /// <summary>The vibration button's text.</summary>
+    public static string VibrationLabel(int level) => level <= 0 ? "Vibration: Off" : $"Vibration: {level}%";
+
+    /// <summary>The rumble's strength as a percentage, 0 when <c>controller_vibration</c> is off; absent is <see cref="VibrationStrengthDefault"/>, as the launcher's defaults.</summary>
+    public static int VibrationLevel(string config)
+    {
+        SortedDictionary<string, string> values = RuntimeConfig.ReadValues(config);
+        return Engine_RefiiConfig.Bool(values, VibrationKey, true)
+            ? Math.Clamp(Engine_RefiiConfig.Int(values, VibrationStrengthKey, VibrationStrengthDefault), 1, 100)
+            : 0;
+    }
+
+    /// <summary>The strength after <paramref name="current"/>; one not in the list steps to the first.</summary>
+    public static int NextVibrationLevel(int current)
+    {
+        int at = Array.IndexOf(VibrationLevels, Math.Max(0, current));
+        return VibrationLevels[(at + 1) % VibrationLevels.Length];
+    }
+
+    /// <summary>Writes <paramref name="level"/>: 0 turns <c>controller_vibration</c> off and keeps the strength; above 0 turns it on at that strength.</summary>
+    /// <exception cref="IOException">The file could not be written.</exception>
+    public static void SetVibrationLevel(string config, int level)
+    {
+        SortedDictionary<string, string> values = RuntimeConfig.ReadValues(config);
+        values[VibrationKey] = level > 0 ? "true" : "false";
+        if (level > 0) values[VibrationStrengthKey] = Math.Clamp(level, 1, 100).ToString(System.Globalization.CultureInfo.InvariantCulture);
         Write(config, values);
     }
 

@@ -195,7 +195,7 @@ public partial class GameInput : Node
 					}
 
 					_rumbleJoypad[pad] = joypad;
-					Input.StartJoyVibration(joypad, _rumble[pad].Weak, _rumble[pad].Strong, 0f);
+					Input.StartJoyVibration(joypad, _rumble[pad].Weak * VibrationStrength, _rumble[pad].Strong * VibrationStrength, 0f);
 					break;
 				case Engine_Rumble.Verdict.Stop:
 					if (_rumbleJoypad[pad] >= 0)
@@ -485,6 +485,7 @@ public partial class GameInput : Node
 			Engine_UiInputMode.KeyboardMouse = false;
 		}
 		ControllerVibration = Refii.Core.Engine_RefiiConfig.Bool(values, "controller_vibration", true);
+		ReadVibrationStrength(values);
 		ReadKeyBindings(values);
 		// The mods' actions take their rebinds (key_<mod>.<action>, pad_<mod>.<action>) from the same read.
 		Refii.Mods.ModInput.ReadBindings(values);

@@ -196,29 +196,36 @@ launcher then removes the extracted game copies and builds it no longer uses.
 ## Android graphics preset
 
 Launch options has a **Graphics Preset** row on a phone: **Ultra Performance**,
-**Performance**, **Balanced**, **Quality** or **Custom** (any preset setting changed by hand).
-A phone starts on Balanced with a 30 FPS cap, or on Ultra Performance if its GPU is an Adreno
-older than the 700s (with a 20 FPS cap below the 650); the in-game Options panel switches the preset and the cap, and its
-see-through Graphics column steps the settings that change the picture and apply at once
-(render scale, model detail, prop distance, sun shadows and their reach, lamps lit, lamp range
-and shadows, bloom; `Godot/src/android/AndroidGraphicsOptions.cs`). Stepping the preset moves
-every row it sets; changing a row makes it Custom. Each row's ? says what the setting does, and a coloured line under its
-name says how much it costs. Options also opens **Controller buttons** (tap a game button, then
-press the controller's button for it; the two swap; saved as `android-controller-map.json`) and
-**Edit touch controls** (the layout of the kind of screen it is opened on, the world, menus or a
-pub game, each its own: drag a control to move it, Smaller and Bigger to resize it, Reset screen,
-and named presets of every screen; saved as `android-touch-layouts.json`), both beside `refii.toml`. Balanced
-(tuned on the S25+) renders at half resolution with the sun's shadows where the theme casts
-them and every same-picture shortcut on; Ultra Performance (measured on a throttled S25+ and
-on the S10e) drops to 30% resolution, no dynamic sun shadow, the nearest four placed lights,
-trees to 300 m and half the undergrowth; Performance sits between the two, without the sun's
-shadow but with more of the resolution, lights and distance back; Quality, for a phone with frames to spare, renders at 60% of the
-resolution with the 360's model detail, the desktop's prop distances, a longer sun shadow
-and more placed lights. Balanced was labelled Quality before Quality was added, and Ultra
-Performance was labelled Performance before the middle preset; each keeps its stored name
-(`android`, `android_low`), so a phone on it stays on it. The values and the measurement
-behind each are in `Godot/src/android/GraphicsPresets.cs`; raising its
-`Revision` makes phones still on a preset take the new values once.
+**Performance**, **Balanced**, **Quality** or **Custom** (a preset setting changed by hand). A
+phone starts on Balanced with a 30 FPS cap, or on Ultra Performance if its GPU is an Adreno
+older than the 700s (with a 20 FPS cap below the 650).
+
+| Preset | Render scale | Sun shadow | Also |
+|---|---|---|---|
+| Ultra Performance | 40% | none | the nearest four placed lights, trees to 300 m, half the undergrowth |
+| Performance | 50% | none | more lights and distance than Ultra Performance |
+| Balanced | 60% | where the theme casts one | every same-picture shortcut |
+| Quality | 67% | longer | the 360's model detail, the desktop's prop distances, more placed lights |
+
+The values and the measurements behind them are in `Godot/src/android/GraphicsPresets.cs`;
+raising its `Revision` makes a phone still on a preset take the new values once. Balanced and
+Ultra Performance keep their earlier stored names (`android`, `android_low`), so a phone on one
+stays on it.
+
+### In-game Options
+
+- **Graphics column:** the preset, picked from a list, and the settings that change the picture,
+  each applied at once (`Godot/src/android/AndroidGraphicsOptions.cs`). A coloured line under
+  each says what it costs and **?** says what it does; changing one makes the preset Custom.
+- **Shadows:** when a pick or a setting turns shadows on in a session that started without them,
+  Options asks whether to rebuild the shaders now (the game pauses) or at the next loading screen.
+- **FPS** caps the frame rate, **FPS counter** shows it in the top left corner, and
+  **Vibration** sets the rumble's strength or turns it off (`vibration_strength`, 50% by default).
+- **Controller buttons:** tap a game button, then press the controller's button for it; the two
+  swap. Saved as `android-controller-map.json` beside `refii.toml`.
+- **Edit touch controls:** the layout of the kind of screen Options was opened on (the world,
+  menus, a pub game...): drag to move, Smaller and Bigger, Reset screen, and named presets of every
+  screen. Saved as `android-touch-layouts.json` beside `refii.toml`.
 
 ## A game module compiled on a PC
 

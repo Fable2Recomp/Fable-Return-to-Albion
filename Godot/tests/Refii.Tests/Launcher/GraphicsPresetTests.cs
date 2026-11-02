@@ -278,7 +278,7 @@ public class GraphicsPresetTests
         var model = new RuntimeSettingsModel();
         model.ApplyGraphicsPreset("android_low");
         AssertThat(model.CurrentGraphicsPreset()).IsEqual("android_low");
-        AssertThat(model.Values["render_scale_percent"]).IsEqual("30");
+        AssertThat(model.Values["render_scale_percent"]).IsEqual("40");
         AssertThat(model.Values["sun_shadow_distance"]).IsEqual("0");
         // The settings it does not change are Balanced's.
         AssertThat(model.Values["entity_draw_distance_scale"]).IsEqual(GraphicsPresets.BalancedValues["entity_draw_distance_scale"]);
@@ -362,7 +362,7 @@ public class GraphicsPresetTests
         AssertThat(phone[GraphicsPresets.Key]).IsEqual("android");
         AssertThat(GraphicsPresets.Upgrade(phone)).IsFalse();
         AssertThat(GraphicsPresets.Current(phone)).IsEqual(GraphicsPresets.Balanced);
-        AssertThat(phone["render_scale_percent"]).IsEqual("50");
+        AssertThat(phone["render_scale_percent"]).IsEqual("60");
     }
 
     [TestCase]
