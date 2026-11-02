@@ -11,22 +11,25 @@
 --                       put the pending thing there; while it is open a D-pad press (with a
 --                       trigger for the other banks) chooses the slot directly
 --   quickslots.menu     the same twelve rows from the pause list, chosen to change a slot
---   quickslots.choose   what a slot may hold: everything in the catalog, and Clear
+--   quickslots.choose   what a slot may hold: the host's own lists of what the hero can use from
+--                       the inventory (inventory:usable — weapons among them, drawn rather than
+--                       used), the expressions it knows and the wills it can assign, and Clear
 --
--- The rows are stated by Refii.set_menu_rows for the player whose menu it is; a label is a text
--- tag, a literal, or a literal with {TAG} parts the UI localises.
+-- The slot rows are stated by Refii.set_menu_rows for the player whose menu it is; a label is a
+-- text tag, a literal, or a literal with {TAG} parts the UI localises. A chosen row names its
+-- subject TYPED (mod_menu_row's subject_kind, definition and spell) — a book's row and a host
+-- list's alike — so no row's command is parsed here.
 
 local Q = Quickslots
 local C = require("common")
-local IsPlayer, Kind = C.IsPlayer, C.Kind
+local IsPlayer = C.IsPlayer
 
 -- The global the rows call (Mod:lua:quickslots.<function>).
 quickslots = quickslots or {}
 
--- Per player: the binding waiting for a slot, the slot waiting for a choice, the catalog shown.
+-- Per player: the binding waiting for a slot, the slot waiting for a choice.
 Q.Pending = Q.Pending or {}
 Q.Choosing = Q.Choosing or {}
-Q.Shown = Q.Shown or {}
 
 local function Row(name, label, command, ghosted)
 	return { name = name, label = label, command = command, ghosted = ghosted or false }
@@ -46,8 +49,7 @@ end
 
 local function Save(p, slots)
 	C.Write(p, slots)
-	-- The next tick re-reads the store and restates the claims and the HUD.
-	Q.State[p].revision = -1
+	Q.Restate(p)
 end
 
 ----------------------------------------------------------------------------------------------------
@@ -76,45 +78,14 @@ function Q.AssignPending(p, slot)
 	slots[slot] = binding
 	Save(p, slots)
 	Q.Pending[p] = nil
-	Refii.log("Quickslots: slot " .. slot .. " <- kind " .. binding.kind .. " " .. C.Hex(binding.record) .. " (player " .. p .. ")")
+	Refii.log("Quickslots: slot " .. slot .. " <- kind " .. binding.kind .. " " .. tostring(binding.record) .. " (player " .. p .. ")")
 end
 
--- The row's own command names what the book has highlighted: "Inventory:use:<id>" an item,
--- "Inventory:equip:<id>" a weapon, "Ability:learn:<n>" a will (7..14), or an expression's record.
-local function BindingOfCommand(command)
-	if command == nil then
-		return nil
-	end
-	local id = string.match(command, "^Inventory:use:(%d+)$")
-	if id ~= nil then
-		return { kind = Kind.Item, record = tonumber(id) }
-	end
-	id = string.match(command, "^Inventory:equip:(%d+)$")
-	if id ~= nil then
-		return { kind = Kind.Weapon, record = tonumber(id) }
-	end
-	id = string.match(command, "^Ability:learn:(%d+)$")
-	if id ~= nil then
-		local ability = tonumber(id)
-		if ability >= 7 and ability <= 14 then
-			return { kind = Kind.Spell, record = ability - 7 }
-		end
-		return nil
-	end
-	id = string.match(command, "^Expression:(%w+)$") or string.match(command, "^(0x%x+)$") or string.match(command, "^(%d+)$")
-	if id ~= nil then
-		local record = tonumber(id)
-		if record ~= nil and record > 0 then
-			return { kind = Kind.Expression, record = record }
-		end
-	end
-	return nil
-end
-
+-- A book's row action: the highlighted row's typed subject — an item, a weapon, an expression or a will.
 function quickslots.assign_row(arg, e)
-	local binding = BindingOfCommand(e.command)
+	local binding = C.Binding(e.subject_kind, e.definition, e.spell)
 	if binding == nil then
-		Refii.log("Quickslots: nothing to assign from row " .. tostring(e.row) .. " (" .. tostring(e.command) .. ")")
+		Refii.log("Quickslots: nothing to assign from row " .. tostring(e.row) .. " (" .. tostring(e.subject_kind) .. ")")
 		return
 	end
 	Q.BeginAssign(e.player, binding)
@@ -157,28 +128,20 @@ function quickslots.slot(arg, e)
 	if slot < 1 or slot > C.Count then
 		return
 	end
-	local p = e.player
-	Q.Choosing[p] = slot
-	local shown = C.Catalog(p)
-	Q.Shown[p] = shown
-	local rows = {}
-	for i, entry in ipairs(shown) do
-		rows[#rows + 1] = Row("choice" .. i, "{" .. C.KindTags[entry.kind] .. "}: " .. C.Label(entry), "Mod:lua:quickslots.choose:" .. i)
-	end
-	rows[#rows + 1] = Row("clear", "{QUICKSLOTS_CLEAR}", "Mod:lua:quickslots.clear")
-	Refii.set_menu_rows("quickslots.choose", rows, p)
-	Refii.open_menu("quickslots.choose", p)
+	Q.Choosing[e.player] = slot
+	Refii.open_menu("quickslots.choose", e.player)
 end
 
+-- A host list's row on quickslots.choose (its rowCommand): the row's typed subject.
 function quickslots.choose(arg, e)
 	local p = e.player
 	local slot = Q.Choosing[p]
-	local entry = Q.Shown[p] and Q.Shown[p][tonumber(arg) or 0]
-	if slot == nil or entry == nil then
+	local binding = C.Binding(e.subject_kind, e.definition, e.spell)
+	if slot == nil or binding == nil then
 		return
 	end
 	local slots = Q.Slots(p)
-	slots[slot] = { kind = entry.kind, record = entry.record }
+	slots[slot] = binding
 	Save(p, slots)
 	Q.Choosing[p] = nil
 	ShowSlots(p)

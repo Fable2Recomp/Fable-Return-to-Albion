@@ -275,6 +275,37 @@ public class EngineClipAnimatorTests
     }
 
     [TestCase]
+    public void TestSkinScaleNeverSquaresTheMorphRecord()
+    {
+        // Live hero (2026-11-02): guest bone 12's pose lane and its morph record entry are the
+        // same bits, because `sub_822BF9B8` writes `s *= sc` into the lane. The skin binds sc once.
+        var sc = new Vector3(1.493f, 1.448f, 1.202f);
+        Vector3 bound = Engine_ClipAnimator.SkinScale(guestLane: sc, recordAtCapture: sc, recordNow: sc);
+        AssertThat(bound.IsEqualApprox(sc)).IsTrue();
+        AssertThat(bound.IsEqualApprox(sc * sc)).IsFalse();
+
+        // A record re-read after the lane was taken replaces the one folded into it.
+        var fatter = new Vector3(1.6f, 1.5f, 1.3f);
+        AssertThat(Engine_ClipAnimator.SkinScale(sc, sc, fatter).IsEqualApprox(fatter)).IsTrue();
+
+        // An unmorphed bone binds the guest's own lane (Fable 3 4.5x bone; One on Fable 2).
+        var big = new Vector3(4.5f, 4.5f, 4.5f);
+        AssertThat(Engine_ClipAnimator.SkinScale(big, Vector3.One, Vector3.One).IsEqualApprox(big)).IsTrue();
+        AssertThat(Engine_ClipAnimator.SkinScale(Vector3.One, Vector3.One, Vector3.One).IsEqualApprox(Vector3.One)).IsTrue();
+
+        // Fable 3: a collapsed helper the strong/tall record also scales (hat, ponytail chains)
+        // stays collapsed — the lane is 3e-5 x 1.2 and the record 1.2, never back to 1.2.
+        var tall = new Vector3(1.2f, 1.2f, 1.2f);
+        var collapsed = new Vector3(3e-5f, 3e-5f, 3e-5f) * tall;
+        Vector3 helper = Engine_ClipAnimator.SkinScale(collapsed, tall, tall);
+        AssertThat(helper.IsEqualApprox(collapsed)).IsTrue();
+        AssertThat(helper.X < 1e-3f).IsTrue();
+
+        // A record that never reached the lane (zero) leaves the lane as stated.
+        AssertThat(Engine_ClipAnimator.SkinScale(sc, Vector3.Zero, fatter).IsEqualApprox(sc)).IsTrue();
+    }
+
+    [TestCase]
     public void TestCanReuseUnseenChannelRejectsDyingFootstepFromPreviousStride()
     {
         // Outgoing WalkFootstep channel at 0.522s must NOT be reused when a brand-new WalkFootstep
@@ -295,5 +326,54 @@ public class EngineClipAnimatorTests
             clipLength: 0.733f,
             loop: false,
             isStatic: false)).IsTrue();
+    }
+
+    [TestCase]
+    public void TestHipCompensationIsOffWithoutTheSpineControl()
+    {
+        // F2 sub_8229CD30 0x8229CDBC / F3 sub_82272918 0x822729A4: hip or spine control missing
+        // (-1 from the name lookup) clears the ready flag; the overlay then compensates nothing.
+        //            0 root, 1 hip, 2 spine control, 3 L thigh, 4 R thigh
+        int[] parents = { -1, 0, 1, 1, 1 };
+        int[] identity = { 0, 1, 2, 3, 4 };
+        AssertThat(Engine_ClipAnimator.HipCompensation(1, -1, parents, identity, out int[] none)).IsFalse();
+        AssertThat(none.Length).IsEqual(0);
+        AssertThat(Engine_ClipAnimator.HipCompensation(-1, 2, parents, identity, out none)).IsFalse();
+        AssertThat(none.Length).IsEqual(0);
+
+        // A bone the guest's skeleton lacks is missing to the guest.
+        int[] spineUnmapped = { 0, 1, -1, 2, 3 };
+        AssertThat(Engine_ClipAnimator.HipCompensation(1, 2, parents, spineUnmapped, out none)).IsFalse();
+
+        // Both present: every hip child but the spine control.
+        AssertThat(Engine_ClipAnimator.HipCompensation(1, 2, parents, identity, out int[] children)).IsTrue();
+        AssertThat(children).IsEqual(new[] { 3, 4 });
+
+        // Present with no other child: ready, nothing to rewrite (the hip keeps its old translation).
+        AssertThat(Engine_ClipAnimator.HipCompensation(1, 2, new[] { -1, 0, 1 }, new[] { 0, 1, 2 }, out children)).IsTrue();
+        AssertThat(children.Length).IsEqual(0);
+    }
+
+    [TestCase]
+    public void TestHipCompensationKeepsTheFirstSixInTheGuestsBoneOrder()
+    {
+        // The slots fill walking the guest's parent table in bone order and stop at the sixth
+        // (`cmpwi r7, 6; beq` F2 0x8229CE3C, F3 0x82272A24).
+        // Model bones: 0 root, 1 hip, 2 spine control, 3..10 eight hip children.
+        int[] parents = { -1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+        int[] identity = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+        AssertThat(Engine_ClipAnimator.HipCompensation(1, 2, parents, identity, out int[] children)).IsTrue();
+        AssertThat(Engine_ClipAnimator.HipChildSlots).IsEqual(6);
+        AssertThat(children).IsEqual(new[] { 3, 4, 5, 6, 7, 8 });
+
+        // The guest's order, not the model's: reversed guest indices keep the model's LAST six.
+        int[] reversed = { 0, 1, 2, 10, 9, 8, 7, 6, 5, 4, 3 };
+        AssertThat(Engine_ClipAnimator.HipCompensation(1, 2, parents, reversed, out children)).IsTrue();
+        AssertThat(children).IsEqual(new[] { 10, 9, 8, 7, 6, 5 });
+
+        // A child the guest's skeleton lacks takes no slot.
+        int[] holes = { 0, 1, 2, -1, 3, -1, 4, 5, 6, 7, 8 };
+        AssertThat(Engine_ClipAnimator.HipCompensation(1, 2, parents, holes, out children)).IsTrue();
+        AssertThat(children).IsEqual(new[] { 4, 6, 7, 8, 9, 10 });
     }
 }

@@ -223,7 +223,8 @@ public static class Engine_MdlComposite
         }
 
         // THE GUEST'S EYE BONES, WHERE THE PARTS DO NOT CARRY THEM. `sub_82209480` hangs each eye
-        // on `Shadow_L_Eye` / `Shadow_R_Eye` of the runtime rig and draws it with that bone's pose
+        // on the title's eye bones (Fable 2's `Shadow_L_Eye` / `Shadow_R_Eye`, RigRole.LeftEye /
+        // RightEye) of the runtime rig and draws it with that bone's pose
         // (rotation and translation); those bones come from the animation skeleton, not from any
         // part — a hero's `.mdl.gmd` has 28 nodes and only the `Focal_Eye_DummyObject` pair.
         // Hung on the dummy instead, the eye never took the guest's eye pose at all. Each bone is
@@ -237,8 +238,15 @@ public static class Engine_MdlComposite
 
         if (anyEye)
         {
-            AddEyeBone("Shadow_L_Eye", "focal_eye_dummyobject1", boneIndex, names, parents, rest);
-            AddEyeBone("Shadow_R_Eye", "focal_eye_dummyobject", boneIndex, names, parents, rest);
+            if (EyeBone(left: true) is { } leftEye)
+            {
+                AddEyeBone(leftEye, "focal_eye_dummyobject1", boneIndex, names, parents, rest);
+            }
+
+            if (EyeBone(left: false) is { } rightEye)
+            {
+                AddEyeBone(rightEye, "focal_eye_dummyobject", boneIndex, names, parents, rest);
+            }
         }
 
         foreach ((Godot.Collections.Array arrays, Mesh.PrimitiveType primitive, string name,
@@ -304,22 +312,27 @@ public static class Engine_MdlComposite
     }
 
     /// <summary>
-    /// The bones an eye mesh can hang from, best first.
+    /// The bones an eye mesh can hang from after the title's own eye bone (<see cref="EyeBone"/>),
+    /// best first.
     ///
-    /// `shadow_l_eye` / `shadow_r_eye` ARE THE NAMES THE GUEST USES. It resolves them by name on
-    /// component 6 (`sub_82209480` at 0x8220A078/0x8220A094, the globals dword_8349C248 and
-    /// dword_8349C24C), and creates no eye instance at all when either is missing — `Shadow_` is
-    /// this rig's prefix for every bone, not a creature namespace. Without them in this list an
-    /// eye part matched no bone and was anchored to bone 0, which puts the eyeballs at the
-    /// character's origin.
+    /// THE TITLE'S EYE BONES ARE THE NAMES THE GUEST USES. Fable 2 resolves `Shadow_L_Eye` /
+    /// `Shadow_R_Eye` by name on component 6 (`sub_82209480` at 0x8220A078/0x8220A094, the globals
+    /// dword_8349C248 and dword_8349C24C), and creates no eye instance at all when either is
+    /// missing. Without them an eye part matched no bone and was anchored to bone 0, which puts
+    /// the eyeballs at the character's origin.
     /// </summary>
     private static readonly string[] LeftEyeBones =
-        { "shadow_l_eye", "l_eye", "left_eye", "lefteye", "character_focal_eye_left",
+        { "l_eye", "left_eye", "lefteye", "character_focal_eye_left",
           "focal_eye_dummyobject1" };
 
     private static readonly string[] RightEyeBones =
-        { "shadow_r_eye", "r_eye", "right_eye", "righteye", "character_focal_eye_right",
+        { "r_eye", "right_eye", "righteye", "character_focal_eye_right",
           "focal_eye_dummyobject" };
+
+    /// <summary>The Godot bone name of the title's left or right eye bone, or null when its rig names none.</summary>
+    private static string? EyeBone(bool left) =>
+        Refii.Core.Engine_TitleGame.Active.Rig.BoneName(
+            left ? Refii.Animations.Engine_TitleRig.RigRole.LeftEye : Refii.Animations.Engine_TitleRig.RigRole.RightEye);
 
     /// <summary>
     /// Binds an unskinned part rigidly to one bone. False means the part must not be drawn:
@@ -510,18 +523,35 @@ public static class Engine_MdlComposite
             return false;
         }
 
+        if (EyeBone(left) is { } titleEye && TryFlatBone(boneIndex, Flatten(titleEye), out bone))
+        {
+            return true;
+        }
+
         foreach (string candidate in left ? LeftEyeBones : RightEyeBones)
         {
-            foreach (KeyValuePair<string, int> entry in boneIndex)
+            if (TryFlatBone(boneIndex, candidate, out bone))
             {
-                if (Flatten(entry.Key) == candidate)
-                {
-                    bone = entry.Value;
-                    return true;
-                }
+                return true;
             }
         }
 
+        return false;
+    }
+
+    /// <summary>The bone whose flattened name is <paramref name="flat"/>.</summary>
+    private static bool TryFlatBone(Dictionary<string, int> boneIndex, string flat, out int bone)
+    {
+        foreach (KeyValuePair<string, int> entry in boneIndex)
+        {
+            if (Flatten(entry.Key) == flat)
+            {
+                bone = entry.Value;
+                return true;
+            }
+        }
+
+        bone = 0;
         return false;
     }
 

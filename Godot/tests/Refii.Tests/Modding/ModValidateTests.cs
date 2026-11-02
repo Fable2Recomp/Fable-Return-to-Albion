@@ -62,7 +62,7 @@ public class ModValidateTests
             return;  // a packaged test run without the source tree
         }
 
-        var expected = new Dictionary<string, int> { ["souls_combat"] = 4, ["spell_weaving"] = 22 };
+        var expected = new Dictionary<string, int> { ["souls_combat"] = 5, ["spell_weaving"] = 20 };  // spell_weaving: thirteen effects, Blades + and Fireball + Force Push have none
         foreach ((string mod, int kinds) in expected)
         {
             string folder = Path.Combine(root, "Fable2", "mods-src", mod);
@@ -205,7 +205,7 @@ public class ModValidateTests
         HasError(issues, "pieces[0].offset", "2 numbers");
         HasError(issues, "pieces[0].fill", "'red' is not a colour");
         HasError(issues, "pieces[0].value", "'health' is not a value source");
-        HasError(issues, "pieces[1]", "a picture needs \"texture\"");
+        HasWarning(issues, "pieces[1]", "draws only what hud_icon");
         HasError(issues, "clones[0].of", "is required");
         HasError(issues, "clones[0].bars.Bar", "names meter 'N'");
     }

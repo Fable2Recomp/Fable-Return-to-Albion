@@ -112,10 +112,15 @@ struct RouteState {
   /// THE MOD LANE: the lines prefixed kModLane (a mod's partner messages, refii_mod_send_to_partner),
   /// kept apart from the core co-op Lua's so each consumer takes only its own, in order.
   std::deque<Arrived> mod_inbox;
+  /// THE CAST LANE: the lines prefixed kCastLane (each cast this machine starts and the spells it
+  /// makes, mod_events.cpp THE CAST PAIRS), drained by the mod bus beside the mod lane.
+  std::deque<Arrived> cast_inbox;
 };
 
 /// The prefix of a route line the mod bus drains (refii_bridge_route_take_mod) instead of the Lua.
 constexpr std::string_view kModLane = "pm:";
+/// The prefix of a route line the cast pairing drains (refii_bridge_route_take_cast).
+constexpr std::string_view kCastLane = "pc:";
 
 RouteState& Route() {
   static RouteState* const state = [] {
@@ -249,7 +254,9 @@ bool ReceiveRoute(std::string_view message) {
     if (!RouteValid(text)) {
       continue;
     }
-    std::deque<Arrived>& lane = text.starts_with(kModLane) ? s.mod_inbox : s.inbox;
+    std::deque<Arrived>& lane = text.starts_with(kModLane)    ? s.mod_inbox
+                                : text.starts_with(kCastLane) ? s.cast_inbox
+                                                              : s.inbox;
     if (lane.size() >= kMaxRouteInbox) {
       lane.pop_front();
     }
@@ -317,6 +324,15 @@ extern "C" int32_t refii_bridge_route_take_mod(char* out, uint32_t capacity) {
   RouteState& s = Route();
   std::lock_guard lock(s.mutex);
   return TakeRouteLine(s.mod_inbox, out, capacity);
+}
+
+extern "C" int32_t refii_bridge_route_take_cast(char* out, uint32_t capacity) {
+  if (out == nullptr || capacity == 0) {
+    return 0;
+  }
+  RouteState& s = Route();
+  std::lock_guard lock(s.mutex);
+  return TakeRouteLine(s.cast_inbox, out, capacity);
 }
 
 extern "C" int32_t refii_bridge_event_relay_take(char* out, uint32_t capacity) {

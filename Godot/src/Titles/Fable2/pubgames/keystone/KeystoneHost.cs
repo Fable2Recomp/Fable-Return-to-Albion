@@ -67,8 +67,6 @@ public partial class KeystoneHost : Node, IPubGameSession
     private PubGameCommandSink _commands = null!;
 
     private SwfSceneUi? _sceneUi;
-    private SwfStage? _stage;
-    private SwfScene? _scene;
     private IPubClip _root = null!;
     private Vector2 _stageSize = new(640f, 462f);
 
@@ -80,10 +78,6 @@ public partial class KeystoneHost : Node, IPubGameSession
     private double _fps;
     private bool _ready;
     private bool _failed;
-
-    public SwfStage? Stage => _stage;
-
-    public SwfScene? Scene => _scene;
 
     public SwfSceneUi? SceneUi => _sceneUi;
 
@@ -137,12 +131,10 @@ public partial class KeystoneHost : Node, IPubGameSession
         GD.Print($"[pubgame] settings: {string.Join(", ", applied)}");
         WarnIfTableMissing(applied);
 
-        if (SwfUiForced() || !LoadSceneUi(root))
+        if (!LoadSceneUi(root))
         {
-            if (!LoadSwfStage(set, game))
-            {
-                return false;
-            }
+            GD.PushWarning($"[pubgame] {GameName}: the scene ui did not load; the board does not open");
+            return false;
         }
 
         foreach (IPubClip child in RootChildren())
@@ -183,10 +175,7 @@ public partial class KeystoneHost : Node, IPubGameSession
 
         GD.Print(
             $"[pubgame] {game.Name} from {set.Root}: " +
-            (_sceneUi is not null
-                ? $"scene {_sceneUi.ScenePath}, {_stageSize.X:0}x{_stageSize.Y:0} stage"
-                : $"swf stage, {(_scene!.Vector ? "vector geometry" : "rasterized artwork")}, " +
-                  $"upscaler {Engine_TexEnhance.BackendId}"));
+            $"scene {_sceneUi!.ScenePath}, {_stageSize.X:0}x{_stageSize.Y:0} stage");
 
         return true;
     }
@@ -217,53 +206,9 @@ public partial class KeystoneHost : Node, IPubGameSession
         return true;
     }
 
-    private bool LoadSwfStage(PubGamesSet set, PubGameEntry game)
-    {
-        SwfFile? file = SwfFile.TryLoad(File.ReadAllBytes(game.SwfPath), out string error);
-        if (file is null)
-        {
-            _status.Text = "swf load failed: " + error;
-            return false;
-        }
+    private void AdvanceUi(double delta) => _sceneUi?.Advance(delta);
 
-        SwfDocument document = SwfDocument.Build(file);
-        PubGameTextures textures = PubGameTextures.Build(set, game, document, _keystone.SkinIndex);
-        set.SharedFonts.TryGetValue(Language, out string? pack);
-        PubGameFonts fonts = PubGameFonts.Build(document, pack ?? string.Empty, Language);
-
-        _stage = new SwfStage(document, file.FrameSize, textures.Resolve) { Fonts = fonts };
-        _root = _stage.Root;
-        _stageSize = new Vector2(
-            Mathf.Max(file.FrameSize.Width, 1) / SwfShapeGeometry.TwipsPerPixel,
-            Mathf.Max(file.FrameSize.Height, 1) / SwfShapeGeometry.TwipsPerPixel);
-
-        _scene = new SwfScene(_stage, _view)
-        {
-            Vector = Engine_TexSettings.PubGameVectorShapes,
-        };
-
-        GD.Print($"[pubgame] textures: {textures.Bindings.Count} bound, {textures.Unbound.Count} unbound");
-        return true;
-    }
-
-    private void AdvanceUi(double delta)
-    {
-        _stage?.Advance();
-        _sceneUi?.Advance(delta);
-    }
-
-    private IEnumerable<IPubClip> RootChildren()
-    {
-        if (_sceneUi is not null)
-        {
-            return _sceneUi.Root.Children;
-        }
-
-        return _stage!.Root.Children.Values;
-    }
-
-    private static bool SwfUiForced() =>
-        System.Environment.GetEnvironmentVariable("REFII_KEYSTONE_SWF_UI") is "1" or "true";
+    private IEnumerable<IPubClip> RootChildren() => _sceneUi!.Root.Children;
 
     private List<string> ApplySettings(PubGamesSet set, PubGameEntry game)
     {
@@ -394,7 +339,6 @@ public partial class KeystoneHost : Node, IPubGameSession
 
         AdvanceUi(delta);
         Fit();
-        _scene?.Sync();
         _processMs = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         Report(delta, pad);
         _shot.Tick(this);
@@ -420,44 +364,8 @@ public partial class KeystoneHost : Node, IPubGameSession
 
     public GameBoard Board => _board;
 
-    public const float MaxRasterScale = 3f;
-
-    private float StageFit() =>
-        PubGameStageFit.Scale(GetViewport().GetVisibleRect().Size, _stageSize);
-
-    private float RasterScale()
-    {
-        float setting = Engine_TexSettings.PubGameRasterScale;
-        float wanted = setting > 0.0f
-            ? setting
-            : Mathf.Ceil(StageFit() * 2f) / 2f;
-
-        return Mathf.Clamp(wanted, 1f, MaxRasterScale);
-    }
-
-    private void Fit()
-    {
-        Vector2 viewport = GetViewport().GetVisibleRect().Size;
-        float scale = StageFit();
-        PubGameStageFit.Apply(_view, viewport, _stageSize);
-
-        if (_scene is null || _scene.Vector)
-        {
-            return;
-        }
-
-        _scene.TextureScale = RasterScale();
-
-        if (!Mathf.IsEqualApprox(_scene.TextureScale, _reportedRaster))
-        {
-            _reportedRaster = _scene.TextureScale;
-            GD.Print(
-                $"[pubgame] viewport {viewport.X:0}x{viewport.Y:0}, stage fit {scale:0.00}x, " +
-                $"rasterizing at {_scene.TextureScale:0.0}x");
-        }
-    }
-
-    private float _reportedRaster;
+    private void Fit() =>
+        PubGameStageFit.Apply(_view, GetViewport().GetVisibleRect().Size, _stageSize);
 
     private void Report(double delta, GamePad pad)
     {
@@ -494,9 +402,7 @@ public partial class KeystoneHost : Node, IPubGameSession
             }
         }
 
-        string device = Godot.Input.GetConnectedJoypads().Count > 0
-            ? Godot.Input.GetJoyName(0)
-            : "keyboard";
+        string device = PubGameInput.DeviceName;
 
         string held =
             (pad.BtnA ? "A" : "-") + (pad.BtnB ? "B" : "-") +
@@ -547,7 +453,6 @@ public partial class KeystoneHost : Node, IPubGameSession
             $"last {_keystone.Roll1}+{_keystone.Roll2}+{_keystone.Roll3}=" +
             $"{_keystone.RollTotal}\n" +
             $"buttons [{held}]   stick ({pad.ThumbLX:F2},{pad.ThumbLY:F2})\n" +
-            $"{hint}\n" +
-            (_scene is not null ? $"nodes {_scene.DrawnNodes}" : "scene ui");
+            $"{hint}";
     }
 }

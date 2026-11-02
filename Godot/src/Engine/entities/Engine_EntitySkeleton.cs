@@ -279,11 +279,17 @@ public sealed class Engine_EntitySkeleton
 	/// </summary>
 	/// <summary>
 	/// The guest's own scale for model bone <paramref name="model"/>, as its newest pose stated it
-	/// (One before any pose). A Fable 3 rig scales bones of its own — 141 of 12,869 live bones,
-	/// 3e-5 (collapsed) to 4.5 — and a scale written over them must start from this, never One.
+	/// (One before any pose). It is the clip's scale with the morph record already folded in, on
+	/// both titles: Fable 2 `sub_822BF9B8` (0x822bfb34 `vmulfp128`, stored to +0x20 at 0x822bfb3c)
+	/// and Fable 3 `sub_8222AB68` (0x8222ac80, stored at 0x8222ac88) multiply the pose's scale lane
+	/// by the record before the pose is published. A Fable 3 rig also scales bones of its own —
+	/// 141 of 12,869 live bones, 3e-5 (collapsed) to 4.5 — which only this lane carries.
 	/// </summary>
 	public Vector3 GuestScale(int model) =>
 		model >= 0 && model < _newestScale.Length ? _newestScale[model] : Vector3.One;
+
+	/// <summary>Guest poses whose scale lanes <see cref="GuestScale"/> took; 0 before the first.</summary>
+	public int GuestScaleCaptures { get; private set; }
 
 	public void SetBoneScales(ReadOnlySpan<Vector3> scales)
 	{
@@ -308,6 +314,9 @@ public sealed class Engine_EntitySkeleton
 	}
 
 	private readonly float _restReach;
+
+	/// <summary><see cref="Refii.Animations.Engine_TitleRig.ReachIncludesGuestRest"/>, read at construction.</summary>
+	private readonly bool _reachIncludesGuestRest = Refii.Core.Engine_TitleGame.Active.Rig.ReachIncludesGuestRest;
 
 	/// <summary>Poses refused because a bone lay outside any reach the rig can have.</summary>
 	public static int ImplausiblePoses;
@@ -422,11 +431,9 @@ public sealed class Engine_EntitySkeleton
 			anchor = pose.Translation(anchorGuest);
 		}
 
-		// The bound is the rig's reach at rest, and the guest's own rest is a rest. Fable 3 skeletons
-		// carry bones the model file places elsewhere: model 86BC6DE7's bone 0x4E8B85EC rests at
-		// 1.48 m with scale 2^-15 in the skeleton's own rest (skel+0x9C), against a model reach
-		// of 0.25, so every pose of it — its rest included — was refused.
-		float reach = Engine_Title.Active == Engine_Title.Fable3
+		// The bound is the rig's reach at rest, and the guest's own rest is a rest where the title's
+		// skeletons place bones the model file does not (Engine_TitleRig.ReachIncludesGuestRest).
+		float reach = _reachIncludesGuestRest
 			? Mathf.Max(_restReach, GuestRestReach)
 			: _restReach;
 		float limit = reach * 2f + 0.5f;
@@ -623,6 +630,16 @@ public sealed class Engine_EntitySkeleton
 		return false;
 	}
 
+	/// <summary>The rig's bone for a role, as the title names it (<see cref="Refii.Animations.Engine_TitleRig"/>).</summary>
+	public bool TryBone(Refii.Animations.Engine_TitleRig.RigRole role, out int bone)
+	{
+		bone = Refii.Core.Engine_TitleGame.Active.Rig.Bone(_rig.Names, role);
+		return bone >= 0;
+	}
+
+	/// <summary>The rig's bone names, in model order.</summary>
+	public IReadOnlyList<string> BoneNames => _rig.Names;
+
 	/// <summary>
 	/// The GUEST's own pose for one bone, in this skeleton's space — a one-off read, for
 	/// solving something the guest stated against its own pose. Never a per-frame path: the
@@ -690,6 +707,13 @@ public sealed class Engine_EntitySkeleton
 					_hipBone = m;
 					break;
 				}
+			}
+
+			// A rig named by hash has no "Hip" in any name: the title's hip.
+			if (_hipBone < 0 && TryBone(Refii.Animations.Engine_TitleRig.RigRole.Hip, out int hip) &&
+				hip < _modelToGuest.Length && _modelToGuest[hip] >= 0)
+			{
+				_hipBone = hip;
 			}
 		}
 
@@ -1380,6 +1404,7 @@ public sealed class Engine_EntitySkeleton
 		++_bufferVersion[buffer];
 		_slotBuffer[_poses.Push(stamp)] = buffer;
 		Engine_TickClock.Observe(sim, Godot.Time.GetTicksUsec());
+		++GuestScaleCaptures;
 		for (int m = 0; m < _modelToGuest.Length; ++m)
 		{
 			int g = _modelToGuest[m];

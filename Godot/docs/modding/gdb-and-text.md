@@ -9,6 +9,7 @@ apply.
 - [Database rows: .gdb.csv](#database-rows-gdbcsv)
   - [Rows](#rows)
   - [Keys, types and values](#keys-types-and-values)
+  - [Mod morphs in rows](#mod-morphs-in-rows)
 - [Binary patches: .gdb.tu](#binary-patches-gdbtu)
 - [Text rows: .babel.csv](#text-rows-babelcsv)
 - [Hashes from names](#hashes-from-names)
@@ -58,6 +59,57 @@ MyToyGunFirearm,BulletCapacity,24
   resolves to nothing is **refused**, because a dangling reference is what the game crashes on;
   resref an entry, an asset path, or a literal.
 - Rows that cannot apply are reported with their line and reason, never guessed at.
+- `@morph:<name>` in an int or enum value is the type of a morph the mod declares in
+  `morphs.json` (`@morph:<mod>.<name>` for another mod's); `@model:<path>` in a string or resref
+  value is a model's hash — FNV-1 of the path in lower case with `\`, relative to the data folder,
+  the way the game refers to models.
+
+### Mod morphs in rows
+
+A morph record is any record with a `MorphType` on one of a character's morph lists. The heroes'
+lists (both genders draw from these):
+
+| List | Holder | Record |
+|---|---|---|
+| ParticleMorphs `#6f7b08b3` | MorphComponent `#8f30e3c8` | CreatureHeroBase (both heroes) |
+| TextureMorphs `#88275944`, MorphTargets `#6a3f620c`, SkeletalMorphs `#66a80357` | GraphicAppearanceMorph `#2a6273b0` | CreatureHero (male) |
+| TextureMorphs `#31dfb252`, MorphTargets `#6a3f620d`, SkeletalMorphs `#c64877a7` | GraphicAppearanceMorph `#16d58ec4` | CreatureHeroFemale |
+
+A list is a record whose reference properties are its items, so ADDING an item is a new property
+on the list: `#88275944,MyItem,ref,MyItem`. Make the item by deriving one the game ships and
+stating its fields on it:
+
+```csv
+entry,property,type,value
+# a texture layer: the shipped corrupt face layer again, at this mod's morph's weight
+MyGlowFace,parent,#703c836c
+MyGlowFace,Layer,2
+MyGlowFace,MorphTexture,#b05adb60
+MyGlowFace,OriginalTexture,#7dfdad45
+MyGlowFace,MorphType,@morph:glow
+#88275944,MyGlowFace,ref,MyGlowFace
+# a MorphTargets pair: the male body (CH_HeroMale_Morph_Thin, #a7cbf4da) blended toward a model this mod adds
+MyBulkBody,parent,#ac91b969
+MyBulkBody,OriginalModel,#a7cbf4da
+MyBulkBody,TargetModel,@model:art/mymod/heromale_bulk.mdl
+MyBulkBody,MorphType,@morph:glow
+#6a3f620c,MyBulkBody,ref,MyBulkBody
+```
+
+- **Item fields by kind:** MorphTargets `OriginalModel`, `TargetModel` (model hashes), `MorphType`;
+  TextureMorphs `Layer`, `MorphTexture`, `OriginalTexture` (texture hashes), `MorphType`, optional
+  `BlendType` (0 alpha over, 1 additive, else a swap); SkeletalMorphs `SkeletonFilename` (a name
+  under `Data\Art\SkeletalMorphs\`, the game adds `.mof`), `MorphType`; ParticleMorphs
+  `ParticleEmitter` (an emitter entity), `DummyObject`, `MorphType`, `StartAtMorphStrength`,
+  `EndAtMorphStrength`.
+- **A new target model** for a MorphTargets pair is a `.mdl.glb` at a path the game does not ship,
+  declared with its template — the part it morphs — in `morph_targets.json` (see
+  [Models and textures](models-and-textures.md#new-morph-targets)).
+- **A new `.mof`** for a SkeletalMorphs item is a file in the mod at
+  `art/skeletalmorphs/<Name>.mof` (the game opens `Data\Art\SkeletalMorphs\<Name>.mof` through the
+  mount, which serves a mod's file at any path).
+- The shipped morph list of a record that DECLARES its own list (a child hero, the statues) is not
+  the one above: the game takes the first record in the chain that declares the property.
 
 ## Binary patches: .gdb.tu
 

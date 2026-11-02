@@ -232,7 +232,7 @@ public partial class GameUi
 		{
 			hold = new Engine_UiHudHold(doc, pieces);
 			key = wanted;
-			GD.Print($"[hud-overrides] player {player} holds {pieces.Count} piece(s): {hold.OwnerCount} slide owner(s)");
+			GD.Print($"[hud-overrides] player {player} holds {pieces.Count} piece(s): {hold.OwnerCount} slide owner(s), {hold.FadedCount} element(s) held at their authored opacity");
 		}
 
 		hold.Apply(slides, active, opacity);

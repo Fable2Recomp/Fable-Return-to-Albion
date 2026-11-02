@@ -31,6 +31,9 @@ namespace Refii.Mods;
 /// declaration in force. Read with the shipped keys (<see cref="ReadBindings"/>, from
 /// <c>GameInput.ReadControlSettings</c>, so a launcher edit lands within two seconds) and written
 /// by the Options › Controls page (<see cref="ModInputUi"/>). An axis is never rebound.</para>
+/// <para>A PAD BINDING NAMES THE GAME'S BUTTON, not the physical one: the player's controller
+/// remap (<c>padmap_*</c>, <see cref="Refii.Core.Engine_PadRemap"/>) applies first, so an action on
+/// "A" fires on whatever presses the game's A, and its claim withholds the game's A.</para>
 /// </remarks>
 public static class ModInput
 {
@@ -262,6 +265,34 @@ public static class ModInput
 
 	private static readonly HashSet<Key> _withheldKeys = new();
 
+	/// <summary>
+	/// ORs a mod's presses (<see cref="ModInputPresses"/>) into one pad state, after the claims are
+	/// withheld: the guest reads them as that player's own pad. The guest's game tick is read once
+	/// per frame, and only while something is pressed.
+	/// </summary>
+	public static void Press(int player, ref uint buttons, ref uint leftTrigger, ref uint rightTrigger)
+	{
+		if (!ModInputPresses.Any)
+		{
+			return;
+		}
+
+		ulong frame = Engine.GetProcessFrames();
+		if (frame != _pressTickFrame)
+		{
+			_pressTickFrame = frame;
+			(double Seconds, uint Tick)? clock = HostBridge.SimClock();
+			_pressTickKnown = clock is not null;
+			_pressTick = clock?.Tick ?? 0u;
+		}
+
+		ModInputPresses.Apply(player, ref buttons, ref leftTrigger, ref rightTrigger, _pressTick, _pressTickKnown, Time.GetTicksMsec());
+	}
+
+	private static ulong _pressTickFrame = ulong.MaxValue;
+	private static uint _pressTick;
+	private static bool _pressTickKnown;
+
 	private static int JoypadOf(int player) => Refii.Game.GameInput.JoypadForPad(player - 1);
 
 	private static bool ChordKeyHeld(Action action) =>
@@ -284,10 +315,10 @@ public static class ModInput
 
 		return action.ChordModifier switch
 		{
-			ModInputClaims.Modifier.LT => Input.GetJoyAxis(joypad, JoyAxis.TriggerLeft) > AxisThreshold,
-			ModInputClaims.Modifier.RT => Input.GetJoyAxis(joypad, JoyAxis.TriggerRight) > AxisThreshold,
-			ModInputClaims.Modifier.LB => Input.IsJoyButtonPressed(joypad, JoyButton.LeftShoulder),
-			ModInputClaims.Modifier.RB => Input.IsJoyButtonPressed(joypad, JoyButton.RightShoulder),
+			ModInputClaims.Modifier.LT => Refii.Game.GameInput.GameTrigger(joypad, JoyAxis.TriggerLeft) > AxisThreshold,
+			ModInputClaims.Modifier.RT => Refii.Game.GameInput.GameTrigger(joypad, JoyAxis.TriggerRight) > AxisThreshold,
+			ModInputClaims.Modifier.LB => Refii.Game.GameInput.GameButtonHeld(joypad, JoyButton.LeftShoulder),
+			ModInputClaims.Modifier.RB => Refii.Game.GameInput.GameButtonHeld(joypad, JoyButton.RightShoulder),
 			_ => false,
 		};
 	}
@@ -300,6 +331,7 @@ public static class ModInput
 	{
 		_actions = null;
 		ClearClaims();
+		ModInputPresses.Clear();
 	}
 
 	/// <summary>The refii.toml key holding an action's keyboard rebind.</summary>
@@ -482,6 +514,7 @@ public static class ModInput
 		{
 			_held.Clear();
 			ClearClaims();
+			ModInputPresses.Clear();
 			return;
 		}
 
@@ -587,9 +620,13 @@ public static class ModInput
 		}
 
 		(IReadOnlyList<JoyButton> buttons, IReadOnlyList<JoyAxis> triggers) = EffectivePad(action);
+		// The game's buttons, through the player's controller remap; a button the game has no
+		// use for (Guide, a paddle) is read as itself.
 		foreach (JoyButton button in buttons)
 		{
-			if (Input.IsJoyButtonPressed(joypad, button))
+			if (Refii.Game.GameInput.PadInputOf(button) is null
+				? Input.IsJoyButtonPressed(joypad, button)
+				: Refii.Game.GameInput.GameButtonHeld(joypad, button))
 			{
 				return true;
 			}
@@ -597,7 +634,7 @@ public static class ModInput
 
 		foreach (JoyAxis trigger in triggers)
 		{
-			if (Input.GetJoyAxis(joypad, trigger) > AxisThreshold)
+			if (Refii.Game.GameInput.GameTrigger(joypad, trigger) > AxisThreshold)
 			{
 				return true;
 			}
@@ -865,15 +902,32 @@ public static class ModInput
 			InputMap.ActionAddEvent(mapped, new InputEventKey { Keycode = key });
 		}
 
+		// The game's buttons as the physical inputs player one's controller remap binds to them.
 		(IReadOnlyList<JoyButton> buttons, IReadOnlyList<JoyAxis> triggers) = EffectivePad(action);
 		foreach (JoyButton button in buttons)
 		{
-			InputMap.ActionAddEvent(mapped, new InputEventJoypadButton { ButtonIndex = button, Device = AllDevices });
+			if (Refii.Game.GameInput.PadInputOf(button) is { } game)
+			{
+				foreach (InputEvent physical in Refii.Game.GameInput.PhysicalPadEvents(game, AllDevices))
+				{
+					InputMap.ActionAddEvent(mapped, physical);
+				}
+			}
+			else
+			{
+				InputMap.ActionAddEvent(mapped, new InputEventJoypadButton { ButtonIndex = button, Device = AllDevices });
+			}
 		}
 
 		foreach (JoyAxis trigger in triggers)
 		{
-			InputMap.ActionAddEvent(mapped, new InputEventJoypadMotion { Axis = trigger, AxisValue = 1f, Device = AllDevices });
+			if (Refii.Game.GameInput.PadInputOf(JoyButton.Invalid, trigger) is { } game)
+			{
+				foreach (InputEvent physical in Refii.Game.GameInput.PhysicalPadEvents(game, AllDevices))
+				{
+					InputMap.ActionAddEvent(mapped, physical);
+				}
+			}
 		}
 
 		if (action.Axis is { } axis)

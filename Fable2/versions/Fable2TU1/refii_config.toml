@@ -10970,6 +10970,9 @@
 0x8245CC90 = { name = "rex_lhLuaScriptSystem_LoadScriptSave" }
 0x82543A20 = { name = "rex_CECSpellManager_OnSpellLaunched" }
 0x8253F010 = { name = "rex_CECSpellManager_LaunchSlot" }
+0x827396B8 = { name = "rex_CActionSpellReleaseArea_Start" }
+0x82739D38 = { name = "rex_CActionSpellReleaseTargeted_Start" }
+0x8273C4C8 = { name = "rex_CActionSpellCast_Start" }
 0x825C5220 = { name = "rex_CECHitReceiver_OnHit" }
 0x823A4E98 = { name = "rex_CECCreature_Die" }
 0x824CE7F8 = { name = "rex_CECHealth_OnHeroDeath" }
@@ -10998,9 +11001,17 @@
 0x827587F8 = { name = "rex_VortexComponent_Init" }
 0x82758F98 = { name = "rex_VortexComponent_Shutdown" }
 0x824B1828 = { name = "rex_CSpellRegistry_Create" }
+0x822A7F50 = { name = "rex_CSpellRegistry_Update" }
+0x822861A8 = { name = "rex_CAction_End" }
+0x8298A870 = { name = "rex_CAbilityActionMagicCast_Start" }
+0x822BDEA0 = { name = "rex_CAction_MovementInterruptible" }
+0x82389CD0 = { name = "rex_CPlayer_ClearPlayerMode" }
+0x8253E840 = { name = "rex_CECSpellManager_SetState" }
 0x827441F0 = { name = "rex_TargetedFireball_Impact" }
 0x8275C578 = { name = "rex_VortexComponent_Capture" }
+0x8275CB28 = { name = "rex_VortexComponent_Release" }
 0x827590E0 = { name = "rex_VortexComponent_Update" }
+0x8275EB10 = { name = "rex_VortexComponent_Classify" }
 0x825A63A8 = { name = "rex_DamoclesSword_Update" }
 0x825F86F0 = { name = "rex_FxEntity_PlaceAt" }
 0x8253E4B8 = { name = "rex_CECSpellManager_ChargeLevelFromTime" }
@@ -11481,6 +11492,10 @@
 0x824F0370 = { name = "rex_CECInventory_AddItemByDefHash" }
 0x824F0820 = { name = "rex_CECInventory_AddOneOfRecord" }
 0x824F1C90 = { name = "rex_CECInventory_FindItemByRecordHash" }
+# The mod API's inventory removal tail (ItemRemoved) and the locomotion table load the held
+# per-hero locomotion is put back after (hooks/mod_events.cpp).
+0x824F3FC0 = { name = "rex_CECInventory_RefreshRecordRefs" }
+0x8283E408 = { name = "rex_CECLocomotion_LoadData" }
 0x824F26A8 = { name = "rex_CECInventory_InstantiateHeldRecord" }
 0x824FB5D8 = { name = "rex_CECHeldItems_AttachItemToSlot" }
 0x824FCB20 = { name = "rex_CECHeldItems_ReleaseSlot" }
@@ -12102,3 +12117,101 @@ registers = ["r10"]
 name = "RefiiCoopInteractionHero"
 address = 0x822BAA2C
 registers = ["r1", "r25"]
+
+# The spell registry's update reaching a spell before its Update, and ending one before its Stop
+# (mod_events.cpp SpellEnded): r31 the spell.
+[[midasm_hook]]
+name = "RefiiSpellRegistryUpdating"
+address = 0x822A7FD8
+registers = ["r31"]
+
+[[midasm_hook]]
+name = "RefiiSpellRegistryEnding"
+address = 0x822A8008
+registers = ["r31"]
+
+# Murgo's Mirror in manual: villagers judge the look it states (character_morph_hooks.cpp). Each
+# runs after its load and replaces the value for either player's hero in manual. The appearance
+# opinion sub_82791658 (r28 the hero of the pass: player one's, or player two's in player two's
+# opinion scope) reads CECAge years, fat, tan and strength:
+
+[[midasm_hook]]
+name = "RefiiMirrorOpinionAge"
+address = 0x82791998
+registers = ["r28", "f13"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RefiiMirrorOpinionFat"
+address = 0x82791AD4
+registers = ["r28", "f31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RefiiMirrorOpinionTan"
+address = 0x82791B00
+registers = ["r28", "f31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RefiiMirrorOpinionStrength"
+address = 0x82791B28
+registers = ["r28", "f31"]
+after_instruction = true
+
+# A reaction line's HeroAppearanceChecks sub_8278F848 (r30 the entity reacted to): fat, strength,
+# height, tan, will, normalised purity (after `bl sub_824D6F90`), CECAge years:
+[[midasm_hook]]
+name = "RefiiMirrorCheckFat"
+address = 0x8278FACC
+registers = ["r30", "f31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RefiiMirrorCheckStrength"
+address = 0x8278FB00
+registers = ["r30", "f31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RefiiMirrorCheckHeight"
+address = 0x8278FB40
+registers = ["r30", "f0"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RefiiMirrorCheckTan"
+address = 0x8278FB5C
+registers = ["r30", "f0"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RefiiMirrorCheckWill"
+address = 0x8278FB6C
+registers = ["r30", "f31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RefiiMirrorCheckPurity"
+address = 0x8278FBAC
+registers = ["r30", "f31"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RefiiMirrorCheckAge"
+address = 0x8278FCE4
+registers = ["r30", "f13"]
+after_instruction = true
+
+# Player two's body morphs (character_morph_hooks.cpp): ChangeEntityType's add of CECMorph and
+# ApplyTextureLayers' TextureMorphs loop both pass over player two's hero (`bl sub_828E5A78` hero
+# two, `cmplw`, `beq`); each hook jumps past the compare and branch.
+[[midasm_hook]]
+name = "RefiiMirrorMorphForPlayerTwo"
+address = 0x8236553C
+jump_address = 0x82365544
+
+[[midasm_hook]]
+name = "RefiiMirrorTextureMorphsForPlayerTwo"
+address = 0x8220EBBC
+jump_address = 0x8220EBC0

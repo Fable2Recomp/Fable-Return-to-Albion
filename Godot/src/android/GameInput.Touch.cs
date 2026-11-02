@@ -66,7 +66,7 @@ public partial class GameInput
 	public static uint PressedOnce => System.Environment.TickCount64 < _pressOnceUntil ? _pressOnce : 0u;
 
 	/// <summary>The touch controls as pad 0's buttons, triggers and left stick.</summary>
-	private static void TouchState(ref PadState state)
+	internal static void TouchState(ref PadState state)
 	{
 		TouchHold touch = Touch;
 		uint buttons = touch.Buttons | PressedOnce;

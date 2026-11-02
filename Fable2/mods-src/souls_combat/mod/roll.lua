@@ -3,7 +3,7 @@
 -- A module of init.lua (require("roll")).
 
 local C = require("common")
-local Setting, IsPlayer, Stamina, Spend = C.Setting, C.IsPlayer, C.Stamina, C.Spend
+local Setting, IsPlayer, Stamina, kStaminaKey = C.Setting, C.IsPlayer, C.Stamina, C.StaminaKey
 
 ----------------------------------------------------------------------------------------------------
 -- THE ROLL costs stamina and is refused on an empty pool. roll_can_start asks whether the roll may
@@ -21,6 +21,6 @@ end)
 
 Refii.on("roll_started", function(e)
 	if IsPlayer(e.player) then
-		Spend(e.player, Setting("roll_cost", 22))
+		Refii.pool_spend(e.player, kStaminaKey, Setting("roll_cost", 22))
 	end
 end)

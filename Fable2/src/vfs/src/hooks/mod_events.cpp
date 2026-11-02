@@ -15,6 +15,8 @@
 // seam, as native handlers do, never nested inside another event's chunk.
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -22,11 +24,13 @@
 #include <cstring>
 #include <string>
 #include <memory>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
 #include <rex/logging.h>
 
+#include "core/cast_pairing.h"
 #include "core/guest_build.h"
 #include "core/guest_state.h"
 #include "core/mod_values.h"
@@ -99,6 +103,11 @@ PPC_EXTERN_FUNC(__imp__rex_CAction_OnAnimEvent);
 PPC_EXTERN_FUNC(__imp__rex_CPlayer_SetLookAtButtonDown);
 PPC_EXTERN_FUNC(__imp__rex_VortexComponent_Init);
 PPC_EXTERN_FUNC(__imp__rex_VortexComponent_Shutdown);
+// VortexCaught: the vortex's capture (named in both configs) and release (new, codegen).
+PPC_EXTERN_FUNC(__imp__rex_VortexComponent_Capture);
+PPC_EXTERN_FUNC(__imp__rex_VortexComponent_Release);
+// Whether the vortex lifts a creature: its update's classification (new, codegen).
+PPC_EXTERN_FUNC(__imp__rex_VortexComponent_Classify);
 PPC_EXTERN_FUNC(__imp__rex_TargetedFireball_Impact);
 PPC_EXTERN_FUNC(__imp__rex_CECHitReceiver_OnHit);
 PPC_EXTERN_FUNC(__imp__rex_CECHitResponsePlayAction_OnHit);
@@ -107,16 +116,35 @@ PPC_EXTERN_FUNC(__imp__rex_CECSpellManager_ChargeLevelFromTime);
 PPC_EXTERN_FUNC(__imp__rex_CECSpellManager_LaunchSlot);
 PPC_EXTERN_FUNC(__imp__rex_CECSpellManager_OnSpellLaunched);
 PPC_EXTERN_FUNC(__imp__rex_CSpellRegistry_Create);
+// SpellEnded, SpellChargeEnded, MeleeSwingEnded, ActionMoveInterrupt and LockLost (Part I wave C):
+// named in both configs for these seams.
+PPC_EXTERN_FUNC(__imp__rex_CSpellRegistry_Update);
+PPC_EXTERN_FUNC(__imp__rex_CAction_End);
+PPC_EXTERN_FUNC(__imp__rex_CAbilityActionMagicCast_Start);
+PPC_EXTERN_FUNC(__imp__rex_CAction_MovementInterruptible);
+PPC_EXTERN_FUNC(__imp__rex_CPlayer_ClearPlayerMode);
+PPC_EXTERN_FUNC(__imp__rex_CECSpellManager_SetState);
 PPC_EXTERN_FUNC(__imp__rex_CECExperience_Modify);
 PPC_EXTERN_FUNC(__imp__rex_CECExperience_Spend);
 PPC_EXTERN_FUNC(__imp__rex_CECCreature_Die);
 PPC_EXTERN_FUNC(__imp__rex_CECCreature_FinishDeath);
 PPC_EXTERN_FUNC(__imp__rex_CECHealth_OnHeroDeath);
 PPC_EXTERN_FUNC(__imp__rex_CECHealth_OnHit);
+// HealthChanged and StatusApplying: named in both configs (refii_mod_modify_health and
+// refii_mod_apply_status call them).
+PPC_EXTERN_FUNC(__imp__rex_CECHealth_Modify);
+PPC_EXTERN_FUNC(__imp__rex_SpellLightning_Electrify);
+PPC_EXTERN_FUNC(__imp__rex_SpellChaos_ApplyToVictim);
+PPC_EXTERN_FUNC(__imp__rex_SpellFireball_Ignite);
 PPC_EXTERN_FUNC(__imp__rex_lhLuaScriptSystem_OnLevelLoad);
 PPC_EXTERN_FUNC(__imp__rex_lhWorld_UnloadLevel);
 PPC_EXTERN_FUNC(__imp__rex_lhSaveManager_WriteSave);
 PPC_EXTERN_FUNC(__imp__rex_CECInventory_AddOneOfRecord);
+// ItemRemoved, ExpressionWheel and the held locomotion (refii_mod_set_locomotion).
+PPC_EXTERN_FUNC(__imp__rex_CECInventory_RefreshRecordRefs);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiManager_OpenExpressionWheel);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiManager_CloseExpressionWheel);
+PPC_EXTERN_FUNC(__imp__rex_CECLocomotion_LoadData);
 PPC_EXTERN_FUNC(__imp__rex_lhEntity_UseInventoryItem);
 PPC_EXTERN_FUNC(__imp__rex_CECHeldItems_AttachItemToSlot);
 PPC_EXTERN_FUNC(__imp__rex_CECHeldItems_ReleaseSlot);
@@ -216,6 +244,9 @@ constexpr uint32_t kManagerSlotTable = 0x80;
 constexpr uint32_t kManagerSlotsToCome = 0x170;
 constexpr uint32_t kStateCascade = 5;
 constexpr uint32_t kSpellSerial = 0x44;
+/// The spell registry's cast counter: the serial the factory gives its next spell (`lwz r19,0xC(r18)`
+/// 0x824b1934 / disc 0x8249bc6c).
+constexpr uint32_t kRegistrySerialCounter = 0xC;
 constexpr uint32_t kSlots = 5;
 /// The game's single-slot spell mode flag (ChargeLevelFromTime: `if (byte_8331918F) { *first =
 /// *count - 1; *count = 1; }`).
@@ -240,6 +271,17 @@ void RelayAfterDispatch(int32_t kind, void* event, bool replica);
 /// From the tick: dispatches the peer's relayed events.
 void DrainRelay(PPCContext& ctx, uint8_t* base);
 void DrainPartnerMessages(PPCContext& ctx, uint8_t* base);
+/// THE CAST PAIRS (the end of this file; core/cast_pairing.h): a spell the factory made inside a
+/// recorded cast action is announced to the peer and paired with the peer's spell of that cast; the
+/// tick takes the peer's announcements before the relay; a relayed hit is rewritten to this
+/// machine's serial, and waits for a spell the host announced and this machine has not made yet.
+void PairCreatedSpell(uint8_t* base, uint32_t caster, uint32_t serial, bool from_cast_spell);
+/// The local spell `serial` is a copy awaiting the decider's spell state (Table::AwaitsPeer).
+bool SpellAwaitsPair(uint32_t serial);
+void DrainCastPairs(uint8_t* base);
+void MapRelayedHitSerial(HitLandedEvent& e);
+bool HoldRelayedHit(int32_t kind, const char* text);
+void ReplayHeldHits(PPCContext& ctx, uint8_t* base);
 
 // ---------------------------------------------------------------------------------------------
 // Lua handlers
@@ -456,9 +498,9 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
     case REFII_EVENT_HIT_LANDED: {
       const auto& e = *static_cast<const HitEvent*>(event);
       std::snprintf(out, size,
-                    "victim=%u,victim_player=%d,attacker=%u,attacker_player=%d,damage=%.9g,spell_type=%d,spell_level=%d,spell_serial=%u,knockdown=%s",
+                    "victim=%u,victim_player=%d,attacker=%u,attacker_player=%d,damage=%.9g,spell_type=%d,spell_level=%d,spell_serial=%u,knockdown=%s,tag=%d",
                     H(e.victim), e.victim_player, H(e.attacker), e.attacker_player, Fin(e.damage), e.spell_type,
-                    e.spell_level, e.spell_serial, e.knockdown ? "true" : "false");
+                    e.spell_level, e.spell_serial, e.knockdown ? "true" : "false", e.tag);
       return;
     }
     case REFII_EVENT_HIT_RESPONSE: {
@@ -479,8 +521,8 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
     }
     case REFII_EVENT_SPELL_LAUNCH: {
       const auto& e = *static_cast<const SpellLaunchEvent*>(event);
-      std::snprintf(out, size, "caster=%u,player=%d,targeted=%s,slot=%d,type=%d,cascading=%s", H(e.caster), e.player,
-                    e.targeted ? "true" : "false", e.slot, e.type, e.cascading ? "true" : "false");
+      std::snprintf(out, size, "caster=%u,player=%d,targeted=%s,slot=%d,type=%d,cascading=%s,tag=%d", H(e.caster), e.player,
+                    e.targeted ? "true" : "false", e.slot, e.type, e.cascading ? "true" : "false", e.tag);
       return;
     }
     case REFII_EVENT_SPELL_LAUNCHED: {
@@ -490,8 +532,11 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
     }
     case REFII_EVENT_SPELL_CREATED: {
       const auto& e = *static_cast<const SpellCreatedEvent*>(event);
-      std::snprintf(out, size, "spell=%u,type=%d,targeted=%s,target=%u,level=%d,caster=%u,caster_player=%d,serial=%u",
-                    H(e.spell), e.type, e.targeted ? "true" : "false", H(e.target), e.level, H(e.caster), e.caster_player, e.serial);
+      std::snprintf(out, size,
+                    "spell=%u,type=%d,targeted=%s,target=%u,level=%d,caster=%u,caster_player=%d,serial=%u,slot=%d,tag=%d,"
+                    "host_serial=%u",
+                    H(e.spell), e.type, e.targeted ? "true" : "false", H(e.target), e.level, H(e.caster), e.caster_player, e.serial,
+                    e.slot, e.tag, e.host_serial);
       return;
     }
     case REFII_EVENT_EXPERIENCE: {
@@ -656,8 +701,8 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
     }
     case REFII_EVENT_STATUS_EFFECT: {
       const auto& e = *static_cast<const StatusEffectEvent*>(event);
-      std::snprintf(out, size, "entity=%u,player=%d,effect=%d,started=%s", H(e.entity), e.player, e.effect,
-                    e.started ? "true" : "false");
+      std::snprintf(out, size, "entity=%u,player=%d,effect=%d,started=%s,serial=%u,source=%u", H(e.entity), e.player, e.effect,
+                    e.started ? "true" : "false", e.serial, H(e.source));
       return;
     }
     case REFII_EVENT_TARGET_CHANGED: {
@@ -742,7 +787,8 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
     }
     case REFII_EVENT_SUMMONED: {
       const auto& e = *static_cast<const SummonedEvent*>(event);
-      std::snprintf(out, size, "summoner=%u,player=%d,summon=%u,kind=%d", H(e.summoner), e.player, H(e.summon), e.kind);
+      std::snprintf(out, size, "summoner=%u,player=%d,summon=%u,kind=%d,serial=%u,tag=%d", H(e.summoner), e.player, H(e.summon),
+                    e.kind, e.serial, e.tag);
       return;
     }
     case REFII_EVENT_CRIME: {
@@ -887,13 +933,18 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
       char mod[96];
       char command[192];
       char button[16];
+      char kind[16];
+      char definition[16];
       LuaString(e.menu, menu, sizeof(menu));
       LuaString(e.row, row, sizeof(row));
       LuaString(e.mod, mod, sizeof(mod));
       LuaString(e.command, command, sizeof(command));
       LuaString(e.button, button, sizeof(button));
-      std::snprintf(out, size, "menu='%s',row='%s',player=%d,mod='%s',command='%s',button='%s'", menu, row, e.player, mod,
-                    command, button);
+      LuaString(e.subject_kind, kind, sizeof(kind));
+      LuaString(e.definition, definition, sizeof(definition));
+      std::snprintf(out, size,
+                    "menu='%s',row='%s',player=%d,mod='%s',command='%s',button='%s',subject_kind='%s',definition='%s',spell=%d",
+                    menu, row, e.player, mod, command, button, kind, definition, e.spell);
       return;
     }
     case REFII_EVENT_MOD_MESSAGE_BOX: {
@@ -947,8 +998,10 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
     }
     case REFII_EVENT_VORTEX_STARTED: {
       const auto& e = *static_cast<const VortexStartedEvent*>(event);
-      std::snprintf(out, size, "entity=%u,caster=%u,caster_player=%d,target=%u,serial=%u,level=%d,x=%.9g,y=%.9g,z=%.9g",
-                    H(e.entity), H(e.caster), e.caster_player, H(e.target), e.serial, e.level, Fin(e.x), Fin(e.y), Fin(e.z));
+      std::snprintf(out, size,
+                    "entity=%u,caster=%u,caster_player=%d,target=%u,serial=%u,level=%d,x=%.9g,y=%.9g,z=%.9g,tag=%d,damage=%.9g,lifts=%s",
+                    H(e.entity), H(e.caster), e.caster_player, H(e.target), e.serial, e.level, Fin(e.x), Fin(e.y), Fin(e.z), e.tag,
+                    Fin(e.damage), e.lifts ? "true" : "false");
       return;
     }
     case REFII_EVENT_VORTEX_ENDED: {
@@ -960,9 +1013,9 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
     case REFII_EVENT_FIREBALL_IMPACT: {
       const auto& e = *static_cast<const FireballImpactEvent*>(event);
       std::snprintf(out, size,
-                    "serial=%u,level=%d,caster=%u,caster_player=%d,struck=%u,struck_player=%d,x=%.9g,y=%.9g,z=%.9g,nx=%.9g,ny=%.9g,nz=%.9g,detonated=%s,hits=%d",
+                    "serial=%u,level=%d,caster=%u,caster_player=%d,struck=%u,struck_player=%d,x=%.9g,y=%.9g,z=%.9g,nx=%.9g,ny=%.9g,nz=%.9g,detonated=%s,hits=%d,tag=%d",
                     e.serial, e.level, H(e.caster), e.caster_player, H(e.struck), e.struck_player, Fin(e.x), Fin(e.y), Fin(e.z),
-                    Fin(e.nx), Fin(e.ny), Fin(e.nz), e.detonated ? "true" : "false", e.hits);
+                    Fin(e.nx), Fin(e.ny), Fin(e.nz), e.detonated ? "true" : "false", e.hits, e.tag);
       return;
     }
     case REFII_EVENT_PAUSED: {
@@ -986,6 +1039,91 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
       const auto& e = *static_cast<const CutsceneEvent*>(event);
       std::snprintf(out, size, "player=%d,active=%s,kind=%d,kinds=%d,hero=%u", e.player, e.active ? "true" : "false", e.kind,
                     e.kinds, H(e.hero));
+      return;
+    }
+    case REFII_EVENT_HEALTH_CHANGED: {
+      const auto& e = *static_cast<const HealthChangedEvent*>(event);
+      std::snprintf(out, size, "entity=%u,player=%d,delta=%.9g,health=%.9g,max=%.9g,source=%u", H(e.entity), e.player,
+                    Fin(e.delta), Fin(e.health), Fin(e.max), H(e.source));
+      return;
+    }
+    case REFII_EVENT_STATUS_APPLYING: {
+      const auto& e = *static_cast<const StatusApplyingEvent*>(event);
+      std::snprintf(out, size, "entity=%u,player=%d,effect=%d,serial=%u,source=%u,level=%d,seconds=%.9g,tag=%d", H(e.entity),
+                    e.player, e.effect, e.serial, H(e.source), e.level, Fin(e.seconds), e.tag);
+      return;
+    }
+    case REFII_EVENT_SAVE_WRITTEN: {
+      const auto& e = *static_cast<const SaveWrittenEvent*>(event);
+      char save[96];
+      LuaString(e.save, save, sizeof(save));
+      std::snprintf(out, size, "player=%d,save='%s',ok=%s", e.player, save, e.ok ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_LOCK_LOST: {
+      const auto& e = *static_cast<const LockLostEvent*>(event);
+      std::snprintf(out, size, "player=%d,hero=%u,target=%u", e.player, H(e.hero), H(e.target));
+      return;
+    }
+    case REFII_EVENT_ATTACK_MODE_CHANGED: {
+      const auto& e = *static_cast<const AttackModeChangedEvent*>(event);
+      std::snprintf(out, size, "player=%d,mode=%d", e.player, e.mode);
+      return;
+    }
+    case REFII_EVENT_SPELL_ENDED: {
+      const auto& e = *static_cast<const SpellEndedEvent*>(event);
+      std::snprintf(out, size, "serial=%u,type=%d,caster=%u,caster_player=%d,tag=%d,reason=%d,level=%d", e.serial, e.type,
+                    H(e.caster), e.caster_player, e.tag, e.reason, e.level);
+      return;
+    }
+    case REFII_EVENT_SPELL_CHARGE_ENDED: {
+      const auto& e = *static_cast<const SpellChargeEndedEvent*>(event);
+      std::snprintf(out, size, "player=%d,caster=%u,released=%s", e.player, H(e.caster), e.released ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_MELEE_SWING_ENDED: {
+      const auto& e = *static_cast<const MeleeSwingEndedEvent*>(event);
+      std::snprintf(out, size, "entity=%u,player=%d,action=%u,action_type=%d,hits=%d", H(e.entity), e.player, H(e.action),
+                    e.action_type, e.hits);
+      return;
+    }
+    case REFII_EVENT_ACTION_MOVE_INTERRUPT: {
+      const auto& e = *static_cast<const ActionMoveInterruptEvent*>(event);
+      std::snprintf(out, size, "entity=%u,player=%d,action=%u,action_type=%d", H(e.entity), e.player, H(e.action),
+                    e.action_type);
+      return;
+    }
+    case REFII_EVENT_CAMERA_CHANGED: {
+      const auto& e = *static_cast<const CameraChangedEvent*>(event);
+      std::snprintf(out, size, "player=%d,mode=%d,previous=%d,hero=%u", e.player, e.mode, e.previous, H(e.hero));
+      return;
+    }
+    case REFII_EVENT_VORTEX_CAUGHT: {
+      const auto& e = *static_cast<const VortexCaughtEvent*>(event);
+      std::snprintf(out, size, "serial=%u,tag=%d,entity=%u,victim=%u,player=%d,caster=%u,caster_player=%d,caught=%s", e.serial,
+                    e.tag, H(e.entity), H(e.victim), e.player, H(e.caster), e.caster_player, e.caught ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_APPEARANCE_CHANGED: {
+      const auto& e = *static_cast<const AppearanceChangedEvent*>(event);
+      std::snprintf(out, size, "player=%d,automatic=%s,hero=%u", e.player, e.automatic ? "true" : "false", H(e.hero));
+      return;
+    }
+    case REFII_EVENT_MORPH_CHANGED: {
+      const auto& e = *static_cast<const MorphChangedEvent*>(event);
+      std::snprintf(out, size, "player=%d,morph='0x%08x',weight=%.9g,hero=%u", e.player, e.morph, static_cast<double>(e.weight),
+                    H(e.hero));
+      return;
+    }
+    case REFII_EVENT_ITEM_REMOVED: {
+      const auto& e = *static_cast<const ItemRemovedEvent*>(event);
+      std::snprintf(out, size, "entity=%u,player=%d,inventory=%u,definition='0x%08x',count=%d,remaining=%d", H(e.entity),
+                    e.player, H(e.inventory), e.definition, e.count, e.remaining);
+      return;
+    }
+    case REFII_EVENT_EXPRESSION_WHEEL: {
+      const auto& e = *static_cast<const ExpressionWheelEvent*>(event);
+      std::snprintf(out, size, "player=%d,open=%s,highlighted='0x%08x'", e.player, e.open ? "true" : "false", e.highlighted);
       return;
     }
     case REFII_EVENT_DIALOGUE: {
@@ -1029,7 +1167,9 @@ bool HasWritableFields(int32_t kind) {
     case REFII_EVENT_SPELL_CHARGE_LEVEL:
     case REFII_EVENT_SPELL_LAUNCH:
     case REFII_EVENT_SPELL_PICK:
+    case REFII_EVENT_STATUS_APPLYING:
     case REFII_EVENT_TRACKED_STAT:
+    case REFII_EVENT_VORTEX_STARTED:
     case REFII_EVENT_WEATHER_THEME:
       return true;
     default:
@@ -1171,6 +1311,20 @@ uint32_t g_hit_sequence = 0;
 uint32_t g_impact_serial = 0;
 int32_t g_impact_hits = 0;
 
+/// THE STAMP THE NEXT SPELL FACTORY CALL TAKES: armed by the launch (its slot and spell_launch's
+/// tag) and by refii_mod_cast_spell_with (its options), taken — and disarmed — at the factory's
+/// entry, so a cast inside a cast's hit takes only its own.
+struct CastStamp {
+  bool armed = false;
+  int32_t tag = 0;
+  int32_t slot = -1;
+  float damage_scale = 1.0f;
+};
+CastStamp g_cast_stamp;
+/// The stamp a cast took, by its serial (the cast records, below); tag 0 and scale 1 for none.
+int32_t CastTagOf(uint32_t serial);
+float CastDamageScaleOf(uint32_t serial);
+
 /// Whether Godot asked for a verdict on `kind` (RefiiHost.on_verdict, and the save gate's own on
 /// start_game): a verdict runs inside Dispatch, so it counts as a subscriber.
 bool HostVerdictWants(int32_t kind) {
@@ -1221,6 +1375,11 @@ extern "C" int32_t refii_mod_api_version(void) { return REFII_MOD_API_VERSION; }
 
 bool WriteEventField(int32_t kind, void* event, const char* field, double value);
 
+namespace refii::vfs {
+// mod_commands.cpp
+int32_t ModVerdictRead(PPCContext& ctx, uint8_t* base, const char* line, char* out, size_t capacity);
+}  // namespace refii::vfs
+
 namespace {
 
 /// A Godot script's VERDICT: the host's handler runs on this thread, inside the seam, with the
@@ -1228,6 +1387,22 @@ namespace {
 /// Opt-in per kind (the host's verdict mask); a verdict handler never runs nested inside another
 /// one (a script cannot raise a game event synchronously, but a hook it reaches could).
 bool g_verdict_running = false;
+
+/// The event a verdict handler is running for, on the thread running it: what RefiiHost.read
+/// answers from. Null on every other thread and outside the handler.
+thread_local Event* t_verdict_event = nullptr;
+
+/// RefiiHost.read (payload_bridge.h refii_bridge_mod_verdict_read): a read-only query answered now,
+/// with the seam's own context and base, only on the guest thread inside a verdict handler.
+int32_t VerdictRead(const char* line, size_t length, char* out, size_t capacity) {
+  Event* event = t_verdict_event;
+  if (event == nullptr || event->ctx == nullptr || event->base == nullptr) {
+    return REFII_MOD_READ_OUTSIDE;
+  }
+  const std::string text(line, length);
+  PPCContext work = *event->ctx;
+  return refii::vfs::ModVerdictRead(work, event->base, text.c_str(), out, capacity);
+}
 
 /// The table text a Godot script gets: Lua's, and `replica=true` for a copy (a Godot handler cannot
 /// ask refii_mod_event_replica: its signal arrives after the dispatch).
@@ -1250,9 +1425,13 @@ void RunGodotVerdict(int32_t kind, void* event) {
   }
   char fields[640];
   HostFields(kind, event, refii_mod_event_replica() != 0, fields, sizeof(fields));
+  static const bool reader_registered = (refii_bridge_mod_set_verdict_reader(&VerdictRead), true);
+  (void)reader_registered;
   char answer[512];
   g_verdict_running = true;
+  t_verdict_event = static_cast<Event*>(event);
   const int32_t length = handler(kind, fields, std::strlen(fields), answer, sizeof(answer) - 1);
+  t_verdict_event = nullptr;
   g_verdict_running = false;
   if (length <= 0) {
     return;
@@ -1333,6 +1512,13 @@ bool ReplicaRun(int32_t kind, void* event) {
     case REFII_EVENT_SPELL_CREATED:
       subject = static_cast<const SpellCreatedEvent*>(event)->caster;
       break;
+    case REFII_EVENT_SPELL_ENDED:
+      subject = static_cast<const SpellEndedEvent*>(event)->caster;
+      break;
+    // The mode drop runs where the network replicates the partner's modes too.
+    case REFII_EVENT_LOCK_LOST:
+      subject = static_cast<const LockLostEvent*>(event)->hero;
+      break;
     // A cast runs on both machines (the factory's copy above): its vortex and its fireball's
     // impact are that cast's.
     case REFII_EVENT_VORTEX_STARTED:
@@ -1341,8 +1527,15 @@ bool ReplicaRun(int32_t kind, void* event) {
     case REFII_EVENT_VORTEX_ENDED:
       subject = static_cast<const VortexEndedEvent*>(event)->caster;
       break;
+    case REFII_EVENT_VORTEX_CAUGHT:
+      subject = static_cast<const VortexCaughtEvent*>(event)->caster;
+      break;
     case REFII_EVENT_FIREBALL_IMPACT:
       subject = static_cast<const FireballImpactEvent*>(event)->caster;
+      break;
+    // Health is each machine's copy of the entity: the run where the entity is not decided is the copy.
+    case REFII_EVENT_HEALTH_CHANGED:
+      subject = static_cast<const HealthChangedEvent*>(event)->entity;
       break;
     case REFII_EVENT_EXPERIENCE: {
       const uint32_t entity = static_cast<const ExperienceEvent*>(event)->entity;
@@ -1427,6 +1620,12 @@ bool WriteEventField(int32_t kind, void* event, const char* field, double value)
         return true;
       }
       return false;
+    case REFII_EVENT_VORTEX_STARTED:
+      if (is("lifts")) {
+        static_cast<VortexStartedEvent*>(event)->lifts = value != 0.0;
+        return true;
+      }
+      return false;
     case REFII_EVENT_HIT:
       if (is("damage")) {
         static_cast<HitEvent*>(event)->damage = static_cast<float>(value);
@@ -1448,10 +1647,20 @@ bool WriteEventField(int32_t kind, void* event, const char* field, double value)
         static_cast<SpellLaunchEvent*>(event)->type = ClampInt(value);
         return true;
       }
+      if (is("tag")) {
+        static_cast<SpellLaunchEvent*>(event)->tag = ClampInt(value);
+        return true;
+      }
       return false;
     case REFII_EVENT_SPELL_PICK:
       if (is("spell")) {
         static_cast<SpellPickEvent*>(event)->spell = ClampInt(value);
+        return true;
+      }
+      return false;
+    case REFII_EVENT_STATUS_APPLYING:
+      if (is("seconds")) {
+        static_cast<StatusApplyingEvent*>(event)->seconds = static_cast<float>(value);
         return true;
       }
       return false;
@@ -1578,6 +1787,20 @@ void DispatchSpawned(PPCContext& ctx, uint8_t* base);
 /// INTERACTIVE / LOOK_AT statements (core/refii_mod_events.h CutsceneEvent).
 bool ModFullCutscenePlaying(PPCContext& ctx, uint8_t* base);
 int32_t ModHeroCutsceneKinds(uint8_t* base, int32_t player);
+/// mod_api.cpp: whether a player's hero holds player mode 4 (the game's own HasPlayerMode), the
+/// player a mode handle is (comp33+0x14), and the target its targeting component holds
+/// (core/refii_mod_events.h LockLostEvent).
+bool ModHeroLockMode(PPCContext& ctx, uint8_t* base, int32_t player);
+int32_t ModPlayerOfModeHandle(uint8_t* base, uint32_t handle);
+uint32_t ModHeroTarget(PPCContext& ctx, uint8_t* base, int32_t player);
+/// mod_api.cpp: the lent charge (refii_mod_charge_spell) — whether one is out, a charge's end, a
+/// spell manager's state, and the tick that brings the slots back.
+bool ModChargeLendActive(int32_t player);
+void ModChargeLendEnded(int32_t player, bool released);
+void ModChargeLendState(uint8_t* base, uint32_t manager, int32_t state);
+void PumpChargeLend(PPCContext& ctx, uint8_t* base, float seconds);
+/// mod_api.cpp: the parry a mod holds for a player, put back on a new hero's fresh copy.
+void ReapplyHeldParry(PPCContext& ctx, uint8_t* base, int32_t player);
 
 namespace {
 
@@ -1619,6 +1842,49 @@ void DispatchCutsceneEdges(PPCContext& ctx, uint8_t* base) {
   }
 }
 
+
+/// The quick menu's wheel-open byte (+35, `stb` 1 in the open, 0 in the close), per build.
+uint32_t WheelOpenByte(uint32_t quick) { return quick + refii::guest::GuiOwnerField(35u); }
+
+/// The wheel controller at *(*(GUI + 32) + 60) and its player (+24), as refii_mod_selected_expression reads it.
+int32_t WheelPlayer(uint8_t* base) {
+  const uint32_t gui = Load32(base, refii::guest::Address(0x83496B08u));
+  const uint32_t hud = gui >= 0x10000u && gui < 0xC0000000u ? Load32(base, gui + 32u) : 0u;
+  const uint32_t wheel = hud >= 0x10000u && hud < 0xC0000000u ? Load32(base, hud + 60u) : 0u;
+  return wheel >= 0x10000u && wheel < 0xC0000000u ? static_cast<int32_t>(Load32(base, wheel + 24u)) : 0;
+}
+
+/// The wheel the last open stated, and the highlight last raised for it (0 player: none up).
+int32_t g_wheel_player = 0;
+uint32_t g_wheel_highlighted = 0;
+
+void RaiseExpressionWheel(const PPCContext& ctx, uint8_t* base, int32_t player, bool open, uint32_t highlighted) {
+  ExpressionWheelEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.player = player;
+  e.open = open;
+  e.highlighted = highlighted;
+  Dispatch(e);
+}
+
+/// THE WHEEL'S HIGHLIGHT (ExpressionWheelEvent): while an open stated a wheel, the expression it
+/// highlights (refii_mod_selected_expression) compared with the last one raised; one event per change.
+void DispatchWheelHighlight(PPCContext& ctx, uint8_t* base) {
+  if (g_wheel_player == 0) {
+    return;
+  }
+  const uint32_t now = refii_mod_selected_expression(base, g_wheel_player);
+  if (now == g_wheel_highlighted) {
+    return;
+  }
+  g_wheel_highlighted = now;
+  if (AnySubscriber(REFII_EVENT_EXPRESSION_WHEEL)) {
+    RaiseExpressionWheel(ctx, base, g_wheel_player, true, now);
+  }
+}
+
 }  // namespace
 
 /// From RunModTicks, after the registered tick callbacks: the Tick event, the hero events,
@@ -1644,6 +1910,7 @@ void RunModEventsTick(PPCContext& ctx, uint8_t* base, float seconds) {
     }
     seen = hero;
     if (hero != 0) {
+      refii::vfs::ReapplyHeldParry(ctx, base, p);
       HeroEvent ready{};
       PPCContext ready_ctx = ctx;
       ready.ctx = &ready_ctx;
@@ -1680,9 +1947,12 @@ void RunModEventsTick(PPCContext& ctx, uint8_t* base, float seconds) {
 
   RunModCommands(ctx, base);
   DispatchSpawned(ctx, base);
+  DrainCastPairs(base);
   DrainRelay(ctx, base);
   DrainPartnerMessages(ctx, base);
   DispatchCutsceneEdges(ctx, base);
+  refii::vfs::PumpChargeLend(ctx, base, seconds);
+  DispatchWheelHighlight(ctx, base);
 
   TickEvent tick{};
   PPCContext tick_ctx = ctx;
@@ -1765,20 +2035,75 @@ REX_EXTERN(rex_CPlayerActionReceiver_ProcessAction) {
 // slot 1 returns its AbilityType (0x826f5f7c `cmpwi r3,0x10` is the melee press). Not calling
 // the original refuses the request; r3 = 0 is what it returns when nothing matched.
 // TU1 0x826F57E8 / disc 0x8273DA00.
+//
+// A REFUSED MELEE PRESS REFUSES ITS RELEASE: the game never saw the press, so the release that
+// follows it (17) is refused here too — the handlers still hear it, already cancelled — and the
+// pair stays together without a mod keeping the press. Kept per entity until its release.
+namespace {
+constexpr uint32_t kMeleePressed = 16u;
+constexpr uint32_t kMeleeReleased = 17u;
+std::array<uint32_t, 16> g_refused_presses{};
+
+/// Whether `entity`'s last melee press was refused; `take` forgets it.
+bool RefusedPress(uint32_t entity, bool take) {
+  for (uint32_t& refused : g_refused_presses) {
+    if (refused == entity) {
+      if (take) {
+        refused = 0u;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+void RememberPress(uint32_t entity, bool refused) {
+  if (!refused) {
+    RefusedPress(entity, true);
+    return;
+  }
+  if (RefusedPress(entity, false)) {
+    return;
+  }
+  for (uint32_t& slot : g_refused_presses) {
+    if (slot == 0u) {
+      slot = entity;
+      return;
+    }
+  }
+  g_refused_presses[0] = entity;  // more held presses than any fight has: the oldest goes
+}
+}  // namespace
+
 REX_EXTERN(rex_CECAbilities_PerformRequest) {
   REX_FUNC_PROLOGUE();
-  if (AnySubscriber(REFII_EVENT_ABILITY_REQUEST)) {
+  const bool listened = AnySubscriber(REFII_EVENT_ABILITY_REQUEST);
+  bool held = false;
+  for (uint32_t refused : g_refused_presses) {
+    held = held || refused != 0u;
+  }
+  if (listened || held) {
     PPCContext query = ctx;
-    AbilityRequestEvent e{};
-    PPCContext e_ctx = ctx;
-    e.ctx = &e_ctx;
-    e.base = base;
-    e.entity = ctx.r3.u32;
-    e.player = PlayerOf(base, e.entity);
-    e.request = ctx.r4.u32;
-    e.type = refii::mods::CallVirtual(query, base, ctx.r4.u32, 1) ? query.r3.u32 : 0u;
-    Dispatch(e);
-    if (e.cancel) {
+    const uint32_t type = refii::mods::CallVirtual(query, base, ctx.r4.u32, 1) ? query.r3.u32 : 0u;
+    const bool release_refused = type == kMeleeReleased && RefusedPress(ctx.r3.u32, true);
+    bool cancel = release_refused;
+    if (listened) {
+      AbilityRequestEvent e{};
+      PPCContext e_ctx = ctx;
+      e.ctx = &e_ctx;
+      e.base = base;
+      e.entity = ctx.r3.u32;
+      e.player = PlayerOf(base, e.entity);
+      e.request = ctx.r4.u32;
+      e.type = type;
+      e.cancel = release_refused;
+      Dispatch(e);
+      cancel = cancel || e.cancel;
+    }
+    if (type == kMeleePressed) {
+      RememberPress(ctx.r3.u32, cancel);
+    }
+    if (cancel) {
       ctx.r3.u64 = 0;
       return;
     }
@@ -1897,15 +2222,89 @@ REX_EXTERN(rex_CActionFactory_CreateFromDefinition) {
   RecordAction(action, type);
 }
 
+namespace {
+
+/// A strike CommitSwing committed, until its action ends (MeleeSwingEndedEvent): the action, the
+/// striker, its EScriptableAction and the hits it has landed so far.
+struct SwingRecord {
+  uint32_t action = 0;
+  uint32_t entity = 0;
+  int32_t type = -1;
+  int32_t hits = 0;
+};
+/// More than both heroes' strikes and every creature mid-swing near them.
+std::array<SwingRecord, 32> g_swings{};
+size_t g_swing_next = 0;
+int32_t g_swings_live = 0;
+
+void RecordSwing(uint32_t action, uint32_t entity, int32_t type) {
+  if (action == 0 || entity == 0) {
+    return;
+  }
+  for (SwingRecord& r : g_swings) {
+    if (r.action == action) {
+      r = SwingRecord{action, entity, type, 0};
+      return;
+    }
+  }
+  SwingRecord& slot = g_swings[g_swing_next];
+  g_swing_next = (g_swing_next + 1) % g_swings.size();
+  if (slot.action == 0) {
+    ++g_swings_live;
+  }
+  slot = SwingRecord{action, entity, type, 0};
+}
+
+SwingRecord* SwingOf(uint32_t action) {
+  if (action == 0 || g_swings_live == 0) {
+    return nullptr;
+  }
+  for (SwingRecord& r : g_swings) {
+    if (r.action == action) {
+      return &r;
+    }
+  }
+  return nullptr;
+}
+
+void ForgetSwing(SwingRecord& r) {
+  r = SwingRecord{};
+  --g_swings_live;
+}
+
+/// A hit_landed by `attacker` (this machine's, or a relayed copy): counted for the strike that is
+/// its current action, when one is recorded.
+void NoteSwingHit(uint8_t* base, uint32_t attacker) {
+  if (attacker == 0 || g_swings_live == 0) {
+    return;
+  }
+  const uint32_t manager = refii_mod_component(base, attacker, kActionManagerComponent);
+  if (SwingRecord* r = manager != 0 ? SwingOf(Load32(base, manager + 0x10u)) : nullptr; r != nullptr && r->entity == attacker) {
+    ++r->hits;
+  }
+}
+
+}  // namespace
+
 // Called once by every strike's Perform after the swing's animation has started: r3 = the
 // ability, r4 = the entity. The entity's action manager (component 49) then holds the live
-// clone at +0x10. TU1 0x8297BD68 / disc 0x829AEB98.
+// clone at +0x10, recorded for its end (MeleeSwingEnded). TU1 0x8297BD68 / disc 0x829AEB98.
 REX_EXTERN(rex_CAbilityActionMelee_CommitSwing) {
   REX_FUNC_PROLOGUE();
   const uint32_t ability = ctx.r3.u32;
   const uint32_t entity = ctx.r4.u32;
   __imp__rex_CAbilityActionMelee_CommitSwing(ctx, base);
-  if (AnySubscriber(REFII_EVENT_MELEE_SWING)) {
+  const bool swing = AnySubscriber(REFII_EVENT_MELEE_SWING);
+  const bool ended = AnySubscriber(REFII_EVENT_MELEE_SWING_ENDED);
+  if (!swing && !ended) {
+    return;
+  }
+  const uint32_t manager = entity != 0 ? refii_mod_component(base, entity, kActionManagerComponent) : 0u;
+  const uint32_t action = manager != 0 ? Load32(base, manager + 0x10u) : 0u;
+  if (ended) {
+    RecordSwing(action, entity, ActionTypeOf(action));
+  }
+  if (swing) {
     MeleeSwingEvent e{};
     PPCContext e_ctx = ctx;
     e.ctx = &e_ctx;
@@ -1913,8 +2312,7 @@ REX_EXTERN(rex_CAbilityActionMelee_CommitSwing) {
     e.entity = entity;
     e.player = PlayerOf(base, entity);
     e.ability = ability;
-    const uint32_t manager = entity != 0 ? refii_mod_component(base, entity, kActionManagerComponent) : 0u;
-    e.action = manager != 0 ? Load32(base, manager + 0x10u) : 0u;
+    e.action = action;
     e.action_type = ActionTypeOf(e.action);
     e.action_name = refii_mod_scriptable_action_name(e.action_type);
     Dispatch(e);
@@ -2065,8 +2463,26 @@ REX_EXTERN(rex_CECHitReceiver_OnHit) {
   if (taken && g_impact_serial != 0 && Load32(base, hit + kHitSerial) == g_impact_serial) {
     ++g_impact_hits;
   }
+  // A cast's damage_scale (refii_mod_cast_options): the hit's damage for this delivery, put back
+  // after it unless a handler wrote its own, so a hit object handed to several receivers is
+  // scaled once each.
+  const float scale = taken ? CastDamageScaleOf(Load32(base, hit + kHitSerial)) : 1.0f;
+  const float unscaled = scale != 1.0f ? LoadF(base, hit + kHitDamage) : 0.0f;
+  if (scale != 1.0f) {
+    refii::mods::StoreF32(base, hit + kHitDamage, unscaled * scale);
+  }
+  const auto unscale = [&] {
+    if (scale != 1.0f && LoadF(base, hit + kHitDamage) == unscaled * scale) {
+      refii::mods::StoreF32(base, hit + kHitDamage, unscaled);
+    }
+  };
+  // A strike's hits, counted for MeleeSwingEnded.hits once delivered (the attacker read before
+  // the delivery, as ReadHit reads it).
+  const uint32_t swing_attacker = taken && g_swings_live != 0 ? Deref(ctx, base, hit + kHitAttackerRef) : 0u;
   if ((!pre && !post) || !taken) {
     __imp__rex_CECHitReceiver_OnHit(ctx, base);
+    unscale();
+    NoteSwingHit(base, swing_attacker);
     return;
   }
   const uint32_t victim = component != 0 ? Load32(base, component + 4u) : 0u;
@@ -2075,11 +2491,13 @@ REX_EXTERN(rex_CECHitReceiver_OnHit) {
   e.ctx = &e_ctx;
   e.base = base;
   ReadHit(ctx, base, victim, hit, e);
+  e.tag = CastTagOf(e.spell_serial);
   if (pre) {
     const float damage = e.damage;
     const bool knockdown = e.knockdown;
     Dispatch(e);
     if (e.cancel) {
+      unscale();
       return;
     }
     if (hit != 0 && e.damage != damage) {
@@ -2092,6 +2510,8 @@ REX_EXTERN(rex_CECHitReceiver_OnHit) {
     }
   }
   __imp__rex_CECHitReceiver_OnHit(ctx, base);
+  unscale();
+  NoteSwingHit(base, swing_attacker);
   if (post) {
     HitLandedEvent landed{};
     PPCContext landed_ctx = ctx;
@@ -2219,12 +2639,19 @@ REX_EXTERN(rex_CECSpellManager_LaunchSlot) {
   const uint32_t manager = ctx.r3.u32;
   const uint32_t flag = ctx.r4.u32;
   const uint32_t slot = ctx.r5.u32;
-  if (manager == 0 || flag > 1 || slot >= kSlots || !AnySubscriber(REFII_EVENT_SPELL_LAUNCH)) {
+  if (manager == 0 || flag > 1 || slot >= kSlots) {
     __imp__rex_CECSpellManager_LaunchSlot(ctx, base);
     return;
   }
   const int32_t forced = static_cast<int32_t>(Load32(base, refii::guest::Address(kLaunchSlotOverride)));
   const uint32_t used = forced >= 0 && forced < static_cast<int32_t>(kSlots) ? static_cast<uint32_t>(forced) : slot;
+  // The spell this launch creates takes its slot (and the tag spell_launch wrote) at the factory.
+  if (!AnySubscriber(REFII_EVENT_SPELL_LAUNCH)) {
+    g_cast_stamp = CastStamp{true, 0, static_cast<int32_t>(used), 1.0f};
+    __imp__rex_CECSpellManager_LaunchSlot(ctx, base);
+    g_cast_stamp = CastStamp{};
+    return;
+  }
   const uint32_t cell = manager + kManagerSlotTable + flag * kSlots + used;
   const int32_t stated = static_cast<int8_t>(Load8(base, cell));
   SpellLaunchEvent e{};
@@ -2249,7 +2676,9 @@ REX_EXTERN(rex_CECSpellManager_LaunchSlot) {
   if (swap) {
     refii::mods::StoreU8(base, cell, static_cast<uint8_t>(static_cast<int8_t>(e.type)));
   }
+  g_cast_stamp = CastStamp{true, e.tag, static_cast<int32_t>(used), 1.0f};
   __imp__rex_CECSpellManager_LaunchSlot(ctx, base);
+  g_cast_stamp = CastStamp{};
   if (swap) {
     refii::mods::StoreU8(base, cell, static_cast<uint8_t>(static_cast<int8_t>(stated)));
   }
@@ -2312,6 +2741,20 @@ constexpr uint32_t kPartVortexLevel = 0x14;
 constexpr uint32_t kPartVortexSerial = 0x18;
 constexpr uint32_t kPartVortexCasterBody = 0x164;
 constexpr uint32_t kPartVortexPoint = 0x140;
+/// The damage of one hit on a held creature before its DamageFactor (Init `stfs f31,0x38(r31)`
+/// 0x82758ebc; VortexStartedEvent quotes its readers).
+constexpr uint32_t kPartVortexDamage = 0x38;
+/// CECCreature, the component rex_VortexComponent_Classify tests (`lbz r10,0x14(r11)` 0x8275ec50).
+constexpr uint32_t kVortexCreatureComponent = 20;
+/// The vortex's held list, a vector at +0x1B0 of 8-byte weak references: +0x1B4 the first, +0x1B8
+/// the end; an entry's +4 the body (Shutdown: `lwz r11,0x1B4(r28); addi r29,r28,0x1B0` 0x82758fd0,
+/// `lwz r10,8(r29)` and `srawi. r27,r9,3` 0x82758fe4..ec, `add r3,r30,r11; lwz r11,4(r3)` and the
+/// body's entity `lwz r10,0(r11)` 0x8275901c..2c). The update appends a capture through
+/// `sub_8236AC38(component+0x1B0, ...)` (0x8275b964) and erases a release (0x8275be28..38).
+constexpr uint32_t kPartVortexHeldFirst = 0x1B4;
+constexpr uint32_t kPartVortexHeldEnd = 0x1B8;
+constexpr uint32_t kPartVortexHeldStride = 8;
+constexpr uint32_t kPartVortexHeldBody = 4;
 constexpr int32_t kPartTypeFireball = 1;
 constexpr int32_t kPartTypeSwords = 3;
 constexpr int32_t kPartTypeVortex = 4;
@@ -2324,24 +2767,50 @@ struct CastRecord {
   int32_t type = -1;
   int32_t level = 0;
   bool targeted = false;
+  /// The stamp the factory call took (CastStamp): the launch slot or -1, the tag, the hits' scale.
+  int32_t slot = -1;
+  int32_t tag = 0;
+  float damage_scale = 1.0f;
 };
 CastRecord g_casts[32];
 int g_cast_next = 0;
+
+CastRecord* CastSlot(uint32_t serial) {
+  for (CastRecord& c : g_casts) {
+    if (c.serial == serial) {
+      return &c;
+    }
+  }
+  CastRecord* slot = &g_casts[g_cast_next];
+  g_cast_next = (g_cast_next + 1) % 32;
+  *slot = CastRecord{};
+  slot->serial = serial;
+  return slot;
+}
+
+/// Before the factory builds the spell: its serial (the registry's counter) takes the stamp, so a
+/// hit landed inside the factory finds it.
+void StampCast(uint32_t serial, const CastStamp& stamp) {
+  if (serial == 0 || !stamp.armed) {
+    return;
+  }
+  CastRecord* record = CastSlot(serial);
+  record->slot = stamp.slot;
+  record->tag = stamp.tag;
+  record->damage_scale = stamp.damage_scale;
+}
 
 void RecordCast(uint8_t* base, uint32_t spell, int32_t type, bool targeted, int32_t level, uint32_t caster) {
   const uint32_t serial = Load32(base, spell + kSpellSerial);
   if (serial == 0) {
     return;
   }
-  const CastRecord record{serial, spell, caster, type, level, targeted};
-  for (CastRecord& c : g_casts) {
-    if (c.serial == serial) {
-      c = record;
-      return;
-    }
-  }
-  g_casts[g_cast_next] = record;
-  g_cast_next = (g_cast_next + 1) % 32;
+  CastRecord* record = CastSlot(serial);
+  record->spell = spell;
+  record->caster = caster;
+  record->type = type;
+  record->level = level;
+  record->targeted = targeted;
 }
 
 const CastRecord* CastOf(uint32_t serial) {
@@ -2353,12 +2822,19 @@ const CastRecord* CastOf(uint32_t serial) {
   return nullptr;
 }
 
-/// The live vortex components, by serial (Init adds, Shutdown removes).
+/// The live vortex components, by serial (Init adds, Shutdown removes), and whether each lifts
+/// creatures: VortexStarted's `lifts`, or online on the copy of a cast this machine does not decide
+/// the decider's (AdoptSpellState). `release_creatures`: the adoption turned lifts false, so the
+/// creatures the copy caught before it are let go at its next update (ReleaseUnliftedCreatures).
 struct LiveVortex {
   uint32_t component = 0;
   uint32_t serial = 0;
+  bool lifts = true;
+  bool release_creatures = false;
 };
 LiveVortex g_vortices[8];
+/// The component whose update is running (rex_VortexComponent_Update, spell_fx_owner.cpp), 0 none.
+uint32_t g_vortex_updating = 0;
 
 LiveVortex* VortexSlot(uint32_t component) {
   for (LiveVortex& v : g_vortices) {
@@ -2470,6 +2946,33 @@ extern "C" int32_t refii_mod_spell_parts(PPCContext* ctx, uint8_t* base, uint32_
   return 1;
 }
 
+extern "C" int32_t refii_mod_vortex_held(uint8_t* base, uint32_t serial, uint32_t* out, int32_t max) {
+  for (const LiveVortex& v : g_vortices) {
+    if (serial == 0 || v.serial != serial || v.component == 0 || Load32(base, v.component + kPartVortexSerial) != serial) {
+      continue;
+    }
+    const uint32_t first = Load32(base, v.component + kPartVortexHeldFirst);
+    const uint32_t end = Load32(base, v.component + kPartVortexHeldEnd);
+    if (!Plausible(first) || end < first || (end - first) % kPartVortexHeldStride != 0 ||
+        (end - first) / kPartVortexHeldStride > 256u) {
+      return 0;
+    }
+    int32_t count = 0;
+    for (uint32_t at = first; at < end; at += kPartVortexHeldStride) {
+      const uint32_t victim = WeakRefEntity(base, Load32(base, at + kPartVortexHeldBody));
+      if (victim == 0 || refii_mod_entity_alive(base, victim) == 0) {
+        continue;
+      }
+      if (out != nullptr && count < max) {
+        out[count] = victim;
+      }
+      ++count;
+    }
+    return count;
+  }
+  return -1;
+}
+
 // The player's look-at flag writer: r3 = the player component (33, owner entity at +4), r4 = the
 // value; `stb r29,0x20(r30)` 0x823e9f34 behind an equal-value early return. Its callers are the
 // camera's LT-down input event (`sub_825ADD58` 0x825ae6e0, 1), the hero's message handler on the
@@ -2520,7 +3023,7 @@ REX_EXTERN(rex_VortexComponent_Init) {
   if (slot == nullptr) {
     slot = &g_vortices[0];  // the oldest: eight live vortices at once is the game's own ceiling by far
   }
-  *slot = LiveVortex{component, serial};
+  *slot = LiveVortex{component, serial, true};
   if (!AnySubscriber(REFII_EVENT_VORTEX_STARTED)) {
     return;
   }
@@ -2534,6 +3037,7 @@ REX_EXTERN(rex_VortexComponent_Init) {
   e.caster_player = PlayerOf(base, e.caster);
   e.target = entry.r5.u32;
   e.serial = serial;
+  e.tag = CastTagOf(serial);
   e.level = static_cast<int32_t>(Load32(base, component + kPartVortexLevel));
   float xyz[3] = {0.0f, 0.0f, 0.0f};
   if (Plausible(e.entity)) {
@@ -2542,7 +3046,136 @@ REX_EXTERN(rex_VortexComponent_Init) {
   e.x = xyz[0];
   e.y = xyz[1];
   e.z = xyz[2];
+  e.damage = LoadF(base, component + kPartVortexDamage);
+  e.lifts = true;
   Dispatch(e);
+  if (LiveVortex* live = VortexSlot(component)) {
+    live->lifts = e.lifts;
+  }
+}
+
+namespace {
+
+/// The vortex letting go of one held entity: r3 the component, r4 the entity. It runs the release
+/// (rex_VortexComponent_Release, `bl sub_8275CB28` 0x8275ca78), then takes the entity out of the
+/// held list (`addi r31,r31,0x1B0` 0x8275ca7c, `bl sub_82343B88` 0x8275cac8, `bl sub_8236A190`
+/// 0x8275cb10). The game lets an entity go of every vortex near it through this call
+/// (`sub_8275E7A0`, `bl sub_8275CA30` 0x8275eae8). TU1 0x8275CA30 / disc 0x82734410, the same body.
+constexpr uint32_t kVortexLetGo = 0x8275CA30u;
+constexpr int32_t kVortexReleaseMax = 32;
+
+/// The SpellState (core/cast_pairing.h) this machine holds for its spell `serial`.
+uint32_t SpellStateOf(uint8_t* base, uint32_t serial) {
+  for (const LiveVortex& v : g_vortices) {
+    if (serial != 0 && v.serial == serial && v.component != 0 && Load32(base, v.component + kPartVortexSerial) == serial) {
+      return v.lifts ? 0u : refii::cast_pairing::kSpellStateNoLift;
+    }
+  }
+  return 0u;
+}
+
+/// The decider's SpellState for this machine's copy `serial`, taken when the pair forms: a live
+/// vortex lifts as the decider's does from its next classification on.
+void AdoptSpellState(uint8_t* base, uint32_t serial, uint32_t state) {
+  for (LiveVortex& v : g_vortices) {
+    if (serial == 0 || v.serial != serial || v.component == 0 || Load32(base, v.component + kPartVortexSerial) != serial) {
+      continue;
+    }
+    const bool lifts = (state & refii::cast_pairing::kSpellStateNoLift) == 0u;
+    v.release_creatures = !lifts && (v.lifts || v.release_creatures);
+    v.lifts = lifts;
+  }
+}
+
+}  // namespace
+
+namespace refii::vfs {
+
+/// rex_VortexComponent_Update (spell_fx_owner.cpp) around the original: the component whose update
+/// runs, 0 after; returns the one before.
+uint32_t VortexUpdating(uint32_t component) {
+  const uint32_t outer = g_vortex_updating;
+  g_vortex_updating = component;
+  return outer;
+}
+
+/// rex_VortexComponent_Update (spell_fx_owner.cpp) before the original: a vortex whose `lifts` an
+/// adoption turned false lets go of the creatures it holds, the entities the classification would
+/// now answer 2 (component 20), through the game's own let-go (kVortexLetGo). The decider's copy
+/// never caught them; props stay held, as they are there.
+void ReleaseUnliftedCreatures(PPCContext& ctx, uint8_t* base, uint32_t component) {
+  LiveVortex* live = Plausible(component) ? VortexSlot(component) : nullptr;
+  if (live == nullptr || !live->release_creatures) {
+    return;
+  }
+  live->release_creatures = false;
+  const uint32_t first = Load32(base, component + kPartVortexHeldFirst);
+  const uint32_t end = Load32(base, component + kPartVortexHeldEnd);
+  if (live->lifts || !Plausible(first) || end < first || (end - first) % kPartVortexHeldStride != 0 ||
+      (end - first) / kPartVortexHeldStride > 256u) {
+    return;
+  }
+  uint32_t creatures[kVortexReleaseMax];
+  int32_t count = 0;
+  for (uint32_t at = first; at < end && count < kVortexReleaseMax; at += kPartVortexHeldStride) {
+    const uint32_t victim = WeakRefEntity(base, Load32(base, at + kPartVortexHeldBody));
+    if (victim != 0 && refii_mod_component(base, victim, kVortexCreatureComponent) != 0) {
+      creatures[count++] = victim;
+    }
+  }
+  // Each let-go erases its entry, so the held list is read once, before the first.
+  for (int32_t i = 0; i < count; ++i) {
+    PPCContext work = Frame(ctx);
+    work.r3.u64 = component;
+    work.r4.u64 = creatures[i];
+    CallGuest(work, base, refii::guest::Address(kVortexLetGo));
+  }
+}
+
+}  // namespace refii::vfs
+
+// How the vortex takes an entity: r3 the entity, r4 the level, r5 the kind out (1 lift, 2 one it
+// cannot lift), r6..r9 the factors out; returns whether the vortex affects it at all (`mr r31,r3;
+// mr r22,r5` 0x8275eb50 / 0x8275eb2c, `mr r3,r23` before each return). VortexStartedEvent quotes
+// the update's reading of the kind. Inside the update of a vortex whose `lifts` is false, a
+// creature (component 20, the lookup the function itself makes at 0x8275ec44..64) answered 1 is
+// answered 2, the store the function makes for a creature it cannot lift. Its callers are the
+// update's own (0x8275aff4, the held entity's step 0x8275c384, the held hit 0x8275d91c) and the
+// update's two world queries' filters (0x8275de88, 0x8275e2ec): a creature answered 2 still passes
+// the creature filter and is no capture candidate for the props' filter.
+// A creature answered 1 by an AWAITING copy (online, a cast this machine does not decide, its pair
+// not formed yet: SpellAwaitsPair) is answered as one the vortex does not affect (r3 = 0), so its
+// update neither shudders nor queues it this pass and reconsiders it at the next: the update's
+// `beq cr6,loc_8275B380` 0x8275b000 skips to the next candidate (no shudder ring entry, no
+// `bl sub_82B49750` 0x8275b37c), the creature filter's `beq cr6,loc_8275DEAC` 0x8275de98 and the
+// props' filter's `beq cr6,loc_8275E320` 0x8275e2f8 reject it, and the capture `bl sub_8275C578`
+// 0x8275b9cc (its one caller) takes only that queue. The checks run every half second (`stfs
+// f0,0x44(r22)` 0x8275acf4 of 0.5; `beq cr6,loc_8275BA1C` 0x8275ace8 skips them between). A
+// creature the copy cannot lift whatever `lifts` says (answered 2) is not held back. Nothing is
+// held while awaiting, so the held step and held hit never see such a creature. TU1 0x8275EB10 /
+// disc 0x827364F0, the same body; the update bodies sub_8275ABE8 / sub_827325C8 have the same
+// 1195 mnemonics.
+REX_EXTERN(rex_VortexComponent_Classify) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t entity = ctx.r3.u32;
+  const uint32_t kind = ctx.r5.u32;
+  __imp__rex_VortexComponent_Classify(ctx, base);
+  if (g_vortex_updating == 0 || (ctx.r3.u32 & 0xFFu) == 0 || !Plausible(kind) || Load32(base, kind) != 1u) {
+    return;
+  }
+  const LiveVortex* live = VortexSlot(g_vortex_updating);
+  if (live == nullptr) {
+    return;
+  }
+  const bool awaiting = SpellAwaitsPair(live->serial);
+  if ((!awaiting && live->lifts) || refii_mod_component(base, entity, kVortexCreatureComponent) == 0) {
+    return;
+  }
+  if (awaiting) {
+    ctx.r3.u64 = 0;
+    return;
+  }
+  refii::mods::StoreU32(base, kind, 2u);
 }
 
 // The vortex component's Shutdown: r3 = the component. It stores nothing to +4, +0x18 or
@@ -2646,6 +3279,7 @@ REX_EXTERN(rex_TargetedFireball_Impact) {
   e.nz = normal[2];
   e.detonated = detonated;
   e.hits = hits;
+  e.tag = CastTagOf(serial);
   Dispatch(e);
 }
 
@@ -2653,13 +3287,25 @@ REX_EXTERN(rex_TargetedFireball_Impact) {
 // type, r5 1 targeted / 0 area, r6 target entity, r7 power level 0..4, r8 caster entity, r9 the
 // manager's definitions word; v1 position, v2 direction. The spell object's serial is at +0x44.
 // TU1 0x824B1828 / disc 0x8249BB60.
+//
+// The serial is the registry's counter, taken before the spell is built (`lwz r19,0xC(r18)`
+// 0x824b1934, `stw r9,0xC(r18)` 0x824b194c) and stored into it after (`stw r19,0x44(r31)`
+// 0x824b1ec4) ahead of the class's Init and Start (0x824b1eec / 0x824b1f00), where a targeted
+// Lightning's bolt lands: so the cast's stamp is recorded by that serial before the call. Disc:
+// `lwz r19,0xC(r18)` 0x8249bc6c, `stw r19,0x44(r31)` 0x8249c1fc.
 REX_EXTERN(rex_CSpellRegistry_Create) {
   REX_FUNC_PROLOGUE();
   const PPCContext entry = ctx;
+  const CastStamp stamp = g_cast_stamp;
+  g_cast_stamp = CastStamp{};
+  const uint32_t registry = ctx.r3.u32;
+  StampCast(Plausible(registry) ? Load32(base, registry + kRegistrySerialCounter) : 0u, stamp);
   __imp__rex_CSpellRegistry_Create(ctx, base);
   if (ctx.r3.u32 != 0) {
     RecordCast(base, ctx.r3.u32, static_cast<int32_t>(entry.r4.u32), entry.r5.u32 != 0, static_cast<int32_t>(entry.r7.u32),
                entry.r8.u32);
+    // A refii_mod_cast_spell_with call arms a stamp with no slot: no cast action made that spell.
+    PairCreatedSpell(base, entry.r8.u32, Load32(base, ctx.r3.u32 + kSpellSerial), stamp.armed && stamp.slot < 0);
   }
   if (ctx.r3.u32 != 0 && AnySubscriber(REFII_EVENT_SPELL_CREATED)) {
     SpellCreatedEvent e{};
@@ -2674,8 +3320,291 @@ REX_EXTERN(rex_CSpellRegistry_Create) {
     e.caster = entry.r8.u32;
     e.caster_player = PlayerOf(base, e.caster);
     e.serial = Load32(base, e.spell + kSpellSerial);
+    const CastRecord* cast = CastOf(e.serial);
+    e.slot = cast != nullptr ? cast->slot : -1;
+    e.tag = cast != nullptr ? cast->tag : 0;
+    e.host_serial = refii_mod_host_serial(base, e.serial);
     Dispatch(e);
   }
+}
+
+namespace {
+
+int32_t CastTagOf(uint32_t serial) {
+  const CastRecord* cast = CastOf(serial);
+  return cast != nullptr ? cast->tag : 0;
+}
+
+float CastDamageScaleOf(uint32_t serial) {
+  const CastRecord* cast = CastOf(serial);
+  return cast != nullptr ? cast->damage_scale : 1.0f;
+}
+
+}  // namespace
+
+namespace refii::vfs {
+
+/// refii_mod_cast_spell_with (mod_api.cpp): the stamp its own factory call takes, the stamp armed
+/// before it (a launch's, when the call is made inside one) put back after.
+CastStamp g_cast_stamp_outer[4];
+int32_t g_cast_stamp_depth = 0;
+
+void PushCastStamp(int32_t tag, float damage_scale) {
+  if (g_cast_stamp_depth < 4) {
+    g_cast_stamp_outer[g_cast_stamp_depth] = g_cast_stamp;
+  }
+  ++g_cast_stamp_depth;
+  g_cast_stamp = CastStamp{true, tag, -1, std::isfinite(damage_scale) && damage_scale >= 0.0f ? damage_scale : 1.0f};
+}
+
+void PopCastStamp() {
+  if (g_cast_stamp_depth <= 0) {
+    return;
+  }
+  --g_cast_stamp_depth;
+  g_cast_stamp = g_cast_stamp_depth < 4 ? g_cast_stamp_outer[g_cast_stamp_depth] : CastStamp{};
+}
+
+}  // namespace refii::vfs
+
+// ---------------------------------------------------------------------------------------------
+// A spell's end (SpellEnded), a charge's and a strike's end (SpellChargeEnded, MeleeSwingEnded),
+// movement's interrupt (ActionMoveInterrupt) and the lock's end (LockLost). core/refii_mod_events.h
+// quotes each seam's instructions.
+// ---------------------------------------------------------------------------------------------
+
+extern "C" uint8_t* RefiiGuestBase(void);
+
+namespace {
+
+/// The base spell (`sub_828E5020`): the caster's weak reference +0x18 (its holder +0x1C, the entity
+/// at *holder — FindLive's own read, 0x82174328), type +0x28, level +0x40 (serial kSpellSerial).
+constexpr uint32_t kSpellCasterHolder = 0x1C;
+constexpr uint32_t kSpellType = 0x28;
+constexpr uint32_t kSpellLevel = 0x40;
+
+/// A spell the registry's update is ending, read before its Stop (the object may be freed by the
+/// erase that follows).
+struct EndedSpell {
+  uint32_t serial;
+  int32_t type;
+  int32_t level;
+  uint32_t caster;
+  int32_t reason;
+};
+std::vector<EndedSpell> g_spells_ended;
+/// The spell whose Update the registry is about to run this pass (RefiiSpellRegistryUpdating).
+uint32_t g_spell_updating = 0;
+bool g_spell_end_listening = false;
+
+}  // namespace
+
+// The registry's update reaching a spell not yet done, before its Update (`lwz r11,0(r31)` at
+// 0x822a7fd8, after `lbz r11,0x48(r31); bne` 0x822a7fcc..d4). Disc 0x822a7d98.
+void RefiiSpellRegistryUpdating(PPCRegister& r31) { g_spell_updating = r31.u32; }
+
+// The registry's update ending a spell, before its Stop (`lwz r11,0(r31)` at 0x822a8008, reached
+// only when it was done before its Update or after it). Disc 0x822a7dc8.
+void RefiiSpellRegistryEnding(PPCRegister& r31) {
+  const uint32_t spell = r31.u32;
+  const bool finished = spell == g_spell_updating;
+  g_spell_updating = 0;
+  uint8_t* base = RefiiGuestBase();
+  if (!g_spell_end_listening || base == nullptr || !Plausible(spell)) {
+    return;
+  }
+  const uint32_t holder = Load32(base, spell + kSpellCasterHolder);
+  EndedSpell ended{};
+  ended.serial = Load32(base, spell + kSpellSerial);
+  ended.type = static_cast<int32_t>(Load32(base, spell + kSpellType));
+  ended.level = static_cast<int32_t>(Load32(base, spell + kSpellLevel));
+  ended.caster = Plausible(holder) ? Load32(base, holder) : 0u;
+  ended.reason = finished ? REFII_SPELL_END_FINISHED : REFII_SPELL_END_STOPPED;
+  g_spells_ended.push_back(ended);
+}
+
+// The spell registry's update: r3 = the registry. Every spell it ends was read by the midasm hooks
+// above; each is raised once the update returned. TU1 0x822A7F50 / disc 0x822A7D10.
+REX_EXTERN(rex_CSpellRegistry_Update) {
+  REX_FUNC_PROLOGUE();
+  g_spell_end_listening = AnySubscriber(REFII_EVENT_SPELL_ENDED);
+  g_spells_ended.clear();
+  __imp__rex_CSpellRegistry_Update(ctx, base);
+  g_spell_end_listening = false;
+  if (g_spells_ended.empty()) {
+    return;
+  }
+  const std::vector<EndedSpell> ended = std::move(g_spells_ended);
+  g_spells_ended.clear();
+  for (const EndedSpell& spell : ended) {
+    SpellEndedEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.serial = spell.serial;
+    e.type = spell.type;
+    e.caster = spell.caster;
+    e.caster_player = PlayerOf(base, spell.caster);
+    e.tag = CastTagOf(spell.serial);
+    e.reason = spell.reason;
+    e.level = spell.level;
+    Dispatch(e);
+  }
+}
+
+namespace {
+
+/// An action's owner (its weak reference at +4, as every action's: the charge's OnEnd `addi
+/// r3,r31,4`), started flag +0x48 (End's gate) and ended flag +0x49 (End's last store).
+constexpr uint32_t kActionOwnerRef = 0x4;
+constexpr uint32_t kActionStarted = 0x48;
+constexpr uint32_t kActionEnded = 0x49;
+/// The magic charge's two actions, by their vtables (the charge ability's Start stores them:
+/// `addi r10,r11,off_820D2FB0@l` 0x8298a3a8, `addi r9,r10,off_820D30A0@l` 0x8298a2b8).
+constexpr uint32_t kQuickChargeAction = 0x820D2FB0u;  // disc 0x820CF820
+constexpr uint32_t kFullChargeAction = 0x820D30A0u;   // disc 0x820CF910
+/// The entity whose magic release ability's Start is running (rex_CAbilityActionMagicCast_Start).
+thread_local uint32_t g_magic_release_entity = 0;
+
+}  // namespace
+
+// The magic RELEASE ability's Start (request type 19: `(*(*a3 + 4))(a3) == 19`): r4 = the entity.
+// It builds the cast action and pushes it, which ends the charge. TU1 0x8298A870 / disc 0x829B9E30.
+REX_EXTERN(rex_CAbilityActionMagicCast_Start) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t outer = g_magic_release_entity;
+  g_magic_release_entity = ctx.r4.u32;
+  __imp__rex_CAbilityActionMagicCast_Start(ctx, base);
+  g_magic_release_entity = outer;
+}
+
+// An action's end: r3 = the action. Its OnEnd (vtable slot 18) runs only for a started action
+// (`lbz r11,0x48(r28)` 0x822861b8) and the end marks it ended (`stb r11,0x49(r28)` 0x82286490), so
+// started-and-not-ended before the call is the one real end. TU1 0x822861A8 / disc 0x82285D10.
+REX_EXTERN(rex_CAction_End) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t action = ctx.r3.u32;
+  SwingRecord* swing = Plausible(action) ? SwingOf(action) : nullptr;
+  const bool live = Plausible(action) && Load8(base, action + kActionStarted) != 0 && Load8(base, action + kActionEnded) == 0;
+  const uint32_t vtable = live ? Load32(base, action) : 0u;
+  const bool charge = (vtable == refii::guest::Address(kQuickChargeAction) || vtable == refii::guest::Address(kFullChargeAction)) &&
+                      (AnySubscriber(REFII_EVENT_SPELL_CHARGE_ENDED) || refii::vfs::ModChargeLendActive(1) ||
+                       refii::vfs::ModChargeLendActive(2));
+  if (swing == nullptr && !charge) {
+    __imp__rex_CAction_End(ctx, base);
+    return;
+  }
+  const SwingRecord ended = swing != nullptr && live ? *swing : SwingRecord{};
+  if (swing != nullptr) {
+    ForgetSwing(*swing);
+  }
+  const uint32_t entity = charge ? Deref(ctx, base, action + kActionOwnerRef) : 0u;
+  const bool released = charge && entity != 0 && entity == g_magic_release_entity;
+  __imp__rex_CAction_End(ctx, base);
+  if (charge && entity != 0) {
+    const int32_t player = PlayerOf(base, entity);
+    // The charge is decided where the hero is played; the other machine's clone ends through the
+    // network's push, outside the release.
+    refii::vfs::ModChargeLendEnded(player, released);
+    if ((player == 1 || player == 2) && refii_mod_player_here(player) != 0 && AnySubscriber(REFII_EVENT_SPELL_CHARGE_ENDED)) {
+      SpellChargeEndedEvent e{};
+      PPCContext e_ctx = ctx;
+      e.ctx = &e_ctx;
+      e.base = base;
+      e.player = player;
+      e.caster = entity;
+      e.released = released;
+      Dispatch(e);
+    }
+  }
+  if (ended.action != 0 && AnySubscriber(REFII_EVENT_MELEE_SWING_ENDED)) {
+    MeleeSwingEndedEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.entity = ended.entity;
+    e.player = PlayerOf(base, ended.entity);
+    e.action = ended.action;
+    e.action_type = ended.type;
+    e.hits = ended.hits;
+    Dispatch(e);
+  }
+}
+
+namespace {
+
+/// The action handle's resolver the movement test itself calls (`bl sub_82298738` in
+/// `sub_822BDEA0`): the entity's action manager (component 49), its slot 36 with the handle's index.
+constexpr uint32_t kActionHandleResolve = 0x82298738u;  // disc 0x822982F8
+
+}  // namespace
+
+// Whether movement may interrupt the current action: r3 = the action handle (its owner's weak
+// reference first, the index at +8); answers `+0x4E` unless `+0x4C`. ActionMoveInterrupt when it
+// answered yes; a cancel answers no. TU1 0x822BDEA0 / disc 0x822BDBC0.
+REX_EXTERN(rex_CAction_MovementInterruptible) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t handle = ctx.r3.u32;
+  __imp__rex_CAction_MovementInterruptible(ctx, base);
+  if ((ctx.r3.u32 & 0xFFu) == 0 || !Plausible(handle) || !AnySubscriber(REFII_EVENT_ACTION_MOVE_INTERRUPT)) {
+    return;
+  }
+  PPCContext work = refii::mods::Frame(ctx);
+  work.r3.u32 = handle;
+  const uint32_t action = CallGuest(work, base, refii::guest::Address(kActionHandleResolve)) ? work.r3.u32 : 0u;
+  ActionMoveInterruptEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.entity = Deref(ctx, base, handle);
+  e.player = PlayerOf(base, e.entity);
+  e.action = Plausible(action) ? action : 0u;
+  e.action_type = ActionTypeOf(e.action);
+  Dispatch(e);
+  if (e.cancel) {
+    ctx.r3.u64 = 0;
+  }
+}
+
+// The spell manager's state change: r3 = the manager (component 56), r4 = the state (stored at +0x70,
+// `stw r4,0x70(r31)` 0x8253e864). State 6 follows the cast's last slot (the cascade's
+// `if (*(+0x170) <= 0) SetState(6)` in sub_8253ED78; the quick cast's after its LaunchSlot in
+// sub_8253E990), 0 the reset (sub_8253E658): the lent charge's slots come back after either
+// (refii_mod_charge_spell). TU1 0x8253E840 / disc 0x82429280.
+REX_EXTERN(rex_CECSpellManager_SetState) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t manager = ctx.r3.u32;
+  const int32_t state = static_cast<int32_t>(ctx.r4.u32);
+  __imp__rex_CECSpellManager_SetState(ctx, base);
+  refii::vfs::ModChargeLendState(base, manager, state);
+}
+
+// The player mode drop: r3 = the player's mode handle (comp33+0x14), r4 = the mode. LockLost for
+// mode 4 when the game's own HasPlayerMode held it before and not after. TU1 0x82389CD0 / disc
+// 0x8238F4A0.
+REX_EXTERN(rex_CPlayer_ClearPlayerMode) {
+  REX_FUNC_PROLOGUE();
+  constexpr uint32_t kTargetLockMode = 4;  // PLAYER_MODE_TARGET_LOCK
+  const uint32_t handle = ctx.r3.u32;
+  const bool lock = ctx.r4.u32 == kTargetLockMode && AnySubscriber(REFII_EVENT_LOCK_LOST);
+  const int32_t player = lock ? refii::vfs::ModPlayerOfModeHandle(base, handle) : 0;
+  const bool held = player != 0 && refii::vfs::ModHeroLockMode(ctx, base, player);
+  __imp__rex_CPlayer_ClearPlayerMode(ctx, base);
+  if (!held || refii::vfs::ModHeroLockMode(ctx, base, player)) {
+    return;
+  }
+  const uint32_t hero = refii_mod_player_hero(base, player);
+  if (hero == 0) {
+    return;
+  }
+  LockLostEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.player = player;
+  e.hero = hero;
+  e.target = refii::vfs::ModHeroTarget(ctx, base, player);
+  Dispatch(e);
 }
 
 namespace {
@@ -2906,6 +3835,38 @@ REX_EXTERN(rex_CECHealth_OnHit) {
   __imp__rex_CECHealth_OnHit(ctx, base);
 }
 
+// The health component's Modify: r3 = the component (owner at +4), f1 = the delta, r5 = the source
+// (`lbz r11,0x90(r5)` in-world test, 0x824cbc9c..a0). +0x14 current takes the delta clamped to
+// 0..+0x1C (`stfs f6,0x14(r31)` 0x824cbf08) and the body runs on only when +0x14 moved (`fcmpu`
+// 0x824cbf14). HealthChanged after it, when +0x14 moved. TU1 0x824CBC68 / disc 0x8268BD90.
+REX_EXTERN(rex_CECHealth_Modify) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t health = ctx.r3.u32;
+  const uint32_t source = ctx.r5.u32;
+  if (health == 0 || !AnySubscriber(REFII_EVENT_HEALTH_CHANGED)) {
+    __imp__rex_CECHealth_Modify(ctx, base);
+    return;
+  }
+  const PPCContext entry = ctx;
+  const float before = LoadF(base, health + kHealthCurrent);
+  __imp__rex_CECHealth_Modify(ctx, base);
+  const float after = LoadF(base, health + kHealthCurrent);
+  if (after == before) {
+    return;
+  }
+  HealthChangedEvent e{};
+  PPCContext e_ctx = entry;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.entity = Load32(base, health + 4u);
+  e.player = PlayerOf(base, e.entity);
+  e.delta = after - before;
+  e.health = after;
+  e.max = LoadF(base, health + kHealthMax);
+  e.source = source >= 0x10000u && source < 0xC0000000u ? source : 0u;
+  Dispatch(e);
+}
+
 // The game's "level loaded" call into Lua (AIManager:OnLevelLoad): r3 = the script-system
 // owner, r4 = the from-save byte. Called from the travel command's state 5 (r4 = 0) after every
 // player's hero was placed, and from the load command's state 2 (r4 = 1). TU1 0x82460BF0.
@@ -2980,6 +3941,84 @@ REX_EXTERN(rex_CECInventory_AddOneOfRecord) {
     e.notify = notify;
     Dispatch(e);
   }
+}
+
+// The tail every inventory removal runs once per unit taken (core/refii_mod_events.h
+// ItemRemovedEvent): r3 = the inventory component (owner at +4), r4 = the definition. TU1
+// 0x824F3FC0 / disc 0x8261DCC8.
+REX_EXTERN(rex_CECInventory_RefreshRecordRefs) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t inventory = ctx.r3.u32;
+  const uint32_t definition = ctx.r4.u32;
+  const PPCContext entry = ctx;
+  __imp__rex_CECInventory_RefreshRecordRefs(ctx, base);
+  if (inventory == 0 || definition == 0 || !AnySubscriber(REFII_EVENT_ITEM_REMOVED)) {
+    return;
+  }
+  ItemRemovedEvent e{};
+  PPCContext e_ctx = entry;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.inventory = inventory;
+  e.entity = Load32(base, inventory + 4u);
+  e.player = PlayerOf(base, e.entity);
+  e.definition = definition;
+  e.count = 1;
+  e.remaining = refii_mod_item_count(base, e.entity, definition);
+  Dispatch(e);
+}
+
+// The expression wheel's open: r3 = the quick menu, r4 = the player record (its id at +36, what
+// `sub_826A9A60` is handed). Raised after it when the menu's +35 went 0 -> 1. TU1 0x8236F110.
+REX_EXTERN(rex_lhGuiManager_OpenExpressionWheel) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t quick = ctx.r3.u32;
+  const uint32_t record = ctx.r4.u32;
+  const bool was_open = quick != 0 && Load8(base, refii::vfs::WheelOpenByte(quick)) != 0;
+  const PPCContext entry = ctx;
+  __imp__rex_lhGuiManager_OpenExpressionWheel(ctx, base);
+  if (quick == 0 || was_open || Load8(base, refii::vfs::WheelOpenByte(quick)) == 0 || record == 0) {
+    return;
+  }
+  refii::vfs::g_wheel_player = static_cast<int32_t>(Load32(base, record + 36u));
+  refii::vfs::g_wheel_highlighted = refii_mod_selected_expression(base, refii::vfs::g_wheel_player);
+  if (AnySubscriber(REFII_EVENT_EXPRESSION_WHEEL)) {
+    refii::vfs::RaiseExpressionWheel(entry, base, refii::vfs::g_wheel_player, true, refii::vfs::g_wheel_highlighted);
+  }
+}
+
+// The close: r3 = the quick menu, r4 = play the close sound. Raised before it while +35 is set, for
+// the wheel's own player (+24). TU1 0x8236F340.
+REX_EXTERN(rex_lhGuiManager_CloseExpressionWheel) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t quick = ctx.r3.u32;
+  if (quick != 0 && Load8(base, refii::vfs::WheelOpenByte(quick)) != 0) {
+    const int32_t player = refii::vfs::WheelPlayer(base);
+    refii::vfs::g_wheel_player = 0;
+    refii::vfs::g_wheel_highlighted = 0;
+    if (AnySubscriber(REFII_EVENT_EXPRESSION_WHEEL)) {
+      refii::vfs::RaiseExpressionWheel(ctx, base, player, false, 0u);
+    }
+  }
+  __imp__rex_lhGuiManager_CloseExpressionWheel(ctx, base);
+}
+
+namespace refii::vfs {
+void ReapplyHeldLocomotion(PPCContext& ctx, uint8_t* base, uint32_t component);
+void ReapplyHeldParry(PPCContext& ctx, uint8_t* base, int32_t player);
+}  // namespace refii::vfs
+
+// The locomotion component's LocomotionData load: r3 = the component (110; owner at +4), r4 = the
+// table's name (LHString). It clears the +0x64 map and copies the ten fields (core/refii_mod.h
+// refii_mod_set_locomotion); the values a mod holds go back on top after it. TU1 0x8283E408 / disc
+// 0x827ED278.
+REX_EXTERN(rex_CECLocomotion_LoadData) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t component = ctx.r3.u32;
+  const PPCContext entry = ctx;
+  __imp__rex_CECLocomotion_LoadData(ctx, base);
+  PPCContext work = entry;
+  refii::vfs::ReapplyHeldLocomotion(work, base, component);
 }
 
 // Uses an inventory item: r3 = the entity, r4 = the item's shared pointer (item at *r4,
@@ -3435,6 +4474,16 @@ bool HasComponent(uint8_t* base, uint32_t entity, uint32_t id) {
   return entity != 0 && ((Load32(base, entity + 0x24u + 4u * (id >> 5)) >> (id & 31u)) & 1u) != 0;
 }
 
+/// The spell installer running now (StatusApplying's seams): a status started inside it is that
+/// cast's. Matched by effect: chaos may move the status to the entity component 159 holds
+/// (`sub_825FAF98`, 0x8274a2a4), so the victim passed in is not always the one that gets it.
+struct StatusInstall {
+  int32_t effect = 0;
+  uint32_t serial = 0xFFFFFFFFu;
+  uint32_t source = 0;
+};
+StatusInstall g_status_install;
+
 void RaiseStatus(PPCContext& ctx, uint8_t* base, uint32_t entity, int32_t effect, bool started) {
   StatusEffectEvent e{};
   PPCContext e_ctx = ctx;
@@ -3444,13 +4493,157 @@ void RaiseStatus(PPCContext& ctx, uint8_t* base, uint32_t entity, int32_t effect
   e.player = PlayerOf(base, entity);
   e.effect = effect;
   e.started = started;
+  const bool installed = started && g_status_install.effect == effect;
+  e.serial = installed ? g_status_install.serial : 0xFFFFFFFFu;
+  e.source = installed ? g_status_install.source : 0u;
   Dispatch(e);
+}
+
+/// StatusApplying before an installer: false when a handler cancelled. `seconds` is written back
+/// only as a positive finite number.
+bool StatusApplying(PPCContext& ctx, uint8_t* base, uint32_t victim, int32_t effect, uint32_t serial, uint32_t source,
+                    int32_t level, float& seconds) {
+  if (!AnySubscriber(REFII_EVENT_STATUS_APPLYING)) {
+    return true;
+  }
+  StatusApplyingEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.entity = victim;
+  e.player = PlayerOf(base, victim);
+  e.effect = effect;
+  e.serial = serial;
+  e.source = source;
+  e.level = level;
+  e.seconds = seconds;
+  e.tag = CastTagOf(serial);
+  Dispatch(e);
+  if (e.cancel) {
+    return false;
+  }
+  if (std::isfinite(e.seconds) && e.seconds > 0.0f) {
+    seconds = e.seconds;
+  }
+  return true;
+}
+
+/// Runs an installer with g_status_install stated, restoring the outer one.
+template <typename Fn>
+void Installing(int32_t effect, uint32_t serial, uint32_t source, Fn&& run) {
+  const StatusInstall outer = g_status_install;
+  g_status_install = StatusInstall{effect, serial, source};
+  run();
+  g_status_install = outer;
 }
 
 int32_t g_last_hour = -1;
 int32_t g_last_day = -1;
 
 }  // namespace
+
+// Lightning's installer: r3 source, r4 victim, r5 serial, r6 level, f1 duration (`mr r29,r3;
+// mr r31,r4; mr r28,r5; mr r27,r6; fmr f31,f1` 0x82742fbc..d4, all handed to `sub_8294CE50`
+// 0x82743178..9c). TU1 0x82742FA8 / disc 0x827180A8, the same prologue.
+REX_EXTERN(rex_SpellLightning_Electrify) {
+  REX_FUNC_PROLOGUE();
+  float seconds = static_cast<float>(ctx.f1.f64);
+  if (!StatusApplying(ctx, base, ctx.r4.u32, REFII_STATUS_ELECTRIFIED, ctx.r5.u32, ctx.r3.u32,
+                      static_cast<int32_t>(ctx.r6.u32), seconds)) {
+    return;
+  }
+  ctx.f1.f64 = static_cast<double>(seconds);
+  Installing(REFII_STATUS_ELECTRIFIED, ctx.r5.u32, ctx.r3.u32, [&] { __imp__rex_SpellLightning_Electrify(ctx, base); });
+}
+
+// Chaos's installer: r3 source, r4 victim, r5 serial, f1 seconds, r7 is-creature, r8 replica (`mr
+// r27,r3; mr r29,r4; mr r26,r5; mr r24,r7; mr r28,r8; fmr f29,f1` 0x8274a258..6c). Only r7's
+// branch installs the status (`sub_8274A5C0(source, victim, serial, seconds)` 0x8274a2d8); the
+// network receive calls with `li r8,1` (0x823991c0) and only r8 = 0 sends it on with the seconds
+// (0x8274a494..0x8274a598), so the event fires for r7 set and r8 clear. TU1 0x8274A230 / disc
+// 0x8271F330, the same prologue.
+REX_EXTERN(rex_SpellChaos_ApplyToVictim) {
+  REX_FUNC_PROLOGUE();
+  const bool installs = (ctx.r7.u32 & 0xFFu) != 0;
+  if (installs && (ctx.r8.u32 & 0xFFu) == 0) {
+    float seconds = static_cast<float>(ctx.f1.f64);
+    if (!StatusApplying(ctx, base, ctx.r4.u32, REFII_STATUS_CHAOS, ctx.r5.u32, ctx.r3.u32, -1, seconds)) {
+      return;
+    }
+    ctx.f1.f64 = static_cast<double>(seconds);
+  }
+  Installing(REFII_STATUS_CHAOS, ctx.r5.u32, ctx.r3.u32, [&] { __imp__rex_SpellChaos_ApplyToVictim(ctx, base); });
+}
+
+// The fireball's burn installer: r3 victim, r4 source, r5 serial, r6 level, f3 burn time (`mr
+// r31,r3; mr r27,r4; mr r26,r5; mr r25,r6; fmr f30,f3` 0x8274727c..98; f30 is handed on as the
+// burn time, `fmr f1,f30` 0x82747418). TU1 0x82747260 / disc 0x8271C360, the same prologue.
+REX_EXTERN(rex_SpellFireball_Ignite) {
+  REX_FUNC_PROLOGUE();
+  float seconds = static_cast<float>(ctx.f3.f64);
+  if (!StatusApplying(ctx, base, ctx.r3.u32, REFII_STATUS_BURNING, ctx.r5.u32, ctx.r4.u32,
+                      static_cast<int32_t>(ctx.r6.u32), seconds)) {
+    return;
+  }
+  ctx.f3.f64 = static_cast<double>(seconds);
+  Installing(REFII_STATUS_BURNING, ctx.r5.u32, ctx.r4.u32, [&] { __imp__rex_SpellFireball_Ignite(ctx, base); });
+}
+
+namespace {
+
+/// VortexCaught after a capture or a release: r3 the component, r4 the victim (0 is a reference
+/// that was already dead, Shutdown's `li r4,0` 0x82759044, and is not reported).
+void RaiseVortexCaught(PPCContext& ctx, uint8_t* base, uint32_t component, uint32_t victim, bool caught) {
+  if (!Plausible(component) || !Plausible(victim) || !AnySubscriber(REFII_EVENT_VORTEX_CAUGHT)) {
+    return;
+  }
+  VortexCaughtEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.serial = Load32(base, component + kPartVortexSerial);
+  e.tag = CastTagOf(e.serial);
+  e.vortex = component;
+  e.entity = Load32(base, component + 4u);
+  e.victim = victim;
+  e.player = PlayerOf(base, victim);
+  e.caster = WeakRefEntity(base, Load32(base, component + kPartVortexCasterBody));
+  e.caster_player = PlayerOf(base, e.caster);
+  e.caught = caught;
+  Dispatch(e);
+}
+
+}  // namespace
+
+// The vortex's capture: r3 the component, r4 the victim, r5 0 (`mr r23,r3; mr r27,r4` 0x8275c58c..94).
+// Its one caller is the vortex's update (0x8275b9cc), after appending the victim to the held list.
+// It adds CECInVortex by name (0x8275c6c8, rex_lhEntity_AddComponent at 0x8238cdac) and gives it
+// the caster (`addi r3,r23,0x160` 0x8275c92c), so the status starts inside this call: it carries
+// the component's serial (+0x18) and the caster as its source. TU1 0x8275C578 / disc 0x82733F58,
+// the same body.
+REX_EXTERN(rex_VortexComponent_Capture) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t component = ctx.r3.u32;
+  const uint32_t victim = ctx.r4.u32;
+  const bool live = Plausible(component);
+  const uint32_t serial = live ? Load32(base, component + kPartVortexSerial) : 0xFFFFFFFFu;
+  const uint32_t caster = live ? WeakRefEntity(base, Load32(base, component + kPartVortexCasterBody)) : 0u;
+  Installing(REFII_STATUS_VORTEX, serial, caster, [&] { __imp__rex_VortexComponent_Capture(ctx, base); });
+  RaiseVortexCaught(ctx, base, component, victim, true);
+}
+
+// The vortex's release: r3 the component, r4 the victim (`mr r27,r4; mr r25,r3` 0x8275cb3c..40).
+// It removes CECInVortex (0x8275ccb4); its callers are the update dropping a victim before erasing
+// it (0x8275be18), the per-victim release `sub_8275CA30` (0x8275ca78) and Shutdown for every held
+// victim (0x8275904c) — after VortexEnded, which Shutdown's hook raises before the call. TU1
+// 0x8275CB28 / disc 0x82734508, the same body.
+REX_EXTERN(rex_VortexComponent_Release) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t component = ctx.r3.u32;
+  const uint32_t victim = ctx.r4.u32;
+  __imp__rex_VortexComponent_Release(ctx, base);
+  RaiseVortexCaught(ctx, base, component, victim, false);
+}
 
 // r3 = the performer component, r4 = {expression hash, GDB entry}; returns 1 when the expression
 // started (the can-perform check refuses with 0). TU1 0x82413698.
@@ -6067,7 +7260,7 @@ constexpr uint32_t kWorldTimeScale = 128;
 /// Raise Dead's minion component (CECDeadRiser): the bind writes its summoner and lifetime.
 constexpr uint32_t kDeadRiserComponent = 207;
 
-void RaiseSummoned(PPCContext& ctx, uint8_t* base, uint32_t summoner, uint32_t summon, int32_t kind) {
+void RaiseSummoned(PPCContext& ctx, uint8_t* base, uint32_t summoner, uint32_t summon, int32_t kind, uint32_t serial) {
   SummonedEvent e{};
   PPCContext e_ctx = ctx;
   e.ctx = &e_ctx;
@@ -6076,6 +7269,8 @@ void RaiseSummoned(PPCContext& ctx, uint8_t* base, uint32_t summoner, uint32_t s
   e.player = PlayerOf(base, summoner);
   e.summon = summon;
   e.kind = kind;
+  e.serial = serial;
+  e.tag = CastTagOf(serial);
   Dispatch(e);
 }
 
@@ -6187,32 +7382,37 @@ REX_EXTERN(rex_HollowMan_SetCrumbled) {
 }
 
 // Raise Dead binding a minion to its summoner: r3 = the summoner, r4 = the summoned entity (its
-// CECDeadRiser, 207, takes the summoner's weak ref at +60 and the lifetime at +20). The network
-// replica path binds through it too. TU1 0x82756F28.
+// CECDeadRiser, 207, takes the summoner's weak ref at +60 and the lifetime at +20), r6 = the
+// summoning spell's serial (SummonedEvent). The network replica path binds through it too.
+// TU1 0x82756F28.
 REX_EXTERN(rex_SpellRaiseDead_BindSummoner) {
   REX_FUNC_PROLOGUE();
   const uint32_t summoner = ctx.r3.u32;
   const uint32_t summon = ctx.r4.u32;
+  const uint32_t serial = ctx.r6.u32;
   __imp__rex_SpellRaiseDead_BindSummoner(ctx, base);
   const auto in_world = [base](uint32_t entity) { return entity != 0 && (Load8(base, entity + 0x90u) & 0x40u) != 0; };
   if (in_world(summoner) && in_world(summon) && HasComponent(base, summon, kDeadRiserComponent) &&
       AnySubscriber(REFII_EVENT_SUMMONED)) {
-    RaiseSummoned(ctx, base, summoner, summon, 1);
+    RaiseSummoned(ctx, base, summoner, summon, 1, serial);
   }
 }
 
 // One Blades sword: r3 = the sword object (its SpellShotDamoclesSword entity's weak ref at +0 once
-// made), r4 = the sword set, r5 = the caster (the set's weak ref, resolved by the caller), r6 the
-// target. TU1 0x825A6198.
+// made), r4 = the sword set (its spell's serial at +0x10, SummonedEvent), r5 = the caster (the
+// set's weak ref, resolved by the caller), r6 the target. TU1 0x825A6198.
 REX_EXTERN(rex_SpellDamoclesSword_Create) {
   REX_FUNC_PROLOGUE();
+  constexpr uint32_t kSwordSetSerial = 0x10;
   const uint32_t sword = ctx.r3.u32;
+  const uint32_t set = ctx.r4.u32;
   const uint32_t caster = ctx.r5.u32;
+  const uint32_t serial = Plausible(set) ? Load32(base, set + kSwordSetSerial) : 0xFFFFFFFFu;
   __imp__rex_SpellDamoclesSword_Create(ctx, base);
   if (sword != 0 && AnySubscriber(REFII_EVENT_SUMMONED)) {
     const uint32_t entity = Deref(ctx, base, sword);
     if (entity != 0) {
-      RaiseSummoned(ctx, base, caster, entity, 2);
+      RaiseSummoned(ctx, base, caster, entity, 2, serial);
     }
   }
 }
@@ -6799,6 +7999,7 @@ void RelayWrite<HitLandedEvent>(uint8_t* base, const HitLandedEvent& e, std::str
   PutNumber(out, e.spell_level);
   PutUnsigned(out, e.spell_serial);
   PutNumber(out, e.knockdown ? 1 : 0);
+  PutNumber(out, e.tag);
 }
 
 template <>
@@ -6812,7 +8013,25 @@ bool RelayRead<HitLandedEvent>(PPCContext& ctx, uint8_t* base, RelayReader& in, 
   e.spell_level = ClampInt(in.Number());
   e.spell_serial = in.Unsigned();
   e.knockdown = in.Number() != 0.0;
+  e.tag = ClampInt(in.Number());
   return e.victim != 0u || e.attacker != 0u;
+}
+
+template <>
+void RelayWrite<MeleeSwingEndedEvent>(uint8_t* base, const MeleeSwingEndedEvent& e, std::string& out) {
+  PutEntity(out, base, e.entity);
+  PutNumber(out, e.action_type);
+  PutNumber(out, e.hits);
+}
+
+template <>
+bool RelayRead<MeleeSwingEndedEvent>(PPCContext& ctx, uint8_t* base, RelayReader& in, MeleeSwingEndedEvent& e) {
+  e.entity = in.Entity(ctx, base);
+  e.player = PlayerOf(base, e.entity);
+  e.action = 0u;
+  e.action_type = ClampInt(in.Number());
+  e.hits = ClampInt(in.Number());
+  return e.entity != 0u;
 }
 
 struct RelayKind {
@@ -6846,6 +8065,7 @@ const RelayKind kRelayed[] = {
     REFII_RELAY(RollStarted, kPlayer),
     REFII_RELAY(ItemUsed, kPlayer),
     REFII_RELAY(HitLanded, kWorld),
+    REFII_RELAY(MeleeSwingEnded, kPlayer),
 };
 
 #undef REFII_RELAY
@@ -6885,9 +8105,17 @@ void ReplayOf(PPCContext& ctx, uint8_t* base, RelayReader& in, int32_t row) {
   if ((actor != 1 && actor != 2) || DecidedHere(kRelayed[row], base, actor) || g_relay_native_elsewhere[row][actor - 1]) {
     return;
   }
+  // The host's serial of the cast's spell, as this machine's (THE CAST PAIRS).
+  if constexpr (std::is_same_v<E, HitLandedEvent>) {
+    MapRelayedHitSerial(e);
+  }
   g_relay_replaying = true;
   Dispatch(e);
   g_relay_replaying = false;
+  // The decider's hit counts for this machine's strike (MeleeSwingEnded.hits).
+  if constexpr (std::is_same_v<E, HitLandedEvent>) {
+    NoteSwingHit(base, e.attacker);
+  }
 }
 
 bool RelayWants(int32_t kind) {
@@ -6940,6 +8168,7 @@ void DrainRelay(PPCContext& ctx, uint8_t* base) {
     }
     g_relay_mode = mode;
   }
+  ReplayHeldHits(ctx, base);
   char text[512];
   // Bounded per tick, as the host's commands are.
   for (int n = 0; n < 64 && refii_bridge_event_relay_take(text, sizeof(text)) != 0; ++n) {
@@ -6949,7 +8178,7 @@ void DrainRelay(PPCContext& ctx, uint8_t* base) {
     char* end = nullptr;
     const long kind = std::strtol(text, &end, 10);
     const int32_t row = end != nullptr && *end == ':' ? RelayRow(static_cast<int32_t>(kind)) : -1;
-    if (row < 0) {
+    if (row < 0 || HoldRelayedHit(static_cast<int32_t>(kind), text)) {
       continue;
     }
     RelayReader in{end + 1};
@@ -7032,3 +8261,342 @@ void DrainPartnerMessages(PPCContext& ctx, uint8_t* base) {
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------------------------
+// THE CAST PAIRS (core/cast_pairing.h holds the rule; core/event_relay.h the route's `pc:` lane).
+//
+// Every cast action Start here, online, with a caster on the network and a peer to send to, is
+// keyed from the fields its message carries and announced (`pc:c,<seq>,<decided>,<message>,<key>`);
+// every spell the factory makes while that action is the caster's current action is announced as
+// its next spell (`pc:s,<seq>,<index>,<serial>,<tag>,<state>`). Both machines announce every cast;
+// each pairs its own with the peer's (THE KEY and THE ORDER: core/cast_pairing.h). A pair on the
+// machine not deciding the caster takes the decider's tag into the cast record (CastTagOf), so every
+// later event of the local spell carries it, and the decider's spell state (AdoptSpellState): a
+// vortex the decider's VortexStarted answered `lifts = false` lifts no creature on the copy either.
+// Until the pair forms the copy's vortex takes no creature it could lift
+// (rex_VortexComponent_Classify, SpellAwaitsPair), for at most Table::kUnpairedLife from its cast's
+// Start, past which the cast can no longer pair and the copy follows its own default; a pair formed
+// later than that lets go of what the copy caught (ReleaseUnliftedCreatures). A vortex's hits land
+// on the host alone: its held hit delivers through
+// sub_825FB9B0, which reaches the receiver only where the network manager's +0x34 and +0x35 are set
+// (`lbz r9,0x34(r11)`, `lbz r11,0x35(r11)` 0x825fba00..0c, the host's pair in sub_82214AF8), and its
+// shudder hits test the same pair before `bl sub_825C5220` (0x825fa350..5c, 0x825fa8d0..dc). So the
+// joiner's copy of a host's cast hits nothing either way, and the host's copy of player two's cast,
+// whose hits are the real ones, gives them as the joiner decided.
+//
+// THE THREE STARTS (each action's vtable slot 15; TU1, disc by identical masked body):
+//   - 0x5B area release, sub_827396B8 / disc sub_8270E938: sends only where the game's authority
+//     test holds (`bl sub_82214AF8` 0x8273988c), the anim and +0x7C (`lwz r11,0x58(r28)` 0x8273989c,
+//     `lfs f0,0x7C(r28)` 0x827398a8) through sub_8273E6F8 (0x827398e0);
+//   - 0x5C targeted release, sub_82739D38 / disc sub_8270F020: `bl sub_82214AF8` 0x82739f18, then
+//     the anim, +0x90, +0x94 and the vector (`lwz r9,0x58(r28)`, `lfs f0,0x90(r28)`,
+//     `lfs f13,0x94(r28)`, `lvx128 v0,r28,r8` 0x82739f78..a4), the target's network id
+//     (`bl sub_8229EE78; bl sub_821B2390` 0x82739f60..64, only when `lbz r11,0x90(r3);
+//     rlwinm r10,r11,0,25,25` 0x82739f38..3c) and the caster's (`bl sub_82174468; bl sub_821B2390`
+//     0x82739fc0..c4, the header) through sub_8273E808 (0x82739fd4);
+//   - 0x5E stated cast, sub_8273C4C8 / disc sub_827117A8: `bl sub_82214AF8` 0x8273c624, then +0x78,
+//     +0x7C, +0x80, +0x84 and the anim (0x8273c638..54), the target (0x8273c6a0..d8) and the caster
+//     (0x8273c6f4..f8) through sub_8273EA50 (0x8273c708). Its own update launches through
+//     sub_8253F2C8 (`bl sub_8253F2C8` 0x8273cce0), not LaunchSlot: the current-action bind covers it.
+// On the other machine the receiver (sub_82392250) rebuilds the same class from those bytes and its
+// copy runs the same Start, where the test fails and nothing is sent. Each sender sends nothing
+// while the network manager's +0x64 is 0 (`lwz r11,0x64(r29); cmplwi cr6,r11,0; ble` 0x8273e820).
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+using refii::cast_pairing::SpellPair;
+
+refii::cast_pairing::Table g_cast_pairs;
+/// refii_mod_coop_mode as the tick last saw it: the pairs are kept online only (2 host, 3 joiner),
+/// and forgotten on any change.
+int32_t g_cast_pairs_mode = 0;
+
+/// The game root (`lis r11,dword_83496AB8@ha` heading sub_82214AF8) +0xC, its +0x8C the network
+/// manager every cast sender is handed (`lwz r4,0xC(r10); lwz r26,0x8C(r4)` 0x82739fb8..bc).
+constexpr uint32_t kCastGameRoot = 0x83496AB8u;
+constexpr uint32_t kCastRootGame = 0xC;
+constexpr uint32_t kCastGameNetwork = 0x8C;
+constexpr uint32_t kCastNetworkPeers = 0x64;
+/// The authority test on component 91 (sub_82214AF8) and the network id of an entity
+/// (sub_821B2390, u64: the UID on an online host, component 91's +0x78 elsewhere).
+constexpr uint32_t kCastDecidesHere = 0x82214AF8u;
+constexpr uint32_t kCastNetworkIdOf = 0x821B2390u;
+constexpr uint32_t kCastNetworkComponent = 91;
+/// A CAction's owner and target are weak references, the holder at +8 / +0x10 and the entity at
+/// *holder: sub_82174468 (`addi r3,r3,4; lwz r11,4(r3); lwz r10,0(r11)`), sub_8229EE78
+/// (`addi r3,r3,0xC; lwz r11,4(r3); lwz r10,0(r11)`).
+constexpr uint32_t kCastActionOwner = 0x8;
+constexpr uint32_t kCastActionTarget = 0x10;
+constexpr uint32_t kCastEntityFlags = 0x90;
+constexpr uint8_t kCastEntityNetworked = 0x40;
+/// The anim every cast action sends: the base ctor's `lwz r4,0(r30); stw r4,0x58(r31)`
+/// (0x8284b57c..84), which the receivers reach with the message's +4.
+constexpr uint32_t kCastActionAnim = 0x58;
+/// 0x5B: +0x7C (receiver `lfs f1,8(r26)` 0x82398db8 -> `stfs f31,0x7C(r31)` 0x8273967c).
+constexpr uint32_t kCastAreaFloat = 0x7C;
+/// 0x5C: the vector +0x80 (sub_8234EB98 writes x, y, z; receiver `lvx128 v1,r26,r8` 0x82398f0c ->
+/// `stvx128 v127,r31,r9` 0x82739d08), +0x90 / +0x94 (receiver `lfs f30,0x28(r26)` / `lfs f31,0x2C(r26)`
+/// 0x82398ed8 / 0x82398ed4 -> `stfs f31,0x90(r31)` / `stfs f30,0x94(r31)` 0x82739ce8 / 0x82739cf0).
+constexpr uint32_t kCastTargetedVector = 0x80;
+constexpr uint32_t kCastTargetedFloatA = 0x90;
+constexpr uint32_t kCastTargetedFloatB = 0x94;
+/// 0x5E: type +0x78, targeted +0x7C, level +0x80, the byte +0x84 (the ctor's `stw r29,0x78(r31)`,
+/// `stw r28,0x7C(r31)`, `stw r27,0x80(r31)`, `stb r26,0x84(r31)` 0x8273c428..3c).
+constexpr uint32_t kCastSpellType = 0x78;
+constexpr uint32_t kCastSpellTargeted = 0x7C;
+constexpr uint32_t kCastSpellLevel = 0x80;
+constexpr uint32_t kCastSpellFlag = 0x84;
+
+/// A relayed hit for a spell the host announced and this machine has not made yet waits this long.
+constexpr double kCastHitHold = 1.0;
+constexpr size_t kCastHitsHeld = 32;
+
+struct HeldHit {
+  std::string text;
+  double at = 0.0;
+};
+std::vector<HeldHit> g_held_hits;
+
+double CastClock() {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+uint32_t CastHeldEntity(uint8_t* base, uint32_t holder_at) {
+  const uint32_t holder = Load32(base, holder_at);
+  return Plausible(holder) ? Load32(base, holder) : 0u;
+}
+
+uint64_t CastNetworkId(const PPCContext& ctx, uint8_t* base, uint32_t entity) {
+  PPCContext work = Frame(ctx);
+  work.r3.u64 = entity;
+  return CallGuest(work, base, refii::guest::Address(kCastNetworkIdOf)) ? work.r3.u64 : 0u;
+}
+
+/// The target as the 0x5C / 0x5E sender states it: its network id when it is on the network, else 0.
+uint64_t CastTargetId(const PPCContext& ctx, uint8_t* base, uint32_t action) {
+  const uint32_t target = CastHeldEntity(base, action + kCastActionTarget);
+  return target != 0 && (Load8(base, target + kCastEntityFlags) & kCastEntityNetworked) != 0 ? CastNetworkId(ctx, base, target)
+                                                                                              : 0u;
+}
+
+void ApplySpellPairs(uint8_t* base, const std::vector<SpellPair>& formed) {
+  for (const SpellPair& pair : formed) {
+    if (pair.adopt) {
+      CastSlot(pair.local_serial)->tag = pair.tag;
+      AdoptSpellState(base, pair.local_serial, pair.state);
+    }
+  }
+}
+
+/// A cast action's Start here (`message` the one it replicates as), before the game's own Start.
+void NoteCastStart(const PPCContext& ctx, uint8_t* base, uint32_t action, uint32_t message) {
+  if (g_cast_pairs_mode < 2 || !Plausible(action)) {
+    return;
+  }
+  const uint32_t caster = CastHeldEntity(base, action + kCastActionOwner);
+  const uint32_t network = caster != 0 ? refii_mod_component(base, caster, kCastNetworkComponent) : 0u;
+  if (network == 0) {
+    return;  // the Start sends nothing for a caster off the network, and the peer has no copy
+  }
+  const uint32_t root = Load32(base, refii::guest::Address(kCastGameRoot));
+  const uint32_t game = Plausible(root) ? Load32(base, root + kCastRootGame) : 0u;
+  const uint32_t manager = Plausible(game) ? Load32(base, game + kCastGameNetwork) : 0u;
+  if (!Plausible(manager) || Load32(base, manager + kCastNetworkPeers) == 0) {
+    return;
+  }
+  PPCContext work = Frame(ctx);
+  work.r3.u64 = network;
+  if (!CallGuest(work, base, refii::guest::Address(kCastDecidesHere))) {
+    return;
+  }
+  const bool decided = (work.r3.u32 & 0xFFu) != 0;
+  const uint64_t caster_id = CastNetworkId(ctx, base, caster);
+  const uint32_t anim = Load32(base, action + kCastActionAnim);
+  uint64_t key = 0;
+  if (message == refii::cast_pairing::kMessageAreaRelease) {
+    key = refii::cast_pairing::AreaReleaseKey(caster_id, anim, Load32(base, action + kCastAreaFloat));
+  } else if (message == refii::cast_pairing::kMessageTargetedRelease) {
+    const uint32_t xyz[3] = {Load32(base, action + kCastTargetedVector), Load32(base, action + kCastTargetedVector + 4),
+                             Load32(base, action + kCastTargetedVector + 8)};
+    key = refii::cast_pairing::TargetedReleaseKey(caster_id, anim, xyz, CastTargetId(ctx, base, action),
+                                                  Load32(base, action + kCastTargetedFloatA),
+                                                  Load32(base, action + kCastTargetedFloatB));
+  } else {
+    key = refii::cast_pairing::SpellCastKey(caster_id, anim, Load32(base, action + kCastSpellType),
+                                            Load32(base, action + kCastSpellTargeted), Load32(base, action + kCastSpellLevel),
+                                            Load8(base, action + kCastSpellFlag), CastTargetId(ctx, base, action));
+  }
+  std::vector<SpellPair> formed;
+  const uint32_t seq = g_cast_pairs.LocalCast(key, decided, action, caster, CastClock(), &formed);
+  char line[96];
+  if (refii::cast_pairing::FormatLine(refii::cast_pairing::CastLine{seq, decided, message, key}, line, sizeof(line)) != 0) {
+    refii_bridge_route_post(line);
+  }
+  ApplySpellPairs(base, formed);
+}
+
+/// The relayed hit_landed's host serial (its sixth field) when the host announced that spell and
+/// this machine's spell of the cast is not made yet; 0 otherwise.
+uint32_t PendingHitSerial(const char* text) {
+  const char* fields = std::strchr(text, ':');
+  if (fields == nullptr) {
+    return 0;
+  }
+  // victim, attacker, damage, spell_type, spell_level, spell_serial (RelayWrite<HitLandedEvent>).
+  long type = -1;
+  unsigned long serial = 0;
+  const char* at = fields + 1;
+  for (int field = 0; field <= 5 && at != nullptr; ++field) {
+    if (field == 3) {
+      type = std::strtol(at, nullptr, 10);
+    } else if (field == 5) {
+      serial = std::strtoul(at, nullptr, 10);
+    }
+    at = std::strchr(at, ',');
+    at = at != nullptr ? at + 1 : nullptr;
+  }
+  if (type < 0 || serial == 0 || serial > 0xFFFFFFFFul) {
+    return 0;
+  }
+  const uint32_t host = static_cast<uint32_t>(serial);
+  return g_cast_pairs.LocalOfPeer(host) == 0 && g_cast_pairs.PeerSpellPending(host) ? host : 0u;
+}
+
+void PairCreatedSpell(uint8_t* base, uint32_t caster, uint32_t serial, bool from_cast_spell) {
+  if (g_cast_pairs_mode < 2 || from_cast_spell || serial == 0 || caster == 0) {
+    return;
+  }
+  const uint32_t action = refii_mod_current_action(base, caster);
+  const int32_t tag = CastTagOf(serial);
+  // A vortex's `lifts` is decided by now: its Init and VortexStarted run inside the factory.
+  const uint32_t state = SpellStateOf(base, serial);
+  uint32_t seq = 0;
+  int32_t index = -1;
+  std::vector<SpellPair> formed;
+  if (!g_cast_pairs.LocalSpell(action, caster, serial, tag, CastClock(), &seq, &index, &formed, state)) {
+    return;
+  }
+  char line[96];
+  if (refii::cast_pairing::FormatLine(refii::cast_pairing::SpellLine{seq, index, serial, tag, state}, line, sizeof(line)) !=
+      0) {
+    refii_bridge_route_post(line);
+  }
+  ApplySpellPairs(base, formed);
+}
+
+bool SpellAwaitsPair(uint32_t serial) {
+  return g_cast_pairs_mode >= 2 && g_cast_pairs.AwaitsPeer(serial, CastClock());
+}
+
+void DrainCastPairs(uint8_t* base) {
+  const int32_t mode = refii_mod_coop_mode(base);
+  if (mode != g_cast_pairs_mode) {
+    g_cast_pairs.Clear();
+    g_held_hits.clear();
+    g_cast_pairs_mode = mode;
+  }
+  char text[160];
+  // Bounded per tick, as the relay is.
+  for (int n = 0; n < 64 && refii_bridge_route_take_cast(text, sizeof(text)) != 0; ++n) {
+    if (mode < 2) {
+      continue;
+    }
+    refii::cast_pairing::CastLine cast;
+    refii::cast_pairing::SpellLine spell;
+    std::vector<SpellPair> formed;
+    const char kind = refii::cast_pairing::ParseLine(text, &cast, &spell);
+    if (kind == 'c') {
+      g_cast_pairs.PeerCast(cast.seq, cast.key, cast.decided, CastClock(), &formed);
+    } else if (kind == 's') {
+      g_cast_pairs.PeerSpell(spell.seq, spell.index, spell.serial, spell.tag, &formed, spell.state);
+    }
+    ApplySpellPairs(base, formed);
+  }
+}
+
+void MapRelayedHitSerial(HitLandedEvent& e) {
+  if (g_cast_pairs_mode != 3 || e.spell_type < 0 || e.spell_serial == 0) {
+    return;
+  }
+  const uint32_t local = g_cast_pairs.LocalOfPeer(e.spell_serial);
+  if (local == 0) {
+    return;
+  }
+  e.spell_serial = local;
+  if (const CastRecord* cast = CastOf(local)) {
+    e.tag = cast->tag;
+  }
+}
+
+bool HoldRelayedHit(int32_t kind, const char* text) {
+  if (kind != REFII_EVENT_HIT_LANDED || g_cast_pairs_mode != 3 || g_held_hits.size() >= kCastHitsHeld ||
+      PendingHitSerial(text) == 0) {
+    return false;
+  }
+  g_held_hits.push_back(HeldHit{text, CastClock()});
+  return true;
+}
+
+void ReplayHeldHits(PPCContext& ctx, uint8_t* base) {
+  if (g_held_hits.empty()) {
+    return;
+  }
+  const double now = CastClock();
+  std::vector<HeldHit> due;
+  for (auto it = g_held_hits.begin(); it != g_held_hits.end();) {
+    if (g_cast_pairs_mode != 3 || now - it->at > kCastHitHold || PendingHitSerial(it->text.c_str()) == 0) {
+      due.push_back(std::move(*it));
+      it = g_held_hits.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  for (const HeldHit& held : due) {
+    if (g_relay_mode < 2) {
+      continue;
+    }
+    char* end = nullptr;
+    const long kind = std::strtol(held.text.c_str(), &end, 10);
+    const int32_t row = end != nullptr && *end == ':' ? RelayRow(static_cast<int32_t>(kind)) : -1;
+    if (row >= 0) {
+      RelayReader in{end + 1};
+      kRelayed[row].replay(ctx, base, in, row);
+    }
+  }
+}
+
+}  // namespace
+
+extern "C" uint32_t refii_mod_host_serial(uint8_t* base, uint32_t serial) {
+  (void)base;
+  return g_cast_pairs_mode == 3 ? g_cast_pairs.PeerOfLocal(serial) : serial;
+}
+
+extern "C" uint32_t refii_mod_local_serial(uint8_t* base, uint32_t host_serial) {
+  (void)base;
+  return g_cast_pairs_mode == 3 ? g_cast_pairs.LocalOfPeer(host_serial) : host_serial;
+}
+
+PPC_EXTERN_FUNC(__imp__rex_CActionSpellReleaseArea_Start);
+PPC_EXTERN_FUNC(__imp__rex_CActionSpellReleaseTargeted_Start);
+PPC_EXTERN_FUNC(__imp__rex_CActionSpellCast_Start);
+
+// r3 = the action (each Start's `mr r28,r3` / `mr r30,r3`).
+REX_EXTERN(rex_CActionSpellReleaseArea_Start) {
+  REX_FUNC_PROLOGUE();
+  NoteCastStart(ctx, base, ctx.r3.u32, refii::cast_pairing::kMessageAreaRelease);
+  __imp__rex_CActionSpellReleaseArea_Start(ctx, base);
+}
+
+REX_EXTERN(rex_CActionSpellReleaseTargeted_Start) {
+  REX_FUNC_PROLOGUE();
+  NoteCastStart(ctx, base, ctx.r3.u32, refii::cast_pairing::kMessageTargetedRelease);
+  __imp__rex_CActionSpellReleaseTargeted_Start(ctx, base);
+}
+
+REX_EXTERN(rex_CActionSpellCast_Start) {
+  REX_FUNC_PROLOGUE();
+  NoteCastStart(ctx, base, ctx.r3.u32, refii::cast_pairing::kMessageSpellCast);
+  __imp__rex_CActionSpellCast_Start(ctx, base);
+}

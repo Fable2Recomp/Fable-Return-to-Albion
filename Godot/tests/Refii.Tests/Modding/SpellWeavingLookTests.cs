@@ -54,10 +54,8 @@ public class SpellWeavingLookTests
 	[TestCase] public void VortexChaos() => Twister("spell_weaving_vortex_chaos");
 	[TestCase] public void BladesFire() => BladeBurn("spell_weaving_blades_fire");
 	[TestCase] public void BladesShock() => BladeBurn("spell_weaving_blades_shock");
-	[TestCase] public void BladesPush() => BladeBurn("spell_weaving_blades_push");
 	[TestCase] public void BladesChaos() => BladeBurn("spell_weaving_blades_chaos");
 	[TestCase] public void FireShock() => Fireball("spell_weaving_fire_shock");
-	[TestCase] public void FirePush() => Fireball("spell_weaving_fire_push");
 	[TestCase] public void FireChaos() => Fireball("spell_weaving_fire_chaos");
 	[TestCase] public void ShockPush() => Burst("spell_weaving_shock_push");
 	[TestCase] public void ShockChaos() => Burst("spell_weaving_shock_chaos");

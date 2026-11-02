@@ -19,6 +19,8 @@ public static class Engine_MorphMirrorRuntime
     public const string ActionName = "OnActionUseRefiiMorphMirror";
     public const string ActiveKey = "refii.morph_mirror.active";
     public const string RotationKey = "refii.morph_mirror.rotation";
+    /// <summary>The guest player (1 or 2) whose hero is at the Mirror, stated when it is used.</summary>
+    public const string PlayerKey = "refii.morph_mirror.player";
     public const string ModelPath = "art/refii/morph_mirror/refii_morph_mirror.mdl";
     public const string TargetMarker = "Prop.Focal.CharacterLookat";
     public const float InteractionDistance = 4f;
@@ -99,9 +101,13 @@ public static class Engine_MorphMirrorRuntime
             OnActionUseRefiiMorphMirror = OnActionUseBase:new()
             function OnActionUseRefiiMorphMirror:Update()
                 if active or not self.ItemBeingUsed:IsAlive() or self.ItemBeingUsed:GetName() ~= "{{EntityName}}"
-                    or self.EntityUsingItem ~= GetPlayerHero() or not IsLevelLoaded("{{level}}") then return end
-                hero = GetPlayerHero()
-                if not hero or not hero:IsAlive() then return end
+                    or not self.EntityUsingItem or not IsLevelLoaded("{{level}}") then return end
+                -- Either player's hero, on the machine that plays it: that player edits their own look.
+                local player = Refii.player_of(Refii.handle(self.EntityUsingItem))
+                if (player ~= 1 and player ~= 2) or not Refii.player_here(player) then return end
+                hero = self.EntityUsingItem
+                if not hero:IsAlive() then return end
+                Refii.publish("{{PlayerKey}}", player)
                 originalPosition = hero:GetPosition()
                 originalFacing = Physics.GetFacingVector(hero)
                 rotation = 0

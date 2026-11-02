@@ -185,6 +185,7 @@ public static class Engine_UiModAbilities
 			Player = Reader(player),
 			Mod = key => HostBridge.TryGetModValue(key, out float value) ? value : null,
 			PlayerValue = (p, key) => HostBridge.GetPlayerValue(p, key),
+			Setting = key => Refii.Mods.ModSettings.TryGet(key, out float value) ? value : null,
 		};
 		return Engine_UiValueSources.Number(ability.Stat, context) is { } stated
 			? ((int)stated).ToString(CultureInfo.InvariantCulture)

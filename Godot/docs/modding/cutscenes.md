@@ -11,6 +11,8 @@ to the game while it has.
 - [In combat](#in-combat)
 - [Co-op](#co-op)
 - [The look-at button](#the-look-at-button)
+- [The camera](#the-camera)
+- [Hidden parts](#hidden-parts)
 
 ## Three statements
 
@@ -82,3 +84,110 @@ toggled LT) writes `e.down = locked` and the flag equals its lock whoever asks, 
 its own.
 
 Seam: `rex_CPlayer_SetLookAtButtonDown`.
+
+## The camera
+
+Each player's camera is the game's own camera manager: every frame it walks its sets — debug,
+the overrides scenes and quests state, the co-op set, the normal set (canned actions, first person,
+the aim cameras, the third-person camera) — and activates the first valid one's best camera.
+
+| Surface | The mode | The hold | The field of view |
+|---|---|---|---|
+| Native | `refii_mod_camera_mode(player)` · `CameraChanged` | `refii_mod_camera_override(player, mode, fov, pitch_limit, blend, flags)` | `refii_mod_camera_fov(base, player)` |
+| Lua | `Refii.camera_mode(p)` · `Refii.on("camera_changed", fn)` | `Refii.camera_override(p, mode [, opts])` | `Refii.fov(p)` |
+| Godot | `host.camera_mode(player)` · signal `camera_changed(e)` | `host.camera_override(player, mode, options)` | `host.fov(player)` |
+
+The mode is the game's ECameraMode (`Refii.CAMERA_*`): 2 `CAMERA_GAME` the third-person camera, 3
+the gun aim, 4 the magic aim, 7 an interactive scene's camera, 8 `CAMERA_FIRST_PERSON` (the game's
+own first-person look and a hold alike), 9 a finishing move's, 10 a canned action's (a chest, a
+door, a ladder). -1 before the player has a camera, and for a player whose camera runs on the
+other machine of an online game.
+
+**The hold** is the game's own per-player camera override, the one the quests use for their
+first-person shots. `mode` is `CAMERA_FIRST_PERSON` or `CAMERA_GAME`; nil or 0 lets it go. The
+options are what the game's cameras read from an override:
+
+| Option | Meaning |
+|---|---|
+| `fov` | degrees (the horizontal angle the game's cameras state); absent, the camera's own (first person 75) |
+| `pitch_limit` | degrees above and below level the view may turn; absent, the camera's own (first person 55) |
+| `blend` | seconds to blend in and out; absent, the camera's own |
+| `aim` | true: while the player aims a gun, the game's aim camera takes over |
+
+The eye is the game's — first person sits at the head's collision point — and no option moves it.
+While a player's mode is `CAMERA_FIRST_PERSON` Refii draws that player's hero without its head,
+hair and hat (the body and the shadow keep theirs), so a mod needs no `hide_part` for it. Only that
+player's view loses it: on split screen the partner's half still draws the head (see
+[Hidden parts](#hidden-parts) for how one view is drawn differently).
+Whatever the mode, a hero is drawn at the opacity the game's cameras fade it to
+(`GraphicAppearance.SetCameraAlpha`: the shipped first-person camera, a scene's point-of-view shot,
+a camera pulled in by a wall), hair and hats included, and at 0 only its shadow shows; a first
+person that keeps the body in view leaves the shipped camera's fade out.
+The hold holds in combat. It yields to the game:
+
+- a scene or quest that states its own camera override replaces it; the hold comes back once theirs
+  is released, and after a level or save load;
+- a full cutscene and the canned-action cameras (opening a chest, digging, a ladder, a door, a
+  finishing move) suspend it;
+- it is never saved: the save's camera record is written without it, so a save made in first person
+  loads in the game's own camera with or without the mod;
+- a held look-at half is the mod's, not a cutscene: `in_cutscene` leaves it out.
+
+Holds are cleared when the mods' Lua loads (each session), so state one from `init.lua` or on
+`lua_ready`. In split screen each player holds their own.
+
+```lua
+Refii.camera_override(1, Refii.CAMERA_FIRST_PERSON, { fov = 80, pitch_limit = 75, aim = true })
+Refii.on("camera_changed", function(e)
+	Refii.log("player " .. e.player .. " camera " .. e.mode)
+end)
+```
+
+**The field of view** is the player's live camera's, read where their view is drawn from. Every
+camera writes its own field of view each update, so there is no per-player field of view to set:
+a hold's `fov` is the way to state one.
+
+## Hidden parts
+
+`hide_part(entity, part, on [, player])` hides a part of an entity in the drawing: `part` is a bone
+of the entity's rig by its rig name, the same in either title (`"Shadow_Neck"`; Fable 3 names its
+bones by the name's hash, and is matched that way), and the bone and every bone under it — for the
+neck, the head, the face, the hair and the hat — is drawn at nothing after the game has posed it.
+Any entity with a rig, not only the heroes. Drawing only: the pose the game holds is untouched, and
+the shadow keeps the part. Godot keeps it per entity handle, across the entity's rebuilds, until it
+is shown again or the mods' Lua loads again (`lua_ready`).
+
+| Surface | Call |
+|---|---|
+| Native | `refii_mod_hide_part(entity, part, on)` · `refii_mod_hide_part_for(entity, part, on, player)` |
+| Lua | `Refii.hide_part(e, part, on [, p])` |
+| Godot | `host.hide_part(handle, part, on, player = 0)` |
+
+**Whose view.** `player` 0 (or absent) hides the part in every view. 1 or 2 hides it only in the
+view drawn for that player:
+
+| Screen | `player` 1 or 2 |
+|---|---|
+| Split screen | that player's half alone; the partner's half still draws the part |
+| One view, alone | hidden for player 1 (the view is player one's); player 2's hide draws nothing differently |
+| One shared couch screen | hidden for either player: the one view is both players' |
+| Online | each machine draws its own player's view: the host hides player 1's parts, the joiner player 2's. A mod's code runs on both machines, so each hides what its own player should not see |
+
+Each part and player is its own statement: `hide_part(e, "Shadow_Neck", true)` and
+`hide_part(e, "Shadow_Neck", false, 1)` leave the neck hidden in every view. The first-person head
+composes with them: a hero in its player's first person loses the head in that view and any part
+hidden for that player besides.
+
+```lua
+-- Player one's own head out of player one's view; player two's half still draws it.
+Refii.hide_part(Refii.player_hero(1), "Shadow_Head", true, 1)
+```
+
+**How a split view differs.** Both halves render the one world from one skeleton, so a pose cannot
+differ between them. A part hidden in every view, or in both players' views, is shrunk on the pose
+(nothing extra is drawn). A part hidden in one player's view alone stands a second copy of the body
+on the same skeleton, whose skin draws that view's parts at nothing, in that view only, and the body
+itself is drawn only in a view that hides nothing of its own — two copies and no body when each
+player hides something. The copies light as the body does (indoors too) and cast no shadow of their
+own; they go when nothing per view is hidden or the screen rejoins. With nothing hidden, nothing is
+added.

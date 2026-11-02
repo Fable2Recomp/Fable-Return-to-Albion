@@ -1352,6 +1352,8 @@ public sealed class Engine_UiScreenMenu
 				child.IdHigh = (int)((sourced.Id >> 16) & 0xFFFFu);
 				child.Committable = sourced.Committable;
 				child.Ghosted = sourced.Ghosted;
+				child.HostOnly = sourced.HostOnly;
+				child.FromMod = sourced.FromMod;
 				child.IsOpen = false;
 				++_hostChildren;
 			}
@@ -1693,6 +1695,25 @@ public sealed class Engine_UiScreenMenu
 	/// the guest's own A (code 36) runs the handler's 36 arm against it. Both ride the same
 	/// pump pass, in order, in one tick.
 	/// </summary>
+	/// <summary>
+	/// A MOD'S ROW WITH NO HOST ACTION COMMITS NOTHING. It has no row in the guest's list and no
+	/// guest record behind its (EventType, id): `MenuHighlight` by its name finds nothing, so the
+	/// guest's select or A would act on whichever of its own rows its cursor last held, and an
+	/// identity push hands a screen handler an id whose record lookup fails — the furniture
+	/// upgrade handler ignores that failure (`bl sub_825CC2F0` 0x8299caf4, result overwritten at
+	/// 0x8299cafc) and reads through the unfilled output (`sub_827647F8` 0x82764814).
+	/// </summary>
+	private static bool RefusesModRow(Engine_UiExpandableMenu.Item row, string label)
+	{
+		if (!row.FromMod)
+		{
+			return false;
+		}
+
+		GD.Print($"[screen-menu] '{label}' is a mod's row with no host action — nothing is committed");
+		return true;
+	}
+
 	private static void CommitThroughHighlight(Engine_UiExpandableMenu.Item row, string label)
 	{
 		GD.Print($"[screen-menu] commit THROUGH THE GUEST'S HIGHLIGHT: '{label}' ({row.Name}) — " +
@@ -1797,7 +1818,7 @@ public sealed class Engine_UiScreenMenu
 				return true;
 			}
 
-			if (RunHostAction(row, label))
+			if (RunHostAction(row, label) || RefusesModRow(row, label))
 			{
 				return true;
 			}
@@ -1935,7 +1956,7 @@ public sealed class Engine_UiScreenMenu
 		//
 		// It is checked before `Committable` on purpose — a row with a host action needs no
 		// guest identity, which is the whole point of having one.
-		if (RunHostAction(row, label))
+		if (RunHostAction(row, label) || RefusesModRow(row, label))
 		{
 			return true;
 		}

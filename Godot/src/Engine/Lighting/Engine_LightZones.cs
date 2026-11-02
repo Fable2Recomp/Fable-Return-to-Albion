@@ -35,15 +35,18 @@ public static class Engine_LightZones
     public const string HostRecordMeta = "light_host_record";
 
     /// <summary>What an outdoor light lights: everything but interiors and indoor lamp hosts.</summary>
-    private const uint OutdoorOnly = ~(IndoorMask | IndoorLampHostMask | Refii.Level.Engine_ReflectionLayer.Mask | Engine_LevelLights.EntityCasterLayerMask);
+    private const uint OutdoorOnly = ~(IndoorMask | IndoorLampHostMask | Refii.Level.Engine_ReflectionLayer.Mask |
+        Engine_LevelLights.EntityCasterLayerMask | Refii.Models.Engine_ClassicViews.IndoorViewLayers);
 
     /// <summary>
     /// What an indoor light lights: interiors (including characters zoned to the interior via Zoned()),
     /// indoor lamp-host fixtures, and the guest's particles, which carry no zone.
     /// Does not include EntityCasterLayerMask or LampHostLayerMask so indoor lights do not leak
-    /// through walls onto outdoor NPCs or outdoor street-lamp fixtures.
+    /// through walls onto outdoor NPCs or outdoor street-lamp fixtures. An interior drawn in one
+    /// split view alone carries that view's indoor layer instead (Engine_ClassicViews.OnlyIn).
     /// </summary>
-    private const uint IndoorOnly = IndoorMask | IndoorLampHostMask | Refii.Models.Engine_ClassicParticles.Layer;
+    private const uint IndoorOnly = IndoorMask | IndoorLampHostMask | Refii.Models.Engine_ClassicParticles.Layer |
+        Refii.Models.Engine_ClassicViews.IndoorViewLayers;
 
     private const uint All = uint.MaxValue;
 

@@ -59,10 +59,27 @@ std::string LhText(uint8_t* base, uint32_t at) {
   return std::string(reinterpret_cast<const char*>(base + text), length);
 }
 
+/// The SaveWritten event for a write that returned, `ok` the writer's own result
+/// (core/refii_mod_events.h SaveWrittenEvent).
+void RaiseSaveWritten(PPCContext& ctx, uint8_t* base, const std::string& name, uint32_t player, bool ok) {
+  refii::mods::SaveWrittenEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.player = static_cast<int32_t>(player);
+  e.save = name.c_str();
+  e.ok = ok;
+  refii::mods::Dispatch(e);
+}
+
 /// After a package write: player `player`'s saved values go beside it.
-void Written(uint8_t* base, uint32_t name_at, uint32_t player, bool ok) {
+void Written(PPCContext& ctx, uint8_t* base, uint32_t name_at, uint32_t player, bool ok) {
   const std::string name = LhText(base, name_at);
-  if (!ok || name.empty() || (player != 1u && player != 2u)) {
+  if (player != 1u && player != 2u) {
+    return;
+  }
+  if (!ok || name.empty()) {
+    RaiseSaveWritten(ctx, base, name, player, ok);
     return;
   }
   refii_bridge_player_write_saved(static_cast<int32_t>(player), name.c_str());
@@ -76,6 +93,8 @@ void Written(uint8_t* base, uint32_t name_at, uint32_t player, bool ok) {
   }
   fields += "'";
   refii::mods::PostEvent(REFII_MOD_HOST_SAVE_KIND, fields);
+  // After the stamp's post, so the host has stamped the package when its save_written arrives.
+  RaiseSaveWritten(ctx, base, name, player, true);
 }
 
 }  // namespace
@@ -91,7 +110,7 @@ REX_EXTERN(rex_lhSaveManager_WritePackage) {
     refii::vfs::StashHouseholdForSave(stash, base);
   }
   __imp__rex_lhSaveManager_WritePackage(ctx, base);
-  Written(base, name_at, player, (ctx.r3.u32 & 0xFFu) != 0u);
+  Written(ctx, base, name_at, player, (ctx.r3.u32 & 0xFFu) != 0u);
 }
 
 // The hero save alone: the same arguments. TU1 0x82445A28.
@@ -100,7 +119,7 @@ REX_EXTERN(rex_lhSaveManager_WriteHeroPackage) {
   const uint32_t name_at = ctx.r4.u32;
   const uint32_t player = ctx.r5.u32;
   __imp__rex_lhSaveManager_WriteHeroPackage(ctx, base);
-  Written(base, name_at, player, (ctx.r3.u32 & 0xFFu) != 0u);
+  Written(ctx, base, name_at, player, (ctx.r3.u32 & 0xFFu) != 0u);
 }
 
 // Player one's save loaded: the name is in SaveMgr+0 (r3+0). TU1 0x82446B10.

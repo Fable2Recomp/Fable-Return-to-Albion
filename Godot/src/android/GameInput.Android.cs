@@ -194,8 +194,8 @@ public partial class GameInput
 				Refii.AndroidRuntime.AndroidQuickSettings.VibrationStrengthDefault), 1, 100) / 100f
 			: 1f;
 
-	/// <summary>One device's buttons and triggers through the player's controller remap; unchanged on the desktop.</summary>
-	private static void RemapPad(ref uint buttons, ref uint leftTrigger, ref uint rightTrigger)
+	/// <summary>One device's buttons and triggers through the phone's own controller map, after the core remap (GameInput.Controllers.cs); unchanged on the desktop.</summary>
+	private static void RemapPadAndroid(ref uint buttons, ref uint leftTrigger, ref uint rightTrigger)
 	{
 		if (Engine_Platform.IsAndroid)
 			Refii.AndroidRuntime.AndroidPadRemap.Apply(ref buttons, ref leftTrigger, ref rightTrigger);

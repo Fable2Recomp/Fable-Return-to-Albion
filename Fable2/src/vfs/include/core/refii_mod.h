@@ -321,6 +321,12 @@ extern "C" uint32_t refii_mod_focus(uint8_t* base, int32_t player);
 /// hero's camera (Fable2/src/vfs/src/hooks/mouse_look.cpp); a pad is untouched.
 extern "C" void refii_mod_wheel_switches_target(uint8_t* base, uint32_t hero);
 
+/// refii_mod_wheel_switches_target made STICKY: `on` non-zero states it now and the guest tick
+/// restates it every tick until `on` 0 or the hero's player no longer holds a lock (the game's own
+/// release, or refii_mod_release_lock) — the one store a Godot script's statement lives in too
+/// (mod_commands.cpp RestateWheelSwitches). At most four heroes at once. Guest tick.
+extern "C" void refii_mod_wheel_switches_target_sticky(PPCContext* ctx, uint8_t* base, uint32_t hero, int32_t on);
+
 // ---------------------------------------------------------------------------------------------
 // PLAYER STATE: a mod's values for one player, right on both co-op machines.
 // ---------------------------------------------------------------------------------------------
@@ -344,6 +350,24 @@ extern "C" void refii_mod_player_set(int32_t player, const char* key, float valu
 extern "C" void refii_mod_player_add(int32_t player, const char* key, float delta, int32_t saved);
 /// Sets a SAVED value: kept with the hero's own save and back when it loads.
 extern "C" void refii_mod_player_save(int32_t player, const char* key, float value);
+
+/// TYPED VALUES in the same store, under the same keys and owners: a TEXT (at most
+/// REFII_MOD_PLAYER_TEXT_MAX bytes) and a HASH, kept exactly (a 32-bit record hash does not survive a
+/// float). A key holds one type: a number written over a text replaces it and the other way round;
+/// the number readers answer 0 / the fallback for a text key. A hash is stored as the text "0x%08x",
+/// so either reader reads it.
+#define REFII_MOD_PLAYER_TEXT_MAX 256
+/// The text under `key` into `out` (NUL-terminated, cut to `capacity`); its length, -1 when the
+/// player has no text there.
+extern "C" int32_t refii_mod_player_text(int32_t player, const char* key, char* out, uint32_t capacity);
+/// Sets a session text (null clears to ""). Longer than REFII_MOD_PLAYER_TEXT_MAX is cut.
+extern "C" void refii_mod_player_set_text(int32_t player, const char* key, const char* text);
+/// Sets a SAVED text: kept with the hero's own save and back when it loads.
+extern "C" void refii_mod_player_save_text(int32_t player, const char* key, const char* text);
+/// The hash under `key` (a text that reads as a "0x…" or decimal number) into `out`; 1 when there is one.
+extern "C" int32_t refii_mod_player_hash(int32_t player, const char* key, uint32_t* out);
+/// Sets a SAVED hash (stored as the text "0x%08x").
+extern "C" void refii_mod_player_save_hash(int32_t player, const char* key, uint32_t hash);
 /// Whether this machine plays that player's hero (both outside an online session; the host plays
 /// player one and the joiner player two inside one). Work that runs on its own every tick for a
 /// player — a refill, a timer — runs where the hero is played, so it runs once per session.
@@ -381,6 +405,25 @@ extern "C" int32_t refii_mod_event_replica(void);
 /// and the joiner player two's. Returns 1 when posted; 0 outside an online session (alone and in
 /// local co-op nothing is sent), for a bad name or mod, or a payload over the limit. Any thread.
 extern "C" int32_t refii_mod_send_to_partner(const char* mod, const char* name, const char* payload);
+
+/// The most bytes a signal's payload or a published text carries; longer is cut and a mod error
+/// says so.
+#define REFII_MOD_SIGNAL_PAYLOAD_MAX 1024
+/// The most characters a signal's scoped name or a published text's key carries.
+#define REFII_MOD_SIGNAL_NAME_MAX 96
+
+/// A SIGNAL TO GODOT ON THIS MACHINE — the same-machine twin of refii_mod_send_to_partner:
+/// `name` is scoped "<mod>.<name>" ("quicksave.saved") and `payload` any text (at most
+/// REFII_MOD_SIGNAL_PAYLOAD_MAX bytes, carried exactly). Godot emits RefiiHost's
+/// mod_signal(mod, name, payload) — mod the part before the first '.' — and mod_event("mod_signal",
+/// e) on its next frame. Returns 1 when posted (0 for no name). Any thread.
+extern "C" int32_t refii_mod_signal(const char* name, const char* payload);
+
+/// PUBLISHES A TEXT under `key` ("<mod>.<name>", at most REFII_MOD_SIGNAL_NAME_MAX) for Godot:
+/// RefiiHost.get_text(key) reads the last one, and value_changed(key, text) fires when it changes.
+/// `text` at most REFII_MOD_SIGNAL_PAYLOAD_MAX bytes, carried exactly. Kept for the process like a
+/// published number. Returns 1 when posted. Any thread.
+extern "C" int32_t refii_mod_publish_text(const char* key, const char* text);
 
 /// Whether `entity` is in the world: the flag the game's own target selector tests
 /// ((entity+0x90) & 0x40). False for 0.
@@ -428,6 +471,48 @@ extern "C" int32_t refii_mod_spend_experience(PPCContext* ctx, uint8_t* base, ui
 extern "C" uint32_t refii_mod_cast_spell(PPCContext* ctx, uint8_t* base, uint32_t caster, int32_t type, int32_t targeted,
                                          uint32_t target, int32_t level, const float* pos, const float* dir);
 
+/// What refii_mod_cast_spell_with stamps on its cast, by the serial the factory gives it (its
+/// registry's counter, read before the factory runs: `lwz r19,0xC(r18)` 0x824b1934 -> `stw
+/// r19,0x44(r31)` 0x824b1ec4), so a hit landed inside the factory carries it too.
+typedef struct refii_mod_cast_options {
+  /// Carried by the cast's spell_created, vortex_started, hit, hit_landed, fireball_impact and
+  /// status_applying (`tag`); 0 none.
+  int32_t tag;
+  /// Every hit carrying the cast's serial deals its damage × this, written into the hit (+0x38,
+  /// the field the Hit event's writable damage writes) before the hit is delivered, where the hit
+  /// is decided (the one machine, or the host: a joiner's cast does not reach the host's hits).
+  /// 1 is the game's own; a negative or non-finite scale is taken as 1.
+  float damage_scale;
+  /// Where the cast goes (REFII_MOD_CAST_AT_*): the core places the start (v1, spell +0x30) and
+  /// facing (v2, +0x60) by the spell class's own rule for that place, from `pos` as the ORIGIN
+  /// (where the cast comes from; the caster's position when null) and `dir` as the facing when
+  /// the origin stands on the place (the caster's facing when null). The cast is the Targeted
+  /// class; `targeted` must be set and `target` 0 or the at entity. Refused, with a mod error,
+  /// for a type with no rule for that place:
+  ///   Lightning   entity: v1 on the point its bolt strikes (bolt of zero length);
+  ///               point: v1 above the point by the bolt's 15.0 reach, facing down
+  ///   Fireball    entity: v1 within the 1.0 the Start impacts at once; point: refused
+  ///   Blades      v1 on the entity's position / the point (its swords appear there)
+  ///   Vortex      v1 set back 1.25 along the facing (its twister spawns on the place)
+  ///   Chaos       entity: v1 on the point its stream strikes; point: refused
+  ///   Force Push  v1 the origin, facing the place (shoves away from the origin)
+  ///   Slow Time, Raise Dead: refused
+  int32_t at_kind;
+  /// The entity for REFII_MOD_CAST_AT_ENTITY (alive).
+  uint32_t at_entity;
+  /// The point for REFII_MOD_CAST_AT_POINT (guest axes, z up).
+  float at_point[3];
+} refii_mod_cast_options;
+
+#define REFII_MOD_CAST_AT_NONE 0
+#define REFII_MOD_CAST_AT_ENTITY 1
+#define REFII_MOD_CAST_AT_POINT 2
+
+/// refii_mod_cast_spell with `options` (null: tag 0, damage_scale 1, no `at`).
+extern "C" uint32_t refii_mod_cast_spell_with(PPCContext* ctx, uint8_t* base, uint32_t caster, int32_t type,
+                                              int32_t targeted, uint32_t target, int32_t level, const float* pos,
+                                              const float* dir, const refii_mod_cast_options* options);
+
 /// The cast serial of a spell object (+0x44): the number its hits carry as spell_serial.
 extern "C" uint32_t refii_mod_spell_serial(uint8_t* base, uint32_t spell);
 
@@ -445,6 +530,22 @@ extern "C" int32_t refii_mod_save_set_int(PPCContext* ctx, uint8_t* base, const 
 extern "C" int32_t refii_mod_save_get_int(PPCContext* ctx, uint8_t* base, const char* key, int32_t lo, int32_t hi,
                                           int32_t* out);
 
+/// Whether the game lets `player` (1 or 2) save now: the body game Lua's Player.IsAbleToSaveGame
+/// binds (`sub_823F3660`, disc `sub_823D2070`; its binder's thunk `sub_823FA658` resolves the
+/// entity to the player component 33), which asks the save manager
+/// `*(game+0x94)` (`lwz r3,0x94(r5)` 0x82459050) `sub_824489C0(manager, *(*(comp33+0x14)+0x28))`:
+/// saving enabled (+0x82D) and that player's user holding a storage device. False with no hero.
+/// Guest tick thread only.
+extern "C" int32_t refii_mod_can_save(PPCContext* ctx, uint8_t* base, int32_t player);
+
+/// Saves the game as game Lua's AutoSaveGame(true, true) does, where refii_mod_can_save(player)
+/// allows it: the body it binds (`sub_82445730`, disc `sub_824E8D28`) on the save manager with r4 1
+/// (deferred: `stb +0x828`) and r5 1 (forced: `stb +0x829`); the world update then runs it again
+/// undeferred (`sub_82445730(manager, 0, +0x829)` 0x82276060), which calls the write driver
+/// (`sub_82445398(manager, 1, 0, 0, 1)` 0x824457cc). The write is the game's whole save — each
+/// hero into its own package — and save_written follows per package. True when asked.
+extern "C" int32_t refii_mod_save_game(PPCContext* ctx, uint8_t* base, int32_t player);
+
 /// The GDB record hash of `entity`'s definition (entity+0x1C): what the entity is.
 extern "C" uint32_t refii_mod_entity_definition(uint8_t* base, uint32_t entity);
 
@@ -460,6 +561,26 @@ extern "C" int32_t refii_mod_relation(PPCContext* ctx, uint8_t* base, uint32_t e
 /// Moves `entity` to `xyz` through its placement's own setter (vtable slot 25), which raises the
 /// game's moved event. True when done. Guest tick thread only.
 extern "C" int32_t refii_mod_set_position(PPCContext* ctx, uint8_t* base, uint32_t entity, const float* xyz);
+
+/// `entity`'s facing and velocity, the bodies game Lua's Physics.* bind. Their binder (thunk
+/// `sub_821E4368` / `sub_826EE148`) refuses an entity not in the world (+0x90 & 0x40) and hands
+/// the body the placement component 2, so these do too; xyz in the guest's axes, z up:
+///   - facing: Physics.GetFacingVector `sub_821F5BC0` (disc `sub_821F5A90`): r3 the out vector, r4
+///     the placement; the placement's slot 17 frame -> `sub_821F5B58` -> `stvx128 v1,r0,r31`.
+///   - velocity: Physics.GetVelocity `sub_8229DDE0` (disc `loc_8229DB18`, 4 identical instructions:
+///     `lwz r12,0(r4); lwz r11,0x4C(r12); mtctr r11; bctr`) — the placement's slot 19 with r3 the
+///     out vector, called here as the virtual itself; the binder copies from the returned r3.
+///   - set_facing: Physics.SetFacingVector `sub_82266518` (disc `sub_822664D8`): r3 the placement,
+///     v1 the vector; it drops z (`vand v0,v1` with {~0,~0,0,~0} at 0x820990C0, 0x82266544), does
+///     nothing for a vector shorter than 1e-4 (0x82266550..64), else builds the frame with z up
+///     (`sub_822675B8`) and calls the placement's slot 26 (`lwz r11,0x68(r6)` 0x822665ac). For a
+///     hero, Player.SetFacingVector `sub_823F3420` (disc `sub_823D1E30`; its binder resolves the
+///     entity to the player component 33, thunk `sub_823FB4D8`) instead: it clears component 110's
+///     +0xC0 byte (`*(v2 + 192) = 0` 0x823f3548) and then calls the same body on `*(entity+0x7C)`.
+/// True when read or set. Guest tick thread only.
+extern "C" int32_t refii_mod_facing(PPCContext* ctx, uint8_t* base, uint32_t entity, float* out_xyz);
+extern "C" int32_t refii_mod_velocity(PPCContext* ctx, uint8_t* base, uint32_t entity, float* out_xyz);
+extern "C" int32_t refii_mod_set_facing(PPCContext* ctx, uint8_t* base, uint32_t entity, const float* xyz);
 
 /// Tints `entity` through the game's own appearance setter: the vector tint of its renderable
 /// (CECGraphicAppearance, component 3; `sub_82573770`, disc `sub_82548418`), the vector twin of
@@ -632,6 +753,14 @@ extern "C" int32_t refii_mod_action_interruptible(uint8_t* base, uint32_t action
 /// is 0).
 extern "C" int32_t refii_mod_allow_action_interrupt(uint8_t* base, uint32_t action);
 
+/// Grants it LATER, once the action's own clock (refii_mod_action_elapsed) reaches `seconds`: at
+/// once when it already has, else on the first guest tick it does — so a committed swing is
+/// released at its time without the mod polling. Dropped, ungranted, when the action stops, its
+/// clock runs backwards (the address is another action's) or a minute of ticks passes. A second
+/// call for the same action restates the time. 1 when granted or waiting (0 for an action that is
+/// stopped, held back by +0x4C, or has no clock; 0 when 32 grants already wait). Guest tick.
+extern "C" int32_t refii_mod_allow_action_interrupt_at(PPCContext* ctx, uint8_t* base, uint32_t action, float seconds);
+
 /// WHAT AN ACTION IS. An action's definition is not a GDB record and is not kept on the object:
 /// it is a Lua TABLE of the game's scripts, handed to `Action.SetCurrentAction(entity, def)`
 /// (the glue `sub_8218AAA0`: `lua_touserdata(L, 1)` the entity, `sub_82302080(.., L, 2)` a
@@ -730,6 +859,66 @@ struct refii_mod_cast_parts {
 /// with `out` zeroed. Guest tick thread only (the origin reads placements).
 extern "C" int32_t refii_mod_spell_parts(PPCContext* ctx, uint8_t* base, uint32_t serial, refii_mod_cast_parts* out);
 
+/// The creatures the live vortex of cast `serial` holds now, read from its own held list: the
+/// component's vector at +0x1B0 of 8-byte weak references (+0x1B4 the first, +0x1B8 the end, an
+/// entry's +4 the body whose +0 is the entity — Shutdown walks it so, 0x82758fd0..0x8275902c), the
+/// list the update appends a capture to (0x8275b964) and erases a release from (0x8275be28..38).
+/// A victim is taken while its entity still points back at the body and is in the world. Writes up
+/// to `max` handles to `out` (null to count only) in the list's order and returns how many it holds;
+/// -1 when no live vortex carries `serial` (not a vortex, or its Shutdown ran). Guest tick thread.
+extern "C" int32_t refii_mod_vortex_held(uint8_t* base, uint32_t serial, uint32_t* out, int32_t max);
+
+/// What refii_mod_spell_balance answers: one power of a spell as its TARGETED class's own data read
+/// loads it. A field the class does not carry is -1.
+struct refii_mod_cast_balance {
+  /// The status the class's Start installs on each victim: its seconds before the victim's own
+  /// factor (the Start's per-victim classification), and the spread of the uniform draw the Start
+  /// adds on top (0 for none) — what the Start hands the installer is seconds × factor + [0, spread).
+  ///   - Lightning: ElectrifyDuration, 5 (`sub_827407F0`: `lfs f0,4(r31)` 0x82741220 the power's
+  ///     record +4, `fmuls f31,f0,f12` 0x82741230, `lfs f1` 5.0 0x82741234 into LHMath_GFFloatRandom
+  ///     0x8274124c, `fadds f31,f1,f31` 0x82741254 -> f2 of sub_82742BF8 0x82741360, its Electrify's f1).
+  ///   - Fireball: CreatureBurnTime, 0 (rex_TargetedFireball_Impact `sub_827441F0`: `lfsx f12,r8,r31`
+  ///     0x8274445c the power's record +0, `fmuls f3,f12,f13` 0x82744460 -> Ignite's f3 0x827444b0).
+  ///   - Chaos: Duration, 2 (`sub_82748C28`: `lfsx f13,r8,r30` 0x82749250 the power's float, `lfs f1`
+  ///     2.0 0x82749220 into LHMath_GFFloatRandom 0x82749238, `fmadds f31,f13,f0,f1` 0x82749254 ->
+  ///     ApplyToVictim's f1 0x8274928c).
+  float status_seconds;
+  float status_spread;
+  /// Vortex: its Duration, the twister's life (the power's record +0).
+  float duration;
+  /// Blades: NumSwords, the swords one cast makes (the power's record +0).
+  int32_t swords;
+};
+
+/// One power (`level` 0..4) of spell `type` for `caster`'s definitions (its spell manager's +400, the
+/// word the factory hands sub_8260D580): the Targeted definition sub_8260D580(definitions, type, 1)
+/// fed to the class's own data read into scratch, as the factory feeds a new spell — each copies
+/// its defaults per power and lays the definition's GDB `PowerN` values over them:
+///   - Lightning `sub_827405C0`: 32-byte records at +0x80, +4 ElectrifyDuration.
+///   - Fireball `sub_82743968`: 36-byte records at +0xB4, +0 CreatureBurnTime.
+///   - Blades `sub_825A1D68`: 20-byte records at +0x80, +0 NumSwords (int).
+///   - Vortex `sub_828B1EA8`: 92-byte records at +0x80, +0 Duration.
+///   - Chaos `sub_82748B10`: one float per power at +0x80, Duration.
+/// Returns 1 with `out` filled, 0 for another type, a caster with no spell manager or a failed read
+/// (`out` all -1). Guest tick thread.
+extern "C" int32_t refii_mod_spell_balance(PPCContext* ctx, uint8_t* base, uint32_t caster, int32_t type, int32_t level,
+                                           refii_mod_cast_balance* out);
+
+/// ONE CAST, ONE IDENTITY ONLINE. The game makes a cast's spell on both machines (the deciding
+/// machine's cast action replicates its Start as message 0x5B, 0x5C or 0x5E and the other machine's
+/// copy of the action launches through its own factory), each with its own serial. A cast is
+/// paired by its replicated release (the caster's network id and the action's sent fields, in the
+/// order the game's guaranteed, sequential channel starts them: mod_events.cpp THE CAST PAIRS), and
+/// its spells by creation order. The host's serial is the shared name: hits are decided there, and
+/// a relayed hit_landed is rewritten to this machine's serial once paired.
+/// refii_mod_host_serial: the host's serial of this machine's spell `serial` — itself on the host,
+/// alone and in local co-op; on the joiner its pair, 0 while unpaired. refii_mod_local_serial: this
+/// machine's spell for the host's `host_serial` — itself on the host, alone and in local co-op; on
+/// the joiner its pair, 0 while unpaired. Spells no cast action made (refii_mod_cast_spell, a launch
+/// outside one) never pair. Guest tick thread.
+extern "C" uint32_t refii_mod_host_serial(uint8_t* base, uint32_t serial);
+extern "C" uint32_t refii_mod_local_serial(uint8_t* base, uint32_t host_serial);
+
 // ---------------------------------------------------------------------------------------------
 // Status effects: the spells' own per-victim installers, without the spell.
 // ---------------------------------------------------------------------------------------------
@@ -744,7 +933,8 @@ extern "C" int32_t refii_mod_spell_parts(PPCContext* ctx, uint8_t* base, uint32_
 /// Puts status `kind` on `entity` for `seconds` at `level` (0..4, the spell level the component
 /// records), as the spell's own hit would, through the installer each spell calls — each adds the
 /// component itself (`sub_8238CD68(entity, "CEC…", 0)`), each refuses an entity not in the world
-/// (+0x90 & 0x40), and the StatusEffect event fires from the add:
+/// (+0x90 & 0x40); the StatusApplying event fires before the installer (a handler may change the
+/// seconds or refuse) and the StatusEffect event from the add:
 ///   - electrified: `rex_SpellLightning_Electrify` `sub_82742FA8` (disc `sub_827180A8`): r3 source,
 ///     r4 victim, r5 serial, r6 level; f1 duration -> +40, f2 total damage -> +52 as damage/second
 ///     (0 here: a status, not a hit), f3 first-tick delay -> +60, f4 tick interval -> +64, f5 -> +68
@@ -1012,6 +1202,13 @@ extern "C" int32_t refii_mod_item_count(uint8_t* base, uint32_t entity, uint32_t
 /// ItemAdded event fires). Returns the item object, or 0. Guest tick thread only.
 extern "C" uint32_t refii_mod_add_item(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t definition);
 
+/// Adds `count` of definition `definition` (1..100: the add runs once per item, its events and
+/// notifications each time, so a tick's work stays bounded) through refii_mod_add_item. Returns
+/// how many were added; `out_last` (may be null) gets the last item object, or 0. Guest tick
+/// thread only.
+extern "C" int32_t refii_mod_add_items(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t definition, int32_t count,
+                                       uint32_t* out_last);
+
 /// LUA AND GODOT SEE HANDLES, NOT ADDRESSES. The game's Lua number is a 32-bit float, so a
 /// guest address above 2^24 is not exact there; every entity or object the bus hands to Lua or
 /// to a Godot script is a HANDLE: a small integer assigned to that address for the session (0 for
@@ -1030,16 +1227,90 @@ extern "C" int32_t refii_mod_renown(PPCContext* ctx, uint8_t* base, uint32_t ent
 extern "C" int32_t refii_mod_morality(PPCContext* ctx, uint8_t* base, uint32_t entity, float* out);
 extern "C" int32_t refii_mod_purity(PPCContext* ctx, uint8_t* base, uint32_t entity, float* out);
 
+/// Changes the hero stats through the game's own modifiers, the bodies game Lua's Stats.Modify*
+/// bind (their binder resolves the entity to stats component 57), so the renown / morality /
+/// purity events fire and the game's own clamps, unlocks and notices run:
+///   - renown: rex_lhHeroStats_ModifyRenown `sub_824D62A0` (disc `sub_8249D410`), r3 stats, r4
+///     the int delta, r5 0 — Stats.ModifyRenown is `li r5,0; b sub_824D62A0` (0x824d6bd8); +28
+///     takes the delta clamped at 0 (0x824d6644..54), and a co-op partner gets its share.
+///   - morality / purity: rex_lhHeroStats_ModifyMorality `sub_824D5BC0` / _ModifyPurity
+///     `sub_824D6BE0` (disc `sub_8249CD30` / `sub_8249DD50`), r3 stats, f1 the delta, +16 / +36
+///     clamped by +20/+24 and +40/+44. Both return untouched unless the session is this machine's
+///     to decide (net +52 and +53) or the stats owner is inside a network receive (comp91 +107).
+/// True when the entity has stats (the call ran). Guest tick thread only.
+extern "C" int32_t refii_mod_modify_renown(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t delta);
+extern "C" int32_t refii_mod_modify_morality(PPCContext* ctx, uint8_t* base, uint32_t entity, float delta);
+extern "C" int32_t refii_mod_modify_purity(PPCContext* ctx, uint8_t* base, uint32_t entity, float delta);
+
 /// Physique from the stats component: fatness (+56) and height (+60). True when read.
 extern "C" int32_t refii_mod_physique(uint8_t* base, uint32_t entity, float* out_fat, float* out_height);
 
 /// Age in years from the age component (122, +12). True when read.
 extern "C" int32_t refii_mod_age(uint8_t* base, uint32_t entity, float* out);
 
+/// MURGO'S MIRROR: A PLAYER'S HERO'S LOOK. Manual, it is the inputs the player stated (the Mirror,
+/// or a mod through refii_mod_set_appearance): the morph override answers the weight function
+/// `sub_822DA028` from them for that hero, and the villagers' looks readers — the appearance opinion
+/// `sub_82791658` and a reaction line's HeroAppearanceChecks `sub_8278F848` — read them in place of
+/// the stats. Automatic, it is the game's own: stats component 57's tan +0x34, fat +0x38, height
+/// +0x3C, strength +0x40, skill +0x44, will +0x48 (the fields those readers load), morality
+/// normalised over +0x14..+0x18 as `sub_822DA028` does, purity normalised by the game's
+/// `sub_824D6F90`, and CECAge's years. Ranges: height -1..1, age 18..60, the rest 0..1.
+/// Each player's look is the player store's `character_morphs.*` set, owned by the machine that
+/// plays that hero, so both co-op machines answer alike; the owner keeps it in that player's Mirror
+/// settings across sessions.
+typedef struct refii_mod_appearance_t {
+  int32_t automatic;
+  float tan, fat, height, strength, skill, will, morality, purity, age;
+} refii_mod_appearance_t;
+/// Player `player`'s look in force into `out`. False with no hero for the player (automatic reads
+/// the hero's stats) or an invalid player. Guest tick thread only.
+extern "C" int32_t refii_mod_appearance(PPCContext* ctx, uint8_t* base, int32_t player, refii_mod_appearance_t* out);
+/// Switches the player to manual with `inputs`: a NaN input keeps the look in force for it (the
+/// manual value, or the game's own while automatic), so the player looks as before but for what
+/// was named; `automatic` is ignored. Values are clamped to the ranges above. A write on the
+/// machine that does not play the hero reaches the one that does. Guest tick thread only.
+extern "C" void refii_mod_set_appearance(PPCContext* ctx, uint8_t* base, int32_t player, const refii_mod_appearance_t* inputs);
+/// Switches the player's look to automatic (`on` 1) or back to the manual inputs it holds (0); an
+/// input it has never held is the game's own. Guest tick thread only.
+extern "C" void refii_mod_set_appearance_automatic(PPCContext* ctx, uint8_t* base, int32_t player, int32_t on);
+
+/// MODS' OWN MORPH TYPES. The weight function `sub_822DA028(CECMorph, type)` weighs types 1..18 and
+/// answers 0 for 11, 13 and every type at or above 19 (its bound, TU1 0x822DA274..7C); the vertex,
+/// texture, skeletal and particle readers pass a record's `MorphType` to it unchecked. A mod declares
+/// morphs in `morphs.json` (name, label, default, min, max, step); each one's type is
+/// refii_mod_morph_id("<mod>.<name>"), and a GDB record carrying that type — a MorphTargets pair, a
+/// TextureMorphs layer, a SkeletalMorphs item, a ParticleMorphs item — is drawn at the player's weight
+/// for it, which the morph hook answers for either player's hero, manual look or automatic.
+/// The weights are the player store's `morph.<id>` (id in decimal), saved with the hero's save and
+/// the same on both co-op machines; the registry (id, default, range) is what Godot read from the
+/// enabled mods.
+/// The type of a morph named "<mod>.<name>": FNV-1 of the name in lower case, the top bit cleared,
+/// plus 0x100 when under it (never a shipped or special type).
+extern "C" uint32_t refii_mod_morph_id(const char* scoped);
+/// The registered mod morphs' ids into `out` (up to `capacity`), in the mods' load order; the count.
+extern "C" int32_t refii_mod_morph_list(uint32_t* out, int32_t capacity);
+/// Whether `id` is a registered mod morph; its default and range into the outputs that are not null.
+extern "C" int32_t refii_mod_morph_registered(uint32_t id, float* out_default, float* out_min, float* out_max);
+/// Player `player`'s weight for mod morph `id` into `out`: the stored weight clamped to the range,
+/// else the default. False for an unregistered id or an invalid player.
+extern "C" int32_t refii_mod_morph_weight(int32_t player, uint32_t id, float* out);
+/// Sets player `player`'s weight for mod morph `id`, clamped to its range and saved with the hero. A
+/// write on the machine that does not play the hero reaches the one that does. False for an
+/// unregistered id or an invalid player. The morph hook redraws that hero on its next tick and
+/// raises MorphChanged.
+extern "C" int32_t refii_mod_set_morph_weight(int32_t player, uint32_t id, float weight);
+
 /// Stack `index` of `entity`'s inventory (component 13: the list head at +16, node +0 next, +8 the
 /// item; item +4 definition hash, +12 stack count), in the game's own order. False past the end.
 extern "C" int32_t refii_mod_inventory_stack(uint8_t* base, uint32_t entity, int32_t index, uint32_t* out_definition,
                                              int32_t* out_count);
+
+/// Whether stack `index` of `entity`'s inventory (refii_mod_inventory_stack's order) is usable from
+/// the inventory, by the game's own test on the item (`sub_827649C8`: the definition's
+/// InventoryItemComponent's UsableFromInventory — what the Items page's use and A button ask).
+/// Guest tick thread only.
+extern "C" int32_t refii_mod_inventory_usable(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t index);
 
 /// The definition hashes in `entity`'s weapon set (component 28: +84 melee, +88 ranged; 0 for none).
 /// True when it has a weapon set.
@@ -1056,7 +1327,8 @@ extern "C" int32_t refii_mod_equipped(uint8_t* base, uint32_t entity, uint32_t* 
 ///     so the pick crosses to Godot (REFII_MOD_HOST_HERO_KIND → CoopHeroKit.SetLocalWeapon), whose
 ///     kit the host equips from and replicates back; the caller never cares which.
 ///   perform_expression: StartExpression on the performer (component 154) for an `expression` (a GDB
-///     record hash) it knows; refused while one plays.
+///     record hash) it knows, released at once (a tap: refii_mod_quick_action REFII_QUICK_HELD holds
+///     it); refused while one plays.
 ///   assign_spell: spell type 0..7 assigned to every tier the hero knows (the spell manager's known
 ///     and offered tables), through the game's own assign — the d-pad, the UI and the net event.
 extern "C" int32_t refii_mod_use_item(PPCContext* ctx, uint8_t* base, int32_t player, uint32_t definition);
@@ -1076,11 +1348,95 @@ extern "C" int32_t refii_mod_expression(uint8_t* base, int32_t player, int32_t i
 /// bytes, index 5 * type + tier — the quick wheel's own offering test). False with no spell manager.
 extern "C" int32_t refii_mod_spells_known(uint8_t* base, int32_t player, uint32_t* out_mask);
 
+/// CHARGES spell `type` (0..7) through player `player`'s own magic charge: the magic button held
+/// (`held` != 0) with that spell on every tier the hero has it (known and offered: the spell manager's
+/// +156 / +196 bytes, as refii_mod_spells_known reads them) and the tiers above emptied, so the charge
+/// stops where the spell does; `held` 0 lets the button go and the cast goes out as the game casts.
+/// The tiers are lent through the slot table's one writer (CECSpellManager::SetSpellSlot) with
+/// NOTIFY clear — the guest's own "not a choice" statement, as its template defaults and the
+/// session's copy use it: no spell_pick, nothing sent to the session (the cast itself crosses as
+/// the game sends every cast). The player's own table comes back through the same writer once the
+/// charge is over: when the charge ends without a release (SpellChargeEnded), when the cast's last
+/// slot is out (the manager's state 6, CECSpellManager::SetState), or — with nothing charged — a
+/// second after the release; also when the hero goes or the mods' Lua reloads. A real pick made
+/// meanwhile (the selectors, a script, assign_spell) is what comes back for its slot. The button is
+/// refii_mod_press(player, "B", held). On the machine that plays the player; 0 when the hero has not
+/// got the spell on its first tier, has no spell manager, or the player is not played here.
+extern "C" int32_t refii_mod_charge_spell(PPCContext* ctx, uint8_t* base, int32_t player, int32_t type, int32_t held);
+
 /// The expression the wheel highlights while player `player`'s expression wheel is up: the wheel at
 /// *(*(GUI + 32) + 60) — open flag +0, its player +24, cursor +20, entries +52..+56 of 12 bytes
 /// {record, flags, _} — read and validated as the HUD's own reader validates it. The record hash,
 /// or 0 with no wheel up for that player.
 extern "C" uint32_t refii_mod_selected_expression(uint8_t* base, int32_t player);
+
+/// refii_mod_quick_action's `flags`.
+///   REFII_QUICK_UNGATED  skip the quick menu's own gate (the d-pad up and
+///                        lhGuiManager::CanPlayerOpenQuickMenu, `sub_8236F400`: a walking-type
+///                        player mode 1/5/20/21/22, no busy action): still refused for a hero not
+///                        alive (+144 & 0x40) and while refii_mod_in_cutscene answers any kind.
+///   REFII_QUICK_HELD     (kind 2, an expression) the expression is HELD: nothing releases it, so
+///                        an extendable one extends when the game's own countdown runs out and plays
+///                        on until refii_mod_release_expression. Without it the start is followed by
+///                        the release at once — the wheel's tap (Accept, then EndHeldExpression).
+#define REFII_QUICK_UNGATED 1u
+#define REFII_QUICK_HELD 2u
+
+/// One quick action (`kind` 1 use_item, 2 perform_expression, 3 equip_weapon, 4 assign_spell —
+/// `record` the definition, expression or spell type as each takes it) with `flags`
+/// (REFII_QUICK_*). refii_mod_use_item .. are this with flags 0 (so perform_expression is a tap).
+/// True when performed. Guest tick thread only.
+extern "C" int32_t refii_mod_quick_action(PPCContext* ctx, uint8_t* base, int32_t player, int32_t kind, uint32_t record,
+                                          uint32_t flags);
+
+/// Ends player `player`'s held expression: the performer's (component 154) own end, `sub_82414A50`
+/// (disc `sub_823E6E88`), which GameAction 25 (the extend release) calls from the hero's action
+/// receiver (`bl sub_82414A50` 0x826e63ec, case 0x19) and the wheel's EndHeldExpression calls. An
+/// expression released before its countdown plays its basic form; one already extending (+12) ends
+/// the extension. False with no performer or nothing playing (+104 is 0). Guest tick thread only.
+extern "C" int32_t refii_mod_release_expression(PPCContext* ctx, uint8_t* base, int32_t player);
+
+/// Whether player `player`'s hero is sprinting: its sprint component's (146) flag +0x24, the byte
+/// the action receiver tests before it ends a sprint on GameAction 67 SprintRelease
+/// (`lbz r11,0x24(r31)` 0x826e6248) and `sub_8284A8C0` stores.
+extern "C" int32_t refii_mod_sprinting(uint8_t* base, int32_t player);
+
+/// Ends player `player`'s sprint as the release does: `sub_8284A8C0(component 146, 0)` (disc
+/// `sub_827DA750`), the call GameAction 67's case makes (`li r4,0; mr r3,r31; bl sub_8284A8C0`
+/// 0x826e6254..5c) — the flag cleared and, when the movement component (21) runs mode 52, that mode
+/// stopped (`sub_824202A0(comp21, 52)`). A held sprint button sprints again only on its next press.
+/// False when the hero was not sprinting. Guest tick thread only.
+extern "C" int32_t refii_mod_end_sprint(PPCContext* ctx, uint8_t* base, int32_t player);
+
+/// PER-HERO LOCOMOTION. Each hero's locomotion component (110) holds the LocomotionData table it
+/// loaded as a map of CRC-32 name -> float at +0x64 (`sub_8283E408`, disc `sub_827ED278`: cleared,
+/// then one insert per field — MinControlMagForMovement, MinVelMagForMovement, MaxTurnSpeedStatic,
+/// MaxTurnSpeedRunning, MaxSpeed, SprintSpeedMultiplier, SprintTerminationSpeedFraction,
+/// FrictionCoefficient, MaxSpeedLateralStatic, MaxSpeedLateralRunning), and every read goes through
+/// `sub_821B2280(comp, name, 1)`: the active locomotion state's MovementParams map at +0x70 first,
+/// then +0x64 (`addi r30,r31,0x70` 0x821b22ac, `addi r30,r31,0x64` 0x821b231c). set_locomotion
+/// writes `value` into THIS hero's +0x64 entry for `key` (one of the ten) through the map's own
+/// operator[] (`sub_823C5E00`, disc `sub_824191A0`), live, and holds it: the loader's next copy
+/// (indoors/outdoors, a movement-mode change) is followed by the held value again. A state's own
+/// MovementParams (the Idle state's turn cap) still win while that state is active. A non-finite
+/// `value` stops holding `key` and puts back the value the last load copied. False for an unknown
+/// key or no component.
+extern "C" int32_t refii_mod_set_locomotion(PPCContext* ctx, uint8_t* base, int32_t player, const char* key, float value);
+/// The value player `player`'s hero's own table (+0x64) holds for locomotion `key`: what the last
+/// load copied, or the held value (the active state's MovementParams may still win over it). False
+/// for an unknown key or no component. Guest tick thread only.
+extern "C" int32_t refii_mod_locomotion(PPCContext* ctx, uint8_t* base, int32_t player, const char* key, float* out);
+
+/// PER-HERO PARRY. The player component (33) copies HeroCombatBalanceParams into its own table at
+/// +340 when it is made (`sub_823E9BF0`), and the parry reads THAT copy each time by name
+/// (`sub_829897B0` -> `sub_823E3440(comp33, name, default)`: "InputWindowSecondsForParry" at
+/// 0x82986db0, "MeleeParryWedgeAngle" at 0x82987054). set_parry writes this hero's entries (type 1,
+/// the float at +8 of the value the table's find `sub_8257EC08` (disc `sub_82C343A0`) gives), live,
+/// and holds them for that player's next hero. A non-finite or negative value leaves that entry.
+/// False when the hero has no such table entries.
+extern "C" int32_t refii_mod_set_parry(PPCContext* ctx, uint8_t* base, int32_t player, float window_seconds, float wedge_degrees);
+/// The parry window (seconds) and wedge (degrees) player `player`'s hero reads now. False without them.
+extern "C" int32_t refii_mod_parry(PPCContext* ctx, uint8_t* base, int32_t player, float* out_window, float* out_wedge);
 
 /// A GDB record's string property, INHERITED, through the game's own getter (sub_82323540: the
 /// property name's FNV-1 looked up on the entry GDBManager_FindEntryByHash gives, type string):
@@ -1096,6 +1452,39 @@ extern "C" int32_t refii_mod_record_string(PPCContext* ctx, uint8_t* base, uint3
 /// record the database lacks or a property it has not got. Guest tick thread only.
 extern "C" int32_t refii_mod_record_int(PPCContext* ctx, uint8_t* base, uint32_t definition, const char* field,
                                         int32_t* out);
+
+/// A GDB record's NUMBER property, INHERITED, through the same typed getter: a float property
+/// (the database's type 3) as stored, else an integer or enum one as a float. False, and 0 in
+/// `out`, for a record the database lacks or a property it has not got. Guest tick thread only.
+extern "C" int32_t refii_mod_record_number(PPCContext* ctx, uint8_t* base, uint32_t definition, const char* field,
+                                           float* out);
+
+/// A GDB record's BOOL property (the database's type 0), INHERITED, through the same typed
+/// getter: 1 or 0 in `out`. False, and 0 in `out`, for a record the database lacks or a property it
+/// has not got as a bool. Guest tick thread only.
+extern "C" int32_t refii_mod_record_bool(PPCContext* ctx, uint8_t* base, uint32_t definition, const char* field,
+                                         int32_t* out);
+
+/// Whether the database has a record under the hash (GDBManager_FindEntryByHash). Guest tick thread only.
+extern "C" int32_t refii_mod_record_exists(PPCContext* ctx, uint8_t* base, uint32_t definition);
+
+/// A GDB record's REFERENCE property (the database's type 6), INHERITED, through the same typed
+/// getter: the hash of the record it names in `out`. The value word of a type-6 property IS that
+/// hash — 107 of the game's 109 type-6 reads load it and look it up (`lwz r4,0(r11)` then
+/// GDBManager_FindEntryByHash, 0x821b0994..98). False, and 0 in `out`, for a record the database
+/// lacks or a property it has not got as a reference. Guest tick thread only.
+extern "C" int32_t refii_mod_record_ref(PPCContext* ctx, uint8_t* base, uint32_t definition, const char* field,
+                                        uint32_t* out);
+
+/// A creature's RANK as its definition states it, bits: REFII_CREATURE_ELITE (the GDB bool
+/// IsElite) and REFII_CREATURE_LIEUTENANT (IsLieutenant). The creature component's init reads both
+/// from the definition (`sub_823AD340(def, "IsLieutenant", comp+0x1C)` 0x823a3440, `(def,
+/// "IsElite", comp+0x1D)` 0x823a3454) and the game's own Lua natives Creature.IsLieutenant /
+/// Creature.IsElite answer those bytes (`lbz r3,0x1C(r3)` sub_822D2948, `lbz r3,0x1D(r3)`
+/// sub_82964A28). -1 for an entity without a creature component (20).
+#define REFII_CREATURE_ELITE 1
+#define REFII_CREATURE_LIEUTENANT 2
+extern "C" int32_t refii_mod_creature_tier(uint8_t* base, uint32_t entity);
 
 /// Entities in the world within `radius` of `xyz` (the world entity manager's list, in-world ones
 /// with a placement, measured by their own position getter), nearest first, up to `max` into `out`.
@@ -1225,13 +1614,27 @@ extern "C" void refii_mod_light_remove(uint32_t id);
 /// point `xyz` (the guest's axes): `icon` a game texture path ("art/gui/.../x.tex") or a PNG of an
 /// enabled mod ("art/x.png"), `text` a line under it (null or "" for none). It rides the drawn
 /// body, is placed as the game's own icons are (each player's camera and half), and is sized by
-/// the game's own distance curve. Returns the id refii_mod_unmark takes (0 for no icon). A
+/// the game's own distance curve. Returns the id refii_mod_unmark takes (0 for no icon and no text). A
 /// marker on an entity goes when the entity does. Any thread.
 extern "C" uint32_t refii_mod_mark(int32_t player, uint32_t entity, const float* xyz, const char* icon,
                                    const char* text);
 
 /// Removes a marker by the id refii_mod_mark returned — any surface's id.
 extern "C" void refii_mod_unmark(uint32_t id);
+
+/// A WORLD METER: a marker that is a bar filled `value` of `max`, on the same channel and by the
+/// same rules as refii_mod_mark (each player's camera and half, lifted by the drawn height, sized
+/// by the game's distance curve, gone with its entity). `style` "bar" (null or "": the HUD's gold)
+/// or "health" (red); a drop leaves a pale trail that holds, then drains; "numbers" after the style
+/// ("health numbers") draws "value / max" under a marker with no text. Returns the id
+/// refii_mod_mark_meter restates and refii_mod_unmark removes (0 for no max). Any thread.
+extern "C" uint32_t refii_mod_world_meter(int32_t player, uint32_t entity, const float* xyz, float value, float max,
+                                          const char* style);
+
+/// Puts a fill on marker `id` (refii_mod_mark's or refii_mod_world_meter's, any surface's) or
+/// restates it in place — the value changes without re-marking; `max` 0 takes the fill off.
+/// Returns 1 when posted (0 for no id). Any thread.
+extern "C" int32_t refii_mod_mark_meter(uint32_t id, float value, float max, const char* style);
 
 /// Fades `player`'s screen (1 or 2; 0 for every player this machine plays) to black
 /// (`to_black` non-zero) or back from it over `seconds` (0: at once): a host-drawn layer over that
@@ -1260,11 +1663,119 @@ extern "C" int32_t refii_mod_meter_remove(const char* id);
 /// reloads and when the game goes down. Returns 1 when posted (0 for no name). Any thread.
 extern "C" int32_t refii_mod_input_claim(int32_t player, const char* action, int32_t on);
 
+/// PRESSES a pad button on `player`'s pad (1 or 2) — the mirror of a claim: Godot ORs it into that
+/// player's pad state after the claims are withheld, so the guest reads it as the player's own pad,
+/// focused or not. `button` is input.json's name (A B X Y LB RB L3 R3 Start Back DpadUp DpadDown
+/// DpadLeft DpadRight) or LT / RT. `held` 0 releases; a button is down for any other value, a
+/// trigger pulled by it — 1 a full pull, 2..255 that much. Cleared with the claims (the mods' Lua
+/// reloading, the game going down). Returns 1 when posted (0 for no button or a player not 1 or 2).
+/// Any thread.
+extern "C" int32_t refii_mod_press(int32_t player, const char* button, int32_t held);
+
+/// TAPS a pad button on `player`'s pad: down for at least `ticks` whole guest game ticks (1..600)
+/// from the frame Godot first publishes it, then up — the guest's own tick counter, read by the pad
+/// publish; with no world up the ticks count Godot frames, and a tap whose guest stops ticking is
+/// let go after 10 s. A trigger tap is a full pull. Returns 1 when posted. Any thread.
+extern "C" int32_t refii_mod_tap(int32_t player, const char* button, int32_t ticks);
+
+/// The keyboard's ATTACK MODE for `player` (1 or 2): which pad button the attack key presses —
+/// REFII_ATTACK_MODE_MELEE (X), _RANGED (Y) or _MAGIC (B), set by the mode keys (Fable III's 1, 2,
+/// 3); 0 for a player no keyboard plays on this machine. Host state Godot states on each change;
+/// the AttackModeChanged event follows one. Guest thread.
+#define REFII_ATTACK_MODE_MELEE 1
+#define REFII_ATTACK_MODE_RANGED 2
+#define REFII_ATTACK_MODE_MAGIC 3
+extern "C" int32_t refii_mod_attack_mode(int32_t player);
+
+// ---------------------------------------------------------------------------------------------
+// The camera, per player: the game's own camera manager (scripts/camera/cameramanager.lua), each
+// player's run by the core camera chunk (Godot/src/Titles/Fable2/host/CoopHeroLua.cs). Both players
+// are principals.
+// ---------------------------------------------------------------------------------------------
+
+/// The game's ECameraMode (miscellaneous/cameramodeenum.lua): the keys of the override set's
+/// CameraModes, which lists every camera the manager activates.
+#define REFII_CAMERA_DEFAULT 0
+#define REFII_CAMERA_SIMPLE 1
+#define REFII_CAMERA_GAME 2
+#define REFII_CAMERA_RANGED_AIM 3
+#define REFII_CAMERA_MAGIC_AIM 4
+#define REFII_CAMERA_ICS 7
+#define REFII_CAMERA_FIRST_PERSON 8
+#define REFII_CAMERA_COMBAT_CANNED_ACTION 9
+#define REFII_CAMERA_CANNED_ACTION 10
+#define REFII_CAMERA_CUTSCENE 11
+#define REFII_CAMERA_TRACKING 12
+#define REFII_CAMERA_FREE 13
+#define REFII_CAMERA_FREEZE 14
+
+/// The camera the game has active for `player` (1 or 2), as REFII_CAMERA_*: the camera the
+/// manager's own CameraManager:FrameUpdate last activated (CameraChangedEvent quotes it); -1 before
+/// any is stated, and for a player whose camera runs on the other machine. Guest thread.
+extern "C" int32_t refii_mod_camera_mode(int32_t player);
+
+/// HOLDS a camera for `player` (1 or 2) through the game's own per-player hold,
+/// `CameraManager.SetCameraOverride(hero, mode, scope, data)` — the call the quests make for their
+/// own first-person shots (qc240_endgame, QuestThreadBase:SetFirstPersonCamera). `mode` is
+/// REFII_CAMERA_FIRST_PERSON or REFII_CAMERA_GAME (the cameras that need no scene data); 0 lets
+/// the hold go. Stated each frame by the core camera chunk before `CameraManager:FrameUpdate(hero)`
+/// on each half of the hero's override record (Normal, LookAt — what a held LT frames) that holds
+/// no override of anyone else's (CameraEnum DEFAULT), with the data the game's cameras read:
+/// `FOV` (`fov` degrees; 0 or less the camera's own, FirstPersonCamera's CameraValues.FOV.FPERSON
+/// 75), `BoundAngleVert = 0, BoundAngle` (`pitch_limit` degrees either side of level; 0 or less the
+/// camera's own VerticalAngularBound 55), `SupercedesCombat = true` (CameraFunctions.HasOverride
+/// otherwise drops an override in combat), `BlendInSeconds` / `BlendOutSeconds` (`blend`; below 0
+/// the camera's own). The camera's eye is the game's (Creature.GetCollisionHeadPosition): no data
+/// key moves it.
+/// IT YIELDS: a half a scene or quest overrides is theirs (their SetCameraOverride replaced our
+/// record) and ours comes back the frame that half is DEFAULT again — their release, a level
+/// load's NewOverrideDataForPlayer, a save load. It is released while a FULL cutscene holds, while
+/// the game has switched a canned-action camera on (CannedActionCamera.Active,
+/// CombatCannedActionCamera.Active: the normal set lists them before FirstPersonCamera) and, with
+/// REFII_CAMERA_HOLD_AIM in `flags`, while the gun aim's own camera is valid
+/// (RangedCombatCamera.IsValid). IT IS NEVER SAVED: the save table's camera overrides are written
+/// with our halves as DEFAULT (CameraManager.Overrides is what CameraManager.GetSaveTable hands
+/// Pluto). A held LOOK_AT half is not a cutscene: refii_mod_in_cutscene leaves it out. Cleared at
+/// each session's start (the startup scripts), so state it from init.lua or on lua_ready. Returns 1
+/// when stated. Guest thread.
+#define REFII_CAMERA_HOLD_AIM 1
+extern "C" int32_t refii_mod_camera_override(int32_t player, int32_t mode, float fov, float pitch_limit, float blend,
+                                             int32_t flags);
+
+/// The field of view of `player`'s live camera in degrees — the horizontal 4:3 angle the game's
+/// Camera.SetFOV takes (70 the default): the camera manager's live block (`manager+0x90`, the block
+/// Godot draws each player's view from), `+0x30` copied from the active camera each frame (`lfs
+/// f0,0x30(r3); stfs f0,0xC0(r31)` TU1 0x8226607c, disc 0x8226603c), stored in radians. 0 for a
+/// player with no camera manager. Every camera writes its own FOV each update (CameraBase.FrameUpdate
+/// `Camera.SetFOV(self.Camera, self.CurrentFOV)`), so there is no per-player FOV to set: a hold's
+/// `fov` is the stated way. Guest thread.
+extern "C" float refii_mod_camera_fov(uint8_t* base, int32_t player);
+
+/// HIDES a part of `entity` in Godot's drawing (`on` non-zero) or shows it again: `part` a bone of
+/// the entity's rig by its rig name, the same in either title ("Shadow_Neck"; a skeleton that names
+/// its bones by hash, Fable 3's, is matched by the name's hash), the bone and every bone under
+/// it drawn at nothing after the game's pose — drawing only, the pose the game holds is untouched,
+/// and the shadow keeps the part. Kept by Godot per entity (its handle) across the entity's
+/// rebuilds until shown again or the mods' Lua loads again (lua_ready). Hidden in every view:
+/// refii_mod_hide_part_for(entity, part, on, 0). Returns 1 when posted. Any thread.
+extern "C" int32_t refii_mod_hide_part(uint32_t entity, const char* part, int32_t on);
+
+/// refii_mod_hide_part in ONE player's view: `player` 1 or 2 hides (or shows) the part only in the
+/// view drawn for that player, 0 in every view; any other player is refused (0). Split screen: the
+/// other half still draws it. One view: hidden there when this machine's view is that player's —
+/// alone player one's, a shared couch screen both players', an online host player one's, an online
+/// joiner player two's (each machine draws its own player's view; the partner's hide is theirs).
+/// Each (part, player) is its own statement: showing a part for player 1 leaves its every-view hide.
+/// Returns 1 when posted. Any thread.
+extern "C" int32_t refii_mod_hide_part_for(uint32_t entity, const char* part, int32_t on, int32_t player);
+
 /// States the texture a HUD element shows for `player` (1 or 2; 0 both): `element` a slide-toggle
 /// binding name ("DPadUp") or an element path by its trailing segments ("dpadmenu.group.up.up"),
 /// `texture` a game texture path ("Art\GUI\WheelIcons\expressions.tex") or an enabled mod's PNG
-/// under art/, fitted to the slot when it is not 128 x 128; null or "" clears. Returns 1 when posted
-/// (0 for no element). Any thread.
+/// under art/, fitted to the slot when it is not 128 x 128; null or "" clears. `element` may also
+/// name a mod's own `picture` piece of ui/hud.json by its id: that player's copy of the piece shows
+/// the texture (any path: a game texture with or without game://, a mod PNG, res://) at the piece's
+/// size and region. Returns 1 when posted (0 for no element). Any thread.
 extern "C" int32_t refii_mod_hud_icon(int32_t player, const char* element, const char* texture);
 
 /// States the slide a HUD element sits on for `player`, as the game counts slides (1 the first); 0
@@ -1272,8 +1783,10 @@ extern "C" int32_t refii_mod_hud_icon(int32_t player, const char* element, const
 extern "C" int32_t refii_mod_hud_slide(int32_t player, const char* element, int32_t slide);
 
 /// Holds a HUD piece visible for `player` (`on` non-zero) — its slide owners kept on their shown
-/// ("in") slides while the guest would hide it; the D-pad is the case — or lets it go. Returns 1 when
-/// posted (0 for no name). Any thread.
+/// ("in") slides while the guest would hide it, and an element of its trunk (its root and each lone
+/// child below it) the guest fades by stated opacity alone drawn at its authored opacity; the D-pad
+/// and the health readout are the cases — or lets it go. Returns 1 when posted (0 for no name). Any
+/// thread.
 extern "C" int32_t refii_mod_hud_hold(int32_t player, const char* piece, int32_t on);
 
 // ---------------------------------------------------------------------------------------------
@@ -1321,7 +1834,10 @@ extern "C" uint32_t refii_mod_menu_box(int32_t player, const char* title, const 
 /// "rows:<list>") shows, at once if it is open. `rows` is one text: rows split by ';', each
 /// "name|label|command|ghosted" ('\' escapes '|', ';' and itself; label a Babel tag or literal,
 /// the name when empty; command any row verb — Mod:lua:, Opens:, Screen:open:; ghosted 1 or 0).
-/// An empty text clears the list. About 1.8 KB of rows cross at once. Returns 1 when posted.
+/// An empty text clears the list. Up to REFII_MOD_MENU_ROWS_MAX bytes of rows cross, in as many
+/// posts as the bus's 2 KB records take (Godot applies them once all have arrived); past it the
+/// rows are cut at the last whole row and a mod error names the menu. Returns 1 when posted.
+#define REFII_MOD_MENU_ROWS_MAX 32768
 extern "C" int32_t refii_mod_set_menu_rows(int32_t player, const char* menu, const char* rows);
 
 /// Opens a host-owned screen by id for `player` (1 or 2; 0 for whoever owns the menus here): the

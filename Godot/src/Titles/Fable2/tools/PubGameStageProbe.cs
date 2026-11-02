@@ -19,10 +19,8 @@ namespace Refii.Titles.Fable2;
 /// unchanged — but answering it is damage control, and the point of this probe is to find out on a
 /// build machine rather than in a pub.
 ///
-/// KEYSTONE HAS A SECOND CHANCE AND THE OTHER TWO DO NOT. <c>KeystoneHost</c> falls back to
-/// building the stage from the SWF when the baked scene will not load; Mage Dice and Wizard's
-/// Tower have only the scene path. That asymmetry is why the one game that has been played is the
-/// one least able to tell us this path is sound.
+/// THE SCENE IS EVERY GAME'S ONLY PATH. Keystone, Mage Dice and Wizard's Tower each build their
+/// board from the baked scene alone; a scene that will not load is a board that does not open.
 ///
 /// THE NAME CENSUS IS THE SECOND HALF. A stage that loads but is the WRONG stage — or the right
 /// one baked from a SWF whose export names moved — fails silently: every <c>GetChild</c> returns

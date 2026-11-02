@@ -265,36 +265,6 @@
 			"intensity": 1.5
 		},
 		{
-			"id": "spell_weaving.blades_push",
-			"with": "spell_weaving_blades_push",
-			"base": [
-				"fxspl_damocles_orb",
-				"fxspl_damocles_attack_flash",
-				"fxspl_damocles_attack_trail",
-				"fxspl_damocles_trail",
-				"fxspl_damocles_ground_ring",
-				"fxspl_damocles_hit",
-				"fxspl_damocles_sword_appear",
-				"fxspl_damocles_sword_continue",
-				"fxspl_damocles_sword_destroy",
-				"fxspl_damocles_sword_disappear",
-				"fxspl_damocles_sword_explode",
-				"fxspl_damocles_sword_shatter",
-				"fxspl_damocles_buildup_01",
-				"fxspl_damocles_buildup_02",
-				"fxspl_damocles_buildup_03",
-				"fxspl_damocles_buildup_04",
-				"fxspl_damocles_buildup_05"
-			],
-			"tint": [
-				1.0,
-				1.0,
-				1.0
-			],
-			"intensity": 1.6,
-			"size": 1.12
-		},
-		{
 			"id": "spell_weaving.blades_chaos",
 			"with": "spell_weaving_blades_chaos",
 			"base": [
@@ -356,41 +326,6 @@
 				1.4
 			],
 			"intensity": 1.5
-		},
-		{
-			"id": "spell_weaving.fire_push",
-			"with": "spell_weaving_fire_push",
-			"base": [
-				"fxspl_blast_fireball",
-				"fxspl_blast_fire_ring",
-				"fxspl_blast_area_impact",
-				"fxspl_blast_area_punch",
-				"fxspl_blast_ball_smoke",
-				"fxspl_blast_character_smoke",
-				"fxspl_blast_creature_reaction",
-				"fxspl_blast_cylinder",
-				"fxspl_blast_inhand",
-				"fxspl_blast_projectile",
-				"fxspl_blast_trail",
-				"fxspl_blast_wall_impact",
-				"fxspl_blast_area_01",
-				"fxspl_blast_area_02",
-				"fxspl_blast_area_03",
-				"fxspl_blast_area_04",
-				"fxspl_blast_area_05",
-				"fxspl_blast_buildup_01",
-				"fxspl_blast_buildup_02",
-				"fxspl_blast_buildup_03",
-				"fxspl_blast_buildup_04",
-				"fxspl_blast_buildup_05"
-			],
-			"tint": [
-				1.2,
-				0.9,
-				0.7
-			],
-			"intensity": 1.6,
-			"size": 1.12
 		},
 		{
 			"id": "spell_weaving.fire_chaos",

@@ -11,11 +11,13 @@ using Refii.Mods;
 
 /// <summary>
 /// Quickslots is pure Lua on the mod API: the D-pad arrives as input actions and claims, the
-/// slots live in the player store, the HUD's D-pad is told what to show, the books' rows reach
-/// the mod through row actions, and the press runs the quick menu's own actions. It ships no
+/// slots live in the player store as typed hashes, the HUD's D-pad is told what to show when it
+/// changes, the books' rows and the host's lists reach the mod as typed row subjects, the wheel as
+/// <c>expression_wheel</c>, and the press runs the quick menu's own actions. It ships no
 /// <c>native/</c>, every <c>Refii.*</c> name it calls is in the catalog, every event it subscribes
-/// is a catalog event with the fields it reads, its data files are the shapes the engine reads,
-/// and each chunk compiles with the game's own compiler.
+/// is a catalog event (or the runtime's own) with the fields it reads, none of the retired
+/// workarounds is back, its data files validate and are the shapes the engine reads, and each
+/// chunk compiles with the game's own compiler.
 /// </summary>
 [TestSuite]
 public class QuickslotsLuaTests
@@ -125,20 +127,65 @@ public class QuickslotsLuaTests
             }
         }
 
-        // The families the feature needs: the store, the catalog of things, the quick menu's
-        // actions, the claims, the HUD's D-pad and the menus.
+        // The families the feature needs: the typed store, the records' names and icons, the quick
+        // menu's actions, the claims, the HUD's D-pad and the menus.
         foreach (string name in new[]
                  {
                      "on", "setting", "log", "hero",
-                     "player_value", "player_save",
-                     "inventory", "expressions", "spells_known", "selected_expression", "record_string", "record_int",
-                     "use_item", "equip_weapon", "perform_expression", "assign_spell",
+                     "player_value", "player_save", "player_value_hash", "player_save_hash",
+                     "record_ref", "record_string", "record_int", "record_exists", "spell_info",
+                     "use_item", "equip_weapon", "perform_expression", "release_expression", "assign_spell",
                      "input_claim", "hud_icon", "hud_slide", "hud_hold",
                      "set_menu_rows", "open_menu",
                  })
         {
             AssertThat(used.Contains(name)).OverrideFailureMessage("the mod never calls Refii." + name).IsTrue();
         }
+
+        // The wheel is an event, not a poll.
+        AssertThat(used.Contains("selected_expression"))
+            .OverrideFailureMessage("the mod polls Refii.selected_expression; expression_wheel states it").IsFalse();
+    }
+
+    [TestCase]
+    public void TheRetiredWorkaroundsAreGone()
+    {
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string code = Comment.Replace(AllLua(root), string.Empty);
+
+        // No per-tick restatement: claims and HUD overrides are stated when they change.
+        AssertThat(Subscribe.Matches(code).Any(m => m.Groups[1].Value == "tick"))
+            .OverrideFailureMessage("the mod restates on every tick").IsFalse();
+
+        // No row command is parsed: the row's subject arrives typed.
+        foreach (string verb in new[] { "Inventory:use", "Inventory:equip", "Ability:learn" })
+        {
+            AssertThat(code.Contains(verb, StringComparison.Ordinal)).OverrideFailureMessage("the mod parses " + verb).IsFalse();
+        }
+
+        // No guessed category list, no hard-coded will table or fallback icon.
+        AssertThat(code.Contains("C.Usable", StringComparison.Ordinal)).IsFalse();
+        AssertThat(code.Contains("C.Wills", StringComparison.Ordinal)).IsFalse();
+        AssertThat(code.Contains("wheelicons", StringComparison.OrdinalIgnoreCase)).IsFalse();
+
+        // A record is never written as two floats again: .hi / .lo are only read, once, to migrate.
+        AssertThat(Regex.IsMatch(code, @"player_save\(\s*p\s*,\s*Key\(\s*i\s*,\s*""(hi|lo)"""))
+            .OverrideFailureMessage("the mod still writes the 8/24 split").IsFalse();
+        AssertThat(Regex.IsMatch(code, @"player_value\(\s*p\s*,\s*Key\(\s*i\s*,\s*""hi"""))
+            .OverrideFailureMessage("saved slots in the old form are not migrated").IsTrue();
+        AssertThat(Regex.IsMatch(code, @"player_save_hash\(\s*p\s*,\s*Key\(\s*i\s*,\s*""record"""))
+            .OverrideFailureMessage("a slot's record is not stored as a typed hash").IsTrue();
+
+        // An item's name and icon are read off its InventoryItemComponent, not the entity record.
+        AssertThat(code.Contains("record_ref(def, \"InventoryItemComponent\")", StringComparison.Ordinal)).IsTrue();
+
+        // The choose list is the host's, not a stated catalog.
+        AssertThat(code.Contains("\"quickslots.choose\", rows", StringComparison.Ordinal)).IsFalse();
     }
 
     [TestCase]
@@ -151,25 +198,35 @@ public class QuickslotsLuaTests
         }
 
         var events = ModApi.Events.ToDictionary(e => e.LuaName, e => e, StringComparer.Ordinal);
+        // The runtime's own events (no bus kind) are the ones a Lua helper documents as Refii.on's.
+        var runtime = new HashSet<string>(
+            ModApi.LuaHelpers.SelectMany(h => Subscribe.Matches(h.Signature).Select(m => m.Groups[1].Value)),
+            StringComparer.Ordinal);
         string lua = AllLua(root);
         var subscribed = new HashSet<string>(StringComparer.Ordinal);
         foreach (Match m in Subscribe.Matches(lua))
         {
             string name = m.Groups[1].Value;
             subscribed.Add(name);
-            AssertThat(events.ContainsKey(name)).OverrideFailureMessage("no event " + name).IsTrue();
+            AssertThat(events.ContainsKey(name) || runtime.Contains(name)).OverrideFailureMessage("no event " + name).IsTrue();
         }
 
-        foreach (string name in new[] { "tick", "input_action", "mod_menu_row", "save_loaded" })
+        foreach (string name in new[]
+                 {
+                     "input_action", "mod_menu_row", "save_loaded", "lua_ready", "hero_ready", "hero_gone",
+                     "expression_wheel", "setting_changed",
+                 })
         {
             AssertThat(subscribed.Contains(name)).OverrideFailureMessage("the mod never subscribes " + name).IsTrue();
         }
 
         foreach ((string name, string[] fields) in new[]
                  {
-                     ("tick", new[] { "seconds" }),
                      ("input_action", new[] { "name", "player", "pressed" }),
-                     ("mod_menu_row", new[] { "menu", "row", "player", "command" }),
+                     ("mod_menu_row", new[] { "menu", "row", "player", "command", "subject_kind", "definition", "spell" }),
+                     ("hero_ready", new[] { "player", "hero" }),
+                     ("hero_gone", new[] { "player" }),
+                     ("expression_wheel", new[] { "player", "open", "highlighted" }),
                  })
         {
             var known = new HashSet<string>(events[name].Fields.Select(f => f.Name), StringComparer.Ordinal);
@@ -210,6 +267,17 @@ public class QuickslotsLuaTests
         {
             AssertThat(defined.Contains(m.Groups[1].Value)).OverrideFailureMessage("no Lua function quickslots." + m.Groups[1].Value).IsTrue();
         }
+
+        // The templates validate, and the choose list is the host's own lists answered by one rowCommand.
+        List<string> problems = ModValidate.Validate("ui/templates.json", templates)
+            .Where(i => i.Error).Select(i => i.ToString()).ToList();
+        AssertThat(problems.Count).OverrideFailureMessage("ui/templates.json:\n" + string.Join("\n", problems)).IsEqual(0);
+        foreach (string source in new[] { "inventory:usable", "expressions", "spells_known" })
+        {
+            AssertThat(templates.Contains("\"source\": \"" + source + "\"", StringComparison.Ordinal))
+                .OverrideFailureMessage("quickslots.choose does not source " + source).IsTrue();
+        }
+        AssertThat(templates.Contains("\"rowCommand\": \"Mod:lua:quickslots.choose\"", StringComparison.Ordinal)).IsTrue();
 
         // Every menu the Lua opens or fills is a template menu, and every row action names a book.
         foreach (Match m in Regex.Matches(lua, @"""(quickslots\.(?:menu|assign|choose))"""))

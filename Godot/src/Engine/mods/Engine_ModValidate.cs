@@ -67,6 +67,8 @@ public static partial class ModValidate
 			case Engine_ModUiFiles.SpellWheelPath:
 			case Engine_ModUiFiles.AbilitiesPath:
 			case ModWorkspace.ModMetadataFilename:
+			case Refii.Hero.Engine_ModMorphs.ManifestPath:
+			case ModMeshOverlays.TargetsPath:
 				return normalized;
 		}
 
@@ -140,6 +142,39 @@ public static partial class ModValidate
 			doc.Warn(string.Empty, "the file starts with a UTF-8 byte-order mark; save it without one " +
 				"(Godot's JSON reader is not guaranteed to skip it)");
 			text = text[1..];
+		}
+
+		// morphs.json: the registry's reader IS the schema (Engine_ModMorphs.Parse).
+		if (kind == Refii.Hero.Engine_ModMorphs.ManifestPath)
+		{
+			var morphIssues = new List<Refii.Hero.ModMorphIssue>();
+			Refii.Hero.Engine_ModMorphs.Parse(string.Empty, text, morphIssues);
+			foreach (Refii.Hero.ModMorphIssue issue in morphIssues)
+			{
+				if (issue.Error)
+				{
+					doc.Error(issue.Pointer, issue.Message);
+				}
+				else
+				{
+					doc.Warn(issue.Pointer, issue.Message);
+				}
+			}
+
+			return doc.Issues;
+		}
+
+		// morph_targets.json: ModMeshOverlays.ParseTargets is its reader.
+		if (kind == ModMeshOverlays.TargetsPath)
+		{
+			var targetErrors = new List<string>();
+			ModMeshOverlays.ParseTargets(text, targetErrors);
+			foreach (string error in targetErrors)
+			{
+				doc.Error(string.Empty, error);
+			}
+
+			return doc.Issues;
 		}
 
 		// fx/effects/*.json: the reader IS the schema (Engine_FxEffectJson.Parse reports every issue
@@ -824,17 +859,20 @@ public static partial class ModValidate
 	// ui/hud.json — Engine_HudModPieces.Parse / ParseClones / Source / MeterValue
 	// ---------------------------------------------------------------------------------------
 
-	private static readonly string[] HudKeys = { "hide", "pieces", "clones", "scale", "layout" };
+	private static readonly string[] HudKeys = { "hide", "pieces", "clones", "scale", "layout", "groups" };
 
 	private static readonly string[] HudPieceKeys =
 	{
 		"id", "kind", "anchor", "offset", "size", "value", "max", "fill", "back", "texture", "follow", "followElement",
 		"widthFrom", "widthPerUnit", "minWidth", "maxWidth", "chip", "border", "borderWidth", "corner", "textures", "index",
-		"text", "format", "colour", "align",
+		"text", "format", "colour", "align", "region", "each", "tint", "group", "outline", "outlineWidth", "shadow", "shadowOffset",
 	};
 
 	/// <summary>The fields only a <c>text</c> piece reads.</summary>
-	private static readonly string[] HudTextKeys = { "text", "format", "colour", "align" };
+	private static readonly string[] HudTextKeys = { "text", "format", "colour", "align", "outline", "outlineWidth", "shadow", "shadowOffset" };
+
+	/// <summary>A <c>groups</c> record's fields (Engine_HudModGroups).</summary>
+	private static readonly string[] HudGroupKeys = { "anchor", "pivot", "scale", "offset" };
 
 	/// <summary>A layout entry's fields, as <c>user://hud/layout.json</c> carries them; the last four are informational.</summary>
 	private static readonly string[] HudLayoutEntryKeys = { "anchor", "offset", "art", "value", "driven", "placed" };
@@ -849,8 +887,9 @@ public static partial class ModValidate
 	/// <c>hide</c> (ids), <c>scale</c> (id → factor), <c>clones</c> (copies of a shipped piece: id
 	/// and of required) and <c>pieces</c> (meter, panel or picture: id required). Values are a
 	/// number or a source the HUD reads (Engine_UiValueSources): <c>mod:&lt;key&gt;</c>,
-	/// <c>game:&lt;meter&gt;</c>, <c>player:&lt;key&gt;</c>, <c>hero:health</c>, <c>hero:health_max</c>;
-	/// colours are HTML hex. A <c>widget.</c> id must name one of Engine_HudWidgets.
+	/// <c>game:&lt;meter&gt;</c>, <c>player:&lt;key&gt;</c>, <c>setting:&lt;mod&gt;.&lt;name&gt;</c>,
+	/// <c>hero:health</c>, <c>hero:health_max</c>; colours are HTML hex. <c>groups</c> (id → pivot,
+	/// scale, offset) moves the pieces naming it. A <c>widget.</c> id must name one of Engine_HudWidgets.
 	/// </summary>
 	private static void CheckHud(Doc doc, JsonElement root)
 	{
@@ -918,6 +957,19 @@ public static partial class ModValidate
 			}
 		}
 
+		var groups = new HashSet<string>(StringComparer.Ordinal);
+		if (Has(root, Refii.Ui.Engine_HudModGroups.Section) &&
+			doc.Object(root.GetProperty(Refii.Ui.Engine_HudModGroups.Section), Refii.Ui.Engine_HudModGroups.Section,
+				"must be an object of group id to { \"anchor\", \"pivot\", \"scale\", \"offset\" }; ignored"))
+		{
+			doc.DuplicateKeys(root.GetProperty(Refii.Ui.Engine_HudModGroups.Section), Refii.Ui.Engine_HudModGroups.Section);
+			foreach (JsonProperty entry in root.GetProperty(Refii.Ui.Engine_HudModGroups.Section).EnumerateObject())
+			{
+				groups.Add(entry.Name);
+				CheckHudGroup(doc, entry.Value, At(Refii.Ui.Engine_HudModGroups.Section, entry.Name));
+			}
+		}
+
 		if (doc.Array(root, "pieces", string.Empty) is { } pieces)
 		{
 			var ids = new HashSet<string>(StringComparer.Ordinal);
@@ -930,8 +982,73 @@ public static partial class ModValidate
 					continue;
 				}
 
-				CheckHudPiece(doc, piece, at, ids);
+				CheckHudPiece(doc, piece, at, ids, groups);
 			}
+		}
+	}
+
+	/// <summary>
+	/// One <c>groups</c> record (Engine_HudModGroups): <c>anchor</c> and <c>pivot</c> two numbers
+	/// each, <c>scale</c> a number or a value source, <c>offset</c> two of them, a source negated
+	/// by a leading <c>-</c>.
+	/// </summary>
+	private static void CheckHudGroup(Doc doc, JsonElement group, string at)
+	{
+		if (!doc.Object(group, at, "must be an object { \"anchor\", \"pivot\", \"scale\", \"offset\" }; ignored"))
+		{
+			return;
+		}
+
+		doc.Keys(group, at, HudGroupKeys);
+		doc.Vector(group, "anchor", at, 2, 2, extraIgnored: false);
+		doc.Vector(group, "pivot", at, 2, 2, extraIgnored: false);
+		if (Has(group, "scale"))
+		{
+			GroupValue(doc, At(at, "scale"), group.GetProperty("scale"));
+			if (group.GetProperty("scale").ValueKind == JsonValueKind.Number && group.GetProperty("scale").GetDouble() <= 0)
+			{
+				doc.Warn(At(at, "scale"), "a scale of 0 or less is read as 1");
+			}
+		}
+
+		if (Has(group, "offset"))
+		{
+			JsonElement offset = group.GetProperty("offset");
+			if (offset.ValueKind != JsonValueKind.Array || offset.GetArrayLength() != 2)
+			{
+				doc.Error(At(at, "offset"), "must be [x, y], each a number or a value source; the group is not offset");
+				return;
+			}
+
+			for (int i = 0; i < 2; i++)
+			{
+				GroupValue(doc, At(At(at, "offset"), i), offset[i]);
+			}
+		}
+
+		if (!Has(group, "scale") && !Has(group, "offset"))
+		{
+			doc.Warn(at, "states neither \"scale\" nor \"offset\"; it moves nothing");
+		}
+	}
+
+	/// <summary>A group's value: a number, or a value source with an optional leading <c>-</c>.</summary>
+	private static void GroupValue(Doc doc, string at, JsonElement value)
+	{
+		if (value.ValueKind == JsonValueKind.Number)
+		{
+			return;
+		}
+
+		if (value.ValueKind != JsonValueKind.String)
+		{
+			doc.Error(at, $"must be a number or a value source, not {Describe(value)}");
+			return;
+		}
+
+		if (Refii.Ui.Engine_HudModGroups.Problem(value.GetString()) is { } problem)
+		{
+			doc.Error(at, problem);
 		}
 	}
 
@@ -1084,13 +1201,18 @@ public static partial class ModValidate
 		}
 	}
 
-	private static void CheckHudPiece(Doc doc, JsonElement piece, string at, HashSet<string> ids)
+	private static void CheckHudPiece(Doc doc, JsonElement piece, string at, HashSet<string> ids, HashSet<string>? groups = null)
 	{
 		doc.Keys(piece, at, HudPieceKeys);
 		string? id = doc.Text(piece, "id", at, required: true);
 		if (id is { Length: > 0 } && !ids.Add(id))
 		{
 			doc.Warn(At(at, "id"), $"a second piece '{id}' in this file; the later one replaces the earlier");
+		}
+
+		if (doc.Text(piece, "group", at) is { Length: > 0 } group && groups?.Contains(group) != true)
+		{
+			doc.Warn(At(at, "group"), $"names '{group}', which this file's \"groups\" does not state; the piece moves with it only if another enabled mod states it");
 		}
 
 		string kind = doc.Text(piece, "kind", at) ?? string.Empty;
@@ -1157,8 +1279,20 @@ public static partial class ModValidate
 			}
 			else
 			{
-				doc.Error(at, "a picture needs \"texture\", or \"textures\" with \"index\"; the piece is not built");
+				doc.Warn(at, "a picture with no \"texture\" and no \"textures\" draws only what hud_icon(p, \"<id>\", texture) states for it");
 			}
+
+			if (Has(piece, "region") && (piece.GetProperty("region").ValueKind != JsonValueKind.Array ||
+				piece.GetProperty("region").GetArrayLength() != 4))
+			{
+				doc.Error(At(at, "region"), "\"region\" is [u, v, w, h], fractions of the texture (0..1)");
+			}
+
+			doc.Colour(piece, "tint", at);
+		}
+		else if (Has(piece, "tint"))
+		{
+			doc.Warn(At(at, "tint"), "read only by a \"picture\" piece; ignored");
 		}
 	}
 
@@ -1216,6 +1350,23 @@ public static partial class ModValidate
 
 		doc.Text(piece, "follow", at);
 		doc.Text(piece, "followElement", at);
+
+		// The rims: an outline all round and a drop shadow, each a colour with its width or offset.
+		doc.Colour(piece, "outline", at);
+		doc.Colour(piece, "shadow", at);
+		if (doc.Number(piece, "outlineWidth", at) is { } width && width <= 0)
+		{
+			doc.Warn(At(at, "outlineWidth"), "an outline 0 wide or less is not drawn");
+		}
+
+		doc.Vector(piece, "shadowOffset", at, 2, 2, extraIgnored: false);
+		foreach ((string size, string colour) in new[] { ("outlineWidth", "outline"), ("shadowOffset", "shadow") })
+		{
+			if (Has(piece, size) && !Has(piece, colour))
+			{
+				doc.Warn(At(at, size), $"read only with \"{colour}\", the colour; ignored");
+			}
+		}
 	}
 
 	/// <summary>A field holding a number or a value source; <paramref name="why"/> is the message for a missing required one.</summary>
@@ -1259,7 +1410,7 @@ public static partial class ModValidate
 
 	/// <summary>
 	/// Engine_UiValueSources.Number: a number, <c>mod:&lt;key&gt;</c>, <c>game:&lt;meter&gt;</c>,
-	/// <c>player:&lt;key&gt;</c>, <c>hero:health</c> or <c>hero:health_max</c>.
+	/// <c>player:&lt;key&gt;</c>, <c>setting:&lt;mod&gt;.&lt;name&gt;</c>, <c>hero:health</c> or <c>hero:health_max</c>.
 	/// </summary>
 	private static void Source(Doc doc, string at, string text)
 	{
@@ -1291,10 +1442,12 @@ public static partial class ModValidate
 	/// <summary>A picture piece's texture goes through Godot's ResourceLoader, which resolves a scheme.</summary>
 	private static void TexturePath(Doc doc, string at, string path)
 	{
-		if (path.Length != 0 && !path.Contains("://", StringComparison.Ordinal))
+		// A HUD picture loads any path (Engine_HudModPieces.LoadAnyTexture): res://, a mod's PNG, or a
+		// game texture with or without game://. Only a path that can be none of them is named.
+		if (path.Length != 0 && !path.Contains("://", StringComparison.Ordinal) &&
+			!path.EndsWith(".tex", StringComparison.OrdinalIgnoreCase) && !path.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
 		{
-			doc.Warn(at, $"'{path}' is loaded through Godot's resource loader; write game://{path.TrimStart('/')} " +
-				"for a game or mod texture");
+			doc.Warn(at, $"'{path}' is neither a game texture (.tex) nor a mod's PNG; a HUD picture loads art/…/x.tex, art/x.png or res://");
 		}
 	}
 
@@ -1815,6 +1968,7 @@ public static partial class ModValidate
 	private static readonly string[] PickKeys =
 	{
 		"name", "store", "inEffect", "unlocked", "exclude", "empty", "scale", "apply", "remove",
+		"legacySaveKey", "legacySaveKeyTwo",
 	};
 
 	/// <summary>
@@ -1897,6 +2051,16 @@ public static partial class ModValidate
 			foreach (string key in new[] { "empty", "apply", "remove" })
 			{
 				doc.Text(pick, key, at);
+			}
+
+			// RefiiModSave keys a save from before kept each slot's pick in ({slot} the slot's number):
+			// the engine declaration carries them as one word each.
+			foreach (string key in new[] { "legacySaveKey", "legacySaveKeyTwo" })
+			{
+				if (doc.Text(pick, key, at) is { Length: > 0 } legacy && legacy.Any(char.IsWhiteSpace))
+				{
+					doc.Error(At(at, key), "must have no spaces: the engine's declaration carries it as one word");
+				}
 			}
 
 			doc.Number(pick, "scale", at, strict: true, min: 0.2, max: 1, clamps: true);

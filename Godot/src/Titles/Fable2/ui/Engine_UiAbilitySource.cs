@@ -227,7 +227,15 @@ public static class Engine_UiAbilitySource
 				Committable: false,
 				Counted: !maxed && cost is not null && Engine_UiModAbilities.CanAfford(mod),
 				Ghosted: false,
-				Command: Engine_UiModAbilities.BuyAction + mod.Name));
+				Command: Engine_UiModAbilities.BuyAction + mod.Name,
+
+				// NEVER STATED TO THE GUEST. Its id names no GDB record, and the screen's highlight
+				// edge `sub_826C3C78` (disc `sub_8259FC18`) ignores `sub_82896900`'s failed lookup
+				// (0x826c3d58) and calls `sub_826C2F98` anyway (0x826c3e18) with the ability Type
+				// still unset — `sub_82896868` never writes `+0`. That stack word reaches
+				// `sub_824E4E28` as the index of `lwzx r31, r10, r29` at 0x824e4f5c
+				// (`abilities + 4 * (Type + 68)`), a read anywhere in guest memory.
+				FromMod: true));
 		}
 
 		int buyable = 0;
@@ -335,6 +343,13 @@ public static class Engine_UiAbilitySource
 			Refii.Host.HostBridge.PostFrontEndAction($"{AbilityAction}unlearn:{type}"));
 		return true;
 	}
+
+	/// <summary>
+	/// A will's name as the abilities book shows its first level, by spell type 0..7 (0 Lightning ..
+	/// 7 Dead Rising: the abilities 7..14 in the same order); the base record name when unnamed.
+	/// </summary>
+	public static string WillLabel(int spell) =>
+		spell is >= 0 and <= 7 ? LabelOf(Abilities[6 + spell].Record, 0, out _) : string.Empty;
 
 	private static string LabelOf(string record, int level, out bool named)
 	{

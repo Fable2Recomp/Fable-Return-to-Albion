@@ -130,6 +130,12 @@ public abstract class Engine_TitleGame
 	/// <summary>The keycap for a pad button while <see cref="InteractionOwnsDevices"/>, or null.</summary>
 	public virtual string? KeyLabel(string button) => null;
 
+	/// <summary>
+	/// What the game's pad button does, for its Controls remap row ("Melee, block, flourish" for
+	/// Fable 2's X); null where the title has not said, and the row shows the button alone.
+	/// </summary>
+	public virtual string? PadButtonRole(Refii.Core.PadInput button) => null;
+
 	/// <summary>Whether the world is open to the player's own interactions (photo mode opens only then).</summary>
 	public virtual bool WorldInteractionAllowed => true;
 
@@ -149,14 +155,23 @@ public abstract class Engine_TitleGame
 
 	// ---------------------------------------------------------------- the entity feed
 
+	/// <summary>
+	/// What the title's rigs are to the shared animation and entity code: its bones by role, its
+	/// bone naming, its face, crossfade and pose-check rules (<see cref="Refii.Animations.Engine_TitleRig"/>).
+	/// </summary>
+	public virtual Refii.Animations.Engine_TitleRig Rig => Refii.Animations.Engine_TitleRig.None;
+
 	/// <summary>Bumped when the title changes the hero's look for a preview, so its body is rebuilt.</summary>
 	public virtual int HeroMorphPreviewGeneration => 0;
 
 	/// <summary>The title is holding the hero's look in preview (a mirror the player stands at).</summary>
 	public virtual bool HeroMorphPreviewHeld => false;
 
-	/// <summary>The hero's skin tan the title states for its composites, 0..1; 0.5 is the guest's own.</summary>
-	public virtual float HeroManualTan => 0.5f;
+	/// <summary>The guest player (1 or 2) whose body <see cref="HeroMorphPreviewGeneration"/> rebuilds; 0 the local hero.</summary>
+	public virtual int HeroMorphPreviewPlayer => 0;
+
+	/// <summary>Player <paramref name="player"/>'s skin tan the title states for its composites, 0..1; 0.5 is the guest's own.</summary>
+	public virtual float ManualTan(int player) => 0.5f;
 
 	/// <summary>The hero's companion's entity address (Fable 2's dog), or 0.</summary>
 	public virtual uint CompanionEntityAddress => 0u;
@@ -351,6 +366,11 @@ public abstract class Engine_TitleGame
 
 	/// <summary>The value index the title's options cursor holds at a row.</summary>
 	public virtual int OptionsCursorIndex(int row) => 0;
+
+	/// <summary>Moves one row of the open host options page to <paramref name="index"/> (a rebind row's captured press).</summary>
+	public virtual void SetOptionsCursorIndex(int row, int index)
+	{
+	}
 
 	/// <summary>The host options page takes the title's options cursor.</summary>
 	public virtual void EnterHostOptions(Refii.Ui.Engine_UiHostOptionsPage page)

@@ -383,8 +383,8 @@ public static class Engine_MdlEngine47
 
     /// <summary>
     /// <c>sub_82D543D8</c>: u8 n × 8-byte pairs (meaning not established), then u32 n ×
-    /// {u32 name hash, u32 parent}, then u32 n × 11 f32 bind transforms. The name hash function is
-    /// not established, so a bone is named by its hash.
+    /// {u32 name hash, u32 parent}, then u32 n × 11 f32 bind transforms. A bone is named by its hash
+    /// (<see cref="Engine_GmdSkeleton.HashedNodeName(uint)"/>), the CRC-32 of its rig name.
     /// </summary>
     private static bool ReadSkeleton(MdlReader r, Payload payload)
     {
@@ -396,7 +396,7 @@ public static class Engine_MdlEngine47
             if (!r.U32(out uint hash) || !r.U32(out uint parent)) return false;
             payload.Bones.Add(new MdlBone
             {
-                Name = $"0x{hash:X8}",
+                Name = Engine_GmdSkeleton.HashedNodeName(hash),
                 ParentId = parent == 0xFFFFFFFFu ? -1 : (int)parent,
             });
         }

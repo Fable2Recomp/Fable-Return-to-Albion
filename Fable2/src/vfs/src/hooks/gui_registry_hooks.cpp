@@ -105,26 +105,18 @@ REX_EXTERN(rex_lhGuiRegistry_JumpSlide) {
 }
 
 // Image: TU1 0x82804C28, `(registry, nameHash, const u32* textureHash)` — writes the resource
-// hash onto every bound quad (`+0x200`, dirty `+0x224`). The disc build inlines this loop into
-// its publishers (the epilogue `sub_824F23A0`), so the original is weak there and nothing calls
-// this. Posted `@Gui.Image hash texture` on change.
+// hash onto every bound quad (`+0x200`, dirty `+0x224`). Posted `@Gui.Image hash texture` on
+// change. The disc build has no such function: its one publisher, the epilogue `sub_824F23A0`
+// (TU1 `sub_823D3FF0`), inlines the loop, so the original is weak there and the disc states the
+// same pair through RefiiGuiImageInlined below. TU1's other caller, the episodic screen
+// `sub_823D02D8` ("EpisodeImage"), is DLC the disc build does not contain.
 extern "C" __attribute__((weak)) REX_FUNC(__imp__rex_lhGuiRegistry_SetImage);
 
 namespace {
 
 std::unordered_map<uint32_t, uint32_t> g_images;
 
-}  // namespace
-
-REX_EXTERN(rex_lhGuiRegistry_SetImage) {
-    if (&__imp__rex_lhGuiRegistry_SetImage == nullptr) {
-        return;
-    }
-
-    const uint32_t hash = ctx.r4.u32;
-    const uint32_t value = ctx.r5.u32;
-    const uint32_t texture = Plausible(value) ? refii::vfs::LoadGuestU32(base, value) : 0u;
-    __imp__rex_lhGuiRegistry_SetImage(ctx, base);
+void StateImage(uint32_t hash, uint32_t texture) {
     {
         std::lock_guard<std::mutex> lock(g_said_lock);
         auto found = g_images.find(hash);
@@ -141,4 +133,32 @@ REX_EXTERN(rex_lhGuiRegistry_SetImage) {
         call.arguments.push_back(std::move(argument));
     }
     refii::vfs::PostGuiNativeCall(std::move(call));
+}
+
+}  // namespace
+
+REX_EXTERN(rex_lhGuiRegistry_SetImage) {
+    if (&__imp__rex_lhGuiRegistry_SetImage == nullptr) {
+        return;
+    }
+
+    const uint32_t hash = ctx.r4.u32;
+    const uint32_t value = ctx.r5.u32;
+    const uint32_t texture = Plausible(value) ? refii::vfs::LoadGuestU32(base, value) : 0u;
+    __imp__rex_lhGuiRegistry_SetImage(ctx, base);
+    StateImage(hash, texture);
+}
+
+extern "C" uint8_t* RefiiGuestBase(void);
+
+// The disc epilogue's inlined image write (disc config only). At 0x824F283C `bl sub_822A9A20`
+// finds the registry entry: r4 = the name hash (`lwz r4, dword_834983D4@l(r10)` 0x824F2838) and
+// the texture is the handle at r1+0x58 (`lwz r9, 0xA0+var_48(r1)` 0x824F2858, stored to every
+// quad's +0x200 at 0x824F288C) — the arguments TU1 passes SetImage.
+void RefiiGuiImageInlined(PPCRegister& r1, PPCRegister& r4) {
+    uint8_t* base = RefiiGuestBase();
+    if (base == nullptr) {
+        return;
+    }
+    StateImage(r4.u32, refii::vfs::LoadGuestU32(base, r1.u32 + 0x58u));
 }

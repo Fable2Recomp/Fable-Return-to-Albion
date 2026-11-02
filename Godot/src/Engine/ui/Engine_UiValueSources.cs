@@ -21,6 +21,8 @@ namespace Refii.Ui;
 /// piece of player two's (their half, a joiner's window, a copy of their widget) reads player
 /// two's value under the same key, so one record serves both players.</item>
 /// <item><c>hero:health</c> / <c>hero:health_max</c> — the local hero's vitals.</item>
+/// <item><c>setting:&lt;mod&gt;.&lt;name&gt;</c> — a mod setting in force (<c>settings.json</c>
+/// with the player's choice and any live change over it), the value <c>Refii.setting</c> answers.</item>
 /// </list>
 /// <para>A source that states nothing resolves to null, never to 0 or an empty string: "not
 /// stated" must not render as empty or full. Pure .NET; the readers are supplied by whoever owns
@@ -32,6 +34,7 @@ public static class Engine_UiValueSources
 	public const string GamePrefix = "game:";
 	public const string PlayerPrefix = "player:";
 	public const string HeroPrefix = "hero:";
+	public const string SettingPrefix = "setting:";
 
 	/// <summary>The hero sources: the local hero's vitals.</summary>
 	public static readonly string[] HeroKeys = { "health", "health_max" };
@@ -56,6 +59,9 @@ public static class Engine_UiValueSources
 		/// <summary><c>hero:health</c> / <c>hero:health_max</c>.</summary>
 		Hero,
 
+		/// <summary><c>setting:&lt;mod&gt;.&lt;name&gt;</c>.</summary>
+		Setting,
+
 		/// <summary>Not a source: a literal or a tag where text is read, an error where a number is.</summary>
 		Other,
 	}
@@ -64,7 +70,7 @@ public static class Engine_UiValueSources
 	public readonly record struct Source(Kind Kind, string Key, float Number)
 	{
 		/// <summary>Whether this names a value someone publishes (not a literal, not empty).</summary>
-		public bool Named => Kind is Kind.Mod or Kind.Game or Kind.Player or Kind.Hero;
+		public bool Named => Kind is Kind.Mod or Kind.Game or Kind.Player or Kind.Hero or Kind.Setting;
 	}
 
 	/// <summary>
@@ -81,6 +87,7 @@ public static class Engine_UiValueSources
 		public Func<string, string?>? GameText { get; init; }
 		public Func<int, string, float?>? PlayerValue { get; init; }
 		public Func<string, float?>? Hero { get; init; }
+		public Func<string, float?>? Setting { get; init; }
 		public Func<string, float?>? StandIn { get; init; }
 		public Func<string, string?>? StandInText { get; init; }
 
@@ -125,6 +132,11 @@ public static class Engine_UiValueSources
 			return new Source(Kind.Hero, hero, 0f);
 		}
 
+		if (Prefixed(source, SettingPrefix) is { } setting)
+		{
+			return new Source(Kind.Setting, setting, 0f);
+		}
+
 		return new Source(Kind.Other, source, 0f);
 	}
 
@@ -138,7 +150,8 @@ public static class Engine_UiValueSources
 		return source.StartsWith(ModPrefix, StringComparison.Ordinal) ||
 			source.StartsWith(GamePrefix, StringComparison.Ordinal) ||
 			source.StartsWith(PlayerPrefix, StringComparison.Ordinal) ||
-			source.StartsWith(HeroPrefix, StringComparison.Ordinal);
+			source.StartsWith(HeroPrefix, StringComparison.Ordinal) ||
+			source.StartsWith(SettingPrefix, StringComparison.Ordinal);
 	}
 
 	/// <summary>
@@ -151,12 +164,12 @@ public static class Engine_UiValueSources
 		return source.Kind switch
 		{
 			Kind.Number or Kind.Hero => null,
-			Kind.Mod or Kind.Game or Kind.Player when source.Key.Length == 0 =>
-				$"'{(text ?? string.Empty).Trim()}' names no value; write mod:<mod>.<name>, game:<meter> or player:<key>",
-			Kind.Mod or Kind.Game or Kind.Player => null,
+			Kind.Mod or Kind.Game or Kind.Player or Kind.Setting when source.Key.Length == 0 =>
+				$"'{(text ?? string.Empty).Trim()}' names no value; write mod:<mod>.<name>, game:<meter>, player:<key> or setting:<mod>.<name>",
+			Kind.Mod or Kind.Game or Kind.Player or Kind.Setting => null,
 			Kind.Empty => "is empty",
 			_ => $"'{text}' is not a value source: a number, mod:<mod>.<name>, game:<meter>, player:<key>, " +
-				"hero:health or hero:health_max; it never states a value, so the piece never draws",
+				"setting:<mod>.<name>, hero:health or hero:health_max; it never states a value, so the piece never draws",
 		};
 	}
 
@@ -167,8 +180,8 @@ public static class Engine_UiValueSources
 	public static string? TextProblem(string? text)
 	{
 		Source source = Parse(text);
-		return source.Kind is Kind.Mod or Kind.Game or Kind.Player && source.Key.Length == 0
-			? $"'{(text ?? string.Empty).Trim()}' names no value; write mod:<mod>.<name>, game:<name> or player:<key>"
+		return source.Kind is Kind.Mod or Kind.Game or Kind.Player or Kind.Setting && source.Key.Length == 0
+			? $"'{(text ?? string.Empty).Trim()}' names no value; write mod:<mod>.<name>, game:<name>, player:<key> or setting:<mod>.<name>"
 			: null;
 	}
 
@@ -197,6 +210,7 @@ public static class Engine_UiValueSources
 			Kind.Game => context.GameMeter?.Invoke(source.Key),
 			Kind.Player => context.PlayerValue?.Invoke(context.Player is 2 ? 2 : 1, source.Key),
 			Kind.Hero => context.Hero?.Invoke(source.Key),
+			Kind.Setting => context.Setting?.Invoke(source.Key),
 			_ => null,
 		};
 	}

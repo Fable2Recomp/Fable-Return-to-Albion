@@ -448,6 +448,7 @@ public partial class Engine_GameAssets : Node
 		{
 			Refii.Mods.ModSettings.Reload();
 			Refii.Mods.ModInput.Reload();
+			Refii.Hero.Engine_ModMorphs.Reload();
 			Refii.Fx.Engine_FxRecipes.Reload();
 			Refii.Core.Engine_TitleGame.Active.ReloadModData();
 		}

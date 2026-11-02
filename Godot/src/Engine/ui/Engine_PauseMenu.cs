@@ -169,11 +169,12 @@ public static class Engine_PauseMenu
 
 		// HOST-ONLY ROWS ARE NOT IN THE GUEST'S LIST AND MUST NOT BE COUNTED AGAINST IT. The
 		// guest spawns seven tabs plus Saving; a host tab makes ours longer, and the positional
-		// fallback below would then hand every row after it the label of its predecessor.
+		// fallback below would then hand every row after it the label of its predecessor. A
+		// mod's row (`FromMod`) is not in it either, whether or not its file says `hostOnly`.
 		var offered = new System.Collections.Generic.List<Engine_UiExpandableMenu.Item>();
 		foreach (Engine_UiExpandableMenu.Item root in menu.Roots)
 		{
-			if (root.Available && !root.HostOnly)
+			if (root.Available && !root.HostOnly && !root.FromMod)
 			{
 				offered.Add(root);
 			}

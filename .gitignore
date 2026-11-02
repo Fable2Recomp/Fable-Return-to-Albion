@@ -478,11 +478,6 @@ __pycache__/
 /Godot/debug
 /Godot/src/tools
 /Godot/src/tools
-Godot/src/Engine/level/environment/dynamic/dynamic_cloud_shadow.gdshader.uid
-Godot/src/Engine/level/environment/dynamic/Engine_DynamicCloudShadows.cs.uid
-Godot/src/Engine/level/environment/dynamic/dynamic_cloud_layers.gdshaderinc.uid
-Godot/src/Engine/level/environment/dynamic/dynamic_cloud_density.gdshaderinc.uid
-Godot/src/Engine/level/environment/dynamic/dynamic_cloud_shadow_density.gdshader.uid
 
 # Android source lives under Godot/src/android; Gradle templates and all private
 # inputs/results are generated into separate output roots, never publication.

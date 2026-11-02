@@ -67,10 +67,19 @@ public static class Engine_UiModBoxes
 			case Engine_UiModRequest.Op.Mark:
 				Engine_HudModMarkers.Set(request.Id, request.Player, request.Entity,
 					new Godot.Vector3(request.X, request.Y, request.Z), request.Icon, request.Text);
+				if (request.HasMeter)
+				{
+					Engine_HudModMarkers.SetMeter(request.Id, request.Value, request.Max, request.Style, Engine_HudModMarkers.Clock);
+				}
+
 				break;
 
 			case Engine_UiModRequest.Op.Unmark:
 				Engine_HudModMarkers.Remove(request.Id);
+				break;
+
+			case Engine_UiModRequest.Op.MarkMeter:
+				Engine_HudModMarkers.SetMeter(request.Id, request.Value, request.Max, request.Style, Engine_HudModMarkers.Clock);
 				break;
 
 			case Engine_UiModRequest.Op.Fade:
@@ -89,11 +98,27 @@ public static class Engine_UiModBoxes
 				Engine_HudModMeters.Remove(request.Name);
 				break;
 
-			// A mod's input claim and HUD overrides: state the pad publish and the HUD feed read.
+			// A mod's input claim, its presses and HUD overrides: state the pad publish and the HUD feed read.
 			case Engine_UiModRequest.Op.InputClaim:
 				if (!Refii.Mods.ModInput.Claim(request.Player, request.Name, request.On))
 				{
 					GD.PushWarning($"[mod-ui] input_claim: no action '{request.Name}' (input.json declares <mod>.<action>)");
+				}
+
+				break;
+
+			case Engine_UiModRequest.Op.Press:
+				if (!Refii.Mods.ModInputPresses.Press(request.Player, request.Name, request.Slide))
+				{
+					GD.PushWarning($"[mod-ui] press: no pad button '{request.Name}' for player {request.Player}");
+				}
+
+				break;
+
+			case Engine_UiModRequest.Op.Tap:
+				if (!Refii.Mods.ModInputPresses.Tap(request.Player, request.Name, request.Slide))
+				{
+					GD.PushWarning($"[mod-ui] tap: no pad button '{request.Name}' for player {request.Player}, or no ticks");
 				}
 
 				break;
@@ -108,6 +133,11 @@ public static class Engine_UiModBoxes
 
 			case Engine_UiModRequest.Op.HudHold:
 				Engine_UiHudOverrides.SetHold(request.Player, request.Name, request.On);
+				break;
+
+			// Godot owns the skeleton a hidden part is a bone of, and the views (Engine_HiddenParts).
+			case Engine_UiModRequest.Op.HidePart:
+				Refii.Entities.Engine_HiddenParts.Set(request.Entity, request.Name, request.On, request.Player);
 				break;
 		}
 	}

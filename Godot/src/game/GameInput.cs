@@ -268,6 +268,12 @@ public partial class GameInput : Node
 			RefreshConnectedJoypads();
 		}
 
+		// A rebind row capturing a press takes it before the menus, the pointer and the guest.
+		if (ObserveControllerEvent(@event))
+		{
+			return;
+		}
+
 		if (@event is InputEventMouse)
 		{
 			if (!MouseInput)
@@ -520,6 +526,7 @@ public partial class GameInput : Node
 
 	private static void OnJoyConnectionChanged(long device, bool connected)
 	{
+		ForgetControllerFamilies();
 		RefreshConnectedJoypads();
 		GD.Print($"[input] joypad {device} {(connected ? "connected" : "disconnected")}");
 	}
@@ -625,6 +632,15 @@ public partial class GameInput : Node
 		}
 	}
 
+	/// <summary>
+	/// Pad 0 as the last publish folded it, before the mods withhold and the title masks: the
+	/// keyboard through the <c>key_*</c> bindings, every joypad on it through its player's remap, the
+	/// touch controls, the pointer's presses, the debug channel and a replay — the game's buttons a
+	/// surface that reads the pad itself (a pub game's board) is pressed by. Neutral while the window
+	/// has no focus, but for the debug channel and a replay.
+	/// </summary>
+	public static PadState Pad0 { get; private set; }
+
 	/// <summary>One pad's raw state, before the menu masks.</summary>
 	public struct PadState
 	{
@@ -637,7 +653,7 @@ public partial class GameInput : Node
 		public void Merge(int joypad, uint buttons)
 		{
 			uint leftTrigger = Trigger(joypad, JoyAxis.TriggerLeft), rightTrigger = Trigger(joypad, JoyAxis.TriggerRight);
-			RemapPad(ref buttons, ref leftTrigger, ref rightTrigger);
+			RemapPad(joypad, ref buttons, ref leftTrigger, ref rightTrigger);
 			Buttons |= buttons;
 			PhysicalButtons |= buttons;
 			LeftTrigger = System.Math.Max(LeftTrigger, leftTrigger);
@@ -686,11 +702,12 @@ public partial class GameInput : Node
 
 		bool connected = joypad >= 0 || GameDebugServer.PadConnected(pad);
 		// A MOD'S CLAIMED ACTIONS leave this pad before the guest reads it (ModInput.Withhold),
-		// for the player the title says the pad is.
+		// and its presses join it (ModInput.Press), for the player the title says the pad is.
 		int player = Engine_TitleGame.Active.Input.ModPlayer(pad);
 		if (player != 0)
 		{
 			Refii.Mods.ModInput.Withhold(player, ref state.Buttons, ref state.LeftTrigger, ref state.RightTrigger);
+			Refii.Mods.ModInput.Press(player, ref state.Buttons, ref state.LeftTrigger, ref state.RightTrigger);
 		}
 
 		Deliver(pad, connected, state, Engine_TitleGame.Active.Input.PublishPad(pad, connected, state, state));
@@ -810,6 +827,7 @@ public partial class GameInput : Node
 		}
 
 		PadState seen = state;
+		Pad0 = seen;
 		uint buttons = state.Buttons;
 		int leftX = state.LeftX, leftY = state.LeftY, rightX = state.RightX, rightY = state.RightY;
 		GameDebugServer.RecordInputFrame(
@@ -832,11 +850,13 @@ public partial class GameInput : Node
 		}
 
 		// A MOD'S CLAIMED ACTIONS leave pad 0 — player one's, keyboard folded in — before the
-		// guest reads it (ModInput.Withhold); the mod's own input_action events still fire.
+		// guest reads it (ModInput.Withhold); the mod's own input_action events still fire. Its
+		// presses join it after (ModInput.Press).
 		int player = Engine_TitleGame.Active.Input.ModPlayer(0);
 		if (player != 0)
 		{
 			Refii.Mods.ModInput.Withhold(player, ref state.Buttons, ref state.LeftTrigger, ref state.RightTrigger);
+			Refii.Mods.ModInput.Press(player, ref state.Buttons, ref state.LeftTrigger, ref state.RightTrigger);
 		}
 
 		// The title takes it from here: what the guest sees, and what its own host menus read

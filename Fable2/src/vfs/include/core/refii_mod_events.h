@@ -144,7 +144,22 @@ enum refii_mod_event_kind : int32_t {
   REFII_EVENT_PAUSED = 98,
   REFII_EVENT_START_GAME = 99,
   REFII_EVENT_CUTSCENE = 100,
-  REFII_EVENT_COUNT = 101,
+  REFII_EVENT_HEALTH_CHANGED = 101,
+  REFII_EVENT_STATUS_APPLYING = 102,
+  REFII_EVENT_SAVE_WRITTEN = 103,
+  REFII_EVENT_LOCK_LOST = 104,
+  REFII_EVENT_ATTACK_MODE_CHANGED = 105,
+  REFII_EVENT_ITEM_REMOVED = 106,
+  REFII_EVENT_EXPRESSION_WHEEL = 107,
+  REFII_EVENT_SPELL_ENDED = 108,
+  REFII_EVENT_SPELL_CHARGE_ENDED = 109,
+  REFII_EVENT_MELEE_SWING_ENDED = 110,
+  REFII_EVENT_ACTION_MOVE_INTERRUPT = 111,
+  REFII_EVENT_CAMERA_CHANGED = 112,
+  REFII_EVENT_VORTEX_CAUGHT = 113,
+  REFII_EVENT_APPEARANCE_CHANGED = 114,
+  REFII_EVENT_MORPH_CHANGED = 115,
+  REFII_EVENT_COUNT = 116,
 };
 
 /// What took a hero's camera and controls away from free play (CutsceneEvent's `kind`, and the
@@ -264,8 +279,9 @@ struct GameActionEvent : Event {
 
 /// A creature asked its ability set for an ability: 16 melee pressed, 17 melee released, 18
 /// magic charge, and the rest of the game's AbilityType enum (the request's vtable slot 1).
-/// `cancel` refuses it (the request matches nothing). A refused melee press should also refuse
-/// its release. Seam: rex_CECAbilities_PerformRequest (r3 entity, r4 request).
+/// `cancel` refuses it (the request matches nothing). A refused melee press refuses its release:
+/// the bus raises that entity's next release already cancelled and refuses it whatever a handler
+/// says. Seam: rex_CECAbilities_PerformRequest (r3 entity, r4 request).
 struct AbilityRequestEvent : Event {
   static constexpr int32_t kKind = REFII_EVENT_ABILITY_REQUEST;
   uint32_t entity;
@@ -358,6 +374,8 @@ struct HitEvent : Event {
   /// The hit asks for a knockdown (hit +0x18; force push sets it, as do heavy blows). Writable
   /// before delivery: the victim's hit response reads it to choose the knockdown.
   bool knockdown;
+  /// The tag of the cast whose serial the hit carries (SpellLaunchEvent's), 0 none.
+  int32_t tag;
 };
 
 struct HitLandedEvent : HitEvent {
@@ -414,6 +432,13 @@ struct SpellLaunchEvent : Event {
   int32_t slot;
   int32_t type;
   bool cascading;
+  /// THE CAST'S TAG, writable (0 none): stamped on the spell this launch creates and carried by
+  /// every later event of that cast — spell_created, vortex_started, hit, hit_landed,
+  /// fireball_impact, status_applying — by its serial. The factory takes the serial from its
+  /// registry's counter before it builds the spell (`lwz r19,0xC(r18)` 0x824b1934, `stw
+  /// r19,0x44(r31)` 0x824b1ec4, then the class's Init and Start 0x824b1eec / 0x824b1f00), so a hit
+  /// landed inside the factory carries it too.
+  int32_t tag;
 };
 
 /// A spell was really created for a launch. Seam: rex_CECSpellManager_OnSpellLaunched (r3
@@ -439,6 +464,16 @@ struct SpellCreatedEvent : Event {
   uint32_t caster;
   int32_t caster_player;
   uint32_t serial;
+  /// The launch slot the spell came from (spell_launch's `slot`), -1 for a cast no launch made
+  /// (a creature's own cast, refii_mod_cast_spell).
+  int32_t slot;
+  /// The cast's tag: spell_launch's, or refii_mod_cast_spell_with's; 0 none. On the machine not
+  /// deciding the caster online, the deciding machine's tag once the cast is paired.
+  int32_t tag;
+  /// This spell's serial on the online HOST (refii_mod_host_serial): `serial` itself on the host,
+  /// alone and in local co-op; on the joiner the host's spell of the same cast once paired, 0
+  /// before (a cast pairs by its replicated release, mod_events.cpp THE CAST PAIRS).
+  uint32_t host_serial;
 };
 
 /// Experience is changing on an entity's experience component: `spend` false is a Modify
@@ -814,6 +849,11 @@ struct StatusEffectEvent : Event {
   int32_t player;
   int32_t effect;
   bool started;
+  /// For a status started inside a spell's installer (StatusApplyingEvent's seams) or a vortex's
+  /// capture (VortexCaughtEvent's): that cast's serial and its source (the caster). 0xFFFFFFFF and
+  /// 0 otherwise (an end, a fall, a script's status).
+  uint32_t serial;
+  uint32_t source;
 };
 
 /// A player's target changed: `target` is the new one, 0 when it was cleared. After the fact.
@@ -992,12 +1032,25 @@ struct SlowTimeEvent : Event {
 /// entity of its own). The summon leaves the world through EntityRemoved. After the fact. Seams:
 /// rex_SpellRaiseDead_BindSummoner (r3 summoner, r4 the summoned entity) and
 /// rex_SpellDamoclesSword_Create (r3 the sword object, its entity's weak ref at +0; r5 the caster).
+/// `serial` is the summoning spell's, as the game states it at each seam:
+///   - the bind's r6: Raise Dead's update reads its spell's serial (`lwz r24,0x44(r3)` 0x82755804,
+///     r3 = the spell) into `sub_82756168`'s r4, which binds with it (`mr r6,r24` 0x827567b8); the
+///     bind hands r6 on as the serial wherever it reports the summon. The network receive's bind
+///     carries the number the sender's message holds.
+///   - the sword set's +0x10 (the create's r4): Blades' Start passes its spell's serial into the
+///     set's init (`lwz r25,0x44(r31)` 0x825a21ec / `lwz r29,0x44(r31)` 0x825a297c, `mr r6`), which
+///     stores it (`stw r27,0x10(r31)` 0x825a2f4c). Swords added to a live set by a re-cast keep the
+///     set's — the spell they join.
 struct SummonedEvent : Event {
   static constexpr int32_t kKind = REFII_EVENT_SUMMONED;
   uint32_t summoner;
   int32_t player;
   uint32_t summon;
   int32_t kind;
+  /// The summoning spell's serial (a hit's spell_serial, spell_created's).
+  uint32_t serial;
+  /// The tag of the cast whose serial it carries (SpellLaunchEvent's), 0 none.
+  int32_t tag;
 };
 
 /// A crime is recorded against someone: `criminal` committed crime `type` (the game's crime
@@ -1278,6 +1331,14 @@ struct ModMenuRowEvent : Event {
   /// the button pressed ("X", "Y"); both "" for a plain row choice.
   const char* command;
   const char* button;
+  /// The row's TYPED SUBJECT, read by Godot off the row's own command or a host list's row name
+  /// (Refii.Mods.ModRowSubject), so a handler never parses a verb: `subject_kind` "item" (a use),
+  /// "weapon" (an equip), "expression" or "will" ("" for none); `definition` the item's, weapon's or
+  /// expression's record hash as "0x%08x" ("" for none); `spell` the will's type 0..7 (0 Lightning ..
+  /// 7 Dead Rising), -1 for none. Trailing, so a mod built against the old struct reads the same.
+  const char* subject_kind;
+  const char* definition;
+  int32_t spell;
 };
 
 /// A message box a mod raised (refii_mod_message_box, Refii.message_box, RefiiHost.message_box) was
@@ -1414,7 +1475,20 @@ struct LookAtButtonEvent : Event {
 /// r5 the target; r6 the cast's serial -> +0x18 `stw r25,0x18(r31)` 0x827588f4; r8 the level ->
 /// +0x14; the call site `sub_828B20D0` 0x828b23c8..0x828b2438 reads them from the spell's +0x40
 /// and +0x44), after it. `x, y, z` is the vortex entity's position then. Online the cast runs on
-/// both machines (refii_mod_event_replica tells the copy). Read-only.
+/// both machines (refii_mod_event_replica tells the copy). `lifts` is writable.
+///
+/// WHETHER THE VORTEX LIFTS CREATURES. Every half second its update asks `sub_8275EB10(entity,
+/// level, &kind, ...)` (rex_VortexComponent_Classify; TU1 0x8275aff4, disc `sub_827364F0`
+/// 0x827329d4) how it takes each creature in reach: 1 lift, 2 one it cannot lift — the function's
+/// own `li r10,2; stw r10,0(r22)` for a hero (0x8275ec00..08) and `li r11,2; stw r11,0(r22)` for a
+/// creature whose CECCreature (component 20) +0x3C lacks 0x40 (0x8275ed38..50). The update then
+/// shudders a 2 (`lwz r11,var_18C; cmpwi cr6,r11,2; bne` 0x8275b004..0c: one hit per cast per
+/// creature, the cast's serial kept in the creature's CECVortexShudderHit ring, `sub_825FA078`
+/// 0x8275b36c or `sub_825FA488` 0x8275b29c, each carrying `lwz r14,0x18(r22)` as the hit's serial)
+/// and queues anything else for the capture (`bl sub_82B49750` 0x8275b374 -> the held test
+/// 0x8275b914, the append 0x8275b964, rex_VortexComponent_Capture 0x8275b9cc). `lifts` false
+/// answers 2 for every creature (an entity with component 20) the function answered 1 while this
+/// vortex's update runs, so the vortex lifts none and shudders each once; a prop it lifts as before.
 struct VortexStartedEvent : Event {
   static constexpr int32_t kKind = REFII_EVENT_VORTEX_STARTED;
   /// The live component: refii_mod_spell_parts(serial) finds it again while it lives (native).
@@ -1429,6 +1503,17 @@ struct VortexStartedEvent : Event {
   float x;
   float y;
   float z;
+  /// The cast's tag (SpellLaunchEvent's), 0 none.
+  int32_t tag;
+  /// The damage of one of the vortex's hits on a creature it holds before that creature's own
+  /// factor: component +0x38, Init's f3 (`fmr f31,f3` 0x8275883c, `stfs f31,0x38(r31)`
+  /// 0x82758ebc), which the held hit multiplies by the creature's DamageFactor (`lfs f0,0x38(r25)`
+  /// 0x8275d92c, `fmuls f30,f13,f0` 0x8275d938) and the lifting shudder by +0x30 and the factors
+  /// (0x8275b304..20).
+  float damage;
+  /// Whether the vortex lifts creatures (writable; true as the game has it). False: it lifts none
+  /// and shudders each creature it reaches once per cast instead (above).
+  bool lifts;
 };
 
 /// The vortex is ending: its component's Shutdown, BEFORE it runs, with the twister's last point.
@@ -1479,6 +1564,8 @@ struct FireballImpactEvent : Event {
   float nz;
   bool detonated;
   int32_t hits;
+  /// The cast's tag (SpellLaunchEvent's), 0 none.
+  int32_t tag;
 };
 
 /// THE GAME'S PAUSE STATE flipped: a GameFlow mode command of the pause family became the mode in
@@ -1577,6 +1664,339 @@ struct CutsceneEvent : Event {
   /// Every statement holding for the player after this edge (for player 0, the full cutscene's).
   int32_t kinds;
   /// The player's hero (0 for player 0, or once the hero is gone).
+  uint32_t hero;
+};
+
+/// An entity's health CHANGED through the health component's own Modify — a hit's damage, a
+/// potion, a heal, refii_mod_modify_health. After the fact, read-only. Seam:
+/// rex_CECHealth_Modify (TU1 `sub_824CBC68`, disc `sub_8268BD90`): r3 the health component (36,
+/// owner at +4), f1 the delta, r5 the source entity (tested `lbz +0x90 & 0x40` at 0x824cbca0);
+/// +0x14 current takes the delta clamped to 0..+0x1C max (0x824cbeb8..0x824cbf08) and the body
+/// runs on only when +0x14 moved (`fcmpu` 0x824cbf14). Damage the game refuses moves nothing and
+/// raises nothing: an in-world source `sub_824CDB38` rejects (0x824cbcc8), or a protected victim
+/// (health +0x131, the hero-protection bytes 0x83496BF2 / BF3 / BFC, component 76's
+/// `sub_82582160`; 0x824cbce8..0x824cbeac). `delta` is the change that landed, after the clamp, so
+/// a heal at full health is not reported.
+struct HealthChangedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_HEALTH_CHANGED;
+  uint32_t entity;
+  int32_t player;
+  /// The change that landed: positive a heal, negative damage.
+  float delta;
+  /// Health after it, and the maximum.
+  float health;
+  float max;
+  /// The entity the change is attributed to (an attacker, a healer), 0 for none.
+  uint32_t source;
+};
+
+/// A spell's status is about to be put on an entity, through the installer each spell calls —
+/// `seconds` writable (> 0), `cancel` puts nothing on (and, for chaos, sends nothing to the co-op
+/// partner). `effect` is the StatusEffect numbering: 1 electrified, 2 chaos, 3 burning. Seams, the
+/// same registers on both builds (each prologue quoted at its address):
+///   - rex_SpellLightning_Electrify (TU1 `sub_82742FA8`, disc `sub_827180A8`): r3 source, r4
+///     victim, r5 serial, r6 level, f1 duration (`mr r29,r3; mr r28,r5; mr r27,r6; fmr f31,f1`
+///     0x82742fbc..d4, handed to `sub_8294CE50`, which stores serial +0x20, level +0x24, duration
+///     +0x28: 0x8294cef4 / 0x8294cef8 / 0x8294ce98). A victim already electrified is re-armed.
+///   - rex_SpellChaos_ApplyToVictim (TU1 `sub_8274A230`, disc `sub_8271F330`): r3 source, r4
+///     victim, r5 serial, f1 seconds, r7 is-creature, r8 replica (`mr r26,r5; mr r24,r7; mr r28,r8;
+///     fmr f29,f1` 0x8274a25c..6c). Only the creature branch (r7) installs the status; the network
+///     receive calls it with `li r8,1` (0x823991c0), and only a call with r8 = 0 sends it on
+///     (`cmpwi r9,1` on the session 0x8274a490), carrying the seconds — so the event fires for r7
+///     set and r8 clear, and a written `seconds` reaches the partner.
+///   - rex_SpellFireball_Ignite (TU1 `sub_82747260`, disc `sub_8271C360`): r3 victim, r4 source,
+///     r5 serial, r6 level, f3 burn time (`mr r27,r4; mr r26,r5; mr r25,r6; fmr f30,f3`
+///     0x82747284..98; f30 is the burn time handed on at 0x82747418).
+/// Before the installer; the installer may still refuse (an entity not in the world, the world's
+/// spell-count gate). A cast's status carries its serial; refii_mod_apply_status passes -1.
+struct StatusApplyingEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_STATUS_APPLYING;
+  uint32_t entity;
+  int32_t player;
+  int32_t effect;
+  /// The cast's serial (a hit's spell_serial), 0xFFFFFFFF for none.
+  uint32_t serial;
+  /// Who put it on (the caster), 0 for none.
+  uint32_t source;
+  /// The spell level the component records (0..4); chaos states none (-1).
+  int32_t level;
+  /// How long it lasts. Writable.
+  float seconds;
+  /// The tag of the cast whose serial it carries (SpellLaunchEvent's), 0 none.
+  int32_t tag;
+};
+
+/// A save package was written — or the write failed. Seams: rex_lhSaveManager_WritePackage (the
+/// full write: main save, hero save, chapter, morphs; TU1 `sub_824457E8`, disc `sub_824E8DE0`) and
+/// rex_lhSaveManager_WriteHeroPackage (the hero save alone; `sub_82445A28` / `sub_824E9020`), both
+/// r4 the package's name (an LHString*), r5 the PLAYER NUMBER whose hero they serialise (`lwz
+/// r5,0x24(r27)` 0x82445514), returning their result in r3 after the package is closed (`bl
+/// sub_82449BD8; mr r3,r31` 0x82445AA0). After the call, read-only.
+struct SaveWrittenEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_SAVE_WRITTEN;
+  int32_t player;
+  /// The package's name (its folder, "Hero000"), "" when the game named none.
+  const char* save;
+  /// The writer's own result: false for a failed write.
+  bool ok;
+};
+
+/// A player's target LOCK ENDED: the game dropped player mode 4 TARGET_LOCK. Seam: the mode drop,
+/// rex_CPlayer_ClearPlayerMode (TU1 `sub_82389CD0`, disc `sub_8238F4A0`): r3 the player's mode
+/// handle (comp33+0x14, what every caller loads: `lwz r3,0x14(r31)`), r4 the mode, handed to the
+/// player manager's remove (`lwz r4,0x24(r30); mr r5,r29; bl sub_823D8820` 0x82389d44..50). The
+/// lock's ends call it with `li r4,4` — the targeting update when the force byte was released
+/// (`+112 && !+20`, 0x82182290..0x821822a4), its range check when the target is beyond reach or
+/// gone (`sub_82844378` 0x82844690, 0x8284493c), `sub_82976588` (0x82976d68) — and `sub_823B93F8`
+/// and the network receive with the mode in a register. Raised after the call for r4 = 4 when the
+/// game's own HasPlayerMode (`sub_821E8B90(handle, 4)`, disc `sub_821E8870`) answered yes before it
+/// and no after: a real drop, never a drop of a mode not held. Read-only; both players are
+/// principals; on the co-op machine not deciding the hero the run is flagged a replica.
+struct LockLostEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_LOCK_LOST;
+  int32_t player;
+  uint32_t hero;
+  /// The targeting component's own GetTarget (slot 17) after the drop, 0 for none.
+  uint32_t target;
+};
+
+/// The keyboard's ATTACK MODE changed for a player: which pad button the attack key presses
+/// (REFII_ATTACK_MODE_MELEE X, _RANGED Y, _MAGIC B), set by the mode keys (Fable III's 1, 2, 3). Host
+/// state, no seam: Godot states the mode with the command `attack_mode P MODE` on each change (and
+/// once when the guest comes up) and the next guest tick raises this where it differs from the last
+/// statement. On the machine whose keyboard plays the player; refii_mod_attack_mode reads it.
+/// Read-only.
+struct AttackModeChangedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_ATTACK_MODE_CHANGED;
+  int32_t player;
+  /// REFII_ATTACK_MODE_*; 0 when no keyboard plays the player here any more.
+  int32_t mode;
+};
+
+/// One unit LEFT an inventory: the tail every removal body runs after it took the unit,
+/// `sub_824F3FC0` (rex_CECInventory_RefreshRecordRefs; disc `sub_8261DCC8`), r3 the inventory
+/// component (13; owner at +4), r4 the definition (item +4). Its callers: RemoveItem's body
+/// `sub_824F12A0` (one unit: `--item+12` or `sub_82764E70(item, instance)`, then `bl sub_824F3FC0`
+/// 0x824f13a0), the by-category loop `sub_824F1910` (0x824f1a20) and `sub_824F1650` (0x824f18ac),
+/// each once per unit. After the call, read-only: the unit is gone.
+struct ItemRemovedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_ITEM_REMOVED;
+  uint32_t entity;
+  int32_t player;
+  uint32_t inventory;
+  uint32_t definition;
+  /// Units this removal took: 1 (each removal body calls the tail once per unit).
+  int32_t count;
+  /// How many of `definition` the inventory still holds (refii_mod_item_count).
+  int32_t remaining;
+};
+
+/// A player's EXPRESSION WHEEL opened, closed, or moved its highlight. Seams: the open
+/// rex_lhGuiManager_OpenExpressionWheel (r3 the quick menu, r4 the player record; the wheel's
+/// player is `*(r4 + 36)`, handed to `sub_826A9A60` after `stb 1` to the menu's +35) — after it,
+/// when +35 went 0 -> 1; the close rex_lhGuiManager_CloseExpressionWheel (r3 the menu; +35 cleared,
+/// `sub_826A9E58`) — before it, while +35 is set, for the wheel's player (+24). The highlight is
+/// polled each guest tick while the wheel is up (refii_mod_selected_expression, the HUD's own
+/// reader): one event with `open` true each time it names a different expression. Read-only.
+struct ExpressionWheelEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_EXPRESSION_WHEEL;
+  int32_t player;
+  bool open;
+  /// The expression record highlighted (refii_mod_selected_expression), 0 for none or closed.
+  uint32_t highlighted;
+};
+
+/// A SPELL ENDED: the spell registry's update took it out of the registry. Seam: the registry's
+/// update, rex_CSpellRegistry_Update (TU1 `sub_822A7F50`, disc `sub_822A7D10`), which for each
+/// spell in its list (r31 = the spell, `lwz r31,8(r29)` 0x822a7fc4) runs its Update (vtable slot 2)
+/// unless the spell is already done (`lbz r11,0x48(r31)`, `bne` 0x822a7fcc..d4), and for a spell
+/// done before or after it (+0x48 again, 0x822a7fec) runs its Stop (slot 3, 0x822a8008..18) and
+/// erases it from the list (`bl sub_82848008` 0x822a8028) — the only place the game removes a live
+/// spell. The spell's own fields are read there, before its Stop (midasm hooks RefiiSpellRegistryUpdating
+/// at 0x822a7fd8 and RefiiSpellRegistryEnding at 0x822a8008, both r31; disc 0x822a7d98 /
+/// 0x822a7dc8): serial +0x44, type +0x28, level +0x40, caster the weak reference at +0x18 (the
+/// base spell's constructor, `sub_828E5020`). Raised after the update returns. `reason`:
+///   REFII_SPELL_END_FINISHED  the spell's own Update this pass marked it done (its time ran out —
+///                             the base Update's `+0x50 >= +0x54` then `stb 1,0x48(r3)`, 0x828e5438..44 — or its own logic)
+///   REFII_SPELL_END_STOPPED   it was marked done from outside before this pass (the registry's
+///                             stop-a-caster's-spells `sub_824B20D0`, a re-cast replacing it)
+/// A level unload that frees the registry raises nothing (level_unloading precedes it). Read-only;
+/// on the co-op machine not deciding the caster the game's copy is flagged a replica.
+#define REFII_SPELL_END_FINISHED 0
+#define REFII_SPELL_END_STOPPED 1
+struct SpellEndedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_SPELL_ENDED;
+  /// The registry's serial (spell_created's, a hit's spell_serial).
+  uint32_t serial;
+  /// The spell type (0 Lightning .. 7 Dead Rising).
+  int32_t type;
+  uint32_t caster;
+  int32_t caster_player;
+  /// The tag of the cast whose serial it carries (SpellLaunchEvent's), 0 none.
+  int32_t tag;
+  /// REFII_SPELL_END_*.
+  int32_t reason;
+  /// The spell's level (0..4).
+  int32_t level;
+};
+
+/// A hero's MAGIC CHARGE ENDED: the charge action the magic charge ability pushed (the quick charge,
+/// vtable TU1 0x820D2FB0 / disc 0x820CF820, or the full charge, 0x820D30A0 / 0x820CF910 — the only
+/// two the charge ability's Start builds, `sub_8284B900` 0x8298a39c / `sub_829CED30`) ended through
+/// the action's end, rex_CAction_End (TU1 `sub_822861A8`, disc `sub_82285D10`): r3 the action, run
+/// once per started action (`lbz r11,0x48(r28)` 0x822861b8 gates its OnEnd, `stb 1,0x49(r28)`
+/// 0x82286490 marks it ended). `released`: the charge ended inside the magic RELEASE ability's Start
+/// (rex_CAbilityActionMagicCast_Start, TU1 `sub_8298A870`, disc `sub_829B9E30`, request type 19, r4
+/// the entity), which builds the cast action and pushes it — the manager's push (vtable slot 16,
+/// `sub_829619A0` -> `sub_822A4888`) ends the charge before the cast starts. False for any other
+/// end: a hit's reaction, a roll, the charge refused. The cast that follows a release raises
+/// spell_launch / spell_launched as usual. Raised only on the machine that plays the hero (the other
+/// machine's clone ends through the network's own push). Read-only.
+struct SpellChargeEndedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_SPELL_CHARGE_ENDED;
+  int32_t player;
+  uint32_t caster;
+  /// The magic button was released into a cast (the release ability took the charge over).
+  bool released;
+};
+
+/// A STRIKE ENDED: the strike action rex_CAbilityActionMelee_CommitSwing committed (MeleeSwingEvent's
+/// `action`) ended through rex_CAction_End (r3 the action; once per started action, as
+/// SpellChargeEndedEvent states). `hits` counts the hit_landed deliveries whose attacker was the
+/// striker while that strike was its current action — the machine's own hits and, online, the
+/// copies relayed from the machine that decides hits (a copy arriving after the end is not counted).
+/// 0 is a whiff. Read-only; relayed like melee_swing from the machine that plays the striker.
+struct MeleeSwingEndedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_MELEE_SWING_ENDED;
+  uint32_t entity;
+  int32_t player;
+  /// The strike action (0 in a relayed copy).
+  uint32_t action;
+  /// The action's EScriptableAction, -1 unknown.
+  int32_t action_type;
+  int32_t hits;
+};
+
+/// MOVEMENT MAY INTERRUPT an entity's current action: the game's own test answered yes —
+/// rex_CAction_MovementInterruptible (TU1 `sub_822BDEA0`, disc `sub_822BDBC0`; r3 the action
+/// handle, its owner's weak reference first): `+0x4C` clear and `+0x4E` set on the action
+/// (`lbz +76` / `lbz +78`), +0x4E being what an ALLOW_MOVEMENT_INTERRUPT anim event sets (a cast's
+/// held until its PERFORM: `stb r26,0x4E(r29)` 0x82737e24 in `sub_82737C38`). The player's control
+/// update asks it twice a frame (`sub_826BB078`): while it answers no, a moved stick is withheld
+/// from the body (0x826bb690); when it answers yes and the stick moved, the action is stopped
+/// through the manager's slot 18 (0x826bb710..30). `cancel` answers no: the action holds — the
+/// body stays in it and the stick does not cancel it — for as long as a handler cancels. Asked
+/// every frame of the window, so a handler is cheap or keyed.
+struct ActionMoveInterruptEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_ACTION_MOVE_INTERRUPT;
+  uint32_t entity;
+  int32_t player;
+  /// The action (sub_82298738 resolves the handle, as the test itself does).
+  uint32_t action;
+  /// The action's EScriptableAction, -1 unknown.
+  int32_t action_type;
+};
+
+/// The CAMERA the game has active for a player CHANGED: the camera manager's own pick. Every
+/// player's manager binds the one `CameraManager` table and runs `CameraManager:FrameUpdate(player)`
+/// (scripts/camera/cameramanager.lua), which walks `CameraSetList` {debug, override, multiplayer,
+/// normal}, takes the first valid set's best camera and, when it differs from `CurrentCamera`,
+/// calls `self.ActivateCamera(camera)` — `rex_lhCameraManager_ActivateCamera` (TU1 `sub_82481760`,
+/// disc `sub_82422FA0`), whose argument is the camera's Lua table (a LuaObject: it builds the
+/// wrapper `sub_825AD080`, which calls the table's own `Create`) and names no mode — then stores
+/// `self.CurrentCamera = camera`. The mode is the key the game's override set lists that camera
+/// under (`CameraModes = {[ECameraMode.CAMERA_FIRST_PERSON] = FirstPersonCamera, ...}`), so it is
+/// stated from the game VM: the core camera chunk (Godot/src/Titles/Fable2/host/CoopHeroLua.cs),
+/// after each `CameraManager:FrameUpdate(hero)`, reads the hero's `CurrentCamera` and states its
+/// mode when it differs from the last. On the machine that runs that player's camera (each its own
+/// online; both on one machine in local co-op). Read-only.
+struct CameraChangedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_CAMERA_CHANGED;
+  /// 1 or 2.
+  int32_t player;
+  /// The ECameraMode now active (REFII_CAMERA_*): 2 GAME (the third-person SACCamera), 8 FIRST_PERSON
+  /// ...; -1 for a camera the override set does not list.
+  int32_t mode;
+  /// The mode before, -1 for none stated yet.
+  int32_t previous;
+  /// The player's hero.
+  uint32_t hero;
+};
+
+/// A vortex CAUGHT an entity (`caught` true) or LET ONE GO (false), whether or not it ever hit it.
+/// The capture is the update's one call for every entity it takes, creatures and props alike: its
+/// candidates are the creature query's lifts and the prop query's (`bl sub_82760500` 0x8275b7f0),
+/// each capped by its kind (`bctrl` 0x8275b8a4, `cmpwi cr6,r29,2` creature against `lwz
+/// r11,0x24(r22)` 0x8275b8ac..c4, `cmpwi cr6,r29,4` prop against the world's cap 0x8275b8b4).
+/// Seams, both after the call:
+///   - capture: rex_VortexComponent_Capture (TU1 `sub_8275C578` / disc `sub_82733F58`; r3 the
+///     component, r4 the victim, r5 0). Its one caller is the vortex's own update (`sub_8275ABE8`
+///     0x8275b9cc, disc `sub_827325C8`), after `sub_82759298` found the victim not yet held
+///     (0x8275b914) and `sub_8236AC38(component+0x1B0, weak ref)` appended it to the held list
+///     (0x8275b964). Capture adds CECInVortex (`addi r4,r11,"CECInVortex"; mr r3,r27; bl
+///     sub_8238CD68` 0x8275c6b8..c8, which is rex_lhEntity_AddComponent by name, 0x8238cdac) and
+///     hands it the caster (`addi r3,r23,0x160; bl sub_82173E38` 0x8275c92c, stored at +0x14
+///     0x8275c958), so the StatusEffect kind 4 it raises carries this cast's serial and the caster
+///     as `source`.
+///   - release: rex_VortexComponent_Release (TU1 `sub_8275CB28` / disc `sub_82734508`; r3 the
+///     component, r4 the victim, 0 for a reference already dead). It removes CECInVortex
+///     (0x8275ccb4) and its three callers are every way out: the update dropping a victim before
+///     erasing it from the list (0x8275be18), the component's own per-victim release (`sub_8275CA30`
+///     0x8275ca78, vtable 0x82125590) and Shutdown releasing every held victim (0x8275904c).
+/// `serial` is the component's +0x18 (Init `stw r25,0x18(r31)` 0x827588f4), the caster its weak
+/// reference at +0x160/+0x164. Online the cast runs on both machines (refii_mod_event_replica tells
+/// the copy, as for VortexStarted). Read-only.
+struct VortexCaughtEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_VORTEX_CAUGHT;
+  /// The cast's number (the component's +0x18), as its vortex_started and hits carry it.
+  uint32_t serial;
+  /// The cast's tag (SpellLaunchEvent's), 0 none.
+  int32_t tag;
+  /// The live CECVortex component (native) and its entity.
+  uint32_t vortex;
+  uint32_t entity;
+  /// The creature caught or let go.
+  uint32_t victim;
+  /// The victim's player, 1 or 2 for a hero, else 0.
+  int32_t player;
+  uint32_t caster;
+  int32_t caster_player;
+  /// True on capture, false on release.
+  bool caught;
+};
+
+/// The LOOK IN FORCE for a player's hero CHANGED (Murgo's Mirror, refii_mod_appearance): manual
+/// came on or off, or a manual input moved. Each player's look is the player store's
+/// `character_morphs.*` set (the Mirror and refii_mod_set_appearance write it; the machine that
+/// plays the hero owns it, so it is the same on both co-op machines); Godot turns it into the
+/// weights of the weight function `sub_822DA028` the morph hook answers for that hero, and this is
+/// raised where the hook takes the new look (character_morph_hooks.cpp), on every machine. Not
+/// raised for a look that stays the same, nor for automatic stats moving (that is the game's own
+/// appearance, unchanged by refii). Read-only.
+struct AppearanceChangedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_APPEARANCE_CHANGED;
+  /// 1 or 2.
+  int32_t player;
+  /// True when the guest's own stats drive the look again; false when the stated manual inputs do.
+  bool automatic;
+  /// The player's hero, 0 while it has none.
+  uint32_t hero;
+};
+
+/// A MOD MORPH'S WEIGHT CHANGED for a player (refii_mod_morph_weight): the player store's
+/// `morph.<id>` moved — the Mirror's mod sliders, or a mod's morph_set on either machine — or the
+/// registry the enabled mods declare changed what it answers. Raised where the morph hook takes the
+/// new weight (character_morph_hooks.cpp's tick), on every machine; the hook then redraws that hero.
+/// Read-only.
+struct MorphChangedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_MORPH_CHANGED;
+  /// 1 or 2.
+  int32_t player;
+  /// The morph's type, refii_mod_morph_id("<mod>.<name>").
+  uint32_t morph;
+  /// The weight the hook answers now (clamped, or the default when none is stored).
+  float weight;
+  /// The player's hero, 0 while it has none.
   uint32_t hero;
 };
 

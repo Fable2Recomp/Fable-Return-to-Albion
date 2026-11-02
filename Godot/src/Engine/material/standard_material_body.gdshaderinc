@@ -384,7 +384,12 @@ void fragment() {
     if (alb.a <= 0.001) {
         discard;
     }
-    ALPHA = alb.a;
+    // ALPHA ENTERS AS THE INSTANCE'S FADE (GeometryInstance3D.Transparency: an entity's stated
+    // opacity, Engine_EntityAppearance; exactly 1.0 for a node at rest), so it is multiplied, not
+    // replaced. The title's blended pass takes the opacity in c26 (`sub_822251D8` 0x82225374..
+    // 0x822253BC splats material+0x44 x opacity, stored at 0x82225BA0) and its pixel shaders end
+    // `oC0.w = c26.w * alpha`; written over, a faded hero's hair cards stayed fully drawn.
+    ALPHA *= alb.a;
 #endif
 
     // TWO-SIDED GEOMETRY NEEDS A TWO-SIDED NORMAL, and this shader is `cull_disabled`.

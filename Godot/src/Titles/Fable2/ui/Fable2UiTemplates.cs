@@ -18,7 +18,7 @@ public static class Fable2UiTemplates
 	public static void Apply(Engine_UiTemplateSet set)
 	{
 		RegisterPopulationTables(set.Menus);
-		set.ApplyText(Engine_UiGameTemplates.Text, owner: string.Empty, "the game's templates");
+		set.ApplyText(Engine_UiGameTemplates.Text, owner: string.Empty, "the game's templates", shipped: true);
 	}
 
 	/// <summary>
@@ -391,8 +391,8 @@ public static class Fable2UiTemplates
 
 		// CONTROLS: the game's own Controls page folded with the game's rumble switch
 		// (Engine_UiVibrationOptions — the guest's byte, which shipped with no page behind it)
-		// and one row per enabled mod that declares rebindable input actions (input.json), each
-		// opening that mod's Controls page (ModInputUi) on the host page furniture. The guest's
+		// and the one host Controls page (Engine_UiControlsPage): glyph style and pack, the
+		// controller remap, every keyboard and mouse binding and every mod's actions. The guest's
 		// row keeps its name and event, so the fold's first child is the page it always was.
 		if (options is not null &&
 			options.Entries.FindIndex(entry => entry.Name == "Controls") is >= 0 and var controlsIndex)
@@ -417,8 +417,16 @@ public static class Fable2UiTemplates
 						Counted = false,
 						Command = Engine_UiVibrationOptions.OpenCommand,
 					},
+					new Engine_UiMenuEntry
+					{
+						Name = Engine_UiControlsPage.PageName,
+						Tag = Engine_UiControlsPage.PageTitle,
+						Icon = controls.Icon,
+						HostOnly = true,
+						Counted = false,
+						Command = Engine_UiControlsPage.OpenCommand,
+					},
 				},
-				Source = Refii.Mods.ModInputUi.SourceName,
 			};
 		}
 

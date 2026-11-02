@@ -19,7 +19,12 @@ A notice says what was given. Nothing is saved by the menu itself; the game's ne
 ## How it works
 
 `ui/templates.json` lays out the pages; each row runs `Mod:lua:CheatMenu.<name>:<arg>` in
-`mod/init.lua`, which goes through the game's own setters: `Refii.give_experience`,
-`Refii.give_gold`, `Stats.ModifyRenown` / `ModifyMorality` / `ModifyPurity`,
-`Inventory.AddItemOfType`, `Refii.set_health` and `Refii.set_time_of_day`. The Items page is a
-row list the Lua states (`Refii.set_menu_rows`) when the Cheat Menu opens.
+`mod/init.lua` for the hero of the player whose menu it is, which goes through the game's own
+setters: `Refii.give_experience`, `Refii.give_gold`, `Refii.modify_renown` / `modify_morality` /
+`modify_purity` (the game's `Stats.Modify*`, so the renown, morality and purity events fire),
+`Refii.add_item` (the inventory's own add, once per item), `Refii.set_health` and
+`Refii.set_time_of_day`. The Items page is a row list the Lua states (`Refii.set_menu_rows`) when
+the Cheat Menu opens: each row whose record the database has (`Refii.record_exists`), labelled
+`{NameTag} xN` from the record (`Refii.record_string`), which the menu draws through the game's
+string book. Morality and purity change only on the machine that decides the session (the host
+online, or the one machine alone), as the game's own setters do.

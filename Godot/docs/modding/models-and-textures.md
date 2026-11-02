@@ -8,6 +8,7 @@ same path, converted in memory where it needs to be. Nothing is converted onto d
 - [How art reaches the game](#how-art-reaches-the-game)
 - [Textures: .tex.png](#textures-texpng)
 - [Models: .mdl.glb](#models-mdlglb)
+  - [New morph targets](#new-morph-targets)
   - [What is carried, what is refused](#what-is-carried-what-is-refused)
   - [In the Studio](#in-the-studio)
 - [Attachment sockets: .mdl.gmd](#attachment-sockets-mdlgmd)
@@ -58,6 +59,34 @@ Refused rather than guessed, by name:
 
 A replacement's sections carry no hide region, so a garment's "hide these clusters" does not apply
 to a replaced body.
+
+### New morph targets
+
+A model at a path the game does NOT ship is refused — unless it is a MORPH TARGET: the shape a
+character part blends toward (a MorphTargets pair's `TargetModel`, usually at a mod morph's weight;
+see [Mod morphs](gameplay.md#mod-morphs)). Declare each one, with the part it morphs as its
+template, in `morph_targets.json` at the mod's root:
+
+```json
+[
+    { "model": "art/mymod/heromale_bulk.mdl", "template": "art/characters/heros/unclothed male/ch_heromale_morph_thin.mdl" }
+]
+```
+
+and ship `art/mymod/heromale_bulk.mdl.glb`. It is converted against the template like a
+replacement and mounted at its own path, where the game finds it by its hash
+(`@model:art/mymod/heromale_bulk.mdl` in a row) and Godot draws it.
+
+- **A target is its template with the vertices moved**: the same mesh parts, each with the same
+  vertices in the same order and the same triangles. Export the template from the Studio, move
+  vertices (no adding, deleting, splitting or re-ordering), and import. The game blends a part's
+  models vertex by vertex, drops the WHOLE morph of the part — the shipped fat, strong and age
+  shapes too — when one listed model will not load or its mesh count differs, and leaves a mesh
+  unmorphed whose vertex count differs; so a target whose mesh parts, vertex counts or face
+  counts differ from its template's is refused here, by name. Vertex ORDER cannot be checked from
+  counts: a reordered target loads and blends into a tangle.
+- Only the position and normal are blended (the tangent comes from the heaviest model); UVs,
+  materials, bones and skin weights are the template's.
 
 ### In the Studio
 

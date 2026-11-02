@@ -107,7 +107,9 @@ public sealed class Fable2Title : Engine_TitleGame
 
 	public override bool HeroMorphPreviewHeld => GameMorphMirror.OwnsInput;
 
-	public override float HeroManualTan => GameCharacterMorphs.ManualTan;
+	public override int HeroMorphPreviewPlayer => GameCharacterMorphs.PreviewPlayer;
+
+	public override float ManualTan(int player) => GameCharacterMorphs.ManualTanOf(player);
 
 	public override bool ObserveEntity(Refii.Host.HostBridge.GuestEntity entity) =>
 		GameGoldenCock.ObserveGuest(entity) || GameMorphMirror.ObserveGuest(entity);
@@ -117,7 +119,11 @@ public sealed class Fable2Title : Engine_TitleGame
 
 	public override bool WheelClaimsFaceButtons => Engine_UiSpellAssign.Secondary is not null;
 
-	public override void PumpMods(bool guestUp) => Engine_UiModAbilities.Pump(guestUp);
+	public override void PumpMods(bool guestUp)
+	{
+		Engine_UiModAbilities.Pump(guestUp);
+		Engine_UiSpellPicks.Pump(guestUp);
+	}
 
 	public override void OnAssetsMounted(Refii.Bnk.BnkFileSystem mounted)
 	{
@@ -146,6 +152,10 @@ public sealed class Fable2Title : Engine_TitleGame
 		if (Engine_MorphMirrorPlacements.Capture(levelRoot))
 			Godot.GD.Print("[morph-mirror] Saved the marked mirror and its set for the installed game.");
 	}
+
+	private static readonly Fable2Rig Rigs = new();
+
+	public override Refii.Animations.Engine_TitleRig Rig => Rigs;
 
 	private static readonly Fable2Props Buildings = new();
 
@@ -233,6 +243,33 @@ public sealed class Fable2Title : Engine_TitleGame
 	public override int OptionsCursorRow => Engine_UiOptionsPending.Row;
 
 	public override int OptionsCursorIndex(int row) => Engine_UiOptionsPending.IndexOf(row);
+
+	public override void SetOptionsCursorIndex(int row, int index) => Engine_UiOptionsPending.SetIndex(row, index);
+
+	/// <summary>
+	/// The shipped scheme's buttons (<c>GameControlsCombatOnRelease</c> over <c>GameControlsBase</c>,
+	/// as GameInput.KeyboardMouse.cs's table states them): each does several things by context.
+	/// </summary>
+	public override string? PadButtonRole(Refii.Core.PadInput button) => button switch
+	{
+		Refii.Core.PadInput.A => "Interact, sprint, accept",
+		Refii.Core.PadInput.B => "Magic, back",
+		Refii.Core.PadInput.X => "Melee, block, flourish",
+		Refii.Core.PadInput.Y => "Ranged, aim",
+		Refii.Core.PadInput.LB => "First person, tab left",
+		Refii.Core.PadInput.RB => "Tab right",
+		Refii.Core.PadInput.LT => "Target lock",
+		Refii.Core.PadInput.RT => "Spells",
+		Refii.Core.PadInput.L3 => "Photo mode (with R3)",
+		Refii.Core.PadInput.R3 => "Camera mode",
+		Refii.Core.PadInput.Start => "Pause",
+		Refii.Core.PadInput.Back => "Expressions",
+		Refii.Core.PadInput.DpadUp => "Item up",
+		Refii.Core.PadInput.DpadDown => "Item down",
+		Refii.Core.PadInput.DpadLeft => "Item left",
+		Refii.Core.PadInput.DpadRight => "Item right",
+		_ => null,
+	};
 
 	public override void EnterHostOptions(Refii.Ui.Engine_UiHostOptionsPage page) => Engine_UiOptionsPending.EnterHost(page);
 

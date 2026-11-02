@@ -18,7 +18,7 @@ namespace Refii.Mods;
 /// <see cref="ModApiEvent.LuaName"/>) with one Dictionary argument of the event's fields, and
 /// as <c>mod_event(name, e)</c> for every kind. The host asks the bus only for the kinds some
 /// script is connected to: the mask is recomputed from the live connections each frame, and
-/// is zero when no mod script is loaded, so an idle host posts nothing.
+/// holds only the engine's own kinds when no mod script is loaded.
 /// </summary>
 /// <remarks>
 /// Member names are snake_case on purpose: Godot exposes C# members to GDScript under their
@@ -146,6 +146,20 @@ public partial class RefiiHost : Node
 	[Signal] public delegate void pausedEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void start_gameEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void cutsceneEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void health_changedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void status_applyingEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void lock_lostEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void attack_mode_changedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void item_removedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void expression_wheelEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void spell_endedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void spell_charge_endedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void melee_swing_endedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void action_move_interruptEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void camera_changedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void vortex_caughtEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void appearance_changedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void morph_changedEventHandler(Godot.Collections.Dictionary e);
 
 	/// <summary>A <see cref="message_box"/>'s answer: the id it returned, and the button's index (0 is A, 1 is B; -1 when another box replaced it).</summary>
 	[Signal] public delegate void message_box_answeredEventHandler(long id, long button);
@@ -157,11 +171,35 @@ public partial class RefiiHost : Node
 	[Signal] public delegate void menu_box_answeredEventHandler(long id, long option);
 
 	/// <summary>
-	/// A save the guest has written, whole: <c>save</c> (its folder name, <c>Hero000</c>) and
-	/// <c>player</c> (1, or 2 for player two's own package). Godot only — the moment a
-	/// <see cref="save_snapshot"/> of the new save can be taken.
+	/// The save_written event (kind 103): a save package written, or a failed write — <c>save</c>
+	/// (its folder name, <c>Hero000</c>), <c>player</c> (1, or 2 for player two's own package) and
+	/// <c>ok</c>. Raised after the host stamped the package's sidecar (the guest posts that first),
+	/// so a <see cref="save_snapshot"/> of the new save can be taken from it.
 	/// </summary>
 	[Signal] public delegate void save_writtenEventHandler(Godot.Collections.Dictionary e);
+
+	/// <summary>
+	/// A mod's SIGNAL on this machine (<c>Refii.signal(name, payload)</c>, <c>refii_mod_signal</c>): the
+	/// mod (the scoped name's part before its first dot), the rest of the name, and the payload text
+	/// exactly as sent (at most 1024 bytes). Also raised through <c>mod_event("mod_signal", e)</c> with
+	/// <c>mod</c>, <c>name</c>, <c>payload</c>. Godot only; the next frame after the call.
+	/// </summary>
+	[Signal] public delegate void mod_signalEventHandler(string mod, string name, string payload);
+
+	/// <summary>
+	/// A published value CHANGED: a number (<c>publish</c> on any surface, a hook's
+	/// refii::mods::Publish — the runtime posts each change while a script is loaded) or a text
+	/// (<c>publish_text</c>). <paramref name="value"/> is a float or a String. Fires only on a change,
+	/// so a script needs no poll.
+	/// </summary>
+	[Signal] public delegate void value_changedEventHandler(string key, Variant value);
+
+	/// <summary>
+	/// A mod setting changed live (<see cref="set_setting"/>, the Options › Mods page, the debug
+	/// channel's <c>mod-setting</c>): its key and new value, once the value is in force. Godot only;
+	/// Lua hears <c>setting_changed</c>, native code reads the value at the call.
+	/// </summary>
+	[Signal] public delegate void setting_changedEventHandler(string key, float value);
 
 	/// <summary>The per-event signal names, in kind order: the static twin of the catalog's Lua names.</summary>
 	public static readonly string[] SignalNames =
@@ -188,6 +226,14 @@ public partial class RefiiHost : Node
 		"look_at_button", "vortex_started", "vortex_ended", "fireball_impact",
 		"paused", "start_game",
 		"cutscene",
+		"health_changed", "status_applying", "save_written", "lock_lost",
+		"attack_mode_changed",
+		"item_removed", "expression_wheel",
+		"spell_ended", "spell_charge_ended", "melee_swing_ended", "action_move_interrupt",
+		"camera_changed",
+		"vortex_caught",
+		"appearance_changed",
+		"morph_changed",
 	};
 
 	public const string SingletonName = "RefiiHost";
@@ -199,11 +245,60 @@ public partial class RefiiHost : Node
 	/// <summary>The cutscene event's kind: the host hears it while any script is loaded, for <see cref="in_cutscene"/>.</summary>
 	private const int CutsceneKind = 100;
 
+	/// <summary>The camera_changed event's kind: the host hears it while any script is loaded, for <see cref="camera_mode"/>.</summary>
+	private const int CameraChangedKind = 112;
+
+	/// <summary>The kinds <see cref="in_play"/> is composed from: paused, level_unloading, level_loaded.</summary>
+	private const int PausedKind = 98;
+	private const int LevelUnloadingKind = 25;
+
+	/// <summary>The tick's kind: its seconds drive <see cref="now"/> and the <see cref="after"/> timers.</summary>
+	private const int TickKind = 0;
+
+	/// <summary>The entity_removed kind: it forgets that handle's <see cref="entity_value"/>s.</summary>
+	private const int EntityRemovedKind = 40;
+
 	/// <summary>
 	/// The kinds the host keeps in the mask while any script is loaded: hero_ready and hero_gone feed
-	/// <see cref="hero"/>, cutscene feeds <see cref="in_cutscene"/>.
+	/// <see cref="hero"/>, cutscene feeds <see cref="in_cutscene"/>, paused and the level edges feed
+	/// <see cref="in_play"/> and <see cref="now"/>, the tick feeds <see cref="now"/>.
 	/// </summary>
-	private static readonly ModEventMask HeroKinds = new ModEventMask().With(1).With(2).With(CutsceneKind);
+	private static readonly ModEventMask HeroKinds = new ModEventMask().With(TickKind).With(1).With(2).With(CutsceneKind)
+		.With(PausedKind).With(LevelUnloadingKind).With(LevelLoadedKind).With(CameraChangedKind);
+
+	/// <summary>The game clock and the <see cref="after"/> timers, on the tick and paused statements Lua's runtime counts.</summary>
+	private readonly ModClock<Callable> _clock = new();
+
+	/// <summary>The <see cref="entity_value"/> store, forgotten per handle at entity_removed.</summary>
+	private readonly ModEntityStore<Variant> _entityStore = new();
+
+	/// <summary>The callables of <see cref="ask"/>'s queries in flight, by id.</summary>
+	private readonly Dictionary<long, Callable> _askCallbacks = new();
+
+	/// <summary>The answers <see cref="call_lua"/> waits for, by id.</summary>
+	private readonly Dictionary<long, Action<ModLuaLane.Reply>> _luaCalls = new();
+	private long _nextLuaCall;
+
+	/// <summary>A Lua handler subscribed to value_changed: published numbers are stated to Lua too.</summary>
+	private bool _luaWatchesValues;
+
+	/// <summary>Published values to state to Lua at the end of the frame (texts always, numbers while watched).</summary>
+	private readonly List<(string Key, object Value, bool Text)> _luaValues = new();
+
+	/// <summary>The pools a Godot script declared, restated to a new VM: (player, key) to the chunk and the max key.</summary>
+	private readonly Dictionary<(int Player, string Key), (string Chunk, string MaxKey)> _pools = new();
+
+	/// <summary>The guest's last coop_state answer for <see cref="split_screen"/>.</summary>
+	private bool _splitScreen;
+
+	/// <summary>The camera mode per player as the bus last stated it (camera_changed, seeded by the <c>camera_mode</c> queries a new host sends); absent is -1.</summary>
+	private readonly Dictionary<long, int> _cameraMode = new();
+
+	/// <summary>Ids of the two <c>camera_mode</c> queries a new host sends, answered into <see cref="_cameraMode"/>.</summary>
+	private readonly Dictionary<long, long> _cameraSeedQueries = new();
+
+	/// <summary>The pause modes and the level load as the bus last stated them, for <see cref="in_play"/>.</summary>
+	private readonly ModPlayState _play = new();
 
 	/// <summary>The cutscene statements as the bus last stated them (the cutscene event, seeded by the <c>in_cutscene</c> queries a new host sends).</summary>
 	private readonly ModCutscene _cutscene = new();
@@ -213,6 +308,9 @@ public partial class RefiiHost : Node
 
 	/// <summary>The kind a query's reply arrives under (REFII_MOD_HOST_REPLY_KIND); never an event.</summary>
 	public const int ReplyKind = 1000;
+
+	/// <summary>The kind a published number's change arrives under (REFII_MOD_HOST_VALUE_KIND, core/payload_bridge.h).</summary>
+	public const int ValueKind = 1010;
 
 	/// <summary>A command line's limit: the tick drains into <c>char line[4096]</c> (mod_commands.cpp).</summary>
 	public const int CommandLimit = 4096;
@@ -288,6 +386,13 @@ public partial class RefiiHost : Node
 			{
 				_cutsceneSeedQueries[cutscene] = player;
 			}
+
+			// The camera the player already had when this host was made: camera_changed fires on a change only.
+			long camera = query("camera_mode", new Godot.Collections.Array { player });
+			if (camera != 0)
+			{
+				_cameraSeedQueries[camera] = player;
+			}
 		}
 	}
 
@@ -303,13 +408,18 @@ public partial class RefiiHost : Node
 
 	private static bool _verdictInstalled;
 
+	/// <summary>True on the guest thread while its verdict handlers run: where <see cref="read"/> answers.</summary>
+	[ThreadStatic]
+	private static bool _inVerdict;
+
 	/// <summary>
 	/// Registers a VERDICT handler for an event (its Lua name, e.g. "hit"): <c>handler(e)</c> runs
 	/// on the GAME'S thread inside the seam, before the game acts, with the same dictionary the
 	/// signal carries. Change a writable field in <c>e</c> (<c>e.damage *= 2</c>, <c>e.knockdown =
 	/// true</c>) or set <c>e.cancel = true</c> / return true to refuse, where the event allows it.
-	/// The handler must only compute: no nodes, no scene tree (use call_deferred for that), and it
-	/// should be quick — the game waits for it. Returns false for an unknown event.
+	/// The handler must only compute and read (<see cref="read"/> answers the game's state at once
+	/// there): no nodes, no scene tree (use call_deferred for that), and it should be quick — the game
+	/// waits for it. Returns false for an unknown event.
 	/// </summary>
 	public bool on_verdict(string eventName, Callable handler)
 	{
@@ -436,18 +546,26 @@ public partial class RefiiHost : Node
 			}
 
 			Godot.Collections.Dictionary e = ParseFields(text);
-			foreach (Callable handler in handlers)
+			_inVerdict = true;
+			try
 			{
-				if (handler.Target is { } target && !GodotObject.IsInstanceValid(target))
+				foreach (Callable handler in handlers)
 				{
-					continue;
-				}
+					if (handler.Target is { } target && !GodotObject.IsInstanceValid(target))
+					{
+						continue;
+					}
 
-				Variant result = handler.Call(e);
-				if (result.VariantType == Variant.Type.Bool && result.AsBool())
-				{
-					cancel = true;
+					Variant result = handler.Call(e);
+					if (result.VariantType == Variant.Type.Bool && result.AsBool())
+					{
+						cancel = true;
+					}
 				}
+			}
+			finally
+			{
+				_inVerdict = false;
 			}
 			// Godot reads e through each handler; see Refii.Core.Engine_ArrayMeshes.
 			GC.KeepAlive(e);
@@ -523,6 +641,11 @@ public partial class RefiiHost : Node
 	public override void _ExitTree()
 	{
 		ClearVerdicts();
+		ModHostQueries.Clear();
+		_clock.Clear();
+		_entityStore.Clear();
+		_askCallbacks.Clear();
+		_luaCalls.Clear();
 		Refii.Fx.Engine_FxPlayer.StopAll();
 		Refii.Lighting.Engine_ModLights.Clear();
 		if (_maskSent)
@@ -550,7 +673,8 @@ public partial class RefiiHost : Node
 		}
 
 		// One question a frame while a script is loaded: the co-op state the sync getters answer.
-		if (!mask.IsZero && (_coopStateQuery == 0 || ++_coopStateWait > CoopStateRetryFrames))
+		bool scripts = ScriptsRoot is not null && IsInstanceValid(ScriptsRoot) && ScriptsRoot.GetChildCount() != 0;
+		if (scripts && (_coopStateQuery == 0 || ++_coopStateWait > CoopStateRetryFrames))
 		{
 			_coopStateQuery = query("coop_state", new Godot.Collections.Array());
 			_coopStateWait = 0;
@@ -572,7 +696,7 @@ public partial class RefiiHost : Node
 					}
 				}
 
-				EmitSignal(SignalName.save_written, written);
+				// The signal is the save_written event's, which the guest posts after this.
 				continue;
 			}
 
@@ -605,7 +729,32 @@ public partial class RefiiHost : Node
 			// A menu or a message box a native or Lua mod asked for: Godot's UI, never an event.
 			if (kind == Refii.Ui.Engine_UiModRequest.Kind)
 			{
-				Refii.Ui.Engine_UiModBoxes.Handle(fields);
+				// A signal, a published text or the Lua lane rides the same kind: Godot's, never UI.
+				List<KeyValuePair<string, object>> request = ParseFieldsPlain(fields);
+				if (ModSignals.IsOurs(request))
+				{
+					HandleSignal(request, fields);
+				}
+				else
+				{
+					Refii.Ui.Engine_UiModBoxes.Handle(fields);
+				}
+
+				continue;
+			}
+
+			// A published number changed (the runtime's post): value_changed, never an event.
+			if (kind == ValueKind)
+			{
+				if (ModSignals.TryValueChange(ParseFieldsPlain(fields), out string changedKey, out double changedValue))
+				{
+					EmitSignal(SignalName.value_changed, changedKey, changedValue);
+					if (_luaWatchesValues && double.IsFinite(changedValue))
+					{
+						_luaValues.Add((changedKey, changedValue, false));
+					}
+				}
+
 				continue;
 			}
 
@@ -626,6 +775,12 @@ public partial class RefiiHost : Node
 			// A query's answer: the id goes back as the signal's first argument, never to mod_event.
 			if (kind == ReplyKind)
 			{
+				// The host's own questions (ModHostQueries: a host list's) are answered there, never to a script.
+				if (ModHostQueries.Take(ParseFieldsPlain(fields)))
+				{
+					continue;
+				}
+
 				Godot.Collections.Dictionary result = ParseFields(fields);
 				long id = result.TryGetValue("id", out Variant idValue) ? idValue.AsInt64() : 0;
 				result.Remove("id");
@@ -635,6 +790,29 @@ public partial class RefiiHost : Node
 					_localHero = result.TryGetValue("local_hero", out Variant local) ? local.AsInt64() : 0;
 					_coopMode = result.TryGetValue("coop_mode", out Variant mode) ? mode.AsInt32() : 0;
 					_menuPlayer = result.TryGetValue("menu_player", out Variant owner) ? owner.AsInt32() : 1;
+					_splitScreen = result.TryGetValue("split_screen", out Variant splitValue) && splitValue.AsBool();
+					continue;
+				}
+
+				// An ask's answer goes to its callable, never to reply.
+				if (_askCallbacks.Remove(id, out Callable answered))
+				{
+					if (answered.Target is not { } askOwner || IsInstanceValid(askOwner))
+					{
+						answered.Call(result);
+					}
+
+					GC.KeepAlive(result);
+					continue;
+				}
+
+				if (_cameraSeedQueries.Remove(id, out long cameraPlayer))
+				{
+					if (!_cameraMode.ContainsKey(cameraPlayer) && result.TryGetValue("mode", out Variant seededMode))
+					{
+						_cameraMode[cameraPlayer] = seededMode.AsInt32();
+					}
+
 					continue;
 				}
 
@@ -665,17 +843,22 @@ public partial class RefiiHost : Node
 				continue;
 			}
 
-			// THE MODS' LUA RELOADED (lua_ready): the claims and HUD overrides the last chunk held go
-			// with it, so a reloaded mod starts from nothing claimed and nothing overridden.
+			// THE MODS' LUA RELOADED (lua_ready): the claims, presses and HUD overrides the last chunk
+			// held go with it, so a reloaded mod starts from nothing claimed, pressed or overridden.
 			if (kind == LuaReadyKind)
 			{
 				ModInput.ClearClaims();
+				ModInputPresses.Clear();
 				Refii.Ui.Engine_UiHudOverrides.Clear();
+				Refii.Entities.Engine_HiddenParts.Clear();
 			}
 
 			Godot.Collections.Dictionary e = ParseFields(fields);
 			TrackHero(kind, e);
 			TrackCutscene(kind, e);
+			TrackCamera(kind, e);
+			TrackPlay(kind, e);
+			TrackRuntime(kind, e);
 			if (_signalByKind[kind] is { } signal)
 			{
 				EmitSignal(signal, e);
@@ -685,8 +868,35 @@ public partial class RefiiHost : Node
 			GC.KeepAlive(e);
 		}
 
+		FlushLuaValues();
 		Refii.Fx.Engine_FxPlayer.Pump(delta);
 		Refii.Lighting.Engine_ModLights.Pump(delta);
+	}
+
+	/// <summary>
+	/// The runtime's statements: a tick counts into the clock (the game clock only while no paused
+	/// mode holds, as Lua's) and runs the timers it made due, before the tick's signal; entity_removed
+	/// forgets that handle's values.
+	/// </summary>
+	private void TrackRuntime(int kind, Godot.Collections.Dictionary e)
+	{
+		if (kind == TickKind)
+		{
+			double seconds = e.TryGetValue("seconds", out Variant s) ? s.AsDouble() : 0;
+			foreach (Callable run in _clock.Tick(seconds, _play.AnyMode))
+			{
+				if (run.Target is { } target && !IsInstanceValid(target))
+				{
+					continue;
+				}
+
+				run.Call();
+			}
+		}
+		else if (kind == EntityRemovedKind && e.TryGetValue("entity", out Variant entity))
+		{
+			_entityStore.Forget(entity.AsInt64());
+		}
 	}
 
 	private void TrackHero(int kind, Godot.Collections.Dictionary e)
@@ -708,7 +918,33 @@ public partial class RefiiHost : Node
 		}
 	}
 
+	/// <summary>The paused event and the level edges into <see cref="_play"/>.</summary>
+	private void TrackPlay(int kind, Godot.Collections.Dictionary e)
+	{
+		switch (kind)
+		{
+			case PausedKind:
+				_play.Paused(e.TryGetValue("mode", out Variant mode) ? mode.AsInt32() : 1,
+					e.TryGetValue("paused", out Variant paused) && paused.AsBool());
+				break;
+			case LevelUnloadingKind:
+				_play.Unloading();
+				break;
+			case LevelLoadedKind:
+				_play.Loaded();
+				break;
+		}
+	}
+
 	/// <summary>The cutscene event into <see cref="_cutscene"/>: kinds is every statement holding after the edge.</summary>
+	private void TrackCamera(int kind, Godot.Collections.Dictionary e)
+	{
+		if (kind == CameraChangedKind && e.TryGetValue("player", out Variant p) && e.TryGetValue("mode", out Variant m))
+		{
+			_cameraMode[p.AsInt64()] = m.AsInt32();
+		}
+	}
+
 	private void TrackCutscene(int kind, Godot.Collections.Dictionary e)
 	{
 		if (kind == CutsceneKind)
@@ -720,14 +956,17 @@ public partial class RefiiHost : Node
 
 	/// <summary>
 	/// Bit k set when some script is connected to kind k's signal; every bit when one is
-	/// connected to mod_event; the hero kinds whenever a script is loaded at all; zero when none is.
+	/// connected to mod_event; the hero kinds whenever a script is loaded at all; the engine's own
+	/// kinds always.
 	/// </summary>
 	private ModEventMask ComputeMask()
 	{
 		// The engine's own want: a filtered load drops the missing mods' RefiiModSave keys on
 		// save_loaded (ModSaveGate), scripts or none.
 		// A quickload in flight waits for level_loaded to put the save folder back (load_snapshot).
+		// camera_changed feeds camera_mode, which the core's head hider reads (Engine_FirstPersonHead).
 		ModEventMask own = ModSaveGate.WantsSaveLoaded ? new ModEventMask().With(ModSaveGate.SaveLoadedKind) : new ModEventMask();
+		own = own.With(CameraChangedKind);
 		if (_staged is not null)
 		{
 			own = own.With(LevelLoadedKind);
@@ -743,6 +982,13 @@ public partial class RefiiHost : Node
 		{
 			mask = mask.With(LevelLoadedKind);
 		}
+
+		// entity_value's store forgets a handle at its entity_removed, handler or none.
+		if (_entityStore.Count != 0)
+		{
+			mask = mask.With(EntityRemovedKind);
+		}
+
 		if (GetSignalConnectionList(SignalName.mod_event).Count != 0)
 		{
 			for (int kind = 0; kind < _nameByKind.Length; kind++)
@@ -772,6 +1018,631 @@ public partial class RefiiHost : Node
 	/// <summary>A hard mod's published value by key (<c>combat.stamina</c>); NaN when its hook has published none.</summary>
 	public float get_value(string key) =>
 		HostBridge.TryGetModValue(key, out float value) ? value : float.NaN;
+
+	/// <summary>The last text published under <paramref name="key"/> (<c>Refii.publish_text</c>, <c>refii_mod_publish_text</c>, <see cref="publish_text"/>); "" when none has been.</summary>
+	public string get_text(string key) => ModSignals.Text(key ?? string.Empty) ?? string.Empty;
+
+	/// <summary>Whether a text has been published under <paramref name="key"/>.</summary>
+	public bool has_text(string key) => ModSignals.Text(key ?? string.Empty) is not null;
+
+	/// <summary>
+	/// Publishes a text under <paramref name="key"/> ("&lt;mod&gt;.&lt;name&gt;", at most 96) for every Godot
+	/// reader: get_text answers it at once and value_changed fires when it changed. At most 1024
+	/// bytes; false for a bad key, a longer text, or a new key past the store's 4096.
+	/// </summary>
+	public bool publish_text(string key, string text)
+	{
+		if (!ModSignals.SetText(key ?? string.Empty, text ?? string.Empty, out bool changed))
+		{
+			return false;
+		}
+
+		if (changed)
+		{
+			EmitSignal(SignalName.value_changed, key!, text ?? string.Empty);
+			_luaValues.Add((key!, text ?? string.Empty, true));
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// A player's store value NOW (1 or 2), synchronously — the store <c>Refii.player_value</c> reads
+	/// and a <c>player:</c> UI source resolves (Engine_UiValueSources); NaN when unset.
+	/// </summary>
+	public float player_value(long player, string key) =>
+		player is 1 or 2 && Refii.Ui.Engine_UiValueSources.Number(
+			Refii.Ui.Engine_UiValueSources.PlayerPrefix + (key ?? string.Empty),
+			Refii.Ui.Engine_UiValueSource.Live((int)player)) is { } value
+			? value
+			: float.NaN;
+
+	/// <summary>The same, with <paramref name="fallback"/> when unset.</summary>
+	public float player_value(long player, string key, float fallback) =>
+		player_value(player, key) is var value && !float.IsNaN(value) ? value : fallback;
+
+	/// <summary>
+	/// The keyboard's attack mode for <paramref name="player"/> (1 or 2), read at the call: 1 melee, 2
+	/// ranged, 3 magic (<see cref="ModApi.AttackModeMeaning"/>); 0 for a player no keyboard plays here.
+	/// </summary>
+	public int attack_mode(long player) => Refii.Game.GameInput.AttackModeOf((int)player);
+
+	/// <summary>
+	/// The camera the game has active for <paramref name="player"/> (1 or 2), as ECameraMode
+	/// (<c>constants()</c>' CAMERA_*: 2 the third-person camera, 8 first person, ...), as the bus last
+	/// stated it (<see cref="ModApi.CameraModeMeaning"/>), heard with or without a script loaded;
+	/// -1 before any is stated, and for a player whose camera runs on the other machine. One guest
+	/// tick behind, like every signal.
+	/// </summary>
+	public int camera_mode(long player) => _cameraMode.TryGetValue(player, out int mode) ? mode : -1;
+
+	/// <summary>
+	/// Holds a camera for <paramref name="player"/> (1 or 2) through the game's own per-player hold
+	/// (<see cref="ModApi.CameraOverrideMeaning"/>): <paramref name="mode"/> 8 first person or 2 the
+	/// third-person camera, 0 lets it go; <paramref name="options"/> <c>fov</c>, <c>pitch_limit</c>,
+	/// <c>blend</c> (seconds), <c>aim</c> (true: the gun aim's own camera takes over while aiming).
+	/// Stated on the guest's next tick.
+	/// </summary>
+	public void camera_override(int player, int mode, Godot.Collections.Dictionary options)
+	{
+		float Option(string key, float fallback) =>
+			options.TryGetValue(key, out Variant v) && v.VariantType is Variant.Type.Float or Variant.Type.Int ? (float)v.AsDouble() : fallback;
+		bool aim = options.TryGetValue("aim", out Variant a) && a.AsBool();
+		Post($"camera_override {player} {mode} {Num(Option("fov", 0f))} {Num(Option("pitch_limit", 0f))} {Num(Option("blend", -1f))} {(aim ? 1 : 0)}");
+	}
+
+	/// <summary>The short form, the camera's own field of view, pitch and blend.</summary>
+	public void camera_override(int player, int mode) => camera_override(player, mode, new Godot.Collections.Dictionary());
+
+	/// <summary>
+	/// The field of view of <paramref name="player"/>'s live camera in degrees, read at the call — the
+	/// horizontal 4:3 angle the game's cameras state (70 the default), from the block this machine
+	/// draws that player's view from; 0 for a player with no camera here (<see cref="ModApi.CameraFovMeaning"/>).
+	/// </summary>
+	public float fov(int player) =>
+		HostBridge.GetPlayerCamera(player) is { } camera && float.IsFinite(camera.HorizontalFov) && camera.HorizontalFov > 0f
+			? Mathf.RadToDeg(camera.HorizontalFov)
+			: 0f;
+
+	/// <summary>
+	/// Hides a part of an entity in the drawing (<paramref name="on"/>) or shows it again, by the
+	/// HANDLE an event gave the script (<see cref="ModApi.HidePartMeaning"/>): <paramref name="part"/>
+	/// a bone of its rig by the name the bone table states, in <paramref name="player"/>'s view alone
+	/// (1 or 2) or in every view (0). False for no handle, no name or any other player.
+	/// </summary>
+	public bool hide_part(long handle, string part, bool on, int player) =>
+		handle > 0 && handle <= uint.MaxValue && Refii.Entities.Engine_HiddenParts.Set((uint)handle, part, on, player);
+
+	/// <summary><see cref="hide_part(long, string, bool, int)"/> in every view.</summary>
+	public bool hide_part(long handle, string part, bool on) => hide_part(handle, part, on, 0);
+
+	/// <summary>
+	/// A player's store TEXT NOW (1 or 2), synchronously — what <c>Refii.player_value_text</c> reads;
+	/// "" when the key holds no text.
+	/// </summary>
+	public string player_text(long player, string key) =>
+		player is 1 or 2 ? HostBridge.GetPlayerText((int)player, key ?? string.Empty) ?? string.Empty : string.Empty;
+
+	/// <summary>
+	/// A player's store HASH NOW, synchronously — what <c>Refii.player_value_hash</c> reads: the text
+	/// read as a number as C's strtoul with base 0 reads it ("0x…" hex, a leading 0 octal, else
+	/// decimal), whole and within 32 bits, as "0x%08x"; "" for none.
+	/// </summary>
+	public string player_value_hash(long player, string key) =>
+		PlayerHash(player_text(player, key)) is { } hash ? ModRowSubject.Hex(hash) : string.Empty;
+
+	/// <summary>A store text as a hash, by refii_mod_player_hash's rule (strtoull base 0 — leading space and a sign allowed, a negative wraps past 32 bits — the whole text, at most 32 bits); null when it is not one.</summary>
+	internal static uint? PlayerHash(string? text)
+	{
+		text = (text ?? string.Empty).TrimStart(' ', '\t', '\n', '\v', '\f', '\r');
+		bool negative = text.StartsWith('-');
+		if (negative || text.StartsWith('+'))
+		{
+			text = text[1..];
+		}
+
+		if (text.Length == 0)
+		{
+			return null;
+		}
+
+		bool hex = text.Length > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X');
+		bool octal = !hex && text.Length > 1 && text[0] == '0';
+		string digits = hex ? text[2..] : octal ? text[1..] : text;
+		ulong value = 0;
+		foreach (char c in digits)
+		{
+			int digit = c is >= '0' and <= '9' ? c - '0' : hex && c is >= 'a' and <= 'f' ? c - 'a' + 10 : hex && c is >= 'A' and <= 'F' ? c - 'A' + 10 : -1;
+			if (digit < 0 || digit >= (hex ? 16 : octal ? 8 : 10))
+			{
+				return null;
+			}
+
+			value = value * (ulong)(hex ? 16 : octal ? 8 : 10) + (ulong)digit;
+			if (value > uint.MaxValue)
+			{
+				return null;
+			}
+		}
+
+		return negative && value != 0 ? null : (uint)value;
+	}
+
+	/// <summary>A mod's signal or published text off the bus: raised as mod_signal / stored for get_text.</summary>
+	private void HandleSignal(List<KeyValuePair<string, object>> request, string fields)
+	{
+		if (ModSignals.Parse(request) is not { } parsed)
+		{
+			GD.PushWarning($"[mods] godot: a signal record the host does not read: {fields}");
+			return;
+		}
+
+		if (parsed.Op == ModSignals.Op.PublishText)
+		{
+			if (!ModSignals.SetText(parsed.Key, parsed.Text, out bool changed))
+			{
+				GD.PushWarning($"[mods] godot: publish_text '{parsed.Key}' not kept (over 1024 bytes, or past {ModSignals.MaxTexts} keys)");
+			}
+			else if (changed)
+			{
+				EmitSignal(SignalName.value_changed, parsed.Key, parsed.Text);
+				_luaValues.Add((parsed.Key, parsed.Text, true));
+			}
+
+			return;
+		}
+
+		(string mod, string name) = ModSignals.Split(parsed.Key);
+		if (mod == ModLuaLane.Scope)
+		{
+			HandleLane(name, parsed.Text);
+			return;
+		}
+
+		EmitSignal(SignalName.mod_signal, mod, name, parsed.Text);
+		var e = new Godot.Collections.Dictionary { ["mod"] = mod, ["name"] = name, ["payload"] = parsed.Text };
+		EmitSignal(SignalName.mod_event, "mod_signal", e);
+		GC.KeepAlive(e);
+	}
+
+	// ---- the Lua lane (ModLuaLane): Lua's asks of the host, Godot's calls into the game VM ----------
+
+	/// <summary>A record of the core's own signal scope: an ask, an answer, a watch, a new VM's hello.</summary>
+	private void HandleLane(string op, string payload)
+	{
+		switch (op)
+		{
+			case ModLuaLane.Ask when ModLuaLane.ParseAsk(payload) is { } ask:
+			{
+				object? answer = HostCall(ask.What, ask.Args);
+				if (ask.Id > 0 && !PostLua(ModLuaLane.ReplyChunk(ask.Id, answer)))
+				{
+					PostLua(ModLuaLane.ReplyChunk(ask.Id, null));
+				}
+
+				break;
+			}
+			case ModLuaLane.Answer when ModLuaLane.ParseAnswer(payload) is { } reply:
+				if (_luaCalls.Remove(reply.Id, out Action<ModLuaLane.Reply>? done))
+				{
+					done(reply);
+				}
+
+				break;
+			case ModLuaLane.Watch:
+				_luaWatchesValues = true;
+				break;
+			case ModLuaLane.Hello:
+				RestateToLua();
+				break;
+			default:
+				GD.PushWarning($"[mods] godot: a Lua lane record the host does not read: {op}");
+				break;
+		}
+	}
+
+	/// <summary>
+	/// What <c>Refii.ask_host(what, fn, ...)</c> may name (<see cref="ModApi.HostCalls"/>): the host-side
+	/// reads and actions a Lua mod has no synchronous form of, answered as plain values.
+	/// </summary>
+	private object? HostCall(string what, object?[] args)
+	{
+		object? At(int i) => i < args.Length ? args[i] : null;
+		long Player(int i) => At(i) is double d ? (long)d : 0;
+		string Text(int i) => At(i) switch
+		{
+			string s => s,
+			double d => d.ToString("R", CultureInfo.InvariantCulture),
+			_ => string.Empty,
+		};
+		float Number(int i) => At(i) switch
+		{
+			double d => (float)d,
+			bool b => b ? 1f : 0f,
+			_ => 0f,
+		};
+		switch (what)
+		{
+			case "fade_state": return Plain(fade_state(Player(0)));
+			case "hud_overrides": return Plain(hud_overrides(Player(0)));
+			case "input_claimed": return input_claimed(Player(0), Text(1));
+			case "input_claims": return Plain(Variant.From(input_claims(Player(0))));
+			case "lights": return Plain(Variant.From(lights()));
+			case "markers": return Plain(Variant.From(markers()));
+			case "meters": return Plain(Variant.From(meters()));
+			case "mods": return EnabledMods.ToList();
+			case "presses": return Plain(Variant.From(presses(Player(0))));
+			case "snapshot_time": return snapshot_time(Text(0));
+			case "set_setting":
+				set_setting(Text(0), Number(1));
+				return true;
+			case "save_snapshot": return save_snapshot(Text(0));
+			case "load_snapshot": return load_snapshot(Text(0));
+			default:
+				GD.PushWarning($"[mods] godot: Refii.ask_host('{what}'): not a host call (ModApi.HostCalls)");
+				return null;
+		}
+	}
+
+	/// <summary>A Variant as the plain value a Lua literal is written from.</summary>
+	private static object? Plain(Variant v)
+	{
+		switch (v.VariantType)
+		{
+			case Variant.Type.Nil: return null;
+			case Variant.Type.Bool: return v.AsBool();
+			case Variant.Type.Int: return v.AsInt64();
+			case Variant.Type.Float: return v.AsDouble();
+			case Variant.Type.Vector3:
+			{
+				Vector3 p = v.AsVector3();
+				return new Dictionary<string, object?> { ["x"] = (double)p.X, ["y"] = (double)p.Y, ["z"] = (double)p.Z };
+			}
+			case Variant.Type.Color:
+			{
+				Color c = v.AsColor();
+				return new Dictionary<string, object?> { ["r"] = (double)c.R, ["g"] = (double)c.G, ["b"] = (double)c.B, ["a"] = (double)c.A };
+			}
+			case Variant.Type.Array:
+				return v.AsGodotArray().Select(Plain).ToList();
+			case Variant.Type.Dictionary:
+			{
+				var map = new SortedDictionary<string, object?>(StringComparer.Ordinal);
+				foreach ((Variant key, Variant value) in v.AsGodotDictionary())
+				{
+					map[key.AsString()] = Plain(value);
+				}
+
+				return map;
+			}
+			default: return v.AsString();
+		}
+	}
+
+	/// <summary>A plain lane value as the Variant a script gets: a whole number as an int (handles, serials), else as it came.</summary>
+	private static Variant FromLane(object? value) => value switch
+	{
+		null => default,
+		bool b => b,
+		double d when d == Math.Floor(d) && Math.Abs(d) < 9.0e15 => (long)d,
+		double d => d,
+		string s => s,
+		_ => default,
+	};
+
+	/// <summary>A chunk for the game VM on the guest's next tick; false when it does not fit the line.</summary>
+	private static bool PostLua(string chunk) => Post("run_lua " + chunk);
+
+	/// <summary>Runs <paramref name="expression"/> in the game VM once; <paramref name="answered"/> gets its values on a later frame.</summary>
+	private bool CallLua(string expression, Action<ModLuaLane.Reply> answered)
+	{
+		long id = ++_nextLuaCall;
+		_luaCalls[id] = answered;
+		if (PostLua(ModLuaLane.CallChunk(id, expression)))
+		{
+			return true;
+		}
+
+		_luaCalls.Remove(id);
+		return false;
+	}
+
+	/// <summary>A callable run with the first value of a call_lua answer (null when it failed), unless its owner is gone.</summary>
+	private bool CallLuaFirst(string expression, Callable callback) =>
+		CallLua(expression, reply =>
+		{
+			if (callback.Target is { } owner && !IsInstanceValid(owner))
+			{
+				return;
+			}
+
+			callback.Call(reply.Ok && reply.Values.Length != 0 ? FromLane(reply.Values[0]) : default);
+		});
+
+	/// <summary>The published values this frame changed, stated to Lua in chunks the command line holds.</summary>
+	private void FlushLuaValues()
+	{
+		if (_luaValues.Count == 0)
+		{
+			return;
+		}
+
+		PostLuaValues(_luaValues, changed: true);
+		_luaValues.Clear();
+	}
+
+	/// <summary>A new game VM (its runtime's hello): every published text and every Godot pool, stated again.</summary>
+	private void RestateToLua()
+	{
+		var texts = new List<(string Key, object Value, bool Text)>();
+		foreach (string key in ModSignals.TextKeys())
+		{
+			texts.Add((key, ModSignals.Text(key) ?? string.Empty, true));
+		}
+
+		PostLuaValues(texts, changed: false);
+		foreach ((string chunk, _) in _pools.Values)
+		{
+			PostLua(chunk);
+		}
+	}
+
+	private static void PostLuaValues(List<(string Key, object Value, bool Text)> values, bool changed)
+	{
+		const int Budget = CommandLimit - 512;
+		var batch = new List<(string Key, object Value, bool Text)>();
+		int size = 0;
+		foreach ((string Key, object Value, bool Text) item in values)
+		{
+			int itemSize = ModLuaLane.ValuesChunk(new[] { item }, changed).Length;
+			if (batch.Count != 0 && size + itemSize > Budget)
+			{
+				PostLua(ModLuaLane.ValuesChunk(batch, changed));
+				batch.Clear();
+				size = 0;
+			}
+
+			batch.Add(item);
+			size += itemSize;
+		}
+
+		if (batch.Count != 0)
+		{
+			PostLua(ModLuaLane.ValuesChunk(batch, changed));
+		}
+	}
+
+	/// <summary>
+	/// Raises Lua's <c>mod_signal {mod, name, payload}</c> in the game VM on the guest's next tick — the
+	/// twin of <c>Refii.signal</c> the other way (<see cref="ModApi.SignalMeaning"/>): name scoped
+	/// "&lt;mod&gt;.&lt;name&gt;", payload at most 1024 bytes. False for a bad name, a longer payload, or a line
+	/// that does not fit.
+	/// </summary>
+	public bool signal_lua(string name, string payload)
+	{
+		if (!ModSignals.ValidName(name) || ModSignals.Split(name).Mod == ModLuaLane.Scope ||
+			Encoding.UTF8.GetByteCount(payload ?? string.Empty) > ModSignals.MaxTextBytes)
+		{
+			GD.PushWarning($"[mods] godot: signal_lua('{name}'): not a scoped name or over {ModSignals.MaxTextBytes} bytes");
+			return false;
+		}
+
+		return PostLua(ModLuaLane.SignalChunk(name, payload ?? string.Empty));
+	}
+
+	/// <summary>The short form, an empty payload.</summary>
+	public bool signal_lua(string name) => signal_lua(name, string.Empty);
+
+	/// <summary>
+	/// Runs a Lua EXPRESSION in the game VM on the guest's next tick, once, and calls
+	/// <paramref name="callback"/> with <c>{ ok, values }</c> on a later frame: ok false when it raised (the
+	/// error is in the Mods error list), values its first five results (a number, a text, a boolean or
+	/// null; a table crosses as null). The answering form of <see cref="run_lua"/>. False when the line
+	/// does not fit.
+	/// </summary>
+	public bool call_lua(string expression, Callable callback)
+	{
+		if (string.IsNullOrWhiteSpace(expression))
+		{
+			return false;
+		}
+
+		return CallLua(expression, reply =>
+		{
+			if (callback.Target is { } owner && !IsInstanceValid(owner))
+			{
+				return;
+			}
+
+			var values = new Godot.Collections.Array();
+			foreach (object? value in reply.Values)
+			{
+				values.Add(FromLane(value));
+			}
+
+			var result = new Godot.Collections.Dictionary { ["ok"] = reply.Ok, ["values"] = values };
+			callback.Call(result);
+			GC.KeepAlive(result);
+		});
+	}
+
+	/// <summary>
+	/// <see cref="query"/> with its answer handed to <paramref name="callback"/>(result) instead of
+	/// <c>reply</c>: the callable form of every guest read a Lua mod makes synchronously. The id, or 0
+	/// when the line could not be posted.
+	/// </summary>
+	public long ask(string what, Godot.Collections.Array args, Callable callback)
+	{
+		long id = query(what, args);
+		if (id != 0)
+		{
+			_askCallbacks[id] = callback;
+		}
+
+		return id;
+	}
+
+	/// <summary>
+	/// <see cref="ask"/> answered AT ONCE, from inside an <see cref="on_verdict"/> handler
+	/// (<see cref="ModApi.VerdictReadMeaning"/>): the verdict runs on the game's thread inside the seam,
+	/// so the guest answers the query there, through the same branch, and the Dictionary ask's callback
+	/// would get comes back now — what a Lua handler's synchronous <c>Refii.*</c> read gives it. Only
+	/// the verbs of <see cref="ModApi.VerdictReads"/>; anywhere else, or for another verb,
+	/// <c>{ ok = false, error }</c> and nothing is read.
+	/// </summary>
+	public Godot.Collections.Dictionary read(string what, Godot.Collections.Array args)
+	{
+		string verb = (what ?? string.Empty).Replace(' ', '_');
+		List<KeyValuePair<string, object>> fields;
+		if (!_inVerdict)
+		{
+			fields = ModVerdictRead.Fields(ModVerdictRead.Outside, string.Empty, verb);
+		}
+		else if (ModVerdictRead.Line(verb, args.Select(Arg)) is not { } line)
+		{
+			fields = ModVerdictRead.Fields(ModVerdictRead.Refused, string.Empty, verb);
+		}
+		else
+		{
+			(int result, string answer) = HostBridge.ModVerdictRead(line);
+			fields = ModVerdictRead.Fields(result, answer, verb);
+		}
+
+		if (fields.FirstOrDefault(f => f.Key == "error").Value is string error)
+		{
+			GD.PushWarning("[mods] godot: " + error);
+		}
+
+		return ToDictionary(fields);
+	}
+
+	// ---- the runtime: the Lua runtime's clock, timers, entity values and pools, for Godot ----------
+
+	/// <summary>The game clock (<see cref="ModApi.TimerMeaning"/>): seconds of guest ticks while no paused mode holds, as Lua's <c>Refii.now</c> counts them, from this host's start.</summary>
+	public double now() => _clock.Now;
+
+	/// <summary>Seconds of every guest tick, menus included (<c>Refii.real_now</c>).</summary>
+	public double real_now() => _clock.RealNow;
+
+	/// <summary>Runs <paramref name="fn"/>() once on the first tick the game clock passes now + <paramref name="seconds"/>; the timer's number.</summary>
+	public long after(double seconds, Callable fn) => (long)_clock.After(seconds, fn);
+
+	/// <summary>The keyed form: replaces the timer standing under <paramref name="key"/>, and answers the key (an empty key is keyless: the number).</summary>
+	public Variant after(double seconds, Callable fn, string key) =>
+		string.IsNullOrEmpty(key) ? (Variant)(long)_clock.After(seconds, fn) : (Variant)(string)_clock.After(seconds, fn, key);
+
+	/// <summary>Drops the timer under a key, or the keyless one with that number; true when one went.</summary>
+	public bool cancel(Variant key) => key.VariantType switch
+	{
+		Variant.Type.String or Variant.Type.StringName => _clock.Cancel(key.AsString()),
+		Variant.Type.Int or Variant.Type.Float => _clock.Cancel(key.AsInt64()),
+		_ => false,
+	};
+
+	/// <summary>A value per entity handle (<see cref="ModApi.EntityStoreMeaning"/>), null for none.</summary>
+	public Variant entity_value(long handle, string key) => _entityStore.Value(handle, key ?? string.Empty, default);
+
+	/// <summary>The same, with <paramref name="fallback"/> for none.</summary>
+	public Variant entity_value(long handle, string key, Variant fallback) => _entityStore.Value(handle, key ?? string.Empty, fallback);
+
+	/// <summary>Sets a value per entity handle; null clears it. Forgotten at that entity's entity_removed.</summary>
+	public void entity_set(long handle, string key, Variant value) =>
+		_entityStore.Set(handle, key ?? string.Empty, value, value.VariantType == Variant.Type.Nil);
+
+	/// <summary>
+	/// Declares (or restates) a REGENERATING POOL in player <paramref name="player"/>'s store
+	/// (<see cref="ModApi.PoolMeaning"/>) — the Lua runtime's own pool, ticked on the guest tick where
+	/// the player's hero is played, so Lua and Godot share it: <paramref name="options"/> <c>max</c> (100),
+	/// <c>floor</c> (0), <c>regen</c> per second (0), <c>delay</c> seconds after a spend (0), <c>max_key</c>
+	/// (key + ".max"), numbers only. Stated again to every new game VM. False when the line does not fit.
+	/// </summary>
+	public bool pool(int player, string key, Godot.Collections.Dictionary options)
+	{
+		double Option(string name, double fallback) =>
+			options.TryGetValue(name, out Variant v) && v.VariantType is Variant.Type.Float or Variant.Type.Int ? v.AsDouble() : fallback;
+		if (string.IsNullOrEmpty(key))
+		{
+			return false;
+		}
+
+		string maxKey = options.TryGetValue("max_key", out Variant mk) && mk.VariantType == Variant.Type.String ? mk.AsString() : string.Empty;
+		string chunk = ModLuaLane.PoolChunk(player, key, Option("max", 100), Option("floor", 0), Option("regen", 0), Option("delay", 0), maxKey);
+		if (!PostLua(chunk))
+		{
+			return false;
+		}
+
+		_pools[(player, key)] = (chunk, maxKey.Length != 0 ? maxKey : key + ".max");
+		return true;
+	}
+
+	/// <summary>The short form, every option its default.</summary>
+	public bool pool(int player, string key) => pool(player, key, new Godot.Collections.Dictionary());
+
+	/// <summary>
+	/// A pool's <c>[value, max]</c> NOW, synchronously, from the player store the pool lives in (what
+	/// <c>Refii.pool_value</c> answers): a pool not stated yet is full; empty when the store holds no
+	/// maximum for it (no such pool, or not ticked yet).
+	/// </summary>
+	public Godot.Collections.Array pool_value(int player, string key)
+	{
+		string maxKey = _pools.TryGetValue((player, key ?? string.Empty), out (string Chunk, string MaxKey) declared) ? declared.MaxKey : key + ".max";
+		float max = player_value(player, maxKey);
+		return float.IsNaN(max)
+			? new Godot.Collections.Array()
+			: new Godot.Collections.Array { player_value(player, key ?? string.Empty, max), max };
+	}
+
+	/// <summary>Spends <paramref name="n"/> from a pool through the Lua runtime's own <c>Refii.pool_spend</c>, on the guest's next tick.</summary>
+	public bool pool_spend(int player, string key, double n) =>
+		PostLua($"if Refii and Refii.pool_spend then Refii.pool_spend({player}, {ModLuaLane.Literal(key ?? string.Empty)}, {ModLuaLane.Literal(n)}) end");
+
+	/// <summary>The same, <paramref name="callback"/>(taken: bool) on a later frame — false when refused (null when it failed).</summary>
+	public bool pool_spend(int player, string key, double n, Callable callback) =>
+		CallLuaFirst($"Refii.pool_spend({player}, {ModLuaLane.Literal(key ?? string.Empty)}, {ModLuaLane.Literal(n)})", callback);
+
+	// ---- reads a Lua mod makes synchronously, for Godot -------------------------------------------
+
+	/// <summary>The game's FNV-1 of a name as a "0x…" string (<c>Refii.hash</c>): a GDB record's hash, a text tag's key.</summary>
+	public string hash(string name) => ModRowSubject.Hex(Fnv1(name ?? string.Empty));
+
+	/// <summary>refii_mod_fnv1 over the name's UTF-8 bytes, as the game hashes a name.</summary>
+	internal static uint Fnv1(string name)
+	{
+		uint hash = 0x811C9DC5u;
+		foreach (byte b in Encoding.UTF8.GetBytes(name))
+		{
+			hash = unchecked(hash * 0x01000193u) ^ b;
+		}
+
+		return hash;
+	}
+
+	/// <summary>Refii.split_screen as the guest last answered (coop_state): local co-op drawn as two halves.</summary>
+	public bool split_screen() => _splitScreen;
+
+	/// <summary>Forgives player <paramref name="player"/>'s crimes in <paramref name="villager"/>'s eyes (Refii.forgive_crimes), on the guest tick.</summary>
+	public void forgive_crimes(long villager, int player) => Post($"forgive_crimes {villager} {player}");
+
+	/// <summary>Asks the co-op partner <paramref name="question"/> for <paramref name="asker"/> (Refii.ask_partner); <paramref name="callback"/>(ticket) — null when not asked.</summary>
+	public bool ask_partner(int asker, string question, Callable callback) =>
+		CallLuaFirst($"Refii.ask_partner({asker}, {ModLuaLane.Literal(question ?? string.Empty)})", callback);
+
+	/// <summary>A partner question's answer (Refii.partner_answer): <paramref name="callback"/>(null while pending, then true or false).</summary>
+	public bool partner_answer(long ticket, Callable callback) =>
+		CallLuaFirst($"Refii.partner_answer({ticket})", callback);
+
+	/// <summary>Whether player <paramref name="player"/> has taken the per-player collectable (Refii.key_taken): <paramref name="callback"/>(bool).</summary>
+	public bool key_taken(long entity, int player, Callable callback) =>
+		CallLuaFirst($"Refii.key_taken({entity}, {player})", callback);
+
+	/// <summary>A spell handle's cast serial (Refii.spell_serial): <paramref name="callback"/>(serial, or null).</summary>
+	public bool spell_serial(long spell, Callable callback) =>
+		CallLuaFirst($"Refii.spell_serial({spell})", callback);
+
+	/// <summary>A <c>RefiiModSave</c> value (what <see cref="save_set"/> writes, what Lua reads as <c>RefiiModSave.&lt;key&gt;</c>): <paramref name="callback"/>(value, or null).</summary>
+	public bool save_get(string key, Callable callback) =>
+		CallLuaFirst($"RefiiModSave and RefiiModSave[{ModLuaLane.Literal(key ?? string.Empty)}]", callback);
 
 	/// <summary>A settings.json value by key, the live override first; <paramref name="default"/> when no mod states it.</summary>
 	public float setting(string key, float @default) =>
@@ -823,8 +1694,28 @@ public partial class RefiiHost : Node
 	/// <summary>Sets an entity's current health outright.</summary>
 	public void set_health(long entity, float value) => Post($"set_health {entity} {Num(value)}");
 
+	/// <summary>Changes a hero's renown by delta through the game's own Stats.ModifyRenown (the renown event fires; the co-op partner gets its share).</summary>
+	public void modify_renown(long entity, long delta) => Post($"modify_renown {entity} {delta}");
+
+	/// <summary>Changes a hero's morality by delta (positive is good) through the game's own Stats.ModifyMorality; the game clamps it.</summary>
+	public void modify_morality(long entity, float delta) => Post($"modify_morality {entity} {Num(delta)}");
+
+	/// <summary>Changes a hero's purity by delta (positive is pure) through the game's own Stats.ModifyPurity; the game clamps it.</summary>
+	public void modify_purity(long entity, float delta) => Post($"modify_purity {entity} {Num(delta)}");
+
+	/// <summary>
+	/// Saves the game as game Lua's AutoSaveGame(true, true) does, where player 1 or 2 may save
+	/// (refii_mod_save_game): the game's whole save, each hero into its own package, with a
+	/// save_written per package. <c>query can_save P</c> answers <c>able</c> (Player.IsAbleToSaveGame).
+	/// </summary>
+	public void save_game(int player) => Post($"save_game {player}");
+
 	/// <summary>Adds one of an item definition (its GDB record hash: the "0x…" string the events carry, or a number) to an entity's inventory.</summary>
 	public void add_item(long entity, Variant definition) => Post($"add_item {entity} {Arg(definition)}");
+
+	/// <summary>Adds <paramref name="count"/> (1..100) of an item definition to an entity's inventory, each through the game's own add (refii_mod_add_items).</summary>
+	public void add_item(long entity, Variant definition, long count) =>
+		Post($"add_item {entity} {Arg(definition)} {Math.Clamp(count, 1, 100)}");
 
 	/// <summary>
 	/// Uses one of an item definition (the "0x…" string the events carry, or a number) from this
@@ -1068,9 +1959,59 @@ public partial class RefiiHost : Node
 	public void cast_spell_at(long caster, int type, bool targeted, long target, int level, Vector3 pos, Vector3 dir) =>
 		Post($"cast_spell {caster} {type} {(targeted ? 1 : 0)} {target} {level} {Num(pos.X)} {Num(pos.Y)} {Num(pos.Z)} {Num(dir.X)} {Num(dir.Y)} {Num(dir.Z)}");
 
+	/// <summary>
+	/// A cast with options (refii_mod_cast_spell_with): <c>tag</c> (int) is carried as <c>tag</c> by
+	/// the cast's spell_created, vortex_started, hit, hit_landed, fireball_impact and status_applying;
+	/// <c>damage_scale</c> (float, 1) multiplies every hit carrying its serial where the hit is decided;
+	/// <c>pos</c> / <c>dir</c> (Vector3, guest axes) as <see cref="cast_spell_at"/>'s; <c>at</c> (an entity
+	/// handle, or a Vector3 point in guest axes) places the cast by its class's own rule for that place
+	/// (refii_mod_cast_options.at_kind: the Targeted class, <c>pos</c> then the origin it comes from and
+	/// <c>dir</c> its facing when the origin stands on the place; Fireball and Chaos refuse a point, Slow
+	/// Time and Raise Dead refuse both).
+	/// </summary>
+	public void cast_spell_with(long caster, int type, bool targeted, long target, int level, Godot.Collections.Dictionary options)
+	{
+		long tag = options.TryGetValue("tag", out Variant t) ? t.AsInt64() : 0;
+		float scale = options.TryGetValue("damage_scale", out Variant d) ? (float)d.AsDouble() : 1f;
+		string line = $"cast_spell_with {caster} {type} {(targeted ? 1 : 0)} {target} {level} {tag} {Num(scale)}";
+		if (options.TryGetValue("pos", out Variant p) && p.VariantType == Variant.Type.Vector3)
+		{
+			Vector3 pos = p.AsVector3();
+			line += $" {Num(pos.X)} {Num(pos.Y)} {Num(pos.Z)}";
+			if (options.TryGetValue("dir", out Variant q) && q.VariantType == Variant.Type.Vector3)
+			{
+				Vector3 dir = q.AsVector3();
+				line += $" {Num(dir.X)} {Num(dir.Y)} {Num(dir.Z)}";
+			}
+		}
+
+		if (options.TryGetValue("at", out Variant a))
+		{
+			if (a.VariantType == Variant.Type.Vector3)
+			{
+				Vector3 point = a.AsVector3();
+				line += $" at {Num(point.X)} {Num(point.Y)} {Num(point.Z)}";
+			}
+			else
+			{
+				line += $" at {a.AsInt64()}";
+			}
+		}
+
+		Post(line);
+	}
+
 	/// <summary>Moves an entity to a world position.</summary>
 	public void set_position(long entity, float x, float y, float z) =>
 		Post($"set_position {entity} {Num(x)} {Num(y)} {Num(z)}");
+
+	/// <summary>
+	/// Turns an entity to face along (x, y) in guest axes (z up; the game drops z and keeps the facing
+	/// level) through Physics.SetFacingVector — a hero's through Player.SetFacingVector (refii_mod_set_facing).
+	/// <c>query facing E</c> / <c>query velocity E</c> answer x, y, z.
+	/// </summary>
+	public void set_facing(long entity, float x, float y, float z) =>
+		Post($"set_facing {entity} {Num(x)} {Num(y)} {Num(z)}");
 
 	/// <summary>
 	/// Tints an entity through the game's own appearance setter (refii_mod_entity_tint): linear
@@ -1149,11 +2090,110 @@ public partial class RefiiHost : Node
 	/// </summary>
 	public void equip_weapon(int player, Variant definition) => Post($"equip_weapon {player} {Arg(definition)}");
 
-	/// <summary>Performs an expression the hero's performer knows, by its record (refii_mod_perform_expression); <c>query expressions P</c> lists them.</summary>
+	/// <summary>Performs an expression the hero's performer knows, by its record, as a tap (refii_mod_perform_expression); <c>query expressions P</c> lists them.</summary>
 	public void perform_expression(int player, Variant expression) => Post($"perform_expression {player} {Arg(expression)}");
 
 	/// <summary>Assigns spell type 0..7 to every tier player 1 or 2's hero knows (refii_mod_assign_spell); <c>query spells_known P</c> lists the types.</summary>
 	public void assign_spell(int player, int spell) => Post($"assign_spell {player} {spell}");
+
+	/// <summary>
+	/// The quick actions with options (refii_mod_quick_action): <c>{"ungated": true}</c> skips the
+	/// quick menu's gate (the d-pad up and CanPlayerOpenQuickMenu) and is still refused for a dead
+	/// hero and in a cutscene. <c>use_item(player, definition, {"ungated": true})</c> is the per-player
+	/// form of the Items page's use (<see cref="use_item(Variant)"/>, this machine's hero).
+	/// </summary>
+	public void use_item(int player, Variant definition, Godot.Collections.Dictionary options) =>
+		Post($"use_item {player} {Arg(definition)} {QuickFlags(options, false)}");
+
+	/// <inheritdoc cref="use_item(int, Variant, Godot.Collections.Dictionary)"/>
+	public void equip_weapon(int player, Variant definition, Godot.Collections.Dictionary options) =>
+		Post($"equip_weapon {player} {Arg(definition)} {QuickFlags(options, false)}");
+
+	/// <summary>
+	/// Performs an expression, <paramref name="held"/> or a tap: a tap is released at once (the
+	/// wheel's own tap) and plays the basic form; a held one is left unreleased, so an extendable
+	/// expression extends when the game's own countdown runs out and plays on until
+	/// <see cref="release_expression"/>.
+	/// </summary>
+	public void perform_expression(int player, Variant expression, bool held) =>
+		Post($"perform_expression {player} {Arg(expression)} {(held ? 2 : 0)}");
+
+	/// <summary><see cref="perform_expression(int, Variant, bool)"/> with the quick actions' options (<c>{"ungated": true}</c>).</summary>
+	public void perform_expression(int player, Variant expression, bool held, Godot.Collections.Dictionary options) =>
+		Post($"perform_expression {player} {Arg(expression)} {QuickFlags(options, held)}");
+
+	/// <summary>
+	/// The same through Lua's own <c>Refii.perform_expression</c> on the guest's next tick,
+	/// <paramref name="callback"/>(performed: bool) on a later frame — what the Lua call returns (null when
+	/// the call failed). False when the line does not fit.
+	/// </summary>
+	public bool perform_expression(int player, Variant expression, bool held, Godot.Collections.Dictionary options, Callable callback) =>
+		CallLuaFirst($"Refii.perform_expression({player}, {LuaArg(expression)}, {(held ? "true" : "false")}, " +
+			$"{{ungated = {((QuickFlags(options, false) & 1) != 0 ? "true" : "false")}}})", callback);
+
+	/// <inheritdoc cref="use_item(int, Variant, Godot.Collections.Dictionary)"/>
+	public void assign_spell(int player, int spell, Godot.Collections.Dictionary options) =>
+		Post($"assign_spell {player} {spell} {QuickFlags(options, false)}");
+
+	/// <summary>
+	/// Charges spell type 0..7 through player 1 or 2's own magic charge (refii_mod_charge_spell): <paramref name="held"/>
+	/// true holds the magic button with the spell lent to every tier the hero has it (the tiers above emptied; no
+	/// spell_pick), false lets it go and the cast goes out as the game casts. The player's own slots come back once the
+	/// charge is over. Guest tick.
+	/// </summary>
+	public void charge_spell(int player, int spell, bool held) => Post($"charge_spell {player} {spell} {(held ? 1 : 0)}");
+
+	/// <summary>
+	/// The same through Lua's own <c>Refii.charge_spell</c> on the guest's next tick,
+	/// <paramref name="callback"/>(taken: bool) on a later frame — false when the charge was refused (the
+	/// player not played here, no spell manager, the spell not known on its first tier); null when the
+	/// call failed. False when the line does not fit.
+	/// </summary>
+	public bool charge_spell(int player, int spell, bool held, Callable callback) =>
+		CallLuaFirst($"Refii.charge_spell({player}, {spell}, {(held ? "true" : "false")})", callback);
+
+	/// <summary>A call argument as a Lua literal: a number as itself, anything else as a string.</summary>
+	private static string LuaArg(Variant arg) => arg.VariantType switch
+	{
+		Variant.Type.Int => arg.AsInt64().ToString(CultureInfo.InvariantCulture),
+		Variant.Type.Float => ModLuaLane.Literal(arg.AsDouble()),
+		Variant.Type.Bool => arg.AsBool() ? "true" : "false",
+		_ => ModLuaLane.Literal(arg.AsString()),
+	};
+
+	/// <summary>Ends player 1 or 2's held expression through the performer's own end, GameAction 25's call (refii_mod_release_expression).</summary>
+	public void release_expression(int player) => Post($"release_expression {player}");
+
+	/// <summary>Ends player 1 or 2's sprint as the sprint button's release does (refii_mod_end_sprint); <c>query sprinting P</c> reads it.</summary>
+	public void end_sprint(int player) => Post($"end_sprint {player}");
+
+	/// <summary>
+	/// Sets LocomotionData fields on player 1 or 2's hero's own table, held across the game's
+	/// reloads of it (refii_mod_set_locomotion): <c>{"MaxTurnSpeedStatic": 720, "FrictionCoefficient": 9}</c>;
+	/// <c>false</c> as a value stops holding that field. <c>query locomotion P KEY</c> reads one.
+	/// </summary>
+	public void set_locomotion(int player, Godot.Collections.Dictionary values)
+	{
+		foreach (Variant key in values.Keys)
+		{
+			Variant value = values[key];
+			string text = value.VariantType is Variant.Type.Int or Variant.Type.Float ? Arg(value) : "-";
+			Post($"set_locomotion {player} {key.AsString()} {text}");
+		}
+	}
+
+	/// <summary>
+	/// Sets player 1 or 2's hero's parry window (seconds) and wedge (degrees) on its own copy of
+	/// HeroCombatBalanceParams, live, held for that player's next hero (refii_mod_set_parry); a
+	/// negative value leaves that one. <c>query parry P</c> reads both.
+	/// </summary>
+	public void set_parry(int player, double window, double wedge) =>
+		Post($"set_parry {player} {Num((float)window)} {Num((float)wedge)}");
+
+	/// <summary>REFII_QUICK_* from an options dictionary: 1 ungated, 2 held.</summary>
+	private static int QuickFlags(Godot.Collections.Dictionary options, bool held) =>
+		(options.TryGetValue("ungated", out Variant ungated) && ungated.AsBool() ? 1 : 0) |
+		(held || (options.TryGetValue("held", out Variant h) && h.AsBool()) ? 2 : 0);
 
 	/// <summary>
 	/// Puts a status on an entity for seconds (refii_mod_apply_status): kind 1 electrified, 2 chaos,
@@ -1189,6 +2229,13 @@ public partial class RefiiHost : Node
 	/// <c>query current_action E</c> answers the action an entity's manager runs, its clock and whether it is granted.
 	/// </summary>
 	public void allow_action_interrupt(long action) => Post($"allow_action_interrupt {action}");
+
+	/// <summary>
+	/// Grants an action's "ALLOW_ACTION_INTERRUPT" once its own clock reaches <paramref name="seconds"/>
+	/// (refii_mod_allow_action_interrupt_at): at once when it already has, else on the guest tick it
+	/// does — no polling of the clock; dropped when the action stops first.
+	/// </summary>
+	public void allow_action_interrupt_at(long action, float seconds) => Post($"allow_action_interrupt_at {action} {Num(seconds)}");
 
 	/// <summary>
 	/// Knocks an entity down and away along a direction scaled by force (refii_mod_knockback): a
@@ -1326,6 +2373,64 @@ public partial class RefiiHost : Node
 
 	private static string TagWord(string tag) => Word(tag);
 
+	/// <summary>The inputs <see cref="set_appearance"/> takes, as the guest's appearance_set line names them.</summary>
+	private static readonly string[] AppearanceInputs = { "tan", "fat", "height", "strength", "skill", "will", "morality", "purity", "age" };
+
+	/// <summary>
+	/// Switches player <paramref name="player"/>'s look to manual with the named inputs of
+	/// <paramref name="inputs"/> (<c>Refii.set_appearance</c>): tan, fat, height, strength, skill,
+	/// will, morality, purity, age; an input not named keeps how the hero looks. The Mirror's own
+	/// look: the same player store, kept in that player's Mirror settings (refii_mod_set_appearance).
+	/// Read it back with the query <c>appearance P</c>.
+	/// </summary>
+	public void set_appearance(int player, Godot.Collections.Dictionary inputs)
+	{
+		var line = new StringBuilder($"appearance_set {player}");
+		foreach (string name in AppearanceInputs)
+		{
+			if (inputs.TryGetValue(name, out Variant value) && value.VariantType is Variant.Type.Float or Variant.Type.Int)
+			{
+				line.Append(' ').Append(name).Append('=').Append(Num((float)value.AsDouble()));
+			}
+		}
+
+		Post(line.ToString());
+	}
+
+	/// <summary>Player <paramref name="player"/>'s look back to the game's own (true) or to the manual inputs it holds (false) (<c>Refii.set_appearance_automatic</c>).</summary>
+	public void set_appearance_automatic(int player, bool on) => Post($"appearance_automatic {player} {(on ? 1 : 0)}");
+
+	/// <summary>
+	/// Player <paramref name="player"/>'s weight for a mod morph (<c>Refii.morph_get</c>), read from the
+	/// player store at the call: the stored weight clamped to the declared range, else the default; NaN for
+	/// a morph no enabled mod declares. <paramref name="morph"/> is <c>"&lt;mod&gt;.&lt;name&gt;"</c> or its
+	/// id <c>"0x…"</c> (<see cref="Refii.Hero.Engine_ModMorphs"/>).
+	/// </summary>
+	public float morph_get(int player, string morph)
+	{
+		if (player is not (1 or 2) || Refii.Hero.Engine_ModMorphs.Find(morph ?? string.Empty) is not { } declared)
+		{
+			return float.NaN;
+		}
+
+		float stored = player_value(player, declared.StoreKey);
+		return Refii.Hero.Engine_ModMorphs.Weight(declared, float.IsNaN(stored) ? null : stored);
+	}
+
+	/// <summary>
+	/// Sets player <paramref name="player"/>'s weight for a mod morph (<c>Refii.morph_set</c>), clamped and
+	/// saved with the hero where it is played; the hero is redrawn and <c>morph_changed</c> raised
+	/// (refii_mod_set_morph_weight, the line <c>morph_set P MORPH W</c>).
+	/// </summary>
+	public void morph_set(int player, string morph, float weight)
+	{
+		Post($"morph_set {player} {morph_id(morph ?? string.Empty)} {Num(weight)}");
+	}
+
+	/// <summary>The MorphType of <c>"&lt;mod&gt;.&lt;name&gt;"</c> as <c>"0x…"</c> (<c>Refii.morph_id</c>), the one its GDB records carry.</summary>
+	public string morph_id(string name) =>
+		Refii.Hero.Engine_ModMorphs.Hex(Refii.Hero.Engine_ModMorphs.ParseId(name ?? string.Empty) ?? Refii.Hero.Engine_ModMorphs.Id(name ?? string.Empty));
+
 	/// <summary>
 	/// Sets a player's SESSION value (<c>Refii.player_set</c>): the player store refii_mod_player_*
 	/// keeps, the same on both co-op machines. <paramref name="key"/> is "&lt;mod&gt;.&lt;name&gt;", no spaces.
@@ -1340,6 +2445,40 @@ public partial class RefiiHost : Node
 	/// <summary>Sets a player's SAVED value (<c>Refii.player_save</c>): kept with that hero's own save, back when it loads.</summary>
 	public void player_save(int player, string key, float value) =>
 		Post($"player_save {player} {key.Replace(' ', '_')} {Num(value)}");
+
+	/// <summary>
+	/// Sets a player's session TEXT (<c>Refii.player_set_text</c>): a typed value in the same store, at
+	/// most 256 bytes, kept exactly. Read back with <see cref="player_text"/> (or the query <c>player_text P KEY</c>).
+	/// </summary>
+	public void player_set_text(int player, string key, string text) =>
+		Post($"player_set_text {player} {key.Replace(' ', '_')} {TextWord(text)}");
+
+	/// <summary>Sets a player's SAVED text (<c>Refii.player_save_text</c>): kept with that hero's own save.</summary>
+	public void player_save_text(int player, string key, string text) =>
+		Post($"player_save_text {player} {key.Replace(' ', '_')} {TextWord(text)}");
+
+	/// <summary>
+	/// Sets a player's SAVED hash (<c>Refii.player_save_hash</c>): a record hash ("0x…" or decimal)
+	/// kept exactly as its "0x%08x" text. False when <paramref name="hash"/> is not one.
+	/// </summary>
+	public bool player_save_hash(int player, string key, string hash)
+	{
+		string text = (hash ?? string.Empty).Trim();
+		bool parsed = text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+			? uint.TryParse(text.AsSpan(2), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out uint value)
+			: uint.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out value);
+		if (!parsed)
+		{
+			return false;
+		}
+
+		player_save_text(player, key, ModRowSubject.Hex(value));
+		return true;
+	}
+
+	/// <summary>A text as one command word: base64, "-" for empty (mod_commands.cpp player_set_text).</summary>
+	private static string TextWord(string? text) =>
+		string.IsNullOrEmpty(text) ? "-" : Convert.ToBase64String(Encoding.UTF8.GetBytes(text.Length > 256 ? text[..256] : text));
 
 	/// <summary>Sets an integer under <c>RefiiModSave.&lt;key&gt;</c>, persisted with the save; the key carries no spaces.</summary>
 	public void save_set(string key, long value) =>
@@ -1427,6 +2566,38 @@ public partial class RefiiHost : Node
 	/// <summary>The short form, <c>player = 0, kinds = ModApi.CutsceneAll</c>: the script bridge passes no C# default.</summary>
 	public bool in_cutscene() => in_cutscene(0, ModApi.CutsceneAll);
 
+	/// <summary>
+	/// Whether <paramref name="player"/> (1 or 2) is IN PLAY — the same composition as Lua's
+	/// <c>Refii.in_play</c>: no pause or GUI mode and no level change in force (the paused event's
+	/// modes), no level loading (level_unloading .. level_loaded), the player's hero standing
+	/// (<see cref="hero"/>), and no FULL cutscene for them (<see cref="in_cutscene(int, int)"/>). As the
+	/// bus last stated it, a guest tick behind like every signal.
+	/// </summary>
+	public bool in_play(int player) =>
+		_play.InPlay(hero(player is 2 ? 2 : 1) != 0, in_cutscene(player is 2 ? 2 : 1, ModApi.CutsceneFull));
+
+	/// <summary>The named numbers every surface states the same (<see cref="ModApi.NamedNumbers"/>): SPELL_*, ABILITY_*, REQUEST_*, ACTION_*, RELATION_*, CUTSCENE_* ….</summary>
+	public Godot.Collections.Dictionary constants()
+	{
+		var all = new Godot.Collections.Dictionary();
+		foreach ((string name, int value) in ModApi.NamedNumbers)
+		{
+			all[name] = value;
+		}
+
+		return all;
+	}
+
+	/// <summary>
+	/// A spell type's (0..7) name tag and wheel icon path, the ones the game draws it with — a
+	/// stand-in's overlays answer for it (<see cref="ModSpells.Info"/>): <c>{ name_tag, icon }</c>,
+	/// empty for a type outside 0..7.
+	/// </summary>
+	public Godot.Collections.Dictionary spell_info(int type) =>
+		ModSpells.Info(type) is { } info
+			? new Godot.Collections.Dictionary { ["name_tag"] = info.NameTag, ["icon"] = info.Icon }
+			: new Godot.Collections.Dictionary();
+
 	/// <summary>Refii.coop_mode as the guest last answered: 0 alone, 1 local co-op, 2 online hosting, 3 online joined.</summary>
 	public int coop_mode() => _coopMode;
 
@@ -1440,6 +2611,19 @@ public partial class RefiiHost : Node
 	/// belong where this holds; an event dictionary with <c>replica = true</c> is the other machine's.
 	/// </summary>
 	public bool world_here() => _coopMode != 3;
+
+	/// <summary>
+	/// Refii.player_here as the guest last answered (coop_state): whether this machine plays player
+	/// <paramref name="player"/>'s hero (1 or 2) — both alone and in local co-op, player one on an
+	/// online host, player two on an online joiner. A player's own effects, refills and timers run
+	/// where this holds; a player value written elsewhere goes to that machine first.
+	/// </summary>
+	public bool player_here(int player) => player is 1 or 2 && _coopMode switch
+	{
+		2 => player == 1,
+		3 => player == 2,
+		_ => true,
+	};
 
 	/// <summary>
 	/// The node Godot draws an entity with, by the HANDLE an event gave the script, or null when
@@ -1643,7 +2827,15 @@ public partial class RefiiHost : Node
 		return true;
 	}
 
-	public bool register_command(string verb, Callable handler)
+	public bool register_command(string verb, Callable handler) => register_command(verb, handler, false);
+
+	/// <summary>
+	/// <see cref="register_command(string, Callable)"/>, and with <paramref name="with_row"/> the handler is
+	/// called <c>(argument, e)</c> instead: <c>e</c> the row as a <c>mod_menu_row</c> Dictionary — menu, row,
+	/// player, mod, command, button and the row's TYPED SUBJECT (subject_kind, definition, spell) — the table a
+	/// Lua row function (<c>Mod:lua:name</c>) is called with, so a host list's pick arrives typed.
+	/// </summary>
+	public bool register_command(string verb, Callable handler, bool with_row)
 	{
 		var record = new Refii.Ui.Engine_UiVerb(verb, verb, "a Godot script's verb", Array.Empty<Refii.Ui.Engine_UiCommandList>(),
 			Owner: "godot");
@@ -1654,7 +2846,30 @@ public partial class RefiiHost : Node
 				return Refii.Ui.Engine_UiCommandResult.Refused("the script that registered it is gone");
 			}
 
-			Variant answer = handler.Call(argument, context.Menu, context.Row, (long)context.Player);
+			Variant answer;
+			if (with_row)
+			{
+				ModRowSubject.Subject subject = ModRowSubject.Of(context.Row, context.RowCommand);
+				var row = new Godot.Collections.Dictionary
+				{
+					["menu"] = context.Menu,
+					["row"] = context.Row,
+					["player"] = (long)(context.Player is 1 or 2 ? context.Player : Refii.Ui.Engine_UiModMenus.MenuPlayer),
+					["mod"] = context.Mod,
+					["command"] = context.RowCommand,
+					["button"] = context.Button,
+					["subject_kind"] = subject.Kind,
+					["definition"] = subject.Definition,
+					["spell"] = (long)subject.Spell,
+				};
+				answer = handler.Call(argument, row);
+				GC.KeepAlive(row);
+			}
+			else
+			{
+				answer = handler.Call(argument, context.Menu, context.Row, (long)context.Player);
+			}
+
 			return answer.VariantType == Variant.Type.Bool && !answer.AsBool()
 				? Refii.Ui.Engine_UiCommandResult.Refused("the script's handler answered false")
 				: Refii.Ui.Engine_UiCommandResult.Done;
@@ -1802,6 +3017,10 @@ public partial class RefiiHost : Node
 		GC.KeepAlive(e);
 	}
 
+	/// <summary>The <see cref="setting_changed"/> signal, raised on the main thread whoever changed the value.</summary>
+	internal void RaiseSettingChanged(string key, float value) =>
+		Callable.From(() => EmitSignal(SignalName.setting_changed, key, value)).CallDeferred();
+
 	/// <summary>The ModMenuBox event's Godot surface, raised where the box was answered.</summary>
 	internal void RaiseModMenuBox(uint id, int option, int player)
 	{
@@ -1847,6 +3066,7 @@ public partial class RefiiHost : Node
 	/// </summary>
 	internal (bool Cancelled, string Command) RaiseModMenuRow(string menu, string row, int player, string mod, string command = "", string button = "")
 	{
+		ModRowSubject.Subject subject = ModRowSubject.Of(row, command);
 		var e = new Godot.Collections.Dictionary
 		{
 			["menu"] = menu,
@@ -1855,6 +3075,9 @@ public partial class RefiiHost : Node
 			["mod"] = mod,
 			["command"] = command ?? string.Empty,
 			["button"] = button ?? string.Empty,
+			["subject_kind"] = subject.Kind,
+			["definition"] = subject.Definition,
+			["spell"] = (long)subject.Spell,
 		};
 		EmitSignal(SignalName.mod_menu_row, e);
 		EmitSignal(SignalName.mod_event, "mod_menu_row", e);
@@ -2127,6 +3350,87 @@ public partial class RefiiHost : Node
 	/// <summary>Removes a marker by any surface's id; false when none stands under it.</summary>
 	public bool unmark(long id) => id > 0 && id <= uint.MaxValue && Refii.Ui.Engine_HudModMarkers.Remove((uint)id);
 
+	/// <summary>
+	/// <see cref="mark(Variant, string, string, long)"/> with options: <c>{ "meter": { "value": v,
+	/// "max": m, "style": s } }</c> puts a fill on the new marker (<see cref="mark_meter"/>).
+	/// </summary>
+	public long mark(Variant target, string icon, string text, long player, Godot.Collections.Dictionary options)
+	{
+		long id = mark(target, icon, text, player);
+		if (id != 0 && options is not null && options.TryGetValue("meter", out Variant meter) &&
+			meter.VariantType == Variant.Type.Dictionary)
+		{
+			var m = meter.AsGodotDictionary();
+			mark_meter(id, m.TryGetValue("value", out Variant v) ? v.AsDouble() : 0,
+				m.TryGetValue("max", out Variant x) ? x.AsDouble() : 0,
+				m.TryGetValue("style", out Variant st) ? st.AsString() : string.Empty);
+		}
+
+		return id;
+	}
+
+	/// <summary>
+	/// A WORLD METER over <paramref name="target"/> (a handle, or a Vector3 / [x, y, z] guest point)
+	/// for <paramref name="player"/> (1 or 2; 0 every player this machine plays): a bar filled
+	/// <paramref name="value"/> of <paramref name="max"/> on the marker channel, placed, sized and
+	/// gone exactly as a marker. <paramref name="style"/> "bar" ("": the HUD's gold), "health" (red)
+	/// or an HTML colour; "numbers" after it draws "value / max". A drop leaves a pale trail that
+	/// holds, then drains. Returns the id <see cref="mark_meter"/> restates and <see cref="unmark"/>
+	/// removes; 0 for no max or an unknown handle.
+	/// </summary>
+	public long world_meter(Variant target, double value, double max, string style, long player)
+	{
+		uint handle = 0;
+		var point = Vector3.Zero;
+		switch (target.VariantType)
+		{
+			case Variant.Type.Int:
+			case Variant.Type.Float:
+			{
+				double raw = target.AsDouble();
+				if (raw is <= 0 or > uint.MaxValue)
+				{
+					return 0;
+				}
+
+				handle = (uint)raw;
+				break;
+			}
+
+			case Variant.Type.Vector3:
+				point = target.AsVector3();
+				break;
+
+			case Variant.Type.Array when target.AsGodotArray() is { Count: >= 3 } a:
+				point = new Vector3((float)a[0].AsDouble(), (float)a[1].AsDouble(), (float)a[2].AsDouble());
+				break;
+
+			default:
+				return 0;
+		}
+
+		return Refii.Ui.Engine_HudModMarkers.AddMeter((int)Math.Clamp(player, 0, 2), handle, point, (float)value, (float)max,
+			style ?? string.Empty);
+	}
+
+	/// <summary>The short form, <c>player = 0</c>: the script bridge passes no C# default.</summary>
+	public long world_meter(Variant target, double value, double max, string style) => world_meter(target, value, max, style, 0);
+
+	/// <summary>The short form, <c>style = "", player = 0</c>.</summary>
+	public long world_meter(Variant target, double value, double max) => world_meter(target, value, max, string.Empty, 0);
+
+	/// <summary>
+	/// Puts a fill on marker <paramref name="id"/> (any surface's) or restates it in place: the value
+	/// changes without re-marking; <paramref name="max"/> 0 takes the fill off (a world meter with
+	/// nothing else goes). False when nothing stands under the id.
+	/// </summary>
+	public bool mark_meter(long id, double value, double max, string style) =>
+		id > 0 && id <= uint.MaxValue &&
+		Refii.Ui.Engine_HudModMarkers.SetMeter((uint)id, (float)value, (float)max, style ?? string.Empty, Refii.Ui.Engine_HudModMarkers.Clock);
+
+	/// <summary>The short form, <c>style = ""</c>.</summary>
+	public bool mark_meter(long id, double value, double max) => mark_meter(id, value, max, string.Empty);
+
 	/// <summary>The markers standing: id, player, entity (handle, 0 for a point), x, y, z, icon, text.</summary>
 	public Godot.Collections.Array<Godot.Collections.Dictionary> markers()
 	{
@@ -2141,6 +3445,8 @@ public partial class RefiiHost : Node
 				["x"] = m.Point.X, ["y"] = m.Point.Y, ["z"] = m.Point.Z,
 				["icon"] = m.Icon,
 				["text"] = m.Text,
+				["meter_value"] = m.Meter?.Value ?? 0f,
+				["meter_max"] = m.Meter?.Max ?? 0f,
 			});
 		}
 
@@ -2216,6 +3522,35 @@ public partial class RefiiHost : Node
 		if (player is 1 or 2)
 		{
 			foreach (string name in ModInput.Claims((int)player))
+			{
+				list.Add(name);
+			}
+		}
+
+		return list;
+	}
+
+	/// <summary>
+	/// Holds <paramref name="button"/> down on <paramref name="player"/>'s pad (1 or 2), or releases it:
+	/// input.json's names (A B X Y LB RB L3 R3 Start Back DpadUp …), LT / RT the triggers.
+	/// <paramref name="held"/> false / 0 releases; a trigger is pulled by it, true / 1 fully, 2..255
+	/// that much. The guest reads it as that player's own pad (ModInputPresses). False for an unknown
+	/// button or player.
+	/// </summary>
+	public bool press(long player, string button, long held) =>
+		player is 1 or 2 && ModInputPresses.Press((int)player, button ?? string.Empty, held);
+
+	/// <summary>Presses <paramref name="button"/> on <paramref name="player"/>'s pad for at least <paramref name="ticks"/> guest ticks (1..600).</summary>
+	public bool tap(long player, string button, long ticks) =>
+		player is 1 or 2 && ModInputPresses.Tap((int)player, button ?? string.Empty, ticks);
+
+	/// <summary>The buttons held for <paramref name="player"/> (1 or 2) by any surface's press, by name.</summary>
+	public Godot.Collections.Array<string> presses(long player)
+	{
+		var list = new Godot.Collections.Array<string>();
+		if (player is 1 or 2)
+		{
+			foreach (string name in ModInputPresses.For((int)player).Held)
 			{
 				list.Add(name);
 			}
@@ -2425,10 +3760,13 @@ public partial class RefiiHost : Node
 	}
 
 	/// <summary>The fields text as the Dictionary a script receives (engine only).</summary>
-	public static Godot.Collections.Dictionary ParseFields(string fields)
+	public static Godot.Collections.Dictionary ParseFields(string fields) => ToDictionary(ParseFieldsPlain(fields));
+
+	/// <summary>Plain fields as the Dictionary a script receives (engine only).</summary>
+	private static Godot.Collections.Dictionary ToDictionary(List<KeyValuePair<string, object>> fields)
 	{
 		var result = new Godot.Collections.Dictionary();
-		foreach ((string key, object value) in ParseFieldsPlain(fields))
+		foreach ((string key, object value) in fields)
 		{
 			result[key] = value switch
 			{

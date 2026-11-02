@@ -84,7 +84,24 @@ public static class Engine_UiMenuSources
 		/// (0x829a3e2c / 0x829a3e4c), and the re-emphasis `sub_829A3260` demotes the primary to
 		/// 2 while a sale or family member holds the trail. None defers to <see cref="Emphasised"/>.
 		/// </summary>
-		Engine_UiMenuConstants.Emphasis Emphasis = Engine_UiMenuConstants.Emphasis.None);
+		Engine_UiMenuConstants.Emphasis Emphasis = Engine_UiMenuConstants.Emphasis.None,
+
+		/// <summary>
+		/// The guest has no row for this and activating it is complete host-side
+		/// (<see cref="Engine_UiExpandableMenu.Item.HostOnly"/>); it is never stated as the
+		/// highlighted row either.
+		/// </summary>
+		bool HostOnly = false,
+
+		/// <summary>
+		/// MOD CONTENT: a row a mod's list states (its script's rows, its published values, its
+		/// settings pages, the per-player lists a mod's menu shows) or that a script-registered
+		/// source supplied. Never stated as the guest's highlight
+		/// (<see cref="Engine_UiExpandableMenu.Item.FromMod"/>): a guest handler resolves a stated
+		/// id and some act on the result without checking it — see Engine_UiAbilitySource.
+		/// Everything else about the row — its command, its press — is as stated.
+		/// </summary>
+		bool FromMod = false);
 
 	/// <summary>A provider: given the source's argument, the rows it supplies.</summary>
 	public delegate IReadOnlyList<Row> Provider(string argument);
@@ -110,9 +127,6 @@ public static class Engine_UiMenuSources
 			// opening that mod's host options page.
 			[Refii.Mods.ModSettingsUi.SourceName] = Refii.Mods.ModSettingsUi.Rows,
 
-			// The options screen's Controls fold: one row per enabled mod with rebindable input
-			// actions, each opening that mod's Controls page.
-			[Refii.Mods.ModInputUi.SourceName] = Refii.Mods.ModInputUi.Rows,
 			[Engine_UiNetworkSource.GamesSource] = Engine_UiNetworkSource.Games,
 			[Engine_UiNetworkSource.AllSource] = Engine_UiNetworkSource.All,
 			[Engine_UiNetworkSource.HostingSource] = Engine_UiNetworkSource.Hosting,
@@ -163,6 +177,18 @@ public static class Engine_UiMenuSources
 
 	private static readonly Row[] None = System.Array.Empty<Row>();
 
+	/// <summary>A script-registered source's rows, each <see cref="Row.FromMod"/> whatever the provider said.</summary>
+	private static IReadOnlyList<Row> AsModRows(IReadOnlyList<Row> rows)
+	{
+		var marked = new List<Row>(rows.Count);
+		foreach (Row row in rows)
+		{
+			marked.Add(row with { FromMod = true });
+		}
+
+		return marked;
+	}
+
 	/// <summary>Rows for one entry's source; <paramref name="entryName"/> is the default argument.</summary>
 	public static IReadOnlyList<Row> Rows(string source, string entryName)
 	{
@@ -180,7 +206,8 @@ public static class Engine_UiMenuSources
 
 		if (Providers.TryGetValue(name, out Provider? provider))
 		{
-			return provider(argument);
+			IReadOnlyList<Row> rows = provider(argument);
+			return GameSources.Contains(name) ? rows : AsModRows(rows);
 		}
 
 		// Once per unknown name; a silent empty category is indistinguishable from no stock.

@@ -83,8 +83,9 @@ public sealed class Fable2Input : GameTitleInput
 	public override int ModPlayer(int pad) => pad == 0 ? 1 : pad == PlayerTwoPad ? 2 : 0;
 
 	/// <summary>
-	/// In the world with nothing holding the input: no front end, pause book, owned screen, box or
-	/// card. Decides what Escape and the mouse buttons mean, and whether the mouse is captured.
+	/// In the world with nothing holding the input: no front end, pause book, owned screen, box,
+	/// card or pub game board. Decides what Escape and the mouse buttons mean, and whether the mouse
+	/// is captured.
 	/// </summary>
 	public override bool WorldHasInput
 	{
@@ -92,7 +93,8 @@ public sealed class Fable2Input : GameTitleInput
 		{
 			bool menuOwns = Engine_TitleGame.Active.InteractionOwnsPad || HostUiOwnsPad || ScreenMenuOwnsInput || CoopScreenOwnsInput ||
 				ModalBoxOwnsInput || MenuBoxOwnsInput ||
-				ReceiveItemsOwnsInput || DisplayMessageBoxUp || HostBridge.FrontEndGuiIsUp;
+				ReceiveItemsOwnsInput || DisplayMessageBoxUp || HostBridge.FrontEndGuiIsUp ||
+				GamePubGames.Showing.Length != 0;
 			return HostBridge.IsInGame && !menuOwns && !MaskPauseInput &&
 				HostBridge.GetPauseState() is not { ModalMode: not 1 };
 		}

@@ -179,6 +179,17 @@ public static class Engine_UiOptionsPending
 		Engine_UiHostOptionsPage.Current = page;
 	}
 
+	/// <summary>Sets a HOST page row's pending index (a rebind row's captured press, a reset); nothing on a guest page.</summary>
+	public static void SetIndex(int row, int index)
+	{
+		if (Engine_UiHostOptionsPage.Current is not { } host || row < 0 || row >= _index.Length || index < 0)
+		{
+			return;
+		}
+
+		_index[row] = Math.Min(index, Math.Max(0, host.Choices(row) - 1));
+	}
+
 	/// <summary>
 	/// One screen action the host just sent to a HOST page. A guest page's codes move the
 	/// guest's own record, which <see cref="Follow"/> reads back — nothing is stepped here for one.

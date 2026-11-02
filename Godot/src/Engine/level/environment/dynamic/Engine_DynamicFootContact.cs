@@ -1,5 +1,8 @@
 using System;
 using Godot;
+using Refii.Animations;
+using Refii.Core;
+using RigRole = Refii.Animations.Engine_TitleRig.RigRole;
 
 namespace Refii.Level;
 
@@ -68,10 +71,11 @@ public sealed class Engine_DynamicFootBones
         if (!ReferenceEquals(_skeleton, skeleton))
         {
             _skeleton = skeleton;
-            _left = Find(skeleton, "Shadow_L_Heel", "Shadow_L_Foot");
-            _right = Find(skeleton, "Shadow_R_Heel", "Shadow_R_Foot");
-            _leftToe = Find(skeleton, "Shadow_L_Tip", "Shadow_L_Toe");
-            _rightToe = Find(skeleton, "Shadow_R_Tip", "Shadow_R_Toe");
+            Engine_TitleRig rig = Engine_TitleGame.Active.Rig;
+            _left = rig.Bone(skeleton, RigRole.LeftHeel, RigRole.LeftFoot);
+            _right = rig.Bone(skeleton, RigRole.RightHeel, RigRole.RightFoot);
+            _leftToe = rig.Bone(skeleton, RigRole.LeftToeTip, RigRole.LeftToe);
+            _rightToe = rig.Bone(skeleton, RigRole.RightToeTip, RigRole.RightToe);
             if (_left >= 0 && _right >= 0)
             {
                 _leftRest = skeleton.GetBoneGlobalRest(_left);
@@ -86,17 +90,6 @@ public sealed class Engine_DynamicFootBones
             Read(skeleton, world, _left, _leftToe, _leftRest, _leftSole),
             Read(skeleton, world, _right, _rightToe, _rightRest, _rightSole));
         return feet.Left.Position.IsFinite() && feet.Right.Position.IsFinite();
-    }
-
-    private static int Find(Skeleton3D skeleton, string first, string second)
-    {
-        for (int i = 0; i < skeleton.GetBoneCount(); i++)
-        {
-            string name = skeleton.GetBoneName(i);
-            if (string.Equals(name, first, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(name, second, StringComparison.OrdinalIgnoreCase)) return i;
-        }
-        return -1;
     }
 
     private static float SoleHeight(Skeleton3D skeleton, Transform3D heel, int toe)

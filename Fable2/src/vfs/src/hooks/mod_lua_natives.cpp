@@ -15,6 +15,7 @@
 // SURFACE (all under Refii): publish(key, n) value(key) log(text) hash(name)
 //   health(e) -> cur, max · set_health(e, v) · modify_health(e, delta, attacker)
 //   position(e) -> x, y, z · set_position(e, x, y, z)
+//   facing(e) -> x, y, z · velocity(e) -> x, y, z · set_facing(e, x, y [, z])
 //   entity_tint(e, r, g, b [, a]) · entity_untint(e)
 //   entity_alpha(e, a) · entity_scale(e, s) · entity_saturation_mask(e, on) · entity_drawable(e, on)
 //   lock_target(p [, e]) · release_lock(p) · switch_target(p, left) -> target · locked_target(p) -> target
@@ -22,8 +23,11 @@
 //   apply_status(e, kind, seconds [, level [, source]]) · clear_status(e, kind) · has_status(e, kind)
 //   set_speed_multiplier(p, factor) · clear_speed_multiplier(p) · speed_multiplier(p) -> overridden, factor
 //   current_action(e) -> action · action_elapsed(a) -> seconds · action_interruptible(a) · allow_action_interrupt(a)
+//   allow_action_interrupt_at(a, seconds)
 //   action_type(a) -> EScriptableAction · action_name(a) -> its name
-//   living(e) · spell_in_slot(p, slot) -> type · spell_parts(serial) -> table
+//   living(e) · spell_in_slot(p, slot) -> type · spell_parts(serial) -> table · vortex_held(serial) -> { e, .. }
+//   spell_balance(caster, type, level) -> { status_seconds, status_spread, duration, swords }   (refii_mod_spell_balance)
+//   host_serial(serial) -> serial · local_serial(host_serial) -> serial   (refii_mod_host_serial / _local_serial)
 //   knockback(e, x, y, z [, force]) · stagger(e)
 //   play_sound(cue, e [, tag]) · play_sound_at(cue, x, y, z [, tag]) · stop_sound(e, tag [, fade_ms])
 //   play_music(name) · stop_music(name)
@@ -35,16 +39,31 @@
 //   gold(e) · give_gold(e, delta) · item_count(e, def) · add_item(e, def)
 //   experience(e, pool) · give_experience(e, pool, amount) · spend_experience(e, pool, amount)
 //   ability_level(e, type) · spell_serial(spell) -> serial
-//   _cast_spell(caster, type, targeted, target, level, has_pos, px, py, pz, has_dir, dx, dy, dz) -> spell, serial
-//   (cast_spell(caster, type, targeted, target, level [, pos [, dir]]) is the preamble's: it unpacks the tables)
+//   _cast_spell(caster, type, targeted, target, level, has_pos, px, py, pz, has_dir, dx, dy, dz [, tag [, scale
+//   [, at_kind, at_entity, ax, ay, az]]]) -> spell, serial
+//   (cast_spell(caster, type, targeted, target, level [, pos [, dir [, options]]]) is the preamble's: it unpacks the tables)
 //   relation(a, b) · alive(e) · definition(e) · name(e) · player_of(e) · level_name()
 //   player_hero(p) · local_hero() · menu_player() · player_value(p, key [, fallback])
 //   player_set(p, key, v) · player_add(p, key, d [, saved]) · player_save(p, key, v) · player_here(p)
+//   player_value_text(p, key) · player_set_text(p, key, s) · player_save_text(p, key, s)
+//   player_value_hash(p, key) -> "0x…" · player_save_hash(p, key, "0x…")
 //   event_replica() · wheel_switches_target(e)
 //   renown(e) · morality(e) · purity(e) · physique(e) -> fat, height
+//   modify_renown(e, delta) · modify_morality(e, delta) · modify_purity(e, delta)
+//   can_save(p) · save_game(p)
 //   age(e) · inventory(e) · equipped(e) -> melee, ranged · near(x, y, z, r [, creatures])
-//   use_item(p, def) · equip_weapon(p, def) · perform_expression(p, expression) · assign_spell(p, spell)
+//   appearance(p) -> {automatic, tan, ..} · _set_appearance(p, tan, fat, height, strength, skill, will,
+//   morality, purity, age) (set_appearance is the preamble's) · set_appearance_automatic(p, on)
+//   morph_get(p, morph) · morph_set(p, morph, w) -> ok · morph_id(name) -> "0x…" (morph "<mod>.<name>" or "0x…")
+//   use_item(p, def [, opts]) · equip_weapon(p, def [, opts]) · perform_expression(p, expression [, held [, opts]])
+//   assign_spell(p, spell [, opts]) (opts {ungated = true}) · release_expression(p)
+//   sprinting(p) · end_sprint(p) · _set_locomotion(p, key, value|false) · locomotion(p, key)
+//   set_parry(p, window, wedge) · parry(p) -> window, wedge
 //   expressions(p) · spells_known(p) · selected_expression(p) · record_string(def, field) · record_int(def, field)
+//   record_number(def, field) · record_bool(def, field) · record_exists(def) · add_item(e, def [, n]) -> item, added
+//   record_ref(def, field) -> "0x…" · creature_tier(e) -> bits (Refii.CREATURE_ELITE, CREATURE_LIEUTENANT)
+//   charge_spell(p, type, held)
+//   wheel_switches_target(e [, on])
 //   line_of_sight(x1, y1, z1, x2, y2, z2) · spawn(def, x, y, z) · entity(handle) · handle(entity)
 //   forgive_crimes(villager, p) · discovered_crime(villager, p) · perceived_renown(villager, p)
 //   stop_fx(id) · _play_fx(name, x, y, z, e, duration, scale, r, g, b, intensity, loop, ox, oy, oz)
@@ -53,10 +72,14 @@
 //   (message_box is the preamble's: it fills the defaults)
 //   notice(title, text [, seconds [, p]]) · _menu_box(title, text, p, cancelable, n, o1 .. o12)
 //   _mark(e, x, y, z, icon, text, p) (mark is the preamble's) · unmark(id) · fade(p, dir [, seconds])
+//   _world_meter(e, x, y, z, value, max, style, p) (world_meter is the preamble's) · mark_meter(id, value, max [, style])
 //   meter(id, label, value, max [, p [, style]]) · meter_remove(id)
-//   input_claim(p, action, on) · hud_icon(p, element, texture) · hud_slide(p, element, slide) · hud_hold(p, piece, on)
+//   camera_mode(p) · _camera_override(p, mode, fov, pitch_limit, blend, flags) · fov(p) · hide_part(e, part, on [, p])
+//   (camera_override is the preamble's: it unpacks the options table)
+//   _camera_stated(hero, mode) · _camera_hold(hero) · _camera_held(hero, bits)   (the core camera chunk's)
+//   input_claim(p, action, on) · press(p, button, held) · tap(p, button [, ticks]) · hud_icon(p, element, texture) · hud_slide(p, element, slide) · hud_hold(p, piece, on)
 //   _light(e, x, y, z, r, g, b, energy, range, ox, oy, oz, at, flicker, dx, dy, dz, cone, attenuation) (light is the preamble's)
-//   light_remove(id) · send_to_partner(mod, name, payload)
+//   light_remove(id) · send_to_partner(mod, name, payload) · signal(name, payload) · publish_text(key, text)
 //   (menu_box is the preamble's: it unpacks the options table)
 //   _menu_rows(menu, rows, p) · open_screen(id [, p])
 //   (set_menu_rows is the preamble's: it writes the rows table as the bus text)
@@ -67,6 +90,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <utility>
 
 #include <rex/logging.h>
 
@@ -114,6 +139,11 @@ PPC_EXTERN_FUNC(rex_lhScriptEntityRef_Resolve);
 
 namespace refii::vfs {
 bool WriteModEventField(int32_t kind, const char* field, double value);
+// mod_commands.cpp: the camera per player.
+void ModCameraStated(PPCContext& ctx, uint8_t* base, uint32_t hero, int32_t mode);
+bool ModCameraHold(PPCContext& ctx, uint8_t* base, uint32_t hero, int32_t* mode, float* fov, float* pitch, float* blend,
+                   int32_t* flags, uint32_t* revision);
+void ModCameraHeld(uint8_t* base, uint32_t hero, int32_t bits);
 void NoteLuaCancelled();
 void BoxSeatEnter(uint8_t* base, int32_t player);
 void BoxSeatLeave(uint8_t* base);
@@ -215,6 +245,33 @@ struct Lua {
       out[n] = c;
     }
     out[n] = 0;
+  }
+  /// The string at `index` whole, up to `limit` bytes, and its length in `length` (counted to its
+  /// terminator, at most 1 MiB; a longer one is cut to `limit` and the caller decides what a cut
+  /// means). Empty for a non-string.
+  std::string LongString(int32_t index, size_t limit, size_t* length = nullptr) {
+    if (length != nullptr) {
+      *length = 0;
+    }
+    if (Type(index) != kTypeString) {
+      return {};
+    }
+    PPCContext w = Work();
+    w.r4.s64 = index;
+    w.r5.u32 = 0;
+    rex_lua_tolstring(w, base);
+    const uint32_t text = w.r3.u32;
+    if (text < 0x10000u || text >= 0xC0000000u) {
+      return {};
+    }
+    size_t size = 0;
+    while (size < (1u << 20) && text + size < 0xC0000000u && base[text + size] != 0) {
+      ++size;
+    }
+    if (length != nullptr) {
+      *length = size;
+    }
+    return std::string(reinterpret_cast<const char*>(base + text), size < limit ? size : limit);
   }
   void PushNil() {
     PPCContext w = Work();
@@ -411,6 +468,41 @@ REFII_LUA_NATIVE(NativePosition) {
   }
 }
 
+// Refii.facing(e) / Refii.velocity(e) -> x, y, z (nil for none): Physics.GetFacingVector /
+// GetVelocity (refii_mod_facing / refii_mod_velocity), guest axes, z up.
+REFII_LUA_NATIVE(NativeFacing) {
+  float xyz[3] = {0, 0, 0};
+  if (refii_mod_facing(&lua.ctx, lua.base, lua.Entity(1), xyz) != 0) {
+    lua.PushNumber(xyz[0]);
+    lua.PushNumber(xyz[1]);
+    lua.PushNumber(xyz[2]);
+    RESULTS(3);
+  }
+  lua.PushNil();
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeVelocity) {
+  float xyz[3] = {0, 0, 0};
+  if (refii_mod_velocity(&lua.ctx, lua.base, lua.Entity(1), xyz) != 0) {
+    lua.PushNumber(xyz[0]);
+    lua.PushNumber(xyz[1]);
+    lua.PushNumber(xyz[2]);
+    RESULTS(3);
+  }
+  lua.PushNil();
+  RESULTS(1);
+}
+
+// Refii.set_facing(e, x, y [, z]) -> bool: Physics.SetFacingVector (a hero's through
+// Player.SetFacingVector), refii_mod_set_facing; the game keeps the facing level (it drops z).
+REFII_LUA_NATIVE(NativeSetFacing) {
+  const float xyz[3] = {static_cast<float>(lua.Number(2)), static_cast<float>(lua.Number(3)),
+                        static_cast<float>(lua.Number(4))};
+  lua.PushBoolean(refii_mod_set_facing(&lua.ctx, lua.base, lua.Entity(1), xyz) != 0);
+  RESULTS(1);
+}
+
 REFII_LUA_NATIVE(NativeSetPosition) {
   const float xyz[3] = {static_cast<float>(lua.Number(2)), static_cast<float>(lua.Number(3)),
                         static_cast<float>(lua.Number(4))};
@@ -591,6 +683,13 @@ REFII_LUA_NATIVE(NativeAllowActionInterrupt) {
   RESULTS(1);
 }
 
+// Refii.allow_action_interrupt_at(a, seconds): the grant once a's clock reaches seconds
+// (refii_mod_allow_action_interrupt_at). True when granted or waiting.
+REFII_LUA_NATIVE(NativeAllowActionInterruptAt) {
+  lua.PushBoolean(refii_mod_allow_action_interrupt_at(&lua.ctx, lua.base, lua.Entity(1), static_cast<float>(lua.Number(2))) != 0);
+  RESULTS(1);
+}
+
 // Refii.action_type(a) -> EScriptableAction (0..88) or nil · Refii.action_name(a) -> its name or
 // nil: what the action was made from (refii_mod_action_type, the factory seam's record).
 REFII_LUA_NATIVE(NativeActionType) {
@@ -670,6 +769,78 @@ REFII_LUA_NATIVE(NativeSpellParts) {
   }
   lua.PushBoolean(parts.exploded != 0);
   lua.SetField(-2, "exploded");
+  RESULTS(1);
+}
+
+// Refii.vortex_held(serial) -> { e1, .. } (handles, the vortex's own list order), or nil when no
+// live vortex carries `serial` (refii_mod_vortex_held).
+REFII_LUA_NATIVE(NativeVortexHeld) {
+  uint32_t held[64];
+  const int32_t count =
+      refii_mod_vortex_held(lua.base, static_cast<uint32_t>(Lua::Clamp(lua.Number(1), 0.0, 4294967295.0)), held, 64);
+  if (count < 0) {
+    lua.PushNil();
+    RESULTS(1);
+    return;
+  }
+  lua.NewTable();
+  for (int32_t i = 0; i < count && i < 64; ++i) {
+    lua.PushNumber(refii_mod_handle(held[i]));
+    lua.RawSetI(-2, i + 1);
+  }
+  RESULTS(1);
+}
+
+// Refii.spell_balance(caster, type, level) -> { status_seconds, status_spread, duration, swords }: one
+// power of a spell as its Targeted class's own data read loads it for the caster's definitions, a
+// field the class does not carry absent; nil for another type or a caster with no spell manager
+// (refii_mod_spell_balance).
+REFII_LUA_NATIVE(NativeSpellBalance) {
+  refii_mod_cast_balance balance{};
+  if (refii_mod_spell_balance(&lua.ctx, lua.base, lua.Entity(1), static_cast<int32_t>(lua.Number(2)),
+                              static_cast<int32_t>(lua.Number(3)), &balance) == 0) {
+    lua.PushNil();
+    RESULTS(1);
+    return;
+  }
+  lua.NewTable();
+  if (balance.status_seconds >= 0.0f) {
+    lua.PushNumber(balance.status_seconds);
+    lua.SetField(-2, "status_seconds");
+    lua.PushNumber(balance.status_spread);
+    lua.SetField(-2, "status_spread");
+  }
+  if (balance.duration >= 0.0f) {
+    lua.PushNumber(balance.duration);
+    lua.SetField(-2, "duration");
+  }
+  if (balance.swords >= 0) {
+    lua.PushNumber(balance.swords);
+    lua.SetField(-2, "swords");
+  }
+  RESULTS(1);
+}
+
+// Refii.host_serial(serial) -> the online host's serial of this machine's spell `serial`, and
+// Refii.local_serial(host_serial) -> this machine's spell for the host's; nil while the cast is not
+// paired (refii_mod_host_serial / refii_mod_local_serial: itself on the host, alone, local co-op).
+REFII_LUA_NATIVE(NativeHostSerial) {
+  const uint32_t serial = refii_mod_host_serial(lua.base, static_cast<uint32_t>(Lua::Clamp(lua.Number(1), 0.0, 4294967295.0)));
+  if (serial == 0) {
+    lua.PushNil();
+  } else {
+    lua.PushNumber(serial);
+  }
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeLocalSerial) {
+  const uint32_t serial = refii_mod_local_serial(lua.base, static_cast<uint32_t>(Lua::Clamp(lua.Number(1), 0.0, 4294967295.0)));
+  if (serial == 0) {
+    lua.PushNil();
+  } else {
+    lua.PushNumber(serial);
+  }
   RESULTS(1);
 }
 
@@ -865,9 +1036,15 @@ REFII_LUA_NATIVE(NativeItemCount) {
   RESULTS(1);
 }
 
+// Refii.add_item(e, def [, n]) -> item, added: n of def (1 when nil; at most 100) through the
+// game's own add (refii_mod_add_items); the last item's handle (nil for none) and how many were added.
 REFII_LUA_NATIVE(NativeAddItem) {
-  lua.PushHandle(refii_mod_add_item(&lua.ctx, lua.base, lua.Entity(1), lua.Hash(2)));
-  RESULTS(1);
+  const int32_t count = lua.Type(3) == kTypeNumber ? lua.Int(3) : 1;
+  uint32_t last = 0u;
+  const int32_t added = refii_mod_add_items(&lua.ctx, lua.base, lua.Entity(1), lua.Hash(2), count, &last);
+  lua.PushHandle(last);
+  lua.PushNumber(added);
+  RESULTS(2);
 }
 
 REFII_LUA_NATIVE(NativeExperience) {
@@ -903,8 +1080,10 @@ REFII_LUA_NATIVE(NativeAbilityLevel) {
 }
 
 // Refii._cast_spell(caster, type, targeted, target, level, has_pos, px, py, pz, has_dir, dx, dy,
-// dz) -> spell, serial: refii_mod_cast_spell with the start position and facing when stated (the
-// preamble's Refii.cast_spell unpacks its pos / dir tables, as play_fx does its options). The
+// dz [, tag [, damage_scale [, at_kind, at_entity, ax, ay, az]]]) -> spell, serial:
+// refii_mod_cast_spell_with with the start position and facing when stated, the cast's tag and
+// hit scale, and where it goes (refii_mod_cast_options; at_kind REFII_MOD_CAST_AT_*; the preamble's
+// Refii.cast_spell unpacks its pos / dir / options tables, as play_fx does its options). The
 // serial is read from the object the factory returned, so a Lua mod knows its own cast by the
 // number its hits carry — the object's spell_created is raised inside this call and reaches Lua
 // deferred, after the chunk. Nil, nil for no cast.
@@ -914,8 +1093,17 @@ REFII_LUA_NATIVE(NativeCastSpell) {
                         static_cast<float>(lua.Number(9))};
   const float dir[3] = {static_cast<float>(lua.Number(11)), static_cast<float>(lua.Number(12)),
                         static_cast<float>(lua.Number(13))};
-  const uint32_t spell = refii_mod_cast_spell(&lua.ctx, lua.base, lua.Entity(1), lua.Int(2), targeted ? 1 : 0, lua.Entity(4),
-                                              lua.Int(5), lua.Int(6) != 0 ? pos : nullptr, lua.Int(10) != 0 ? dir : nullptr);
+  refii_mod_cast_options options{};
+  options.tag = lua.Int(14);
+  options.damage_scale = lua.Type(15) == kTypeNumber ? static_cast<float>(lua.Number(15)) : 1.0f;
+  options.at_kind = lua.Int(16);
+  options.at_entity = lua.Entity(17);
+  options.at_point[0] = static_cast<float>(lua.Number(18));
+  options.at_point[1] = static_cast<float>(lua.Number(19));
+  options.at_point[2] = static_cast<float>(lua.Number(20));
+  const uint32_t spell = refii_mod_cast_spell_with(&lua.ctx, lua.base, lua.Entity(1), lua.Int(2), targeted ? 1 : 0,
+                                                   lua.Entity(4), lua.Int(5), lua.Int(6) != 0 ? pos : nullptr,
+                                                   lua.Int(10) != 0 ? dir : nullptr, &options);
   lua.PushHandle(spell);
   const uint32_t serial = refii_mod_spell_serial(lua.base, spell);
   if (serial != 0) {
@@ -1146,8 +1334,69 @@ REFII_LUA_NATIVE(NativePlayerSave) {
   RESULTS(0);
 }
 
+// Typed values in the same store (refii_mod_player_text / _hash): a text kept exactly, a hash as
+// its "0x%08x" text — a record hash survives where a float would not.
+REFII_LUA_NATIVE(NativePlayerValueText) {
+  char key[128];
+  lua.String(2, key, sizeof(key));
+  char text[REFII_MOD_PLAYER_TEXT_MAX + 1];
+  if (key[0] != 0 && refii_mod_player_text(lua.Int(1), key, text, sizeof(text)) >= 0) {
+    lua.PushLongString(text);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativePlayerSetText) {
+  char key[128];
+  lua.String(2, key, sizeof(key));
+  const std::string text = lua.LongString(3, REFII_MOD_PLAYER_TEXT_MAX);
+  if (key[0] != 0) {
+    refii_mod_player_set_text(lua.Int(1), key, text.c_str());
+  }
+  RESULTS(0);
+}
+
+REFII_LUA_NATIVE(NativePlayerSaveText) {
+  char key[128];
+  lua.String(2, key, sizeof(key));
+  const std::string text = lua.LongString(3, REFII_MOD_PLAYER_TEXT_MAX);
+  if (key[0] != 0) {
+    refii_mod_player_save_text(lua.Int(1), key, text.c_str());
+  }
+  RESULTS(0);
+}
+
+REFII_LUA_NATIVE(NativePlayerValueHash) {
+  char key[128];
+  lua.String(2, key, sizeof(key));
+  uint32_t hash = 0;
+  if (key[0] != 0 && refii_mod_player_hash(lua.Int(1), key, &hash) != 0) {
+    lua.PushHash(hash);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativePlayerSaveHash) {
+  char key[128];
+  lua.String(2, key, sizeof(key));
+  if (key[0] != 0) {
+    refii_mod_player_save_hash(lua.Int(1), key, lua.Hash(3));
+  }
+  RESULTS(0);
+}
+
 REFII_LUA_NATIVE(NativePlayerHere) {
   lua.PushBoolean(refii_mod_player_here(lua.Int(1)) != 0);
+  RESULTS(1);
+}
+
+// Refii.attack_mode(p): the keyboard's attack button mode for p (1 melee, 2 ranged, 3 magic), 0 none.
+REFII_LUA_NATIVE(NativeAttackMode) {
+  lua.PushNumber(refii_mod_attack_mode(lua.Int(1)));
   RESULTS(1);
 }
 
@@ -1391,10 +1640,17 @@ REFII_LUA_NATIVE(NativeFocus) {
   RESULTS(1);
 }
 
-// Refii.wheel_switches_target(e): e's target lock switches by the mouse wheel this tick (call it
-// each tick the lock holds; refii_mod_wheel_switches_target).
+// Refii.wheel_switches_target(e [, on]): e's target lock switches by the mouse wheel — with e
+// alone for this tick (call it each tick the lock holds; refii_mod_wheel_switches_target), with on
+// (true / false) STICKY until off or the lock goes (refii_mod_wheel_switches_target_sticky).
 REFII_LUA_NATIVE(NativeWheelSwitchesTarget) {
-  refii_mod_wheel_switches_target(lua.base, lua.Entity(1));
+  const int32_t kind = lua.Type(2);
+  if (kind == 1 || kind == kTypeNumber) {
+    const bool on = kind == 1 ? lua.Boolean(2) : lua.Int(2) != 0;
+    refii_mod_wheel_switches_target_sticky(&lua.ctx, lua.base, lua.Entity(1), on ? 1 : 0);
+  } else {
+    refii_mod_wheel_switches_target(lua.base, lua.Entity(1));
+  }
   RESULTS(0);
 }
 
@@ -1476,6 +1732,76 @@ REFII_LUA_NATIVE(NativePlayerFor) {
   RESULTS(1);
 }
 
+// The camera per player (refii_mod.h refii_mod_camera_*). The public three, and the core camera
+// chunk's three (Godot/src/Titles/Fable2/host/CoopHeroLua.cs) that state the mode and apply the hold.
+// Refii.camera_mode(p) -> ECameraMode, -1 none.
+REFII_LUA_NATIVE(NativeCameraMode) {
+  lua.PushNumber(refii_mod_camera_mode(lua.Int(1)));
+  RESULTS(1);
+}
+
+// Refii._camera_override(p, mode, fov, pitch_limit, blend, flags) -> stated (camera_override is the
+// preamble's: it unpacks the options table).
+REFII_LUA_NATIVE(NativeCameraOverride) {
+  lua.PushBoolean(refii_mod_camera_override(lua.Int(1), lua.Int(2), static_cast<float>(lua.Number(3)),
+                                            static_cast<float>(lua.Number(4)), static_cast<float>(lua.Number(5)),
+                                            lua.Int(6)) != 0);
+  RESULTS(1);
+}
+
+// Refii.fov(p) -> degrees (refii_mod_camera_fov), 0 with no camera.
+REFII_LUA_NATIVE(NativeCameraFov) {
+  lua.PushNumber(refii_mod_camera_fov(lua.base, lua.Int(1)));
+  RESULTS(1);
+}
+
+// Refii._camera_stated(hero, mode): hero (a game Entity or a handle) has mode active.
+REFII_LUA_NATIVE(NativeCameraStated) {
+  const uint32_t hero = EntityArgument(lua, 1);
+  if (hero != 0u) {
+    refii::vfs::ModCameraStated(lua.ctx, lua.base, hero, lua.Int(2));
+  }
+  RESULTS(0);
+}
+
+// Refii._camera_hold(hero) -> mode, fov, pitch_limit, blend, flags, revision; nil with no hold in force.
+REFII_LUA_NATIVE(NativeCameraHold) {
+  int32_t mode = 0, flags = 0;
+  float fov = 0.0f, pitch = 0.0f, blend = -1.0f;
+  uint32_t revision = 0;
+  const uint32_t hero = EntityArgument(lua, 1);
+  if (hero == 0u || !refii::vfs::ModCameraHold(lua.ctx, lua.base, hero, &mode, &fov, &pitch, &blend, &flags, &revision)) {
+    lua.PushNil();
+    RESULTS(1);
+    return;
+  }
+  lua.PushNumber(mode);
+  lua.PushNumber(fov);
+  lua.PushNumber(pitch);
+  lua.PushNumber(blend);
+  lua.PushNumber(flags);
+  lua.PushNumber(revision);
+  RESULTS(6);
+}
+
+// Refii._camera_held(hero, bits): the halves of hero's override record the hold wrote and still stand.
+REFII_LUA_NATIVE(NativeCameraHeld) {
+  const uint32_t hero = EntityArgument(lua, 1);
+  if (hero != 0u) {
+    refii::vfs::ModCameraHeld(lua.base, hero, lua.Int(2));
+  }
+  RESULTS(0);
+}
+
+// Refii.hide_part(e, part, on [, p]) -> posted (refii_mod_hide_part_for: drawing only, Godot's
+// skeleton; p 1 or 2 that player's view alone, absent or 0 every view).
+REFII_LUA_NATIVE(NativeHidePart) {
+  char part[128];
+  lua.String(2, part, sizeof(part));
+  lua.PushBoolean(refii_mod_hide_part_for(EntityArgument(lua, 1), part, lua.Boolean(3) ? 1 : 0, lua.Int(4)) != 0);
+  RESULTS(1);
+}
+
 REFII_LUA_NATIVE(NativeRenown) {
   int32_t renown = 0;
   if (refii_mod_renown(&lua.ctx, lua.base, lua.Entity(1), &renown) != 0) {
@@ -1506,6 +1832,36 @@ REFII_LUA_NATIVE(NativePurity) {
   RESULTS(1);
 }
 
+// Refii.can_save(p) -> bool: Player.IsAbleToSaveGame for player p's hero (refii_mod_can_save).
+REFII_LUA_NATIVE(NativeCanSave) {
+  lua.PushBoolean(refii_mod_can_save(&lua.ctx, lua.base, lua.Int(1)) != 0);
+  RESULTS(1);
+}
+
+// Refii.save_game(p) -> bool: AutoSaveGame(true, true) where p may save (refii_mod_save_game);
+// save_written follows per package.
+REFII_LUA_NATIVE(NativeSaveGame) {
+  lua.PushBoolean(refii_mod_save_game(&lua.ctx, lua.base, lua.Int(1)) != 0);
+  RESULTS(1);
+}
+
+// Refii.modify_renown(e, delta) / modify_morality(e, delta) / modify_purity(e, delta) -> bool:
+// the game's own Stats.Modify* bodies (refii_mod_modify_renown ..), so the events fire.
+REFII_LUA_NATIVE(NativeModifyRenown) {
+  lua.PushBoolean(refii_mod_modify_renown(&lua.ctx, lua.base, lua.Entity(1), lua.Int(2)) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeModifyMorality) {
+  lua.PushBoolean(refii_mod_modify_morality(&lua.ctx, lua.base, lua.Entity(1), static_cast<float>(lua.Number(2))) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeModifyPurity) {
+  lua.PushBoolean(refii_mod_modify_purity(&lua.ctx, lua.base, lua.Entity(1), static_cast<float>(lua.Number(2))) != 0);
+  RESULTS(1);
+}
+
 REFII_LUA_NATIVE(NativePhysique) {
   float fat = 0.0f, height = 0.0f;
   if (refii_mod_physique(lua.base, lua.Entity(1), &fat, &height) != 0) {
@@ -1528,7 +1884,89 @@ REFII_LUA_NATIVE(NativeAge) {
   RESULTS(1);
 }
 
-// Refii.inventory(e): { {definition = "0x…", count = n}, ... } in the game's order, or nil.
+// Refii.appearance(p) -> {automatic, tan, fat, height, strength, skill, will, morality, purity, age}
+// or nil: the look in force for player p's hero (refii_mod_appearance).
+REFII_LUA_NATIVE(NativeAppearance) {
+  refii_mod_appearance_t look{};
+  if (refii_mod_appearance(&lua.ctx, lua.base, lua.Int(1), &look) == 0) {
+    lua.PushNil();
+    RESULTS(1);
+    return;
+  }
+  lua.NewTable();
+  lua.PushBoolean(look.automatic != 0);
+  lua.SetField(-2, "automatic");
+  const std::pair<const char*, float> inputs[] = {
+      {"tan", look.tan},     {"fat", look.fat},           {"height", look.height},
+      {"strength", look.strength}, {"skill", look.skill}, {"will", look.will},
+      {"morality", look.morality}, {"purity", look.purity}, {"age", look.age},
+  };
+  for (const auto& [name, value] : inputs) {
+    lua.PushNumber(value);
+    lua.SetField(-2, name);
+  }
+  RESULTS(1);
+}
+
+// Refii._set_appearance(p, tan, fat, height, strength, skill, will, morality, purity, age): the
+// preamble's Refii.set_appearance(p, {..}); a nil input keeps how it looks (refii_mod_set_appearance).
+REFII_LUA_NATIVE(NativeSetAppearance) {
+  const auto input = [&lua](int32_t index) {
+    return lua.Type(index) == kTypeNumber ? static_cast<float>(lua.Number(index)) : NAN;
+  };
+  const refii_mod_appearance_t look = {0, input(2), input(3), input(4), input(5), input(6),
+                                       input(7), input(8), input(9), input(10)};
+  refii_mod_set_appearance(&lua.ctx, lua.base, lua.Int(1), &look);
+  RESULTS(0);
+}
+
+// Refii.set_appearance_automatic(p, on): the game's own look again (true), or the stated one (false).
+REFII_LUA_NATIVE(NativeSetAppearanceAutomatic) {
+  refii_mod_set_appearance_automatic(&lua.ctx, lua.base, lua.Int(1), lua.Boolean(2) ? 1 : 0);
+  RESULTS(0);
+}
+
+// A mod morph as a script names it: "<mod>.<name>" (refii_mod_morph_id) or its id "0x…"; 0 for none.
+// A Lua number is a 32-bit float, so an id is a string.
+uint32_t MorphArgument(Lua& lua, int32_t index) {
+  char text[160];
+  lua.String(index, text, sizeof(text));
+  if (text[0] == 0) {
+    return 0;
+  }
+  if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+    return static_cast<uint32_t>(std::strtoul(text + 2, nullptr, 16));
+  }
+  return refii_mod_morph_id(text);
+}
+
+// Refii.morph_get(p, morph) -> weight, or nil for a morph no enabled mod declares (refii_mod_morph_weight).
+REFII_LUA_NATIVE(NativeMorphGet) {
+  float weight = 0.0f;
+  if (refii_mod_morph_weight(lua.Int(1), MorphArgument(lua, 2), &weight) != 0) {
+    lua.PushNumber(weight);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+// Refii.morph_set(p, morph, w) -> true when the morph is declared (refii_mod_set_morph_weight).
+REFII_LUA_NATIVE(NativeMorphSet) {
+  lua.PushBoolean(refii_mod_set_morph_weight(lua.Int(1), MorphArgument(lua, 2), static_cast<float>(lua.Number(3))) != 0);
+  RESULTS(1);
+}
+
+// Refii.morph_id("<mod>.<name>") -> "0x…", the MorphType its records carry.
+REFII_LUA_NATIVE(NativeMorphId) {
+  char hex[16];
+  std::snprintf(hex, sizeof(hex), "0x%08x", MorphArgument(lua, 1));
+  lua.PushString(hex);
+  RESULTS(1);
+}
+
+// Refii.inventory(e): { {definition = "0x…", count = n, usable = bool}, ... } in the game's order,
+// or nil; usable is the item's own UsableFromInventory test (refii_mod_inventory_usable).
 REFII_LUA_NATIVE(NativeInventory) {
   const uint32_t entity = lua.Entity(1);
   if (refii_mod_component(lua.base, entity, 13) == 0) {
@@ -1545,6 +1983,8 @@ REFII_LUA_NATIVE(NativeInventory) {
     lua.SetField(-2, "definition");
     lua.PushNumber(count);
     lua.SetField(-2, "count");
+    lua.PushBoolean(refii_mod_inventory_usable(&lua.ctx, lua.base, entity, i) != 0);
+    lua.SetField(-2, "usable");
     lua.RawSetI(-2, i + 1);
   }
   RESULTS(1);
@@ -1571,26 +2011,111 @@ REFII_LUA_NATIVE(NativeEquipped) {
 }
 
 // Refii.near(x, y, z, radius [, creatures_only]): handles, nearest first (at most 2048).
-// The quick menu's actions for player p (refii_mod_use_item ..): Refii.use_item(p, def) ·
-// equip_weapon(p, def) · perform_expression(p, expression) · assign_spell(p, spell) -> performed.
+/// The REFII_QUICK_* flags an options table at `index` states: `ungated` (and `held`) true.
+uint32_t QuickFlags(Lua& lua, int32_t index) {
+  if (lua.Type(index) != kTypeTable) {
+    return 0u;
+  }
+  uint32_t flags = 0u;
+  lua.GetField(index, "ungated");
+  flags |= lua.Boolean(-1) ? REFII_QUICK_UNGATED : 0u;
+  lua.SetTop(-2);
+  lua.GetField(index, "held");
+  flags |= lua.Boolean(-1) ? REFII_QUICK_HELD : 0u;
+  lua.SetTop(-2);
+  return flags;
+}
+
+// The quick menu's actions for player p (refii_mod_quick_action): Refii.use_item(p, def [, opts]) ·
+// equip_weapon(p, def [, opts]) · perform_expression(p, expression [, held [, opts]]) ·
+// assign_spell(p, spell [, opts]) -> performed. opts {ungated = true} skips the quick menu's gate
+// (still refused for a dead hero and in a cutscene); held keeps the expression unreleased.
 REFII_LUA_NATIVE(NativeUseItem) {
-  lua.PushBoolean(refii_mod_use_item(&lua.ctx, lua.base, lua.Int(1), lua.Hash(2)) != 0);
+  lua.PushBoolean(refii_mod_quick_action(&lua.ctx, lua.base, lua.Int(1), 1, lua.Hash(2), QuickFlags(lua, 3) & REFII_QUICK_UNGATED) != 0);
   RESULTS(1);
 }
 
 REFII_LUA_NATIVE(NativeEquipWeapon) {
-  lua.PushBoolean(refii_mod_equip_weapon(&lua.ctx, lua.base, lua.Int(1), lua.Hash(2)) != 0);
+  lua.PushBoolean(refii_mod_quick_action(&lua.ctx, lua.base, lua.Int(1), 3, lua.Hash(2), QuickFlags(lua, 3) & REFII_QUICK_UNGATED) != 0);
   RESULTS(1);
 }
 
 REFII_LUA_NATIVE(NativePerformExpression) {
-  lua.PushBoolean(refii_mod_perform_expression(&lua.ctx, lua.base, lua.Int(1), lua.Hash(2)) != 0);
+  uint32_t flags = QuickFlags(lua, 3) | QuickFlags(lua, 4);
+  if (lua.Type(3) == 1 && lua.Boolean(3)) {
+    flags |= REFII_QUICK_HELD;
+  }
+  lua.PushBoolean(refii_mod_quick_action(&lua.ctx, lua.base, lua.Int(1), 2, lua.Hash(2), flags) != 0);
   RESULTS(1);
 }
 
 REFII_LUA_NATIVE(NativeAssignSpell) {
-  lua.PushBoolean(refii_mod_assign_spell(&lua.ctx, lua.base, lua.Int(1), lua.Int(2)) != 0);
+  const int32_t spell = lua.Int(2);
+  lua.PushBoolean(spell >= 0 && refii_mod_quick_action(&lua.ctx, lua.base, lua.Int(1), 4, static_cast<uint32_t>(spell),
+                                                       QuickFlags(lua, 3) & REFII_QUICK_UNGATED) != 0);
   RESULTS(1);
+}
+
+// Refii.release_expression(p) -> bool: the performer's own end of a held expression.
+REFII_LUA_NATIVE(NativeReleaseExpression) {
+  lua.PushBoolean(refii_mod_release_expression(&lua.ctx, lua.base, lua.Int(1)) != 0);
+  RESULTS(1);
+}
+
+// Refii.sprinting(p) -> bool · Refii.end_sprint(p) -> bool: the sprint component's flag, and the
+// release's own end (refii_mod_end_sprint).
+REFII_LUA_NATIVE(NativeSprinting) {
+  lua.PushBoolean(refii_mod_sprinting(lua.base, lua.Int(1)) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeEndSprint) {
+  lua.PushBoolean(refii_mod_end_sprint(&lua.ctx, lua.base, lua.Int(1)) != 0);
+  RESULTS(1);
+}
+
+// Refii._set_locomotion(p, key, value) -> bool: one LocomotionData field on player p's hero's own
+// table, held (refii_mod_set_locomotion); false (or nil) as the value stops holding it. The
+// preamble's Refii.set_locomotion(p, {key = value, ..}) calls it per field.
+REFII_LUA_NATIVE(NativeSetLocomotion) {
+  char key[64];
+  lua.String(2, key, sizeof(key));
+  const float value = lua.Type(3) == kTypeNumber ? static_cast<float>(lua.Number(3)) : NAN;
+  lua.PushBoolean(refii_mod_set_locomotion(&lua.ctx, lua.base, lua.Int(1), key, value) != 0);
+  RESULTS(1);
+}
+
+// Refii.locomotion(p, key) -> number or nil: what player p's hero's own table holds for key.
+REFII_LUA_NATIVE(NativeLocomotion) {
+  char key[64];
+  lua.String(2, key, sizeof(key));
+  float value = 0.0f;
+  if (refii_mod_locomotion(&lua.ctx, lua.base, lua.Int(1), key, &value) != 0) {
+    lua.PushNumber(value);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+// Refii.set_parry(p, window, wedge) -> bool (nil leaves one) · Refii.parry(p) -> window, wedge.
+REFII_LUA_NATIVE(NativeSetParry) {
+  const float window = lua.Type(2) == kTypeNumber ? static_cast<float>(lua.Number(2)) : NAN;
+  const float wedge = lua.Type(3) == kTypeNumber ? static_cast<float>(lua.Number(3)) : NAN;
+  lua.PushBoolean(refii_mod_set_parry(&lua.ctx, lua.base, lua.Int(1), window, wedge) != 0);
+  RESULTS(1);
+}
+
+REFII_LUA_NATIVE(NativeParry) {
+  float window = 0.0f, wedge = 0.0f;
+  if (refii_mod_parry(&lua.ctx, lua.base, lua.Int(1), &window, &wedge) != 0) {
+    lua.PushNumber(window);
+    lua.PushNumber(wedge);
+    RESULTS(2);
+  } else {
+    lua.PushNil();
+    RESULTS(1);
+  }
 }
 
 // Refii.expressions(p): { {record = "0x…", id = "0x…", uses = n}, … } the performer knows (id is
@@ -1675,6 +2200,64 @@ REFII_LUA_NATIVE(NativeRecordInt) {
     lua.PushNumber(static_cast<double>(value));
   } else {
     lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+// Refii.record_number(def, field): a GDB record's inherited float (or int / enum) property, or nil.
+REFII_LUA_NATIVE(NativeRecordNumber) {
+  char field[64];
+  lua.String(2, field, sizeof(field));
+  float value = 0.0f;
+  if (refii_mod_record_number(&lua.ctx, lua.base, lua.Hash(1), field, &value) != 0) {
+    lua.PushNumber(static_cast<double>(value));
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+// Refii.record_bool(def, field): a GDB record's inherited bool property, true / false, or nil.
+REFII_LUA_NATIVE(NativeRecordBool) {
+  char field[64];
+  lua.String(2, field, sizeof(field));
+  int32_t value = 0;
+  if (refii_mod_record_bool(&lua.ctx, lua.base, lua.Hash(1), field, &value) != 0) {
+    lua.PushBoolean(value != 0);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+// Refii.record_exists(def): whether the database has the record.
+REFII_LUA_NATIVE(NativeRecordExists) {
+  lua.PushBoolean(refii_mod_record_exists(&lua.ctx, lua.base, lua.Hash(1)) != 0);
+  RESULTS(1);
+}
+
+// Refii.record_ref(def, field): the record a GDB reference property (type 6) names, "0x…", or nil
+// (refii_mod_record_ref).
+REFII_LUA_NATIVE(NativeRecordRef) {
+  char field[64];
+  lua.String(2, field, sizeof(field));
+  uint32_t value = 0u;
+  if (refii_mod_record_ref(&lua.ctx, lua.base, lua.Hash(1), field, &value) != 0) {
+    lua.PushHash(value);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+// Refii.creature_tier(e): the creature's rank bits as its definition states them (refii_mod_creature_tier),
+// nil without a creature component.
+REFII_LUA_NATIVE(NativeCreatureTier) {
+  const int32_t tier = refii_mod_creature_tier(lua.base, lua.Entity(1));
+  if (tier < 0) {
+    lua.PushNil();
+  } else {
+    lua.PushNumber(static_cast<double>(tier));
   }
   RESULTS(1);
 }
@@ -1769,6 +2352,36 @@ REFII_LUA_NATIVE(NativeUnmark) {
   RESULTS(0);
 }
 
+// Refii._world_meter(e, x, y, z, value, max, style, p): refii_mod_world_meter — a bar on the marker
+// channel over handle e (0: at x, y, z); the preamble's Refii.world_meter takes a handle or {x, y, z}.
+// The id Refii.mark_meter and Refii.unmark take, or nil.
+REFII_LUA_NATIVE(NativeWorldMeter) {
+  const uint32_t handle = static_cast<uint32_t>(Lua::Clamp(lua.Number(1), 0.0, 4294967295.0));
+  const float xyz[3] = {static_cast<float>(lua.Number(2)), static_cast<float>(lua.Number(3)),
+                        static_cast<float>(lua.Number(4))};
+  char style[32];
+  lua.String(7, style, sizeof(style));
+  const uint32_t entity = handle != 0u ? refii_mod_handle_address(handle) : 0u;
+  const uint32_t id = refii_mod_world_meter(lua.Int(8), entity, handle != 0u ? nullptr : xyz,
+                                            static_cast<float>(lua.Number(5)), static_cast<float>(lua.Number(6)), style);
+  if (id != 0) {
+    lua.PushNumber(id);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
+// Refii.mark_meter(id, value, max [, style]): refii_mod_mark_meter — a marker's fill stated or
+// restated in place; max 0 takes it off. True when posted.
+REFII_LUA_NATIVE(NativeMarkMeter) {
+  char style[32];
+  lua.String(4, style, sizeof(style));
+  lua.PushBoolean(refii_mod_mark_meter(static_cast<uint32_t>(Lua::Clamp(lua.Number(1), 0.0, 4294967295.0)),
+                                       static_cast<float>(lua.Number(2)), static_cast<float>(lua.Number(3)), style) != 0);
+  RESULTS(1);
+}
+
 // Refii.fade(p, dir [, seconds]): refii_mod_fade — player p's screen (0 or nil: every player
 // played here) "to_black" / "out" or "from_black" / "in" over seconds (0 or nil: at once). True
 // when posted.
@@ -1809,6 +2422,34 @@ REFII_LUA_NATIVE(NativeInputClaim) {
   char action[96];
   lua.String(2, action, sizeof(action));
   lua.PushBoolean(refii_mod_input_claim(lua.Int(1), action, lua.Boolean(3) ? 1 : 0) != 0);
+  RESULTS(1);
+}
+
+// Refii.press(p, button, held): refii_mod_press — held true / a number holds the button on player p's
+// pad (a trigger pulled by it: true or 1 full, 2..255 that much), false / nil / 0 releases. True when posted.
+REFII_LUA_NATIVE(NativePress) {
+  char button[32];
+  lua.String(2, button, sizeof(button));
+  const int32_t held = lua.Type(3) == kTypeNumber ? lua.Int(3) : (lua.Boolean(3) ? 1 : 0);
+  lua.PushBoolean(refii_mod_press(lua.Int(1), button, held) != 0);
+  RESULTS(1);
+}
+
+// Refii.charge_spell(p, type, held): refii_mod_charge_spell — held true charges spell `type` through
+// player p's own magic charge (its tiers lent, no spell_pick), false lets the button go; the slots come
+// back once the charge is over. True when the charge was taken (false: not known on tier one).
+REFII_LUA_NATIVE(NativeChargeSpell) {
+  const int32_t held = lua.Type(3) == kTypeNumber ? lua.Int(3) : (lua.Boolean(3) ? 1 : 0);
+  lua.PushBoolean(refii_mod_charge_spell(&lua.ctx, lua.base, lua.Int(1), lua.Int(2), held) != 0);
+  RESULTS(1);
+}
+
+// Refii.tap(p, button [, ticks]): refii_mod_tap — down for at least `ticks` guest ticks (1 when absent).
+REFII_LUA_NATIVE(NativeTap) {
+  char button[32];
+  lua.String(2, button, sizeof(button));
+  const int32_t ticks = lua.Type(3) == kTypeNumber ? lua.Int(3) : 1;
+  lua.PushBoolean(refii_mod_tap(lua.Int(1), button, ticks) != 0);
   RESULTS(1);
 }
 
@@ -1898,6 +2539,26 @@ REFII_LUA_NATIVE(NativeSendToPartner) {
   RESULTS(1);
 }
 
+// Refii.signal(name, payload): refii_mod_signal — "<mod>.<name>" and any text (at most
+// REFII_MOD_SIGNAL_PAYLOAD_MAX bytes, longer cut with a mod error) to Godot on this machine, raised
+// there as RefiiHost.mod_signal(mod, name, payload). True when posted.
+REFII_LUA_NATIVE(NativeSignal) {
+  char name[REFII_MOD_SIGNAL_NAME_MAX + 2];
+  lua.String(1, name, sizeof(name));
+  const std::string payload = lua.LongString(2, REFII_MOD_SIGNAL_PAYLOAD_MAX + 1);
+  lua.PushBoolean(refii_mod_signal(name, payload.c_str()) != 0);
+  RESULTS(1);
+}
+
+// Refii.publish_text(key, text): refii_mod_publish_text — a text Godot reads with get_text(key).
+REFII_LUA_NATIVE(NativePublishText) {
+  char key[REFII_MOD_SIGNAL_NAME_MAX + 2];
+  lua.String(1, key, sizeof(key));
+  const std::string text = lua.LongString(2, REFII_MOD_SIGNAL_PAYLOAD_MAX + 1);
+  lua.PushBoolean(refii_mod_publish_text(key, text.c_str()) != 0);
+  RESULTS(1);
+}
+
 // Refii.open_menu(name [, p]): a mod's menu for player p (0 or nil: whoever owns the menus
 // here), over the list that has the input or on its own (refii_mod_open_menu). True when posted.
 REFII_LUA_NATIVE(NativeOpenMenu) {
@@ -1908,13 +2569,14 @@ REFII_LUA_NATIVE(NativeOpenMenu) {
 }
 
 // Refii._menu_rows(menu, rows, p): refii_mod_set_menu_rows with the preamble's text for the rows
-// table (Refii.set_menu_rows). True when posted.
+// table (Refii.set_menu_rows), up to REFII_MOD_MENU_ROWS_MAX bytes. True when posted.
 REFII_LUA_NATIVE(NativeMenuRows) {
   char menu[96];
-  char rows[1800];
   lua.String(1, menu, sizeof(menu));
-  lua.String(2, rows, sizeof(rows));
-  lua.PushBoolean(refii_mod_set_menu_rows(lua.Int(3), menu, rows) != 0);
+  // The whole text: refii_mod_set_menu_rows carries up to REFII_MOD_MENU_ROWS_MAX in parts and names
+  // a cut on the mod errors channel; the extra byte read lets it see one.
+  const std::string rows = lua.LongString(2, REFII_MOD_MENU_ROWS_MAX + 1);
+  lua.PushBoolean(refii_mod_set_menu_rows(lua.Int(3), menu, rows.c_str()) != 0);
   RESULTS(1);
 }
 
@@ -2016,6 +2678,9 @@ Native g_natives[] = {
     {"modify_health", &NativeModifyHealth, 0},
     {"position", &NativePosition, 0},
     {"set_position", &NativeSetPosition, 0},
+    {"facing", &NativeFacing, 0},
+    {"velocity", &NativeVelocity, 0},
+    {"set_facing", &NativeSetFacing, 0},
     {"_decorate_rotation", &NativeDecorateRotation, 0},
     {"entity_tint", &NativeEntityTint, 0},
     {"entity_untint", &NativeEntityUntint, 0},
@@ -2035,11 +2700,16 @@ Native g_natives[] = {
     {"action_elapsed", &NativeActionElapsed, 0},
     {"action_interruptible", &NativeActionInterruptible, 0},
     {"allow_action_interrupt", &NativeAllowActionInterrupt, 0},
+    {"allow_action_interrupt_at", &NativeAllowActionInterruptAt, 0},
     {"action_type", &NativeActionType, 0},
     {"action_name", &NativeActionName, 0},
     {"living", &NativeLiving, 0},
     {"spell_in_slot", &NativeSpellInSlot, 0},
     {"spell_parts", &NativeSpellParts, 0},
+    {"vortex_held", &NativeVortexHeld, 0},
+    {"spell_balance", &NativeSpellBalance, 0},
+    {"host_serial", &NativeHostSerial, 0},
+    {"local_serial", &NativeLocalSerial, 0},
     {"apply_status", &NativeApplyStatus, 0},
     {"clear_status", &NativeClearStatus, 0},
     {"has_status", &NativeHasStatus, 0},
@@ -2086,8 +2756,21 @@ Native g_natives[] = {
     {"player_set", &NativePlayerSet, 0},
     {"player_add", &NativePlayerAdd, 0},
     {"player_save", &NativePlayerSave, 0},
+    {"player_value_text", &NativePlayerValueText, 0},
+    {"player_set_text", &NativePlayerSetText, 0},
+    {"player_save_text", &NativePlayerSaveText, 0},
+    {"player_value_hash", &NativePlayerValueHash, 0},
+    {"player_save_hash", &NativePlayerSaveHash, 0},
     {"player_here", &NativePlayerHere, 0},
     {"event_replica", &NativeEventReplica, 0},
+    {"attack_mode", &NativeAttackMode, 0},
+    {"camera_mode", &NativeCameraMode, 0},
+    {"_camera_override", &NativeCameraOverride, 0},
+    {"fov", &NativeCameraFov, 0},
+    {"_camera_stated", &NativeCameraStated, 0},
+    {"_camera_hold", &NativeCameraHold, 0},
+    {"_camera_held", &NativeCameraHeld, 0},
+    {"hide_part", &NativeHidePart, 0},
     {"split_screen", &NativeSplitScreen, 0},
     {"player_dog", &NativePlayerDog, 0},
     {"player_for", &NativePlayerFor, 0},
@@ -2127,19 +2810,42 @@ Native g_natives[] = {
     {"renown", &NativeRenown, 0},
     {"morality", &NativeMorality, 0},
     {"purity", &NativePurity, 0},
+    {"modify_renown", &NativeModifyRenown, 0},
+    {"modify_morality", &NativeModifyMorality, 0},
+    {"modify_purity", &NativeModifyPurity, 0},
+    {"can_save", &NativeCanSave, 0},
+    {"save_game", &NativeSaveGame, 0},
     {"physique", &NativePhysique, 0},
     {"age", &NativeAge, 0},
+    {"appearance", &NativeAppearance, 0},
+    {"_set_appearance", &NativeSetAppearance, 0},
+    {"set_appearance_automatic", &NativeSetAppearanceAutomatic, 0},
+    {"morph_get", &NativeMorphGet, 0},
+    {"morph_set", &NativeMorphSet, 0},
+    {"morph_id", &NativeMorphId, 0},
     {"inventory", &NativeInventory, 0},
     {"equipped", &NativeEquipped, 0},
     {"use_item", &NativeUseItem, 0},
     {"equip_weapon", &NativeEquipWeapon, 0},
     {"perform_expression", &NativePerformExpression, 0},
     {"assign_spell", &NativeAssignSpell, 0},
+    {"release_expression", &NativeReleaseExpression, 0},
+    {"sprinting", &NativeSprinting, 0},
+    {"end_sprint", &NativeEndSprint, 0},
+    {"_set_locomotion", &NativeSetLocomotion, 0},
+    {"locomotion", &NativeLocomotion, 0},
+    {"set_parry", &NativeSetParry, 0},
+    {"parry", &NativeParry, 0},
     {"expressions", &NativeExpressions, 0},
     {"spells_known", &NativeSpellsKnown, 0},
     {"selected_expression", &NativeSelectedExpression, 0},
     {"record_string", &NativeRecordString, 0},
     {"record_int", &NativeRecordInt, 0},
+    {"record_number", &NativeRecordNumber, 0},
+    {"record_bool", &NativeRecordBool, 0},
+    {"record_exists", &NativeRecordExists, 0},
+    {"record_ref", &NativeRecordRef, 0},
+    {"creature_tier", &NativeCreatureTier, 0},
     {"near", &NativeNear, 0},
     {"line_of_sight", &NativeLineOfSight, 0},
     {"spawn", &NativeSpawn, 0},
@@ -2154,16 +2860,23 @@ Native g_natives[] = {
     {"notice", &NativeNotice, 0},
     {"_mark", &NativeMark, 0},
     {"unmark", &NativeUnmark, 0},
+    {"_world_meter", &NativeWorldMeter, 0},
+    {"mark_meter", &NativeMarkMeter, 0},
     {"fade", &NativeFade, 0},
     {"meter", &NativeMeter, 0},
     {"meter_remove", &NativeMeterRemove, 0},
     {"input_claim", &NativeInputClaim, 0},
+    {"press", &NativePress, 0},
+    {"charge_spell", &NativeChargeSpell, 0},
+    {"tap", &NativeTap, 0},
     {"hud_icon", &NativeHudIcon, 0},
     {"hud_slide", &NativeHudSlide, 0},
     {"hud_hold", &NativeHudHold, 0},
     {"_light", &NativeLight, 0},
     {"light_remove", &NativeLightRemove, 0},
     {"send_to_partner", &NativeSendToPartner, 0},
+    {"signal", &NativeSignal, 0},
+    {"publish_text", &NativePublishText, 0},
     {"_menu_box", &NativeMenuBox, 0},
     {"_write", &NativeWrite, 0},
     {"_error", &NativeError, 0},

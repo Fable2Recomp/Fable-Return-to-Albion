@@ -50,7 +50,10 @@ public sealed class Engine_UiTemplateSet
 	/// Applies one file over the records that stand. <paramref name="owner"/> is the mod's name,
 	/// empty for the game's file and the player's. Returns the pieces it took.
 	/// </summary>
-	public int ApplyText(string text, string owner, string where)
+	/// <param name="shipped">The GAME's own file. Every other file's menu entries are
+	/// <see cref="Engine_UiMenuEntry.FromMod"/> unless they restate an entry that stands
+	/// (<see cref="Provenance"/>), whatever the file says.</param>
+	public int ApplyText(string text, string owner, string where, bool shipped = false)
 	{
 		if (Engine_UiTemplateJson.ParseObject(text) is not { } root)
 		{
@@ -66,10 +69,21 @@ public sealed class Engine_UiTemplateSet
 				if (value is JsonObject record && record.TryGetPropertyValue("patch", out JsonNode? patch) &&
 					Engine_UiTemplateJson.Flag(patch))
 				{
-					taken += PatchMenu(name, record, owner, where);
+					taken += PatchMenu(name, record, owner, where, shipped);
 				}
 				else if (Engine_UiTemplateJson.ParseMenu(name, value) is { } menu)
 				{
+					if (!shipped)
+					{
+						Menus.TryGetValue(menu.Name, out Engine_UiMenuTemplate? standing);
+						menu.SourceFromMod = menu.Source.Length != 0 &&
+							(standing is null || standing.SourceFromMod || standing.Source != menu.Source);
+						foreach (Engine_UiMenuEntry entry in menu.Entries)
+						{
+							Provenance(entry, standing is null ? null : Standing(standing.Entries, entry, anyDepth: true));
+						}
+					}
+
 					NoteOwner("menu:" + name, owner);
 					Menus[menu.Name] = menu;
 					++taken;
@@ -138,7 +152,59 @@ public sealed class Engine_UiTemplateSet
 		Owners[piece] = owner;
 	}
 
-	private int PatchMenu(string name, JsonObject record, string owner, string where)
+	/// <summary>
+	/// Marks one entry from a mod's or the player's file, and its children, as
+	/// <see cref="Engine_UiMenuEntry.FromMod"/> — unless it RESTATES <paramref name="standing"/>:
+	/// the entry it replaces, under the same name and spawning the same event, which is the game's
+	/// row restyled (a new tag, icon or condition) and keeps the game's standing. Anything else —
+	/// a new name, a changed event, or the restatement of a mod's row — is the mod's, and so are
+	/// the rows of a source it introduces or changes.
+	/// </summary>
+	public static void Provenance(Engine_UiMenuEntry entry, Engine_UiMenuEntry? standing)
+	{
+		entry.FromMod = standing is null || standing.FromMod || standing.SpawnEventType != entry.SpawnEventType;
+		entry.SourceFromMod = entry.Source.Length != 0 &&
+			(entry.FromMod || standing!.SourceFromMod || standing.Source != entry.Source);
+		foreach (Engine_UiMenuEntry child in entry.Children)
+		{
+			Provenance(child, entry.FromMod || standing is null ? null : Standing(standing.Children, child, anyDepth: false));
+		}
+	}
+
+	/// <summary>The entry <paramref name="entry"/> would replace: the same name, the variant with its <c>when</c> first.</summary>
+	private static Engine_UiMenuEntry? Standing(List<Engine_UiMenuEntry> entries, Engine_UiMenuEntry entry, bool anyDepth)
+	{
+		Engine_UiMenuEntry? named = null;
+		foreach (Engine_UiMenuEntry candidate in entries)
+		{
+			if (candidate.Name == entry.Name)
+			{
+				if (string.Equals(candidate.When, entry.When, StringComparison.Ordinal))
+				{
+					return candidate;
+				}
+
+				named ??= candidate;
+			}
+		}
+
+		if (named is not null || !anyDepth)
+		{
+			return named;
+		}
+
+		foreach (Engine_UiMenuEntry candidate in entries)
+		{
+			if (Standing(candidate.Children, entry, anyDepth: true) is { } nested)
+			{
+				return nested;
+			}
+		}
+
+		return null;
+	}
+
+	private int PatchMenu(string name, JsonObject record, string owner, string where, bool shipped)
 	{
 		if (!Menus.TryGetValue(name, out Engine_UiMenuTemplate? menu))
 		{
@@ -146,7 +212,12 @@ public sealed class Engine_UiTemplateSet
 			Menus[name] = menu;
 		}
 
+		string sourceWas = menu.Source;
 		Engine_UiTemplateJson.ApplyMenuFields(menu, record);
+		if (!shipped && menu.Source != sourceWas)
+		{
+			menu.SourceFromMod = menu.Source.Length != 0;
+		}
 		if (!record.TryGetPropertyValue("entries", out JsonNode? entriesNode) || entriesNode is not JsonArray entries)
 		{
 			return 0;
@@ -199,6 +270,11 @@ public sealed class Engine_UiTemplateSet
 			if (Engine_UiTemplateJson.ParseEntry(patch) is not { } parsed)
 			{
 				continue;
+			}
+
+			if (!shipped)
+			{
+				Provenance(parsed, at >= 0 ? siblings[at] : null);
 			}
 
 			if (at >= 0)

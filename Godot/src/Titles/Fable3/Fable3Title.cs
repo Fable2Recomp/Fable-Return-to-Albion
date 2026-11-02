@@ -53,6 +53,10 @@ public sealed class Fable3Title : Engine_TitleGame
 
 	public override Refii.Text.Engine_BabelDatabase? Strings => Fable3Strings.Current;
 
+	private static readonly Fable3Rig Rigs = new();
+
+	public override Refii.Animations.Engine_TitleRig Rig => Rigs;
+
 	/// <summary>The `hud.bgf` widgets Fable 3's own surfaces draw rather than the shared HUD view (<see cref="Fable3Hud.Owned"/>).</summary>
 	public override System.Collections.Generic.IReadOnlyCollection<string> HudOwnedSubtrees => Fable3Hud.Owned;
 

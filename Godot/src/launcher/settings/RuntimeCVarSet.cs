@@ -742,7 +742,44 @@ public static class RuntimeCVarsGodot
                 "Show the game you are playing and the level you are in on your "
                 + "Discord profile while Discord is running."),
             ..KeyBindings(),
+            new("glyph_style", ControlsCategory, RuntimeCVarType.String, "auto",
+                "The button prompts on the controller: Automatic draws the glyphs of the controller "
+                + "you are holding (PlayStation, Switch or Xbox, detected per controller); or always "
+                + "draw one style. The keyboard keeps its keycaps. The game's Options > Controls > "
+                + "Controller and Keyboard page edits the same setting.",
+                "auto|Automatic (follow the controller),xbox|Xbox,playstation|PlayStation,switch|Switch"),
+            new("glyph_pack", ControlsCategory, RuntimeCVarType.String, "",
+                "A glyph pack: your own button art, drawn in place of the built-in prompts. Put PNGs "
+                + "named by button (a, b, x, y, lb, rb, lt, rt, start, back, ls, rs, dpad, dpad_up ...; "
+                + "key_e, key_space ... for keyboard keys) in a folder under glyphs in the game's user "
+                + "data folder and enter the folder's name here; a mod can share a pack as glyphs/<name>/. "
+                + "Missing buttons use the selected style. Empty is the built-in glyphs."),
+            ..ControllerBindings(),
         ];
+
+    /// <summary>
+    /// One setting per game button per player, from <see cref="Refii.Core.Engine_PadRemap"/>: which
+    /// physical inputs press it. Player two's are Fable 2's (its local co-op).
+    /// </summary>
+    private static IEnumerable<RuntimeCVarDefinition> ControllerBindings()
+    {
+        for (int player = 1; player <= 2; player++)
+        {
+            for (int i = 0; i < Refii.Core.Engine_PadRemap.Count; i++)
+            {
+                var game = (Refii.Core.PadInput)i;
+                string name = Refii.Core.Engine_PadRemap.Name(game);
+                yield return new RuntimeCVarDefinition(
+                    Refii.Core.Engine_PadRemap.SettingKey(player, game), ControlsCategory, RuntimeCVarType.String, "",
+                    $"Player {player}: the physical controller button(s) that press the game's {name} button, by "
+                    + "position (A is the bottom face button on every controller): a comma list of A B X Y LB RB "
+                    + "LT RT L3 R3 Start Back DpadUp DpadDown DpadLeft DpadRight; empty keeps "
+                    + $"{name}, none unbinds. Mods' controller bindings follow it. The game's Options > Controls "
+                    + "page edits the same setting.",
+                    OwnerTitle: player == 2 ? Fable2LocalCoop : null);
+            }
+        }
+    }
 
     /// <summary>
     /// One setting per keyboard and mouse action, from the game's own table so the defaults live
@@ -797,8 +834,9 @@ public static class RuntimeCVarsGodot
             {
                 yield return new RuntimeCVarDefinition(
                     Refii.Mods.ModInput.PadSettingKey(action), category, RuntimeCVarType.String, string.Empty,
-                    action.Label + " on the pad: a comma list of A B X Y LB RB LT RT L3 R3 Start Back DpadUp DpadDown DpadLeft DpadRight " +
-                    "or JoyButton names; empty keeps the mod's own (" + Refii.Mods.ModInput.DeclaredPadText(action) + "), none unbinds. " +
+                    action.Label + " on the pad: a comma list of the game's buttons A B X Y LB RB LT RT L3 R3 Start Back DpadUp DpadDown " +
+                    "DpadLeft DpadRight or JoyButton names (your controller remap applies first); empty keeps the mod's own (" +
+                    Refii.Mods.ModInput.DeclaredPadText(action) + "), none unbinds. " +
                     "The game's Options > Controls page edits the same setting.");
             }
         }

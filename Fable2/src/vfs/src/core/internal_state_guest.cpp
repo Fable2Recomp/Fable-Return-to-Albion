@@ -1481,9 +1481,30 @@ bool IsResourceWrapperTextureTraceAsset(std::string_view asset_path) {
          IsTextureHeaderCandidate(normalized);
 }
 
+// The texture code that calls the resource wrapper, as code spans per build. The unpatched
+// relink spread TU1's first span over three: its functions are the same bodies at
+// 0x82A6D9F0..0x82A6EF30, 0x82A6C0C0..0x82A6C5AC and 0x82A676C0..0x82A67D38 (TU1 0x82A79F98,
+// 0x82A7B4E8 and 0x82A7B9A8 onward), and TU1's second span is 0x82B67418..0x82B68BB0 (TU1
+// 0x82B6CE10..0x82B6E610; the two TU1 functions after that have no counterpart body there).
 bool IsTextureResourceWrapperCaller(uint32_t lr) {
-  return (lr >= 0x82A7A000 && lr < 0x82A7C000) ||
-         (lr >= 0x82B6D000 && lr < 0x82B6E800);
+  struct Span {
+    uint32_t begin;
+    uint32_t end;
+  };
+  static constexpr Span kTu1[] = {{0x82A7A000u, 0x82A7C000u}, {0x82B6D000u, 0x82B6E800u}};
+  static constexpr Span kUnpatched[] = {{0x82A6DA58u, 0x82A6EF30u},
+                                        {0x82A6C0C0u, 0x82A6C5ACu},
+                                        {0x82A676C0u, 0x82A67D18u},
+                                        {0x82B67608u, 0x82B68BB0u}};
+  const bool unpatched = refii::guest::Current() == refii::guest::Build::kUnpatched;
+  const Span* begin = unpatched ? std::begin(kUnpatched) : std::begin(kTu1);
+  const Span* end = unpatched ? std::end(kUnpatched) : std::end(kTu1);
+  for (const Span* span = begin; span != end; ++span) {
+    if (lr >= span->begin && lr < span->end) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool ShouldTraceNativeResourceWrapperApi(std::string_view api, uint32_t lr) {

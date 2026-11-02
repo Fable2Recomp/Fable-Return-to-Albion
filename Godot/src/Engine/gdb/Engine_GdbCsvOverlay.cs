@@ -50,10 +50,36 @@ public sealed class GdbCsvResult
 /// string: text (filed in the name table) or a <c>#</c> literal; enum: a number or a name; ref: an
 /// entry name or literal — a name that resolves to nothing is refused, because a dangling
 /// reference is what the guest crashes on; resref: an entry, an asset path, or a literal.</para>
+/// <para><b>Mod morphs.</b> An int or enum value <c>@morph:&lt;name&gt;</c> (a morph of the mod the
+/// file belongs to) or <c>@morph:&lt;mod&gt;.&lt;name&gt;</c> is that morph's type,
+/// <see cref="Refii.Hero.Engine_ModMorphs.Id(string)"/> — what a <c>MorphType</c> of a MorphTargets
+/// pair, a TextureMorphs layer, a SkeletalMorphs item or a ParticleMorphs item carries.</para>
 /// </summary>
 public static class GdbCsvOverlay
 {
     public const string CsvSuffix = ".gdb.csv";
+
+    /// <summary>The value prefix that names a mod morph (<see cref="Refii.Hero.Engine_ModMorphs"/>).</summary>
+    public const string MorphPrefix = "@morph:";
+
+    /// <summary>
+    /// The value prefix that names a model by its path, for a string or resref field that holds a
+    /// model's hash (a MorphTargets pair's OriginalModel / TargetModel): FNV-1 of the path in lower
+    /// case with '/' as '\', relative to the data folder — the guest's own spelling.
+    /// </summary>
+    public const string ModelPrefix = "@model:";
+
+    /// <summary>The hash a model path is referred to by (<see cref="ModelPrefix"/>).</summary>
+    public static uint ModelHash(string path)
+    {
+        string relative = (path ?? string.Empty).Trim().Replace('\\', '/').TrimStart('/');
+        if (relative.StartsWith("data/", StringComparison.OrdinalIgnoreCase))
+        {
+            relative = relative["data/".Length..];
+        }
+
+        return Refii.Level.Engine_PropModelIndex.PathHash(relative);
+    }
 
     private const string FlagsRow = "@flags";
     private const string AliasRow = "@alias";
@@ -62,7 +88,13 @@ public static class GdbCsvOverlay
     /// Compiles <paramref name="text"/> against <paramref name="database"/>. Without a database only
     /// the rows' form is checked (columns, type tokens, value forms); nothing is built.
     /// </summary>
-    public static GdbCsvResult Parse(string text, GdbMulti? database)
+    public static GdbCsvResult Parse(string text, GdbMulti? database) => Parse(text, database, null);
+
+    /// <summary>
+    /// <see cref="Parse(string, GdbMulti?)"/> for a file of mod <paramref name="mod"/>, whose bare
+    /// <c>@morph:&lt;name&gt;</c> values are its own morphs.
+    /// </summary>
+    public static GdbCsvResult Parse(string text, GdbMulti? database, string? mod)
     {
         var result = new GdbCsvResult();
         if (string.IsNullOrEmpty(text))
@@ -70,7 +102,7 @@ public static class GdbCsvOverlay
             return result;
         }
 
-        var state = new ParseState(database, result);
+        var state = new ParseState(database, result, mod);
         bool firstDataLine = true;
         string[] lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
         for (int i = 0; i < lines.Length; i++)
@@ -316,11 +348,13 @@ public static class GdbCsvOverlay
         private readonly GdbCsvResult _result;
         private readonly Dictionary<uint, GdbPatchEntry> _entries = new();
         private readonly HashSet<uint> _declared = new();
+        private readonly string? _mod;
 
-        public ParseState(GdbMulti? database, GdbCsvResult result)
+        public ParseState(GdbMulti? database, GdbCsvResult result, string? mod)
         {
             _database = database;
             _result = result;
+            _mod = mod;
         }
 
         private GdbPatchDatabase Db => _result.Database;
@@ -605,6 +639,46 @@ public static class GdbCsvOverlay
         {
             raw = 0;
             error = null;
+            if (value.StartsWith(ModelPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                if (type is not (GdbFieldType.String or GdbFieldType.ResourceReference))
+                {
+                    error = $"'{value}' names a model by its hash; this property is {TypeToken(type)}";
+                    return false;
+                }
+
+                string model = value[ModelPrefix.Length..].Trim();
+                if (model.Length == 0)
+                {
+                    error = "'@model:' names no model";
+                    return false;
+                }
+
+                raw = ModelHash(model);
+                return true;
+            }
+
+            if (value.StartsWith(MorphPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                if (type is not (GdbFieldType.Int or GdbFieldType.Enum))
+                {
+                    error = $"'{value}' names a mod morph, a MorphType value; this property is {TypeToken(type)}";
+                    return false;
+                }
+
+                string morph = value[MorphPrefix.Length..].Trim();
+                if (Refii.Hero.Engine_ModMorphs.Resolve(morph, _database is null ? _mod ?? "mod" : _mod) is not { } id)
+                {
+                    error = morph.Length == 0
+                        ? "'@morph:' names no morph"
+                        : $"'@morph:{morph}' needs the mod it belongs to: write @morph:<mod>.{morph}";
+                    return false;
+                }
+
+                raw = id;
+                return true;
+            }
+
             switch (type)
             {
                 case GdbFieldType.Bool:

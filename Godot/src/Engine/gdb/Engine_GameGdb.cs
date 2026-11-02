@@ -90,19 +90,61 @@ public static class Engine_GameGdb
 		}
 
 		string norm = virtualPath.Replace('\\', '/').TrimStart('/');
-		string full = System.IO.Path.Combine(gameDir, norm);
-		if (System.IO.File.Exists(full))
+		string? full = FindIgnoringCase(gameDir, norm) ?? FindIgnoringCase(gameDir, "data/" + norm);
+		return full is null ? null : System.IO.File.ReadAllBytes(full);
+	}
+
+	/// <summary>
+	/// The file at <paramref name="relative"/> under <paramref name="root"/>, each segment matched
+	/// without regard to case: the game's paths are case-blind and the install keeps the disc's
+	/// spelling (<c>Globals/globals.gdb</c> answers <c>globals/globals.gdb</c>). Null when absent.
+	/// </summary>
+	internal static string? FindIgnoringCase(string root, string relative)
+	{
+		string exact = System.IO.Path.Combine(root, relative);
+		if (System.IO.File.Exists(exact))
 		{
-			return System.IO.File.ReadAllBytes(full);
+			return exact;
 		}
 
-		string underData = System.IO.Path.Combine(gameDir, "data", norm);
-		if (System.IO.File.Exists(underData))
+		string at = root;
+		string[] segments = relative.Split('/', StringSplitOptions.RemoveEmptyEntries);
+		for (int i = 0; i < segments.Length; i++)
 		{
-			return System.IO.File.ReadAllBytes(underData);
+			bool last = i == segments.Length - 1;
+			string? match = null;
+			try
+			{
+				IEnumerable<string> candidates = last
+					? System.IO.Directory.EnumerateFiles(at)
+					: System.IO.Directory.EnumerateDirectories(at);
+				foreach (string candidate in candidates)
+				{
+					if (string.Equals(System.IO.Path.GetFileName(candidate), segments[i], StringComparison.OrdinalIgnoreCase))
+					{
+						match = candidate;
+						break;
+					}
+				}
+			}
+			catch (System.IO.IOException)
+			{
+				return null;
+			}
+			catch (UnauthorizedAccessException)
+			{
+				return null;
+			}
+
+			if (match is null)
+			{
+				return null;
+			}
+
+			at = match;
 		}
 
-		return null;
+		return segments.Length == 0 ? null : at;
 	}
 
 	/// <summary>

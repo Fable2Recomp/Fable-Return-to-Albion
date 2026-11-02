@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 
 namespace Refii.Ui;
@@ -31,6 +32,12 @@ namespace Refii.Ui;
 /// the other machine too).</para>
 /// <para>IDS: the payload issues 1 .. 2^23-1, Godot <see cref="FirstHostId"/> (2^23) .. 2^24-1, so
 /// every id is exact as a Lua number and any surface's <c>unmark</c> removes any surface's id.</para>
+/// <para>A WORLD METER (<c>world_meter</c> / <c>mark_meter</c> / <c>mark(…, { meter = … })</c>) is a
+/// marker's fill: a bar under its icon and text, <see cref="MeterState"/>, restated in place by id
+/// so a value changes without re-marking. A drop leaves a pale trail that holds
+/// <see cref="TrailHoldSeconds"/> and drains at <see cref="TrailDrainPerSecond"/> of a full bar
+/// (<see cref="MeterTrail"/>); the bar is placed, sized and seen exactly as its marker is, and a
+/// style's <c>x&lt;n&gt;</c> draws the marker n times the curve's size (<see cref="MeterSize"/>).</para>
 /// </remarks>
 public static class Engine_HudModMarkers
 {
@@ -56,7 +63,112 @@ public static class Engine_HudModMarkers
 	{
 		/// <summary>The clock at which the entity last had a stated position; NaN before any.</summary>
 		public double SeenAt { get; set; } = double.NaN;
+
+		/// <summary>The marker's fill, or null for none.</summary>
+		public MeterState? Meter { get; set; }
 	}
+
+	/// <summary>How long a world meter's trail holds after a drop before it drains.</summary>
+	public const double TrailHoldSeconds = 0.45;
+
+	/// <summary>How fast a world meter's trail drains, in full bars a second.</summary>
+	public const double TrailDrainPerSecond = 0.9;
+
+	/// <summary>
+	/// A marker's fill as stated: <see cref="Value"/> of <see cref="Max"/>, its <see cref="Style"/>,
+	/// and the trail a drop leaves (<see cref="TrailFrom"/> at <see cref="DropAt"/>; NaN for none).
+	/// </summary>
+	public sealed class MeterState
+	{
+		public float Value { get; set; }
+		public float Max { get; set; } = 1f;
+		public string Style { get; set; } = string.Empty;
+		public float Fill { get; set; }
+		public float TrailFrom { get; set; }
+		public double DropAt { get; set; } = double.NaN;
+	}
+
+	/// <summary>
+	/// The trail's length at <paramref name="clock"/>: what it stood at the drop for
+	/// <see cref="TrailHoldSeconds"/>, then draining to the fill; the fill itself with no drop.
+	/// </summary>
+	public static float MeterTrail(float fill, float trailFrom, double dropAt, double clock)
+	{
+		if (double.IsNaN(dropAt) || trailFrom <= fill)
+		{
+			return fill;
+		}
+
+		double since = clock - dropAt - TrailHoldSeconds;
+		return since <= 0 ? trailFrom : (float)Math.Max(fill, trailFrom - (TrailDrainPerSecond * since));
+	}
+
+	/// <summary>
+	/// A fill restated on <paramref name="meter"/> at <paramref name="clock"/>: a drop starts the
+	/// trail from where it stands, a rise past the trail ends it.
+	/// </summary>
+	public static void Restate(MeterState meter, float value, float max, string style, double clock)
+	{
+		float fill = max > 0f && float.IsFinite(value) ? Math.Clamp(value / max, 0f, 1f) : 0f;
+		float trail = MeterTrail(meter.Fill, meter.TrailFrom, meter.DropAt, clock);
+		if (fill < meter.Fill)
+		{
+			meter.TrailFrom = Math.Max(trail, meter.Fill);
+			meter.DropAt = clock;
+		}
+		else if (fill >= trail)
+		{
+			meter.DropAt = double.NaN;
+		}
+
+		meter.Fill = fill;
+		meter.Value = float.IsFinite(value) ? value : 0f;
+		meter.Max = max;
+		meter.Style = style ?? string.Empty;
+	}
+
+	/// <summary>The fill colour a style names: "health" red, an HTML colour as given, else ("bar", "") the HUD's gold.</summary>
+	public static Color MeterColour(string style)
+	{
+		string first = MeterWords(style).FirstOrDefault(w => !w.Equals("numbers", StringComparison.OrdinalIgnoreCase) && SizeWord(w) is null) ?? string.Empty;
+		if (first.Equals("health", StringComparison.OrdinalIgnoreCase))
+		{
+			return HealthFill;
+		}
+
+		return first.StartsWith('#') && Color.HtmlIsValid(first) ? Color.FromHtml(first) : Ink;
+	}
+
+	/// <summary>Whether a style asks for the numbers ("health numbers").</summary>
+	public static bool MeterNumbers(string style) =>
+		MeterWords(style).Any(w => w.Equals("numbers", StringComparison.OrdinalIgnoreCase));
+
+	/// <summary>
+	/// The size a style asks its marker drawn at, over the game's distance curve: a word <c>x&lt;n&gt;</c>
+	/// ("health x1.5"), n clamped to 0.25..4; 1 with none.
+	/// </summary>
+	public static float MeterSize(string style) =>
+		MeterWords(style).Select(SizeWord).FirstOrDefault(n => n is not null) ?? 1f;
+
+	private static float? SizeWord(string word) =>
+		word.Length > 1 && (word[0] == 'x' || word[0] == 'X') &&
+		float.TryParse(word.AsSpan(1), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float n) &&
+		float.IsFinite(n) && n > 0f
+			? Math.Clamp(n, 0.25f, 4f)
+			: null;
+
+	/// <summary>The line a meter's numbers draw: "value / max", rounded.</summary>
+	public static string MeterText(float value, float max) =>
+		string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{Math.Round(value):0} / {Math.Round(max):0}");
+
+	private static string[] MeterWords(string style) =>
+		(style ?? string.Empty).Split(new[] { ' ', ',', '+' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+	/// <summary>The "health" style's fill.</summary>
+	private static readonly Color HealthFill = new(0.72f, 0.09f, 0.07f, 1f);
+
+	/// <summary>The clock a meter's trail runs on: the same monotonic seconds the HUD composes markers with.</summary>
+	public static double Clock => Time.GetTicksMsec() / 1000.0;
 
 	private static readonly Dictionary<uint, Marker> _marks = new();
 	private static readonly Dictionary<string, Texture2D?> _icons = new(StringComparer.OrdinalIgnoreCase);
@@ -105,7 +217,63 @@ public static class Engine_HudModMarkers
 		}
 
 		uint address = handle != 0 ? Refii.Host.HostBridge.ModHandleAddress(handle) : 0u;
-		_marks[id] = new Marker(id, player is 1 or 2 ? player : 0, address, handle, point, icon ?? string.Empty, text ?? string.Empty);
+		MeterState? meter = _marks.TryGetValue(id, out Marker? previous) ? previous.Meter : null;
+		_marks[id] = new Marker(id, player is 1 or 2 ? player : 0, address, handle, point, icon ?? string.Empty, text ?? string.Empty)
+		{
+			Meter = meter,
+		};
+	}
+
+	/// <summary>
+	/// A Godot script's world meter: a marker that is a bar, its id issued (0 for no max or an
+	/// unknown handle). <paramref name="handle"/> is an entity HANDLE (0 for the point).
+	/// </summary>
+	public static uint AddMeter(int player, uint handle, Vector3 point, float value, float max, string style)
+	{
+		uint address = handle != 0 ? Refii.Host.HostBridge.ModHandleAddress(handle) : 0u;
+		if (!(max > 0f) || !float.IsFinite(max) || (handle != 0 && address == 0))
+		{
+			return 0;
+		}
+
+		uint id = _nextHostId;
+		_nextHostId = _nextHostId >= LastHostId ? FirstHostId : _nextHostId + 1;
+		Set(id, player, handle, point, string.Empty, string.Empty);
+		SetMeter(id, value, max, style, Clock);
+		return id;
+	}
+
+	/// <summary>
+	/// Puts a fill on marker <paramref name="id"/> or restates it in place (<see cref="Restate"/>); an
+	/// empty <paramref name="style"/> keeps the standing one. <paramref name="max"/> 0 or less takes
+	/// it off, and a marker left with no icon, text or fill goes. False when nothing stands under the id.
+	/// </summary>
+	public static bool SetMeter(uint id, float value, float max, string style, double clock)
+	{
+		if (!_marks.TryGetValue(id, out Marker? mark))
+		{
+			return false;
+		}
+
+		if (!(max > 0f) || !float.IsFinite(max))
+		{
+			mark.Meter = null;
+			if (mark.Icon.Length == 0 && mark.Text.Length == 0)
+			{
+				_marks.Remove(id);
+			}
+
+			return true;
+		}
+
+		if (mark.Meter is null)
+		{
+			float fill = float.IsFinite(value) ? Math.Clamp(value / max, 0f, 1f) : 0f;
+			mark.Meter = new MeterState { Fill = fill, TrailFrom = fill };
+		}
+
+		Restate(mark.Meter, value, max, string.IsNullOrWhiteSpace(style) ? mark.Meter.Style : style, clock);
+		return true;
 	}
 
 	/// <summary>Removes any surface's id; false when nothing stands under it.</summary>
@@ -269,10 +437,22 @@ public static class Engine_HudModMarkers
 				continue;
 			}
 
-			float scale = DistanceSize(distanceSquaredTo(anchor) ?? 0f);
+			float scale = DistanceSize(distanceSquaredTo(anchor) ?? 0f) * (mark.Meter is { } sized ? MeterSize(sized.Style) : 1f);
+			Engine_HudWorldSprites.Bar? bar = null;
+			string title = mark.Text;
+			if (mark.Meter is { } meter)
+			{
+				bar = new Engine_HudWorldSprites.Bar(meter.Fill,
+					MeterTrail(meter.Fill, meter.TrailFrom, meter.DropAt, clock), MeterColour(meter.Style));
+				if (title.Length == 0 && MeterNumbers(meter.Style))
+				{
+					title = MeterText(meter.Value, meter.Max);
+				}
+			}
+
 			into.Add(new Engine_HudWorldSprites.Sprite(
-				SpriteType, 0u, Ink, mark.Entity, anchor, scale, mark.Text, string.Empty, SpriteKey(mark.Id),
-				string.Empty, Icon(mark.Icon)));
+				SpriteType, 0u, Ink, mark.Entity, anchor, scale, title, string.Empty, SpriteKey(mark.Id),
+				string.Empty, Icon(mark.Icon), bar));
 		}
 
 		foreach (uint id in _gone)

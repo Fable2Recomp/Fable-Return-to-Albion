@@ -48,6 +48,20 @@ public sealed record ModApiEvent(
 public readonly record struct ModApiHelper(string Signature, string Meaning);
 
 /// <summary>
+/// One row of the parity table (<see cref="ModApi.Twins"/>): what Lua writes and what Godot writes for
+/// one meaning, as space-separated tokens; a row with an empty side carries <see cref="Why"/> that side
+/// has no form of its own.
+/// </summary>
+public readonly record struct ModApiTwin(string Lua, string Godot, string Why = "")
+{
+	public bool Exempt => Lua.Length == 0 || Godot.Length == 0;
+
+	public IEnumerable<string> LuaTokens => Lua.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+	public IEnumerable<string> GodotTokens => Godot.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+}
+
+/// <summary>
 /// THE MOD API CATALOG: the one description of what <c>core/refii_mod_events.h</c> and
 /// <c>core/refii_mod.h</c> offer, read by the Modding Guide, by <c>RefiiModApi</c> (the editor's
 /// scripting surface), by the Lua runtime preamble (the event names), and by a test that holds
@@ -122,6 +136,7 @@ public static class ModApi
 		F("spell_level", "int32_t", "the cast's power 0..4"),
 		F("spell_serial", "uint32_t", "the cast's number: every hit of one cast carries the same"),
 		F("knockdown", "bool", "the hit asks for a knockdown — force push and heavy blows set it (writable before delivery)", true),
+		F("tag", "int32_t", "the tag of the cast whose serial the hit carries (spell_launch's tag, cast_spell's options.tag), 0 none; a cast's damage_scale is already in damage"),
 	};
 
 	/// <summary>The same fields after delivery: nothing is written back any more.</summary>
@@ -163,7 +178,7 @@ public static class ModApi
 			}),
 		new ModApiEvent("AbilityRequest", "ability_request", 6, "rex_CECAbilities_PerformRequest (r3 entity, r4 request; type = request vtable slot 1)",
 			"A creature asked its ability set for an ability: 16 melee pressed, 17 melee released, 18 magic charge, and the rest of the AbilityType enum.",
-			"the request matches nothing; a refused melee press should refuse its release too",
+			"the request matches nothing; a refused melee press (16) refuses its release (17) too — the bus does it: that entity's next release is raised already cancelled and refused whatever a handler says",
 			new[]
 			{
 				F("entity", "uint32_t", "the creature"),
@@ -224,7 +239,7 @@ public static class ModApi
 			"A hit was delivered, with the damage it carried in. Read-only.",
 			string.Empty,
 			HitAfter,
-			"RELAYED: decided where the world runs (the host); online, a hit with a hero on either side reaches the joiner as a replica (refii_mod_event_replica / Refii.event_replica(); Godot's e.replica) with the heroes as the joiner's copies, other entities by UniqueID, hit 0 and spell_serial the host's number — follow it for looks, never act on the world from it"),
+			"RELAYED: decided where the world runs (the host); online, a hit with a hero on either side reaches the joiner as a replica (refii_mod_event_replica / Refii.event_replica(); Godot's e.replica) with the heroes as the joiner's copies, other entities by UniqueID, hit 0 and spell_serial the joiner's own spell of that cast with its tag once the cast is paired (host_serial / local_serial; a hit for a spell the host announced and the joiner has not made yet waits up to a second), else the host's number — follow it for looks, never act on the world from it"),
 		new ModApiEvent("HitResponse", "hit_response", 14, "rex_CECHitResponsePlayAction_OnHit (r3 listener, entity at r3-8; r4 hit; r5 result word), priority 20 on the dispatch",
 			"The victim is about to flinch or be knocked down by a hit. The game's own early-outs (a blocked or parried hit, a ranged hit, a knockdown request, a killing blow) come first, so a lethal hit's fall always plays. A second response the listener can play (its +28 branch) is cancelled with it; a flinch played by a knockdown-flagged hit without the listener's response raises nothing.",
 			"the hit is absorbed: no animation, no state left behind",
@@ -262,6 +277,7 @@ public static class ModApi
 				F("slot", "int32_t", "the slot 0..4, also the power level"),
 				F("type", "int32_t", "the spell type the slot holds; -1 empty (native: writable for this launch)", true),
 				F("cascading", "bool", "the release cascade is running through the lower slots"),
+				F("tag", "int32_t", "the cast's tag, 0 none (writable): the spell this launch creates carries it, and so does every later event of that cast — spell_created, vortex_started, hit, hit_landed, fireball_impact, status_applying — by its serial, a hit landed inside the factory included", true),
 			}),
 		new ModApiEvent("SpellLaunched", "spell_launched", 18, "rex_CECSpellManager_OnSpellLaunched (r3 manager, r4 slot), behind the launch's own success test",
 			"A spell was really created for a launch.",
@@ -286,6 +302,9 @@ public static class ModApi
 				F("caster", "uint32_t", "the caster entity"),
 				F("caster_player", "int32_t", "1 or 2 for a hero, else 0"),
 				F("serial", "uint32_t", "the cast's number (the spell object's +0x44), carried by its hits"),
+				F("slot", "int32_t", "the launch slot it came from (spell_launch's slot), -1 for a cast no launch made (a creature's own, cast_spell)"),
+				F("tag", "int32_t", "the cast's tag (spell_launch's, or cast_spell's options.tag), 0 none; online, on the machine not deciding the caster, the deciding machine's tag once the cast is paired (0 before)"),
+				F("host_serial", "uint32_t", "this spell's serial on the online host (host_serial(serial)): serial itself on the host, alone and in local co-op; on the joiner the host's spell of the same cast once paired, 0 before"),
 			}),
 		new ModApiEvent("Experience", "experience", 20, "rex_CECExperience_Modify (r3 component 164, r4 pool, f1 amount) / rex_CECExperience_Spend (r3 component, r4 pool, f1 cost)",
 			"Experience is changing on an entity: earned, refunded or spent. Pools: 0 General, 1 Strength, 2 Skill, 3 Will.",
@@ -577,6 +596,8 @@ public static class ModApi
 				F("player", "int32_t", "1 or 2 for a hero, else 0"),
 				F("effect", "int32_t", "1 electrified, 2 chaos, 3 burning, 4 in a vortex, 5 knocked down, 6 mauled by the dog, 7 unconscious, 8 crumbled (hollow man)"),
 				F("started", "bool", "true when it started, false when it ended"),
+				F("serial", "uint32_t", "for a status started inside a spell's installer (status_applying's seams) or a vortex's capture (vortex_caught's): that cast's serial (a hit's spell_serial); 4294967295 otherwise"),
+				F("source", "uint32_t", "for a status started inside an installer or a vortex's capture: who put it on (the caster); 0 otherwise"),
 			}),
 		new ModApiEvent("TargetChanged", "target_changed", 49, "rex_CECTargetingPlayer_SetTarget (r3 targeting 77, owner at +4; r4 target) / _ClearTarget (r3)",
 			"A player's target changed, after the fact; 0 when it was cleared.",
@@ -711,8 +732,8 @@ public static class ModApi
 				F("scale", "float", "the world's time scale, 1 normal (writable)", true),
 				F("active", "bool", "the world is slowed (scale < 1)"),
 			}),
-		new ModApiEvent("Summoned", "summoned", 63, "rex_SpellRaiseDead_BindSummoner (r3 summoner, r4 summon) / rex_SpellDamoclesSword_Create (r3 sword, r5 caster), after them",
-			"A spell summoned a creature or a weapon. The summon leaves through EntityRemoved.",
+		new ModApiEvent("Summoned", "summoned", 63, "rex_SpellRaiseDead_BindSummoner (r3 summoner, r4 summon, r6 the spell's serial) / rex_SpellDamoclesSword_Create (r3 sword, r4 the sword set: its spell's serial at +0x10, r5 caster), after them",
+			"A spell summoned a creature or a weapon. The summon leaves through EntityRemoved. serial is the summoning spell's as the game states it at each seam — the bind's own argument, the sword set's (swords a re-cast adds to a live set carry the set's: the spell they join) — so it matches that cast's spell_created, hits and spell_ended, and tag is that cast's.",
 			string.Empty,
 			new[]
 			{
@@ -720,6 +741,8 @@ public static class ModApi
 				F("player", "int32_t", "1 or 2 for a hero, else 0"),
 				F("summon", "uint32_t", "the summoned entity"),
 				F("kind", "int32_t", "1 a Raise Dead minion, 2 a Blades sword"),
+				F("serial", "uint32_t", "the summoning spell's serial (spell_created's, a hit's spell_serial)"),
+				F("tag", "int32_t", "the tag of the cast whose serial it carries (spell_launch's, cast_spell's options.tag), 0 none"),
 			}),
 		new ModApiEvent("Crime", "crime", 64, "rex_CECCrime_Add (r3 crime component, r4 criminal, r5 victim, r6 type)",
 			"A crime is recorded against someone. The co-op partner's crimes are their own. A reported murder also records an assault (type 3), raised again.",
@@ -958,6 +981,9 @@ public static class ModApi
 				F("mod", "const char* / string", "the mod that stated the row or its menu, empty for a shipped row"),
 				F("command", "const char* / string", "the row's own command (Inventory:use:1234, Inventory:equip:…, Ability:learn:9, Shop:buy:7; the expression id on the expressions list), or a ROW ACTION's highlighted row's; a Godot handler may REWRITE it to another verb, which then runs instead"),
 				F("button", "const char* / string", "a ROW ACTION's: the button pressed (X or Y); empty for a plain row choice"),
+				F("subject_kind", "const char* / string", "the row's TYPED SUBJECT, read by the engine off the row's own command or a host list's row name (ModRowSubject) so no handler parses a verb: \"item\" (Inventory:use, inventory:usable), \"weapon\" (Inventory:equip), \"expression\" (an expression row, expressions), \"will\" (Ability:learn 7..14, spells_known); empty for none"),
+				F("definition", "const char* / string", "the item's, weapon's or expression's record hash as \"0x%08x\" (exact, where a float would not be); empty for none and for a will"),
+				F("spell", "int32_t", "a will's spell type 0..7 (0 Lightning .. 7 Dead Rising: the ability less 7), -1 for none"),
 			}),
 		new ModApiEvent("ModMessageBox", "mod_message_box", 88, "Godot's host boxes (Engine_UiModBoxes), then the guest tick from the host's command queue (box_answer)",
 			"A message box a mod raised (refii_mod_message_box, Refii.message_box, RefiiHost.message_box) was answered. Godot scripts get it as it happens; native handlers on the next guest tick, on the front end too; Lua handlers in a game (init.lua) and on the front end (mod/frontend.lua).",
@@ -1031,8 +1057,8 @@ public static class ModApi
 				F("down", "bool", "the value being written (writable)", true),
 				F("component", "uint32_t", "the player component the flag lives on (native)"),
 			}),
-		new ModApiEvent("VortexStarted", "vortex_started", 95, "rex_VortexComponent_Init (r3 the component 211, owner at +4; r4 caster, r5 target, r6 serial -> +0x18, r8 level -> +0x14), after it — inside the spell factory, before spell_created",
-			"A vortex is live: its component was initialised on the vortex entity by the vortex spell's post-init, inside the factory and before spell_created reports the spell object, which finishes at once (no registry lookup ever returns a vortex). spell_parts(serial) finds the component again while it lives. Online the cast runs on both machines (replica on the copy).",
+		new ModApiEvent("VortexStarted", "vortex_started", 95, "rex_VortexComponent_Init (r3 the component 211, owner at +4; r4 caster, r5 target, r6 serial -> +0x18, r8 level -> +0x14), after it — inside the spell factory, before spell_created; lifts is answered in rex_VortexComponent_Classify (TU1 sub_8275EB10 / disc sub_827364F0) while that vortex's update runs",
+			"A vortex is live: its component was initialised on the vortex entity by the vortex spell's post-init, inside the factory and before spell_created reports the spell object, which finishes at once (no registry lookup ever returns a vortex). spell_parts(serial) finds the component again while it lives. Every half second its update asks how it takes each creature in reach — lift it (the capture, vortex_caught) or shudder it, the one hit per cast it gives a creature it cannot lift (a hero, or a creature not flagged liftable); lifts = false answers 'cannot lift' for every creature, so this vortex picks none up and its shudder hit lands on each creature it passes once per cast, carrying the cast's serial and tag (props are lifted as before). Online the cast runs on both machines (replica on the copy), and lifts holds on both: the machine deciding the caster states it, and the core carries its answer to the other machine's copy through the cast pairing. Until the pair forms the copy lifts no creature (its half-second check passes over them), so it starts lifting at most one check after the pair; a copy whose cast cannot pair follows its own lifts after the eight seconds an unpaired cast is kept.",
 			string.Empty,
 			new[]
 			{
@@ -1046,6 +1072,9 @@ public static class ModApi
 				F("x", "float", "the vortex entity's position"),
 				F("y", "float", "the vortex entity's position"),
 				F("z", "float", "the vortex entity's position"),
+				F("tag", "int32_t", "the cast's tag (spell_launch's), 0 none"),
+				F("damage", "float", "the damage of one of the vortex's hits on a creature it holds, before that creature's damage factor (the component's +0x38, from the spell's data at Init)"),
+				F("lifts", "bool", "whether the vortex lifts creatures, true as the game has it (writable): false lifts none and shudders each creature it reaches once per cast instead; online the deciding machine's answer holds on both machines", true),
 			}),
 		new ModApiEvent("VortexEnded", "vortex_ended", 96, "rex_VortexComponent_Shutdown (r3 the component), before it",
 			"The vortex is ending: its component's Shutdown, with the twister's last point (the component's +0x140, the vector its update hands every ground effect and places the entity at). The look holds where the twister ended, not where the cast began.",
@@ -1081,6 +1110,7 @@ public static class ModApi
 				F("nz", "float", "the impact normal"),
 				F("detonated", "bool", "the blast went off inside this call"),
 				F("hits", "int32_t", "hits delivered inside the call carrying this serial"),
+				F("tag", "int32_t", "the cast's tag (spell_launch's), 0 none"),
 			}),
 		new ModApiEvent("Paused", "paused", 98, "rex_lhGameFlowGuiMode_Apply / rex_lhGameFlowGuiMode_Remove (r3 the GameFlow mode command; its id by vtable slot 1), after each",
 			"The game's pause state flipped: a GameFlow mode command of the pause family became the mode in force (its apply: both players' input categories applied, the world held behind it — what rex_lhGameFlow_IsGuiActive answers), or stopped being it (its remove). Mode 1 is the GUI / pause command (the pause menu and every screen entered from play, the partner's relayed pause, a camera mode); mode 2 a level change. Raised again when a command above it is removed (the mode re-applied) and when one is pushed over it (removed for its length).",
@@ -1115,6 +1145,167 @@ public static class ModApi
 				F("kinds", "int32_t", "every statement holding for the player after this edge, as those bits (for player 0 the full cutscene's)"),
 				F("hero", "uint32_t", "the player's hero (0 for player 0, or once the hero is gone)"),
 			}),
+		new ModApiEvent("HealthChanged", "health_changed", 101, "rex_CECHealth_Modify (r3 health component 36, owner at +4; f1 delta; r5 the source), after it, when current health (+0x14) moved",
+			"An entity's health changed through the game's own Modify: a hit's damage, a potion, a heal, modify_health. delta is what landed after the clamp to 0..max (a heal at full health is not reported; damage the game refuses — a protected hero — moves nothing and raises nothing). Online the game's copy on the machine not authoritative for the entity is flagged a replica.",
+			string.Empty,
+			new[]
+			{
+				F("entity", "uint32_t", "whose health"),
+				F("player", "int32_t", "1 or 2 for a hero, else 0"),
+				F("delta", "float", "the change that landed: positive a heal, negative damage"),
+				F("health", "float", "health after it"),
+				F("max", "float", "the maximum"),
+				F("source", "uint32_t", "the entity the change is attributed to (an attacker, a healer), 0 for none"),
+			}),
+		new ModApiEvent("StatusApplying", "status_applying", 102, "rex_SpellLightning_Electrify (r3 source, r4 victim, r5 serial, r6 level, f1 duration) / rex_SpellChaos_ApplyToVictim (r3 source, r4 victim, r5 serial, f1 seconds, r7 is-creature, r8 replica) / rex_SpellFireball_Ignite (r3 victim, r4 source, r5 serial, r6 level, f3 burn time), before them",
+			"A spell's status is about to be put on an entity (1 electrified, 2 chaos, 3 burning), through the installer the spell itself calls — a cast's hit, apply_status. seconds is writable; the installer may still refuse (an entity not in the world, the world's spell-count gate). Chaos fires where it is decided: never for the network receive's copy, and a written seconds is what the game sends the partner.",
+			"nothing is put on (chaos sends nothing to the partner)",
+			new[]
+			{
+				F("entity", "uint32_t", "the victim"),
+				F("player", "int32_t", "1 or 2 for a hero, else 0"),
+				F("effect", "int32_t", "1 electrified, 2 chaos, 3 burning (status_effect's numbering)"),
+				F("serial", "uint32_t", "the cast's serial (a hit's spell_serial); 4294967295 for none (apply_status)"),
+				F("source", "uint32_t", "who put it on (the caster), 0 for none"),
+				F("level", "int32_t", "the spell level the component records, 0..4; -1 for chaos (it states none)"),
+				F("seconds", "float", "how long it lasts (writable, > 0)", true),
+				F("tag", "int32_t", "the tag of the cast whose serial it carries (spell_launch's, cast_spell's options.tag), 0 none"),
+			}),
+		new ModApiEvent("SaveWritten", "save_written", 103, "rex_lhSaveManager_WritePackage / rex_lhSaveManager_WriteHeroPackage (r4 the package's name, r5 the player whose hero it holds; r3 the result), after them",
+			"A save package was written, or the write failed: the full write (main save, hero save, chapter) and player two's hero save alone, each with the player whose hero it holds. Godot's signal is raised after the host stamped the package's sidecar, so save_snapshot of the new save works from it.",
+			string.Empty,
+			new[]
+			{
+				F("player", "int32_t", "the player whose hero the package holds, 1 or 2"),
+				F("save", "const char* / string", "the package's name, its folder (Hero000); \"\" when the game named none"),
+				F("ok", "bool", "the writer's own result: false for a failed write"),
+			}),
+		new ModApiEvent("LockLost", "lock_lost", 104, "rex_CPlayer_ClearPlayerMode (r3 the player's mode handle, comp33+0x14; r4 the mode), for mode 4 TARGET_LOCK, when the game's own HasPlayerMode (sub_821E8B90 / disc sub_821E8870) held it before the call and not after",
+			"A player's target lock ended: the game dropped its own TARGET_LOCK mode — whichever of its drops ended it (the targeting update when the force byte was released — release_lock —, its range check when the target died or left reach, the network's replication of the partner's). Raised at the drop, only when the mode was really held. Read-only; online the run on the machine not deciding the hero is flagged a replica.",
+			string.Empty,
+			new[]
+			{
+				F("player", "int32_t", "1 or 2"),
+				F("hero", "uint32_t", "the player's hero"),
+				F("target", "uint32_t", "the target the targeting component still holds after the drop, 0 for none"),
+			}),
+		new ModApiEvent("AttackModeChanged", "attack_mode_changed", 105, "host state (GameInput's attack mode), stated by Godot with the command attack_mode P MODE and raised on the next guest tick (no seam)",
+			"The keyboard's attack mode changed for a player: which pad button the attack key presses — 1 melee (X), 2 ranged (Y), 3 magic (B) — set by the mode keys (Fable III's 1, 2, 3). Raised on the machine whose keyboard plays the player; attack_mode(p) reads the mode at any time.",
+			string.Empty,
+			new[]
+			{
+				F("player", "int32_t", "1 or 2: the player the keyboard plays"),
+				F("mode", "int32_t", "1 melee, 2 ranged, 3 magic (Refii.ATTACK_MODE_*); 0 when no keyboard plays the player here any more"),
+			}),
+		new ModApiEvent("ItemRemoved", "item_removed", 106, "rex_CECInventory_RefreshRecordRefs (r3 the inventory component, r4 the definition), after it: the tail RemoveItem's body (sub_824F12A0) and the by-category loops (sub_824F1910, sub_824F1650) run once per unit taken",
+			"One unit left an inventory — used up, sold, given, dropped, taken by a quest or by remove: whatever path took it ran the game's own removal, which calls this tail once per unit. Read-only: the unit is gone.",
+			string.Empty,
+			new[]
+			{
+				F("entity", "uint32_t", "whose inventory"),
+				F("player", "int32_t", "1 or 2 for a hero's inventory, else 0"),
+				F("inventory", "uint32_t", "the inventory component (13)"),
+				F("definition", "uint32_t", "the item's definition (GDB record hash)"),
+				F("count", "int32_t", "units this removal took: 1"),
+				F("remaining", "int32_t", "how many of the definition the inventory still holds"),
+			}),
+		new ModApiEvent("ExpressionWheel", "expression_wheel", 107, "rex_lhGuiManager_OpenExpressionWheel (r3 the quick menu, r4 the player record), after it / rex_lhGuiManager_CloseExpressionWheel (r3 the quick menu), before it; the highlight polled each guest tick while the wheel is up (the HUD's own reader)",
+			"A player's expression wheel opened, closed, or highlighted a different expression. Open and close are the game's own calls; while the wheel is up each change of highlight is one event with open true. Read-only.",
+			string.Empty,
+			new[]
+			{
+				F("player", "int32_t", "1 or 2: whose wheel"),
+				F("open", "bool", "true while the wheel is up (the open and each highlight change), false for the close"),
+				F("highlighted", "uint32_t", "the expression record the wheel highlights (what perform_expression takes), 0 for none or closed"),
+			}),
+		new ModApiEvent("SpellEnded", "spell_ended", 108, "rex_CSpellRegistry_Update (r3 the registry), after it; each spell it stops and erases read before its Stop by the midasm hooks RefiiSpellRegistryUpdating / RefiiSpellRegistryEnding (r31 the spell)",
+			"A spell ended: the spell registry's update stopped it and took it out of the registry — the one place the game removes a live spell. reason 0 the spell's own update finished it this pass (its time ran out, or its own logic), 1 it was stopped from outside before the pass (the caster's spells stopped, a re-cast replacing it). Raised after the update. Read-only; online the game's copy on the machine not deciding the caster is flagged a replica.",
+			string.Empty,
+			new[]
+			{
+				F("serial", "uint32_t", "the registry's serial: spell_created's, a hit's spell_serial, summoned's"),
+				F("type", "int32_t", "the spell type, 0 Lightning .. 7 Dead Rising (Refii.SPELL_*)"),
+				F("caster", "uint32_t", "the caster, 0 for none or gone"),
+				F("caster_player", "int32_t", "1 or 2 for a hero, else 0"),
+				F("tag", "int32_t", "the tag of the cast whose serial it carries (spell_launch's, cast_spell's options.tag), 0 none"),
+				F("reason", "int32_t", "0 finished by its own update, 1 stopped from outside (REFII_SPELL_END_*)"),
+				F("level", "int32_t", "the spell's level, 0..4"),
+			}),
+		new ModApiEvent("SpellChargeEnded", "spell_charge_ended", 109, "rex_CAction_End (r3 the action), before it, for the magic charge's two actions (quick / full charge) once started and not yet ended; released when inside rex_CAbilityActionMagicCast_Start (r4 the entity)",
+			"A hero's magic charge ended — released into a cast (the magic release ability took the charge over: its spell_launch / spell_launched follow) or not (a hit's reaction, a roll, the charge refused). Raised once per charge, on the machine that plays the hero. Read-only.",
+			string.Empty,
+			new[]
+			{
+				F("player", "int32_t", "1 or 2"),
+				F("caster", "uint32_t", "the hero"),
+				F("released", "bool", "true when the magic button was released into a cast"),
+			}),
+		new ModApiEvent("MeleeSwingEnded", "melee_swing_ended", 110, "rex_CAction_End (r3 the action), before it, for the strike action rex_CAbilityActionMelee_CommitSwing committed, once started and not yet ended",
+			"A committed strike ended. hits counts the hit_landed deliveries whose attacker was the striker while that strike was its current action — this machine's own and, online, the copies relayed from the machine deciding hits (one arriving after the end is not counted); 0 is a whiff. Read-only.",
+			string.Empty,
+			new[]
+			{
+				F("entity", "uint32_t", "the striker"),
+				F("player", "int32_t", "1 or 2 for a hero, else 0"),
+				F("action", "uint32_t", "the strike action melee_swing named (Lua and Godot: a handle; 0 in a relayed copy)"),
+				F("action_type", "int32_t", "the action's EScriptableAction (action_type), -1 unknown"),
+				F("hits", "int32_t", "how many hits the strike landed"),
+			},
+			RelayedFromPlayer),
+		new ModApiEvent("ActionMoveInterrupt", "action_move_interrupt", 111, "rex_CAction_MovementInterruptible (r3 the action handle), after it, when it answered yes",
+			"Movement may interrupt an entity's current action: the game's own test answered yes (the action holds no interrupt veto and an ALLOW_MOVEMENT_INTERRUPT anim event allowed it — a cast's waits for its PERFORM). The player's control update asks every frame of that window: while it answers no a moved stick is withheld from the body, when it answers yes a moved stick stops the action. Cancel to hold the action — the animation plays on and the stick neither cancels it nor moves the body — for as long as a handler cancels.",
+			"the action holds: movement does not interrupt it (the stick is withheld from the body)",
+			new[]
+			{
+				F("entity", "uint32_t", "whose action"),
+				F("player", "int32_t", "1 or 2 for a hero, else 0"),
+				F("action", "uint32_t", "the action (Lua and Godot: a handle, what current_action answers)"),
+				F("action_type", "int32_t", "the action's EScriptableAction (action_type), -1 unknown"),
+			}),
+		new ModApiEvent("CameraChanged", "camera_changed", 112, "the game VM: the core camera chunk after each CameraManager:FrameUpdate(hero), when the hero's CurrentCamera (the table the update handed rex_lhCameraManager_ActivateCamera) maps to another mode in the override set's CameraModes",
+			"The camera the game has active for a player changed: the camera manager's own pick among its sets (debug, override, multiplayer, normal), as ECameraMode — 2 GAME (the third-person camera), 3 RANGED_AIM, 4 MAGIC_AIM, 7 ICS (an interactive scene's), 8 FIRST_PERSON, 9 COMBAT_CANNED_ACTION, 10 CANNED_ACTION ... (Refii.CAMERA_*). Raised on the machine that runs that player's camera. Read-only; camera_mode(p) reads it at any time.",
+			string.Empty,
+			new[]
+			{
+				F("player", "int32_t", "1 or 2"),
+				F("mode", "int32_t", "the ECameraMode now active (Refii.CAMERA_*), -1 for a camera the override set does not list"),
+				F("previous", "int32_t", "the mode before, -1 for none stated yet"),
+				F("hero", "uint32_t", "the player's hero"),
+			}),
+		new ModApiEvent("VortexCaught", "vortex_caught", 113, "rex_VortexComponent_Capture (r3 the component 211, r4 the victim; the update's one call after appending the victim to its held list at +0x1B0) / rex_VortexComponent_Release (r3 the component, r4 the victim; the update's drop, the per-victim release and Shutdown), after each; serial from the component's +0x18",
+			"A vortex caught an entity (caught true) or let one go (caught false), whether or not it ever hit it: the vortex's own capture — the update's one call for every entity it takes, the creatures within its creature cap and the props it lifts within the world's prop cap alike (a creature-only rule tests the victim: creature_tier non-nil) — which puts the in-vortex status on the victim (that status_effect kind 4 carries the cast's serial and the caster as source), and its release, every way one ends — dropped from the twister, released on its own, or the vortex shutting down. Carries the cast's tag. vortex_held(serial) lists who it holds now. Online the cast runs on both machines (replica on the copy).",
+			string.Empty,
+			new[]
+			{
+				F("serial", "uint32_t", "the cast's number (the component's +0x18), as its vortex_started and hits carry it"),
+				F("tag", "int32_t", "the cast's tag (spell_launch's), 0 none"),
+				F("vortex", "uint32_t", "the live component (native)"),
+				F("entity", "uint32_t", "the vortex entity"),
+				F("victim", "uint32_t", "the creature caught or let go"),
+				F("player", "int32_t", "the victim's player: 1 or 2 for a hero, else 0"),
+				F("caster", "uint32_t", "the caster entity"),
+				F("caster_player", "int32_t", "1 or 2 for a hero, else 0"),
+				F("caught", "bool", "true on capture, false on release"),
+			}),
+		new ModApiEvent("AppearanceChanged", "appearance_changed", 114, "character_morph_hooks.cpp's tick, when the look Godot published for the player from the player store's character_morphs.* set (refii.character_morphs.p<N>.*) takes over: the morph hook answers the weight function sub_822DA028 from it for that hero",
+			"The look in force for a player's hero changed (Murgo's Mirror): manual came on or off, or a manual input moved — the Mirror's Apply or preview, or a mod's set_appearance / set_appearance_automatic, on either machine. Raised on every machine (the look is the player's store, the same on both). Not raised while automatic stats move (that is the game's own look). Read-only; appearance(p) reads the look at any time.",
+			string.Empty,
+			new[]
+			{
+				F("player", "int32_t", "1 or 2"),
+				F("automatic", "bool", "true when the game's own stats drive the look again, false when the stated manual inputs do"),
+				F("hero", "uint32_t", "the player's hero, 0 while it has none"),
+			}),
+		new ModApiEvent("MorphChanged", "morph_changed", 115, "character_morph_hooks.cpp's tick, when the weight refii_mod_morph_weight answers for a player and a mod morph moved (the player store's morph.<id>, or the registry Godot published as refii.morphs.*): the morph hook answers the weight function sub_822DA028 with it for that player's hero and redraws it",
+			"A mod morph's weight changed for a player: the Mirror's mod sliders, or a mod's morph_set on either machine (the weight is the player's store, the same on both), or the enabled mods' morphs.json changing what it answers. Raised on every machine; the hero is redrawn (its appearance flushed, its texture layers rebuilt). Read-only; morph_get(p, morph) reads the weight at any time.",
+			string.Empty,
+			new[]
+			{
+				F("player", "int32_t", "1 or 2"),
+				F("morph", "uint32_t", "the morph's id, refii_mod_morph_id(\"<mod>.<name>\") (\"0x…\" to Lua and Godot, as morph_id gives it)"),
+				F("weight", "float", "the weight the hook answers now: the stored one clamped to the declared range, else the default"),
+				F("hero", "uint32_t", "the player's hero, 0 while it has none"),
+			}),
 	};
 
 	/// <summary>REFII_CUTSCENE_* (core/refii_mod_events.h): the cutscene event's kinds and in_cutscene's bits.</summary>
@@ -1122,6 +1313,42 @@ public static class ModApi
 	public const int CutsceneInteractive = 2;
 	public const int CutsceneLookAt = 4;
 	public const int CutsceneAll = CutsceneFull | CutsceneInteractive | CutsceneLookAt;
+
+	/// <summary>
+	/// THE NAMED NUMBERS every surface states the same: <c>Refii.&lt;Name&gt;</c> in Lua (the preamble's),
+	/// <c>RefiiHost.constants()</c> in Godot. SPELL_* the spell types (the hit's spell_type, a slot's
+	/// spell, cast_spell's type); ABILITY_* the ability types (ability_level, an ability's costLike);
+	/// REQUEST_* the ability_request types; ACTION_* the game_action ids the mods meet; RELATION_* the
+	/// faction rule's answers (relation, the relation event); ATTACK_MODE_* the keyboard's attack modes
+	/// (attack_mode, attack_mode_changed); CAMERA_* the game's ECameraMode (miscellaneous/cameramodeenum.lua:
+	/// camera_mode, camera_changed, camera_override).
+	/// </summary>
+	public static readonly IReadOnlyList<(string Name, int Value)> Constants = new (string, int)[]
+	{
+		("SPELL_LIGHTNING", 0), ("SPELL_FIREBALL", 1), ("SPELL_SLOW_TIME", 2), ("SPELL_BLADES", 3),
+		("SPELL_VORTEX", 4), ("SPELL_CHAOS", 5), ("SPELL_FORCE_PUSH", 6), ("SPELL_RAISE_DEAD", 7),
+		("ABILITY_HEAVY_WEAPONS", 1), ("ABILITY_PHYSIQUE", 2), ("ABILITY_TOUGHNESS", 3), ("ABILITY_RANGED_WEAPONS", 4),
+		("ABILITY_ACCURACY", 5), ("ABILITY_SPEED", 6), ("ABILITY_LIGHTNING", 7), ("ABILITY_FIREBALL", 8),
+		("ABILITY_SLOW_TIME", 9), ("ABILITY_BLADES", 10), ("ABILITY_VORTEX", 11), ("ABILITY_CHAOS", 12),
+		("ABILITY_FORCE_PUSH", 13), ("ABILITY_RAISE_DEAD", 14),
+		("REQUEST_MELEE_PRESSED", 16), ("REQUEST_MELEE_RELEASED", 17), ("REQUEST_MAGIC_CHARGE", 18),
+		("ACTION_INTERACT", 11), ("ACTION_LOCK_SET", 49), ("ACTION_LOCK_RELEASE", 50),
+		("ACTION_SPRINT_SET", 66), ("ACTION_SPRINT_RELEASE", 67),
+		("RELATION_NEUTRAL", 1), ("RELATION_ALLY", 2), ("RELATION_ENEMY", 4),
+		("ATTACK_MODE_MELEE", 1), ("ATTACK_MODE_RANGED", 2), ("ATTACK_MODE_MAGIC", 3),
+		("CREATURE_ELITE", 1), ("CREATURE_LIEUTENANT", 2),
+		("CAMERA_DEFAULT", 0), ("CAMERA_SIMPLE", 1), ("CAMERA_GAME", 2), ("CAMERA_RANGED_AIM", 3), ("CAMERA_MAGIC_AIM", 4),
+		("CAMERA_ICS", 7), ("CAMERA_FIRST_PERSON", 8), ("CAMERA_COMBAT_CANNED_ACTION", 9), ("CAMERA_CANNED_ACTION", 10),
+		("CAMERA_CUTSCENE", 11), ("CAMERA_TRACKING", 12), ("CAMERA_FREE", 13), ("CAMERA_FREEZE", 14),
+	};
+
+	/// <summary>
+	/// EVERY NAMED NUMBER, the one list both surfaces state: <see cref="Constants"/> and the cutscene
+	/// bits (<c>CUTSCENE_FULL</c>, <c>_INTERACTIVE</c>, <c>_LOOK_AT</c>) — Lua's <c>Refii.&lt;NAME&gt;</c>, Godot's
+	/// <c>constants()</c>.
+	/// </summary>
+	public static IEnumerable<(string Name, int Value)> NamedNumbers =>
+		Constants.Concat(new[] { ("CUTSCENE_FULL", CutsceneFull), ("CUTSCENE_INTERACTIVE", CutsceneInteractive), ("CUTSCENE_LOOK_AT", CutsceneLookAt) });
 
 	/// <summary>The three statements a cutscene is, the same on every surface.</summary>
 	public const string CutsceneKindsMeaning =
@@ -1166,8 +1393,29 @@ public static class ModApi
 		"the quick menu's own actions for player 1 or 2's hero, gated as the game gates its quick menu (the hero alive, the d-pad up, CanPlayerOpenQuickMenu for that player), " +
 		"true when performed: use_item uses an inventory item by definition (the item handle by record, the game's Use, the handle released; the UI data generation moves); " +
 		"equip_weapon is the weapon set's own EquipWeaponByRecord for a weapon the inventory holds — on an online joiner the pick crosses to the co-op kit (REFII_MOD_HOST_HERO_KIND, CoopHeroKit.SetLocalWeapon), " +
-		"whose kit the host equips from and replicates back, so the caller never cares; perform_expression is StartExpression on the performer (component 154) for an expression it knows; " +
+		"whose kit the host equips from and replicates back, so the caller never cares; perform_expression is StartExpression on the performer (component 154) for an expression it knows, released at once (a tap: the basic form); " +
 		"assign_spell puts spell type 0..7 on every tier the hero knows (the spell manager's known and offered tables) through the game's own assign. Definitions and expressions are \"0x…\" record hashes. Guest tick";
+
+	private const string QuickOptionsMeaning =
+		"the quick actions with options: ungated skips the quick menu's own gate (the d-pad up and CanPlayerOpenQuickMenu: a walking-type player mode, no busy action) and is still refused for a hero not alive and while any cutscene kind holds (in_cutscene); " +
+		"held (perform_expression) leaves the expression unreleased — an extendable one extends when the game's own one-second countdown (the expression action's +0x90, set in its constructor sub_8284F380) runs out and plays on until release_expression; " +
+		"release_expression is the performer's own end of a held expression (sub_82414A50), the call GameAction 25 (the extend release) makes from the hero's action receiver: released before the countdown the basic form plays, released while extending the extension ends. " +
+		"Natively flags are REFII_QUICK_UNGATED 1 and REFII_QUICK_HELD 2. Guest tick";
+
+	private const string SprintMeaning =
+		"the sprint as the game holds it, by player: sprinting is the sprint component's (146) flag +0x24, the byte the action receiver tests before it ends a sprint on GameAction 67 (sprint release); " +
+		"end_sprint is that release's own call, sub_8284A8C0(component, 0): the flag cleared and the movement's sprint mode (52) stopped — a held sprint button sprints again only on its next press. False when not sprinting";
+
+	private const string LocomotionMeaning =
+		"per-hero locomotion: each hero's locomotion component (110) copies a LocomotionData table into its own name->value map when it loads one (sub_8283E408: at creation, indoors/outdoors, a movement-mode change), " +
+		"and every read takes the active locomotion state's MovementParams first, then that map (sub_821B2280). set_locomotion writes this hero's own entry for one of the ten fields the loader copies " +
+		"(MinControlMagForMovement, MinVelMagForMovement, MaxTurnSpeedStatic, MaxTurnSpeedRunning, MaxSpeed, SprintSpeedMultiplier, SprintTerminationSpeedFraction, FrictionCoefficient, MaxSpeedLateralStatic, MaxSpeedLateralRunning) through the map's own operator[], live, " +
+		"and holds it across the loader's next copy; a state's own MovementParams (the Idle state's turn cap) still win while it is active. A non-number (false, nil, \"-\") stops holding the field and puts back what the last load copied. " +
+		"locomotion reads the hero's own entry (the held value, or what the load copied). Guest tick";
+
+	private const string ParryMeaning =
+		"per-hero parry: each hero's player component copies HeroCombatBalanceParams into its own table when it is made (sub_823E9BF0), and the parry reads that copy by name each time (sub_829897B0): " +
+		"set_parry writes this hero's InputWindowSecondsForParry (seconds) and MeleeParryWedgeAngle (degrees), live, and holds them for that player's next hero; a missing or negative value leaves that one. parry reads both. Guest tick";
 
 	private const string ExpressionsMeaning =
 		"what the quick actions choose from, by player: the performer's known expressions (its +0x88 vector: the record, counted uses; the record is the id perform_expression takes), " +
@@ -1215,6 +1463,23 @@ public static class ModApi
 
 	public const string SlotMeaning =
 		"the spell player 1 or 2's hero holds in slot 0..4 (0 Lightning .. 7 Dead Rising), -1 for none: the spell manager's slot table, row 0, what the launch reads";
+
+	/// <summary>vortex_held's meaning on every surface.</summary>
+	public const string VortexHeldMeaning =
+		"who the live vortex of a cast holds now, by the serial its events carry: the component's own held list (+0x1B0, the vector its update appends a capture to and erases a release from), in its order, " +
+		"each a handle while it is in the world — whether or not the vortex ever hit it. vortex_caught states each capture and release as it happens";
+
+	/// <summary>spell_balance's meaning on every surface.</summary>
+	public const string SpellBalanceMeaning =
+		"one power (level 0..4) of a spell for a caster's definitions (its spell manager's +400): the Targeted definition sub_8260D580 hands the factory, fed to the class's own data read as the factory feeds a new spell — its defaults per power under the definition's GDB PowerN values. " +
+		"status_seconds / status_spread: the status the class's Start installs on each victim, its seconds before the victim's own factor and the spread of the uniform draw the Start adds (the installer gets seconds × factor + [0, spread)) — Lightning ElectrifyDuration and 5, Fireball CreatureBurnTime and 0, Chaos Duration and 2; " +
+		"duration: Vortex's Duration, the twister's life; swords: Blades' NumSwords, the swords one cast makes. A field the class does not carry is absent (-1 on the C and query surfaces)";
+
+	/// <summary>host_serial / local_serial's meaning on every surface.</summary>
+	public const string CastSerialMeaning =
+		"one cast, one identity online: the game makes a cast's spell on both machines, each with its own serial (the deciding machine's cast action replicates its Start as message 0x5B, 0x5C or 0x5E and the other machine's copy launches through its own factory). " +
+		"A cast is paired by that replicated release — the caster's network id and the fields the message carries, in the order the game's guaranteed, sequential channel starts them — and its spells by creation order; the HOST's serial is the shared name (hits are decided there, and a relayed hit_landed carries this machine's serial once paired). " +
+		"host_serial(serial) is the host's serial of this machine's spell, local_serial(host_serial) this machine's spell for the host's: each the serial itself on the host, alone and in local co-op; on the joiner 0 / nil / ok false while unpaired. A spell no cast action made (cast_spell) never pairs";
 
 	public const string CastPartsMeaning =
 		"what a cast put in the world, by the serial its hits and events carry (spell_created / vortex_started / fireball_impact, a hit's spell_serial), read live and validated: " +
@@ -1273,10 +1538,13 @@ public static class ModApi
 		new ModApiHelper("int32_t refii_mod_coop_mode(base)", "0 alone, 1 local co-op, 2 online hosting, 3 online joined"),
 		new ModApiHelper("uint32_t refii_mod_focus(base, player)", "the living entity that hero is focused on (their targeting), or 0; meaningful only where that hero is played (refii_mod_player_here)"),
 		new ModApiHelper("void refii_mod_wheel_switches_target(base, hero)", WheelSwitchesTargetMeaning),
+		new ModApiHelper("void refii_mod_wheel_switches_target_sticky(ctx, base, hero, on)", WheelStickyMeaning + ". Guest tick"),
 		new ModApiHelper("float refii_mod_player_value(player, key, fallback)", "a player's value, the same on both co-op machines (fallback when unset)"),
 		new ModApiHelper("int32_t refii_mod_player_get(player, key, float* out)", "whether the player has a value under key, written to out when not null"),
 		new ModApiHelper("void refii_mod_player_set(player, key, v) / refii_mod_player_add(player, key, d, saved)", "writes a player's value on either machine; the hero's owner applies it (an add merges)"),
 		new ModApiHelper("void refii_mod_player_save(player, key, v)", "a SAVED player value: kept with that hero's own save, back when it loads"),
+		new ModApiHelper("int32_t refii_mod_player_text(player, key, out, capacity) / refii_mod_player_set_text(player, key, text) / refii_mod_player_save_text(player, key, text) / refii_mod_player_hash(player, key, uint32_t* out) / refii_mod_player_save_hash(player, key, hash)",
+			PlayerTextMeaning + " player_text answers the length (-1 for none); REFII_MOD_PLAYER_TEXT_MAX"),
 		new ModApiHelper("int32_t refii_mod_player_here(player)", "whether this machine plays that hero: run a per-player refill or timer only there"),
 		new ModApiHelper("int32_t refii_mod_event_replica()", "the event is a copy of something the other co-op machine decides — the game's own copy (verdicts apply) or a RELAYED one (it already happened): player-state writes are dropped; skip world and body effects"),
 		new ModApiHelper("int32_t refii_mod_opinion_scope_two()", "1 while the game is moving player two's opinions on this thread (an OpinionModified for hero two)"),
@@ -1300,6 +1568,7 @@ public static class ModApi
 		new ModApiHelper("int32_t refii_mod_entity_name(base, entity, char* out, size)", "the entity's instance name"),
 		new ModApiHelper("int32_t refii_mod_relation(ctx, base, entity, other)", "the game's faction rule: 1 neutral, 2 ally, 4 enemy"),
 		new ModApiHelper("int32_t refii_mod_set_position(ctx, base, entity, xyz)", "moves the entity through its placement's own setter"),
+		new ModApiHelper("int32_t refii_mod_facing(ctx, base, entity, float* out_xyz) / refii_mod_velocity(ctx, base, entity, float* out_xyz) / refii_mod_set_facing(ctx, base, entity, const float* xyz)", "the bodies game Lua's Physics.GetFacingVector / GetVelocity / SetFacingVector bind, on the placement their binder hands them (an entity in the world); guest axes, z up; set_facing keeps the facing level (the game drops z) and does nothing for a vector shorter than 1e-4; a hero turns through Player.SetFacingVector"),
 		new ModApiHelper("int32_t refii_mod_entity_tint(ctx, base, entity, r, g, b, a) / refii_mod_entity_untint(ctx, base, entity)", EntityTintMeaning),
 		new ModApiHelper("int32_t refii_mod_entity_alpha(ctx, base, entity, alpha) / refii_mod_entity_scale(ctx, base, entity, scale) / refii_mod_entity_saturation_mask(ctx, base, entity, on) / refii_mod_entity_drawable(ctx, base, entity, on)", AppearanceMeaning),
 		new ModApiHelper("int32_t refii_mod_lock_target(ctx, base, player, entity) / refii_mod_release_lock(ctx, base, player) / uint32_t refii_mod_switch_target(ctx, base, player, left) / uint32_t refii_mod_locked_target(ctx, base, player)", LockMeaning),
@@ -1308,11 +1577,15 @@ public static class ModApi
 		new ModApiHelper("int32_t refii_mod_knockback(ctx, base, entity, dir, force) / refii_mod_stagger(ctx, base, entity)", KnockbackMeaning),
 		new ModApiHelper("int32_t refii_mod_set_speed_multiplier(base, player, factor) / refii_mod_clear_speed_multiplier(base, player) / refii_mod_speed_multiplier(base, player, float* out)", SpeedMeaning),
 		new ModApiHelper("uint32_t refii_mod_current_action(base, entity) / int32_t refii_mod_action_elapsed(ctx, base, action, float* out) / refii_mod_action_interruptible(base, action) / refii_mod_allow_action_interrupt(base, action)", ActionMeaning),
+		new ModApiHelper("int32_t refii_mod_allow_action_interrupt_at(ctx, base, action, seconds)", InterruptAtMeaning + ". Guest tick"),
 		new ModApiHelper("int32_t refii_mod_action_type(base, action) / refii_mod_action_name(base, action, char* out, size) / const char* refii_mod_scriptable_action_name(type)", ActionKindMeaning),
 		new ModApiHelper("int32_t refii_mod_signed_in_user(base) / refii_mod_save_count(ctx, base) / refii_mod_frontend_screen(ctx, base, char* out, size)", FrontEndMeaning),
 		new ModApiHelper("int32_t refii_mod_entity_living(base, entity)", LivingMeaning),
 		new ModApiHelper("int32_t refii_mod_spell_in_slot(base, player, slot)", SlotMeaning),
 		new ModApiHelper("int32_t refii_mod_spell_parts(ctx, base, serial, refii_mod_cast_parts* out)", CastPartsMeaning + "; out: spell, type, targeted, level, caster, caster_player, vortex, anchor, swords[8], sword_count, origin[3], has_origin, exploded"),
+		new ModApiHelper("int32_t refii_mod_vortex_held(base, serial, uint32_t* out, int32_t max)", VortexHeldMeaning + "; writes up to max entities and returns how many it holds, -1 when no live vortex carries serial"),
+		new ModApiHelper("int32_t refii_mod_spell_balance(ctx, base, caster, type, level, refii_mod_cast_balance* out)", SpellBalanceMeaning + "; out: status_seconds, status_spread, duration, swords; 0 (all -1) for another type or a caster with no spell manager. Guest tick"),
+		new ModApiHelper("uint32_t refii_mod_host_serial(base, serial) / refii_mod_local_serial(base, host_serial)", CastSerialMeaning),
 		new ModApiHelper("int32_t refii_mod_play_sound_on(ctx, base, entity, cue, tag) / refii_mod_play_sound_at(ctx, base, xyz, cue, tag) / refii_mod_stop_sound(ctx, base, entity, tag, fade_ms) / refii_mod_play_music(ctx, base, name) / refii_mod_stop_music(ctx, base, name)", SoundMeaning),
 		new ModApiHelper("int32_t refii_mod_play_animation(ctx, base, entity, name, loops, blend_seconds, speed) / refii_mod_stop_animation(ctx, base, entity)", AnimationMeaning),
 		new ModApiHelper("int32_t refii_mod_modify_opinion(ctx, base, villager, hero, axis, delta) / refii_mod_add_deed(ctx, base, villager, hero, deed)", OpinionSetMeaning),
@@ -1322,6 +1595,7 @@ public static class ModApi
 		new ModApiHelper("int32_t refii_mod_level_name(base, char* out, size)", "the loaded level's name"),
 		new ModApiHelper("int32_t refii_mod_gold(base, entity, int32_t* out) / refii_mod_give_gold(ctx, base, entity, delta)", "a purse, read and changed through the game's own Modify"),
 		new ModApiHelper("int32_t refii_mod_item_count(base, entity, definition) / uint32_t refii_mod_add_item(ctx, base, entity, definition)", "an inventory, counted and added to through the game's own add"),
+		new ModApiHelper("int32_t refii_mod_add_items(ctx, base, entity, definition, count, uint32_t* out_last)", AddItemsMeaning + ". Guest tick"),
 		new ModApiHelper("int32_t refii_mod_run_game_lua(ctx, base, chunk)", "runs a Lua chunk in the game VM"),
 		new ModApiHelper("int32_t refii_mod_run_frontend_lua(ctx, base, chunk)", "runs a Lua chunk in the mods' front-end Lua (the title and the front end: the current Gameface presentation's own state, every mod's mod/frontend.lua run in it first); 0 when no presentation has one"),
 		new ModApiHelper("int32_t refii_mod_game_lua_int(ctx, base, expr, lo, hi, int32_t* out)", "an integer Lua expression's value, by a search of assertions"),
@@ -1338,13 +1612,26 @@ public static class ModApi
 		new ModApiHelper("uint32_t refii_mod_handle(address) / refii_mod_handle_address(handle)", "the handle Lua and Godot hold for an object, and back"),
 		new ModApiHelper("uint32_t refii_mod_fnv1(text)", "the game's FNV-1 of a name: a GDB record's hash, a text tag's key"),
 		new ModApiHelper("int32_t refii_mod_renown / refii_mod_morality / refii_mod_purity(ctx, base, entity, out)", "the game's own getters: renown (with bonuses), morality and purity (clamped)"),
+		new ModApiHelper("uint32_t refii_mod_cast_spell_with(ctx, base, caster, type, targeted, target, level, pos, dir, const refii_mod_cast_options* options)", "refii_mod_cast_spell with { tag, damage_scale, at_kind, at_entity, at_point }: the tag rides the cast's spell_created, vortex_started, hit, hit_landed, fireball_impact and status_applying by its serial (the registry's counter, read before the factory builds the spell, so a hit inside the factory carries it); its hits deal damage × damage_scale for that delivery, where the hit is decided; at_kind REFII_MOD_CAST_AT_ENTITY / _POINT: at casts the Targeted class by the class's own rule for that place, from pos as the origin (the caster's when absent) and dir as the facing when the origin stands on the place: Lightning at an entity starts on the point its bolt strikes (sub_825FEFC8 with the power's CreateImpactFX and 0.25: a bolt of zero length), at a point one 15.0 reach above it facing down (outside the re-acquire's 1.35 height); Fireball at an entity within the 1.0 its Start impacts at once, set back toward the origin; Blades at the entity's position or the point (its swords are made there); Vortex set back 1.25 along the facing (its twister spawns on the place); Chaos at an entity on the point its stream strikes; Force Push from the origin toward the place; Fireball and Chaos at a point, and Slow Time and Raise Dead, are refused with a mod error"),
+		new ModApiHelper("int32_t refii_mod_can_save(ctx, base, player) / refii_mod_save_game(ctx, base, player)", "the game's own save, by player: can_save is Player.IsAbleToSaveGame for that player's hero (saving enabled and the player's user holding a storage device); save_game is AutoSaveGame(true, true) where can_save allows it — the game's whole save on the next world update, each hero into its own package, save_written following per package"),
+		new ModApiHelper("int32_t refii_mod_modify_renown(ctx, base, entity, int32_t delta) / refii_mod_modify_morality / refii_mod_modify_purity(ctx, base, entity, float delta)", "the game's own Stats.ModifyRenown / ModifyMorality / ModifyPurity bodies (rex_lhHeroStats_Modify*): the renown / morality / purity events fire, the game clamps, unlocks and splits renown with a co-op partner; morality and purity change only where the session is decided (the host)"),
 		new ModApiHelper("int32_t refii_mod_physique(base, entity, float* fat, float* height) / refii_mod_age(base, entity, float* years)", "physique from the stats component, age from the age component (122)"),
+		new ModApiHelper("uint32_t refii_mod_morph_id(\"<mod>.<name>\") / int32_t refii_mod_morph_list(uint32_t* out, capacity) / int32_t refii_mod_morph_registered(id, float* default, float* min, float* max) / int32_t refii_mod_morph_weight(player, id, float* out) / int32_t refii_mod_set_morph_weight(player, id, weight)", ModMorphMeaning),
+		new ModApiHelper("int32_t refii_mod_appearance(ctx, base, player, refii_mod_appearance_t* out) / void refii_mod_set_appearance(ctx, base, player, const refii_mod_appearance_t* inputs) / void refii_mod_set_appearance_automatic(ctx, base, player, on)", "Murgo's Mirror: the look in force for player's hero (automatic, tan, fat, height, strength, skill, will, morality, purity, age — manual the stated inputs, automatic the game's own) · switch to manual with the inputs that are not NaN, the rest as the hero looks · back to the game's own (1) or the held manual inputs (0); the player store's character_morphs.* set, kept in the owning player's Mirror settings"),
 		new ModApiHelper("int32_t refii_mod_inventory_stack(base, entity, index, uint32_t* definition, int32_t* count)", "stack index of an inventory, in the game's order; false past the end"),
 		new ModApiHelper("int32_t refii_mod_equipped(base, entity, uint32_t* melee, uint32_t* ranged)", "the weapon set's melee and ranged definition hashes"),
 		new ModApiHelper("int32_t refii_mod_use_item(ctx, base, player, definition) / refii_mod_equip_weapon(ctx, base, player, definition) / refii_mod_perform_expression(ctx, base, player, expression) / refii_mod_assign_spell(ctx, base, player, spell)", QuickActionMeaning),
+		new ModApiHelper("int32_t refii_mod_quick_action(ctx, base, player, kind, record, flags) / refii_mod_release_expression(ctx, base, player)", QuickOptionsMeaning + "; kind 1 use_item, 2 perform_expression, 3 equip_weapon, 4 assign_spell"),
+		new ModApiHelper("int32_t refii_mod_sprinting(base, player) / refii_mod_end_sprint(ctx, base, player)", SprintMeaning),
+		new ModApiHelper("int32_t refii_mod_inventory_usable(ctx, base, entity, index)", "whether stack index of the entity's inventory (refii_mod_inventory_stack's order) is usable from the inventory, by the item's own test (sub_827649C8: the definition's InventoryItemComponent's UsableFromInventory — what the Items page's use and A button ask). Guest tick"),
+		new ModApiHelper("int32_t refii_mod_set_locomotion(ctx, base, player, const char* key, float value) / refii_mod_locomotion(ctx, base, player, key, float* out)", LocomotionMeaning),
+		new ModApiHelper("int32_t refii_mod_set_parry(ctx, base, player, float window_seconds, float wedge_degrees) / refii_mod_parry(ctx, base, player, float* window, float* wedge)", ParryMeaning),
 		new ModApiHelper("int32_t refii_mod_expression(base, player, index, uint32_t* record, int32_t* uses) / refii_mod_spells_known(base, player, uint32_t* mask) / uint32_t refii_mod_selected_expression(base, player)", ExpressionsMeaning + "; expression is false past the end"),
 		new ModApiHelper("int32_t refii_mod_record_string(ctx, base, definition, field, out, size)", RecordStringMeaning),
 		new ModApiHelper("int32_t refii_mod_record_int(ctx, base, definition, field, int32_t* out)", RecordIntMeaning),
+		new ModApiHelper("int32_t refii_mod_record_number(ctx, base, definition, field, float* out) / refii_mod_record_bool(ctx, base, definition, field, int32_t* out) / refii_mod_record_exists(ctx, base, definition)", RecordNumberMeaning),
+		new ModApiHelper("int32_t refii_mod_record_ref(ctx, base, definition, field, uint32_t* out)", RecordRefMeaning),
+		new ModApiHelper("int32_t refii_mod_creature_tier(base, entity)", CreatureTierMeaning + "; -1 without a creature component"),
 		new ModApiHelper("int32_t refii_mod_entities_near(ctx, base, xyz, radius, creatures_only, out[], max)", "entities within a radius, nearest first"),
 		new ModApiHelper("int32_t refii_mod_line_of_sight(ctx, base, from, to)", "the game's physics raycast: true when nothing is between"),
 		new ModApiHelper("uint32_t refii_mod_spawn(ctx, base, definition, xyz)", "an entity created through the game's own CreateEntityFromIDAtPosition"),
@@ -1354,17 +1641,27 @@ public static class ModApi
 			"the effect stands at that .mdl.gmd point in its own frame, on a rigged body on its bone; refii_mod_play_fx_at(name, entity, helper, options) is the same); returns the id. Any thread"),
 		new ModApiHelper("void refii_mod_stop_fx(id)", "stops a played effect by any surface's id (native, Lua or Godot)"),
 		new ModApiHelper("uint32_t refii_mod_mark(player, entity, xyz, icon, text) / refii_mod_unmark(id)", MarkMeaning + " Any thread"),
+		new ModApiHelper("uint32_t refii_mod_world_meter(player, entity, xyz, value, max, style) / int32_t refii_mod_mark_meter(id, value, max, style)", WorldMeterMeaning + " Any thread"),
 		new ModApiHelper("int32_t refii_mod_fade(player, to_black, seconds)", FadeMeaning + " Any thread"),
 		new ModApiHelper("int32_t refii_mod_meter(player, id, label, value, max, style) / refii_mod_meter_remove(id)", MeterMeaning + " Any thread"),
 		new ModApiHelper("int32_t refii_mod_input_claim(player, action, on)", InputClaimMeaning),
+		new ModApiHelper("int32_t refii_mod_press(player, button, held) / refii_mod_tap(player, button, ticks)", PressMeaning + " 1 when posted. Any thread"),
+		new ModApiHelper("int32_t refii_mod_charge_spell(ctx, base, player, type, held)", ChargeSpellMeaning + " 1 when taken. Guest tick"),
+		new ModApiHelper("int32_t refii_mod_attack_mode(player)", AttackModeMeaning + " REFII_ATTACK_MODE_*; the guest tick holds the last mode Godot stated. Guest thread"),
+		new ModApiHelper("int32_t refii_mod_camera_mode(player)", CameraModeMeaning + " REFII_CAMERA_*; stated from the game VM by the core camera chunk after each CameraManager:FrameUpdate. Guest thread"),
+		new ModApiHelper("int32_t refii_mod_camera_override(player, mode, fov, pitch_limit, blend, flags)", CameraOverrideMeaning + " fov / pitch_limit 0 or less and blend below 0 are the camera's own; flags REFII_CAMERA_HOLD_AIM (1) is the aim option. Guest thread"),
+		new ModApiHelper("float refii_mod_camera_fov(base, player)", CameraFovMeaning + " Guest thread"),
+		new ModApiHelper("int32_t refii_mod_hide_part(entity, part, on) / refii_mod_hide_part_for(entity, part, on, player)", HidePartMeaning + " refii_mod_hide_part is player 0. Posted to Godot. Any thread"),
 		new ModApiHelper("int32_t refii_mod_hud_icon(player, element, texture) / refii_mod_hud_slide(player, element, slide) / refii_mod_hud_hold(player, piece, on)", HudOverrideMeaning),
 		new ModApiHelper("uint32_t refii_mod_light(entity, xyz, rgb, energy, range, options) / refii_mod_light_remove(id)",
 			LightMeaning + " options (refii_mod_light_options, null for none): offset, at (a model helper, as play_fx_on's), flicker; direction, cone, attenuation for a spot. Any thread"),
 		new ModApiHelper("int32_t refii_mod_send_to_partner(mod, name, payload)", PartnerMeaning + " Any thread"),
+		new ModApiHelper("int32_t refii_mod_signal(name, payload) / refii_mod_publish_text(key, text)", SignalMeaning + " REFII_MOD_SIGNAL_NAME_MAX, REFII_MOD_SIGNAL_PAYLOAD_MAX. 1 when posted. Any thread"),
 		new ModApiHelper("int32_t refii_mod_set_menu_rows(player, menu, rows)",
 			"states a menu list's rows for player 1 or 2 (0: every player) — what a ui/templates.json menu or entry with \"source\": \"rows\" " +
 			"(or rows:<list>) shows, at once if open; rows is one text, \"name|label|command|ghosted\" split by ';' ('\\' escapes), " +
-			"command any row verb (Mod:lua:, Opens:, Screen:open:); \"\" clears. Any thread"),
+			"command any row verb (Mod:lua:, Opens:, Screen:open:); \"\" clears. Up to REFII_MOD_MENU_ROWS_MAX (32768) bytes cross in parts; past it the " +
+			"rows are cut at the last whole row and the mod errors channel says so. Any thread. " + MenuLabelMeaning + " " + HostListMeaning),
 		new ModApiHelper("int32_t refii_mod_open_screen(player, screen)",
 			"opens a host-owned screen by id for player 1 or 2 (0: the menu owner here) — the Screen:open:<id> verb: the game's (1013 " +
 			"achievements, 1014 multiplayer) or a ui/templates.json screens record a mod states (id 1000+, a menu and a presentation, " +
@@ -1390,6 +1687,73 @@ public static class ModApi
 		"as the game's own icons are (each player's camera and half) and sized by the game's distance curve (sub_821AA758); returns the id unmark takes; " +
 		"a marker on an entity goes with the entity.";
 
+	/// <summary>The Lua runtime's own helpers (ModLua.InfrastructureRuntime), one meaning each.</summary>
+	public const string TimerMeaning =
+		"THE game clock and timers on the guest tick: now() is the sum of the tick's seconds while no paused mode is in force (it stands still while the world does: the pause, every menu, a level change; a hitch counts at most 0.25 s; " +
+		"a 32-bit float, exact to a millisecond for four hours); real_now() counts every tick, menus included; after(seconds, fn [, key]) runs fn once, protected, on the first tick the game clock passes now + seconds, " +
+		"in due order, and answers key or a number; a key replaces the timer standing under it; cancel(key or id) drops it; a Lua reload drops every timer";
+
+	public const string EntityStoreMeaning =
+		"a value per entity HANDLE (entity_set(e, key, v), nil clears; entity_value(e, key [, default])), kept across a Lua reload and forgotten when the bus raises that entity's entity_removed — no handler needed";
+
+	public const string PoolMeaning =
+		"a REGENERATING POOL in player p's store under key, so player:key HUD sources and Refii.player_value read it on both co-op machines: pool declares or restates it " +
+		"(max 100, floor 0, regen 0 per second, delay 0 seconds after a spend, each a number or function(p) read every tick; max_key key .. \".max\"; the seconds since the last spend under key .. \".rest\") " +
+		"and answers value, max; ticked where p's hero is played: regen once delay has passed since a spend, clamped to floor..max; pool_spend(p, key, n) takes n and answers true, " +
+		"or refuses (false, nothing taken) when the pool holds less than n — unless floor is below 0 and the pool holds more than 0, which goes into debt down to floor; a pool not stated yet is full (true, nothing taken); " +
+		"pool_value(p, key) answers value, max (nil for no such pool)";
+
+	public const string InPlayMeaning =
+		"whether player 1 or 2 is IN PLAY: no pause or GUI mode and no level change in force (the paused event's modes), no level loading (level_unloading .. level_loaded), " +
+		"that player's hero standing, and no FULL cutscene for them — what a HUD or a timer that must not run behind a menu asks";
+
+	public const string SpellInfoMeaning =
+		"a spell type's (0..7) name tag (the wheel's GUI_SCREEN_ABILITIES_WILL_<X>_NAME_LEVEL_06) and wheel icon path (art/gui/wheelicons/abilities/<stem>.tex), the ones the game draws it with — " +
+		"a stand-in spell (spells/<id>.json) overlays exactly these, so the answer is the stand-in's; nil / empty for another type";
+
+	public const string ConstantsMeaning =
+		"the named numbers, the same on Lua (Refii.<NAME>) and Godot (constants()): SPELL_LIGHTNING 0 .. SPELL_RAISE_DEAD 7 (the spell types); ABILITY_HEAVY_WEAPONS 1, PHYSIQUE 2, TOUGHNESS 3, " +
+		"RANGED_WEAPONS 4, ACCURACY 5, SPEED 6, LIGHTNING 7 .. RAISE_DEAD 14 (ability_level's types); REQUEST_MELEE_PRESSED 16, REQUEST_MELEE_RELEASED 17, REQUEST_MAGIC_CHARGE 18 (ability_request's types); " +
+		"ACTION_INTERACT 11, ACTION_LOCK_SET 49, ACTION_LOCK_RELEASE 50, ACTION_SPRINT_SET 66, ACTION_SPRINT_RELEASE 67 (game_action ids); RELATION_NEUTRAL 1, RELATION_ALLY 2, RELATION_ENEMY 4; ATTACK_MODE_MELEE 1, ATTACK_MODE_RANGED 2, ATTACK_MODE_MAGIC 3 (attack_mode); CREATURE_ELITE 1, CREATURE_LIEUTENANT 2 (creature_tier's bits); " +
+		"CAMERA_DEFAULT 0, SIMPLE 1, GAME 2, RANGED_AIM 3, MAGIC_AIM 4, ICS 7, FIRST_PERSON 8, COMBAT_CANNED_ACTION 9, CANNED_ACTION 10, CUTSCENE 11, TRACKING 12, FREE 13, FREEZE 14 (the game's ECameraMode: camera_mode, camera_override)";
+
+	public const string SettingChangedMeaning =
+		"a mod setting changed LIVE (the Options › Mods page, a script's set_setting, the debug channel's mod-setting): the key, its new value and the previous one, " +
+		"after Refii.setting answers the new value; only on a real change, never at session start (read settings at the call)";
+
+	public const string RecordNumberMeaning =
+		"a GDB record's NUMBER, BOOL or EXISTENCE through the game's own lookup and typed getter (FindEntryByHash, GDBEntry_GetPropTyped — record_int's path), INHERITED: " +
+		"record_number a float property (the database's type 3) as stored, else an int or enum one as a number; record_bool a bool property (type 0); record_exists whether the record is there. " +
+		"nil / false for a record the database lacks or a property it has not got as that type. Guest tick";
+
+	public const string RecordRefMeaning =
+		"a GDB record's REFERENCE property (the database's type 6), INHERITED, through the game's own lookup and typed getter: the hash of the record it names — " +
+		"the value word the game itself looks up (GDBManager_FindEntryByHash after the type-6 read). Absent for a record the database lacks or a property it has not got as a reference. Guest tick";
+
+	public const string CreatureTierMeaning =
+		"a creature's rank as its definition states it, bits CREATURE_ELITE 1 (the GDB bool IsElite) and CREATURE_LIEUTENANT 2 (IsLieutenant): " +
+		"the bytes the creature component's init reads from the definition and the game's own Creature.IsElite / Creature.IsLieutenant answer";
+
+	public const string AddItemsMeaning =
+		"n of a definition (1..100) through the game's own add, once per item — each add's notifications and item_added event as one add's — answering how many were added and the last item";
+
+	public const string WheelStickyMeaning =
+		"the wheel-switched lock made STICKY: on true states it and the guest tick restates it every tick until on false or that hero's player no longer holds a lock " +
+		"(the game's own release, or release_lock) — the one store a Godot script's wheel_switches_target lives in too; at most four heroes at once";
+
+	public const string InterruptAtMeaning =
+		"the interrupt grant deferred to the action's own clock: granted at once when the clock already reads seconds, else on the first guest tick it does — no polling; " +
+		"dropped, ungranted, when the action stops, its clock runs backwards (the address is another action's now) or a minute of ticks passes; a second call restates the time; " +
+		"at most 32 wait (false / 0 past that, or for a stopped action or one +0x4C holds back)";
+
+	/// <summary>What a world meter means on every surface (Engine_HudModMarkers' fill).</summary>
+	public const string WorldMeterMeaning =
+		"a WORLD METER: a bar filled value of max on the marker channel, by the marker's own rules (each player's camera and half, lifted by the drawn height, " +
+		"sized by the game's distance curve, gone with its entity) — world_meter makes a marker that is only the bar, mark_meter puts a fill on any marker " +
+		"(or restates it IN PLACE by id: the value changes without re-marking; max 0 takes it off; an empty style keeps the standing one), unmark removes it; " +
+		"style \"bar\" (\"\": the HUD's gold), \"health\" (red) or an HTML colour (\"#5fa8ff\"), and \"numbers\" after it (\"health numbers\") draws \"value / max\" " +
+		"under a marker with no text, \"x<n>\" (\"health x1.5\") draws the marker n times the curve's size (0.25 .. 4); a drop leaves a pale trail that holds 0.45 s, then drains at 0.9 of a bar a second; returns the id (0 / nil for no max).";
+
 	/// <summary>What fade means on every surface (Engine_UiModFade).</summary>
 	public const string FadeMeaning =
 		"fades player 1 or 2's screen (0: every player this machine plays) to black or back over seconds (0: at once): a host-drawn layer over that " +
@@ -1414,9 +1778,12 @@ public static class ModApi
 	public const string HudOverrideMeaning =
 		"a HUD override by element name for player 1 or 2 (0: both; the shared HUD is the local player's, the second half local player two's): " +
 		"hud_icon states the texture an element shows — a game texture path (Art\\GUI\\WheelIcons\\expressions.tex) or an enabled mod's PNG " +
-		"under art/, fitted to the 128 x 128 slot when it is not that size, \"\" clears; hud_slide the slide it sits on as the game counts them " +
-		"(0 clears); hud_hold keeps a HUD piece visible, its slide owners held on their shown (\"in\") slides while the guest would hide it — " +
-		"the d-pad is the case. An element is a slide-toggle binding name (DPadUp) or an element path by its trailing segments " +
+		"under art/, fitted to the 128 x 128 slot when it is not that size, \"\" clears — and on a MOD'S OWN picture piece of ui/hud.json, named " +
+		"by its id, the texture that player's copy of the piece shows, any path (game:// or not, a mod PNG, res://), drawn at the piece's size and " +
+		"region, over its own texture; hud_slide the slide it sits on as the game counts them " +
+		"(0 clears); hud_hold keeps a HUD piece visible, its slide owners held on their shown (\"in\") slides while the guest would hide it " +
+		"and an element of its trunk (its root and each lone child below it) the guest fades by stated opacity alone drawn at its authored opacity — the d-pad, and the health readout " +
+		"(PlayerHealth, player two's CoopHealth) with its copies. An element is a slide-toggle binding name (DPadUp) or an element path by its trailing segments " +
 		"(dpadmenu.group.up.up). Everything goes when the mods' Lua reloads or the game goes down.";
 
 	/// <summary>What light means on every surface (Engine_ModLights).</summary>
@@ -1436,15 +1803,148 @@ public static class ModApi
 		"once and in the order sent, on the route the game's own cross-machine calls take (core/event_relay.h pm: lines); either machine may send; " +
 		"nothing is sent alone or in local co-op (false), for a bad name, or a payload over the limit.";
 
+	/// <summary>What press / tap mean on every surface (ModInputPresses).</summary>
+	/// <summary>The keyboard's attack mode, the same on every surface (GameInput's 1 / 2 / 3).</summary>
+	public const string AttackModeMeaning =
+		"the keyboard's ATTACK MODE for player p: which pad button the attack key presses — 1 melee (X), 2 ranged (Y), 3 magic (B), " +
+		"ATTACK_MODE_*, set by the mode keys (Fable III's 1, 2, 3); 0 for a player no keyboard plays on this machine. Host state: the " +
+		"attack_mode_changed event follows each change, on the machine whose keyboard plays the player.";
+
+	/// <summary>The camera mode, the same on every surface.</summary>
+	public const string CameraModeMeaning =
+		"the camera the game has ACTIVE for player p, as the game's ECameraMode (CAMERA_*): the camera its own manager picked (CameraManager:FrameUpdate walks the debug, override, " +
+		"multiplayer and normal sets and activates the first valid set's best camera) — 2 GAME the third-person camera, 3 RANGED_AIM, 4 MAGIC_AIM, 7 ICS an interactive scene's, " +
+		"8 FIRST_PERSON (the game's own first-person look and a camera_override hold alike), 9 COMBAT_CANNED_ACTION, 10 CANNED_ACTION; -1 before any is stated and for a player " +
+		"whose camera runs on the other machine. The camera_changed event follows each change.";
+
+	/// <summary>The camera hold, the same on every surface.</summary>
+	public const string CameraOverrideMeaning =
+		"HOLDS a camera for player p through the game's own per-player hold, CameraManager.SetCameraOverride (the call the quests make for their first-person shots): mode " +
+		"CAMERA_FIRST_PERSON (8) or CAMERA_GAME (2); 0 / nil lets it go. Options: fov (degrees; the camera's own when absent, first person 75), pitch_limit (degrees above and below " +
+		"level; first person's own 55), blend (seconds in and out; the camera's own when absent), aim (true: while the player aims a gun the game's aim camera takes over). " +
+		"The hold holds in combat. It YIELDS to the game: a scene's or quest's own camera override replaces it, and it comes back once theirs is released (also after a level or save " +
+		"load); a full cutscene and the canned-action cameras (opening a chest, digging, a ladder, a door, a finishing move) suspend it. It is NEVER SAVED (the save's camera record " +
+		"is written without it) and a held look-at half is not a cutscene (in_cutscene). The eye is the game's (the head's collision point): no option moves it. Cleared when the " +
+		"mods' Lua loads (each session): state it from init.lua or on lua_ready. Split screen: each player's own.";
+
+	/// <summary>The live field of view, the same on every surface.</summary>
+	public const string CameraFovMeaning =
+		"the field of view of player p's live camera in degrees: the horizontal 4:3 angle the game's cameras state (70 the default, first person 75), from the camera manager's " +
+		"live block the player's view is drawn from (manager+0x90, +0x30 copied from the active camera each frame), 0 with no camera. Every camera writes its own FOV each update, " +
+		"so there is no per-player FOV to set: camera_override's fov is the stated way.";
+
+	/// <summary>A hidden part, the same on every surface.</summary>
+	public const string HidePartMeaning =
+		"HIDES a part of an entity in the drawing (on) or shows it again: part a bone of the entity's rig by its rig name, the same in either title (Shadow_Neck: the bone and every bone " +
+		"under it — the head, the face, the hair and hat; a skeleton that names its bones by hash, Fable 3's, is matched by the name's hash), drawn at nothing after the game's pose. Drawing only: the game's pose is untouched and the shadow keeps the part. Kept " +
+		"per entity handle across the entity's rebuilds until shown again or the mods' Lua loads again (lua_ready). player 1 or 2 hides it in that player's view alone, 0 (or absent) in every view: " +
+		"on split screen the other half still draws it; on one view it is hidden when the view is that player's (alone player one's, a shared couch screen both players', an online host " +
+		"player one's, an online joiner player two's). Each part and player is its own statement: showing it for player 1 leaves a hide for every view standing.";
+
+	public const string ChargeSpellMeaning =
+		"charges spell type 0..7 (SPELL_*) through the player's OWN magic charge: held true holds the magic button with the spell lent to every tier the hero has it (known and offered) and the tiers above emptied, " +
+		"so the charge stops where the spell does; held false lets the button go and the cast goes out as the game casts it (spell_launch, spell_launched, spell_created). " +
+		"The tiers are lent through the slot table's own writer with its NOTIFY clear — the game's \"not a choice\" write: no spell_pick, nothing sent to the session — and the player's own slots come back the same way once the charge is over " +
+		"(the charge ended without a release, the cast's last slot out, a second after a release that charged nothing, the hero gone, the mods' Lua reloaded); a real pick made meanwhile is what comes back for its slot. " +
+		"On the machine that plays the player; refused when the hero has not got the spell on its first tier.";
+
+	public const string PressMeaning =
+		"PRESSES a pad button on player 1 or 2's pad — the mirror of an input claim: OR'd into that player's pad state after the claims are " +
+		"withheld (GameInput, both pad paths), so the guest reads it as the player's own pad, focused or not. Names are input.json's (A B X Y LB " +
+		"RB L3 R3 Start Back DpadUp DpadDown DpadLeft DpadRight) and LT / RT; press holds until released (held false / 0), a trigger pulled by " +
+		"held (true / 1 full, 2..255 that much); tap holds for at least ticks whole guest game ticks (1..600; game+0xFC, the counter the pad " +
+		"publish reads; with no world up it counts frames; a tap whose guest stops ticking goes after 10 s). Cleared with the claims: the mods' " +
+		"Lua reloading, the game going down.";
+
+	/// <summary>What signal / publish_text mean on every surface (ModSignals).</summary>
+	public const string SignalMeaning =
+		"LUA AND NATIVE TO GODOT ON THIS MACHINE, the same-machine twin of send_to_partner: signal(name, payload) — name scoped " +
+		"\"<mod>.<name>\" (letters, digits, '_', '.', '-'; at most 96), payload any text up to 1024 bytes carried exactly (longer is cut and a " +
+		"mod error says so) — is raised by RefiiHost as mod_signal(mod, name, payload) and mod_event(\"mod_signal\", e) on Godot's next frame; " +
+		"publish_text(key, text) keeps a text (the same bounds) that RefiiHost.get_text(key) reads, and value_changed(key, value) fires when a " +
+		"published text or number changes.";
+
+	/// <summary>THE PARITY RULE (user 2026-11-02): what Lua can do, Godot can, and the other way round — <see cref="Twins"/> holds it.</summary>
+	public const string ParityRule =
+		"BOTH SURFACES HAVE THE SAME ACCESS: every Lua call has a Godot form and every Godot call a Lua form, matched by meaning in ModApi.Twins " +
+		"(a test fails on an entry with no twin). Where one surface reads at the call and the other cannot, the other ASKS: Godot's ask(what, args, callback) " +
+		"and call_lua for what the guest answers, Lua's Refii.ask_host(what, fn, ...) for what the host holds. Inside an event both read at the call: a Lua handler's Refii.* reads, " +
+		"a Godot verdict's read(what, args). An entry one surface cannot have is listed with its reason.";
+
+	public const string OffMeaning =
+		"takes back a handler Refii.on took (the bus's events and the runtime's own), as Godot's remove_verdict and disconnect; true when it stood. The kind stays subscribed, so a later on() is heard at once";
+
+	public const string TextReadMeaning =
+		"the PUBLISHED TEXTS as the host states them: every surface's publish_text (a native hook's, a Godot script's, a Lua mod's own at once) — get_text answers the text, nil for none; has_text whether one stands. " +
+		"A new game VM is stated every text again";
+
+	public const string SignalLuaMeaning =
+		"GODOT TO LUA ON THIS MACHINE, the other way of Refii.signal: RefiiHost.signal_lua(name, payload) — name scoped \"<mod>.<name>\", payload up to 1024 bytes carried exactly — " +
+		"raises Lua's mod_signal { mod, name, payload } in the game VM on the guest's next tick (the game VM only: mod/frontend.lua does not hear it)";
+
+	public const string ValueChangedMeaning =
+		"a published number or text CHANGED, whoever published it — the same changes Godot's value_changed(key, value) hears, a frame later: texts always, numbers once a value_changed handler is subscribed";
+
+	public const string AskHostMeaning =
+		"THE HOST'S READS AND ACTIONS a Lua mod has no synchronous form of, asked of Godot on this machine: ask_host(what, fn, a, b, c, d) and fn(value) runs on a later tick with the answer " +
+		"(plain data: a number, a text, a boolean, a table of them; nil for none), false when it could not be posted; what is one of ModApi.HostCalls — fade_state(p), hud_overrides(p), input_claimed(p, action), input_claims(p), " +
+		"lights(), markers(), meters(), mods(), presses(p), snapshot_time(key), and the actions set_setting(key, v), save_snapshot(key), load_snapshot(key), which Refii.set_setting / save_snapshot / load_snapshot name (fn(true) once done)";
+
+	public const string GodotRuntimeMeaning =
+		"Godot's: counted by RefiiHost from the same tick and paused statements Lua's runtime counts (heard while a script is loaded), from this host's start — durations agree with Lua's, absolute values need not; " +
+		"fn is a Callable run on the main thread; a key is a String; a host made again (Reload mods) starts with no timer";
+
+	public const string GodotPoolMeaning =
+		"Godot's pool IS the Lua runtime's (declared there through run_lua and stated again to each new game VM), so a pool Lua and Godot both name is one pool; options max, floor, regen, delay, max_key are numbers (and a String); " +
+		"pool_value reads the player store at the call (empty for no maximum stated there); pool_spend runs Refii.pool_spend on the guest's next tick, callback(taken) on a later frame";
+
+	public const string AskMeaning =
+		"query with its answer handed to callback(result) instead of reply — the callable form of every guest read a Lua mod makes at the call (each Lua read's Godot twin is the query verb of the same meaning); the id, 0 when not posted";
+
+	/// <summary>Mods' own morph types (Engine_ModMorphs), as every surface states them.</summary>
+	public const string ModMorphMeaning =
+		"MODS' OWN MORPHS: a mod declares morphs in morphs.json (name, label, default, min, max, step); each one's type is FNV-1 of \"<mod>.<name>\" in lower case, top bit cleared, moved past 0x100 (morph_id), which its GDB records carry as MorphType (a .gdb.csv writes @morph:<name>). " +
+		"The weight is the player store's morph.<id>, saved with the hero and the same on both co-op machines: read it (the stored weight clamped to the declared range, else the default) or set it (clamped; the hero is redrawn and morph_changed raised on every machine). " +
+		"The morph hook answers the weight function sub_822DA028 with it for either player's hero, manual look or automatic; an unregistered type is the game's own (0).";
+
+	public const string VerdictReadMeaning =
+		"a guest read answered AT ONCE from inside an on_verdict handler — the verdict runs on the game's thread inside the seam, so the read runs there too, " +
+		"through the same answer as query: the Dictionary ask's callback would get ({ ok, <fields> }), the Lua handler's synchronous Refii.* read. " +
+		"Only the query verbs that change nothing (ModApi.VerdictReads: not spawn, not lua_int); outside a verdict handler, or for any other verb, " +
+		"{ ok = false, error } and nothing is read — use ask there. A read runs guest code: an event it raises gets no verdict";
+
+	public const string CallLuaMeaning =
+		"runs a Lua EXPRESSION once in the game VM on the guest's next tick and calls callback({ ok, values }) on a later frame: ok false when it raised (the error is in the Mods error list), values its first five results " +
+		"(a number — a whole one as an int —, a text, a boolean or null; a table crosses as null) — the answering form of run_lua, through which any Refii.* call is reachable";
+
+	/// <summary>What the typed player values mean on every surface (core/player_state.h, the runtime's store).</summary>
+	public const string PlayerTextMeaning =
+		"TYPED per-player values in the same store, under the same keys, owners and save as the numbers: a text (at most 256 bytes) kept exactly, " +
+		"and a hash kept as its \"0x%08x\" text — a 32-bit record hash survives where a float would not. A key holds one type: a number written " +
+		"over a text replaces it and the other way round; the number readers answer nil / the fallback for a text key.";
+
+	/// <summary>The host lists a mod's menu sources by name (Engine_UiModListSources, Engine_UiInventorySource).</summary>
+	/// <summary>What a stated row's label may be, on every surface (Engine_FrontEndMenuView.Resolve).</summary>
+	public const string MenuLabelMeaning =
+		"A row's label is a Babel tag, a literal, or a literal with tags in braces (\"{QUICKSLOTS_SLOT_1}: {OBJECT_HEALTH_POTION_NAME}\"): " +
+		"each {TAG} (letters, digits, '_') is drawn as the string book says, or as written when the book has no such tag — a mod's Lua has no text lookup of its own.";
+
+	public const string HostListMeaning =
+		"a mod's menu need not build the catalogs: an entry's \"source\" may be inventory:usable[:p[:<categories>]] (what player p's hero can use from the inventory; p 0 the menus' owner), " +
+		"expressions[:p] (the expressions player p's hero knows) or spells_known[:p] (the wills p's hero can assign), beside abilities:<category>; " +
+		"p absent is the player whose menus are open. The rows are typed (item:0x…, expression:0x…, will:<n>) and carry no command, so the menu's " +
+		"rowCommand runs for each and mod_menu_row carries subject_kind, definition and spell.";
+
 	/// <summary>The Lua-side calls the init chunk's preamble defines.</summary>
 	public static readonly IReadOnlyList<ModApiHelper> LuaHelpers = new[]
 	{
-		new ModApiHelper("Refii.on(event, function(e) ... end)", "subscribes; e is a table of the event's fields; return true to cancel; assigning a writable field (e.damage, e.delta, e.amount, e.level, e.type, e.relation) changes what the game gets. An event raised while a handler runs is delivered nested and live when it has writable fields (the hit a Refii.cast_spell's Start lands: your e.damage reaches the game; one level of nesting, per-depth write target and cancel), else after that chunk returns with e.deferred = true (a Refii.cast_spell's spell_created, the bolt's hit_landed): the game has acted, so a cancel there has no effect"),
+		new ModApiHelper("Refii.on(event, function(e) ... end)", "subscribes; e is a table of the event's fields; return true (or set e.cancel = true) to cancel; assigning a writable field (e.damage, e.delta, e.amount, e.level, e.type, e.relation) changes what the game gets. An event raised while a handler runs is delivered nested and live when it has writable fields (the hit a Refii.cast_spell's Start lands: your e.damage reaches the game; one level of nesting, per-depth write target and cancel), else after that chunk returns with e.deferred = true (a Refii.cast_spell's spell_created, the bolt's hit_landed): the game has acted, so a cancel there has no effect"),
 		new ModApiHelper("Refii.publish(key, number) / Refii.value(key)", "a mod value Godot reads as \"mod:<key>\" (HUD pieces, FX recipes), and the last value under a key"),
 		new ModApiHelper("Refii.log(text)", "a line in the guest log, prefixed [mod lua]"),
 		new ModApiHelper("Refii.hash(name)", "the game's FNV-1 of a name as a \"0x…\" string: a GDB record's hash, a text tag's key"),
 		new ModApiHelper("Refii.health(e) -> current, max / Refii.set_health(e, v) / Refii.modify_health(e, delta, attacker)", "health, read, written, or changed through the game's own Modify (death included)"),
 		new ModApiHelper("Refii.position(e) -> x, y, z / Refii.set_position(e, x, y, z)", "a position through the entity's own placement"),
+		new ModApiHelper("Refii.facing(e) -> x, y, z / Refii.velocity(e) -> x, y, z / Refii.set_facing(e, x, y [, z]) -> bool", "the game's own Physics.GetFacingVector / GetVelocity / SetFacingVector (a hero's Player.SetFacingVector); guest axes, z up — the game keeps a facing level (it drops z); nil / false for an entity not in the world"),
 		new ModApiHelper("Refii.entity_tint(e, r, g, b [, a]) / Refii.entity_untint(e)", EntityTintMeaning),
 		new ModApiHelper("Refii.entity_alpha(e, a) / Refii.entity_scale(e, s) / Refii.entity_saturation_mask(e, on) / Refii.entity_drawable(e, on)", AppearanceMeaning),
 		new ModApiHelper("Refii.lock_target(p [, e]) / Refii.release_lock(p) / Refii.switch_target(p, left) -> target / Refii.locked_target(p) -> target", LockMeaning),
@@ -1453,10 +1953,14 @@ public static class ModApi
 		new ModApiHelper("Refii.knockback(e, x, y, z [, force]) / Refii.stagger(e)", KnockbackMeaning),
 		new ModApiHelper("Refii.set_speed_multiplier(p, factor) / Refii.clear_speed_multiplier(p) / Refii.speed_multiplier(p) -> overridden, factor", SpeedMeaning),
 		new ModApiHelper("Refii.current_action(e) -> action / Refii.action_elapsed(a) -> seconds / Refii.action_interruptible(a) / Refii.allow_action_interrupt(a)", ActionMeaning),
+		new ModApiHelper("Refii.allow_action_interrupt_at(a, seconds)", InterruptAtMeaning),
 		new ModApiHelper("Refii.action_type(a) -> type / Refii.action_name(a) -> name", ActionKindMeaning),
 		new ModApiHelper("Refii.living(e)", LivingMeaning),
 		new ModApiHelper("Refii.spell_in_slot(p, slot) -> type", SlotMeaning),
 		new ModApiHelper("Refii.spell_parts(serial) -> table", CastPartsMeaning + "; the table: spell, type, targeted, level, caster, caster_player, vortex, anchor, swords = { .. }, origin = { x, y, z }, exploded (absent parts nil)"),
+		new ModApiHelper("Refii.vortex_held(serial) -> { e, .. }", VortexHeldMeaning + "; nil when no live vortex carries serial"),
+		new ModApiHelper("Refii.spell_balance(caster, type, level) -> table", SpellBalanceMeaning + "; the table: status_seconds, status_spread, duration, swords (absent fields nil); nil for another type or a caster with no spell manager"),
+		new ModApiHelper("Refii.host_serial(serial) -> serial · Refii.local_serial(host_serial) -> serial", CastSerialMeaning),
 		new ModApiHelper("Refii.play_sound(cue, e [, tag]) / Refii.play_sound_at(cue, x, y, z [, tag]) / Refii.stop_sound(e, tag [, fade_ms]) / Refii.play_music(name) / Refii.stop_music(name)", SoundMeaning),
 		new ModApiHelper("Refii.play_animation(e, name [, loops [, blend_seconds [, speed]]]) / Refii.stop_animation(e)", AnimationMeaning),
 		new ModApiHelper("Refii.modify_opinion(villager, hero, axis, delta) / Refii.add_deed(villager, hero, deed)", OpinionSetMeaning + "; deed is a \"0x…\" string (Refii.hash of the Deed record's name)"),
@@ -1464,12 +1968,14 @@ public static class ModApi
 		new ModApiHelper("Refii.set_time_of_day(hours) / Refii.time_of_day() -> hours / Refii.set_weather(theme [, weight [, seconds]])", TimeWeatherMeaning + "; weight defaults to 1, seconds to 1"),
 		new ModApiHelper("Refii.gold(e) / Refii.give_gold(e, delta)", "a purse, read and changed through the game's own Modify"),
 		new ModApiHelper("Refii.item_count(e, definition) / Refii.add_item(e, definition)", "an inventory: definitions are \"0x…\" strings (Refii.hash of the record's name)"),
+		new ModApiHelper("Refii.add_item(e, definition, n) -> item, added", AddItemsMeaning + "; item a handle, nil for none"),
 		new ModApiHelper("Refii.experience(e, pool) / Refii.give_experience(e, pool, amount) / Refii.spend_experience(e, pool, amount)", "experience: pools 0 General 1 Strength 2 Skill 3 Will"),
 		new ModApiHelper("Refii.ability_level(e, type)", "the level of ability 1..14, or nil"),
-		new ModApiHelper("Refii.cast_spell(caster, type, targeted, target, level [, pos [, dir]]) -> spell, serial / Refii.spell_serial(spell) -> serial", "a real spell through the game's spell factory, no will cost, started at pos = {x, y, z} facing dir (the caster's own when absent: Fable 2's targeted classes place from the position along the facing — Lightning draws its bolt from there, Fireball spawns its shot there, Force Push shoves away from there); the spell object's handle and its cast serial (the number its hits and spell_created carry), nil for no cast; spell_serial reads the serial of a spell handle — the serial, not the handle, is a cast's identity (a spell handle is never forgotten)"),
+		new ModApiHelper("Refii.cast_spell(caster, type, targeted, target, level [, pos [, dir [, options]]]) -> spell, serial / Refii.spell_serial(spell) -> serial", "a real spell through the game's spell factory, no will cost, started at pos = {x, y, z} facing dir (the caster's own when absent: Fable 2's targeted classes place from the position along the facing — Lightning draws its bolt from there, Fireball spawns its shot there, Force Push shoves away from there); options = { tag = n, damage_scale = f, at = e or {x, y, z} }: the cast's tag, carried as `tag` by its spell_created, vortex_started, hit, hit_landed, fireball_impact and status_applying (as a launch's spell_launch tag is), and every hit carrying its serial deals damage × damage_scale where the hit is decided (refii_mod_cast_options); at casts the Targeted class by the class's own rule for that place, from pos as the origin (the caster's when absent) and dir as the facing when the origin stands on the place: Lightning at an entity starts on the point its bolt strikes (sub_825FEFC8 with the power's CreateImpactFX and 0.25: a bolt of zero length), at a point one 15.0 reach above it facing down (outside the re-acquire's 1.35 height); Fireball at an entity within the 1.0 its Start impacts at once, set back toward the origin; Blades at the entity's position or the point (its swords are made there); Vortex set back 1.25 along the facing (its twister spawns on the place); Chaos at an entity on the point its stream strikes; Force Push from the origin toward the place; Fireball and Chaos at a point, and Slow Time and Raise Dead, are refused with a mod error; the spell object's handle and its cast serial (the number its hits and spell_created carry), nil for no cast; spell_serial reads the serial of a spell handle — the serial, not the handle, is a cast's identity (a spell handle is never forgotten)"),
 		new ModApiHelper("Refii.relation(a, b) / Refii.alive(e) / Refii.definition(e) / Refii.name(e) / Refii.player_of(e)", "the faction rule (1 neutral 2 ally 4 enemy), liveness, the definition hash, the instance name, 1/2/0"),
 		new ModApiHelper("Refii.level_name() / Refii.player_hero(p) / Refii.local_hero() / Refii.menu_player()", "the loaded level, a player's hero, the local hero (in local co-op: the hero of whoever owns the open menus), whose menus are open (1/2)"),
 		new ModApiHelper("Refii.player_value(p, key [, fallback]) / Refii.player_set(p, key, v) / Refii.player_add(p, key, d [, saved]) / Refii.player_save(p, key, v) / Refii.player_here(p) / Refii.event_replica()", "per-player values, the same on both co-op machines; saved ones go home with the hero"),
+		new ModApiHelper("Refii.player_value_text(p, key) / Refii.player_set_text(p, key, text) / Refii.player_save_text(p, key, text) / Refii.player_value_hash(p, key) -> \"0x…\" / Refii.player_save_hash(p, key, \"0x…\")", PlayerTextMeaning + " The readers answer nil for none"),
 		new ModApiHelper("Refii.player_for(e)", PlayerForMeaning + " — the core co-op layer's own rule for who an NPC acts toward"),
 		new ModApiHelper("Refii.acting_player()", "1 or 2: who \"the hero\" (GetPlayerHero) means right now — 2 inside Refii.run_as_player(2, …) and in AI acting for player two, else 1"),
 		new ModApiHelper("Refii.run_as_player(p, fn, ...)", "runs fn with GetPlayerHero(), GetPlayerHenchman() and QuestManager.HeroEntity as player p's (the partner as the henchman): a shipped script acts for either hero"),
@@ -1483,15 +1989,27 @@ public static class ModApi
 		new ModApiHelper("Refii.uid(e)", "the entity's own 64-bit UniqueID as \"0x…\": the same on both co-op machines and across saves (a handle is neither) — a key for per-thing player values"),
 		new ModApiHelper("Refii.coop_mode()", "0 alone, 1 local co-op, 2 online and this machine hosts, 3 online and this machine joined"),
 		new ModApiHelper("Refii.wheel_switches_target(e)", WheelSwitchesTargetMeaning),
+		new ModApiHelper("Refii.wheel_switches_target(e, on)", WheelStickyMeaning),
 		new ModApiHelper("Refii.focus(p) / Refii.key_taken(e, p)", "the living entity player p is focused on, or nil — meaningful only where that hero is played (Refii.player_here(p)); whether player p has taken the per-player collectable e (silver keys)"),
 		new ModApiHelper("Refii.ask_partner(asker, question) -> ticket / Refii.partner_answer(ticket) -> nil, true, false", "your own yes/no question for the other player, on their screen; nil while pending, 30 s unanswered is no; no partner answers yes"),
 		new ModApiHelper("Refii.renown(e) / Refii.morality(e) / Refii.purity(e) / Refii.age(e) / Refii.physique(e) -> fat, height", "the hero stats the game reports"),
-		new ModApiHelper("Refii.inventory(e)", "{ {definition = \"0x…\", count = n}, … } in the game's order"),
+		new ModApiHelper("Refii.morph_get(p, morph) -> weight or nil / Refii.morph_set(p, morph, w) -> ok / Refii.morph_id(\"<mod>.<name>\") -> \"0x…\"", ModMorphMeaning + " A morph is \"<mod>.<name>\" or its id \"0x…\" (a Lua number cannot hold one)."),
+		new ModApiHelper("Refii.appearance(p) -> {automatic, tan, fat, height, strength, skill, will, morality, purity, age} / Refii.set_appearance(p, {tan = .., ..}) / Refii.set_appearance_automatic(p, on)", "Murgo's Mirror for player p: the look in force (manual the stated inputs, automatic the game's own), or nil · manual with the named inputs, the rest as the hero looks (height -1..1, age 18..60, the rest 0..1) · the game's own look again (true) or the held manual one (false); written where p is played and kept in that player's Mirror settings, the same as the Mirror's Apply"),
+		new ModApiHelper("Refii.can_save(p) / Refii.save_game(p) -> bool", "the game's own save for player p: can_save is Player.IsAbleToSaveGame for p's hero; save_game is AutoSaveGame(true, true) where can_save allows it (false otherwise) — the whole save on the next world update, save_written following per package"),
+		new ModApiHelper("Refii.modify_renown(e, delta) / Refii.modify_morality(e, delta) / Refii.modify_purity(e, delta) -> bool", "the hero stats changed through the game's own Stats.Modify* (the renown / morality / purity events fire, the game clamps and splits renown with a co-op partner); false for an entity without stats"),
+		new ModApiHelper("Refii.inventory(e)", "{ {definition = \"0x…\", count = n, usable = bool}, … } in the game's order; usable is the item's own UsableFromInventory test (sub_827649C8, what the Items page's use and A button ask) — definition is the item ENTITY record, which carries none of the item's own properties: the category, name and icon are on its InventoryItemComponent, c = Refii.record_ref(def, \"InventoryItemComponent\"), then Refii.record_int(c, \"Category\") / record_string(c, \"NameTag\" / \"IconGraphic\")"),
 		new ModApiHelper("Refii.equipped(e) -> melee, ranged", "the weapon set's definition hashes, nil for an empty hand"),
 		new ModApiHelper("Refii.use_item(p, def) / Refii.equip_weapon(p, def) / Refii.perform_expression(p, expression) / Refii.assign_spell(p, spell)", QuickActionMeaning),
+		new ModApiHelper("Refii.use_item(p, def [, opts]) / Refii.equip_weapon(p, def [, opts]) / Refii.perform_expression(p, expression [, held [, opts]]) / Refii.assign_spell(p, spell [, opts]) / Refii.release_expression(p) -> bool", QuickOptionsMeaning + "; opts is {ungated = true}"),
+		new ModApiHelper("Refii.sprinting(p) / Refii.end_sprint(p) -> bool", SprintMeaning),
+		new ModApiHelper("Refii.set_locomotion(p, {key = value, ..}) or (p, key, value) -> bool / Refii.locomotion(p, key) -> number or nil", LocomotionMeaning),
+		new ModApiHelper("Refii.set_parry(p, window, wedge) -> bool / Refii.parry(p) -> window, wedge", ParryMeaning),
 		new ModApiHelper("Refii.expressions(p) / Refii.spells_known(p) / Refii.selected_expression(p)", ExpressionsMeaning + "; expressions is { {record = \"0x…\", id = \"0x…\", uses = n}, … } (nil without a performer), spells_known { type, … } (nil without a spell manager), selected_expression the record \"0x…\" or nil"),
 		new ModApiHelper("Refii.record_string(def, field)", RecordStringMeaning),
 		new ModApiHelper("Refii.record_int(def, field)", RecordIntMeaning),
+		new ModApiHelper("Refii.record_number(def, field) / Refii.record_bool(def, field) / Refii.record_exists(def)", RecordNumberMeaning),
+		new ModApiHelper("Refii.record_ref(def, field)", RecordRefMeaning + "; \"0x…\" or nil"),
+		new ModApiHelper("Refii.creature_tier(e)", CreatureTierMeaning + "; nil without a creature component"),
 		new ModApiHelper("Refii.near(x, y, z, radius [, creatures_only])", "handles of the entities within a radius, nearest first (at most 2048)"),
 		new ModApiHelper("Refii.line_of_sight(x1, y1, z1, x2, y2, z2)", "true when the game's physics sees nothing between"),
 		new ModApiHelper("Refii.spawn(definition, x, y, z)", "a new entity through the game's own CreateEntityFromIDAtPosition: its handle, or nil"),
@@ -1502,20 +2020,42 @@ public static class ModApi
 			"the effect stands at that .mdl.gmd point in its own frame, on a rigged body on its bone) }; the id, or nil"),
 		new ModApiHelper("Refii.stop_fx(id)", "stops a played effect by any surface's id"),
 		new ModApiHelper("Refii.mark(target, icon, text [, p]) / Refii.unmark(id)", MarkMeaning + " target is an entity handle or {x, y, z}"),
+		new ModApiHelper("Refii.world_meter(target, value, max [, style [, p]]) -> id / Refii.mark_meter(id, value, max [, style]) / Refii.mark(target, icon, text, p, { meter = {value, max, style} })", WorldMeterMeaning + " target is an entity handle or {x, y, z}"),
 		new ModApiHelper("Refii.fade(p, dir [, seconds])", FadeMeaning + " dir is \"to_black\" or \"from_black\" (\"out\" / \"in\")"),
 		new ModApiHelper("Refii.meter(id, label, value, max [, p [, style]]) / Refii.meter_remove(id)", MeterMeaning),
 		new ModApiHelper("Refii.input_claim(p, action, on)", InputClaimMeaning + " True when posted"),
+		new ModApiHelper("Refii.press(p, button, held) / Refii.tap(p, button [, ticks])", PressMeaning + " ticks absent is 1. True when posted"),
+		new ModApiHelper("Refii.charge_spell(p, type, held)", ChargeSpellMeaning + " True when taken"),
+		new ModApiHelper("Refii.attack_mode(p)", AttackModeMeaning),
+		new ModApiHelper("Refii.camera_mode(p)", CameraModeMeaning),
+		new ModApiHelper("Refii.camera_override(p, mode [, {fov, pitch_limit, blend, aim}])", CameraOverrideMeaning + " Returns true when stated"),
+		new ModApiHelper("Refii.fov(p)", CameraFovMeaning),
+		new ModApiHelper("Refii.hide_part(e, part, on [, p])", HidePartMeaning + " Returns true when posted"),
 		new ModApiHelper("Refii.hud_icon(p, element, texture) / Refii.hud_slide(p, element, slide) / Refii.hud_hold(p, piece, on)", HudOverrideMeaning + " True when posted"),
 		new ModApiHelper("Refii.light(target, color, energy, range [, o]) / Refii.light_remove(id)",
 			LightMeaning + " target an entity handle or {x, y, z}, color {r, g, b}, o = { offset = {x, y, z}, at = \"Weapon.Weapon.Top\", flicker = n, direction = {x, y, z}, cone = degrees, attenuation = n }; the id, or nil"),
 		new ModApiHelper("Refii.send_to_partner(mod, name, payload)", PartnerMeaning),
-		new ModApiHelper("Refii.set_menu_rows(menu, rows [, p])", "states a menu list's rows for player p (nil: every player): strings or { name, label, command, ghosted } — what a menu or entry with \"source\": \"rows\" shows, at once if open; {} clears; true when posted"),
+		new ModApiHelper("Refii.signal(name, payload) / Refii.publish_text(key, text)", SignalMeaning + " True when posted"),
+		new ModApiHelper("Refii.set_menu_rows(menu, rows [, p])", "states a menu list's rows for player p (nil: every player): strings or { name, label, command, ghosted } — what a menu or entry with \"source\": \"rows\" shows, at once if open; {} clears; true when posted. Up to 32768 bytes of rows; past it they are cut at the last whole row and the mod errors channel says so. " + MenuLabelMeaning + " " + HostListMeaning),
 		new ModApiHelper("Refii.open_screen(id [, p])", "opens a host-owned screen (Screen:open:<id>) for player p: the game's or a screens record a mod states (id 1000+); true when posted"),
 		new ModApiHelper("Refii.open_menu(name [, p])", "opens a mod's menu (ui/templates.json) for player p (nil: the menu owner here) over the list that has the input, or on its own with none up; true when asked"),
 		new ModApiHelper("Refii.message_box(title, text [, accept [, cancel [, p]]])", "the game's own box for player p: a question when cancel is given (nil captions keep the box's own), else a notice; the id mod_message_box carries"),
 		new ModApiHelper("Refii.notice(title, text [, seconds [, p]])", "a notice on the notice channel for player p (nil: the menu owner here): the HUD's info box in game, queued behind the others; the id mod_notice carries (0 shown, -1 never)"),
+		new ModApiHelper("Refii.frontend", "true in the front end's own Lua state (mod/frontend.lua), absent in the game VM"),
 		new ModApiHelper("Refii.signed_in() -> user / Refii.save_count() -> n / Refii.screen() -> name", "FRONT END ONLY (mod/frontend.lua): " + FrontEndMeaning + "; nil for none. With Refii.hash, setting, log, publish / value, notice, message_box, menu_box, open_menu, menu_player and Refii.on for start_game, mod_menu_row, mod_message_box, mod_notice, mod_menu_box — the whole front-end surface (docs/modding/ui-and-hud.md, The front-end surface)"),
 		new ModApiHelper("Refii.menu_box(title, text, options [, p [, cancelable]])", "the game's own menu box for player p: up to 12 options from the table, paged past six; B closes it unless cancelable is false; the id mod_menu_box carries with the option's index (-1 none)"),
+		new ModApiHelper("Refii.now() / Refii.real_now() / Refii.after(seconds, fn [, key]) -> id / Refii.cancel(key)", TimerMeaning),
+		new ModApiHelper("Refii.entity_value(e, key [, default]) / Refii.entity_set(e, key, v)", EntityStoreMeaning),
+		new ModApiHelper("Refii.pool(p, key, { max, floor, regen, delay [, max_key] }) -> value, max / Refii.pool_spend(p, key, n) -> bool / Refii.pool_value(p, key) -> value, max", PoolMeaning),
+		new ModApiHelper("Refii.in_play(p)", InPlayMeaning + " (the paused, level_unloading and level_loaded events are the runtime's own: it hears them with no handler)"),
+		new ModApiHelper("Refii.spell_info(type) -> name_tag, icon", SpellInfoMeaning),
+		new ModApiHelper("Refii.SPELL_* / Refii.ABILITY_* / Refii.REQUEST_* / Refii.ACTION_* / Refii.RELATION_* / Refii.ATTACK_MODE_*", ConstantsMeaning),
+		new ModApiHelper("Refii.off(event, fn) -> bool", OffMeaning),
+		new ModApiHelper("Refii.get_text(key) / Refii.has_text(key)", TextReadMeaning),
+		new ModApiHelper("mod_signal — Refii.on(\"mod_signal\", function(e) ... end)", SignalLuaMeaning + "; e = { mod, name, payload } — the runtime's own event (no bus kind, no cancel)"),
+		new ModApiHelper("value_changed — Refii.on(\"value_changed\", function(e) ... end)", ValueChangedMeaning + "; e = { key, value } — the runtime's own event (no bus kind, no cancel)"),
+		new ModApiHelper("Refii.ask_host(what, fn, ...) -> bool / Refii.set_setting(key, v) / Refii.save_snapshot(key [, fn]) / Refii.load_snapshot(key [, fn])", AskHostMeaning),
+		new ModApiHelper("setting_changed — Refii.on(\"setting_changed\", function(e) ... end)", SettingChangedMeaning + "; e = { key, value, previous } — the runtime's own event, raised by the preamble (no bus kind, no cancel)"),
 		new ModApiHelper("Refii.setting(key, default)", "a settings.json value with the player's choice over it, read at the call: RefiiSettings, composed in at session start and kept current — a live change (the Options › Mods page, a script's set_setting, the Studio's live tune) reaches the running VM at the next guest tick, no reload"),
 		new ModApiHelper("require(name)", "a mod's own module: mod/<name>.lua of the same mod (the path under mod/ without .lua; . or / between folders), composed into the init chunk and run once on the first require, its return value cached (nil as true); an error names a missing file. Only the three entry points (init.lua, camera.lua, frontend.lua) run on their own"),
 		new ModApiHelper("Refii.hero(player)", "the player's hero handle as the bus last stated it, or nil"),
@@ -1536,17 +2076,17 @@ public static class ModApi
 	public static readonly IReadOnlyList<ModApiHelper> GodotHelpers = new[]
 	{
 		new ModApiHelper("signal <event>(e) / signal mod_event(name, e)", "every catalog event, by its Lua name, with a Dictionary of its fields"),
-		new ModApiHelper("on_verdict(event, handler) / remove_verdict(event, handler)", "a handler run inside the game's seam: change a writable field of e or set e.cancel (return true) to refuse"),
+		new ModApiHelper("on_verdict(event, handler) / remove_verdict(event, handler)", "a handler run inside the game's seam: change a writable field of e or set e.cancel (return true) to refuse; read(what, args) reads the game there at once"),
 		new ModApiHelper("hero(player)", "the player's hero handle as the bus last stated it (hero_ready / hero_gone), or 0 — player 1 is the host's hero on BOTH machines, so on a joiner hero(1) is the partner"),
-		new ModApiHelper("local_hero() / coop_mode() / menu_player() / world_here()", "the guest's last answers (asked every frame while a script is loaded, one guest tick behind): the local player's hero handle (in local co-op the menu owner's), 0 alone 1 local co-op 2 hosting 3 joined, whose menus are open (1/2), whether this machine runs the shared world"),
+		new ModApiHelper("local_hero() / coop_mode() / menu_player() / world_here() / player_here(player)", "the guest's last answers (asked every frame while a script is loaded, one guest tick behind): the local player's hero handle (in local co-op the menu owner's), 0 alone 1 local co-op 2 hosting 3 joined, whose menus are open (1/2), whether this machine runs the shared world, whether this machine plays that player's hero (Refii.player_here: both alone and in local co-op, player one hosting, player two joined)"),
 		new ModApiHelper("e.replica", "true in a signal's (or verdict's) dictionary when the event is a copy of the other co-op machine's — the game's own copy or a RELAYED one; absent otherwise"),
 		new ModApiHelper("player_set(p, key, v) / player_add(p, key, d, saved) / player_save(p, key, v)", "per-player values, written to the store Refii.player_set / _add / _save write: the same on both co-op machines; saved ones go home with the hero"),
 		new ModApiHelper("node_for(handle)", "the Node3D Godot draws that entity with, or null: parent to it, never move it"),
 		new ModApiHelper("get_value(key) / setting(key, default) / set_setting(key, v) / run_lua(chunk) / frontend_lua(chunk) / mods()", "a mod's published value, a settings.json value, a live override (in force for native code at once and for the running Lua's Refii.setting at the next guest tick), a Lua chunk in the game VM, a Lua chunk in the mods' front-end Lua (the title and the front end, every mod's mod/frontend.lua in scope), the enabled mods"),
 		new ModApiHelper("publish(key, value)", "sets a mod value (\"mod:<key>\" in the UI) on the guest's next tick, for every reader: HUD pieces, menus, Lua and native"),
-		new ModApiHelper("set_menu_rows(menu, rows, player = 0)", "states a menu list's rows for player 1 or 2 (0: every player), replacing the last: what a ui/templates.json menu or entry with \"source\": \"rows\" (or rows:<list>) shows, at once if it is open. A row is a string or { name, label, command, ghosted }; label a Babel tag or literal, command any row verb; [] clears. \"source\": \"values:mod:<key>|<format>=<label>,...\" lists published values instead"),
+		new ModApiHelper("set_menu_rows(menu, rows, player = 0)", "states a menu list's rows for player 1 or 2 (0: every player), replacing the last: what a ui/templates.json menu or entry with \"source\": \"rows\" (or rows:<list>) shows, at once if it is open. A row is a string or { name, label, command, ghosted }; label a Babel tag or literal, command any row verb; [] clears. \"source\": \"values:mod:<key>|<format>=<label>,...\" lists published values instead. " + MenuLabelMeaning + " " + HostListMeaning),
 		new ModApiHelper("open_screen(screen, player = 0) -> bool", "opens a host-owned screen by id — the Screen:open:<id> verb any row can name: the game's (1013 achievements, 1014 multiplayer) or a ui/templates.json screens record a mod states (id 1000+, with a menu and a presentation; provider \"data\" fills its page from the record's fields, bound to mod:/player: values, row:label, Babel tags). It stands over the pause book, so it opens while the pause list has the input; false says why in the log"),
-		new ModApiHelper("register_command(verb, handler) -> bool", "a row verb every list runs (the front end, the pause book, screen lists, mod menus, a screen's own buttons): a row whose command is verb — or begins with it when it ends in ':' — calls handler(argument, menu, row, player); false refuses the row. The game's verbs (PauseTab:, Screen:open:, Opens:, Mod:lua:, setting:, Inventory: ...) stay the game's"),
+		new ModApiHelper("register_command(verb, handler) -> bool / register_command(verb, handler, with_row) -> bool", "a row verb every list runs (the front end, the pause book, screen lists, mod menus, a screen's own buttons): a row whose command is verb — or begins with it when it ends in ':' — calls handler(argument, menu, row, player), or with with_row true handler(argument, e) with e the row as a mod_menu_row Dictionary (menu, row, player, mod, command, button and the typed subject_kind, definition, spell: the table a Mod:lua: function is called with); false refuses the row. The game's verbs (PauseTab:, Screen:open:, Opens:, Mod:lua:, setting:, Inventory: ...) stay the game's"),
 		new ModApiHelper("open_menu(name, player = 0) -> bool", "opens a menu a mod defines in ui/templates.json for player 1 or 2 (0: whoever owns the menus here) over the menu list that has the input — B returns — or, with no list up (in play, on the title), as a list of its own that takes the pad and closes on B. False for no such menu or a player played on the other machine. A row chosen there raises mod_menu_row here at once, and reaches native handlers (and Lua in a game) on the guest's next tick through the menu_row command"),
 		new ModApiHelper("message_box(title, text, buttons, player = 0) -> id / signal message_box_answered(id, button)", "the game's own box for player 1 or 2 (0: the menu owner here) — in game the message box (one button) or query box (two), on the front end its own dialog; more than two buttons is a menu box answered here with the button's index; button is 0 for A, 1 for B, -1 when another box replaced it or the player is played on the other machine. The mod_message_box event carries the same, on every surface"),
 		new ModApiHelper("notice(title, text, seconds = 0, player = 0) -> id / signal notice_done(id, outcome)", "a notice on the channel the game's co-op notices use — in game the HUD's info box for seconds (0: its own length), on the front end its dialog — queued behind the others; outcome 0 once shown, -1 when it never showed. The mod_notice event carries the same, on every surface"),
@@ -1562,28 +2102,52 @@ public static class ModApi
 		new ModApiHelper("knockback(handle, x, y, z, force = 1) / stagger(handle)", KnockbackMeaning),
 		new ModApiHelper("set_speed_multiplier(player, factor) / clear_speed_multiplier(player)", SpeedMeaning + "; query speed_multiplier P answers overridden and factor"),
 		new ModApiHelper("allow_action_interrupt(action)", ActionMeaning + "; query current_action E answers action, elapsed, interruptible"),
+		new ModApiHelper("allow_action_interrupt_at(action, seconds)", InterruptAtMeaning),
+		new ModApiHelper("add_item(entity, definition, count)", AddItemsMeaning),
 		new ModApiHelper("play_sound(cue, handle, tag = \"\") / play_sound_at(cue, x, y, z, tag = \"\") / stop_sound(handle, tag, fade_ms = 0) / play_music(name) / stop_music(name)", SoundMeaning),
 		new ModApiHelper("play_animation(handle, name, loops = 1, blend_seconds = 0.1, speed = 1) / stop_animation(handle)", AnimationMeaning),
 		new ModApiHelper("modify_opinion(villager, hero, axis, delta) / add_deed(villager, hero, deed)", OpinionSetMeaning + "; deed is the record's hash, a \"0x…\" string or a number"),
 		new ModApiHelper("npc_follow(entity, target, radius = 2) / npc_go_to(entity, x, y, z) / npc_flee(entity, from) / npc_attack(entity, target) / npc_set_hostile(entity, other, on) / npc_stop(entity)", NpcMeaning),
 		new ModApiHelper("set_time_of_day(hours) / set_weather(theme, weight = 1, seconds = 1)", TimeWeatherMeaning + "; query time_of_day answers hours"),
+		new ModApiHelper("in_play(player) -> bool", InPlayMeaning + " — as this host last heard the paused and level events (always heard while a script is loaded; a script loaded mid-pause sees play until the next edge)"),
+		new ModApiHelper("constants() -> Dictionary / spell_info(type) -> Dictionary", ConstantsMeaning + " / " + SpellInfoMeaning + " ({ name_tag, icon })"),
+		new ModApiHelper("signal setting_changed(key, value)", SettingChangedMeaning),
 		new ModApiHelper("in_cutscene(player = 0, kinds = 7) -> bool / cutscene_kinds(player = 0)", "the cutscene event as this host last heard it (always heard while a script is loaded; seeded by a query when the host is made): whether any of kinds holds for player 1 or 2 (0: either), and the bits — " + InCutsceneMeaning + "; query in_cutscene P asks the guest now"),
 		new ModApiHelper("query locked_target P / has_status E KIND / in_cutscene P", "target (0 when not locked) · has · kinds (the REFII_CUTSCENE_* bits, 0 none): refii_mod_locked_target / refii_mod_has_status / refii_mod_in_cutscene"),
 		new ModApiHelper("query speed_multiplier P / current_action E", "overridden, factor · action (0 for none), elapsed, interruptible: refii_mod_speed_multiplier / refii_mod_current_action, _action_elapsed, _action_interruptible"),
-		new ModApiHelper("query action A / frontend", "type, name (ok false for an unknown action) · signed_in, saves, screen (ok false with no front end up): " + ActionKindMeaning + " / " + FrontEndMeaning),
+		new ModApiHelper("query action A / frontend", "type, name, elapsed, interruptible (ok false for an unknown action; elapsed and interruptible are Refii.action_elapsed / action_interruptible of that action) · signed_in, saves, screen (ok false with no front end up): " + ActionKindMeaning + " / " + FrontEndMeaning),
 		new ModApiHelper("query living E / spell_in_slot P SLOT", "living · type (-1 none): " + LivingMeaning + " / " + SlotMeaning),
 		new ModApiHelper("query spell_parts SERIAL", "spell, type, targeted, level, caster, caster_player, vortex, anchor, sword_count, s1..s8, x, y, z, has_origin, exploded: " + CastPartsMeaning),
+		new ModApiHelper("query vortex_held SERIAL", "count, v1..v16 (0 past count; ok false when no live vortex carries SERIAL): " + VortexHeldMeaning),
+		new ModApiHelper("query spell_balance C T L", "status_seconds, status_spread, duration, swords (-1 a field the class lacks; ok false for another type or a caster with no spell manager): " + SpellBalanceMeaning),
+		new ModApiHelper("query host_serial SERIAL / local_serial SERIAL", "serial (ok false while the cast is not paired): " + CastSerialMeaning),
 		new ModApiHelper("query time_of_day", "hours (the game clock, 0..24): refii_mod_time_of_day"),
 		new ModApiHelper("query(what, args) -> id / signal reply(id, result)", "asks the guest; the answer comes on a later frame with ok and the fields below"),
 		new ModApiHelper("query health E / position E / gold E / item_count E DEF / experience E POOL / ability_level E T", "current, max · x, y, z · gold · count · amount · level"),
+		new ModApiHelper("cast_spell_with(caster, type, targeted, target, level, options)", "a cast with options { tag, damage_scale, pos, dir, at } (refii_mod_cast_spell_with; the line `cast_spell_with C T TARGETED TARGET LEVEL TAG SCALE [X Y Z [DX DY DZ]] [at E | at X Y Z]`): the tag rides the cast's spell_created, vortex_started, hit, hit_landed, fireball_impact and status_applying; its hits deal damage × damage_scale where the hit is decided; at (an entity handle or a Vector3 point): at casts the Targeted class by the class's own rule for that place, from pos as the origin (the caster's when absent) and dir as the facing when the origin stands on the place: Lightning at an entity starts on the point its bolt strikes (sub_825FEFC8 with the power's CreateImpactFX and 0.25: a bolt of zero length), at a point one 15.0 reach above it facing down (outside the re-acquire's 1.35 height); Fireball at an entity within the 1.0 its Start impacts at once, set back toward the origin; Blades at the entity's position or the point (its swords are made there); Vortex set back 1.25 along the facing (its twister spawns on the place); Chaos at an entity on the point its stream strikes; Force Push from the origin toward the place; Fireball and Chaos at a point, and Slow Time and Raise Dead, are refused with a mod error"),
+		new ModApiHelper("set_facing(entity, x, y, z) · query facing E · query velocity E", "an entity turned through Physics.SetFacingVector (a hero's Player.SetFacingVector; the line `set_facing E X Y [Z]`) · x, y, z: Physics.GetFacingVector / GetVelocity, guest axes, z up"),
 		new ModApiHelper("query relation A B / alive E / definition E / name E / level_name / hero P / player_of E", "relation · alive · definition · name · level · hero · player"),
 		new ModApiHelper("query player_for E / world_here / combat_state P", "player (refii_mod_player_for: who \"the hero\" is for E) · here · midst, close_to_combat, in_any_combat (Refii.combat_state, asked of the game VM); acting_player and run_as_player are Lua's — reach them with run_lua"),
 		new ModApiHelper("query renown E / morality E / purity E / physique E / age E / equipped E / inventory_stack E I", "renown · value · value · fat, height · age · melee, ranged · definition, count"),
+		new ModApiHelper("query morph P MORPH", "weight, registered (ok false for a morph no enabled mod declares; MORPH \"0x…\" or \"<mod>.<name>\"): Refii.morph_get"),
+		new ModApiHelper("morph_get(player, morph) -> float / morph_set(player, morph, weight) (the command morph_set) / morph_id(name) -> String", ModMorphMeaning + " morph_get reads the store at the call (NaN for a morph no enabled mod declares); morph_set is the line morph_set P MORPH W."),
+		new ModApiHelper("query appearance P", "Murgo's Mirror for player P: automatic, tan, fat, height, strength, skill, will, morality, purity, age — the look in force (manual the stated inputs, automatic the game's own): Refii.appearance"),
+		new ModApiHelper("set_appearance(player, inputs) (the command appearance_set) / set_appearance_automatic(player, on) (the command appearance_automatic)", "Murgo's Mirror: the player's look to manual with the Dictionary's named inputs (tan, fat, height, strength, skill, will, morality, purity, age), the rest as the hero looks · the game's own look again (true) or the held manual one (false); kept in that player's Mirror settings like the Mirror's Apply (the lines appearance_set P NAME=V... and appearance_automatic P ON): Refii.set_appearance / set_appearance_automatic"),
+		new ModApiHelper("query inventory P [OFFSET]", "player P's hero's stacks in the game's order, up to 40 a reply from stack OFFSET: total, offset, next, count, d1..dk (definitions \"0x…\"), n1..nk (counts), c1..ck (categories), v1..vk (viewed 0/1), u1..uk (usable 0/1: the item's own UsableFromInventory test, Refii.inventory's usable); ask again from next while next < total"),
+		new ModApiHelper("save_game(player) · query can_save P", "the game's own save where player P may save (AutoSaveGame(true, true); save_written follows per package) · able: Player.IsAbleToSaveGame for P's hero"),
+		new ModApiHelper("modify_renown(entity, delta) / modify_morality(entity, delta) / modify_purity(entity, delta)", "the hero stats changed through the game's own Stats.Modify*, run in the guest tick (the lines `modify_renown E D` ..); the renown / morality / purity events fire"),
 		new ModApiHelper("use_item(player, definition) / equip_weapon(player, definition) / perform_expression(player, expression) / assign_spell(player, spell)", QuickActionMeaning),
-		new ModApiHelper("query expressions P / spells_known P / selected_expression P / record_string DEF FIELD", ExpressionsMeaning + " — count, e1..eN (records), u1..uN (uses) · mask, count · expression (ok false with no wheel up) · value: " + RecordStringMeaning),
+		new ModApiHelper("use_item(player, definition, options) / equip_weapon(player, definition, options) / perform_expression(player, expression, held [, options]) / perform_expression(player, expression, held, options, callback) -> bool / assign_spell(player, spell, options) / release_expression(player)", QuickOptionsMeaning + "; options is {\"ungated\": true}; use_item(player, definition, {\"ungated\": true}) is the per-player form of the Items page's use_item(definition); with callback it runs Lua's own Refii.perform_expression and callback(performed) follows on a later frame"),
+		new ModApiHelper("end_sprint(player) · query sprinting P", SprintMeaning + " · sprinting=true|false"),
+		new ModApiHelper("set_locomotion(player, values) · query locomotion P KEY", LocomotionMeaning + " · value"),
+		new ModApiHelper("set_parry(player, window, wedge) · query parry P", ParryMeaning + " · window, wedge"),
+		new ModApiHelper("query expressions P / spells_known P / selected_expression P / record_string DEF FIELD", ExpressionsMeaning + " — count, e1..eN (records), u1..uN (uses) · mask, count · expression (ok false with no wheel up) · value (exact but for a quote or a line break, read as _): " + RecordStringMeaning),
 		new ModApiHelper("query record_int DEF FIELD", RecordIntMeaning + " — value"),
+		new ModApiHelper("query record_number DEF FIELD / record_bool DEF FIELD / record_exists DEF", RecordNumberMeaning + " — value · value · exists"),
+		new ModApiHelper("query record_ref DEF FIELD", RecordRefMeaning + " — value ('0x…')"),
+		new ModApiHelper("query creature_tier E", CreatureTierMeaning + " — tier; ok false without a creature component"),
 		new ModApiHelper("query near X Y Z R [CREATURES [OFFSET]] / line_of_sight X1 Y1 Z1 X2 Y2 Z2 / spawn DEF X Y Z / lua_int EXPR LO HI", "total, offset, count, e1..eN (100 a reply) · clear · entity · value"),
-		new ModApiHelper("query local_hero / coop_mode / menu_player / coop_state", "hero · mode · player · local_hero, coop_mode, menu_player: Refii.local_hero / coop_mode / menu_player, asked now"),
+		new ModApiHelper("query local_hero / coop_mode / menu_player / coop_state", "hero · mode · player · local_hero, coop_mode, menu_player, split_screen: Refii.local_hero / coop_mode / menu_player / split_screen, asked now"),
 		new ModApiHelper("query player_value P KEY [FALLBACK] / player_here P", "value, has (ok false when neither the value nor a fallback is there) · here: Refii.player_value / player_here"),
 		new ModApiHelper("query player_dog P / focus P / opinion E P / uid E", "dog · entity · love, fear, attractiveness, morality, respect · uid (\"0x…\"): Refii.player_dog / focus / opinion / uid"),
 		new ModApiHelper("query discovered_crime E P / perceived_renown E P · forgive_crimes E P", "discovered · renown: Refii.discovered_crime / perceived_renown for villager E and player P · the command forgives player P's crimes villager E knows of (Refii.forgive_crimes); show_to_player is Lua's — reach it with run_lua"),
@@ -1593,14 +2157,227 @@ public static class ModApi
 			"the effect stands at that .mdl.gmd point in its own frame, on a rigged body on its bone) }; the id, 0 for an unknown effect"),
 		new ModApiHelper("stop_fx(id)", "stops a played effect by any surface's id; false when none plays under it"),
 		new ModApiHelper("mark(target, icon, text = \"\", player = 0) -> id / unmark(id) / markers()", MarkMeaning + " target is an entity handle or a Vector3; markers() lists what stands"),
+		new ModApiHelper("world_meter(target, value, max, style = \"\", player = 0) -> id / mark_meter(id, value, max, style = \"\") -> bool / mark(target, icon, text, player, { \"meter\": { value, max, style } })", WorldMeterMeaning + " target is an entity handle or a Vector3; markers() lists meter_value and meter_max"),
 		new ModApiHelper("fade(player, to_black, seconds = 0) -> bool / fade_state(player)", FadeMeaning + " fade_state answers alpha (0 clear .. 1 black), target and seconds"),
 		new ModApiHelper("meter(id, label, value, max, player = 0, style = \"\") -> bool / meter_remove(id) / meters()", MeterMeaning + " meters() lists what stands, in stack order"),
 		new ModApiHelper("claim_input(player, action, on = true) -> bool / input_claimed(player, action) -> bool / input_claims(player)", InputClaimMeaning + " input_claims lists the actions claimed for a player"),
+		new ModApiHelper("press(player, button, held) -> bool / tap(player, button, ticks) -> bool / presses(player)", PressMeaning + " presses lists the buttons held for a player; false for an unknown button or player"),
+		new ModApiHelper("charge_spell(player, type, held) / charge_spell(player, type, held, callback) -> bool", ChargeSpellMeaning + " Posted to the guest tick (command charge_spell P TYPE HELD); with callback it runs Lua's own Refii.charge_spell and callback(taken) follows on a later frame"),
+		new ModApiHelper("attack_mode(player) -> int · attack_mode PLAYER MODE", AttackModeMeaning + " Read from GameInput at the call; the line attack_mode P MODE is Godot's own statement of it to the guest tick"),
+		new ModApiHelper("camera_mode(player) -> int · query camera_mode P", CameraModeMeaning + " As the bus last stated it (camera_changed), a guest tick behind; the query asks the guest now (mode, fov)"),
+		new ModApiHelper("camera_override(player, mode [, {fov, pitch_limit, blend, aim}]) · camera_override P MODE [FOV [PITCH [BLEND [FLAGS]]]]", CameraOverrideMeaning + " Posted, stated on the guest's next tick"),
+		new ModApiHelper("fov(player) -> float", CameraFovMeaning + " Read at the call from the block this machine draws the player's view from"),
+		new ModApiHelper("hide_part(handle, part, on, player = 0) -> bool", HidePartMeaning),
 		new ModApiHelper("hud_icon(player, element, texture) -> bool / hud_slide(player, element, slide) -> bool / hud_hold(player, piece, on = true) -> bool / hud_overrides(player)", HudOverrideMeaning + " hud_overrides answers icons, slides, holds"),
 		new ModApiHelper("light(target, color, energy, range, options = null) -> id / light_remove(id) / lights()",
 			LightMeaning + " target an entity handle or a Vector3, color a Color or [r, g, b], options { offset, at, flicker, direction, cone, attenuation }; lights() lists what stands (id, entity, r, g, b, energy, range, x, y, z, cone, dx, dy, dz)"),
 		new ModApiHelper("send_to_partner(mod, name, payload = \"\") -> bool (the command partner_send) / signal partner_message(e)", PartnerMeaning + " The signal carries mod, name, payload, from"),
+		new ModApiHelper("signal mod_signal(mod, name, payload) / get_text(key) -> String / has_text(key) -> bool / publish_text(key, text) -> bool / signal value_changed(key, value)", SignalMeaning + " get_text answers \"\" for none; value is a float (a number) or a String (a text)"),
+		new ModApiHelper("player_value(player, key, fallback = NaN) -> float", "a player's store value NOW, synchronously — the store Refii.player_value reads and a player: UI source resolves (Engine_UiValueSources); NaN (or the fallback) when unset"),
+		new ModApiHelper("player_text(player, key) -> String / player_value_hash(player, key) -> String", "a player's store TEXT and HASH NOW, synchronously — what Refii.player_value_text / player_value_hash read: the text kept exactly, \"\" for none; the text as a hash (\"0x…\", a leading 0 octal, else decimal; whole, within 32 bits) as \"0x%08x\", \"\" when it reads as none. " + PlayerTextMeaning),
+		new ModApiHelper("player_set_text(p, key, text) / player_save_text(p, key, text) / player_save_hash(p, key, hash) -> bool", PlayerTextMeaning + " Lines the guest tick runs (the commands player_set_text / player_save_text, the text base64); player_save_hash is false for a hash that does not parse"),
+		new ModApiHelper("now() -> float / real_now() -> float / after(seconds, fn, key = \"\") -> id / cancel(key) -> bool", TimerMeaning + " — " + GodotRuntimeMeaning),
+		new ModApiHelper("entity_value(handle, key, default = null) / entity_set(handle, key, value)", EntityStoreMeaning + " — each surface holds its own values (a Lua value and a Variant do not cross); the host hears entity_removed while it holds any"),
+		new ModApiHelper("pool(player, key, options = null) -> bool / pool_value(player, key) -> [value, max] / pool_spend(player, key, n, callback = null) -> bool", PoolMeaning + " — " + GodotPoolMeaning),
+		new ModApiHelper("ask(what, args, callback) -> id", AskMeaning),
+		new ModApiHelper("read(what, args) -> Dictionary", VerdictReadMeaning),
+		new ModApiHelper("call_lua(expression, callback) -> bool", CallLuaMeaning),
+		new ModApiHelper("signal_lua(name, payload = \"\") -> bool", SignalLuaMeaning),
+		new ModApiHelper("hash(name) -> String", "the game's FNV-1 of a name (its UTF-8 bytes) as a \"0x…\" string, as Refii.hash: a GDB record's hash, a text tag's key — computed at the call"),
+		new ModApiHelper("split_screen() -> bool", "Refii.split_screen as the guest last answered (coop_state, asked every frame while a script is loaded): local co-op drawn as two halves"),
+		new ModApiHelper("forgive_crimes(villager, player)", "Refii.forgive_crimes: the villager forgets player 1 or 2's crimes (the line forgive_crimes E P, on the guest tick)"),
+		new ModApiHelper("ask_partner(asker, question, callback) -> bool / partner_answer(ticket, callback) -> bool / key_taken(handle, player, callback) -> bool / spell_serial(spell, callback) -> bool / save_get(key, callback) -> bool",
+			"Refii.ask_partner / partner_answer / key_taken / spell_serial and a RefiiModSave value, run once in the game VM through call_lua: callback(value) on a later frame — the ticket (null when not asked), " +
+			"null while pending then true or false, whether that player took the collectable, the cast serial (null for none), RefiiModSave[key] (what save_set writes; null for none)"),
+		new ModApiHelper("api_version()", "REFII_MOD_API_VERSION, as Refii.api_version"),
+		new ModApiHelper("register_source(name, rows) -> bool / register_condition(name, holds) -> bool", "a row SOURCE a list's template may name (\"source\": \"<name>[:<argument>]\"; rows(argument) answers an Array of row Dictionaries: name, label, icon, command, rating, ghosted, group, emphasised, counted, unviewed) and a row CONDITION its entries may name in \"when\" (holds() answers whether they show), each called by the UI while it builds a list; the game's own names stay the game's (false)"),
+		new ModApiHelper("query player_text P KEY", "text (a quote, backslash, comma or line break as '_'), hash (\"0x…\" when the text reads as one), has: the typed text player_set_text / player_save_text / Refii.player_save_hash wrote (ok false for none)"),
 	};
+
+	/// <summary>
+	/// What Lua's <c>Refii.ask_host(what, fn, ...)</c> may name: the host-side reads a Godot script makes
+	/// at the call and the host-side actions, each a RefiiHost method of the same name (RefiiHost.HostCall
+	/// answers each).
+	/// </summary>
+	public static readonly IReadOnlyList<string> HostCalls = new[]
+	{
+		"fade_state", "hud_overrides", "input_claimed", "input_claims", "lights", "markers", "meters", "mods", "presses",
+		"snapshot_time", "set_setting", "save_snapshot", "load_snapshot",
+	};
+
+	private static ModApiTwin T(string lua, string godot, string why = "") => new(lua, godot, why);
+
+	/// <summary>
+	/// THE QUERY VERBS A VERDICT MAY READ AT ONCE (<c>RefiiHost.read</c>, <see cref="VerdictReadMeaning"/>):
+	/// every verb that changes nothing, with the synchronous Lua read of the same meaning — mod_commands.cpp's
+	/// <c>kReadOnlyVerbs</c>, in its order. Refused: <c>spawn</c> (makes an entity) and <c>lua_int</c> (runs
+	/// any game Lua expression).
+	/// </summary>
+	public static readonly IReadOnlyList<(string Verb, string Lua)> VerdictReads = new[]
+	{
+		("health", "health"), ("position", "position"), ("facing", "facing"), ("velocity", "velocity"), ("gold", "gold"),
+		("item_count", "item_count"), ("experience", "experience"), ("ability_level", "ability_level"), ("relation", "relation"),
+		("alive", "alive"), ("locked_target", "locked_target"), ("in_cutscene", "in_cutscene"), ("camera_mode", "camera_mode fov"),
+		("has_status", "has_status"), ("speed_multiplier", "speed_multiplier"), ("current_action", "current_action"),
+		("action", "action_type action_name action_elapsed action_interruptible"), ("frontend", "signed_in save_count screen"),
+		("living", "living"), ("spell_in_slot", "spell_in_slot"), ("spell_parts", "spell_parts"), ("vortex_held", "vortex_held"),
+		("spell_balance", "spell_balance"), ("host_serial", "host_serial"), ("local_serial", "local_serial"), ("time_of_day", "time_of_day"), ("definition", "definition"),
+		("name", "name"), ("level_name", "level_name"), ("hero", "player_hero"), ("player_of", "player_of"), ("player_for", "player_for"),
+		("world_here", "world_here"), ("combat_state", "combat_state"), ("can_save", "can_save"), ("renown", "renown"),
+		("morality", "morality"), ("purity", "purity"), ("physique", "physique"), ("age", "age"), ("equipped", "equipped"),
+		("inventory_stack", "inventory"), ("inventory", "inventory"), ("expressions", "expressions"), ("spells_known", "spells_known"),
+		("sprinting", "sprinting"), ("locomotion", "locomotion"), ("parry", "parry"), ("selected_expression", "selected_expression"),
+		("record_string", "record_string"), ("record_int", "record_int"), ("record_number", "record_number"), ("record_bool", "record_bool"),
+		("record_exists", "record_exists"), ("record_ref", "record_ref"), ("creature_tier", "creature_tier"), ("near", "near"),
+		("line_of_sight", "line_of_sight"), ("local_hero", "local_hero"), ("coop_mode", "coop_mode"), ("menu_player", "menu_player"),
+		("coop_state", "local_hero coop_mode menu_player split_screen"), ("player_value", "player_value"),
+		("player_text", "player_value_text player_value_hash"), ("player_here", "player_here"), ("player_dog", "player_dog"),
+		("focus", "focus"), ("opinion", "opinion"), ("discovered_crime", "discovered_crime"), ("perceived_renown", "perceived_renown"),
+		("uid", "uid"), ("appearance", "appearance"), ("morph", "morph_get"),
+	};
+
+	/// <summary>The Lua side of <c>RefiiHost.read</c>'s row: every synchronous read of <see cref="VerdictReads"/>, once each.</summary>
+	public static string VerdictReadLua =>
+		string.Join(" ", VerdictReads.SelectMany(r => r.Lua.Split(' ')).Distinct(StringComparer.Ordinal));
+
+	/// <summary>
+	/// THE PARITY TABLE (<see cref="ParityRule"/>): every Lua call, field, constant and runtime event and
+	/// every Godot method, signal and query verb, matched by meaning. A side's tokens, space separated:
+	/// Lua a <c>Refii.</c> name, <c>event:</c> a Lua event, <c>ask_host:</c> a host call Lua asks for;
+	/// Godot a RefiiHost method, <c>query:</c> a query verb, <c>signal:</c> a signal. A token that is not
+	/// a name (<c>e.replica</c>, <c>RefiiModSave.&lt;key&gt;</c>) is written as the catalog writes it. A row
+	/// with an empty side says why that side has no form. ModParityTests holds the table to the code
+	/// both ways and to reference-calls.md.
+	/// </summary>
+	public static readonly IReadOnlyList<ModApiTwin> Twins = new[]
+	{
+		// Events, handlers, the lane between the surfaces.
+		T("on", "on_verdict signal:mod_event"),
+		T("off", "remove_verdict"),
+		T("event:setting_changed setting set_setting", "signal:setting_changed setting set_setting"),
+		T("signal event:mod_signal", "signal_lua signal:mod_signal"),
+		T("publish value", "publish get_value"),
+		T("publish_text get_text has_text event:value_changed", "publish_text get_text has_text signal:value_changed"),
+		T("ask_host", "ask query signal:reply"),
+		T(VerdictReadLua, "read"),
+		T("", "run_lua call_lua frontend_lua query:lua_int",
+			"Lua IS the game VM: a Lua mod runs its code there directly, and its front-end code as mod/frontend.lua"),
+		T("", "node_for", "a Godot node: Lua has no scene tree (it places with mark, light and play_fx_on on the handle)"),
+		T("", "register_source register_condition",
+			"called by Godot's UI while it builds a list, at once; Lua runs on the guest tick, so it states a list's rows ahead with set_menu_rows (ghosted included)"),
+		T("", "register_command", "Lua's row verb is the command Mod:lua:name[:arg], which calls the Lua function of that name with the row"),
+		T("log", "", "GDScript's own print and push_warning write Godot's log; Refii.log writes the guest's"),
+		T("entity handle", "", "a guest address for game Lua that takes the object itself; a Godot script holds handles only and reaches game Lua through call_lua"),
+		T("require", "", "GDScript's own preload and load"),
+		T("RefiiModErrors", "", "the Mods error list shows every surface's errors; a GDScript error is Godot's own"),
+		T("run_as_player acting_player show_to_player", "",
+			"the player a game-Lua call stands for while it runs; a Godot call names its player outright (every UI call takes one), and call_lua reaches these"),
+		T("frontend", "", "marks the front end's own Lua state; a Godot script runs in one process across the front end and the game"),
+		T("signed_in save_count screen", "query:frontend"),
+		T("hash", "hash"),
+		T("api_version", "api_version"),
+		T("Refii.SPELL_*", "constants"),
+		T("spell_info", "spell_info"),
+		// The runtime.
+		T("now real_now after cancel", "now real_now after cancel"),
+		T("entity_value entity_set", "entity_value entity_set"),
+		T("pool pool_spend pool_value", "pool pool_spend pool_value"),
+		T("in_play", "in_play"),
+		// Entities and the world.
+		T("health set_health modify_health", "query:health set_health modify_health"),
+		T("position set_position", "query:position set_position"),
+		T("facing velocity set_facing", "query:facing query:velocity set_facing"),
+		T("entity_tint entity_untint entity_alpha entity_scale entity_saturation_mask entity_drawable",
+			"entity_tint entity_untint entity_alpha entity_scale entity_saturation_mask entity_drawable"),
+		T("lock_target release_lock switch_target locked_target", "lock_target release_lock switch_target query:locked_target"),
+		T("wheel_switches_target", "wheel_switches_target"),
+		T("in_cutscene", "in_cutscene cutscene_kinds query:in_cutscene"),
+		T("apply_status clear_status has_status", "apply_status clear_status query:has_status"),
+		T("knockback stagger", "knockback stagger"),
+		T("set_speed_multiplier clear_speed_multiplier speed_multiplier", "set_speed_multiplier clear_speed_multiplier query:speed_multiplier"),
+		T("current_action action_elapsed action_interruptible allow_action_interrupt allow_action_interrupt_at action_type action_name",
+			"query:current_action query:action allow_action_interrupt allow_action_interrupt_at"),
+		T("living alive", "query:living query:alive"),
+		T("spell_in_slot spell_parts vortex_held", "query:spell_in_slot query:spell_parts query:vortex_held"),
+		T("spell_balance", "query:spell_balance"),
+		T("host_serial local_serial", "query:host_serial query:local_serial"),
+		T("cast_spell spell_serial", "cast_spell cast_spell_at cast_spell_with spell_serial"),
+		T("charge_spell", "charge_spell"),
+		T("play_sound play_sound_at stop_sound play_music stop_music", "play_sound play_sound_at stop_sound play_music stop_music"),
+		T("play_animation stop_animation", "play_animation stop_animation"),
+		T("modify_opinion add_deed opinion", "modify_opinion add_deed query:opinion"),
+		T("npc_follow npc_go_to npc_flee npc_attack npc_set_hostile npc_stop", "npc_follow npc_go_to npc_flee npc_attack npc_set_hostile npc_stop"),
+		T("set_time_of_day time_of_day set_weather", "set_time_of_day query:time_of_day set_weather"),
+		T("gold give_gold", "query:gold give_gold"),
+		T("item_count add_item inventory equipped", "query:item_count add_item query:inventory query:inventory_stack query:equipped"),
+		T("experience give_experience spend_experience ability_level", "query:experience give_experience spend_experience query:ability_level"),
+		T("relation definition name level_name uid creature_tier", "query:relation query:definition query:name query:level_name query:uid query:creature_tier"),
+		T("near line_of_sight spawn", "query:near query:line_of_sight query:spawn"),
+		T("record_string record_int record_number record_bool record_exists record_ref",
+			"query:record_string query:record_int query:record_number query:record_bool query:record_exists query:record_ref"),
+		T("renown morality purity modify_renown modify_morality modify_purity physique age",
+			"query:renown query:morality query:purity modify_renown modify_morality modify_purity query:physique query:age"),
+		T("forgive_crimes discovered_crime perceived_renown focus", "forgive_crimes query:discovered_crime query:perceived_renown query:focus"),
+		T("appearance set_appearance set_appearance_automatic", "query:appearance set_appearance set_appearance_automatic"),
+		T("morph_get morph_set morph_id", "morph_get query:morph morph_set morph_id"),
+		// Players and co-op.
+		T("hero player_hero", "hero query:hero"),
+		T("player_of player_for player_dog combat_state", "query:player_of query:player_for query:player_dog query:combat_state"),
+		T("local_hero menu_player coop_mode world_here split_screen",
+			"local_hero menu_player coop_mode world_here split_screen query:local_hero query:menu_player query:coop_mode query:world_here query:coop_state"),
+		T("player_here event_replica", "player_here query:player_here e.replica"),
+		T("player_value player_set player_add player_save", "player_value player_set player_add player_save query:player_value"),
+		T("player_value_text player_set_text player_save_text player_value_hash player_save_hash",
+			"player_text player_set_text player_save_text player_value_hash player_save_hash query:player_text"),
+		T("ask_partner partner_answer key_taken", "ask_partner partner_answer key_taken"),
+		T("send_to_partner", "send_to_partner"),
+		T("can_save save_game", "query:can_save save_game"),
+		T("save_snapshot load_snapshot ask_host:snapshot_time", "save_snapshot load_snapshot snapshot_time"),
+		T("RefiiModSave.<key>", "save_set save_get"),
+		// The hero's actions, input and camera.
+		T("use_item equip_weapon perform_expression assign_spell release_expression", "use_item equip_weapon perform_expression assign_spell release_expression"),
+		T("expressions spells_known selected_expression", "query:expressions query:spells_known query:selected_expression"),
+		T("sprinting end_sprint set_locomotion locomotion set_parry parry", "query:sprinting end_sprint set_locomotion query:locomotion set_parry query:parry"),
+		T("input_claim ask_host:input_claimed ask_host:input_claims", "claim_input input_claimed input_claims"),
+		T("press tap ask_host:presses", "press tap presses"),
+		T("attack_mode", "attack_mode"),
+		T("camera_mode camera_override fov", "camera_mode camera_override fov query:camera_mode"),
+		T("hide_part", "hide_part"),
+		// What is drawn: effects, lights, the HUD, menus and boxes.
+		T("play_fx play_fx_on stop_fx", "play_fx play_fx_on stop_fx"),
+		T("light light_remove ask_host:lights", "light light_remove lights"),
+		T("mark unmark world_meter mark_meter ask_host:markers", "mark unmark world_meter mark_meter markers"),
+		T("fade ask_host:fade_state", "fade fade_state"),
+		T("meter meter_remove ask_host:meters", "meter meter_remove meters"),
+		T("hud_icon hud_slide hud_hold ask_host:hud_overrides", "hud_icon hud_slide hud_hold hud_overrides"),
+		T("set_menu_rows open_menu open_screen", "set_menu_rows open_menu open_screen"),
+		T("message_box event:mod_message_box", "message_box signal:message_box_answered"),
+		T("notice event:mod_notice", "notice signal:notice_done"),
+		T("menu_box event:mod_menu_box", "menu_box signal:menu_box_answered"),
+		T("ask_host:mods", "mods"),
+	};
+
+	/// <summary>Lua tokens of <see cref="Twins"/> that are globals of the chunk, not <c>Refii.</c> names.</summary>
+	public static readonly IReadOnlyList<string> LuaGlobals = new[] { "require", "RefiiModErrors" };
+
+	/// <summary>
+	/// One <see cref="Twins"/> row as the parity table of reference-calls.md writes it: Lua's forms,
+	/// Godot's forms, and why a side has none.
+	/// </summary>
+	public static string TwinMarkdown(ModApiTwin twin)
+	{
+		static bool IsName(string token) => token.Length != 0 && token.All(c => c is (>= 'a' and <= 'z') or (>= '0' and <= '9') or '_');
+		static string Lua(string token) =>
+			token.StartsWith("event:", StringComparison.Ordinal) ? $"`Refii.on(\"{token[6..]}\")`" :
+			token.StartsWith("ask_host:", StringComparison.Ordinal) ? $"`Refii.ask_host(\"{token[9..]}\", fn)`" :
+			IsName(token) && !LuaGlobals.Contains(token) ? $"`Refii.{token}`" : $"`{token}`";
+		static string Godot(string token) =>
+			token.StartsWith("query:", StringComparison.Ordinal) ? $"`query {token[6..]}`" :
+			token.StartsWith("signal:", StringComparison.Ordinal) ? $"`signal {token[7..]}`" : $"`{token}`";
+		string lua = twin.Lua.Length == 0 ? "—" : string.Join(" · ", twin.LuaTokens.Select(Lua));
+		string godot = twin.Godot.Length == 0 ? "—" : string.Join(" · ", twin.GodotTokens.Select(Godot));
+		return $"| {lua} | {godot} | {twin.Why} |";
+	}
 
 	/// <summary>The RefiiHost method names one <see cref="GodotHelpers"/> signature states.</summary>
 	public static IEnumerable<string> GodotMethodNames(string signature)

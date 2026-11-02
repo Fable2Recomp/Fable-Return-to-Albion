@@ -3,6 +3,7 @@ using Refii.AndroidRuntime;
 using Refii.Game;
 using static GdUnit4.Assertions;
 using Refii.Titles.Fable2;
+using Refii.Titles.Fable2.PubGames.Framework;
 
 namespace Refii.Tests;
 
@@ -37,14 +38,21 @@ public sealed class AndroidSystemKeysTests
         AssertThat(AndroidSystemKeys.PauseOnReturn(wasAway: true, panel: false, playing: false, overlay: false, board: true, boardDialog: true)).IsFalse();
     }
 
-    /// <summary>A press once reaches a pub game's board through its touch pad, not only the guest's pad.</summary>
+    /// <summary>A press once reaches a pub game's board: the touch state the core folds into pad 0 carries it.</summary>
     [TestCase]
     public void APressOnceReachesTheBoard()
     {
+        static int Board()
+        {
+            var pad = new GameInput.PadState();
+            GameInput.TouchState(ref pad);
+            return PubGameInput.FromPad(pad, boardClick: false).Buttons;
+        }
+
         GameInput.PressOnce(GameInput.PadStart);
-        AssertThat(GamePubGames.TouchPad().Buttons & (int)GameInput.PadStart).IsEqual((int)GameInput.PadStart);
+        AssertThat(Board() & (int)GameInput.PadStart).IsEqual((int)GameInput.PadStart);
         GameInput.PressOnce(0u);
-        AssertThat(GamePubGames.TouchPad().Buttons & (int)GameInput.PadStart).IsEqual(0);
+        AssertThat(Board() & (int)GameInput.PadStart).IsEqual(0);
     }
 
     /// <summary>Only play left mid-stride comes back paused, and only once for the notices of one return.</summary>

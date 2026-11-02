@@ -20,6 +20,10 @@ public partial class Engine_UiMorphMirror : Node3D
     private MeshInstance3D _status = null!;
     private MeshInstance3D _band = null!;
     private int _count;
+    private int _first;
+
+    /// <summary>The settings row the first visible row shows: the rows scroll to keep the selected one in view.</summary>
+    public int FirstRow => _first;
 
     /// <summary>The first row's height, and the step to the next, in the panel's units.</summary>
     private const float FirstRowY = 177, RowStep = 32;
@@ -79,19 +83,23 @@ public partial class Engine_UiMorphMirror : Node3D
 
     public void ShowSettings(Engine_MorphMirrorSettings settings)
     {
-        _count = settings.Count;
+        _first = Math.Clamp(_first, Math.Max(0, settings.Selected - _rows.Length + 1), Math.Max(0, settings.Selected));
+        _first = Math.Clamp(_first, 0, Math.Max(0, settings.Count - _rows.Length));
+        _count = Math.Min(_rows.Length, settings.Count - _first);
         for (int i = 0; i < _rows.Length; i++)
         {
             _rows[i].Visible = i < _count;
             if (i >= _count) continue;
-            Color color = i == settings.Selected ? SelectedInk : Ink;
-            _theme.Paint(_names[i], settings.Title(i), 18, color, boxWidth: 212);
-            _theme.Paint(_values[i], settings.Display(i), 17, color, horizontalAlign: 1, boxWidth: 128);
+            int row = _first + i;
+            Color color = row == settings.Selected ? SelectedInk : Ink;
+            _theme.Paint(_names[i], settings.Title(row), 18, color, boxWidth: 212);
+            _theme.Paint(_values[i], settings.Display(row), 17, color, horizontalAlign: 1, boxWidth: 128);
             _values[i].Scale = Vector3.One * Math.Min(1, 128 / Math.Max(_values[i].GetAabb().Size.X, 1));
         }
-        _band.Visible = settings.Selected >= 0 && settings.Selected < _count;
-        _band.Position = new Vector3(10, FirstRowY - settings.Selected * RowStep, 5);
-        SetStatus(_count == 1 ? "Turn automatic morphs off to customise" : "");
+        int shown = settings.Selected - _first;
+        _band.Visible = shown >= 0 && shown < _count;
+        _band.Position = new Vector3(10, FirstRowY - shown * RowStep, 5);
+        SetStatus(settings.Automatic && settings.Selected < settings.LookRows ? "Turn automatic morphs off to customise" : "");
     }
 
     public void Layout(float width) => Position = new Vector3(-width / 2 + 20 + Width / 2, 0, 0);

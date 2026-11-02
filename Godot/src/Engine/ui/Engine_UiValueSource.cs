@@ -90,12 +90,13 @@ public static class Engine_UiValueSource
 
 	/// <summary>
 	/// The live readers for a page or list of <paramref name="player"/>'s: published mod values, the
-	/// player store under that player. (The guest's own HUD meters belong to the HUD's views.)
+	/// player store under that player, mod settings. (The guest's own HUD meters belong to the HUD's views.)
 	/// </summary>
 	public static Engine_UiValueSources.Context Live(int player) => new()
 	{
 		Player = player is 2 ? 2 : 1,
 		Mod = key => Refii.Host.HostBridge.TryGetModValue(key, out float value) ? value : null,
 		PlayerValue = (p, key) => Refii.Host.HostBridge.GetPlayerValue(p, key),
+		Setting = key => Refii.Mods.ModSettings.TryGet(key, out float value) ? value : null,
 	};
 }

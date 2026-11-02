@@ -16,6 +16,17 @@
 //   spell_pick PLAYER SLOT SPELL STORE PICK MOD
 //       a pick on a spell slot (ui/spellwheel.json, Engine_UiSpellPicks): STORE the saved player key
 //       the pick lives under, its {slot} filled in; '-' for an empty MOD
+//   spell_pick_clear
+//   spell_pick_declare NAME MOD STORE EXCLUDE LEGACY LEGACY_TWO
+//       the selectors declare each mod pick: STORE its key template ({slot} the slot's number 1..5),
+//       EXCLUDE the wills it never takes (comma-separated, '-' none), LEGACY / LEGACY_TWO the
+//       RefiiModSave key templates a save from before kept player one's / player two's pick in
+//
+// A DECLARED PICK'S EXCLUDE IS THE ENGINE'S: a spell_pick naming an excluded will is refused
+// before the event (whoever posted it), and a handler that rewrites the will to an excluded one is
+// refused after it — the slot keeps the pick it had. Its legacy keys are read as an ability's:
+// once after each Lua rebuild or save load, on the first tick with the hero present, a slot whose
+// store is empty takes the save's Lua value (0..7, not excluded) for each player played here.
 //
 // THE PURCHASE IS THE SHIPPED ONE (TU1 sub_8246C970), share by share: the next level's price from
 // the game's own table (refii_mod_ability_cost), split evenly across the pools (the first named takes
@@ -102,6 +113,20 @@ struct Ability {
 std::vector<Ability> g_abilities;
 uint32_t g_seen_generation = 0xFFFFFFFFu;
 bool g_reread_legacy = true;
+
+/// A mod's spell slot pick as the selectors declared it (spell_pick_declare).
+struct DeclaredPick {
+  std::string name;
+  std::string mod;
+  std::string store;
+  uint32_t excluded = 0;  // bit w: will w is never picked
+  std::string legacy[2];
+};
+
+std::vector<DeclaredPick> g_picks;
+
+/// Per player: the declared picks' legacy keys are still to be read for that player's hero.
+bool g_reread_picks[2] = {true, true};
 
 /// A word, '-' standing for an empty one.
 std::string Word(const std::vector<std::string>& w, size_t i) {
@@ -332,6 +357,80 @@ void State(PPCContext& ctx, uint8_t* base, Ability& a, int32_t player, uint32_t 
                        a.next_cost[index] > 0 && Affordable(base, hero, a, a.next_cost[index]) ? 1.0f : 0.0f);
 }
 
+const DeclaredPick* FindPick(const std::string& name) {
+  for (const DeclaredPick& p : g_picks) {
+    if (p.name == name) {
+      return &p;
+    }
+  }
+  return nullptr;
+}
+
+bool Excluded(const DeclaredPick* pick, int32_t spell) {
+  return pick != nullptr && spell >= 0 && spell <= 7 && (pick->excluded & (1u << spell)) != 0;
+}
+
+/// A key template with its {slot} filled in: the slot's number, 1..5.
+std::string SlotKey(const std::string& tmpl, int32_t slot) {
+  std::string key = tmpl;
+  const size_t at = key.find("{slot}");
+  if (at != std::string::npos) {
+    key.replace(at, 6, std::to_string(slot + 1));
+  }
+  return key;
+}
+
+void DeclarePick(const std::vector<std::string>& w) {
+  DeclaredPick p;
+  p.name = Word(w, 1);
+  p.mod = Word(w, 2);
+  p.store = Word(w, 3);
+  const std::string exclude = Word(w, 4);
+  for (size_t at = 0; at < exclude.size();) {
+    const size_t comma = exclude.find(',', at);
+    const int32_t will = static_cast<int32_t>(std::strtol(exclude.c_str() + at, nullptr, 10));
+    if (will >= 0 && will <= 7) {
+      p.excluded |= 1u << will;
+    }
+    at = comma == std::string::npos ? exclude.size() : comma + 1;
+  }
+  p.legacy[0] = Word(w, 5);
+  p.legacy[1] = Word(w, 6);
+  if (p.name.empty() || p.store.empty()) {
+    return;
+  }
+  for (DeclaredPick& existing : g_picks) {
+    if (existing.name == p.name) {
+      existing = p;
+      return;
+    }
+  }
+  g_picks.push_back(p);
+}
+
+/// A save from before: `player`'s slots each declared pick's store leaves empty, from the world save's Lua table.
+void ReadLegacyPicks(PPCContext& ctx, uint8_t* base, int32_t player) {
+  for (const DeclaredPick& p : g_picks) {
+    {
+      const std::string& tmpl = p.legacy[player - 1];
+      if (tmpl.empty()) {
+        continue;
+      }
+      for (int32_t slot = 0; slot < 5; ++slot) {
+        const std::string store = SlotKey(p.store, slot);
+        int32_t legacy = -1;
+        PPCContext work = ctx;
+        if (refii_mod_player_get(player, store.c_str(), nullptr) == 0 &&
+            refii_mod_save_get_int(&work, base, SlotKey(tmpl, slot).c_str(), 0, 7, &legacy) != 0 && !Excluded(&p, legacy)) {
+          refii_mod_player_save(player, store.c_str(), static_cast<float>(legacy));
+          REXLOG_INFO("Spell picks: player {}'s {} on slot {} = {} taken from the save's Lua table", player, p.name, slot + 1,
+                      legacy);
+        }
+      }
+    }
+  }
+}
+
 /// The pick's previous will, the event, and the store written when no handler refused it.
 void Pick(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w) {
   const int32_t player = Int(w, 1);
@@ -343,6 +442,12 @@ void Pick(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w) {
     return;
   }
   const int32_t previous = static_cast<int32_t>(refii_mod_player_value(player, store.c_str(), -1.0f));
+  const DeclaredPick* declared = FindPick(pick);
+  if (Excluded(declared, Int(w, 3, -1))) {
+    REXLOG_INFO("Spell picks: {} never takes will {}; player {}'s slot {} keeps {}", pick, Int(w, 3, -1), player, slot + 1,
+                previous);
+    return;
+  }
 
   refii::mods::SpellPickEvent e{};
   PPCContext event_ctx = ctx;
@@ -360,6 +465,11 @@ void Pick(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w) {
     return;
   }
   const int32_t spell = e.spell >= 0 && e.spell <= 7 ? e.spell : -1;
+  if (Excluded(declared, spell)) {
+    REXLOG_INFO("Spell picks: a handler rewrote {} to will {}, which it never takes; player {}'s slot {} keeps {}", pick,
+                spell, player, slot + 1, previous);
+    return;
+  }
   refii_mod_player_save(player, store.c_str(), static_cast<float>(spell));
   REXLOG_INFO("Spell picks: player {} {} on slot {}: {} (was {})", player, pick, slot + 1, spell, previous);
 }
@@ -390,6 +500,11 @@ bool RunModAbilityCommand(PPCContext& ctx, uint8_t* base, const std::vector<std:
     }
   } else if (op == "spell_pick") {
     Pick(ctx, base, w);
+  } else if (op == "spell_pick_clear") {
+    g_picks.clear();
+  } else if (op == "spell_pick_declare") {
+    DeclarePick(w);
+    g_reread_picks[0] = g_reread_picks[1] = true;
   } else {
     return false;
   }
@@ -398,17 +513,24 @@ bool RunModAbilityCommand(PPCContext& ctx, uint8_t* base, const std::vector<std:
 
 /// Every tick: saves from before, and the prices the book shows, for each player played here.
 void PumpModAbilities(PPCContext& ctx, uint8_t* base) {
-  if (g_abilities.empty()) {
+  if (g_abilities.empty() && g_picks.empty()) {
     return;
   }
   const uint32_t generation = refii_mod_lua_generation();
   if (generation != g_seen_generation) {
     g_seen_generation = generation;
     g_reread_legacy = true;
+    g_reread_picks[0] = g_reread_picks[1] = true;
   }
   if (g_reread_legacy && refii_mod_player_hero(base, 1) != 0 && refii_mod_player_here(1) != 0) {
     g_reread_legacy = false;
     ReadLegacy(ctx, base);
+  }
+  for (int32_t player = 1; player <= 2; ++player) {
+    if (g_reread_picks[player - 1] && refii_mod_player_hero(base, player) != 0 && refii_mod_player_here(player) != 0) {
+      g_reread_picks[player - 1] = false;
+      ReadLegacyPicks(ctx, base, player);
+    }
   }
   for (int32_t player = 1; player <= 2; ++player) {
     const uint32_t hero = refii_mod_player_hero(base, player);
@@ -421,6 +543,11 @@ void PumpModAbilities(PPCContext& ctx, uint8_t* base) {
   }
 }
 
+}  // namespace refii::vfs
+
+namespace refii::vfs {
+/// mod_api.cpp: the slots refii_mod_charge_spell has lent come back as this pick says.
+void ModChargeLendPicked(int32_t player, int32_t slot, int32_t spell);
 }  // namespace refii::vfs
 
 namespace {
@@ -471,4 +598,6 @@ REX_EXTERN(rex_CECSpellManager_SetSpellSlot) {
     ctx.r6.u32 = static_cast<uint32_t>(e.spell);
   }
   __imp__rex_CECSpellManager_SetSpellSlot(ctx, base);
+  // A real pick while refii_mod_charge_spell has lent the slots is what comes back for this slot.
+  refii::vfs::ModChargeLendPicked(player, slot, static_cast<int8_t>(ctx.r6.u32 & 0xFFu));
 }

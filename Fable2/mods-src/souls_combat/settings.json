@@ -36,6 +36,7 @@
 		"ai_punish_heal_seconds": 1.6,
 		"ai_punish_whiff_seconds": 1.1,
 		"ai_punish_cast_seconds": 1.5,
-		"ai_close_in_distance": 3
+		"ai_close_in_distance": 3,
+		"bars_always_when_not_full": 1
 	}
 }

@@ -620,7 +620,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
         // Pieces mods define (ui/hud.json), beside the ones cut from hud.bgf; children of this view
         // so they show and hide with the HUD. A piece that FOLLOWS a shipped piece is that
         // piece's player's and is drawn wherever it is (FindDrawn); a free piece is the screen's
-        // and stays out of player two's half.
+        // and stays out of player two's half, unless it is each player's ("each": true).
         bool ownsMods = Seat != Engine_UiSeats.Seat.PlayerTwo;
         if (_modPieces is null)
         {
@@ -636,9 +636,10 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
             _modPieces.StringBook = Values.Strings;
             _modPieces.Sources = Sources;
             _modPieces.ForPlayerTwo = ForPlayerTwo;
+            _modPieces.Groups = modLayout.Groups;
             _modPieces.Build(ownsMods
                 ? modLayout.Pieces
-                : modLayout.Pieces.FindAll(piece => piece.Follow.Length != 0));
+                : modLayout.Pieces.FindAll(piece => piece.Follow.Length != 0 || piece.Each));
         }
 
         if (ownsMods && modLayout.Hidden.Count != 0)
@@ -771,6 +772,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                     GameMeter = name => Values.Meter(Engine_HudValues.Handle.For(name)),
                     GameText = name => Values.Text(Engine_HudValues.Handle.For(name)),
                     PlayerValue = (player, key) => Engine.IsEditorHint() ? null : Refii.Host.HostBridge.GetPlayerValue(player, key),
+                    Setting = key => Refii.Mods.ModSettings.TryGet(key, out float value) ? value : null,
                     Hero = key =>
                     {
                         if (Engine.IsEditorHint())

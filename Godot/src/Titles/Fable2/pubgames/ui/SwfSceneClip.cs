@@ -449,6 +449,7 @@ public sealed class SwfSceneClip : IPubClip
         copy.Visible = true;
         SwfSceneClip clip = Place(copy, name, depth);
         _scene.WakeTimelines(copy, null);
+        _scene.TrackPrompts(copy);
         return clip;
     }
 

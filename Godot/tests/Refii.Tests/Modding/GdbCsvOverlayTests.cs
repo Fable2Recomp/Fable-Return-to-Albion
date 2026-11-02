@@ -324,6 +324,78 @@ public class GdbCsvOverlayTests
     }
 
     /// <summary>
+    /// A composite is made against the base it is stamped with. Rows compiled against a base that
+    /// lacks their entries (the launcher's loose read once missed <c>Globals/globals.gdb</c>) keep
+    /// only what resolved; the same mod files against the full base make it again rather than
+    /// serve the cached half.
+    /// </summary>
+    [TestCase]
+    public void ACompositeMadeAgainstAnotherBaseIsMadeAgain()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_gdbcsv_base_" + Guid.NewGuid().ToString("N"));
+        string modDir = Path.Combine(tempDir, "ModRows");
+        Directory.CreateDirectory(Path.Combine(modDir, "test"));
+        Engine_GameGdb.SetBaseResolver(_ => null);
+        try
+        {
+            File.WriteAllText(Path.Combine(modDir, "test", "test.gdb.csv"), Rows + "Unrelated,Flag,bool,true\n");
+            var overlays = new List<ModOverlay> { new() { Name = "ModRows", AssetRoot = modDir } };
+
+            var unrelated = new GdbPatchDatabase();
+            unrelated.Entries.Add(new GdbPatchEntry(Engine_GameHash.Fnv1("Unrelated"), 1));
+            byte[] thin = GdbWriter.Serialize(unrelated);
+            var thinMount = new BnkFileSystem();
+            thinMount.AddVirtualFile("test/test.gdb", "base_game", thin.Length, () => thin);
+            CompositeGdbResult partial = GdbPatchCompositor.Apply(thinMount, overlays, tempDir)[0];
+            AssertThat(partial.Refused.Count > 0).IsTrue();
+            AssertThat(partial.Binary.Length > 0).IsTrue();
+
+            GdbPatchDatabase whole = GdbContainerRoundTripTests.SyntheticDatabase();
+            whole.Entries.Add(new GdbPatchEntry(Engine_GameHash.Fnv1("Unrelated"), 1));
+            byte[] baseBytes = GdbWriter.Serialize(whole);
+            var mounted = new BnkFileSystem();
+            mounted.AddVirtualFile("test/test.gdb", "base_game", baseBytes.Length, () => baseBytes);
+            CompositeGdbResult full = GdbPatchCompositor.Apply(mounted, overlays, tempDir)[0];
+            AssertThat(full.Refused.Count).IsEqual(0);
+            AssertThat(GdbContainerCheck.TryVerify(full.Binary, out GdbPatchDatabase patch, out string error)).IsTrue();
+            AssertThat(error).IsEqual(string.Empty);
+            AssertThat(patch.Entries.Count).IsEqual(3);
+            GdbPatchEntry child = patch.Entries.Single(e => e.Id == ChildId);
+            AssertThat(child.Properties.Single(p => p.NameHash == Range).Value).IsEqual(BitConverter.SingleToUInt32Bits(200f));
+        }
+        finally
+        {
+            Engine_GameGdb.SetBaseResolver(null);
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+    }
+
+    /// <summary>The loose base read matches each segment without regard to case, as the game's paths do.</summary>
+    [TestCase]
+    public void TheLooseBaseReadIgnoresCase()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_gdbcase_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(tempDir, "data", "Globals"));
+        try
+        {
+            string file = Path.Combine(tempDir, "data", "Globals", "globals.gdb");
+            File.WriteAllBytes(file, new byte[] { 1 });
+            AssertThat(Engine_GameGdb.FindIgnoringCase(tempDir, "data/globals/globals.gdb")).IsEqual(file);
+            AssertThat(Engine_GameGdb.FindIgnoringCase(Path.Combine(tempDir, "data"), "GLOBALS/Globals.GDB")).IsEqual(file);
+            AssertThat(Engine_GameGdb.FindIgnoringCase(tempDir, "data/globals/missing.gdb")).IsNull();
+            AssertThat(Engine_GameGdb.FindIgnoringCase(tempDir, "nothere/globals.gdb")).IsNull();
+            AssertThat(Engine_GameGdb.FindIgnoringCase(tempDir, "data/globals")).IsNull();
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    /// <summary>
     /// THE SHIPPED DATABASE: a new firearm component derived from the Toy Gun's (0x2FDDF213,
     /// unique to the Toy Gun per docs/GDB_INHERITANCE_AND_PER_ITEM_MODDING.md), BulletCapacity
     /// materialised on it, the Toy Gun's own component left answering the parent's value. The

@@ -20,8 +20,12 @@
 		},
 		"quickslots.choose": {
 			"title": "QUICKSLOTS_CHOOSE_TITLE",
+			"rowCommand": "Mod:lua:quickslots.choose",
 			"entries": [
-				{ "name": "choices", "source": "rows" }
+				{ "name": "items", "tag": "QUICKSLOTS_ITEMS", "source": "inventory:usable" },
+				{ "name": "expressions", "tag": "QUICKSLOTS_EXPRESSIONS", "source": "expressions" },
+				{ "name": "wills", "tag": "QUICKSLOTS_SPELLS", "source": "spells_known" },
+				{ "name": "clear", "tag": "QUICKSLOTS_CLEAR", "command": "Mod:lua:quickslots.clear" }
 			]
 		}
 	},

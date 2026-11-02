@@ -367,9 +367,7 @@ public partial class MageDiceHost : Node, IPubGameSession
             }
         }
 
-        string device = Godot.Input.GetConnectedJoypads().Count > 0
-            ? Godot.Input.GetJoyName(0)
-            : "keyboard";
+        string device = PubGameInput.DeviceName;
 
         if (_overlays.AbsorbingInput)
         {

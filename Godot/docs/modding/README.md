@@ -134,7 +134,7 @@ REFII_MOD_ON(Hit, OnHit);
 | [Gameplay](gameplay.md) | appearance, the target lock, status effects, knockback, movement, actions, live casts, custom spells, sound, animation, opinion, NPC orders, time and weather |
 | [GDB and text overlays](gdb-and-text.md) | database rows, new records, text rows |
 | [Models and textures](models-and-textures.md) | textures, models, presentations, art through the mod mount |
-| [Cutscenes](cutscenes.md) | knowing when the game holds the hero's camera and controls |
+| [Cutscenes and the camera](cutscenes.md) | knowing when the game holds the hero's camera and controls; each player's camera mode, a first-person hold, hidden parts |
 | [Saves, sharing and co-op sync](saves-and-sharing.md) | installing and sharing, co-op mod checks, mod sync, how mods fuse into saves |
 | [Live iteration](live-iteration.md) | reloading into a running game, errors, the Studio's scripting class |
 

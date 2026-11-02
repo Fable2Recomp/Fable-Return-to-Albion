@@ -125,6 +125,10 @@ public static class Engine_UiModMenuCommand
 		text.Append(",mod=").Append(LuaLiteral(mod));
 		text.Append(",command=").Append(LuaLiteral(rowCommand ?? string.Empty));
 		text.Append(",button=").Append(LuaLiteral(button ?? string.Empty));
+		Refii.Mods.ModRowSubject.Subject subject = Refii.Mods.ModRowSubject.Of(row, rowCommand);
+		text.Append(",subject_kind=").Append(LuaLiteral(subject.Kind));
+		text.Append(",definition=").Append(LuaLiteral(subject.Definition));
+		text.Append(",spell=").Append(subject.Spell.ToString(CultureInfo.InvariantCulture));
 		text.Append("}) end");
 		return text.ToString();
 	}
@@ -133,12 +137,17 @@ public static class Engine_UiModMenuCommand
 	/// The guest command line that raises <c>ModMenuRow</c>: <c>menu_row &lt;player&gt; &lt;menu&gt;
 	/// &lt;row&gt; &lt;mod&gt; &lt;command&gt; &lt;button&gt;</c>. Words are space-separated, so a space
 	/// in a name becomes '_'; an empty name is '-'. The row's own command (a row action's trailing
-	/// field) crosses base64, since it carries any character; '-' for none.
+	/// field) crosses base64, since it carries any character; '-' for none. The row's typed subject
+	/// (<see cref="Refii.Mods.ModRowSubject"/>) trails as kind, definition and spell.
 	/// </summary>
 	public static string RowCommandLine(string menu, string row, int player, string mod,
-		string rowCommand = "", string button = "") =>
-		$"{RowCommandVerb} {player.ToString(CultureInfo.InvariantCulture)} {Word(menu)} {Word(row)} {Word(mod)} " +
-		$"{(string.IsNullOrEmpty(rowCommand) ? "-" : Convert.ToBase64String(Encoding.UTF8.GetBytes(rowCommand)))} {Word(button ?? string.Empty)}";
+		string rowCommand = "", string button = "")
+	{
+		Refii.Mods.ModRowSubject.Subject subject = Refii.Mods.ModRowSubject.Of(row, rowCommand);
+		return $"{RowCommandVerb} {player.ToString(CultureInfo.InvariantCulture)} {Word(menu)} {Word(row)} {Word(mod)} " +
+			$"{(string.IsNullOrEmpty(rowCommand) ? "-" : Convert.ToBase64String(Encoding.UTF8.GetBytes(rowCommand)))} {Word(button ?? string.Empty)} " +
+			$"{Word(subject.Kind)} {Word(subject.Definition)} {subject.Spell.ToString(CultureInfo.InvariantCulture)}";
+	}
 
 	private static string Word(string text)
 	{

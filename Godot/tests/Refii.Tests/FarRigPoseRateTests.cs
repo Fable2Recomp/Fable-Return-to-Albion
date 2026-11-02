@@ -194,6 +194,7 @@ public sealed class FarRigPoseRateTests
 		};
 
 		bool[] mask = Refii.Animations.Engine_ClipAnimator.ComputeFacialBoneMask(
+			new Refii.Titles.Fable2.Fable2Rig(),
 			boneNames,
 			boneParents,
 			out int headBone,

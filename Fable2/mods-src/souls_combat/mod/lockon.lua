@@ -14,21 +14,26 @@ local Setting, IsPlayer = C.Setting, C.IsPlayer
 -- the player's look-at flag, what a held LT states). Keying off the game's own look-at flag stuck
 -- locked: it is set only by a camera event on LT down, not delivered again while the lock holds.
 --
---   game_action — LT is 49, TARGET_LOCK_SET, on press and 50, TARGET_LOCK_RELEASE, on release. The
---     receiver has no case for 49, and its case 50 already skips the lock removal while the force
---     byte is set (0x826e5db4): neither is cancelled; the press flips our lock.
+--   game_action — LT is ACTION_LOCK_SET on press and ACTION_LOCK_RELEASE on release. The
+--     receiver has no case for the set, and its case for the release already skips the lock
+--     removal while the force byte is set (0x826e5db4): neither is cancelled; the press flips our
+--     lock.
 --   look_at_button — every write of the player's look-at flag (the camera's press event, and the
 --     API's own lock and release) arrives with `down` writable, so the flag always equals our
 --     lock, whoever asks.
---   tick — THE LOCK ENDS WHEN THERE IS NOTHING TO LOCK. The game never clears the force byte: the
---     targeting update re-selects within 8 ticks of the old target dying, and with none found only
---     drops player mode 4, leaving the camera locked on nothing. So the lock drops after
---     lock_drop_seconds without a valid target: the one Refii.locked_target reports, living
---     (Refii.living: in the world and, for a creature, not killed — the selector's own test).
---     Each tick the lock holds, Refii.wheel_switches_target states that on the keyboard and mouse
---     the wheel switches target (up the next left, down the next right) and moving the mouse never
---     does; a pad's right-stick flick is untouched. The statement holds for the guest tick it is
---     made on and the two after, and this tick runs every guest tick, so it never lapses.
+--   lock_lost — THE LOCK ENDS WHEN THERE IS NOTHING TO LOCK. The game never clears the force
+--     byte: when it drops its TARGET_LOCK mode (the target died or left reach) the targeting update
+--     re-selects within 8 ticks while the byte holds, and with none found leaves the camera locked
+--     on nothing. So a drop, and a toggle that finds nothing, gives the lock lock_drop_seconds
+--     (Refii.after) to hold a valid target — the one Refii.locked_target reports, living
+--     (Refii.living: in the world and, for a creature, not killed — the selector's own test) —
+--     and releases it otherwise.
+--   Refii.wheel_switches_target(hero, true) — while the lock holds, on the keyboard and mouse the
+--     wheel switches target (up the next left, down the next right) and moving the mouse never
+--     does; a pad's right-stick flick is untouched. The statement is sticky: the engine restates
+--     it every tick until it is turned off or the player holds no target, so it is made again
+--     whenever the lock's target changes (target_changed) and turned off when the lock is.
+--   hero_gone — a hero that stopped existing (a level change, a partner leaving) holds no lock.
 --
 -- IN A CUTSCENE LT IS THE GAME'S. A full cutscene, a foreground interactive cutscene, or a camera
 -- the game gave held LT (a conversation's talking camera on the speaker, a quest's look-at) is
@@ -38,9 +43,7 @@ local Setting, IsPlayer = C.Setting, C.IsPlayer
 -- lock stays released afterwards; LT toggles again once the cutscene has ended.
 ----------------------------------------------------------------------------------------------------
 
-local kTargetLockSet = 49
-
--- The heroes currently locked, by handle: how long each has been locked on nothing.
+-- The heroes currently locked, by handle.
 S.Locked = {}
 
 local function IsLocked(hero)
@@ -59,7 +62,12 @@ local function HasValidTarget(p)
 	return target ~= nil and Refii.living(target)
 end
 
--- Puts the game's lock where ours says, through the API: the force byte and the look-at flag.
+local function DropKey(hero)
+	return "souls_combat.lock_drop." .. hero
+end
+
+-- Puts the game's lock where ours says, through the API: the force byte and the look-at flag,
+-- and the wheel's statement with them.
 local function ApplyLock(hero, on)
 	local p = Refii.player_of(hero)
 	if not IsPlayer(p) then
@@ -70,49 +78,65 @@ local function ApplyLock(hero, on)
 	else
 		Refii.release_lock(p)
 	end
+	Refii.wheel_switches_target(hero, on)
 end
 
-Refii.on("tick", function(e)
-	for hero, without in pairs(S.Locked) do
+local function Unlock(hero, why)
+	S.Locked[hero] = nil
+	Refii.cancel(DropKey(hero))
+	ApplyLock(hero, false)
+	Refii.log("Souls Combat: lock-on OFF (" .. why .. ")")
+end
+
+-- lock_drop_seconds from now, the lock ends unless it holds a valid target.
+local function ReleaseIfNothingToLock(hero)
+	Refii.after(Setting("lock_drop_seconds", 0.5), function()
+		if not IsLocked(hero) then
+			return
+		end
 		local p = Refii.player_of(hero)
 		if not IsPlayer(p) then
-			-- The hero itself is gone (a level change); nothing to release on.
 			S.Locked[hero] = nil
-		else
-			Refii.wheel_switches_target(hero)
-			if HasValidTarget(p) then
-				S.Locked[hero] = 0
-			else
-				without = without + e.seconds
-				if without >= Setting("lock_drop_seconds", 0.5) then
-					S.Locked[hero] = nil
-					ApplyLock(hero, false)
-					Refii.log("Souls Combat: lock-on OFF (no target)")
-				else
-					S.Locked[hero] = without
-				end
-			end
+		elseif not HasValidTarget(p) then
+			Unlock(hero, "no target")
 		end
+	end, DropKey(hero))
+end
+
+Refii.on("game_action", function(e)
+	if e.action ~= Refii.ACTION_LOCK_SET or InCutscene(e.hero) then
+		return
+	end
+	if IsLocked(e.hero) then
+		Unlock(e.hero, "toggle")
+		return
+	end
+	S.Locked[e.hero] = true
+	ApplyLock(e.hero, true)
+	ReleaseIfNothingToLock(e.hero)
+	Refii.log("Souls Combat: lock-on ON")
+	-- The release ends nothing while locked: the game's own case honours the force byte, and the
+	-- look-at flag is held by the handler below.
+end)
+
+Refii.on("lock_lost", function(e)
+	if Refii.event_replica() or not IsLocked(e.hero) then
+		return
+	end
+	ReleaseIfNothingToLock(e.hero)
+end)
+
+Refii.on("target_changed", function(e)
+	if e.target ~= 0 and IsLocked(e.hero) and not Refii.event_replica() then
+		Refii.wheel_switches_target(e.hero, true)
 	end
 end)
 
-Refii.on("game_action", function(e)
-	if e.action ~= kTargetLockSet or InCutscene(e.hero) then
-		return
-	end
-	local on = not IsLocked(e.hero)
-	if on then
-		S.Locked[e.hero] = 0
-	else
+Refii.on("hero_gone", function(e)
+	if IsLocked(e.hero) then
 		S.Locked[e.hero] = nil
+		Refii.cancel(DropKey(e.hero))
 	end
-	ApplyLock(e.hero, on)
-	if on then
-		Refii.wheel_switches_target(e.hero)
-	end
-	Refii.log("Souls Combat: lock-on " .. (on and "ON" or "OFF"))
-	-- The release (50) ends nothing while locked: the game's own case honours the force byte, and
-	-- the look-at flag is held by the handler below.
 end)
 
 -- The flag is the lock, whoever asks — the camera's press event included. In a cutscene the flag
@@ -132,9 +156,7 @@ Refii.on("cutscene", function(e)
 	end
 	for hero in pairs(S.Locked) do
 		if e.player == 0 or Refii.player_of(hero) == e.player then
-			S.Locked[hero] = nil
-			ApplyLock(hero, false)
-			Refii.log("Souls Combat: lock-on OFF (cutscene)")
+			Unlock(hero, "cutscene")
 		end
 	end
 end)

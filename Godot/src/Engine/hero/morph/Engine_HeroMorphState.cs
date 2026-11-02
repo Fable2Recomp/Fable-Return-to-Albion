@@ -82,7 +82,8 @@ public static class Engine_HeroMorphState
                 return age < 30 ? 0.0f : age > 60 ? 1.0f : (age - 30) * 0.033333335f;
             }
             default:
-                return 0.0f;
+                // A mod's own type (Engine_ModMorphs): the editor has no player, so the declared default.
+                return Engine_ModMorphs.Peek(type)?.Default ?? 0.0f;
         }
     }
 

@@ -175,11 +175,13 @@ public static class ModRemount
 
 		// The readers the main thread walks every frame, reset on it.
 		ModInput.Reload();
+		Refii.Hero.Engine_ModMorphs.Reload();
 		Refii.Fx.Engine_FxRecipes.Reload();
 		Refii.Core.Engine_TitleGame.Active.ReloadModData();
 		Refii.Ui.Engine_UiTemplates.Reload();
 		report.Refreshed.Add("settings (settings.json), pushed to the game again; the player's choices and live overrides stand");
 		report.Refreshed.Add("input bindings (input.json)");
+		report.Refreshed.Add("mod morphs (morphs.json): the Mirror's sliders and the weights the morph hook answers; a GDB record's new MorphTargets pair reaches a hero only when it is built again");
 		report.Refreshed.Add("FX recipes (fx/recipes.json), re-dressed on the next frame");
 		report.Refreshed.Add("spell and ability pages");
 		report.Refreshed.Add("menu and screen templates (ui/templates.json); a screen already open takes them when it next opens");

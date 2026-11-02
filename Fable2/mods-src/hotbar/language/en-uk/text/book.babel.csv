@@ -7,6 +7,3 @@ HOTBAR_KIND_FOOD,Food
 HOTBAR_KIND_POTIONS,Potions
 HOTBAR_KIND_ITEMS,Other items
 HOTBAR_KIND_CLEAR,Empty the slot
-HOTBAR_PICK,Choose
-HOTBAR_MORE,More...
-HOTBAR_NONE,Nothing to put here

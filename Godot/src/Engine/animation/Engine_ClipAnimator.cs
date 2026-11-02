@@ -501,16 +501,17 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	private readonly HashSet<uint> _extraRunners = new();
 	private readonly List<Channel> _overlays = new();
 
-	/// <summary>Shadow_Hip's model bone, or -1; its children bar Shadow_SpineControl.</summary>
+	/// <summary>The title's rigs: bones by role, the face, the pick's rules. Read once, at construction.</summary>
+	private readonly Engine_TitleRig _titleRig;
+
+	/// <summary>The title's hip bone (<see cref="Engine_TitleRig.RigRole.Hip"/>), or -1.</summary>
 	private int _hipBone = -1;
 
-	private readonly List<int> _hipChildren = new();
+	/// <summary>The guest's ready flag for hip compensation (see <see cref="HipCompensation"/>); false compensates nothing.</summary>
+	private readonly bool _hipCompensates;
 
-	/// <summary>Animated humanoid happy/idle facial loop (`IdleHappy`, 7.67s), used as primary Host-driven ambient facial source when an NPC is in a body-only carry idle (`IdleHoldBeerLoop`, `SitHoldBeerLoop`).</summary>
-	private const uint PrimaryAmbientFaceClipKey = 0xE903635Fu;
-
-	/// <summary>Fallback humanoid standing idle clip (`IdleStand1`), used as ambient facial source when `IdleHappy` is not yet decoded.</summary>
-	private const uint DefaultAmbientFaceClipKey = 0xB742E730u;
+	/// <summary>The hip children an overlay rewrites, at most <see cref="HipChildSlots"/>, in the guest's bone order.</summary>
+	private readonly int[] _hipChildren = System.Array.Empty<int>();
 
 	private int _headBone = -1;
 	private int _faceRootBone = -1;
@@ -531,41 +532,13 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	public bool IsCharacterRig => _hasFacialRig || _skeleton.GetBoneCount() >= 20;
 
 	/// <summary>
-	/// Identifies all facial bones on <paramref name="skeleton"/>. In Godot <c>.mdl</c> rigs
-	/// (<c>CH_HeroMale_Morph_Body_Rig_Asset</c>), <c>"Shadow_FaceRoot"</c> is absent and all 62
-	/// facial bones (<c>"Shadow_jaw"</c> with lowercase <c>'j'</c>, <c>"Shadow_m_mouth_*"</c>,
-	/// <c>"Shadow_L_Eye"</c>, <c>"Shadow_R_Eye"</c>, etc.) are parented directly under
-	/// <c>"Shadow_Head"</c>. Excludes attachment dummies (<c>Focal_*</c>, <c>Carry_*</c>, <c>FX_*</c>)
-	/// and hair/ponytail/ear chains.
+	/// The facial bones of a rig, as <paramref name="rig"/>'s face names them
+	/// (<see cref="Engine_TitleRig.FaceRig"/>): every bone under the face root, else the head, that
+	/// carries the face's prefix and hangs off no non-facial branch. All false, every bone -1, when
+	/// the title has no face.
 	/// </summary>
 	public static bool[] ComputeFacialBoneMask(
-		Skeleton3D skeleton,
-		out int headBone,
-		out int faceRootBone,
-		out int jawBone,
-		out int leftEyeBone,
-		out int rightEyeBone)
-	{
-		int bones = skeleton.GetBoneCount();
-		var boneNames = new string[bones];
-		var boneParents = new int[bones];
-		for (int b = 0; b < bones; ++b)
-		{
-			boneNames[b] = skeleton.GetBoneName(b);
-			boneParents[b] = skeleton.GetBoneParent(b);
-		}
-
-		return ComputeFacialBoneMask(
-			boneNames,
-			boneParents,
-			out headBone,
-			out faceRootBone,
-			out jawBone,
-			out leftEyeBone,
-			out rightEyeBone);
-	}
-
-	public static bool[] ComputeFacialBoneMask(
+		Engine_TitleRig rig,
 		ReadOnlySpan<string> boneNames,
 		ReadOnlySpan<int> boneParents,
 		out int headBone,
@@ -581,26 +554,31 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		jawBone = -1;
 		leftEyeBone = -1;
 		rightEyeBone = -1;
+		if (rig.Face is not { } face)
+		{
+			return mask;
+		}
+
 		for (int b = 0; b < bones; ++b)
 		{
 			string name = boneNames[b];
-			if (string.Equals(name, "Shadow_Head", StringComparison.OrdinalIgnoreCase))
+			if (rig.Is(name, Engine_TitleRig.RigRole.Head))
 			{
 				headBone = b;
 			}
-			else if (string.Equals(name, "Shadow_FaceRoot", StringComparison.OrdinalIgnoreCase))
+			else if (rig.Is(name, Engine_TitleRig.RigRole.FaceRoot))
 			{
 				faceRootBone = b;
 			}
-			else if (string.Equals(name, "Shadow_jaw", StringComparison.OrdinalIgnoreCase))
+			else if (rig.Is(name, Engine_TitleRig.RigRole.Jaw))
 			{
 				jawBone = b;
 			}
-			else if (string.Equals(name, "Shadow_L_Eye", StringComparison.OrdinalIgnoreCase))
+			else if (rig.Is(name, Engine_TitleRig.RigRole.LeftEye))
 			{
 				leftEyeBone = b;
 			}
-			else if (string.Equals(name, "Shadow_R_Eye", StringComparison.OrdinalIgnoreCase))
+			else if (rig.Is(name, Engine_TitleRig.RigRole.RightEye))
 			{
 				rightEyeBone = b;
 			}
@@ -620,7 +598,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			}
 
 			string boneName = boneNames[b];
-			if (!boneName.StartsWith("Shadow_", StringComparison.OrdinalIgnoreCase) &&
+			if (!boneName.StartsWith(face.BonePrefix, StringComparison.OrdinalIgnoreCase) &&
 				b != faceRootBone)
 			{
 				continue;
@@ -638,11 +616,17 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 				}
 
 				string pName = boneNames[p];
-				if (pName.Contains("Ponytail", StringComparison.OrdinalIgnoreCase) ||
-					pName.Contains("Hair", StringComparison.OrdinalIgnoreCase) ||
-					pName.Contains("Ear", StringComparison.OrdinalIgnoreCase))
+				foreach (string branch in face.NonFacialBranches)
 				{
-					nonFacialBranch = true;
+					if (pName.Contains(branch, StringComparison.OrdinalIgnoreCase))
+					{
+						nonFacialBranch = true;
+						break;
+					}
+				}
+
+				if (nonFacialBranch)
+				{
 					break;
 				}
 
@@ -663,6 +647,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		_skeleton = skeleton;
 		_skeletonName = skeletonName;
 		_modelToGuest = modelToGuest;
+		_titleRig = Refii.Core.Engine_TitleGame.Active.Rig;
 		int bones = skeleton.GetBoneCount();
 		_finalPosition = new Vector3[bones];
 		_finalRotation = new Quaternion[bones];
@@ -704,13 +689,10 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			_parents[b] = skeleton.GetBoneParent(b);
 			string boneName = skeleton.GetBoneName(b);
 			boneNames[b] = boneName;
-			if (string.Equals(boneName, "Shadow_Hip", StringComparison.OrdinalIgnoreCase))
-			{
-				_hipBone = b;
-			}
 		}
 
 		_isFacialBone = ComputeFacialBoneMask(
+			_titleRig,
 			boneNames,
 			_parents,
 			out _headBone,
@@ -719,34 +701,82 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			out _leftEyeBone,
 			out _rightEyeBone);
 		_hasFacialRig = _jawBone >= 0 && (_leftEyeBone >= 0 || _rightEyeBone >= 0);
-		if (_jawBone >= 0)
+		if (_titleRig.Face is { } face)
 		{
-			Vector3 euler = _restRotation[_jawBone].GetEuler();
-			_neutralJawRotation = Quaternion.FromEuler(new Vector3(euler.X, euler.Y, Mathf.DegToRad(4.5f)));
-		}
-		if (_leftEyeBone >= 0)
-		{
-			Vector3 euler = _restRotation[_leftEyeBone].GetEuler();
-			_neutralLeftEyeRotation = Quaternion.FromEuler(new Vector3(euler.X, euler.Y, Mathf.DegToRad(-90.0f)));
-		}
-		if (_rightEyeBone >= 0)
-		{
-			Vector3 euler = _restRotation[_rightEyeBone].GetEuler();
-			_neutralRightEyeRotation = Quaternion.FromEuler(new Vector3(euler.X, euler.Y, Mathf.DegToRad(-90.0f)));
-		}
-
-		if (_hipBone >= 0)
-		{
-			for (int b = 0; b < bones; ++b)
+			if (_jawBone >= 0)
 			{
-				if (_parents[b] == _hipBone && skeleton.GetBoneName(b) != "Shadow_SpineControl")
-				{
-					_hipChildren.Add(b);
-				}
+				Vector3 euler = _restRotation[_jawBone].GetEuler();
+				_neutralJawRotation = Quaternion.FromEuler(new Vector3(euler.X, euler.Y, Mathf.DegToRad(face.JawRollDegrees)));
+			}
+			if (_leftEyeBone >= 0)
+			{
+				Vector3 euler = _restRotation[_leftEyeBone].GetEuler();
+				_neutralLeftEyeRotation = Quaternion.FromEuler(new Vector3(euler.X, euler.Y, Mathf.DegToRad(face.EyeRollDegrees)));
+			}
+			if (_rightEyeBone >= 0)
+			{
+				Vector3 euler = _restRotation[_rightEyeBone].GetEuler();
+				_neutralRightEyeRotation = Quaternion.FromEuler(new Vector3(euler.X, euler.Y, Mathf.DegToRad(face.EyeRollDegrees)));
 			}
 		}
 
+		_hipBone = _titleRig.Bone(boneNames, Engine_TitleRig.RigRole.Hip);
+		_hipCompensates = HipCompensation(
+			_hipBone, _titleRig.Bone(boneNames, Engine_TitleRig.RigRole.SpineControl), _parents, modelToGuest,
+			out _hipChildren);
+
 		_boneCandidates = Engine_AnimBuilder.BoneCandidates(skeleton);
+	}
+
+	/// <summary>The guest's hip-child slots: six words from skeleton+116 (Fable 2) / +128 (Fable 3).</summary>
+	public const int HipChildSlots = 6;
+
+	/// <summary>
+	/// The hip compensation the guest's skeleton states, resolved once per rig.
+	/// </summary>
+	/// <remarks>
+	/// Fable 2 `sub_8229CD30` / Fable 3 `sub_82272918`, identical: resolve the hip and the spine
+	/// control by name; if EITHER is missing the ready flag (+105 / +117) is cleared and the
+	/// overlay blend (`sub_8220CB18` 0x8220CC14, `sub_82206348` 0x822067A8) compensates nothing —
+	/// not even the hip's own translation. Otherwise the six slots are filled with -1 and the
+	/// skeleton's parent table is walked in bone order (0x8229CE10 / 0x822729F8), taking each bone
+	/// whose parent is the hip and that is not the spine control, stopping at the sixth
+	/// (`cmpwi r7, 6; beq` 0x8229CE3C / 0x82272A24). The blend's loop rewrites the slots up to the
+	/// first -1, at most six (0x8220CDC4..0x8220CE24, 0x8220697C..0x82206B1C).
+	///
+	/// "Bone order" is the GUEST's skeleton: children are ordered by <paramref name="modelToGuest"/>,
+	/// and a bone the guest's skeleton lacks is neither a hip, a spine control, nor a slot.
+	/// </remarks>
+	/// <returns>The ready flag; <paramref name="children"/> is empty when it is false.</returns>
+	public static bool HipCompensation(
+		int hip, int spineControl, IReadOnlyList<int> parents, IReadOnlyList<int> modelToGuest, out int[] children)
+	{
+		children = System.Array.Empty<int>();
+		static int Guest(IReadOnlyList<int> map, int bone) => bone >= 0 && bone < map.Count ? map[bone] : -1;
+		if (Guest(modelToGuest, hip) < 0 || Guest(modelToGuest, spineControl) < 0)
+		{
+			return false;
+		}
+
+		var found = new List<(int Guest, int Bone)>();
+		for (int b = 0; b < parents.Count; ++b)
+		{
+			int g = Guest(modelToGuest, b);
+			if (parents[b] == hip && b != spineControl && g >= 0)
+			{
+				found.Add((g, b));
+			}
+		}
+
+		found.Sort((x, y) => x.Guest.CompareTo(y.Guest));
+		int count = Math.Min(found.Count, HipChildSlots);
+		children = new int[count];
+		for (int i = 0; i < count; ++i)
+		{
+			children[i] = found[i].Bone;
+		}
+
+		return true;
 	}
 
 	/// <summary>Whether this animator drives that skeleton — the identity a re-created rig fails.</summary>
@@ -1111,7 +1141,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			ObservePlayhead(channel, leaf, tick, drawTick, !IsCharacterRig);
 		}
 
-		if (_hasFacialRig)
+		if (_hasFacialRig && _titleRig.Face is { } face)
 		{
 			if (!_ambientFaceTimeSeeded)
 			{
@@ -1121,14 +1151,14 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 			if (_ambientFaceClip is null || !_ambientFaceClip.HasAnimatedFace)
 			{
-				Built? primaryFace = Ensure(PrimaryAmbientFaceClipKey, out _);
+				Built? primaryFace = Ensure(face.PrimaryClip, out _);
 				if (primaryFace is { HasPosedFace: true })
 				{
 					_ambientFaceClip = primaryFace;
 				}
 				else if (_ambientFaceClip is null)
 				{
-					Built? defaultFace = Ensure(DefaultAmbientFaceClipKey, out _);
+					Built? defaultFace = Ensure(face.FallbackClip, out _);
 					if (defaultFace is { HasPosedFace: true })
 					{
 						_ambientFaceClip = defaultFace;
@@ -1617,9 +1647,9 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 		int Order(uint uid) => _recordOrder.GetValueOrDefault(uid, int.MaxValue);
 
-		// FABLE 3 STATES ITS WHOLE PICK (Fable3/src/hostbridge/src/anim_feed.cpp): the top, every
+		// A TITLE THAT STATES ITS WHOLE PICK (Engine_TitleRig.StatesPartnerSet) names the top, every
 		// member of its partner SET, and each one's share of the fold as its weight pair.
-		bool statesPartnerSet = Refii.Core.Engine_Title.Active == Refii.Core.Engine_Title.Fable3;
+		bool statesPartnerSet = _titleRig.StatesPartnerSet;
 
 		// The runner is picked deterministically: if an explicit guest IsRunner leaf exists, elect it;
 		// otherwise select by weight and list order.
@@ -1718,12 +1748,9 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			topShare = 1f;
 		}
 
-		// The guest's short-circuits. Fable 2 (`sub_82211660`): the top alone at 0.98333, the
-		// partner alone at 0.016667. Fable 3: no partner is built when `|w − 1| < 0.05`
-		// (`sub_821EB068`) and the crossfade node keeps one side when `min(w, 1 − w) ≤ 0.05`
-		// (`sub_8222AEF8` case 1, 0x8222b4e0).
-		if (topShare >= (statesPartnerSet ? 0.95f : 0.98333f)) topShare = 1f;
-		if (topShare <= (statesPartnerSet ? 0.05f : 0.016667f)) topShare = 0f;
+		// The guest's short-circuits, the title's (Engine_TitleRig.CrossfadeTopAlone / PartnerAlone).
+		if (topShare >= _titleRig.CrossfadeTopAlone) topShare = 1f;
+		if (topShare <= _titleRig.CrossfadePartnerAlone) topShare = 0f;
 
 		// How far the crossfade ratio moved in one frame; a step moves every bone by that
 		// fraction of the distance between two clips. Reported.
@@ -1955,13 +1982,15 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			float effectiveLayerWeight = recordCap > 1e-5f ? Mathf.Min(layerWeight, recordCap) : layerWeight;
 			float w = Mathf.Clamp(effectiveLayerWeight, 0f, 1f);
 
-			// THE HIP'S CHILDREN STAY PUT. When an overlay's mask covers Shadow_Hip the guest
-			// (`sub_8220CB18`, 0x8220CC20..) remembers the hip's local transform, applies the
-			// blend, keeps the OLD translation on the new hip, and rewrites every hip child but
-			// Shadow_SpineControl so its world placement is unchanged — the spine follows the
-			// overlay's hip rotation, the legs do not swing with it.
+			// THE HIP'S CHILDREN STAY PUT. When an overlay's mask covers the hip the guest
+			// (Fable 2 `sub_8220CB18`, 0x8220CC20..; Fable 3 `sub_82206348`, 0x822067A8..)
+			// remembers the hip's local transform, applies the blend, keeps the OLD translation on
+			// the new hip, and rewrites every hip child but the spine control so its world
+			// placement is unchanged — the spine follows the overlay's hip rotation, the legs do
+			// not swing with it. Gated on the guest's ready flag and limited to its child slots
+			// (see HipCompensation).
 			int hip = _hipBone;
-			bool compensateHip = hip >= 0 && (mask.Length == 0 || (hip < _modelToGuest.Length &&
+			bool compensateHip = _hipCompensates && (mask.Length == 0 || (hip < _modelToGuest.Length &&
 				_modelToGuest[hip] >= 0 && _modelToGuest[hip] < mask.Length && mask[_modelToGuest[hip]] != 0));
 			Transform3D hipOld = compensateHip ? PoseOf(hip) : Transform3D.Identity;
 
@@ -2078,13 +2107,10 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		bool shadowNow = Refii.Entities.Engine_ShadowSkeletons.WriteNow(_skeleton, out Skeleton3D? shadow);
 		bool shadowAll = shadowNow && _shadowStale;
 		// The skeleton takes rotation and translation; the scale binds through the skin (see
-		// ApplyMorph), and only when the record was re-read. `_finalScale` is the morph's factor
-		// (One without one); the bone's OWN scale under it is the guest's, as its pose stated it
-		// (Engine_EntitySkeleton.GuestScale) — a Fable 3 rig collapses helper bones to 3e-5 and
-		// scales others to 4.5, and binding One over those un-collapses them: the hand spike and
-		// the foot lump of the first clip-driven run. Fable 2's own scales are One, so its skin
-		// takes exactly the morph factor as before.
-		if (_scaleDirty && Rig is { } rig)
+		// ApplyMorph), and only when the record was re-read. See SkinScale for which of the
+		// morph factor (`_finalScale`) and the guest's stated lane (Engine_EntitySkeleton.GuestScale)
+		// a bone binds with.
+		if (Rig is { } rig && (_scaleDirty || rig.GuestScaleCaptures != _laneCapturesSeen))
 		{
 			_skinScale ??= new Vector3[bones];
 			if (_skinScale.Length != bones)
@@ -2092,9 +2118,31 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 				_skinScale = new Vector3[bones];
 			}
 
+			// The record a lane was folded with: the one in force when the lane was taken, known
+			// once the record has been read (a lane taken before the first read already carries
+			// the guest's record, so it binds as stated until then).
+			if (rig.GuestScaleCaptures != _laneCapturesSeen)
+			{
+				_laneCapturesSeen = rig.GuestScaleCaptures;
+				_laneRecordStale = true;
+			}
+
+			if (_laneRecordStale && !double.IsNegativeInfinity(_morphReadAt))
+			{
+				if (_laneRecord is null || _laneRecord.Length != bones)
+				{
+					_laneRecord = new Vector3[bones];
+				}
+
+				System.Array.Copy(_finalScale, _laneRecord, bones);
+				_laneRecordStale = false;
+			}
+
 			for (int b = 0; b < bones; ++b)
 			{
-				_skinScale[b] = rig.GuestScale(b) * _finalScale[b];
+				_skinScale[b] = _laneCapturesSeen == 0
+					? _finalScale[b]
+					: _laneRecordStale ? rig.GuestScale(b) : SkinScale(rig.GuestScale(b), _laneRecord![b], _finalScale[b]);
 			}
 
 			rig.SetBoneScales(_skinScale);
@@ -2855,7 +2903,34 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 
 	private bool _morphWasApplied;
 
-	/// <summary>The skin's scale per bone: the guest's own times the morph factor, composed on each push.</summary>
+	/// <summary>
+	/// One bone's skin scale: the guest's stated pose lane with the record it was folded with
+	/// swapped for the record in force now. The lane ALREADY CARRIES the record on both titles —
+	/// Fable 2 `sub_822BF9B8` (0x822bfb20 the lane, 0x822bfb34 `vmulfp128` by the record's `sc`,
+	/// 0x822bfb3c stored back to +0x20; bitwise `sc` on all 74 scaled bones of a live hero, One
+	/// on the other 86) and Fable 3 `sub_8222AB68` (0x8222ac80, stored at 0x8222ac88) — so
+	/// `lane * record` bound `sc²`. Dividing out the record at capture keeps the clip's own part
+	/// of the lane: One on Fable 2, a Fable 3 helper's collapse (3e-5) or 4.5x even where that
+	/// title's strong/tall records also scale the bone (hat, ponytail, pigtail chains).
+	/// </summary>
+	internal static Vector3 SkinScale(Vector3 guestLane, Vector3 recordAtCapture, Vector3 recordNow) =>
+		new(Swap(guestLane.X, recordAtCapture.X, recordNow.X),
+			Swap(guestLane.Y, recordAtCapture.Y, recordNow.Y),
+			Swap(guestLane.Z, recordAtCapture.Z, recordNow.Z));
+
+	private static float Swap(float lane, float atCapture, float now) =>
+		Mathf.Abs(atCapture) > 1e-6f ? lane / atCapture * now : lane;
+
+	/// <summary>The record in force when the rig's current lanes were taken (see <see cref="SkinScale"/>).</summary>
+	private Vector3[]? _laneRecord;
+
+	/// <summary>The rig's <c>GuestScaleCaptures</c> that <see cref="_laneRecord"/> belongs to.</summary>
+	private int _laneCapturesSeen;
+
+	/// <summary>Set when new lanes were taken and the record they were folded with is not yet paired.</summary>
+	private bool _laneRecordStale;
+
+	/// <summary>The skin's scale per bone, composed by <see cref="SkinScale"/> on each push.</summary>
 	private Vector3[]? _skinScale;
 
 	/// <summary>Set when <see cref="_finalScale"/> was re-read, so the rig's skin takes it once.</summary>

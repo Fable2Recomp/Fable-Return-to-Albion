@@ -109,34 +109,38 @@ public class ModInputUiTests
     }
 
     [TestCase]
-    public void APageReadsAndWritesTheShippedKeysFile()
+    public void AControlsPageRowReadsAndWritesTheShippedKeysFile()
     {
-        var page = new ModInputUi.Page("mymod", "My Mod", ModInputUi.RowsFor(Dash()).ToList());
-        AssertThat(page.Name).IsEqual("options:controls:mymod");
-        AssertThat(page.Count).IsEqual(2);
-        AssertThat(page.RowTitle(1)).IsEqual("Dash (pad)");
+        // The mod's rows sit on the one Controls page behind its "press a key" position.
+        Refii.Ui.Engine_UiControlsPage.ModLine[] rows = ModInputUi.RowsFor(Dash())
+            .Select(row => new Refii.Ui.Engine_UiControlsPage.ModLine(row)).ToArray();
+        AssertThat(rows.Length).IsEqual(2);
+        AssertThat(rows[1].Label).IsEqual("Dash (pad)");
+        AssertThat(rows[1].Choices).IsEqual(1 + 2 + ModInputUi.PadCandidates.Count);
 
         var stored = new Dictionary<string, string> { ["pad_mymod.dash"] = "RB" };
-        int[] read = page.Read(key => stored.TryGetValue(key, out string? v) ? v : string.Empty);
-        AssertThat(read[0]).IsEqual(ModInputUi.DefaultIndex);
-        AssertThat(read[1]).IsEqual(2 + ModInputUi.PadCandidates.ToList().IndexOf("RB"));
+        string Read(string key) => stored.TryGetValue(key, out string? v) ? v : string.Empty;
+        AssertThat(rows[0].IndexOfStored(Read)).IsEqual(1 + ModInputUi.DefaultIndex);
+        AssertThat(rows[1].IndexOfStored(Read)).IsEqual(1 + 2 + ModInputUi.PadCandidates.ToList().IndexOf("RB"));
 
         // Committing: a row at its default removes its key, the others write their names.
-        IReadOnlyDictionary<string, string?> values = page.Values(row => row == 0 ? ModInputUi.DefaultIndex : ModInputUi.UnboundIndex);
+        var values = new Dictionary<string, string?>();
+        rows[0].Store(1 + ModInputUi.DefaultIndex, values);
+        rows[1].Store(1 + ModInputUi.UnboundIndex, values);
         AssertThat(values["key_mymod.dash"]).IsNull();
         AssertThat(values["pad_mymod.dash"]).IsEqual("none");
     }
 
     [TestCase]
-    public void OnePagePerModWithSomethingToRebind()
+    public void OneSectionPerModWithSomethingToRebind()
     {
-        IReadOnlyList<ModInputUi.Page> pages = ModInputUi.Pages(
+        IReadOnlyList<ModInputUi.Section> sections = ModInputUi.Sections(
             new[] { Dash("alpha"), Look("beta"), Aim("gamma"), Dash("alpha") with { Name = "alpha.roll", Label = "Roll" } },
             mod => mod.ToUpperInvariant());
-        AssertThat(pages.Select(p => p.Mod).ToArray()).ContainsExactly("alpha", "gamma");
-        AssertThat(pages[0].Title).IsEqual("ALPHA");
-        AssertThat(pages[0].Count).IsEqual(4);
-        AssertThat(pages[1].Count).IsEqual(1);
+        AssertThat(sections.Select(p => p.Mod).ToArray()).ContainsExactly("alpha", "gamma");
+        AssertThat(sections[0].Title).IsEqual("ALPHA");
+        AssertThat(sections[0].Rows.Count).IsEqual(4);
+        AssertThat(sections[1].Rows.Count).IsEqual(1);
     }
 
     [TestCase]
@@ -185,19 +189,17 @@ public class ModInputUiTests
             return;
         }
 
-        // The page is registered under its command prefix, its rows are a menu source, the
-        // options list folds the game's Controls row with that source, and the rebinds are read
-        // where the shipped keys are (every two seconds from refii.toml, at once after a commit).
+        // The one Controls page is registered under its command, the options list folds the
+        // game's Controls row with a row opening it, and the rebinds are read where the shipped
+        // keys are (every two seconds from refii.toml, at once after a commit).
         string pages = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "ui", "Engine_UiHostOptionsPage.cs"));
-        AssertThat(pages.Contains("Register(Refii.Mods.ModInputUi.OpenCommandPrefix, Refii.Mods.ModInputUi.PageFor);", StringComparison.Ordinal)).IsTrue();
-        string sources = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "ui", "Engine_UiMenuSources.cs"));
-        AssertThat(sources.Contains("[Refii.Mods.ModInputUi.SourceName] = Refii.Mods.ModInputUi.Rows,", StringComparison.Ordinal)).IsTrue();
+        AssertThat(pages.Contains("Register(Engine_UiControlsPage.OpenCommand, _ => Engine_UiControlsPage.Page);", StringComparison.Ordinal)).IsTrue();
         string templates = File.ReadAllText(Path.Combine(root, "Godot", "src", "Titles", "Fable2", "ui", "Engine_UiGameTemplates.cs"));
         AssertThat(templates.Contains("\"name\": \"ControlsSettings\"", StringComparison.Ordinal)).IsTrue();
-        AssertThat(templates.Contains("\"source\": \"mod-controls\"", StringComparison.Ordinal)).IsTrue();
+        AssertThat(templates.Contains("\"command\": \"" + Refii.Ui.Engine_UiControlsPage.OpenCommand + "\"", StringComparison.Ordinal)).IsTrue();
         string input = File.ReadAllText(Path.Combine(root, "Godot", "src", "game", "GameInput.cs"));
         AssertThat(input.Contains("Refii.Mods.ModInput.ReadBindings(values);", StringComparison.Ordinal)).IsTrue();
-        string ui = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_ModInputUi.cs"));
+        string ui = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "ui", "Engine_UiControlsPage.cs"));
         AssertThat(ui.Contains("Engine_UiScreenActions.WriteSettings(write, remove)", StringComparison.Ordinal)).IsTrue();
         // The limit is gone from the guide, and the guide says how to rebind.
         string folder = Path.Combine(root, "Godot", Refii.Mods.ModGuide.ProjectFolder);

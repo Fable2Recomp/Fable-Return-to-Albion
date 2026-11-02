@@ -163,6 +163,19 @@ public sealed class Engine_UiExpandableMenu
 		/// <summary>An entry the guest knows nothing about; activating it is complete host-side.</summary>
 		public bool HostOnly;
 
+		/// <summary>
+		/// MOD CONTENT: a row a mod (or the player's templates file) put on this list, which the
+		/// guest has no record for. It is never stated to the guest as its highlighted row: every
+		/// list screen's C++ reads the highlight through `sub_826C1B50`, and a handler can feed
+		/// the id to a lookup whose failure it ignores — the abilities edge `sub_826C3C78` drops
+		/// `sub_82896900`'s result (0x826c3d58) and indexes with the unset Type (0x824e4f5c). The
+		/// row is otherwise as stated: it activates, commits and runs row actions exactly as before.
+		/// </summary>
+		public bool FromMod;
+
+		/// <summary>Whether this row may be stated to the guest as its highlighted row: neither host-only nor a mod's.</summary>
+		public bool GuestHighlightable => !HostOnly && !FromMod;
+
 		/// <summary>`GetMenuItemDepth` counts parent links; a root entry is depth 1.</summary>
 		public int Depth
 		{

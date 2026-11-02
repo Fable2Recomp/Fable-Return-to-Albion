@@ -664,7 +664,11 @@ extern "C" {
 ///     RefiiHostSetGameModulePath — and RefiiNetGamerCard (the player an orb's Interact asked the
 ///     guide's gamer card for, resolved to a peer for the shell's Join / Invite question;
 ///     RefiiNetPeerAction's join also takes a non-friend's session from the shard beat).
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 230; }
+/// 231 adds RefiiHostGetPlayerText — a player store's TEXT value, read synchronously beside
+///     RefiiHostGetPlayerValue (RefiiHost.player_text / player_value_hash).
+/// 232 adds RefiiHostModVerdictRead — a read-only query answered at once from inside a Godot
+///     verdict handler, on the guest thread while the payload waits in the seam (RefiiHost.read).
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 232; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveRoot(char* output, uint32_t capacity) {
     auto* state = rex::system::kernel_state();
@@ -750,6 +754,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMouseLook(double* out_values, uint32_
 /// A player's store value (core/player_state.h): 1 with it in `out`, 0 when the key is unset.
 REFII_HOST_ABI_EXPORT int32_t RefiiHostGetPlayerValue(int32_t player, const char* key, float* out) {
     return key != nullptr ? refii_bridge_player_get(player, key, std::strlen(key), out) : 0;
+}
+
+
+/// A player's store TEXT (core/player_state.h): its length with the text in `out` (NUL-terminated,
+/// cut to `capacity`), -1 when the key holds no text.
+REFII_HOST_ABI_EXPORT int32_t RefiiHostGetPlayerText(int32_t player, const char* key, char* out, uint32_t capacity) {
+    return key != nullptr ? refii_bridge_player_get_text(player, key, std::strlen(key), out, capacity) : -1;
 }
 
 
@@ -1176,6 +1187,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostDrainModErrors(char* out, uint32_t capac
 /// The host's verdict handler for Godot scripts (null to remove), called on the guest thread.
 REFII_HOST_ABI_EXPORT void RefiiHostSetModVerdictHandler(refii_mod_verdict_fn handler) {
     refii_bridge_mod_set_verdict_handler(handler);
+}
+
+/// A read-only query verb and its words ("VERB ARGS...") answered at once into `out` as
+/// "ok=true|false,<fields>" — only from inside the verdict handler, on the guest thread; the length,
+/// REFII_MOD_READ_OUTSIDE anywhere else, REFII_MOD_READ_REFUSED for a verb that is not a read.
+REFII_HOST_ABI_EXPORT int32_t RefiiHostModVerdictRead(const char* line, size_t line_length, char* out, size_t capacity) {
+    return refii_bridge_mod_verdict_read(line, line_length, out, capacity);
 }
 
 /// Which event kinds the verdict handler is asked about: word 0 (bit = kind, kinds 0..63); the

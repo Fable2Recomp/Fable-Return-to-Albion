@@ -19,16 +19,19 @@ public class ModSettingsLuaTests
     [TestCase]
     public void TheAssignmentIsOneLineOfLua()
     {
-        AssertThat(ModSettings.LuaAssignment("souls_combat.swing_cost", 18.5f))
-            .IsEqual("if RefiiSettings then RefiiSettings[\"souls_combat.swing_cost\"] = 18.5 end");
-        AssertThat(ModSettings.LuaAssignment("spell_weaving.woven", 1f))
-            .IsEqual("if RefiiSettings then RefiiSettings[\"spell_weaving.woven\"] = 1 end");
+        // Through the game VM's Refii._setting_changed (which raises setting_changed), else — the
+        // front end's state — the table alone.
+        static string Assign(string key, string value) =>
+            "if Refii and Refii._setting_changed then Refii._setting_changed(\"" + key + "\", " + value +
+            ") elseif RefiiSettings then RefiiSettings[\"" + key + "\"] = " + value + " end";
+        AssertThat(ModSettings.LuaAssignment("souls_combat.swing_cost", 18.5f)).IsEqual(Assign("souls_combat.swing_cost", "18.5"));
+        AssertThat(ModSettings.LuaAssignment("spell_weaving.woven", 1f)).IsEqual(Assign("spell_weaving.woven", "1"));
         // A quote in a key is escaped; a key no one line can carry is refused; a non-number is 0.
-        AssertThat(ModSettings.LuaAssignment("a\"b", 2f)).IsEqual("if RefiiSettings then RefiiSettings[\"a\\\"b\"] = 2 end");
+        AssertThat(ModSettings.LuaAssignment("a\"b", 2f)).IsEqual(Assign("a\\\"b", "2"));
         AssertThat(ModSettings.LuaAssignment("a\nb", 2f)).IsEqual(string.Empty);
         AssertThat(ModSettings.LuaAssignment(string.Empty, 2f)).IsEqual(string.Empty);
-        AssertThat(ModSettings.LuaAssignment("k", float.NaN)).IsEqual("if RefiiSettings then RefiiSettings[\"k\"] = 0 end");
-        AssertThat(ModSettings.LuaAssignment("k", -0.25f)).IsEqual("if RefiiSettings then RefiiSettings[\"k\"] = -0.25 end");
+        AssertThat(ModSettings.LuaAssignment("k", float.NaN)).IsEqual(Assign("k", "0"));
+        AssertThat(ModSettings.LuaAssignment("k", -0.25f)).IsEqual(Assign("k", "-0.25"));
     }
 
     [TestCase]
@@ -65,7 +68,8 @@ public class ModSettingsLuaTests
         string debug = File.ReadAllText(Path.Combine(root, "Godot", "src", "game", "GameDebugServer.cs"));
         AssertThat(debug.Contains("Refii.Mods.ModSettings.Set(parts[1], setting);", StringComparison.Ordinal)).IsTrue();
         string preamble = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_ModLua.cs"));
-        AssertThat(preamble.Contains("foreach ((string key, float value) in ModSettings.InForce)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(preamble.Contains("public static string RuntimePreamble() => RuntimePreamble(ModSettings.InForce);", StringComparison.Ordinal)).IsTrue();
+        AssertThat(preamble.Contains("foreach ((string key, float value) in settings)", StringComparison.Ordinal)).IsTrue();
         // Both example mods read their settings at the call, so the new value is in effect at once.
         foreach (string file in Directory.EnumerateFiles(Path.Combine(root, "Fable2", "mods-src", "souls_combat", "mod"), "*.lua"))
         {

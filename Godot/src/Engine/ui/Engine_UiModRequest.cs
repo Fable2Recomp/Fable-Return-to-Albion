@@ -8,7 +8,7 @@ namespace Refii.Ui;
 /// A UI request a native or Lua mod made — <c>refii_mod_open_menu</c> / <c>Refii.open_menu</c>,
 /// <c>refii_mod_message_box</c> / <c>Refii.message_box</c>, <c>refii_mod_notice</c> /
 /// <c>Refii.notice</c>, <c>refii_mod_menu_box</c> / <c>Refii.menu_box</c>, and the HUD's own: markers, fades,
-/// meters, input claims (<c>refii_mod_input_claim</c>) and HUD overrides (<c>refii_mod_hud_icon</c> /
+/// meters, input claims (<c>refii_mod_input_claim</c>), pad presses (<c>refii_mod_press</c> / <c>_tap</c>) and HUD overrides (<c>refii_mod_hud_icon</c> /
 /// <c>_hud_slide</c> / <c>_hud_hold</c>) — as it crosses the mod bus to Godot
 /// under <see cref="Kind"/> (REFII_MOD_HOST_UI_KIND, core/refii_mod_events.h): never an event,
 /// posted whatever the mask says. And the guest command a box's answer goes back as, which raises
@@ -58,6 +58,9 @@ public static class Engine_UiModRequest
 		/// <summary>A marker removed by id.</summary>
 		Unmark,
 
+		/// <summary>A marker's fill (<c>refii_mod_mark_meter</c>): <see cref="Request.Id"/>, <see cref="Request.Value"/> of <see cref="Request.Max"/> (0 takes it off), <see cref="Request.Style"/>.</summary>
+		MarkMeter,
+
 		/// <summary>A player's screen fade (<c>refii_mod_fade</c>): <see cref="Request.ToBlack"/> over <see cref="Request.Seconds"/>.</summary>
 		Fade,
 
@@ -78,6 +81,15 @@ public static class Engine_UiModRequest
 
 		/// <summary>A HUD piece held visible (<c>refii_mod_hud_hold</c>): <see cref="Request.Name"/> the piece, <see cref="Request.On"/>.</summary>
 		HudHold,
+
+		/// <summary>A pad press held or released (<c>refii_mod_press</c>): <see cref="Request.Name"/> the button, <see cref="Request.Slide"/> the hold (0 releases; a trigger's pull).</summary>
+		Press,
+
+		/// <summary>A pad tap (<c>refii_mod_tap</c>): <see cref="Request.Name"/> the button, <see cref="Request.Slide"/> the guest ticks.</summary>
+		Tap,
+
+		/// <summary>A part of an entity hidden or shown (<c>refii_mod_hide_part_for</c>): <see cref="Request.Entity"/> the handle, <see cref="Request.Name"/> the bone, <see cref="Request.On"/>, <see cref="Request.Player"/> the player whose view loses it (0: every view, never the menu owner).</summary>
+		HidePart,
 	}
 
 	/// <summary>
@@ -94,7 +106,7 @@ public static class Engine_UiModRequest
 		Op Op, uint Id, int Player, string Name, string Title, string Text, string? Accept, string? Cancel, bool Question,
 		IReadOnlyList<string>? Options = null, float Seconds = 0f, bool Cancelable = true,
 		uint Entity = 0, float X = 0f, float Y = 0f, float Z = 0f, string Icon = "", bool ToBlack = false,
-		float Value = 0f, float Max = 0f, string Style = "", bool On = false, int Slide = 0);
+		float Value = 0f, float Max = 0f, string Style = "", bool On = false, int Slide = 0, bool HasMeter = false);
 
 	/// <summary>The request in <paramref name="fields"/>, or null when it is not one (no op, an open with no menu, a box with no id or text).</summary>
 	public static Request? Parse(IEnumerable<KeyValuePair<string, object>> fields)
@@ -177,7 +189,8 @@ public static class Engine_UiModRequest
 				uint id = Id(Number("id"));
 				string icon = Text("icon").Trim();
 				string text = Text("text");
-				if (id == 0 || icon.Length + text.Length == 0)
+				bool meter = Number("meter") != 0 && Number("max") > 0;
+				if (id == 0 || (icon.Length + text.Length == 0 && !meter))
 				{
 					return null;
 				}
@@ -185,7 +198,18 @@ public static class Engine_UiModRequest
 				double entity = Number("entity");
 				return new Request(Op.Mark, id, player, string.Empty, string.Empty, text, null, null, false,
 					Entity: entity is > 0 and <= uint.MaxValue ? (uint)entity : 0u,
-					X: (float)Number("x"), Y: (float)Number("y"), Z: (float)Number("z"), Icon: icon);
+					X: (float)Number("x"), Y: (float)Number("y"), Z: (float)Number("z"), Icon: icon,
+					Value: meter ? (float)Number("value") : 0f, Max: meter ? (float)Number("max") : 0f,
+					Style: meter ? Text("style").Trim() : string.Empty, HasMeter: meter);
+			}
+
+			case "mark_meter":
+			{
+				uint id = Id(Number("id"));
+				return id == 0
+					? null
+					: new Request(Op.MarkMeter, id, player, string.Empty, string.Empty, string.Empty, null, null, false,
+						Value: (float)Number("value"), Max: (float)Number("max"), Style: Text("style").Trim());
 			}
 
 			case "unmark":
@@ -253,6 +277,27 @@ public static class Engine_UiModRequest
 				return piece.Length == 0
 					? null
 					: new Request(Op.HudHold, 0u, player, piece, string.Empty, string.Empty, null, null, false, On: Number("on") != 0);
+			}
+
+			case "press":
+			case "tap":
+			{
+				string button = Text("button").Trim();
+				double amount = Number(Text("op") == "press" ? "held" : "ticks");
+				return button.Length == 0 || player == 0 || !double.IsFinite(amount)
+					? null
+					: new Request(Text("op") == "press" ? Op.Press : Op.Tap, 0u, player, button, string.Empty, string.Empty, null, null, false,
+						Slide: (int)Math.Clamp(amount, 0, 65535));
+			}
+
+			case "hide_part":
+			{
+				string part = Text("part").Trim();
+				double entity = Number("entity");
+				return part.Length == 0 || entity is not (> 0 and <= uint.MaxValue)
+					? null
+					: new Request(Op.HidePart, 0u, player, part, string.Empty, string.Empty, null, null, false,
+						Entity: (uint)entity, On: Number("on") != 0);
 			}
 
 			default:

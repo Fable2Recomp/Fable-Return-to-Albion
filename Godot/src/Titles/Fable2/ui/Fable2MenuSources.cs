@@ -31,6 +31,11 @@ public static class Fable2MenuSources
 		Engine_UiMenuSources.RegisterGame(Engine_UiPropertySource.SourceName, Engine_UiPropertySource.Rows);
 		Engine_UiMenuSources.RegisterGame(Engine_UiAbilitySource.SourceName, Engine_UiAbilitySource.Rows);
 
+		// What a mod's menu lists without building the catalog: the hero's known expressions and
+		// assignable wills, per player, as the guest tick states them (Engine_UiModListSources).
+		Engine_UiMenuSources.RegisterGame(Engine_UiModListSources.ExpressionsSource, Engine_UiModListSources.ExpressionRows);
+		Engine_UiMenuSources.RegisterGame(Engine_UiModListSources.SpellsKnownSource, Engine_UiModListSources.SpellRows);
+
 		// The shop's six groups — the capture's rows with the TRANSACTION stamped on.
 		Engine_UiMenuSources.RegisterGame(ShopSource, ShopRows);
 	}

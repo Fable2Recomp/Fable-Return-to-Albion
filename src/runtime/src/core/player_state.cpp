@@ -4,11 +4,11 @@
 // THE WIRE (the co-op channel, one datagram per line; the host bridge sends and receives):
 //   ps.s=<p>,<epoch>,<version>,<op epoch>,<op seq>,<part>,<parts>|<entries>
 //       the owner's values for player p. Entries are `;`-separated `<v|s><key>=<value>` (v a
-//       session value, s a saved one). <op epoch>/<op seq> is the last operation it applied from
+//       session value, s a saved one), or `<t|T><key>=<base64>` for a TEXT (t session, T saved). <op epoch>/<op seq> is the last operation it applied from
 //       the peer. A set too long for one datagram goes in parts, applied once all have arrived.
 //   ps.o=<p>,<op epoch>|<seq>:<s|a><v|s><key>=<value>;...
-//       the peer's pending operations on player p (set or add), restated until the owner's state
-//       says it applied them.
+//       the peer's pending operations on player p (set or add, or `t` a text set whose value is
+//       base64), restated until the owner's state says it applied them.
 //   ps.b=<p>,<version>,<part>,<parts>,<key>|<base64>
 //       one part of the owner's saved blob <key> for player p, sent when it changes and restated
 //       every few seconds; the peer keeps it once every part of that version has arrived.
@@ -31,6 +31,7 @@
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <vector>
 
 #include <rex/logging.h>
@@ -42,6 +43,10 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr size_t kMaxKeyLength = 128;
+/// A text value's bytes (REFII_MOD_PLAYER_TEXT_MAX): its base64 keeps an entry well inside a datagram.
+constexpr size_t kMaxTextLength = 256;
+/// A text's prefix in refii_player.txt: `key=t:<base64>`; a number is written bare.
+constexpr std::string_view kTextSavePrefix = "t:";
 constexpr std::string_view kBlobPrefix = "refii_blob_";
 constexpr std::string_view kBlobSuffix = ".bin";
 constexpr size_t kMaxBlobBytes = 4u << 20;
@@ -58,6 +63,10 @@ constexpr auto kOperationInterval = std::chrono::milliseconds(100);
 struct Entry {
   float value = 0.0f;
   bool saved = false;
+  /// A TEXT value (refii_bridge_player_write_text): `text` holds it and `value` is 0. A key holds
+  /// one type; a number written over a text replaces it, and the other way round.
+  bool is_text = false;
+  std::string text;
 };
 
 using Entries = std::map<std::string, Entry>;
@@ -68,6 +77,9 @@ struct Operation {
   bool saved = false;
   std::string key;
   float value = 0.0f;
+  /// A text set: `str` is the text, `add` and `value` unused.
+  bool is_text = false;
+  std::string str;
 };
 
 struct Assembly {
@@ -170,7 +182,18 @@ bool Owns(const State& s, int index) { return ((s.owned >> index) & 1u) != 0u; }
 
 void Apply(Entries& entries, const Operation& op) {
   Entry& entry = entries[op.key];
-  entry.value = op.add ? entry.value + op.value : op.value;
+  if (op.is_text) {
+    entry.is_text = true;
+    entry.text = op.str;
+    entry.value = 0.0f;
+  } else {
+    if (entry.is_text) {
+      entry.is_text = false;
+      entry.text.clear();
+      entry.value = 0.0f;
+    }
+    entry.value = op.add ? entry.value + op.value : op.value;
+  }
   entry.saved = entry.saved || op.saved;
 }
 
@@ -178,10 +201,10 @@ void Apply(Entries& entries, const Operation& op) {
 /// moves the UI data generation like the game's own levels do; the per-tick pools do not.
 bool SavedDiffer(const Entries& before, const Entries& after) {
   const auto saved_only = [](const Entries& entries) {
-    std::vector<std::pair<std::string_view, float>> out;
+    std::vector<std::tuple<std::string_view, float, bool, std::string_view>> out;
     for (const auto& [key, entry] : entries) {
       if (entry.saved) {
-        out.emplace_back(key, entry.value);
+        out.emplace_back(key, entry.value, entry.is_text, entry.text);
       }
     }
     return out;
@@ -240,15 +263,45 @@ std::vector<std::string_view> Split(std::string_view text, char separator) {
   return parts;
 }
 
-/// `<v|s><key>=<value>`.
+std::string Base64(const uint8_t* data, size_t size);
+bool Unbase64(std::string_view text, std::vector<uint8_t>& out);
+
+/// A text from its base64, refused past kMaxTextLength.
+bool ParseText(std::string_view text, std::string& out) {
+  std::vector<uint8_t> bytes;
+  if (!Unbase64(text, bytes) || bytes.size() > kMaxTextLength) {
+    return false;
+  }
+  out.assign(bytes.begin(), bytes.end());
+  return true;
+}
+
+std::string TextBase64(const std::string& text) {
+  return Base64(reinterpret_cast<const uint8_t*>(text.data()), text.size());
+}
+
+/// `<v|s><key>=<value>`, or `<t|T><key>=<base64>` for a text.
 bool ParseEntry(std::string_view text, std::string& key, Entry& entry) {
   const size_t equals = text.find('=');
-  if (text.size() < 3 || (text[0] != 'v' && text[0] != 's') || equals == std::string_view::npos) {
+  if (text.size() < 3 || equals == std::string_view::npos) {
+    return false;
+  }
+  const char kind = text[0];
+  if (kind != 'v' && kind != 's' && kind != 't' && kind != 'T') {
     return false;
   }
   key = std::string(text.substr(1, equals - 1));
-  entry.saved = text[0] == 's';
-  return ValidKey(key) && ParseFloat(text.substr(equals + 1), entry.value);
+  if (!ValidKey(key)) {
+    return false;
+  }
+  if (kind == 't' || kind == 'T') {
+    entry.saved = kind == 'T';
+    entry.is_text = true;
+    entry.value = 0.0f;
+    return ParseText(text.substr(equals + 1), entry.text);
+  }
+  entry.saved = kind == 's';
+  return ParseFloat(text.substr(equals + 1), entry.value);
 }
 
 void Append(char* out, size_t capacity, size_t& written, std::string_view line) {
@@ -264,7 +317,8 @@ void Append(char* out, size_t capacity, size_t& written, std::string_view line) 
 void StateMessages(const Store& store, int index, std::vector<std::string>& lines) {
   std::vector<std::string> bodies(1);
   for (const auto& [key, entry] : store.entries) {
-    std::string item = std::string(1, entry.saved ? 's' : 'v') + key + "=" + Number(entry.value);
+    std::string item = entry.is_text ? std::string(1, entry.saved ? 'T' : 't') + key + "=" + TextBase64(entry.text)
+                                     : std::string(1, entry.saved ? 's' : 'v') + key + "=" + Number(entry.value);
     if (!bodies.back().empty() && bodies.back().size() + item.size() + 1 > kMaxMessage - 96) {
       bodies.emplace_back();
     }
@@ -404,7 +458,8 @@ void OperationMessages(const State& s, const Store& store, int index, std::vecto
   for (const Operation& op : store.pending) {
     char seq[24];
     std::snprintf(seq, sizeof(seq), "%u:", op.seq);
-    std::string item = std::string(seq) + (op.add ? 'a' : 's') + (op.saved ? 's' : 'v') + op.key + "=" + Number(op.value);
+    std::string item = std::string(seq) + (op.is_text ? 't' : (op.add ? 'a' : 's')) + (op.saved ? 's' : 'v') + op.key +
+                       "=" + (op.is_text ? TextBase64(op.str) : Number(op.value));
     if (any && line.size() + item.size() + 1 > kMaxMessage) {
       lines.push_back(line);
       line = head;
@@ -500,12 +555,19 @@ void TakeOperations(State& s, int index, std::string_view head, std::string_view
       continue;
     }
     const std::string_view rest = item.substr(colon + 1);
-    if (rest.size() < 4 || (rest[0] != 's' && rest[0] != 'a')) {
+    if (rest.size() < 4 || (rest[0] != 's' && rest[0] != 'a' && rest[0] != 't')) {
       continue;
     }
     std::string key;
     Entry entry;
-    if (!ParseEntry(rest.substr(1), key, entry)) {
+    // A text set's body is `<v|s><key>=<base64>`: read as the text entry it states.
+    std::string body(rest.substr(1));
+    if (rest[0] == 't' && (body[0] == 'v' || body[0] == 's')) {
+      body[0] = body[0] == 's' ? 'T' : 't';
+    } else if (rest[0] != 't' && (body[0] == 't' || body[0] == 'T')) {
+      continue;
+    }
+    if (!ParseEntry(body, key, entry)) {
       continue;
     }
     Operation op;
@@ -514,6 +576,8 @@ void TakeOperations(State& s, int index, std::string_view head, std::string_view
     op.saved = entry.saved;
     op.key = std::move(key);
     op.value = entry.value;
+    op.is_text = rest[0] == 't';
+    op.str = std::move(entry.text);
     Apply(store.entries, op);
     store.peer_op_seq = seq;
     changed = true;
@@ -581,13 +645,34 @@ extern "C" int32_t refii_bridge_player_get(int32_t player, const char* key, size
   State& s = Tables();
   std::lock_guard lock(s.mutex);
   const auto found = s.stores[index].entries.find(std::string(key, key_length));
-  if (found == s.stores[index].entries.end()) {
+  if (found == s.stores[index].entries.end() || found->second.is_text) {
     return 0;
   }
   if (out != nullptr) {
     *out = found->second.value;
   }
   return 1;
+}
+
+extern "C" int32_t refii_bridge_player_get_text(int32_t player, const char* key, size_t key_length, char* out,
+                                                uint32_t capacity) {
+  const int index = Index(player);
+  if (index < 0 || key == nullptr || key_length > kMaxKeyLength) {
+    return -1;
+  }
+  State& s = Tables();
+  std::lock_guard lock(s.mutex);
+  const auto found = s.stores[index].entries.find(std::string(key, key_length));
+  if (found == s.stores[index].entries.end() || !found->second.is_text) {
+    return -1;
+  }
+  const std::string& text = found->second.text;
+  if (out != nullptr && capacity != 0) {
+    const size_t n = std::min<size_t>(text.size(), capacity - 1);
+    std::memcpy(out, text.data(), n);
+    out[n] = 0;
+  }
+  return static_cast<int32_t>(text.size());
 }
 
 extern "C" void refii_bridge_player_write(int32_t player, const char* key, size_t key_length, float value,
@@ -606,10 +691,47 @@ extern "C" void refii_bridge_player_write(int32_t player, const char* key, size_
   op.value = value;
   if (Owns(s, index)) {
     const auto found = store.entries.find(op.key);
-    if (!op.add && found != store.entries.end() && found->second.value == value && found->second.saved == op.saved) {
+    if (!op.add && found != store.entries.end() && !found->second.is_text && found->second.value == value &&
+        found->second.saved == op.saved) {
       return;
     }
     if (op.add && value == 0.0f) {
+      return;
+    }
+    Apply(store.entries, op);
+    ++store.version;
+    if (op.saved) {
+      refii_bridge_ui_data_changed();
+    }
+    return;
+  }
+  const bool saved_op = op.saved;
+  op.seq = ++s.op_seq;
+  store.pending.push_back(std::move(op));
+  Rebuild(store);
+  if (saved_op) {
+    refii_bridge_ui_data_changed();
+  }
+}
+
+extern "C" void refii_bridge_player_write_text(int32_t player, const char* key, size_t key_length, const char* text,
+                                               size_t length, int32_t saved) {
+  const int index = Index(player);
+  if (index < 0 || key == nullptr || !ValidKey(std::string_view(key, key_length)) || g_replica > 0) {
+    return;
+  }
+  State& s = Tables();
+  std::lock_guard lock(s.mutex);
+  Store& store = s.stores[index];
+  Operation op;
+  op.is_text = true;
+  op.saved = saved != 0;
+  op.key = std::string(key, key_length);
+  op.str = text != nullptr ? std::string(text, std::min(length, kMaxTextLength)) : std::string();
+  if (Owns(s, index)) {
+    const auto found = store.entries.find(op.key);
+    if (found != store.entries.end() && found->second.is_text && found->second.text == op.str &&
+        found->second.saved == op.saved) {
       return;
     }
     Apply(store.entries, op);
@@ -727,13 +849,22 @@ extern "C" void refii_bridge_player_load_saved(int32_t player, const char* save_
       line.pop_back();
     }
     const size_t equals = line.find('=');
-    float value = 0.0f;
     if (line.empty() || line[0] == '#' || equals == std::string::npos ||
-        !ValidKey(std::string_view(line).substr(0, equals)) ||
-        !ParseFloat(std::string_view(line).substr(equals + 1), value)) {
+        !ValidKey(std::string_view(line).substr(0, equals))) {
       continue;
     }
-    loaded[line.substr(0, equals)] = Entry{value, true};
+    const std::string_view value_text = std::string_view(line).substr(equals + 1);
+    Entry entry;
+    entry.saved = true;
+    if (value_text.starts_with(kTextSavePrefix)) {
+      entry.is_text = true;
+      if (!ParseText(value_text.substr(kTextSavePrefix.size()), entry.text)) {
+        continue;
+      }
+    } else if (!ParseFloat(value_text, entry.value)) {
+      continue;
+    }
+    loaded[line.substr(0, equals)] = std::move(entry);
   }
   Store& store = s.stores[index];
   std::erase_if(store.entries, [](const auto& item) { return item.second.saved; });
@@ -799,11 +930,12 @@ extern "C" int32_t refii_bridge_player_write_saved(int32_t player, const char* s
     return 0;
   }
   std::ostringstream text;
-  text << "# Refii: this save's hero's mod values (refii_mod_player_*), key=value\n";
+  text << "# Refii: this save's hero's mod values (refii_mod_player_*), key=value (a text: key=t:<base64>)\n";
   size_t count = 0;
   for (const auto& [key, entry] : s.stores[index].entries) {
     if (entry.saved) {
-      text << key << '=' << Number(entry.value) << '\n';
+      text << key << '=' << (entry.is_text ? std::string(kTextSavePrefix) + TextBase64(entry.text) : Number(entry.value))
+           << '\n';
       ++count;
     }
   }
@@ -981,7 +1113,7 @@ std::string Describe() {
     text += " p" + std::to_string(index + 1) + "{v" + std::to_string(store.version) + " pending " +
             std::to_string(store.pending.size());
     for (const auto& [key, entry] : store.entries) {
-      text += " " + key + (entry.saved ? "*" : "") + "=" + Number(entry.value);
+      text += " " + key + (entry.saved ? "*" : "") + "=" + (entry.is_text ? "\"" + entry.text + "\"" : Number(entry.value));
     }
     text += "}";
   }

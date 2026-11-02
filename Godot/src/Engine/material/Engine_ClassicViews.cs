@@ -40,6 +40,35 @@ public static class Engine_ClassicViews
     public const uint SecondViewOnlyLayer = 1u << 30;
 
     /// <summary>
+    /// Layer 12: drawn by player one's view alone while split, and lit as an interior
+    /// (Engine_LightZones gives it to indoor lights and keeps it from outdoor lights and the sun).
+    /// </summary>
+    public const uint FirstViewIndoorLayer = 1u << 11;
+
+    /// <summary>Layer 13: <see cref="FirstViewIndoorLayer"/> for player two's view.</summary>
+    public const uint SecondViewIndoorLayer = 1u << 12;
+
+    /// <summary>The interior pair of the one-view layers.</summary>
+    public const uint IndoorViewLayers = FirstViewIndoorLayer | SecondViewIndoorLayer;
+
+    /// <summary>Every layer a single view draws alone.</summary>
+    private const uint OneViewLayers = FirstViewOnlyLayer | SecondViewOnlyLayer | IndoorViewLayers;
+
+    /// <summary>
+    /// The layers that put an instance whose own layers are <paramref name="layers"/> in view
+    /// <paramref name="view"/> alone while split, lit as those layers are: an interior's
+    /// (<see cref="Refii.Lighting.Engine_LightZones.IndoorMask"/>) takes the view's indoor layer,
+    /// anything else the view's own layer, which every outdoor light and the sun reach.
+    /// </summary>
+    public static uint OnlyIn(int view, uint layers)
+    {
+        bool indoor = (layers & Refii.Lighting.Engine_LightZones.IndoorMask) != 0u;
+        return view == 0
+            ? (indoor ? FirstViewIndoorLayer : FirstViewOnlyLayer)
+            : (indoor ? SecondViewIndoorLayer : SecondViewOnlyLayer);
+    }
+
+    /// <summary>
     /// The layers drawn by their own overlay cameras, never by a view: each overlay strips its
     /// layer from the camera it mirrors, and this copy runs after them, so it strips them too.
     /// </summary>
@@ -88,9 +117,9 @@ public static class Engine_ClassicViews
             _cameras[1] = second;
             if (window is not null && GodotObject.IsInstanceValid(window))
             {
-                uint mask = window.CullMask & ~(SecondViewLayer | OverlayLayers | FirstViewOnlyLayer | SecondViewOnlyLayer);
-                uint firstMask = mask | FirstViewOnlyLayer;
-                uint secondMask = mask | SecondViewOnlyLayer | SecondViewLayer;
+                uint mask = window.CullMask & ~(SecondViewLayer | OverlayLayers | OneViewLayers);
+                uint firstMask = mask | FirstViewOnlyLayer | FirstViewIndoorLayer;
+                uint secondMask = mask | SecondViewOnlyLayer | SecondViewIndoorLayer | SecondViewLayer;
                 if (first.CullMask != firstMask)
                 {
                     first.CullMask = firstMask;

@@ -78,6 +78,34 @@ public sealed class Engine_UiMenuEntry
 	/// </summary>
 	public bool Counted = true;
 
+	/// <summary>
+	/// MOD CONTENT: an entry a mod's or the player's file states that restates no game entry (see
+	/// <see cref="Engine_UiTemplateSet.ApplyText"/>). Its row has no record of the guest's behind
+	/// its `(EventType, id)`, so it is never stated as the guest's highlight
+	/// (<see cref="Engine_UiExpandableMenu.Item.FromMod"/>). Set by composition, never read from
+	/// or written to a file.
+	/// </summary>
+	public bool FromMod;
+
+	/// <summary>
+	/// The rows <see cref="Source"/> supplies were put on this list by mod content — the entry is
+	/// a mod's, or a mod changed the game's source — so they are <see cref="FromMod"/> however
+	/// real their ids are: an id is only meaningful to the screen whose handlers it was made for.
+	/// </summary>
+	public bool SourceFromMod;
+
+	/// <summary>
+	/// The event this entry is SPAWNED with: its own, else `Submenu` (301) for an entry with
+	/// children or a source, else 0. A category is a submenu row; a source makes it one too,
+	/// because its rows arrive after the build and a command row never folds however many rows
+	/// land under it later.
+	/// </summary>
+	public int SpawnEventType => EventType != 0
+		? EventType
+		: Children.Count > 0 || Source.Length != 0
+			? (int)Engine_UiMenuConstants.EventType.Submenu
+			: 0;
+
 	public List<Engine_UiMenuEntry> Children = new();
 }
 
@@ -102,6 +130,9 @@ public sealed class Engine_UiMenuTemplate
 	/// Authored entries and a source compose, the authored ones first.
 	/// </summary>
 	public string Source = string.Empty;
+
+	/// <summary>The root's <see cref="Source"/> was stated by mod content — see <see cref="Engine_UiMenuEntry.SourceFromMod"/>.</summary>
+	public bool SourceFromMod;
 
 	public List<Engine_UiMenuEntry> Entries = new();
 
@@ -172,7 +203,7 @@ public sealed class Engine_UiMenuTemplate
 		{
 			changed |= RefreshUnder(
 				menu, menu.Model.MenuRoot, Engine_UiExpandableMenu.RootName, Source, Name,
-				RowCommand);
+				RowCommand, SourceFromMod);
 		}
 
 		return changed;
@@ -193,7 +224,7 @@ public sealed class Engine_UiMenuTemplate
 		}
 
 		return changed |
-			RefreshUnder(menu, item, entry.Name, entry.Source, entry.Name, rowCommand);
+			RefreshUnder(menu, item, entry.Name, entry.Source, entry.Name, rowCommand, entry.SourceFromMod);
 	}
 
 	/// <summary>
@@ -207,10 +238,11 @@ public sealed class Engine_UiMenuTemplate
 		string parentName,
 		string source,
 		string argument,
-		string rowCommand)
+		string rowCommand,
+		bool placedByMod)
 	{
 		List<Engine_UiMenuSources.Row> rows =
-			Expanded(Engine_UiMenuSources.Rows(source, argument));
+			Expanded(Engine_UiMenuSources.Rows(source, argument), placedByMod);
 
 		// `current` in the order `Expanded` states: each sourced child, and under a group
 		// HEADER its own sourced rows — `SpawnSourced` hangs a grouped row under its header, so
@@ -258,6 +290,9 @@ public sealed class Engine_UiMenuTemplate
 				{
 					current[i].Emphasis = wanted;
 				}
+
+				// Provenance, not drawn: carried so a remount that changes it reaches the statement.
+				current[i].FromMod = rows[i].FromMod;
 
 				// The rest of what a row states can change under an unchanged name and label
 				// (a viewed flag, a new ticket in its command); restated in place. Not `Ghosted`:
@@ -327,6 +362,8 @@ public sealed class Engine_UiMenuTemplate
 			sourced.StatedLabel = row.IsHeader ? null : row.Label;
 			sourced.Committable = row.Committable;
 			sourced.Sourced = true;
+			sourced.HostOnly = row.HostOnly;
+			sourced.FromMod = row.FromMod;
 			sourced.Ghosted = row.Ghosted;
 			sourced.Emphasis = row.Emphasis != Engine_UiMenuConstants.Emphasis.None
 				? row.Emphasis
@@ -350,14 +387,18 @@ public sealed class Engine_UiMenuTemplate
 	/// A header is a submenu row with the group's Babel tag and no stated label, so the view
 	/// resolves the tag exactly as it does for an authored category.
 	/// </summary>
+	/// <param name="placedByMod">The rows were put on this list by mod content
+	/// (<see cref="Engine_UiMenuEntry.SourceFromMod"/>): every row and header is
+	/// <see cref="Engine_UiMenuSources.Row.FromMod"/>.</param>
 	private static List<Engine_UiMenuSources.Row> Expanded(
-		IReadOnlyList<Engine_UiMenuSources.Row> rows)
+		IReadOnlyList<Engine_UiMenuSources.Row> rows, bool placedByMod)
 	{
 		var seen = new HashSet<string>(System.StringComparer.Ordinal);
 		var expanded = new List<Engine_UiMenuSources.Row>(rows.Count);
 
-		foreach (Engine_UiMenuSources.Row row in rows)
+		foreach (Engine_UiMenuSources.Row source in rows)
 		{
+			Engine_UiMenuSources.Row row = placedByMod && !source.FromMod ? source with { FromMod = true } : source;
 			if (row.Group.Length != 0 && seen.Add(row.Group))
 			{
 				expanded.Add(new Engine_UiMenuSources.Row(
@@ -374,7 +415,8 @@ public sealed class Engine_UiMenuTemplate
 					Command: null,
 					Group: row.Group,
 					GroupTag: row.GroupTag,
-					IsHeader: true));
+					IsHeader: true,
+					FromMod: row.FromMod));
 			}
 
 			expanded.Add(row);
@@ -438,7 +480,7 @@ public sealed class Engine_UiMenuTemplate
 		}
 
 		// The ROOT's own source, after the authored entries so a fixed row keeps the top.
-		SpawnSourced(menu, Expanded(Engine_UiMenuSources.Rows(Source, Name)),
+		SpawnSourced(menu, Expanded(Engine_UiMenuSources.Rows(Source, Name), SourceFromMod),
 			Engine_UiExpandableMenu.RootName, RowCommand);
 
 		// `UpdateAfterSpawning` — the population is complete, so the visible list and the
@@ -465,26 +507,17 @@ public sealed class Engine_UiMenuTemplate
 				return;
 			}
 
-			// A category is a submenu row: an entry with children stating no event of its own
-			// gets 301, which is what makes `SelectMenuItem` treat the press as a fold.
-			// A SOURCE MAKES IT A SUBMENU TOO, not just authored children. The rows arrive after
-			// the build — that is what a source is — so an entry with only sourced children was
-			// spawned as a command row, and a command row never folds however many rows land
-			// under it later. `Games` folded only because it happens to author one child.
-			int eventType = entry.EventType != 0
-				? entry.EventType
-				: entry.Children.Count > 0 || entry.Source.Length != 0
-					? (int)Engine_UiMenuConstants.EventType.Submenu
-					: 0;
-
+			// A category is a submenu row (301), which is what makes `SelectMenuItem` treat the
+			// press as a fold — see Engine_UiMenuEntry.SpawnEventType.
 			Engine_UiExpandableMenu.Item item = menu.Model.SpawnButton(
-				entry.Name, entry.Tag, entry.Icon, eventType,
+				entry.Name, entry.Tag, entry.Icon, entry.SpawnEventType,
 				idLow: 0, idHigh: 0, entry.Rating, parent);
 
 			// Host routing is not menu content, so it rides beside the spawn.
 			item.Command = entry.Command;
 			item.Opens = entry.Opens;
 			item.HostOnly = entry.HostOnly;
+			item.FromMod = entry.FromMod;
 			Engine_UiScreenActions.RefreshSettingLabel(item);
 
 			// See the `committable` parameter: a hand-authored row has no guest identity, a
@@ -502,7 +535,7 @@ public sealed class Engine_UiMenuTemplate
 			// wherever it was sourced from, and the identity, ghosting and command channels
 			// cannot drift between the three call sites — they already had, this one carrying a
 			// `Command` the other two dropped.
-			SpawnSourced(menu, Expanded(Engine_UiMenuSources.Rows(entry.Source, entry.Name)),
+			SpawnSourced(menu, Expanded(Engine_UiMenuSources.Rows(entry.Source, entry.Name), entry.SourceFromMod),
 				entry.Name, RowCommand);
 		}
 	}

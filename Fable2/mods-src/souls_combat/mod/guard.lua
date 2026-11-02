@@ -3,13 +3,14 @@
 -- A module of init.lua (require("guard")).
 
 local C = require("common")
-local Setting, IsPlayer, Stamina, Spend = C.Setting, C.IsPlayer, C.Stamina, C.Spend
+local Setting, IsPlayer, Stamina, kStaminaKey = C.Setting, C.IsPlayer, C.Stamina, C.StaminaKey
 
 ----------------------------------------------------------------------------------------------------
 -- THE GUARD costs stamina and breaks when the pool cannot pay. block fires once per hit a block is
 -- taking (the bus gives the game's second block listener the first's verdict, so the cost is
--- taken once); cancelling BREAKS the guard and the hit lands in full. An unblockable hit bypasses
--- the block in the game already and is never charged.
+-- taken once); cancelling BREAKS the guard and the hit lands in full. A block never goes into
+-- debt: the pool must hold the whole cost. An unblockable hit bypasses the block in the game
+-- already and is never charged.
 ----------------------------------------------------------------------------------------------------
 
 Refii.on("block", function(e)
@@ -22,5 +23,5 @@ Refii.on("block", function(e)
 	if not (stamina >= cost and stamina > 0) then
 		return true  -- The guard breaks and the hit lands in full: that is the whole price.
 	end
-	Spend(p, cost)
+	Refii.pool_spend(p, kStaminaKey, cost)
 end)

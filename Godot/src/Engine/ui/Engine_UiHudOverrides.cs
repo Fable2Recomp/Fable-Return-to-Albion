@@ -164,6 +164,27 @@ public static class Engine_UiHudOverrides
 		return list;
 	}
 
+	/// <summary>
+	/// The texture stated for <paramref name="player"/> on a MOD'S OWN HUD PIECE (a <c>picture</c>
+	/// of <c>ui/hud.json</c>) by its id — an element name naming the id, or its trailing segments
+	/// (<see cref="MatchesPath"/>); null when none is stated.
+	/// </summary>
+	public static string? IconForPiece(int player, string pieceId)
+	{
+		lock (Icons)
+		{
+			foreach (((int p, string element), string texture) in Icons)
+			{
+				if (p == player && MatchesPath(pieceId, element))
+				{
+					return texture;
+				}
+			}
+		}
+
+		return null;
+	}
+
 	/// <summary>The slides stated for <paramref name="player"/>'s HUD: element name → slide.</summary>
 	public static List<(string Element, int Slide)> SlidesFor(int player)
 	{

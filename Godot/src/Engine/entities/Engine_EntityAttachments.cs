@@ -598,8 +598,8 @@ public sealed class Engine_EntityAttachments
 	}
 
 	/// <summary>
-	/// Resolves character focal attachment dummies (head, mouth, chest, eyes) that do not
-	/// have dedicated entries in `.mdl.gmd` attachment tables to skeleton bones.
+	/// A dummy no part's <c>.mdl.gmd</c> names, on the rig bone the title mounts it on
+	/// (<see cref="Refii.Animations.Engine_TitleRig.FocalBone"/>); false when it mounts none.
 	/// </summary>
 	private static bool TryResolveFocalBone(string dummy, Engine_EntitySkeleton? rig, out int bone)
 	{
@@ -609,33 +609,8 @@ public sealed class Engine_EntityAttachments
 			return false;
 		}
 
-		if (dummy.StartsWith("Character.Focal.", System.StringComparison.OrdinalIgnoreCase))
-		{
-			string sub = dummy.Substring("Character.Focal.".Length);
-			if (sub.StartsWith("Mouth", System.StringComparison.OrdinalIgnoreCase) ||
-			    sub.StartsWith("Head", System.StringComparison.OrdinalIgnoreCase))
-			{
-				return rig.TryBone("Shadow_Head", out bone) || rig.TryBone("Head", out bone);
-			}
-
-			if (sub.StartsWith("Chest", System.StringComparison.OrdinalIgnoreCase) ||
-			    sub.StartsWith("Torso", System.StringComparison.OrdinalIgnoreCase))
-			{
-				return rig.TryBone("Shadow_Chest", out bone) || rig.TryBone("Chest", out bone);
-			}
-
-			if (sub.StartsWith("Eye.L", System.StringComparison.OrdinalIgnoreCase))
-			{
-				return rig.TryBone("Shadow_L_Eye", out bone) || rig.TryBone("Shadow_Head", out bone);
-			}
-
-			if (sub.StartsWith("Eye.R", System.StringComparison.OrdinalIgnoreCase))
-			{
-				return rig.TryBone("Shadow_R_Eye", out bone) || rig.TryBone("Shadow_Head", out bone);
-			}
-		}
-
-		return false;
+		bone = Refii.Core.Engine_TitleGame.Active.Rig.FocalBone(rig.BoneNames, dummy);
+		return bone >= 0;
 	}
 
 	/// <summary>

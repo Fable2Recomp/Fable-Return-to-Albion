@@ -13,17 +13,38 @@
 		"hotbar.kind": {
 			"title": "HOTBAR_KIND",
 			"entries": [
-				{ "name": "spells", "tag": "HOTBAR_KIND_SPELLS", "opens": "hotbar.pick" },
-				{ "name": "expressions", "tag": "HOTBAR_KIND_EXPRESSIONS", "opens": "hotbar.pick" },
-				{ "name": "food", "tag": "HOTBAR_KIND_FOOD", "opens": "hotbar.pick" },
-				{ "name": "potions", "tag": "HOTBAR_KIND_POTIONS", "opens": "hotbar.pick" },
-				{ "name": "items", "tag": "HOTBAR_KIND_ITEMS", "opens": "hotbar.pick" },
-				{ "name": "clear", "tag": "HOTBAR_KIND_CLEAR", "command": "Mod:lua:Hotbar.clear" }
+				{ "name": "spells", "tag": "HOTBAR_KIND_SPELLS", "opens": "hotbar.spells" },
+				{ "name": "expressions", "tag": "HOTBAR_KIND_EXPRESSIONS", "opens": "hotbar.expressions" },
+				{ "name": "food", "tag": "HOTBAR_KIND_FOOD", "opens": "hotbar.food" },
+				{ "name": "potions", "tag": "HOTBAR_KIND_POTIONS", "opens": "hotbar.potions" },
+				{ "name": "items", "tag": "HOTBAR_KIND_ITEMS", "opens": "hotbar.items" },
+				{ "name": "clear", "tag": "HOTBAR_KIND_CLEAR", "command": "Hotbar:clear" }
 			]
 		},
-		"hotbar.pick": {
-			"title": "HOTBAR_PICK",
-			"source": "rows"
+		"hotbar.spells": {
+			"title": "HOTBAR_KIND_SPELLS",
+			"source": "spells_known",
+			"rowCommand": "Hotbar:assign"
+		},
+		"hotbar.expressions": {
+			"title": "HOTBAR_KIND_EXPRESSIONS",
+			"source": "expressions",
+			"rowCommand": "Hotbar:assign"
+		},
+		"hotbar.food": {
+			"title": "HOTBAR_KIND_FOOD",
+			"source": "inventory:usable:0:5",
+			"rowCommand": "Hotbar:assign"
+		},
+		"hotbar.potions": {
+			"title": "HOTBAR_KIND_POTIONS",
+			"source": "inventory:usable:0:6",
+			"rowCommand": "Hotbar:assign"
+		},
+		"hotbar.items": {
+			"title": "HOTBAR_KIND_ITEMS",
+			"source": "inventory:usable:0:1,2,3,4,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26",
+			"rowCommand": "Hotbar:assign"
 		}
 	}
 }

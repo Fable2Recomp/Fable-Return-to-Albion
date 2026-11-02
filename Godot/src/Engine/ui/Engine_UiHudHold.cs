@@ -13,12 +13,19 @@ namespace Refii.Ui;
 /// slide the guest states, at least the first — and that slide's entries are released from the
 /// guest's stale attributes, as the HUD's played slides are. The <c>in</c> slide's scale commands
 /// win over the guest's live transform for the elements they drive (<see cref="Transforms"/>), so
-/// a piece the guest tweened closed opens at its authored size.
+/// a piece the guest tweened closed opens at its authored size. The piece's TRUNK — its root and
+/// each lone child below it, down to the first element with several (behaviours, materials and
+/// textures not counted) — fades the whole piece; a trunk element whose opacity no slide of the
+/// document commands is faded by the guest's stated opacity alone (the health readout's timed fade
+/// on <c>PlayerHealth.HealthAndMana.Health</c>) and is drawn at no less than its authored opacity.
+/// Elements past the first branch keep the opacity the guest states: they are the piece's own look.
 /// </summary>
 public sealed class Engine_UiHudHold : IReadOnlyList<float?[]?>
 {
 	private readonly Engine_UiScreen _screen;
 	private readonly List<(int Owner, int ForcedSlide, BgfSlide[] Slides)> _owners = new();
+	private readonly List<(int Ordinal, float Authored)> _faded = new();
+	private readonly HashSet<int> _commanded;
 	private readonly Dictionary<int, float?[]> _scaleRows = new();
 	private IReadOnlyList<float?[]?>? _transforms;
 
@@ -31,10 +38,17 @@ public sealed class Engine_UiHudHold : IReadOnlyList<float?[]?>
 	/// <summary>How many slide owners the hold found; 0 means no piece of those names is in the document.</summary>
 	public int OwnerCount => _owners.Count;
 
+	/// <summary>How many trunk elements the hold lifts to their authored opacity over a lower stated one.</summary>
+	public int FadedCount => _faded.Count;
+
+	/// <summary>The trunk elements the hold lifts, by ordinal.</summary>
+	public IEnumerable<int> Faded => _faded.Select(f => f.Ordinal);
+
 	public Engine_UiHudHold(Engine_UiScreen screen, IReadOnlyList<string> pieces)
 	{
 		_screen = screen;
 		Pieces = pieces;
+		_commanded = OpacityCommanded(screen.Document);
 		var paths = Paths(screen);
 		var roots = new List<UiNode>();
 		foreach (string piece in pieces)
@@ -67,6 +81,7 @@ public sealed class Engine_UiHudHold : IReadOnlyList<float?[]?>
 		foreach (UiNode root in roots)
 		{
 			Walk(root);
+			Trunk(root);
 		}
 	}
 
@@ -92,12 +107,63 @@ public sealed class Engine_UiHudHold : IReadOnlyList<float?[]?>
 		return paths;
 	}
 
+	/// <summary>Every element whose opacity a slide of the document commands, in an entry or through an animation it starts.</summary>
+	public static HashSet<int> OpacityCommanded(Engine_BgfDocument file)
+	{
+		var commanded = new HashSet<int>();
+		foreach (BgfSlide slide in file.Slides)
+		{
+			foreach (BgfSlideEntry entry in slide.Entries)
+			{
+				if (entry.Commands.Any(c => c.Id == Engine_UiElementResolve.OpacityAttribute))
+				{
+					commanded.Add(entry.ElementOrdinal);
+				}
+
+				foreach (int index in entry.ActivatedAnimations ?? Array.Empty<int>())
+				{
+					if (index >= 0 && index < file.Animations.Length &&
+						file.Animations[index].AttributeId == Engine_UiElementResolve.OpacityAttribute)
+					{
+						commanded.Add(file.Animations[index].ElementOrdinal);
+					}
+				}
+			}
+		}
+
+		return commanded;
+	}
+
 	private void Walk(UiNode node)
 	{
 		AddOwner(node);
 		foreach (UiNode child in node.Children)
 		{
 			Walk(child);
+		}
+	}
+
+	private void Trunk(UiNode root)
+	{
+		for (UiNode? node = root; node is not null;)
+		{
+			if (node.Opacity > 0f && !_commanded.Contains(node.Ordinal))
+			{
+				_faded.Add((node.Ordinal, node.Opacity));
+			}
+
+			UiNode? only = null;
+			int drawn = 0;
+			foreach (UiNode child in node.Children)
+			{
+				if (child.Type is not (BgfElementType.Behavior or BgfElementType.Material or BgfElementType.Texture))
+				{
+					only = child;
+					++drawn;
+				}
+			}
+
+			node = drawn == 1 ? only : null;
 		}
 	}
 
@@ -125,9 +191,20 @@ public sealed class Engine_UiHudHold : IReadOnlyList<float?[]?>
 		}
 	}
 
-	/// <summary>Folds the hold into one resolve pass: the owners' slides, with each slide's entries released.</summary>
+	/// <summary>
+	/// Folds the hold into one resolve pass: the owners' slides, with each slide's entries released,
+	/// and every trunk element faded by stated opacity alone raised to its authored opacity.
+	/// </summary>
 	public void Apply(int[] slides, bool[] active, float?[] opacity)
 	{
+		foreach ((int ordinal, float authored) in _faded)
+		{
+			if (ordinal < opacity.Length && opacity[ordinal] is float stated && stated < authored)
+			{
+				opacity[ordinal] = authored;
+			}
+		}
+
 		foreach ((int owner, int forced, BgfSlide[] own) in _owners)
 		{
 			if (owner >= slides.Length)

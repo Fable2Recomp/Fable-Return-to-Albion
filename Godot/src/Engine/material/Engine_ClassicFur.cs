@@ -38,6 +38,13 @@ namespace Refii.Models;
 /// its cascade set, on a layer of its own (<see cref="PrelitSecondLayer"/>); the shells sample it
 /// in that view (<see cref="Engine_ClassicShaders.ViewSampler"/>). Built when the screen splits,
 /// freed when it rejoins.
+///
+/// THE SHELLS FADE WITH THE BODY, A REMASTER CHOICE (the title's shell pass never reads the
+/// opacity: Engine_EntityAppearance, "THE FUR SHELLS FADE WITH THE BODY"). The composition writes
+/// no ALPHA and cuts on its own output alpha (PS 0105's alpha test, reference 16), so the body's
+/// Transparency on the shell node is a separate factor; while the body keeps its depth the chain
+/// also draws each shell's depth first (the same stages writing nothing else, render priority
+/// -128), so only the nearest surviving texel blends. At rest neither exists.
 /// </remarks>
 public partial class Engine_ClassicFur : Node
 {
@@ -110,14 +117,23 @@ public partial class Engine_ClassicFur : Node
         public Engine_ClassicMist.Volume? Mist;
         public bool MistKnown;
         public int Linked = -1;
+        /// <summary>The shell node's visibility: the source's colour pass is built (Engine_EntityAppearance.IsSubmitted).</summary>
+        public bool Shown = true;
+        /// <summary>The body's fade on the shell node (Engine_EntityAppearance.FadeOf).</summary>
+        public float Transparency;
+        /// <summary>The body keeps its depth while faded: the chain draws the shells' depth first.</summary>
+        public bool Depth;
+        public bool LinkedDepth;
+        /// <summary>The depth-only passes, one per shell on its row; made at the first faded frame.</summary>
+        public ShaderMaterial[]? DepthPasses;
     }
 
     private readonly Dictionary<ulong, Furred> _furred = new();
     private readonly List<ulong> _gone = new();
     private static readonly Dictionary<float, ImageTexture[]> SlicesByFalloff = new();
     private static readonly Dictionary<ulong, ArrayMesh?> ShellMeshes = new();
-    private Shader? _shader, _mistShader;
-    private bool _shaderTried;
+    private Shader? _shader, _mistShader, _depthShader;
+    private bool _shaderTried, _depthTried;
 
     private static readonly float[] FramePs = new float[Engine_ClassicConstants.Floats];
     private static readonly float[] FrameVs = new float[Engine_ClassicConstants.Floats];
@@ -133,7 +149,7 @@ public partial class Engine_ClassicFur : Node
             int shells = 0;
             foreach (Furred f in _furred.Values)
             {
-                shells += Math.Max(f.Linked, 0);
+                shells += f.Shown ? Math.Max(f.Linked, 0) : 0;
             }
             return (_furred.Count, shells);
         }
@@ -591,7 +607,27 @@ public partial class Engine_ClassicFur : Node
             {
                 JoinPrelit(furred);
             }
-            bool visible = furred.Source.IsVisibleInTree();
+            // The shells and their prelit pair are not faded with the body: drawn whole while its
+            // colour pass is built, else not at all (Engine_EntityAppearance, "THE FUR SHELLS DO
+            // NOT FADE"; the prelit list push follows the same gate, `sub_82219AB8` 0x82219FD4, disc
+            // 0x8221A104).
+            bool visible = furred.Source.IsVisibleInTree() &&
+                Refii.Entities.Engine_EntityAppearance.IsSubmitted(furred.Source);
+            if (furred.Shown != visible)
+            {
+                furred.Shown = visible;
+                furred.Shell.Visible = visible;
+            }
+            if (visible)
+            {
+                (float fade, bool depth) = Refii.Entities.Engine_EntityAppearance.FadeOf(furred.Source);
+                if (furred.Transparency != fade)
+                {
+                    furred.Transparency = fade;
+                    furred.Shell.Transparency = fade;
+                }
+                furred.Depth = depth && fade > 0f;
+            }
             Update(furred.FurPass, visible);
             Update(furred.SkinPass, visible);
             Update(furred.SecondFurPass, visible);
@@ -828,24 +864,69 @@ public partial class Engine_ClassicFur : Node
     }
 
     /// <summary>Chains the first <paramref name="count"/> shell passes; each its slice.</summary>
-    private static void Link(Furred furred, int count)
+    private void Link(Furred furred, int count)
     {
-        if (furred.Linked == count)
+        ShaderMaterial[]? depth = furred.Depth ? DepthPassesOf(furred) : null;
+        if (furred.Linked == count && furred.LinkedDepth == (depth is not null))
         {
             return;
         }
         furred.Linked = count;
+        furred.LinkedDepth = depth is not null;
         int n = count + 1;
         for (int i = 0; i < furred.Passes.Length; i++)
         {
             ShaderMaterial pass = furred.Passes[i];
-            pass.NextPass = i + 1 < count ? furred.Passes[i + 1] : null;
+            pass.NextPass = i + 1 < count ? furred.Passes[i + 1]
+                : i + 1 == count && depth is not null ? depth[0] : null;
+            if (depth is not null)
+            {
+                depth[i].NextPass = i + 1 < count ? depth[i + 1] : null;
+            }
             if (i < count && pass.GetMeta("fur_slices").AsGodotArray() is { Count: Slices } slices)
             {
                 float t = Math.Clamp((i + 1) / (float)n, 0f, 0.9999f);
-                pass.SetShaderParameter("ps_g_FurTexture", slices[(int)(t * Slices)]);
+                Variant slice = slices[(int)(t * Slices)];
+                pass.SetShaderParameter("ps_g_FurTexture", slice);
+                depth?[i].SetShaderParameter("ps_g_FurTexture", slice);
             }
         }
+    }
+
+    /// <summary>
+    /// The shells' depth passes: PS 0105 on the shell stage writing no colour and no alpha
+    /// (blend_add, depth_draw_always), each on its colour pass's row and cut. The misted shells'
+    /// PS 0106 cuts on the same alpha (the slice's .w x COLOR.y + COLOR.w), so one composition
+    /// serves both.
+    /// </summary>
+    private ShaderMaterial[]? DepthPassesOf(Furred furred)
+    {
+        if (furred.DepthPasses is not null)
+        {
+            return furred.DepthPasses;
+        }
+        if (_depthShader is null && !_depthTried)
+        {
+            _depthTried = true;
+            _depthShader = Engine_ClassicShaders.Compose(ShellVertex, ShellPixel,
+                "unshaded, blend_add, depth_draw_always, cull_back, shadows_disabled, fog_disabled", 0,
+                ShellDefines + "\n#define XR_COLOUR_OUT(c) vec3(0.0)\n#define XR_ALPHA_OUT(a) 0.0");
+        }
+        if (_depthShader is null)
+        {
+            return null;
+        }
+        var passes = new ShaderMaterial[furred.Passes.Length];
+        for (int i = 0; i < passes.Length; i++)
+        {
+            var pass = new ShaderMaterial { Shader = _depthShader, RenderPriority = (int)Material.RenderPriorityMin };
+            pass.SetShaderParameter(ShellRow, furred.Rows[i]);
+            pass.SetShaderParameter("xr_spec_constants", 2u);
+            pass.SetShaderParameter("xr_alpha_threshold", 16f / 255f);
+            passes[i] = pass;
+        }
+        furred.Linked = -1;
+        return furred.DepthPasses = passes;
     }
 
     private static void Set(float[] into, int register, float value)

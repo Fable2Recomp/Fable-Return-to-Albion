@@ -1,19 +1,21 @@
--- Quickslots: what every part shares — the slots in the player store, the catalog of what a slot
--- may hold, and the labels.
+-- Quickslots: what every part shares — the slots in the player store, what a chosen row binds,
+-- and the labels.
 --
 -- A module of init.lua (require("common")).
 --
 -- A SLOT IS A BINDING { kind, record }. kind: 1 an item to use, 2 an expression to perform,
--- 3 a weapon to draw, 4 a spell to ready; record: the GDB record hash for 1..3, the spell type
--- 0..7 for 4. Twelve slots per player: 1..4 the D-pad, 5..8 LT + the D-pad, 9..12 RT + the
--- D-pad, in the order up, down, left, right.
+-- 3 a weapon to draw, 4 a spell to ready; record: the GDB record as its "0x%08x" text for 1..3,
+-- the spell type 0..7 for 4. Twelve slots per player: 1..4 the D-pad, 5..8 LT + the D-pad, 9..12
+-- RT + the D-pad, in the order up, down, left, right.
 --
--- EACH PLAYER'S SLOTS LIVE IN THE PLAYER STORE, SAVED with the hero (Refii.player_save), so they
--- go home with the save and are the same on both machines of an online session. A Lua number is
--- a float32 in this VM, so a 32-bit record is kept as two values: quickslots.<n>.lo (the low 24
--- bits) and quickslots.<n>.hi (the high 8); quickslots.<n>.kind holds the kind, 0 for an empty
--- slot. quickslots.revision counts the writes, so the input and HUD parts re-read only when a
--- save changed the slots under them.
+-- EACH PLAYER'S SLOTS LIVE IN THE PLAYER STORE, SAVED with the hero, so they go home with the save
+-- and are the same on both machines of an online session: quickslots.<n>.kind the kind (0 empty),
+-- quickslots.<n>.record the record as a TYPED hash (Refii.player_save_hash) for 1..3,
+-- quickslots.<n>.spell the spell type for 4.
+--
+-- AN ITEM'S NAME, ICON AND CATEGORY ARE ON ITS InventoryItemComponent. The record an inventory
+-- states (and a use or equip takes) is the item ENTITY, which names that component by a reference
+-- property and carries none of the item's own properties; an expression's record carries its own.
 
 local Q = Quickslots
 local C = {}
@@ -24,26 +26,8 @@ C.Directions = { "up", "down", "left", "right" }
 C.Elements = { "DPadUp", "DPadDown", "DPadLeft", "DPadRight" }
 C.KindTags = { "QUICKSLOTS_ITEM", "QUICKSLOTS_EXPRESSION", "QUICKSLOTS_WEAPON", "QUICKSLOTS_SPELL" }
 
--- The wills by spell type 0..7: the abilities book's own name tags and wheel icons.
-C.Wills = {
-	[0] = { tag = "GUI_SCREEN_ABILITIES_WILL_LIGHTNING_NAME_LEVEL_06", icon = "will_shock" },
-	[1] = { tag = "GUI_SCREEN_ABILITIES_WILL_FIREBALL_NAME_LEVEL_06", icon = "will_blast" },
-	[2] = { tag = "GUI_SCREEN_ABILITIES_WILL_SLOWTIME_NAME_LEVEL_06", icon = "icon_will_time_control" },
-	[3] = { tag = "GUI_SCREEN_ABILITIES_WILL_SWORDS_NAME_LEVEL_06", icon = "will_sword_of_damocles" },
-	[4] = { tag = "GUI_SCREEN_ABILITIES_WILL_VORTEX_NAME_LEVEL_06", icon = "will_vortex" },
-	[5] = { tag = "GUI_SCREEN_ABILITIES_WILL_CHAOS_NAME_LEVEL_06", icon = "will_chaos" },
-	[6] = { tag = "GUI_SCREEN_ABILITIES_WILL_FORCE_PUSH_NAME_LEVEL_06", icon = "will_force_push" },
-	[7] = { tag = "GUI_SCREEN_ABILITIES_WILL_DEAD_RISING_NAME_LEVEL_06", icon = "will_dead_rising" },
-}
-local kWillIconFolder = "art\\gui\\wheelicons\\abilities\\"
-
--- The inventory categories the game's own quick menu offers for use (the inventory book's
--- "use" pages: potions, food, drink, books, gifts, dyes, tattoos and the rest). Category 1 is a
--- weapon; its WeaponType 1..4 is melee, 5..8 ranged.
-C.Usable = {}
-for _, category in ipairs({ 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 16, 24, 26 }) do
-	C.Usable[category] = true
-end
+local kNone = "0x00000000"
+local kWeaponCategory = 1
 
 function C.Setting(name, default)
 	return Refii.setting("quickslots." .. name, default)
@@ -51,14 +35,6 @@ end
 
 function C.IsPlayer(p)
 	return p == 1 or p == 2
-end
-
--- A record as the "0x…" string the Refii.* calls take. Split in two so no 32-bit value meets
--- string.format's integer cast.
-local kLow = 16777216
-function C.Hex(record)
-	local hi = math.floor(record / kLow)
-	return string.format("0x%02x%06x", hi, record - hi * kLow)
 end
 
 function C.Bank(slot)
@@ -77,6 +53,37 @@ function C.Same(a, b)
 	return a ~= nil and b ~= nil and a.kind == b.kind and a.record == b.record
 end
 
+-- The InventoryItemComponent record an item entity names, or nil.
+local function ItemComponent(def)
+	return Refii.record_ref(def, "InventoryItemComponent")
+end
+
+-- The binding a chosen row's typed subject states (mod_menu_row's subject_kind, definition, spell),
+-- or nil. An item in the weapon category is drawn, not used.
+function C.Binding(kind, definition, spell)
+	if kind == "will" then
+		if spell ~= nil and spell >= 0 and spell <= 7 then
+			return { kind = C.Kind.Spell, record = spell }
+		end
+		return nil
+	end
+	if definition == nil or definition == "" or definition == kNone then
+		return nil
+	end
+	if kind == "expression" then
+		return { kind = C.Kind.Expression, record = definition }
+	elseif kind == "weapon" then
+		return { kind = C.Kind.Weapon, record = definition }
+	elseif kind == "item" then
+		local component = ItemComponent(definition)
+		if component ~= nil and Refii.record_int(component, "Category") == kWeaponCategory then
+			return { kind = C.Kind.Weapon, record = definition }
+		end
+		return { kind = C.Kind.Item, record = definition }
+	end
+	return nil
+end
+
 ----------------------------------------------------------------------------------------------------
 -- THE STORE
 ----------------------------------------------------------------------------------------------------
@@ -85,45 +92,119 @@ local function Key(slot, part)
 	return "quickslots." .. slot .. "." .. part
 end
 
--- Every slot of a player, nil where empty.
-function C.Read(p)
+-- THE OLD FORM, read once: a record split over two floats, quickslots.<n>.hi (the high 8 bits) and
+-- .lo (the low 24), written from the record as a float, so a record past 2^24 lost its low bits
+-- before it was stored. The record is the carried item or known expression whose float splits into
+-- the same two halves, else the halves joined when the database has that record. nil when neither,
+-- and whether that is final: not while the hero states no inventory or expressions yet.
+local kLow = 16777216
+
+local function Halves(hex)
+	local f = tonumber(hex)
+	if f == nil then
+		return nil, nil
+	end
+	local hi = math.floor(f / kLow)
+	return hi, f - hi * kLow
+end
+
+local function OldRecord(p, hero, kind, hi, lo)
+	local candidates = {}
+	if kind == C.Kind.Expression then
+		for _, e in ipairs(Refii.expressions(p) or {}) do
+			candidates[#candidates + 1] = e.record
+		end
+	else
+		for _, stack in ipairs(Refii.inventory(hero) or {}) do
+			candidates[#candidates + 1] = stack.definition
+		end
+	end
+	for _, hex in ipairs(candidates) do
+		local h, l = Halves(hex)
+		if h == hi and l == lo then
+			return hex, true
+		end
+	end
+	local joined = string.format("0x%02x%06x", hi, lo)
+	if Refii.record_exists(joined) then
+		return joined, true
+	end
+	return nil, #candidates > 0
+end
+
+-- Moves slot i of player p from the old form to the typed one, once the hero exists (the
+-- candidates are its inventory and expressions). The binding, or nil.
+local function Migrate(p, hero, i, kind)
+	local hi = Refii.player_value(p, Key(i, "hi"))
+	local lo = Refii.player_value(p, Key(i, "lo"))
+	if hi == nil or lo == nil or hero == nil then
+		return nil
+	end
+	local binding, final = nil, true
+	if kind == C.Kind.Spell then
+		local spell = hi * kLow + lo
+		if spell >= 0 and spell <= 7 then
+			binding = { kind = kind, record = spell }
+			Refii.player_save(p, Key(i, "spell"), spell)
+		end
+	else
+		local record
+		record, final = OldRecord(p, hero, kind, hi, lo)
+		if record ~= nil then
+			binding = { kind = kind, record = record }
+			Refii.player_save_hash(p, Key(i, "record"), record)
+		end
+	end
+	if binding == nil and final then
+		Refii.player_save(p, Key(i, "kind"), 0)
+		Refii.log("Quickslots: slot " .. i .. " of player " .. p .. " named no record it can be read back as; cleared")
+	end
+	return binding
+end
+
+-- Every slot of a player, nil where empty. hero: the player's hero (Refii.hero(p) when absent).
+function C.Read(p, hero)
+	hero = hero or Refii.hero(p)
 	local slots = {}
 	for i = 1, C.Count do
 		local kind = Refii.player_value(p, Key(i, "kind"), 0)
-		if kind >= 1 and kind <= 4 then
-			local record = Refii.player_value(p, Key(i, "hi"), 0) * kLow + Refii.player_value(p, Key(i, "lo"), 0)
-			if kind == C.Kind.Spell then
-				if record >= 0 and record <= 7 then
+		if kind == C.Kind.Spell then
+			local spell = Refii.player_value(p, Key(i, "spell"))
+			if spell ~= nil then
+				if spell >= 0 and spell <= 7 then
+					slots[i] = { kind = kind, record = spell }
+				end
+			else
+				slots[i] = Migrate(p, hero, i, kind)
+			end
+		elseif kind >= 1 and kind <= 3 then
+			local record = Refii.player_value_hash(p, Key(i, "record"))
+			if record ~= nil then
+				if record ~= kNone then
 					slots[i] = { kind = kind, record = record }
 				end
-			elseif record > 0 then
-				slots[i] = { kind = kind, record = record }
+			else
+				slots[i] = Migrate(p, hero, i, kind)
 			end
 		end
 	end
 	return slots
 end
 
-function C.Revision(p)
-	return Refii.player_value(p, "quickslots.revision", 0)
-end
-
--- Writes every slot and bumps the revision. Saved: it goes home with the hero.
+-- Writes every slot. Saved: it goes home with the hero.
 function C.Write(p, slots)
 	for i = 1, C.Count do
 		local b = slots[i]
-		if b ~= nil then
-			local hi = math.floor(b.record / kLow)
-			Refii.player_save(p, Key(i, "kind"), b.kind)
-			Refii.player_save(p, Key(i, "hi"), hi)
-			Refii.player_save(p, Key(i, "lo"), b.record - hi * kLow)
-		else
+		if b == nil then
 			Refii.player_save(p, Key(i, "kind"), 0)
-			Refii.player_save(p, Key(i, "hi"), 0)
-			Refii.player_save(p, Key(i, "lo"), 0)
+		elseif b.kind == C.Kind.Spell then
+			Refii.player_save(p, Key(i, "kind"), b.kind)
+			Refii.player_save(p, Key(i, "spell"), b.record)
+		else
+			Refii.player_save(p, Key(i, "kind"), b.kind)
+			Refii.player_save_hash(p, Key(i, "record"), b.record)
 		end
 	end
-	Refii.player_save(p, "quickslots.revision", C.Revision(p) + 1)
 end
 
 -- The slots a binding sits in, as a list of slot numbers.
@@ -138,60 +219,29 @@ function C.Holding(slots, binding)
 end
 
 ----------------------------------------------------------------------------------------------------
--- THE CATALOG: what a player may put in a slot right now, each with its name tag and icon.
+-- NAMES AND ICONS
 ----------------------------------------------------------------------------------------------------
 
-local function Entry(kind, record, tag, icon)
-	return { kind = kind, record = record, tag = tag or "", icon = icon or "" }
-end
-
--- The name tag and icon of a binding, from the record (items, weapons, expressions) or the
--- will table (spells).
+-- The name tag and icon of a binding: a spell's from Refii.spell_info, an expression's off its
+-- record, an item's or weapon's off its InventoryItemComponent. "" for what the records lack.
 function C.Describe(binding)
 	if binding == nil then
 		return nil
 	end
+	local tag, icon
 	if binding.kind == C.Kind.Spell then
-		local will = C.Wills[binding.record]
-		return Entry(binding.kind, binding.record, will and will.tag, will and (kWillIconFolder .. will.icon .. ".tex"))
-	end
-	local def = C.Hex(binding.record)
-	return Entry(binding.kind, binding.record, Refii.record_string(def, "NameTag"), Refii.record_string(def, "IconGraphic"))
-end
-
-function C.Catalog(p)
-	local list = {}
-	local hero = Refii.hero(p)
-	if hero == nil then
-		return list
-	end
-	for _, stack in ipairs(Refii.inventory(hero) or {}) do
-		local def = stack.definition
-		local record = tonumber(def)
-		if record ~= nil and record > 0 then
-			local category = Refii.record_int(def, "Category")
-			if category ~= nil and C.Usable[category] then
-				list[#list + 1] = C.Describe({ kind = C.Kind.Item, record = record })
-			elseif category == 1 then
-				local weapon = Refii.record_int(def, "WeaponType")
-				if weapon ~= nil and weapon >= 1 and weapon <= 8 then
-					list[#list + 1] = C.Describe({ kind = C.Kind.Weapon, record = record })
-				end
-			end
+		tag, icon = Refii.spell_info(binding.record)
+	else
+		local record = binding.record
+		if binding.kind ~= C.Kind.Expression then
+			record = ItemComponent(record)
+		end
+		if record ~= nil then
+			tag = Refii.record_string(record, "NameTag")
+			icon = Refii.record_string(record, "IconGraphic")
 		end
 	end
-	for _, e in ipairs(Refii.expressions(p) or {}) do
-		local record = tonumber(e.record)
-		if record ~= nil and record > 0 then
-			list[#list + 1] = C.Describe({ kind = C.Kind.Expression, record = record })
-		end
-	end
-	for _, spell in ipairs(Refii.spells_known(p) or {}) do
-		if C.Wills[spell] ~= nil then
-			list[#list + 1] = C.Describe({ kind = C.Kind.Spell, record = spell })
-		end
-	end
-	return list
+	return { kind = binding.kind, record = binding.record, tag = tag or "", icon = icon or "" }
 end
 
 -- A row label: the entry's own name tag, or its kind when the record names nothing.

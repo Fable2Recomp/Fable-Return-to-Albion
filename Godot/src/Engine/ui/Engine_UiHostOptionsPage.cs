@@ -229,6 +229,6 @@ public abstract class Engine_UiHostOptionsPage
 	{
 		Register(Engine_UiWeatherOptions.OpenCommand, _ => Engine_UiWeatherOptions.Page);
 		Register(Refii.Mods.ModSettingsUi.OpenCommandPrefix, Refii.Mods.ModSettingsUi.PageFor);
-		Register(Refii.Mods.ModInputUi.OpenCommandPrefix, Refii.Mods.ModInputUi.PageFor);
+		Register(Engine_UiControlsPage.OpenCommand, _ => Engine_UiControlsPage.Page);
 	}
 }

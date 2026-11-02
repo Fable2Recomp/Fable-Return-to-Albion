@@ -69,7 +69,6 @@ public static class Engine_UiGameTemplates
         {
           "name": "ControlsSettings",
           "tag": "GUI_SCREEN_OPTIONS_CONTROLS",
-          "source": "mod-controls",
           "hostOnly": true,
           "icon": "Art\\GUI\\WheelIcons\\Abilities\\icon_logbook.tga",
           "counted": false,
@@ -84,6 +83,14 @@ public static class Engine_UiGameTemplates
               "name": "ControllerVibration",
               "tag": "Controller Vibration",
               "command": "options:vibration",
+              "hostOnly": true,
+              "icon": "Art\\GUI\\WheelIcons\\Abilities\\icon_logbook.tga",
+              "counted": false
+            },
+            {
+              "name": "ControllerAndKeyboard",
+              "tag": "Controller and Keyboard",
+              "command": "options:input",
               "hostOnly": true,
               "icon": "Art\\GUI\\WheelIcons\\Abilities\\icon_logbook.tga",
               "counted": false

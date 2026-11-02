@@ -129,11 +129,19 @@ public static class ModSettings
 	/// script's <c>set_setting</c>, the debug channel's <c>mod-setting</c>: the native table takes
 	/// it at once, and the running Lua's <c>RefiiSettings</c> takes it at the next guest tick
 	/// (<see cref="LuaAssignment"/>, a <c>run_lua</c> command; on the title the front end's state
-	/// instead), so <c>Refii.setting</c> answers the new value without a reload.
+	/// instead), so <c>Refii.setting</c> answers the new value without a reload and Lua's
+	/// <c>setting_changed</c> fires; Godot scripts hear <c>RefiiHost.setting_changed</c> here, on a
+	/// real change.
 	/// </summary>
 	public static void Set(string key, float value)
 	{
+		bool changed = !TryGet(key, out float before) || before != value;
 		_overrides[key] = value;
+		if (changed)
+		{
+			ModGodot.Host?.RaiseSettingChanged(key, value);
+		}
+
 		HostBridge.SetModSetting(key, value);
 		string assignment = LuaAssignment(key, value);
 		if (assignment.Length != 0)
@@ -148,7 +156,9 @@ public static class ModSettings
 
 	/// <summary>
 	/// The Lua statement that puts a setting into a running VM's <c>RefiiSettings</c>, one line (the
-	/// command line holds it), or empty for a key no Lua string can carry.
+	/// command line holds it), or empty for a key no Lua string can carry: through the game VM's
+	/// <c>Refii._setting_changed</c>, which raises <c>setting_changed</c> on a real change, else (the
+	/// front end's state) the table alone.
 	/// </summary>
 	public static string LuaAssignment(string key, float value)
 	{
@@ -159,7 +169,8 @@ public static class ModSettings
 
 		string escaped = key.Replace("\\", "\\\\").Replace("\"", "\\\"");
 		string number = float.IsFinite(value) ? value.ToString("R", CultureInfo.InvariantCulture) : "0";
-		return "if RefiiSettings then RefiiSettings[\"" + escaped + "\"] = " + number + " end";
+		return "if Refii and Refii._setting_changed then Refii._setting_changed(\"" + escaped + "\", " + number +
+			") elseif RefiiSettings then RefiiSettings[\"" + escaped + "\"] = " + number + " end";
 	}
 
 	/// <summary>Pushes the settings once per guest; call every frame with whether the guest is up.</summary>

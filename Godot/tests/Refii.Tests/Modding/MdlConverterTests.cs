@@ -291,6 +291,31 @@ public class MdlConverterTests
 		BoneWeights = skinned ? new byte[] { 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255 } : Array.Empty<byte>(),
 	};
 
+	/// <summary>
+	/// A synthetic model for other suites: one triangle part per entry, skinned where true, or a
+	/// quad (four vertices, two triangles) where <paramref name="quad"/> names that part.
+	/// </summary>
+	internal static byte[] SyntheticModel(bool[] skinned, int quad = -1)
+	{
+		var fixture = new Fixture { Bones = new[] { "Root" }, BoneParents = new[] { -1 } };
+		for (int i = 0; i < skinned.Length; i++)
+		{
+			Part part = Triangle(skinned[i]);
+			if (i == quad)
+			{
+				part.Positions = new float[] { 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0 };
+				part.Uvs = new float[] { 0, 0, 1, 0, 0, 1, 1, 1 };
+				part.Indices = new ushort[] { 0, 1, 2, 2, 1, 3 };
+				part.BoneIndices = skinned[i] ? new byte[16] : Array.Empty<byte>();
+				part.BoneWeights = skinned[i] ? new byte[] { 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255 } : Array.Empty<byte>();
+			}
+
+			fixture.Parts.Add(part);
+		}
+
+		return BuildMdl(fixture);
+	}
+
 	/// <summary>A unit cube, 8 vertices and 12 triangles, in model space.</summary>
 	private static (float[] Positions, float[] Uvs, ushort[] Indices) Cube()
 	{

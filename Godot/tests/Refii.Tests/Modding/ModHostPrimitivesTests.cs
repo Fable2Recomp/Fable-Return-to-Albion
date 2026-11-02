@@ -64,7 +64,7 @@ public class ModHostPrimitivesTests
 
         // The trailing fields do not bump the version; they are catalogued on the event.
         ModApiEvent row = ModApi.Find("mod_menu_row")!;
-        AssertThat(row.Fields.Select(f => f.Name).ToArray()).IsEqual(new[] { "menu", "row", "player", "mod", "command", "button" });
+        AssertThat(row.Fields.Select(f => f.Name).ToArray()).IsEqual(new[] { "menu", "row", "player", "mod", "command", "button", "subject_kind", "definition", "spell" });
 
         string? root = RepoRoot();
         if (root == null)
@@ -85,7 +85,9 @@ public class ModHostPrimitivesTests
         }
 
         string events = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h"));
-        AssertThat(events.Contains("const char* command;\n  const char* button;\n};", StringComparison.Ordinal)).IsTrue();
+        AssertThat(events.Contains("const char* command;\n  const char* button;\n", StringComparison.Ordinal)).IsTrue();
+        // The typed subject trails them (Part I.3), so a mod built against the old struct reads the same.
+        AssertThat(events.Contains("const char* subject_kind;\n  const char* definition;\n  int32_t spell;\n};", StringComparison.Ordinal)).IsTrue();
 
         string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
         foreach (string registered in new[] { "{\"input_claim\", &NativeInputClaim, 0}", "{\"hud_icon\", &NativeHudIcon, 0}", "{\"hud_slide\", &NativeHudSlide, 0}", "{\"hud_hold\", &NativeHudHold, 0}" })
@@ -235,16 +237,20 @@ public class ModHostPrimitivesTests
     {
         Engine_UiModMenuCommand.Parsed command = Engine_UiModMenuCommand.Parse("Mod:lua:quickslots.assign:spell");
         string chunk = Engine_UiModMenuCommand.LuaCall(command, "ItemsMenu", "Item 3", 2, "quickslots", "Inventory:use:1234", "Y");
-        AssertThat(chunk.Contains(",command='Inventory:use:1234',button='Y'})", StringComparison.Ordinal)).IsTrue();
+        AssertThat(chunk.Contains(",command='Inventory:use:1234',button='Y',subject_kind='item',definition='0x000004d2',spell=-1})", StringComparison.Ordinal)).IsTrue();
         AssertThat(Engine_UiModMenuCommand.LuaCall(command, "m", "r", 1, "q").Contains(",command='',button=''", StringComparison.Ordinal)).IsTrue();
 
         string line = Engine_UiModMenuCommand.RowCommandLine("ItemsMenu", "Item 3", 2, "quickslots", "Inventory:use:1234", "Y");
         string[] words = line.Split(' ');
-        AssertThat(words.Length).IsEqual(7);
+        AssertThat(words.Length).IsEqual(10);
         AssertThat(words[0]).IsEqual("menu_row");
         AssertThat(words[3]).IsEqual("Item_3");
         AssertThat(Encoding.UTF8.GetString(Convert.FromBase64String(words[5]))).IsEqual("Inventory:use:1234");
         AssertThat(words[6]).IsEqual("Y");
-        AssertThat(Engine_UiModMenuCommand.RowCommandLine("m", "r", 1, "q").EndsWith(" - -", StringComparison.Ordinal)).IsTrue();
+        // The typed subject trails: kind, "0x…" definition, spell (-1 for none).
+        AssertThat(words[7]).IsEqual("item");
+        AssertThat(words[8]).IsEqual("0x000004d2");
+        AssertThat(words[9]).IsEqual("-1");
+        AssertThat(Engine_UiModMenuCommand.RowCommandLine("m", "r", 1, "q").EndsWith(" - - - - -1", StringComparison.Ordinal)).IsTrue();
     }
 }

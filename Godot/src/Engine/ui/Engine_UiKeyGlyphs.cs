@@ -1,12 +1,16 @@
 using System;
 using System.Collections.Generic;
 using Godot;
+using Refii.Core;
 
 namespace Refii.Ui;
 
 /// <summary>
 /// The controller's button art, swapped for keycaps while the keyboard and mouse are the
-/// active device and back the instant the controller is touched.
+/// active device and back the instant the controller is touched — and, on the pad, drawn in the
+/// player's glyph style (Xbox, PlayStation, Switch: <c>glyph_style</c>), from their glyph pack
+/// (<c>glyph_pack</c>, <see cref="Engine_UiGlyphPack"/>), naming the physical input the player's
+/// remap binds to each game button (<see cref="Engine_PadRemap"/>).
 /// </summary>
 /// <remarks>
 /// EVERY BUTTON GLYPH IS ONE TEXTURE OBJECT. The UI loads all of them through
@@ -17,8 +21,20 @@ namespace Refii.Ui;
 ///
 /// A keycap is drawn at the original's size, so the UV insets the quads were cut with still
 /// fit. The `abyx` atlas keeps everything but its eight button cells — its lower half is the
-/// hold-meter ring. Labels come from the game (<see cref="LabelFor"/>), which knows the bindings
-/// and whether a menu or the world has the input.
+/// hold-meter ring. The menu cursor's select orb, cut from `frames_elements.tex`, is an atlas
+/// button too (<see cref="CursorOrb"/>): its quads carry an orb texture, an opaque disc that also
+/// covers the red B baked into the cursor's rim. Labels come from the game (<see cref="LabelFor"/>),
+/// which knows the bindings and whether a menu or the world has the input.
+///
+/// THE SHIPPED ART STAYS while it is true: Xbox style, no pack file for the input, and the game
+/// button pressed by itself. Anything else is drawn (<see cref="DrawPadGlyph"/>) cell by cell like
+/// a keycap, so the atlas cells and the animated strips keep their UVs. The atlas quads show their
+/// keycap texture while <c>ui_keyboard_mode</c> is set — set whenever a face button is not the
+/// shipped art. Proxies are shared textures: they follow ONE player's device, the one with the
+/// input (<see cref="GlyphPlayer"/>, <see cref="PadFamily"/>).
+///
+/// Art that is not a texture — the pub games' SWF prompt shapes — makes the same choice per
+/// button (<see cref="PromptShowsShipped"/>) and, drawn, carries a keycap texture in its place.
 /// </remarks>
 public static partial class Engine_UiKeyGlyphs
 {
@@ -28,16 +44,36 @@ public static partial class Engine_UiKeyGlyphs
 	/// <summary>The font keycaps are lettered in — the game's own, once the UI has loaded it.</summary>
 	public static Engine_UiFontLibrary? Fonts { get; set; }
 
+	/// <summary><c>glyph_style</c>: auto, xbox, playstation or switch.</summary>
+	public static string StyleSetting { get; set; } = "auto";
+
+	/// <summary><c>glyph_pack</c>: the pack's folder name, empty for the built-in glyphs.</summary>
+	public static string PackName { get; set; } = string.Empty;
+
+	/// <summary>The family of the controller the prompts follow (the player with the input).</summary>
+	public static ControllerFamily PadFamily { get; set; }
+
+	/// <summary>The player (1 or 2) whose remap and controller the prompts follow.</summary>
+	public static int GlyphPlayer { get; set; } = 1;
+
+	/// <summary>The style the pad prompts are drawn in now.</summary>
+	public static GlyphStyle Style => Engine_ControllerFamily.Resolve(StyleSetting, PadFamily);
+
 	private sealed class Proxy
 	{
 		public required ImageTexture Texture;
 		public required Texture2D Original;
 		public required string Button;
+
+		/// <summary>A stick or D-pad prompt's direction (`LeftUp`), else none.</summary>
+		public Direction Arrow;
 	}
 
 	private static readonly Dictionary<string, Proxy> _proxies = new(StringComparer.Ordinal);
 
-	private static string _drawnSignature = string.Empty;
+	private static int _drawnSignature;
+
+	private static bool _drawnOnce;
 
 	/// <summary>The buttons the `abyx` atlas's columns show, idle and pressed rows alike.</summary>
 	private static readonly string[] AtlasColumns = { "A", "B", "Y", "X" };
@@ -51,6 +87,9 @@ public static partial class Engine_UiKeyGlyphs
 	private static readonly string[] Buttons =
 		{ "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Start", "Back", "DPad", "LS", "RS" };
 
+	/// <summary>Bumped whenever <see cref="Update"/> redraws, for a view that chooses between the shipped art and a glyph.</summary>
+	public static int Generation { get; private set; }
+
 	/// <summary>The keycap a quad carries for <paramref name="button"/> — one object per button.</summary>
 	public static ImageTexture KeycapFor(string button)
 	{
@@ -63,11 +102,30 @@ public static partial class Engine_UiKeyGlyphs
 		return keycap;
 	}
 
+	/// <summary>
+	/// Whether a prompt for <paramref name="button"/> shows its shipped Xbox art now — on the pad
+	/// and <see cref="ShowsShipped"/> — rather than its keycap.
+	/// </summary>
+	public static bool PromptShowsShipped(string button) => !Engine_UiInputMode.Keycaps && ShowsShipped(button);
+
+	/// <summary>The square glyph for a button: its keycap on the keyboard, its pad glyph on the pad.</summary>
 	private static Image Keycap(string button)
 	{
 		var canvas = new Canvas(KeycapSize, KeycapSize);
-		DrawKeycap(canvas, new Rect2I(0, 0, KeycapSize, KeycapSize),
-			LabelFor?.Invoke(button) ?? button, pressed: false);
+		var cell = new Rect2I(0, 0, KeycapSize, KeycapSize);
+		if (Engine_UiInputMode.Keycaps)
+		{
+			string label = LabelFor?.Invoke(button) ?? button;
+			if (!BlitPack(canvas, cell, KeyPackName(label)))
+			{
+				DrawKeycap(canvas, cell, label, pressed: false);
+			}
+		}
+		else
+		{
+			DrawPadCell(canvas, cell, button, Direction.None);
+		}
+
 		return canvas.ToImage(mipmaps: true);
 	}
 
@@ -96,6 +154,110 @@ public static partial class Engine_UiKeyGlyphs
 
 		int column = Math.Clamp((int)Math.Floor((uMin * 4f) + 0.01f), 0, 3);
 		return AtlasColumns[column];
+	}
+
+	/// <summary>
+	/// The button the menu cursor's orb names: the game's A, its select (<c>GUISelect</c>).
+	/// </summary>
+	private const string OrbButton = "A";
+
+	/// <summary>
+	/// The menu cursor's select orb in `art/gui/frames/frames_elements.tex`, the art of every
+	/// `MenuHighlight`'s `green_top` and `green_top_translucent`: a green A disc centred on texel
+	/// (35.5, 394.5) of the 512 atlas, radius 21.5. As atlas UV.
+	/// </summary>
+	private const float OrbU = 35.5f / 512f, OrbV = 394.5f / 512f, OrbDisc = 21.5f / 512f;
+
+	/// <summary>
+	/// The radius a drawn orb covers, opaque: the green disc and the red B disc `rim_and_red` bakes
+	/// beneath it (radius 21.5 about texel (68, 216); green_top's authored transform lays the green
+	/// disc's centre within a texel of it), inside the bronze ring's outer edge (radius 34).
+	/// </summary>
+	private const float OrbCover = 23f / 512f;
+
+	/// <summary>
+	/// The atlas cell that holds the orb and no other art — the left column between the cursor's
+	/// rim (above) and the stars (below) — as UV: u 0..0.25, v 0.5..0.875.
+	/// </summary>
+	private const float OrbCellUMax = 0.25f, OrbCellVMin = 0.5f, OrbCellVMax = 0.875f;
+
+	/// <summary>
+	/// Where a quad cut from `frames_elements.tex` shows the cursor's select orb, in the quad's own
+	/// 0..1 space (x right, y down from <paramref name="vMin"/>; the covered radius against the
+	/// quad's width) — or null when its cell does not hold the whole green disc inside the orb's
+	/// cell. `rim_and_red` is not an orb quad: the orb drawn over it covers its red B.
+	/// </summary>
+	public static (float X, float Y, float Radius)? CursorOrb(string texturePath, float uMin, float uMax, float vMin, float vMax)
+	{
+		string path = texturePath.Replace('\\', '/').ToLowerInvariant();
+		float du = uMax - uMin, dv = vMax - vMin;
+		if (!path.EndsWith("art/gui/frames/frames_elements.tex", StringComparison.Ordinal) || du <= 0f || dv <= 0f ||
+			uMin < 0f || uMax > OrbCellUMax || vMin < OrbCellVMin || vMax > OrbCellVMax ||
+			OrbU - OrbDisc < uMin || OrbU + OrbDisc > uMax || OrbV - OrbDisc < vMin || OrbV + OrbDisc > vMax)
+		{
+			return null;
+		}
+
+		return ((OrbU - uMin) / du, (OrbV - vMin) / dv, OrbCover / du);
+	}
+
+	/// <summary>An orb quad's cell: the orb in the quad's 0..1 space and the cell's height over its width.</summary>
+	private readonly record struct OrbCell(float X, float Y, float Radius, float Aspect);
+
+	/// <summary>One orb texture per quad cell (every shipped cursor cuts the same one), redrawn with the keycaps.</summary>
+	private static readonly Dictionary<(float, float, float, float), (OrbCell Cell, ImageTexture Texture)> _orbs = new();
+
+	/// <summary>
+	/// The texture an orb quad draws in place of its atlas cell while <c>ui_keyboard_mode</c> is set
+	/// (<see cref="CursorOrb"/>), or null for any other quad: the orb the shipped art shows, covered
+	/// by the active style's glyph for the physical input bound to the game's A.
+	/// </summary>
+	public static ImageTexture? OrbFor(string texturePath, float uMin, float uMax, float vMin, float vMax)
+	{
+		if (CursorOrb(texturePath, uMin, uMax, vMin, vMax) is not { } orb)
+		{
+			return null;
+		}
+
+		var key = (uMin, uMax, vMin, vMax);
+		if (!_orbs.TryGetValue(key, out var known))
+		{
+			var cell = new OrbCell(orb.X, orb.Y, orb.Radius, (vMax - vMin) / (uMax - uMin));
+			known = (cell, ImageTexture.CreateFromImage(DrawOrb(cell)));
+			_orbs[key] = known;
+		}
+
+		return known.Texture;
+	}
+
+	/// <summary>
+	/// An orb: an opaque plate disc over the shipped orb and the red B beneath it, the glyph for the
+	/// game's A drawn in the disc's square — the pack's file or the style's glyph on the pad, the
+	/// keycap on the keyboard.
+	/// </summary>
+	private static Image DrawOrb(OrbCell cell)
+	{
+		int width = KeycapSize;
+		int height = Math.Max(1, (int)Math.Round(KeycapSize * cell.Aspect));
+		var canvas = new Canvas(width, height);
+		float cx = cell.X * width, cy = cell.Y * height, r = cell.Radius * width;
+		int side = (int)Math.Round(r * 2f);
+		var disc = new Rect2I((int)Math.Round(cx - r), (int)Math.Round(cy - r), side, side);
+		if (Engine_UiInputMode.Keycaps)
+		{
+			string label = LabelFor?.Invoke(OrbButton) ?? OrbButton;
+			if (!BlitPack(canvas, disc, KeyPackName(label)))
+			{
+				DrawKeycap(canvas, disc, label, pressed: false);
+			}
+		}
+		else
+		{
+			DrawPadCell(canvas, disc, OrbButton, Direction.None);
+		}
+
+		canvas.UnderCircle(cx, cy, r, PlateFill with { A = 1f });
+		return canvas.ToImage(mipmaps: true);
 	}
 
 	private static string? ButtonNamed(string name)
@@ -146,15 +308,16 @@ public static partial class Engine_UiKeyGlyphs
 			Texture = ImageTexture.CreateFromImage(image),
 			Original = original,
 			Button = button,
+			Arrow = ArrowFor(key),
 		};
 		_proxies[key] = proxy;
 		Draw(proxy, Engine_UiInputMode.Keycaps);
 
 		// The enhancer swaps a sharper image into the original later; the pad art follows it.
-		// (Keyboard mode keeps its keycap — the atlas cells are redrawn on the next switch.)
+		// (A drawn glyph keeps itself — it is redrawn on the next switch.)
 		original.Changed += () =>
 		{
-			if (!Engine_UiInputMode.Keycaps)
+			if (!Engine_UiInputMode.Keycaps && ShowsShipped(proxy.Button))
 			{
 				Draw(proxy, Engine_UiInputMode.Keycaps);
 			}
@@ -170,34 +333,85 @@ public static partial class Engine_UiKeyGlyphs
 	public static void Update()
 	{
 		bool keys = Engine_UiInputMode.Keycaps;
-		string signature = keys ? "kbm" : "pad";
+		var hash = new HashCode();
+		hash.Add(keys);
+		hash.Add(PackName);
+		hash.Add(Engine_UiGlyphPack.Generation);
 		if (keys)
 		{
 			foreach (string button in Buttons)
 			{
-				signature += "|" + (LabelFor?.Invoke(button) ?? "?");
+				hash.Add(LabelFor?.Invoke(button));
 			}
 		}
+		else
+		{
+			hash.Add(Style);
+			hash.Add(PadFamily);
+			hash.Add(GlyphPlayer);
+			hash.Add(Engine_PadRemap.Generation);
+		}
 
-		if (signature == _drawnSignature)
+		int signature = hash.ToHashCode();
+		if (_drawnOnce && signature == _drawnSignature)
 		{
 			return;
 		}
 
+		_drawnOnce = true;
 		_drawnSignature = signature;
-		RenderingServer.GlobalShaderParameterSet("ui_keyboard_mode", keys);
+		++Generation;
+
+		RenderingServer.GlobalShaderParameterSet("ui_keyboard_mode", !AtlasShowsShipped(keys));
 		foreach (Proxy proxy in _proxies.Values)
 		{
 			Draw(proxy, keys);
 		}
 
-		if (keys)
+		foreach ((string button, ImageTexture keycap) in _keycaps)
 		{
-			foreach ((string button, ImageTexture keycap) in _keycaps)
+			keycap.SetImage(Keycap(button));
+		}
+
+		foreach ((OrbCell cell, ImageTexture orb) in _orbs.Values)
+		{
+			orb.SetImage(DrawOrb(cell));
+		}
+	}
+
+	/// <summary>
+	/// Whether the atlas quads — the `abyx` prompts and the cursor's orb — draw their shipped cells:
+	/// on the pad while every face button is the shipped art. Otherwise <c>ui_keyboard_mode</c> is
+	/// set and they draw their keycap textures.
+	/// </summary>
+	internal static bool AtlasShowsShipped(bool keys) =>
+		!keys && ShowsShipped("A") && ShowsShipped("B") && ShowsShipped("X") && ShowsShipped("Y");
+
+	/// <summary>The direction a stick prompt's art shows (`LeftUp`, `24x24/AnimRightLeft`), else none.</summary>
+	private static Direction ArrowFor(string path)
+	{
+		string name = System.IO.Path.GetFileNameWithoutExtension(path);
+		if (name.StartsWith("anim", StringComparison.Ordinal))
+		{
+			name = name["anim".Length..];
+		}
+
+		foreach (string stick in new[] { "left", "right" })
+		{
+			if (name.Length > stick.Length && name.StartsWith(stick, StringComparison.Ordinal))
 			{
-				keycap.SetImage(Keycap(button));
+				return name[stick.Length..] switch
+				{
+					"up" => Direction.Up,
+					"down" => Direction.Down,
+					"left" => Direction.Left,
+					"right" => Direction.Right,
+					_ => Direction.None,
+				};
 			}
 		}
+
+		return Direction.None;
 	}
 
 	/// <summary>Which pad button a texture path draws, or null for any other art.</summary>
@@ -244,28 +458,144 @@ public static partial class Engine_UiKeyGlyphs
 			return;
 		}
 
-		if (!keys)
+		if (!keys && ShowsShipped(proxy.Button))
 		{
 			proxy.Texture.SetImage(pad);
 			return;
 		}
 
-		// One keycap per square cell along the long side, so an animated strip shows a whole key
+		// One glyph per square cell along the long side, so an animated strip shows a whole key
 		// in whichever frame its UVs select; a square texture is one cell.
 		int width = pad.GetWidth();
 		int height = pad.GetHeight();
 		int side = Math.Min(width, height);
-		string label = LabelFor?.Invoke(proxy.Button) ?? proxy.Button;
+		string label = keys ? LabelFor?.Invoke(proxy.Button) ?? proxy.Button : string.Empty;
 		var canvas = new Canvas(width, height);
 		for (int y = 0; y + side <= height; y += side)
 		{
 			for (int x = 0; x + side <= width; x += side)
 			{
-				DrawKeycap(canvas, new Rect2I(x, y, side, side), label, pressed: false);
+				var cell = new Rect2I(x, y, side, side);
+				if (!keys)
+				{
+					DrawPadCell(canvas, cell, proxy.Button, proxy.Arrow);
+				}
+				else if (!BlitPack(canvas, cell, KeyPackName(label)))
+				{
+					DrawKeycap(canvas, cell, label, pressed: false);
+				}
 			}
 		}
 
 		proxy.Texture.SetImage(canvas.ToImage(pad.HasMipmaps()));
+	}
+
+	/// <summary>
+	/// The physical input a pad prompt for <paramref name="button"/> shows: the remap's for the
+	/// game's buttons; the stick or D-pad itself for the sticks and the D-pad, which are not
+	/// remapped as prompts (<paramref name="unbound"/> true when the game button has no source).
+	/// </summary>
+	private static PadInput? PhysicalFor(string button, out bool unbound)
+	{
+		unbound = false;
+		if (button is "LS" or "RS" or "DPad" || Engine_PadRemap.FromGlyphButton(button) is not { } game)
+		{
+			return Engine_PadRemap.FromGlyphButton(button);
+		}
+
+		PadInput? shown = Engine_PadRemap.For(GlyphPlayer).Shown(game);
+		unbound = shown is null;
+		return shown;
+	}
+
+	/// <summary>Whether the pad prompt for <paramref name="button"/> is the shipped Xbox art.</summary>
+	private static bool ShowsShipped(string button)
+	{
+		if (Style != GlyphStyle.Xbox)
+		{
+			return false;
+		}
+
+		PadInput? physical = PhysicalFor(button, out bool unbound);
+		bool alone = !unbound && physical == Engine_PadRemap.FromGlyphButton(button);
+		return alone && KeepsShippedArt(false, Style, alone,
+			Engine_UiGlyphPack.Find(PackName, PadPackName(physical, Direction.None)) is not null);
+	}
+
+	/// <summary>
+	/// Whether a prompt keeps the shipped Xbox art: on the pad (not <paramref name="keys"/>), in the
+	/// Xbox style, its game button pressed by itself alone, and no pack file for that input.
+	/// </summary>
+	internal static bool KeepsShippedArt(bool keys, GlyphStyle style, bool pressedByItself, bool packed) =>
+		!keys && style == GlyphStyle.Xbox && pressedByItself && !packed;
+
+	/// <summary>
+	/// One pad cell for <paramref name="button"/>: the pack's file, else the style's glyph — an
+	/// empty cell while the game button is unbound, as an unbound key's keycap is.
+	/// </summary>
+	private static void DrawPadCell(Canvas canvas, Rect2I cell, string button, Direction arrow)
+	{
+		PadInput? physical = PhysicalFor(button, out bool unbound);
+		if (unbound)
+		{
+			canvas.Clear(cell);
+			return;
+		}
+
+		if (BlitPack(canvas, cell, PadPackName(physical, arrow)))
+		{
+			return;
+		}
+
+		bool ps5 = PadFamily == ControllerFamily.PlayStation5;
+		DrawPadGlyph(canvas, cell, new PadGlyph(physical, arrow, button is "LS" or "RS"), Style, ps5);
+	}
+
+	/// <summary>A pad input's file name in a pack (see <see cref="Engine_UiGlyphPack"/>).</summary>
+	private static string PadPackName(PadInput? input, Direction arrow) => input switch
+	{
+		null => arrow switch
+		{
+			Direction.Up => "dpad_up",
+			Direction.Down => "dpad_down",
+			Direction.Left => "dpad_left",
+			Direction.Right => "dpad_right",
+			_ => "dpad",
+		},
+		PadInput.DpadUp => "dpad_up",
+		PadInput.DpadDown => "dpad_down",
+		PadInput.DpadLeft => "dpad_left",
+		PadInput.DpadRight => "dpad_right",
+		PadInput.L3 => "ls",
+		PadInput.R3 => "rs",
+		{ } named => named.ToString().ToLowerInvariant(),
+	};
+
+	/// <summary>A keycap's file name in a pack: <c>key_</c> + its label lowercased, spaces dropped.</summary>
+	private static string KeyPackName(string label) =>
+		label.Length == 0 ? string.Empty : "key_" + label.Replace(" ", string.Empty).ToLowerInvariant();
+
+	/// <summary>
+	/// Draws the selected pack's <paramref name="name"/> scaled into <paramref name="cell"/>; false
+	/// when the pack has no such file (also tried as <c>l3</c>/<c>r3</c> for a stick).
+	/// </summary>
+	private static bool BlitPack(Canvas canvas, Rect2I cell, string name)
+	{
+		if (PackName.Length == 0 || name.Length == 0)
+		{
+			return false;
+		}
+
+		Image? art = Engine_UiGlyphPack.Find(PackName, name) ??
+			(name is "ls" or "rs" ? Engine_UiGlyphPack.Find(PackName, name == "ls" ? "l3" : "r3") : null);
+		if (art is null)
+		{
+			return false;
+		}
+
+		canvas.Clear(cell);
+		canvas.Blit(art, cell);
+		return true;
 	}
 
 	/// <summary>
@@ -331,6 +661,174 @@ public static partial class Engine_UiKeyGlyphs
 			return image;
 		}
 
+		/// <summary>Lays <paramref name="colour"/> over a pixel at <paramref name="coverage"/> (0..1), source-over.</summary>
+		public void Blend(int x, int y, Color colour, float coverage)
+		{
+			if (x < 0 || y < 0 || x >= Width || y >= Height || coverage <= 0f)
+			{
+				return;
+			}
+
+			float a = colour.A * Math.Min(1f, coverage);
+			Color under = Get(x, y);
+			float outA = a + (under.A * (1f - a));
+			if (outA <= 0f)
+			{
+				return;
+			}
+
+			Set(x, y, new Color(
+				((colour.R * a) + (under.R * under.A * (1f - a))) / outA,
+				((colour.G * a) + (under.G * under.A * (1f - a))) / outA,
+				((colour.B * a) + (under.B * under.A * (1f - a))) / outA,
+				outA));
+		}
+
+		/// <summary>Fills every pixel whose centre <paramref name="distance"/> puts inside (negative), antialiased over one pixel.</summary>
+		private void Fill(float x0, float y0, float x1, float y1, Func<float, float, float> distance, Color colour)
+		{
+			int ix0 = Math.Max(0, (int)Math.Floor(x0) - 1), ix1 = Math.Min(Width, (int)Math.Ceiling(x1) + 1);
+			int iy0 = Math.Max(0, (int)Math.Floor(y0) - 1), iy1 = Math.Min(Height, (int)Math.Ceiling(y1) + 1);
+			for (int y = iy0; y < iy1; ++y)
+			{
+				for (int x = ix0; x < ix1; ++x)
+				{
+					float d = distance(x + 0.5f, y + 0.5f);
+					if (d < 0.5f)
+					{
+						Blend(x, y, colour, Mathf.Clamp(0.5f - d, 0f, 1f));
+					}
+				}
+			}
+		}
+
+		public void FillCircle(float cx, float cy, float r, Color colour) =>
+			Fill(cx - r, cy - r, cx + r, cy + r, (x, y) => new Vector2(x - cx, y - cy).Length() - r, colour);
+
+		/// <summary>Lays <paramref name="colour"/> beneath what is drawn inside a circle (destination-over), antialiased over one pixel.</summary>
+		public void UnderCircle(float cx, float cy, float r, Color colour)
+		{
+			int x0 = Math.Max(0, (int)Math.Floor(cx - r) - 1), x1 = Math.Min(Width, (int)Math.Ceiling(cx + r) + 1);
+			int y0 = Math.Max(0, (int)Math.Floor(cy - r) - 1), y1 = Math.Min(Height, (int)Math.Ceiling(cy + r) + 1);
+			for (int y = y0; y < y1; ++y)
+			{
+				for (int x = x0; x < x1; ++x)
+				{
+					float coverage = Mathf.Clamp(0.5f - (new Vector2(x + 0.5f - cx, y + 0.5f - cy).Length() - r), 0f, 1f);
+					if (coverage <= 0f)
+					{
+						continue;
+					}
+
+					float a = colour.A * coverage;
+					Color over = Get(x, y);
+					float outA = over.A + (a * (1f - over.A));
+					if (outA <= 0f)
+					{
+						continue;
+					}
+
+					Set(x, y, new Color(
+						((over.R * over.A) + (colour.R * a * (1f - over.A))) / outA,
+						((over.G * over.A) + (colour.G * a * (1f - over.A))) / outA,
+						((over.B * over.A) + (colour.B * a * (1f - over.A))) / outA,
+						outA));
+				}
+			}
+		}
+
+		/// <summary>A ring of <paramref name="width"/> centred on radius <paramref name="r"/>.</summary>
+		public void StrokeCircle(float cx, float cy, float r, float width, Color colour) =>
+			Fill(cx - r - width, cy - r - width, cx + r + width, cy + r + width,
+				(x, y) => Math.Abs(new Vector2(x - cx, y - cy).Length() - r) - (width / 2f), colour);
+
+		public void FillRounded(Rect2 rect, float radius, Color colour) =>
+			Fill(rect.Position.X, rect.Position.Y, rect.End.X, rect.End.Y,
+				(x, y) => Rounded(x, y, rect, radius), colour);
+
+		/// <summary>A rounded rectangle's outline, <paramref name="width"/> wide, inside its edge.</summary>
+		public void StrokeRounded(Rect2 rect, float radius, float width, Color colour) =>
+			Fill(rect.Position.X, rect.Position.Y, rect.End.X, rect.End.Y,
+				(x, y) => Math.Abs(Rounded(x, y, rect, radius) + (width / 2f)) - (width / 2f), colour);
+
+		/// <summary>A round-capped line <paramref name="width"/> wide.</summary>
+		public void Line(float ax, float ay, float bx, float by, float width, Color colour)
+		{
+			var a = new Vector2(ax, ay);
+			var ab = new Vector2(bx, by) - a;
+			float length2 = Math.Max(1e-6f, ab.LengthSquared());
+			float pad = width;
+			Fill(Math.Min(ax, bx) - pad, Math.Min(ay, by) - pad, Math.Max(ax, bx) + pad, Math.Max(ay, by) + pad,
+				(x, y) =>
+				{
+					var p = new Vector2(x, y) - a;
+					float t = Mathf.Clamp(p.Dot(ab) / length2, 0f, 1f);
+					return (p - (ab * t)).Length() - (width / 2f);
+				}, colour);
+		}
+
+		public void FillTriangle(float ax, float ay, float bx, float by, float cx, float cy, Color colour)
+		{
+			float sign = ((bx - ax) * (cy - ay)) - ((by - ay) * (cx - ax)) < 0f ? -1f : 1f;
+			float Edge(float px, float py, float x0, float y0, float x1, float y1)
+			{
+				var e = new Vector2(x1 - x0, y1 - y0);
+				float length = Math.Max(1e-6f, e.Length());
+				return sign * (((px - x0) * e.Y) - ((py - y0) * e.X)) / length;
+			}
+
+			Fill(Math.Min(ax, Math.Min(bx, cx)), Math.Min(ay, Math.Min(by, cy)),
+				Math.Max(ax, Math.Max(bx, cx)), Math.Max(ay, Math.Max(by, cy)),
+				(x, y) => Math.Max(Edge(x, y, ax, ay, bx, by), Math.Max(Edge(x, y, bx, by, cx, cy), Edge(x, y, cx, cy, ax, ay))),
+				colour);
+		}
+
+		/// <summary>Draws <paramref name="art"/> (RGBA8) scaled to fit <paramref name="cell"/>, centred, aspect kept.</summary>
+		public void Blit(Image art, Rect2I cell)
+		{
+			int aw = art.GetWidth(), ah = art.GetHeight();
+			if (aw <= 0 || ah <= 0 || cell.Size.X <= 0 || cell.Size.Y <= 0)
+			{
+				return;
+			}
+
+			float scale = Math.Min(cell.Size.X / (float)aw, cell.Size.Y / (float)ah);
+			int w = Math.Max(1, (int)Math.Round(aw * scale)), h = Math.Max(1, (int)Math.Round(ah * scale));
+			Image sized = art;
+			if (w != aw || h != ah)
+			{
+				sized = (Image)art.Duplicate();
+				sized.Resize(w, h, Image.Interpolation.Lanczos);
+			}
+
+			byte[] data = sized.GetData();
+			int ox = cell.Position.X + ((cell.Size.X - w) / 2), oy = cell.Position.Y + ((cell.Size.Y - h) / 2);
+			for (int y = 0; y < h; ++y)
+			{
+				for (int x = 0; x < w; ++x)
+				{
+					int at = ((y * w) + x) * 4;
+					if (at + 3 >= data.Length)
+					{
+						return;
+					}
+
+					Blend(ox + x, oy + y, new Color(data[at] / 255f, data[at + 1] / 255f, data[at + 2] / 255f, 1f), data[at + 3] / 255f);
+				}
+			}
+		}
+
+		private static float Rounded(float x, float y, Rect2 rect, float radius)
+		{
+			float cx = rect.Position.X + (rect.Size.X / 2f);
+			float cy = rect.Position.Y + (rect.Size.Y / 2f);
+			radius = Math.Min(radius, Math.Min(rect.Size.X, rect.Size.Y) / 2f);
+			float qx = Math.Abs(x - cx) - ((rect.Size.X / 2f) - radius);
+			float qy = Math.Abs(y - cy) - ((rect.Size.Y / 2f) - radius);
+			float outside = new Vector2(Math.Max(qx, 0f), Math.Max(qy, 0f)).Length();
+			return outside + Math.Min(Math.Max(qx, qy), 0f) - radius;
+		}
+
 		/// <summary><c>uint8_t(CLAMP(c * 255.0, 0, 255))</c>: scaled in double, truncated.</summary>
 		private static byte Channel(float c) => (byte)Math.Clamp(c * 255.0, 0.0, 255.0);
 	}
@@ -373,7 +871,7 @@ public static partial class Engine_UiKeyGlyphs
 			}
 		}
 
-		DrawLabel(image, cap, label);
+		DrawLabel(image, cap, label, CapRim);
 	}
 
 	/// <summary>Signed distance to a rounded rectangle's edge, negative inside.</summary>
@@ -428,7 +926,7 @@ public static partial class Engine_UiKeyGlyphs
 		}
 	}
 
-	private static void DrawLabel(Canvas image, Rect2I cap, string label)
+	private static void DrawLabel(Canvas image, Rect2I cap, string label, Color colour)
 	{
 		if (Fonts?.For(18) is not { } selection || label.Length == 0)
 		{
@@ -458,7 +956,7 @@ public static partial class Engine_UiKeyGlyphs
 				continue;
 			}
 
-			BlitGlyph(image, g, left, top, g.DrawWidth * scale, height * scale, CapRim);
+			BlitGlyph(image, g, left, top, g.DrawWidth * scale, height * scale, colour);
 		}
 	}
 

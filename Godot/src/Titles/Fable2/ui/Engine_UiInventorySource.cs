@@ -172,8 +172,25 @@ public static class Engine_UiInventorySource
 	/// </summary>
 	public static IReadOnlyList<Engine_UiMenuSources.Row> Rows(string argument)
 	{
-		List<Fable2Bridge.InventoryRecord> records =
-			Fable2Bridge.GetHeroInventory();
+		// `inventory:usable[:<p>[:<categories>]]` — A MOD'S LIST of what player p's hero can use
+		// from the inventory (p 1 or 2; absent or 0 the menus' owner here): only the rows `use` acts
+		// on (UsableFromInventory, the guest's own test), each named by its record for the row's
+		// typed subject (ModRowSubject: item, "0x…") and carrying no command, so the mod menu's
+		// rowCommand runs for it instead of the use. Read from that player's hero
+		// (Engine_UiModListSources.Inventory), never the menus' snapshot.
+		bool usableOnly = argument == UsableOperation || argument.StartsWith(UsableOperation + ":", System.StringComparison.Ordinal);
+		int usablePlayer = 0;
+		if (usableOnly)
+		{
+			string rest = argument.Length > UsableOperation.Length ? argument[(UsableOperation.Length + 1)..] : string.Empty;
+			int colon = rest.IndexOf(':');
+			int.TryParse(colon < 0 ? rest : rest[..colon], out usablePlayer);
+			argument = UseOperation + ":" + (colon < 0 ? string.Empty : rest[(colon + 1)..]);
+		}
+
+		List<Fable2Bridge.InventoryRecord> records = usableOnly
+			? Engine_UiModListSources.Inventory(usablePlayer)
+			: Fable2Bridge.GetHeroInventory();
 
 		// WHAT THE HERO IS ALREADY WEARING. `sub_8242FB28` drops a clothing row when that item is
 		// equipped AND the stack holds only one — a second copy stays offered, because there is
@@ -324,6 +341,12 @@ public static class Engine_UiInventorySource
 				}
 			}
 
+			if (usableOnly && !Acts(rowOperation, record))
+			{
+				++hidden;
+				continue;
+			}
+
 			string tag = NameTagOf(record);
 			string label = LabelOf(record, tag);
 			if (tag.Length == 0)
@@ -339,7 +362,7 @@ public static class Engine_UiInventorySource
 				// borrow the guest's `(EventType, id)` until host actions exist for these.
 				//
 				// Falls back to the GDB key so an item with no tag is still distinct.
-				Name: tag.Length != 0 ? tag : $"Item:{record.RecordId:X8}",
+				Name: usableOnly ? Refii.Mods.ModRowSubject.ItemRow(record.RecordId) : tag.Length != 0 ? tag : $"Item:{record.RecordId:X8}",
 				Label: label,
 				Icon: IconOf(record),
 				EventType: 0,
@@ -356,7 +379,7 @@ public static class Engine_UiInventorySource
 				// and then the row does NOTHING on A — as the guest's own list does (`sub_826D19B8`
 				// tests `UsableFromInventory` before it dispatches a use). It is never pushed at
 				// the screen's handler, which acts on ITS cursor (`screen+396`), not on the row.
-				Command: Acts(rowOperation, record)
+				Command: !usableOnly && Acts(rowOperation, record)
 					? $"{InventoryAction}{rowOperation}:{record.RecordId}"
 					: null,
 				Group: grouped ? Category.NameOf(record.Category) : string.Empty,
@@ -372,7 +395,11 @@ public static class Engine_UiInventorySource
 				// An inventory record IS what the header counts, and the new-item marker follows
 				// `*(item + 20) == 0` — the export states that byte as `Viewed`.
 				Counted: true,
-				Unviewed: !record.Viewed));
+				Unviewed: !record.Viewed,
+
+				// `inventory:usable` is a mod's list, named by `ModRowSubject.ItemRow` — no row
+				// the guest spawns.
+				FromMod: usableOnly));
 		}
 
 		Report = $"{rows.Count} row(s) from {records.Count} inventory record(s)" +
@@ -423,6 +450,12 @@ public static class Engine_UiInventorySource
 	/// pieces of the suit and never the suit item itself (`sub_826D3A10`, event 89).
 	/// </summary>
 	private const string OutfitOperation = "outfit";
+
+	/// <summary>The `use` operation, gated on `UsableFromInventory` (<see cref="Acts"/>).</summary>
+	private const string UseOperation = "use";
+
+	/// <summary>`inventory:usable` — only what `use` acts on, as typed rows for a mod's menu.</summary>
+	public const string UsableOperation = "usable";
 
 	private static bool Acts(string operation, Fable2Bridge.InventoryRecord record)
 	{

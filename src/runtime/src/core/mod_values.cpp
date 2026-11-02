@@ -77,13 +77,40 @@ bool ValidKey(const char* key, size_t length) {
 
 }  // namespace
 
+/// Whether a host listens at all: some word of its event mask is set (a Godot script is loaded).
+static bool HostListening() {
+  for (const std::atomic<uint64_t>& word : g_host_event_mask) {
+    if (word.load(std::memory_order_relaxed) != 0u) {
+      return true;
+    }
+  }
+  return false;
+}
+
 extern "C" void refii_bridge_mod_publish_f32(const char* key, size_t key_length, float value) {
   if (!ValidKey(key, key_length)) {
     return;
   }
-  ModValueTables& tables = Tables();
-  std::lock_guard lock(tables.mutex);
-  tables.published[std::string(key, key_length)] = value;
+  bool changed = false;
+  {
+    ModValueTables& tables = Tables();
+    std::lock_guard lock(tables.mutex);
+    auto [at, added] = tables.published.try_emplace(std::string(key, key_length), value);
+    // Bitwise, so a NaN restated is no change and +0 / -0 are.
+    changed = added || std::memcmp(&at->second, &value, sizeof(value)) != 0;
+    at->second = value;
+  }
+  // THE CHANGE, for the host's value_changed: posted after the lock (the post takes it).
+  if (changed && HostListening()) {
+    std::string fields = "key='";
+    for (size_t i = 0; i < key_length; ++i) {
+      fields += key[i] == '\'' || static_cast<unsigned char>(key[i]) < 0x20u ? '_' : key[i];
+    }
+    char number[48];
+    std::snprintf(number, sizeof(number), "',value=%.9g", static_cast<double>(value));
+    fields += number;
+    refii_bridge_mod_event_post(REFII_MOD_HOST_VALUE_KIND, fields.data(), fields.size());
+  }
 }
 
 extern "C" int32_t refii_bridge_mod_value_f32(const char* key, size_t key_length, float* out) {
@@ -337,6 +364,7 @@ void PostInputFromHost(std::string_view action, int32_t player, bool pressed) {
 
 namespace {
 std::atomic<refii_mod_verdict_fn> g_verdict_handler{nullptr};
+std::atomic<refii_mod_verdict_read_fn> g_verdict_reader{nullptr};
 /// The verdict mask, the event mask's shape.
 std::atomic<uint64_t> g_verdict_mask[refii::mods::kHostMaskWords] = {};
 }  // namespace
@@ -347,6 +375,20 @@ extern "C" void refii_bridge_mod_set_verdict_handler(refii_mod_verdict_fn handle
 
 extern "C" refii_mod_verdict_fn refii_bridge_mod_verdict_handler(void) {
   return g_verdict_handler.load(std::memory_order_acquire);
+}
+
+extern "C" void refii_bridge_mod_set_verdict_reader(refii_mod_verdict_read_fn reader) {
+  g_verdict_reader.store(reader, std::memory_order_release);
+}
+
+/// The payload's reader decides whether this thread is inside a verdict: it answers
+/// REFII_MOD_READ_OUTSIDE anywhere else.
+extern "C" int32_t refii_bridge_mod_verdict_read(const char* line, size_t length, char* out, size_t capacity) {
+  const refii_mod_verdict_read_fn reader = g_verdict_reader.load(std::memory_order_acquire);
+  if (reader == nullptr || line == nullptr || out == nullptr || capacity == 0) {
+    return REFII_MOD_READ_OUTSIDE;
+  }
+  return reader(line, length, out, capacity);
 }
 
 extern "C" void refii_bridge_mod_set_verdict_mask_word(int32_t word, uint64_t mask) {

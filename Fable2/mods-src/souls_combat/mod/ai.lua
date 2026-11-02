@@ -26,7 +26,10 @@ local Setting = C.Setting
 
 -- EVERY SETTING IS READ AT USE: the numbers below are read where they act (each wheel update,
 -- each combat update, each hit), so a live tune reaches the next one; the style patches that the
--- game reads by name every update are re-applied on the tick a value changes (ApplyTierCaps).
+-- game reads by name every update are re-applied when a gap setting changes (setting_changed).
+--
+-- ONE CLOCK: every time this file keeps of its own is Refii.now(); the shipped AI's own stamps
+-- (CombatInfo.LastAttackTime) stay on the game's Timing, which wrote them.
 
 -- A combat style, not one of the other tables CombatStyles also holds (StandardMeleeCombatStates,
 -- ShootingBalanceDataDefault ...).
@@ -41,7 +44,7 @@ S.Cast = {}
 
 Refii.on("spell_launched", function(e)
 	if e.player ~= 0 then
-		S.Cast[e.caster] = Timing.GetWorldFrame()
+		S.Cast[e.caster] = Refii.now()
 	end
 end)
 
@@ -50,7 +53,7 @@ function S.RecentlyCast(entity)
 		return false
 	end
 	local at = S.Cast[Refii.handle(entity)]
-	return at ~= nil and Timing.GetSecondsSince(at) < Setting("ai_punish_cast_seconds", 1.5)
+	return at ~= nil and Refii.now() - at < Setting("ai_punish_cast_seconds", 1.5)
 end
 
 if CombatWheel then
@@ -94,7 +97,7 @@ if CombatWheel then
 		for info, tick in pairs(held) do
 			if info == wheel.ActiveAttacker or not IsCombatantAlive(info) or not info.IsActiveAttacker then
 				held[info] = nil
-			elseif Timing.HaveSecondsElapsedSince(tick, wheel.ActiveAttackerTimeOut) and not Action.IsAttackingViaAction(info.Combatant) then
+			elseif Refii.now() - tick >= wheel.ActiveAttackerTimeOut and not Action.IsAttackingViaAction(info.Combatant) then
 				info.IsActiveAttacker = false
 				held[info] = nil
 			else
@@ -124,7 +127,7 @@ if CombatWheel then
 				return
 			end
 			pick.IsActiveAttacker = true
-			held[pick] = Timing.GetWorldFrame()
+			held[pick] = Refii.now()
 			count = count + 1
 		end
 	end
@@ -149,6 +152,9 @@ end
 if CombatInfo and CombatInfo.Update then
 	S.CombatInfoUpdate = S.CombatInfoUpdate or CombatInfo.Update
 	CombatInfo.Update = function(self, ...)
+		if self.SoulsTierStyle ~= self.Style and S.NoteCombatantTier then
+			S.NoteCombatantTier(self)
+		end
 		if self.EnterStrafeDist ~= nil then
 			if self.SoulsStrafeDist == nil or self.SoulsStrafeDistFrom ~= self.Style then
 				self.SoulsStrafeDist = self.EnterStrafeDist
@@ -185,14 +191,17 @@ if CombatStyles then
 	end
 end
 
--- Tiers, from the styles' own data: a leader, a style with a boss health bar or a troll is a
--- boss; an "Elite" style is elite; the rest is fodder. Each tier caps the swing gap and the
--- courtesy waits (all three are read by name on every update); a style that ships quicker keeps
--- its own number.
+-- Tiers: a leader, a style with a boss health bar or a troll is a boss, from the styles' own
+-- data; a creature whose definition states it elite or a lieutenant (Refii.creature_tier:
+-- CREATURE_ELITE, CREATURE_LIEUTENANT) is elite; the rest is fodder. Each tier caps the swing gap
+-- and the courtesy waits, which the shipped AI reads off the STYLE by name on every update: a
+-- style starts as boss or fodder, and becomes elite on the first update of an elite creature
+-- fighting with it. A style that ships quicker keeps its own number. The block chance is the
+-- combatant's own tier.
 S.Tiers = {
-	fodder = { gap_key = "ai_gap_fodder", gap_default = 2.0, hit = 1.0, attacked = 0.75, block_key = "ai_block_chance_fodder", block_default = 15 },
-	elite = { gap_key = "ai_gap_elite", gap_default = 1.2, hit = 0.6, attacked = 0.4, block_key = "ai_block_chance_elite", block_default = 35 },
-	boss = { gap_key = "ai_gap_boss", gap_default = 0.7, hit = 0.3, attacked = 0, block_key = "ai_block_chance_boss", block_default = 50 },
+	fodder = { rank = 1, gap_key = "ai_gap_fodder", gap_default = 2.0, hit = 1.0, attacked = 0.75, block_key = "ai_block_chance_fodder", block_default = 15 },
+	elite = { rank = 2, gap_key = "ai_gap_elite", gap_default = 1.2, hit = 0.6, attacked = 0.4, block_key = "ai_block_chance_elite", block_default = 35 },
+	boss = { rank = 3, gap_key = "ai_gap_boss", gap_default = 0.7, hit = 0.3, attacked = 0, block_key = "ai_block_chance_boss", block_default = 50 },
 }
 
 -- A tier's swing gap and block chance, read live by the tier's own setting key.
@@ -204,53 +213,86 @@ local function TierBlock(tier)
 	return Setting(S.Tiers[tier].block_key, S.Tiers[tier].block_default)
 end
 
-local function TierOf(name, style)
+local function StyleTier(style)
 	if style.IsLeaderType or style.UsesHealthBar or style.IsTroll then
 		return "boss"
 	end
-	if type(name) == "string" and string.find(name, "Elite", 1, true) then
+	return "fodder"
+end
+
+local function HasBit(bits, bit)
+	return math.floor(bits / bit) % 2 == 1
+end
+
+-- A combatant's tier: its style's boss data, else the rank its creature definition states.
+local function CombatantTier(info)
+	if StyleTier(info.Style) == "boss" then
+		return "boss"
+	end
+	local bits = info.Combatant and Refii.creature_tier(Refii.handle(info.Combatant))
+	if bits ~= nil and (HasBit(bits, Refii.CREATURE_ELITE) or HasBit(bits, Refii.CREATURE_LIEUTENANT)) then
 		return "elite"
 	end
 	return "fodder"
 end
 
--- The caps on the styles' own numbers: applied now, and again on the tick a gap setting changes.
--- The shipped number is kept on the style the first time (SoulsShippedGap), so a wider gap after
--- a narrower one still computes from the shipped base; the courtesy waits are fixed per tier.
+-- The caps on one style's own numbers. The shipped number is kept on the style the first time
+-- (SoulsShippedGap), so a wider gap after a narrower one still computes from the shipped base; the
+-- courtesy waits are fixed per tier.
+local function ApplyStyleCaps(style)
+	local tier = S.Tiers[style.SoulsTier]
+	if style.MinSecondsBetweenMeleeAttacks ~= nil then
+		style.SoulsShippedGap = style.SoulsShippedGap or style.MinSecondsBetweenMeleeAttacks
+		style.MinSecondsBetweenMeleeAttacks = math.min(style.SoulsShippedGap, TierGap(style.SoulsTier))
+	end
+	if style.SecondsToWaitAfterTargetIsHit then
+		style.SecondsToWaitAfterTargetIsHit = math.min(style.SecondsToWaitAfterTargetIsHit, tier.hit)
+	end
+	if style.SecondsToWaitAfterTargetIsAttacked then
+		style.SecondsToWaitAfterTargetIsAttacked = math.min(style.SecondsToWaitAfterTargetIsAttacked, tier.attacked)
+	end
+end
+
 local function ApplyTierCaps()
 	if not CombatStyles then
 		return
 	end
-	for name, style in pairs(CombatStyles) do
+	for _, style in pairs(CombatStyles) do
 		if IsStyle(style) then
-			style.SoulsTier = style.SoulsTier or TierOf(name, style)
-			local tier = S.Tiers[style.SoulsTier]
-			if style.MinSecondsBetweenMeleeAttacks ~= nil then
-				style.SoulsShippedGap = style.SoulsShippedGap or style.MinSecondsBetweenMeleeAttacks
-				style.MinSecondsBetweenMeleeAttacks = math.min(style.SoulsShippedGap, TierGap(style.SoulsTier))
-			end
-			if style.SecondsToWaitAfterTargetIsHit then
-				style.SecondsToWaitAfterTargetIsHit = math.min(style.SecondsToWaitAfterTargetIsHit, tier.hit)
-			end
-			if style.SecondsToWaitAfterTargetIsAttacked then
-				style.SecondsToWaitAfterTargetIsAttacked = math.min(style.SecondsToWaitAfterTargetIsAttacked, tier.attacked)
-			end
+			style.SoulsTier = style.SoulsTier or StyleTier(style)
+			ApplyStyleCaps(style)
 		end
 	end
 end
 
-local applied_gaps = { fodder = nil, elite = nil, boss = nil }
-
-local function ApplyTierCapsIfChanged()
-	local fodder, elite, boss = TierGap("fodder"), TierGap("elite"), TierGap("boss")
-	if fodder ~= applied_gaps.fodder or elite ~= applied_gaps.elite or boss ~= applied_gaps.boss then
-		applied_gaps.fodder, applied_gaps.elite, applied_gaps.boss = fodder, elite, boss
-		ApplyTierCaps()
+-- Each combatant's tier, on its first update with a style (CombatInfo.Update above); a style
+-- fought with by a higher tier than it holds is raised to it.
+function S.NoteCombatantTier(info)
+	info.SoulsTierStyle = info.Style
+	if not IsStyle(info.Style) then
+		return
+	end
+	info.SoulsTier = CombatantTier(info)
+	local style = info.Style
+	style.SoulsTier = style.SoulsTier or StyleTier(style)
+	if S.Tiers[info.SoulsTier].rank > S.Tiers[style.SoulsTier].rank then
+		style.SoulsTier = info.SoulsTier
+		ApplyStyleCaps(style)
 	end
 end
 
-ApplyTierCapsIfChanged()
-Refii.on("tick", ApplyTierCapsIfChanged)
+local kGapSettings = {
+	["souls_combat.ai_gap_fodder"] = true,
+	["souls_combat.ai_gap_elite"] = true,
+	["souls_combat.ai_gap_boss"] = true,
+}
+
+ApplyTierCaps()
+Refii.on("setting_changed", function(e)
+	if kGapSettings[e.key] then
+		ApplyTierCaps()
+	end
+end)
 
 -- Combos commit: an interruptible sequence is broken off (Action.AttemptComboBreak) whenever the
 -- target leaves its zones or a better sequence appears; an Uninterruptable one plays out, so a
@@ -264,64 +306,62 @@ if CombatSequences and SequencePriorities then
 	end
 end
 
--- Punish windows: right after a hero drinks or eats, or swings and misses, up to two enemies in
+-- Punish windows: right after a hero heals, or ends a swing that hit nothing, up to two enemies in
 -- reach look for one of their own attack sequences as if they held the token. Keyed by player
 -- (Refii.player_of): player two's body on an online host is not a Player there.
---
--- Online, the AI runs only on the host while a swing or an item use fires where that hero is
--- played. The mod API relays both to the host, where player two's arrive as replicas
--- (Refii.event_replica()), so every machine times a window from the copy it receives. Hits land
--- on the host, so a hit landed at or after the swing cancels the whiff; a relayed swing reaches
--- the host a network moment after the joiner swung, so for one a hit up to arrival_slack before
--- its arrival counts too. Alone and in local co-op every event fires on the one machine.
+--   health_changed — a hero's health rose (delta > 0): a potion, food, any heal the game's own
+--     Modify made. Online the game runs it on both machines; the AI's machine times the window
+--     from its own run, replica or not.
+--   melee_swing_ended — the hero's strike ended with `hits` 0: a whiff. Relayed, so the host,
+--     where the AI runs, hears player two's from the joiner. The joiner counts the host's hits
+--     relayed to it only while its strike is still current, so a late one is missed and a
+--     relayed whiff may be a hit: on a relayed copy, a hit by that hero landed here (the host
+--     delivers every hit, hit_landed) since the hero's previous strike ended cancels the whiff.
+--     The window opens when the strike ends, where the whiff is stated, and lasts
+--     ai_punish_whiff_seconds.
 S.Punish = {
-	whiff_from = 0.25,
 	per_window = 2,
 	own_gap = 0.8,
-	arrival_slack = 0.25,
 }
-S.Used = {}
-S.Swung = {}
-S.SwungRelayed = {}
+S.Healed = {}
+S.Whiffed = {}
+S.StrikeEnded = {}
 S.Landed = {}
 S.Claims = {}
 
 local function HeroActed(player, times)
-	if player ~= 1 and player ~= 2 then
-		return
-	end
-	times[player] = Timing.GetWorldFrame()
+	times[player] = Refii.now()
 	S.Claims = {}
 end
 
-Refii.on("item_used", function(e)
-	HeroActed(e.player, S.Used)
-end)
-Refii.on("melee_swing", function(e)
-	if e.player == 1 or e.player == 2 then
-		S.SwungRelayed[e.player] = Refii.event_replica() or nil
-	end
-	HeroActed(e.player, S.Swung)
-end)
-Refii.on("hit_landed", function(e)
-	if e.attacker_player == 1 or e.attacker_player == 2 then
-		S.Landed[e.attacker_player] = Timing.GetWorldFrame()
+Refii.on("health_changed", function(e)
+	if (e.player == 1 or e.player == 2) and e.delta > 0 then
+		HeroActed(e.player, S.Healed)
 	end
 end)
 
--- Whether the hero's last swing has a landed hit of its own: one at or after the swing, or, for a
--- relayed swing, one up to arrival_slack before it arrived.
-local function SwingLanded(player, swung)
-	local landed = S.Landed[player]
-	if landed == nil then
-		return false
+Refii.on("hit_landed", function(e)
+	if (e.attacker_player == 1 or e.attacker_player == 2) and not Refii.event_replica() then
+		S.Landed[e.attacker_player] = Refii.now()
 	end
-	if landed >= swung then
-		return true
+end)
+
+Refii.on("melee_swing_ended", function(e)
+	local p = e.player
+	if p ~= 1 and p ~= 2 then
+		return
 	end
-	return S.SwungRelayed[player] == true
-		and Timing.GetSecondsSince(landed) - Timing.GetSecondsSince(swung) <= S.Punish.arrival_slack
-end
+	local previous = S.StrikeEnded[p]
+	S.StrikeEnded[p] = Refii.now()
+	if e.hits > 0 then
+		return
+	end
+	local landed = S.Landed[p]
+	if Refii.event_replica() and landed ~= nil and (previous == nil or landed >= previous) then
+		return
+	end
+	HeroActed(p, S.Whiffed)
+end)
 
 local function PunishWindow(info)
 	local target = info.Target
@@ -338,16 +378,14 @@ local function PunishWindow(info)
 	if player ~= 1 and player ~= 2 then
 		return nil
 	end
-	local used = S.Used[player]
-	if used and Timing.GetSecondsSince(used) < Setting("ai_punish_heal_seconds", 1.6) then
-		return "used" .. player .. ":" .. used
+	local now = Refii.now()
+	local healed = S.Healed[player]
+	if healed and now - healed < Setting("ai_punish_heal_seconds", 1.6) then
+		return "healed" .. player .. ":" .. healed
 	end
-	local swung = S.Swung[player]
-	if swung and not SwingLanded(player, swung) then
-		local age = Timing.GetSecondsSince(swung)
-		if age > S.Punish.whiff_from and age < Setting("ai_punish_whiff_seconds", 1.1) then
-			return "swung" .. player .. ":" .. swung
-		end
+	local whiffed = S.Whiffed[player]
+	if whiffed and now - whiffed < Setting("ai_punish_whiff_seconds", 1.1) then
+		return "whiffed" .. player .. ":" .. whiffed
 	end
 	return nil
 end
@@ -380,34 +418,51 @@ if CombatSequences then
 end
 
 -- Blocks: the shipped styles block only once N unblocked hits land within a window (their chance
--- fields are all 0). Each new unblocked hit now also rolls the tier's chance to raise the guard,
--- through the same call and weapon rule the shipped UpdateBlocking uses; the shipped rule then
--- runs as before and lowers the guard when the hits stop.
+-- fields are all 0). Each new hit that lands while the enemy holds no guard now also rolls its
+-- tier's chance to raise the guard, through the same call and weapon rule the shipped
+-- UpdateBlocking uses; the shipped rule then runs as before and lowers the guard when the hits
+-- stop. The hit is the hit_landed event, decided where the AI runs (a relayed copy is skipped),
+-- kept on the victim (Refii.entity_value) until its next blocking update rolls for it, if that
+-- comes within the 2 s the shipped rule counts hits over.
 --
 -- The shipped weapon rule compares against EBlockType.BLOCK_MELEE_DODGE, a name the enum does not
 -- have (it is BLOCK_TYPE_DODGE_MELEE), so an unarmed dodger (the balverines) never dodged through
--- it and their after-dodge counters never played. The alias restores the name it meant.
+-- it and their after-dodge counters never played. The alias restores the name it meant; a fix in
+-- the core, for every mod, is separate.
 if EBlockType and EBlockType.BLOCK_TYPE_DODGE_MELEE then
 	EBlockType.BLOCK_MELEE_DODGE = EBlockType.BLOCK_TYPE_DODGE_MELEE
 end
+
+local kUnansweredHitKey = "souls_combat.unanswered_hit"
+local kHitMemorySeconds = 2
+
+Refii.on("hit_landed", function(e)
+	if e.victim_player == 0 and e.victim ~= nil and e.victim ~= 0 and not Refii.event_replica() then
+		Refii.entity_set(e.victim, kUnansweredHitKey, Refii.now())
+	end
+end)
 
 if CombatStates and CombatStates.UpdateBlocking then
 	S.UpdateBlocking = S.UpdateBlocking or CombatStates.UpdateBlocking
 	CombatStates.UpdateBlocking = function(self)
 		local info = self.CombatInfo
 		local style = info and info.Style
-		if style and style.CanBlock and style.BlockData and style.SoulsTier
+		local tier = info and (info.SoulsTier or style and style.SoulsTier)
+		if style and style.CanBlock and style.BlockData and tier
 			and (info.CurrentBlock == nil or info.CurrentBlock == EBlockType.BLOCK_TYPE_NULL) then
-			local hits = Block.GetNumHitsOfTypeInTime(self.Entity, EBlockType.BLOCK_TYPE_NULL, 2)
-			if hits > (info.SoulsHitsSeen or 0) and TierBlock(style.SoulsTier) > GetRandomNumber(100) then
-				local block = style.BlockData.PrimaryBlockType
-				if info.CurrentWeaponType == WeaponTypes.Melee or block == EBlockType.BLOCK_TYPE_DODGE_MELEE
-					or block == EBlockType.BLOCK_TYPE_GARTH then
-					info.CurrentBlock = block
-					Block.SetBlockingToType(self.Entity, block)
+			local entity = Refii.handle(self.Entity)
+			local hit_at = Refii.entity_value(entity, kUnansweredHitKey)
+			if hit_at ~= nil then
+				Refii.entity_set(entity, kUnansweredHitKey, nil)
+				if Refii.now() - hit_at < kHitMemorySeconds and TierBlock(tier) > GetRandomNumber(100) then
+					local block = style.BlockData.PrimaryBlockType
+					if info.CurrentWeaponType == WeaponTypes.Melee or block == EBlockType.BLOCK_TYPE_DODGE_MELEE
+						or block == EBlockType.BLOCK_TYPE_GARTH then
+						info.CurrentBlock = block
+						Block.SetBlockingToType(self.Entity, block)
+					end
 				end
 			end
-			info.SoulsHitsSeen = hits
 		end
 		return S.UpdateBlocking(self)
 	end

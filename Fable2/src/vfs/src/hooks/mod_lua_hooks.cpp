@@ -44,6 +44,8 @@ void DispatchLuaEvent(PPCContext& ctx, uint8_t* base, bool save_loaded);
 void RegisterModLuaNatives(PPCContext& ctx, uint8_t* base, uint32_t state);
 /// The script system the startup scripts last ran on, or 0 (refii_mod_spawn's binding).
 uint32_t ModScriptSystem();
+/// Every camera_override hold let go (hooks/mod_commands.cpp): a fresh VM's mods state their own.
+void ModCameraClearHolds();
 }  // namespace refii::vfs
 
 namespace {
@@ -149,6 +151,7 @@ REX_EXTERN(rex_lhLuaScriptSystem_LoadStartupScripts) {
     g_script_system.store(system, std::memory_order_relaxed);
     PPCContext work = entry;
     const uint32_t state = refii::vfs::LoadGuestU32(base, system);
+    refii::vfs::ModCameraClearHolds();
     refii::vfs::RegisterModLuaNatives(work, base, state);
     RunComposedChunk(work, base, state, kCoreKey);
     RunComposedChunk(work, base, state, kInitKey);

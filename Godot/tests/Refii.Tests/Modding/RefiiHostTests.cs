@@ -96,6 +96,37 @@ public class RefiiHostTests
         AssertThat(RefiiHost.UseItemAction("-5")).IsNull();
     }
 
+    // read: only a verb that changes nothing crosses, as a query's words without the id; the answer
+    // parses as ask's would; outside a verdict or for another verb, ok false and an error naming ask.
+    [TestCase]
+    public void AVerdictReadCrossesOnlyAReadAndAnswersAsAsk()
+    {
+        AssertThat(ModVerdictRead.Line("sprinting", new[] { "1" })).IsEqual("sprinting 1");
+        AssertThat(ModVerdictRead.Line("record_string", new[] { "0x00000001", "a b" })).IsEqual("record_string 0x00000001 a_b");
+        AssertThat(ModVerdictRead.Line("time_of_day", Array.Empty<string>())).IsEqual("time_of_day");
+        AssertThat(ModVerdictRead.Line("spawn", new[] { "0x1", "0", "0", "0" })).IsNull();
+        AssertThat(ModVerdictRead.Line("lua_int", new[] { "1", "0", "1" })).IsNull();
+        AssertThat(ModVerdictRead.Line("give_gold", new[] { "1", "5" })).IsNull();
+        AssertThat(ModVerdictRead.Line(string.Empty, Array.Empty<string>())).IsNull();
+
+        var answered = new Dictionary<string, object>(ModVerdictRead.Fields(20, "ok=true,sprinting=true", "sprinting"));
+        AssertThat(answered["ok"]).IsEqual(true);
+        AssertThat(answered["sprinting"]).IsEqual(true);
+        AssertThat(answered.ContainsKey("error")).IsFalse();
+        var unanswered = new Dictionary<string, object>(ModVerdictRead.Fields(33, "ok=false,x=0,y=0,z=0", "velocity"));
+        AssertThat(unanswered["ok"]).IsEqual(false);
+        AssertThat(unanswered["x"]).IsEqual(0L);
+
+        var outside = new Dictionary<string, object>(ModVerdictRead.Fields(ModVerdictRead.Outside, string.Empty, "health"));
+        AssertThat(outside["ok"]).IsEqual(false);
+        AssertThat(((string)outside["error"]).Contains("on_verdict", StringComparison.Ordinal)).IsTrue();
+        AssertThat(((string)outside["error"]).Contains("ask(\"health\"", StringComparison.Ordinal)).IsTrue();
+        var refused = new Dictionary<string, object>(ModVerdictRead.Fields(ModVerdictRead.Refused, string.Empty, "spawn"));
+        AssertThat(refused["ok"]).IsEqual(false);
+        AssertThat(((string)refused["error"]).Contains("changes nothing", StringComparison.Ordinal)).IsTrue();
+        AssertThat(new Dictionary<string, object>(ModVerdictRead.Fields(0, string.Empty, "health"))["ok"]).IsEqual(false);
+    }
+
     // Godot's script bridge registers no C# default and dispatches by name and argument count:
     // host.notice("T", "x") reaches a method only if one takes exactly two arguments. A default
     // here would read as callable from C# and fail from GDScript ("Nonexistent function").
@@ -121,7 +152,10 @@ public class RefiiHostTests
         AssertThat(Arities("cutscene_kinds")).IsEqual(new[] { 0, 1 });
         AssertThat(Arities("message_box")).IsEqual(new[] { 3, 4 });
         AssertThat(Arities("menu_box")).IsEqual(new[] { 3, 4, 5 });
-        AssertThat(Arities("mark")).IsEqual(new[] { 2, 3, 4 });
+        AssertThat(Arities("mark")).IsEqual(new[] { 2, 3, 4, 5 });
+        AssertThat(Arities("world_meter")).IsEqual(new[] { 3, 4, 5 });
+        AssertThat(Arities("mark_meter")).IsEqual(new[] { 3, 4 });
+        AssertThat(Arities("add_item")).IsEqual(new[] { 2, 3 });
         AssertThat(Arities("fade")).IsEqual(new[] { 2, 3 });
         AssertThat(Arities("meter")).IsEqual(new[] { 4, 5, 6 });
         AssertThat(Arities("light")).IsEqual(new[] { 4, 5 });
@@ -140,6 +174,14 @@ public class RefiiHostTests
         AssertThat(Arities("play_animation")).IsEqual(new[] { 2, 3, 4, 5 });
         AssertThat(Arities("npc_follow")).IsEqual(new[] { 2, 3 });
         AssertThat(Arities("set_weather")).IsEqual(new[] { 1, 2, 3 });
+
+        // The answering forms a Godot mod needs where Lua reads the call's result, and the row verb with its row.
+        AssertThat(Arities("charge_spell")).IsEqual(new[] { 3, 4 });
+        AssertThat(Arities("perform_expression")).IsEqual(new[] { 2, 3, 4, 5 });
+        AssertThat(Arities("register_command")).IsEqual(new[] { 2, 3 });
+        AssertThat(Arities("player_here")).IsEqual(new[] { 1 });
+        AssertThat(typeof(RefiiHost).GetMethod("charge_spell", new[] { typeof(int), typeof(int), typeof(bool), typeof(Callable) })!.ReturnType).IsEqual(typeof(bool));
+        AssertThat(typeof(RefiiHost).GetMethod("player_here", new[] { typeof(int) })!.ReturnType).IsEqual(typeof(bool));
     }
 
     // Each Godot helper signature, "name(a, b = 0) -> r / other(c)": every argument count from the

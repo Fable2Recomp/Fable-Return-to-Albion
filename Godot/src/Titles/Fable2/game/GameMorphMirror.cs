@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Godot;
 using Refii.Core;
 using Refii.Hero;
@@ -44,6 +45,9 @@ public partial class GameMorphMirror : Node
     private bool _dragging;
     private bool _closing;
     private bool _ignoreActive;
+    /// <summary>The settings slot of the player at the Mirror (1 pad 0's, 2 local co-op's player two) and that player's joypad.</summary>
+    private static int _slot = 1;
+    private static int _pad;
 
     public static bool OwnsInput => _current?._settings is not null;
     public static void Register(Engine_MorphMirror actor) => _actor = actor;
@@ -125,8 +129,8 @@ public partial class GameMorphMirror : Node
     private static bool CanOpen() => _actor?.Placement is { Enabled: true } && IsInstanceValid(_actor) &&
         // Not paused: the desktop's session, or no session at all on a host that steps its own guest (Android).
         GameSession.Current is not { Paused: true } && GameUi.WorldInteractionAllowed && !GamePhotoMode.Active &&
+        // Any session: each player edits their own look where their hero is played (the Lua's player_here).
         !GameGoldenCock.OwnsInput && !Fable2Input.HostUiOwnsPad && !GameDevMenu.KeyboardCaptured &&
-        GameGoldenCock.SessionAllowsInteraction(CoopSession.State, CoopSession.Side, CoopSession.LocalCoop) &&
         GameGoldenCock.MenuAllowsInteraction(HostBridge.GetPauseState());
 
     private void Open()
@@ -140,8 +144,15 @@ public partial class GameMorphMirror : Node
             _originalTransform = _camera.GlobalTransform;
             _originalFov = _camera.Fov;
             _originalHOffset = _camera.HOffset;
-            _settings = new Engine_MorphMirrorSettings(key => Engine_Switches.String(key, string.Empty),
-                GameUi.MoveCue);
+            // The player who used the Mirror (the Lua's RefiiMorphMirror.Update states it) edits their own slot.
+            int user = HostBridge.TryGetModValue(Engine_MorphMirrorRuntime.PlayerKey, out float stated) && stated is 1 or 2 ? (int)stated : 1;
+            _slot = Math.Max(1, GameCharacterMorphs.SlotOfPlayer(user));
+            _pad = _slot == 2 ? GameInput.PadOfPlayer(2) : 0;
+            int player = GameCharacterMorphs.PlayerOfSlot(_slot) is var owner and not 0 ? owner : user;
+            _settings = new Engine_MorphMirrorSettings(
+                Engine_CharacterMorphs.ForSlot(key => Engine_Switches.String(key, string.Empty), _slot), GameUi.MoveCue,
+                ModMorphRows(player), (morph, weight) => HostBridge.PostModCommand(
+                    FormattableString.Invariant($"morph_set {player} {Engine_ModMorphs.Hex(morph.Id)} {weight:R}")));
             _held = uint.MaxValue;
             _closing = false;
             _touch = 0;
@@ -179,6 +190,15 @@ public partial class GameMorphMirror : Node
             Command("End");
             GD.PushError("[morph-mirror] " + exception.Message);
         }
+    }
+
+    /// <summary>Each mod morph with <paramref name="player"/>'s weight now, as the hook answers it (the store, else the default).</summary>
+    private static List<(ModMorph Morph, float Weight)> ModMorphRows(int player)
+    {
+        var rows = new List<(ModMorph, float)>();
+        foreach (ModMorph morph in Engine_ModMorphs.All)
+            rows.Add((morph, Engine_ModMorphs.Weight(morph, HostBridge.GetPlayerValue(player, morph.StoreKey))));
+        return rows;
     }
 
     public static bool ApplyCamera(Camera3D camera)
@@ -264,14 +284,14 @@ public partial class GameMorphMirror : Node
     private void Preview()
     {
         if (_settings is null) return;
-        GameCharacterMorphs.Preview(_settings.Values());
+        GameCharacterMorphs.Preview(_slot, _settings.Values());
         _ui?.ShowSettings(_settings);
     }
 
     private void UpdateView(double delta, bool focused)
     {
         if (!focused) { EndDrag(); _mouseZoom = 0; return; }
-        int pad = GameInput.JoypadForPad(0);
+        int pad = GameInput.JoypadForPad(_pad);
         _settings!.Rotate(pad >= 0 ? Input.GetJoyAxis(pad, JoyAxis.RightX) : 0, _mouseTurn + _touchTurn, (float)delta);
         _settings.ZoomBy(pad >= 0 ? -Input.GetJoyAxis(pad, JoyAxis.RightY) : 0, _mouseZoom, (float)delta);
         _mouseTurn = 0;
@@ -302,7 +322,8 @@ public partial class GameMorphMirror : Node
     private void RequestClose(bool save)
     {
         if (_settings is null || _closing) return;
-        if (save && !Engine_UiScreenActions.WriteSettings(_settings.Values()))
+        if (!save) _settings.RestoreMorphs();
+        if (save && !Engine_UiScreenActions.WriteSettings(Engine_CharacterMorphs.ForSlot(_settings.Values(), _slot)))
         {
             _ui?.SetStatus("Could not save. Try Apply again.");
             return;
@@ -318,7 +339,7 @@ public partial class GameMorphMirror : Node
         Command("End");
         _ignoreActive = true;
         _settings = null;
-        GameCharacterMorphs.Preview(null);
+        GameCharacterMorphs.Preview(_slot, null);
         if (_camera is not null && IsInstanceValid(_camera))
         {
             _camera.GlobalTransform = _originalTransform;
@@ -373,7 +394,7 @@ public partial class GameMorphMirror : Node
             if (action == 20) RequestClose(true);
             else if (action == 21) RequestClose(false);
             else if (action == 22) { _settings.Reset(); Preview(); }
-            else if (action >= 0) Adjust(action / 2, action % 2 == 0 ? -1 : 1);
+            else if (action >= 0) Adjust(_ui.FirstRow + action / 2, action % 2 == 0 ? -1 : 1);
         }
         if (input is InputEventKey or InputEventMouseButton or InputEventMouseMotion or InputEventJoypadButton or InputEventJoypadMotion)
             GetViewport().SetInputAsHandled();
@@ -381,7 +402,7 @@ public partial class GameMorphMirror : Node
 
     private static uint ReadButtons()
     {
-        int pad = GameInput.JoypadForPad(0);
+        int pad = GameInput.JoypadForPad(_pad);
         bool Down(Key key, JoyButton button) => Input.IsPhysicalKeyPressed(key) || pad >= 0 && Input.IsJoyButtonPressed(pad, button);
         uint buttons = 0;
         if (Down(Key.Enter, JoyButton.A)) buttons |= 1;

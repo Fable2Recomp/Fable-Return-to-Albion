@@ -10,19 +10,25 @@ shipped UI runs through, with no second implementation.
   - [Moving the game's own pieces: layout](#moving-the-games-own-pieces-layout)
   - [Copies of the game's own pieces: clones](#copies-of-the-games-own-pieces-clones)
   - [Each player's from one record](#each-players-from-one-record)
+  - [A mod's own pieces: meter, panel, picture](#a-mods-own-pieces-meter-panel-picture)
   - [Text pieces](#text-pieces)
+  - [Moving pieces together: groups](#moving-pieces-together-groups)
 - [Markers, fades and meters](#markers-fades-and-meters)
+  - [World meters](#world-meters)
   - [The game's own world icons](#the-games-own-world-icons)
 - [HUD overrides: icons, slides and holds](#hud-overrides-icons-slides-and-holds)
+- [Textures from a Godot script: game://](#textures-from-a-godot-script-game)
 - [Boxes: messages, notices and menu boxes](#boxes-messages-notices-and-menu-boxes)
 - [Modals: who answers the game's boxes](#modals-who-answers-the-games-boxes)
 - [A mod's own menus](#a-mods-own-menus)
   - [How a game screen stands: its file and Godot's statements](#how-a-game-screen-stands-its-file-and-godots-statements)
   - [Row actions on the game's screens](#row-actions-on-the-games-screens)
+  - [Host lists a mod menu can source](#host-lists-a-mod-menu-can-source)
 - [Lua on the title screen](#lua-on-the-title-screen)
   - [The front-end surface](#the-front-end-surface)
 - [Mod abilities: ui/abilities.json](#mod-abilities-uiabilitiesjson)
 - [Spell slot picks: ui/spellwheel.json](#spell-slot-picks-uispellwheeljson)
+- [Button glyphs: glyph packs](#button-glyphs-glyph-packs)
 - [Starters](#starters)
 
 ## How mod UI composes
@@ -111,6 +117,56 @@ screen and an online joiner's window all draw the right player from the one reco
 is the record's with `2` after it; a mod that states that id itself keeps its own. A record reading
 only `mod:` values (one number for everyone) stays on the widget it names.
 
+### A mod's own pieces: meter, panel, picture
+
+`"pieces"` are a mod's own, built beside the game's from Godot primitives — no art needed — and
+children of the HUD view, so they show and hide with it, scale with it and stand in 720-high
+reference units:
+
+```json
+{
+  "hide": ["group.PlayerHealth.PlayerHealth"],
+  "pieces": [
+    { "id": "my_mod.hp", "kind": "meter", "anchor": [0, 0], "offset": [96, 40], "size": [0, 10],
+      "value": "player:my_mod.hp", "max": "player:my_mod.hp.max",
+      "widthFrom": "player:my_mod.hp.max", "widthPerUnit": 0.6, "minWidth": 120, "maxWidth": 560,
+      "fill": "#9e1b1b", "back": "#000000b0", "chip": "#d8c27a", "border": "#8a8478", "borderWidth": 1.5 },
+    { "id": "my_mod.frame", "kind": "panel", "anchor": [0.5, 1], "offset": [-200, -120], "size": [400, 64],
+      "back": "#00000080", "border": "#c8a85a", "borderWidth": 2, "corner": 6, "each": true },
+    { "id": "my_mod.slot1", "kind": "picture", "anchor": [0.5, 1], "offset": [-190, -112], "size": [48, 48],
+      "each": true },
+    { "id": "my_mod.orb", "kind": "picture", "anchor": [0.5, 1], "offset": [-250, -120], "size": [64, 64],
+      "texture": "art/gui/persistant/hud.tex", "region": [0.006, 0.164, 0.127, 0.125], "each": true }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | required: the piece's id (prefix it with the mod's name); a later mod's piece of the same id replaces it |
+| `kind` | `meter` (back, a trailing chip and a fill; the default), `panel` (back and border only: a frame, a plate), `picture` (a texture) or `text` (below) |
+| `anchor`, `offset`, `size` | placed as the layout places the game's pieces: the screen fraction it hangs from, the distance in reference units (+Y down), the size `[w, h]` |
+| `follow`, `followElement` | hang beneath a shipped piece's element as it is drawn, every frame; `offset` is then from its bottom-left corner and a width of 0 takes the element's. A follower is that piece's player's |
+| `each` | `true`: a piece with no `follow` is **each player's** — built in player two's half too (their view on split screen, an online joiner's window), reading player two's values and player two's `hud_icon` textures. Without it a free piece is the screen's and stays out of player two's half |
+| `value`, `max` | a meter's fill: a number or a value source (`mod:`, `player:`, `game:`, `hero:`, `setting:`); a value not stated hides the piece — never drawn empty or full |
+| `widthFrom`, `widthPerUnit`, `minWidth`, `maxWidth` | a bar whose LENGTH is a value (a pool's maximum) times `widthPerUnit`, clamped |
+| `fill`, `back`, `chip`, `border`, `borderWidth`, `corner` | HTML colours (with alpha), the border's width and the corner radius; `chip` is the recently-lost part, held briefly then drained |
+| `texture` | a picture's texture: a game texture (`art/gui/…/x.tex`, with or without `game://`), a PNG an enabled mod ships (`art/x.png`), or `res://`. Optional: a picture with none draws what `hud_icon` states for it |
+| `textures` + `index` | a picture that shows ONE of a list, picked by a value source's integer part; hidden while it states nothing or an index outside the list |
+| `region` | `[u, v, w, h]`, fractions of the texture from its top-left: the picture shows that part of it — a piece of an atlas, at any of the atlas's resolutions |
+| `tint` | a picture's HTML colour (with alpha) its texture is multiplied by: a darkened orb, a dimmed icon (`"#ffffff59"`), a gold ring |
+| `scale` (file level, id → factor) | a piece drawn larger about its own point |
+| `group` | the id of a file-level `groups` record: the piece moves and sizes with it ([below](#moving-pieces-together-groups)) |
+
+Pieces draw in file order (the mods' files in load order): a later piece over an earlier one, so
+an icon listed after its frame sits on it and a ring listed after the icon rims it.
+
+**Filled by a call.** `hud_icon(p, "<piece id>", texture)` on any surface states the texture
+player p's copy of a picture shows — any path `texture` takes — over its own `texture` and
+`textures`; `""` clears. With `each`, a ten-slot bar is ten pictures that each player's
+`hud_icon` calls fill, a `text` piece per count reading `player:` values, and nothing drawn by the
+mod itself: the HUD's own visibility, scale and halves come with it.
+
 ### Text pieces
 
 ```json
@@ -125,16 +181,51 @@ only `mod:` values (one number for everyone) stays on the widget it names.
 
 | Field | Meaning |
 |---|---|
-| `text` | required: a literal, a Babel tag (drawn as written when the book has no such tag), or `mod:<key>`, a published value; an unpublished value draws nothing, never a zero |
-| `format` | for a `mod:` value: a .NET composite (`"{0:0} gold"`) or a bare numeric format (`"0.0"`, `"N0"`); empty draws up to two decimals |
+| `text` | required: a literal, a Babel tag (drawn as written when the book has no such tag), or a value source — `mod:<key>` (a published value), `player:<key>` (the player store, read for the piece's player: player two's in their half), `game:<name>` (a text field the guest publishes for its HUD, drawn as written), `setting:<mod>.<name>` (a mod setting in force), `hero:health` / `hero:health_max`; an unstated value draws nothing, never a zero |
+| `format` | for a number: a .NET composite (`"{0:0} gold"`) or a bare numeric format (`"0.0"`, `"N0"`); empty draws up to two decimals |
 | `size` | the point size (default 18, the HUD's own) |
 | `colour` | HTML hex; default the HUD text's gold |
 | `align` | `left`, `centre` (or `center`) or `right` of the piece's point; the text hangs from its top edge |
+| `outline`, `outlineWidth` | an HTML colour ringing every glyph, and the ring's width in reference units (default 1.5): the glyphs drawn again behind the text, offset all round |
+| `shadow`, `shadowOffset` | an HTML colour for a drop shadow, and its `[x, y]` offset in reference units, +Y down (default `[1.5, 1.5]`) |
 | placement | `anchor` + `offset`, or `follow` / `followElement` |
 
 It is drawn by the HUD's own text path — the theme's fonts, inline icon tags included — and scales
 with the HUD. Publish the value from any surface: `Refii.publish(key, n)`, `host.publish(key, v)`,
 `refii::mods::Publish(key, v)`.
+
+### Moving pieces together: groups
+
+`"groups"` names a transform; every piece whose `group` names it is moved and sized by it, read
+every frame, so a setting the player changes on Options › Mods moves the pieces at once:
+
+```json
+{
+  "groups": {
+    "my_mod.bar": { "anchor": [0.5, 1], "pivot": [0, -12],
+                    "scale": "setting:my_mod.size", "offset": [0, "-setting:my_mod.lift"] }
+  },
+  "pieces": [
+    { "id": "my_mod.frame", "kind": "panel", "anchor": [0.5, 1], "offset": [-200, -76], "size": [400, 64],
+      "each": true, "group": "my_mod.bar" },
+    { "id": "my_mod.count", "kind": "text", "anchor": [0.5, 1], "offset": [0, -60], "text": "player:my_mod.count",
+      "outline": "#0a0805d9", "each": true, "group": "my_mod.bar" }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `anchor`, `pivot` | the point the group scales about, placed as a piece's point is: the screen fraction plus reference units (+Y down) |
+| `scale` | a number or a value source; every member's point moves that factor away from the pivot and the member is drawn that factor larger. Not stated, or not above 0, it is 1 |
+| `offset` | `[x, y]` in reference units (+Y down), added after the scale; each a number or a value source, a leading `-` negating a source (`"-setting:my_mod.lift"` raises by the setting). Not stated, it is 0 |
+
+A member is placed first as it always is (anchor and offset, or `follow`), then moved by its group.
+The values are read for the member's player: a group of `each` pieces in player two's half scales
+about the pivot placed in that half and reads player two's `player:` values. `setting:<mod>.<name>`
+reads the setting in force — the file's value, the player's choice over it, any live
+`set_setting` — the value `Refii.setting` answers. A later mod's group of the same id replaces an
+earlier one's.
 
 ## Markers, fades and meters
 
@@ -144,9 +235,9 @@ players it plays; the mod's code runs on the other machine too.
 
 | Surface | Calls |
 |---|---|
-| Native | `refii_mod_mark(player, entity, xyz, icon, text)` · `refii_mod_unmark(id)` · `refii_mod_fade(player, to_black, seconds)` · `refii_mod_meter(player, id, label, value, max, style)` · `refii_mod_meter_remove(id)` |
-| Lua | `Refii.mark(target, icon, text [, p])` · `Refii.unmark(id)` · `Refii.fade(p, dir [, seconds])` · `Refii.meter(id, label, value, max [, p [, style]])` · `Refii.meter_remove(id)` |
-| Godot | `mark(target, icon, text, player)` · `unmark(id)` · `markers()` · `fade(player, to_black, seconds)` · `fade_state(player)` · `meter(id, label, value, max, player, style)` · `meter_remove(id)` · `meters()` |
+| Native | `refii_mod_mark(player, entity, xyz, icon, text)` · `refii_mod_unmark(id)` · `refii_mod_world_meter(player, entity, xyz, value, max, style)` · `refii_mod_mark_meter(id, value, max, style)` · `refii_mod_fade(player, to_black, seconds)` · `refii_mod_meter(player, id, label, value, max, style)` · `refii_mod_meter_remove(id)` |
+| Lua | `Refii.mark(target, icon, text [, p [, o]])` · `Refii.unmark(id)` · `Refii.world_meter(target, value, max [, style [, p]])` · `Refii.mark_meter(id, value, max [, style])` · `Refii.fade(p, dir [, seconds])` · `Refii.meter(id, label, value, max [, p [, style]])` · `Refii.meter_remove(id)` |
+| Godot | `mark(target, icon, text, player)` · `unmark(id)` · `markers()` · `world_meter(target, value, max, style, player)` · `mark_meter(id, value, max, style)` · `fade(player, to_black, seconds)` · `fade_state(player)` · `meter(id, label, value, max, player, style)` · `meter_remove(id)` · `meters()` |
 
 From GDScript, the trailing arguments may be left off, from the right: `mark`'s `text` ("") and
 `player` (0), `fade`'s `seconds` (0), and `meter`'s `player` (0) and `style` ("").
@@ -177,6 +268,30 @@ Refii.meter_remove("my_mod.boss"); Refii.unmark(id); Refii.fade(1, "from_black",
   number). The value and maximum are read live; the same id restates a meter in place.
 - Ids: any surface's `unmark` takes any surface's id. Everything a session put up is cleared when
   the game goes down.
+
+### World meters
+
+A world meter is a marker's FILL: a bar under its icon and text, on the same channel and by the
+same rules — each player's camera and half, lifted by the drawn height, sized by the game's
+distance curve, gone with its entity, hidden by the world as the game's own icons are.
+
+```lua
+local bar = Refii.world_meter(enemy, hp, hp_max, "health numbers", 0)   -- a bar alone
+Refii.mark_meter(bar, hp_now, hp_max)                                    -- the value, in place
+Refii.mark(boss, "quest", "Thag", 0, { meter = { hp, hp_max, "health" } }) -- an icon with a fill
+Refii.unmark(bar)
+```
+
+- `world_meter` makes a marker that is only the bar; `mark(…, { meter = { value, max, style } })`
+  (Godot: `mark(target, icon, text, player, { "meter": { "value", "max", "style" } })`) puts a
+  fill on a new marker; `mark_meter(id, value, max [, style])` puts one on any marker or restates
+  it **in place** — no re-mark, no new id. `max` 0 takes the fill off (a world meter with nothing
+  else goes); an empty style keeps the standing one.
+- `style`: `bar` (or empty: the HUD's gold), `health` (red), or an HTML colour (`"#5fa8ff"`); add
+  `numbers` (`"health numbers"`) for a "value / max" line under a marker with no text, and `x<n>`
+  (`"health x1.5"`) to draw the marker n times the distance curve's size (0.25 .. 4).
+- A drop leaves a pale trail that holds 0.45 s, then drains at 0.9 of a bar a second.
+- `markers()` lists `meter_value` and `meter_max` beside each marker.
 
 ### The game's own world icons
 
@@ -234,9 +349,33 @@ Refii.hud_icon(1, "DPadUp", ""); Refii.hud_slide(1, "DPadUp", 0); Refii.hud_hold
   clears and the guest's own stands.
 - **Holds** name a HUD piece (`dpad`): every slide owner under it is kept on screen — one with an
   `in` slide is forced onto it, the others keep the slide the guest states — so a piece the guest
-  tweens away stays up.
+  tweens away stays up. The piece's trunk — its element and each lone child below it, down to the
+  first element with several — fades the whole piece: a trunk element whose opacity no slide
+  commands, which the guest fades by stating its opacity, is drawn at no less than its authored
+  opacity. The health readout (`PlayerHealth`, player two's `CoopHealth`) fades out that way at
+  full health (its `HealthAndMana.Health`), and held it stays up, its copies (`clones`) with it;
+  elements past the first branch (the D-pad's sparkles and glow) keep the guest's opacity. Each view draws the piece of the player it shows, so
+  `Refii.hud_hold(0, "CoopHealth", true)` keeps player two's readout up wherever it is drawn.
 - Everything is cleared when the mod's Lua reloads and when the game goes down; state it again from
   `lua_ready` / `hero_ready`.
+- **A mod's own picture piece** is an element too, named by its `ui/hud.json` id: `hud_icon(p,
+  "my_mod.slot1", texture)` states the texture player p's copy of the piece shows, at the piece's
+  size and `region` — any path, `game://` or not, a mod PNG or `res://`. See
+  [A mod's own pieces](#a-mods-own-pieces-meter-panel-picture).
+
+## Textures from a Godot script: game://
+
+A Godot script loads the game's textures through Godot's own loader:
+
+```gdscript
+var icon: Texture2D = load("game://art/gui/wheelicons/abilities/will_shock.tex")
+```
+
+`game://<path>.tex` reads the game's banks with every enabled mod's overlays in place (a mod's
+`art/x.tex.png` replaces the shipped texture at that path), decoded and cached as the HUD and the
+menus decode theirs, upscaled when the player has upscaling on. A path is lower case with `/`; a
+PNG a mod ships under its own path is read from the package as any file. A script rarely needs it:
+a HUD picture names its texture by path and `hud_icon` fills it, a marker names its icon.
 
 ## Boxes: messages, notices and menu boxes
 
@@ -299,7 +438,7 @@ with the root.
   "menus": {
     "pause-root": {
       "patch": true,
-      "entries": [ { "name": "my_mod.menu", "tag": "MY_MOD_MENU", "opens": "my_mod.menu", "hostOnly": true } ]
+      "entries": [ { "name": "my_mod.menu", "tag": "MY_MOD_MENU", "opens": "my_mod.menu" } ]
     },
     "my_mod.menu": {
       "title": "MY_MOD_MENU",
@@ -313,8 +452,12 @@ with the root.
 }
 ```
 
-- A row patched onto the **pause list** must carry `"hostOnly": true`: the pause rows take their
-  labels from the game's own list by order, and a row the game never spawned has to say so.
+- A row a mod adds to one of the game's lists (a patch entry, the rows of a source a mod's entry
+  names, a script's `set_menu_rows` or `register_source` rows) is the mod's, and nothing in the file
+  changes that: the game is never told such a row is highlighted, so its screen code goes on reading
+  the game's own row, and the pause list's labels skip it. It needs no `"hostOnly"`. A patch entry
+  that keeps the name and event of the row it replaces (a new tag, icon or `when`) is still the
+  game's row.
 - The shipped **options**, **upgradefurniture** and **decoration** screens carry
   `"commitsByHighlight": true` (a screens-record flag, default false): on such a screen a press
   puts the game's own menu cursor on the row and sends the game's A, instead of pushing the row's
@@ -441,16 +584,60 @@ menu's own name:
   trailing fields `command` — the row's OWN command, `Inventory:use:1234`, `Inventory:equip:…`,
   `Ability:learn:9`, or on the expressions list the expression id — and `button`. Then the
   action's `command` runs exactly as a mod menu row's: `Mod:lua:<function>[:<arg>]` calls your
-  Lua with `(arg, e)`, `e` carrying the same fields.
+  Lua with `(arg, e)`, `e` carrying the same fields — and the row's TYPED SUBJECT, so no handler
+  parses a verb: `subject_kind` (`item` for `Inventory:use`, `weapon` for `Inventory:equip`,
+  `expression`, `will` for `Ability:learn` 7..14), `definition` (the record as `"0x%08x"`) and
+  `spell` (a will's type 0..7; -1 for none).
 - A later mod's list for the same menu replaces the earlier one's; `null` or `[]` removes it. The
   first action's prompt is drawn; every action's button is held and answered.
 
 ```lua
 quickslots = {}
 function quickslots.assign(arg, e)
-  -- e.menu "ItemsMenu", e.row the item row, e.command "Inventory:use:1234", e.button "Y"
+  -- e.menu "ItemsMenu", e.row the item row, e.command "Inventory:use:1234", e.button "Y",
+  -- e.subject_kind "item", e.definition "0x000004d2", e.spell -1
 end
 ```
+
+### Host lists a mod menu can source
+
+A mod's menu need not build a catalog with `set_menu_rows`: an entry's `"source"` may name a list
+the host builds from what the guest states.
+
+| Source | Rows |
+|---|---|
+| `inventory:usable` / `inventory:usable:<p>` / `inventory:usable:<p>:<categories>` | what player p's hero can use from the inventory — `UsableFromInventory`, the game's own test — named `item:0x…`; `p` 0 is the menus' owner, as absent (the guest tick's answer to `inventory P`) |
+| `expressions` / `expressions:<p>` | the expressions player p's hero knows (the guest tick's answer to `expressions P`), named `expression:0x…` and labelled as the logbook titles them |
+| `spells_known` / `spells_known:<p>` | the wills player p's hero can assign (known and offered on some tier, the quick wheel's own test), named `will:<n>` |
+| `abilities:<category>` | the abilities book's rows (Strength, Skill, Will, or a mod's category) |
+
+- `p` absent is the player whose menus are open here. The guest-stated lists are asked again at most
+  once a second while drawn; the rows follow the next answer.
+- The rows carry no command: the menu's `"rowCommand"` (a `Mod:lua:` call) runs for each, and the
+  `mod_menu_row` a choice raises carries `subject_kind`, `definition` and `spell` read off the row's
+  name.
+
+```json
+"my_mod.choose": {
+  "title": "MY_MOD_CHOOSE",
+  "rowCommand": "Mod:lua:my_mod.chosen",
+  "entries": [
+    { "name": "items", "tag": "MY_MOD_ITEMS", "source": "inventory:usable" },
+    { "name": "expressions", "tag": "MY_MOD_EXPRESSIONS", "source": "expressions" },
+    { "name": "wills", "tag": "MY_MOD_WILLS", "source": "spells_known" }
+  ]
+}
+```
+
+A stated row's **label** is a Babel tag, a literal, or a literal with tags in braces —
+`"{QUICKSLOTS_SLOT_1}: {OBJECT_HEALTH_POTION_NAME}"`: each `{TAG}` (letters, digits, `_`) is drawn
+as the string book says, or as written when the book has no such tag. A mod's Lua has no text
+lookup of its own; this is how a row names an item in the player's language.
+
+`Refii.set_menu_rows` (any surface) carries up to 32768 bytes of rows; the native and Lua forms
+cross the bus in as many 2 KB records as that takes and Godot applies them once all have arrived.
+Past the limit the rows are cut at the last whole row and the Mods error list names the menu —
+never a silent truncation.
 
 ## Lua on the title screen
 
@@ -579,6 +766,49 @@ A pick per spell slot beside the slot's own spell — Spell Weaving's partner. T
   read the active pick's `apply` and `remove`.
 - A pick of the same `name` from a later mod replaces an earlier one, so the validator warns a
   `name` without the mod's prefix.
+- **`exclude` is the engine's.** The selectors declare each pick to the engine, and a will the pick
+  excludes is refused on every path: an X on the selectors, a `spell_pick` command posted by
+  anyone, and a `spell_pick` handler that rewrites `spell` to one — the slot keeps what it had.
+- **`legacySaveKey` / `legacySaveKeyTwo`** name the `RefiiModSave` keys a save from before kept
+  player one's / player two's pick in, `{slot}` the slot's number (`"SpellWeavingPartner{slot}"`,
+  `"SpellWeavingPartner2_{slot}"`): once after each Lua rebuild or save load, on the first tick that
+  player's hero stands where it is played, a slot whose store is empty takes that value (0..7, not
+  excluded) — as an ability's `legacySaveKey`.
+
+## Button glyphs: glyph packs
+
+Every button prompt the UI draws — inline `<a_img>` icons, the `.bgf` prompt quads, the HUD's
+world prompts, the `art/gui/controller` art — follows the player's device: keycaps on the
+keyboard, and on a controller the style `glyph_style` names (`auto` follows the controller in the
+player's hands: PlayStation, Switch or Xbox, detected per pad; or `xbox`, `playstation`, `switch`).
+The PlayStation and Switch glyphs are drawn by the game, and every prompt names the PHYSICAL
+button bound to the game's button, after the player's remap.
+
+A **glyph pack** replaces them with art of your own: a folder of PNGs named by button.
+
+```
+glyphs/<pack>/a.png  b.png  x.png  y.png      face buttons, by POSITION: a = bottom, b = right,
+                                              x = left, y = top (Cross/Circle/Square/Triangle,
+                                              B/A/Y/X on a Switch pad)
+               lb.png rb.png lt.png rt.png    shoulders and triggers
+               start.png back.png             the two system buttons
+               ls.png rs.png                  the sticks (l3.png / r3.png also read)
+               dpad.png dpad_up.png dpad_down.png dpad_left.png dpad_right.png
+               key_e.png key_space.png ...    keyboard: key_ + the keycap's label, lowercase
+                                              (key_lmb, key_esc, key_f1)
+```
+
+- The player's packs live under `glyphs/` in the game's user data folder (`user://glyphs/<pack>/`);
+  a mod shares one by shipping `glyphs/<pack>/` in its package. The pack is content the game
+  reads — no script runs. The player's folder wins over a mod's of the same name, file by file.
+- `glyph_pack` (the launcher's Controls group, or Options › Controls › Controller and Keyboard ›
+  Glyph pack) selects it by folder name; empty is the built-in glyphs.
+- Any size; square art fills a prompt best. Each file is scaled into the prompt's cell, so the
+  animated strips (`24x24/Anim*`) and the `abyx` atlas cells show it in every frame.
+- A button the pack has no file for falls back to the selected style, so a pack can replace just
+  the face buttons.
+- A pack's files are read when it is selected and again whenever `refii.toml` changes; a file
+  added while the game runs shows after the next settings change or restart.
 
 ## Starters
 

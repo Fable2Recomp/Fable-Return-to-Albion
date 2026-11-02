@@ -7,9 +7,17 @@
 // GRAMMAR (space-separated; numbers decimal; `run_lua` takes the rest of the line):
 // Entities and objects are HANDLES (refii_mod_handle: what every event gave the script), never
 // addresses; definitions and text hashes are "0x…" strings or decimal.
-//   give_gold E D · modify_health E D ATTACKER · set_health E V · add_item E DEFINITION
+//   give_gold E D · modify_health E D ATTACKER · set_health E V · add_item E DEFINITION [COUNT]
 //   give_experience E POOL AMOUNT · spend_experience E POOL AMOUNT
+//   modify_renown E D · modify_morality E D · modify_purity E D   (refii_mod_modify_renown ..: the
+//                                game's own Stats.Modify* bodies, so the events fire)
+//   save_game P   (refii_mod_save_game: AutoSaveGame(true, true) where player P may save)
 //   cast_spell CASTER TYPE TARGETED TARGET LEVEL [X Y Z [DX DY DZ]] · set_position E X Y Z
+//   set_facing E X Y [Z]   (refii_mod_set_facing: Physics.SetFacingVector, a hero's Player.SetFacingVector)
+//   cast_spell_with CASTER TYPE TARGETED TARGET LEVEL TAG SCALE [X Y Z [DX DY DZ]] [at E | at X Y Z]
+//                                (refii_mod_cast_spell_with: the cast's tag and its hits' damage scale;
+//                                `at` places the cast by its class's rule for that entity or point,
+//                                X Y Z then the origin and DX DY DZ the facing on the place)
 //                                   (the start position and facing; the caster's own when absent)
 //   entity_tint E R G B A · entity_untint E   (refii_mod_entity_tint: the game's own tint setter)
 //   entity_alpha E A · entity_scale E S · entity_saturation_mask E ON · entity_drawable E ON
@@ -25,6 +33,7 @@
 //   set_speed_multiplier P FACTOR · clear_speed_multiplier P   (refii_mod_set_speed_multiplier /
 //                                refii_mod_clear_speed_multiplier: the player component's override)
 //   allow_action_interrupt A   (refii_mod_allow_action_interrupt: A an action handle)
+//   allow_action_interrupt_at A SECONDS   (refii_mod_allow_action_interrupt_at: granted once A's clock reaches SECONDS)
 //   play_sound CUE E [TAG] · play_sound_at CUE X Y Z [TAG] · stop_sound E TAG [FADE_MS]
 //                                (refii_mod_play_sound_on / _at / refii_mod_stop_sound: E 0 for the
 //                                point emitters; an empty tag is "-")
@@ -39,18 +48,29 @@
 //   save_set KEY INT · run_lua CHUNK...
 //   player_set P KEY V · player_add P KEY D [SAVED] · player_save P KEY V   (the player store
 //     Refii.player_set / _add / _save write: refii_mod_player_*)
+//   player_set_text P KEY B64 · player_save_text P KEY B64   (a typed text in the same store,
+//     refii_mod_player_set_text / _save_text; base64 on the line, '-' for "")
 //   mask_word event|verdict W HEX -> word W (2 and up: words 0 and 1 are the two mask exports) of
 //                                   the host's event or verdict mask, its 64 bits in hex
 //                                   (HostBridge.SetModEventMask / SetModVerdictMask post it)
 //   publish KEY VALUE            -> refii::mods::Publish: the value every reader sees ("mod:<key>")
-//   menu_row PLAYER MENU ROW MOD -> raises ModMenuRow for the native and Lua handlers (a row chosen
-//                                   in Godot; a space in a name arrives as '_', an empty one as '-')
+//   menu_row PLAYER MENU ROW MOD [CMD64 BUTTON [KIND DEF SPELL]]
+//                                -> raises ModMenuRow for the native and Lua handlers (a row chosen
+//                                   in Godot; a space in a name arrives as '_', an empty one as '-');
+//                                   KIND DEF SPELL the row's typed subject (Refii.Mods.ModRowSubject)
 //   box_answer ID BUTTON PLAYER  -> raises ModMessageBox for the native and Lua handlers (a mod's
 //                                   message box answered in Godot: 0 A, 1 B, -1 replaced)
 //   notice_done ID OUTCOME PLAYER -> raises ModNotice (a mod's notice gone: 0 shown, -1 never shown)
 //   menu_box_answer ID OPTION PLAYER -> raises ModMenuBox (a mod's menu box answered: the option, -1 none)
+//   attack_mode PLAYER MODE -> raises AttackModeChanged on a change (the keyboard's attack button mode
+//                                   for the player it plays: 1 melee, 2 ranged, 3 magic; refii_mod_attack_mode)
+//   camera_override P MODE [FOV [PITCH [BLEND [FLAGS]]]] -> refii_mod_camera_override: player P's hold
+//                                   (MODE 8 first person, 2 the third-person camera, 0 lets go; 0 FOV or
+//                                   PITCH the camera's own, BLEND below 0 its own; FLAGS 1 yields to the gun aim)
 //   query ID health E            -> id,ok,current,max
 //   query ID position E          -> id,ok,x,y,z
+//   query ID facing E            -> id,ok,x,y,z   (refii_mod_facing: Physics.GetFacingVector)
+//   query ID velocity E          -> id,ok,x,y,z   (refii_mod_velocity: Physics.GetVelocity)
 //   query ID gold E              -> id,ok,gold
 //   query ID item_count E DEF    -> id,ok,count
 //   query ID experience E POOL   -> id,ok,amount
@@ -58,13 +78,16 @@
 //   query ID relation A B        -> id,ok,relation
 //   query ID alive E             -> id,ok,alive
 //   query ID locked_target P     -> id,ok,target  (refii_mod_locked_target: 0 when not locked)
+//   query ID can_save P          -> id,ok,able    (refii_mod_can_save: Player.IsAbleToSaveGame)
 //   query ID in_cutscene P       -> id,ok,kinds   (refii_mod_in_cutscene: REFII_CUTSCENE_* bits, 0 none;
 //                                   P 0 either player)
+//   query ID camera_mode P       -> id,ok,mode,fov (refii_mod_camera_mode: ECameraMode, -1 none;
+//                                   refii_mod_camera_fov: degrees, 0 with no camera)
 //   query ID has_status E KIND   -> id,ok,has     (refii_mod_has_status)
 //   query ID speed_multiplier P  -> id,ok,overridden,factor  (refii_mod_speed_multiplier)
 //   query ID current_action E    -> id,ok,action,elapsed,interruptible  (refii_mod_current_action,
 //                                   _action_elapsed, _action_interruptible; action 0 for none)
-//   query ID action A            -> id,ok,type,name='..'  (refii_mod_action_type / _action_name:
+//   query ID action A            -> id,ok,type,name='..',elapsed,interruptible  (refii_mod_action_type / _action_name:
 //                                   EScriptableAction and its name; ok false for an unknown action)
 //   query ID frontend            -> id,ok,signed_in,saves,screen='..'  (refii_mod_signed_in_user,
 //                                   _save_count, _frontend_screen; ok false with no front end up)
@@ -73,6 +96,17 @@
 //   query ID spell_parts SERIAL  -> id,ok,spell,type,targeted,level,caster,caster_player,vortex,
 //                                   anchor,sword_count,s1..s8,x,y,z,has_origin,exploded
 //                                   (refii_mod_spell_parts; ok false for an unknown cast)
+//   query ID vortex_held SERIAL  -> id,ok,count,v1..v16  (refii_mod_vortex_held: the handles the
+//                                   cast's live vortex holds, its list order, 0 past count; ok
+//                                   false when no live vortex carries SERIAL)
+//   query ID spell_balance C T L -> id,ok,status_seconds,status_spread,duration,swords
+//                                   (refii_mod_spell_balance: power L of spell T as its Targeted class's
+//                                   data read loads it for caster C; -1 a field the class lacks; ok
+//                                   false for another type or a caster with no spell manager)
+//   query ID host_serial SERIAL  -> id,ok,serial  (refii_mod_host_serial: the online host's serial of
+//                                   this machine's spell; ok false while its cast is not paired)
+//   query ID local_serial SERIAL -> id,ok,serial  (refii_mod_local_serial: this machine's spell for
+//                                   the host's serial; ok false while not paired)
 //   query ID time_of_day         -> id,ok,hours   (refii_mod_time_of_day: the clock, 0..24)
 //   query ID definition E        -> id,ok,definition
 //   query ID name E              -> id,ok,name='..'
@@ -85,24 +119,53 @@
 //   query ID lua_int EXPR... (last two tokens LO HI) -> id,ok,value
 //   query ID renown E -> renown · morality E / purity E -> value · physique E -> fat,height
 //   query ID age E -> age · equipped E -> melee,ranged · inventory_stack E I -> definition,count
-//   use_item P DEF · equip_weapon P DEF · perform_expression P EXPRESSION · assign_spell P SPELL
-//                        (refii_mod_use_item ..: the quick menu's own actions for player P's hero,
-//                        gated as the quick menu is; a joiner's weapon pick goes through the co-op kit)
+//   query ID inventory P [OFFSET] -> total,offset,next,count,d1..dk ('0x…'),n1..nk (count),c1..ck
+//                        (category),v1..vk (viewed 0|1),u1..uk (usable 0|1, refii_mod_inventory_usable):
+//                        player P's hero's stacks in the game's order,
+//                        up to 40 a reply from stack OFFSET; ask again from next while next < total
+//   use_item P DEF [FLAGS] · equip_weapon P DEF [FLAGS] · perform_expression P EXPRESSION [FLAGS] ·
+//   assign_spell P SPELL [FLAGS]
+//                        (refii_mod_quick_action: the quick menu's own actions for player P's hero,
+//                        gated as the quick menu is unless FLAGS has REFII_QUICK_UNGATED (1); 2 holds
+//                        the expression; a joiner's weapon pick goes through the co-op kit)
+//   release_expression P (refii_mod_release_expression) · end_sprint P (refii_mod_end_sprint)
+//   set_locomotion P KEY VALUE ("-" stops holding KEY) (refii_mod_set_locomotion)
+//   set_parry P WINDOW WEDGE (negative leaves one) (refii_mod_set_parry)
+//   query ID sprinting P -> sprinting · locomotion P KEY -> value · parry P -> window,wedge
 //   query ID expressions P -> count,e1..eN (records '0x…'),u1..uN (uses)  (refii_mod_expression)
 //   query ID spells_known P -> mask,count  (refii_mod_spells_known: bit 1 << type)
 //   query ID selected_expression P -> expression='0x…'  (refii_mod_selected_expression; ok false with
 //                        no wheel up for P)
-//   query ID record_string DEF FIELD -> value='..'  (refii_mod_record_string: the inherited string)
+//   query ID record_string DEF FIELD -> value='..'  (refii_mod_record_string: the inherited string, exact
+//                        but for a quote or a line break)
 //   query ID record_int DEF FIELD -> value=n  (refii_mod_record_int: the inherited int or enum)
+//   query ID record_number DEF FIELD -> value=x · record_bool DEF FIELD -> value=true|false ·
+//     record_exists DEF -> exists=true|false  (refii_mod_record_number / _bool / _exists)
+//   query ID record_ref DEF FIELD -> value='0x…'  (refii_mod_record_ref: the record a type-6 property names)
+//   charge_spell P TYPE HELD  (refii_mod_charge_spell: HELD 1 charges spell TYPE through P's own magic
+//                        charge, its tiers lent with no spell_pick; 0 lets the button go)
+//   query ID creature_tier E -> tier  (refii_mod_creature_tier: 1 elite | 2 lieutenant; ok false without a creature)
 //   query ID near X Y Z R [CREATURES [OFFSET]] -> total,offset,count,e1..ecount (100 a page)
 //   query ID line_of_sight X1 Y1 Z1 X2 Y2 Z2 -> clear
 //   query ID spawn DEF X Y Z -> entity
 //   query ID local_hero -> hero · coop_mode -> mode · menu_player -> player
-//   query ID coop_state -> local_hero,coop_mode,menu_player (the three at once)
+//   query ID coop_state -> local_hero,coop_mode,menu_player,split_screen (the four at once)
 //   query ID player_value P KEY [FALLBACK] -> value,has · player_here P -> here
+//   query ID player_text P KEY -> text (quoted: a quote, backslash, comma or line break as '_'),
+//     hash ('0x…' when the text reads as one), has
 //   query ID player_dog P -> dog · focus P -> entity · opinion E P -> love,fear,attractiveness,
 //     morality,respect · uid E -> uid='0x…'
 //   query ID discovered_crime E P -> discovered · perceived_renown E P -> renown
+//   query ID appearance P -> automatic,tan,fat,height,strength,skill,will,morality,purity,age
+//     (refii_mod_appearance: the look in force for player P, Murgo's Mirror's or the game's own)
+//   query ID morph P MORPH -> weight,registered   (refii_mod_morph_weight; MORPH "0x…" or "<mod>.<name>")
+//   morph_set P MORPH W   (refii_mod_set_morph_weight)
+//   appearance_set P NAME=V...   (refii_mod_set_appearance: manual, the named inputs of tan fat
+//     height strength skill will morality purity age, the rest kept as they look)
+//   appearance_automatic P ON    (refii_mod_set_appearance_automatic)
+//   appearance_state P AUTOMATIC TAN FAT HEIGHT STRENGTH SKILL WILL MORALITY PURITY AGE
+//     (GameCharacterMorphs' statement of a settings slot's look for player P; written only where P
+//     is played: refii::vfs::AppearanceState)
 //   forgive_crimes E P   (refii_mod_forgive_crimes: player P's crimes the villager E knows of)
 //   fx_play ID HASH X Y Z ENTITY OX OY OZ SCALE INTENSITY LOOP [R G B]
 //                        play_fx under the classic look (Engine_FxPlayer): the guest's own particle
@@ -131,14 +194,18 @@
 //                        line (no spaces), raised on the other machine as PartnerMessage
 // A command that does nothing (no such entity, no component) is silent; a query always replies,
 // with ok=false when it could not be answered.
+// A Godot VERDICT handler reads a query verb that changes nothing (kReadOnlyVerbs) AT ONCE through
+// RefiiHost.read: the same branch answers, on the guest thread inside the seam (ModVerdictRead).
 
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <iterator>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -147,8 +214,9 @@
 #include "core/mod_values.h"
 #include "core/refii_mod.h"
 
-// guest_tick_pump.cpp: a player's dog (Refii.player_dog's answer).
+// guest_tick_pump.cpp: a player's dog (Refii.player_dog's answer), and local co-op drawn as halves.
 extern "C" uint32_t RefiiCoopPlayerDog(uint8_t* base, int player);
+extern "C" int RefiiCoopSplitScreen(void);
 
 namespace refii::vfs {
 // particle_dress.cpp
@@ -164,6 +232,8 @@ bool RunFrontEndLua(PPCContext& ctx, uint8_t* base, const std::string& chunk);
 // mod_abilities.cpp
 bool RunModAbilityCommand(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& words);
 void PumpModAbilities(PPCContext& ctx, uint8_t* base);
+// mod_api.cpp
+void AppearanceState(int32_t player, bool automatic, const refii_mod_appearance_t& look);
 }  // namespace refii::vfs
 
 namespace {
@@ -256,10 +326,60 @@ void Quote(const char* text, char* out, size_t size) {
   out[n] = 0;
 }
 
-void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w) {
-  const std::string id = w.size() > 1 ? w[1] : "0";
+/// A reply's text kept exact for the host's field parser, which reads a quoted value to its closing
+/// quote with no escapes: only a quote and a line break become underscores (a record's path keeps
+/// its backslashes, a name its commas).
+void QuoteText(const char* text, char* out, size_t size) {
+  size_t n = 0;
+  for (const char* c = text; c != nullptr && *c != 0 && n + 1 < size; ++c) {
+    out[n++] = (*c == '\'' || *c == '\n' || *c == '\r') ? '_' : *c;
+  }
+  out[n] = 0;
+}
+
+constexpr size_t kAnswerBytes = 1900;
+
+/// THE QUERY VERBS THAT CHANGE NOTHING: what a Godot verdict may read at once (RefiiHost.read,
+/// ModVerdictRead below), as a Lua handler reads at the call. Every other verb is refused there:
+/// spawn makes an entity, lua_int runs any game Lua expression. ModApi.VerdictReads is this list.
+constexpr const char* kReadOnlyVerbs[] = {
+    "health", "position", "facing", "velocity", "gold", "item_count", "experience", "ability_level", "relation",
+    "alive", "locked_target", "in_cutscene", "camera_mode", "has_status", "speed_multiplier", "current_action",
+    "action", "frontend", "living", "spell_in_slot", "spell_parts", "vortex_held", "spell_balance", "host_serial",
+    "local_serial", "time_of_day", "definition", "name", "level_name", "hero", "player_of", "player_for", "world_here",
+    "combat_state", "can_save", "renown", "morality", "purity", "physique", "age", "equipped", "inventory_stack",
+    "inventory", "expressions", "spells_known", "sprinting", "locomotion", "parry", "selected_expression",
+    "record_string", "record_int", "record_number", "record_bool", "record_exists", "record_ref", "creature_tier",
+    "near", "line_of_sight", "local_hero", "coop_mode", "menu_player", "coop_state", "player_value", "player_text",
+    "player_here", "player_dog", "focus", "opinion", "discovered_crime", "perceived_renown", "uid", "appearance",
+    "morph",
+};
+
+/// A mod morph as a command names it: "0x…" its id, else "<mod>.<name>" (refii_mod_morph_id).
+uint32_t MorphWord(const std::string& word) {
+  if (word.size() > 2 && word[0] == '0' && (word[1] == 'x' || word[1] == 'X')) {
+    return static_cast<uint32_t>(std::strtoul(word.c_str() + 2, nullptr, 16));
+  }
+  return refii_mod_morph_id(word.c_str());
+}
+
+/// refii_mod_appearance_t's inputs as the appearance_set / appearance_state lines name and order them.
+constexpr float refii_mod_appearance_t::* kAppearanceFields[] = {
+    &refii_mod_appearance_t::tan,      &refii_mod_appearance_t::fat,   &refii_mod_appearance_t::height,
+    &refii_mod_appearance_t::strength, &refii_mod_appearance_t::skill, &refii_mod_appearance_t::will,
+    &refii_mod_appearance_t::morality, &refii_mod_appearance_t::purity, &refii_mod_appearance_t::age,
+};
+constexpr const char* kAppearanceNames[] = {"tan", "fat", "height", "strength", "skill", "will", "morality", "purity", "age"};
+
+bool ReadOnlyVerb(const std::string& verb) {
+  return std::any_of(std::begin(kReadOnlyVerbs), std::end(kReadOnlyVerbs),
+                     [&](const char* v) { return verb == v; });
+}
+
+/// A query's answer: `w` is "query ID VERB ARGS..."; the fields into `fields`, true when answered.
+/// One implementation for the queued lane (RunQuery) and a verdict's read (ModVerdictRead).
+bool Answer(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w, char (&fields)[kAnswerBytes]) {
   const std::string what = w.size() > 2 ? w[2] : "";
-  char fields[1900] = {0};
   bool ok = false;
   if (what == "health") {
     float current = 0.0f, max = 0.0f;
@@ -268,6 +388,11 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
   } else if (what == "position") {
     float xyz[3] = {0, 0, 0};
     ok = refii_mod_entity_position(&ctx, base, E(w, 3), xyz) != 0;
+    std::snprintf(fields, sizeof(fields), "x=%g,y=%g,z=%g", static_cast<double>(xyz[0]), static_cast<double>(xyz[1]),
+                  static_cast<double>(xyz[2]));
+  } else if (what == "facing" || what == "velocity") {
+    float xyz[3] = {0, 0, 0};
+    ok = (what == "facing" ? refii_mod_facing(&ctx, base, E(w, 3), xyz) : refii_mod_velocity(&ctx, base, E(w, 3), xyz)) != 0;
     std::snprintf(fields, sizeof(fields), "x=%g,y=%g,z=%g", static_cast<double>(xyz[0]), static_cast<double>(xyz[1]),
                   static_cast<double>(xyz[2]));
   } else if (what == "gold") {
@@ -298,6 +423,10 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
   } else if (what == "in_cutscene") {
     ok = true;
     std::snprintf(fields, sizeof(fields), "kinds=%d", refii_mod_in_cutscene(&ctx, base, I(w, 3)));
+  } else if (what == "camera_mode") {
+    ok = I(w, 3) == 1 || I(w, 3) == 2;
+    std::snprintf(fields, sizeof(fields), "mode=%d,fov=%.9g", refii_mod_camera_mode(I(w, 3)),
+                  static_cast<double>(refii_mod_camera_fov(base, I(w, 3))));
   } else if (what == "has_status") {
     ok = true;
     std::snprintf(fields, sizeof(fields), "has=%s", refii_mod_has_status(base, E(w, 3), I(w, 4)) != 0 ? "true" : "false");
@@ -320,7 +449,13 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
     const uint32_t action = E(w, 3);
     const int32_t type = refii_mod_action_type(base, action);
     ok = type >= 0;
-    std::snprintf(fields, sizeof(fields), "type=%d,name='%s'", type, refii_mod_scriptable_action_name(type));
+    float elapsed = 0.0f;
+    if (action != 0) {
+      refii_mod_action_elapsed(&ctx, base, action, &elapsed);
+    }
+    std::snprintf(fields, sizeof(fields), "type=%d,name='%s',elapsed=%g,interruptible=%s", type,
+                  refii_mod_scriptable_action_name(type), static_cast<double>(elapsed),
+                  action != 0 && refii_mod_action_interruptible(base, action) != 0 ? "true" : "false");
   } else if (what == "frontend") {
     char screen[96];
     refii_mod_frontend_screen(&ctx, base, screen, sizeof(screen));
@@ -346,6 +481,25 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
                   refii_mod_handle(parts.swords[5]), refii_mod_handle(parts.swords[6]), refii_mod_handle(parts.swords[7]),
                   static_cast<double>(parts.origin[0]), static_cast<double>(parts.origin[1]), static_cast<double>(parts.origin[2]),
                   parts.has_origin != 0 ? "true" : "false", parts.exploded != 0 ? "true" : "false");
+  } else if (what == "vortex_held") {
+    uint32_t held[16] = {0};
+    const int32_t count = refii_mod_vortex_held(base, U(w, 3), held, 16);
+    ok = count >= 0;
+    int length = std::snprintf(fields, sizeof(fields), "count=%d", count < 0 ? 0 : count);
+    for (int32_t i = 0; i < 16 && length > 0 && static_cast<size_t>(length) < sizeof(fields); ++i) {
+      length += std::snprintf(fields + length, sizeof(fields) - static_cast<size_t>(length), ",v%d=%u", i + 1,
+                              i < count ? refii_mod_handle(held[i]) : 0u);
+    }
+  } else if (what == "spell_balance") {
+    refii_mod_cast_balance balance{};
+    ok = refii_mod_spell_balance(&ctx, base, E(w, 3), I(w, 4), I(w, 5), &balance) != 0;
+    std::snprintf(fields, sizeof(fields), "status_seconds=%g,status_spread=%g,duration=%g,swords=%d",
+                  static_cast<double>(balance.status_seconds), static_cast<double>(balance.status_spread),
+                  static_cast<double>(balance.duration), balance.swords);
+  } else if (what == "host_serial" || what == "local_serial") {
+    const uint32_t serial = what == "host_serial" ? refii_mod_host_serial(base, U(w, 3)) : refii_mod_local_serial(base, U(w, 3));
+    ok = serial != 0;
+    std::snprintf(fields, sizeof(fields), "serial=%u", serial);
   } else if (what == "time_of_day") {
     float hours = 0.0f;
     ok = refii_mod_time_of_day(base, &hours) != 0;
@@ -396,6 +550,10 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
     }
     std::snprintf(fields, sizeof(fields), "midst=%s,close_to_combat=%s,in_any_combat=%s", state[0] != 0 ? "true" : "false",
                   state[1] != 0 ? "true" : "false", state[2] != 0 ? "true" : "false");
+  } else if (what == "can_save") {
+    // refii_mod_can_save: Player.IsAbleToSaveGame for player P's hero.
+    ok = true;
+    std::snprintf(fields, sizeof(fields), "able=%s", refii_mod_can_save(&ctx, base, I(w, 3)) != 0 ? "true" : "false");
   } else if (what == "renown") {
     int32_t renown = 0;
     ok = refii_mod_renown(&ctx, base, E(w, 3), &renown) != 0;
@@ -422,6 +580,45 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
     int32_t count = 0;
     ok = refii_mod_inventory_stack(base, E(w, 3), I(w, 4), &definition, &count) != 0;
     std::snprintf(fields, sizeof(fields), "definition='0x%08x',count=%d", definition, count);
+  } else if (what == "inventory") {
+    // query ID inventory P [OFFSET]: component 13's list (+0x10 the sentinel, node+8 the item) read
+    // as the pump's SampleHeroInventory reads player one's — item +4 record, +0xC count, +0x10
+    // category, +0x14 viewed — for either player's hero.
+    using refii::mods::LoadU32;
+    const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+    constexpr int32_t kInventoryPage = 40;
+    const int32_t player = I(w, 3);
+    const uint32_t hero = player >= 1 && player <= 2 ? refii_mod_player_hero(base, player) : 0u;
+    const uint32_t inventory = hero != 0u ? refii_mod_component(base, hero, 13) : 0u;
+    const uint32_t sentinel = inventory != 0u ? LoadU32(base, inventory + 0x10u) : 0u;
+    ok = plausible(sentinel);
+    const int32_t offset = I(w, 4) < 0 ? 0 : I(w, 4);
+    int32_t total = 0, next = -1, count = 0;
+    char list[1700] = {0};
+    int at = 0;
+    for (uint32_t node = ok ? LoadU32(base, sentinel) : 0u; plausible(node) && node != sentinel && total < 4096;
+         node = LoadU32(base, node), ++total) {
+      if (total < offset || next >= 0) {
+        continue;
+      }
+      if (count >= kInventoryPage || static_cast<size_t>(at) >= sizeof(list) - 64) {
+        next = total;
+        continue;
+      }
+      const uint32_t item = LoadU32(base, node + 8u);
+      if (!plausible(item)) {
+        continue;
+      }
+      ++count;
+      // u: the item's own UsableFromInventory test, what Refii.inventory's `usable` answers.
+      at += std::snprintf(list + at, sizeof(list) - static_cast<size_t>(at), ",d%d='0x%08x',n%d=%d,c%d=%d,v%d=%d,u%d=%d", count,
+                          LoadU32(base, item + 0x04u), count, static_cast<int32_t>(LoadU32(base, item + 0x0Cu)), count,
+                          static_cast<int32_t>(LoadU32(base, item + 0x10u)), count,
+                          refii::mods::LoadU8(base, item + 0x14u) != 0u ? 1 : 0, count,
+                          refii_mod_inventory_usable(&ctx, base, hero, total) != 0 ? 1 : 0);
+    }
+    std::snprintf(fields, sizeof(fields), "total=%d,offset=%d,next=%d,count=%d%s", total, offset, next >= 0 ? next : total,
+                  count, list);
   } else if (what == "expressions") {
     // query ID expressions P -> count=n,e1='0x…',u1=n,...: the performer's known expressions, at
     // most 60 a reply (a hero knows a few dozen).
@@ -444,6 +641,18 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
     uint32_t mask = 0;
     ok = refii_mod_spells_known(base, I(w, 3), &mask) != 0;
     std::snprintf(fields, sizeof(fields), "mask=%u,count=%d", mask, __builtin_popcount(mask));
+  } else if (what == "sprinting") {
+    // refii_mod_sprinting: the sprint component's flag (+0x24) for player P's hero.
+    ok = refii_mod_player_hero(base, I(w, 3)) != 0;
+    std::snprintf(fields, sizeof(fields), "sprinting=%s", refii_mod_sprinting(base, I(w, 3)) != 0 ? "true" : "false");
+  } else if (what == "locomotion") {
+    float value = 0.0f;
+    ok = refii_mod_locomotion(&ctx, base, I(w, 3), w.size() > 4 ? w[4].c_str() : "", &value) != 0;
+    std::snprintf(fields, sizeof(fields), "value=%.9g", value);
+  } else if (what == "parry") {
+    float window = 0.0f, wedge = 0.0f;
+    ok = refii_mod_parry(&ctx, base, I(w, 3), &window, &wedge) != 0;
+    std::snprintf(fields, sizeof(fields), "window=%.9g,wedge=%.9g", window, wedge);
   } else if (what == "selected_expression") {
     const uint32_t record = refii_mod_selected_expression(base, I(w, 3));
     ok = record != 0;
@@ -452,12 +661,31 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
     char text[256] = {0};
     ok = refii_mod_record_string(&ctx, base, U(w, 3), w.size() > 4 ? w[4].c_str() : "", text, sizeof(text)) != 0;
     char quoted[300];
-    Quote(text, quoted, sizeof(quoted));
+    QuoteText(text, quoted, sizeof(quoted));
     std::snprintf(fields, sizeof(fields), "value='%s'", quoted);
   } else if (what == "record_int") {
     int32_t value = 0;
     ok = refii_mod_record_int(&ctx, base, U(w, 3), w.size() > 4 ? w[4].c_str() : "", &value) != 0;
     std::snprintf(fields, sizeof(fields), "value=%d", value);
+  } else if (what == "record_number") {
+    float value = 0.0f;
+    ok = refii_mod_record_number(&ctx, base, U(w, 3), w.size() > 4 ? w[4].c_str() : "", &value) != 0;
+    std::snprintf(fields, sizeof(fields), "value=%.9g", static_cast<double>(std::isfinite(value) ? value : 0.0f));
+  } else if (what == "record_bool") {
+    int32_t value = 0;
+    ok = refii_mod_record_bool(&ctx, base, U(w, 3), w.size() > 4 ? w[4].c_str() : "", &value) != 0;
+    std::snprintf(fields, sizeof(fields), "value=%s", value != 0 ? "true" : "false");
+  } else if (what == "record_exists") {
+    ok = true;
+    std::snprintf(fields, sizeof(fields), "exists=%s", refii_mod_record_exists(&ctx, base, U(w, 3)) != 0 ? "true" : "false");
+  } else if (what == "record_ref") {
+    uint32_t value = 0u;
+    ok = refii_mod_record_ref(&ctx, base, U(w, 3), w.size() > 4 ? w[4].c_str() : "", &value) != 0;
+    std::snprintf(fields, sizeof(fields), "value='0x%08x'", value);
+  } else if (what == "creature_tier") {
+    const int32_t tier = refii_mod_creature_tier(base, E(w, 3));
+    ok = tier >= 0;
+    std::snprintf(fields, sizeof(fields), "tier=%d", ok ? tier : 0);
   } else if (what == "near") {
     // query ID near X Y Z R [CREATURES [OFFSET]] -> total=n,offset=o,count=k,e1=h..ek=h: up to
     // 100 handles a reply, nearest first, starting at OFFSET; ask again from offset+count for more.
@@ -498,8 +726,9 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
     std::snprintf(fields, sizeof(fields), "player=%d", refii_mod_menu_player(base));
   } else if (what == "coop_state") {
     ok = true;
-    std::snprintf(fields, sizeof(fields), "local_hero=%u,coop_mode=%d,menu_player=%d",
-                  refii_mod_handle(refii_mod_local_hero(base)), refii_mod_coop_mode(base), refii_mod_menu_player(base));
+    std::snprintf(fields, sizeof(fields), "local_hero=%u,coop_mode=%d,menu_player=%d,split_screen=%s",
+                  refii_mod_handle(refii_mod_local_hero(base)), refii_mod_coop_mode(base), refii_mod_menu_player(base),
+                  RefiiCoopSplitScreen() != 0 ? "true" : "false");
   } else if (what == "player_value") {
     // Refii.player_value(p, key [, fallback]): the value, else the fallback, else nothing.
     float value = 0.0f;
@@ -510,6 +739,20 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
     }
     ok = has || fallback;
     std::snprintf(fields, sizeof(fields), "value=%.9g,has=%s", static_cast<double>(value), has ? "true" : "false");
+  } else if (what == "player_text") {
+    // Refii.player_value_text / _hash: the typed text, and the hash it reads as.
+    char text[REFII_MOD_PLAYER_TEXT_MAX + 1] = {0};
+    const bool has = w.size() > 4 && refii_mod_player_text(I(w, 3), w[4].c_str(), text, sizeof(text)) >= 0;
+    uint32_t hash = 0;
+    const bool hashed = has && refii_mod_player_hash(I(w, 3), w[4].c_str(), &hash) != 0;
+    char quoted[REFII_MOD_PLAYER_TEXT_MAX + 1];
+    Quote(text, quoted, sizeof(quoted));
+    char hex[16] = {0};
+    if (hashed) {
+      std::snprintf(hex, sizeof(hex), "0x%08x", hash);
+    }
+    ok = has;
+    std::snprintf(fields, sizeof(fields), "text='%s',hash='%s',has=%s", quoted, hex, has ? "true" : "false");
   } else if (what == "player_here") {
     ok = true;
     std::snprintf(fields, sizeof(fields), "here=%s", refii_mod_player_here(I(w, 3)) != 0 ? "true" : "false");
@@ -544,6 +787,20 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
     ok = entity != 0;
     std::snprintf(fields, sizeof(fields), "uid='0x%08x%08x'", ok ? refii::mods::LoadU32(base, entity + 0x14u) : 0u,
                   ok ? refii::mods::LoadU32(base, entity + 0x18u) : 0u);
+  } else if (what == "appearance") {
+    refii_mod_appearance_t look{};
+    ok = refii_mod_appearance(&ctx, base, I(w, 3), &look) != 0;
+    std::snprintf(fields, sizeof(fields),
+                  "automatic=%s,tan=%.9g,fat=%.9g,height=%.9g,strength=%.9g,skill=%.9g,will=%.9g,morality=%.9g,purity=%.9g,age=%.9g",
+                  look.automatic != 0 ? "true" : "false", static_cast<double>(look.tan), static_cast<double>(look.fat),
+                  static_cast<double>(look.height), static_cast<double>(look.strength), static_cast<double>(look.skill),
+                  static_cast<double>(look.will), static_cast<double>(look.morality), static_cast<double>(look.purity),
+                  static_cast<double>(look.age));
+  } else if (what == "morph") {
+    float weight = 0.0f;
+    const bool registered = w.size() > 4 && refii_mod_morph_weight(I(w, 3), MorphWord(w[4]), &weight) != 0;
+    ok = registered;
+    std::snprintf(fields, sizeof(fields), "weight=%.9g,registered=%s", static_cast<double>(weight), registered ? "true" : "false");
   } else if (what == "lua_int" && w.size() >= 6) {
     // query ID lua_int <expr words...> LO HI
     std::string expr;
@@ -554,7 +811,13 @@ void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w)
     ok = refii_mod_game_lua_int(&ctx, base, expr.c_str(), I(w, w.size() - 2), I(w, w.size() - 1), &value) != 0;
     std::snprintf(fields, sizeof(fields), "value=%d", value);
   }
-  Reply(id, ok, fields);
+  return ok;
+}
+
+void RunQuery(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w) {
+  char fields[kAnswerBytes] = {0};
+  const bool ok = Answer(ctx, base, w, fields);
+  Reply(w.size() > 1 ? w[1] : "0", ok, fields);
 }
 
 /// A menu_row word back to the name Godot sent: '-' stands for an empty one.
@@ -577,6 +840,10 @@ void RaiseMenuRow(PPCContext& ctx, uint8_t* base, const std::vector<std::string>
   }
   e.command = command.c_str();
   e.button = Name(w, 6);
+  // The typed subject Godot read off the row (ModRowSubject): kind, "0x…" definition, spell.
+  e.subject_kind = Name(w, 7);
+  e.definition = Name(w, 8);
+  e.spell = w.size() > 9 ? I(w, 9) : -1;
   refii::mods::Dispatch(e);
   // No game VM (the title, the front end): the mods' front-end Lua hears it instead.
   if (!refii::vfs::GameLuaUp(base)) {
@@ -585,15 +852,20 @@ void RaiseMenuRow(PPCContext& ctx, uint8_t* base, const std::vector<std::string>
     char mod[96];
     char cmd[256];
     char button[16];
+    char kind[16];
+    char definition[16];
     Quote(e.menu, menu, sizeof(menu));
     Quote(e.row, row, sizeof(row));
     Quote(e.mod, mod, sizeof(mod));
     Quote(e.command, cmd, sizeof(cmd));
     Quote(e.button, button, sizeof(button));
-    char chunk[960];
+    Quote(e.subject_kind, kind, sizeof(kind));
+    Quote(e.definition, definition, sizeof(definition));
+    char chunk[1024];
     std::snprintf(chunk, sizeof(chunk),
-                  "if Refii and Refii._fire then Refii._fire(%d, {player=%d,menu='%s',row='%s',mod='%s',command='%s',button='%s'}) end",
-                  REFII_EVENT_MOD_MENU_ROW, e.player, menu, row, mod, cmd, button);
+                  "if Refii and Refii._fire then Refii._fire(%d, {player=%d,menu='%s',row='%s',mod='%s',command='%s',button='%s',"
+                  "subject_kind='%s',definition='%s',spell=%d}) end",
+                  REFII_EVENT_MOD_MENU_ROW, e.player, menu, row, mod, cmd, button, kind, definition, e.spell);
     refii::vfs::RunFrontEndLua(ctx, base, chunk);
   }
 }
@@ -1053,6 +1325,24 @@ void RaiseNotice(PPCContext& ctx, uint8_t* base, const std::vector<std::string>&
   }
 }
 
+/// The keyboard's attack button mode per player as Godot last stated it (GameInput's 1 / 2 / 3), 0
+/// for a player no keyboard plays on this machine.
+std::atomic<int32_t> g_attack_mode[2] = {0, 0};
+
+void StateAttackMode(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w) {
+  const int32_t player = I(w, 1);
+  const int32_t mode = I(w, 2);
+  if (player < 1 || player > 2 || mode < 0 || mode > 3 || g_attack_mode[player - 1].exchange(mode) == mode) {
+    return;
+  }
+  refii::mods::AttackModeChangedEvent e{};
+  e.ctx = &ctx;
+  e.base = base;
+  e.player = player;
+  e.mode = mode;
+  refii::mods::Dispatch(e);
+}
+
 void RaiseMenuBox(PPCContext& ctx, uint8_t* base, const std::vector<std::string>& w) {
   refii::mods::ModMenuBoxEvent e{};
   e.ctx = &ctx;
@@ -1143,19 +1433,50 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
   } else if (op == "set_health") {
     refii_mod_set_health(base, E(w, 1), F(w, 2));
   } else if (op == "add_item") {
-    refii_mod_add_item(&ctx, base, E(w, 1), U(w, 2));
+    refii_mod_add_items(&ctx, base, E(w, 1), U(w, 2), w.size() >= 4 ? I(w, 3) : 1, nullptr);
   } else if (op == "give_experience") {
     refii_mod_give_experience(&ctx, base, E(w, 1), I(w, 2), F(w, 3));
   } else if (op == "spend_experience") {
     refii_mod_spend_experience(&ctx, base, E(w, 1), I(w, 2), F(w, 3));
+  } else if (op == "modify_renown") {
+    refii_mod_modify_renown(&ctx, base, E(w, 1), I(w, 2));
+  } else if (op == "modify_morality") {
+    refii_mod_modify_morality(&ctx, base, E(w, 1), F(w, 2));
+  } else if (op == "modify_purity") {
+    refii_mod_modify_purity(&ctx, base, E(w, 1), F(w, 2));
+  } else if (op == "save_game") {
+    refii_mod_save_game(&ctx, base, I(w, 1));
   } else if (op == "cast_spell") {
     const float pos[3] = {F(w, 6), F(w, 7), F(w, 8)};
     const float dir[3] = {F(w, 9), F(w, 10), F(w, 11)};
     refii_mod_cast_spell(&ctx, base, E(w, 1), I(w, 2), I(w, 3), E(w, 4), I(w, 5), w.size() >= 9 ? pos : nullptr,
                          w.size() >= 12 ? dir : nullptr);
+  } else if (op == "cast_spell_with" && w.size() >= 8) {
+    // The positional words end at a trailing `at E` (REFII_MOD_CAST_AT_ENTITY) or `at X Y Z`
+    // (REFII_MOD_CAST_AT_POINT).
+    const size_t at = static_cast<size_t>(std::find(w.begin() + 8, w.end(), "at") - w.begin());
+    const float pos[3] = {F(w, 8), F(w, 9), F(w, 10)};
+    const float dir[3] = {F(w, 11), F(w, 12), F(w, 13)};
+    refii_mod_cast_options options{};
+    options.tag = I(w, 6);
+    options.damage_scale = F(w, 7);
+    if (at + 2 == w.size()) {
+      options.at_kind = REFII_MOD_CAST_AT_ENTITY;
+      options.at_entity = E(w, at + 1);
+    } else if (at + 4 == w.size()) {
+      options.at_kind = REFII_MOD_CAST_AT_POINT;
+      options.at_point[0] = F(w, at + 1);
+      options.at_point[1] = F(w, at + 2);
+      options.at_point[2] = F(w, at + 3);
+    }
+    refii_mod_cast_spell_with(&ctx, base, E(w, 1), I(w, 2), I(w, 3), E(w, 4), I(w, 5), at >= 11 ? pos : nullptr,
+                              at >= 14 ? dir : nullptr, &options);
   } else if (op == "set_position") {
     const float xyz[3] = {F(w, 2), F(w, 3), F(w, 4)};
     refii_mod_set_position(&ctx, base, E(w, 1), xyz);
+  } else if (op == "set_facing") {
+    const float xyz[3] = {F(w, 2), F(w, 3), w.size() >= 5 ? F(w, 4) : 0.0f};
+    refii_mod_set_facing(&ctx, base, E(w, 1), xyz);
   } else if (op == "entity_tint" && w.size() >= 5) {
     refii_mod_entity_tint(&ctx, base, E(w, 1), F(w, 2), F(w, 3), F(w, 4), w.size() >= 6 ? F(w, 5) : 1.0f);
   } else if (op == "entity_untint") {
@@ -1177,13 +1498,25 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
   } else if (op == "switch_target" && w.size() >= 3) {
     refii_mod_switch_target(&ctx, base, I(w, 1), I(w, 2));
   } else if (op == "use_item" && w.size() >= 3) {
-    refii_mod_use_item(&ctx, base, I(w, 1), U(w, 2));
+    refii_mod_quick_action(&ctx, base, I(w, 1), 1, U(w, 2), U(w, 3) & REFII_QUICK_UNGATED);
   } else if (op == "equip_weapon" && w.size() >= 3) {
-    refii_mod_equip_weapon(&ctx, base, I(w, 1), U(w, 2));
+    refii_mod_quick_action(&ctx, base, I(w, 1), 3, U(w, 2), U(w, 3) & REFII_QUICK_UNGATED);
   } else if (op == "perform_expression" && w.size() >= 3) {
-    refii_mod_perform_expression(&ctx, base, I(w, 1), U(w, 2));
+    refii_mod_quick_action(&ctx, base, I(w, 1), 2, U(w, 2), U(w, 3));
+  } else if (op == "charge_spell" && w.size() >= 4) {
+    refii_mod_charge_spell(&ctx, base, I(w, 1), I(w, 2), I(w, 3));
   } else if (op == "assign_spell" && w.size() >= 3) {
-    refii_mod_assign_spell(&ctx, base, I(w, 1), I(w, 2));
+    if (I(w, 2) >= 0) {
+      refii_mod_quick_action(&ctx, base, I(w, 1), 4, static_cast<uint32_t>(I(w, 2)), U(w, 3) & REFII_QUICK_UNGATED);
+    }
+  } else if (op == "release_expression" && w.size() >= 2) {
+    refii_mod_release_expression(&ctx, base, I(w, 1));
+  } else if (op == "end_sprint" && w.size() >= 2) {
+    refii_mod_end_sprint(&ctx, base, I(w, 1));
+  } else if (op == "set_locomotion" && w.size() >= 4) {
+    refii_mod_set_locomotion(&ctx, base, I(w, 1), w[2].c_str(), w[3] == "-" ? NAN : F(w, 3));
+  } else if (op == "set_parry" && w.size() >= 4) {
+    refii_mod_set_parry(&ctx, base, I(w, 1), F(w, 2), F(w, 3));
   } else if (op == "apply_status" && w.size() >= 4) {
     refii_mod_apply_status(&ctx, base, E(w, 1), I(w, 2), F(w, 3), w.size() >= 5 ? I(w, 4) : 0,
                            w.size() >= 6 ? E(w, 5) : 0u);
@@ -1200,6 +1533,8 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
     refii_mod_clear_speed_multiplier(base, I(w, 1));
   } else if (op == "allow_action_interrupt" && w.size() >= 2) {
     refii_mod_allow_action_interrupt(base, E(w, 1));
+  } else if (op == "allow_action_interrupt_at" && w.size() >= 3) {
+    refii_mod_allow_action_interrupt_at(&ctx, base, E(w, 1), F(w, 2));
   } else if (op == "play_sound" && w.size() >= 3) {
     refii_mod_play_sound_on(&ctx, base, E(w, 2), w[1].c_str(), Tag(w, 3));
   } else if (op == "play_sound_at" && w.size() >= 5) {
@@ -1237,12 +1572,42 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
     refii_mod_set_time_of_day(&ctx, base, F(w, 1));
   } else if (op == "set_weather" && w.size() >= 2) {
     refii_mod_set_weather(&ctx, base, w[1].c_str(), w.size() >= 3 ? F(w, 2) : 1.0f, w.size() >= 4 ? F(w, 3) : 1.0f);
+  } else if (op == "appearance_set" && w.size() >= 2) {
+    refii_mod_appearance_t look{};
+    for (float refii_mod_appearance_t::* field : kAppearanceFields) {
+      look.*field = NAN;
+    }
+    for (size_t i = 2; i < w.size(); ++i) {
+      const size_t equals = w[i].find('=');
+      for (size_t f = 0; equals != std::string::npos && f < std::size(kAppearanceNames); ++f) {
+        if (w[i].compare(0, equals, kAppearanceNames[f]) == 0) {
+          look.*kAppearanceFields[f] = std::strtof(w[i].c_str() + equals + 1, nullptr);
+        }
+      }
+    }
+    refii_mod_set_appearance(&ctx, base, I(w, 1), &look);
+  } else if (op == "morph_set" && w.size() >= 4) {
+    refii_mod_set_morph_weight(I(w, 1), MorphWord(w[2]), F(w, 3));
+  } else if (op == "appearance_automatic" && w.size() >= 3) {
+    refii_mod_set_appearance_automatic(&ctx, base, I(w, 1), I(w, 2) != 0 ? 1 : 0);
+  } else if (op == "appearance_state" && w.size() >= 3 + std::size(kAppearanceFields)) {
+    refii_mod_appearance_t look{};
+    for (size_t f = 0; f < std::size(kAppearanceFields); ++f) {
+      look.*kAppearanceFields[f] = F(w, 3 + f);
+    }
+    refii::vfs::AppearanceState(I(w, 1), I(w, 2) != 0, look);
   } else if (op == "player_set" && w.size() >= 4) {
     refii_mod_player_set(I(w, 1), w[2].c_str(), F(w, 3));
   } else if (op == "player_add" && w.size() >= 4) {
     refii_mod_player_add(I(w, 1), w[2].c_str(), F(w, 3), I(w, 4) != 0 ? 1 : 0);
   } else if (op == "player_save" && w.size() >= 4) {
     refii_mod_player_save(I(w, 1), w[2].c_str(), F(w, 3));
+  } else if ((op == "player_set_text" || op == "player_save_text") && w.size() >= 4) {
+    std::string text;
+    if (w[3] == "-" || UnbaseCommand(w[3], text)) {
+      (op == "player_save_text" ? refii_mod_player_save_text : refii_mod_player_set_text)(I(w, 1), w[2].c_str(),
+                                                                                          text.c_str());
+    }
   } else if (op == "save_set" && w.size() >= 3) {
     refii_mod_save_set_int(&ctx, base, w[1].c_str(), I(w, 2));
   } else if (op == "forgive_crimes") {
@@ -1257,6 +1622,11 @@ void RunOne(PPCContext& ctx, uint8_t* base, const char* line) {
     RaiseNotice(ctx, base, w);
   } else if (op == "menu_box_answer" && w.size() >= 4) {
     RaiseMenuBox(ctx, base, w);
+  } else if (op == "attack_mode" && w.size() >= 3) {
+    StateAttackMode(ctx, base, w);
+  } else if (op == "camera_override" && w.size() >= 3) {
+    refii_mod_camera_override(I(w, 1), I(w, 2), w.size() > 3 ? F(w, 3) : 0.0f, w.size() > 4 ? F(w, 4) : 0.0f,
+                              w.size() > 5 ? F(w, 5) : -1.0f, I(w, 6));
   } else if (op == "run_lua" && w.size() >= 2) {
     refii_mod_run_game_lua(&ctx, base, w[1].c_str());
   } else if (op == "partner_send" && w.size() >= 3) {
@@ -1312,6 +1682,22 @@ void RunModCommands(PPCContext& ctx, uint8_t* base) {
   refii::vfs::PumpModAbilities(work, base);
 }
 
+/// RefiiHost.read inside a Godot verdict: `line` is "VERB ARGS..." (a query's words without its id),
+/// answered at once by the query's own branch into `out` as "ok=true|false,<fields>"; the length, or
+/// REFII_MOD_READ_REFUSED for a verb outside kReadOnlyVerbs. The caller holds the guest thread inside
+/// the verdict (mod_events.cpp VerdictRead).
+int32_t ModVerdictRead(PPCContext& ctx, uint8_t* base, const char* line, char* out, size_t capacity) {
+  std::vector<std::string> w = Split(line, 64);
+  if (w.empty() || !ReadOnlyVerb(w[0]) || out == nullptr || capacity == 0) {
+    return REFII_MOD_READ_REFUSED;
+  }
+  w.insert(w.begin(), {std::string("query"), std::string("0")});
+  char fields[kAnswerBytes] = {0};
+  const bool ok = Answer(ctx, base, w, fields);
+  const int length = std::snprintf(out, capacity, "ok=%s%s%s", ok ? "true" : "false", fields[0] != 0 ? "," : "", fields);
+  return length < 0 ? 0 : static_cast<int32_t>(std::min(static_cast<size_t>(length), capacity - 1));
+}
+
 /// The classic plays riding `entity` placed at it now (guest_fx::PlaceRiding); guest thread only.
 void PlaceFxRiding(PPCContext& ctx, uint8_t* base, uint32_t entity) {
   PPCContext work = ctx;
@@ -1319,3 +1705,171 @@ void PlaceFxRiding(PPCContext& ctx, uint8_t* base, uint32_t entity) {
 }
 
 }  // namespace refii::vfs
+
+extern "C" int32_t refii_mod_attack_mode(int32_t player) {
+  return player >= 1 && player <= 2 ? g_attack_mode[player - 1].load() : 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The camera per player (refii_mod.h refii_mod_camera_*). The game VM states the mode and applies
+// the hold: the core camera chunk (Godot/src/Titles/Fable2/host/CoopHeroLua.cs) runs around every
+// CameraManager:FrameUpdate(hero) and reaches this state through Refii._camera_stated /
+// _camera_hold / _camera_held (mod_lua_natives.cpp).
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+struct CameraHold {
+  int32_t mode = 0;
+  float fov = 0.0f;
+  float pitch = 0.0f;
+  float blend = -1.0f;
+  int32_t flags = 0;
+  /// Bumped on every statement, so the chunk re-states a hold whose data changed.
+  uint32_t revision = 0;
+};
+
+/// Guest thread only: written by the API and the command, read by the chunk, all in the tick.
+std::array<CameraHold, 2> g_camera_hold{};
+uint32_t g_camera_revision = 0;
+
+/// The mode last stated per player, -1 for none.
+std::atomic<int32_t> g_camera_mode[2] = {-1, -1};
+
+/// Per player, the halves of the override record our hold wrote and still stand (1 Normal, 2
+/// LookAt), as the chunk states them.
+std::atomic<int32_t> g_camera_held[2] = {0, 0};
+
+/// The camera manager of the player keyed `player` (1 or 2) in the guest's player map: game+0x9C
+/// ({key, Player, _} from container+8 to +0xC), Player+4 the holder, holder+4 the manager — the
+/// hops RefiiHostGetPlayerCamera and the split-screen tick take. 0 when there is none.
+uint32_t CameraManagerOf(uint8_t* base, int32_t player) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+  const uint32_t root = refii::mods::LoadU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t game = plausible(root) ? refii::mods::LoadU32(base, root + 0xCu) : 0u;
+  const uint32_t map = plausible(game) ? refii::mods::LoadU32(base, game + 0x9Cu) : 0u;
+  if (!plausible(map)) {
+    return 0u;
+  }
+  const uint32_t begin = refii::mods::LoadU32(base, map + 0x8u);
+  const uint32_t end = refii::mods::LoadU32(base, map + 0xCu);
+  if (!plausible(begin) || end <= begin || end - begin > 0x1000u) {
+    return 0u;
+  }
+  for (uint32_t entry = begin; entry + 12u <= end; entry += 12u) {
+    if (refii::mods::LoadU32(base, entry) != static_cast<uint32_t>(player)) {
+      continue;
+    }
+    const uint32_t record = refii::mods::LoadU32(base, entry + 4u);
+    const uint32_t holder = plausible(record) ? refii::mods::LoadU32(base, record + 4u) : 0u;
+    const uint32_t manager = plausible(holder) ? refii::mods::LoadU32(base, holder + 4u) : 0u;
+    return plausible(manager) ? manager : 0u;
+  }
+  return 0u;
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_camera_mode(int32_t player) {
+  return player >= 1 && player <= 2 ? g_camera_mode[player - 1].load() : -1;
+}
+
+extern "C" int32_t refii_mod_camera_override(int32_t player, int32_t mode, float fov, float pitch_limit, float blend,
+                                             int32_t flags) {
+  if (player < 1 || player > 2 || (mode != 0 && mode != REFII_CAMERA_GAME && mode != REFII_CAMERA_FIRST_PERSON) ||
+      !std::isfinite(fov) || !std::isfinite(pitch_limit) || !std::isfinite(blend)) {
+    return 0;
+  }
+  CameraHold& hold = g_camera_hold[player - 1];
+  hold.mode = mode;
+  hold.fov = fov > 0.0f ? (fov < 179.0f ? fov : 179.0f) : 0.0f;
+  hold.pitch = pitch_limit > 0.0f ? (pitch_limit < 90.0f ? pitch_limit : 90.0f) : 0.0f;
+  hold.blend = blend >= 0.0f ? blend : -1.0f;
+  hold.flags = flags & REFII_CAMERA_HOLD_AIM;
+  hold.revision = ++g_camera_revision;
+  return 1;
+}
+
+extern "C" float refii_mod_camera_fov(uint8_t* base, int32_t player) {
+  const uint32_t manager = base != nullptr && (player == 1 || player == 2) ? CameraManagerOf(base, player) : 0u;
+  if (manager == 0u) {
+    return 0.0f;
+  }
+  const float radians = refii::mods::LoadF32(base, manager + 0xC0u);
+  return std::isfinite(radians) && radians > 0.0f ? radians * (180.0f / 3.14159265f) : 0.0f;
+}
+
+namespace refii::vfs {
+
+/// Refii._camera_stated(hero, mode): the core chunk's statement of the mode hero's manager has
+/// active; raises CameraChanged where it differs from the last.
+void ModCameraStated(PPCContext& ctx, uint8_t* base, uint32_t hero, int32_t mode) {
+  const int32_t player = refii_mod_player_of(base, hero);
+  if (player != 1 && player != 2) {
+    return;
+  }
+  const int32_t previous = g_camera_mode[player - 1].exchange(mode);
+  if (previous == mode) {
+    return;
+  }
+  refii::mods::CameraChangedEvent e{};
+  e.ctx = &ctx;
+  e.base = base;
+  e.player = player;
+  e.mode = mode;
+  e.previous = previous;
+  e.hero = hero;
+  refii::mods::Dispatch(e);
+}
+
+/// Refii._camera_hold(hero): the hold stated for hero's player while it is in force — false with
+/// none, and while a FULL cutscene holds (refii_mod_in_cutscene).
+bool ModCameraHold(PPCContext& ctx, uint8_t* base, uint32_t hero, int32_t* mode, float* fov, float* pitch, float* blend,
+                   int32_t* flags, uint32_t* revision) {
+  const int32_t player = refii_mod_player_of(base, hero);
+  if ((player != 1 && player != 2) || g_camera_hold[player - 1].mode == 0 ||
+      (refii_mod_in_cutscene(&ctx, base, player) & REFII_CUTSCENE_FULL) != 0) {
+    return false;
+  }
+  const CameraHold& hold = g_camera_hold[player - 1];
+  *mode = hold.mode;
+  *fov = hold.fov;
+  *pitch = hold.pitch;
+  *blend = hold.blend;
+  *flags = hold.flags;
+  *revision = hold.revision;
+  return true;
+}
+
+/// Refii._camera_held(hero, normal, look_at): which halves of hero's override record our hold wrote
+/// and still stand.
+void ModCameraHeld(uint8_t* base, uint32_t hero, int32_t bits) {
+  const int32_t player = refii_mod_player_of(base, hero);
+  if (player == 1 || player == 2) {
+    g_camera_held[player - 1].store(bits & 3);
+  }
+}
+
+/// The halves `player`'s hold stands on (mod_api.cpp: a held LookAt half is not a cutscene).
+int32_t ModCameraHeldBits(int32_t player) { return player >= 1 && player <= 2 ? g_camera_held[player - 1].load() : 0; }
+
+/// Every hold let go: a session's startup scripts build a fresh VM (mod_lua_hooks.cpp).
+void ModCameraClearHolds() {
+  for (CameraHold& hold : g_camera_hold) {
+    hold = CameraHold{};
+  }
+  for (auto& held : g_camera_held) {
+    held.store(0);
+  }
+  for (auto& mode : g_camera_mode) {
+    mode.store(-1);
+  }
+}
+
+}  // namespace refii::vfs
+
+extern "C" void refii_mod_wheel_switches_target_sticky(PPCContext* ctx, uint8_t* base, uint32_t hero, int32_t on) {
+  if (ctx != nullptr) {
+    StateWheelSwitches(*ctx, base, hero, on != 0);
+  }
+}

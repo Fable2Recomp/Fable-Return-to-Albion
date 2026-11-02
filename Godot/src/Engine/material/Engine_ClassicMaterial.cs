@@ -1005,7 +1005,7 @@ public static class Engine_ClassicMaterial
         string renderMode = GroupRenderMode(source, pass);
         long composeFrom = System.Diagnostics.Stopwatch.GetTimestamp();
         Shader? shader = Engine_ClassicShaders.Compose(
-            vertexEntry, pixelEntry, renderMode, pass, source.GetMeta(DefinesMeta, string.Empty).AsString());
+            vertexEntry, pixelEntry, renderMode, pass, GroupDefines(source, pass));
         VariantComposeTicks += System.Diagnostics.Stopwatch.GetTimestamp() - composeFrom;
         if (shader is null)
         {
@@ -1242,11 +1242,35 @@ public static class Engine_ClassicMaterial
     public static readonly StringName TranslucentPassMeta = "xenos_translucent_pass";
 
     /// <summary>
+    /// THE STATED OPACITY ON THE GLASS PASS: c26. That pass (`sub_822251D8`, the branch taken when
+    /// r4+0x701 or r4+0x702 is set) splats material+0x44 x the draw's opacity into all four
+    /// lanes (0x82225374..0x822253BC) and stores them at +0x90, c26 (0x82225BA0); the standard
+    /// pixel shaders end `oC0.xyz = c20.www * c26.xyz * colour`, `oC0.w = c26.w * alpha`. The
+    /// material's c26 stays (1, 1, 1, 1) because materials are shared; the opacity is the
+    /// instance's fade, which ALPHA holds on entry to a Godot fragment (GeometryInstance3D
+    /// .Transparency, Engine_EntityAppearance; exactly 1.0 for a node at rest), so the whole
+    /// output scales by it before the colour and alpha are written.
+    /// </summary>
+    private const string GlassFadeDefines = "#define XR_BEFORE_OUTPUT(c) (c) *= ALPHA;";
+
+    /// <summary>
+    /// THE STATED OPACITY ON A LATER LIGHT-GROUP PASS. Pass 1 (`sub_822251D8` with r5+0x54, the
+    /// pass index `sub_82B25080` also reads, == 1: 0x82225908..0x82225A50) sets only
+    /// AlphaBlendEnable and DestBlend ONE; SrcBlend and BLENDFACTOR stay as the draw's pass 0 set
+    /// them, BLENDFACTOR/opacity for a faded draw (0x822256A0, 0x822257C4..0x822257E0), so the
+    /// added light scales by the opacity as the base does. (That nothing restores the blend
+    /// between the passes is read from this function, not from the caller's pass loop.) Pass 0
+    /// is opaque and writes no ALPHA, so Godot's instance fade blends it; a later pass writes its
+    /// own, so the fade multiplies it.
+    /// </summary>
+    private const string AdditiveFadeDefines = "#ifndef XR_ALPHA_OUT\n#define XR_ALPHA_OUT(a) ((a) * ALPHA)\n#endif";
+
+    /// <summary>
     /// A translucent surface's second draw (`sub_8221BD40` bucket 3, back to front after the
     /// resolve): the same permutation without SCR1, SrcBlend ONE (`sub_822251D8`) over the
     /// frame's DestBlend INVSRCALPHA and BlendOp ADD (`sub_822C2C60`) — premultiplied — with
-    /// depth writes off, no alpha test, and c26 = opacity x fade = (1, 1, 1, 1). The shader's
-    /// oC0.w is c26.w x the texture's alpha; its colour is not multiplied by it.
+    /// depth writes off, no alpha test, and c26 the stated opacity (<see cref="GlassFadeDefines"/>).
+    /// The shader's oC0.w is c26.w x the texture's alpha; its colour is not multiplied by that alpha.
     /// </summary>
     private static ShaderMaterial? BuildTranslucentPass(ShaderMaterial opaque, List<string> pixelTokens, string vertex)
     {
@@ -1259,7 +1283,7 @@ public static class Engine_ClassicMaterial
             return null;
         }
         const string mode = "unshaded, blend_premul_alpha, depth_draw_never, cull_back";
-        Shader? shader = Engine_ClassicShaders.Compose(vertex, pixel, mode);
+        Shader? shader = Engine_ClassicShaders.Compose(vertex, pixel, mode, 0, GlassFadeDefines);
         if (shader is null)
         {
             return null;
@@ -1270,6 +1294,8 @@ public static class Engine_ClassicMaterial
         glass.RemoveMeta(TranslucentPassMeta);
         glass.SetMeta(PixelTokensMeta, string.Join(' ', tokens));
         glass.SetMeta(RenderModeMeta, mode);
+        // Its ambient and light-group variants compose from these.
+        glass.SetMeta(DefinesMeta, GlassFadeDefines);
         glass.SetShaderParameter("xr_spec_constants", 0u);
         if (Fable3Selected(opaque))
         {
@@ -1396,6 +1422,20 @@ public static class Engine_ClassicMaterial
     }
 
     /// <summary>
+    /// A light group pass's defines: the source's, and on a later pass the stated opacity
+    /// (<see cref="AdditiveFadeDefines"/>) — unless the source's own already scale the whole output.
+    /// </summary>
+    private static string GroupDefines(ShaderMaterial source, int pass)
+    {
+        string defines = source.GetMeta(DefinesMeta, string.Empty).AsString();
+        if (pass == 0 || defines.Contains(GlassFadeDefines, StringComparison.Ordinal))
+        {
+            return defines;
+        }
+        return defines.Length == 0 ? AdditiveFadeDefines : defines + "\n" + AdditiveFadeDefines;
+    }
+
+    /// <summary>
     /// Composes every light-group shader <paramref name="source"/> can be drawn with — BLT 1, 2,
     /// 4 and 7 on each of the three passes — without building a material, so the load hold
     /// compiles them (the pool, Engine_ClassicShaders) instead of play composing one the first
@@ -1408,7 +1448,6 @@ public static class Engine_ClassicMaterial
             return 0;
         }
         int passes = source.HasMeta(SinglePassMeta) ? 1 : 3;
-        string defines = source.GetMeta(DefinesMeta, string.Empty).AsString();
         int composed = 0;
         foreach (int blt in Fable3Selected(source) ? Engine_ClassicTokensFable3.DistinctLightCounts : WarmBlts)
         {
@@ -1418,7 +1457,7 @@ public static class Engine_ClassicMaterial
             }
             for (int pass = 0; pass < passes; pass++)
             {
-                if (Engine_ClassicShaders.Warm(vertexEntry, pixelEntry, GroupRenderMode(source, pass), pass, defines))
+                if (Engine_ClassicShaders.Warm(vertexEntry, pixelEntry, GroupRenderMode(source, pass), pass, GroupDefines(source, pass)))
                 {
                     ++composed;
                 }

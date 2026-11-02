@@ -17,10 +17,20 @@ namespace Refii.Models;
 ///
 /// The shells are a child of the furred instance on its skeleton, one pass per shell chained with
 /// NextPass; the count and length are instance uniforms, the layer a pass's own.
+///
+/// THE SHELLS FADE WITH THE BODY, A REMASTER CHOICE (the title's never do: Engine_EntityAppearance,
+/// "THE FUR SHELLS FADE WITH THE BODY"). The shell node takes the body's Transparency, the cut
+/// staying at 16 on the slice's alpha; while the body keeps its depth the chain also draws each
+/// shell's depth first (fur_shell_depth.gdshader, render priority -128), so only the nearest
+/// surviving texel blends. At rest neither exists. The shells go when the colour pass is not
+/// built, as the title's do. They cast no shadow: the shell item draws only in pass type 2
+/// (`sub_82279378` 0x82279384 `lwz r11, 0x6FC(r4)` / `cmpwi cr6, r11, 2`; disc `sub_82279238`
+/// 0x82279244).
 /// </remarks>
 public static class Engine_ModernFur
 {
     private const string ShaderPath = "res://src/Engine/material/fur_shell.gdshader";
+    private const string DepthShaderPath = "res://src/Engine/material/fur_shell_depth.gdshader";
 
     private static readonly StringName ShellsName = "fur_shells";
     private static readonly StringName LengthName = "fur_length";
@@ -57,12 +67,23 @@ public static class Engine_ModernFur
         public Vector4 LastLightmapColour;
         public Vector4 LastEntityTint = Vector4.One;
         public float LastAmbientScale = -1f;
+        /// <summary>The shell node's visibility: the source's colour pass is built (Engine_EntityAppearance.IsSubmitted).</summary>
+        public bool Shown = true;
+        /// <summary>The body's fade on the shell node (Engine_EntityAppearance.FadeOf).</summary>
+        public float Transparency;
+        /// <summary>The body keeps its depth while faded: the chain draws the shells' depth first.</summary>
+        public bool Depth;
+        public bool LinkedDepth;
+        /// <summary>The depth-only passes, one per shell; made at the first faded frame.</summary>
+        public ShaderMaterial[]? DepthPasses;
     }
 
     private static readonly System.Collections.Concurrent.ConcurrentQueue<MeshInstance3D> Pending = new();
     private static readonly Dictionary<ulong, Furred> FurredById = new();
     private static readonly List<ulong> Gone = new();
     private static Shader? _shader;
+    private static Shader? _depthShader;
+    private static bool _depthTried;
     private static long _frame;
 
     /// <summary>Furred instances, and the shells drawn on the last frame.</summary>
@@ -73,7 +94,7 @@ public static class Engine_ModernFur
             int shells = 0;
             foreach (Furred f in FurredById.Values)
             {
-                shells += Math.Max(f.Linked, 0);
+                shells += f.Shown ? Math.Max(f.Linked, 0) : 0;
             }
             return (FurredById.Count, shells);
         }
@@ -113,6 +134,24 @@ public static class Engine_ModernFur
             {
                 continue;
             }
+            // Drawn while its colour pass is built, else not at all (the title's gate).
+            bool shown = Refii.Entities.Engine_EntityAppearance.IsSubmitted(furred.Source);
+            if (furred.Shown != shown)
+            {
+                furred.Shown = shown;
+                furred.Shell.Visible = shown;
+            }
+            if (!shown)
+            {
+                continue;
+            }
+            (float fade, bool depth) = Refii.Entities.Engine_EntityAppearance.FadeOf(furred.Source);
+            if (furred.Transparency != fade)
+            {
+                furred.Transparency = fade;
+                furred.Shell.Transparency = fade;
+            }
+            furred.Depth = depth && fade > 0f;
             if (furred.Shell.Layers != furred.Source.Layers)
             {
                 furred.Shell.Layers = furred.Source.Layers;
@@ -233,18 +272,55 @@ public static class Engine_ModernFur
         return material as ShaderMaterial;
     }
 
-    /// <summary>Chains the first <paramref name="count"/> shell passes.</summary>
+    /// <summary>
+    /// Chains the first <paramref name="count"/> shell passes, then, while the body keeps its
+    /// depth, the same shells' depth passes.
+    /// </summary>
     private static void Link(Furred furred, int count)
     {
-        if (furred.Linked == count)
+        ShaderMaterial[]? depth = furred.Depth ? DepthPassesOf(furred) : null;
+        if (furred.Linked == count && furred.LinkedDepth == (depth is not null))
         {
             return;
         }
         furred.Linked = count;
+        furred.LinkedDepth = depth is not null;
         for (int i = 0; i < furred.Passes.Length; i++)
         {
-            furred.Passes[i].NextPass = i + 1 < count ? furred.Passes[i + 1] : null;
+            furred.Passes[i].NextPass = i + 1 < count ? furred.Passes[i + 1]
+                : i + 1 == count && depth is not null ? depth[0] : null;
+            if (depth is not null)
+            {
+                depth[i].NextPass = i + 1 < count ? depth[i + 1] : null;
+            }
         }
+    }
+
+    /// <summary>The shells' depth passes, each on its colour pass's layer and slices.</summary>
+    private static ShaderMaterial[]? DepthPassesOf(Furred furred)
+    {
+        if (furred.DepthPasses is not null)
+        {
+            return furred.DepthPasses;
+        }
+        if (_depthShader is null && !_depthTried)
+        {
+            _depthTried = true;
+            _depthShader = GD.Load<Shader>(DepthShaderPath);
+        }
+        if (_depthShader is null)
+        {
+            return null;
+        }
+        var passes = new ShaderMaterial[furred.Passes.Length];
+        for (int i = 0; i < passes.Length; i++)
+        {
+            var pass = new ShaderMaterial { Shader = _depthShader, RenderPriority = (int)Material.RenderPriorityMin };
+            pass.SetShaderParameter(LayerName, i + 1);
+            pass.SetShaderParameter(SlicesName, furred.Passes[i].GetShaderParameter(SlicesName));
+            passes[i] = pass;
+        }
+        return furred.DepthPasses = passes;
     }
 
     /// <summary>The source's ambient probe, bake mode and tint, onto the shells without calling GetInstanceShaderParameter.</summary>

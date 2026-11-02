@@ -6,26 +6,19 @@ using Refii.Ui;
 namespace Refii.Mods;
 
 /// <summary>
-/// A mod's input actions as a Controls page the player rebinds in the game: Options › Controls ›
-/// the mod's title, beside the game's own Controls page. One row per device an action declares —
-/// a key row where <c>input.json</c> binds keys, a pad row where it binds buttons or triggers — on
-/// the shared host options page (<see cref="Engine_UiHostOptionsPage"/>: the same furniture, cursor,
-/// stepping and prompts every host page has; nothing here lays out a row). Left and right step the
-/// row through the mod's default, Unbound, then every bindable input; A writes the page to
-/// refii.toml where the shipped keys live (<see cref="ModInput.KeyPrefix"/> / <see cref="ModInput.PadPrefix"/>
-/// + the scoped action), B leaves it as it was. A row left at the default stores nothing, so a
-/// later change to the mod's file reaches the player; the stored value otherwise wins
-/// (<see cref="ModInput.EffectiveKeys"/>). The page binds one input per row; refii.toml itself takes
-/// a comma list, shown here as its first entry. An axis has no row: it is never rebound.
+/// A mod's input actions as rows of the one Controls page (<see cref="Engine_UiControlsPage"/>,
+/// Options › Controls › Controller and Keyboard), under the mod's title after the game's own rows.
+/// One row per device an action declares — a key row where <c>input.json</c> binds keys, a pad row
+/// where it binds buttons or triggers. A row steps through the mod's default, Unbound, then every
+/// bindable input (the page adds "press a key" before them); A writes the page to refii.toml where
+/// the shipped keys live (<see cref="ModInput.KeyPrefix"/> / <see cref="ModInput.PadPrefix"/> + the
+/// scoped action), B leaves it as it was. A row left at the default stores nothing, so a later
+/// change to the mod's file reaches the player; the stored value otherwise wins
+/// (<see cref="ModInput.EffectiveKeys"/>). A pad row names the GAME's buttons — the player's
+/// controller remap applies first. An axis has no row: it is never rebound.
 /// </summary>
 public static class ModInputUi
 {
-	/// <summary>The menu source the Controls fold is filled from: one row per mod with rebindable actions.</summary>
-	public const string SourceName = "mod-controls";
-
-	/// <summary>The command a mod's row carries; the suffix is the mod's name.</summary>
-	public const string OpenCommandPrefix = "options:controls:";
-
 	public enum Device
 	{
 		Keyboard,
@@ -197,81 +190,6 @@ public static class ModInputUi
 		};
 	}
 
-	/// <summary>One mod's page: its rebindable rows in the file's order, key row before pad row.</summary>
-	public sealed class Page : Engine_UiHostOptionsPage
-	{
-		public Page(string mod, string title, IReadOnlyList<Row> bindings)
-		{
-			Mod = mod;
-			Title = title;
-			Bindings = bindings;
-		}
-
-		public string Mod { get; }
-
-		/// <summary>The page's rows, top to bottom.</summary>
-		public IReadOnlyList<Row> Bindings { get; }
-
-		public override string Name => OpenCommandPrefix + Mod;
-		public override string Title { get; }
-		public override int Count => Bindings.Count;
-		public override string RowTitle(int row) => Bindings[row].Label;
-		public override int Choices(int row) => Bindings[row].Choices;
-		public override string Caption(int row, int index) => Bindings[row].Caption(index);
-
-		public override int[] Read() => Read(key => Refii.Core.Engine_Switches.String(key, string.Empty));
-
-		/// <summary>Every row's index for the stored values <paramref name="read"/> gives (empty for unset).</summary>
-		public int[] Read(Func<string, string> read)
-		{
-			var indices = new int[Bindings.Count];
-			for (int i = 0; i < indices.Length; i++)
-			{
-				indices[i] = Bindings[i].IndexOfStored(read(Bindings[i].SettingKey));
-			}
-
-			return indices;
-		}
-
-		/// <summary>The values a set of indices stores, keyed by setting; a null value removes the key.</summary>
-		public IReadOnlyDictionary<string, string?> Values(Func<int, int> index)
-		{
-			var values = new Dictionary<string, string?>(StringComparer.Ordinal);
-			for (int i = 0; i < Bindings.Count; i++)
-			{
-				values[Bindings[i].SettingKey] = Bindings[i].StoredAt(index(i));
-			}
-
-			return values;
-		}
-
-		/// <summary>A: the page to refii.toml as one write, and the bindings in force at once.</summary>
-		public override bool Commit(Func<int, int> index)
-		{
-			var write = new Dictionary<string, string>(StringComparer.Ordinal);
-			var remove = new List<string>();
-			foreach ((string key, string? value) in Values(index))
-			{
-				if (value is null)
-				{
-					remove.Add(key);
-				}
-				else
-				{
-					write[key] = value;
-				}
-			}
-
-			if (!Engine_UiScreenActions.WriteSettings(write, remove))
-			{
-				return false;
-			}
-
-			ModInput.ReadBindings(Refii.Core.Engine_RefiiConfig.Read(out _));
-			return true;
-		}
-	}
-
 	/// <summary>The rows an action offers: a key row when it declares keys, a pad row when it declares buttons or triggers.</summary>
 	public static IEnumerable<Row> RowsFor(ModInput.Action action)
 	{
@@ -286,8 +204,11 @@ public static class ModInputUi
 		}
 	}
 
-	/// <summary>Every enabled mod's page, in load order, from the actions declared now; a mod with nothing rebindable has none.</summary>
-	public static IReadOnlyList<Page> Pages(IReadOnlyList<ModInput.Action> actions, Func<string, string> title)
+	/// <summary>One mod's section of the Controls page: its title and its rebindable rows in the file's order, key row before pad row.</summary>
+	public sealed record Section(string Mod, string Title, IReadOnlyList<Row> Rows);
+
+	/// <summary>Every enabled mod's section, in load order, from <paramref name="actions"/>; a mod with nothing rebindable has none.</summary>
+	public static IReadOnlyList<Section> Sections(IReadOnlyList<ModInput.Action> actions, Func<string, string> title)
 	{
 		var order = new List<string>();
 		var rowsByMod = new Dictionary<string, List<Row>>(StringComparer.OrdinalIgnoreCase);
@@ -303,27 +224,27 @@ public static class ModInputUi
 			rows.AddRange(RowsFor(action));
 		}
 
-		var pages = new List<Page>();
+		var sections = new List<Section>();
 		foreach (string mod in order)
 		{
 			if (rowsByMod[mod].Count != 0)
 			{
-				pages.Add(new Page(mod, title(mod), rowsByMod[mod]));
+				sections.Add(new Section(mod, title(mod), rowsByMod[mod]));
 			}
 		}
 
-		return pages;
+		return sections;
 	}
 
-	private static IReadOnlyList<Page>? _pages;
+	private static IReadOnlyList<Section>? _sections;
 
 	private static IReadOnlyList<ModInput.Action>? _builtFor;
 
-	/// <summary>The pages for the actions loaded now; rebuilt when the actions reload.</summary>
-	public static IReadOnlyList<Page> Pages()
+	/// <summary>The sections for the actions loaded now; rebuilt when the actions reload.</summary>
+	public static IReadOnlyList<Section> Sections()
 	{
 		IReadOnlyList<ModInput.Action> actions = ModInput.All;
-		if (_pages is null || !ReferenceEquals(_builtFor, actions))
+		if (_sections is null || !ReferenceEquals(_builtFor, actions))
 		{
 			var titles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 			foreach (ModInstall install in ModSession.Resolve(Refii.Assets.Engine_GameAssets.ModsRoot).Installs)
@@ -331,44 +252,10 @@ public static class ModInputUi
 				titles[install.Name] = install.Metadata.Title.Length != 0 ? install.Metadata.Title : install.Name;
 			}
 
-			_pages = Pages(actions, mod => titles.TryGetValue(mod, out string? title) ? title : mod);
+			_sections = Sections(actions, mod => titles.TryGetValue(mod, out string? title) ? title : mod);
 			_builtFor = actions;
 		}
 
-		return _pages;
-	}
-
-	/// <summary>The page a row's command suffix names, or null for a mod with nothing rebindable.</summary>
-	public static Engine_UiHostOptionsPage? PageFor(string mod)
-	{
-		foreach (Page page in Pages())
-		{
-			if (string.Equals(page.Mod, mod, StringComparison.OrdinalIgnoreCase))
-			{
-				return page;
-			}
-		}
-
-		return null;
-	}
-
-	/// <summary>The Controls fold's sourced rows: one per page, carrying the command that opens it.</summary>
-	public static IReadOnlyList<Engine_UiMenuSources.Row> Rows(string argument)
-	{
-		var rows = new List<Engine_UiMenuSources.Row>();
-		foreach (Page page in Pages())
-		{
-			rows.Add(new Engine_UiMenuSources.Row(
-				Name: "modcontrols:" + page.Mod,
-				Label: page.Title,
-				Icon: string.Empty,
-				EventType: 0,
-				Id: 0u,
-				Rating: Engine_UiMenuConstants.EmptyRatingSlide,
-				Committable: false,
-				Command: OpenCommandPrefix + page.Mod));
-		}
-
-		return rows;
+		return _sections;
 	}
 }

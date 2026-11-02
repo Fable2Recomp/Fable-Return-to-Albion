@@ -138,6 +138,147 @@ public class TitleBoundaryTests
 			.IsEqual(0);
 	}
 
+	private static readonly Regex RigNameLiteral = new(@"""Shadow_", RegexOptions.Compiled);
+
+	private static readonly Regex HexKeyLiteral = new(@"\b0x[0-9A-Fa-f]{8}u?\b", RegexOptions.Compiled);
+
+	private static readonly Regex ClipKeyContext = new(@"(?i)clip|\bEnsure\(", RegexOptions.Compiled);
+
+	private static readonly Regex TitleComparison = new(@"\bEngine_Title\.(?:Fable2|Fable3)\b", RegexOptions.Compiled);
+
+	/// <summary>
+	/// Files allowed a title literal in the scanned code, as "relative/path.cs: why". Empty: a rig
+	/// name, a clip key or (in the rig code) a title test belongs to the title's
+	/// <c>Engine_TitleRig</c>, and the files whose job is naming titles
+	/// (<c>Godot/src/Engine/core/Engine_Title*.cs</c>) name no rig or clip either.
+	/// </summary>
+	private static readonly string[] RigLiteralExemptions = Array.Empty<string>();
+
+	/// <summary>A line with its <c>//</c> comment cut off, string and char literals kept whole.</summary>
+	private static string CodeOf(string line)
+	{
+		bool inString = false;
+		bool verbatim = false;
+		for (int i = 0; i < line.Length; i++)
+		{
+			char c = line[i];
+			if (inString)
+			{
+				if (c == '\\' && !verbatim)
+				{
+					i++;
+				}
+				else if (c == '"')
+				{
+					inString = false;
+				}
+
+				continue;
+			}
+
+			if (c == '/' && i + 1 < line.Length && line[i + 1] == '/')
+			{
+				return line[..i];
+			}
+
+			if (c == '\'')
+			{
+				int from = i + (i + 1 < line.Length && line[i + 1] == '\\' ? 3 : 2);
+				int close = from < line.Length ? line.IndexOf('\'', from) : -1;
+				if (close > i && close - i <= 4)
+				{
+					i = close;
+				}
+
+				continue;
+			}
+
+			if (c == '"')
+			{
+				inString = true;
+				verbatim = (i > 0 && line[i - 1] == '@') || (i > 1 && line[i - 2] == '@');
+			}
+		}
+
+		return line;
+	}
+
+	/// <summary>
+	/// THE SHARED CODE NAMES NO TITLE'S RIG. Everything under Godot/src/Engine, Godot/src/game and
+	/// Godot/src/host asks the title's <c>Engine_TitleRig</c> for a bone by role and a face's clips;
+	/// a <c>"Shadow_*</c> name or an 8-digit clip key there is one title's knowledge in shared code,
+	/// and quietly does nothing on the other. The rig code (the animation and entity code and the
+	/// entity walk) also asks it for the guest's pick rules, so a test of which title is running is
+	/// one title's rig knowledge there; elsewhere it is a format's layout, which is not a rig's.
+	/// </summary>
+	[TestCase]
+	public void SharedRigCodeNamesNoTitleRig()
+	{
+		string? root = RepoRoot();
+		AssertThat(root).OverrideFailureMessage("repo root not found").IsNotNull();
+		string src = Path.Combine(root!, "Godot", "src");
+		IEnumerable<string> scanned = CSharpUnder(Path.Combine(src, "Engine"))
+			.Concat(CSharpUnder(Path.Combine(src, "game")))
+			.Concat(CSharpUnder(Path.Combine(src, "host")));
+		string animation = Path.Combine(src, "Engine", "animation") + Path.DirectorySeparatorChar;
+		string entities = Path.Combine(src, "Engine", "entities") + Path.DirectorySeparatorChar;
+		string entityWalk = Path.Combine(src, "game", "GameEntities.cs");
+		var exempt = new HashSet<string>(
+			RigLiteralExemptions.Select(e => e.Split(':')[0].Trim().Replace('/', Path.DirectorySeparatorChar)),
+			StringComparer.Ordinal);
+
+		var offenders = new List<string>();
+		int files = 0;
+		int rigFiles = 0;
+		foreach (string file in scanned)
+		{
+			string relative = Path.GetRelativePath(root!, file);
+			if (exempt.Contains(relative))
+			{
+				continue;
+			}
+
+			++files;
+			bool rigCode = file.StartsWith(animation, StringComparison.Ordinal) ||
+				file.StartsWith(entities, StringComparison.Ordinal) ||
+				string.Equals(file, entityWalk, StringComparison.Ordinal);
+			rigFiles += rigCode ? 1 : 0;
+			string[] lines = File.ReadAllLines(file);
+			for (int i = 0; i < lines.Length; i++)
+			{
+				string code = CodeOf(lines[i]);
+				string? why = RigNameLiteral.IsMatch(code) ? "rig name"
+					: rigCode && TitleComparison.IsMatch(code) ? "title test"
+					: HexKeyLiteral.IsMatch(code) && ClipKeyContext.IsMatch(code) ? "clip key"
+					: null;
+				if (why is not null)
+				{
+					offenders.Add(relative + ":" + (i + 1) + " (" + why + ")");
+				}
+			}
+		}
+
+		AssertThat(files > 500).OverrideFailureMessage($"only {files} files scanned").IsTrue();
+		AssertThat(rigFiles > 50).OverrideFailureMessage($"only {rigFiles} rig code files scanned").IsTrue();
+		AssertThat(offenders.Count)
+			.OverrideFailureMessage("shared code names a title's rig: " + string.Join(", ", offenders.Take(20)))
+			.IsEqual(0);
+	}
+
+	/// <summary>The scan's own reading: a literal in code is seen, the same text in a comment is not.</summary>
+	[TestCase]
+	public void RigScanReadsCodeNotComments()
+	{
+		AssertThat(RigNameLiteral.IsMatch(CodeOf("rig.TryBone(\"Shadow_Head\", out bone);"))).IsTrue();
+		AssertThat(RigNameLiteral.IsMatch(CodeOf("int b = 0; // was \"Shadow_Head\""))).IsFalse();
+		AssertThat(RigNameLiteral.IsMatch(CodeOf("string s = \"a // b\" + \"Shadow_Hip\";"))).IsTrue();
+		string clip = CodeOf("private const uint PrimaryAmbientFaceClipKey = 0xE903635Fu;");
+		AssertThat(HexKeyLiteral.IsMatch(clip) && ClipKeyContext.IsMatch(clip)).IsTrue();
+		string hash = CodeOf("public const uint Animation = 0x8F32748Du;");
+		AssertThat(HexKeyLiteral.IsMatch(hash) && ClipKeyContext.IsMatch(hash)).IsFalse();
+		AssertThat(TitleComparison.IsMatch(CodeOf("bool f3 = Engine_Title.Active == Engine_Title.Fable3;"))).IsTrue();
+	}
+
 	private static readonly Regex NativeExport =
 		new(@"REFII_HOST_ABI_EXPORT[^;{(]*?\b(Refii\w+)\s*\(", RegexOptions.Compiled);
 

@@ -3505,7 +3505,8 @@ public partial class GameDebugServer : Node
 					uint who = System.Convert.ToUInt32(ca.GetString(), 16);
 					if (root.TryGetProperty("arm", out JsonElement arm) && arm.ValueKind == JsonValueKind.True)
 					{
-						string bone = root.TryGetProperty("bone", out JsonElement bn) ? bn.GetString() ?? "Shadow_Head" : "Shadow_Head";
+						string headBone = Refii.Core.Engine_TitleGame.Active.Rig.BoneName(Refii.Animations.Engine_TitleRig.RigRole.Head) ?? string.Empty;
+						string bone = root.TryGetProperty("bone", out JsonElement bn) ? bn.GetString() ?? headBone : headBone;
 						float distance = root.TryGetProperty("distance", out JsonElement di) ? (float)di.GetDouble() : 0.6f;
 						int size = root.TryGetProperty("size", out JsonElement sz) ? sz.GetInt32() : 512;
 						bool armed = GameEntities.Current?.ArmCloseup(who, bone, distance, size) ?? false;

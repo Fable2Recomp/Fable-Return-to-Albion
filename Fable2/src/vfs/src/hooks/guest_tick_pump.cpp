@@ -59,6 +59,7 @@
 #include "core/guest_state.h"
 #include "core/mod_values.h"
 #include "core/refii_mod_events.h"
+#include "core/refii_mod.h"
 #include "gui/gui_display_box.h"
 #include "hooks/ppc_externs.h"
 #include "gui/gui_told_statements.h"
@@ -8656,8 +8657,8 @@ const std::string& GuestTickPumpDispatching() { return g_dispatching; }
 // every link both ways and every header against its node; the first tick that disagrees,
 // confirmed on the next tick (other guest threads allocate under the heap lock while this
 // reads without it), is reported ONCE with the actions the pump ran most recently, which is
-// the attribution the crash logs could never give. TU1 only: the heap globals are not in
-// the address map for the unpatched executable.
+// the attribution the crash logs could never give. Both builds: the three heap globals are
+// mapped (the allocator `sub_83237F70` / unpatched `sub_832316F8` is the same code at both).
 
 constexpr std::size_t kHeapCheckActionRing = 8u;
 std::string g_heap_check_actions[kHeapCheckActionRing];
@@ -8727,16 +8728,16 @@ uint32_t g_heap_suspect_node = 0u;
 bool g_heap_reported = false;
 
 /// Walks the heaps after one step of guest work (a pump action, a hero-apply step) and records
-/// the first step after which they are broken. TU1 only, like the tick check.
+/// the first step after which they are broken.
 void HeapCheckAfter(uint8_t* base, const char* step) {
-  if (g_heap_reported || !g_heap_suspect.empty() || refii_guest_build() != 0) {
+  if (g_heap_reported || !g_heap_suspect.empty()) {
     return;
   }
   static const uint32_t kHeaps[3] = {0x83496DB0u, 0x83496DB4u, 0x83496DB8u};
   uint32_t steps = 200000u;
   HeapViolation found;
   for (uint32_t i = 0; i < 3u && found.what[0] == '\0'; ++i) {
-    found = WalkGuestHeap(base, kHeaps[i], i, steps);
+    found = WalkGuestHeap(base, refii::guest::Address(kHeaps[i]), i, steps);
   }
   if (found.what[0] != '\0') {
     g_heap_suspect = std::string(step).substr(0, 96u);
@@ -8749,7 +8750,7 @@ void CheckGuestHeaps(uint8_t* base, uint32_t tick) {
   bool& reported = g_heap_reported;
   static HeapViolation pending;
   static uint32_t pending_tick = 0u;
-  if (!enabled || reported || refii_guest_build() != 0) {
+  if (!enabled || reported) {
     return;
   }
 
@@ -8757,7 +8758,7 @@ void CheckGuestHeaps(uint8_t* base, uint32_t tick) {
   uint32_t steps = 200000u;
   HeapViolation found;
   for (uint32_t i = 0; i < 3u && found.what[0] == '\0'; ++i) {
-    found = WalkGuestHeap(base, kHeaps[i], i, steps);
+    found = WalkGuestHeap(base, refii::guest::Address(kHeaps[i]), i, steps);
   }
 
   if (found.what[0] == '\0') {
@@ -8806,7 +8807,10 @@ PPC_EXTERN_FUNC(rex_CECExpressionPerformer_StartExpression);
 ///           known and +196 offered bytes, index 5*spell+tier) through DispatchSpellAssign.
 /// Gated as the quick menu is: the hero alive (+144 & 0x40), the d-pad up (hud+56 → +32), and
 /// `rex_lhGuiManager_CanPlayerOpenQuickMenu(quick, player)`. True when the action was performed.
-bool PerformQuickslot(PPCContext& ctx, uint8_t* base, uint32_t player, uint32_t kind, uint32_t record) {
+/// `flags` (core/refii_mod.h REFII_QUICK_*): UNGATED keeps only the hero alive and no cutscene
+/// (refii_mod_in_cutscene); HELD (kind 2) leaves the expression unreleased — without it the start
+/// is followed by the performer's own end (`sub_82414A50`, GameAction 25's call), the wheel's tap.
+bool PerformQuickslot(PPCContext& ctx, uint8_t* base, uint32_t player, uint32_t kind, uint32_t record, uint32_t flags) {
   if (player < 1 || player > 2 || kind < 1 || kind > 4 || (kind == 4 ? record >= 8 : record == 0)) return false;
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
   const uint32_t hero = refii_mod_player_hero(base, player);
@@ -8815,15 +8819,20 @@ bool PerformQuickslot(PPCContext& ctx, uint8_t* base, uint32_t player, uint32_t 
   const uint32_t quick = plausible(gui) ? LoadGuestU32(base, gui + 28u) : 0u;
   const uint32_t hud = plausible(gui) ? LoadGuestU32(base, gui + 32u) : 0u;
   const uint32_t dpad = plausible(hud) ? LoadGuestU32(base, hud + 56u) : 0u;
-  if (!plausible(hero) || !plausible(owner) || !plausible(quick) || !plausible(dpad) ||
-      (LoadGuestU8(base, hero + 144u) & 0x40u) == 0u || LoadGuestU8(base, dpad + 32u) == 0u) return false;
+  const bool ungated = (flags & REFII_QUICK_UNGATED) != 0u;
+  if (!plausible(hero) || (LoadGuestU8(base, hero + 144u) & 0x40u) == 0u) return false;
   const PPCContext saved = ctx;
-  ctx.r3.u32 = quick;
-  ctx.r4.u32 = owner;
-  rex_lhGuiManager_CanPlayerOpenQuickMenu(ctx, base);
-  const bool allowed = (ctx.r3.u32 & 0xFFu) != 0u;
-  ctx = saved;
-  if (!allowed) return false;
+  if (ungated) {
+    if (refii_mod_in_cutscene(&ctx, base, static_cast<int32_t>(player)) != 0) return false;
+  } else {
+    if (!plausible(owner) || !plausible(quick) || !plausible(dpad) || LoadGuestU8(base, dpad + 32u) == 0u) return false;
+    ctx.r3.u32 = quick;
+    ctx.r4.u32 = owner;
+    rex_lhGuiManager_CanPlayerOpenQuickMenu(ctx, base);
+    const bool allowed = (ctx.r3.u32 & 0xFFu) != 0u;
+    ctx = saved;
+    if (!allowed) return false;
+  }
   const uint32_t frame = (saved.r1.u32 - 0x200u) & ~0xFu;
   bool done = false;
   if (kind == 4) {
@@ -8855,6 +8864,9 @@ bool PerformQuickslot(PPCContext& ctx, uint8_t* base, uint32_t player, uint32_t 
       rex_CECExpressionPerformer_StartExpression(ctx, base);
       done = (ctx.r3.u32 & 0xFFu) != 0u;
       ctx = saved;
+      if (done && (flags & REFII_QUICK_HELD) == 0u) {
+        CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x82414A50u), performer);
+      }
       break;
     }
   } else {

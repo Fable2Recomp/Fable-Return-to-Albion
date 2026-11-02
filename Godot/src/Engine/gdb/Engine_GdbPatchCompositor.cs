@@ -299,12 +299,11 @@ public static class GdbPatchCompositor
         {
             string cachePath = Path.Combine(cacheRoot, subPath.Replace('/', Path.DirectorySeparatorChar));
             string stampPath = cachePath + ".stamp";
-            string currentStamp = ComputeCompositeStamp(modFiles);
-
             byte[] binary;
             var refused = new List<string>();
             string winningMod = modFiles[^1].ModName;
             GdbMulti? baseMulti = BaseFor(subPath, mounted);
+            string currentStamp = ComputeCompositeStamp(modFiles, baseMulti);
 
             // THE MERGE IS ALWAYS RUN: it is what the report states (who set what, who lost, what
             // was refused, what was added), and it is cheap next to the synthesis and the write,
@@ -684,7 +683,7 @@ public static class GdbPatchCompositor
             return new GdbPatchDatabase();
         }
 
-        GdbCsvResult compiled = GdbCsvOverlay.Parse(Encoding.UTF8.GetString(bytes), baseMulti);
+        GdbCsvResult compiled = GdbCsvOverlay.Parse(Encoding.UTF8.GetString(bytes), baseMulti, source.ModName);
         foreach (string error in compiled.Errors)
         {
             refused.Add($"{source.ModName}: {source.EntryPath}: {error}");
@@ -988,9 +987,16 @@ public static class GdbPatchCompositor
         return $"0x{hash:X8}";
     }
 
-    private static string ComputeCompositeStamp(IReadOnlyList<GdbPatchSource> modFiles)
+    /// <summary>
+    /// What a cached composite was made from: each source's size and time, and the base it was
+    /// compiled and synthesized against (rows resolve their entries and types through it, and every
+    /// record is completed from it). A composite made against another base — the launcher reads
+    /// the loose data, the game its mount — is made again.
+    /// </summary>
+    private static string ComputeCompositeStamp(IReadOnlyList<GdbPatchSource> modFiles, GdbMulti? baseMulti)
     {
         var sb = new StringBuilder();
+        sb.Append("base:").Append(baseMulti?.Views.Count ?? 0).Append('/').Append(baseMulti?.RecordCount ?? 0).Append(';');
         foreach (var (modName, diskPath, entryPath) in modFiles)
         {
             sb.Append(modName).Append(':').Append(entryPath).Append(':');

@@ -235,9 +235,10 @@ A Godot script can keep its own copies of the hero's save and load one back with
 title (RefiiHost, see [the calls](reference-calls.md#members-and-signals)). The Quicksave mod is
 built on them.
 
-- **Taking one.** Have the game save first, the way it saves itself: from Lua,
-  `AutoSaveGame(true, true)` when `Player.IsAbleToSaveGame(GetPlayerHero())` allows it. When
-  `save_written` arrives with `player` 1, `save_snapshot("<mod>.<name>")` copies every file of the
+- **Taking one.** Have the game save first, the way it saves itself: `Refii.save_game(p)` (Godot
+  `save_game(player)`) — the body of game Lua's `AutoSaveGame(true, true)`, where `Refii.can_save(p)`
+  (`Player.IsAbleToSaveGame` for that player's hero) allows it. When `save_written` arrives with
+  `player` 1 and `ok`, `save_snapshot("<mod>.<name>")` copies every file of the
   save folder to `user_data_root/<xuid>/refii-snapshots/<save>/<mod>.<name>/`, beside the title's
   own `4D5307F1/`, so the Load Game list never shows it. A key holds one copy; taking it again
   replaces it once the new copy is whole.

@@ -7,63 +7,49 @@ local C = require("common")
 local Setting, IsPlayer = C.Setting, C.IsPlayer
 
 ----------------------------------------------------------------------------------------------------
--- CAST RECOVERY: a launched spell plants its caster for a moment. The game holds a quick cast's
--- movement only until the spell launches; from then any stick input cancels the rest of the
--- animation (sub_82737C38, 0x82737e14..e24), which made a step back between casts free. The plant
--- is the player component's own movement-speed override (Refii.set_speed_multiplier: the pair the
--- game's scripts set through Player.SetPlayerMovementSpeedOverridden / SetOverriddenMovement-
--- SpeedMultiplier, which the locomotion update multiplies the velocity by, 0x822b2c68): 0 holds
--- the hero in place; turning, rolls and blocks still work. Every slot of a charged release's
--- cascade fires spell_launched; each refreshes the timer. The override is taken only when no
--- script holds it, and given back only while it still holds the values written here — a script
--- that took it meanwhile keeps it. In co-op only the machine that plays the hero plants it.
+-- CAST RECOVERY: a launched spell holds its caster in the cast for a moment. The game holds a
+-- quick cast's movement only until the spell launches; from then any stick input cancels the rest
+-- of the animation, which made a step back between casts free.
+--   spell_launched — the cast action is the caster's current action as its spell is created; it
+--     is held for cast_recovery_seconds from this launch (0 turns the rule off). Every slot of a
+--     charged release's cascade fires spell_launched; each restarts the hold.
+--   action_move_interrupt — every frame the game would let the stick end that action (its own
+--     test answered yes: the cast's PERFORM has passed); cancelling holds it: the animation plays
+--     on and the stick neither cancels it nor moves the body. The action is matched by handle and
+--     type, so another action reusing the handle is never held. Once the cast animation ends the
+--     hero is free, whatever is left of the hold.
+-- The hold is made where the hero is played; the other co-op machine runs a copy of the cast
+-- (Refii.event_replica) and leaves the body to the replication.
 ----------------------------------------------------------------------------------------------------
 
-S.Plants = {}
-
-local function ReleasePlant(p, plant)
-	if Refii.player_hero(p) == plant.hero then
-		local overridden, factor = Refii.speed_multiplier(p)
-		if overridden == true and factor == 0 then
-			Refii.set_speed_multiplier(p, plant.multiplier)
-			Refii.clear_speed_multiplier(p)
-		end
-	end
-	S.Plants[p] = nil
-end
+-- Each player's held cast: { action, type, ends } (ends on the runtime's clock).
+S.CastHold = {}
 
 Refii.on("spell_launched", function(e)
 	local p = e.player
-	-- The plant holds the body still, so it is made where the hero is played; the other co-op
-	-- machine runs a copy of the cast and leaves the body to the replication.
 	if not IsPlayer(p) or Refii.event_replica() then
 		return
 	end
 	local seconds = Setting("cast_recovery_seconds", 0.6)
-	if seconds <= 0 then
+	local action = seconds > 0 and Refii.current_action(e.caster) or nil
+	if action == nil then
+		S.CastHold[p] = nil
 		return
 	end
-	local plant = S.Plants[p]
-	if plant ~= nil and plant.hero == e.caster then
-		plant.left = seconds
-		return
-	end
-	local overridden, factor = Refii.speed_multiplier(p)
-	if overridden == nil or overridden then
-		return  -- no player component, or a script holds the override
-	end
-	S.Plants[p] = { hero = e.caster, multiplier = factor, left = seconds }
-	Refii.set_speed_multiplier(p, 0)
+	S.CastHold[p] = { action = action, type = Refii.action_type(action), ends = Refii.now() + seconds }
 end)
 
-Refii.on("tick", function(e)
-	for p = 1, 2 do
-		local plant = S.Plants[p]
-		if plant ~= nil then
-			plant.left = plant.left - e.seconds
-			if plant.left <= 0 or Refii.player_hero(p) ~= plant.hero then
-				ReleasePlant(p, plant)
-			end
-		end
+Refii.on("action_move_interrupt", function(e)
+	local p = e.player
+	local hold = IsPlayer(p) and S.CastHold[p] or nil
+	if hold == nil then
+		return
+	end
+	if Refii.now() >= hold.ends then
+		S.CastHold[p] = nil
+		return
+	end
+	if e.action == hold.action and e.action_type == (hold.type or -1) then
+		return true
 	end
 end)

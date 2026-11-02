@@ -40,8 +40,13 @@ using Refii.Ui;
 /// for the selectors' player: what the mod states is in effect (drawn full; the stored pick that is
 /// not in effect is drawn faint), and a positive value once the player has the pick (the spell page
 /// says nothing about it before). <c>exclude</c> lists the wills that can never be picked (the slot
-/// whose own will is one of them draws its frame greyed). <c>apply</c> and <c>remove</c> are the
-/// Babel tags of the X and Y prompts on the abilities blade.</para>
+/// whose own will is one of them draws its frame greyed) — and the ENGINE refuses them on every
+/// path a pick takes, the selectors, a posted <c>spell_pick</c> and a handler's rewrite alike
+/// (<see cref="DeclarationLine"/>, mod_abilities.cpp). <c>apply</c> and <c>remove</c> are the
+/// Babel tags of the X and Y prompts on the abilities blade. <c>legacySaveKey</c> /
+/// <c>legacySaveKeyTwo</c> name the <c>RefiiModSave</c> keys (<c>{slot}</c> the slot's number) a
+/// save from before kept player one's / player two's pick in: a slot whose store is empty takes
+/// that value once after each Lua rebuild or save load, as an ability's <c>legacySaveKey</c>.</para>
 /// <para>The selectors draw EVERY enabled mod's pick under each slot, one small icon per pick in
 /// load order (<see cref="Layout"/>). X and Y act on one of them, each player's
 /// <see cref="Active"/> pick; a press with nothing to do on it, or LB/RB on the abilities blade,
@@ -67,7 +72,9 @@ public static class Engine_UiSpellPicks
 		string Empty = "",
 		float Scale = 0.55f,
 		string Apply = "",
-		string Remove = "")
+		string Remove = "",
+		string LegacySaveKey = "",
+		string LegacySaveKeyTwo = "")
 	{
 		/// <summary>Whether the guest keeps this pick (the slot's own spell), not the player store.</summary>
 		public bool IsGame => Store == GameStore;
@@ -101,8 +108,55 @@ public static class Engine_UiSpellPicks
 		return at;
 	}
 
-	/// <summary>Drops the loaded picks; the next read loads them again.</summary>
-	public static void Reload() => _mods = null;
+	/// <summary>Drops the loaded picks; the next read loads them again, and declares them to the engine again.</summary>
+	public static void Reload()
+	{
+		_mods = null;
+		_declared = false;
+	}
+
+	private static bool _declared;
+
+	/// <summary>
+	/// Declares the loaded picks to the engine once per guest (and again after a remount), so the
+	/// engine enforces each one's <c>exclude</c> and reads its legacy keys; call every frame with
+	/// whether the guest is up.
+	/// </summary>
+	public static void Pump(bool guestUp)
+	{
+		if (!guestUp)
+		{
+			_declared = false;
+			return;
+		}
+
+		if (_declared)
+		{
+			return;
+		}
+
+		_declared = true;
+		HostBridge.PostModCommand("spell_pick_clear");
+		foreach (Pick pick in Mods)
+		{
+			HostBridge.PostModCommand(DeclarationLine(pick));
+		}
+	}
+
+	/// <summary>
+	/// The engine's declaration of <paramref name="pick"/>:
+	/// <c>spell_pick_declare NAME MOD STORE EXCLUDE LEGACY LEGACY_TWO</c> — EXCLUDE the wills
+	/// comma-separated, '-' for an empty word (Fable2/src/vfs/src/hooks/mod_abilities.cpp).
+	/// </summary>
+	public static string DeclarationLine(Pick pick)
+	{
+		static string W(string word) => word.Length == 0 || word.Contains(' ') ? "-" : word;
+		var excluded = new List<int>(pick.Excluded ?? (IEnumerable<int>)Array.Empty<int>());
+		excluded.Sort();
+		return string.Join(' ', "spell_pick_declare", W(pick.Name), W(pick.Mod), W(pick.Store),
+			excluded.Count == 0 ? "-" : string.Join(',', excluded.ConvertAll(w => w.ToString(CultureInfo.InvariantCulture))),
+			W(pick.LegacySaveKey), W(pick.LegacySaveKeyTwo));
+	}
 
 	/// <summary>The gap between two pick icons, as a fraction of one icon's size.</summary>
 	public const float LayoutPitch = 1.05f;
@@ -220,6 +274,7 @@ public static class Engine_UiSpellPicks
 		Player = player is 2 ? 2 : 1,
 		Mod = key => HostBridge.TryGetModValue(key, out float value) ? value : null,
 		PlayerValue = (p, key) => HostBridge.GetPlayerValue(p, key),
+		Setting = key => Refii.Mods.ModSettings.TryGet(key, out float value) ? value : null,
 	};
 
 	private static List<Pick> Load()
@@ -277,7 +332,7 @@ public static class Engine_UiSpellPicks
 				? Mathf.Clamp((float)s.AsDouble(), 0.2f, 1f)
 				: 0.55f;
 			var pick = new Pick(Text("name"), mod, Text("store"), Text("inEffect"), Text("unlocked"), excluded,
-				Text("empty"), scale, Text("apply"), Text("remove"));
+				Text("empty"), scale, Text("apply"), Text("remove"), Text("legacySaveKey"), Text("legacySaveKeyTwo"));
 			if (pick.Name.Length == 0 || pick.Store.Length == 0 || pick.IsGame)
 			{
 				GD.PushWarning($"[spell-picks] {mod}: a pick needs a name and a player store key; skipped");

@@ -81,6 +81,317 @@ public static class ModLua
 		"end\n";
 
 	/// <summary>
+	/// THE RUNTIME EVERY MOD WOULD OTHERWISE WRITE, in the preamble (hard_mods_plan I.7), on the one
+	/// guest tick the bus raises (<c>Refii._fire</c> runs <c>Refii._runtime[kind]</c> before the
+	/// handlers; the kinds it needs are wanted here, so it runs with no handler subscribed):
+	/// <list type="bullet">
+	/// <item><c>Refii.now()</c> — THE game clock: the sum of the tick's seconds while no mode of the
+	/// <c>paused</c> event is in force (mode 1 holds the world behind the pause and menus, mode 2 is a
+	/// level change), so it stands still exactly while the world does; a hitch counts at most 0.25 s.
+	/// <c>Refii.real_now()</c> counts every tick, menus included. A Lua number is a 32-bit float:
+	/// exact to a millisecond for the first four hours.</item>
+	/// <item><c>Refii.after(seconds, fn [, key]) -> id</c> / <c>Refii.cancel(key or id)</c> — fn run
+	/// once, protected, on the first tick the game clock passes now + seconds, in due order; a key
+	/// replaces the timer standing under it. A reload drops every timer (its functions are the old
+	/// chunk's).</item>
+	/// <item><c>setting_changed {key, value, previous}</c> — <c>Refii.on</c> takes it: a live change of a
+	/// mod setting (<c>ModSettings.Set</c>'s assignment calls <c>Refii._setting_changed</c>), after
+	/// <c>RefiiSettings</c> holds the new value; only on a real change.</item>
+	/// <item><c>Refii.entity_value(e, key [, default])</c> / <c>Refii.entity_set(e, key, v)</c> — a value
+	/// per entity HANDLE, forgotten at that entity's <c>entity_removed</c>; kept across a reload.</item>
+	/// <item><c>Refii.pool(p, key, {max, floor, regen, delay [, max_key]})</c> / <c>Refii.pool_spend(p,
+	/// key, n) -> bool</c> / <c>Refii.pool_value(p, key) -> value, max</c> — a regenerating pool in
+	/// player p's store under key (so <c>player:key</c> HUD sources read it on every machine), its
+	/// maximum under max_key (key .. ".max"), the seconds since the last spend under key .. ".rest";
+	/// each field a number or <c>function(p)</c> read every tick. Ticked where p's hero is played:
+	/// regen per second once delay seconds have passed since a spend, clamped to floor..max. A spend
+	/// is refused (false, nothing taken) when the pool holds less than n — unless floor is below 0
+	/// and the pool holds more than 0, which may go into debt down to floor; a pool not stated yet is
+	/// full (true, nothing taken).</item>
+	/// <item><c>Refii.in_play(p)</c> — player p is in play: no pause or GUI mode and no level change in
+	/// force (the paused event's modes), no level loading (level_unloading .. level_loaded), p's hero
+	/// standing, and no FULL cutscene for p (in_cutscene).</item>
+	/// <item><c>Refii.spell_info(type) -> name_tag, icon</c> and the named numbers of
+	/// <see cref="ModApi.Constants"/> (<c>Refii.SPELL_FIREBALL</c> …).</item>
+	/// </list>
+	/// </summary>
+	public static string InfrastructureRuntime()
+	{
+		int tick = ModApi.Find("tick")!.Kind;
+		int removed = ModApi.Find("entity_removed")!.Kind;
+		int loaded = ModApi.Find("level_loaded")!.Kind;
+		int unloading = ModApi.Find("level_unloading")!.Kind;
+		int paused = ModApi.Find("paused")!.Kind;
+		var text = new StringBuilder();
+		foreach ((string name, int value) in ModApi.Constants)
+		{
+			text.Append("Refii.").Append(name).Append(" = ").Append(value).Append('\n');
+		}
+
+		text.Append("Refii._spell_info = {");
+		for (int type = 0; ModSpells.Info(type) is { } info; ++type)
+		{
+			text.Append('[').Append(type).Append("]={'").Append(info.NameTag).Append("','").Append(info.Icon).Append("'},");
+		}
+
+		text.Append("}\n");
+		text.Append(
+			"function Refii.spell_info(t)\n" +
+			"\tlocal s = Refii._spell_info[t]\n" +
+			"\tif s == nil then return nil end\n" +
+			"\treturn s[1], s[2]\n" +
+			"end\n" +
+			"Refii._local_events = { setting_changed = true, mod_signal = true, value_changed = true }\n" +
+			"Refii._runtime = {}\n" +
+			"Refii._clock = Refii._clock or 0\n" +
+			"Refii._real_clock = Refii._real_clock or 0\n" +
+			"Refii._timers = {}\n" +
+			"Refii._timer_seq = Refii._timer_seq or 0\n" +
+			"Refii._entity_store = Refii._entity_store or {}\n" +
+			"Refii._pools = Refii._pools or {}\n" +
+			"Refii._play = Refii._play or { modes = {}, loading = true }\n" +
+			"function Refii._want(kind)\n" +
+			"\tlocal group = math.floor(kind / " + ModApi.LuaMaskBits + ") + 1\n" +
+			"\tlocal bit = 2 ^ (kind % " + ModApi.LuaMaskBits + ")\n" +
+			"\tlocal mask = Refii._masks[group] or 0\n" +
+			"\tif math.floor(mask / bit) % 2 == 0 then Refii._masks[group] = mask + bit Refii._dirty = true end\n" +
+			"end\n" +
+			"function Refii.now() return Refii._clock end\n" +
+			"function Refii.real_now() return Refii._real_clock end\n" +
+			"function Refii.after(seconds, fn, key)\n" +
+			"\tif type(fn) ~= 'function' then error('Refii.after: a function is needed', 2) end\n" +
+			"\tif key ~= nil then Refii.cancel(key) end\n" +
+			"\tRefii._timer_seq = Refii._timer_seq + 1\n" +
+			"\tlocal list = Refii._timers\n" +
+			"\tlist[#list + 1] = { at = Refii._clock + (tonumber(seconds) or 0), fn = fn, key = key, seq = Refii._timer_seq }\n" +
+			"\tif key ~= nil then return key end\n" +
+			"\treturn Refii._timer_seq\n" +
+			"end\n" +
+			"function Refii.cancel(key)\n" +
+			"\tlocal list = Refii._timers\n" +
+			"\tfor i = #list, 1, -1 do\n" +
+			"\t\tlocal t = list[i]\n" +
+			"\t\tif t.key == key or (t.key == nil and t.seq == key) then table.remove(list, i) end\n" +
+			"\tend\n" +
+			"end\n" +
+			"local function RunTimers()\n" +
+			"\tlocal now, list = Refii._clock, Refii._timers\n" +
+			"\tlocal any = false\n" +
+			"\tfor i = 1, #list do if list[i].at <= now then any = true break end end\n" +
+			"\tif not any then return end\n" +
+			"\tlocal due, keep = {}, {}\n" +
+			"\tfor i = 1, #list do\n" +
+			"\t\tlocal t = list[i]\n" +
+			"\t\tif t.at <= now then due[#due + 1] = t else keep[#keep + 1] = t end\n" +
+			"\tend\n" +
+			"\tRefii._timers = keep\n" +
+			"\ttable.sort(due, function(a, b) return a.at < b.at or (a.at == b.at and a.seq < b.seq) end)\n" +
+			"\tfor i = 1, #due do\n" +
+			"\t\tlocal ok, err = pcall(due[i].fn)\n" +
+			"\t\tif not ok then Refii._report('after ' .. tostring(due[i].key or due[i].seq), err) end\n" +
+			"\tend\n" +
+			"end\n" +
+			"local function Field(x, p) if type(x) == 'function' then return x(p) end return x end\n" +
+			"local function TickPools(dt)\n" +
+			"\tfor p, list in pairs(Refii._pools) do\n" +
+			"\t\tif Refii.player_here and Refii.player_here(p) and Refii.player_hero(p) ~= nil then\n" +
+			"\t\t\tfor key, pool in pairs(list) do\n" +
+			"\t\t\t\tlocal ok, err = pcall(function()\n" +
+			"\t\t\t\t\tlocal max, floor = Field(pool.max, p) or 0, Field(pool.floor, p) or 0\n" +
+			"\t\t\t\t\tlocal regen, delay = Field(pool.regen, p) or 0, Field(pool.delay, p) or 0\n" +
+			"\t\t\t\t\tlocal value = Refii.player_value(p, key, max)\n" +
+			"\t\t\t\t\tlocal rest = Refii.player_value(p, key .. '.rest', delay)\n" +
+			"\t\t\t\t\tlocal v, r = value, rest + dt\n" +
+			"\t\t\t\t\tif r >= delay and v < max then v = v + regen * dt end\n" +
+			"\t\t\t\t\tif v > max then v = max elseif v < floor then v = floor end\n" +
+			"\t\t\t\t\tif r > delay then r = delay end\n" +
+			"\t\t\t\t\tif v ~= value or Refii.player_value(p, key) == nil then Refii.player_set(p, key, v) end\n" +
+			"\t\t\t\t\tif r ~= rest then Refii.player_set(p, key .. '.rest', r) end\n" +
+			"\t\t\t\t\tif Refii.player_value(p, pool.max_key) ~= max then Refii.player_set(p, pool.max_key, max) end\n" +
+			"\t\t\t\tend)\n" +
+			"\t\t\t\tif not ok then Refii._report('pool ' .. tostring(key), err) end\n" +
+			"\t\t\tend\n" +
+			"\t\tend\n" +
+			"\tend\n" +
+			"end\n" +
+			"Refii._runtime[" + tick + "] = function(e)\n" +
+			"\tlocal dt = e.seconds or 0\n" +
+			"\tRefii._real_clock = Refii._real_clock + dt\n" +
+			"\tif next(Refii._play.modes) ~= nil then return end\n" +
+			"\tRefii._clock = Refii._clock + dt\n" +
+			"\tRunTimers()\n" +
+			"\tif next(Refii._pools) ~= nil then TickPools(dt) end\n" +
+			"end\n" +
+			"function Refii.pool(p, key, o)\n" +
+			"\tif p == nil or key == nil then return nil end\n" +
+			"\to = o or {}\n" +
+			"\tlocal list = Refii._pools[p] or {}\n" +
+			"\tRefii._pools[p] = list\n" +
+			"\tlocal pool = list[key] or {}\n" +
+			"\tpool.max, pool.floor, pool.regen, pool.delay = o.max or 100, o.floor or 0, o.regen or 0, o.delay or 0\n" +
+			"\tpool.max_key = o.max_key or (key .. '.max')\n" +
+			"\tlist[key] = pool\n" +
+			"\treturn Refii.pool_value(p, key)\n" +
+			"end\n" +
+			"function Refii.pool_value(p, key)\n" +
+			"\tlocal pool = Refii._pools[p] and Refii._pools[p][key]\n" +
+			"\tif pool == nil then return nil end\n" +
+			"\tlocal max = Field(pool.max, p) or 0\n" +
+			"\treturn Refii.player_value(p, key, max), max\n" +
+			"end\n" +
+			"function Refii.pool_spend(p, key, n)\n" +
+			"\tlocal pool = Refii._pools[p] and Refii._pools[p][key]\n" +
+			"\tif pool == nil then return false end\n" +
+			"\tlocal value = Refii.player_value(p, key)\n" +
+			"\tif value == nil then return true end\n" +
+			"\tn = tonumber(n) or 0\n" +
+			"\tlocal floor = Field(pool.floor, p) or 0\n" +
+			"\tif value < n and not (floor < 0 and value > 0) then return false end\n" +
+			"\tlocal take = n\n" +
+			"\tif value - take < floor then take = value - floor end\n" +
+			"\tif take > 0 then Refii.player_add(p, key, -take) end\n" +
+			"\tRefii.player_set(p, key .. '.rest', 0)\n" +
+			"\treturn true\n" +
+			"end\n" +
+			"function Refii.entity_value(e, key, default)\n" +
+			"\tlocal t = e ~= nil and Refii._entity_store[e] or nil\n" +
+			"\tlocal v = t and t[key]\n" +
+			"\tif v == nil then return default end\n" +
+			"\treturn v\n" +
+			"end\n" +
+			"function Refii.entity_set(e, key, v)\n" +
+			"\tif e == nil or e == 0 or key == nil then return end\n" +
+			"\tlocal t = Refii._entity_store[e]\n" +
+			"\tif t == nil then\n" +
+			"\t\tif v == nil then return end\n" +
+			"\t\tt = {}\n" +
+			"\t\tRefii._entity_store[e] = t\n" +
+			"\tend\n" +
+			"\tt[key] = v\n" +
+			"\tRefii._want(" + removed + ")\n" +
+			"end\n" +
+			"Refii._runtime[" + removed + "] = function(e) if e.entity ~= nil then Refii._entity_store[e.entity] = nil end end\n" +
+			"Refii._runtime[" + paused + "] = function(e) Refii._play.modes[e.mode or 1] = (e.paused == true or e.paused == 1) and true or nil end\n" +
+			"Refii._runtime[" + unloading + "] = function(e) Refii._play.loading = true end\n" +
+			"Refii._runtime[" + loaded + "] = function(e) Refii._play.loading = false end\n" +
+			"function Refii.in_play(p)\n" +
+			"\tlocal s = Refii._play\n" +
+			"\tif s.loading or next(s.modes) ~= nil then return false end\n" +
+			"\tif Refii.player_hero == nil or Refii.player_hero(p or 1) == nil then return false end\n" +
+			"\tif Refii.in_cutscene and Refii.in_cutscene(p or 0, Refii.CUTSCENE_FULL) then return false end\n" +
+			"\treturn true\n" +
+			"end\n" +
+			"function Refii._setting_changed(key, value)\n" +
+			"\tRefiiSettings = RefiiSettings or {}\n" +
+			"\tlocal previous = RefiiSettings[key]\n" +
+			"\tRefiiSettings[key] = value\n" +
+			"\tif previous == value then return end\n" +
+			"\tRefii._raise_local('setting_changed', { key = key, value = value, previous = previous })\n" +
+			"end\n" +
+			LaneRuntime +
+			"Refii._want(" + tick + ") Refii._want(" + paused + ") Refii._want(" + unloading + ") Refii._want(" + loaded + ")\n" +
+			"if next(Refii._entity_store) ~= nil then Refii._want(" + removed + ") end\n");
+		return text.ToString();
+	}
+
+	/// <summary>
+	/// THE LUA END OF THE GODOT LANE (<see cref="ModLuaLane"/>), in the runtime: what makes the Lua and
+	/// Godot surfaces the same (ModApi.Twins).
+	/// <list type="bullet">
+	/// <item><c>Refii._raise_local(name, e)</c> — runs the runtime's own events' handlers
+	/// (<c>setting_changed</c>, <c>mod_signal</c>, <c>value_changed</c>), each protected.</item>
+	/// <item><c>Refii.get_text(key)</c> / <c>Refii.has_text(key)</c> — the published texts as the host
+	/// states them (every surface's <c>publish_text</c>; Lua's own at once), nil / false for none.</item>
+	/// <item><c>mod_signal {mod, name, payload}</c> — a Godot script's <c>signal_lua(name, payload)</c>
+	/// (<c>Refii._godot_signal</c>), the twin of <c>Refii.signal</c> the other way.</item>
+	/// <item><c>value_changed {key, value}</c> — a published number or text changed, whoever published it
+	/// (<c>Refii._host_values</c>); a handler's subscription asks the host to state numbers
+	/// (<c>refii.watch</c>).</item>
+	/// <item><c>Refii.ask_host(what, fn, ...)</c> — a read or action of the host (ModApi.HostCalls),
+	/// <c>fn(value)</c> called with its answer on a later tick; <c>set_setting</c>, <c>save_snapshot</c> and
+	/// <c>load_snapshot</c> are its actions by name.</item>
+	/// <item><c>Refii._godot_call(id, fn)</c> — a Godot <c>call_lua</c>: fn's first five values back on the lane.</item>
+	/// </list>
+	/// </summary>
+	public const string LaneRuntime = """
+		if Refii._texts == nil and Refii.signal ~= nil then Refii.signal('refii.hello', '') end
+		Refii._texts = Refii._texts or {}
+		Refii._asks = Refii._asks or {}
+		Refii._ask_seq = Refii._ask_seq or 0
+		function Refii._raise_local(name, e)
+			local list = Refii._handlers[name]
+			if list == nil then return end
+			for i = 1, #list do
+				local ok, err = pcall(list[i], e)
+				if not ok then Refii._report(name, err) end
+			end
+		end
+		function Refii._encode(v)
+			local t = type(v)
+			if t == 'number' then return 'n' .. tostring(v) end
+			if t == 'boolean' then return v and 'b1' or 'b0' end
+			if t == 'string' then return 's' .. (string.gsub((string.gsub(v, '\\', '\\\\')), '\n', '\\n')) end
+			return '-'
+		end
+		if Refii._publish_text == nil and Refii.publish_text ~= nil then Refii._publish_text = Refii.publish_text end
+		function Refii.publish_text(key, text)
+			if Refii._publish_text == nil then return false end
+			local ok = Refii._publish_text(key, text)
+			if ok then Refii._texts[key] = tostring(text) end
+			return ok
+		end
+		function Refii.get_text(key) return Refii._texts[key] end
+		function Refii.has_text(key) return Refii._texts[key] ~= nil end
+		function Refii._host_values(list, changed)
+			for i = 1, #list do
+				local item = list[i]
+				if item[3] then Refii._texts[item[1]] = item[2] end
+				if changed then Refii._raise_local('value_changed', { key = item[1], value = item[2] }) end
+			end
+		end
+		function Refii._godot_signal(scoped, payload)
+			local dot = string.find(scoped, '.', 1, true)
+			if dot == nil then return end
+			Refii._raise_local('mod_signal', { mod = string.sub(scoped, 1, dot - 1), name = string.sub(scoped, dot + 1), payload = payload })
+		end
+		function Refii.ask_host(what, fn, a, b, c, d)
+			if Refii.signal == nil or what == nil then return false end
+			local id = 0
+			if type(fn) == 'function' then
+				Refii._ask_seq = Refii._ask_seq + 1
+				id = Refii._ask_seq
+				Refii._asks[id] = fn
+			end
+			local E = Refii._encode
+			local text = tostring(id) .. '\n' .. tostring(what) .. '\n' .. E(a) .. '\n' .. E(b) .. '\n' .. E(c) .. '\n' .. E(d)
+			if Refii.signal('refii.ask', text) then return true end
+			Refii._asks[id] = nil
+			return false
+		end
+		function Refii._host_reply(id, value)
+			local fn = Refii._asks[id]
+			Refii._asks[id] = nil
+			if fn == nil then return end
+			local ok, err = pcall(fn, value)
+			if not ok then Refii._report('ask_host ' .. tostring(id), err) end
+		end
+		function Refii.set_setting(key, value) return Refii.ask_host('set_setting', nil, key, value) end
+		function Refii.save_snapshot(key, fn) return Refii.ask_host('save_snapshot', fn, key) end
+		function Refii.load_snapshot(key, fn) return Refii.ask_host('load_snapshot', fn, key) end
+		function Refii._godot_call(id, fn)
+			local ok, a, b, c, d, e = pcall(fn)
+			if not ok then
+				Refii._report('call_lua ' .. tostring(id), a)
+				a, b, c, d, e = nil, nil, nil, nil, nil
+			end
+			if Refii.signal == nil then return end
+			local E = Refii._encode
+			Refii.signal('refii.answer', tostring(id) .. '\n' .. (ok and 'b1' or 'b0') .. '\n' .. E(a) .. '\n' .. E(b) .. '\n' .. E(c) .. '\n' .. E(d) .. '\n' .. E(e))
+		end
+
+		""";
+
+	/// <summary>
 	/// A mod's Lua for the TITLE and the FRONT END, where there is no game VM: run in the current
 	/// Gameface presentation's own Lua state (Fable2/src/vfs/src/hooks/mod_frontend_lua.cpp), which is a
 	/// different Lua build with no world, no hero and no save. Its own entry point, as a client and
@@ -120,7 +431,10 @@ public static class ModLua
 	/// <c>RefiiModErrors</c> and never stops the others. The kinds table mirrors
 	/// <see cref="ModApi.Events"/>, which is checked by a test.
 	/// </summary>
-    public static string RuntimePreamble()
+    public static string RuntimePreamble() => RuntimePreamble(ModSettings.InForce);
+
+	/// <summary>The preamble with <paramref name="settings"/> as its <c>RefiiSettings</c>: the values in force, at run time.</summary>
+	public static string RuntimePreamble(IEnumerable<(string Key, float Value)> settings)
 	{
 		var text = new StringBuilder();
 		text.Append("Refii = Refii or {}\n");
@@ -162,6 +476,15 @@ public static class ModLua
 		text.Append(
 			"function Refii.on(name, fn)\n" +
 			"\tlocal kind = Refii._kinds[name]\n" +
+			// The runtime's own events (setting_changed): raised by the preamble, never by the bus.
+			"\tif kind == nil and Refii._local_events and Refii._local_events[name] and type(fn) == 'function' then\n" +
+			"\t\tlocal own = Refii._handlers[name] or {}\n" +
+			"\t\tRefii._handlers[name] = own\n" +
+			"\t\town[#own + 1] = fn\n" +
+			// A value_changed handler asks the host to state published numbers (texts it always states).
+			"\t\tif name == 'value_changed' and Refii.signal then Refii.signal('refii.watch', 'value_changed') end\n" +
+			"\t\treturn\n" +
+			"\tend\n" +
 			"\tif kind == nil then error('Refii.on: no event \"' .. tostring(name) .. '\"') end\n" +
 			"\tif type(fn) ~= 'function' then error('Refii.on: a function is needed for \"' .. name .. '\"') end\n" +
 			"\tlocal list = Refii._handlers[kind]\n" +
@@ -173,7 +496,19 @@ public static class ModLua
 			"\tif math.floor(mask / bit) % 2 == 0 then Refii._masks[group] = mask + bit end\n" +
 			"\tRefii._dirty = true\n" +
 			"end\n" +
+			// off(name, fn): the handler on() took, taken back (Godot's remove_verdict / disconnect); true when it stood.
+			"function Refii.off(name, fn)\n" +
+			"\tlocal list = Refii._handlers[Refii._kinds[name] or name]\n" +
+			"\tif list == nil then return false end\n" +
+			"\tfor i = #list, 1, -1 do\n" +
+			"\t\tif list[i] == fn then table.remove(list, i) return true end\n" +
+			"\tend\n" +
+			"\treturn false\n" +
+			"end\n" +
 			"function Refii._fire(kind, e)\n" +
+			// The runtime's own consumers first (the clock and timers, the pools, the entity store, the play state).
+			"\tlocal runtime = Refii._runtime and Refii._runtime[kind]\n" +
+			"\tif runtime then runtime(e) end\n" +
 			"\tlocal list = Refii._handlers[kind]\n" +
 			"\tif list == nil then return true end\n" +
 			"\tlocal writable = Refii._writable[kind]\n" +
@@ -183,7 +518,8 @@ public static class ModLua
 			"\tfor i = 1, #list do\n" +
 			"\t\tlocal ok, cancel = pcall(list[i], e)\n" +
 			"\t\tif not ok then Refii._report('event ' .. tostring(kind), cancel)\n" +
-			"\t\telseif cancel == true then keep = false end\n" +
+			// A refusal is a handler's `return true` or `e.cancel = true`, as a Godot verdict's.
+			"\t\telseif cancel == true or e.cancel == true then keep = false end\n" +
 			"\tend\n" +
 			"\tif writable and Refii._write then\n" +
 			"\t\tfor i = 1, #writable do\n" +
@@ -232,26 +568,73 @@ public static class ModLua
 			"\tif Refii._play_fx == nil or e == nil or e == 0 then return nil end\n" +
 			"\treturn Refii._play_fx(name, 0, 0, 0, e, Refii._fx_options(o))\n" +
 			"end\n" +
-			// cast_spell(caster, type, targeted, target, level [, pos [, dir]]) -> spell, serial: the
-			// native Refii._cast_spell with the start position and facing unpacked from {x, y, z}
-			// tables (the caster's own when absent); targeted is a boolean or 0/1.
-			"function Refii.cast_spell(caster, spell_type, targeted, target, level, pos, dir)\n" +
+			// cast_spell(caster, type, targeted, target, level [, pos [, dir [, options]]]) -> spell, serial:
+			// the native Refii._cast_spell with the start position and facing unpacked from {x, y, z}
+			// tables (the caster's own when absent) and options { tag, damage_scale, at }
+			// (refii_mod_cast_options; `at` a handle is REFII_MOD_CAST_AT_ENTITY, a {x, y, z} table
+			// REFII_MOD_CAST_AT_POINT); targeted is a boolean or 0/1.
+			"function Refii.cast_spell(caster, spell_type, targeted, target, level, pos, dir, options)\n" +
 			"\tif Refii._cast_spell == nil or caster == nil or caster == 0 then return nil end\n" +
 			"\tlocal p = pos or {}\n" +
 			"\tlocal d = dir or {}\n" +
+			"\tlocal o = options or {}\n" +
 			"\tlocal t = (targeted == true or (type(targeted) == 'number' and targeted ~= 0)) and 1 or 0\n" +
+			"\tlocal ak, ae, a = 0, 0, {}\n" +
+			"\tif type(o.at) == 'table' then ak, a = 2, o.at elseif o.at ~= nil then ak, ae = 1, o.at end\n" +
 			"\treturn Refii._cast_spell(caster, spell_type, t, target or 0, level or 0, pos ~= nil and 1 or 0,\n" +
-			"\t\tp[1] or p.x or 0, p[2] or p.y or 0, p[3] or p.z or 0, dir ~= nil and 1 or 0, d[1] or d.x or 0, d[2] or d.y or 0, d[3] or d.z or 0)\n" +
+			"\t\tp[1] or p.x or 0, p[2] or p.y or 0, p[3] or p.z or 0, dir ~= nil and 1 or 0, d[1] or d.x or 0, d[2] or d.y or 0, d[3] or d.z or 0,\n" +
+			"\t\ttonumber(o.tag) or 0, tonumber(o.damage_scale) or 1, ak, ae, a[1] or a.x or 0, a[2] or a.y or 0, a[3] or a.z or 0)\n" +
 			"end\n" +
-			// mark(target, icon, text [, p]): a HUD world marker over an entity handle or at a point
-			// {x, y, z} for player p (nil: every player played here); the id unmark takes, or nil.
-			"function Refii.mark(target, icon, text, p)\n" +
+			// set_locomotion(p, {key = value, ..}) or (p, key, value) -> bool: each LocomotionData field
+			// on player p's hero's own table through the native Refii._set_locomotion, held across the
+			// game's reloads of it; false as a value stops holding that field (refii_mod_set_locomotion).
+			"function Refii.set_locomotion(p, values, value)\n" +
+			"\tif Refii._set_locomotion == nil then return false end\n" +
+			"\tif type(values) ~= 'table' then return Refii._set_locomotion(p, values, value) end\n" +
+			"\tlocal ok = true\n" +
+			"\tfor k, v in pairs(values) do ok = Refii._set_locomotion(p, k, v) and ok end\n" +
+			"\treturn ok\n" +
+			"end\n" +
+			// set_appearance(p, {tan, fat, height, strength, skill, will, morality, purity, age}): player
+			// p's look to manual with the named inputs, the rest as the hero looks (Murgo's Mirror's own
+			// look, refii_mod_set_appearance through the native Refii._set_appearance).
+			"function Refii.set_appearance(p, t)\n" +
+			"\tif Refii._set_appearance == nil or type(t) ~= 'table' then return end\n" +
+			"\tRefii._set_appearance(p, t.tan, t.fat, t.height, t.strength, t.skill, t.will, t.morality, t.purity, t.age)\n" +
+			"end\n" +
+			// camera_override(p, mode [, o]): player p's camera hold through the game's own
+			// CameraManager.SetCameraOverride (refii_mod_camera_override): mode Refii.CAMERA_FIRST_PERSON or
+			// CAMERA_GAME, nil or 0 lets it go; o = {fov, pitch_limit, blend, aim}.
+			"function Refii.camera_override(p, mode, o)\n" +
+			"\tif Refii._camera_override == nil then return false end\n" +
+			"\to = type(o) == 'table' and o or {}\n" +
+			"\treturn Refii._camera_override(p or 0, mode or 0, o.fov or 0, o.pitch_limit or 0, o.blend or -1, o.aim and 1 or 0)\n" +
+			"end\n" +
+			// mark(target, icon, text [, p [, o]]): a HUD world marker over an entity handle or at a point
+			// {x, y, z} for player p (nil: every player played here); o.meter = {value, max, style}
+			// puts a fill on it (mark_meter). The id unmark and mark_meter take, or nil.
+			"function Refii.mark(target, icon, text, p, o)\n" +
 			"\tif Refii._mark == nil or target == nil then return nil end\n" +
+			"\tlocal id = nil\n" +
 			"\tif type(target) == 'table' then\n" +
-			"\t\treturn Refii._mark(0, target[1] or target.x or 0, target[2] or target.y or 0, target[3] or target.z or 0, icon or '', text or '', p or 0)\n" +
+			"\t\tid = Refii._mark(0, target[1] or target.x or 0, target[2] or target.y or 0, target[3] or target.z or 0, icon or '', text or '', p or 0)\n" +
+			"\telseif target ~= 0 then\n" +
+			"\t\tid = Refii._mark(target, 0, 0, 0, icon or '', text or '', p or 0)\n" +
+			"\tend\n" +
+			"\tlocal m = type(o) == 'table' and o.meter or nil\n" +
+			"\tif id == nil and type(m) == 'table' then return Refii.world_meter(target, m[1] or m.value or 0, m[2] or m.max or 0, m[3] or m.style, p) end\n" +
+			"\tif id ~= nil and type(m) == 'table' and Refii.mark_meter then Refii.mark_meter(id, m[1] or m.value or 0, m[2] or m.max or 0, m[3] or m.style or '') end\n" +
+			"\treturn id\n" +
+			"end\n" +
+			// world_meter(target, value, max [, style [, p]]): a bar on the marker channel over an
+			// entity handle or at {x, y, z}; mark_meter(id, value, max) restates it. The id, or nil.
+			"function Refii.world_meter(target, value, max, style, p)\n" +
+			"\tif Refii._world_meter == nil or target == nil then return nil end\n" +
+			"\tif type(target) == 'table' then\n" +
+			"\t\treturn Refii._world_meter(0, target[1] or target.x or 0, target[2] or target.y or 0, target[3] or target.z or 0, value or 0, max or 0, style or '', p or 0)\n" +
 			"\tend\n" +
 			"\tif target == 0 then return nil end\n" +
-			"\treturn Refii._mark(target, 0, 0, 0, icon or '', text or '', p or 0)\n" +
+			"\treturn Refii._world_meter(target, 0, 0, 0, value or 0, max or 0, style or '', p or 0)\n" +
 			"end\n" +
 			// light(target, color, energy, range [, o]): a mod light on an entity handle or at a
 			// point {x, y, z}; color {r, g, b}; o = { offset = {x, y, z}, at = "helper", flicker = n,
@@ -292,10 +675,11 @@ public static class ModLua
 			"end\n");
 
 		text.Append(RequireRuntime);
+		text.Append(InfrastructureRuntime());
 		// The values IN FORCE, the live overrides over the files': what the native table holds, so
 		// a session or a reload composed after a live change starts from that change.
 		text.Append("RefiiSettings = {");
-		foreach ((string key, float value) in ModSettings.InForce)
+		foreach ((string key, float value) in settings)
 		{
 			text.Append("[\"").Append(key.Replace("\\", "\\\\").Replace("\"", "\\\""))
 				.Append("\"]=").Append(value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)).Append(',');

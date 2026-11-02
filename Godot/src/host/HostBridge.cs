@@ -23,7 +23,7 @@ public static partial class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 230;
+	public const int ExpectedAbiVersion = 232;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -1867,6 +1867,14 @@ public static partial class HostBridge
 		public bool Drawn(bool principal) =>
 			Drawable && (Opacity > 1e-4f || (principal && Alpha >= 1e-4f));
 
+		/// <summary>
+		/// Whether a drawn entity's colour-pass draws are built at all: the product above 0
+		/// (`sub_82219AB8` 0x82219CB0 `fcmpu cr6, f31, f29` / `ble`, f29 = 0.0; disc 0x82219DE0).
+		/// At 0 nothing of the pass is built — the body, the fur shells and their prelit
+		/// textures. Only a principal is drawn with the product at 0.
+		/// </summary>
+		public bool Submitted => Opacity > 0f;
+
 		public bool IsConstructed => this == Constructed;
 	}
 
@@ -2954,6 +2962,26 @@ public static partial class HostBridge
 		try
 		{
 			return RefiiHostGetPlayerValue(player, key, out float value) != 0 ? value : null;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>A player's store TEXT (at most 256 bytes, kept exactly), or null when the key holds none.</summary>
+	public static string? GetPlayerText(int player, string key)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return null;
+		}
+
+		try
+		{
+			byte[] text = new byte[260];
+			int length = RefiiHostGetPlayerText(player, key, text, (uint)text.Length);
+			return length < 0 ? null : Encoding.UTF8.GetString(text, 0, Math.Min(length, text.Length - 1));
 		}
 		catch (EntryPointNotFoundException)
 		{
@@ -6897,6 +6925,32 @@ public static partial class HostBridge
 		}
 	}
 
+	/// <summary>
+	/// A read-only query ("VERB ARGS...") answered at once from INSIDE the verdict handler, on the
+	/// guest thread while the payload waits in the seam: the answer text ("ok=…,<fields>") and the
+	/// native result — its length, or REFII_MOD_READ_OUTSIDE (-1) anywhere else, REFII_MOD_READ_REFUSED
+	/// (-2) for a verb that is not a read.
+	/// </summary>
+	public static (int Result, string Answer) ModVerdictRead(string line)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return (-1, string.Empty);
+		}
+
+		try
+		{
+			byte[] bytes = Encoding.UTF8.GetBytes(line);
+			byte[] answer = new byte[2048];
+			int result = RefiiHostModVerdictRead(bytes, (UIntPtr)bytes.Length, answer, (UIntPtr)answer.Length);
+			return (result, result > 0 ? Encoding.UTF8.GetString(answer, 0, Math.Min(result, answer.Length - 1)) : string.Empty);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return (-1, string.Empty);
+		}
+	}
+
 	/// <summary>Which event kinds the verdict handler is asked about; an empty mask asks about none. The words cross as <see cref="SetModEventMask"/>'s do.</summary>
 	public static void SetModVerdictMask(in Refii.Mods.ModEventMask mask)
 	{
@@ -7902,6 +7956,9 @@ public static partial class HostBridge
 	private static extern int RefiiHostGetPlayerValue(int player, [MarshalAs(UnmanagedType.LPUTF8Str)] string key, out float value);
 
 	[DllImport(Library)]
+	private static extern int RefiiHostGetPlayerText(int player, [MarshalAs(UnmanagedType.LPUTF8Str)] string key, [Out] byte[] text, uint capacity);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostGetClassicSceneLights([Out] float[] values, uint capacity);
 
 	[DllImport(Library)]
@@ -8765,6 +8822,9 @@ public static partial class HostBridge
 
 	[DllImport(Library)]
 	private static extern void RefiiHostSetModVerdictMask(ulong mask);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostModVerdictRead(byte[] line, UIntPtr lineLength, [Out] byte[] output, UIntPtr capacity);
 
 	[DllImport(Library)]
 	private static extern void RefiiHostSetModVerdictMaskHigh(ulong mask);

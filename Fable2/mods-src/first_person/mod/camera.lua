@@ -1,72 +1,44 @@
--- First Person: the gameplay camera, from the hero's eyes.
+-- First Person: the game's first-person camera, adjusted for a player who holds it.
 --
 -- Runs after the camera scripts each time they run (a session's first level, a save load, a
 -- co-op join), so everything here is idempotent.
 --
--- The game already has a first-person camera (camera/firstpersoncamera.lua, FirstPersonCamera):
--- the "look around" view the first-person button gives, where the hero stands still and both
--- sticks turn the head. It sits at Creature.GetCollisionHeadPosition, turns the hero to face the
--- way it looks, and fades the hero's body out (here the body stays and godot/hide_head.gd hides
--- only the head). Refii's mouse look already drives it.
---
--- This mod makes that camera the everyday one while FirstPerson.On holds (init.lua's H key):
---   * IsValid: the camera manager picks the first valid camera of its normal set
---     {CutScene, CannedAction, CombatCannedAction, FirstPerson, ICS, RangedCombat, MagicSAC, SAC},
---     so cutscenes and canned actions (chests, doors, finishers) still take over, and the
---     override set (conversations, quest cameras) and the co-op set come before it anyway.
---     It also steps aside for a full cutscene (and an interactive one when the scenes setting is
---     off), and for the gun aim by default.
---   * ProcessGameAction: only the look input turns the view; the shipped look mode also turned
---     it with the left stick, which here walks the hero.
---   * FrameUpdate: the eye is lifted and pushed forward of the head (settings), and the hero
---     is turned to the view only as face_camera says.
--- The game's own first-person button keeps its shipped behaviour: the patches only act on a
--- camera this mod activated.
+-- godot/first_person.gd holds the game's own first-person camera (camera/firstpersoncamera.lua,
+-- FirstPersonCamera) per player through camera_override, with the field of view, the pitch limit
+-- and the gun-aim rule as the hold's options, and states each hold as the player value
+-- first_person.held. The game's camera takes no data for the rest, so these wraps state it, on a
+-- camera whose player holds first person (Refii.player_value(p, "first_person.held")) and that the
+-- game's own look mode (the left bumper) did not open:
+--   * ProcessGameAction: only the look input turns the view; the shipped look mode also turned it
+--     with the left stick, which here walks the hero.
+--   * FrameUpdate: the eye is lifted and pushed forward of the head (settings), the hero is turned
+--     to the view only as face_camera says, and the shipped body fade is left out (the core hides
+--     the head while the camera is first person).
+--   * Scenes: a scene's look-at and framed shots (SIMPLE and GAME in the override set) become the
+--     first-person camera for a player who holds it, facing what they frame until the player looks
+--     away (the scenes setting; never in a full cutscene).
+-- Each camera is its player's instance (self.Player is that player's hero), so both players of a
+-- split screen or an online game are served alike.
 
-if FirstPersonCamera == nil or CameraFunctions == nil then
+if FirstPersonCamera == nil or CameraFunctions == nil or Refii == nil then
 	return
 end
 
-FirstPerson = FirstPerson or {}
-local F = FirstPerson
-
 local function Setting(name, default)
-	if Refii and Refii.setting then
-		return Refii.setting("first_person." .. name, default)
-	end
-	return default
+	return Refii.setting("first_person." .. name, default)
 end
 
-if F.On == nil then
-	F.On = Setting("start_on", 1) ~= 0
+-- The player (1 or 2) whose hero `hero` is; 0 for anything else.
+local function PlayerOf(hero)
+	local handle = hero ~= nil and Refii.handle(hero) or nil
+	return handle ~= nil and Refii.player_of(handle) or 0
 end
 
-local kFull = 1           -- Refii.CUTSCENE_FULL
-local kFullOrScene = 3    -- Refii.CUTSCENE_FULL + Refii.CUTSCENE_INTERACTIVE
-
--- Whether conversations and interactive scenes stay in first person (the "scenes" setting).
-local function Scenes()
-	return Setting("scenes", 1) ~= 0
-end
-
--- Whether this mod's first person should hold for the player now.
-function F.Wanted(player)
-	if not F.On or not Player.IsAvailable(player) then
-		return false
-	end
-	if CameraFunctions.IsMultiplayer(player) then
-		return false
-	end
-	if Setting("third_person_aim", 1) ~= 0 and CameraFunctions.IsRangedCombat(player) then
-		return false
-	end
-	-- A full cutscene is the game's cinematic. An interactive one (a conversation: the hero stays
-	-- in the world under the vignette) stays in first person unless the scenes setting is off.
-	local kinds = Scenes() and kFull or kFullOrScene
-	if Refii and Refii.in_cutscene and Refii.in_cutscene(0, kinds) then
-		return false
-	end
-	return true
+-- Whether hero's player holds first person through this mod now: the hold godot/first_person.gd
+-- states, as player p's value first_person.held.
+local function Holds(hero)
+	local p = PlayerOf(hero)
+	return (p == 1 or p == 2) and (Refii.player_value(p, "first_person.held", 0) or 0) ~= 0
 end
 
 -- The camera scripts build FirstPersonCamera afresh each run, so the shipped methods are kept on
@@ -75,7 +47,6 @@ end
 local shipped = FirstPersonCamera.RefiiFirstPersonShipped
 if shipped == nil then
 	shipped = {
-		IsValid = FirstPersonCamera.IsValid,
 		Activate = FirstPersonCamera.Activate,
 		ProcessGameAction = FirstPersonCamera.ProcessGameAction,
 		FrameUpdate = FirstPersonCamera.FrameUpdate,
@@ -83,20 +54,22 @@ if shipped == nil then
 	FirstPersonCamera.RefiiFirstPersonShipped = shipped
 end
 
--- The overrides a scene or quest sets (camera/cameramanager.lua's override set, ahead of the
--- normal set): SIMPLE, a camera at PositionEntity looking at FocusEntity (a scene's look-at shot),
--- and GAME, the third-person camera framed on an InterestingObject (the talk camera a held LT
--- gives, a quest's hero shot). While first person holds those become the first-person camera,
--- which turns toward what they frame (FirstPersonCamera.FrameUpdate below). Everything else in the
--- set (a scene's own first-person camera, the gun aim, the cutscene cameras) stays as shipped.
+-- The overrides a scene or quest sets (camera/cameramanager.lua's override set, ahead of the normal
+-- set): SIMPLE, a camera at PositionEntity looking at FocusEntity (a scene's look-at shot), and
+-- GAME, the third-person camera framed on an InterestingObject (the talk camera a held LT gives, a
+-- quest's hero shot). Such an override replaces the hold; for a player who holds first person it
+-- becomes the first-person camera, which turns toward what it frames (FrameUpdate below).
 for _, set in ipairs(CameraManager.CameraSetList or {}) do
 	if set.OverridesCameraValidity then
 		set.RefiiShippedBest = set.RefiiShippedBest or set.BestCameraFunction
 		local shipped_best = set.RefiiShippedBest
-		set.BestCameraFunction = function(camera_set, player)
-			local camera = shipped_best(camera_set, player)
-			if (camera == SimpleCamera or camera == SACCamera) and Scenes() and F.Wanted(player) then
-				return FirstPersonCamera
+		set.BestCameraFunction = function(camera_set, hero)
+			local camera = shipped_best(camera_set, hero)
+			if (camera == SimpleCamera or camera == SACCamera) and Setting("scenes", 1) ~= 0 and Holds(hero) then
+				local p = PlayerOf(hero)
+				if not Refii.in_cutscene(p, Refii.CUTSCENE_FULL) then
+					return FirstPersonCamera
+				end
 			end
 			return camera
 		end
@@ -117,18 +90,14 @@ local function OverrideFocus(data)
 end
 
 do
-	local shipped_valid = shipped.IsValid
-	FirstPersonCamera.IsValid = function(player)
-		return shipped_valid(player) or F.Wanted(player)
-	end
-
-	-- Ours when the game's own first-person state does not hold: the shipped look mode stays as
-	-- shipped.
+	-- Ours for a player who holds first person, unless the game's own look mode opened it: that
+	-- stays as shipped.
 	local shipped_activate = shipped.Activate
-	FirstPersonCamera.Activate = function(self, player_entity, camera, previous_camera)
-		shipped_activate(self, player_entity, camera, previous_camera)
-		self.ModDriven = not CameraFunctions.IsInFirstPerson(player_entity)
+	FirstPersonCamera.Activate = function(self, hero, camera, previous_camera)
+		shipped_activate(self, hero, camera, previous_camera)
+		self.ModDriven = Holds(hero) and not CameraFunctions.IsInFirstPerson(hero)
 		if self.ModDriven then
+			-- The hold states this; a scene's camera turned first person carries the scene's data.
 			self:SetFOV(Setting("fov", 80))
 		end
 	end
@@ -150,7 +119,8 @@ do
 			return shipped_update(self)
 		end
 
-		-- UpdateRotations reads the class's bound, so it is ours only for this call.
+		-- UpdateRotations bounds the pitch by the hold's BoundAngle; a scene's data that states no
+		-- bound falls back to the class's, which is the pitch limit only for this call.
 		local bound = FirstPersonCamera.VerticalAngularBound
 		FirstPersonCamera.VerticalAngularBound = Setting("pitch_limit", 75)
 		self:UpdateRotations()
@@ -186,10 +156,7 @@ do
 			Physics.SetFacingVector(self.Player, forward)
 		end
 
-		-- Read every update, so the Options slider applies live; CameraBase eases toward it.
-		self:SetDesiredFOV(Setting("fov", 80))
-
-		-- No fade: the body stays in view, and godot/hide_head.gd takes the head away.
+		-- No fade: the body stays in view, and the core takes the head away.
 		self:SetDesiredDOF(CameraFunctions.AssembleDOFData(50, 50, 50, 50, 0, 0.6))
 
 		CameraBase.FrameUpdate(self)

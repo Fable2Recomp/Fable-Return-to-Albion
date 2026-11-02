@@ -44,7 +44,7 @@ public sealed class Engine_Title
 	private Engine_Title(
 		string key, string name, string remakeName, uint titleId, string folder, string moduleName,
 		string discVersion, string updatedVersion, bool hasHardMods, string modExtension,
-		uint editorFolderColour, params string[] instance)
+		uint editorFolderColour, bool hashedModelNodes, params string[] instance)
 	{
 		Instance = new HashSet<string>(instance, StringComparer.Ordinal);
 		Key = key;
@@ -58,6 +58,7 @@ public sealed class Engine_Title
 		_discVersion = discVersion;
 		_updatedVersion = updatedVersion;
 		HasHardMods = hasHardMods;
+		HashedModelNodes = hashedModelNodes;
 	}
 
 	private readonly string _discVersion;
@@ -112,6 +113,12 @@ public sealed class Engine_Title
 	public bool HasHardMods { get; }
 
 	/// <summary>
+	/// Whether the title's model files name a skeleton node only by the hash of its name (the
+	/// hashed <c>.mdl</c>/<c>.mdl.gmd</c> layout), so its Godot bones are named "0x%08X".
+	/// </summary>
+	public bool HashedModelNodes { get; }
+
+	/// <summary>
 	/// The instance libraries this title ships in <c>bin/&lt;Folder&gt;/</c>. Every title has its
 	/// host bridge; the vfs and Lua runtime are Fable 2's hooks and the code they call.
 	/// </summary>
@@ -156,14 +163,14 @@ public sealed class Engine_Title
 
 	public static readonly Engine_Title Fable2 = new(
 		"refii", "Fable 2", "Fable 2 Return to Albion", 0x4D5307F1, "Fable2", "refii_generated",
-		"Fable2", "Fable2TU1", hasHardMods: true, ".f2mod", 0x5DD978FFu,
+		"Fable2", "Fable2TU1", hasHardMods: true, ".f2mod", 0x5DD978FFu, hashedModelNodes: false,
 		"refii_hostbridge", "refii_vfs", "refii_lua");
 
 	/// <summary>Fable 3. Its remake has no name yet; it goes by the game's until it does.</summary>
 	public static readonly Engine_Title Fable3 = new(
 		"refiii", "Fable 3", "Fable 3", 0x4D5308D6, "Fable3", "refiii_generated",
-		"Fable3", string.Empty, hasHardMods: false, ".f3mod", 0xE0474CFFu, "refii_hostbridge",
-		"refii_vfs");
+		"Fable3", string.Empty, hasHardMods: false, ".f3mod", 0xE0474CFFu, hashedModelNodes: true,
+		"refii_hostbridge", "refii_vfs");
 
 	public static IReadOnlyList<Engine_Title> All { get; } = new[] { Fable2, Fable3 };
 

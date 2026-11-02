@@ -195,6 +195,14 @@ public static class ModSpells
 	/// <summary>The abilities book's tarot still: the level record's <c>ImageFilePathAndName</c> + <c>.tex</c>.</summary>
 	public static string CardPath(int type) => $"art/gui/abilitytarot/{Shipped[type].Card}.tex";
 
+	/// <summary>
+	/// A spell type's name tag (the wheel's <c>_NAME_LEVEL_06</c>) and wheel icon path, the ones the
+	/// game draws it with — a stand-in's name and icon are overlays at exactly these, so they answer
+	/// for it too (<c>Refii.spell_info</c>, <c>RefiiHost.spell_info</c>). Null for a type outside 0..7.
+	/// </summary>
+	public static (string NameTag, string Icon)? Info(int type) =>
+		type >= 0 && type < Shipped.Length ? (NameTags(type)[MaxLevel], WheelIconPath(type)) : null;
+
 	/// <summary>Reads one <c>spells/&lt;id&gt;.json</c>; a bad type or a non-object is refused with the reason.</summary>
 	public static bool TryParse(string mod, string id, string json, out ModSpell? spell, out string error)
 	{

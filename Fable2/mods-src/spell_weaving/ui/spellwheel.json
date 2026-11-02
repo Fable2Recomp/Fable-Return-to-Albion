@@ -9,7 +9,9 @@
 			"empty": "art/gui/hud/spell_weaving_slot.tex",
 			"scale": 0.55,
 			"apply": "SPELL_WEAVING_SET_PARTNER",
-			"remove": "SPELL_WEAVING_REMOVE_PARTNER"
+			"remove": "SPELL_WEAVING_REMOVE_PARTNER",
+			"legacySaveKey": "SpellWeavingPartner{slot}",
+			"legacySaveKeyTwo": "SpellWeavingPartner2_{slot}"
 		}
 	]
 }

@@ -186,6 +186,10 @@ public static class CoopHeroLua
 				if type(t) ~= "table" then
 					return t
 				end
+				-- A camera_override hold stays out of the save (the camera chunk's C.CameraSaveTable).
+				if C.CameraSaveTable ~= nil then
+					pcall(C.CameraSaveTable, t)
+				end
 				local threads = {}
 				for co in pairs(C.SavedThreads(t)) do
 					local record = nil
@@ -3925,6 +3929,185 @@ public static class CoopHeroLua
 			SACCamera.CalculateNearbyFoes = C.CalculateNearbyFoes
 		end
 
+		-- THE MOD API'S CAMERA (refii_mod.h refii_mod_camera_*), stated around every
+		-- CameraManager:FrameUpdate(hero) below.
+		--   THE MODE. FrameUpdate activates the first valid set's best camera through
+		--   self.ActivateCamera(camera) (rex_lhCameraManager_ActivateCamera: a Lua table, no mode) and keeps
+		--   it as self.CurrentCamera. Its mode is the key the override set (OverridesCameraValidity) lists
+		--   it under in CameraModes, which names every camera the manager activates; -1 for one it does
+		--   not list. Refii._camera_stated raises camera_changed where it differs.
+		--   THE HOLD. CameraManager.SetCameraOverride(hero, mode, scope, data) is the game's per-player
+		--   hold (the quests' first-person shots). Each half of the hero's record (Normal; LookAt, what a
+		--   held LT frames) that holds nobody else's override (CameraEnum DEFAULT) is claimed with the
+		--   hold's data; a half someone else overrode is theirs, and is claimed again once it is DEFAULT
+		--   (their release, OnLevelLoad's NewOverrideDataForPlayer, LoadFromSave). Released while a canned
+		--   action's camera is switched on (the normal set lists CannedActionCamera and
+		--   CombatCannedActionCamera before FirstPersonCamera; IsValid answers their Active flags) and, with
+		--   the aim flag, while RangedCombatCamera.IsValid(hero); the host answers no hold during a FULL
+		--   cutscene. hold.Written[half] is the data table written there, while the native mode word
+		--   (Player.SetOverrideCameraMode's +0xC4 / +0xC8) is still ours; Refii._camera_held states those
+		--   halves, so the cutscene event leaves our LookAt out.
+		C.CameraModes = C.CameraModes or {}
+		C.Holds = C.Holds or {}
+		C.CameraHalves = { { "Normal", 1 }, { "LookAt", 2 } }
+
+		function C.CameraModeOf(camera)
+			if camera ~= nil and type(CameraManager.CameraSetList) == "table" then
+				for _, set in ipairs(CameraManager.CameraSetList) do
+					if type(set) == "table" and set.OverridesCameraValidity and type(set.CameraModes) == "table" then
+						for mode, listed in pairs(set.CameraModes) do
+							if listed == camera then
+								return mode
+							end
+						end
+					end
+				end
+			end
+			return -1
+		end
+
+		function C.CameraStated(hero, camera)
+			local key = GetIDFromEntity(hero)
+			local mode = C.CameraModeOf(camera)
+			if key ~= nil and C.CameraModes[key] ~= mode and Refii ~= nil and Refii._camera_stated ~= nil then
+				C.CameraModes[key] = mode
+				Refii._camera_stated(hero, mode)
+			end
+		end
+
+		-- The scope covering the halves flagged in bits (1 Normal, 2 LookAt).
+		function C.CameraScope(bits)
+			if bits == 3 then
+				return EInteractiveCutsceneRuleScope.CUTSCENE_RULE_SCOPE_ALWAYS
+			elseif bits == 1 then
+				return EInteractiveCutsceneRuleScope.CUTSCENE_RULE_SCOPE_NORMAL
+			end
+			return EInteractiveCutsceneRuleScope.CUTSCENE_RULE_SCOPE_LOOK_AT
+		end
+
+		function C.CameraHold(hero)
+			if Refii == nil or Refii._camera_hold == nil then
+				return
+			end
+			local key = GetIDFromEntity(hero)
+			if key == nil then
+				return
+			end
+			local mode, fov, pitch, blend, flags, revision = Refii._camera_hold(hero)
+			local hold = C.Holds[key]
+			if mode == nil and hold == nil then
+				return
+			end
+			if hold == nil then
+				hold = { Written = {}, Bits = 0 }
+				C.Holds[key] = hold
+			end
+			local wanted = mode ~= nil
+			if wanted and ((CannedActionCamera ~= nil and CannedActionCamera.Active) or
+					(CombatCannedActionCamera ~= nil and CombatCannedActionCamera.Active)) then
+				wanted = false
+			end
+			if wanted and flags % 2 == 1 and RangedCombatCamera ~= nil and RangedCombatCamera.IsValid(hero) then
+				wanted = false
+			end
+			if wanted and (hold.Data == nil or hold.Revision ~= revision) then
+				local data = { SupercedesCombat = true }
+				if fov > 0 then
+					data.FOV = fov
+				end
+				if pitch > 0 then
+					data.BoundAngleVert = 0
+					data.BoundAngle = pitch
+				end
+				if blend >= 0 then
+					data.BlendInSeconds = blend
+					data.BlendOutSeconds = blend
+				end
+				hold.Data, hold.Revision, hold.Mode, hold.Blend = data, revision, mode, blend
+			end
+			local record = CameraManager.GetOverriddenData(hero)
+			local default = ECameraMode.CAMERA_MODE_DEFAULT
+			local claim, release = 0, 0
+			for _, half in ipairs(C.CameraHalves) do
+				local name, bit = half[1], half[2]
+				local slot = record[name]
+				local written = hold.Written[name]
+				local free = slot.CameraEnum == default
+				local ours = written ~= nil and not free and slot.OverrideData == written
+				if not free and not ours then
+					hold.Written[name] = nil
+				elseif wanted then
+					if free or written ~= hold.Data then
+						claim = claim + bit
+					end
+				elseif written ~= nil then
+					release = release + bit
+				end
+			end
+			if claim ~= 0 then
+				CameraManager.SetCameraOverride(hero, hold.Mode, C.CameraScope(claim), hold.Data)
+				for _, half in ipairs(C.CameraHalves) do
+					if math.floor(claim / half[2]) % 2 == 1 then
+						hold.Written[half[1]] = hold.Data
+					end
+				end
+			end
+			if release ~= 0 then
+				local data = nil
+				if hold.Blend ~= nil and hold.Blend >= 0 then
+					data = { BlendInSeconds = hold.Blend }
+				end
+				CameraManager.SetCameraOverride(hero, default, C.CameraScope(release), data)
+				for _, half in ipairs(C.CameraHalves) do
+					if math.floor(release / half[2]) % 2 == 1 then
+						hold.Written[half[1]] = nil
+					end
+				end
+			end
+			local bits = (hold.Written.Normal ~= nil and 1 or 0) + (hold.Written.LookAt ~= nil and 2 or 0)
+			if bits ~= hold.Bits then
+				hold.Bits = bits
+				Refii._camera_held(hero, bits)
+			end
+			if mode == nil and bits == 0 then
+				C.Holds[key] = nil
+			end
+		end
+
+		-- THE HOLD IS NEVER SAVED. The engine persists what the global GetSaveTable returns as soon as it
+		-- returns (TU1 sub_8245CB10: the global looked up by name, called, its table handed to
+		-- pluto_persist_entry), and the shipped table's CameraSave.Overrides is CameraManager.Overrides
+		-- itself (CameraManager.GetSaveTable). The core save wrapper calls this on that table: the
+		-- written copy has every half the hold stands on as the default record, the live one untouched.
+		function C.CameraSaveTable(t)
+			local save = type(t) == "table" and t.CameraSave or nil
+			local overrides = type(save) == "table" and save.Overrides or nil
+			if type(overrides) ~= "table" or next(C.Holds) == nil then
+				return
+			end
+			local copy = {}
+			for id, record in pairs(overrides) do
+				local hold = C.Holds[id]
+				if hold ~= nil and type(record) == "table" then
+					local entry = {}
+					for field, value in pairs(record) do
+						entry[field] = value
+					end
+					for _, half in ipairs(C.CameraHalves) do
+						local name = half[1]
+						local written = hold.Written[name]
+						if written ~= nil and type(record[name]) == "table" and record[name].OverrideData == written then
+							entry[name] = { CameraEnum = ECameraMode.CAMERA_MODE_DEFAULT }
+						end
+					end
+					copy[id] = entry
+				else
+					copy[id] = record
+				end
+			end
+			save.Overrides = copy
+		end
+
 		-- EACH CAMERA MANAGER ITS OWN CURRENT CAMERA. Every native manager binds the ONE global
 		-- `CameraManager` table as its self (`sub_82481328`: the global named at dword_83498450),
 		-- and FrameUpdate activates a camera only when the best one differs from
@@ -3953,12 +4136,17 @@ public static class CoopHeroLua
 				if C.RouteTick ~= nil then
 					pcall(C.RouteTick)
 				end
-				if hero == nil or not C.OwnCameras() then
+				if hero ~= nil then
+					pcall(C.CameraHold, hero)
+				end
+				if hero == nil then
 					return shipped(self, hero, ...)
 				end
 				local key = GetIDFromEntity(hero)
-				if key == nil then
-					return shipped(self, hero, ...)
+				if key == nil or not C.OwnCameras() then
+					local result = shipped(self, hero, ...)
+					pcall(C.CameraStated, hero, self.CurrentCamera)
+					return result
 				end
 				local state = C.CameraState[key]
 				if state == nil then
@@ -3969,6 +4157,7 @@ public static class CoopHeroLua
 				self.CurrentSet, self.CurrentCamera, self.CurrentSetPriority = state.Set, state.Camera, state.Priority
 				local result = shipped(self, hero, ...)
 				state.Set, state.Camera, state.Priority = self.CurrentSet, self.CurrentCamera, self.CurrentSetPriority
+				pcall(C.CameraStated, hero, self.CurrentCamera)
 				self.CurrentSet, self.CurrentCamera, self.CurrentSetPriority = set, camera, priority
 				return result
 			end, "FrameUpdate")

@@ -33,8 +33,40 @@ namespace Refii.Game;
 /// </remarks>
 public partial class GameInput
 {
-	/// <summary>One rebindable action: its setting key, default keys, and what it presses.</summary>
-	public readonly record struct KeyAction(string Name, string Defaults, string Description);
+	/// <summary>
+	/// One rebindable action: its setting key, default keys, and what it presses. <c>Superseded</c>
+	/// lists the action's former defaults: the launcher writes every setting it offers, so an install
+	/// holds the default of its day, and a stored value equal to a former default reads as today's.
+	/// </summary>
+	public readonly record struct KeyAction(string Name, string Defaults, string Description, string[]? Superseded = null)
+	{
+		/// <summary>Whether <paramref name="stored"/> means "the default": empty, today's, or a former one.</summary>
+		public bool IsDefault(string? stored)
+		{
+			string value = Normalised(stored);
+			if (value.Length == 0 || value == Normalised(Defaults))
+			{
+				return true;
+			}
+
+			foreach (string former in Superseded ?? System.Array.Empty<string>())
+			{
+				if (value == Normalised(former))
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		/// <summary>The keys in force for <paramref name="stored"/>: today's defaults when it means the default.</summary>
+		public string Bound(string? stored) => IsDefault(stored) ? Defaults : stored!;
+
+		private static string Normalised(string? list) =>
+			string.Join(",", (list ?? string.Empty).Trim().Trim('"').Split(',',
+				System.StringSplitOptions.RemoveEmptyEntries | System.StringSplitOptions.TrimEntries)).ToLowerInvariant();
+	}
 
 	/// <summary>Every action, in the order the launcher lists them.</summary>
 	public static readonly KeyAction[] KeyActions =
@@ -54,8 +86,10 @@ public partial class GameInput
 		new("melee", "F", "Melee directly, whatever the mode (X)."),
 		new("ranged", "R", "Ranged directly, whatever the mode (Y)."),
 		new("magic", "C", "Magic directly, whatever the mode (B)."),
-		new("target_lock", "MouseRight", "Hold to lock on to a target (left trigger); flick the " +
-			"mouse to switch target (a mod's lock may switch by the wheel instead: up left, down right)."),
+		new("target_lock", "MouseRight,T", "Hold to lock on to a target (left trigger); flick the " +
+			"mouse to switch target (a mod's lock may switch by the wheel instead: up left, down right). " +
+			"T is the key for it where the mouse buttons mean pointer clicks (menus, the pub games' odds).",
+			new[] { "MouseRight" }),
 		new("first_person", "MouseMiddle,Z", "Hold for the first-person view (left bumper)."),
 		new("spells_menu", "Ctrl", "Hold to choose a spell (right trigger)."),
 		new("expression_wheel", "Q", "Hold for the expression wheel."),
@@ -75,6 +109,39 @@ public partial class GameInput
 	private enum AttackMode { Melee, Ranged, Magic }
 
 	private static AttackMode _attackMode = AttackMode.Melee;
+
+	/// <summary>The mode last stated to the guest tick (<see cref="StateAttackMode"/>), 0 for none since it came up.</summary>
+	private static int _attackModeStated;
+
+	/// <summary>
+	/// The attack mode for <paramref name="player"/> (1 or 2) as the mods read it — 1 melee, 2 ranged,
+	/// 3 magic (REFII_ATTACK_MODE_*) — for the player the keyboard's pad plays here (pad 0's
+	/// <c>ModPlayer</c>, the player its claims and presses are), else 0.
+	/// </summary>
+	public static int AttackModeOf(int player) =>
+		player is 1 or 2 && player == Engine_TitleGame.Active.Input.ModPlayer(0) ? (int)_attackMode + 1 : 0;
+
+	/// <summary>
+	/// States the attack mode to the guest tick (the command <c>attack_mode P MODE</c>, which raises
+	/// <c>attack_mode_changed</c> and answers <c>refii_mod_attack_mode</c>) when it differs from the last
+	/// statement, and again whenever the guest has come up since.
+	/// </summary>
+	private static void StateAttackMode()
+	{
+		if (!HostBridge.IsGuestUp)
+		{
+			_attackModeStated = 0;
+			return;
+		}
+
+		int player = Engine_TitleGame.Active.Input.ModPlayer(0);
+		int mode = AttackModeOf(player);
+		if (player != 0 && mode != _attackModeStated)
+		{
+			_attackModeStated = mode;
+			HostBridge.PostModCommand($"attack_mode {player} {mode}");
+		}
+	}
 
 	/// <summary>Each action's bound inputs, parsed from refii.toml with the defaults beneath.</summary>
 	private static readonly Dictionary<string, List<BoundInput>> _bindings = new();
@@ -105,8 +172,8 @@ public partial class GameInput
 	{
 		foreach (KeyAction action in KeyActions)
 		{
-			string raw = Refii.Core.Engine_RefiiConfig.String(values, "key_" + action.Name,
-				action.Defaults);
+			string raw = action.Bound(Refii.Core.Engine_RefiiConfig.String(values, "key_" + action.Name,
+				action.Defaults));
 			var inputs = new List<BoundInput>();
 			foreach (string part in raw.Split(','))
 			{
@@ -118,6 +185,9 @@ public partial class GameInput
 
 			_bindings[action.Name] = inputs;
 		}
+
+		// The controller's remap and the prompts' glyph settings come from the same read.
+		ReadControllerSettings(values);
 	}
 
 	private static BoundInput? ParseInput(string name)
@@ -227,6 +297,7 @@ public partial class GameInput
 		Engine_UiKeyGlyphs.LabelFor ??= KeyLabel;
 		using (Refii.Core.Engine_FramePhases.Measure("input.glyphs"))
 		{
+			UpdateGlyphDevice();
 			Engine_UiKeyGlyphs.Update();
 		}
 
@@ -242,6 +313,8 @@ public partial class GameInput
 		{
 			_attackMode = AttackMode.Magic;
 		}
+
+		StateAttackMode();
 	}
 
 	/// <summary>
@@ -269,7 +342,11 @@ public partial class GameInput
 		_ => null,
 	};
 
-	/// <summary>The first input bound to an action, in its short printed form.</summary>
+	/// <summary>
+	/// The first input bound to an action that works now, in its short printed form: mouse buttons
+	/// press the pad only in play (elsewhere they are the pointer's clicks), so outside play the first
+	/// KEY is shown, and a mouse button only when the action has no key.
+	/// </summary>
 	private static string Shown(string action)
 	{
 		if (!_bindings.TryGetValue(action, out List<BoundInput>? inputs) || inputs.Count == 0)
@@ -278,6 +355,17 @@ public partial class GameInput
 		}
 
 		BoundInput first = inputs[0];
+		if (!Playing)
+		{
+			foreach (BoundInput input in inputs)
+			{
+				if (input.Mouse == MouseButton.None)
+				{
+					first = input;
+					break;
+				}
+			}
+		}
 		return first.Mouse switch
 		{
 			MouseButton.Left => "LMB",
@@ -358,8 +446,8 @@ public partial class GameInput
 	/// <summary>The keyboard as pad 0's buttons, triggers and left stick.</summary>
 	private static void KeyboardMouseState(ref PadState state)
 	{
-		// Typing into the dev menu is not play.
-		if (GameDevMenu.KeyboardCaptured)
+		// Typing into the dev menu is not play; nor is the key a rebind row is capturing.
+		if (GameDevMenu.KeyboardCaptured || Engine_UiInputCapture.Blocking)
 		{
 			return;
 		}

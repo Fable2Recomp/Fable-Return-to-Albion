@@ -120,7 +120,8 @@ public static class Engine_UiModRows
 				Rating: Engine_UiMenuConstants.EmptyRatingSlide,
 				Committable: false,
 				Ghosted: row.Ghosted,
-				Command: string.IsNullOrEmpty(row.Command) ? null : row.Command));
+				Command: string.IsNullOrEmpty(row.Command) ? null : row.Command,
+				FromMod: true));
 		}
 
 		return rows;
@@ -256,8 +257,58 @@ public static class Engine_UiModRows
 		OpenScreen,
 	}
 
-	/// <summary>One request off the bus: rows for a list, or a screen to open, for a player.</summary>
-	public readonly record struct Request(Op Op, int Player, string Menu, IReadOnlyList<Stated> Rows, uint Screen);
+	/// <summary>
+	/// One request off the bus: rows for a list, or a screen to open, for a player. A rows text
+	/// longer than one bus record crosses in <see cref="Parts"/> records sharing <see cref="Seq"/>
+	/// (refii_mod_set_menu_rows, up to REFII_MOD_MENU_ROWS_MAX bytes); <see cref="Text"/> is this
+	/// part's raw share and <see cref="Rows"/> is parsed only for a request in one part.
+	/// </summary>
+	public readonly record struct Request(Op Op, int Player, string Menu, IReadOnlyList<Stated> Rows, uint Screen,
+		long Seq = 0, int Part = 0, int Parts = 1, string Text = "");
+
+	/// <summary>The most parts one rows text may take (REFII_MOD_MENU_ROWS_MAX / the 1800-byte share, rounded up).</summary>
+	public const int MaxParts = 20;
+
+	/// <summary>Parts arriving, by (player, menu): the seq they belong to and the shares so far.</summary>
+	private static readonly Dictionary<(int Player, string Menu), (long Seq, string?[] Parts)> _arriving = new();
+
+	/// <summary>
+	/// One part of a rows text in; the whole text once every part of its <paramref name="seq"/> has
+	/// arrived, else null. A part of a newer seq drops what an older one left unfinished (a lost
+	/// record leaves its list as it was until the next statement).
+	/// </summary>
+	public static string? Assemble(int player, string menu, long seq, int part, int parts, string text)
+	{
+		if (parts <= 1)
+		{
+			_arriving.Remove((player, menu));
+			return text;
+		}
+
+		if (parts > MaxParts || part < 0 || part >= parts)
+		{
+			return null;
+		}
+
+		var key = (player, menu);
+		if (!_arriving.TryGetValue(key, out (long Seq, string?[] Parts) held) || held.Seq != seq || held.Parts.Length != parts)
+		{
+			held = (seq, new string?[parts]);
+			_arriving[key] = held;
+		}
+
+		held.Parts[part] = text;
+		foreach (string? share in held.Parts)
+		{
+			if (share is null)
+			{
+				return null;
+			}
+		}
+
+		_arriving.Remove(key);
+		return string.Concat(held.Parts);
+	}
 
 	/// <summary>The request in <paramref name="fields"/>, or null when it is not one.</summary>
 	public static Request? Parse(IEnumerable<KeyValuePair<string, object>> fields)
@@ -279,7 +330,11 @@ public static class Engine_UiModRows
 			case "menu_rows":
 			{
 				string menu = Text("menu").Trim();
-				return menu.Length == 0 ? null : new Request(Op.MenuRows, player, menu, ParseRows(Text("rows")), 0u);
+				int parts = (int)Math.Clamp(Number("parts"), 1, MaxParts + 1);
+				return menu.Length == 0
+					? null
+					: new Request(Op.MenuRows, player, menu, parts <= 1 ? ParseRows(Text("rows")) : Array.Empty<Stated>(), 0u,
+						(long)Number("seq"), (int)Math.Clamp(Number("part"), 0, MaxParts + 1), parts, Text("rows"));
 			}
 
 			case "open_screen":
@@ -307,10 +362,28 @@ public static class Engine_UiModRows
 		switch (request.Op)
 		{
 			case Op.MenuRows:
-				Set(request.Menu, request.Rows, request.Player);
-				Godot.GD.Print($"[mod-rows] '{request.Menu}' now has {request.Rows.Count} row(s) for " +
-					(request.Player == 0 ? "every player" : $"player {request.Player}"));
+			{
+				IReadOnlyList<Stated> rows = request.Rows;
+				if (request.Parts > 1)
+				{
+					if (Assemble(request.Player, request.Menu, request.Seq, request.Part, request.Parts, request.Text) is not { } whole)
+					{
+						break;
+					}
+
+					rows = ParseRows(whole);
+				}
+				else
+				{
+					Assemble(request.Player, request.Menu, request.Seq, 0, 1, request.Text);
+				}
+
+				Set(request.Menu, rows, request.Player);
+				Godot.GD.Print($"[mod-rows] '{request.Menu}' now has {rows.Count} row(s) for " +
+					(request.Player == 0 ? "every player" : $"player {request.Player}") +
+					(request.Parts > 1 ? $" ({request.Parts} parts)" : string.Empty));
 				break;
+			}
 
 			case Op.OpenScreen:
 				OpenScreen(request.Screen, request.Player);

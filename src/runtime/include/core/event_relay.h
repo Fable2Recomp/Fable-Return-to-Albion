@@ -24,6 +24,9 @@
 // peer is gone). The receiver takes only the line after the last it took; anything before <first>
 // was abandoned by the sender, so it moves on from there. An ack with nothing to send goes on its
 // own (an empty body) when it changed, and with every restatement.
+// Two lanes ride the route apart from the Lua's lines, each kept in its own order on the receiver:
+// `pm:` a mod's partner message (refii_bridge_route_take_mod) and `pc:` the cast pairing's
+// announcements (refii_bridge_route_take_cast).
 //
 // The state lives here, in refii_runtime, because the payload posts and takes (core/payload_bridge.h)
 // and the host bridge carries the lines (its player-state exports, which the Godot side already

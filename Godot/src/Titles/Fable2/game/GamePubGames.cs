@@ -88,18 +88,16 @@ public partial class GamePubGames : Node
 	{
 		_layer = new CanvasLayer { Name = "PubGameLayer", Layer = LayerIndex };
 		AddChild(_layer);
-		// The phone's letterbox and the touch controls' pad: GamePubGames.Android.cs.
+		// The phone's letterbox: GamePubGames.Android.cs. The touch controls reach the board as one
+		// more device on the core's pad 0 (PubGameInput).
 		if (Refii.Core.Engine_Platform.IsAndroid)
 		{
 			_layer.AddChild(new Letterbox { Name = "Letterbox" });
 		}
-
-		PubGameInput.Touch = TouchPad;
 	}
 
 	public override void _ExitTree()
 	{
-		PubGameInput.Touch = null;
 		Showing = string.Empty;
 		DialogUp = false;
 		if (_claimed)

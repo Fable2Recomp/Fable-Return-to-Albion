@@ -848,7 +848,7 @@ public static class Engine_UiLogbookPage
 	}
 
 	/// <summary>A string property's text, following the record's parent chain.</summary>
-	private static string Text(GdbMulti multi, GdbCursor at, string property)
+	internal static string Text(GdbMulti multi, GdbCursor at, string property)
 	{
 		if (!multi.TryFindInherited(
 				at, Refii.Core.Engine_GameHash.Fnv1(property), (int)GdbFieldType.String,
@@ -861,7 +861,7 @@ public static class Engine_UiLogbookPage
 		return owner.View.Names.TryGetValue(raw, out string? text) ? text : string.Empty;
 	}
 
-	private static string Babel(Refii.Text.Engine_BabelDatabase? strings, string tag) =>
+	internal static string Babel(Refii.Text.Engine_BabelDatabase? strings, string tag) =>
 		strings is not null && !string.IsNullOrEmpty(tag) &&
 		strings.TryGetString(tag, out string value)
 			? value

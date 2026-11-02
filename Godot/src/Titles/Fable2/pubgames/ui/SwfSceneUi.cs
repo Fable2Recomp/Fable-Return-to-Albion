@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using Godot;
 
 using Refii.Titles.Fable2.PubGames;
+using Refii.Titles.Fable2.PubGames.Framework;
 
 namespace Refii.Titles.Fable2.PubGames;
 
@@ -98,7 +99,12 @@ public sealed class SwfSceneUi
 
         Root = Wrap(node, null, node.Name, 0);
         WakeTimelines(node, library);
+        _prompts = new SwfScenePrompts(PromptFaces(node, library));
+        _prompts.Track(node, library);
     }
+
+    /// <summary>The stage's button prompts, drawn in the player's glyphs.</summary>
+    private readonly SwfScenePrompts _prompts;
 
     public Node2D Node { get; }
 
@@ -262,11 +268,18 @@ public sealed class SwfSceneUi
         _timelines.Clear();
         _templatesById.Clear();
         _templatesByName.Clear();
+        _prompts.Clear();
     }
 
     public void Advance(double deltaSeconds)
     {
-        if (Released || _ticking.Count == 0)
+        if (Released)
+        {
+            return;
+        }
+
+        _prompts.Refresh();
+        if (_ticking.Count == 0)
         {
             return;
         }
@@ -309,6 +322,90 @@ public sealed class SwfSceneUi
         node.RemoveMeta(Engine_SwfScene.StopFramesMeta);
         node.RemoveMeta(Engine_SwfScene.LabelsMeta);
     }
+
+    /// <summary>
+    /// The prompt shapes the stage's `button` symbol files under its labels
+    /// (<see cref="PubGamePrompts.Faces"/>): its timeline is a library sprite's, or a stage clip's own.
+    /// </summary>
+    private Dictionary<int, string> PromptFaces(Node2D stage, Node? library)
+    {
+        foreach (SharedTimeline timeline in _timelines.Values)
+        {
+            if (FacesOf(timeline.Table, timeline.Labels) is { Count: > 0 } faces)
+            {
+                return faces;
+            }
+        }
+
+        return StageFaces(stage, library) ?? new Dictionary<int, string>();
+    }
+
+    private static Dictionary<int, string>? StageFaces(Node node, Node? library)
+    {
+        if (node == library)
+        {
+            return null;
+        }
+
+        if (node.HasMeta(Engine_SwfScene.LabelsMeta) && node.HasMeta(Engine_SwfScene.TimelineMeta))
+        {
+            using Godot.Collections.Array table = node.GetMeta(Engine_SwfScene.TimelineMeta).AsGodotArray();
+            using Godot.Collections.Dictionary labels = node.GetMeta(Engine_SwfScene.LabelsMeta).AsGodotDictionary();
+            if (FacesOf(table, labels) is { Count: > 0 } faces)
+            {
+                return faces;
+            }
+        }
+
+        foreach (Node child in node.GetChildren())
+        {
+            if (StageFaces(child, library) is { } faces)
+            {
+                return faces;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>A sprite's prompt shapes from its timeline, or null for a sprite that is not the prompt symbol.</summary>
+    private static Dictionary<int, string>? FacesOf(Godot.Collections.Array? table, Godot.Collections.Dictionary? labels)
+    {
+        if (table is null || labels is null || !PubGamePrompts.IsPromptSymbol(label => labels.ContainsKey(label)))
+        {
+            return null;
+        }
+
+        var frames = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (string label in PubGamePrompts.Labels)
+        {
+            if (labels.ContainsKey(label))
+            {
+                frames[label] = labels[label].AsInt32();
+            }
+        }
+
+        return PubGamePrompts.Faces(frames, frame =>
+        {
+            var characters = new List<int>();
+            if (frame < 1 || frame > table.Count)
+            {
+                return characters;
+            }
+
+            using Godot.Collections.Array placements = table[frame - 1].AsGodotArray();
+            foreach (Variant item in placements)
+            {
+                using Godot.Collections.Dictionary place = item.AsGodotDictionary();
+                characters.Add(place[Engine_SwfScene.PlaceCharacter].AsInt32());
+            }
+
+            return characters;
+        });
+    }
+
+    /// <summary>Takes the prompt shapes of a clip just attached.</summary>
+    internal void TrackPrompts(Node2D attached) => _prompts.Track(attached, null);
 
     /// <summary>The shared timeline of a library sprite, or null for a character without one.</summary>
     internal SharedTimeline? TimelineOf(int characterId) =>

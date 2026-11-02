@@ -561,15 +561,15 @@ public class CharacterMorphTests
         AssertThat(mirror.Adjust(weightRow, -100)).IsTrue();
         var published = new Dictionary<string, float>();
         var values = mirror.Values();
-        Engine_CharacterMorphs.Publish(key => values.GetValueOrDefault(key, ""),
-            (key, value) => published[key] = value, 1);
-        AssertThat(published[Engine_CharacterMorphs.BridgePrefix + Engine_HeroMorphState.TypeFat]).IsEqual(0f);
+        Engine_CharacterMorphs.Publish(Engine_CharacterMorphs.StoreValues(key => values.GetValueOrDefault(key, "")),
+            (key, value) => published[key] = value, 1, 1);
+        AssertThat(published[Engine_CharacterMorphs.BridgePrefix(1) + Engine_HeroMorphState.TypeFat]).IsEqual(0f);
         AssertThat(saved[Engine_CharacterMorphs.Key(HeroMorphInput.Fat)]).IsEqual("1");
         mirror.Reset();
         values = mirror.Values();
-        Engine_CharacterMorphs.Publish(key => values.GetValueOrDefault(key, ""),
-            (key, value) => published[key] = value, 2);
-        AssertThat(published[Engine_CharacterMorphs.BridgePrefix + Engine_HeroMorphState.TypeFat]).IsEqual(1f);
+        Engine_CharacterMorphs.Publish(Engine_CharacterMorphs.StoreValues(key => values.GetValueOrDefault(key, "")),
+            (key, value) => published[key] = value, 1, 2);
+        AssertThat(published[Engine_CharacterMorphs.BridgePrefix(1) + Engine_HeroMorphState.TypeFat]).IsEqual(1f);
     }
 
     [TestCase]
@@ -599,7 +599,9 @@ public class CharacterMorphTests
     {
         string lua = Engine_MorphMirrorRuntime.ScriptFor("ThagsCave", "CVector3(1,2,3)", "CVector3(4,5,6)", "CVector3(0,1,0)");
         AssertThat(lua.Contains("GetName() ~= \"RefiiMorphMirror\"", StringComparison.Ordinal)).IsTrue();
-        AssertThat(lua.Contains("self.EntityUsingItem ~= GetPlayerHero()", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("local player = Refii.player_of(Refii.handle(self.EntityUsingItem))", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("not Refii.player_here(player)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("Refii.publish(\"" + Engine_MorphMirrorRuntime.PlayerKey + "\", player)", StringComparison.Ordinal)).IsTrue();
         AssertThat(lua.Contains("now - touched > 150", StringComparison.Ordinal)).IsTrue();
         AssertThat(lua.Contains("hero:SetPosition(originalPosition)", StringComparison.Ordinal)).IsTrue();
         AssertThat(lua.Contains("Physics.SetFacingVector(hero, originalFacing)", StringComparison.Ordinal)).IsTrue();
@@ -699,9 +701,9 @@ public class CharacterMorphTests
         };
         var sent = new Dictionary<string, float>();
         string last = "";
-        Engine_CharacterMorphs.Publish(key => values.GetValueOrDefault(key, ""),
-            (key, value) => { sent[key] = value; last = key; }, 7);
-        string prefix = Engine_CharacterMorphs.BridgePrefix;
+        Engine_CharacterMorphs.Publish(Engine_CharacterMorphs.StoreValues(key => values.GetValueOrDefault(key, "")),
+            (key, value) => { sent[key] = value; last = key; }, 1, 7);
+        string prefix = Engine_CharacterMorphs.BridgePrefix(1);
         AssertThat(last).IsEqual(prefix + "generation");
         AssertThat(sent[last]).IsEqual(7f);
         AssertThat(sent[prefix + "automatic"]).IsEqual(0f);
@@ -709,9 +711,50 @@ public class CharacterMorphTests
         AssertThat(sent[prefix + "7"]).IsEqual(0.75f);
         AssertThat(sent[prefix + "14"]).IsEqual(1f);
         values[Engine_CharacterMorphs.AutomaticKey] = "true";
-        Engine_CharacterMorphs.Publish(key => values.GetValueOrDefault(key, ""), (key, value) => sent[key] = value, 8);
+        Engine_CharacterMorphs.Publish(Engine_CharacterMorphs.StoreValues(key => values.GetValueOrDefault(key, "")), (key, value) => sent[key] = value, 1, 8);
         AssertThat(sent[prefix + "automatic"]).IsEqual(1f);
         AssertThat(sent[prefix + "7"]).IsEqual(0.75f);
+    }
+
+    [TestCase]
+    public void RuntimePublishesTheInputsVillagersJudgeBeforeTheGeneration()
+    {
+        var values = new Dictionary<string, string>
+        {
+            [Engine_CharacterMorphs.AutomaticKey] = "false",
+            [Engine_CharacterMorphs.Key(HeroMorphInput.Fat)] = "0.9",
+            [Engine_CharacterMorphs.Key(HeroMorphInput.Strength)] = "0.8",
+            [Engine_CharacterMorphs.Key(HeroMorphInput.Skill)] = "0.9",
+            [Engine_CharacterMorphs.Key(HeroMorphInput.Height)] = "0.2",
+            [Engine_CharacterMorphs.Key(HeroMorphInput.Tan)] = "0.2",
+            [Engine_CharacterMorphs.Key(HeroMorphInput.Will)] = "0.75",
+            [Engine_CharacterMorphs.Key(HeroMorphInput.Purity)] = "0.1",
+            [Engine_CharacterMorphs.Key(HeroMorphInput.Age)] = "45",
+        };
+        var order = new List<string>();
+        var sent = new Dictionary<string, float>();
+        Engine_CharacterMorphs.Publish(Engine_CharacterMorphs.StoreValues(key => values.GetValueOrDefault(key, "")),
+            (key, value) => { sent[key] = value; order.Add(key); }, 1, 3);
+        string prefix = Engine_CharacterMorphs.BridgePrefix(1);
+
+        // The raw inputs, not the capped weights: the reaction path loads the fields themselves.
+        AssertThat(sent[Engine_CharacterMorphs.BridgeKey(HeroMorphInput.Fat, 1)]).IsEqual(0.9f);
+        AssertThat(sent[prefix + Engine_HeroMorphState.TypeFat]).IsEqual(Engine_HeroMorphState.FatCap);
+        AssertThat(sent[prefix + "strength"]).IsEqual(0.8f);
+        AssertThat(sent[prefix + Engine_HeroMorphState.TypeStrength]).IsEqual(Engine_HeroMorphState.StrengthCap);
+        AssertThat(sent[prefix + "height"]).IsEqual(0.2f);
+        AssertThat(sent[prefix + "tan"]).IsEqual(0.2f);
+        AssertThat(sent[prefix + "will"]).IsEqual(0.75f);
+        AssertThat(sent[prefix + "purity"]).IsEqual(0.1f);
+        AssertThat(sent[prefix + "age"]).IsEqual(45f);
+        AssertThat(sent.ContainsKey(prefix + "skill")).IsFalse();
+        AssertThat(sent.ContainsKey(prefix + "morality")).IsFalse();
+
+        // The hook reads every value when the generation moves, so each is sent before it.
+        int generation = order.IndexOf(prefix + "generation");
+        AssertThat(generation).IsEqual(order.Count - 1);
+        foreach (HeroMorphInput input in Engine_CharacterMorphs.JudgedInputs)
+            AssertThat(order.IndexOf(Engine_CharacterMorphs.BridgeKey(input, 1)) < generation).IsTrue();
     }
 
     [TestCase]
@@ -801,5 +844,129 @@ public class CharacterMorphTests
             AssertThat(page.Count).IsEqual(1);
         }
         finally { Engine_UiOptionsPending.Leave(); }
+    }
+
+    // ---- Murgo's Mirror for both players --------------------------------------------------------
+
+    [TestCase]
+    public void EachSettingsSlotKeepsItsOwnLookUnderThePadmapShape()
+    {
+        AssertThat(Engine_CharacterMorphs.AutomaticKeyOf(1)).IsEqual("character_morphs");
+        AssertThat(Engine_CharacterMorphs.AutomaticKeyOf(2)).IsEqual("character_morphs2");
+        AssertThat(Engine_CharacterMorphs.Key(HeroMorphInput.Fat, 1)).IsEqual("character_morph_fat");
+        AssertThat(Engine_CharacterMorphs.Key(HeroMorphInput.Fat, 2)).IsEqual("character_morph2_fat");
+        AssertThat(Engine_CharacterMorphs.SlotKey("master_volume", 2)).IsEqual("master_volume");
+
+        var stored = new Dictionary<string, string>
+        {
+            ["character_morphs"] = "false", ["character_morph_fat"] = "0.25",
+            ["character_morphs2"] = "false", ["character_morph2_fat"] = "0.75",
+        };
+        string Read(string key) => stored.GetValueOrDefault(key, "");
+        var one = new Engine_MorphMirrorSettings(Engine_CharacterMorphs.ForSlot(Read, 1));
+        var two = new Engine_MorphMirrorSettings(Engine_CharacterMorphs.ForSlot(Read, 2));
+        int fatRow = Array.FindIndex(Engine_CharacterMorphs.Sliders, slider => slider.Input == HeroMorphInput.Fat) + 1;
+        AssertThat(one.Values()[Engine_CharacterMorphs.Key(HeroMorphInput.Fat)]).IsEqual("0.25");
+        AssertThat(two.Values()[Engine_CharacterMorphs.Key(HeroMorphInput.Fat)]).IsEqual("0.75");
+
+        // Player two's Apply writes player two's keys only.
+        AssertThat(two.Adjust(fatRow, 1)).IsTrue();
+        var written = Engine_CharacterMorphs.ForSlot(two.Values(), 2);
+        AssertThat(written.Keys.All(key => key == "character_morphs2" || key.StartsWith("character_morph2_", StringComparison.Ordinal))).IsTrue();
+        AssertThat(written["character_morph2_fat"]).IsEqual("0.8");
+        foreach (var (key, value) in written) stored[key] = value;
+        AssertThat(stored["character_morph_fat"]).IsEqual("0.25");
+        AssertThat(Engine_CharacterMorphs.StoreValues(Engine_CharacterMorphs.ForSlot(Read, 2))[Engine_CharacterMorphs.StoreKey(HeroMorphInput.Fat)]).IsEqual(0.8f);
+    }
+
+    [TestCase]
+    public void TheStoredLookRoundTripsExactlyThroughEitherSlotsSettings()
+    {
+        var look = new Dictionary<string, float> { [Engine_CharacterMorphs.StoreAutomaticKey] = 0 };
+        foreach (var slider in Engine_CharacterMorphs.Sliders) look[Engine_CharacterMorphs.StoreKey(slider.Input)] = slider.Minimum + 0.333f;
+        foreach (int slot in new[] { 1, 2 })
+        {
+            var settings = Engine_CharacterMorphs.SettingsOf(look, slot);
+            AssertThat(settings[Engine_CharacterMorphs.AutomaticKeyOf(slot)]).IsEqual("false");
+            var back = Engine_CharacterMorphs.StoreValues(Engine_CharacterMorphs.ForSlot(key => settings.GetValueOrDefault(key, ""), slot));
+            AssertThat(Engine_CharacterMorphs.SameLook(back, look)).IsTrue();
+        }
+
+        AssertThat(Engine_CharacterMorphs.StoredLook(key => look.TryGetValue(key, out float v) ? v : null)!.Count).IsEqual(10);
+        var partial = new Dictionary<string, float>(look);
+        partial.Remove(Engine_CharacterMorphs.StoreKey(HeroMorphInput.Age));
+        AssertThat(Engine_CharacterMorphs.StoredLook(key => partial.TryGetValue(key, out float v) ? v : null)).IsNull();
+
+        // appearance_state P AUTOMATIC then refii_mod_appearance_t's order: tan fat height strength skill will morality purity age.
+        string line = Engine_CharacterMorphs.StateCommand(2, look);
+        string[] words = line.Split(' ');
+        AssertThat(words[0]).IsEqual("appearance_state");
+        AssertThat(words[1]).IsEqual("2");
+        AssertThat(words[2]).IsEqual("0");
+        AssertThat(words.Length).IsEqual(12);
+        for (int i = 0; i < Engine_CharacterMorphs.StateOrder.Length; i++)
+            AssertThat(float.Parse(words[3 + i], CultureInfo.InvariantCulture)).IsEqual(look[Engine_CharacterMorphs.StoreKey(Engine_CharacterMorphs.StateOrder[i])]);
+        AssertThat(string.Join(",", Engine_CharacterMorphs.StateOrder.Select(i => i.ToString().ToLowerInvariant())))
+            .IsEqual("tan,fat,height,strength,skill,will,morality,purity,age");
+    }
+
+    [TestCase]
+    public void EachPlayersLookIsPublishedUnderItsOwnPrefixAndNoLookIsAutomatic()
+    {
+        var look = Engine_CharacterMorphs.StoreValues(key => key == Engine_CharacterMorphs.AutomaticKey ? "false" :
+            key == Engine_CharacterMorphs.Key(HeroMorphInput.Will) ? "0.75" : "");
+        var sent = new Dictionary<string, float>();
+        Engine_CharacterMorphs.Publish(look, (key, value) => sent[key] = value, 2, 5);
+        AssertThat(sent["refii.character_morphs.p2.7"]).IsEqual(0.75f);
+        AssertThat(sent["refii.character_morphs.p2.automatic"]).IsEqual(0f);
+        AssertThat(sent["refii.character_morphs.p2.generation"]).IsEqual(5f);
+        AssertThat(sent.Keys.Any(key => key.StartsWith("refii.character_morphs.p1.", StringComparison.Ordinal))).IsFalse();
+        AssertThat(Engine_CharacterMorphs.LookTan(look)).IsEqual(0.5f);
+
+        sent.Clear();
+        Engine_CharacterMorphs.Publish(null, (key, value) => sent[key] = value, 1, 6);
+        AssertThat(sent["refii.character_morphs.p1.automatic"]).IsEqual(1f);
+        AssertThat(Engine_CharacterMorphs.LookTan(null)).IsEqual(0.5f);
+    }
+
+    [TestCase]
+    public void ASlotStatesItsLookKeepsAModsWriteAndNeverWritesForAnotherMachine()
+    {
+        Dictionary<string, float> Look(float fat, bool automatic = false)
+        {
+            var look = Engine_CharacterMorphs.StoreValues(_ => "");
+            look[Engine_CharacterMorphs.StoreAutomaticKey] = automatic ? 1 : 0;
+            look[Engine_CharacterMorphs.StoreKey(HeroMorphInput.Fat)] = fat;
+            return look;
+        }
+        var sync = new Engine_MorphLookSync();
+        var local = Look(0.2f);
+
+        // No player for the slot (front end, or its player is played on the other machine): nothing.
+        AssertThat(sync.Next(0, local, null, 0, out _)).IsEqual(Engine_MorphLookSync.Step.None);
+        // Bound: stated at once, whatever the store holds.
+        AssertThat(sync.Next(1, local, Look(0.9f), 0, out var values)).IsEqual(Engine_MorphLookSync.Step.Push);
+        AssertThat(Engine_CharacterMorphs.SameLook(values, local)).IsTrue();
+        // The statement lands a tick later: until then the old store value is not a mod's write.
+        AssertThat(sync.Next(1, local, Look(0.9f), 0.2, out _)).IsEqual(Engine_MorphLookSync.Step.None);
+        AssertThat(sync.Next(1, local, local, 0.3, out _)).IsEqual(Engine_MorphLookSync.Step.None);
+        // A new hero empties the store: restated, at most every RestateSeconds.
+        AssertThat(sync.Next(1, local, null, 0.4, out values)).IsEqual(Engine_MorphLookSync.Step.Push);
+        AssertThat(sync.Next(1, local, null, 0.5, out _)).IsEqual(Engine_MorphLookSync.Step.None);
+        AssertThat(sync.Next(1, local, local, 0.6, out _)).IsEqual(Engine_MorphLookSync.Step.None);
+        // A mod's write (here or from the other machine) is kept in the slot's settings.
+        var modded = Look(0.6f);
+        AssertThat(sync.Next(1, local, modded, 5, out values)).IsEqual(Engine_MorphLookSync.Step.Persist);
+        AssertThat(Engine_CharacterMorphs.SameLook(values, modded)).IsTrue();
+        AssertThat(sync.Next(1, modded, modded, 5.1, out _)).IsEqual(Engine_MorphLookSync.Step.None);
+        // The Mirror's preview (or Apply) is stated.
+        var preview = Look(1f);
+        AssertThat(sync.Next(1, preview, modded, 6, out values)).IsEqual(Engine_MorphLookSync.Step.Push);
+        AssertThat(Engine_CharacterMorphs.SameLook(values, preview)).IsTrue();
+        // A join moves slot 1 to player two: stated to player two at once; player one's look is the host's.
+        AssertThat(sync.Next(2, preview, Look(0.1f, true), 6.1, out values)).IsEqual(Engine_MorphLookSync.Step.Push);
+        AssertThat(sync.Player).IsEqual(2);
+        AssertThat(sync.Next(0, preview, null, 7, out _)).IsEqual(Engine_MorphLookSync.Step.None);
+        AssertThat(sync.Player).IsEqual(0);
     }
 }

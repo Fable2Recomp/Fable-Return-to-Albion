@@ -90,4 +90,46 @@ public static class ModEntries
 
 		return null;
 	}
+
+	/// <summary>Every entry path under <paramref name="prefix"/> (a folder, `/`-separated) in any enabled mod, each once.</summary>
+	public static List<string> EnabledEntryPaths(string prefix)
+	{
+		var result = new List<string>();
+		string modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
+		if (string.IsNullOrEmpty(modsRoot) || (!System.IO.Directory.Exists(modsRoot) && !ModSession.IsActive))
+		{
+			return result;
+		}
+
+		(ModLoadOrder order, List<ModInstall> found) = ModSession.Resolve(modsRoot);
+		var installs = new Dictionary<string, ModInstall>(StringComparer.OrdinalIgnoreCase);
+		foreach (ModInstall install in found)
+		{
+			installs[install.Name] = install;
+		}
+
+		var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (string name in order.Enabled)
+		{
+			if (!installs.TryGetValue(name, out ModInstall? mod) ||
+				!F2ModPackage.TryOpen(mod.PackagePath, out F2ModPackage? package, out _) || package is null)
+			{
+				continue;
+			}
+
+			using (package)
+			{
+				foreach (F2ModEntry entry in package.Entries)
+				{
+					string path = entry.Path.Replace('\\', '/');
+					if (path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && seen.Add(path))
+					{
+						result.Add(path);
+					}
+				}
+			}
+		}
+
+		return result;
+	}
 }

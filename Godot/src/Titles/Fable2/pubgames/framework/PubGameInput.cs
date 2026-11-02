@@ -2,81 +2,62 @@ using System;
 
 using Godot;
 
-using PubInput = Refii.Titles.Fable2.PubGames.Framework.Input;
+using Refii.Game;
+using Refii.Ui;
 
 namespace Refii.Titles.Fable2.PubGames.Framework;
 
 /// <summary>
-/// The pad the guest hands the game: every connected joypad and the keyboard merged into pad 0,
+/// The pad the guest hands the game: pad 0 as the core folds it (<see cref="GameInput.Pad0"/>),
 /// in XInput units, then put through the guest's own stick filter.
 /// </summary>
 /// <remarks>
-/// The guest reads its pad through <c>sub_830F22B8</c> and passes it to
+/// <para>THE GAME BUTTONS ARE THE CORE'S. The keyboard presses them through the player's
+/// <c>key_*</c> bindings, a joypad through its player's remap, the touch controls and the
+/// pointer's leftovers (a right click is B, a wheel notch a D-pad step) as everywhere else, so a
+/// rebind reaches the board and the prompts name what the player bound
+/// (<see cref="Engine_UiKeyGlyphs.LabelFor"/>). The board owns the input while it is up
+/// (<c>WorldHasInput</c> is false): the menus' keys and a free cursor.</para>
+/// <para>THE BOARD'S OWN POINTER UI is the one input added here: the board has nothing to point at,
+/// so a left click on it confirms (A) — where a menu's click on nothing is nothing.</para>
+/// <para>The guest reads its pad through <c>sub_830F22B8</c> and passes it to
 /// <c>pubGame.SetPadValue(0, LT, RT, LX, LY, RX, RY, wButtons)</c> (<c>sub_82EF1650</c>): triggers
 /// 0-255, sticks through <c>sub_830F2178</c> — a SQUARE deadzone (both axes within 7849 on the
 /// left, 8689 on the right, reads as centred), then value/32767 when positive and value/32768
-/// when negative, with no rescale past the deadzone. Up is +Y. Devices only count while the
-/// window has focus; unfocused, the pad is published neutral so every press gets its release.
-/// A host's on-screen pad (<see cref="Touch"/>) is one more device, merged the same way.
+/// when negative, with no rescale past the deadzone. Up is +Y. The devices only count while the
+/// window has focus; unfocused, the pad reads neutral so every press gets its release.</para>
 /// </remarks>
 public static class PubGameInput
 {
     public const int LeftThumbDeadzone = 7849;
     public const int RightThumbDeadzone = 8689;
 
-    private static readonly bool IgnorePads =
-        System.Environment.GetEnvironmentVariable("REFII_PUBGAME_NO_PAD") is "1";
-
     /// <summary>
-    /// The host's on-screen pad (Android's touch controls), read with the other devices at each
-    /// sample, in the same raw XInput units; null where the host has none.
+    /// The device the prompts follow, as the core states it (<see cref="Engine_UiInputMode"/>, the
+    /// prompt player's controller family and glyph style).
     /// </summary>
-    public static Func<Sample>? Touch { get; set; }
+    public static string DeviceName =>
+        Engine_UiInputMode.Touch ? "touch"
+        : Engine_UiInputMode.Keycaps ? "keyboard"
+        : $"{Engine_UiKeyGlyphs.PadFamily} pad, {Engine_UiKeyGlyphs.Style} glyphs";
 
     /// <summary>One raw XInput snapshot of pad 0.</summary>
     public readonly record struct Sample(
         int LeftTrigger, int RightTrigger,
         int ThumbLX, int ThumbLY, int ThumbRX, int ThumbRY, int Buttons);
 
-    public static Sample Read(bool devices)
-    {
-        if (!devices)
-        {
-            return default;
-        }
+    /// <summary>
+    /// This frame's pad: the core's pad 0, and — with <paramref name="devices"/> (the window has
+    /// focus) — the board's left click.
+    /// </summary>
+    public static Sample Read(bool devices) =>
+        FromPad(GameInput.Pad0, devices && Engine_UiPointer.Free && Godot.Input.IsMouseButtonPressed(MouseButton.Left));
 
-        int buttons = KeyboardButtons(out int leftTrigger, out int rightTrigger,
-            out int leftX, out int leftY, out int rightX, out int rightY);
-
-        // The mouse's two buttons are the pad's A and B — the pub games' only answers are
-        // confirm and back, and their own art carries the prompts.
-        buttons |= Godot.Input.IsMouseButtonPressed(MouseButton.Left) ? GamePad.AButton : 0;
-        buttons |= Godot.Input.IsMouseButtonPressed(MouseButton.Right) ? GamePad.BButton : 0;
-
-        if (!IgnorePads)
-        {
-            foreach (int pad in Godot.Input.GetConnectedJoypads())
-            {
-                buttons |= JoypadButtons(pad);
-                leftTrigger = Math.Max(leftTrigger, Trigger(pad, JoyAxis.TriggerLeft));
-                rightTrigger = Math.Max(rightTrigger, Trigger(pad, JoyAxis.TriggerRight));
-                leftX = Dominant(leftX, Axis(pad, JoyAxis.LeftX));
-                leftY = Dominant(leftY, -Axis(pad, JoyAxis.LeftY));
-                rightX = Dominant(rightX, Axis(pad, JoyAxis.RightX));
-                rightY = Dominant(rightY, -Axis(pad, JoyAxis.RightY));
-            }
-        }
-
-        var sample = new Sample(leftTrigger, rightTrigger, leftX, leftY, rightX, rightY, buttons);
-        return Touch is { } touch ? Merge(sample, touch()) : sample;
-    }
-
-    /// <summary>Two devices as one pad: buttons OR'd, each trigger and stick axis the one pushed hardest.</summary>
-    public static Sample Merge(Sample a, Sample b) => new(
-        Math.Max(a.LeftTrigger, b.LeftTrigger), Math.Max(a.RightTrigger, b.RightTrigger),
-        Dominant(a.ThumbLX, b.ThumbLX), Dominant(a.ThumbLY, b.ThumbLY),
-        Dominant(a.ThumbRX, b.ThumbRX), Dominant(a.ThumbRY, b.ThumbRY),
-        a.Buttons | b.Buttons);
+    /// <summary>The core's pad as the board's sample, with the board's left click as A (<paramref name="boardClick"/>).</summary>
+    public static Sample FromPad(GameInput.PadState pad, bool boardClick) => new(
+        (int)Math.Min(pad.LeftTrigger, 255u), (int)Math.Min(pad.RightTrigger, 255u),
+        pad.LeftX, pad.LeftY, pad.RightX, pad.RightY,
+        (int)(pad.Buttons & 0xFFFFu) | (boardClick ? GamePad.AButton : 0));
 
     /// <summary><c>pubGame.SetPadValue</c> with the guest's stick filter applied.</summary>
     public static void Publish(PubGame game, Sample sample)
@@ -99,102 +80,4 @@ public static class PubGameInput
     }
 
     private static double Normalise(int value) => value >= 0 ? value / 32767.0 : value / 32768.0;
-
-    private static int Dominant(int a, int b) => Math.Abs(b) > Math.Abs(a) ? b : a;
-
-    private static int Trigger(int pad, JoyAxis axis) =>
-        Math.Clamp((int)MathF.Round(Godot.Input.GetJoyAxis(pad, axis) * 255f), 0, 255);
-
-    private static int Axis(int pad, JoyAxis axis) =>
-        Math.Clamp((int)MathF.Round(Godot.Input.GetJoyAxis(pad, axis) * 32767f), -32768, 32767);
-
-    private static int JoypadButtons(int pad)
-    {
-        int buttons = 0;
-        buttons |= Bit(pad, JoyButton.A, GamePad.AButton);
-        buttons |= Bit(pad, JoyButton.B, GamePad.BButton);
-        buttons |= Bit(pad, JoyButton.X, GamePad.XButton);
-        buttons |= Bit(pad, JoyButton.Y, GamePad.YButton);
-        buttons |= Bit(pad, JoyButton.Start, GamePad.Start);
-        buttons |= Bit(pad, JoyButton.Back, GamePad.Back);
-        buttons |= Bit(pad, JoyButton.LeftStick, GamePad.LeftThumbButton);
-        buttons |= Bit(pad, JoyButton.RightStick, GamePad.RightThumbButton);
-        buttons |= Bit(pad, JoyButton.LeftShoulder, GamePad.LeftShoulderButton);
-        buttons |= Bit(pad, JoyButton.RightShoulder, GamePad.RightShoulderButton);
-        buttons |= Bit(pad, JoyButton.DpadUp, GamePad.DpadUp);
-        buttons |= Bit(pad, JoyButton.DpadDown, GamePad.DpadDown);
-        buttons |= Bit(pad, JoyButton.DpadLeft, GamePad.DpadLeft);
-        buttons |= Bit(pad, JoyButton.DpadRight, GamePad.DpadRight);
-        return buttons;
-    }
-
-    private static int Bit(int pad, JoyButton button, int flag) =>
-        Godot.Input.IsJoyButtonPressed(pad, button) ? flag : 0;
-
-    /// <summary>
-    /// The keyboard as a pad, with <c>Input::UpdateFromKeyboard</c>'s key map: arrows are the
-    /// D-pad and the left stick, the numpad the right stick, triggers and shoulders.
-    /// </summary>
-    private static int KeyboardButtons(
-        out int leftTrigger, out int rightTrigger,
-        out int leftX, out int leftY, out int rightX, out int rightY)
-    {
-        int buttons = 0;
-        leftX = Key(PubInput.KeyRight) - Key(PubInput.KeyLeft);
-        leftY = Key(PubInput.KeyUp) - Key(PubInput.KeyDown);
-        rightX = Key(PubInput.KeyNumpad6) - Key(PubInput.KeyNumpad4);
-        rightY = Key(PubInput.KeyNumpad8) - Key(PubInput.KeyNumpad2);
-        leftX *= 32767;
-        leftY *= 32767;
-        rightX *= 32767;
-        rightY *= 32767;
-        leftTrigger = Key(PubInput.KeyNumpad7) * 255;
-        rightTrigger = Key(PubInput.KeyNumpad9) * 255;
-
-        buttons |= Key(PubInput.KeyRight) * GamePad.DpadRight;
-        buttons |= Key(PubInput.KeyLeft) * GamePad.DpadLeft;
-        buttons |= Key(PubInput.KeyUp) * GamePad.DpadUp;
-        buttons |= Key(PubInput.KeyDown) * GamePad.DpadDown;
-        buttons |= Key(PubInput.KeyA) * GamePad.AButton;
-        buttons |= Key(PubInput.KeyB) * GamePad.BButton;
-        buttons |= Key(PubInput.KeyX) * GamePad.XButton;
-        buttons |= Key(PubInput.KeyY) * GamePad.YButton;
-        buttons |= Key(PubInput.KeyL) * GamePad.LeftThumbButton;
-        buttons |= Key(PubInput.KeyR) * GamePad.RightThumbButton;
-        buttons |= Key(PubInput.KeyNumpad1) * GamePad.LeftShoulderButton;
-        buttons |= Key(PubInput.KeyNumpad3) * GamePad.RightShoulderButton;
-        buttons |= Key(PubInput.KeyEnter) * GamePad.Start;
-        buttons |= Key(PubInput.KeyBackspace) * GamePad.Back;
-        return buttons;
-    }
-
-    private static int Key(int flashKeyCode)
-    {
-        Godot.Key key = flashKeyCode switch
-        {
-            PubInput.KeyBackspace => Godot.Key.Backspace,
-            PubInput.KeyEnter => Godot.Key.Enter,
-            PubInput.KeyLeft => Godot.Key.Left,
-            PubInput.KeyUp => Godot.Key.Up,
-            PubInput.KeyRight => Godot.Key.Right,
-            PubInput.KeyDown => Godot.Key.Down,
-            PubInput.KeyA => Godot.Key.A,
-            PubInput.KeyB => Godot.Key.B,
-            PubInput.KeyL => Godot.Key.L,
-            PubInput.KeyR => Godot.Key.R,
-            PubInput.KeyX => Godot.Key.X,
-            PubInput.KeyY => Godot.Key.Y,
-            PubInput.KeyNumpad1 => Godot.Key.Kp1,
-            PubInput.KeyNumpad2 => Godot.Key.Kp2,
-            PubInput.KeyNumpad3 => Godot.Key.Kp3,
-            PubInput.KeyNumpad4 => Godot.Key.Kp4,
-            PubInput.KeyNumpad6 => Godot.Key.Kp6,
-            PubInput.KeyNumpad7 => Godot.Key.Kp7,
-            PubInput.KeyNumpad8 => Godot.Key.Kp8,
-            PubInput.KeyNumpad9 => Godot.Key.Kp9,
-            _ => Godot.Key.None,
-        };
-
-        return key != Godot.Key.None && Godot.Input.IsKeyPressed(key) ? 1 : 0;
-    }
 }

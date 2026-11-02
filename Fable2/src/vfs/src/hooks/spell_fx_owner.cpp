@@ -59,6 +59,10 @@
 
 namespace refii::vfs {
 void PlaceFxRiding(PPCContext& ctx, uint8_t* base, uint32_t entity);
+/// mod_events.cpp: the vortex whose update runs, for rex_VortexComponent_Classify; returns the one before.
+uint32_t VortexUpdating(uint32_t component);
+/// mod_events.cpp: a vortex whose `lifts` the co-op cast pairing turned false lets go of its creatures.
+void ReleaseUnliftedCreatures(PPCContext& ctx, uint8_t* base, uint32_t component);
 }  // namespace refii::vfs
 
 namespace {
@@ -145,12 +149,17 @@ void NoteSpellFxInstancePlaced(uint32_t instance) {
 
 }  // namespace refii::vfs
 
-// The vortex component's update: r3 the component, its entity at +4.
+// The vortex component's update: r3 the component, its entity at +4. The component is the one
+// in update for the classification it makes (mod_events.cpp, rex_VortexComponent_Classify); before
+// it, outside the update's walk of its held list, the let-go a co-op adoption asked for.
 REX_EXTERN(rex_VortexComponent_Update) {
   REX_FUNC_PROLOGUE();
   const uint32_t component = ctx.r3.u32;
   const uint32_t entity = Plausible(component) ? refii::mods::LoadU32(base, component + kComponentOwner) : 0u;
+  refii::vfs::ReleaseUnliftedCreatures(ctx, base, component);
+  const uint32_t outer = refii::vfs::VortexUpdating(Plausible(component) ? component : 0u);
   InScope(ctx, base, entity, [](PPCContext& c, uint8_t* b) { __imp__rex_VortexComponent_Update(c, b); });
+  refii::vfs::VortexUpdating(outer);
 }
 
 // One Blades sword record's update: r3 the record, the sword entity behind its weak ref at +0.

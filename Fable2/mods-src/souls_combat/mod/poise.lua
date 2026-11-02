@@ -2,7 +2,6 @@
 --
 -- A module of init.lua (require("poise")).
 
-local S = SoulsCombat
 local C = require("common")
 local Setting = C.Setting
 
@@ -14,65 +13,37 @@ local Setting = C.Setting
 --     (a blocked or parried hit, a ranged hit, a knockdown, a killing blow), so this only sees a
 --     hit the victim would have flinched at. Cancelling absorbs it: no animation, no state.
 --   entity_died — a dead entity's pool goes with it.
+-- Each victim's pool is a per-entity value (Refii.entity_value), forgotten when the entity leaves
+-- the world; its window runs on the runtime's clock (Refii.now).
 -- Online the game runs the response on both machines for a hit on or by player two; the run on
 -- the machine not authoritative for the victim is the copy (Refii.event_replica). The host runs
 -- every hit, so its pools are whole and decide; the joiner decides player two's own pool and
--- leaves its copy of a hit by player two on anyone else to the game's predicted response.
+-- leaves its copy of a hit by player two on anyone else to the game's predicted response. No event
+-- field states which machine decides a hit's response, so that is the copy on a joiner (coop_mode 3).
 ----------------------------------------------------------------------------------------------------
 
-local kPoiseSlots = 32
-
-S.Poise = {}
-for i = 1, kPoiseSlots do
-	S.Poise[i] = { entity = nil, taken = 0, last_hit = -1000 }
-end
-S.PoiseNow = 0
-
-Refii.on("tick", function(e)
-	S.PoiseNow = S.PoiseNow + e.seconds
-end)
+local kTakenKey = "souls_combat.poise_taken"
+local kLastHitKey = "souls_combat.poise_last_hit"
 
 Refii.on("entity_died", function(e)
-	for i = 1, kPoiseSlots do
-		local poise = S.Poise[i]
-		if poise.entity == e.entity then
-			poise.entity = nil
-			poise.taken = 0
-			poise.last_hit = -1000
-		end
-	end
+	Refii.entity_set(e.entity, kTakenKey, nil)
+	Refii.entity_set(e.entity, kLastHitKey, nil)
 end)
-
--- The victim's pool, or the longest-idle slot made its own.
-local function PoiseOf(entity)
-	local oldest = S.Poise[1]
-	for i = 1, kPoiseSlots do
-		local poise = S.Poise[i]
-		if poise.entity == entity then
-			return poise
-		end
-		if poise.last_hit < oldest.last_hit then
-			oldest = poise
-		end
-	end
-	oldest.entity = entity
-	oldest.taken = 0
-	oldest.last_hit = -1000
-	return oldest
-end
 
 Refii.on("hit_response", function(e)
 	if e.max_health <= 0 or (Refii.event_replica() and Refii.coop_mode() == 3) then
 		return
 	end
-	local poise = PoiseOf(e.victim)
-	if S.PoiseNow - poise.last_hit > Setting("poise_window_seconds", 3) then
-		poise.taken = 0
+	local now = Refii.now()
+	local taken = Refii.entity_value(e.victim, kTakenKey, 0)
+	if now - Refii.entity_value(e.victim, kLastHitKey, now) > Setting("poise_window_seconds", 3) then
+		taken = 0
 	end
-	poise.taken = poise.taken + e.damage
-	poise.last_hit = S.PoiseNow
-	if poise.taken < Setting("poise_fraction", 0.3) * e.max_health then
+	taken = taken + e.damage
+	Refii.entity_set(e.victim, kLastHitKey, now)
+	if taken < Setting("poise_fraction", 0.3) * e.max_health then
+		Refii.entity_set(e.victim, kTakenKey, taken)
 		return true  -- Absorbed: no flinch.
 	end
-	poise.taken = 0  -- Staggered; the pool refills from here.
+	Refii.entity_set(e.victim, kTakenKey, 0)  -- Staggered; the pool refills from here.
 end)

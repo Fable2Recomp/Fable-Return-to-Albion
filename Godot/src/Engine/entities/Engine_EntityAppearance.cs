@@ -13,9 +13,29 @@ namespace Refii.Entities;
 /// original renders a partial alpha as a CONSTANT blend, never a dither or a dissolve texture
 /// (`sub_822251D8`): effective alpha = material+0x44 × the stated opacity, and below 0.999
 /// (`flt_83320A70`) SrcBlend = BLENDFACTOR, DestBlend = INVBLENDFACTOR, BLENDFACTOR = that alpha.
-/// Our entity shaders never write ALPHA, so <see cref="GeometryInstance3D.Transparency"/> is the
-/// same `src·a + dst·(1−a)`. The shadow and depth passes (pass types 0, 1, 7) skip the alpha
-/// multiply, so a fading body keeps its full shadow — which the cast-only proxy already does.
+/// Our opaque entity passes write no ALPHA, so <see cref="GeometryInstance3D.Transparency"/> is the
+/// same `src·a + dst·(1−a)`; a pass that writes its own ALPHA multiplies it by the fade it enters
+/// with (the modern translucent pass, the classic glass and later light-group passes).
+///
+/// A CUTOUT KEEPS ITS CUT. On the faded opaque pass c26 stays (1, 1, 1, 1) (0x82225254..
+/// 0x82225288, stored at 0x82225BA0) and ALPHAREF (0x82225AC4) and ALPHATESTENABLE (0x82225AEC..
+/// 0x82225B68: its r5 +0x51) are set without reference to the opacity, so the test sees the
+/// texture's own alpha and only the blend takes the opacity: hair and hats fade with the body and
+/// are gone at 0, never dissolved and never dithered. Our cutouts discard in the shader and write
+/// no ALPHA, so Godot's fade reaches them the same way.
+///
+/// THE FUR SHELLS FADE WITH THE BODY — A REMASTER CHOICE, NOT THE GUEST'S. The guest's shell
+/// item carries the opacity (item+0x20, `sub_822A2940` from `sub_82219AB8` 0x82219FA8 `fmr f1,
+/// f31`; disc 0x8221A0D8) but its pass never reads it: ALPHABLENDENABLE 1, ALPHATESTENABLE 1,
+/// ALPHAREF 16, ALPHAFUNC GREATEREQUAL, ZWRITEENABLE 1 over the default SrcBlend ONE / DestBlend
+/// ZERO (`Render_LodMeshDraw_INFERRED` 0x821F1A90..0x821F1CFC, disc `sub_821F1578` 0x821F1958..
+/// 0x821F1BC4; defaults `Render_ApplyDefaultRenderStates_INFERRED`), so on the 360 a faded dog
+/// keeps its whole coat over a blended body. Here the shells take the body's fade (<see
+/// cref="FadeOf"/>) and its kept depth, the cut staying on the slice's own alpha; they go with
+/// the colour pass (<see cref="IsSubmitted"/>) as the guest's do.
+///
+/// The shadow and depth passes (pass types 0, 1, 7) skip the alpha multiply, so a fading body
+/// keeps its full shadow — which the cast-only proxy already does.
 ///
 /// Not drawn at all — SetAsDrawable(0), or the product not above 1e-4 — the guest releases the
 /// proxies: no body, no shadow. Hiding the node does both; the shadow skeletons mirror it.
@@ -60,6 +80,13 @@ public static class Engine_EntityAppearance
     /// <summary>Opacity at or above which the guest draws without blending (`flt_83320A70`).</summary>
     private const float OpaqueFrom = 0.999f;
 
+    /// <summary>
+    /// Opacity below which no pixel shows: the title's BLENDFACTOR is `fctiwz(opacity x 255)`
+    /// (`sub_822251D8` 0x822257CC..0x822257E0) and Godot's instance fade `uint(fade x 255)`
+    /// (render_forward_clustered.cpp), both 0 under one step.
+    /// </summary>
+    private const float InvisibleBelow = 1f / 255f;
+
     /// <summary>Entities whose look is not the constructor's; reset by the walk that feeds this.</summary>
     public static int StatedThisWalk;
 
@@ -102,6 +129,33 @@ public static class Engine_EntityAppearance
 
         return Vector4.One;
     }
+
+    /// <summary>
+    /// Whether <paramref name="node"/>'s colour pass is built (<see
+    /// cref="HostBridge.EntityAppearance.Submitted"/>), from the appearance cache; true when
+    /// constructed. The fur shells draw by it.
+    /// </summary>
+    public static bool IsSubmitted(MeshInstance3D node) =>
+        !Applied.TryGetValue(node, out HostBridge.EntityAppearance look) || look.Submitted;
+
+    /// <summary>
+    /// The fade a drawn <paramref name="node"/>'s body was given, from the appearance cache: its
+    /// Transparency, and whether it carries the kept depth (the depth overlay). (0, false) when
+    /// constructed. The fur shells take both (the remaster's choice, see the remarks).
+    /// </summary>
+    public static (float Transparency, bool Depth) FadeOf(MeshInstance3D node)
+    {
+        if (!Applied.TryGetValue(node, out HostBridge.EntityAppearance look))
+        {
+            return (0f, false);
+        }
+
+        bool depth = Overlays.TryGetValue(node, out int overlay) && (overlay & OverlayDepth) != 0;
+        return (TransparencyFor(Mathf.Clamp(look.Opacity, 0f, 1f)), depth);
+    }
+
+    /// <summary>A drawn body's Transparency for a clamped opacity: blended below <see cref="OpaqueFrom"/>.</summary>
+    private static float TransparencyFor(float opacity) => opacity < OpaqueFrom ? 1f - opacity : 0f;
 
     /// <summary>
     /// The body's fade and tint onto its cloth. The guest draws the cloth as part of the body, so
@@ -193,7 +247,7 @@ public static class Engine_EntityAppearance
         }
 
         float opacity = Mathf.Clamp(look.Opacity, 0f, 1f);
-        node.Transparency = drawn && opacity < OpaqueFrom ? 1f - opacity : 0f;
+        node.Transparency = drawn ? TransparencyFor(opacity) : 0f;
         node.Visible = drawn;
 
         // The tint's lanes in the guest's memory order are the shader's x, y, z (`sub_82573570`
@@ -260,7 +314,13 @@ public static class Engine_EntityAppearance
             MaskedCount = Masked.Count;
         }
 
-        int overlay = (masked ? OverlayMask : 0) | (node.Transparency > 0f ? OverlayDepth : 0);
+        // NO DEPTH AT NO OPACITY (a principal under camera alpha 0: first person, a point-of-view
+        // shot, a full pull-in). The depth exists so only the nearest layer of a blended body
+        // shows; with no layer showing it would only stamp the whole body's depth, unculled and
+        // untested, where the title alpha-tests its cutouts and culls every standard draw CCW
+        // (`sub_8221BD40`) — from a camera inside the head, over every transparent draw behind it.
+        bool blended = node.Transparency > 0f && opacity >= InvisibleBelow;
+        int overlay = (masked ? OverlayMask : 0) | (blended ? OverlayDepth : 0);
         Overlays.TryGetValue(node, out int carried);
         if (overlay != carried)
         {

@@ -88,7 +88,7 @@ public class SpellWeavingFxTests
 		}
 
 		var effects = Effects(folder);
-		AssertThat(effects.Count).IsEqual(15);
+		AssertThat(effects.Count).IsEqual(13);  // the fifteen pairs but Blades + and Fireball + Force Push, which play no look
 		foreach ((string file, string text, Engine_FxEffectJson.Definition effect) in effects)
 		{
 			AssertThat(effect.Name).IsEqual(Path.GetFileNameWithoutExtension(file));

@@ -49,6 +49,26 @@ namespace Refii.Ui;
 /// charge meter is <c>{ "kind": "picture", "follow": "group.SpellCharging.SpellCharging",
 /// "textures": ["game://art/gui/wheelicons/abilities/will_shock.tex", ...],
 /// "index": "mod:spell_weaving.hud_partner" }</c>.</item>
+/// <item>A picture's texture is any of <see cref="LoadAnyTexture"/>'s paths: a game texture
+/// (<c>art/gui/…/x.tex</c>, with or without <c>game://</c>), an enabled mod's PNG
+/// (<c>art/x.png</c>) or a project resource (<c>res://</c>). A picture may state none and be
+/// FILLED BY A CALL: <c>hud_icon(p, "&lt;piece id&gt;", texture)</c> on any surface states the
+/// texture that player's copy of the piece shows (empty clears; it wins over <c>texture</c> and
+/// <c>textures</c>); with nothing stated and no texture of its own the picture is not drawn.</item>
+/// <item><c>region</c> — <c>[u, v, w, h]</c>, fractions of the texture (0..1, from its top-left):
+/// the picture shows that part of it, a piece of an atlas at any of its resolutions.</item>
+/// <item><c>tint</c> — an HTML colour (with alpha) a picture's texture is multiplied by: a
+/// darkened glass, a dimmed icon, a gold ring.</item>
+/// <item>Pieces draw in file order (composed load order): a later piece over an earlier one.</item>
+/// <item><c>each</c> — <c>true</c>: a piece with no <c>follow</c> is EACH PLAYER'S — built in
+/// player two's half too (their view, or an online joiner's window), reading player two's values
+/// and player two's <c>hud_icon</c> textures, placed in that half by the same anchor rule.</item>
+/// <item><c>group</c> — the id of a file-level <c>groups</c> record
+/// (<see cref="Engine_HudModGroups"/>): the piece, placed as above, is then scaled about the
+/// group's pivot and offset by the group's values, read each frame for the piece's player.</item>
+/// <item><c>outline</c> / <c>outlineWidth</c>, <c>shadow</c> / <c>shadowOffset</c> — a text
+/// piece's ring and drop shadow: the same glyphs drawn again behind it in that colour, offset by
+/// the width all round (8 copies) or by the shadow's <c>[x, y]</c>, in the piece's own units.</item>
 /// </list>
 /// <para>Value sources (<see cref="Engine_UiValueSources"/>, the one resolver every UI record
 /// reads through): a number; <c>mod:&lt;mod&gt;.&lt;name&gt;</c>, what a mod published;
@@ -103,7 +123,15 @@ public sealed partial class Engine_HudModPieces : Node3D
 		string Format = "",
 		int TextSize = Engine_HudModText.DefaultSize,
 		Color? TextColour = null,
-		int Align = 0);
+		int Align = 0,
+		Rect2? Region = null,
+		bool Each = false,
+		Color? Tint = null,
+		string Group = "",
+		Color? Outline = null,
+		float OutlineWidth = 0f,
+		Color? Shadow = null,
+		Vector2 ShadowOffset = default);
 
 	/// <summary>
 	/// A COPY of a shipped piece — the guest's own widget, built again beside the original, so it
@@ -141,10 +169,17 @@ public sealed partial class Engine_HudModPieces : Node3D
 
 	/// <summary>What every enabled mod's <c>ui/hud.json</c> states, composed.</summary>
 	public sealed record ModLayout(
-		List<Piece> Pieces, HashSet<string> Hidden, List<Clone> Clones, Dictionary<string, float> Scales);
+		List<Piece> Pieces, HashSet<string> Hidden, List<Clone> Clones, Dictionary<string, float> Scales,
+		Dictionary<string, Engine_HudModGroups.Group>? Groups = null);
 
 	/// <summary>The drawn node of a shipped HUD piece by id, supplied by the HUD view.</summary>
 	public System.Func<string, Node3D?>? FindPiece { get; set; }
+
+	/// <summary>The groups a piece's <c>group</c> names (<see cref="ModLayout.Groups"/>); null for none.</summary>
+	public IReadOnlyDictionary<string, Engine_HudModGroups.Group>? Groups { get; set; }
+
+	/// <summary>Each group's values this frame, by group and player: read once per frame, not per member.</summary>
+	private readonly Dictionary<(string Group, int Player), Engine_HudModGroups.Transform> _groupsNow = new();
 
 	/// <summary>A stand-in value for every piece, for an editor preview with no game running.</summary>
 	public float? PreviewValue
@@ -206,10 +241,11 @@ public sealed partial class Engine_HudModPieces : Node3D
 	/// <summary>Per player, the readers with the preview's stand-ins over them; rebuilt when <see cref="Sources"/> changes.</summary>
 	private readonly Engine_UiValueSources.Context?[] _contexts = new Engine_UiValueSources.Context?[2];
 
-	/// <summary>The readers without a view: published mod values and the local hero.</summary>
+	/// <summary>The readers without a view: published mod values, mod settings and the local hero.</summary>
 	private static readonly Engine_UiValueSources.Context Standalone = new()
 	{
 		Mod = key => !Engine.IsEditorHint() && HostBridge.TryGetModValue(key, out float value) ? value : null,
+		Setting = key => Refii.Mods.ModSettings.TryGet(key, out float value) ? value : null,
 		Hero = key =>
 		{
 			if (Engine.IsEditorHint())
@@ -268,6 +304,12 @@ public sealed partial class Engine_HudModPieces : Node3D
 
 	private const float Depth = 0.45f;
 
+	/// <summary>
+	/// The sort distance each piece adds over the one before it, so overlapping pieces at the same
+	/// depth draw in file order; wider than a meter's own chip and fill steps.
+	/// </summary>
+	private const float LayerStep = 0.01f;
+
 	/// <summary>How long a lost chunk is held before it drains, and how fast it drains.</summary>
 	private const float ChipHoldSeconds = 0.6f;
 	private const float ChipDrainPerSecond = 0.6f;
@@ -280,6 +322,9 @@ public sealed partial class Engine_HudModPieces : Node3D
 		public Engine_UiRoundedPanel? Fill;
 		public MeshInstance3D? Picture;
 		public MeshInstance3D? Label;
+
+		/// <summary>A text piece's outline and shadow copies, children of <see cref="Label"/>, drawn with its glyphs.</summary>
+		public MeshInstance3D[]? Rims;
 		public string? ShownText;
 		/// <summary>The picture's choices, loaded once; a null entry is a path that did not load.</summary>
 		public List<Texture2D?>? Textures;
@@ -295,6 +340,17 @@ public sealed partial class Engine_HudModPieces : Node3D
 
 		/// <summary>The resolved element node per followed name; null where the root carries none.</summary>
 		public Node3D?[]? FollowNodes;
+
+		/// <summary>The picture's own texture (<c>texture</c>), or null when it states none.</summary>
+		public Texture2D? Own;
+
+		/// <summary>The <see cref="Engine_UiHudOverrides.Generation"/> and player the stated texture was read under.</summary>
+		public int StatedGeneration = -1;
+		public int StatedPlayer;
+		public Texture2D? Stated;
+
+		/// <summary>The texture on the material now.</summary>
+		public Texture2D? OnMaterial;
 	}
 
 	private readonly List<Built> _built = new();
@@ -341,6 +397,7 @@ public sealed partial class Engine_HudModPieces : Node3D
 					CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
 				};
 				AddChild(built.Label);
+				built.Rims = Rims(built.Label, piece);
 			}
 			else if (piece.Kind == Kind.Picture)
 			{
@@ -360,27 +417,36 @@ public sealed partial class Engine_HudModPieces : Node3D
 						texture ??= loaded;
 					}
 				}
-				else
+				else if (piece.Texture.Length != 0)
 				{
 					texture = LoadTexture(piece.Texture);
+					built.Own = texture;
+					if (texture is null)
+					{
+						GD.PushWarning($"[hud-mods] '{piece.Id}' ({piece.Mod}): no texture at '{piece.Texture}'");
+					}
 				}
 
-				if (texture is null)
+				var material = new StandardMaterial3D
 				{
-					GD.PushWarning($"[hud-mods] '{piece.Id}' ({piece.Mod}): no texture at '{piece.Texture}'");
-					continue;
+					AlbedoTexture = texture,
+					AlbedoColor = piece.Tint ?? Colors.White,
+					ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+					Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+				};
+				if (piece.Region is { } region)
+				{
+					// The quad's UV is 0..1 from the top-left: scaled to the region's size and moved to its corner.
+					material.Uv1Scale = new Vector3(region.Size.X, region.Size.Y, 1f);
+					material.Uv1Offset = new Vector3(region.Position.X, region.Position.Y, 0f);
 				}
 
+				built.OnMaterial = texture;
 				built.Picture = new MeshInstance3D
 				{
 					Name = name,
 					Mesh = new QuadMesh { Size = piece.Size },
-					MaterialOverride = new StandardMaterial3D
-					{
-						AlbedoTexture = texture,
-						ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-						Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
-					},
+					MaterialOverride = material,
 					CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
 				};
 				AddChild(built.Picture);
@@ -399,6 +465,26 @@ public sealed partial class Engine_HudModPieces : Node3D
 				}
 			}
 
+			float layer = _built.Count * LayerStep;
+			foreach (GeometryInstance3D? part in new GeometryInstance3D?[] { built.Back, built.Chip, built.Fill, built.Picture, built.Label })
+			{
+				if (part is not null)
+				{
+					part.SortingOffset = layer;
+				}
+			}
+
+			// A text piece's rims sit under its glyphs and over every piece before it.
+			foreach (MeshInstance3D rim in built.Rims ?? System.Array.Empty<MeshInstance3D>())
+			{
+				rim.SortingOffset = layer - LayerStep * 0.5f;
+			}
+
+			if (piece.Group.Length != 0 && Groups?.ContainsKey(piece.Group) != true)
+			{
+				GD.PushWarning($"[hud-mods] '{piece.Id}' ({piece.Mod}): no group '{piece.Group}'; drawn where it is placed");
+			}
+
 			_built.Add(built);
 		}
 
@@ -406,6 +492,84 @@ public sealed partial class Engine_HudModPieces : Node3D
 		{
 			GD.Print($"[hud-mods] {_built.Count} piece(s) from mods: " +
 				string.Join(", ", _built.ConvertAll(b => $"{b.Piece.Id} ({b.Piece.Mod})")));
+		}
+	}
+
+	/// <summary>The 8 directions an outline's copies stand in, unit length.</summary>
+	private static readonly Vector2[] RimDirections =
+	{
+		new(1f, 0f), new(-1f, 0f), new(0f, 1f), new(0f, -1f),
+		new(0.7071f, 0.7071f), new(-0.7071f, 0.7071f), new(0.7071f, -0.7071f), new(-0.7071f, -0.7071f),
+	};
+
+	/// <summary>
+	/// A text piece's outline copies (8, at <c>outlineWidth</c> all round) then its shadow copy (at
+	/// <c>shadowOffset</c>, +Y down), children of the label in its own units, so they scale and hide
+	/// with it; null when it states neither. Their glyphs are the label's, set as it is painted.
+	/// </summary>
+	private static MeshInstance3D[]? Rims(MeshInstance3D label, Piece piece)
+	{
+		var rims = new List<MeshInstance3D>();
+		if (piece.Outline is not null && piece.OutlineWidth > 0f)
+		{
+			foreach (Vector2 direction in RimDirections)
+			{
+				rims.Add(Rim(label, direction * piece.OutlineWidth));
+			}
+		}
+
+		if (piece.Shadow is not null && piece.ShadowOffset != Vector2.Zero)
+		{
+			rims.Add(Rim(label, piece.ShadowOffset));
+		}
+
+		return rims.Count == 0 ? null : rims.ToArray();
+	}
+
+	private static MeshInstance3D Rim(MeshInstance3D label, Vector2 offset)
+	{
+		var rim = new MeshInstance3D
+		{
+			Name = "Rim",
+			Position = new Vector3(offset.X, -offset.Y, -0.0005f),
+			CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+		};
+		label.AddChild(rim);
+		return rim;
+	}
+
+	/// <summary>The label's glyphs on its rims, each in its colour: the outline's, then the shadow's.</summary>
+	private static void PaintRims(Built built, MeshInstance3D label)
+	{
+		if (built.Rims is not { } rims)
+		{
+			return;
+		}
+
+		Piece piece = built.Piece;
+		int outlines = piece.Outline is not null && piece.OutlineWidth > 0f ? RimDirections.Length : 0;
+		Material? material = null;
+		for (int i = 0; i < rims.Length; ++i)
+		{
+			MeshInstance3D rim = rims[i];
+			rim.Mesh = label.Mesh;
+			if (label.MaterialOverride is not ShaderMaterial glyphs)
+			{
+				rim.MaterialOverride = null;
+				continue;
+			}
+
+			// One material per colour: the label's (its atlas and clip) duplicated and recoloured.
+			if (i == 0 || i == outlines)
+			{
+				rim.MaterialOverride = (Material)glyphs.Duplicate();
+				Engine_UiSceneBuilder.SetTextColour(rim, i < outlines ? piece.Outline!.Value : piece.Shadow!.Value);
+				material = rim.MaterialOverride;
+			}
+			else
+			{
+				rim.MaterialOverride = material;
+			}
 		}
 	}
 
@@ -424,6 +588,7 @@ public sealed partial class Engine_HudModPieces : Node3D
 	{
 		Vector2 extent = Engine_HudLayout.CanvasExtent(Window);
 		float scale = Engine_HudLayout.Scale(extent);
+		_groupsNow.Clear();
 		foreach (Built built in _built)
 		{
 			Piece piece = built.Piece;
@@ -467,6 +632,22 @@ public sealed partial class Engine_HudModPieces : Node3D
 					new Engine_HudLayout.Piece(piece.Id, string.Empty, piece.Anchor, piece.Offset), extent);
 			}
 
+			// A grouped piece is moved and sized with its group, about the group's pivot.
+			float grown = scale;
+			if (piece.Group.Length != 0 && Groups is { } groups && groups.TryGetValue(piece.Group, out Engine_HudModGroups.Group? group))
+			{
+				Engine_UiValueSources.Context readers = ContextFor(piece);
+				if (!_groupsNow.TryGetValue((group.Id, readers.Player), out Engine_HudModGroups.Transform moved))
+				{
+					moved = Engine_HudModGroups.Resolve(group, readers);
+					_groupsNow[(group.Id, readers.Player)] = moved;
+				}
+
+				corner = Engine_HudModGroups.Apply(corner, group, moved, extent);
+				size *= moved.Scale;
+				grown = scale * moved.Scale;
+			}
+
 			if (built.Label is { } label)
 			{
 				if (!DrawText(built, label))
@@ -475,7 +656,7 @@ public sealed partial class Engine_HudModPieces : Node3D
 					continue;
 				}
 
-				label.Scale = new Vector3(scale, scale, 1f);
+				label.Scale = new Vector3(grown, grown, 1f);
 				label.Position = new Vector3(corner.X, corner.Y, Depth);
 				label.Visible = true;
 				continue;
@@ -485,23 +666,31 @@ public sealed partial class Engine_HudModPieces : Node3D
 
 			if (built.Picture is { } picture)
 			{
-				if (built.Textures is { } choices)
+				// A texture a call stated for this piece's player (hud_icon on the piece's id) wins.
+				Texture2D? shown = StatedTexture(built, ContextFor(piece).Player);
+				if (shown is null && built.Textures is { } choices)
 				{
 					int index = Resolve(piece.Index, piece) is { } chosen ? (int)Mathf.Floor(chosen) : -1;
-					if (index < 0 || index >= choices.Count || choices[index] is not { } shown)
-					{
-						Hide(built);
-						continue;
-					}
-
-					if (built.Shown != index && picture.MaterialOverride is StandardMaterial3D material)
-					{
-						material.AlbedoTexture = shown;
-						built.Shown = index;
-					}
+					shown = index >= 0 && index < choices.Count ? choices[index] : null;
+				}
+				else if (shown is null)
+				{
+					shown = built.Own;
 				}
 
-				picture.Scale = new Vector3(scale, scale, 1f);
+				if (shown is null)
+				{
+					Hide(built);
+					continue;
+				}
+
+				if (!ReferenceEquals(built.OnMaterial, shown) && picture.MaterialOverride is StandardMaterial3D material)
+				{
+					material.AlbedoTexture = shown;
+					built.OnMaterial = shown;
+				}
+
+				picture.Scale = new Vector3(grown, grown, 1f);
 				picture.Position = new Vector3(centre.X, centre.Y, Depth);
 				picture.Visible = true;
 				continue;
@@ -565,6 +754,7 @@ public sealed partial class Engine_HudModPieces : Node3D
 			built.ShownText = text;
 			Theme.Paint(label, text, piece.TextSize, piece.TextColour ?? DefaultTextColour,
 				horizontalAlign: piece.Align, verticalAlign: 0);
+			PaintRims(built, label);
 		}
 
 		return true;
@@ -681,16 +871,96 @@ public sealed partial class Engine_HudModPieces : Node3D
 	/// <summary>A number, or the value a source states now for the piece's player; null when the source has none.</summary>
 	private float? Resolve(string source, Piece piece) => Engine_UiValueSources.Number(source, ContextFor(piece));
 
-	private static Texture2D? LoadTexture(string path)
+	private static Texture2D? LoadTexture(string path) => LoadAnyTexture(path);
+
+	/// <summary>
+	/// The texture a call stated for <paramref name="player"/>'s copy of a picture piece
+	/// (<see cref="Engine_UiHudOverrides.IconForPiece"/>), re-read when the overrides change; null
+	/// for none, or a path that loads nothing.
+	/// </summary>
+	private static Texture2D? StatedTexture(Built built, int player)
 	{
-		if (path.Length == 0)
+		int generation = Engine_UiHudOverrides.Generation;
+		if (built.StatedGeneration == generation && built.StatedPlayer == player)
+		{
+			return built.Stated;
+		}
+
+		built.StatedGeneration = generation;
+		built.StatedPlayer = player;
+		built.Stated = Engine.IsEditorHint() || Engine_UiHudOverrides.IconForPiece(player, built.Piece.Id) is not { Length: > 0 } path
+			? null
+			: LoadAnyTexture(path);
+		return built.Stated;
+	}
+
+	private static readonly Dictionary<string, Texture2D?> _anyTextures = new(System.StringComparer.OrdinalIgnoreCase);
+
+	/// <summary>
+	/// A texture by any path a mod names, loaded once per path (a miss remembered too): <c>res://</c>
+	/// through Godot's loader; an enabled mod's PNG (<c>art/x.png</c>, through the mount, then the
+	/// package itself); otherwise a game texture through the <c>game://</c> loader — the banks with
+	/// the mods' overlays in place — with or without the prefix, slashes either way, <c>.tex</c>
+	/// added when missing. Null for nothing there.
+	/// </summary>
+	public static Texture2D? LoadAnyTexture(string path)
+	{
+		string named = (path ?? string.Empty).Trim();
+		if (named.Length == 0)
 		{
 			return null;
 		}
 
-		// Through Godot's loaders: a game:// texture comes out of the banks (and a mod's own
-		// image in its place); a res:// one is the project's.
-		return ResourceLoader.Exists(path) ? ResourceLoader.Load<Texture2D>(path) : null;
+		if (_anyTextures.TryGetValue(named, out Texture2D? known))
+		{
+			return known;
+		}
+
+		Texture2D? texture = null;
+		if (named.StartsWith("res://", System.StringComparison.OrdinalIgnoreCase))
+		{
+			texture = ResourceLoader.Exists(named) ? ResourceLoader.Load<Texture2D>(named) : null;
+		}
+		else
+		{
+			string virtualPath = named.Replace('\\', '/');
+			if (virtualPath.StartsWith(Refii.Textures.Engine_BnkTextureLoader.PathPrefix, System.StringComparison.OrdinalIgnoreCase))
+			{
+				virtualPath = virtualPath[Refii.Textures.Engine_BnkTextureLoader.PathPrefix.Length..];
+			}
+
+			virtualPath = virtualPath.TrimStart('/');
+			if (virtualPath.EndsWith(".png", System.StringComparison.OrdinalIgnoreCase))
+			{
+				byte[]? bytes = Refii.Textures.Engine_BnkTextureLoader.ReadBytes(virtualPath) ??
+					Refii.Mods.ModEntries.ReadEnabledBytes(virtualPath);
+				var image = new Image();
+				if (bytes is not null && image.LoadPngFromBuffer(bytes) == Error.Ok)
+				{
+					image.GenerateMipmaps();
+					texture = ImageTexture.CreateFromImage(image);
+				}
+			}
+			else
+			{
+				if (!virtualPath.EndsWith(".tex", System.StringComparison.OrdinalIgnoreCase))
+				{
+					virtualPath += ".tex";
+				}
+
+				Refii.Textures.Engine_BnkTextureLoader.EnsureRegistered();
+				string game = Refii.Textures.Engine_BnkTextureLoader.PathPrefix + virtualPath.ToLowerInvariant();
+				texture = ResourceLoader.Exists(game) ? ResourceLoader.Load<Texture2D>(game) : null;
+			}
+		}
+
+		if (texture is null)
+		{
+			GD.PushWarning($"[hud-mods] no texture at '{named}' (a game texture, an enabled mod's PNG or res://)");
+		}
+
+		_anyTextures[named] = texture;
+		return texture;
 	}
 
 	// -----------------------------------------------------------------------------------
@@ -710,11 +980,13 @@ public sealed partial class Engine_HudModPieces : Node3D
 		var hidden = new HashSet<string>(System.StringComparer.Ordinal);
 		var clones = new Dictionary<string, Clone>(System.StringComparer.Ordinal);
 		var scales = new Dictionary<string, float>(System.StringComparer.Ordinal);
+		var groups = new Dictionary<string, Engine_HudModGroups.Group>(System.StringComparer.Ordinal);
 
 		// Lowest priority first, so the highest is applied last and wins a shared id.
 		foreach ((string mod, string text) in files)
 		{
 			ParseClones(text, mod, clones, scales);
+			ParseGroups(text, mod, groups);
 			foreach (Piece piece in Parse(text, mod, hidden))
 			{
 				if (byId.TryGetValue(piece.Id, out Piece? previous))
@@ -730,7 +1002,42 @@ public sealed partial class Engine_HudModPieces : Node3D
 			}
 		}
 
-		return new ModLayout(Engine_HudModTwins.WithPlayerTwoTwins(order.ConvertAll(id => byId[id])), hidden, new List<Clone>(clones.Values), scales);
+		return new ModLayout(Engine_HudModTwins.WithPlayerTwoTwins(order.ConvertAll(id => byId[id])), hidden, new List<Clone>(clones.Values), scales, groups);
+	}
+
+	/// <summary>A file's <c>groups</c> (<see cref="Engine_HudModGroups"/>), by id, later mods winning.</summary>
+	private static void ParseGroups(string text, string mod, Dictionary<string, Engine_HudModGroups.Group> groups)
+	{
+		Variant parsed = Json.ParseString(text);
+		if (parsed.VariantType != Variant.Type.Dictionary ||
+			!parsed.AsGodotDictionary().TryGetValue(Engine_HudModGroups.Section, out Variant section) ||
+			section.VariantType != Variant.Type.Dictionary)
+		{
+			return;
+		}
+
+		foreach ((Variant id, Variant value) in section.AsGodotDictionary())
+		{
+			if (value.VariantType != Variant.Type.Dictionary)
+			{
+				GD.PushWarning($"[hud-mods] {mod}:{ModHudPath}: group '{id.AsString()}' is not an object; skipped");
+				continue;
+			}
+
+			var record = value.AsGodotDictionary();
+			Vector2 anchor = Pair(record, "anchor", Vector2.Zero);
+			string offsetX = string.Empty, offsetY = string.Empty;
+			if (record.TryGetValue("offset", out Variant offset) && offset.VariantType == Variant.Type.Array &&
+				offset.AsGodotArray() is { Count: 2 } pair)
+			{
+				offsetX = pair[0].AsString();
+				offsetY = pair[1].AsString();
+			}
+
+			string name = id.AsString();
+			groups[name] = new Engine_HudModGroups.Group(name, mod, new Engine_HudLayout.Anchor(anchor.X, anchor.Y),
+				Pair(record, "pivot", Vector2.Zero), Text(record, "scale"), offsetX, offsetY);
+		}
 	}
 
 	/// <summary>A file's <c>clones</c> and per-piece <c>scale</c>, by id, later mods winning.</summary>
@@ -928,10 +1235,45 @@ public sealed partial class Engine_HudModPieces : Node3D
 					? PointSize(record)
 					: Engine_HudModText.DefaultSize,
 				ColourOf(record, "colour", null),
-				Engine_HudModText.Align(Text(record, "align"))));
+				Engine_HudModText.Align(Text(record, "align")),
+				RegionOf(record),
+				record.TryGetValue("each", out Variant each) && each.VariantType == Variant.Type.Bool && each.AsBool(),
+				kind == Kind.Picture ? ColourOf(record, "tint", null) : null,
+				Text(record, "group"),
+				kind == Kind.Text ? ColourOf(record, "outline", null) : null,
+				Number(record, "outlineWidth", 1.5f),
+				kind == Kind.Text ? ColourOf(record, "shadow", null) : null,
+				Pair(record, "shadowOffset", new Vector2(1.5f, 1.5f))));
 		}
 
 		return pieces;
+	}
+
+	/// <summary>A picture's <c>region</c>: <c>[u, v, w, h]</c> fractions of its texture, clamped to it; null for none or a bad one.</summary>
+	private static Rect2? RegionOf(Godot.Collections.Dictionary record)
+	{
+		if (!record.TryGetValue("region", out Variant value) || value.VariantType != Variant.Type.Array)
+		{
+			return null;
+		}
+
+		var array = value.AsGodotArray();
+		if (array.Count != 4)
+		{
+			return null;
+		}
+
+		return Region((float)array[0].AsDouble(), (float)array[1].AsDouble(), (float)array[2].AsDouble(), (float)array[3].AsDouble());
+	}
+
+	/// <summary>A region of a texture in fractions, clamped inside it; null when it has no area.</summary>
+	public static Rect2? Region(float u, float v, float w, float h)
+	{
+		u = Mathf.Clamp(u, 0f, 1f);
+		v = Mathf.Clamp(v, 0f, 1f);
+		w = Mathf.Clamp(w, 0f, 1f - u);
+		h = Mathf.Clamp(h, 0f, 1f - v);
+		return w > 0f && h > 0f ? new Rect2(u, v, w, h) : null;
 	}
 
 	/// <summary>A text piece's <c>size</c>: a POINT size when it is a number, else the HUD's own.</summary>

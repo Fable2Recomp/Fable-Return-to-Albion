@@ -152,7 +152,7 @@ public sealed class Engine_HudValues
 
     private readonly Dictionary<uint, uint> _registryImages = new();
 
-    /// <summary>`@Gui.Image hash texture` — the image registry (12), TU1 only.</summary>
+    /// <summary>`@Gui.Image hash texture` — the image registry (12).</summary>
     public void StateRegistryImage(uint hash, uint texture)
     {
         if (_registryImages.TryGetValue(hash, out uint was) && was == texture)

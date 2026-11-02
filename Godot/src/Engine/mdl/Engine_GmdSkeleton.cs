@@ -63,6 +63,12 @@ public readonly record struct GmdAttachment(string Name, Transform3D Local, int 
 /// </summary>
 public sealed class Engine_GmdSkeleton
 {
+    /// <summary>A hashed layout's node name for its hash: "0x%08X".</summary>
+    public static string HashedNodeName(uint hash) => $"0x{hash:X8}";
+
+    /// <summary>A hashed layout's node name for a rig name: <see cref="HashedNodeName(uint)"/> of its CRC-32.</summary>
+    public static string HashedNodeName(string name) => HashedNodeName(Engine_MdlEngine47.Crc32Lh(name));
+
     /// <summary>The record the file stores per node: 11 floats, 44 bytes.</summary>
     public const int NodeTransformStride = 44;
 
@@ -190,7 +196,7 @@ public sealed class Engine_GmdSkeleton
     /// <summary><see cref="TryParse(byte[])"/> in <paramref name="title"/>'s layout.</summary>
     public static Engine_GmdSkeleton? TryParse(byte[]? bytes, Refii.Core.Engine_Title title)
     {
-        if (title == Refii.Core.Engine_Title.Fable3)
+        if (title.HashedModelNodes)
         {
             return TryParseHashed(bytes);
         }
@@ -301,7 +307,7 @@ public sealed class Engine_GmdSkeleton
         {
             hashes[i] = ReadU32(bytes, at);
             parents[i] = unchecked((int)ReadU32(bytes, at + 4));
-            names[i] = $"0x{hashes[i]:X8}";
+            names[i] = HashedNodeName(hashes[i]);
             at += 8;
         }
 

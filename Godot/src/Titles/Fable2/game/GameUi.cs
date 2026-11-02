@@ -5402,7 +5402,12 @@ public partial class GameUi : Node, IGameTitleUi
 	/// THE ROW THE GUEST'S HANDLERS READ. Every list screen's C++ asks `sub_826C1B50` for the
 	/// highlighted row's event type, id and strings; the hook answers from this statement for the
 	/// current screen (gui_menu_hooks.cpp), so a handler acts on the row the player is on. Stated
-	/// on change; a host-only row, or no Godot list, clears it and the guest asks its own Lua.
+	/// on change; a host-only row, a mod's row, or no Godot list, clears it and the guest asks
+	/// its own Lua. A MOD'S ROW (<see cref="Engine_UiExpandableMenu.Item.FromMod"/>) is never
+	/// stated whatever its JSON says: its `(EventType, id)` names no record of the guest's, and
+	/// handlers drop failed lookups — the abilities edge `sub_826C3C78` ignores `sub_82896900`
+	/// (0x826c3d58), the furniture upgrade `sub_8299C710` ignores `sub_825CC2F0` (0x8299caf4)
+	/// and dereferences the unfilled record in `sub_827647F8` (0x82764814).
 	/// </summary>
 	private void StateHighlightedRow()
 	{
@@ -5410,7 +5415,7 @@ public partial class GameUi : Node, IGameTitleUi
 			_screenMenuView is { OpenedDepth: 0, Visible: true }
 				? list.Script.Highlighted
 				: null;
-		uint screen = row is not null && !row.HostOnly ? _screenMenu!.ScreenId : 0u;
+		uint screen = row is { GuestHighlightable: true } ? _screenMenu!.ScreenId : 0u;
 		int id = row is null ? 0 : (row.IdHigh << 16) + row.IdLow;
 		string label = row?.StatedLabel ?? row?.TextTag ?? string.Empty;
 		string key = screen == 0u ? string.Empty : $"{screen}|{row!.Name}|{row.EventType}|{id}|{label}";

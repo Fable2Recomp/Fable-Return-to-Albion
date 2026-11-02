@@ -4,8 +4,10 @@
 
 #include <chrono>
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -20,6 +22,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 // The game's own bodies, by their config names — called, never overridden here.
@@ -38,6 +41,13 @@ PPC_EXTERN_FUNC(rex_GDBManager_FindEntryByHash);
 PPC_EXTERN_FUNC(rex_lhHeroStats_GetRenown);
 PPC_EXTERN_FUNC(rex_lhHeroStats_GetMorality);
 PPC_EXTERN_FUNC(rex_lhHeroStats_GetPurity);
+// The stat modifiers (refii_mod_modify_renown ..): hooked in mod_events.cpp, so the events fire.
+PPC_EXTERN_FUNC(rex_lhHeroStats_ModifyRenown);
+// The slot table's one writer: hooked in mod_abilities.cpp (spell_pick), which passes a NOTIFY-clear
+// write straight through (refii_mod_charge_spell).
+PPC_EXTERN_FUNC(rex_CECSpellManager_SetSpellSlot);
+PPC_EXTERN_FUNC(rex_lhHeroStats_ModifyMorality);
+PPC_EXTERN_FUNC(rex_lhHeroStats_ModifyPurity);
 PPC_EXTERN_FUNC(rex_Village_IsLineOfSight);
 PPC_EXTERN_FUNC(rex_lhLuaScriptSystem_CreateEntityAtPosition);
 // The lock, the statuses and the hit (refii_mod_lock_target .. refii_mod_stagger). OnHit is the
@@ -57,10 +67,12 @@ uint32_t HeroEntity(uint8_t* base);
 bool IsCoopJoiner(uint8_t* base);
 /// guest_tick_pump.cpp: the quick menu's action (1 use an item, 2 perform an expression, 3 equip a
 /// weapon, 4 assign a spell) for a player's hero, gated as the quick menu is; true when performed.
-bool PerformQuickslot(PPCContext& ctx, uint8_t* base, uint32_t player, uint32_t kind, uint32_t record);
+bool PerformQuickslot(PPCContext& ctx, uint8_t* base, uint32_t player, uint32_t kind, uint32_t record, uint32_t flags);
 bool CoopSessionLive(uint8_t* base);
 bool MenusActForPlayerTwo(uint8_t* base);
 void RunModEventsTick(PPCContext& ctx, uint8_t* base, float seconds);
+/// The deferred interrupt grants (refii_mod_allow_action_interrupt_at), granted once due.
+void PumpActionInterrupts(PPCContext& ctx, uint8_t* base);
 
 std::atomic<uint32_t> g_lua_generation{0};
 
@@ -419,6 +431,7 @@ void RunModTicks(PPCContext& ctx, uint8_t* base) {
   }
 
   DriveHouseholds(ctx, base, seconds);
+  PumpActionInterrupts(ctx, base);
   for (refii_mod_tick_fn fn : ticks) {
     PPCContext work = ctx;
     fn(&work, base, seconds);
@@ -707,7 +720,8 @@ std::string Float(float value) {
 extern "C" uint32_t refii_mod_mark(int32_t player, uint32_t entity, const float* xyz, const char* icon,
                                    const char* text) {
   const std::string picture = QuotedField(icon, 160);
-  if (picture.empty()) {
+  const std::string line = QuotedField(text, 160);
+  if (picture.empty() && line.empty()) {
     return 0;
   }
   const uint32_t id = (g_mark_ids.fetch_add(1u, std::memory_order_relaxed) % kFxIdSpan) + 1u;
@@ -715,7 +729,7 @@ extern "C" uint32_t refii_mod_mark(int32_t player, uint32_t entity, const float*
   const std::string fields = "op='mark',id=" + std::to_string(id) + ",player=" + std::to_string(ClampPlayer(player)) +
                              ",entity=" + std::to_string(handle) + ",x=" + Float(xyz != nullptr ? xyz[0] : 0.0f) +
                              ",y=" + Float(xyz != nullptr ? xyz[1] : 0.0f) + ",z=" + Float(xyz != nullptr ? xyz[2] : 0.0f) +
-                             ",icon='" + picture + "',text='" + QuotedField(text, 160) + "'";
+                             ",icon='" + picture + "',text='" + line + "'";
   refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, fields);
   return id;
 }
@@ -725,6 +739,31 @@ extern "C" void refii_mod_unmark(uint32_t id) {
     return;
   }
   refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, "op='unmark',id=" + std::to_string(id));
+}
+
+extern "C" uint32_t refii_mod_world_meter(int32_t player, uint32_t entity, const float* xyz, float value, float max,
+                                          const char* style) {
+  if (!(max > 0.0f) || !std::isfinite(max)) {
+    return 0;
+  }
+  const uint32_t id = (g_mark_ids.fetch_add(1u, std::memory_order_relaxed) % kFxIdSpan) + 1u;
+  const uint32_t handle = entity != 0u ? refii_mod_handle(entity) : 0u;
+  const std::string fields = "op='mark',id=" + std::to_string(id) + ",player=" + std::to_string(ClampPlayer(player)) +
+                             ",entity=" + std::to_string(handle) + ",x=" + Float(xyz != nullptr ? xyz[0] : 0.0f) +
+                             ",y=" + Float(xyz != nullptr ? xyz[1] : 0.0f) + ",z=" + Float(xyz != nullptr ? xyz[2] : 0.0f) +
+                             ",icon='',text='',meter=1,value=" + Float(value) + ",max=" + Float(max) + ",style='" +
+                             QuotedField(style, 32) + "'";
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, fields);
+  return id;
+}
+
+extern "C" int32_t refii_mod_mark_meter(uint32_t id, float value, float max, const char* style) {
+  if (id == 0u) {
+    return 0;
+  }
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, "op='mark_meter',id=" + std::to_string(id) + ",value=" + Float(value) +
+                                                     ",max=" + Float(max) + ",style='" + QuotedField(style, 32) + "'");
+  return 1;
 }
 
 extern "C" int32_t refii_mod_fade(int32_t player, int32_t to_black, float seconds) {
@@ -799,19 +838,92 @@ extern "C" int32_t refii_mod_hud_hold(int32_t player, const char* piece, int32_t
   return 1;
 }
 
+// A part of an entity hidden in Godot's drawing (Refii.Entities.Engine_HiddenParts), by the entity's
+// handle and the player whose view loses it (0 every view): Godot owns the skeleton the part is a
+// bone of, and the views.
+extern "C" int32_t refii_mod_hide_part_for(uint32_t entity, const char* part, int32_t on, int32_t player) {
+  const std::string name = QuotedField(part, 96);
+  const uint32_t handle = entity != 0u ? refii_mod_handle(entity) : 0u;
+  if (name.empty() || handle == 0u || player < 0 || player > 2) {
+    return 0;
+  }
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, "op='hide_part',entity=" + std::to_string(handle) + ",part='" + name +
+                                                     "',on=" + (on != 0 ? "1" : "0") +
+                                                     ",player=" + std::to_string(player));
+  return 1;
+}
+
+extern "C" int32_t refii_mod_hide_part(uint32_t entity, const char* part, int32_t on) {
+  return refii_mod_hide_part_for(entity, part, on, 0);
+}
+
+// Presses: state Godot's pad publish ORs into the player's pad (ModInputPresses), on the UI kind
+// like the claims. A press is one player's pad: 1 or 2, never both.
+
+extern "C" int32_t refii_mod_press(int32_t player, const char* button, int32_t held) {
+  const std::string name = QuotedField(button, 32);
+  if (name.empty() || (player != 1 && player != 2)) {
+    return 0;
+  }
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, "op='press',player=" + std::to_string(player) + ",button='" + name +
+                                                     "',held=" + std::to_string(held < 0 ? 0 : (held > 255 ? 255 : held)));
+  return 1;
+}
+
+extern "C" int32_t refii_mod_tap(int32_t player, const char* button, int32_t ticks) {
+  const std::string name = QuotedField(button, 32);
+  if (name.empty() || (player != 1 && player != 2) || ticks < 1) {
+    return 0;
+  }
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND, "op='tap',player=" + std::to_string(player) + ",button='" + name +
+                                                     "',ticks=" + std::to_string(ticks > 600 ? 600 : ticks));
+  return 1;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Menu rows and host screens: a request for Godot, posted on the host-only kind
 // REFII_MOD_HOST_MENU_KIND (Engine_UiModRows reads it)
 // ---------------------------------------------------------------------------------------------
+
+namespace {
+
+/// One bus record's share of a rows text: the record is at most 2048 bytes (the runtime's
+/// kMaxFieldsLength, src/runtime/src/core/mod_values.cpp) with the head and the menu name around it.
+constexpr size_t kRowsChunk = 1800;
+std::atomic<uint32_t> g_rows_seq{0};
+
+}  // namespace
 
 extern "C" int32_t refii_mod_set_menu_rows(int32_t player, const char* menu, const char* rows) {
   const std::string list = QuotedField(menu, 96);
   if (list.empty()) {
     return 0;
   }
-  const std::string fields = "op='menu_rows',player=" + std::to_string(ClampPlayer(player)) + ",menu='" + list +
-                             "',rows='" + QuotedField(rows, 1800) + "'";
-  refii::mods::PostEvent(REFII_MOD_HOST_MENU_KIND, fields);
+  // The whole text as the bus carries it; past REFII_MOD_MENU_ROWS_MAX it is cut at the last whole
+  // row (an unescaped ';') and the mod errors channel says so — never a silent truncation.
+  std::string text = QuotedField(rows, REFII_MOD_MENU_ROWS_MAX + 1);
+  if (text.size() > REFII_MOD_MENU_ROWS_MAX) {
+    size_t cut = REFII_MOD_MENU_ROWS_MAX;
+    while (cut > 0 && !(text[cut] == ';' && (cut == 0 || text[cut - 1] != '\\'))) {
+      --cut;
+    }
+    text.resize(cut);
+    char error[256];
+    std::snprintf(error, sizeof(error), "set_menu_rows '%s': the rows are over %d bytes; cut to %zu at the last whole row",
+                  list.c_str(), REFII_MOD_MENU_ROWS_MAX, cut);
+    refii_bridge_mod_error_post(error, std::strlen(error));
+    REXLOG_WARN("[mods] {}", error);
+  }
+  // In parts: Godot keeps them by seq and applies the rows once every part has arrived.
+  const size_t parts = text.empty() ? 1u : (text.size() + kRowsChunk - 1) / kRowsChunk;
+  const uint32_t seq = g_rows_seq.fetch_add(1u, std::memory_order_relaxed) + 1u;
+  for (size_t part = 0; part < parts; ++part) {
+    const std::string fields = "op='menu_rows',player=" + std::to_string(ClampPlayer(player)) + ",menu='" + list +
+                               "',seq=" + std::to_string(seq) + ",part=" + std::to_string(part) +
+                               ",parts=" + std::to_string(parts) + ",rows='" +
+                               text.substr(part * kRowsChunk, kRowsChunk) + "'";
+    refii::mods::PostEvent(REFII_MOD_HOST_MENU_KIND, fields);
+  }
   return 1;
 }
 
@@ -996,6 +1108,46 @@ extern "C" void refii_mod_player_save(int32_t player, const char* key, float val
   }
 }
 
+extern "C" int32_t refii_mod_player_text(int32_t player, const char* key, char* out, uint32_t capacity) {
+  return key != nullptr ? refii_bridge_player_get_text(player, key, std::strlen(key), out, capacity) : -1;
+}
+
+extern "C" void refii_mod_player_set_text(int32_t player, const char* key, const char* text) {
+  if (key != nullptr) {
+    refii_bridge_player_write_text(player, key, std::strlen(key), text != nullptr ? text : "",
+                                   text != nullptr ? std::strlen(text) : 0u, 0);
+  }
+}
+
+extern "C" void refii_mod_player_save_text(int32_t player, const char* key, const char* text) {
+  if (key != nullptr) {
+    refii_bridge_player_write_text(player, key, std::strlen(key), text != nullptr ? text : "",
+                                   text != nullptr ? std::strlen(text) : 0u, 1);
+  }
+}
+
+extern "C" int32_t refii_mod_player_hash(int32_t player, const char* key, uint32_t* out) {
+  char text[REFII_MOD_PLAYER_TEXT_MAX + 1];
+  if (refii_mod_player_text(player, key, text, sizeof(text)) <= 0) {
+    return 0;
+  }
+  char* end = nullptr;
+  const unsigned long long value = std::strtoull(text, &end, 0);
+  if (end == text || *end != 0 || value > 0xFFFFFFFFull) {
+    return 0;
+  }
+  if (out != nullptr) {
+    *out = static_cast<uint32_t>(value);
+  }
+  return 1;
+}
+
+extern "C" void refii_mod_player_save_hash(int32_t player, const char* key, uint32_t hash) {
+  char text[16];
+  std::snprintf(text, sizeof(text), "0x%08x", hash);
+  refii_mod_player_save_text(player, key, text);
+}
+
 extern "C" int32_t refii_mod_event_replica(void) { return refii_bridge_player_in_replica(); }
 
 extern "C" int32_t refii_mod_player_here(int32_t player) {
@@ -1059,6 +1211,63 @@ extern "C" int32_t refii_mod_send_to_partner(const char* mod, const char* name, 
   // pm:<from>:<mod>:<name>:<base64 payload> — the lane Engine/mod_events.cpp drains on the peer.
   const std::string line = "pm:" + std::to_string(owned) + ":" + mod + ":" + name + ":" + Base64(payload, size);
   refii_bridge_route_post(line.c_str());
+  return 1;
+}
+
+namespace {
+
+/// A signal name or text key: "<mod>.<name>" of letters, digits, '_', '.', '-', a '.' after a
+/// non-empty mod, at most REFII_MOD_SIGNAL_NAME_MAX.
+bool ScopedName(const char* text) {
+  if (text == nullptr || text[0] == 0 || text[0] == '.' || std::strchr(text, '.') == nullptr) {
+    return false;
+  }
+  size_t n = 0;
+  for (const char* c = text; *c != 0; ++c, ++n) {
+    const bool ok = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '_' ||
+                    *c == '.' || *c == '-';
+    if (!ok || n >= REFII_MOD_SIGNAL_NAME_MAX) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// The payload's bytes, cut to REFII_MOD_SIGNAL_PAYLOAD_MAX with a mod error naming what was cut.
+size_t BoundedPayload(const char* what, const char* name, const char* payload) {
+  const size_t size = payload != nullptr ? std::strlen(payload) : 0u;
+  if (size <= REFII_MOD_SIGNAL_PAYLOAD_MAX) {
+    return size;
+  }
+  char error[256];
+  std::snprintf(error, sizeof(error), "%s '%s': %zu bytes, cut at %d", what, name, size, REFII_MOD_SIGNAL_PAYLOAD_MAX);
+  refii_bridge_mod_error_post(error, std::strlen(error));
+  REXLOG_WARN("[mods] {}", error);
+  return REFII_MOD_SIGNAL_PAYLOAD_MAX;
+}
+
+}  // namespace
+
+// A signal and a published text for Godot on this machine, on the host-only UI kind: the payload
+// crosses base64 (the bus's quoted field carries no quote), so it arrives exactly.
+
+extern "C" int32_t refii_mod_signal(const char* name, const char* payload) {
+  if (!ScopedName(name)) {
+    return 0;
+  }
+  const size_t size = BoundedPayload("signal", name, payload);
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND,
+                         std::string("op='signal',name='") + name + "',payload='" + Base64(payload, size) + "'");
+  return 1;
+}
+
+extern "C" int32_t refii_mod_publish_text(const char* key, const char* text) {
+  if (!ScopedName(key)) {
+    return 0;
+  }
+  const size_t size = BoundedPayload("publish_text", key, text);
+  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND,
+                         std::string("op='publish_text',key='") + key + "',text='" + Base64(text, size) + "'");
   return 1;
 }
 
@@ -1161,8 +1370,250 @@ extern "C" int32_t refii_mod_spend_experience(PPCContext* ctx, uint8_t* base, ui
   return 1;
 }
 
+namespace refii::vfs {
+/// mod_events.cpp: the stamp the next spell factory call takes (refii_mod_cast_options).
+void PushCastStamp(int32_t tag, float damage_scale);
+void PopCastStamp();
+}  // namespace refii::vfs
+
+namespace {
+
+/// The factory's spell types (sub_824B1828's switch on r4).
+constexpr int32_t kSpellLightning = 0;
+constexpr int32_t kSpellFireball = 1;
+constexpr int32_t kSpellBlades = 3;
+constexpr int32_t kSpellVortex = 4;
+constexpr int32_t kSpellChaos = 5;
+constexpr int32_t kSpellForcePush = 6;
+constexpr const char* kSpellNames[8] = {"Lightning", "Fireball", "Slow Time", "Blades",
+                                        "Vortex",    "Chaos",    "Force Push", "Raise Dead"};
+
+/// sub_825FEFC8(entity r3, r4, f1) -> v1: the point a targeted Start aims at on its target. The
+/// placement position (`lwz r4,0x7C(r31)`, slot 0x40, 0x825ff01c..30); with r4 clear, the body
+/// point (component 23, `bl sub_824292A0` 0x825ff1ac) where the entity has one (+0x24 bit 8,
+/// 0x825ff09c); lane 2 raised by f1 (`fadds f13,f0,f31` 0x825ff1cc), or by 0 for a dead entity
+/// (+0x34 sign, 0x825ff03c) or posture 11 and -0.5 for posture 15 (sub_825FDB40, 0x825ff054..6c).
+constexpr uint32_t kAimPoint = 0x825FEFC8u;
+/// sub_8260D580(definitions hash, type, 1 "Targeted" / else "Area") -> entry: the definition the
+/// factory hands the new spell's data read (sub_824B1828: `bl sub_8260D580`, then slot 0).
+constexpr uint32_t kSpellDefinition = 0x8260D580u;
+/// Targeted Lightning's data read, its class's slot 0 (sub_827405C0, r3 object, r4 definition):
+/// copies five 32-byte per-power records from the defaults (0x83320BD0) to object +0x80, then
+/// each power's GDB values over them; CreateImpactFX is the record's byte +0x1C (`stb r8,0x14(r30)`
+/// 0x827407cc, r30 the record + 8).
+constexpr uint32_t kLightningReadData = 0x827405C0u;
+constexpr uint32_t kLightningRecords = 0x80u;
+constexpr uint32_t kLightningRecordBytes = 32u;
+constexpr uint32_t kLightningCreateImpactFx = 0x1Cu;
+/// Targeted Lightning (sub_827407F0): with a target, the bolt runs from v1 to
+/// sub_825FEFC8(target, CreateImpactFX of the power, 0.25) (`lbz r9,0x9C(r10)` 0x827408c0, `lfs
+/// f1` flt_8209B730 0x827408d8, `bl` 0x827408dc), after a segment test from v1 to that point
+/// (slot 0x44 type 0x16, 0x82740ce0..0x82740d14) that ends the bolt on the first creature or wall.
+constexpr float kLightningLift = 0.25f;
+/// Without a target the bolt's end is v1 + 15 v2 (flt_820994D8, 0x827408f4..0x8274091c), ±2 on
+/// x and y (0x8274092c, 0x82740964); a clear segment then rolls > 0.5 (LHMath_GFFloatRandom
+/// 0x82740a28, 0x82740a3c) to re-acquire a creature whose height is within 1.35 of v1's
+/// (flt_820B139C 0x82740a38; `fabs(z - v1.z) <= 1.35` in sub_82743290, 0x82740af0).
+constexpr float kLightningReach = 15.0f;
+constexpr float kLightningReacquireHeight = 1.35f;
+static_assert(kLightningReach > kLightningReacquireHeight,
+              "a start one reach above the point is outside the re-acquire's height");
+/// Targeted Fireball (sub_82743B10): the shot spawns at v1 (sub_828E5180 "SpellShotEntity"); a
+/// shot within 1.0 of sub_825FEFC8(target, 0, 0) (0x82743d84..8c; `vmsum3fp` against flt_82099490
+/// 0x82743e18..38) impacts there at once (`bl sub_827441F0` 0x82743e94), its normal
+/// normalize(point - shot) (0x82743e54) — zero below the normaliser's epsilon.
+constexpr float kFireballImpactReach = 1.0f;
+/// Targeted Vortex (sub_828B20D0): its twister entity spawns at v1 + 1.25 v2 (flt_8209B760
+/// 0x828b2148, `vmaddfp128` 0x828b2168, "VortexEntity" 0x828b2194).
+constexpr float kVortexSpawnAhead = 1.25f;
+/// Math_Vec3NormalizeInPlaceEps's epsilon (flt_82099A80): a shorter vector normalises to zero.
+constexpr float kDirectionEpsilon = 1.0e-4f;
+
+void CastAtError(const char* format, const char* what) {
+  char error[256];
+  std::snprintf(error, sizeof(error), format, what);
+  refii_bridge_mod_error_post(error, std::strlen(error));
+  REXLOG_WARN("[mods] {}", error);
+}
+
+/// sub_825FEFC8(entity, flag, lift): the game's own aim point on `entity`.
+bool AimPoint(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t flag, float lift, float* out) {
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = entity;
+  work.r4.u32 = flag;
+  work.f1.f64 = static_cast<double>(lift);
+  if (!refii::mods::CallGuest(work, base, refii::guest::Address(kAimPoint))) {
+    return false;
+  }
+  refii::mods::GetVector(work, 1, out);
+  return std::isfinite(out[0]) && std::isfinite(out[1]) && std::isfinite(out[2]);
+}
+
+/// Targeted Lightning's CreateImpactFX at `power` for the caster's definitions, read by its own
+/// class's data read into scratch below the caller's frame, as the factory feeds a new spell.
+uint32_t LightningCreatesImpactFx(PPCContext* ctx, uint8_t* base, uint32_t definitions, int32_t power) {
+  PPCContext lookup = refii::mods::Frame(*ctx, 0x400u);
+  lookup.r3.u32 = definitions;
+  lookup.r4.u32 = static_cast<uint32_t>(kSpellLightning);
+  lookup.r5.u32 = 1u;
+  if (!refii::mods::CallGuest(lookup, base, refii::guest::Address(kSpellDefinition))) {
+    return 0u;
+  }
+  PPCContext read = refii::mods::Frame(*ctx, 0x400u);
+  const uint32_t object = read.r1.u32 + 0x100u - kLightningRecords;  // records at r1+0x100..+0x1A0
+  read.r3.u32 = object;
+  read.r4.u32 = Plausible(lookup.r3.u32) ? lookup.r3.u32 : 0u;  // 0: the defaults alone, as the read does
+  if (!refii::mods::CallGuest(read, base, refii::guest::Address(kLightningReadData))) {
+    return 0u;
+  }
+  const uint32_t record = object + kLightningRecords + kLightningRecordBytes * static_cast<uint32_t>(power);
+  return base[record + kLightningCreateImpactFx] != 0 ? 1u : 0u;
+}
+
+/// The unit direction from `from` to `to`, else `fallback` normalised, else up.
+void Toward(const float* from, const float* to, const float* fallback, float* out) {
+  float d[3] = {to[0] - from[0], to[1] - from[1], to[2] - from[2]};
+  float length = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+  if (!(length >= kDirectionEpsilon)) {
+    d[0] = fallback[0];
+    d[1] = fallback[1];
+    d[2] = fallback[2];
+    length = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+  }
+  if (!(length >= kDirectionEpsilon) || !std::isfinite(length)) {
+    out[0] = 0.0f;
+    out[1] = 0.0f;
+    out[2] = 1.0f;
+    return;
+  }
+  for (int i = 0; i < 3; ++i) {
+    out[i] = d[i] / length;
+  }
+}
+
+/// refii_mod_cast_options.at: the start (v1) and facing (v2) each class's Start makes of that
+/// place, from `origin` (where the cast comes from) with `fallback` as the facing when the origin
+/// stands on it. False, the mod error posted, for a type with no rule for the place.
+bool PlaceCastAt(PPCContext* ctx, uint8_t* base, int32_t type, int32_t power, uint32_t definitions,
+                 const refii_mod_cast_options& options, int32_t targeted, uint32_t target, const float* origin,
+                 const float* fallback, float* v1, float* v2) {
+  const char* name = kSpellNames[type];
+  const bool entity = options.at_kind == REFII_MOD_CAST_AT_ENTITY;
+  if (!entity && options.at_kind != REFII_MOD_CAST_AT_POINT) {
+    CastAtError("cast_spell %s: at is an entity or a point", name);
+    return false;
+  }
+  if (targeted == 0) {
+    CastAtError("cast_spell %s: at casts the Targeted class; targeted must be set", name);
+    return false;
+  }
+  float place[3] = {options.at_point[0], options.at_point[1], options.at_point[2]};
+  if (entity) {
+    if (!refii_mod_entity_alive(base, options.at_entity) || (target != 0 && target != options.at_entity)) {
+      CastAtError("cast_spell %s: at names a live entity, and target is 0 or that entity", name);
+      return false;
+    }
+    if (refii_mod_entity_position(ctx, base, options.at_entity, place) == 0) {
+      return false;
+    }
+  } else if (target != 0 || !std::isfinite(place[0]) || !std::isfinite(place[1]) || !std::isfinite(place[2])) {
+    CastAtError("cast_spell %s: at a point takes a finite point and no target", name);
+    return false;
+  }
+  float u[3];
+  switch (type) {
+    case kSpellLightning:
+      if (entity) {
+        // On the bolt's own end: the segment test covers nothing, the bolt strikes the target.
+        if (!AimPoint(ctx, base, options.at_entity, LightningCreatesImpactFx(ctx, base, definitions, power),
+                      kLightningLift, v1)) {
+          return false;
+        }
+        Toward(origin, v1, fallback, v2);
+      } else {
+        // One reach above the point, facing down: the end is the point, and no creature at the
+        // point's height is within the re-acquire's 1.35 of the start.
+        v1[0] = place[0];
+        v1[1] = place[1];
+        v1[2] = place[2] + kLightningReach;
+        v2[0] = 0.0f;
+        v2[1] = 0.0f;
+        v2[2] = -1.0f;
+      }
+      return true;
+    case kSpellFireball:
+      if (!entity) {
+        CastAtError("cast_spell %s: no rule for a point; its shot impacts at once only on a target (0x82743df0)", name);
+        return false;
+      }
+      // Within the immediate-impact reach, set back toward the origin so the impact's normal is
+      // the cast's direction rather than the zero a shot spawned on the point gets.
+      if (!AimPoint(ctx, base, options.at_entity, 0u, 0.0f, place)) {
+        return false;
+      }
+      Toward(origin, place, fallback, u);
+      for (int i = 0; i < 3; ++i) {
+        v1[i] = place[i] - 0.5f * kFireballImpactReach * u[i];
+        v2[i] = u[i];
+      }
+      return true;
+    case kSpellBlades:
+      // Its swords are made at v1 (sub_825A2E68 stores v1 at +0xA0 0x825a2f54; each sword
+      // sub_825A37E0 from it, 0x825a301c..28).
+      Toward(origin, place, fallback, v2);
+      v1[0] = place[0];
+      v1[1] = place[1];
+      v1[2] = place[2];
+      return true;
+    case kSpellVortex:
+      Toward(origin, place, fallback, u);
+      for (int i = 0; i < 3; ++i) {
+        v1[i] = place[i] - kVortexSpawnAhead * u[i];
+        v2[i] = u[i];
+      }
+      return true;
+    case kSpellChaos:
+      // sub_82748C28: the stream runs from v1 to sub_825FEFC8(target, 0, 0) (0x82748ca8..b0)
+      // after a segment test that drops the target when anything else is struck first
+      // (sub_828E5A10); the victim is turned only while the target stands (+0x74). No target, no
+      // victim: nothing is done at a point.
+      if (!entity) {
+        CastAtError("cast_spell %s: no rule for a point; it acts only on its target (+0x74)", name);
+        return false;
+      }
+      if (!AimPoint(ctx, base, options.at_entity, 0u, 0.0f, v1)) {
+        return false;
+      }
+      Toward(origin, v1, fallback, v2);
+      return true;
+    case kSpellForcePush:
+      // sub_828B2CC8: with a target it shoves along v1 (dropped to the ground, sub_825F6990
+      // 0x828b2d9c) to sub_825FEFC8(target, 0, 0) (0x828b2db0); without one along v1 + 25 v2
+      // (flt_8209BC54 0x828b2df4) to the first wall (slot 0x44, 0x828b2e64).
+      if (entity && !AimPoint(ctx, base, options.at_entity, 0u, 0.0f, place)) {
+        return false;
+      }
+      Toward(origin, place, fallback, v2);
+      v1[0] = origin[0];
+      v1[1] = origin[1];
+      v1[2] = origin[2];
+      return true;
+    default:
+      CastAtError("cast_spell %s: no rule for casting at a place", name);
+      return false;
+  }
+}
+
+}  // namespace
+
 extern "C" uint32_t refii_mod_cast_spell(PPCContext* ctx, uint8_t* base, uint32_t caster, int32_t type, int32_t targeted,
                                          uint32_t target, int32_t level, const float* pos, const float* dir) {
+  return refii_mod_cast_spell_with(ctx, base, caster, type, targeted, target, level, pos, dir, nullptr);
+}
+
+extern "C" uint32_t refii_mod_cast_spell_with(PPCContext* ctx, uint8_t* base, uint32_t caster, int32_t type,
+                                              int32_t targeted, uint32_t target, int32_t level, const float* pos,
+                                              const float* dir, const refii_mod_cast_options* options) {
   if (ctx == nullptr || type < 0 || type > 7 || !Plausible(caster)) {
     return 0;
   }
@@ -1197,22 +1648,126 @@ extern "C" uint32_t refii_mod_cast_spell(PPCContext* ctx, uint8_t* base, uint32_
       }
     }
   }
+  const int32_t power = level < 0 ? 0 : (level > 4 ? 4 : level);
+  const uint32_t definitions = refii::mods::LoadU32(base, manager + kManagerDefinitions);
+  if (options != nullptr && options->at_kind != REFII_MOD_CAST_AT_NONE) {
+    float origin[3] = {at[0], at[1], at[2]};
+    if (pos == nullptr && refii_mod_entity_position(ctx, base, caster, origin) == 0) {
+      return 0;
+    }
+    float fallback[3] = {0.0f, 0.0f, 0.0f};
+    if (dir != nullptr) {
+      fallback[0] = dir[0];
+      fallback[1] = dir[1];
+      fallback[2] = dir[2];
+    } else {
+      refii_mod_facing(ctx, base, caster, fallback);
+    }
+    if (!PlaceCastAt(ctx, base, type, power, definitions, *options, targeted, target, origin, fallback, at, facing)) {
+      return 0;
+    }
+    targeted = 1;
+    target = options->at_kind == REFII_MOD_CAST_AT_ENTITY ? options->at_entity : 0u;
+  }
   PPCContext work = refii::mods::Frame(*ctx);
   work.r3.u32 = registry;
   work.r4.u32 = static_cast<uint32_t>(type);
   work.r5.u32 = targeted != 0 ? 1u : 0u;
   work.r6.u32 = target;
-  work.r7.u32 = static_cast<uint32_t>(level < 0 ? 0 : (level > 4 ? 4 : level));
+  work.r7.u32 = static_cast<uint32_t>(power);
   work.r8.u32 = caster;
-  work.r9.u32 = refii::mods::LoadU32(base, manager + kManagerDefinitions);
+  work.r9.u32 = definitions;
   refii::mods::SetVector(work, 1, at);
   refii::mods::SetVector(work, 2, facing);
+  refii::vfs::PushCastStamp(options != nullptr ? options->tag : 0, options != nullptr ? options->damage_scale : 1.0f);
   rex_CSpellRegistry_Create(work, base);
+  refii::vfs::PopCastStamp();
   return Plausible(work.r3.u32) ? work.r3.u32 : 0u;
 }
 
 extern "C" uint32_t refii_mod_spell_serial(uint8_t* base, uint32_t spell) {
   return Plausible(spell) ? refii::mods::LoadU32(base, spell + kSpellSerial) : 0u;
+}
+
+namespace {
+
+/// A Targeted class's data read for refii_mod_spell_balance (r3 the object, r4 the definition, 0
+/// for its defaults alone): where its per-power records start on the object and their stride, each
+/// field's offset in a record (-1 the class has none), and the spread its Start draws on the status.
+struct BalanceRead {
+  int32_t type;
+  uint32_t read;
+  uint32_t records;
+  uint32_t stride;
+  int32_t status;
+  float spread;
+  int32_t duration;
+  int32_t swords;
+};
+
+constexpr BalanceRead kBalanceReads[] = {
+    // `*(v8 - 1)` with v8 = object + 0x88: ElectrifyDuration at record +4 (sub_827405C0).
+    {kSpellLightning, kLightningReadData, kLightningRecords, kLightningRecordBytes, 4, 5.0f, -1, -1},
+    // `v3 = result + 45`, nine words a power; `*(v11 - 1)` CreatureBurnTime at record +0 (sub_82743968).
+    {kSpellFireball, 0x82743968u, 0xB4u, 36u, 0, 0.0f, -1, -1},
+    // `v3 = result + 32`, five words a power; `*(v12 - 2)` NumSwords (type 1, int) at record +0 (sub_825A1D68).
+    {kSpellBlades, 0x825A1D68u, 0x80u, 20u, -1, 0.0f, -1, 0},
+    // `a1 + 128`, 0x5C a power; `*(v11 - 4)` Duration at record +0 (sub_828B1EA8).
+    {kSpellVortex, 0x828B1EA8u, 0x80u, 92u, -1, 0.0f, 0, -1},
+    // `v5 = result + 32`, one float a power: Duration (sub_82748B10).
+    {kSpellChaos, 0x82748B10u, 0x80u, 4u, 0, 2.0f, -1, -1},
+};
+
+}  // namespace
+
+extern "C" int32_t refii_mod_spell_balance(PPCContext* ctx, uint8_t* base, uint32_t caster, int32_t type, int32_t level,
+                                           refii_mod_cast_balance* out) {
+  if (out == nullptr) {
+    return 0;
+  }
+  out->status_seconds = -1.0f;
+  out->status_spread = -1.0f;
+  out->duration = -1.0f;
+  out->swords = -1;
+  const BalanceRead* read = nullptr;
+  for (const BalanceRead& r : kBalanceReads) {
+    if (r.type == type) {
+      read = &r;
+    }
+  }
+  const uint32_t manager = ctx != nullptr && read != nullptr && Plausible(caster)
+                               ? refii_mod_component(base, caster, kSpellManagerComponent)
+                               : 0u;
+  if (manager == 0) {
+    return 0;
+  }
+  PPCContext lookup = refii::mods::Frame(*ctx, 0x400u);
+  lookup.r3.u32 = refii::mods::LoadU32(base, manager + kManagerDefinitions);
+  lookup.r4.u32 = static_cast<uint32_t>(type);
+  lookup.r5.u32 = 1u;
+  if (!refii::mods::CallGuest(lookup, base, refii::guest::Address(kSpellDefinition))) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx, 0x400u);
+  const uint32_t object = work.r1.u32 + 0x100u - read->records;  // records from r1+0x100, above the read's own frame
+  work.r3.u32 = object;
+  work.r4.u32 = Plausible(lookup.r3.u32) ? lookup.r3.u32 : 0u;
+  if (!refii::mods::CallGuest(work, base, refii::guest::Address(read->read))) {
+    return 0;
+  }
+  const uint32_t power = static_cast<uint32_t>(level < 0 ? 0 : (level > 4 ? 4 : level));
+  const uint32_t record = object + read->records + read->stride * power;
+  if (read->status >= 0) {
+    out->status_seconds = refii::mods::LoadF32(base, record + static_cast<uint32_t>(read->status));
+    out->status_spread = read->spread;
+  }
+  if (read->duration >= 0) {
+    out->duration = refii::mods::LoadF32(base, record + static_cast<uint32_t>(read->duration));
+  }
+  if (read->swords >= 0) {
+    out->swords = static_cast<int32_t>(refii::mods::LoadU32(base, record + static_cast<uint32_t>(read->swords)));
+  }
+  return 1;
 }
 
 extern "C" uint32_t refii_mod_live_spell(PPCContext* ctx, uint8_t* base, int32_t type, uint32_t caster) {
@@ -1247,6 +1802,45 @@ extern "C" int32_t refii_mod_save_get_int(PPCContext* ctx, uint8_t* base, const 
   char expr[160];
   std::snprintf(expr, sizeof(expr), "RefiiModSave and RefiiModSave.%s", key);
   return refii_mod_game_lua_int(ctx, base, expr, lo, hi, out);
+}
+
+namespace {
+
+/// Player.IsAbleToSaveGame's body (TU1 0x823F3660 / disc 0x823D2070): r3 the player component.
+constexpr uint32_t kIsAbleToSaveGame = 0x823F3660u;
+/// AutoSaveGame's body (TU1 0x82445730 / disc 0x824E8D28): r3 the save manager, r4 defer, r5 force.
+constexpr uint32_t kAutoSaveGame = 0x82445730u;
+/// The game's save manager, *(game + 0x94): what AutoSaveGame is bound to (0x82459050).
+constexpr uint32_t kGameSaveManager = 0x94;
+
+}  // namespace
+
+extern "C" int32_t refii_mod_can_save(PPCContext* ctx, uint8_t* base, int32_t player) {
+  const uint32_t hero = ctx != nullptr ? refii_mod_player_hero(base, player) : 0u;
+  const uint32_t component = hero != 0 ? refii_mod_component(base, hero, kPlayerComponent) : 0u;
+  if (component == 0) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = component;
+  return refii::mods::CallGuest(work, base, refii::guest::Address(kIsAbleToSaveGame)) && (work.r3.u32 & 0xFFu) != 0 ? 1 : 0;
+}
+
+extern "C" int32_t refii_mod_save_game(PPCContext* ctx, uint8_t* base, int32_t player) {
+  if (refii_mod_can_save(ctx, base, player) == 0) {
+    return 0;
+  }
+  const uint32_t root = refii::mods::LoadU32(base, refii::guest::Address(kGameRoot));
+  const uint32_t game = Plausible(root) ? refii::mods::LoadU32(base, root + 12u) : 0u;
+  const uint32_t manager = Plausible(game) ? refii::mods::LoadU32(base, game + kGameSaveManager) : 0u;
+  if (!Plausible(manager)) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = manager;
+  work.r4.u64 = 1;
+  work.r5.u64 = 1;
+  return refii::mods::CallGuest(work, base, refii::guest::Address(kAutoSaveGame)) ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1290,6 +1884,87 @@ extern "C" int32_t refii_mod_set_position(PPCContext* ctx, uint8_t* base, uint32
   PPCContext work = refii::mods::Frame(*ctx);
   refii::mods::SetVector(work, 1, xyz);
   return refii::mods::CallVirtual(work, base, placement, kSetPositionSlot) ? 1 : 0;
+}
+
+namespace {
+
+/// Physics.GetFacingVector (TU1 0x821F5BC0 / disc 0x821F5A90): r3 the out vector, r4 the placement.
+constexpr uint32_t kPhysicsGetFacing = 0x821F5BC0u;
+/// Physics.SetFacingVector (TU1 0x82266518 / disc 0x822664D8): r3 the placement, v1 the vector.
+constexpr uint32_t kPhysicsSetFacing = 0x82266518u;
+/// Player.SetFacingVector (TU1 0x823F3420 / disc 0x823D1E30): r3 the player component, v1 the vector.
+constexpr uint32_t kPlayerSetFacing = 0x823F3420u;
+/// Physics.GetVelocity is the placement's slot 19 (`lwz r11,0x4C(r12)` 0x8229dde4).
+constexpr uint32_t kPlacementVelocitySlot = 19;
+/// The component the Physics binder resolves (`sub_821E4368`: presence bit 2 at +0x24, slot 2).
+constexpr uint32_t kPhysicsPlacementComponent = 2;
+constexpr uint32_t kEntityInWorldByte = 0x90;
+constexpr uint8_t kEntityInWorldBit = 0x40;
+
+/// The placement the Physics binder hands its body: 0 for an entity not in the world.
+uint32_t PhysicsPlacement(uint8_t* base, uint32_t entity) {
+  if (!Plausible(entity) || (refii::mods::LoadU8(base, entity + kEntityInWorldByte) & kEntityInWorldBit) == 0) {
+    return 0u;
+  }
+  return refii_mod_component(base, entity, kPhysicsPlacementComponent);
+}
+
+/// The vector a getter left at `at` (the r3 it returned).
+bool ReadVector(uint8_t* base, uint32_t at, float* out_xyz) {
+  if (!Plausible(at) || out_xyz == nullptr) {
+    return false;
+  }
+  for (uint32_t i = 0; i < 3; ++i) {
+    out_xyz[i] = refii::mods::LoadF32(base, at + 4u * i);
+  }
+  return true;
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_facing(PPCContext* ctx, uint8_t* base, uint32_t entity, float* out_xyz) {
+  const uint32_t placement = ctx != nullptr ? PhysicsPlacement(base, entity) : 0u;
+  if (placement == 0 || out_xyz == nullptr) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = work.r1.u32 + 0x40u;  // 16-byte aligned: the body stores with stvx128
+  work.r4.u32 = placement;
+  return refii::mods::CallGuest(work, base, refii::guest::Address(kPhysicsGetFacing)) && ReadVector(base, work.r3.u32, out_xyz)
+             ? 1
+             : 0;
+}
+
+extern "C" int32_t refii_mod_velocity(PPCContext* ctx, uint8_t* base, uint32_t entity, float* out_xyz) {
+  const uint32_t placement = ctx != nullptr ? PhysicsPlacement(base, entity) : 0u;
+  if (placement == 0 || out_xyz == nullptr) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = work.r1.u32 + 0x40u;
+  work.r4.u32 = placement;
+  return refii::mods::CallVirtual(work, base, placement, kPlacementVelocitySlot) && ReadVector(base, work.r3.u32, out_xyz)
+             ? 1
+             : 0;
+}
+
+extern "C" int32_t refii_mod_set_facing(PPCContext* ctx, uint8_t* base, uint32_t entity, const float* xyz) {
+  if (xyz == nullptr || !std::isfinite(xyz[0]) || !std::isfinite(xyz[1]) || !std::isfinite(xyz[2])) {
+    return 0;
+  }
+  const uint32_t placement = ctx != nullptr ? PhysicsPlacement(base, entity) : 0u;
+  if (placement == 0) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  refii::mods::SetVector(work, 1, xyz);
+  const uint32_t player = refii::mods::IsPlayerHero(base, entity) ? refii_mod_component(base, entity, kPlayerComponent) : 0u;
+  if (player != 0) {
+    work.r3.u32 = player;
+    return refii::mods::CallGuest(work, base, refii::guest::Address(kPlayerSetFacing)) ? 1 : 0;
+  }
+  work.r3.u32 = placement;
+  return refii::mods::CallGuest(work, base, refii::guest::Address(kPhysicsSetFacing)) ? 1 : 0;
 }
 
 // THE TINT SETTER, sub_82573770(CECGraphicAppearance* r3, const float r4[4]) (disc sub_82548418,
@@ -1493,6 +2168,10 @@ extern "C" uint32_t refii_mod_locked_target(PPCContext* ctx, uint8_t* base, int3
 // Cutscenes (core/refii_mod_events.h CutsceneEvent quotes each instruction).
 // ---------------------------------------------------------------------------------------------
 
+namespace refii::vfs {
+int32_t ModCameraHeldBits(int32_t player);  // mod_commands.cpp
+}  // namespace refii::vfs
+
 namespace {
 
 /// comp33 +0x3B: `Player.SetForegroundCutsceneInEffect`'s `stb r4,0x3B(r3)` (0x823e72dc, disc 0x823c5d0c).
@@ -1537,7 +2216,9 @@ int32_t HeroCutsceneKinds(uint8_t* base, int32_t player) {
   if (refii::mods::LoadU8(base, comp + kForegroundCutscene) != 0) {
     kinds |= REFII_CUTSCENE_INTERACTIVE;
   }
-  if (refii::mods::LoadU32(base, comp + kLookAtCameraMode) != 0) {
+  // A camera_override hold standing on the LookAt half wrote this word itself (refii_mod_camera_override):
+  // that is a mod's camera, not a scene's.
+  if (refii::mods::LoadU32(base, comp + kLookAtCameraMode) != 0 && (refii::vfs::ModCameraHeldBits(player) & 2) == 0) {
     kinds |= REFII_CUTSCENE_LOOK_AT;
   }
   return kinds;
@@ -1563,6 +2244,26 @@ namespace refii::vfs {
 /// The tick's poll (mod_events.cpp): the full cutscene, and one player's own statements.
 bool ModFullCutscenePlaying(PPCContext& ctx, uint8_t* base) { return FullCutscenePlaying(ctx, base); }
 int32_t ModHeroCutsceneKinds(uint8_t* base, int32_t player) { return HeroCutsceneKinds(base, player); }
+
+/// The lock_lost seam (mod_events.cpp rex_CPlayer_ClearPlayerMode): whether `player`'s hero holds
+/// player mode 4, the game's own HasPlayerMode; the player whose mode handle (comp33+0x14) `handle`
+/// is, 0 for neither; and the target its targeting component holds (GetTarget, slot 17).
+bool ModHeroLockMode(PPCContext& ctx, uint8_t* base, int32_t player) {
+  const LockParts parts = PartsOf(base, player);
+  return parts.player != 0 && HasPlayerMode(ctx, base, parts.player, kTargetLockMode);
+}
+int32_t ModPlayerOfModeHandle(uint8_t* base, uint32_t handle) {
+  for (int32_t player = 1; player <= 2 && Plausible(handle); ++player) {
+    const LockParts parts = PartsOf(base, player);
+    if (parts.player != 0 && refii::mods::LoadU32(base, parts.player + kPlayerHandle) == handle) {
+      return player;
+    }
+  }
+  return 0;
+}
+uint32_t ModHeroTarget(PPCContext& ctx, uint8_t* base, int32_t player) {
+  return TargetOf(ctx, base, PartsOf(base, player).targeting);
+}
 
 }  // namespace refii::vfs
 
@@ -1669,6 +2370,77 @@ extern "C" int32_t refii_mod_allow_action_interrupt(uint8_t* base, uint32_t acti
   refii::mods::StoreU8(base, action + kActionInterruptAllowed, 1u);
   return 1;
 }
+
+namespace {
+
+/// A grant waiting for its action's clock (refii_mod_allow_action_interrupt_at).
+struct PendingInterrupt {
+  uint32_t action = 0;
+  float at = 0.0f;
+  float last = 0.0f;
+  uint32_t ticks = 0;
+};
+
+/// More than both heroes' committed strikes and any creature a mod times besides.
+std::array<PendingInterrupt, 32> g_pending_interrupts{};
+
+/// A grant whose action never reaches its time is dropped after this many ticks (a minute at 30 Hz).
+constexpr uint32_t kPendingInterruptTicks = 1800;
+
+}  // namespace
+
+extern "C" int32_t refii_mod_allow_action_interrupt_at(PPCContext* ctx, uint8_t* base, uint32_t action, float seconds) {
+  float elapsed = 0.0f;
+  if (ctx == nullptr || !Plausible(action) || refii::mods::LoadU8(base, action + kActionStopped) != 0 ||
+      refii::mods::LoadU8(base, action + kActionNoInterrupt) != 0 || refii_mod_action_elapsed(ctx, base, action, &elapsed) == 0) {
+    return 0;
+  }
+  if (!(seconds > elapsed)) {
+    return refii_mod_allow_action_interrupt(base, action);
+  }
+  PendingInterrupt* slot = nullptr;
+  for (PendingInterrupt& pending : g_pending_interrupts) {
+    if (pending.action == action) {
+      slot = &pending;
+      break;
+    }
+    if (slot == nullptr && pending.action == 0u) {
+      slot = &pending;
+    }
+  }
+  if (slot == nullptr) {
+    return 0;
+  }
+  *slot = PendingInterrupt{action, seconds, elapsed, 0u};
+  return 1;
+}
+
+namespace refii::vfs {
+
+/// Each waiting grant: given once its action's clock reaches the time; dropped when the action
+/// stops, its clock runs backwards (the address is another action's now) or it never gets there.
+void PumpActionInterrupts(PPCContext& ctx, uint8_t* base) {
+  for (PendingInterrupt& pending : g_pending_interrupts) {
+    if (pending.action == 0u) {
+      continue;
+    }
+    float elapsed = 0.0f;
+    PPCContext work = ctx;
+    if (refii::mods::LoadU8(base, pending.action + kActionStopped) != 0 ||
+        refii_mod_action_elapsed(&work, base, pending.action, &elapsed) == 0 || elapsed + 1e-4f < pending.last ||
+        ++pending.ticks > kPendingInterruptTicks) {
+      pending.action = 0u;
+      continue;
+    }
+    pending.last = elapsed;
+    if (elapsed >= pending.at) {
+      refii_mod_allow_action_interrupt(base, pending.action);
+      pending.action = 0u;
+    }
+  }
+}
+
+}  // namespace refii::vfs
 
 extern "C" int32_t refii_mod_entity_living(uint8_t* base, uint32_t entity) {
   if (!refii_mod_entity_alive(base, entity)) {
@@ -2520,6 +3292,31 @@ extern "C" uint32_t refii_mod_add_item(PPCContext* ctx, uint8_t* base, uint32_t 
   return item;
 }
 
+namespace {
+/// The most items one refii_mod_add_items adds: each is the game's whole add, events included.
+constexpr int32_t kAddItemsMax = 100;
+}  // namespace
+
+extern "C" int32_t refii_mod_add_items(PPCContext* ctx, uint8_t* base, uint32_t entity, uint32_t definition, int32_t count,
+                                       uint32_t* out_last) {
+  if (out_last != nullptr) {
+    *out_last = 0u;
+  }
+  const int32_t wanted = count < 1 ? 0 : (count > kAddItemsMax ? kAddItemsMax : count);
+  int32_t added = 0;
+  for (int32_t i = 0; i < wanted; ++i) {
+    const uint32_t item = refii_mod_add_item(ctx, base, entity, definition);
+    if (item == 0u) {
+      break;
+    }
+    ++added;
+    if (out_last != nullptr) {
+      *out_last = item;
+    }
+  }
+  return added;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Hero stats, physique, inventory, weapons, space, spawning (v2 helpers)
 // ---------------------------------------------------------------------------------------------
@@ -2596,6 +3393,44 @@ extern "C" int32_t refii_mod_purity(PPCContext* ctx, uint8_t* base, uint32_t ent
   return 1;
 }
 
+extern "C" int32_t refii_mod_modify_renown(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t delta) {
+  const uint32_t stats = ctx != nullptr ? StatsOf(base, entity) : 0u;
+  if (stats == 0) {
+    return 0;
+  }
+  // Stats.ModifyRenown: `li r5,0; b sub_824D62A0` (0x824d6bd8).
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = stats;
+  work.r4.u64 = static_cast<uint32_t>(delta);
+  work.r5.u64 = 0;
+  rex_lhHeroStats_ModifyRenown(work, base);
+  return 1;
+}
+
+extern "C" int32_t refii_mod_modify_morality(PPCContext* ctx, uint8_t* base, uint32_t entity, float delta) {
+  const uint32_t stats = ctx != nullptr && std::isfinite(delta) ? StatsOf(base, entity) : 0u;
+  if (stats == 0) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = stats;
+  work.f1.f64 = static_cast<double>(delta);
+  rex_lhHeroStats_ModifyMorality(work, base);
+  return 1;
+}
+
+extern "C" int32_t refii_mod_modify_purity(PPCContext* ctx, uint8_t* base, uint32_t entity, float delta) {
+  const uint32_t stats = ctx != nullptr && std::isfinite(delta) ? StatsOf(base, entity) : 0u;
+  if (stats == 0) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = stats;
+  work.f1.f64 = static_cast<double>(delta);
+  rex_lhHeroStats_ModifyPurity(work, base);
+  return 1;
+}
+
 extern "C" int32_t refii_mod_physique(uint8_t* base, uint32_t entity, float* out_fat, float* out_height) {
   const uint32_t stats = StatsOf(base, entity);
   if (stats == 0) {
@@ -2619,6 +3454,325 @@ extern "C" int32_t refii_mod_age(uint8_t* base, uint32_t entity, float* out) {
     *out = refii::mods::LoadF32(base, age + kAgeYears);
   }
   return 1;
+}
+
+// --- Murgo's Mirror: a player's look (refii_mod_appearance) -------------------------------------
+
+namespace {
+
+using LookField = float refii_mod_appearance_t::*;
+/// refii_mod_appearance_t's inputs, with their player-store keys (Engine_CharacterMorphs.StoreKey)
+/// and the Mirror's ranges (Engine_CharacterMorphs.Sliders).
+constexpr LookField kLookFields[] = {
+    &refii_mod_appearance_t::tan,    &refii_mod_appearance_t::fat,      &refii_mod_appearance_t::height,
+    &refii_mod_appearance_t::strength, &refii_mod_appearance_t::skill,  &refii_mod_appearance_t::will,
+    &refii_mod_appearance_t::morality, &refii_mod_appearance_t::purity, &refii_mod_appearance_t::age,
+};
+constexpr const char* kLookKeys[] = {
+    "character_morphs.tan",   "character_morphs.fat",      "character_morphs.height",
+    "character_morphs.strength", "character_morphs.skill", "character_morphs.will",
+    "character_morphs.morality", "character_morphs.purity", "character_morphs.age",
+};
+constexpr const char* kLookAutomatic = "character_morphs.automatic";
+constexpr float kLookMin[] = {0, 0, -1, 0, 0, 0, 0, 0, 18};
+constexpr float kLookMax[] = {1, 1, 1, 1, 1, 1, 1, 1, 60};
+/// HeroMorphStats' neutral look, for an input neither stated nor readable.
+constexpr refii_mod_appearance_t kNeutralLook = {1, 0.5f, 0, 0, 0, 0, 0, 0.5f, 0.5f, 30};
+/// The game's normalised purity (TU1 sub_824D6F90 / disc sub_8249E100, r3 the stats): (purity -
+/// +0x28) / (+0x2C - +0x28), 1 for a range at or under 1e-4 — what sub_8278F848 (0x8278FBA0) and
+/// the weight function sub_822DA028 read.
+constexpr uint32_t kNormalisedPurity = 0x824D6F90u;
+constexpr uint32_t kStatsTan = 0x34;
+constexpr uint32_t kStatsStrength = 0x40;
+constexpr uint32_t kStatsSkill = 0x44;
+constexpr uint32_t kStatsWill = 0x48;
+constexpr uint32_t kStatsMoralityMin = 0x14;
+constexpr uint32_t kStatsMoralityMax = 0x18;
+
+/// The game's own look of `hero`: the stats fields the looks readers load, morality normalised as
+/// sub_822DA028's cases 9..16 do inline (`(GetMorality - v8[5]) / (v8[6] - v8[5])`, v8 the stats),
+/// purity by the game's normaliser, CECAge's years. False without stats.
+bool GameLook(PPCContext* ctx, uint8_t* base, uint32_t hero, refii_mod_appearance_t& out) {
+  const uint32_t stats = ctx != nullptr ? StatsOf(base, hero) : 0u;
+  if (stats == 0u) {
+    return false;
+  }
+  out = kNeutralLook;
+  out.tan = refii::mods::LoadF32(base, stats + kStatsTan);
+  out.fat = refii::mods::LoadF32(base, stats + kStatsFat);
+  out.height = refii::mods::LoadF32(base, stats + kStatsHeight);
+  out.strength = refii::mods::LoadF32(base, stats + kStatsStrength);
+  out.skill = refii::mods::LoadF32(base, stats + kStatsSkill);
+  out.will = refii::mods::LoadF32(base, stats + kStatsWill);
+  float morality = 0.0f;
+  const float low = refii::mods::LoadF32(base, stats + kStatsMoralityMin);
+  const float high = refii::mods::LoadF32(base, stats + kStatsMoralityMax);
+  if (refii_mod_morality(ctx, base, hero, &morality) != 0 && high > low) {
+    out.morality = (morality - low) / (high - low);
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u64 = stats;
+  if (refii::mods::CallGuest(work, base, refii::guest::Address(kNormalisedPurity))) {
+    out.purity = static_cast<float>(work.f1.f64);
+  }
+  refii_mod_age(base, hero, &out.age);
+  return true;
+}
+
+/// The inputs the store holds for `player` into `out`, each one present; true when all are.
+bool StoredInputs(int32_t player, refii_mod_appearance_t& out) {
+  bool all = true;
+  for (size_t i = 0; i < std::size(kLookFields); ++i) {
+    float value = 0.0f;
+    if (refii_mod_player_get(player, kLookKeys[i], &value) != 0 && std::isfinite(value)) {
+      out.*kLookFields[i] = value;
+    } else {
+      all = false;
+    }
+  }
+  return all;
+}
+
+/// Writes a whole look into the player's store: the inputs clamped to the Mirror's ranges, then the
+/// mode. A write where the hero is not played reaches the machine that plays it (player_state.cpp).
+void WriteLook(int32_t player, bool automatic, const refii_mod_appearance_t& look) {
+  for (size_t i = 0; i < std::size(kLookFields); ++i) {
+    const float value = look.*kLookFields[i];
+    refii_mod_player_set(player, kLookKeys[i],
+                         std::clamp(std::isfinite(value) ? value : kNeutralLook.*kLookFields[i], kLookMin[i], kLookMax[i]));
+  }
+  refii_mod_player_set(player, kLookAutomatic, automatic ? 1.0f : 0.0f);
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_appearance(PPCContext* ctx, uint8_t* base, int32_t player, refii_mod_appearance_t* out) {
+  if (player != 1 && player != 2) {
+    return 0;
+  }
+  refii_mod_appearance_t look = kNeutralLook;
+  float automatic = 1.0f;
+  const bool manual = refii_mod_player_get(player, kLookAutomatic, &automatic) != 0 && automatic == 0.0f &&
+                      StoredInputs(player, look);
+  if (manual) {
+    look.automatic = 0;
+  } else if (!GameLook(ctx, base, refii_mod_player_hero(base, player), look)) {
+    return 0;
+  }
+  if (out != nullptr) {
+    *out = look;
+  }
+  return 1;
+}
+
+extern "C" void refii_mod_set_appearance(PPCContext* ctx, uint8_t* base, int32_t player, const refii_mod_appearance_t* inputs) {
+  if ((player != 1 && player != 2) || inputs == nullptr) {
+    return;
+  }
+  refii_mod_appearance_t look = kNeutralLook;
+  refii_mod_appearance(ctx, base, player, &look);
+  for (const LookField field : kLookFields) {
+    if (!std::isnan(inputs->*field)) {
+      look.*field = inputs->*field;
+    }
+  }
+  WriteLook(player, false, look);
+}
+
+extern "C" void refii_mod_set_appearance_automatic(PPCContext* ctx, uint8_t* base, int32_t player, int32_t on) {
+  if (player != 1 && player != 2) {
+    return;
+  }
+  refii_mod_appearance_t look = kNeutralLook;
+  refii_mod_appearance_t probe = kNeutralLook;
+  if (!StoredInputs(player, probe)) {
+    GameLook(ctx, base, refii_mod_player_hero(base, player), look);
+  }
+  StoredInputs(player, look);
+  WriteLook(player, on != 0, look);
+}
+
+namespace refii::vfs {
+
+/// GameCharacterMorphs' statement of a settings slot's look for `player` (the `appearance_state`
+/// command): written only where that player's hero is played, so a slot whose player moved to the
+/// other machine (a join) never writes into the store the other machine owns.
+void AppearanceState(int32_t player, bool automatic, const refii_mod_appearance_t& look) {
+  if (refii_mod_player_here(player) == 0) {
+    return;
+  }
+  WriteLook(player, automatic, look);
+}
+
+}  // namespace refii::vfs
+
+// --- Mods' own morph types (refii_mod_morph_*) ------------------------------------------------
+
+namespace {
+
+/// One registered mod morph, as Engine_ModMorphs.Publish states it.
+struct ModMorphEntry {
+  uint32_t id;
+  float initial, minimum, maximum;
+};
+
+/// Engine_ModMorphs.Capacity.
+constexpr int32_t kMaxModMorphs = 256;
+
+std::mutex g_mod_morph_lock;
+std::vector<ModMorphEntry> g_mod_morphs;
+float g_mod_morph_generation = -1.0f;
+
+/// The registry Godot published (`refii.morphs.*`), read again when its generation moved.
+void RefreshModMorphs() {
+  const float generation = refii::mods::Setting("refii.morphs.generation", 0.0f);
+  std::lock_guard<std::mutex> lock(g_mod_morph_lock);
+  if (generation == g_mod_morph_generation) {
+    return;
+  }
+  g_mod_morph_generation = generation;
+  g_mod_morphs.clear();
+  const int32_t count = std::clamp(static_cast<int32_t>(refii::mods::Setting("refii.morphs.count", 0.0f)), 0, kMaxModMorphs);
+  char key[64];
+  const auto read = [&key](int32_t index, const char* field, float fallback) {
+    std::snprintf(key, sizeof(key), "refii.morphs.%d.%s", index, field);
+    return refii::mods::Setting(key, fallback);
+  };
+  for (int32_t i = 0; i < count; ++i) {
+    const float hi = read(i, "hi", -1.0f);
+    const float lo = read(i, "lo", -1.0f);
+    if (!(hi >= 0.0f && hi <= 0x7FFF && lo >= 0.0f && lo <= 0xFFFF)) {
+      continue;
+    }
+    ModMorphEntry entry{(static_cast<uint32_t>(hi) << 16) | static_cast<uint32_t>(lo), read(i, "default", 0.0f),
+                        read(i, "min", 0.0f), read(i, "max", 1.0f)};
+    if (entry.id < 0x100u || !(entry.maximum > entry.minimum) || !std::isfinite(entry.initial)) {
+      continue;
+    }
+    g_mod_morphs.push_back(entry);
+  }
+}
+
+bool FindModMorph(uint32_t id, ModMorphEntry& out) {
+  if (id < 0x100u) {
+    return false;
+  }
+  RefreshModMorphs();
+  std::lock_guard<std::mutex> lock(g_mod_morph_lock);
+  for (const ModMorphEntry& entry : g_mod_morphs) {
+    if (entry.id == id) {
+      out = entry;
+      return true;
+    }
+  }
+  return false;
+}
+
+void ModMorphKey(char* out, size_t size, uint32_t id) { std::snprintf(out, size, "morph.%u", id); }
+
+}  // namespace
+
+extern "C" uint32_t refii_mod_morph_id(const char* scoped) {
+  const char* begin = scoped != nullptr ? scoped : "";
+  while (*begin == ' ' || *begin == '\t') {
+    ++begin;
+  }
+  const char* end = begin + std::strlen(begin);
+  while (end > begin && (end[-1] == ' ' || end[-1] == '\t')) {
+    --end;
+  }
+  uint32_t hash = 0x811C9DC5u;
+  for (const char* c = begin; c < end; ++c) {
+    const uint8_t byte = static_cast<uint8_t>(*c);
+    hash = (hash * 0x01000193u) ^ (byte >= 'A' && byte <= 'Z' ? byte + 32u : byte);
+  }
+  const uint32_t id = hash & 0x7FFFFFFFu;
+  return id < 0x100u ? id + 0x100u : id;
+}
+
+extern "C" int32_t refii_mod_morph_list(uint32_t* out, int32_t capacity) {
+  RefreshModMorphs();
+  std::lock_guard<std::mutex> lock(g_mod_morph_lock);
+  const int32_t count = static_cast<int32_t>(g_mod_morphs.size());
+  for (int32_t i = 0; out != nullptr && i < count && i < capacity; ++i) {
+    out[i] = g_mod_morphs[i].id;
+  }
+  return count;
+}
+
+extern "C" int32_t refii_mod_morph_registered(uint32_t id, float* out_default, float* out_min, float* out_max) {
+  ModMorphEntry entry{};
+  if (!FindModMorph(id, entry)) {
+    return 0;
+  }
+  if (out_default != nullptr) {
+    *out_default = entry.initial;
+  }
+  if (out_min != nullptr) {
+    *out_min = entry.minimum;
+  }
+  if (out_max != nullptr) {
+    *out_max = entry.maximum;
+  }
+  return 1;
+}
+
+extern "C" int32_t refii_mod_morph_weight(int32_t player, uint32_t id, float* out) {
+  ModMorphEntry entry{};
+  if ((player != 1 && player != 2) || !FindModMorph(id, entry)) {
+    return 0;
+  }
+  char key[32];
+  ModMorphKey(key, sizeof(key), id);
+  float weight = entry.initial;
+  if (refii_mod_player_get(player, key, &weight) == 0 || !std::isfinite(weight)) {
+    weight = entry.initial;
+  }
+  if (out != nullptr) {
+    *out = std::clamp(weight, entry.minimum, entry.maximum);
+  }
+  return 1;
+}
+
+extern "C" int32_t refii_mod_set_morph_weight(int32_t player, uint32_t id, float weight) {
+  ModMorphEntry entry{};
+  if ((player != 1 && player != 2) || !FindModMorph(id, entry)) {
+    return 0;
+  }
+  char key[32];
+  ModMorphKey(key, sizeof(key), id);
+  refii_mod_player_save(player, key, std::clamp(std::isfinite(weight) ? weight : entry.initial, entry.minimum, entry.maximum));
+  return 1;
+}
+
+namespace {
+/// The inventory item's own "usable from the inventory" test (TU1 0x827649C8 / disc 0x827417E0):
+/// r3 the item; the definition's InventoryItemComponent (`sub_822A99E8`) and its
+/// "UsableFromInventory" bool (`sub_82310290`). The Items page's use and its A button ask it
+/// (0x826d19b8, 0x829b5084).
+constexpr uint32_t kItemUsableFromInventory = 0x827649C8u;
+}  // namespace
+
+extern "C" int32_t refii_mod_inventory_usable(PPCContext* ctx, uint8_t* base, uint32_t entity, int32_t index) {
+  const uint32_t inventory = ctx != nullptr && Plausible(entity) ? refii_mod_component(base, entity, kInventoryComponent) : 0u;
+  const uint32_t head = inventory != 0 ? refii::vfs::LoadGuestU32(base, inventory + kInventoryList) : 0u;
+  if (!Plausible(head) || index < 0) {
+    return 0;
+  }
+  uint32_t node = refii::vfs::LoadGuestU32(base, head);
+  for (int32_t i = 0; Plausible(node) && node != head && i < 4096; ++i, node = refii::vfs::LoadGuestU32(base, node)) {
+    if (i != index) {
+      continue;
+    }
+    const uint32_t item = refii::vfs::LoadGuestU32(base, node + 8u);
+    if (!Plausible(item)) {
+      return 0;
+    }
+    PPCContext work = refii::mods::Frame(*ctx);
+    work.r3.u32 = item;
+    return refii::mods::CallGuest(work, base, refii::guest::Address(kItemUsableFromInventory)) && (work.r3.u32 & 0xFFu) != 0 ? 1 : 0;
+  }
+  return 0;
 }
 
 extern "C" int32_t refii_mod_inventory_stack(uint8_t* base, uint32_t entity, int32_t index, uint32_t* out_definition,
@@ -2687,6 +3841,8 @@ constexpr uint32_t kRecordStringGetter = 0x82323540u;  // disc 0x82345978: (entr
 constexpr uint32_t kRecordTypedGetter = 0x82A006C8u;   // disc 0x829FB978: GDBEntry_GetPropTyped(entry, hash, type) -> value*
 constexpr uint32_t kGdbTypeInt = 1;                     // GDB property types, as the database states them
 constexpr uint32_t kGdbTypeEnum = 5;
+constexpr uint32_t kGdbTypeBool = 0;                    // word != 0: lwz, cntlzw, extrwi 1,26, xori 1 (0x825A1F20)
+constexpr uint32_t kGdbTypeFloat = 3;                   // lfs 0(r3) after every type-3 call (79 of 80 sites)
 // The expression wheel (the HUD's own reader): the
 // controller at *(*(GUI + 32) + 60); 15 words read as one.
 constexpr uint32_t kWheelOpen = 0;
@@ -2697,12 +3853,12 @@ constexpr uint32_t kWheelEnd = 14;
 constexpr uint32_t kWheelEntryBytes = 12;
 constexpr uint32_t kWheelEntriesMax = 64;
 
-int32_t Quickslot(PPCContext* ctx, uint8_t* base, int32_t player, uint32_t kind, uint32_t record) {
+int32_t Quickslot(PPCContext* ctx, uint8_t* base, int32_t player, uint32_t kind, uint32_t record, uint32_t flags = 0u) {
   if (ctx == nullptr || player < 1 || player > 2) {
     return 0;
   }
   PPCContext work = *ctx;
-  return refii::vfs::PerformQuickslot(work, base, static_cast<uint32_t>(player), kind, record) ? 1 : 0;
+  return refii::vfs::PerformQuickslot(work, base, static_cast<uint32_t>(player), kind, record, flags) ? 1 : 0;
 }
 
 /// Player `player`'s performer (component 154), or 0.
@@ -2739,6 +3895,290 @@ extern "C" int32_t refii_mod_assign_spell(PPCContext* ctx, uint8_t* base, int32_
   }
   return Quickslot(ctx, base, player, 4u, static_cast<uint32_t>(spell));
 }
+
+extern "C" int32_t refii_mod_quick_action(PPCContext* ctx, uint8_t* base, int32_t player, int32_t kind, uint32_t record,
+                                          uint32_t flags) {
+  if (kind < 1 || kind > 4 || (kind == 4 && record >= kSpellTypes)) {
+    return 0;
+  }
+  return Quickslot(ctx, base, player, static_cast<uint32_t>(kind), record, flags & (REFII_QUICK_UNGATED | REFII_QUICK_HELD));
+}
+
+namespace {
+
+/// The performer's own end of a held expression (TU1 0x82414A50 / disc 0x823E6E88): r3 the
+/// performer. GameAction 25's case calls it (`bl sub_82414A50` 0x826e63ec).
+constexpr uint32_t kPerformerEndHeld = 0x82414A50u;
+/// The performer's playing expression record (+104): StartExpression stores it (`stw r?,0x68`),
+/// the end clears it.
+constexpr uint32_t kPerformerPlaying = 104;
+/// The sprint component and its flag (`cmpwi r7,0x92` 0x826e61a0; `lbz r11,0x24(r31)` 0x826e6248).
+constexpr uint32_t kSprintComponent = 146;
+constexpr uint32_t kSprintFlag = 0x24;
+/// The sprint setter (TU1 0x8284A8C0 / disc 0x827DA750): r3 the component, r4 the new flag.
+constexpr uint32_t kSetSprinting = 0x8284A8C0u;
+
+}  // namespace
+
+extern "C" int32_t refii_mod_release_expression(PPCContext* ctx, uint8_t* base, int32_t player) {
+  const uint32_t performer = ctx != nullptr ? PlayerPerformer(base, player) : 0u;
+  if (performer == 0 || refii::mods::LoadU32(base, performer + kPerformerPlaying) == 0) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = performer;
+  return refii::mods::CallGuest(work, base, refii::guest::Address(kPerformerEndHeld)) ? 1 : 0;
+}
+
+namespace {
+uint32_t PlayerSprint(uint8_t* base, int32_t player) {
+  const uint32_t hero = player >= 1 && player <= 2 ? refii_mod_player_hero(base, player) : 0u;
+  return Plausible(hero) ? refii_mod_component(base, hero, kSprintComponent) : 0u;
+}
+}  // namespace
+
+extern "C" int32_t refii_mod_sprinting(uint8_t* base, int32_t player) {
+  const uint32_t sprint = PlayerSprint(base, player);
+  return sprint != 0 && refii::mods::LoadU8(base, sprint + kSprintFlag) != 0 ? 1 : 0;
+}
+
+extern "C" int32_t refii_mod_end_sprint(PPCContext* ctx, uint8_t* base, int32_t player) {
+  const uint32_t sprint = ctx != nullptr ? PlayerSprint(base, player) : 0u;
+  if (sprint == 0 || refii::mods::LoadU8(base, sprint + kSprintFlag) == 0) {
+    return 0;
+  }
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = sprint;
+  work.r4.u64 = 0;
+  return refii::mods::CallGuest(work, base, refii::guest::Address(kSetSprinting)) ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Per-hero locomotion and parry (core/refii_mod.h states the copies and their readers)
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr uint32_t kLocomotionComponent = 110;  // `cmpwi r11,0x6E` 0x823ef054, the loader's caller
+constexpr uint32_t kLocomotionTable = 0x64;     // the map the loader fills (`addi r30,r31,0x64` 0x821b231c)
+/// The map's operator[] (TU1 0x823C5E00 / disc 0x824191A0): r3 the map, r4 -> the key; r3 -> the float.
+constexpr uint32_t kFloatMapAt = 0x823C5E00u;
+/// The player component's property table (+340: `sub_823ACBC0(a1 + 340, table)` in sub_823E9BF0).
+constexpr uint32_t kCombatParamsTable = 340;
+/// The table's find (TU1 0x8257EC08 / disc 0x82C343A0): r3 the out {map, node}, r4 the table, r5 ->
+/// the key; node == *(table + 4) is the end. node +16 the value: +4 its type (1 a float), +8 the float.
+constexpr uint32_t kParamsFind = 0x8257EC08u;
+
+/// The game's property-name hash, `sub_823B0A38`: CRC-32 over the name's bytes through the table at
+/// 0x82098C40 (the standard reflected table: 0, 0x77073096, 0xEE0E612C, ..), from 0, no final xor.
+uint32_t GameNameHash(const char* name) {
+  uint32_t crc = 0;
+  for (const char* c = name; *c != 0; ++c) {
+    crc ^= static_cast<uint8_t>(*c);
+    for (int bit = 0; bit < 8; ++bit) {
+      crc = (crc >> 1) ^ ((crc & 1u) != 0 ? 0xEDB88320u : 0u);
+    }
+  }
+  return crc;
+}
+
+/// The ten fields the loader copies (`sub_8283E408`), in its order.
+constexpr const char* kLocomotionKeys[] = {
+    "MinControlMagForMovement", "MinVelMagForMovement", "MaxTurnSpeedStatic", "MaxTurnSpeedRunning",
+    "MaxSpeed", "SprintSpeedMultiplier", "SprintTerminationSpeedFraction", "FrictionCoefficient",
+    "MaxSpeedLateralStatic", "MaxSpeedLateralRunning"};
+
+bool LocomotionKey(const char* key) {
+  if (key == nullptr) {
+    return false;
+  }
+  for (const char* known : kLocomotionKeys) {
+    if (std::strcmp(known, key) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// Per player: the values held (hash -> value) and what the last load copied for each held hash.
+std::unordered_map<uint32_t, float> g_held_locomotion[2];
+std::unordered_map<uint32_t, float> g_loaded_locomotion[2];
+/// Per player: the parry window and wedge held (NaN: not held).
+float g_held_parry[2][2] = {{NAN, NAN}, {NAN, NAN}};
+
+/// The float slot for `hash` in the component's table, through the game's own operator[]; 0 when
+/// the call fails.
+uint32_t LocomotionSlot(const PPCContext& ctx, uint8_t* base, uint32_t component, uint32_t hash) {
+  const uint32_t frame = (ctx.r1.u32 - 0x100u) & ~0xFu;
+  const uint32_t key = frame + 0x60u;
+  refii::mods::StoreU32(base, key, hash);
+  PPCContext work = ctx;
+  work.r1.u32 = frame;
+  work.r3.u32 = component + kLocomotionTable;
+  work.r4.u32 = key;
+  return refii::mods::CallGuest(work, base, refii::guest::Address(kFloatMapAt)) && Plausible(work.r3.u32) ? work.r3.u32 : 0u;
+}
+
+uint32_t PlayerLocomotion(uint8_t* base, int32_t player) {
+  const uint32_t hero = player >= 1 && player <= 2 ? refii_mod_player_hero(base, player) : 0u;
+  return Plausible(hero) ? refii_mod_component(base, hero, kLocomotionComponent) : 0u;
+}
+
+/// Writes `value` into the slot, first remembering what the last load copied there.
+bool WriteHeldLocomotion(const PPCContext& ctx, uint8_t* base, int32_t player, uint32_t component, uint32_t hash, float value) {
+  const uint32_t slot = LocomotionSlot(ctx, base, component, hash);
+  if (slot == 0) {
+    return false;
+  }
+  g_loaded_locomotion[player - 1].emplace(hash, refii::mods::LoadF32(base, slot));
+  refii::mods::StoreF32(base, slot, value);
+  return true;
+}
+
+/// The value object for `name` in the hero's combat parameter table, or 0.
+uint32_t CombatParam(const PPCContext& ctx, uint8_t* base, int32_t player, const char* name) {
+  const uint32_t hero = player >= 1 && player <= 2 ? refii_mod_player_hero(base, player) : 0u;
+  const uint32_t component = Plausible(hero) ? refii_mod_component(base, hero, kPlayerComponent) : 0u;
+  const uint32_t table = component != 0 ? refii::mods::LoadU32(base, component + kCombatParamsTable) : 0u;
+  if (!Plausible(table)) {
+    return 0u;
+  }
+  const uint32_t frame = (ctx.r1.u32 - 0x100u) & ~0xFu;
+  const uint32_t out = frame + 0x60u;
+  const uint32_t key = frame + 0x70u;
+  refii::mods::StoreU32(base, out, 0u);
+  refii::mods::StoreU32(base, out + 4u, 0u);
+  refii::mods::StoreU32(base, key, GameNameHash(name));
+  PPCContext work = ctx;
+  work.r1.u32 = frame;
+  work.r3.u32 = out;
+  work.r4.u32 = table;
+  work.r5.u32 = key;
+  if (!refii::mods::CallGuest(work, base, refii::guest::Address(kParamsFind))) {
+    return 0u;
+  }
+  const uint32_t node = refii::mods::LoadU32(base, out + 4u);
+  if (!Plausible(node) || node == refii::mods::LoadU32(base, table + 4u)) {
+    return 0u;
+  }
+  const uint32_t value = refii::mods::LoadU32(base, node + 16u);
+  return Plausible(value) && refii::mods::LoadU32(base, value + 4u) == 1u ? value : 0u;
+}
+
+bool WriteParry(const PPCContext& ctx, uint8_t* base, int32_t player, float window, float wedge) {
+  bool wrote = false;
+  const char* names[2] = {"InputWindowSecondsForParry", "MeleeParryWedgeAngle"};
+  const float values[2] = {window, wedge};
+  for (int i = 0; i < 2; ++i) {
+    if (!std::isfinite(values[i]) || values[i] < 0.0f) {
+      continue;
+    }
+    const uint32_t value = CombatParam(ctx, base, player, names[i]);
+    if (value != 0) {
+      refii::mods::StoreF32(base, value + 8u, values[i]);
+      wrote = true;
+    }
+  }
+  return wrote;
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_set_locomotion(PPCContext* ctx, uint8_t* base, int32_t player, const char* key, float value) {
+  const uint32_t component = ctx != nullptr && LocomotionKey(key) ? PlayerLocomotion(base, player) : 0u;
+  if (component == 0) {
+    return 0;
+  }
+  const uint32_t hash = GameNameHash(key);
+  auto& held = g_held_locomotion[player - 1];
+  auto& loaded = g_loaded_locomotion[player - 1];
+  if (!std::isfinite(value)) {
+    held.erase(hash);
+    const auto shipped = loaded.find(hash);
+    if (shipped == loaded.end()) {
+      return 1;
+    }
+    const uint32_t slot = LocomotionSlot(*ctx, base, component, hash);
+    if (slot != 0) {
+      refii::mods::StoreF32(base, slot, shipped->second);
+    }
+    loaded.erase(shipped);
+    return slot != 0 ? 1 : 0;
+  }
+  if (!WriteHeldLocomotion(*ctx, base, player, component, hash, value)) {
+    return 0;
+  }
+  held[hash] = value;
+  return 1;
+}
+
+extern "C" int32_t refii_mod_locomotion(PPCContext* ctx, uint8_t* base, int32_t player, const char* key, float* out) {
+  const uint32_t component = ctx != nullptr && out != nullptr && LocomotionKey(key) ? PlayerLocomotion(base, player) : 0u;
+  const uint32_t slot = component != 0 ? LocomotionSlot(*ctx, base, component, GameNameHash(key)) : 0u;
+  if (slot == 0) {
+    return 0;
+  }
+  *out = refii::mods::LoadF32(base, slot);
+  return 1;
+}
+
+extern "C" int32_t refii_mod_set_parry(PPCContext* ctx, uint8_t* base, int32_t player, float window_seconds,
+                                       float wedge_degrees) {
+  if (ctx == nullptr || player < 1 || player > 2) {
+    return 0;
+  }
+  if (std::isfinite(window_seconds) && window_seconds >= 0.0f) {
+    g_held_parry[player - 1][0] = window_seconds;
+  }
+  if (std::isfinite(wedge_degrees) && wedge_degrees >= 0.0f) {
+    g_held_parry[player - 1][1] = wedge_degrees;
+  }
+  return WriteParry(*ctx, base, player, window_seconds, wedge_degrees) ? 1 : 0;
+}
+
+extern "C" int32_t refii_mod_parry(PPCContext* ctx, uint8_t* base, int32_t player, float* out_window, float* out_wedge) {
+  if (ctx == nullptr) {
+    return 0;
+  }
+  const uint32_t window = CombatParam(*ctx, base, player, "InputWindowSecondsForParry");
+  const uint32_t wedge = CombatParam(*ctx, base, player, "MeleeParryWedgeAngle");
+  if (window == 0 || wedge == 0) {
+    return 0;
+  }
+  if (out_window != nullptr) {
+    *out_window = refii::mods::LoadF32(base, window + 8u);
+  }
+  if (out_wedge != nullptr) {
+    *out_wedge = refii::mods::LoadF32(base, wedge + 8u);
+  }
+  return 1;
+}
+
+namespace refii::vfs {
+
+/// After the loader copied a LocomotionData table into `component` (mod_events.cpp's hook on
+/// rex_CECLocomotion_LoadData): what it copied is the new "loaded" value, and the held values go
+/// back on top.
+void ReapplyHeldLocomotion(PPCContext& ctx, uint8_t* base, uint32_t component) {
+  const int32_t player = Plausible(component) ? refii_mod_player_of(base, refii::mods::LoadU32(base, component + 4u)) : 0;
+  if (player < 1 || player > 2) {
+    return;
+  }
+  g_loaded_locomotion[player - 1].clear();
+  for (const auto& [hash, value] : g_held_locomotion[player - 1]) {
+    WriteHeldLocomotion(ctx, base, player, component, hash, value);
+  }
+}
+
+/// A player's new hero (mod_events.cpp's hero edge): its player component made a fresh copy of
+/// HeroCombatBalanceParams, so the held parry goes back on it.
+void ReapplyHeldParry(PPCContext& ctx, uint8_t* base, int32_t player) {
+  if (player >= 1 && player <= 2) {
+    WriteParry(ctx, base, player, g_held_parry[player - 1][0], g_held_parry[player - 1][1]);
+  }
+}
+
+}  // namespace refii::vfs
 
 extern "C" int32_t refii_mod_expression(uint8_t* base, int32_t player, int32_t index, uint32_t* out_record,
                                         int32_t* out_uses) {
@@ -2782,6 +4222,178 @@ extern "C" int32_t refii_mod_spells_known(uint8_t* base, int32_t player, uint32_
   }
   return 1;
 }
+
+namespace {
+
+/// THE LENT CHARGE (refii_mod_charge_spell): one per player — the spell lent, the player's own slots
+/// it borrowed (the slot table's row 1, `+0x85 + slot`, what the slot writer's hook reads as the
+/// pick before it), whether the button has been let go and how long ago, and the restore once due.
+struct ChargeLend {
+  bool active = false;
+  int32_t type = -1;
+  uint32_t hero = 0;
+  int8_t saved[kSpellSlots] = {};
+  bool released = false;
+  float since_release = 0.0f;
+  float age = 0.0f;
+  bool restore = false;
+  uint32_t generation = 0;
+};
+std::array<ChargeLend, 2> g_charge_lend{};
+
+/// The slot table's row 1: what the game's own pick path reads back (+0x80 + 5 + slot).
+constexpr uint32_t kSlotTableRow = 5;
+/// A lend whose button was let go with nothing charged comes back after this long.
+constexpr float kLendIdleSeconds = 1.0f;
+/// Any lend comes back after this long, whatever happened.
+constexpr float kLendMaxSeconds = 30.0f;
+
+uint32_t SpellManagerOf(uint8_t* base, uint32_t hero) {
+  return Plausible(hero) ? refii_mod_component(base, hero, kSpellManagerComponent) : 0u;
+}
+
+/// One slot through the game's own writer, NOTIFY clear (no pick, nothing sent).
+void WriteSlot(PPCContext& ctx, uint8_t* base, uint32_t manager, int32_t slot, int32_t spell) {
+  PPCContext work = refii::mods::Frame(ctx);
+  work.r3.u32 = manager;
+  work.r4.u32 = 0u;  // the guest passes 0 from every one of its own call sites
+  work.r5.u32 = static_cast<uint32_t>(slot);
+  work.r6.u32 = static_cast<uint32_t>(spell);
+  work.r7.u32 = 0u;
+  rex_CECSpellManager_SetSpellSlot(work, base);
+}
+
+void RestoreLend(PPCContext& ctx, uint8_t* base, int32_t player) {
+  ChargeLend& lend = g_charge_lend[player - 1];
+  if (!lend.active) {
+    return;
+  }
+  const uint32_t manager = refii_mod_player_hero(base, player) == lend.hero ? SpellManagerOf(base, lend.hero) : 0u;
+  if (manager != 0u) {
+    for (int32_t slot = 0; slot < kSpellSlots; ++slot) {
+      WriteSlot(ctx, base, manager, slot, lend.saved[slot]);
+    }
+  }
+  lend = ChargeLend{};
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_charge_spell(PPCContext* ctx, uint8_t* base, int32_t player, int32_t type, int32_t held) {
+  if (ctx == nullptr || (player != 1 && player != 2) || refii_mod_player_here(player) == 0) {
+    return 0;
+  }
+  ChargeLend& lend = g_charge_lend[player - 1];
+  if (held == 0) {
+    refii_mod_press(player, "B", 0);
+    if (lend.active && !lend.released) {
+      lend.released = true;
+      lend.since_release = 0.0f;
+    }
+    return lend.active ? 1 : 0;
+  }
+  const uint32_t hero = refii_mod_player_hero(base, player);
+  const uint32_t manager = SpellManagerOf(base, hero);
+  if (manager == 0u || type < 0 || type >= static_cast<int32_t>(kSpellTypes)) {
+    return 0;
+  }
+  const auto offered = [&](int32_t tier) {
+    const uint32_t index = kSpellTiers * static_cast<uint32_t>(type) + static_cast<uint32_t>(tier);
+    return refii::mods::LoadU8(base, manager + kSpellKnown + index) != 0 && refii::mods::LoadU8(base, manager + kSpellOffered + index) != 0;
+  };
+  if (!offered(0)) {
+    return 0;
+  }
+  if (lend.active && lend.hero != hero) {
+    RestoreLend(*ctx, base, player);
+  }
+  if (!lend.active) {
+    lend.active = true;
+    lend.hero = hero;
+    lend.generation = refii_mod_lua_generation();
+    for (int32_t slot = 0; slot < kSpellSlots; ++slot) {
+      lend.saved[slot] = static_cast<int8_t>(refii::mods::LoadU8(base, manager + kSlotTable + kSlotTableRow + static_cast<uint32_t>(slot)));
+    }
+  }
+  lend.type = type;
+  lend.released = false;
+  lend.since_release = 0.0f;
+  lend.age = 0.0f;
+  lend.restore = false;
+  bool above = false;
+  for (int32_t tier = 0; tier < kSpellSlots; ++tier) {
+    above = above || !offered(tier);
+    WriteSlot(*ctx, base, manager, tier, above ? -1 : type);
+  }
+  refii_mod_press(player, "B", 1);
+  return 1;
+}
+
+namespace refii::vfs {
+
+/// mod_events.cpp: whether a lend is out for `player` (rex_CAction_End then watches its charge).
+bool ModChargeLendActive(int32_t player) {
+  return (player == 1 || player == 2) && g_charge_lend[player - 1].active;
+}
+
+/// mod_events.cpp rex_CAction_End: the lent player's charge ended; without a release nothing will
+/// be cast, so the slots come back on the next tick.
+void ModChargeLendEnded(int32_t player, bool released) {
+  if (ModChargeLendActive(player) && !released) {
+    g_charge_lend[player - 1].restore = true;
+  }
+}
+
+/// mod_events.cpp rex_CECSpellManager_SetState: a spell manager entered `state`; 6 is the cast's
+/// last slot out (the cascade's `if (*(+0x170) <= 0) SetState(6)`, the quick cast's after its one
+/// LaunchSlot), 0 the reset — either way the lent slots have been read for the last time.
+void ModChargeLendState(uint8_t* base, uint32_t manager, int32_t state) {
+  if (state != 6 && state != 0) {
+    return;
+  }
+  for (ChargeLend& lend : g_charge_lend) {
+    if (lend.active && lend.released && SpellManagerOf(base, lend.hero) == manager) {
+      lend.restore = true;
+    }
+  }
+}
+
+/// mod_abilities.cpp rex_CECSpellManager_SetSpellSlot: a real pick (NOTIFY set) of `spell` for a
+/// lent player's slot is what comes back for that slot.
+void ModChargeLendPicked(int32_t player, int32_t slot, int32_t spell) {
+  if (ModChargeLendActive(player) && slot >= 0 && slot < kSpellSlots) {
+    g_charge_lend[player - 1].saved[slot] = static_cast<int8_t>(spell);
+  }
+}
+
+/// Every tick (mod_events.cpp RunModEventsTick): a restore that is due, a lend whose button went
+/// with nothing charged, a hero gone, the mods' Lua reloaded, or the time limit.
+void PumpChargeLend(PPCContext& ctx, uint8_t* base, float seconds) {
+  for (int32_t player = 1; player <= 2; ++player) {
+    ChargeLend& lend = g_charge_lend[player - 1];
+    if (!lend.active) {
+      continue;
+    }
+    lend.age += seconds;
+    if (lend.released) {
+      lend.since_release += seconds;
+    }
+    const uint32_t manager = SpellManagerOf(base, lend.hero);
+    // The manager's state, as CECSpellManager::SetState stores it (`stw r4,0x70(r31)` 0x8253e864):
+    // outside 2..5 (charging, quick cast, released, cascade) nothing is being charged or cast.
+    const uint32_t state = manager != 0u ? refii::mods::LoadU32(base, manager + 0x70u) : 0u;
+    const bool idle = lend.released && lend.since_release >= kLendIdleSeconds && (state < 2u || state > 5u);
+    if (lend.restore || idle || lend.age >= kLendMaxSeconds || refii_mod_player_hero(base, player) != lend.hero ||
+        refii_mod_lua_generation() != lend.generation) {
+      if (refii_mod_lua_generation() != lend.generation) {
+        refii_mod_press(player, "B", 0);
+      }
+      RestoreLend(ctx, base, player);
+    }
+  }
+}
+
+}  // namespace refii::vfs
 
 extern "C" uint32_t refii_mod_selected_expression(uint8_t* base, int32_t player) {
   if (player < 1 || player > 2) {
@@ -2895,6 +4507,111 @@ extern "C" int32_t refii_mod_record_int(PPCContext* ctx, uint8_t* base, uint32_t
     }
   }
   return 0;
+}
+
+namespace {
+
+/// The database entry a record hash names (GDBManager_FindEntryByHash), or 0.
+uint32_t RecordEntry(PPCContext* ctx, uint8_t* base, uint32_t definition) {
+  const uint32_t gdb = refii::vfs::LoadGuestU32(base, refii::guest::Address(kGdbManager));
+  if (ctx == nullptr || definition == 0 || !Plausible(gdb)) {
+    return 0u;
+  }
+  PPCContext lookup = refii::mods::Frame(*ctx);
+  lookup.r3.u32 = gdb;
+  lookup.r4.u32 = definition;
+  rex_GDBManager_FindEntryByHash(lookup, base);
+  return Plausible(lookup.r3.u32) ? lookup.r3.u32 : 0u;
+}
+
+/// The value word of an entry's property of `type`, INHERITED (GDBEntry_GetPropTyped), or 0.
+uint32_t RecordValue(PPCContext* ctx, uint8_t* base, uint32_t entry, const char* field, uint32_t type) {
+  PPCContext work = refii::mods::Frame(*ctx);
+  work.r3.u32 = entry;
+  work.r4.u32 = refii_mod_fnv1(field);
+  work.r5.u32 = type;
+  if (!refii::mods::CallGuest(work, base, refii::guest::Address(kRecordTypedGetter))) {
+    return 0u;
+  }
+  return Plausible(work.r3.u32) ? work.r3.u32 : 0u;
+}
+
+}  // namespace
+
+extern "C" int32_t refii_mod_record_exists(PPCContext* ctx, uint8_t* base, uint32_t definition) {
+  return RecordEntry(ctx, base, definition) != 0u ? 1 : 0;
+}
+
+extern "C" int32_t refii_mod_record_number(PPCContext* ctx, uint8_t* base, uint32_t definition, const char* field,
+                                           float* out) {
+  if (out != nullptr) {
+    *out = 0.0f;
+  }
+  const uint32_t entry = field != nullptr && field[0] != 0 && out != nullptr ? RecordEntry(ctx, base, definition) : 0u;
+  if (entry == 0u) {
+    return 0;
+  }
+  if (const uint32_t value = RecordValue(ctx, base, entry, field, kGdbTypeFloat); value != 0u) {
+    *out = refii::mods::LoadF32(base, value);
+    return 1;
+  }
+  for (uint32_t type : {kGdbTypeInt, kGdbTypeEnum}) {
+    if (const uint32_t value = RecordValue(ctx, base, entry, field, type); value != 0u) {
+      *out = static_cast<float>(static_cast<int32_t>(refii::mods::LoadU32(base, value)));
+      return 1;
+    }
+  }
+  return 0;
+}
+
+extern "C" int32_t refii_mod_record_bool(PPCContext* ctx, uint8_t* base, uint32_t definition, const char* field,
+                                         int32_t* out) {
+  if (out != nullptr) {
+    *out = 0;
+  }
+  const uint32_t entry = field != nullptr && field[0] != 0 && out != nullptr ? RecordEntry(ctx, base, definition) : 0u;
+  const uint32_t value = entry != 0u ? RecordValue(ctx, base, entry, field, kGdbTypeBool) : 0u;
+  if (value == 0u) {
+    return 0;
+  }
+  *out = refii::mods::LoadU32(base, value) != 0u ? 1 : 0;
+  return 1;
+}
+
+extern "C" int32_t refii_mod_record_ref(PPCContext* ctx, uint8_t* base, uint32_t definition, const char* field,
+                                        uint32_t* out) {
+  /// The database's reference type: its value word is the named record's hash (`lwz r4,0(r11)`
+  /// before GDBManager_FindEntryByHash, 0x821b0994..98).
+  constexpr uint32_t kGdbTypeRef = 6;
+  if (out != nullptr) {
+    *out = 0u;
+  }
+  const uint32_t entry = field != nullptr && field[0] != 0 && out != nullptr ? RecordEntry(ctx, base, definition) : 0u;
+  const uint32_t value = entry != 0u ? RecordValue(ctx, base, entry, field, kGdbTypeRef) : 0u;
+  if (value == 0u) {
+    return 0;
+  }
+  *out = refii::mods::LoadU32(base, value);
+  return 1;
+}
+
+extern "C" int32_t refii_mod_creature_tier(uint8_t* base, uint32_t entity) {
+  /// comp20 +0x1C IsLieutenant, +0x1D IsElite (the init's `addi r5,r31,0x1C` 0x823a3434 / `addi
+  /// r5,r31,0x1D` 0x823a3448; Creature.IsLieutenant / IsElite read them back).
+  constexpr uint32_t kCreatureIsLieutenant = 0x1C;
+  constexpr uint32_t kCreatureIsElite = 0x1D;
+  const uint32_t creature = entity != 0 ? refii_mod_component(base, entity, kCreatureComponent) : 0u;
+  if (creature == 0u) {
+    return -1;
+  }
+  int32_t tier = 0;
+  if (refii::mods::LoadU8(base, creature + kCreatureIsElite) != 0) {
+    tier |= REFII_CREATURE_ELITE;
+  }
+  if (refii::mods::LoadU8(base, creature + kCreatureIsLieutenant) != 0) {
+    tier |= REFII_CREATURE_LIEUTENANT;
+  }
+  return tier;
 }
 
 extern "C" int32_t refii_mod_entities_near(PPCContext* ctx, uint8_t* base, const float* xyz, float radius,

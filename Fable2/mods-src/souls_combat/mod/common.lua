@@ -8,18 +8,17 @@
 -- nothing here reads guest memory or hooks a function by name.
 --
 -- EACH PLAYER'S STATE LIVES IN THE PLAYER STORE (Refii.player_*), so it is the same on both
--- machines of an online session: a spend on either reaches the hero's owner, and the refill runs
--- where the hero is played (Refii.player_here). Keys:
---   souls_combat.stamina / stamina_max / stamina_rest   the pool (it may dip below zero by up to
---                               stamina_floor: the swing that empties it still lands), the maximum
---                               the HUD's bar reads, and seconds since the last spend
---   souls_combat.mana / mana_max / mana_rest            the same for mana
+-- machines of an online session: a spend on either reaches the hero's owner. The two pools are the
+-- runtime's regenerating pools (Refii.pool: ticked where the hero is played). Keys:
+--   souls_combat.stamina / stamina_max   the pool (it may dip below zero by up to stamina_floor:
+--                               the swing that empties it still lands) and the maximum the HUD's
+--                               bar reads; the pool keeps its seconds since the last spend under
+--                               souls_combat.stamina.rest
+--   souls_combat.mana / mana_max         the same for mana (souls_combat.mana.rest)
 --   souls_combat.stamina_ability   the Stamina ability's level, SAVED with the hero: the ENGINE
 --                               buys and unlearns it from ui/abilities.json; this mod only reads it
 -- The HUD (ui/hud.json) reads them as player:souls_combat.<name>, and the bars' common length as
 -- mod:souls_combat.bar_cap.
---
--- Lua tick handlers run every guest tick with that tick's seconds, the grain the native had.
 ----------------------------------------------------------------------------------------------------
 
 local S = SoulsCombat
@@ -31,24 +30,25 @@ end
 
 local kStaminaKey = "souls_combat.stamina"
 local kStaminaMaxKey = "souls_combat.stamina_max"
-local kStaminaRestKey = "souls_combat.stamina_rest"
 local kStaminaAbilityKey = "souls_combat.stamina_ability"
 local kManaKey = "souls_combat.mana"
 local kManaMaxKey = "souls_combat.mana_max"
-local kManaRestKey = "souls_combat.mana_rest"
 
--- Held at kRestCap once past any refill delay, so a full, rested pool stops changing.
-local kRestCap = 10
 local kStaminaMaxLevel = 5
 local kBaseStamina = 100
 
--- THE HEALTH CURVE, so stamina and mana grow exactly as health does. From globals.gdb:
--- GUIValues.MaxMaxHealth (#a8f8dac8) is 950, the length a maxed health bar is drawn against, and
--- Toughness levels 1..5 (AbilityToughnessBase -> AbilityGroupRecords #24876832, Record1..5) state
--- MaxHealthModifier 100, 300, 400, 500, 600 — so an untrained hero's 350 is 950 - 600.
-local kHealthCeiling = 950
+-- THE HEALTH CURVE, so stamina and mana grow exactly as health does. From globals.gdb: the
+-- length a maxed health bar is drawn against is GUIValues (#a8f8dac8) MaxMaxHealth, 950, read from
+-- the record; Toughness levels 1..5 (AbilityToughnessBase -> AbilityGroupRecords #24876832,
+-- Record1..5) state MaxHealthModifier 100, 300, 400, 500, 600. Those five are copied here: the
+-- RecordN properties are links, not the reference properties Refii.record_ref reads. An untrained
+-- hero's 350 is the ceiling less level 5's 600.
 local kToughnessBonus = { [0] = 0, 100, 300, 400, 500, 600 }
-local kUntrainedHealth = kHealthCeiling - 600
+local kHealthCeiling = Refii.record_number("0xa8f8dac8", "MaxMaxHealth")
+if kHealthCeiling == nil or kHealthCeiling <= kToughnessBonus[5] then
+	kHealthCeiling = 950
+end
+local kUntrainedHealth = kHealthCeiling - kToughnessBonus[5]
 
 -- A pool that starts at kBaseStamina and grows as health would: `bonus` health points' worth.
 local function AlongHealthCurve(bonus)
@@ -77,29 +77,16 @@ local function StaminaMax(p)
 	return AlongHealthCurve(kToughnessBonus[StaminaLevel(p)])
 end
 
--- A player's stamina now; a player with none stated yet is full.
+-- A player's stamina now (the pool's value; a player with none stated yet is full).
 local function Stamina(p)
-	return Refii.player_value(p, kStaminaKey, StaminaMax(p))
+	return Refii.pool_value(p, kStaminaKey) or StaminaMax(p)
 end
 
--- Takes `cost` from a player's pool, on whichever machine the spend happens. A pool nobody has
--- stated yet is full, and the first statement comes from the tick where the hero is played, so a
--- spend before it has nothing to come off.
-local function Spend(p, cost)
-	if Refii.player_value(p, kStaminaKey) == nil then
-		return
-	end
-	Refii.player_add(p, kStaminaKey, -cost)
-	Refii.player_set(p, kStaminaRestKey, 0)
-end
-
-C.StaminaKey, C.StaminaMaxKey, C.StaminaRestKey, C.StaminaAbilityKey = kStaminaKey, kStaminaMaxKey, kStaminaRestKey, kStaminaAbilityKey
-C.ManaKey, C.ManaMaxKey, C.ManaRestKey = kManaKey, kManaMaxKey, kManaRestKey
-C.RestCap = kRestCap
+C.StaminaKey, C.StaminaMaxKey, C.StaminaAbilityKey = kStaminaKey, kStaminaMaxKey, kStaminaAbilityKey
+C.ManaKey, C.ManaMaxKey = kManaKey, kManaMaxKey
 C.AlongHealthCurve = AlongHealthCurve
 C.IsPlayer = IsPlayer
 C.StaminaMax = StaminaMax
 C.Stamina = Stamina
-C.Spend = Spend
 
 return C

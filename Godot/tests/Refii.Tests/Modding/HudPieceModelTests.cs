@@ -237,6 +237,104 @@ public class HudPieceModelTests
             .OverrideFailureMessage(lines).IsTrue();
     }
 
+    // ---- groups and settings -------------------------------------------------------------------
+
+    [TestCase]
+    public void SettingSourcesReadTheSettingInForce()
+    {
+        Engine_UiValueSources.Context readers = Readers() with { Setting = key => key == "m.size" ? 1.4f : null };
+        AssertThat(Engine_UiValueSources.Parse("setting:m.size").Kind).IsEqual(Engine_UiValueSources.Kind.Setting);
+        AssertThat(Engine_UiValueSources.Parse("setting:m.size").Named).IsTrue();
+        AssertThat(Engine_UiValueSources.LooksLikeSource("setting:m.size")).IsTrue();
+        Near(Engine_UiValueSources.Number("setting:m.size", readers)!.Value, 1.4f);
+        AssertThat(Engine_UiValueSources.Number("setting:m.none", readers)).IsNull();
+        AssertThat(Engine_UiValueSources.Number("setting:m.size", Readers())).IsNull();
+        AssertThat(Engine_UiValueSources.Text("setting:m.size", "0.0", readers, _ => null)).IsEqual("1.4");
+        AssertThat(Engine_UiValueSources.NumberProblem("setting:m.size")).IsNull();
+        AssertThat(Engine_UiValueSources.NumberProblem("setting:")).Contains("names no value");
+    }
+
+    private static Engine_HudModGroups.Group Bar(string scale, string x, string y) =>
+        new("m.bar", "m", Engine_HudLayout.Anchor.BottomCentre, new Vector2(0f, -12f), scale, x, y);
+
+    [TestCase]
+    public void AGroupReadsItsValuesForTheMembersPlayer()
+    {
+        Engine_UiValueSources.Context one = Readers() with { Setting = key => key == "m.size" ? 1.5f : key == "m.lift" ? 40f : null };
+
+        Engine_HudModGroups.Transform moved = Engine_HudModGroups.Resolve(Bar("setting:m.size", "0", "-setting:m.lift"), one);
+        Near(moved.Scale, 1.5f);
+        Near(moved.Offset.X, 0f);
+        Near(moved.Offset.Y, -40f);
+
+        // player: is the member's player's: player two's half reads player two's value.
+        Near(Engine_HudModGroups.Resolve(Bar("1", "player:m.stamina", "0"), one).Offset.X, 80f);
+        Near(Engine_HudModGroups.Resolve(Bar("1", "player:m.stamina", "0"), one.ForPlayer(2)).Offset.X, 20f);
+
+        // Unstated, or a scale not above 0, is the identity — the pieces still draw where placed.
+        Engine_HudModGroups.Transform none = Engine_HudModGroups.Resolve(Bar("setting:m.none", "mod:m.none", string.Empty), one);
+        AssertThat(none).IsEqual(Engine_HudModGroups.Transform.Identity);
+        Near(Engine_HudModGroups.Resolve(Bar("0", string.Empty, string.Empty), one).Scale, 1f);
+        Near(Engine_HudModGroups.Resolve(Bar("-2", string.Empty, string.Empty), one).Scale, 1f);
+
+        // A leading - negates a source; a negative literal is a number.
+        Near(Engine_HudModGroups.Number("-mod:m.gold", one)!.Value, -1234.5f);
+        Near(Engine_HudModGroups.Number("-12", one)!.Value, -12f);
+        AssertThat(Engine_HudModGroups.Number("-mod:m.none", one)).IsNull();
+        AssertThat(Engine_HudModGroups.Problem("-setting:m.lift")).IsNull();
+        AssertThat(Engine_HudModGroups.Problem("-setting:")).Contains("names no value");
+        AssertThat(Engine_HudModGroups.Problem("-lift")).Contains("is not a value source");
+    }
+
+    [TestCase]
+    public void AGroupScalesAboutItsPivotThenOffsets()
+    {
+        var extent = new Vector2(1280f, 720f);
+        float unit = Engine_HudLayout.Scale(extent);
+        Engine_HudModGroups.Group bar = Bar("1", "0", "0");
+        Vector2 pivot = Engine_HudLayout.Place(new Engine_HudLayout.Piece("p", string.Empty, Engine_HudLayout.Anchor.BottomCentre, new Vector2(0f, -12f)), extent);
+        Vector2 point = Engine_HudLayout.Place(new Engine_HudLayout.Piece("q", string.Empty, Engine_HudLayout.Anchor.BottomCentre, new Vector2(-100f, -60f)), extent);
+
+        // The identity leaves a point where it was; the pivot never moves under a scale.
+        Vector2 still = Engine_HudModGroups.Apply(point, bar, Engine_HudModGroups.Transform.Identity, extent);
+        Near(still.X, point.X);
+        Near(still.Y, point.Y);
+        Vector2 fixedPivot = Engine_HudModGroups.Apply(pivot, bar, new Engine_HudModGroups.Transform(1.6f, Vector2.Zero), extent);
+        Near(fixedPivot.X, pivot.X);
+        Near(fixedPivot.Y, pivot.Y);
+
+        // Twice the size: twice as far from the pivot (canvas +Y up, the layout's +Y down).
+        Vector2 grown = Engine_HudModGroups.Apply(point, bar, new Engine_HudModGroups.Transform(2f, Vector2.Zero), extent);
+        Near(grown.X - pivot.X, -200f * unit);
+        Near(grown.Y - pivot.Y, 96f * unit);
+
+        // The offset is reference units, +Y down: -40 raises the point by 40.
+        Vector2 raised = Engine_HudModGroups.Apply(point, bar, new Engine_HudModGroups.Transform(1f, new Vector2(0f, -40f)), extent);
+        Near(raised.X, point.X);
+        Near(raised.Y - point.Y, 40f * unit);
+    }
+
+    [TestCase]
+    public void TheValidatorReadsGroupsAndRims()
+    {
+        List<ModIssue> issues = ModValidate.Validate("ui/hud.json",
+            "{ \"groups\": { \"g\": { \"anchor\": [0.5, 1], \"pivot\": [0, -12], \"scale\": \"setting:m.size\", \"offset\": [0, \"-setting:m.lift\"] }, " +
+            "\"bad\": { \"scale\": \"size\", \"offset\": [0] } }, " +
+            "\"pieces\": [ { \"id\": \"t\", \"kind\": \"text\", \"text\": \"player:m.n\", \"outline\": \"#000000d9\", \"outlineWidth\": 1.5, \"group\": \"g\" }, " +
+            "{ \"id\": \"p\", \"kind\": \"panel\", \"group\": \"nope\", \"outline\": \"#000\" }, " +
+            "{ \"id\": \"s\", \"kind\": \"text\", \"text\": \"x\", \"shadowOffset\": [1, 1] } ] }").ToList();
+        string lines = string.Join("\n", issues.Select(i => (i.Error ? "error: " : "warning: ") + i.Pointer + " " + i.Message));
+        AssertThat(issues.Count(i => i.Error)).OverrideFailureMessage(lines).IsEqual(2);
+        AssertThat(issues.Any(i => i.Error && i.Pointer == "groups.bad.scale" && i.Message.Contains("is not a value source")))
+            .OverrideFailureMessage(lines).IsTrue();
+        AssertThat(issues.Any(i => i.Error && i.Pointer == "groups.bad.offset")).OverrideFailureMessage(lines).IsTrue();
+        AssertThat(issues.Any(i => !i.Error && i.Pointer == "pieces[1].group" && i.Message.Contains("'nope'"))).OverrideFailureMessage(lines).IsTrue();
+        AssertThat(issues.Any(i => !i.Error && i.Pointer == "pieces[1].outline" && i.Message.Contains("\"text\""))).OverrideFailureMessage(lines).IsTrue();
+        AssertThat(issues.Any(i => !i.Error && i.Pointer == "pieces[2].shadowOffset" && i.Message.Contains("\"shadow\""))).OverrideFailureMessage(lines).IsTrue();
+        AssertThat(issues.Any(i => i.Pointer.StartsWith("pieces[0]", StringComparison.Ordinal) || i.Pointer.StartsWith("groups.g", StringComparison.Ordinal)))
+            .OverrideFailureMessage(lines).IsFalse();
+    }
+
     // ---- notices --------------------------------------------------------------------------------
 
     [TestCase]

@@ -7,7 +7,6 @@
 		"pitch_limit": 75,
 		"face_camera": 1,
 		"third_person_aim": 1,
-		"head_radius": 0.6,
 		"scenes": 1
 	}
 }

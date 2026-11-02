@@ -38,19 +38,38 @@ local function Setting(name, default)
 	return default
 end
 
--- Raised by a live retune (refii_lua: RefiiSettings[...] = v; SoulsCamera.Generation = ...)
--- so the zoom levels are reshaped on the next update.
+-- Raised on every run and on every live change of a camera setting, so the zoom levels are
+-- reshaped on the next update.
 C.Generation = (C.Generation or 0) + 1
 
 -- The class fields every update reads through `self`. The orbit speed and damping are not among
 -- them: they stay the shipped ones for the stick, the player's camera sensitivity scales them, and
 -- the mouse's turn lands whole outside them (Fable2/src/vfs/src/hooks/mouse_look.cpp).
-SACCamera.HeightAdjustSpeed = Setting("camera_pitch_speed", 0.09)
-SACCamera.HeightOffsetUpperBound = 1.2
-SACCamera.HeightOffsetLowerBound = 0.45
-SACCamera.CameraMoveDamping = 1
-SACCamera.DirectionStrengthHard = Setting("camera_lock_tightness", 0.97)
-SACCamera.InwardsRotateSpeed = Setting("camera_lock_turn_speed", 420)
+function C.ApplyClassFields()
+	if SACCamera == nil then
+		return
+	end
+	SACCamera.HeightAdjustSpeed = Setting("camera_pitch_speed", 0.09)
+	SACCamera.HeightOffsetUpperBound = 1.2
+	SACCamera.HeightOffsetLowerBound = 0.45
+	SACCamera.CameraMoveDamping = 1
+	SACCamera.DirectionStrengthHard = Setting("camera_lock_tightness", 0.97)
+	SACCamera.InwardsRotateSpeed = Setting("camera_lock_turn_speed", 420)
+end
+C.ApplyClassFields()
+
+-- A live change of a camera setting (setting_changed) reaches the camera at once: the class
+-- fields restated, the zoom levels reshaped. Subscribed once per game VM; this chunk runs again
+-- with every camera build.
+if not C.SettingsSubscribed and Refii and Refii.on then
+	C.SettingsSubscribed = true
+	Refii.on("setting_changed", function(e)
+		if string.sub(e.key, 1, 20) == "souls_combat.camera_" then
+			C.Generation = C.Generation + 1
+			C.ApplyClassFields()
+		end
+	end)
+end
 
 local function Solo(camera)
 	return not CameraFunctions.IsMultiplayer(camera.Player)

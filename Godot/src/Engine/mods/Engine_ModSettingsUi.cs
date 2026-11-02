@@ -397,7 +397,10 @@ public static class ModSettingsUi
 				Id: 0u,
 				Rating: Engine_UiMenuConstants.EmptyRatingSlide,
 				Committable: false,
-				Command: OpenCommandPrefix + page.Mod));
+				Command: OpenCommandPrefix + page.Mod,
+
+				// On the shipped options screen, but the guest has no row for a mod's page.
+				FromMod: true));
 		}
 
 		return rows;

@@ -125,6 +125,10 @@ float refii_bridge_mod_setting_f32(const char* key, size_t key_length, float fal
 // - the host POSTS an input edge (a mod's input.json action, pressed or released, for player 1
 //   or 2) and the payload's tick polls them into InputAction events.
 #define REFII_MOD_HOST_MASK_WORDS 4
+// - a PUBLISHED VALUE that changed (refii_bridge_mod_publish_f32 with a new value or a new key)
+//   is posted under this host-only kind as `key='<key>',value=<number>`, while any word of the
+//   host's event mask is set (a Godot script is loaded): the host raises value_changed from it.
+#define REFII_MOD_HOST_VALUE_KIND 1010
 void refii_bridge_mod_event_post(int32_t kind, const char* fields, size_t length);
 uint64_t refii_bridge_mod_host_event_mask_word(int32_t word);
 void refii_bridge_mod_set_host_event_mask_word(int32_t word, uint64_t mask);
@@ -153,15 +157,33 @@ refii_mod_verdict_fn refii_bridge_mod_verdict_handler(void);
 //   The mask is REFII_MOD_HOST_MASK_WORDS words, as the event mask.
 void refii_bridge_mod_set_verdict_mask_word(int32_t word, uint64_t mask);
 uint64_t refii_bridge_mod_verdict_mask_word(int32_t word);
+// - a verdict's synchronous READ (RefiiHost.read): the payload registers its reader once; the host
+//   calls refii_bridge_mod_verdict_read from INSIDE its verdict handler, on the guest thread, while
+//   the payload waits in the seam. `line` is "VERB ARGS..." — a read-only query verb and its words,
+//   the grammar of `query` in Fable2/src/vfs/src/hooks/mod_commands.cpp without the id — answered at
+//   once into `out` as "ok=true|false,<fields>" (the query's reply without its id); returns the
+//   length, REFII_MOD_READ_OUTSIDE off the guest thread or outside a verdict (and with no reader),
+//   REFII_MOD_READ_REFUSED for a verb that changes something or does not exist.
+#define REFII_MOD_READ_OUTSIDE (-1)
+#define REFII_MOD_READ_REFUSED (-2)
+typedef int32_t (*refii_mod_verdict_read_fn)(const char* line, size_t length, char* out, size_t capacity);
+void refii_bridge_mod_set_verdict_reader(refii_mod_verdict_read_fn reader);
+int32_t refii_bridge_mod_verdict_read(const char* line, size_t length, char* out, size_t capacity);
 
 // PLAYER STATE (state in src/core/player_state.cpp, the contract in core/player_state.h): a mod's
 // per-player values, owned by the machine that plays the hero and the same on both machines.
 // `player` is 1 or 2; a key is "<mod>.<name>".
 // - read: 1 and the value when the key is set for that player, else 0;
 int32_t refii_bridge_player_get(int32_t player, const char* key, size_t key_length, float* out);
+// - a TEXT under a key (at most 256 bytes; a key holds a number or a text): its length and the
+//   text into `out` (NUL-terminated, cut to `capacity`), -1 when the key holds no text;
+int32_t refii_bridge_player_get_text(int32_t player, const char* key, size_t key_length, char* out, uint32_t capacity);
 // - write: `add` adds `value` instead of setting it; `saved` keeps the key with the player's save;
 void refii_bridge_player_write(int32_t player, const char* key, size_t key_length, float value, int32_t add,
                                int32_t saved);
+// - write a text: replaces whatever the key held; `saved` keeps it with the player's save;
+void refii_bridge_player_write_text(int32_t player, const char* key, size_t key_length, const char* text, size_t length,
+                                    int32_t saved);
 // - the payload states which players this machine plays (bit 0 player one, bit 1 player two),
 //   every tick; a player gaining an owner here keeps what it holds, one losing it waits for the peer;
 void refii_bridge_player_set_owned(uint32_t mask);
@@ -211,6 +233,10 @@ int32_t refii_bridge_route_take(char* out, uint32_t capacity);
 // on the guest tick (mod_events.cpp DrainPartnerMessages) and the Lua never sees it; the same
 // order and once-only as the rest of the route.
 int32_t refii_bridge_route_take_mod(char* out, uint32_t capacity);
+// The route's CAST LANE: a line posted with the prefix `pc:` (a cast this machine started, or a
+// spell one of them made: mod_events.cpp THE CAST PAIRS) is kept apart the same way and taken
+// here by the mod bus on the guest tick; the same order and once-only.
+int32_t refii_bridge_route_take_cast(char* out, uint32_t capacity);
 
 // PARTNER CONSENT (src/core/coop_consent.cpp): a co-op script asks the other player before doing
 // something that changes both players' game. `kind` 1 sleep (detail: the sleep type), 2 sex,

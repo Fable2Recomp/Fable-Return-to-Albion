@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Refii.Bnk;
 using Refii.Models;
 
@@ -33,10 +34,163 @@ public sealed class MeshConversion
 /// CONVERTED IN MEMORY, NEVER TO DISK, like every other overlay. The glTF is read by our own
 /// parser (<see cref="Engine_GltfReader"/>), so the conversion needs no scene and runs the
 /// same in a test as in the mount.
+///
+/// A NEW MORPH TARGET is a model at a path the game does not ship, declared in the mod's
+/// <c>morph_targets.json</c> (<c>[{ "model": "art/.../my_target.mdl", "template": "art/.../the_base_part.mdl" }]</c>)
+/// with the part it morphs as its template. The guest blends a part's listed models vertex by
+/// vertex and drops the WHOLE morph of a part — every target, the shipped ones too — when any
+/// listed model fails to load or its mesh counts differ (<c>sub_82B36878</c>: a null
+/// <c>sub_8221CFE8</c> at 0x82b36b2c leaves before the blend <c>sub_82AB12F8</c>, which itself
+/// returns on a rigid or skinned mesh count unlike the result's), and leaves a mesh unmorphed whose
+/// vertex count differs; <see cref="Refii.Hero.Engine_HeroMorph"/> blends the same way. So a target
+/// whose mesh buffers, vertex counts or face counts differ from its template's is refused here, by
+/// name, rather than drawn unmorphed. The converted model is mounted at its own path, where the
+/// guest's hash lookup finds it (AssetHashIndex over the mount) and the prop index draws it.
 /// </summary>
 public static class ModMeshOverlays
 {
 	public static readonly string[] Suffixes = { ".mdl.glb", ".mdl.gltf" };
+
+	/// <summary>The manifest of new morph target models and the part each one morphs.</summary>
+	public const string TargetsPath = "morph_targets.json";
+
+	/// <summary>
+	/// A <c>morph_targets.json</c> as model path to template path, both normalized; each entry that
+	/// cannot be read is an error line.
+	/// </summary>
+	public static Dictionary<string, string> ParseTargets(string text, List<string> errors)
+	{
+		var targets = new Dictionary<string, string>(StringComparer.Ordinal);
+		System.Text.Json.JsonDocument document;
+		try
+		{
+			document = System.Text.Json.JsonDocument.Parse(text ?? string.Empty);
+		}
+		catch (System.Text.Json.JsonException exception)
+		{
+			errors.Add($"{TargetsPath}: not valid JSON: {exception.Message}");
+			return targets;
+		}
+
+		using (document)
+		{
+			if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array)
+			{
+				errors.Add($"{TargetsPath}: must be an array of {{ \"model\": \"art/.../target.mdl\", \"template\": \"art/.../part.mdl\" }}");
+				return targets;
+			}
+
+			int index = 0;
+			foreach (System.Text.Json.JsonElement entry in document.RootElement.EnumerateArray())
+			{
+				string at = $"{TargetsPath}[{index++}]";
+				string Field(string name) =>
+					entry.ValueKind == System.Text.Json.JsonValueKind.Object && entry.TryGetProperty(name, out var value) &&
+					value.ValueKind == System.Text.Json.JsonValueKind.String ? ModLoadOrder.Normalize(value.GetString()!.Trim()) : string.Empty;
+				string model = Field("model"), template = Field("template");
+				if (!model.EndsWith(".mdl", StringComparison.Ordinal) || !template.EndsWith(".mdl", StringComparison.Ordinal))
+				{
+					errors.Add($"{at}: needs \"model\" and \"template\", each a .mdl path");
+					continue;
+				}
+
+				if (model == template)
+				{
+					errors.Add($"{at}: '{model}' cannot be its own template");
+					continue;
+				}
+
+				if (!targets.TryAdd(model, template))
+				{
+					errors.Add($"{at}: '{model}' is declared twice; the first stands");
+				}
+			}
+		}
+
+		return targets;
+	}
+
+	/// <summary>
+	/// Whether <paramref name="target"/> can stand in a morph list with <paramref name="template"/>:
+	/// the same mesh buffers, each of the same kind (rigid, skinned) with the same vertex and face
+	/// counts. Vertex ORDER is the author's to keep (a re-export of the template with only positions
+	/// moved): counts cannot prove it.
+	/// </summary>
+	public static bool SameTopology(byte[] target, byte[] template, out string error)
+	{
+		error = string.Empty;
+		if (!Engine_MdlData.TryParseInfo(target, out MdlInfo built, out string builtError))
+		{
+			error = $"the converted model does not parse: {builtError}";
+			return false;
+		}
+
+		if (!Engine_MdlData.TryParseInfo(template, out MdlInfo part, out string partError))
+		{
+			error = $"the template does not parse: {partError}";
+			return false;
+		}
+
+		if (built.MeshBuffers.Count != part.MeshBuffers.Count)
+		{
+			error = $"it has {built.MeshBuffers.Count} mesh buffer(s), its template {part.MeshBuffers.Count}; the game drops the whole morph of a part whose models differ";
+			return false;
+		}
+
+		for (int i = 0; i < part.MeshBuffers.Count; i++)
+		{
+			MdlMeshBuffer a = built.MeshBuffers[i], b = part.MeshBuffers[i];
+			if (a.IsEngineSkinned != b.IsEngineSkinned || a.IsEngineRigid != b.IsEngineRigid)
+			{
+				error = $"mesh buffer {i} is {(a.IsEngineSkinned ? "skinned" : "rigid")}, its template's {(b.IsEngineSkinned ? "skinned" : "rigid")}";
+				return false;
+			}
+
+			if (a.VertexCount != b.VertexCount || a.FaceCount != b.FaceCount)
+			{
+				error = $"mesh buffer {i} has {a.VertexCount} vertices and {a.FaceCount} faces, its template {b.VertexCount} and {b.FaceCount}; " +
+					"a morph target is its template with the vertices moved — same vertices, same order, same triangles — or the game leaves the mesh unmorphed";
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/// <summary>The mod's declared morph targets (<see cref="TargetsPath"/>), from its package or folder; errors reported as conversions.</summary>
+	private static Dictionary<string, string> ReadTargets(F2ModPackage? package, string? folder, string mod, List<MeshConversion> conversions)
+	{
+		string? text = null;
+		try
+		{
+			if (package is not null && package.TryGetEntry(TargetsPath, out F2ModEntry? entry) && entry is not null)
+			{
+				text = System.Text.Encoding.UTF8.GetString(package.ReadEntryBytes(entry));
+			}
+			else if (folder is not null && File.Exists(Path.Combine(folder, TargetsPath)))
+			{
+				text = File.ReadAllText(Path.Combine(folder, TargetsPath));
+			}
+		}
+		catch (Exception exception)
+		{
+			conversions.Add(new MeshConversion { Target = TargetsPath, Mod = mod, Error = exception.Message });
+		}
+
+		if (text is null)
+		{
+			return new Dictionary<string, string>(StringComparer.Ordinal);
+		}
+
+		var errors = new List<string>();
+		Dictionary<string, string> targets = ParseTargets(text, errors);
+		foreach (string error in errors)
+		{
+			conversions.Add(new MeshConversion { Target = TargetsPath, Mod = mod, Error = error });
+		}
+
+		return targets;
+	}
 
 	public static List<MeshConversion> Apply(
 		BnkFileSystem mounted, IReadOnlyList<ModOverlay> overlays)
@@ -52,6 +206,7 @@ public static class ModMeshOverlays
 				{
 					using (pkg)
 					{
+						Dictionary<string, string> templates = ReadTargets(pkg, null, overlay.Name, conversions);
 						foreach (F2ModEntry entry in pkg.Entries)
 						{
 							string? suffix = null;
@@ -91,7 +246,7 @@ public static class ModMeshOverlays
 							string target = ModLoadOrder.Normalize(relative);
 							target = target[..^(suffix.Length - ".mdl".Length)];
 
-							ProcessMesh(mounted, conversions, overlay.Name, target, gltf);
+							ProcessMesh(mounted, conversions, overlay.Name, target, gltf, templates);
 						}
 					}
 				}
@@ -103,6 +258,7 @@ public static class ModMeshOverlays
 				continue;
 			}
 
+			Dictionary<string, string> folderTemplates = ReadTargets(null, overlay.AssetRoot, overlay.Name, conversions);
 			foreach (string file in ModManifest.EnumerateAssets(overlay.AssetRoot))
 			{
 				string? suffix = null;
@@ -144,7 +300,7 @@ public static class ModMeshOverlays
 				string target = ModLoadOrder.Normalize(normRel);
 				target = target[..^(suffix.Length - ".mdl".Length)];
 
-				ProcessMesh(mounted, conversions, overlay.Name, target, gltf);
+				ProcessMesh(mounted, conversions, overlay.Name, target, gltf, folderTemplates);
 			}
 		}
 
@@ -156,9 +312,17 @@ public static class ModMeshOverlays
 		List<MeshConversion> conversions,
 		string modName,
 		string target,
-		byte[] gltf)
+		byte[] gltf,
+		IReadOnlyDictionary<string, string> templates)
 	{
 		var conversion = new MeshConversion { Target = target, Mod = modName };
+
+		// A new morph target: a path the game does not ship, with the part it morphs as its template.
+		if (templates.TryGetValue(target, out string? templatePath) && !mounted.TryGetFile(target, out _))
+		{
+			ProcessTarget(mounted, conversions, conversion, templatePath, gltf);
+			return;
+		}
 
 		if (!mounted.TryGetFile(target, out BnkFile template))
 		{
@@ -177,7 +341,8 @@ public static class ModMeshOverlays
 			{
 				conversion.Error =
 					$"there is no '{target}' to replace — a model mod edits a model the game " +
-					"already has, because the file states far more than its mesh.";
+					"already has, because the file states far more than its mesh. A new morph target " +
+					$"names the part it morphs in {TargetsPath}.";
 				conversions.Add(conversion);
 				return;
 			}
@@ -208,6 +373,60 @@ public static class ModMeshOverlays
 
 		mounted.AddVirtualFile(
 			target, $"<mesh:{target}>", rebuilt.LongLength, () => rebuilt, modName);
+	}
+
+	private static void ProcessTarget(
+		BnkFileSystem mounted, List<MeshConversion> conversions, MeshConversion conversion, string templatePath, byte[] gltf)
+	{
+		BnkFile? template = null;
+		foreach (string candidate in new[] { templatePath }.Concat(BnkFileSystem.AliasesFor(templatePath)))
+		{
+			if (mounted.TryGetFile(candidate, out BnkFile found))
+			{
+				template = found;
+				break;
+			}
+		}
+
+		if (template is null)
+		{
+			conversion.Error = $"its template '{templatePath}' ({TargetsPath}) is not a model the game has";
+			conversions.Add(conversion);
+			return;
+		}
+
+		byte[] original;
+		try
+		{
+			original = template.ReadAllBytes();
+		}
+		catch (Exception exception)
+		{
+			conversion.Error = exception.Message;
+			conversions.Add(conversion);
+			return;
+		}
+
+		if (!TryConvert(gltf, original, out byte[] rebuilt, out string writeError, out int vertexCount, out int triangleCount))
+		{
+			conversion.Error = writeError;
+			conversions.Add(conversion);
+			return;
+		}
+
+		if (!SameTopology(rebuilt, original, out string topologyError))
+		{
+			conversion.Error = $"refused as a morph target of '{templatePath}': {topologyError}";
+			conversions.Add(conversion);
+			return;
+		}
+
+		conversion.VertexCount = vertexCount;
+		conversion.TriangleCount = triangleCount;
+		conversions.Add(conversion);
+		string target = conversion.Target;
+		mounted.AddVirtualFile(target, $"<mesh:{target}>", rebuilt.LongLength, () => rebuilt, conversion.Mod);
+		Refii.Level.Engine_PropModelIndex.RegisterPath(target);
 	}
 
 	/// <summary>Converts a glTF into a `.mdl`, with <paramref name="originalMdl"/> — the model being replaced — as the template.</summary>

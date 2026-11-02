@@ -1,4 +1,4 @@
 name = "Health Bars"
-version = "0.1.0"
+version = "0.2.0"
 author = "ammuica"
 description = "A health bar over every enemy near you, with a pale trail that shows each hit."

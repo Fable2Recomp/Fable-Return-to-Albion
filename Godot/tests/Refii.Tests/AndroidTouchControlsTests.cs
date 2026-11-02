@@ -937,9 +937,9 @@ public sealed class AndroidTouchControlsTests
     }
 
     /// <summary>
-    /// The touch controls' hold is the pub game's pad: the same XInput bits, triggers and left
-    /// stick (GamePubGames.TouchPad, PubGameInput's Touch device), merged with a controller's as
-    /// the guest merges devices.
+    /// The touch controls' hold reaches the pub game as one more device on the core's pad 0
+    /// (GameInput.TouchState, read by PubGameInput.FromPad): the same XInput bits, triggers and left
+    /// stick, merged with what else pressed the pad.
     /// </summary>
     [TestCase]
     public void TheTouchPadReachesThePubGame()
@@ -948,21 +948,19 @@ public sealed class AndroidTouchControlsTests
         try
         {
             GameInput.Touch = new GameInput.TouchHold(GameInput.PadA | GameInput.PadUp | GameInput.PadLeftShoulder, 255u, 0u, 0, 20000);
-            PubGameInput.Sample touch = GamePubGames.TouchPad();
-            AssertThat(touch.Buttons).IsEqual(GamePad.AButton | GamePad.DpadUp | GamePad.LeftShoulderButton);
-            AssertThat(touch.LeftTrigger).IsEqual(255);
-            AssertThat(touch.ThumbLY).IsEqual(20000);
-
-            var controller = new PubGameInput.Sample(0, 128, 0, -30000, 9000, 0, GamePad.XButton);
-            PubGameInput.Sample merged = PubGameInput.Merge(controller, touch);
-            AssertThat(merged.Buttons).IsEqual(GamePad.AButton | GamePad.DpadUp | GamePad.LeftShoulderButton | GamePad.XButton);
-            AssertThat(merged.LeftTrigger).IsEqual(255);
-            AssertThat(merged.RightTrigger).IsEqual(128);
-            AssertThat(merged.ThumbLY).IsEqual(-30000);
-            AssertThat(merged.ThumbRX).IsEqual(9000);
+            var pad = new GameInput.PadState { Buttons = GameInput.PadX, RightTrigger = 128, RightX = 9000 };
+            GameInput.TouchState(ref pad);
+            PubGameInput.Sample board = PubGameInput.FromPad(pad, boardClick: false);
+            AssertThat(board.Buttons).IsEqual(GamePad.AButton | GamePad.DpadUp | GamePad.LeftShoulderButton | GamePad.XButton);
+            AssertThat(board.LeftTrigger).IsEqual(255);
+            AssertThat(board.RightTrigger).IsEqual(128);
+            AssertThat(board.ThumbLY).IsEqual(20000);
+            AssertThat(board.ThumbRX).IsEqual(9000);
 
             GameInput.Touch = default;
-            AssertThat(GamePubGames.TouchPad()).IsEqual(default(PubGameInput.Sample));
+            var idle = new GameInput.PadState();
+            GameInput.TouchState(ref idle);
+            AssertThat(PubGameInput.FromPad(idle, boardClick: false)).IsEqual(default(PubGameInput.Sample));
         }
         finally
         {

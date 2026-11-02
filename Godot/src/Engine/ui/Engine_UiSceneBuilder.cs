@@ -825,10 +825,16 @@ public sealed class Engine_UiSceneBuilder
 		mat.SetShaderParameter(Uv1ScaleName, new Vector2(q.UMax - q.UMin, q.VMax - q.VMin));
 		mat.SetShaderParameter(Uv1OffsetName, new Vector2(q.UMin, q.VMin));
 
-		// A controller button cut from the shared atlas carries its keycap, for the keyboard.
+		// A controller button cut from a shared atlas — an `abyx` prompt, the menu cursor's select
+		// orb — carries the glyph it shows off the shipped art: keycap, style, pack or remap.
 		if (Engine_UiKeyGlyphs.AtlasButton(q.TexturePath, n, q.UMin, q.VMax) is { } button)
 		{
 			mat.SetShaderParameter("keycap_tex", Engine_UiKeyGlyphs.KeycapFor(button));
+			mat.SetShaderParameter("has_keycap", true);
+		}
+		else if (Engine_UiKeyGlyphs.OrbFor(q.TexturePath, q.UMin, q.UMax, q.VMin, q.VMax) is { } orb)
+		{
+			mat.SetShaderParameter("keycap_tex", orb);
 			mat.SetShaderParameter("has_keycap", true);
 		}
 

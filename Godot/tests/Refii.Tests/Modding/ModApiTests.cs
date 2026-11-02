@@ -291,8 +291,9 @@ public class ModApiTests
         // fx_reload is the remount's (Engine_ModRemount -> Engine_FxModEffects.ReloadGuestBank), and
         // so are gdb_reload and gdb_revert (Engine_ModRemount -> GdbHotReload.Apply).
         // mask_word is HostBridge.SetModEventMask / SetModVerdictMask's: the words of the host's
-        // masks past the two the exports carry.
-        foreach (string verb in verbs.Where(v => v is not ("menu_row" or "box_answer" or "notice_done" or "menu_box_answer" or "fx_play" or "fx_stop" or "fx_reload" or "gdb_reload" or "gdb_revert" or "mask_word")))
+        // masks past the two the exports carry. appearance_state is GameCharacterMorphs': a settings
+        // slot's look stated for its player where that player is played; a script calls set_appearance.
+        foreach (string verb in verbs.Where(v => v is not ("menu_row" or "box_answer" or "notice_done" or "menu_box_answer" or "fx_play" or "fx_stop" or "fx_reload" or "gdb_reload" or "gdb_revert" or "mask_word" or "appearance_state")))
         {
             AssertThat(Regex.IsMatch(godot, @"\b" + verb + @"\b"))
                 .OverrideFailureMessage($"'{verb}' is answered by mod_commands.cpp but missing from ModApi.GodotHelpers")
@@ -410,9 +411,11 @@ public class ModApiTests
         AssertThat(header.Contains("extern \"C\" void refii_mod_wheel_switches_target(uint8_t* base, uint32_t hero);", StringComparison.Ordinal)).IsTrue();
         string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
         AssertThat(natives.Contains("{\"wheel_switches_target\", &NativeWheelSwitchesTarget, 0}", StringComparison.Ordinal)).IsTrue();
-        // Souls Combat's toggled lock, now Lua (mod/lockon.lua), states it each tick the lock holds.
+        // Souls Combat's toggled lock, now Lua (mod/lockon.lua), states it sticky with the lock and
+        // again when the lock's target changes.
         string souls = string.Concat(Directory.EnumerateFiles(Path.Combine(root, "Fable2", "mods-src", "souls_combat", "mod"), "*.lua").OrderBy(f => f, StringComparer.Ordinal).Select(File.ReadAllText));
-        AssertThat(souls.Contains("Refii.wheel_switches_target(hero)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(souls.Contains("Refii.wheel_switches_target(hero, on)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(souls.Contains("Refii.wheel_switches_target(e.hero, true)", StringComparison.Ordinal)).IsTrue();
     }
 
     [TestCase]
@@ -777,7 +780,7 @@ public class ModApiTests
         string api = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp"));
         string events = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h"));
         string kit = File.ReadAllText(Path.Combine(root, "Godot", "src", "Titles", "Fable2", "host", "CoopHeroKit.cs"));
-        AssertThat(pump.Contains("bool PerformQuickslot(PPCContext& ctx, uint8_t* base, uint32_t player, uint32_t kind, uint32_t record)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(pump.Contains("bool PerformQuickslot(PPCContext& ctx, uint8_t* base, uint32_t player, uint32_t kind, uint32_t record, uint32_t flags)", StringComparison.Ordinal)).IsTrue();
         AssertThat(api.Contains("refii::vfs::PerformQuickslot(work, base,", StringComparison.Ordinal)).IsTrue();
         AssertThat(events.Contains("#define REFII_MOD_HOST_HERO_KIND 1005", StringComparison.Ordinal)).IsTrue();
         AssertThat(pump.Contains("refii::mods::PostEvent(REFII_MOD_HOST_HERO_KIND, fields)", StringComparison.Ordinal)).IsTrue();
@@ -866,16 +869,16 @@ public class ModApiTests
         AssertThat(lookAt.Cancellable).IsTrue();
         ModApiEvent started = ModApi.Find("vortex_started")!;
         AssertThat(started.Kind).IsEqual(95);
-        AssertThat(string.Join(",", started.Fields.Select(f => f.Name))).IsEqual("vortex,entity,caster,caster_player,target,serial,level,x,y,z");
+        AssertThat(string.Join(",", started.Fields.Select(f => f.Name))).IsEqual("vortex,entity,caster,caster_player,target,serial,level,x,y,z,tag,damage,lifts");
         AssertThat(started.Cancellable).IsFalse();
         ModApiEvent ended = ModApi.Find("vortex_ended")!;
         AssertThat(ended.Kind).IsEqual(96);
         AssertThat(string.Join(",", ended.Fields.Select(f => f.Name))).IsEqual("vortex,entity,caster,caster_player,serial,x,y,z");
         ModApiEvent impact = ModApi.Find("fireball_impact")!;
         AssertThat(impact.Kind).IsEqual(97);
-        AssertThat(string.Join(",", impact.Fields.Select(f => f.Name))).IsEqual("spell,serial,level,caster,caster_player,struck,struck_player,x,y,z,nx,ny,nz,detonated,hits");
+        AssertThat(string.Join(",", impact.Fields.Select(f => f.Name))).IsEqual("spell,serial,level,caster,caster_player,struck,struck_player,x,y,z,nx,ny,nz,detonated,hits,tag");
         AssertThat(impact.Cancellable).IsFalse();
-        AssertThat(ModApi.Events.Count).IsEqual(101);  // 98 paused, 99 start_game (H.16), 100 cutscene
+        AssertThat(ModApi.Events.Count).IsEqual(116);  // 98 paused, 99 start_game (H.16), 100 cutscene, 101..104 Part I wave B, 105 attack_mode_changed, 106..111 Part I wave C, 112 camera_changed, 113 vortex_caught, 114 appearance_changed, 115 morph_changed
 
         string? root = RepoRoot();
         if (root == null)
@@ -1028,7 +1031,7 @@ public class ModApiTests
         // The Lua preamble unpacks `at` as the sixteenth _play_fx argument and builds mark from a handle or a point.
         string preamble = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_ModLua.cs"));
         AssertThat(preamble.Contains("f[3] or f.z or 0, o.at or ''", StringComparison.Ordinal)).IsTrue();
-        AssertThat(preamble.Contains("function Refii.mark(target, icon, text, p)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(preamble.Contains("function Refii.mark(target, icon, text, p, o)", StringComparison.Ordinal)).IsTrue();
         string api = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp"));
         AssertThat(api.Contains(",at='%s'\"", StringComparison.Ordinal)).IsTrue();
         foreach (string op in new[] { "op='mark'", "op='unmark'", "op='fade'", "op='meter'", "op='meter_remove'" })
@@ -1120,7 +1123,7 @@ public class ModApiTests
         string lua = string.Join("\n", ModApi.LuaHelpers.Select(h => h.Signature + " " + h.Meaning));
         string godot = string.Join("\n", ModApi.GodotHelpers.Select(h => h.Signature));
         // 1 + 2: a position cast from Lua and Godot, and the cast's serial.
-        AssertThat(lua.Contains("Refii.cast_spell(caster, type, targeted, target, level [, pos [, dir]]) -> spell, serial", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("Refii.cast_spell(caster, type, targeted, target, level [, pos [, dir [, options]]]) -> spell, serial", StringComparison.Ordinal)).IsTrue();
         AssertThat(lua.Contains("Refii.spell_serial(spell) -> serial", StringComparison.Ordinal)).IsTrue();
         AssertThat(ModApi.GodotHelpers.Any(h => ModApi.GodotMethodNames(h.Signature).Contains("cast_spell_at"))).IsTrue();
         AssertThat(godot.Contains("cast_spell_at(caster, type, targeted, target, level, pos, dir)", StringComparison.Ordinal)).IsTrue();
@@ -1150,7 +1153,7 @@ public class ModApiTests
         // The preamble's wrapper (read from the source: the composed preamble reads mod settings
         // through Godot's FileAccess, a native crash in the test host).
         string preamble = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_ModLua.cs"));
-        AssertThat(preamble.Contains("function Refii.cast_spell(caster, spell_type, targeted, target, level, pos, dir)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(preamble.Contains("function Refii.cast_spell(caster, spell_type, targeted, target, level, pos, dir, options)", StringComparison.Ordinal)).IsTrue();
         AssertThat(preamble.Contains("return Refii._cast_spell(caster, spell_type, t, target or 0, level or 0, pos ~= nil and 1 or 0,", StringComparison.Ordinal)).IsTrue();
         string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
         AssertThat(natives.Contains("{\"_cast_spell\", &NativeCastSpell, 0}", StringComparison.Ordinal)).IsTrue();
@@ -1190,17 +1193,106 @@ public class ModApiTests
         AssertThat(mouse.Contains("constexpr uint32_t kWheelStatementTicks = 2u;", StringComparison.Ordinal)).IsTrue();
         // Both mods stand on the closed items.
         string weaving = File.ReadAllText(Path.Combine(root, "Fable2", "mods-src", "spell_weaving", "mod", "init.lua"));
-        AssertThat(weaving.Contains("local spell, serial = Refii.cast_spell(hero, cast.type, true, cast.victim, cast.level, start, facing)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(weaving.Contains("local spell, serial = Refii.cast_spell(hero, cast.type, true, 0, cast.level, cast.origin, cast.facing,", StringComparison.Ordinal)).IsTrue();
         AssertThat(weaving.Contains("spell_parts(serial).spell", StringComparison.Ordinal)).IsFalse();
         AssertThat(weaving.Contains("partner_casts", StringComparison.Ordinal)).IsFalse();
-        AssertThat(weaving.Contains("kChargeHoldSeconds = 0.3", StringComparison.Ordinal)).IsTrue();
-        // The bolt landed inside the partner's own factory call is scaled live, as the native's OnHit did.
-        AssertThat(weaving.Contains("casting = { type = cast.type, hero = hero }", StringComparison.Ordinal)).IsTrue();
-        AssertThat(weaving.Contains("if e.spell_type ~= casting.type or e.attacker ~= casting.hero or e.spell_serial == nil or e.spell_serial == 0 then", StringComparison.Ordinal)).IsTrue();
+        // Part I: the charge's end is spell_charge_ended, not a staleness timer.
+        AssertThat(weaving.Contains("kChargeHoldSeconds", StringComparison.Ordinal)).IsFalse();
+        AssertThat(weaving.Contains("Refii.on(\"spell_charge_ended\"", StringComparison.Ordinal)).IsTrue();
+        // Part I: the partner's hits, the bolt inside its own factory call included, are scaled by the
+        // cast's damage_scale where the hit is decided; no in-flight cast record matched by type and caster.
+        AssertThat(weaving.Contains("{ at = at, tag = cast.tag, damage_scale = Knob(\"weave_damage\", 0.7) }", StringComparison.Ordinal)).IsTrue();
+        AssertThat(weaving.Contains("casting = {", StringComparison.Ordinal)).IsFalse();
         string souls = string.Concat(Directory.EnumerateFiles(Path.Combine(root, "Fable2", "mods-src", "souls_combat", "mod"), "*.lua").OrderBy(f => f, StringComparer.Ordinal).Select(File.ReadAllText));
-        AssertThat(souls.Contains("S.CommittedStrike[p] = e.action", StringComparison.Ordinal)).IsTrue();
-        AssertThat(souls.Contains("if strike == nil or e.action ~= strike then", StringComparison.Ordinal)).IsTrue();
+        AssertThat(souls.Contains("S.Commit[p] = { action = e.action }", StringComparison.Ordinal)).IsTrue();
+        AssertThat(souls.Contains("if commit == nil or e.action ~= commit.action then", StringComparison.Ordinal)).IsTrue();
+        AssertThat(souls.Contains("Refii.allow_action_interrupt_at(commit.action, commit.at)", StringComparison.Ordinal)).IsTrue();
         AssertThat(souls.Contains("ten times a second", StringComparison.Ordinal)).IsFalse();
+    }
+
+    /// <summary>
+    /// cast_spell's `at` (Part I): the core places a cast at an entity or a point by the spell
+    /// class's own Start, on every surface, and a type with no rule for the place is refused with
+    /// a mod error rather than guessed. The rules are the binary's: Lightning on its bolt's end
+    /// (sub_825FEFC8 with the power's CreateImpactFX, read by the class's own data read) or one 15.0
+    /// reach above a point (outside the 1.35 re-acquire height), Fireball within its 1.0
+    /// immediate impact, Vortex set back its 1.25 spawn, Chaos on its stream's end, Force Push from
+    /// the origin.
+    /// </summary>
+    [TestCase]
+    public void CastSpellAtPlacesByTheClassesOwnRule()
+    {
+        string native = string.Join("\n", ModApi.Helpers.Select(h => h.Signature + " " + h.Meaning));
+        string lua = string.Join("\n", ModApi.LuaHelpers.Select(h => h.Signature + " " + h.Meaning));
+        string godot = string.Join("\n", ModApi.GodotHelpers.Select(h => h.Signature + " " + h.Meaning));
+        AssertThat(native.Contains("{ tag, damage_scale, at_kind, at_entity, at_point }", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("at = e or {x, y, z}", StringComparison.Ordinal)).IsTrue();
+        AssertThat(godot.Contains("[at E | at X Y Z]", StringComparison.Ordinal)).IsTrue();
+        foreach (string surface in new[] { native, lua, godot })
+        {
+            AssertThat(surface.Contains("Fireball and Chaos at a point, and Slow Time and Raise Dead, are refused with a mod error", StringComparison.Ordinal)).IsTrue();
+        }
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
+        AssertThat(header.Contains("#define REFII_MOD_CAST_AT_ENTITY 1", StringComparison.Ordinal)).IsTrue();
+        AssertThat(header.Contains("#define REFII_MOD_CAST_AT_POINT 2", StringComparison.Ordinal)).IsTrue();
+        AssertThat(Regex.IsMatch(header, @"float damage_scale;\s*(///[^\n]*\n\s*)*int32_t at_kind;\s*(///[^\n]*\n\s*)*uint32_t at_entity;\s*(///[^\n]*\n\s*)*float at_point\[3\];")).IsTrue();
+
+        string api = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        foreach (string rule in new[]
+                 {
+                     "constexpr uint32_t kAimPoint = 0x825FEFC8u;",
+                     "constexpr uint32_t kSpellDefinition = 0x8260D580u;",
+                     "constexpr uint32_t kLightningReadData = 0x827405C0u;",
+                     "constexpr uint32_t kLightningCreateImpactFx = 0x1Cu;",
+                     "constexpr float kLightningLift = 0.25f;",
+                     "constexpr float kLightningReach = 15.0f;",
+                     "constexpr float kLightningReacquireHeight = 1.35f;",
+                     "static_assert(kLightningReach > kLightningReacquireHeight,",
+                     "constexpr float kFireballImpactReach = 1.0f;",
+                     "constexpr float kVortexSpawnAhead = 1.25f;",
+                     "v1[2] = place[2] + kLightningReach;",
+                     "v1[i] = place[i] - 0.5f * kFireballImpactReach * u[i];",
+                     "v1[i] = place[i] - kVortexSpawnAhead * u[i];",
+                     "AimPoint(ctx, base, options.at_entity, LightningCreatesImpactFx(ctx, base, definitions, power),",
+                     "refii_bridge_mod_error_post(error, std::strlen(error));",
+                 })
+        {
+            AssertThat(api.Contains(rule, StringComparison.Ordinal)).OverrideFailureMessage(rule).IsTrue();
+        }
+        // Each refusal is a case of its own: no point for Fireball or Chaos, nothing for the rest.
+        string place = Regex.Match(api, @"bool PlaceCastAt\(.*?\n\}", RegexOptions.Singleline).Value;
+        AssertThat(place.Length > 0).IsTrue();
+        AssertThat(Regex.Matches(place, @"CastAtError\(""cast_spell %s: no rule for a point").Count).IsEqual(2);
+        AssertThat(place.Contains("default:\n      CastAtError(\"cast_spell %s: no rule for casting at a place\", name);", StringComparison.Ordinal)).IsTrue();
+        foreach (string type in new[] { "kSpellLightning", "kSpellFireball", "kSpellBlades", "kSpellVortex", "kSpellChaos", "kSpellForcePush" })
+        {
+            AssertThat(place.Contains("case " + type + ":", StringComparison.Ordinal)).OverrideFailureMessage(type).IsTrue();
+        }
+
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        AssertThat(natives.Contains("options.at_kind = lua.Int(16);", StringComparison.Ordinal)).IsTrue();
+        AssertThat(natives.Contains("options.at_entity = lua.Entity(17);", StringComparison.Ordinal)).IsTrue();
+        string preamble = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_ModLua.cs"));
+        AssertThat(preamble.Contains("if type(o.at) == 'table' then ak, a = 2, o.at elseif o.at ~= nil then ak, ae = 1, o.at end", StringComparison.Ordinal)).IsTrue();
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        AssertThat(commands.Contains("options.at_kind = REFII_MOD_CAST_AT_ENTITY;", StringComparison.Ordinal)).IsTrue();
+        AssertThat(commands.Contains("options.at_kind = REFII_MOD_CAST_AT_POINT;", StringComparison.Ordinal)).IsTrue();
+        string host = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_RefiiHost.cs"));
+        AssertThat(host.Contains("line += $\" at {Num(point.X)} {Num(point.Y)} {Num(point.Z)}\";", StringComparison.Ordinal)).IsTrue();
+
+        // The three functions the rules call, each with its disc twin (same size, unique masked body).
+        string rows = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "guest_addresses.inc"));
+        foreach (string row in new[] { "{0x825FEFC8u, 0x824BF198u},", "{0x8260D580u, 0x82622940u},", "{0x827405C0u, 0x827156C8u}," })
+        {
+            AssertThat(rows.Contains(row, StringComparison.Ordinal)).OverrideFailureMessage(row).IsTrue();
+        }
     }
 
     [TestCase]
@@ -1238,7 +1330,7 @@ public class ModApiTests
         AssertThat(start.Kind).IsEqual(99);
         AssertThat(start.Fields.Select(f => f.Name).ToArray()).IsEqual(new[] { "save", "level", "new_game", "player", "commit" });
         AssertThat(start.SeamFunctions.Contains("rex_lhFrontEnd_SetStartGameTarget")).IsTrue();
-        AssertThat(ModApi.Events.Count).IsEqual(101);
+        AssertThat(ModApi.Events.Count).IsEqual(116);
         foreach (string name in new[] { "MeleeSwing", "AnimEvent" })
         {
             ModApiEvent e = ModApi.Events.Single(x => x.Name == name);
@@ -1414,5 +1506,639 @@ public class ModApiTests
         AssertThat(state.Kinds(0)).IsEqual(0);
         AssertThat(state.In(1)).IsFalse();
         AssertThat(state.In(2)).IsFalse();
+    }
+
+    [TestCase]
+    public void OneCastHasOneSerialOnEverySurface()
+    {
+        // hard_mods_plan Part I wave C, the replica -> local serial mapping: spell_created states the
+        // host's serial last (a trailing field), and host_serial / local_serial translate on native,
+        // Lua and Godot.
+        ModApiEvent created = ModApi.Find("spell_created")!;
+        AssertThat(created.Fields[^1].Name).IsEqual("host_serial");
+        AssertThat(created.Fields[^1].Type).IsEqual("uint32_t");
+        AssertThat(created.Fields[^1].Writable).IsFalse();
+        string native = string.Join("\n", ModApi.Helpers.Select(h => h.Signature));
+        string lua = string.Join("\n", ModApi.LuaHelpers.Select(h => h.Signature));
+        string godot = string.Join("\n", ModApi.GodotHelpers.Select(h => h.Signature));
+        foreach (string call in new[] { "host_serial", "local_serial" })
+        {
+            AssertThat(native.Contains("refii_mod_" + call + "(", StringComparison.Ordinal)).OverrideFailureMessage("native " + call).IsTrue();
+            AssertThat(lua.Contains("Refii." + call + "(", StringComparison.Ordinal)).OverrideFailureMessage("lua " + call).IsTrue();
+            AssertThat(Regex.IsMatch(godot, @"\b" + call + @" SERIAL\b")).OverrideFailureMessage("query " + call).IsTrue();
+        }
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        foreach (string call in new[] { "host_serial", "local_serial" })
+        {
+            AssertThat(header.Contains("extern \"C\" uint32_t refii_mod_" + call + "(uint8_t* base, ", StringComparison.Ordinal)).OverrideFailureMessage("header " + call).IsTrue();
+            AssertThat(Regex.IsMatch(natives, "\\{\"" + call + "\", &Native\\w+, 0\\}")).OverrideFailureMessage("natives " + call).IsTrue();
+            AssertThat(commands.Contains("what == \"" + call + "\"", StringComparison.Ordinal)).OverrideFailureMessage("query " + call).IsTrue();
+        }
+
+        // The three cast-action Starts are named in both builds and hooked; the route carries the pc: lane.
+        string bus = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        foreach (string start in new[] { "rex_CActionSpellReleaseArea_Start", "rex_CActionSpellReleaseTargeted_Start", "rex_CActionSpellCast_Start" })
+        {
+            AssertThat(bus.Contains("REX_EXTERN(" + start + ")", StringComparison.Ordinal)).OverrideFailureMessage("hook " + start).IsTrue();
+            foreach (string build in new[] { "Fable2", "Fable2TU1" })
+            {
+                string config = File.ReadAllText(Path.Combine(root, "Fable2", "versions", build, "refii_config.toml"));
+                AssertThat(config.Contains("{ name = \"" + start + "\" }", StringComparison.Ordinal)).OverrideFailureMessage(build + " " + start).IsTrue();
+            }
+        }
+        AssertThat(bus.Contains("DrainCastPairs(base);", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("MapRelayedHitSerial(e);", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("e.host_serial = refii_mod_host_serial(base, e.serial);", StringComparison.Ordinal)).IsTrue();
+        string relay = File.ReadAllText(Path.Combine(root, "src", "runtime", "src", "core", "event_relay.cpp"));
+        AssertThat(relay.Contains("constexpr std::string_view kCastLane = \"pc:\";", StringComparison.Ordinal)).IsTrue();
+        AssertThat(relay.Contains("extern \"C\" int32_t refii_bridge_route_take_cast(char* out, uint32_t capacity)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(File.Exists(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "cast_pairing.h"))).IsTrue();
+        AssertThat(File.Exists(Path.Combine(root, "tools", "tests", "cast_pairing_test.cpp"))).IsTrue();
+    }
+
+    [TestCase]
+    public void ThePartIWaveBGuestSeamsAreOnEverySurface()
+    {
+        // hard_mods_plan Part I wave B: the stat setters (I.10), the save (I.14), facing and velocity
+        // (I.15) and the cast options (I.13) on native, Lua and Godot; the four new events (I.11,
+        // I.12, I.14, I.16) and the cast tag on the events of a cast.
+        string native = string.Join("\n", ModApi.Helpers.Select(h => h.Signature));
+        string lua = string.Join("\n", ModApi.LuaHelpers.Select(h => h.Signature));
+        string godot = string.Join("\n", ModApi.GodotHelpers.Select(h => h.Signature));
+        string[] calls = { "modify_renown", "modify_morality", "modify_purity", "save_game", "set_facing" };
+        foreach (string call in calls)
+        {
+            AssertThat(native.Contains("refii_mod_" + call, StringComparison.Ordinal)).OverrideFailureMessage("native " + call).IsTrue();
+            AssertThat(lua.Contains("Refii." + call + "(", StringComparison.Ordinal)).OverrideFailureMessage("lua " + call).IsTrue();
+            AssertThat(ModApi.GodotHelpers.Any(h => ModApi.GodotMethodNames(h.Signature).Contains(call))).OverrideFailureMessage("godot " + call).IsTrue();
+        }
+        foreach (string read in new[] { "can_save", "facing", "velocity" })
+        {
+            AssertThat(native.Contains("refii_mod_" + read + "(", StringComparison.Ordinal)).OverrideFailureMessage("native " + read).IsTrue();
+            AssertThat(lua.Contains("Refii." + read + "(", StringComparison.Ordinal)).OverrideFailureMessage("lua " + read).IsTrue();
+            AssertThat(godot.Contains("query " + read, StringComparison.Ordinal)).OverrideFailureMessage("query " + read).IsTrue();
+        }
+        AssertThat(native.Contains("refii_mod_cast_spell_with(", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("[, options]", StringComparison.Ordinal)).IsTrue();
+        AssertThat(ModApi.GodotHelpers.Any(h => ModApi.GodotMethodNames(h.Signature).Contains("cast_spell_with"))).IsTrue();
+
+        // The events: kinds after the cutscene, the verdict's writable seconds, the read-only rest.
+        AssertThat(ModApi.Find("health_changed")!.Kind).IsEqual(101);
+        AssertThat(ModApi.Find("status_applying")!.Kind).IsEqual(102);
+        AssertThat(ModApi.Find("save_written")!.Kind).IsEqual(103);
+        AssertThat(ModApi.Find("lock_lost")!.Kind).IsEqual(104);
+        AssertThat(string.Join(",", ModApi.Find("health_changed")!.Fields.Select(f => f.Name))).IsEqual("entity,player,delta,health,max,source");
+        ModApiEvent applying = ModApi.Find("status_applying")!;
+        AssertThat(applying.Cancellable).IsTrue();
+        AssertThat(applying.Fields.Single(f => f.Name == "seconds").Writable).IsTrue();
+        AssertThat(applying.Fields.Count(f => f.Writable)).IsEqual(1);
+        foreach (string name in new[] { "health_changed", "save_written", "lock_lost" })
+        {
+            AssertThat(ModApi.Find(name)!.Cancellable).OverrideFailureMessage(name + " is after the fact").IsFalse();
+            AssertThat(ModApi.Find(name)!.Fields.Any(f => f.Writable)).OverrideFailureMessage(name + " is read-only").IsFalse();
+            AssertThat(RefiiHost.SignalNames.Contains(name)).IsTrue();
+        }
+        AssertThat(string.Join(",", ModApi.Find("save_written")!.Fields.Select(f => f.Name))).IsEqual("player,save,ok");
+        AssertThat(ModApi.Find("status_effect")!.Fields.Select(f => f.Name).TakeLast(2).ToArray()).IsEqual(new[] { "serial", "source" });
+
+        // The cast's tag: writable on the launch, carried by the cast's later events; the slot on spell_created.
+        ModApiField launchTag = ModApi.Find("spell_launch")!.Fields.Single(f => f.Name == "tag");
+        AssertThat(launchTag.Writable).IsTrue();
+        foreach (string name in new[] { "spell_created", "vortex_started", "hit", "hit_landed", "fireball_impact", "status_applying" })
+        {
+            ModApiField tag = ModApi.Find(name)!.Fields.SingleOrDefault(f => f.Name == "tag");
+            AssertThat(tag.Name).OverrideFailureMessage(name + " carries no tag").IsEqual("tag");
+            AssertThat(tag.Writable).OverrideFailureMessage(name + "'s tag is the launch's").IsFalse();
+        }
+        AssertThat(ModApi.Find("spell_created")!.Fields.Any(f => f.Name == "slot")).IsTrue();
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string bus = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        foreach (string call in new[] { "modify_renown", "modify_morality", "modify_purity", "can_save", "save_game", "facing", "velocity", "set_facing" })
+        {
+            AssertThat(header.Contains("refii_mod_" + call + "(PPCContext* ctx, uint8_t* base, ", StringComparison.Ordinal)).OverrideFailureMessage("header " + call).IsTrue();
+            AssertThat(Regex.IsMatch(natives, "\\{\"" + call + "\", &Native\\w+, 0\\}")).OverrideFailureMessage("natives " + call).IsTrue();
+        }
+        foreach (string op in new[] { "modify_renown", "modify_morality", "modify_purity", "save_game", "set_facing", "cast_spell_with" })
+        {
+            AssertThat(commands.Contains("op == \"" + op + "\"", StringComparison.Ordinal)).OverrideFailureMessage("command " + op).IsTrue();
+        }
+        foreach (string what in new[] { "can_save", "facing", "velocity" })
+        {
+            AssertThat(commands.Contains("what == \"" + what + "\"", StringComparison.Ordinal)).OverrideFailureMessage("query " + what).IsTrue();
+        }
+
+        // The seams: the installers and health's Modify hooked by their config names, the lock polled.
+        foreach (string seam in new[] { "rex_CECHealth_Modify", "rex_SpellLightning_Electrify", "rex_SpellChaos_ApplyToVictim", "rex_SpellFireball_Ignite" })
+        {
+            AssertThat(bus.Contains("REX_EXTERN(" + seam + ")", StringComparison.Ordinal)).OverrideFailureMessage("hook " + seam).IsTrue();
+        }
+        // The lock's end is the mode drop's hook now (Part I wave C), not a poll.
+        AssertThat(bus.Contains("REX_EXTERN(rex_CPlayer_ClearPlayerMode)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("DispatchLockEdges", StringComparison.Ordinal)).IsFalse();
+        // Chaos fires where it is decided: the creature branch, never the network receive's copy.
+        AssertThat(bus.Contains("if (installs && (ctx.r8.u32 & 0xFFu) == 0) {", StringComparison.Ordinal)).IsTrue();
+        // The cast's serial is the registry's counter, read before the factory runs.
+        AssertThat(bus.Contains("constexpr uint32_t kRegistrySerialCounter = 0xC;", StringComparison.Ordinal)).IsTrue();
+        string saves = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "player_state_hooks.cpp"));
+        AssertThat(saves.Contains("RaiseSaveWritten(ctx, base, name, player, ok);", StringComparison.Ordinal)).IsTrue();
+        // Godot's save_written is the event's: the host's stamp kind no longer emits it.
+        string host = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_RefiiHost.cs"));
+        AssertThat(host.Contains("EmitSignal(SignalName.save_written", StringComparison.Ordinal)).IsFalse();
+
+        // The guest functions the helpers call by TU1 address, each with its disc row (masked body
+        // match, unique, same size on both builds).
+        string rows = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "guest_addresses.inc"));
+        foreach (string row in new[]
+                 {
+                     "{0x823F3660u, 0x823D2070u},",  // Player.IsAbleToSaveGame
+                     "{0x82445730u, 0x824E8D28u},",  // AutoSaveGame
+                     "{0x821F5BC0u, 0x821F5A90u},",  // Physics.GetFacingVector
+                     "{0x82266518u, 0x822664D8u},",  // Physics.SetFacingVector
+                     "{0x823F3420u, 0x823D1E30u},",  // Player.SetFacingVector
+                 })
+        {
+            AssertThat(rows.Contains(row, StringComparison.Ordinal)).OverrideFailureMessage(row).IsTrue();
+        }
+    }
+
+    [TestCase]
+    public void ThePartIWaveCMovementAndQuickSeamsAreOnEverySurface()
+    {
+        // hard_mods_plan Part I wave C (movement, inventory, quick actions): the sprint (C.15), the
+        // held expression and its release (C.17), the ungated quick actions (C.16), per-hero
+        // locomotion and parry (C.12) on native, Lua and Godot; item_removed (C.13) and
+        // expression_wheel (C.14).
+        string native = string.Join("\n", ModApi.Helpers.Select(h => h.Signature));
+        string lua = string.Join("\n", ModApi.LuaHelpers.Select(h => h.Signature));
+        string godot = string.Join("\n", ModApi.GodotHelpers.Select(h => h.Signature));
+        foreach (string call in new[] { "release_expression", "end_sprint", "set_locomotion", "set_parry" })
+        {
+            AssertThat(native.Contains("refii_mod_" + call + "(", StringComparison.Ordinal)).OverrideFailureMessage("native " + call).IsTrue();
+            AssertThat(lua.Contains("Refii." + call + "(", StringComparison.Ordinal)).OverrideFailureMessage("lua " + call).IsTrue();
+            AssertThat(ModApi.GodotHelpers.Any(h => ModApi.GodotMethodNames(h.Signature).Contains(call))).OverrideFailureMessage("godot " + call).IsTrue();
+        }
+        foreach (string read in new[] { "sprinting", "locomotion", "parry" })
+        {
+            AssertThat(native.Contains("refii_mod_" + read + "(", StringComparison.Ordinal)).OverrideFailureMessage("native " + read).IsTrue();
+            AssertThat(lua.Contains("Refii." + read + "(", StringComparison.Ordinal)).OverrideFailureMessage("lua " + read).IsTrue();
+            AssertThat(godot.Contains("query " + read, StringComparison.Ordinal)).OverrideFailureMessage("query " + read).IsTrue();
+        }
+        AssertThat(native.Contains("refii_mod_quick_action(", StringComparison.Ordinal)).IsTrue();
+        AssertThat(lua.Contains("Refii.perform_expression(p, expression [, held [, opts]])", StringComparison.Ordinal)).IsTrue();
+        AssertThat(godot.Contains("perform_expression(player, expression, held", StringComparison.Ordinal)).IsTrue();
+
+        // The events: appended in one change, read-only, after the fact, a signal each.
+        ModApiEvent removed = ModApi.Find("item_removed")!;
+        ModApiEvent wheel = ModApi.Find("expression_wheel")!;
+        AssertThat(wheel.Kind).IsEqual(removed.Kind + 1);
+        AssertThat(string.Join(",", removed.Fields.Select(f => f.Name))).IsEqual("entity,player,inventory,definition,count,remaining");
+        AssertThat(string.Join(",", wheel.Fields.Select(f => f.Name))).IsEqual("player,open,highlighted");
+        foreach (ModApiEvent e in new[] { removed, wheel })
+        {
+            AssertThat(e.Cancellable).OverrideFailureMessage(e.LuaName + " is after the fact").IsFalse();
+            AssertThat(e.Fields.Any(f => f.Writable)).OverrideFailureMessage(e.LuaName + " is read-only").IsFalse();
+            AssertThat(RefiiHost.SignalNames.Contains(e.LuaName)).IsTrue();
+        }
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string bus = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        string preamble = File.ReadAllText(Path.Combine(root, "Godot", "src", "Engine", "mods", "Engine_ModLua.cs"));
+        foreach (string call in new[] { "quick_action", "release_expression", "end_sprint", "set_locomotion", "locomotion", "set_parry", "parry" })
+        {
+            AssertThat(header.Contains("refii_mod_" + call + "(PPCContext* ctx, uint8_t* base, ", StringComparison.Ordinal)).OverrideFailureMessage("header " + call).IsTrue();
+        }
+        AssertThat(header.Contains("refii_mod_sprinting(uint8_t* base, int32_t player)", StringComparison.Ordinal)).IsTrue();
+        foreach (string native_name in new[] { "release_expression", "sprinting", "end_sprint", "_set_locomotion", "locomotion", "set_parry", "parry" })
+        {
+            AssertThat(Regex.IsMatch(natives, "\\{\"" + native_name + "\", &Native\\w+, 0\\}")).OverrideFailureMessage("natives " + native_name).IsTrue();
+        }
+        AssertThat(preamble.Contains("function Refii.set_locomotion(p, values, value)", StringComparison.Ordinal)).IsTrue();
+        foreach (string op in new[] { "release_expression", "end_sprint", "set_locomotion", "set_parry" })
+        {
+            AssertThat(commands.Contains("op == \"" + op + "\"", StringComparison.Ordinal)).OverrideFailureMessage("command " + op).IsTrue();
+        }
+        foreach (string what in new[] { "sprinting", "locomotion", "parry" })
+        {
+            AssertThat(commands.Contains("what == \"" + what + "\"", StringComparison.Ordinal)).OverrideFailureMessage("query " + what).IsTrue();
+        }
+
+        // The seams: the removal tail, the wheel's open and close and the locomotion load hooked by
+        // their config names (both builds), the highlight polled, the parry restated on a new hero.
+        foreach (string seam in new[] { "rex_CECInventory_RefreshRecordRefs", "rex_lhGuiManager_OpenExpressionWheel", "rex_lhGuiManager_CloseExpressionWheel", "rex_CECLocomotion_LoadData" })
+        {
+            AssertThat(bus.Contains("REX_EXTERN(" + seam + ")", StringComparison.Ordinal)).OverrideFailureMessage("hook " + seam).IsTrue();
+            foreach (string build in new[] { "Fable2", "Fable2TU1" })
+            {
+                string config = File.ReadAllText(Path.Combine(root, "Fable2", "versions", build, "refii_config.toml"));
+                AssertThat(config.Contains("\"" + seam + "\"", StringComparison.Ordinal)).OverrideFailureMessage(build + " " + seam).IsTrue();
+            }
+        }
+        AssertThat(bus.Contains("DispatchWheelHighlight(ctx, base);", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("refii::vfs::ReapplyHeldParry(ctx, base, p);", StringComparison.Ordinal)).IsTrue();
+
+        // The guest functions the helpers call by TU1 address, each with its disc row.
+        string rows = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "guest_addresses.inc"));
+        foreach (string row in new[]
+                 {
+                     "{0x82414A50u, 0x823E6E88u},",  // the performer's end of a held expression
+                     "{0x8284A8C0u, 0x827DA750u},",  // the sprint setter
+                     "{0x823C5E00u, 0x824191A0u},",  // the locomotion map's operator[]
+                     "{0x8257EC08u, 0x82C343A0u},",  // the combat parameter table's find
+                     "{0x827649C8u, 0x827417E0u},",  // the item's UsableFromInventory test
+                 })
+        {
+            AssertThat(rows.Contains(row, StringComparison.Ordinal)).OverrideFailureMessage(row).IsTrue();
+        }
+    }
+
+    /// <summary>
+    /// PART I WAVE C (spells and combat): each end a mod guessed with a timer is an event at the
+    /// guest's own seam, the move-cancel is a verdict, the lock's end is the mode drop's hook, the
+    /// summon carries its cast, and record_ref / creature_tier / charge_spell are on every surface.
+    /// </summary>
+    [TestCase]
+    public void PartIWaveCSpellsAndCombat()
+    {
+        // The events: appended after the expression wheel, in kind order, with their fields.
+        AssertThat(ModApi.Find("spell_ended")!.Kind).IsEqual(108);
+        AssertThat(ModApi.Find("spell_charge_ended")!.Kind).IsEqual(109);
+        AssertThat(ModApi.Find("melee_swing_ended")!.Kind).IsEqual(110);
+        AssertThat(ModApi.Find("action_move_interrupt")!.Kind).IsEqual(111);
+        AssertThat(string.Join(",", ModApi.Find("spell_ended")!.Fields.Select(f => f.Name))).IsEqual("serial,type,caster,caster_player,tag,reason,level");
+        AssertThat(string.Join(",", ModApi.Find("spell_charge_ended")!.Fields.Select(f => f.Name))).IsEqual("player,caster,released");
+        AssertThat(string.Join(",", ModApi.Find("melee_swing_ended")!.Fields.Select(f => f.Name))).IsEqual("entity,player,action,action_type,hits");
+        AssertThat(string.Join(",", ModApi.Find("action_move_interrupt")!.Fields.Select(f => f.Name))).IsEqual("entity,player,action,action_type");
+        foreach (string name in new[] { "spell_ended", "spell_charge_ended", "melee_swing_ended" })
+        {
+            AssertThat(ModApi.Find(name)!.Cancellable).OverrideFailureMessage(name + " is after the fact").IsFalse();
+            AssertThat(ModApi.Find(name)!.Fields.Any(f => f.Writable)).OverrideFailureMessage(name + " is read-only").IsFalse();
+        }
+        AssertThat(ModApi.Find("action_move_interrupt")!.Cancellable).IsTrue();
+        AssertThat(ModApi.Find("melee_swing_ended")!.IsRelayed).IsTrue();
+        AssertThat(ModApi.Find("spell_ended")!.IsRelayed).IsFalse();
+        foreach (string name in new[] { "spell_ended", "spell_charge_ended", "melee_swing_ended", "action_move_interrupt" })
+        {
+            AssertThat(RefiiHost.SignalNames.Contains(name)).OverrideFailureMessage(name + " signal").IsTrue();
+        }
+
+        // summoned carries its cast: serial and tag, trailing (a mod built against the old struct keeps its offsets).
+        AssertThat(ModApi.Find("summoned")!.Fields.Select(f => f.Name).TakeLast(2).ToArray()).IsEqual(new[] { "serial", "tag" });
+        AssertThat(ModApi.Find("spell_ended")!.Fields.Single(f => f.Name == "tag").Writable).IsFalse();
+
+        // The calls on every surface.
+        string native = string.Join("\n", ModApi.Helpers.Select(h => h.Signature));
+        string lua = string.Join("\n", ModApi.LuaHelpers.Select(h => h.Signature));
+        string godot = string.Join("\n", ModApi.GodotHelpers.Select(h => h.Signature));
+        foreach (string call in new[] { "record_ref", "creature_tier", "charge_spell" })
+        {
+            AssertThat(native.Contains("refii_mod_" + call + "(", StringComparison.Ordinal)).OverrideFailureMessage("native " + call).IsTrue();
+            AssertThat(lua.Contains("Refii." + call + "(", StringComparison.Ordinal)).OverrideFailureMessage("lua " + call).IsTrue();
+        }
+        AssertThat(godot.Contains("query record_ref DEF FIELD", StringComparison.Ordinal)).IsTrue();
+        AssertThat(godot.Contains("query creature_tier E", StringComparison.Ordinal)).IsTrue();
+        AssertThat(ModApi.GodotHelpers.Any(h => ModApi.GodotMethodNames(h.Signature).Contains("charge_spell"))).IsTrue();
+        AssertThat(ModApi.Constants.Single(c => c.Name == "CREATURE_ELITE").Value).IsEqual(1);
+        AssertThat(ModApi.Constants.Single(c => c.Name == "CREATURE_LIEUTENANT").Value).IsEqual(2);
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
+        string events = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h"));
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        string bus = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        string api = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        string abilities = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_abilities.cpp"));
+        AssertThat(header.Contains("extern \"C\" int32_t refii_mod_record_ref(PPCContext* ctx, uint8_t* base, uint32_t definition, const char* field,", StringComparison.Ordinal)).IsTrue();
+        AssertThat(header.Contains("extern \"C\" int32_t refii_mod_creature_tier(uint8_t* base, uint32_t entity);", StringComparison.Ordinal)).IsTrue();
+        AssertThat(header.Contains("extern \"C\" int32_t refii_mod_charge_spell(PPCContext* ctx, uint8_t* base, int32_t player, int32_t type, int32_t held);", StringComparison.Ordinal)).IsTrue();
+        AssertThat(header.Contains("#define REFII_CREATURE_ELITE 1", StringComparison.Ordinal) && header.Contains("#define REFII_CREATURE_LIEUTENANT 2", StringComparison.Ordinal)).IsTrue();
+        AssertThat(events.Contains("#define REFII_SPELL_END_FINISHED 0", StringComparison.Ordinal) && events.Contains("#define REFII_SPELL_END_STOPPED 1", StringComparison.Ordinal)).IsTrue();
+        foreach (string call in new[] { "record_ref", "creature_tier", "charge_spell" })
+        {
+            AssertThat(Regex.IsMatch(natives, "\\{\"" + call + "\", &Native\\w+, 0\\}")).OverrideFailureMessage("natives " + call).IsTrue();
+        }
+        AssertThat(commands.Contains("what == \"record_ref\"", StringComparison.Ordinal)).IsTrue();
+        AssertThat(commands.Contains("what == \"creature_tier\"", StringComparison.Ordinal)).IsTrue();
+        AssertThat(commands.Contains("op == \"charge_spell\"", StringComparison.Ordinal)).IsTrue();
+        // The type-6 value word is the named record's hash; the rank bytes the creature init writes.
+        AssertThat(api.Contains("constexpr uint32_t kGdbTypeRef = 6;", StringComparison.Ordinal)).IsTrue();
+        AssertThat(api.Contains("constexpr uint32_t kCreatureIsLieutenant = 0x1C;", StringComparison.Ordinal)).IsTrue();
+        AssertThat(api.Contains("constexpr uint32_t kCreatureIsElite = 0x1D;", StringComparison.Ordinal)).IsTrue();
+        // The lend writes with NOTIFY clear (no spell_pick); a real pick meanwhile is what comes back.
+        AssertThat(api.Contains("work.r7.u32 = 0u;", StringComparison.Ordinal)).IsTrue();
+        AssertThat(abilities.Contains("refii::vfs::ModChargeLendPicked(player, slot,", StringComparison.Ordinal)).IsTrue();
+
+        // The seams, hooked here and named in both builds.
+        var seams = new Dictionary<string, (string Tu1, string Disc)>
+        {
+            ["rex_CSpellRegistry_Update"] = ("0x822A7F50", "0x822A7D10"),
+            ["rex_CAction_End"] = ("0x822861A8", "0x82285D10"),
+            ["rex_CAbilityActionMagicCast_Start"] = ("0x8298A870", "0x829B9E30"),
+            ["rex_CAction_MovementInterruptible"] = ("0x822BDEA0", "0x822BDBC0"),
+            ["rex_CPlayer_ClearPlayerMode"] = ("0x82389CD0", "0x8238F4A0"),
+            ["rex_CECSpellManager_SetState"] = ("0x8253E840", "0x82429280"),
+        };
+        string tu1 = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2TU1", "refii_config.toml"));
+        string disc = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "refii_config.toml"));
+        foreach ((string name, (string t, string d)) in seams)
+        {
+            AssertThat(bus.Contains("REX_EXTERN(" + name + ")", StringComparison.Ordinal)).OverrideFailureMessage("hook " + name).IsTrue();
+            AssertThat(bus.Contains("PPC_EXTERN_FUNC(__imp__" + name + ");", StringComparison.Ordinal)).OverrideFailureMessage("extern " + name).IsTrue();
+            AssertThat(tu1.Contains($"{t} = {{ name = \"{name}\" }}")).OverrideFailureMessage(name + " TU1").IsTrue();
+            AssertThat(disc.Contains($"{d} = {{ name = \"{name}\" }}")).OverrideFailureMessage(name + " disc").IsTrue();
+        }
+        // The registry's two midasm reads, r31 the spell, at each build's own addresses.
+        foreach ((string config, string updating, string ending) in new[] { (tu1, "0x822A7FD8", "0x822A8008"), (disc, "0x822A7D98", "0x822A7DC8") })
+        {
+            AssertThat(config.Contains("name = \"RefiiSpellRegistryUpdating\"\naddress = " + updating + "\nregisters = [\"r31\"]", StringComparison.Ordinal)).IsTrue();
+            AssertThat(config.Contains("name = \"RefiiSpellRegistryEnding\"\naddress = " + ending + "\nregisters = [\"r31\"]", StringComparison.Ordinal)).IsTrue();
+        }
+        AssertThat(bus.Contains("void RefiiSpellRegistryUpdating(PPCRegister& r31)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("void RefiiSpellRegistryEnding(PPCRegister& r31)", StringComparison.Ordinal)).IsTrue();
+        // The strike's end is relayed like its start; the decider's hits count on this machine.
+        AssertThat(bus.Contains("REFII_RELAY(MeleeSwingEnded, kPlayer),", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("NoteSwingHit(base, e.attacker);", StringComparison.Ordinal)).IsTrue();
+        // The summon's serial as each seam states it.
+        AssertThat(bus.Contains("const uint32_t serial = ctx.r6.u32;", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("constexpr uint32_t kSwordSetSerial = 0x10;", StringComparison.Ordinal)).IsTrue();
+
+        // The addresses the hooks name, each with its disc row.
+        string rows = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "guest_addresses.inc"));
+        foreach (string row in new[]
+                 {
+                     "{0x820D2FB0u, 0x820CF820u},",  // the quick charge action's vtable
+                     "{0x820D30A0u, 0x820CF910u},",  // the full charge action's vtable
+                     "{0x82298738u, 0x822982F8u},",  // the action handle's resolver
+                 })
+        {
+            AssertThat(rows.Contains(row, StringComparison.Ordinal)).OverrideFailureMessage(row).IsTrue();
+        }
+    }
+
+    /// <summary>
+    /// A spell's own numbers are a stated read on every surface: one power as its Targeted class's own
+    /// data read loads it for the caster's definitions (Lightning's ElectrifyDuration, Fireball's
+    /// CreatureBurnTime, Chaos's Duration with their Starts' spreads; Vortex's Duration; Blades'
+    /// NumSwords), each read a function row on both builds.
+    /// </summary>
+    [TestCase]
+    public void ASpellStatesItsOwnBalance()
+    {
+        AssertThat(ModApi.LuaHelpers.Any(h => h.Signature.StartsWith("Refii.spell_balance(caster, type, level)", StringComparison.Ordinal))).IsTrue();
+        AssertThat(ModApi.Helpers.Any(h => h.Signature.Contains("refii_mod_spell_balance(", StringComparison.Ordinal))).IsTrue();
+        AssertThat(ModApi.SpellBalanceMeaning.Contains("ElectrifyDuration", StringComparison.Ordinal) &&
+                   ModApi.SpellBalanceMeaning.Contains("CreatureBurnTime", StringComparison.Ordinal) &&
+                   ModApi.SpellBalanceMeaning.Contains("NumSwords", StringComparison.Ordinal)).IsTrue();
+        AssertThat(ModApi.VerdictReads.Any(r => r.Verb == "spell_balance" && r.Lua == "spell_balance")).IsTrue();
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
+        AssertThat(header.Contains("extern \"C\" int32_t refii_mod_spell_balance(PPCContext* ctx, uint8_t* base, uint32_t caster, int32_t type, int32_t level,", StringComparison.Ordinal)).IsTrue();
+        string api = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        foreach (string read in new[]
+                 {
+                     "{kSpellLightning, kLightningReadData, kLightningRecords, kLightningRecordBytes, 4, 5.0f, -1, -1},",
+                     "{kSpellFireball, 0x82743968u, 0xB4u, 36u, 0, 0.0f, -1, -1},",
+                     "{kSpellBlades, 0x825A1D68u, 0x80u, 20u, -1, 0.0f, -1, 0},",
+                     "{kSpellVortex, 0x828B1EA8u, 0x80u, 92u, -1, 0.0f, 0, -1},",
+                     "{kSpellChaos, 0x82748B10u, 0x80u, 4u, 0, 2.0f, -1, -1},",
+                 })
+        {
+            AssertThat(api.Contains(read, StringComparison.Ordinal)).OverrideFailureMessage(read).IsTrue();
+        }
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        AssertThat(natives.Contains("{\"spell_balance\", &NativeSpellBalance, 0},", StringComparison.Ordinal)).IsTrue();
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        AssertThat(commands.Contains("what == \"spell_balance\"", StringComparison.Ordinal)).IsTrue();
+        // The data reads, matched to the unpatched build by masked body (struct offsets kept).
+        string rows = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "guest_addresses.inc"));
+        foreach (string row in new[]
+                 {
+                     "{0x825A1D68u, 0x82552B50u},", "{0x827405C0u, 0x827156C8u},", "{0x82743968u, 0x82718A68u},",
+                     "{0x82748B10u, 0x8271DC10u},", "{0x828B1EA8u, 0x8288CB80u},", "{0x8260D580u, 0x82622940u},",
+                 })
+        {
+            AssertThat(rows.Contains(row, StringComparison.Ordinal)).OverrideFailureMessage(row).IsTrue();
+        }
+        string calls = File.ReadAllText(Path.Combine(GuideFolder(root), "reference-calls.md"));
+        AssertThat(calls.Contains("Refii.spell_balance(caster, type, level)", StringComparison.Ordinal)).IsTrue();
+    }
+
+    [TestCase]
+    public void AVortexStatesWhoItCatchesAndLetsGo()
+    {
+        ModApiEvent caught = ModApi.Find("vortex_caught")!;
+        AssertThat(caught.Kind).IsEqual(113);
+        AssertThat(caught.Name).IsEqual("VortexCaught");
+        AssertThat(string.Join(",", caught.Fields.Select(f => f.Name))).IsEqual("serial,tag,vortex,entity,victim,player,caster,caster_player,caught");
+        AssertThat(caught.Cancellable).IsFalse();
+        AssertThat(caught.Fields.Any(f => f.Writable)).IsFalse();
+        AssertThat(RefiiHost.SignalNames.Contains("vortex_caught")).IsTrue();
+        AssertThat(ModApi.Find("status_effect")!.Fields.Single(f => f.Name == "serial").Meaning.Contains("vortex", StringComparison.Ordinal)).IsTrue();
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+        string events = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h"));
+        AssertThat(events.Contains("REFII_EVENT_VORTEX_CAUGHT = 113,", StringComparison.Ordinal)).IsTrue();
+        AssertThat(events.Contains("struct VortexCaughtEvent : Event {", StringComparison.Ordinal)).IsTrue();
+        string bus = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        // Capture states the status's serial and source; both seams raise the event after the call.
+        AssertThat(bus.Contains("Installing(REFII_STATUS_VORTEX, serial, caster, [&] { __imp__rex_VortexComponent_Capture(ctx, base); });", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("RaiseVortexCaught(ctx, base, component, victim, true);", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("RaiseVortexCaught(ctx, base, component, victim, false);", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("case REFII_EVENT_VORTEX_CAUGHT:", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("extern \"C\" int32_t refii_mod_vortex_held(", StringComparison.Ordinal)).IsTrue();
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
+        AssertThat(header.Contains("extern \"C\" int32_t refii_mod_vortex_held(uint8_t* base, uint32_t serial, uint32_t* out, int32_t max);", StringComparison.Ordinal)).IsTrue();
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        AssertThat(natives.Contains("{\"vortex_held\", &NativeVortexHeld, 0},", StringComparison.Ordinal)).IsTrue();
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        AssertThat(commands.Contains("what == \"vortex_held\"", StringComparison.Ordinal)).IsTrue();
+
+        // Capture was named already; Release is new. Same bodies on both builds (masked, unique).
+        var seams = new Dictionary<string, (string Tu1, string Disc)>
+        {
+            ["rex_VortexComponent_Capture"] = ("0x8275C578", "0x82733F58"),
+            ["rex_VortexComponent_Release"] = ("0x8275CB28", "0x82734508"),
+        };
+        string tu1 = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2TU1", "refii_config.toml"));
+        string disc = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "refii_config.toml"));
+        foreach ((string name, (string t, string d)) in seams)
+        {
+            AssertThat(bus.Contains("REX_EXTERN(" + name + ")", StringComparison.Ordinal)).OverrideFailureMessage("hook " + name).IsTrue();
+            AssertThat(bus.Contains("PPC_EXTERN_FUNC(__imp__" + name + ");", StringComparison.Ordinal)).OverrideFailureMessage("extern " + name).IsTrue();
+            AssertThat(tu1.Contains($"{t} = {{ name = \"{name}\" }}")).OverrideFailureMessage(name + " TU1").IsTrue();
+            AssertThat(disc.Contains($"{d} = {{ name = \"{name}\" }}")).OverrideFailureMessage(name + " disc").IsTrue();
+        }
+        string reference = File.ReadAllText(Path.Combine(GuideFolder(root), "reference-events.md"));
+        AssertThat(reference.Contains("| 113 | VortexCaught / vortex_caught |", StringComparison.Ordinal)).IsTrue();
+        string calls = File.ReadAllText(Path.Combine(GuideFolder(root), "reference-calls.md"));
+        AssertThat(calls.Contains("Refii.vortex_held(serial)", StringComparison.Ordinal)).IsTrue();
+    }
+
+    /// <summary>
+    /// Murgo's Mirror is a mod surface: appearance(p) / set_appearance / set_appearance_automatic on
+    /// every surface over the one player-store look, and appearance_changed raised where the morph
+    /// hook takes a new look.
+    /// </summary>
+    [TestCase]
+    public void TheMirrorsLookIsOneApiOnEverySurface()
+    {
+        ModApiEvent changed = ModApi.Find("appearance_changed")!;
+        AssertThat(changed.Kind).IsEqual(114);
+        AssertThat(changed.Name).IsEqual("AppearanceChanged");
+        AssertThat(string.Join(",", changed.Fields.Select(f => f.Name))).IsEqual("player,automatic,hero");
+        AssertThat(changed.Cancellable).IsFalse();
+        AssertThat(changed.Fields.Any(f => f.Writable)).IsFalse();
+        AssertThat(RefiiHost.SignalNames.Contains("appearance_changed")).IsTrue();
+        AssertThat(ModApi.VerdictReads.Any(r => r.Verb == "appearance" && r.Lua == "appearance")).IsTrue();
+        AssertThat(ModLua.RuntimePreamble(Array.Empty<(string, float)>()).Contains("function Refii.set_appearance(p, t)", StringComparison.Ordinal)).IsTrue();
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+        string events = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h"));
+        AssertThat(events.Contains("REFII_EVENT_APPEARANCE_CHANGED = 114,", StringComparison.Ordinal)).IsTrue();
+        AssertThat(events.Contains("REFII_EVENT_COUNT = 116,", StringComparison.Ordinal)).IsTrue();
+        AssertThat(events.Contains("struct AppearanceChangedEvent : Event {", StringComparison.Ordinal)).IsTrue();
+        string bus = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        AssertThat(bus.Contains("case REFII_EVENT_APPEARANCE_CHANGED:", StringComparison.Ordinal)).IsTrue();
+        string hook = File.ReadAllText(Path.Combine(root, "Fable2", "src", "hooks", "src", "character_morph_hooks.cpp"));
+        AssertThat(hook.Contains("refii::mods::AppearanceChangedEvent e{};", StringComparison.Ordinal)).IsTrue();
+        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
+        AssertThat(header.Contains("extern \"C\" int32_t refii_mod_appearance(PPCContext* ctx, uint8_t* base, int32_t player, refii_mod_appearance_t* out);", StringComparison.Ordinal)).IsTrue();
+        string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
+        AssertThat(natives.Contains("{\"appearance\", &NativeAppearance, 0},", StringComparison.Ordinal)).IsTrue();
+        AssertThat(natives.Contains("{\"_set_appearance\", &NativeSetAppearance, 0},", StringComparison.Ordinal)).IsTrue();
+        AssertThat(natives.Contains("{\"set_appearance_automatic\", &NativeSetAppearanceAutomatic, 0},", StringComparison.Ordinal)).IsTrue();
+        string commands = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp"));
+        AssertThat(commands.Contains("what == \"appearance\"", StringComparison.Ordinal)).IsTrue();
+        AssertThat(commands.Contains("op == \"appearance_set\"", StringComparison.Ordinal)).IsTrue();
+        AssertThat(commands.Contains("op == \"appearance_automatic\"", StringComparison.Ordinal)).IsTrue();
+        AssertThat(commands.Contains("op == \"appearance_state\"", StringComparison.Ordinal)).IsTrue();
+        string reference = File.ReadAllText(Path.Combine(GuideFolder(root), "reference-events.md"));
+        AssertThat(reference.Contains("| 114 | AppearanceChanged / appearance_changed |", StringComparison.Ordinal)).IsTrue();
+        string calls = File.ReadAllText(Path.Combine(GuideFolder(root), "reference-calls.md"));
+        AssertThat(calls.Contains("Refii.appearance(p)", StringComparison.Ordinal)).IsTrue();
+        string gameplay = File.ReadAllText(Path.Combine(GuideFolder(root), "gameplay.md"));
+        AssertThat(gameplay.Contains("## Appearance (Murgo's Mirror)", StringComparison.Ordinal)).IsTrue();
+    }
+
+    /// <summary>
+    /// A vortex can lift nobody: vortex_started's writable lifts is answered where the update asks
+    /// how it takes each creature (rex_VortexComponent_Classify, inside that vortex's update), as
+    /// the store the classification makes for a creature it cannot lift — so the creature takes the
+    /// cast's shudder hit instead of the capture. Trailing fields, so a native mod built against the
+    /// old struct keeps its offsets.
+    /// </summary>
+    [TestCase]
+    public void AVortexCanLiftNobody()
+    {
+        ModApiEvent started = ModApi.Find("vortex_started")!;
+        AssertThat(started.Fields.Select(f => f.Name).TakeLast(2).ToArray()).IsEqual(new[] { "damage", "lifts" });
+        AssertThat(started.Fields.Single(f => f.Name == "lifts").Writable).IsTrue();
+        AssertThat(started.Fields.Count(f => f.Writable)).IsEqual(1);
+        AssertThat(started.Cancellable).IsFalse();
+        AssertThat(ModApi.WritableFields.Contains((95, "lifts"))).IsTrue();
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+        string events = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h"));
+        AssertThat(events.Contains("  float damage;\n  /// Whether the vortex lifts creatures", StringComparison.Ordinal)).IsTrue();
+        AssertThat(events.Contains("  bool lifts;\n};", StringComparison.Ordinal)).IsTrue();
+        string bus = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        AssertThat(bus.Contains("REX_EXTERN(rex_VortexComponent_Classify)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("PPC_EXTERN_FUNC(__imp__rex_VortexComponent_Classify);", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("live->lifts = e.lifts;", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("refii::mods::StoreU32(base, kind, 2u);", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("static_cast<VortexStartedEvent*>(event)->lifts = value != 0.0;", StringComparison.Ordinal)).IsTrue();
+        string owner = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "spell_fx_owner.cpp"));
+        AssertThat(owner.Contains("const uint32_t outer = refii::vfs::VortexUpdating(", StringComparison.Ordinal)).IsTrue();
+        AssertThat(owner.Contains("refii::vfs::VortexUpdating(outer);", StringComparison.Ordinal)).IsTrue();
+        // The classification is named on both builds (masked bodies identical, 152 instructions).
+        string tu1 = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2TU1", "refii_config.toml"));
+        string disc = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "refii_config.toml"));
+        AssertThat(tu1.Contains("0x8275EB10 = { name = \"rex_VortexComponent_Classify\" }", StringComparison.Ordinal)).IsTrue();
+        AssertThat(disc.Contains("0x827364F0 = { name = \"rex_VortexComponent_Classify\" }", StringComparison.Ordinal)).IsTrue();
+        string reference = File.ReadAllText(Path.Combine(GuideFolder(root), "reference-events.md"));
+        AssertThat(reference.Contains("`lifts` writable", StringComparison.Ordinal)).IsTrue();
+    }
+
+    /// <summary>
+    /// Online a vortex's lifts holds on both machines: the deciding machine's answer rides the cast
+    /// pairing's spell line as the spell state, the copy adopts it with the tag, takes no creature
+    /// it could lift until then (bounded by the unpaired life), and a copy that caught creatures
+    /// before a late pair lets them go through the game's own let-go (sub_8275CA30) before its next
+    /// update. tools/tests/cast_pairing_test.cpp holds the table and the line encoding.
+    /// </summary>
+    [TestCase]
+    public void AVortexLiftsAlikeOnBothMachines()
+    {
+        AssertThat(ModApi.Find("vortex_started")!.Fields.Single(f => f.Name == "lifts").Meaning.Contains("both machines", StringComparison.Ordinal)).IsTrue();
+
+        string? root = RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+        string pairing = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "cast_pairing.h"));
+        AssertThat(pairing.Contains("constexpr uint32_t kSpellStateNoLift = 1u;", StringComparison.Ordinal)).IsTrue();
+        AssertThat(pairing.Contains("\"pc:s,%u,%d,%u,%d,%u\"", StringComparison.Ordinal)).IsTrue();
+        string bus = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
+        AssertThat(bus.Contains("AdoptSpellState(base, pair.local_serial, pair.state);", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("const uint32_t state = SpellStateOf(base, serial);", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("constexpr uint32_t kVortexLetGo = 0x8275CA30u;", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("refii::cast_pairing::ParseLine(text, &cast, &spell)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("const bool awaiting = SpellAwaitsPair(live->serial);", StringComparison.Ordinal)).IsTrue();
+        AssertThat(pairing.Contains("bool AwaitsPeer(uint32_t local_serial, double now) const", StringComparison.Ordinal)).IsTrue();
+        string owner = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "spell_fx_owner.cpp"));
+        AssertThat(owner.Contains("refii::vfs::ReleaseUnliftedCreatures(ctx, base, component);", StringComparison.Ordinal)).IsTrue();
+        string addresses = File.ReadAllText(Path.Combine(root, "Fable2", "versions", "Fable2", "guest_addresses.inc"));
+        AssertThat(addresses.Contains("{0x8275CA30u, 0x82734410u},", StringComparison.Ordinal)).IsTrue();
+        string guide = File.ReadAllText(Path.Combine(GuideFolder(root), "gameplay.md"));
+        AssertThat(guide.Contains("takes the decider's spell state too", StringComparison.Ordinal)).IsTrue();
     }
 }

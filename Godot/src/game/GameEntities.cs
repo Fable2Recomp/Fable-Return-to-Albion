@@ -225,7 +225,7 @@ public partial class GameEntities : Node3D
         if (_headPositionRig != rig)
         {
             _headPositionRig = rig;
-            rig.TryBone("Shadow_Head", out _headPositionBone);
+            rig.TryBone(Refii.Animations.Engine_TitleRig.RigRole.Head, out _headPositionBone);
         }
         if (_headPositionBone < 0) return false;
         position = (node.GlobalTransform * rig.Node.GetBoneGlobalPose(_headPositionBone)).Origin;
@@ -562,8 +562,9 @@ public partial class GameEntities : Node3D
             _morphPreviewGeneration = title.HeroMorphPreviewGeneration;
             _morphPreviewUntilTick = _ticks + ReconcileTicks * 2;
         }
-        _morphPreviewHero = title.HeroMorphPreviewHeld || _ticks < _morphPreviewUntilTick ? heroAddress : 0u;
         (uint playerOne, uint playerTwo) = HostBridge.CoopPlayerEntities();
+        _morphPreviewHero = !title.HeroMorphPreviewHeld && _ticks >= _morphPreviewUntilTick ? 0u
+            : title.HeroMorphPreviewPlayer switch { 1 => playerOne, 2 => playerTwo, _ => heroAddress };
         uint dogAddress = Engine_TitleGame.Active.CompanionEntityAddress;
         _principals = (heroAddress, playerOne, playerTwo, dogAddress);
         bool heroZoneDue = heroAddress != _lastHeroZoneAddress ||
@@ -1202,11 +1203,20 @@ public partial class GameEntities : Node3D
             Refii.Entities.Engine_EntityAppearance.Apply(node, entity.Appearance, IsPrincipal(entity.Address));
             _lastLook[entity.Address] = entity.Appearance;
 
-            // A hero's head goes while the camera is in it (first person): its cutout hair and hat
-            // ignore the fade (Engine_FirstPersonHead). Once per skeleton; the check is a child lookup.
+            // A hero's head goes while its player's stated camera is first person, for a hold that
+            // leaves the game's body fade out (Engine_FirstPersonHead). Created once per skeleton;
+            // the player (its player-map key) is restated every pass.
             if (IsHero(entity.Address) && _skeletons.TryGetValue(entity.Address, out var heroRig))
             {
-                Refii.Entities.Engine_FirstPersonHead.Ensure(heroRig.Node);
+                Refii.Entities.Engine_FirstPersonHead.Ensure(heroRig.Node,
+                    Refii.Entities.Engine_FirstPersonView.PlayerOf(entity.Address, _principals.One, _principals.Two));
+            }
+
+            // A mod's hidden parts (Engine_HiddenParts), on any rig, by the entity's handle: a rebuilt
+            // node gets them again here. Nothing to do while nothing is hidden.
+            if (Refii.Entities.Engine_HiddenParts.Count > 0 && _skeletons.TryGetValue(entity.Address, out var partsRig))
+            {
+                Refii.Entities.Engine_HiddenPartModifier.EnsureFor(partsRig.Node, entity.Address);
             }
 
             // The stated targeting highlight goes ABOVE the unchanged-entity skip: the guest
@@ -3620,7 +3630,8 @@ public partial class GameEntities : Node3D
         hasParts = true;
         _builtParts += built;
         return ComposeParts(parts, TextureLayersOf(address), PartMorphsOf(address),
-            address == _principals.Hero ? Engine_TitleGame.Active.HeroManualTan : 0.5f) ??
+            address == _principals.One ? Engine_TitleGame.Active.ManualTan(1) :
+            address == _principals.Two ? Engine_TitleGame.Active.ManualTan(2) : 0.5f) ??
             _nodeMesh.GetValueOrDefault(address);
     }
 
@@ -5819,7 +5830,7 @@ public partial class GameEntities : Node3D
         --_traceRemaining;
         Vector3 hip = Vector3.Zero;
         if (rig is not null &&
-            (rig.TryBone("Shadow_Hip", out int bone) || rig.TryBone("Shadow_Hips", out bone)))
+            rig.TryBone(Refii.Animations.Engine_TitleRig.RigRole.Hip, out int bone))
         {
             hip = (node.Transform * rig.Node.GetBoneGlobalPose(bone)).Origin;
         }
