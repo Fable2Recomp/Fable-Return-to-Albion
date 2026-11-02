@@ -47,10 +47,10 @@ public partial class Fable3Boxes : Control
 
 	public override void _Process(double delta)
 	{
-		if (_font is null || _culture != Engine_GameCulture.Current)
+		if (_culture != Engine_GameCulture.Current)
 		{
 			_culture = Engine_GameCulture.Current;
-			Engine_UiFontLibrary fonts = Engine_UiFontLibrary.Load(Refii.Core.Engine_GameData.Resolve(), _culture);
+			Engine_UiFontLibrary fonts = Fable3Fonts.For(_culture);
 			Fable3Prompts.UseFonts(fonts);
 			_font = fonts.Get(UiFontBucket.Normal);
 			QueueRedraw();

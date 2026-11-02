@@ -122,7 +122,7 @@ public abstract partial class Fable3Canvas : SubViewportContainer
 			_culture = Engine_GameCulture.Current;
 			Theme = new Engine_UiTheme
 			{
-				Fonts = Engine_UiFontLibrary.Load(Refii.Core.Engine_GameData.Resolve(), _culture),
+				Fonts = Fable3Fonts.For(_culture),
 				Strings = Fable3Strings.Current,
 				Textures = Fable3Art.Load,
 			};

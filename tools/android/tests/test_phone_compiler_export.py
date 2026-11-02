@@ -28,7 +28,7 @@ class PhoneCompilerExportTests(unittest.TestCase):
             manifest.write_text('<manifest xmlns:android="http://schemas.android.com/apk/res/android"><application/></manifest>')
             source = project/'src/android/installer'
             source.mkdir(parents=True)
-            for name in ('RefiiInstallPlugin.java', 'RefiiInstallService.java'):
+            for name in ('RefiiInstallPlugin.java', 'RefiiInstallService.java', 'RefiiPlayService.java'):
                 (source/name).write_text('public synthetic fixture')
             exporter.stage_install_service(project)
             android = '{http://schemas.android.com/apk/res/android}'
@@ -37,6 +37,12 @@ class PhoneCompilerExportTests(unittest.TestCase):
             self.assertEqual(service.get(android+'exported'), 'false')
             self.assertEqual(service.get(android+'stopWithTask'), 'false')
             self.assertEqual(service.get(android+'foregroundServiceType'), 'dataSync')
+            play = root.findall('application/service')[1]
+            self.assertEqual(play.get(android+'name'), 'com.godot.game.refii.RefiiPlayService')
+            self.assertEqual(play.get(android+'exported'), 'false')
+            self.assertEqual(play.get(android+'stopWithTask'), 'true')
+            self.assertEqual(play.get(android+'foregroundServiceType'), 'specialUse')
+            self.assertEqual(play.find('property').get(android+'name'), 'android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE')
             self.assertEqual(root.find('application/meta-data').get(android+'name'), 'org.godotengine.plugin.v2.RefiiInstall')
             # Every build also declares VIBRATE, from the export preset rather than this staging.
             info = ''.join("uses-permission: name='" + p.get(android+'name') + "'\n" for p in root.findall('uses-permission'))
@@ -48,6 +54,7 @@ class PhoneCompilerExportTests(unittest.TestCase):
             with self.assertRaises(ValueError): exporter.stage_install_service(project)
             staged = project/'android/build/src/main/java/com/godot/game/refii'
             self.assertEqual((staged/'RefiiInstallService.java').read_text(), 'public synthetic fixture')
+            self.assertEqual((staged/'RefiiPlayService.java').read_text(), 'public synthetic fixture')
 
     def test_signed_apk_must_contain_the_exact_public_archive(self):
         payload = io.BytesIO()

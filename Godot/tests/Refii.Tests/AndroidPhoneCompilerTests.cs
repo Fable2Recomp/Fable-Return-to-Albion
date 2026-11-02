@@ -330,6 +330,40 @@ public sealed class AndroidPhoneCompilerTests
         AssertThat(AndroidPhoneCompiler.AndroidPayloadOpenFlags).IsEqual(0x102);
     }
 
+    /// <summary>Fable 3 compiles with its own include list and loads after its own bridge; Fable 2's are unchanged.</summary>
+    [TestCase]
+    public void Fable3UsesItsOwnIncludesAndBridge()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "refii-phone-fable3-" + Guid.NewGuid().ToString("N"));
+        var manifest = new AndroidPhoneCompiler.BundleManifest
+        {
+            Includes = new[] { "Fable2/src/vfs/include" }, Fable3Includes = new[] { "Fable3/src/hooks/src" },
+        };
+        var fable2 = new AndroidPhoneCompiler.Request(root, root, root, root);
+        var fable3 = fable2 with { Title = Refii.Core.Engine_Title.Fable3 };
+        var flags2 = AndroidPhoneCompiler.CompilerFlags(fable2, manifest, root, "Fable2TU1");
+        var flags3 = AndroidPhoneCompiler.CompilerFlags(fable3, manifest, root, "Fable3");
+        AssertThat(flags2.Any(flag => flag.EndsWith("Fable2/src/vfs/include", StringComparison.Ordinal))).IsTrue();
+        AssertThat(flags2.Any(flag => flag.EndsWith("Fable3/src/hooks/src", StringComparison.Ordinal))).IsFalse();
+        AssertThat(flags3.Any(flag => flag.EndsWith("Fable3/src/hooks/src", StringComparison.Ordinal))).IsTrue();
+        AssertThat(flags3.Any(flag => flag.EndsWith("Fable2/src/vfs/include", StringComparison.Ordinal))).IsFalse();
+        AssertThat(flags3.Contains("-DREFII_GUEST_BUILD_UNPATCHED=1")).IsFalse();
+        AssertThat(fable2.HostBridge).IsEqual("librefii_hostbridge.so");
+        AssertThat(fable3.HostBridge).IsEqual("librefiii_hostbridge.so");
+        // Fable 3's module links its VFS, which the APK ships under its own key beside Fable 2's.
+        AssertThat(AndroidPhoneCompiler.Fable3Vfs).IsEqual("librefiii_vfs.so");
+    }
+
+    /// <summary>Fable 2's installs stay in the app's data directory; Fable 3's get a folder of their own.</summary>
+    [TestCase]
+    public void EachTitleKeepsItsOwnInstallFolder()
+    {
+        string user = Path.Combine(Path.GetTempPath(), "refii-user");
+        AssertThat(AndroidRuntimeOptions.TitleDirectory(user, Refii.Core.Engine_Title.Fable2)).IsEqual(user);
+        AssertThat(AndroidRuntimeOptions.TitleDirectory(user, Refii.Core.Engine_Title.Fable3))
+            .IsEqual(Path.Combine(user, "Fable3"));
+    }
+
     /// <summary>An older generator's process-wide interrupt lock becomes the template's thread-local depth, once.</summary>
     [TestCase]
     public void InterruptLockBecomesTheTemplatesThreadLocalDepth()
@@ -501,7 +535,7 @@ public sealed class AndroidPhoneCompilerTests
                 Manifest.Files[path] = Hash(file);
             }
             foreach (string name in new[] { "librefii_clang.so", "librefii_lld.so", "librefii_codegen.so", "librefii_core.so",
-                         "librefii_hostbridge.so", "librexruntime.so", "librefii_lua.so", "librefii_vfs.so", "libc++_shared.so" })
+                         "librefii_runtime.so", "librefii_hostbridge.so", "librexruntime.so", "librefii_lua.so", "librefii_vfs.so", "libc++_shared.so" })
             {
                 string file = Path.Combine(Request.NativeDirectory, name);
                 File.WriteAllText(file, "synthetic tool");

@@ -122,7 +122,7 @@ public sealed class Engine_UiBookSet
 			uint screenId = template.ScreenId;
 			if (template.ChromeUnits.Count == 0 || template.Presentation.Length == 0 ||
 				Refii.Core.Engine_TitleGame.Active.IsFrontEndPresentation(template.Presentation) ||
-				_bookless.Contains(screenId) || !_prebuildTried.Add(screenId) ||
+				_bookless.Contains(screenId) || !Engine_UiBookPrebuild.Wants(template.Name) || !_prebuildTried.Add(screenId) ||
 				Book(screenId) is not null)
 			{
 				continue;

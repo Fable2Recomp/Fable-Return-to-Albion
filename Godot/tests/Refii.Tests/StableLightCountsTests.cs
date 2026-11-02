@@ -48,7 +48,7 @@ public sealed class StableLightCountsTests
 			Engine_StableLightCounts.Enabled = before;
 		}
 
-		AssertThat(GraphicsPresets.QualityValues[Engine_StableLightCounts.Key]).IsEqual("true");
-		AssertThat(GraphicsPresets.PerformanceValues[Engine_StableLightCounts.Key]).IsEqual("true");
+		AssertThat(GraphicsPresets.BalancedValues[Engine_StableLightCounts.Key]).IsEqual("true");
+		AssertThat(GraphicsPresets.UltraPerformanceValues[Engine_StableLightCounts.Key]).IsEqual("true");
 	}
 }

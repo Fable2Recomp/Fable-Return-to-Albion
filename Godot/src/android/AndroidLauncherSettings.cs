@@ -14,7 +14,7 @@ public static class AndroidLauncherSettings
     public static void Prepare(string runtimeRoot, string? gameRoot)
     {
         string root = AndroidRuntimeOptions.PhysicalPath(runtimeRoot, "runtime root");
-        string config = Path.Combine(root, "refii.toml");
+        string config = Path.Combine(root, Refii.Core.Engine_Title.Active.ConfigFileName);
         var values = RuntimeConfig.ReadValues(config);
         bool changed = false;
         // Native automatic logging uses the executable folder, which is /system/bin
@@ -41,17 +41,54 @@ public static class AndroidLauncherSettings
             throw new IOException("Cannot prepare Android launcher paths: " + error);
     }
 
-    /// <summary>Gives a configuration that never chose a graphics preset Quality and the 30 FPS cap.</summary>
+    /// <summary>Gives a configuration that never chose a graphics preset the one for this phone's GPU
+    /// (<see cref="FirstPreset"/>) and its frame cap.</summary>
     /// <remarks>Runs once: afterwards the key is present, and the player's own choices, the
     /// preset's settings and the cap included, stay exactly as they leave them.</remarks>
     /// <param name="values">The runtime configuration's values, changed in place.</param>
+    /// <param name="adapter">The GPU's name; null asks the rendering server.</param>
     /// <returns>Whether the preset was applied.</returns>
-    public static bool ApplyPresetOnce(System.Collections.Generic.IDictionary<string, string> values)
+    public static bool ApplyPresetOnce(System.Collections.Generic.IDictionary<string, string> values, string? adapter = null)
     {
-        if (values.ContainsKey(GraphicsPresets.Key) || !GraphicsPresets.Apply(GraphicsPresets.Quality, values))
-            return false;
-        values["max_fps"] = GraphicsPresets.AndroidFrameCap;
+        if (values.ContainsKey(GraphicsPresets.Key)) return false;
+        (string preset, string cap) = FirstPreset(adapter ?? AdapterName());
+        if (!GraphicsPresets.Apply(preset, values)) return false;
+        values["max_fps"] = cap;
         return true;
+    }
+
+    /// <summary>
+    /// The preset and frame cap a phone starts on, by its GPU: Ultra Performance on an Adreno older than the
+    /// 700s (capped at 20 below the 650), else Balanced at <see cref="GraphicsPresets.AndroidFrameCap"/>.
+    /// </summary>
+    /// <remarks>On the Galaxy S10e (Adreno 640) Balanced ran 13 FPS at either cap, GPU-bound, while
+    /// Ultra Performance held 19.6 at 20 with every frame 50 ms; at 30 it reached 22-25 with frames alternating
+    /// 33 and 50 ms, which reads as uneven, and the hotter phone ran the world slower (0.54 of real time
+    /// against 0.62). The 650 and 660 (Snapdragon 865, 888) have roughly half as much GPU again, untested:
+    /// they start on Ultra Performance at 30. The S25+'s Adreno 830 runs Balanced at 30 with room to spare, and
+    /// the 700s and any other GPU start on Balanced, as every phone did before.</remarks>
+    /// <param name="adapter">The GPU's name as the rendering server gives it ("Adreno (TM) 640").</param>
+    public static (string Preset, string Cap) FirstPreset(string adapter)
+    {
+        Match adreno = Regex.Match(adapter, @"Adreno\D{0,8}(\d{3})", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (adreno.Success && int.TryParse(adreno.Groups[1].Value, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out int model) && model < 700)
+            return (GraphicsPresets.UltraPerformance, model < 650 ? "20" : GraphicsPresets.AndroidFrameCap);
+        return (GraphicsPresets.Balanced, GraphicsPresets.AndroidFrameCap);
+    }
+
+    /// <summary>The GPU's name on a phone; empty elsewhere (tools and tests run without a GPU's server).</summary>
+    private static string AdapterName()
+    {
+        if (!Refii.Core.Engine_Platform.IsAndroid) return string.Empty;
+        try
+        {
+            return Godot.RenderingServer.GetVideoAdapterName() ?? string.Empty;
+        }
+        catch (Exception)
+        {
+            return string.Empty;
+        }
     }
 
     /// <summary>Copies the earlier Android TU layout into upstream's update volume without replacing existing files.</summary>
@@ -71,7 +108,7 @@ public static class AndroidLauncherSettings
     /// <returns>Whether the path is exactly an owned installation's game child.</returns>
     private static bool OwnedGamePath(string path, string runtimeRoot)
     {
-        string parent = Path.GetDirectoryName(runtimeRoot) ?? runtimeRoot;
+        string parent = AndroidRuntimeOptions.TitleDirectory(Path.GetDirectoryName(runtimeRoot) ?? runtimeRoot);
         string relative = Path.GetRelativePath(Path.Combine(parent, "phone-installs"), path).Replace('\\', '/');
         return Regex.IsMatch(relative, @"\Ainstall-[0-9a-f]{32}/game\z", RegexOptions.CultureInvariant);
     }

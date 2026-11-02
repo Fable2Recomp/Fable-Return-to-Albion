@@ -44,6 +44,23 @@ Shared C# that runs on Android must also work under NativeAOT: no reflection-bas
 System.Text.Json (use `Engine_Json` and the source-generated contexts), no OpenSSL (hash
 through `Engine_Hash`, no HTTPS), and no thread started from a module initializer.
 
+## Where Android code goes
+
+- Phone-only C# goes in `Godot/src/android` (one title's own in `Godot/src/Titles/<title>/android`), as a
+  `partial` file of the shared class or a helper of its own. The shared file keeps at most a one-line
+  call, gated by `Engine_Platform.IsAndroid`.
+- Phone-only native code goes in a `*_android.cpp/.h` beside the shared file, added under `if(ANDROID)`;
+  Android build settings go in `cmake/refii_android*.cmake` and `Godot/src/android/Android.targets`.
+- Nothing is copied to separate it. The lite shaders are the full shaders plus defines, built by
+  `Engine_ShaderVariant`; `FABLE_LITE` blocks inside the shared shader bodies are the exception that
+  avoids second copies.
+- Android docs go in `docs/`: `Godot/docs` ships in every install's SDK.
+
+`AndroidSeparationTests` holds this: it counts the lines in each shared file that name the phone
+against `Godot/tests/Refii.Tests/AndroidSeparationBaseline.txt` and fails when one goes up. A hook that
+really has to stay in a shared file raises that file's count in the same commit (or run the tests with
+`REFII_WRITE_ANDROID_BASELINE=1`), so it shows up in review.
+
 ## Build the APK
 
 `tools/android/build-apk.py` builds a signed APK (an export of Godot's debug template) in
@@ -178,15 +195,37 @@ launcher then removes the extracted game copies and builds it no longer uses.
 
 ## Android graphics preset
 
-Launch options has a **Graphics Preset** row on a phone: **Quality**, **Performance** or
-**Custom** (any preset setting changed by hand). A phone starts on Quality with a 30 FPS
-cap; the in-game Options panel switches the preset and the cap. Quality (tuned on the
-S25+) renders at half resolution with the sun's shadows where the theme casts them and
-every same-picture shortcut on; Performance (measured on a throttled S25+, with values
-checked on the S10e) drops to 30% resolution,
-no dynamic sun shadow and the nearest four placed lights. The values and the measurement
-behind each are in `Godot/src/launcher/settings/GraphicsPresets.cs`; raising its
-`Revision` makes phones still on a preset take the new values once.
+Launch options has a **Graphics Preset** row on a phone: **Ultra Performance**,
+**Performance**, **Balanced**, **Quality** or **Custom** (a preset setting changed by hand). A
+phone starts on Balanced with a 30 FPS cap, or on Ultra Performance if its GPU is an Adreno
+older than the 700s (with a 20 FPS cap below the 650).
+
+| Preset | Render scale | Sun shadow | Also |
+|---|---|---|---|
+| Ultra Performance | 40% | none | the nearest four placed lights, trees to 300 m, half the undergrowth |
+| Performance | 50% | none | more lights and distance than Ultra Performance |
+| Balanced | 60% | where the theme casts one | every same-picture shortcut |
+| Quality | 67% | longer | the 360's model detail, the desktop's prop distances, more placed lights |
+
+The values and the measurements behind them are in `Godot/src/android/GraphicsPresets.cs`;
+raising its `Revision` makes a phone still on a preset take the new values once. Balanced and
+Ultra Performance keep their earlier stored names (`android`, `android_low`), so a phone on one
+stays on it.
+
+### In-game Options
+
+- **Graphics column:** the preset, picked from a list, and the settings that change the picture,
+  each applied at once (`Godot/src/android/AndroidGraphicsOptions.cs`). A coloured line under
+  each says what it costs and **?** says what it does; changing one makes the preset Custom.
+- **Shadows:** when a pick or a setting turns shadows on in a session that started without them,
+  Options asks whether to rebuild the shaders now (the game pauses) or at the next loading screen.
+- **FPS** caps the frame rate, **FPS counter** shows it in the top left corner, and
+  **Vibration** sets the rumble's strength or turns it off (`vibration_strength`, 50% by default).
+- **Controller buttons:** tap a game button, then press the controller's button for it; the two
+  swap. Saved as `android-controller-map.json` beside `refii.toml`.
+- **Edit touch controls:** the layout of the kind of screen Options was opened on (the world,
+  menus, a pub game...): drag to move, Smaller and Bigger, Reset screen, and named presets of every
+  screen. Saved as `android-touch-layouts.json` beside `refii.toml`.
 
 ## A game module compiled on a PC
 

@@ -12,17 +12,36 @@ public static class RuntimeCVarsAndroid
     /// <summary>The graphics preset and the presets' revision it was written from (<see cref="GraphicsPresets"/>), after <c>display_resolution</c>.</summary>
     public static readonly RuntimeCVarDefinition[] GraphicsPreset =
     {
-        new(GraphicsPresets.Key, DisplayCategory, RuntimeCVarType.String, GraphicsPresets.Quality,
-            "The picture's cost settings as one choice, on a phone. Quality trades distance, "
+        new(GraphicsPresets.Key, DisplayCategory, RuntimeCVarType.String, GraphicsPresets.Balanced,
+            "The picture's cost settings as one choice, on a phone. Balanced trades distance, "
             + "shadows and resolution for a steady frame rate on a phone, which its own heat "
-            + "holds well below its peak clock; Performance gives up the sun's shadow and most "
-            + "of the resolution to hold 30 FPS on a phone that has throttled fully. Changing "
-            + "any of those settings afterwards reads as Custom.",
-            "android|Quality,android_low|Performance,custom|Custom"),
+            + "holds well below its peak clock; Ultra Performance gives up the sun's shadow, most "
+            + "of the resolution and some distance for the most frame rate; Performance keeps "
+            + "the shadowless picture with more resolution, lights and distance; Quality "
+            + "gives back resolution, distance and shadow reach on a phone with frames to "
+            + "spare. Changing any of those settings afterwards reads as Custom.",
+            "android_low|Ultra Performance,android_mid|Performance,android|Balanced,android_high|Quality,custom|Custom"),
 
         new(GraphicsPresets.RevisionKey, DisplayCategory, RuntimeCVarType.Int, "1",
             "The presets' revision these settings were last written from; a phone still on a "
             + "named preset takes that preset's newer values once, on its next start."),
+    };
+
+    /// <summary>The frame rate in the corner of the screen (<see cref="Refii.AndroidRuntime.AndroidFpsCounter"/>), after <c>max_fps</c>.</summary>
+    public static readonly RuntimeCVarDefinition[] FpsCounter =
+    {
+        new("fps_counter", DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android: show the frame rate, small, in the top left corner of the screen. Options "
+            + "in the game turns it on and off."),
+    };
+
+    /// <summary>The rumble's strength (<see cref="Refii.Game.GameInput.VibrationStrength"/>), after <c>controller_vibration</c>.</summary>
+    public static readonly RuntimeCVarDefinition[] VibrationStrength =
+    {
+        new(Refii.AndroidRuntime.AndroidQuickSettings.VibrationStrengthKey, ControlsCategory, RuntimeCVarType.Int, "50",
+            "Android: how strong the rumble is, as a percentage of what the game asks for, on the "
+            + "phone's vibrator played by touch and on a controller. controller_vibration turns it "
+            + "off. Options in the game steps it."),
     };
 
     /// <summary>Godot's render thread on Android, after <c>render_thread</c>.</summary>
@@ -47,9 +66,10 @@ public static class RuntimeCVarsAndroid
 
         new("lite_shadowless", DisplayCategory, RuntimeCVarType.Bool, "false",
             "Android, lite shaders: compile out Godot's shadow sampling while the settings render "
-            + "no shadow map (sun_shadow_distance 0, placed_light_shadows off). The first light "
-            + "that casts, or a setting that would cast, puts the shadowed shaders back for the "
-            + "session (a pause of a few seconds while they recompile). Applies at the next launch."),
+            + "no shadow map (sun_shadow_distance 0, placed_light_shadows off); the few spot lights "
+            + "that cast even then cast nothing. A setting that would cast puts the shadowed shaders "
+            + "back for the session at the next level load (a pause while they recompile). Applies "
+            + "at the next launch."),
 
         new("lite_bake_variants", DisplayCategory, RuntimeCVarType.Bool, "false",
             "Android, lite shaders: a static prop draws with a shader built for its own baked "
@@ -104,6 +124,11 @@ public static class RuntimeCVarsAndroid
             + "fastest cores, so that thread has them to itself instead of sharing them with "
             + "Godot's own threads. The same game; the rest of the work runs on the other cores. "
             + "Takes effect at the next launch."),
+
+        new("foliage_density", DisplayCategory, RuntimeCVarType.Double, "1",
+            "The share of ground foliage (nettles, bracken, grass clumps) drawn, from 0.25 to 1. Each "
+            + "clump is kept or left out by where it stands, so the cover thins evenly. Applies to the "
+            + "next area loaded."),
 
         new("android_guest_real_clock", DisplayCategory, RuntimeCVarType.Bool, "false",
             "Android, CPU: the game reads the real clock directly, instead of through the "

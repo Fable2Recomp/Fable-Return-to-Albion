@@ -53,6 +53,9 @@ public sealed class AndroidTouchPad
     /// <summary>The action a tap on the camera in photo mode reports (<see cref="TakeActions"/>).</summary>
     public const string PhotoTap = "PhotoTap";
 
+    /// <summary>Where the last <see cref="AndroidTouchLayout.DecorateTap"/> landed, in canvas units.</summary>
+    public Vector2 LastTap { get; private set; }
+
     /// <summary>
     /// A tap on the camera side is a touch this short that moved no further than
     /// <see cref="SteerSlop"/>; two of them this close in time and place are the right stick's
@@ -125,6 +128,39 @@ public sealed class AndroidTouchPad
         return false;
     }
 
+    /// <summary>
+    /// How far a finger on the <see cref="TouchControlKind.Menu"/> control <paramref name="id"/>
+    /// has come toward a hold: 0 with none on it, 1 once it is the pad's hold (past
+    /// <see cref="LatchTap"/>, or sliding).
+    /// </summary>
+    public float HoldProgress(string id, double now)
+    {
+        float progress = 0f;
+        foreach (Finger finger in _fingers.Values)
+        {
+            if (finger.Control is { Kind: TouchControlKind.Menu } control && control.Id == id)
+            {
+                progress = Mathf.Max(progress, finger.Steering ? 1f : (float)Mathf.Min((now - finger.Since) / LatchTap, 1.0));
+            }
+        }
+
+        return progress;
+    }
+
+    /// <summary>Whether a finger is on the control <paramref name="id"/>, whatever its kind.</summary>
+    public bool Touching(string id)
+    {
+        foreach (Finger finger in _fingers.Values)
+        {
+            if (finger.Control?.Id == id)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>Whether a control is latched on by a tap.</summary>
     public bool IsLatched(string id) => _latched.Contains(id);
 
@@ -167,7 +203,8 @@ public sealed class AndroidTouchPad
             return;
         }
 
-        if (context is TouchContext.Menu or TouchContext.Hidden or TouchContext.Photo or TouchContext.Mirror or TouchContext.PubGame)
+        if (context is TouchContext.Menu or TouchContext.Hidden or TouchContext.Photo or TouchContext.Mirror or TouchContext.PubGame or
+            TouchContext.Decorate)
         {
             _latched.Clear();
         }
@@ -325,6 +362,11 @@ public sealed class AndroidTouchPad
                 // Photo mode has no right-stick click: a tap is the photo panel's way back.
                 _actions.Add(PhotoTap);
                 break;
+            case TouchControlKind.Look when tap && Context == TouchContext.Decorate:
+                // Decorating, a tap is the mouse's click: a piece picked up or put down where it lands.
+                LastTap = position;
+                _actions.Add(AndroidTouchLayout.DecorateTap);
+                break;
             case TouchControlKind.Look when tap && Context == TouchContext.Mirror:
                 // The mirror has no camera mode to click: a tap off its panel does nothing.
                 break;
@@ -347,17 +389,14 @@ public sealed class AndroidTouchPad
                 Sprinting = false;
                 break;
             case TouchControlKind.Menu:
-                // Latched: the tap that lets go. Held: the game's menu opened under the finger and
-                // stays latched open. A short tap: the host's action.
+                // A short tap: the host's action. A hold was the pad's own hold, and lets go with
+                // the finger (Spells: the right trigger, which draws in experience orbs).
                 if (finger.UnlatchOnRelease)
                 {
                     _latched.Remove(control.Id);
                 }
-                else if (now - finger.Since >= LatchTap || finger.Steering)
-                {
-                    _latched.Add(control.Id);
-                }
-                else if (finger.Position.DistanceTo(finger.Start) <= SteerSlop)
+                else if (now - finger.Since < LatchTap && !finger.Steering &&
+                    finger.Position.DistanceTo(finger.Start) <= SteerSlop)
                 {
                     _actions.Add(control.Id);
                 }

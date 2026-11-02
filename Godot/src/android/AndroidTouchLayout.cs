@@ -21,6 +21,8 @@ public enum TouchContext
     Mirror,
     /// <summary>A pub game's board (Keystone, Mage Dice, Wizard's Tower): the pad its legend names, and the board takes no taps.</summary>
     PubGame,
+    /// <summary>Decorating a home: the stick and the drag fly its camera, a tap picks up or puts down, the held piece is dragged; taps on its panel go to the panel.</summary>
+    Decorate,
 }
 
 /// <summary>How a control turns a finger into pad input.</summary>
@@ -40,8 +42,8 @@ public enum TouchControlKind
     Action,
     /// <summary>
     /// A tap runs the host's action (Spells: the touch spell picker); a press held past
-    /// <see cref="AndroidTouchPad.LatchTap"/> is the pad's own hold instead, and latches on, so
-    /// the game's own menu opens and stays until the button is tapped again.
+    /// <see cref="AndroidTouchPad.LatchTap"/> is the pad's own hold instead, for as long as the
+    /// finger stays (Spells: the right trigger, which draws in experience orbs).
     /// </summary>
     Menu,
 }
@@ -95,6 +97,9 @@ public static class AndroidTouchLayout
     public static readonly Color Slate = new(0.18f, 0.20f, 0.24f);
     public static readonly Color Violet = new(0.42f, 0.34f, 0.72f);
 
+    /// <summary>What a hold on Spells does, said over the button.</summary>
+    public const string OrbsHint = "Hold: XP orbs";
+
     /// <summary>The move stick's base radius, in units; the knob travels this far (about 26 mm across on an S25+).</summary>
     public const float StickRadius = 128f;
 
@@ -121,11 +126,13 @@ public static class AndroidTouchLayout
     /// slot — or null for where the game draws it on a 16:9-or-wider phone.</param>
     /// <param name="hero">What the hero can do (<see cref="TouchHero"/>); everything when null.</param>
     /// <param name="photoPanel">In photo mode, whether its panel is shown: with it hidden for a clear
-    /// view only the stick and the camera stand, and a tap brings the panel back.</param>
+    /// view only the stick and the camera stand, and a tap brings the panel back. Decorating, the
+    /// same for its panel, which a Panel button brings back.</param>
     /// <param name="pubGame">At a pub game, which (GamePubGames.Showing): Keystone alone bets with X and RB.</param>
+    /// <param name="placing">Decorating, whether a piece is held: its Place, Turn and Item buttons stand.</param>
     public static IReadOnlyList<TouchControl> Build(Vector2 size, float scale, TouchContext context,
         (Vector2 Centre, float Reach)? itemSlots = null, TouchHero? hero = null, bool photoPanel = true,
-        string pubGame = "")
+        string pubGame = "", bool placing = false)
     {
         var controls = new List<TouchControl>();
         if (size.X <= 0f || size.Y <= 0f)
@@ -159,6 +166,11 @@ public static class AndroidTouchLayout
         if (context == TouchContext.Photo)
         {
             return BuildPhoto(controls, size, u, photoPanel);
+        }
+
+        if (context == TouchContext.Decorate)
+        {
+            return BuildDecorate(controls, size, u, photoPanel, placing);
         }
 
         if (context == TouchContext.Mirror)
@@ -244,10 +256,9 @@ public static class AndroidTouchLayout
         // The camera mode (the right stick's click) is a double tap on the camera side (AndroidTouchPad).
         // SPELLS AND LOCK STAND AT THE SIDE EDGES, MIRRORED, on their triggers' sides as a controller
         // has them: Lock (LT) under the left thumb, Spells (RT) under the right, each found by feel
-        // at its edge and clear of the camera drag over the middle of the screen. Halfway down from
-        // the Menu pill to B: below a corner's punch-hole camera and above the one a phone centres
-        // on a side edge, and in line with the right thumb's reach from B. On the left that is
-        // where the HUD's spell-charge meter runs, so Android moves the meter in
+        // at its edge and clear of the camera drag over the middle of the screen. A third of the way
+        // down: below a corner's punch-hole camera and above the one a phone centres on a side edge.
+        // On the left that is where the HUD's spell-charge meter runs, so Android moves the meter in
         // (Engine_HudLayout.InsetSpellCharge). Between the HUD's
         // health above and B below, the pair shrinks rather than covering either at the largest
         // scales. Each keeps its place with the game's spell menu open, so a latch is tapped closed
@@ -255,16 +266,16 @@ public static class AndroidTouchLayout
         float hud = h / 720f;
         float edgeLow = HudHealthBottom * hud + 8f * u, edgeHigh = Inner(276f).Y - face - 16f * k;
         float edgeRadius = Mathf.Min(54f * k, (edgeHigh - edgeLow) * 0.5f);
-        float bTop = Inner(276f).Y - face;
-        float edgeY = Mathf.Clamp((top + pillH + bTop) * 0.5f, edgeLow + edgeRadius, edgeHigh - edgeRadius);
-        // A menu's tabs keep the height they had: a third of the way down.
-        float tabsY = Mathf.Clamp(h * EdgeHeight, edgeLow + edgeRadius, edgeHigh - edgeRadius);
+        float edgeY = Mathf.Clamp(h * EdgeHeight, edgeLow + edgeRadius, edgeHigh - edgeRadius);
         float edgeX = OptionsInset * u + edgeRadius;
-        if ((world && can.SpellMenu) || wheel)
+        if (world)
         {
-            // In the world a tap opens the touch spell picker and a long press the game's own
-            // menu; with that menu open, Spells is its latch again, tapped to close it.
-            controls.Add(Round("RT", world ? TouchControlKind.Menu : TouchControlKind.Latch,
+            // A hold is the right trigger, which draws in the experience orbs around the hero, so
+            // the button stands whatever spells the hero has. With two to choose between a tap
+            // opens the touch spell picker; the game's own spell menu, which the trigger also
+            // opens, stays hidden under a touch hold (Engine_UiSpellAssignSet.TouchHidesWheel).
+            // It is named Spells whatever the hero has; the hold's hint is drawn over it.
+            controls.Add(Round("RT", TouchControlKind.Menu,
                 new Vector2(w - edgeX, edgeY), edgeRadius, 0u, TouchTrigger.Right, "", "Spells", Violet));
         }
 
@@ -280,7 +291,7 @@ public static class AndroidTouchLayout
             // the previous tab on the left, the next on the right, each a chevron pointing its way.
             // Above the menus' D-pad, which stands below them on the left, however large the scale.
             float dpadTop = optionsPill.Position.Y - DPadClearance * u - 2f * MenuDPadReach * u;
-            float tabY = Mathf.Max(top + pillH + gap + edgeRadius, Mathf.Min(tabsY, dpadTop - gap - edgeRadius));
+            float tabY = Mathf.Max(top + pillH + gap + edgeRadius, Mathf.Min(edgeY, dpadTop - gap - edgeRadius));
             if (pub)
             {
                 // A pub game's shoulders stand there too, lettered as its legend names them: LB the
@@ -446,7 +457,7 @@ public static class AndroidTouchLayout
     public const float MenuDPadReach = 125f;
 
     /// <summary>
-    /// How far down the screen a menu's tab buttons stand, as a fraction of its height: clear of a
+    /// How far down the screen Spells and Lock stand, as a fraction of its height: clear of a
     /// corner's punch-hole camera and of one centred on a side edge.
     /// </summary>
     public const float EdgeHeight = 0.33f;
@@ -466,6 +477,57 @@ public static class AndroidTouchLayout
 
     /// <summary>The `touch_scale` range: past the top the arcs would run into the top row.</summary>
     public const float MinScale = 0.6f, MaxScale = 1.25f;
+
+    /// <summary>A tap on the camera while decorating: the decoration picks up or puts down there (AndroidTouchPad.LastTap).</summary>
+    public const string DecorateTap = "DecorateTap";
+
+    /// <summary>
+    /// DECORATING FLIES A FREE CAMERA, as photo mode does: the stick moves it, a drag turns it, and
+    /// Raise and Lower stand by the resting right thumb. The furniture is handled with the finger:
+    /// a tap on a piece picks it up, a tap on the room puts the held piece down there, and a drag
+    /// that starts on the held piece slides it (AndroidTouchControls hands that finger to the
+    /// decoration). While a piece is held, Place (A) puts it down where it stands, and Turn and
+    /// Item move it as the pad's shoulders and D-pad do. The panel's own buttons are tapped where it
+    /// draws them; hidden, a Panel button brings it back.
+    /// </summary>
+    private static IReadOnlyList<TouchControl> BuildDecorate(List<TouchControl> controls, Vector2 size, float u,
+        bool panel, bool placing)
+    {
+        float w = size.X, h = size.Y, margin = 20f * u, pillH = 56f * u, gap = 10f * u;
+        var pivot = new Vector2(w - margin - 130f * u, h - margin - 130f * u);
+        if (!panel)
+        {
+            controls.Add(Pill("Panel", TouchControlKind.Action, new Rect2(OptionsInset * u, 14f * u, 140f * u, pillH),
+                0u, TouchTrigger.None, "Panel", "", Slate));
+        }
+
+        if (placing)
+        {
+            controls.Add(Circle("Place", pivot, 78f * u, GameInput.PadA, "A", "Place", GreenA, false));
+            // Turn and Item in two rows above the thumb's arc, each pair side by side.
+            float pillW = 150f * u, right = w - margin - pillW, left = right - gap - pillW, row = h * 0.18f;
+            controls.Add(Pill("TurnLeft", TouchControlKind.Button, new Rect2(left, row, pillW, pillH),
+                GameInput.PadLeftShoulder, TouchTrigger.None, "Turn left", "", Slate));
+            controls.Add(Pill("TurnRight", TouchControlKind.Button, new Rect2(right, row, pillW, pillH),
+                GameInput.PadRightShoulder, TouchTrigger.None, "Turn right", "", Slate));
+            controls.Add(Pill("ItemDown", TouchControlKind.Button, new Rect2(left, row + pillH + gap, pillW, pillH),
+                GameInput.PadDown, TouchTrigger.None, "Item down", "", Slate));
+            controls.Add(Pill("ItemUp", TouchControlKind.Button, new Rect2(right, row + pillH + gap, pillW, pillH),
+                GameInput.PadUp, TouchTrigger.None, "Item up", "", Slate));
+        }
+
+        // Where they stand with a piece held or not, so the thumb finds them the same.
+        controls.Add(Round("Lower", TouchControlKind.Button, pivot + Polar(178f * u, 180f), 58f * u, 0u,
+            TouchTrigger.Left, "Lower", "", Violet));
+        controls.Add(Round("Raise", TouchControlKind.Button, pivot + Polar(178f * u, 250f), 58f * u, 0u,
+            TouchTrigger.Right, "Raise", "", Violet));
+        float stickTop = h * 0.15f;
+        controls.Add(new TouchControl("Stick", TouchControlKind.Stick,
+            new Rect2(0f, stickTop, w * 0.45f, h - stickTop), false, 0u, TouchTrigger.None, "", "", Slate));
+        controls.Add(new TouchControl("Look", TouchControlKind.Look,
+            new Rect2(0f, 0f, w, h), false, 0u, TouchTrigger.None, "", "", Slate));
+        return controls;
+    }
 
     /// <summary>
     /// The controller's name for what a control presses, as the game's prompts show it — LT, RT,

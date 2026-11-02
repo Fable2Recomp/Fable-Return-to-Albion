@@ -16,7 +16,7 @@ public partial class LauncherApp
     /// <summary>The File menu on a phone: installation and save transfer instead of the install folder.</summary>
     private static readonly string[] AndroidFileMenuItems =
     {
-        "Install from ISO and TU", "Cancel installation", "", "Export logs and saves", "Export saves", "Import save", "",
+        "Install from ISO", "Cancel installation", "", "Export logs and saves", "Export saves", "Import save", "",
         "Show Announcements", "Show Debug Panel", "Close",
     };
 
@@ -30,14 +30,11 @@ public partial class LauncherApp
         Engine_AppRoot.Invalidate();
         Engine_AppRoot.EnsureLayout();
         LauncherPaths.OverrideLauncherDirectory = Engine_AppRoot.Path;
-        // Match the accepted Android defaults before the shared settings model fills
-        // missing CVars. Existing user settings always keep their exact values.
-        if (!File.Exists(Engine_AppRoot.ConfigPath))
-            File.WriteAllText(Engine_AppRoot.ConfigPath, "max_fps = 0\nsun_shadow_map = 1024\nsun_shadow_splits = 2\nshader_warmup_enabled = false\nmaterials_modernized = false\n");
         LoadLauncherConfig();
         LauncherTheme.Load();
         // The mods that ship in the APK, packed into the mods folder before the Mods panel
         // first lists it, as on desktop. Installed switched off; never over a copy someone has edited.
+        // They are Fable 2's: installed while Fable 2 is still the active title, before the switch's.
         try
         {
             foreach (string line in AndroidBundledMods.Install(Engine_AppRoot.BundledModsDirectory,
@@ -45,14 +42,13 @@ public partial class LauncherApp
                 GD.Print("[mods] bundled " + line);
         }
         catch (Exception error) { GD.PushError("[mods] bundled mods not installed: " + error.Message); }
+        LoadActiveTitle();
+        SeedAndroidConfig();
         _patches = new Patches();
         _launch = new LaunchController(_patches);
         _updates = new UpdateChecker();
         BindNodes();
-        _phone = new AndroidPhoneLauncher { Hosted = true, SizeFlagsHorizontal = SizeFlags.ExpandFill,
-            SizeFlagsVertical = SizeFlags.ExpandFill };
-        _reinstallPanel.GetParent().AddChild(_phone);
-        AndroidLauncherSettings.Prepare(Engine_AppRoot.Path, _phone.InstalledGameRoot);
+        AddAndroidInstallation();
         _font = LoadLauncherFont();
         BuildStyles();
         ApplyStyles();
@@ -60,7 +56,7 @@ public partial class LauncherApp
         WireTabs();
         _settingsTabs.CurrentTab = _phone.HasPlayableInstall ? 0 : 2;
         _infoTabs.AddTab("Installation");
-        _infoTabs.CurrentTab = 2;
+        _infoTabs.CurrentTab = _infoTabs.TabCount - 1;
         _settingsTitle.Text = "Launch options";
         Resized += ApplyLayout;
         ApplyLayout();
@@ -71,12 +67,60 @@ public partial class LauncherApp
         FetchGitHubData();
     }
 
+    /// <summary>Writes the accepted Android defaults into the active title's config when it has none, before
+    /// the shared settings model fills missing CVars. Existing user settings always keep their exact values.</summary>
+    private static void SeedAndroidConfig()
+    {
+        Engine_AppRoot.EnsureLayout();
+        if (!File.Exists(Engine_AppRoot.ConfigPath))
+            File.WriteAllText(Engine_AppRoot.ConfigPath, "max_fps = 0\nsun_shadow_map = 1024\nsun_shadow_splits = 2\nshader_warmup_enabled = false\nmaterials_modernized = false\n");
+    }
+
+    /// <summary>Adds the active title's installation controls to the settings drawer and resolves its config's paths.</summary>
+    private void AddAndroidInstallation()
+    {
+        _phone = new AndroidPhoneLauncher { Hosted = true, SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ExpandFill };
+        _reinstallPanel.GetParent().AddChild(_phone);
+        AndroidLauncherSettings.Prepare(Engine_AppRoot.Path, _phone.InstalledGameRoot);
+    }
+
+    /// <summary>Whether the phone's installer is running, which a title switch waits for.</summary>
+    private bool AndroidInstalling => _phone?.IsInstalling ?? false;
+
+    /// <summary>
+    /// Follows a title switch (<see cref="SwitchTitle"/>): the installation controls are rebuilt for the
+    /// new title's own installs and builds (AndroidRuntimeOptions.TitleDirectory), its config gets the
+    /// Android defaults, and the Installation tab the title's info tabs replaced is added again.
+    /// </summary>
+    private void ReloadAndroidTitle()
+    {
+        if (_phone == null) return;
+        SeedAndroidConfig();
+        // Godot's thread model is the app's and fixed when it starts, so renderer.cfg states the next
+        // launch's: the title just chosen's (AndroidRenderThread), not the last one played.
+        var config = RuntimeConfig.ReadValues(Engine_AppRoot.ConfigPath);
+        AndroidRenderThread.Apply(config);
+        if (AndroidRenderThread.Configured(config) != AndroidRenderThread.Active)
+            Log(Engine_Title.Active.Name + "'s render thread setting takes effect when the app next starts.");
+        _phone.QueueFree();
+        _phone.GetParent().RemoveChild(_phone);
+        AddAndroidInstallation();
+        _infoTabs.AddTab("Installation");
+        _infoTabs.Visible = true;
+        _settingsTabs.CurrentTab = _phone.HasPlayableInstall ? 0 : 2;
+        _settingsPanel.ReloadForTitle();
+        ApplyLayout();
+        RefreshState();
+        RefreshDebugDrawer();
+    }
+
     /// <summary>Publishes worker progress on the original button and progress bar without desktop runtime checks.</summary>
     private void RefreshAndroidState()
     {
         if (_phone == null) return;
         bool running = _phone.IsInstalling;
-        _primaryButton.Text = AndroidLauncherProgress.Label(running, _phone.HasPlayableInstall, _phone.Status);
+        _primaryButton.Text = AndroidLauncherProgress.Label(running, _phone.HasPlayableInstall, _phone.Status, _phone.NeedsBuild);
         _primaryButton.Disabled = running;
         _progressTrack.Visible = running;
         _progressTrack.Position = _primaryButton.Position;
@@ -95,7 +139,8 @@ public partial class LauncherApp
     private void PrimaryAndroid()
     {
         if (_phone == null || _phone.IsInstalling) return;
-        if (_phone.HasPlayableInstall) { _settingsPanel.SaveIfDirty(); _phone.PlayFromLauncher(); }
+        if (_phone.NeedsBuild) { _settingsPanel.SaveIfDirty(); _phone.BuildFromLauncher(); }
+        else if (_phone.HasPlayableInstall) { _settingsPanel.SaveIfDirty(); _phone.PlayFromLauncher(); }
         else { _settingsTabs.CurrentTab = 2; RefreshDebugDrawer(); ShowSettingsDrawer(); }
     }
 
@@ -119,7 +164,7 @@ public partial class LauncherApp
     {
         switch (item)
         {
-            case "Install from ISO and TU":
+            case "Install from ISO":
                 _settingsTabs.CurrentTab = 2; RefreshDebugDrawer(); ShowSettingsDrawer(); return true;
             case "Cancel installation":
                 _phone?.CancelInstallation(); return true;
@@ -150,7 +195,7 @@ public partial class LauncherApp
     /// <returns>False when another tab, or the desktop, is showing.</returns>
     private bool ShowAndroidInstallationLog()
     {
-        if (_phone == null || _infoTabs.CurrentTab != 2) return false;
+        if (_phone == null || _infoTabs.CurrentTab != _infoTabs.TabCount - 1 || _infoTabs.GetTabTitle(_infoTabs.CurrentTab) != "Installation") return false;
         _infoBody.Text = string.Join("\n", _consoleLines).Replace("[", "[lb]", StringComparison.Ordinal);
         return true;
     }

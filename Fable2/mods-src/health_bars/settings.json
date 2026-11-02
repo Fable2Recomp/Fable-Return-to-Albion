@@ -1,0 +1,9 @@
+{
+	"health_bars": {
+		"show": 1,
+		"range": 25,
+		"only_hurt": 0,
+		"numbers": 0,
+		"size": 1.0
+	}
+}

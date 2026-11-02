@@ -526,7 +526,8 @@ public static class RuntimeConfig
             // A key with a definition that ShouldWriteCVar declined is INTENTIONALLY absent —
             // it belongs to a retired category, or to another title — so only keys with no
             // definition at all belong here.
-            if (!written.Contains(key) && FindDefinition(key) is null && !RetiredKeys.Contains(key))
+            if (!written.Contains(key) && FindDefinition(key) is null && !RetiredKeys.Contains(key) &&
+                !ClashesWithAValue(key, values, written))
             {
                 unrecognised[key] = value;
             }
@@ -545,6 +546,26 @@ public static class RuntimeConfig
         {
             builder.Append(key).Append(" = ").Append(FormatUnknownValue(value)).Append('\n');
         }
+    }
+
+    /// <summary>
+    /// Whether a dotted key is nested under a key that holds a value: <c>key_hotbar.slot0</c> beside
+    /// <c>key_hotbar = "..."</c>. TOML can't hold both, and one such line makes the whole file
+    /// unreadable to the game, which then starts with none of its settings; the dotted key goes.
+    /// </summary>
+    private static bool ClashesWithAValue(
+        string key, IReadOnlyDictionary<string, string> values, HashSet<string> written)
+    {
+        for (int dot = key.IndexOf('.'); dot > 0; dot = key.IndexOf('.', dot + 1))
+        {
+            string parent = key[..dot];
+            if (written.Contains(parent) || values.ContainsKey(parent))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

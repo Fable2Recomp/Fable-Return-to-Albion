@@ -359,7 +359,7 @@ class RenderingConfigurationTests(unittest.TestCase):
 
 
 class BundledModsTests(unittest.TestCase):
-    """mods-src ships in the APK as one source zip the Android launcher unpacks (AndroidBundledMods) and ModBundled installs."""
+    """Fable2/mods-src ships in the APK as one source zip the Android launcher unpacks (AndroidBundledMods) and ModBundled installs."""
 
     def stage(self, root, names):
         for name in names:
@@ -372,26 +372,26 @@ class BundledModsTests(unittest.TestCase):
             return exporter.stage_bundled_mods(root, project), project / exporter.BUNDLED_MODS
 
     def test_every_mod_file_and_the_manifest_are_zipped(self):
-        names = ["mods-src/hotbar/mod.toml", "mods-src/hotbar/godot/hotbar.gd", "mods-src/quicksave/mod/init.lua"]
+        names = ["Fable2/mods-src/hotbar/mod.toml", "Fable2/mods-src/hotbar/godot/hotbar.gd", "Fable2/mods-src/quicksave/mod/init.lua"]
         with tempfile.TemporaryDirectory() as temporary:
             report, archive_path = self.stage(Path(temporary), names)
             with zipfile.ZipFile(archive_path) as archive:
                 listed = ["hotbar/godot/hotbar.gd", "hotbar/mod.toml", "quicksave/mod/init.lua"]
                 self.assertEqual(sorted(archive.namelist()), sorted(listed + ["manifest.txt"]))
                 self.assertEqual(archive.read("manifest.txt").decode().splitlines(), listed)
-                self.assertEqual(archive.read("hotbar/mod.toml").decode(), "source mods-src/hotbar/mod.toml")
+                self.assertEqual(archive.read("hotbar/mod.toml").decode(), "source Fable2/mods-src/hotbar/mod.toml")
             self.assertEqual(report["mods"], ["hotbar", "quicksave"])
             self.assertEqual(report["files"], 3)
 
     def test_the_zip_is_a_function_of_the_sources(self):
-        names = ["mods-src/a/mod.toml", "mods-src/a/mod/init.lua"]
+        names = ["Fable2/mods-src/a/mod.toml", "Fable2/mods-src/a/mod/init.lua"]
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
             self.assertEqual(self.stage(Path(first), names)[0]["sha256"], self.stage(Path(second), names)[0]["sha256"])
 
     def test_a_file_outside_a_mod_folder_is_refused(self):
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaises(ValueError):
-                self.stage(Path(temporary), ["mods-src/stray.txt"])
+                self.stage(Path(temporary), ["Fable2/mods-src/stray.txt"])
 
     def test_include_resource_changes_only_the_android_filter(self):
         preset = ('[preset.0]\nname="Linux"\ninclude_filter=""\n[preset.0.options]\n'

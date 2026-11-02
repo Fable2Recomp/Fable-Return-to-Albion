@@ -18,4 +18,10 @@ public interface IAndroidTouchControls
 	System.Action<Rect2>? OptionsPressed { get; set; }
 
 	System.Func<IEnumerable<Rect2>>? PassThrough { get; set; }
+
+	/// <summary>The controls as last laid out, the player's own layout applied: what the touch editor outlines and drags.</summary>
+	IReadOnlyList<TouchControl> LaidOut { get; }
+
+	/// <summary>Rereads the touch settings shortly, once refii.toml's cache has seen a change just written (the touch editor's opacity).</summary>
+	void RereadSettingsSoon();
 }

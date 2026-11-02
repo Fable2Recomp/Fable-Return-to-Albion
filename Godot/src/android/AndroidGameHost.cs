@@ -29,6 +29,7 @@ public partial class AndroidGameHost : Node3D
     private GameAudio? _audio;
     private GameInput? _input;
     private Node? _uiNode;
+    private bool _frontEndAttached;
     private IGameTitleUi? _ui;
     private Control? _touchNode;
     private IAndroidTouchControls? _touch;
@@ -67,6 +68,7 @@ public partial class AndroidGameHost : Node3D
     {
         AndroidNativeLog.StartPump();
         AndroidLastExit.RecordOnce();
+        KeepInMemoryWhileAway();
         ProcessPriority = -100;
         // The back gesture is the game's (AndroidSystemKeys), never Godot's quit.
         GetTree().QuitOnGoBack = false;
@@ -78,6 +80,8 @@ public partial class AndroidGameHost : Node3D
         {
             _touch.PassThrough = diagnostics.Rects;
             _touch.OptionsPressed = diagnostics.Toggle;
+            diagnostics.Touch = _touch;
+            GameInput.HostUiRects = diagnostics.Rects;
             diagnostics.ConfigPath = () => _runtimeConfig;
             diagnostics.SettingsWritten = RefreshRenderScale;
         }
@@ -85,7 +89,7 @@ public partial class AndroidGameHost : Node3D
             AddChild(new AndroidCanvasLean { Name = "CanvasLean", Touch = _touchNode, Target = UiLayer });
         try
         {
-            string configPath = Path.Combine(_userDirectory, AndroidRuntimeOptions.FileName);
+            string configPath = Path.Combine(AndroidRuntimeOptions.TitleDirectory(_userDirectory), AndroidRuntimeOptions.FileName);
             if (!File.Exists(configPath))
                 throw new FileNotFoundException("Supply private android-runtime.json before booting; see docs/android-runtime.md", configPath);
             _options = AndroidRuntimeOptions.Parse(File.ReadAllText(configPath), _userDirectory);
@@ -110,7 +114,7 @@ public partial class AndroidGameHost : Node3D
             GetViewport().UseTaa = false;
             Engine_RenderStats.Track(GetViewport());
             AndroidTextureUpload.InitializeOnMainThread();
-            string runtimeConfig = Path.Combine(root, "refii.toml");
+            string runtimeConfig = Path.Combine(root, Engine_Title.Active.ConfigFileName);
             if (!File.Exists(runtimeConfig))
                 File.WriteAllText(runtimeConfig, "sun_shadow_map = 1024\nsun_shadow_splits = 2\nshader_warmup_enabled = false\n");
             var seeded = Refii.Launcher.Core.RuntimeConfig.ReadValues(runtimeConfig);
@@ -218,6 +222,18 @@ public partial class AndroidGameHost : Node3D
     public override void _ExitTree() => Refii.Mods.ModFrame.Stop();
 
     /// <summary>
+    /// Starts RefiiPlayService while the game is in front (Android refuses the start from the background):
+    /// its foreground-service rank keeps the low-memory killer off the game while another app is in front.
+    /// Without it an 8 GB phone killed a 4.5 GB game 3 s after Home (adj 700).
+    /// </summary>
+    private static void KeepInMemoryWhileAway()
+    {
+        if (!Engine.HasSingleton("RefiiInstall")) return;
+        string error = Engine.GetSingleton("RefiiInstall").Call("play", Engine_Title.Active.Name).AsString();
+        if (error.Length > 0) GD.PushWarning("[android] the game is not kept in memory in the background: " + error);
+    }
+
+    /// <summary>
     /// Releases held input and holds the guest while the app is away, coming back to the pause
     /// menu; turns the back gesture into the pad's (AndroidSystemKeys). Teardown remains unsupported.
     /// </summary>
@@ -244,6 +260,8 @@ public partial class AndroidGameHost : Node3D
         }
         else if (what == NotificationWMGoBackRequest)
         {
+            // Options and the menus it opens close first: a way out whatever a touch did.
+            if (GetNodeOrNull<AndroidDiagnosticButtons>("AndroidDiagnosticButtons")?.CloseTop() == true) return;
             switch (AndroidSystemKeys.Back(_ui != null, HostPanelUp, GameInput.Playing, GameInput.InOverlay,
                 BoardUp, Engine_TitleGame.Active.InteractionDialogUp))
             {
@@ -287,7 +305,10 @@ public partial class AndroidGameHost : Node3D
     /// <summary>Installs production menus and the input sink after one successful native initialization.</summary>
     private void AttachFrontEnd()
     {
-        if (_ui != null || _guest == null) return;
+        // Once. Not "until _ui is set": only Fable 2's UI is an IGameTitleUi, so for Fable 3 _ui stays
+        // null and every frame built another whole UI, input node and photo mode.
+        if (_frontEndAttached || _guest == null) return;
+        _frontEndAttached = true;
         _input = new GameInput { Name = "GameInput", ControllerStateSink = _guest.PublishController,
             DevicesEnabled = _focused };
         AddChild(_input);

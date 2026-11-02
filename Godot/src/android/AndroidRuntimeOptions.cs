@@ -14,6 +14,19 @@ public sealed record AndroidRuntimeOptions(string GameRoot, string ModulePath, s
     /// <summary>The private configuration filename, relative to Godot's user data directory.</summary>
     public const string FileName = "android-runtime.json";
 
+    /// <summary>
+    /// Where a title's installs, builds, install state and this file live: the app's data directory
+    /// for Fable 2, as before there were titles, and a folder named for any other title inside it.
+    /// Each title prunes only its own folder, so installing one never removes another's game or build.
+    /// </summary>
+    /// <param name="userDirectory">The app's data directory (<c>OS.GetUserDataDir</c>).</param>
+    /// <param name="title">The title; the active one when null.</param>
+    public static string TitleDirectory(string userDirectory, Refii.Core.Engine_Title? title = null)
+    {
+        title ??= Refii.Core.Engine_Title.Active;
+        return title == Refii.Core.Engine_Title.Fable2 ? userDirectory : Path.Combine(userDirectory, title.Folder);
+    }
+
     /// <summary>Reads a strict schema-one configuration without touching the supplied game or save.</summary>
     /// <param name="json">The user's configuration document.</param>
     /// <param name="userDirectory">The physical app-private directory supplied by Godot.</param>

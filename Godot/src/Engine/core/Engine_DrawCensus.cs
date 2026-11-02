@@ -123,7 +123,7 @@ public static class Engine_DrawCensus
     }
 
     /// <summary>The nearest ancestor that is one of ours, by type name: who put the node there.</summary>
-    private static string OwnerOf(Node node, Dictionary<ulong, string> cache)
+    internal static string OwnerOf(Node node, Dictionary<ulong, string> cache)
     {
         for (Node? at = node.GetParent(); at is not null; at = at.GetParent())
         {

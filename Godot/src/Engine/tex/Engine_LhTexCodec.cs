@@ -480,6 +480,10 @@ public static class Engine_LhTexCodec
 		int lastOpType = -1;
 		byte lastV20 = 0;
 		Span<byte> indices = stackalloc byte[16];
+		// Fable 3's five C symbols per block. Here, not in the block loop: a stackalloc is freed only
+		// when the method returns, so one per block grew the stack ~20 bytes a block until a large
+		// terrain texture overflowed a thread pool worker's stack (1 MB on Android).
+		Span<int> sym = stackalloc int[5];
 
 		for (int by = 0; by < byCount; ++by)
 		{
@@ -577,7 +581,6 @@ public static class Engine_LhTexCodec
 							// maps it through byte_820EB2B0. When lo == hi the indices stay 0, but the
 							// symbols are consumed all the same.
 							int raw = (int)reader.Read(3);
-							Span<int> sym = stackalloc int[5];
 							for (int k = 0; k < 5; ++k)
 							{
 								sym[k] = treeC.Decode(reader);

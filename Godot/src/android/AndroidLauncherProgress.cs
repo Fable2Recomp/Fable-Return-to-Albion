@@ -12,9 +12,11 @@ public static class AndroidLauncherProgress
     /// <param name="running">Whether an Android worker owns installation.</param>
     /// <param name="playable">Whether Android has a completed module or active runtime.</param>
     /// <param name="status">Actual worker stage or failure.</param>
+    /// <param name="needsBuild">Whether the playable module must be built again first (AndroidPhoneLauncher.NeedsBuild).</param>
     /// <returns>The original launcher's primary button label.</returns>
-    public static string Label(bool running, bool playable, string status) => running
-        ? ProgressLabel.BuildButtonLabel("Installing", status) : playable ? "Play Fable 2" : "Install Fable 2";
+    public static string Label(bool running, bool playable, string status, bool needsBuild = false) => running
+        ? ProgressLabel.BuildButtonLabel("Installing", status)
+        : needsBuild ? "Build Game Code" : (playable ? "Play " : "Install ") + Refii.Core.Engine_Title.Active.Name;
 
     /// <summary>Returns measured current-stage progress; unknown-duration stages remain indeterminate.</summary>
     /// <param name="status">Real copy/extraction percentage or source-unit count.</param>

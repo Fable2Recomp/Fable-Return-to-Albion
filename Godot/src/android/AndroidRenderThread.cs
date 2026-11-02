@@ -24,6 +24,11 @@ namespace Refii.AndroidRuntime;
 /// the Android default waits on measurement. The file is the toml's mirror: a hand-written
 /// <c>driver/threads/thread_model</c> there is replaced by what the toml says, and every other
 /// key in the file is kept.
+///
+/// ONE FILE FOR EVERY TITLE. Each title's config states its own setting, but the thread model is the
+/// app's: the file mirrors the active title's, written when its game starts and when the launcher
+/// switches to it (LauncherApp.Android.cs), so the next launch follows the title chosen last rather
+/// than the one played last. Neither title's config is changed.
 /// </remarks>
 internal static class AndroidRenderThread
 {

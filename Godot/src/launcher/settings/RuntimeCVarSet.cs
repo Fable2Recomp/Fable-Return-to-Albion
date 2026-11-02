@@ -148,6 +148,7 @@ public static class RuntimeCVarsGodot
                 "Frame rate cap. 0 is uncapped, which with vsync off will run the GPU as hard "
                 + "as it can. The SIMULATION is not affected: the guest advances on its own "
                 + "fixed step and only the drawing rate changes."),
+            ..RuntimeCVarsAndroid.FpsCounter,
 
             new("vsync_mode", DisplayCategory, RuntimeCVarType.String, "mailbox",
                 "How frames meet the display. 'mailbox' shows the newest finished frame at each "
@@ -715,6 +716,7 @@ public static class RuntimeCVarsGodot
                 "spells, landings and the near-death heartbeat. Played by touch on Android, the " +
                 "phone vibrates instead. The game's own Controls page has a Controller Vibration " +
                 "switch too; both must be on."),
+            ..RuntimeCVarsAndroid.VibrationStrength,
             new("mouse_sensitivity", ControlsCategory, RuntimeCVarType.Double, "1.0",
                 "How far the camera turns for a given mouse movement. 1.0 is the default; 2.0 " +
                 "turns twice as far."),

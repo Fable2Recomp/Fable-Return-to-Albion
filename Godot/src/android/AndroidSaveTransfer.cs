@@ -117,7 +117,7 @@ public static class AndroidSaveTransfer
     {
         if (GameStarted)
             throw new InvalidOperationException("The game has already started. Close the app, open it again and import from the launcher.");
-        string saves = Path.Combine(userDirectory, AndroidLogBundle.SaveFolder.Replace('/', Path.DirectorySeparatorChar));
+        string saves = AndroidLogBundle.SaveDirectory(userDirectory);
         using ZipArchive zip = ZipFile.OpenRead(zipPath);
         Inspection inspection = Inspect(zip);
 

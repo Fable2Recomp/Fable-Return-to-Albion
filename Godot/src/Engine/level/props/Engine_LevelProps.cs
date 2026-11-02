@@ -976,6 +976,7 @@ public static partial class Engine_LevelProps
         }
 
         float foliageCells = editorHierarchy is null ? ReadFoliageCellMetres() : 0f;
+        float foliageDensity = editorHierarchy is null ? ReadFoliageDensity() : 1f;
         foreach (string key in order)
         {
             PropBlockBuild block = blocks[key];
@@ -1046,6 +1047,7 @@ public static partial class Engine_LevelProps
             float cellMetres = CellMetresFor(block, foliageCells);
             foreach (int index in batched)
             {
+                if (!KeepsFoliageCopy(block, index, foliageDensity)) continue;
                 Vector3 at = block.Instances[index].Origin;
                 var cell = (new Vector3I(Mathf.FloorToInt(at.X / cellMetres),
                     Mathf.FloorToInt(at.Y / cellMetres),

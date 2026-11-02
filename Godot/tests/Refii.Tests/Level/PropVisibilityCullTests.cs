@@ -20,6 +20,19 @@ public class PropVisibilityCullTests
     }
 
     [TestCase]
+    public void TestFoliageDensityIsHeldBetweenAQuarterAndAll()
+    {
+        AssertThat(Engine_LevelProps.ClampFoliageDensity(0.5f)).IsEqual(0.5f);
+        AssertThat(Engine_LevelProps.ClampFoliageDensity(0.1f)).IsEqual(0.25f);
+        AssertThat(Engine_LevelProps.ClampFoliageDensity(3f)).IsEqual(1f);
+        AssertThat(Engine_LevelProps.ClampFoliageDensity(0f)).IsEqual(1f);
+        AssertThat(Engine_LevelProps.ClampFoliageDensity(float.NaN)).IsEqual(1f);
+        var def = RuntimeCVarSet.All.FirstOrDefault(d => d.Name == Engine_LevelProps.FoliageDensityKey);
+        AssertThat(def).IsNotNull();
+        AssertThat(def!.DefaultValue).IsEqual("1");
+    }
+
+    [TestCase]
     public void TestBuildingPathDetectionExemptsArchitecturalModels()
     {
         // Real building shells and major structures

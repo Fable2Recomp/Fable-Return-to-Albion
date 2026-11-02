@@ -199,7 +199,7 @@ public static class Engine_LevelLighting
 		if (shadows)
 		{
 			// Before the light casts: lite shaders built without shadow sampling go back (lite_shadowless).
-			Refii.Models.Engine_ShaderSpecialisation.ShadowCast("the sun");
+			shadows = Refii.Models.Engine_ShaderSpecialisation.ShadowCast("the sun");
 		}
 		if (light.ShadowEnabled != shadows) light.ShadowEnabled = shadows;
 

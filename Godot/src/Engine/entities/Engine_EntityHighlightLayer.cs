@@ -109,13 +109,17 @@ public partial class Engine_EntityHighlightLayer : Node
     /// chain, its only reader, both runs and can reach the colour layer. On the Mobile renderer it
     /// cannot (<see cref="Refii.Lighting.Engine_PostFxRoute"/>), so no proxy is built, the viewport
     /// stays Disabled and nothing is drawn for the highlight: the game has no other outline path,
-    /// and the glow never reached the screen there anyway.
+    /// and the glow never reached the screen there anyway. On a phone it is drawn without the chain
+    /// (<see cref="Engine_MobileHighlight"/>).
     /// </summary>
     public static bool Present =>
         _current is not null && GodotObject.IsInstanceValid(_current) && _current.IsInsideTree() &&
-        _current._enabled && _current._usable && Refii.Lighting.Engine_PostFxParams.Enabled &&
-        Refii.Lighting.Engine_PostFxRoute.LayersReachScreen &&
+        _current._enabled && _current._usable && (Refii.Lighting.Engine_PostFxParams.Enabled &&
+        Refii.Lighting.Engine_PostFxRoute.LayersReachScreen || PhoneComposites) &&
         RenderingServer.GetRenderingDevice() is not null;
+
+    /// <summary>The phone draws the highlight itself where the post chain cannot (Engine_MobileHighlight).</summary>
+    private static bool PhoneComposites => Refii.Core.Engine_Platform.IsAndroid && Engine_MobileHighlight.Composites;
 
 
     /// <summary>
@@ -344,7 +348,7 @@ public partial class Engine_EntityHighlightLayer : Node
         // Active while any slot has a target, not while the walk last touched one: the walk
         // need not run every frame, and a highlight lasts until the guest clears it.
         Array.Clear(_targets, 0, Slots);
-        bool active = _enabled && Refii.Lighting.Engine_PostFxRoute.LayersReachScreen &&
+        bool active = _enabled && (Refii.Lighting.Engine_PostFxRoute.LayersReachScreen || PhoneComposites) &&
             Gather(main.GlobalPosition, _targets);
         _viewport.RenderTargetUpdateMode = active ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
 
@@ -384,6 +388,8 @@ public partial class Engine_EntityHighlightLayer : Node
             System.Array.Copy(_targets, _published[_view], Slots);
             _publishedActive[_view] = active && rd.IsValid;
         }
+
+        Engine_MobileHighlight.Follow(this, _viewport, main, _targets, active, scale, _view == 1);
     }
 
     /// <summary>

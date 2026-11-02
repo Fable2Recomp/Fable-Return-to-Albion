@@ -57,7 +57,7 @@ public class DeviceClocksTests
             AssertThat(s.GpuMaxMhz).IsEqual(1200L);
             AssertThat(s.Throttled).IsTrue();
             string[] lines = Engine_DeviceClocks.Format(s).ToArray();
-            AssertThat(lines[0]).IsEqual("cpu 2.9/3.5 · 1.0/2.2 GHz   gpu 525/734 MHz (max 1200)   [throttled]");
+            AssertThat(lines[0]).IsEqual("cpu 2.9/3.5 · 1.0/2.2 GHz   gpu 525/734 MHz (max 1200)");
             AssertThat(lines[1]).IsEqual("cpu 76°C  gpu 51°C  battery 38°C  gpu busy 91%");
         }
         finally { Directory.Delete(root, true); }

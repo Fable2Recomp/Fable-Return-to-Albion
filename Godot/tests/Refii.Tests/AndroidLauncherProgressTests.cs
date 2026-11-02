@@ -21,5 +21,9 @@ public sealed class AndroidLauncherProgressTests
         AssertThat(AndroidLauncherProgress.Fraction("Copying selected file: 999%")).IsEqual(1f);
         AssertThat(AndroidLauncherProgress.Label(false, false, "Compilation stopped")).IsEqual("Install Fable 2");
         AssertThat(AndroidLauncherProgress.Label(false, true, "Cleanup finished")).IsEqual("Play Fable 2");
+        AssertThat(AndroidLauncherProgress.Label(false, true, "This update changes the game's code", needsBuild: true))
+            .IsEqual("Build Game Code");
+        AssertThat(AndroidLauncherProgress.Label(true, true, "Generating game code on this phone", needsBuild: true))
+            .Contains("Generating game code on this phone");
     }
 }

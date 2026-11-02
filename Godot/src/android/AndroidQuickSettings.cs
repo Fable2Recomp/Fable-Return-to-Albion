@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Refii.Core;
 using Refii.Launcher.Core;
 
@@ -14,9 +15,10 @@ namespace Refii.AndroidRuntime;
 /// LIVE. The host rereads the cap, render scale and mesh LOD from the file
 /// (AndroidGameHost.RefreshRenderScale), and <see cref="ApplyPreset"/> hands the rest to
 /// <see cref="Engine_RefiiConfig.TrySetGodotCvar"/>, whose listeners reload the placed lights,
-/// the sun shadow's reach (Quality casts the sun, Performance does not) and the props' draw
-/// ranges. Vibration is the launcher's <c>controller_vibration</c>, the one switch for the host's
-/// rumble whether it reaches a controller or, played by touch, the phone; GameInput rereads it.
+/// the sun shadow's reach (Balanced and Quality cast the sun, the two Performance presets do not) and the
+/// props' draw ranges. Vibration is the launcher's <c>controller_vibration</c>, the one switch
+/// for the host's rumble whether it reaches a controller or, played by touch, the phone;
+/// GameInput rereads it.
 /// </remarks>
 public static class AndroidQuickSettings
 {
@@ -25,21 +27,14 @@ public static class AndroidQuickSettings
     /// shows every frame for three refreshes, where a missed 30 alternates two and three.</remarks>
     public static readonly int[] FrameCaps = { 20, 30, 60, 0 };
 
-    /// <summary>The presets a tap steps through, in order.</summary>
-    public static readonly string[] Presets = { GraphicsPresets.Performance, GraphicsPresets.Quality };
+    /// <summary>The presets Options offers, in order.</summary>
+    public static readonly string[] Presets = { GraphicsPresets.UltraPerformance, GraphicsPresets.Performance, GraphicsPresets.Balanced, GraphicsPresets.Quality };
 
     /// <summary>The cap after <paramref name="current"/>; one not in the list steps to the first.</summary>
     public static int NextFrameCap(int current)
     {
         int at = Array.IndexOf(FrameCaps, Math.Max(0, current));
         return FrameCaps[(at + 1) % FrameCaps.Length];
-    }
-
-    /// <summary>The preset after <paramref name="current"/>; Custom steps to the first.</summary>
-    public static string NextPreset(string current)
-    {
-        int at = Array.FindIndex(Presets, p => p.Equals(current, StringComparison.OrdinalIgnoreCase));
-        return Presets[(at + 1) % Presets.Length];
     }
 
     /// <summary>The cap's button text.</summary>
@@ -58,19 +53,57 @@ public static class AndroidQuickSettings
     /// <summary>The rumble switch's key, shared with the launcher's Controls settings.</summary>
     public const string VibrationKey = "controller_vibration";
 
-    /// <summary>The vibration button's text.</summary>
-    public static string VibrationLabel(bool on) => on ? "Vibration: On" : "Vibration: Off";
+    /// <summary>The FPS counter button's text.</summary>
+    public static string FpsCounterLabel(bool on) => on ? "FPS counter: On" : "FPS counter: Off";
 
-    /// <summary>Whether rumble is on; absent is on, as the launcher's default.</summary>
-    public static bool Vibration(string config) =>
-        Engine_RefiiConfig.Bool(RuntimeConfig.ReadValues(config), VibrationKey, true);
+    /// <summary>Whether the frame rate shows in the corner (<see cref="AndroidFpsCounter"/>); absent is off.</summary>
+    public static bool FpsCounter(string config) =>
+        Engine_RefiiConfig.Bool(RuntimeConfig.ReadValues(config), AndroidFpsCounter.Key, false);
 
-    /// <summary>Writes <paramref name="on"/> as <c>controller_vibration</c>.</summary>
+    /// <summary>Writes <paramref name="on"/> as <c>fps_counter</c>.</summary>
     /// <exception cref="IOException">The file could not be written.</exception>
-    public static void SetVibration(string config, bool on)
+    public static void SetFpsCounter(string config, bool on)
     {
         SortedDictionary<string, string> values = RuntimeConfig.ReadValues(config);
-        values[VibrationKey] = on ? "true" : "false";
+        values[AndroidFpsCounter.Key] = on ? "true" : "false";
+        Write(config, values);
+    }
+
+    /// <summary>The rumble's strength, a percentage, shared with the launcher's Controls settings.</summary>
+    public const string VibrationStrengthKey = "vibration_strength";
+
+    /// <summary>The rumble's strength until the player picks another: half, which a phone's vibrator plays firmly enough.</summary>
+    public const int VibrationStrengthDefault = 50;
+
+    /// <summary>The strengths a tap steps through, in order; 0 is off.</summary>
+    public static readonly int[] VibrationLevels = { 100, 75, 50, 25, 0 };
+
+    /// <summary>The vibration button's text.</summary>
+    public static string VibrationLabel(int level) => level <= 0 ? "Vibration: Off" : $"Vibration: {level}%";
+
+    /// <summary>The rumble's strength as a percentage, 0 when <c>controller_vibration</c> is off; absent is <see cref="VibrationStrengthDefault"/>, as the launcher's defaults.</summary>
+    public static int VibrationLevel(string config)
+    {
+        SortedDictionary<string, string> values = RuntimeConfig.ReadValues(config);
+        return Engine_RefiiConfig.Bool(values, VibrationKey, true)
+            ? Math.Clamp(Engine_RefiiConfig.Int(values, VibrationStrengthKey, VibrationStrengthDefault), 1, 100)
+            : 0;
+    }
+
+    /// <summary>The strength after <paramref name="current"/>; one not in the list steps to the first.</summary>
+    public static int NextVibrationLevel(int current)
+    {
+        int at = Array.IndexOf(VibrationLevels, Math.Max(0, current));
+        return VibrationLevels[(at + 1) % VibrationLevels.Length];
+    }
+
+    /// <summary>Writes <paramref name="level"/>: 0 turns <c>controller_vibration</c> off and keeps the strength; above 0 turns it on at that strength.</summary>
+    /// <exception cref="IOException">The file could not be written.</exception>
+    public static void SetVibrationLevel(string config, int level)
+    {
+        SortedDictionary<string, string> values = RuntimeConfig.ReadValues(config);
+        values[VibrationKey] = level > 0 ? "true" : "false";
+        if (level > 0) values[VibrationStrengthKey] = Math.Clamp(level, 1, 100).ToString(System.Globalization.CultureInfo.InvariantCulture);
         Write(config, values);
     }
 
@@ -101,6 +134,42 @@ public static class AndroidQuickSettings
         {
             live(key, value);
         }
+    }
+
+    /// <summary>A setting's configured value, unquoted; absent is the setting's default.</summary>
+    public static string Value(string config, string key) =>
+        RuntimeConfig.ReadValues(config).TryGetValue(key, out string? value)
+            ? value.Trim().Trim('"')
+            : RuntimeCVarSet.All.FirstOrDefault(definition => definition.Name == key)?.DefaultValue ?? "";
+
+    /// <summary>
+    /// Writes one graphics setting and passes it to <paramref name="live"/>. The stored preset becomes the one
+    /// the settings now make, "custom" when they match none, as a change in the launcher stores it.
+    /// </summary>
+    /// <exception cref="IOException">The file could not be written.</exception>
+    public static void SetGraphics(string config, string key, string value, Action<string, string> live)
+    {
+        SortedDictionary<string, string> values = RuntimeConfig.ReadValues(config);
+        values[key] = value;
+        values[GraphicsPresets.Key] = GraphicsPresets.Current(values);
+        Write(config, values);
+        live(key, value);
+    }
+
+    /// <summary>The touch controls' opacity key, which they reread every couple of seconds.</summary>
+    public const string TouchOpacityKey = "touch_opacity";
+
+    /// <summary>The touch controls' opacity, 0.1 to 1; absent is the launcher's 0.5.</summary>
+    public static float TouchOpacity(string config) =>
+        Math.Clamp(Engine_RefiiConfig.Float(RuntimeConfig.ReadValues(config), TouchOpacityKey, 0.5f), 0.1f, 1f);
+
+    /// <summary>Writes the touch controls' opacity, stepped to tenths and kept within 0.1 to 1.</summary>
+    /// <exception cref="IOException">The file could not be written.</exception>
+    public static void SetTouchOpacity(string config, float opacity)
+    {
+        SortedDictionary<string, string> values = RuntimeConfig.ReadValues(config);
+        values[TouchOpacityKey] = Math.Clamp(MathF.Round(opacity, 1), 0.1f, 1f).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+        Write(config, values);
     }
 
     private static void Write(string config, IReadOnlyDictionary<string, string> values)

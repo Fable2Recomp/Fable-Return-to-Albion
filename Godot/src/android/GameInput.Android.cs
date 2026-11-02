@@ -165,6 +165,42 @@ public partial class GameInput
 	private uint PhysicalButtons(int device) => CapturePhysicalButtons
 		? _buttonCapture.Sample(device, JoypadButtons(device)) : JoypadButtons(device);
 
+	/// <summary>
+	/// Screen rectangles the phone's own UI holds (the Options panel and the menus it opens), in canvas
+	/// units; null on the desktop. A pointer event there is that UI's alone.
+	/// </summary>
+	public static System.Func<System.Collections.Generic.IEnumerable<Rect2>>? HostUiRects { get; set; }
+
+	/// <summary>
+	/// Whether a mouse event lands on the phone's own UI, so the game's menu pointer leaves it: a tap on an
+	/// Options button over a game menu would also click the entry under it. Always false on the desktop.
+	/// </summary>
+	private bool OnHostUi(InputEvent inputEvent)
+	{
+		if (HostUiRects is not { } rects || inputEvent is not InputEventMouse mouse) return false;
+		Vector2 canvas = GetViewport().GetFinalTransform().AffineInverse() * mouse.Position;
+		foreach (Rect2 rect in rects())
+			if (rect.HasPoint(canvas)) return true;
+		return false;
+	}
+
+	/// <summary>How strong the rumble is, joypad and phone alike: the phone's <c>vibration_strength</c> as a fraction; full on the desktop.</summary>
+	public static float VibrationStrength { get; private set; } = 1f;
+
+	/// <summary>Reads <see cref="VibrationStrength"/> with the other control settings.</summary>
+	private static void ReadVibrationStrength(System.Collections.Generic.IReadOnlyDictionary<string, string> values) =>
+		VibrationStrength = Engine_Platform.IsAndroid
+			? Mathf.Clamp(Engine_RefiiConfig.Int(values, Refii.AndroidRuntime.AndroidQuickSettings.VibrationStrengthKey,
+				Refii.AndroidRuntime.AndroidQuickSettings.VibrationStrengthDefault), 1, 100) / 100f
+			: 1f;
+
+	/// <summary>One device's buttons and triggers through the player's controller remap; unchanged on the desktop.</summary>
+	private static void RemapPad(ref uint buttons, ref uint leftTrigger, ref uint rightTrigger)
+	{
+		if (Engine_Platform.IsAndroid)
+			Refii.AndroidRuntime.AndroidPadRemap.Apply(ref buttons, ref leftTrigger, ref rightTrigger);
+	}
+
 	/// <summary>A captured press not yet sampled, so a tap already released before this frame still claims a pad; zero on the desktop.</summary>
 	private uint PendingPhysicalButtons(int device) =>
 		CapturePhysicalButtons ? _buttonCapture.PendingButtons(device) : 0;
@@ -215,7 +251,7 @@ public partial class GameInput
 		switch (verdict)
 		{
 			case Engine_HandheldRumble.Verdict.Pulse:
-				Input.VibrateHandheld(Engine_HandheldRumble.PulseMs, _handheldRumble.Amplitude);
+				Input.VibrateHandheld(Engine_HandheldRumble.PulseMs, _handheldRumble.Amplitude * VibrationStrength);
 				break;
 			case Engine_HandheldRumble.Verdict.Stop:
 				Input.VibrateHandheld(Engine_HandheldRumble.StopMs, Engine_HandheldRumble.StopAmplitude);

@@ -1,0 +1,11 @@
+{
+	"show": { "label": "Show enemy health bars", "type": "toggle" },
+	"range": { "label": "Range", "type": "slider", "min": 5, "max": 60, "step": 5,
+	           "description": "How far away, in metres, an enemy still gets a bar." },
+	"only_hurt": { "label": "Only hurt enemies", "type": "toggle",
+	               "description": "Leave out enemies that have not been hit yet." },
+	"numbers": { "label": "Show numbers", "type": "toggle",
+	             "description": "Health as a number over the bar." },
+	"size": { "label": "Size", "type": "slider", "min": 0.6, "max": 2.0, "step": 0.1,
+	          "description": "How big the bars are drawn." }
+}

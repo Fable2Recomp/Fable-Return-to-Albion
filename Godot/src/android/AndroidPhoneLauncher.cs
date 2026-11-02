@@ -19,7 +19,9 @@ namespace Refii.AndroidRuntime;
 /// are preserved. The installer itself sends no guest input.</remarks>
 public partial class AndroidPhoneLauncher : Control
 {
-    private string _user = "", _selected = "", _bundle = "", _native = "", _message = "";
+    /// <summary>The app's data directory, and the active title's own folder in it (AndroidRuntimeOptions.TitleDirectory).</summary>
+    private string _app = "", _user = "";
+    private string _selected = "", _bundle = "", _native = "", _message = "";
     private Label? _status;
     private Button? _compile, _pick, _update, _play, _playCompiled, _cancel, _exportBoth, _exportSaves, _importSave;
     private Task<AndroidPhoneCompiler.Result>? _task;
@@ -36,13 +38,22 @@ public partial class AndroidPhoneLauncher : Control
     public bool Hosted { get; set; }
 
     /// <summary>The button that plays the compiled game: the launcher's own when hosted in it.</summary>
-    private string PlayLabel => Hosted ? "Play Fable 2" : "Play newly installed game";
+    /// <summary>Whether the active title has a title update to install (Fable 3 has none).</summary>
+    private static bool TakesUpdate => Engine_Title.Active.SupportsTitleUpdate;
+
+    private string PlayLabel => Hosted ? "Play " + Engine_Title.Active.Name : "Play newly installed game";
     /// <summary>Current background worker status for the shared launcher's progress display.</summary>
     public string Status => _message;
     /// <summary>Whether an owned installation worker is still running.</summary>
     public bool IsInstalling => _task != null;
     /// <summary>Whether a completed installation or previous runtime is available to play.</summary>
     public bool HasPlayableInstall => _result != null || _runtime != null;
+    /// <summary>Whether the playable module was built from another APK's compiler bundle and must be built again
+    /// before it is played (<see cref="IsStale"/>); the launcher's button offers Build Game Code, as on desktop.</summary>
+    public bool NeedsBuild { get; private set; }
+
+    /// <summary>Starts the game-code build from the shared launcher's Build Game Code button.</summary>
+    public void BuildFromLauncher() => StartCompile();
     /// <summary>Physical prepared or active game path shared with the original launcher's automatic runtime settings.</summary>
     public string? InstalledGameRoot => _prepared?.GameRoot ?? _runtime?.GameRoot;
 
@@ -122,19 +133,23 @@ public partial class AndroidPhoneLauncher : Control
     /// <summary>Creates controller-focusable installer actions before any guest initialization.</summary>
     public override void _Ready()
     {
-        _user = OS.GetUserDataDir();
+        _app = OS.GetUserDataDir();
+        _user = AndroidRuntimeOptions.TitleDirectory(_app);
+        Directory.CreateDirectory(_user);
         _keepScreenOn = DisplayServer.ScreenIsKeptOn();
         var margin = new MarginContainer { AnchorRight = 1, AnchorBottom = 1 };
         AddChild(margin);
         foreach (string side in new[] { "left", "top", "right", "bottom" }) margin.AddThemeConstantOverride("margin_" + side, Hosted ? 4 : 32);
         var box = new VBoxContainer();
         margin.AddChild(box);
-        box.AddChild(new Label { Text = "Fable 2 — install on this phone", ThemeTypeVariation = "HeaderLarge" });
-        _status = new Label { Text = "Choose your legally ripped Xbox 360 ISO and its title update. Installation can continue while you use other apps.",
+        box.AddChild(new Label { Text = Engine_Title.Active.Name + " — install on this phone", ThemeTypeVariation = "HeaderLarge" });
+        _status = new Label { Text = "Choose your legally ripped Xbox 360 ISO" + (TakesUpdate ? " and its title update" : "") +
+            ". Installation can continue while you use other apps.",
             AutowrapMode = TextServer.AutowrapMode.WordSmart, SizeFlagsVertical = SizeFlags.ExpandFill };
         box.AddChild(_status);
         _pick = Button(box, "Choose Xbox 360 ISO", () => Pick(false));
         _update = Button(box, "Choose title update (TU file), optional", () => Pick(true));
+        if (!TakesUpdate) _update.Hide();
         _compile = Button(box, "Extract and compile on this phone", StartCompile);
         _cancel = Button(box, "Cancel compilation", () => _cancellation?.Cancel());
         _play = Button(box, "Play installed game", PlayInstalled);
@@ -162,16 +177,17 @@ public partial class AndroidPhoneLauncher : Control
             if (_native.Contains('!') || !Directory.Exists(_native))
                 throw new IOException("The compiler APK must extract its native libraries");
             _message = _result != null ? "Your compiled installation is ready to play." : _selected.Length > 0
-                ? "Game files are ready. Compile to finish installation." : "Choose your ISO, then its TU file. Original files stay untouched.";
-            // AN UPDATE THAT CHANGES THE GAME CODE REBUILDS IT. The module is compiled on the phone
+                ? "Game files are ready. Compile to finish installation."
+                : (TakesUpdate ? "Choose your ISO, then its TU file." : "Choose your ISO.") + " Original files stay untouched.";
+            // AN UPDATE THAT CHANGES THE GAME CODE ASKS FOR A BUILD. The module is compiled on the phone
             // from the APK's bundle (hooks, version configs, headers), so a new APK can leave the
             // installed module behind; played anyway, it ran without the update's native fixes
             // (a co-op crash fix in a game hook did nothing until the module was compiled again).
+            // The build starts when the player chooses it, as desktop's Build Game Code does.
             if (HasPlayableInstall && _selected.Length > 0 && _native.Length > 0 && IsStale(_result, ApkBundleIdentity()))
             {
-                _message = "This update changes the game's code, so it is being compiled again on this phone. " +
-                    "Your saves are kept. Cancel to play the previous build meanwhile.";
-                Callable.From(StartCompile).CallDeferred();
+                NeedsBuild = true;
+                _message = "This update changes the game's code. Saves are kept.";
             }
         }
         catch (Exception error) { _message = error.Message; }
@@ -204,7 +220,7 @@ public partial class AndroidPhoneLauncher : Control
             var task = _task;
             _task = null;
             DisplayServer.ScreenSetKeepOn(_keepScreenOn);
-            try { _result = task.GetAwaiter().GetResult(); _message = _verificationOnly
+            try { _result = task.GetAwaiter().GetResult(); NeedsBuild = false; _message = _verificationOnly
                 ? $"Existing phone-compiled module verified. Select {PlayLabel} to use it."
                 : $"Installation compiled and verified. Temporary copies and build files removed. Select {PlayLabel}."; }
             catch (OperationCanceledException) { _message = "Compilation cancelled. Your installed game is preserved."; }
@@ -255,7 +271,8 @@ public partial class AndroidPhoneLauncher : Control
                     else { _isoUri = paths[0]; _updateUri = ""; }
                     _prepared = null;
                     _result = null;
-                    _message = update ? "ISO and title update selected. Ready to extract and compile." : "ISO selected. Choose its title update, then extract and compile.";
+                    _message = update ? "ISO and title update selected. Ready to extract and compile."
+                        : TakesUpdate ? "ISO selected. Choose its title update, then extract and compile." : "ISO selected. Ready to extract and compile.";
                     UpdateButtons();
                 }
                 catch (Exception exception) { _message = "Import stopped: " + exception.Message; }
@@ -311,7 +328,7 @@ public partial class AndroidPhoneLauncher : Control
             _result = null;
             _bundle = "";
             if (!Engine.HasSingleton("RefiiInstall")) throw new IOException("This APK lacks the Android installation service");
-            _job = new AndroidInstallJob(_user);
+            _job = new AndroidInstallJob(_app);
             string serviceError = Engine.GetSingleton("RefiiInstall").Call("begin", _job.Id).AsString();
             if (serviceError.Length > 0) throw new IOException(serviceError);
             var job = _job;
@@ -336,7 +353,7 @@ public partial class AndroidPhoneLauncher : Control
                 {
                     Progress("Preparing the bundled compiler");
                     _bundle = ExtractBundle(token);
-                    var request = new AndroidPhoneCompiler.Request(_bundle, _native, _selected, builds);
+                    var request = new AndroidPhoneCompiler.Request(_bundle, _native, _selected, builds, Engine_Title.Active);
                     var result = diagnosis == null
                         ? await AndroidPhoneCompiler.CompileAsync(request, Progress, token)
                         : await AndroidPhoneCompiler.VerifyExistingAsync(request, diagnosis.Module, diagnosis.Sha256,
@@ -415,7 +432,7 @@ public partial class AndroidPhoneLauncher : Control
         {
             _runtime = AndroidInstallState.Activate(_user, _selected, _result!);
             PruneUnused();
-            AndroidLauncherSettings.Prepare(Path.Combine(_user, "runtime"), _runtime.GameRoot);
+            AndroidLauncherSettings.Prepare(Path.Combine(_app, "runtime"), _runtime.GameRoot);
             GetTree().ChangeSceneToFile("res://src/android/AndroidGame.tscn");
         }
         catch (Exception error) { _message = "Cannot play this installation: " + error.Message; }

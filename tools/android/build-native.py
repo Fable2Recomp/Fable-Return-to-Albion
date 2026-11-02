@@ -93,9 +93,14 @@ def generate_private(source: Path, game: Path, generator: Path, output: Path,
             shutil.copyfile(path, inputs / name)
     if not (inputs / "default.xex").is_file():
         raise ValueError("Game directory must contain the privately supplied default.xex")
-    config_root = source / "versions" / version
-    shutil.copyfile(config_root / "refii_config.toml", private / "refii_config.toml")
-    manifest = (config_root / "refii_manifest.toml").read_text(encoding="utf-8")
+    # Since the title split the version configs are under the title's folder (pack-phone-bundle.py
+    # reads them the same way), named for its key: Fable2/versions/<version>/refii_*.toml,
+    # Fable3/versions/Fable3/refiii_*.toml.
+    title, key = ("Fable3", "refiii") if version == "Fable3" else ("Fable2", "refii")
+    versions = source / title / "versions" if (source / title / "versions").is_dir() else source / "versions"
+    config_root = versions / version
+    shutil.copyfile(config_root / f"{key}_config.toml", private / f"{key}_config.toml")
+    manifest = (config_root / f"{key}_manifest.toml").read_text(encoding="utf-8")
     manifest = re.sub(r"(?m)^file_path\s*=.*$", 'file_path = ' + json.dumps((inputs / "default.xex").as_posix()), manifest)
     manifest = re.sub(r"(?m)^out_directory_path\s*=.*$", 'out_directory_path = ' + json.dumps((private / "generated").as_posix()), manifest)
     manifest_path = private / "refii_manifest.toml"
@@ -137,8 +142,8 @@ def stage_closure(build: Path, destination: Path, ndk_bin: Path) -> list[dict]:
     by_name[libcxx.name] = libcxx
     # Lua is a payload dependency even when the host bridge has no direct
     # DT_NEEDED edge to it. Bink/XMA are loaded through managed P/Invoke.
-    pending = ["librefii_hostbridge.so", "librefii_lua.so",
-               "librefii_binkdecode.so", "librefii_xmadecode.so"]
+    pending = ["librefii_hostbridge.so", "librefiii_hostbridge.so", "librefii_lua.so",
+               "librefiii_vfs.so", "librefii_binkdecode.so", "librefii_xmadecode.so"]
     staged = {}
     destination.mkdir(parents=True, exist_ok=True)
     while pending:
@@ -190,7 +195,7 @@ def main() -> int:
     parser.add_argument("--host-codegen", required=True, type=Path)
     parser.add_argument("--generated-dir", type=Path)
     parser.add_argument("--game-directory", type=Path)
-    parser.add_argument("--game-version", choices=("Fable2", "Fable2TU1"), default="Fable2TU1")
+    parser.add_argument("--game-version", choices=("Fable2", "Fable2TU1", "Fable3"), default="Fable2TU1")
     parser.add_argument("--api", type=int, default=31)
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--cmake", default="cmake")
@@ -237,7 +242,10 @@ def main() -> int:
             "-DREXGLUE_ENABLE_TRACY=OFF", "-DREXGLUE_ENABLE_PERF_COUNTERS=ON",
             f"-DPython3_EXECUTABLE={sys.executable}", f"-DPYTHON_EXECUTABLE={sys.executable}",
             f"-DREFII_ANDROID_BUILD_SELFTESTS={'ON' if args.selftests else 'OFF'}",
-            f"-DREFII_GAME_VERSION={args.game_version}"]
+            # Fable 3's module builds with its own hooks and link (cmake/refii_android.cmake); the
+            # Fable 2 version the rest of the configure reads stays its default.
+            f"-DREFII_GAME_VERSION={'Fable2TU1' if args.game_version == 'Fable3' else args.game_version}",
+            f"-DREFII_ANDROID_GAME_TITLE={'Fable3' if args.game_version == 'Fable3' else 'Fable2'}"]
         if generated:
             configure.append(f"-DREFII_ANDROID_GENERATED_DIR={generated}")
         if args.rexnet:
@@ -247,7 +255,11 @@ def main() -> int:
         run(configure, output / "configure.log", commands)
         if args.configure_only:
             return 0
-        targets = ["refii_hostbridge", "refii_lua", "refii_binkdecode", "refii_xmadecode"]
+        # Fable 3's bridge and VFS (librefiii_hostbridge.so, librefiii_vfs.so, cmake/refii_android.cmake),
+        # which the APK ships, and its hooks, built here only so a hook that does not compile for
+        # ARM64 fails now rather than on the phone.
+        targets = ["refii_hostbridge", "refiii_hostbridge", "refiii_vfs", "refiii_hooks", "refii_lua",
+                   "refii_binkdecode", "refii_xmadecode"]
         if args.selftests:
             targets += ["refii_android_platform_selftest", "refii_android_fiber_selftest",
                         "refii_android_sdl_probe"]
@@ -263,11 +275,11 @@ def main() -> int:
         libraries = stage_closure(build, output / "native", ndk_bin)
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
         dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=source, text=True).strip())
-        headers = [source / "src/vfs/include/rex/thread/mutex.h",
+        headers = [source / "src/runtime/include/rex/thread/mutex.h",
                    source / "tools/android/payload_abi_guard.h",
                    source / "rexglue-net/shadow/rexglue-sdk/include/rex/thread/fiber.h",
                    source / "rexglue-net/shadow/rexglue-sdk/include/rex/platform/fpscr.h",
-                   source / "src/vfs/include/core/rex_payload_bridge.h",
+                   source / "src/runtime/include/core/rex_payload_bridge.h",
                    sdk / "include/rex/ppc/context.h"]
         identity = {str(path.relative_to(source)) if source in path.parents else str(path): sha256(path)
                     for path in headers if path.is_file()}

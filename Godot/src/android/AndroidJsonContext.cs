@@ -15,6 +15,8 @@ namespace Refii.AndroidRuntime;
 [JsonSerializable(typeof(AndroidInstallState.State))]
 [JsonSerializable(typeof(AndroidPhoneCompiler.BundleManifest))]
 [JsonSerializable(typeof(AndroidPhoneLauncher.DiagnosticRequest))]
+[JsonSerializable(typeof(System.Collections.Generic.Dictionary<string, string>))]
+[JsonSerializable(typeof(AndroidTouchCustomLayout.LayoutsFile))]
 internal sealed partial class AndroidJsonContext : JsonSerializerContext
 {
 }

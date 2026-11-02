@@ -147,4 +147,37 @@ public sealed class ShaderSpecialisationTests
         AssertThat(calls).IsEqual(1);
         AssertThat(branch.Contains("mat <= 32", StringComparison.Ordinal)).IsTrue();
     }
+
+    /// <summary>
+    /// A light about to cast while the shaders are built without shadow sampling holds its shadow off,
+    /// and the rebuild waits for a loading screen (or the Options panel's Rebuild now); after it, lights cast.
+    /// In Godot's runtime: the wait and the rebuild log through GD.Print.
+    /// </summary>
+    [TestCase]
+    [RequireGodotRuntime]
+    public void TheShadowRebuildWaitsForALoadingScreen()
+    {
+        try
+        {
+            Engine_ShaderSpecialisation.SetShadowlessForTests(true);
+            AssertThat(Engine_ShaderSpecialisation.ShadowCast("the sun")).IsFalse();
+            AssertThat(Engine_ShaderSpecialisation.RebuildWaiting).IsTrue();
+            AssertThat(Engine_ShaderSpecialisation.ShadowCast("a placed light")).IsFalse();
+            Engine_ShaderSpecialisation.LoadingScreen();
+            AssertThat(Engine_ShaderSpecialisation.RebuildWaiting).IsFalse();
+            AssertThat(Engine_ShaderSpecialisation.ShadowCast("the sun")).IsTrue();
+
+            Engine_ShaderSpecialisation.SetShadowlessForTests(true);
+            Engine_ShaderSpecialisation.ShadowCast("a placed light");
+            Engine_ShaderSpecialisation.RebuildNow();
+            AssertThat(Engine_ShaderSpecialisation.RebuildWaiting).IsFalse();
+            AssertThat(Engine_ShaderSpecialisation.ShadowCast("a placed light")).IsTrue();
+
+            // Nothing waits, and nothing is held, while the shaders keep their shadow sampling.
+            Engine_ShaderSpecialisation.SetShadowlessForTests(false);
+            AssertThat(Engine_ShaderSpecialisation.ShadowCast("the sun")).IsTrue();
+            AssertThat(Engine_ShaderSpecialisation.RebuildWaiting).IsFalse();
+        }
+        finally { Engine_ShaderSpecialisation.SetShadowlessForTests(null); }
+    }
 }

@@ -18,6 +18,16 @@ public sealed partial class Engine_UiSpellAssignSet
 	/// </summary>
 	public static bool SpellsMenuCanOpen => HeroSpellTypes is not { } types || types >= 2;
 
+	/// <summary>
+	/// Set by the touch controls while a hold on their Spells button is the right trigger: the
+	/// trigger draws in experience orbs and opens the game's spell wheel, and under a touch hold the
+	/// wheel is not drawn (the touch picker is the way to choose). A controller's trigger is untouched.
+	/// </summary>
+	public static bool TouchHidesWheel { get; set; }
+
+	/// <summary>Whether the guest has either player's spell wheel open, as last sampled.</summary>
+	public static bool GuestWheelOpen { get; private set; }
+
 	/// <summary>The spell types the hero can cast at power level 0, or null while unknown.</summary>
 	public static int? HeroSpellTypes { get; private set; }
 
@@ -70,6 +80,7 @@ public sealed partial class Engine_UiSpellAssignSet
 	{
 		HeroSpellTypes = _spells.Known ? _spells.Choices(0).Count : null;
 		HeroSpells = _spells;
+		GuestWheelOpen = _spells.WheelOpen || _spells.WheelOpenPlayerTwo;
 		_artHost = Host;
 	}
 }

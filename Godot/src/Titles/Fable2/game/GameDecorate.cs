@@ -71,7 +71,9 @@ public partial class GameDecorate : Node
     private uint _previewCard;
     private double _ghostPoll;
     private bool HasSelection => _selectedUid != 0 || _previewCard != 0 || _storedId != 0;
-    private GameSession? _session;
+    /// <summary>The node that hosts the play: the desktop's GameSession, or the host this was added
+    /// to where the guest is stepped without one (Android), as the mirror and photo mode allow.</summary>
+    private Node? _session;
     private Camera3D? _camera, _uiCamera;
     private CanvasLayer? _layer;
     private SubViewportContainer? _container;
@@ -125,7 +127,7 @@ public partial class GameDecorate : Node
             _guestRequested = Read("active") == 1;
             if (Active && (!_guestRequested || !_enabled)) { Close(_guestRequested); return; }
             if (!Active && _enabled && _guestRequested && !GamePhotoMode.Active && !GameMorphMirror.OwnsInput &&
-                GameUi.WorldInteractionAllowed && GameSession.Current is { Paused: false }) Open();
+                GameUi.WorldInteractionAllowed && GameSession.Current is not { Paused: true }) Open();
             if (Active)
             {
                 int revision = (int)Read("revision");
@@ -185,7 +187,7 @@ public partial class GameDecorate : Node
         bool focused = GetWindow().HasFocus();
         int pad = GameInput.JoypadForPad(0);
         uint buttons = focused ? Buttons(pad) : 0;
-        uint pressed = buttons & ~_held;
+        uint pressed = buttons & ~_held | TouchBack();
         _held = buttons;
         if (!focused) { SetAim(-1); _mouse = Vector2.Zero; _scroll = 0; _dragReady = false; Input.MouseMode = Input.MouseModeEnum.Visible; return; }
         if (_device != Engine_UiInputMode.Generation)
@@ -199,8 +201,10 @@ public partial class GameDecorate : Node
             Engine_UiKeyGlyphs.Update();
         }
         Resize();
+        StateTouch();
         if (_editingRotation)
         {
+            TouchRotationEdit();
             ProcessRotationInput(pressed);
             _mouse = Vector2.Zero; _scroll = 0;
             Input.MouseMode = Input.MouseModeEnum.Visible;
@@ -223,6 +227,7 @@ public partial class GameDecorate : Node
             _repeat = (pressed & 48) != 0 ? 0.3 : 0.1;
             Refresh();
         }
+        ApplyTouch();
         bool fine = Held(Key.Ctrl);
         bool keyboard = Engine_UiInputMode.KeyboardMouse;
         bool worldControls = (_room || _uiHidden) && !_waiting;
@@ -230,13 +235,14 @@ public partial class GameDecorate : Node
         var mouseMode = looking ? Input.MouseModeEnum.Captured : Input.MouseModeEnum.Visible;
         if (Input.MouseMode != mouseMode) Input.MouseMode = mouseMode;
         Vector2 previousCursor = _cursor;
-        UpdateCursor(keyboard, looking, keyboard && !looking ? GetViewport().GetMousePosition() : _size * 0.5f);
+        UpdateCursor(keyboard, looking, keyboard && !looking ? TouchCursor(GetViewport().GetMousePosition()) : _size * 0.5f);
         Transform3D before = _camera.GlobalTransform;
         Transform3D after = before;
         if (worldControls)
         {
             var movement = keyboard ? new Vector3(Keys(Key.A, Key.D), Keys(Key.Q, Key.E), Keys(Key.W, Key.S))
                 : new Vector3(left.X, Trigger(pad, JoyAxis.TriggerRight) - Trigger(pad, JoyAxis.TriggerLeft), left.Y);
+            movement += TouchMove();
             Vector2 turn = keyboard ? Vector2.Zero : new Vector2(Axis(pad, JoyAxis.RightX), Axis(pad, JoyAxis.RightY));
             after = Engine_DecorateControls.Camera(ref _position, ref _yaw, ref _pitch,
                 movement, turn, _mouse, seconds, fine, Held(Key.Shift) || Pad(pad, JoyButton.LeftStick));
@@ -259,12 +265,13 @@ public partial class GameDecorate : Node
                 AnchorDrag();
             }
             else if (_cursor != previousCursor) DragToCursor();
-            float height = keyboard ? Keys(Key.F, Key.R) : 0;
+            float height = (keyboard ? Keys(Key.F, Key.R) : 0) + TouchHeight();
             Vector3 nudge = keyboard ? new Vector3(Keys(Key.Left, Key.Right), 0, Keys(Key.Up, Key.Down)) : Vector3.Zero;
             float turn = keyboard ? 0 : Engine_DecorateControls.Rotation(Pad(pad, JoyButton.LeftShoulder), Pad(pad, JoyButton.RightShoulder), seconds, fine);
             if ((pressed & 1024) != 0) turn -= Mathf.Pi / 4;
             if ((pressed & 2048) != 0) turn += Mathf.Pi / 4;
             turn += Keys(Key.Z, Key.C) * seconds * (fine ? 0.2f : 1.5f);
+            turn += TouchTurn(seconds, fine);
             if (height != 0 || nudge != Vector3.Zero || turn != 0)
             {
                 _pendingMove = false;
@@ -779,8 +786,8 @@ public partial class GameDecorate : Node
 
     private void Open()
     {
-        if (Active || GameSession.Current is not { Paused: false } session || GetViewport().GetCamera3D() is not { } camera) return;
-        _session = session; _camera = camera; _original = camera.GlobalTransform; _mouseMode = Input.MouseMode;
+        if (Active || GameSession.Current is { Paused: true } || GetViewport().GetCamera3D() is not { } camera) return;
+        _session = (Node?)GameSession.Current ?? GetParent(); _camera = camera; _original = camera.GlobalTransform; _mouseMode = Input.MouseMode;
         var angles = _original.Basis.GetEuler(); _yaw = angles.Y; _pitch = angles.X;
         _position = _original.Origin;
         _held = uint.MaxValue; _revision = -1; _waiting = false; _room = true; _row = 0; _touch = 0; _uiHidden = false; _aimPoll = 0;
@@ -800,14 +807,14 @@ public partial class GameDecorate : Node
 
     private void Hide(Node node)
     {
-        if (node == this || node is Refii.Fx.Engine_FxDisplacement) return;
+        if (node == this || node is Refii.Fx.Engine_FxDisplacement || node.IsInGroup(GamePhotoMode.KeepLayerGroup)) return;
         if (node is CanvasLayer { Visible: true } layer) { _hidden.Add(layer); layer.Visible = false; }
         foreach (Node child in node.GetChildren()) Hide(child);
     }
 
     private void BuildUi()
     {
-        var theme = _session?.GetParent().GetNodeOrNull<GameUi>("GameUi")?.PhotoModeTheme
+        var theme = (GameSession.Current?.GetParent() ?? _session)?.GetNodeOrNull<GameUi>("GameUi")?.PhotoModeTheme
             ?? throw new InvalidOperationException("Fable 2's native UI is not ready.");
         _layer = new CanvasLayer { Name = "DecorateControls", Layer = 121 }; AddChild(_layer);
         _container = new SubViewportContainer { Stretch = true, MouseFilter = Control.MouseFilterEnum.Ignore }; _layer.AddChild(_container);
@@ -866,8 +873,10 @@ public partial class GameDecorate : Node
 
     public override void _Input(InputEvent input)
     {
-        if (!Active || _ui is null) return;
-        if (input is InputEventKey { Pressed: true } or InputEventMouseButton { Pressed: true } || input is InputEventMouseMotion motion && motion.Relative.LengthSquared() > 4)
+        // The fingers are the touch controls' (GameDecorate.Touch.cs), and their mouse is not the desktop's.
+        if (!Active || _ui is null || input is InputEventScreenTouch or InputEventScreenDrag) return;
+        if (input.Device != (int)InputEvent.DeviceIdEmulation &&
+            (input is InputEventKey { Pressed: true } or InputEventMouseButton { Pressed: true } || input is InputEventMouseMotion motion && motion.Relative.LengthSquared() > 4))
             Engine_UiInputMode.KeyboardMouse = true;
         else if (input is InputEventJoypadButton { Pressed: true } || input is InputEventJoypadMotion axis && Math.Abs(axis.AxisValue) > 0.5f)
             Engine_UiInputMode.KeyboardMouse = false;
@@ -879,7 +888,7 @@ public partial class GameDecorate : Node
             return;
         }
         if (input is InputEventMouseMotion look && Input.MouseMode == Input.MouseModeEnum.Captured && !_ui.HelpOpen) _mouse += look.Relative;
-        if (input is InputEventMouseButton { Pressed: true } wheel && !_ui.HelpOpen &&
+        if (input is InputEventMouseButton { Pressed: true } wheel && !_ui.HelpOpen && wheel.Device != (int)InputEvent.DeviceIdEmulation &&
             wheel.ButtonIndex is MouseButton.WheelUp or MouseButton.WheelDown)
             _scroll += wheel.ButtonIndex == MouseButton.WheelUp ? -0.6f : 0.6f;
         if (input is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left } click && _uiCamera is not null)
@@ -938,6 +947,7 @@ public partial class GameDecorate : Node
     {
         uint b = 0;
         if (Held(Key.Enter) || Pad(pad, JoyButton.A)) b |= 1;
+        b |= TouchButtons();
         if (Held(Key.Escape) || Pad(pad, JoyButton.B)) b |= 2;
         if (Held(Key.Tab) || Pad(pad, JoyButton.X)) b |= 4;
         if (Held(Key.H) || Pad(pad, JoyButton.Back)) b |= 8;

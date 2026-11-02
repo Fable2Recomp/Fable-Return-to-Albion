@@ -180,7 +180,7 @@ public sealed class Engine_UiTheme
 			return null;
 		}
 
-		var clone = (Node3D)matches[variant].Duplicate();
+		var clone = Refii.Core.Engine_Platform.IsAndroid ? Engine_UiArtClone.Clone(matches[variant]) : (Node3D)matches[variant].Duplicate();
 		if (keepAuthoredBasis)
 		{
 			clone.Transform = new Transform3D(matches[variant].Transform.Basis, Vector3.Zero);
