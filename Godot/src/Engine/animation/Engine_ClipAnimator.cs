@@ -2110,7 +2110,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		// ApplyMorph), and only when the record was re-read. See SkinScale for which of the
 		// morph factor (`_finalScale`) and the guest's stated lane (Engine_EntitySkeleton.GuestScale)
 		// a bone binds with.
-		if (Rig is { } rig && (_scaleDirty || rig.GuestScaleCaptures != _laneCapturesSeen))
+		if (Rig is { } rig && (_scaleDirty || rig.FoldedCaptures != _laneCapturesSeen))
 		{
 			_skinScale ??= new Vector3[bones];
 			if (_skinScale.Length != bones)
@@ -2118,31 +2118,14 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 				_skinScale = new Vector3[bones];
 			}
 
-			// The record a lane was folded with: the one in force when the lane was taken, known
-			// once the record has been read (a lane taken before the first read already carries
-			// the guest's record, so it binds as stated until then).
-			if (rig.GuestScaleCaptures != _laneCapturesSeen)
-			{
-				_laneCapturesSeen = rig.GuestScaleCaptures;
-				_laneRecordStale = true;
-			}
-
-			if (_laneRecordStale && !double.IsNegativeInfinity(_morphReadAt))
-			{
-				if (_laneRecord is null || _laneRecord.Length != bones)
-				{
-					_laneRecord = new Vector3[bones];
-				}
-
-				System.Array.Copy(_finalScale, _laneRecord, bones);
-				_laneRecordStale = false;
-			}
-
+			// The record each lane was folded with is the rig's, paired when the lane was taken;
+			// no lane yet binds the record alone.
+			_laneCapturesSeen = rig.FoldedCaptures;
 			for (int b = 0; b < bones; ++b)
 			{
 				_skinScale[b] = _laneCapturesSeen == 0
 					? _finalScale[b]
-					: _laneRecordStale ? rig.GuestScale(b) : SkinScale(rig.GuestScale(b), _laneRecord![b], _finalScale[b]);
+					: SkinScale(rig.FoldedLane(b), rig.FoldedRecord(b), _finalScale[b]);
 			}
 
 			rig.SetBoneScales(_skinScale);
@@ -2912,6 +2895,9 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	/// `lane * record` bound `sc²`. Dividing out the record at capture keeps the clip's own part
 	/// of the lane: One on Fable 2, a Fable 3 helper's collapse (3e-5) or 4.5x even where that
 	/// title's strong/tall records also scale the bone (hat, ponytail, pigtail chains).
+	/// A lane of exactly One beside a record that is not is a pose the fold never reached — a
+	/// load's pose stated before the guest's first update of the body — and its clip part is One:
+	/// a folded clip part of One is the record itself.
 	/// </summary>
 	internal static Vector3 SkinScale(Vector3 guestLane, Vector3 recordAtCapture, Vector3 recordNow) =>
 		new(Swap(guestLane.X, recordAtCapture.X, recordNow.X),
@@ -2919,16 +2905,10 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 			Swap(guestLane.Z, recordAtCapture.Z, recordNow.Z));
 
 	private static float Swap(float lane, float atCapture, float now) =>
-		Mathf.Abs(atCapture) > 1e-6f ? lane / atCapture * now : lane;
+		lane == 1f ? now : Mathf.Abs(atCapture) > 1e-6f ? lane / atCapture * now : lane;
 
-	/// <summary>The record in force when the rig's current lanes were taken (see <see cref="SkinScale"/>).</summary>
-	private Vector3[]? _laneRecord;
-
-	/// <summary>The rig's <c>GuestScaleCaptures</c> that <see cref="_laneRecord"/> belongs to.</summary>
+	/// <summary>The rig's <c>FoldedCaptures</c> the skin was last composed from.</summary>
 	private int _laneCapturesSeen;
-
-	/// <summary>Set when new lanes were taken and the record they were folded with is not yet paired.</summary>
-	private bool _laneRecordStale;
 
 	/// <summary>The skin's scale per bone, composed by <see cref="SkinScale"/> on each push.</summary>
 	private Vector3[]? _skinScale;

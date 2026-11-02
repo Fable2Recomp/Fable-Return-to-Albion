@@ -930,7 +930,7 @@ public class CharacterMorphTests
     }
 
     [TestCase]
-    public void ASlotStatesItsLookKeepsAModsWriteAndNeverWritesForAnotherMachine()
+    public void TheSlotFollowsTheSavedLookStatesTheMirrorAndNeverWritesForAnotherMachine()
     {
         Dictionary<string, float> Look(float fat, bool automatic = false)
         {
@@ -944,29 +944,31 @@ public class CharacterMorphTests
 
         // No player for the slot (front end, or its player is played on the other machine): nothing.
         AssertThat(sync.Next(0, local, null, 0, out _)).IsEqual(Engine_MorphLookSync.Step.None);
-        // Bound: stated at once, whatever the store holds.
-        AssertThat(sync.Next(1, local, Look(0.9f), 0, out var values)).IsEqual(Engine_MorphLookSync.Step.Push);
-        AssertThat(Engine_CharacterMorphs.SameLook(values, local)).IsTrue();
-        // The statement lands a tick later: until then the old store value is not a mod's write.
-        AssertThat(sync.Next(1, local, Look(0.9f), 0.2, out _)).IsEqual(Engine_MorphLookSync.Step.None);
-        AssertThat(sync.Next(1, local, local, 0.3, out _)).IsEqual(Engine_MorphLookSync.Step.None);
-        // A new hero empties the store: restated, at most every RestateSeconds.
-        AssertThat(sync.Next(1, local, null, 0.4, out values)).IsEqual(Engine_MorphLookSync.Step.Push);
-        AssertThat(sync.Next(1, local, null, 0.5, out _)).IsEqual(Engine_MorphLookSync.Step.None);
-        AssertThat(sync.Next(1, local, local, 0.6, out _)).IsEqual(Engine_MorphLookSync.Step.None);
-        // A mod's write (here or from the other machine) is kept in the slot's settings.
-        var modded = Look(0.6f);
-        AssertThat(sync.Next(1, local, modded, 5, out values)).IsEqual(Engine_MorphLookSync.Step.Persist);
-        AssertThat(Engine_CharacterMorphs.SameLook(values, modded)).IsTrue();
-        AssertThat(sync.Next(1, modded, modded, 5.1, out _)).IsEqual(Engine_MorphLookSync.Step.None);
-        // The Mirror's preview (or Apply) is stated.
+        // Bound: the slot takes the hero's saved look, never the other way round.
+        var saved = Look(0.9f);
+        AssertThat(sync.Next(1, local, saved, 0, out var values)).IsEqual(Engine_MorphLookSync.Step.Persist);
+        AssertThat(Engine_CharacterMorphs.SameLook(values, saved)).IsTrue();
+        AssertThat(sync.Next(1, saved, saved, 0.1, out _)).IsEqual(Engine_MorphLookSync.Step.None);
+        // The Mirror's preview (or Apply) is stated; until it lands the old store value is not a change.
         var preview = Look(1f);
-        AssertThat(sync.Next(1, preview, modded, 6, out values)).IsEqual(Engine_MorphLookSync.Step.Push);
+        AssertThat(sync.Next(1, preview, saved, 1, out values)).IsEqual(Engine_MorphLookSync.Step.Push);
         AssertThat(Engine_CharacterMorphs.SameLook(values, preview)).IsTrue();
-        // A join moves slot 1 to player two: stated to player two at once; player one's look is the host's.
-        AssertThat(sync.Next(2, preview, Look(0.1f, true), 6.1, out values)).IsEqual(Engine_MorphLookSync.Step.Push);
+        AssertThat(sync.Next(1, preview, saved, 1.2, out _)).IsEqual(Engine_MorphLookSync.Step.None);
+        AssertThat(sync.Next(1, preview, preview, 1.3, out _)).IsEqual(Engine_MorphLookSync.Step.None);
+        // A save load (or a mod's write, here or from the other machine) is kept in the slot's settings.
+        var other = Look(0.6f);
+        AssertThat(sync.Next(1, preview, other, 5, out values)).IsEqual(Engine_MorphLookSync.Step.Persist);
+        AssertThat(Engine_CharacterMorphs.SameLook(values, other)).IsTrue();
+        AssertThat(sync.Next(1, other, other, 5.1, out _)).IsEqual(Engine_MorphLookSync.Step.None);
+        // A save made without a look, or a new game: the game's own look, the slot automatic.
+        AssertThat(sync.Next(1, other, null, 6, out values)).IsEqual(Engine_MorphLookSync.Step.Persist);
+        AssertThat(values[Engine_CharacterMorphs.StoreAutomaticKey]).IsEqual(1f);
+        var automatic = new Dictionary<string, float>(values);
+        AssertThat(sync.Next(1, automatic, null, 6.1, out _)).IsEqual(Engine_MorphLookSync.Step.None);
+        // A join moves slot 1 to player two: the slot takes player two's look; player one's is the host's.
+        AssertThat(sync.Next(2, automatic, Look(0.1f), 7, out values)).IsEqual(Engine_MorphLookSync.Step.Persist);
         AssertThat(sync.Player).IsEqual(2);
-        AssertThat(sync.Next(0, preview, null, 7, out _)).IsEqual(Engine_MorphLookSync.Step.None);
+        AssertThat(sync.Next(0, automatic, null, 8, out _)).IsEqual(Engine_MorphLookSync.Step.None);
         AssertThat(sync.Player).IsEqual(0);
     }
 }

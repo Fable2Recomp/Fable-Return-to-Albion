@@ -3534,14 +3534,16 @@ bool StoredInputs(int32_t player, refii_mod_appearance_t& out) {
 }
 
 /// Writes a whole look into the player's store: the inputs clamped to the Mirror's ranges, then the
-/// mode. A write where the hero is not played reaches the machine that plays it (player_state.cpp).
+/// mode. Saved values: the look is the hero's, written with its save and read back by its load, so a
+/// save made without one loads in the game's own look. A write where the hero is not played reaches
+/// the machine that plays it (player_state.cpp).
 void WriteLook(int32_t player, bool automatic, const refii_mod_appearance_t& look) {
   for (size_t i = 0; i < std::size(kLookFields); ++i) {
     const float value = look.*kLookFields[i];
-    refii_mod_player_set(player, kLookKeys[i],
-                         std::clamp(std::isfinite(value) ? value : kNeutralLook.*kLookFields[i], kLookMin[i], kLookMax[i]));
+    refii_mod_player_save(player, kLookKeys[i],
+                          std::clamp(std::isfinite(value) ? value : kNeutralLook.*kLookFields[i], kLookMin[i], kLookMax[i]));
   }
-  refii_mod_player_set(player, kLookAutomatic, automatic ? 1.0f : 0.0f);
+  refii_mod_player_save(player, kLookAutomatic, automatic ? 1.0f : 0.0f);
 }
 
 }  // namespace

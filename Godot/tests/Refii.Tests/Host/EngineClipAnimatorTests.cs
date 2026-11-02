@@ -303,6 +303,12 @@ public class EngineClipAnimatorTests
 
         // A record that never reached the lane (zero) leaves the lane as stated.
         AssertThat(Engine_ClipAnimator.SkinScale(sc, Vector3.Zero, fatter).IsEqualApprox(sc)).IsTrue();
+
+        // A save load: the pose taken before the guest's first update of the body is unfolded (One)
+        // while the strength record is already set. It binds the record, never One (the lanky hero).
+        AssertThat(Engine_ClipAnimator.SkinScale(Vector3.One, sc, sc).IsEqualApprox(sc)).IsTrue();
+        AssertThat(Engine_ClipAnimator.SkinScale(new Vector3(1f, sc.Y, 1f), new Vector3(1f, sc.Y, 1f), fatter)
+            .IsEqualApprox(fatter)).IsTrue();
     }
 
     [TestCase]

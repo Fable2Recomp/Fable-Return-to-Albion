@@ -272,25 +272,35 @@ public sealed class Engine_EntitySkeleton
 	public static long SkinScaleWrites;
 
 	/// <summary>
+	/// The guest's own scale lane for model bone <paramref name="model"/> from the newest pose whose
+	/// morph record is known (<see cref="FoldedRecord"/>), One before any. It is the clip's scale
+	/// with the record already folded in, on both titles: Fable 2 `sub_821F2C78` runs
+	/// `sub_822BF9B8` on the pose whenever comp6+152 is set (0x822bfb34 `vmulfp128`, stored to
+	/// +0x20 at 0x822bfb3c) and Fable 3 `sub_8222AB68` does the same (0x8222ac80, stored at
+	/// 0x8222ac88). A Fable 3 rig also scales bones of its own — 141 of 12,869 live bones, 3e-5
+	/// (collapsed) to 4.5 — which only this lane carries.
+	/// </summary>
+	public Vector3 FoldedLane(int model) =>
+		model >= 0 && model < _foldedLane.Length ? _foldedLane[model] : Vector3.One;
+
+	/// <summary>
+	/// The record <see cref="FoldedLane"/> was folded with: the guest's record read beside that pose
+	/// and unchanged since the read before it, so the guest's fold in between used it. A lane taken
+	/// beside a record that had just changed may carry the old one (the fold runs once a tick) and
+	/// is not taken; one taken before the guest ever updated the pose carries none (One).
+	/// </summary>
+	public Vector3 FoldedRecord(int model) =>
+		model >= 0 && model < _foldedRecord.Length ? _foldedRecord[model] : Vector3.One;
+
+	/// <summary>Lanes <see cref="FoldedLane"/> took with their record; 0 before the first.</summary>
+	public int FoldedCaptures { get; private set; }
+
+	/// <summary>
 	/// Gives each model bone its own scale, in the bone's axes, by folding it into the skin's
 	/// bind pose — never into the skeleton, which must stay scale-free (see the constructor).
 	/// Indexed by model bone; a shorter span leaves the rest at their last value. Only binds
 	/// whose scale moved are rewritten, so a settled rig costs a comparison per bone.
 	/// </summary>
-	/// <summary>
-	/// The guest's own scale for model bone <paramref name="model"/>, as its newest pose stated it
-	/// (One before any pose). It is the clip's scale with the morph record already folded in, on
-	/// both titles: Fable 2 `sub_822BF9B8` (0x822bfb34 `vmulfp128`, stored to +0x20 at 0x822bfb3c)
-	/// and Fable 3 `sub_8222AB68` (0x8222ac80, stored at 0x8222ac88) multiply the pose's scale lane
-	/// by the record before the pose is published. A Fable 3 rig also scales bones of its own —
-	/// 141 of 12,869 live bones, 3e-5 (collapsed) to 4.5 — which only this lane carries.
-	/// </summary>
-	public Vector3 GuestScale(int model) =>
-		model >= 0 && model < _newestScale.Length ? _newestScale[model] : Vector3.One;
-
-	/// <summary>Guest poses whose scale lanes <see cref="GuestScale"/> took; 0 before the first.</summary>
-	public int GuestScaleCaptures { get; private set; }
-
 	public void SetBoneScales(ReadOnlySpan<Vector3> scales)
 	{
 		int bones = Math.Min(scales.Length, _inverseRest.Length);
@@ -1404,7 +1414,6 @@ public sealed class Engine_EntitySkeleton
 		++_bufferVersion[buffer];
 		_slotBuffer[_poses.Push(stamp)] = buffer;
 		Engine_TickClock.Observe(sim, Godot.Time.GetTicksUsec());
-		++GuestScaleCaptures;
 		for (int m = 0; m < _modelToGuest.Length; ++m)
 		{
 			int g = _modelToGuest[m];
@@ -1422,7 +1431,84 @@ public sealed class Engine_EntitySkeleton
 				? ToGodot(pose.Rotation(g), pose.Translation(g), Vector3.One)
 				: _composed![g];
 		}
+
+		TakeFoldedLanes(entity);
 	}
+
+	/// <summary>
+	/// Pairs the newest lanes with the record the guest folded into them (<see cref="FoldedRecord"/>).
+	/// The record is read only while lanes moved or a pairing waits, so a settled rig reads nothing.
+	/// </summary>
+	private void TakeFoldedLanes(uint entity)
+	{
+		int bones = _newestScale.Length;
+		bool moved = _foldedLane.Length != bones;
+		for (int m = 0; !moved && m < bones; ++m)
+		{
+			moved = _newestScale[m] != _foldedLane[m];
+		}
+
+		if (!moved && !_foldPending)
+		{
+			return;
+		}
+
+		if (_recordByGuest.Length != _guestBones)
+		{
+			_recordByGuest = new Vector3[_guestBones];
+		}
+
+		System.Array.Fill(_recordByGuest, Vector3.One);
+		foreach (HostBridge.GuestBoneMorph morph in HostBridge.GetBoneMorph(entity))
+		{
+			if (morph.Bone >= 0 && morph.Bone < _guestBones)
+			{
+				// Permuted into the lane's axes, as the lane is.
+				_recordByGuest[morph.Bone] = new Vector3(Mathf.Abs(morph.Scale.X), Mathf.Abs(morph.Scale.Z), Mathf.Abs(morph.Scale.Y));
+			}
+		}
+
+		bool stable = _recordRead.Length == bones;
+		if (!stable)
+		{
+			_recordRead = new Vector3[bones];
+		}
+
+		for (int m = 0; m < bones; ++m)
+		{
+			int g = m < _modelToGuest.Length ? _modelToGuest[m] : -1;
+			Vector3 record = g >= 0 && g < _guestBones ? _recordByGuest[g] : Vector3.One;
+			stable = stable && record == _recordRead[m];
+			_recordRead[m] = record;
+		}
+
+		_foldPending = !stable;
+		if (!stable)
+		{
+			return;
+		}
+
+		if (_foldedLane.Length != bones)
+		{
+			_foldedLane = new Vector3[bones];
+			_foldedRecord = new Vector3[bones];
+		}
+
+		System.Array.Copy(_newestScale, _foldedLane, bones);
+		System.Array.Copy(_recordRead, _foldedRecord, bones);
+		++FoldedCaptures;
+	}
+
+	private Vector3[] _foldedLane = System.Array.Empty<Vector3>();
+	private Vector3[] _foldedRecord = System.Array.Empty<Vector3>();
+
+	/// <summary>The record as last read, per model bone in the lane's axes.</summary>
+	private Vector3[] _recordRead = System.Array.Empty<Vector3>();
+
+	private Vector3[] _recordByGuest = System.Array.Empty<Vector3>();
+
+	/// <summary>Lanes moved beside a record that had just changed: read again on the next pose.</summary>
+	private bool _foldPending;
 
 	/// <summary>
 	/// Stamped poses held: enough that a draw point a tick and a half behind the newest still

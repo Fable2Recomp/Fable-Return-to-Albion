@@ -4,28 +4,31 @@ namespace Refii.Hero;
 
 /// <summary>
 /// One settings slot's look against its player's look in the store (<see cref="Engine_CharacterMorphs"/>),
-/// each frame: the slot is what this machine's player edits and keeps (the Mirror's settings, or its
-/// preview), the store is what both co-op machines draw and judge. The rule, in order:
+/// each frame. The store is the look of record: its values are saved with the hero (the player store's
+/// saved values, written beside the save and read back by its load), so each save keeps its own look
+/// and both co-op machines draw and judge the same one. The slot is the Mirror's working copy. The
+/// rule, in order:
 /// <list type="number">
-/// <item>the slot's player changed (a join, a leave, the first frame in game): the slot is stated to the new player;</item>
-/// <item>the slot changed (the Mirror's preview or Apply): it is stated;</item>
-/// <item>the store holds no look (a new hero empties it): the slot is restated, at most every <see cref="RestateSeconds"/>;</item>
-/// <item>the store holds another look once a statement has had <see cref="PendingSeconds"/> to land: a
-/// mod's write (on either machine; it reaches the owner) — kept in the slot's settings;</item>
+/// <item>the slot's player changed (a join, a leave, the first frame in game): the slot takes the
+/// store's look;</item>
+/// <item>the slot changed (the Mirror's preview or Apply): it is stated to the store;</item>
+/// <item>the store changed (a save load, a new game, a mod's write on either machine) once a statement
+/// has had <see cref="PendingSeconds"/> to land: the slot takes the store's look;</item>
 /// <item>otherwise they agree.</item>
 /// </list>
-/// A statement lands only where the player is played (<c>appearance_state</c>), the same owners the
-/// slot's player is read from, so a slot never writes a look the other machine owns.
+/// A store holding no look (a new game, or a save made without one) is the game's own look: the slot
+/// is kept automatic. A statement lands only where the player is played (<c>appearance_state</c>), the
+/// same owners the slot's player is read from, so a slot never writes a look the other machine owns.
 /// </summary>
 public sealed class Engine_MorphLookSync
 {
     public enum Step { None, Push, Persist }
 
-    public const double RestateSeconds = 0.5;
     public const double PendingSeconds = 1.0;
 
     private int _player;
-    private Dictionary<string, float>? _synced;
+    private Dictionary<string, float>? _local;
+    private Dictionary<string, float>? _store;
     private double _statedAt = double.NegativeInfinity;
 
     /// <summary>The player the slot is bound to now, 0 for none.</summary>
@@ -42,35 +45,40 @@ public sealed class Engine_MorphLookSync
         if (player is not (1 or 2))
         {
             _player = 0;
-            _synced = null;
+            _local = null;
+            _store = null;
             return Step.None;
         }
 
-        if (player != _player || _synced is null || !Engine_CharacterMorphs.SameLook(local, _synced))
+        if (player != _player || _local is null)
         {
             _player = player;
-            _synced = new Dictionary<string, float>(local);
-            _statedAt = now;
-            return Step.Push;
-        }
-
-        if (stored is null)
-        {
-            if (now - _statedAt < RestateSeconds) return Step.None;
-            _statedAt = now;
-            values = _synced;
-            return Step.Push;
-        }
-
-        if (Engine_CharacterMorphs.SameLook(stored, _synced))
-        {
             _statedAt = double.NegativeInfinity;
-            return Step.None;
+            return Adopt(local, stored, out values);
         }
 
+        if (!Engine_CharacterMorphs.SameLook(local, _local))
+        {
+            _local = new Dictionary<string, float>(local);
+            _store = new Dictionary<string, float>(local);
+            _statedAt = now;
+            return Step.Push;
+        }
+
+        if (Engine_CharacterMorphs.SameLook(stored, _store)) return Step.None;
         if (now - _statedAt < PendingSeconds) return Step.None;
-        _synced = new Dictionary<string, float>(stored);
-        values = _synced;
-        return Step.Persist;
+        return Adopt(local, stored, out values);
+    }
+
+    /// <summary>The slot takes the store's look, or turns automatic when the store holds none.</summary>
+    private Step Adopt(IReadOnlyDictionary<string, float> local, IReadOnlyDictionary<string, float>? stored,
+        out IReadOnlyDictionary<string, float> values)
+    {
+        _store = stored is null ? null : new Dictionary<string, float>(stored);
+        var look = new Dictionary<string, float>(stored ?? local);
+        if (stored is null) look[Engine_CharacterMorphs.StoreAutomaticKey] = 1;
+        _local = look;
+        values = look;
+        return Engine_CharacterMorphs.SameLook(local, look) ? Step.None : Step.Persist;
     }
 }

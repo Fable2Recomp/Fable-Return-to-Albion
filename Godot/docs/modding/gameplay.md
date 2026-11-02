@@ -479,10 +479,12 @@ mod can read and set the same look through the same path.
   `character_morphs.*` keys, owned by the machine that plays that hero), so both co-op machines
   draw both heroes the same and the host's villagers judge the joiner's look. A call for a player
   played on the other machine reaches that machine.
-- **It persists like the Mirror's Apply.** The machine that plays the hero keeps the look in that
-  player's Mirror settings (`character_morphs` / `character_morph_<input>` for the machine's first
-  player, `character_morphs2` / `character_morph2_<input>` for local co-op's player two), so it
-  is there next session and the Mirror opens on it. There is no session-only form.
+- **It is saved with the hero.** The look is saved values in the player store, written with the
+  save and read back when that save loads, so each save keeps its own look; a save made without one
+  (or a new game) loads in the game's own look. The Mirror's settings (`character_morphs` /
+  `character_morph_<input>` for the machine's first player, `character_morphs2` /
+  `character_morph2_<input>` for local co-op's player two) follow the loaded hero's look, so the
+  Mirror opens on it. There is no session-only form.
 - Inside an event copy (`event_replica()`) the write is dropped, as for every player-store write.
 
 ```lua
