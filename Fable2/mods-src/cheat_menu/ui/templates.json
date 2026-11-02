@@ -1,0 +1,85 @@
+{
+	"menus": {
+		"pause-root": {
+			"patch": true,
+			"entries": [
+				{ "name": "cheat_menu.menu", "tag": "CHEAT_MENU", "opens": "cheat_menu.root", "hostOnly": true }
+			]
+		},
+		"cheat_menu.root": {
+			"title": "CHEAT_MENU",
+			"entries": [
+				{ "name": "experience", "tag": "CHEAT_MENU_EXPERIENCE", "opens": "cheat_menu.experience" },
+				{ "name": "gold", "tag": "CHEAT_MENU_GOLD", "opens": "cheat_menu.gold" },
+				{ "name": "renown", "tag": "CHEAT_MENU_RENOWN", "opens": "cheat_menu.renown" },
+				{ "name": "morality", "tag": "CHEAT_MENU_MORALITY", "opens": "cheat_menu.morality" },
+				{ "name": "purity", "tag": "CHEAT_MENU_PURITY", "opens": "cheat_menu.purity" },
+				{ "name": "items", "tag": "CHEAT_MENU_ITEMS", "opens": "cheat_menu.items" },
+				{ "name": "time", "tag": "CHEAT_MENU_TIME", "opens": "cheat_menu.time" },
+				{ "name": "heal", "tag": "CHEAT_MENU_HEAL", "command": "Mod:lua:CheatMenu.heal" }
+			]
+		},
+		"cheat_menu.experience": {
+			"title": "CHEAT_MENU_EXPERIENCE",
+			"entries": [
+				{ "name": "general_1k", "tag": "CHEAT_MENU_XP_GENERAL_1K", "command": "Mod:lua:CheatMenu.experience:0:1000" },
+				{ "name": "general_10k", "tag": "CHEAT_MENU_XP_GENERAL_10K", "command": "Mod:lua:CheatMenu.experience:0:10000" },
+				{ "name": "strength_1k", "tag": "CHEAT_MENU_XP_STRENGTH_1K", "command": "Mod:lua:CheatMenu.experience:1:1000" },
+				{ "name": "strength_10k", "tag": "CHEAT_MENU_XP_STRENGTH_10K", "command": "Mod:lua:CheatMenu.experience:1:10000" },
+				{ "name": "skill_1k", "tag": "CHEAT_MENU_XP_SKILL_1K", "command": "Mod:lua:CheatMenu.experience:2:1000" },
+				{ "name": "skill_10k", "tag": "CHEAT_MENU_XP_SKILL_10K", "command": "Mod:lua:CheatMenu.experience:2:10000" },
+				{ "name": "will_1k", "tag": "CHEAT_MENU_XP_WILL_1K", "command": "Mod:lua:CheatMenu.experience:3:1000" },
+				{ "name": "will_10k", "tag": "CHEAT_MENU_XP_WILL_10K", "command": "Mod:lua:CheatMenu.experience:3:10000" },
+				{ "name": "all_10k", "tag": "CHEAT_MENU_XP_ALL_10K", "command": "Mod:lua:CheatMenu.experience:all:10000" }
+			]
+		},
+		"cheat_menu.gold": {
+			"title": "CHEAT_MENU_GOLD",
+			"entries": [
+				{ "name": "1k", "tag": "CHEAT_MENU_GOLD_1K", "command": "Mod:lua:CheatMenu.gold:1000" },
+				{ "name": "10k", "tag": "CHEAT_MENU_GOLD_10K", "command": "Mod:lua:CheatMenu.gold:10000" },
+				{ "name": "100k", "tag": "CHEAT_MENU_GOLD_100K", "command": "Mod:lua:CheatMenu.gold:100000" },
+				{ "name": "1m", "tag": "CHEAT_MENU_GOLD_1M", "command": "Mod:lua:CheatMenu.gold:1000000" }
+			]
+		},
+		"cheat_menu.renown": {
+			"title": "CHEAT_MENU_RENOWN",
+			"entries": [
+				{ "name": "1k", "tag": "CHEAT_MENU_RENOWN_1K", "command": "Mod:lua:CheatMenu.renown:1000" },
+				{ "name": "10k", "tag": "CHEAT_MENU_RENOWN_10K", "command": "Mod:lua:CheatMenu.renown:10000" },
+				{ "name": "100k", "tag": "CHEAT_MENU_RENOWN_100K", "command": "Mod:lua:CheatMenu.renown:100000" }
+			]
+		},
+		"cheat_menu.morality": {
+			"title": "CHEAT_MENU_MORALITY",
+			"entries": [
+				{ "name": "good_100", "tag": "CHEAT_MENU_GOOD_100", "command": "Mod:lua:CheatMenu.morality:100" },
+				{ "name": "good_1000", "tag": "CHEAT_MENU_GOOD_1000", "command": "Mod:lua:CheatMenu.morality:1000" },
+				{ "name": "evil_100", "tag": "CHEAT_MENU_EVIL_100", "command": "Mod:lua:CheatMenu.morality:-100" },
+				{ "name": "evil_1000", "tag": "CHEAT_MENU_EVIL_1000", "command": "Mod:lua:CheatMenu.morality:-1000" }
+			]
+		},
+		"cheat_menu.purity": {
+			"title": "CHEAT_MENU_PURITY",
+			"entries": [
+				{ "name": "pure_100", "tag": "CHEAT_MENU_PURE_100", "command": "Mod:lua:CheatMenu.purity:100" },
+				{ "name": "pure_1000", "tag": "CHEAT_MENU_PURE_1000", "command": "Mod:lua:CheatMenu.purity:1000" },
+				{ "name": "corrupt_100", "tag": "CHEAT_MENU_CORRUPT_100", "command": "Mod:lua:CheatMenu.purity:-100" },
+				{ "name": "corrupt_1000", "tag": "CHEAT_MENU_CORRUPT_1000", "command": "Mod:lua:CheatMenu.purity:-1000" }
+			]
+		},
+		"cheat_menu.items": {
+			"title": "CHEAT_MENU_ITEMS",
+			"source": "rows"
+		},
+		"cheat_menu.time": {
+			"title": "CHEAT_MENU_TIME",
+			"entries": [
+				{ "name": "dawn", "tag": "CHEAT_MENU_TIME_DAWN", "command": "Mod:lua:CheatMenu.time:6" },
+				{ "name": "noon", "tag": "CHEAT_MENU_TIME_NOON", "command": "Mod:lua:CheatMenu.time:12" },
+				{ "name": "dusk", "tag": "CHEAT_MENU_TIME_DUSK", "command": "Mod:lua:CheatMenu.time:18" },
+				{ "name": "midnight", "tag": "CHEAT_MENU_TIME_MIDNIGHT", "command": "Mod:lua:CheatMenu.time:0" }
+			]
+		}
+	}
+}
