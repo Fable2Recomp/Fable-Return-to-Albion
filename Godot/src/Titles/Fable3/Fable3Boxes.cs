@@ -125,6 +125,14 @@ public partial class Fable3Boxes : Control
 		else
 		{
 			buttons.Add(("A", Label(null, "GUI_DIALOG_ACCEPT", strings)));
+
+			// The download form: sub_8281AFA8 shows `paper.MessageBox.Action` and names its X
+			// button by the tag at box+36 (0x8281B048 / 0x8281B07C); X (76) is taken only then
+			// (sub_8281B390 at 0x8281B410) and opens the marketplace itself.
+			if (box.AcceptCaption.Length > 0)
+			{
+				buttons.Add(("X", Label(box.AcceptCaption, "GUI_DIALOG_ACCEPT", strings)));
+			}
 		}
 
 		int titleLines = box.Title.Length == 0 ? 0 : Engine_UiCanvasText.MeasureWrappedLines(_font, box.Title, inner, scale);

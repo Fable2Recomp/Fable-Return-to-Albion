@@ -33,11 +33,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 #include <rex/logging.h>
 #include <rex/ppc.h>
 
 #include "core/payload_bridge.h"
+#include "keyboard_ui.h"
 
 REX_EXTERN(__imp__rex_App_TickInput);
 
@@ -70,14 +72,23 @@ void FormatFrames(const uint32_t* frames, uint32_t count, char* out, size_t capa
   out[used < capacity ? used : capacity - 1] = '\0';
 }
 
-/// Actions the host posted (core/guest_tick_queue.h). Fable 3 implements none yet: each is named
-/// in the log and dropped, never deferred, so the queue cannot hold a name forever.
-void DrainPostedActions() {
+/// Actions the host posted (core/guest_tick_queue.h): the keyboard's answer (keyboard_ui.cpp).
+/// Any other is named in the log and dropped, never deferred, so the queue cannot hold a name forever.
+void DrainPostedActions(uint8_t* base) {
   const uint32_t taken = refii_bridge_guest_tick_pump_begin_drain();
   for (uint32_t i = 0; i < taken; ++i) {
     char name[128];
     const size_t needed = refii_bridge_guest_tick_pump_taken_action(i, name, sizeof(name));
     name[sizeof(name) - 1] = '\0';
+    const size_t answer = sizeof(refii::fable3::kKeyboardAnswerAction) - 1u;
+    if (std::strncmp(name, refii::fable3::kKeyboardAnswerAction, answer) == 0) {
+      refii::fable3::AnswerKeyboardUi(base, name + answer);
+      continue;
+    }
+    if (std::strcmp(name, refii::fable3::kKeyboardCancelAction) == 0) {
+      refii::fable3::AnswerKeyboardUi(base, nullptr);
+      continue;
+    }
     REXLOG_WARN("Refii guest-tick pump: action '{}'{} has no Fable 3 implementation; dropped",
                 name, needed >= sizeof(name) ? "..." : "");
   }
@@ -159,7 +170,7 @@ REX_EXTERN(rex_App_TickInput) {
   // A fault on this thread needs a stack to run its handler on; guest threads get none.
   refii_bridge_ensure_alternate_signal_stack();
 
-  DrainPostedActions();
+  DrainPostedActions(base);
 
   const Clock::time_point before = Clock::now();
   __imp__rex_App_TickInput(ctx, base);

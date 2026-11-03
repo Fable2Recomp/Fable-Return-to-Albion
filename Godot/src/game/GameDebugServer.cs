@@ -125,6 +125,10 @@ public partial class GameDebugServer : Node
 
 	private static int _pressFrames;
 
+	/// <summary>The key the `key` op is holding and the frames left before its release.</summary>
+	private static Key _heldKey = Key.None;
+	private static int _keyFrames;
+
 	/// <summary>The guest pad a `press` is aimed at — 0 unless it names one. Player two's
 	/// drop-in is a START on a pad that is not player one's.</summary>
 	private static int _pressPad;
@@ -323,6 +327,21 @@ public partial class GameDebugServer : Node
 	public static uint Buttons(int pad) =>
 		pad == _pressPad && _pressFrames > 0 && --_pressFrames >= 0 ? _pressed : 0u;
 
+	/// <summary>
+	/// Ends the `key` op's hold once its frames are spent: the release goes through the same input
+	/// pipeline as the press, so the device switch and the bindings see a real key go up.
+	/// </summary>
+	private static void ReleaseHeldKey()
+	{
+		if (_heldKey == Key.None || --_keyFrames > 0)
+		{
+			return;
+		}
+
+		Input.ParseInputEvent(new InputEventKey { Keycode = _heldKey, PhysicalKeycode = _heldKey, Pressed = false });
+		_heldKey = Key.None;
+	}
+
 	/// <summary>Installs any owned samplers before attempting the opt-in loopback listener.</summary>
 	public override void _Ready()
 	{
@@ -443,6 +462,7 @@ public partial class GameDebugServer : Node
 
 	private void ProcessBody(double delta)
 	{
+		ReleaseHeldKey();
 		if (_server is null)
 		{
 			return;
@@ -3618,6 +3638,67 @@ public partial class GameDebugServer : Node
 				});
 			}
 
+			case "input":
+				return Ok(new Dictionary<string, object?> { ["keys"] = GameInput.DescribeKeys() });
+
+			case "mouse":
+			{
+				// The MOUSE through Godot's own input pipeline: a move to window pixel (x, y), then a
+				// left or right click there, or wheel notches — the device switch and the pointer
+				// (Engine_UiPointer) see what a player's mouse would make.
+				Vector2 at = new(
+					root.TryGetProperty("x", out JsonElement mx) ? (float)mx.GetDouble() : 0f,
+					root.TryGetProperty("y", out JsonElement my) ? (float)my.GetDouble() : 0f);
+				Input.ParseInputEvent(new InputEventMouseMotion { Position = at, GlobalPosition = at, Relative = new Vector2(8f, 8f) });
+				string click = root.TryGetProperty("click", out JsonElement c) ? c.GetString() ?? string.Empty : string.Empty;
+				MouseButton button = click switch
+				{
+					"left" => MouseButton.Left,
+					"right" => MouseButton.Right,
+					_ => MouseButton.None,
+				};
+				if (button != MouseButton.None)
+				{
+					Input.ParseInputEvent(new InputEventMouseButton { Position = at, GlobalPosition = at, ButtonIndex = button, Pressed = true });
+					Input.ParseInputEvent(new InputEventMouseButton { Position = at, GlobalPosition = at, ButtonIndex = button, Pressed = false });
+				}
+
+				int wheel = root.TryGetProperty("wheel", out JsonElement w) ? w.GetInt32() : 0;
+				for (int i = 0; i < System.Math.Abs(wheel); ++i)
+				{
+					MouseButton notch = wheel < 0 ? MouseButton.WheelUp : MouseButton.WheelDown;
+					Input.ParseInputEvent(new InputEventMouseButton { Position = at, GlobalPosition = at, ButtonIndex = notch, Pressed = true });
+					Input.ParseInputEvent(new InputEventMouseButton { Position = at, GlobalPosition = at, ButtonIndex = notch, Pressed = false });
+				}
+
+				return Ok(new Dictionary<string, object?> { ["x"] = at.X, ["y"] = at.Y, ["click"] = click, ["wheel"] = wheel });
+			}
+
+			case "key":
+			{
+				// A KEYBOARD key through Godot's own input pipeline, as a player's would arrive: the
+				// device switch takes the keyboard, the bindings (key_*) read it down, the prompts
+				// turn to keycaps. Held for `frames` frames, then released the same way.
+				string name = root.TryGetProperty("name", out JsonElement n) ? n.GetString() ?? string.Empty : string.Empty;
+				Key key = OS.FindKeycodeFromString(name);
+				if (key == Key.None)
+				{
+					return new Dictionary<string, object?> { ["ok"] = false, ["error"] = $"no key named '{name}'" };
+				}
+
+				if (_heldKey != Key.None)
+				{
+					_keyFrames = 1;
+					ReleaseHeldKey();
+				}
+
+				int frames = root.TryGetProperty("frames", out JsonElement kf) ? kf.GetInt32() : 8;
+				Input.ParseInputEvent(new InputEventKey { Keycode = key, PhysicalKeycode = key, Pressed = true });
+				_heldKey = key;
+				_keyFrames = frames < 1 ? 1 : frames;
+				return Ok(new Dictionary<string, object?> { ["key"] = OS.GetKeycodeString(key), ["frames"] = _keyFrames });
+			}
+
 			default:
 				// THE TITLE'S OWN OPS: what only that game has (its co-op stack, its pub).
 				if (Refii.Core.Engine_TitleGame.Active.DebugRequest(op, root) is { } titled)
@@ -3636,7 +3717,7 @@ public partial class GameDebugServer : Node
 						"objects", "perf", "exports", "cvars", "cvar-set", "vfs", "sockets",
 						"menu", "action", "call", "lua", "call-result", "poke", "heap", "heapcensus",
 						"probe", "guestlog", "mark", "metrics", "input-record", "input-replay",
-						"wait", "log", "shot", "flicker", "press", "gdb", "achievements",
+						"wait", "log", "shot", "flicker", "press", "key", "mouse", "input", "gdb", "achievements",
 						"gpuprofile", "capture", "hang",
 					},
 				};

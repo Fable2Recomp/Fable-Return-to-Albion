@@ -1,5 +1,5 @@
-// refii - Fable 3's HUD, as the guest states it: its typed element registries (texts, meters) and
-// its screen fade.
+// refii - Fable 3's HUD, as the guest states it: its typed element registries (texts, meters,
+// pulsers) and its screen fade.
 //
 // THE REGISTRIES ARE FABLE 2'S, UNDER A NEW ROOT. GUI = `*0x83556490`, the HUD H = `*(GUI+0x20)`,
 // and H+0x24 holds the registry set: the HUD.bgf load sub_825C18C0 hands it to the builder
@@ -10,6 +10,16 @@
 // its record at +16, `_Isnil` at +21; a record's element vector is +4..+8. The element writers
 // are Fable 2's byte for byte: text sub_82733F30 (LHString at element+0x10, element+12 = 1 —
 // 0x82733F70/0x82733F78), meter sub_8291F988 (current at element+0x14).
+//
+// THE PULSERS are registry [4] (`PulserName`, vtable off_820A49B0 stored at 0x82675460). Its
+// factory slot sub_82674CE8 makes a 28-byte element: +4/+8 the Gameface element it scrubs, +12 the
+// mode, created 2 (`*(e+12) = 2` 0x82674d58), +16 the time it last advanced at, +20 the phase,
+// +24 the rate (all three 0.0, 0x82674d64..0x82674d6c). Its update, element vtable off_820DB4D0
+// slot 3 sub_82B9A300(e, f1 now), runs only while mode != 2 and time has moved
+// (0x82b9a314..0x82b9a340): phase += rate * (now - +16) (0x82b9a354); past 1 a mode-1 pulser
+// zeroes the phase and stops at mode 2 (0x82b9a36c / 0x82b9a370), a mode-0 one wraps
+// (0x82b9a37c..0x82b9a38c); then GuiElement_SetTime(+4, +8, phase * 1000) (0x82b9a3c4). Fable 2's
+// layout and contract, the clock absolute instead of a delta.
 //
 // The visible subtitle is one of these texts: the subtitler (`*(H+0x38)`) writes each page through
 // sub_82920278 into the text registry under FNV-1("Subtitles") (`dword_8355906C`), as Fable 2's does.
@@ -36,6 +46,7 @@ using refii::hostcore::SafeKernelMemory;
 
 constexpr uint32_t kGuiManager = 0x83556490u;
 constexpr uint32_t kRegistryMeter = 1u;
+constexpr uint32_t kRegistryPulser = 4u;
 constexpr uint32_t kRegistryText = 6u;
 constexpr uint32_t kMaxNames = 512u;
 
@@ -196,6 +207,39 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudMeters(uint32_t* out_hashes, float
     }
 
     return found;
+}
+
+/// Every HUD pulser by name (registry [4]), its PHASE 0..1 (element+0x14) and its MODE
+/// (element+0x0C: 0 looping, 1 finishing its loop, 2 stopped — the stop zeroes the phase and
+/// applies tick 0, 0x82b9a36c..0x82b9a3c4). The shell runs a running pulser on its own clock
+/// between reads and holds a stopped one; see the header for the element.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudPulserStates(uint32_t* out_hashes, float* out_phases,
+                                                           uint32_t* out_modes, uint32_t capacity) {
+    const uint8_t* base = GuestBase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    uint32_t elements[kMaxNames];
+    const uint32_t want = capacity < kMaxNames ? capacity : kMaxNames;
+    const uint32_t found = WalkRegistry(base, kRegistryPulser, out_hashes, elements, want);
+    const uint32_t stored = found < want ? found : want;
+    for (uint32_t i = 0; i < stored; ++i) {
+        if (out_phases != nullptr) {
+            const uint32_t raw = GuestWordAt(base, elements[i] + 0x14u);
+            std::memcpy(&out_phases[i], &raw, sizeof(float));
+        }
+        if (out_modes != nullptr) {
+            out_modes[i] = GuestWordAt(base, elements[i] + 0x0Cu);
+        }
+    }
+
+    return found;
+}
+
+/// The phases alone, the shape the shell binds when the states export is missing.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudPulsers(uint32_t* out_hashes, float* out_phases, uint32_t capacity) {
+    return RefiiHostGetHudPulserStates(out_hashes, out_phases, nullptr, capacity);
 }
 
 /// The screen fade: fader = `*(GUI+0x3C)`, Fable 2's layout — +0 progress t, +8 the colour it

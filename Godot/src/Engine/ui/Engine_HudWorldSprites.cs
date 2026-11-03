@@ -171,7 +171,7 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 	public const float IconSize = 50f;
 
 	/// <summary>The two text lines' point size.</summary>
-	private const int TextSize = 18;
+	public const int TextSize = 18;
 
 	/// <summary>
 	/// Takes this frame's icons: builds, re-texts and retires. Placement is NOT done here — see

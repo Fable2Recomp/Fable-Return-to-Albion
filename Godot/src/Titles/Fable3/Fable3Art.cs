@@ -32,6 +32,9 @@ public static class Fable3Art
 		}
 
 		Refii.Textures.Engine_BnkTextureLoader.EnsureRegistered();
-		return ResourceLoader.Load<Texture2D>(Refii.Textures.Engine_BnkTextureLoader.PathPrefix + virtualPath);
+		Texture2D? texture = ResourceLoader.Load<Texture2D>(Refii.Textures.Engine_BnkTextureLoader.PathPrefix + virtualPath);
+
+		// A button's art becomes the proxy the glyph swap redraws (Fable3Glyphs), as the shared cache's does.
+		return texture is null ? null : Refii.Ui.Engine_UiKeyGlyphs.Wrap(virtualPath, texture);
 	}
 }

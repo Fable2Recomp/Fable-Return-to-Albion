@@ -7,7 +7,8 @@ using Refii.Ui;
 /// <summary>
 /// Fable 3's in-game HUD on the SHARED engine: one presentation host over the title's banks and
 /// one <see cref="Fable3HudDocument"/> per presentation the HUD draws — `hud.bgf` (the widgets
-/// below) and `interactionmode.bgf` (the interaction buttons) — each on the shared
+/// below), `interactionmode.bgf` (the interaction mode) and the end screens
+/// (<see cref="Fable3EndScreens"/>) — each on the shared
 /// <see cref="Engine_HudView"/>, driven by what the guest states. The same view, layout, art and
 /// resolve draw Fable 2's HUD; this is the title's feed into them.
 /// </summary>
@@ -76,9 +77,9 @@ public partial class Fable3Hud : Fable3Canvas
 	public static readonly string[] Owned = { "WorldIcons", "FillWorldIcon" };
 
 	/// <summary>
-	/// The interaction buttons, `interactionmode.bgf`'s `LowerElements.InteractionMenuRight`:
-	/// every interaction class hides Button1..4 (sub_82819AE0(button, pres, 0), e.g. sub_829651F8
-	/// at 0x82965324, sub_82B23C58 at 0x82B23D78) and shows the ones it offers through
+	/// The interaction mode's widgets in `interactionmode.bgf`, each cut whole and driven by element
+	/// statements. The buttons, `LowerElements.InteractionMenuRight`: every interaction class hides
+	/// Button1..4 (sub_82819AE0(button, pres, 0), e.g. sub_829651F8 at 0x82965324, sub_82B23C58 at 0x82B23D78) and shows the ones it offers through
 	/// sub_82961340 — opacity 100 enabled / 50 not (0x8296139C), the `Title` label (0x829613E4),
 	/// the glyph's `_text`/`_orb` textures (0x82961464, sub_829614A0 at 0x82961644), shown
 	/// (0x82961494). All of it is element statements.
@@ -86,6 +87,46 @@ public partial class Fable3Hud : Fable3Canvas
 	public static readonly Engine_HudLayout.GroupSubtree[] InteractionGroups =
 	{
 		new("InteractionMenuRight", "InteractionButtons", null, 0f, true, "LowerElements"),
+
+		// The option list: a three-row window over the guest's list. sub_82963DE0 writes the row at
+		// the cursor (mode+116) into `Buttons.Button3` (sub_82961340 at 0x82963ED8), the next two into
+		// Button2 / Button1 (0x82963F5C / 0x82964050) and the leaving one into DissapearingButton —
+		// hiding a row past the end (sub_82819AE0 at 0x82963FEC / 0x829640E0 / 0x8296423C) — so the
+		// cursor IS Button3, the only row with `Selection_Box_Glow`. A scroll moves the cursor and
+		// plays the list root's slide 3 (down, sub_82963D18 at 0x82963D9C) or 4 (up, sub_82964248 at
+		// 0x82964520) through sub_8281A500 -> sub_8281A490 -> SetState (0x8281A4AC); a refresh sets 2
+		// (sub_82963BE0 at 0x82963C28).
+		new("InteractionMenuScrollableList", "InteractionList", null, 0f, true, "LowerElements"),
+
+		// The info box: one component whose slide is the panel. The panel id is staged by
+		// sub_82963040 (handle+0x40, dirty byte +9, 0x8296307C / 0x82963078) and written by the
+		// screen tick as `LowerElements.InfoBox`'s state (sub_825C3A78: sub_8227DA00 at 0x825C3B14 with
+		// `lwz r5,0x40(r31)`) — 5 NPCInfo, 6 WeaponInfo, 9 SaveGameInfo, 11 DogInfo, 1 closed; the
+		// panels' texts are element writes beneath it (`NPCInfo.Contents.Name` …, the joined
+		// interaction text `TextBox.Contents.Text1`, sub_82BEF428 at 0x82BEF5B4), as are the map's
+		// `WorldMapRegion` and the shops' `BuildingInfo`.
+		new("InfoBox", "InteractionInfo", null, 0f, true, "LowerElements"),
+
+		// The trigger and bumper bars: the mode's IM+36 (vtable 0x820D1D50, sub_82B19150) and IM+32
+		// (vtable 0x820D1CD8, sub_82B18EF0), stored by sub_825C3F00 — label text (sub_82B3EB28, commit
+		// 0x82B3EB58), LT/RT/LB/RB `_Complete` shown (sub_82B3EB60 at 0x82B3EB9C), root state
+		// (sub_82B3EA18 at 0x82B3EAF0).
+		new("TriggerButtons", "InteractionTriggers", null, 0f, true, "UpperElements"),
+		new("BumperButtons", "InteractionBumpers", null, 0f, true, "UpperElements"),
+
+		// The dye shop's bar: `ShowDyingBar(r, g, b, value, [entity], [min], [max])` (0x8251F2C0 ->
+		// sub_8295C940) toggles the `DyeingBar` slide-toggle (sub_825E4120 -> sub_82921200 ->
+		// sub_8227DA00 at 0x8281A4AC) and sets the `DyeingBar` meter to (value - min) / (max - min)
+		// (sub_825E3F28 -> sub_8291F988), which the meter tick states through sub_8281A5D8
+		// (0x8291F738); `HideDyingBar` toggles it off (sub_8295CA98). One unit, so the `Arrows`
+		// meter stays on its hue bar.
+		new("DyeingBar", "DyeingBar", null, 0f, true, "UpperElements"),
+
+		// The weapon side panel: `ShowWeaponPanel` (sub_8295C500 kind 1) toggles
+		// `WeaponPanelToggle` on through the same toggle registry and fills `WeaponsInformation`
+		// (sub_829590A8: registry slides, texts and meters); Clothes / Augment / HideSideInfoPanel
+		// toggle it off.
+		new("WeaponInfoPanel", "WeaponPanel", null, 0f, true, "MiddleElements"),
 	};
 
 	private Fable3Presentations? _host;
@@ -100,6 +141,7 @@ public partial class Fable3Hud : Fable3Canvas
 		_documents.Add(new Fable3HudDocument("hud", Groups, () => Fable3Elements.HudPresentation, layouts: true));
 		_documents.Add(new Fable3HudDocument(
 			"interactionmode", InteractionGroups, () => Fable3Elements.LatestPresentationOf("LowerElements"), layouts: false));
+		_documents.AddRange(Fable3EndScreens.Documents());
 
 		_host = new Fable3Presentations { Name = "Presentations", LoadsInBackground = true };
 		_host.Loaded += Stand;
@@ -131,6 +173,7 @@ public partial class Fable3Hud : Fable3Canvas
 		foreach (Fable3HudDocument document in _documents)
 		{
 			document.Frame(window);
+			Fable3EndScreens.Gate(document);
 		}
 	}
 

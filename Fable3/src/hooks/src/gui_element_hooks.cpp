@@ -75,13 +75,44 @@
 // resolver names its "Layer" child by passing that root as the parent (0x82819E70..0x82819E90), so
 // the root is named `Scene` (the chunk runner's own `getElement('Scene.Layer')`) and contributes no
 // prefix: paths stay `Layer.…` as the census has them.
+//
+// THE GAMEFACE LUA ELEMENT API writes around every setter above. AKLuaEngine's registration
+// sub_82C1FC20 binds the globals (pushcclosure + setfield -10002): getElement sub_82C242E8,
+// setAttribute sub_82C24A70, goToSlide sub_82C21AB0, goToTime sub_82C21A60, play / pause /
+// goToNext/Previous/BackSlide, fireEvent, clone, … Each takes its presentation from the Lua
+// registry through sub_822673D8 (0x82c243f0, 0x82c24b6c, 0x82c21c74). Its writes:
+// - setAttribute(elem, name, value) hashes the name (sdbm & 0x07FFFFFF, sub_825C01B8 at 0x82c24b54)
+//   and calls the attribute store `pres->vt[8]()->vt[18](store, elem, id, value)` at 0x82c24e8c
+//   SYNCHRONOUSLY — not through sub_82819420 or sub_82818580; `active` (dword_8355ED7C) instead sets
+//   the element's flag 0x2000 through vt[20] (0x82c24c3c). hud.lua's g_HUD:Enable/Disable is this:
+//   `setAttribute(getElement('Scene.Layer'), 'opacity', 100 / 0)`.
+// - getElement(path [, parent]) walks the segments itself through the store's lookup vt[21]
+//   (0x82c24514), never the resolver: `Scene` first is the root, `parent` steps up (vt[22]).
+// - goToSlide / goToTime / play … QUEUE a command (sub_82C21BD0 -> pres->vt[7] = sub_82C35308 at
+//   0x82c21ea8, the ring at pres+324), drained in the presentation update (sub_8225E868 ->
+//   sub_82183C00 -> sub_82C34EC0 at 0x82183cf4). The executor is also what the .bgf's own authored
+//   actions run through: COMMAND_SETPROPERTY -> store->vt[18] (0x82c34f18), COMMAND_GOTOTIME ->
+//   `pres->vt[9]()->vt[11]` (0x82c35008), COMMAND_GOTOSLIDE -> `->vt[2]` (0x82c35048),
+//   GOTOSLIDENAME -> vt[3] sub_82C3A578, which resolves the name and calls vt[2] (0x82c3a608).
+//
+// THE SLIDE FUNNEL is that vt[2]: sub_82268BE0(slides = pres+0x238, component, slide, flag), the
+// presentation's slide manager (vtable 0x82002B40, `pres->vt[9]` = 0x82193990 `addi r3,r3,0x238`).
+// It writes the component's current slide byte +0x2B (0x82268CE4) after its range check
+// (0x82268C24). Every slide change reaches it: SetState (0x8227DA8C), the executor, the name and
+// next/previous variants. It posts `@Element.State` — except INSIDE SetState, which already posts
+// the element its caller named (the funnel gets that element's component, sub_822800B0), so each
+// change posts once. Attribute writes are hooked at the Lua method and the executor instead of the
+// store's vt[18] (sub_821C9F28): SetOpacity (0x828194dc) and SetPosition reach vt[18] too, and the
+// two entry points are disjoint from them — neither calls the other.
 
 #include <cstdint>
 #include <array>
 #include <cstring>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <rex/ppc.h>
 
@@ -99,6 +130,11 @@ REX_EXTERN(__imp__rex_GuiElement_SetTime);
 REX_EXTERN(__imp__rex_GuiElement_SetTextName);
 REX_EXTERN(__imp__rex_GuiElement_SetPosition);
 REX_EXTERN(__imp__rex_GuiElement_SetTexture);
+REX_EXTERN(__imp__rex_GuiSlides_GoTo);
+REX_EXTERN(__imp__rex_GamefaceLua_Presentation);
+REX_EXTERN(__imp__rex_GamefaceLua_GetElement);
+REX_EXTERN(__imp__rex_GamefaceLua_SetAttribute);
+REX_EXTERN(__imp__rex_GamefacePresentation_Execute);
 
 namespace {
 
@@ -141,6 +177,70 @@ struct Filing {
   uint32_t presentation = 0;
 };
 thread_local Filing t_filing;
+
+/// Inside SetState on this thread: the slide funnel leaves the post to it.
+thread_local uint32_t t_set_state_depth = 0u;
+
+/// The presentation the Gameface Lua method running on this thread took from the registry
+/// (sub_822673D8's answer), 0 before it asked.
+thread_local uint32_t t_lua_presentation = 0u;
+
+// The presentation class (sub_82C34658 stores the vtable at 0x82c34680) and its slide manager.
+constexpr uint32_t kPresentationVtable = 0x82007700u;
+constexpr uint32_t kSlideManagerOffset = 0x238u;
+constexpr uint32_t kComponentSlide = 0x2Bu;  // byte: the component's current slide (0x82268CE4)
+
+// lua_State and TValue (gui_natives.cpp's LAYOUTS): top +28, base +32; TValue 8 bytes, value +0,
+// tag +4; TString length `*ts & 0x3FFFFFFF`, characters at ts+8; a userdata's payload at +16.
+constexpr uint32_t kLuaTop = 28u;
+constexpr uint32_t kLuaBase = 32u;
+constexpr uint32_t kTValueSize = 8u;
+constexpr uint32_t kTValueTag = 4u;
+constexpr uint32_t kLuaTBoolean = 1u;
+constexpr uint32_t kLuaTLightUserdata = 2u;
+constexpr uint32_t kLuaTNumber = 3u;
+constexpr uint32_t kLuaTString = 4u;
+constexpr uint32_t kLuaTUserdata = 7u;
+constexpr uint32_t kUdataPayload = 16u;
+
+// The executor's command record (sub_82C35308 fills it, 0x82c35318..0x82c35350): +0 target,
+// +4 the command's hash, +8 / +12 its two arguments. Hashes are `sdbm("COMMAND_…") & 0x7FFFFFFF`
+// (sub_831F7590: `clrlwi r11,r3,1`).
+constexpr uint32_t kCommandTarget = 0u;
+constexpr uint32_t kCommandId = 4u;
+constexpr uint32_t kCommandFirst = 8u;
+constexpr uint32_t kCommandSecond = 12u;
+constexpr uint32_t kAttributeIdMask = 0x07FFFFFFu;
+
+/// sub_825C01B8: `h = 65599*h + (signed char)c` over at most 100 characters, the terminator
+/// included (the loop tests the character after adding it).
+uint32_t Sdbm(const std::string& text) {
+  uint32_t hash = 0u;
+  for (size_t i = 0; i < 100u; ++i) {
+    const int8_t ch = i < text.size() ? static_cast<int8_t>(text[i]) : 0;
+    hash = hash * 65599u + static_cast<uint32_t>(static_cast<int32_t>(ch));
+    if (ch == 0) {
+      break;
+    }
+  }
+  return hash;
+}
+
+/// The float attributes a .bgf action's COMMAND_SETPROPERTY may carry, by id.
+const std::unordered_map<uint32_t, std::string>& FloatAttributes() {
+  static const std::unordered_map<uint32_t, std::string> names = [] {
+    std::unordered_map<uint32_t, std::string> out;
+    for (const char* name : {"opacity", "position.x", "position.y", "position.z", "scale.x", "scale.y", "scale.z",
+                             "rotation.x", "rotation.y", "rotation.z", "pivot.x", "pivot.y", "textcolor.r",
+                             "textcolor.g", "textcolor.b", "boxwidth", "boxheight", "fontsize"}) {
+      out[Sdbm(name) & kAttributeIdMask] = name;
+    }
+    return out;
+  }();
+  return names;
+}
+
+uint32_t CommandHash(const char* name) { return Sdbm(name) & 0x7FFFFFFFu; }
 
 uint64_t Key(uint32_t element, uint32_t kind) { return (static_cast<uint64_t>(element) << 32) | kind; }
 
@@ -339,7 +439,9 @@ REX_EXTERN(rex_GuiElement_SetState) {
   const uint32_t element = ctx.r3.u32;
   const uint32_t presentation = ctx.r4.u32;
   const uint32_t state = ctx.r5.u32;
+  ++t_set_state_depth;
   __imp__rex_GuiElement_SetState(ctx, base);
+  --t_set_state_depth;
   if (base != nullptr && presentation != 0u) {
     PostValue(base, element, presentation, kKindState, state, "@Element.State", static_cast<float>(static_cast<int32_t>(state)));
   }
@@ -480,4 +582,344 @@ REX_EXTERN(rex_GuiElement_SetTexture) {
   const bool named = Lookup(element, known);
   Post("@Element.Texture", named ? known.presentation : 0u, element, named ? known.path : std::string(),
        Text(texture));
+}
+
+namespace {
+
+constexpr uint32_t kKindActive = 4u;
+constexpr uint32_t kMaxLuaPath = 256u;
+
+std::unordered_map<uint32_t, std::string> g_lua_texts;  // element -> last textstring posted
+std::unordered_map<uint64_t, uint32_t> g_attributes;    // (element, attribute id) -> last bits + 1
+
+/// A TString by its stated length, bounded; empty when it is not one.
+std::string LuaString(const uint8_t* base, uint32_t tstring, uint32_t max_chars) {
+  if (!Plausible(tstring)) {
+    return std::string();
+  }
+  const uint32_t length = LoadGuestU32(base, tstring) & 0x3FFFFFFFu;
+  if (length == 0u || length > max_chars) {
+    return std::string();
+  }
+  return std::string(reinterpret_cast<const char*>(base + tstring + 8u), length);
+}
+
+/// The element a Gameface method takes from a TValue: a light userdata is the element, a full
+/// userdata's payload address is (setAttribute 0x82c24ae8..0x82c24b00, getElement 0x82c243c4).
+uint32_t LuaElement(const uint8_t* base, uint32_t slot) {
+  const uint32_t tag = LoadGuestU32(base, slot + kTValueTag);
+  const uint32_t value = LoadGuestU32(base, slot);
+  if (tag == kLuaTLightUserdata) {
+    return value;
+  }
+  if (tag == kLuaTUserdata && Plausible(value)) {
+    return value + kUdataPayload;
+  }
+  return 0u;
+}
+
+/// The presentation a slide manager belongs to, or 0 when it is not the known class's.
+uint32_t PresentationOfSlides(const uint8_t* base, uint32_t slides) {
+  if (!Plausible(slides) || slides < kSlideManagerOffset) {
+    return 0u;
+  }
+  const uint32_t presentation = slides - kSlideManagerOffset;
+  return LoadGuestU32(base, presentation) == kPresentationVtable ? presentation : 0u;
+}
+
+/// Splits a dotted path.
+std::vector<std::string> Segments(const std::string& path) {
+  std::vector<std::string> out;
+  size_t start = 0;
+  while (start <= path.size()) {
+    const size_t dot = path.find('.', start);
+    const size_t end = dot == std::string::npos ? path.size() : dot;
+    if (end > start) {
+      out.push_back(path.substr(start, end - start));
+    }
+    if (dot == std::string::npos) {
+      break;
+    }
+    start = dot + 1;
+  }
+  return out;
+}
+
+/// A getElement path in the resolver's spelling: segments from the root, `Scene` not spelled,
+/// `Layer` dropped when something follows it (the resolver starts beneath it), the root `Scene`.
+std::string Spelled(const std::vector<std::string>& from_root) {
+  if (from_root.empty()) {
+    return kRootPath;
+  }
+  size_t first = from_root.size() > 1u && from_root[0] == "Layer" ? 1u : 0u;
+  std::string out;
+  for (size_t i = first; i < from_root.size(); ++i) {
+    if (!out.empty()) {
+      out.push_back('.');
+    }
+    out += from_root[i];
+  }
+  return out;
+}
+
+/// The segments from the root a known path stands for, false when it is not a dotted path (a
+/// registry key names no place in the tree).
+bool FromRoot(const std::string& known, std::vector<std::string>& out) {
+  out.clear();
+  if (known.find(':') != std::string::npos) {
+    return false;
+  }
+  if (known == kRootPath) {
+    return true;
+  }
+  out = Segments(known);
+  if (!out.empty() && out[0] != "Layer") {
+    out.insert(out.begin(), "Layer");
+  }
+  return true;
+}
+
+/// `@Element.Attribute(pres, elem, path, name, value)`: a write no other statement carries.
+void PostAttribute(uint32_t presentation, uint32_t element, uint32_t id, const std::string& name, uint32_t bits,
+                   refii::vfs::GuiNativeArgument value) {
+  Known known;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  uint32_t& last = g_attributes[(static_cast<uint64_t>(element) << 32) | id];
+  if (last != 0u && last == bits + 1u) {
+    return;
+  }
+  last = bits + 1u;
+  if (g_attributes.size() > kMaxValues) {
+    g_attributes.clear();
+  }
+  const bool named = Lookup(element, known);
+  refii::vfs::GuiNativeCall call;
+  call.name = "@Element.Attribute";
+  call.arguments.push_back(Text(Hex(named && known.presentation != 0u ? known.presentation : presentation)));
+  call.arguments.push_back(Text(Hex(element)));
+  call.arguments.push_back(Text(named ? known.path : std::string()));
+  call.arguments.push_back(Text(name));
+  call.arguments.push_back(std::move(value));
+  refii::vfs::PostGuiNativeCall(std::move(call));
+}
+
+/// A Lua `textstring`, posted when the element's string changed.
+void PostLuaText(uint32_t presentation, uint32_t element, const std::string& text) {
+  Known known;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  auto last = g_lua_texts.find(element);
+  if (last != g_lua_texts.end() && last->second == text) {
+    return;
+  }
+  if (g_lua_texts.size() > kMaxValues) {
+    g_lua_texts.clear();
+  }
+  g_lua_texts[element] = text;
+  const bool named = Lookup(element, known);
+  Post("@Element.Text", named && known.presentation != 0u ? known.presentation : presentation, element,
+       named ? known.path : std::string(), Text(text));
+}
+
+}  // namespace
+
+/// The slide funnel, `sub_82268BE0(slides, component, slide, flag)`: posted when the component's
+/// slide byte took the value (the range check refuses others, 0x82268C24), unless SetState is
+/// the caller — it states the change itself.
+REX_EXTERN(rex_GuiSlides_GoTo) {
+  const uint32_t slides = ctx.r3.u32;
+  const uint32_t component = ctx.r4.u32;
+  const uint32_t slide = ctx.r5.u32;
+  __imp__rex_GuiSlides_GoTo(ctx, base);
+  if (base == nullptr || t_set_state_depth != 0u || !Plausible(component) ||
+      base[component + kComponentSlide] != (slide & 0xFFu)) {
+    return;
+  }
+  PostValue(base, component, PresentationOfSlides(base, slides), kKindState, slide, "@Element.State",
+            static_cast<float>(static_cast<int32_t>(slide)));
+}
+
+/// The Gameface Lua methods' presentation getter (L): its answer, for the method hooks below.
+REX_EXTERN(rex_GamefaceLua_Presentation) {
+  __imp__rex_GamefaceLua_Presentation(ctx, base);
+  t_lua_presentation = ctx.r3.u32;
+}
+
+/// Lua `getElement(path [, parent])`: names the element it answers (the top TValue on return).
+REX_EXTERN(rex_GamefaceLua_GetElement) {
+  const uint32_t state = ctx.r3.u32;
+  std::string path;
+  uint32_t parent = 0u;
+  bool has_parent = false;
+  if (base != nullptr) {
+    const uint32_t args = LoadGuestU32(base, state + kLuaBase);
+    const uint32_t top = LoadGuestU32(base, state + kLuaTop);
+    if (args < top && LoadGuestU32(base, args + kTValueTag) == kLuaTString) {
+      path = LuaString(base, LoadGuestU32(base, args), kMaxLuaPath);
+    }
+    if (top - args == 2u * kTValueSize) {  // the parent is read only when exactly two (0x82c2435c)
+      has_parent = true;
+      parent = LuaElement(base, args + kTValueSize);
+    }
+  }
+  t_lua_presentation = 0u;
+  __imp__rex_GamefaceLua_GetElement(ctx, base);
+  if (base == nullptr || path.empty()) {
+    return;
+  }
+  const uint32_t result = LoadGuestU32(base, state + kLuaTop) - kTValueSize;
+  if (LoadGuestU32(base, result + kTValueTag) != kLuaTLightUserdata) {
+    return;
+  }
+  const uint32_t element = LoadGuestU32(base, result);
+  if (!Plausible(element)) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(g_mutex);
+  Known known;
+  if (Lookup(element, known) && !known.path.empty()) {
+    return;  // the resolver's (or an earlier lookup's) name stands
+  }
+  std::vector<std::string> from_root;
+  const std::vector<std::string> segments = Segments(path);
+  size_t i = 0;
+  if (has_parent && parent != 0u && !(segments.size() > 0u && segments[0] == "Scene")) {
+    Known above;
+    if (!Lookup(parent, above) || above.path.empty() || !FromRoot(above.path, from_root)) {
+      return;  // relative to an element nobody named
+    }
+  } else if (!segments.empty() && segments[0] == "Scene") {
+    i = 1;  // the root (0x82c24524..0x82c24550)
+  }
+  for (; i < segments.size(); ++i) {
+    if (segments[i] == "parent") {  // dword_8355ED74: the store's parent-of (vt[22], 0x82c244f4)
+      if (from_root.empty()) {
+        return;
+      }
+      from_root.pop_back();
+    } else {
+      from_root.push_back(segments[i]);
+    }
+  }
+  if (g_elements.size() > kMaxCached) {
+    g_elements.clear();
+    g_boxes.clear();
+  }
+  known.presentation = t_lua_presentation;
+  known.path = Spelled(from_root);
+  g_elements[element] = known;
+  if (const uint32_t box = BoxOf(base, element); box != 0u) {
+    g_boxes[box] = element;
+  }
+}
+
+/// Lua `setAttribute(elem, name, value)`: opacity, textstring and active as their own statements,
+/// every other attribute as `@Element.Attribute`.
+REX_EXTERN(rex_GamefaceLua_SetAttribute) {
+  const uint32_t state = ctx.r3.u32;
+  uint32_t element = 0u;
+  std::string name;
+  uint32_t value_tag = 0u;
+  uint32_t value = 0u;
+  std::string text;
+  if (base != nullptr) {
+    const uint32_t args = LoadGuestU32(base, state + kLuaBase);
+    const uint32_t top = LoadGuestU32(base, state + kLuaTop);
+    if (args + 3u * kTValueSize <= top) {
+      element = LuaElement(base, args);
+      if (LoadGuestU32(base, args + kTValueSize + kTValueTag) == kLuaTString) {
+        name = LuaString(base, LoadGuestU32(base, args + kTValueSize), 64u);
+      }
+      value_tag = LoadGuestU32(base, args + 2u * kTValueSize + kTValueTag);
+      value = LoadGuestU32(base, args + 2u * kTValueSize);
+      if (value_tag == kLuaTString) {
+        text = LuaString(base, value, kMaxTextUnits);
+      }
+    }
+  }
+  t_lua_presentation = 0u;
+  __imp__rex_GamefaceLua_SetAttribute(ctx, base);
+  if (base == nullptr || !Plausible(element) || name.empty()) {
+    return;
+  }
+  const uint32_t presentation = t_lua_presentation;
+  float number = 0.0f;
+  std::memcpy(&number, &value, sizeof(number));
+
+  if (name == "active") {  // the flag write at 0x82c24c3c: truthy = not nil, not false
+    const bool on = value_tag != 0u && !(value_tag == kLuaTBoolean && value == 0u);
+    Known known;
+    {
+      std::lock_guard<std::mutex> lock(g_mutex);
+      uint32_t& last = g_states[Key(element, kKindActive)];
+      if (last != 0u && last == static_cast<uint32_t>(on) + 1u) {
+        return;
+      }
+      last = static_cast<uint32_t>(on) + 1u;
+      const bool named = Lookup(element, known);
+      Post("@Element.Active", named && known.presentation != 0u ? known.presentation : presentation, element,
+           named ? known.path : std::string(), Boolean(on));
+    }
+    return;
+  }
+  if (name == "opacity" && value_tag == kLuaTNumber) {
+    PostValue(base, element, presentation, kKindOpacity, value, "@Element.Opacity", number);
+    return;
+  }
+  if (name == "textstring" && value_tag == kLuaTString) {
+    PostLuaText(presentation, element, text);
+    return;
+  }
+  const uint32_t id = Sdbm(name) & kAttributeIdMask;
+  if (value_tag == kLuaTNumber) {
+    PostAttribute(presentation, element, id, name, value, Number(number));
+  } else if (value_tag == kLuaTBoolean) {
+    PostAttribute(presentation, element, id, name, value, Boolean(value != 0u));
+  } else if (value_tag == kLuaTString) {
+    PostAttribute(presentation, element, id, name, static_cast<uint32_t>(std::hash<std::string>{}(text)), Text(text));
+  }
+}
+
+/// The presentation's command executor, `sub_82C34EC0(pres, &command)`: the queued Lua commands
+/// and the .bgf's authored actions. Its slide commands reach the funnel above; its property and
+/// timeline commands are stated here.
+REX_EXTERN(rex_GamefacePresentation_Execute) {
+  static const uint32_t kSetProperty = CommandHash("COMMAND_SETPROPERTY");
+  static const uint32_t kGoToTime = CommandHash("COMMAND_GOTOTIME");
+  const uint32_t presentation = ctx.r3.u32;
+  const uint32_t command = ctx.r4.u32;
+  uint32_t target = 0u, id = 0u, first = 0u, second = 0u;
+  if (base != nullptr && Plausible(command)) {
+    target = LoadGuestU32(base, command + kCommandTarget);
+    id = LoadGuestU32(base, command + kCommandId);
+    first = LoadGuestU32(base, command + kCommandFirst);
+    second = LoadGuestU32(base, command + kCommandSecond);
+  }
+  __imp__rex_GamefacePresentation_Execute(ctx, base);
+  if (base == nullptr || !Plausible(target)) {
+    return;
+  }
+  if (id == kGoToTime) {  // vt[11](slides, target, ms) at 0x82c35008: SetTime's unit
+    const float ms = static_cast<float>(static_cast<int32_t>(first));
+    uint32_t bits = 0u;
+    std::memcpy(&bits, &ms, sizeof(bits));
+    PostValue(base, target, presentation, kKindTime, bits, "@Element.Time", ms);
+    return;
+  }
+  if (id != kSetProperty) {
+    return;
+  }
+  const uint32_t attribute = first & kAttributeIdMask;  // 0x82c34f04
+  const auto& names = FloatAttributes();
+  auto found = names.find(attribute);
+  if (found == names.end()) {
+    return;
+  }
+  float number = 0.0f;
+  std::memcpy(&number, &second, sizeof(number));
+  if (found->second == "opacity") {
+    PostValue(base, target, presentation, kKindOpacity, second, "@Element.Opacity", number);
+  } else {
+    PostAttribute(presentation, target, attribute, found->second, second, Number(number));
+  }
 }

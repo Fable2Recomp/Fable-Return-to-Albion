@@ -23,22 +23,39 @@ set(REFIII_HOOK_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/gui_element_hooks.cpp
     # The display boxes and the menu box, stated as the box manager shows and drops them.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/display_box_hooks.cpp
+    # The epilogue and credits screens, stated as the screen manager opens and closes them.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/end_screen_hooks.cpp
+    # The system keyboard the guest opens (the rename), answered by the host.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/keyboard_ui.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/keyboard_ui.h
     # No object added to a render scene the 3D Engine has already destroyed.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/scene_guard.cpp
     # The world: a level's up and down, each effect's creation, placement and end, each decal.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/world_hooks.cpp
+    # Who plays an effect: the CECParticleEmitter that made its handle and the entity it is attached to.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/fx_owner_hooks.cpp
+    # The map tables: the scene the world/town map presents, its camera, its meshes and their commands.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/map_table_hooks.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/map_table_hooks.h
     # Each character's appearance: the morph target lists and texture commands its draw virtual
     # hands the renderer, stated per entity.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/appearance_hooks.cpp
     # Each cloth piece's drawn vertices as the guest's draw publishes them to its vertex buffer,
     # and the piece's end.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cloth_hooks.cpp
+    # Each particle group's and trail's stream as the particle system's own writers lay it into
+    # the frame's vertex buffer, and the render object each group's message is posted to.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/classic_particle_hooks.cpp
     # The mouse's turn, handed whole to the active camera mode around the camera manager's update.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/mouse_look.cpp
     # The per-tick Lua GC slice, run against the real clock instead of the host-granted time base.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/lua_gc_slice.cpp
     # The CRT's pow/sin/cos/... answered by the host's libm.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/crt_math.cpp
+    # The CRT's memcpy/memmove/memset/XMemCpy answered by the host's libc.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/crt_memory.cpp
+    # The Limited Collector's Edition licence (IsPackagePremium of the Day One package).
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/unlock_hooks.cpp
     # The root file system's Open and Exists: the host mount's override served as a guest memory
     # file (the decision is Fable3/src/vfs's, refiii_vfs). Its C ABI header is listed so the
     # staging ships it, laid out relative to Fable3/src as the hook includes it.
@@ -46,6 +63,8 @@ set(REFIII_HOOK_SOURCES
     ${CMAKE_SOURCE_DIR}/Fable3/src/vfs/include/fable3_vfs.h
     # The loading screen's quads cut (Godot draws the screen); its state machine runs unchanged.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/loading_screen_scene.cpp
+    # The aim reticules' setters (ranged aim, spell target), stated as `@Reticule` per player and slot.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/reticle_hooks.cpp
     # What the UI hooks share (the guest's two string classes, the statement post). Listed with
     # the sources so the staging ships it beside them: the player's build compiles the staged
     # copies, and a header only in the tree is not there.

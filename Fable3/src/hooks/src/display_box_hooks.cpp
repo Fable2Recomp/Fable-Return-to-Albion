@@ -66,9 +66,16 @@ constexpr uint32_t kVtAdjuster = 0x820B4600u;
 constexpr uint32_t kVtQuest = 0x820B4620u;
 constexpr uint32_t kVtMarriage = 0x820B4640u;
 constexpr uint32_t kVtIntermission = 0x820D87D4u;
+/// CAcceptHoldBox (type 8; the PC RTTI class map: `Paper.HoldButton`, `Paper.Accept`).
 constexpr uint32_t kVtInfoCard = 0x820D71CCu;
 constexpr uint32_t kVtButtonBox = 0x820D87F4u;
 constexpr uint32_t kVtWeddingPicker = 0x820D85A4u;
+/// Q0's CTutorialBox (type 26, ctor sub_824B1BC8: its Show hides the B button and both natal
+/// choices, 0x824B27C0..0x824B27E8; its input takes only 41, 0x824B29DC) and Q1's CAcceptBox
+/// (type 6, built by the card factory sub_825FB988 case 6; its input slot is `li r3, 0`) — class
+/// names from the PC build's RTTI (scratch f3/gaps/rtti/classmap.tsv).
+constexpr uint32_t kVtNotice = 0x82091964u;
+constexpr uint32_t kVtDisplay = 0x820D71ECu;
 
 /// The box-manager SCREENS, by vtable: each class's slot 7 returns its box type (`li r3, N` at
 /// the function the vtable's +28 names) and its constructor stores the vtable — Options
@@ -82,6 +89,34 @@ constexpr uint32_t kVtStats = 0x820C2E28u;
 constexpr uint32_t kVtQuestSummary = 0x820C3214u;
 constexpr uint32_t kVtKingsSchedule = 0x820C30E0u;
 
+/// The rest of the box-manager screens, each writing its own .bgf's elements (the presentation
+/// slot is sub_8291F4C8's switch on the type; the slot's file is sub_82B3EC40's table):
+/// join / visibility options 0x820C35F8 (ctor sub_82521928, ONE class whose slot 7 returns its
+/// +48 — 18 JoinOptions.bgf, 19 Visability.bgf, `lwz r3, 0x30(r3)` at 0x82A0AF50), friends
+/// channel 0x820C3640 (sub_82521AF0, 21), chat channel 0x820C2F58 (sub_825208D8, 22), the
+/// treasury statement 0x820D84A4 (sub_82B59C40, 17), the bed menu 0x820D7508 (sub_825FB858, 14),
+/// the food query 0x820D72F4 (sub_825FB3D0 / sub_825FB4A8, 9), the wedding picker 0x820D85A4
+/// (sub_82B5BCF0, 23), co-op partners 0x820D8754 (sub_82B5C5D0, 24), the marriage proposal
+/// 0x820B4640 (sub_825FB730, 10) and the divorce message 0x820C0088 (sub_829281C8, 11).
+constexpr uint32_t kVtJoinOptions = 0x820C35F8u;
+constexpr uint32_t kVtFriendsChannel = 0x820C3640u;
+constexpr uint32_t kVtChatChannel = 0x820C2F58u;
+constexpr uint32_t kVtTreasury = 0x820D84A4u;
+constexpr uint32_t kVtBedMenu = 0x820D7508u;
+constexpr uint32_t kVtFoodQuery = 0x820D72F4u;
+constexpr uint32_t kVtPartners = 0x820D8754u;
+constexpr uint32_t kVtDivorce = 0x820C0088u;
+
+/// The join/visibility class's box type (its slot 7 reads +48).
+constexpr uint32_t kJoinOptionsType = 48u;
+constexpr uint32_t kTypeVisibility = 19u;
+
+/// The message box's download form (DisplayDownloadMessageBox, sub_82516B18): +33 set (0x82516BAC)
+/// shows `paper.MessageBox.Action` and names its X button by the tag at +36 (sub_8281AFA8 at
+/// 0x8281B048 / 0x8281B07C); X (76) is taken only while +33 is set (sub_8281B390, 0x8281B410).
+constexpr uint32_t kMessageDownload = 33u;
+constexpr uint32_t kMessageActionTag = 36u;
+
 constexpr uint32_t kMenuSelected = 0u;
 constexpr uint32_t kMenuOpen = 12u;
 constexpr uint32_t kMenuCancelled = 13u;
@@ -92,18 +127,29 @@ constexpr uint32_t kMenuTitle = 32u;
 constexpr uint32_t kMenuRowStride = 8u;
 constexpr uint32_t kMenuMaxRows = 6u;
 
-const char* KindOf(uint32_t vtable) {
+const char* KindOf(const uint8_t* base, uint32_t box, uint32_t vtable) {
   switch (vtable) {
     case kVtMessage: return "message";
     case kVtYesNo: return "question";
     case kVtNatalQuery: return "question";
-    case kVtMarriage: return "question";
+    case kVtNotice: return "notice";
+    case kVtDisplay: return "display";
     case kVtAdjuster: return "adjuster";
     case kVtQuest: return "quest";
     case kVtIntermission: return "intermission";
     case kVtInfoCard: return "card";
     case kVtButtonBox: return "buttons";
-    case kVtWeddingPicker: return "picker";
+    case kVtJoinOptions:
+      return LoadGuestU32(base, box + kJoinOptionsType) == kTypeVisibility ? "screen:visibility" : "screen:join";
+    case kVtFriendsChannel: return "screen:friends";
+    case kVtChatChannel: return "screen:chat";
+    case kVtTreasury: return "screen:treasury";
+    case kVtBedMenu: return "screen:bed";
+    case kVtFoodQuery: return "screen:food";
+    case kVtWeddingPicker: return "screen:wedding";
+    case kVtPartners: return "screen:partners";
+    case kVtMarriage: return "screen:proposal";
+    case kVtDivorce: return "screen:divorce";
     case kVtOptions: return "screen:options";
     case kVtHeroStatus: return "screen:herostatus";
     case kVtPromises: return "screen:promises";
@@ -132,17 +178,21 @@ int32_t QueueIndex(const uint8_t* base, uint32_t queue) {
   return offset % kQueueStride == 0u && offset / kQueueStride < 2u ? static_cast<int32_t>(offset / kQueueStride) : -1;
 }
 
-/// `@Box.Open(queue, box, kind, name, text, …)` — the trailing arguments by kind: question
-/// yesTag, noTag; adjuster min, max, increment, value; card title, acceptTag, helpTag, showA, showY.
+/// `@Box.Open(queue, box, kind, name, text, …)` — the trailing arguments by kind: message
+/// download, actionTag; question yesTag, noTag; adjuster min, max, increment, value; card title,
+/// acceptTag, helpTag, showA, showY.
 void PostOpen(const uint8_t* base, int32_t queue, uint32_t box) {
   const uint32_t vtable = LoadGuestU32(base, box);
   Statement open("@Box.Open");
   open.Add(Number(static_cast<float>(queue)))
       .Add(Text(Hex(box)))
-      .Add(Text(KindOf(vtable)))
+      .Add(Text(KindOf(base, box, vtable)))
       .Add(Text(ReadCharString(base, box + kBoxName)))
       .Add(Text(ReadLhString(base, box + kBoxText)));
   switch (vtable) {
+    case kVtMessage:
+      open.Add(Boolean(base[box + kMessageDownload] != 0u)).Add(Text(ReadCharString(base, box + kMessageActionTag)));
+      break;
     case kVtYesNo:
     case kVtNatalQuery:
       open.Add(Text(ReadCharString(base, box + 32u))).Add(Text(ReadCharString(base, box + 36u)));

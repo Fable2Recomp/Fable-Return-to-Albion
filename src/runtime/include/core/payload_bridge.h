@@ -361,10 +361,13 @@ void refii_bridge_fx_position(uint32_t handle, const float* lanes);
 void refii_bridge_fx_orientation(uint32_t handle, const float* lanes);
 void refii_bridge_fx_killed(uint32_t handle);
 void refii_bridge_fx_scene_killed(uint32_t scene);
+// The entity that plays the effect and the entity that one was attached to, as the title's emitter hooks state them.
+void refii_bridge_fx_owner(uint32_t handle, uint32_t owner, uint32_t attached);
 //   Read back as rows of REFII_STATED_FX_WORDS words: handle, name hash, sequence (the last
-//   statement's), flags, four position lanes, four orientation lanes. Returns the rows written;
+//   statement's), flags, four position lanes, four orientation lanes, the owner entity, the entity it
+//   was attached to. Returns the rows written;
 //   the count is the statements since boot (0 until a hook has stated one).
-#define REFII_STATED_FX_WORDS 12u
+#define REFII_STATED_FX_WORDS 14u
 #define REFII_STATED_FX_STARTED 1u
 #define REFII_STATED_FX_PLACED 2u
 #define REFII_STATED_FX_ORIENTED 4u
@@ -397,6 +400,29 @@ uint32_t refii_bridge_world_quads_read(uint32_t* out, uint32_t capacity);
 void refii_bridge_world_fx_mesh_stated(uint32_t id, uint32_t descriptor);
 void refii_bridge_world_fx_mesh_removed(uint32_t id);
 uint32_t refii_bridge_world_fx_meshes_read(uint32_t* out_pairs, uint32_t pair_capacity);
+// GUI scenes: a scene the guest presents in place of the world (Fable 3's map tables), keyed by an
+// opaque holder the title's hooks choose. Implemented in src/core/stated_scene_objects.cpp.
+// - an object: a mesh render object added to the holder's scene, keyed by the id the scene allotted
+//   it, in REFII_SCENE_OBJECT_WORDS words — [0] model hash [1] flags [2] record id [3] message
+//   class [4..7] orientation quaternion x y z w [8..10] position x y z [11] uniform scale
+//   [12..15] tint r g b a [16] alpha (floats as bits). Patched in place by the title's per-object
+//   commands (first word, count); removed by id, or all of a holder's when it is dropped. Read back
+//   as rows of 1 + REFII_SCENE_OBJECT_WORDS words [id, words...] for one holder; `out_serial`
+//   moves whenever the set (not a transform) changed.
+// - the camera the holder's scene is presented through, REFII_SCENE_CAMERA_WORDS words — [0..2]
+//   position [3..6] orientation quaternion x y z w [7] vertical fov in radians [8] near [9] far.
+// - presented: whether the guest presents the holder's scene now. The read answers the holder
+//   presented last (0 for none) with its camera.
+#define REFII_SCENE_OBJECT_WORDS 17u
+#define REFII_SCENE_CAMERA_WORDS 10u
+void refii_bridge_scene_object_stated(uint32_t holder, uint32_t id, const uint32_t* words);
+void refii_bridge_scene_object_patch(uint32_t id, uint32_t first, const uint32_t* words, uint32_t count);
+void refii_bridge_scene_object_removed(uint32_t id);
+void refii_bridge_scene_holder_dropped(uint32_t holder);
+void refii_bridge_scene_camera_stated(uint32_t holder, const uint32_t* words);
+void refii_bridge_scene_presented(uint32_t holder, int32_t on);
+uint32_t refii_bridge_scene_presented_read(uint32_t* out_camera_words, int32_t* out_camera_stated);
+uint32_t refii_bridge_scene_objects_read(uint32_t holder, uint32_t* out, uint32_t capacity, uint32_t* out_serial);
 
 // THE APPEARANCE A TITLE STATES (src/runtime/src/core/stated_appearance.cpp): what its hooks see
 // a character's draw virtual hand its renderer, read back by its host bridge in Fable 2's rows
@@ -459,6 +485,27 @@ uint32_t refii_bridge_cloth_vertices(uint32_t key, uint32_t previous, float* out
                                      uint32_t max_vertices, uint32_t* out_tick,
                                      uint32_t* out_sequence);
 uint64_t refii_bridge_cloth_publish_count(void);
+
+// THE CLASSIC PARTICLE STREAMS A TITLE STATES (src/runtime/src/core/stated_classic_particles.cpp):
+// each particle group's stream as its hook sees the guest's own writer lay it into the frame's
+// vertex buffer, keyed by the sim data it was written from, and the render object each sim data
+// was last posted to; read back by its host bridge per render object.
+// - written: `data` (the sim's particle data), its kind (1 quads, 2 trails, 3 double trails), the
+//   writer's count n and ring count c (0 for quads), and `float_count` floats — quads n x 12 (the
+//   sim's records), trails (c + 3) x 8 (the points the writer laid down). No floats: the writer
+//   wrote nothing this frame, so the guest draws none.
+// - bound: render object `id` was posted a message naming `data`.
+// - removed: render object `id` is gone.
+//   Read back: the bound ids, and per id meta = {kind, n, c, float count} with the floats when
+//   they fit `capacity`; returns 1 when copied, 0 otherwise (meta filled whenever the id is known).
+#define REFII_CLASSIC_PARTICLE_MAX_FLOATS (8192u * 12u)
+void refii_bridge_classic_particle_written(uint32_t data, uint32_t kind, uint32_t n, uint32_t c,
+                                           const float* floats, uint32_t float_count);
+void refii_bridge_classic_particle_bound(uint32_t id, uint32_t data);
+void refii_bridge_classic_particle_removed(uint32_t id);
+uint32_t refii_bridge_classic_particle_ids(uint32_t* out_ids, uint32_t capacity);
+int32_t refii_bridge_classic_particle_read(uint32_t id, uint32_t* out_meta, float* out,
+                                           uint32_t capacity);
 
 #ifdef __cplusplus
 }  // extern "C"

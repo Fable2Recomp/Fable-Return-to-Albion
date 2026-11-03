@@ -31,7 +31,11 @@ public partial class Fable3WorldIcons : SubViewportContainer
 	private const float CanvasHeight = Engine_UiSceneBuilder.CanvasHeight;
 	private const float PixelsPerUnit = Engine_UiSceneBuilder.PixelsPerUnit;
 
-	/// <summary>The guest's ring radius, in its 720-line pixels (sub_82979188: `* 14.0`, 0x8297935C).</summary>
+	/// <summary>
+	/// The guest's ring radius, in its 720-line pixels: sub_82979188 builds the 301-point path
+	/// `(sin a * aspect * 14, -cos a * 14)` for a = i/300 * 2pi (0x8297935C / 0x82979374), the
+	/// aspect `(w/h) / (16:9 or 4:3)` (0x82979320) keeping it round on the display, so a circle.
+	/// </summary>
 	private const float RingRadius = 14f;
 
 	/// <summary>The guest's icon sizes, in its 720-line pixels: 64 for the opinion, status, quest,
@@ -41,9 +45,13 @@ public partial class Fable3WorldIcons : SubViewportContainer
 		(type is >= 1u and <= 31u || type is >= 36u and <= 51u || type == 63u || type == 65u || type is >= 73u and <= 75u ? 64f : 32f) /
 		Engine_HudWorldSprites.IconSize;
 
+	/// <summary>The emotion icon's registry type (sub_825E8938 registers it as 77, 0x825E89C0).</summary>
+	private const uint EmotionIconType = 77u;
+
 	private SubViewport _viewport = null!;
 	private Camera3D _canvasCamera = null!;
 	private Engine_HudWorldSprites _sprites = null!;
+	private readonly Engine_HudReticule[] _reticules = new Engine_HudReticule[2];
 	private Vector2 _fittedTo;
 	private bool _placed;
 	private bool _probed;
@@ -54,12 +62,17 @@ public partial class Fable3WorldIcons : SubViewportContainer
 	private readonly Dictionary<uint, string> _pathsByHash = new();
 
 
-	/// <summary>The ring of every held choice this frame, in window pixels: centre, radius scale, progress, complete.</summary>
-	private readonly List<(Vector2 Centre, float Progress, bool Complete)> _rings = new();
+	/// <summary>The ring of every held choice this frame, in window pixels: centre, radius, progress, complete.</summary>
+	private readonly List<(Vector2 Centre, float Radius, float Progress, bool Complete)> _rings = new();
+
+	/// <summary>This frame's emotion icons by the guest's object: whether the drawer stacked a title under the square, and its scale.</summary>
+	private readonly Dictionary<uint, (bool Titled, float Scale)> _emotionSquares = new();
 
 	public override void _Ready()
 	{
-		SetAnchorsPreset(LayoutPreset.FullRect);
+		// Anchors AND offsets, as Fable3Canvas: anchors alone leave the container 0×0 under the
+		// CanvasLayer and its stretched viewport 2×2 — nothing rendered.
+		SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
 		MouseFilter = MouseFilterEnum.Ignore;
 		Stretch = true;
 
@@ -95,6 +108,20 @@ public partial class Fable3WorldIcons : SubViewportContainer
 			Place = PlaceSprite,
 		};
 		root.AddChild(_sprites);
+
+		// The aim reticules (Fable3Reticles), in front of the icons: pushed by the guest as sprites, never elements.
+		for (int slot = 0; slot < 2; ++slot)
+		{
+			_reticules[slot] = new Engine_HudReticule
+			{
+				Name = slot == 0 ? "SpellReticule" : "RangedReticule",
+				Look = Fable3Reticles.Look,
+				Position = new Vector3(0f, 0f, 1f),
+				ResolveTexture = ResolveTexture,
+				Place = guest => PlaceSprite(guest, 0u)?.Canvas,
+			};
+			root.AddChild(_reticules[slot]);
+		}
 
 		foreach ((uint type, string path) in Fable3IconArt.Paths)
 		{
@@ -143,6 +170,15 @@ public partial class Fable3WorldIcons : SubViewportContainer
 
 	public override void _Process(double delta)
 	{
+		// The container covers the window: its parent is a CanvasLayer, not a Control, so nothing
+		// else resizes it when the window does.
+		Vector2 cover = GetViewportRect().Size;
+		if (Size != cover && cover.X > 0f && cover.Y > 0f)
+		{
+			Position = Vector2.Zero;
+			Size = cover;
+		}
+
 		Vector2 size = GetViewportRect().Size;
 		if (size != _fittedTo && size.X > 0f && size.Y > 0f)
 		{
@@ -166,6 +202,7 @@ public partial class Fable3WorldIcons : SubViewportContainer
 		// (sub_82277308 at 0x825c3d20 -> sub_8227DA00(root, pres, 2) at 0x825c3d5c; back to 1 at
 		// 0x825c3d8c) — the Options screen among them — so nothing of the HUD is drawn then.
 		_list.Clear();
+		_emotionSquares.Clear();
 		foreach (HostBridge.WorldSprite sprite in HostBridge.GetWorldSprites())
 		{
 			if (Fable3Elements.HudHidden)
@@ -176,18 +213,46 @@ public partial class Fable3WorldIcons : SubViewportContainer
 			// The off-screen player markers (52/53) are pinned inside the screen edge by the
 			// guest's own clamp, which writes their HUD element's position (sub_82B51B58 at
 			// 0x82B51FC8): the shared HUD view draws them there (Fable3Hud, `HeroOffScreenWorldIcon`).
+			// The stated position is already in hud.bgf's canvas units: sub_82C403E0 projects the
+			// point through the game camera (R+84) and unprojects the pixel through UI camera desc B
+			// (R+80: eye (0,-4000,0), fovY 10.2°, sub_82197CA8) on the plane through the origin, and
+			// the write swaps Y/Z (f1 x, f2 z, f3 y at 0x82B51FBC..C4) — centre origin, +y up,
+			// 4000·tan 5.1° = 357 units per half screen height.
 			if (sprite.Type is 52u or 53u)
 			{
 				continue;
 			}
 
-			string badge = sprite.Pooled ? Fable3IconArt.ButtonFor(sprite.Type) : string.Empty;
+			// A pooled prompt (the interaction mode's A/B/X/Y world icons) is a button: drawn as the
+			// shared glyph for it — the pad's in the player's style, the bound key's keycap on the
+			// keyboard — as every other prompt is (Engine_UiKeyGlyphs), not as a lettered badge.
+			string button = sprite.Pooled ? Fable3IconArt.ButtonFor(sprite.Type) : string.Empty;
+			Texture2D? glyph = button.Length > 0 ? Engine_UiKeyGlyphs.KeycapFor(button) : null;
+			if (sprite.Type == EmotionIconType)
+			{
+				_emotionSquares[sprite.Object] = (sprite.Title.Length > 0, sprite.Scale * SizeFor(sprite.Type));
+			}
+
 			_list.Add(new Engine_HudWorldSprites.Sprite(
 				sprite.Type, sprite.Pooled ? 0u : sprite.TextureHash, sprite.Colour, sprite.Entity, sprite.Anchor,
-				sprite.Scale * SizeFor(sprite.Type), sprite.Title, sprite.Opinion, sprite.Object, badge));
+				sprite.Scale * SizeFor(sprite.Type), sprite.Title, sprite.Opinion, sprite.Object, Texture: glyph));
 		}
 
 		_sprites.Feed(_list);
+
+		float canvasHeight = CanvasHeight / PixelsPerUnit;
+		foreach (int slot in new[] { 0, 1 })
+		{
+			Engine_HudReticule reticule = _reticules[slot];
+			reticule.CanvasHalfExtent = size.Y > 0f ? new Vector2(size.X / size.Y * canvasHeight, canvasHeight) * 0.5f : Vector2.Zero;
+			for (int player = 0; player < 2; ++player)
+			{
+				float guestHeight = 720f;
+				Engine_HudReticule.Aim? aim = Fable3Elements.HudHidden ? null : Fable3Reticles.Read(player, slot, out guestHeight);
+				reticule.UnitsPerGuestPixel = canvasHeight / guestHeight;
+				reticule.Feed(player, aim);
+			}
+		}
 
 		// Ground truth once a sprite was placed on screen (last frame's placement): the log's
 		// `1 on screen` is the drawer's count, not pixels (r8 shows none of them).
@@ -199,13 +264,24 @@ public partial class Fable3WorldIcons : SubViewportContainer
 
 		_placed = false;
 
+		// THE RING IS CONCENTRIC WITH THE ICON'S SQUARE. The guest centres its path on the centre of
+		// the icon's own quad (sub_8297A400: the bounds sub_82B509F8 at 0x8297A448, halved at
+		// 0x8297A480..0x8297A4B4, projected by sub_82287A08 at 0x8297A4C4) and adds each point in
+		// screen pixels before unprojecting it (sub_82269260 at 0x8297A7B8). The shared drawer stacks
+		// the square above the anchor (title on the anchor), so the centre is lifted by the title
+		// and half the square, exactly as it places them.
 		_rings.Clear();
+		IReadOnlyList<EmotionChoice> choices = GetEmotionChoices();
+		ChoicesUp = choices.Count > 0;
 		Camera3D? camera = GetWindow().GetCamera3D();
-		if (camera is not null && GodotObject.IsInstanceValid(camera) && !Fable3Elements.HudHidden)
+		Vector2 window = GetViewportRect().Size;
+		if (camera is not null && GodotObject.IsInstanceValid(camera) && !Fable3Elements.HudHidden && window.Y > 0f)
 		{
-			foreach (EmotionChoice choice in GetEmotionChoices())
+			float pixelsPerUnit = window.Y * PixelsPerUnit / CanvasHeight;
+			float piece = _sprites.PieceScale;
+			foreach (EmotionChoice choice in choices)
 			{
-				if (!choice.RingOn)
+				if (!choice.RingOn || !_emotionSquares.TryGetValue(choice.Icon, out (bool Titled, float Scale) square))
 				{
 					continue;
 				}
@@ -216,7 +292,10 @@ public partial class Fable3WorldIcons : SubViewportContainer
 					continue;
 				}
 
-				_rings.Add((camera.UnprojectPosition(world), choice.Progress, choice.Complete));
+				float lift = ((square.Titled ? Engine_HudWorldSprites.TextSize : 0f) +
+					(Engine_HudWorldSprites.IconSize * square.Scale * 0.5f)) * piece;
+				Vector2 centre = camera.UnprojectPosition(world) - new Vector2(0f, lift * pixelsPerUnit);
+				_rings.Add((centre, RingRadius * piece * pixelsPerUnit, choice.Progress, choice.Complete));
 			}
 		}
 
@@ -257,11 +336,11 @@ public partial class Fable3WorldIcons : SubViewportContainer
 			return;
 		}
 
+		// Only the filled part: the guest's path is points 0..progress from twelve o'clock clockwise
+		// (the loop to `v28` at 0x8297A7D4), with no track behind it.
 		float scale = GetViewportRect().Size.Y / CanvasHeight;
-		float radius = RingRadius * scale * 2f;
-		foreach ((Vector2 centre, float progress, bool complete) in _rings)
+		foreach ((Vector2 centre, float radius, float progress, bool complete) in _rings)
 		{
-			DrawArc(centre, radius, 0f, Mathf.Tau, 48, new Color(1f, 1f, 1f, 0.25f), 2f * scale, true);
 			if (progress > 0f)
 			{
 				float sweep = Mathf.Tau * Mathf.Clamp(progress, 0f, 1f);
@@ -286,6 +365,12 @@ public partial class Fable3WorldIcons : SubViewportContainer
 	private static readonly float[] _choiceValues = new float[MaxChoices * ChoiceValues];
 	private static readonly byte[] _choiceText = new byte[8192];
 	private static readonly List<EmotionChoice> _choices = new();
+
+	/// <summary>
+	/// Whether the guest has emotion choices up (a record on E, read this frame): the face buttons
+	/// — and on the keyboard 1-5 and the left mouse button, as Fable III PC binds them — pick them.
+	/// </summary>
+	public static bool ChoicesUp { get; private set; }
 
 	/// <summary>The choices this frame; the list is reused until the next call.</summary>
 	public static IReadOnlyList<EmotionChoice> GetEmotionChoices()

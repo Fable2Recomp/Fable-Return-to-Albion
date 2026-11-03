@@ -131,6 +131,13 @@ public abstract class Engine_TitleGame
 	public virtual string? KeyLabel(string button) => null;
 
 	/// <summary>
+	/// Which pad button one of the title's own GUI textures draws, and how it layers, for the glyph
+	/// swap (<see cref="Refii.Ui.Engine_UiKeyGlyphs"/>); null where the path is not button art the
+	/// title names — the shared table (Fable 2's `art/gui/controller/…`) is asked after.
+	/// </summary>
+	public virtual Refii.Ui.Engine_UiKeyGlyphs.GlyphArt? GlyphArtFor(string path) => null;
+
+	/// <summary>
 	/// What the game's pad button does, for its Controls remap row ("Melee, block, flourish" for
 	/// Fable 2's X); null where the title has not said, and the row shows the button alone.
 	/// </summary>

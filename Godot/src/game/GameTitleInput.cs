@@ -33,6 +33,25 @@ public class GameTitleInput
 			GameInput.InvertCameraX ? -guest.RightX : guest.RightX, guest.RightY),
 			0u, guest.PhysicalButtons, guest.OtherButtons);
 
+	/// <summary>
+	/// The keyboard and mouse actions, each the pad button it presses (<see cref="GameInput.KeyAction"/>):
+	/// the launcher's Controls group, the in-game Controls page and the key-to-pad mapping all read it.
+	/// </summary>
+	public virtual GameInput.KeyAction[] KeyActions => GameInput.DefaultKeyActions;
+
+	/// <summary>Whether the title's own "press START" screen is up (<see cref="GameInput.KeyContext.TitleScreen"/>).</summary>
+	public virtual bool TitleScreenUp => false;
+
+	/// <summary>Whether the title's on-screen choices have the face buttons (<see cref="GameInput.KeyContext.Choice"/>).</summary>
+	public virtual bool ChoicesUp => false;
+
+	/// <summary>
+	/// The key a pad button's prompt shows now, or null for the shell's (Fable 2's) reading.
+	/// <paramref name="shown"/> prints an action's first working input; <paramref name="playing"/> is
+	/// whether the world has the input.
+	/// </summary>
+	public virtual string? KeyLabel(string button, System.Func<string, string> shown, bool playing) => null;
+
 	/// <summary>Which player a pad carries for the mods' input (1 or 2), or 0 for none.</summary>
 	public virtual int ModPlayer(int pad) => pad == 0 ? 1 : 0;
 

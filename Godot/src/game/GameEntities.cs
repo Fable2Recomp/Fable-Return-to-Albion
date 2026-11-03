@@ -4225,12 +4225,35 @@ public partial class GameEntities : Node3D
     }
 
     /// <summary>
+    /// A model through the bank loader. TWO WORKERS MAY NOT RACE ONE FIRST LOAD: both creating the
+    /// managed wrapper of the same new resource is a FATAL in the interop (`gchandle ... !=
+    /// p_old_gchandle`, run r15: two composite builds on the region workers met one part together),
+    /// so loads off the main thread serialise on <see cref="WorkerMeshLoad"/>. The main thread never
+    /// takes it, so a worker's load that waits on the main thread cannot deadlock through it — the
+    /// rule Engine_MdlMaterial.LoadShared keeps for shaders.
+    /// </summary>
+    private static Mesh? LoadMesh(string path)
+    {
+        string resource = Refii.Models.Engine_BnkMeshLoader.PathPrefix + path;
+        if (OS.GetThreadCallerId() == OS.GetMainThreadId())
+        {
+            return ResourceLoader.Load<Mesh>(resource, "Mesh");
+        }
+
+        lock (WorkerMeshLoad)
+        {
+            return ResourceLoader.Load<Mesh>(resource, "Mesh");
+        }
+    }
+
+    private static readonly object WorkerMeshLoad = new();
+
+    /// <summary>
     /// One part, blended with the targets the guest listed for it (<c>sub_82A48B90</c>).
     /// </summary>
     private static Mesh? LoadPart(string path, List<(string Path, float Weight)>? stated)
     {
-        Mesh? part = ResourceLoader.Load<Mesh>(
-            Refii.Models.Engine_BnkMeshLoader.PathPrefix + path, "Mesh");
+        Mesh? part = LoadMesh(path);
 
         if (stated is null || part is not ArrayMesh own)
         {
@@ -4240,8 +4263,7 @@ public partial class GameEntities : Node3D
         var listed = new List<(ArrayMesh Target, float Weight)>(stated.Count);
         foreach ((string target, float weight) in stated)
         {
-            if (ResourceLoader.Load<Mesh>(
-                    Refii.Models.Engine_BnkMeshLoader.PathPrefix + target, "Mesh") is ArrayMesh mesh)
+            if (LoadMesh(target) is ArrayMesh mesh)
             {
                 listed.Add((mesh, weight));
             }
@@ -4407,8 +4429,7 @@ public partial class GameEntities : Node3D
 
             try
             {
-                mesh = ResourceLoader.Load<Mesh>(
-                    Refii.Models.Engine_BnkMeshLoader.PathPrefix + path, "Mesh");
+                mesh = LoadMesh(path);
             }
             catch (System.Exception e)
             {

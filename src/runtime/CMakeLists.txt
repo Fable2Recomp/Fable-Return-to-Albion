@@ -65,6 +65,9 @@ add_library(refii_runtime SHARED
     # The cloth a title states between its hooks and its host bridge: each piece's drawn vertices
     # as the guest's draw publishes them.
     ${REFII_RUNTIME_ROOT}/src/core/stated_cloth.cpp
+    ${REFII_RUNTIME_ROOT}/src/core/stated_classic_particles.cpp
+    # The GUI scenes a title presents in place of the world (map tables): objects, camera, presented.
+    ${REFII_RUNTIME_ROOT}/src/core/stated_scene_objects.cpp
 )
 target_include_directories(refii_runtime
     PUBLIC

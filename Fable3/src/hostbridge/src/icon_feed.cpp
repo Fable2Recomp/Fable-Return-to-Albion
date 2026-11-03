@@ -472,35 +472,4 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFable3EmotionChoices(uint32_t* words,
     return written;
 }
 
-/// The interaction mode as its manager IM = *(GUI+72) holds it (sub_823ABCF8: the mode object is
-/// `*(IM+24)` when `*(IM+4)` and `*(IM+20) == 3`, 0x823ABD3C..0x823ABD68). Four words: [0] open
-/// (IM+4), [1] mode type (IM+20), [2] the highlighted list row `*(mode+116)` (the value the cursor
-/// post sub_829559A0 sends with message 137 at 0x82955A54), [3] the mode object. [2] and [3] are
-/// zero unless a mode-3 object is open.
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFable3InteractionMode(uint32_t* out_words, uint32_t capacity) {
-    constexpr uint32_t kWords = 4u;
-    if (out_words == nullptr || capacity < kWords) {
-        return 0u;
-    }
-    for (uint32_t i = 0; i < kWords; ++i) {
-        out_words[i] = 0u;
-    }
-    const uint8_t* base = GuestBase();
-    if (base == nullptr) {
-        return 0u;
-    }
-    const uint32_t manager = Word(base, Word(base, kGuiManager) + 72u);
-    if (!Plausible(manager)) {
-        return 0u;
-    }
-    out_words[0] = GuestByteAt(base, manager + 4u);
-    out_words[1] = Word(base, manager + 20u);
-    const uint32_t mode = Word(base, manager + 24u);
-    if (out_words[0] != 0u && out_words[1] == 3u && Plausible(mode)) {
-        out_words[2] = Word(base, mode + 116u);
-        out_words[3] = mode;
-    }
-    return kWords;
-}
-
 }  // extern "C"

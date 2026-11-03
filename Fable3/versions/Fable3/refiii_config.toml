@@ -70,6 +70,18 @@
 # (&path, elem) — the interaction buttons' glyphs (sub_82961340, sub_829614A0).
 0x82818580 = { name = "rex_GuiElement_SetPosition" }
 0x82818EF0 = { name = "rex_GuiElement_SetTexture" }
+# The presentation's slide funnel (slides = pres+0x238, component, slide, flag) every slide change
+# reaches; the Gameface Lua methods' presentation getter (L), getElement (L) and setAttribute (L);
+# and the presentation's command executor (pres, &command) — the queued Lua goTo* and the .bgf's
+# authored actions (gui_element_hooks.cpp).
+0x82268BE0 = { name = "rex_GuiSlides_GoTo" }
+0x822673D8 = { name = "rex_GamefaceLua_Presentation" }
+0x82C242E8 = { name = "rex_GamefaceLua_GetElement" }
+0x82C24A70 = { name = "rex_GamefaceLua_SetAttribute" }
+0x82C34EC0 = { name = "rex_GamefacePresentation_Execute" }
+# XamShowKeyboardUI's one guest thunk (`b XamShowKeyboardUI`), called by the rename at 0x82962250;
+# keyboard_ui.cpp leaves the request pending for the host to answer.
+0x830FF1F8 = { name = "rex_Xam_ShowKeyboardUI" }
 # The box manager's queue tick (queue) — the one place a display box becomes the showing box and
 # the one exit that drops it — and the menu box's open (MB), input (MB, ev, pad) and close (MB)
 # (Fable3/src/hooks/src/display_box_hooks.cpp).
@@ -77,6 +89,12 @@
 0x825FA220 = { name = "rex_MenuBox_Open" }
 0x825FA030 = { name = "rex_MenuBox_Input" }
 0x825FA420 = { name = "rex_MenuBox_Close" }
+# The epilogue's show (E, title, description, gold, image CCharString, flag) and hide (E), and the
+# screen manager's credits start and end (SM) (Fable3/src/hooks/src/end_screen_hooks.cpp).
+0x8276B460 = { name = "rex_Epilogue_Show" }
+0x8276B9F8 = { name = "rex_Epilogue_Hide" }
+0x825CF128 = { name = "rex_ScreenManager_StartCredits" }
+0x825CF280 = { name = "rex_ScreenManager_EndCredits" }
 # The render scene's object add (scene, object): Fable3/src/hooks/src/scene_guard.cpp skips an add to
 # a scene the 3D Engine has already destroyed (a new game destroys the front end's while objects
 # queued for it are still being added).
@@ -112,11 +130,35 @@
 0x8318F9D0 = { name = "rex_ParticleSystem_SetOrientation" }
 0x8318F8B0 = { name = "rex_ParticleSystem_Kill" }
 0x8318F510 = { name = "rex_ParticleSystem_KillScene" }
+# Who plays an effect: the CECParticleEmitter that makes its handle (handle at +0x14, stw at 0x826827C4)
+# and the entity it attaches to (weak ref +0x1C, attachment sub_82715270 at 0x826831A8) — fx_owner_hooks.cpp.
+0x82682738 = { name = "rex_ParticleEmitter_CreateEffect" }
+0x82683000 = { name = "rex_ParticleEmitter_AttachToEntity" }
 0x82C3F2A8 = { name = "rex_Decal_ExecuteRenderCommand" }
 0x82CA0CA0 = { name = "rex_RenderTwin_ReleaseDecals" }
 0x82C734B0 = { name = "rex_Decal_ClearAll" }
 0x82257228 = { name = "rex_RenderScene_AddObject" }
 0x82C3C148 = { name = "rex_RenderScene_RemoveObject" }
+# The classic particle streams (Fable3/src/hooks/src/classic_particle_hooks.cpp): the particle
+# system's stream writers (W, D + 4, n; return the byte offset in the frame's vertex buffer, -1
+# when nothing was written) for quads, trails and double trails, and the render object message
+# post (id, message, ring) through which a group's message names its sim data D.
+0x83178480 = { name = "rex_ParticleQuads_WriteStream" }
+0x8317A758 = { name = "rex_ParticleTrail_WriteStream" }
+0x831797E0 = { name = "rex_ParticleDoubleTrail_WriteStream" }
+0x821C2120 = { name = "rex_RenderObject_PostMessage" }
+# The aim reticules (Fable3/src/hooks/src/reticle_hooks.cpp): the ranged aim's setter (aimer, active) and the
+# spell target's per-tick update (caster), each writing its record of the HUD's reticule manager *(H+0x3C).
+0x82853668 = { name = "rex_HudReticule_SetRangedAim" }
+0x826F36F0 = { name = "rex_HudReticule_UpdateSpellTarget" }
+# The map tables (Fable3/src/hooks/src/map_table_hooks.cpp): the scene holder's add (holder, msg;
+# returns the id), add-or-update (holder, int* id, msg), present (holder, on), destroy (holder),
+# and the render object command post (id, cmd, ring) the map entities move their objects with.
+0x8292AF98 = { name = "rex_MapScene_Add" }
+0x8292AFF8 = { name = "rex_MapScene_AddOrUpdate" }
+0x8292AEA8 = { name = "rex_MapScene_Present" }
+0x8292AD70 = { name = "rex_MapScene_Destroy" }
+0x821F5110 = { name = "rex_RenderObject_Command" }
 # The loading screen's quads, cut (Fable3/src/hooks/src/loading_screen_scene.cpp): Godot draws the
 # screen. Its per-frame update (ls, engine), its quad builders (one quad; a text run) and the twin
 # create they call (desc, f1 time, scene, requested id, ...), which inside a builder answers its
@@ -154,6 +196,15 @@
 0x82254920 = { name = "rex_atan" }
 0x821F0B80 = { name = "rex_floor" }
 0x821A1428 = { name = "rex_ceil" }
+# The CRT's copy and fill, answered by the host's libc (Fable3/src/hooks/src/crt_memory.cpp; each
+# matched to Fable 2's routine by its whole body, XMemCpy by shape, see that file).
+0x82E32EF0 = { name = "rex_memcpy" }
+0x82E33860 = { name = "rex_memmove" }
+0x82E334F0 = { name = "rex_memset" }
+0x8221F3D8 = { name = "rex_XMemCpy" }
+# The Limited Collector's Edition licence (Fable3/src/hooks/src/unlock_hooks.cpp): the Lua
+# PackageManager.IsPackagePremium thunk (namespace r3, CCharString* r4).
+0x822ECB70 = { name = "rex_PackageManager_IsPackagePremium" }
 # The file system (Fable3/src/hooks/src/vfs_hooks.cpp): the root CCompositeFileSystem's Open
 # (out, fs, name, mode; vtable 0x820FB1FC slot 4) and Exists (fs, name; slot 11), which every
 # named and hashed open reaches; the name object's hash (name; cached at +0x1C), the
@@ -183,7 +234,7 @@
 # sub_82DAC3E0 had left in r30.
 0x821DFB00 = { size = 0x30 }
 0x821DFB30 = { size = 0x68 }
-0x8223E040 = { size = 0x8 }
+0x8223E040 = { name = "rex_acos", size = 0x8 }
 0x8223E048 = { size = 0x1C }
 0x82249B28 = { size = 0x98 }
 0x82249BC0 = { size = 0xC }

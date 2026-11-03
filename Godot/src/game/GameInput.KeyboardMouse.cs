@@ -40,6 +40,15 @@ public partial class GameInput
 	/// </summary>
 	public readonly record struct KeyAction(string Name, string Defaults, string Description, string[]? Superseded = null)
 	{
+		/// <summary>What the action presses on pad 0 while it is down.</summary>
+		public KeyPress Press { get; init; }
+
+		/// <summary>When the action presses it (<see cref="KeyContext"/>): always, only in play, only in a menu, only while the title's choices are up.</summary>
+		public KeyContext When { get; init; }
+
+		/// <summary>For <see cref="KeyPress.HostAction"/>: the guest tick action posted once per press (the title's tick pump runs it).</summary>
+		public string HostAction { get; init; }
+
 		/// <summary>Whether <paramref name="stored"/> means "the default": empty, today's, or a former one.</summary>
 		public bool IsDefault(string? stored)
 		{
@@ -68,41 +77,95 @@ public partial class GameInput
 				System.StringSplitOptions.RemoveEmptyEntries | System.StringSplitOptions.TrimEntries)).ToLowerInvariant();
 	}
 
-	/// <summary>Every action, in the order the launcher lists them.</summary>
-	public static readonly KeyAction[] KeyActions =
+	/// <summary>What a key action presses.</summary>
+	public enum KeyPress
 	{
-		new("move_forward", "W", "Move forward (left stick up)."),
-		new("move_back", "S", "Move back (left stick down)."),
-		new("move_left", "A", "Move left (left stick left)."),
-		new("move_right", "D", "Move right (left stick right)."),
-		new("walk", "Alt", "Hold to walk: the stick at half deflection."),
-		new("sprint", "Shift", "Hold to sprint (A held)."),
-		new("interact", "E,Space,Enter", "Interact, talk, pick up; accept in menus (A)."),
+		None, A, B, X, Y, LeftShoulder, RightShoulder, Back, RightThumb, DpadUp, DpadDown, DpadLeft, DpadRight,
+		LeftTrigger, RightTrigger,
+
+		/// <summary>The attack mode's button: X, Y or B (<see cref="AttackMode"/>).</summary>
+		Attack,
+		MeleeMode, RangedMode, MagicMode,
+		MoveForward, MoveBack, MoveLeft, MoveRight,
+
+		/// <summary>The stick at half deflection while held.</summary>
+		Walk,
+
+		/// <summary>Start in play, B in a menu, each press keeping the meaning it began with (<see cref="Refii.Core.Engine_PauseBackKeys"/>).</summary>
+		Pause,
+
+		/// <summary>B, in a menu only (<see cref="Refii.Core.Engine_PauseBackKeys"/>).</summary>
+		BackOut,
+
+		/// <summary>Read by photo mode, never the pad.</summary>
+		PhotoMode,
+
+		/// <summary>Start itself (a title screen's "press START").</summary>
+		Start,
+
+		/// <summary>No pad button: <see cref="KeyAction.HostAction"/> is posted to the guest tick once per press.</summary>
+		HostAction,
+	}
+
+	/// <summary>When a key action presses its button.</summary>
+	public enum KeyContext
+	{
+		Always,
+
+		/// <summary>The world has the input (<see cref="Playing"/>).</summary>
+		Play,
+
+		/// <summary>A menu, box or screen has the input.</summary>
+		Menu,
+
+		/// <summary>The title's on-screen choices are up (Fable 3's held expression choices).</summary>
+		Choice,
+
+		/// <summary>In play while no choice is up.</summary>
+		PlayNoChoice,
+
+		/// <summary>The title's "press START" screen is up.</summary>
+		TitleScreen,
+	}
+
+	/// <summary>Every action of the running title, in the order the launcher and the Controls page list them.</summary>
+	public static KeyAction[] KeyActions => Engine_TitleGame.Active.Input.KeyActions;
+
+	/// <summary>The shell's table — Fable 2's: one action per game button, Fable III's 1/2/3 for the attack modes.</summary>
+	public static readonly KeyAction[] DefaultKeyActions =
+	{
+		new("move_forward", "W", "Move forward (left stick up).") { Press = KeyPress.MoveForward },
+		new("move_back", "S", "Move back (left stick down).") { Press = KeyPress.MoveBack },
+		new("move_left", "A", "Move left (left stick left).") { Press = KeyPress.MoveLeft },
+		new("move_right", "D", "Move right (left stick right).") { Press = KeyPress.MoveRight },
+		new("walk", "Alt", "Hold to walk: the stick at half deflection.") { Press = KeyPress.Walk },
+		new("sprint", "Shift", "Hold to sprint (A held).") { Press = KeyPress.A },
+		new("interact", "E,Space,Enter", "Interact, talk, pick up; accept in menus (A).") { Press = KeyPress.A },
 		new("attack", "MouseLeft", "Attack with the selected mode: melee, ranged or magic. Hold " +
-			"to block and charge a flourish, to aim, or to charge a spell."),
-		new("melee_mode", "1", "Put the attack button on melee (Fable III's 1)."),
-		new("ranged_mode", "2", "Put the attack button on the ranged weapon (Fable III's 2)."),
-		new("magic_mode", "3", "Put the attack button on magic (Fable III's 3)."),
-		new("melee", "F", "Melee directly, whatever the mode (X)."),
-		new("ranged", "R", "Ranged directly, whatever the mode (Y)."),
-		new("magic", "C", "Magic directly, whatever the mode (B)."),
+			"to block and charge a flourish, to aim, or to charge a spell.") { Press = KeyPress.Attack },
+		new("melee_mode", "1", "Put the attack button on melee (Fable III's 1).") { Press = KeyPress.MeleeMode },
+		new("ranged_mode", "2", "Put the attack button on the ranged weapon (Fable III's 2).") { Press = KeyPress.RangedMode },
+		new("magic_mode", "3", "Put the attack button on magic (Fable III's 3).") { Press = KeyPress.MagicMode },
+		new("melee", "F", "Melee directly, whatever the mode (X).") { Press = KeyPress.X },
+		new("ranged", "R", "Ranged directly, whatever the mode (Y).") { Press = KeyPress.Y },
+		new("magic", "C", "Magic directly, whatever the mode (B).") { Press = KeyPress.B },
 		new("target_lock", "MouseRight,T", "Hold to lock on to a target (left trigger); flick the " +
 			"mouse to switch target (a mod's lock may switch by the wheel instead: up left, down right). " +
 			"T is the key for it where the mouse buttons mean pointer clicks (menus, the pub games' odds).",
-			new[] { "MouseRight" }),
-		new("first_person", "MouseMiddle,Z", "Hold for the first-person view (left bumper)."),
-		new("spells_menu", "Ctrl", "Hold to choose a spell (right trigger)."),
-		new("expression_wheel", "Q", "Hold for the expression wheel."),
-		new("camera_mode", "V", "Toggle the camera mode (right stick click)."),
-		new("photo_mode", "F11", "Open or close Photo Mode (L3 + R3 on controller)."),
-		new("pause", "Escape,Tab", "Pause and open the book (Start). Escape is back in menus."),
-		new("back", "Escape,Backspace", "Back out of a menu (B). Only in menus."),
-		new("item_up", "F1,Up", "Item slot up / menu up (D-pad up)."),
-		new("item_down", "F2,Down", "Item slot down / menu down (D-pad down)."),
-		new("item_left", "F3,Left", "Item slot left / menu left (D-pad left)."),
-		new("item_right", "F4,Right", "Item slot right / menu right (D-pad right)."),
-		new("tab_prev", "PageUp,BracketLeft", "Previous tab in a menu (left bumper)."),
-		new("tab_next", "PageDown,BracketRight", "Next tab in a menu (right bumper)."),
+			new[] { "MouseRight" }) { Press = KeyPress.LeftTrigger },
+		new("first_person", "MouseMiddle,Z", "Hold for the first-person view (left bumper).") { Press = KeyPress.LeftShoulder },
+		new("spells_menu", "Ctrl", "Hold to choose a spell (right trigger).") { Press = KeyPress.RightTrigger },
+		new("expression_wheel", "Q", "Hold for the expression wheel.") { Press = KeyPress.Back },
+		new("camera_mode", "V", "Toggle the camera mode (right stick click).") { Press = KeyPress.RightThumb },
+		new("photo_mode", "F11", "Open or close Photo Mode (L3 + R3 on controller).") { Press = KeyPress.PhotoMode },
+		new("pause", "Escape,Tab", "Pause and open the book (Start). Escape is back in menus.") { Press = KeyPress.Pause },
+		new("back", "Escape,Backspace", "Back out of a menu (B). Only in menus.") { Press = KeyPress.BackOut },
+		new("item_up", "F1,Up", "Item slot up / menu up (D-pad up).") { Press = KeyPress.DpadUp },
+		new("item_down", "F2,Down", "Item slot down / menu down (D-pad down).") { Press = KeyPress.DpadDown },
+		new("item_left", "F3,Left", "Item slot left / menu left (D-pad left).") { Press = KeyPress.DpadLeft },
+		new("item_right", "F4,Right", "Item slot right / menu right (D-pad right).") { Press = KeyPress.DpadRight },
+		new("tab_prev", "PageUp,BracketLeft", "Previous tab in a menu (left bumper).") { Press = KeyPress.LeftShoulder },
+		new("tab_next", "PageDown,BracketRight", "Next tab in a menu (right bumper).") { Press = KeyPress.RightShoulder },
 	};
 
 	/// <summary>The attack button's mode — Fable III's 1, 2 and 3.</summary>
@@ -146,6 +209,9 @@ public partial class GameInput
 	/// <summary>Each action's bound inputs, parsed from refii.toml with the defaults beneath.</summary>
 	private static readonly Dictionary<string, List<BoundInput>> _bindings = new();
 
+	/// <summary>Each action's context (<see cref="KeyAction.When"/>), read with the bindings.</summary>
+	private static readonly Dictionary<string, KeyContext> _contexts = new();
+
 	/// <summary>One bound input: a key or a mouse button.</summary>
 	private readonly record struct BoundInput(Key Key, MouseButton Mouse);
 
@@ -184,6 +250,7 @@ public partial class GameInput
 			}
 
 			_bindings[action.Name] = inputs;
+			_contexts[action.Name] = action.When;
 		}
 
 		// The controller's remap and the prompts' glyph settings come from the same read.
@@ -220,7 +287,8 @@ public partial class GameInput
 	/// cursor's clicks belong to the menus.</summary>
 	private static bool Down(string action)
 	{
-		if (!_bindings.TryGetValue(action, out List<BoundInput>? inputs))
+		if (!_bindings.TryGetValue(action, out List<BoundInput>? inputs) ||
+			(_contexts.TryGetValue(action, out KeyContext when) && !InContext(when)))
 		{
 			return false;
 		}
@@ -245,6 +313,40 @@ public partial class GameInput
 	}
 
 	public static bool PhotoModeKeyHeld => Down("photo_mode");
+
+	/// <summary>The keyboard's state for the debug channel (`input`): the contexts, the device and every action down now.</summary>
+	public static object DescribeKeys()
+	{
+		var down = new List<string>();
+		foreach (KeyAction action in KeyActions)
+		{
+			if (Down(action.Name))
+			{
+				down.Add(action.Name);
+			}
+		}
+
+		GameTitleInput title = Engine_TitleGame.Active.Input;
+		return new
+		{
+			playing = Playing, in_game = HostBridge.IsInGame, world_has_input = title.WorldHasInput,
+			choices_up = title.ChoicesUp, title_screen_up = title.TitleScreenUp,
+			keyboard_mouse = Engine_UiInputMode.KeyboardMouse, pointer_free = Engine_UiPointer.Free,
+			mouse_mode = Godot.Input.MouseMode.ToString(), actions = KeyActions.Length, down,
+			title_input = title.Describe(),
+		};
+	}
+
+	/// <summary>Whether an action of context <paramref name="when"/> presses now.</summary>
+	private static bool InContext(KeyContext when) => when switch
+	{
+		KeyContext.Play => Playing,
+		KeyContext.Menu => !Playing,
+		KeyContext.Choice => Engine_TitleGame.Active.Input.ChoicesUp,
+		KeyContext.PlayNoChoice => Playing && !Engine_TitleGame.Active.Input.ChoicesUp,
+		KeyContext.TitleScreen => Engine_TitleGame.Active.Input.TitleScreenUp,
+		_ => true,
+	};
 
 	/// <summary>
 	/// A title overlay is pointed at (Fable 2's expression wheel and spell blade): the cursor is
@@ -301,17 +403,18 @@ public partial class GameInput
 			Engine_UiKeyGlyphs.Update();
 		}
 
-		if (Down("melee_mode"))
+		foreach (KeyAction action in KeyActions)
 		{
-			_attackMode = AttackMode.Melee;
-		}
-		else if (Down("ranged_mode"))
-		{
-			_attackMode = AttackMode.Ranged;
-		}
-		else if (Down("magic_mode"))
-		{
-			_attackMode = AttackMode.Magic;
+			if (action.Press is KeyPress.MeleeMode or KeyPress.RangedMode or KeyPress.MagicMode && Down(action.Name))
+			{
+				_attackMode = action.Press switch
+				{
+					KeyPress.RangedMode => AttackMode.Ranged,
+					KeyPress.MagicMode => AttackMode.Magic,
+					_ => AttackMode.Melee,
+				};
+				break;
+			}
 		}
 
 		StateAttackMode();
@@ -323,7 +426,8 @@ public partial class GameInput
 	/// the world and back in a menu.
 	/// </summary>
 	public static string? KeyLabel(string button) => GamePhotoMode.Active ? GamePhotoMode.KeyLabel(button) :
-		Engine_TitleGame.Active.InteractionOwnsDevices ? Engine_TitleGame.Active.KeyLabel(button) : button switch
+		Engine_TitleGame.Active.InteractionOwnsDevices ? Engine_TitleGame.Active.KeyLabel(button) :
+		Engine_TitleGame.Active.Input.KeyLabel(button, Shown, Playing) ?? button switch
 	{
 		"A" => Shown("interact"),
 		"B" => Shown(Playing ? "magic" : "back"),
@@ -443,6 +547,28 @@ public partial class GameInput
 	/// <summary>The keys the mods' claims withhold from the pad mapping this frame (ModInput.WithheldKeys).</summary>
 	private static IReadOnlySet<Key> _withheldKeys = new HashSet<Key>();
 
+	/// <summary>The host actions whose keys are down: each posts once per press.</summary>
+	private static readonly HashSet<string> _hostActionsHeld = new();
+
+	/// <summary>The pad bit a plain button press sets.</summary>
+	private static uint ButtonOf(KeyPress press) => press switch
+	{
+		KeyPress.A => ButtonA,
+		KeyPress.B => ButtonB,
+		KeyPress.X => ButtonX,
+		KeyPress.Y => ButtonY,
+		KeyPress.LeftShoulder => LeftShoulder,
+		KeyPress.RightShoulder => RightShoulder,
+		KeyPress.Back => Back,
+		KeyPress.RightThumb => RightThumb,
+		KeyPress.DpadUp => DpadUp,
+		KeyPress.DpadDown => DpadDown,
+		KeyPress.DpadLeft => DpadLeft,
+		KeyPress.DpadRight => DpadRight,
+		KeyPress.Start => Start,
+		_ => 0u,
+	};
+
 	/// <summary>The keyboard as pad 0's buttons, triggers and left stick.</summary>
 	private static void KeyboardMouseState(ref PadState state)
 	{
@@ -454,48 +580,67 @@ public partial class GameInput
 
 		_withheldKeys = Refii.Mods.ModInput.WithheldKeys();
 		uint buttons = 0;
-		if (Down("interact") || Down("sprint")) buttons |= ButtonA;
-		if (Down("melee")) buttons |= ButtonX;
-		if (Down("ranged")) buttons |= ButtonY;
-		if (Down("magic")) buttons |= ButtonB;
-		if (Down("attack"))
+		bool pause = false, backOut = false, walk = false;
+		var move = Vector2.Zero;
+		foreach (KeyAction action in KeyActions)
 		{
-			buttons |= _attackMode switch
+			if (action.Press == KeyPress.HostAction)
 			{
-				AttackMode.Ranged => ButtonY,
-				AttackMode.Magic => ButtonB,
-				_ => ButtonX,
-			};
-		}
+				bool held = Down(action.Name);
+				if (held && _hostActionsHeld.Add(action.Name) && !string.IsNullOrEmpty(action.HostAction))
+				{
+					HostBridge.PostFrontEndAction(action.HostAction);
+				}
+				else if (!held)
+				{
+					_hostActionsHeld.Remove(action.Name);
+				}
 
-		if (Down("first_person")) buttons |= LeftShoulder;
-		if (Down("tab_prev")) buttons |= LeftShoulder;
-		if (Down("tab_next")) buttons |= RightShoulder;
-		if (Down("expression_wheel")) buttons |= Back;
-		if (Down("camera_mode")) buttons |= RightThumb;
-		if (Down("item_up")) buttons |= DpadUp;
-		if (Down("item_down")) buttons |= DpadDown;
-		if (Down("item_left")) buttons |= DpadLeft;
-		if (Down("item_right")) buttons |= DpadRight;
+				continue;
+			}
+
+			if (action.Press is KeyPress.None or KeyPress.PhotoMode or KeyPress.MeleeMode or KeyPress.RangedMode or
+				KeyPress.MagicMode || !Down(action.Name))
+			{
+				continue;
+			}
+
+			switch (action.Press)
+			{
+				case KeyPress.Attack:
+					buttons |= _attackMode switch
+					{
+						AttackMode.Ranged => ButtonY,
+						AttackMode.Magic => ButtonB,
+						_ => ButtonX,
+					};
+					break;
+				case KeyPress.LeftTrigger: state.LeftTrigger = 255; break;
+				case KeyPress.RightTrigger: state.RightTrigger = 255; break;
+				case KeyPress.Pause: pause = true; break;
+				case KeyPress.BackOut: backOut = true; break;
+				case KeyPress.Walk: walk = true; break;
+				case KeyPress.MoveForward: move.Y += 1f; break;
+				case KeyPress.MoveBack: move.Y -= 1f; break;
+				case KeyPress.MoveRight: move.X += 1f; break;
+				case KeyPress.MoveLeft: move.X -= 1f; break;
+				default: buttons |= ButtonOf(action.Press); break;
+			}
+		}
 
 		// Escape pauses in play and backs out in a menu; a held press keeps the meaning it started
 		// with (Engine_PauseBackKeys).
-		(bool start, bool back) = PauseBackKeys.Map(Playing, Down("pause"), Down("back"));
+		(bool start, bool back) = PauseBackKeys.Map(Playing, pause, backOut);
 		if (start) buttons |= Start;
 		if (back) buttons |= ButtonB;
 
 		state.Buttons |= buttons;
-		if (Down("target_lock")) state.LeftTrigger = 255;
-		if (Down("spells_menu")) state.RightTrigger = 255;
 
 		// THE KEYS AS THE LEFT STICK: full deflection, the diagonal kept to unit length, half
 		// with walk held.
-		var move = new Vector2(
-			(Down("move_right") ? 1f : 0f) - (Down("move_left") ? 1f : 0f),
-			(Down("move_forward") ? 1f : 0f) - (Down("move_back") ? 1f : 0f));
 		if (move != Vector2.Zero)
 		{
-			move = move.Normalized() * (Down("walk") ? 0.5f : 1f);
+			move = move.Normalized() * (walk ? 0.5f : 1f);
 			state.LeftX = Dominant(state.LeftX, Mathf.RoundToInt(move.X * 32767f));
 			state.LeftY = Dominant(state.LeftY, Mathf.RoundToInt(move.Y * 32767f));
 		}

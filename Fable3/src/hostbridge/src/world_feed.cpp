@@ -177,8 +177,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetStatedFxCount(void) { return refii_br
 /// 4 emitting, 8 root: each row is the effect's placement, the position its root emitters take
 /// (sub_83183750 → emitter+0x50) — [3] 0 live particles (the guest's particles are not read),
 /// [4..6] the stated position's x, y, z, [7..15] the rotation's rows from the stated orientation,
-/// [16] the handle, [17] intensity 1, [18] scale 1, [19] fade 0, [20] [21] no owner or attachment
-/// stated. An effect is listed from its START until its KILL or its scene's.
+/// [16] the handle, [17] intensity 1, [18] scale 1, [19] fade 1 (no fade-out is stated), [20] the
+/// entity that plays the effect and [21] the entity that one was attached to, as fx_owner_hooks.cpp
+/// states them (0 for an effect no CECParticleEmitter plays). An effect is listed from its START
+/// until its KILL or its scene's.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_effects) {
     if (out == nullptr || max_effects == 0u) {
         return 0u;
@@ -221,9 +223,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
         fx[16] = row[0];
         fx[17] = Bits(1.0f);
         fx[18] = Bits(1.0f);
-        fx[19] = Bits(0.0f);
-        fx[20] = 0u;
-        fx[21] = 0u;
+        fx[19] = Bits(1.0f);
+        fx[20] = row[12];
+        fx[21] = row[13];
         ++written;
     }
 

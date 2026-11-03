@@ -72,14 +72,6 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetGameLoopPacer(uint32_t* /*words*/, ui
     return 0;
 }
 
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudPulserStates(uint32_t* /*out_hashes*/, float* /*out_phases*/, uint32_t* /*out_modes*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudPulsers(uint32_t* /*out_hashes*/, float* /*out_phases*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudScriptMeters(uint32_t* /*out_hashes*/, float* /*out_ratios*/, uint32_t /*capacity*/) {
     return 0;
 }

@@ -20,6 +20,9 @@ public sealed class Fable3UiSource : Engine_UiSource
 
 	public override Dictionary<uint, float> GetHudMeters() => HostBridge.GetHudMeters();
 
+	/// <summary>The HUD's pulsers, registry [4] (hud_feed.cpp: RefiiHostGetHudPulserStates).</summary>
+	public override Dictionary<uint, Engine_UiSource.HudPulser> GetHudPulsers() => HostBridge.GetHudPulsers();
+
 	public override Dictionary<uint, string> GetHudTexts() => HostBridge.GetHudTexts();
 
 	/// <summary>The guest's language table (options_feed.cpp: RefiiHostGetLanguages), Fable 2's layout at Fable 3's addresses.</summary>

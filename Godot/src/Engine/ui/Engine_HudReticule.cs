@@ -1,17 +1,16 @@
 using System;
 using Godot;
 
-namespace Refii.Titles.Fable2;
-
-using Refii.Ui;
+namespace Refii.Ui;
 
 /// <summary>
-/// The ranged-aim reticule — four `target` petals per player that close in on the aim point as
-/// a lock builds. Not a Gameface element: `sub_82179778` pushes each petal as a 2D sprite into
-/// the command stream from a per-player record, so the HUD rebuild has nothing to follow. Godot
-/// draws it here from that record and the aim point's world anchor.
+/// The aim reticule — `target` petals per player that close in on the aim point as a lock builds.
+/// Not a Gameface element: each title's guest pushes its petals as 2D sprites into the command
+/// stream from a per-player record, so the HUD rebuild has nothing to follow. Godot draws it here
+/// from that record and the aim point, by the title's own draw (<see cref="Look"/>): Fable 2's
+/// sub_82179778 (below), Fable 3's sub_822906A8 (one petal on the point, s = (1 − t)·8 + 8).
 ///
-/// The petal geometry is the guest's draw, in its own 1280x720 pixels (0x82179778..0x82179a90):
+/// Fable 2's petal geometry is the guest's draw, in its own 1280x720 pixels (0x82179778..0x82179a90):
 /// <code>
 ///   t      = clamp(counter / 4, 0, 1)                 the four-frame intro
 ///   m      = min(progress, t)
@@ -39,8 +38,18 @@ public sealed partial class Engine_HudReticule : Node3D
 	/// <param name="Colour">Record +16, RGBA.</param>
 	/// <param name="Mode">Record +32: 0 picks `targeta`, 1 and 2 `targetb`, above that `target`.</param>
 	/// <param name="Counter">Record +52, the frames since the mode last changed.</param>
+	/// <param name="Screen">The point as the guest stated it on screen (its pixels from the centre, y up), for a
+	/// reticule whose world point the guest never keeps; null to place <paramref name="Anchor"/> through <see cref="Place"/>.</param>
 	public readonly record struct Aim(
-		Vector3 Anchor, float Progress, Color Colour, uint Mode, int Counter);
+		Vector3 Anchor, float Progress, Color Colour, uint Mode, int Counter, Vector2? Screen = null);
+
+	/// <summary>A title's reticule draw in its guest pixels: r = (1 − m)·RadiusSpan + RadiusBase,
+	/// s = (1 − t)·SizeSpan + SizeBase, each player's Phase, the clamp fraction (null: none), the art by mode.</summary>
+	public sealed record Style(int Petals, float RadiusSpan, float RadiusBase, float SizeSpan, float SizeBase,
+		float[] Phase, float? Clamp, Func<uint, string> ArtFor);
+
+	/// <summary>The title's draw; set before the node enters the tree.</summary>
+	public Style Look { get; init; } = null!;
 
 	/// <summary>Resolves a lowercase resource hash to a texture, or null.</summary>
 	public Func<uint, Texture2D?>? ResolveTexture { get; set; }
@@ -62,27 +71,15 @@ public sealed partial class Engine_HudReticule : Node3D
 	/// </summary>
 	public int OnlyPlayer { get; set; } = -1;
 
-	private const int Petals = 4;
-
-	/// <summary>`sub_822939B0`: player one's phase is 0 (`flt_82099484`), player two's π/4
-	/// (`flt_82100E60`).</summary>
-	private static readonly float[] Phase = { 0f, Mathf.Pi / 4f };
-
-	private static readonly string[] Names =
-	{
-		"art\\gui\\persistant\\targeta.tex",
-		"art\\gui\\persistant\\targetb.tex",
-		"art\\gui\\persistant\\target.tex",
-	};
-
 	private readonly Aim?[] _aims = new Aim?[2];
-	private readonly MeshInstance3D[,] _quads = new MeshInstance3D[2, Petals];
-	private readonly ShaderMaterial[,] _materials = new ShaderMaterial[2, Petals];
-	private readonly Color[,] _lastTint = new Color[2, Petals];
-	private readonly Texture2D?[,] _lastTexture = new Texture2D?[2, Petals];
+	private MeshInstance3D[,] _quads = null!;
+	private ShaderMaterial[,] _materials = null!;
+	private Color[,] _lastTint = null!;
+	private Texture2D?[,] _lastTexture = null!;
 	private readonly bool[] _hidden = { true, true };
-	private readonly Texture2D?[] _textures = new Texture2D?[Names.Length];
-	private readonly bool[] _resolved = new bool[Names.Length];
+	private readonly System.Collections.Generic.Dictionary<string, Texture2D?> _textures = new();
+
+	private int Petals => Look.Petals;
 	private readonly Vector2?[] _last = new Vector2?[2];
 	private readonly float[] _drawnIntro = new float[2];
 	private readonly float[] _drawnProgress = new float[2];
@@ -91,6 +88,11 @@ public sealed partial class Engine_HudReticule : Node3D
 	{
 		// After the camera, as the world sprites are — see Engine_HudWorldSprites._Ready.
 		ProcessPriority = 880;
+		ArgumentNullException.ThrowIfNull(Look);
+		_quads = new MeshInstance3D[2, Petals];
+		_materials = new ShaderMaterial[2, Petals];
+		_lastTint = new Color[2, Petals];
+		_lastTexture = new Texture2D?[2, Petals];
 		for (int player = 0; player < 2; ++player)
 		{
 			for (int i = 0; i < Petals; ++i)
@@ -122,18 +124,18 @@ public sealed partial class Engine_HudReticule : Node3D
 
 	private Texture2D? TextureFor(uint mode)
 	{
-		int which = mode == 0 ? 0 : mode <= 2 ? 1 : 2;
-		if (!_resolved[which])
+		string name = Look.ArtFor(mode);
+		if (!_textures.TryGetValue(name, out Texture2D? texture))
 		{
-			_resolved[which] = true;
-			_textures[which] = ResolveTexture?.Invoke(Refii.Core.Engine_GameHash.ResourcePath(Names[which]));
-			if (_textures[which] is null)
+			texture = ResolveTexture?.Invoke(Refii.Core.Engine_GameHash.ResourcePath(name));
+			_textures[name] = texture;
+			if (texture is null)
 			{
-				GD.Print($"[hud-reticule] '{Names[which]}' did not resolve — the petals draw untextured");
+				GD.Print($"[hud-reticule] '{name}' did not resolve — the petals draw untextured");
 			}
 		}
 
-		return _textures[which];
+		return texture;
 	}
 
 	/// <summary>
@@ -156,12 +158,16 @@ public sealed partial class Engine_HudReticule : Node3D
 			}
 
 			// Behind the camera the guest keeps its last point; so does this.
-			Vector2? placed = Place?.Invoke(aim.Anchor);
+			Vector2? placed = aim.Screen is { } stated ? stated * UnitsPerGuestPixel : Place?.Invoke(aim.Anchor);
 			if (placed is { } fresh)
 			{
-				Vector2 limit = CanvasHalfExtent * 0.8f;
-				_last[player] = new Vector2(
-					Mathf.Clamp(fresh.X, -limit.X, limit.X), Mathf.Clamp(fresh.Y, -limit.Y, limit.Y));
+				_last[player] = fresh;
+				if (Look.Clamp is { } clamp)
+				{
+					Vector2 limit = CanvasHalfExtent * clamp;
+					_last[player] = new Vector2(
+						Mathf.Clamp(fresh.X, -limit.X, limit.X), Mathf.Clamp(fresh.Y, -limit.Y, limit.Y));
+				}
 			}
 
 			if (_last[player] is not { } centre)
@@ -176,8 +182,8 @@ public sealed partial class Engine_HudReticule : Node3D
 
 			_drawnProgress[player] = Mathf.MoveToward(_drawnProgress[player], aim.Progress, (float)delta * 2.5f);
 			float m = Mathf.Min(_drawnProgress[player], t);
-			float r = ((1f - m) * 18f) + 8f;
-			float s = ((1f - t) * 12f) + 12f;
+			float r = ((1f - m) * Look.RadiusSpan) + Look.RadiusBase;
+			float s = ((1f - t) * Look.SizeSpan) + Look.SizeBase;
 			float k = ((1f - t) * 1.25f) + 1f;
 			float scale = UnitsPerGuestPixel * PieceScale;
 			var tint = new Color(aim.Colour.R, aim.Colour.G, aim.Colour.B, aim.Colour.A * t);
@@ -187,7 +193,7 @@ public sealed partial class Engine_HudReticule : Node3D
 
 			for (int i = 0; i < Petals; ++i)
 			{
-				float angle = (i * Mathf.Pi * 0.5f) + (t * Mathf.Pi * 0.5f) + Phase[player];
+				float angle = (i * Mathf.Pi * 0.5f) + (t * Mathf.Pi * 0.5f) + Look.Phase[player];
 
 				// Guest screen space is y down; the canvas is y up, so y and the turn both flip.
 				var offset = new Vector2(Mathf.Sin(angle) * r, -Mathf.Cos(angle) * r) * scale;

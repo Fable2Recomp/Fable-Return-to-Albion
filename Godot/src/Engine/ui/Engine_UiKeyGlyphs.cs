@@ -59,11 +59,26 @@ public static partial class Engine_UiKeyGlyphs
 	/// <summary>The style the pad prompts are drawn in now.</summary>
 	public static GlyphStyle Style => Engine_ControllerFamily.Resolve(StyleSetting, PadFamily);
 
+	/// <summary>How one texture of a button's art takes the glyph swap.</summary>
+	public enum GlyphLayer
+	{
+		/// <summary>The whole button (its `complete` art, or the orb its letter sits on): drawn as the glyph.</summary>
+		Whole,
+
+		/// <summary>A layer over the orb (the letter, the rim): shipped art or nothing, so the glyph under it shows alone.</summary>
+		Overlay,
+	}
+
+	/// <summary>A texture that is a button's art: the button, and how the texture layers.</summary>
+	public readonly record struct GlyphArt(string Button, GlyphLayer Layer);
+
 	private sealed class Proxy
 	{
 		public required ImageTexture Texture;
 		public required Texture2D Original;
 		public required string Button;
+
+		public GlyphLayer Layer;
 
 		/// <summary>A stick or D-pad prompt's direction (`LeftUp`), else none.</summary>
 		public Direction Arrow;
@@ -287,10 +302,12 @@ public static partial class Engine_UiKeyGlyphs
 			PadAtlas = original;
 		}
 
-		if (ButtonFor(key) is not { } button)
+		if (ArtFor(key) is not { } art)
 		{
 			return original;
 		}
+
+		string button = art.Button;
 
 		if (_proxies.TryGetValue(key, out Proxy? known))
 		{
@@ -308,6 +325,7 @@ public static partial class Engine_UiKeyGlyphs
 			Texture = ImageTexture.CreateFromImage(image),
 			Original = original,
 			Button = button,
+			Layer = art.Layer,
 			Arrow = ArrowFor(key),
 		};
 		_proxies[key] = proxy;
@@ -414,6 +432,10 @@ public static partial class Engine_UiKeyGlyphs
 		return Direction.None;
 	}
 
+	/// <summary>A texture path's button art: the running title's own first, then the shared table.</summary>
+	private static GlyphArt? ArtFor(string path) =>
+		Engine_TitleGame.Active.GlyphArtFor(path) ?? (ButtonFor(path) is { } button ? new GlyphArt(button, GlyphLayer.Whole) : null);
+
 	/// <summary>Which pad button a texture path draws, or null for any other art.</summary>
 	private static string? ButtonFor(string path)
 	{
@@ -464,10 +486,20 @@ public static partial class Engine_UiKeyGlyphs
 			return;
 		}
 
+		if (proxy.Layer == GlyphLayer.Overlay)
+		{
+			// The orb under it carries the glyph; the letter over it would draw on top of the keycap.
+			proxy.Texture.SetImage(new Canvas(pad.GetWidth(), pad.GetHeight()).ToImage(pad.HasMipmaps()));
+			return;
+		}
+
 		// One glyph per square cell along the long side, so an animated strip shows a whole key
 		// in whichever frame its UVs select; a square texture is one cell.
-		int width = pad.GetWidth();
-		int height = pad.GetHeight();
+		// A small original (Fable 3's prompts are 32 px) is drawn at a whole multiple of its size, so the
+		// letter stays legible; the quads' UVs are fractions, so every cut still fits.
+		int scale = Math.Max(1, (int)Math.Ceiling(MinGlyphSide / (double)Math.Max(1, Math.Min(pad.GetWidth(), pad.GetHeight()))));
+		int width = pad.GetWidth() * scale;
+		int height = pad.GetHeight() * scale;
 		int side = Math.Min(width, height);
 		string label = keys ? LabelFor?.Invoke(proxy.Button) ?? proxy.Button : string.Empty;
 		var canvas = new Canvas(width, height);
@@ -487,8 +519,11 @@ public static partial class Engine_UiKeyGlyphs
 			}
 		}
 
-		proxy.Texture.SetImage(canvas.ToImage(pad.HasMipmaps()));
+		proxy.Texture.SetImage(canvas.ToImage(pad.HasMipmaps() || scale > 1));
 	}
+
+	/// <summary>The smallest side a drawn glyph is rasterised at.</summary>
+	private const int MinGlyphSide = 128;
 
 	/// <summary>
 	/// The physical input a pad prompt for <paramref name="button"/> shows: the remap's for the

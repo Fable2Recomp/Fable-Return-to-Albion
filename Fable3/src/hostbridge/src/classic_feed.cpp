@@ -33,7 +33,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <unordered_map>
 
+#include "core/payload_bridge.h"
 #include "host_abi.h"
 #include "host_core.h"
 #include "presented_world.h"
@@ -375,6 +377,44 @@ void TextureKey(const uint8_t* base, uint32_t entry, float* o) {
     for (uint32_t w = 0; w < 16u; ++w) {
         PutBits(o + 4 + w, Word(base, key + w * 4u));
     }
+}
+
+constexpr uint32_t kMaxStatedGroups = 4096u;
+
+/// The twin of every render object a particle group's message was posted to, to that id
+/// (Fable3/src/hooks/src/classic_particle_hooks.cpp; the id indexes the twin table, sub_8220D870).
+const std::unordered_map<uint32_t, uint32_t>& StatedGroupTwins(const uint8_t* base) {
+    static thread_local uint32_t ids[kMaxStatedGroups];
+    static thread_local std::unordered_map<uint32_t, uint32_t> twins;
+    twins.clear();
+    const uint32_t count = refii_bridge_classic_particle_ids(ids, kMaxStatedGroups);
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t twin = TableEntry(base, kTwins, kTwinsEnd, ids[i]);
+        if (twin != 0u) {
+            twins[twin] = ids[i];
+        }
+    }
+    return twins;
+}
+
+enum class Stated { kNone, kRead, kNoRoom };
+
+/// The stream the guest's writer last laid down for the group twin `r` (classic_particle_hooks.cpp)
+/// into `out`, when it is of `kind`: meta = {kind, n, c, floats}. kNone when the group has none
+/// (its writer wrote nothing, so the guest's draw skips it at R+432 == -1); kNoRoom when it does
+/// not fit `room` floats.
+Stated StatedStream(const std::unordered_map<uint32_t, uint32_t>& twins, uint32_t r, uint32_t kind,
+                    float* out, uint32_t room, uint32_t* meta) {
+    meta[0] = meta[1] = meta[2] = meta[3] = 0u;
+    const auto id = twins.find(r);
+    if (id == twins.end()) {
+        return Stated::kNone;
+    }
+    const bool read = refii_bridge_classic_particle_read(id->second, meta, out, room) != 0;
+    if (meta[0] != kind || meta[3] == 0u) {
+        return Stated::kNone;
+    }
+    return read ? Stated::kRead : Stated::kNoRoom;
 }
 
 }  // namespace
@@ -788,8 +828,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicMists(float* out, uint32_t cap
 /// then count x 12 floats. R = the render object, D = *(*(R+180)+4), M = *(D+48), all at Fable
 /// 2's offsets, except: [12..15] the fades R+408..420 (sub_82C54180 `lfs 0x198..0x1A4`), [16] 0
 /// (Fable 3's fade constant has no alpha lane), [17] the scale R+424 (the keyframe scale's
-/// multiplier, sub_82C54220), [18..20] 0. The records live in a vertex buffer, not D+8, so each
-/// group's count x 12 floats are zero. [7] owner, [51..53] the lit ambient and [54] probes are 0.
+/// multiplier, sub_82C54220), [18..20] 0. The render copy D holds no records (sub_82C49A78): the
+/// records are the sim's, n of 48 bytes, as the quad writer sub_83178480 took them to build the
+/// frame's vertices, stated by classic_particle_hooks.cpp for the object R's id was posted to;
+/// [2] count is that n. A group whose writer wrote nothing is left out, as the guest's draw skips
+/// it (R+432 == -1, sub_82C53F10). [7] owner, [51..53] the lit ambient and [54] probes are 0.
 /// out[0] = groups, out[1] = floats used; returns the floats used, 0 when none.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicParticles(float* out, uint32_t capacity) {
     constexpr uint32_t kHeader = 340u;
@@ -805,23 +848,32 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicParticles(float* out, uint32_t
     }
     uint32_t used = 2u;
     uint32_t groups = 0u;
+    const auto& twins = StatedGroupTwins(base);
     const auto visit = [&](uint32_t begin, uint32_t end) {
         for (uint32_t at = begin; at + 4u <= end; at += 4u) {
             const uint32_t r = Word(base, at);
             if (!Plausible(r) || Word(base, r + 240u) != 1u) {
                 continue;
             }
-            const uint32_t count = Word(base, r + 176u);
             const uint32_t data = Word(base, Word(base, r + 180u) + 4u);
             const uint32_t material = Word(base, data + 48u);
-            if (count == 0u || count > kMaxRecords || !Plausible(data) || !Plausible(material)) {
+            if (!Plausible(data) || !Plausible(material)) {
                 continue;
             }
-            if (used + kHeader + count * kRecord > capacity) {
+            if (used + kHeader > capacity) {
                 return false;
             }
             float* h = out + used;
-            std::memset(h, 0, (kHeader + count * kRecord) * sizeof(float));
+            uint32_t meta[4];
+            const Stated stated = StatedStream(twins, r, 1u, h + kHeader, capacity - used - kHeader, meta);
+            if (stated == Stated::kNoRoom) {
+                return false;
+            }
+            const uint32_t count = meta[1];
+            if (stated == Stated::kNone || count == 0u || count > kMaxRecords || meta[3] != count * kRecord) {
+                continue;
+            }
+            std::memset(h, 0, kHeader * sizeof(float));
             PutBits(h + 0, r);
             h[1] = 1.0f;
             h[2] = static_cast<float>(count);
@@ -871,10 +923,14 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicParticles(float* out, uint32_t
 /// CONTRACT: the trails (R+240 == 2) and double trails (3) of types 12 and 30 in Fable 2's
 /// layout: a 288-float header, then (c + 3) x 8 floats. The materials are Fable 2's: TM =
 /// *(D+0x40), DM = *(D+0x2C), blend TM+0x24, texture block TM+0x50 with its count at +100 (the
-/// draw sub_82C55988 reads TM+36, TM+48, TM+80, TM+180). [12..15] the fades R+408..420, [16] 0;
-/// c is D+36 under Fable 2's guard (n >= 2, n <= c <= 4096). The points live in a vertex buffer,
-/// not D's ring, so the (c + 3) x 8 floats are zero and [6] closed is 0. [38] owner, [51..53] and
-/// [54] are 0. out[0] = groups, out[1] = floats used; returns the floats used, 0 when none.
+/// draw sub_82C55988 reads TM+36, TM+48, TM+80, TM+180). [12..15] the fades R+408..420, [16] 0.
+/// The render copy D holds no ring (sub_82C49B70 / C78): n, c and the c + 3 points are the ones
+/// the guest's own trail writers (sub_8317A758 / sub_831797E0) laid into the frame's vertex
+/// buffer, the sim ring unrolled with its end points, under Fable 2's guard (n >= 2, n <= c <=
+/// 4096), stated by classic_particle_hooks.cpp for the object R's id was posted to; a trail whose
+/// writer wrote nothing is left out, as the guest's draw skips it. [6] closed is 0 (the writer
+/// made its own end points). [38] owner, [51..53] and [54] are 0. out[0] = groups, out[1] =
+/// floats used; returns the floats used, 0 when none.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicTrails(float* out, uint32_t capacity) {
     constexpr uint32_t kHeader = 288u;
     constexpr uint32_t kPoint = 8u;
@@ -889,6 +945,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicTrails(float* out, uint32_t ca
     }
     uint32_t used = 2u;
     uint32_t groups = 0u;
+    const auto& twins = StatedGroupTwins(base);
     const auto visit = [&](uint32_t begin, uint32_t end) {
         for (uint32_t at = begin; at + 4u <= end; at += 4u) {
             const uint32_t r = Word(base, at);
@@ -901,9 +958,18 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicTrails(float* out, uint32_t ca
             if (!Plausible(m)) {
                 continue;
             }
-            const uint32_t n = Word(base, r + 176u);
-            const uint32_t c = Word(base, d + 36u);
-            if (n < 2u || c < n || c > kMaxPoints) {
+            if (used + kHeader > capacity) {
+                return false;
+            }
+            uint32_t meta[4];
+            const Stated stated =
+                StatedStream(twins, r, kind, out + used + kHeader, capacity - used - kHeader, meta);
+            if (stated == Stated::kNoRoom) {
+                return false;
+            }
+            const uint32_t n = meta[1];
+            const uint32_t c = meta[2];
+            if (stated == Stated::kNone || n < 2u || c < n || c > kMaxPoints || meta[3] != (c + 3u) * kPoint) {
                 continue;
             }
             const int32_t sub = static_cast<int32_t>(Word(base, m + (kind == 2u ? 0x20u : 0x14u)));
@@ -911,11 +977,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicTrails(float* out, uint32_t ca
                 continue;
             }
             const uint32_t points = c + 3u;
-            if (used + kHeader + points * kPoint > capacity) {
-                return false;
-            }
             float* h = out + used;
-            std::memset(h, 0, (kHeader + points * kPoint) * sizeof(float));
+            std::memset(h, 0, kHeader * sizeof(float));
             PutBits(h + 0, r);
             h[1] = static_cast<float>(kind);
             h[2] = static_cast<float>(n);

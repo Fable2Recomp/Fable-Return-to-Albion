@@ -3025,6 +3025,7 @@ public partial class GameUi : Node, IGameTitleUi
 		_reticule = new Engine_HudReticule
 		{
 			Name = "Reticule",
+			Look = ReticuleLook,
 			Position = new Vector3(0f, 0f, 54f),
 			ResolveTexture = hash =>
 				_presentation.TextureNames is { } names &&
@@ -3038,6 +3039,7 @@ public partial class GameUi : Node, IGameTitleUi
 		_reticuleTwo = new Engine_HudReticule
 		{
 			Name = "ReticulePlayerTwo",
+			Look = ReticuleLook,
 			Position = new Vector3(0f, 0f, 54f),
 			ResolveTexture = _reticule.ResolveTexture,
 			OnlyPlayer = 1,
@@ -3532,6 +3534,12 @@ public partial class GameUi : Node, IGameTitleUi
 	private Engine_HudWorldSprites? _worldSpritesTwo;
 
 	private Engine_HudReticule? _reticule;
+
+	/// <summary>sub_82179778: four petals, r = (1 − m)·18 + 8, s = (1 − t)·12 + 12; sub_822939B0's phases 0 / π/4
+	/// (flt_82099484 / flt_82100E60); the ±0.8 clamp; mode 0 targeta, 1–2 targetb, above that target.</summary>
+	private static readonly Engine_HudReticule.Style ReticuleLook = new(4, 18f, 8f, 12f, 12f,
+		new[] { 0f, Mathf.Pi / 4f }, 0.8f,
+		mode => mode == 0 ? "art\\gui\\persistant\\targeta.tex" : mode <= 2 ? "art\\gui\\persistant\\targetb.tex" : "art\\gui\\persistant\\target.tex");
 
 	/// <summary>Player two's reticule layer, drawn only while the screen is split.</summary>
 	private Engine_HudReticule? _reticuleTwo;

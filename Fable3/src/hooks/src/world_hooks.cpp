@@ -92,6 +92,7 @@
 #include <rex/ppc.h>
 
 #include "core/payload_bridge.h"
+#include "map_table_hooks.h"
 
 REX_EXTERN(__imp__rex_LevelManager_LevelLoaded);
 REX_EXTERN(__imp__rex_LevelManager_Unload);
@@ -260,6 +261,9 @@ REX_EXTERN(rex_RenderScene_RemoveObject) {
     refii_bridge_world_quad_removed(id);
   }
   refii_bridge_world_fx_mesh_removed(id);
+  refii_bridge_classic_particle_removed(id);
+  // A map table's object (map_table_hooks.cpp): its holder's remove sub_8292B060 posts it here.
+  refii::fable3::MapTableObjectRemoved(id);
   __imp__rex_RenderScene_RemoveObject(ctx, base);
 }
 

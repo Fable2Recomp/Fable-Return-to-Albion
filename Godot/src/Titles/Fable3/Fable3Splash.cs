@@ -41,6 +41,9 @@ public partial class Fable3Splash : Control
 	private const string StartIcon = "art/gui/hudassests/version4/buttons/start/24x24/start_complete.tex";
 
 	private int _state = -1;
+
+	/// <summary>Whether the "press START" splash is up: the keyboard's Enter, Space and Esc press START on it (<see cref="Fable3Input"/>).</summary>
+	public static bool Showing { get; private set; }
 	private bool _closed = true;
 	private bool _wideScreen = true;
 	private float _backBufferWidth = Width;
@@ -102,6 +105,7 @@ public partial class Fable3Splash : Control
 
 		_closed = closed;
 		bool shown = !_closed && _state >= 1;
+		Showing = shown;
 		if (shown && !_loaded)
 		{
 			Load();

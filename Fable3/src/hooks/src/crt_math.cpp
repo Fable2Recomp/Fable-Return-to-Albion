@@ -22,9 +22,9 @@
 //   pow   0x821EF7C8 (0x4E4) Fable 2's pow prologue (`mflr; stw r12; std r31; bl __savefpr_25`,
 //         `stfd f1; stfd f2; fmr f28,f1`), 0x588 past exp as Fable 2's is 0x548 past its exp,
 //         two instructions shorter; the signature's relative branch is what kept it from matching.
-// NOT NAMED: acos. Fable 2's acos is an 8-byte `li r4,1; b core` stub into the asin/acos core;
-// Fable 3 folded the flag into asin (above) and no function start carries the core's head with
-// `li r10,0`, so Fable 3 has no acos entry to answer.
+//   acos  0x8223E040 (0x8)   Fable 2's stub, `li r4,1; b 0x82E304D8` into the asin/acos core (a chunk
+//                            with no function start; `subfic r10,r4,1`, so r10 = 0 is acos); Lua math.acos
+//                            (sub_822C182C) calls it.
 //
 // PowerPC ABI: double arguments in f1, f2; the result in f1. Nothing else is touched.
 #include <cmath>
@@ -46,6 +46,7 @@ REFIII_CRT_MATH_1(rex_tan, std::tan)
 REFIII_CRT_MATH_1(rex_exp, std::exp)
 REFIII_CRT_MATH_1(rex_log, std::log)
 REFIII_CRT_MATH_1(rex_asin, std::asin)
+REFIII_CRT_MATH_1(rex_acos, std::acos)
 REFIII_CRT_MATH_1(rex_atan, std::atan)
 REFIII_CRT_MATH_1(rex_floor, std::floor)
 REFIII_CRT_MATH_1(rex_ceil, std::ceil)

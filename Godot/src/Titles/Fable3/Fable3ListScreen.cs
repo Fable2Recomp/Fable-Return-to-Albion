@@ -123,6 +123,9 @@ public abstract partial class Fable3ListScreen : Fable3Canvas
 		if (open != _open)
 		{
 			_open = open;
+			// Clicks made before the screen stood are not picks on it.
+			Engine_UiPointer.EndFrame();
+			Fable3PointerSteps.Cancel();
 			Visible = open;
 			_view.Visible = open;
 			CanvasViewport.RenderTargetUpdateMode = open ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
@@ -174,6 +177,7 @@ public abstract partial class Fable3ListScreen : Fable3Canvas
 
 		_page = page;
 		_view.CursorShown = page.Cursor;
+		Point(page, delta);
 
 		// A query stands over the page: the list steps back while the guest waits for the answer.
 		bool listShown = page.Query is null;
@@ -240,6 +244,49 @@ public abstract partial class Fable3ListScreen : Fable3Canvas
 			}
 		}
 	}
+
+	/// <summary>
+	/// THE MOUSE ON THE LIST: the pointer resolved through this canvas's camera (the open screen's),
+	/// a hovered row picked when the pointer moves, a click picking and accepting it, the wheel stepping
+	/// the cursor. Where the guest owns the cursor the pick is walked (<see cref="PointAt"/>).
+	/// </summary>
+	private void Point(Fable3ScreenPage page, double delta)
+	{
+		Engine_UiPointer.Resolve(CanvasCamera, CanvasViewport, GetViewportRect().Size);
+		if (page.Query is null && _view.Visible && Engine_UiPointer.Canvas is { } at)
+		{
+			int row = -1;
+			if (_view.EntryAt(at) is { } item)
+			{
+				for (int i = 0; i < page.Rows.Count; ++i)
+				{
+					if (page.Rows[i].Name == item.Name)
+					{
+						row = i;
+						break;
+					}
+				}
+			}
+
+			bool clicked = Engine_UiPointer.TakeLeft();
+			if (row >= 0 && (Engine_UiPointer.Moved || clicked))
+			{
+				PointAt(row, clicked);
+			}
+
+			int wheel = Engine_UiPointer.TakeWheel();
+			if (wheel != 0 && page.Rows.Count > 0)
+			{
+				int from = page.Selected >= 0 ? page.Selected : 0;
+				PointAt(System.Math.Clamp(from + wheel, 0, page.Rows.Count - 1), false);
+			}
+		}
+
+		Fable3PointerSteps.Tick(page.Selected, delta);
+	}
+
+	/// <summary>The pointer picked <paramref name="row"/>; <paramref name="clicked"/> when it was a click. The guest's screens walk their own cursor to it.</summary>
+	protected virtual void PointAt(int row, bool clicked) => Fable3PointerSteps.Toward(row, clicked);
 
 	public override void _Draw()
 	{

@@ -28,6 +28,8 @@ public sealed class Fable3Title : Engine_TitleGame
 
 		var layer = new Godot.CanvasLayer { Name = "Fable3Ui", Layer = 5 };
 		layer.AddChild(new Fable3Strings { Name = "Strings" });
+		// The map table the guest presents in place of the world, under every UI surface.
+		layer.AddChild(new Fable3MapTable { Name = "MapTable" });
 		// The HUD on the shared view, under every other surface as the guest's HUD layer is; its
 		// screen fade stands on its own canvas layer over all of them.
 		layer.AddChild(new Fable3Hud { Name = "Hud" });
@@ -35,10 +37,12 @@ public sealed class Fable3Title : Engine_TitleGame
 		layer.AddChild(natives);
 		// The world icons sit under the boxes and screens, as the guest's HUD layer does.
 		layer.AddChild(new Fable3WorldIcons { Name = "WorldIcons" });
-		layer.AddChild(new Fable3Screens { Name = "Screens" });
 		layer.AddChild(new Fable3Options { Name = "Options" });
+		layer.AddChild(new Fable3HostOptions { Name = "HostOptions" });
 		layer.AddChild(new Fable3StatedScreen { Name = "StatedScreen" });
 		layer.AddChild(new Fable3Boxes(natives) { Name = "Boxes" });
+		// The console's keyboard, over every screen that asks for it.
+		layer.AddChild(new Fable3Keyboard { Name = "Keyboard" });
 		// Over the HUD, as Fable 2's toast stands above every presentation.
 		layer.AddChild(new Fable3Achievements { Name = "Achievements" });
 		_splash = new Fable3Splash { Name = "Splash" };
@@ -52,6 +56,63 @@ public sealed class Fable3Title : Engine_TitleGame
 	}
 
 	public override Refii.Text.Engine_BabelDatabase? Strings => Fable3Strings.Current;
+
+	public override Refii.Game.GameTitleInput Input => Fable3Input.Instance;
+
+	public override Refii.Ui.Engine_UiKeyGlyphs.GlyphArt? GlyphArtFor(string path) => Fable3Glyphs.ArtFor(path);
+
+	/// <summary>Player one's dog, as the game binds it to its hero (RefiiHostGetHeroDogs: EntityManager+0xB8 / +0xC0, set by sub_82399CB8, read by sub_821E8250).</summary>
+	public override uint CompanionEntityAddress
+	{
+		get
+		{
+			try
+			{
+				return RefiiHostGetHeroDogs(out uint one, out _) == 0u ? 0u : one;
+			}
+			catch (System.EntryPointNotFoundException)
+			{
+				return 0u;
+			}
+		}
+	}
+
+	[System.Runtime.InteropServices.DllImport(Refii.Host.HostBridge.Library)]
+	private static extern uint RefiiHostGetHeroDogs(out uint one, out uint two);
+
+	/// <summary>
+	/// What each game button does, for the Controls page's remap rows: the shipped scheme the guest
+	/// loads (`GameControlsCombatOnRelease`, GDB 0x8c1585e4: sub_8294BD08 from sub_8250E798 at boot).
+	/// </summary>
+	public override string? PadButtonRole(Refii.Core.PadInput button) => button switch
+	{
+		Refii.Core.PadInput.A => "Interact, run, accept, choice 1",
+		Refii.Core.PadInput.B => "Magic, back",
+		Refii.Core.PadInput.X => "Melee, block, choice 2",
+		Refii.Core.PadInput.Y => "Ranged, aim, choice 3",
+		Refii.Core.PadInput.LB => "First person, choice 5",
+		Refii.Core.PadInput.RB => "Quick menu, choice 4",
+		Refii.Core.PadInput.LT => "Target lock, zoom aim",
+		Refii.Core.PadInput.RT => "Look at (hold)",
+		Refii.Core.PadInput.L3 => "Photo mode (with R3)",
+		Refii.Core.PadInput.R3 => "Camera mode",
+		Refii.Core.PadInput.Start => "The Sanctuary",
+		Refii.Core.PadInput.Back => "Nickname",
+		Refii.Core.PadInput.DpadUp => "Shortcut up",
+		Refii.Core.PadInput.DpadDown => "Shortcut down",
+		Refii.Core.PadInput.DpadLeft => "Shortcut left",
+		Refii.Core.PadInput.DpadRight => "Shortcut right",
+		_ => null,
+	};
+
+	/// <summary>The host options page (the Controls page) on Fable 3's own driver (<see cref="Fable3HostOptions"/>).</summary>
+	public override void EnterHostOptions(Refii.Ui.Engine_UiHostOptionsPage page) => Fable3HostOptions.Enter(page);
+
+	public override void SetOptionsCursorIndex(int row, int index) => Fable3HostOptions.SetIndex(row, index);
+
+	public override int OptionsCursorRow => Fable3HostOptions.Cursor;
+
+	public override int OptionsCursorIndex(int row) => Fable3HostOptions.IndexOf(row);
 
 	private static readonly Fable3Rig Rigs = new();
 

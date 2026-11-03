@@ -43,7 +43,18 @@ public static class Fable3ScreenModel
 		Promises => PromisesPage(stated, resolve),
 		Quests => QuestsPage(stated, resolve),
 		Schedule => SchedulePage(stated, resolve),
-		_ => null,
+		_ => Fable3BoxScreenModel.Compose(root, stated, resolve),
+	};
+
+	/// <summary>The element root of a display_box_hooks.cpp `screen:*` kind, or null (Options draws its own object).</summary>
+	public static string? RootOf(string kind) => kind switch
+	{
+		"screen:herostatus" => HeroStatus,
+		"screen:promises" => Promises,
+		"screen:stats" => Stats,
+		"screen:quests" => Quests,
+		"screen:schedule" => Schedule,
+		_ => Fable3BoxScreenModel.RootOf(kind),
 	};
 
 	/// <summary><paramref name="filled"/> of <paramref name="of"/> pips.</summary>

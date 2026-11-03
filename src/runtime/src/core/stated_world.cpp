@@ -39,6 +39,9 @@ struct StatedEffect {
   uint32_t flags = 0u;
   float position[4]{};
   float orientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
+  /// The entity that plays the effect and the entity that one was attached to, 0 when unstated.
+  uint32_t owner = 0u;
+  uint32_t attached = 0u;
 };
 
 /// Sized above the live effect population: one slot per effect instance, not per particle.
@@ -96,6 +99,24 @@ StatedEffect* ClaimEffect(uint32_t handle) {
 
 void Stamp(StatedEffect& slot) {
   slot.sequence = g_fx_sequence.fetch_add(1u, std::memory_order_relaxed) + 1u;
+}
+
+/// Empties slot `at` and closes the gap behind it: a later slot of the same probe run moves
+/// back unless its home lies cyclically in (hole, slot], so FindEffect, which stops at the
+/// first empty slot, still reaches every handle placed past the one erased. Caller holds the lock.
+void EraseEffectAt(uint32_t at) {
+  constexpr uint32_t kMask = kEffectSlots - 1u;
+  uint32_t hole = at & kMask;
+  g_fx[hole] = StatedEffect{};
+  for (uint32_t next = (hole + 1u) & kMask; g_fx[next].handle != 0u; next = (next + 1u) & kMask) {
+    const uint32_t home = EffectSlotFor(g_fx[next].handle);
+    const bool reachable = hole <= next ? (hole < home && home <= next) : (hole < home || home <= next);
+    if (!reachable) {
+      g_fx[hole] = g_fx[next];
+      g_fx[next] = StatedEffect{};
+      hole = next;
+    }
+  }
 }
 
 // --- Decals: the guest keeps 50, a new one replacing the oldest. ---------------------------
@@ -175,6 +196,10 @@ void refii_bridge_fx_created(uint32_t handle, uint32_t name_hash) {
   std::lock_guard<std::mutex> lock(g_fx_lock);
   if (StatedEffect* slot = ClaimEffect(handle); slot != nullptr) {
     slot->name_hash = name_hash;
+    // A handle the guest makes again is a new effect: whoever played the last one does not
+    // play this one until a hook says so.
+    slot->owner = 0u;
+    slot->attached = 0u;
     Stamp(*slot);
   }
 }
@@ -224,20 +249,38 @@ void refii_bridge_fx_killed(uint32_t handle) {
   if (StatedEffect* slot = FindEffect(handle); slot != nullptr) {
     // Cleared, not flagged: the guest erases the handle once the kill has run, and a slot kept
     // for a handle the guest may reuse would hand the next effect this one's name.
-    *slot = StatedEffect{};
+    EraseEffectAt(static_cast<uint32_t>(slot - g_fx));
     g_fx_sequence.fetch_add(1u, std::memory_order_relaxed);
   }
 }
 
 void refii_bridge_fx_scene_killed(uint32_t scene) {
   std::lock_guard<std::mutex> lock(g_fx_lock);
-  for (StatedEffect& slot : g_fx) {
-    if (slot.handle != 0u && slot.scene == scene) {
-      slot = StatedEffect{};
+  // An erase can move a later slot of the scene back onto an index already passed, so the
+  // sweep repeats until a pass finds none.
+  for (bool erased = true; erased;) {
+    erased = false;
+    for (uint32_t i = 0u; i < kEffectSlots; ++i) {
+      while (g_fx[i].handle != 0u && g_fx[i].scene == scene) {
+        EraseEffectAt(i);
+        erased = true;
+      }
     }
   }
   g_fx_sequence.fetch_add(1u, std::memory_order_relaxed);
 }
+
+void refii_bridge_fx_owner(uint32_t handle, uint32_t owner, uint32_t attached) {
+  std::lock_guard<std::mutex> lock(g_fx_lock);
+  // Found, not claimed: an owner is stated for an effect its create already stated.
+  if (StatedEffect* slot = FindEffect(handle); slot != nullptr) {
+    slot->owner = owner;
+    slot->attached = attached;
+    Stamp(*slot);
+  }
+}
+
+static_assert(REFII_STATED_FX_WORDS >= 14u, "a stated effect row carries its owner and attached words at [12] [13]");
 
 uint32_t refii_bridge_fx_rows(uint32_t* out_words, uint32_t word_capacity) {
   if (out_words == nullptr) {
@@ -258,6 +301,8 @@ uint32_t refii_bridge_fx_rows(uint32_t* out_words, uint32_t word_capacity) {
     row[3] = slot.flags;
     std::memcpy(row + 4, slot.position, sizeof(slot.position));
     std::memcpy(row + 8, slot.orientation, sizeof(slot.orientation));
+    row[12] = slot.owner;
+    row[13] = slot.attached;
     ++written;
   }
   return written;

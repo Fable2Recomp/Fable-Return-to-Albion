@@ -40,6 +40,18 @@ public static class Fable3Elements
 		/// <summary>The texture path the guest last set on the element (sub_82818EF0), null until set.</summary>
 		public string? Texture { get; set; }
 
+		/// <summary>
+		/// The element's `active` flag as Lua `setAttribute(elem, 'active', b)` set it (flag 0x2000
+		/// through the store's vt[20], sub_82C24A70 at 0x82c24c3c), null until set.
+		/// </summary>
+		public bool? Active { get; set; }
+
+		/// <summary>
+		/// Every other attribute a Gameface write set by name — Lua `setAttribute` (`position.y`,
+		/// `textcolor.r`, `boxwidth`, …) or a .bgf action's COMMAND_SETPROPERTY — as last stated.
+		/// </summary>
+		public Dictionary<string, Engine_UiModel.GuiNativeArgument> Attributes { get; } = new(System.StringComparer.Ordinal);
+
 		public uint Address { get; set; }
 
 		/// <summary>The <see cref="Generation"/> of the element's latest statement: which of two statements is the later.</summary>
@@ -132,7 +144,7 @@ public static class Fable3Elements
 		}
 	}
 
-	/// <summary>Routes the four pseudo-calls into the model.</summary>
+	/// <summary>Routes the element pseudo-calls into the model.</summary>
 	public static void Register(Engine_UiGuiNatives router)
 	{
 		router.Register("@Element.State", call => Apply(call, (element, value) => element.State = (int)value.Number));
@@ -142,6 +154,10 @@ public static class Fable3Elements
 		router.Register("@Element.Texture", call => Apply(call, (element, value) => element.Texture = value.Text));
 		router.Register("@Element.Position", call => Apply(call, (element, value) =>
 			element.Position = (value.Number, call.Argument(4).Number, call.Argument(5).Number)));
+		router.Register("@Element.Active", call => Apply(call, (element, value) => element.Active = value.Boolean));
+		// (pres, elem, path, name, value): the name in argument 3, the value after it.
+		router.Register("@Element.Attribute", call => Apply(call, (element, name) =>
+			element.Attributes[name.Text] = call.Argument(4)));
 	}
 
 	private static void Apply(Engine_UiModel.GuiNativeCall call, System.Action<Element, Engine_UiModel.GuiNativeArgument> set)

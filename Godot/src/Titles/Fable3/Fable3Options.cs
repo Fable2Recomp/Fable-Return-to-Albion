@@ -240,9 +240,16 @@ public partial class Fable3Options : Fable3ListScreen
 
 	protected override string LogContext => $"page {_page} ";
 
+	/// <summary>
+	/// Whether the guest's Game Settings page is up with nothing over it, so X opens the host's
+	/// Controls page (<see cref="Fable3HostOptions"/>; the guest's input ignores X on Options).
+	/// </summary>
+	public static bool OffersControls { get; private set; }
+
 	protected override Fable3ScreenPage? Compose(double delta)
 	{
-		if (!HostBridge.IsGuestUp || !Read())
+		OffersControls = false;
+		if (!HostBridge.IsGuestUp || !Read() || Fable3HostOptions.IsOpen)
 		{
 			return null;
 		}
@@ -273,8 +280,14 @@ public partial class Fable3Options : Fable3ListScreen
 			lines.Add(new Fable3ScreenPage.Row(row.Name, Fable3OptionsModel.Line(row), row.Ghosted, row.Description));
 		}
 
+		Fable3ScreenPage.QueryBox? query = Query();
+		OffersControls = query is null &&
+			snapshot.Page is Fable3OptionsModel.PageGameSettings or Fable3OptionsModel.PageGameSettingsLite;
+		Fable3ScreenPage.Prompt[] prompts = OffersControls
+			? new[] { new Fable3ScreenPage.Prompt("X", Fable3SettingsHub.Page.Title) }
+			: System.Array.Empty<Fable3ScreenPage.Prompt>();
 		return new Fable3ScreenPage(Resolve(Fable3OptionsModel.PageTitle(snapshot.Page)), lines, snapshot.SelectedRow - 1,
-			string.Empty, System.Array.Empty<Fable3ScreenPage.Prompt>(), true, Query());
+			string.Empty, prompts, true, query);
 	}
 
 	/// <summary>The Options root's state while its query shows (sub_825CBEC0: `sub_8281A428(Options, pres, 6)` at 0x825cbef4).</summary>
