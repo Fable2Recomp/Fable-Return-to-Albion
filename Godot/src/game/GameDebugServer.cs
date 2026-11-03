@@ -1190,6 +1190,23 @@ public partial class GameDebugServer : Node
 					return Ok(new Dictionary<string, object?> { ["values"] = values });
 				}
 
+				// A player's store, live: "player-value <player> <key> [<key> ...]" — what this
+				// machine reads for that player (the owner's values), saved or session alike.
+				if (name.StartsWith("player-value ", System.StringComparison.Ordinal))
+				{
+					string[] words = name.Split(' ', System.StringSplitOptions.RemoveEmptyEntries);
+					var values = new Dictionary<string, object?>();
+					if (words.Length >= 2 && int.TryParse(words[1], out int player))
+					{
+						foreach (string key in words.Skip(2))
+						{
+							values[key] = Refii.Host.HostBridge.GetPlayerValue(player, key);
+						}
+					}
+
+					return Ok(new Dictionary<string, object?> { ["values"] = values });
+				}
+
 				return Ok(new Dictionary<string, object?>
 				{
 					["queued"] = Refii.Host.HostBridge.PostFrontEndAction(name),

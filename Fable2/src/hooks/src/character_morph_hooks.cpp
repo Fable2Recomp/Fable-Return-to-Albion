@@ -132,8 +132,15 @@ void QueueRefresh(uint32_t hero) {
 
 // The game's own appearance update for one hero: CECStats_FlushAppearance stamps it (the stamp the
 // appearance opinion re-runs on) and GraphicAppearanceMorph.UpdateTextureMorphs rebuilds its layers.
-void Refresh(PPCContext* ctx, uint8_t* base, uint32_t hero) {
-  if (hero == 0 || refii_mod_entity_alive(base, hero) == 0) return;
+// The layers keep each morph type's weight cached on the appearance component (component 17, the
+// map at +164): ApplyTextureLayers asks the weight function only for a type the map lacks
+// (`sub_8220DE88` 0x8220EE04 find, 0x8220EE50 the cached weight, 0x8220EE6C the weight function,
+// 0x8220EE80 stored), and UpdateTextureMorphs (`sub_825B60F8`) is what empties it. So a hero whose
+// layers were built before the look took over keeps the old weights until this runs on it: false
+// while the hero has no appearance component yet (a load still building it), so it stays queued.
+bool Refresh(PPCContext* ctx, uint8_t* base, uint32_t hero) {
+  if (hero == 0 || refii_mod_entity_alive(base, hero) == 0) return true;
+  if (refii_mod_component(base, hero, 17u) == 0u) return false;
   const uint32_t stats = refii_mod_component(base, hero, 57u);
   if (stats != 0u) {
     PPCContext work = refii::mods::Frame(*ctx);
@@ -146,6 +153,7 @@ void Refresh(PPCContext* ctx, uint8_t* base, uint32_t hero) {
                 "GraphicAppearanceMorph.UpdateTextureMorphs(h) end",
                 refii_mod_handle(hero));
   refii_mod_run_game_lua(ctx, base, source);
+  return true;
 }
 
 // Settings slot 1 is the player this machine's pad 0 plays: player one alone, in local co-op and
@@ -178,7 +186,8 @@ bool Load(Look& look, int32_t player) {
     Key(key, sizeof(key), player, name);
     float weight = refii::mods::Setting(key, 0);
     if (!std::isfinite(weight)) weight = 0;
-    moved = moved || look.weights[type].exchange(weight, std::memory_order_relaxed) != weight;
+    const float before = look.weights[type].exchange(weight, std::memory_order_relaxed);
+    moved = moved || before != weight;
   }
   for (uint32_t input = 0; input < kJudgedCount; ++input) {
     Key(key, sizeof(key), player, kJudgedNames[input]);
@@ -189,6 +198,17 @@ bool Load(Look& look, int32_t player) {
   Key(key, sizeof(key), player, "automatic");
   const bool manual = refii::mods::Setting(key, 1) == 0;
   look.manual.store(manual, std::memory_order_release);
+  // What the hook now answers with, published for the debug channel's `mod-value`.
+  Key(key, sizeof(key), player, "held.generation");
+  refii::mods::Publish(key, generation);
+  Key(key, sizeof(key), player, "held.manual");
+  refii::mods::Publish(key, manual ? 1.0f : 0.0f);
+  for (uint32_t type = 2; type <= 18; ++type) {
+    char name[16];
+    std::snprintf(name, sizeof(name), "held.%u", type);
+    Key(key, sizeof(key), player, name);
+    refii::mods::Publish(key, look.weights[type].load(std::memory_order_relaxed));
+  }
   return manual != was_manual || (manual && moved);
 }
 
@@ -253,8 +273,7 @@ void Tick(PPCContext* ctx, uint8_t* base, float) {
     }
   }
   for (uint32_t& hero : g_refresh) {
-    if (hero == 0u) continue;
-    Refresh(ctx, base, hero);
+    if (hero == 0u || !Refresh(ctx, base, hero)) continue;
     hero = 0u;
     break;
   }
