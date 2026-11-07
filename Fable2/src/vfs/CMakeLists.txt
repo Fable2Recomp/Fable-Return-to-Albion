@@ -61,7 +61,6 @@ set(REFII_VFS_RUNTIME_SOURCES
     # (The told-statement queues the hooks push and the bridge takes are shared state in
     # refii_runtime, src/runtime/src/core/told_statements.cpp, as the GUI native call queue is.)
     ${REFII_VFS_ROOT}/src/gui/gui_menu_chunks.cpp
-    ${REFII_VFS_ROOT}/src/gui/gui_element_state.cpp
 )
 
 set(REFII_VFS_HOOK_INTERNAL_SOURCES

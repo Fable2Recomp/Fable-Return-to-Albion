@@ -24,24 +24,20 @@ public sealed class HeadlessStandTests
 		AssertThat(Engine_UiSlideStatements.SetOpacityValue(40f, 100f)).IsEqual(40f);
 	}
 
-	/// <summary>A stated screen stands as a showing, contributing, headless registry entry.</summary>
+	/// <summary>A stated screen stands as a showing, contributing registry entry.</summary>
 	[TestCase]
-	public void StatedEntryIsShowingAndHeadless()
+	public void StatedEntryIsShowing()
 	{
 		Engine_UiModel.Presentation entry = Engine_UiStatedScreens.Entry(0x4C200000u, "shopscreen");
-		AssertThat(entry.IsHeadless).IsTrue();
 		AssertThat(entry.IsShowing).IsTrue();
 		AssertThat(entry.ActiveElements).IsEqual(1u);
 		AssertThat(entry.Is("shopscreen.bgf")).IsTrue();
 	}
 
-	/// <summary>The kernel array's entries are not headless; bit 3 is.</summary>
+	/// <summary>A headless presentation parked by its draw byte (vf +92, +872) is not showing.</summary>
 	[TestCase]
-	public void RegistryStateBitThreeIsHeadless()
+	public void ParkedHeadlessPresentationIsNotShowing()
 	{
-		AssertThat(new Engine_UiModel.Presentation(1u, 1u, "a.bgf", 1u, 3u).IsHeadless).IsFalse();
-		AssertThat(new Engine_UiModel.Presentation(1u, 1u, "a.bgf", 9u, 0u).IsHeadless).IsTrue();
-		// A headless presentation parked by its draw byte (vf +92, +872) is not showing.
 		AssertThat(new Engine_UiModel.Presentation(1u, 1u, "a.bgf", 9u | 4u, 0u).IsShowing).IsFalse();
 	}
 

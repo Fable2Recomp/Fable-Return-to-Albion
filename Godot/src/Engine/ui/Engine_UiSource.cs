@@ -20,38 +20,6 @@ public abstract class Engine_UiSource
 	/// <summary>Every live presentation: address, root, name, state, active element count.</summary>
 	public virtual List<Engine_UiModel.Presentation> GetPresentations() => new();
 
-	/// <summary>One presentation's element array, or null when there is nothing to read.</summary>
-	public virtual List<Engine_UiModel.UiElement>? GetUiElements(uint presentation = 0) => null;
-
-	/// <summary>
-	/// <see cref="GetUiElements"/> into <paramref name="into"/>, replacing what it held; false (and
-	/// <paramref name="into"/> untouched) when there is nothing to read. <paramref name="previous"/>
-	/// is the last walk of the same presentation, whose strings a source may reuse where the text
-	/// is unchanged.
-	/// </summary>
-	public virtual bool FillUiElements(
-		uint presentation, List<Engine_UiModel.UiElement> into, List<Engine_UiModel.UiElement>? previous)
-	{
-		if (GetUiElements(presentation) is not { } walked)
-		{
-			return false;
-		}
-
-		into.Clear();
-		into.AddRange(walked);
-		return true;
-	}
-
-	/// <summary>Element count without reading any element; how <see cref="Engine_UiElementState"/> notices a reloaded screen.</summary>
-	public virtual uint GetUiElementCount(uint presentation = 0) => 0;
-
-	/// <summary>The per-element texture hashes, or null. Positional against the element array.</summary>
-	public virtual uint[]? GetUiTextureHashes(uint presentation, int elementCount) => null;
-
-	/// <summary>A rectangle of live attributes — rows are elements, columns the ids asked for.</summary>
-	public virtual Engine_UiModel.LiveAttribute[,]? GetUiAttributes(
-		uint[] ids, uint presentation = 0) => null;
-
 	/// <summary>The screen fade the guest is driving.</summary>
 	public virtual Engine_UiModel.ScreenFade GetScreenFade() => default;
 
@@ -192,14 +160,6 @@ public abstract class Engine_UiSource
 	/// <summary>The `g_Menu:` mutations the game's C++ has made since the last drain, with their staged attributes. See docs/ui_native_cut.md.</summary>
 	public virtual System.Collections.Generic.List<Engine_UiModel.MenuChunk> TakeMenuChunks() =>
 		new();
-
-	/// <summary>Every element state change since the last drain, taken at the writers; the presentation's own dirty list is cleared and refilled during the guest frame and cannot be read from another thread.</summary>
-	public virtual System.Collections.Generic.List<Engine_UiModel.UiElementChange>
-		TakeUiElementChanges() => new();
-
-	/// <summary>Recorded, pending and dropped element changes. This is a change log, not a statement queue: a non-zero <c>Dropped</c> means re-walk the elements.</summary>
-	public virtual (ulong Recorded, uint Pending, ulong Dropped) UiElementCounters() =>
-		(0ul, 0u, 0ul);
 
 	// ---- THE LEVERS --------------------------------------------------------------------
 	// Each returns what the bridge returns (queue depth or accepted flag), never an outcome.

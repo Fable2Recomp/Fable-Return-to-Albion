@@ -186,7 +186,7 @@ public sealed class Engine_UiListBookScreen(uint screenId, string menuName, stri
 
 		// THE DRAW GATE THE GUEST WOULD HAVE STATED. Sized to the document once and reused; the
 		// provider's switches are applied over it inside the book.
-		_book.SetLive(null, null, null, _drawn, null, null);
+		_book.SetLive(null, null, _drawn, null, null);
 	}
 
 	/// <summary>Builds the book and the list once. False while the art is still being read.</summary>

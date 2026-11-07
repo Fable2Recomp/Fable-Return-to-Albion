@@ -1,11 +1,10 @@
-// Element state captured at its three guest writers (attribute, flags, slide) plus the text
-// writer — see gui/gui_element_state.h.
+// The guest's element writers (attribute, flags, slide, text): each runs the original and tells
+// what it wrote (gui/gui_told_statements.h).
 
 #include <cstdint>
 
 #include "vfs_hooks_private.h"
 #include "core/guest_state.h"
-#include "gui/gui_element_state.h"
 #include "gui/gui_told_statements.h"
 #include "hooks/ppc_externs.h"
 
@@ -15,43 +14,12 @@ PPC_EXTERN_FUNC(__imp__rex_lhGuiAnimation_GotoSlide);
 PPC_EXTERN_FUNC(__imp__rex_lhGuiElement_SetText);
 PPC_EXTERN_FUNC(__imp__rex_lhGuiElement_SetTextFromTag);
 
-namespace {
-
-/// The attribute service lives at `presentation + 0x1EC` (`82BAFBF0 stw r4, 0x1EC(r31)`);
-/// changes are keyed on the presentation, not the service, because presentation addresses recycle.
-constexpr uint32_t kAttributeServiceOffset = 0x1ECu;
-
-/// The animation service lives at `presentation + 0x238` (`82BAFBF8 stw r3, 0x238(r31)`).
-constexpr uint32_t kAnimationServiceOffset = 0x238u;
-
-bool Plausible(uint32_t value) { return value >= 0x10000u && value < 0xC0000000u; }
-
-/// `elem+0` is the element's name hash (`sub_82BB5658` compares it directly).
-uint32_t NameHashOf(uint8_t* base, uint32_t element) {
-    return Plausible(element) ? refii::vfs::LoadGuestU32(base, element) : 0u;
-}
-
-}  // namespace
-
 /// The attribute writer — `(attrSvc, element, u32 id27, u32 valueBits)`; attribute-service
 /// vtable `0x820065C0` slot +0x48, also fed by the keyframe interpolator `sub_822846B0`.
 /// The value is raw bits; the type is in the element's record
 /// (`(*(u32*)rec >> 2) & 7`: 1,2 int · 3 float · 4 bool · 5 string · 6 userdata).
 REX_EXTERN(rex_lhGuiAttributeService_SetElementAttribute) {
     REX_FUNC_PROLOGUE();
-
-    const uint32_t service = ctx.r3.u32;
-    const uint32_t element = ctx.r4.u32;
-    if (Plausible(service) && Plausible(element)) {
-        refii::vfs::GuiElementChange change;
-        change.kind = refii::vfs::GuiElementChange::Kind::kAttribute;
-        change.presentation = service - kAttributeServiceOffset;
-        change.element = element;
-        change.name_hash = NameHashOf(base, element);
-        change.id = ctx.r5.u32;
-        change.value = ctx.r6.u32;
-        refii::vfs::NoteGuiElementChange(change);
-    }
 
     const uint32_t told_service = ctx.r3.u32;
     const uint32_t told_element = ctx.r4.u32;
@@ -64,32 +32,9 @@ REX_EXTERN(rex_lhGuiAttributeService_SetElementAttribute) {
 /// The flag writer — `(attrSvc, element, u16 mask, bool set)`; attribute-service vtable
 /// `0x820065C0` slot +0x50. `0x1000` is the draw gate `globalactive`, `0x2000` the authored
 /// `active`; neither is an attribute. Only the `0x8000` dirty bit and constructor zero-init
-/// write `element+0x1C` without passing here. `sub_822849A0` calls this for every element every
-/// frame with no dirty check, so the guest's own no-op filter (0x82284c48) is applied here too.
-/// Read the halfword BEFORE the call — the original mutates `element+0x1C`.
+/// write `element+0x1C` without passing here.
 REX_EXTERN(rex_lhGuiAttributeService_SetElementFlags) {
     REX_FUNC_PROLOGUE();
-
-    const uint32_t service = ctx.r3.u32;
-    const uint32_t element = ctx.r4.u32;
-    if (Plausible(service) && Plausible(element)) {
-        const uint32_t mask = ctx.r5.u32 & 0xFFFFu;
-        const bool set = ctx.r6.u32 != 0u;
-
-        // `element+0x1C` is a big-endian halfword — the same one the walk reads.
-        const uint32_t before = refii::vfs::LoadGuestU16(base, element + 0x1Cu);
-        const uint32_t after = set ? (before | mask) : (before & ~mask);
-        if (after != before) {
-            refii::vfs::GuiElementChange change;
-            change.kind = refii::vfs::GuiElementChange::Kind::kFlags;
-            change.presentation = service - kAttributeServiceOffset;
-            change.element = element;
-            change.name_hash = NameHashOf(base, element);
-            change.id = mask;
-            change.value = set ? 1u : 0u;
-            refii::vfs::NoteGuiElementChange(change);
-        }
-    }
 
     const uint32_t told_service = ctx.r3.u32;
     const uint32_t told_element = ctx.r4.u32;
@@ -105,18 +50,6 @@ REX_EXTERN(rex_lhGuiAttributeService_SetElementFlags) {
 REX_EXTERN(rex_lhGuiAnimation_GotoSlide) {
     REX_FUNC_PROLOGUE();
 
-    const uint32_t service = ctx.r3.u32;
-    const uint32_t element = ctx.r4.u32;
-    if (Plausible(service) && Plausible(element)) {
-        refii::vfs::GuiElementChange change;
-        change.kind = refii::vfs::GuiElementChange::Kind::kSlide;
-        change.presentation = service - kAnimationServiceOffset;
-        change.element = element;
-        change.name_hash = NameHashOf(base, element);
-        change.value = ctx.r5.u32;
-        refii::vfs::NoteGuiElementChange(change);
-    }
-
     // Every explicit entry is the guest's statement (gui_slide_hooks.cpp); the walk's own entry
     // of a component coming live passes `notify` 0 (`sub_822849A0` 0x82284b38).
     const uint32_t told_service = ctx.r3.u32;
@@ -131,20 +64,11 @@ REX_EXTERN(rex_lhGuiAnimation_GotoSlide) {
 /// The text writer — `(element, ...)`. Text lives on the text record: `element+4` holder,
 /// `*holder` record, `record+140` live string; this marks it dirty (`record+144 = 1`, then
 /// `record+138`/`+136` once layout takes). The string is mutated in place and no presentation
-/// is recoverable from an element, so only the element address is recorded.
+/// is recoverable from an element, so only the element address is told.
 REX_EXTERN(rex_lhGuiElement_SetText) {
     REX_FUNC_PROLOGUE();
 
     const uint32_t element = ctx.r3.u32;
-    if (Plausible(element)) {
-        refii::vfs::GuiElementChange change;
-        change.kind = refii::vfs::GuiElementChange::Kind::kText;
-        change.presentation = 0u;
-        change.element = element;
-        change.name_hash = NameHashOf(base, element);
-        refii::vfs::NoteGuiElementChange(change);
-    }
-
     __imp__rex_lhGuiElement_SetText(ctx, base);
     refii::vfs::TellText(base, element);
 }
@@ -167,15 +91,6 @@ REX_EXTERN(rex_lhGuiElement_SetTextFromTag) {
     REX_FUNC_PROLOGUE();
 
     const uint32_t element = ctx.r3.u32;
-    if (Plausible(element)) {
-        refii::vfs::GuiElementChange change;
-        change.kind = refii::vfs::GuiElementChange::Kind::kText;
-        change.presentation = 0u;
-        change.element = element;
-        change.name_hash = NameHashOf(base, element);
-        refii::vfs::NoteGuiElementChange(change);
-    }
-
     __imp__rex_lhGuiElement_SetTextFromTag(ctx, base);
     refii::vfs::TellText(base, element);
 }

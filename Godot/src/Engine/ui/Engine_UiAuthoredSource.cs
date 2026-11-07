@@ -13,9 +13,6 @@ public sealed class Engine_UiAuthoredSource : Engine_UiSource
 	/// <summary>Presentations the UI should believe are live.</summary>
 	public List<Engine_UiModel.Presentation> Presentations { get; } = new();
 
-	/// <summary>Element arrays by presentation address. Key 0 answers the default read.</summary>
-	public Dictionary<uint, List<Engine_UiModel.UiElement>> Elements { get; } = new();
-
 	/// <summary>Spawned row identities, as a population would have staged them.</summary>
 	public List<Engine_UiModel.MenuRow> Rows { get; } = new();
 
@@ -64,11 +61,6 @@ public sealed class Engine_UiAuthoredSource : Engine_UiSource
 	public void ClearPosted() => Posted.Clear();
 
 	public override List<Engine_UiModel.Presentation> GetPresentations() => Presentations;
-
-	public override List<Engine_UiModel.UiElement>? GetUiElements(uint presentation = 0) =>
-		Elements.TryGetValue(presentation, out List<Engine_UiModel.UiElement>? elements)
-			? elements
-			: null;
 
 	public override List<Engine_UiModel.MenuRow> GetMenuRows(out ulong generation)
 	{

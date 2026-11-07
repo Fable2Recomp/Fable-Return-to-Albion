@@ -305,8 +305,6 @@ void refii_bridge_publish_clothing_mannequin(uint32_t entity);
 // What the guest TELLS a presentation's elements (refii_bridge_told_*) is shared state: its
 // entries are in core/payload_bridge.h, its queues in src/runtime/src/core/told_statements.cpp.
 
-void refii_bridge_note_gui_element_change(const void* change);
-
 void refii_bridge_stage_menu_attribute(const char* name, size_t name_length,
                                        const char* text, size_t text_length,
                                        float number, int32_t is_number);

@@ -20,22 +20,6 @@ public sealed class HostUiSource : Engine_UiSource
 	public override List<Engine_UiModel.Presentation> GetPresentations() =>
 		HostBridge.GetPresentations();
 
-	public override List<Engine_UiModel.UiElement>? GetUiElements(uint presentation = 0) =>
-		HostBridge.GetUiElements(presentation);
-
-	public override bool FillUiElements(
-		uint presentation, List<Engine_UiModel.UiElement> into, List<Engine_UiModel.UiElement>? previous) =>
-		HostBridge.FillUiElements(presentation, into, previous);
-
-	public override uint GetUiElementCount(uint presentation = 0) =>
-		HostBridge.GetUiElementCount(presentation);
-
-	public override uint[]? GetUiTextureHashes(uint presentation, int elementCount) =>
-		HostBridge.GetUiTextureHashes(presentation, elementCount);
-
-	public override Engine_UiModel.LiveAttribute[,]? GetUiAttributes(
-		uint[] ids, uint presentation = 0) => HostBridge.GetUiAttributes(ids, presentation);
-
 	public override Engine_UiModel.ScreenFade GetScreenFade() => HostBridge.GetScreenFade();
 
 	public override Engine_UiModel.InGameScreens? GetInGameScreens() =>
@@ -183,12 +167,6 @@ public sealed class HostUiSource : Engine_UiSource
 
 	public override List<Engine_UiModel.MenuChunk> TakeMenuChunks() =>
 		HostBridge.TakeMenuChunks();
-
-	public override List<Engine_UiModel.UiElementChange> TakeUiElementChanges() =>
-		HostBridge.TakeUiElementChanges();
-
-	public override (ulong Recorded, uint Pending, ulong Dropped) UiElementCounters() =>
-		HostBridge.UiElementCounters();
 
 	public override bool MenuPopulating() => HostBridge.MenuPopulating();
 

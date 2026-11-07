@@ -48,7 +48,7 @@ public sealed class Fable3HudStatements
 		Refii.Ui.Engine_UiBindings.Kind? Kind = null, uint NameHash = 0u, bool EveryName = false,
 		uint TextureHash = 0u, (float R, float G, float B, float A)? Colour = null);
 
-	/// <summary>The width of a transform row: position x, y, z then scale x, y, z (Engine_UiLiveAttributes.TransformIds).</summary>
+	/// <summary>The width of a transform row: position x, y, z then scale x, y, z.</summary>
 	public const int TransformWidth = 6;
 
 	/// <summary>The name the root element is stated under.</summary>

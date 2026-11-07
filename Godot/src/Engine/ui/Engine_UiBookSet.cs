@@ -222,9 +222,8 @@ public sealed class Engine_UiBookSet
 	}
 
 	/// <summary>
-	/// Stands a screen's owned book in place of its mirrored tree and feeds it the guest's stated
-	/// values. The mirror is still sampled, only not drawn: every value the book paints comes off
-	/// the same walk.
+	/// Stands a screen's owned book over its stated presentation's stand-in node, on its file, the
+	/// host and the guest's statements.
 	/// </summary>
 	private void Drive(uint screenId, Engine_UiDrawnPresentation? drawn, uint address = 0)
 	{
@@ -284,27 +283,13 @@ public sealed class Engine_UiBookSet
 			book.PresentationAddress = address;
 		}
 
-		// The guest's mirror is still fed whole: its transform carries the CHROME's layout (the
-		// screen is laid out once at open, before the highlight froze) and dropping it took the
-		// book frame off the screen. What IS stale in it — the per-element state of fields the
-		// HOST drives — is dropped inside the book, per channel, for exactly the elements the
-		// host writes (Opaqued / Positioned).
 		using (Refii.Core.Engine_FramePhases.Measure("ui.book.live"))
 		{
 			Engine_UiDetailPages.FillOnDraw(screenId, book);
 
-			// A screen whose rest state is proven stands on its file and the host alone; the
-			// guest's sample, when there is one, is kept for the `rest:` check only.
-			if (book.Template is { RestFromFile: true } || drawn is null or { Stated: true })
-			{
-				book.SetRest();
-			}
-			else
-			{
-				book.SetLive(
-					drawn.Texts, drawn.Textures, drawn.LastTransform,
-					drawn.Visible, drawn.Opacity, drawn.Slides);
-			}
+			// Every presentation is headless (gui_headless_presentation.cpp): there is no guest
+			// sample, so the book stands on its file, the host and the guest's statements.
+			book.SetRest();
 		}
 	}
 

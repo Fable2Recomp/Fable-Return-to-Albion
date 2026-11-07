@@ -1118,7 +1118,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 		_restPose ??= RestChannel(t => t.RestPose.Count == 0 ? null : t.RestPose, pose => pose);
 		_restOpacity ??= RestOpacityChannel();
-		SetLive(null, ToldTextures(), _restPose, _restActive, _restOpacity, Play(_restSlides));
+		SetLive(ToldTextures(), _restPose, _restActive, _restOpacity, Play(_restSlides));
 	}
 
 	private bool[]? _unitOrdinals;
@@ -1303,7 +1303,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 	/// <summary>Applies one sample of the guest's statements; every write is change-keyed.</summary>
 	public void SetLive(
-		string?[]? texts, uint[]? textures, IReadOnlyList<float?[]?>? transform,
+		uint[]? textures, IReadOnlyList<float?[]?>? transform,
 		IReadOnlyList<bool>? active = null, IReadOnlyList<float?>? opacity = null,
 		IReadOnlyList<int>? slides = null)
 	{
@@ -1344,7 +1344,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		// The page arranges every frame (`NeedToUpdateState` is set once in `Initialize`, page.dis
 		// main.0 pc17, never cleared) and must run after `_binding.Apply`, which rewrites every
 		// bound transform from the stated position.
-		bool textMoved = ApplyText(texts);
+		bool textMoved = ApplyText();
 		ApplyTints();
 		if (!playing)
 		{
@@ -1388,7 +1388,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			ReportDark();
 			ProbeHostKeys();
 			ProbeExtents();
-			ProbeLegend(texts);
+			ProbeLegend();
 			ProbePageStack();
 		}
 	}
@@ -1701,7 +1701,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 	private string _pageStackShown = string.Empty;
 
-	private void ProbeLegend(string?[]? texts)
+	private void ProbeLegend()
 	{
 		if (_resolve is null || Document is null || Template?.ScreenId != 0)
 		{
@@ -1719,15 +1719,12 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			}
 
 			int i = node.Ordinal;
-			string text = texts is not null && i < texts.Length && texts[i] is { Length: > 0 } t
-				? $"'{t}'"
-				: "-";
 			Vector3? at = _binding.NodeFor(i) is { } live
 				? Engine_UiTheme.CanvasTransform(live).Origin
 				: null;
 			lines.Add($"{node.Name}#{i} drawn={_resolve.Drawn[i]} " +
 				$"active={_resolve.Active[i]} slid={_resolve.Slid[i]} " +
-				$"op={_resolve.Opacity[i]:0.00} text={text} " +
+				$"op={_resolve.Opacity[i]:0.00} " +
 				(at is { } pos ? $"at=({pos.X:0},{pos.Y:0})" : "at=UNBOUND"));
 		}
 
@@ -2687,7 +2684,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		 path[path.Length - key.Length - 1] == '.' &&
 		 path.EndsWith(key, System.StringComparison.Ordinal));
 
-	private bool ApplyText(string?[]? texts)
+	private bool ApplyText()
 	{
 		if (Book is null)
 		{
@@ -2696,10 +2693,8 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 		bool changed = false;
 
-		// THE GUEST IS NOT IN THE TEXT PATH — except for the units a template names in
-		// `GuestTextUnits`, read below as data. `texts` is its mirrored element sample; the
-		// same call carries the art, the transforms and the draw gate, which ARE the guest's
-		// statements.
+		// THE GUEST IS IN THE TEXT PATH ONLY BY ITS STATEMENTS: the registry text its calls
+		// publish and the text its writers are told (`SetText` / `SetTextFromTag`).
 
 		foreach (Field field in _fields)
 		{
@@ -2763,25 +2758,6 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			{
 				owned = true;
 				display = told;
-			}
-
-			// A GUEST-TEXT UNIT: the guest's own live write for this field, when the template
-			// names its unit and the guest has written one. Read as data, not as a channel —
-			// see Engine_UiScreenTemplate.GuestTextUnits.
-			if (!owned && texts is not null && Template is { GuestTextUnits.Count: > 0 } template &&
-				field.Ordinal >= 0 && field.Ordinal < texts.Length &&
-				texts[field.Ordinal] is { Length: > 0 } guest)
-			{
-				foreach (string unit in template.GuestTextUnits)
-				{
-					if (PathNames(field.Path, unit) || field.Path.Contains("." + unit + ".", System.StringComparison.Ordinal) ||
-						field.Path.StartsWith(unit + ".", System.StringComparison.Ordinal))
-					{
-						owned = true;
-						display = guest;
-						break;
-					}
-				}
 			}
 
 			if (!owned)

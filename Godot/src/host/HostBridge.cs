@@ -23,7 +23,7 @@ public static partial class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 236;
+	public const int ExpectedAbiVersion = 237;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -1735,7 +1735,7 @@ public static partial class HostBridge
 
 	/// <summary>
 	/// Every element's live attribute values (runtime setAttribute, not the authored .bgf), in
-	/// <see cref="GetUiElements"/> walk order, one row per element, one column per id.
+	/// the element tree's depth-first walk order, one row per element, one column per id.
 	/// Ids are sdbm hashes of attribute names: <c>Engine_GameHash.Sdbm</c>, mirroring sub_82189140.
 	/// </summary>
 	/// <param name="presentation">
@@ -3213,48 +3213,6 @@ public static partial class HostBridge
 		return end > start
 			? System.Text.Encoding.UTF8.GetString(buffer, start, end - start)
 			: string.Empty;
-	}
-
-	/// <summary>
-	/// Why a presentation's texture hashes are what they are, broken down.
-	/// <see cref="UiTextureStats.BackPointerMismatch"/> invalidates the rest: the scene node
-	/// points back at its element, so a non-zero count means the walk is following a non-node.
-	/// </summary>
-	public readonly record struct UiTextureStats(
-		int Elements, int WithNode, int WithQuad, int ImageNodes, int WithTexture,
-		int BackPointerMismatch)
-	{
-		public string Describe() =>
-			$"{Elements} elements, {WithNode} with a scene node, {WithQuad} with a render item, " +
-			$"{ImageNodes} image nodes, {WithTexture} carrying a texture" +
-			(BackPointerMismatch > 0
-				? $" — {BackPointerMismatch} NODE BACK-POINTER MISMATCHES, the walk is wrong"
-				: string.Empty);
-	}
-
-	/// <summary>Reads the texture-chain breakdown for one presentation, or null if unavailable.</summary>
-	public static UiTextureStats? GetUiTextureStats(uint presentation)
-	{
-		if (TryGetAbiVersion() is null || !IsGuestUp)
-		{
-			return null;
-		}
-
-		uint[] words = new uint[6];
-		try
-		{
-			if (RefiiHostGetUiTextureStats(presentation, words) == 0)
-			{
-				return null;
-			}
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return null;
-		}
-
-		return new UiTextureStats((int)words[0], (int)words[1], (int)words[2],
-			(int)words[3], (int)words[4], (int)words[5]);
 	}
 
 	/// <summary>
@@ -4877,86 +4835,6 @@ public static partial class HostBridge
 		}
 
 		return chunks;
-	}
-
-	/// <summary>
-	/// Every element state change the guest wrote since the last drain — ABI 83.
-	/// </summary>
-	/// <remarks>
-	/// Taken at the three writers, not from the guest's dirty list. `sub_82284798` is the one
-	/// attribute writer — its only data reference is slot +0x48 of the attribute-service vtable,
-	/// so authored, scripted, COMMAND_SETPROPERTY, text-layout and keyframe-interpolated values
-	/// all arrive through it. `sub_82284BE8` carries the flags and `sub_82BB5760` the slide.
-	/// </remarks>
-	public static System.Collections.Generic.List<Engine_UiModel.UiElementChange>
-		TakeUiElementChanges()
-	{
-		// ONE list, drained and refilled: the result is valid until the next drain, and the
-		// consumer (Engine_UiElementState.Drain) applies it in place and keeps nothing.
-		System.Collections.Generic.List<Engine_UiModel.UiElementChange> changes = _elementChanges;
-		changes.Clear();
-		if (TryGetAbiVersion() is null)
-		{
-			return changes;
-		}
-
-		// Sized for a whole population: a screen opening writes every element it owns in one
-		// guest frame. What the buffer cannot hold stays queued; the drop counter says whether
-		// the host fell behind.
-		const int Capacity = 16384;
-		uint[] words = _elementWords ??= new uint[Capacity * 5];
-		byte[] kinds = _elementKinds ??= new byte[Capacity];
-
-		uint count;
-		try
-		{
-			count = RefiiHostTakeUiElementChanges(
-				words, (uint)words.Length, kinds, (uint)kinds.Length);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return changes;
-		}
-
-		int usable = (int)Math.Min(count, (uint)Capacity);
-		if (changes.Capacity < usable)
-		{
-			changes.Capacity = usable;
-		}
-
-		for (int i = 0; i < usable; ++i)
-		{
-			changes.Add(new Engine_UiModel.UiElementChange(
-				words[i * 5], words[i * 5 + 1], words[i * 5 + 2],
-				words[i * 5 + 3], words[i * 5 + 4],
-				(Engine_UiModel.UiElementChangeKind)kinds[i]));
-		}
-
-		return changes;
-	}
-
-	// Reused across frames: this drains every frame and the buffers are 80 KB together.
-	private static uint[]? _elementWords;
-	private static byte[]? _elementKinds;
-	private static readonly System.Collections.Generic.List<Engine_UiModel.UiElementChange> _elementChanges = new();
-
-	/// <summary>Recorded, pending and dropped element changes — ABI 83.</summary>
-	public static (ulong Recorded, uint Pending, ulong Dropped) UiElementCounters()
-	{
-		if (TryGetAbiVersion() is null)
-		{
-			return (0ul, 0u, 0ul);
-		}
-
-		try
-		{
-			RefiiHostUiElementCounters(out ulong recorded, out uint pending, out ulong dropped);
-			return (recorded, pending, dropped);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return (0ul, 0u, 0ul);
-		}
 	}
 
 	/// <summary>
@@ -7727,125 +7605,6 @@ public static partial class HostBridge
 		return live;
 	}
 
-	/// <summary>
-	/// Every element of the guest's active screen: its slide and the text it is actually
-	/// displaying. The shipped presentation carries placeholders the game overwrites at runtime,
-	/// and some tags resolve through a table that is not the Babel book.
-	/// </summary>
-	/// <param name="presentation">
-	/// A presentation from <see cref="GetPresentations"/>, or 0 for the front end's active
-	/// screen.
-	/// </param>
-	/// <summary>
-	/// How many elements one presentation has, without reading any of them.
-	/// </summary>
-	/// <remarks>
-	/// `RefiiHostGetUiElements` with no buffers still follows the child/sibling links but copies,
-	/// allocates and marshals nothing. <see cref="Engine_UiElementState"/> uses it to notice a
-	/// presentation reloaded under it, since the element arena is bump-allocated and reuses
-	/// addresses.
-	/// </remarks>
-	public static uint GetUiElementCount(uint presentation = 0)
-	{
-		if (TryGetAbiVersion() is null)
-		{
-			return 0;
-		}
-
-		try
-		{
-			return RefiiHostGetUiElements(presentation, null, 0, null, 0);
-		}
-		catch (EntryPointNotFoundException)
-		{
-			return 0;
-		}
-	}
-
-	[System.ThreadStatic]
-	private static uint[]? _uiElementWords;
-
-	[System.ThreadStatic]
-	private static ushort[]? _uiElementChars;
-
-	public static List<UiElement>? GetUiElements(uint presentation = 0)
-	{
-		var elements = new List<UiElement>();
-		return FillUiElements(presentation, elements, null) ? elements : null;
-	}
-
-	/// <summary>
-	/// <see cref="GetUiElements"/> into a kept list. A text equal to the one at the same ordinal
-	/// of <paramref name="previous"/> is that string again, not a new copy: a re-walk for one
-	/// changed text otherwise copied every string on the screen.
-	/// </summary>
-	public static bool FillUiElements(uint presentation, List<UiElement> into, List<UiElement>? previous)
-	{
-		uint count = RefiiHostGetUiElements(presentation, null, 0, null, 0);
-		if (count == 0)
-		{
-			return false;
-		}
-
-		// Sized from the probe, with headroom: the guest mutates the tree, so the second walk
-		// can find more than the first. Stride 6 since ABI 84 — type byte, flags halfword,
-		// element ADDRESS.
-		int neededWords = (int)(count * 6 + 64);
-		// Room for the long strings too: a description is up to 4096 units (the native cap),
-		// and text past the buffer's end comes back as no text at all.
-		int neededChars = (int)(count * 24 + 16384);
-		if (_uiElementWords is null || _uiElementWords.Length < neededWords)
-		{
-			_uiElementWords = new uint[Math.Max(neededWords, 4096)];
-		}
-		if (_uiElementChars is null || _uiElementChars.Length < neededChars)
-		{
-			_uiElementChars = new ushort[Math.Max(neededChars, 65536)];
-		}
-		uint[] words = _uiElementWords;
-		ushort[] chars = _uiElementChars;
-		uint written = RefiiHostGetUiElements(
-			presentation, words, (uint)neededWords, chars, (uint)neededChars);
-
-		int usable = (int)Math.Min(written, (uint)(neededWords / 6));
-		into.Clear();
-		if (into.Capacity < usable)
-		{
-			into.Capacity = usable;
-		}
-
-		for (int i = 0; i < usable; ++i)
-		{
-			uint offset = words[i * 6 + 2];
-			string? text = null;
-			if (offset != 0xFFFFFFFFu && offset < neededChars)
-			{
-				int end = (int)offset;
-				while (end < neededChars && chars[end] != 0)
-				{
-					++end;
-				}
-
-				int len = end - (int)offset;
-				if (len == 0)
-				{
-					text = string.Empty;
-				}
-				else
-				{
-					ReadOnlySpan<char> read = MemoryMarshal.Cast<ushort, char>(chars.AsSpan((int)offset, len));
-					string? before = previous is not null && i < previous.Count ? previous[i].Text : null;
-					text = before is not null && read.SequenceEqual(before) ? before : new string(read);
-				}
-			}
-
-			into.Add(new UiElement(words[i * 6], (int)words[i * 6 + 1], text,
-				(int)words[i * 6 + 3], (int)words[i * 6 + 4], words[i * 6 + 5]));
-		}
-
-		return true;
-	}
-
 	/// <summary>The four-argument form, for callers that only want the screen state.</summary>
 	public static bool TryGetFrontEnd(
 		out FrontEndScreen screen, out uint state, out bool canPressA, out uint cursor) =>
@@ -7882,30 +7641,6 @@ public static partial class HostBridge
 		left = 0;
 		right = 0;
 		return RefiiHostGetVibration((uint)userIndex, out left, out right) != 0;
-	}
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetUiMovie(
-		uint presentation, out uint outOrdinal, byte[]? outPath, uint capacity);
-
-	/// <summary>
-	/// The element of <paramref name="presentation"/> currently hosting a Bink movie, and the
-	/// path it is playing, or null when none is. The guest has no embedded-video flag: a sprite
-	/// whose `Movie` string is non-empty draws a movie into its own rect instead of a texture,
-	/// and that string is the only statement of which element is playing. The ordinal is in the
-	/// same traversal every other live array uses.
-	/// </summary>
-	public static (int Ordinal, string Path)? GetUiMovie(uint presentation)
-	{
-		var buffer = new byte[260];
-		if (RefiiHostGetUiMovie(presentation, out uint ordinal, buffer, (uint)buffer.Length) == 0)
-		{
-			return null;
-		}
-
-		int length = System.Array.IndexOf(buffer, (byte)0);
-		return ((int)ordinal,
-			System.Text.Encoding.ASCII.GetString(buffer, 0, length < 0 ? buffer.Length : length));
 	}
 
 	[DllImport(Library)]
@@ -8090,15 +7825,7 @@ public static partial class HostBridge
 		out int rating);
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostTakeUiElementChanges(
-		uint[]? outWords, uint wordCapacity, byte[]? outKinds, uint kindCapacity);
-
-	[DllImport(Library)]
 	private static extern void RefiiHostSetGuiPredicate([MarshalAs(UnmanagedType.LPUTF8Str)] string name, uint kind, uint bits);
-
-	[DllImport(Library)]
-	private static extern void RefiiHostUiElementCounters(
-		out ulong outRecorded, out uint outPending, out ulong outDropped);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostTakeMenuChunks(
@@ -8265,9 +7992,6 @@ public static partial class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetHudScriptTexts([Out] uint[]? hashes, [Out] uint[]? textIds, uint capacity);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetUiTextureHashes(uint presentation, [Out] uint[]? hashes, uint capacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetTimeOfDay(
@@ -8711,11 +8435,6 @@ public static partial class HostBridge
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetFrontEndInit(uint[] outWords);
-
-	[DllImport(Library)]
-	private static extern uint RefiiHostGetUiElements(
-		uint presentation, uint[]? outWords, uint wordCapacity,
-		ushort[]? outText, uint textCapacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetPresentations(
@@ -9297,47 +9016,6 @@ public static partial class HostBridge
 			return text;
 		}
 
-		public static uint[]? GetUiTextureHashes(uint presentation, int elementCount)
-		{
-			ReadOnlySpan<uint> read = ReadUiTextureHashes(presentation, elementCount);
-			return read.Length == elementCount && elementCount > 0 ? read.ToArray() : null;
-		}
-
-		/// <summary>
-		/// The guest's stated texture hash per element, in a KEPT buffer: the span is valid until
-		/// the next call and must be copied to be held. Empty when the guest is down or its count
-		/// disagrees with <paramref name="elementCount"/>. Main thread only. The per-sample
-		/// readers compare against what they hold and copy only on a change.
-		/// </summary>
-		public static ReadOnlySpan<uint> ReadUiTextureHashes(uint presentation, int elementCount)
-		{
-			if (!TryGetAbiVersion().HasValue || !IsGuestUp || elementCount <= 0)
-			{
-				return ReadOnlySpan<uint>.Empty;
-			}
-
-			if (_uiTextureHashes.Length < elementCount)
-			{
-				_uiTextureHashes = new uint[Math.Max(elementCount, _uiTextureHashes.Length * 2)];
-			}
-
-			uint num;
-			try
-			{
-				num = RefiiHostGetUiTextureHashes(presentation, _uiTextureHashes, (uint)elementCount);
-			}
-			catch (EntryPointNotFoundException)
-			{
-				return ReadOnlySpan<uint>.Empty;
-			}
-
-			return num == (uint)elementCount
-				? new ReadOnlySpan<uint>(_uiTextureHashes, 0, elementCount)
-				: ReadOnlySpan<uint>.Empty;
-		}
-
-		private static uint[] _uiTextureHashes = new uint[1024];
-
 		[DllImport("refii_hostbridge")]
 		private static extern uint RefiiHostGetEntityLocomotion(uint entity, uint[] outWords, uint wordCount, byte[] outName, uint nameCapacity);
 
@@ -9426,9 +9104,6 @@ public static partial class HostBridge
 
 		[DllImport("refii_hostbridge")]
 		private static extern int RefiiHostGetInGameScreen(uint[] outWords);
-
-		[DllImport("refii_hostbridge")]
-		private static extern int RefiiHostGetUiTextureStats(uint presentation, uint[] outWords);
 
 
 

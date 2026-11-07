@@ -496,71 +496,6 @@ public static class Engine_UiModel
 	/// <summary>One installed language, as the guest's own table holds it.</summary>
 	public readonly record struct Language(int Index, string Name, bool IsCurrent);
 
-	/// <summary>One element of the guest's live UI.</summary>
-	/// <summary>
-	/// One element of the guest's live front end. <paramref name="Type"/> is the runtime's element
-	/// kind byte, carried so the POSITIONAL join against the .bgf can be checked: slide, text and
-	/// opacity are applied by ordinal, assuming the guest's depth-first walk and the file's element
-	/// order are the same sequence.
-	/// </summary>
-	/// <param name="Address">
-	/// The element's guest address (ABI 84) — the join key for the change feed, valid only for the
-	/// frame the walk ran in: elements are freed and rebuilt with the presentation.
-	/// </param>
-	public readonly record struct UiElement(
-		uint NameHash, int Slide, string? Text, int Type, int Flags, uint Address = 0)
-	{
-		/// <summary>
-		/// Whether the guest is DRAWING this element: `globalactive`, bit 0x1000 of the flags
-		/// halfword, derived every frame as <c>active AND in-time-range AND parent's
-		/// globalactive</c>. `sub_82188B70` copies this bit onto the render node's draw gate, which
-		/// `sub_8229E400` tests before descending, so a false prunes the whole subtree. Follow this
-		/// rather than recomputing from the .bgf's authored state, which the Lua changes at runtime.
-		/// </summary>
-		public bool IsGloballyActive => (Flags & 0x1000) != 0;
-
-		/// <summary>
-		/// The AUTHORED active flag, bit 0x2000 — what the .bgf carried and setAttribute writes.
-		/// Not the draw gate: an active element inside an inactive parent still does not draw.
-		/// </summary>
-		public bool IsActive => (Flags & 0x2000) != 0;
-	}
-
-	/// <summary>What one write to an element said, taken at the writer that made it.</summary>
-	public enum UiElementChangeKind : byte
-	{
-		/// <summary><c>Id</c> is the 27-bit attribute id, <c>Value</c> its RAW BITS.</summary>
-		Attribute = 0,
-
-		/// <summary><c>Id</c> is the flags mask, <c>Value</c> 1 to set and 0 to clear.</summary>
-		Flags = 1,
-
-		/// <summary><c>Value</c> is the new slide index.</summary>
-		Slide = 2,
-
-		/// <summary>The element's TEXT changed. Neither <c>Id</c> nor <c>Value</c> carries it.</summary>
-		/// <remarks>
-		/// A notification, not a value: `sub_82425DD0` takes the element and marks its text record
-		/// dirty, mutating the characters in place. It carries no presentation either — it is the
-		/// one writer that takes an element, and an element has no back-pointer to its presentation.
-		/// </remarks>
-		Text = 3,
-	}
-
-	/// <summary>
-	/// One element state change, as its writer stated it. Key on
-	/// (<paramref name="Presentation"/>, <paramref name="NameHash"/>), never the raw pointer:
-	/// presentation addresses recycle and elements are rebuilt with them. <see cref="Element"/> is
-	/// carried only as the identity the guest used within the frame it wrote.
-	/// </summary>
-	public readonly record struct UiElementChange(
-		uint Presentation, uint Element, uint NameHash, uint Id, uint Value,
-		UiElementChangeKind Kind)
-	{
-		/// <summary>The value read as a float — correct for the transform and opacity ids.</summary>
-		public float AsFloat => System.BitConverter.UInt32BitsToSingle(Value);
-	}
-
 	/// <summary>One live Gameface presentation: where it is, its root, its path, and whether
 	/// it is actually on screen.</summary>
 	public readonly record struct Presentation(
@@ -582,12 +517,6 @@ public static class Engine_UiModel
 
 		/// <summary>Held at last frame's content rather than being updated.</summary>
 		public bool IsFrozen => (State & 2u) != 0u;
-
-		/// <summary>
-		/// A headless presentation (state bit 3): no .bgf tree was built, so there is nothing to
-		/// sample — it stands on its file and what the guest tells it.
-		/// </summary>
-		public bool IsHeadless => (State & 8u) != 0u;
 
 		/// <summary>
 		/// Parked by the guest: loaded, kept in the registry, skipped by the scene draw. The pause

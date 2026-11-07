@@ -29,7 +29,6 @@ public partial class GameUi
 		var retired = new HashSet<string>(names, System.StringComparer.OrdinalIgnoreCase);
 		int books = _books.Retire(retired);
 		_spells.Retire(retired);
-		_infoPanel.Retire();
 
 		// Host screens rebuild from the records and art as they stand now, on their next open.
 		ForgetHostScreens();

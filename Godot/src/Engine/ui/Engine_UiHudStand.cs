@@ -76,8 +76,8 @@ public sealed class Engine_UiHudStand
 	public uint[] Textures { get; }
 
 	/// <summary>
-	/// Per element, position x/y/z and scale x/y/z as the playback stands them (the order of
-	/// <see cref="Engine_UiLiveAttributes.TransformIds"/>), null where none of the six is written.
+	/// Per element, position x/y/z and scale x/y/z as the playback stands them, null where none
+	/// of the six is written.
 	/// </summary>
 	public float?[]?[] Transform { get; }
 

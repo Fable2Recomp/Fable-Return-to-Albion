@@ -676,7 +676,11 @@ extern "C" {
 ///     placer's drawn quads.
 /// 236 adds RefiiHostGetPendingWeapons — the weapon switches the menu has pending, which the
 ///     weapons list emphasises before the weapon in hand (`sub_826D0C08`).
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 236; }
+/// 237 drops the built-presentation reads — RefiiHostGetUiElements, RefiiHostGetUiTextureHashes,
+///     RefiiHostGetUiTextureStats, RefiiHostGetUiMovie, RefiiHostTakeUiElementChanges and
+///     RefiiHostUiElementCounters: every Fable 2 presentation is headless (CGameface vtable +28),
+///     so there is no element tree to walk and nothing on the host reads one.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 237; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveRoot(char* output, uint32_t capacity) {
     auto* state = rex::system::kernel_state();

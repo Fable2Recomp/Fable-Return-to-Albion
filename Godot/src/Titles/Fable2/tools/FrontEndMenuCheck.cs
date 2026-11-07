@@ -295,32 +295,6 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 				};
 				pauseBook.Build();
 				AddChild(pauseBook);
-
-				// Live stand-ins through the real seam: ordinals from the document, as the game
-				// feeds it.
-				if (DocumentFor(backdrop) is { } doc)
-				{
-					var texts = new string?[doc.Nodes.Length];
-					void Put(string path, string value)
-					{
-						if (Engine_UiScreenPanel.Resolve(doc, path) is { } node)
-						{
-							texts[node.Ordinal] = value;
-						}
-					}
-
-					Put("Contents.CurrentQuest", "The Journey Begins");
-					Put("Contents.Time", "01:34 am");
-					Put("Contents.Renown", "Renown: 250");
-					Put("experienceorbs.Strength.valueText", "1234");
-					Put("experienceorbs.Skill.valueText", "567");
-					Put("experienceorbs.Will.valueText", "89");
-					Put("experienceorbs.General.valueText", "999");
-					Put("Legend.CurrentObjective", "Find the abbot in Oakfield.");
-					Put("Money.Text", "2000138");
-					Put("Money.Back.Select", "Back");
-					pauseBook.SetLive(texts, null, null);
-				}
 			}
 		}
 		else
@@ -416,7 +390,7 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 				logbook.HostActive = Engine_UiAchievementPage.Active(row);
 				var allActive = new bool[logbookDoc.Nodes.Length];
 				System.Array.Fill(allActive, true);
-				logbook.SetLive(null, null, null, allActive, null, null);
+				logbook.SetLive(null, null, allActive, null, null);
 				GD.Print($"[menu-check] achievement page for '{row.Name}': " +
 					$"{logbook.HostValues.Count} value(s), {logbook.HostTextures.Count} texture(s), " +
 					$"{logbook.HostActive.Count} switch(es)");

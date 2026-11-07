@@ -173,22 +173,6 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiAttributes(uint32_t /*requested_pre
     return 0;
 }
 
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiElements(uint32_t /*requested_presentation*/, uint32_t* /*words*/, uint32_t /*word_capacity*/, uint16_t* /*text*/, uint32_t /*text_capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiMovie(uint32_t /*presentation*/, uint32_t* /*out_ordinal*/, char* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiTextureHashes(uint32_t /*presentation*/, uint32_t* /*out*/, uint32_t /*capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT int RefiiHostGetUiTextureStats(uint32_t /*presentation*/, uint32_t* /*out*/) {
-    return 0;
-}
-
 REFII_HOST_ABI_EXPORT int RefiiHostGetVideoFrame(uint8_t* /*out_rgba*/, uint32_t /*capacity*/, uint32_t* /*out_width*/, uint32_t* /*out_height*/) {
     return 0;
 }
@@ -246,18 +230,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostTakeMenuChunks(char* /*out_utf8*/, uint3
     return 0;
 }
 
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostTakeUiElementChanges(uint32_t* /*out_words*/, uint32_t /*word_capacity*/, uint8_t* /*out_kinds*/, uint32_t /*kind_capacity*/) {
-    return 0;
-}
-
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostUiDataGeneration(void) {
     return 0;
-}
-
-REFII_HOST_ABI_EXPORT void RefiiHostUiElementCounters(uint64_t* out_recorded, uint32_t* out_pending, uint64_t* out_dropped) {
-    Zero(out_recorded);
-    Zero(out_pending);
-    Zero(out_dropped);
 }
 
 }  // extern "C"

@@ -197,7 +197,7 @@ public sealed class Engine_UiHostScreen
 
 		// THE DRAW GATE THE GUEST WOULD HAVE STATED, sized to the document once; the provider's
 		// switches are applied over it inside the book.
-		_book.SetLive(null, null, null, _drawn, null, null);
+		_book.SetLive(null, null, _drawn, null, null);
 	}
 
 	/// <summary>Builds the book and the list once. False while the art is still being read.</summary>
