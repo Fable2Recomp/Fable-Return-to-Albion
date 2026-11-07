@@ -44,12 +44,19 @@ set(REFII_PAYLOAD_EXPORT_SOURCE
 #   guest_yield_backoff.cpp  the back-off policy for the guest's SwitchToThread spin waits,
 #                            keyed on the link register, never on a call site. Payload-side: the
 #                            payload must not import a C++ symbol from a host library.
+#   headless_presentation.cpp the headless Gameface core (core/headless_presentation.h): a
+#                            presentation made without its .bgf scene, its elements made from the
+#                            file's element table, their attributes, flags and slides answered as
+#                            the file authored them and as the guest last wrote them, and the
+#                            statements told to them. Title-neutral: each title hands it its
+#                            Gameface's addresses and offsets (a GamefaceTable) from its own hooks.
 #
 # Staged for the install-time build as recompile/payload_core_sources.cmake
 # (REFII_PAYLOAD_CORE_SOURCES), separately from a title's hook_sources.cmake.
 set(REFII_PAYLOAD_CORE_SOURCES
     ${REFII_PAYLOAD_ROOT}/src/core/rex_bridge_payload.cpp
     ${REFII_PAYLOAD_ROOT}/src/core/guest_yield_backoff.cpp
+    ${REFII_PAYLOAD_ROOT}/src/core/headless_presentation.cpp
 )
 
 add_library(refii_payload_core OBJECT ${REFII_PAYLOAD_CORE_SOURCES})

@@ -1,4 +1,4 @@
-// The GUI registries' SLIDE writers, stated to the host.
+// The GUI registries' SLIDE, IMAGE, METER and TEXT writers, stated to the host.
 //
 // A `.bgf` element binds to a name in one of the GUI manager's typed registries (the vector at
 // `*(*(GUI+0x20)+0x20)+28`: [2] SlideFaderName, [3] SlideFader2Name, [9] SlideToggleName,
@@ -22,6 +22,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "vfs_hooks_private.h"
 #include "core/guest_build.h"
@@ -162,3 +163,135 @@ void RefiiGuiImageInlined(PPCRegister& r1, PPCRegister& r4) {
     }
     StateImage(r4.u32, refii::vfs::LoadGuestU32(base, r1.u32 + 0x58u));
 }
+
+// THE METER AND TEXT WRITERS, stated at their entry from their arguments.
+//
+// A meter or text name's record holds the elements filed under it; each writer finds the record
+// (`sub_822A9C60`, disc `sub_822A9A20`) and writes every binding, and writes nothing for a name
+// with no record. The host follows the CALL, not the record: `@Gui.Meter registry hash op a b c`
+// and `@Gui.Text registry hash text`, posted on change (the HUD restates its meters every frame).
+// The binding fields are +20 current, +24 rate (percent per second, 0 snaps), +28 target, +12 the
+// seek mode, every value clamped to 0..100 by the writer (TU1 addresses; disc in brackets):
+//
+//   set   sub_823FE210 [sub_8257C348](registry, hash, f1)         target f1, rate 0, mode 0
+//   seek  sub_823FE2D0 [sub_8257C408](registry, hash, f1, f2)     target f1, rate (f1 - current) / f2,
+//                                                                  0 when f2 <= 0
+//   run   sub_823FE068 [sub_8257C1A0](registry, hash, f1, f2, f3) current f1, target f2, rate f3
+//   scrub sub_823FE3D0 [sub_8257C508](registry, hash, f1)         target f1, rate 0, then each bound
+//                                                                  element to goToTime(trunc(f1 x 10))
+//   text  sub_823FEB28 [sub_8257C720](registry, hash, LHString*)  the string, already localised
+//                                                                  (handle -> {UTF-16 BE data, length})
+namespace {
+
+std::unordered_map<uint64_t, std::string> g_values_said;
+
+std::string Number(float value) {
+    char text[32];
+    std::snprintf(text, sizeof text, "%.9g", static_cast<double>(value));
+    return text;
+}
+
+void PostValue(uint8_t* base, const char* name, uint32_t registry, uint32_t hash,
+               std::vector<std::string> values) {
+    const int index = RegistryIndex(base, registry);
+    if (index < 0) return;
+    std::string said;
+    for (const std::string& value : values) {
+        said += value;
+        said += '\x1f';
+    }
+    {
+        const uint64_t key = (static_cast<uint64_t>(index) << 32) | hash;
+        std::lock_guard<std::mutex> lock(g_said_lock);
+        auto found = g_values_said.find(key);
+        if (found != g_values_said.end() && found->second == said) return;
+        g_values_said[key] = said;
+    }
+
+    refii::vfs::GuiNativeCall call;
+    call.name = name;
+    values.insert(values.begin(), {std::to_string(index), std::to_string(hash)});
+    for (std::string& value : values) {
+        refii::vfs::GuiNativeArgument argument;
+        argument.kind = refii::vfs::GuiNativeArgument::Kind::kString;
+        argument.text = std::move(value);
+        call.arguments.push_back(std::move(argument));
+    }
+    refii::vfs::PostGuiNativeCall(std::move(call));
+}
+
+/// The LHString handle at `at` as UTF-8: `*at` the rep, rep +0 the UTF-16 big-endian data, +4 its
+/// length in code units.
+std::string WideText(uint8_t* base, uint32_t at) {
+    std::string out;
+    if (!Plausible(at)) return out;
+    const uint32_t rep = refii::vfs::LoadGuestU32(base, at);
+    if (!Plausible(rep)) return out;
+    const uint32_t chars = refii::vfs::LoadGuestU32(base, rep);
+    const uint32_t length = refii::vfs::LoadGuestU32(base, rep + 4u);
+    if (!Plausible(chars) || length > 4096u) return out;
+    for (uint32_t c = 0; c < length; ++c) {
+        const uint16_t unit = refii::vfs::LoadGuestU16(base, chars + (c * 2u));
+        if (unit == 0u) break;
+        if (unit < 0x80u) {
+            out += static_cast<char>(unit);
+        } else if (unit < 0x800u) {
+            out += static_cast<char>(0xC0u | (unit >> 6));
+            out += static_cast<char>(0x80u | (unit & 0x3Fu));
+        } else {
+            out += static_cast<char>(0xE0u | (unit >> 12));
+            out += static_cast<char>(0x80u | ((unit >> 6) & 0x3Fu));
+            out += static_cast<char>(0x80u | (unit & 0x3Fu));
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+REX_EXTERN(rex_lhGuiRegistry_SetMeter) {
+    const uint32_t registry = ctx.r3.u32;
+    const uint32_t hash = ctx.r4.u32;
+    const float value = static_cast<float>(ctx.f1.f64);
+    __imp__rex_lhGuiRegistry_SetMeter(ctx, base);
+    PostValue(base, "@Gui.Meter", registry, hash, {"set", Number(value), "0", "0"});
+}
+
+REX_EXTERN(rex_lhGuiRegistry_SeekMeter) {
+    const uint32_t registry = ctx.r3.u32;
+    const uint32_t hash = ctx.r4.u32;
+    const float target = static_cast<float>(ctx.f1.f64);
+    const float seconds = static_cast<float>(ctx.f2.f64);
+    __imp__rex_lhGuiRegistry_SeekMeter(ctx, base);
+    PostValue(base, "@Gui.Meter", registry, hash, {"seek", Number(target), Number(seconds), "0"});
+}
+
+REX_EXTERN(rex_lhGuiRegistry_RunMeter) {
+    const uint32_t registry = ctx.r3.u32;
+    const uint32_t hash = ctx.r4.u32;
+    const float current = static_cast<float>(ctx.f1.f64);
+    const float target = static_cast<float>(ctx.f2.f64);
+    const float rate = static_cast<float>(ctx.f3.f64);
+    __imp__rex_lhGuiRegistry_RunMeter(ctx, base);
+    PostValue(base, "@Gui.Meter", registry, hash, {"run", Number(current), Number(target), Number(rate)});
+}
+
+REX_EXTERN(rex_lhGuiRegistry_ScrubMeter) {
+    const uint32_t registry = ctx.r3.u32;
+    const uint32_t hash = ctx.r4.u32;
+    const float value = static_cast<float>(ctx.f1.f64);
+    __imp__rex_lhGuiRegistry_ScrubMeter(ctx, base);
+    PostValue(base, "@Gui.Meter", registry, hash, {"scrub", Number(value), "0", "0"});
+}
+
+REX_EXTERN(rex_lhGuiRegistry_SetText) {
+    const uint32_t registry = ctx.r3.u32;
+    const uint32_t hash = ctx.r4.u32;
+    std::string text = WideText(base, ctx.r5.u32);
+    __imp__rex_lhGuiRegistry_SetText(ctx, base);
+    PostValue(base, "@Gui.Text", registry, hash, {std::move(text)});
+}
+
+// The registry images named outside SetImage (hooks/gui_headless_presentation.cpp, the spell
+// charges' icons): the name hash and the resource hash the quads would carry.
+void RefiiGuiStateImage(uint32_t hash, uint32_t texture) { StateImage(hash, texture); }

@@ -457,6 +457,10 @@ REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const 
         if (const std::string stem = RefiiGetConfigPath().stem().string(); !stem.empty()) {
             owned.push_back("--log_prefix=" + stem);
         }
+        // ... in the title's own logs folder (logs/Fable2, logs/Fable3) when the host states one.
+        if (const std::filesystem::path& logs = RefiiGetLogDirectory(); !logs.empty()) {
+            owned.push_back("--log_dir=" + logs.string());
+        }
 
         std::vector<char*> argv;
         argv.reserve(owned.size());

@@ -23,7 +23,7 @@ public static partial class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 232;
+	public const int ExpectedAbiVersion = 236;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -259,6 +259,7 @@ public static partial class HostBridge
 			// running title's own (Engine_Title.ConfigFileName), never another title's.
 			RefiiHostSetAppRoot(Refii.Core.Engine_AppRoot.Path);
 			RefiiHostSetConfigPath(Refii.Core.Engine_AppRoot.ConfigPath);
+			RefiiHostSetLogDirectory(Refii.Core.Engine_Title.Active.LogsDirectory);
 
 			int ok = RefiiHostInitialize(gameDirectory, packed, message, (nuint)message.Length);
 			if (ok == 1)
@@ -2380,10 +2381,12 @@ public static partial class HostBridge
 	/// <summary>All seven tab bits — what <see cref="PauseTabsAvailable"/> means by "everything".</summary>
 	public const uint AllPauseTabs = 0x1FCu;
 
+	/// <summary>The token names <see cref="GetMapMarkers"/> carries, by the bridge's index.</summary>
+	private static readonly string[] MapMarkerTokens = { "Quest", "QuestExit", "QuestGiver" };
+
 	/// <summary>
-	/// The pause-root minimap's quest markers — the C++ container the element mirror could
-	/// never see. At most three; hero and dog are ordinary elements and never appear here.
-	/// Valid only while the pause root is up (the guest empties the tree on deactivate).
+	/// The pause-root minimap's quest markers this open, as the guest names them to its placer
+	/// (`sub_826A3FD8`): the token and the world point. Godot projects them like the hero's token.
 	/// </summary>
 	public static System.Collections.Generic.List<MapMarker> GetMapMarkers()
 	{
@@ -2393,27 +2396,16 @@ public static partial class HostBridge
 			return markers;
 		}
 
-		var keys = new uint[8];
+		var tokens = new uint[8];
 		var values = new float[80];
-		uint count = RefiiHostGetMapMarkers(keys, values, 8);
-		for (uint i = 0; i < count; ++i)
+		uint count = RefiiHostGetMapMarkers(tokens, values, 8);
+		for (uint i = 0; i < count && i < 8; ++i)
 		{
-			float uMin = float.MaxValue;
-			float vMin = float.MaxValue;
-			float uMax = float.MinValue;
-			float vMax = float.MinValue;
-			for (uint corner = 0; corner < 4; ++corner)
+			if (tokens[i] < MapMarkerTokens.Length)
 			{
-				float u = values[(i * 10) + 2 + (corner * 2)];
-				float v = values[(i * 10) + 3 + (corner * 2)];
-				uMin = System.Math.Min(uMin, u);
-				vMin = System.Math.Min(vMin, v);
-				uMax = System.Math.Max(uMax, u);
-				vMax = System.Math.Max(vMax, v);
+				markers.Add(new MapMarker(MapMarkerTokens[tokens[i]],
+					values[i * 10], values[(i * 10) + 1], values[(i * 10) + 2]));
 			}
-
-			markers.Add(new MapMarker(
-				keys[i], values[i * 10], values[(i * 10) + 1], uMin, vMin, uMax, vMax));
 		}
 
 		return markers;
@@ -3051,7 +3043,8 @@ public static partial class HostBridge
 	/// </summary>
 	/// <remarks>
 	/// `Enabled` is the guest's master gate (`WorldIconManager+48`), armed only when its HUD
-	/// load binds 16 elements through binding registry 7; `IncomeIcons` is the hero's
+	/// load finds exactly 16 children under the registry builder's slot 7, `Layer.WorldIcons`
+	/// (`sub_828254D8`; headless, the child walk answers the file's — ExpandLocked); `IncomeIcons` is the hero's
 	/// `CECMoney.ShowIncomeIcon`, without which the income payout never labels its icon as
 	/// income. An always-empty queue means one of the two is dark.
 	/// </remarks>
@@ -3061,7 +3054,7 @@ public static partial class HostBridge
 	{
 		/// <summary>
 		/// How many icons the guest currently has on screen, through its own elements:
-		/// `sub_82825618` claims one of 16 HUD elements bound from binding registry 7 and
+		/// `sub_82825618` claims one of the 16 `WorldIcons` children the HUD load pooled and
 		/// `sub_82824D60` writes its projected screen position every frame, so a lit icon is
 		/// one the HUD mirror should already carry.
 		/// </summary>
@@ -3531,6 +3524,58 @@ public static partial class HostBridge
 		catch (EntryPointNotFoundException)
 		{
 			return 0;
+		}
+	}
+
+	/// <summary>
+	/// A headless presentation's file, as its create named it (hooks/gui_headless_presentation.cpp):
+	/// the key its statements carry is (presentation, <paramref name="serial"/> in the root-hash word,
+	/// <c>0x80000000 | id</c>). Null when <paramref name="serial"/> is not the presentation there.
+	/// </summary>
+	public static string? ToldHeadlessFile(uint presentation, uint serial)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		try
+		{
+			var buffer = new byte[512];
+			uint length = RefiiHostToldHeadlessFile(presentation, serial, buffer, (uint)buffer.Length);
+			return length == 0 ? null : Encoding.UTF8.GetString(buffer, 0, (int)length);
+		}
+		catch (DllNotFoundException)
+		{
+			return null;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>One element of a headless presentation by its id: its parent's id (0 the root) and name hash.</summary>
+	public static bool ToldHeadlessElement(uint presentation, uint serial, uint id, out uint parentId, out uint nameHash)
+	{
+		parentId = 0;
+		nameHash = 0;
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return false;
+		}
+
+		try
+		{
+			return RefiiHostToldHeadlessElement(presentation, serial, id, out parentId, out nameHash) != 0;
+		}
+		catch (DllNotFoundException)
+		{
+			return false;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
 		}
 	}
 
@@ -5164,33 +5209,16 @@ public static partial class HostBridge
 		TryGetAbiVersion() is null ? 0u : RefiiHostGetAchievementsUiRequests();
 
 	/// <summary>
-	/// Presses or releases a direction on whichever in-game screen is up — an EDGE, not a step.
-	/// The guest's own path (`sub_82404ED0` / `sub_82405030`) sets the presentation's `String1`
-	/// attribute to the direction and runs `GUI:SetDirectionToHeld()` /
-	/// `GUI:SetDirectionToReleased()`; Lua's `g_Menu:onUpdate` polls that latch and calls
-	/// `ScrollUp` itself, so the repeat cadence and `UpDownInputDisabled` stay the original's.
-	/// Because it is a latch, both edges must be sent: a press with no release leaves the guest
-	/// scrolling for ever, including after the menu closes.
-	/// </summary>
-	public static uint MenuScroll(MenuStick direction, bool held) =>
-		PostFrontEndAction($"MenuScroll:{direction.ToString().ToLowerInvariant()}" +
-			(held ? string.Empty : ":released"));
-
-	/// <summary>
 	/// Feeds one action code to the current in-game screen's own <c>vtable+24</c> handler.
 	///
 	/// 36 select (the uniform <c>sub_826D58F0</c> "OnPressA"), 37 back, 39 the per-screen Y
-	/// action, 59 inspect, 72/73 tab prev/next. The pump passes player index 1; see
-	/// <see cref="MenuScroll"/> for why the highlight has to be moved through the guest too.
+	/// action, 59 inspect, 72/73 tab prev/next, 28..31 the directions and 32..35 their releases.
+	/// The pump passes player index 1. A handler that reads the highlighted row reads the row
+	/// stated by <see cref="SetHighlightedRow"/>.
 	/// </summary>
-	/// <param name="atRoot">
-	/// The host's answer to `g_Menu:IsHighlightedItemAtRoot()`, carried with the press. Only
-	/// code 37 reads it, and it must be supplied: `sub_826C1D98` posts the chunk that would
-	/// compute it and reads `Float1` back ten instructions later, so the guest always sees
-	/// whatever last wrote that slot.
-	/// </param>
-	public static uint ScreenAction(uint code, bool atRoot = false) =>
-		PostFrontEndAction($"ScreenAction:{code}{(atRoot ? ":root" : string.Empty)}");
+	/// <remarks>B's root test (`IsHighlightedItemAtRoot`) is answered from <see cref="SetListFoldDepth"/>,
+	/// not carried with the press.</remarks>
+	public static uint ScreenAction(uint code) => PostFrontEndAction($"ScreenAction:{code}");
 
 	/// <summary>
 	/// Commits a menu row BY IDENTITY, the way the shipped script does: `g_Menu:SelectMenuItem`
@@ -5206,24 +5234,6 @@ public static partial class HostBridge
 	/// </summary>
 	public static uint MenuEvent(string name, int eventType, uint id) =>
 		PostFrontEndAction($"MenuEvent:{name}:{eventType}:{id}");
-
-	/// <summary>
-	/// The shipped commit — `g_Menu:SelectMenuItem()` on the guest's own tick thread. It is an
-	/// event AND a toggle, and the toggle is what <see cref="MenuEvent"/> cannot do: only the
-	/// guest's Lua menu spawns a category's child rows, off the expand `SelectMenuItem` fires
-	/// (a world-map category is event type 301, which the screen's C++ handler has no case for).
-	/// Acts on the GUEST's cursor, so use it only while that cursor is the row meant.
-	/// </summary>
-	public static uint MenuSelect() => PostFrontEndAction("MenuSelect");
-
-	/// <summary>
-	/// Puts the guest's own menu cursor (`g_Menu.CurrentHighlightIdx`) on the row named, by the
-	/// name both menus carry. Run by the pump inside the guest's Lua window, so the screen
-	/// handlers that read `g_Menu:GetHighlightedMenuItemData()` (options, logbook, furniture;
-	/// the items/clothing caches) then resolve the row Godot's cursor is on — see
-	/// Engine_UiScreenTemplate.CommitsByHighlight.
-	/// </summary>
-	public static uint MenuHighlight(string name) => PostFrontEndAction($"MenuHighlight:{name}");
 
 	/// <summary>
 	/// Every row the guest has spawned into the current list, in spawn order: the identity —
@@ -8727,6 +8737,33 @@ public static partial class HostBridge
 		uint screen, int eventType, int id,
 		[MarshalAs(UnmanagedType.LPUTF8Str)] string name, [MarshalAs(UnmanagedType.LPUTF8Str)] string label);
 
+	[DllImport(Library)]
+	private static extern void RefiiHostSetListFoldDepth(uint screen, uint depth);
+
+	/// <summary>The front end's main menu as a <see cref="SetListFoldDepth"/> key; in-game screens
+	/// use their TU1 id, all below 64.</summary>
+	public const uint FrontEndMainMenuList = 1010;
+
+	/// <summary>States how deep into open folders the highlighted row of Godot's list for
+	/// <paramref name="screen"/> sits (0 at the root, which also clears). The guest's
+	/// `IsHighlightedItemAtRoot` readers — `sub_826C1D98` in game, `sub_826DED60` on the front end —
+	/// answer from it (gui_menu_hooks.cpp).</summary>
+	public static void SetListFoldDepth(uint screen, uint depth)
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return;
+		}
+
+		try
+		{
+			RefiiHostSetListFoldDepth(screen, depth);
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+		}
+	}
+
 	/// <summary>States the highlighted row of an in-game screen's Godot list — what the guest's
 	/// highlighted-row reader answers with (gui_menu_hooks.cpp). Screen 0 clears it.</summary>
 	public static void SetHighlightedRow(uint screen, int eventType, int id, string name, string label)
@@ -8807,6 +8844,12 @@ public static partial class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostTakeToldTexts(uint[] outWords, uint wordCapacity, ushort[] units, uint unitCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostToldHeadlessFile(uint presentation, uint serial, [Out] byte[] output, uint capacity);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostToldHeadlessElement(uint presentation, uint serial, uint id, out uint parentId, out uint nameHash);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostPlayerStateReceive(byte[] message, uint length);
@@ -8907,6 +8950,10 @@ public static partial class HostBridge
 
 	[DllImport(Library)]
 	private static extern void RefiiHostSetConfigPath(
+		[MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetLogDirectory(
 		[MarshalAs(UnmanagedType.LPUTF8Str)] string path);
 
 	[DllImport(Library)]

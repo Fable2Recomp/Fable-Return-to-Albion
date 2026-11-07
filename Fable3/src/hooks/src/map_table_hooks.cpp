@@ -72,10 +72,13 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
+#include <unordered_set>
 
 #include <rex/ppc.h>
 
 #include "core/payload_bridge.h"
+#include "gui_statements.h"
 
 REX_EXTERN(__imp__rex_MapScene_Add);
 REX_EXTERN(__imp__rex_MapScene_AddOrUpdate);
@@ -163,6 +166,32 @@ void RestateMeshTransform(const uint8_t* base, uint32_t id, uint32_t message) {
   refii_bridge_scene_object_patch(id, 0u, words, kRowTint);
 }
 
+/// THE MESSAGES THE TABLE DOES NOT DRAW: anything added through H that is not a mesh message —
+/// the entity sprites (CWorldMapEntitySprite_vf2 0x829320A8 -> sub_8292AFF8, message from
+/// sub_82931A90) and the lights / sun (Lua_WorldMap_Lights 0x824CDFD4.., CWorldMapEntityLight_vf2
+/// 0x82931294 -> sub_8292AF98). Their layouts are not read yet; each class is named once
+/// (`@MapTable.Unstated(holder, id, vtable)`) so a run lists what the table still lacks.
+std::mutex g_unstated_mutex;
+std::unordered_set<uint32_t> g_unstated;
+
+void NameUnstated(const uint8_t* base, uint32_t holder, uint32_t id, uint32_t message) {
+  if (!Plausible(message)) {
+    return;
+  }
+  const uint32_t vtable = LoadGuestU32(base, message);
+  {
+    std::lock_guard<std::mutex> lock(g_unstated_mutex);
+    if (g_unstated.size() > 64u || !g_unstated.insert(vtable).second) {
+      return;
+    }
+  }
+  refii::fable3::Statement("@MapTable.Unstated")
+      .Add(refii::fable3::Text(refii::fable3::Hex(holder)))
+      .Add(refii::fable3::Number(static_cast<float>(static_cast<int32_t>(id))))
+      .Add(refii::fable3::Text(refii::fable3::Hex(vtable)))
+      .Post();
+}
+
 }  // namespace
 
 namespace refii::fable3 {
@@ -183,6 +212,8 @@ REX_EXTERN(rex_MapScene_Add) {
   const uint32_t id = ctx.r3.u32;
   if (mesh && id != 0xFFFFFFFFu) {
     StateMesh(base, holder, id, message);
+  } else if (!mesh && base != nullptr) {
+    NameUnstated(base, holder, id, message);
   }
 }
 
@@ -209,6 +240,10 @@ REX_EXTERN(rex_MapScene_AddOrUpdate) {
     words[9] = LoadGuestU32(base, message + 52u);
     refii_bridge_scene_camera_stated(holder, words);
     return;
+  }
+
+  if (!IsMeshMessage(base, message)) {
+    NameUnstated(base, holder, before, message);
   }
 
   // An add went through sub_8292AF98 (rex_MapScene_Add states it); an update re-sent the message.

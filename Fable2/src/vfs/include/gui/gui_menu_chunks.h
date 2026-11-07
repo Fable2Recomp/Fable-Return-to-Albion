@@ -20,6 +20,16 @@
 
 namespace refii::vfs {
 
+/// The first chunk the guest runs on a presentation it initialises (`sub_823DCC70`, disc
+/// `sub_823FE988`): the presentation's Lua state, and so its menu, starts here. Recorded with the
+/// `g_Menu:` statements so a reused address does not carry the last instance's menu.
+inline constexpr const char kPresentationInitChunk[] = "GUI:SetAsNotRunningInAnarkStudio()";
+
+/// The staged attribute the runner adds to a `...Selected...` statement and to `PushMenuState`:
+/// the name of the row Godot states as highlighted, which is the row the shipped script's
+/// `CurrentHighlightIdx` named.
+inline constexpr const char kHighlightedAttribute[] = "@Highlighted";
+
 /// One staged attribute, as the C++ handed it to the stager.
 struct MenuChunkAttribute {
     std::string name;   // "String1", "Float3", …
@@ -46,6 +56,28 @@ inline void StageMenuAttribute(std::string name, std::string text, float number,
 /// Records a chunk and consumes the staged bag; a leftover would attach to the next chunk.
 inline void RunMenuChunk(std::string chunk, uint32_t presentation) {
   refii_bridge_run_menu_chunk(chunk.data(), chunk.size(), presentation);
+}
+
+/// Rows on `presentation`'s menu root — see `refii_bridge_menu_root_rows`.
+inline uint32_t MenuRootRows(uint32_t presentation) {
+  return refii_bridge_menu_root_rows(presentation);
+}
+
+/// The 1-based place of `presentation`'s last spawned row — see
+/// `refii_bridge_menu_last_spawn_ordinal`.
+inline uint32_t MenuLastSpawnOrdinal(uint32_t presentation) {
+  return refii_bridge_menu_last_spawn_ordinal(presentation);
+}
+
+/// `GetMenuItemDataByName`'s `String2` for `presentation` — see
+/// `refii_bridge_menu_by_name_text_tag`.
+inline bool MenuByNameTextTag(uint32_t presentation, std::string* out) {
+  char text[256] = {};
+  if (!refii_bridge_menu_by_name_text_tag(presentation, text, sizeof(text))) {
+    return false;
+  }
+  *out = text;
+  return true;
 }
 
 /// Takes every recorded call. Empties the queue.

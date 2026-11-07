@@ -31,10 +31,16 @@
 // field inline (0x828192FC); sub_828191A8(elem, &tagName) resolves a tag NAME (sub_823A9728 at
 // 0x828191E0) and assigns it inline too (0x82819204) — the promise's button labels (sub_827A3398 at
 // 0x827A34D0 / 0x827A3508) and sub_82819230's six callers. All are read AFTER they return, from box+0x88: rep +0 = UTF-16BE
-// characters, +4 = length in code units (as the HUD registry's strings, hud_feed.cpp).
+// characters, +4 = length in code units (as the HUD registry's strings, hud_hooks.cpp).
+//
+// WHAT GODOT DRAWS vs WHAT IT CHECKS. A text read back from box+0x88 after a commit and an opacity
+// the visibility toggle derived from a read-back exist only while Gameface builds the element's
+// renderable. The values those writers were ASKED for are stated at their entry instead
+// (`@Ui.TextTag` / `@Ui.TextName` / `@Ui.Visible` here, `@Ui.Text` in ui_stated_hooks.cpp), and
+// Godot draws those; `@Element.Text` and `@Element.ToggleOpacity` remain as the cross-check.
 //
 // Statements, not samples: each (element, kind) posts only when its value changes — the HUD update
-// sub_822597B0 restates two states every frame (0x82259978, 0x82259990).
+// sub_822597B0 restates two states on each g_HUD:Enable() (0x82259978, 0x82259990; once, H+9 cleared at 0x8225990C).
 //
 // THE REGISTRY ELEMENTS NEVER PASS THE RESOLVER. The HUD's registry builder sub_82675288 walks the
 // whole element tree (sub_82675848 recurses the children from sub_8281A138) and hands every element
@@ -69,9 +75,11 @@
 // (0x82961464) and sub_829614A0 maps it to the matching `…\<b>_orb.tex` on `Icon.Container.A_Orb`
 // (0x82961644). Posted as `@Element.Texture(pres, elem, path, texturePath)`.
 //
-// THE SCREEN ROOT is written by the screen tick itself: sub_825C3A78 sets the state of
-// `sub_82819DB8(pres)` — the renderer's root element, `pres->vt[8]()->vt[17]()` (0x82819E08 /
-// 0x82819E1C) — to 1 showing / 2 hidden (0x825C3D10, 0x825C3D5C, 0x825C3D8C, 0x825C3EC8). The
+// THE SCREEN ROOT is written straight through `sub_82819DB8(pres)` — the renderer's root element,
+// `pres->vt[8]()->vt[17]()` (0x82819E08 / 0x82819E1C): the interaction mode's tick sub_825C3A78
+// sets InteractionMode.bgf's (IM+0) to 1 / 2 (0x825C3D10, 0x825C3D5C, 0x825C3D8C, 0x825C3EC8);
+// hud.bgf's is set by sub_825C1CB0 (2), sub_825C1D28 (1) and sub_8249A030 (3,
+// screen_stated_hooks.cpp states those). The
 // resolver names its "Layer" child by passing that root as the parent (0x82819E70..0x82819E90), so
 // the root is named `Scene` (the chunk runner's own `getElement('Scene.Layer')`) and contributes no
 // prefix: paths stay `Layer.…` as the census has them.
@@ -116,6 +124,7 @@
 
 #include <rex/ppc.h>
 
+#include "core/headless_presentation.h"
 #include "gui_statements.h"
 
 REX_EXTERN(__imp__rex_GuiElement_Resolve);
@@ -135,6 +144,8 @@ REX_EXTERN(__imp__rex_GamefaceLua_Presentation);
 REX_EXTERN(__imp__rex_GamefaceLua_GetElement);
 REX_EXTERN(__imp__rex_GamefaceLua_SetAttribute);
 REX_EXTERN(__imp__rex_GamefacePresentation_Execute);
+REX_EXTERN(__imp__rex_GuiElement_SetVisible);
+REX_EXTERN(__imp__rex_GuiElement_SetFlagActive);
 
 namespace {
 
@@ -166,6 +177,7 @@ std::unordered_map<uint32_t, std::string> g_textures;                // element 
 constexpr uint32_t kKindState = 1u;
 constexpr uint32_t kKindOpacity = 2u;
 constexpr uint32_t kKindTime = 3u;
+constexpr uint32_t kKindStoredOpacity = 4u;
 
 /// The presentation root's name; it prefixes nothing.
 const char kRootPath[] = "Scene";
@@ -180,6 +192,11 @@ thread_local Filing t_filing;
 
 /// Inside SetState on this thread: the slide funnel leaves the post to it.
 thread_local uint32_t t_set_state_depth = 0u;
+
+/// Inside the visibility toggle sub_82819AE0 on this thread: the opacity its SetOpacity writes
+/// (0x82819B68) is derived from a read-back (GetOpacity at 0x82819B2C) and is posted only as
+/// `@Element.ToggleOpacity`, the cross-check of the toggle's stated bool (`@Ui.Visible`).
+thread_local uint32_t t_toggle_depth = 0u;
 
 /// The presentation the Gameface Lua method running on this thread took from the registry
 /// (sub_822673D8's answer), 0 before it asked.
@@ -276,12 +293,31 @@ bool Lookup(uint32_t element, Known& out) {
   return true;
 }
 
+/// The element's name for a statement: the recorded path, else — for a headless element no
+/// resolver step or filing named (a child walk's, a pooled element) — `#<file ordinal>`, the
+/// .bgf element table's index Godot's document is indexed by (core/headless_presentation.h,
+/// FileOrdinal). Caller holds g_mutex.
+bool Named(uint32_t element, Known& out) {
+  const bool found = Lookup(element, out);
+  if (found && !out.path.empty()) {
+    return true;
+  }
+  const int32_t ordinal = refii::headless::FileOrdinal(element);
+  uint32_t presentation = 0u, serial = 0u, id = 0u;
+  if (ordinal < 0 || !refii::headless::ElementKey(element, &presentation, &serial, &id)) {
+    return found;
+  }
+  out.presentation = presentation;
+  out.path = "#" + std::to_string(ordinal);
+  return true;
+}
+
 /// `@Element.<kind>(presentation hex, element hex, path, value)`.
 void Post(const char* name, uint32_t presentation, uint32_t element, const std::string& path,
           refii::vfs::GuiNativeArgument value) {
   refii::vfs::GuiNativeCall call;
   call.name = name;
-  call.arguments.push_back(Text(Hex(presentation)));
+  call.arguments.push_back(Text(PresentationKey(presentation)));
   call.arguments.push_back(Text(Hex(element)));
   call.arguments.push_back(Text(path));
   call.arguments.push_back(std::move(value));
@@ -304,7 +340,7 @@ void PostValue(const uint8_t* base, uint32_t element, uint32_t presentation, uin
   if (g_states.size() > kMaxValues) {
     g_states.clear();
   }
-  const bool named = Lookup(element, known);
+  const bool named = Named(element, known);
   Post(name, named && known.presentation != 0u ? known.presentation : presentation, element,
        named ? known.path : std::string(), Number(value));
 }
@@ -333,9 +369,35 @@ void PostBoxText(const uint8_t* base, uint32_t box) {
     element = FindBoxOwner(base, box);
   }
   Known known;
-  const bool named = element != 0u && Lookup(element, known);
+  const bool named = element != 0u && Named(element, known);
   Post("@Element.Text", named ? known.presentation : 0u, element, named ? known.path : std::string(),
        Text(text));
+}
+
+// THE EXISTENCE-CHECKED SETTERS on a headless element (headless_presentation_hooks.cpp). SetOpacity
+// writes `opacity` (dword_8355EE48, `lwz r5,dword_8355EE48@l(r9)` 0x8281946c) only when
+// `sub_821C9ED0` finds it (0x82819474); SetPosition checks `position.x` through service vf +12
+// (0x828185ec) and then writes x/y/z (dword_8355EE4C / 50 / 54, 0x82818610 / 0x8281863c /
+// 0x82818664). A file element carries what the .bgf authored; a fileless one (a name the file has
+// not got) is given the attributes here, so the guest's own write lands and its read-backs
+// (GetPosition, the visibility toggle's GetOpacity) echo it. Either way the write is stated by the
+// hook from its arguments.
+const uint32_t kAttrOpacityIds[] = {0x8355EE48u};
+const uint32_t kAttrPositionIds[] = {0x8355EE4Cu, 0x8355EE50u, 0x8355EE54u};
+
+/// After a writer of `opacity`: the value a headless element now holds, stated (defined below).
+void StateHeld(const uint8_t* base, uint32_t element, uint32_t presentation);
+
+void RememberHeadless(const uint8_t* base, uint32_t element, const uint32_t* globals, const float* values,
+                      size_t count) {
+  if (!Plausible(element)) {
+    return;
+  }
+  uint32_t ids[3] = {};
+  for (size_t i = 0; i < count && i < 3u; ++i) {
+    ids[i] = LoadGuestU32(base, globals[i]) & kAttributeIdMask;
+  }
+  refii::headless::RememberWrite(const_cast<uint8_t*>(base), element, ids, values, count);
 }
 
 }  // namespace
@@ -392,7 +454,10 @@ REX_EXTERN(rex_GuiPresentation_Root) {
   g_elements[root] = known;
 }
 
-/// The registry filer: the element being filed, for the attribute getter below.
+uint32_t refii::fable3::FilingElement() { return t_filing.element; }
+
+/// The registry filer: the element being filed, for the attribute getter below and the
+/// registry insert's hook (hud_hooks.cpp).
 REX_EXTERN(rex_GuiRegistry_File) {
   const Filing outer = t_filing;
   t_filing.element = ctx.r4.u32;
@@ -401,13 +466,18 @@ REX_EXTERN(rex_GuiRegistry_File) {
   t_filing = outer;
 }
 
-/// The attribute-string getter, `sub_828183C8(out, element, pres, &attributeName)`: during a
-/// filing of this element, the string it answers is the registry's key for the element.
+/// The attribute-string getter, `sub_828183C8(out, element, pres, &attributeName)`: a headless
+/// element answers its FILE's string attribute (headless_presentation_hooks.cpp); during a filing
+/// of this element, the string it answers is the registry's key for the element.
 REX_EXTERN(rex_GuiElement_AttributeString) {
   const uint32_t out = ctx.r3.u32;
   const uint32_t element = ctx.r4.u32;
+  const uint32_t presentation = ctx.r5.u32;
   const uint32_t attribute_name = ctx.r6.u32;
   __imp__rex_GuiElement_AttributeString(ctx, base);
+  if (base != nullptr && HeadlessAnswerAttributeString(ctx, base, out, element, presentation, attribute_name)) {
+    ctx.r3.u32 = out;  // the read answers `out` (`mr r3,r29` 0x828184a0)
+  }
 
   if (base == nullptr || element == 0u || element != t_filing.element || !Plausible(element)) {
     return;
@@ -451,11 +521,16 @@ REX_EXTERN(rex_GuiElement_SetOpacity) {
   const uint32_t element = ctx.r3.u32;
   const uint32_t presentation = ctx.r4.u32;
   const float opacity = static_cast<float>(ctx.f1.f64);
+  if (base != nullptr && presentation != 0u) {
+    RememberHeadless(base, element, kAttrOpacityIds, &opacity, 1u);
+  }
   __imp__rex_GuiElement_SetOpacity(ctx, base);
   if (base != nullptr && presentation != 0u) {
     uint32_t bits = 0u;
     std::memcpy(&bits, &opacity, sizeof(bits));
-    PostValue(base, element, presentation, kKindOpacity, bits, "@Element.Opacity", opacity);
+    PostValue(base, element, presentation, kKindOpacity, bits,
+              t_toggle_depth != 0u ? "@Element.ToggleOpacity" : "@Element.Opacity", opacity);
+    StateHeld(base, element, presentation);
   }
 }
 
@@ -476,6 +551,14 @@ REX_EXTERN(rex_GuiElement_SetTime) {
 /// A text set from a tag name, `sub_828191A8(elem, &name)`: the element's box shows the result.
 REX_EXTERN(rex_GuiElement_SetTextName) {
   const uint32_t element = ctx.r3.u32;
+  if (base != nullptr && Plausible(element)) {
+    // The name as given (r4, a CCharString handle; resolved by sub_823A9728 at 0x828191E0 only
+    // behind elem+4, 0x828191BC..0x828191C8): stated whether or not the element has a box.
+    uint32_t presentation = 0u;
+    std::string path;
+    ElementName(element, presentation, path);
+    StateTextName(presentation, element, path, ReadCharString(base, ctx.r4.u32), "828191A8");
+  }
   __imp__rex_GuiElement_SetTextName(ctx, base);
   if (base == nullptr || !Plausible(element)) {
     return;
@@ -505,6 +588,14 @@ REX_EXTERN(rex_GuiTextBox_Commit) {
 /// A text tag resolved and assigned to an element's box: `sub_82819288(elem, tagId)`.
 REX_EXTERN(rex_GuiElement_SetTextTag) {
   const uint32_t element = ctx.r3.u32;
+  if (base != nullptr && Plausible(element)) {
+    // The tag as given (r4, its FNV-1; looked up by sub_8230DCA8 at 0x828192D4 only behind
+    // elem+4, 0x8281929C..0x828192A8): stated whether or not the element has a box.
+    uint32_t presentation = 0u;
+    std::string path;
+    ElementName(element, presentation, path);
+    StateTextTag(presentation, element, path, ctx.r4.u32, "82819288");
+  }
   __imp__rex_GuiElement_SetTextTag(ctx, base);
   if (base == nullptr || !Plausible(element)) {
     return;
@@ -530,8 +621,19 @@ REX_EXTERN(rex_GuiElement_SetPosition) {
   const float x = static_cast<float>(ctx.f1.f64);
   const float y = static_cast<float>(ctx.f2.f64);
   const float z = static_cast<float>(ctx.f3.f64);
+  if (base != nullptr && presentation != 0u) {
+    const float xyz[3] = {x, y, z};
+    RememberHeadless(base, element, kAttrPositionIds, xyz, 3u);
+  }
   __imp__rex_GuiElement_SetPosition(ctx, base);
   if (base == nullptr || presentation == 0u || !Plausible(element)) {
+    return;
+  }
+  // A TopBox line placed by the guest's own box fit (sub_82920610 at 0x829207DC, inside
+  // sub_82920BC8) is not stated: Godot stands the first row where the file's fit puts it and
+  // stacks the rest from the text it draws (Engine_UiTextBoxFit, Engine_UiTopBoxLayout).
+  const uint32_t box = LaidOutBox();
+  if (box != 0u && box == TopBoxName(base)) {
     return;
   }
   std::array<uint32_t, 3> bits{};
@@ -548,10 +650,10 @@ REX_EXTERN(rex_GuiElement_SetPosition) {
     g_positions.clear();
   }
   g_positions[element] = bits;
-  const bool named = Lookup(element, known);
+  const bool named = Named(element, known);
   refii::vfs::GuiNativeCall call;
   call.name = "@Element.Position";
-  call.arguments.push_back(Text(Hex(named && known.presentation != 0u ? known.presentation : presentation)));
+  call.arguments.push_back(Text(PresentationKey(named && known.presentation != 0u ? known.presentation : presentation)));
   call.arguments.push_back(Text(Hex(element)));
   call.arguments.push_back(Text(named ? known.path : std::string()));
   call.arguments.push_back(Number(x));
@@ -579,9 +681,10 @@ REX_EXTERN(rex_GuiElement_SetTexture) {
     g_textures.clear();
   }
   g_textures[element] = texture;
-  const bool named = Lookup(element, known);
+  const bool named = Named(element, known);
   Post("@Element.Texture", named ? known.presentation : 0u, element, named ? known.path : std::string(),
        Text(texture));
+  StateTexture(named ? known.presentation : 0u, element, named ? known.path : std::string(), texture, "82818EF0");
 }
 
 namespace {
@@ -692,10 +795,10 @@ void PostAttribute(uint32_t presentation, uint32_t element, uint32_t id, const s
   if (g_attributes.size() > kMaxValues) {
     g_attributes.clear();
   }
-  const bool named = Lookup(element, known);
+  const bool named = Named(element, known);
   refii::vfs::GuiNativeCall call;
   call.name = "@Element.Attribute";
-  call.arguments.push_back(Text(Hex(named && known.presentation != 0u ? known.presentation : presentation)));
+  call.arguments.push_back(Text(PresentationKey(named && known.presentation != 0u ? known.presentation : presentation)));
   call.arguments.push_back(Text(Hex(element)));
   call.arguments.push_back(Text(named ? known.path : std::string()));
   call.arguments.push_back(Text(name));
@@ -715,7 +818,7 @@ void PostLuaText(uint32_t presentation, uint32_t element, const std::string& tex
     g_lua_texts.clear();
   }
   g_lua_texts[element] = text;
-  const bool named = Lookup(element, known);
+  const bool named = Named(element, known);
   Post("@Element.Text", named && known.presentation != 0u ? known.presentation : presentation, element,
        named ? known.path : std::string(), Text(text));
 }
@@ -856,7 +959,7 @@ REX_EXTERN(rex_GamefaceLua_SetAttribute) {
         return;
       }
       last = static_cast<uint32_t>(on) + 1u;
-      const bool named = Lookup(element, known);
+      const bool named = Named(element, known);
       Post("@Element.Active", named && known.presentation != 0u ? known.presentation : presentation, element,
            named ? known.path : std::string(), Boolean(on));
     }
@@ -922,4 +1025,98 @@ REX_EXTERN(rex_GamefacePresentation_Execute) {
   } else {
     PostAttribute(presentation, target, attribute, found->second, second, Number(number));
   }
+}
+
+void refii::fable3::StateStoredOpacity(uint32_t element, uint32_t presentation, uint32_t bits) {
+  if (!Plausible(element)) {
+    return;
+  }
+  Known known;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  uint32_t& last = g_states[Key(element, kKindStoredOpacity)];
+  if (last != 0u && last == bits + 1u) {
+    return;
+  }
+  last = bits + 1u;
+  float value = 0.0f;
+  std::memcpy(&value, &bits, sizeof(value));
+  const bool named = Named(element, known);
+  Post("@Element.StoredOpacity", named && known.presentation != 0u ? known.presentation : presentation, element,
+       named ? known.path : std::string(), Number(value));
+}
+
+namespace {
+
+/// After a writer of `opacity` (SetOpacity, the visibility toggle): the value the element now holds.
+void StateHeld(const uint8_t* base, uint32_t element, uint32_t presentation) {
+  uint32_t bits = 0u;
+  const uint32_t id = LoadGuestU32(base, kAttrOpacityIds[0]) & kAttributeIdMask;
+  if (refii::headless::AttributeBits(base, element, id, &bits)) {
+    StateStoredOpacity(element, presentation, bits);
+    refii::headless::WatchStoredValue(element, bits);
+  }
+}
+
+}  // namespace
+
+bool refii::fable3::ElementName(uint32_t element, uint32_t& presentation, std::string& path) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  Known known;
+  if (!Named(element, known)) {
+    return false;
+  }
+  presentation = known.presentation;
+  path = known.path;
+  return true;
+}
+
+/// THE VISIBILITY TOGGLE sub_82819AE0(elem, pres, shown): stated as the bool its caller asks for
+/// (r5, `mr r30,r5` 0x82819AFC). Its body compares the request with IsVisible (sub_82819BF8 at
+/// 0x82819B00), reads the opacity back (GetOpacity sub_82819560 at 0x82819B2C) and scales it by
+/// 1024 or 1/1024 across 0.09765625 (flt_832A18DC, 0x82819B38..0x82819B64) — a read-back a
+/// headless element answers 0, so its SetOpacity is only the cross-check (`@Element.ToggleOpacity`).
+REX_EXTERN(rex_GuiElement_SetVisible) {
+  const uint32_t element = ctx.r3.u32;
+  const uint32_t presentation = ctx.r4.u32;
+  const bool shown = (ctx.r5.u32 & 0xFFu) != 0u;
+  if (base != nullptr && Plausible(element)) {
+    uint32_t named_in = 0u;
+    std::string path;
+    ElementName(element, named_in, path);
+    StateVisible(presentation != 0u ? presentation : named_in, element, path, shown, "82819AE0");
+  }
+  ++t_toggle_depth;
+  __imp__rex_GuiElement_SetVisible(ctx, base);
+  --t_toggle_depth;
+  if (base != nullptr && Plausible(element) && presentation != 0u) {
+    StateHeld(base, element, presentation);
+  }
+}
+
+/// THE ACTIVE FLAG sub_828196E0(elem, pres, on, force): flag 0x2000 through the store's vt+80
+/// (0x82819774), skipped when the store's vt+76 already answers `on` unless forced (0x82819754)
+/// — a read-back. Stated as asked, `@Element.Active` as Lua's `setAttribute(e, 'active', b)` is.
+REX_EXTERN(rex_GuiElement_SetFlagActive) {
+  const uint32_t element = ctx.r3.u32;
+  const uint32_t presentation = ctx.r4.u32;
+  const bool on = (ctx.r5.u32 & 0xFFu) != 0u;
+  if (base != nullptr && Plausible(element) && presentation != 0u) {
+    uint32_t named_in = 0u;
+    std::string path;
+    if (ElementName(element, named_in, path) && !path.empty()) {
+      StateActive(presentation, element, path, on, "828196E0");
+    }
+  }
+  if (base != nullptr && Plausible(element) && presentation != 0u) {
+    Known known;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    uint32_t& last = g_states[Key(element, kKindActive)];
+    if (last == 0u || last != static_cast<uint32_t>(on) + 1u) {
+      last = static_cast<uint32_t>(on) + 1u;
+      const bool named = Named(element, known);
+      Post("@Element.Active", named && known.presentation != 0u ? known.presentation : presentation, element,
+           named ? known.path : std::string(), Boolean(on));
+    }
+  }
+  __imp__rex_GuiElement_SetFlagActive(ctx, base);
 }

@@ -326,6 +326,22 @@ uint32_t refii_bridge_current_gui_native_entry(void);
 // - one intercepted call, flattened by core/gui_native_calls.h's blob codec.
 void refii_bridge_post_gui_native_call(const uint8_t* blob, size_t length);
 
+// WHAT A TITLE'S GUEST TELLS ITS PRESENTATIONS' ELEMENTS (src/runtime/src/core/told_statements.cpp;
+// the host side's C++ API core/told_statements.h). `kind` 1 slide entry, 2 paused, 3 attribute,
+// 4 active, 5 texture; `a`/`b` per kind. A text is its UTF-16 units, copied.
+void refii_bridge_told_push(uint32_t kind, uint32_t presentation, uint32_t root_hash, uint32_t ordinal,
+                            uint32_t a, uint32_t b);
+void refii_bridge_told_text_push(uint32_t presentation, uint32_t root_hash, uint32_t ordinal,
+                                 const uint16_t* units, uint32_t length);
+// A headless presentation (the shared headless core, core/headless_presentation.h): its serial and
+// file at creation, then each element the guest names, by id (1..), its parent's id (0 the root)
+// and name hash; and its destroy, which takes it off the registry's live list.
+void refii_bridge_told_headless_presentation(uint32_t presentation, uint32_t serial, const char* file,
+                                             uint32_t length);
+void refii_bridge_told_headless_element(uint32_t presentation, uint32_t serial, uint32_t id,
+                                        uint32_t parent_id, uint32_t name_hash);
+void refii_bridge_told_headless_gone(uint32_t presentation, uint32_t serial);
+
 // THE VIEW A TITLE STATES (src/runtime/src/core/stated_view.cpp). A title whose hook sees the
 // camera the guest renders the world with states it here, every step; its host bridge reads it
 // back for the shell.
@@ -506,6 +522,157 @@ void refii_bridge_classic_particle_removed(uint32_t id);
 uint32_t refii_bridge_classic_particle_ids(uint32_t* out_ids, uint32_t capacity);
 int32_t refii_bridge_classic_particle_read(uint32_t id, uint32_t* out_meta, float* out,
                                            uint32_t capacity);
+
+// THE WORLD ICONS AND CHOICE RECORDS A TITLE STATES (src/runtime/src/core/stated_world_icons.cpp),
+// keyed by the guest's icon object and record, read back by its host bridge in the order first
+// stated.
+// - an icon stated: its Init, Update or ring tick returned. `visible` is the Update's own argument
+//   (1 drawn, 0 hidden this tick), -1 to keep the last one (an Init or ring tick: not drawn until
+//   an Update says so). Words: REFII_WORLD_ICON_CLASS_*, type, texture id, colour 0xRRGGBBAA,
+//   entity, flags (REFII_WORLD_ICON_*; bit 31 is the table's), ring progress 0..300, player.
+//   Values: anchor x y z, scale, seconds left, age, ring speed, 0. Text: name NUL title NUL
+//   opinion, `text_length` bytes.
+// - an icon removed: the registry erased it, or it was destroyed.
+// - a choice stated: created, or restated after the input handler. Words: action, player uid
+//   words +8 and +12, entity, kind, flags (REFII_EMOTION_CHOICE_*). Values: position x y z, manual
+//   speed. Text: Name NUL Text NUL RecordName.
+// - a choice removed: its deleter ran.
+//   Read back: rows of words, values and three NUL-terminated strings per entry, stopping at the
+//   first entry whose strings do not fit `text_capacity` (a null `out_text` reads no strings and
+//   never stops); returns the rows written. Any null out pointer skips that part.
+#define REFII_WORLD_ICON_WORDS 8u
+#define REFII_WORLD_ICON_VALUES 8u
+#define REFII_WORLD_ICON_FLAGS_WORD 5u
+#define REFII_WORLD_ICON_CLASS_3D 1u
+#define REFII_WORLD_ICON_CLASS_EMOTION 2u
+#define REFII_WORLD_ICON_CLASS_HUD_ELEMENT 3u
+#define REFII_WORLD_ICON_PERSISTENT 1u
+#define REFII_WORLD_ICON_FADING 2u
+#define REFII_WORLD_ICON_IMAGE_LIVE 4u
+#define REFII_WORLD_ICON_RING_ON 8u
+#define REFII_WORLD_ICON_RING_COMPLETE 16u
+#define REFII_WORLD_ICON_RING_MANUAL 32u
+#define REFII_WORLD_ICON_VISIBLE 0x80000000u
+#define REFII_EMOTION_CHOICE_WORDS 6u
+#define REFII_EMOTION_CHOICE_VALUES 4u
+#define REFII_EMOTION_CHOICE_HOLDABLE 1u
+#define REFII_EMOTION_CHOICE_MANUAL 2u
+#define REFII_EMOTION_CHOICE_HELD 4u
+void refii_bridge_world_icon_stated(uint32_t icon, int32_t visible, const uint32_t* words,
+                                    const float* values, const char* text, uint32_t text_length);
+void refii_bridge_world_icon_removed(uint32_t icon);
+uint32_t refii_bridge_world_icons_read(uint32_t* out_icons, uint32_t* out_words, float* out_values,
+                                       char* out_text, uint32_t text_capacity, uint32_t max_icons);
+void refii_bridge_emotion_choice_stated(uint32_t record, const uint32_t* words, const float* values,
+                                        const char* text, uint32_t text_length);
+void refii_bridge_emotion_choice_removed(uint32_t record);
+uint32_t refii_bridge_emotion_choices_read(uint32_t* out_records, uint32_t* out_words,
+                                           float* out_values, char* out_text,
+                                           uint32_t text_capacity, uint32_t max_choices);
+
+// THE HUD ELEMENT REGISTRIES AND THE SCREEN FADE A TITLE STATES (src/runtime/src/core/stated_hud.cpp).
+// - an element filed: `kind` (the title's registry kind, REFII_HUD_KIND_*) and `registry` name the
+//   registry, `hash` the name it is filed under, `source` the element it was filed from (0 when
+//   none), `value` / `mode` its constructor's.
+// - a source unfiled: the registry erases the name an element filed from `source` is under —
+//   every element under it.
+// - a registry destroyed: every name it holds leaves.
+// - a text stated: every element under (registry, hash) shows `text` (UTF-8, `length` bytes).
+// - a value stated: the element's value.
+//   Read back: one row per name of `kind`, in the order first filed — a TEXT name only once a text
+//   was stated for it — : the hash, the first element's value, mode and NUL-terminated text (cut at a UTF-8 boundary to fit; the strings stop once
+//   `text_capacity` is full). Returns the names held, which may exceed `max_rows`.
+// - a fade started: colours as the fader stores them (four bytes each), progress 0 or 1 (instant),
+//   `rate` its progress per second. Run on the host's clock from the guest's first advance of it.
+// - a fade stepped: the guest's own advance ran; `progress` after it, `advanced` whether it moved,
+//   `locked` the lock it tested. A hold, a resume, the completion and a lock change rebase the
+//   host's run on the guest's progress.
+//   Read back: the colours, the progress now and the lock; returns the fader, 0 before any.
+#define REFII_HUD_KIND_METER 1u
+#define REFII_HUD_KIND_PULSER 4u
+#define REFII_HUD_KIND_TEXT 6u
+void refii_bridge_hud_element_filed(uint32_t kind, uint32_t registry, uint32_t hash, uint32_t element,
+                                    uint32_t source, float value, uint32_t mode);
+void refii_bridge_hud_source_unfiled(uint32_t registry, uint32_t source);
+void refii_bridge_hud_registry_destroyed(uint32_t registry);
+void refii_bridge_hud_text_stated(uint32_t registry, uint32_t hash, const char* text, uint32_t length);
+void refii_bridge_hud_value_stated(uint32_t element, float value);
+uint32_t refii_bridge_hud_read(uint32_t kind, uint32_t* out_hashes, float* out_values, uint32_t* out_modes,
+                               char* out_text, uint32_t text_capacity, uint32_t max_rows);
+void refii_bridge_screen_fade_started(uint32_t fader, const uint8_t* from, const uint8_t* to, float progress,
+                                      float rate);
+void refii_bridge_screen_fade_stepped(uint32_t fader, float progress, int32_t advanced, int32_t locked);
+uint32_t refii_bridge_screen_fade_read(uint8_t* out_from, uint8_t* out_to, float* out_progress,
+                                       uint32_t* out_locked);
+
+// THE AIM RETICULES A TITLE STATES (src/runtime/src/core/stated_hud.cpp): one record per player
+// (0, 1) and slot (0 spell target, 1 ranged aim), as its setter left it.
+// - stated: `active`, and while active the values (REFII_RETICLE_VALUES: point x y in guest
+//   pixels from the screen centre, y up; lock progress; RGBA as drawn; the world anchor x y z, 0
+//   when none; the guest's backbuffer height) and words (REFII_RETICLE_WORDS: mode, frames since
+//   the mode changed).
+//   Read back: 1 and the values and words while the record is active, else 0.
+#define REFII_RETICLE_VALUES 11u
+#define REFII_RETICLE_WORDS 2u
+void refii_bridge_reticle_stated(uint32_t player, uint32_t slot, int32_t active, const float* values,
+                                 const uint32_t* words);
+int32_t refii_bridge_reticle_read(uint32_t player, uint32_t slot, float* out_values, uint32_t* out_words);
+
+// THE GAME STATE A TITLE STATES FOR THE SHELL (src/runtime/src/core/stated_game_state.cpp).
+// THE LOADING SCREEN, one at a time:
+// - created: `manager` made `screen` of `kind` (the title's numbering).
+// - destroyed: `screen` is gone.
+// - art: the screen decided its art, `name` (`length` bytes) held in `body`.
+// - updated: the screen's own update ran: its cover opacity, stop requested, finished.
+//   Read back: 1 while a screen is up, with the manager, screen, fade, requested, done, kind, body
+//   and the NUL-terminated art name ("" before the decision; cut to fit).
+void refii_bridge_loading_screen_created(uint32_t manager, uint32_t screen, uint32_t kind);
+void refii_bridge_loading_screen_destroyed(uint32_t screen);
+void refii_bridge_loading_screen_art(uint32_t screen, uint32_t kind, uint32_t body, const char* name,
+                                     uint32_t length);
+void refii_bridge_loading_screen_updated(uint32_t screen, float fade, int32_t requested, int32_t done);
+int32_t refii_bridge_loading_screen_read(uint32_t* out_manager, uint32_t* out_screen, float* out_fade,
+                                         uint32_t* out_requested, uint32_t* out_done, uint32_t* out_kind,
+                                         uint32_t* out_body, char* out_name, uint32_t name_capacity);
+// THE GAME MODE STACKS, keyed by the stack object: after a push, a pop or the stack's own run, its
+// top mode, that mode's vtable and the depth (0 = empty: top and vtable 0).
+//   Read back: 1 and the last statement for `stack`, 0 when it never stated.
+// THE GUI SCREEN: the id the GUI's screen manager holds, stated by each of its writers.
+//   Read back: 1 and the id once stated, 0 before.
+void refii_bridge_mode_stack_stated(uint32_t stack, uint32_t top, uint32_t top_vtable, uint32_t depth);
+int32_t refii_bridge_mode_stack_read(uint32_t stack, uint32_t* out_top, uint32_t* out_vtable, uint32_t* out_depth);
+void refii_bridge_gui_screen_stated(uint32_t screen_id);
+int32_t refii_bridge_gui_screen_read(uint32_t* out_screen_id);
+// THE CULTURES: the installed culture table as its builder left it — `count` rows, `codes` and
+// `names` each `count` NUL-terminated strings back to back (`codes_length` / `names_length`
+// bytes; codes ASCII, names UTF-8), `current` the row in use, -1 for none.
+// - selected: the row now in use.
+//   Read back: the count (0 before the table is stated), the current row (-1 for none) and the
+//   names NUL-separated (stopping at the first that does not fit); the code of the current row,
+//   returning its length, 0 when there is none or it does not fit.
+void refii_bridge_cultures_stated(uint32_t count, int32_t current, const char* codes, uint32_t codes_length,
+                                  const char* names, uint32_t names_length);
+void refii_bridge_culture_selected(uint32_t index);
+uint32_t refii_bridge_cultures_read(int32_t* out_current, char* out_names, uint32_t names_capacity);
+uint32_t refii_bridge_culture_code_read(char* out, uint32_t capacity);
+
+// THE OPTIONS A TITLE STATES (src/runtime/src/core/stated_options.cpp): one value per option, by
+// REFII_OPTION_*, from two kinds of writer:
+// - applied: an applier the running game uses was called with it (a volume setter's argument,
+//   the gamma applier's input);
+// - profiled: the player's saved settings were read or written with it (the boot load, a save).
+//   Read back: each option's applied value, else its profiled one, into `out_values` (up to
+//   `capacity`); returns the mask of options stated either way (bit = option).
+#define REFII_OPTION_GAMMA 0u
+#define REFII_OPTION_SFX 1u
+#define REFII_OPTION_MUSIC 2u
+#define REFII_OPTION_VOICE 3u
+#define REFII_OPTION_SPEAKER 4u
+#define REFII_OPTION_SUBTITLES 5u
+#define REFII_OPTION_COUNT 6u
+void refii_bridge_option_applied(uint32_t option, float value);
+void refii_bridge_option_profiled(uint32_t option, float value);
+uint32_t refii_bridge_options_read(float* out_values, uint32_t capacity);
 
 #ifdef __cplusplus
 }  // extern "C"

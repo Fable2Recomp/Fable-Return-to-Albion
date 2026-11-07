@@ -172,25 +172,21 @@ public sealed class Engine_UiFontLibrary
 		LanguageSubdirectory(gameDataRoot, culture, "fonts");
 
 	/// <summary>
-	/// The bucket a point size lands in, and the residual scale to draw it at.
-	///
-	/// From <c>sub_828715E0</c>, which compares the integer size against 18 and 24:
-	/// below 18 takes GUI_Small scaled by <c>size/18</c>; exactly 18 takes GUI_Normal at
-	/// 1.0; 19..24 takes GUI_Large at 1.0; above 24 takes GUI_Large scaled by
-	/// <c>size/24</c>. There is no per-element font name — the point size is the whole
-	/// input.
-	///
-	/// The SCALE is the part that is easy to miss, because three of the four cases and
-	/// every bucket boundary are right without it. It only shows up as text at the wrong
-	/// size for the sizes that do not sit exactly on a bucket.
+	/// The bucket a point size lands in, and the residual scale to draw it at, under the active
+	/// title's <see cref="Engine_UiTextContract"/>. There is no per-element font name in either
+	/// title — Fable 3's `.bgf` carries the artist's face name ("fertigo pro", "maiandra gd") but
+	/// the element reads only its `.fac` record (`CTextAsset_vf1` 0x82B45E30) and the attributes
+	/// TextID, size, truncate and textcolor.r/g/b (`CTextAsset_vf3` 0x82B46190); the point size is
+	/// the whole input.
 	/// </summary>
-	public static (UiFontBucket Bucket, float Scale) SelectFor(int pointSize) => pointSize switch
-	{
-		< 18 => (UiFontBucket.Small, pointSize / 18f),
-		18 => (UiFontBucket.Normal, 1f),
-		<= 24 => (UiFontBucket.Large, 1f),
-		_ => (UiFontBucket.Large, pointSize / 24f),
-	};
+	public static (UiFontBucket Bucket, float Scale) SelectFor(int pointSize) =>
+		Engine_UiTextContract.Active.SelectFor(pointSize);
+
+	/// <summary>
+	/// The text contract this library's fonts are laid out under — the title whose data they were
+	/// read from. Fable 2's buckets sit at 18/24 and scale off them; Fable 3's at 16 and do not.
+	/// </summary>
+	public Engine_UiTextContract Contract { get; set; } = Engine_UiTextContract.Active;
 
 	/// <summary>The bucket's own font at its authored size, or null when that file did not load.</summary>
 	public UiFont? Get(UiFontBucket bucket) => _fonts.TryGetValue(bucket, out UiFont? font) ? font : null;
@@ -206,7 +202,7 @@ public sealed class Engine_UiFontLibrary
 	/// </summary>
 	public (UiFont Font, float Scale)? For(int pointSize)
 	{
-		(UiFontBucket wanted, float scale) = SelectFor(pointSize);
+		(UiFontBucket wanted, float scale) = Contract.SelectFor(pointSize);
 
 		if (_fonts.TryGetValue(wanted, out UiFont? exact))
 			return (exact, scale);

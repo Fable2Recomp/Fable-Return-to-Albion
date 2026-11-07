@@ -105,6 +105,9 @@ public partial class GameInput
 
 		/// <summary>No pad button: <see cref="KeyAction.HostAction"/> is posted to the guest tick once per press.</summary>
 		HostAction,
+
+		/// <summary>The right stick at full deflection left or right while held.</summary>
+		RightStickLeft, RightStickRight,
 	}
 
 	/// <summary>When a key action presses its button.</summary>
@@ -115,8 +118,11 @@ public partial class GameInput
 		/// <summary>The world has the input (<see cref="Playing"/>).</summary>
 		Play,
 
-		/// <summary>A menu, box or screen has the input.</summary>
+		/// <summary>A menu, box or screen has the input, and no map (<see cref="Map"/>).</summary>
 		Menu,
+
+		/// <summary>A map of the guest's has the input (<see cref="GameTitleInput.MapUp"/>).</summary>
+		Map,
 
 		/// <summary>The title's on-screen choices are up (Fable 3's held expression choices).</summary>
 		Choice,
@@ -144,8 +150,10 @@ public partial class GameInput
 		new("attack", "MouseLeft", "Attack with the selected mode: melee, ranged or magic. Hold " +
 			"to block and charge a flourish, to aim, or to charge a spell.") { Press = KeyPress.Attack },
 		new("melee_mode", "1", "Put the attack button on melee (Fable III's 1).") { Press = KeyPress.MeleeMode },
-		new("ranged_mode", "2", "Put the attack button on the ranged weapon (Fable III's 2).") { Press = KeyPress.RangedMode },
-		new("magic_mode", "3", "Put the attack button on magic (Fable III's 3).") { Press = KeyPress.MagicMode },
+		// Fable III PC: 1 melee, 2 magic, 3 ranged (`SwitchToSpellsPressedPC` key 3, `SwitchToRangedPressedPC`
+		// key 4 — DirectInput scancodes for 2 and 3; the manual's "2 for Magic mode, or 3 for Ranged mode").
+		new("ranged_mode", "3", "Put the attack button on the ranged weapon (Fable III's 3).", new[] { "2" }) { Press = KeyPress.RangedMode },
+		new("magic_mode", "2", "Put the attack button on magic (Fable III's 2).", new[] { "3" }) { Press = KeyPress.MagicMode },
 		new("melee", "F", "Melee directly, whatever the mode (X).") { Press = KeyPress.X },
 		new("ranged", "R", "Ranged directly, whatever the mode (Y).") { Press = KeyPress.Y },
 		new("magic", "C", "Magic directly, whatever the mode (B).") { Press = KeyPress.B },
@@ -330,7 +338,7 @@ public partial class GameInput
 		return new
 		{
 			playing = Playing, in_game = HostBridge.IsInGame, world_has_input = title.WorldHasInput,
-			choices_up = title.ChoicesUp, title_screen_up = title.TitleScreenUp,
+			choices_up = title.ChoicesUp, title_screen_up = title.TitleScreenUp, map_up = title.MapUp,
 			keyboard_mouse = Engine_UiInputMode.KeyboardMouse, pointer_free = Engine_UiPointer.Free,
 			mouse_mode = Godot.Input.MouseMode.ToString(), actions = KeyActions.Length, down,
 			title_input = title.Describe(),
@@ -341,7 +349,8 @@ public partial class GameInput
 	private static bool InContext(KeyContext when) => when switch
 	{
 		KeyContext.Play => Playing,
-		KeyContext.Menu => !Playing,
+		KeyContext.Menu => !Playing && !Engine_TitleGame.Active.Input.MapUp,
+		KeyContext.Map => !Playing && Engine_TitleGame.Active.Input.MapUp,
 		KeyContext.Choice => Engine_TitleGame.Active.Input.ChoicesUp,
 		KeyContext.PlayNoChoice => Playing && !Engine_TitleGame.Active.Input.ChoicesUp,
 		KeyContext.TitleScreen => Engine_TitleGame.Active.Input.TitleScreenUp,
@@ -368,8 +377,9 @@ public partial class GameInput
 		// every frame, a finalizable handle for the collector.
 		bool windowOpen = GameDevMenu.WindowOpen;
 		// A finger is not a mouse to capture: the touch controls own the screen in play.
-		bool capture = MouseInput && MouseLock && devices && Playing && !InOverlay && !windowOpen && !GameDevMenu.KeyboardCaptured &&
-			!Engine_UiInputMode.Touch;
+		// A guest map's cursor is a stick the mouse drives: captured there too (FeedMouseMotion).
+		bool capture = MouseInput && MouseLock && devices && (Playing || MapHasMouse) && !InOverlay && !windowOpen &&
+			!GameDevMenu.KeyboardCaptured && !Engine_UiInputMode.Touch;
 		Godot.Input.MouseModeEnum wanted =
 			capture ? Godot.Input.MouseModeEnum.Captured : Godot.Input.MouseModeEnum.Visible;
 		if (Godot.Input.MouseMode != wanted)
@@ -511,8 +521,14 @@ public partial class GameInput
 
 		// The cursor is captured in play, or free by choice (mouse_lock off) and still the camera's.
 		if (@event is not InputEventMouseMotion motion ||
-			(Godot.Input.MouseMode != Godot.Input.MouseModeEnum.Captured && !(!MouseLock && Playing)))
+			(Godot.Input.MouseMode != Godot.Input.MouseModeEnum.Captured && !(!MouseLock && (Playing || MapHasMouse))))
 		{
+			return;
+		}
+
+		if (MapHasMouse)
+		{
+			MapMouse.Add(Time.GetTicksUsec(), motion.Relative);
 			return;
 		}
 
@@ -533,6 +549,7 @@ public partial class GameInput
 	private static void FeedMouseWheel(InputEvent @event)
 	{
 		if (@event is InputEventMouseButton { Pressed: true } button &&
+			button.ButtonIndex is MouseButton.WheelDown or MouseButton.WheelUp &&
 			Godot.Input.MouseMode == Godot.Input.MouseModeEnum.Captured)
 		{
 			HostBridge.PostMouseWheel(button.ButtonIndex switch
@@ -572,8 +589,9 @@ public partial class GameInput
 	/// <summary>The keyboard as pad 0's buttons, triggers and left stick.</summary>
 	private static void KeyboardMouseState(ref PadState state)
 	{
-		// Typing into the dev menu is not play; nor is the key a rebind row is capturing.
-		if (GameDevMenu.KeyboardCaptured || Engine_UiInputCapture.Blocking)
+		// Typing into the dev menu is not play; nor is the key a rebind row is capturing, nor a
+		// name typed into the host's text entry.
+		if (GameDevMenu.KeyboardCaptured || Engine_UiInputCapture.Blocking || Refii.Ui.Engine_UiTextEntry.AnyOpen)
 		{
 			return;
 		}
@@ -582,6 +600,7 @@ public partial class GameInput
 		uint buttons = 0;
 		bool pause = false, backOut = false, walk = false;
 		var move = Vector2.Zero;
+		float lookX = 0f;
 		foreach (KeyAction action in KeyActions)
 		{
 			if (action.Press == KeyPress.HostAction)
@@ -624,6 +643,8 @@ public partial class GameInput
 				case KeyPress.MoveBack: move.Y -= 1f; break;
 				case KeyPress.MoveRight: move.X += 1f; break;
 				case KeyPress.MoveLeft: move.X -= 1f; break;
+				case KeyPress.RightStickLeft: lookX -= 1f; break;
+				case KeyPress.RightStickRight: lookX += 1f; break;
 				default: buttons |= ButtonOf(action.Press); break;
 			}
 		}
@@ -643,6 +664,75 @@ public partial class GameInput
 			move = move.Normalized() * (walk ? 0.5f : 1f);
 			state.LeftX = Dominant(state.LeftX, Mathf.RoundToInt(move.X * 32767f));
 			state.LeftY = Dominant(state.LeftY, Mathf.RoundToInt(move.Y * 32767f));
+		}
+
+		if (lookX != 0f)
+		{
+			state.RightX = Dominant(state.RightX, Mathf.RoundToInt(Mathf.Clamp(lookX, -1f, 1f) * 32767f));
+		}
+
+		// A guest map's cursor stick, from the mouse (MapMouseStick).
+		if (MapHasMouse)
+		{
+			Vector2 stick = MapMouse.Stick(Time.GetTicksUsec());
+			state.LeftX = Dominant(state.LeftX, Mathf.RoundToInt(stick.X * 32767f));
+			state.LeftY = Dominant(state.LeftY, Mathf.RoundToInt(stick.Y * 32767f));
+		}
+		else
+		{
+			MapMouse.Clear();
+		}
+	}
+
+	/// <summary>A guest map has the input (<see cref="GameTitleInput.MapUp"/>): the mouse is its cursor stick.</summary>
+	private static bool MapHasMouse => !Playing && Engine_TitleGame.Active.Input.MapUp;
+
+	private static readonly MapMouseStick MapMouse = new();
+
+	/// <summary>
+	/// THE MOUSE AS A MAP'S CURSOR STICK. The 360 build reads a map's cursor from the left stick
+	/// (Fable III's GameActionWorldMapMoveCursorXBOX, InputType 4) and makes no mouse device, so the
+	/// mouse's motion is handed to it as that stick, by the engine's own rule for a mouse-movement
+	/// binding: the counts since the last input read over 64, y up, clamped to unit length (Fable 2
+	/// TU1 `sub_829C2358`: `v16[0] * 0.015625`, `v16[1] * -0.015625`, then the length clamp at
+	/// 0x829c2400). The guest reads its input once per tick at the pump's 30 Hz, so the stick each
+	/// frame is the motion of the last 1/30 s — each count is read once whatever the frame rate.
+	/// </summary>
+	private sealed class MapMouseStick
+	{
+		private const ulong ReadMicroseconds = 1_000_000UL / 30UL;
+		private const float CountsPerUnit = 64f;
+
+		private readonly Queue<(ulong At, Vector2 Counts)> _motion = new();
+
+		public void Add(ulong at, Vector2 counts)
+		{
+			// Read every frame; the bound only covers frames the window was not focused for.
+			if (_motion.Count >= 256)
+			{
+				_motion.Dequeue();
+			}
+
+			_motion.Enqueue((at, counts));
+		}
+
+		public void Clear() => _motion.Clear();
+
+		public Vector2 Stick(ulong now)
+		{
+			while (_motion.Count > 0 && now - _motion.Peek().At > ReadMicroseconds)
+			{
+				_motion.Dequeue();
+			}
+
+			Vector2 sum = Vector2.Zero;
+			foreach ((ulong At, Vector2 Counts) entry in _motion)
+			{
+				sum += entry.Counts;
+			}
+
+			var stick = new Vector2(sum.X, -sum.Y) / CountsPerUnit;
+			return stick.LengthSquared() > 1f ? stick.Normalized() : stick;
 		}
 	}
 }

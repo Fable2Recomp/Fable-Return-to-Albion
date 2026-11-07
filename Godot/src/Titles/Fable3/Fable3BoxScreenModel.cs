@@ -8,8 +8,11 @@ using Probe = Fable3ScreenModel.Probe;
 /// The pages of the box-manager screens past the five <see cref="Fable3ScreenModel"/> composes —
 /// join and visibility options, the friends and chat channels, the treasury statement, the bed
 /// menu, the food query, the wedding picker, co-op partners, the marriage proposal, the divorce
-/// message — and the save menu, all from the element values the guest STATES through the hooked
-/// setters. Pure, so the tests run it against a stated set.
+/// message — and the save menu. The texts are the guest's stated texts (the text funnels at their
+/// entry); the cursor row, the ghosting and the choices are what the screen's own calls stated
+/// (<see cref="Fable3ScreenState"/>: its Show's and pad handler's fields, its opener's arguments,
+/// its row writers' records), never the elements' slides. Pure, so the tests run it against a
+/// stated set.
 /// </summary>
 /// <remarks>
 /// <para>THE CLASSES (Fable 3 IDB, disc build; slot 1 Show, 4 input with the EGameAction in `*ev`,
@@ -64,46 +67,39 @@ public static class Fable3BoxScreenModel
 	};
 
 	/// <summary>The page of the screen whose element root is <paramref name="root"/>; null for a root this model does not draw.</summary>
-	public static Fable3ScreenPage? Compose(string root, IReadOnlyDictionary<string, Probe> stated, System.Func<string, string> resolve) => root switch
+	public static Fable3ScreenPage? Compose(string root, IReadOnlyDictionary<string, Probe> stated, Fable3ScreenState screen,
+		System.Func<string, string> resolve) => root switch
 	{
-		JoinOptions => ChoicePage(stated, resolve, JoinOptions, "TEXT_GUI_JOIN_OPTIONS_TITLE", ".Emotes", ".ThisEmote",
+		JoinOptions => ChoicePage(stated, screen, resolve, "TEXT_GUI_JOIN_OPTIONS_TITLE", JoinOptions + ".ThisEmote",
 			new[] { ("Any1", "TEXT_GUI_JOIN_OPTIONS_ANYONE"), ("Invite", "TEXT_GUI_JOIN_OPTIONS_INVITE"), ("Off", "TEXT_GUI_JOIN_OPTIONS_OFF") }),
-		Visibility => ChoicePage(stated, resolve, Visibility, "TEXT_GUI_ORB_VISIBILITY_TITLE", ".Visibilities", ".ThisEmote",
+		Visibility => ChoicePage(stated, screen, resolve, "TEXT_GUI_ORB_VISIBILITY_TITLE", Visibility + ".ThisEmote",
 			new[] { ("Everyone", "TEXT_GUI_ORB_VISIBILITY_EVERYONE"), ("Friends", "TEXT_GUI_ORB_VISIBILITY_FRIENDS"), ("None", "TEXT_GUI_ORB_VISIBILITY_NONE") }),
-		FriendsChannel => FriendsPage(stated, resolve),
-		ChatChannel => ChatPage(stated, resolve),
-		Treasury => TreasuryPage(stated, resolve),
-		BedMenu => BedPage(stated, resolve),
+		FriendsChannel => FriendsPage(screen, resolve),
+		ChatChannel => ChatPage(stated, screen, resolve),
+		Treasury => TreasuryPage(stated, screen, resolve),
+		BedMenu => BedPage(stated, screen, resolve),
 		FoodQuery => FoodPage(stated, resolve),
-		WeddingPicker => WeddingPage(stated, resolve),
-		Partners => PartnersPage(stated, resolve),
+		WeddingPicker => WeddingPage(stated, screen, resolve),
+		Partners => PartnersPage(stated, screen, resolve),
 		Proposal => ProposalPage(stated, resolve),
 		Divorce => DivorcePage(stated, resolve),
-		SaveMenu => SaveMenuPage(stated, resolve),
+		SaveMenu => SaveMenuPage(screen, resolve),
 		_ => null,
 	};
 
 	/// <summary>
-	/// Whether the save menu is up: its root's state is the cursor row 1..4 while open — the open
-	/// sub_8296C5D0 writes 1 or 3 (0x8296C74C), the row writer sub_8296CB08 restates it (0x8296CB74) —
-	/// and 5 once sub_8296C858 closes it (0x8296C88C).
+	/// JOIN OPTIONS and VISIBILITY: one class, three choices, fields (type `+48`, cursor `+52`).
+	/// The Show sub_82976A08 starts the cursor on the SAVED setting (sub_829770A8: the profile's
+	/// +108 join / +104 visibility 0/1/2 to 1/2/3, 0x829771C8..0x829772E8) and states it as the
+	/// tick (`<root>.Emotes` / `.Visibilities`, 0x82976AD0) — the Show's field is the saved one; the
+	/// stick moves `+52` 1..3 (sub_82976E58 / sub_82976F80, 0x82976EF0 / 0x82977018). Input
+	/// sub_82976BC8: A (74) commits through sub_82977370 and closes, B (75) closes.
 	/// </summary>
-	public static bool SaveMenuOpen(IReadOnlyDictionary<string, Probe> stated) =>
-		At(stated, SaveMenu) is { State: >= 1 and <= 4 };
-
-	/// <summary>
-	/// JOIN OPTIONS and VISIBILITY: one class, three choices. The cursor is the root's state 1..3
-	/// (sub_829770A8 at 0x82977364, sub_82976E58 at 0x82976F70 and its twin sub_82976F80 write `+52` to
-	/// `OrbEmote` or `Visibilities`); the Show sub_82976A08 writes the SAVED setting as `<root>.Emotes` /
-	/// `.Visibilities` state (0x82976AD0) and its title tag into `<root>.ThisEmote` (0x82976B60). Input sub_82976BC8: the
-	/// stick (26/27, 0x82976D60 / 0x82976D68) moves, A (74, 0x82976D54) commits through
-	/// sub_82977370 and closes, B (75, 0x82976E04) closes.
-	/// </summary>
-	private static Fable3ScreenPage ChoicePage(IReadOnlyDictionary<string, Probe> stated, System.Func<string, string> resolve,
-		string root, string titleTag, string savedPath, string currentPath, (string Name, string Tag)[] choices)
+	private static Fable3ScreenPage ChoicePage(IReadOnlyDictionary<string, Probe> stated, Fable3ScreenState screen,
+		System.Func<string, string> resolve, string titleTag, string currentPath, (string Name, string Tag)[] choices)
 	{
-		int cursor = At(stated, root)?.State ?? 1;
-		int saved = At(stated, root + savedPath)?.State ?? 0;
+		int cursor = screen.Field(1, 1);
+		int saved = screen.ShownField(1, 0);
 		var rows = new List<Fable3ScreenPage.Row>(choices.Length);
 		for (int i = 0; i < choices.Length; ++i)
 		{
@@ -111,20 +107,20 @@ public static class Fable3BoxScreenModel
 			rows.Add(new(choices[i].Name, saved == i + 1 ? label + Gap + "✓" : label, false, choices[i].Tag + "_DESC"));
 		}
 
-		string current = Text(stated, root + currentPath) ?? string.Empty;
+		string current = Text(stated, currentPath) ?? string.Empty;
 		return new Fable3ScreenPage(resolve(titleTag), rows, Clamp(cursor - 1, rows.Count), current,
 			new[] { new Fable3ScreenPage.Prompt("A", resolve("GUI_ACCEPT")), new Fable3ScreenPage.Prompt("B", resolve("GUI_BACK")) }, true);
 	}
 
 	/// <summary>
-	/// FRIENDS CHANNEL. The root's state is the cursor 1..3 (the Show writes 1 at 0x82977ADC; the
-	/// input restates it at 0x82977E2C); 4 parks it. Input sub_82977B78: the stick (26/27,
+	/// FRIENDS CHANNEL. The cursor `+36` 1..3: the Show sets 1 (0x82977A64), the stick moves it
+	/// (0x82977D94 / 0x82977DE8); 4 parks it. Input sub_82977B78: the stick (26/27,
 	/// 0x82977D10 / 0x82977D18) moves 1..3, A (74, 0x82977D04) runs the row (sub_82365190 /
 	/// sub_82365220 / sub_82365328) and closes, B (75, 0x82977F04) closes. Labels: friendschannel.bgf.
 	/// </summary>
-	private static Fable3ScreenPage FriendsPage(IReadOnlyDictionary<string, Probe> stated, System.Func<string, string> resolve)
+	private static Fable3ScreenPage FriendsPage(Fable3ScreenState screen, System.Func<string, string> resolve)
 	{
-		int cursor = At(stated, FriendsChannel)?.State ?? 1;
+		int cursor = screen.Field(0, 1);
 		var rows = new List<Fable3ScreenPage.Row>
 		{
 			new("Friends", "Friends"),
@@ -137,15 +133,16 @@ public static class Fable3BoxScreenModel
 	}
 
 	/// <summary>
-	/// CHAT CHANNEL. sub_82972AB0 writes the working mute byte `+36` as `ChatChannel.Emotes` and
-	/// `ChatChannel.OnOff` state 2 muted / 1 audible (0x82972AF4 / 0x82972B08), the SAVED setting's
+	/// CHAT CHANNEL. The working mute byte `+36`: the Show starts it on the saved setting
+	/// (0x8297245C), left/right toggle it (0x82972C28); sub_82972AB0 slides `ChatChannel.Emotes` and
+	/// `ChatChannel.OnOff` 2 muted / 1 audible from it (0x82972AF4 / 0x82972B08), writes the SAVED setting's
 	/// tag into `ChatChannel.CurrSetting` (0x82972B60) and the working one's description into
 	/// `ChatChannel.SelectionDescription.Mute_Description` (0x82972B90). Input sub_829727C8: left/right (31/32 via
 	/// sub_82972BA0) toggle `+36`, A (72, 0x8297294C) saves it and closes, B (73, 0x82972A58) closes.
 	/// </summary>
-	private static Fable3ScreenPage ChatPage(IReadOnlyDictionary<string, Probe> stated, System.Func<string, string> resolve)
+	private static Fable3ScreenPage ChatPage(IReadOnlyDictionary<string, Probe> stated, Fable3ScreenState screen, System.Func<string, string> resolve)
 	{
-		bool muted = At(stated, ChatChannel + ".OnOff")?.State == 2;
+		bool muted = screen.Field(0, 0) != 0;
 		string value = resolve(muted ? "TEXT_GUI_AUDIO_CHAT_MUTED" : "TEXT_GUI_AUDIO_CHAT_AUDIBLE");
 		var rows = new List<Fable3ScreenPage.Row> { new("Mute", "Mute" + Gap + "◀ " + value + " ▶") };
 		string description = string.Join("\n", Present(
@@ -156,8 +153,10 @@ public static class Fable3BoxScreenModel
 	}
 
 	/// <summary>
-	/// THE TREASURY STATEMENT. The root's state is the page `+28` (the Show at 0x82B5A134, the
-	/// Update sub_82B5A328 at 0x82B5A388): 2 with the transfer widget, 3 without, 4/5 the confirmation query.
+	/// THE TREASURY STATEMENT. The page `+28` (fields: page, direction `+32`, amount `+56`): the
+	/// ctor sub_82B59C40 sets 3, or 2 with the transfer widget (0x82B59CB0 / 0x82B59F04), the input's
+	/// query sub_82B5A6C8 moves it (0x82B5A6F0); the Show and the Update slide the root to it
+	/// (0x82B5A134 / 0x82B5A388): 2 with the transfer widget, 3 without, 4/5 the confirmation query.
 	/// sub_82B5AEA8 writes the balances (`Personal.Personal Balance Value`, `Treasury.Treasury Balance
 	/// Value`, the `Treasury Balance` label) and the transfer row's tags; sub_82B5B410 /
 	/// sub_82B5B628 the direction's title, transfer label and X caption; sub_82B5A6C8 the query
@@ -165,9 +164,9 @@ public static class Fable3BoxScreenModel
 	/// 0x82B5A5A0) steps the transfer, B (75) backs out of the query or closes, X (76) flips the
 	/// direction, left/right reach the amount widget sub_82B56830.
 	/// </summary>
-	private static Fable3ScreenPage TreasuryPage(IReadOnlyDictionary<string, Probe> stated, System.Func<string, string> resolve)
+	private static Fable3ScreenPage TreasuryPage(IReadOnlyDictionary<string, Probe> stated, Fable3ScreenState screen, System.Func<string, string> resolve)
 	{
-		int page = At(stated, Treasury)?.State ?? 3;
+		int page = screen.Field(0, 3);
 		var rows = new List<Fable3ScreenPage.Row>();
 		if (Text(stated, Treasury + ".Personal.Personal Balance Value") is { } personal)
 		{
@@ -211,32 +210,38 @@ public static class Fable3BoxScreenModel
 	}
 
 	/// <summary>
-	/// THE BED MENU. sub_82B591E8 states the row `+44`: `BedMenu.Sleep` / `BedMenu.Sex` state 2 for
-	/// the cursor row, 1 for the other (0x82B5922C..0x82B59278); the Show writes the row titles by
-	/// tag (TEXT_GUI_BED_MENU_SLEEP, TEXT_GUI_BED_MENU_SEX[_GROUP]) and hides the Sex row when it is
-	/// not offered (`+56`, sub_82B59BB8); sub_82B590C8 writes each row's option and description by
-	/// tag (`.Widget.Text`, `.Description`). Input sub_82B59348: up/down (29/30, the stick through
-	/// sub_82B3F6F0) move, left/right (31/32) cycle the option, 41 accepts, 42 cancels.
+	/// THE BED MENU. Fields (row `+44` 0 Sleep / 1 Sex, sleep option `+48`, sex option `+52`) and
+	/// the opener's (offered `+56`, group `+57`, cycle `+58`; sub_825FB858's r6..r8). sub_82B591E8
+	/// slides `BedMenu.Sleep` / `BedMenu.Sex` 2 for the cursor row, 1 for the other
+	/// (0x82B5922C..0x82B59264); without `offered` the Show halves the Sex row's opacity
+	/// (sub_82B59BB8, 0x82B59048 / 0x82B59054) and the stick never reaches it (0x82B59800) — the row
+	/// is ghosted. The Show writes the row titles by tag (TEXT_GUI_BED_MENU_SLEEP, the Sex one by
+	/// `group`, 0x82B58FE8); sub_82B590C8 writes each row's option and description by tag
+	/// (`.Widget.Text`, `.Description`). Input sub_82B59348: up/down (29/30) move, left/right
+	/// (31/32) cycle the option, 41 accepts, 42 cancels.
 	/// </summary>
-	private static Fable3ScreenPage BedPage(IReadOnlyDictionary<string, Probe> stated, System.Func<string, string> resolve)
+	private static Fable3ScreenPage BedPage(IReadOnlyDictionary<string, Probe> stated, Fable3ScreenState screen, System.Func<string, string> resolve)
 	{
 		var rows = new List<Fable3ScreenPage.Row>();
+		int cursor = screen.Field(0, 0);
 		int selected = -1;
-		foreach (string name in new[] { "Sleep", "Sex" })
+		for (int index = 0; index < 2; ++index)
 		{
+			string name = index == 0 ? "Sleep" : "Sex";
 			string path = BedMenu + "." + name;
-			if (At(stated, path) is not { } row || row.Hidden || Text(stated, path + ".Title") is not { } title)
+			if (Text(stated, path + ".Title") is not { } title)
 			{
 				continue;
 			}
 
-			if (row.State == 2)
+			if (cursor == index)
 			{
 				selected = rows.Count;
 			}
 
 			string option = Text(stated, path + ".Widget.Text") is { } widget ? Gap + "◀ " + widget + " ▶" : string.Empty;
-			rows.Add(new(name, title + option, false, Text(stated, path + ".Description") ?? string.Empty));
+			bool ghosted = index == 1 && !screen.OpenedFlag(0, true);
+			rows.Add(new(name, title + option, ghosted, Text(stated, path + ".Description") ?? string.Empty));
 		}
 
 		return new Fable3ScreenPage("Bed Activities", rows, selected, string.Empty,
@@ -281,14 +286,15 @@ public static class Fable3BoxScreenModel
 	/// <summary>
 	/// THE WEDDING PICKER. The Show sub_82B5BE98 writes the level's name (`WeddingPicker.Title`) and
 	/// three tiers `WeddingPicker.Details.WeddingDetails%d.Group.{Title,Details,Cost}` (titles and
-	/// descriptions by tag name, sub_82819230; the price as text); sub_82B5C158 states the tier
-	/// `+68` as `WeddingPicker.Details` state tier+1 and each row 2 selected / 1 not (sub_82B5C1F0).
-	/// Input sub_82B5C260: up/down move the tier, 41 books an affordable one (event 69 with the
-	/// tier, 0x82B5C498), 42 backs out (event 70, 0x82B5C524).
+	/// descriptions by tag name, sub_82819230; the price as text, marked when unaffordable). The tier
+	/// `+68` is the field (the stick, 0x82B5C33C / 0x82B5C3A8; sub_82B5C158 slides it, 0x82B5C18C);
+	/// the ctor's three affordable bytes (sub_82B5BCF0, `+88..+90`) ghost a tier 41 cannot book
+	/// (event 69 only for an affordable one, 0x82B5C408..0x82B5C43C); 42 backs out (event 70, 0x82B5C524).
 	/// </summary>
-	private static Fable3ScreenPage WeddingPage(IReadOnlyDictionary<string, Probe> stated, System.Func<string, string> resolve)
+	private static Fable3ScreenPage WeddingPage(IReadOnlyDictionary<string, Probe> stated, Fable3ScreenState screen, System.Func<string, string> resolve)
 	{
 		var rows = new List<Fable3ScreenPage.Row>();
+		int tier = screen.Field(0, 0);
 		int selected = -1;
 		for (int i = 0; i < 3; ++i)
 		{
@@ -298,13 +304,14 @@ public static class Fable3BoxScreenModel
 				continue;
 			}
 
-			if (At(stated, path)?.State == 2)
+			if (tier == i)
 			{
 				selected = rows.Count;
 			}
 
 			string cost = Text(stated, path + ".Group.Cost") is { } price ? Gap + price : string.Empty;
-			rows.Add(new("Tier" + i.ToString(CultureInfo.InvariantCulture), title + cost, false, Text(stated, path + ".Group.Details") ?? string.Empty));
+			rows.Add(new("Tier" + i.ToString(CultureInfo.InvariantCulture), title + cost, !screen.OpenedFlag(i, true),
+				Text(stated, path + ".Group.Details") ?? string.Empty));
 		}
 
 		return new Fable3ScreenPage(Text(stated, WeddingPicker + ".Title") ?? resolve("TEXT_GUI_SELECT_WEDDING_LOCATION"), rows, selected, string.Empty,
@@ -312,29 +319,35 @@ public static class Fable3BoxScreenModel
 	}
 
 	/// <summary>
-	/// CO-OP PARTNERS. sub_82B5D6A8 writes `CoopPartnersInfoBox.NumOnline` (0x82B5D7E4), the cursor `+56` as
-	/// `CoopPartnersInfoBox.Details` state cursor+1 (0x82B5D850) and eight rows
-	/// `CoopPartnersInfoBox.Details.PartnerDetails%d`: hidden past the list, else state 2 for the
-	/// cursor row / 1 otherwise, +2 for a partnership that is not a marriage (0x82B5D92C), shown at 0x82B5D93C;
-	/// each row's `.GamerTag`, `.NumBuildings`, `.NumChildren` texts and `.Online` / `.Offline`
-	/// toggles (sub_82B5D9E0); the cursor row's `Details.LocationFormedOn.Location` / `.Date`.
-	/// Input sub_82B5CA70: the stick (26/27) moves, A (74) / X (76) / Y (77) act on the row (their
-	/// buttons shown per row, sub_82B5C868), B (75) closes.
+	/// CO-OP PARTNERS. sub_82B5D6A8 writes `CoopPartnersInfoBox.NumOnline` (0x82B5D7E4) and a window
+	/// of eight rows `CoopPartnersInfoBox.Details.PartnerDetails%d` from the scroll `+60`: hidden past
+	/// the list (0x82B5D96C), else written by sub_82B5D9E0(box, row path, record) — `.GamerTag`,
+	/// `.NumBuildings`, `.NumChildren` only for a marriage (record+40, 0x82B5DC30), `.Online` /
+	/// `.Offline` from record+43 (0x82B5DC9C / 0x82B5DCCC). The cursor `+56` is window-relative (the
+	/// row equal to it slides 2, 0x82B5D914); the cursor row's joinable record+42 shows the A button
+	/// (0x82B5D830). Fields (cursor, scroll); the rows are sub_82B5D9E0's records
+	/// (<see cref="Fable3ScreenState.PartnerRows"/>). Input sub_82B5CA70: the stick (26/27) moves,
+	/// A (74) / X (76) / Y (77) act on the row, B (75) closes.
 	/// </summary>
-	private static Fable3ScreenPage PartnersPage(IReadOnlyDictionary<string, Probe> stated, System.Func<string, string> resolve)
+	private static Fable3ScreenPage PartnersPage(IReadOnlyDictionary<string, Probe> stated, Fable3ScreenState screen, System.Func<string, string> resolve)
 	{
 		var rows = new List<Fable3ScreenPage.Row>();
+		int cursor = screen.Field(0, 0);
 		int selected = -1;
-		foreach ((int index, string path, Probe row) in Fable3ScreenModel.Indexed(stated, Partners + ".Details.PartnerDetails"))
+		bool joinable = false;
+		for (int index = 0; index < 8; ++index)
 		{
-			if (row.Hidden || Text(stated, path + ".GamerTag") is not { } gamer)
+			string path = Partners + ".Details.PartnerDetails" + index.ToString(CultureInfo.InvariantCulture);
+			if (!screen.PartnerRows.TryGetValue(path, out (bool Married, bool Online, bool Joinable) record) ||
+				At(stated, path) is { Hidden: true } || Text(stated, path + ".GamerTag") is not { } gamer)
 			{
 				continue;
 			}
 
-			if (row.State is 2 or 4)
+			if (index == cursor)
 			{
 				selected = rows.Count;
+				joinable = record.Joinable;
 			}
 
 			string line = gamer;
@@ -343,12 +356,12 @@ public static class Fable3BoxScreenModel
 				line += Gap + buildings;
 			}
 
-			if (row.State is 1 or 2 && Text(stated, path + ".NumChildren") is { } children)
+			if (record.Married && Text(stated, path + ".NumChildren") is { } children)
 			{
 				line += Gap + children;
 			}
 
-			line += Gap + (At(stated, path + ".Online") is { Hidden: false } ? "Online" : "Offline");
+			line += Gap + (record.Online ? "Online" : "Offline");
 			rows.Add(new("Partner" + index.ToString(CultureInfo.InvariantCulture), line));
 		}
 
@@ -356,7 +369,7 @@ public static class Fable3BoxScreenModel
 			Text(stated, Partners + ".Details.LocationFormedOn.Location") is { } location ? "Location: " + location : null,
 			Text(stated, Partners + ".Details.LocationFormedOn.Date") is { } date ? "Formed on: " + date : null));
 		var prompts = new List<Fable3ScreenPage.Prompt>();
-		if (At(stated, Partners + ".Buttons.Buttons.A_Button") is not { Hidden: true })
+		if (joinable)
 		{
 			prompts.Add(new("A", resolve("GUI_SELECT")));
 		}
@@ -439,28 +452,26 @@ public static class Fable3BoxScreenModel
 	}
 
 	/// <summary>
-	/// THE SAVE MENU. The open sub_8296C5D0 writes `SaveMenu.Foreground.Text.Save` and
-	/// `.SaveAndQuit` state 1 when saving is allowed, 2 when not (0x8296C76C..0x8296C790);
-	/// sub_8296CB08 states the cursor `+12` on the root and each row's `.Layout` 2 highlighted / 1
-	/// not (0x8296CBA0..0x8296CC24) — 1 Save, 2 SaveAndQuit, 4 CharacterManagement, else Quit. Input sub_8296C918: up/down
+	/// THE SAVE MENU (<see cref="Fable3UiStatements"/>: `@SaveMenu.Open(allowed, row)`,
+	/// `@SaveMenu.Row`). The open sub_8296C5D0 slides `SaveMenu.Foreground.Text.Save` and
+	/// `.SaveAndQuit` 1 when saving is allowed, 2 when not (0x8296C76C..0x8296C790) — those two rows
+	/// are ghosted without it — and starts the row `+12` on 1, or 3 when not allowed
+	/// (0x8296C6F4 / 0x8296C700); sub_8296CB08 highlights the row's `.Layout`: 1 Save, 2 SaveAndQuit,
+	/// 4 CharacterManagement, else Quit (0x8296CB30..0x8296CC24). Input sub_8296C918: up/down
 	/// (29/30 and the stick) move, 72 runs the row (sub_8296CDB0), 73 closes (sub_8296C858).
 	/// The rows' captions are SaveMenu.bgf's, not extracted here: their element names stand in.
 	/// </summary>
-	private static Fable3ScreenPage SaveMenuPage(IReadOnlyDictionary<string, Probe> stated, System.Func<string, string> resolve)
+	private static Fable3ScreenPage SaveMenuPage(Fable3ScreenState screen, System.Func<string, string> resolve)
 	{
-		string text = SaveMenu + ".Foreground.Text.";
-		var rows = new List<Fable3ScreenPage.Row>();
-		int selected = -1;
-		foreach ((string name, string label) in new[] { ("Save", "Save"), ("SaveAndQuit", "Save and Quit"), ("CharacterManagement", "Character Management"), ("Quit", "Quit") })
+		var rows = new List<Fable3ScreenPage.Row>
 		{
-			if (At(stated, text + name + ".Layout")?.State == 2)
-			{
-				selected = rows.Count;
-			}
+			new("Save", "Save", !screen.SaveAllowed),
+			new("SaveAndQuit", "Save and Quit", !screen.SaveAllowed),
+			new("CharacterManagement", "Character Management"),
+			new("Quit", "Quit"),
+		};
 
-			rows.Add(new(name, label, At(stated, text + name)?.State == 2));
-		}
-
+		int selected = screen.SaveRow switch { 1 => 0, 2 => 1, 4 => 2, _ => 3 };
 		return new Fable3ScreenPage(string.Empty, rows, selected, string.Empty,
 			new[] { new Fable3ScreenPage.Prompt("A", resolve("GUI_SELECT")), new Fable3ScreenPage.Prompt("B", resolve("GUI_BACK")) }, true);
 	}

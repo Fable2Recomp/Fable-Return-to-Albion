@@ -184,6 +184,18 @@ public partial class GameUi : Node, IGameTitleUi
 			(words[3] >> 24) != 0u;
 	}
 
+	/// <summary>
+	/// One stated display box re-read at its own address: the class's vtable (as TU1) at +0 and the
+	/// open byte at +12 that every handler gates on; null when the read fails.
+	/// </summary>
+	private static (uint Vtable, bool Open)? ProbeDisplayBox(uint box)
+	{
+		System.Span<uint> words = stackalloc uint[4];
+		return HostBridge.Peek(box, words) == 4
+			? (HostBridge.GuestAddressToTu1(words[0]), (words[3] >> 24) != 0u)
+			: null;
+	}
+
 	/// <summary>This frame's press, in the form an owned surface takes it.</summary>
 	private static Engine_UiSurfaceInput SurfaceInput(double delta) => new()
 	{
@@ -273,11 +285,13 @@ public partial class GameUi : Node, IGameTitleUi
 
 		RetireDrawn("the guest left the game");
 		Engine_UiModalText.Clear();
+		Engine_UiDisplayBoxes.Clear();
 
 		// The HUD's feed is its address; with it at 0 the icons and the piece gate stop, and a
 		// null gate hides every stated piece. Hidden outright as well: a piece with no ordinal
 		// is not gated and would otherwise stand. Shown again when the game names hud.bgf.
 		_hudAddress = 0;
+		_hudStand?.Reset();
 		_cyclerAddress = 0;
 		if (_hud is not null && GodotObject.IsInstanceValid(_hud))
 		{
@@ -430,6 +444,7 @@ public partial class GameUi : Node, IGameTitleUi
 
 		_books.Host = _presentation;
 		_books.Registry = () => _hud?.Values;
+		_books.BehaviourFired = PostPresentationEvent;
 		_infoPanel.Host = _presentation;
 		_spells.Host = _presentation;
 		// The screen names the row; this turns it into the same action the front-end fold uses,
@@ -518,65 +533,10 @@ public partial class GameUi : Node, IGameTitleUi
 			return;
 		}
 
-		// The guest's own per-element slides — a button on GetFocus, a card on Selected. Compared
-		// as a whole: one widget changing state means a rebuild either way. Keyed by ORDINAL —
-		// the guest's depth-first walk is byte-for-byte the .bgf element order, while the name
-		// hash is ambiguous (77 elements share 47 names on the title screen).
-		System.Collections.Generic.List<Engine_UiModel.UiElement>? live = HostBridge.GetUiElements();
-		int[]? slides = null;
-		string?[]? texts = null;
-		bool[]? visible = null;
-		if (live is { Count: > 0 })
-		{
-			slides = new int[live.Count];
-			texts = new string?[live.Count];
-			visible = new bool[live.Count];
-			for (int i = 0; i < live.Count; ++i)
-			{
-				slides[i] = live[i].Slide;
-				texts[i] = live[i].Text;
-				visible[i] = live[i].IsGloballyActive;
-			}
-		}
-
-		// Live opacity, keyed the same way. NOT a visibility lever: sub_8229E358 uses opacity only
-		// to choose the transparent bucket, and a fully transparent element is still traversed and
-		// submitted — hiding is globalactive's job, above.
-		//
-		// Read every frame, AHEAD of the unchanged test: the owned book below is a standing tree
-		// that follows the guest sample by sample, not a mirror rebuilt on change.
-		float?[]? opacity = null;
-		Engine_UiScreen.LiveTint?[]? tint = null;
-		if (slides is not null)
-		{
-			Engine_UiModel.LiveAttribute[,]? attributes = HostBridge.GetUiAttributes(Engine_UiLiveAttributes.OpacityIds);
-			if (attributes is not null)
-			{
-				int count = System.Math.Min(attributes.GetLength(0), slides.Length);
-				opacity = new float?[count];
-				tint = new Engine_UiScreen.LiveTint?[count];
-				for (int i = 0; i < count; ++i)
-				{
-					opacity[i] = attributes[i, 0].Present ? attributes[i, 0].AsFloat : null;
-					tint[i] = ReadTint(attributes, i);
-				}
-			}
-		}
-
-		// The front end needs this as much as the HUD: its own screens lay elements out by
-		// writing position attributes, so without it they stack where the file put them.
-		float?[]?[]? transform = slides is null ? null : Engine_UiLiveAttributes.Transform(0u, slides.Length);
-
-		// The guest's chosen art: the front end decides pictures at runtime — a save card's
-		// portrait, a storage device's icon — and the file carries only a placeholder.
-		uint[]? textures = live is { Count: > 0 }
-			? HostBridge.GetUiTextureHashes(0u, live.Count)
-			: null;
-
-		// The book stands whether or not the mirror needs rebuilding, and the mirror's visibility
-		// is restated from the answer every frame rather than toggled once.
-		bool owned = _books.DriveFrontEnd(
-			presentation, slides, texts, visible, opacity, transform, textures);
+		// THE FRONT END STANDS ON ITS FILE. Its presentation is headless (no .bgf tree is built,
+		// gui_headless_presentation.cpp), so there is no element sample: the book plays its own
+		// slides and takes what the guest TELLS the presentation (Engine_UiSlideStatements).
+		bool owned = _books.DriveFrontEnd(presentation);
 
 		// GODOT OWNS EVERY SCREEN IT HAS A TEMPLATE FOR. The guest's tree is SAMPLED for its
 		// data and never drawn once a template names the screen — a book that is not standing
@@ -591,23 +551,19 @@ public partial class GameUi : Node, IGameTitleUi
 				"for it (the guest's tree is never shown)");
 		}
 
-		// Visibility counts as a change too: the guest hides and reveals widgets without any slide
-		// moving, which is most of what a screen's Lua does. Two nulls compare EQUAL — a starved
-		// presentation publishes no elements, and requiring non-null rebuilds it every frame.
-		bool same = presentation == _showing &&
-			SameLive(slides, _showingSlides) && SameLive(visible, _showingVisible);
-		if (same)
+		_frontendUp = screen != Engine_UiModel.FrontEndScreen.None;
+		if (presentation == _showing)
 		{
 			return;
 		}
 
-		_presentation.LiveOpacity = opacity;
-		_presentation.LiveTint = tint;
-		_presentation.LiveVisible = visible;
-		_presentation.LiveSlides = slides;
-		_presentation.LiveText = texts;
-		_presentation.LiveTransform = transform;
-		_presentation.LiveTextures = textures;
+		_presentation.LiveOpacity = null;
+		_presentation.LiveTint = null;
+		_presentation.LiveVisible = null;
+		_presentation.LiveSlides = null;
+		_presentation.LiveText = null;
+		_presentation.LiveTransform = null;
+		_presentation.LiveTextures = null;
 		if (!_presentation.ShowByName(presentation, sceneSlide))
 		{
 			GD.PushWarning($"[game-ui] the guest is on '{screen}' but '{presentation}' " +
@@ -652,140 +608,8 @@ public partial class GameUi : Node, IGameTitleUi
 			}
 		}
 
-		if (presentation != _showing)
-		{
-			GD.Print($"[game-ui] following the guest onto '{presentation}' " +
-				$"({slides?.Length ?? 0} live elements, " +
-				$"{(_presentation.CurrentScreen?.IsLive == true ? "applied" : "NOT applied")})");
-		}
-
-		// The ordinal join, checked rather than believed. Slide, text and opacity are applied by
-		// position, so a divergence gives every later element another element's state — a mostly
-		// correct screen with stray widgets. Element TYPE is the cheap invariant: the guest holds
-		// a kind byte numbered as BgfElementType and it carries no live state, so any mismatch is
-		// a join failure.
-		if (presentation != _showing && live is { Count: > 0 } &&
-			_presentation.CurrentScreen is { } built)
-		{
-			int compared = System.Math.Min(built.Nodes.Length, live.Count);
-			int diverged = -1;
-			int mismatches = 0;
-			for (int i = 0; i < compared; ++i)
-			{
-				if ((int)built.Nodes[i].Type == live[i].Type)
-				{
-					continue;
-				}
-
-				++mismatches;
-				if (diverged < 0)
-				{
-					diverged = i;
-				}
-			}
-
-			GD.Print(diverged < 0
-				? $"[game-ui] ordinal join OK: {compared} elements, types agree end to end"
-				: $"[game-ui] ORDINAL JOIN BROKEN: {mismatches} of {compared} element types " +
-				  $"disagree, first at index {diverged} " +
-				  $"(file says {built.Nodes[diverged].Type}, guest says {live[diverged].Type}) " +
-				  "— every element past that point is wearing another element's state");
-
-			if (built.Nodes.Length != live.Count)
-			{
-				GD.Print($"[game-ui] element COUNT differs: file {built.Nodes.Length}, " +
-					$"guest {live.Count} — the join cannot be positional at all");
-			}
-		}
-
-		// How much of the screen the guest told us about, once per screen. Opacity is the lever
-		// the screens' Lua hides things with, and an unreported element keeps the file's value —
-		// the shipped .bgf is full of placeholder labels that stay off screen only because
-		// something set them transparent.
-		if (presentation != _showing && opacity is not null)
-		{
-			int reported = 0;
-			int hidden = 0;
-			foreach (float? value in opacity)
-			{
-				if (value is not { } alpha)
-				{
-					continue;
-				}
-
-				++reported;
-				if (alpha <= 0.001f)
-				{
-					++hidden;
-				}
-			}
-
-			GD.Print($"[game-ui] opacity: {reported} of {slides?.Length ?? 0} elements " +
-				$"reported one, {hidden} of those are fully transparent");
-
-			// Did following globalactive change anything? The file-derived visibility and the
-			// guest's answer should DISAGREE; matching element for element means the runtime
-			// never moved from what the .bgf authored.
-			if (visible is not null && _presentation?.CurrentScreen is { } current)
-			{
-				int guestHides = 0;
-				int fileHides = 0;
-				int disagree = 0;
-				int compared = System.Math.Min(current.Nodes.Length, visible.Length);
-				for (int i = 0; i < compared; ++i)
-				{
-					// Nodes[i].Visible already carries the live value, so the file's answer comes
-					// from the document's own slide state instead.
-					bool fromFile = current.FileVisible(i);
-					if (!visible[i])
-					{
-						++guestHides;
-					}
-
-					if (!fromFile)
-					{
-						++fileHides;
-					}
-
-					if (visible[i] != fromFile)
-					{
-						++disagree;
-					}
-				}
-
-				GD.Print($"[game-ui] visibility: guest hides {guestHides} of {compared}, " +
-					$"the file would hide {fileHides}, they disagree on {disagree}");
-			}
-
-			ReportPages(slides, visible);
-		}
-
-		// Does the guest's submission gate agree with the by-name pick? The front end picks its
-		// screen by name from the guest's reported active screen while the in-game path asks the
-		// gate; the two should be one mechanism, so the disagreement is measured before the
-		// by-name path can be deleted.
-		if (presentation != _showing)
-		{
-			foreach (Engine_UiModel.Presentation p in HostBridge.GetPresentations())
-			{
-				if (!p.Is(presentation + ".bgf"))
-				{
-					continue;
-				}
-
-				GD.Print(p.IsShowing
-					? $"[game-ui] gate agrees: '{presentation}' is SHOWING"
-					: $"[game-ui] GATE DISAGREES: drawing '{presentation}' by name, but the " +
-					  $"guest has it hidden (active={p.ActiveElements}" +
-					  $"{(p.IsFrozen ? " FROZEN" : string.Empty)}" +
-					  $"{(p.IsSuppressed ? " PARKED" : string.Empty)}) — the by-name path " +
-					  "cannot be replaced by the gate until this stops happening");
-			}
-		}
-
+		GD.Print($"[game-ui] following the guest onto '{presentation}' (stood on its file)");
 		_showing = presentation;
-		_showingSlides = slides;
-		_showingVisible = visible;
 	}
 
 	/// <summary>
@@ -973,8 +797,6 @@ public partial class GameUi : Node, IGameTitleUi
 		_presentation?.ClearScreen();
 
 		_showing = null;
-		_showingSlides = null;
-		_showingVisible = null;
 	}
 
 	private bool? _developerMenu;
@@ -1234,6 +1056,12 @@ public partial class GameUi : Node, IGameTitleUi
 	private string? _guestDialogShownText;
 
 	/// <summary>
+	/// The told sequence at the last frame no guest dialog was raised: the raise's three texts
+	/// are told after it (<see cref="FrontEndDialogText"/>).
+	/// </summary>
+	private ulong _guestDialogSince;
+
+	/// <summary>
 	/// THE FRONT END'S OWN DIALOG. The guest raises it itself — Load Game with no saves or a
 	/// refused save, a co-op or network failure arriving on the menu or the title, Downloadable
 	/// Content with nobody signed in — through `sub_826E40E0`, which writes the three
@@ -1243,9 +1071,17 @@ public partial class GameUi : Node, IGameTitleUi
 	/// </summary>
 	private bool DriveGuestDialog()
 	{
-		Engine_UiSource.FrontEndDialogState? up = IsRevealed && !HostBridge.IsInGame
+		// Raised or not is read whether or not the UI is revealed, so a raise made before the
+		// reveal keeps its texts.
+		Engine_UiSource.FrontEndDialogState? raised = !HostBridge.IsInGame
 			? Engine_UiSource.Current.GetFrontEndDialog()
 			: null;
+		if (raised is null)
+		{
+			_guestDialogSince = Engine_UiSlideStatements.Sequence;
+		}
+
+		Engine_UiSource.FrontEndDialogState? up = IsRevealed ? raised : null;
 		if (up is not { } dialog)
 		{
 			if (_guestDialogShown)
@@ -1279,9 +1115,9 @@ public partial class GameUi : Node, IGameTitleUi
 			return false;
 		}
 
-		string body = FrontEndDialogText(dialog.Presentation, "yousure");
-		string accept = FrontEndDialogText(dialog.Presentation, "OK");
-		string cancel = FrontEndDialogText(dialog.Presentation, "cancel");
+		string body = FrontEndDialogText(dialog.Presentation, "yousure", _guestDialogSince);
+		string accept = FrontEndDialogText(dialog.Presentation, "OK", _guestDialogSince);
+		string cancel = FrontEndDialogText(dialog.Presentation, "cancel", _guestDialogSince);
 		string signature = $"{body}\u0001{accept}\u0001{cancel}\u0001{dialog.AllowCancel}";
 		if (signature != _guestDialogShownText)
 		{
@@ -1320,9 +1156,12 @@ public partial class GameUi : Node, IGameTitleUi
 		return true;
 	}
 
-	/// <summary>One of the dialog's three texts as the guest wrote it, `dialog.Group.{leaf}` in
-	/// the owner's presentation; empty when it cannot be read.</summary>
-	private string FrontEndDialogText(uint presentation, string leaf)
+	/// <summary>
+	/// One of the dialog's three texts as the guest TOLD it (Engine_UiFrontEndScreens.DialogText):
+	/// `OK` at 0x826e4158, `yousure` at 0x826e4180, `cancel` at 0x826e4210 / 0x826e4278 (disc
+	/// `sub_826CB158` the same). <paramref name="since"/> keeps an earlier raise's texts out.
+	/// </summary>
+	private string FrontEndDialogText(uint presentation, string leaf, ulong since)
 	{
 		foreach (Engine_UiModel.Presentation p in Engine_UiSource.Current.GetPresentations())
 		{
@@ -1332,17 +1171,8 @@ public partial class GameUi : Node, IGameTitleUi
 			}
 
 			string name = System.IO.Path.GetFileNameWithoutExtension(p.Name.Replace('\\', '/'));
-			if (_presentation?.DocumentFor(name) is not { } document ||
-				Engine_UiElementState.Current.Elements(presentation) is not { } elements)
-			{
-				return string.Empty;
-			}
-
-			UiNode? node = Engine_UiStatedPanel.Child(
-				Engine_UiStatedPanel.Child(Engine_UiStatedPanel.FindByName(document.Roots, "dialog"), "Group"),
-				leaf);
-			return node is not null && node.Ordinal < elements.Count
-				? elements[node.Ordinal].Text ?? string.Empty
+			return _presentation?.DocumentFor(name) is { } document
+				? Engine_UiFrontEndScreens.DialogText(document, presentation, leaf, since)
 				: string.Empty;
 		}
 
@@ -1590,8 +1420,7 @@ public partial class GameUi : Node, IGameTitleUi
 
 	/// <summary>
 	/// Keeps the owned banner standing and its title current — the cycler's single live text
-	/// is the current screen's NAME ("Paused", "Abilities", …), sampled off the presentation
-	/// the mirror no longer draws.
+	/// is the current screen's NAME ("Paused", "Abilities", …), as the guest tells it.
 	/// </summary>
 	private void DrivePauseBanner(Engine_UiModel.PauseState? pause)
 	{
@@ -1602,22 +1431,14 @@ public partial class GameUi : Node, IGameTitleUi
 
 		bool up = _pauseTreeUp && IsRevealed && pause is not null && pause.Value.ScreenId != 31;
 		_pauseBanner.Visible = up;
-		if (!up || _cyclerAddress == 0 ||
-			Engine_UiElementState.Current.Elements(_cyclerAddress) is not { Count: > 0 } elements)
+		if (!up || _cyclerAddress == 0)
 		{
 			return;
 		}
 
-		// The cycler's one meaningful text — first non-empty in the walk.
-		string title = string.Empty;
-		foreach (Engine_UiModel.UiElement element in elements)
-		{
-			if (!string.IsNullOrEmpty(element.Text))
-			{
-				title = element.Text;
-				break;
-			}
-		}
+		// The cycler's one meaningful text — the current screen's name, as the guest last told
+		// it (SetText / SetTextFromTag on its headless element, Engine_UiSlideStatements).
+		string title = Engine_UiSlideStatements.LatestTextOf(_cyclerAddress) ?? string.Empty;
 
 		if (title.Length == 0 || title == _bannerShown ||
 			_presentation?.Theme is not { } theme)
@@ -1652,17 +1473,18 @@ public partial class GameUi : Node, IGameTitleUi
 	/// `this+24`, runs `g_Menu:SetExpandableMenuDisabled(true)` and opens a PAGE, where 28/29 move
 	/// the row, 30/31 change its VALUE and 36 commits the whole page — nothing is written while
 	/// scrolling. `sub_826D9FC8` puts `Foreground.ExpandableMenu` on slide 2 when the page opens
-	/// and slide 3 when it closes, which the host already mirrors per ordinal.
+	/// and slide 3 when it closes — the guest's told slide entry (Engine_UiSlideStatements).
 	///
 	/// Fails to FALSE: no template, an unresolved element or an unread slide all leave the list
 	/// level standing, which the owned view can drive.
 	/// </summary>
-	private static bool ScreenPageOpen(uint screenId, Engine_UiDrawnPresentation drawn) =>
+	private static bool ScreenPageOpen(uint screenId, uint address, Engine_UiDrawnPresentation drawn) =>
 		Engine_UiTemplates.Screen(screenId) is { PageElement.Length: > 0 } template &&
-		drawn.Screen is { } screen && drawn.Slides is { } slides &&
+		drawn.Screen is { } screen &&
 		Engine_UiScreenPanel.Resolve(screen, template.PageElement) is { } node &&
-		node.Ordinal >= 0 && node.Ordinal < slides.Length &&
-		slides[node.Ordinal] == template.PageSlide;
+		node.Ordinal >= 0 &&
+		Engine_UiSlideStatements.Of(address, screen.Nodes[0].Element.NameHash, node.Ordinal) is { } told &&
+		told.Slide == template.PageSlide;
 
 	/// <summary>
 	/// One frame of the owned in-game list. True when it consumed the input.
@@ -1735,6 +1557,7 @@ public partial class GameUi : Node, IGameTitleUi
 	{
 		// Every frame, before any early return: a list that goes away clears the statement.
 		StateHighlightedRow();
+		StateScreenListFold();
 
 		// Re-validate the held node: a Godot node freed elsewhere throws on EVERY access, and an
 		// exception once a frame out of _Process reads as a hang.
@@ -1763,9 +1586,6 @@ public partial class GameUi : Node, IGameTitleUi
 				Engine_UiOptionsPending.Leave();
 			}
 
-			// The guest's stick latch does not survive us walking away from it — see
-			// HoldScreenStick.
-			HoldScreenStick(0);
 			Fable2Input.ScreenMenuOwnsInput = false;
 
 			// A MODAL OVER THE LIST KEEPS THE VIEW. Dropping the address here made AdoptScreenMenu
@@ -1775,14 +1595,6 @@ public partial class GameUi : Node, IGameTitleUi
 			{
 				_screenMenuAddress = 0;
 			}
-
-			if (pause is not { } stillOpen || stillOpen.ScreenId != Engine_UiScreenInput.AbilitiesScreenId)
-			{
-				_abilityHovered = -1;
-			}
-
-			// The next list stands with the guest's cursor wherever its own build left it.
-			_statedHighlight = string.Empty;
 
 			// The panel follows its SCREEN, not this drive: every early return here is a frame
 			// the owned text would keep painting over whatever replaced it, and the guest's own
@@ -1845,7 +1657,7 @@ public partial class GameUi : Node, IGameTitleUi
 					Fable2Input.ScreenMenuOwnsInput = true;
 					if (Fable2Input.MenuBackPressed)
 					{
-						HostBridge.ScreenAction(Engine_UiScreenInput.Back, atRoot: true);
+						HostBridge.ScreenAction(Engine_UiScreenInput.Back);
 					}
 					else if (Fable2Input.MenuTabPrevPressed)
 					{
@@ -1883,7 +1695,7 @@ public partial class GameUi : Node, IGameTitleUi
 
 		// The options page level is not a list and must not be drawn as one: the owned view comes
 		// down, the guest's page stays mirrored, and input becomes the page's own vocabulary.
-		if (ScreenPageOpen(state.ScreenId, drawn) || Engine_UiHostOptionsPage.Open)
+		if (ScreenPageOpen(state.ScreenId, address, drawn) || Engine_UiHostOptionsPage.Open)
 		{
 			bool hostPage = Engine_UiHostOptionsPage.Open;
 			if (_screenMenuView is not null)
@@ -1936,7 +1748,6 @@ public partial class GameUi : Node, IGameTitleUi
 				_providerFilledThisFrame = true;
 			}
 
-			HoldScreenStick(0);
 			Fable2Input.ScreenMenuOwnsInput = true;
 			if (_books.Book(state.ScreenId) is { } optionsBook)
 			{
@@ -1958,10 +1769,11 @@ public partial class GameUi : Node, IGameTitleUi
 			(Engine_UiTemplates.Screen(state.ScreenId)?.HasSpellBlade ?? false) &&
 			AbilitiesBladeOpen();
 
-		// `SetExpandableMenuDisabled` — the flag the blade raises while its carousel is up.
-		// `g_Menu:onUpdate` checks it BEFORE reading the stick, so a disabled menu does not
-		// scroll. Carried on the model so the rule holds wherever the model is driven from.
-		_screenMenu?.Script.SetDisabled(blade);
+		// `SetExpandableMenuDisabled`, as the guest states it — the blade raises it while its
+		// carousel is up (`sub_826C2480`), the shop's confirm, the options page and the gift
+		// adjuster too. `g_Menu:onUpdate` checks it BEFORE reading the stick, so a disabled menu
+		// does not scroll. Carried on the model so the rule holds wherever it is driven from.
+		_screenMenu?.Script.SetDisabled(_screenMenu.StatedInputLock);
 
 		if (blade)
 		{
@@ -1984,7 +1796,6 @@ public partial class GameUi : Node, IGameTitleUi
 					state.ScreenId, default, _screenMenu?.Script.Highlighted);
 			}
 
-			HoldScreenStick(0);
 			Fable2Input.ScreenMenuOwnsInput = true;
 			if (_books.Book(state.ScreenId) is { } pointedBlade)
 			{
@@ -2032,31 +1843,6 @@ public partial class GameUi : Node, IGameTitleUi
 			}
 		}
 
-		// THE ABILITY SCREEN'S VOICE-OVER. The guest arms its tutorial narration on its own
-		// highlight edge, which our cursor no longer moves; the pump runs that arm for the row
-		// we state (guest_tick_pump.cpp ArmAbilityTutorial). 0 is "not an ability", which the
-		// guest answers by disarming.
-		int hovered = -1;
-		if (state.ScreenId == Engine_UiScreenInput.AbilitiesScreenId)
-		{
-			hovered = _screenMenu?.Script.Highlighted is { } row &&
-				!Engine_UiModAbilities.TryGet(row.Name, out _) &&
-				Refii.Gdb.Engine_AbilityRecords.TryGet(row.Name,
-					out Refii.Gdb.Engine_AbilityRecords.Ability ability) &&
-				ability.Type is >= 1 and <= 14
-					? ability.Type
-					: 0;
-		}
-
-		if (hovered != _abilityHovered)
-		{
-			_abilityHovered = hovered;
-			if (hovered >= 0)
-			{
-				HostBridge.PostFrontEndAction($"{Engine_UiAbilitySource.AbilityAction}hover:{hovered}");
-			}
-		}
-
 		// A screen cannot have both: once its book is standing, the panel's text is painted into
 		// the book's clones and running both draws every field twice a few units apart.
 		if (_books.Book(state.ScreenId) is { Visible: true })
@@ -2091,7 +1877,7 @@ public partial class GameUi : Node, IGameTitleUi
 			(uint, string, int, uint, bool) detailKey = (
 				state.ScreenId, _screenMenu?.Script.Highlighted?.Name ?? string.Empty,
 				Fable2PageProviders.BookPage, HostBridge.UiDataGeneration(),
-				_screenMenu?.HostExpanded ?? false);
+				_screenMenu is not null);
 			bool refill = Engine_GuestFrame.Changed || detailKey != _detailKey ||
 				!ReferenceEquals(_detailBook, abilityBook);
 			_detailKey = detailKey;
@@ -2153,14 +1939,12 @@ public partial class GameUi : Node, IGameTitleUi
 			{
 				abilityBook.HostSlides = Engine_UiDetailPages.Slides(
 					state.ScreenId, _screenMenu?.Script.Highlighted, worldMap,
-					_screenMenu?.HostExpanded ?? false, vitals, hero);
+					_screenMenu is not null, vitals, hero);
 			}
 
-			// THE ABILITY PREVIEW MOVIE, on the quad the guest names. The abilities tick writes
-			// the .bik into the tarot sprite's Movie string (`sub_829A5A18`, sprite+564) and the
-			// sprite opens it; `GetUiMovie` reads that statement back. The decoded frame is a
-			// viewport texture, registered once and painted through the book's own texture
-			// channel over the still the provider put there.
+			// THE ABILITY PREVIEW MOVIE, on the tarot frame. The decoded frame is a viewport
+			// texture, registered once and painted through the book's own texture channel over
+			// the still the provider put there.
 			if (Video is { } video)
 			{
 				// THE HOST NAMES THE ABILITY MOVIE. The guest's own choice is frozen on the row
@@ -2169,21 +1953,16 @@ public partial class GameUi : Node, IGameTitleUi
 				string wanted = Engine_UiDetailPages.Movie(
 					state.ScreenId, _screenMenu?.Script.Highlighted, vitals);
 
-				// THE QUAD IS OURS TO KNOW. The guest's movie sprite names it when one exists,
-				// but the sprite is only created by the guest's own highlight-change edge — a
-				// boot where that edge never fires has no sprite, and gating playback on it
-				// silenced every preview for the whole session. The still and the movie share
-				// the tarot frame, so that element is the fallback quad.
-				(int Ordinal, string Path)? hosted = HostBridge.GetUiMovie(address);
-				int quad = hosted?.Ordinal ??
-					abilityBook.OrdinalOf(Engine_UiAbilityPage.TarotFrame) ?? -1;
+				// THE QUAD IS THE TAROT FRAME, where the still and the movie share one quad. The
+				// guest's movie write (`sub_829A5A18`, sprite+564) stores only through the
+				// element's node (`*(elem+4)`), which a headless element does not have.
+				int quad = abilityBook.OrdinalOf(Engine_UiAbilityPage.TarotFrame) ?? -1;
 
 				// A mod's ability shows its still card: no movie, and the last one taken down.
 				bool noMovie = Engine_UiAbilityPage.WantsNoMovie(_screenMenu?.Script.Highlighted);
 				if (noMovie)
 				{
 					wanted = string.Empty;
-					hosted = null;
 				}
 
 				if (wanted.Length != 0 && quad >= 0)
@@ -2198,7 +1977,7 @@ public partial class GameUi : Node, IGameTitleUi
 					video.PlayEmbedded(wanted, quad);
 				}
 
-				if (quad >= 0 && (wanted.Length != 0 || hosted is not null))
+				if (quad >= 0 && wanted.Length != 0)
 				{
 					video.EmbedOrdinal = quad;
 					_movieSlots[address] = quad;
@@ -2238,48 +2017,36 @@ public partial class GameUi : Node, IGameTitleUi
 			return false;
 		}
 
-		// The cursor, every frame, from the transform the host already reads for this screen.
-		// The guest's own row components are hidden, so our refresh is the animation on screen.
-		float?[]?[]? liveTransform = Engine_UiLiveAttributes.Transform(address, drawn.ElementCount);
-
-		// The slide and the dim, from the guest's element state — see `_screenMenuFollowOrdinal`.
-		// A frame with no stated x keeps the anchor.
-		if (_screenMenuFollowOrdinal >= 0 && liveTransform is not null &&
-			_screenMenuFollowOrdinal < liveTransform.Length &&
-			liveTransform[_screenMenuFollowOrdinal] is { Length: > 0 } menuRow &&
-			menuRow[0] is { } liveX && float.IsFinite(liveX))
+		// THE LIST'S SLIDE AND ITS FOCUS DIM, from the screen's own book: `Foreground.ExpandableMenu`'s
+		// x as its playing slide tracks or the guest's told write put it, `Buttons`' opacity as
+		// the guest told it (`sub_82426078`, the page or blade taking focus). A frame with no
+		// stood x keeps the anchor.
+		if (_books.Book(state.ScreenId) is { } listBook)
 		{
-			Vector3 at = _screenMenuView.Position;
-			_screenMenuView.Position = new Vector3(
-				_screenMenuAnchor.X + (liveX - _screenMenuFollowAuthoredX) -
-					Engine_UiTemplates.WideListShift(state.ScreenId),
-				at.Y, at.Z);
-		}
+			if (_screenMenuFollowOrdinal >= 0 &&
+				listBook.StoodValue(_screenMenuFollowOrdinal, Engine_UiSlidePlayback.Channel.PositionX) is { } stoodX &&
+				float.IsFinite(stoodX))
+			{
+				Vector3 at = _screenMenuView.Position;
+				_screenMenuView.Position = new Vector3(
+					_screenMenuAnchor.X + (stoodX - _screenMenuFollowAuthoredX) -
+						Engine_UiTemplates.WideListShift(state.ScreenId),
+					at.Y, at.Z);
+			}
 
-		if (_screenMenuButtonsOrdinal >= 0 && drawn.Opacity is { } liveOpacity &&
-			_screenMenuButtonsOrdinal < liveOpacity.Length &&
-			liveOpacity[_screenMenuButtonsOrdinal] is { } buttonsOpacity)
-		{
-			_screenMenuView.FocusOpacity = Mathf.Clamp(buttonsOpacity / 100f, 0f, 1f);
-		}
-
-		if (_screenMenu.Track(liveTransform))
-		{
-			_screenMenuView.Refresh();
-
-			// One line per actual move: the adoption line prints the highlight only once, so a
-			// scroll the guest refused and one it made but we failed to draw look identical.
-			GD.Print($"[game-ui] screen {state.ScreenId} highlight → " +
-				$"{_screenMenu.GuestHighlight} of {_screenMenu.Count}");
+			if (_screenMenuButtonsOrdinal >= 0 &&
+				listBook.StoodValue(_screenMenuButtonsOrdinal, Engine_UiSlidePlayback.Channel.Opacity) is { } focus)
+			{
+				_screenMenuView.FocusOpacity = Mathf.Clamp(focus / 100f, 0f, 1f);
+			}
 		}
 
 		_screenMenuView.Visible = true;
 		Fable2Input.ScreenMenuOwnsInput = true;
 		Engine_UiModMenus.Focus(_screenMenuView, _screenMenu.PopulationScript, Engine_UiCommandList.Screen);
 
-		// Whose cursor the pointer steers: the guest's while its rows are on screen (the stick
-		// goes to its latch below), ours inside a host-only level or a mod's menu.
-		_screenMenuView.GuestCursor = _screenMenuView.OpenedDepth == 0 && !_screenMenu.HostExpanded;
+		// The cursor is Godot's: the guest's Lua menu, its cursor and its stick latch are cut.
+		_screenMenuView.GuestCursor = false;
 
 		// A MOD'S MENU opened over this list is the host's alone: the guest's pool does not carry
 		// its rows, so the view is navigated directly and B returns to the screen's own list.
@@ -2289,23 +2056,11 @@ public partial class GameUi : Node, IGameTitleUi
 			return true;
 		}
 
-		// Navigation goes to the GUEST while the rows on screen are the guest's: its cursor is
-		// the authority for pool rows and the stick is a LATCH its Lua polls with the shipped
-		// repeat (0.25s then 0.14s). Inside a HOST-ONLY level the roles swap — the guest's pool
-		// does not carry those rows, so the latch is released and the view is navigated directly.
-		if (_screenMenu.HostExpanded)
-		{
-			HoldScreenStick(0);
-			_screenMenuView.Navigate(Fable2Input.MenuDirection, delta);
-			StateGuestHighlight();
+		_screenMenuView.Navigate(Fable2Input.MenuDirection, delta);
+		StateHighlightedRow();
 
-			// Change-keyed row report: one line when the list settles, one more per press.
-			ReportMenuView(_screenMenuView);
-		}
-		else
-		{
-			HoldScreenStick(Fable2Input.MenuDirection);
-		}
+		// Change-keyed row report: one line when the list settles, one more per press.
+		ReportMenuView(_screenMenuView);
 
 		// A MOD'S ROW ACTIONS on this list (ui/templates.json "rowActions"): a prompt beside the page
 		// buttons, the button held from the guest, mod_menu_row on the press.
@@ -2462,16 +2217,14 @@ public partial class GameUi : Node, IGameTitleUi
 			// different pair (`sub_8236ED98` / `sub_82370178`) no book screen's B reaches.
 			//
 			// The fold is ours, so `Collapse()` while there is something to close and forward
-			// once there is not. `atRoot` states the predicate's answer (the pump writes `Float1`
-			// first, DispatchScreenAction); the press is delivered inside the guest's Lua window,
-			// so `sub_826C1D98`'s own chunk now runs and a fold the guest laid out answers for
-			// itself.
+			// once there is not. `sub_826C1D98` answers from the fold depth stated every frame
+			// (StateListFoldDepth), so the forwarded press reads the fold the player is on.
 			// ONE FOLD. A level the GUEST laid out (pool rows) closes through the guest — its
 			// `sub_826C2560` case 37 folds it and re-lays the pool, which the model follows —
 			// or two folds drift apart: ours closed, the guest's open, the highlight solved
 			// against the guest's sixteen rows on our eight. Only a host-only level is ours to
 			// collapse.
-			if (_screenMenu is { } menu && menu.HostExpanded && menu.Collapse())
+			if (_screenMenu is { } menu && menu.Collapse())
 			{
 				// The guest's own collapse below the root cancels (`SE_GUI_MENU_BOX_CANCEL`,
 				// 0x826D5BBC); this one is ours.
@@ -2498,76 +2251,14 @@ public partial class GameUi : Node, IGameTitleUi
 			// never asked: `BeginDrain` swaps the whole queue out and `NoteRan` runs only after a
 			// dispatch returns, so an action that never returns leaves the queue at 0 and the
 			// next press starting again from 1.
-			//
-			// `atRoot` is true because reaching here means `Collapse()` found nothing to close,
-			// and the fold and the cursor are both ours.
-			uint depth = HostBridge.ScreenAction(Engine_UiScreenInput.Back, atRoot: true);
+			uint depth = HostBridge.ScreenAction(Engine_UiScreenInput.Back);
 			GD.Print($"[game-ui] screen {state.ScreenId}: B press forwarded as " +
-				$"ScreenAction({Engine_UiScreenInput.Back}, atRoot) — queue depth {depth}");
+				$"ScreenAction({Engine_UiScreenInput.Back}) at fold depth {_statedFold.Depth} — " +
+				$"queue depth {depth}");
 		}
 
 		return true;
 	}
-
-	/// <summary>
-	/// Holds the guest's menu stick in one direction, sending the edges as they change. Every
-	/// press must get its release — the guest's latch does not time out — so call this with 0
-	/// from every path that stops owning the input, not only when the player lets go.
-	/// </summary>
-	private void HoldScreenStick(int direction)
-	{
-		_screenStickWanted = direction;
-		if (direction != _screenStickHeld)
-		{
-			LatchScreenStick(direction);
-		}
-	}
-
-	/// <summary>
-	/// Releases the latch when no drive asked for a direction on the previous pass. Called once
-	/// at the top of the input chain — the drives below each return out of <c>_Process</c>.
-	/// </summary>
-	private void PumpScreenStick()
-	{
-		if (_screenStickWanted == 0 && _screenStickHeld != 0)
-		{
-			LatchScreenStick(0);
-		}
-
-		_screenStickWanted = 0;
-	}
-
-	/// <summary>Sends the edges that take the guest's latch from where it is to where we want it.</summary>
-	private void LatchScreenStick(int direction)
-	{
-		if (_screenStickHeld != 0)
-		{
-			HostBridge.MenuScroll(
-				_screenStickHeld < 0 ? Engine_UiModel.MenuStick.Up : Engine_UiModel.MenuStick.Down,
-				held: false);
-		}
-
-		if (direction != 0)
-		{
-			HostBridge.MenuScroll(
-				direction < 0 ? Engine_UiModel.MenuStick.Up : Engine_UiModel.MenuStick.Down,
-				held: true);
-		}
-
-		_screenStickHeld = direction;
-	}
-
-	/// <summary>Which way the guest's menu stick is currently latched: -1 up, +1 down, 0 free.</summary>
-	private int _screenStickHeld;
-
-	/// <summary>
-	/// Which way the stick was last seen on an item-book screen, so a page turn fires on the
-	/// EDGE. Reset with the screen, not with the press.
-	/// </summary>
-	private int _screenPageHeld;
-
-	/// <summary>Which way a drive asked for it this pass. Cleared by <see cref="PumpScreenStick"/>.</summary>
-	private int _screenStickWanted;
 
 	/// <summary>
 	/// True while the abilities screen's spell-assignment blade is up — the guest's own mode byte
@@ -2859,6 +2550,8 @@ public partial class GameUi : Node, IGameTitleUi
 		{
 			Name = "Hud",
 			Theme = _presentation.Theme,
+			TopBoxWrapWidth = Engine_UiHudTopBox.WrapWidth,
+			TopBoxHeightRange = Engine_UiHudTopBox.HeightRange,
 			Screen = screen,
 			Art = new Engine_HudArt { Shipped = _presentation.PatternBookFor(HudPresentation) },
 			ResolveTexture = hash =>
@@ -2939,6 +2632,8 @@ public partial class GameUi : Node, IGameTitleUi
 		{
 			Name = "HudPlayerTwo",
 			Theme = _presentation.Theme,
+			TopBoxWrapWidth = Engine_UiHudTopBox.WrapWidth,
+			TopBoxHeightRange = Engine_UiHudTopBox.HeightRange,
 			Screen = screen,
 			Art = _hud.Art,
 			ResolveTexture = _hud.ResolveTexture,
@@ -3241,7 +2936,8 @@ public partial class GameUi : Node, IGameTitleUi
 	private static readonly System.Collections.Generic.HashSet<string> RefiiNoticeBoxes =
 		new() { Engine_UiCoopNotices.BoxName, ExitRefusedBox, Engine_UiNotices.ModBoxName };
 
-	private static bool PauseIsPlayerTwos() =>
+	/// <summary>The open pause and the screens it opened are player two's.</summary>
+	internal static bool PauseIsPlayerTwos() =>
 		CoopSession.IsClient || (CoopSession.LocalCoop && Fable2Bridge.GetMenuOwner() == 2);
 
 	/// <summary>
@@ -4552,17 +4248,30 @@ public partial class GameUi : Node, IGameTitleUi
 	private Engine_UiElementResolve? _hudResolve;
 
 
-	private int _hudRootSlideSaid = -1;
+	/// <summary>The HUD stood on its file and the guest's statements (Engine_UiHudStand).</summary>
+	private Engine_UiHudStand? _hudStand;
 
-	/// <summary>
-	/// The scene root's current slide, applied over the guest's stale statements: its entries'
-	/// actives replace the guest's, and every element it commands an opacity for drops the
-	/// guest's stated opacity so the authored track decides. Nothing outside the root's own
-	/// slides is touched.
-	/// </summary>
+	private int[]? _hudStatedSlides;
+	private bool[]? _hudStatedPlays;
+	private bool[]? _hudShown;
+	private long _hudStandTicks;
+	private ulong _hudTexturesGeneration = ulong.MaxValue;
+
+	/// <summary>The HUD values' registry generation the textures last took (`@Gui.Image` among them).</summary>
+	private ulong _hudRegistryTexturesGeneration = ulong.MaxValue;
+
 	private int _hudStatedFolded = -1;
 
-	private void FoldStatedHudSlides(Engine_UiScreen doc, int[] slides, bool[] active, float?[] stated)
+	/// <summary>
+	/// THE SLIDES THE HOST STATES BY NAME, as the stand's stated input: what the registry writers
+	/// play on every element bound to a name — toggle true → 2, false → 1 (`sub_823FE848`), a
+	/// fader's index (`sub_827FA600`, plus one on the second channel), a slide set's verbatim
+	/// (`sub_828421F8`). <paramref name="plays"/> marks the entries the writer played: the toggle
+	/// and the fader go through `sub_82426CA8` (entry, then `SetPaused(0)`); the second fader and
+	/// the slide set through `sub_82426BA8`, which leaves an authored-paused slide at t = 0 unless
+	/// the guest's own write played it.
+	/// </summary>
+	private void FoldStatedHudSlides(int[] slides, bool[] plays)
 	{
 		if (_hud is null || _hud.Bindings is not { } bindings)
 		{
@@ -4570,7 +4279,7 @@ public partial class GameUi : Node, IGameTitleUi
 		}
 
 		int folded = 0;
-		void Fold(int ordinal, int slide)
+		void Fold(int ordinal, int slide, bool played)
 		{
 			if (ordinal < 0 || ordinal >= slides.Length)
 			{
@@ -4578,20 +4287,34 @@ public partial class GameUi : Node, IGameTitleUi
 			}
 
 			slides[ordinal] = slide;
+			plays[ordinal] = played;
 			++folded;
+		}
 
-			// THE SLIDE OUTRANKS THE STATED OPACITY, as for the root: the guest's own animation
-			// of a slide it did not play never ran, so the elements it commands still carry the
-			// authored opacity — 0 on every box that opens by fading in. Same release as the
-			// root's, on this owner's chosen slide.
-			ReleaseHudOwnerSlide(doc, ordinal, slide, active, stated);
+		// THE GUEST'S OWN REGISTRY WRITES FIRST (`@Gui.Slide`, hooks/gui_registry_hooks.cpp): the
+		// toggle (registry 9, `sub_823FE848`: 2 on, 1 off), the fader and second fader (2, 3) and
+		// the slide set (10), each slide as its writer was handed it, on every element bound to
+		// the name — the spell charges' fader (`PlayerSpellCharger`) and charge levels
+		// (`PlayerSpellcharge1..5`), the health and experience faders. What the host states by
+		// name below (the TopBox, the timing meter, the natives) is laid over them.
+		foreach ((int registry, uint hash, int slide) in _hud.Values.RegistrySlides)
+		{
+			if (Engine_UiHudRegistryWrites.SlideKind(registry) is not { } kind)
+			{
+				continue;
+			}
+
+			foreach (int ordinal in bindings.Elements(kind, hash))
+			{
+				Fold(ordinal, slide, _hud.Values.RegistryPlayed(registry, hash));
+			}
 		}
 
 		foreach ((uint hash, bool visible) in _hud.Values.Toggles)
 		{
 			foreach (int ordinal in bindings.Elements(Engine_UiBindings.Kind.SlideToggle, hash))
 			{
-				Fold(ordinal, visible ? 2 : 1);
+				Fold(ordinal, visible ? 2 : 1, true);
 			}
 		}
 
@@ -4599,12 +4322,12 @@ public partial class GameUi : Node, IGameTitleUi
 		{
 			foreach (int ordinal in bindings.Elements(Engine_UiBindings.Kind.SlideFader, hash))
 			{
-				Fold(ordinal, slide);
+				Fold(ordinal, slide, true);
 			}
 
 			foreach (int ordinal in bindings.Elements(Engine_UiBindings.Kind.SlideFader2, hash))
 			{
-				Fold(ordinal, slide + 1);
+				Fold(ordinal, slide + 1, _hud.Values.RegistryPlayed(3, hash));
 			}
 		}
 
@@ -4616,15 +4339,42 @@ public partial class GameUi : Node, IGameTitleUi
 		{
 			foreach (int ordinal in bindings.Elements(Engine_UiBindings.Kind.SlideSet, hash))
 			{
-				Fold(ordinal, slide);
+				Fold(ordinal, slide, _hud.Values.RegistryPlayed(10, hash));
 			}
 		}
 
 		if (folded != _hudStatedFolded)
 		{
 			_hudStatedFolded = folded;
-			GD.Print($"[hud] {folded} host-stated toggle/fader slide(s) folded over the guest's");
+			GD.Print($"[hud] {folded} host-stated toggle/fader slide(s) stand the HUD's rest state");
 		}
+	}
+
+	private readonly System.Collections.Generic.List<(int Ordinal, float Percent)> _hudMeterTimes = new();
+
+	/// <summary>
+	/// Each bound meter's component and its stated percentage — the meter registry's scrub,
+	/// `goToTime(trunc(pct × 10))` (`sub_823FDFF8`), played by the stand. Layout meters are not
+	/// played (<see cref="Engine_UiHudStand.PlaysMeter"/>).
+	/// </summary>
+	private System.Collections.Generic.IReadOnlyList<(int Ordinal, float Percent)> HudMeterTimes()
+	{
+		_hudMeterTimes.Clear();
+		if (_hud?.Bindings is not { } bindings)
+		{
+			return _hudMeterTimes;
+		}
+
+		foreach (Engine_UiBindings.Binding binding in bindings.All)
+		{
+			if (Engine_UiHudStand.PlaysMeter(binding) &&
+				_hud.Values.Meter(new Engine_HudValues.Handle(binding.Name, binding.NameHash)) is { } percent)
+			{
+				_hudMeterTimes.Add((binding.ElementOrdinal, percent));
+			}
+		}
+
+		return _hudMeterTimes;
 	}
 
 	/// <summary>
@@ -4653,138 +4403,76 @@ public partial class GameUi : Node, IGameTitleUi
 		return 0;
 	}
 
-	private System.Collections.Generic.Dictionary<int, System.Collections.Generic.List<BgfSlide>>? _hudSlidesByOwner;
-
-	private Engine_BgfDocument? _hudSlidesDocument;
-
-	private void ReleaseHudPlayedSlides(Engine_UiScreen doc, int[] slides, bool[] active, float?[] stated)
-	{
-		if (doc.Document is not { } file || doc.Roots.Length == 0)
-		{
-			return;
-		}
-
-		if (!ReferenceEquals(_hudSlidesDocument, file) || _hudSlidesByOwner is null)
-		{
-			_hudSlidesDocument = file;
-			_hudSlidesByOwner = new System.Collections.Generic.Dictionary<int, System.Collections.Generic.List<BgfSlide>>();
-			foreach (BgfSlide slide in file.Slides)
-			{
-				if (slide.IsMaster)
-				{
-					continue;
-				}
-
-				if (!_hudSlidesByOwner.TryGetValue(slide.OwnerElement, out System.Collections.Generic.List<BgfSlide>? list))
-				{
-					_hudSlidesByOwner[slide.OwnerElement] = list = new System.Collections.Generic.List<BgfSlide>();
-				}
-
-				list.Add(slide);
-			}
-		}
-
-		int root = doc.Roots[0].Ordinal;
-		for (int owner = 0; owner < slides.Length; ++owner)
-		{
-			int wanted = slides[owner];
-			if (wanted <= 0 || owner == root ||
-				!_hudSlidesByOwner.TryGetValue(owner, out System.Collections.Generic.List<BgfSlide>? owned) ||
-				wanted > owned.Count)
-			{
-				continue;
-			}
-
-			ReleaseHudSlideEntries(file, owned[wanted - 1], active, stated);
-		}
-	}
-
 	/// <summary>The one release of a slide's entries, shared with a copy's own slide (Engine_UiElementResolve.ReleaseSlideEntries).</summary>
 	private static int ReleaseHudSlideEntries(
 		Engine_BgfDocument file, BgfSlide slide, bool[] active, float?[] stated) =>
 		Engine_UiElementResolve.ReleaseSlideEntries(file, slide, active, stated);
-
-	private void ReleaseHudRootSlide(Engine_UiScreen doc, int[] slides, bool[] active, float?[] stated)
-	{
-		if (doc.Document is not { } file || doc.Roots.Length == 0)
-		{
-			return;
-		}
-
-		int root = doc.Roots[0].Ordinal;
-		if (root < 0 || root >= slides.Length)
-		{
-			return;
-		}
-
-		int wanted = slides[root];
-		if (wanted <= 0)
-		{
-			if (_hudRootSlideSaid != 0)
-			{
-				_hudRootSlideSaid = 0;
-				GD.Print($"[hud] root '{doc.Roots[0].Name}'#{root} states slide 0 (master) — nothing released");
-			}
-
-			return;
-		}
-
-		int seen = 0;
-		foreach (BgfSlide slide in file.Slides)
-		{
-			if (slide.OwnerElement != root || slide.IsMaster)
-			{
-				continue;
-			}
-
-			if (++seen != wanted)
-			{
-				continue;
-			}
-
-			int released = 0;
-			foreach (BgfSlideEntry entry in slide.Entries)
-			{
-				int ordinal = entry.ElementOrdinal;
-				if (ordinal < 0 || ordinal >= stated.Length)
-				{
-					continue;
-				}
-
-				active[ordinal] = entry.Active;
-				foreach (BgfAttribute command in entry.Commands)
-				{
-					if (command.Id == Engine_UiElementResolve.OpacityAttribute)
-					{
-						stated[ordinal] = null;
-						++released;
-						break;
-					}
-				}
-			}
-
-			if (_hudRootSlideSaid != wanted)
-			{
-				_hudRootSlideSaid = wanted;
-				GD.Print($"[hud] root '{doc.Roots[0].Name}'#{root} on slide {wanted} ('{slide.Name}') — " +
-					$"{slide.Entries.Length} entry(ies), {released} guest opacity(ies) released to the slide");
-			}
-
-			return;
-		}
-
-		if (_hudRootSlideSaid != -2)
-		{
-			_hudRootSlideSaid = -2;
-			GD.Print($"[hud] root '{doc.Roots[0].Name}'#{root} states slide {wanted} but owns no such slide");
-		}
-	}
 
 	/// <summary>The hud document, kept for the opacity chain the piece gate walks.</summary>
 	private Engine_UiScreen? _hudScreen;
 
 	/// <summary>The guest's hud presentation address, taken as Follow declines to mirror it.</summary>
 	private uint _hudAddress;
+
+	/// <summary>
+	/// A behaviour's presentation event, timed by Godot's playback of the file, posted to the
+	/// callback the guest registered for it: `PresentationEvent:&lt;file&gt;:&lt;parent&gt;:&lt;EVENT&gt;`
+	/// (hooks/gui_menu_hooks.cpp, which swallows the guest's own timeline delivery of the same event).
+	/// </summary>
+	private static void PostPresentationEvent(string presentation, Engine_UiBehaviourEvents.Fired fired)
+	{
+		string file = System.IO.Path.GetFileNameWithoutExtension(presentation.Replace('\\', '/')).ToLowerInvariant();
+		string action = $"PresentationEvent:{file}:{fired.ParentName}:{fired.Event}";
+		GD.Print($"[behaviour] {file}: {fired.Event} on '{fired.ParentName}' (#{fired.Ordinal}) — posting '{action}'");
+		HostBridge.PostFrontEndAction(action);
+	}
+
+	/// <summary>
+	/// THE HUD'S BEHAVIOURS (`hud.bgf`'s FinishedTransitioningToGame, live on the root's
+	/// `PauseMenuToGame` slide for 0..482): the HUD stands on the guest's sample, so its clocks are
+	/// a windows-only playback over the stated slides, and a behaviour is live while the resolve
+	/// draws it and its window is open. A new HUD presentation starts both afresh.
+	/// </summary>
+	private Engine_UiBehaviourEvents? _hudBehaviours;
+	private Engine_UiSlidePlayback? _hudWindows;
+	private Engine_UiScreen? _hudBehavioursScreen;
+	private uint _hudBehavioursAddress;
+	private static readonly System.Diagnostics.Stopwatch HudBehaviourClock = System.Diagnostics.Stopwatch.StartNew();
+
+	private void ObserveHudBehaviours(Engine_UiScreen doc, int[] slides)
+	{
+		if (!ReferenceEquals(doc, _hudBehavioursScreen))
+		{
+			_hudBehavioursScreen = doc;
+			_hudBehaviours = Engine_UiBehaviourEvents.For(doc);
+			_hudWindows = _hudBehaviours is { } found
+				? new Engine_UiSlidePlayback(doc, found.Behaviours.Select(b => b.Ordinal).ToArray())
+				: null;
+			_hudBehavioursAddress = _hudAddress;
+		}
+
+		if (_hudBehaviours is not { } behaviours || _hudWindows is not { } windows || _hudResolve is not { } resolve)
+		{
+			return;
+		}
+
+		if (_hudBehavioursAddress != _hudAddress)
+		{
+			_hudBehavioursAddress = _hudAddress;
+			behaviours.Reset();
+			windows.Reset();
+		}
+
+		windows.Step(slides, null, HudBehaviourClock.ElapsedMilliseconds);
+		bool[] drawn = resolve.Drawn;
+		bool[] closed = windows.Closed;
+		System.Collections.Generic.List<Engine_UiBehaviourEvents.Fired>? fired = behaviours.Observe(ordinal =>
+			ordinal >= 0 && ordinal < drawn.Length && drawn[ordinal] && !(ordinal < closed.Length && closed[ordinal]));
+		foreach (Engine_UiBehaviourEvents.Fired one in fired ?? new System.Collections.Generic.List<Engine_UiBehaviourEvents.Fired>(0))
+		{
+			PostPresentationEvent("hud", one);
+		}
+	}
 
 	private int _worldIconTick;
 
@@ -4808,8 +4496,6 @@ public partial class GameUi : Node, IGameTitleUi
 	private int[]? _hudSlides;
 	private float?[]? _hudStated;
 
-	private long _hudOpacityTicks;
-	private long _hudTransformTicks;
 	private long _hudResolveTicks;
 
 	private long _hudFeedTicks;
@@ -4891,160 +4577,106 @@ public partial class GameUi : Node, IGameTitleUi
 			Fable2Input.SpellsMenuHeld ||
 			_hudOverrideGeneration != Engine_UiHudOverrides.Generation || (hudValid && _hud!.ElementActive is null);
 		long began = System.Diagnostics.Stopwatch.GetTimestamp();
-		if (needHudFeed && Engine_UiElementState.Current.Elements(_hudAddress) is { Count: > 0 } elements)
+		if (needHudFeed && _hudScreen is { Nodes.Length: > 0 } doc)
 		{
+			// THE HUD STANDS ON ITS FILE AND THE GUEST'S STATEMENTS (Engine_UiHudStand): the
+			// presentation is headless, so there is no element tree to read. The host's by-name
+			// slides — the registry toggles, faders and slide sets, a mod's `hud_slide` — are the
+			// stated slides the rest state stands under; everything the guest tells the
+			// presentation's elements (slides, plays, `active`, attributes, texts, textures) is
+			// played over that by Godot's own playback of the file.
+			if (_hudStand is null || !ReferenceEquals(_hudStand.Screen, doc))
+			{
+				_hudStand = new Engine_UiHudStand(doc);
+				_hudResolve = null;
+			}
+
+			int count = doc.Nodes.Length;
+			int[] stated = Buffer(ref _hudStatedSlides, count);
+			bool[] statedPlays = Buffer(ref _hudStatedPlays, count);
+			System.Array.Clear(stated, 0, count);
+			System.Array.Clear(statedPlays, 0, count);
+			FoldStatedHudSlides(stated, statedPlays);
+			// A mod's stated slides (hud_slide) stand over the guest's, for the local player's HUD.
+			ApplyHudSlideOverrides(stated, HudLocalPlayer);
+
+			long standBegan = System.Diagnostics.Stopwatch.GetTimestamp();
+			_hudStand.Stand(_hudAddress, stated, _hudResolve?.Drawn,
+				HudBehaviourClock.ElapsedMilliseconds,
+				ordinal => ordinal >= 0 && ordinal < statedPlays.Length && statedPlays[ordinal],
+				HudMeterTimes());
+			_hudStandTicks += System.Diagnostics.Stopwatch.GetTimestamp() - standBegan;
+
+			_hudResolve ??= new Engine_UiElementResolve(doc);
+			int[] slides = Buffer(ref _hudSlides, count);
+			System.Array.Copy(_hudStand.Slides, slides, count);
+			bool[] active = Buffer(ref _hudActive, count);
+			System.Array.Copy(_hudStand.Active, active, count);
+
+			// CLEARED: the stand's store carries every told opacity; this channel is only a mod
+			// hold's.
+			float?[] statedOpacity = Buffer(ref _hudStated, count);
+			System.Array.Clear(statedOpacity, 0, count);
+
+			// The pieces a mod holds visible (hud_hold): kept on their shown slides.
+			ApplyHudHold(ref _hudHold, ref _hudHoldKey, doc, slides, active, statedOpacity, HudLocalPlayer);
+
+			long resolveBegan = System.Diagnostics.Stopwatch.GetTimestamp();
+			_hudResolve.Animate(_hudStand.Animated, _hudStand.Closed);
+			_hudResolve.Apply(slides, active, statedOpacity, _hudStand.SwitchedOn);
+			_hudResolveTicks += System.Diagnostics.Stopwatch.GetTimestamp() - resolveBegan;
+
 			if (cadence)
 			{
-				uint[]? iconTextures = SampleHudTextures(elements.Count);
-				_worldIcons.Sample(elements, iconTextures);
+				uint[]? iconTextures = HudTextures(_hudStand);
+				_worldIcons.Sample(_hudResolve.Drawn, _hudStand.Texts, iconTextures);
 				if ((Engine_Views.Split || _holdPromptTwo is not null) &&
 					_worldIconsTwo is not null && GodotObject.IsInstanceValid(_worldIconsTwo))
 				{
-					_worldIconsTwo.Sample(elements, iconTextures);
+					_worldIconsTwo.Sample(_hudResolve.Drawn, _hudStand.Texts, iconTextures);
 				}
 			}
 
-			// THE SAME ELEMENT READ, EVERY FRAME, gates the rebuilt HUD's pieces — it shares
-			// the read above but not the icons' cadence; see the method comment for why the
-			// two diverge. TWO statements, both required:
-			// the ACTIVE bit, and the OPACITY CHAIN — because opacity is how the guest
-			// actually hides HUD furniture. The wheel's elements stay globalactive while it
-			// is closed; `SpellsMenu`'s show/hide is an opacity write on a group, exactly
-			// like hud.lua's whole-HUD Enable/Disable. Gating on active alone drew the closed
-			// wheel as permanent scenery.
-			//
-			// The chain is the engine's own accumulation — parent product times own, live
-			// value where stated, authored where not — and document order is parents-first,
-			// so one forward pass computes every element.
 			if (hudValid)
 			{
-				// REUSED, NOT REALLOCATED. This walks the WHOLE hud document — 3431 elements —
-				// and three fresh arrays a pass (bool, int and a nullable float each per
-				// element) is tens of kilobytes of garbage per gate frame for buffers whose
-				// size never changes. The feed measured 11-14ms per frame averaged across the
-				// gate; the allocation and the collection it provokes are part of that.
-				bool[] active = Buffer(ref _hudActive, elements.Count);
-				for (int i = 0; i < elements.Count; ++i)
+				ObserveHudBehaviours(doc, slides);
+				_hud!.Resolve = _hudResolve;
+				_hud.LiveSlides = slides;
+				// The resolve's inputs beside it: a mod copy that states a slide of its own
+				// resolves itself from these (Engine_HudView.Built.SlideOverrides).
+				_hud.ActiveInputs = active;
+				_hud.StatedOpacity = statedOpacity;
+
+				// THE ART: the textures told to the HUD's elements, under a mod's icon overrides.
+				if (cadence || _hud.LiveTextures is null || _hudTexturesGeneration != _hudStand.Generation ||
+					_hudOverrideGeneration != Engine_UiHudOverrides.Generation ||
+					_hudRegistryTexturesGeneration != _hud.Values.RegistryGeneration)
 				{
-					active[i] = elements[i].IsGloballyActive;
+					_hudRegistryTexturesGeneration = _hud.Values.RegistryGeneration;
+					_hud.LiveTextures = HudTextures(_hudStand);
 				}
 
-				if (_hudScreen is { } doc && doc.Nodes.Length == elements.Count)
+				// AND THE TRANSFORMS: the stand's tracks and told writes — a meter's bar scale is its
+				// component's track at the meter's time, as the guest's own scrub leaves it.
+				_hud.LiveTransform = _hudStand.Transform;
+				if (_hudHold is { OwnerCount: > 0 } held)
 				{
-					// ONE RESOLVE, the same one the owned books use. This block used to carry its own
-					// copy of the slide fold and the opacity chain; those are terms of one function
-					// and they live in Engine_UiElementResolve now.
-					_hudResolve ??= new Engine_UiElementResolve(doc);
-
-					int[] slides = Buffer(ref _hudSlides, elements.Count);
-					for (int i = 0; i < elements.Count; ++i)
-					{
-						slides[i] = elements[i].Slide;
-					}
-
-					// CLEARED, because a slot the guest stops stating must fall back to the
-					// authored value rather than keep last frame's answer.
-					float?[] stated = Buffer(ref _hudStated, elements.Count);
-					System.Array.Clear(stated, 0, elements.Count);
-					long opacityBegan = System.Diagnostics.Stopwatch.GetTimestamp();
-					Engine_UiModel.LiveAttribute[,]? opacityRead =
-						Engine_UiElementState.Current.Attributes(
-							Engine_UiLiveAttributes.OpacityIds, _hudAddress);
-					_hudOpacityTicks += System.Diagnostics.Stopwatch.GetTimestamp() - opacityBegan;
-					if (opacityRead is { } read)
-					{
-						int rows = System.Math.Min(read.GetLength(0), elements.Count);
-						for (int i = 0; i < rows; ++i)
-						{
-							if (read[i, 0].Present && float.IsFinite(read[i, 0].AsFloat))
-							{
-								stated[i] = read[i, 0].AsFloat;
-							}
-						}
-					}
-
-					// THE ROOT SLIDE OUTRANKS THE GUEST'S STALE ATTRIBUTES. The HUD's show/hide is a
-					// slide on the scene root (1 shown, 2 hidden — `sub_821764D8` / `sub_82405678`)
-					// whose tracks move `UpperElements` and fade it; the guest's own animation of
-					// that slide does not run here, so the elements it commands keep the opacity
-					// they had on the LAST slide the guest did play — dark, for the rest of the
-					// session. The owned books already give a slide's commands precedence over the
-					// guest's stated opacity; the HUD gets the same for its root's current slide.
-					// THE STATED TOGGLES AND FADES. Registries 9 (SlideToggleName) and 3
-					// (SlideFader2Name) cannot be read out of the guest, so what its publishers
-					// toggle — the TopBox's visibility, the meter's — is re-derived host-side and
-					// folded here as the slides those registries would play: toggle true → 2,
-					// false → 1 (`sub_823FE848`); fader index as stated, plus one on the second channel.
-					FoldStatedHudSlides(doc, slides, active, stated);
-					// A mod's stated slides (hud_slide) stand over the guest's, for the local player's HUD.
-					ApplyHudSlideOverrides(slides, HudLocalPlayer);
-
-					ReleaseHudRootSlide(doc, slides, active, stated);
-
-					// EVERY PLAYED SLIDE OUTRANKS THE STALE ATTRIBUTES, not only the root's. The
-					// guest's tweens do not advance here, so an element whose owner sits on a
-					// slide it did play (the vignette border's `Off`, opacity 0 over 1444 ms)
-					// still carries the loaded value the tween was meant to leave — 90, a black
-					// band across the top of every region. Slide 0 is the master, never played,
-					// and its elements keep their stated values.
-					ReleaseHudPlayedSlides(doc, slides, active, stated);
-					// The pieces a mod holds visible (hud_hold): kept on their shown slides.
-					ApplyHudHold(ref _hudHold, ref _hudHoldKey, doc, slides, active, stated, HudLocalPlayer);
-
-					long resolveBegan = System.Diagnostics.Stopwatch.GetTimestamp();
-					_hudResolve.Apply(slides, active, stated);
-					_hudResolveTicks += System.Diagnostics.Stopwatch.GetTimestamp() - resolveBegan;
-					_hud!.Resolve = _hudResolve;
-					_hud.LiveSlides = slides;
-					// The resolve's inputs beside it: a mod copy that states a slide of its own
-					// resolves itself from these (Engine_HudView.Built.SlideOverrides).
-					_hud.ActiveInputs = active;
-					_hud.StatedOpacity = stated;
-
-					// THE ART, ON THE ICONS' CADENCE. A slot's texture changes when the player
-					// equips something, not per frame, and this is the one read here that walks a
-					// hash per element. Held across frames rather than re-read, so the gate above
-					// can be per frame without the whole feed becoming so.
-					if (cadence || _hud.LiveTextures is null ||
-						_hudOverrideGeneration != Engine_UiHudOverrides.Generation)
-					{
-						_hud.LiveTextures = SampleHudTextures(elements.Count);
-					}
-
-					// AND THE TRANSFORMS. The bars are authored empty, so the binding needs the
-					// guest's stated scale or it writes the authored zero back over the scrub.
-					long transformBegan = System.Diagnostics.Stopwatch.GetTimestamp();
-					_hud.LiveTransform =
-						Engine_UiLiveAttributes.Transform(_hudAddress, elements.Count);
-					if (_hudHold is { OwnerCount: > 0 } held)
-					{
-						_hud.LiveTransform = held.Transforms(_hud.LiveTransform);
-					}
-					_hudTransformTicks += System.Diagnostics.Stopwatch.GetTimestamp() - transformBegan;
-
-					// AND THE ELEMENT TEXT, for the expression wheel's titles — the guest writes
-					// them onto the elements (`sub_826AB1F8`), not into the text registry.
-					if (_hudTexts is null || _hudTexts.Length != elements.Count)
-					{
-						_hudTexts = new string?[elements.Count];
-					}
-
-					for (int i = 0; i < elements.Count; ++i)
-					{
-						_hudTexts[i] = elements[i].Text;
-					}
-
-					_hud.LiveTexts = _hudTexts;
-
-					for (int i = 0; i < elements.Count; ++i)
-					{
-						// A piece is dark when the guest says so, when its SLIDE says so, or when the
-						// accumulated opacity has faded it out — three channels, one answer.
-						active[i] = _hudResolve.Drawn[i] && _hudResolve.Opacity[i] > 0.01f;
-					}
+					_hud.LiveTransform = held.Transforms(_hud.LiveTransform);
 				}
 
-				_hud!.ElementActive = active;
+				// AND THE ELEMENT TEXT, for the expression wheel's titles — the guest writes them onto
+				// the elements (`sub_826AB1F8`), not into the text registry.
+				_hud.LiveTexts = _hudStand.Texts;
+
+				bool[] shown = Buffer(ref _hudShown, count);
+				for (int i = 0; i < count; ++i)
+				{
+					// A piece is dark when the guest says so, when its SLIDE says so, or when the
+					// accumulated opacity has faded it out — three channels, one answer.
+					shown[i] = _hudResolve.Drawn[i] && _hudResolve.Opacity[i] > 0.01f;
+				}
+
+				_hud.ElementActive = shown;
 				DrivePlayerTwoExperience();
 				DrivePlayerTwoHud();
 				ShareHudFeed();
@@ -5057,16 +4689,11 @@ public partial class GameUi : Node, IGameTitleUi
 				double ms = _hudFeedTicks * 1000.0
 					/ System.Diagnostics.Stopwatch.Frequency / _hudFeedFrames;
 				double per = 1000.0 / System.Diagnostics.Stopwatch.Frequency / _hudFeedFrames;
-				GD.Print($"[hud] feed split/frame: " +
-					$"opacity-read {_hudOpacityTicks * per:0.00}ms, " +
-					$"transform-read {_hudTransformTicks * per:0.00}ms, " +
-					$"resolve {_hudResolveTicks * per:0.00}ms — the rest is the element read " +
-					"and the three passes");
-				_hudOpacityTicks = 0;
-				_hudTransformTicks = 0;
+				GD.Print($"[hud] feed split/frame: stand {_hudStandTicks * per:0.00}ms, " +
+					$"resolve {_hudResolveTicks * per:0.00}ms");
+				_hudStandTicks = 0;
 				_hudResolveTicks = 0;
-				GD.Print($"[hud] feed {ms:0.00}ms/frame over {_hudFeedFrames} frame(s), " +
-					$"{elements.Count} element(s)");
+				GD.Print($"[hud] feed {ms:0.00}ms/frame over {_hudFeedFrames} frame(s), {count} element(s)");
 				_hudFeedTicks = 0;
 				_hudFeedFrames = 0;
 			}
@@ -5384,34 +5011,21 @@ public partial class GameUi : Node, IGameTitleUi
 	/// <summary>The last row this cursor marked viewed, so a resting cursor posts it once.</summary>
 	private uint _viewedPosted;
 
-	/// <summary>The ability row last stated to the pump; -1 off the abilities screen.</summary>
-	private int _abilityHovered = -1;
-
 	/// <summary>The screen the book page was last reset for (the stated screen id).</summary>
 	private uint _pageScreen = uint.MaxValue;
 
-	/// <summary>The row last stated to the guest as its own highlight (StateGuestHighlight).</summary>
 	/// <summary>The menu model's rows as last reported, so the report is change-keyed on content.</summary>
 	private string _menuModelHeld = string.Empty;
 
-	private string _statedHighlight = string.Empty;
-
-	/// <summary>
-	/// THE HOST'S CURSOR, STATED TO THE GUEST. Godot owns the cursor of every owned list, and
-	/// the guest's screen code keeps reading its own: the items and clothing caches
-	/// (`sub_826D1698` → screen15+396, `sub_826D2F80` → screen16+244), the abilities discard
-	/// cache (`sub_826C3C78` → +624), the logbook page (`sub_826D9168`), the options page and
-	/// furniture A arms, the preview the guest spawns for its row. Each move puts the guest's
-	/// own `CurrentHighlightIdx` on the same row by name (`MenuHighlight:`, run in the guest's
-	/// Lua window), so whatever still reads the guest's cursor reads ours. A row the guest's
-	/// menu does not show (inside a fold it has not opened, or a host-only row) is left alone.
-	/// </summary>
 	/// <summary>
 	/// THE ROW THE GUEST'S HANDLERS READ. Every list screen's C++ asks `sub_826C1B50` for the
 	/// highlighted row's event type, id and strings; the hook answers from this statement for the
 	/// current screen (gui_menu_hooks.cpp), so a handler acts on the row the player is on. Stated
-	/// on change; a host-only row, a mod's row, or no Godot list, clears it and the guest asks
-	/// its own Lua. A MOD'S ROW (<see cref="Engine_UiExpandableMenu.Item.FromMod"/>) is never
+	/// on change; a host-only row, a mod's row, or no Godot list, clears it and the reader answers
+	/// the script's no-row ("No MenuItem", type 0, id 0). It STANDS while the list is hidden over
+	/// its own screen — a confirm box, the abilities blade — because the screens' Update keeps
+	/// refilling their cached rows from the reader (`sub_826D1698` at 0x826d1718 into +396) and
+	/// their box answers act on that cache. A MOD'S ROW (<see cref="Engine_UiExpandableMenu.Item.FromMod"/>) is never
 	/// stated whatever its JSON says: its `(EventType, id)` names no record of the guest's, and
 	/// handlers drop failed lookups — the abilities edge `sub_826C3C78` ignores `sub_82896900`
 	/// (0x826c3d58), the furniture upgrade `sub_8299C710` ignores `sub_825CC2F0` (0x8299caf4)
@@ -5419,10 +5033,28 @@ public partial class GameUi : Node, IGameTitleUi
 	/// </summary>
 	private void StateHighlightedRow()
 	{
-		Engine_UiExpandableMenu.Item? row = _screenMenu is { HostExpanded: true } list &&
-			_screenMenuView is { OpenedDepth: 0, Visible: true }
+		Engine_UiExpandableMenu.Item? row = _screenMenu is { } list &&
+			_screenMenuView is { OpenedDepth: 0 }
 				? list.Script.Highlighted
 				: null;
+
+		// THE ABILITIES SCREEN IS NEVER ANSWERED WITH A ROW IT HAS NO RECORD FOR. Its refresh
+		// `sub_826C3C78` builds an ability record from any highlight that is not a category (301)
+		// or the Spell Selector (23) and indexes by that record's unwritten Type when the id is no
+		// ability (0x826C3CFC / 0x826C3D1C). A mod's or a host row is stated as the guest category
+		// it hangs under; the hook answers 301 when nothing is stated at all.
+		if (row is { GuestHighlightable: false } && _screenMenu is { ScreenId: Engine_UiScreenInput.AbilitiesScreenId })
+		{
+			Engine_UiExpandableMenu.Item? category = row.Parent;
+			while (category is not null &&
+				!(category.GuestHighlightable && category.EventType == (int)Engine_UiMenuConstants.EventType.Submenu))
+			{
+				category = category.Parent;
+			}
+
+			row = category is { Parent: not null } ? category : null;
+		}
+
 		uint screen = row is { GuestHighlightable: true } ? _screenMenu!.ScreenId : 0u;
 		int id = row is null ? 0 : (row.IdHigh << 16) + row.IdLow;
 		string label = row?.StatedLabel ?? row?.TextTag ?? string.Empty;
@@ -5439,19 +5071,55 @@ public partial class GameUi : Node, IGameTitleUi
 
 	private string _statedRowKey = string.Empty;
 
-	private void StateGuestHighlight()
+	/// <summary>The in-game fold last stated: the screen and the depth.</summary>
+	private (uint Screen, uint Depth) _statedFold;
+
+	/// <summary>The front end's fold last stated.</summary>
+	private uint _statedFrontEndFold;
+
+	/// <summary>
+	/// THE FOLD THE GUEST'S ROOT TEST READS. `sub_826C1D98` (`IsHighlightedItemAtRoot`) is answered
+	/// from this depth for the current screen (gui_menu_hooks.cpp): the back arm `sub_826D5AF0`
+	/// hands the screen to the pause root at depth 0 and otherwise closes the fold, and the A arm
+	/// `sub_826D58F0` plays its select cue below the root. Stated on change; a list that goes away
+	/// states depth 0, the script's own answer with no row.
+	/// </summary>
+	private void StateScreenListFold()
 	{
-		StateHighlightedRow();
-		string name = _screenMenu?.Script.Highlighted?.Name ?? string.Empty;
-		if (name.Length == 0 || name == _statedHighlight || _screenMenu is not { HostExpanded: true } ||
-			_screenMenuView is not { OpenedDepth: 0 })
+		(uint Screen, uint Depth) fold =
+			_screenMenu is { } list && _screenMenuView is { Visible: true } view
+				? (list.ScreenId, (uint)System.Math.Max(0, view.Depth))
+				: (0u, 0u);
+		if (fold == _statedFold)
 		{
 			return;
 		}
 
-		_statedHighlight = name;
-		Engine_UiSource.Current.MenuHighlight(name);
+		if (_statedFold.Screen != fold.Screen && _statedFold.Depth != 0)
+		{
+			Engine_UiSource.Current.StateListFoldDepth(_statedFold.Screen, 0);
+		}
+
+		_statedFold = fold;
+		Engine_UiSource.Current.StateListFoldDepth(fold.Screen, fold.Depth);
 	}
+
+	/// <summary>
+	/// The front end's main menu's fold, for `sub_826DED60` — the root test of
+	/// `lhGui_FrontendRoot_OnScreenAction`'s B (at root it leaves for the title, else `OnPressB`).
+	/// </summary>
+	private void StateFrontEndFold(bool shown)
+	{
+		uint depth = shown && _menuView is { } view ? (uint)System.Math.Max(0, view.Depth) : 0u;
+		if (depth == _statedFrontEndFold)
+		{
+			return;
+		}
+
+		_statedFrontEndFold = depth;
+		Engine_UiSource.Current.StateListFoldDepth(HostBridge.FrontEndMainMenuList, depth);
+	}
+
 	private Engine_FrontEndMenuView? _screenMenuView;
 
 	/// <summary>The guest's screen fade, drawn over the UI. See <see cref="Engine_UiScreenFade"/>.</summary>
@@ -5520,6 +5188,12 @@ public partial class GameUi : Node, IGameTitleUi
 	/// <summary>The expression-wheel sector last posted, so the cursor lever fires on change.</summary>
 	private int _wheelSector = -1;
 
+	/// <summary>
+	/// Which way the stick was last seen on an item-book screen, so a page turn fires on the
+	/// EDGE. Reset with the screen, not with the press.
+	/// </summary>
+	private int _screenPageHeld;
+
 	/// <summary>`Foreground.ExpandableMenu`'s ordinal and authored x in the adopted screen.</summary>
 	private int _screenMenuFollowOrdinal = -1;
 
@@ -5575,16 +5249,11 @@ public partial class GameUi : Node, IGameTitleUi
 
 		DrivePauseBanner(pause);
 
-		// THE OWNED BOOK DRAWS THE ROOT. The guest's tree is sampled, never drawn: the book takes
-		// its draw gate, page fold, region map and token positions from that sample; its text
-		// is the host's (Engine_UiPausePage) or the file's.
+		// THE OWNED BOOK DRAWS THE ROOT, on the file and what the guest tells the headless
+		// presentation; the tokens and the quest markers are projected here.
 		if (_pauseBook is not null && IsInstanceValid(_pauseBook))
 		{
 			_pauseBook.Visible = onRoot;
-			if (!onRoot)
-			{
-				Engine_UiPauseMinimap.Reset();
-			}
 			if (_drawn.TryGetValue(_pauseAddress, out Engine_UiDrawnPresentation? pauseDrawn))
 			{
 				if (pauseDrawn.Node is { } mirrored && IsInstanceValid(mirrored))
@@ -5594,42 +5263,25 @@ public partial class GameUi : Node, IGameTitleUi
 
 				if (onRoot)
 				{
-					// THE WHOLE SAMPLE, not three of its six channels. Dropping the draw
-						// bit, the opacity and the slides left the pause book with no page
-						// fold at all — every page of the stack drawn at once, every ghosted
-						// row at full strength — which is the identical defect the world map
-						// had before the slide pass landed. Every other owned book passes six.
-						// THE READOUTS ARE OURS, not the mirror's — see Engine_UiPausePage.
-						// Renown, the purse, the four orbs and the clock were the last
-						// guest-fed numbers on this page, correct only for as long as the
-						// guest kept writing them.
-						Engine_UiPauseMinimap.Statements minimap = Engine_UiPauseMinimap.State(
-							_pauseBook.AuthoredPosition(Engine_UiPauseMinimap.MapImagePath),
-							_pauseBook.Book?.Strings);
-						_pauseBook.HostValues = Engine_UiMinimapPage.Merge(
-							Engine_UiPausePage.Values(HostBridge.GetHeroVitals(), _pauseBook.Book?.Strings),
-							minimap.Values);
-						_pauseBook.HostTextures = minimap.Textures;
-						_pauseBook.HostPositions = minimap.Positions;
-						_pauseBook.HostRotations = minimap.Rotations;
-						_pauseBook.HostActive = minimap.Active;
+					// THE PAGE IS THE GUEST'S STATEMENTS — the readouts, the quest lines, the legend,
+					// the map image and its turn, every show and hide. The hero's and dog's tokens
+					// and the projection of the guest's quest markers are Engine_UiPauseMinimap's.
+					Engine_UiPauseMinimap.Statements minimap = Engine_UiPauseMinimap.State(
+						_pauseBook.AuthoredPosition(Engine_UiPauseMinimap.MapImagePath),
+						HostBridge.GetMapMarkers());
+					_pauseBook.HostValues = null;
+					_pauseBook.HostTextures = null;
+					_pauseBook.HostPositions = minimap.Positions;
+					_pauseBook.HostRotations = minimap.Rotations;
+					_pauseBook.HostActive = minimap.Active;
 
-						// The guest's slide statements reach the book by this address — the root's
-						// `Static` among them (`sub_826A23F8`, `sub_82426CA8(root, 3)`).
-						_pauseBook.PresentationAddress = _pauseAddress;
-						if (_pauseBook.Template is { RestFromFile: true })
-						{
-							_pauseBook.KeepSample(pauseDrawn.Textures, pauseDrawn.LastTransform,
-								pauseDrawn.Visible, pauseDrawn.Opacity, pauseDrawn.Slides);
-							_pauseBook.SetRest();
-						}
-						else
-						{
-							_pauseBook.SetLive(
-								pauseDrawn.Texts, pauseDrawn.Textures, pauseDrawn.LastTransform,
-								pauseDrawn.Visible, pauseDrawn.Opacity, pauseDrawn.Slides);
-						}
-					_pauseBook.SetMarkers(HostBridge.GetMapMarkers());
+					// The guest's slide statements reach the book by this address — the root's
+					// `Static` among them (`sub_826A23F8`, `sub_82426CA8(root, 3)`). The book
+					// stands on its file and those statements.
+					_pauseBook.PresentationAddress = _pauseAddress;
+					_pauseBook.SetRest();
+					_pauseBook.SetMarkers(minimap.Markers, Engine_UiPauseMinimap.MiniMapPath,
+						Engine_UiPauseMinimap.MarkerDepth);
 				}
 			}
 		}
@@ -5843,7 +5495,7 @@ public partial class GameUi : Node, IGameTitleUi
 		}
 
 		_worldIconState = state;
-		GD.Print($"[game-ui] world icons: channel {(icons.Enabled ? "ENABLED" : "DISABLED — the guest's HUD never bound registry 7")}, " +
+		GD.Print($"[game-ui] world icons: channel {(icons.Enabled ? "ENABLED" : "DISABLED — the HUD load found no 16 children under its 'WorldIcons' slot (sub_828254D8)")}, " +
 			$"income icons {(icons.IncomeIcons ? "on" : "OFF — ShowIncomeIcon is clear, so a payout is never labelled income")}, " +
 			$"{icons.Queued} queued, {icons.Showing} LIT on the guest's own elements" +
 			(icons.Queued > 0
@@ -7194,13 +6846,8 @@ public partial class GameUi : Node, IGameTitleUi
 			PointerCoop();
 			ui_processBody(delta);
 
-			// What no screen took becomes the pad's: right click is always B and a wheel notch a
-			// D-pad step. A left click acts only on what it lands on — a click on nothing is
-			// nothing, never an A for whatever happens to be highlighted.
-			GameInput.QueuePointerButtons(
-				Engine_UiPointer.Free && Engine_UiPointer.RightPressed,
-				Engine_UiPointer.Free ? Engine_UiPointer.WheelSteps : 0);
-			Engine_UiPointer.EndFrame();
+			// What no screen took becomes the pad's (right click B, wheel D-pad steps).
+			Engine_UiPointer.HandLeftoversToPad();
 		}
 	}
 
@@ -7813,6 +7460,7 @@ public partial class GameUi : Node, IGameTitleUi
 		// that would otherwise have inferred it. Drained even when nothing routes yet: the
 		// report is what turns the plan's static census into a measured one.
 		EnsureGuiNativeRoutes();
+		EnsureHudRegistryRoutes();
 
 		// On the guest's frame: what reads guest state below reads what the guest wrote on its
 		// last HF tick, and between two the read is identical. Input pumps, per-frame animation
@@ -7942,6 +7590,14 @@ public partial class GameUi : Node, IGameTitleUi
 		_surfaces.Message.StatedDisplayBox = _boxes.GuestMessageBox;
 		Fable2Input.DisplayMessageBoxUp = _boxes.GuestMessageBox != 0u;
 
+		// A stated display box freed with no Close seen would stand its surface, masking the pad,
+		// over nothing: each stated address is re-checked against its class and open byte.
+		if (guestFrame && Engine_UiDisplayBoxes.Open.Count != 0 &&
+			Engine_UiDisplayBoxes.Sweep(ProbeDisplayBox) is var lost && lost != 0)
+		{
+			GD.Print($"[game-ui] {lost} stated display box(es) no longer open boxes of their class — dropped");
+		}
+
 		// Change-keyed, so it is one line per box rather than one per frame — and it is the only
 		// place the owned box state is visible at all.
 		if (_boxes.Generation != _boxesReported)
@@ -7996,7 +7652,6 @@ public partial class GameUi : Node, IGameTitleUi
 		// at the point of use — a modal raised while the player held a direction would leave the
 		// guest scrolling for ever, because its latch has no timeout. Asserting is immediate;
 		// only the release waits for a pass in which nobody asked for a direction.
-		PumpScreenStick();
 
 		// THE OWNED SURFACES FIRST, and independent of the pause menu — the guest raises them
 		// over ANY screen and one that is pending owns the frame outright. Their order is the
@@ -8082,10 +7737,15 @@ public partial class GameUi : Node, IGameTitleUi
 		// WHETHER B IS OURS THIS FRAME — see Fable2Input.FrontEndSwallowsBack. Computed before
 		// the guard so it is cleared the moment the front end is not the thing on screen.
 		// `_newGameCommitPending`: the guest is at the root with the rows down and the New Game
-		// post queued; its B would leave for the title under the commit.
+		// post queued; its B would leave for the title under the commit. A list book (Multiplayer,
+		// Active Mods) or the host page book answers B itself by closing: the guest sits at its
+		// root under it with the rows hidden, so its B (0x826dfb88) would answer "at root" and
+		// leave for the title.
+		StateFrontEndFold(_menu is not null && _menuView is { Visible: true } && IsRevealed);
 		Fable2Input.FrontEndSwallowsBack =
 			_menu is not null && _menuView is not null && IsRevealed &&
 			(_warningView is { Visible: true } || _cardView is { Visible: true } || _newGameCommitPending ||
+			OpenListBook is not null || _hostPageBook.IsOpen ||
 			(_menuView.Visible && (_menuView.Menu?.CanCollapse == true || _menuView.OpenedDepth > 0)));
 
 		// AND WHAT IT IS SHOWING, for the unattended driver — see Fable2Input.FrontEndDrive. The
@@ -8526,52 +8186,37 @@ public partial class GameUi : Node, IGameTitleUi
 	}
 
 	/// <summary>
-	/// Each save card's portrait, in card order, as the guest currently has it.
-	///
-	/// THREE STEPS, and each is a place this can honestly come back empty. The guest publishes
-	/// a texture HASH per element; `Engine_TextureNameTable` inverts it to a path; the texture
-	/// cache loads that path. A card whose quest has no screenshot, a hash the table does not
-	/// know, or a texture the banks do not carry all end with a null — and a null keeps the
-	/// artist's placeholder, which is the right picture for "no screenshot" and an honest one
-	/// for the other two.
-	///
-	/// Read from the LIVE front-end presentation by ordinal, so the join is the same one slides
-	/// and text use. It declines wholesale if the guest's element count disagrees with ours.
+	/// Each save card's portrait, in card order, as the guest TOLD it: the Load Game path stamps
+	/// the blank on every card (0x826e06cc) and each save's screenshot (`sub_826E1408`
+	/// 0x826e14b0), stated as texture statements to the front end's presentation
+	/// (gui_headless_presentation.cpp, RefiiHeadlessStampTexture). The six `screenshot` elements
+	/// of `frontendmainmenu` are the cards' — the file's only six — in walk order, which is card
+	/// order. A card told nothing, a hash the name table does not know or a texture the banks do
+	/// not carry keeps the artist's placeholder (null).
 	/// </summary>
 	private System.Collections.Generic.List<Texture2D?> ReadCardPortraits()
 	{
 		var portraits = new System.Collections.Generic.List<Texture2D?>();
-
-		if (_presentation?.TextureNames is not { } names ||
-			HostBridge.GetUiElements() is not { } elements || elements.Count == 0)
+		uint presentation = HostBridge.FrontEndPresentation();
+		if (_presentation?.TextureNames is not { } names || presentation == 0 ||
+			_presentation.DocumentFor(Engine_UiFrontEndScreens.PresentationFor(
+				Engine_UiModel.FrontEndScreen.MainMenu) ?? string.Empty) is not { } screen)
 		{
 			return portraits;
 		}
 
-		if (HostBridge.GetUiTextureHashes(0u, elements.Count)
-			is not { } hashes)
+		var told = new System.Collections.Generic.Dictionary<int, uint>();
+		foreach ((int ordinal, uint hash) in Engine_UiSlideStatements.TexturesSince(
+			presentation, screen.Nodes[0].Element.NameHash, 0))
 		{
-			return portraits;
+			told[ordinal] = hash;
 		}
 
-		// THE SIX PORTRAIT ELEMENTS, FOUND BY NAME HASH IN WALK ORDER.
-		//
-		// `frontendmainmenu` carries exactly six elements named `screenshot` and all six are the
-		// load cards' — checked against the file rather than assumed, because matching a leaf
-		// name is only safe when the name is unique to the thing being matched. Walk order is
-		// card order; the caller maps saves onto cards by the guest's base slot.
-		uint screenshot = Engine_GameHash.Sdbm(Engine_FrontEndSaveCards.PortraitName);
-
-		for (int i = 0; i < elements.Count && portraits.Count < Engine_FrontEndSaveCards.MaxCards; ++i)
+		foreach (int ordinal in Engine_FrontEndSaveCards.PortraitOrdinals(screen))
 		{
-			if (elements[i].NameHash != screenshot)
-			{
-				continue;
-			}
-
 			Texture2D? texture = null;
-			if (i < hashes.Length && hashes[i] != 0 &&
-				names.TryResolve(hashes[i], out string path))
+			if (told.TryGetValue(ordinal, out uint hash) && hash != 0 &&
+				names.TryResolve(hash, out string path))
 			{
 				texture = _presentation.LoadTexture(path);
 			}
@@ -8965,7 +8610,6 @@ public partial class GameUi : Node, IGameTitleUi
 	/// </summary>
 	private void DriveOpenedModMenu(Engine_FrontEndMenuView view, string rootMenu, double delta)
 	{
-		HoldScreenStick(0);
 		view.Navigate(Fable2Input.MenuDirection, delta);
 		bool clicked = PointerList(view);
 		ReportMenuView(view);
@@ -9168,8 +8812,6 @@ public partial class GameUi : Node, IGameTitleUi
 	}
 
 	private string? _showing;
-	private int[]? _showingSlides;
-	private bool[]? _showingVisible;
 
 	/// <summary>
 	/// Reports which presentations the guest has live, whenever that set CHANGES.
@@ -9203,6 +8845,7 @@ public partial class GameUi : Node, IGameTitleUi
 
 		System.Collections.Generic.List<Engine_UiModel.Presentation> live =
 			HostBridge.GetPresentations();
+		AddStatedScreens(live);
 
 		// A presentation the registry has dropped takes its menu rows with it. The menu model is
 		// keyed by address and the guest reuses addresses, so a screen rebuilt where its last
@@ -9436,7 +9079,8 @@ public partial class GameUi : Node, IGameTitleUi
 				}
 			}
 
-			if (drawn.ElementCount == 0)
+			// A stated presentation has no tree to read transforms from: its book plays its own.
+			if (drawn.ElementCount == 0 || drawn.Stated)
 			{
 				continue;
 			}
@@ -9773,7 +9417,15 @@ public partial class GameUi : Node, IGameTitleUi
 		// than keep reasoning about why a string comparison did not hold, the comparison is
 		// gone: the flash is driven wherever the current screen actually has one, and a screen
 		// without it says so.
-		string current = _showing ?? Screen;
+		// NO FRONT END, NO FLASH. LeaveFrontEnd clears `_showing`; the export's starting screen is
+		// not the current one. Forgetting the screen here lets the title made again after Quit to
+		// Title — a new presentation, whose scene starts over — run its flash from the start.
+		if (_showing is not { } current)
+		{
+			_titleScreen = null;
+			return;
+		}
+
 		if (current != _titleScreen)
 		{
 			_titleScreen = current;
@@ -10708,25 +10360,38 @@ public partial class GameUi : Node, IGameTitleUi
 	}
 
 	/// <summary>
-	/// The HUD's stated texture per element, into ONE array sized to the element count and
-	/// refilled in place: the world icons read it during their sample and the HUD view holds
-	/// it as the newest sample, which is what a fresh array per cadence gave them too.
+	/// The textures told to the HUD's elements (Engine_UiHudStand.Textures: every texture writer's
+	/// argument — GuiElement_SetTexture by name, the wheel, d-pad, spell and charge icons, the
+	/// image registry) under a mod's icon overrides, into ONE array refilled in place.
 	/// </summary>
-	private uint[]? SampleHudTextures(int elementCount)
+	private uint[]? HudTextures(Engine_UiHudStand stand)
 	{
-		System.ReadOnlySpan<uint> read = HostBridge.ReadUiTextureHashes(_hudAddress, elementCount);
-		if (read.Length != elementCount)
+		if (_hudTextures is null || _hudTextures.Length != stand.Count)
 		{
-			return null;
+			_hudTextures = new uint[stand.Count];
 		}
 
-		if (_hudTextures is null || _hudTextures.Length != elementCount)
+		System.Array.Copy(stand.Textures, _hudTextures, stand.Count);
+
+		// AND THE IMAGE REGISTRY'S NAMES (`ImageName`, registry 12): an element the guest gave no
+		// texture of its own wears the texture its name was last given — the spell charges'
+		// icons (`sub_825E9EA0`), stated as the call names them (`@Gui.Image`).
+		if (_hud?.Bindings is { } bindings)
 		{
-			_hudTextures = new uint[elementCount];
+			foreach (Engine_UiBindings.Binding binding in bindings.All)
+			{
+				if (binding.Kind == Engine_UiBindings.Kind.Image &&
+					binding.ElementOrdinal >= 0 && binding.ElementOrdinal < _hudTextures.Length &&
+					_hudTextures[binding.ElementOrdinal] == 0u &&
+					_hud.Values.RegistryImage(binding.NameHash) is { } image)
+				{
+					_hudTextures[binding.ElementOrdinal] = image;
+				}
+			}
 		}
 
-		read.CopyTo(_hudTextures);
 		ApplyHudIconOverrides(_hudTextures, HudLocalPlayer);
+		_hudTexturesGeneration = stand.Generation;
 		return _hudTextures;
 	}
 
@@ -10842,7 +10507,6 @@ public partial class GameUi : Node, IGameTitleUi
 			_screenMenuView?.QueueFree();
 			_screenMenuView = null;
 			_screenMenuScreen = uint.MaxValue;
-			HoldScreenStick(0);
 			Fable2Input.ScreenMenuOwnsInput = false;
 		}
 
@@ -10983,6 +10647,32 @@ public partial class GameUi : Node, IGameTitleUi
 	/// through a second renderer. What the HUD needed was not drawing but FINDING: a walk that
 	/// does not go through a field only the front-end GUI object has.
 	/// </summary>
+	/// <summary>
+	/// Whether the guest holds a box surface's presentation hidden: it has one live and none of
+	/// them showing. No presentation at all says nothing — the box stands on its Open alone.
+	/// </summary>
+	private static bool HiddenByGuest(System.Collections.Generic.List<Engine_UiModel.Presentation> live,
+		Engine_UiStatedSurface surface)
+	{
+		bool any = false;
+		foreach (Engine_UiModel.Presentation p in live)
+		{
+			if (!surface.Matches(p))
+			{
+				continue;
+			}
+
+			if (p.IsShowing)
+			{
+				return false;
+			}
+
+			any = true;
+		}
+
+		return any;
+	}
+
 	private void FollowInGameUi(System.Collections.Generic.List<Engine_UiModel.Presentation> live)
 	{
 		if (_presentation is null)
@@ -10999,8 +10689,13 @@ public partial class GameUi : Node, IGameTitleUi
 		// makes before walking the tree at all — so following that needs no host-side list and
 		// covers all thirty in-game screens for free.
 		var wanted = new System.Collections.Generic.List<Engine_UiModel.Presentation>();
-		bool intermissionSeen = false;
-		bool displayBoxSeen = false;
+
+		// THE DISPLAY-ONLY PANELS stand on their boxes' own Open and Close (`@DisplayBox.Open` /
+		// `.Close`), not on a presentation: theirs are headless and never mirrored.
+		bool intermissionSeen = _surfaces.Intermission.Stand(_presentation,
+			HiddenByGuest(live, _surfaces.Intermission));
+		bool displayBoxSeen = _surfaces.DisplayBox.Stand(_presentation,
+			HiddenByGuest(live, _surfaces.DisplayBox));
 
 		// OWNING A PANEL IS NOT THE SAME AS THERE BEING NO PANEL. `wanted` is the MIRROR set,
 		// and an owned surface is deliberately kept out of it — but `HasInGameUi` is read by
@@ -11032,23 +10727,9 @@ public partial class GameUi : Node, IGameTitleUi
 				continue;
 			}
 
-			// THE DISPLAY-ONLY PANELS, owned at this sampling cadence — they take no input,
-			// so the mirror's rhythm is all they ever had.
-			if (_surfaces.Intermission.Matches(p))
+			if (_surfaces.Intermission.Matches(p) || _surfaces.DisplayBox.Matches(p))
 			{
-				intermissionSeen = _surfaces.Intermission.Sample(_presentation, p.Address);
-				if (intermissionSeen)
-				{
-					continue;
-				}
-			}
-			else if (_surfaces.DisplayBox.Matches(p))
-			{
-				displayBoxSeen = _surfaces.DisplayBox.Sample(_presentation, p.Address);
-				if (displayBoxSeen)
-				{
-					continue;
-				}
+				continue;
 			}
 
 			// A SCREEN CONTRIBUTING NO ELEMENTS IS NOT ON SCREEN, and the guest counts them
@@ -11077,6 +10758,19 @@ public partial class GameUi : Node, IGameTitleUi
 			// principle and never fired: the screen manager's slot pointers did not match the
 			// addresses the presentation registry reports, so the test could not match. The
 			// element count needs no pointer identity at all.
+			// A HEADLESS presentation shows by what states it: the screen manager's current screen
+			// (AddStatedScreens), or — the HUD and the banner — by being made at all; its element
+			// count is not a file's.
+			if (p.IsHeadless && !_statedOnly.Contains(p.Address))
+			{
+				if (p.Is(HudPresentation + ".bgf") || p.Is(CyclerPresentation + ".bgf"))
+				{
+					wanted.Add(p);
+				}
+
+				continue;
+			}
+
 			if (p.ActiveElements == 0)
 			{
 				if (_suppressed.Add(p.Address))
@@ -11182,6 +10876,248 @@ public partial class GameUi : Node, IGameTitleUi
 	}
 
 	/// <summary>
+	/// The owned list of one presentation: made on first sight, rebuilt from the stated g_Menu
+	/// model and the population template, the guest's sample joined in only where a sample
+	/// exists (null for a headless presentation, which has none).
+	/// </summary>
+	private void FollowList(uint address, string name, Engine_UiScreen? screen, string?[]? texts,
+		bool[]? visible, int[]? slides, float?[]?[]? transform)
+	{
+		// THE OWNED LIST'S CONTENTS, re-read wherever the guest's live text is already in
+		// hand. These screens repopulate with no event that says so — equipping, buying, a
+		// page turn — and the model's own comparison is what turns that into a refresh. The
+		// CURSOR is not read here: it moves far more often than this samples, and
+		// Engine_UiScreenMenu.Track follows it per frame off the live transform.
+		if (screen is not null && Engine_ExpandableMenuItems.FindGroup(screen) is not null)
+		{
+			if (!_screenLists.TryGetValue(address, out Engine_UiScreenMenu? list))
+			{
+				list = new Engine_UiScreenMenu();
+				_screenLists[address] = list;
+			}
+
+			// THE STRING TABLE, because a FOLDED row has no pool button and therefore no
+			// resolved label — all the tree carries for it is a Babel tag. Set every sample
+			// rather than once: the database arrives with the presentation host, which may not
+			// exist yet the first time a list is built.
+			if (list.Strings is null)
+			{
+				list.Strings = _presentation?.Strings;
+			}
+
+			// The same two inputs for the DATA-AREA source, which needs the string book to name
+			// an item and `globals.gdb` to find its tag. Read once and kept: the GDB is 3 MB and
+			// its parse is shared, but re-resolving it per sample would still walk the banks.
+			if (Engine_UiInventorySource.Strings is null || Engine_UiInventorySource.Strings != _presentation?.Strings)
+			{
+				Engine_UiInventorySource.Strings = _presentation?.Strings;
+			}
+
+			if (Engine_UiInventorySource.Globals is null &&
+				Refii.Gdb.Engine_GameGdb.Database is { } gameGdb)
+			{
+				// The SHARED database, not a second parse: `Engine_GameGdb` already holds
+				// `globals.gdb` and its supplements behind one resolver.
+				Engine_UiInventorySource.Globals = gameGdb;
+				GD.Print("[screen-menu] the inventory source has the game GDB — item rows can " +
+					"be read from the data areas now");
+			}
+
+			// THE C++'s OWN STATEMENTS, WHICH WIN WHERE THEY EXIST. `Engine_UiMenuModel` holds
+			// what the Gameface Lua would have held, built from the 28 `g_Menu:` mutations the
+			// game makes; where it carries rows for this presentation the list is built from
+			// them and the UI VM is not read. Set every sample rather than once, for the same
+			// reason the string table is: a list can be built before the first statement lands.
+			list.Model = _menuModel;
+
+			// WHICH SCREEN THIS LIST IS, from the manager's own presentation-to-id map — the
+			// only way a widget that names no population script can find its template. The gift
+			// family is the case: see `Engine_UiScreenTemplate.MenuScript`.
+			// THE UP SCREEN STANDS IN until the manager's map names this presentation. The
+			// map registers an entry a sample or two after the presentation is first drawn,
+			// and a list built in that gap at id 0 comes from the g_Menu model; when the id
+			// then lands the template wins and the rebuild drops the host's fold and cursor —
+			// the weapons book snapped shut the moment the preview model loaded. The guest
+			// keeps one in-game screen up at a time, so the screen that is up IS this list's,
+			// except for the pause presentation, whose own list is the root's.
+			list.ScreenId =
+				_screenOwners is { } owners &&
+				owners.TryGetValue(address, out int owning)
+					? (uint)owning
+					: !string.Equals(name, PausePresentation, System.StringComparison.OrdinalIgnoreCase)
+						? UpScreenId()
+						: 0u;
+
+			bool rebuilt;
+			using (Refii.Core.Engine_FramePhases.Measure("ui.list.rebuild"))
+			{
+				rebuilt = list.Rebuild(address, screen, texts, visible, slides, transform);
+			}
+
+			if (rebuilt && ReferenceEquals(list, _screenMenu))
+			{
+				_screenMenuView?.Refresh();
+			}
+
+			// THE PAUSE ROOT'S LABELS, from the guest's own buttons. Its list is ours — the
+			// guest keeps no C++ item list — but the STRING in each row is the guest's, and it
+			// carries what a tag cannot: the unspent-ability count and the new-item marker,
+			// both appended at spawn time. Read here because this is where the live text is
+			// already joined to the file, and re-read on every sample because the decorations
+			// change as the player picks things up.
+			if (name == PausePresentation && _pauseMenu is not null)
+			{
+				// NAMED FIRST, so the label join and the sub-tab source read the same capture.
+				Engine_UiMenuSources.StatedPresentation = address;
+
+				bool moved = Engine_PauseMenu.ApplyStatedLabels(_pauseMenu, _menuModel.For(address).Rows);
+
+				// AND THE SUB-TABS, from the same capture the in-game lists join against.
+				//
+				// The template authors the SHAPE — which tabs exist, what each dispatches — and
+				// the capture supplies the CONTENTS under each. It has to run here rather than at
+				// Build: the menu is built when the screen is adopted and the capture fills in
+				// afterwards, so building once would freeze whatever the capture held at
+				// adoption, which is usually nothing. That is the whole reason the pause tabs
+				// had no sub-tabs while the in-game screens did — not a missing mechanism, a
+				// mechanism that only ever ran too early.
+				int before = CountRows(_pauseMenu);
+
+				// WHOSE LUA THE SOURCE READS, named once for the whole pass. The pause tabs'
+				// children are stated in this presentation's own `g_Menu` tree — folded and
+				// unfolded alike — and the spawn capture is only the fallback behind it. The
+				// set also invalidates the cached read, so one sample is one walk however many
+				// tabs ask — it was named above, before the labels joined against it.
+				if (Engine_UiTemplates.Menu("pause-root") is { } record &&
+					record.RefreshSources(_pauseMenu))
+				{
+					moved = true;
+					GD.Print($"[game-ui] pause sub-tabs re-sourced — {before} row(s) before, " +
+						$"{CountRows(_pauseMenu)} after");
+				}
+
+				if (moved)
+				{
+					_pauseView?.Refresh();
+					ReportMenuView(_pauseView);
+				}
+			}
+		}
+
+	}
+
+	/// <summary>
+	/// The screens the guest's screen manager STATES are up that the registry cannot list: a
+	/// headless presentation (gui_headless_presentation.cpp) is in no kernel list. The manager's
+	/// slot for the current screen id (`mgr+12+4*id`, the shared slot `+156`) and the display
+	/// box's screen name the presentation; its file is the screen's template's. Each joins the
+	/// live set as showing and contributing, so every in-game screen stands by its stated id.
+	/// </summary>
+	private void AddStatedScreens(System.Collections.Generic.List<Engine_UiModel.Presentation> live)
+	{
+		_statedOnly.Clear();
+		if (HostBridge.FrontEndGuiIsUp || HostBridge.GetInGameScreens() is not { } screens)
+		{
+			return;
+		}
+
+		uint current = (uint)screens.Current;
+		uint box = Engine_UiSource.Current.DisplayBoxScreen();
+		foreach (uint stated in new[] { current, box })
+		{
+			if (stated is (uint)Engine_UiModel.InGameScreen.None or uint.MaxValue ||
+				Engine_UiStatedScreens.Presentation(screens.Owned, stated) is not (uint address, string file))
+			{
+				continue;
+			}
+
+			// The stated screen stands as showing whatever the registry says of a headless
+			// presentation — its root and element count are not a file's.
+			int listed = live.FindIndex(p => p.Address == address);
+			if (listed >= 0 && !live[listed].IsHeadless)
+			{
+				continue;
+			}
+
+			if (listed >= 0)
+			{
+				live.RemoveAt(listed);
+			}
+
+			live.Add(Engine_UiStatedScreens.Entry(address, file));
+			_statedOnly.Add(address);
+		}
+	}
+
+	/// <summary>The addresses <see cref="AddStatedScreens"/> added this sample.</summary>
+	private readonly System.Collections.Generic.HashSet<uint> _statedOnly = new();
+
+	/// <summary>
+	/// Stands a stated screen with no sample: an unmirrored stand-in at its depth (the pause root
+	/// adopts its owned menu on it), the file's document for the joins, every element drawn as far
+	/// as the sample is concerned — the book's own stand decides — and the owned list rebuilt
+	/// from the stated g_Menu model and the template.
+	/// </summary>
+	private void FollowStated(uint address, string name, int depth)
+	{
+		if (_presentation is null)
+		{
+			return;
+		}
+
+		if (_drawn.TryGetValue(address, out Engine_UiDrawnPresentation? drawn) &&
+			!string.Equals(drawn.Name, name, System.StringComparison.OrdinalIgnoreCase))
+		{
+			Retire(address, "the screen manager states another presentation at this address");
+			drawn = null;
+		}
+
+		bool made = false;
+		if (drawn is null)
+		{
+			if (_presentation.DocumentFor(name) is not { } screen)
+			{
+				if (_unmirrored.Add("stated:" + name))
+				{
+					GD.PushWarning($"[game-ui] the screen manager states '{name}', which is not among the shipped presentations");
+				}
+
+				return;
+			}
+
+			int n = screen.Nodes.Length;
+			var visible = new bool[n];
+			System.Array.Fill(visible, true);
+			var built = new Node3D { Name = $"Stated_{name}", Visible = false };
+			_presentation.AddChild(built);
+			drawn = new Engine_UiDrawnPresentation
+			{
+				Name = name,
+				Node = built,
+				Mirrored = false,
+				Stated = true,
+				Slides = new int[n],
+				Visible = visible,
+				ElementCount = n,
+				Screen = screen,
+			};
+			_drawn[address] = drawn;
+			made = true;
+			GD.Print($"[game-ui] '{name}' stands by its STATED screen at 0x{address:X8} — " +
+				$"{n} file element(s), no guest sample");
+		}
+
+		drawn.Node.Position = new Vector3(0f, 0f, depth * Engine_UiPresentationDepth.Step);
+
+		if (made && name == PausePresentation)
+		{
+			AdoptPauseMenu(drawn.Node, address);
+		}
+
+		FollowList(address, name, drawn.Screen, null, null, null, null);
+	}
+
+	/// <summary>
 	/// The bank entry name for a live presentation — the guest's string is a full guest path,
 	/// e.g. <c>GAME:\data\art\gui\gameface\hud.bgf</c>, with backslashes that mean nothing here.
 	///
@@ -11223,6 +11159,13 @@ public partial class GameUi : Node, IGameTitleUi
 		if (string.Equals(name, CyclerPresentation, System.StringComparison.OrdinalIgnoreCase))
 		{
 			_cyclerAddress = presentation.Address;
+			return;
+		}
+
+		// A STATED SCREEN has no sample to take: it stands on its file and the statements.
+		if (_statedOnly.Contains(presentation.Address) || presentation.IsHeadless)
+		{
+			FollowStated(presentation.Address, name, depth);
 			return;
 		}
 
@@ -11581,128 +11524,7 @@ public partial class GameUi : Node, IGameTitleUi
 			sampled.Texts = texts;
 		}
 
-		// THE OWNED LIST'S CONTENTS, re-read wherever the guest's live text is already in
-		// hand. These screens repopulate with no event that says so — equipping, buying, a
-		// page turn — and the model's own comparison is what turns that into a refresh. The
-		// CURSOR is not read here: it moves far more often than this samples, and
-		// Engine_UiScreenMenu.Track follows it per frame off the live transform.
-		if (screen is not null && Engine_ExpandableMenuItems.FindGroup(screen) is not null)
-		{
-			if (!_screenLists.TryGetValue(presentation.Address, out Engine_UiScreenMenu? list))
-			{
-				list = new Engine_UiScreenMenu();
-				_screenLists[presentation.Address] = list;
-			}
-
-			// THE STRING TABLE, because a FOLDED row has no pool button and therefore no
-			// resolved label — all the tree carries for it is a Babel tag. Set every sample
-			// rather than once: the database arrives with the presentation host, which may not
-			// exist yet the first time a list is built.
-			if (list.Strings is null)
-			{
-				list.Strings = _presentation?.Strings;
-			}
-
-			// The same two inputs for the DATA-AREA source, which needs the string book to name
-			// an item and `globals.gdb` to find its tag. Read once and kept: the GDB is 3 MB and
-			// its parse is shared, but re-resolving it per sample would still walk the banks.
-			if (Engine_UiInventorySource.Strings is null || Engine_UiInventorySource.Strings != _presentation?.Strings)
-			{
-				Engine_UiInventorySource.Strings = _presentation?.Strings;
-			}
-
-			if (Engine_UiInventorySource.Globals is null &&
-				Refii.Gdb.Engine_GameGdb.Database is { } gameGdb)
-			{
-				// The SHARED database, not a second parse: `Engine_GameGdb` already holds
-				// `globals.gdb` and its supplements behind one resolver.
-				Engine_UiInventorySource.Globals = gameGdb;
-				GD.Print("[screen-menu] the inventory source has the game GDB — item rows can " +
-					"be read from the data areas now");
-			}
-
-			// THE C++'s OWN STATEMENTS, WHICH WIN WHERE THEY EXIST. `Engine_UiMenuModel` holds
-			// what the Gameface Lua would have held, built from the 28 `g_Menu:` mutations the
-			// game makes; where it carries rows for this presentation the list is built from
-			// them and the UI VM is not read. Set every sample rather than once, for the same
-			// reason the string table is: a list can be built before the first statement lands.
-			list.Model = _menuModel;
-
-			// WHICH SCREEN THIS LIST IS, from the manager's own presentation-to-id map — the
-			// only way a widget that names no population script can find its template. The gift
-			// family is the case: see `Engine_UiScreenTemplate.MenuScript`.
-			// THE UP SCREEN STANDS IN until the manager's map names this presentation. The
-			// map registers an entry a sample or two after the presentation is first drawn,
-			// and a list built in that gap at id 0 comes from the g_Menu model; when the id
-			// then lands the template wins and the rebuild drops the host's fold and cursor —
-			// the weapons book snapped shut the moment the preview model loaded. The guest
-			// keeps one in-game screen up at a time, so the screen that is up IS this list's,
-			// except for the pause presentation, whose own list is the root's.
-			list.ScreenId =
-				_screenOwners is { } owners &&
-				owners.TryGetValue(presentation.Address, out int owning)
-					? (uint)owning
-					: !string.Equals(name, PausePresentation, System.StringComparison.OrdinalIgnoreCase)
-						? UpScreenId()
-						: 0u;
-
-			bool rebuilt;
-			using (Refii.Core.Engine_FramePhases.Measure("ui.list.rebuild"))
-			{
-				rebuilt = list.Rebuild(presentation.Address, screen, texts, visible, slides, transform);
-			}
-
-			if (rebuilt && ReferenceEquals(list, _screenMenu))
-			{
-				_screenMenuView?.Refresh();
-			}
-
-			// THE PAUSE ROOT'S LABELS, from the guest's own buttons. Its list is ours — the
-			// guest keeps no C++ item list — but the STRING in each row is the guest's, and it
-			// carries what a tag cannot: the unspent-ability count and the new-item marker,
-			// both appended at spawn time. Read here because this is where the live text is
-			// already joined to the file, and re-read on every sample because the decorations
-			// change as the player picks things up.
-			if (name == PausePresentation && _pauseMenu is not null)
-			{
-				// NAMED FIRST, so the label join and the sub-tab source read the same capture.
-				Engine_UiMenuSources.StatedPresentation = presentation.Address;
-
-				bool moved = Engine_PauseMenu.ApplyStatedLabels(
-					_pauseMenu, Engine_ExpandableMenuItems.Read(screen, texts, visible, slides),
-					_menuModel.For(presentation.Address).Rows);
-
-				// AND THE SUB-TABS, from the same capture the in-game lists join against.
-				//
-				// The template authors the SHAPE — which tabs exist, what each dispatches — and
-				// the capture supplies the CONTENTS under each. It has to run here rather than at
-				// Build: the menu is built when the screen is adopted and the capture fills in
-				// afterwards, so building once would freeze whatever the capture held at
-				// adoption, which is usually nothing. That is the whole reason the pause tabs
-				// had no sub-tabs while the in-game screens did — not a missing mechanism, a
-				// mechanism that only ever ran too early.
-				int before = CountRows(_pauseMenu);
-
-				// WHOSE LUA THE SOURCE READS, named once for the whole pass. The pause tabs'
-				// children are stated in this presentation's own `g_Menu` tree — folded and
-				// unfolded alike — and the spawn capture is only the fallback behind it. The
-				// set also invalidates the cached read, so one sample is one walk however many
-				// tabs ask — it was named above, before the labels joined against it.
-				if (Engine_UiTemplates.Menu("pause-root") is { } record &&
-					record.RefreshSources(_pauseMenu))
-				{
-					moved = true;
-					GD.Print($"[game-ui] pause sub-tabs re-sourced — {before} row(s) before, " +
-						$"{CountRows(_pauseMenu)} after");
-				}
-
-				if (moved)
-				{
-					_pauseView?.Refresh();
-					ReportMenuView(_pauseView);
-				}
-			}
-		}
+		FollowList(presentation.Address, name, screen, texts, visible, slides, transform);
 
 		// Depth by Z rather than by child order: these share one orthographic canvas camera
 		// looking down -Z, so tree order does not decide what covers what.
@@ -12001,9 +11823,12 @@ public partial class GameUi : Node, IGameTitleUi
 		// not worth that.
 		_viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
 
-		// _showing, not Screen: the export is the STARTING presentation and never changes, so
-		// naming it here reports the title screen long after the guest has moved on.
-		GD.Print($"[game-ui] revealed '{_showing ?? Screen}'");
+		// _showing, never Screen: the export is the STARTING presentation and never changes, so
+		// naming it reported the title screen long after the guest had moved on. Null once the
+		// front end has gone.
+		GD.Print(_showing is { } showing
+			? $"[game-ui] revealed '{showing}'"
+			: $"[game-ui] revealed with no front-end screen{(HostBridge.IsInGame ? " (in game)" : string.Empty)}");
 	}
 
 	/// <summary>

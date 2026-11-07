@@ -115,16 +115,47 @@ PPC_EXTERN_FUNC(__imp__rex_luaD_precall);
 // hooks/display_box_hooks.cpp.
 PPC_EXTERN_FUNC(__imp__rex_lhDisplayMessageBox_Dtor);
 PPC_EXTERN_FUNC(__imp__rex_lhDisplayMessageBox_Open);
+PPC_EXTERN_FUNC(__imp__rex_lhIntermissionBox_Open);
+PPC_EXTERN_FUNC(__imp__rex_lhIntermissionBox_Close);
+PPC_EXTERN_FUNC(__imp__rex_lhAcceptBox_Show);
+PPC_EXTERN_FUNC(__imp__rex_lhAcceptBox_Close);
+// The display boxes' class Open (vf1) and Close (vf2) and the menu box's populate and close,
+// stated to the host — hooks/display_box_hooks.cpp.
+PPC_EXTERN_FUNC(__imp__rex_lhQueryBox_Open);
+PPC_EXTERN_FUNC(__imp__rex_lhQueryBox_Close);
+PPC_EXTERN_FUNC(__imp__rex_lhNumericAdjusterBox_Open);
+PPC_EXTERN_FUNC(__imp__rex_lhNumericAdjusterBox_Close);
+PPC_EXTERN_FUNC(__imp__rex_lhQuestInfoBox_Open);
+PPC_EXTERN_FUNC(__imp__rex_lhQuestInfoBox_Close);
+PPC_EXTERN_FUNC(__imp__rex_lhAcceptHoldBox_Open);
+PPC_EXTERN_FUNC(__imp__rex_lhAcceptHoldBox_Close);
+PPC_EXTERN_FUNC(__imp__rex_lhMenuBox_Populate);
+PPC_EXTERN_FUNC(__imp__rex_lhMenuBox_Close);
 PPC_EXTERN_FUNC(__imp__rex_lhGuiManager_OpenModal);
 PPC_EXTERN_FUNC(__imp__rex_lhGuiRegistry_SetToggle);
 PPC_EXTERN_FUNC(__imp__rex_lhGuiRegistry_SetSlide);
 PPC_EXTERN_FUNC(__imp__rex_lhGuiRegistry_JumpSlide);
+// The meter and text writers, stated at their entry — hooks/gui_registry_hooks.cpp.
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRegistry_SetMeter);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRegistry_SeekMeter);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRegistry_RunMeter);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRegistry_ScrubMeter);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiRegistry_SetText);
 // Every explicit slide statement and play/pause on a presentation — hooks/gui_slide_hooks.cpp.
 PPC_EXTERN_FUNC(__imp__rex_lhGfxTimeline_SetPaused);
 PPC_EXTERN_FUNC(__imp__rex_lhGfxElements_EvaluateTracks);
-PPC_EXTERN_FUNC(__imp__rex_lhGuiMenu_GetHighlightedItemData);
 PPC_EXTERN_FUNC(__imp__rex_lhGuiManager_OpenNumericAdjuster);
 PPC_EXTERN_FUNC(__imp__rex_lhDisplayMessageBox_Close);
+// The presentation-event callbacks the host posts — hooks/gui_menu_hooks.cpp.
+PPC_EXTERN_FUNC(__imp__rex_lhGuiFrontEndTitle_OnEndLegal);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiFrontEndTitle_OnEndStarted);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiFrontEndTitle_OnCanPressA);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiFrontEndTitle_OnDialogEvent);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiFrontEndRoot_OnOutroFinished);
+PPC_EXTERN_FUNC(__imp__rex_lhGui_FrontendRoot_HandleGuiEvent);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiFrontEndRoot_OnLoadCardEvent);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiFrontEndRoot_OnDialogEvent);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiHud_OnFinishedTransitioningToGame);
 // hooks/reticule_hooks.cpp.
 PPC_EXTERN_FUNC(__imp__rex_lhGui_Reticule_SetActiveForObject);
 PPC_EXTERN_FUNC(__imp__rex_lhGameInit_CreateGameSystems);
@@ -329,6 +360,12 @@ PPC_EXTERN_FUNC(__imp__rex_lhBinkPlayer_Dtor);
 PPC_EXTERN_FUNC(__imp__rex_lhBinkPlayer_Close);
 PPC_EXTERN_FUNC(rex_stdListDword_InsertWithLengthCheck);
 PPC_EXTERN_FUNC(rex_lhGuiPresentation_GetRootElement);
+// Gameface presentations built headless (Fable2/src/vfs/src/hooks/gui_headless_presentation.cpp).
+PPC_EXTERN_FUNC(__imp__rex_lhGuiPresentation_GetRootElement);
+PPC_EXTERN_FUNC(__imp__rex_CGameface_Update);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiAttributeService_ChildByName);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiAttributeService_CollectChildren);
+PPC_EXTERN_FUNC(__imp__rex_GuiElement_GetAttributeString);
 PPC_EXTERN_FUNC(rex_lhGuiElement_GoToSlideAndRestart);
 PPC_EXTERN_FUNC(rex_lhRenderCommandStream_BeginCommand);
 PPC_EXTERN_FUNC(rex_lhRenderCommandStream_Reserve);

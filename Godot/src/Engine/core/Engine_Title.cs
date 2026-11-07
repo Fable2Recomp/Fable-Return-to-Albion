@@ -118,6 +118,9 @@ public sealed class Engine_Title
 	/// </summary>
 	public bool HashedModelNodes { get; }
 
+	/// <summary>How the title's Gameface text element lays out: box canvas, font buckets, line advance.</summary>
+	public Refii.Ui.Engine_UiTextContract UiText { get; private init; } = Refii.Ui.Engine_UiTextContract.Fable2;
+
 	/// <summary>
 	/// The instance libraries this title ships in <c>bin/&lt;Folder&gt;/</c>. Every title has its
 	/// host bridge; the vfs and Lua runtime are Fable 2's hooks and the code they call.
@@ -148,6 +151,19 @@ public sealed class Engine_Title
 	public string CacheDirectory => System.IO.Path.Combine(Engine_AppRoot.CacheDirectory, Folder);
 
 	/// <summary>
+	/// <c>logs/&lt;Folder&gt;</c>: this title's logs — the guest's segments (<c>&lt;Key&gt;_NNN.log</c>),
+	/// its crash record, the hang watchdog's dumps and the game's Godot log. The launcher's own log
+	/// stays in <c>logs/</c>.
+	/// </summary>
+	public string LogsDirectory => System.IO.Path.Combine(Engine_AppRoot.LogsDirectory, Folder);
+
+	/// <summary>The file pattern of this title's guest log segments in <see cref="LogsDirectory"/>.</summary>
+	public string GuestLogPattern => Key + "_*.log*";
+
+	/// <summary>The game's Godot log in <see cref="LogsDirectory"/>, passed as <c>--log-file</c> at spawn.</summary>
+	public string GodotLogPath => System.IO.Path.Combine(LogsDirectory, "godot.log");
+
+	/// <summary>
 	/// The title's runtime config file, at the app root: <c>&lt;Key&gt;.toml</c>, so <c>refii.toml</c>
 	/// for Fable 2 and <c>refiii.toml</c> for Fable 3. The one file a player edits for that game:
 	/// the launcher's settings for it, the Godot side's switches and the guest's cvars all come
@@ -170,7 +186,10 @@ public sealed class Engine_Title
 	public static readonly Engine_Title Fable3 = new(
 		"refiii", "Fable 3", "Fable 3", 0x4D5308D6, "Fable3", "refiii_generated",
 		"Fable3", string.Empty, hasHardMods: false, ".f3mod", 0xE0474CFFu, hashedModelNodes: true,
-		"refii_hostbridge", "refii_vfs");
+		"refii_hostbridge", "refii_vfs")
+	{
+		UiText = Refii.Ui.Engine_UiTextContract.Fable3,
+	};
 
 	public static IReadOnlyList<Engine_Title> All { get; } = new[] { Fable2, Fable3 };
 

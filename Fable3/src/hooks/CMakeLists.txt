@@ -21,8 +21,27 @@ set(REFIII_HOOK_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/gui_natives.cpp
     # The Gameface elements the guest writes (resolver + state/opacity/text setters), stated by path.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/gui_element_hooks.cpp
-    # The display boxes and the menu box, stated as the box manager shows and drops them.
+    # The UI's values stated at their writers' entry — texts, visibility, the presentation's
+    # document, the interaction mode's panels, buttons and list — for Godot to draw headless.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui_stated_hooks.cpp
+    # Headless Gameface presentations through the shared core (core/headless_presentation.h):
+    # the maker, destroy and per-frame pass, child-by-name and the child walk, the parameter
+    # setter and the chunk runner; Fable 3's Gameface table beside it.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/headless_presentation_hooks.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/headless_table.h
+    # The HUD text boxes' lines and the TopBox queue's post, removal, clear and answer.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/topbox_hooks.cpp
+    # The HUD root, save menu, Options query, HUD widgets and box screens by the values they carry.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/screen_stated_hooks.cpp
+    # The texts a box or HUD widget commits straight to its text box, stated at the commit's guard.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/headless_commit_hooks.cpp
+    # The display boxes, the pause screen's message box and the menu box, stated at their push,
+    # show, drop and close; Godot owns their pad and its answers run their own answer functions.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/display_box_hooks.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/box_answers.h
+    # The options: the appliers' values and the saved settings' read and write, stated to the
+    # table the host bridge's options feed reads; the Options screen's state, its pad Godot's.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/options_hooks.cpp
     # The epilogue and credits screens, stated as the screen manager opens and closes them.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/end_screen_hooks.cpp
     # The system keyboard the guest opens (the rename), answered by the host.
@@ -56,15 +75,32 @@ set(REFIII_HOOK_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/crt_memory.cpp
     # The Limited Collector's Edition licence (IsPackagePremium of the Day One package).
     ${CMAKE_CURRENT_SOURCE_DIR}/src/unlock_hooks.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/preload_hooks.cpp
     # The root file system's Open and Exists: the host mount's override served as a guest memory
     # file (the decision is Fable3/src/vfs's, refiii_vfs). Its C ABI header is listed so the
     # staging ships it, laid out relative to Fable3/src as the hook includes it.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/vfs_hooks.cpp
     ${CMAKE_SOURCE_DIR}/Fable3/src/vfs/include/fable3_vfs.h
-    # The loading screen's quads cut (Godot draws the screen); its state machine runs unchanged.
+    # The loading screen, stated (creates, destroy, art, close, update) for Godot, which draws it,
+    # and its quads cut; its state machine runs unchanged.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/loading_screen_scene.cpp
-    # The aim reticules' setters (ranged aim, spell target), stated as `@Reticule` per player and slot.
+    # The aim reticules' setters (ranged aim, spell target), stated as `@Reticule` per player and
+    # slot and each record, as the setter left it, to the table the host bridge's reticle feed reads.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/reticle_hooks.cpp
+    # The world icons (Init, Update, ring tick, erase, destroy) and the emotion choice records
+    # (add, input, delete), stated to the table the host bridge's icon feed reads.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/world_icon_hooks.cpp
+    # The HUD registries (insert, unfile, destroy, the text and meter value writers) and the
+    # screen fade (start, advance), stated to the table the host bridge's HUD feed reads; the
+    # slide registries' writers, the HUD's enable and reset, and the d-pad's slide and slots,
+    # stated as `@Hud.*`.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/hud_hooks.cpp
+    # The interaction mode's set and close and its info panel id, stated for Godot's interaction
+    # document; the mode, its objects and its pad stay the guest's.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/interaction_hooks.cpp
+    # The game mode stacks (push, pop, run), the GUI screen id's writers and the culture table
+    # (build, rebuild, switch), stated to the table the host bridge's level and options feeds read.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/game_state_hooks.cpp
     # What the UI hooks share (the guest's two string classes, the statement post). Listed with
     # the sources so the staging ships it beside them: the player's build compiles the staged
     # copies, and a header only in the tree is not there.
@@ -88,8 +124,10 @@ target_compile_options(refiii_hooks PRIVATE "-UTRACY_ENABLE" "-UTRACY_MANUAL_LIF
 # Windows build. REFII_NM is found by Fable 2's hooks, configured first.
 if(REFII_CHECK_PAYLOAD_ABI AND REFII_NM)
     set(_refiii_abi_objects "${CMAKE_BINARY_DIR}/payload_abi_objects_refiii_$<CONFIG>.txt")
+    # The shared payload sources (refii_payload_core, the headless core among them) are checked
+    # with the hooks: they compile into the same module on the same terms, as Fable 2's check has them.
     file(GENERATE OUTPUT "${_refiii_abi_objects}"
-         CONTENT "$<JOIN:$<TARGET_OBJECTS:refiii_hooks>,\n>\n")
+         CONTENT "$<JOIN:$<TARGET_OBJECTS:refiii_hooks>,\n>\n$<JOIN:$<TARGET_OBJECTS:refii_payload_core>,\n>\n")
     set(_refiii_abi_stamp "${CMAKE_CURRENT_BINARY_DIR}/payload_abi_checked_$<CONFIG>")
     add_custom_command(
         OUTPUT "${_refiii_abi_stamp}"
@@ -100,7 +138,7 @@ if(REFII_CHECK_PAYLOAD_ABI AND REFII_NM)
             -DUNDNAME=${REFII_UNDNAME}
             -P "${CMAKE_SOURCE_DIR}/cmake/refii_check_payload_abi.cmake"
         COMMAND ${CMAKE_COMMAND} -E touch "${_refiii_abi_stamp}"
-        DEPENDS $<TARGET_OBJECTS:refiii_hooks> "${_refiii_abi_objects}"
+        DEPENDS $<TARGET_OBJECTS:refiii_hooks> $<TARGET_OBJECTS:refii_payload_core> "${_refiii_abi_objects}"
         COMMENT "Checking Fable 3's hooks import no C++ symbol from a host library"
         VERBATIM
     )

@@ -219,6 +219,7 @@ public static partial class Engine_AppRoot
 		         {
 			         BinDirectory, AssetsDirectory, LogsDirectory, SaveDirectory, CacheDirectory,
 			         Engine_Title.Active.AssetsDirectory, Engine_Title.Active.BinDirectory,
+			         Engine_Title.Active.LogsDirectory,
 		         })
 		{
 			try

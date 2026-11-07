@@ -1,7 +1,10 @@
 #include "gui/gui_menu_chunks.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <mutex>
+#include <unordered_map>
 #include <utility>
 
 namespace refii::vfs {
@@ -34,6 +37,169 @@ constexpr std::size_t kMaxPending = 2048u;
 
 /// A bag this large means a chunk ran without consuming; bounded so a leak cannot grow.
 constexpr std::size_t kMaxStaged = 64u;
+
+/// One row a populate spawned: its `String1` name, its `String2` text tag (`CreateMenuItem`'s
+/// `TextTag`, rewritten by the refresh statements) and whether `String4` put it on the root.
+struct SpawnedRow {
+    std::string name;
+    std::string text_tag;
+    bool root = false;
+};
+
+/// `GetMenuItemDataByName`'s `String2` as the shipped script writes it (`expandablemenu.lua`):
+/// the named row's `TextTag`, else "No Text Tag". Kept per presentation for the read that
+/// follows that statement.
+std::unordered_map<uint32_t, std::string>& ByNameTextTags() {
+    static std::unordered_map<uint32_t, std::string> answers;
+    return answers;
+}
+
+constexpr const char kNoTextTag[] = "No Text Tag";
+
+/// THE ROWS EACH PRESENTATION'S CURRENT POPULATE STATED, kept beside the queue so the guest's
+/// own read-back is answered at the runner, in the call, without the Lua. Same boundaries the
+/// host model applies (Engine_UiMenuModel): `DeleteAllSpawnedMenuItems` and
+/// `RepopulateMenuFromPopulationScript` empty it, `SpawnButton` adds or restates a row by name,
+/// `PushMenuState` saves it and starts empty, `PopMenuState` restores it — the shipped
+/// `expandablemenu.lua` keeps `MenuRoot` exactly so (`PushMenuState` / `PopMenuState`).
+struct Populate {
+    std::vector<SpawnedRow> rows;
+    std::vector<SpawnedRow> pushed;
+    bool has_pushed = false;
+    /// The 1-based place in `rows` of the row the last `SpawnButton` named; 0 none since the
+    /// last boundary.
+    uint32_t last = 0;
+    uint32_t pushed_last = 0;
+};
+
+std::unordered_map<uint32_t, Populate>& Populates() {
+    static std::unordered_map<uint32_t, Populate> populates;
+    return populates;
+}
+
+const MenuChunkAttribute* StagedNamed(const std::vector<MenuChunkAttribute>& staged,
+                                      const char* name) {
+    for (const MenuChunkAttribute& attribute : staged) {
+        if (attribute.name == name) {
+            return &attribute;
+        }
+    }
+    return nullptr;
+}
+
+/// Applies one statement to its presentation's populate. Called under the mutex.
+void NotePopulate(const MenuChunkCall& call) {
+    const std::string& chunk = call.chunk;
+    const auto is = [&](const char* method) { return chunk.find(method) != std::string::npos; };
+
+    // A presentation's script state is born here: `sub_823DCC70` (disc `sub_823FE988`) runs this
+    // chunk first on every presentation it initialises (0x823dcca8 / 0x823fe9c0), so its menu
+    // starts empty whatever the address last held.
+    if (is(kPresentationInitChunk)) {
+        Populates().erase(call.presentation);
+        return;
+    }
+
+    if (is("g_Menu:DeleteAllSpawnedMenuItems") || is("g_Menu:RepopulateMenuFromPopulationScript")) {
+        Populate& populate = Populates()[call.presentation];
+        populate.rows.clear();
+        populate.last = 0;
+        return;
+    }
+
+    if (is("g_Menu:PushMenuState")) {
+        Populate& populate = Populates()[call.presentation];
+        populate.pushed.swap(populate.rows);
+        populate.rows.clear();
+        populate.pushed_last = populate.last;
+        populate.last = 0;
+        populate.has_pushed = true;
+        return;
+    }
+
+    if (is("g_Menu:PopMenuState")) {
+        Populate& populate = Populates()[call.presentation];
+        if (populate.has_pushed) {
+            populate.rows.swap(populate.pushed);
+            populate.pushed.clear();
+            populate.last = populate.pushed_last;
+            populate.pushed_last = 0;
+            populate.has_pushed = false;
+        }
+        return;
+    }
+
+    const MenuChunkAttribute* name = StagedNamed(call.staged, "String1");
+    const MenuChunkAttribute* text_tag = StagedNamed(call.staged, "String2");
+    const auto row_named = [&](const std::string& wanted) -> SpawnedRow* {
+        for (SpawnedRow& row : Populates()[call.presentation].rows) {
+            if (row.name == wanted) {
+                return &row;
+            }
+        }
+        return nullptr;
+    };
+
+    // The `TextTag` writers (`expandablemenuspawning.lua`): `RefreshButton`, `RefreshButtonText`
+    // and `RefreshChildsButtonText` on the row `String1` names, `RefreshSelectedButtonText` only
+    // when the highlighted row is that row, and `RenameSelectedButton` renames the highlighted row
+    // to `String1`.
+    if (is("g_Menu:RefreshButton(") || is("g_Menu:RefreshButtonText(") ||
+        is("g_Menu:RefreshChildsButtonText(") || is("g_Menu:RefreshSelectedButtonText(")) {
+        const MenuChunkAttribute* highlighted = StagedNamed(call.staged, kHighlightedAttribute);
+        const bool selected_only = is("g_Menu:RefreshSelectedButtonText(");
+        if (name != nullptr && text_tag != nullptr &&
+            (!selected_only || (highlighted != nullptr && highlighted->text == name->text))) {
+            if (SpawnedRow* row = row_named(name->text)) {
+                row->text_tag = text_tag->text;
+            }
+        }
+        return;
+    }
+
+    if (is("g_Menu:RenameSelectedButton(")) {
+        const MenuChunkAttribute* highlighted = StagedNamed(call.staged, kHighlightedAttribute);
+        if (name != nullptr && highlighted != nullptr) {
+            if (SpawnedRow* row = row_named(highlighted->text)) {
+                row->name = name->text;
+            }
+        }
+        return;
+    }
+
+    // `GetMenuItemDataByName` — the answer its reader takes next (refii_bridge_menu_by_name_text_tag).
+    if (is("g_Menu:GetMenuItemDataByName(")) {
+        const SpawnedRow* row = name != nullptr ? row_named(name->text) : nullptr;
+        ByNameTextTags()[call.presentation] = row != nullptr ? row->text_tag : std::string(kNoTextTag);
+        return;
+    }
+
+    if (!is("g_Menu:SpawnButton")) {
+        return;
+    }
+
+    if (name == nullptr || name->text.empty()) {
+        return;
+    }
+
+    // `SpawnButton` maps `String4 == "Root"` to a nil parent, which `AddChild` hangs on
+    // `MenuRoot`; an unstaged parent is nil too.
+    const MenuChunkAttribute* parent = StagedNamed(call.staged, "String4");
+    const bool root = parent == nullptr || parent->text.empty() || parent->text == "Root";
+
+    Populate& populate = Populates()[call.presentation];
+    std::vector<SpawnedRow>& rows = populate.rows;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        if (rows[i].name == name->text) {
+            rows[i].root = root;
+            rows[i].text_tag = text_tag != nullptr ? text_tag->text : std::string();
+            populate.last = static_cast<uint32_t>(i + 1u);
+            return;
+        }
+    }
+    rows.push_back(SpawnedRow{name->text, text_tag != nullptr ? text_tag->text : std::string(), root});
+    populate.last = static_cast<uint32_t>(rows.size());
+}
 
 }  // namespace
 
@@ -95,7 +261,40 @@ extern "C" void refii_bridge_run_menu_chunk(const char* chunk, size_t length,
         g_dropped.fetch_add(1, std::memory_order_relaxed);
     }
 
+    NotePopulate(call);
     Pending().push_back(std::move(call));
+}
+
+extern "C" uint32_t refii_bridge_menu_root_rows(uint32_t presentation) {
+    std::lock_guard<std::mutex> lock(Mutex());
+    const auto found = Populates().find(presentation);
+    if (found == Populates().end()) {
+        return 0u;
+    }
+    uint32_t count = 0;
+    for (const SpawnedRow& row : found->second.rows) {
+        count += row.root ? 1u : 0u;
+    }
+    return count;
+}
+
+extern "C" bool refii_bridge_menu_by_name_text_tag(uint32_t presentation, char* out, size_t capacity) {
+    std::lock_guard<std::mutex> lock(Mutex());
+    const auto found = ByNameTextTags().find(presentation);
+    if (found == ByNameTextTags().end() || out == nullptr || capacity == 0u) {
+        return false;
+    }
+    const std::size_t length = std::min(found->second.size(), capacity - 1u);
+    std::memcpy(out, found->second.data(), length);
+    out[length] = '\0';
+    ByNameTextTags().erase(found);
+    return true;
+}
+
+extern "C" uint32_t refii_bridge_menu_last_spawn_ordinal(uint32_t presentation) {
+    std::lock_guard<std::mutex> lock(Mutex());
+    const auto found = Populates().find(presentation);
+    return found == Populates().end() ? 0u : found->second.last;
 }
 
 std::vector<MenuChunkCall> TakeMenuChunkCalls() {

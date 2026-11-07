@@ -683,10 +683,10 @@ public sealed partial class Engine_HudLayout
         //   (`sub_826AC730` slides "wheelmenu" 2 open / 4 reopen / 3 close, `sub_826AB1F8` writes
         //   the items' titles and textures, each item's `selected` pointer is a slide).
         //
-        //   `Layer/TopBox` — the quest/info box. The guest positions its text (`sub_823FC8F0`
-        //   writes TopTitle/TopMain box-relative) and sizes the slab through the TopBoxX/TopBoxY
-        //   meters (`sub_823FE638`, from the measured text); its buttons ride the TopBoxX tracks
-        //   and its faders are the guest's stated opacity.
+        //   `Layer/TopBox` — the quest/info box. Its rows (title, body, button row) are placed by
+        //   Engine_UiTopBoxLayout from the text Godot draws; the guest's own fit (`sub_823FC8F0`,
+        //   TopBoxX/TopBoxY via `sub_823FE638`) places nothing on a headless element and measures
+        //   in its own font. Its faders are the guest's stated opacity.
         foreach ((string name, string label, Anchor? fixedAnchor, float depth, bool fromContents, string? parent)
             in groups ?? GroupSubtrees)
         {

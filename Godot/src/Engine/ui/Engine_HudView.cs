@@ -261,6 +261,16 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
     public string?[]? LiveTexts { get; set; }
 
     /// <summary>
+    /// The colour stated per element, by ordinal (r, g, b, a in 0..1) — the guest's colour setter
+    /// (Fable 3 `sub_828190E8`, `@Ui.Colour`), drawn through the one tint both titles share
+    /// (<see cref="Engine_UiElementTint"/>). Null where none was stated: the file's colour stands.
+    /// </summary>
+    public IReadOnlyList<(float R, float G, float B, float A)?>? LiveColours { get; set; }
+
+    /// <summary>This frame's ordinals with a stated colour.</summary>
+    private readonly List<int> _coloured = new();
+
+    /// <summary>
     /// The window size the anchors resolve against. Fed by the owner: this node lives inside a
     /// SubViewport whose own size is the window's, which breaks a fixed-size editor preview.
     /// </summary>
@@ -300,6 +310,15 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
     /// `fraction × 1000`); Fable 2 publishes values only and leaves this off.
     /// </summary>
     public bool StatesTimes { get; set; }
+
+    /// <summary>
+    /// THE TITLE'S OWN TEXT-BOX ART. Fable 2's quest box, subtitle and counters draw a fitted
+    /// rounded panel in place of the .bgf's slab pieces (FitPanel / HideSlabs). A title that
+    /// keeps its own look (Fable 3) sets this: the .bgf's panel pieces stay and draw at the size
+    /// their meters state (the TopBoxX / TopBoxY, SubtitlesX / SubtitlesY, CornerX / CornerY
+    /// timelines), and no panel is fitted; the rows are still laid out by the TopBox layout.
+    /// </summary>
+    public bool AuthoredTextBoxPanels { get; init; }
 
     /// <summary>
     /// The guest's stated timeline position per element ordinal (0..1000), null where it states
@@ -419,6 +438,9 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
 
         /// <summary>The band last tinted onto the bars, so an unchanged band re-tints nothing.</summary>
         public int TintedBand { get; set; } = int.MinValue;
+
+        /// <summary>The colour each element of the piece was last tinted from <see cref="LiveColours"/>, by ordinal.</summary>
+        public Dictionary<int, (float R, float G, float B, float A)> Tinted { get; } = new();
 
         /// <summary>What each of those last painted, keyed by ordinal.</summary>
         public Dictionary<int, string> ShownTexts { get; } = new();
@@ -842,6 +864,16 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
     {
         built.Remap = clone.Values;
 
+        // A COPY OF A GROUP IS A GROUP: its nested meters scrub their own tracks, each at the value
+        // the copy names for it, exactly as the original's do at the guest's — the fill, its cap
+        // and the max bar each by its own track. Bound here because the copy's piece carries the
+        // copy's id, not the group's, when it is built.
+        if (built.Tracks.Count == 0 && Screen is { } document && built.Piece.ElementOrdinal >= 0 &&
+            built.Origin is { } origin && origin.Id.StartsWith("group.", System.StringComparison.Ordinal))
+        {
+            BindNestedTracks(built, document);
+        }
+
         foreach ((string element, string meter) in clone.Bars)
         {
             if (built.Node.FindChild(element, recursive: true, owned: false) is Node3D bar &&
@@ -1202,6 +1234,15 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
     /// </summary>
     private void RescaleClonedBars(Built built)
     {
+        // A copy whose nested meters scrub at its own values draws every bar from its tracks
+        // (BindNestedTracks); scaling the bar element on top multiplied its length by
+        // copy% ÷ health% and stretched the cap with it.
+        if (built.Remap is { } remap &&
+            built.Tracks.Exists(track => track.Value is { } value && remap.ContainsKey(value.Name)))
+        {
+            return;
+        }
+
         foreach (ClonedBar bar in built.Bars)
         {
             Transform3D transform = bar.Node.Transform;
@@ -1555,6 +1596,50 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
 
     private Engine_UiBindings? _bindings;
 
+    /// <summary>Each text element's `TextName`, by file ordinal, read once per screen from the bindings.</summary>
+    private Dictionary<int, Engine_HudValues.Handle>? _textNames;
+
+    private Engine_UiScreen? _textNamesScreen;
+
+    /// <summary>
+    /// The text stated for an element: under its `TextName` (the registry's own key, FNV-1 of the
+    /// attribute value), else under its node name (`GUI.SetGUIText` with a name the file authors
+    /// as the node's). <paramref name="fileOrdinal"/> is the file element a clone's node stands for.
+    /// </summary>
+    private string? StatedText(int ordinal, int fileOrdinal)
+    {
+        if (Screen is not { } document || ordinal < 0 || ordinal >= document.Nodes.Length)
+        {
+            return null;
+        }
+
+        if ((_textNames is null || !ReferenceEquals(_textNamesScreen, document)) &&
+            Engine_UiBindings.Read(document.Document) is { } bindings)
+        {
+            _textNamesScreen = document;
+            _textNames = new Dictionary<int, Engine_HudValues.Handle>();
+            foreach (Engine_UiBindings.Binding binding in bindings.All)
+            {
+                if (binding.Kind == Engine_UiBindings.Kind.Text)
+                {
+                    _textNames.TryAdd(binding.ElementOrdinal, new Engine_HudValues.Handle(binding.Name, binding.NameHash));
+                }
+            }
+        }
+
+        if (_textNames is not null &&
+            (_textNames.TryGetValue(fileOrdinal, out Engine_HudValues.Handle name) ||
+             _textNames.TryGetValue(ordinal, out name)) &&
+            Values.Text(name) is { } filed)
+        {
+            return filed;
+        }
+
+        return document.Nodes[ordinal] is { HasAuthoredName: true } named
+            ? Values.Text(new Engine_HudValues.Handle(named.Name, Engine_GameHash.Fnv1(named.Name)))
+            : null;
+    }
+
     /// <summary>The HUD document's name bindings, read once — the fold of stated toggles needs them.</summary>
     public Engine_UiBindings? Bindings
     {
@@ -1824,19 +1909,30 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
         {
             if (!built.Node.Visible)
             {
+                if (built.Piece.Id == "group.QuestBox.TopBox")
+                {
+                    WithdrawTopBoxHeight();
+                }
+
                 continue;
             }
 
             if (built.Piece.Id == "group.QuestBox.TopBox")
             {
-                HideSlabs(built.Node);
-                CentreTitle(built.LiveTextNodes);
-                Rect2? bounds = null;
+                if (!AuthoredTextBoxPanels)
+                {
+                    HideSlabs(built.Node);
+                }
+
                 foreach ((MeshInstance3D label, int _) in built.LiveTextNodes)
                 {
                     Engine_UiHudTextStyle.Capture(label);
-                    bounds = Union(bounds, TextBounds(label));
                 }
+
+                WrapTopBoxLines(built);
+
+                // Every channel's rows — title, body, buttons — from the one layout.
+                Rect2? bounds = LayoutTopBox(built);
 
                 float behind = 1.5f;
                 foreach ((MeshInstance3D label, int _) in built.LiveTextNodes)
@@ -1847,15 +1943,21 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                     }
                 }
 
-                FitPanel("topbox", bounds, used, behind);
+                if (!AuthoredTextBoxPanels)
+                {
+                    FitPanel("topbox", bounds, used, behind);
+                }
+
+                StateTopBoxHeight();
             }
-            else if (built.Piece.Id.StartsWith("slidetoggle.Counter", System.StringComparison.Ordinal) ||
+            else if (!AuthoredTextBoxPanels &&
+                (built.Piece.Id.StartsWith("slidetoggle.Counter", System.StringComparison.Ordinal) ||
                 built.Piece.Id.EndsWith(".CornerBox", System.StringComparison.Ordinal) ||
                 built.Piece.Id.StartsWith("meter.CornerX.", System.StringComparison.Ordinal) ||
                 built.Piece.Id.StartsWith("meter.CornerY.", System.StringComparison.Ordinal) ||
                 built.Piece.Id.StartsWith("meter.SubtitlesX.", System.StringComparison.Ordinal) ||
                 built.Piece.Id.StartsWith("meter.SubtitlesY.", System.StringComparison.Ordinal) ||
-                built.Piece.Id == "slidefader2.Subtitles.Subtitles")
+                built.Piece.Id == "slidefader2.Subtitles.Subtitles"))
             {
                 // The counters' strings sit in the CornerBox — a black nine-slice (`Group`#616:
                 // BoxMiddle, corners, sides) sized by the CornerX/CornerY meters — and the
@@ -1877,7 +1979,8 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                     counterBehind = System.Math.Min(counterBehind, counter.GlobalPosition.Z - 0.5f);
                 }
             }
-            else if (built.Piece.Id == "text.Subtitles.Text" && built.Node is MeshInstance3D label)
+            else if (!AuthoredTextBoxPanels && built.Piece.Id == "text.Subtitles.Text" &&
+                built.Node is MeshInstance3D label)
             {
                 // NOT grouped with the counters: the subtitle sits elsewhere on the screen and
                 // is a different readout, so it keeps its own box.
@@ -1979,7 +2082,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
             }
         }
 
-        if (counterBounds is { } counters)
+        if (!AuthoredTextBoxPanels && counterBounds is { } counters)
         {
             FitPanel("counters", counters.Grow(8f), used, counterBehind);
         }
@@ -2073,44 +2176,339 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
         return new Rect2(box.Position.X, box.Position.Y, box.Size.X, box.Size.Y);
     }
 
+    /// <summary>The text names the TopBox's two lines are bound under (hud.bgf `TextName`).</summary>
+    private const string TopBoxTitleName = "TopTitle";
+
+    private const string TopBoxBodyName = "TopMain";
+
+    /// <summary>The button labels' text names — the publisher's `LeftTopButton`/`RightTopButton`.</summary>
+    private const string TopBoxLeftButtonName = "LeftTopButton";
+
+    private const string TopBoxRightButtonName = "RightTopButton";
+
     /// <summary>
-    /// The quest box's title, centred over its body text. Our layout: the guest writes the title
-    /// box-relative at the left margin (`sub_823FC8F0`). Measured from where the title stands
-    /// this frame, so a rewrite of its position by the guest is re-centred, never compounded.
+    /// Places the TopBox's rows through <see cref="Engine_UiTopBoxLayout"/> and answers the
+    /// rectangle they occupy (world space, as <see cref="FitPanel"/> takes it), or null when
+    /// nothing is drawn. The rows are found by their bindings, not by node names: the title is
+    /// the text bound TopTitle, the body the text bound TopMain, and the button row is the child
+    /// of the box that holds the button labels (`Buttons`, carrying the texts bound
+    /// LeftTopButton/RightTopButton). The anchor is the title's (else the body's) parent
+    /// element — `Title`/`Main`, authored at the box's line origin and never moved here.
     /// </summary>
-    private static void CentreTitle(List<(MeshInstance3D Node, int Ordinal)> labels)
+    private Rect2? LayoutTopBox(Built built)
     {
+        _topBoxTextHeight = 0f;
         MeshInstance3D? title = null;
-        Rect2? titleBounds = null;
-        Rect2? body = null;
-        foreach ((MeshInstance3D label, int _) in labels)
+        MeshInstance3D? body = null;
+        MeshInstance3D? button = null;
+        Engine_UiBindings? bindings = Bindings;
+        foreach ((MeshInstance3D label, int ordinal) in built.LiveTextNodes)
         {
-            if (TextBounds(label) is not { } rect)
+            if (!GodotObject.IsInstanceValid(label))
             {
                 continue;
             }
 
-            if (label.Name.ToString().Contains("Title", System.StringComparison.OrdinalIgnoreCase))
+            switch (TextBindingName(bindings, ordinal))
             {
-                title = label;
-                titleBounds = rect;
-            }
-            else
-            {
-                body = Union(body, rect);
+                case TopBoxTitleName:
+                    title = label;
+                    break;
+                case TopBoxBodyName:
+                    body = label;
+                    break;
+                case TopBoxLeftButtonName or TopBoxRightButtonName:
+                    button ??= label;
+                    break;
             }
         }
 
-        if (title is null || titleBounds is not { } own || body is not { } under)
+        if ((title ?? body)?.GetParent() is not Node3D anchor)
+        {
+            return null;
+        }
+
+        Node3D? row = button is null ? null : RowUnder(button, title ?? body!);
+        Engine_UiTopBoxLayout.Extent? titleExtent = title is null ? null : DrawnExtent(title);
+        Engine_UiTopBoxLayout.Extent? bodyExtent = body is null ? null : DrawnExtent(body);
+        Engine_UiTopBoxLayout.Extent? rowExtent = row is null ? null : DrawnExtent(row);
+        Vector3 origin = ToLocal(anchor.GlobalPosition);
+
+        // THE FIRST LINE STANDS WHERE THE FILE PUTS IT. The fit (TU1 `sub_823FC8F0`, Fable 3
+        // `sub_82920610`) writes line 0 at `(0.5 − pivot.y) × height + pos.y`, pos and pivot
+        // summed up the chain of the `BoxName 'TopBox'` element (Engine_UiTextBoxFit) — Fable 2's
+        // hud.bgf `Bar`, y 0 + 50 + 276, pivot.y 0.5: y 326, the top of the screen, the box art
+        // growing down from the same mark. The height is this box's, as StateTopBoxHeight states
+        // it. The rows stack down from that line's top; the parent's origin is the canvas centre
+        // and states nothing.
+        float textHeight = (titleExtent?.Height ?? 0f) + (bodyExtent?.Height ?? 0f) +
+            (titleExtent is not null && bodyExtent is not null
+                ? Engine_UiTopBoxLayout.Leading(Engine_UiHudTextStyle.BodySize)
+                : 0f);
+        float fitted = TopBoxHeightRange.Y > TopBoxHeightRange.X
+            ? System.Math.Clamp(textHeight, TopBoxHeightRange.X, TopBoxHeightRange.Y) + TopBoxHeightPad
+            : textHeight;
+        float top = StatedLineTop(title ?? body!, Engine_HudLayout.QuestBoxName, fitted) ?? origin.Y;
+        Engine_UiTopBoxLayout.Arrangement arranged = Engine_UiTopBoxLayout.Arrange(
+            titleExtent, bodyExtent, rowExtent, origin.X, top,
+            Engine_UiTopBoxLayout.Leading(Engine_UiHudTextStyle.BodySize));
+
+        _topBoxTextHeight = textHeight;
+
+        if (titleExtent is not null)
+        {
+            MoveBy(title!, arranged.Title);
+        }
+
+        if (bodyExtent is not null)
+        {
+            MoveBy(body!, arranged.Body);
+        }
+
+        if (rowExtent is not null)
+        {
+            MoveBy(row!, arranged.Buttons);
+        }
+
+        // THE PANEL COVERS THE LINES. Where the title states its box's height range, the panel art
+        // is the lines' own (hud.bgf `Bar`/`blur`/`top`, scaled by TopBoxY between that range) and
+        // the button row is a separate element riding below it on the right — so the panel stops
+        // at the text, and the health readout, dropped by the same TopBoxY, clears it.
+        Engine_UiTopBoxLayout.Extent? covered = TopBoxHeightRange.Y > TopBoxHeightRange.X && arranged.Text is { } lines
+            ? lines
+            : arranged.Bounds;
+        if (covered is not { } b)
+        {
+            return null;
+        }
+
+        Vector3 low = ToGlobal(new Vector3(b.Left, b.Bottom, 0f));
+        Vector3 high = ToGlobal(new Vector3(b.Right, b.Top, 0f));
+        return new Rect2(
+            Mathf.Min(low.X, high.X), Mathf.Min(low.Y, high.Y),
+            Mathf.Abs(high.X - low.X), Mathf.Abs(high.Y - low.Y));
+    }
+
+    /// <summary>The Text binding's name for an element ordinal, or null when it carries none.</summary>
+    private static string? TextBindingName(Engine_UiBindings? bindings, int ordinal)
+    {
+        if (bindings is null)
+        {
+            return null;
+        }
+
+        foreach (Engine_UiBindings.Binding binding in bindings.All)
+        {
+            if (binding.ElementOrdinal == ordinal && binding.Kind == Engine_UiBindings.Kind.Text)
+            {
+                return binding.Name;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The ancestor of <paramref name="member"/> whose parent is also an ancestor of
+    /// <paramref name="text"/> — the row that holds the member, as a sibling of the text's row.
+    /// </summary>
+    private static Node3D? RowUnder(Node member, Node text)
+    {
+        for (Node? at = member; at?.GetParent() is { } parent; at = parent)
+        {
+            if (parent.IsAncestorOf(text))
+            {
+                return at as Node3D;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>A node's move by <paramref name="by"/> in this view's space.</summary>
+    /// <summary>
+    /// THE TOPBOX WRAPS ITS LINES AT THE BOX'S MAXIMUM WIDTH — the title's own figure, stated by
+    /// it (Fable 2: Engine_UiHudTopBox.WrapWidth); 0 leaves the lines' records alone.
+    /// </summary>
+    public float TopBoxWrapWidth { get; init; }
+
+
+    /// <summary>
+    /// The TopBox's height range, canvas units — the title's own figure (Fable 2:
+    /// Engine_UiHudTopBox.HeightRange); zero leaves TopBoxY to the guest.
+    /// </summary>
+    public Vector2 TopBoxHeightRange { get; init; }
+
+    /// <summary>
+    /// Canvas units the title's fit adds to the clamped line height before stating TopBoxY
+    /// (Fable 3: 16, `sub_82920278` 0x829205b8; Fable 2: none).
+    /// </summary>
+    public float TopBoxHeightPad { get; init; }
+
+    private float _topBoxTextHeight;
+
+    /// <summary>
+    /// TOPBOXY FROM THE BOX WE DRAW. The guest sets it from its own measure of the lines
+    /// (`sub_823FC510`: height = Σ line heights clamped to [min.y, max.y], then `sub_823FE638`:
+    /// `(height − min.y) / (max.y − min.y) × 100`), and everything that rides it — the health
+    /// readout's drop, the button row, the panel's depth — makes room for THAT box. Our lines are
+    /// our font's, so the same formula is applied to the height we laid out; the guest's own value
+    /// left the health bars inside a box taller than it measured.
+    /// </summary>
+    private void StateTopBoxHeight()
+    {
+        if (TopBoxHeightRange.Y <= TopBoxHeightRange.X)
         {
             return;
         }
 
-        float shift = under.GetCenter().X - own.GetCenter().X;
-        if (Mathf.Abs(shift) > 0.01f)
+        if (_topBoxTextHeight <= 0f)
         {
-            title.GlobalPosition += new Vector3(shift, 0f, 0f);
+            WithdrawTopBoxHeight();
+            return;
         }
+
+        float height = System.Math.Clamp(_topBoxTextHeight, TopBoxHeightRange.X, TopBoxHeightRange.Y) +
+            TopBoxHeightPad;
+        float percent = System.Math.Clamp(
+            (height - TopBoxHeightRange.X) / (TopBoxHeightRange.Y - TopBoxHeightRange.X) * 100f, 0f, 100f);
+        Values.OverrideMeter(Engine_HudValues.Handle.For("TopBoxY"), percent);
+        _topBoxHeightStated = true;
+    }
+
+    private bool _topBoxHeightStated;
+
+    /// <summary>The box is down: TopBoxY goes back to the guest, which states 0 for no record.</summary>
+    private void WithdrawTopBoxHeight()
+    {
+        if (_topBoxHeightStated)
+        {
+            Values.OverrideMeter(Engine_HudValues.Handle.For("TopBoxY"), null);
+            _topBoxHeightStated = false;
+        }
+
+        _topBoxTextHeight = 0f;
+    }
+
+    private void WrapTopBoxLines(Built built)
+    {
+        if (TopBoxWrapWidth <= 0f)
+        {
+            return;
+        }
+
+        Engine_UiBindings? bindings = Bindings;
+        var wrapBox = new Vector2(TopBoxWrapWidth, 0f);
+        foreach ((MeshInstance3D label, int ordinal) in built.LiveTextNodes)
+        {
+            if (!GodotObject.IsInstanceValid(label) ||
+                TextBindingName(bindings, ordinal) is not (TopBoxTitleName or TopBoxBodyName))
+            {
+                continue;
+            }
+
+            if (label.HasMeta("text_wrap") && (int)label.GetMeta("text_wrap") == 1 &&
+                label.HasMeta("text_box") && (Vector2)label.GetMeta("text_box") == wrapBox)
+            {
+                continue;
+            }
+
+            label.SetMeta("text_wrap", 1);
+            label.SetMeta("text_box", wrapBox);
+            built.ShownTexts.Remove(ordinal);
+        }
+    }
+
+    /// <summary>
+    /// A text box's first line, in this view's space: the `position.y` the fit writes onto the
+    /// line's Text element (<see cref="Engine_UiTextBoxFit.FirstLineY"/>, from this document's
+    /// file — the same value the guest's fit states), placed under the label's parent. Null when
+    /// the document files no box by that name.
+    /// </summary>
+    private static readonly uint PositionXId = Refii.Core.Engine_GameHash.AttributeId("position.x");
+
+    private static readonly uint PositionYId = Refii.Core.Engine_GameHash.AttributeId("position.y");
+
+    private float? StatedLineTop(MeshInstance3D label, string boxName, float height)
+    {
+        // The fit's getters read the LIVE attribute store, so the chain is summed at the slid
+        // positions: Fable 3's `ButtonOnly` FullBox slide moves `TopBox.TopBox` [1517] to y 290,
+        // which is what stands the box at the top (the file's own 0 put line 0 mid-screen).
+        Engine_UiElementResolve? resolve = Resolve;
+        Engine_UiScreen? screen = Screen;
+        System.Func<int, (float? X, float? Y)>? slid = resolve is null || screen is null
+            ? null
+            : ordinal =>
+            {
+                if (ordinal < 0 || ordinal >= resolve.SlidPosition.Length || ordinal >= screen.Nodes.Length)
+                {
+                    return (null, null);
+                }
+
+                // Only what differs from the RAW FILE overrides it — the getter's own reading of the
+                // file, its position.x-only fallback included. Not the parsed node: that already
+                // carries the document's resting slide (FullBox is self-activating, flags 13), so
+                // #1517 reads 290 there and compared equal while the file says 0.
+                Vector3 at = resolve.SlidPosition[ordinal];
+                BgfElement element = screen.Document.Elements[ordinal];
+                float fileX = element.TryGetAttribute(PositionXId, out BgfAttribute ax) && ax.Type == BgfValueType.Float
+                    ? ax.AsFloat() : 0f;
+                float fileY = element.TryGetAttribute(PositionYId, out BgfAttribute ay) && ay.Type == BgfValueType.Float
+                    ? ay.AsFloat() : fileX;
+                bool movedX = !Mathf.IsEqualApprox(at.X, fileX);
+                bool movedY = !Mathf.IsEqualApprox(at.Y, fileY);
+                return movedX || movedY ? (at.X, at.Y) : (null, null);
+            };
+        if (Screen?.Document is not { } document || label.GetParent() is not Node3D parent ||
+            Engine_UiTextBoxFit.FirstLineY(document, boxName, height, slid) is not { } y)
+        {
+            return null;
+        }
+
+        return ToLocal(parent.ToGlobal(new Vector3(0f, y, 0f))).Y;
+    }
+
+    private void MoveBy(Node3D node, Engine_UiTopBoxLayout.Offset by)
+    {
+        if (Mathf.Abs(by.X) <= 0.01f && Mathf.Abs(by.Y) <= 0.01f)
+        {
+            return;
+        }
+
+        Vector3 at = ToLocal(node.GlobalPosition);
+        node.GlobalPosition = ToGlobal(at + new Vector3(by.X, by.Y, 0f));
+    }
+
+    /// <summary>
+    /// What a subtree draws, in this view's space: every visible, non-transparent mesh under
+    /// <paramref name="node"/> (itself included), less canvas-sized containers — the same cut
+    /// <see cref="SubtreeBounds"/> makes — or null when it draws nothing.
+    /// </summary>
+    private Engine_UiTopBoxLayout.Extent? DrawnExtent(Node node)
+    {
+        Engine_UiTopBoxLayout.Extent? extent = null;
+        if (node is MeshInstance3D mesh && TextBounds(mesh) is not null)
+        {
+            // A text line may run most of the screen's width (the job sign's instructions): only a
+            // block wider than the screen itself is not a row. Half the width dropped a long body
+            // from the layout, which then stood wherever its node was, off-centre.
+            Aabb box = GlobalTransform.AffineInverse() * (mesh.GlobalTransform * mesh.Mesh.GetAabb());
+            if (box.Size.X <= Engine_HudLayout.DesignWidth &&
+                box.Size.Y <= Engine_HudLayout.DesignHeight * 0.5f)
+            {
+                extent = new Engine_UiTopBoxLayout.Extent(box.Position.X, box.Position.Y, box.Size.X, box.Size.Y);
+            }
+        }
+
+        for (int i = 0, count = node.GetChildCount(); i < count; i++)
+        {
+            if (DrawnExtent(node.GetChild(i)) is { } child)
+            {
+                extent = extent is { } e ? e.Union(child) : child;
+            }
+        }
+
+        return extent;
     }
 
     private static Rect2? Union(Rect2? a, Rect2? b) =>
@@ -2313,6 +2711,67 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
         }
     }
 
+    /// <summary>
+    /// The piece's elements in the colours <see cref="LiveColours"/> states, and back to the
+    /// file's where a colour is no longer stated. A re-coloured text is dropped from
+    /// <see cref="Built.ShownTexts"/> so the live-text pass re-meshes it in its new colour.
+    /// </summary>
+    private void TintStated(Built built)
+    {
+        if (_coloured.Count == 0 && built.Tinted.Count == 0)
+        {
+            return;
+        }
+
+        foreach (int ordinal in _coloured)
+        {
+            (float R, float G, float B, float A) colour = LiveColours![ordinal]!.Value;
+            if ((built.Tinted.TryGetValue(ordinal, out var was) && was == colour) ||
+                built.Binding.NodeFor(ordinal) is not { } node || !GodotObject.IsInstanceValid(node))
+            {
+                continue;
+            }
+
+            built.Tinted[ordinal] = colour;
+            if (Engine_UiElementTint.Tint(node, new Color(colour.R, colour.G, colour.B, colour.A), own: true))
+            {
+                built.ShownTexts.Remove(ordinal);
+            }
+        }
+
+        if (built.Tinted.Count == 0)
+        {
+            return;
+        }
+
+        List<int>? released = null;
+        foreach (int ordinal in built.Tinted.Keys)
+        {
+            if (LiveColours is { } colours && ordinal < colours.Count && colours[ordinal] is not null)
+            {
+                continue;
+            }
+
+            (released ??= new List<int>()).Add(ordinal);
+        }
+
+        if (released is null)
+        {
+            return;
+        }
+
+        foreach (int ordinal in released)
+        {
+            built.Tinted.Remove(ordinal);
+            UiNode? file = Screen is { } doc && ordinal >= 0 && ordinal < doc.Nodes.Length ? doc.Nodes[ordinal] : null;
+            if (built.Binding.NodeFor(ordinal) is { } node && GodotObject.IsInstanceValid(node) &&
+                Engine_UiElementTint.Restore(node, file, own: true))
+            {
+                built.ShownTexts.Remove(ordinal);
+            }
+        }
+    }
+
     private static void TintSubtree(Node node, Color colour)
     {
         if (node is MeshInstance3D mesh)
@@ -2382,43 +2841,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
         // element's slides activate, against its own published value.
         if (built.Piece.Id.StartsWith("group.", System.StringComparison.Ordinal))
         {
-            _bindings ??= Engine_UiBindings.Read(screen.Document);
-            foreach (Engine_UiBindings.Binding binding in _bindings.All)
-            {
-                bool pulse = binding.Kind == Engine_UiBindings.Kind.Pulser;
-
-                // A LAYOUT METER MUST NOT DRAG A GROUP WE PLACED. `TopBoxY` is the quest box's
-                // measured height, and inside `PlayerHealth` it owns `Health`'s position.y
-                // track (0 -> -136) — so the health readout slid up and down by ~90 units as
-                // the quest box grew and shrank, which the diagnostic caught as its rect y
-                // wandering 202 / 220 / 294 between samples.
-                //
-                // That coupling is the ORIGINAL's layout decision, and layout is ours: we place
-                // this widget, so nothing else may move it. `Engine_UiLiveValues` already keeps
-                // this same list for the same reason.
-                //
-                // A title that states times scrubs them too: its guest positions a laid-out box's
-                // slab and lines inside the group by those meters' timelines (Fable 3's TopBox,
-                // subtitles and counters), and the group's own place is still the layout's.
-                if (Engine_UiBindings.IsLayoutMeter(binding.Name) && !StatesTimes)
-                {
-                    continue;
-                }
-
-                // The root's own meter belongs to the group when the title states times: its
-                // element's timeline is scrubbed at the stated position, as every nested one is.
-                if ((binding.Kind != Engine_UiBindings.Kind.Meter && !pulse) ||
-                    (binding.ElementOrdinal == built.Piece.ElementOrdinal && !StatesTimes) ||
-                    !InSubtree(screen, binding.ElementOrdinal, built.Piece.ElementOrdinal))
-                {
-                    continue;
-                }
-
-                BindOwnedTracks(built, screen, binding.ElementOrdinal,
-                    Engine_HudValues.Handle.For(KeyedName(built, binding)), pulse,
-                    StatesTimes ? binding.ElementOrdinal : -1);
-            }
-
+            BindNestedTracks(built, screen);
             return;
         }
 
@@ -2429,6 +2852,51 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
         }
 
         BindOwnedTracks(built, screen, built.Piece.ElementOrdinal, null, false);
+    }
+
+    /// <summary>
+    /// A group's nested meters and pulsers, each track bound to the value its own element names
+    /// (through a keyed piece's source); a copy's <see cref="Built.Remap"/> answers those names
+    /// with its own values at scrub time (<see cref="NestedTime"/>).
+    /// </summary>
+    private void BindNestedTracks(Built built, Engine_UiScreen screen)
+    {
+        _bindings ??= Engine_UiBindings.Read(screen.Document);
+        foreach (Engine_UiBindings.Binding binding in _bindings.All)
+        {
+            bool pulse = binding.Kind == Engine_UiBindings.Kind.Pulser;
+
+            // A LAYOUT METER MUST NOT DRAG A GROUP WE PLACED. `TopBoxY` is the quest box's
+            // measured height, and inside `PlayerHealth` it owns `Health`'s position.y
+            // track (0 -> -136) — so the health readout slid up and down by ~90 units as
+            // the quest box grew and shrank, which the diagnostic caught as its rect y
+            // wandering 202 / 220 / 294 between samples.
+            //
+            // That coupling is the ORIGINAL's layout decision, and layout is ours: we place
+            // this widget, so nothing else may move it. `Engine_UiLiveValues` already keeps
+            // this same list for the same reason.
+            //
+            // A title that states times scrubs them too: its guest positions a laid-out box's
+            // slab and lines inside the group by those meters' timelines (Fable 3's TopBox,
+            // subtitles and counters), and the group's own place is still the layout's.
+            if (Engine_UiBindings.IsLayoutMeter(binding.Name) && !StatesTimes)
+            {
+                continue;
+            }
+
+            // The root's own meter belongs to the group when the title states times: its
+            // element's timeline is scrubbed at the stated position, as every nested one is.
+            if ((binding.Kind != Engine_UiBindings.Kind.Meter && !pulse) ||
+                (binding.ElementOrdinal == built.Piece.ElementOrdinal && !StatesTimes) ||
+                !InSubtree(screen, binding.ElementOrdinal, built.Piece.ElementOrdinal))
+            {
+                continue;
+            }
+
+            BindOwnedTracks(built, screen, binding.ElementOrdinal,
+                Engine_HudValues.Handle.For(KeyedName(built, binding)), pulse,
+                StatesTimes ? binding.ElementOrdinal : -1);
+        }
     }
 
     /// <summary>
@@ -2484,7 +2952,10 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
         int source = built.StateOf(element);
         int stated = LiveSlides is { } live && source >= 0 && source < live.Count ? live[source] : 0;
         BgfSlide? playing = Engine_UiTimeline.PlayingSlide(screen.Document, element, stated);
-        foreach (Engine_UiTimeline.Window window in Engine_UiTimeline.Windows(screen, element, playing))
+        // A stated time is the element's own timeline's (StatesTimes): a nested slide owner's
+        // elements keep their own clock.
+        foreach (Engine_UiTimeline.Window window in
+            Engine_UiTimeline.Windows(screen, element, playing, ownTimeline: timeOrdinal >= 0))
         {
             int slot = built.Binding.SlotFor(window.Ordinal);
             if (slot < 0)
@@ -2534,17 +3005,17 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
     /// Scrubs a group piece's nested meters and pulsers, each track and window at its own
     /// value's playhead. An unpublished value leaves them as they stand.
     /// </summary>
-    private void ScrubNested(Built built, Vector2 at)
+    private void ScrubNested(Built built, Vector2 at, Engine_UiElementResolve? resolve)
     {
         foreach (BoundTrack track in built.Tracks)
         {
             if (StatedTime(built, track.TimeOrdinal) is { } stated)
             {
-                ApplyTrack(built, track, at, stated);
+                ApplyTrack(built, track, at, stated, resolve);
             }
             else if (track.Value is { } handle && NestedTime(built, handle, track.Pulse) is { } time)
             {
-                ApplyTrack(built, track, at, time);
+                ApplyTrack(built, track, at, time, resolve);
             }
         }
 
@@ -2674,10 +3145,37 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                 ["textBounds"] = bounds is { } b ? new[] { b.Position.X, b.Position.Y, b.Size.X, b.Size.Y } : null,
                 ["texts"] = texts,
                 ["children"] = built.Node.GetChildCount(),
+                ["tracks"] = DescribeTracks(built),
             });
         }
 
         return rows;
+    }
+
+    /// <summary>
+    /// For the debug channel: each bound track of a piece — the element it moves, the channel, the
+    /// node it landed on and where that node stands, and the time the scrub reads for it (stated,
+    /// else the nested value's playhead).
+    /// </summary>
+    private List<Dictionary<string, object?>> DescribeTracks(Built built)
+    {
+        var tracks = new List<Dictionary<string, object?>>();
+        foreach (BoundTrack track in built.Tracks)
+        {
+            bool valid = GodotObject.IsInstanceValid(track.Node);
+            tracks.Add(new Dictionary<string, object?>
+            {
+                ["element"] = track.Animation.ElementOrdinal,
+                ["target"] = track.Target.ToString(),
+                ["node"] = valid ? track.Node.Name.ToString() : null,
+                ["nodePosition"] = valid ? new[] { track.Node.Position.X, track.Node.Position.Y } : null,
+                ["timeOrdinal"] = track.TimeOrdinal,
+                ["stated"] = StatedTime(built, track.TimeOrdinal),
+                ["nested"] = track.Value is { } handle ? NestedTime(built, handle, track.Pulse) : null,
+            });
+        }
+
+        return tracks;
     }
 
     public override void _Process(double delta)
@@ -2774,6 +3272,17 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
         _hiddenByDrive = 0;
         _why.Clear();
         _culprits.Clear();
+        _coloured.Clear();
+        if (LiveColours is { } colourRow)
+        {
+            for (int i = 0; i < colourRow.Count; ++i)
+            {
+                if (colourRow[i] is not null)
+                {
+                    _coloured.Add(i);
+                }
+            }
+        }
 
         foreach (Built built in _built)
         {
@@ -2900,6 +3409,8 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
             TicksPip += now - mark;
             mark = now;
 
+            TintStated(built);
+
             // The guest's own strings on the wheel's titles, applied only when they change: it
             // restates them every frame it holds the wheel.
             if (built.LiveTextNodes.Count != 0 && LiveTexts is { } texts && Theme is not null)
@@ -2910,12 +3421,11 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                     string? element = stated >= 0 && stated < texts.Length ? texts[stated] : null;
                     built.AuthoredTexts.TryGetValue(ordinal, out string? authoredText);
 
-                    // The text STATED for the element by name: `GUI.SetGUIText`, or the host's
-                    // TopBox body (Engine_UiHudTopBox) for `TopMain`.
-                    string? statedText = Screen is { } document && ordinal >= 0 && ordinal < document.Nodes.Length &&
-                        document.Nodes[ordinal] is { HasAuthoredName: true } named
-                        ? Values.Text(new Engine_HudValues.Handle(named.Name, Engine_GameHash.Fnv1(named.Name)))
-                        : null;
+                    // The text STATED for the element: by the name its `TextName` files it under —
+                    // what the text registry's writer (`sub_823FEB28`) and `GUI.SetGUIText` address,
+                    // and what the host's TopBox states `TopTitle` / `TopMain` as — else by its own
+                    // node name.
+                    string? statedText = StatedText(ordinal, stated);
                     string live = LiveTextToPaint(built.Piece.Id, element, authoredText, statedText);
                     if (built.ShownTexts.TryGetValue(ordinal, out string? shown) && shown == live)
                     {
@@ -2980,7 +3490,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                 // bar scaling below serves only meter pieces with no applicable tracks.
                 case Engine_HudLayout.Drive.Bar when built.Tracks.Count > 0:
                     built.Node.Position = new Vector3(at.X, at.Y, built.Piece.Depth);
-                    ScrubTracks(built, at);
+                    ScrubTracks(built, at, stateResolve);
                     break;
 
                 // The pulser loops the timeline: the guest advances the phase and publishes it
@@ -2990,7 +3500,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                     built.Node.Position = new Vector3(at.X, at.Y, built.Piece.Depth);
                     if (built.Tracks.Count > 0 && Values.Pulser(built.Value) is { } phase)
                     {
-                        ScrubAt(built, at, Mathf.Clamp(phase, 0f, 1f) * 1000f);
+                        ScrubAt(built, at, Mathf.Clamp(phase, 0f, 1f) * 1000f, stateResolve);
                     }
 
                     break;
@@ -3008,7 +3518,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                     built.Node.Position = new Vector3(at.X, at.Y, built.Piece.Depth);
                     if (built.Tracks.Count > 0)
                     {
-                        ScrubNested(built, at);
+                        ScrubNested(built, at, stateResolve);
                     }
 
                     break;
@@ -3222,7 +3732,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
     /// value (the layout owns the anchor); child tracks apply local values verbatim. Opacity is
     /// authored in percent and scaled by 0.01 at apply.
     /// </summary>
-    private void ScrubTracks(Built built, Vector2 at)
+    private void ScrubTracks(Built built, Vector2 at, Engine_UiElementResolve? resolve)
     {
         if (Values.Meter(built.Value) is not { } value)
         {
@@ -3230,17 +3740,17 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
             return;
         }
 
-        ScrubAt(built, at, Mathf.Clamp(value, 0f, 100f) * 10f);
+        ScrubAt(built, at, Mathf.Clamp(value, 0f, 100f) * 10f, resolve);
     }
 
     /// <summary>Writes every bound track and window of a piece at one tick of its timeline.</summary>
-    private static void ScrubAt(Built built, Vector2 at, float t)
+    private static void ScrubAt(Built built, Vector2 at, float t, Engine_UiElementResolve? resolve)
     {
         foreach (BoundTrack track in built.Tracks)
         {
             if (track.Value is null)
             {
-                ApplyTrack(built, track, at, t);
+                ApplyTrack(built, track, at, t, resolve);
             }
         }
 
@@ -3248,7 +3758,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
     }
 
     /// <summary>Writes one bound track at one tick.</summary>
-    private static void ApplyTrack(Built built, BoundTrack track, Vector2 at, float t)
+    private static void ApplyTrack(Built built, BoundTrack track, Vector2 at, float t, Engine_UiElementResolve? resolve)
     {
         if (!GodotObject.IsInstanceValid(track.Node))
         {
@@ -3256,6 +3766,14 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
         }
 
         float evaluated = track.Animation.Evaluate(t);
+
+        // AN OPACITY TRACK WRITES THE ELEMENT'S OWN TERM, drawn under the frame above it
+        // (Engine_UiElementResolve.TrackOpacity): the guild seal's corner tracks stand at 100 at its
+        // fill meter's time, and the slide that hides it puts the seal's `GuildSeal` at 0.
+        if (track.Target == Engine_UiTimeline.Target.Opacity && resolve is not null)
+        {
+            evaluated = resolve.TrackOpacity(built.StateOf(track.Animation.ElementOrdinal), evaluated);
+        }
 
         // The piece's own root is placed by the layout: its position track moves it relative to
         // where the layout put it.
@@ -3268,14 +3786,16 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
             return;
         }
 
-        // A COPY ON ITS OWN SLIDES has no guest-stated transform re-anchoring its bar every frame
-        // (Engine_UiCloneBinding.ApplyTransform puts an element's origin at position − basis·pivot
-        // from what the guest states), so its scrubbed scale is anchored at the authored pivot
-        // here: every fill in hud.bgf pivots at its left edge (pivot.x −50), and growing about the
-        // origin instead walked the generic meter's fill 124 units out of its frame.
-        if (built.SlideOverrides is not null &&
-            track.Target is Engine_UiTimeline.Target.ScaleX or Engine_UiTimeline.Target.ScaleY &&
-            built.Binding.PivotOf(track.Node) is { } pivot && pivot != Vector3.Zero)
+        // A track writes the element's ATTRIBUTE, and an element's origin is position − basis·pivot
+        // (Engine_UiCloneBinding.ApplyTransform, the binding's write earlier this frame). So a
+        // scale keeps the pivot point where it stands and a position puts the attribute, not the
+        // origin, at the value: every fill and cap in hud.bgf pivots at its left edge (pivot.x −50).
+        // A copy's scrub is at ITS value over the original's stated pose, so without this its fill
+        // grew about the origin (the generic meter's walked 124 units out of its frame) and its cap
+        // sat a pivot's width off the fill's end.
+        Vector3 pivot = built.Binding.PivotOf(track.Node);
+        if (pivot != Vector3.Zero &&
+            track.Target is Engine_UiTimeline.Target.ScaleX or Engine_UiTimeline.Target.ScaleY)
         {
             Basis before = track.Node.Basis;
             Engine_UiTimeline.Write(track.Node, track.Target, evaluated);
@@ -3284,6 +3804,14 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
         }
 
         Engine_UiTimeline.Write(track.Node, track.Target, evaluated);
+        if (pivot != Vector3.Zero &&
+            track.Target is Engine_UiTimeline.Target.PositionX or Engine_UiTimeline.Target.PositionY)
+        {
+            Vector3 shift = track.Node.Basis * pivot;
+            track.Node.Position = track.Target == Engine_UiTimeline.Target.PositionX
+                ? track.Node.Position with { X = track.Node.Position.X - shift.X }
+                : track.Node.Position with { Y = track.Node.Position.Y - shift.Y };
+        }
     }
 
     /// <summary>

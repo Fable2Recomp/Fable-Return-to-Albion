@@ -38,6 +38,7 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 
+#include "box_answers.h"
 #include "core/payload_bridge.h"
 #include "keyboard_ui.h"
 
@@ -72,9 +73,11 @@ void FormatFrames(const uint32_t* frames, uint32_t count, char* out, size_t capa
   out[used < capacity ? used : capacity - 1] = '\0';
 }
 
-/// Actions the host posted (core/guest_tick_queue.h): the keyboard's answer (keyboard_ui.cpp).
-/// Any other is named in the log and dropped, never deferred, so the queue cannot hold a name forever.
-void DrainPostedActions(uint8_t* base) {
+/// Actions the host posted (core/guest_tick_queue.h): the keyboard's answer (keyboard_ui.cpp),
+/// a box's and the menu box's answers (display_box_hooks.cpp) and the Options screen's actions
+/// (options_hooks.cpp). Any other is named in the log and dropped, never deferred, so the queue
+/// cannot hold a name forever. `ctx` is the tick's, the frame the answers call the guest below.
+void DrainPostedActions(PPCContext& ctx, uint8_t* base) {
   const uint32_t taken = refii_bridge_guest_tick_pump_begin_drain();
   for (uint32_t i = 0; i < taken; ++i) {
     char name[128];
@@ -87,6 +90,15 @@ void DrainPostedActions(uint8_t* base) {
     }
     if (std::strcmp(name, refii::fable3::kKeyboardCancelAction) == 0) {
       refii::fable3::AnswerKeyboardUi(base, nullptr);
+      continue;
+    }
+    if (std::strncmp(name, refii::fable3::kBoxAnswerAction, sizeof(refii::fable3::kBoxAnswerAction) - 1u) == 0 ||
+        std::strncmp(name, "menubox", 7u) == 0) {
+      refii::fable3::AnswerBoxAction(ctx, base, name);
+      continue;
+    }
+    if (std::strncmp(name, refii::fable3::kOptionsAction, sizeof(refii::fable3::kOptionsAction) - 1u) == 0) {
+      refii::fable3::AnswerOptionsAction(ctx, base, name);
       continue;
     }
     REXLOG_WARN("Refii guest-tick pump: action '{}'{} has no Fable 3 implementation; dropped",
@@ -170,7 +182,7 @@ REX_EXTERN(rex_App_TickInput) {
   // A fault on this thread needs a stack to run its handler on; guest threads get none.
   refii_bridge_ensure_alternate_signal_stack();
 
-  DrainPostedActions(base);
+  DrainPostedActions(ctx, base);
 
   const Clock::time_point before = Clock::now();
   __imp__rex_App_TickInput(ctx, base);

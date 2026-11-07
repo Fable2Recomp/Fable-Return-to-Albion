@@ -1,16 +1,17 @@
 namespace Refii.Titles.Fable3;
 
 using System.Collections.Generic;
-using System.Runtime.InteropServices;
 using Godot;
+using Refii.Game;
 using Refii.Host;
 using Refii.Text;
 using Refii.Ui;
 
 /// <summary>
-/// The rows of Fable 3's Options screen, from the object the guest holds while the screen shows
-/// (Fable3/src/hostbridge/src/options_feed.cpp: RefiiHostGetFable3Options). Pure logic, so the
-/// tests can run it against a snapshot.
+/// The rows of Fable 3's Options screen, from the screen's state as its handler states it
+/// (`@Options.State`, Fable3/src/hooks/src/options_hooks.cpp) and the levels the game's appliers
+/// were given (RefiiHostGetOptionsSliders, the stated options table). Pure logic, so the tests can
+/// run it against a snapshot.
 /// </summary>
 /// <remarks>
 /// THE ROW ORDER AND VALUES ARE THE GUEST'S. The row writer sub_825CC938 (page 3, GameSettings)
@@ -40,7 +41,7 @@ public static class Fable3OptionsModel
 	/// <summary>One row: a stable name, its label (resolved), its value (resolved), its description tag and whether the guest ghosts it.</summary>
 	public readonly record struct Row(string Name, string Label, string Value, string Description, bool Ghosted = false);
 
-	/// <summary>The Options object's state, the feed's 14 words and 4 values.</summary>
+	/// <summary>The Options screen's state: the statement's first 15 words and the 4 stated levels.</summary>
 	public readonly record struct Snapshot(
 		uint Box, int Page, int SelectedRow, bool Controller, bool Subtitles, bool Tutorial, int Breadcrumb,
 		int Speaker, int LanguageIndex, int LanguageCount, uint Flag108, uint Flag112, bool FromPause, bool Lite,
@@ -221,20 +222,111 @@ public static class Fable3OptionsModel
 }
 
 /// <summary>
+/// The Options screen's state as its own handler and Show left it (`@Options.State(box, page,
+/// row, invert, subtitles, tutorial, breadcrumb, speaker, language, languages, flag108, flag112,
+/// fromPause, frontEnd, canSave, query, changed)`, options_hooks.cpp), held while the box manager
+/// shows the screen. Pure, so the tests can run it.
+/// </summary>
+public static class Fable3OptionsState
+{
+	/// <summary>The statement's words: the box, then its 16 fields.</summary>
+	public const int Words = 17;
+
+	public const int QueryWord = 15;
+
+	private static uint[]? _words;
+
+	/// <summary>The words while the screen shows, else null.</summary>
+	public static uint[]? Current => _words;
+
+	public static ulong Generation { get; private set; }
+
+	/// <summary>The statement's words, or null when it is short.</summary>
+	public static uint[]? Parse(Refii.Ui.Engine_UiModel.GuiNativeCall call)
+	{
+		if (call.Arguments is not { Count: >= Words } arguments ||
+			!uint.TryParse(arguments[0].Text, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out uint box))
+		{
+			return null;
+		}
+
+		var words = new uint[Words];
+		words[0] = box;
+		for (int i = 1; i < Words; ++i)
+		{
+			words[i] = unchecked((uint)(int)arguments[i].Number);
+		}
+
+		return words;
+	}
+
+	public static void Stated(Refii.Ui.Engine_UiModel.GuiNativeCall call)
+	{
+		if (Parse(call) is { } words)
+		{
+			_words = words;
+			++Generation;
+		}
+	}
+
+	/// <summary>The box manager dropped <paramref name="box"/>: its state goes with it.</summary>
+	public static void Closed(uint box)
+	{
+		if (_words is { } words && words[0] == box)
+		{
+			_words = null;
+			++Generation;
+		}
+	}
+
+	/// <summary>
+	/// The model's snapshot: the state's first 15 words with the stated speaker mode, and the
+	/// stated levels (gamma, music, sfx, voice). The speaker and the levels are the appliers'.
+	/// </summary>
+	public static Fable3OptionsModel.Snapshot Snapshot(uint[] words, float gamma, float music, float sfx, float voice, int speaker)
+	{
+		var head = new uint[Fable3OptionsModel.Words];
+		System.Array.Copy(words, head, Fable3OptionsModel.Words);
+		if (speaker is >= 0 and <= 2)
+		{
+			head[7] = (uint)speaker;
+		}
+
+		return Fable3OptionsModel.Parse(head, new[] { gamma, music, sfx, voice });
+	}
+}
+
+/// <summary>
 /// Fable 3's Options screen, drawn on the shared menu template (<see cref="Fable3ListScreen"/>)
-/// from the object the guest holds while it shows: the rows are the page's
-/// (<see cref="Fable3OptionsModel"/>), the highlight the guest's selected row (+84..+96), the
-/// title and the highlighted row's description over it. The pad reaches the guest unchanged —
-/// left/right step its sliders and toggles (sub_825CAA98 / sub_825CB028), B closes (sub_825C9D08).
+/// from its stated state (<see cref="Fable3OptionsState"/>) and the stated levels: the rows are
+/// the page's (<see cref="Fable3OptionsModel"/>), the highlight the screen's selected row, the title
+/// and the highlighted row's description over it. Godot owns its pad: each press is one game
+/// action into the screen's own handler (`options:<action>`, options_hooks.cpp) — up/down move,
+/// left/right step its sliders and toggles (sub_825CAA98 / sub_825CB028, applying them live), A
+/// enters a page or commits one, B goes back, Y restores the defaults.
 /// </summary>
 public partial class Fable3Options : Fable3ListScreen
 {
+	private const double RepeatDelay = 0.35;
+	private const double RepeatEvery = 0.2;
+	private const int StickDeadZone = 16000;
+
+	/// <summary>The pause between two walked steps: past the screen's own repeat gate (five
+	/// updates between moves, sub_825CA980's `+56 <= +40 + 4`, 0x825CA9A8).</summary>
+	private const double StepPace = 0.25;
+	private const double GiveUp = 4.0;
+
 	private readonly List<string> _languages = new();
 	private double _languagesAge = double.MaxValue;
 	private int _page;
-
-	private static readonly uint[] _words = new uint[Fable3OptionsModel.Words];
-	private static readonly float[] _values = new float[Fable3OptionsModel.Values];
+	private int _selected;
+	private uint _wasDown;
+	private int _held;
+	private double _repeat;
+	private int _walkTarget = -1;
+	private bool _walkAccept;
+	private double _walkWait;
+	private double _walkAge;
 
 	protected override string LogTag => "fable3-options";
 
@@ -242,20 +334,25 @@ public partial class Fable3Options : Fable3ListScreen
 
 	/// <summary>
 	/// Whether the guest's Game Settings page is up with nothing over it, so X opens the host's
-	/// Controls page (<see cref="Fable3HostOptions"/>; the guest's input ignores X on Options).
+	/// Controls page (<see cref="Fable3HostOptions"/>; the screen's handler ignores X).
 	/// </summary>
 	public static bool OffersControls { get; private set; }
 
 	protected override Fable3ScreenPage? Compose(double delta)
 	{
 		OffersControls = false;
-		if (!HostBridge.IsGuestUp || !Read() || Fable3HostOptions.IsOpen)
+		if (!HostBridge.IsGuestUp || Fable3OptionsState.Current is not { } words || Fable3HostOptions.IsOpen)
 		{
+			_walkTarget = -1;
 			return null;
 		}
 
-		Fable3OptionsModel.Snapshot snapshot = Fable3OptionsModel.Parse(_words, _values);
+		HostBridge.OptionSliders levels = HostBridge.GetOptionSliders();
+		Fable3OptionsModel.Snapshot snapshot = levels.Known
+			? Fable3OptionsState.Snapshot(words, levels.Gamma, levels.Music, levels.Sfx, levels.Speech, levels.Speaker)
+			: Fable3OptionsState.Snapshot(words, 0.5f, 1.0f, 1.0f, 0.9f, -1);
 		_page = snapshot.Page;
+		_selected = snapshot.SelectedRow - 1;
 
 		// The language names are the guest's table; asked when the lite page shows, every second.
 		if (snapshot.Page == Fable3OptionsModel.PageGameSettingsLite && (_languagesAge += delta) > 1.0)
@@ -280,41 +377,138 @@ public partial class Fable3Options : Fable3ListScreen
 			lines.Add(new Fable3ScreenPage.Row(row.Name, Fable3OptionsModel.Line(row), row.Ghosted, row.Description));
 		}
 
-		Fable3ScreenPage.QueryBox? query = Query();
+		Fable3ScreenPage.QueryBox? query = words[Fable3OptionsState.QueryWord] != 0u ? Query(words[0]) : null;
 		OffersControls = query is null &&
 			snapshot.Page is Fable3OptionsModel.PageGameSettings or Fable3OptionsModel.PageGameSettingsLite;
+
+		Drive(delta, rows.Count);
+
 		Fable3ScreenPage.Prompt[] prompts = OffersControls
 			? new[] { new Fable3ScreenPage.Prompt("X", Fable3SettingsHub.Page.Title) }
 			: System.Array.Empty<Fable3ScreenPage.Prompt>();
-		return new Fable3ScreenPage(Resolve(Fable3OptionsModel.PageTitle(snapshot.Page)), lines, snapshot.SelectedRow - 1,
+		return new Fable3ScreenPage(Resolve(Fable3OptionsModel.PageTitle(snapshot.Page)), lines, _selected,
 			string.Empty, prompts, true, query);
 	}
 
-	/// <summary>The Options root's state while its query shows (sub_825CBEC0: `sub_8281A428(Options, pres, 6)` at 0x825cbef4).</summary>
-	public const int QueryState = 6;
+	/// <summary>The pad, as game actions into the screen's handler; held directions repeat.</summary>
+	private void Drive(double delta, int rowCount)
+	{
+		uint down = GameInput.Pad0.Buttons;
+		uint pressed = down & ~_wasDown;
+		_wasDown = down;
+		GameInput.PadState pad = GameInput.Pad0;
+
+		var press = new Fable3BoxAnswers.Press(
+			(pressed & GameInput.ButtonA) != 0, (pressed & GameInput.ButtonB) != 0, false, (pressed & GameInput.ButtonY) != 0,
+			false, false, false, false);
+		if (Fable3BoxAnswers.OptionsAction(press) is { } button)
+		{
+			_walkTarget = -1;
+			Send(button);
+			Refii.Core.Engine_TitleGame.Active.Input.HoldUntilReleased();
+			return;
+		}
+
+		int held = (down & GameInput.DpadUp) != 0 || pad.LeftY > StickDeadZone ? Fable3BoxAnswers.ActionUp :
+			(down & GameInput.DpadDown) != 0 || pad.LeftY < -StickDeadZone ? Fable3BoxAnswers.ActionDown :
+			(down & GameInput.DpadLeft) != 0 || pad.LeftX < -StickDeadZone ? Fable3BoxAnswers.ActionLeft :
+			(down & GameInput.DpadRight) != 0 || pad.LeftX > StickDeadZone ? Fable3BoxAnswers.ActionRight : 0;
+		if (held != _held)
+		{
+			_held = held;
+			_repeat = RepeatDelay;
+			if (held != 0)
+			{
+				_walkTarget = -1;
+				Send(held);
+			}
+		}
+		else if (held != 0 && (_repeat -= delta) <= 0.0)
+		{
+			_repeat = RepeatEvery;
+			Send(held);
+		}
+
+		Walk(delta, rowCount);
+	}
+
+	/// <summary>The pointer's pick, walked one stated row at a time (the screen takes no row from outside).</summary>
+	private void Walk(double delta, int rowCount)
+	{
+		if (_walkTarget < 0)
+		{
+			return;
+		}
+
+		_walkAge += delta;
+		if (_walkAge > GiveUp || _walkTarget >= rowCount)
+		{
+			_walkTarget = -1;
+			return;
+		}
+
+		if ((_walkWait -= delta) > 0.0)
+		{
+			return;
+		}
+
+		_walkWait = StepPace;
+		if (_selected == _walkTarget)
+		{
+			if (_walkAccept)
+			{
+				Send(Fable3BoxAnswers.ActionA);
+			}
+
+			_walkTarget = -1;
+			return;
+		}
+
+		Send(_selected < _walkTarget ? Fable3BoxAnswers.ActionDown : Fable3BoxAnswers.ActionUp);
+	}
+
+	private static void Send(int action) => HostBridge.PostFrontEndAction(Fable3BoxAnswers.Options(action));
+
+	/// <summary>A hover walks the screen's cursor to the row; a click there is its A.</summary>
+	protected override void PointAt(int row, bool clicked)
+	{
+		if (row < 0)
+		{
+			return;
+		}
+
+		if (row != _walkTarget || clicked)
+		{
+			_walkTarget = row;
+			_walkAccept = clicked;
+			_walkAge = 0.0;
+		}
+	}
 
 	private const string QueryRoot = "Options.Sections.QueryBox";
 
 	/// <summary>
-	/// THE QUERY IS THE GUEST'S. sub_825CBEC0(box, tag) — called by the A handler sub_825CB588 for
+	/// THE QUERY IS THE SCREEN'S. sub_825CBEC0(box, tag) — called by the A handler sub_825CB588 for
 	/// New Game, Save and Continue, Load and Kick/Leave (0x825cb60c, 0x825cb8ac, 0x825cb8c0,
-	/// 0x825cb8e4, 0x825cba94) — sets the `Options` root to state 6 (0x825cbef4), writes the
-	/// question by tag into `Options.Sections.QueryBox.Group.QueryBox.Text` (sub_82819328,
-	/// 0x825cbf08) and raises box+30 (0x825cbf10); the same handler's composed variant does it
-	/// inline (0x825cb9e8 state 6, 0x825cba5c text, 0x825cba68 box+30). The input handler sub_825CA410 answers it and restores the page state
-	/// (`sub_8281A428(Options, pres, *(box+80))`, 0x825ca614). So the query is up exactly while the
-	/// root of the current Options presentation holds 6; its button labels are the ones the guest
-	/// wrote into `.Buttons.Buttons.A_Button.small.Text` / `B_Button` (r7: 'Continue' / 'Cancel').
+	/// 0x825cb8e4, 0x825cba94) and the B handler sub_825CBAA0 (0x825cbb80, 0x825cbc44) — sets the
+	/// `Options` root to state 6 (0x825cbef4), writes the question by tag into
+	/// `Options.Sections.QueryBox.Group.QueryBox.Text` (sub_82819328, 0x825cbf08) and raises box+30
+	/// (0x825cbf10), which the screen's state carries; its handler answers it on 74 / 75
+	/// (0x825CA5AC..0x825CA664). All of that is behind the box's presentation (0x825CBEE0), so the
+	/// question is the call's tag (`@Options.Query`, screen_stated_hooks.cpp), resolved through the
+	/// book; the element's text stands only for the kick query, whose henchman-formatted text is
+	/// written inline (sub_82819070 at 0x825CBA5C) without the call. THE QUERY HAS NO TITLE: the
+	/// binary names no `.Group.QueryBox.Title` path (only `.Text` and the two button paths). Its
+	/// button labels are constants per case written inline behind the presentation (0x825cb770 …
+	/// 0x825cbc34) — the elements' texts.
 	/// </summary>
-	private static Fable3ScreenPage.QueryBox? Query()
+	private static Fable3ScreenPage.QueryBox? Query(uint box)
 	{
-		if (Fable3Elements.Latest("Options") is not { State: QueryState })
-		{
-			return null;
-		}
-
-		string text = Fable3Elements.Latest(QueryRoot + ".Group.QueryBox.Text")?.Text ?? string.Empty;
-		string title = Fable3Elements.Latest(QueryRoot + ".Group.QueryBox.Title")?.Text ?? string.Empty;
+		string text = Fable3UiStatements.OptionsQuery is { } asked && asked.Box == box &&
+			Fable3Elements.TagText(asked.Tag) is { } question
+			? question
+			: Fable3Elements.Latest(QueryRoot + ".Group.QueryBox.Text")?.Text ?? string.Empty;
+		const string title = "";
 		var prompts = new List<Fable3ScreenPage.Prompt>(2);
 		foreach (string button in new[] { "A", "B" })
 		{
@@ -330,7 +524,7 @@ public partial class Fable3Options : Fable3ListScreen
 	/// <summary>The text the guest wrote into an Options element, by path, or null.</summary>
 	private static string? Stated(string path)
 	{
-		foreach (KeyValuePair<(uint Presentation, string Path), Fable3Elements.Element> entry in Fable3Elements.All)
+		foreach (KeyValuePair<(string Document, string Path), Fable3Elements.Element> entry in Fable3Elements.All)
 		{
 			if (entry.Key.Path == path && entry.Value.Text is { Length: > 0 } text)
 			{
@@ -343,7 +537,7 @@ public partial class Fable3Options : Fable3ListScreen
 
 	private static IEnumerable<KeyValuePair<string, string>> StatedTexts()
 	{
-		foreach (KeyValuePair<(uint Presentation, string Path), Fable3Elements.Element> entry in Fable3Elements.All)
+		foreach (KeyValuePair<(string Document, string Path), Fable3Elements.Element> entry in Fable3Elements.All)
 		{
 			if (entry.Value.Text is { Length: > 0 } text)
 			{
@@ -351,20 +545,4 @@ public partial class Fable3Options : Fable3ListScreen
 			}
 		}
 	}
-
-	/// <summary>The Options object this frame; false when the screen is not showing.</summary>
-	private static bool Read()
-	{
-		try
-		{
-			return RefiiHostGetFable3Options(_words, (uint)_words.Length, _values, (uint)_values.Length) != 0u;
-		}
-		catch (System.EntryPointNotFoundException)
-		{
-			return false;
-		}
-	}
-
-	[DllImport(HostBridge.Library)]
-	private static extern uint RefiiHostGetFable3Options([Out] uint[] words, uint wordCapacity, [Out] float[] values, uint valueCapacity);
 }

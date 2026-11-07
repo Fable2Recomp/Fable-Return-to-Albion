@@ -659,7 +659,7 @@ public partial class GameWindow : Node
 		if (HostBridge.TryGetAbiVersion() is null ||
 			!HostBridge.TryGetFrontEnd(out Engine_UiModel.FrontEndScreen screen,
 				out uint state, out bool canPressA, out uint cursor,
-				out int sceneSlide, out int slideCount))
+				out int sceneSlide, out _))
 		{
 			return;
 		}
@@ -668,7 +668,7 @@ public partial class GameWindow : Node
 		// fields below, and FollowGuest is a no-op when the live slide table has not moved.
 		_ui?.FollowGuest(screen, sceneSlide);
 
-		var now = (screen, state, canPressA, cursor, sceneSlide);
+		var now = (screen, state, canPressA, cursor);
 		if (now == _lastFrontEnd)
 		{
 			return;
@@ -692,7 +692,8 @@ public partial class GameWindow : Node
 				: " (NOT the front-end GUI — the game has taken it over)";
 		}
 
-		GD.Print($"[guest-ui] {screen} state={state} slide={sceneSlide}/{slideCount}" +
+		// No slide: the root's +43/+42 of a headless presentation are never written.
+		GD.Print($"[guest-ui] {screen} state={state}" +
 			(screen == Engine_UiModel.FrontEndScreen.Title ? $" canPressA={canPressA}" : $" cursor={cursor}") +
 			where);
 
@@ -727,7 +728,7 @@ public partial class GameWindow : Node
 
 	private (bool, bool, bool, bool) _lastFrontEndInit = (true, true, true, true);
 
-	private (Engine_UiModel.FrontEndScreen, uint, bool, uint, int) _lastFrontEnd;
+	private (Engine_UiModel.FrontEndScreen, uint, bool, uint) _lastFrontEnd;
 
 	public override void _ExitTree()
 	{

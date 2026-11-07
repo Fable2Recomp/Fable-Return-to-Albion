@@ -524,20 +524,24 @@ public static class Fable2PageProviders
 		"Foreground.Book.Pages.Page1", "Foreground.Book.Pages.Page2",
 	};
 
-	/// <summary>The quest box (screen 5): a box page, filled whenever it draws, from the call that
-	/// opened it — see <see cref="Engine_UiQuestBoxPage"/>.</summary>
+	/// <summary>The quest box (screen 5): a box page, filled whenever it draws, from the box's own
+	/// Open — see <see cref="Engine_UiQuestBoxPage"/>.</summary>
 	private sealed class QuestBoxProvider : Engine_UiPageProvider
 	{
 		public bool FillsOnDraw => true;
 
+		private static Engine_UiQuestBoxPage.Statement? Stated(in Engine_UiPageContext page) =>
+			Engine_UiQuestBoxPage.Of(
+				Engine_UiDisplayBoxes.ShowingOf(Engine_UiDisplayBoxes.Quest), page.Strings);
+
 		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page) =>
-			Engine_UiQuestBoxPage.Values();
+			Engine_UiQuestBoxPage.Values(Stated(page));
 
 		public IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page) =>
-			Engine_UiQuestBoxPage.Active();
+			Engine_UiQuestBoxPage.Active(Stated(page));
 
 		public IReadOnlyDictionary<string, int> Slides(in Engine_UiPageContext page) =>
-			Engine_UiQuestBoxPage.Slides();
+			Engine_UiQuestBoxPage.Slides(Stated(page));
 	}
 
 	/// <summary>
@@ -573,17 +577,21 @@ public static class Fable2PageProviders
 	}
 
 	/// <summary>
-	/// The display box's info card (screen 7, `Paper`): a style-0 `DisplayInfoBoxParams` call,
-	/// written by its open `sub_8299E490` — `Paper.Text` the call's text, `Paper.Title` its title,
-	/// `Paper.Accept` the accept caption shown iff `ShowAButton` with `Paper.HoldButton` to match
-	/// and `HoldMeter` iff `IsHoldAButton`, `Paper.Info` the help caption shown iff `ShowYButton`
-	/// with `Paper.abyx`, and the root on slide 7. Stated from the call, filled as it draws.
+	/// The display box's info card (screen 7, `Paper`): the hold-to-accept card (class 0x820EBF1C —
+	/// a style-0 `DisplayInfoBoxParams`, photo mode's upload notice), stated by its own Open
+	/// `sub_8299E490` (`@DisplayBox.Open` kind 8, display_box_hooks.cpp), which writes `Paper.Text`
+	/// (`box+8`), `Paper.Title` (the tag `+32`, resolved), `Paper.Accept` (the tag `+40`) shown iff
+	/// ShowA `+36` with `Paper.HoldButton` to match and `HoldMeter` iff HoldA `+38`, `Paper.Info`
+	/// (the tag `+44`) shown iff ShowY `+37` with `Paper.abyx`, and the root on slide 7. Filled
+	/// while that box is the one showing.
 	/// </summary>
 	private sealed class InfoCardProvider : Engine_UiPageProvider
 	{
 		public bool FillsOnDraw => true;
 
-		private static Engine_UiGuiBoxes.Box? Card => Engine_UiGuiBoxes.StatedCard;
+		/// <summary>The card's stated fields: title tag, ShowA, ShowY, HoldA, accept tag, help tag.</summary>
+		private static Engine_UiDisplayBoxes.Box? Card =>
+			Engine_UiDisplayBoxes.ShowingOf(Engine_UiDisplayBoxes.AcceptHold);
 
 		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page)
 		{
@@ -592,41 +600,36 @@ public static class Fable2PageProviders
 				return NoValues;
 			}
 
-			var values = new Dictionary<string, string>
+			return new Dictionary<string, string>
 			{
-				["Paper.Text"] = card.Text,
-				["Paper.Title"] = card.Title,
+				["Paper.Text"] = card.Body,
+				["Paper.Title"] = Engine_UiGuiText.Resolve(card.Field(0), page.Strings),
+				["Paper.Accept"] = Engine_UiGuiText.Resolve(card.Field(4), page.Strings),
+				["Paper.Info"] = Engine_UiGuiText.Resolve(card.Field(5), page.Strings),
 			};
-			if (card.Buttons is { } buttons)
-			{
-				values["Paper.Accept"] = buttons.AcceptText;
-				values["Paper.Info"] = buttons.HelpText;
-			}
-
-			return values;
 		}
 
 		public IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page)
 		{
-			if (Card?.Buttons is not { } buttons)
+			if (Card is not { } card)
 			{
 				return NoActive;
 			}
 
 			return new Dictionary<string, bool>
 			{
-				["Paper.Accept"] = buttons.ShowA,
-				["Paper.Info"] = buttons.ShowY,
-				["Paper.abyx"] = buttons.ShowY,
+				["Paper.Accept"] = card.Flag(1),
+				["Paper.Info"] = card.Flag(2),
+				["Paper.abyx"] = card.Flag(2),
 			};
 		}
 
 		public IReadOnlyDictionary<string, float> Opacities(in Engine_UiPageContext page) =>
-			Card?.Buttons is { } buttons
+			Card is { } card
 				? new Dictionary<string, float>
 				{
-					["Paper.HoldButton"] = buttons.ShowA ? 1f : 0f,
-					["Paper.HoldButton.HoldMeter"] = buttons.HoldA ? 1f : 0f,
+					["Paper.HoldButton"] = card.Flag(1) ? 1f : 0f,
+					["Paper.HoldButton.HoldMeter"] = card.Flag(3) ? 1f : 0f,
 				}
 				: NoOpacities;
 
@@ -636,23 +639,9 @@ public static class Fable2PageProviders
 
 	private sealed class CrimeProvider : Engine_UiPageProvider
 	{
-		/// <summary>The pages' text, and the purse the tick writes every frame
-		/// (`Foreground.ExpandableMenu.Money.Text`, `sub_8246B5E8`: the gold token and the gold).</summary>
-		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page)
-		{
-			IReadOnlyDictionary<string, string> text = Engine_UiCrimePage.Values(page.Crime, page.Strings);
-			if (!page.Vitals.Known)
-			{
-				return text;
-			}
-
-			var values = new Dictionary<string, string>(text)
-			{
-				["ExpandableMenu.Money.Text"] = "<gold_img>" +
-					page.Vitals.Gold.ToString(System.Globalization.CultureInfo.InvariantCulture),
-			};
-			return values;
-		}
+		/// <summary>The pages' text. The purse is the guest's told write (Engine_UiScreenTemplate.Purse).</summary>
+		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page) =>
+			Engine_UiCrimePage.Values(page.Crime, page.Strings);
 
 		/// <summary>
 		/// THE PAGES PARK BY SLIDE (`sub_82990B30` 0x82990c78..d0): for the book's second and
@@ -768,8 +757,27 @@ public static class Fable2PageProviders
 		/// Nothing selected between them before, so the right page was whatever the guest last
 		/// left up — which on this screen is a page of the wrong category.
 		/// </summary>
-		public IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page) =>
-			BookPagesByOpacity(PageIndexOf(PickedRow(page)), PagesOf(page, OptionsPageElements));
+		public IReadOnlyDictionary<string, bool> Active(in Engine_UiPageContext page)
+		{
+			string[] pages = PagesOf(page, OptionsPageElements);
+			IReadOnlyDictionary<string, bool> shown = BookPagesByOpacity(PageIndexOf(PickedRow(page)), pages);
+			if (!GameUi.PauseIsPlayerTwos() || pages.Length == 0)
+			{
+				return shown;
+			}
+
+			// PLAYER TWO'S GAME PAGE IS SUBTITLES ALONE: the page's build `sub_829BE130` makes
+			// widgets 1..4 only while the pause root's player (`FindScreenHandler(gui, 0) + 4`) is
+			// zero (0x829BE1AC..0x829BE1B8; disc `sub_828D7470` 0x828D749C..0x828D74BC), so player
+			// two's page cursor has one row to stand on.
+			var active = new Dictionary<string, bool>(shown);
+			for (int row = 1; row < OptionWidgets[0].Length; ++row)
+			{
+				active[$"{pages[0]}.{OptionWidgets[0][row]}"] = false;
+			}
+
+			return active;
+		}
 
 		/// <summary>
 		/// The row that picks the page: the highlighted list row, or — once code 36 has opened
@@ -875,7 +883,7 @@ public static class Fable2PageProviders
 		{
 			// Upgrade furniture: a row is a LEVEL, not an item — its pages are the piece's
 			// (Engine_UiFurniturePage), with the `Done` prompt both page inits write
-			// (`sub_8299BF48`, `sub_8299CEA8`) and the purse the screen's open writes.
+			// (`sub_8299BF48`, `sub_8299CEA8`). The purse is the guest's told write.
 			if (page.ScreenId == Engine_UiFurniturePage.ScreenId)
 			{
 				var furniture = new Dictionary<string, string>(
@@ -883,12 +891,6 @@ public static class Fable2PageProviders
 				string done = page.Strings is { } doneBook && doneBook.TryGetString("GUI_DONE", out string caption) ? caption : string.Empty;
 				furniture["Page1.Contents.PageButtons.B.B.Text"] = done;
 				furniture["Page2.Contents.PageButtons.B.B.Text"] = done;
-				if (page.Vitals.Known)
-				{
-					furniture["ExpandableMenu.Money.Text"] = "<gold_img>" +
-						page.Vitals.Gold.ToString(System.Globalization.CultureInfo.InvariantCulture);
-				}
-
 				return furniture;
 			}
 

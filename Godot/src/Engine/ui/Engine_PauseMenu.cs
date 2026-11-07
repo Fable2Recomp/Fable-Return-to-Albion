@@ -132,66 +132,32 @@ public static class Engine_PauseMenu
 	}
 
 	/// <summary>
-	/// Takes each row's label from the guest's own button pool. True when anything changed.
+	/// Takes each row's label from the guest's own statements, BY NAME. True when anything changed.
 	///
 	/// The Babel tags all resolve, but only to the bare noun: the guest composes the live
-	/// decoration before it writes the row — "Abilities" becomes
+	/// decoration before it spawns the row — "Abilities" becomes
 	/// `Abilities &lt;s4&gt;(2)&lt;/s4&gt;` when there are points to spend, Items and Clothing
-	/// pick up `&lt;exclamation.img&gt;` when something inside is new — and that exists nowhere
-	/// but in the string.
-	///
-	/// Matched by ORDER: both lists come from the same builder, `sub_8298DF98` spawns in the
-	/// order <see cref="BuildHero"/> transcribes, and an unavailable tab is dropped from both
-	/// (<see cref="ApplyTabAvailability"/>). The guest's buttons carry the finished label, not
-	/// the identity, so a name join is unavailable and a count mismatch is a real disagreement —
-	/// the shorter list wins and the caller reports the gap.
+	/// pick up `&lt;exclamation.img&gt;` when something inside is new — and `SpawnButton`'s
+	/// String2 carries it (`sub_8298DF98`, 0x8298e510..0x8298e5c8), recorded with the row's name.
+	/// Host-only and mod rows are not the guest's and are never joined.
 	/// </summary>
-	/// <param name="positionalFallback">
-	/// Whether a row the NAME join did not reach may take a label by its index in the guest's
-	/// pool. True for the pause list, which is built to match the guest's one for one. FALSE for
-	/// any list that deliberately differs from the guest's — a template list that drops a row is
-	/// shorter, and then every row past the gap takes its predecessor's label.
+	/// <param name="clearUnnamed">
+	/// Whether a row the stated rows do not name loses a label it took earlier — true for the pause
+	/// list, built to match the guest's one for one; false for a template list that deliberately
+	/// differs and whose unmatched rows carry their own tags.
 	/// </param>
 	public static bool ApplyStatedLabels(
 		Engine_FrontEndMenu menu,
-		System.Collections.Generic.IReadOnlyList<Engine_ExpandableMenuItems.Button> buttons,
 		System.Collections.Generic.IReadOnlyList<Engine_UiMenuModel.Row> stated,
-		bool positionalFallback = true)
+		bool clearUnnamed = true)
 	{
-		var filled = new System.Collections.Generic.List<string>();
-		foreach (Engine_ExpandableMenuItems.Button button in buttons)
-		{
-			if (button.IsFilled && button.Text is { } text)
-			{
-				filled.Add(text);
-			}
-		}
-
-		// HOST-ONLY ROWS ARE NOT IN THE GUEST'S LIST AND MUST NOT BE COUNTED AGAINST IT. The
-		// guest spawns seven tabs plus Saving; a host tab makes ours longer, and the positional
-		// fallback below would then hand every row after it the label of its predecessor. A
-		// mod's row (`FromMod`) is not in it either, whether or not its file says `hostOnly`.
-		var offered = new System.Collections.Generic.List<Engine_UiExpandableMenu.Item>();
-		foreach (Engine_UiExpandableMenu.Item root in menu.Roots)
-		{
-			if (root.Available && !root.HostOnly && !root.FromMod)
-			{
-				offered.Add(root);
-			}
-		}
-
-		// An empty read is no news, not no labels: a sample taken between the guest tearing the
-		// pause list down for a tab change and building it again looks identical to "the guest
-		// offers no rows", so neither may be acted on.
-		if (filled.Count == 0 && stated.Count == 0)
+		// An empty capture is no news, not no labels: a pause list torn down for a tab change and
+		// not yet repopulated reads the same as "the guest offers no rows".
+		if (stated.Count == 0)
 		{
 			return false;
 		}
 
-		// By name, from the C++'s own statements: `SpawnButton`'s String2 is the localised label
-		// with decorations (unspent ability count, new-item marker) already appended at spawn
-		// time. Taken from the capture, so it needs no VM read or pool join and arrives before
-		// the guest has laid anything out.
 		var byName = new System.Collections.Generic.Dictionary<string, string>(
 			System.StringComparer.Ordinal);
 		foreach (Engine_UiMenuModel.Row row in stated)
@@ -203,56 +169,28 @@ public static class Engine_PauseMenu
 		}
 
 		bool changed = false;
-		var named = new System.Collections.Generic.HashSet<Engine_UiExpandableMenu.Item>();
-		foreach (Engine_UiExpandableMenu.Item item in offered)
+		foreach (Engine_UiExpandableMenu.Item item in menu.Roots)
 		{
-			if (!byName.TryGetValue(item.Name, out string? label))
+			if (!item.Available || item.HostOnly || item.FromMod)
 			{
 				continue;
 			}
 
-			named.Add(item);
-			if (!string.Equals(item.StatedLabel, label, System.StringComparison.Ordinal))
+			if (byName.TryGetValue(item.Name, out string? label))
 			{
-				item.StatedLabel = label;
-				changed = true;
-			}
-		}
-
-		if (named.Count == offered.Count || !positionalFallback)
-		{
-			return changed;
-		}
-
-		// The positional fallback, for rows the tree did not name — a pause list read before its
-		// Lua is up, or a template entry the guest never spawned. Rows the name join settled are
-		// skipped so the two cannot disagree.
-		int at = 0;
-		foreach (Engine_UiExpandableMenu.Item item in offered)
-		{
-			if (named.Contains(item))
-			{
-				++at;
-				continue;
-			}
-
-			if (at < filled.Count)
-			{
-				if (!string.Equals(item.StatedLabel, filled[at], System.StringComparison.Ordinal))
+				if (!string.Equals(item.StatedLabel, label, System.StringComparison.Ordinal))
 				{
-					item.StatedLabel = filled[at];
+					item.StatedLabel = label;
 					changed = true;
 				}
 			}
-			else if (stated.Count != 0 && item.StatedLabel is not null)
+			else if (clearUnnamed && item.StatedLabel is not null)
 			{
-				// The tree is up and does not carry this row, so its label belongs to a list that
-				// no longer exists. Cleared only on that evidence, never on an empty read.
+				// The guest's population is up and does not carry this row: its label belongs to a
+				// list that no longer exists.
 				item.StatedLabel = null;
 				changed = true;
 			}
-
-			++at;
 		}
 
 		return changed;

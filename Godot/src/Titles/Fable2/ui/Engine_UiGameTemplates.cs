@@ -366,6 +366,7 @@ public static class Engine_UiGameTemplates
         {
           "name": "Gold",
           "tag": "GUI_SCREEN_GIFT_GOLD",
+          "when": "has-gold",
           "icon": "Art\\GUI\\WheelIcons\\icon_gold_coin.tga",
           "eventType": 7
         }
@@ -949,6 +950,7 @@ public static class Engine_UiGameTemplates
       "name": "abilities",
       "ownsList": true,
       "restFromFile": true,
+      "purse": true,
       "provider": "abilities",
       "hasSpellBlade": true,
       "scrollContent": "Foreground.Book.Pages.Page2.Contents.Text",
@@ -1017,6 +1019,7 @@ public static class Engine_UiGameTemplates
       "name": "items",
       "ownsList": true,
       "restFromFile": true,
+      "purse": true,
       "menuScript": "ItemsMenu",
       "menuScriptByMode": {
         "1": "ItemsMenu",
@@ -1106,6 +1109,7 @@ public static class Engine_UiGameTemplates
       "name": "clothing",
       "ownsList": true,
       "restFromFile": true,
+      "purse": true,
       "previewAnchor": "Foreground.Book.Pages.Page1.Contents.TypeSpecific.model_proxy.model",
       "provider": "item-book",
       "scrollContent": "Foreground.Book.Pages.Page2.Contents.ItemDescription",
@@ -1189,6 +1193,7 @@ public static class Engine_UiGameTemplates
       "name": "gift",
       "ownsList": true,
       "restFromFile": true,
+      "purse": true,
       "menuScript": "GiftGivingMenu",
       "previewAnchor": "Foreground.Book.Pages.Page1.Contents.ModelHider.model_proxy.model",
       "provider": "item-book",
@@ -1270,6 +1275,7 @@ public static class Engine_UiGameTemplates
       "name": "upgradefurniture",
       "ownsList": true,
       "restFromFile": true,
+      "purse": true,
       "commitsByHighlight": true,
       "previewAnchor": "Foreground.Book.Pages.Page1.Contents.ModelHider.model_proxy.model",
       "provider": "item-book",
@@ -1348,9 +1354,11 @@ public static class Engine_UiGameTemplates
       "name": "decoration",
       "ownsList": true,
       "restFromFile": true,
+      "purse": true,
       "commitsByHighlight": true,
       "previewAnchor": "Foreground.Book.Pages.Page1.Contents.ModelHider.model_proxy.model",
       "provider": "item-book",
+      "flipAction": "screen:unlearn",
       "scrollContent": "Foreground.Book.Pages.Page2.Contents.ItemDescription",
       "scrollMask": "Mask",
       "scrollBar": "Foreground.Book.Pages.Page2.Contents.Scrollbar",
@@ -1429,6 +1437,7 @@ public static class Engine_UiGameTemplates
       "name": "logbook",
       "ownsList": true,
       "restFromFile": true,
+      "purse": true,
       "provider": "logbook",
       "scrollContent": "Foreground.Book.Pages.StatsPage.Contents.LogBook.Stats|Foreground.Book.Pages.RenownPage.Contents.LogBook.Renown|Foreground.Book.Pages.ExpressionsPage.Contents|Foreground.Book.Pages.CompletedQuestsPage.Contents.Quests|Foreground.Book.Pages.HelpPage.Contents.LogBook",
       "scrollMask": "Mask|Mask|Mask|Mask|Mask",
@@ -1464,6 +1473,9 @@ public static class Engine_UiGameTemplates
       "wideRight": [
         "Foreground.Book",
         "Foreground.Mask"
+      ],
+      "guestTextUnits": [
+        "ExpressionsPage.Contents.Icon"
       ],
       "statFields": [
         {
@@ -1854,6 +1866,7 @@ public static class Engine_UiGameTemplates
       "name": "options",
       "ownsList": true,
       "restFromFile": true,
+      "purse": true,
       "commitsByHighlight": true,
       "pageElement": "Foreground.ExpandableMenu",
       "pageSlide": 2,
@@ -1896,6 +1909,7 @@ public static class Engine_UiGameTemplates
       "name": "crime",
       "ownsList": true,
       "restFromFile": true,
+      "purse": true,
       "provider": "crime",
       "scrollContent": "Foreground.Book.Pages.Page1.Contents.Text|Foreground.Book.Pages.Page2.Contents.Text|Foreground.Book.Pages.Page3.Contents.Text",
       "scrollMask": "Mask|Mask|Mask",
@@ -1948,6 +1962,7 @@ public static class Engine_UiGameTemplates
       "name": "shop",
       "ownsList": true,
       "restFromFile": true,
+      "purse": true,
       "menuScript": "ShopMenu",
       "previewAnchor": "Foreground.Book.Pages.Page1.Contents.ModelHider.model_proxy.model",
       "provider": "item-book",
@@ -2028,6 +2043,7 @@ public static class Engine_UiGameTemplates
       "name": "worldmap",
       "ownsList": true,
       "restFromFile": true,
+      "purse": true,
       "provider": "worldmap",
       "scrollContent": "Foreground.Book.Pages.Page1.Contents.Text|Foreground.Book.Pages.QuestsPage.Contents.Description|Foreground.Book.Pages.FamilyPage.Contents.Group|Foreground.Book.Pages.Page2.Contents.Legend|Foreground.Book.Pages.SalesPage.Contents.Description",
       "scrollMask": "MaskPage2|MaskQuests|MaskFamily|MaskPage3|MaskPage2",
@@ -2164,6 +2180,7 @@ public static class Engine_UiGameTemplates
       "name": "realestate",
       "ownsList": true,
       "restFromFile": true,
+      "purse": true,
       "provider": "realestate",
       "scrollContent": "Foreground.Book.Pages.Page1.Group|Foreground.Book.Pages.Page2.Contents.Group",
       "scrollMask": "Mask|Mask",
@@ -2360,7 +2377,9 @@ public static class Engine_UiGameTemplates
         "logo",
         "White",
         "PressStart",
-        "Legal",
+        "Legal"
+      ],
+      "ownedElsewhere": [
         "dialog"
       ]
     },

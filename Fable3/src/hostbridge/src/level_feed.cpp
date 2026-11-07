@@ -1,6 +1,7 @@
 // refii - Fable 3's world, as the guest states it: the level standing, the level change in
 // flight, the scenario, whether the world is ready, the camera, and the hold that keeps the guest
-// in its loading screen while Godot builds.
+// in its loading screen while Godot builds; and, from the table its hooks state, the pause gate,
+// the culture and the loading screen.
 //
 // Every offset is from the Fable 3 IDB, each against its own base:
 //
@@ -38,8 +39,6 @@ using refii::hostcore::SafeKernelMemory;
 constexpr uint32_t kLevelChangeCommand = 0x820AB6A8u;
 constexpr uint32_t kDefaultScenario = 0x83557288u;
 constexpr uint32_t kTickRate = 0x8329EA48u;
-constexpr uint32_t kComponentList = 0x83556448u;
-constexpr uint32_t kGuiManager = 0x83556490u;
 constexpr uint32_t kGuiMode = 0x82091988u;
 constexpr uint32_t kNoScreen = 31u;
 
@@ -339,12 +338,15 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWeather(float* out_snow_size, float* 
     return 1u;
 }
 
-/// The pause gate. The presented game runs only the TOP of its mode stack (the main loop,
-/// 0x821CBE6C..0x821CBEA4: stack `*(game+0x30)+4`, top `*(*(*stack+4)+8)`), and while the GUI mode
-/// is on top (vtable 0x82091988, id 1: `li r3,1` at 0x82C13A28; pushed by the in-cutscene pause
-/// and screen OnEnter) its update ticks only the GUI and input — the world is frozen. So the screen
-/// id is the GUI's own (`*(*(GUI+56)+4)`, GUI = `*0x83556490`) while that mode is on top, and 31,
-/// "no screen", otherwise. Fable 2's modal and tab fields have no Fable 3 counterpart.
+/// The pause gate. The presented game runs only the TOP of its mode stack S = `*(*(game+0x30)+4)`
+/// (the main loop, 0x821CBE6C..0x821CBEA4), and while the GUI's pause mode is on top (vtable
+/// 0x82091988, id 1: `li r3,1` at 0x82C13A28; pushed by lhGuiManager_EnterGuiMode at 0x825CEA54)
+/// its update ticks only the GUI and input — the world is frozen. Both are stated
+/// (Fable3/src/hooks/src/game_state_hooks.cpp): the top by the stack's push, pop and run, the
+/// screen id by each writer of the GUI's screen manager. S is the key the presented game's stack
+/// was stated under. The screen id is the GUI's own while that mode is on top (31, "no screen",
+/// answered as 0 there), and 31 otherwise. Fable 2's modal and tab fields have no Fable 3
+/// counterpart.
 REFII_HOST_ABI_EXPORT int RefiiHostGetPauseState(uint32_t* out_screen_id, uint32_t* out_modal_id,
                                                 uint32_t* out_modal_mode, uint32_t* out_current_tab) {
     if (out_screen_id != nullptr) *out_screen_id = 0xFFFFFFFFu;
@@ -359,136 +361,63 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetPauseState(uint32_t* out_screen_id, uint32
     }
 
     const uint32_t stack = Word(base, Word(base, game + 0x30u) + 4u);
-    const uint32_t top = Word(base, Word(base, Word(base, stack) + 4u) + 8u);
-    if (!Plausible(top)) {
+    uint32_t vtable = 0u;
+    uint32_t depth = 0u;
+    if (refii_bridge_mode_stack_read(stack, nullptr, &vtable, &depth) == 0 || depth == 0u) {
         return 0;
     }
 
     uint32_t screen_id = kNoScreen;
-    if (Word(base, top) == kGuiMode) {
-        const uint32_t screens = Word(base, Word(base, kGuiManager) + 56u);
-        screen_id = Plausible(screens) ? GuestWordAt(base, screens + 4u) : 0u;
-        if (screen_id == kNoScreen) {
-            screen_id = 0u;
-        }
+    if (vtable == kGuiMode) {
+        uint32_t stated = kNoScreen;
+        refii_bridge_gui_screen_read(&stated);
+        screen_id = stated == kNoScreen ? 0u : stated;
     }
 
     if (out_screen_id != nullptr) *out_screen_id = screen_id;
     return 1;
 }
 
-/// The culture the guest runs in ("en-uk", ...): Fable 2's language table layout at Fable 3's
-/// addresses — table `0x832A0AC8`, count `0x832A0ACC`, current index `0x832A0AD0`, 96-byte rows
-/// led by the culture code (boot sub_822E8FC8 matches "en-uk" and stores the index at 0x822E918C;
-/// a switch goes through sub_822E8D70). The refresh frees and rebuilds the table, so it is read
-/// twice and answered only when both agree. Returns the code's length, 0 when unread.
+/// The culture the guest runs in ("en-uk", ...): the code of the culture table's row in use, as its
+/// builds and its switch stated it (Fable3/src/hooks/src/game_state_hooks.cpp: the boot build
+/// sub_822E8FC8, the rebuild sub_822E8A88, the switch sub_822E8D70). Returns the code's length, 0
+/// before the table is stated or when no row is in use.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCurrentCulture(char* out, uint32_t capacity) {
-    if (out == nullptr || capacity == 0u) {
-        return 0u;
-    }
-    out[0] = '\0';
-
-    const uint8_t* base = GuestBase();
-    if (base == nullptr) {
-        return 0u;
-    }
-
-    constexpr uint32_t kLanguageTable = 0x832A0AC8u;
-    constexpr uint32_t kLanguageStride = 96u;
-    constexpr uint32_t kCodeCapacity = 16u;
-    const auto read_code = [&](char (&code)[kCodeCapacity + 1]) -> uint32_t {
-        const uint32_t table = Word(base, kLanguageTable);
-        const uint32_t count = GuestWordAt(base, kLanguageTable + 4u);
-        const uint32_t current = GuestWordAt(base, kLanguageTable + 8u);
-        if (!Plausible(table) || count == 0u || count > 64u || current >= count) {
-            return 0u;
-        }
-
-        const uint32_t row = table + (current * kLanguageStride);
-        for (uint32_t i = 0; i < kCodeCapacity; ++i) {
-            const char c = static_cast<char>(GuestByteAt(base, row + i));
-            if (c == '\0') {
-                code[i] = '\0';
-                return i;
-            }
-            const bool plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                               (c >= '0' && c <= '9') || c == '-';
-            if (!plain) {
-                return 0u;
-            }
-            code[i] = c;
-        }
-        return 0u;
-    };
-
-    char first[kCodeCapacity + 1] = {};
-    char second[kCodeCapacity + 1] = {};
-    const uint32_t length = read_code(first);
-    if (length == 0u || read_code(second) != length || std::memcmp(first, second, length) != 0 ||
-        length + 1u > capacity) {
-        return 0u;
-    }
-
-    std::memcpy(out, first, length);
-    out[length] = '\0';
-    return length;
+    return refii_bridge_culture_code_read(out, capacity);
 }
 
-/// The loading screen the guest has up, by its own fields. Fable 3's is a C++ quad screen, as
-/// Fable 2's: the manager is `*(*0x83556448 + 0x14)` (the main loop reads it at 0x821CBF08) and
-/// the live screen is manager+4, 0 when none. The screen states its cover opacity at +0xD0
-/// (1.0 on request, 0x823020F4; rising and falling in the tick sub_823022D0), "stop requested"
-/// at +0x19C (0x823020E8, from sub_82307B18) and "done" at +0x1B1 (0x8230262C). The stop does
-/// not block, unlike Fable 2's. Returns 1 when a screen exists.
+/// The loading screen the guest has up, as it states it (Fable3/src/hooks/src/
+/// loading_screen_scene.cpp): the manager that made it, the screen, its cover opacity (ls+0xD0 as
+/// its update leaves it: rising as it comes up, falling after the close), the close requested
+/// (ls+0x19C, sub_823020D0) and finished (ls+0x19D, its update's teardown). The stop does not
+/// block, unlike Fable 2's. Returns 1 while a screen exists.
 REFII_HOST_ABI_EXPORT int RefiiHostGetLoadingScreen(uint32_t* out_manager, uint32_t* out_screen, float* out_fade,
                                                    uint32_t* out_requested, uint32_t* out_done) {
-    const uint8_t* base = GuestBase();
-    if (base == nullptr) {
-        return 0;
-    }
-
-    const uint32_t manager = Word(base, Word(base, kComponentList) + 0x14u);
-    if (!Plausible(manager)) {
-        return 0;
-    }
-    if (out_manager != nullptr) *out_manager = manager;
-
-    const uint32_t screen = Word(base, manager + 4u);
-    if (out_screen != nullptr) *out_screen = screen;
-    if (!Plausible(screen)) {
-        return 0;
-    }
-
-    if (out_fade != nullptr) {
-        const uint32_t raw = GuestWordAt(base, screen + 0xD0u);
-        std::memcpy(out_fade, &raw, sizeof(float));
-    }
-    if (out_requested != nullptr) *out_requested = GuestByteAt(base, screen + 0x19Cu);
-    if (out_done != nullptr) *out_done = GuestByteAt(base, screen + 0x1B1u);
-    return 1;
+    return refii_bridge_loading_screen_read(out_manager, out_screen, out_fade, out_requested, out_done, nullptr,
+                                            nullptr, nullptr, 0u);
 }
 
-/// The art the guest chose for its loading screen: sub_823030B0 decides it once per screen and
-/// writes it on every branch through sub_822295F0 into the LHString handle at +0x150 (e.g.
-/// `qc010_opening.tex` for the prologue, `qc0000_road_to_rule.tex` for a new game), so the name
-/// is two dereferences away (handle → body → char*). The kind (+0x170, 0x82300470) is Fable 3's
-/// own numbering, not Fable 2's art enum: the name is the statement. Returns 1 when a name was read.
+/// The art the guest chose for its loading screen, as its decision sub_823030B0 stated it (the
+/// CCharString it writes into ls+0x150 on every branch, e.g. `qc010_opening.tex` for the prologue,
+/// `qc0000_road_to_rule.tex` for a new game). The kind is the create's (ls+0x170), Fable 3's own
+/// numbering, not Fable 2's art enum: the name is the statement. Returns 1 when a name is held.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLoadingScreenArt(uint32_t* out_type, uint32_t* out_body, char* name,
                                                            uint32_t capacity) {
     if (out_type != nullptr) *out_type = 0u;
     if (out_body != nullptr) *out_body = 0u;
     if (name != nullptr && capacity > 0u) name[0] = '\0';
 
-    uint32_t screen = 0u;
-    if (RefiiHostGetLoadingScreen(nullptr, &screen, nullptr, nullptr, nullptr) == 0) {
+    uint32_t kind = 0u;
+    uint32_t body = 0u;
+    if (refii_bridge_loading_screen_read(nullptr, nullptr, nullptr, nullptr, nullptr, &kind, &body, name,
+                                         capacity) == 0) {
+        if (name != nullptr && capacity > 0u) name[0] = '\0';
         return 0u;
     }
 
-    const uint8_t* base = GuestBase();
-    if (out_type != nullptr) *out_type = GuestWordAt(base, screen + 0x170u);
-    const uint32_t body = Word(base, screen + 0x150u);
+    if (out_type != nullptr) *out_type = kind;
     if (out_body != nullptr) *out_body = body;
-    return ReadName(base, screen + 0x150u, name, capacity) ? 1u : 0u;
+    return name != nullptr && capacity > 0u && name[0] != '\0' ? 1u : 0u;
 }
 
 /// The camera the guest last rendered the world with, as its hook stated it

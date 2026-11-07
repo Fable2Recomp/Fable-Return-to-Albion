@@ -6,13 +6,15 @@ using Refii.Ui;
 /// <summary>
 /// Fable 3's epilogue (questcompletion.bgf) and credits (creditsscreen.bgf), drawn on the SHARED
 /// HUD view as two more <see cref="Fable3HudDocument"/>s. Both are screen-manager screens, not
-/// box-manager boxes, so no `@Box.Open` names them: end_screen_hooks.cpp states when each is up
+/// box-manager boxes, so no `@Box.Show` names them: end_screen_hooks.cpp states when each is up
 /// and which presentation it is; everything on them is an element statement.
 /// </summary>
 /// <remarks>
 /// THE EPILOGUE. The show (sub_8276B460) writes the title, description, reward caption, renown
 /// and button texts through the HUD text registry, whose flush commits each to its text box
-/// (sub_8223A888 -> sub_82B45268 at 0x8223A8DC: `@Element.Text`); the reward rows
+/// (sub_8223A888 -> sub_82B45268 at 0x8223A8DC: `@Element.Text`) — all behind its presentation
+/// (0x8276B4BC), so the title and description are taken from the show's own arguments
+/// (`@Epilogue.Open`, <see cref="Opened"/>); the reward rows
 /// (AddItemRewardToEpilogueScreen -> sub_8276B978) toggle `EpilogueItem1/2` through SetState
 /// (sub_8281A490 at 0x8281A4AC) and write their texts the same way; the gold
 /// (SetGoldRewardInEpilogueScreen -> sub_8276B848) writes `EpilogueRenown` / `EpilogueRenownAmt`.
@@ -55,8 +57,8 @@ public static class Fable3EndScreens
 	/// <summary>The two documents, for <see cref="Fable3Hud"/> to stand beside `hud` and `interactionmode`.</summary>
 	public static Fable3HudDocument[] Documents() => new[]
 	{
-		new Fable3HudDocument("questcompletion", EpilogueGroups, () => EpiloguePresentation, layouts: false),
-		new Fable3HudDocument("creditsscreen", CreditsGroups, () => CreditsPresentation, layouts: false),
+		new Fable3HudDocument("questcompletion", EpilogueGroups, layouts: false),
+		new Fable3HudDocument("creditsscreen", CreditsGroups, layouts: false),
 	};
 
 	/// <summary>
@@ -89,6 +91,17 @@ public static class Fable3EndScreens
 		{
 			EpiloguePresentation = Parse(call.Argument(0).Text);
 			EpilogueImage = call.Argument(1).Text;
+			Opened(call.Argument(2).Text, call.Argument(3).Text, (int)call.Argument(4).Number,
+				Parse(call.Argument(5).Text), Parse(call.Argument(6).Text));
+		});
+		// The screenshot's texture as the show computed it (sub_826EFBD8 at 0x8276B788), for the
+		// elements filed under `*dword_8355AC44` in the ImageName registry.
+		router.Register("@Epilogue.Image", call =>
+		{
+			uint name = Parse(call.Argument(0).Text);
+			uint texture = Parse(call.Argument(1).Text);
+			Fable3HudRegistry.StateImage(name, texture);
+			Fable3Elements.Log($"[fable3-stated] epilogue screenshot '{call.Argument(2).Text}' texture {texture:X8} under image name {name:X8}");
 		});
 		router.Register("@Epilogue.Close", _ =>
 		{
@@ -97,6 +110,29 @@ public static class Fable3EndScreens
 		});
 		router.Register("@Credits.Open", call => CreditsPresentation = Parse(call.Argument(0).Text));
 		router.Register("@Credits.Close", _ => CreditsPresentation = 0u);
+	}
+
+	/// <summary>The renown the epilogue was shown with (Epilogue_Show's r6; 0 none).</summary>
+	public static int EpilogueRenown { get; private set; }
+
+	/// <summary>
+	/// The show's own arguments (end_screen_hooks.cpp): the title and description land on the
+	/// elements questcompletion.bgf binds under the text names the show writes them to
+	/// (`*dword_8355AC24` / `*dword_8355AC28`, 0x8276B500 / 0x8276B524) — the writes the show makes
+	/// only behind its presentation (0x8276B4BC).
+	/// </summary>
+	public static void Opened(string title, string description, int renown, uint titleName, uint descriptionName)
+	{
+		EpilogueRenown = renown;
+		if (titleName != 0u)
+		{
+			Fable3HudRegistry.StateText(titleName, title);
+		}
+
+		if (descriptionName != 0u)
+		{
+			Fable3HudRegistry.StateText(descriptionName, description);
+		}
 	}
 
 	private static uint Parse(string hex) =>

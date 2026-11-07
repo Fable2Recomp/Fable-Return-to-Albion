@@ -179,7 +179,87 @@ public partial class GameUi
 		{
 			if (GuestAddress(call) is { } box)
 			{
-				_boxes.GuestMessageOpened(box, call.Argument(1).Text, call.Argument(2).Text ?? string.Empty);
+				string body = call.Argument(2).Text ?? string.Empty;
+				_boxes.GuestMessageOpened(box, call.Argument(1).Text, body);
+				Engine_UiDisplayBoxes.Opened(box, Engine_UiDisplayBoxes.Message, call.Argument(1).Text, body,
+					System.Array.Empty<string>());
+			}
+		});
+
+		// The display boxes' classes stating themselves (display_box_hooks.cpp): box address, name,
+		// body, kind — the class's own type: 2 query, 3 numeric adjuster, 4 quest box, 5 the
+		// intermission strip, 6 acceptance, 7 button, 8 the hold-to-accept card — then the class's
+		// own fields (Engine_UiDisplayBoxes). Acceptance and button open through
+		// `g_DisplayBox:OpenAsAcceptanceBox()`, whose title is `GUI_ACCEPTANCE_BOX`.
+		_guiNatives.Register("@DisplayBox.Open", call =>
+		{
+			if (GuestAddress(call) is not { } box || !int.TryParse(call.Argument(3).Text, out int kind))
+			{
+				return;
+			}
+
+			string body = call.Argument(2).Text ?? string.Empty;
+			var fields = new System.Collections.Generic.List<string>();
+			for (int i = 4; i < call.Arguments.Count; ++i)
+			{
+				fields.Add(call.Argument(i).Text ?? string.Empty);
+			}
+
+			Engine_UiDisplayBoxes.Opened(box, kind, call.Argument(1).Text ?? string.Empty, body, fields);
+			if (kind == 5)
+			{
+				_surfaces.Intermission.Opened(box, kind, body);
+			}
+			else if (kind is 6 or 7)
+			{
+				_surfaces.DisplayBox.Opened(box, kind, body,
+					Engine_UiGuiText.Resolve("GUI_ACCEPTANCE_BOX", _presentation?.Strings));
+			}
+		});
+
+		_guiNatives.Register("@DisplayBox.Close", call =>
+		{
+			if (GuestAddress(call) is { } box)
+			{
+				Engine_UiDisplayBoxes.Closed(box);
+				_surfaces.Intermission.Closed(box);
+				_surfaces.DisplayBox.Closed(box);
+			}
+		});
+
+		// The menu box's populate stating it (display_box_hooks.cpp, THE MENU BOX): the controller,
+		// the title as the populate wrote it, cancelable, the Orb's player card, then each row's tag
+		// prefixed `+` enabled or `-` disabled — resolved as the populate resolves it
+		// (`sub_8230E0E8`). Restated on a row's enable; the close states the answer it posted.
+		_guiNatives.Register("@MenuBox.Open", call =>
+		{
+			if (GuestAddress(call) is not { } box)
+			{
+				return;
+			}
+
+			var options = new System.Collections.Generic.List<Engine_UiGuiBoxes.MenuOption>();
+			for (int i = 4; i < call.Arguments.Count; ++i)
+			{
+				if (Engine_UiDisplayBoxes.Row(call.Argument(i).Text ?? string.Empty) is { } row)
+				{
+					options.Add(new Engine_UiGuiBoxes.MenuOption(
+						Engine_UiGuiText.Resolve(row.Tag, _presentation?.Strings), row.Enabled));
+				}
+			}
+
+			Engine_UiDisplayBoxes.MenuOpened(box,
+				new Engine_UiGuiBoxes.MenuBoxModel(call.Argument(1).Text ?? string.Empty, options,
+					call.Argument(2).Text == "1"),
+				call.Argument(3).Text == "1");
+		});
+
+		_guiNatives.Register("@MenuBox.Close", call =>
+		{
+			if (GuestAddress(call) is { } box)
+			{
+				GD.Print($"[game-ui] menu box 0x{box:X8} closed by the guest — answer {call.Argument(1).Text}");
+				Engine_UiDisplayBoxes.MenuClosed(box);
 			}
 		});
 
@@ -228,6 +308,7 @@ public partial class GameUi
 			if (GuestAddress(call) is { } box)
 			{
 				_boxes.GuestMessageClosed(box, call.Argument(1).Text);
+				Engine_UiDisplayBoxes.Closed(box);
 			}
 		});
 
@@ -271,6 +352,11 @@ public partial class GameUi
 		// raises: `GUI_SCREEN_AUGMENT_APPLIED` with %1 the augment and %2 the weapon, or
 		// `GUI_SCREEN_AUGMENT_FAILED_FULL` with %1 the weapon (0x826d20b0..0x826d21e4). The held
 		// list is put away either way; the items list stands again.
+		//
+		// The guest's handler raises it as a router MESSAGE box — `lhGuiManager_OpenModal(gui28,
+		// text, 2, 38, …)` (0x826d2140 / 0x826d21e4) — which the player dismisses; the pump took the
+		// handler's place, so the host raises the same dismissable notice
+		// (Engine_UiHostBoxes.Tell, drawn on the query paper by the owned query surface).
 		_guiNatives.Register("@Augment.Result", call =>
 		{
 			bool ok = call.Argument(0).Boolean;
@@ -278,7 +364,7 @@ public partial class GameUi
 			string text = ok
 				? Engine_UiGuiText.Substitute(Engine_UiGuiText.Resolve("GUI_SCREEN_AUGMENT_APPLIED", _presentation?.Strings), new[] { augment, target })
 				: Engine_UiGuiText.Substitute(Engine_UiGuiText.Resolve("GUI_SCREEN_AUGMENT_FAILED_FULL", _presentation?.Strings), new[] { target });
-			_boxes.InfoBoxEx("AugmentResult", 6f, text);
+			Engine_UiHostBoxes.Tell(text);
 			Engine_UiAugmentFlow.End();
 			_screenMenu?.FollowDyeFlow();
 			_screenMenuView?.Refresh();
@@ -294,7 +380,7 @@ public partial class GameUi
 			string text = Engine_UiGuiText.Substitute(
 				Engine_UiGuiText.Resolve(ok ? "GUI_SCREEN_AUGMENT_REMOVED_SUCCESS" : "GUI_SCREEN_AUGMENT_REMOVED_FAIL", _presentation?.Strings),
 				new[] { target });
-			_boxes.InfoBoxEx("AugmentResult", 6f, text);
+			Engine_UiHostBoxes.Tell(text);
 			Engine_UiAugmentFlow.End();
 			_screenMenu?.FollowDyeFlow();
 			_screenMenuView?.Refresh();
@@ -364,57 +450,14 @@ public partial class GameUi
 					HelpText: Tag("HelpText", "GUI_DIALOG_HELP")));
 		});
 
-		// `DisplayMenuBox(body, option…)` — a body plus one to five options, each either a
-		// string or a table carrying `TextTag` and `Enabled`.
-		//
-		// The body is resolved WITHOUT substitution, unlike every other box here: the trailing
-		// arguments are options, not `%N` values.
-		//
-		// A plain string option is enabled. The table form calls
-		// `sub_823DBBD0(box, index, Enabled, 0)` with `Enabled` defaulting to false; the string
-		// form calls only `sub_823DBA40` and never touches the flag.
-		void MenuBox(Engine_UiModel.GuiNativeCall call, bool cancelable)
-		{
-			var options = new System.Collections.Generic.List<Engine_UiGuiBoxes.MenuOption>();
-			if (call.Arguments is { Count: > 1 } arguments)
-			{
-				for (int i = 1; i < arguments.Count; ++i)
-				{
-					Engine_UiModel.GuiNativeArgument option = arguments[i];
-					if (option.Kind == Engine_UiModel.GuiNativeArgumentKind.Table)
-					{
-						options.Add(new Engine_UiGuiBoxes.MenuOption(
-							Engine_UiGuiText.Resolve(
-								option.FieldText("TextTag", string.Empty),
-								_presentation?.Strings),
-							option.FieldBoolean("Enabled", false)));
-						continue;
-					}
-
-					if (option.Kind != Engine_UiModel.GuiNativeArgumentKind.String)
-					{
-						continue;
-					}
-
-					options.Add(new Engine_UiGuiBoxes.MenuOption(
-						Engine_UiGuiText.Resolve(option.Text, _presentation?.Strings), true));
-				}
-			}
-
-			// The guest returns before building the box outside 2..6 arguments.
-			if (options.Count == 0 || options.Count > 5)
-			{
-				return;
-			}
-
-			_boxes.ShowMenuBox(
-				Engine_UiGuiText.Resolve(call.Argument(0).Text, _presentation?.Strings),
-				options, cancelable);
-		}
-
-		_guiNatives.Register("DisplayMenuBox", call => MenuBox(call, cancelable: true));
-		_guiNatives.Register("DisplayUncancelableMenuBox",
-			call => MenuBox(call, cancelable: false));
+		// `DisplayMenuBox(body, option…)` / `DisplayUncancelableMenuBox` fill the one menu-box
+		// controller (`sub_82303BF0`: the rows by `sub_823DBA40`, a table row's `Enabled` by
+		// `sub_823DBBD0`, cancelable at `+14`) and open it; the open's populate states what the box
+		// holds (`@MenuBox.Open`) for this and every other opener — the Orb, the sleep menu.
+		const string menuBox =
+			"fills the menu box's rows; its populate states the box when it opens (@MenuBox.Open)";
+		_guiNatives.Observe("DisplayMenuBox", menuBox);
+		_guiNatives.Observe("DisplayUncancelableMenuBox", menuBox);
 
 	}
 
@@ -805,75 +848,24 @@ public partial class GameUi
 		// A question box returns nothing and stores nothing a host can read: its answer travels
 		// as a MESSAGE EVENT the scripts collect with `MessageEvents.IsMessagePosted` — type 36
 		// carrying 1 or 0 for a yes/no, 37 or 38 carrying the chosen number for the adjuster.
-		// So the host draws the box and `Engine_UiSource.DisplayBoxAction` runs the GUEST's own
-		// handler, which posts the message; closing our own copy would strand the caller.
+		// So the host draws the box and posts `BoxAction:<code>@<box>`, which runs the GUEST's
+		// own handler and posts the message; closing our own copy would strand the caller.
 		//
-		// All three query forms are one class: `DisplayYesNoQuestion`,
-		// `DisplayPubGameYesNoQuestion` and `DisplayQuestPrimaryQuestion` build the identical
-		// 24-byte object on the identical vtable and differ only in key and body.
-		_guiNatives.Register("DisplayYesNoQuestion", call =>
-			_boxes.Question(Engine_UiGuiBoxes.MessageBoxName, Localise(call, 0)));
-
-		_guiNatives.Register("DisplayPubGameYesNoQuestion", call =>
-			_boxes.Question("PubGameQuery", Localise(call, 0)));
-
-		// The only native here that substitutes `%s` rather than `%1`: its body is the fixed tag
-		// `GUI_SCREEN_WORLD_MAP_QUESTS_PRIMARY_QUESTION` and its optional argument, itself a
-		// tag, replaces the `%s`. An absent argument leaves the marker in place.
-		_guiNatives.Register("DisplayQuestPrimaryQuestion", call =>
+		// The natives only BUILD the box and queue it; the queue's tick shows it later through
+		// its class's Open, which states it (`@DisplayBox.Open`, display_box_hooks.cpp) — the
+		// body as the native resolved it, the adjuster's widget, the quest box's fields. The
+		// calls state nothing the box does not.
+		const string statedAtOpen =
+			"builds and queues a display box; the box's own class Open states it when it shows " +
+			"(@DisplayBox.Open, display_box_hooks.cpp)";
+		foreach (string name in new[]
 		{
-			string body = Engine_UiGuiText.Resolve(
-				"GUI_SCREEN_WORLD_MAP_QUESTS_PRIMARY_QUESTION", _presentation?.Strings);
-			if (call.Argument(0).Text is { Length: > 0 } inner)
-			{
-				body = body.Replace("%s",
-					Engine_UiGuiText.Resolve(inner, _presentation?.Strings),
-					System.StringComparison.Ordinal);
-			}
-
-			_boxes.Question(Engine_UiGuiBoxes.MessageBoxName, body);
-		});
-
-		// `DisplayNumericAdjusterParams(table, tag, ...)` — six keys, and the defaults are not
-		// zeroes: the guest ships 111/666/33/55.
-		_guiNatives.Register("DisplayNumericAdjusterParams", call =>
+			"DisplayYesNoQuestion", "DisplayPubGameYesNoQuestion", "DisplayQuestPrimaryQuestion",
+			"DisplayNumericAdjusterParams", "DisplayQuestBoxParams",
+		})
 		{
-			Engine_UiModel.GuiNativeArgument table = call.Argument(0);
-			_boxes.Adjuster(
-				Localise(call, 1),
-				(int)table.FieldNumber("MinVal", 111f),
-				(int)table.FieldNumber("MaxVal", 666f),
-				(int)table.FieldNumber("Increment", 33f),
-				(int)table.FieldNumber("DefaultVal", 55f),
-				(int)table.FieldNumber("Type", 0f),
-				table.FieldBoolean("ShowSign", false));
-		});
-
-		// `DisplayQuestBoxParams` is not a question despite the family: its handler answers only
-		// action 36 and posts nothing.
-		_guiNatives.Register("DisplayQuestBoxParams", call =>
-		{
-			Engine_UiModel.GuiNativeArgument table = call.Argument(0);
-			string text = Localise(call, 1);
-			int type = (int)table.FieldNumber("Type", 0f);
-			int risk = (int)table.FieldNumber("RiskLevel", 1f);
-			_boxes.QuestBox(table.FieldText("Name", "Unnamed Quest"), text, type, risk);
-
-			// The page's whole statement (`sub_82304920`): the fields localised as the filler
-			// `sub_823CFBE0` localises them, the condition count as 0x82304a44..7c counts it.
-			string Field(string key) =>
-				Engine_UiGuiText.Resolve(table.FieldText(key, string.Empty), _presentation?.Strings);
-			string condition1 = table.FieldText("Condition1", "nocondition");
-			string condition2 = table.FieldText("Condition2", "nocondition");
-			int conditions = condition2 != "nocondition" ? 2 : condition1 != "nocondition" ? 1 : 0;
-			Engine_UiQuestBoxPage.Stated = new Engine_UiQuestBoxPage.Statement(
-				type, risk, text,
-				Field("Occupation"), Field("Appearance"), Field("Features"), Field("TargetName"),
-				Field("Whereabouts"), Field("Reason"),
-				conditions > 0 ? Engine_UiGuiText.Resolve(condition1, _presentation?.Strings) : string.Empty,
-				conditions > 1 ? Engine_UiGuiText.Resolve(condition2, _presentation?.Strings) : string.Empty,
-				conditions);
-		});
+			_guiNatives.Observe(name, statedAtOpen);
+		}
 
 		// The acceptance box has `li r3,0; blr` in both input slots — its whole interaction is
 		// in the Gameface Lua behind `g_DisplayBox:OpenAsAcceptanceBox()`. The button box takes

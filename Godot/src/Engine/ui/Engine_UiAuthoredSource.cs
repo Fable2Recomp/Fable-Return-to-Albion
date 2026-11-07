@@ -43,7 +43,7 @@ public sealed class Engine_UiAuthoredSource : Engine_UiSource
 
 	/// <summary>
 	/// Every lever the UI pulled, in order, spelled as the pump's queue spells it —
-	/// <c>ScreenAction:37:root</c>, <c>MenuEvent:&lt;name&gt;:&lt;type&gt;:&lt;id&gt;</c>,
+	/// <c>ScreenAction:37</c>, <c>MenuEvent:&lt;name&gt;:&lt;type&gt;:&lt;id&gt;</c>,
 	/// <c>PauseTab:3</c>.
 	/// </summary>
 	public List<string> Posted { get; } = new();
@@ -94,18 +94,10 @@ public sealed class Engine_UiAuthoredSource : Engine_UiSource
 		return (uint)Posted.Count;
 	}
 
-	public override uint ScreenAction(uint code, bool atRoot = false) =>
-		PostFrontEndAction($"ScreenAction:{code}{(atRoot ? ":root" : string.Empty)}");
+	public override uint ScreenAction(uint code) => PostFrontEndAction($"ScreenAction:{code}");
 
 	public override uint MenuEvent(string name, int eventType, uint id) =>
 		PostFrontEndAction($"MenuEvent:{name}:{eventType}:{id}");
-
-	public override uint MenuSelect() => PostFrontEndAction("MenuSelect");
-
-	public override uint MenuHighlight(string name) => PostFrontEndAction($"MenuHighlight:{name}");
-
-	public override uint MenuScroll(Engine_UiModel.MenuStick direction, bool held) =>
-		PostFrontEndAction($"MenuScroll:{direction}:{(held ? "held" : "released")}");
 
 	public override bool PauseTabSelect(uint tab)
 	{

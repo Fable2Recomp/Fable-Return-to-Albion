@@ -22,6 +22,7 @@ public static class Engine_UiStageMaterial
 {
 	private static readonly StringName AlphaScissorOn = "alpha_scissor_on";
 	private static readonly StringName AlphaScissorThreshold = "alpha_scissor_threshold";
+	private static readonly StringName HasNormal = "has_normal";
 
 	/// <summary>
 	/// Gives each surface of <paramref name="mesh"/> on <paramref name="target"/> its stage
@@ -44,6 +45,7 @@ public static class Engine_UiStageMaterial
 			};
 
 			string cover = "solid";
+			bool flat = false;
 			if (stated is ShaderMaterial source)
 			{
 				if (Texture(source, 0) is { } albedo)
@@ -53,11 +55,22 @@ public static class Engine_UiStageMaterial
 					++textured;
 				}
 
-				// A slot is bound only when the material has that texture (both families).
+				// A slot is bound only when the material has that texture (both families). The normal
+				// map also needs the surface's tangent frame and the material applying it: with no
+				// TANGENT array Godot reads the next vertex's normal as the tangent and bends the
+				// normal along it, which is why the world material states `has_normal` false there
+				// (Engine_MdlMaterial.TryCreateShared).
 				if (Texture(source, 1) is { } normal)
 				{
-					material.NormalEnabled = true;
-					material.NormalTexture = normal;
+					if (HasTangents(mesh, surface) && !StatedOff(source, HasNormal))
+					{
+						material.NormalEnabled = true;
+						material.NormalTexture = normal;
+					}
+					else
+					{
+						flat = true;
+					}
 				}
 
 				if (Texture(source, 3) is { } emission)
@@ -88,7 +101,7 @@ public static class Engine_UiStageMaterial
 				string names = stated is not null && stated.HasMeta(Refii.Models.Engine_MdlMaterial.TextureNamesMeta)
 					? string.Join("/", stated.GetMeta(Refii.Models.Engine_MdlMaterial.TextureNamesMeta).AsStringArray())
 					: "?";
-				notes.Add($"s{surface}:{cover}:{names}");
+				notes.Add($"s{surface}:{cover}{(flat ? "+flat" : string.Empty)}:{names}");
 			}
 
 			target.SetSurfaceOverrideMaterial(surface, material);
@@ -106,4 +119,15 @@ public static class Engine_UiStageMaterial
 		Variant value = material.GetShaderParameter(name);
 		return value.VariantType == Variant.Type.Bool && value.AsBool();
 	}
+
+	/// <summary>True when the material states <paramref name="name"/> as false; unstated is not off.</summary>
+	private static bool StatedOff(ShaderMaterial material, StringName name)
+	{
+		Variant value = material.GetShaderParameter(name);
+		return value.VariantType == Variant.Type.Bool && !value.AsBool();
+	}
+
+	/// <summary>True when the surface carries a TANGENT array; a non-array mesh is taken as carrying one.</summary>
+	private static bool HasTangents(Mesh mesh, int surface) =>
+		mesh is not ArrayMesh array || (array.SurfaceGetFormat(surface) & Mesh.ArrayFormat.FormatTangent) != 0;
 }

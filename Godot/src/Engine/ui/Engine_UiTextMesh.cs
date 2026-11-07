@@ -22,9 +22,10 @@ namespace Refii.Ui;
 /// full-colour art in its own `.tex`. The guest splits them the same way, into two draw-node
 /// types (`off_820015A0` text, `off_820F4520` image).
 ///
-/// Units: one font pixel is one world unit — the authoring canvas is 960x720 and the authored
-/// cameras frame close to 720 units of height at the content plane. Y is up, so the pen walks
-/// down in -Y.
+/// Units: one font pixel is one world unit — the authoring canvas is 720 high in both titles
+/// (960 wide in Fable 2, 1280 in Fable 3) and the authored cameras frame close to 720 units of
+/// height at the content plane. Y is up, so the pen walks down in -Y. What differs between the
+/// titles is stated by <see cref="Engine_UiTextContract"/>.
 /// </summary>
 public static class Engine_UiTextMesh
 {
@@ -94,9 +95,16 @@ public static class Engine_UiTextMesh
 	/// The residual scale from <see cref="Engine_UiFontLibrary.SelectFor"/> — a point size that
 	/// does not sit on a bucket boundary draws its bucket's font scaled.
 	/// </param>
-	public static Built Build(UiText text, Engine_BitmapFont font, float scale)
+	/// <param name="contract">
+	/// The title's text contract — the font library's <see cref="Engine_UiFontLibrary.Contract"/>;
+	/// null takes the active title's.
+	/// </param>
+	public static Built Build(UiText text, Engine_BitmapFont font, float scale,
+		Engine_UiTextContract? contract = null)
 	{
-		List<List<Cell>> paragraphs = Cells(text.Display, font);
+		contract ??= Engine_UiTextContract.Active;
+
+		List<List<Cell>> paragraphs = Cells(text.Display, font, contract);
 		if (paragraphs.Count == 0)
 		{
 			return new Built(null, 0, Array.Empty<IconPlacement>());
@@ -116,12 +124,13 @@ public static class Engine_UiTextMesh
 		// by that same half extent — code 0 puts the near edge on the origin, 2 the far edge,
 		// anything else centres. boxwidth/boxheight are outputs the element publishes.
 		//
-		// Both passes advance lineHeight + 1: the measure loop `sub_82B714A0` does
+		// The measure counts lineHeight + 1 per line in both titles: Fable 2's `sub_82B714A0` does
 		// `lwz r10, 0x18(r25); addi r6, r10, 1` at `0x82B714EC` and on every U+000A
-		// (`0x82B71538`), and the draw's only break path — the `<br>` case at `0x8226F1B4`,
-		// `sub_82802DB8` having rewritten `\n` to `<br>` — subtracts the same
-		// `(lineHeight + 1) * scale`.
-		float lineAdvance = font.LineHeight + 1;
+		// (`0x82B71538`), Fable 3's `sub_82D40300` the same at 0x82D40354/0x82D403A4. The DRAW's
+		// newline differs (Engine_UiTextContract.LineAdvanceExtra): Fable 2's `<br>` case at
+		// `0x8226F1B4` (`sub_82802DB8` having rewritten `\n` to `<br>`) drops
+		// `(lineHeight + 1) * scale`, Fable 3's newline token drops `lineHeight` alone.
+		float lineAdvance = font.LineHeight + contract.LineAdvanceExtra;
 		float quadHeight = font.LineHeight + 1;
 
 		float measuredWidth = 0f;
@@ -167,11 +176,12 @@ public static class Engine_UiTextMesh
 			{
 				if (cell.Icon is { } tag)
 				{
-					Vector2I size = Engine_UiTextMarkup.DrawSize(tag, font.LineHeight);
+					(float width, float height) = contract.IconSize(
+						tag is { Kind: Engine_UiTextMarkup.Kind.Icon, DoubleWidth: true }, font.LineHeight);
 					icons.Add(new IconPlacement(
 						tag,
-						new Vector2(penX, lineTop) * scale,
-						new Vector2(size.X, size.Y) * scale));
+						new Vector2(penX - contract.IconInset, lineTop + contract.IconInset) * scale,
+						new Vector2(width, height) * scale));
 					penX += cell.Advance;
 					continue;
 				}
@@ -215,10 +225,11 @@ public static class Engine_UiTextMesh
 
 	/// <summary>
 	/// Turns a string into one cell list per paragraph, running the markup tokeniser first. An
-	/// icon advances by what it draws — the `lineHeight + 1` box, doubled in width for the five
-	/// stars.
+	/// icon advances by the title's <see cref="Engine_UiTextContract.IconPenAdvance"/> — Fable 2's
+	/// `lineHeight + 1` box (doubled in width for the five stars), Fable 3's fixed 26.
 	/// </summary>
-	private static List<List<Cell>> Cells(string display, Engine_BitmapFont font)
+	private static List<List<Cell>> Cells(string display, Engine_BitmapFont font,
+		Engine_UiTextContract contract)
 	{
 		var paragraphs = new List<List<Cell>>();
 		var current = new List<Cell>();
@@ -236,7 +247,8 @@ public static class Engine_UiTextMesh
 			{
 				current.Add(new Cell(
 					'\0', icon, run.Colour,
-					Engine_UiTextMarkup.DrawSize(icon, font.LineHeight).X));
+					contract.IconPenAdvance(
+						icon is { Kind: Engine_UiTextMarkup.Kind.Icon, DoubleWidth: true }, font.LineHeight)));
 				continue;
 			}
 

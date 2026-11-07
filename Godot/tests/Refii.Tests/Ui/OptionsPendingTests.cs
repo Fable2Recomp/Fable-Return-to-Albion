@@ -21,7 +21,7 @@ public class OptionsPendingTests
 	{
 		public readonly List<uint> Codes = new();
 
-		public override uint ScreenAction(uint code, bool atRoot = false)
+		public override uint ScreenAction(uint code)
 		{
 			Codes.Add(code);
 			return 1;

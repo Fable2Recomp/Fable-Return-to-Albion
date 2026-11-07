@@ -22,10 +22,27 @@ namespace Refii.Ui;
 /// </remarks>
 public sealed class Engine_UiMenuModel
 {
+	/// <summary>
+	/// The attribute the runner adds to the statements that act on "the selected row"
+	/// (`SetSelectedItemGhosting`, `SetSelectedItemEmphasis`, `RefreshSelectedButtonText`,
+	/// `RenameSelectedButton`) and to `PushMenuState`: the name of the row Godot states as
+	/// highlighted when the guest made the statement, which is the row the shipped script's
+	/// `VisibleElements[CurrentHighlightIdx]` would have been. Absent when no row was stated — the
+	/// script's `nil` arm, which changes nothing.
+	/// </summary>
+	public const string HighlightedAttribute = "@Highlighted";
+
+	/// <summary>
+	/// The first chunk the guest runs on a presentation it initialises (`sub_823DCC70`, disc
+	/// `sub_823FE988`, at 0x823dcca8 / 0x823fe9c0): its Lua state, and so its menu, starts here.
+	/// </summary>
+	public const string PresentationInitChunk = "GUI:SetAsNotRunningInAnarkStudio()";
+
 	/// <summary>One row, as the C++ stated it.</summary>
 	public sealed class Row
 	{
-		public required string Name { get; init; }
+		/// <summary>`String1`. Settable: `RenameSelectedButton` renames the row in place.</summary>
+		public required string Name { get; set; }
 
 		public string Parent { get; set; } = string.Empty;
 
@@ -94,6 +111,130 @@ public sealed class Engine_UiMenuModel
 		/// </summary>
 		public readonly Dictionary<string, bool> Ghosting =
 			new(System.StringComparer.Ordinal);
+
+		/// <summary>
+		/// `SetSelectedItemEmphasis` by the highlighted row's NAME, kept whether or not this model
+		/// holds the row, like <see cref="Ghosting"/>.
+		/// </summary>
+		public readonly Dictionary<string, Engine_UiMenuConstants.Emphasis> Emphases =
+			new(System.StringComparer.Ordinal);
+
+		/// <summary>`RefreshSelectedButtonText`'s `String2`, by the highlighted row's name.</summary>
+		public readonly Dictionary<string, string> Labels = new(System.StringComparer.Ordinal);
+
+		/// <summary>
+		/// `RenameSelectedButton`: the highlighted row's name when renamed, to the name it took
+		/// (`String1`). The shop names a row it sold out `SOLD` (`sub_826B0B90`, 0x826b0ca4) and its
+		/// handler then reads that name back through `GetHighlightedMenuItemData`.
+		/// </summary>
+		public readonly Dictionary<string, string> Renames = new(System.StringComparer.Ordinal);
+
+		/// <summary>
+		/// `SetExpandableMenuDisabled(true|false)` — `g_Menu.UpDownInputDisabled`, which the
+		/// script's `onUpdate` checks before reading the stick. Lives with the presentation's
+		/// script state: no list boundary resets it, only the script's own `onInitialize`.
+		/// </summary>
+		public bool InputDisabled;
+
+		/// <summary>How many `g_MenuFormatter:UpdateAllGhosting()` the guest has asked for — a
+		/// view re-derives every row's drawn ghosting when this moves.</summary>
+		public int GhostRefreshes;
+
+		/// <summary>True while a `PushMenuState` stands unpopped.</summary>
+		public bool Pushed => _saved is not null;
+
+		private Saved? _saved;
+
+		private string? _restoredHighlight;
+
+		/// <summary>
+		/// The row `PopMenuState` put the cursor back on (the script's
+		/// `forceReset(Backup.CurrentHighlightIdx)`), named; taken once by the view.
+		/// </summary>
+		public string? TakeRestoredHighlight()
+		{
+			string? name = _restoredHighlight;
+			_restoredHighlight = null;
+			return name;
+		}
+
+		/// <summary>One saved menu, as `PushMenuState` keeps it — one level, not a stack.</summary>
+		private sealed record Saved(
+			List<Row> Rows,
+			Dictionary<string, bool> Ghosting,
+			Dictionary<string, Engine_UiMenuConstants.Emphasis> Emphases,
+			Dictionary<string, string> Labels,
+			Dictionary<string, string> Renames,
+			int InitiallySelected,
+			bool Settled,
+			string PopulationScript,
+			string Highlighted);
+
+		/// <summary>
+		/// `g_Menu:PushMenuState()` — the whole menu (`MenuRoot`, `SpawnedItems`, the highlight) is
+		/// saved and an empty one starts, for a screen opening a sub-list over its own.
+		/// </summary>
+		public void Push(string highlighted)
+		{
+			_saved = new Saved(
+				new List<Row>(Rows),
+				new Dictionary<string, bool>(Ghosting, System.StringComparer.Ordinal),
+				new Dictionary<string, Engine_UiMenuConstants.Emphasis>(Emphases, System.StringComparer.Ordinal),
+				new Dictionary<string, string>(Labels, System.StringComparer.Ordinal),
+				new Dictionary<string, string>(Renames, System.StringComparer.Ordinal),
+				InitiallySelected,
+				Settled,
+				PopulationScript,
+				highlighted);
+			ClearRows();
+		}
+
+		/// <summary>
+		/// `g_Menu:PopMenuState()` — the saved menu comes back with its cursor; nothing pushed does
+		/// nothing. The population script is restored with the rows it made (the script itself
+		/// leaves its `MenuPopulationScript` attribute on the sub-list's name).
+		/// </summary>
+		public bool Pop()
+		{
+			if (_saved is not { } saved)
+			{
+				return false;
+			}
+
+			ClearRows();
+			Rows.AddRange(saved.Rows);
+			Copy(saved.Ghosting, Ghosting);
+			Copy(saved.Emphases, Emphases);
+			Copy(saved.Labels, Labels);
+			Copy(saved.Renames, Renames);
+			InitiallySelected = saved.InitiallySelected;
+			Settled = saved.Settled;
+			PopulationScript = saved.PopulationScript;
+			_restoredHighlight = saved.Highlighted.Length != 0 ? saved.Highlighted : null;
+			_saved = null;
+			return true;
+		}
+
+		/// <summary>A list boundary: every row and every by-name statement about one goes.</summary>
+		public void ClearRows()
+		{
+			Rows.Clear();
+			Ghosting.Clear();
+			Emphases.Clear();
+			Labels.Clear();
+			Renames.Clear();
+			Settled = false;
+			InitiallySelected = 0;
+		}
+
+		private static void Copy<T>(Dictionary<string, T> from, Dictionary<string, T> to)
+		{
+			to.Clear();
+			foreach ((string key, T value) in from)
+			{
+				to[key] = value;
+			}
+		}
 
 		public Row? Find(string name) =>
 			Rows.Find(row => string.Equals(row.Name, name, System.StringComparison.Ordinal));
@@ -175,8 +316,16 @@ public sealed class Engine_UiMenuModel
 
 	public void Apply(Engine_UiModel.MenuChunk chunk)
 	{
-		Menu menu = For(chunk.Presentation);
 		++_applied;
+
+		// A presentation's script state is born: whatever this address held is another instance's.
+		if (string.Equals(chunk.Chunk.Trim(), PresentationInitChunk, System.StringComparison.Ordinal))
+		{
+			_menus.Remove(chunk.Presentation);
+			return;
+		}
+
+		Menu menu = For(chunk.Presentation);
 
 		switch (chunk.Method)
 		{
@@ -189,10 +338,7 @@ public sealed class Engine_UiMenuModel
 				// the next population states its own. The shipped Lua drains
 				// `g_Menu.SpawnedItems` one at a time (`expandablemenuspawning`), so its scope
 				// is exactly the rows this model holds.
-				menu.Rows.Clear();
-				menu.Ghosting.Clear();
-				menu.Settled = false;
-				menu.InitiallySelected = 0;
+				menu.ClearRows();
 				break;
 
 			case "RepopulateMenuFromPopulationScript":
@@ -214,10 +360,7 @@ public sealed class Engine_UiMenuModel
 				// `SpawnButton`, so they never reach this model at all — which is exactly why
 				// the fixed menus have to be built from our own transcription of the population
 				// table rather than waited for here.
-				menu.Rows.Clear();
-				menu.Ghosting.Clear();
-				menu.Settled = false;
-				menu.InitiallySelected = 0;
+				menu.ClearRows();
 
 				// The script it is switching to. The name is the chunk's own quoted argument —
 				// `sub_829B2A20` builds the text with
@@ -256,11 +399,28 @@ public sealed class Engine_UiMenuModel
 			}
 
 			case "SetItemEmphasis":
-				if (menu.Find(chunk.Attribute("String1")) is { } emphasised)
+			{
+				// RECORDED BY NAME, as SetItemGhosting is: the world map's enter emphasises its
+				// category by name (`sub_823DFA98(23, name, 3)` at 0x826c5df8), and its categories
+				// are template rows the model never spawned.
+				string named = chunk.Attribute("String1");
+				Engine_UiMenuConstants.Emphasis emphasis = EmphasisFrom(chunk.Number("Float1"));
+				if (named.Length != 0)
 				{
-					emphasised.Emphasis = EmphasisFrom(chunk.Number("Float1"));
+					menu.Emphases[named] = emphasis;
 				}
 
+				if (menu.Find(named) is { } emphasised)
+				{
+					emphasised.Emphasis = emphasis;
+				}
+
+				break;
+			}
+
+			case "GetLastItemIndex":
+				// A read, answered natively at the runner (resource_manager_open.cpp) for the
+				// spawn helper's `SetItemEmphasisByIndex`; it states nothing.
 				break;
 
 			case "SetItemEmphasisByIndex":
@@ -303,7 +463,7 @@ public sealed class Engine_UiMenuModel
 			case "SetInitiallySelectedItem":
 				// The argument is in the chunk text, not staged — built by concatenation.
 				menu.InitiallySelected =
-					int.TryParse(chunk.Inline, out int selected) ? selected : 0;
+					int.TryParse(chunk.Inline, out int initial) ? initial : 0;
 				break;
 
 			case "TurnOffAutomaticGhostingOnSubmenus":
@@ -316,11 +476,113 @@ public sealed class Engine_UiMenuModel
 				menu.Settled = true;
 				break;
 
+			case "SetExpandableMenuDisabled":
+				// Two literals, the flag in the text: `(true)` from the abilities blade
+				// (`sub_826C2480`, 0x826c24d4), the shop's confirm, the options page, the gift
+				// adjuster; `(false)` from their closes (`sub_826C25C0`, 0x826c261c, …).
+				menu.InputDisabled = string.Equals(chunk.Inline, "true", System.StringComparison.Ordinal);
+				break;
+
+			case "PushMenuState":
+				menu.Push(chunk.Attribute(HighlightedAttribute));
+				break;
+
+			case "PopMenuState":
+				if (!menu.Pop())
+				{
+					return;
+				}
+
+				break;
+
+			case "SetSelectedItemGhosting":
+			{
+				// `VisibleElements[CurrentHighlightIdx].Ghosted = Float1 ~= 0`; no row, no change.
+				string selected = chunk.Attribute(HighlightedAttribute);
+				if (selected.Length == 0)
+				{
+					return;
+				}
+
+				bool ghost = chunk.Number("Float1") != 0f;
+				menu.Ghosting[selected] = ghost;
+				if (menu.Find(selected) is { } row)
+				{
+					row.Ghosted = ghost;
+				}
+
+				break;
+			}
+
+			case "SetSelectedItemEmphasis":
+			{
+				// `Emphasis = Float1` on the highlighted row; with none the script calls a global
+				// `SetItemEmphasis()` that does not exist, so nothing changes.
+				string selected = chunk.Attribute(HighlightedAttribute);
+				if (selected.Length == 0)
+				{
+					return;
+				}
+
+				Engine_UiMenuConstants.Emphasis emphasis = EmphasisFrom(chunk.Number("Float1"));
+				menu.Emphases[selected] = emphasis;
+				if (menu.Find(selected) is { } row)
+				{
+					row.Emphasis = emphasis;
+				}
+
+				break;
+			}
+
+			case "RefreshSelectedButtonText":
+			{
+				// Only when the highlighted row IS `String1`; otherwise the script calls a global
+				// `RefreshButtonText()` that does not exist.
+				string selected = chunk.Attribute(HighlightedAttribute);
+				string named = chunk.Attribute("String1");
+				if (selected.Length == 0 ||
+					!string.Equals(selected, named, System.StringComparison.Ordinal))
+				{
+					return;
+				}
+
+				string label = chunk.Attribute("String2");
+				menu.Labels[selected] = label;
+				if (menu.Find(selected) is { } row)
+				{
+					row.Label = label;
+				}
+
+				break;
+			}
+
+			case "RenameSelectedButton":
+			{
+				// `Name = String1` on the highlighted row, caption untouched.
+				string selected = chunk.Attribute(HighlightedAttribute);
+				string renamed = chunk.Attribute("String1");
+				if (selected.Length == 0 || renamed.Length == 0)
+				{
+					return;
+				}
+
+				menu.Renames[selected] = renamed;
+				if (menu.Find(selected) is { } row)
+				{
+					row.Name = renamed;
+				}
+
+				break;
+			}
+
+			case "UpdateAllGhosting":
+				++menu.GhostRefreshes;
+				break;
+
 			default:
-				// Not modelled: the menu stack (`PushMenuState`, `PopMenuState`), input gating
-				// (`SetExpandableMenuDisabled`), the formatter's fades, and the read-backs
-				// (`GetHighlightedMenuItemData`, `IsHighlightedItemAtRoot`, `CountSpawnedItems`)
-				// which are questions with no effect to apply.
+				// Not modelled: the formatter's fades, and the read-backs
+				// (`GetHighlightedMenuItemData`, `IsHighlightedItemAtRoot`, `CountSpawnedItems`),
+				// which the hooks answer natively.
 				NoteUnhandled(chunk);
 				return;
 		}

@@ -757,6 +757,11 @@ public sealed class Engine_UiSceneBuilder
 		{
 			material.SetShaderParameter(AtlasName, atlas);
 			material.SetShaderParameter("supersample", Engine_BitmapFontTexture.SupersampleOf(atlas));
+			if (Engine_BitmapFontTexture.DistanceFieldOf(atlas) is { } field)
+			{
+				material.SetShaderParameter("distance_field", field);
+				material.SetShaderParameter("use_distance_field", true);
+			}
 		}
 
 		return material;

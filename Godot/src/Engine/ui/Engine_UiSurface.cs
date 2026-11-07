@@ -21,11 +21,10 @@ public interface IUiSurfaceView
 /// <summary>
 /// An owned surface: one of the guest's presentations that Godot draws instead of mirroring.
 /// A surface states four things — which presentation it owns, how to build its view, how to
-/// resolve its join, and what to do with a sample.
-///
-/// The join is positional, so <see cref="ElementCount"/> is load-bearing: ordinals come from the
-/// file-only parse and are read against the guest's live element array; a half-built presentation
-/// reports fewer elements and every ordinal past that point names somebody else's field.
+/// resolve its join against the file, and what the guest stated for it to show. Nothing is read
+/// back out of the guest's elements: its presentations are headless (gui_headless_presentation.cpp)
+/// and list only the elements the guest named, so a count or an ordinal read against them names
+/// nothing.
 /// </summary>
 public abstract class Engine_UiSurface<TView>
 	where TView : Node3D, IUiSurfaceView
@@ -45,19 +44,15 @@ public abstract class Engine_UiSurface<TView>
 	/// so suppressing the mirror on art alone would leave the screen empty.
 	///
 	/// AND ONLY WHILE IT IS ACTUALLY ON SCREEN, past a short grace. Art and join say the view
-	/// CAN draw; whether it HAS needs the guest's live presentation found by name and its
-	/// element count agreeing with the document, and either can fail for a whole opening
-	/// (a presentation the guest has not built or named as expected, a count that never
-	/// matches). Claiming ownership on art and join alone then suppressed the mirror while
-	/// nothing of ours stood: the player saw no box and the guest waited on one — a chest's
-	/// item card, more than once. The grace covers the frames between the guest opening the
-	/// box and the first apply, so the mirror does not flash the guest's own copy first.
+	/// CAN draw; whether it HAS needs the guest to have stated what it shows, which can fail for
+	/// a whole opening (an opener that is not hooked, a statement that never arrived). The grace
+	/// covers the frames between the guest opening the box and the first statement.
 	/// </summary>
 	public bool Owned =>
 		_open && View is { HasShippedArt: true } && Joined &&
 		(Standing || Godot.Engine.GetProcessFrames() - OpenedFrame <= OwnerGraceFrames);
 
-	/// <summary>Frames an open surface may take to stand before the mirror draws the guest's own panel.</summary>
+	/// <summary>Frames an open surface may take to stand before it is reported unseen.</summary>
 	public const ulong OwnerGraceFrames = 30;
 
 	/// <summary>The guest has this surface up and it is being driven this frame; <see cref="Owned"/>
@@ -74,9 +69,6 @@ public abstract class Engine_UiSurface<TView>
 	/// presentation. Mask and input routing gate on this, so an undrawn box still answers to
 	/// the guest's own input.</summary>
 	public bool Standing => View is { Visible: true };
-
-	/// <summary>The document's element count, resolved once with the join.</summary>
-	protected int ElementCount { get; private set; }
 
 	/// <summary>Above every mirrored slab (they stack 1000 apart).</summary>
 	public const float ModalDepth = 9000f;
@@ -151,7 +143,6 @@ public abstract class Engine_UiSurface<TView>
 		if (host.DocumentFor(Presentation) is { } document)
 		{
 			Join(document);
-			ElementCount = document.Nodes.Length;
 
 			// Nine-slice borders, cloned at runtime: the box files carry the frame behaviour
 			// and none of the slices (`framecloning.lua`).
@@ -175,19 +166,6 @@ public abstract class Engine_UiSurface<TView>
 	/// after the view stands and its join is resolved.</summary>
 	protected virtual void Dress(Engine_UiPresentationHost host)
 	{
-	}
-
-	/// <summary>
-	/// The guest's live element array for one presentation, or null when its count disagrees
-	/// with the document the join was built against.
-	/// </summary>
-	protected System.Collections.Generic.List<Engine_UiModel.UiElement>? Elements(uint address)
-	{
-		// Through the cache, not the walk: same list and ordinals, read once per presentation
-		// and kept current by the guest's writers. See Engine_UiElementState.
-		System.Collections.Generic.List<Engine_UiModel.UiElement>? elements =
-			Engine_UiElementState.Current.Elements(address);
-		return elements is not null && elements.Count == ElementCount ? elements : null;
 	}
 
 	/// <summary>
@@ -238,9 +216,11 @@ public abstract class Engine_UiSurface<TView>
 
 /// <summary>
 /// An owned surface the player can answer: query box, message box, numeric adjuster,
-/// received-item card, MenuBox. The guest states the strings and waits on an answer through its
-/// own input router; the host clones the art, paints the text and posts back the code that
-/// screen's handler expects. The outcome stays guest-side.
+/// received-item card, MenuBox. The guest STATES what the box shows at the box's own entry
+/// points — the router's openers (`@Modal.Open`), each display-box class's Open
+/// (`@DisplayBox.Open`, `@MessageBox.Open`), the card's set-item, the menu box's populate — and
+/// waits on an answer; the host clones the art, paints the stated text and posts back the code
+/// the box's own handler expects. The outcome stays guest-side.
 ///
 /// The mask engages only once the view is on screen — <see cref="Engine_UiSurface{TView}.Standing"/>,
 /// not <see cref="Engine_UiSurface{TView}.Owned"/> — so an undrawn box is answerable, not a deadlock.
@@ -264,14 +244,16 @@ public abstract class Engine_UiModalSurface<TView> : Engine_UiSurface<TView>
 	/// differently.</summary>
 	protected abstract bool IsOpen(Engine_UiModel.PauseState? pause);
 
-	/// <summary>One sample of the guest's stated elements, gated on the count agreeing.</summary>
-	protected abstract void Apply(
-		System.Collections.Generic.List<Engine_UiModel.UiElement> elements,
-		Engine_UiPresentationHost host);
+	/// <summary>Puts what was stated for the box that is up on the view; true when there was a
+	/// statement to show. Called every frame the box is up — applies gate on
+	/// <see cref="Engine_UiSurface{TView}.Changed"/>.</summary>
+	protected abstract bool ApplyHost(Engine_UiPresentationHost host);
 
-	/// <summary>A surface whose content the HOST states — a host-raised box's text, or a card fed
-	/// from the guest's entry point — shown without the guest's elements; true when it is one.</summary>
-	protected virtual bool ApplyHost(Engine_UiPresentationHost host) => false;
+	/// <summary>Why nothing was stated, for the unseen report.</summary>
+	protected virtual string Unstated => "its opener stated nothing for it to show";
+
+	/// <summary>This frame's <see cref="ApplyHost"/>.</summary>
+	private bool _stated;
 
 	/// <summary>This frame's press, once the view is standing.</summary>
 	protected abstract void Route(Engine_UiSurfaceInput input);
@@ -315,30 +297,17 @@ public abstract class Engine_UiModalSurface<TView> : Engine_UiSurface<TView>
 
 		Ensure(host);
 
-		// THE ADDRESS IS RE-FOUND WHENEVER IT STOPS ANSWERING. The guest can drop a box's
-		// presentation and build a new one while the box stays up — the received-item card does
-		// between items of one chest — and a latched address then reads nothing forever: the
-		// card is never drawn again while the guest waits on it (a chest of four items stood the
-		// game still on the fourth, 2026-10-23).
-		if (Address != 0 && Elements(Address) is null)
-		{
-			Address = 0;
-		}
+		// RE-ASKED EVERY FRAME: the guest can drop a box's presentation and build a new one while
+		// the box stays up — the received-item card does between items of one chest. Only the
+		// told statements are keyed by it (the menu box's fallback); nothing stands on it.
+		Address = AddressOf($"{Presentation}.bgf");
 
-		if (Address == 0)
-		{
-			Address = AddressOf($"{Presentation}.bgf");
-		}
+		// THE BOX STANDS ON WHAT THE GUEST STATED, never on its presentation: the presentation is
+		// headless, and a box gated on reading it was never drawn — invisible, unanswered, the
+		// game waiting for ever (the shop's "Ragdoll purchased.").
+		_stated = ApplyHost(host);
 
-		// A box the HOST raises states its own text: it needs no guest presentation, and over a
-		// screen with none (the world map) waiting for one left it unseen, deaf, and holding the
-		// frame — every menu under it starved.
-		if (!ApplyHost(host) && Address != 0 && Joined && Elements(Address) is { } elements)
-		{
-			Apply(elements, host);
-		}
-
-		ReportStarvation(host);
+		ReportStarvation();
 
 		Mask?.Invoke(Standing && TakesInput);
 		if (!Standing || !TakesInput)
@@ -358,30 +327,26 @@ public abstract class Engine_UiModalSurface<TView> : Engine_UiSurface<TView>
 	}
 
 	/// <summary>
-	/// Names, once per opening, why an open surface has not stood past the grace: the live
-	/// presentation missing by name, its element count disagreeing with the document, or the
-	/// join. The mirror draws the guest's own panel from that frame (<see cref="Owned"/>); this
-	/// line is what turns "the box did not appear" into a cause.
+	/// Names, once per opening, why an open surface has not stood past the grace: no art, the join,
+	/// or no statement. Nothing else draws it — the guest's presentation is headless — so this line
+	/// is what turns "the box did not appear" into a cause.
 	/// </summary>
-	private void ReportStarvation(Engine_UiPresentationHost host)
+	private void ReportStarvation()
 	{
-		if (Starved || Standing || ApplyHost(host) ||
-			Godot.Engine.GetProcessFrames() - OpenedFrame <= OwnerGraceFrames)
+		if (Starved || Standing || Godot.Engine.GetProcessFrames() - OpenedFrame <= OwnerGraceFrames)
 		{
 			return;
 		}
 
 		Starved = true;
-		int live = Address == 0 ? -1 : Engine_UiElementState.Current.Elements(Address)?.Count ?? -1;
 		GD.Print($"[ui-surface] {Label} is up but NOT DRAWN after {OwnerGraceFrames} frames — " +
-			(Address == 0
-				? $"no live presentation named '{Presentation}.bgf'"
-				: live < 0
-					? $"presentation 0x{Address:X8} has no element sample"
-					: live != ElementCount
-						? $"presentation 0x{Address:X8} has {live} live elements, the document {ElementCount}"
-						: Joined ? "elements agree, apply left the view hidden" : "the join did not resolve") +
-			"; the mirror draws the guest's own panel from here");
+			(View is not { HasShippedArt: true }
+				? "no shipped art for it"
+				: !Joined
+					? "its join did not resolve against the document"
+					: _stated ? "the statement left the view hidden" : Unstated) +
+			"; the guest's presentation is headless, so nothing is on screen — it is not masked, " +
+			"and the guest's own input still reaches it");
 	}
 
 	/// <summary>

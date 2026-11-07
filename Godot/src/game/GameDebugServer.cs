@@ -1095,42 +1095,40 @@ public partial class GameDebugServer : Node
 
 			case "menu":
 			{
-				// The guest's own menu verbs, not synthesized pad input — the stick latch and
-				// edge detection stay the guest's problem.
+				// The guest's own menu verbs, not synthesized pad input. A direction is the screen's
+				// own directional code (28 up, 29 down, 30 left, 31 right; +4 the release), the codes
+				// `ScreenAction` accepts — the options page answers them natively, list screens
+				// swallow them (their cursor is Godot's).
 				string verb = root.TryGetProperty("verb", out JsonElement v)
 					? v.GetString() ?? string.Empty
 					: string.Empty;
 				bool held = root.TryGetProperty("held", out JsonElement h) && h.GetBoolean();
+				uint release = held ? 0u : 4u;
 				uint result;
 				switch (verb)
 				{
 					case "up":
-						result = Refii.Host.HostBridge.MenuScroll(
-							Engine_UiModel.MenuStick.Up, held);
+						result = Refii.Host.HostBridge.ScreenAction(28u + release);
 						break;
 					case "down":
-						result = Refii.Host.HostBridge.MenuScroll(
-							Engine_UiModel.MenuStick.Down, held);
+						result = Refii.Host.HostBridge.ScreenAction(29u + release);
 						break;
 					case "left":
-						result = Refii.Host.HostBridge.MenuScroll(
-							Engine_UiModel.MenuStick.Left, held);
+						result = Refii.Host.HostBridge.ScreenAction(30u + release);
 						break;
 					case "right":
-						result = Refii.Host.HostBridge.MenuScroll(
-							Engine_UiModel.MenuStick.Right, held);
+						result = Refii.Host.HostBridge.ScreenAction(31u + release);
 						break;
 					case "select":
-						result = Refii.Host.HostBridge.MenuSelect();
+						// The screen's own A (code 36): its arm reads the row Godot states.
+						result = Refii.Host.HostBridge.ScreenAction(36u);
 						break;
 					case "action":
 					{
 						uint code = root.TryGetProperty("code", out JsonElement c)
 							? (uint)c.GetInt64()
 							: 36u;
-						bool atRoot = root.TryGetProperty("atRoot", out JsonElement r2) &&
-							r2.GetBoolean();
-						result = Refii.Host.HostBridge.ScreenAction(code, atRoot);
+						result = Refii.Host.HostBridge.ScreenAction(code);
 						break;
 					}
 					case "event":
@@ -1502,14 +1500,16 @@ public partial class GameDebugServer : Node
 				string match = root.TryGetProperty("match", out JsonElement m)
 					? m.GetString() ?? string.Empty
 					: string.Empty;
-				string logs = System.IO.Path.Combine(
-					System.IO.Path.GetDirectoryName(OS.GetExecutablePath())!, "logs");
+				// The launcher's log stays in the shared logs/; the guest's are the title's own (logs/<Title>).
+				string logs = which == "launcher"
+					? System.IO.Path.Combine(System.IO.Path.GetDirectoryName(OS.GetExecutablePath())!, "logs")
+					: Refii.Core.Engine_Title.Active.LogsDirectory;
 				string[] files;
 				try
 				{
 					files = which == "launcher"
 						? System.IO.Directory.GetFiles(logs, "refii-launcher.log*")
-						: System.IO.Directory.GetFiles(logs, "refii_*.log*");
+						: System.IO.Directory.GetFiles(logs, Refii.Core.Engine_Title.Active.GuestLogPattern);
 				}
 				catch (System.Exception error)
 				{
@@ -3424,8 +3424,17 @@ public partial class GameDebugServer : Node
 				};
 				Refii.Ui.Engine_HudView.ResetWalkProfile();
 
+				// The guest's stated health meters, 0..100: the bar's fill and its max track.
+				Refii.Ui.Engine_HudValues? hudValues = Refii.Ui.Engine_HudView.Current?.Values;
+				var healthMeters = new Dictionary<string, object?>();
+				foreach (string name in new[] { "PlayerHealth", "PlayerHealthMax", "CoopHealth", "CoopHealthMax" })
+				{
+					healthMeters[name] = hudValues?.Meter(Refii.Ui.Engine_HudValues.Handle.For(name));
+				}
+
 				return Ok(new Dictionary<string, object?>
 				{
+					["healthMeters"] = healthMeters,
 					["bindProfile"] = bindProfile,
 					["walkProfile"] = walkProfile,
 					["pieces"] = Refii.Ui.Engine_HudView.Current?.Describe(match),
@@ -4206,7 +4215,7 @@ public partial class GameDebugServer : Node
 	/// </summary>
 	private static Dictionary<string, object?> Tail(int lines, string match)
 	{
-		string path = ProjectSettings.GlobalizePath("user://logs/godot.log");
+		string path = GameLogPaths.GodotLog;
 		var kept = new List<string>();
 		try
 		{

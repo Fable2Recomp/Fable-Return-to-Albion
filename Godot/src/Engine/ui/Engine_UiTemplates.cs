@@ -288,7 +288,11 @@ public sealed class Engine_UiMenuTemplate
 					: Engine_UiMenuConstants.Emphasis.None;
 				if (current[i].Emphasis != wanted)
 				{
+					// A CHANGE THE VIEW MUST DRAW: the weapon just chosen (a pending switch) and the
+					// primary quest moving are emphasis alone, and unreported they waited for the
+					// list to be rebuilt — on leaving the menu.
 					current[i].Emphasis = wanted;
+					restated = true;
 				}
 
 				// Provenance, not drawn: carried so a remount that changes it reaches the statement.
@@ -325,13 +329,29 @@ public sealed class Engine_UiMenuTemplate
 			return restated;
 		}
 
+		// A REAL CHANGE KEEPS THE FOLD: the last of a stack given away removes its row, and the
+		// headers the player had open stay open across the respawn, by name.
+		var open = new HashSet<string>(System.StringComparer.Ordinal);
 		foreach (Engine_UiExpandableMenu.Item stale in direct)
 		{
+			if (stale.IsOpen && stale.Name.Length != 0)
+			{
+				open.Add(stale.Name);
+			}
+
 			item.Children.Remove(stale);
 			menu.Model.Forget(stale);
 		}
 
 		SpawnSourced(menu, rows, parentName, rowCommand);
+		foreach (Engine_UiExpandableMenu.Item spawned in item.Children)
+		{
+			if (spawned.Sourced && spawned.Children.Count > 0 && open.Contains(spawned.Name))
+			{
+				spawned.IsOpen = true;
+			}
+		}
+
 		menu.Model.UpdateAfterSpawning();
 		return true;
 	}
@@ -393,15 +413,22 @@ public sealed class Engine_UiMenuTemplate
 	private static List<Engine_UiMenuSources.Row> Expanded(
 		IReadOnlyList<Engine_UiMenuSources.Row> rows, bool placedByMod)
 	{
-		var seen = new HashSet<string>(System.StringComparer.Ordinal);
-		var expanded = new List<Engine_UiMenuSources.Row>(rows.Count);
+		// IN THE ORDER THE MODEL HOLDS THEM after `SpawnSourced`, which is the order `RefreshUnder`
+		// walks: a header, then every row of its group wherever in the source those rows fell. The
+		// inventory is in pickup order (push_back in `CECInventory_AddOneOfRecord`, 0x824F09AC), so a
+		// group's rows are rarely adjacent — compared in source order the gift list respawned, its
+		// fold shut, on every sample.
+		var members = new Dictionary<string, List<Engine_UiMenuSources.Row>>(System.StringComparer.Ordinal);
+		var order = new List<(Engine_UiMenuSources.Row Row, List<Engine_UiMenuSources.Row>? Members)>(rows.Count);
 
 		foreach (Engine_UiMenuSources.Row source in rows)
 		{
 			Engine_UiMenuSources.Row row = placedByMod && !source.FromMod ? source with { FromMod = true } : source;
-			if (row.Group.Length != 0 && seen.Add(row.Group))
+			if (row.Group.Length != 0 && !members.ContainsKey(row.Group))
 			{
-				expanded.Add(new Engine_UiMenuSources.Row(
+				var group = new List<Engine_UiMenuSources.Row>();
+				members[row.Group] = group;
+				order.Add((new Engine_UiMenuSources.Row(
 					Name: row.Group,
 					Label: row.GroupTag.Length != 0 ? row.GroupTag : row.Group,
 					Icon: string.Empty,
@@ -416,10 +443,28 @@ public sealed class Engine_UiMenuTemplate
 					Group: row.Group,
 					GroupTag: row.GroupTag,
 					IsHeader: true,
-					FromMod: row.FromMod));
+					FromMod: row.FromMod), group));
 			}
 
+			// A grouped row hangs under its header (SpawnSourced); anything else stands in place.
+			if (row.Group.Length != 0 && !row.IsHeader)
+			{
+				members[row.Group].Add(row);
+			}
+			else
+			{
+				order.Add((row, null));
+			}
+		}
+
+		var expanded = new List<Engine_UiMenuSources.Row>(rows.Count + members.Count);
+		foreach ((Engine_UiMenuSources.Row row, List<Engine_UiMenuSources.Row>? group) in order)
+		{
 			expanded.Add(row);
+			if (group is not null)
+			{
+				expanded.AddRange(group);
+			}
 		}
 
 		return expanded;
@@ -556,6 +601,13 @@ public sealed class Engine_UiScreenTemplate
 	public bool OwnsList;
 
 	/// <summary>
+	/// The screen's handler writes the purse — `Foreground.ExpandableMenu.Money.Text`, through
+	/// the guest's purse writer (Fable 2 `sub_8246B5E8`) — and that told text stands even under a
+	/// list Godot owns.
+	/// </summary>
+	public bool Purse;
+
+	/// <summary>
 	/// The book's chrome stands on its FILE's rest state (Engine_UiRestState) and the host's
 	/// channels, never on the guest's presentation sample: every component on its rest slide, the
 	/// draw bit the host's (all on, then the provider's switches), the authored pose. Set per screen
@@ -575,14 +627,13 @@ public sealed class Engine_UiScreenTemplate
 	public Dictionary<string, float> RestOpacity = new(System.StringComparer.Ordinal);
 
 	/// <summary>
-	/// The screen's handler chooses the row from the GUEST'S OWN HIGHLIGHT, never from a pushed
-	/// event: options (`sub_826DA228` reads `g_Menu:GetHighlightedMenuItemData()` @0x826da3ec and
-	/// takes the page as its type − 70), furniture and decoration (`sub_826B6A18`, `sub_826B7550`).
-	/// (The logbook's A reaches no C++ at all — `sub_826D96F0` 36 fires Lua `OnPressA` only, and
-	/// its page follows the highlight, which StateGuestHighlight keeps on ours.) A press on such a screen
-	/// puts the guest's cursor on the row (`MenuHighlight:&lt;name&gt;`, run inside the guest's
-	/// Lua window) and then sends the guest's own A (code 36). An identity push at these
-	/// handlers answers only the scroll sounds.
+	/// The screen's handler chooses the row from the HIGHLIGHTED ROW, never from a pushed event:
+	/// options (`sub_826DA228` asks `sub_826C1B50` @0x826da3ec and takes the page as its type − 70),
+	/// furniture and decoration (`sub_826B6A18`, `sub_826B7550`). (The logbook's A reaches no C++ —
+	/// `sub_826D96F0` 36 fires `OnPressA` only, which no Lua receives now — and its page follows
+	/// the stated highlighted row.) A press on such a screen states the row as highlighted
+	/// (`StateHighlightedRow`, which `sub_826C1B50` answers from) and then sends the screen's own
+	/// A (code 36). An identity push at these handlers answers only the scroll sounds.
 	/// </summary>
 	public bool CommitsByHighlight;
 
@@ -900,6 +951,14 @@ public sealed class Engine_UiModalTemplate
 	public uint Confirm;
 
 	public uint? Cancel;
+
+	/// <summary>
+	/// A query's third answer, on X — the shop's "Equip and continue" (query 20, `XAChoices`): its
+	/// answer `sub_826AF888` buys on 36 and buys then equips on 75 (`cmpwi r31, 0x4B` at
+	/// 0x826AF8EC, `lhGuiInventory_ActivateItemByCategory` at 0x826AF94C; disc `sub_82593DA8`).
+	/// Null when X answers nothing.
+	/// </summary>
+	public uint? Alternate;
 
 	/// <summary>
 	/// True for a MessageBox (one dismiss code) rather than a QueryBox (confirm and cancel).

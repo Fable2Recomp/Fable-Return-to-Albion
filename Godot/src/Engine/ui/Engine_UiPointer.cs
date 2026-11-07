@@ -115,6 +115,18 @@ public static class Engine_UiPointer
 		Canvas = new Vector2(origin.X, origin.Y);
 	}
 
+	/// <summary>
+	/// THE FRAME'S LEFTOVERS ARE THE PAD'S, in both titles: after every screen has taken what it
+	/// lands on, a right click still free is B and the wheel's notches are D-pad steps, so a screen
+	/// the guest drives itself answers them like the pad. A left click acts only on what it lands
+	/// on — a click on nothing is nothing. Clears the frame. Call once, after every consumer.
+	/// </summary>
+	public static void HandLeftoversToPad()
+	{
+		Refii.Game.GameInput.QueuePointerButtons(Free && RightPressed, Free ? WheelSteps : 0);
+		EndFrame();
+	}
+
 	/// <summary>Clears this frame's clicks and wheel. After every consumer has read them.</summary>
 	public static void EndFrame()
 	{

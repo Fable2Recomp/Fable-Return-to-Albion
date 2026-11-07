@@ -492,13 +492,29 @@ void RefiiCoopNoCameraPostSend() {}
 // Shipped, the inbound pause message (sub_8232B518, pause byte r1+0x74, UI byte r1+0x75) closes
 // the receiver's own GUI (sub_8236ED98) and runs sub_8232B2B0: net+217 = 1, GameFlow mode 1
 // (sub_823D4C48; mode 8 for "looking at UI") pushed — the world stops — and the
-// GUI_NET_PAUSED_KICK_CLIENT box. Its resume (0x8232C384) acts only while net+217 is set. The
-// hook at the pause byte's load (0x8232C2E8, disc 0x8230EDB8) goes to the handler's own exit
-// (0x8232C378 `mr r3,r25`, disc 0x8230EE48): neither message changes the receiver.
+// GUI_NET_PAUSED_KICK_CLIENT box. The hook sits on the PAUSE branch only (0x8232C2F4, after the
+// pause byte's test; disc 0x8230EDC4) and goes to the handler's own exit (0x8232C378 `mr r3,r25`,
+// disc 0x8230EE48): a partner's pause changes nothing here. Its RESUME (0x8232C384, disc
+// 0x8230EE54) runs as shipped — it pops the pushed mode and clears net+217 and the notice
+// (sub_8232B480) — so nothing can strand them; on the pause byte's load the hook threw the
+// resume away too, and a card dismissed first left "Host has paused the game" up for good.
 std::atomic<bool> g_said_partner_pause{false};
 
 bool RefiiCoopPartnerPauseRoams() {
   Once(g_said_partner_pause, "a partner's pause leaves this player roaming");
+  return true;
+}
+
+// A CLIENT'S OWN CARD PAUSES NOBODY EITHER. Dismissing the item-received card (screen 8,
+// sub_82538BF0) or the quest card (screen 12, sub_823D4750) before the host, a client raises the
+// host-paused wait on itself (`bl sub_8232B2B0`, 0x82538D24 / 0x823D48A4; disc 0x824044C4 /
+// 0x824F2CAC) and is held under it until the host's own dismissal sends the resume. Each player
+// roams while the other is in a menu, so the client's own raise is skipped; the host's close
+// (msg 0x101 / 0xE6) still closes the client's card.
+std::atomic<bool> g_said_own_card{false};
+
+bool RefiiCoopOwnCardRoams() {
+  Once(g_said_own_card, "a client's own card leaves it roaming");
   return true;
 }
 
@@ -1425,6 +1441,24 @@ bool PlayerTwoTargetsHoldUse(PPCContext& ctx, uint8_t* base) {
 }
 
 }  // namespace
+
+// THE USE GATE READS THE VIEWER'S OWN BYTE. A usable thing's update shows its prompt only while
+// its targeted component says a hero targets it — `lbz r11,0x21(r30)` / `beq` (TU1 0x828224FC /
+// 0x82822504, disc 0x82753F7C / 0x82753F84), hero ONE's byte. `lhECTargeted_SetTargetedByPlayer`
+// keeps hero two's at +0x22 (0x8242810C); on an online joiner hero one is the host's replica with
+// no targeting process, so +0x21 never sets there and the update left before the hooks after it.
+// Before the compare (TU1 0x82822500, disc 0x82753F80), the byte is the one of the player the
+// update is for: hero two's when they are the viewer, and always on the joiner.
+std::atomic<bool> g_said_use_gate{false};
+
+void RefiiCoopUseGateForViewer(PPCRegister& r11, PPCRegister& r30) {
+  uint8_t* base = RefiiGuestBase();
+  if (base == nullptr || !Plausible(r30.u32) || (g_use_viewer == 0u && !IsJoiner(base))) {
+    return;
+  }
+  r11.u64 = refii::vfs::LoadGuestU8(base, r30.u32 + 0x22u);
+  Once(g_said_use_gate, "a usable thing's prompt gate reads player two's own targeted byte");
+}
 
 void RefiiCoopPromptForNearerPlayer(PPCRegister& r3) {
   if (g_use_viewer != 0u) {

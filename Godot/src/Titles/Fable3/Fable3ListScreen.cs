@@ -231,7 +231,13 @@ public abstract partial class Fable3ListScreen : Fable3Canvas
 				lines.Add(row.Line);
 			}
 
-			GD.Print($"[{LogTag}] {LogContext}'{page.Title}' row {page.Selected + 1}: {page.Rows.Count} row(s) bound, view drew {_view.RowsDrawn} " +
+			// The template is a carousel (Engine_UiExpandableMenu.Window): ten rows a window with the
+			// cursor pinned to slot 4, two rows above it; at row 1 those two are empty and the
+			// window holds rows 1..8, so a nine-row page (Game Settings) draws eight until the cursor
+			// moves and the ninth scrolls in. The window is logged so the count is read against it.
+			(int first, int last) = Engine_FrontEndMenuView.Window(page.Selected + 1, page.Rows.Count);
+			GD.Print($"[{LogTag}] {LogContext}'{page.Title}' row {page.Selected + 1}: {page.Rows.Count} row(s) bound, " +
+				$"window rows {first}..{System.Math.Min(last, page.Rows.Count)}, view drew {_view.RowsDrawn} " +
 				$"(labels without glyphs {_view.LabelsWithoutGlyphs}, theme {(Theme?.Fonts is null ? "MISSING" : "bound")}, " +
 				$"view {(_view.IsVisibleInTree() ? "shown" : "HIDDEN")}): {string.Join(" | ", lines)}");
 

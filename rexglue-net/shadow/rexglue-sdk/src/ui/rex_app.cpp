@@ -342,7 +342,8 @@ std::filesystem::path metadata_dir;
     // both titles run from one app and one logs folder.
     const std::string log_prefix = REXCVAR_GET(log_prefix);
     log_config.app_name = log_prefix.empty() ? std::string(GetName()) : log_prefix;
-    log_config.log_dir = (exe_dir / "logs").string();
+    const std::string log_dir = REXCVAR_GET(log_dir);
+    log_config.log_dir = log_dir.empty() ? (exe_dir / "logs").string() : log_dir;
   }
 
   rex::InitLogging(log_config);

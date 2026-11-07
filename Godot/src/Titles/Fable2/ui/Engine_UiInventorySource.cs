@@ -315,6 +315,15 @@ public static class Engine_UiInventorySource
 				rowOperation = OutfitOperation;
 			}
 
+			// A DOG ITEM IS ACTIVATED, NOT WORN. The clothing screen's answer `sub_826D4D58` takes a
+			// Category 24 row to `lhGuiInventory_ActivateItemByCategory` and leaves the screen
+			// (0x826D5050..0x826D506C, disc 0x82580AF8..0x82580B04); the pump commits the row
+			// through that answer.
+			if (record.Category == Category.Dog && operation == WearOperation)
+			{
+				rowOperation = EquipOperation;
+			}
+
 			// A GIFT LIST IS THE INVENTORY NARROWED BY `sub_8242FB28`, and by nothing else — see
 			// Listable for why the two exclusions below are not applied to every screen.
 			if (operation == "gift")
@@ -373,12 +382,12 @@ public static class Engine_UiInventorySource
 				Committable: false,
 				Ghosted: false,
 
-				// THE ROW'S OWN ACTION, performed on the simulation without the guest's menus:
-				// `Inventory:<op>:<record hash>` reaches the guest's own entry points through the
-				// tick pump. Empty when the screen states no operation or the item refuses it,
-				// and then the row does NOTHING on A — as the guest's own list does (`sub_826D19B8`
-				// tests `UsableFromInventory` before it dispatches a use). It is never pushed at
-				// the screen's handler, which acts on ITS cursor (`screen+396`), not on the row.
+				// THE ROW'S OWN ACTION: `Inventory:<op>:<record hash>`. On the items, clothing and
+				// gift screens the pump commits it through the screen's own answer, as the
+				// populate's ticket for the record (CommitItemThroughScreen), so the screen's
+				// refusals, tutorials, confirm and exit run. Empty when the screen states no
+				// operation or the item refuses it, and then the row does NOTHING on A — as the
+				// guest's own list does (`sub_826D19B8` tests `UsableFromInventory` first).
 				Command: !usableOnly && Acts(rowOperation, record)
 					? $"{InventoryAction}{rowOperation}:{record.RecordId}"
 					: null,
@@ -453,6 +462,9 @@ public static class Engine_UiInventorySource
 
 	/// <summary>The `use` operation, gated on `UsableFromInventory` (<see cref="Acts"/>).</summary>
 	private const string UseOperation = "use";
+
+	/// <summary>`equip` — the guest's activation switch `sub_826C9AB8`, by the item's Category.</summary>
+	private const string EquipOperation = "equip";
 
 	/// <summary>`inventory:usable` — only what `use` acts on, as typed rows for a mod's menu.</summary>
 	public const string UsableOperation = "usable";
@@ -971,9 +983,8 @@ public static class Engine_UiInventorySource
 	/// field read at type code 2 (`sub_82472890`) and mapped by `sub_82561420`: values 2, 3 and 4
 	/// are melee, 5 through 8 are ranged, anything else is neither and is not listed.
 	///
-	/// A row's action is `Inventory:equip:&lt;record&gt;`, which reaches the guest's own activation
-	/// switch by NAME rather than by cursor — see the pump's DispatchInventoryAction for why that
-	/// distinction is the whole point on this screen.
+	/// A row's action is `Inventory:equip:&lt;record&gt;`; the pump commits it through the items
+	/// screen's own answer with the populate's ticket for the record (CommitItemThroughScreen).
 	/// </summary>
 	public static IReadOnlyList<Engine_UiMenuSources.Row> Weapons(string argument)
 	{
@@ -1030,7 +1041,15 @@ public static class Engine_UiInventorySource
 		// component 28 with no inventory record, so it is listed here, emphasised.
 		if (Fable2Bridge.HeroWeapons() is { } held)
 		{
+			// A PENDING SWITCH WINS: the guest's list emphasises the weapon just chosen, and the
+			// one in hand only while its class has nothing pending (`sub_826D0C08`, 0x826d0e04).
 			uint heldId = wanted == 2 ? held.Ranged : held.Melee;
+			if (Fable2Bridge.PendingWeapons() is { } pending &&
+				(wanted == 2 ? pending.Ranged : pending.Melee) is var chosen && chosen != 0u)
+			{
+				heldId = chosen;
+			}
+
 			int at = rows.FindIndex(r => r.Id == heldId);
 			if (heldId != 0u && at >= 0)
 			{

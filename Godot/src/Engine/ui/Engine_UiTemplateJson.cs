@@ -383,6 +383,7 @@ public static class Engine_UiTemplateJson
 
 		if (record.TryGetPropertyValue("ownsList", out JsonNode? owns)) screen.OwnsList = Flag(owns);
 		if (record.TryGetPropertyValue("restFromFile", out JsonNode? rest)) screen.RestFromFile = Flag(rest);
+		if (record.TryGetPropertyValue("purse", out JsonNode? purse)) screen.Purse = Flag(purse);
 		if (record.TryGetPropertyValue("flowWhenDrawn", out JsonNode? flowDrawn)) screen.FlowWhenDrawn = Flag(flowDrawn);
 		if (record.TryGetPropertyValue("commitsByHighlight", out JsonNode? byHighlight)) screen.CommitsByHighlight = Flag(byHighlight);
 		if (record.TryGetPropertyValue("ownsRevealedInput", out JsonNode? revealed)) screen.OwnsRevealedInput = Flag(revealed);
@@ -620,6 +621,7 @@ public static class Engine_UiTemplateJson
 
 		PutFlag("ownsList", screen.OwnsList, false);
 		PutFlag("restFromFile", screen.RestFromFile, false);
+		PutFlag("purse", screen.Purse, false);
 		PutFlag("commitsByHighlight", screen.CommitsByHighlight, false);
 		Put("menuScript", screen.MenuScript);
 		if (full || screen.MenuScriptByMode.Count != 0)

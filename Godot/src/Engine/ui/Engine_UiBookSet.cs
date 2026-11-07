@@ -21,6 +21,12 @@ public sealed class Engine_UiBookSet
 	/// (<see cref="Engine_UiOwnedBook.RegistryText"/>, <see cref="Engine_UiOwnedBook.RegistrySlide"/>).</summary>
 	public System.Func<Engine_HudValues?>? Registry { get; set; }
 
+	/// <summary>
+	/// A book's behaviour fired its presentation event under the book's own playback — the
+	/// presentation's file name and the event (Engine_UiBehaviourEvents). The title states where it goes.
+	/// </summary>
+	public System.Action<string, Engine_UiBehaviourEvents.Fired>? BehaviourFired { get; set; }
+
 	/// <summary>One screen's book, or null when it has none yet.</summary>
 	public Engine_UiOwnedBook? Book(uint screenId) =>
 		_books.TryGetValue(screenId, out Engine_UiOwnedBook? book) &&
@@ -80,6 +86,7 @@ public sealed class Engine_UiBookSet
 				Host.TextureNames is { } names && names.TryResolve(hash, out string path) ? path : null,
 		};
 		Wire(book);
+		book.BehaviourFired = fired => BehaviourFired?.Invoke(presentation, fired);
 
 		// Suppression is applied at bind time, so it must be registered before Build().
 		foreach (string owned in template.OwnedElsewhere)
@@ -288,18 +295,9 @@ public sealed class Engine_UiBookSet
 
 			// A screen whose rest state is proven stands on its file and the host alone; the
 			// guest's sample, when there is one, is kept for the `rest:` check only.
-			if (book.Template is { RestFromFile: true })
+			if (book.Template is { RestFromFile: true } || drawn is null or { Stated: true })
 			{
-				if (drawn is not null)
-				{
-					book.KeepSample(drawn.Textures, drawn.LastTransform, drawn.Visible, drawn.Opacity, drawn.Slides);
-				}
-
-				book.SetRest(drawn?.Texts);
-			}
-			else if (drawn is null)
-			{
-				return;
+				book.SetRest();
 			}
 			else
 			{
@@ -311,17 +309,16 @@ public sealed class Engine_UiBookSet
 	}
 
 	/// <summary>
-	/// Stands the FRONT END's own owned book and feeds it the guest's sample. The front end never
-	/// appears in the presentation registry — it reaches Godot through its screen-object fields,
-	/// read by name — so it cannot be driven by <see cref="Drive(uint, Engine_UiDrawnPresentation)"/>.
-	/// The mirrored tree is still built (the live art catalogue and the owned front-end views'
-	/// placement come off it); it just stops being what the player sees.
+	/// Stands the FRONT END's own owned book. The front end never appears in the presentation
+	/// registry's kernel array — it reaches Godot through its screen-object fields, read by name —
+	/// so it cannot be driven by <see cref="Drive(uint, Engine_UiDrawnPresentation, uint)"/>. Its
+	/// presentation is headless: the book stands on its file, its slides, plays, attributes,
+	/// switches, texts and textures arriving as the guest's statements to the front end's active
+	/// screen presentation (Engine_UiSlideStatements).
 	///
 	/// Returns true when the book is standing.
 	/// </summary>
-	public bool DriveFrontEnd(
-		string presentation, int[]? slides, string?[]? texts, bool[]? visible,
-		float?[]? opacity, float?[]?[]? transform, uint[]? textures)
+	public bool DriveFrontEnd(string presentation)
 	{
 		if (Host is null ||
 			Engine_UiTemplates.ScreenFor(presentation) is not { ChromeUnits.Count: > 0 } template)
@@ -351,19 +348,8 @@ public sealed class Engine_UiBookSet
 
 		book.Position = Vector3.Zero;
 		book.Visible = true;
-		if (book.Template is { RestFromFile: true })
-		{
-			// THE FRONT END STANDS ON ITS FILE: its slides, plays, attributes, switches and texts
-			// arrive as the guest's statements to this presentation (Engine_UiSlideStatements),
-			// keyed by the front end's active screen; the sample is kept for the `rest:` check.
-			book.PresentationAddress = Refii.Host.HostBridge.FrontEndPresentation();
-			book.KeepSample(textures, transform, visible, opacity, slides);
-			book.SetRest(texts);
-		}
-		else
-		{
-			book.SetLive(texts, textures, transform, visible, opacity, slides);
-		}
+		book.PresentationAddress = Refii.Host.HostBridge.FrontEndPresentation();
+		book.SetRest();
 
 		FrontEndBookId = screenId;
 

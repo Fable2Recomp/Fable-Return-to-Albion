@@ -106,6 +106,9 @@ int32_t FrontEndSubtitles();
 /// tick. Bit N = tab N available, N in 2..8; 0 means not sampled yet.
 uint32_t PauseTabsMask();
 
+/// The pause minimap's quest markers the guest stated this open (gui_pause_hooks.cpp).
+uint32_t PauseMarkers(uint32_t* out_tokens, float* out_world, uint32_t capacity);
+
 // Defined in Fable2/src/vfs/src/core/stated_fx_state.cpp and
 // Fable2/src/vfs/src/core/target_highlight_state.cpp —
 // what the guest's own setters stated, recorded by the hooks in the payload. Ordinary C++
@@ -795,6 +798,21 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostTakeToldTexts(uint32_t* out_words, uint3
     return refii::vfs::TakeToldTexts(out_words, word_capacity, units, unit_capacity);
 }
 
+/// A HEADLESS presentation's file (hooks/gui_headless_presentation.cpp), the key its statements
+/// carry being (presentation, serial in the root-hash word, `0x80000000 | id`): the path its create
+/// named, NUL-terminated into `out`; returns the length, 0 when `serial` is not the one there.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostToldHeadlessFile(uint32_t presentation, uint32_t serial, char* out,
+                                                         uint32_t capacity) {
+    return refii::vfs::ToldHeadlessFile(presentation, serial, out, capacity);
+}
+
+/// One element of a headless presentation by the id its statements carry: its parent's id (0 the
+/// root) and its name hash. 1 when known, else 0.
+REFII_HOST_ABI_EXPORT int32_t RefiiHostToldHeadlessElement(uint32_t presentation, uint32_t serial, uint32_t id,
+                                                           uint32_t* parent_id, uint32_t* name_hash) {
+    return refii::vfs::ToldHeadlessElement(presentation, serial, id, parent_id, name_hash) ? 1 : 0;
+}
+
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostUiDataGeneration(void) { return refii_bridge_ui_data_generation(); }
 
 /// The taken silver keys still in the world: (address, mask) pairs into `out`, at most `capacity`
@@ -928,133 +946,28 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetItemDyeLayers(uint32_t record, uint32
     return refii::vfs::StatedItemDyeLayers(record, out_words, word_capacity, out_generation);
 }
 
-/// The pause-root minimap's quest markers — the std::map at `screen0+88`, IDA-settled.
-///
-/// Layout (MSVC map node, 96 bytes; `_Color/_Isnil` sit AFTER the value): +0 left, +4 parent,
-/// +8 right, +12 4B pad, +16 KEY = texture object pointer, +32 float4 page-local quad centre,
-/// +48 float2[4] corner UVs, +80 colour byte, +81 nil byte. Head pointer at `screen0+92`
-/// (head[81]==1), size at `screen0+96`, built flag at `screen0+100`. Populated once per map
-/// opening (`sub_826A3150`), emptied on deactivate — the only tear window — so sample only
-/// while screen 0 is up.
-///
-/// At most THREE live: Quest OR QuestExit, plus one QuestGiver (unique-keyed by texture, so
-/// all givers collapse to the last — shipped behaviour). Hero and dog are ordinary elements
-/// and never appear here.
-///
-/// Type travels as the corner UVs. `out_hashes[i]` is the raw map KEY (a texture object
-/// pointer, or -1 on a failed lookup), an opaque identity that is never dereferenced; the C#
-/// side matches the corner UVs against the shipped `ReusableTokens` quads to pick the art.
-///
-/// `out_values` takes 10 floats per marker: x, y (page-local centre), then the four (u,v)
-/// corners. Returns how many markers were written.
+/// THE PAUSE MINIMAP'S QUEST MARKERS, as the guest states them: each marker the pass
+/// `sub_826A3150` (disc `sub_8240F508`) hands its placer `sub_826A3FD8` (disc `sub_82410390`) —
+/// gui_pause_hooks.cpp. `out_hashes[i]` is the token, 0 `Quest`, 1 `QuestExit`, 2 `QuestGiver`
+/// (`Foreground.ReusableTokens.<name>`); `out_values` takes 10 floats per marker, the world point
+/// x, y, z then seven zeros. The table empties as each open's pass begins. Returns how many.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMapMarkers(uint32_t* out_hashes,
                                                       float* out_values,
                                                       uint32_t cap) {
     if (out_hashes == nullptr || out_values == nullptr || cap == 0) {
         return 0;
     }
-
-    auto* memory = SafeKernelMemory();
-    if (memory == nullptr) {
-        return 0;
-    }
-
-    uint8_t* base = memory->virtual_membase();
-    if (base == nullptr) {
-        return 0;
-    }
-
-    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
-    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
-    const auto read_float = [base](uint32_t at) {
-        const uint32_t word = GuestWordAt(base, at);
-        float value = 0.0f;
-        std::memcpy(&value, &word, sizeof(value));
-        return value;
-    };
-
-    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
-    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x82001610u)) {
-        return 0;
-    }
-
-    const uint32_t owner = read32(gui + 28u);
-    if (!plausible(owner)) {
-        return 0;
-    }
-
-    // Screen 0's handler out of the id -> screen map at owner+68.
-    const uint32_t end_node = read32(owner + 72u);
-    if (!plausible(end_node)) {
-        return 0;
-    }
-
-    uint32_t node = read32(end_node + 4u);
-    uint32_t screen0 = 0;
-    for (uint32_t step = 0; step < 64u && plausible(node) && node != end_node; ++step) {
-        const uint32_t key = read32(node + 12u);
-        if (key == 0u) {
-            screen0 = read32(node + 16u);
-            break;
-        }
-
-        node = read32(node + (0u < key ? 0u : 8u));
-    }
-
-    if (!plausible(screen0) || GuestByteAt(base, screen0 + 100u) != 1u) {
-        return 0;
-    }
-
-    const uint32_t head = read32(screen0 + 92u);
-    const uint32_t size = read32(screen0 + 96u);
-    if (!plausible(head) || size == 0u || size > 8u) {
-        return 0;
-    }
-
-    uint32_t written = 0;
-    uint32_t at = read32(head + 0u);  // begin = leftmost
-    for (uint32_t step = 0; step < size + 8u && plausible(at) && at != head && written < cap;
-         ++step) {
-        // The key is returned verbatim, never dereferenced: it is a texture OBJECT pointer (or
-        // -1 on a failed lookup) and this walk runs on the host thread with unguarded reads.
-        // The C# side identifies the marker type by its corner UVs instead.
-        out_hashes[written] = read32(at + 16u);
-        float* record = out_values + (written * 10u);
-        record[0] = read_float(at + 32u);
-        record[1] = read_float(at + 36u);
-        for (uint32_t corner = 0; corner < 8u; ++corner) {
-            record[2u + corner] = read_float(at + 48u + (corner * 4u));
-        }
-
-        ++written;
-
-        // In-order successor.
-        uint32_t right = read32(at + 8u);
-        if (plausible(right) && GuestByteAt(base, right + 81u) == 0u) {
-            at = right;
-            for (uint32_t descend = 0; descend < 32u; ++descend) {
-                const uint32_t left = read32(at + 0u);
-                if (!plausible(left) || GuestByteAt(base, left + 81u) != 0u) {
-                    break;
-                }
-
-                at = left;
-            }
-        } else {
-            uint32_t parent = read32(at + 4u);
-            uint32_t climb = 0;
-            while (climb < 32u && plausible(parent) &&
-                   GuestByteAt(base, parent + 81u) == 0u && at == read32(parent + 8u)) {
-                at = parent;
-                parent = read32(at + 4u);
-                ++climb;
-            }
-
-            at = parent;
+    uint32_t tokens[16] = {};
+    float world[16 * 3] = {};
+    const uint32_t count = refii::vfs::PauseMarkers(tokens, world, cap < 16u ? cap : 16u);
+    for (uint32_t i = 0; i < count; ++i) {
+        out_hashes[i] = tokens[i];
+        float* record = out_values + (i * 10u);
+        for (uint32_t lane = 0; lane < 10u; ++lane) {
+            record[lane] = lane < 3u ? world[(i * 3u) + lane] : 0.0f;
         }
     }
-
-    return written;
+    return count;
 }
 
 /// The abilities screen's spell-assignment mode — the guest's own byte at `screen14+620`.
@@ -1670,6 +1583,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFurniture(uint32_t* out_words, uint32
 REFII_HOST_ABI_EXPORT void RefiiHostSetHighlightedRow(uint32_t screen, int32_t event_type, int32_t id,
                                                       const char* name, const char* label) {
     refii_bridge_set_stated_highlight(screen, event_type, id, name, label);
+}
+
+/// THE FOLD DEPTH OF GODOT'S LIST for one screen (TU1 in-game id, or 1010 its front-end main
+/// menu); 0 clears. The guest's `g_Menu:IsHighlightedItemAtRoot()` readers `sub_826C1D98` and
+/// `sub_826DED60` answer from it (gui_menu_hooks.cpp).
+REFII_HOST_ABI_EXPORT void RefiiHostSetListFoldDepth(uint32_t screen, uint32_t depth) {
+    refii_bridge_set_list_fold_depth(screen, depth);
 }
 
 /// THE SHOP'S FRONT PAGE (screen 22) — see `ShopFront`. Fifteen words: known, flags (1 trader,
@@ -14182,8 +14102,19 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPresentations(uint32_t* words, uint32
     uint32_t found = 0;
     uint32_t chars = 0;
 
-    for (uint32_t i = 0; i < count && i < kMaxPresentations; ++i) {
-        const uint32_t presentation = read32(array + i * 4u);
+    // The headless presentations (hooks/gui_headless_presentation.cpp) are in no kernel list, so
+    // the array never holds them; the payload states each one's life. Listed after the array,
+    // with state bit 3 (8) saying so: a headless root carries no flags of the file's, so its
+    // `active` is the file's authored root (set, bit 0), and the draw and update bytes are the
+    // guest's own writes to the real CPresentation (+872 vf +92, +873 vf +100).
+    uint32_t headless[kMaxPresentations] = {};
+    const uint32_t headless_count =
+        std::min<uint32_t>(refii::vfs::ToldHeadlessLive(headless, kMaxPresentations), kMaxPresentations);
+    const uint32_t listed = std::min<uint32_t>(count, kMaxPresentations);
+
+    for (uint32_t i = 0; i < listed + headless_count; ++i) {
+        const bool is_headless = i >= listed;
+        const uint32_t presentation = is_headless ? headless[i - listed] : read32(array + i * 4u);
         if (!plausible(presentation)) {
             continue;
         }
@@ -14211,8 +14142,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPresentations(uint32_t* words, uint32
         }
 
         // Is it SHOWING? The root's own `active` bit, and the freeze byte.
-        uint32_t state = 0u;
-        if (plausible(root)) {
+        uint32_t state = is_headless ? 9u : 0u;
+        if (plausible(root) && !is_headless) {
             const uint16_t flags = GuestHalfAt(base, root + 0x1Cu);
             if ((flags & 0x2000u) != 0u) {
                 state |= 1u;
@@ -16873,6 +16804,39 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroWeapons(uint32_t* out_melee, uint
     if (out_melee != nullptr) *out_melee = GuestWordAt(base, weapons + 84u);
     if (out_ranged != nullptr) *out_ranged = GuestWordAt(base, weapons + 88u);
     return 1;
+}
+
+/// The weapon switches the menu has PENDING, as the ids the weapon rows carry; 0 for none
+/// (ABI 236). The weapons list emphasises a pending choice before the weapon in hand
+/// (`sub_826D0C08`): the two tracked handles at `*(*(0x83496B08) + 52)` — `+0` melee, `+16`
+/// ranged (`sub_8218DF38` copies, 0x826d0d30 / 0x826d0d5c) — each object's `+4` against the
+/// row's item (0x826d0d7c / 0x826d0d90); the held weapon of a class is emphasised only while
+/// that class has nothing pending (0x826d0e04). The swap itself lands when play resumes.
+/// Returns how many are pending.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPendingWeapons(uint32_t* out_melee, uint32_t* out_ranged) {
+    if (out_melee != nullptr) *out_melee = 0;
+    if (out_ranged != nullptr) *out_ranged = 0;
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) return 0;
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) return 0;
+
+    const uint32_t gui = GuestWordAt(base, refii::guest::Address(0x83496B08u));
+    const uint32_t pending = gui != 0u ? GuestWordAt(base, gui + 52u) : 0u;
+    if (pending == 0u) return 0;
+
+    uint32_t found = 0;
+    const uint32_t melee = GuestWordAt(base, pending);
+    if (melee != 0u) {
+        if (out_melee != nullptr) *out_melee = GuestWordAt(base, melee + 4u);
+        ++found;
+    }
+    const uint32_t ranged = GuestWordAt(base, pending + 16u);
+    if (ranged != 0u) {
+        if (out_ranged != nullptr) *out_ranged = GuestWordAt(base, ranged + 4u);
+        ++found;
+    }
+    return found;
 }
 
 /// The item entities a player holds, as net ids (ABI 135, 64-bit since 170). Component 24

@@ -1,3 +1,7 @@
+#include <atomic>
+#include <string>
+#include <utility>
+
 #include "vfs_hooks_private.h"
 #include "gui/gui_menu_chunks.h"
 
@@ -123,65 +127,128 @@ REX_EXTERN(rex_lhResourceManager_OpenInternal) {
   }
 }
 
+/// THE RUNNER, `sub_82426470(chunk, presentation)` (TU1, disc `sub_823F8908`) — the one door
+/// every C++→Lua UI chunk passes: 127 `bl` sites per build, and its core `sub_82372500` (disc
+/// `sub_82306718`) has exactly two callers, this function (0x824264C8 / 0x823F8960) and the
+/// deferred drain `sub_821738A0` (0x821739A0; disc `sub_82173718` 0x82173818). The original runs
+/// the chunk while the GUI's Lua window `GUI+0x64` is set, else queues it in the
+/// `std::map<presentation, list<LHString>>` at GUI+0x58, whose only writer is this function
+/// (`sub_823726C8`, one caller at 0x824264E8 / disc `sub_823068E0` at 0x823F8980).
+///
+/// THE GUEST'S UI LUA IS CUT HERE. The chunk is recorded for Godot and never run, never queued —
+/// so the drain finds the map empty, and the core is swallowed besides
+/// (`rex_lhGuiPresentation_RunLuaString`, gui_menu_hooks.cpp). That includes the presentation
+/// init `GUI:StoreScriptsDirectoryAndLoadAppropriateScripts()` (0x823DCD28 / 0x823FEA40), the
+/// only `dofile` of `GUISetup.lua` in a shipped build (`uicontract.lua`), so no presentation
+/// carries `g_Menu`, the event queue or the `OnPressA`/`OnPressB` handlers
+/// (`expandablemenuinput.lua`) the UIContract fires (`sub_826D58F0` 0x826D597C, `sub_826D59C8`
+/// 0x826D5A54, `sub_82405190` 0x82405384, the front-end root 0x826DF4A4 / 0x826DFC64) reach.
+/// Those fires' C++ consequences — the root test, the sounds, the screen exits — are outside
+/// the Lua and run unchanged.
+///
+/// Every read-back of a Lua result is answered natively: `GetHighlightedMenuItemData`
+/// (`sub_826C1B50`), `IsHighlightedItemAtRoot` (`sub_826C1D98`, `sub_826DED60`) are replaced
+/// whole; the event pumps' `EventQueueSize` (0x823704D0, 0x82379410) and `CountSpawnedItems`'s
+/// `Float1` (0x82998F24) are answered by the getter hook. The rest are Lua→C++→Lua round trips
+/// with no C++ state behind them (`GetMenuItemDataByName` 0x823DF7E4 → `RefreshButtonText`,
+/// `GetLastItemIndex` 0x826CE75C → `SetItemEmphasisByIndex`) or dead (the front end's
+/// `GetHighlightedMenuItemData`, `sub_826E4AE8`: its out slots are never loaded after
+/// 0x826DED20).
+///
+/// Recorded, in submission order, with what the stagers staged: every `g_Menu:` /
+/// `g_MenuFormatter:` statement and each presentation's script init. A `...Selected...`
+/// statement and `PushMenuState` carry Godot's stated highlighted row (`@Highlighted`), the row
+/// the script's `CurrentHighlightIdx` would have meant.
 REX_EXTERN(rex_lhGui_RunLuaString) {
   REX_FUNC_PROLOGUE();
 
-  // THE CAPTURE RUNS BEFORE THE PASSTHROUGH. It used to sit after it, and
-  // `REFII_VFS_NATIVE_PASSTHROUGH` runs the guest's function and RETURNS — so the whole block
-  // below was dead code and not one menu statement was ever recorded. A 6,777-line run that
-  // opened the logbook, options, equipment, world map and abilities produced zero, which is
-  // indistinguishable from "the guest states no menus": every screen silently fell back to
-  // reading its rows out of the button pool's geometry.
-  //
-  // WHAT THIS FUNCTION IS. Not `dostring` — a DISPATCHER. `lbz r10, 0x64(r11)` at 0x82426498
-  // on the GUI manager (`dword_83496B08`) decides: non-zero runs the chunk now through
-  // `sub_82372500`, zero QUEUES it into the `std::map<presentation, list<LHString>>` at
-  // `g_Gui+0x58`, flushed later by `sub_821738A0`. The manager's constructor sets +0x64 = 1
-  // (0x8237119C) and the first `Update` clears it (0x8228716C) and never sets it back, so in
-  // practice every chunk after the first tick is deferred.
-  //
-  // Capturing on ENTRY is deliberate: it sees every chunk in SUBMISSION order, which is the
-  // order the statements were made, and it pairs with the attribute stagers in
-  // gui_menu_hooks.cpp — `sub_826CE8D0` writes String1..Float4 and only then submits
-  // "g_Menu:SpawnButton()" (0x826CEB3C). Do not expect the guest's Lua side effects to exist
-  // yet at this point; they happen at the flush.
-  {
-    // r4 == 0 is a chunk the guest DISCARDS outright (`beq cr6` at 0x82426488), and it is the
-    // key the model files the statement under. Recording it would invent a menu at address 0.
-    if (ctx.r4.u32 != 0) {
-      // r3 is an LHString handle — `char***`, reached with exactly two dereferences, the way
-      // `sub_82372500` does it (`lwz r11, 0(r30)` / `lwz r6, 0(r11)`). The best-effort reader
-      // used before probes one to three levels and returns pointer bytes whenever they happen
-      // to be printable, so it could not read these reliably. The permissive reader stays as a
-      // fallback for a caller shape we have not enumerated; the `g_Menu` test filters it.
-      std::string chunk = refii::vfs::ReadGuestLhString(base, ctx.r3.u32);
-      if (chunk.empty()) {
-        chunk = refii::vfs::ReadMaybeGuestString(base, ctx.r3.u32, 512);
-      }
+  // A Float1 answer is for the read that follows its own chunk; a reader that skipped its read
+  // (`sub_826CE230` reads only off the current presentation, 0x826ce754) leaves it for no one.
+  refii::vfs::DisarmFloat1();
 
-      if (chunk.find("g_Menu") != std::string::npos) {
-        refii::vfs::RunMenuChunk(chunk, ctx.r4.u32);
+  // r4 == 0 is a chunk the original discards outright (`beq cr6` at 0x82426488).
+  const uint32_t presentation = ctx.r4.u32;
+  if (presentation == 0) {
+    return;
+  }
 
-        // The list boundary. `sub_826CE110` is the class-level "clear the menu" helper and only
-        // the pause and inventory paths reach it; the logbook submits
-        // `g_Menu:RepopulateMenuFromPopulationScript('...')` inline (0x826D8E34), so the
-        // boundary has to be taken from the chunk text here.
-        if (chunk.find("g_Menu:DeleteAllSpawnedMenuItems") != std::string::npos) {
-          // KEYED BY THE SCREEN THE GUEST STATES, like the other boundaries.
-          //
-          // This one published the population as belonging to NO screen, and it is the boundary
-          // most of the in-game lists actually come through — the weapons list was captured
-          // with its rows correct (`Melee (3)<exclamation.img>`, `Ranged (2)`) while screen 15
-          // was up, and reported as screen 0xFFFFFFFF. Any screen bound to a `capture:` source
-          // would then refuse its OWN rows, which is worse than the bleed the key was added to
-          // stop.
-          uint32_t screen_id = 0;
-          refii_bridge_menu_spawn_begin_for(
-              refii::vfs::InGameScreenRoots(base, nullptr, &screen_id) ? screen_id : 0xFFFFFFFFu);
+  // r3 is an LHString handle — `char***`, two dereferences, as `sub_82372500` reads it
+  // (`lwz r11, 0(r30)` / `lwz r6, 0(r11)`).
+  std::string chunk = refii::vfs::ReadGuestLhString(base, ctx.r3.u32);
+  if (chunk.empty()) {
+    chunk = refii::vfs::ReadMaybeGuestString(base, ctx.r3.u32, 512);
+  }
+
+  if (chunk.find("g_Menu") != std::string::npos ||
+      chunk.find(refii::vfs::kPresentationInitChunk) != std::string::npos) {
+    const bool names_selected =
+        chunk.find("g_Menu:SetSelectedItemGhosting") != std::string::npos ||
+        chunk.find("g_Menu:SetSelectedItemEmphasis") != std::string::npos ||
+        chunk.find("g_Menu:RefreshSelectedButtonText") != std::string::npos ||
+        chunk.find("g_Menu:RenameSelectedButton") != std::string::npos ||
+        chunk.find("g_Menu:PushMenuState") != std::string::npos;
+    std::string highlighted;
+    if (names_selected && refii::vfs::StatedHighlightName(base, &highlighted)) {
+      refii::vfs::StageMenuAttribute(refii::vfs::kHighlightedAttribute, highlighted, 0.0f,
+                                     /*is_number=*/false);
+    }
+
+    refii::vfs::RunMenuChunk(chunk, presentation);
+
+    // The capture's list boundary, keyed by the screen the guest states. `sub_826CE110` is the
+    // class-level clear the pause and inventory paths reach; the logbook submits its
+    // repopulation inline (0x826D8E34), so the boundary is taken from the chunk text.
+    if (chunk.find("g_Menu:DeleteAllSpawnedMenuItems") != std::string::npos) {
+      uint32_t screen_id = 0;
+      refii_bridge_menu_spawn_begin_for(
+          refii::vfs::InGameScreenRoots(base, nullptr, &screen_id) ? screen_id : 0xFFFFFFFFu);
+    }
+
+    // `g_Menu:CountSpawnedItems()` — the real-estate populate `sub_82998300` (disc
+    // `sub_828ECC10`) runs it at 0x82998ECC (disc 0x828ED7DC) and reads `Float1` at 0x82998F24
+    // (disc 0x828ED834), adding `GUI_BACK` (`li r8, 0x78` at 0x82998F78) below 1.0
+    // (`fcmpu` at 0x82998F40). The answer is the root rows that populate stated, handed to that
+    // one read.
+    // `g_Menu:GetLastItemIndex()` — the spawn helper `sub_826CE230` (disc `sub_82407D20`) runs
+    // it at 0x826ce708 (disc 0x824081f8) and reads `Float1` at 0x826ce75c (disc 0x8240824c) into
+    // `sub_826D0890`, which states the row's worn/equipped emphasis by that index
+    // (`SetItemEmphasisByIndex`, 0x826d0be4). The script answers `NumberOfItems - 1`, the index
+    // of the row just spawned; the answer is that row's place in this presentation's populate.
+    if (chunk.find("g_Menu:GetLastItemIndex") != std::string::npos) {
+      refii::vfs::AnswerNextFloat1(
+          static_cast<double>(refii::vfs::MenuLastSpawnOrdinal(presentation)));
+    }
+
+    // `g_Menu:GetMenuItemDataByName()` — `sub_823DF660` (disc `sub_8283F948`) runs it at
+    // 0x823df7ac (disc 0x8283fa94) and reads `String2` at 0x823df7e4 (disc 0x8283facc): the named
+    // row's text tag, which the recorder answered from this presentation's populate.
+    if (chunk.find("g_Menu:GetMenuItemDataByName") != std::string::npos) {
+      std::string text_tag;
+      if (refii::vfs::MenuByNameTextTag(presentation, &text_tag)) {
+        static std::atomic<uint64_t> answered{0};
+        const uint64_t a = answered.fetch_add(1, std::memory_order_relaxed) + 1u;
+        if (a <= 16u || (a & (a - 1u)) == 0u) {
+          REXLOG_INFO("Refii menu: GetMenuItemDataByName on presentation 0x{:08X} answered "
+                      "natively — text tag '{}' (#{})",
+                      presentation, text_tag, a);
         }
+        refii::vfs::AnswerNextString2(std::move(text_tag));
       }
+    }
+
+    if (chunk.find("g_Menu:CountSpawnedItems") != std::string::npos) {
+      const uint32_t rows = refii::vfs::MenuRootRows(presentation);
+      refii::vfs::AnswerNextFloat1(static_cast<double>(rows));
+      REXLOG_INFO("Refii menu: CountSpawnedItems on presentation 0x{:08X} answered natively — "
+                  "{} root row(s)",
+                  presentation, rows);
     }
   }
 
-  REFII_VFS_NATIVE_PASSTHROUGH(rex_lhGui_RunLuaString);
+  static std::atomic<uint64_t> cut{0};
+  const uint64_t n = cut.fetch_add(1, std::memory_order_relaxed) + 1u;
+  if (n <= 16u || (n & (n - 1u)) == 0u) {
+    REXLOG_INFO("Refii menu: the guest's UI Lua is cut — chunk #{} '{}' on 0x{:08X} not run",
+                n, chunk.substr(0, 96), presentation);
+  }
 }

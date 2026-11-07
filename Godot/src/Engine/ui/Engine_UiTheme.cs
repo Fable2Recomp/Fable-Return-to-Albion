@@ -691,7 +691,7 @@ public sealed class Engine_UiTheme
 			B = colour.B,
 		};
 
-		return Engine_UiTextMesh.Build(text, font.Font, scale);
+		return Engine_UiTextMesh.Build(text, font.Font, scale, Fonts?.Contract);
 	}
 
 	/// <summary>

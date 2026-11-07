@@ -24,8 +24,9 @@ def _guest_writes():
     except OSError:
         return None
     lines = []
-    for path in sorted(glob.glob(os.path.join(exe_dir, "logs", "refii_*.log*")),
-                       key=os.path.getmtime)[-3:]:
+    # Each title's guest logs sit in its own folder (logs/Fable2/refii_*, logs/Fable3/refiii_*).
+    found = glob.glob(os.path.join(exe_dir, "logs", "*", "refii*_*.log*"))
+    for path in sorted(found, key=os.path.getmtime)[-3:]:
         try:
             with open(path, errors="replace") as handle:
                 lines += [line.strip() for line in handle if "XGIUserWriteAchievements: id=" in line]

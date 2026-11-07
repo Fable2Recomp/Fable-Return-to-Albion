@@ -25,6 +25,12 @@ public sealed class Engine_UiDrawnPresentation
 	/// (see <see cref="Engine_UiPresentationDepth"/>).
 	/// </summary>
 	public bool Mirrored { get; init; } = true;
+
+	/// <summary>
+	/// Stood by the screen the guest STATES is up, with no guest sample behind it (a headless
+	/// presentation): its book stands on its file and the statements alone.
+	/// </summary>
+	public bool Stated { get; init; }
 	public int[]? Slides { get; set; }
 	public bool[]? Visible { get; set; }
 

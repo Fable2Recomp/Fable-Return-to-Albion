@@ -5,9 +5,11 @@ using System.Globalization;
 
 /// <summary>
 /// The pages of Fable 3's element-written box-manager screens — hero status, stats, promises,
-/// quest summary, king's schedule — from the element values the guest STATES through the hooked
-/// element setters (gui_element_hooks.cpp: state, opacity/visibility, text, timeline). Pure, so
-/// the tests can run it against a stated set. Every path, value and route below is the screen
+/// quest summary, king's schedule — from what the guest STATES: the texts, slides and meters its
+/// writers pass at their entry (ui_stated_hooks.cpp: the path setters, the text funnels, the
+/// visibility toggle) and the screens' own calls (<see cref="Fable3ScreenState"/>: the rows the
+/// quest summary and the king's schedule write, the promise's signature). Pure, so the tests can run
+/// it against a stated set. Every path, value and route below is the screen
 /// class's own (Fable 3 IDB; the class vtables are display_box_hooks.cpp's `screen:*` kinds).
 /// </summary>
 /// <remarks>
@@ -36,14 +38,15 @@ public static class Fable3ScreenModel
 	private const string Gap = "    ";
 
 	/// <summary>The page of the screen whose element root is <paramref name="root"/>; null for an unknown root.</summary>
-	public static Fable3ScreenPage? Compose(string root, IReadOnlyDictionary<string, Probe> stated, System.Func<string, string> resolve) => root switch
+	public static Fable3ScreenPage? Compose(string root, IReadOnlyDictionary<string, Probe> stated, Fable3ScreenState screen,
+		System.Func<string, string> resolve) => root switch
 	{
 		HeroStatus => HeroStatusPage(stated, resolve),
-		Stats => StatsPage(stated, resolve),
-		Promises => PromisesPage(stated, resolve),
-		Quests => QuestsPage(stated, resolve),
-		Schedule => SchedulePage(stated, resolve),
-		_ => Fable3BoxScreenModel.Compose(root, stated, resolve),
+		Stats => StatsPage(stated, screen, resolve),
+		Promises => PromisesPage(stated, screen, resolve),
+		Quests => QuestsPage(stated, screen, resolve),
+		Schedule => SchedulePage(stated, screen, resolve),
+		_ => Fable3BoxScreenModel.Compose(root, stated, screen, resolve),
 	};
 
 	/// <summary>The element root of a display_box_hooks.cpp `screen:*` kind, or null (Options draws its own object).</summary>
@@ -110,112 +113,86 @@ public static class Fable3ScreenModel
 	}
 
 	/// <summary>
-	/// STATS. The root's state is the page (sub_8296EC88 at 0x8296ECC8; the Show writes 2 at
-	/// 0x8296D54C): 2 the categories, `…Categories.Details.CompStatisticCategories%d` rows, label
-	/// `.Categories.Category01`, state 2 highlighted / 1 shown / 3 unused (sub_8296ED30,
-	/// 0x8296EE34..0x8296EE54); 3 a category's statistics, `…FullStatistics.Details.
-	/// CompStatisticDetails%d` rows with `Statistics.Title.Statistic` / `.Score` / `.Rank` texts,
-	/// the highlighted row state 3 online or 6 offline, the others 1 or 5 (sub_8296EF78,
-	/// 0x8296F584..0x8296F60C); 4 the friends' board, `…FriendsStatistics.Details.
-	/// CompStatisticFriendsOnly%d` rows with `Line1.GamerTag` / `.Score` / `.Rank`, state 2
-	/// highlighted / 1 shown / 3 unused (sub_829708B0, 0x82970C40..0x82970CC4). Input
-	/// sub_8296DA10 by page: categories A (72) opens the statistics, B (73) closes (sub_8296DC00);
-	/// statistics B back to the categories, A the friends' board (sub_8296DD90).
+	/// STATS. Fields (page `+52`, cursor `+68`, category `+72`, friend `+76`); the page moves through
+	/// sub_8296EC88 (`@Screen.StatsPage`; the Show slides the root to 2 at 0x8296D54C). Each page's
+	/// writer decides its window (`@Screen.StatsWindow`: first row, count, rows) and highlights the
+	/// row where `start + row == cursor`: 2 the categories, `…Categories.Details.
+	/// CompStatisticCategories%d` labelled `.Categories.Category01` (sub_8296ED30, 0x8296EE30); 3 a
+	/// category's statistics, `…FullStatistics.Details.CompStatisticDetails%d` with
+	/// `Statistics.Title.Statistic` / `.Score` / `.Rank` (sub_8296EF78, 0x8296F50C; six rows when
+	/// online, nine offline); 4 the friends' board, `…FriendsStatistics.Details.
+	/// CompStatisticFriendsOnly%d` with `Line1.GamerTag` / `.Score` / `.Rank` (sub_829708B0,
+	/// 0x82970C50). Rows past the list are its unused slides and are not drawn. Input sub_8296DA10 by
+	/// page: categories A (72) opens the statistics, B (73) closes (sub_8296DC00); statistics B back to
+	/// the categories, A the friends' board (sub_8296DD90).
 	/// </summary>
-	private static Fable3ScreenPage StatsPage(IReadOnlyDictionary<string, Probe> stated, System.Func<string, string> resolve)
+	private static Fable3ScreenPage StatsPage(IReadOnlyDictionary<string, Probe> stated, Fable3ScreenState screen, System.Func<string, string> resolve)
 	{
-		int page = At(stated, Stats)?.State ?? 2;
+		int page = screen.StatsPage ?? (screen.Field(0, 2) is 3 or 4 ? screen.Field(0, 2) : 2);
+		int cursor = screen.Field(1, 0);
 		var rows = new List<Fable3ScreenPage.Row>();
 		int selected = -1;
 		string title = Text(stated, Stats + ".Title") ?? resolve("TEXT_GUI_STATS_SCREEN_TITLE");
 		string accept = Text(stated, Stats + ".Buttons.A_Button.Group.Text") ?? resolve("GUI_TEXT_MORE_DETAILS");
 		var prompts = new List<Fable3ScreenPage.Prompt>();
+		(int start, int count, int shown) = screen.StatsWindows.TryGetValue(page, out (int, int, int) window)
+			? window : (0, int.MaxValue, page == 3 ? 9 : page == 4 ? 9 : 8);
 
-		switch (page)
+		for (int row = 0; row < shown && start + row < count; ++row)
 		{
-			case 3:
-				foreach ((int index, string path, Probe row) in Indexed(stated, Stats + ".Table.FullStatistics.Details.CompStatisticDetails"))
-				{
-					if (Text(stated, path + ".Statistics.Title.Statistic") is not { } statistic)
-					{
-						continue;
-					}
+			string n = row.ToString(CultureInfo.InvariantCulture);
+			string? line = page switch
+			{
+				3 => Line(Stats + ".Table.FullStatistics.Details.CompStatisticDetails" + n + ".Statistics.Title.", "Statistic"),
+				4 => Line(Stats + ".Table.FriendsStatistics.Details.CompStatisticFriendsOnly" + n + ".Line1.", "GamerTag"),
+				_ => Text(stated, Stats + ".Table.Categories.Details.CompStatisticCategories" + n + ".Categories.Category01"),
+			};
 
-					string line = statistic + Gap + (Text(stated, path + ".Statistics.Title.Score") ?? string.Empty);
-					if (Text(stated, path + ".Statistics.Title.Rank") is { } rank)
-					{
-						line += Gap + "#" + rank;
-					}
+			if (line is null)
+			{
+				continue;
+			}
 
-					if (row.State is 3 or 6)
-					{
-						selected = rows.Count;
-					}
+			if (start + row == cursor)
+			{
+				selected = rows.Count;
+			}
 
-					rows.Add(new("Statistic" + index.ToString(CultureInfo.InvariantCulture), line));
-				}
+			rows.Add(new((page switch { 3 => "Statistic", 4 => "Friend", _ => "Category" }) + n, line));
+		}
 
-				prompts.Add(new("A", accept));
-				break;
-			case 4:
-				foreach ((int index, string path, Probe row) in Indexed(stated, Stats + ".Table.FriendsStatistics.Details.CompStatisticFriendsOnly"))
-				{
-					if (row.State == 3 || Text(stated, path + ".Line1.GamerTag") is not { } gamer)
-					{
-						continue;
-					}
-
-					string line = gamer + Gap + (Text(stated, path + ".Line1.Score") ?? string.Empty);
-					if (Text(stated, path + ".Line1.Rank") is { } rank)
-					{
-						line += Gap + "#" + rank;
-					}
-
-					if (row.State == 2)
-					{
-						selected = rows.Count;
-					}
-
-					rows.Add(new("Friend" + index.ToString(CultureInfo.InvariantCulture), line));
-				}
-
-				break;
-			default:
-				foreach ((int index, string path, Probe row) in Indexed(stated, Stats + ".Table.Categories.Details.CompStatisticCategories"))
-				{
-					if (row.State == 3 || Text(stated, path + ".Categories.Category01") is not { } category)
-					{
-						continue;
-					}
-
-					if (row.State == 2)
-					{
-						selected = rows.Count;
-					}
-
-					rows.Add(new("Category" + index.ToString(CultureInfo.InvariantCulture), category));
-				}
-
-				prompts.Add(new("A", accept));
-				break;
+		if (page != 4)
+		{
+			prompts.Add(new("A", accept));
 		}
 
 		prompts.Add(new("B", resolve("GUI_BACK")));
 		return new Fable3ScreenPage(title, rows, selected, string.Empty, prompts, true);
+
+		string? Line(string path, string name)
+		{
+			if (Text(stated, path + name) is not { } label)
+			{
+				return null;
+			}
+
+			string line = label + Gap + (Text(stated, path + "Score") ?? string.Empty);
+			return Text(stated, path + "Rank") is { } rank ? line + Gap + "#" + rank : line;
+		}
 	}
 
 	/// <summary>
 	/// PROMISES. The Show sub_827A3398 writes the player's gamertag (0x827A3458), the promise's
 	/// text tag `+72` into `Promises.Promise.Promise` (0x827A3498), the button labels GUI_ACCEPT /
-	/// GUI_BACK by name (0x827A34D0 / 0x827A3508), and `Promises.Buttons` state 1 when the promise
-	/// is already signed (`+77`, with `Signature` 3) else 2 (0x827A3530..0x827A3564). Input
-	/// sub_827A3600: A (74) while unsigned signs it (`Signature` 2, `Buttons` 1, message
-	/// "PromiseAccepted", 0x827A36C0..0x827A3754); B (75) only once signed closes it (+76,
-	/// 0x827A3688; the Update closes at 0x827A35C0).
+	/// GUI_BACK by name (0x827A34D0 / 0x827A3508), and slides `Promises.Buttons` 1 when the promise
+	/// is already signed (`+77`, with `Signature` 3) else 2 (0x827A350C..0x827A3564). The signature
+	/// is the field `+77`: the ctor's accepted argument (sub_827A3290, 0x827A3300), set by A while
+	/// unsigned (sub_827A3600, 0x827A36EC, message "PromiseAccepted"); B only once signed closes it
+	/// (+76, 0x827A3688; the Update closes at 0x827A35C0).
 	/// </summary>
-	private static Fable3ScreenPage PromisesPage(IReadOnlyDictionary<string, Probe> stated, System.Func<string, string> resolve)
+	private static Fable3ScreenPage PromisesPage(IReadOnlyDictionary<string, Probe> stated, Fable3ScreenState screen, System.Func<string, string> resolve)
 	{
-		bool signed = At(stated, Promises + ".Buttons")?.State == 1;
+		bool signed = screen.Field(0, screen.Promise is { Accepted: true } ? 1 : 0) != 0;
 		var rows = new List<Fable3ScreenPage.Row>();
 		if (Text(stated, Promises + ".Player.GamerTag") is { } gamer)
 		{
@@ -237,42 +214,47 @@ public static class Fable3ScreenModel
 
 	/// <summary>
 	/// QUEST SUMMARY. The Show sub_829739D8 writes the active quest's objective title and
-	/// description (sub_82973AC8, 0x82973BB0 / 0x82973DC0) and a window of seven rows
-	/// `QuestSummary.Details.QuestSummaryDetails%d` from the cursor `+44` (sub_82973E20): each row
-	/// is shown through the visibility toggle, its `Text.QuestName` / `Text.QuestLocation` /
-	/// `Text.GuildSealValue` texts committed, and its state 2 for the cursor row, 1 otherwise, 3 for
-	/// an unused slot (sub_82973FB0, 0x82974164..0x82974378). Input sub_829745B0: the stick (26/27)
-	/// moves `+44` (sub_829747A8), A (72) makes the row's quest the active one (message 156 with the
-	/// FNV-1 of its name, 0x82974708) and closes, B (73) closes.
+	/// description (sub_82973AC8, 0x82973BB0 / 0x82973DC0) and sub_82973E20 a window of seven rows
+	/// `QuestSummary.Details.QuestSummaryDetails%d` from the cursor `+44` (start `+44 - 6` from 7 on,
+	/// 0x82973E3C): each listed quest through sub_82973FB0(box, row, quest, selected, isLast)
+	/// (0x82973E9C) — the row shown (0x82974164), its `Text.QuestName` / `Text.QuestLocation` /
+	/// `Text.GuildSealValue` committed — and the rest slid to 3, unused (0x82973F74). The rows are
+	/// those calls (<see cref="Fable3ScreenState.QuestRows"/>), up to the one stated last. Input
+	/// sub_829745B0: the stick (26/27) moves `+44` (sub_829747A8), A (72) makes the row's quest the
+	/// active one (message 156 with the FNV-1 of its name, 0x82974708) and closes, B (73) closes.
 	/// </summary>
-	private static Fable3ScreenPage QuestsPage(IReadOnlyDictionary<string, Probe> stated, System.Func<string, string> resolve)
+	private static Fable3ScreenPage QuestsPage(IReadOnlyDictionary<string, Probe> stated, Fable3ScreenState screen, System.Func<string, string> resolve)
 	{
 		var rows = new List<Fable3ScreenPage.Row>();
 		int selected = -1;
-		foreach ((int index, string path, Probe row) in Indexed(stated, Quests + ".Details.QuestSummaryDetails"))
+		foreach ((int index, (uint quest, bool isSelected, bool last)) in screen.QuestRows)
 		{
-			if (row.State == 3 || row.Hidden || Text(stated, path + ".Text.QuestName") is not { } name)
+			string path = Quests + ".Details.QuestSummaryDetails" + index.ToString(CultureInfo.InvariantCulture);
+			if (quest != 0u && Text(stated, path + ".Text.QuestName") is { } name)
 			{
-				continue;
+				string line = name;
+				if (Text(stated, path + ".Text.QuestLocation") is { } location)
+				{
+					line += Gap + location;
+				}
+
+				if (Text(stated, path + ".Text.GuildSealValue") is { } seals)
+				{
+					line += Gap + seals;
+				}
+
+				if (isSelected)
+				{
+					selected = rows.Count;
+				}
+
+				rows.Add(new("Quest" + index.ToString(CultureInfo.InvariantCulture), line));
 			}
 
-			string line = name;
-			if (Text(stated, path + ".Text.QuestLocation") is { } location)
+			if (last)
 			{
-				line += Gap + location;
+				break;
 			}
-
-			if (Text(stated, path + ".Text.GuildSealValue") is { } seals)
-			{
-				line += Gap + seals;
-			}
-
-			if (row.State == 2)
-			{
-				selected = rows.Count;
-			}
-
-			rows.Add(new("Quest" + index.ToString(CultureInfo.InvariantCulture), line));
 		}
 
 		string objective = string.Join("\n", Present(Text(stated, Quests + ".ObjectiveTitle"), Text(stated, Quests + ".ObjectiveDecription")));
@@ -282,18 +264,19 @@ public static class Fable3ScreenModel
 
 	/// <summary>
 	/// THE KING'S SCHEDULE. The Show sub_82972FD8 writes the title by tag (0x82973138), the day
-	/// subtitle (0x829731B8, emptied with the top line hidden when `+28` is -1), and four rows
-	/// (sub_82973328): `KingsSchedule.Tasks.Task%d` the task's text tag, `KingsSchedule.TickBoxes.
-	/// TickBox%d` its state — 4 for a day with fewer tasks (0x82973268), 2 stamped (the stamp sound,
-	/// 0x82973410). Input sub_82973428: A (74) from pad 1 closes it.
+	/// subtitle (0x829731B8, emptied with the top line hidden when `+28` is -1), and calls
+	/// sub_82973328(box, row 1..4, tick, tag) per row (0x82973270): the day's task tag on
+	/// `KingsSchedule.Tasks.Task%d` and its tick slide on `TickBoxes.TickBox%d` — 4 and tag 0 past the
+	/// day's tasks (0x82973264 / 0x82973268), 2 stamped (the stamp sound, 0x82973410). The rows are
+	/// those calls (<see cref="Fable3ScreenState.ScheduleRows"/>). Input sub_82973428: A (74) from pad
+	/// 1 closes it.
 	/// </summary>
-	private static Fable3ScreenPage SchedulePage(IReadOnlyDictionary<string, Probe> stated, System.Func<string, string> resolve)
+	private static Fable3ScreenPage SchedulePage(IReadOnlyDictionary<string, Probe> stated, Fable3ScreenState screen, System.Func<string, string> resolve)
 	{
 		var rows = new List<Fable3ScreenPage.Row>();
-		for (int i = 1; i <= 4; ++i)
+		foreach ((int row, (int tick, uint _)) in screen.ScheduleRows)
 		{
-			string n = i.ToString(CultureInfo.InvariantCulture);
-			int? tick = At(stated, Schedule + ".TickBoxes.TickBox" + n)?.State;
+			string n = row.ToString(CultureInfo.InvariantCulture);
 			if (tick == 4 || Text(stated, Schedule + ".Tasks.Task" + n) is not { } task)
 			{
 				continue;

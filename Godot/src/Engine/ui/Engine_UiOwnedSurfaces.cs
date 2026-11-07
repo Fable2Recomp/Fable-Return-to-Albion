@@ -3,13 +3,15 @@ using Godot;
 namespace Refii.Ui;
 
 // The concrete owned surfaces — one per presentation Godot draws instead of mirroring. Each
-// states which presentation it owns, how to build its view, how to resolve its positional join,
-// and what to do with a sample. Frame: Engine_UiSurface.cs; views: Engine_UiBoxes.cs.
+// states which presentation it owns, how to build its view, how to resolve its join against the
+// file, and what the guest stated for it to show. Frame: Engine_UiSurface.cs; views:
+// Engine_UiBoxes.cs; the stated boxes: Engine_UiDisplayBoxes.cs.
 
 /// <summary>
-/// The owned MenuBox (screen id 9) — the Lua-opened option list. The guest's Lua opens the list
-/// and owns the outcome; Godot draws it, moves the highlight, and answers through the guest's
-/// own accept.
+/// The owned MenuBox (screen id 9) — the option list `GUI.DisplayMenuBox`, the Orb, the sleep
+/// menu and the rest open through `sub_823DC100`. Its populate states the title and rows
+/// (`@MenuBox.Open`, Engine_UiDisplayBoxes.Menu) and its close the answer; Godot draws them,
+/// moves the highlight, and answers through the guest's own accept, which posts message 35.
 ///
 /// Navigation moves the guest's own selection, not a host copy: its selector reslides the two
 /// affected buttons, so the accept lever and the drawn card always agree.
@@ -94,32 +96,44 @@ public sealed class Engine_UiMenuBoxSurface : Engine_UiModalSurface<Engine_UiMen
 		// within 0.3 s is refused whether or not the stick recentred.
 	}
 
-	protected override void Apply(
-		System.Collections.Generic.List<Engine_UiModel.UiElement> elements,
-		Engine_UiPresentationHost host)
+	protected override string Unstated => "no populate was stated and no row text was told";
+
+	protected override bool ApplyHost(Engine_UiPresentationHost host)
 	{
-		// THE CALL'S TITLE AND OPTIONS (`DisplayMenuBox(title, tag | {TextTag, Enabled}, …)`,
-		// `sub_823DC400` writes exactly these into `Group.Title` and each row's
-		// `Choice1.Frame.Choice1`) when the stated call is the box that is up; the selection
-		// stays the guest's, the lever its accept reads.
+		if (View is null || _joins is null)
+		{
+			return false;
+		}
+
+		// THE POPULATE'S TITLE AND ROWS (`sub_823DC400` writes exactly these into `Group.Title`
+		// and each row's `Choice1.Frame.Choice1`) when its statement is the box that is up — the
+		// controller is one object, so an open statement with the box's row count is it. Else
+		// the texts the guest told those elements, by ordinal. The selection stays the guest's,
+		// the lever its accept reads.
 		var labels = new string?[Engine_UiMenuBox.MaxOptions];
 		string? title;
-		if (Engine_UiGuiBoxes.StatedMenuBox is { } stated && stated.Options.Count == _box.Count)
+		if (Engine_UiDisplayBoxes.Menu is { } stated && stated.Model.Options.Count == _box.Count)
 		{
-			title = stated.Text;
-			for (int i = 0; i < labels.Length && i < stated.Options.Count; ++i)
+			title = stated.Model.Text;
+			for (int i = 0; i < labels.Length && i < stated.Model.Options.Count; ++i)
 			{
-				labels[i] = stated.Options[i].Label;
+				labels[i] = stated.Model.Options[i].Label;
 			}
 		}
 		else
 		{
+			bool told = false;
 			for (int i = 0; i < labels.Length && i < _box.Count; ++i)
 			{
-				labels[i] = elements[_joins!.Labels[i]].Text;
+				labels[i] = Told(_joins.Labels[i]);
+				told |= labels[i] is not null;
 			}
 
-			title = elements[_joins!.Title].Text;
+			title = Told(_joins.Title);
+			if (!told && title is null)
+			{
+				return false;
+			}
 		}
 
 		bool gamerTag = GamerTagShown();
@@ -128,13 +142,17 @@ public sealed class Engine_UiMenuBoxSurface : Engine_UiModalSurface<Engine_UiMen
 		if (!Changed($"{title}|{string.Join('\u001F', labels)}|{_box.Count}|{_box.Selected}|" +
 			$"{_box.EnabledMask}|{_box.Cancelable}|{gamerTag}|{gamerName}|{gamerScore}"))
 		{
-			return;
+			return true;
 		}
 
-		View!.ShowStated(title, labels, _box.Count, _box.Selected,
+		View.ShowStated(title, labels, _box.Count, _box.Selected,
 			_box.EnabledMask, _box.Cancelable, gamerTag, gamerName, gamerScore);
 		GD.Print($"[game-ui] menu box up — '{title}', {_box.Count} option(s), " +
-			$"selected {_box.Selected}, enabled 0x{_box.EnabledMask:X}");
+			$"selected {_box.Selected}, enabled 0x{_box.EnabledMask:X}" +
+			(Engine_UiDisplayBoxes.Menu is { } menu && menu.Model.Options.Count == _box.Count
+				? $" (populate of 0x{menu.Address:X8})"
+				: " (told texts)"));
+		return true;
 	}
 
 	/// <summary>
@@ -291,67 +309,45 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 		return _display != 0;
 	}
 
-	protected override void Apply(
-		System.Collections.Generic.List<Engine_UiModel.UiElement> elements,
-		Engine_UiPresentationHost host)
+	protected override string Unstated => _display != 0
+		? $"the display message box 0x{_display:X8} stated no body"
+		: $"router message box {_modalId}'s open was not stated (@Modal.Open)";
+
+	protected override bool ApplyHost(Engine_UiPresentationHost host)
 	{
-		// The body, for a box whose open was not stated: the text the guest wrote, on the
-		// variant it activated or else the first that holds any.
-		int chosen = -1;
-		string body = string.Empty;
-		for (int i = 0; i < _joins!.Texts.Length; ++i)
+		if (View is null || _joins is null)
 		{
-			Engine_UiModel.UiElement element = elements[_joins.Texts[i]];
-			if (element.IsActive && !string.IsNullOrEmpty(element.Text))
-			{
-				chosen = i;
-				body = element.Text;
-				break;
-			}
+			return false;
 		}
 
-		if (chosen < 0)
+		// THE OPENER'S OWN TEXT: the router's (`sub_8236FA68`'s argument, Engine_UiModalText), or a
+		// display box's own Open (`box+8`, Engine_UiGuiBoxes.StatedMessageBodies).
+		string? body = _display == 0
+			? Engine_UiModalText.For(2u, _modalId)
+			: Engine_UiGuiBoxes.StatedMessageBodies.TryGetValue(_display, out string? opened) ? opened : null;
+		if (body is null)
 		{
-			for (int i = 0; i < _joins.Texts.Length; ++i)
-			{
-				string? text = elements[_joins.Texts[i]].Text;
-				if (!string.IsNullOrEmpty(text))
-				{
-					chosen = i;
-					body = text;
-					break;
-				}
-			}
+			return false;
 		}
 
-		// THE OPENER'S OWN TEXT where it was stated: the router's (Engine_UiModalText), or a
-		// display box's own Open (Engine_UiGuiBoxes.StatedMessageBodies).
-		if (_display == 0 && Engine_UiModalText.For(2u, _modalId) is { } stated)
+		if (!Changed($"{_display:X8}|{_modalId}|{body}"))
 		{
-			body = stated;
-		}
-		else if (_display != 0 && Engine_UiGuiBoxes.StatedMessageBodies.TryGetValue(_display, out string? opened))
-		{
-			body = opened;
-		}
-
-		if (body.Length == 0 || !Changed(body))
-		{
-			return;
+			return true;
 		}
 
 		// THE SIZE IS OURS: the guest's fitter's rule over our own layout (Engine_UiMessageBox.Fit),
 		// so the variant the guest activated is not read.
-		chosen = View!.Fit(body) is int fitted and >= 0 ? fitted : System.Math.Max(chosen, 0);
+		int chosen = View.Fit(body) is int fitted and >= 0 ? fitted : 0;
 
 		BgfSlide? size = SizeSlide(chosen);
 		string paperSource = size is null ? "authored" : $"slide type{chosen + 1}";
 
-		View!.ShowStated(body, chosen, size);
+		View.ShowStated(body, chosen, size);
 		GD.Print((_display != 0
 				? $"[game-ui] display message box {_display:X8} up "
 				: $"[game-ui] message box {_modalId} up over screen {_screenId} ") +
 			$"(size {chosen + 1}, paper {paperSource}) — " + View.LastReport);
+		return true;
 	}
 
 	protected override void Route(Engine_UiSurfaceInput input)
@@ -380,11 +376,12 @@ public sealed class Engine_UiMessageSurface : Engine_UiModalSurface<Engine_UiMes
 }
 
 /// <summary>
-/// The owned in-game query box, game-wide. The guest opens one (modal id at guiOwner+44,
-/// QueryBox mode at +40) over whatever screen is current and states its text as live element
-/// strings; Godot draws it and answers through the guest's own input router. A box whose answer
-/// codes are not in the modal table is still drawn but keeps its own input — see
-/// <see cref="Engine_UiTemplates.Modal"/>.
+/// The owned in-game query box, game-wide: the modal router's (modal id at guiOwner+44, QueryBox
+/// mode at +40, its text stated by the opener `sub_8236FA68` as `@Modal.Open`) or a display
+/// question (class 0x820AE688, stated by its Open `sub_823CF228` as `@DisplayBox.Open` kind 2).
+/// Godot draws it from that statement and answers through the guest's own router or the box's own
+/// handler. A router box whose answer codes are not in the modal table is still drawn but keeps
+/// its own input — see <see cref="Engine_UiModals"/>.
 /// </summary>
 public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQueryBox>
 {
@@ -403,13 +400,13 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 	private uint _screenId;
 
 	/// <summary>
-	/// The box up is a DISPLAY question, not the modal router's. Same presentation, different
-	/// answer: its own handler `sub_823CF3B0` takes 46/47 and posts reply 1/0, reached through
-	/// <see cref="Engine_UiSource.DisplayBoxAction"/>.
+	/// The box up is a DISPLAY question, not the modal router's — as its Open stated it. Same
+	/// presentation, different answer: its own handler `sub_823CF3B0` takes 46/47 and posts reply
+	/// 1/0, addressed to this box (`BoxAction:<code>@<box>`).
 	/// </summary>
-	private bool _display;
+	private Engine_UiDisplayBoxes.Box? _display;
 
-	protected override bool TakesInput => _display || _codes is not null || _host;
+	protected override bool TakesInput => _display is not null || _codes is not null || _host;
 
 	/// <summary>
 	/// The box up is the HOST's — a question (<see cref="Engine_UiHostBoxes.Question"/>), or a
@@ -442,7 +439,7 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 	/// </summary>
 	private Engine_UiQueryBox.RowJoin RowFor(uint modalId)
 	{
-		string wanted = _display ? Engine_UiQueryBox.ChoiceRows[0].Row : modalId switch
+		string wanted = _display is not null ? Engine_UiQueryBox.ChoiceRows[0].Row : modalId switch
 		{
 			20u => Engine_UiQueryBox.ChoiceRows[1].Row,
 			13u => Engine_UiQueryBox.ChoiceRows[2].Row,
@@ -486,26 +483,35 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 		if (pause is { QueryBoxUp: true } state)
 		{
 			_codes = Engine_UiTemplates.Modal(state.ModalId, uint.MaxValue, dismissal: false);
-			_display = false;
+			_display = null;
 			_modalId = state.ModalId;
 			_screenId = state.ScreenId;
 			return true;
 		}
 
 		_codes = null;
-		_display = Engine_UiSource.Current.DisplayQueryUp();
+		_display = Engine_UiDisplayBoxes.ShowingOf(Engine_UiDisplayBoxes.Query);
 		// A host box needs the box's join to be shown; without one it must not hold the frame.
 		// In game only: out of it the front end's own dialog draws it (GameUi.DriveFrontEndHostBox).
 		// A question stands before a notice, as on the front end.
 		_notice = Engine_UiHostBoxes.Question is null;
-		_host = !_display && (Engine_UiHostBoxes.Question ?? Engine_UiHostBoxes.Notice) is not null &&
+		_host = _display is null && (Engine_UiHostBoxes.Question ?? Engine_UiHostBoxes.Notice) is not null &&
 			Refii.Host.HostBridge.IsInGame && (View is null || _joins is not null);
-		return _display || _host;
+		return _display is not null || _host;
 	}
+
+	protected override string Unstated => _display is not null
+		? $"the display question 0x{_display.Address:X8} stated nothing"
+		: $"router query box {_modalId}'s open was not stated (@Modal.Open)";
 
 	protected override bool ApplyHost(Engine_UiPresentationHost host)
 	{
-		if (!_host || (Engine_UiHostBoxes.Question ?? Engine_UiHostBoxes.Notice) is not { } body || _joins is null)
+		if (!_host)
+		{
+			return ApplyGuest();
+		}
+
+		if ((Engine_UiHostBoxes.Question ?? Engine_UiHostBoxes.Notice) is not { } body || _joins is null)
 		{
 			return false;
 		}
@@ -523,36 +529,47 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 		return true;
 	}
 
-	protected override void Apply(
-		System.Collections.Generic.List<Engine_UiModel.UiElement> elements,
-		Engine_UiPresentationHost host)
+	/// <summary>The guest's box: the opener's own text — the router's (Engine_UiModalText) or the
+	/// display question's Open (`box+8`) — on the row its opener stands, captioned by the file.</summary>
+	private bool ApplyGuest()
 	{
+		if (View is null || _joins is null)
+		{
+			return false;
+		}
+
+		string? body = _display is { } box ? box.Body : Engine_UiModalText.For(3u, _modalId);
+		if (body is null)
+		{
+			return false;
+		}
+
 		Engine_UiQueryBox.RowJoin row = RowFor(_modalId);
 		string? first = Authored(row.First);
 		string? second = Authored(row.Second);
-
-		// The opener's own text where it was stated: the router's (Engine_UiModalText) or the
-		// display question's call (Engine_UiGuiBoxes.StatedQuestion); else the box's.
-		string body = (!_display ? Engine_UiModalText.For(3u, _modalId) : Engine_UiGuiBoxes.StatedQuestion) ??
-			elements[_joins!.Body].Text ?? string.Empty;
-		if (body.Length == 0 || !Changed($"{row.Name}\u0001{body}\u0001{first}\u0001{second}"))
+		if (!Changed($"{_display?.Address:X8}\u0001{_modalId}\u0001{row.Name}\u0001{body}\u0001{first}\u0001{second}"))
 		{
-			return;
+			return true;
 		}
 
-		View!.ShowStated(body, row.Name, first, second);
-		GD.Print((_display ? "[game-ui] display query up " : $"[game-ui] query box {_modalId} up over screen {_screenId} ") +
+		View.ShowStated(body, row.Name, first, second);
+		GD.Print((_display is { } shown
+				? $"[game-ui] display query 0x{shown.Address:X8} up "
+				: $"[game-ui] query box {_modalId} up over screen {_screenId} ") +
 			$"({row.Name}) — {View.LastReport}");
+		return true;
 	}
 
-	/// <summary>A click on the A choice confirms, on the B choice cancels, on the scroll bar
-	/// drags it; elsewhere nothing.</summary>
+	/// <summary>A click on the A choice confirms, on the second choice cancels — or answers the
+	/// alternate where the box's second choice is X (`XAChoices`) — on the scroll bar drags it;
+	/// elsewhere nothing.</summary>
 	protected override Engine_UiSurfaceInput Point(Engine_UiSurfaceInput input, Vector2 at) =>
 		View is not null && View.PressBar(at)
 			? input
 			: View?.AnswerAt(at) switch
 			{
 				1 => input with { Accept = true },
+				-1 when _codes is { Cancel: null, Alternate: not null } => input with { Equip = true },
 				-1 => input with { Back = true },
 				_ => input,
 			};
@@ -580,14 +597,15 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 			return;
 		}
 
-		if (_display)
+		if (_display is { } box)
 		{
 			if (input.Accept || input.Back)
 			{
-				Engine_UiSource.Current.DisplayBoxAction(input.Accept
+				Engine_UiSource.BoxAction code = input.Accept
 					? Engine_UiSource.BoxAction.Confirm
-					: Engine_UiSource.BoxAction.Cancel);
-				GD.Print($"[game-ui] display query {(input.Accept ? "CONFIRMED" : "cancelled")}");
+					: Engine_UiSource.BoxAction.Cancel;
+				Engine_UiSource.Current.PostFrontEndAction($"BoxAction:{(int)code}@{box.Address:X8}");
+				GD.Print($"[game-ui] display query 0x{box.Address:X8} {(input.Accept ? "CONFIRMED" : "cancelled")}");
 			}
 
 			return;
@@ -608,18 +626,22 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 			Engine_UiSource.Current.PostFrontEndAction($"QueryAnswer:{cancel}@{_modalId}");
 			GD.Print($"[game-ui] query box {_modalId} cancelled (code {cancel})");
 		}
+		else if (input.Equip && codes.Alternate is { } alternate)
+		{
+			Engine_UiSource.Current.PostFrontEndAction($"QueryAnswer:{alternate}@{_modalId}");
+			GD.Print($"[game-ui] query box {_modalId} answered the alternate (code {alternate})");
+		}
 	}
 }
 
 /// <summary>
 /// The owned numeric adjuster (modal mode 5, or a DISPLAY adjuster from
 /// `GUI.DisplayNumericAdjusterParams`). Drawn from what the opener STATED: the router's
-/// `sub_8236FCA8(…, value, min, max, step, flags)` (display_box_hooks.cpp) or the Lua table
-/// (<see cref="Engine_UiGuiBoxes.DisplayAdjuster"/>). The steps go to the guest as its own codes
-/// — its handler commits its own value — and the host steps its copy by the same rule
-/// (`sub_826B8CF0`: move only while the room is at least one step; no clamp, no wrap), formats it
-/// as `sub_826B8BB0` does and gates the arrows by the room. A box whose open was not stated falls
-/// back to its presentation.
+/// `sub_8236FCA8(…, value, min, max, step, flags)` or the display box's Open, its widget at
+/// `box+24` (display_box_hooks.cpp; <see cref="Engine_UiDisplayBoxes.Box.Adjuster"/>). The steps go
+/// to the guest as its own codes, each with its release — its handler steps and commits its own
+/// value — and the value drawn is the one the widget tells (ToldValue); the arrows are gated by
+/// the room left at that value.
 /// </summary>
 public sealed class Engine_UiNumericSurface : Engine_UiModalSurface<Engine_UiNumericBox>
 {
@@ -637,6 +659,14 @@ public sealed class Engine_UiNumericSurface : Engine_UiModalSurface<Engine_UiNum
 
 	private const uint StepDecrement = 29;
 
+	/// <summary>
+	/// A step's release: the step code + 4 (32 up, 33 down). The widget's repeat gate
+	/// `sub_828818E8` (behind `sub_826B8EB0`, both adjusters) drops a second step inside its
+	/// first-repeat delay unless a release came between — cases 32..35 reset its clocks
+	/// (0x82881a88..0x82881a9c) — so every step goes out with its release and every one lands.
+	/// </summary>
+	private const uint ReleaseOffset = 4;
+
 	/// <summary>Commit and cancel, as the adjuster's handler reads them.</summary>
 	private const uint Commit = 46;
 
@@ -651,11 +681,11 @@ public sealed class Engine_UiNumericSurface : Engine_UiModalSurface<Engine_UiNum
 	private uint _modalId;
 
 	/// <summary>
-	/// The adjuster up is a DISPLAY box, not the router's. Same codes, different lever: its own
-	/// handler `sub_823CF8A8` takes them — 28/29 step, 46 commits and posts 37, 47 cancels and
-	/// posts 38 — reached through <see cref="Engine_UiSource.DisplayBoxAction"/>.
+	/// The adjuster up is a DISPLAY box, not the router's, as its Open stated it. Same codes,
+	/// different lever: its own handler `sub_823CF8A8` takes them — 28/29 step, 46 commits and
+	/// posts 37, 47 cancels and posts 38 — addressed to this box (`BoxAction:<code>@<box>`).
 	/// </summary>
-	private bool _display;
+	private Engine_UiDisplayBoxes.Box? _display;
 
 	private double _repeat;
 
@@ -664,56 +694,91 @@ public sealed class Engine_UiNumericSurface : Engine_UiModalSurface<Engine_UiNum
 	protected override Engine_UiNumericBox Build(Engine_UiTheme? art) =>
 		Engine_UiNumericBox.FromPatternBook(art);
 
-	protected override void Join(Engine_UiScreen document) =>
+	protected override void Join(Engine_UiScreen document)
+	{
 		_joins = Engine_UiNumericBox.Resolve(document);
+		_rootHash = document.Nodes.Length > 0 ? document.Nodes[0].Element.NameHash : 0u;
+	}
+
+	/// <summary>The document root's name hash — how told statements key this presentation.</summary>
+	private uint _rootHash;
+
+	/// <summary>The told sequence when this adjuster opened: its value text must come after it.</summary>
+	private ulong _openedAt;
+
+	private bool _open;
 
 	protected override bool IsOpen(Engine_UiModel.PauseState? pause)
 	{
+		bool open;
 		if (pause is { AdjusterUp: true } state)
 		{
 			_modalId = state.ModalId;
-			_display = false;
-			return true;
+			_display = null;
+			open = true;
+		}
+		else
+		{
+			_display = Engine_UiDisplayBoxes.ShowingOf(Engine_UiDisplayBoxes.Adjuster);
+			open = _display is not null;
 		}
 
-		_display = Engine_UiSource.Current.DisplayAdjusterUp();
-		return _display;
+		if (open && !_open)
+		{
+			_openedAt = Engine_UiSlideStatements.Sequence;
+		}
+
+		_open = open;
+		return open;
 	}
+
+	/// <summary>
+	/// THE VALUE THE GUEST HOLDS, as its widget writes it: every step (`sub_826B8CF0` /
+	/// `sub_826B8DD0`) moves the widget's value (`+0x2C`) and re-renders it into the box's value
+	/// text (`sub_826B8BB0`: `lhGuiElement_SetText(*(w+8), *(w+4), …)` at 0x826b8c78), told. The
+	/// widget's step is its own — it divides by ten near a bound (0x826b8d50..0x826b8d6c) — so
+	/// the value is read, never stepped here. Null before the guest's first render.
+	/// </summary>
+	private int? ToldValue()
+	{
+		return _joins is not null && _joins.Value >= 0 &&
+			Engine_UiSlideStatements.TextOf(Address, _rootHash, _joins.Value, _openedAt) is { Length: > 0 } told
+				? Engine_UiGuiBoxes.AdjusterState.ParseDisplay(told)
+				: null;
+	}
+
+	protected override string Unstated => _display is not null
+		? $"the display adjuster 0x{_display.Address:X8} stated no widget"
+		: $"router adjuster {_modalId}'s open was not stated (@Modal.Open)";
 
 	protected override void Released() => _repeat = 0.0;
 
 	/// <summary>The stated adjuster that is up, or null when its open was not stated.</summary>
 	private Engine_UiGuiBoxes.AdjusterState? Stated =>
-		_display ? Engine_UiGuiBoxes.DisplayAdjuster : Engine_UiModalText.Adjuster(_modalId);
+		_display is { } box ? box.Adjuster : Engine_UiModalText.Adjuster(_modalId);
 
-	protected override void Apply(
-		System.Collections.Generic.List<Engine_UiModel.UiElement> elements,
-		Engine_UiPresentationHost host)
+	protected override bool ApplyHost(Engine_UiPresentationHost host)
 	{
-		string body = (!_display ? Engine_UiModalText.For(5u, _modalId) : null) ??
-			elements[_joins!.Body].Text ?? string.Empty;
-		string value;
-		bool up;
-		bool down;
-		if (Stated is { } stated)
+		string? body = _display is { } box ? box.Body : Engine_UiModalText.For(5u, _modalId);
+		if (View is null || _joins is null || body is null || Stated is not { } stated)
 		{
-			value = stated.Display;
-			up = stated.CanIncrease;
-			down = stated.CanDecrease;
-		}
-		else
-		{
-			value = elements[_joins!.Value].Text ?? string.Empty;
-			up = elements[_joins.ArrowUp].IsGloballyActive;
-			down = elements[_joins.ArrowDown].IsGloballyActive;
+			return false;
 		}
 
-		if (value.Length == 0 || !Changed($"{body}|{value}|{up}|{down}"))
+		if (ToldValue() is { } guest)
 		{
-			return;
+			stated.Value = guest;
 		}
 
-		View!.ShowStated(body, value, up, down);
+		string value = stated.Display;
+		bool up = stated.CanIncrease;
+		bool down = stated.CanDecrease;
+		if (Changed($"{_display?.Address:X8}|{_modalId}|{body}|{value}|{up}|{down}"))
+		{
+			View.ShowStated(body, value, up, down);
+		}
+
+		return true;
 	}
 
 	/// <summary>A click on an arrow steps; anywhere else on the box commits the value.</summary>
@@ -734,19 +799,15 @@ public sealed class Engine_UiNumericSurface : Engine_UiModalSurface<Engine_UiNum
 			if (_repeat <= 0.0)
 			{
 				_repeat = StepInterval;
-				bool increase = input.Direction < 0;
-				Send(increase ? StepIncrement : StepDecrement);
-				if (Stated is { } stated)
-				{
-					if (increase ? stated.CanIncrease : stated.CanDecrease)
-					{
-						stated.Value += increase ? stated.Increment : -stated.Increment;
-					}
-				}
+				uint step = input.Direction < 0 ? StepIncrement : StepDecrement;
+				Send(step);
+				Send(step + ReleaseOffset);
 			}
 		}
 
-		string which = _display ? "display numeric adjuster" : $"numeric adjuster {_modalId}";
+		string which = _display is { } shown
+			? $"display numeric adjuster 0x{shown.Address:X8}"
+			: $"numeric adjuster {_modalId}";
 		if (input.Accept)
 		{
 			Send(Commit);
@@ -761,11 +822,9 @@ public sealed class Engine_UiNumericSurface : Engine_UiModalSurface<Engine_UiNum
 
 	private void Send(uint code)
 	{
-		if (_display)
+		if (_display is { } box)
 		{
-			uint box = Engine_UiSource.Current.DisplayBoxAddress();
-			Engine_UiSource.Current.PostFrontEndAction(
-				box != 0 ? $"BoxAction:{code}@{box:X8}" : $"BoxAction:{code}");
+			Engine_UiSource.Current.PostFrontEndAction($"BoxAction:{code}@{box.Address:X8}");
 		}
 		else
 		{
@@ -927,14 +986,6 @@ public sealed class Engine_UiReceiveItemsSurface : Engine_UiModalSurface<Engine_
 	private static string? Text(Engine_UiTheme? theme, uint key) =>
 		key != 0 && theme?.Strings is { } strings && strings.TryGetString(key, out string value) ? value : null;
 
-	/// <summary>Never reached: the card is host-stated (<see cref="ApplyHost"/>) and the elements
-	/// are not read.</summary>
-	protected override void Apply(
-		System.Collections.Generic.List<Engine_UiModel.UiElement> elements,
-		Engine_UiPresentationHost host)
-	{
-	}
-
 	/// <summary>A click on a prompt is its button; the card itself answers nothing.</summary>
 	protected override Engine_UiSurfaceInput Point(Engine_UiSurfaceInput input, Vector2 at) =>
 		View?.PromptAt(at) switch
@@ -973,13 +1024,13 @@ public sealed class Engine_UiReceiveItemsSurface : Engine_UiModalSurface<Engine_
 }
 
 /// <summary>
-/// A display-only owned surface: the intermission strip and the info/acceptance display box.
-/// Both are box-queue requests the guest opens, writes and closes itself. They take no input and
-/// have no modal state, so they are driven at the presentation follower's sampling cadence — the
-/// follower hands the address in.
+/// A display-only owned surface: the intermission strip and the acceptance / button display box.
+/// Both are box-queue requests the guest opens, writes and closes itself; each class's own Open
+/// and Close state the box (`@DisplayBox.Open` / `.Close`, display_box_hooks.cpp), and the panel
+/// stands on that statement. They take no input and have no modal state.
 ///
-/// One class for both: they differ only by table — which authored groups to clone, which paths
-/// carry the live text, and, for the display box, the group whose presence vetoes ownership.
+/// One class for both: they differ only by table — which authored groups to clone and which paths
+/// carry the stated text.
 /// </summary>
 public sealed class Engine_UiStatedSurface : Engine_UiSurface<Engine_UiStatedPanel>
 {
@@ -999,15 +1050,11 @@ public sealed class Engine_UiStatedSurface : Engine_UiSurface<Engine_UiStatedPan
 			HudStyle = true,
 			Texts = new[] { new Engine_UiStatedPanel.TextBinding("Group", "Text") },
 		},
-		veto: null,
-		describeSlide: DescribeIntermission);
+		acceptanceText: false);
 
 	/// <summary>
-	/// The info/acceptance display box: body plus an optional title.
-	///
-	/// Slides 7 and 8 stay the mirror's: the hold-to-accept card is `AcceptanceNewInt` /
-	/// `AcceptanceNewOut`, the only two slides that set the `Paper` group active, so the veto is
-	/// that group's name.
+	/// The acceptance / button display box: body plus its title. The hold-to-accept `Paper` card
+	/// (`AcceptanceNewInt` / `AcceptanceNewOut`, kind 8) is a class of its own and not this panel.
 	///
 	/// The two colours are `PrepareDisplayBox`'s (`displaybox.dis main.6 pc3..56`): subheading on
 	/// the title, normal text on the body.
@@ -1030,18 +1077,15 @@ public sealed class Engine_UiStatedSurface : Engine_UiSurface<Engine_UiStatedPan
 					Engine_UiBoxConstants.SubheadingText),
 			},
 		},
-		veto: "Paper",
-		describeSlide: DescribeDisplayBox);
+		acceptanceText: true);
 
 	private Engine_UiStatedSurface(
-		string label, string nodeName, Engine_UiStatedPanel.Config config, string? veto,
-		System.Func<int, string>? describeSlide = null)
+		string label, string nodeName, Engine_UiStatedPanel.Config config, bool acceptanceText)
 	{
 		Label = label;
 		_nodeName = nodeName;
 		_config = config;
-		_veto = veto;
-		_describeSlide = describeSlide;
+		_acceptanceText = acceptanceText;
 	}
 
 	public override string Presentation => _config.Presentation;
@@ -1058,28 +1102,13 @@ public sealed class Engine_UiStatedSurface : Engine_UiSurface<Engine_UiStatedPan
 
 	private readonly Engine_UiStatedPanel.Config _config;
 
-	/// <summary>The authored group whose live-active state means this style is not ours.</summary>
-	private readonly string? _veto;
+	/// <summary>Whether the acceptance / button natives' text stands in for an empty stated body.</summary>
+	private readonly bool _acceptanceText;
 
 	private bool _wasUp;
 
 	private Engine_UiStatedPanel.Joins? _joins;
 
-	/// <summary>The veto group's document ordinal, -1 when the surface has none.</summary>
-	private int _vetoOrdinal = -1;
-
-	/// <summary>
-	/// How this surface's SCENE slide reads, or null where the surface states none.
-	///
-	/// The slide is the scene root's: every `OpenAs*Box` ends on `goToSlide(SCENE, n)`
-	/// (`displaybox.dis main.2/3/4 pc12..17`) and `Close` tests `getCurrentSlide(SCENE)`
-	/// (`main.5 pc3..5`); `MessageBox`'s `:GoToSlide(n)` is the same call.
-	///
-	/// `SCENE` is element ordinal 0, the root `Component`, where `displaybox.bgf` (master plus
-	/// eight slides) and `intermissionbox.bgf` (master plus Intro and Outro) hang their numbered
-	/// sets. No other element's slide byte is written.
-	/// </summary>
-	private readonly System.Func<int, string>? _describeSlide;
 
 	protected override bool Joined => _joins is not null;
 
@@ -1089,143 +1118,87 @@ public sealed class Engine_UiStatedSurface : Engine_UiSurface<Engine_UiStatedPan
 	protected override void Join(Engine_UiScreen document)
 	{
 		_joins = Engine_UiStatedPanel.Resolve(document, _config);
+	}
 
-		if (_veto is not null)
+	/// <summary>The box the guest last opened on this surface, 0 when none is up.</summary>
+	private uint _statedBox;
+
+	private string?[]? _statedTexts;
+
+	private int _statedKind;
+
+	/// <summary>
+	/// The guest opened one of this surface's boxes (`@DisplayBox.Open`, display_box_hooks.cpp):
+	/// its class's Open wrote <paramref name="body"/> (`box+8`) into the panel's text element and
+	/// played its intro (intermission slide 1 `sub_8299EB40`; acceptance / button
+	/// `g_DisplayBox:OpenAsAcceptanceBox()` from `sub_8299EE40`, whose title is that function's
+	/// `GUI_ACCEPTANCE_BOX` — <paramref name="title"/>).
+	/// </summary>
+	public void Opened(uint box, int kind, string body, string? title = null)
+	{
+		_statedBox = box;
+		_statedKind = kind;
+		_statedTexts = new string?[_config.Texts.Length];
+		if (_statedTexts.Length > 0)
 		{
-			_vetoOrdinal =
-				Engine_UiStatedPanel.FindByName(document.Roots, _veto)?.Ordinal ?? -1;
+			_statedTexts[0] = body.Length != 0 ? body : _acceptanceText ? StatedDisplayText : body;
+		}
+
+		if (_statedTexts.Length > 1)
+		{
+			_statedTexts[1] = title;
+		}
+	}
+
+	/// <summary>The guest closed box <paramref name="box"/> (its class's Close, `@DisplayBox.Close`).</summary>
+	public void Closed(uint box)
+	{
+		if (box == _statedBox)
+		{
+			_statedBox = 0;
+			_statedTexts = null;
+			StatedDisplayText = null;
 		}
 	}
 
 	/// <summary>
-	/// One sample of a live presentation. True when the owned panel stands in for the mirror;
-	/// false leaves the guest's own tree to be drawn — the fallback for an unowned style and for
-	/// a build that produced no art.
+	/// The panel stands while the guest's box is open, with the texts its Open stated. True while
+	/// it is up.
 	/// </summary>
-	public bool Sample(Engine_UiPresentationHost? host, uint address)
+	/// <param name="hiddenByGuest">The guest holds this box's presentation hidden — the pause
+	/// screen hides the intermission and display boxes' presentations without closing the boxes
+	/// (registry `hidden … FROZEN` under the pause), and the panel follows that statement.</param>
+	public bool Stand(Engine_UiPresentationHost? host, bool hiddenByGuest = false)
 	{
-		if (host is null)
+		bool up = !hiddenByGuest && _statedBox != 0 && _statedTexts is { Length: > 0 } texts &&
+			!string.IsNullOrEmpty(texts[0]);
+		if (host is null || (!up && View is null))
 		{
+			_wasUp = false;
 			return false;
 		}
 
 		Ensure(host);
-
-		if (!View!.HasShippedArt || _joins is null || Elements(address) is not { } elements)
+		if (!View!.HasShippedArt || _joins is null)
 		{
 			return false;
 		}
 
-		if (_vetoOrdinal >= 0 && elements[_vetoOrdinal].IsGloballyActive)
+		if (up && !_wasUp)
 		{
-			View.Visible = false;
-			return false;
-		}
-
-		// The first text is the body and decides whether the panel is up: the guest clears it
-		// rather than tearing the presentation down. Later texts are optional.
-		//
-		// The body is the element the guest wrote, never a `GUI.*` call record: this art is only
-		// the acceptance and button boxes (`sub_823D0B90` kinds 6..8 → screen 7). Info boxes go
-		// to the HUD TopBox, messages to `messageboxmulti`, intermissions to `intermissionbox`.
-		string body = elements[_joins.Texts[0]].Text ?? string.Empty;
-		bool up = elements[_joins.Texts[0]].IsGloballyActive && body.Length != 0;
-		if (up && _veto is not null && StatedDisplayText is { Length: > 0 } stated)
-		{
-			body = stated;
-		}
-		else if (!up && _wasUp && _veto is not null)
-		{
-			StatedDisplayText = null;
+			View.ShowStated(_statedTexts!);
+			GD.Print($"[ui-surface] the {Label} is up (kind {_statedKind}, box 0x{_statedBox:X8})");
 		}
 
 		_wasUp = up;
-
-		if (up)
-		{
-			var texts = new string?[_joins.Texts.Length];
-			texts[0] = body;
-			for (int i = 1; i < texts.Length; ++i)
-			{
-				texts[i] = elements[_joins.Texts[i]].IsGloballyActive
-					? elements[_joins.Texts[i]].Text
-					: null;
-			}
-
-			View.ShowStated(texts);
-		}
-
 		View.Visible = up;
-
-		// Which slide the scene root is on, and so which box this is and whether it is coming or
-		// going. Reported on change.
-		if (_describeSlide is not null && up &&
-			Engine_BgfDocument.SceneOwnerElement < elements.Count)
-		{
-			int slide = elements[Engine_BgfDocument.SceneOwnerElement].Slide;
-			string kind = _describeSlide(slide);
-			if (kind != _kindReported)
-			{
-				_kindReported = kind;
-				GD.Print($"[ui-surface] the {Label} is {kind}");
-			}
-		}
-
-		return true;
+		return up;
 	}
-
-	/// <summary>
-	/// What a display box's scene slide means — see
-	/// <see cref="Engine_UiBoxConstants.DisplayBox"/>.
-	///
-	/// Eight numbered slides: Info/Objective/Acceptance in and out, then `AcceptanceNewInt` and
-	/// `AcceptanceNewOut` — the `Paper` card, vetoed above, so those two arrive here only if the
-	/// veto did not see the group active.
-	/// </summary>
-	private static string DescribeDisplayBox(int slide)
-	{
-		foreach (Engine_UiBoxConstants.DisplayBox kind in
-			System.Enum.GetValues<Engine_UiBoxConstants.DisplayBox>())
-		{
-			if (slide == Engine_UiBoxConstants.DisplayBoxIntro(kind))
-			{
-				return $"{kind} (slide {slide}, coming in)";
-			}
-
-			if (slide == Engine_UiBoxConstants.DisplayBoxOutro(kind))
-			{
-				return $"{kind} (slide {slide}, going out)";
-			}
-		}
-
-		return slide switch
-		{
-			Engine_UiBoxConstants.DisplayBoxAcceptanceNewIntro =>
-				$"AcceptanceNew (slide {slide}, coming in)",
-			Engine_UiBoxConstants.DisplayBoxAcceptanceNewOutro =>
-				$"AcceptanceNew (slide {slide}, going out)",
-			_ => $"on slide {slide}, which is not one of the eight the root authors",
-		};
-	}
-
-	/// <summary>
-	/// What the intermission strip's scene slide means — `MessageBox.lua`'s `INTRO_SLIDE = 1`
-	/// and `OUTRO_SLIDE = 2` (`messagebox.dis main pc5, pc8`), which are the two numbered
-	/// slides `intermissionbox.bgf`'s root authors.
-	/// </summary>
-	private static string DescribeIntermission(int slide) => slide switch
-	{
-		Engine_UiBoxConstants.MessageBoxIntroSlide => $"coming in (slide {slide})",
-		Engine_UiBoxConstants.MessageBoxOutroSlide => $"going out (slide {slide})",
-		_ => $"on slide {slide}, which is neither of the two the root authors",
-	};
-
-	private string _kindReported = string.Empty;
 
 	/// <summary>Takes the panel down when its presentation has left the live set.</summary>
 	public void Withdraw()
 	{
 		Close();
-		_kindReported = string.Empty;
+		_wasUp = false;
 	}
 }

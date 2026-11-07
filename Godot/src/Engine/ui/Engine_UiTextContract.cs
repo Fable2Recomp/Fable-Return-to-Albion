@@ -1,0 +1,124 @@
+namespace Refii.Ui;
+
+/// <summary>
+/// How a title's Gameface text element turns its authored attributes into a layout: the canvas its
+/// box fractions are measured against, which GUI font bucket a point size draws from and at what
+/// scale, and how far the pen drops per line. Both titles ship the same three fonts
+/// (<c>language/&lt;culture&gt;/fonts/gui_{small,normal,large}.bft</c>) and the same text element
+/// (<c>CTextAsset</c>), but the element's numbers differ, so a layout written for one draws the
+/// other at the wrong size and wraps it at the wrong width.
+/// </summary>
+/// <remarks>
+/// Addresses: Fable 2 TU1 (<see cref="Fable2"/>) and Fable 3 360 disc (<see cref="Fable3"/>); the
+/// element's vtable is <c>0x82001B18</c> / <c>0x82001738</c> (PC RTTI <c>CTextAsset@NUI</c>).
+/// </remarks>
+public sealed class Engine_UiTextContract
+{
+	/// <summary>The width a <c>.fac</c> TEXT record's <c>boxwidth</c> fraction is multiplied by.</summary>
+	public float BoxWidthUnits { get; }
+
+	/// <summary>The height a <c>.fac</c> TEXT record's <c>boxheight</c> fraction is multiplied by.</summary>
+	public float BoxHeightUnits { get; }
+
+	/// <summary>The point size that draws GUI_Normal; below it draws GUI_Small, above it GUI_Large.</summary>
+	public int NormalSize { get; }
+
+	/// <summary>
+	/// Whether a size off a bucket boundary draws its bucket scaled (Fable 2: below 18 by
+	/// <c>size/18</c>, above 24 by <c>size/24</c>) or at the bucket's own size (Fable 3).
+	/// </summary>
+	public bool ScalesOffBucket { get; }
+
+	/// <summary>
+	/// Pixels the draw adds to the font's <c>LineHeight</c> when it starts the next line. The
+	/// measured block is <c>lines × (LineHeight + 1)</c> in both titles.
+	/// </summary>
+	public int LineAdvanceExtra { get; }
+
+	/// <summary>
+	/// An inline icon's pen advance, doubled for a double-width tag; 0 advances by what it draws
+	/// (Fable 2: the <c>LineHeight + 1</c> square, <see cref="Engine_UiTextMarkup.DrawSize"/>).
+	/// </summary>
+	public float IconAdvance { get; }
+
+	/// <summary>An inline icon's drawn side; 0 draws the <c>LineHeight + 1</c> square.</summary>
+	public float IconSide { get; }
+
+	/// <summary>Where an icon's top-left sits from the pen, Y up: left by this, up by this.</summary>
+	public float IconInset { get; }
+
+	private Engine_UiTextContract(float boxWidthUnits, float boxHeightUnits, int normalSize,
+		bool scalesOffBucket, int lineAdvanceExtra, float iconAdvance, float iconSide, float iconInset)
+	{
+		BoxWidthUnits = boxWidthUnits;
+		BoxHeightUnits = boxHeightUnits;
+		NormalSize = normalSize;
+		ScalesOffBucket = scalesOffBucket;
+		LineAdvanceExtra = lineAdvanceExtra;
+		IconAdvance = iconAdvance;
+		IconSide = iconSide;
+		IconInset = iconInset;
+	}
+
+	/// <summary>An icon's drawn size, the double-width tags twice as wide.</summary>
+	public (float Width, float Height) IconSize(bool doubleWidth, int lineHeight)
+	{
+		float side = IconSide > 0f ? IconSide : lineHeight + 1;
+		return (doubleWidth ? 2f * side : side, side);
+	}
+
+	/// <summary>An icon's pen advance.</summary>
+	public float IconPenAdvance(bool doubleWidth, int lineHeight) =>
+		IconAdvance > 0f ? (doubleWidth ? 2f * IconAdvance : IconAdvance) : IconSize(doubleWidth, lineHeight).Width;
+
+	/// <summary>
+	/// Fable 2. Box: <c>CTextAsset_vf1</c> 0x82870E14 (<c>boxwidth × 960.0</c> → +0x50) and
+	/// 0x82870E34 (<c>× 720.0</c> → +0x54). Font: <c>sub_828715E0</c> compares the size with 18 at
+	/// 0x828715F8 and 0x82871644, stores <c>size × 1/18</c> (0x8287163C) below it and
+	/// <c>size × 1/24</c> (0x82871694) above 24 in +0x5C, which the wrap and the measure multiply
+	/// (<c>sub_828716D0</c> 0x82871838, 0x828718DC). Line: the draw's <c>&lt;br&gt;</c> case
+	/// (0x8226F1B4) drops <c>(LineHeight + 1) × scale</c>. Icons: the <c>LineHeight + 1</c> square
+	/// at the pen, advancing by what they draw.
+	/// </summary>
+	public static readonly Engine_UiTextContract Fable2 = new(960f, 720f, 18, true, 1, 0f, 0f, 0f);
+
+	/// <summary>
+	/// Fable 3. Box: <c>CTextAsset_vf1</c> 0x82B45F70 (<c>boxwidth × 1280.0</c>, flt_8206D2A0 →
+	/// +0x50) and 0x82B45F90 (<c>× 720.0</c> → +0x54); the constructor's defaults are the same
+	/// 1280 × 720 (0x82B44ECC, 0x82B44ED4). Font: <c>sub_82B46708</c> compares the size with 16 at
+	/// 0x82B46720 — below takes bucket 0 (0x82B4672C), equal bucket 1 (0x82B46740), above bucket 2
+	/// (0x82B46750) — and stores no scale: the only multipliers the wrap and the measure apply
+	/// (<c>sub_82B467A0</c> 0x82B46898, 0x82B46930/0x82B4694C) are +0xA4/+0xA8, which the
+	/// constructor sets from the back buffer (<c>(w/h)/(16/9)</c> 0x82B45034, <c>h/720</c>
+	/// 0x82B4502C), 1.0 on the 1280×720 canvas. Line: the draw reads the font's +0x18 LineHeight
+	/// with no +1 (<c>sub_821F6180</c> 0x821F624C → 0x821F6298 <c>× +0xA8</c>), and its newline
+	/// token (case 0xD) drops that; the measure (<c>sub_82D40300</c> 0x82D40354, 0x82D403A4) still
+	/// counts <c>LineHeight + 1</c> per line. Icons: every icon token (8..0x41) calls
+	/// <c>sub_82B457A8</c> with side 32 and advances the pen 26 (case 8: <c>li r6, 0x20</c> at
+	/// 0x821F67D8, the call at 0x821F67EC, <c>+ f30</c> at 0x821F6808 with f30 = flt_82074480 = 26.0
+	/// loaded at 0x821F6428; the line-width sum <c>sub_82B45320</c> 0x82B453F8 and the wrap's
+	/// <c>sub_82B40A40</c> 0x82B40B00 bill 26, 52 for its wide class at 0x82B40AF8), from a pen moved
+	/// left 6 and up 6 for the icon (<c>sub_821F6180</c> 0x821F661C <c>x − 6.0</c>, 0x821F6644
+	/// <c>y + 6.0</c>, flt_8206C77C).
+	/// </summary>
+	public static readonly Engine_UiTextContract Fable3 = new(1280f, 720f, 16, false, 0, 26f, 32f, 6f);
+
+	/// <summary>The contract of the title this process runs.</summary>
+	public static Engine_UiTextContract Active => Refii.Core.Engine_Title.Active.UiText;
+
+	/// <summary>The bucket a point size lands in and the residual scale it draws at.</summary>
+	public (UiFontBucket Bucket, float Scale) SelectFor(int pointSize)
+	{
+		if (pointSize < NormalSize)
+		{
+			return (UiFontBucket.Small, ScalesOffBucket ? pointSize / (float)NormalSize : 1f);
+		}
+
+		if (pointSize == NormalSize)
+		{
+			return (UiFontBucket.Normal, 1f);
+		}
+
+		return (UiFontBucket.Large, ScalesOffBucket && pointSize > 24 ? pointSize / 24f : 1f);
+	}
+}

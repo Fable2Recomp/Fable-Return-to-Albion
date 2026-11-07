@@ -35,9 +35,18 @@
 // colour (1, 1, 1, caster+0x2358) (0x826f3938..0x826f3970). The point is computed, never stored,
 // so the record's +4/+8 is the guest's statement of where it goes.
 //
-// Each hook runs the guest's body first and posts `@Reticule(player, slot, object, active)` when
-// that player's slot changes; the host reads the record (reticle_feed.cpp) and, for the ranged
-// slot, the aimer's +0x80.
+// WHAT THE DRAW MAKES OF IT. sub_822906A8(record, 0) colours the sprite with the record's RGBA,
+// or qword_8355D6C0 (copied from 0x820FD640 = (0.906, 0.271, 0.251, 0.8)) when the mode is not 0
+// (`cmpwi cr6,r4,0` on +0x20 at 0x8229085C, the copy at 0x82290930..0x8229094C), in the guest's
+// backbuffer pixels (height 0x83566C88).
+//
+// Each hook runs the guest's body first, then states the record it wrote, as it left it, to the
+// table the host bridge reads (core/payload_bridge.h: refii_bridge_reticle_stated): the point,
+// the progress, the colour as drawn, the mode and +0x28, and for the ranged aim the aim point
+// aimer+0x80 the setter projected (its WORLD anchor, which the host projects with Godot's camera).
+// +0x28 is the draw's own count (bumped per draw, zeroed by a setter's mode change), so it is
+// stated as of the setter. It also posts `@Reticule(player, slot, object, active)` when that
+// player's slot changes.
 
 #include <cstdint>
 #include <cstdio>
@@ -45,6 +54,7 @@
 
 #include <rex/ppc.h>
 
+#include "core/payload_bridge.h"
 #include "gui_statements.h"
 
 REX_EXTERN(__imp__rex_HudReticule_SetRangedAim);
@@ -52,11 +62,16 @@ REX_EXTERN(__imp__rex_HudReticule_UpdateSpellTarget);
 
 namespace {
 
+using refii::fable3::LoadGuestF32;
 using refii::fable3::LoadGuestU32;
 using refii::fable3::Plausible;
 
 constexpr uint32_t kGame = 0x83556540u;
 constexpr uint32_t kGuiManager = 0x83556490u;
+constexpr uint32_t kLockedColour = 0x8355D6C0u;
+constexpr uint32_t kBackBufferHeight = 0x83566C88u;
+constexpr uint32_t kRecordBytes = 0x30u;
+constexpr uint32_t kAimPoint = 0x80u;
 
 uint32_t Word(const uint8_t* base, uint32_t at) { return Plausible(at) ? LoadGuestU32(base, at) : 0u; }
 
@@ -116,6 +131,39 @@ void State(int player, int slot, uint32_t object, bool active) {
   refii::vfs::PostGuiNativeCall(std::move(call));
 }
 
+/// Player `player`'s `slot` record as its setter left it; `aimer` the ranged aimer (0 for none).
+void StateRecord(const uint8_t* base, int player, int slot, uint32_t aimer) {
+  const uint32_t array = RecordArray(base, player);
+  if (!Plausible(array)) {
+    return;
+  }
+  const uint32_t record = array + (static_cast<uint32_t>(slot) * kRecordBytes);
+  const bool active = base[record] != 0u;
+  if (!active) {
+    refii_bridge_reticle_stated(static_cast<uint32_t>(player), static_cast<uint32_t>(slot), 0, nullptr, nullptr);
+    return;
+  }
+  const uint32_t mode = LoadGuestU32(base, record + 0x20u);
+  const uint32_t colour = mode != 0u ? kLockedColour : record + 0x10u;
+  const float height = static_cast<float>(LoadGuestU32(base, kBackBufferHeight));
+  const bool anchored = Plausible(aimer);
+  const float values[REFII_RETICLE_VALUES] = {
+      LoadGuestF32(base, record + 0x4u),
+      LoadGuestF32(base, record + 0x8u),
+      LoadGuestF32(base, record + 0xCu),
+      LoadGuestF32(base, colour),
+      LoadGuestF32(base, colour + 0x4u),
+      LoadGuestF32(base, colour + 0x8u),
+      LoadGuestF32(base, colour + 0xCu),
+      anchored ? LoadGuestF32(base, aimer + kAimPoint) : 0.0f,
+      anchored ? LoadGuestF32(base, aimer + kAimPoint + 0x4u) : 0.0f,
+      anchored ? LoadGuestF32(base, aimer + kAimPoint + 0x8u) : 0.0f,
+      height > 0.0f ? height : 720.0f,
+  };
+  const uint32_t words[REFII_RETICLE_WORDS] = {mode, LoadGuestU32(base, record + 0x28u)};
+  refii_bridge_reticle_stated(static_cast<uint32_t>(player), static_cast<uint32_t>(slot), 1, values, words);
+}
+
 }  // namespace
 
 // sub_82853668(aimer, active): stated past the guest's own early-outs, where it wrote nothing.
@@ -130,6 +178,7 @@ REX_EXTERN(rex_HudReticule_SetRangedAim) {
   }
 
   const int player = Resolve(base, aimer) == PlayerOneEntity(base, state) ? 0 : 1;
+  StateRecord(base, player, 1, aimer);
   State(player, 1, aimer, active);
 }
 
@@ -148,5 +197,6 @@ REX_EXTERN(rex_HudReticule_UpdateSpellTarget) {
   }
 
   const bool active = base[record] != 0u;
+  StateRecord(base, player, 0, 0u);
   State(player, 0, active ? Resolve(base, caster) : 0u, active);
 }

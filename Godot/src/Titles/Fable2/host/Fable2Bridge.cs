@@ -23,12 +23,6 @@ public static class Fable2Bridge
 {
 	static Fable2Bridge() => Refii.Core.Engine_NativeLibraries.Install();
 
-	/// <summary>The QueryBox class — `GUI.DisplayYesNoQuestion` and its two siblings.</summary>
-	public const uint DisplayQueryBoxVtable = 0x820AE688u;
-
-	/// <summary>The NumericAdjuster class — `GUI.DisplayNumericAdjusterParams`.</summary>
-	public const uint DisplayAdjusterVtable = 0x820AE6A8u;
-
 	[ThreadStatic]
 	private static uint[]? _topBoxFrontWords;
 
@@ -597,6 +591,21 @@ public static class Fable2Bridge
 		}
 
 		return RefiiHostGetHeroWeapons(out uint melee, out uint ranged) != 0 ? (melee, ranged) : null;
+	}
+
+	/// <summary>
+	/// The weapon switches the menu has pending (ABI 236), as record ids — what the weapons list
+	/// emphasises before the weapon in hand until play resumes and the swap lands. 0 for none.
+	/// </summary>
+	public static (uint Melee, uint Ranged)? PendingWeapons()
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		RefiiHostGetPendingWeapons(out uint melee, out uint ranged);
+		return (melee, ranged);
 	}
 
 	/// <summary>The co-op session's raw words off the authoritative network manager (ABI 134).</summary>
@@ -2503,6 +2512,9 @@ public static class Fable2Bridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetHeroWeapons(out uint melee, out uint ranged);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetPendingWeapons(out uint melee, out uint ranged);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetCoopHeldUids(uint player, out ulong melee, out ulong ranged);

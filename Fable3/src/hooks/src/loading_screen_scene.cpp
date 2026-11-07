@@ -1,8 +1,9 @@
-// refii - Fable 3's loading screen quads, cut: Godot draws the loading screen
-// (Godot/src/Titles/Fable3/Fable3LoadingScreen.cs, stated by RefiiHostGetLoadingScreen/…Art from
-// the screen's own fields), so the guest's quads for it are pixel work. The screen's state
-// machine — fade, dwell, closes, done, its scene and the display it points — runs unchanged.
-//
+// refii - Fable 3's loading screen: stated at its own entry points for Godot, which draws it
+// (Godot/src/Titles/Fable3/Fable3LoadingScreen.cs, through RefiiHostGetLoadingScreen/…Art reading
+// the table core/payload_bridge.h names), and its quads cut. The screen's state machine — fade,
+// dwell, closes, done, its scene and the display it points — runs unchanged; IsLoadingScreenActive
+// (sub_82176F38) and every other guest reader see the guest's own object.
+
 // Every address is the Fable 3 IDB; each offset names its base (ls = the screen, the r3 of its
 // per-frame update sub_823022D0).
 //
@@ -16,11 +17,32 @@
 // = r6 (0x821F17D0, 0x821F192C): it returns the requested id, -1 at every site above, and touches
 // neither the scene, the twin table nor the id pool.
 //
+// THE STATEMENTS (offsets from ls; mgr = the manager, the r3 of its create and stop):
+//   - Creates: sub_82307750(mgr, a2, a3, kind, a5) and sub_82307890(mgr, a2, kind), each making
+//     the screen only while mgr+4 is empty (`if (!a1[1])` at 0x823077B8 / 0x823078F0) through its
+//     constructor (sub_82300580 at 0x823077F4 / sub_82300768 at 0x82307928), which stores `kind`
+//     at ls+0x170 (`stw` at 0x82300470 in sub_823002F0, reached with the create's kind), and
+//     storing it at mgr+4 (0x82307814 / 0x82307950). Stated when mgr+4 changed across the call.
+//   - Destruction: sub_82300968(ls), the one body every release runs (the stop's sub_82308260 at
+//     0x823082F4, the creates' replace at 0x82307808 / 0x82307944, the manager's destructor
+//     sub_82307638 at 0x82307684).
+//   - The art: sub_823030B0(ls), run from sub_82300BB0 (0x82300C50) when the update finds ls+0x1A7
+//     set (0x82302764), writes the CCharString handle ls+0x150 on every branch (sub_822295F0 at
+//     0x82303144..0x823033B4, the E32010 form then formatted in place at 0x82303168); the kind it
+//     switches on is ls+0x170 (0x8230319C).
+//   - The update (r3 = ls) states, as it returns, what it moved: ls+0xD0 the cover opacity (up by
+//     1/dbl_8329EA48 per update while it shows, 0x82302874; down by the same after the close,
+//     0x82302380), ls+0x19C the close requested (set only by the close sub_823020D0 at 0x823020E8,
+//     cleared by the update's teardown at 0x823024B8) and ls+0x19D finished (set at 0x82302530 /
+//     0x82302570 beside the PulseEvent that releases the stop's waiter).
+//   - The close sub_823020D0(ls), from the stop sub_82307B18(mgr, imm) (0x82307BE8) and from the
+//     update's own dwell expiry (0x82302634), sets ls+0x19C and ls+0xD0 = 1.0 (0x823020F4): stated
+//     as it returns, so a stop reaches the host before the next update.
+//
 // WHO READS THE IDS BACK. Only the releases: sub_823022D0 (ls+236.., ls+220..),
 // sub_82303AF8/B78/BF8/FD8, sub_82304058 and sub_82305CC0's own clear, each `sub_82C4F128(id)`,
 // which returns at once for -1 (`if (result != -1)`). No screen function reads the twin table
-// dword_8355F464; no host feed reads these twins (the screen's host statements are +0xD0, +0x150,
-// +0x170, +0x19C, +0x1B1, level_feed.cpp). The builders' return values gate nothing. The screen's
+// dword_8355F464; no host feed reads these twins (the screen's statements are below). The builders' return values gate nothing. The screen's
 // own scene (sub_82C4F1A8 in sub_82300BB0) and its view twin ls+4 (sub_82301B58, the camera the
 // display names; the frame tests it, `a1 != -1 && twin[a1]`, sub_821988C8) are not quads and stay.
 //
@@ -40,10 +62,20 @@
 #include <cstdint>
 #include <cstring>
 
+#include <string>
+
 #include <rex/logging.h>
 #include <rex/ppc.h>
 
+#include "core/payload_bridge.h"
+#include "gui_statements.h"
+
 REX_EXTERN(__imp__rex_LoadingScreen_Update);
+REX_EXTERN(__imp__rex_LoadingScreen_Create);
+REX_EXTERN(__imp__rex_LoadingScreen_CreateShown);
+REX_EXTERN(__imp__rex_LoadingScreen_Destroy);
+REX_EXTERN(__imp__rex_LoadingScreen_ChooseArt);
+REX_EXTERN(__imp__rex_LoadingScreen_Close);
 REX_EXTERN(__imp__rex_LoadingScreen_BuildQuad);
 REX_EXTERN(__imp__rex_LoadingScreen_BuildTextQuads);
 REX_EXTERN(__imp__rex_RenderTwin_Create);
@@ -55,8 +87,13 @@ constexpr uint32_t kSceneTableEnd = 0x8355F458u;
 constexpr uint32_t kNoScene = 0xFFFFFFFFu;
 
 constexpr uint32_t kLsScene = 0x0u;
+constexpr uint32_t kLsFade = 0xD0u;
+constexpr uint32_t kLsArt = 0x150u;
+constexpr uint32_t kLsKind = 0x170u;
+constexpr uint32_t kLsRequested = 0x19Cu;
 constexpr uint32_t kLsDone = 0x19Du;
 constexpr uint32_t kLsBorrowed = 0x1A6u;
+constexpr uint32_t kMgrScreen = 0x4u;
 
 /// Depth of the screen's quad builders on this thread (they run on the 3D Engine thread).
 thread_local uint32_t t_building_quads = 0u;
@@ -77,6 +114,21 @@ uint32_t SceneSlot(const uint8_t* base, uint32_t id) {
     return kNoScene;
   }
   return LoadGuestU32(base, begin + id * 4u);
+}
+
+void StateUpdate(const uint8_t* base, uint32_t screen) {
+  refii_bridge_loading_screen_updated(screen, refii::fable3::LoadGuestF32(base, screen + kLsFade),
+                                      base[screen + kLsRequested] != 0u ? 1 : 0, base[screen + kLsDone] != 0u ? 1 : 0);
+}
+
+/// A create made a screen when mgr+4 changed across it.
+void StateCreated(const uint8_t* base, uint32_t manager, uint32_t before, uint32_t kind) {
+  const uint32_t screen = refii::fable3::Plausible(manager) ? LoadGuestU32(base, manager + kMgrScreen) : 0u;
+  if (screen == 0u || screen == before) {
+    return;
+  }
+  refii_bridge_loading_screen_created(manager, screen, kind);
+  REXLOG_INFO("[fable3-loading] screen {:08X} created by manager {:08X}, kind {}", screen, manager, kind);
 }
 
 struct QuadScope {
@@ -100,6 +152,58 @@ REX_EXTERN(rex_LoadingScreen_Update) {
     }
   }
   __imp__rex_LoadingScreen_Update(ctx, base);
+  if (refii::fable3::Plausible(screen)) {
+    StateUpdate(base, screen);
+  }
+}
+
+// (mgr, a2, a3, kind, a5).
+REX_EXTERN(rex_LoadingScreen_Create) {
+  const uint32_t manager = ctx.r3.u32;
+  const uint32_t kind = ctx.r6.u32;
+  const uint32_t before = refii::fable3::Plausible(manager) ? LoadGuestU32(base, manager + kMgrScreen) : 0u;
+  __imp__rex_LoadingScreen_Create(ctx, base);
+  StateCreated(base, manager, before, kind);
+}
+
+// (mgr, a2, kind).
+REX_EXTERN(rex_LoadingScreen_CreateShown) {
+  const uint32_t manager = ctx.r3.u32;
+  const uint32_t kind = ctx.r5.u32;
+  const uint32_t before = refii::fable3::Plausible(manager) ? LoadGuestU32(base, manager + kMgrScreen) : 0u;
+  __imp__rex_LoadingScreen_CreateShown(ctx, base);
+  StateCreated(base, manager, before, kind);
+}
+
+// (ls): the screen's destructor body.
+REX_EXTERN(rex_LoadingScreen_Destroy) {
+  const uint32_t screen = ctx.r3.u32;
+  refii_bridge_loading_screen_destroyed(screen);
+  REXLOG_INFO("[fable3-loading] screen {:08X} destroyed", screen);
+  __imp__rex_LoadingScreen_Destroy(ctx, base);
+}
+
+// (ls): the art decision, written into ls+0x150.
+REX_EXTERN(rex_LoadingScreen_ChooseArt) {
+  const uint32_t screen = ctx.r3.u32;
+  __imp__rex_LoadingScreen_ChooseArt(ctx, base);
+  if (!refii::fable3::Plausible(screen)) {
+    return;
+  }
+  const std::string art = refii::fable3::ReadCharString(base, screen + kLsArt, 255u);
+  const uint32_t kind = LoadGuestU32(base, screen + kLsKind);
+  refii_bridge_loading_screen_art(screen, kind, LoadGuestU32(base, screen + kLsArt), art.data(),
+                                  static_cast<uint32_t>(art.size()));
+  REXLOG_INFO("[fable3-loading] screen {:08X} chose '{}' (kind {})", screen, art, kind);
+}
+
+// (ls): the close, from the stop or the dwell's expiry.
+REX_EXTERN(rex_LoadingScreen_Close) {
+  const uint32_t screen = ctx.r3.u32;
+  __imp__rex_LoadingScreen_Close(ctx, base);
+  if (refii::fable3::Plausible(screen)) {
+    StateUpdate(base, screen);
+  }
 }
 
 REX_EXTERN(rex_LoadingScreen_BuildQuad) {

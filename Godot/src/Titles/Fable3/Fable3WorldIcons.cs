@@ -11,20 +11,23 @@ using Refii.Ui;
 /// <summary>
 /// Fable 3's world icons — opinion splashes, quest and reward markers, NPC status, property
 /// signs, button prompts, the emotion choices — drawn by the shared
-/// <see cref="Engine_HudWorldSprites"/> from the guest's own icon registry, read live
-/// (Fable3/src/hostbridge/src/icon_feed.cpp: RefiiHostGetWorldSprites), and the emotion ring
-/// drawn over them from the choice records (RefiiHostGetFable3EmotionChoices).
+/// <see cref="Engine_HudWorldSprites"/> from the icons the guest STATES
+/// (Fable3/src/hooks/src/world_icon_hooks.cpp into the runtime's stated table;
+/// Fable3/src/hostbridge/src/icon_feed.cpp: RefiiHostGetWorldSprites), and the emotion ring drawn
+/// over them from the stated choice records (RefiiHostGetFable3EmotionChoices).
 /// </summary>
 /// <remarks>
-/// THE GUEST OWNS EVERY LIFETIME. An icon appears when the registry's Update accepts its request,
-/// fades by the registry's own scale tween and leaves when the registry erases it; the feed is a
-/// per-frame read of those containers, so nothing here adds, times or removes an icon. What is
-/// ours is the drawing: the anchor is projected through Godot's world camera into a 720-high
-/// canvas the sprites layer lives in, the art is the texture the guest names by type, a button
-/// prompt (a pooled HUD-element icon with no texture of its own) shows its button letter.
+/// THE GUEST OWNS EVERY LIFETIME. An icon is stated by its own Init, each Update the registry's
+/// tick runs on it (whose `visible` argument decides whether it is drawn this frame) and the
+/// emotion icon's ring tick; it leaves when the registry erases it or it is destroyed. Nothing
+/// here adds, times or removes an icon. What is ours is the drawing: the anchor is projected
+/// through Godot's world camera into a 720-high canvas the sprites layer lives in, the art is the
+/// texture the guest names by type, a button prompt (a pooled HUD-element icon with no texture of
+/// its own) shows its button glyph.
 ///
 /// THE EMOTION RING is the guest's too: the icon's progress (0..300 steps) fills while the
-/// choice is held and completes at 300; the ring here is that number as an arc at the icon.
+/// choice is held and completes at 300, both written by its ring tick (sub_8297A400); the ring
+/// here is that number as an arc at the icon.
 /// </remarks>
 public partial class Fable3WorldIcons : SubViewportContainer
 {
@@ -197,11 +200,12 @@ public partial class Fable3WorldIcons : SubViewportContainer
 			};
 		}
 
-		// THE HUD ROOT'S STATE IS THE GUEST'S GATE: the icons are HUD elements, and the HUD screen's
-		// tick sub_825C3A78 sets its presentation root to state 2 while a box-manager screen shows
-		// (sub_82277308 at 0x825c3d20 -> sub_8227DA00(root, pres, 2) at 0x825c3d5c; back to 1 at
-		// 0x825c3d8c) — the Options screen among them — so nothing of the HUD is drawn then.
+		// THE HUD ROOT'S STATE IS THE GUEST'S GATE: the icons are HUD elements, and hud.bgf's root is
+		// set to state 2 by sub_825C1CB0 from every box's Show — the Options screen among them — and
+		// back to 1 by sub_825C1D28 (`@Hud.Root`, Fable3Elements.HudHidden), so nothing of the HUD is
+		// drawn then.
 		_list.Clear();
+		_markerSprites.Clear();
 		_emotionSquares.Clear();
 		foreach (HostBridge.WorldSprite sprite in HostBridge.GetWorldSprites())
 		{
@@ -210,16 +214,11 @@ public partial class Fable3WorldIcons : SubViewportContainer
 				break;
 			}
 
-			// The off-screen player markers (52/53) are pinned inside the screen edge by the
-			// guest's own clamp, which writes their HUD element's position (sub_82B51B58 at
-			// 0x82B51FC8): the shared HUD view draws them there (Fable3Hud, `HeroOffScreenWorldIcon`).
-			// The stated position is already in hud.bgf's canvas units: sub_82C403E0 projects the
-			// point through the game camera (R+84) and unprojects the pixel through UI camera desc B
-			// (R+80: eye (0,-4000,0), fovY 10.2°, sub_82197CA8) on the plane through the origin, and
-			// the write swaps Y/Z (f1 x, f2 z, f3 y at 0x82B51FBC..C4) — centre origin, +y up,
-			// 4000·tan 5.1° = 357 units per half screen height.
-			if (sprite.Type is 52u or 53u)
+			// The co-op partners' markers (52/53) are placed and drawn here from the stated icon
+			// alone (PlaceMarker, _Draw), never from their hud.bgf element.
+			if (sprite.Type is MarkerHero or MarkerHenchman)
 			{
+				_markerSprites.Add(sprite);
 				continue;
 			}
 
@@ -275,6 +274,7 @@ public partial class Fable3WorldIcons : SubViewportContainer
 		ChoicesUp = choices.Count > 0;
 		Camera3D? camera = GetWindow().GetCamera3D();
 		Vector2 window = GetViewportRect().Size;
+		PlaceMarkers(camera, window);
 		if (camera is not null && GodotObject.IsInstanceValid(camera) && !Fable3Elements.HudHidden && window.Y > 0f)
 		{
 			float pixelsPerUnit = window.Y * PixelsPerUnit / CanvasHeight;
@@ -329,8 +329,191 @@ public partial class Fable3WorldIcons : SubViewportContainer
 		return new Engine_HudWorldSprites.Placed(canvas, new Vector3(-1f, 0f, 0f));
 	}
 
+	// ---- The co-op partners' markers, types 52/53 ---------------------------------------------
+	//
+	// THE STATED ICON IS THE MARKER. sub_82B52440 builds a HUD-element icon (vtable 0x820D5EBC,
+	// 0x82B52534) on the record 0x832A1D70 for type 52 and 0x832A1DB0 for 53 (icon+144, 0x82B52520),
+	// whose elements sub_82B522A0 resolves from `HeroOffScreenWorldIcon` / `HenchmanOffScreenWorldIcon`
+	// (0x82B523E0 / 0x82B52420). Its type setter (`vt+8` sub_82B520D0) gives the icon model the
+	// type's art from sub_82B530E8 (SetTexture at 0x82B5214C): `icon_player1` / `icon_player2`
+	// (Fable3IconArt). Its Update sub_82B51B58 shows the element exactly when its `visible`
+	// argument is set (`vt+24` sub_82B52818 at 0x82B51F58), which is when the feed exports the icon,
+	// and places it from the icon's world point (`vt+48`, stated as +112):
+	//   - projected through the game camera (sub_82287A08 at 0x82B51BF0); OFF SCREEN when the depth
+	//     is negative (0x82B51C1C) or the pixel is outside the camera's viewport rect
+	//     (+0x8C..+0x98, 0x82B51C24..0x82B51C58);
+	//   - BEHIND the camera the point is pushed along the view's forward axis (the view quaternion's
+	//     +Y, sub_82195450 at 0x82B51CE8) by max(2 * the view's +0x30, 2 * |its distance from the
+	//     camera plane|) (0x82B51D78..0x82B51DB0), projected again and its y set to the viewport's
+	//     bottom (+0x48, 0x82B51DC8..0x82B51DD0);
+	//   - ON SCREEN the point is first lifted by the icon's +160 offset (0x82B51E94), whose height
+	//     sub_82B529E8 measures from the element's own bounds (stored at 0x82B51E7C);
+	//   - every placement of 52/53 then goes through the edge clamp sub_82B519C8 (0x82B51DDC,
+	//     0x82B51EEC): x into [x0 + 10% + 10, x1 - 9% - 10], y into [y0 + 10% + 40, y1 - 9%] of the
+	//     viewport rect, in its 720-line pixels (0x82B51A14..0x82B51AF4).
+	// Nothing in the guest rotates the element: the Update writes its position alone (0x82B51FC8),
+	// and the `Contents.Arrow` it resolves (record+20, 0x82B526C8) is read by no code; hud.bgf
+	// makes it active only on the `Clamped` slide (6), which nothing plays. The slides the guest
+	// plays are Init's first-show state (1 `Fade In` for these types: sub_82B52068 at 0x82B520AC,
+	// played at 0x82B51F28), the death's 2 `Fade Out` (sub_82B51FE0 at 0x82B5204C, with one second
+	// left at 0x82B52020) and 7 `Hidden` (0x82B52940).
+
+	/// <summary>The `HeroOffScreenWorldIcon` marker: art `icon_player1`, record 0x832A1D70.</summary>
+	private const uint MarkerHero = 52u;
+
+	/// <summary>The `HenchmanOffScreenWorldIcon` marker: art `icon_player2`, record 0x832A1DB0.</summary>
+	private const uint MarkerHenchman = 53u;
+
+	/// <summary>The icon's side in hud.bgf units: `Contents.Icon.ImageModel`, scale 0.375 of the 100-unit quad on every slide.</summary>
+	private const float MarkerSide = 37.5f;
+
+	/// <summary>The icon's height above the element's root on `Fade In`: `Contents.Icon` position.y 25.</summary>
+	private const float MarkerIconLift = 25f;
+
+	/// <summary>`Fade In` and `Fade Out` run the icon's opacity 0..100 and back over 1000 ms (hud.bgf anims 44 / 45).</summary>
+	private const float MarkerFadeSeconds = 1f;
+
+	private readonly List<HostBridge.WorldSprite> _markerSprites = new();
+
+	/// <summary>This frame's markers in window pixels: art, the icon's centre, its side, its opacity.</summary>
+	private readonly List<(Texture2D Art, Vector2 Centre, float Side, float Alpha)> _markers = new();
+
+	/// <summary>Each marker icon's stated age (+68) when it was first drawn: `Fade In` runs from there.</summary>
+	private readonly Dictionary<uint, float> _markerShownAt = new();
+
+	private readonly Dictionary<uint, Texture2D?> _markerArt = new();
+	private readonly HashSet<uint> _markersReported = new();
+
+	/// <summary>
+	/// The markers the guest states this frame, placed by Godot's own camera as sub_82B51B58
+	/// places them (see above) and faded as their slides do. The on-screen lift is the icon's own
+	/// side on the screen, where the guest lifts the world point by the element's bounds measured
+	/// once in world units (sub_82B529E8). The fade's authored ease tangents are not reproduced;
+	/// it is linear over the authored second.
+	/// </summary>
+	private void PlaceMarkers(Camera3D? camera, Vector2 window)
+	{
+		_markers.Clear();
+		if (camera is null || !GodotObject.IsInstanceValid(camera) || !camera.IsInsideTree() ||
+			window.X <= 0f || window.Y <= 0f || _markerSprites.Count == 0)
+		{
+			return;
+		}
+
+		float unit = window.Y * PixelsPerUnit / CanvasHeight;
+		foreach (HostBridge.WorldSprite sprite in _markerSprites)
+		{
+			if (!_markerArt.TryGetValue(sprite.Type, out Texture2D? art))
+			{
+				foreach ((uint type, string path) in Fable3IconArt.Paths)
+				{
+					if (type == sprite.Type)
+					{
+						art = Fable3Art.Load(Fable3IconArt.BankPath(path));
+						break;
+					}
+				}
+
+				_markerArt[sprite.Type] = art;
+				if (art is null)
+				{
+					GD.Print($"[fable3-markers] type {sprite.Type}: no art for the type");
+				}
+			}
+
+			if (art is null)
+			{
+				continue;
+			}
+
+			if (!_markerShownAt.TryGetValue(sprite.Object, out float shownAt) || sprite.Age < shownAt)
+			{
+				shownAt = sprite.Age;
+				_markerShownAt[sprite.Object] = shownAt;
+			}
+
+			float alpha = sprite.Fading
+				? Mathf.Clamp(sprite.SecondsLeft / MarkerFadeSeconds, 0f, 1f)
+				: Mathf.Clamp((sprite.Age - shownAt) / MarkerFadeSeconds, 0f, 1f);
+			(Vector2 root, string where) = PlaceMarker(camera, window, sprite.Anchor, MarkerSide * unit);
+			_markers.Add((art, root - new Vector2(0f, MarkerIconLift * unit), MarkerSide * unit, alpha));
+			if (_markersReported.Count < 32 && _markersReported.Add(sprite.Object))
+			{
+				GD.Print($"[fable3-markers] type {sprite.Type} icon {sprite.Object:X8} entity {sprite.Entity:X8}: " +
+					$"drawn {where} at ({root.X:F0},{root.Y:F0}) of {window.X:F0}x{window.Y:F0}");
+			}
+		}
+
+		if (_markerShownAt.Count > 8)
+		{
+			var live = new HashSet<uint>();
+			foreach (HostBridge.WorldSprite sprite in _markerSprites)
+			{
+				live.Add(sprite.Object);
+			}
+
+			foreach (uint key in new List<uint>(_markerShownAt.Keys))
+			{
+				if (!live.Contains(key))
+				{
+					_markerShownAt.Remove(key);
+				}
+			}
+		}
+	}
+
+	/// <summary>
+	/// A marker's root in window pixels (y down): the stated world point through Godot's camera,
+	/// pushed in front when behind it and dropped to the bottom edge, lifted by
+	/// <paramref name="lift"/> pixels when on screen, then held inside sub_82B519C8's margins with
+	/// its 10 / 40 pixels scaled from 720 lines to the window. The push's floor, twice the view's
+	/// +0x30, is taken as twice the camera's near distance.
+	/// </summary>
+	private static (Vector2 Root, string Where) PlaceMarker(Camera3D camera, Vector2 window, Vector3 guest, float lift)
+	{
+		Vector3 world = GameWorld.GuestToGodot(guest);
+		Vector2 pixel;
+		string where;
+		if (camera.IsPositionBehind(world))
+		{
+			Transform3D eye = camera.GlobalTransform;
+			Vector3 forward = -eye.Basis.Z.Normalized();
+			float distance = forward.Dot(world - eye.Origin);
+			float push = Mathf.Max(2f * camera.Near, 2f * Mathf.Abs(distance));
+			pixel = camera.UnprojectPosition(world + (forward * push));
+			pixel.Y = window.Y;
+			where = "behind";
+		}
+		else
+		{
+			pixel = camera.UnprojectPosition(world);
+			bool onScreen = pixel.X >= 0f && pixel.X < window.X && pixel.Y >= 0f && pixel.Y < window.Y;
+			if (onScreen)
+			{
+				pixel.Y -= lift;
+			}
+
+			where = onScreen ? "on screen" : "off screen";
+		}
+
+		float line = window.Y / 720f;
+		float left = (window.X * 0.1f) + (10f * line);
+		float right = window.X - (window.X * 0.09f) - (10f * line);
+		float top = (window.Y * 0.1f) + (40f * line);
+		float bottom = window.Y - (window.Y * 0.09f);
+		pixel.X = Mathf.Min(Mathf.Max(pixel.X, left), right);
+		pixel.Y = Mathf.Min(Mathf.Max(pixel.Y, top), bottom);
+		return (pixel, where);
+	}
+
 	public override void _Draw()
 	{
+		foreach ((Texture2D art, Vector2 centre, float side, float alpha) in _markers)
+		{
+			DrawTextureRect(art, new Rect2(centre - (new Vector2(side, side) * 0.5f), new Vector2(side, side)), false,
+				new Color(1f, 1f, 1f, alpha));
+		}
+
 		if (_rings.Count == 0)
 		{
 			return;
@@ -350,9 +533,9 @@ public partial class Fable3WorldIcons : SubViewportContainer
 		}
 	}
 
-	// ---- The emotion choices, as E holds them (icon_feed.cpp) ----------------------------------
+	// ---- The emotion choices, as the guest states them (icon_feed.cpp) ------------------------
 
-	/// <summary>One choice record and the state of the icon the registry keeps for it.</summary>
+	/// <summary>One stated choice record and the stated state of its emotion icon.</summary>
 	public readonly record struct EmotionChoice(
 		int Action, ulong Player, uint Entity, uint IconType, bool Holdable, bool Manual, bool Held, bool RingOn,
 		bool Complete, bool Drawn, uint Icon, Vector3 Anchor, float Progress, float Speed, float Scale,
@@ -367,7 +550,7 @@ public partial class Fable3WorldIcons : SubViewportContainer
 	private static readonly List<EmotionChoice> _choices = new();
 
 	/// <summary>
-	/// Whether the guest has emotion choices up (a record on E, read this frame): the face buttons
+	/// Whether the guest has emotion choices up (a stated record, read this frame): the face buttons
 	/// — and on the keyboard 1-5 and the left mouse button, as Fable III PC binds them — pick them.
 	/// </summary>
 	public static bool ChoicesUp { get; private set; }

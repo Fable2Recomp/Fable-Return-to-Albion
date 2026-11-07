@@ -842,6 +842,7 @@ int RunEmbeddedOnPosix(std::vector<std::string> ownedArguments) {
 namespace {
 std::filesystem::path g_refii_app_root;
 std::filesystem::path g_refii_config_path;
+std::filesystem::path g_refii_log_directory;
 
 }  // namespace
 
@@ -852,6 +853,10 @@ const std::filesystem::path& RefiiGetAppRoot() { return g_refii_app_root; }
 void RefiiSetConfigPath(const std::filesystem::path& path) { g_refii_config_path = path; }
 
 const std::filesystem::path& RefiiGetConfigPath() { return g_refii_config_path; }
+
+void RefiiSetLogDirectory(const std::filesystem::path& path) { g_refii_log_directory = path; }
+
+const std::filesystem::path& RefiiGetLogDirectory() { return g_refii_log_directory; }
 
 std::unique_ptr<rex::ui::WindowedApp> CreateRefiiApp(rex::ui::WindowedAppContext& app_context) {
 #if defined(_WIN32)

@@ -48,18 +48,6 @@ public sealed class HostUiSource : Engine_UiSource
 
 	public override Engine_UiModel.MenuBoxState? GetMenuBox() => HostBridge.GetMenuBox();
 
-	public override bool DisplayQueryUp() =>
-		HostBridge.GetDisplayBox() is { Vtable: Fable2Bridge.DisplayQueryBoxVtable };
-
-	public override bool DisplayAdjusterUp() =>
-		HostBridge.GetDisplayBox() is { Vtable: Fable2Bridge.DisplayAdjusterVtable };
-
-	public override uint DisplayBoxAddress() => HostBridge.GetDisplayBox()?.Box ?? 0u;
-
-	/// <summary>
-	/// The guest's own mapping: the class's type (vtable slot 7, `li r3,N`) through
-	/// `sub_823D0B90` — 0 → 3, 2 → 19, 3 → 4, 4 → 5, 5 → 6, 6..8 → 7.
-	/// </summary>
 	/// <summary>
 	/// `F = *(*(*(0x83496AC0)+8)+0x50)` (0x8230FF44..0x8230FF64, gated on `byte_83496AC4`); the
 	/// main-menu root `*(F+0xB8)` (vt 0x820D0934) and the title `*(F+0xB4)` (vt 0x820D09C4).
@@ -118,14 +106,24 @@ public sealed class HostUiSource : Engine_UiSource
 		return null;
 	}
 
-	public override uint DisplayBoxScreen() => HostBridge.GetDisplayBox()?.Vtable switch
+	/// <summary>
+	/// The screen the showing box stands on, by the guest's own mapping — the class's type (vtable
+	/// slot 7, `li r3,N`, the kind its Open stated) through `sub_823D0B90`: 0 → 3, 2 → 19, 3 → 4,
+	/// 4 → 5, 5 → 6, 6..8 → 7. Screen 7 (`displaybox.bgf`, the `infocard` book) stands only for the
+	/// hold-to-accept card (8): the acceptance and button boxes (6, 7) are the display-box panel's
+	/// (Engine_UiStatedSurface.DisplayBox), and standing the book for them too drew them twice.
+	/// </summary>
+	public override uint DisplayBoxScreen() => ScreenOfBox(Engine_UiDisplayBoxes.Showing?.Kind ?? -1);
+
+	/// <summary>The screen a box of <paramref name="kind"/> stands on, <see cref="uint.MaxValue"/> for none.</summary>
+	public static uint ScreenOfBox(int kind) => kind switch
 	{
-		0x820AE668u => 3u,   // MessageBox
-		0x820AE688u => 19u,  // QueryBox
-		0x820AE6A8u => 4u,   // NumericAdjuster
-		0x820AE6C8u => 5u,   // QuestBoxParams — questrepeatable
-		0x820EBFA8u => 6u,   // Intermission
-		0x820EBF3Cu or 0x820028F4u or 0x820EBF1Cu => 7u,  // Acceptance, Button, InfoParams
+		Engine_UiDisplayBoxes.Message => 3u,
+		Engine_UiDisplayBoxes.Query => 19u,
+		Engine_UiDisplayBoxes.Adjuster => 4u,
+		Engine_UiDisplayBoxes.Quest => 5u,
+		Engine_UiDisplayBoxes.Intermission => 6u,
+		Engine_UiDisplayBoxes.AcceptHold => 7u,
 		_ => uint.MaxValue,
 	};
 
@@ -204,21 +202,17 @@ public sealed class HostUiSource : Engine_UiSource
 
 	public override uint PostFrontEndAction(string name) => HostBridge.PostFrontEndAction(name);
 
-	public override uint ScreenAction(uint code, bool atRoot = false) =>
-		HostBridge.ScreenAction(code, atRoot);
+	public override uint ScreenAction(uint code) => HostBridge.ScreenAction(code);
 
 	public override uint MenuEvent(string name, int eventType, uint id) =>
 		HostBridge.MenuEvent(name, eventType, id);
 
-	public override uint MenuSelect() => HostBridge.MenuSelect();
-
-	public override uint MenuHighlight(string name) => HostBridge.MenuHighlight(name);
-
 	public override void StateHighlightedRow(uint screen, int eventType, int id, string name, string label) =>
 		HostBridge.SetHighlightedRow(screen, eventType, id, name, label);
 
-	public override uint MenuScroll(Engine_UiModel.MenuStick direction, bool held) =>
-		HostBridge.MenuScroll(direction, held);
+	public override void StateListFoldDepth(uint screen, uint depth) =>
+		HostBridge.SetListFoldDepth(screen, depth);
+
 
 	public override bool PauseTabSelect(uint tab) => HostBridge.PauseTabSelect(tab);
 

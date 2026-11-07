@@ -33,6 +33,12 @@ const std::filesystem::path& RefiiGetAppRoot();
 void RefiiSetConfigPath(const std::filesystem::path& path);
 const std::filesystem::path& RefiiGetConfigPath();
 
+/// The running title's log folder the host states (<app root>/logs/<Title>): the guest's
+/// segments, its crash record and the hang watchdog's dumps. Empty means "not stated", and the
+/// executable-relative logs/ stands.
+void RefiiSetLogDirectory(const std::filesystem::path& path);
+const std::filesystem::path& RefiiGetLogDirectory();
+
 std::unique_ptr<rex::ui::WindowedApp> CreateRefiiApp(rex::ui::WindowedAppContext& app_context);
 
 int RunRefiiEmbedded(

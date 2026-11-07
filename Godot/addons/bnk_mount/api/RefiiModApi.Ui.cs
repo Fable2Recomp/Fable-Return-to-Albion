@@ -217,6 +217,11 @@ public partial class RefiiModApi
 				record["cancel"] = (long)cancel;
 			}
 
+			if (modal.Alternate is { } alternate)
+			{
+				record["alternate"] = (long)alternate;
+			}
+
 			rows[Engine_UiModals.KeyOf(modal)] = record;
 		}
 

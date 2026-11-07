@@ -45,6 +45,24 @@ public partial class Engine_UiTextEntry : Control
 
 	public bool IsOpen => _panel.Visible;
 
+	/// <summary>
+	/// An entry is open somewhere: the keyboard is typing into its line, so the core stops reading
+	/// keys as the pad (GameInput.KeyboardMouseState) — otherwise E/1/Space typed the grid's key as
+	/// well, 3 deleted, 2 spaced and WASD moved the grid cursor. A controller still drives the grid.
+	/// </summary>
+	public static bool AnyOpen => _open > 0;
+
+	private static int _open;
+
+	public override void _ExitTree()
+	{
+		if (_panel.Visible)
+		{
+			--_open;
+			_panel.Visible = false;
+		}
+	}
+
 	public override void _Ready()
 	{
 		SetAnchorsPreset(LayoutPreset.FullRect);
@@ -108,6 +126,11 @@ public partial class Engine_UiTextEntry : Control
 		_wasDown = GameInput.Pad0.Buttons;
 		_heldDirection = Vector2I.Zero;
 		Relabel();
+		if (!_panel.Visible)
+		{
+			++_open;
+		}
+
 		_panel.Visible = true;
 		MouseFilter = MouseFilterEnum.Stop;
 		_line.GrabFocus();
@@ -313,6 +336,11 @@ public partial class Engine_UiTextEntry : Control
 
 	private void Close()
 	{
+		if (_panel.Visible)
+		{
+			--_open;
+		}
+
 		_panel.Visible = false;
 		MouseFilter = MouseFilterEnum.Ignore;
 		_line.ReleaseFocus();

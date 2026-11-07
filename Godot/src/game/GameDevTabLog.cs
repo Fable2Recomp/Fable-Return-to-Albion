@@ -62,7 +62,7 @@ public partial class GameDevTabLog : GameDevTab
 	public override void Refresh()
 	{
 		string path = _source.Selected == 0
-			? ProjectSettings.GlobalizePath("user://logs/godot.log")
+			? GameLogPaths.GodotLog
 			: NewestGuestLog();
 		if (path != _path)
 		{
@@ -172,11 +172,10 @@ public partial class GameDevTabLog : GameDevTab
 	{
 		try
 		{
-			string logs = System.IO.Path.Combine(
-				System.IO.Path.GetDirectoryName(OS.GetExecutablePath())!, "logs");
+			string logs = Refii.Core.Engine_Title.Active.LogsDirectory;
 			string newest = string.Empty;
 			System.DateTime when = System.DateTime.MinValue;
-			foreach (string file in System.IO.Directory.GetFiles(logs, "refii_*.log*"))
+			foreach (string file in System.IO.Directory.GetFiles(logs, Refii.Core.Engine_Title.Active.GuestLogPattern))
 			{
 				System.DateTime written = System.IO.File.GetLastWriteTimeUtc(file);
 				if (written > when)

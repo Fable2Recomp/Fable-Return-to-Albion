@@ -58,12 +58,8 @@ set(REFII_VFS_RUNTIME_SOURCES
     # Player two's split-screen HUD: the pump states it, the host bridge reads it.
     ${REFII_VFS_ROOT}/src/core/coop_hud_two.cpp
     ${REFII_VFS_ROOT}/src/core/hero_partners.cpp
-    # The told-statement queues (hooks/gui_slide_hooks.cpp pushes, the bridge takes): the PAYLOAD
-    # posts and the HOST BRIDGE drains, so a copy in each library would have the hook filling one
-    # queue while the bridge reads another empty one. That is not a link error on Linux, which is
-    # what makes it worth stating here. (The GUI native call queue itself is shared state in
-    # refii_runtime, src/runtime/src/core/gui_native_calls.cpp.)
-    ${REFII_VFS_ROOT}/src/gui/gui_told_statements.cpp
+    # (The told-statement queues the hooks push and the bridge takes are shared state in
+    # refii_runtime, src/runtime/src/core/told_statements.cpp, as the GUI native call queue is.)
     ${REFII_VFS_ROOT}/src/gui/gui_menu_chunks.cpp
     ${REFII_VFS_ROOT}/src/gui/gui_element_state.cpp
 )
@@ -108,6 +104,10 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/gui_slide_hooks.cpp
     ${REFII_VFS_ROOT}/src/hooks/reticule_hooks.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_menu_hooks.cpp
+    # The pause minimap's markers and the inline texture stores, stated for Godot.
+    ${REFII_VFS_ROOT}/src/hooks/gui_pause_hooks.cpp
+    # Gameface presentations built headless: the guest keeps its UI objects, Godot draws.
+    ${REFII_VFS_ROOT}/src/hooks/gui_headless_presentation.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_element_hooks.cpp
     # The pub-game pump with the Scaleform module taken out, once Godot claims the games.
     ${REFII_VFS_ROOT}/src/hooks/pubgame_pump.cpp

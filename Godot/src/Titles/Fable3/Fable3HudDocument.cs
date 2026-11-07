@@ -7,10 +7,13 @@ using Refii.Ui;
 /// <summary>
 /// One Fable 3 presentation on the SHARED HUD view: its `.bgf` read in place by the presentation
 /// host, laid out by <see cref="Engine_HudLayout"/> with the widgets the title cuts whole, drawn by
-/// <see cref="Engine_HudView"/> with its authored art, and driven by the element statements of the
-/// presentation that writes it (<see cref="Fable3Elements"/>, joined by
-/// <see cref="Fable3HudStatements"/>) and the registry values the bridge publishes (hud_feed.cpp,
-/// through <see cref="Engine_HudValues"/>). <see cref="Fable3Hud"/> stands one per presentation.
+/// <see cref="Engine_HudView"/> with its authored art, and driven by the element statements made
+/// under its document (<see cref="Fable3Elements"/>, joined by
+/// <see cref="Fable3HudStatements"/>), the registry values the bridge publishes (hud_feed.cpp,
+/// through <see cref="Engine_HudValues"/>) and the registry writers' slides, places, d-pad and
+/// panel (<see cref="Fable3HudRegistry"/>). An element filed under a name those writers state is
+/// taken from them, never from the element write they make. <see cref="Fable3Hud"/> stands one
+/// per presentation.
 /// </summary>
 /// <remarks>
 /// WHAT FABLE 2 SAMPLES, FABLE 3 STATES. Fable 2's feed reads every element's live slide, active
@@ -23,18 +26,49 @@ using Refii.Ui;
 /// </remarks>
 public sealed class Fable3HudDocument
 {
-	/// <param name="document">The presentation's name in the banks (`hud`, `interactionmode`).</param>
+	/// <summary>
+	/// FABLE 3'S TOPBOX, from the 360 fit (the same scheme as Fable 2's, Engine_UiHudTopBox): both
+	/// lines take the plain wrap (publisher `sub_8217D880`, `li r25,1` 0x8217d8c0, `stb` 0x8217db7c /
+	/// 0x8217dbec) at the `BoxName 'TopBox'` entry's max.x, measured once with the meters at 100
+	/// (`sub_8227CC70`, max stored 0x8227cd70/74): 100 × hud.bgf `Bar` scale.x 1.105 (TopBoxX track
+	/// end) × `Bar` 7.8 — no widescreen factor on this chain. Height 100 × scale.y 0.38 → 1.1, and the
+	/// fit adds 16 before stating TopBoxY (0x829205b8).
+	/// </summary>
+	public const float TopBoxWrapWidth = 100f * 1.105f * 7.8f;
+
+	public static readonly Vector2 TopBoxHeightRange = new(100f * 0.38f, 100f * 1.1f);
+
+	public const float TopBoxHeightPad = 16f;
+
+	/// <param name="document">
+	/// The presentation's name in the banks (`hud`, `interactionmode`) — also the document its
+	/// statements are keyed under (<see cref="Fable3Elements.DocumentOf"/>), so the view reads them
+	/// whether or not a presentation for it was ever built.
+	/// </param>
 	/// <param name="groups">The widgets cut whole.</param>
-	/// <param name="presentation">The guest presentation writing this document now, or 0.</param>
 	/// <param name="layouts">Whether this document's arrangement is the title's HUD layout file (snapshot written, player file applied).</param>
+	/// <param name="statedOnly">
+	/// Whether the document folds ONLY what its writers were called with (<see cref="StatedOnly"/>).
+	/// </param>
 	public Fable3HudDocument(
-		string document, IReadOnlyList<Engine_HudLayout.GroupSubtree> groups, System.Func<uint> presentation, bool layouts)
+		string document, IReadOnlyList<Engine_HudLayout.GroupSubtree> groups, bool layouts, bool statedOnly = false)
 	{
 		Document = document;
 		Groups = groups;
-		_presentation = presentation;
 		_layouts = layouts;
+		StatedOnly = statedOnly;
 	}
+
+	/// <summary>
+	/// THE DOCUMENT IS DRAWN FROM ITS CALLS ALONE: each element's slide, text, texture and opacity
+	/// as its writer was called with them (`@Ui.State`, `@Ui.Text` / `TextTag` / `TextName`,
+	/// `@Ui.Texture`, `@Ui.Visible`, the surface statements' own values — the interaction button's
+	/// 100 / 50), never the setters' after-the-fact reports (`@Element.*`: the slide funnel's
+	/// writes, the stored opacity, the timeline) nor anything read back off a headless element.
+	/// Meters stand at the registry values their writers state; the registry slides and the
+	/// interaction panel are <see cref="Fable3HudRegistry"/>'s.
+	/// </summary>
+	public bool StatedOnly { get; }
 
 	public string Document { get; }
 
@@ -43,7 +77,6 @@ public sealed class Fable3HudDocument
 	/// <summary>The view, once the document is read.</summary>
 	public Engine_HudView? View { get; private set; }
 
-	private readonly System.Func<uint> _presentation;
 	private readonly bool _layouts;
 	private Engine_UiScreen? _screen;
 	private Engine_UiBindings? _bindings;
@@ -60,7 +93,26 @@ public sealed class Fable3HudDocument
 	private float?[] _times = System.Array.Empty<float?>();
 	private float?[]?[] _transforms = System.Array.Empty<float?[]?>();
 	private uint[] _textures = System.Array.Empty<uint>();
+	private (float R, float G, float B, float A)?[] _colours = System.Array.Empty<(float, float, float, float)?>();
 	private bool[] _active = System.Array.Empty<bool>();
+
+	/// <summary>
+	/// A stated-only document's slides PLAYED by Godot (the shared <see cref="Engine_UiSlidePlayback"/>,
+	/// as Fable 2's HUD stand plays its file): each stated slide entered, its tracks run over real
+	/// time, the meters' components at their registry time. Null for a document that folds the
+	/// guest's own reports.
+	/// </summary>
+	private Engine_UiSlidePlayback? _playback;
+
+	/// <summary>Per ordinal, the stamp of the slide write that landed there (an entry; 0 none).</summary>
+	private ulong[] _slideStamps = System.Array.Empty<ulong>();
+
+	/// <summary>This feed's meter components and their registry time (`pct × 10`), for the playback's GoToTime.</summary>
+	private readonly List<(int Ordinal, int Time)> _meterTimes = new();
+
+	private bool _played;
+
+	private static readonly System.Diagnostics.Stopwatch PlayClock = System.Diagnostics.Stopwatch.StartNew();
 
 	/// <summary>Per ordinal: the meter name bound there, for the time an unstated meter stands at.</summary>
 	private string?[] _meters = System.Array.Empty<string?>();
@@ -68,9 +120,15 @@ public sealed class Fable3HudDocument
 	/// <summary>Per ordinal: the text name bound there, for a text the registry states and no element write carried.</summary>
 	private string?[] _textNames = System.Array.Empty<string?>();
 
+	/// <summary>The ordinals filed under each `ScriptPositioned` name (FNV-1 of the value), for <see cref="Fable3HudRegistry.Placed"/>.</summary>
+	private readonly Dictionary<uint, List<int>> _placed = new();
+
+	/// <summary>Per registry kind, every ordinal the document binds in it (a reset's reach).</summary>
+	private readonly Dictionary<Engine_UiBindings.Kind, IReadOnlyList<int>> _everyOfKind = new();
+
 	private readonly List<Fable3HudStatements.Statement> _gathered = new();
 	private ulong _fed = ulong.MaxValue;
-	private uint _fedPresentation;
+	private readonly Fable3MiniGameBarClones _barClones = new();
 	private int _reportedUnmapped = -1;
 
 	/// <summary>Builds the view under <paramref name="parent"/> from the host's banks; false when the document is not there.</summary>
@@ -95,6 +153,14 @@ public sealed class Fable3HudDocument
 			ResolveTexture = hash => ResolveTexture(host, hash),
 			Layout = layout,
 			StatesTimes = true,
+			TopBoxWrapWidth = TopBoxWrapWidth,
+			TopBoxHeightRange = TopBoxHeightRange,
+			TopBoxHeightPad = TopBoxHeightPad,
+			// Fable 3's own box art: the TopBox's `Bar` [1519] (BoxName 'TopBox', the `hud` atlas) under
+			// the TopBoxX / TopBoxY meters [1518] / [1517] with its `Group` [1522] highlight and glow
+			// quads, the Subtitles and Corner boxes' nine-slices under their X / Y meters — drawn at the
+			// size the meters state, never Fable 2's fitted rounded panel.
+			AuthoredTextBoxPanels = true,
 		};
 		View.Values.Strings = host.Strings ?? Fable3Strings.Current;
 		parent.AddChild(View);
@@ -126,6 +192,7 @@ public sealed class Fable3HudDocument
 		_times = new float?[count];
 		_transforms = new float?[]?[count];
 		_textures = new uint[count];
+		_colours = new (float, float, float, float)?[count];
 		_active = new bool[count];
 		_meters = new string?[count];
 		_textNames = new string?[count];
@@ -146,11 +213,21 @@ public sealed class Fable3HudDocument
 			}
 		}
 
-		_statements = new Fable3HudStatements(PathsOf(_screen), Bound, SlideOwners(_screen.Document));
+		if (StatedOnly)
+		{
+			_playback = new Engine_UiSlidePlayback(_screen);
+			_slideStamps = new ulong[count];
+			_played = false;
+		}
+
+		IndexScriptPositioned(_screen.Document);
+		_statements = new Fable3HudStatements(PathsOf(_screen), Bound, SlideOwners(_screen.Document), Named);
 		// The rest state from the slides alone: an ancestor's slide gates a child component over
 		// the child's own self-activating entry (Engine_UiElementResolve.AncestorsWinAtRest).
 		_resolve = new Engine_UiElementResolve(_screen) { AncestorsWinAtRest = true };
 		View.Build();
+		Live.Remove(this);
+		Live.Add(this);
 		GD.Print($"[fable3-hud] '{Document}' {count} element(s), {_bindings.Describe()}; " +
 			$"{layout.Pieces.Count} piece(s), {Groups.Count} cut whole; {replaced} piece(s) replaced from {folder}" +
 			(modArranged == 0 ? string.Empty : $"; {modArranged} moved by mods") +
@@ -158,19 +235,96 @@ public sealed class Fable3HudDocument
 		return true;
 	}
 
-	/// <summary>The ordinals bound to `Attribute:value`, by the attribute's spelling in the file.</summary>
-	private IReadOnlyList<int> Bound(string attribute, string value)
+	/// <summary>The documents standing, for the debug channel (`f3ui`).</summary>
+	public static readonly List<Fable3HudDocument> Live = new();
+
+	/// <summary>
+	/// For the debug channel: every element whose path contains <paramref name="match"/> — what the
+	/// guest stated for it (<see cref="Fable3Elements"/>), what the feed folded into the view's
+	/// channels, and what the resolve made of it (drawn, own and accumulated opacity, why dark) — and
+	/// the view's pieces under the same match.
+	/// </summary>
+	public Dictionary<string, object?> Describe(string match, int limit)
 	{
-		if (_bindings is null)
+		var rows = new List<Dictionary<string, object?>>();
+		if (_screen is not null && _resolve is not null)
 		{
-			return System.Array.Empty<int>();
+			string[] paths = PathsOf(_screen);
+			for (int i = 0; i < paths.Length && rows.Count < limit; ++i)
+			{
+				if (match.Length != 0 && !paths[i].Contains(match, System.StringComparison.Ordinal))
+				{
+					continue;
+				}
+
+				bool drawn = i < _resolve.Drawn.Length && _resolve.Drawn[i];
+				rows.Add(new Dictionary<string, object?>
+				{
+					["ordinal"] = i,
+					["path"] = paths[i],
+					["slide"] = i < _slides.Length ? _slides[i] : null,
+					["fedOpacity"] = i < _opacity.Length ? _opacity[i] : null,
+					["text"] = i < _texts.Length ? _texts[i] : null,
+					["time"] = i < _times.Length ? _times[i] : null,
+					["drawn"] = drawn,
+					["own"] = i < _resolve.Own.Length ? _resolve.Own[i] : null,
+					["opacity"] = i < _resolve.Opacity.Length ? _resolve.Opacity[i] : null,
+					["active"] = i < _active.Length && _active[i],
+					["dark"] = drawn ? null : _resolve.WhyDark(i),
+				});
+			}
 		}
 
+		var stated = new List<Dictionary<string, object?>>();
+		foreach (KeyValuePair<(string Document, string Path), Fable3Elements.Element> entry in Fable3Elements.Of(Document))
+		{
+			if (stated.Count >= limit || (match.Length != 0 && !entry.Key.Path.Contains(match, System.StringComparison.Ordinal)))
+			{
+				continue;
+			}
+
+			Fable3Elements.Element e = entry.Value;
+			stated.Add(new Dictionary<string, object?>
+			{
+				["path"] = entry.Key.Path,
+				["address"] = e.Address.ToString("X8"),
+				["state"] = e.State,
+				["opacity"] = e.Opacity,
+				["visible"] = e.Visible,
+				["drawnOpacity"] = e.DrawnOpacity,
+				["text"] = e.Text,
+				["time"] = e.Time,
+				["active"] = e.Active,
+				["statedState"] = e.StatedState,
+				["statedOpacity"] = e.StatedDrawnOpacity,
+				["statedText"] = e.StatedTextValue,
+				["statedTexture"] = e.StatedTexture,
+				["stamp"] = e.Stamp,
+			});
+		}
+
+		return new Dictionary<string, object?>
+		{
+			["document"] = Document,
+			["statedOnly"] = StatedOnly,
+			["elements"] = rows,
+			["stated"] = stated,
+			["pieces"] = View?.Describe(match),
+		};
+	}
+
+	/// <summary>The ordinals bound to `Attribute:value`, by the attribute's spelling in the file.</summary>
+	private IReadOnlyList<int> Bound(string attribute, string value) =>
+		_bindings is null ? System.Array.Empty<int>() : Bound(_bindings, attribute, value);
+
+	/// <summary>The ordinals <paramref name="bindings"/> binds to `Attribute:value`, by the attribute's spelling in the file.</summary>
+	internal static IReadOnlyList<int> Bound(Engine_UiBindings bindings, string attribute, string value)
+	{
 		foreach ((Engine_UiBindings.Kind kind, string spelled) in Engine_UiBindings.Attributes)
 		{
 			if (spelled == attribute)
 			{
-				return _bindings.Elements(kind, value);
+				return bindings.Elements(kind, value);
 			}
 		}
 
@@ -189,31 +343,86 @@ public sealed class Fable3HudDocument
 		}
 
 		View.Window = window;
-		uint presentation = _presentation();
-		if (presentation == 0u || (Fable3Elements.Generation == _fed && presentation == _fedPresentation &&
-			!Refii.Core.Engine_GuestFrame.Changed))
+
+		// The mini-game bar's cloned segments (minigamebarcontrol.lua `clone`), only once its script ran here.
+		if (Fable3LuaContracts.BarOf(Document) is { Elements.Count: > 0 } bar)
+		{
+			_barClones.Drive(View, bar, _screen, _resolve, _statements.Resolve);
+		}
+
+		if (Fable3Elements.Generation == _fed && !Refii.Core.Engine_GuestFrame.Changed)
 		{
 			return;
 		}
 
 		_fed = Fable3Elements.Generation;
-		_fedPresentation = presentation;
-		Feed(presentation);
+		Feed();
 	}
 
-	private void Feed(uint presentation)
+	private void Feed()
 	{
 		_gathered.Clear();
-		foreach (KeyValuePair<(uint Presentation, string Path), Fable3Elements.Element> entry in Fable3Elements.Of(presentation))
+		foreach (KeyValuePair<(string Document, string Path), Fable3Elements.Element> entry in Fable3Elements.Of(Document))
 		{
+			if (StatedOnly)
+			{
+				Fable3Elements.Element stated = entry.Value;
+				if (IsRegistryStated(entry.Key.Path))
+				{
+					continue;
+				}
+
+				// The slide under its own stamp: an entry is re-entered only by a newer slide write.
+				if (stated.StatedState is { } slide)
+				{
+					_gathered.Add(new Fable3HudStatements.Statement(
+						entry.Key.Path, slide, null, null, null, stated.StatedStateStamp));
+				}
+
+				if (stated.StatedDrawnOpacity is not null || stated.Stated is not null || stated.StatedTexture is not null ||
+					stated.Colour is not null)
+				{
+					_gathered.Add(new Fable3HudStatements.Statement(
+						entry.Key.Path, null, stated.StatedDrawnOpacity, stated.StatedTextValue, null,
+						stated.Stamp, null, stated.StatedTexture, Colour: stated.Colour));
+				}
+
+				continue;
+			}
+
+			// An element filed under a name the registry writers state is written by them: their
+			// statement (Fable3HudRegistry, the text and meter values below) is the one taken.
+			if (IsRegistryStated(entry.Key.Path))
+			{
+				// Except where the element stands: the text boxes' line fit (sub_82920BC8 ->
+				// sub_82920610 -> sub_82818580 at 0x829207DC) places each line element it writes
+				// through the text registry, from the box's own attributes (sub_82818760 / sub_82818C30
+				// up the `BoxName` element's chain): the subtitle and corner lines stand at it. The
+				// TopBox's fit is not stated — Godot stacks those rows from the file's first line
+				// (Engine_HudView.StatedLineTop, Engine_UiTextBoxFit).
+				if (entry.Value.Position is { } fit)
+				{
+					_gathered.Add(new Fable3HudStatements.Statement(
+						entry.Key.Path, null, null, null, null, entry.Value.Stamp, fit));
+				}
+
+				continue;
+			}
+
 			Fable3Elements.Element element = entry.Value;
 			_gathered.Add(new Fable3HudStatements.Statement(
-				entry.Key.Path, element.State, element.Opacity, element.Text, element.Time, element.Stamp,
-				element.Position, element.Texture));
+				entry.Key.Path, element.State, element.DrawnOpacity, element.Text, element.Time, element.Stamp,
+				element.Position, element.Texture, Colour: element.Colour));
 		}
 
-		_statements!.Apply(_gathered, _slides, _opacity, _texts, _times, _transforms, _textures);
+		_gathered.AddRange(Fable3HudRegistry.StatementsFor(Document));
+		_gathered.AddRange(Fable3LuaContracts.StatementsFor(Document, SlideNamed));
+		_statements!.Apply(_gathered, _slides, _opacity, _texts, _times, _transforms, _textures,
+			_playback is null ? null : _slideStamps, _colours);
+		_meterTimes.Clear();
+		StatePlaced();
 		StateWidescreen();
+		StateLuaTransforms();
 		if (_statements.Unmapped != _reportedUnmapped)
 		{
 			_reportedUnmapped = _statements.Unmapped;
@@ -224,10 +433,18 @@ public sealed class Fable3HudDocument
 		Engine_HudValues values = View!.Values;
 		for (int i = 0; i < _slides.Length; ++i)
 		{
-			// A text the registry states (hud_feed.cpp, registry 6) where no element write carried one.
+			// A text the registry states (hud_feed.cpp, registry 6) where no element write carried
+			// one; else the line its text box's caller passed (sub_82920BC8, `@Hud.Lines`) — the
+			// registry's write is that line wrapped, made only for a box the TextBox registry filed.
 			if (_texts[i] is null && _textNames[i] is { } textName)
 			{
-				_texts[i] = values.Text(Engine_HudValues.Handle.For(textName));
+				string? written = values.Text(Engine_HudValues.Handle.For(textName));
+				string? line = Fable3HudRegistry.Line(Refii.Core.Engine_GameHash.Fnv1(textName));
+				// The registry's write wins; an EMPTY one does not over a non-empty stated line (the
+				// Sanctuary's counters drew empty bars with the registry at '' and the line stated —
+				// round 7q). A cleared subtitle states '' as its line and keeps its slide's hide.
+				_texts[i] = string.IsNullOrEmpty(written) && !string.IsNullOrEmpty(line) ? line : written ?? line;
+				CheckLine(textName, written, line);
 			}
 
 			// A meter's timeline: the stated position, else the registry's value (`pct × 10`, the
@@ -235,10 +452,18 @@ public sealed class Fable3HudDocument
 			// guest has not positioned stands at 0, not at its last key.
 			if (_times[i] is null && _meters[i] is { } meter)
 			{
-				_times[i] = values.Meter(Engine_HudValues.Handle.For(meter)) is { } percent
-					? Mathf.Clamp(percent, 0f, 100f) * 10f
-					: 0f;
+				float? percent = values.Meter(Engine_HudValues.Handle.For(meter));
+				_times[i] = percent is { } p ? Mathf.Clamp(p, 0f, 100f) * 10f : 0f;
+				if (percent is not null)
+				{
+					_meterTimes.Add((i, (int)_times[i]!.Value));
+				}
 			}
+		}
+
+		if (_playback is not null)
+		{
+			Play(_playback);
 		}
 
 		_resolve!.Apply(_slides, null, _opacity);
@@ -256,7 +481,157 @@ public sealed class Fable3HudDocument
 		View.LiveTimes = _times;
 		View.LiveTransform = _transforms;
 		View.LiveTextures = _textures;
+		View.LiveColours = _colours;
 		View.ElementActive = _active;
+	}
+
+	/// <summary>
+	/// One step of a stated-only document's playback: every stated slide is an entry (a newer stamp
+	/// of the same slide enters it again — the guest's funnel restarts it), an authored-paused slide
+	/// waits where the meter's GoToTime (sub_8281A5D8 -> `vt[9]()->vt[11]` at 0x8281A634, the meters'
+	/// `fraction × 1000`) puts it, the rest run over real time; the tracks' values go to the resolve
+	/// (positions, scales, opacity) and the slide each component plays (a finished go-next slide
+	/// moves on) replaces the stated one.
+	/// </summary>
+	private void Play(Engine_UiSlidePlayback playback)
+	{
+		long now = PlayClock.ElapsedMilliseconds;
+		int[] playing = playback.Step(
+			_slides, _played ? _resolve!.Drawn : null, now, null,
+			at =>
+			{
+				foreach ((int ordinal, int time) in _meterTimes)
+				{
+					playback.GoToTime(ordinal, time, now);
+				}
+			},
+			ordinal => ordinal >= 0 && ordinal < _slideStamps.Length && _slideStamps[ordinal] != 0
+				? new Engine_UiSlideStatements.Told(_slides[ordinal], _slideStamps[ordinal], null, 0)
+				: null,
+			Fable3Elements.Generation);
+		System.Array.Copy(playing, _slides, System.Math.Min(playing.Length, _slides.Length));
+		_resolve!.Animate(playback.Values, playback.Closed);
+		_played = true;
+	}
+
+	/// <summary>Text names whose stated line and registry write were compared and differed, logged once each.</summary>
+	private readonly HashSet<string> _lineChecks = new(System.StringComparer.Ordinal);
+
+	/// <summary>The cross-check of a stated line against the registry's wrapped write of it.</summary>
+	private void CheckLine(string textName, string? written, string? line)
+	{
+		if (written is null || line is null ||
+			Fable3Elements.Normalise(written) == Fable3Elements.Normalise(line) || _lineChecks.Count > 200)
+		{
+			return;
+		}
+
+		if (_lineChecks.Add(textName + "\u0001" + line))
+		{
+			GD.Print($"[fable3-statecheck] DIFF line '{Document}' {textName}: stated '{line}', registry wrote '{written}'");
+		}
+	}
+
+	/// <summary>
+	/// Whether a statement's path is `Attribute:value` for an attribute the registry writers state
+	/// (<see cref="Fable3HudRegistry.IsStatedAttribute"/>).
+	/// </summary>
+	internal static bool IsRegistryStated(string path)
+	{
+		int colon = path.IndexOf(':');
+		if (colon <= 0)
+		{
+			return false;
+		}
+
+		int dot = path.IndexOf('.');
+		return (dot < 0 || dot > colon) && Fable3HudRegistry.IsStatedAttribute(path[..colon]);
+	}
+
+	/// <summary>
+	/// The ordinals bound under <paramref name="hash"/> in the kind's registry, or every ordinal the
+	/// document binds in it for a null hash.
+	/// </summary>
+	private IReadOnlyList<int> Named(Engine_UiBindings.Kind kind, uint? hash)
+	{
+		if (_bindings is null)
+		{
+			return System.Array.Empty<int>();
+		}
+
+		if (hash is { } name)
+		{
+			return _bindings.Elements(kind, name);
+		}
+
+		if (!_everyOfKind.TryGetValue(kind, out IReadOnlyList<int>? every))
+		{
+			var ordinals = new List<int>();
+			foreach (Engine_UiBindings.Binding binding in _bindings.All)
+			{
+				if (binding.Kind == kind)
+				{
+					ordinals.Add(binding.ElementOrdinal);
+				}
+			}
+
+			_everyOfKind[kind] = every = ordinals;
+		}
+
+		return every;
+	}
+
+	/// <summary>Files every element's `ScriptPositioned` value under its FNV-1, as the registry filer does.</summary>
+	private void IndexScriptPositioned(Engine_BgfDocument document)
+	{
+		_placed.Clear();
+		uint id = Refii.Core.Engine_GameHash.AttributeId(Fable3HudRegistry.ScriptPositionedAttribute);
+		for (int ordinal = 0; ordinal < document.Elements.Length; ordinal++)
+		{
+			if (!document.Elements[ordinal].TryGetAttribute(id, out BgfAttribute attribute) ||
+				attribute.Type != BgfValueType.String)
+			{
+				continue;
+			}
+
+			string name = document.GetString(attribute.AsStringIndex());
+			if (name.Length == 0)
+			{
+				continue;
+			}
+
+			uint hash = Refii.Core.Engine_GameHash.Fnv1(name);
+			if (!_placed.TryGetValue(hash, out List<int>? ordinals))
+			{
+				_placed[hash] = ordinals = new List<int>();
+			}
+
+			ordinals.Add(ordinal);
+		}
+	}
+
+	/// <summary>Every script-placed element at the (x, y) its name was placed at (sub_82B4FD30), z its own.</summary>
+	private void StatePlaced()
+	{
+		foreach (KeyValuePair<uint, (float X, float Y)> placed in Fable3HudRegistry.Placed)
+		{
+			if (!_placed.TryGetValue(placed.Key, out List<int>? ordinals))
+			{
+				continue;
+			}
+
+			foreach (int ordinal in ordinals)
+			{
+				if (ordinal < 0 || ordinal >= _transforms.Length)
+				{
+					continue;
+				}
+
+				float?[] row = _transforms[ordinal] ??= new float?[Fable3HudStatements.TransformWidth];
+				row[0] = placed.Value.X;
+				row[1] = placed.Value.Y;
+			}
+		}
 	}
 
 	/// <summary>
@@ -269,6 +644,58 @@ public sealed class Fable3HudDocument
 	/// nothing, which left the parked received-item alert's gift on screen. Stated here wherever the
 	/// guest has not written that channel itself.
 	/// </summary>
+	/// <summary>
+	/// The shipped Lua's transform writes (Fable3LuaContracts.Transforms: the mini-game bar's pip and
+	/// segment templates), written over the folded rows as the script's setAttribute was — after the
+	/// C++'s writes of the same frame.
+	/// </summary>
+	private void StateLuaTransforms()
+	{
+		foreach ((string path, int channel, float value) in Fable3LuaContracts.Transforms(Document))
+		{
+			foreach (int ordinal in _statements!.Resolve(path))
+			{
+				if (ordinal >= 0 && ordinal < _transforms.Length)
+				{
+					float?[] row = _transforms[ordinal] ??= new float?[Fable3HudStatements.TransformWidth];
+					row[channel] = value;
+				}
+			}
+		}
+	}
+
+	/// <summary>
+	/// A component's slide by NAME, as Gameface's goToSlide(element, name) resolves it: the index
+	/// relative to the owner's own run, its master 0 (BgfSlide). Null when the path or name is not
+	/// in this document.
+	/// </summary>
+	private int? SlideNamed(string path, string name)
+	{
+		if (_screen is null || _statements is null || _statements.Resolve(path) is not { Count: > 0 } owners)
+		{
+			return null;
+		}
+
+		int owner = owners[0];
+		int relative = 0;
+		foreach (BgfSlide slide in _screen.Document.Slides)
+		{
+			if (slide.OwnerElement != owner)
+			{
+				continue;
+			}
+
+			if (slide.Name == name)
+			{
+				return relative;
+			}
+
+			++relative;
+		}
+
+		return null;
+	}
+
 	private void StateWidescreen()
 	{
 		if (_wide is null)
@@ -318,7 +745,7 @@ public sealed class Fable3HudDocument
 	}
 
 	/// <summary>Per ordinal, the element's dotted path from beneath the root (the root's is empty).</summary>
-	private static string[] PathsOf(Engine_UiScreen screen)
+	internal static string[] PathsOf(Engine_UiScreen screen)
 	{
 		var paths = new string[screen.Nodes.Length];
 		for (int i = 0; i < screen.Nodes.Length; ++i)
@@ -333,7 +760,7 @@ public sealed class Fable3HudDocument
 	}
 
 	/// <summary>Every element that owns numbered slides.</summary>
-	private static List<int> SlideOwners(Engine_BgfDocument document)
+	internal static List<int> SlideOwners(Engine_BgfDocument document)
 	{
 		var owners = new HashSet<int>();
 		foreach (BgfSlide slide in document.Slides)

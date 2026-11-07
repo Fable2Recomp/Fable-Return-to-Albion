@@ -8,7 +8,8 @@ namespace Refii.Ui;
 /// presentation. They are hooked (Fable2/src/vfs/src/hooks/display_box_hooks.cpp) and post
 /// `@Modal.Open kind id text` on the GUI call feed, so the owned surfaces draw the text from the
 /// call rather than from the presentation it fills. Keyed by the modal kind and id the latch
-/// states; a box whose open was not stated falls back to its presentation's text.
+/// states. An opener that passed an empty string stated an empty text; a box whose open was not
+/// stated has none, and its surface does not stand.
 /// </summary>
 public static class Engine_UiModalText
 {
@@ -23,10 +24,11 @@ public static class Engine_UiModalText
 	{
 		_kind = kind;
 		_id = id;
-		_text = text.Length == 0 ? null : text;
+		_text = text;
 	}
 
-	/// <summary>The stated text of the box the latch names, or null when its open was not stated.</summary>
+	/// <summary>The stated text of the box the latch names (empty when the opener passed none), or
+	/// null when its open was not stated.</summary>
 	public static string? For(uint kind, uint id) => _text is not null && _kind == kind && _id == id ? _text : null;
 
 	/// <summary>Forgets the stated box — the guest has left the game.</summary>
@@ -42,8 +44,8 @@ public static class Engine_UiModalText
 
 	/// <summary>
 	/// The router adjuster's numbers as `sub_8236FCA8` was handed them — value, min, max, step,
-	/// flags (1 money, 2 percent, 4 sign). The host keeps the value from here: it steps by the
-	/// widget's rule on the same codes it sends the guest, so the two never part.
+	/// flags (1 money, 2 percent, 4 sign). The value is the open's until the widget tells its own
+	/// (Engine_UiNumericSurface reads the told value text).
 	/// </summary>
 	public static void StatedAdjuster(uint id, int value, int min, int max, int step, int flags)
 	{

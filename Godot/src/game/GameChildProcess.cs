@@ -49,6 +49,12 @@ public static class GameChildProcess
 			arguments.Add(ProjectSettings.GlobalizePath("res://"));
 		}
 
+		// The game's Godot log in the title's own logs folder, beside its guest logs (logs/Fable2,
+		// logs/Fable3): two titles' runs never share one file. Engine flags go ahead of the rest.
+		try { System.IO.Directory.CreateDirectory(Refii.Core.Engine_Title.Active.LogsDirectory); }
+		catch (System.Exception) { }
+		arguments.Add("--log-file");
+		arguments.Add(Refii.Core.Engine_Title.Active.GodotLogPath);
 		// `render_thread` is a Godot start-up option, not a runtime setting: the renderer's
 		// thread model is fixed before the game's own code runs, so it rides the command line.
 		IReadOnlyDictionary<string, string> config = Refii.Core.Engine_RefiiConfig.Read(out _);

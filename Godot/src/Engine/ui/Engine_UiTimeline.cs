@@ -148,14 +148,31 @@ public static class Engine_UiTimeline
     /// The time windows under <paramref name="element"/> that bite inside its playing slide.
     /// The exporter writes `endtime` equal to the slide length on nearly every element, which
     /// gates nothing and is left out.
+    /// <paramref name="ownTimeline"/>: only the elements on <paramref name="element"/>'s own clock —
+    /// a slide owner between them runs its own timeline (interactionmode.bgf's `Button1` [55], slides
+    /// 0-600, holds `Title`/`Icon`/`ButtonBox_24x24` at `endtime` 600, while its
+    /// `InteractionMenuRight` meter [51] stands at 750), so a time stated for the element
+    /// (the meter's GoToTime, sub_8281A5D8 -> `vt[9]()->vt[11]` at 0x8281A634, moves that one
+    /// timeline) never opens or closes them.
     /// </summary>
-    public static List<Window> Windows(Engine_UiScreen screen, int element, BgfSlide? playing)
+    public static List<Window> Windows(Engine_UiScreen screen, int element, BgfSlide? playing, bool ownTimeline = false)
     {
         var windows = new List<Window>();
         int length = playing?.EndTime ?? 1000;
+        HashSet<int>? owners = null;
+        if (ownTimeline)
+        {
+            owners = new HashSet<int>();
+            foreach (BgfSlide slide in screen.Document.Slides)
+            {
+                owners.Add(slide.OwnerElement);
+            }
+        }
+
         foreach (UiNode node in screen.Nodes)
         {
-            if (node.Ordinal == element || !InSubtree(screen, node.Ordinal, element))
+            if (node.Ordinal == element || !InSubtree(screen, node.Ordinal, element) ||
+                (owners is not null && UnderNestedOwner(node, element, owners)))
             {
                 continue;
             }
@@ -240,6 +257,20 @@ public static class Engine_UiTimeline
     }
 
     /// <summary>Whether an element sits at or under <paramref name="root"/>.</summary>
+    /// <summary>Whether a slide owner stands between <paramref name="node"/> and <paramref name="root"/>.</summary>
+    private static bool UnderNestedOwner(UiNode node, int root, HashSet<int> owners)
+    {
+        for (UiNode? at = node.Parent; at is not null && at.Ordinal != root; at = at.Parent)
+        {
+            if (owners.Contains(at.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public static bool InSubtree(Engine_UiScreen screen, int element, int root)
     {
         for (UiNode? at = element >= 0 && element < screen.Nodes.Length

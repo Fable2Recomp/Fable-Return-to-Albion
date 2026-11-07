@@ -284,8 +284,8 @@ public sealed class Fable2Input : GameTitleInput
 	public static bool PauseMenuSwallowsBack { get; set; }
 
 	/// <summary>
-	/// Set while the owned front end answers B itself — a folder open in the list, or the gender
-	/// card or warning box up. The guest's B on the root list leaves for the title, and its Lua
+	/// Set while the owned front end answers B itself — a folder open in the list, the gender
+	/// card or warning box up, or a list book or host page book standing over the rows. The guest's B on the root list leaves for the title, and its Lua
 	/// highlight always reads "at root" here (28/29 are masked), so B must not reach it.
 	/// </summary>
 	public static bool FrontEndSwallowsBack { get; set; }

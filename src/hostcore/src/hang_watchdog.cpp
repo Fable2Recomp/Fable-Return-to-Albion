@@ -52,6 +52,7 @@
 
 #include "hang_watchdog.h"
 #include "host_abi.h"
+#include "refii_host.h"
 
 #include <atomic>
 #include <cstdint>
@@ -270,10 +271,16 @@ void TaskState(long tid, char* state, size_t state_capacity, char* vctx, size_t 
     FindLine(g_file_buffer, "nonvoluntary_ctxt_switches:", nvctx, nvctx_capacity);
 }
 
-/// Beside the guest logs: `ReXApp::OnInitialize` logs to `exe_dir/logs`, and embedded, exe_dir
-/// is Godot's — the same resolution as host_bridge.cpp's crash record.
+/// Beside the guest logs: the title's own folder when the host stated one
+/// (RefiiHostSetLogDirectory), else `exe_dir/logs`, where `ReXApp::OnInitialize` logs and,
+/// embedded, exe_dir is Godot's — the same resolution as the crash record.
 void ResolveLogDir() {
     if (g_log_dir[0] != '\0') {
+        return;
+    }
+    if (const std::filesystem::path& stated = RefiiGetLogDirectory(); !stated.empty()) {
+        std::snprintf(g_log_dir, sizeof(g_log_dir), "%s", stated.c_str());
+        ::mkdir(g_log_dir, 0755);
         return;
     }
     char exe[4096];
@@ -665,7 +672,14 @@ void WatchdogLoop() {
         if (last_report == 0) {
             char stamp[48];
             UtcStamp(stamp, sizeof(stamp), true);
-            std::snprintf(path, sizeof(path), "%s/refii_hang_%s.txt", g_log_dir, stamp);
+            // The title's own folder once the host has stated it (RefiiHostSetLogDirectory comes
+            // after this watchdog starts), else the folder resolved at start.
+            const std::filesystem::path& stated = RefiiGetLogDirectory();
+            if (!stated.empty()) {
+                ::mkdir(stated.c_str(), 0755);
+            }
+            std::snprintf(path, sizeof(path), "%s/refii_hang_%s.txt",
+                          stated.empty() ? g_log_dir : stated.c_str(), stamp);
             stall_alive = alive;
             sections = 0;
             g_stalled.store(1);

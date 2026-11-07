@@ -13,6 +13,9 @@ public static class Fable3ScreenBoxes
 	/// <summary>The element root of the front screen whose rows are element writes, or null (the options screen has its own view and names none).</summary>
 	public static string? ScreenRoot { get; private set; }
 
+	/// <summary>The front screen's box: what its own calls stated is keyed by it (<see cref="Fable3ScreenStatements"/>).</summary>
+	public static uint ScreenBox { get; private set; }
+
 	public static ulong Generation { get; private set; }
 
 	/// <summary>
@@ -22,16 +25,18 @@ public static class Fable3ScreenBoxes
 	/// </summary>
 	public static string? RootOf(string kind) => Fable3ScreenModel.RootOf(kind);
 
-	public static void Shown(int delta, string? root = null)
+	public static void Shown(int delta, string? root = null, uint box = 0u)
 	{
 		Showing = System.Math.Max(0, Showing + delta);
 		if (delta > 0)
 		{
 			ScreenRoot = root;
+			ScreenBox = box;
 		}
 		else if (Showing == 0 || root == ScreenRoot)
 		{
 			ScreenRoot = null;
+			ScreenBox = 0u;
 		}
 
 		++Generation;

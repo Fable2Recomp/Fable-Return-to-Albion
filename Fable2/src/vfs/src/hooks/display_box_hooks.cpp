@@ -167,6 +167,271 @@ REX_EXTERN(rex_lhDisplayMessageBox_Dtor) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// THE DISPLAY-ONLY BOXES on the owner's +0x20 queue — the intermission strip (kind 5, screen 6) and
+// the acceptance / button boxes (kinds 6 / 7, screen 7; router `sub_823D0B90`). Every opener (the
+// `GUI.*` natives, the level exits, the game loop's chapter text, a partner's packet) builds one of
+// these classes and the queue's tick calls its Open (vf1) and Close (vf2) with r3 the box, so the
+// class methods are the one place every case passes:
+//   intermission vtable 0x820EBFA8: Open `sub_8299EB40` writes `box+8` into `Group.Text` and plays
+//     the root's slide 1; Close `sub_8299EBF8` plays slide 2 (disc 0x820DCF10, 0x82842328,
+//     0x828423E0).
+//   acceptance 0x820EBF3C / button 0x820028F4 share Show `sub_8299EE40` (`box+8` into
+//     `DefaultGroup.FramePositioningGroup.Text`, then `g_DisplayBox:OpenAsAcceptanceBox()`) and
+//     the close `sub_823D0998` (`g_DisplayBox:Close()`), reached through the acceptance's thunk
+//     `sub_8299EA48` and the button's `CButtonBox_vf2` (disc 0x820DCEA4 / 0x82002914, 0x82842628,
+//     0x827DE7C0).
+// Each is posted `@DisplayBox.Open <box> <name> <body> <kind>` / `@DisplayBox.Close <box> <name>
+// <body> <kind>` after the original, so the host stands its panel on the box's own statement.
+//
+// The answerable classes state themselves the same way, kind = the class's own type (vtable slot 7,
+// `li r3,N`, which `sub_823D0B90` maps to a screen): query 2, numeric adjuster 3, quest box 4,
+// hold-to-accept card 8. Their fields follow the kind — see each hook.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr refii::guest::Addr kAcceptanceBoxVtable{0x820EBF3Cu};
+
+void StateDisplay(uint8_t* base, const char* name, uint32_t box, uint32_t kind,
+                  std::initializer_list<std::string> fields = {}) {
+    refii::vfs::GuiNativeCall call;
+    call.name = name;
+    const auto add = [&call](std::string value) {
+        refii::vfs::GuiNativeArgument argument;
+        argument.kind = refii::vfs::GuiNativeArgument::Kind::kString;
+        argument.text = std::move(value);
+        call.arguments.push_back(std::move(argument));
+    };
+    char hex[9];
+    std::snprintf(hex, sizeof hex, "%08X", box);
+    add(hex);
+    add(refii::vfs::ReadGuestLhString(base, box + kBoxIdentity));
+    add(refii::vfs::ReadStatedWideLhString(base, box + kBoxBody));
+    add(std::to_string(kind));
+    for (const std::string& field : fields) {
+        add(field);
+    }
+    refii::vfs::PostGuiNativeCall(std::move(call));
+}
+
+std::string Signed(uint8_t* base, uint32_t at) {
+    return std::to_string(static_cast<int32_t>(refii::vfs::LoadGuestU32(base, at)));
+}
+
+std::string Flag(uint8_t* base, uint32_t at) {
+    return refii::vfs::LoadGuestU8(base, at) != 0u ? "1" : "0";
+}
+
+std::string Tag(uint8_t* base, uint32_t at) { return refii::vfs::ReadGuestLhString(base, at); }
+
+constexpr uint32_t kQueryKind = 2u;
+constexpr uint32_t kAdjusterKind = 3u;
+constexpr uint32_t kQuestKind = 4u;
+constexpr uint32_t kAcceptHoldKind = 8u;
+
+/// Acceptance (6) or button (7), by the box's class.
+uint32_t AcceptKind(uint8_t* base, uint32_t box) {
+    return refii::vfs::LoadGuestU32(base, box) == static_cast<uint32_t>(kAcceptanceBoxVtable) ? 6u : 7u;
+}
+
+}  // namespace
+
+REX_EXTERN(rex_lhIntermissionBox_Open) {
+    const uint32_t box = ctx.r3.u32;
+    __imp__rex_lhIntermissionBox_Open(ctx, base);
+    StateDisplay(base, "@DisplayBox.Open", box, 5u);
+}
+
+REX_EXTERN(rex_lhIntermissionBox_Close) {
+    const uint32_t box = ctx.r3.u32;
+    __imp__rex_lhIntermissionBox_Close(ctx, base);
+    StateDisplay(base, "@DisplayBox.Close", box, 5u);
+}
+
+REX_EXTERN(rex_lhAcceptBox_Show) {
+    const uint32_t box = ctx.r3.u32;
+    __imp__rex_lhAcceptBox_Show(ctx, base);
+    StateDisplay(base, "@DisplayBox.Open", box, AcceptKind(base, box));
+}
+
+REX_EXTERN(rex_lhAcceptBox_Close) {
+    const uint32_t box = ctx.r3.u32;
+    const uint32_t kind = AcceptKind(base, box);
+    __imp__rex_lhAcceptBox_Close(ctx, base);
+    StateDisplay(base, "@DisplayBox.Close", box, kind);
+}
+
+// CQueryBox (vtable 0x820AE688, `GUI.DisplayYesNoQuestion` and its two siblings): Open
+// `sub_823CF228` writes `box+8` into `Group.QueryBox.Text` and sets the open byte; Close
+// `sub_823CF300` clears it (disc 0x823BD8D0 / 0x823BD9A8). Answered by its slot 3, 46/47.
+REX_EXTERN(rex_lhQueryBox_Open) {
+    const uint32_t box = ctx.r3.u32;
+    __imp__rex_lhQueryBox_Open(ctx, base);
+    StateDisplay(base, "@DisplayBox.Open", box, kQueryKind);
+}
+
+REX_EXTERN(rex_lhQueryBox_Close) {
+    const uint32_t box = ctx.r3.u32;
+    __imp__rex_lhQueryBox_Close(ctx, base);
+    StateDisplay(base, "@DisplayBox.Close", box, kQueryKind);
+}
+
+// CNumericAdjuster (vtable 0x820AE6A8, `GUI.DisplayNumericAdjusterParams`): its widget is
+// `box+24`, the router adjuster's layout — the ctor `sub_823CF508` (disc 0x823BDBB0) stores min
+// +56, max +60, step +64, value +68 and flags +52 (1 money, 2 percent, 4 sign); Open
+// `sub_823CF6B8` formats it (`sub_826B8BB0(box+24)`) and writes `box+8`; Close `sub_823CF7F0`
+// (disc 0x823BDCF8 / 0x823BDE30). Fields: value, min, max, step, flags — the order `@Modal.Open`
+// states the router's.
+REX_EXTERN(rex_lhNumericAdjusterBox_Open) {
+    const uint32_t box = ctx.r3.u32;
+    __imp__rex_lhNumericAdjusterBox_Open(ctx, base);
+    StateDisplay(base, "@DisplayBox.Open", box, kAdjusterKind,
+                 {Signed(base, box + 68u), Signed(base, box + 56u), Signed(base, box + 60u),
+                  Signed(base, box + 64u), Signed(base, box + 52u)});
+}
+
+REX_EXTERN(rex_lhNumericAdjusterBox_Close) {
+    const uint32_t box = ctx.r3.u32;
+    __imp__rex_lhNumericAdjusterBox_Close(ctx, base);
+    StateDisplay(base, "@DisplayBox.Close", box, kAdjusterKind);
+}
+
+// CQuestInfoBox (vtable 0x820AE6C8, `GUI.DisplayQuestBoxParams`): the ctor `sub_826B96F8` (disc
+// 0x8240D160) copies the call's table into +24 Type, +28 RiskLevel, +32 the condition count, and
+// the tags +36 Condition1, +40 Condition2, +44 Occupation, +48 Appearance, +52 Features,
+// +56 TargetName, +60 Whereabouts, +64 Reason. Open `sub_823CFF60` plays root slide Type and runs
+// the filler `sub_823CFBE0`, which writes `box+8` and those tags, localised, into the page; Close
+// `sub_823D0000` (disc 0x823BE608 / 0x823BE6A8). Fields in that order, the tags raw.
+REX_EXTERN(rex_lhQuestInfoBox_Open) {
+    const uint32_t box = ctx.r3.u32;
+    __imp__rex_lhQuestInfoBox_Open(ctx, base);
+    StateDisplay(base, "@DisplayBox.Open", box, kQuestKind,
+                 {Signed(base, box + 24u), Signed(base, box + 28u), Signed(base, box + 32u),
+                  Tag(base, box + 36u), Tag(base, box + 40u), Tag(base, box + 44u),
+                  Tag(base, box + 48u), Tag(base, box + 52u), Tag(base, box + 56u),
+                  Tag(base, box + 60u), Tag(base, box + 64u)});
+}
+
+REX_EXTERN(rex_lhQuestInfoBox_Close) {
+    const uint32_t box = ctx.r3.u32;
+    __imp__rex_lhQuestInfoBox_Close(ctx, base);
+    StateDisplay(base, "@DisplayBox.Close", box, kQuestKind);
+}
+
+// CAcceptHoldBox (vtable 0x820EBF1C, the `Paper` card: style-0 `DisplayInfoBoxParams`, photo
+// mode's upload notice): the ctor `sub_8299E318` (disc 0x82841A98) keeps the title tag +32, ShowA
+// +36, ShowY +37, HoldA +38, the accept caption tag +40 and the help caption tag +44. Open
+// `sub_8299E490` writes `box+8` into `Paper.Text`, the resolved +32 into `Paper.Title`, each caption
+// with its prompt's opacity, and plays root slide 7; Close `sub_8299E708` plays 8 (disc 0x82841C10
+// / 0x82841E88). Its answer is its own input slot (+16, `CAcceptHoldBox_vf4`), the guest's.
+// Fields: title tag, ShowA, ShowY, HoldA, accept tag, help tag.
+REX_EXTERN(rex_lhAcceptHoldBox_Open) {
+    const uint32_t box = ctx.r3.u32;
+    __imp__rex_lhAcceptHoldBox_Open(ctx, base);
+    StateDisplay(base, "@DisplayBox.Open", box, kAcceptHoldKind,
+                 {Tag(base, box + 32u), Flag(base, box + 36u), Flag(base, box + 37u),
+                  Flag(base, box + 38u), Tag(base, box + 40u), Tag(base, box + 44u)});
+}
+
+REX_EXTERN(rex_lhAcceptHoldBox_Close) {
+    const uint32_t box = ctx.r3.u32;
+    __imp__rex_lhAcceptHoldBox_Close(ctx, base);
+    StateDisplay(base, "@DisplayBox.Close", box, kAcceptHoldKind);
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE MENU BOX, the controller `*(guiOwner+56)` (a plain struct): +0 selected, +8 presentation,
+// +12 open, +13 cancelled, +14 cancelable, +20/+24 the option vector (8-byte `{item*, ref*}`; an
+// item's +0 is its text tag, +4 its enabled byte), +32 the title (wide), +44 the Orb's player card.
+// Every opener — `DisplayMenuBox` (`sub_82303BF0`), the Orb (`sub_823DB968`), the sleep menu, and
+// `sub_826C7E90` — goes through the open `sub_823DC100`, whose populate `sub_823DC400` (disc
+// 0x8240C630) writes the title and each row's resolved tag and enabled slide, and returns 1; a
+// row's enable (`sub_823DBBD0`) repopulates an open box. The close `sub_823DC2B0` (disc 0x8240C4E0)
+// posts message 35 with `+13 ? 0 : selected + 1` (0x823dc354), then clears the title and rows.
+//
+// Populate states `@MenuBox.Open <box> <title> <cancelable> <card> <row>…`, a row its tag prefixed
+// `+` enabled or `-` disabled; close states `@MenuBox.Close <box> <answer>` when it closed an open
+// box.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr uint32_t kMenuBoxMaxRows = 6u;
+
+bool PlausibleItem(uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; }
+
+void StateMenuBoxOpen(uint8_t* base, uint32_t box) {
+    refii::vfs::GuiNativeCall call;
+    call.name = "@MenuBox.Open";
+    const auto add = [&call](std::string value) {
+        refii::vfs::GuiNativeArgument argument;
+        argument.kind = refii::vfs::GuiNativeArgument::Kind::kString;
+        argument.text = std::move(value);
+        call.arguments.push_back(std::move(argument));
+    };
+    char hex[9];
+    std::snprintf(hex, sizeof hex, "%08X", box);
+    add(hex);
+    add(refii::vfs::ReadStatedWideLhString(base, box + 32u));
+    add(Flag(base, box + 14u));
+    add(refii::vfs::LoadGuestU32(base, box + 44u) != 0u ? "1" : "0");
+    const uint32_t begin = refii::vfs::LoadGuestU32(base, box + 20u);
+    const uint32_t end = refii::vfs::LoadGuestU32(base, box + 24u);
+    if (PlausibleItem(begin) && end > begin && (end - begin) / 8u <= kMenuBoxMaxRows) {
+        for (uint32_t at = begin; at < end; at += 8u) {
+            const uint32_t item = refii::vfs::LoadGuestU32(base, at);
+            if (!PlausibleItem(item)) {
+                add(std::string());
+                continue;
+            }
+            add((refii::vfs::LoadGuestU8(base, item + 4u) != 0u ? "+" : "-") + Tag(base, item));
+        }
+    }
+    refii::vfs::PostGuiNativeCall(std::move(call));
+}
+
+}  // namespace
+
+REX_EXTERN(rex_lhMenuBox_Populate) {
+    const uint32_t box = ctx.r3.u32;
+    __imp__rex_lhMenuBox_Populate(ctx, base);
+    if ((ctx.r3.u32 & 0xFFu) != 0u) {
+        StateMenuBoxOpen(base, box);
+    }
+}
+
+// The menu box's close is hooked once, by the mod events (mod_events.cpp rex_lhMenuBox_Close), which
+// calls this with the box's state read after its verdict and before the guest's close: +8 rows and
+// +12 open, the answer `+13 ? 0 : +0 + 1` that the close posts as message 35 (0x823DC354).
+namespace refii::vfs {
+
+void StateMenuBoxClose(uint8_t* base, uint32_t box) {
+    const bool open = refii::vfs::LoadGuestU32(base, box + 8u) != 0u &&
+                      refii::vfs::LoadGuestU8(base, box + 12u) != 0u;
+    if (!open) {
+        return;
+    }
+    const uint32_t answer = refii::vfs::LoadGuestU8(base, box + 13u) != 0u
+                                ? 0u
+                                : refii::vfs::LoadGuestU32(base, box) + 1u;
+    refii::vfs::GuiNativeCall call;
+    call.name = "@MenuBox.Close";
+    refii::vfs::GuiNativeArgument address;
+    address.kind = refii::vfs::GuiNativeArgument::Kind::kString;
+    char hex[9];
+    std::snprintf(hex, sizeof hex, "%08X", box);
+    address.text = hex;
+    call.arguments.push_back(std::move(address));
+    refii::vfs::GuiNativeArgument value;
+    value.kind = refii::vfs::GuiNativeArgument::Kind::kString;
+    value.text = std::to_string(answer);
+    call.arguments.push_back(std::move(value));
+    refii::vfs::PostGuiNativeCall(std::move(call));
+}
+
+}  // namespace refii::vfs
+
+// ---------------------------------------------------------------------------------------------
 // A BOX FOR ONE PLAYER (local split screen). The box classes name no player: `GUI.DisplayMessageBox`
 // (`sub_823027B0`) and `GUI.DisplayYesNoQuestion` (`sub_823044A8`) build their box and push it on the
 // owner's +4 queue (`sub_826B99D8(owner + 4, box)` at 0x82302824 / 0x82304520), the menu boxes on the

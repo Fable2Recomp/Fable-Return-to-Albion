@@ -12,7 +12,8 @@ using Refii.Ui;
 /// <remarks>
 /// A call arrives with the name the script used and its arguments, BEFORE the guest's own
 /// implementation runs; taking it does not suppress it, so every predicate the scripts read
-/// back still answers out of the guest's own state and the guest's own box still takes the pad.
+/// back still answers out of the guest's own state. The boxes Godot answers are the exception, by
+/// statement rather than by native: their pad is Godot's (display_box_hooks.cpp).
 ///
 /// Three answers, as Fable 2's table has them: <c>Register</c> (Godot draws the surface it
 /// affects), <c>Observe</c> (deliberately not owned here, with the reason — the census counts
@@ -45,31 +46,36 @@ public partial class Fable3GuiNatives : Node
 
 	private void Route()
 	{
-		// The Gameface element writes (gui_element_hooks.cpp), by presentation and path.
+		// The Gameface element writes (gui_element_hooks.cpp, ui_stated_hooks.cpp), by document and path.
 		Fable3Elements.Register(_router);
+		// The surfaces' values by the calls that carry them (ui_stated_hooks.cpp, topbox_hooks.cpp,
+		// screen_stated_hooks.cpp) and the bar and objective natives below.
+		Fable3UiStatements.Register(_router);
+		Fable3ScreenStatements.Register(_router);
+		// The HUD's registry writers, d-pad and interaction panel (hud_hooks.cpp, interaction_hooks.cpp).
+		Fable3HudRegistry.Register(_router);
 		Fable3EndScreens.Register(_router);
 		Fable3Reticles.Register(_router);
 
-		// ---- THE BOXES, AS THE BOX MANAGER SHOWS AND DROPS THEM (display_box_hooks.cpp) ------
+		// ---- THE BOXES: MADE, SHOWN, DROPPED AND CLOSED (display_box_hooks.cpp) -------------
 		//
-		// The natives only QUEUE a box; the moment it is on screen is the box manager's: its queue
-		// tick sub_822878B0 promotes the front pending box into the showing slot (queue+20) and
-		// calls Show, and releases it when its Update returns 0 — lifetime, Hide or
-		// RemoveDisplayBox alike. Many boxes are queued by C++ and never pass a native, so the
-		// statements are taken there, with the box's class (its vtable), its resolved text and the
-		// per-class fields. The guest routes the pad to the showing box itself (41/42, 73, 31/32),
-		// so Godot draws and never answers.
-		_router.Register("@Box.Open", BoxOpened);
+		// The natives only QUEUE a box; many are queued by C++ and never pass a native. Every box
+		// goes through the queue's push sub_825FBBF8, where its creator's fields are complete
+		// (@Box.Queued); the queue's tick shows the front one (@Box.Show) and releases it when its
+		// Update answers 0 — lifetime, Hide or RemoveDisplayBox alike (@Box.Close); a pending box
+		// removed before it showed is @Box.Dropped. The pause screen's message box (sub_825CEEB0)
+		// is stated the same way under queue -1. Godot owns the pad of the boxes it answers
+		// (<see cref="Fable3BoxAnswers.Owns"/>): the guest's handlers do nothing, and the answer
+		// goes back as a tick action to the box's own answer function.
+		_router.Register("@Box.Queued", BoxQueued);
+		_router.Register("@Box.Show", call => BoxShown(Parse(call.Argument(1).Text)));
+		_router.Register("@Box.Dropped", call => _queued.Remove(Parse(call.Argument(0).Text)));
 		_router.Register("@Box.Close", call => BoxClosed(Parse(call.Argument(1).Text)));
-		_router.Register("@Box.Value", call =>
-		{
-			if (Boxes.Adjusting is { } adjusting)
-			{
-				adjusting.Value = (int)call.Argument(1).Number;
-			}
-		});
 
-		const string queued = "queues a box; it is stated when the box manager shows it (@Box.Open) and when it drops it (@Box.Close)";
+		// ---- THE OPTIONS SCREEN: its handler's state as it returns (options_hooks.cpp) ----------
+		_router.Register("@Options.State", call => Fable3OptionsState.Stated(call));
+
+		const string queued = "queues a box; it is stated at the queue's push (@Box.Queued), as the queue shows it (@Box.Show) and as it drops it (@Box.Close)";
 		foreach (string name in new[] { "DisplayMessageBox", "DisplayYesNoQuestion", "DisplayYesNoQuestionWithTextOverride", "DisplayQuestPrimaryQuestion", "DisplayNumericAdjusterParams", "DisplayQuestBoxParams", "DisplayButtonBox", "DisplayFoodItemQueryBox", "DisplayNatalQueryBox", "DisplayDivorceMessage", "DisplayIntermissionScreen", "DisplayIntermissionScreenWithLifetime", "DisplayItemNameWithCount", "DisplayNameFromItem", "RemoveDisplayBox", "RemoveAllDisplayBoxesWithName", "DisplayDownloadMessageBox", "DisplaySaveGameIncompatibilityMessageBox" })
 		{
 			_router.Observe(name, queued);
@@ -93,21 +99,13 @@ public partial class Fable3GuiNatives : Node
 		_router.Observe("RemoveCounterIfFastTravelOrChangeLevel",
 			"marks the counter for removal on the guest's next travel; the removal itself is the guest's");
 
-		// ---- THE MENU BOX: `*(SM+0x34)`, stated by its own open, input and close ---------------
+		// ---- THE MENU BOX: `*(SM+0x34)`, stated by its row adds, its open and its close -----------
 		//
-		// sub_825FA220 opens it with the rows DisplayMenuBox filled (TextTag, Enabled), the title and
-		// the cancelable flag; sub_825FA030 moves the selection on the guest's own pad handling;
-		// sub_825FA420 closes it and posts MESSAGE_EVENT_MENUBOX (65) with the 1-based row or 0.
+		// sub_825FA220 opens it with the rows its filler added (sub_825F9E68 / sub_825F9FC0), the
+		// title it resolved and whether B cancels; sub_825FA420 closes it and posts
+		// MESSAGE_EVENT_MENUBOX (65) with the 1-based row or 0. The highlight is Godot's: the pick
+		// goes back as `menubox:<row>` to the guest's own highlight and select.
 		_router.Register("@MenuBox.Open", MenuBoxOpened);
-		_router.Register("@MenuBox.Select", call =>
-		{
-			// Re-shown with the new row: the model bumps its generation on a show, not on a cursor move.
-			if (Boxes.Menu is { } menu)
-			{
-				Boxes.ShowMenuBox(menu.Text, menu.Options, menu.Cancelable);
-				Boxes.Menu!.Highlight = (int)call.Argument(0).Number;
-			}
-		});
 		_router.Register("@MenuBox.Close", _ => Boxes.CloseMenuBox());
 		_router.Observe("DisplayMenuBox", "fills the menu box's rows; stated when it opens (@MenuBox.Open)");
 		_router.Observe("DisplayUncancelableMenuBox", "fills the menu box's rows; stated when it opens (@MenuBox.Open)");
@@ -126,19 +124,20 @@ public partial class Fable3GuiNatives : Node
 			_router.Observe(name, topBox);
 		}
 
-		// The fader `*(GUI+0x3C)`: the natives write its target and duration (sub_825D5700) and
-		// the guest polls IsScreenFully* — progress stays the guest's; Engine_UiScreenFade draws
-		// it from RefiiHostGetScreenFade.
-		const string fade = "the fader's own state is drawn (RefiiHostGetScreenFade); the guest polls it, so it stays the guest's";
+		// The fader `*(GUI+0x3C)`: every start ends in sub_825D5700, which states the colour and
+		// seconds, and its advance sub_82287090 states the holds and the lock (hud_hooks.cpp); the
+		// host runs the fade on its own clock between them (RefiiHostGetScreenFade) while the guest
+		// polls IsScreenFully* on its own fader.
+		const string fade = "the fade's start and advance are stated (hud_hooks.cpp) and run on the host's clock; the guest polls its own fader";
 		foreach (string name in new[] { "FadeScreenIn", "FadeScreenOut", "FadeScreenOutToColour", "FadeScreenOutIfEntityIsVisible", "IsScreenFading", "IsScreenFullyFaded", "IsScreenFullyFadedIn", "IsScreenFadeLocked", "LockScreenFade", "UnlockScreenFade" })
 		{
 			_router.Observe(name, fade);
 		}
 
-		// The HUD element registries at `*(*(H+0x24)+0x18)`: the writers publish by name hash and
-		// hud_feed.cpp reads them in place (texts, meters) — the same channel the subtitler and
-		// the TopBox publisher write through.
-		const string registry = "a HUD registry write (sub_825E4028 / sub_825E4120 / meters) read in place by hud_feed.cpp";
+		// The HUD element registries at `*(*(H+0x24)+0x18)`: the writers publish by name hash
+		// through the text writer sub_82733F30 and the meters' value writer sub_8291F6E8, both
+		// stated (hud_hooks.cpp) — the same channel the subtitler and the TopBox publisher write through.
+		const string registry = "a HUD registry write, stated at the text and meter value writers (hud_hooks.cpp)";
 		foreach (string name in new[] { "SetGUIText", "ToggleElement", "SetMeterRatioOverTime", "SetMeterPercentOverTime", "SetMeterPosition", "ResetMeterPosition", "FadeElementIn", "FadeElementOutFast", "FadeElementOutSlow" })
 		{
 			_router.Observe(name, registry);
@@ -174,7 +173,7 @@ public partial class Fable3GuiNatives : Node
 
 		_router.Observe("AddInteractionModeText",
 			"joined by the guest into the mode's one text box (sub_82958878), committed to LowerElements.InfoBox.TextBox.Contents.Text1 and drawn by the InfoBox group");
-		_router.Observe("ClearInteractionModeText", "clears the same text box (sub_82957D00); the empty @Element.Text follows");
+		_router.Observe("ClearInteractionModeText", "clears the same text box (sub_82957D00); its empty text is stated at sub_82BEF428 (@Ui.Text)");
 
 		const string infoBox = "element writes under LowerElements.InfoBox (texts + the page state at 0x825C3B14), drawn by the shared HUD view";
 		foreach (string name in new[] { "AddInteractionModeTextForItem", "AddInteractionModeTextForReceivedGift", "AddInteractionModeTitleAndDescription", "OpenInteractionTextWithTitleAndScrollableDescription" })
@@ -182,50 +181,54 @@ public partial class Fable3GuiNatives : Node
 			_router.Observe(name, infoBox);
 		}
 
-		const string bars = "UpperElements.TriggerButtons / BumperButtons element writes (IM+36 / IM+32: state, Text, LT/RT or LB/RB shown), drawn by the shared HUD view";
-		foreach (string name in new[] { "SetInteractionBumpersText", "SetInteractionBumpersVisibility", "ShowInteractionBumpers", "SetInteractionTriggersText", "SetInteractionTriggersVisibility", "ShowInteractionTriggers" })
+		// The trigger and bumper natives reach the bar classes (the *Triggers* calls IM+32 =
+		// UpperElements.BumperButtons, 0x8251DC98; the *Bumpers* calls IM+36 = TriggerButtons), as
+		// the GUIWorld table does; the classes' own writes are stated (interaction_hooks.cpp).
+		const string bar = "the bar class states its slide (@Ui.State, vf0 sub_82B3EA18), its label (@Ui.Text, vf1 sub_82B3EB28) and its sides (@Ui.Visible) on interactionmode.bgf";
+		foreach (string name in new[] { "ShowInteractionTriggers", "ShowInteractionBumpers", "SetInteractionTriggersText", "SetInteractionBumpersText", "SetInteractionTriggersVisibility", "SetInteractionBumpersVisibility" })
 		{
-			_router.Observe(name, bars);
+			_router.Observe(name, bar);
 		}
 
-		_router.Observe("SetInteractionModeWorldIconPositions", "mode+309..312 pick the side (sub_82956068) of the world icons 66..69 the mode registers on R, read live");
+		_router.Observe("SetInteractionModeWorldIconPositions", "mode+309..312 pick the side (sub_82956068) of the world icons 66..69 the mode registers on R, whose Update states their anchor");
 		_router.Observe("StartInteractionMiniGame", "the mode's mini-game (IM+40) fills the hero expression hold fraction the emotion ring reads live; rumble and speech are the guest's");
 		_router.Observe("ExecuteInteractionScript", "a Lua chunk in the interactionmode presentation (sub_82819D40); no shipped script calls it");
 		_router.Observe("OpenPodiumInteractionMenu", "interaction mode 4 (sub_82B23840): its buttons are InteractionMenuRight element writes the shared HUD view draws");
 		Fable3Keyboard.Register(_router);
 		_router.Observe("RenameEntityWithInteractionMode", "opens XamShowKeyboardUI (stated as @Keyboard.Open, answered by Fable3Keyboard); the rename is the guest's");
 
-		// ---- THE WORLD ICONS AND THE EMOTION RING: the registry R and E, read live --------------
+		// ---- THE WORLD ICONS AND THE EMOTION RING: stated by world_icon_hooks.cpp ---------------
 		//
-		// `AddWorldIcon` and friends only QUEUE a request on R+88; R's Update accepts it, keeps its
-		// lifetime and fades it by scale, and a timed icon expires inside that Update — so
-		// Fable3WorldIcons draws the live containers (RefiiHostGetWorldSprites), not the calls.
-		const string iconRegistry = "a request on the icon registry R (*(H+0x18)); R's own containers are drawn live (RefiiHostGetWorldSprites)";
+		// `AddWorldIcon` and friends only QUEUE a request on R+88; R's tick makes the icon, keeps
+		// its lifetime, fades it by scale and expires it — so Fable3WorldIcons draws the icons the
+		// tick states (Init, Update with its `visible`, erase; RefiiHostGetWorldSprites), not the calls.
+		const string iconRegistry = "a request on the icon registry R (*(H+0x18)); the icons R's tick makes are stated (RefiiHostGetWorldSprites)";
 		foreach (string name in new[] { "AddWorldIcon", "AddWorldIconWithOffset", "RemoveWorldIcon", "SetCanShowHintWorldIcons" })
 		{
 			_router.Observe(name, iconRegistry);
 		}
 
-		// `SetShouldDrawPlayerIcons(b)` (0x8251C0F0) writes the byte `*(H+80)+16` (0x8251C154);
-		// RefiiHostGetWorldIcons reads it as flag bit 1, which gates the player markers (52/53).
-		_router.Observe("SetShouldDrawPlayerIcons", "writes *(H+80)+16, read live as RefiiHostGetWorldIcons flag bit 1");
+		// `SetShouldDrawPlayerIcons(b)` (0x8251C0F0) writes the byte `*(H+80)+16` (0x8251C154); the
+		// player markers (52/53) are drawn from their HUD element (Fable3Hud), so the call is the statement.
+		_router.Observe("SetShouldDrawPlayerIcons", "writes *(H+80)+16; this call is its statement");
 
-		// `Emotion.AddEmotion(table)` (0x825229F0 -> sub_825E9088) builds a record on E's list
-		// and registers its type-77 icon on R; `Emotion.Close(table)` (0x82522A28 -> sub_825E9EB0)
-		// erases the record, whose deleter removes the icon. Both are drawn from E and R live
+		// `Emotion.AddEmotion(table)` (0x825229F0 -> sub_825E9088) builds a record, which every
+		// creator hands to the list add sub_825E8D30, and registers its type-77 icon on R;
+		// `Emotion.Close(table)` (0x82522A28 -> sub_825E9EB0) erases the record, whose deleter
+		// sub_825EBD70 removes the icon. Both are stated at those entry points
 		// (RefiiHostGetFable3EmotionChoices); the table is kept for the census of the choice
 		// vocabulary (Name, Text, RecordName, GameAction, Holdable, ManuallyIncreasePower).
-		_router.Observe("Emotion.AddEmotion", "a record on E (*(H+0x1C)) and its icon on R, both read live (RefiiHostGetFable3EmotionChoices)");
-		_router.Observe("Emotion.Close", "erases the record on E; its icon goes with it (sub_825EBD70) — the live read drops the ring");
+		_router.Observe("Emotion.AddEmotion", "a record on E (*(H+0x1C)) and its icon on R, both stated (RefiiHostGetFable3EmotionChoices)");
+		_router.Observe("Emotion.Close", "erases the record on E; its deleter (sub_825EBD70) states it gone and removes the icon");
 
-		const string emotionIcon = "writes the type-77 icon on R (orbit/tilt/rumble land in icon+112 via sub_829797B8, texture in +144, FX through the hooked FX wrappers), read live";
+		const string emotionIcon = "writes the type-77 icon on R (orbit/tilt/rumble land in icon+112 via sub_829797B8, texture in +144, FX through the hooked FX wrappers), stated at its Update and ring tick";
 		foreach (string name in new[] { "Emotion.AddIcon", "Emotion.SetActualSpriteScreenSize", "Emotion.SetMajorRadius", "Emotion.SetManualPowerIncreaseSpeed", "Emotion.SetMinorRadius", "Emotion.SetOffset", "Emotion.SetParticle", "Emotion.SetParticleOffset", "Emotion.SetRumbleAmplitude", "Emotion.SetRumbleSpeed", "Emotion.SetSpeed", "Emotion.SetTexture", "Emotion.SetTiltXAngle", "Emotion.SetTiltYAngle", "Emotion.SetTiltZAngle" })
 		{
 			_router.Observe(name, emotionIcon);
 		}
 
-		_router.Observe("Emotion.SetCanAddSimEmotionIcons", "E+28; false erases every choice (sub_825E9B20), read live");
-		_router.Observe("Emotion.SetCanAddSimEmotionIconsNonNetworked", "E+29; false erases every choice (sub_825E9B20), read live");
+		_router.Observe("Emotion.SetCanAddSimEmotionIcons", "E+28; false erases every choice (sub_825E9B20), each deleter stating it gone");
+		_router.Observe("Emotion.SetCanAddSimEmotionIconsNonNetworked", "E+29; false erases every choice (sub_825E9B20), each deleter stating it gone");
 
 		// ---- THE GUEST'S OWN FLAGS, polled by its scripts ------------------------------------------
 		//
@@ -270,10 +273,9 @@ public partial class Fable3GuiNatives : Node
 		_router.Observe("StopShowing2ndPlayerMoney", "second money widget sub_8281EA00: MoneyAlertSecondPlayer meter to 0 over 500 ms (0x8291F738)");
 		_router.Observe("AddSubObjective", "adds a row to *(H+92); refresh sub_82953E68 states ObjectiveList.ObjectiveList (0x82953EAC), Bar<i>.Text (sub_828191A8 0x8281926C) and tickbox.tick (0x82953F64)");
 		_router.Observe("SetSubObjectiveCompletion", "sets the row's done flag and refreshes (sub_82953DD0 -> sub_82953E68)");
-		_router.Observe("RemoveSubObjective", "unlinks the row (0x8251D784); the next refresh restates the list");
-		_router.Observe("ClearSubObjectives", "clears *(H+92) and refreshes: ObjectiveList.ObjectiveList slide 1 (0x82953FC0)");
-		_router.Observe("ShowSubObjectives", "refreshes and re-arms the HUD tick's refresh (*(H+92)+12 = 3, 0x8251D8E0 / 0x82259AB0)");
-		_router.Observe("HideSubObjectives", "ObjectiveList.ObjectiveList slide 1 (sub_8281A428 at 0x8251D89C)");
+		// RemoveSubObjective / ClearSubObjectives / HideSubObjectives: handled by Fable3UiStatements
+		// (the list's model); the rows are drawn from it at each redraw (`@Hud.Objective.Redraw`, sub_82953E68).
+		_router.Observe("ShowSubObjectives", "refreshes and re-arms the HUD tick's refresh (*(H+92)+12 = 3, 0x8251D8E0 / 0x82259AB0); the refresh is stated (@Hud.Objective.Redraw)");
 		_router.Observe("ShowWeaponPanel", "WeaponPanelToggle on (0x8281A4AC) and WeaponsInformation filled through the registries (sub_829590A8)");
 		_router.Observe("ShowClothesPanel", "WeaponPanelToggle off; its MiddleElements.SideInfoPanel writes resolve nothing (no such element in interactionmode.bgf)");
 		_router.Observe("ShowAugmentPanel", "WeaponPanelToggle off; its MiddleElements.SideInfoPanel writes resolve nothing (no such element in interactionmode.bgf)");
@@ -307,7 +309,7 @@ public partial class Fable3GuiNatives : Node
 		_router.Observe("SetWorldMapExitDirectlyToGame", "writes the world map's +125, read by its close sub_824CDBB8 (0x824CDC7C) to fade and leave the Sanctuary (reason 12) — guest flow, no surface");
 		_router.Observe("ToggleWorldMap", "pushes the world-map component at GUI+0x54 (sub_8240E7A0 0x8251D3B4; pops type 12 at 0x8251D310); it presents its holder's scene (sub_8292AEA8), stated by map_table_hooks.cpp and drawn by Fable3MapTable");
 		_router.Observe("ToggleTownMapPrototype", "pushes the town-map component sub_82950FD0 (0x8251D4CC, push 0x8251D504; pops type 12 at 0x8251D47C); it presents its holder's scene (sub_8292AEA8 0x829514B8), stated by map_table_hooks.cpp and drawn by Fable3MapTable");
-		_router.Observe("DisplayRealEstateScreen", "opens interaction mode 6 (sub_825C4348(IM,6,…) 0x8251A8A8): BuildingInfo texts (commit 0x82BEA78C), its verb rows (sub_82963DE0 -> sub_82961340) and buttons are element writes drawn by the interactionmode document; the buy/sell confirmations are box-manager boxes (@Box.Open)");
+		_router.Observe("DisplayRealEstateScreen", "opens interaction mode 6 (sub_825C4348(IM,6,…) 0x8251A8A8): BuildingInfo texts (commit 0x82BEA78C), its verb rows (sub_82963DE0 -> sub_82961340) and buttons are element writes drawn by the interactionmode document; the buy/sell confirmations are box-manager boxes (@Box.Queued / @Box.Show)");
 		_router.Observe("DisplayRealEstateScreenUnloaded", "opens interaction mode 6/7 for a property in an unloaded region (sub_825C4BB8 0x8251A970, same sub_82B191F0 object): element writes drawn by the interactionmode document");
 		_router.Observe("AddItemRewardToEpilogueScreen", "writes EpilogueItem1/2 (SetState + registry text -> @Element.Text) on questcompletion.bgf, drawn by Fable3EndScreens");
 		_router.Observe("SetGoldRewardInEpilogueScreen", "writes EpilogueRenown / EpilogueRenownAmt (registry text -> @Element.Text), drawn by Fable3EndScreens");
@@ -354,7 +356,7 @@ public partial class Fable3GuiNatives : Node
 	/// sub_825C8528 — ShowHeroStatusScreen stores vtable 0x820C345C inline (0x825217B0), OpenStatsBox
 	/// calls the Stats ctor sub_8296D2C8, ShowPromiseScreen sub_827A3290, ShowQuestsSummary
 	/// sub_829735B0, ShowKingsSchedule sub_82972D58; the Close natives drop it (sub_825C8860 /
-	/// sub_825C88F0). Shown and dropped by the box manager (@Box.Open/Close `screen:*`), drawn by
+	/// sub_825C88F0). Shown and dropped by the box manager (@Box.Show/Close `screen:*`), drawn by
 	/// Fable3StatedScreen and Fable3Options.
 	/// </summary>
 	private static readonly string[] ScreenNatives =
@@ -398,7 +400,7 @@ public partial class Fable3GuiNatives : Node
 	{
 		foreach (string name in ScreenNatives)
 		{
-			_router.Observe(name, "queues a box-manager screen (sub_825C8528) — stated when it shows (@Box.Open screen:*), drawn by Fable3StatedScreen / Fable3Options");
+			_router.Observe(name, "queues a box-manager screen (sub_825C8528) — stated when it shows (@Box.Show screen:*), drawn by Fable3StatedScreen / Fable3Options");
 		}
 
 		_router.Observe("OpenSaveMenu",
@@ -433,10 +435,54 @@ public partial class Fable3GuiNatives : Node
 	/// <summary>The boxes on screen, by the guest's box address, so a close drops the right one.</summary>
 	private readonly Dictionary<uint, Engine_UiGuiBoxes.Box> _shown = new();
 
+	/// <summary>Boxes pushed and not yet shown, by address: their push statement. Bounded: a box the
+	/// guest frees without an erase (a manager torn down whole) is forgotten with the oldest.</summary>
+	private readonly Dictionary<uint, Engine_UiModel.GuiNativeCall> _queued = new();
+	private readonly Queue<uint> _queuedOrder = new();
+	private const int MaxQueued = 64;
+
+	/// <summary>The boxes Godot answers, in the order they showed: the last is the front.</summary>
+	private readonly List<OwnedBox> _owned = new();
+
+	/// <summary>A box on screen whose pad is Godot's: the guest's address, its kind and its model.</summary>
+	public sealed record OwnedBox(uint Address, string Kind, Engine_UiGuiBoxes.Box Box, bool Download);
+
+	/// <summary>The box the pad answers now, or null.</summary>
+	public OwnedBox? FrontOwned => _owned.Count == 0 ? null : _owned[^1];
+
+	private void BoxQueued(Engine_UiModel.GuiNativeCall call)
+	{
+		uint address = Parse(call.Argument(1).Text);
+		if (address == 0u)
+		{
+			return;
+		}
+
+		if (_queued.Count >= MaxQueued && _queuedOrder.TryDequeue(out uint oldest))
+		{
+			_queued.Remove(oldest);
+		}
+
+		_queued[address] = call;
+		_queuedOrder.Enqueue(address);
+	}
+
+	private void BoxShown(uint address)
+	{
+		if (!_queued.Remove(address, out Engine_UiModel.GuiNativeCall call))
+		{
+			GD.Print($"[fable3-boxes] box {address:X8} shown with no push stated (queued before the hooks ran); not drawn");
+			return;
+		}
+
+		BoxOpened(call);
+	}
+
 	/// <summary>
-	/// `@Box.Open(queue, box, kind, name, text, …)`: question boxes carry their yes/no tags, the
-	/// adjuster its min/max/increment/value, an info card its title, accept and help tags and the
-	/// two button flags. Every box stays until `@Box.Close` — the lifetime is the guest's.
+	/// The box `@Box.Queued(queue, box, kind, name, text, …)` stated, now showing: question boxes
+	/// carry their yes/no tags, the adjuster its min/max/increment/value, an info card its title,
+	/// accept and help tags and the two button flags. Every box stays until `@Box.Close` — the
+	/// lifetime is the guest's.
 	/// </summary>
 	private void BoxOpened(Engine_UiModel.GuiNativeCall call)
 	{
@@ -471,22 +517,23 @@ public partial class Fable3GuiNatives : Node
 			case "unknown":
 			case string screen when screen.StartsWith("screen:", System.StringComparison.Ordinal):
 				// The box-manager SCREENS: Options (`screen:options`, drawn by Fable3Options from
-				// its object), hero status, stats, promises, quest summary and the king's schedule
+				// its stated state, its pad Godot's), hero status, stats, promises, quest summary and the king's schedule
 				// (element writes under their own root, drawn by Fable3StatedScreen), and any class
 				// the hooks do not name yet — the census names it for the next table entry.
 				if (address != 0u && _screens.Add(address))
 				{
 					_screenKinds[address] = kind;
-					Fable3ScreenBoxes.Shown(+1, Fable3ScreenBoxes.RootOf(kind));
+					Fable3ScreenBoxes.Shown(+1, Fable3ScreenBoxes.RootOf(kind), address);
 					GD.Print($"[fable3-screens] {kind} box {address:X8} '{name}' shown — text '{text}'");
 				}
 
 				return;
 			default:
 				box = Boxes.MessageBoxNamed(name, text);
-				if (kind == "message" && call.Argument(5).Boolean)
+				if (kind is "message" or "modal" && call.Argument(5).Boolean)
 				{
-					// DisplayDownloadMessageBox: box+33 set, the X button named by the tag at box+36.
+					// The download form: box+33 set, the X button named by the tag at box+36
+					// (DisplayDownloadMessageBox); the pause screen's box names GUI_BUTTONS_DOWNLOAD.
 					box.AcceptCaption = call.Argument(6).Text;
 				}
 
@@ -496,6 +543,11 @@ public partial class Fable3GuiNatives : Node
 		if (address != 0u)
 		{
 			_shown[address] = box;
+			if (Fable3BoxAnswers.Owns(kind))
+			{
+				_owned.RemoveAll(owned => owned.Address == address);
+				_owned.Add(new OwnedBox(address, kind, box, kind is "message" or "modal" && call.Argument(5).Boolean));
+			}
 		}
 	}
 
@@ -510,20 +562,31 @@ public partial class Fable3GuiNatives : Node
 			Boxes.Remove(box);
 		}
 
+		_owned.RemoveAll(owned => owned.Address == address);
+
 		if (address != 0u && _screens.Remove(address))
 		{
 			_screenKinds.Remove(address, out string? kind);
-			Fable3ScreenBoxes.Shown(-1, Fable3ScreenBoxes.RootOf(kind ?? "unknown"));
+			Fable3ScreenBoxes.Shown(-1, Fable3ScreenBoxes.RootOf(kind ?? "unknown"), address);
+			Fable3ScreenStatements.Forget(address);
+			if (kind == "screen:options")
+			{
+				Fable3OptionsState.Closed(address);
+			}
 		}
 	}
 
-	/// <summary>`@MenuBox.Open(title, cancelable, selected, row…)`: a row is its TextTag, prefixed `+` or `-` for enabled.</summary>
+	/// <summary>
+	/// `@MenuBox.Open(title, cancelable, row…)`: the title as the filler resolved it, a row its
+	/// TextTag prefixed `+` or `-` for enabled. The highlight starts on the first row, as the
+	/// open's own `*MB = 0` (0x825FA348) has it.
+	/// </summary>
 	private void MenuBoxOpened(Engine_UiModel.GuiNativeCall call)
 	{
 		var options = new List<Engine_UiGuiBoxes.MenuOption>();
-		if (call.Arguments is { Count: > 3 } arguments)
+		if (call.Arguments is { Count: > 2 } arguments)
 		{
-			for (int i = 3; i < arguments.Count; ++i)
+			for (int i = 2; i < arguments.Count; ++i)
 			{
 				string row = arguments[i].Text;
 				if (row.Length == 0)
@@ -536,8 +599,8 @@ public partial class Fable3GuiNatives : Node
 			}
 		}
 
-		Boxes.ShowMenuBox(Engine_UiGuiText.Resolve(call.Argument(0).Text, Fable3Strings.Current), options, call.Argument(1).Boolean);
-		Boxes.Menu!.Highlight = (int)call.Argument(2).Number;
+		Boxes.ShowMenuBox(call.Argument(0).Text, options, call.Argument(1).Boolean);
+		Boxes.Menu!.Highlight = 0;
 	}
 
 	private static uint Parse(string hex) =>

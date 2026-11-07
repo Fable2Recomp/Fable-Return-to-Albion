@@ -74,10 +74,10 @@ public sealed class FacTextRecord
 	/// <summary>1 = wrapped box mode (per-line align, auto-shrink); 0 = single line with truncation.</summary>
 	public int WrapMode;
 
-	/// <summary>Point size. Selects the font bucket: &lt;18 small, ==18 normal, &gt;18 large.</summary>
+	/// <summary>Point size. Selects the font bucket (<see cref="Engine_UiTextContract.SelectFor"/>).</summary>
 	public int Size;
 
-	/// <summary>Authored 0..1; multiply by 960 for the virtual UI space.</summary>
+	/// <summary>Authored 0..1 of the title's text canvas width (<see cref="Engine_UiTextContract.BoxWidthUnits"/>).</summary>
 	public float BoxWidth;
 
 	/// <summary>Authored 0..1; multiply by 720.</summary>

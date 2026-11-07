@@ -137,7 +137,8 @@ public static class Fable2UiVerbs
 
 		// `Shop:buy|sell:<ticket>` — the shop screen's handler `sub_826AE5C0` acts on the PUSHED
 		// row: it caches the event's id at screen+396 and its confirm's YES re-reads it
-		// (@0x826AF8BC) before `sub_82872D70` / `sub_82872A68`. So the push IS the guest's
+		// (@0x826AF8BC) before buying (`sub_82872A68`, 0x826B0960) or selling (`sub_82872D70`,
+		// 0x826AFEB8). So the push IS the guest's
 		// contract here — type 30 buys, 31 sells, the ticket is the one its own populate handed
 		// the row — and the shop's own confirm (modal 19/20) follows.
 		set.Register(Fable2UiVerbs.Shop, (_, context) =>

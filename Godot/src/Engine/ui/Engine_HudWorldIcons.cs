@@ -378,12 +378,16 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 	}
 
 	/// <summary>
-	/// Takes the slow-changing statements: which slots are lit, their titles, their art.
-	/// Declined on a count mismatch — the live arrays join to the file by ordinal.
+	/// Takes the slow-changing statements: which slots are lit, their titles, their art — from the
+	/// HUD's stand (Engine_UiHudStand): <paramref name="drawn"/> the resolved draw gate, which carries
+	/// the guest's told `active` on each slot's `Contents` (the pool's claim `sub_82825618` and
+	/// update `sub_82824D60` show and hide it), <paramref name="texts"/> the told texts and
+	/// <paramref name="textures"/> the told textures, per file ordinal. Declined on a count mismatch —
+	/// the arrays join to the file by ordinal.
 	/// </summary>
-	public void Sample(IReadOnlyList<Engine_UiModel.UiElement> elements, uint[]? textures)
+	public void Sample(IReadOnlyList<bool> drawn, IReadOnlyList<string?> texts, uint[]? textures)
 	{
-		if (elements.Count != _documentElements)
+		if (drawn.Count != _documentElements || texts.Count != _documentElements)
 		{
 			Clear();
 			return;
@@ -394,9 +398,9 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 		foreach (Slot slot in _slots)
 		{
 			bool statedFill = StatedFill is not null && !fillStated && PoolIndexOf(slot.Name) == 16 &&
-				slot.Ordinal < elements.Count && elements[slot.Ordinal].IsGloballyActive;
+				slot.Ordinal < drawn.Count && drawn[slot.Ordinal];
 			fillStated |= statedFill;
-			slot.Lit = statedFill || (slot.LitOrdinal < elements.Count && elements[slot.LitOrdinal].IsGloballyActive);
+			slot.Lit = statedFill || (slot.LitOrdinal < drawn.Count && drawn[slot.LitOrdinal]);
 			if (!slot.Lit)
 			{
 				if (slot.Node is not null)
@@ -433,9 +437,9 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 				? StatedFill!
 				: StatedTitles is { } titles && titles.TryGetValue(PoolIndexOf(slot.Name), out string? own)
 					? own
-				: slot.TitleOrdinal >= 0 && slot.TitleOrdinal < elements.Count
+				: slot.TitleOrdinal >= 0 && slot.TitleOrdinal < texts.Count
 					? Engine_HudView.LiveTextToPaint(
-						string.Empty, elements[slot.TitleOrdinal].Text, slot.Title?.Display, null)
+						string.Empty, texts[slot.TitleOrdinal], slot.Title?.Display, null)
 					: string.Empty;
 			// The `.fac` record's colour — the prompt title is authored (255,255,48).
 			var colour = slot.Title is { } record
@@ -452,8 +456,8 @@ public sealed partial class Engine_HudWorldIcons : Node3D
 			}
 
 			// The amount line, live only, exactly like the title.
-			string opinion = slot.OpinionOrdinal >= 0 && slot.OpinionOrdinal < elements.Count
-				? elements[slot.OpinionOrdinal].Text ?? string.Empty
+			string opinion = slot.OpinionOrdinal >= 0 && slot.OpinionOrdinal < texts.Count
+				? texts[slot.OpinionOrdinal] ?? string.Empty
 				: string.Empty;
 			if (opinion != slot.ShownOpinion && slot.OpinionLabel is not null && Theme is not null)
 			{

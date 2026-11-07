@@ -472,6 +472,52 @@ public static partial class Engine_UiKeyGlyphs
 		};
 	}
 
+	/// <summary>
+	/// The square, centred on the art's opaque pixels, that holds them — in the scaled canvas of
+	/// <paramref name="cell"/> (the pad image is <paramref name="scale"/> times smaller) — or null when
+	/// the cell's art is empty. Alpha above a quarter counts: the orbs' soft glow does not.
+	/// </summary>
+	private static Rect2I? OpaqueFootprint(Image pad, Rect2I cell, int scale)
+	{
+		if (pad.IsCompressed())
+		{
+			pad = (Image)pad.Duplicate();
+			if (pad.Decompress() != Error.Ok)
+			{
+				return null;
+			}
+		}
+
+		int x0 = cell.Position.X / scale, y0 = cell.Position.Y / scale;
+		int x1 = Math.Min(pad.GetWidth(), cell.End.X / scale), y1 = Math.Min(pad.GetHeight(), cell.End.Y / scale);
+		int minX = int.MaxValue, minY = int.MaxValue, maxX = -1, maxY = -1;
+		for (int y = y0; y < y1; ++y)
+		{
+			for (int x = x0; x < x1; ++x)
+			{
+				if (pad.GetPixel(x, y).A > 0.25f)
+				{
+					minX = Math.Min(minX, x);
+					minY = Math.Min(minY, y);
+					maxX = Math.Max(maxX, x);
+					maxY = Math.Max(maxY, y);
+				}
+			}
+		}
+
+		if (maxX < 0)
+		{
+			return null;
+		}
+
+		// A square key about the footprint's centre, as large as its larger side, kept in the cell.
+		float cx = (minX + maxX + 1) * 0.5f * scale, cy = (minY + maxY + 1) * 0.5f * scale;
+		int side = Math.Min(cell.Size.X, Math.Max(maxX - minX + 1, maxY - minY + 1) * scale);
+		int left = Math.Clamp((int)Math.Round(cx - (side / 2f)), cell.Position.X, cell.End.X - side);
+		int top = Math.Clamp((int)Math.Round(cy - (side / 2f)), cell.Position.Y, cell.End.Y - side);
+		return new Rect2I(left, top, side, side);
+	}
+
 	private static void Draw(Proxy proxy, bool keys)
 	{
 		Image? pad = Refii.Core.Engine_ServerSyncs.Image(proxy.Original);
@@ -511,10 +557,17 @@ public static partial class Engine_UiKeyGlyphs
 				if (!keys)
 				{
 					DrawPadCell(canvas, cell, proxy.Button, proxy.Arrow);
+					continue;
 				}
-				else if (!BlitPack(canvas, cell, KeyPackName(label)))
+
+				// THE KEY COVERS WHAT THE ORB COVERED. The shipped art's transparent margin is the
+				// gap the layout leaves between a prompt's label and its glyph (Fable 3's
+				// `24x24_NoRim` orbs sit inside their cell); a keycap filling the whole cell ran
+				// into the label. An orb that fills its cell gives the cell back unchanged.
+				Rect2I key = OpaqueFootprint(pad, cell, scale) ?? cell;
+				if (!BlitPack(canvas, key, KeyPackName(label)))
 				{
-					DrawKeycap(canvas, cell, label, pressed: false);
+					DrawKeycap(canvas, key, label, pressed: false);
 				}
 			}
 		}
@@ -963,7 +1016,7 @@ public static partial class Engine_UiKeyGlyphs
 
 	private static void DrawLabel(Canvas image, Rect2I cap, string label, Color colour)
 	{
-		if (Fonts?.For(18) is not { } selection || label.Length == 0)
+		if (Fonts?.For(Fonts.Contract.NormalSize) is not { } selection || label.Length == 0)
 		{
 			return;
 		}

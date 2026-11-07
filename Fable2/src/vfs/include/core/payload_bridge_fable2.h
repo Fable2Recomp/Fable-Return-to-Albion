@@ -34,6 +34,12 @@ void refii_bridge_front_end_note_subtitles(int32_t state);
 /// the host bridge, so it has to cross here rather than by C++ symbol.
 void refii_bridge_note_pause_tabs(uint32_t mask);
 
+/// The pause minimap's quest markers as the guest states them (hooks/gui_pause_hooks.cpp): the
+/// pass begins (the table empties), then one note per marker — `token` 0 Quest, 1 QuestExit,
+/// 2 QuestGiver (`Foreground.ReusableTokens.<name>`), and the world point it projects.
+void refii_bridge_pause_markers_begin(void);
+void refii_bridge_pause_marker_note(uint32_t token, float x, float y, float z);
+
 // The effect transforms the guest states, recorded per PSInstance. Wrappers:
 // refii::vfs::NoteFx* in vfs_hooks_private.h.
 //
@@ -282,6 +288,11 @@ void refii_bridge_set_stated_highlight(uint32_t screen, int32_t event_type, int3
 /// Copies the statement out; false when none stands.
 bool refii_bridge_get_stated_highlight(uint32_t* screen, int32_t* event_type, int32_t* id,
                                        char* name, char* label, uint32_t capacity);
+/// The fold depth of Godot's list for one screen (TU1 in-game id, or 1010 the front end's main
+/// menu): how many open folders the highlighted row sits below the root. 0 clears. The guest's
+/// `g_Menu:IsHighlightedItemAtRoot()` readers answer "at root" for depth 0 or none stated.
+void refii_bridge_set_list_fold_depth(uint32_t screen, uint32_t depth);
+uint32_t refii_bridge_list_fold_depth(uint32_t screen);
 /// The world map's property row: the UID the host wants sampled, and the page's numbers for it.
 uint64_t refii_bridge_requested_property_estate(void);
 void refii_bridge_publish_property_estate(uint64_t uid, const void* estate);
@@ -291,13 +302,8 @@ uint32_t refii_bridge_requested_shop_price(int32_t* sell);
 void refii_bridge_publish_shop_price(const void* price);
 void refii_bridge_publish_clothing_mannequin(uint32_t entity);
 
-// What the guest TELLS a presentation's elements (hooks/gui_slide_hooks.cpp posts, the host bridge
-// drains — gui/gui_told_statements.cpp). `kind` 1 slide entry, 2 paused, 3 attribute, 4 active,
-// 5 texture; `a`/`b` per kind. A text is its UTF-16 units, copied.
-void refii_bridge_told_push(uint32_t kind, uint32_t presentation, uint32_t root_hash, uint32_t ordinal,
-                            uint32_t a, uint32_t b);
-void refii_bridge_told_text_push(uint32_t presentation, uint32_t root_hash, uint32_t ordinal,
-                                 const uint16_t* units, uint32_t length);
+// What the guest TELLS a presentation's elements (refii_bridge_told_*) is shared state: its
+// entries are in core/payload_bridge.h, its queues in src/runtime/src/core/told_statements.cpp.
 
 void refii_bridge_note_gui_element_change(const void* change);
 
@@ -308,6 +314,22 @@ void refii_bridge_stage_menu_attribute(const char* name, size_t name_length,
 // The runner the two stagers feed. Pointer and length, not std::string: the chunk text is
 // carried verbatim and the host copies it into its own queue.
 void refii_bridge_run_menu_chunk(const char* chunk, size_t length, uint32_t presentation);
+
+/// How many rows `presentation`'s current populate stated on its ROOT — `SpawnButton`s since its
+/// `DeleteAllSpawnedMenuItems` / `RepopulateMenuFromPopulationScript` / script init, `String4`
+/// "Root" or none, one per name, saved and restored by `PushMenuState` / `PopMenuState`. The
+/// shipped `CountSpawnedItems` counts exactly `MenuRoot.ChildItems`.
+uint32_t refii_bridge_menu_root_rows(uint32_t presentation);
+
+/// The 1-based place, in `presentation`'s current populate, of the row its last `SpawnButton`
+/// named — the shipped `GetLastItemIndex` (`NumberOfItems - 1`, the root item taking index 0),
+/// which is the index `SetItemEmphasisByIndex` then names. 0 when nothing was spawned.
+uint32_t refii_bridge_menu_last_spawn_ordinal(uint32_t presentation);
+
+/// `String2` as `presentation`'s last `GetMenuItemDataByName` wrote it — the named row's text tag
+/// in its current populate (`SpawnButton`, then the refresh statements), else "No Text Tag".
+/// Taken once; false when that statement has not run since.
+bool refii_bridge_menu_by_name_text_tag(uint32_t presentation, char* out, size_t capacity);
 
 // HERO IDENTITY AND PARTNERSHIPS (src/core/hero_partners.cpp), Fable 3's player-to-player marriage
 // and business partnership: a hero's id (48 bits, kept with its save; 0 not yet known), made once by

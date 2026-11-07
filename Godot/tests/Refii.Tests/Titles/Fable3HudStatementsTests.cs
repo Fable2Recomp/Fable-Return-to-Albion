@@ -63,6 +63,28 @@ public class Fable3HudStatementsTests
 	}
 
 	[TestCase]
+	public void EachSlideLandsWithItsStamp()
+	{
+		Fable3HudStatements join = Make();
+		int[] slides = new int[Paths.Length];
+		ulong[] stamps = new ulong[Paths.Length];
+		var statements = new List<Statement>
+		{
+			new("Layer.TopBoxRefined", 3, null, null, null, 9),
+			new("Layer.TopBoxRefined", 3, null, null, null, 12),
+			new("dpad.dpad.dpadmenu", null, 50f, null, null, 20),
+		};
+		join.Apply(statements, slides, new float?[Paths.Length], new string?[Paths.Length], new float?[Paths.Length],
+			slideStamps: stamps);
+
+		// The same slide written again is a later entry; an opacity alone enters nothing.
+		AssertThat(slides[7]).IsEqual(3);
+		AssertThat(stamps[7]).IsEqual(12UL);
+		AssertThat(stamps[4]).IsEqual(0UL);
+		AssertThat(stamps[2]).IsEqual(0UL);
+	}
+
+	[TestCase]
 	public void StatementsFoldPerChannelLaterWins()
 	{
 		Fable3HudStatements join = Make();

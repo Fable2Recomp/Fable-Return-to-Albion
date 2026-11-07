@@ -54,7 +54,7 @@ def run(path):
             time.sleep(step.get("settle", 0.7))
         elif "menu" in step:
             reply = registry.call("refii_menu", {"verb": step["menu"], **{
-                k: step[k] for k in ("held", "code", "atRoot", "name", "type", "id")
+                k: step[k] for k in ("held", "code", "name", "type", "id")
                 if k in step}})
             if not reply.get("ok"):
                 print(f"{label} MENU FAILED: {reply}")

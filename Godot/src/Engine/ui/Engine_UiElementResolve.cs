@@ -288,6 +288,25 @@ public sealed class Engine_UiElementResolve
 		}
 	}
 
+	/// <summary>
+	/// The accumulated opacity ABOVE an element, 0..1: its parent's <see cref="Opacity"/>, 1 for a
+	/// root. A scrubbed opacity track writes the element's OWN attribute, and the engine draws it
+	/// at that times the frame above — `sub_821C97C0` (Fable 3; Fable 2's `sub_8229E250`) stores
+	/// `own (+224) × parent frame's accumulated` at +228 (0x821C9894) — so a track at 100 under a
+	/// group its slide put at 0 draws nothing.
+	/// </summary>
+	public float OpacityAbove(int ordinal) =>
+		ordinal >= 0 && ordinal < _screen.Nodes.Length && _screen.Nodes[ordinal].Parent is { } parent &&
+		parent.Ordinal >= 0 && parent.Ordinal < Opacity.Length
+			? Opacity[parent.Ordinal]
+			: 1f;
+
+	/// <summary>
+	/// What a scrubbed opacity track on <paramref name="ordinal"/> draws, in percent: the track's
+	/// <paramref name="evaluated"/> value (the element's own term) under <see cref="OpacityAbove"/>.
+	/// </summary>
+	public float TrackOpacity(int ordinal, float evaluated) => evaluated * OpacityAbove(ordinal);
+
 	/// <summary>The attribute id the opacity commands carry, as the file spells it.</summary>
 	public static readonly uint OpacityAttribute = Refii.Core.Engine_GameHash.AttributeId("opacity");
 

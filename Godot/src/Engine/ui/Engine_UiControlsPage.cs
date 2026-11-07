@@ -565,6 +565,31 @@ public sealed class Engine_UiControlsPage : Engine_UiHostOptionsPage
 			}
 		}
 
+		// The mouse's own settings, in game as in the launcher (the same refii.toml keys GameInput
+		// reads): how far the camera turns, the horizontal invert, and the cursor kept in the window.
+		Add("mouse", new Header("Mouse"));
+		Add("mouse", new ChoiceLine("Mouse sensitivity", "mouse_sensitivity", new[]
+		{
+			("1.0", "1.0 (default)"),
+			("0.25", "0.25"),
+			("0.5", "0.5"),
+			("0.75", "0.75"),
+			("1.25", "1.25"),
+			("1.5", "1.5"),
+			("2.0", "2.0"),
+			("3.0", "3.0"),
+		}));
+		Add("mouse", new ChoiceLine("Invert camera left and right", "camera_invert_x", new[]
+		{
+			("false", "Off"),
+			("true", "On"),
+		}));
+		Add("mouse", new ChoiceLine("Keep the cursor in the window in play", "mouse_lock", new[]
+		{
+			("true", "On"),
+			("false", "Off"),
+		}));
+
 		Add("keys", new Header("Keyboard and mouse"));
 		Add("keys", new ResetLine("Reset keyboard and mouse", "keys"));
 		IReadOnlyList<string> candidates = KeyCandidates();

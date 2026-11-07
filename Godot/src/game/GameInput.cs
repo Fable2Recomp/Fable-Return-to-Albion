@@ -287,6 +287,9 @@ public partial class GameInput : Node
 				FeedMouseMotion(@event);
 			}
 
+			// The captured wheel's notches to the guest — this branch returns before the general
+			// path's own call, so a wheel event (a mouse event) never reached it.
+			FeedMouseWheel(@event);
 			DetectDevice(@event);
 			return;
 		}

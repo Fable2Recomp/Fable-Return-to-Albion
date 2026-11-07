@@ -48,6 +48,8 @@ public sealed class Fable3Title : Engine_TitleGame
 		_splash = new Fable3Splash { Name = "Splash" };
 		layer.AddChild(_splash);
 		layer.AddChild(new Fable3Culture { Name = "Culture" });
+		// After every screen has read the pointer: its leftovers are the pad's.
+		layer.AddChild(new Fable3PointerLeftovers { Name = "PointerLeftovers" });
 
 		var loading = new Godot.CanvasLayer { Name = "Fable3Loading", Layer = LoadingLayer };
 		loading.AddChild(new Fable3LoadingScreen { Name = "LoadingScreen" });
@@ -113,6 +115,35 @@ public sealed class Fable3Title : Engine_TitleGame
 	public override int OptionsCursorRow => Fable3HostOptions.Cursor;
 
 	public override int OptionsCursorIndex(int row) => Fable3HostOptions.IndexOf(row);
+
+	/// <summary>
+	/// `f3ui` (match, doc, limit): per standing presentation document, each element whose path holds
+	/// the match — stated, fed and resolved (<see cref="Fable3HudDocument.Describe"/>).
+	/// </summary>
+	public override System.Collections.Generic.Dictionary<string, object?>? DebugRequest(
+		string op, System.Text.Json.JsonElement request)
+	{
+		if (op != "f3ui")
+		{
+			return null;
+		}
+
+		string match = request.TryGetProperty("match", out System.Text.Json.JsonElement m) ? m.GetString() ?? string.Empty : string.Empty;
+		string doc = request.TryGetProperty("doc", out System.Text.Json.JsonElement d) ? d.GetString() ?? string.Empty : string.Empty;
+		int limit = request.TryGetProperty("limit", out System.Text.Json.JsonElement l) ? l.GetInt32() : 60;
+		var documents = new System.Collections.Generic.List<System.Collections.Generic.Dictionary<string, object?>>();
+		foreach (Fable3HudDocument document in Fable3HudDocument.Live)
+		{
+			if (doc.Length == 0 || document.Document == doc)
+			{
+				documents.Add(document.Describe(match, limit));
+			}
+		}
+
+		return new System.Collections.Generic.Dictionary<string, object?> { ["ok"] = true, ["documents"] = documents };
+	}
+
+	public override System.Collections.Generic.IReadOnlyList<string> DebugOps => new[] { "f3ui" };
 
 	private static readonly Fable3Rig Rigs = new();
 

@@ -172,6 +172,7 @@ public static class Engine_Achievements
 			if (Engine_XdbfDatabase.TryParse(Engine_UiSource.Current.GetTitleXdbf()) is { } database)
 			{
 				_database = database;
+				Refii.Core.Engine_TitleIcon.Adopt(database);
 				BuildDefinitions(database);
 				PushUnlockedSet();
 				Report = $"{_definitions.Count} definition(s) from the XDBF, " +

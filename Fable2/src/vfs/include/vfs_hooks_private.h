@@ -197,6 +197,10 @@ int32_t FrontEndSubtitles();
 /// Bit N = tab N available, N in 2..8; 0 means it has not been sampled yet.
 uint32_t PauseTabsMask();
 
+/// The pause minimap's quest markers the guest stated this open: `out_tokens[i]` 0 Quest,
+/// 1 QuestExit, 2 QuestGiver; `out_world` three floats each. Returns how many.
+uint32_t PauseMarkers(uint32_t* out_tokens, float* out_world, uint32_t capacity);
+
 // The hero's derived state lives in core/hero_derived.h.
 
 /// One captured menu row; returns the TOTAL row count. Every out parameter is optional;
@@ -210,6 +214,44 @@ uint32_t MenuScreenId();
 /// hooks/guest_tick_pump.cpp; shared so a menu boundary in another TU can key its population by
 /// the screen the guest states rather than publishing it as belonging to none.
 bool InGameScreenRoots(uint8_t* base, uint32_t* out_owner, uint32_t* out_screen_id);
+
+/// The list key Godot states its front-end main menu's fold under (`RefiiHostSetListFoldDepth`);
+/// in-game screens are keyed by their TU1 id, all below 64.
+constexpr uint32_t kFrontEndMainMenuList = 1010u;
+
+/// The NAME of the row Godot states as highlighted, when it is stated for the screen the GUI
+/// manager names current — the row `sub_826C1B50` answers with. Defined in hooks/gui_menu_hooks.cpp.
+bool StatedHighlightName(uint8_t* base, std::string* name);
+
+/// Arms the answer to the next `Float1` read through `sub_826B9210` (the getter hook in
+/// hooks/gui_menu_hooks.cpp): the runner states it for `g_Menu:CountSpawnedItems()`, whose
+/// populate reads `Float1` right after, with no presentation's Lua involved, and for
+/// `g_Menu:GetLastItemIndex()`, whose spawn helper reads it the same way.
+void AnswerNextFloat1(double value);
+
+/// Drops an armed `Float1` answer — the runner's next chunk means its read has passed.
+void DisarmFloat1();
+
+/// Arms the answer to the next `String2` read through the string getter `sub_826B92D0` (disc
+/// `sub_8259D488`; hook in hooks/gui_menu_hooks.cpp): the runner states it for
+/// `g_Menu:GetMenuItemDataByName()`, whose one reader `sub_823DF660` reads `String2` right after
+/// (0x823df7e4). Dropped with the Float1 answer by the runner's next chunk.
+void AnswerNextString2(std::string value);
+
+/// The guest's population ticket for the item `record` on the row-id map every list screen
+/// shares (`*(*(GUI+0x1C)+0x3C)+4`, keyed by `sub_82880AC8`'s `++*a1`), or 0 when no row holds
+/// it. Defined in hooks/gui_menu_hooks.cpp.
+uint32_t MenuTicketForRecord(uint8_t* base, uint32_t record);
+
+/// Posts one presentation event the host's slide playback stated (`PresentationEvent:` action,
+/// `<presentation>:<parent element>:<EVENT>`) to the callback the guest registered for it, on the
+/// guest thread. False leaves the action queued (the event ids not interned yet). Defined in
+/// hooks/gui_menu_hooks.cpp.
+bool PostPresentationEvent(PPCContext& ctx, uint8_t* base, const std::string& spec);
+
+/// States a menu box's close (`@MenuBox.Close <box> <answer>`); called by the one hook on the
+/// close (mod_events.cpp) before the guest's body runs. display_box_hooks.cpp.
+void StateMenuBoxClose(uint8_t* base, uint32_t box);
 uint32_t MenuRows(uint32_t index, char* out_name, size_t name_capacity, char* out_parent,
                   size_t parent_capacity, uint32_t* out_id, int32_t* out_event_type,
                   uint64_t* out_generation, int32_t* out_rating);

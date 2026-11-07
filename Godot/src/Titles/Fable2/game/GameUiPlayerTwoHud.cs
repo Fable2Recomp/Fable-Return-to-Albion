@@ -220,7 +220,9 @@ public partial class GameUi
 			_hudTwoResolveScreen = doc;
 		}
 
-		_hudTwoResolve.Apply(slides, active, own);
+		// The stand's tracks and told writes, as player one's resolve takes them.
+		_hudTwoResolve.Animate(shared.Animated, shared.Closed);
+		_hudTwoResolve.Apply(slides, active, own, _hudStand?.SwitchedOn);
 		bool[] drawn = Buffer(ref _hudTwoActive, live.Count);
 		for (int i = 0; i < live.Count; ++i)
 		{

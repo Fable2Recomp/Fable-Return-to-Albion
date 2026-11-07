@@ -66,9 +66,8 @@
 #include "core/gui_native_calls.h"
 #include "core/guest_build.h"
 
-// The New Game commit. NOT hooked — the guest's own function is called, so this is the plain
-// symbol rather than an `__imp__` original.
-PPC_EXTERN_FUNC(rex_lhGui_FrontendRoot_HandleGuiEvent);
+// The New Game commit, `sub_826E0D60`: hooked in hooks/gui_menu_hooks.cpp, so the host calls the
+// original (ppc_externs.h).
 
 // The front end's own menu-action dispatcher, vtable slot +16 of 0x820D0934. Called directly:
 // the slot is fixed.
@@ -185,15 +184,6 @@ PPC_EXTERN_FUNC(rex_lhMenuBox_Close);
 // writes ctl+0. Keeps the guest's drawn selection in step with the host highlight.
 PPC_EXTERN_FUNC(rex_lhMenuBox_SetSelection);
 
-// The guest's directional stick router — held (0x1C..0x1F) and released (0x20..0x23). Both read
-// the action code through their second argument (`switch (*a2)`) and never touch the first, so
-// the host can drive them with a scratch word. They set the presentation attribute `String1` to
-// "Up"/"Down"/"Left"/"Right" and run `"GUI:SetDirectionToHeld()"` /
-// `"GUI:SetDirectionToReleased()"` on the context `sub_823DCBE0` picks; Lua polls that state in
-// `g_Menu:onUpdate` and calls `ScrollUp` itself.
-PPC_EXTERN_FUNC(rex_lhGuiInput_OnDirectionHeld);
-PPC_EXTERN_FUNC(rex_lhGuiInput_OnDirectionReleased);
-
 // The vtable+24 screen-input methods, per screen id. Named statically because the recompiler
 // emits no indirect-call path; each is checked against its screen id (from the guest's `mgr+4`)
 // before use.
@@ -211,7 +201,6 @@ PPC_EXTERN_FUNC(rex_lhGuiDecorationScreen_OnScreenAction);  // 27 decoration
 PPC_EXTERN_FUNC(rex_lhGuiQueryScreen_OnScreenAction);  // 10 query screen (37 close, 38 rename)
 PPC_EXTERN_FUNC(rex_lhGuiRealEstateScreen_OnScreenAction);  // 28 real estate (`*(0x820CEA58+24)`, read from the image)
 PPC_EXTERN_FUNC(rex_lhGuiRealEstateScreen_OnMenuEvent);  // 28 real estate (`*(0x820CEA58+20)`, read from the image)
-PPC_EXTERN_FUNC(rex_lhGuiPresentation_SetStringParam);  // presentation string parameter setter (String1/String2)
 PPC_EXTERN_FUNC(rex_lhGuiManager_CanPlayerOpenQuickMenu);  // expression wheel: may open? (hero alive, mode 1/5/20/21/22)
 PPC_EXTERN_FUNC(rex_lhGuiManager_OpenExpressionWheel);  // expression wheel: open (GameAction 40's body)
 PPC_EXTERN_FUNC(rex_lhGuiManager_CloseExpressionWheel);  // expression wheel: close (GameAction 41's body)
@@ -254,16 +243,8 @@ PPC_EXTERN_FUNC(rex_lhWorld_ComputeWorldLevelFnv1Key);  // World_ComputeWorldLev
 PPC_EXTERN_FUNC(rex_lhWorld_LookupScenarioNameByLevelKey);  // World_LookupLevelNameByKey(world, key) -> &scenario handle
 PPC_EXTERN_FUNC(rex_lhPodVector_FreeStorage);  // frees that list, as sub_826C6940 does at 0x826c6a4c
 
-// The Lua string runner, and the two LHString primitives that feed it.
-//
-// `sub_82426470(LHString* source, presentation)` either executes immediately — when
-// `byte[GUI+100]` is set and the presentation's vtable+20 says it may — or queues the chunk at
-// `GUI+88` for the next update. `sub_8222CED0(LHString* dest, const char* literal)` constructs
-// one from a NUL-terminated guest string; `sub_82214DD8` releases it.
-//
-// It is silent on every failure path — a null context, a wrong context and a nil method are
-// indistinguishable no-ops — so nothing is sent here without a read-back.
-PPC_EXTERN_FUNC(rex_lhGui_RunLuaString);
+// The LHString primitives: `sub_8222CED0(LHString* dest, const char* literal)` constructs one
+// from a NUL-terminated guest string; `sub_82214DD8` releases it.
 PPC_EXTERN_FUNC(rex_lhCharString_CtorFromCStr);
 
 // `lhLua_RunScriptBuffer(lua_State* L, const char* buf, size, LHString* name, -)` (TU1
@@ -372,21 +353,9 @@ PPC_EXTERN_FUNC(rex_lhGuiWorldMapScreen_OnMenuEvent);   // 23 world map
 PPC_EXTERN_FUNC(rex_lhGuiGiftGivingScreen_OnMenuEvent);   // 25 gift giving
 PPC_EXTERN_FUNC(rex_lhGuiScreen_OnMenuEventNavSoundsOnly);   // 26 furniture, 27 decoration, 24 co-op — one folded body
 
-// The presentation the GUI is currently driving — `sub_823DCBE0(*(GUI+56))`. Every attribute
-// read and every Lua chunk in this file is scoped to whatever it returns.
+// The presentation the GUI is currently driving — `sub_823DCBE0(*(GUI+56))`.
 PPC_EXTERN_FUNC(rex_lhGuiPresentationSet_GetCurrent);
 
-// `sub_826B9210(LHString** name, int element)` -> float. Reads one float attribute off the
-// Parameters element; `element == 0` means "resolve the current presentation yourself". Used
-// here for exactly one thing: reading `EventQueueSize` back after a push.
-PPC_EXTERN_FUNC(rex_lhGuiPresentation_GetFloatParam);
-
-// The matching writer — `sub_826B9440(f1 = value, r4 = LHString* name, r6 = presentation)`.
-// Same element `sub_826B9210` reads from: presentation vtable slot 32 gives the parameter table
-// at `pres+0x1EC`, and its own vtable slot 72 is the float setter. `r6 == 0` means "resolve the
-// current presentation yourself"; `r3` and `r5` are read by neither. Called rather than poked:
-// the setter also raises the dirty bit, marks the change list and runs the change callbacks.
-PPC_EXTERN_FUNC(rex_lhGuiPresentation_SetFloatParam);
 
 namespace refii::vfs {
 
@@ -560,7 +529,7 @@ bool StartNewGame(PPCContext& ctx, uint8_t* base, bool female) {
   ctx.r3.u32 = 0u;  // don't-care, per the disassembly above
   ctx.r4.u32 = record;
 
-  rex_lhGui_FrontendRoot_HandleGuiEvent(ctx, base);
+  __imp__rex_lhGui_FrontendRoot_HandleGuiEvent(ctx, base);
 
   ctx = saved;
 
@@ -882,23 +851,6 @@ constexpr const char* kActionBoxActionPrefix = "BoxAction:";
 /// through the owning screen's input slot. See DispatchFrontEndDialog.
 constexpr const char* kActionFrontEndDialogPrefix = "FrontEndDialog:";
 
-/// "MenuScroll:up|down|left|right[:released]" — the DIRECTIONAL STICK, as the guest routes it.
-///
-/// The in-game lists keep their cursor in LUA: every screen's A press commits whatever
-/// `g_Menu:GetHighlightedMenuItemData()` returns, and none implement up/down natively (screens
-/// 22 and 25 swallow codes 28–35), so an owned highlight plus a plain A press commits the wrong
-/// row. Never run `g_Menu:ScrollUp()` as a Lua string: it skips a gate and `sub_82426470`
-/// cannot report failure.
-///
-/// The guest's path, at 0x82404ED0 and 0x82405030: for action 0x1C..0x1F it sets the
-/// presentation attribute `String1` to the direction via `sub_826B9510` and runs
-/// `"GUI:SetDirectionToHeld()"` on the context `sub_823DCBE0` returns; 0x20..0x23 are the
-/// matching releases running `"GUI:SetDirectionToReleased()"`. Lua's `g_Menu:onUpdate` polls
-/// `GUI:IsPushingUp()` and calls `ScrollUp` itself, keeping `UpDownInputDisabled` honoured and
-/// the original repeat cadence. Both dispatchers take the code through a pointer and ignore
-/// their first argument, so a scratch word suffices and the guest's own gates stay in the path.
-constexpr const char* kActionMenuScrollPrefix = "MenuScroll:";
-
 /// "ScreenAction:<code>" — one action code to the CURRENT in-game screen's own input method
 /// (vtable+24): 36 select, 37 back, 39 the per-screen Y action, 72/73 tab prev/next.
 constexpr const char* kActionScreenActionPrefix = "ScreenAction:";
@@ -911,31 +863,15 @@ constexpr const char* kActionScreenActionPrefix = "ScreenAction:";
 /// lever answers a box over any screen.
 constexpr const char* kActionQueryAnswerPrefix = "QueryAnswer:";
 
-/// "MenuEvent:<name>:<type>:<id>" — commit a menu row BY IDENTITY, which is what lets Godot own
-/// the cursor: every list screen learns the chosen row from Lua (`sub_826C1B50` runs
-/// `"g_Menu:GetHighlightedMenuItemData()"`), so a plain A press would commit Lua's row.
+/// "MenuEvent:<name>:<type>:<id>" — commit a menu row BY IDENTITY: the 12-byte
+/// `{LHString name, int32 type, int32 id}` the guest's own pump `sub_82370450` would have pulled
+/// from `GUI:PullEvent()` (`sub_826C1810`), delivered to the current screen's `vtable+20` as that
+/// pump does (`sub_8236FFC0(*(GUI+28), *(*(GUI+56)+4))`, `bctrl` at 0x823705E0) — see
+/// `DispatchMenuEventDirect`. The guest's Lua queue behind that pump is cut with its UI Lua
+/// (`EventQueueSize` reads 0, gui_menu_hooks.cpp), so this is the only commit path.
 ///
-/// The shipped `g_Menu:SelectMenuItem` also sends identity, not an index:
-///
-///     if item.Ghosted then return end
-///     GUI:PushButtonEvent(item.Name, item.EventType, item.IDLow, item.IDHigh)
-///
-/// `PushButtonEvent` is `guieventqueue.lua`, not a native: four parallel Lua arrays plus a float
-/// attribute `EventQueueSize` on the Parameters element. The C++ drain `sub_82370450` pulls one
-/// per tick through `sub_826C1810` (`GUI:PullEvent()`, rebuilding a 12-byte
-/// `{LHString name, int32 type, int32 param1}`), compares the name against `NO_VALID_EVENT`,
-/// and dispatches to the current screen's `vtable+20` — `sub_8236FFC0(*(GUI+28),
-/// *(*(GUI+56)+4))` then `(*(*(u32*)screen + 20))(screen, &event)` at 0x823705E0.
-///
-/// That push is NOT the route taken: it goes through `sub_82426470`, which defers whenever
-/// `guiObject+0x64` is clear, and that byte is cleared by the first GUI frame update and never
-/// set again — so the chunk lands on a list nothing drains. `DispatchMenuEventDirect` builds the
-/// same 12-byte event and calls the screen's `vtable+20` itself, reading the slot from the live
-/// object. The Lua push is kept below only for classes the eleven-entry table does not cover.
-///
-/// `id` is the FULL 32-bit row id; the Lua halves are `id & 0xFFFF` and `id >> 16`, as
-/// `sub_826CE8D0` split it into `Float1`/`Float2` at spawn. Ghosted rows are the caller's
-/// problem: `SelectMenuItem`'s early return is bypassed here.
+/// `id` is the FULL 32-bit row id, as `sub_826CE8D0` split it into `Float1`/`Float2` at spawn.
+/// Ghosted rows are the caller's problem: the shipped `SelectMenuItem`'s ghost test is the host's.
 constexpr const char* kActionMenuEventPrefix = "MenuEvent:";
 
 /// `Inventory:<op>:<recordHash>` — see DispatchInventoryAction.
@@ -944,27 +880,6 @@ constexpr const char* kActionInventoryPrefix = "Inventory:";
 /// `Ability:learn:<index>` / `Ability:unlearn:<index>` — one level of one of the fourteen
 /// abilities bought or given back, see DispatchAbilityAction.
 constexpr const char* kActionAbilityPrefix = "Ability:";
-
-/// The SHIPPED commit — `g_Menu:SelectMenuItem()`, whole: an event AND A TOGGLE. It pushes the
-/// highlighted row's `(Name, EventType, IDLow, IDHigh)` and, when the row has children, flips
-/// `IsOpen` and fires the expand event that makes the Lua menu spawn that category's rows.
-///
-/// The identity push reproduces only the first half. Category rows (world map: `sub_826CF098`,
-/// `li r9, 0x12D` = event type 301, the submenu marker) reach a handler with no case for 301,
-/// so the fold never happens; the expansion lives entirely in the menu Lua.
-///
-/// This acts on the guest's OWN `CurrentHighlightIdx`; `MenuHighlight:` below puts that cursor
-/// where ours is first.
-constexpr const char* kActionMenuSelect = "MenuSelect";
-
-/// "MenuHighlight:<name>" — the guest's own cursor put on the row named, by the name both menus
-/// carry (`String1` at spawn, `item.Name` in the Lua tree). Every screen handler that reads
-/// `g_Menu:GetHighlightedMenuItemData()` (`sub_826C1B50`) — the options page (`sub_826DA228`
-/// @0x826da3ec), the logbook page (`sub_826D9168`), furniture (`sub_826B6A18`), the items and
-/// clothing caches (`sub_826D1698`, `sub_826D2F80`), the abilities discard (`sub_826C3C78`) —
-/// then resolves the row Godot's cursor is on. A row not in `VisibleInfo.VisibleElements`
-/// (inside a closed fold) is reported and left alone.
-constexpr const char* kActionMenuHighlightPrefix = "MenuHighlight:";
 
 /// THE IN-GAME GUI'S OWN ACTIONS run inside the guest's Lua window, not before the tick body.
 ///
@@ -979,13 +894,9 @@ constexpr const char* kActionMenuHighlightPrefix = "MenuHighlight:";
 /// follows it land in order, in one tick.
 bool IsInGameUiAction(const std::string& name) {
   static constexpr const char* kPrefixes[] = {
-      "MenuEvent:",   "MenuHighlight:",     "MenuScroll:",    "ScreenAction:",
-      "QueryAnswer:", "BoxAction:",         "ReceiveItemsAction:", "MenuBoxSelect:",
-      "MenuBoxAnswer:", "GuiLua:",          "debug-lua:",
+      "MenuEvent:",   "ScreenAction:", "QueryAnswer:",
+      "BoxAction:",   "ReceiveItemsAction:", "MenuBoxSelect:", "MenuBoxAnswer:",
   };
-  if (name == "MenuSelect") {
-    return true;
-  }
   for (const char* prefix : kPrefixes) {
     if (name.rfind(prefix, 0) == 0) {
       return true;
@@ -993,13 +904,6 @@ bool IsInGameUiAction(const std::string& name) {
   }
   return false;
 }
-
-// A diagnostic channel, not a gameplay path: runs the chunk verbatim on the current screen's
-// presentation through the same `RunGuestLua` MenuSelect uses, so the guest's own Lua can be
-// asked a question and answered through element text
-// (`setAttribute(getElement(...), "textstring", tostring(<expr>))`). Behaviour gets a named
-// action instead.
-constexpr const char* kActionGuiLuaPrefix = "GuiLua:";
 
 /// "SpellAssign:<slot>:<spell>[:<player>]" — put a will on one of the five d-pad slots, of
 /// player 1's hero or (player 2) the co-op partner's.
@@ -1044,6 +948,11 @@ constexpr const char* kActionSaleSelectPrefix = "Sale:select:";
 /// the guest identifies a save by the ADDRESS of its handle slot inside its own vector, and the
 /// index is the join it uses itself (`this+72`, moved by its own left/right handler).
 constexpr const char* kActionLoadSavePrefix = "LoadSave:";
+
+/// "PresentationEvent:<presentation>:<parent element>:<EVENT>" — a behaviour element's
+/// `onDeactivate` `fireEvent(EVENT, parent)`, timed by Godot's playback of the presentation and
+/// delivered to the callback the guest registered for it (hooks/gui_menu_hooks.cpp).
+constexpr const char* kActionPresentationEventPrefix = "PresentationEvent:";
 
 bool DispatchByName(PPCContext& ctx, uint8_t* base, const std::string& name,
                     uint32_t command = kCommandNone, uint32_t param = 0u) {
@@ -1567,107 +1476,12 @@ void ArmHudShow(PPCContext& ctx, uint8_t* base) {
               presentation, closed ? "a screen closed" : "a fresh HUD instance");
 }
 
-/// The guest's directional action codes — `sub_824047E8`'s cases. 0x1C..0x1F are the presses
-/// ("held") and 0x20..0x23 the matching releases, same Up/Down/Left/Right order. Send BOTH: the
-/// Lua stick state is a latch, so a press with no release scrolls for ever.
-enum class MenuDirection : uint32_t { Up = 0x1Cu, Down = 0x1Du, Left = 0x1Eu, Right = 0x1Fu };
-
-constexpr uint32_t kDirectionReleaseOffset = 4u;
-
-/// Feeds one directional press or release to the guest's own stick router.
-///
-/// `sub_82404ED0` (held) and `sub_82405030` (released) both read the code through their SECOND
-/// argument and never touch their first, so a scratch word is the whole call; the `String1`
-/// write, the eligibility gate and the context resolution stay the guest's.
-bool DispatchMenuDirection(PPCContext& ctx, uint8_t* base, MenuDirection direction, bool held) {
-  uint32_t owner = 0;
-  uint32_t screen_id = 0;
-  if (!InGameScreenRoots(base, &owner, &screen_id)) {
-    REXLOG_INFO("Refii guest-tick pump: MenuScroll with no in-game menu — dropped");
-    return true;
-  }
-
-  const PPCContext saved = ctx;
-  const uint32_t frame = (saved.r1.u32 - 0x80u) & ~0xFu;
-  const uint32_t code_word = frame + 0x20u;
-
-  const uint32_t code =
-      static_cast<uint32_t>(direction) + (held ? 0u : kDirectionReleaseOffset);
-  StoreGuestU32(base, code_word, code);
-
-  ctx.r1.u32 = frame;
-  ctx.r3.u32 = 0u;  // the dispatchers ignore it; the guest's own callers pass a router
-  ctx.r4.u32 = code_word;
-  if (held) {
-    rex_lhGuiInput_OnDirectionHeld(ctx, base);
-  } else {
-    rex_lhGuiInput_OnDirectionReleased(ctx, base);
-  }
-
-  ctx = saved;
-  return true;
-}
-
-/// Answer `g_Menu:IsHighlightedItemAtRoot()` for the guest, because it cannot answer itself.
-///
-/// The predicate is unconditionally stale: `sub_826C1D98` posts the chunk that computes the
-/// answer and reads `Float1` back about ten instructions later, with no reentrancy in between,
-/// so no flush can land there. It reads whatever last wrote that slot — an earlier Lua answer,
-/// the row index `sub_826CE8D0` writes before every `SpawnButton()`, or the `.bgf` default.
-/// (`guiObject+0x64` is a per-TICK window: `sub_821A1140` re-opens it every frame at
-/// `0x821A11D8` and `sub_82286FD8` closes it after flushing.)
-///
-/// So the host writes the answer — it owns the fold and the cursor. Both `sub_826C63C8`'s
-/// `if (sub_826C1D98())` and `sub_826D5AF0`'s re-test then read it, and the guest performs its
-/// own close with all its side effects (un-pause, screen-0 hand-back, `*(mgr+152) = 31`,
-/// slide-3 transition).
-///
-/// `Float1` is a SHARED SCRATCH SLOT, not a return channel — `sub_826CE8D0` writes it before
-/// every row spawn and `sub_826C1A50` writes 0/1 for emphasis — so write it immediately before
-/// each dispatch, never once at setup.
-void WriteAtRootAnswer(PPCContext& ctx, uint8_t* base, bool at_root) {
-  const PPCContext saved = ctx;
-
-  // The literal, then the LHString, then the write — the same three-step the chunk runner uses.
-  const uint32_t sp = ctx.r1.u32;
-  const uint32_t frame = (sp - 0x100u) & ~0xFu;
-  const uint32_t text = frame + 0x20u;
-  const uint32_t handle = frame + 0x60u;
-
-  static const char kName[] = "Float1";
-  for (std::size_t i = 0; i < sizeof(kName); ++i) {
-    base[text + i] = static_cast<uint8_t>(kName[i]);
-  }
-  StoreGuestU32(base, handle, 0u);
-
-  PPCContext work = ctx;
-  work.r1.u32 = frame;
-  work.r3.u32 = handle;
-  work.r4.u32 = text;
-  work.r5.u32 = 0xFFFFFFFFu;  // the length, read by sub_822078A0: -1 = strlen. Must be set.
-  rex_lhCharString_CtorFromCStr(work, base);
-
-  work.r1.u32 = frame;
-  work.r3.u32 = 0u;      // `this` — read by nothing on this path
-  work.r4.u32 = handle;  // the name
-  work.r5.u32 = 0u;      // read by nothing
-  work.r6.u32 = 0u;      // 0 = whichever presentation the GUI is currently driving
-  work.f1.f64 = at_root ? 1.0 : 0.0;
-  rex_lhGuiPresentation_SetFloatParam(work, base);
-
-  work.r1.u32 = frame;
-  work.r3.u32 = handle;
-  rex_lhCharString_Dtor(work, base);
-
-  ctx = saved;
-}
-
 /// One action code to the current in-game screen's own input method (vtable+24).
 ///
 /// Named statically per screen id because the recompiler emits no indirect-call path; the id is
 /// the guest's own `mgr+4` and each handler comes from the guest's own map. The third argument
 /// is the PLAYER INDEX (1 or 2) — gift, selection and decoration `bnelr` unless it is 1.
-bool DispatchScreenAction(PPCContext& ctx, uint8_t* base, uint32_t code, bool at_root) {
+bool DispatchScreenAction(PPCContext& ctx, uint8_t* base, uint32_t code) {
   uint32_t owner = 0;
   uint32_t screen_id = 0;
   if (!InGameScreenRoots(base, &owner, &screen_id)) {
@@ -1685,16 +1499,6 @@ bool DispatchScreenAction(PPCContext& ctx, uint8_t* base, uint32_t code, bool at
     REXLOG_INFO("Refii guest-tick pump: ScreenAction:{} — screen {} has no handler",
                 code, screen_id);
     return true;
-  }
-
-  // The back predicate, answered before the handler reads it: code 37 is the only one that
-  // consults `IsHighlightedItemAtRoot()` (in the handler and again inside `sub_826D5AF0`) and
-  // it cannot compute it. See WriteAtRootAnswer.
-  if (code == 37u) {
-    WriteAtRootAnswer(ctx, base, at_root);
-    REXLOG_INFO("Refii guest-tick pump: ScreenAction:37 on screen {} with atRoot={} written "
-                "to Float1 — the guest's own predicate restates it in the Lua window",
-                screen_id, at_root ? 1 : 0);
   }
 
   ctx.r3.u32 = handler;
@@ -1953,102 +1757,6 @@ bool DispatchSaleSelect(PPCContext& ctx, uint8_t* base, uint32_t key, bool short
   return DispatchMenuEventDirect(ctx, base, label, 44u, ordinal);
 }
 
-/// Runs one Lua chunk on the GUI's current presentation. Returns false when there is none.
-///
-/// The chunk is built into a scratch frame on the guest stack: `sub_8222CED0` wants a
-/// NUL-terminated guest `char*`, and the LHString it produces must be released with
-/// `sub_82214DD8`.
-bool RunGuestLua(PPCContext& ctx, uint8_t* base, const std::string& chunk) {
-  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
-
-  const uint32_t gui = LoadGuestU32(base, kGuiObject);
-  if (!plausible(gui)) {
-    return false;
-  }
-
-  const uint32_t stack = LoadGuestU32(base, gui + 56u);
-  if (!plausible(stack)) {
-    return false;
-  }
-
-  const PPCContext saved = ctx;
-  ctx.r3.u32 = stack;
-  rex_lhGuiPresentationSet_GetCurrent(ctx, base);
-  const uint32_t presentation = ctx.r3.u32;
-  ctx = saved;
-
-  if (!plausible(presentation)) {
-    return false;
-  }
-
-  // THE LUA WINDOW. `sub_82426470` runs a chunk now only while `guiObject+0x64` is set, else
-  // it appends it to the list at `GUI+88`. The byte is a per-tick window: the game loop sets it
-  // at the start of a game tick (`sub_821A1140` @0x821a11d8, from `sub_82276D10` @0x82277130)
-  // and the GUI frame update clears it after the GUI tick (`sub_82286FD8` @0x82287170). The
-  // UI pass of the drain runs inside that window (IsInGameUiAction); a chunk that lands on a
-  // GUI frame with no game tick in it is refused here and retried on the next GUI tick.
-  if (LoadGuestU8(base, gui + 100u) == 0u) {
-    static std::atomic<uint64_t> refused{0};
-    const uint64_t seen = refused.fetch_add(1, std::memory_order_relaxed) + 1;
-    if ((seen & (seen - 1)) == 0) {
-      REXLOG_INFO("Refii guest-tick pump: guiObject+0x64 is clear on this GUI frame — '{}' "
-                  "waits for the next game tick's window (refusal #{})", chunk, seen);
-    }
-    return false;
-  }
-
-  // Claimed by lowering r1, so the callee's own frame cannot land on the text it was handed.
-  const uint32_t sp = ctx.r1.u32;
-  const uint32_t frame = (sp - 0x200u) & ~0xFu;
-  const uint32_t text = frame + 0x20u;
-  const uint32_t handle = frame + 0x1A0u;
-
-  constexpr uint32_t kMaxChunk = 0x17Fu;
-  if (chunk.size() + 1u > kMaxChunk) {
-    REXLOG_INFO("Refii guest-tick pump: Lua chunk is too long ({} bytes) — dropped",
-                chunk.size());
-    return false;
-  }
-
-  for (std::size_t i = 0; i < chunk.size(); ++i) {
-    base[text + i] = static_cast<uint8_t>(chunk[i]);
-  }
-
-  base[text + chunk.size()] = 0;
-  StoreGuestU32(base, handle, 0u);
-
-  // Logged before each call, not after the group: all three enter the guest and two are
-  // allocator operations (the LHString constructor reaches `operator new` via
-  // `sub_8222CED0` -> `sub_822078A0` -> 0x8221F258, the destructor the matching free), both
-  // taking the guest heap lock at `sub_822D6C88`, a spin with no yield. A hang in any one of
-  // them is otherwise indistinguishable.
-  const auto step = [&](const char* what) {
-    REXLOG_INFO("Refii guest-tick pump: Lua chunk step '{}' for {}", what, chunk);
-  };
-
-  PPCContext work = ctx;
-  work.r1.u32 = frame;
-  work.r3.u32 = handle;
-  work.r4.u32 = text;
-  work.r5.u32 = 0xFFFFFFFFu;  // the length, read by sub_822078A0: -1 = strlen. Must be set.
-  step("LHString ctor");
-  rex_lhCharString_CtorFromCStr(work, base);
-
-  work.r1.u32 = frame;
-  work.r3.u32 = handle;
-  work.r4.u32 = presentation;
-  step("push");
-  rex_lhGui_RunLuaString(work, base);
-
-  work.r1.u32 = frame;
-  work.r3.u32 = handle;
-  step("LHString dtor");
-  rex_lhCharString_Dtor(work, base);
-
-  step("done");
-  return true;
-}
-
 /// Runs one Lua source chunk in the GAME script VM — the state the startup scripts, the camera
 /// among them, run in. False when there is no game VM. Not the GUI's: Gameface links a second
 /// Lua build with its own states and a different `lua_State` layout (`luaD_pcall` reads
@@ -2120,176 +1828,6 @@ bool RunGameLua(PPCContext& ctx, uint8_t* base, const std::string& chunk) {
   return ok;
 }
 
-/// One commit waiting to be confirmed on the NEXT tick — see DispatchMenuEvent.
-struct MenuEventPending {
-  std::string name;
-  uint32_t type = 0;
-  uint32_t id = 0;
-  int depth_after_push = -1;
-};
-
-std::optional<MenuEventPending> _menuEventPending;
-
-/// The GUI event queue's depth, as the Lua side reports it. -1 when it cannot be read.
-///
-/// `sub_82426470` swallows every failure, so this reads the attribute `GUI:PushButtonEvent`
-/// writes on its way out (`setAttribute(g_Param.element, "EventQueueSize",
-/// #GUI.State.EventQueue.Name)`): a push that does not move it did not run.
-int GuestEventQueueSize(PPCContext& ctx, uint8_t* base) {
-  const uint32_t sp = ctx.r1.u32;
-  const uint32_t frame = (sp - 0x80u) & ~0xFu;
-  const uint32_t text = frame + 0x20u;
-  const uint32_t handle = frame + 0x60u;
-
-  static constexpr char kName[] = "EventQueueSize";
-  for (std::size_t i = 0; i < sizeof(kName); ++i) {
-    base[text + i] = static_cast<uint8_t>(kName[i]);
-  }
-
-  StoreGuestU32(base, handle, 0u);
-
-  PPCContext work = ctx;
-  work.r1.u32 = frame;
-  work.r3.u32 = handle;
-  work.r4.u32 = text;
-  work.r5.u32 = 0xFFFFFFFFu;  // the length, read by sub_822078A0: -1 = strlen. Must be set.
-  rex_lhCharString_CtorFromCStr(work, base);
-
-  // The presentation is NOT optional here. `sub_826B9510`/`sub_826B9440` fall back to
-  // `sub_823DCBE0(*(GUI+56))` when handed 0; this getter dereferences it unconditionally
-  // (`lwz r11, 0(r29)` / `lwz r10, 0x38(r11)` / `bctrl` at 0x826B9228), so 0 faults.
-  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
-  const uint32_t gui = LoadGuestU32(base, kGuiObject);
-  const uint32_t stack = plausible(gui) ? LoadGuestU32(base, gui + 56u) : 0u;
-  if (!plausible(stack)) {
-    work.r1.u32 = frame;
-    work.r3.u32 = handle;
-    rex_lhCharString_Dtor(work, base);
-    return -1;
-  }
-  work.r1.u32 = frame;
-  work.r3.u32 = stack;
-  rex_lhGuiPresentationSet_GetCurrent(work, base);
-  const uint32_t presentation = work.r3.u32;
-  if (!plausible(presentation)) {
-    work.r1.u32 = frame;
-    work.r3.u32 = handle;
-    rex_lhCharString_Dtor(work, base);
-    return -1;
-  }
-
-  work.r1.u32 = frame;
-  work.r3.u32 = handle;
-  work.r4.u32 = presentation;
-  rex_lhGuiPresentation_GetFloatParam(work, base);
-  const double depth = work.f1.f64;
-
-  work.r1.u32 = frame;
-  work.r3.u32 = handle;
-  rex_lhCharString_Dtor(work, base);
-
-  return depth < 0.0 || depth > 4096.0 ? -1 : static_cast<int>(depth);
-}
-
-/// Runs the current screen's own event handler on a host-built event.
-///
-/// The Lua route cannot work: `GUI:PushButtonEvent` reaches the guest through `sub_82426470`,
-/// which runs a chunk immediately only while `guiObject+0x64` is set — set once by the GUI
-/// constructor (`0x8237119c`), cleared by the first frame update (`0x82287170`), never set
-/// again — so from the second update on every chunk lands on the undrained list at `GUI+88`.
-///
-/// This does what the guest's own drain does, one step later: `sub_82370450` builds a 12-byte
-/// `{LHString name, int32 type, int32 id}` and calls the screen's `vtable+20` (`0x823705E0`).
-/// Everything downstream (the arming check at `screen+198`, the purchase, the message box) is
-/// the guest's own code. The slot is READ from the live object's vtable and compared against
-/// the verified class; anything else is refused.
-///
-/// Returns false when the screen is not one we can dispatch to, so the caller can fall back.
-/// Writes one float parameter on the current presentation — `sub_826B9440(value, this, &name,
-/// unused, presentation)`; 0 for the presentation means "whichever the GUI is driving".
-void WriteParameterFloat(PPCContext& ctx, uint8_t* base, uint32_t frame, const char* name,
-                         double value) {
-  const uint32_t text = frame + 0x20u;
-  const uint32_t handle = frame + 0x160u;
-  std::size_t i = 0;
-  for (; name[i] != 0 && i < 0x3Fu; ++i) {
-    base[text + i] = static_cast<uint8_t>(name[i]);
-  }
-  base[text + i] = 0;
-  StoreGuestU32(base, handle, 0u);
-
-  PPCContext work = ctx;
-  work.r1.u32 = frame;
-  work.r3.u32 = handle;
-  work.r4.u32 = text;
-  work.r5.u32 = 0xFFFFFFFFu;  // the length, read by sub_822078A0: -1 = strlen. Must be set.
-  rex_lhCharString_CtorFromCStr(work, base);
-
-  work.r1.u32 = frame;
-  work.r3.u32 = 0u;
-  work.r4.u32 = handle;
-  work.r5.u32 = 0u;
-  work.r6.u32 = 0u;
-  work.f1.f64 = value;
-  rex_lhGuiPresentation_SetFloatParam(work, base);
-
-  work.r1.u32 = frame;
-  work.r3.u32 = handle;
-  rex_lhCharString_Dtor(work, base);
-}
-
-/// Writes one string parameter — `sub_826B9510(unused, &name, &value, presentation)`: r4 is
-/// hashed as the ATTRIBUTE NAME, r5 is the value copied in (the guest's own `sub_826DEE40`
-/// case 28 passes `&"String1", &"Up"` in that order).
-void WriteParameterString(PPCContext& ctx, uint8_t* base, uint32_t frame, const char* name,
-                          const std::string& value) {
-  const uint32_t nameText = frame + 0x20u;
-  const uint32_t valueText = frame + 0x60u;
-  const uint32_t nameHandle = frame + 0x160u;
-  const uint32_t valueHandle = frame + 0x168u;
-
-  std::size_t i = 0;
-  for (; name[i] != 0 && i < 0x3Fu; ++i) {
-    base[nameText + i] = static_cast<uint8_t>(name[i]);
-  }
-  base[nameText + i] = 0;
-
-  const std::size_t n = value.size() < 0xFFu ? value.size() : 0xFFu;
-  for (std::size_t k = 0; k < n; ++k) {
-    base[valueText + k] = static_cast<uint8_t>(value[k]);
-  }
-  base[valueText + n] = 0;
-  StoreGuestU32(base, nameHandle, 0u);
-  StoreGuestU32(base, valueHandle, 0u);
-
-  PPCContext work = ctx;
-  work.r1.u32 = frame;
-  work.r3.u32 = nameHandle;
-  work.r4.u32 = nameText;
-  work.r5.u32 = 0xFFFFFFFFu;  // the length, read by sub_822078A0: -1 = strlen. Must be set.
-  rex_lhCharString_CtorFromCStr(work, base);
-
-  work.r1.u32 = frame;
-  work.r3.u32 = valueHandle;
-  work.r4.u32 = valueText;
-  work.r5.u32 = 0xFFFFFFFFu;  // the length, read by sub_822078A0: -1 = strlen. Must be set.
-  rex_lhCharString_CtorFromCStr(work, base);
-
-  work.r1.u32 = frame;
-  work.r3.u32 = 0u;
-  work.r4.u32 = nameHandle;
-  work.r5.u32 = valueHandle;
-  work.r6.u32 = 0u;
-  rex_lhGuiPresentation_SetStringParam(work, base);
-
-  work.r1.u32 = frame;
-  work.r3.u32 = valueHandle;
-  rex_lhCharString_Dtor(work, base);
-  work.r1.u32 = frame;
-  work.r3.u32 = nameHandle;
-  rex_lhCharString_Dtor(work, base);
-}
-
 uint32_t PlayerObject(uint8_t* base);
 
 /// Both are defined further down this file; the inventory dispatch below needs them here.
@@ -2302,9 +1840,8 @@ std::string ReadStatedWideLhString(uint8_t* base, uint32_t handle);
 /// hash, with the guest's menus taking no part at all.
 ///
 /// This is the seam that lets Godot own the item lists outright. Everything else on this screen
-/// goes through `GUI:PushButtonEvent` into the current screen's `vtable+20`, which means the
-/// guest's Gameface menu has to exist and have been populated first. These two do not: they are
-/// the guest's own SCRIPT-COMMAND level entry points, bound as `AddAndReplaceItemOfRecordID` and
+/// goes through the current screen's `vtable+20` with a row the guest's populate handed out.
+/// These two do not: they are the guest's own SCRIPT-COMMAND level entry points, bound as `AddAndReplaceItemOfRecordID` and
 /// `Player:GiveGift`, and both are self-contained. Decompiled and verified rather than taken on
 /// report:
 ///
@@ -2793,6 +2330,92 @@ bool DispatchAugment(PPCContext& ctx, uint8_t* base, const std::string& argument
   return true;
 }
 
+/// AN ITEM ROW COMMITTED THROUGH THE SCREEN THAT LISTS IT, so the screen's own answer runs with
+/// every side effect it has. Each list screen answers its item rows' event type 3:
+///
+///   items 15 (`sub_826D1800`, disc `sub_8257D250`) — case 3 refuses a weapon while swimming
+///   (0x826D1B5C, `GUI_CANNOT_EQUIP_WEAPON_WHILE_SWIMMING`), completes tutorial 188 (0x826D1BDC),
+///   activates `screen+396` (`lhGuiInventory_ActivateItemByCategory` 0x826D1BEC) and queues the
+///   `GUI_SCREEN_EXPRESSIONS_LEARNED` box for an expression book (0x826D1C9C..0x826D1DC8);
+///   clothing 16 (`sub_826D4D58`, disc `sub_825807F0`) — case 3 on `screen+244`: a dog item
+///   (Category 24, 0x826D5050) is activated and the screen exits (0x826D5060 / 0x826D506C, disc
+///   0x82580AF8 / 0x82580B04); a garment goes to `sub_826D3608` — its swimming refusal
+///   (`sub_826CB218` 0x826CB360), the OverrideOpenModel toggle (0x826D37B4) and tutorial 229
+///   (0x826D39F4);
+///   gift 25 (`sub_826C45C8`, disc `sub_825A0568`) — looks the pushed id up in the row map
+///   (0x826C46CC), asks query 15 (`GUI_GIFT_GIVING_SCREEN_WOULD_YOU_LIKE`, 0x826C4B80) and on
+///   its YES (`sub_826C4CC0`) gives the item, or the orb in orb mode (`+48 == 1`,
+///   `sub_826C5578`), then leaves the screen (0x826C4DEC, disc 0x825A0C58's twin).
+///
+/// The row's id is the populate's TICKET for the item (MenuTicketForRecord). Items and clothing
+/// act on the handle their Update cached from the highlight, which the highlight answer fills
+/// for Godot's stated row; a commit that lands before that Update has run takes the Update's own
+/// lookup (`sub_82880BC0(map, ticket, screen+cache)`, 0x826D1754 / 0x826D2EDC, disc
+/// `sub_827BE1E8`) first.
+///
+/// Player two's books keep the direct calls: the screens' answers act on player one.
+/// False when this is not that screen, or the row is not on it.
+bool CommitItemThroughScreen(PPCContext& ctx, uint8_t* base, const std::string& op,
+                             uint32_t record) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+  uint32_t owner = 0;
+  uint32_t screen_id = 0;
+  if (!InGameScreenRoots(base, &owner, &screen_id) || IsCoopJoiner(base) ||
+      MenusActForPlayerTwo(base)) {
+    return false;
+  }
+
+  uint32_t cache = 0u;
+  if (screen_id == 15u && (op == "use" || op == "equip")) {
+    cache = 0x18Cu;
+  } else if (screen_id == 16u && (op == "wear" || op == "equip")) {
+    cache = 0xF4u;
+  } else if (!(screen_id == 25u && op == "gift")) {
+    return false;
+  }
+
+  const uint32_t ticket = MenuTicketForRecord(base, record);
+  if (ticket == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:{} — record 0x{:08X} is on no row of screen "
+                "{}'s map", op, record, screen_id);
+    return false;
+  }
+
+  if (cache != 0u) {
+    const uint32_t screen = ScreenObjectRO(base, screen_id);
+    if (screen == 0u) {
+      return false;
+    }
+    const uint32_t cached = LoadGuestU32(base, screen + cache);
+    if (!plausible(cached) || LoadGuestU32(base, cached + 4u) != record) {
+      const uint32_t gui = LoadGuestU32(base, kGuiObject);
+      const uint32_t manager = plausible(gui) ? LoadGuestU32(base, gui + 0x1Cu) : 0u;
+      const uint32_t helper = plausible(manager) ? LoadGuestU32(base, manager + 0x3Cu) : 0u;
+      PPCFunc* lookup = FindGuestFunction(refii::guest::Address(0x82880BC0u));
+      if (!plausible(helper) || lookup == nullptr) {
+        return false;
+      }
+      const PPCContext saved = ctx;
+      ctx.r1.u32 = (saved.r1.u32 - 0x100u) & ~0xFu;
+      ctx.r3.u32 = helper + 4u;
+      ctx.r4.u32 = ticket;
+      ctx.r5.u32 = screen + cache;
+      ctx.ctr.u32 = refii::guest::Address(0x82880BC0u);
+      lookup(ctx, base);
+      ctx = saved;
+    }
+  }
+
+  char name[32];
+  std::snprintf(name, sizeof(name), "Item:%08X", record);
+  if (!DispatchMenuEventDirect(ctx, base, name, 3u, ticket)) {
+    return false;
+  }
+  REXLOG_INFO("Refii guest-tick pump: Inventory:{} committed record 0x{:08X} as ticket {} on "
+              "screen {}'s own handler", op, record, ticket, screen_id);
+  return true;
+}
+
 bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& body) {
   if (body.rfind("dye:", 0) == 0) {
     return DispatchDye(ctx, base, body.substr(4));
@@ -2917,6 +2540,19 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
   //   Then `sub_823E0FF8(entity, &handle, "")` uses it, or `sub_823F2718(component33, &handle)`
   //   gives it. `sub_823F2718` resolves the RECIPIENT itself, off the giver's property 77 and
   //   that object's vtable+68, so no target has to be supplied.
+  if ((op == "use" || op == "equip" || op == "wear" || op == "gift") &&
+      CommitItemThroughScreen(ctx, base, op, static_cast<uint32_t>(hash))) {
+    return true;
+  }
+
+  // A gift is only ever the gift screen's: its confirm, the orb mode and the exit are the
+  // screen's (CommitItemThroughScreen), and a gift without them repeats into one interaction.
+  if (op == "gift" && !IsCoopJoiner(base) && !MenusActForPlayerTwo(base)) {
+    REXLOG_INFO("Refii guest-tick pump: Inventory:{} — not on the gift screen's rows, not given",
+                body);
+    return true;
+  }
+
   const uint32_t hero = HeroEntity(base);
   if (hero == 0u) {
     REXLOG_INFO("Refii guest-tick pump: Inventory:{} — no hero", body);
@@ -2973,11 +2609,9 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
   // `*(gameRoot + 52)`, which holds the two equipped-weapon handles at `+0` and `+16`, and both
   // of the guest's own callers fetch it from exactly that global.
   //
-  // This matters beyond convenience. The screen's own answer to event 3 (`sub_826D1800`) does
-  // NOT act on the row it was handed — it reads `screen+396`, a handle the screen's Update
-  // refills every frame from `g_Menu:GetHighlightedMenuItemData()`. So the guest equips whatever
-  // ITS cursor is on, and pushing an identity at it equips the right thing only while the two
-  // cursors agree. Naming the record removes that dependency entirely.
+  // Player one's rows on the items and clothing screens never get here: they commit through
+  // the screen's own answer (CommitItemThroughScreen). This is player two's book, and any
+  // inventory action posted with no list screen up.
   //
   // `use` goes through the same switch, because that is the screen's own call for it: event 3
   // runs `sub_826C9AB8(slots, screen+396, 1)` at 0x826D1BEC for every category. Categories
@@ -3174,75 +2808,14 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
 /// `screen+4 == 0` — `lwz r11, 4(r31); cntlzw r10, r11; extrwi r29, r10, 1,26` at 0x826C2D58,
 /// which is the "player index is zero" BIT, not the index. `sub_8246C970` then branches
 /// `if (a2) hero = sub_8222C1B8(...) else hero = sub_828E5A78(...)`, so 0 would fetch the other
-/// hero entirely. The guest's screen states it from the OPENER's index, so player two's book —
-/// a joiner's, or local player two's (MenusActForPlayerTwo) — passes 0: player two's hero
-/// (`sub_828E5A78`) spends player two's experience.
+/// hero entirely. It is read off the screen object exactly so: a book opened for player two
+/// passes 0, and player two's hero (`sub_828E5A78`) spends player two's experience.
 ///
 /// The guest puts up its own result box (`sub_8236FA68`, `guiMgr+40 = 2`) either way — the
 /// tutorial text on success, `GUI_SCREEN_ABILITY_YOU_DO_NOT_HAVE_ENOUGH_EXPERIENCE` or
 /// `GUI_SCREEN_ABILITIES_MAXED` on refusal. That is the feedback, and it arrives through the
 /// message-box path the host already mirrors.
-/// THE ABILITY SCREEN'S VOICE-OVER — `Ability:hover:<0..14>`, the row the host's cursor stands on.
-///
-/// The narration over the previews is the TUTORIAL system, not the movies (the 352x264 `.bik`s
-/// carry no audio track). The screen's highlight edge `sub_826C3C78` (0x826c3d9c..0x826c3e0c)
-/// arms a 2.0 s timer at `screen+0x274` (`sub_828C36D0`, `flt_8209B480`) when the row is an
-/// ability AND `tutorials+0x38` is set — `PlayAbilityScreenTutorials`, saved state that
-/// `qc060_newbeginning.lua` turns on at the Guild seal and `qc080_monksquest.lua` turns off. A
-/// row that is not an ability clears the timer (0x826c3e20). When it runs out, the screen's
-/// update `sub_826C23A8` waits while `screen+0xC5` is set and `sub_8244DE40` reports a line on
-/// the hero's TUTORIAL channel — the open handler `sub_826C2118` sets that latch over its own
-/// category intro (tutorial 120) — then `sub_826C3FD0` maps the ability Type through the table at
-/// 0x826c3f58 to `ETutorialType.TUTORIAL_ABILITY_SCREEN_*`, and, if that differs from the last
-/// one it queued (`screen+0x280`), stops the channel (`sub_8244DAD8`) and queues it
-/// (`sub_8219AE90`). The tutorial processor speaks `TEXT_<name>` on the TUTORIAL channel.
-///
-/// The edge reads the GUEST's `g_Menu` highlight, which no longer moves once the host owns the
-/// cursor, so the host states the row and this runs the same arm and the same firing body.
-struct AbilityTutorialTimer {
-  bool armed = false;
-  uint32_t type = 0u;
-  std::chrono::steady_clock::time_point due{};
-};
-AbilityTutorialTimer g_ability_tutorial;
-
-/// `sub_826C3F08`'s table: ability Type 1..14 to its ETutorialType (tutorialtypes.lua).
-constexpr uint32_t kAbilityTutorials[14] = {0x8Fu, 0x83u, 0x8Bu, 0x90u, 0x91u, 0x87u, 0x85u,
-                                            0x80u, 0x8Au, 0x89u, 0x8Cu, 0x79u, 0x7Cu, 0x7Au};
-
-/// `*(*(*(dword_83496AB8 + 12) + 168) + 4)` — the tutorial state both screen paths pass on.
-uint32_t TutorialState(uint8_t* base) {
-  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
-  const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
-  const uint32_t world = plausible(root) ? LoadGuestU32(base, root + 12u) : 0u;
-  const uint32_t manager = plausible(world) ? LoadGuestU32(base, world + 168u) : 0u;
-  const uint32_t state = plausible(manager) ? LoadGuestU32(base, manager + 4u) : 0u;
-  return plausible(state) ? state : 0u;
-}
-
-bool ArmAbilityTutorial(uint8_t* base, const std::string& index_text) {
-  char* end = nullptr;
-  const unsigned long type = std::strtoul(index_text.c_str(), &end, 10);
-  if (end == index_text.c_str() || *end != '\0' || type > 14u) {
-    REXLOG_INFO("Refii guest-tick pump: 'Ability:hover:{}' names no row 0..14 — dropped",
-                index_text);
-    return true;
-  }
-
-  const uint32_t tutorials = TutorialState(base);
-  g_ability_tutorial.armed =
-      type != 0u && tutorials != 0u && LoadGuestU8(base, tutorials + 0x38u) != 0u;
-  g_ability_tutorial.type = static_cast<uint32_t>(type);
-  g_ability_tutorial.due = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  return true;
-}
-
 bool DispatchAbilityAction(PPCContext& ctx, uint8_t* base, const std::string& body) {
-  constexpr std::string_view kHover = "hover:";
-  if (body.compare(0, kHover.size(), kHover) == 0) {
-    return ArmAbilityTutorial(base, body.substr(kHover.size()));
-  }
-
   const std::size_t colon = body.rfind(':');
   const bool unlearn = colon != std::string::npos && body.compare(0, colon, "unlearn") == 0;
   if (colon == std::string::npos || (!unlearn && body.compare(0, colon, "learn") != 0)) {
@@ -3276,7 +2849,16 @@ bool DispatchAbilityAction(PPCContext& ctx, uint8_t* base, const std::string& bo
     return true;
   }
 
-  const bool player_two = IsCoopJoiner(base) || MenusActForPlayerTwo(base);
+  // THE HERO FLAG IS THE SCREEN'S OWN: `screen+4 == 0` (0x826C2D58, disc 0x8259ED08), the
+  // player its opener stated through SetPlayer (the pause root's `stw` at 0x826A6264, OnEnter's
+  // re-derivation at 0x826C2150).
+  const uint32_t screen = ScreenObjectRO(base, 14u);
+  if (screen == 0u) {
+    REXLOG_INFO("Refii guest-tick pump: Ability:{}:{} with no abilities screen — dropped", verb,
+                index);
+    return true;
+  }
+  const bool player_two = LoadGuestU32(base, screen + 4u) != 0u;
   const PPCContext saved = ctx;
   ctx.r3.u32 = static_cast<uint32_t>(index);
   ctx.r4.u32 = player_two ? 0u : 1u;
@@ -3284,6 +2866,19 @@ bool DispatchAbilityAction(PPCContext& ctx, uint8_t* base, const std::string& bo
   function(ctx, base);
   const bool done = (ctx.r3.u32 & 0xFFu) != 0u;
   ctx = saved;
+
+  // A Will ability bought restates the Spell Selector row's ghosting, as the screen's own Will
+  // purchase `sub_826C2E68` does after `sub_8246CF48` succeeds (0x826C2EE0, disc 0x8259EE88):
+  // `sub_826C2C88(screen)` (disc `sub_8259EC38`) ghosts "SpellAssigning" by
+  // `lhGuiWillAssignWidget_CanOpen` and runs `UpdateAllGhosting`, both recorded for Godot's model.
+  if (done && !unlearn && index >= 7u) {
+    if (PPCFunc* ghost = FindGuestFunction(refii::guest::Address(0x826C2C88u))) {
+      ctx.r3.u32 = screen;
+      ctx.ctr.u32 = refii::guest::Address(0x826C2C88u);
+      ghost(ctx, base);
+      ctx = saved;
+    }
+  }
 
   REXLOG_INFO("Refii guest-tick pump: Ability:{}:{} ran 0x{:08X}(index {}, hero {}) — {}", verb,
               index, entry, index, player_two ? 2 : 1,
@@ -3327,65 +2922,6 @@ uint32_t ScreenObjectRO(uint8_t* base, uint32_t screen_id) {
 
   return 0u;
 }
-
-/// The armed ability voice-over, fired the way `sub_826C23A8` fires it — see ArmAbilityTutorial.
-void ServiceAbilityTutorial(PPCContext& ctx, uint8_t* base) {
-  if (!g_ability_tutorial.armed || std::chrono::steady_clock::now() < g_ability_tutorial.due) {
-    return;
-  }
-
-  const uint32_t screen = ScreenObjectRO(base, 14u);
-  const uint32_t tutorials = TutorialState(base);
-  if (screen == 0u || tutorials == 0u) {
-    g_ability_tutorial.armed = false;
-    return;
-  }
-
-  // `sub_826C23A8` returns before the timer while +620 is set.
-  if (LoadGuestU8(base, screen + 620u) != 0u) {
-    return;
-  }
-
-  PPCFunc* speaking = FindGuestFunction(refii::guest::Address(0x8244DE40u));
-  PPCFunc* stop = FindGuestFunction(refii::guest::Address(0x8244DAD8u));
-  PPCFunc* queue = FindGuestFunction(refii::guest::Address(0x8219AE90u));
-  if (speaking == nullptr || stop == nullptr || queue == nullptr) {
-    g_ability_tutorial.armed = false;
-    return;
-  }
-
-  const PPCContext saved = ctx;
-  if (LoadGuestU8(base, screen + 0xC5u) != 0u) {
-    ctx.r3.u32 = tutorials;
-    speaking(ctx, base);
-    const bool busy = (ctx.r3.u32 & 0xFFu) != 0u;
-    ctx = saved;
-    if (busy) {
-      return;
-    }
-
-    StoreGuestU8(base, screen + 0xC5u, 0u);
-  }
-
-  g_ability_tutorial.armed = false;
-  const uint32_t tutorial = kAbilityTutorials[g_ability_tutorial.type - 1u];
-  if (LoadGuestU32(base, screen + 0x280u) == tutorial) {
-    return;
-  }
-
-  ctx.r3.u32 = tutorials;
-  stop(ctx, base);
-  ctx = saved;
-  ctx.r3.u32 = tutorials;
-  ctx.r4.u32 = tutorial;
-  queue(ctx, base);
-  ctx = saved;
-  StoreGuestU32(base, screen + 0x280u, tutorial);
-
-  REXLOG_INFO("Refii guest-tick pump: ability {} — queued tutorial {} (its voice-over)",
-              g_ability_tutorial.type, tutorial);
-}
-
 
 /// The `Player` with this id, out of the `PlayerManager` at `game+156`.
 ///
@@ -4369,6 +3905,26 @@ bool ApplyStats(PPCContext& ctx, uint8_t* base, uint32_t entity, const std::stri
   // A BYTE, not a word: `sub_82A1CE48` fills a bool, and on this big-endian guest a word of 1
   // would leave 0x00 at +116 and the 0x01 at +119.
   base[block + 116u] = 1u;                              // CanUnlockAchievements
+
+  // THE JOINER KEEPS THE FOUR THE HOST REPLICATES. Money, morality, purity and renown are SET by
+  // slot 40 (CECMoney 0x8242E3AC `stw r11,0xC(r31)`; CECStats 0x824DEBE0 +0x10, 0x824DEC6C +0x24,
+  // 0x824DED08 +0x1C) and on the host the same call sends new − old to the peer (0x8242E530,
+  // 0x824DEC2C/0x824DECBC/0x824DED2C), which ADDS it there (CECMoney_Modify 0x8242E6B8,
+  // lhHeroStats_ModifyRenown 0x824D63F4). Both machines applying the save left the joiner at
+  // 2K − H — doubled on every import. Here the joiner restates its current values, so its own
+  // call changes nothing and the host's delta lands them on the save's.
+  if (IsCoopJoiner(base)) {
+    if (const uint32_t purse = EntityComponent(base, entity, 81u)) {
+      const uint32_t current = LoadGuestU32(base, purse + 0x0Cu);
+      StoreGuestU32(base, block + 0u, current);
+      StoreGuestU32(base, block + 0x184u, current);
+    }
+    if (stats != 0u) {
+      StoreGuestU32(base, block + 8u, LoadGuestU32(base, stats + 0x10u));    // Morality
+      StoreGuestU32(base, block + 12u, LoadGuestU32(base, stats + 0x24u));   // Purity
+      StoreGuestU32(base, block + 16u, LoadGuestU32(base, stats + 0x1Cu));   // Renown
+    }
+  }
 
   uint32_t called = 0u;
   for (uint32_t pair = pairs; pair + 8u <= pairs_end; pair += 8u) {
@@ -5844,7 +5400,12 @@ bool DispatchSpellBlade(PPCContext& ctx, uint8_t* base, const std::string& verb)
   return true;
 }
 
-
+/// Runs the current screen's own event handler on a host-built event — what the guest's own pump
+/// `sub_82370450` does with an event `GUI:PullEvent()` returned: builds the 12-byte
+/// `{LHString name, int32 type, int32 id}` and calls the screen's `vtable+20` (0x823705E0).
+/// Everything downstream (the arming check at `screen+198`, the purchase, the message box) is the
+/// guest's own code. The slot is READ from the live object's vtable and compared against the
+/// verified handlers; false when the screen is not one this build can call.
 bool DispatchMenuEventDirect(PPCContext& ctx, uint8_t* base, const std::string& name,
                              uint32_t type, uint32_t id) {
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
@@ -5920,10 +5481,10 @@ bool DispatchMenuEventDirect(PPCContext& ctx, uint8_t* base, const std::string& 
   const uint32_t slot = LoadGuestU32(base, vtable + 20u);
 
   // Furniture/decoration (26/27) and options (18) do not act on the event at all: their choice
-  // is made in the input handler's 36 arm from the guest's own highlight (`sub_826B6A18`,
-  // `sub_826DA228` @0x826da3ec). The host commits those screens with `MenuHighlight:<name>`
-  // followed by `ScreenAction:36` (Engine_UiScreenTemplate.CommitsByHighlight); an event pushed
-  // at them is delivered below and answers only the scroll sounds, as the guest's switch says.
+  // is made in the input handler's 36 arm from the highlighted row (`sub_826B6A18`,
+  // `sub_826DA228` @0x826da3ec), which `sub_826C1B50` answers from Godot's stated row — the host
+  // commits those screens with `ScreenAction:36` (Engine_UiScreenTemplate.CommitsByHighlight);
+  // an event pushed at them answers only the scroll sounds, as the guest's switch says.
 
   switch (refii::guest::ToTu1(slot)) {
     case 0x826C2660u: case 0x826A26E8u: case 0x826D1800u: case 0x826D4D58u:
@@ -8505,18 +8066,6 @@ void SampleHeroDerived(PPCContext& ctx, uint8_t* base) {
 /// Commits a menu row by identity — see kActionMenuEventPrefix.
 bool DispatchMenuEvent(PPCContext& ctx, uint8_t* base, const std::string& name, uint32_t type,
                        uint32_t id) {
-  // The name goes into a Lua single-quoted literal, so anything that could close it early or
-  // escape into the chunk is refused rather than sanitised — a mangled name would match a
-  // different branch of somebody's strcmp, which is worse than not committing.
-  for (char c : name) {
-    if (c == '\'' || c == '\\' || c == '\n' || c == '\r' ||
-        static_cast<unsigned char>(c) < 0x20u) {
-      REXLOG_INFO("Refii guest-tick pump: MenuEvent name '{}' is not a safe Lua literal — dropped",
-                  name);
-      return true;
-    }
-  }
-
   // The abilities screen's A is armed before it is delivered, because in the guest the arm is
   // part of the press. `sub_826C2958` (the screen's vtable+24) answers A and Y by writing one
   // byte and only then firing the event chain:
@@ -8547,36 +8096,14 @@ bool DispatchMenuEvent(PPCContext& ctx, uint8_t* base, const std::string& name, 
     }
   }
 
-  std::string chunk = "GUI:PushButtonEvent('";
-  chunk += name;
-  chunk += "',";
-  chunk += std::to_string(type);
-  chunk += ',';
-  chunk += std::to_string(id & 0xFFFFu);
-  chunk += ',';
-  chunk += std::to_string((id >> 16) & 0xFFFFu);
-  chunk += ')';
-
-  // The direct route first: it is the only one that executes (see DispatchMenuEventDirect).
-  // No pending sample on this route — `ConfirmPendingMenuEvent` watches the Lua queue's depth,
-  // which a direct dispatch never touches.
-  if (DispatchMenuEventDirect(ctx, base, name, type, id)) {
-    return true;
+  // The screen's own handler, called with the event. The guest's Lua event queue
+  // (`guieventqueue.lua`, drained by `sub_82370450`) is cut with the rest of its UI Lua, so a
+  // class this build cannot call is reported, not pushed.
+  if (!DispatchMenuEventDirect(ctx, base, name, type, id)) {
+    REXLOG_INFO("Refii guest-tick pump: MenuEvent '{}' type={} id=0x{:08X} has no handler this "
+                "build calls — not delivered",
+                name, type, id);
   }
-
-  // The push is kept for screens whose handler this build cannot call, so their commits still
-  // reach the queue the guest drains (`sub_82370450`); it runs in the UI pass, inside the Lua
-  // window, so it executes now.
-  if (!RunGuestLua(ctx, base, chunk)) {
-    // RunGuestLua already logged which refusal it was.
-    REXLOG_INFO("Refii guest-tick pump: MenuEvent '{}' was not delivered — see the reason above",
-                name);
-    return true;
-  }
-
-  // The guest pops the queue on its own GUI update, so the delivery is confirmed one tick later,
-  // via `_menuEventPending`.
-  _menuEventPending = MenuEventPending{name, type, id, GuestEventQueueSize(ctx, base)};
   return true;
 }
 
@@ -9047,6 +8574,9 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base, bool ui_pass) {
       ran = StartNewGame(ctx, base, /*female=*/false);
     } else if (name == "New Game Female") {
       ran = StartNewGame(ctx, base, /*female=*/true);
+    } else if (name.rfind(kActionPresentationEventPrefix, 0) == 0) {
+      ran = refii::vfs::PostPresentationEvent(
+          ctx, base, name.substr(std::strlen(kActionPresentationEventPrefix)));
     } else if (name.rfind(kActionLanguagePrefix, 0) == 0) {
       // The name carries the index; the dispatcher takes it from `a2+8` and the name is never
       // looked at on this path, so it is left empty rather than sent as "Language:3".
@@ -9166,46 +8696,6 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base, bool ui_pass) {
 
       ran = DispatchSpellAssign(ctx, base, static_cast<uint32_t>(slot),
                                 static_cast<uint32_t>(spell), static_cast<uint32_t>(player));
-    } else if (name == kActionMenuSelect) {
-      // `SelectMenuItem` minus its first line. The shipped body
-      // (`expandablemenuinput.dis main.5`) is the ghost test, `GUI:PushButtonEvent`, and the
-      // `#ChildItems > 0` fold with its expand or collapse event, prefixed by
-      // `if self:WaitForInput() then return end`. `WaitForInput` (main.4) computes
-      // `the_time - start_time`, and `the_time` has NO WRITER anywhere in `default.xex`, so it
-      // is nil, the subtraction raises, `luaD_pcall` swallows it and `SelectMenuItem` aborts
-      // before the event and the fold. Refusing a press mid-animation is the host's decision
-      // anyway; everything else here is the shipped function verbatim.
-      ran = RunGuestLua(
-          ctx, base,
-          "local m=g_Menu local i=m.VisibleInfo.VisibleElements[m.CurrentHighlightIdx] "
-          "if i and not i.Ghosted then "
-          "GUI:PushButtonEvent(i.Name,i.EventType,i.IDLow,i.IDHigh) "
-          "if #i.ChildItems>0 then i.IsOpen=not i.IsOpen "
-          "if i.IsOpen then m:FireExpandMenuItemEvent(m.CurrentHighlightIdx) "
-          "else m:FireCollapseMenuItemEvent(m.CurrentHighlightIdx) end end end");
-    } else if (name.rfind(kActionMenuHighlightPrefix, 0) == 0) {
-      const std::string row = name.substr(std::strlen(kActionMenuHighlightPrefix));
-      bool safe = !row.empty();
-      for (char c : row) {
-        if (c == '\'' || c == '\\' || c == '\n' || c == '\r' ||
-            static_cast<unsigned char>(c) < 0x20u) {
-          safe = false;
-        }
-      }
-      if (!safe) {
-        REXLOG_INFO("Refii guest-tick pump: '{}' is not a safe Lua literal — dropped", name);
-        ran = true;
-      } else {
-        ran = RunGuestLua(
-            ctx, base,
-            "local m=g_Menu local v=m.VisibleInfo.VisibleElements local f=0 "
-            "for i=1,#v do if v[i].Name=='" + row + "' then f=i break end end "
-            "if f>0 then m.CurrentHighlightIdx=f end");
-        if (ran) {
-          REXLOG_INFO("Refii guest-tick pump: MenuHighlight '{}' — the guest's cursor follows",
-                      row);
-        }
-      }
     } else if (name.rfind("debug-call:", 0) == 0) {
       // `debug-call:ADDR[:r3[:r4[:r5[:r6]]]]` — one guest function, called on the guest's own
       // tick thread with the registers stated, result r3 recorded for the host. The debug
@@ -9262,18 +8752,9 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base, bool ui_pass) {
                           luaRan ? "ok" : "error, false assertion, or no game VM");
       ran = true;
     } else if (name.rfind("debug-lua:", 0) == 0) {
-      // Arbitrary Lua against the live GUI state, result noted for the host. GuiLua: predates
-      // this and stays; this variant exists so the caller can SEE whether the chunk ran.
-      const std::string chunk = name.substr(std::strlen("debug-lua:"));
-      const bool luaRan = RunGuestLua(ctx, base, chunk);
-      NoteDebugCallResult(0, luaRan ? 1u : 0u,
-                          luaRan ? "ok" : "no live presentation to run Lua in");
-      ran = true;
-    } else if (name.rfind(kActionGuiLuaPrefix, 0) == 0) {
-      const std::string chunk = name.substr(std::strlen(kActionGuiLuaPrefix));
-      ran = RunGuestLua(ctx, base, chunk);
-      REXLOG_INFO("Refii guest-tick pump: GuiLua probe {} ({} bytes)",
-                  ran ? "ran" : "had no live presentation", chunk.size());
+      // The guest's GUI Lua is cut (rex_lhGui_RunLuaString): no presentation carries a script
+      // library to ask. The game VM's probe is `debug-gamelua:`.
+      NoteDebugCallResult(0, 0u, "the guest's GUI Lua is cut — use debug-gamelua");
       ran = true;
     } else if (name.rfind(kActionMenuEventPrefix, 0) == 0) {
       // `MenuEvent:<name>:<type>:<id>` — the name may itself contain no colon, so the two
@@ -9445,52 +8926,14 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base, bool ui_pass) {
       }
 
       ran = DispatchReceiveItemsAction(ctx, base, static_cast<uint32_t>(code));
-    } else if (name.rfind(kActionMenuScrollPrefix, 0) == 0) {
-      std::string where = name.substr(std::strlen(kActionMenuScrollPrefix));
-
-      // "<direction>" is a press; "<direction>:released" is the matching release. The latch is
-      // the guest's, so both edges have to be sent — see kActionMenuScrollPrefix.
-      bool held = true;
-      const std::string::size_type edge = where.find(':');
-      if (edge != std::string::npos) {
-        held = where.substr(edge + 1) != "released";
-        where = where.substr(0, edge);
-      }
-
-      MenuDirection direction = MenuDirection::Up;
-      if (where == "up") {
-        direction = MenuDirection::Up;
-      } else if (where == "down") {
-        direction = MenuDirection::Down;
-      } else if (where == "left") {
-        direction = MenuDirection::Left;
-      } else if (where == "right") {
-        direction = MenuDirection::Right;
-      } else {
-        REXLOG_INFO("Refii guest-tick pump: '{}' names no direction — dropped", name);
-        GuestTickPumpNoteRan();
-        continue;
-      }
-
-      ran = DispatchMenuDirection(ctx, base, direction, held);
     } else if (name.rfind(kActionScreenActionPrefix, 0) == 0) {
       std::string codeText = name.substr(std::strlen(kActionScreenActionPrefix));
-
-      // `ScreenAction:37:root` — the host's answer to a predicate the guest cannot evaluate,
-      // carried on the action name so it travels with the press it belongs to.
-      bool at_root = false;
-      const std::string::size_type flag = codeText.find(':');
-      if (flag != std::string::npos) {
-        at_root = codeText.substr(flag + 1) == "root";
-        codeText = codeText.substr(0, flag);
-      }
 
       char* end = nullptr;
       const unsigned long code = std::strtoul(codeText.c_str(), &end, 10);
       // The codes these screens answer; anything else is a host defect. 28..31 are the
-      // DIRECTIONAL presses: the list screens swallow them (their scrolling is Lua's
-      // `onUpdate` polling `GUI:IsPushingUp()`, hence MenuScroll), but the OPTIONS page answers
-      // them natively — 28/29 move the row, 30/31 change its VALUE (pickbox index or slider
+      // DIRECTIONAL presses: the list screens swallow them (their cursor is Godot's), but the
+      // OPTIONS page answers them natively — 28/29 move the row, 30/31 change its VALUE (pickbox index or slider
       // float). 6 is the one-off panels' DISMISS: the minigame tally (`sub_823CDC08`) and the
       // quest completion card (`sub_823D3F98`) answer only it. 32..35 are the RELEASES: the
       // direction gate `sub_828818E8` resets its last direction and both repeat clocks on them
@@ -9504,7 +8947,7 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base, bool ui_pass) {
         continue;
       }
 
-      ran = DispatchScreenAction(ctx, base, static_cast<uint32_t>(code), at_root);
+      ran = DispatchScreenAction(ctx, base, static_cast<uint32_t>(code));
     } else if (name.rfind(kActionMenuBoxSelectPrefix, 0) == 0 ||
                name.rfind(kActionMenuBoxAnswerPrefix, 0) == 0) {
       const bool select = name.rfind(kActionMenuBoxSelectPrefix, 0) == 0;
@@ -10030,33 +9473,6 @@ void MaybeArmInGameSimulation(PPCContext& ctx, uint8_t* base) {
 // guest memory through base plus the take-down event signal, no PPC call.
 
 /// One tick's worth of pump work. Split out so the hook body stays the delegation it must be.
-/// Reports whether the PREVIOUS tick's commit reached the Lua queue.
-///
-/// A tick later, because the push is deferred to the GUI's own command flush. The queue is
-/// Lua-side and C++ is pull-only, so its depth is the only observable that moves.
-void ConfirmPendingMenuEvent(PPCContext& ctx, uint8_t* base) {
-  if (!_menuEventPending) {
-    return;
-  }
-
-  const MenuEventPending pending = *_menuEventPending;
-  _menuEventPending.reset();
-
-  const int now = GuestEventQueueSize(ctx, base);
-  if (pending.depth_after_push < 0 || now < 0) {
-    return;
-  }
-
-  if (now > pending.depth_after_push) {
-    return;
-  }
-
-  REXLOG_INFO(
-      "Refii guest-tick pump: MenuEvent '{}' type={} id={} did NOT reach the queue "
-      "(EventQueueSize {} -> {} across the flush) — the chunk never ran, or PushButtonEvent "
-      "refused it",
-      pending.name, pending.type, pending.id, pending.depth_after_push, now);
-}
 
 /// Who owns the open in-game GUI, sampled for the host (split screen routes that player's pad to
 /// the menu and seats it in their half). The guest's own test is `sub_8236E400(gui)`, gui =
@@ -10235,7 +9651,6 @@ void SampleMenuOwner(PPCContext& ctx, uint8_t* base) {
 void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   g_guest_base.store(base, std::memory_order_relaxed);
   RunCoopKickCountdown(ctx, base);
-  ConfirmPendingMenuEvent(ctx, base);
 
   const uint64_t tick = GuestTickPumpObserveTick();
 
@@ -10263,7 +9678,6 @@ void OnGuestTick(PPCContext& ctx, uint8_t* base) {
   SampleMenuOwner(ctx, base);
 
   DrainOnGuestThread(ctx, base, /*ui_pass=*/false);
-  ServiceAbilityTutorial(ctx, base);
 
   // Hard mods' per-tick callbacks (core/refii_mod.h).
   RunModTicks(ctx, base);
@@ -10496,12 +9910,12 @@ REFII_MENU_BOUNDARY_HOOK(rex_lhGuiShopScreen_PopulateMenu)
 REFII_MENU_BOUNDARY_HOOK(rex_lhGuiLogbookScreen_PopulateMenu)
 REFII_MENU_BOUNDARY_HOOK(rex_lhGuiGiftGoldScreen_PopulateMenu)
 
-// The main menu's rebuild also resets every load card's portrait to blank.tex (0x826e2118).
+// The main menu's rebuild also resets every load card's portrait to blank.tex (0x826e2118),
+// stated where it takes each card (gui_headless_presentation.cpp, RefiiHeadlessStampCardBlank).
 REX_EXTERN(rex_lhGui_FrontendRoot_PopulateMainMenu) {
   REX_FUNC_PROLOGUE();
   refii_bridge_menu_spawn_begin_for(PopulatingScreenId(base));
   __imp__rex_lhGui_FrontendRoot_PopulateMainMenu(ctx, base);
-  refii::vfs::TellFrontEndTextures(base);
 }
 
 #undef REFII_MENU_BOUNDARY_HOOK

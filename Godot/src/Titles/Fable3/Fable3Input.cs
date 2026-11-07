@@ -69,14 +69,21 @@ public sealed class Fable3Input : GameTitleInput
 
 	/// <summary>
 	/// The world has the input in play with nothing of the guest's or ours over it: the HUD root at
-	/// state 2 is the guest's own word that a box-manager screen has the pad (the HUD screen's tick
-	/// sub_825C3A78 sets it while BM+24 shows, 0x825c3d5c, and back to 1 at 0x825c3d8c) — Options among
+	/// state 2 is the guest's own word that a box-manager screen has the pad (every box's Show hides
+	/// it through sub_825C1CB0, its hide shows it through sub_825C1D28; `@Hud.Root`) — Options among
 	/// them. Under one the keys take their menu meanings and the cursor is free for the menus.
 	/// </summary>
 	public override bool WorldHasInput => base.WorldHasInput && !Fable3Elements.HudHidden && !Fable3MapTable.Presented &&
 		!Fable3Keyboard.IsOpen && !Fable3HostOptions.IsOpen;
 
 	public override bool PointerOverlay => Fable3Keyboard.IsOpen || Fable3HostOptions.IsOpen;
+
+	/// <summary>
+	/// A map table is presented (<see cref="Fable3MapTable.Presented"/>) with nothing of ours over it:
+	/// the map has the pad, its cursor on the left stick (GameActionWorldMapMoveCursorXBOX, InputType 4),
+	/// so the mouse drives that stick and the keys take the map's meanings.
+	/// </summary>
+	public override bool MapUp => Fable3MapTable.Presented && !Fable3Keyboard.IsOpen && !Fable3HostOptions.IsOpen;
 
 	/// <summary>Expression choices take the keys only while the world has the input: a screen over them has its own.</summary>
 	public override bool ChoicesUp => Fable3WorldIcons.ChoicesUp && WorldHasInput;
@@ -106,11 +113,13 @@ public sealed class Fable3Input : GameTitleInput
 		new("sprint", "Shift", "Hold to run (A held).") { Press = KeyPress.A, When = KeyContext.Play },
 		new("interact", "E", "Interact, talk, pick up (A).") { Press = KeyPress.A, When = KeyContext.Play },
 		new("roll", "Space", "Roll in combat (A).") { Press = KeyPress.A, When = KeyContext.Play },
-		new("attack", "MouseLeft", "Attack with the mode 1/2/3 picked: melee, ranged or magic. Hold to block, " +
-			"aim or charge.") { Press = KeyPress.Attack, When = KeyContext.PlayNoChoice },
+		new("attack", "MouseLeft", "Attack with the mode 1/2/3 picked: melee, magic or ranged. Hold to block, " +
+			"charge or aim.") { Press = KeyPress.Attack, When = KeyContext.PlayNoChoice },
 		new("melee_mode", "1", "Put the attack button on melee.") { Press = KeyPress.MeleeMode, When = KeyContext.PlayNoChoice },
-		new("ranged_mode", "2", "Put the attack button on the ranged weapon.") { Press = KeyPress.RangedMode, When = KeyContext.PlayNoChoice },
-		new("magic_mode", "3", "Put the attack button on magic.") { Press = KeyPress.MagicMode, When = KeyContext.PlayNoChoice },
+		// Fable III PC: 1 melee, 2 magic, 3 ranged (`SwitchToSpellsPressedPC` key 3 / `SwitchToRangedPressedPC`
+		// key 4, DirectInput scancodes for 2 and 3).
+		new("ranged_mode", "3", "Put the attack button on the ranged weapon.", new[] { "2" }) { Press = KeyPress.RangedMode, When = KeyContext.PlayNoChoice },
+		new("magic_mode", "2", "Put the attack button on magic.", new[] { "3" }) { Press = KeyPress.MagicMode, When = KeyContext.PlayNoChoice },
 		new("melee", "F", "Melee directly, whatever the mode (X).") { Press = KeyPress.X, When = KeyContext.Play },
 		new("ranged", "R", "Ranged directly, whatever the mode (Y).") { Press = KeyPress.Y, When = KeyContext.Play },
 		new("magic", "C", "Magic directly, whatever the mode (B).") { Press = KeyPress.B, When = KeyContext.Play },
@@ -126,10 +135,12 @@ public sealed class Fable3Input : GameTitleInput
 			{ Press = KeyPress.Back, When = KeyContext.Play },
 		new("photo_mode", "F11", "Open or close Photo Mode (L3 + R3 on controller).") { Press = KeyPress.PhotoMode },
 		new("pause", "Escape", "The Sanctuary (Start). Escape is back in menus.") { Press = KeyPress.Pause },
-		new("shortcut_up", "F1", "D-pad up: its shortcut.") { Press = KeyPress.DpadUp, When = KeyContext.Play },
+		// Fable III PC: F1 right, F2 left, F3 down, F4 up (`GUIRightPC` 59, `GUILeftPC` 60, `GUIDownPC` 61,
+		// `GUIUpPC` 62); the potion is F1 (manual).
+		new("shortcut_up", "F4", "D-pad up: its shortcut.", new[] { "F1" }) { Press = KeyPress.DpadUp, When = KeyContext.Play },
 		new("shortcut_left", "F2", "D-pad left: its shortcut.") { Press = KeyPress.DpadLeft, When = KeyContext.Play },
 		new("shortcut_down", "F3", "D-pad down: its shortcut.") { Press = KeyPress.DpadDown, When = KeyContext.Play },
-		new("shortcut_right", "F4", "D-pad right: its shortcut.") { Press = KeyPress.DpadRight, When = KeyContext.Play },
+		new("shortcut_right", "F1", "D-pad right: its shortcut.", new[] { "F4" }) { Press = KeyPress.DpadRight, When = KeyContext.Play },
 
 		new("press_start", "Enter,Space,Escape", "Press START on the title screen.") { Press = KeyPress.Start, When = KeyContext.TitleScreen },
 		new("menu_accept", "1,Enter,E,Space", "Accept in a menu (A).") { Press = KeyPress.A, When = KeyContext.Menu },
@@ -146,6 +157,22 @@ public sealed class Fable3Input : GameTitleInput
 		new("tab_next", "Equal,PageDown", "Next category in a menu (right bumper).") { Press = KeyPress.RightShoulder, When = KeyContext.Menu },
 		new("scroll_prev", "BracketLeft", "Scroll back in a menu (left trigger).") { Press = KeyPress.LeftTrigger, When = KeyContext.Menu },
 		new("scroll_next", "BracketRight", "Scroll on in a menu (right trigger).") { Press = KeyPress.RightTrigger, When = KeyContext.Menu },
+
+		// THE MAP TABLE as Fable III PC binds it (GameControlsPC): the mouse moves the cursor
+		// (`WorldMapMoveCursorPC`, mouse movement; the 360's cursor is the left stick, which the mouse
+		// drives here, and WASD with it), the left button accepts and the right cancels
+		// (`WorldMapAcceptPC` / `WorldMapCancelPC`), 3 and 2 are the context actions (`...Action1PC`
+		// DirectInput 4, `...Action2PC` 3 — the pad's Y and X, XboxButton 14 and 13), 4 lifts a map
+		// item (`WorldMapMoveItemTogglePC` 5 — the pad's left trigger, XboxButton 15), Z and C orbit
+		// (`WorldMapOrbitClockwisePC` 44 at ControlDirection X -1, `...AntiClockwisePC` 46 at +1 — the
+		// pad's right stick, `WorldMapOrbitCameraXBOX` InputType 5).
+		new("map_accept", "MouseLeft", "Accept on the map table (A).") { Press = KeyPress.A, When = KeyContext.Map },
+		new("map_cancel", "MouseRight", "Cancel on the map table (B). Escape backs out too.") { Press = KeyPress.B, When = KeyContext.Map },
+		new("map_action_1", "3", "The map table's first context action (Y).") { Press = KeyPress.Y, When = KeyContext.Map },
+		new("map_action_2", "2", "The map table's second context action (X).") { Press = KeyPress.X, When = KeyContext.Map },
+		new("map_move_item", "4", "Lift or set down a map item (left trigger).") { Press = KeyPress.LeftTrigger, When = KeyContext.Map },
+		new("map_orbit_clockwise", "Z", "Orbit the map clockwise (right stick left).") { Press = KeyPress.RightStickLeft, When = KeyContext.Map },
+		new("map_orbit_anticlockwise", "C", "Orbit the map anticlockwise (right stick right).") { Press = KeyPress.RightStickRight, When = KeyContext.Map },
 
 		new("choice_1", "1,MouseLeft", "The first expression choice (A).") { Press = KeyPress.A, When = KeyContext.Choice },
 		new("choice_2", "2", "The second expression choice (X).") { Press = KeyPress.X, When = KeyContext.Choice },
@@ -223,6 +250,26 @@ public sealed class Fable3Input : GameTitleInput
 			if (choice is not null)
 			{
 				return choice;
+			}
+		}
+
+		if (!playing && MapUp)
+		{
+			string? map = button switch
+			{
+				"A" => shown("map_accept"),
+				"B" => shown("map_cancel"),
+				"X" => shown("map_action_2"),
+				"Y" => shown("map_action_1"),
+				"LT" => shown("map_move_item"),
+				"LS" => "Mouse",
+				"RS" => shown("map_orbit_clockwise") + "/" + shown("map_orbit_anticlockwise"),
+				"Start" => shown("pause"),
+				_ => null,
+			};
+			if (map is not null)
+			{
+				return map;
 			}
 		}
 

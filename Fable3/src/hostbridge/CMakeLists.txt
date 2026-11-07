@@ -17,9 +17,10 @@ add_library(refiii_hostbridge SHARED
     ${CMAKE_CURRENT_LIST_DIR}/src/entity_feed.cpp
     # Each hero's dog as the game binds it (sub_82399CB8).
     ${CMAKE_CURRENT_LIST_DIR}/src/companion_feed.cpp
-    # The HUD the guest states: its element registries (texts, meters) and the screen fade.
+    # The HUD the guest states (Fable3/src/hooks/src/hud_hooks.cpp): its element registries (texts,
+    # meters, pulsers) and the screen fade.
     ${CMAKE_CURRENT_LIST_DIR}/src/hud_feed.cpp
-    # The world icons, emotion choices and interaction mode the guest's HUD holds, read live.
+    # The world icons and emotion choices the guest states (Fable3/src/hooks/src/world_icon_hooks.cpp).
     ${CMAKE_CURRENT_LIST_DIR}/src/icon_feed.cpp
     # The aim reticules' records as their draw reads them (Fable3/src/hooks/src/reticle_hooks.cpp states the objects).
     ${CMAKE_CURRENT_LIST_DIR}/src/reticle_feed.cpp
@@ -46,6 +47,9 @@ add_library(refiii_hostbridge SHARED
     ${CMAKE_CURRENT_LIST_DIR}/src/cloth_feed.cpp
     # The map table the guest presents (Fable3/src/hooks/src/map_table_hooks.cpp).
     ${CMAKE_CURRENT_LIST_DIR}/src/map_table_feed.cpp
+    # What the guest tells its headless presentations (Fable3/src/hooks/src/
+    # headless_presentation_hooks.cpp): the told queues and the headless files and element ids.
+    ${CMAKE_CURRENT_LIST_DIR}/src/headless_feed.cpp
 )
 
 # The whole core, --no-undefined and OUTPUT_NAME refii_hostbridge (src/hostcore/CMakeLists.txt).

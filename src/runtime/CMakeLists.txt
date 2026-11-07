@@ -53,6 +53,10 @@ add_library(refii_runtime SHARED
     # The UI cut's arrival queue: the `GUI.*` native calls a title's luaD_precall hook posts, with
     # their arguments, drained by the shared host exports; and the host's answers to predicates.
     ${REFII_RUNTIME_ROOT}/src/core/gui_native_calls.cpp
+    # What a title's guest tells its presentations' elements (slides, attributes, active, texts,
+    # textures) and its headless presentations' registry: a title's hooks push, its host bridge
+    # takes for the shell's RefiiHostTakeTold* / RefiiHostToldHeadless* exports.
+    ${REFII_RUNTIME_ROOT}/src/core/told_statements.cpp
     # The camera a title states and the host's world-build hold, between its hooks and its
     # host bridge.
     ${REFII_RUNTIME_ROOT}/src/core/stated_view.cpp
@@ -66,6 +70,16 @@ add_library(refii_runtime SHARED
     # as the guest's draw publishes them.
     ${REFII_RUNTIME_ROOT}/src/core/stated_cloth.cpp
     ${REFII_RUNTIME_ROOT}/src/core/stated_classic_particles.cpp
+    # The world icons and choice records a title states between its hooks and its host bridge.
+    ${REFII_RUNTIME_ROOT}/src/core/stated_world_icons.cpp
+    # The HUD element registries (texts, meters, pulsers), the screen fade and the aim reticules a
+    # title states.
+    ${REFII_RUNTIME_ROOT}/src/core/stated_hud.cpp
+    # The loading screen, the game mode stacks and GUI screen, and the installed cultures a title
+    # states for the shell.
+    ${REFII_RUNTIME_ROOT}/src/core/stated_game_state.cpp
+    # The options a title states: each applier's value and the saved profile's.
+    ${REFII_RUNTIME_ROOT}/src/core/stated_options.cpp
     # The GUI scenes a title presents in place of the world (map tables): objects, camera, presented.
     ${REFII_RUNTIME_ROOT}/src/core/stated_scene_objects.cpp
 )

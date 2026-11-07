@@ -99,6 +99,7 @@ public static class Engine_BitmapFontTexture
 		// `filter_linear_mipmap` samples when a label draws smaller than authored.
 		int factor = Mathf.Max(width, height) * 4 <= 4096 ? 4 : 2;
 		mask.Resize(width * factor, height * factor, Image.Interpolation.Cubic);
+		ImageTexture? field = DistanceField(font, mask, factor);
 		mask.GenerateMipmaps();
 
 		if (mask.IsEmpty())
@@ -108,7 +109,96 @@ public static class Engine_BitmapFontTexture
 
 		ImageTexture texture = ImageTexture.CreateFromImage(mask);
 		texture.SetMeta(SupersampleMeta, factor);
+		if (field is not null)
+		{
+			texture.SetMeta(DistanceFieldMeta, field);
+		}
+
 		return texture;
+	}
+
+	/// <summary>
+	/// Meta on a coverage atlas: its signed distance field (<see cref="Engine_SdfField"/>), the
+	/// texture `ui_text.gdshader` draws from. The coverage stays the atlas for plain 2D drawing.
+	/// </summary>
+	public static readonly StringName DistanceFieldMeta = "distance_field";
+
+	/// <summary>The distance field paired with a coverage atlas, or null.</summary>
+	public static Texture2D? DistanceFieldOf(Texture2D? atlas) =>
+		atlas is not null && atlas.HasMeta(DistanceFieldMeta)
+			? atlas.GetMeta(DistanceFieldMeta).As<Texture2D>()
+			: null;
+
+	/// <summary>Bump when the field's encoding changes, so cached fields are rebuilt.</summary>
+	private const int DistanceFieldVersion = 1;
+
+	/// <summary>
+	/// The supersampled coverage's distance field, L8 with mips. Built on the player's machine
+	/// from their own font and cached in the title's cache folder (derived game data never ships),
+	/// keyed by the atlas payload; a second start reads the cache. Spread is two shipped texels
+	/// either side of the edge, which is what an outline or a soft shadow can reach.
+	/// </summary>
+	private static ImageTexture? DistanceField(Engine_BitmapFont font, Image mask, int factor)
+	{
+		int width = mask.GetWidth();
+		int height = mask.GetHeight();
+		string path = DistanceFieldCachePath(font, factor);
+		Image? image = null;
+		try
+		{
+			if (System.IO.File.Exists(path))
+			{
+				Image cached = Image.LoadFromFile(path);
+				if (cached.GetWidth() == width && cached.GetHeight() == height)
+				{
+					cached.Convert(Image.Format.L8);
+					image = cached;
+				}
+			}
+		}
+		catch (Exception)
+		{
+			image = null;
+		}
+
+		if (image is null)
+		{
+			byte[] rgba = mask.GetData();
+			var coverage = new float[width * height];
+			for (int i = 0; i < coverage.Length; ++i)
+			{
+				coverage[i] = rgba[(i * 4) + 3] / 255f;
+			}
+
+			byte[] field = Engine_SdfField.FromCoverage(coverage, width, height,
+				spread: 2f * factor, edgeWidth: factor);
+			image = Image.CreateFromData(width, height, false, Image.Format.L8, field);
+			try
+			{
+				System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+				image.SavePng(path);
+			}
+			catch (Exception exception)
+			{
+				GD.PushWarning($"[ui-font] distance field not cached at {path}: {exception.Message}");
+			}
+		}
+
+		if (image.IsEmpty())
+		{
+			return null;
+		}
+
+		image.GenerateMipmaps();
+		return ImageTexture.CreateFromImage(image);
+	}
+
+	private static string DistanceFieldCachePath(Engine_BitmapFont font, int factor)
+	{
+		byte[] digest = Engine_Hash.Sha1(font.AtlasBlocks.Span);
+		string key = Convert.ToHexString(digest, 0, 8).ToLowerInvariant();
+		return System.IO.Path.Combine(Engine_Title.Active.CacheDirectory, "fonts",
+			$"sdf-v{DistanceFieldVersion}-{key}-x{factor}.png");
 	}
 
 	/// <summary>

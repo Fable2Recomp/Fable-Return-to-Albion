@@ -239,12 +239,11 @@ public static class Engine_UiModel
 	}
 
 	/// <summary>
-	/// One pause-map quest marker: an OPAQUE key (never dereferenced host-side), the
-	/// page-local centre, and the quad's UV bounds — the type discriminator, matched against
-	/// the file's own token quads.
+	/// One pause-map quest marker as the guest names it to its placer (`sub_826A3FD8`): the
+	/// `Foreground.ReusableTokens` entry it draws (`Quest`, `QuestExit`, `QuestGiver`) and the
+	/// world point it projects, in the guest's coordinates.
 	/// </summary>
-	public readonly record struct MapMarker(
-		uint Key, float X, float Y, float UMin, float VMin, float UMax, float VMax);
+	public readonly record struct MapMarker(string Token, float X, float Y, float Z);
 
 	/// <summary>
 	/// The front end as a MODEL — which entries exist and which screen is up — for a menu Godot
@@ -583,6 +582,12 @@ public static class Engine_UiModel
 
 		/// <summary>Held at last frame's content rather than being updated.</summary>
 		public bool IsFrozen => (State & 2u) != 0u;
+
+		/// <summary>
+		/// A headless presentation (state bit 3): no .bgf tree was built, so there is nothing to
+		/// sample — it stands on its file and what the guest tells it.
+		/// </summary>
+		public bool IsHeadless => (State & 8u) != 0u;
 
 		/// <summary>
 		/// Parked by the guest: loaded, kept in the registry, skipped by the scene draw. The pause

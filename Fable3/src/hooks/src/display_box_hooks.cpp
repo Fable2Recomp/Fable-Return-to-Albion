@@ -1,57 +1,122 @@
-// refii - Fable 3's display boxes and menu box, stated at the moment the guest shows and drops
-// them, for Godot's Fable3GuiNatives / Fable3Boxes. The natives that QUEUE a box
-// (DisplayMessageBox, DisplayYesNoQuestion, …) are not the moment it is on screen — a box waits
-// behind the one showing, and many boxes are queued by C++ and never pass a native — so the
-// statement is taken from the box manager itself.
+// refii - Fable 3's display boxes, the pause screen's message box and the menu box: stated at
+// the calls that make, show, drop and close them, for Godot's Fable3GuiNatives / Fable3Boxes,
+// which draw them and own their pad. Godot's answer comes back as a guest tick action and is
+// handed to the box's OWN answer function on the guest's thread (AnswerBoxAction); the box's pad
+// handler does nothing while Godot owns it.
 //
 // THE BOX MANAGER BM = *(*(GUI+0x1C)+0x30) (GUI = *0x83556490) holds two queues of 28 bytes at
 // BM+4 (Q0: messages, questions, adjusters, quest boxes) and BM+32 (Q1: intermission and info
-// cards, button boxes): +4/+8 the pending vector's begin/end (8-byte {Box*, refcount*} entries),
-// +20 the SHOWING box's shared_ptr (+20 Box*, +24 count). Each tick the screen manager runs the
-// queue's Update sub_822878B0(queue) (0x821B65DC / 0x821B660C):
-//   - a showing box's vt[5] Update returning 0 releases it (0x82287910, `*(queue+20) = 0` at
-//     0x82287918) — the ONE exit for lifetime, Hide and RemoveDisplayBox;
-//   - with none showing and a pending box, unless the menu box is open (`*(SM+0x34)` +12, or its
-//     close timer +4 > 0), the queue's own vt[0] (sub_825FC030 for Q0) takes the front into +20
-//     (0x825FC060) and calls the box's vt[1] Show (0x825FC09C).
-// So the shared_ptr at queue+20 before and after that call states every open and close.
+// cards, button boxes). Queue q: +4/+8 the pending vector's begin/end (8-byte {Box*, count*}
+// entries), +20 the SHOWING box's shared_ptr. Its writers:
+//   - the push sub_825FBBF8(q, shared_ptr<Box>) — every creator's one door (93 callers: the
+//     `GUI.Display*` natives, the C++ queries, the cards) — appends at q+4 through sub_825FC1C8
+//     (`v3[1] += 8` at 0x825FC2DC), except a card of type 6/7/8 whose name is already queued,
+//     which it drops (0x825FBC74..0x825FBC90). The box is complete there: its creator's ctor
+//     wrote every field from its own arguments.
+//   - the queue's tick sub_822878B0(q) (0x821B65DC / 0x821B660C): a showing box whose vt[5]
+//     Update answers 0 is released (0x82287910, `*(q+20) = 0` at 0x82287918) — the one exit for
+//     lifetime, Hide and RemoveDisplayBox; with none showing and a pending box, unless the menu
+//     box is open (`*(SM+0x34)` +12, or its close timer +4 > 0), the queue's own vt[0]
+//     (sub_825FC030 for Q0) takes the front into q+20 (0x825FC060) and calls the box's vt[1]
+//     Show (0x825FC09C) — its only caller is this tick (0x822879D4) — then erases the front.
+//   - the pending erase sub_825FC2F8(out, vector, iterator) (the tick's at 0x822879E4,
+//     RemoveDisplayBox's sub_825FBCC8 at 0x825FBE64, RemoveAllDisplayBoxesWithName's sub_825FBE80
+//     at 0x825FBFFC): `*(vector+4) -= 8` at 0x825FC350.
 //
-// THE BOX (base sub_8291ECD8): +0 vtable, +4 name CCharString, +8 resolved text LHString, +12
-// shown, +16 lifetime, +24 pad filter. The class is its vtable: yes/no off_820B45E0 (+32/+36 the
-// yes/no tags, empty = GUI_YES / GUI_NO; OnAction 41 ANSWER_QUESTION_YES -> 1, 42 -> 0, reply event
-// 68) and the natal query off_820D8868; message off_820B45C0 (73 GUI_CANCEL hides, event 66);
-// numeric adjuster off_820B4600 (+100 min, +104 max, +108 increment, +112 value; 31/32 step, 41/42
-// -> events 69/70 with the value); quest box off_820B4620 (73/61 -> event 67); intermission
-// off_820D87D4 and info card off_820D71CC (+36 Title, +40 ShowAButton, +41 ShowYButton, +44
-// AcceptText, +48 HelpText; A/Y -> event 64) and button box off_820D87F4 on Q1. The guest routes
-// the pad to the showing box itself (sub_825D6A08 -> sub_825C8B68(BM, ev) -> vt[4]), so Godot
-// draws and never answers.
+// THE BOX (base ctor sub_8291ECD8(box, name, text)): +0 vtable, +4 name CCharString (0x8291ED04),
+// +8 resolved text LHString (0x8291ED10), +12 shown. The class is its vtable, and slot 4 is its
+// pad handler HandleInput(box, ev*, player), reached only through sub_825C8B68(BM, ev) — Q0's
+// showing box, else Q1's (0x825C8BEC; the handler's answer is not read). The classes Godot owns:
+//   - message off_820B45C0 (CMessageBox_HandleInput sub_8281B390: 73 GUI_CANCEL plays the cancel
+//     cue and closes it, 0x8281B3D0..0x8281B404; 76 with the download form +33 opens the
+//     marketplace; both only when `+28` is -1 or the player, 0x8281B3BC);
+//   - yes/no off_820B45E0 (+28 = -1, +32/+36 the yes/no tags: Lua_GUI_DisplayYesNoQuestion
+//     0x82518E14..0x82518E30) and the natal query off_820D8868: 41 answers 1, 42 answers 0
+//     through sub_8281BD88(box, answer) (`li r4,1` 0x8281BD54 / `li r4,0` 0x8281BD38), which posts
+//     message event 68 with it (`sub_821CF948(..., 68, ..., 101, answer)` at 0x8281BE08) and
+//     closes the box through its vt[2];
+//   - the numeric adjuster off_820B4600 (ctor sub_8281BEC0(box, text, min, max, increment,
+//     value, …): +100 min, +104 max, +108 increment, +112 value, 0x8281BF2C..0x8281BF38): 41/42
+//     finish it through sub_8281C638(box, accept), which posts event 69 (accept) or 70 with
+//     `box[28]` = +112 (0x8281C688..0x8281C6CC) and closes it;
+//   - the quest box off_820B4620 (CQuestInfoBox_HandleInput sub_8281CB80: 73/61 post event 67 and
+//     close, 0x8281CBF0..0x8281CC04);
+//   - the tutorial notice off_82091964 (CTutorialBox_HandleInput sub_824B29C0: 41 closes).
+// The cards (CAcceptHoldBox: a press and release on its own elements) and the button box stay
+// the guest's: their answers are hold and release, not one call.
 //
-// THE MENU BOX MB = *(SM+0x34): +0 selected, +4 close timer, +12 open, +13 cancelled, +14
-// cancelable, +16/+20 the rows vector (8-byte rows: +0 TextTag CCharString, +4 Enabled byte, six
-// at most), +32 title CCharString. Open sub_825FA220(MB) returns 1 when it opened (`+12 = 1` at
-// 0x825FA3F4); input sub_825FA030(MB, ev, pad) moves +0 (72/74 select, 73/75 cancel, 29/30 up and
-// down); close sub_825FA420(MB) posts event 65 with `cancelled ? 0 : selected + 1` (0x825FA4C0).
+// THE PAUSE SCREEN'S MESSAGE BOX is not a queued box. sub_825CEEB0(G, text LHString, download)
+// — reached only from sub_823AB718 (0x823AB7E8) when the top mode is the GUI's — runs when
+// G+36 is 1 (0x825CEED0): +36 = 2 (0x825CEEE4), +40 = screen 42 `paper.MessageBox` (0x825CEEEC),
+// +88 the download flag (0x825CEED8), and the text through sub_8281B598 (0x825CEFC4). The
+// screen input sub_825CE380(SM, ev, player) (SM = *(GUI+0x1C), 0x825CE3A0) answers it while
+// `*(SM+40) == 42`: 72 GUI_SELECT runs sub_825CF040(SM, 2) (0x825CE3BC), whose reset
+// sub_825CF0C8 (+36 = 1, +40 = 0 at 0x825CF0DC / 0x825CF0E4) drops it; 76 with +88 opens the
+// marketplace (0x825CE3D8). sub_823AB718 also resets an older one first (0x823AB7CC).
+//
+// THE MENU BOX MB = *(SM+0x34): +0 the highlighted row, +12 open, +13 cancelled, +14 cancelable,
+// +16/+20 the rows (8-byte shared_ptrs to {+0 TextTag CCharString, +4 Enabled}), +32 the title,
+// the RESOLVED text LHString (sub_823A9728 resolves the tag, 0x8251861C / 0x82532A8C). Its
+// writers: the row add sub_825F9E68(MB, &tag) while closed and under six rows (0x825F9E74,
+// 0x825F9EA8; enabled 1 at 0x825F9ED0); the row enable sub_825F9FC0(MB, index, enabled)
+// (0x825FA014); the title and cancelable by its two fillers (DisplayMenuBox's sub_825185A0:
+// title 0x82518628, cancelable `+14 = a2` 0x8251864C; Lua_SleepMenu_ShowSleepMenu: title
+// 0x82532A98, rows SLEEP_FOR_*); the open sub_825FA220(MB) returns 1 when it opened (`+12 = 1`
+// at 0x825FA3F4). Its pad handler sub_825FA030(MB, ev, pad) (one caller, sub_825FA980) maps the
+// event through sub_82B13220 (0x825FA070) — 109 up, 114 down, 1 cancel, 28 select — and moves
+// the row with sub_825F9F38(MB, row) (0x825FA154 / 0x825FA1D8). Select is sub_825FA850(MB): an
+// enabled row clears +13 and closes (0x825FA8E4..0x825FA8E8); cancel, when +14, sets +13 and
+// closes (0x825FA0F0..0x825FA0F4). The close sub_825FA420(MB) posts event 65 with
+// `cancelled ? 0 : row + 1` (0x825FA4C0).
 
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
+#include <rex/logging.h>
 #include <rex/ppc.h>
 
+#include "box_answers.h"
 #include "gui_statements.h"
 
+REX_EXTERN(__imp__rex_BoxQueue_Push);
 REX_EXTERN(__imp__rex_BoxQueue_Update);
+REX_EXTERN(__imp__rex_BoxVector_Erase);
+REX_EXTERN(__imp__rex_MessageBox_HandleInput);
+REX_EXTERN(__imp__rex_QueryBox_HandleInput);
+REX_EXTERN(__imp__rex_NatalQueryBox_HandleInput);
+REX_EXTERN(__imp__rex_NumericAdjuster_HandleInput);
+REX_EXTERN(__imp__rex_QuestBox_HandleInput);
+REX_EXTERN(__imp__rex_TutorialBox_HandleInput);
+REX_EXTERN(__imp__rex_GuiManager_ScreenInput);
+REX_EXTERN(__imp__rex_GuiManager_ModalReset);
 REX_EXTERN(__imp__rex_MenuBox_Open);
 REX_EXTERN(__imp__rex_MenuBox_Close);
 REX_EXTERN(__imp__rex_MenuBox_Input);
+REX_EXTERN(__imp__rex_MenuBox_AddRow);
+REX_EXTERN(__imp__rex_MenuBox_SetEnabled);
+REX_EXTERN(rex_MessageBox_HandleInput);
+REX_EXTERN(rex_NatalQueryBox_HandleInput);
+REX_EXTERN(rex_QuestBox_HandleInput);
+REX_EXTERN(rex_TutorialBox_HandleInput);
+REX_EXTERN(rex_GuiManager_ScreenInput);
+REX_EXTERN(rex_MenuBox_Close);
+REX_EXTERN(rex_QueryBox_Answer);
+REX_EXTERN(rex_NumericAdjuster_Answer);
+REX_EXTERN(rex_MenuBox_Highlight);
+REX_EXTERN(rex_MenuBox_Accept);
+REX_EXTERN(rex_GuiInput_MenuAction);
 
 namespace {
 
 using namespace refii::fable3;
 
 constexpr uint32_t kGuiManager = 0x83556490u;
+constexpr uint32_t kQueuePendingEnd = 8u;
 constexpr uint32_t kQueueShowing = 20u;
 constexpr uint32_t kQueueStride = 28u;
 
@@ -117,15 +182,34 @@ constexpr uint32_t kTypeVisibility = 19u;
 constexpr uint32_t kMessageDownload = 33u;
 constexpr uint32_t kMessageActionTag = 36u;
 
-constexpr uint32_t kMenuSelected = 0u;
+/// The adjuster's answer reads its value at +112 (`box[28]`, 0x8281C688).
+constexpr uint32_t kAdjusterValue = 112u;
+
+/// The game actions the owned handlers take (sub_8281B390, sub_82B5F168, sub_8281CB80,
+/// sub_824B29C0, sub_825CE380).
+constexpr uint32_t kActionYes = 41u;
+constexpr uint32_t kActionNo = 42u;
+constexpr uint32_t kActionSelect = 72u;
+constexpr uint32_t kActionCancel = 73u;
+constexpr uint32_t kActionX = 76u;
+
+/// The pause screen's message box: SM+40 is 42 while it is up (0x825CEEEC, read at 0x825CE3AC).
+constexpr uint32_t kScreenManager = 0x1Cu;
+constexpr uint32_t kModalScreenWord = 40u;
+constexpr uint32_t kModalScreen = 42u;
+/// The queue index the modal box is stated under: it is no queue's.
+constexpr int32_t kModalQueue = -1;
+
 constexpr uint32_t kMenuOpen = 12u;
 constexpr uint32_t kMenuCancelled = 13u;
 constexpr uint32_t kMenuCancelable = 14u;
-constexpr uint32_t kMenuRowsBegin = 16u;
-constexpr uint32_t kMenuRowsEnd = 20u;
 constexpr uint32_t kMenuTitle = 32u;
-constexpr uint32_t kMenuRowStride = 8u;
 constexpr uint32_t kMenuMaxRows = 6u;
+/// sub_82B13220's actions the menu box's handler takes (0x825FA078..0x825FA08C).
+constexpr int32_t kMenuActionCancel = 1;
+constexpr int32_t kMenuActionSelect = 28;
+constexpr int32_t kMenuActionUp = 109;
+constexpr int32_t kMenuActionDown = 114;
 
 const char* KindOf(const uint8_t* base, uint32_t box, uint32_t vtable) {
   switch (vtable) {
@@ -166,7 +250,7 @@ int32_t QueueIndex(const uint8_t* base, uint32_t queue) {
   if (!Plausible(gui)) {
     return -1;
   }
-  const uint32_t screens = LoadGuestU32(base, gui + 0x1Cu);
+  const uint32_t screens = LoadGuestU32(base, gui + kScreenManager);
   if (!Plausible(screens)) {
     return -1;
   }
@@ -178,33 +262,33 @@ int32_t QueueIndex(const uint8_t* base, uint32_t queue) {
   return offset % kQueueStride == 0u && offset / kQueueStride < 2u ? static_cast<int32_t>(offset / kQueueStride) : -1;
 }
 
-/// `@Box.Open(queue, box, kind, name, text, …)` — the trailing arguments by kind: message
-/// download, actionTag; question yesTag, noTag; adjuster min, max, increment, value; card title,
-/// acceptTag, helpTag, showA, showY.
-void PostOpen(const uint8_t* base, int32_t queue, uint32_t box) {
+/// `@Box.Queued(queue, box, kind, name, text, …)` — the creator's fields as the push receives
+/// the box, by kind: message download, actionTag; question yesTag, noTag; adjuster min, max,
+/// increment, value; card title, acceptTag, helpTag, showA, showY.
+void PostQueued(const uint8_t* base, int32_t queue, uint32_t box) {
   const uint32_t vtable = LoadGuestU32(base, box);
-  Statement open("@Box.Open");
-  open.Add(Number(static_cast<float>(queue)))
+  Statement queued("@Box.Queued");
+  queued.Add(Number(static_cast<float>(queue)))
       .Add(Text(Hex(box)))
       .Add(Text(KindOf(base, box, vtable)))
       .Add(Text(ReadCharString(base, box + kBoxName)))
       .Add(Text(ReadLhString(base, box + kBoxText)));
   switch (vtable) {
     case kVtMessage:
-      open.Add(Boolean(base[box + kMessageDownload] != 0u)).Add(Text(ReadCharString(base, box + kMessageActionTag)));
+      queued.Add(Boolean(base[box + kMessageDownload] != 0u)).Add(Text(ReadCharString(base, box + kMessageActionTag)));
       break;
     case kVtYesNo:
     case kVtNatalQuery:
-      open.Add(Text(ReadCharString(base, box + 32u))).Add(Text(ReadCharString(base, box + 36u)));
+      queued.Add(Text(ReadCharString(base, box + 32u))).Add(Text(ReadCharString(base, box + 36u)));
       break;
     case kVtAdjuster:
-      open.Add(Number(static_cast<float>(static_cast<int32_t>(LoadGuestU32(base, box + 100u)))))
+      queued.Add(Number(static_cast<float>(static_cast<int32_t>(LoadGuestU32(base, box + 100u)))))
           .Add(Number(static_cast<float>(static_cast<int32_t>(LoadGuestU32(base, box + 104u)))))
           .Add(Number(static_cast<float>(static_cast<int32_t>(LoadGuestU32(base, box + 108u)))))
-          .Add(Number(static_cast<float>(static_cast<int32_t>(LoadGuestU32(base, box + 112u)))));
+          .Add(Number(static_cast<float>(static_cast<int32_t>(LoadGuestU32(base, box + kAdjusterValue)))));
       break;
     case kVtInfoCard:
-      open.Add(Text(ReadCharString(base, box + 36u)))
+      queued.Add(Text(ReadCharString(base, box + 36u)))
           .Add(Text(ReadCharString(base, box + 44u)))
           .Add(Text(ReadCharString(base, box + 48u)))
           .Add(Boolean(base[box + 40u] != 0u))
@@ -213,15 +297,312 @@ void PostOpen(const uint8_t* base, int32_t queue, uint32_t box) {
     default:
       break;
   }
-  open.Post();
+  queued.Post();
 }
 
+/// A box on screen, as this file stated it: its class at the push and the last player the
+/// guest's own router handed its handler (the handler's player filter, sub_8281B390 0x8281B3BC).
+struct Showing {
+  int32_t queue = -1;
+  uint32_t vtable = 0u;
+  uint32_t player = 0u;
+};
+
 std::mutex g_mutex;
-std::unordered_map<uint32_t, int32_t> g_adjuster_values;  // box -> last value posted
+std::unordered_map<uint32_t, uint32_t>* g_queued = nullptr;   // box -> vtable, pushed, not shown
+std::unordered_map<uint32_t, Showing>* g_showing = nullptr;  // box -> what it is
+
+std::unordered_map<uint32_t, uint32_t>& Queued() {
+  if (g_queued == nullptr) {
+    g_queued = new std::unordered_map<uint32_t, uint32_t>();
+  }
+  return *g_queued;
+}
+
+std::unordered_map<uint32_t, Showing>& ShowingBoxes() {
+  if (g_showing == nullptr) {
+    g_showing = new std::unordered_map<uint32_t, Showing>();
+  }
+  return *g_showing;
+}
+
+/// Set while this file runs a handler with Godot's answer, so the gate lets it through.
+thread_local bool t_host_answer = false;
+
+struct HostAnswer {
+  HostAnswer() { t_host_answer = true; }
+  ~HostAnswer() { t_host_answer = false; }
+};
+
+/// The menu box's rows as their adds and enables stated them since its last open or close.
+struct MenuRow {
+  std::string tag;
+  bool enabled = true;
+};
+uint32_t g_menu = 0u;  // the open menu box, 0 when none
+uint32_t g_modal = 0u;  // the pause screen's message box's manager while it is up, else 0
+std::vector<MenuRow>* g_menu_rows = nullptr;
+
+std::vector<MenuRow>& MenuRows() {
+  if (g_menu_rows == nullptr) {
+    g_menu_rows = new std::vector<MenuRow>();
+  }
+  return *g_menu_rows;
+}
+
+/// A copy of `ctx` with the stack pointer moved below the caller's frame; the bytes between the
+/// new and the old pointer are this file's scratch (an event block at +0x100).
+PPCContext Frame(const PPCContext& ctx, uint32_t bytes = 0x200u) {
+  PPCContext work = ctx;
+  work.r1.u32 = (ctx.r1.u32 - bytes) & ~0xFu;
+  return work;
+}
+
+void StoreGuestU32(uint8_t* base, uint32_t address, uint32_t value) {
+  const uint32_t swapped = __builtin_bswap32(value);
+  std::memcpy(base + address, &swapped, sizeof(swapped));
+}
+
+/// Runs a pad handler `handler(box, {action, 0, 0}, player)` with Godot's answer.
+template <typename Handler>
+void RunHandler(PPCContext& ctx, uint8_t* base, Handler handler, uint32_t box, uint32_t action, uint32_t player) {
+  PPCContext work = Frame(ctx);
+  const uint32_t event = work.r1.u32 + 0x100u;
+  StoreGuestU32(base, event, action);
+  StoreGuestU32(base, event + 4u, 0u);
+  StoreGuestU32(base, event + 8u, 0u);
+  StoreGuestU32(base, event + 12u, 0u);
+  work.r3.u64 = box;
+  work.r4.u64 = event;
+  work.r5.u64 = player;
+  HostAnswer answering;
+  handler(work, base);
+}
+
+/// The gate every owned handler runs through: Godot's answer passes, the guest's pad is
+/// consumed (the router does not read the answer, 0x825C8BEC) after its player is noted.
+template <typename Original>
+void Gate(PPCContext& ctx, uint8_t* base, Original original) {
+  if (t_host_answer) {
+    original(ctx, base);
+    return;
+  }
+  const uint32_t box = ctx.r3.u32;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto it = ShowingBoxes().find(box);
+    if (it == ShowingBoxes().end()) {
+      // A box this file never stated as shown is not Godot's to answer.
+      original(ctx, base);
+      return;
+    }
+    it->second.player = ctx.r5.u32;
+  }
+  ctx.r3.u64 = 1u;
+}
+
+/// The pause screen's message box is up: SM+40 = 42.
+bool ModalUp(const uint8_t* base) {
+  const uint32_t gui = LoadGuestU32(base, kGuiManager);
+  const uint32_t screens = Plausible(gui) ? LoadGuestU32(base, gui + kScreenManager) : 0u;
+  return Plausible(screens) && LoadGuestU32(base, screens + kModalScreenWord) == kModalScreen;
+}
 
 }  // namespace
 
-/// The queue's tick: the showing box before and after is the open/close statement.
+namespace refii::fable3 {
+
+/// screen_stated_hooks.cpp: `@Screen.Fields(box, kind, true, …)` for a box-manager screen's Show.
+void StateScreenShown(const uint8_t* base, uint32_t box, const char* kind);
+
+}  // namespace refii::fable3
+
+namespace refii::fable3 {
+
+void StateModalMessageBox(uint32_t manager, const std::string& text, bool download) {
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_modal != 0u) {
+      ShowingBoxes().erase(g_modal);
+    }
+    g_modal = manager;
+    ShowingBoxes()[manager] = Showing{kModalQueue, 0u, 0u};
+  }
+  Statement("@Box.Queued")
+      .Add(Number(static_cast<float>(kModalQueue)))
+      .Add(Text(Hex(manager)))
+      .Add(Text("modal"))
+      .Add(Text(""))
+      .Add(Text(text))
+      .Add(Boolean(download))
+      .Add(Text(download ? "GUI_BUTTONS_DOWNLOAD" : ""))
+      .Post();
+  Statement("@Box.Show").Add(Number(static_cast<float>(kModalQueue))).Add(Text(Hex(manager))).Post();
+}
+
+bool BoxIsShowing(uint32_t box) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return ShowingBoxes().count(box) != 0u;
+}
+
+bool AnswerBoxAction(PPCContext& ctx, uint8_t* base, const char* action) {
+  if (base == nullptr || action == nullptr) {
+    return false;
+  }
+
+  // `menubox:<row>` (0-based) / `menubox-cancel`.
+  if (std::strncmp(action, kMenuBoxAnswerAction, sizeof(kMenuBoxAnswerAction) - 1u) == 0 ||
+      std::strcmp(action, kMenuBoxCancelAction) == 0) {
+    const uint32_t menu = g_menu;
+    if (menu == 0u || !Plausible(menu) || base[menu + kMenuOpen] == 0u) {
+      REXLOG_WARN("[fable3-boxes] menu box answer '{}' with no menu box open; dropped", action);
+      return false;
+    }
+    PPCContext work = Frame(ctx);
+    work.r3.u64 = menu;
+    if (std::strcmp(action, kMenuBoxCancelAction) == 0) {
+      if (base[menu + kMenuCancelable] == 0u) {
+        return false;
+      }
+      // The guest's own cancel: `+13 = 1` then the close (0x825FA0F0..0x825FA0F4).
+      base[menu + kMenuCancelled] = 1u;
+      rex_MenuBox_Close(work, base);
+      return true;
+    }
+    const long row = std::strtol(action + sizeof(kMenuBoxAnswerAction) - 1u, nullptr, 10);
+    if (row < 0 || row >= static_cast<long>(kMenuMaxRows)) {
+      return false;
+    }
+    work.r4.u64 = static_cast<uint32_t>(row);
+    rex_MenuBox_Highlight(work, base);
+    work = Frame(ctx);
+    work.r3.u64 = menu;
+    rex_MenuBox_Accept(work, base);
+    return true;
+  }
+
+  // `box:<HEX>:<verb>[:<value>]`.
+  if (std::strncmp(action, kBoxAnswerAction, sizeof(kBoxAnswerAction) - 1u) != 0) {
+    return false;
+  }
+  const char* at = action + sizeof(kBoxAnswerAction) - 1u;
+  char* end = nullptr;
+  const uint32_t box = static_cast<uint32_t>(std::strtoul(at, &end, 16));
+  if (end == nullptr || *end != ':') {
+    return false;
+  }
+  const std::string verb_and_value = end + 1;
+  const size_t colon = verb_and_value.find(':');
+  const std::string verb = verb_and_value.substr(0, colon);
+  const long value = colon == std::string::npos ? 0 : std::strtol(verb_and_value.c_str() + colon + 1, nullptr, 10);
+
+  Showing showing;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto it = ShowingBoxes().find(box);
+    if (it == ShowingBoxes().end()) {
+      REXLOG_WARN("[fable3-boxes] answer '{}' for a box not on screen; dropped", action);
+      return false;
+    }
+    showing = it->second;
+  }
+
+  if (showing.queue == kModalQueue) {
+    if (!ModalUp(base)) {
+      return false;
+    }
+    // sub_825D6A08 passes SM = *(GUI+0x1C), the action itself (not an event block) and the
+    // player (0x825D6AB0, 0x825D6B8C).
+    PPCContext work = Frame(ctx);
+    work.r3.u64 = LoadGuestU32(base, LoadGuestU32(base, kGuiManager) + kScreenManager);
+    work.r4.u64 = verb == "action" ? kActionX : kActionSelect;
+    work.r5.u64 = 0u;
+    HostAnswer answering;
+    rex_GuiManager_ScreenInput(work, base);
+    return true;
+  }
+
+  PPCContext work = Frame(ctx);
+  work.r3.u64 = box;
+  switch (showing.vtable) {
+    case kVtYesNo:
+      work.r4.u64 = verb == "yes" ? 1u : 0u;
+      rex_QueryBox_Answer(work, base);
+      return true;
+    case kVtNatalQuery:
+      RunHandler(ctx, base, rex_NatalQueryBox_HandleInput, box, verb == "yes" ? kActionYes : kActionNo, showing.player);
+      return true;
+    case kVtAdjuster:
+      if (verb == "accept") {
+        StoreGuestU32(base, box + kAdjusterValue, static_cast<uint32_t>(static_cast<int32_t>(value)));
+      }
+      work.r4.u64 = verb == "accept" ? 1u : 0u;
+      rex_NumericAdjuster_Answer(work, base);
+      return true;
+    case kVtMessage:
+      RunHandler(ctx, base, rex_MessageBox_HandleInput, box, verb == "action" ? kActionX : kActionCancel, showing.player);
+      return true;
+    case kVtQuest:
+      RunHandler(ctx, base, rex_QuestBox_HandleInput, box, kActionCancel, showing.player);
+      return true;
+    case kVtNotice:
+      RunHandler(ctx, base, rex_TutorialBox_HandleInput, box, kActionYes, showing.player);
+      return true;
+    default:
+      REXLOG_WARN("[fable3-boxes] answer '{}' for a box Godot does not own (vtable {:08X}); dropped", action,
+                  showing.vtable);
+      return false;
+  }
+}
+
+}  // namespace refii::fable3
+
+/// (queue, shared_ptr<Box>): `@Box.Queued` once the push appended it (the pending end moved).
+REX_EXTERN(rex_BoxQueue_Push) {
+  const uint32_t queue = ctx.r3.u32;
+  const uint32_t holder = ctx.r4.u32;
+  const bool readable = base != nullptr && Plausible(queue) && Plausible(holder);
+  const uint32_t box = readable ? LoadGuestU32(base, holder) : 0u;
+  const uint32_t end_before = readable ? LoadGuestU32(base, queue + kQueuePendingEnd) : 0u;
+
+  __imp__rex_BoxQueue_Push(ctx, base);
+
+  if (!readable || !Plausible(box) || LoadGuestU32(base, queue + kQueuePendingEnd) == end_before) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    Queued()[box] = LoadGuestU32(base, box);
+  }
+  PostQueued(base, QueueIndex(base, queue), box);
+}
+
+/// (out, vector, iterator): `@Box.Dropped` when a pending box leaves one of the manager's queues
+/// without showing — RemoveDisplayBox, RemoveAllDisplayBoxesWithName.
+REX_EXTERN(rex_BoxVector_Erase) {
+  const uint32_t vector = ctx.r4.u32;
+  const uint32_t iterator = ctx.r5.u32;
+  const bool ours = base != nullptr && Plausible(vector) && Plausible(iterator) && QueueIndex(base, vector - 4u) >= 0;
+  const uint32_t box = ours ? LoadGuestU32(base, iterator) : 0u;
+
+  __imp__rex_BoxVector_Erase(ctx, base);
+
+  // The tick's own erase follows its take (0x822879D4 then 0x822879E4): that box is showing now,
+  // and the tick states it.
+  if (box == 0u || LoadGuestU32(base, vector - 4u + kQueueShowing) == box) {
+    return;
+  }
+  bool was_queued = false;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    was_queued = Queued().erase(box) != 0u;
+  }
+  if (was_queued) {
+    Statement("@Box.Dropped").Add(Text(Hex(box))).Post();
+  }
+}
+
+/// The queue's tick: the showing slot before and after is the show and the release.
 REX_EXTERN(rex_BoxQueue_Update) {
   const uint32_t queue = ctx.r3.u32;
   const uint32_t before = base != nullptr && Plausible(queue) ? LoadGuestU32(base, queue + kQueueShowing) : 0u;
@@ -232,50 +613,112 @@ REX_EXTERN(rex_BoxQueue_Update) {
     return;
   }
   const uint32_t after = LoadGuestU32(base, queue + kQueueShowing);
+  if (after == before) {
+    return;
+  }
   const int32_t index = QueueIndex(base, queue);
 
-  if (before != 0u && before != after) {
-    Statement("@Box.Close").Add(Number(static_cast<float>(index))).Add(Text(Hex(before))).Post();
-    std::lock_guard<std::mutex> lock(g_mutex);
-    g_adjuster_values.erase(before);
-  }
-  if (after != 0u && after != before && Plausible(after)) {
-    PostOpen(base, index, after);
-  }
-
-  // The adjuster's value moves on the guest's own left/right handling; restated on change.
-  if (after != 0u && Plausible(after) && LoadGuestU32(base, after) == kVtAdjuster) {
-    const int32_t value = static_cast<int32_t>(LoadGuestU32(base, after + 112u));
-    std::lock_guard<std::mutex> lock(g_mutex);
-    auto last = g_adjuster_values.find(after);
-    if (last == g_adjuster_values.end() || last->second != value) {
-      g_adjuster_values[after] = value;
-      Statement("@Box.Value").Add(Text(Hex(after))).Add(Number(static_cast<float>(value))).Post();
+  if (before != 0u) {
+    {
+      std::lock_guard<std::mutex> lock(g_mutex);
+      ShowingBoxes().erase(before);
     }
+    Statement("@Box.Close").Add(Number(static_cast<float>(index))).Add(Text(Hex(before))).Post();
+  }
+  if (after != 0u && Plausible(after)) {
+    uint32_t vtable = 0u;
+    {
+      std::lock_guard<std::mutex> lock(g_mutex);
+      auto queued = Queued().find(after);
+      vtable = queued != Queued().end() ? queued->second : LoadGuestU32(base, after);
+      if (queued != Queued().end()) {
+        Queued().erase(queued);
+      }
+      ShowingBoxes()[after] = Showing{index, vtable, 0u};
+    }
+    Statement("@Box.Show").Add(Number(static_cast<float>(index))).Add(Text(Hex(after))).Post();
+    // The Show has run (0x825FC09C inside the tick): a screen's starting cursor and choices.
+    StateScreenShown(base, after, KindOf(base, after, vtable));
   }
 }
 
-/// `@MenuBox.Open(title, cancelable, selected, row…)` — each row its TextTag, prefixed `+`
-/// (enabled) or `-` (ghosted).
+// The owned classes' pad handlers (box, ev*, player).
+REX_EXTERN(rex_MessageBox_HandleInput) { Gate(ctx, base, __imp__rex_MessageBox_HandleInput); }
+REX_EXTERN(rex_QueryBox_HandleInput) { Gate(ctx, base, __imp__rex_QueryBox_HandleInput); }
+REX_EXTERN(rex_NatalQueryBox_HandleInput) { Gate(ctx, base, __imp__rex_NatalQueryBox_HandleInput); }
+REX_EXTERN(rex_NumericAdjuster_HandleInput) { Gate(ctx, base, __imp__rex_NumericAdjuster_HandleInput); }
+REX_EXTERN(rex_QuestBox_HandleInput) { Gate(ctx, base, __imp__rex_QuestBox_HandleInput); }
+REX_EXTERN(rex_TutorialBox_HandleInput) { Gate(ctx, base, __imp__rex_TutorialBox_HandleInput); }
+
+/// (SM, action, player): while the pause screen's message box is up, its two actions (72, and 76
+/// on the download form) are Godot's; every other action runs as the guest has it.
+REX_EXTERN(rex_GuiManager_ScreenInput) {
+  const uint32_t action = ctx.r4.u32;
+  if (!t_host_answer && base != nullptr && (action == kActionSelect || action == kActionX) && ModalUp(base)) {
+    ctx.r3.u64 = 1u;
+    return;
+  }
+  __imp__rex_GuiManager_ScreenInput(ctx, base);
+}
+
+/// (G): the pause screen's message box drops (its one box: the show's manager is the key).
+REX_EXTERN(rex_GuiManager_ModalReset) {
+  __imp__rex_GuiManager_ModalReset(ctx, base);
+  uint32_t manager = 0u;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    manager = g_modal;
+    if (manager != 0u) {
+      ShowingBoxes().erase(manager);
+      g_modal = 0u;
+    }
+  }
+  if (manager != 0u) {
+    Statement("@Box.Close").Add(Number(static_cast<float>(kModalQueue))).Add(Text(Hex(manager))).Post();
+  }
+}
+
+/// (MB, &tag): a row, as its add stated it.
+REX_EXTERN(rex_MenuBox_AddRow) {
+  const uint32_t tag = ctx.r4.u32;
+  const std::string text = base != nullptr && Plausible(tag) ? ReadCharString(base, tag) : std::string();
+  __imp__rex_MenuBox_AddRow(ctx, base);
+  if (ctx.r3.u32 != 0u) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    MenuRows().push_back(MenuRow{text, true});
+  }
+}
+
+/// (MB, index, enabled).
+REX_EXTERN(rex_MenuBox_SetEnabled) {
+  const uint32_t index = ctx.r4.u32;
+  const bool enabled = (ctx.r5.u32 & 0xFFu) != 0u;
+  __imp__rex_MenuBox_SetEnabled(ctx, base);
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (index < MenuRows().size()) {
+    MenuRows()[index].enabled = enabled;
+  }
+}
+
+/// `@MenuBox.Open(title, cancelable, row…)` — the title the filler resolved, whether B cancels,
+/// and each row its TextTag prefixed `+` (enabled) or `-` (ghosted), as the adds stated them.
 REX_EXTERN(rex_MenuBox_Open) {
   const uint32_t menu = ctx.r3.u32;
   __imp__rex_MenuBox_Open(ctx, base);
+  std::vector<MenuRow> rows;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    rows.swap(MenuRows());
+  }
   if (base == nullptr || ctx.r3.u32 != 1u || !Plausible(menu)) {
     return;
   }
+  g_menu = menu;
 
   Statement open("@MenuBox.Open");
-  open.Add(Text(ReadCharString(base, menu + kMenuTitle)))
-      .Add(Boolean(base[menu + kMenuCancelable] != 0u))
-      .Add(Number(static_cast<float>(static_cast<int32_t>(LoadGuestU32(base, menu + kMenuSelected)))));
-  const uint32_t begin = LoadGuestU32(base, menu + kMenuRowsBegin);
-  const uint32_t end = LoadGuestU32(base, menu + kMenuRowsEnd);
-  if (Plausible(begin) && end > begin && (end - begin) / kMenuRowStride <= kMenuMaxRows) {
-    for (uint32_t row = begin; row < end; row += kMenuRowStride) {
-      std::string tag = base[row + 4u] != 0u ? "+" : "-";
-      tag += ReadCharString(base, row);
-      open.Add(Text(tag));
-    }
+  open.Add(Text(ReadLhString(base, menu + kMenuTitle))).Add(Boolean(base[menu + kMenuCancelable] != 0u));
+  for (const MenuRow& row : rows) {
+    open.Add(Text((row.enabled ? "+" : "-") + row.tag));
   }
   open.Post();
 }
@@ -287,25 +730,33 @@ REX_EXTERN(rex_MenuBox_Close) {
                         LoadGuestU32(base, menu + 8u) != 0u;
   int32_t result = 0;
   if (was_open && base[menu + kMenuCancelled] == 0u) {
-    result = static_cast<int32_t>(LoadGuestU32(base, menu + kMenuSelected)) + 1;
+    result = static_cast<int32_t>(LoadGuestU32(base, menu)) + 1;
   }
   __imp__rex_MenuBox_Close(ctx, base);
   if (was_open) {
+    if (g_menu == menu) {
+      g_menu = 0u;
+    }
     Statement("@MenuBox.Close").Add(Number(static_cast<float>(result))).Post();
   }
 }
 
-/// `@MenuBox.Select(selected)` when the guest's own input moved the row.
+/// (MB, ev, pad): Godot owns the open menu box's pad. The guest's own mapping still runs (its
+/// repeat timers are the guest's), and the handler's answer is kept: 1 for the four actions it
+/// takes, 0 for any other, so nothing else changes for the caller.
 REX_EXTERN(rex_MenuBox_Input) {
   const uint32_t menu = ctx.r3.u32;
-  const bool open = base != nullptr && Plausible(menu) && base[menu + kMenuOpen] != 0u;
-  const uint32_t before = open ? LoadGuestU32(base, menu + kMenuSelected) : 0u;
-  __imp__rex_MenuBox_Input(ctx, base);
-  if (!open) {
+  if (base == nullptr || !Plausible(menu) || base[menu + kMenuOpen] == 0u) {
+    __imp__rex_MenuBox_Input(ctx, base);
     return;
   }
-  const uint32_t after = LoadGuestU32(base, menu + kMenuSelected);
-  if (after != before) {
-    Statement("@MenuBox.Select").Add(Number(static_cast<float>(static_cast<int32_t>(after)))).Post();
-  }
+  PPCContext work = Frame(ctx);
+  work.r3.u64 = ctx.r4.u32;
+  work.r4.u64 = ctx.r5.u32;
+  rex_GuiInput_MenuAction(work, base);
+  const int32_t mapped = static_cast<int32_t>(work.r3.u32);
+  ctx.r3.u64 = mapped == kMenuActionUp || mapped == kMenuActionDown || mapped == kMenuActionCancel ||
+                       mapped == kMenuActionSelect
+                   ? 1u
+                   : 0u;
 }

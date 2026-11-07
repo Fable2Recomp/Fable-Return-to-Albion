@@ -100,16 +100,16 @@ def wait(args):
 
 @tool(
     "refii_menu",
-    "Drive a menu with the GUEST'S OWN verbs instead of synthesized pad input — the stick "
-    "latch and edge detection stay its problem. verb: up/down/left/right (held=true for a "
-    "latched scroll), select, action (a screen input code, default 36=A; atRoot for the "
-    "root), event (name/type/id posted as a MenuEvent).",
+    "Drive a menu with the GUEST'S OWN verbs instead of synthesized pad input. verb: "
+    "up/down/left/right (the screen's directional codes 28..31; held=false sends the release "
+    "32..35 — only the options page answers them, list cursors are Godot's), select (the "
+    "screen's A, code 36, on the row Godot states), action (a screen input code, default 36=A; "
+    "B's root test reads Godot's fold), event (name/type/id posted as a MenuEvent).",
     {
         "verb": {"type": "string",
                  "enum": ["up", "down", "left", "right", "select", "action", "event"]},
-        "held": {"type": "boolean", "description": "Scrolls: latch held (default false)."},
+        "held": {"type": "boolean", "description": "Directions: the press (true) or its release (default false)."},
         "code": {"type": "integer", "description": "action: the input code (36=A, 37=back)."},
-        "atRoot": {"type": "boolean", "description": "action: aim at the pause root."},
         "name": {"type": "string", "description": "event: the row name."},
         "type": {"type": "integer", "description": "event: the event type."},
         "id": {"type": "integer", "description": "event: the row id."},
@@ -119,7 +119,7 @@ def wait(args):
 def menu(args):
     payload = {"op": "menu"}
     payload.update({key: args[key] for key in
-                    ("verb", "held", "code", "atRoot", "name", "type", "id")
+                    ("verb", "held", "code", "name", "type", "id")
                     if args.get(key) is not None})
     return ask(payload)
 
@@ -127,7 +127,7 @@ def menu(args):
 @tool(
     "refii_action",
     "Post a named action onto the guest's tick-thread queue — the same lever the host's own "
-    "menus use (New Game, LoadSave:N, MenuSelect, GuiLua:..., ...). Returns the queue depth; "
+    "menus use (New Game, LoadSave:N, MenuEvent:..., ScreenAction:N, ...). Returns the queue depth; "
     "a depth that climbs means the pump is not draining.",
     {
         "name": {"type": "string", "description": "The action string, verbatim."},

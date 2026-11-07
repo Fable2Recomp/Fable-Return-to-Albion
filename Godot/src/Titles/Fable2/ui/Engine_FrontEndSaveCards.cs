@@ -59,6 +59,21 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	/// </summary>
 	public const string PortraitName = "screenshot";
 
+	/// <summary>The ordinals of the cards' portrait elements in walk (card) order, at most <see cref="MaxCards"/>.</summary>
+	public static System.Collections.Generic.List<int> PortraitOrdinals(Refii.Ui.Engine_UiScreen screen)
+	{
+		var ordinals = new System.Collections.Generic.List<int>();
+		for (int i = 0; i < screen.Nodes.Length && ordinals.Count < MaxCards; ++i)
+		{
+			if (string.Equals(screen.Nodes[i].Name, PortraitName, System.StringComparison.Ordinal))
+			{
+				ordinals.Add(i);
+			}
+		}
+
+		return ordinals;
+	}
+
 	/// <summary>One card's place in the fan, in the <c>loadgame</c> component's own space.</summary>
 	public readonly struct Pose
 	{
@@ -889,7 +904,16 @@ public partial class Engine_FrontEndSaveCards : Node3D
 			? card.GlobalPosition.ToString()
 			: "none";
 
-		return $"[save-cards] saves={_saves.Count} cursor={Cursor} slot={slot + 1}/{BaseSlot} " +
+		int portraits = 0;
+		foreach (Save save in _saves)
+		{
+			if (save.Portrait is not null)
+			{
+				++portraits;
+			}
+		}
+
+		return $"[save-cards] saves={_saves.Count} portraits={portraits}/{_saves.Count} cursor={Cursor} slot={slot + 1}/{BaseSlot} " +
 			$"art={(HasShippedArt ? "shipped" : "STAND-IN")} " +
 			$"tint={(_background is null ? "none" : "shipped")} " +
 			$"text={(_description is null ? "NOT FOUND" : "shipped")} " +

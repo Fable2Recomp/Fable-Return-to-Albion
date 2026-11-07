@@ -1234,7 +1234,7 @@
 0x823C3E38 = { size = 0x84 }
 0x823C3EC0 = { size = 0xA0 }
 0x823C3F60 = { size = 0xA8 }
-0x823CA5F8 = { size = 0x54 }
+0x823CA5F8 = { name = "rex_lhGuiHud_OnFinishedTransitioningToGame", size = 0x54 }
 0x823D5AA8 = { name = "rex_lhWorld_Update", size = 0xCAC }
 0x823DA258 = { size = 0x3C }
 0x823DFF78 = { size = 0x8 }
@@ -3157,13 +3157,13 @@
 0x826D8458 = { size = 0x40 }
 0x826DA518 = { name = "rex_lh_lua_allocator", size = 0x124 }
 0x826E0D60 = { name = "rex_lhGui_FrontendRoot_HandleGuiEvent", size = 0xF8 }
-0x826E0E58 = { size = 0x1E8 }
-0x826E1040 = { size = 0x3B0 }
-0x826E13F0 = { size = 0x18 }
-0x826E2DA0 = { size = 0x7C }
-0x826E2E20 = { size = 0x90 }
-0x826E2EB0 = { size = 0x68 }
-0x826E3740 = { size = 0xCC }
+0x826E0E58 = { name = "rex_lhGuiFrontEndRoot_OnLoadCardEvent", size = 0x1E8 }
+0x826E1040 = { name = "rex_lhGuiFrontEndRoot_OnDialogEvent", size = 0x3B0 }
+0x826E13F0 = { name = "rex_lhGuiFrontEndRoot_OnOutroFinished", size = 0x18 }
+0x826E2DA0 = { name = "rex_lhGuiFrontEndTitle_OnEndLegal", size = 0x7C }
+0x826E2E20 = { name = "rex_lhGuiFrontEndTitle_OnCanPressA", size = 0x90 }
+0x826E2EB0 = { name = "rex_lhGuiFrontEndTitle_OnEndStarted", size = 0x68 }
+0x826E3740 = { name = "rex_lhGuiFrontEndTitle_OnDialogEvent", size = 0xCC }
 0x826E4CB0 = { size = 0x8 }
 0x826EBD18 = { size = 0x10 }
 0x826EBDD8 = { size = 0x9C }
@@ -11408,12 +11408,19 @@
 0x8236F968 = { name = "rex_lhGuiManager_CloseSpellsMenu" }
 0x8236FA68 = { name = "rex_lhGuiManager_OpenModal" }
 0x823FE848 = { name = "rex_lhGuiRegistry_SetToggle" }
+0x823FE210 = { name = "rex_lhGuiRegistry_SetMeter" }
+0x823FE2D0 = { name = "rex_lhGuiRegistry_SeekMeter" }
+0x823FE068 = { name = "rex_lhGuiRegistry_RunMeter" }
+0x823FE3D0 = { name = "rex_lhGuiRegistry_ScrubMeter" }
+0x823FEB28 = { name = "rex_lhGuiRegistry_SetText" }
 0x828421F8 = { name = "rex_lhGuiRegistry_SetSlide" }
 0x827FA600 = { name = "rex_lhGuiRegistry_JumpSlide" }
 0x82804C28 = { name = "rex_lhGuiRegistry_SetImage" }
 0x82BB5CB8 = { name = "rex_lhGfxTimeline_SetPaused" }
 0x822846B0 = { name = "rex_lhGfxElements_EvaluateTracks" }
 0x826C1B50 = { name = "rex_lhGuiMenu_GetHighlightedItemData" }
+0x826C1D98 = { name = "rex_lhGuiMenu_IsHighlightedItemAtRoot" }
+0x826DED60 = { name = "rex_lhGuiFrontEnd_IsHighlightedItemAtRoot" }
 0x8236FCA8 = { name = "rex_lhGuiManager_OpenNumericAdjuster" }
 0x8236FF58 = { name = "rex_lhGuiManager_ClearModalState" }
 0x8236FFC0 = { name = "rex_lhGuiManager_FindScreenHandler" }
@@ -11442,6 +11449,23 @@
 0x823CEAE8 = { name = "rex_lhDisplayMessageBox_Dtor" }
 0x823CEB58 = { name = "rex_lhDisplayMessageBox_Open" }
 0x823CEC98 = { name = "rex_lhDisplayMessageBox_Close" }
+# The display-only boxes' class Open/Close (display_box_hooks.cpp, THE DISPLAY-ONLY BOXES):
+# intermission vf1/vf2, the acceptance/button boxes' shared Show and close.
+0x8299EB40 = { name = "rex_lhIntermissionBox_Open" }
+0x8299EBF8 = { name = "rex_lhIntermissionBox_Close" }
+0x8299EE40 = { name = "rex_lhAcceptBox_Show" }
+0x823D0998 = { name = "rex_lhAcceptBox_Close" }
+# The answerable display boxes' class Open (vf1) and Close (vf2), and the menu box's populate
+# (display_box_hooks.cpp): query, numeric adjuster, quest box, hold-to-accept card.
+0x823CF228 = { name = "rex_lhQueryBox_Open" }
+0x823CF300 = { name = "rex_lhQueryBox_Close" }
+0x823CF6B8 = { name = "rex_lhNumericAdjusterBox_Open" }
+0x823CF7F0 = { name = "rex_lhNumericAdjusterBox_Close" }
+0x823CFF60 = { name = "rex_lhQuestInfoBox_Open" }
+0x823D0000 = { name = "rex_lhQuestInfoBox_Close" }
+0x8299E490 = { name = "rex_lhAcceptHoldBox_Open" }
+0x8299E708 = { name = "rex_lhAcceptHoldBox_Close" }
+0x823DC400 = { name = "rex_lhMenuBox_Populate" }
 0x823CEDD8 = { name = "rex_lhDisplayMessageBox_HandleAction" }
 0x823CF3B0 = { name = "rex_lhDisplayQueryBox_HandleAction" }
 0x823CF8A8 = { name = "rex_lhDisplayNumericAdjuster_HandleAction" }
@@ -11540,6 +11564,7 @@
 0x826B7770 = { name = "rex_lhGuiDecorationScreen_OnScreenAction" }
 0x826B83D0 = { name = "rex_lhGuiPauseMenu_IsTabAvailable" }
 0x826B9210 = { name = "rex_lhGuiPresentation_GetFloatParam" }
+0x826B92D0 = { name = "rex_lhGuiPresentation_GetStringParam" }
 0x826B9440 = { name = "rex_lhGuiPresentation_SetFloatParam" }
 0x826B9510 = { name = "rex_lhGuiPresentation_SetStringParam" }
 0x826C2660 = { name = "rex_lhGuiAbilitiesScreen_OnMenuEvent" }
@@ -11754,6 +11779,18 @@
 0x8235A500 = { name = "rex_lhCoopText_DonationRecipient" }
 0x82359B40 = { name = "rex_lhCoopText_RefusedByHost" }
 0x823596C0 = { name = "rex_lhCoopText_RefusedByJoiner" }
+# Gameface presentations are built headless (Fable2/src/vfs/src/hooks/gui_headless_presentation.cpp):
+# the CGameface's create (vtable +28) answers an unloaded CPresentation that is never rendered,
+# and its per-frame pass (vtable +40) updates those as it updates its kernel's. The destroy
+# (vtable +32) is rex_lhItemManager_NotifyAndRemoveItem. The element service's child-by-name
+# (vtable +84) makes the elements the guest names on them.
+0x82BBA588 = { name = "rex_CGameface_CreatePresentation" }
+0x822BE860 = { name = "rex_CGameface_Update" }
+0x82BB5658 = { name = "rex_lhGuiAttributeService_ChildByName" }
+# A headless element answers the FILE's children (service vtable +92) and string attributes
+# (GuiElement_AttributeString_p) — gui_headless_presentation.cpp, ExpandLocked.
+0x82BB56A8 = { name = "rex_lhGuiAttributeService_CollectChildren" }
+0x82425038 = { name = "rex_GuiElement_GetAttributeString" }
 # The ranged aim cursor (r3 the aim, r4 its stick as two packed floats): the mouse's turn joins
 # the stick through the cursor's own gain (Fable2/src/vfs/src/hooks/mouse_look.cpp).
 0x8287B258 = { name = "rex_lhRangedAim_MoveCursor" }
@@ -11918,6 +11955,12 @@ address = 0x821ED4D4
 registers = ["r11"]
 
 # Interaction: use prompts and hold-to-use answer player two (coop_hero_hooks.cpp).
+# Before the use gate's compare: the viewer's own targeted byte (coop_hero_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiCoopUseGateForViewer"
+address = 0x82822500
+registers = ["r11", "r30"]
+
 # Before `mr r31,r3` after the hero getter: the player a usable thing tests.
 [[midasm_hook]]
 name = "RefiiCoopPromptForNearerPlayer"
@@ -12092,8 +12135,20 @@ jump_address_on_true = 0x82814F84
 # A partner's pause leaves this player roaming (coop_hero_hooks.cpp).
 [[midasm_hook]]
 name = "RefiiCoopPartnerPauseRoams"
-address = 0x8232C2E8
+address = 0x8232C2F4
 jump_address_on_true = 0x8232C378
+
+# A client's own dismissed card leaves it roaming (coop_hero_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiCoopOwnCardRoams"
+address = 0x82538D24
+jump_address_on_true = 0x82538D28
+
+# A client's own dismissed card leaves it roaming (coop_hero_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiCoopOwnCardRoams"
+address = 0x823D48A4
+jump_address_on_true = 0x823D48A8
 
 # A partner's held look-at (left trigger) never sets hero one's (coop_hero_hooks.cpp).
 [[midasm_hook]]
@@ -12215,3 +12270,185 @@ jump_address = 0x82365544
 name = "RefiiMirrorTextureMorphsForPlayerTwo"
 address = 0x8220EBBC
 jump_address = 0x8220EBC0
+
+# SetStringParam writes an attribute's string only when the Parameters element has that attribute
+# (gui_headless_presentation.cpp). Before `lwz r11,0(r28)` after the attribute lookup's bctrl:
+# r3 = found; true jumps to the epilogue past the string assign (`bl sub_82BAEF98`).
+[[midasm_hook]]
+name = "RefiiPresentationAttributeAbsent"
+address = 0x826B95E0
+registers = ["r3"]
+jump_address_on_true = 0x826B9600
+
+# A headless presentation's texts, stated at the writers' entries (gui_headless_presentation.cpp):
+# SetText r3 element, r4 presentation, r5 the text's handle; SetTextFromTag r3 element, r4 the tag.
+[[midasm_hook]]
+name = "RefiiHeadlessSetText"
+address = 0x82425DD0
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessSetTextFromTag"
+address = 0x82425F40
+registers = ["r3", "r4"]
+
+# The existence-checked setters' entries: a fileless headless element is given the attribute the
+# setter names, so its own write lands (gui_headless_presentation.cpp, EXISTENCE-CHECKED WRITES).
+# SetPosition `sub_824251E0` (position.x checked at 0x8242524c) and SetRotation `sub_824254C8`
+# (rotation.x `dword_834BE528` checked at 0x82425530): r3 element, r4 presentation, f1..f3.
+[[midasm_hook]]
+name = "RefiiHeadlessSetPosition"
+address = 0x824251E0
+registers = ["r3", "r4", "f1", "f2", "f3"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessSetRotation"
+address = 0x824254C8
+registers = ["r3", "r4", "f1", "f2", "f3"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessSetOpacity"
+address = 0x82426078
+registers = ["r3", "r4", "f1"]
+
+# SetActive (r3 element, r4 presentation, r5 on), stated at its entry for a headless element.
+[[midasm_hook]]
+name = "RefiiHeadlessSetActive"
+address = 0x82284210
+registers = ["r3", "r4", "r5"]
+
+# The HUD's texture writes onto a headless element, stated as the hash the quad would carry:
+# GuiElement_SetTexture's entry (r3 name, r4 element), the expression wheel item (r29, name r28),
+# the d-pad slots (r3, name at sp+0x50), the spell wheel (r31) and the spell charges (r10).
+[[midasm_hook]]
+name = "RefiiHeadlessSetTextureByName"
+address = 0x82425BB8
+registers = ["r3", "r4"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessTextureNamed"
+address = 0x826AC708
+registers = ["r3", "r29", "r28"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessTextureOnStack"
+address = 0x823D30D4
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessTextureOnStackOf"
+address = 0x826B5E34
+registers = ["r3", "r31", "r1"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessTextureOnStackOf"
+address = 0x825EA1F4
+registers = ["r3", "r10", "r1"]
+
+# The spell charges' icons named before the image registry's lookup (gui_headless_presentation.cpp,
+# sub_825E9EA0): r4 the image name's hash, the texture name at sp+0x50.
+[[midasm_hook]]
+name = "RefiiHudChargeImage"
+address = 0x825EA1C8
+registers = ["r3", "r4", "r1"]
+
+# The front end's texture stamps on a headless element (gui_headless_presentation.cpp).
+[[midasm_hook]]
+name = "RefiiHeadlessStampTexture"
+address = 0x826E14B0
+registers = ["r3", "r30"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessStampCardBlank"
+address = 0x826E06CC
+registers = ["r3"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessStampGlyphCancel"
+address = 0x826E421C
+registers = ["r30"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessStampGlyphOther"
+address = 0x826E4284
+registers = ["r30"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessStampCardBlank"
+address = 0x826E20F0
+registers = ["r3"]
+
+# The quad readers' joins: a headless element's missing kind-2 record answered with the inert
+# record (gui_headless_presentation.cpp, RefiiHeadlessQuadRecord). TU1
+[[midasm_hook]]
+name = "RefiiHeadlessQuadRecord"
+address = 0x823D0EE4  # sub_823D0E10
+registers = ["r11"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessQuadRecord"
+address = 0x826A3E28  # sub_826A3D98
+registers = ["r11"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessQuadRecord"
+address = 0x826A3E58  # sub_826A3D98
+registers = ["r11"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessQuadRecord"
+address = 0x826A404C  # sub_826A3FD8
+registers = ["r11"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessQuadRecord"
+address = 0x826DC548  # sub_826DC138
+registers = ["r11"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessQuadRecord"
+address = 0x826DCB40  # sub_826DCAA0
+registers = ["r11"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessQuadRecord"
+address = 0x826E43AC  # sub_826E42C8
+registers = ["r11"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessQuadRecord"
+address = 0x8281F108  # sub_8281F010
+registers = ["r3"]
+
+
+# The pause minimap's quest markers (gui_pause_hooks.cpp): the marker pass's rectangle test answered
+# 1 at its read (sub_826A3150), and each marker the placer is handed stated, its drawing body skipped
+# (sub_826A3FD8: r4 the token's path, r5 the world point).
+[[midasm_hook]]
+name = "RefiiPauseMarkerGate"
+address = 0x826A3164  # sub_826A3150, `clrlwi r11, r3, 24` after `bl sub_826A3D98`
+registers = ["r3"]
+
+[[midasm_hook]]
+name = "RefiiPauseMarker"
+address = 0x826A3FD8  # sub_826A3FD8 entry
+registers = ["r4", "r5"]
+return_on_true = true
+
+# The inline texture stores on a headless element (gui_pause_hooks.cpp): the pause map image (r31,
+# hash at sp+0x58), each legend KeyImage (r29, hash at *r27), each co-op save card's portrait (r31,
+# hash at *r29).
+[[midasm_hook]]
+name = "RefiiPauseMapTexture"
+address = 0x826A21C4  # sub_826A19E0, `lwz r11, 4(r31)`
+registers = ["r31", "r1"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessInlineTexture"
+address = 0x826A3B8C  # sub_826A3AC8, `lwz r11, 4(r29)`
+registers = ["r29", "r27"]
+
+[[midasm_hook]]
+name = "RefiiHeadlessInlineTexture"
+address = 0x8243B57C  # sub_8243B520, `lwz r11, 4(r31)`
+registers = ["r31", "r29"]

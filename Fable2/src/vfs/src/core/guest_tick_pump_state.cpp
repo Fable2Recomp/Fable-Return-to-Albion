@@ -29,6 +29,7 @@
 #include <mutex>
 #include <cstdio>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <rex/kernel/xboxkrnl/threading.h>
@@ -582,6 +583,26 @@ extern "C" bool refii_bridge_get_stated_highlight(uint32_t* screen, int32_t* eve
   return true;
 }
 
+namespace {
+std::mutex g_fold_mutex;
+std::unordered_map<uint32_t, uint32_t> g_fold_depth;
+}  // namespace
+
+extern "C" void refii_bridge_set_list_fold_depth(uint32_t screen, uint32_t depth) {
+  std::lock_guard<std::mutex> lock(g_fold_mutex);
+  if (depth == 0u) {
+    g_fold_depth.erase(screen);
+  } else {
+    g_fold_depth[screen] = depth;
+  }
+}
+
+extern "C" uint32_t refii_bridge_list_fold_depth(uint32_t screen) {
+  std::lock_guard<std::mutex> lock(g_fold_mutex);
+  const auto found = g_fold_depth.find(screen);
+  return found == g_fold_depth.end() ? 0u : found->second;
+}
+
 extern "C" void refii_bridge_publish_shop_front(const void* front) {
   if (front == nullptr) {
     return;
@@ -733,11 +754,63 @@ uint32_t MenuRows(uint32_t index, char* out_name, size_t name_capacity, char* ou
   return static_cast<uint32_t>(g_menu_rows.size());
 }
 
+namespace {
+
+/// THE PAUSE MINIMAP'S QUEST MARKERS, as the guest states them: one per call of the marker
+/// placer `sub_826A3FD8` (disc `sub_82410390`) in the pass `sub_826A3150` (disc `sub_8240F508`)
+/// — the token it names and the world point it projects. The pass runs once per pause open
+/// (OnEnter clears `screen0+100`, the pass sets it), and the payload empties this table as the
+/// pass begins (hooks/gui_pause_hooks.cpp).
+struct PauseMarker {
+  uint32_t token = 0;
+  float world[3] = {};
+};
+
+std::mutex g_pause_markers_mutex;
+std::vector<PauseMarker> g_pause_markers;
+
+}  // namespace
+
+uint32_t PauseMarkers(uint32_t* out_tokens, float* out_world, uint32_t capacity) {
+  std::lock_guard lock(g_pause_markers_mutex);
+  const uint32_t count = static_cast<uint32_t>(
+      std::min<std::size_t>(g_pause_markers.size(), capacity));
+  for (uint32_t i = 0; i < count; ++i) {
+    if (out_tokens != nullptr) {
+      out_tokens[i] = g_pause_markers[i].token;
+    }
+    if (out_world != nullptr) {
+      std::memcpy(out_world + (i * 3u), g_pause_markers[i].world, sizeof(float) * 3u);
+    }
+  }
+  return count;
+}
+
 }  // namespace refii::vfs
 
 // --- The payload's side. C only; see core/payload_bridge.h. --------------------------------
 
 extern "C" {
+
+void refii_bridge_pause_markers_begin(void) {
+  std::lock_guard lock(refii::vfs::g_pause_markers_mutex);
+  refii::vfs::g_pause_markers.clear();
+}
+
+void refii_bridge_pause_marker_note(uint32_t token, float x, float y, float z) {
+  std::lock_guard lock(refii::vfs::g_pause_markers_mutex);
+  // The pass places the dog's trigger target (Quest or QuestExit) and one QuestGiver per giver
+  // of the primary quest; bounded so a runaway list cannot grow.
+  if (refii::vfs::g_pause_markers.size() >= 16u) {
+    return;
+  }
+  refii::vfs::PauseMarker marker;
+  marker.token = token;
+  marker.world[0] = x;
+  marker.world[1] = y;
+  marker.world[2] = z;
+  refii::vfs::g_pause_markers.push_back(marker);
+}
 
 void refii_bridge_front_end_note_subtitles(int32_t state) {
   refii::vfs::g_subtitles.store(state, std::memory_order_relaxed);

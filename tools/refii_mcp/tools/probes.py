@@ -88,10 +88,9 @@ def call(args):
 
 @tool(
     "refii_lua",
-    "Run a Lua chunk in the guest's live GUI state, on its own tick thread, and report "
-    "whether it ran. The g_Menu / GUI globals are the shipped scripts' own world — the same "
-    "state the ported C# mirrors. Needs a live presentation; the reply says when there was "
-    "none.",
+    "The guest's GUI Lua is CUT (no presentation carries g_Menu or the GUI library any "
+    "more), so this reports that and runs nothing; use refii_action 'debug-gamelua:<chunk>' "
+    "for the game VM.",
     {
         "chunk": {"type": "string", "description": "The Lua source to run."},
         "timeout": {"type": "integer", "description": "Seconds to wait (default 10)."},

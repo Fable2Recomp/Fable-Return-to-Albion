@@ -11,6 +11,13 @@ render_mode unshaded, cull_disabled, blend_mix, depth_draw_never;
 
 uniform sampler2D atlas : source_color, filter_linear_mipmap, repeat_disable;
 
+// THE GLYPH EDGE FROM A DISTANCE FIELD (Engine_SdfField): the atlas's signed distance, built on
+// the player's machine from the shipped coverage, 0.5 on the coverage's own half contour. The
+// edge is resolved per screen pixel at any magnification and any minification, so text stays
+// crisp at 1440p/2160p without the coverage's bilinear blur. Absent, the coverage path below.
+uniform sampler2D distance_field : filter_linear_mipmap, repeat_disable;
+uniform bool use_distance_field = false;
+
 // Texture pixels per SHIPPED atlas texel — the atlas is supersampled at load.
 uniform float supersample = 1.0;
 
@@ -50,14 +57,24 @@ void fragment() {
 
 	vec4 texel = texture(atlas, UV);
 
-	// LEGIBLE AT ANY SIZE. The font is a 720p coverage mask whose edge is about one shipped
-	// texel wide; drawn at 2x or 3x that edge is a 2-3 pixel blur. `magnified` is screen pixels
-	// per shipped texel, and the coverage is re-contrasted about its half point by that
-	// factor, so the edge is one SCREEN pixel wide whatever the display. At or below 1:1 it
-	// is the shipped coverage untouched.
+	// Screen pixels per SHIPPED atlas texel.
 	vec2 shipped = UV * vec2(textureSize(atlas, 0)) / supersample;
 	float magnified = 1.0 / max(max(fwidth(shipped.x), fwidth(shipped.y)), 1e-5);
-	if (magnified > 1.0) {
+
+	// THE FIELD ONLY WHERE THE TEXT IS MAGNIFIED. At or near the shipped size a screen pixel spans
+	// a whole shipped texel, the field is read from its mips, and the mip average erodes every
+	// stroke thinner than a pixel below the 0.5 contour — Fable 3's list rows lost the bar of 'H'
+	// and the bowls of 'B' at 1280x720. The shipped coverage is exact there.
+	if (use_distance_field && magnified > 1.25) {
+		// One screen pixel of anti-aliasing across the 0.5 contour: the field's own change per
+		// pixel, so the edge is as sharp at 3x as at 1.25x and never wider than a pixel.
+		float distance = texture(distance_field, UV).r;
+		float width = max(fwidth(distance), 1e-4);
+		texel.a = clamp((distance - 0.5) / width + 0.5, 0.0, 1.0);
+	} else if (magnified > 1.0) {
+		// LEGIBLE AT ANY SIZE. The font is a 720p coverage mask whose edge is about one shipped
+		// texel wide; magnified, the coverage is re-contrasted about its half point by that factor
+		// so the edge is one SCREEN pixel wide. At or below 1:1 it is the shipped coverage untouched.
 		texel.a = clamp((texel.a - 0.5) * min(magnified, 8.0) + 0.5, 0.0, 1.0);
 	}
 

@@ -804,8 +804,10 @@ public sealed class Engine_UiScreen
 			HorzAlign = t.HorzAlign,
 			VertAlign = t.VertAlign,
 			WrapMode = t.WrapMode,
-			BoxWidth = t.BoxWidth * 960f,
-			BoxHeight = t.BoxHeight * 720f,
+			// The element's own canvas, not the presentation's: 960 in Fable 2, 1280 in Fable 3
+			// (Engine_UiTextContract).
+			BoxWidth = t.BoxWidth * Engine_UiTextContract.Active.BoxWidthUnits,
+			BoxHeight = t.BoxHeight * Engine_UiTextContract.Active.BoxHeightUnits,
 			R = t.R, G = t.G, B = t.B,
 			Source = t,
 		};

@@ -33,9 +33,6 @@ public static class GameHangWatchdog
 			Refii.Host.HostBridge.SetFramePhase,
 			Refii.Host.HostBridge.FrameAlive);
 
-		// Godot's log file as the project states it (`debug/file_logging/log_path`), globalised.
-		string stated = ProjectSettings.GetSetting("debug/file_logging/log_path").AsString();
-		string path = ProjectSettings.GlobalizePath(stated.Length != 0 ? stated : "user://logs/godot.log");
-		Refii.Host.HostBridge.SetHostLogPath(path);
+		Refii.Host.HostBridge.SetHostLogPath(GameLogPaths.GodotLog);
 	}
 }

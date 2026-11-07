@@ -5,7 +5,7 @@
 // CCharString: a handle word holding a rep pointer; rep+0 = `char*` (sub_82359150 reads a name
 // as `*(char**)handle[0]`, 0x823591E4). LHString (the game's WString): a handle word holding a rep
 // pointer; rep+0 = UTF-16BE characters, rep+4 = length in code units (the compare sub_8229B520
-// walks `*v2` by `v2[1]`), the same shape hud_feed.cpp reads out of the HUD registries.
+// walks `*v2` by `v2[1]`), the same shape the HUD registries' texts have (hud_hooks.cpp).
 
 #pragma once
 
@@ -13,6 +13,8 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+
+#include <rex/ppc.h>
 
 #include "core/gui_native_calls.h"
 
@@ -138,6 +140,72 @@ inline refii::vfs::GuiNativeArgument Boolean(bool value) {
   argument.boolean = value;
   return argument;
 }
+
+/// The Gameface element the registry filer sub_82B9A108(registry, element, pres) is filing on this
+/// thread (gui_element_hooks.cpp), 0 outside a filing: the element a registry insert inside it
+/// was made from.
+uint32_t FilingElement();
+
+/// The presentation and path the element hooks (gui_element_hooks.cpp) named `element` by — the
+/// resolver's dotted path, a registry filing's `Attribute:value`, a Lua getElement's — false when
+/// nothing named it.
+bool ElementName(uint32_t element, uint32_t& presentation, std::string& path);
+
+/// THE HEADLESS PRESENTATIONS (headless_presentation_hooks.cpp): after the attribute-string read
+/// sub_828183C8(out, element, pres, &name) answered "", the FILE's string attribute of a headless
+/// element constructed into `out` (the shared core's AnswerAttributeString); true when it answered.
+bool HeadlessAnswerAttributeString(PPCContext& ctx, uint8_t* base, uint32_t out, uint32_t element,
+                                   uint32_t presentation, uint32_t name);
+
+/// THE OPACITY A HEADLESS ELEMENT HOLDS, as the guest's own writers left it (gui_element_hooks.cpp):
+/// `@Element.StoredOpacity(pres, elem, path, value)` with the element's stored `opacity` — after
+/// SetOpacity, after the visibility toggle, and for each element the track pass moved
+/// (headless_presentation_hooks.cpp) — posted when it changed. `bits` is the stored word.
+void StateStoredOpacity(uint32_t element, uint32_t presentation, uint32_t bits);
+
+/// A presentation as a statement names it: `=<document>` once its load was seen (the .bgf's stem,
+/// lower-cased: `=hud`, `=interactionmode`), else its address in hex (ui_stated_hooks.cpp).
+std::string PresentationKey(uint32_t presentation);
+
+/// THE STATED ELEMENT WRITES (ui_stated_hooks.cpp): each writer's VALUE as its caller passed it,
+/// posted at the writer's entry — never read back from the text box, the opacity or the
+/// renderable it ends in, which a headless element does not have. Keyed `(presentation, element,
+/// path)`: the element when the writer takes one, else the path the writer resolves from the
+/// presentation's root (element 0). Each posts only when the value changed; a presentation load
+/// forgets every value, so a reloaded document hears its texts again.
+/// `@Ui.Text(pres, elem, path, text, via)` — a literal string.
+void StateText(uint32_t presentation, uint32_t element, const std::string& path, const std::string& text,
+               const char* via);
+/// `@Ui.TextTag(pres, elem, path, tag hex, via)` — a Babel tag by its FNV-1 (sub_82819288's r4).
+void StateTextTag(uint32_t presentation, uint32_t element, const std::string& path, uint32_t tag, const char* via);
+/// `@Ui.TextName(pres, elem, path, name, via)` — a Babel tag by name (sub_828191A8's r4).
+void StateTextName(uint32_t presentation, uint32_t element, const std::string& path, const std::string& name,
+                   const char* via);
+/// `@Ui.Visible(pres, elem, path, shown, via)` — the visibility toggle's bool (sub_82819AE0's r5).
+void StateVisible(uint32_t presentation, uint32_t element, const std::string& path, bool shown, const char* via);
+/// `@Ui.State(pres, elem, path, slide, via)` — a component's slide as its writer passes it: the
+/// path setters' r5 (sub_8281A428 / sub_8281A500), the interaction mode tick's root slide and the
+/// interaction bars' show (interaction_hooks.cpp).
+void StateState(uint32_t presentation, uint32_t element, const std::string& path, int32_t slide, const char* via);
+/// `@Ui.Active(pres, elem, path, on, via)` — the active flag's request (sub_828196E0's r5): flag 0x2000,
+/// `globalactive`, the whole subtree skipped when off.
+void StateActive(uint32_t presentation, uint32_t element, const std::string& path, bool on, const char* via);
+/// `@Ui.Texture(pres, elem, path, texture path, via)` — the texture setter's CCharString (sub_82818EF0's r3).
+void StateTexture(uint32_t presentation, uint32_t element, const std::string& path, const std::string& texture,
+                  const char* via);
+
+/// The name hash of the text box whose lines sub_82920BC8 is laying out on this thread
+/// (topbox_hooks.cpp), 0 outside it: the line positions its layout writes (sub_82920610 ->
+/// sub_82818580 at 0x829207DC) are the guest's own fit of its own font, which Godot replaces.
+uint32_t LaidOutBox();
+
+/// The HUD's TopBox text box name hash (`*dword_835580D0`, the publisher sub_8217D880's r4 at
+/// 0x8217DC20), 0 before the static initialiser ran.
+uint32_t TopBoxName(const uint8_t* base);
+
+/// States the GUI screen id `*(*(GUI+0x38)+4)` as one of its writers left it
+/// (game_state_hooks.cpp): every writer that is not the screen set calls this as it returns.
+void StateGuiScreen(const uint8_t* base);
 
 /// A statement under a `@Family.Event` name with its arguments, in order.
 class Statement {

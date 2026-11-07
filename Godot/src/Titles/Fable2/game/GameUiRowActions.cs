@@ -120,7 +120,6 @@ public partial class GameUi
 		}
 
 		_rowActionPrompt?.Hide();
-		HoldScreenStick(0);
 		return true;
 	}
 

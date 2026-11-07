@@ -47,8 +47,7 @@ public static class Engine_UiScreenInput
 	public const uint PagePrev = 27;
 
 	/// <summary>
-	/// The directional presses. List screens swallow 28..35 (their scrolling is Lua's `onUpdate`
-	/// polling `GUI:IsPushingUp()`, hence <c>Engine_UiSource.Current.MenuScroll</c>); only the
+	/// The directional presses. List screens swallow 28..35 (their cursor is Godot's); only the
 	/// options page answers natively — page object on 28/29, row object on 30/31.
 	/// </summary>
 	public const uint Up = 28;

@@ -5,14 +5,16 @@ namespace Refii.Titles.Fable2;
 using Refii.Ui;
 
 /// <summary>
-/// THE QUEST BOX (screen 5, `questrepeatable.bgf`), stated by the call that opens it.
+/// THE QUEST BOX (screen 5, `questrepeatable.bgf`), stated by the box's own Open.
 ///
 /// It is not a screen class but a box page (vtable `off_820AE6C8`, kind 4 → screen 5) built by
-/// the GUI native `DisplayQuestBoxParams(table, text)` (`sub_82304920` → `sub_826B96F8`). On show
-/// (`sub_823CFF60`) the root goes to slide `Type` and the filler `sub_823CFBE0` writes, under
-/// `elements`:
+/// the GUI native `DisplayQuestBoxParams(table, text)` (`sub_82304920` → `sub_826B96F8`, which
+/// copies the table into the box). Its Open (`sub_823CFF60`) is hooked and states the box's fields
+/// (`@DisplayBox.Open` kind 4, display_box_hooks.cpp); on show the root goes to slide `Type` and
+/// the filler `sub_823CFBE0` writes, under `elements`:
 /// <list type="bullet">
-/// <item>`QuestDescription` ← the call's text (argument 2, localised with `%n` substitution).</item>
+/// <item>`QuestDescription` ← `box+8`, the call's text (argument 2, localised with `%n`
+/// substitution).</item>
 /// <item>`Stars` slide `RiskLevel + 5`, only for a risk level 1..5 (0x823cfc3c..58) — the second
 /// set of `1star`..`5star`.</item>
 /// <item>`DetailsGroup.{Occupation,Appearance,Features,Name,Whereabouts,Reason}Amount` ← the
@@ -29,24 +31,46 @@ public static class Engine_UiQuestBoxPage
 {
 	public const uint ScreenId = 5;
 
-	/// <summary>One open, as the call stated it — every string already localised.</summary>
+	/// <summary>One open box's page — every string localised.</summary>
 	public sealed record Statement(
 		int Type, int RiskLevel, string Description,
 		string Occupation, string Appearance, string Features, string TargetName,
 		string Whereabouts, string Reason, string Condition1, string Condition2, int Conditions);
 
-	/// <summary>The quest box the last `DisplayQuestBoxParams` call opened.</summary>
-	public static Statement? Stated { get; set; }
+	/// <summary>
+	/// The page of a stated quest box, its tags localised as the filler localises them
+	/// (`sub_8230E0E8`); null for no box. The fields are the hook's order: Type `+24`, RiskLevel
+	/// `+28`, the condition count `+32` (0x82304a44..7c: two when `Condition2` is not
+	/// `"nocondition"`, else one when `Condition1` is not), then the tags `+36` Condition1, `+40`
+	/// Condition2, `+44` Occupation, `+48` Appearance, `+52` Features, `+56` TargetName, `+60`
+	/// Whereabouts, `+64` Reason.
+	/// </summary>
+	public static Statement? Of(Engine_UiDisplayBoxes.Box? box, Refii.Text.Engine_BabelDatabase? strings)
+	{
+		if (box is not { Kind: Engine_UiDisplayBoxes.Quest })
+		{
+			return null;
+		}
+
+		string Text(int field) => Engine_UiGuiText.Resolve(box.Field(field), strings);
+		int conditions = box.Number(2);
+		return new Statement(
+			box.Number(0), box.Number(1), box.Body,
+			Text(5), Text(6), Text(7), Text(8), Text(9), Text(10),
+			conditions > 0 ? Text(3) : string.Empty,
+			conditions > 1 ? Text(4) : string.Empty,
+			conditions);
+	}
 
 	private const string Elements = "elements.";
 
 	/// <summary>The root element carries no authored name: it is addressed by ordinal.</summary>
 	private const string Root = "#0";
 
-	public static IReadOnlyDictionary<string, string> Values()
+	public static IReadOnlyDictionary<string, string> Values(Statement? stated)
 	{
 		var values = new Dictionary<string, string>();
-		if (Stated is not { } s)
+		if (stated is not { } s)
 		{
 			return values;
 		}
@@ -63,10 +87,10 @@ public static class Engine_UiQuestBoxPage
 		return values;
 	}
 
-	public static IReadOnlyDictionary<string, bool> Active()
+	public static IReadOnlyDictionary<string, bool> Active(Statement? stated)
 	{
 		var active = new Dictionary<string, bool>();
-		if (Stated is not { } s)
+		if (stated is not { } s)
 		{
 			return active;
 		}
@@ -77,10 +101,10 @@ public static class Engine_UiQuestBoxPage
 		return active;
 	}
 
-	public static IReadOnlyDictionary<string, int> Slides()
+	public static IReadOnlyDictionary<string, int> Slides(Statement? stated)
 	{
 		var slides = new Dictionary<string, int>();
-		if (Stated is not { } s)
+		if (stated is not { } s)
 		{
 			return slides;
 		}

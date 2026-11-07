@@ -7243,6 +7243,7 @@ REX_EXTERN(rex_lhMenuBox_Close) {
       refii::mods::StoreU32(base, menu, static_cast<uint32_t>(e.choice));
     }
   }
+  refii::vfs::StateMenuBoxClose(base, menu);
   __imp__rex_lhMenuBox_Close(ctx, base);
 }
 

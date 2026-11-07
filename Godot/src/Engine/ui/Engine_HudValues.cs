@@ -168,13 +168,26 @@ public sealed class Engine_HudValues
     public uint? RegistryImage(uint hash) =>
         _registryImages.TryGetValue(hash, out uint texture) && texture != 0u ? texture : null;
 
+    /// <summary>Every registry slide the guest's writers stated, as `@Gui.Slide` carried it.</summary>
+    public IEnumerable<(int Registry, uint Hash, int Slide)> RegistrySlides
+    {
+        get
+        {
+            foreach (((int registry, uint hash), int slide) in _registrySlides)
+            {
+                yield return (registry, hash, slide);
+            }
+        }
+    }
+
     /// <summary>The slide a registry name was last played to, or null when the guest never has.</summary>
     public int? RegistrySlide(int registry, uint hash) =>
         _registrySlides.TryGetValue((registry, hash), out int slide) ? slide : null;
 
     /// <summary>
-    /// Meters stated through `SetMeterRatioOverTime`, 0..100, keyed by FNV-1 of the raw element
-    /// name (`sub_82306928`, basis 0x811C9DC5). The Lua channel; the C++ registry covers ~20 names.
+    /// Meters stated by a call, 0..100, keyed by FNV-1 of the name (basis 0x811C9DC5): the meter
+    /// registry's writers at their entry (`@Gui.Meter`, Engine_UiHudRegistryWrites) and the
+    /// `SetMeterRatioOverTime` native (`sub_82306928`). Laid over the registry walk's reads.
     /// </summary>
     private readonly Dictionary<uint, Seek> _statedMeters = new();
 
@@ -222,6 +235,29 @@ public sealed class Engine_HudValues
         seek.Target = target;
         seek.Rate = seconds <= 0f ? 0f : (target - seek.Current) / seconds;
     }
+
+    /// <summary>
+    /// The meter registry's run writer (`sub_823FE068`, disc `sub_8257C1A0`): current and target
+    /// clamped to 0..100 and the rate verbatim, percent per second. `sub_82265D20` (mode 0) steps
+    /// current by rate × dt and snaps onto the target once a step passes it.
+    /// </summary>
+    public void StateMeterRun(uint elementHash, float current, float target, float rate)
+    {
+        if (!_statedMeters.TryGetValue(elementHash, out Seek? seek))
+        {
+            seek = new Seek();
+            _statedMeters[elementHash] = seek;
+        }
+
+        seek.Current = System.Math.Clamp(current, 0f, 100f);
+        seek.Polled = _meters.TryGetValue(elementHash, out float polled) ? polled : seek.Polled;
+        seek.Target = System.Math.Clamp(target, 0f, 100f);
+        seek.Rate = rate;
+    }
+
+    /// <summary>The meter a name was last stated at, current as the seek stands, or null when none was.</summary>
+    public float? StatedMeter(uint elementHash) =>
+        _statedMeters.TryGetValue(elementHash, out Seek? seek) ? seek.Current : null;
 
     /// <summary>`sub_82265D20`, mode 0, for every stated meter.</summary>
     private void AdvanceMeters(float dt) => AdvanceSeeks(_statedMeters.Values, dt);
@@ -357,6 +393,11 @@ public sealed class Engine_HudValues
             {
                 _meters[hash] = seek.Current;
             }
+        }
+
+        foreach ((uint hash, float value) in _meterOverrides)
+        {
+            _meters[hash] = value;
         }
 
         foreach ((uint hash, Pulse pulse) in _pulses)
@@ -517,27 +558,6 @@ public sealed class Engine_HudValues
             }
         }
 
-        // The script store holds a tag id, not a string: without the book it is unresolvable
-        // and the name is left to the registry.
-        if (Strings is null)
-        {
-            return;
-        }
-
-        foreach ((uint hash, uint tag) in scriptTexts)
-        {
-            if (!_texts.ContainsKey(hash) && Strings.TryGetString(tag, out string display))
-            {
-                _texts[hash] = display;
-            }
-        }
-
-        // The stated value wins over the polled channels, so it is applied last.
-        foreach ((uint hash, string display) in _stated)
-        {
-            _texts[hash] = display;
-        }
-
         // Last writer wins, as in the guest: both channels write the same element records. A
         // registry value that changed since the last sample collapses the seek onto it; an
         // unchanged one loses to the seek's own progress.
@@ -552,6 +572,34 @@ public sealed class Engine_HudValues
             }
 
             _meters[hash] = seek.Current;
+        }
+
+        // An override stands over every channel, the stated seeks included.
+        foreach ((uint hash, float value) in _meterOverrides)
+        {
+            _meters[hash] = value;
+        }
+
+        // The stated value wins over the polled channels: the script store below only fills a
+        // name nothing else holds.
+        foreach ((uint hash, string display) in _stated)
+        {
+            _texts[hash] = display;
+        }
+
+        // The script store holds a tag id, not a string: without the book it is unresolvable
+        // and the name is left to the registry.
+        if (Strings is null)
+        {
+            return;
+        }
+
+        foreach ((uint hash, uint tag) in scriptTexts)
+        {
+            if (!_texts.ContainsKey(hash) && Strings.TryGetString(tag, out string display))
+            {
+                _texts[hash] = display;
+            }
         }
     }
 

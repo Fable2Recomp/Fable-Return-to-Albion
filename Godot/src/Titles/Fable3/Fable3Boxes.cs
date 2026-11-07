@@ -11,11 +11,15 @@ using Refii.Ui;
 /// timers are hud.bgf's `CornerBox`, on the shared HUD view (<see cref="Fable3Hud"/>).
 /// </summary>
 /// <remarks>
-/// THE GUEST ANSWERS ITS OWN BOX. The pad reaches the guest unchanged, its box manager routes the
-/// action to the box showing (sub_825C8B68 -> OnAction, 41 yes / 42 no), and the script reads the
-/// reply off the message bus — so this draws and never decides. What it draws is the call's own
-/// text; the labels are the box's stated overrides or the guest's defaults (GUI_YES / GUI_NO,
-/// GUI_DIALOG_ACCEPT), each behind the shared keycap for its button (<see cref="Fable3Prompts"/>).
+/// GODOT TAKES THE PAD; THE GUEST'S OWN ANSWER RUNS. For the boxes Godot owns (questions, the
+/// numeric adjuster, messages, quest boxes, notices, the pause screen's message box) and the menu
+/// box, the guest's pad handlers do nothing (display_box_hooks.cpp); a press here becomes the
+/// guest tick action <see cref="Fable3BoxAnswers"/> names, which the guest's thread hands to the
+/// box's own answer function — so the reply still reaches the scripts through the guest's message
+/// bus, and the box still closes on the guest's own lifetime (@Box.Close). What it draws is the
+/// box's own text; the labels are the box's stated overrides or the guest's defaults (GUI_YES /
+/// GUI_NO, GUI_DIALOG_ACCEPT), each behind the shared keycap for its button
+/// (<see cref="Fable3Prompts"/>).
 ///
 /// The place and look are ours, laid out in a 720-high reference and scaled with the window so
 /// the text stays legible at any size.
@@ -57,11 +61,95 @@ public partial class Fable3Boxes : Control
 		}
 
 		Engine_UiGuiBoxes boxes = _natives.Boxes;
+		Answer(boxes, delta);
 		if (boxes.Generation != _drawn)
 		{
 			_drawn = boxes.Generation;
 			QueueRedraw();
 		}
+	}
+
+	/// <summary>The box last answered and how long ago: one answer per box until the guest drops it.</summary>
+	private uint _answered;
+	private double _answeredAge;
+	private uint _wasDown;
+
+	/// <summary>The answer is the guest's to act on; a second press inside this is the same press.</summary>
+	private const double AnswerLatch = 0.5;
+
+	/// <summary>Reads the pad for the menu box or the front owned box and posts the answer.</summary>
+	private void Answer(Engine_UiGuiBoxes boxes, double delta)
+	{
+		uint down = Refii.Game.GameInput.Pad0.Buttons;
+		uint pressedBits = down & ~_wasDown;
+		_wasDown = down;
+		_answeredAge += delta;
+		if (pressedBits == 0u || !Refii.Host.HostBridge.IsGuestUp || Fable3HostOptions.IsOpen)
+		{
+			return;
+		}
+
+		var press = new Fable3BoxAnswers.Press(
+			(pressedBits & Refii.Game.GameInput.ButtonA) != 0, (pressedBits & Refii.Game.GameInput.ButtonB) != 0,
+			(pressedBits & Refii.Game.GameInput.ButtonX) != 0, (pressedBits & Refii.Game.GameInput.ButtonY) != 0,
+			(pressedBits & Refii.Game.GameInput.DpadUp) != 0, (pressedBits & Refii.Game.GameInput.DpadDown) != 0,
+			(pressedBits & Refii.Game.GameInput.DpadLeft) != 0, (pressedBits & Refii.Game.GameInput.DpadRight) != 0);
+
+		if (boxes.Menu is { } menu)
+		{
+			if (press.Up || press.Down)
+			{
+				menu.Highlight = Fable3BoxAnswers.MenuStep(menu.Highlight, menu.Options.Count, press.Down);
+				QueueRedraw();
+			}
+			else if (press.A && menu.Options.Count > 0)
+			{
+				Post(Fable3BoxAnswers.MenuPick(menu.Highlight), 0u);
+			}
+			else if (press.B && menu.Cancelable)
+			{
+				Post(Fable3BoxAnswers.MenuCancel, 0u);
+			}
+
+			return;
+		}
+
+		if (_natives.FrontOwned is not { } front)
+		{
+			return;
+		}
+
+		if (front.Kind == "adjuster" && boxes.Adjusting is not null && (press.Left || press.Right || press.Up || press.Down))
+		{
+			// The value is Godot's until the answer: it is stored where the guest's answer reads it.
+			if (boxes.StepAdjuster(press.Right || press.Up))
+			{
+				QueueRedraw();
+			}
+
+			return;
+		}
+
+		if (front.Address == _answered && _answeredAge < AnswerLatch)
+		{
+			return;
+		}
+
+		string? action = Fable3BoxAnswers.ForBox(front.Kind, front.Address, press, boxes.Adjusting?.Value ?? 0, front.Download);
+		if (action is not null)
+		{
+			Post(action, front.Address);
+		}
+	}
+
+	private void Post(string action, uint address)
+	{
+		Refii.Host.HostBridge.PostFrontEndAction(action);
+		_answered = address;
+		_answeredAge = 0.0;
+		// The press that answered is not a press on whatever the guest shows next.
+		Refii.Core.Engine_TitleGame.Active.Input.HoldUntilReleased();
+		GD.Print($"[fable3-boxes] answered: {action}");
 	}
 
 	public override void _Draw()
@@ -125,6 +213,11 @@ public partial class Fable3Boxes : Control
 		else
 		{
 			buttons.Add(("A", Label(null, "GUI_DIALOG_ACCEPT", strings)));
+			if (box.Kind == Engine_UiGuiBoxes.BoxKind.Adjuster)
+			{
+				// sub_8281C638(box, 0): B finishes it without the value (event 70).
+				buttons.Add(("B", Label(null, "GUI_DIALOG_BACK", strings)));
+			}
 
 			// The download form: sub_8281AFA8 shows `paper.MessageBox.Action` and names its X
 			// button by the tag at box+36 (0x8281B048 / 0x8281B07C); X (76) is taken only then
@@ -135,8 +228,12 @@ public partial class Fable3Boxes : Control
 			}
 		}
 
+		// The adjuster's value is Godot's until it answers: shown under the question.
+		string body = box.Kind == Engine_UiGuiBoxes.BoxKind.Adjuster && _natives.Boxes.Adjusting is { } adjusting
+			? box.Text + "\n" + adjusting.Display
+			: box.Text;
 		int titleLines = box.Title.Length == 0 ? 0 : Engine_UiCanvasText.MeasureWrappedLines(_font, box.Title, inner, scale);
-		int bodyLines = box.Text.Length == 0 ? 0 : Engine_UiCanvasText.MeasureWrappedLines(_font, box.Text, inner, scale);
+		int bodyLines = body.Length == 0 ? 0 : Engine_UiCanvasText.MeasureWrappedLines(_font, body, inner, scale);
 		float height = ((titleLines + bodyLines + 1) * lineHeight) + (3f * Padding * scale);
 		var rect = new Rect2(new Vector2((size.X - width) * 0.5f, size.Y - (BoxBottom * scale) - height), new Vector2(width, height));
 		DrawRect(rect, Panel);
@@ -149,7 +246,7 @@ public partial class Fable3Boxes : Control
 
 		if (bodyLines > 0)
 		{
-			Engine_UiCanvasText.DrawWrapped(this, _font, box.Text, pen, inner, scale, Colors.White);
+			Engine_UiCanvasText.DrawWrapped(this, _font, body, pen, inner, scale, Colors.White);
 		}
 
 		// The prompts, right-aligned on the last line: A rightmost, as the guest lays them.

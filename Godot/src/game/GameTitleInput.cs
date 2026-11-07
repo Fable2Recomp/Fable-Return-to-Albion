@@ -46,6 +46,13 @@ public class GameTitleInput
 	public virtual bool ChoicesUp => false;
 
 	/// <summary>
+	/// Whether a map of the guest's has the input (<see cref="GameInput.KeyContext.Map"/>): a screen
+	/// that reads its cursor from the left stick, so the mouse is captured and its motion is that
+	/// stick, and the menu keys give way to the map's own.
+	/// </summary>
+	public virtual bool MapUp => false;
+
+	/// <summary>
 	/// The key a pad button's prompt shows now, or null for the shell's (Fable 2's) reading.
 	/// <paramref name="shown"/> prints an action's first working input; <paramref name="playing"/> is
 	/// whether the world has the input.

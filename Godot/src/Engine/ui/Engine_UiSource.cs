@@ -77,22 +77,9 @@ public abstract class Engine_UiSource
 	/// <summary>The Lua-opened option box, or null when none is open.</summary>
 	public virtual Engine_UiModel.MenuBoxState? GetMenuBox() => null;
 
-	/// <summary>
-	/// A yes/no DISPLAY box is open — `GUI.DisplayYesNoQuestion`, `DisplayPubGameYesNoQuestion`,
-	/// `DisplayQuestPrimaryQuestion`. It stands up `querybox.bgf` like the modal router's
-	/// QueryBox but is answered through <see cref="DisplayBoxAction"/>, not the router.
-	/// </summary>
-	public virtual bool DisplayQueryUp() => false;
-
-	/// <summary>
-	/// A DISPLAY numeric adjuster is open — `GUI.DisplayNumericAdjusterParams` (the temple
-	/// donation). Same `numericadjuster.bgf` as the modal router's, answered through
-	/// <see cref="DisplayBoxAction"/>.
-	/// </summary>
-	public virtual bool DisplayAdjusterUp() => false;
-
-	/// <summary>The address of the display box showing, or 0: the box an answer is addressed to.</summary>
-	public virtual uint DisplayBoxAddress() => 0;
+	/// <summary>The address of the display box showing, or 0: the box an answer is addressed to —
+	/// the newest one its class's Open stated (<see cref="Engine_UiDisplayBoxes.Showing"/>).</summary>
+	public virtual uint DisplayBoxAddress() => Engine_UiDisplayBoxes.Showing?.Address ?? 0u;
 
 	/// <summary>
 	/// The screen id the showing display box stands on, <see cref="uint.MaxValue"/> when none.
@@ -280,16 +267,10 @@ public abstract class Engine_UiSource
 	}
 
 	/// <summary>One action code to the current in-game screen's own input method.</summary>
-	public virtual uint ScreenAction(uint code, bool atRoot = false) => 0;
+	public virtual uint ScreenAction(uint code) => 0;
 
 	/// <summary>Pushes a menu button event by identity.</summary>
 	public virtual uint MenuEvent(string name, int eventType, uint id) => 0;
-
-	/// <summary>Runs the shipped <c>SelectMenuItem</c> against the guest's own highlight.</summary>
-	public virtual uint MenuSelect() => 0;
-
-	/// <summary>Puts the guest's own menu cursor on the row named, inside its Lua window.</summary>
-	public virtual uint MenuHighlight(string name) => 0;
 
 	/// <summary>States the highlighted row of an in-game screen's list (screen 0 clears) — see
 	/// <c>HostBridge.SetHighlightedRow</c>.</summary>
@@ -297,8 +278,11 @@ public abstract class Engine_UiSource
 	{
 	}
 
-	/// <summary>Holds or releases the menu stick in one direction.</summary>
-	public virtual uint MenuScroll(Engine_UiModel.MenuStick direction, bool held) => 0;
+	/// <summary>States the fold depth of the list Godot shows for a screen (0 at the root, which
+	/// clears) — see <c>HostBridge.SetListFoldDepth</c>.</summary>
+	public virtual void StateListFoldDepth(uint screen, uint depth)
+	{
+	}
 
 	/// <summary>Selects a pause tab. False when the source refused it.</summary>
 	public virtual bool PauseTabSelect(uint tab) => false;

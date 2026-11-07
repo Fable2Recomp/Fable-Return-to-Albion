@@ -82,8 +82,6 @@ internal static class GameUiDiagnosticsSnapshot
     /// <param name="ModelScreenId">The list model's own declared screen identity.</param>
     /// <param name="Presentation">The guest presentation containing the model.</param>
     /// <param name="PopulationScript">The production population script name.</param>
-    /// <param name="GuestHighlight">The guest's one-based cursor, or zero until solved.</param>
-    /// <param name="HostExpanded">Whether the list follows its host-expanded model.</param>
     /// <param name="Stated">Whether rows came from the guest's stated model.</param>
     /// <param name="Menu">The shared widget's detached state.</param>
     internal sealed record ScreenMenu(
@@ -91,8 +89,6 @@ internal static class GameUiDiagnosticsSnapshot
         [property: JsonPropertyName("model_screen_id")] uint ModelScreenId,
         [property: JsonPropertyName("presentation")] uint Presentation,
         [property: JsonPropertyName("population_script")] string PopulationScript,
-        [property: JsonPropertyName("guest_highlight")] int GuestHighlight,
-        [property: JsonPropertyName("host_expanded")] bool HostExpanded,
         [property: JsonPropertyName("stated")] bool Stated,
         [property: JsonPropertyName("menu")] Menu? Menu);
 
@@ -133,6 +129,6 @@ internal static class GameUiDiagnosticsSnapshot
     internal static ScreenMenu? CaptureScreenMenu(Engine_UiScreenMenu? menu, uint screenId,
         bool viewAvailable, bool viewVisible, bool viewVisibleInTree) => menu is null ? null :
         new(screenId, menu.ScreenId, menu.Presentation, menu.PopulationScript,
-            menu.GuestHighlight, menu.HostExpanded, menu.Stated,
+            menu.Stated,
             CaptureMenu(menu.Menu, viewAvailable, viewVisible, viewVisibleInTree));
 }

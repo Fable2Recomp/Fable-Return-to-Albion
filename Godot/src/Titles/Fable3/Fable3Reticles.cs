@@ -12,8 +12,8 @@ using Refii.Ui;
 /// player in the HUD's reticule manager *(H+0x3C) — on the shared <see cref="Engine_HudReticule"/>.
 /// The guest pushes each as a render-scene sprite (HudReticule_Draw sub_822906A8 →
 /// RenderScene_AddObject at 0x82290a24), which nothing draws under the null device. Its setters state
-/// the object (`@Reticule`, reticle_hooks.cpp); the record is read as the guest's draw reads it
-/// (reticle_feed.cpp).
+/// the object (`@Reticule`) and the record as they left it (reticle_hooks.cpp), read back by
+/// reticle_feed.cpp.
 /// </summary>
 public static class Fable3Reticles
 {
@@ -39,8 +39,9 @@ public static class Fable3Reticles
 
 	/// <summary>
 	/// One player's slot this frame and the backbuffer height its pixels are in; null while down. The
-	/// ranged aim is placed by its world anchor (aimer+0x80); the spell target by the point the guest
-	/// stated (its projection is computed in a register and only stored in the record).
+	/// ranged aim is placed by its world anchor (aimer+0x80 as its setter projected it); the spell
+	/// target by the point the guest stated (its projection is computed in a register and only
+	/// stored in the record).
 	/// </summary>
 	public static Engine_HudReticule.Aim? Read(int player, int slot, out float guestHeight)
 	{

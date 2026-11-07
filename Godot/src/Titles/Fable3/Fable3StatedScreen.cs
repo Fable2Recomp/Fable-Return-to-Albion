@@ -8,13 +8,16 @@ using System.Collections.Generic;
 /// drawn on the one menu template (<see cref="Fable3ListScreen"/>) from what the
 /// guest states (<see cref="Fable3ScreenModel"/>). The screen showing is the box manager's
 /// (display_box_hooks.cpp names its class; <see cref="Fable3ScreenBoxes.ScreenRoot"/> is its
-/// element root); the rows, the cursor row and the values are its element writes. The pad reaches
-/// the guest unchanged, which moves its own cursor and closes its own screen.
+/// element root); its texts are the stated texts under that root, its cursor row, ghosting and
+/// rows what its own calls stated for its box (<see cref="Fable3ScreenStatements"/>). The pad
+/// reaches the guest unchanged, which moves its own cursor and closes its own screen.
 /// </summary>
 public partial class Fable3StatedScreen : Fable3ListScreen
 {
 	private readonly Dictionary<string, Fable3ScreenModel.Probe> _stated = new();
 	private ulong _elements = ulong.MaxValue;
+	private ulong _statements = ulong.MaxValue;
+	private ulong _screens = ulong.MaxValue;
 	private string? _root;
 	private string? _boxRoot;
 	private Fable3ScreenPage? _page;
@@ -25,20 +28,30 @@ public partial class Fable3StatedScreen : Fable3ListScreen
 
 	protected override Fable3ScreenPage? Compose(double delta)
 	{
-		if (Fable3Elements.Generation == _elements && Fable3ScreenBoxes.ScreenRoot == _boxRoot)
+		if (Fable3Elements.Generation == _elements && Fable3UiStatements.Generation == _statements &&
+			Fable3ScreenStatements.Generation == _screens && Fable3ScreenBoxes.ScreenRoot == _boxRoot)
 		{
 			return _page;
 		}
 
 		_elements = Fable3Elements.Generation;
+		_statements = Fable3UiStatements.Generation;
+		_screens = Fable3ScreenStatements.Generation;
 		_boxRoot = Fable3ScreenBoxes.ScreenRoot;
 
-		// The box manager's screen first; else the save menu, which is no box — its root's own
-		// state is the statement (1..4 open, 5 closed; Fable3BoxScreenModel.SaveMenuOpen).
+		// The box manager's screen first; else the save menu, which is no box — its open, its row
+		// and its `allowed` are stated by its own calls (sub_8296C5D0 / sub_8296CB08 / sub_8296C858,
+		// Fable3UiStatements).
 		string? root = _boxRoot;
-		if (root is null && Fable3Elements.Latest(Fable3BoxScreenModel.SaveMenu) is { State: >= 1 and <= 4 })
+		Fable3ScreenState screen = Fable3ScreenStatements.Of(Fable3ScreenBoxes.ScreenBox);
+		if (root is null && Fable3UiStatements.SaveMenuOpen)
 		{
 			root = Fable3BoxScreenModel.SaveMenu;
+			screen = new Fable3ScreenState
+			{
+				SaveRow = Fable3UiStatements.SaveMenuRow,
+				SaveAllowed = Fable3UiStatements.SaveMenuAllowed,
+			};
 		}
 
 		if (root is not null)
@@ -47,28 +60,28 @@ public partial class Fable3StatedScreen : Fable3ListScreen
 		}
 
 		_root = root;
-		_page = root is null ? null : Fable3ScreenModel.Compose(root, _stated, Resolve);
+		_page = root is null ? null : Fable3ScreenModel.Compose(root, _stated, screen, Resolve);
 		return _page;
 	}
 
 	/// <summary>
-	/// The values stated under <paramref name="root"/> in the presentation that last wrote under
-	/// its first segment — a reopened screen gets a new presentation and the old one's elements
-	/// stay in the model, and two .bgf share a root (foodquerybox's and proposalquerybox's
-	/// `InfoBox`), so only the latest one is the screen showing.
+	/// The values stated under <paramref name="root"/> in the document that last wrote under its
+	/// first segment — two .bgf share a root (foodquerybox's and proposalquerybox's `InfoBox`), so
+	/// only the latest one is the screen showing; a reloaded document starts clean
+	/// (<see cref="Fable3Elements.Load"/>). No presentation is waited on: a root nothing wrote yet
+	/// collects nothing and the model composes the screen from what its calls stated.
 	/// </summary>
 	private void Collect(string root)
 	{
 		_stated.Clear();
 		int dot = root.IndexOf('.');
-		uint presentation = Fable3Elements.LatestPresentationOf(dot < 0 ? root : root[..dot]);
-		if (presentation == 0u)
+		if (Fable3Elements.LatestDocumentOf(dot < 0 ? root : root[..dot]) is not { } document)
 		{
 			return;
 		}
 
 		string prefix = root + ".";
-		foreach (KeyValuePair<(uint Presentation, string Path), Fable3Elements.Element> entry in Fable3Elements.Of(presentation))
+		foreach (KeyValuePair<(string Document, string Path), Fable3Elements.Element> entry in Fable3Elements.Of(document))
 		{
 			string path = entry.Key.Path;
 			if (path == root || path.StartsWith(prefix, System.StringComparison.Ordinal))

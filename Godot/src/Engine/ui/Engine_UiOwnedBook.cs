@@ -115,13 +115,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		_tinted = want;
 	}
 
-	private static readonly StringName TintRgb = "tint_rgb";
-
-	private static readonly StringName TintAmount = "tint_amount";
-
-	private static readonly StringName TextColour = "text_colour";
-
-	private static readonly StringName AuthoredTextColour = "text_colour_authored";
+	private static readonly StringName AuthoredTextColour = Engine_UiElementTint.AuthoredTextColour;
 
 	private void Tint(int ordinal, Color colour)
 	{
@@ -130,37 +124,11 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			return;
 		}
 
-		// A TEXT element's colour is its mesh's (`sub_82425E58` writes renderable +0x40 on a text
-		// element): the mesher reads `text_colour`, so the field is re-meshed in the new colour.
-		if (node is MeshInstance3D text && text.HasMeta(TextColour))
+		// One mechanism with the HUD (Engine_UiElementTint): a text element re-meshes in its new colour.
+		if (Engine_UiElementTint.Tint(node, colour) && node is MeshInstance3D text && Book is not null &&
+			_fields.Find(field => field.Node == text) is { EverShown: true } shown)
 		{
-			if (!text.HasMeta(AuthoredTextColour))
-			{
-				text.SetMeta(AuthoredTextColour, text.GetMeta(TextColour));
-			}
-
-			text.SetMeta(TextColour, colour);
-			if (Book is not null && _fields.Find(field => field.Node == text) is { EverShown: true } shown)
-			{
-				Book.SetMeshText(text, shown.Shown);
-			}
-
-			return;
-		}
-
-		void Paint(Node target)
-		{
-			if (target is MeshInstance3D { MaterialOverride: ShaderMaterial material })
-			{
-				material.SetShaderParameter(TintRgb, new Vector3(colour.R, colour.G, colour.B));
-				material.SetShaderParameter(TintAmount, colour.A);
-			}
-		}
-
-		Paint(node);
-		foreach (Node child in node.GetChildren())
-		{
-			Paint(child);
+			Book.SetMeshText(text, shown.Shown);
 		}
 	}
 
@@ -287,6 +255,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	public void RestartPlayback()
 	{
 		_playback?.Reset(Engine_UiSlideStatements.Sequence);
+		_behaviours?.Reset();
 		_toldWrites = Engine_UiSlideStatements.Sequence;
 		_toldOpened = Engine_UiSlideStatements.Sequence;
 	}
@@ -356,6 +325,49 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 	/// <summary>Every entry plays — a stand with no guest to state its plays (Engine_UiScreenStand).</summary>
 	public bool PlayEntries { get; set; }
+
+	/// <summary>
+	/// A behaviour of this book fired its presentation event (Engine_UiBehaviourEvents): its
+	/// element stopped being live under the book's own playback. Null leaves them untracked.
+	/// </summary>
+	public System.Action<Engine_UiBehaviourEvents.Fired>? BehaviourFired { get; set; }
+
+	private Engine_UiBehaviourEvents? _behaviours;
+	private bool _behavioursRead;
+	private readonly List<Engine_UiBehaviourEvents.Behaviour> _behavioursRose = new();
+
+	/// <summary>One stand's liveness to the book's behaviours: the resolve's draw gate, which carries the playback's windows.</summary>
+	private void ObserveBehaviours()
+	{
+		if (BehaviourFired is null || _resolve is null || Document is null)
+		{
+			return;
+		}
+
+		if (!_behavioursRead)
+		{
+			_behavioursRead = true;
+			_behaviours = Engine_UiBehaviourEvents.For(Document);
+		}
+
+		if (_behaviours is null)
+		{
+			return;
+		}
+
+		_behavioursRose.Clear();
+		List<Engine_UiBehaviourEvents.Fired>? fired = _behaviours.Observe(_resolve.Drawn, _behavioursRose);
+		foreach (Engine_UiBehaviourEvents.Behaviour rose in _behavioursRose)
+		{
+			GD.Print($"[behaviour] {Name}: {Document.Nodes[rose.Ordinal].Name}#{rose.Ordinal} live " +
+				$"({rose.Event} on '{rose.ParentName}')");
+		}
+
+		foreach (Engine_UiBehaviourEvents.Fired one in fired ?? new List<Engine_UiBehaviourEvents.Fired>(0))
+		{
+			BehaviourFired(one);
+		}
+	}
 
 	/// <summary>The screen closing hides its book: every component enters again at the next stand.</summary>
 	public override void _Notification(int what)
@@ -453,6 +465,84 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		return _toldTextures = any ? textures : null;
 	}
 
+	/// <summary>
+	/// Where one element's channel stands in this book's own stand: the playing slide track's
+	/// value this frame, else the guest's last told write of that attribute since the screen
+	/// opened — read even where Godot owns the element (a list's slide and its focus dim are the
+	/// guest's statements about the list Godot draws), else null. Opacity answers 0..100, as the
+	/// guest states it.
+	/// </summary>
+	public float? StoodValue(int ordinal, Engine_UiSlidePlayback.Channel channel)
+	{
+		if (Document is null || ordinal < 0 || ordinal >= Document.Nodes.Length)
+		{
+			return null;
+		}
+
+		if (_playback is { } playback &&
+			playback.Values[(ordinal * Engine_UiSlidePlayback.Channels) + (int)channel] is var played &&
+			!float.IsNaN(played))
+		{
+			return played;
+		}
+
+		return ToldValue(ordinal, channel);
+	}
+
+	/// <summary>The guest's last told write of one element's channel since the screen opened, or null.</summary>
+	private float? ToldValue(int ordinal, Engine_UiSlidePlayback.Channel channel)
+	{
+		if (Document is null || PresentationAddress == 0)
+		{
+			return null;
+		}
+
+		uint attribute = Engine_UiSlidePlayback.AttributeOf(channel);
+		float? last = null;
+		foreach (Engine_UiSlideStatements.Write write in Engine_UiSlideStatements.WritesSince(
+			PresentationAddress, Document.Nodes[0].Element.NameHash, _toldOpened))
+		{
+			if (!write.IsActive && write.Ordinal == ordinal &&
+				(write.Attribute & ~Engine_UiSlideStatements.ScaledOpacity) == attribute)
+			{
+				last = StoredValue(write, last);
+			}
+		}
+
+		return last;
+	}
+
+	/// <summary>
+	/// The value a told write leaves stored: as told, or SetOpacity_p's raw argument scaled over
+	/// <paramref name="before"/> (the element's opacity before it — the authored one when null).
+	/// </summary>
+	private float StoredValue(Engine_UiSlideStatements.Write write, float? before)
+	{
+		float value = System.BitConverter.UInt32BitsToSingle(write.Value);
+		if ((write.Attribute & Engine_UiSlideStatements.ScaledOpacity) == 0)
+		{
+			return value;
+		}
+
+		return Engine_UiSlideStatements.SetOpacityValue(value, before ?? CurrentOpacity(write.Ordinal));
+	}
+
+	/// <summary>An element's opacity (0..100) as the book stands it: its track or told write, else the file's.</summary>
+	private float CurrentOpacity(int ordinal)
+	{
+		if (_playback is { } playback &&
+			playback.Values[(ordinal * Engine_UiSlidePlayback.Channels) + (int)Engine_UiSlidePlayback.Channel.Opacity] is var v &&
+			!float.IsNaN(v))
+		{
+			return v;
+		}
+
+		return Document is not null && ordinal >= 0 && ordinal < Document.Nodes.Length &&
+			Document.Nodes[ordinal].Element.TryGetAttribute(Engine_UiElementResolve.OpacityAttribute, out BgfAttribute authored)
+				? authored.AsFloat()
+				: 100f;
+	}
+
 	/// <summary>The last told write applied to the playback.</summary>
 	private ulong _toldWrites;
 
@@ -487,10 +577,15 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 					}
 				}
 
+				bool[] units = UnitOrdinals();
 				for (int i = 0; i < _untold.Length; ++i)
 				{
 					string path = DocumentPath(Document.Nodes[i]);
-					_untold[i] = Under(path, OwnedListPath) || (pages is not null && Under(path, pages));
+					// A guest unit (Engine_UiScreenTemplate.GuestTextUnits) is the guest's own fill
+					// even inside a page, and so is the purse its handler writes beside the list
+					// (Engine_UiScreenTemplate.Purse): what it is told stands.
+					_untold[i] = (Under(path, OwnedListPath) || (pages is not null && Under(path, pages))) &&
+						!units[i] && !(template.Purse && Under(path, PursePath));
 				}
 			}
 		}
@@ -503,6 +598,9 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 	/// <summary>The list an `OwnsList` screen's Godot view draws in place of the guest's rows.</summary>
 	private const string OwnedListPath = "Foreground.ExpandableMenu";
+
+	/// <summary>The purse beside the list (<see cref="Engine_UiScreenTemplate.Purse"/>).</summary>
+	private const string PursePath = "Foreground.ExpandableMenu.Money";
 
 	/// <summary>
 	/// This tick's time statements, after the entries and before the tracks: the meters, then
@@ -528,6 +626,11 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			if (write.IsActive)
 			{
 				_playback.TellActive(write.Ordinal, write.Value != 0, write.Sequence);
+			}
+			else if ((write.Attribute & Engine_UiSlideStatements.ScaledOpacity) != 0)
+			{
+				_playback.Tell(write.Ordinal, write.Attribute & ~Engine_UiSlideStatements.ScaledOpacity,
+					System.BitConverter.SingleToUInt32Bits(StoredValue(write, null)), write.Sequence);
 			}
 			else
 			{
@@ -739,13 +842,27 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 	/// <summary>
 	/// The guest's stated `scale.x` for one element, or null when it stated none. The co-op
-	/// figures are sized by this one value (`sub_82438438` writes it; `sub_826D6C90` reads only it).
+	/// figures are sized by this one value: `sub_82438438` (disc `sub_82479658`) writes it through
+	/// the attribute store (vf +72, attribute `dword_834BE534`), told; `sub_826D6C90` reads only it.
+	/// The told write wins the stand's pose, which is the file's rest when nothing was told.
 	/// </summary>
-	public float? StatedScaleX(string path) =>
-		OrdinalForPath(path) is int ordinal && _lastStated is { } stated && ordinal >= 0 &&
-		ordinal < stated.Count && stated[ordinal] is { Length: > 3 } entry
-			? entry[3]
-			: null;
+	public float? StatedScaleX(string path)
+	{
+		if (OrdinalForPath(path) is not int ordinal)
+		{
+			return null;
+		}
+
+		if (ToldValue(ordinal, Engine_UiSlidePlayback.Channel.ScaleX) is { } told)
+		{
+			return told;
+		}
+
+		return _lastStated is { } stated && ordinal >= 0 && ordinal < stated.Count &&
+			stated[ordinal] is { Length: > 3 } entry
+				? entry[3]
+				: null;
+	}
 
 	/// <summary>The screen template naming this book's parts (<see cref="Engine_UiTemplates"/>, screen 0 by default).</summary>
 	public Engine_UiScreenTemplate? Template { get; set; }
@@ -973,12 +1090,11 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	}
 
 	/// <summary>
-	/// Stands the book on its file's rest state and the host's channels alone — no guest sample.
-	/// <paramref name="texts"/> is read only under the template's
-	/// <see cref="Engine_UiScreenTemplate.GuestTextUnits"/> (see ApplyText); null on a screen that names none.
-	/// See <see cref="Engine_UiScreenTemplate.RestFromFile"/>.
+	/// Stands the book on its file's rest state, its own playback of the told slides and the
+	/// host's channels alone — no guest sample. A guest unit's texts and states are what the guest
+	/// told it (Untold leaves them the guest's). See <see cref="Engine_UiScreenTemplate.RestFromFile"/>.
 	/// </summary>
-	public void SetRest(string?[]? texts = null)
+	public void SetRest()
 	{
 		if (Document is null)
 		{
@@ -1002,61 +1118,8 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 		_restPose ??= RestChannel(t => t.RestPose.Count == 0 ? null : t.RestPose, pose => pose);
 		_restOpacity ??= RestOpacityChannel();
-		if (Template is not { GuestTextUnits.Count: > 0 })
-		{
-			SetLive(null, ToldTextures(), _restPose, _restActive, _restOpacity, Play(_restSlides));
-			return;
-		}
-
-		// Rebuilt only on a new sample or a new rest base: SetLive change-keys on reference.
-		if (_unitStand is not { } stood || !ReferenceEquals(_unitStandBase, _restSlides) ||
-			UnitSampleMoved(stood))
-		{
-			_unitStand = WithGuestUnits(_restSlides!, _restActive!, _restOpacity, _restPose);
-			_unitStandBase = _restSlides;
-		}
-
-		(int[] slides, bool[] active, IReadOnlyList<float?>? opacity, IReadOnlyList<float?[]?>? pose) = _unitStand.Value;
-		SetLive(texts, ToldTextures(), pose, active, opacity, Play(slides));
+		SetLive(null, ToldTextures(), _restPose, _restActive, _restOpacity, Play(_restSlides));
 	}
-
-	private (int[], bool[], IReadOnlyList<float?>?, IReadOnlyList<float?[]?>?)? _unitStand;
-
-	/// <summary>Whether the sample differs from the stand under any guest unit — compared by value,
-	/// the sample's arrays being the sampler's to reuse.</summary>
-	private bool UnitSampleMoved((int[] Slides, bool[] Active, IReadOnlyList<float?>? Opacity, IReadOnlyList<float?[]?>? Pose) stood)
-	{
-		bool[] under = UnitOrdinals();
-		for (int i = 0; i < under.Length; ++i)
-		{
-			if (!under[i])
-			{
-				continue;
-			}
-
-			if (_sampleSlides is { } s && i < s.Count && i < stood.Slides.Length && s[i] != stood.Slides[i]) return true;
-			if (_sampleActive is { } a && i < a.Count && i < stood.Active.Length && a[i] != stood.Active[i]) return true;
-			if (_sampleOpacity is { } o && i < o.Count && stood.Opacity is { } so && i < so.Count && o[i] != so[i]) return true;
-			if (_sampleTransform is { } t && i < t.Count && stood.Pose is { } sp && i < sp.Count &&
-				!SamePose(t[i], sp[i])) return true;
-		}
-
-		return false;
-	}
-
-	private static bool SamePose(float?[]? a, float?[]? b)
-	{
-		if (ReferenceEquals(a, b)) return true;
-		if (a is null || b is null || a.Length != b.Length) return false;
-		for (int i = 0; i < a.Length; ++i)
-		{
-			if (a[i] != b[i]) return false;
-		}
-
-		return true;
-	}
-
-	private object? _unitStandBase;
 
 	private bool[]? _unitOrdinals;
 
@@ -1091,40 +1154,6 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		}
 
 		return _unitOrdinals = under;
-	}
-
-	/// <summary>
-	/// The rest stand with each guest unit's subtree taken from the guest's sample — its slides,
-	/// switches, opacities and transforms, beside the text ApplyText already reads. The writer
-	/// that fills the unit's text sets those in the same pass (the shop's owner row is slide 2
-	/// when the hero owns the building; opinions, sale and reward are hidden by opacity), so the
-	/// unit is one statement and is read whole.
-	/// </summary>
-	private (int[], bool[], IReadOnlyList<float?>?, IReadOnlyList<float?[]?>?) WithGuestUnits(
-		int[] slides, bool[] active, IReadOnlyList<float?>? opacity, IReadOnlyList<float?[]?>? pose)
-	{
-		bool[] under = UnitOrdinals();
-		int n = under.Length;
-		var mergedSlides = (int[])slides.Clone();
-		var mergedActive = (bool[])active.Clone();
-		var mergedOpacity = new float?[n];
-		var mergedPose = new float?[]?[n];
-		for (int i = 0; i < n; ++i)
-		{
-			mergedOpacity[i] = opacity is not null && i < opacity.Count ? opacity[i] : null;
-			mergedPose[i] = pose is not null && i < pose.Count ? pose[i] : null;
-			if (!under[i])
-			{
-				continue;
-			}
-
-			if (_sampleSlides is { } s && i < s.Count && i < mergedSlides.Length) mergedSlides[i] = s[i];
-			if (_sampleActive is { } a && i < a.Count && i < mergedActive.Length) mergedActive[i] = a[i];
-			if (_sampleOpacity is { } o && i < o.Count) mergedOpacity[i] = o[i];
-			if (_sampleTransform is { } t && i < t.Count) mergedPose[i] = (float?[]?)t[i]?.Clone();
-		}
-
-		return (mergedSlides, mergedActive, mergedOpacity, mergedPose);
 	}
 
 	/// <summary>The template's measured rest pose as a stated transform per element, or null when it states none.</summary>
@@ -1272,42 +1301,12 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		return true;
 	}
 
-	/// <summary>
-	/// Keeps the guest's sample beside a book that stands on its file, for the `rest:` check only
-	/// — references, no copy, nothing drawn from them.
-	/// </summary>
-	public void KeepSample(
-		uint[]? textures, IReadOnlyList<float?[]?>? transform, IReadOnlyList<bool>? active,
-		IReadOnlyList<float?>? opacity, IReadOnlyList<int>? slides)
-	{
-		_sampleTextures = textures;
-		_sampleTransform = transform;
-		_sampleActive = active;
-		_sampleOpacity = opacity;
-		_sampleSlides = slides;
-	}
-
-	private uint[]? _sampleTextures;
-
-	private IReadOnlyList<float?[]?>? _sampleTransform;
-
-	private IReadOnlyList<bool>? _sampleActive;
-
-	private IReadOnlyList<float?>? _sampleOpacity;
-
-	private IReadOnlyList<int>? _sampleSlides;
-
 	/// <summary>Applies one sample of the guest's statements; every write is change-keyed.</summary>
 	public void SetLive(
 		string?[]? texts, uint[]? textures, IReadOnlyList<float?[]?>? transform,
 		IReadOnlyList<bool>? active = null, IReadOnlyList<float?>? opacity = null,
 		IReadOnlyList<int>? slides = null)
 	{
-		if (Template is not { RestFromFile: true })
-		{
-			KeepSample(textures, transform, active, opacity, slides);
-		}
-
 		if (Book is null || Document is null)
 		{
 			return;
@@ -1331,6 +1330,10 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		_resolve.Apply(playing ? slides : Slid(slides),
 			playing ? ToldActive(Activated(active)) : Activated(active), Opaqued(opacity),
 			playing ? ToldSwitches(SwitchedOn()) : SwitchedOn());
+		if (playing)
+		{
+			ObserveBehaviours();
+		}
 
 		// Draw gate, accumulated opacity and stated art for every node, in one pass.
 		// Host-supplied textures first (a registry key), the guest's path hashes otherwise.
@@ -2956,33 +2959,6 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			return lines;
 		}
 
-		// `rest:<book>` — THE CUT'S PROOF: the book resolved from its FILE's rest state
-		// (Engine_UiRestState) and every host channel it has now, with an all-true draw bit as a
-		// host screen states it, against the resolution the guest's live sample gives it. Every
-		// element whose draw differs is listed, with the guest's own slide and bit beside it, so a
-		// screen is cut only when this says nothing but host-driven differences.
-		if (match.StartsWith("rest:", System.StringComparison.Ordinal))
-		{
-			string want = match["rest:".Length..];
-			foreach (Engine_UiOwnedBook book in LiveBooks)
-			{
-				string bookName = book.Template?.Name ?? "?";
-				if (!$"[{bookName}]".Contains(want, System.StringComparison.Ordinal) ||
-					book.Document is null || book._resolve is null)
-				{
-					continue;
-				}
-
-				lines.AddRange(book.CompareRest(limit - lines.Count));
-				if (lines.Count >= limit)
-				{
-					return lines;
-				}
-			}
-
-			return lines;
-		}
-
 		// `slides:<owner path fragment>` — the authored slides of every matching owner: the
 		// entries' actives, their direct commands and each activated track's LAST key, i.e.
 		// exactly what the resolver folds in. The other channel of the same document.
@@ -3117,288 +3093,6 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		return lines;
 
 		static string Short(string s) => s.Length > 48 ? s[..48] + "…" : s;
-	}
-
-	/// <summary>
-	/// This book resolved from its file's rest state plus the host's channels, against its live
-	/// resolution: one line per element whose draw differs. See `rest:` in DescribeLive.
-	/// </summary>
-	private List<string> CompareRest(int limit)
-	{
-		var lines = new List<string>();
-		if (Document is null || limit <= 0)
-		{
-			return lines;
-		}
-
-		string name = Template?.Name ?? "?";
-		int[] restSlides = RestSlides();
-		var allTrue = new bool[Document.Nodes.Length];
-		System.Array.Fill(allTrue, true);
-		var rest = new Engine_UiElementResolve(Document);
-		IReadOnlyList<float?>? restOpacity = RestOpacityChannel();
-		IReadOnlyList<float?[]?>? restPose = RestChannel(t => t.RestPose.Count == 0 ? null : t.RestPose, pose => pose);
-		if (Template is { GuestTextUnits.Count: > 0 })
-		{
-			(restSlides, allTrue, restOpacity, restPose) = WithGuestUnits(restSlides, allTrue, restOpacity, restPose);
-		}
-
-		rest.Apply(Slid(restSlides), Activated(allTrue), Opaqued(restOpacity), SwitchedOn());
-
-		// THE GUEST'S PICTURE, from the sample the book keeps whether or not it draws from it.
-		if (_sampleSlides is null && _sampleActive is null)
-		{
-			lines.Add($"[{name}] no guest sample kept yet");
-			return lines;
-		}
-
-		var sampled = new Engine_UiElementResolve(Document);
-		sampled.Apply(Slid(_sampleSlides), Activated(_sampleActive), Opaqued(_sampleOpacity), SwitchedOn());
-
-		int differ = 0;
-		int drawnLive = 0;
-		int drawnRest = 0;
-		for (int i = 0; i < Document.Nodes.Length; ++i)
-		{
-			bool live = i < sampled.Drawn.Length && sampled.Drawn[i];
-			bool mine = rest.Drawn[i];
-			drawnLive += live ? 1 : 0;
-			drawnRest += mine ? 1 : 0;
-			if (live == mine)
-			{
-				continue;
-			}
-
-			// Only the TOP of a differing subtree: its children differ for the same reason.
-			UiNode node = Document.Nodes[i];
-			if (node.Parent is { } parent &&
-				(parent.Ordinal < sampled.Drawn.Length && sampled.Drawn[parent.Ordinal]) != rest.Drawn[parent.Ordinal])
-			{
-				continue;
-			}
-
-			++differ;
-			if (lines.Count < limit - 1)
-			{
-				int guestSlide = _sampleSlides is { } slid && i < slid.Count ? slid[i] : -1;
-				lines.Add($"[{name}] #{i} {DocumentPath(node)} live={(live ? "DRAWN" : "dark")} " +
-					$"rest={(mine ? "DRAWN" : "dark")} guest-bit={sampled.Active[i]} guest-slide={guestSlide} " +
-					$"rest-slide={restSlides[i]}");
-			}
-		}
-
-		// WHERE AND HOW OPAQUE, for what both draw: the guest's stated transform against the rest
-		// slide's, and the guest's own opacity against the slid one. The host's own positions
-		// are applied after this in the binding, so an element the host places is not counted.
-		int moved = 0;
-		int faded = 0;
-		int swapped = 0;
-
-		// The host's own statements resolve by the book's own path matching (suffix paths), so
-		// the elements they reach are gathered the same way rather than compared as strings.
-		var placedByHost = new HashSet<int>();
-		var texturedByHost = new HashSet<int>();
-		if (HostPositions is { } positions)
-		{
-			foreach (string key in positions.Keys)
-			{
-				placedByHost.UnionWith(OrdinalsForPath(key));
-			}
-		}
-
-		if (HostTextures is { } textures)
-		{
-			foreach (string key in textures.Keys)
-			{
-				texturedByHost.UnionWith(OrdinalsForPath(key));
-			}
-		}
-		for (int i = 0; i < Document.Nodes.Length; ++i)
-		{
-			if (!rest.Drawn[i] || i >= sampled.Drawn.Length || !sampled.Drawn[i])
-			{
-				continue;
-			}
-
-			string path = DocumentPath(Document.Nodes[i]);
-			if (placedByHost.Contains(i))
-			{
-				continue;
-			}
-
-			if (_sampleTransform is { } stated && i < stated.Count && stated[i] is { } t)
-			{
-				float[] restValues =
-				{
-					rest.SlidPosition[i].X, rest.SlidPosition[i].Y, rest.SlidPosition[i].Z,
-					rest.SlidScale[i].X, rest.SlidScale[i].Y, rest.SlidScale[i].Z,
-				};
-
-				// The template's measured rest pose stands over the slide's.
-				if (restPose is not null && i < restPose.Count && restPose[i] is { } measured)
-				{
-					for (int a = 0; a < measured.Length && a < restValues.Length; ++a)
-					{
-						if (measured[a] is { } m)
-						{
-							restValues[a] = m;
-						}
-					}
-				}
-				for (int a = 0; a < t.Length && a < restValues.Length; ++a)
-				{
-					if (t[a] is { } value && System.Math.Abs(value - restValues[a]) > (a < 3 ? 0.5f : 0.01f))
-					{
-						++moved;
-						if (lines.Count < limit - 1)
-						{
-							lines.Add($"[{name}] #{i} {path} MOVED slot {a}: live {value:0.##} rest {restValues[a]:0.##}");
-						}
-
-						break;
-					}
-				}
-			}
-
-			if (System.Math.Abs(sampled.Own[i] - rest.Own[i]) > 0.05f)
-			{
-				++faded;
-				if (lines.Count < limit - 1)
-				{
-					lines.Add($"[{name}] #{i} {path} OPACITY live {sampled.Own[i]:0.##} rest {rest.Own[i]:0.##}");
-				}
-			}
-
-			// A texture the guest SWAPPED in — a stated hash on a quad that is not the quad's own
-			// file texture — that the host does not state. Text elements report a small id, not
-			// a texture, and are not quads.
-			if (_sampleTextures is { } hashes && i < hashes.Length && hashes[i] != 0u &&
-				Document.Nodes[i].Quad is { } quad && quad.TextureHash != hashes[i] &&
-				!texturedByHost.Contains(i) &&
-				!(NameTexture?.Invoke(hashes[i]) is { Length: > 0 } swappedIn &&
-					string.Equals(swappedIn, quad.TexturePath, System.StringComparison.OrdinalIgnoreCase)))
-			{
-				++swapped;
-				if (lines.Count < limit - 1)
-				{
-					lines.Add($"[{name}] #{i} {path} TEXTURE stated by the guest: 0x{hashes[i]:X8} " +
-						$"'{NameTexture?.Invoke(hashes[i]) ?? "?"}' over the file's '{quad.TexturePath}'");
-				}
-			}
-		}
-
-		// WHAT THE BOOK DRAWS NOW against the guest: the book's own resolve — rest slides, playback,
-		// told statements, the host's channels — not the pure rest stand above.
-		int finalDiffer = 0;
-		int finalMoved = 0;
-		int finalFaded = 0;
-		if (_resolve is { } drawnNow)
-		{
-			var finals = new List<string>();
-			for (int i = 0; i < Document.Nodes.Length && i < drawnNow.Drawn.Length; ++i)
-			{
-				bool live = i < sampled.Drawn.Length && sampled.Drawn[i];
-				bool mine = drawnNow.Drawn[i];
-				UiNode node = Document.Nodes[i];
-				if (live != mine)
-				{
-					if (node.Parent is { } up && up.Ordinal < drawnNow.Drawn.Length &&
-						(up.Ordinal < sampled.Drawn.Length && sampled.Drawn[up.Ordinal]) != drawnNow.Drawn[up.Ordinal])
-					{
-						continue;
-					}
-
-					++finalDiffer;
-					int owner = -1;
-					for (UiNode? at = node.Parent; at is not null; at = at.Parent)
-					{
-						if (_playing is { } q && at.Ordinal < q.Length && q[at.Ordinal] > 0)
-						{
-							owner = at.Ordinal;
-							break;
-						}
-					}
-
-					uint root = Document.Nodes[0].Element.NameHash;
-					string told = Engine_UiSlideStatements.Of(PresentationAddress, root, i) is { } t
-						? $" told-slide={t.Slide}@{t.Sequence}" : string.Empty;
-					string ownerTold = owner >= 0 && Engine_UiSlideStatements.Of(PresentationAddress, root, owner) is { } ot
-						? $" owner-told={ot.Slide}@{ot.Sequence}/paused={ot.Paused}@{ot.PauseSequence}" : string.Empty;
-					IReadOnlyList<bool>? hostOn = SwitchedOn();
-					bool byHost = hostOn is not null && i < hostOn.Count && hostOn[i];
-					bool byTold = _playback?.ToldActive is { } toldOn && i < toldOn.Length && toldOn[i] == true;
-					string hostKeys = string.Empty;
-					if (byHost && HostActive is { } switchesNow)
-					{
-						foreach (var pair in switchesNow)
-						{
-							if (pair.Value && OrdinalsForPath(pair.Key).Contains(i))
-							{
-								hostKeys += $" '{pair.Key}'";
-							}
-						}
-					}
-
-					finals.Add($"[{name}] FINAL #{i} {DocumentPath(node)} live={(live ? "DRAWN" : "dark")} " +
-						$"book={(mine ? "DRAWN" : "dark")} slide={(_playing is { } p && i < p.Length ? p[i] : 0)} " +
-						$"forced-by-host={byHost}{hostKeys} forced-by-told={byTold} parent={(node.Parent is { } par && drawnNow.Drawn[par.Ordinal])} " +
-						$"own={drawnNow.Active[i]} slid={drawnNow.Slid[i]} told-active=" +
-						$"{Engine_UiSlideStatements.ActiveOf(PresentationAddress, root, i, _toldOpened)?.ToString() ?? "-"}" +
-						$" owner=#{owner}:{(owner >= 0 && _playing is { } r ? r[owner] : 0)}{told}{ownerTold}" +
-						(drawnNow.Closed is { } shut && i < shut.Length && shut[i] ? " CLOSED" : string.Empty));
-					continue;
-				}
-
-				if (!live || placedByHost.Contains(i))
-				{
-					continue;
-				}
-
-				if (System.Math.Abs(sampled.Opacity[i] - drawnNow.Opacity[i]) > 0.05f)
-				{
-					++finalFaded;
-					finals.Add($"[{name}] FINAL #{i} {DocumentPath(node)} OPACITY live {sampled.Opacity[i]:0.##} book {drawnNow.Opacity[i]:0.##}");
-				}
-
-				if (_sampleTransform is { } statedNow && i < statedNow.Count && statedNow[i] is { } tNow)
-				{
-					for (int a = 0; a < 2 && a < tNow.Length; ++a)
-					{
-						float animated = drawnNow.AnimatedValue(i, a == 0
-							? Engine_UiSlidePlayback.Channel.PositionX
-							: Engine_UiSlidePlayback.Channel.PositionY);
-						float book = !float.IsNaN(animated) ? animated : a == 0 ? drawnNow.SlidPosition[i].X : drawnNow.SlidPosition[i].Y;
-						if (tNow[a] is { } value && System.Math.Abs(value - book) > 0.5f)
-						{
-							++finalMoved;
-							finals.Add($"[{name}] FINAL #{i} {DocumentPath(node)} MOVED {(a == 0 ? "x" : "y")}: live {value:0.##} book {book:0.##}" +
-								(float.IsNaN(animated) ? " (no track or told value)" : " (track / told value)"));
-							break;
-						}
-					}
-				}
-			}
-
-			foreach (string line in finals)
-			{
-				if (lines.Count >= limit - 2)
-				{
-					break;
-				}
-
-				lines.Add(line);
-			}
-		}
-
-		string texts = Template is { GuestTextUnits.Count: > 0 } units
-			? $"; guest text under {string.Join(", ", units.GuestTextUnits)}"
-			: string.Empty;
-		lines.Insert(0, $"[{name}] FINAL book vs live: {finalDiffer} differing draw subtree(s), {finalMoved} moved, {finalFaded} faded; " +
-			$"told: {Engine_UiSlideStatements.Summary(PresentationAddress, Document.Nodes[0].Element.NameHash)}; " +
-			$"playback {(_playback is null ? "none" : "running")}");
-		lines.Insert(0, $"[{name}] rest state vs live: {differ} differing draw subtree(s), {moved} moved, {faded} " +
-			$"faded, {swapped} guest texture(s); drawn live {drawnLive}, rest {drawnRest} of {Document.Nodes.Length}{texts}");
-		return lines;
 	}
 
 	/// <summary>Each top-level unit's authored canvas transform — unit roots are not restated
@@ -3695,6 +3389,28 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 	private string _scrollKey = string.Empty;
 
+	/// <summary>The highest drawn edge, in global space, of the text meshes under a block —
+	/// its first line box — or null when it draws no text.</summary>
+	private static float? DrawnTextTop(Node node)
+	{
+		float? top = null;
+		if (node is MeshInstance3D { Mesh: not null } mesh && mesh.IsVisibleInTree() &&
+			mesh.HasMeta("element_type") && mesh.GetMeta("element_type").AsString() == "Text")
+		{
+			top = (mesh.GlobalTransform * mesh.GetAabb()).End.Y;
+		}
+
+		for (int i = 0, count = node.GetChildCount(); i < count; ++i)
+		{
+			if (DrawnTextTop(node.GetChild(i)) is { } child && (top is null || child > top))
+			{
+				top = child;
+			}
+		}
+
+		return top;
+	}
+
 	/// <summary>The bound clone for a template path, through the same trailing-segment match
 	/// every host channel uses.</summary>
 	private Node3D? NodeByPath(string path) =>
@@ -3743,11 +3459,30 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			return;
 		}
 
-		float height = measured.Mesh is not null && measured.Visible
-			? measured.GetAabb().Size.Y
-			: 0f;
-		float bottom = StatedYOf(measured) - height;
-		float delta = bottom - Document.Nodes[baseOrdinal].PositionY;
+		float delta;
+		if (template.FlowMoved.Count == 1 && template.FlowMoved[0] == template.FlowBase &&
+			measured.Mesh is not null && measured.Visible &&
+			NodeByPath(template.FlowBase) is { } block && block.GetParent() is Node3D frame &&
+			DrawnTextTop(block) is { } blockTop)
+		{
+			// A BLOCK HUNG UNDER THE TEXT (`Fixed.y = CurrentObjective.y − extent`, 0x826a2074;
+			// `Effects.y = Description.y − height`, `sub_829BD340`): the guest's origins carry one
+			// anchor, so its line boxes stand flush. Ours carry each text's own alignment from its
+			// record — the objective's wrapped box hangs from its origin, a key row centres on its
+			// own — so the block is placed where the guest's lands it: its first line box at the
+			// measured text's drawn bottom. Glyph quads are whole line boxes.
+			float measuredBottom = (measured.GlobalTransform * measured.GetAabb()).Position.Y;
+			float scale = frame.GlobalTransform.Basis.Scale.Y;
+			delta = scale > 1e-6f ? (measuredBottom - blockTop) / scale : 0f;
+		}
+		else
+		{
+			float height = measured.Mesh is not null && measured.Visible
+				? measured.GetAabb().Size.Y
+				: 0f;
+			float bottom = StatedYOf(measured) - height;
+			delta = bottom - Document.Nodes[baseOrdinal].PositionY;
+		}
 
 		foreach (string path in template.FlowMoved)
 		{
@@ -4030,21 +3765,22 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	private string _markersShown = string.Empty;
 
 	/// <summary>
-	/// Draws the quest markers: a clone of the matching `ReusableTokens` art at the guest's stated
-	/// page-local centre, under the Pages unit.
+	/// Draws the quest markers: a clone of each named `ReusableTokens` art at its projected
+	/// point, under <paramref name="parentPath"/> (the element whose units the points are in) at
+	/// <paramref name="depth"/>.
 	/// </summary>
-	public void SetMarkers(IReadOnlyList<Engine_UiModel.MapMarker> markers)
+	public void SetMarkers(IReadOnlyList<(string Token, Vector2 At)> markers, string parentPath, float depth)
 	{
-		if (_pages is null || Book is null)
+		if (Book is null || NodeFor(parentPath) is not { } parent)
 		{
 			return;
 		}
 
 		// Change-keyed: one rebuild per map opening.
 		var key = new System.Text.StringBuilder();
-		foreach (Engine_UiModel.MapMarker marker in markers)
+		foreach ((string token, Vector2 at) in markers)
 		{
-			key.Append($"{marker.Key:X8}@{marker.X:0},{marker.Y:0};");
+			key.Append($"{token}@{at.X:0},{at.Y:0};");
 		}
 
 		string shown = key.ToString();
@@ -4064,10 +3800,8 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 		_markers.Clear();
 
-		foreach (Engine_UiModel.MapMarker marker in markers)
+		foreach ((string token, Vector2 at) in markers)
 		{
-			// Matched on the authored UV rect; the marker key is an opaque guest pointer.
-			string token = MatchToken(marker);
 			if (Book.Art(token) is not { } art)
 			{
 				continue;
@@ -4075,62 +3809,23 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 			art.Name = $"Marker_{_markers.Count}";
 
-			// Art() zeroed the transform; the token's authored scale is 0.1.
-			art.Position = new Vector3(marker.X, marker.Y, -5f);
-			art.Scale = new Vector3(0.1f, 0.1f, 1f);
-			_pages.AddChild(art);
+			// Art() zeroed the transform; the token's authored scale is 0.1, in the page's units —
+			// kept so under a parent scaled otherwise.
+			Vector3 page = _pages is not null && GodotObject.IsInstanceValid(_pages)
+				? _pages.GlobalTransform.Basis.Scale
+				: Vector3.One;
+			Vector3 under = parent.GlobalTransform.Basis.Scale;
+			art.Position = new Vector3(at.X, at.Y, depth);
+			art.Scale = new Vector3(
+				under.X != 0f ? 0.1f * page.X / under.X : 0.1f,
+				under.Y != 0f ? 0.1f * page.Y / under.Y : 0.1f,
+				1f);
+			parent.AddChild(art);
 			_markers.Add(art);
 		}
 
 		GD.Print($"[owned-book] {_markers.Count} quest marker(s) on the minimap" +
 			(_markers.Count == 0 ? string.Empty : $": {shown}"));
-	}
-
-	/// <summary>
-	/// The ReusableTokens entry whose authored UV rect matches a marker's corners; "Quest" is the
-	/// default for anything unmatched.
-	/// </summary>
-	private string MatchToken(Engine_UiModel.MapMarker marker)
-	{
-		if (Document is null)
-		{
-			return "Quest";
-		}
-
-		string best = "Quest";
-		float bestError = float.MaxValue;
-		foreach (string token in new[] { "Quest", "QuestGiver", "QuestExit", "LevelExit" })
-		{
-			UiNode? node = Engine_UiScreenPanel.Resolve(Document, $"ReusableTokens.{token}");
-			UiQuad? quad = node?.Quad;
-			if (quad is null && node is not null)
-			{
-				foreach (UiNode child in node.Children)
-				{
-					if (child.Quad is not null)
-					{
-						quad = child.Quad;
-						break;
-					}
-				}
-			}
-
-			if (quad is null)
-			{
-				continue;
-			}
-
-			float error =
-				System.Math.Abs(quad.UMin - marker.UMin) + System.Math.Abs(quad.VMin - marker.VMin) +
-				System.Math.Abs(quad.UMax - marker.UMax) + System.Math.Abs(quad.VMax - marker.VMax);
-			if (error < bestError)
-			{
-				bestError = error;
-				best = token == "LevelExit" ? "QuestExit" : token;
-			}
-		}
-
-		return best;
 	}
 
 	/// <summary>

@@ -8,9 +8,11 @@ using Refii.Host;
 /// </summary>
 /// <remarks>
 /// A C++ quad screen in the guest, not a presentation, so the two statements its bridge reads are
-/// the whole interface (Fable3/src/hostbridge/src/level_feed.cpp): the screen and its fade
-/// (+0xD0, rising as it comes up and falling after the stop request), and the art name the guest
-/// picked (sub_823030B0, e.g. `qc010_opening.tex`). The art lives under
+/// the whole interface (Fable3/src/hostbridge/src/level_feed.cpp, from the table
+/// Fable3/src/hooks/src/loading_screen_scene.cpp states at the screen's create, destroy, update
+/// and close): the screen and its fade (+0xD0 as its update leaves it, rising as it comes up and
+/// falling after the close), and the art name the guest picked (stated at its decision
+/// sub_823030B0, e.g. `qc010_opening.tex`). The art lives under
 /// `art/gui/loadingscreens/`; a bare name is looked up there, any other spelling as stated.
 /// </remarks>
 public partial class Fable3LoadingScreen : Control

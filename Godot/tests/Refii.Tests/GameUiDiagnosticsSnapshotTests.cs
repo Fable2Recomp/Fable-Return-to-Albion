@@ -123,7 +123,7 @@ public sealed class GameUiDiagnosticsSnapshotTests
         var idle = GameUiDiagnosticsSnapshot.CaptureScreenMenu(screen, 18, false, true, true)!;
         AssertThat(idle.ScreenId).IsEqual(18u);
         AssertThat(idle.ModelScreenId).IsEqual(14u);
-        AssertThat(idle.GuestHighlight).IsEqual(0);
+        AssertThat(idle.Stated).IsFalse();
         AssertThat(idle.Menu!.ViewAvailable).IsFalse();
         AssertThat(idle.Menu.ViewVisible).IsFalse();
         AssertThat(idle.Menu.ViewVisibleInTree).IsFalse();

@@ -145,16 +145,14 @@ public sealed class PauseMenuActivationTests
     public void PausePopulationNavigationAndAvailabilityLifecycle()
     {
         Engine_FrontEndMenu menu = PauseFixture();
-        var buttons = new List<Engine_ExpandableMenuItems.Button>();
         var stated = new List<Engine_UiMenuModel.Row>();
         string[] guestNames = { "Saving", "Map", "Abilities", "Items", "Weapons", "Clothing", "Logbook", "Options" };
         string[] labels = { "Save", "Quests/Maps!", "Abilities (4)", "Items!", "Weapons!", "Clothing!", "Logbook", "Options" };
         for (int i = 0; i < guestNames.Length; ++i)
         {
-            buttons.Add(new(i, "MenuItemButton" + (i + 1), i, labels[i], "DEFAULT_TEXT_ID", true, 0));
             stated.Add(new() { Name = guestNames[i], Parent = "Root", Label = labels[i] });
         }
-        AssertThat(Engine_PauseMenu.ApplyStatedLabels(menu, buttons, stated)).IsTrue();
+        AssertThat(Engine_PauseMenu.ApplyStatedLabels(menu, stated)).IsTrue();
         AssertThat(menu.Visible.Count).IsEqual(10);
         AssertThat(menu.Visible[7].Name).IsEqual("Achievements");
         AssertThat(menu.Visible[8].Name).IsEqual("Multiplayer");
@@ -195,19 +193,27 @@ public sealed class PauseMenuActivationTests
         AssertThat(menu.Activate()).IsEqual("PauseTab:8");
     }
 
-    /// <summary>The early positional label fallback also skips host-only entries before Options.</summary>
+    /// <summary>An empty capture changes no label, and a row the guest's population drops loses the one it had.</summary>
     [TestCase]
-    public void PoolOnlyLabelsDoNotShiftAcrossHostTabs()
+    public void StatedLabelsJoinByNameOnly()
     {
         Engine_FrontEndMenu menu = PauseFixture();
-        var buttons = new List<Engine_ExpandableMenuItems.Button>();
-        string[] labels = { "Save", "Map", "Abilities", "Items", "Weapons", "Clothing", "Logbook", "Options from guest" };
-        for (int i = 0; i < labels.Length; ++i)
-            buttons.Add(new(i, "MenuItemButton" + (i + 1), i, labels[i], "DEFAULT_TEXT_ID", true, 0));
-        AssertThat(Engine_PauseMenu.ApplyStatedLabels(menu, buttons, new List<Engine_UiMenuModel.Row>())).IsTrue();
-        AssertThat(menu.Find("Options")!.StatedLabel).IsEqual("Options from guest");
+        AssertThat(Engine_PauseMenu.ApplyStatedLabels(menu, new List<Engine_UiMenuModel.Row>())).IsFalse();
+
+        var stated = new List<Engine_UiMenuModel.Row>
+        {
+            new() { Name = "Map", Parent = "Root", Label = "Quests/Maps!" },
+            new() { Name = "Options", Parent = "Root", Label = "Options" },
+        };
+        AssertThat(Engine_PauseMenu.ApplyStatedLabels(menu, stated)).IsTrue();
+        AssertThat(menu.Find("Map")!.StatedLabel).IsEqual("Quests/Maps!");
+        AssertThat(menu.Find("Abilities")!.StatedLabel).IsNull();
         AssertThat(menu.Find("Achievements")!.StatedLabel).IsNull();
-        AssertThat(menu.Find("Multiplayer")!.StatedLabel).IsNull();
+
+        stated.RemoveAt(0);
+        AssertThat(Engine_PauseMenu.ApplyStatedLabels(menu, stated)).IsTrue();
+        AssertThat(menu.Find("Map")!.StatedLabel).IsNull();
+        AssertThat(Engine_PauseMenu.ApplyStatedLabels(menu, stated, clearUnnamed: false)).IsFalse();
     }
 
     /// <summary>Builds a synthetic population using the production tab factory and both host-only commands.</summary>

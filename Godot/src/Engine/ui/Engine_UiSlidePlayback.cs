@@ -61,6 +61,20 @@ public sealed class Engine_UiSlidePlayback
 		[Engine_GameHash.AttributeId("opacity")] = Channel.Opacity,
 	};
 
+	/// <summary>The attribute id a channel writes (the inverse of the playback's channel map).</summary>
+	public static uint AttributeOf(Channel channel)
+	{
+		foreach ((uint id, Channel c) in ChannelById)
+		{
+			if (c == channel)
+			{
+				return id;
+			}
+		}
+
+		return 0u;
+	}
+
 	private static readonly uint TimeOffsetId = Engine_GameHash.AttributeId("timeoffset");
 	private static readonly uint EndTimeId = Engine_GameHash.AttributeId("endtime");
 
@@ -140,9 +154,18 @@ public sealed class Engine_UiSlidePlayback
 	/// <summary>The statement sequence at the last step (or the close): a component that comes live now does so after it.</summary>
 	private ulong _stepped;
 
-	public Engine_UiSlidePlayback(Engine_UiScreen screen)
+	/// <summary>False for a playback kept only for its windows (the constructor's <c>windowsOf</c>).</summary>
+	private readonly bool _evaluatesTracks;
+
+	/// <summary>
+	/// <paramref name="windowsOf"/>, when given, keeps only the clocks and the time windows of
+	/// those elements: no track is evaluated and <see cref="Closed"/> is answered for them alone —
+	/// a screen whose look the guest's sample still states, timed by the same clocks.
+	/// </summary>
+	public Engine_UiSlidePlayback(Engine_UiScreen screen, IReadOnlyCollection<int>? windowsOf = null)
 	{
 		_screen = screen;
+		_evaluatesTracks = windowsOf is null;
 		int count = screen.Nodes.Length;
 		_tracks = screen.Document.Animations;
 		_trackChannel = new Channel?[_tracks.Length];
@@ -215,6 +238,11 @@ public sealed class Engine_UiSlidePlayback
 			{
 				windowed.Add(i);
 			}
+		}
+
+		if (windowsOf is not null)
+		{
+			windowed.IntersectWith(windowsOf);
 		}
 
 		_windowed = new int[windowed.Count];
@@ -435,7 +463,7 @@ public sealed class Engine_UiSlidePlayback
 		_stepped = sequence;
 		timed?.Invoke(now);
 		int presentation = (int)System.Math.Min(now - _opened, int.MaxValue);
-		for (int i = 0; i < _tracks.Length; ++i)
+		for (int i = 0; _evaluatesTracks && i < _tracks.Length; ++i)
 		{
 			if (!_trackOn[i] || _trackChannel[i] is not { } channel)
 			{

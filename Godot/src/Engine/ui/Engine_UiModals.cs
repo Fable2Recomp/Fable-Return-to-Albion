@@ -21,12 +21,13 @@ namespace Refii.Ui;
 /// <code>
 /// "modals": {
 ///   "13":   { "kind": "query", "confirm": 39, "cancel": 37 },
-///   "20":   { "kind": "query", "confirm": 36 },
+///   "20":   { "kind": "query", "confirm": 36, "alternate": 75 },
 ///   "0@22": { "kind": "message", "confirm": 36 },
 ///   "42":   null }
 /// </code>
 /// <para><c>kind</c> is <c>query</c> (confirm and cancel) or <c>message</c> (one dismiss code);
-/// a query with no <c>cancel</c> leaves B doing nothing. A <c>null</c> record removes the row, so
+/// a query with no <c>cancel</c> leaves B doing nothing, and its <c>alternate</c> is the code X
+/// answers, if any. A <c>null</c> record removes the row, so
 /// the box keeps the guest's own input. <see cref="ToJson"/> writes every row in the same shape, so
 /// the snapshot round-trips.</para>
 /// <para>Pure .NET over <see cref="System.Text.Json"/>: the composition is held by tests without a
@@ -41,6 +42,12 @@ public sealed class Engine_UiModals
 	/// (39/40/41/43) answer only on the router's pad index 2 while our lever passes 0, the
 	/// marketplace offer (42) carries an X download action and a sign-in gate, and photo mode's box
 	/// has no dismiss code at all.
+	///
+	/// The guest's own input still answers them under the UI cut: an unlisted box is drawn but not
+	/// masked, and the router's modal input `sub_8236E458` (disc `sub_82336668`) answers boxes 42 and
+	/// 44 itself and hands every other box's code to the C++ handler of the screen the opener pushed
+	/// (`FindScreenHandler(*(*(GUI+56)+4))`, vtable +28 at 0x8236e5c8 / 0x823367cc). Nothing on that
+	/// path reads a presentation or runs the cut Lua.
 	/// </summary>
 	public static IReadOnlyList<Engine_UiModalTemplate> Shipped() => new[]
 	{
@@ -58,8 +65,9 @@ public sealed class Engine_UiModals
 		// Fast travel confirms on the per-screen Y action.
 		Query(13, 39, 37),
 
-		// B does nothing here — see Engine_UiModalTemplate.Cancel.
-		Query(20, 36, null),
+		// B does nothing here — see Engine_UiModalTemplate.Cancel. X equips what was bought
+		// (Engine_UiModalTemplate.Alternate).
+		Query(20, 36, null, alternate: 75),
 
 		// MessageBoxes — a single dismiss. Id 0 is per-screen; the rest are uniform.
 		Dismiss(0, 36, screenId: 22),   // shop: already wearing that tattoo
@@ -70,8 +78,8 @@ public sealed class Engine_UiModals
 		Dismiss(38, 36),                // equipment / expression / augment notices
 	};
 
-	private static Engine_UiModalTemplate Query(uint id, uint confirm, uint? cancel) =>
-		new() { ModalId = id, Confirm = confirm, Cancel = cancel };
+	private static Engine_UiModalTemplate Query(uint id, uint confirm, uint? cancel, uint? alternate = null) =>
+		new() { ModalId = id, Confirm = confirm, Cancel = cancel, Alternate = alternate };
 
 	private static Engine_UiModalTemplate Dismiss(uint id, uint code, uint screenId = uint.MaxValue) =>
 		new() { ModalId = id, ScreenId = screenId, Confirm = code, Dismissal = true };
@@ -259,12 +267,31 @@ public sealed class Engine_UiModals
 			cancel = code;
 		}
 
+		uint? alternate = null;
+		if (record.TryGetProperty("alternate", out JsonElement x) && x.ValueKind != JsonValueKind.Null)
+		{
+			if (kind == "message")
+			{
+				error = "a message box has one dismiss code; \"alternate\" belongs to a query";
+				return null;
+			}
+
+			if (Code(record, "alternate") is not { } code)
+			{
+				error = "\"alternate\" must be an input code or null";
+				return null;
+			}
+
+			alternate = code;
+		}
+
 		return new Engine_UiModalTemplate
 		{
 			ModalId = modalId,
 			ScreenId = screenId,
 			Confirm = confirm,
 			Cancel = cancel,
+			Alternate = alternate,
 			Dismissal = kind == "message",
 		};
 	}
@@ -290,6 +317,11 @@ public sealed class Engine_UiModals
 				if (modal.Cancel is { } cancel)
 				{
 					writer.WriteNumber("cancel", cancel);
+				}
+
+				if (modal.Alternate is { } alternate)
+				{
+					writer.WriteNumber("alternate", alternate);
 				}
 
 				writer.WriteEndObject();

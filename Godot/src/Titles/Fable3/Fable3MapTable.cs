@@ -26,7 +26,8 @@ using Refii.Models;
 /// model comes through the props index and the `game://` loader every world mesh does.
 ///
 /// The input is the guest's: the map's Lua (WorldMap:ProcessGameAction) moves the camera and the
-/// pieces, and this view follows.
+/// pieces, and this view follows. The keyboard and mouse reach it as the pad does, by the PC
+/// build's map bindings (<see cref="Fable3Input.MapUp"/>).
 /// </remarks>
 public partial class Fable3MapTable : SubViewportContainer
 {

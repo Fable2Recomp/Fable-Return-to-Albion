@@ -13,9 +13,12 @@ using Refii.Ui;
 /// resolve draw Fable 2's HUD; this is the title's feed into them.
 /// </summary>
 /// <remarks>
-/// THE HUD'S VISIBILITY IS ITS ROOT'S SLIDE, as Fable 2's is: the screen tick writes `Scene` 1
-/// shown, 2 hidden, 3 for an ambient cutscene (sub_825C3A78), and the root's authored slides
-/// (`PauseMenuToGame`, `GameToPauseMenu`, `ACS`) fade the widgets beneath — so no host gate.
+/// THE HUD'S VISIBILITY IS ITS ROOT'S SLIDE, as Fable 2's is: hud.bgf's `Scene` is 1 shown by
+/// sub_825C1D28, 2 hidden by sub_825C1CB0 (every box's Show) and 3 for an ambient cutscene by the
+/// cutscene rules sub_8249A030 (bit 27, 0x8249B6DC) — `@Hud.Root`, screen_stated_hooks.cpp — and
+/// the root's authored slides (`PauseMenuToGame`, `GameToPauseMenu`, `ACS`) fade the widgets
+/// beneath, so no host gate. (sub_825C3A78 is the interaction mode's tick: it writes
+/// InteractionMode.bgf's root, IM+0, never this one.)
 ///
 /// THE WIDGETS ARE CUT WHOLE (<see cref="Groups"/>): each component is one piece following the
 /// guest's state for every element beneath it, placed by where its art sits so an edge widget
@@ -30,15 +33,21 @@ public partial class Fable3Hud : Fable3Canvas
 	/// </summary>
 	public static readonly Engine_HudLayout.GroupSubtree[] Groups =
 	{
-		// The quest / info box: band, title, body, hold buttons. Its lines are placed by the guest's
-		// box layout (sub_82920610 -> sub_82818580 at 0x829207DC) — the stated positions.
-		new("TopBoxRefined", "TopBox", null, 0f, true),
+		// The quest / info box `TopBoxRefined.TopBox`: band, title, body, hold buttons. Cut as the
+		// shared view's `group.QuestBox.TopBox`, so its rows — the texts bound TopTitle / TopMain and
+		// the button row — are placed by Engine_UiTopBoxLayout from the text Godot draws, as Fable
+		// 2's are. The first line stands where the file's box fit puts it (sub_82920610: the
+		// `BoxName 'TopBox'` chain, Engine_UiTextBoxFit) and Godot stacks the rest from the text it
+		// draws. The lines' texts are the text registry's writes, else the lines the box's caller
+		// passed (sub_82920BC8).
+		new("TopBox", "QuestBox", null, 0f, true, "TopBoxRefined"),
 		new("Subtitles", "Subtitles", null, 0f, true),
 		// The counters and timers: the counter tick sub_825E7C28 toggles `Counter%d` (registry 9,
 		// 0x825e7c74) and lays the joined text into the `Corner` box (0x825e7cdc).
 		new("CornerBox", "Counters", null, 0f, true),
-		// The d-pad and player two's: ring, four slots (DPad* toggles), counters (DP*Counter sets);
-		// `dpad.dpad.dpadmenu` slides out (1) and in (2) with SetDPadEnabled.
+		// The d-pad and player two's: `dpad.dpad.dpadmenu`'s slide (2 open, 1 closed), each slot's
+		// icon, count and flash as its writers state them (sub_825D8B30, sub_825D8988 — the
+		// `@Hud.Dpad.*` statements, Fable3HudRegistry); DP*Counter's slides through the SlideSet writer.
 		new("dpad", "Dpad", null, 0f, true),
 		new("dpad2", "Dpad2", null, 0f, true),
 		new("ReceivedItems", "ReceivedItems", null, 0f, true),
@@ -58,31 +67,29 @@ public partial class Fable3Hud : Fable3Canvas
 		// The screen-edge damage frame, scrubbed by its root's `LowHealth` meter.
 		new("DamageTaken", "DamageTaken", null, -0.5f, true),
 		new("AbilitiesBox", "AbilitiesBox", null, 0f, true, "ExperianceDisplay"),
-		// The co-op partners' off-screen markers (types 52/53, `icon_player1/2`). sub_82B52440 gives
-		// a type-52 icon the record 0x832A1D70 (53: 0x832A1DB0) at icon+144 (0x82B52520), built by
-		// sub_82B522A0 from this element (0x82B523E0 / 0x82B52420; read in r7: record+0 =
-		// 0x47E57194 = the HUD table's +40, resolved by name at 0x82675BEC). The screen-edge clamp
-		// (sub_82B519C8) writes the root's position through sub_82818580 (0x82B51FC8) in the
-		// canvas's centre-origin units, so the root hangs from the centre; authored at y -800.
-		new("HeroOffScreenWorldIcon", "HeroOffScreen", Engine_HudLayout.Anchor.Centre, 0.6f),
-		new("HenchmanOffScreenWorldIcon", "HenchmanOffScreen", Engine_HudLayout.Anchor.Centre, 0.6f),
 	};
 
 	/// <summary>
 	/// `hud.bgf` widgets another Fable 3 surface draws (<see cref="Fable3Title.HudOwnedSubtrees"/>):
 	/// the pooled world icons and the hold-fill prompt, which the guest places in world space
 	/// every frame (sub_82B51B58) and <see cref="Fable3WorldIcons"/> draws from the icon feed
-	/// through the shared Engine_HudWorldSprites.
+	/// through the shared Engine_HudWorldSprites; and the co-op partners' markers (types 52/53 on
+	/// the records 0x832A1D70 / 0x832A1DB0 sub_82B522A0 builds from these elements), which
+	/// <see cref="Fable3WorldIcons"/> places from their stated icons and clamps to the screen edge.
 	/// </summary>
-	public static readonly string[] Owned = { "WorldIcons", "FillWorldIcon" };
+	public static readonly string[] Owned =
+		{ "WorldIcons", "FillWorldIcon", "HeroOffScreenWorldIcon", "HenchmanOffScreenWorldIcon" };
 
 	/// <summary>
-	/// The interaction mode's widgets in `interactionmode.bgf`, each cut whole and driven by element
-	/// statements. The buttons, `LowerElements.InteractionMenuRight`: every interaction class hides
+	/// The interaction mode's widgets in `interactionmode.bgf`, each cut whole and drawn from what
+	/// its writers were CALLED with alone (the document is stated-only, <see cref="Fable3HudDocument.StatedOnly"/>):
+	/// the root's slide from the mode's tick and clear and its active flag (interaction_hooks.cpp),
+	/// the list's slide from its path setter, the bars' from their show, every text, texture and
+	/// visibility at its writer's entry. The buttons, `LowerElements.InteractionMenuRight`: every interaction class hides
 	/// Button1..4 (sub_82819AE0(button, pres, 0), e.g. sub_829651F8 at 0x82965324, sub_82B23C58 at 0x82B23D78) and shows the ones it offers through
 	/// sub_82961340 — opacity 100 enabled / 50 not (0x8296139C), the `Title` label (0x829613E4),
 	/// the glyph's `_text`/`_orb` textures (0x82961464, sub_829614A0 at 0x82961644), shown
-	/// (0x82961494). All of it is element statements.
+	/// (0x82961494): `@Interaction.Button`, the glyphs `@Ui.Texture`, the hides `@Ui.Visible`.
 	/// </summary>
 	public static readonly Engine_HudLayout.GroupSubtree[] InteractionGroups =
 	{
@@ -98,19 +105,23 @@ public partial class Fable3Hud : Fable3Canvas
 		// (sub_82963BE0 at 0x82963C28).
 		new("InteractionMenuScrollableList", "InteractionList", null, 0f, true, "LowerElements"),
 
-		// The info box: one component whose slide is the panel. The panel id is staged by
-		// sub_82963040 (handle+0x40, dirty byte +9, 0x8296307C / 0x82963078) and written by the
-		// screen tick as `LowerElements.InfoBox`'s state (sub_825C3A78: sub_8227DA00 at 0x825C3B14 with
-		// `lwz r5,0x40(r31)`) — 5 NPCInfo, 6 WeaponInfo, 9 SaveGameInfo, 11 DogInfo, 1 closed; the
+		// The info box: one component whose slide is the panel, IM+64 — staged by sub_82963040
+		// (0x8296307C), rested at 1 by the mode's clear (0x825C400C) and close (0x825C62F0), stated at
+		// each by interaction_hooks.cpp (`@Interaction.Panel`, Fable3HudRegistry) — the value the
+		// screen tick writes as `LowerElements.InfoBox`'s state (0x825C3B14) — 5 NPCInfo, 6 WeaponInfo,
+		// 9 SaveGameInfo, 11 DogInfo, 1 closed; the
 		// panels' texts are element writes beneath it (`NPCInfo.Contents.Name` …, the joined
 		// interaction text `TextBox.Contents.Text1`, sub_82BEF428 at 0x82BEF5B4), as are the map's
 		// `WorldMapRegion` and the shops' `BuildingInfo`.
 		new("InfoBox", "InteractionInfo", null, 0f, true, "LowerElements"),
 
-		// The trigger and bumper bars: the mode's IM+36 (vtable 0x820D1D50, sub_82B19150) and IM+32
-		// (vtable 0x820D1CD8, sub_82B18EF0), stored by sub_825C3F00 — label text (sub_82B3EB28, commit
-		// 0x82B3EB58), LT/RT/LB/RB `_Complete` shown (sub_82B3EB60 at 0x82B3EB9C), root state
-		// (sub_82B3EA18 at 0x82B3EAF0).
+		// The trigger and bumper bars: `TriggerButtons` is the mode's IM+36 (vtable 0x820D1D50,
+		// sub_82B19150: `.Triggers.LT/RT_Complete`, stored 0x825C4100) and `BumperButtons` its IM+32
+		// (vtable 0x820D1CD8, sub_82B18EF0: `.Buttons.LB/RB_Complete`, stored 0x825C40AC) — label
+		// text (sub_82B3EB28, commit 0x82B3EB58: `@Ui.Text`), the sides' `_Complete` shown
+		// (sub_82B3EB60 at 0x82B3EB9C: `@Ui.Visible`), root slide 1 hide / 2 TopBoxOn / 3 TopBoxOff
+		// (sub_82B3EA18 at 0x82B3EAF0: `@Ui.State`). The GUI.*Triggers* natives drive IM+32 =
+		// BumperButtons and the *Bumpers* ones IM+36 = TriggerButtons (0x8251DC98).
 		new("TriggerButtons", "InteractionTriggers", null, 0f, true, "UpperElements"),
 		new("BumperButtons", "InteractionBumpers", null, 0f, true, "UpperElements"),
 
@@ -127,6 +138,12 @@ public partial class Fable3Hud : Fable3Canvas
 		// (sub_829590A8: registry slides, texts and meters); Clothes / Augment / HideSideInfoPanel
 		// toggle it off.
 		new("WeaponInfoPanel", "WeaponPanel", null, 0f, true, "MiddleElements"),
+
+		// The relationship / podium mini-game bar (`RelationshipHero.Start` -> sub_825C5A60): every
+		// write on it is `minigamebarcontrol.lua`'s — slide 2 Show / 1 Hide, the segments, the pip,
+		// the HitHighlights slide — reproduced from the guest's chunks and parameters
+		// (Fable3MiniGameBar, Fable3LuaContracts); the pip icons and counters are the C++'s writes.
+		new("Bar", "MiniGameBar", null, 0f, true, "Layer"),
 	};
 
 	private Fable3Presentations? _host;
@@ -138,9 +155,8 @@ public partial class Fable3Hud : Fable3Canvas
 		_fade = new Engine_UiScreenFade { Name = "ScreenFade" };
 		AddChild(_fade);
 
-		_documents.Add(new Fable3HudDocument("hud", Groups, () => Fable3Elements.HudPresentation, layouts: true));
-		_documents.Add(new Fable3HudDocument(
-			"interactionmode", InteractionGroups, () => Fable3Elements.LatestPresentationOf("LowerElements"), layouts: false));
+		_documents.Add(new Fable3HudDocument(Fable3Elements.HudDocument, Groups, layouts: true));
+		_documents.Add(new Fable3HudDocument(Fable3Elements.InteractionDocument, InteractionGroups, layouts: false, statedOnly: true));
 		_documents.AddRange(Fable3EndScreens.Documents());
 
 		_host = new Fable3Presentations { Name = "Presentations", LoadsInBackground = true };
@@ -184,6 +200,11 @@ public partial class Fable3Hud : Fable3Canvas
 		foreach (Engine_HudLayout.GroupSubtree group in Groups)
 		{
 			named.Add(group.Name);
+			// A group cut beneath a component (`TopBoxRefined.TopBox`) stands for that component.
+			if (group.Parent is { } holder)
+			{
+				named.Add(holder);
+			}
 		}
 
 		named.UnionWith(Owned);

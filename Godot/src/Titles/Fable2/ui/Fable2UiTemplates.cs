@@ -35,6 +35,7 @@ public static class Fable2UiTemplates
 		BuildDefaults(set.Menus, set.Screens);
 		StateWideLayouts(set.Screens);
 		StateRestStates(set.Screens);
+		StatePurses(set.Screens);
 		return set;
 	}
 
@@ -809,6 +810,10 @@ public static class Fable2UiTemplates
 					Tag = "GUI_SCREEN_GIFT_GOLD",
 					Icon = @"Art\GUI\WheelIcons\icon_gold_coin.tga",
 					EventType = GiftGoldEventType,
+
+					// Spawned only while the giver has gold: `*(money + 12) > 0` (`ble` at
+					// 0x82430A80, disc 0x823A4BFC) — with none the amount picker has no range.
+					When = Engine_UiRowConditions.HasGold,
 				},
 			},
 		};
@@ -1090,8 +1095,8 @@ public static class Fable2UiTemplates
 			FlowMoved = { "Foreground.Pages.Contents.MiniMap.Legend.Fixed" },
 			FlowWhenDrawn = true,
 
-			// Renown, the clock, the purse and the four orb readouts are plain reads off the hero
-			// (`Engine_UiPausePage`); the minimap, its legend and the quest lines are
+			// The readouts, the quest lines, the legend and the map image are the guest's own
+			// statements; the tokens and the quest markers' projection are
 			// `Engine_UiPauseMinimap`.
 		});
 
@@ -1167,6 +1172,13 @@ public static class Fable2UiTemplates
 				// Furniture and decoration choose in the input handler's 36 arm from the guest's
 				// highlight (`sub_826B6A18`); the item books act by stated command.
 				CommitsByHighlight = id is 26 or 27,
+
+				// DECORATION'S Y REMOVES what the slot holds: the input handler's code 39 arm
+				// (`sub_826B7770` case 13, 0x826B78C4..0x826B7908; disc `sub_8259CA10`
+				// 0x8259CB64..0x8259CBA8) takes no highlight — `sub_8243ED88(*(screen+0x58))`
+				// (disc `sub_825A91F8`), then ExitScreen. The list's Y is Godot's, so the lever
+				// is posted as the guest's own code.
+				FlipAction = id == 27 ? Engine_UiScreenActions.ScreenUnlearn : string.Empty,
 				ScrollContent = id == 26 ? string.Empty : "Foreground.Book.Pages.Page2.Contents.ItemDescription",
 				ScrollMask = id == 26 ? string.Empty : "Mask",
 				ScrollBar = id == 26 ? string.Empty : "Foreground.Book.Pages.Page2.Contents.Scrollbar",
@@ -1299,6 +1311,13 @@ public static class Fable2UiTemplates
 			FlowMeasured = "Foreground.Book.Pages.ExpressionsPage.Contents.Description",
 			FlowBase = "Foreground.Book.Pages.ExpressionsPage.Contents.Effects",
 			FlowMoved = { "Foreground.Book.Pages.ExpressionsPage.Contents.Effects" },
+
+			// THE EXPRESSION'S ICON IS THE GUEST'S STATEMENT: the page refresh `sub_829BCDF0`
+			// reads the highlighted expression's `IconGraphic` and sets it with
+			// `GuiElement_SetTexture` (0x829BCEE8; disc `sub_828D61D0` 0x828D62C8), told for the
+			// headless element — on the row Godot states (`sub_826C1B50`). A guest unit, so the
+			// told texture stands inside the page Godot otherwise owns.
+			GuestTextUnits = { "ExpressionsPage.Contents.Icon" },
 
 			// Lifted verbatim from `Engine_UiLogbookPage.StatRows`.
 			StatFields =
@@ -1713,7 +1732,7 @@ public static class Fable2UiTemplates
 				"Condition1", "Condition2",
 			},
 
-			// Stated by the call that opens it (`DisplayQuestBoxParams`), filled as it draws.
+			// Stated by the box's own Open (`@DisplayBox.Open` kind 4), filled as it draws.
 			Provider = Fable2PageProviders.QuestBox,
 			RestFromFile = true,
 		});
@@ -1733,15 +1752,16 @@ public static class Fable2UiTemplates
 		// native's default is 0, `sub_823033D0`) builds class 0x820EBF1C, and photo mode's
 		// uploading notice is the same class. Its Open `sub_8299E490` writes Paper.Text / Title /
 		// Accept / Info and the button alphas, then plays root slide 7 — the `Paper` variant the
-		// display-box surface vetoes. Only `Paper` is chrome here, so while the acceptance and
-		// button boxes (DefaultGroup) are up this book has nothing active to draw. Input stays
-		// the guest's: A and hold-A are the class's raw slot, and it does not freeze the game.
+		// display-box surface vetoes. The book stands only while that class is the box showing
+		// (HostUiSource.ScreenOfBox): the acceptance and button boxes share the file and are the
+		// display-box panel's. Input stays the guest's: A and hold-A are the class's raw slot
+		// (`CAcceptHoldBox_vf4`), which posts message 34, and it does not freeze the game.
 		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 7, Name = "displaybox", Presentation = "displaybox",
 			ChromeUnits = { "Paper" },
 
-			// The card is stated by its call (`DisplayInfoBoxParams`), the `infocard` provider.
+			// The card is stated by its class's Open (`@DisplayBox.Open` kind 8), the `infocard` provider.
 			Provider = Fable2PageProviders.InfoCard,
 			RestFromFile = true,
 		});
@@ -1872,7 +1892,12 @@ public static class Fable2UiTemplates
 			// at z 0 it sits IN FRONT of the logo at z -1 and PressStart at z -2 — the logo's
 			// white flash, authored at full opacity with its fade in the Anark scene and in no
 			// script. Engine_FrontEndTitle runs that fade.
-			ChromeUnits = { "logo", "White", "PressStart", "Legal", "dialog" },
+			ChromeUnits = { "logo", "White", "PressStart", "Legal" },
+
+			// The guest's dialog is drawn once, by the host's warning box (GameUi.DriveGuestDialog)
+			// with its told texts, as on the main menu. Its behaviours still fire from the book's
+			// playback of the file, which is not the unit.
+			OwnedElsewhere = { "dialog" },
 		});
 
 		// THE SCROLLING BACKDROP is a 7x2 grid of 512x512 tiles with a second copy at +3453 to
@@ -2153,6 +2178,26 @@ public static class Fable2UiTemplates
 		if (screens.TryGetValue(23, out Engine_UiScreenTemplate? map))
 		{
 			map.RestOpacity["Foreground.Book.Pages.QuestsPage.Contents.Scrollbar"] = 0f;
+		}
+	}
+
+	/// <summary>
+	/// THE SCREENS WHOSE HANDLER WRITES THE PURSE (<see cref="Engine_UiScreenTemplate.Purse"/>):
+	/// every caller of the purse writer `sub_8246B5E8` (disc `sub_82837218`) — crime 0x826A90B8,
+	/// shop 0x826AE4E8, real estate 0x826B1F2C, furniture 0x826B6164, decoration 0x826B70B4,
+	/// abilities 0x826C2290, gift 0x826C45AC, world map 0x826C5E48, items 0x826D15B4, clothing
+	/// 0x826D2D54, logbook 0x826D914C, options 0x826D9E94 — each writes
+	/// `Foreground.ExpandableMenu.Money.Text` through `lhGuiElement_SetText` (0x8246b808), told.
+	/// The pause root (0x826A4D80) owns no list, so its told purse already stands.
+	/// </summary>
+	private static void StatePurses(Dictionary<uint, Engine_UiScreenTemplate> screens)
+	{
+		foreach (uint id in new uint[] { 14, 15, 16, 17, 18, 21, 22, 23, 25, 26, 27, 28 })
+		{
+			if (screens.TryGetValue(id, out Engine_UiScreenTemplate? screen))
+			{
+				screen.Purse = true;
+			}
 		}
 	}
 

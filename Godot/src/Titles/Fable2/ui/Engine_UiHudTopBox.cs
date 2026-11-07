@@ -33,6 +33,24 @@ using Refii.Ui;
 public static class Engine_UiHudTopBox
 {
 	/// <summary>
+	/// FABLE 2'S TOPBOX WRAP WIDTH. The publisher marks both TopTitle
+	/// and TopMain for the plain wrap (`li r24,1`, `stb r24` 0x82178bb8), so the fit wraps each at
+	/// `{0, 0, max.x, max.y}` (`sub_823FCAD8` → `sub_82803138`). max.x is the `BoxName 'TopBox'`
+	/// entry's +20, measured once with both meters at 100 (`sub_8218C9C0`, 0x8218cb04): 100 × the
+	/// scale.x product up the chain — hud.bgf `Bar` 1.0 (TopBoxX track end) × `Bar` 7.8 × the
+	/// panel `TopBox` 1.38 (its widescreen adapter's `WidescreenXWidth`). The strings are the
+	/// record's, unwrapped (Engine_UiHudRegistryWrites.TakesText), so Godot wraps them here with
+	/// its own font at the guest's width.
+	/// </summary>
+	public const float WrapWidth = 100f * 1.0f * 7.8f * 1.38f;
+
+	/// <summary>
+	/// The box's height range, canvas units: the same calibration (`sub_8218C9C0`) with the TopBoxY
+	/// meter at 0 and 100 — 100 × hud.bgf `Bar` scale.y 0.38 → 1.18 (the panel's TopBoxY track).
+	/// </summary>
+	public static readonly Godot.Vector2 HeightRange = new(100f * 0.38f, 100f * 1.18f);
+
+	/// <summary>
 	/// The will-name record `sub_826B50B8` pushes on channel 10 while the spell blade is up —
 	/// `sub_8230B560(rec, dword_8349AE44, …)` at 0x826b5200, the hash `sub_8325E1C8` seeds from
 	/// "SpellAssignerInfo". The blade's label already draws that word, so the banner stays down
@@ -151,12 +169,19 @@ public static class Engine_UiHudTopBox
 		// TopMain, so the registry string outlives its record — "Poppy the Stall Vendor" over
 		// "Find the abbot in Oakfield." was the previous box's body under the new title.
 
-		bool hasTitle = strings is not null && strings.TryGetString(front.TitleTag, out _);
+		string title = string.Empty;
+		bool hasTitle = strings is not null && strings.TryGetString(front.TitleTag, out title);
 		string body = ComposeBody(readBody(), strings);
 		bool buttonOnly = !hasTitle && body.Length == 0;
 		State(values, "ButtonOnly", buttonOnly);
 		State(values, "TopTitle", !buttonOnly && hasTitle);
 		State(values, "TopMain", !buttonOnly && body.Length != 0);
+
+		// THE TITLE IS THE RECORD'S TOO. The publisher hands `TopTitle` = Babel(rec+4) and
+		// `TopMain` to the TopBox's box fit (`sub_8230D700` at 0x82178b34 / 0x82178bc4, then
+		// `sub_823FCEB0` 0x82178c14), which writes them into the text registry only through the
+		// box's own record — so the strings are stated here from the record they come from.
+		values.StateText(Refii.Core.Engine_GameHash.Fnv1("TopTitle"), hasTitle ? title : string.Empty);
 		values.StateText(Refii.Core.Engine_GameHash.Fnv1("TopMain"), body);
 
 		// The button toggles exactly as the publisher states them (0x82178c84–0x82179070):

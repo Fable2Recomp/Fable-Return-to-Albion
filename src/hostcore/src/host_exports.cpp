@@ -668,7 +668,15 @@ extern "C" {
 ///     RefiiHostGetPlayerValue (RefiiHost.player_text / player_value_hash).
 /// 232 adds RefiiHostModVerdictRead — a read-only query answered at once from inside a Godot
 ///     verdict handler, on the guest thread while the payload waits in the seam (RefiiHost.read).
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 232; }
+/// 233 adds RefiiHostSetListFoldDepth — the fold depth of Godot's list per screen, which the
+///     guest's `IsHighlightedItemAtRoot` readers answer from — and drops `ScreenAction:N:root`.
+/// 234 adds RefiiHostSetLogDirectory — each title's logs in its own folder (logs/<Title>).
+/// 235 restates RefiiHostGetMapMarkers: the pause minimap's markers as the guest names them to
+///     its placer — token (0 Quest, 1 QuestExit, 2 QuestGiver) and world point — not the
+///     placer's drawn quads.
+/// 236 adds RefiiHostGetPendingWeapons — the weapon switches the menu has pending, which the
+///     weapons list emphasises before the weapon in hand (`sub_826D0C08`).
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 236; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveRoot(char* output, uint32_t capacity) {
     auto* state = rex::system::kernel_state();
@@ -1248,6 +1256,13 @@ REFII_HOST_ABI_EXPORT int RefiiHostSetGameModulePath(const char* path, char* out
 REFII_HOST_ABI_EXPORT void RefiiHostSetConfigPath(const char* path) {
     RefiiSetConfigPath(path != nullptr && path[0] != '\0' ? std::filesystem::path{path}
                                                          : std::filesystem::path{});
+}
+
+/// Must be called BEFORE RefiiHostInitialize: the running title's log folder, which the guest's
+/// logs, its crash record and the hang watchdog write into.
+REFII_HOST_ABI_EXPORT void RefiiHostSetLogDirectory(const char* path) {
+    RefiiSetLogDirectory(path != nullptr && path[0] != '\0' ? std::filesystem::path{path}
+                                                            : std::filesystem::path{});
 }
 
 // ---------------------------------------------------------------------------------

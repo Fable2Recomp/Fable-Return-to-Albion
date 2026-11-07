@@ -240,15 +240,9 @@ REFII_HOST_ABI_EXPORT void RefiiHostRefreshSaveState(void) {}
 
 REFII_HOST_ABI_EXPORT void RefiiHostSetHighlightedRow(uint32_t /*screen*/, int32_t /*event_type*/, int32_t /*id*/, const char* /*name*/, const char* /*label*/) {}
 
+REFII_HOST_ABI_EXPORT void RefiiHostSetListFoldDepth(uint32_t /*screen*/, uint32_t /*depth*/) {}
+
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostTakeMenuChunks(char* /*out_utf8*/, uint32_t /*utf8_capacity*/, uint8_t* /*out_kinds*/, uint32_t /*kinds_capacity*/, uint32_t /*max_records*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostTakeToldStatements(uint32_t* /*out_words*/, uint32_t /*word_capacity*/) {
-    return 0;
-}
-
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostTakeToldTexts(uint32_t* /*out_words*/, uint32_t /*word_capacity*/, uint16_t* /*units*/, uint32_t /*unit_capacity*/) {
     return 0;
 }
 

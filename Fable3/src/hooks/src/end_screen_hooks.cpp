@@ -7,7 +7,7 @@
 // epilogue's image.
 //
 // EPILOGUE E = SM[6] (28 bytes, vtable off_8209D2FC). Show sub_8276B460(E, title, description,
-// gold, image, flag) — QuestTracker.ShowEpilogueScreen through sub_824F0CE8 (0x824F0E8C) and the
+// renown, image, flag) — QuestTracker.ShowEpilogueScreen through sub_824F0CE8 (0x824F0E8C) and the
 // co-op net handler sub_82370150 (0x82373E54) — returns at once unless E+0x14 is clear
 // (`lbz r11,0x14(r3)` 0x8276B46C), sets it (0x8276B498), loads the screen (sub_825C79A0(*(GUI+0x38),
 // 6) at 0x8276B4A8) and attaches its presentation *(*(GUI+0x38)+0x20) (0x8276B4B4) to the HUD
@@ -28,6 +28,8 @@
 #include <cstdint>
 
 #include <rex/ppc.h>
+#include <rex/system/kernel_state.h>
+#include <rex/system/xmemory.h>
 
 #include "gui_statements.h"
 
@@ -51,6 +53,11 @@ constexpr uint32_t kEpiloguePresentation = 0x20u;
 constexpr uint32_t kCreditsPresentation = 0x9Cu;
 constexpr uint32_t kEpilogueOpen = 0x14u;
 constexpr uint32_t kCreditsRunning = 0x23u;
+/// The epilogue's title and description text names, FNV-1 words (0x8276B500 / 0x8276B524).
+constexpr uint32_t kEpilogueTitleName = 0x8355AC24u;
+constexpr uint32_t kEpilogueDescriptionName = 0x8355AC28u;
+/// The screenshot's ImageName registry name, an FNV-1 word (0x8276B798).
+constexpr uint32_t kEpilogueImageName = 0x8355AC44u;
 
 uint32_t LoaderWord(const uint8_t* base, uint32_t offset) {
   const uint32_t gui = LoadGuestU32(base, kGuiManager);
@@ -63,15 +70,53 @@ uint32_t LoaderWord(const uint8_t* base, uint32_t offset) {
 
 }  // namespace
 
-/// `@Epilogue.Open(presentation, image)` when the show took (E+0x14 clear before, set after).
+/// `@Epilogue.Open(presentation, image, title, description, renown, titleName, descriptionName)`
+/// when the show took (E+0x14 clear before, set after). The show keeps its arguments (`mr r28,r4;
+/// mr r27,r5; mr r29,r6; mr r26,r7` 0x8276B470..0x8276B47C) and writes them only behind the
+/// screen's presentation (`lwz r30,0x20(r10)` 0x8276B4B4 / beq 0x8276B4BC): the title into the
+/// text registry under `*dword_8355AC24` (r5 = r28, 0x8276B4F8..0x8276B510), the description
+/// under `*dword_8355AC28` (r5 = r27, 0x8276B51C..0x8276B534); the renown r6 is formatted into
+/// AC30 / AC34 (0x8276B598..0x8276B5EC). The names' hashes are read from those words (their
+/// static initialisers store the FNV-1, sub_831C7360 / sub_831C73A0).
 REX_EXTERN(rex_Epilogue_Show) {
   const uint32_t epilogue = ctx.r3.u32;
   const bool closed = base != nullptr && Plausible(epilogue) && base[epilogue + kEpilogueOpen] == 0u;
   const std::string image = closed ? ReadCharString(base, ctx.r7.u32) : std::string();
+  const std::string title = closed ? ReadLhString(base, ctx.r4.u32) : std::string();
+  const std::string description = closed ? ReadLhString(base, ctx.r5.u32) : std::string();
+  const int32_t renown = static_cast<int32_t>(ctx.r6.u32);
   __imp__rex_Epilogue_Show(ctx, base);
   if (closed && base[epilogue + kEpilogueOpen] != 0u) {
-    Statement("@Epilogue.Open").Add(Text(Hex(LoaderWord(base, kEpiloguePresentation)))).Add(Text(image)).Post();
+    Statement("@Epilogue.Open")
+        .Add(Text(Hex(LoaderWord(base, kEpiloguePresentation))))
+        .Add(Text(image))
+        .Add(Text(title))
+        .Add(Text(description))
+        .Add(Number(static_cast<float>(renown)))
+        .Add(Text(Hex(LoadGuestU32(base, kEpilogueTitleName))))
+        .Add(Text(Hex(LoadGuestU32(base, kEpilogueDescriptionName))))
+        .Post();
   }
+}
+
+/// THE SCREENSHOT. After `bl sub_826EFBD8` at 0x8276B788 (r3 = r1+0x58 out, r4 = r1+0x50 the
+/// image's path from sub_82510688 at 0x8276B758, r5 = `*dword_8355AC58` "ScreenShot"), the word at
+/// r1+0x58 is the texture hash the show then stores raw into +512 of every element the ImageName
+/// registry (R+0x30, `lwz r3,0x30(r7)` 0x8276B7A4) files under `*dword_8355AC44` (`lwz r9,
+/// 0xA0+var_48(r1)` 0x8276B7C4, `stw r9,0x200(r11)` 0x8276B7F8) — only through the element's node.
+/// A [[midasm_hook]] at 0x8276B78C: `@Epilogue.Image(name hash, texture hash, path)`.
+void RefiiF3EpilogueScreenshot(PPCRegister& stack) {
+  rex::system::KernelState* state = rex::system::kernel_state();
+  rex::memory::Memory* memory = state != nullptr ? state->memory() : nullptr;
+  const uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+  if (base == nullptr) {
+    return;
+  }
+  Statement("@Epilogue.Image")
+      .Add(Text(Hex(LoadGuestU32(base, kEpilogueImageName))))
+      .Add(Text(Hex(LoadGuestU32(base, stack.u32 + 0x58u))))
+      .Add(Text(ReadCharString(base, stack.u32 + 0x50u, 260u)))
+      .Post();
 }
 
 /// `@Epilogue.Close` when the hide had an open screen to drop.
@@ -99,6 +144,8 @@ REX_EXTERN(rex_ScreenManager_EndCredits) {
   const uint32_t manager = ctx.r3.u32;
   const bool running = base != nullptr && Plausible(manager) && base[manager + kCreditsRunning] != 0u;
   __imp__rex_ScreenManager_EndCredits(ctx, base);
+  // Its stores to the GUI screen id (0x825CF35C, 0x825CF46C), stated as it returns.
+  refii::fable3::StateGuiScreen(base);
   if (running) {
     Statement("@Credits.Close").Post();
   }

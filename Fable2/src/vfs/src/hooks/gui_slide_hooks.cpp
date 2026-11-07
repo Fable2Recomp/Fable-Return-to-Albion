@@ -34,6 +34,11 @@
 // Every entry is posted, a restatement included: GotoSlide has no same-slide guard
 // (`sub_823FE848` calls `sub_82426CA8` unconditionally), so a restatement re-enters the slide
 // at t = 0 in the guest as well.
+//
+// An element of a HEADLESS presentation (gui_headless_presentation.cpp) has no file tree to walk:
+// it is posted under the id its creation stated, `root_hash` the presentation's serial and the
+// ordinal `kHeadlessOrdinal | id`; the host resolves the id's name path in the file. Its texts are
+// stated at the writers' entries there, since a headless element has no text record (+4).
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -129,14 +134,21 @@ bool OrdinalOf(uint8_t* base, uint32_t presentation, uint32_t element, uint32_t&
 /// refii_vfs (gui/gui_told_statements.cpp), which the bridge drains.
 void Queue(uint8_t* base, refii::vfs::ToldStatement::Kind kind, uint32_t presentation, uint32_t element,
            uint32_t a, uint32_t b = 0u) {
+    uint32_t headless = 0;
+    uint32_t serial = 0;
+    uint32_t id = 0;
+    if (refii::vfs::HeadlessElementKey(element, &headless, &serial, &id)) {
+        if (headless == presentation) {
+            refii_bridge_told_push(static_cast<uint32_t>(kind), presentation, serial,
+                                   refii::vfs::kHeadlessOrdinal | id, a, b);
+        }
+        return;
+    }
     uint32_t root_hash = 0;
     uint32_t ordinal = 0;
     if (!OrdinalOf(base, presentation, element, root_hash, ordinal)) return;
     refii_bridge_told_push(static_cast<uint32_t>(kind), presentation, root_hash, ordinal, a, b);
 }
-
-/// The texture each front-end element last showed, by presentation then ordinal — what a writer changed.
-std::unordered_map<uint32_t, std::unordered_map<uint32_t, uint32_t>> g_textures;
 
 constexpr uint32_t kMaxTextUnits = 4096u;
 
@@ -214,41 +226,6 @@ void TellText(uint8_t* base, uint32_t element) {
                                 static_cast<uint32_t>(units.size()));
 }
 
-void TellFrontEndTextures(uint8_t* base) {
-    const uint32_t presentation = ::FrontEndPresentation(base, 0u);
-    if (presentation == 0) return;
-    const uint32_t root = refii::vfs::LoadGuestU32(base, presentation + kRootInPresentation);
-    if (!Plausible(root)) return;
-
-    std::vector<std::pair<uint32_t, uint32_t>> elements;
-    uint32_t root_hash = 0;
-    {
-        std::lock_guard<std::mutex> lock(g_lock);
-        Ordinals& map = g_ordinals[presentation];
-        if (map.root != root || map.root_hash != refii::vfs::LoadGuestU32(base, root)) {
-            Build(base, root, map);
-            g_textures.erase(presentation);
-        }
-        root_hash = map.root_hash;
-        elements.assign(map.by_element.begin(), map.by_element.end());
-    }
-
-    std::unordered_map<uint32_t, uint32_t>& shown = g_textures[presentation];
-    for (const auto& [element, ordinal] : elements) {
-        const uint32_t holder = refii::vfs::LoadGuestU32(base, element + 4u);
-        if (!Plausible(holder)) continue;
-        const uint32_t record = refii::vfs::LoadGuestU32(base, holder);
-        if (!Plausible(record)) continue;
-        const uint32_t hash = refii::vfs::LoadGuestU32(base, record + 512u);
-        auto found = shown.find(ordinal);
-        if (found != shown.end() ? found->second == hash : hash == 0u) continue;
-        shown[ordinal] = hash;
-
-        refii_bridge_told_push(static_cast<uint32_t>(ToldStatement::Kind::kTexture), presentation,
-                               root_hash, ordinal, hash, 0u);
-    }
-}
-
 void TellGotoSlideBegin() { ++t_inside_goto; }
 
 void TellGotoSlideEnd(uint8_t* base, uint32_t timeline, uint32_t element, uint32_t slide, bool stated) {
@@ -291,11 +268,10 @@ REX_EXTERN(rex_lhGfxElements_EvaluateTracks) {
 }
 
 // The front end's menu dispatch: TU1 0x826DFD58. Its Load Game path stamps blank.tex on every card
-// (0x826e06f4) and each save's portrait (`sub_826E1408`, from the save's QuestName through the
-// `<quest>_Epilogue_Screen_Image` GDB record's ScreenShot); its dialogs set the Y glyph
-// (`sub_826E40E0`). The stamped hashes are the guest's answer, taken as it returns.
+// and each save's portrait (`sub_826E1408`); its dialogs set the Y glyph (`sub_826E40E0`). The
+// front end's presentation is headless, so each stamp is stated where it takes its element
+// (gui_headless_presentation.cpp, THE FRONT END'S TEXTURE STAMPS).
 PPC_EXTERN_FUNC(__imp__rex_lhGui_FrontendRoot_MenuActionDispatch);
 REX_EXTERN(rex_lhGui_FrontendRoot_MenuActionDispatch) {
     __imp__rex_lhGui_FrontendRoot_MenuActionDispatch(ctx, base);
-    refii::vfs::TellFrontEndTextures(base);
 }

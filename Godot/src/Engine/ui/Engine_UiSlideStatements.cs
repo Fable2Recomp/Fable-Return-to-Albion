@@ -5,7 +5,8 @@ namespace Refii.Ui;
 /// <summary>
 /// THE SLIDES THE GUEST TELLS ITS PRESENTATIONS, by element: every explicit `GotoSlide`
 /// (`sub_82BB5760`), play / pause (`sub_82BB5CB8`), attribute, `active`, text and texture write as
-/// gui_slide_hooks.cpp queues them (taken by <see cref="Take"/>) —
+/// gui_slide_hooks.cpp queues them (taken by <see cref="Take"/>; a headless presentation's keyed
+/// to its file through <see cref="Headless"/>) —
 /// native screen code, the GUI registries, Lua `goToSlide`, a file's Logic commands, the page
 /// arrows — keyed by presentation address and element ordinal. A book reads them through
 /// <see cref="Engine_UiSlidePlayback"/>, which enters the slide and plays or pauses it as the
@@ -13,12 +14,26 @@ namespace Refii.Ui;
 ///
 /// Statements carry one global sequence so the playback can tell a statement made after a
 /// component came live from one the walk's own entry superseded. A presentation rebuilt at the
-/// same address (a different root name hash) starts clean.
+/// same address starts clean: a different root name hash, or — for a headless presentation —
+/// a different serial (each create states a new one, gui_headless_presentation.cpp), so the
+/// title made again after Quit to Title never reads its predecessor's slides, texts or stamps.
 /// </summary>
 public static class Engine_UiSlideStatements
 {
 	/// <summary>The last entry and play state told to one element.</summary>
 	public readonly record struct Told(int Slide, ulong Sequence, bool? Paused, ulong PauseSequence);
+
+	/// <summary>
+	/// The top bit of a told attribute id: SetOpacity_p's RAW argument (`sub_82426078`), stated at
+	/// its entry for an element with no attribute store. The setter scales it by 1024 when the
+	/// element's current opacity is below 0.09765625 (`flt_83319B60` / `flt_82101240`,
+	/// 0x824260e0..0x824260fc) — the current value is the reader's.
+	/// </summary>
+	public const uint ScaledOpacity = 0x80000000u;
+
+	/// <summary>The value SetOpacity_p stores for <paramref name="raw"/> over an element at <paramref name="current"/>.</summary>
+	public static float SetOpacityValue(float raw, float current) =>
+		current < 0.09765625f ? raw * 1024f : raw;
 
 	/// <summary>One attribute or `active` write told to an element, in statement order.</summary>
 	public readonly record struct Write(int Ordinal, uint Attribute, uint Value, bool IsActive, ulong Sequence);
@@ -26,6 +41,9 @@ public static class Engine_UiSlideStatements
 	private sealed class Held
 	{
 		public uint RootHash;
+
+		/// <summary>The headless presentation's serial its statements carried; 0 for a built one.</summary>
+		public uint Serial;
 		public readonly Dictionary<int, Told> ByOrdinal = new();
 		public readonly List<Write> Writes = new();
 		public readonly Dictionary<int, (string Text, ulong Sequence)> Texts = new();
@@ -60,12 +78,23 @@ public static class Engine_UiSlideStatements
 	/// <summary>Bumped by every statement.</summary>
 	public static ulong Sequence { get; private set; }
 
-	private static Held HeldFor(uint presentation, uint rootHash)
+	/// <summary>
+	/// What <paramref name="presentation"/> holds under <paramref name="rootHash"/>, started clean
+	/// when it held another root or another headless presentation's serial. A built
+	/// presentation's statements carry no serial (0), which neither starts it clean nor is one.
+	/// </summary>
+	private static Held HeldFor(uint presentation, uint rootHash, uint serial = 0u)
 	{
-		if (!_said.TryGetValue(presentation, out Held? held) || held.RootHash != rootHash)
+		if (!_said.TryGetValue(presentation, out Held? held) || held.RootHash != rootHash ||
+			(serial != 0u && held.Serial != 0u && held.Serial != serial))
 		{
 			held = new Held { RootHash = rootHash };
 			_said[presentation] = held;
+		}
+
+		if (serial != 0u)
+		{
+			held.Serial = serial;
 		}
 
 		return held;
@@ -130,6 +159,109 @@ public static class Engine_UiSlideStatements
 
 	private static readonly uint[] TakeBuffer = new uint[6 * 2048];
 
+	private static Engine_UiHeadlessElements? _headless;
+
+	/// <summary>
+	/// The resolver of headless presentations' element ids (<see cref="Engine_UiHeadlessElements"/>):
+	/// the bridge's stated paths against the file read from the game's mount.
+	/// </summary>
+	public static Engine_UiHeadlessElements Headless
+	{
+		get => _headless ??= new Engine_UiHeadlessElements(
+			Refii.Host.HostBridge.ToldHeadlessFile,
+			Refii.Host.HostBridge.ToldHeadlessElement,
+			ReadDocument,
+			message => Godot.GD.Print(message));
+		set => _headless = value;
+	}
+
+	/// <summary>The presentation's file through the game's mount (its mods' layers included).</summary>
+	private static Engine_BgfDocument? ReadDocument(string file)
+	{
+		if (Refii.Assets.Engine_GameAssets.Instance is not { IsMounted: true } assets)
+		{
+			return null;
+		}
+
+		// The guest names the file on its device (`GAME:\data\art\gui\gameface\…`): the mount is the device's root.
+		string slashed = file.Replace('\\', '/');
+		int device = slashed.IndexOf(':');
+		if (device > 0 && slashed.IndexOf('/') is var firstSlash && (firstSlash < 0 || device < firstSlash))
+		{
+			slashed = slashed[(device + 1)..].TrimStart('/');
+		}
+
+		string bare = slashed.StartsWith("data/", System.StringComparison.OrdinalIgnoreCase) ? slashed[5..] : slashed;
+		byte[]? bytes = assets.ReadAllBytes(slashed) ?? assets.ReadAllBytes(bare);
+		if (bytes is null)
+		{
+			return null;
+		}
+
+		try
+		{
+			return Engine_BgfDocument.Parse(bytes);
+		}
+		catch (System.Exception e) when (e is System.IO.InvalidDataException or System.ArgumentException or
+			System.IndexOutOfRangeException or System.IO.EndOfStreamException)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>
+	/// The key a statement is held under: a live element's as told, a headless element's resolved to
+	/// the file's root name hash and ordinal (the timeline owner's for a slide entry or a pause).
+	/// </summary>
+	private static bool KeyOf(uint presentation, uint root, uint ordinalWord, bool timelineOwner,
+		out uint rootHash, out int ordinal)
+	{
+		if (!Engine_UiHeadlessElements.IsHeadless(ordinalWord))
+		{
+			rootHash = root;
+			ordinal = (int)ordinalWord;
+			return true;
+		}
+
+		return Headless.TryResolve(presentation, root, ordinalWord, timelineOwner, out rootHash, out ordinal);
+	}
+
+	/// <summary>The serial a statement's root word carries for a headless element; 0 for a built one.</summary>
+	private static uint SerialOf(uint root, uint ordinalWord) =>
+		Engine_UiHeadlessElements.IsHeadless(ordinalWord) ? root : 0u;
+
+	/// <summary>One taken statement record: kind, presentation, root (a headless one's serial), ordinal word, a, b.</summary>
+	public static void Apply(uint kind, uint presentation, uint root, uint ordinalWord, uint a, uint b)
+	{
+		if (!KeyOf(presentation, root, ordinalWord, kind is 1u or 2u, out uint rootHash, out int ordinal))
+		{
+			return;
+		}
+
+		HeldFor(presentation, rootHash, SerialOf(root, ordinalWord));
+
+		switch (kind)
+		{
+			case 1u: GotoSlide(presentation, rootHash, ordinal, (int)a); break;
+			case 2u: Paused(presentation, rootHash, ordinal, a != 0); break;
+			case 3u: Attribute(presentation, rootHash, ordinal, a, b); break;
+			case 4u: Active(presentation, rootHash, ordinal, a != 0); break;
+			case 5u:
+				HeldFor(presentation, rootHash).Textures[ordinal] = (a, ++Sequence);
+				++TextureGeneration;
+				break;
+		}
+	}
+
+	/// <summary>One taken text: presentation, root (a headless one's serial), ordinal word, the string.</summary>
+	public static void ApplyText(uint presentation, uint root, uint ordinalWord, string text)
+	{
+		if (KeyOf(presentation, root, ordinalWord, false, out uint rootHash, out int ordinal))
+		{
+			HeldFor(presentation, rootHash, SerialOf(root, ordinalWord)).Texts[ordinal] = (text, ++Sequence);
+		}
+	}
+
 	/// <summary>
 	/// Takes everything the guest told since the last call (HostBridge.TakeToldStatements) — once a
 	/// frame, before the books stand.
@@ -143,21 +275,8 @@ public static class Engine_UiSlideStatements
 			for (int r = 0; r < records; ++r)
 			{
 				int at = r * 6;
-				uint presentation = TakeBuffer[at + 1];
-				uint root = TakeBuffer[at + 2];
-				int ordinal = (int)TakeBuffer[at + 3];
-				uint a = TakeBuffer[at + 4];
-				switch (TakeBuffer[at])
-				{
-					case 1u: GotoSlide(presentation, root, ordinal, (int)a); break;
-					case 2u: Paused(presentation, root, ordinal, a != 0); break;
-					case 3u: Attribute(presentation, root, ordinal, a, TakeBuffer[at + 5]); break;
-					case 4u: Active(presentation, root, ordinal, a != 0); break;
-					case 5u:
-						HeldFor(presentation, root).Textures[ordinal] = (a, ++Sequence);
-						++TextureGeneration;
-						break;
-				}
+				Apply(TakeBuffer[at], TakeBuffer[at + 1], TakeBuffer[at + 2], TakeBuffer[at + 3],
+					TakeBuffer[at + 4], TakeBuffer[at + 5]);
 			}
 		}
 		while (records * 6 == TakeBuffer.Length);
@@ -177,8 +296,7 @@ public static class Engine_UiSlideStatements
 				}
 
 				at += length;
-				HeldFor(TextWords[r * 4], TextWords[(r * 4) + 1]).Texts[(int)TextWords[(r * 4) + 2]] =
-					(new string(chars), ++Sequence);
+				ApplyText(TextWords[r * 4], TextWords[(r * 4) + 1], TextWords[(r * 4) + 2], new string(chars));
 			}
 		}
 		while (texts * 4 == TextWords.Length);
@@ -188,6 +306,23 @@ public static class Engine_UiSlideStatements
 
 	private static readonly ushort[] TextUnits = new ushort[64 * 1024];
 
+	/// <summary>The texts told to a presentation's elements after <paramref name="since"/>, last one per element.</summary>
+	public static IEnumerable<(int Ordinal, string Text)> TextsSince(uint presentation, uint rootHash, ulong since)
+	{
+		if (presentation == 0 || !_said.TryGetValue(presentation, out Held? held) || held.RootHash != rootHash)
+		{
+			yield break;
+		}
+
+		foreach ((int ordinal, (string text, ulong sequence)) in held.Texts)
+		{
+			if (sequence > since)
+			{
+				yield return (ordinal, text);
+			}
+		}
+	}
+
 	/// <summary>The text the guest last wrote into an element after <paramref name="since"/>, or null.</summary>
 	public static string? TextOf(uint presentation, uint rootHash, int ordinal, ulong since) =>
 		presentation != 0 && _said.TryGetValue(presentation, out Held? held) && held.RootHash == rootHash &&
@@ -195,7 +330,32 @@ public static class Engine_UiSlideStatements
 			? told.Text
 			: null;
 
-	/// <summary>What a presentation has been told, for the `rest:` check: entries, writes, texts, textures.</summary>
+	/// <summary>
+	/// The non-empty text last told to any element of <paramref name="presentation"/>, or null —
+	/// for a presentation whose one live text is the statement (the menu cycler's screen name).
+	/// </summary>
+	public static string? LatestTextOf(uint presentation)
+	{
+		if (presentation == 0 || !_said.TryGetValue(presentation, out Held? held))
+		{
+			return null;
+		}
+
+		string? latest = null;
+		ulong at = 0;
+		foreach ((string text, ulong sequence) in held.Texts.Values)
+		{
+			if (text.Length != 0 && sequence > at)
+			{
+				latest = text;
+				at = sequence;
+			}
+		}
+
+		return latest;
+	}
+
+	/// <summary>What a presentation has been told: entries, writes, texts, textures.</summary>
 	public static string Summary(uint presentation, uint rootHash)
 	{
 		if (presentation == 0)
@@ -211,7 +371,7 @@ public static class Engine_UiSlideStatements
 		return held.RootHash != rootHash
 			? $"0x{presentation:X8} was told under root 0x{held.RootHash:X8}, the book's root is 0x{rootHash:X8}"
 			: $"0x{presentation:X8}: {held.ByOrdinal.Count} element(s) told a slide, {held.Writes.Count} write(s), " +
-				$"{held.Texts.Count} text(s), {held.Textures.Count} texture(s); sequence {Sequence}";
+				$"{held.Texts.Count} text(s), {held.Textures.Count} texture(s); serial {held.Serial}, sequence {Sequence}";
 	}
 
 	/// <summary>The last `active` write told to an element after <paramref name="since"/>, or null.</summary>
