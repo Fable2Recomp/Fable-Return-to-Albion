@@ -20,6 +20,10 @@ public sealed class Engine_NewGameInventory
     private readonly Func<GdbMulti> _rebuild;
     private readonly Dictionary<uint, string> _names = new();
     private readonly Dictionary<Engine_SaveHero.Augmentation, uint> _augmentItems = new();
+    /// <summary>
+    /// A container's aliases may name only its own entries (<see cref="GdbWriter"/>), so each
+    /// named record goes in too, with the fields the game states for it.
+    /// </summary>
     public GdbPatchDatabase Aliases { get; } = new();
 
     public Engine_NewGameInventory(GdbMulti database)
@@ -43,6 +47,17 @@ public sealed class Engine_NewGameInventory
                 alias = Engine_GameHash.Fnv1(name);
             }
             _names.Add(record, name);
+            var entry = new GdbPatchEntry(record, cursor.View.RecordSchemaFlags(cursor.Record));
+            foreach (var field in cursor.View.RawFields(cursor.Record))
+            {
+                entry.Properties.Add(new GdbPatchProperty(field.Hash, field.Type, field.Raw));
+                // THE STRINGS COME WITH THE COPY. It shadows the original record, and its field names
+                // and String/Enum values are hashes into its own container's name table: without them
+                // every quest's NameTag resolved to nothing and the pause menu said "!!!<id>".
+                CopyName(cursor.View, field.Hash);
+                if (field.Type is GdbFieldType.String or GdbFieldType.Enum) CopyName(cursor.View, field.Raw);
+            }
+            Aliases.Entries.Add(entry);
             Aliases.Aliases.Add((alias, record));
             Aliases.Names.Add(alias, name);
             if (Reference(cursor, "InventoryItemComponent") == 0) continue;

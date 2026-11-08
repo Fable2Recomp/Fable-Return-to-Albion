@@ -630,6 +630,14 @@ public partial class GameFx : Node3D
                 node = null;
             }
 
+            // A node freed under us (its parent went with a level) is a fresh build, not a write
+            // to a disposed object.
+            if (node is not null && !IsInstanceValid(node))
+            {
+                _nodes.Remove(key);
+                node = null;
+            }
+
             if (node is null)
             {
                 if (fx.Attached != 0u &&

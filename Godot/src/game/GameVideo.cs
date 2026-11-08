@@ -763,10 +763,11 @@ public partial class GameVideo : Node
 
 		if (ended)
 		{
-			// End of the movie: stop drawing rather than freezing on the last frame.
+			// End of the movie: stop drawing rather than freezing on the last frame. The backdrop
+			// goes in the same frame: mirrored only at the top of the next one, it drew a black frame.
 			_decoder.Dispose();
 			_decoder = null;
-			_view.Visible = false;
+			_view.Visible = _backdrop.Visible = false;
 			++MoviesFinished;
 
 			// Tell the guest, or it never advances: its startup sequence blocks until every

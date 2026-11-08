@@ -199,6 +199,9 @@ public static class Engine_HiddenClusters
 	{
 		public UInt128 Written;
 
+		/// <summary>The mesh these bits describe: a new mesh (a co-op hero re-rigged) starts over.</summary>
+		public ulong MeshId;
+
 		private ulong _bits;
 		private bool[] _more = Array.Empty<bool>();
 
@@ -291,10 +294,10 @@ public static class Engine_HiddenClusters
 		int[] surfaceParts = tables.SurfaceParts;
 		uint[] partHashes = tables.PartHashes;
 
-		if (!_collapsedSurfaces.TryGetValue(node, out SurfaceState? state))
+		if (!_collapsedSurfaces.TryGetValue(node, out SurfaceState? state) || state.MeshId != mesh.GetInstanceId())
 		{
-			state = new SurfaceState();
-			_collapsedSurfaces.Add(node, state);
+			state = new SurfaceState { MeshId = mesh.GetInstanceId() };
+			_collapsedSurfaces.AddOrUpdate(node, state);
 		}
 
 		Dictionary<uint, HashSet<string>>? hidden = HiddenFor(entity);
@@ -405,7 +408,8 @@ public static class Engine_HiddenClusters
 	private static void WriteOverrides(MeshInstance3D node, SurfaceState state, UInt128 wanted)
 	{
 		UInt128 changed = state.Written ^ wanted;
-		for (int s = 0; s < 128 && changed != UInt128.Zero; s++)
+		int surfaces = Math.Min(128, node.GetSurfaceOverrideMaterialCount());
+		for (int s = 0; s < surfaces && changed != UInt128.Zero; s++)
 		{
 			UInt128 bit = UInt128.One << s;
 			if ((changed & bit) != UInt128.Zero)

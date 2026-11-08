@@ -149,7 +149,8 @@ public sealed class Fable2Title : Engine_TitleGame
 		catch (System.Exception exception) { Godot.GD.PushError("[morph-mirror] " + exception.Message); }
 		try { Engine_DecorateCatalog.Attach(mounted); }
 		catch (System.Exception exception) { Godot.GD.PushError("[decorate] " + exception.Message); }
-		Engine_NewGameRuntime.Attach(mounted);
+		try { Engine_NewGameRuntime.Attach(mounted); }
+		catch (System.Exception exception) { Godot.GD.PushError("[new-game] " + exception.Message); }
 	}
 
 	public override void DressLevel(Godot.Node3D root, Refii.Level.LevelEntry level)

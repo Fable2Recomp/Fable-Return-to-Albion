@@ -981,6 +981,7 @@ public partial class GameLoadingScreen : Node
 		// The painting goes too, or the next load's cover would show this region's art.
 		_source = null;
 		_frameAtOpen = null;
+		_held.Clear();
 		Report(why);
 	}
 
@@ -1024,6 +1025,15 @@ public partial class GameLoadingScreen : Node
 	/// are normalised here rather than at the resolver, because the resolver is the UI's and
 	/// every other caller hands it a path that came out of a `.fac` already in that shape.
 	/// </summary>
+	/// <remarks>
+	/// HELD WHILE THE SCREEN IS UP. The resolver's cache is Godot's ResourceLoader, which frees a
+	/// texture as soon as nothing references it, and a texture fetched for one <c>_Draw</c> is
+	/// referenced only by its C# wrapper until the next collection. A level load collects every
+	/// few frames, so the tip panel's sheet was freed and loaded again about twenty times per load
+	/// on the S25+, and each time the canvas still drew the freed texture for a frame, which the
+	/// renderer draws white: the tip panel flashed. Holding it costs one sheet and also stops the
+	/// decode being paid again in the middle of a load.
+	/// </remarks>
 	private Texture2D? Resolve(string guestPath)
 	{
 		if (Resolver is null)
@@ -1031,9 +1041,24 @@ public partial class GameLoadingScreen : Node
 			return null;
 		}
 
+		if (_held.TryGetValue(guestPath, out Texture2D? held) && IsInstanceValid(held))
+		{
+			return held;
+		}
+
 		string path = guestPath.Replace('\\', '/').ToLowerInvariant();
-		return Resolver(path) ?? Resolver(TexturePrefix + path);
+		Texture2D? texture = Resolver(path) ?? Resolver(TexturePrefix + path);
+		if (texture is not null)
+		{
+			_held[guestPath] = texture;
+		}
+
+		return texture;
 	}
+
+	/// <summary>The textures this screen has drawn since it came up, held until it goes down.</summary>
+	private readonly System.Collections.Generic.Dictionary<string, Texture2D> _held =
+		new(System.StringComparer.OrdinalIgnoreCase);
 
 	/// <summary>Prints a line only when it changes, so a per-frame poll does not flood.</summary>
 	private void Report(string line)

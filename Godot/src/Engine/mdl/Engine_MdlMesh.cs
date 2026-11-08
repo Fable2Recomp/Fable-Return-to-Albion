@@ -438,6 +438,9 @@ public static int SurfacesWithLods;
                     {
                         treePivots[v * 4] = rawClusters[v * 4];
                     }
+
+                    // The array slot took a copy of the pivots when it was set above.
+                    arrays[(int)Mesh.ArrayType.Custom3] = treePivots;
                 }
                 else
                 {
