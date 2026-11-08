@@ -246,7 +246,16 @@ public partial class GameDecorate : Node
             Vector2 turn = keyboard ? Vector2.Zero : new Vector2(Axis(pad, JoyAxis.RightX), Axis(pad, JoyAxis.RightY));
             after = Engine_DecorateControls.Camera(ref _position, ref _yaw, ref _pitch,
                 movement, turn, _mouse, seconds, fine, Held(Key.Shift) || Pad(pad, JoyButton.LeftStick));
-            if (keyboard && _scroll != 0) { _position += after.Basis.Z * _scroll; after.Origin = _position; }
+            if (keyboard && _scroll != 0)
+            {
+                if (HasSelection)
+                {
+                    _pendingMove = false;
+                    _piece.Y -= _scroll * (fine ? 0.05f : 0.25f);
+                    _dirty = true; _dragReady = false;
+                }
+                else { _position += after.Basis.Z * _scroll; after.Origin = _position; }
+            }
             if (!before.IsEqualApprox(after)) _camera.GlobalTransform = after;
         }
         _scroll = 0;
@@ -329,11 +338,6 @@ public partial class GameDecorate : Node
         point = default;
         if (_camera is null) return false;
         Vector3 origin = _camera.ProjectRayOrigin(_cursor), direction = _camera.ProjectRayNormal(_cursor);
-        if (_interior.Surface(origin, direction, Engine_DecoratePicking.Range, out point, out Vector3 normal))
-        {
-            _dragPlanePoint = point; _dragPlaneNormal = normal;
-            return true;
-        }
         return Engine_DecorateControls.DragPoint(origin, direction, _dragPlanePoint, _dragPlaneNormal, out point);
     }
 
@@ -430,10 +434,10 @@ public partial class GameDecorate : Node
         }
         if (!_dirty || _ghost is null) return;
         bool stopped = false;
-        if (_acceptedPreview)
+        if (_collisionEnabled && _acceptedPreview)
         {
             float fraction = _collision.LimitMovement(_ghost, _ghostSource * _ghostOffset, _selectedUid != 0,
-                _interior, _ghostOffset, _acceptedPiece, _acceptedAngles, _piece, Angles, _collisionEnabled);
+                _interior, _ghostOffset, _acceptedPiece, _acceptedAngles, _piece, Angles, false);
             if (fraction < 1)
             {
                 stopped = _collision.MovementBlocked;
@@ -442,7 +446,7 @@ public partial class GameDecorate : Node
                 _piece = _acceptedPiece.Lerp(_piece, fraction);
                 Angles = Engine_DecorateControls.InterpolateAngles(_acceptedAngles, Angles, fraction);
                 if (stopped) _piece = _collision.Slide(_ghost, _ghostSource * _ghostOffset, _selectedUid != 0,
-                    _interior, _ghostOffset, _piece, Angles, requested, _collisionEnabled);
+                    _interior, _ghostOffset, _piece, Angles, requested, false);
                 _dragReady = false;
             }
             _acceptedPiece = _piece; _acceptedAngles = Angles;
@@ -466,9 +470,8 @@ public partial class GameDecorate : Node
 
     private void CheckCollision()
     {
-        bool outside = _ghost is { Mesh: { } mesh } && (!_interior.Contains(mesh.GetAabb(), _ghost.GlobalTransform) || _interior.CrossesSurface(mesh.GetAabb(), _ghost.GlobalTransform));
-        _blocked = outside || _collisionEnabled && _ghost is not null &&
-            _collision.Blocked(_ghost, _ghostSource * _ghostOffset, _selectedUid != 0);
+        bool outside = _collisionEnabled && _ghost is { Mesh: { } mesh } && (!_interior.Contains(mesh.GetAabb(), _ghost.GlobalTransform) || _interior.CrossesSurface(mesh.GetAabb(), _ghost.GlobalTransform));
+        _blocked = outside;
         _collisionDirty = false;
         _collisionPoll = 0.1;
         _acceptedPreview = !_blocked && _ghost is not null;
