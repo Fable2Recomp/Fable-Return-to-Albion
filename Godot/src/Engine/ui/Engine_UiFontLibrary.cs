@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading.Tasks;
 using Godot;
 
 using Refii.Core;
@@ -134,20 +135,33 @@ public sealed class Engine_UiFontLibrary
 			return;
 		}
 
+		// THE THREE ATLASES ARE BUILT TOGETHER. Each is a cubic upsample with mips on one CPU thread,
+		// and one after another they took about 0.75 s of the main thread on a phone while the UI
+		// first stands up. Only the textures are made here, in the buckets' order.
+		var builds = new List<(UiFontBucket Bucket, string Name, Task<(Engine_BitmapFont Font, Image Atlas, int Factor)> Work)>();
 		foreach ((UiFontBucket bucket, string name) in FileNames)
 		{
 			string path = Array.Find(present, file =>
 				string.Equals(Path.GetFileName(file), name, StringComparison.OrdinalIgnoreCase))
 				?? Path.Combine(directory, name);
-			try
+			builds.Add((bucket, name, Task.Run(() =>
 			{
 				Engine_BitmapFont font = Engine_BitmapFont.Load(path);
-				_fonts[bucket] = new UiFont(font,
-					Engine_BitmapFontTexture.CreateAtlasTextureDecompressed(font));
+				Image atlas = Engine_BitmapFontTexture.CreateAtlasImage(font, out int factor);
+				return (font, atlas, factor);
+			})));
+		}
+
+		foreach (var build in builds)
+		{
+			try
+			{
+				(Engine_BitmapFont font, Image atlas, int factor) = build.Work.GetAwaiter().GetResult();
+				_fonts[build.Bucket] = new UiFont(font, Engine_BitmapFontTexture.CreateAtlasTexture(font, atlas, factor));
 			}
 			catch (Exception exception)
 			{
-				Failures.Add($"{name}: {exception.Message}");
+				Failures.Add($"{build.Name}: {exception.Message}");
 			}
 		}
 	}

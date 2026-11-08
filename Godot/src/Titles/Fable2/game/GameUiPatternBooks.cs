@@ -12,6 +12,68 @@ public partial class GameUi
 	/// <summary>The front end's presentation: the menu, the gender card, the load fan and the dialog are its pages.</summary>
 	private const string FrontEndMenuPresentation = "frontendmainmenu";
 
+	/// <summary>The title screen's presentation ("Press Start").</summary>
+	private const string TitlePresentation = "frontendstartupscreen";
+
+	/// <summary>Frames the title has stood with no movie on screen.</summary>
+	private int _menuPrebuildFrames;
+
+	/// <summary>The main menu's prebuild: 0 not begun, 1 its template tree built, 2 its pattern book
+	/// catalogued, 3 done or given up.</summary>
+	private int _menuPrebuild;
+
+	/// <summary>
+	/// THE MAIN MENU, BUILT WHILE THE TITLE WAITS FOR A PRESS. Its pattern book and owned book were
+	/// built on the frame the player pressed Start: a 0.9-1.1 s freeze on a OnePlus 7 Pro, 1.2 s on a
+	/// Galaxy S10e. Once the title has stood a second with no movie over it, they are built ahead,
+	/// one piece per frame (the file-only template tree, its catalogue, then the book), and
+	/// <see cref="Engine_UiBookSet.DriveFrontEnd"/> finds the book waiting. A press before then
+	/// builds them on demand as before.
+	/// </summary>
+	/// <remarks>NOT UNDER A MOVIE: the startup videos play over the title, and a long frame stops
+	/// them.</remarks>
+	private void PrebuildMenuAtTitle(string presentation, bool owned)
+	{
+		if (_menuPrebuild >= 3 || !owned || _presentation is null ||
+			!string.Equals(presentation, TitlePresentation, System.StringComparison.OrdinalIgnoreCase))
+		{
+			return;
+		}
+
+		if (GameVideo.PlayedWithin(30))
+		{
+			_menuPrebuildFrames = 0;
+			return;
+		}
+
+		if (++_menuPrebuildFrames < 30)
+		{
+			return;
+		}
+
+		using (Refii.Core.Engine_FramePhases.Measure("ui.menu.prebuild"))
+		{
+			switch (_menuPrebuild)
+			{
+				case 0:
+					_presentation.DocumentFor(FrontEndMenuPresentation);
+					_menuPrebuild = 1;
+					break;
+				case 1:
+					_presentation.PatternBookFor(FrontEndMenuPresentation);
+					_menuPrebuild = 2;
+					break;
+				default:
+					if (_books.PrebuildFrontEnd(FrontEndMenuPresentation) || _menuPrebuildFrames > 300)
+					{
+						_menuPrebuild = 3;
+					}
+
+					break;
+			}
+		}
+	}
+
 	/// <summary>
 	/// THE MOUNT CHANGED A PRESENTATION'S FILES (<see cref="Engine_UiPresentationHost.PatternBooksRetired"/>):
 	/// a mod's <c>.bgf</c> now stands in for one a view was built from, or no longer does. Every

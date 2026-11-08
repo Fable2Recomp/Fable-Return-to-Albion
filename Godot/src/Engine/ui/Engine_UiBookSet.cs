@@ -149,6 +149,33 @@ public sealed class Engine_UiBookSet
 	}
 
 	/// <summary>
+	/// Builds a FRONT-END screen's book before the guest asks for it, and keeps it hidden where
+	/// <see cref="DriveFrontEnd"/> will find it. True when there is nothing left to do (built, or
+	/// no chrome for it); false when its art is not readable yet, for the caller to ask again.
+	/// </summary>
+	public bool PrebuildFrontEnd(string presentation)
+	{
+		if (Host is null ||
+			Engine_UiTemplates.ScreenFor(presentation) is not { ChromeUnits.Count: > 0 } template)
+		{
+			return true;
+		}
+
+		if (_books.TryGetValue(template.ScreenId, out Engine_UiOwnedBook? held) && GodotObject.IsInstanceValid(held))
+		{
+			return true;
+		}
+
+		if (Ensure(template.ScreenId, presentation) is not { } book)
+		{
+			return false;
+		}
+
+		_books[template.ScreenId] = book;
+		return true;
+	}
+
+	/// <summary>
 	/// The book <see cref="PrebuildOne"/> set aside for this screen and presentation, handed
 	/// over once; null when there is none (or it was built from another file, or a remount
 	/// retired it), and the caller builds as before.

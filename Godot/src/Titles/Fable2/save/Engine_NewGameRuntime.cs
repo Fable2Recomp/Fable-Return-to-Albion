@@ -18,6 +18,23 @@ public static class Engine_NewGameRuntime
     private static BnkFileSystem? _mount;
     private static byte[] _modInit = Array.Empty<byte>();
     private static Engine_NewGameInventory? _inventory;
+    private static Func<GdbMulti>? _buildDatabase;
+
+    /// <summary>The carry names and items the New Game script reads, built when it first asks: a start
+    /// that finds the patch on disk (<see cref="Attach"/>) has no reason to build them.</summary>
+    private static Engine_NewGameInventory? Inventory
+    {
+        get
+        {
+            if (_inventory is null && _buildDatabase is { } build && build() is { RecordCount: > 0 } database)
+            {
+                _inventory = new Engine_NewGameInventory(database, build);
+                _inventory.Aliases.Entries.Clear(); // the patch is already mounted
+            }
+
+            return _inventory;
+        }
+    }
 
     public static IReadOnlyList<string> SaveRoots()
     {
@@ -59,18 +76,34 @@ public static class Engine_NewGameRuntime
     {
         _mount = mounted;
         _inventory = null;
-        var blobs = Engine_GameGdb.LoadSupplementalBlobs(path => mounted.TryGetFile(path, out var file) ? file.ReadAllBytes() : null);
-        var database = GdbMulti.Build(blobs);
-        if (database.RecordCount != 0)
-        {
-            _inventory = new Engine_NewGameInventory(database);
-            const string path = "globals/globals.gdb.tu";
-            byte[] patch = GdbWriter.Serialize(_inventory.Aliases);
-            if (mounted.TryGetFile(path, out var previous)) patch = GdbPatchBuilder.ApplyOverlayToBaseGdb(previous.ReadAllBytes(), patch);
-            mounted.AddVirtualFile(path, path, patch.Length, () => patch, "Refii");
-        }
         _modInit = mounted.TryGetFile(ModLua.InitKey, out var file) ? file.ReadAllBytes() : Array.Empty<byte>();
+        byte[]? Read(string path) => mounted.TryGetFile(path, out var file) ? file.ReadAllBytes() : null;
+        GdbMulti BuildDatabase() => GdbMulti.Build(Engine_GameGdb.LoadSupplementalBlobs(Read));
+        _buildDatabase = BuildDatabase;
+        const string path = "globals/globals.gdb.tu";
+
+        // THE PATCH IS KEPT ON DISK. Every start merged the same 42,000 carry names into the same
+        // globals.gdb.tu, about 1.3 s of the mount on a phone; it changes only with the data under
+        // it (the blobs include that file as the decorate catalog left it) or the build.
+        List<byte[]?> blobs = Engine_GameGdb.LoadSupplementalBlobs(Read);
+        byte[] key = Engine_KeyedFileCache.Key(CacheFormat, typeof(Engine_NewGameRuntime), blobs);
+        string cache = Path.Combine(Engine_Title.Fable2.CacheDirectory, "newgame", "carry.bin");
+        if (!Engine_KeyedFileCache.TryRead(cache, key, out byte[] patch))
+        {
+            var database = GdbMulti.Build(blobs);
+            if (database.RecordCount == 0) return;
+            _inventory = new Engine_NewGameInventory(database, BuildDatabase);
+            patch = GdbWriter.Serialize(_inventory.Aliases);
+            _inventory.Aliases.Entries.Clear(); // written; about 4 MB not to keep
+            if (mounted.TryGetFile(path, out var previous)) patch = GdbPatchBuilder.ApplyOverlayToBaseGdb(previous.ReadAllBytes(), patch);
+            Engine_KeyedFileCache.Write(cache, key, patch);
+        }
+
+        mounted.AddVirtualFile(path, path, patch.Length, () => patch, "Refii");
     }
+
+    /// <summary>Raise when the patch changes in a way the build stamp would not show.</summary>
+    private const int CacheFormat = 1;
 
     public static bool Prepare(NewGameSelection selection, out bool? female, out string error)
     {
@@ -98,8 +131,8 @@ public static class Engine_NewGameRuntime
 
     private static string BuildScript(NewGameSelection selection, Engine_SaveHero.Hero? hero, bool live = false) =>
         Engine_NewGameScript.Build(selection, hero, ResolveRecord, live,
-            _inventory is null ? null : _inventory.InitialAugments, _inventory is null ? null : _inventory.AugmentationName);
+            Inventory is null ? null : Inventory.InitialAugments, Inventory is null ? null : Inventory.AugmentationName);
 
-    private static string? ResolveRecord(uint record) => _inventory?.RecordName(record) ??
+    private static string? ResolveRecord(uint record) => Inventory?.RecordName(record) ??
         (Engine_GameGdb.TryLookupHash(record, out var cursor) ? cursor.View.RecordName(cursor.Record) : null);
 }

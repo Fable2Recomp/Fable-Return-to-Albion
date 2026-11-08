@@ -543,6 +543,7 @@ public partial class GameUi : Node, IGameTitleUi
 		// gui_headless_presentation.cpp), so there is no element sample: the book plays its own
 		// slides and takes what the guest TELLS the presentation (Engine_UiSlideStatements).
 		bool owned = _books.DriveFrontEnd(presentation);
+		PrebuildMenuAtTitle(presentation, owned);
 
 		// GODOT OWNS EVERY SCREEN IT HAS A TEMPLATE FOR. The guest's tree is SAMPLED for its
 		// data and never drawn once a template names the screen — a book that is not standing

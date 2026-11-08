@@ -25,6 +25,13 @@ public partial class GameVideo : Node
 	/// <summary>True while a movie is on screen.</summary>
 	public bool IsPlaying => _decoder is not null;
 
+	/// <summary>The last process frame any player had a movie on screen.</summary>
+	private static ulong _lastPlayingFrame;
+
+	/// <summary>Whether any player had a movie on screen within the last <paramref name="frames"/> frames.</summary>
+	public static bool PlayedWithin(ulong frames) =>
+		_lastPlayingFrame != 0 && Engine.GetProcessFrames() - _lastPlayingFrame < frames;
+
 	/// <summary>How many movies have played to the end this session.</summary>
 	public int MoviesFinished { get; private set; }
 
@@ -273,6 +280,7 @@ public partial class GameVideo : Node
 	public override void _Process(double delta)
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("gamevideo");
+		if (_decoder is not null) _lastPlayingFrame = Engine.GetProcessFrames();
 		// Mirrored here so no site that toggles _view can miss the backdrop.
 		_backdrop.Visible = _view.Visible;
 		SubViewport.UpdateMode embedMode = _decoder is not null && EmbedOrdinal >= 0

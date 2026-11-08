@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Godot;
 using Refii.Bnk;
+using Refii.Core;
 using Refii.Text;
 
 namespace Refii.Titles.Fable2;
@@ -33,6 +34,9 @@ public static class CoopText
 		0xE531CCCBu, 0xED052E2Du, 0xED071A30u, 0xEFEC3838u, 0xF4716ADBu, 0xFEAE6758u,
 	};
 
+	/// <summary>Raise when the rewritten table changes in a way the build stamp would not show.</summary>
+	private const int CacheFormat = 1;
+
 	public static void Attach(BnkFileSystem mounted)
 	{
 		int changed = 0;
@@ -52,6 +56,17 @@ public static class CoopText
 			try
 			{
 				byte[] original = file.ReadAllBytes();
+				// KEPT ON DISK: writing the table back deflates all of its blocks, about 0.4 s of
+				// every start on a phone, for the same few strings over the same file.
+				byte[] cacheKey = Engine_KeyedFileCache.Key(CacheFormat, typeof(CoopText), new[] { original });
+				string cache = System.IO.Path.Combine(Engine_Title.Fable2.CacheDirectory, "coop-text", language + ".bin");
+				if (Engine_KeyedFileCache.TryRead(cache, cacheKey, out byte[] kept))
+				{
+					mounted.AddVirtualFile(table, $"<refii-coop:{table}>", kept.LongLength, () => kept, "Refii");
+					changed++;
+					continue;
+				}
+
 				Engine_BabelDatabase database = Engine_BabelDatabase.Parse(original);
 				var rows = new List<BabelOverlayRow>();
 				foreach (uint key in HenchmanKeys)
@@ -80,6 +95,7 @@ public static class CoopText
 				}
 
 				byte[] bytes = result.Bytes;
+				Engine_KeyedFileCache.Write(cache, cacheKey, bytes);
 				mounted.AddVirtualFile(table, $"<refii-coop:{table}>", bytes.LongLength, () => bytes, "Refii");
 				changed += result.Applied;
 			}

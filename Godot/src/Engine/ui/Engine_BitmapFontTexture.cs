@@ -75,7 +75,14 @@ public static class Engine_BitmapFontTexture
 			? (float)atlas.GetMeta(SupersampleMeta).AsDouble()
 			: 1f;
 
-	public static ImageTexture CreateAtlasTextureDecompressed(Engine_BitmapFont font)
+	public static ImageTexture CreateAtlasTextureDecompressed(Engine_BitmapFont font) =>
+		CreateAtlasTexture(font, CreateAtlasImage(font, out int factor), factor);
+
+	/// <summary>
+	/// The atlas as an image, before it becomes a texture: CPU work only, so a worker may build
+	/// one font's while another builds the next (<see cref="Engine_UiFontLibrary"/>).
+	/// </summary>
+	public static Image CreateAtlasImage(Engine_BitmapFont font, out int factor)
 	{
 		Image image = Image.CreateFromData(
 			font.AtlasWidth, font.AtlasHeight,
@@ -97,16 +104,22 @@ public static class Engine_BitmapFontTexture
 		// 2160p. A cubic upsample gives the coverage smooth contours for `ui_text.gdshader`
 		// to re-sharpen at the display's own pixel size; the mips are what its
 		// `filter_linear_mipmap` samples when a label draws smaller than authored.
-		int factor = Mathf.Max(width, height) * 4 <= 4096 ? 4 : 2;
+		factor = Mathf.Max(width, height) * 4 <= 4096 ? 4 : 2;
 		mask.Resize(width * factor, height * factor, Image.Interpolation.Cubic);
-		ImageTexture? field = DistanceField(font, mask, factor);
 		mask.GenerateMipmaps();
+		return mask;
+	}
 
+	/// <summary>The texture for an atlas <see cref="CreateAtlasImage"/> built; null when it came out empty.</summary>
+	/// <remarks>The distance field reads the atlas's full-size level only, so its mips being built already changes nothing.</remarks>
+	public static ImageTexture CreateAtlasTexture(Engine_BitmapFont font, Image mask, int factor)
+	{
 		if (mask.IsEmpty())
 		{
 			return null!;
 		}
 
+		ImageTexture? field = DistanceField(font, mask, factor);
 		ImageTexture texture = ImageTexture.CreateFromImage(mask);
 		texture.SetMeta(SupersampleMeta, factor);
 		if (field is not null)

@@ -156,15 +156,23 @@ public static class GdbPatchBuilder
             baseDb.Names[kvp.Key] = kvp.Value;
         }
 
+        // By hash, the first of each: a FindIndex per alias was quadratic, 6-9 s on a phone for
+        // New Game's 42,000 carry-name aliases.
+        var aliasIndex = new Dictionary<uint, int>(baseDb.Aliases.Count + tuDb.Aliases.Count);
+        for (int i = 0; i < baseDb.Aliases.Count; i++)
+        {
+            aliasIndex.TryAdd(baseDb.Aliases[i].AliasHash, i);
+        }
+
         foreach (var (aliasHash, targetId) in tuDb.Aliases)
         {
-            int aliasIdx = baseDb.Aliases.FindIndex(a => a.AliasHash == aliasHash);
-            if (aliasIdx >= 0)
+            if (aliasIndex.TryGetValue(aliasHash, out int aliasIdx))
             {
                 baseDb.Aliases[aliasIdx] = (aliasHash, targetId);
             }
             else
             {
+                aliasIndex.Add(aliasHash, baseDb.Aliases.Count);
                 baseDb.Aliases.Add((aliasHash, targetId));
             }
         }

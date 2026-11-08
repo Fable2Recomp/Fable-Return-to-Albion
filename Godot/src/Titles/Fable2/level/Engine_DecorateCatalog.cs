@@ -43,6 +43,21 @@ public sealed class Engine_DecorateCatalog
         return Field(db, cursor, field, out uint hash) && hash != 0 && hash != GdbHash.Null && db.TryLookup(hash, out component);
     }
 
+    /// <summary>
+    /// The records, in key order, that pass <paramref name="test"/>, a condition a pass needs before
+    /// anything else. Tested on every core: a pass looks at all of the records through read-only
+    /// lookups, about 12 s on one thread of a phone. The pass's own loop then runs as before, in
+    /// order and alone, over these only, so it builds the same catalog.
+    /// </summary>
+    private static IEnumerable<KeyValuePair<uint, GdbCursor>> Having(Dictionary<uint, GdbCursor> all, Func<GdbCursor, bool> test)
+    {
+        var pairs = all.OrderBy(p => p.Key).ToArray();
+        var keep = new bool[pairs.Length];
+        System.Threading.Tasks.Parallel.For(0, pairs.Length, i => keep[i] = test(pairs[i].Value));
+        for (int i = 0; i < pairs.Length; i++)
+            if (keep[i]) yield return pairs[i];
+    }
+
     public static bool IsDecorationModel(string model)
     {
         string path = model.Replace('\\', '/').ToLowerInvariant();
@@ -62,7 +77,7 @@ public sealed class Engine_DecorateCatalog
         var all = new Dictionary<uint, GdbCursor>();
         foreach (var view in db.Views)
             for (int i = 0; i < view.RecordCount; i++) all[view.RecordHash(i)] = new GdbCursor(view, i);
-        foreach (var pair in all.OrderBy(p => p.Key))
+        foreach (var pair in Having(all, record => Component(db, record, "UpgradeableFurnitureComponent", out _)))
         {
             if (!Component(db, pair.Value, "UpgradeableFurnitureComponent", out var furniture) ||
                 !Field(db, furniture, "Type", out uint type) || type == 0 || type > 12 ||
@@ -107,7 +122,10 @@ public sealed class Engine_DecorateCatalog
             }
             result.Movable[definition] = names;
         }
-        foreach (var pair in all.OrderBy(p => p.Key))
+        foreach (var pair in Having(all, record => Component(db, record, "ObjectComponent", out _) &&
+            Component(db, record, "GraphicAppearanceStaticMeshComponent", out var shown) &&
+            Field(db, shown, "ModelFile", out uint shownModel) && models.TryGetValue(shownModel, out string? shownPath) &&
+            IsDecorationModel(shownPath) && !FixedComponents.Any(slot => Component(db, record, slot, out _))))
         {
             if (result.Furniture.Contains(pair.Key) || !Component(db, pair.Value, "ObjectComponent", out _) ||
                 !Component(db, pair.Value, "GraphicAppearanceStaticMeshComponent", out var appearance) ||
@@ -133,7 +151,7 @@ public sealed class Engine_DecorateCatalog
             result.Furniture.Add(entity.Id);
             result.FurnitureTypes[entity.Id] = 13;
         }
-        foreach (var pair in all.OrderBy(p => p.Key))
+        foreach (var pair in Having(all, record => Component(db, record, "FurnitureUnlockComponent", out _)))
         {
             if (!Component(db, pair.Value, "FurnitureUnlockComponent", out var unlock) ||
                 !Component(db, pair.Value, "InventoryItemComponent", out var inventory) ||
@@ -239,7 +257,6 @@ public sealed class Engine_DecorateCatalog
         foreach (string path in paths.Where(p => p.StartsWith("worlds/", StringComparison.OrdinalIgnoreCase) &&
             (p.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase) || p.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase)))
             .OrderBy(p => p.EndsWith(".tu", StringComparison.OrdinalIgnoreCase))) blobs.Add(Read(path));
-        var db = GdbMulti.Build(blobs);
         var models = new Dictionary<uint, string>();
         foreach (string path in paths.Where(p => p.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) || p.EndsWith(".hkx", StringComparison.OrdinalIgnoreCase)))
             models.TryAdd(Engine_GameHash.ResourcePath(path), path);

@@ -61,11 +61,85 @@ bool Plausible(uint32_t value) { return value >= 0x10000u && value < 0xC0000000u
 constexpr uint32_t kTimelineInPresentation = 0x238u;
 constexpr uint32_t kRootInPresentation = 492u + 8u;
 
+/// Element → ordinal, open addressing over one array that is kept between rebuilds. A guest
+/// building a screen sets flags on elements it has not linked yet, and each such miss rebuilds the
+/// map: as a node-per-entry std::unordered_map that rebuild was mostly malloc and free (about 1.2 s
+/// of a OnePlus 7 Pro's 3.3 s between leaving the front end and the region build).
+class OrdinalTable {
+public:
+    void clear() {
+        std::fill(slots_.begin(), slots_.end(), 0u);
+        count_ = 0;
+    }
+
+    void put(uint32_t element, uint32_t ordinal) {
+        if ((count_ + 1u) * 2u > slots_.size()) grow();
+        if (Insert(slots_, element, ordinal)) ++count_;
+    }
+
+    bool find(uint32_t element, uint32_t& ordinal) const {
+        if (slots_.empty()) return false;
+        const size_t mask = slots_.size() - 1u;
+        for (size_t at = Mix(element) & mask;; at = (at + 1u) & mask) {
+            const uint64_t slot = slots_[at];
+            if (slot == 0u) return false;
+            if (static_cast<uint32_t>(slot >> 32) == element) {
+                ordinal = static_cast<uint32_t>(slot);
+                return true;
+            }
+        }
+    }
+
+    template <typename Visit>
+    void for_each(Visit&& visit) const {
+        for (uint64_t slot : slots_) {
+            if (slot != 0u) visit(static_cast<uint32_t>(slot >> 32), static_cast<uint32_t>(slot));
+        }
+    }
+
+private:
+    // An element is never 0 (Plausible), so a zero slot is empty.
+    static uint32_t Mix(uint32_t key) {
+        key ^= key >> 16;
+        key *= 0x7FEB352Du;
+        key ^= key >> 15;
+        key *= 0x846CA68Bu;
+        return key ^ (key >> 16);
+    }
+
+    /// True when the element was new, false when its ordinal was replaced.
+    static bool Insert(std::vector<uint64_t>& slots, uint32_t element, uint32_t ordinal) {
+        const size_t mask = slots.size() - 1u;
+        const uint64_t entry = (static_cast<uint64_t>(element) << 32) | ordinal;
+        for (size_t at = Mix(element) & mask;; at = (at + 1u) & mask) {
+            if (slots[at] == 0u) {
+                slots[at] = entry;
+                return true;
+            }
+            if (static_cast<uint32_t>(slots[at] >> 32) == element) {
+                slots[at] = entry;
+                return false;
+            }
+        }
+    }
+
+    void grow() {
+        std::vector<uint64_t> wider(slots_.empty() ? 256u : slots_.size() * 2u, 0u);
+        for (uint64_t slot : slots_) {
+            if (slot != 0u) Insert(wider, static_cast<uint32_t>(slot >> 32), static_cast<uint32_t>(slot));
+        }
+        slots_.swap(wider);
+    }
+
+    std::vector<uint64_t> slots_;
+    uint32_t count_ = 0;
+};
+
 /// One presentation's element → ordinal map, rebuilt when its tree is not the one it was built from.
 struct Ordinals {
     uint32_t root = 0;
     uint32_t root_hash = 0;
-    std::unordered_map<uint32_t, uint32_t> by_element;
+    OrdinalTable by_element;
 };
 
 std::mutex g_lock;
@@ -83,7 +157,7 @@ void Build(uint8_t* base, uint32_t root, Ordinals& map) {
     uint32_t ordinal = 0;
     uint32_t element = root;
     while (element != 0 && ordinal < 16384u && Plausible(element)) {
-        map.by_element[element] = ordinal++;
+        map.by_element.put(element, ordinal++);
         const uint32_t child = refii::vfs::LoadGuestU32(base, element + 20u);
         if (Plausible(child)) {
             element = child;
@@ -118,15 +192,12 @@ bool OrdinalOf(uint8_t* base, uint32_t presentation, uint32_t element, uint32_t&
     std::lock_guard<std::mutex> lock(g_lock);
     Ordinals& map = g_ordinals[presentation];
     const uint32_t hash = refii::vfs::LoadGuestU32(base, root);
-    auto found = map.by_element.find(element);
-    if (map.root != root || map.root_hash != hash || found == map.by_element.end()) {
+    if (map.root != root || map.root_hash != hash || !map.by_element.find(element, ordinal)) {
         Build(base, root, map);
-        found = map.by_element.find(element);
-        if (found == map.by_element.end()) return false;
+        if (!map.by_element.find(element, ordinal)) return false;
     }
 
     root_hash = map.root_hash;
-    ordinal = found->second;
     return true;
 }
 
