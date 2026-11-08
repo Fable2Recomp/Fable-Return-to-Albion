@@ -5,21 +5,21 @@
 //
 // Every offset is from the Fable 3 IDB, each against its own base:
 //
-//   Game   = the game of the world on screen, *0x83556534 (presented_world.h)
-//   World  = *(*(*(*(Game+0x1C)+4)+0x10)+4)   (state 9 of the level change, 0x82722D88..0x82722D98)
+//   Game   = the game of the world on screen, *0x83597030 (presented_world.h)
+//   World  = *(*(*(*(Game+0x1C)+4)+0x10)+4)   (state 9 of the level change, disc 0x82722D88..0x82756F08)
 //   Level  = *(*(World+0x28)+4)          World+0x28 null means no level (IsAnyLevelLoaded,
-//                                         `lwz r11,0x28(r3)` at 0x8234A248)
-//   World+0x14  world name   Level+0xAC  level name (0x8243CB84)   Level+0xB0  entrance (0x8243CC2C)
-//   Level+0xB4  key, FNV-1 of the world+level path (`stw r28,0xB4(r31)` at 0x8243CC48)
-//   Game+0xB5   world ready: cleared as the blocking load starts (0x82722848), set as the level
-//               change finishes (0x82722EA8)
-//   Game+0xBA   the game is initialised (0x82345810)
+//                                         `lwz r11,0x28(r3)` at 0x82351D10)
+//   World+0x14  world name   Level+0xAC  level name (0x8245C454)   Level+0xB0  entrance (0x8245C4FC)
+//   Level+0xB4  key, FNV-1 of the world+level path (`stw r28,0xB4(r31)` at 0x8245C518)
+//   Game+0xB5   world ready: cleared as the blocking load starts (disc 0x82722848), set as the level
+//               change finishes (0x8275712C)
+//   Game+0xBA   the game is initialised (disc 0x82345810)
 //
 // Names are LHString Reps (+0 characters, +4 length), as in Fable 2.
 //
 // THE FRONT END IS A WORLD. Fable 3's Sanctuary is a level (fable3 / pvp_gui\gui), standing in
-// the GUI-world component (vtable 0x82095030) as the main game's levels stand in its own
-// (0x82001AE8). So "in game", to the shell, is "a world is standing" in either.
+// the GUI-world component (vtable 0x82096D7C) as the main game's levels stand in its own
+// (0x82001A84). So "in game", to the shell, is "a world is standing" in either.
 
 #include <cmath>
 #include <cstdint>
@@ -29,6 +29,7 @@
 #include "host_abi.h"
 #include "host_core.h"
 #include "presented_world.h"
+#include "../../vfs/include/fable3_guest_build.h"
 
 namespace {
 
@@ -36,10 +37,10 @@ using refii::hostcore::GuestByteAt;
 using refii::hostcore::GuestWordAt;
 using refii::hostcore::SafeKernelMemory;
 
-constexpr uint32_t kLevelChangeCommand = 0x820AB6A8u;
-constexpr uint32_t kDefaultScenario = 0x83557288u;
-constexpr uint32_t kTickRate = 0x8329EA48u;
-constexpr uint32_t kGuiMode = 0x82091988u;
+const refii::guest::Addr kLevelChangeCommand{0x820AEA18u};
+const refii::guest::Addr kDefaultScenario{0x83597DBCu};
+const refii::guest::Addr kTickRate{0x832DF4D0u};
+const refii::guest::Addr kGuiMode{0x82093488u};
 constexpr uint32_t kNoScreen = 31u;
 
 bool Plausible(uint32_t address) { return address >= 0x10000u && address < 0xC0000000u; }
@@ -158,13 +159,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCurrentLevel(char* world_name, char* 
     return 1u;
 }
 
-/// The level change in flight (command vtable 0x820AB6A8, ctor sub_82721C08): world +0x14,
+/// The level change in flight (command vtable 0x820AEA18, ctor sub_82755D10): world +0x14,
 /// level +0x18, entrance +0x1C, travel type +0x24, state +0x2C, full load +0x3A (decided at
-/// 0x82721F88; 0 is a reposition inside the resident level, which tears nothing down).
+/// 0x82756090; 0 is a reposition inside the resident level, which tears nothing down).
 ///
 /// THE STATE IS STATED IN THE SHELL'S NUMBERING, Fable 2's: 2 is the teardown, 3 the first state
 /// with the new level built, 5 its entities placed. Fable 3's blocking load (which tears the old
-/// level down, then builds the new) is its state 4 (0x82722838), so its states are reported two
+/// level down, then builds the new) is its state 4 (0x82756998), so its states are reported two
 /// lower: 4 -> 2, 5 -> 3, 7 -> 5.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLevelChange(char* world_name, char* level_name, char* entrance,
                                                        uint32_t capacity, uint32_t* out_state,
@@ -195,8 +196,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetLevelChange(char* world_name, char* l
 }
 
 /// The current level's scenario: the world's {u32 key, LHString} map at World+0x7C..+0x80, keyed
-/// by Level+0xB4 (sub_8234AEC0, 8-byte entries, the name at +4), else the guest's default
-/// "DefaultScenario" (0x83557288). Scanned, not searched: a save restore appends unsorted.
+/// by Level+0xB4 (sub_823529B8, 8-byte entries, the name at +4), else the guest's default
+/// "DefaultScenario" (0x83597DBC). Scanned, not searched: a save restore appends unsorted.
 REFII_HOST_ABI_EXPORT int RefiiHostGetActiveScenario(char* scenario, uint32_t capacity) {
     if (scenario == nullptr || capacity == 0u) return 0;
     scenario[0] = '\0';
@@ -224,17 +225,17 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetActiveScenario(char* scenario, uint32_t ca
 }
 
 /// The scenario a new game starts in: the start globals the new-game path writes
-/// (0x83556E48 world, 0x83556E4C level, 0x83556E50 scenario, 0x83556E54 start point).
+/// (0x83597948 world, 0x8359794C level, 0x83597950 scenario, 0x83597954 start point).
 REFII_HOST_ABI_EXPORT int RefiiHostGetStartScenario(char* scenario, uint32_t capacity) {
     const uint8_t* base = GuestBase();
-    return base != nullptr && ReadName(base, 0x83556E50u, scenario, capacity) ? 1 : 0;
+    return base != nullptr && ReadName(base, refii::guest::Address(0x83597950u), scenario, capacity) ? 1 : 0;
 }
 
-/// The world's game tick and its clock. The tick is what GetWorldFrame states (sub_82209868):
+/// The world's game tick and its clock. The tick is what GetWorldFrame states (sub_82209028):
 /// `*(*(*(Game+0x1C)+4)+0x100)` while Game+0xBA is set, else 0 — incremented once per world update
-/// (0x821C53C4, 0x826ED31C; both paths of the world component's slot 6, vtable 0x820AA2F0). The
-/// rate is GetTickRate's (sub_82241980: `dbl_8329EA48`, 15.0), so the clock is tick / rate. The
-/// main loop sub_821CB758 runs two HF steps (`dbl_8329EA50`, 30.0) per tick, the ratio the shell's
+/// (0x821C5390, disc 0x826ED31C; both paths of the world component's slot 6, vtable 0x820AC6DC). The
+/// rate is GetTickRate's (sub_82240908: `dbl_832DF4D0`, 15.0), so the clock is tick / rate. The
+/// main loop sub_821CB7B0 runs two HF steps (`dbl_832DF4D8`, 30.0) per tick, the ratio the shell's
 /// lead cap assumes (GameSession: half a game tick per granted step). 0 when no world is standing,
 /// outputs untouched.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSimClock(double* out_seconds, uint32_t* out_tick) {
@@ -268,15 +269,15 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSimTick(void) {
     return RefiiHostGetSimClock(nullptr, &tick) != 0u ? tick : 0u;
 }
 
-/// The presented world's container B = `*(*(Game+0x1C)+4)`: the world update sub_821CD3C0(B)
-/// advances the time manager `*(B+0x20)` (0x821CD504) and evaluates the theme manager `*(B+0x24)`
-/// (`lwz r3,0x24(r27)` at 0x821CD508). One of each per world, so the two front-end worlds stay apart.
+/// The presented world's container B = `*(*(Game+0x1C)+4)`: the world update sub_821CD4C8(B)
+/// advances the time manager `*(B+0x20)` (0x821CD60C) and evaluates the theme manager `*(B+0x24)`
+/// (`lwz r3,0x24(r27)` at 0x821CD610). One of each per world, so the two front-end worlds stay apart.
 uint32_t WorldContainer(const uint8_t* base) {
     const uint32_t game = WorldGame(base);
     return game == 0u ? 0u : Word(base, Word(base, game + 0x1Cu) + 4u);
 }
 
-/// The world's time of day: the time manager (sub_821AB898 advances it) holds the day fraction at
+/// The world's time of day: the time manager (sub_821AB918 advances it) holds the day fraction at
 /// +4, the day count at +8 and its stop count at +0x24 (time stands while it is non-zero). Fable 3
 /// has no moon-phase field; the moon is theme parameters. Returns 1 when read.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTimeOfDay(float* out_fraction, int32_t* out_day, int32_t* out_frozen,
@@ -307,8 +308,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetTimeOfDay(float* out_fraction, int32_
 
 /// The world's weather, as its theme stack evaluated it: the stack is `*(M+8)` while byte M+12 is
 /// set, else `*(M+4)` (M = the theme manager); its evaluated block starts at +32, where the
-/// descriptor table sub_82C416B8 places Snow Size, Snow Fall Speed, Rain Size and Rain Density at
-/// +0xD4..+0xE0 (`li r5,0xD4` at 0x82C41B64; Lua GetRainDensity reads stack+0x100). Returns 1 when read.
+/// descriptor table sub_82C757C0 places Snow Size, Snow Fall Speed, Rain Size and Rain Density at
+/// +0xD4..+0xE0 (`li r5,0xD4` at 0x82C75C6C; Lua GetRainDensity reads stack+0x100). Returns 1 when read.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWeather(float* out_snow_size, float* out_snow_fall_speed,
                                                   float* out_rain_size, float* out_rain_density) {
     const uint8_t* base = GuestBase();
@@ -339,8 +340,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWeather(float* out_snow_size, float* 
 }
 
 /// The pause gate. The presented game runs only the TOP of its mode stack S = `*(*(game+0x30)+4)`
-/// (the main loop, 0x821CBE6C..0x821CBEA4), and while the GUI's pause mode is on top (vtable
-/// 0x82091988, id 1: `li r3,1` at 0x82C13A28; pushed by lhGuiManager_EnterGuiMode at 0x825CEA54)
+/// (the main loop, 0x821CBF78..disc 0x821CBEA4), and while the GUI's pause mode is on top (vtable
+/// 0x82093488, id 1: `li r3,1` at 0x82A99990; pushed by lhGuiManager_EnterGuiMode at 0x825F9ADC)
 /// its update ticks only the GUI and input — the world is frozen. Both are stated
 /// (Fable3/src/hooks/src/game_state_hooks.cpp): the top by the stack's push, pop and run, the
 /// screen id by each writer of the GUI's screen manager. S is the key the presented game's stack
@@ -380,7 +381,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetPauseState(uint32_t* out_screen_id, uint32
 
 /// The culture the guest runs in ("en-uk", ...): the code of the culture table's row in use, as its
 /// builds and its switch stated it (Fable3/src/hooks/src/game_state_hooks.cpp: the boot build
-/// sub_822E8FC8, the rebuild sub_822E8A88, the switch sub_822E8D70). Returns the code's length, 0
+/// sub_822E8E88, the rebuild sub_822E8948, the switch sub_822E8C30). Returns the code's length, 0
 /// before the table is stated or when no row is in use.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCurrentCulture(char* out, uint32_t capacity) {
     return refii_bridge_culture_code_read(out, capacity);
@@ -389,7 +390,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCurrentCulture(char* out, uint32_t ca
 /// The loading screen the guest has up, as it states it (Fable3/src/hooks/src/
 /// loading_screen_scene.cpp): the manager that made it, the screen, its cover opacity (ls+0xD0 as
 /// its update leaves it: rising as it comes up, falling after the close), the close requested
-/// (ls+0x19C, sub_823020D0) and finished (ls+0x19D, its update's teardown). The stop does not
+/// (ls+0x19C, sub_823069C8) and finished (ls+0x19D, its update's teardown). The stop does not
 /// block, unlike Fable 2's. Returns 1 while a screen exists.
 REFII_HOST_ABI_EXPORT int RefiiHostGetLoadingScreen(uint32_t* out_manager, uint32_t* out_screen, float* out_fade,
                                                    uint32_t* out_requested, uint32_t* out_done) {
@@ -397,7 +398,7 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetLoadingScreen(uint32_t* out_manager, uint3
                                             nullptr, nullptr, 0u);
 }
 
-/// The art the guest chose for its loading screen, as its decision sub_823030B0 stated it (the
+/// The art the guest chose for its loading screen, as its decision sub_82307A30 stated it (the
 /// CCharString it writes into ls+0x150 on every branch, e.g. `qc010_opening.tex` for the prologue,
 /// `qc0000_road_to_rule.tex` for a new game). The kind is the create's (ls+0x170), Fable 3's own
 /// numbering, not Fable 2's art enum: the name is the statement. Returns 1 when a name is held.

@@ -4,42 +4,47 @@
 // Options screen, whose pad Godot owns — Godot's actions run through the screen's own handler,
 // whose state is stated as it returns.
 //
-// Every address is the Fable 3 IDB; each offset names its base.
+// Every address is the Fable 3 TU3 IDB ("disc" marks one TU3 lacks); each offset names its base.
 //
-// THE APPLIERS (each `r3` the audio object *0x835569DC):
-//   - sfx sub_82D1D440(A, f1): clamps to 0..1 (0x82D1D48C) and stores A+88 (0x82D1D494);
-//   - voice sub_82D1D4E8(A, f1): clamps (0x82D1D520..0x82D1D538), stores A+92 (0x82D1D53C);
-//   - music sub_82D1D668(A, f1): clamps (0x82D1D6A0..0x82D1D6B8), stores A+100 (0x82D1D6BC);
-//   - speaker sub_82D1D710(A, r4 mode): 0 TV, 1 HIFI, 2 SURROUND, stored A+104 (0x82D1D7BC).
+// THE APPLIERS (each `r3` the audio object *0x835974DC):
+//   - sfx sub_82D4F758(A, f1): clamps to 0..1 (0x82D4F7A4) and stores A+88 (0x82D4F7AC);
+//   - voice sub_82D4F800(A, f1): clamps (0x82D4F838..0x82D4F850), stores A+92 (0x82D4F854);
+//   - music sub_82D4F980(A, f1): clamps (0x82D4F9B8..0x82D4F9D0), stores A+100 (0x82D4F9D4);
+//   - speaker sub_82D4FA28(A, r4 mode): 0 TV, 1 HIFI, 2 SURROUND, stored A+104 (0x82D4FAD4).
 //   Their callers: the Options screen's live step and commit, its revert, the sign-in
-//   sub_825B5778, the boot sub_82312520 and the SoundTools natives.
-//   - gamma has no applier that takes a value: sub_825CD1F0(box) applies the Options screen's own
-//     +128 (`lfs` at 0x825CD210; stores at 0x825CD264 / 0x825CD274), the only field it reads; the
-//     profile's is applied from sub_822F27B0(user)'s answer (f1) by the display object's ctor
-//     sub_824D1BB0 (0x824D1C20), the sign-in sub_825B5778 (0x825B5888, `fmr f31,f1` at
-//     0x825B5894) and the revert sub_825CD2F8 (0x825CD310); the Options screen's fill
-//     sub_825CD0E0 hands it to the screen instead (0x825CD150, returning at 0x825CD154).
-// THE SAVED SETTINGS, title setting 0x63E83FFF, 92 bytes: read by sub_822F4058(user, out)
-// (answers 1 and copies the blob at 0x822F40D0), written by sub_822F2A50(user, r4 subtitles,
+//   sub_825E36A0, the boot sub_82318D30 and the SoundTools natives.
+//   - gamma has no applier that takes a value: sub_825F8148(box) applies the Options screen's own
+//     +128 (`lfs` at 0x825F8168; stores at 0x825F81BC / 0x825F81CC), the only field it reads; the
+//     profile's is applied from sub_822F6018(user)'s answer (f1) by the display object's ctor
+//     sub_824F19F8 (0x824F1A68), the sign-in sub_825E36A0 (0x825E37BC, `fmr f31,f1` at
+//     0x825E37C8) and the revert sub_825F8250 (0x825F8268); the Options screen's fill
+//     sub_825F8028 hands it to the screen instead (0x825F80A4, returning at 0x825F80A8).
+// THE SAVED SETTINGS, title setting 0x63E83FFF, 92 bytes: read by sub_822F78C8(user, out)
+// (answers 1 and copies the blob at 0x822F7940), written by sub_822F62B8(user, r4 subtitles,
 // f1 gamma, r6 &{sfx, music, voice, speaker}) (`mr r30,r4` / `fmr f31,f1` / `mr r29,r6` at
-// 0x822F2A64..0x822F2A70), which lays them at blob +8 (0x822F2AE4), +4 (0x822F2AF8), +12, +16,
-// +20, +24 (0x822F2B4C..0x822F2B64).
+// 0x822F62CC..0x822F62D8), which lays them at blob +8 (0x822F634C), +4 (0x822F6360), +12, +16,
+// +20, +24 (0x822F63B4..0x822F63CC).
 //
-// THE OPTIONS SCREEN (COptionsMenuBox, vtable 0x8209D230, ctor sub_825C95F0, opened by
-// sub_825C8630): its pad handler sub_825CA410(box, ev*, player) (slot 4, reached only through
-// the box manager's router sub_825C8B68) takes 29/30 up/down (sub_825CA980 / sub_825CA858,
-// 0x825CA6BC / 0x825CA710), 31/32 left/right (sub_825CB028 / sub_825CAA98, 0x825CA72C /
-// 0x825CA740), 74 A (sub_825CB588, 0x825CA848), 75 B (sub_825CBAA0, 0x825CA810), 77 Y (the
-// defaults, 0x825CA77C..0x825CA7E0), and 74/75 answer its confirm query while +30 is set
-// (0x825CA5AC..0x825CA664). The steps write the screen's own fields and re-run its row writer,
-// which applies gamma and the volumes live (sub_825CD1F0, sub_825CCEF8 -> the four appliers);
-// A on a settings page commits through the appliers and the save sub_822F2A50 (sub_825CD3F8).
+// THE OPTIONS SCREEN (COptionsMenuBox, vtable 0x820A0B10, ctor disc sub_825C95F0, opened by
+// sub_825F33C0): its pad handler sub_825F4F30(box, ev*, player) (slot 4, reached only through
+// the box manager's router sub_825F38F8) takes 29/30 up/down (sub_825F54A0 / sub_825F5378,
+// 0x825F51DC / 0x825F5230), 31/32 left/right (sub_825F5B48 / sub_825F55B8, 0x825F524C /
+// 0x825F5260), 74 A (sub_825F60A8, 0x825F5368), 75 B (sub_825F66D8, 0x825F5330), 77 Y (the
+// defaults, 0x825F529C..0x825F5300), and 74/75 answer its confirm query while +30 is set
+// (0x825F50CC..0x825F5184). The steps write the screen's own fields and re-run its row writer,
+// which applies gamma and the volumes live (sub_825F8148, sub_825F7E18 -> the four appliers);
+// A on a settings page commits through the appliers and the save sub_822F62B8 (sub_825F8350).
 // The screen's state, the fields its handler and Show wrote: +80 page (1 Options, 2 Save
 // Management, 3 Game Settings, 4 the front end's, 5 Multiplayer), +84/+88/+92/+96 the selected
 // row of pages 1 and 5 / 2 / 3 / 4, +31 invert aim, +32 subtitles, +33 tutorial, +104
-// breadcrumb 0..4, +100 speaker, +64 language index, +60 language count, +108/+112 the
-// multiplayer rows' flags, +34 opened from the pause, +37 the front end's variant, +36 save
-// allowed, +30 the query up, +38 changed since open.
+// breadcrumb 0..4, +100 speaker, +64 language index, +60 language count, +108 the multiplayer
+// row (1 host, 2 joined), +112 why Load is blocked (0 it is not, 1 no saves, 2 not now: it picks
+// the row's description, sub_825F69B8 `lwz r11,0x70(r31)` 0x825F69E8), +34 opened from the pause,
+// +37 the front end's variant, +36 save allowed, +30 the query up, +38 changed since open.
+// WHETHER LOAD IS OFFERED differs by build: TU3 keeps it in +192 (set by sub_825F6AF8 0x825F6BEC /
+// 0x825F6C94, read by the ghosting sub_825F6CA8 0x825F6D10 and A 0x825F60E8), the disc tests +112
+// == 0 (disc Show disc 0x825C9A40, A disc 0x825CB5C8). TU3 also recomputes +36/+112/+192 while the
+// screen is up (its update, slot 5, on a save-list change: 0x825F4C80..0x825F4C9C), stated there.
 
 #include <cstdint>
 #include <cstdlib>
@@ -53,6 +58,7 @@
 #include "box_answers.h"
 #include "core/payload_bridge.h"
 #include "gui_statements.h"
+#include "../../vfs/include/fable3_guest_build.h"
 
 REX_EXTERN(__imp__rex_Audio_SetSfxVolume);
 REX_EXTERN(__imp__rex_Audio_SetVoiceVolume);
@@ -64,6 +70,7 @@ REX_EXTERN(__imp__rex_Profile_ReadSettings);
 REX_EXTERN(__imp__rex_Profile_WriteSettings);
 REX_EXTERN(__imp__rex_OptionsBox_Show);
 REX_EXTERN(__imp__rex_OptionsBox_HandleInput);
+REX_EXTERN(__imp__rex_OptionsBox_Update);
 REX_EXTERN(rex_OptionsBox_HandleInput);
 
 namespace {
@@ -71,7 +78,7 @@ namespace {
 using namespace refii::fable3;
 
 /// The Options screen's fill hands the profile's gamma to the screen, not to the game.
-constexpr uint32_t kGammaToScreenReturn = 0x825CD154u;
+const refii::guest::Addr kGammaToScreenReturn{0x825F80A8u};
 
 constexpr uint32_t kBlobGamma = 4u;
 constexpr uint32_t kBlobSubtitles = 8u;
@@ -97,7 +104,7 @@ std::mutex g_mutex;
 std::string g_last_state;
 
 /// `@Options.State(box, page, row, invert, subtitles, tutorial, breadcrumb, speaker, language,
-/// languages, flag108, flag112, fromPause, frontEnd, canSave, query, changed)` — when it differs
+/// languages, flag108, flag112, fromPause, frontEnd, canSave, query, changed, canLoad)` — when it differs
 /// from the last.
 void StateScreen(const uint8_t* base, uint32_t box) {
   if (base == nullptr || !Plausible(box)) {
@@ -122,6 +129,7 @@ void StateScreen(const uint8_t* base, uint32_t box) {
       base[box + 36u],
       base[box + 30u],
       base[box + 38u],
+      refii::guest::Pick(static_cast<uint32_t>(base[box + 192u]), LoadGuestU32(base, box + 112u) == 0u ? 1u : 0u),
   };
   std::string key = Hex(box);
   for (uint32_t word : words) {
@@ -278,6 +286,16 @@ REX_EXTERN(rex_OptionsBox_Show) {
     g_last_state.clear();
   }
   StateScreen(base, screen);
+}
+
+/// (screen): the screen's per-frame update (slot 5), stated after it: TU3 rewrites the save fields
+/// there; on the disc the state repeats and nothing is posted.
+REX_EXTERN(rex_OptionsBox_Update) {
+  const uint32_t screen = ctx.r3.u32;
+  __imp__rex_OptionsBox_Update(ctx, base);
+  if (screen == g_screen) {
+    StateScreen(base, screen);
+  }
 }
 
 /// (screen, ev*, player): Godot owns the showing screen's pad; its actions run here, the

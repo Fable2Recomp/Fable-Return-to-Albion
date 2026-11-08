@@ -3,29 +3,29 @@
 //
 // Every address is the Fable 3 disc IDB (port 13339); each offset names its base.
 //
-// THE LINES. sub_82920BC8(R7, boxHash, lines*, f1 pad) is the one writer of a text box's content:
-// it finds the records filed under the box's name in the TextBox registry R7 (sub_8218D900 at
-// 0x82920BE4), lays the lines into each (sub_82920278 at 0x82920C24: wrap with the guest's font,
-// write each wrapped line through the text registry sub_82733F30, place the line elements with
-// sub_82920610 -> sub_82818580 at 0x829207DC) and then frees the vector (0x82920C4C..0x82920C74).
+// THE LINES. sub_82976D48(R7, boxHash, lines*, f1 pad) is the one writer of a text box's content:
+// it finds the records filed under the box's name in the TextBox registry R7 (sub_8218D820 at
+// 0x82976D64), lays the lines into each (sub_829763F8 at 0x82976DA4: wrap with the guest's font,
+// write each wrapped line through the text registry sub_827681B8, place the line elements with
+// sub_82976790 -> sub_82876288 at 0x8297695C) and then frees the vector (0x82976DCC..0x82976DF4).
 // The vector is `+4 begin, +8 end`, 16-byte entries `{+0 line name hash, +4 LHString, +8 bool}`
-// (the free walk sub_824B7418 steps 4 words and releases +4; sub_82920278 sizes it `& ~15` at
-// 0x829202B4). It is read at ENTRY: an unfiled box (no R7 record) writes nothing, and the text
-// is what the caller said, unwrapped. The TopBox's publisher sub_8217D880 passes the box
-// `*dword_835580D0` (0x8217DC20) and the lines TopTitle (`*dword_83558108`) and TopMain
-// (`*dword_83558104`, 0x8217DBC4). `@Hud.Lines(box, n, hash1, text1, flag1, ...)`.
+// (the free walk sub_824D1E50 steps 4 words and releases +4; sub_829763F8 sizes it `& ~15` at
+// 0x82976434). It is read at ENTRY: an unfiled box (no R7 record) writes nothing, and the text
+// is what the caller said, unwrapped. The TopBox's publisher sub_8217D7A0 passes the box
+// `*dword_83598CD0` (0x8217DB40) and the lines TopTitle (`*disc dword_83558108`) and TopMain
+// (`*disc dword_83558104`, 0x8217DAE4). `@Hud.Lines(box, n, hash1, text1, flag1, ...)`.
 //
-// THE TOPBOX QUEUE M = *(H+0x4C): post sub_824B5EE0(M, channel, Msg*, broadcast, player) — 42
-// callers, e.g. Lua ShowTopBoxMessage 0x82521114 — refuses a message whose main text (Msg+8,
-// kind vf0) is a tag the book does not hold (0x824B5F3C) and pushes the rest into channel
+// THE TOPBOX QUEUE M = *(H+0x4C): post disc sub_824B5EE0(M, channel, Msg*, broadcast, player) — 42
+// callers, e.g. Lua ShowTopBoxMessage disc 0x82521114 — refuses a message whose main text (Msg+8,
+// kind vf0) is a tag the book does not hold (disc 0x824B5F3C) and pushes the rest into channel
 // `*(M+76)[channel]` (+4 begin, +8 end of record pointers, record+0 the id). The Msg (ctor
-// sub_824B4840) is +0 id, +4 title tag, +8 main text object (vtable, +4 its tag), +16 lifetime
+// sub_824CF630) is +0 id, +4 title tag, +8 main text object (vtable, +4 its tag), +16 lifetime
 // (float), +20 A label tag, +24 Y label tag, bytes +28 show A, +29 hold A, +31 show Y, +32 hold Y.
-// Stated on return when a channel holds the id: `@TopBox.Post`. Removal sub_824B5680(channel, id)
-// — the per-channel erase every remover reaches (sub_824B6980 at 0x824B69C4) — returns 1 when it
-// erased: `@TopBox.Remove(id)`. Clear sub_824B68D0(M): `@TopBox.Clear`. Answer sub_824B70E0(M,
+// Stated on return when a channel holds the id: `@TopBox.Post`. Removal sub_824D0470(channel, id)
+// — the per-channel erase every remover reaches (sub_824D1570 at 0x824D15B4) — returns 1 when it
+// erased: `@TopBox.Remove(id)`. Clear sub_824D14C0(M): `@TopBox.Clear`. Answer disc sub_824B70E0(M,
 // answer 1 A / 4 Y): `@TopBox.Answer(answer)`. The current message is the back of the first
-// non-empty channel (sub_82194270) — Godot's to work out from these.
+// non-empty channel (sub_82194538) — Godot's to work out from these.
 
 #include <atomic>
 #include <cstdint>
@@ -34,18 +34,21 @@
 #include <rex/ppc.h>
 
 #include "gui_statements.h"
+#include "../../vfs/include/fable3_guest_build.h"
 
 REX_EXTERN(__imp__rex_HudTextBox_SetLines);
 REX_EXTERN(__imp__rex_TopBox_Post);
 REX_EXTERN(__imp__rex_TopBox_RemoveFromChannel);
 REX_EXTERN(__imp__rex_TopBox_Clear);
-REX_EXTERN(__imp__rex_TopBox_Answer);
+// Disc only: TU3 has no counterpart (its answers post through the generic sub_824D1BC0, stated by
+// RefiiF3TopBoxAnswered), so the TU3 payload loads without it.
+extern "C" __attribute__((weak)) REX_FUNC(__imp__rex_TopBox_Answer);
 
 namespace {
 
 using namespace refii::fable3;
 
-constexpr uint32_t kTopBoxNameHash = 0x835580D0u;
+const refii::guest::Addr kTopBoxNameHash{0x83598CD0u};
 constexpr uint32_t kLinesBegin = 4u;
 constexpr uint32_t kLinesEnd = 8u;
 constexpr uint32_t kLineSize = 16u;
@@ -53,7 +56,7 @@ constexpr uint32_t kLineText = 4u;
 constexpr uint32_t kLineFlag = 8u;
 constexpr uint32_t kMostLines = 32u;
 
-constexpr uint32_t kQueueChannels = 76u;  // M+76 begin, M+80 end (sub_824B6980 at 0x824B69A8)
+constexpr uint32_t kQueueChannels = 76u;  // M+76 begin, M+80 end (sub_824D1570 at 0x824D1598)
 constexpr uint32_t kChannelBegin = 4u;
 constexpr uint32_t kChannelEnd = 8u;
 constexpr uint32_t kMostChannels = 16u;
@@ -107,7 +110,7 @@ uint32_t refii::fable3::TopBoxName(const uint8_t* base) {
   return base != nullptr ? LoadGuestU32(base, kTopBoxNameHash) : 0u;
 }
 
-/// sub_82920BC8(R7, box, lines, f1): the lines at entry; the box named for the position hook
+/// sub_82976D48(R7, box, lines, f1): the lines at entry; the box named for the position hook
 /// while its layout runs.
 REX_EXTERN(rex_HudTextBox_SetLines) {
   const uint32_t box = ctx.r4.u32;
@@ -131,12 +134,15 @@ REX_EXTERN(rex_HudTextBox_SetLines) {
   t_laid_out_box = outer;
 }
 
-/// sub_824B5EE0(M, channel, msg, broadcast, player).
+/// sub_824D0CC8(M, channel, msg, target): TU3 folds the disc's (…, broadcast, player) into one target
+/// in r6 (`mr r29,r6` 0x824D0CE4; 1 and 2 are the disc's players, 0 also sends it to the network,
+/// 3 is local only, 4 is never queued) and reads no r7; the disc's player is r7 (`mr r28,r7` disc
+/// 0x824B5F00).
 REX_EXTERN(rex_TopBox_Post) {
   const uint32_t manager = ctx.r3.u32;
   const uint32_t channel = ctx.r4.u32;
   const uint32_t msg = ctx.r5.u32;
-  const uint32_t player = ctx.r7.u32;
+  const uint32_t player = refii::guest::Pick(ctx.r6.u32, ctx.r7.u32);
   const bool readable = base != nullptr && Plausible(manager) && Plausible(msg);
   uint32_t id = 0u, title = 0u, main_vtable = 0u, main_tag = 0u, label_a = 0u, label_y = 0u;
   float lifetime = 0.0f;
@@ -178,7 +184,7 @@ REX_EXTERN(rex_TopBox_Post) {
       .Post();
 }
 
-/// sub_824B5680(channel, id): `@TopBox.Remove(id)` when it erased.
+/// sub_824D0470(channel, id): `@TopBox.Remove(id)` when it erased.
 REX_EXTERN(rex_TopBox_RemoveFromChannel) {
   const uint32_t id = ctx.r4.u32;
   __imp__rex_TopBox_RemoveFromChannel(ctx, base);
@@ -187,15 +193,25 @@ REX_EXTERN(rex_TopBox_RemoveFromChannel) {
   }
 }
 
-/// sub_824B68D0(M).
+/// sub_824D14C0(M).
 REX_EXTERN(rex_TopBox_Clear) {
   __imp__rex_TopBox_Clear(ctx, base);
   Statement("@TopBox.Clear").Post();
 }
 
-/// sub_824B70E0(M, answer).
+/// disc sub_824B70E0(M, answer), called by the hold and press answers (disc 0x824B6F4C, 0x824B70D0).
 REX_EXTERN(rex_TopBox_Answer) {
+  if (&__imp__rex_TopBox_Answer == nullptr) {
+    return;
+  }
   const uint32_t answer = ctx.r4.u32;
   Statement("@TopBox.Answer").Add(Number(static_cast<float>(static_cast<int32_t>(answer)))).Post();
   __imp__rex_TopBox_Answer(ctx, base);
+}
+
+/// TU3's hold and press answers (sub_824D1910, sub_824D1B08), on their `bl sub_824D1BC0` (0x824D1A0C,
+/// 0x824D1BA0): r3 is the answer, which sub_824D1BC0 posts as message 101. Not the function itself:
+/// the hold box and the button box answer through it too.
+void RefiiF3TopBoxAnswered(PPCRegister& answer) {
+  Statement("@TopBox.Answer").Add(Number(static_cast<float>(static_cast<int32_t>(answer.u32)))).Post();
 }

@@ -7,7 +7,7 @@
 
 namespace refii::fable3 {
 
-/// The render object `id` is gone (sub_82C3C148 posted its remove): drop it if a map holder owned it.
+/// The render object `id` is gone (sub_82C708C8 posted its remove): drop it if a map holder owned it.
 void MapTableObjectRemoved(uint32_t id);
 
 }  // namespace refii::fable3

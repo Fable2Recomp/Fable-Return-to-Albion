@@ -3,17 +3,17 @@
 // (core/payload_bridge.h, src/runtime/src/core/stated_world_icons.cpp). Nothing here reads guest
 // memory.
 //
-// AN ICON is stated by its Init (CWorldIconBase sub_82B52DB0), each Update the registry's tick runs
-// on it (CWorldIcon3D sub_82226DA8, the HUD-element icon's sub_82B51B58: `visible` is that call's
-// argument, sub_82230C10) and the emotion icon's ring tick (sub_8297A400); it leaves when the
-// registry erases it (sub_825EE968) or it is destroyed (sub_82B52D20). Only the icons the last
-// Update drew are exported: the guest hides the rest (`vt+60` at 0x82226DF0, its element through
-// `vt+24` at 0x82B51F58).
+// AN ICON is stated by its Init (CWorldIconBase sub_82B87938), each Update the registry's tick runs
+// on it (CWorldIcon3D sub_82225AC8, the HUD-element icon's sub_82B866C8: `visible` is that call's
+// argument, sub_8222FA78) and the emotion icon's ring tick (sub_829C2F98); it leaves when the
+// registry erases it (sub_82615CD8) or it is destroyed (sub_82B878A8). Only the icons the last
+// Update drew are exported: the guest hides the rest (`vt+60` at 0x82225B10, its element through
+// `vt+24` at 0x82B86AC8).
 //
-// A CHOICE is stated by the list add every creator reaches (sub_825E8D30), restated after the
-// press/release handler (sub_825E91E0) and leaves at its deleter (sub_825EBD70). Its icon is the
-// stated emotion icon the guest's own lookup sub_825EDDF8(R, Name, entity) would return: the same
-// name and, when the record names an entity, the same entity (sub_82267178).
+// A CHOICE is stated by the list add every creator reaches (sub_8260FF38), restated after the
+// press/release handler (sub_826103E8) and leaves at its deleter (sub_826131F0). Its icon is the
+// stated emotion icon the guest's own lookup sub_82615168(R, Name, entity) would return: the same
+// name and, when the record names an entity, the same entity (sub_82265BC0).
 
 #include <cstdint>
 #include <cstring>
@@ -174,11 +174,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldSprites(uint32_t* words, uint32_
 
 /// The HUD-element icons the guest draws (the hold icon 35, the player markers 52/53, the button
 /// prompts 31..34 and 66..69), types and entities in stated order. `out_flags` bit0: the registry
-/// states icons — its enable byte R+52 is set once as the HUD is built (sub_825C18C0 at 0x825C193C)
-/// and no icon is added without it (sub_825EDBC0 at 0x825EDC0C). The other bits Fable 2 fills are
+/// states icons — its enable byte R+52 is set once as the HUD is built (sub_824CD3F8 at 0x824CD474)
+/// and no icon is added without it (sub_82614F28 at 0x82614F74). The other bits Fable 2 fills are
 /// not this feed's here: R+55..R+57 are in each icon's stated `visible`; SetShouldDrawPlayerIcons
-/// (0x8251C0F0) and SetCanShowHintWorldIcons (0x8251C318) reach the host as GUI native calls; the
-/// hold fill R+60 is the guest's own HUD meter call (sub_8291F988 at 0x825ECACC).
+/// (0x8254BD70) and SetCanShowHintWorldIcons (0x8254BF98) reach the host as GUI native calls; the
+/// hold fill R+60 is the guest's own HUD meter call (sub_82975CF8 at disc 0x825ECACC).
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldIcons(uint32_t* out_flags, uint32_t* out_types, uint32_t* out_entities,
                                                       uint32_t max_icons) {
   const IconSnapshot& snapshot = Snapshot();

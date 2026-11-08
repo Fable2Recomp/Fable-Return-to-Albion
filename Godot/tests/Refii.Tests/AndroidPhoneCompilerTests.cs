@@ -382,7 +382,8 @@ public sealed class AndroidPhoneCompilerTests
         var fable2 = new AndroidPhoneCompiler.Request(root, root, root, root);
         var fable3 = fable2 with { Title = Refii.Core.Engine_Title.Fable3 };
         var flags2 = AndroidPhoneCompiler.CompilerFlags(fable2, manifest, root, "Fable2TU1");
-        var flags3 = AndroidPhoneCompiler.CompilerFlags(fable3, manifest, root, "Fable3");
+        var flags3 = AndroidPhoneCompiler.CompilerFlags(fable3, manifest, root, "Fable3TU3");
+        var flags3Disc = AndroidPhoneCompiler.CompilerFlags(fable3, manifest, root, "Fable3");
         // The include paths are joined with the host's separator, so a PC run sees backslashes.
         string vfs2 = Path.Combine("Fable2", "src", "vfs", "include");
         string hooks3 = Path.Combine("Fable3", "src", "hooks", "src");
@@ -390,7 +391,9 @@ public sealed class AndroidPhoneCompilerTests
         AssertThat(flags2.Any(flag => flag.EndsWith(hooks3, StringComparison.Ordinal))).IsFalse();
         AssertThat(flags3.Any(flag => flag.EndsWith(hooks3, StringComparison.Ordinal))).IsTrue();
         AssertThat(flags3.Any(flag => flag.EndsWith(vfs2, StringComparison.Ordinal))).IsFalse();
+        // TU3 is the build the Fable 3 source names; the disc payload is told it is the other one.
         AssertThat(flags3.Contains("-DREFII_GUEST_BUILD_UNPATCHED=1")).IsFalse();
+        AssertThat(flags3Disc.Contains("-DREFII_GUEST_BUILD_UNPATCHED=1")).IsTrue();
         AssertThat(fable2.HostBridge).IsEqual("librefii_hostbridge.so");
         AssertThat(fable3.HostBridge).IsEqual("librefiii_hostbridge.so");
         // Fable 3's module links its VFS, which the APK ships under its own key beside Fable 2's.

@@ -8,23 +8,23 @@
 // EACH ENTRY IS FABLE 2'S CRT ROUTINE AT FABLE 3'S ADDRESS: found by Fable 2 TU1's entry-point
 // byte signature matching exactly one function start in the Fable 3 IDB, of the same size, whose
 // head reads f1 (and f2) as the CRT's does:
-//   sin   0x821E1DF8 (0xE0)  `fabs f0,f1`, the Cody-Waite table at dbl_8327C308
-//   cos   0x821E1F58 (0xE0)  the same table, `fadd f12,f13,f0`
-//   tan   0x82255458 (0xD4)  `fcmpu cr6,f1,dbl_8200E8F0; beqlr`
-//   exp   0x821EF240 (0xDC)  `fmul f5,f0,f1` with the dbl_8327C870 table
-//   log   0x822461D0 (0x18C) `fcmpu cr6,f1,dbl_82000D40` (1.0 -> 0)
-//   asin  0x8225B6D8 (0xC8)  Fable 2's asin/acos core with the flag folded to `li r10,1` (asin)
-//   atan  0x82254920 (0xE4)  `fabs f0,f1` against flt_8327C300
-//   atan2 0x82E2C110 (0x130) `stfd f1; stfd f2`, the zero tests on f2 then f1
-//   fmod  0x821FC448 (0x184) `stfd f1; lhz r11; rlwinm 0,17,27; stfd f2; cmplwi 0x7FF0` (NaN/Inf)
-//   floor 0x821F0B80 (0x3C)  `fctidz f12,f1 ... fsub f10,f1,f12`
-//   ceil  0x821A1428 (0x3C)  the same head, `fsub f10,f12,f1`
-//   pow   0x821EF7C8 (0x4E4) Fable 2's pow prologue (`mflr; stw r12; std r31; bl __savefpr_25`,
+//   sin   0x821E19C0 (0xE0)  `fabs f0,f1`, the Cody-Waite table at dbl_832BC458
+//   cos   0x821E1B20 (0xE0)  the same table, `fadd f12,f13,f0`
+//   tan   0x82254688 (0xD4)  `fcmpu cr6,f1,dbl_8200E888; beqlr`
+//   exp   0x821EE808 (0xDC)  `fmul f5,f0,f1` with the dbl_832BC9C0 table
+//   log   0x822453A0 (0x18C) `fcmpu cr6,f1,dbl_82000D10` (1.0 -> 0)
+//   asin  0x8225ADB0 (0xC8)  Fable 2's asin/acos core with the flag folded to `li r10,1` (asin)
+//   atan  0x82253B58 (0xE4)  `fabs f0,f1` against flt_832BC450
+//   atan2 0x82E5DA00 (0x130) `stfd f1; stfd f2`, the zero tests on f2 then f1
+//   fmod  0x821FBD98 (0x184) `stfd f1; lhz r11; rlwinm 0,17,27; stfd f2; cmplwi 0x7FF0` (NaN/Inf)
+//   floor 0x821F0130 (0x3C)  `fctidz f12,f1 ... fsub f10,f1,f12`
+//   ceil  0x821A10C0 (0x3C)  the same head, `fsub f10,f12,f1`
+//   pow   0x821EED90 (0x4E4) Fable 2's pow prologue (`mflr; stw r12; std r31; bl __savefpr_25`,
 //         `stfd f1; stfd f2; fmr f28,f1`), 0x588 past exp as Fable 2's is 0x548 past its exp,
 //         two instructions shorter; the signature's relative branch is what kept it from matching.
-//   acos  0x8223E040 (0x8)   Fable 2's stub, `li r4,1; b 0x82E304D8` into the asin/acos core (a chunk
+//   acos  0x8223CDE8 (0x8)   Fable 2's stub, `li r4,1; b 0x82E61D68` into the asin/acos core (a chunk
 //                            with no function start; `subfic r10,r4,1`, so r10 = 0 is acos); Lua math.acos
-//                            (sub_822C182C) calls it.
+//                            (disc sub_822C182C) calls it.
 //
 // PowerPC ABI: double arguments in f1, f2; the result in f1. Nothing else is touched.
 #include <cmath>

@@ -21,6 +21,18 @@
 
 #include "anim_walk.h"
 
+// The walk names TU3's addresses (fable3_guest_build.h); this synthetic guest is TU3, so every
+// address is its own, as refiii_vfs answers before a disc payload says otherwise. The worlds run
+// once as TU3 and once more under the disc's rules (gBuild 1): its layout and its fold, the
+// addresses still the synthetic ones.
+int32_t gBuild = 0;
+extern "C" {
+int32_t refiii_guest_build(void) { return gBuild; }
+void refiii_guest_build_set(int32_t build) { gBuild = build; }
+uint32_t refiii_guest_address(uint32_t tu3_address) { return tu3_address; }
+uint32_t refiii_guest_address_to_tu3(uint32_t live_address) { return live_address; }
+}
+
 namespace {
 
 namespace anim = refii::fable3::anim;
@@ -101,7 +113,9 @@ struct SyntheticMemory {
 
 // ---------------------------------------------------------------------------------------------
 // THE REFERENCE: anim_feed.cpp as it read the guest before the spans, one read per field. Copied
-// verbatim; only the guest's primitives below are the synthetic memory's.
+// verbatim; only the guest's primitives below are the synthetic memory's. The TU3 rules (its
+// manager layout, the replica record in the primary fold, node kinds 6 and 7, the dominant leaf's
+// kinds 2, 6, 7 and above) are added beside the disc's, per field, each under `Tu3()`.
 
 namespace reference {
 
@@ -136,24 +150,34 @@ constexpr uint32_t kFullTier = 4u;
 constexpr float kCull = 0.05f;
 
 /// byte_8329E3D7: the fold crossfades the top against a partner at all (sub_821EB068).
-constexpr uint32_t kCrossfadeOn = 0x8329E3D7u;
-/// byte_83556685: the partner walk starts from 1 instead of 1 − w (sub_826BC358 0x826bc3fc).
-constexpr uint32_t kPartnerFromOne = 0x83556685u;
+constexpr uint32_t kCrossfadeOn = 0x832DE527u;
+/// byte_83556685: the partner walk starts from 1 instead of 1 − w (sub_826BC358 disc 0x826bc3fc).
+constexpr uint32_t kPartnerFromOne = 0x8359717Cu;
 /// qword_83556BD8 / dbl_83556BD0: the guest clock `(mftb − base) / frequency` (sub_8220A380).
-constexpr uint32_t kTimeBase = 0x83556BD8u;
-constexpr uint32_t kTimeFrequency = 0x83556BD0u;
+constexpr uint32_t kTimeBase = 0x835976D8u;
+constexpr uint32_t kTimeFrequency = 0x835976D0u;
 
-constexpr uint32_t kRampInTimed = 0x82001B2Cu;
-constexpr uint32_t kRampOutTimed = 0x82001858u;
+constexpr uint32_t kRampInTimed = 0x82001AC8u;
+constexpr uint32_t kRampOutTimed = 0x820017F4u;
 
-/// The ragdoll's class (ctor sub_82B06638 stores it at 0x82b06668); its slot 2 answers 1, the
+/// The ragdoll's class (ctor sub_82B06638 stores it at 0x82B44968); its slot 2 answers 1, the
 /// test sub_8270CCF8 makes.
-constexpr uint32_t kRagdollVtable = 0x82006DE0u;
-/// `lwz r3, 0x20(r3); blr` — slot 0x70 of every non-simple placement class (0x82007DF8,
-/// 0x820079C0, 0x82007FA8, 0x82007C48, 0x82007ED0, ...); the simple ones answer 0 (sub_82CE17A8).
-constexpr uint32_t kPhysicsProxyGetter = 0x82E78F88u;
+constexpr uint32_t kRagdollVtable = 0x82006D00u;
+/// `lwz r3, 0x20(r3); blr` — slot 0x70 of every non-simple placement class (0x82007D28,
+/// 0x820078F0, 0x82007ED8, 0x82007B78, 0x82007E00, ...); the simple ones answer 0 (sub_82CE17A8).
+constexpr uint32_t kPhysicsProxyGetter = 0x82EAA858u;
 
 bool Plausible(uint32_t address) { return address >= 0x10000u && address < 0xC0000000u; }
+
+bool Tu3() { return refiii_guest_build() == 0; }
+
+/// TU3 inserted the replica record at mgr+88: its trees are +92/+96, their receipts +100/+104.
+uint32_t CurrentTree() { return Tu3() ? 96u : 92u; }
+uint32_t CurrentReceipt() { return Tu3() ? 104u : 100u; }
+
+float GuardAlpha(double alpha) {
+    return std::isfinite(alpha) && alpha > -1.0 && alpha < 15.0 * 60.0 ? static_cast<float>(alpha) : 1.0f;
+}
 
 uint32_t Word(const uint8_t* base, uint32_t address) {
     return Plausible(address) ? GuestWordAt(base, address) : 0u;
@@ -227,7 +251,7 @@ uint32_t RampSecondsBits(const uint8_t* base, uint32_t ramp, uint32_t timed_vtab
     return Bits(1.0f / (step * 15.0f));
 }
 
-/// Whether the guest's physics owns this entity's bones: sub_823531E0 (0x82353a18..0x82353a78)
+/// Whether the guest's physics owns this entity's bones: sub_823531E0 (0x8235BE98..0x8235BEF8)
 /// takes `entity+0x80`'s slot 0x70 (the physics proxy, `*(placement+0x20)`), finds the object
 /// sub_8270CCF8 picks in its {object, ref} vector at +4/+8, and hands the pose to physics when
 /// its byte +0x44 is set and its mode +0x40 is 3 or 4. The host cannot call the virtuals; it
@@ -292,6 +316,8 @@ struct Flattener {
         float importance;
         bool additive;
         uint32_t mask;
+        bool replica;
+        float alpha;
     };
 
     void Emit(const Frame& frame) {
@@ -302,7 +328,7 @@ struct Flattener {
         leaf[0] = Word(base, frame.node + 28u);
         leaf[1] = Word(base, frame.node + 36u);
         leaf[2] = Word(base, frame.node + 32u);
-        if (stated.replica) {
+        if (frame.replica) {
             // `(1 − α)·+32 + α·+36` at the receipt alpha, the previous value one graph step back
             // so consecutive folds join (Fable 2's replica contract).
             const float previous = Float(base, frame.node + 32u);
@@ -311,7 +337,7 @@ struct Flattener {
             if (!(step > 0.0f) || !std::isfinite(step)) {
                 step = 1.0f / 15.0f;
             }
-            const float sampled = previous + step * stated.replica_alpha;
+            const float sampled = previous + step * frame.alpha;
             if (std::isfinite(sampled)) {
                 leaf[1] = Bits(sampled);
                 leaf[2] = Bits(sampled - step);
@@ -319,7 +345,7 @@ struct Flattener {
         }
         leaf[3] = Bits(frame.weight);
         leaf[4] = (Byte(base, frame.node + 40u) != 0u ? 1u : 0u) | (frame.additive ? 2u : 0u) |
-                  (stated.replica ? 8u : 0u) | stated.role | ((stated.priority & 0xFFu) << 8) |
+                  (frame.replica ? 8u : 0u) | stated.role | ((stated.priority & 0xFFu) << 8) |
                   ((stated.track & 0xFFu) << 16);
         leaf[5] = stated.uid;
         leaf[6] = stated.ramp_in_bits;
@@ -334,7 +360,7 @@ struct Flattener {
     void Walk(uint32_t root, float weight, float importance) {
         Frame stack[64];
         int depth = 0;
-        stack[depth++] = Frame{root, weight, importance, false, 0u};
+        stack[depth++] = Frame{root, weight, importance, false, 0u, stated.replica, stated.replica_alpha};
         int steps = 0;
         while (depth > 0 && leaves < capacity && ++steps < 512) {
             const Frame frame = stack[--depth];
@@ -343,7 +369,12 @@ struct Flattener {
             }
             const auto push = [&](uint32_t child, float w, float imp, bool additive, uint32_t mask) {
                 if (depth < 64 && Plausible(child)) {
-                    stack[depth++] = Frame{child, w, imp, additive, mask};
+                    stack[depth++] = Frame{child, w, imp, additive, mask, frame.replica, frame.alpha};
+                }
+            };
+            const auto push_at = [&](uint32_t child, float w, float imp, float alpha) {
+                if (depth < 64 && Plausible(child)) {
+                    stack[depth++] = Frame{child, w, imp, frame.additive, frame.mask, true, GuardAlpha(alpha)};
                 }
             };
             switch (Word(base, frame.node + 24u)) {
@@ -410,6 +441,36 @@ struct Flattener {
                     break;
                 case 5u:
                     push(Word(base, frame.node + 32u), frame.weight, frame.importance, true, frame.mask);
+                    break;
+                case 6u: {
+                    // TU3: A +28 at alpha +40, B +32 at alpha +44, by +36 as a crossfade.
+                    if (!Tu3()) {
+                        break;
+                    }
+                    const float f = Finite(Float(base, frame.node + 36u));
+                    const uint32_t a = Word(base, frame.node + 28u);
+                    const uint32_t b = Word(base, frame.node + 32u);
+                    const float alpha_a = Float(base, frame.node + 40u);
+                    const float alpha_b = Float(base, frame.node + 44u);
+                    if (std::min(f, 1.0f - f) * frame.importance <= kCull) {
+                        if (f >= 0.5f) {
+                            push_at(b, frame.weight, frame.importance, alpha_b);
+                        } else {
+                            push_at(a, frame.weight, frame.importance, alpha_a);
+                        }
+                        break;
+                    }
+                    const float t = std::clamp(f, 0.0f, 1.0f);
+                    push_at(a, frame.weight * (1.0f - t), frame.importance * (1.0f - t), alpha_a);
+                    push_at(b, frame.weight * t, frame.importance * t, alpha_b);
+                    break;
+                }
+                case 7u:
+                    // TU3: +28 at alpha +32.
+                    if (Tu3()) {
+                        push_at(Word(base, frame.node + 28u), frame.weight, frame.importance,
+                                Float(base, frame.node + 32u));
+                    }
                     break;
                 default:
                     break;
@@ -557,10 +618,53 @@ uint32_t LinkedAnimLeaf(const uint8_t* base, uint32_t entity, uint32_t* out) {
     }
 
     // sub_821FB610: 0 the leaf; 1 B (+32) when +36 ≥ 0.5 else A (+28); 3 and 4 take +28; 5 +32;
-    // a set has no dominant leaf.
+    // a set has no dominant leaf. TU3 (sub_821FAD98) also: 2 its heaviest child by `+20·0 + +16`
+    // above 0, the first of equals; 6 its +32; 7 its +28; a kind above 7 is its own leaf.
+    const auto heaviest_child = [&](uint32_t node) -> uint32_t {
+        const uint32_t begin = Word(base, node + 32u);
+        const uint32_t end = Word(base, node + 36u);
+        if (!Plausible(begin) || end < begin || end - begin > 4u * kMaxSetChildren || end - begin < 4u) {
+            return 0u;
+        }
+        uint32_t heaviest = 0u;
+        float best = 0.0f;
+        for (uint32_t at = begin; at + 4u <= end; at += 4u) {
+            const uint32_t child = Word(base, at);
+            const float current = Float(base, child + 16u);
+            const float previous = Float(base, child + 20u);
+            const float w = previous * 0.0f + current;
+            if (w > best) {
+                best = w;
+                heaviest = child;
+            }
+        }
+        return heaviest;
+    };
     const auto dominant = [&](uint32_t node) -> uint32_t {
         for (int depth = 0; depth < 32 && Plausible(node); ++depth) {
-            switch (Word(base, node + 24u)) {
+            const uint32_t kind = Word(base, node + 24u);
+            if (Tu3() && kind > 7u) {
+                return node;
+            }
+            switch (kind) {
+                case 2u:
+                    if (!Tu3()) {
+                        return 0u;
+                    }
+                    node = heaviest_child(node);
+                    break;
+                case 6u:
+                    if (!Tu3()) {
+                        return 0u;
+                    }
+                    node = Word(base, node + 32u);
+                    break;
+                case 7u:
+                    if (!Tu3()) {
+                        return 0u;
+                    }
+                    node = Word(base, node + 28u);
+                    break;
                 case 0u:
                     return node;
                 case 1u:
@@ -584,7 +688,7 @@ uint32_t LinkedAnimLeaf(const uint8_t* base, uint32_t entity, uint32_t* out) {
     float time = 0.0f;
     float previous = 0.0f;
     bool replica = false;
-    const uint32_t tree = Word(base, manager + 92u);
+    const uint32_t tree = Word(base, manager + CurrentTree());
     if (Plausible(tree)) {
         leaf = dominant(tree);
         double now = 0.0;
@@ -596,7 +700,7 @@ uint32_t LinkedAnimLeaf(const uint8_t* base, uint32_t entity, uint32_t* out) {
         if (!(step > 0.0f) || !std::isfinite(step)) {
             step = 1.0f / 15.0f;
         }
-        time = static_cast<float>(now - Float(base, manager + 100u)) + current;
+        time = static_cast<float>(now - Float(base, manager + CurrentReceipt())) + current;
         previous = time - step;
         replica = true;
     } else {
@@ -722,9 +826,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
     uint32_t flags = PhysicsOwnsPose(base, entity) ? 8u : 0u;
     const uint32_t manager = Component(base, entity, kAnimationManager);
     const uint32_t primary_count = manager == 0u ? 0u : Word(base, manager + 32u);
-    const uint32_t replica = manager == 0u ? 0u : Word(base, manager + 92u);
+    const uint32_t replica = manager == 0u ? 0u : Word(base, manager + CurrentTree());
 
-    // THE GATE'S CHOICE OF SOURCE (sub_823531E0 0x82353c30..0x82353e8c): component 23 with records
+    // THE GATE'S CHOICE OF SOURCE (sub_823531E0 disc 0x82353c30..0x8235C30C): component 23 with records
     // or a replicated tree poses the rig; otherwise component 215 does, when present.
     if (manager == 0u || (primary_count == 0u && !Plausible(replica))) {
         const uint32_t linked = LinkedAnimLeaf(base, entity, out_words);
@@ -754,9 +858,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
 
     Flattener flat{base, out_words, word_capacity / kLeafWords};
 
-    // THE GUEST'S OWN CHOICE OF ROOT (sub_821E9AC0 0x821e9af8, sub_82208F50 0x82208f88): the
-    // replicated tree when it exists and the primary list is empty or holds nothing at 128.
-    if (Plausible(replica) && (primary_count == 0u || static_cast<int32_t>(Word(base, manager + 644u)) < 128)) {
+    // THE GUEST'S OWN CHOICE OF ROOT (sub_821E9AC0 disc 0x821e9af8, sub_82208F50 disc 0x82208f88): the
+    // replicated tree when it exists and the primary list is empty or holds nothing at 128. TU3 makes
+    // no choice: its replica is a primary record, and the primary fold always runs (sub_821E9728).
+    if (!Tu3() && Plausible(replica) &&
+        (primary_count == 0u || static_cast<int32_t>(Word(base, manager + 644u)) < 128)) {
         WalkReplica(base, manager, flat);
         if (flat.leaves == 0u) {
             gEmptyList.fetch_add(1u, std::memory_order_relaxed);
@@ -866,7 +972,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityAnimState(uint32_t entity, uint
 }
 
 /// THE BYTES OF ONE BONE MASK NODE — kind 4 (sub_8222AEF8 case 4 -> sub_821C7B18): one byte per
-/// skeleton bone in [+40, +44), applied only when the pose's skeleton id equals +32 (0x821c7b68).
+/// skeleton bone in [+40, +44), applied only when the pose's skeleton id equals +32 (0x821C7BC8).
 /// Returns the bytes written (0 for a node that is not a mask) and, when asked, that skeleton id.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimMask(uint32_t node, uint8_t* out_bytes, uint32_t capacity,
                                                     uint32_t* out_skeleton_id) {
@@ -904,11 +1010,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAnimMask(uint32_t node, uint8_t* out_
 // Synthetic rigs.
 
 constexpr uint32_t kRegion = 0x40000000u;
-constexpr uint32_t kRampInInstant = 0x820019F4u;
-constexpr uint32_t kRampOutInstant = 0x820A7108u;
+constexpr uint32_t kRampInInstant = 0x82001990u;
+constexpr uint32_t kRampOutInstant = 0x820AAAE8u;
 
-/// Node sizes by kind, as the guest allocates them (anim_walk.h).
-constexpr uint32_t kNodeSize[] = {0x2Cu, 0x2Cu, 0x2Cu, 0x24u, 0x38u, 0x24u, 0x30u};
+/// Node sizes by kind, as the guest allocates them (anim_walk.h); kind 7 is TU3's.
+constexpr uint32_t kNodeSize[] = {0x2Cu, 0x2Cu, 0x2Cu, 0x24u, 0x38u, 0x24u, 0x30u, 0x24u};
 
 struct World {
     SyntheticMemory memory;
@@ -987,6 +1093,19 @@ struct World {
         }
     }
 
+    /// A replica receipt alpha `(now − receipt)·15`: mostly a few steps, sometimes past any use.
+    float Alpha() {
+        switch (Rand(10u)) {
+            case 0: return std::numeric_limits<float>::quiet_NaN();
+            case 1: return std::numeric_limits<float>::infinity();
+            case 2: return -Uniform(0.0f, 3.0f);
+            case 3: return 900.0f + Uniform(0.0f, 100.0f);
+            case 4: return 0.0f;
+            case 5: return 1.0f;
+            default: return Uniform(0.0f, 4.0f);
+        }
+    }
+
     uint32_t Key() {
         if (keys.size() >= 24u || (!keys.empty() && Chance(0.7))) return keys[Rand(static_cast<uint32_t>(keys.size()))];
         const uint32_t key = static_cast<uint32_t>(rng()) | 1u;
@@ -1018,12 +1137,12 @@ struct World {
         if (depth_budget <= 0 || Chance(0.03)) return Garbage();
         if (!nodes.empty() && Chance(0.05)) return nodes[Rand(static_cast<uint32_t>(nodes.size()))];
         --depth_budget;
-        uint32_t kind = depth <= 0 ? 0u : Rand(10u);
-        if (kind >= 7u) kind = Chance(0.2) ? 9u : 0u;
-        const uint32_t size = kind < 7u ? kNodeSize[kind] : 0x2Cu;
+        uint32_t kind = depth <= 0 ? 0u : Rand(11u);
+        if (kind >= 8u) kind = Chance(0.2) ? 9u : 0u;
+        const uint32_t size = kind < 8u ? kNodeSize[kind] : 0x2Cu;
         const uint32_t node = Alloc(size);
         nodes.push_back(node);
-        memory.Put32(node, 0x82000DE0u);
+        memory.Put32(node, 0x820AAAC0u);
         memory.PutF(node + 16u, Weight());
         memory.PutF(node + 20u, Weight());
         memory.Put32(node + 24u, kind);
@@ -1074,9 +1193,16 @@ struct World {
                 memory.Put32(node + 28u, Tree(depth - 1));
                 memory.Put32(node + 32u, Tree(depth - 1));
                 memory.PutF(node + 36u, Weight());
+                memory.PutF(node + 40u, Alpha());
+                memory.PutF(node + 44u, Alpha());
+                break;
+            case 7:
+                memory.Put32(node + 28u, Tree(depth - 1));
+                memory.PutF(node + 32u, Alpha());
                 break;
             default:
-                memory.Put32(node + 28u, Tree(depth - 1));
+                // A kind no build walks; TU3's dominant leaf answers it, so its +28 may be a key.
+                memory.Put32(node + 28u, Chance(0.5) ? Key() : Tree(depth - 1));
                 memory.Put32(node + 32u, Tree(depth - 1));
                 memory.Put32(node + 36u, static_cast<uint32_t>(rng()));
                 break;
@@ -1086,7 +1212,7 @@ struct World {
 
     uint32_t Record() {
         const uint32_t record = Alloc(68u);
-        memory.Put32(record, 0x82000E94u);
+        memory.Put32(record, 0x82000E54u);
         memory.Put32(record + 4u, 1u);
         static constexpr uint32_t kPriorities[] = {0u, 1u, 2u, 4u, 8u, 16u, 64u, 128u, 255u, 256u, 300u};
         memory.Put32(record + 8u, kPriorities[Rand(sizeof(kPriorities) / sizeof(kPriorities[0]))]);
@@ -1130,8 +1256,9 @@ struct World {
     }
 
     uint32_t Manager() {
-        const uint32_t manager = Alloc(704u);
-        memory.Put32(manager, 0x82003800u);
+        // 0x2D0 bytes in TU3 (`li r11,0x2D0` 0x82589550), 0x2C0 on the disc.
+        const uint32_t manager = Alloc(anim::Tu3() ? 720u : 704u);
+        memory.Put32(manager, 0x82003780u);
         uint32_t primaries = Rand(6u);
         if (Chance(0.15)) primaries = Rand(65u);
         uint32_t overlays = Chance(0.5) ? Rand(5u) : 0u;
@@ -1140,33 +1267,48 @@ struct World {
         List(manager, 28u, primaries);
         List(manager, 40u, overlays);
         memory.Put32(manager + 84u, Chance(0.7) ? 4u : Rand(6u));
+        // The replicated trees and their times: disc +88/+92 then +96..+104; TU3 one word later,
+        // after the replica record at +88 (a primary like any other here, priority 128 among them).
+        const bool tu3 = anim::Tu3();
+        const uint32_t trees = tu3 ? 92u : 88u;
+        if (tu3) {
+            memory.Put32(manager + 88u, Chance(0.5) ? Garbage() : 0u);
+        }
         if (Chance(0.25)) {
             depth_budget = 24;
-            memory.Put32(manager + 88u, Tree(1 + static_cast<int>(Rand(4u))));
+            memory.Put32(manager + trees, Tree(1 + static_cast<int>(Rand(4u))));
         }
         if (Chance(0.3)) {
             depth_budget = 24;
-            memory.Put32(manager + 92u, Tree(1 + static_cast<int>(Rand(4u))));
+            memory.Put32(manager + trees + 4u, Tree(1 + static_cast<int>(Rand(4u))));
         }
-        for (uint32_t offset = 96u; offset <= 104u; offset += 4u) {
+        for (uint32_t offset = trees + 8u; offset <= trees + 16u; offset += 4u) {
             float t = Now() - Uniform(0.0f, 0.2f);
             if (Chance(0.05)) t = Now() - 100.0f;
             if (Chance(0.03)) t = std::numeric_limits<float>::quiet_NaN();
             if (Chance(0.03)) t = Now() + 1.0f;
             memory.PutF(manager + offset, t);
         }
-        static constexpr int32_t kTop[] = {0, 1, 127, 128, 129, 255, -5};
-        memory.Put32(manager + 644u, static_cast<uint32_t>(kTop[Rand(sizeof(kTop) / sizeof(kTop[0]))]));
+        static constexpr int32_t kTop[] = {0, 1, 127, 128, 129, 255, 256, 257, -5};
+        memory.Put32(manager + (tu3 ? 652u : 644u),
+                     static_cast<uint32_t>(kTop[Rand(sizeof(kTop) / sizeof(kTop[0]))]));
+        if (tu3) {
+            memory.PutF(manager + 716u, Weight());  // the replica weight, which only the step reads
+        }
         return manager;
     }
 
     /// A std::map<u32, u32> of `n` keys (MSVC: the head is the nil node, +21 set).
     uint32_t Map(uint32_t n) {
+        std::vector<uint32_t> keys;
+        for (uint32_t i = 0; i < n; ++i) keys.push_back(Key());
+        return MapOf(std::move(keys));
+    }
+
+    uint32_t MapOf(std::vector<uint32_t> sorted) {
         const uint32_t head = Alloc(24u);
         memory.Put8(head + 20u, 1u);
         memory.Put8(head + 21u, Chance(0.97) ? 1u : 0u);
-        std::vector<uint32_t> sorted;
-        for (uint32_t i = 0; i < n; ++i) sorted.push_back(Key());
         std::sort(sorted.begin(), sorted.end());
         sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
         const auto build = [&](auto&& self, int lo, int hi, uint32_t parent) -> uint32_t {
@@ -1188,7 +1330,7 @@ struct World {
         const uint32_t placement = Alloc(0x40u);
         const uint32_t vtable = Alloc(0x80u);
         memory.Put32(placement, Chance(0.05) ? Garbage() : vtable);
-        memory.Put32(vtable + 0x70u, Chance(0.6) ? anim::kPhysicsProxyGetter : 0x82CE17A8u);
+        memory.Put32(vtable + 0x70u, Chance(0.6) ? anim::kPhysicsProxyGetter : 0x82F5D180u);
         const uint32_t proxy = Alloc(12u);
         memory.Put32(placement + 0x20u, Chance(0.05) ? Garbage() : proxy);
         const uint32_t n = Chance(0.05) ? 64u + Rand(3u) : Rand(5u);
@@ -1202,7 +1344,7 @@ struct World {
                 memory.Put8(object + 0x44u, static_cast<uint8_t>(Chance(0.3) ? 0u : 1u + Rand(255u)));
             } else {
                 object = Chance(0.2) ? Garbage() : Alloc(0x50u);
-                if (Plausible(object)) memory.Put32(object, 0x82007000u + 8u * Rand(16u));
+                if (Plausible(object)) memory.Put32(object, 0x82006F20u + 8u * Rand(16u));
             }
             memory.Put32(pairs + 8u * i, object);
             memory.Put32(pairs + 8u * i + 4u, static_cast<uint32_t>(rng()));
@@ -1230,7 +1372,7 @@ struct World {
             const uint32_t control = Alloc(8u);
             memory.Put32(component + 16u, Chance(0.03) ? Garbage() : control);
             memory.Put32(control, Chance(0.05) ? Garbage() : Entity(Chance(0.9), false, nesting + 1));
-            memory.Put32(component + 28u, Chance(0.03) ? Garbage() : Map(Rand(9u)));
+            memory.Put32(component + 28u, Chance(0.03) ? Garbage() : Map(Rand(17u)));
             pairs.push_back({anim::kLinkedAnimation, component});
         }
         if (Chance(0.05) && !pairs.empty()) pairs.push_back(pairs[Rand(static_cast<uint32_t>(pairs.size()))]);
@@ -1247,6 +1389,67 @@ struct World {
         if (Chance(0.02)) end = vector - 8u;
         memory.Put32(entity + 0x54u, Chance(0.02) ? Garbage() : vector);
         memory.Put32(entity + 0x58u, end);
+        return entity;
+    }
+
+    /// A linked rig whose source's current replicated tree is a set of clips (bare, or under a kind-7
+    /// or kind-6 node), every key in the map: the dominant leaf's rules decide which clip plays.
+    uint32_t DominantRig() {
+        const uint32_t n = 1u + Rand(5u);
+        const uint32_t children = Alloc(4u * n);
+        std::vector<uint32_t> clip_keys;
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint32_t clip = Alloc(0x2Cu);
+            nodes.push_back(clip);
+            memory.PutF(clip + 16u, Weight());
+            memory.PutF(clip + 20u, Chance(0.4) ? std::numeric_limits<float>::quiet_NaN() : Weight());
+            const uint32_t key = static_cast<uint32_t>(rng()) | 1u;
+            memory.Put32(clip + 28u, key);
+            memory.PutF(clip + 32u, Uniform(0.0f, 5.0f));
+            memory.PutF(clip + 36u, Uniform(0.0f, 5.0f));
+            memory.Put32(children + 4u * i, clip);
+            clip_keys.push_back(key);
+        }
+        const uint32_t set = Alloc(0x2Cu);
+        nodes.push_back(set);
+        memory.Put32(set + 24u, 2u);
+        memory.Put32(set + 32u, children);
+        memory.Put32(set + 36u, children + 4u * n);
+        uint32_t root = set;
+        if (Chance(0.3)) {
+            root = Alloc(0x24u);
+            memory.Put32(root + 24u, 7u);
+            memory.Put32(root + 28u, set);
+            memory.PutF(root + 32u, Alpha());
+        } else if (Chance(0.3)) {
+            root = Alloc(0x30u);
+            memory.Put32(root + 24u, 6u);
+            memory.Put32(root + 28u, Chance(0.5) ? set : Garbage());
+            memory.Put32(root + 32u, set);
+            memory.PutF(root + 36u, Weight());
+        }
+        const uint32_t manager = Alloc(720u);
+        memory.Put32(manager + (anim::Tu3() ? 96u : 92u), root);
+        memory.PutF(manager + (anim::Tu3() ? 104u : 100u), Now() - Uniform(0.0f, 0.2f));
+        const uint32_t source = Alloc(0x98u);
+        memory.Put8(source + 0x94u, 0x40u);
+        const uint32_t source_vector = Alloc(8u);
+        memory.Put32(source_vector, anim::kAnimationManager);
+        memory.Put32(source_vector + 4u, manager);
+        memory.Put32(source + 0x54u, source_vector);
+        memory.Put32(source + 0x58u, source_vector + 8u);
+
+        const uint32_t component = Alloc(0x38u);
+        const uint32_t control = Alloc(8u);
+        memory.Put32(component + 16u, control);
+        memory.Put32(control, source);
+        memory.Put32(component + 28u, MapOf(clip_keys));
+        const uint32_t entity = Alloc(0x98u);
+        const uint32_t vector = Alloc(8u);
+        memory.Put32(vector, anim::kLinkedAnimation);
+        memory.Put32(vector + 4u, component);
+        memory.Put32(entity + 0x54u, vector);
+        memory.Put32(entity + 0x58u, vector + 8u);
         return entity;
     }
 
@@ -1291,8 +1494,9 @@ struct Totals {
 };
 
 bool Fail(const char* what, uint32_t seed, uint32_t address, uint32_t index, uint32_t expected, uint32_t actual) {
-    std::fprintf(stderr, "anim_state_test: %s differs (world %u, 0x%08X, word %u): per-field 0x%08X, span 0x%08X\n",
-                 what, seed, address, index, expected, actual);
+    std::fprintf(stderr,
+                 "anim_state_test: %s: %s differs (world %u, 0x%08X, word %u): per-field 0x%08X, span 0x%08X\n",
+                 gBuild == 0 ? "TU3" : "disc", what, seed, address, index, expected, actual);
     return false;
 }
 
@@ -1480,7 +1684,7 @@ std::pair<uint64_t, uint64_t> TypicalRig() {
     m.Put32(ragdoll, anim::kRagdollVtable);
     m.Put32(ragdoll + 0x40u, 1u);
     const uint32_t other = alloc(0x50u);
-    m.Put32(other, 0x82007000u);
+    m.Put32(other, 0x82006F20u);
     const uint32_t pairs = alloc(16u);
     m.Put32(pairs, other);
     m.Put32(pairs + 8u, ragdoll);
@@ -1517,7 +1721,10 @@ std::pair<uint64_t, uint64_t> TypicalRig() {
 
 }  // namespace
 
-int main() {
+int RunBuild(int32_t build) {
+    gBuild = build;
+    const char* name = build == 0 ? "TU3" : "disc";
+    Causes();  // the counters as the last pass (its plain rig included) left them
     constexpr uint32_t kWorlds = 300u;
     Totals totals;
     for (uint32_t seed = 1; seed <= kWorlds; ++seed) {
@@ -1526,12 +1733,14 @@ int main() {
         const uint32_t rigs = 20u + world.Rand(30u);
         for (uint32_t i = 0; i < rigs; ++i) {
             const uint32_t roll = world.Rand(100u);
-            if (roll < 60u) {
-                world.rigs.push_back(world.Entity(true, world.Chance(0.2), 0));
+            if (roll < 50u) {
+                world.rigs.push_back(world.Entity(true, world.Chance(0.3), 0));
             } else if (roll < 80u) {
                 world.rigs.push_back(world.Entity(world.Chance(0.5), true, 0));
-            } else if (roll < 92u) {
+            } else if (roll < 86u) {
                 world.rigs.push_back(world.Entity(false, false, 0));
+            } else if (roll < 92u) {
+                world.rigs.push_back(world.DominantRig());
             } else {
                 world.rigs.push_back(world.Garbage());
             }
@@ -1553,13 +1762,14 @@ int main() {
     const auto [typical_reference, typical_span] = TypicalRig();
 
     std::printf(
-        "anim_state_test: %u worlds, %llu rigs (%llu posed, %llu leaves), %llu masks: span reads equal the per-field "
-        "reads\n",
-        kWorlds, static_cast<unsigned long long>(totals.rigs), static_cast<unsigned long long>(totals.posed),
+        "anim_state_test: %s: %u worlds, %llu rigs (%llu posed, %llu leaves), %llu masks: span reads equal the "
+        "per-field reads\n",
+        name, kWorlds, static_cast<unsigned long long>(totals.rigs), static_cast<unsigned long long>(totals.posed),
         static_cast<unsigned long long>(totals.leaves), static_cast<unsigned long long>(totals.masks));
     std::printf(
-        "anim_state_test: guarded reads per rig %.1f -> %.1f (posed rigs %.1f -> %.1f, per leaf %.2f -> %.2f); per mask "
-        "%.1f -> %.1f; reads at no guest address %llu -> %llu\n",
+        "anim_state_test: %s: guarded reads per rig %.1f -> %.1f (posed rigs %.1f -> %.1f, per leaf %.2f -> %.2f); per "
+        "mask %.1f -> %.1f; reads at no guest address %llu -> %llu\n",
+        name,
         static_cast<double>(totals.reference_reads) / static_cast<double>(totals.rigs),
         static_cast<double>(totals.span_reads) / static_cast<double>(totals.rigs),
         static_cast<double>(totals.reference_posed_reads) / static_cast<double>(std::max<uint64_t>(totals.posed, 1u)),
@@ -1569,7 +1779,15 @@ int main() {
         static_cast<double>(totals.reference_mask_reads) / static_cast<double>(std::max<uint64_t>(totals.masks, 1u)),
         static_cast<double>(totals.span_mask_reads) / static_cast<double>(std::max<uint64_t>(totals.masks, 1u)),
         static_cast<unsigned long long>(totals.reference_outside), static_cast<unsigned long long>(totals.span_outside));
-    std::printf("anim_state_test: a plain rig (2 crossfaded primaries, 1 overlay, ragdoll proxy): %llu -> %llu guarded reads\n",
-                static_cast<unsigned long long>(typical_reference), static_cast<unsigned long long>(typical_span));
+    std::printf(
+        "anim_state_test: %s: a plain rig (2 crossfaded primaries, 1 overlay, ragdoll proxy): %llu -> %llu guarded "
+        "reads\n",
+        name, static_cast<unsigned long long>(typical_reference), static_cast<unsigned long long>(typical_span));
     return 0;
+}
+
+int main() {
+    // TU3 first, the build this synthetic guest is; then the disc's rules over the same worlds.
+    if (RunBuild(0) != 0) return 1;
+    return RunBuild(1);
 }

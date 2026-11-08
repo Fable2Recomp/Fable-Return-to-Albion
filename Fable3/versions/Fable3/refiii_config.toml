@@ -91,8 +91,8 @@
 # shared_ptr<Box>), its tick (queue) — the one place a display box becomes the showing box and the
 # one exit that drops it — and the pending vector's erase (out, vector, iterator); the pad
 # handlers (box, ev*, player) of the classes Godot owns — message, yes/no, natal query, numeric
-# adjuster, quest, tutorial notice — and the answers it runs: the query's (box, answer) and the
-# adjuster's (box, accept). The pause screen's message box: the screen input (SM, action,
+# adjuster, quest, tutorial notice — and the answer it runs, the adjuster's (box, accept); a
+# yes/no is answered through its own input. The pause screen's message box: the screen input (SM, action,
 # player) and its reset (G). The menu box: open (MB), input (MB, ev, pad), close (MB), the row
 # add (MB, &tag), enable (MB, index, enabled), highlight (MB, row) and select (MB), and the GUI
 # action mapping its input runs (ev*, pad).
@@ -105,7 +105,6 @@
 0x8281C448 = { name = "rex_NumericAdjuster_HandleInput" }
 0x8281CB80 = { name = "rex_QuestBox_HandleInput" }
 0x824B29C0 = { name = "rex_TutorialBox_HandleInput" }
-0x8281BD88 = { name = "rex_QueryBox_Answer" }
 0x8281C638 = { name = "rex_NumericAdjuster_Answer" }
 0x825CE380 = { name = "rex_GuiManager_ScreenInput" }
 0x825CF0C8 = { name = "rex_GuiManager_ModalReset" }
@@ -131,6 +130,8 @@
 0x822F2A50 = { name = "rex_Profile_WriteSettings" }
 0x825C98D8 = { name = "rex_OptionsBox_Show" }
 0x825CA410 = { name = "rex_OptionsBox_HandleInput" }
+# The Options screen's per-frame update (screen; vtable slot 5).
+0x825C9EC0 = { name = "rex_OptionsBox_Update" }
 # The epilogue's show (E, title, description, gold, image CCharString, flag) and hide (E), and the
 # screen manager's credits start and end (SM) (Fable3/src/hooks/src/end_screen_hooks.cpp).
 0x8276B460 = { name = "rex_Epilogue_Show" }

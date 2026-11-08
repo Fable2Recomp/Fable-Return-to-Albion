@@ -2,20 +2,20 @@
 // the stream callbacks the GPU would have raised, run as they are inserted.
 //
 // THE WAIT. Every GPU-completion wait in Fable 3's XDK D3D funnels into one spin step,
-// sub_82D25890, polling the retired-fence word the GPU writes at *(device+0x2A90). Godot draws
+// sub_82D57BF0, polling the retired-fence word the GPU writes at *(device+0x2A90). Godot draws
 // and the guest's command stream reaches no GPU, so nothing retires a fence: BlockOnFence
-// (sub_821E7D18) spins until the hang path traps (twui at 0x82D2B0A8). The first such wait is
-// on the GameThread inside device creation (BlockUntilIdle, sub_82D203A8, from the ring re-init
-// at 0x82D20454), before the 3D Engine thread or any movie.
+// (sub_821E7980) spins until the hang path traps (twui at 0x82D5D408). The first such wait is
+// on the GameThread inside device creation (BlockUntilIdle, sub_82D52708, from the ring re-init
+// at 0x82D527B4), before the 3D Engine thread or any movie.
 //
 // THE GUEST'S OWN WAY OUT. The spin step returns 0 when device+0x2ABD has 0x02
-// (0x82D258D8 lbz / rlwinm. / bne -> 0x82D2595C li r3,0), and BlockOnFence leaves on that 0
-// (0x821E7DD8 cmpwi r3,0 / beq). The XDK sets it itself when HSIO training failed
-// (sub_821BDD10). Fable 2's D3D has the same bit at the same offset; this is the latch
+// (0x82D57C38 lbz / rlwinm. / bne -> 0x82D57CBC li r3,0), and BlockOnFence leaves on that 0
+// (0x821E7A40 cmpwi r3,0 / beq). The XDK sets it itself when HSIO training failed
+// (sub_821BDC58). Fable 2's D3D has the same bit at the same offset; this is the latch
 // Fable2/src/vfs/src/hooks/boot_lifecycle.cpp arms, for the same reason.
 //
-// THE SITE. sub_82D20428 is the ring-buffer initialiser (it calls VdInitializeRingBuffer and
-// VdEnableRingBufferRPtrWriteBack). Its first call (0x82D2A388, in sub_82D2A240) is the first
+// THE SITE. sub_82D52788 is the ring-buffer initialiser (it calls VdInitializeRingBuffer and
+// VdEnableRingBufferRPtrWriteBack). Its first call (0x82D5C6E8, in sub_82D5C5A0) is the first
 // ring setup and waits on nothing; every later call re-initialises through BlockUntilIdle. Armed
 // as the first call returns, the bit is up before any reader can wait on a fence. A re-run ORs
 // the same bit again.
@@ -50,18 +50,18 @@ REX_EXTERN(rex_D3DDevice_InitializeRingBuffer) {
   }
 }
 
-// THE CALLBACKS THE GPU WOULD HAVE RUN. sub_821D8D08(device, cmd, flags, callback, data) is the
+// THE CALLBACKS THE GPU WOULD HAVE RUN. sub_821D8A60(device, cmd, flags, callback, data) is the
 // XDK's InsertCallback: on its interrupt path (flags & 2, after `flags |= 6` when neither bit is
-// set, 0x821D8D58) it emits PM4 that writes `callback` and `data` to the write-back block at
+// set, 0x821D8AB0) it emits PM4 that writes `callback` and `data` to the write-back block at
 // *(device+10900) +16 and +20 and raises a CP interrupt. The guest's interrupt handler
-// sub_82D20310 (registered with VdSetGraphicsInterruptCallback at 0x82D2A2D8) answers type 1
-// with `(*(block+16))(*(block+20))`, 0x82D2032C..0x82D20340. No GPU reads this stream, so the
+// sub_82D52670 (registered with VdSetGraphicsInterruptCallback at 0x82D5C638) answers type 1
+// with `(*(block+16))(*(block+20))`, 0x82D5268C..0x82D526A0. No GPU reads this stream, so the
 // device consumes it as it is written and runs the callback then, with the same argument.
 //
-// What waits on them: Present (sub_82D49CE8) inserts sub_82D6B020, which stamps the frame-sync
-// record (qword_83554A30) its clock sub_82D4A9F8 predicts the next vblank from. Never stamped,
+// What waits on them: Present (sub_82D7C338) inserts sub_82D9D4C0, which stamps the frame-sync
+// record (qword_83595520) its clock sub_82D7D048 predicts the next vblank from. Never stamped,
 // that record holds 0 and the 3D Engine frame's time is (0 - base) / frequency, ~3.7e11 s: the
-// stream catch-up loop in sub_822A21A8 (`while (dbl_8330E498[slot] < time)`) never reaches it
+// stream catch-up loop in sub_822A07D8 (`while (dbl_8334EF88[slot] < time)`) never reaches it
 // and no frame completes.
 REX_EXTERN(rex_D3DDevice_InsertCallback) {
   const uint32_t device = ctx.r3.u32;

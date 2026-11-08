@@ -2,20 +2,20 @@
 // platform. Its one caller is the interaction mode's rename (`GUI.RenameEntityWithInteractionMode`,
 // the dog's and a weapon's name in the Sanctuary, GuildRoomsSingle.lua).
 //
-// THE CALL. sub_82961FA0(mode, entity, pad, hero) (reached from the native 0x8251F110 at
-// 0x8251F2B0) builds the title `TEXT_QUERY_INTERFACE_RENAME_TITLE` (mode+80, 0x829621C4) and the
-// description `TEXT_QUERY_INTERFACE_RENAME_DESC` (mode+84, 0x829621EC), empties the 17-unit
-// buffer at mode+44 (sub_82E34950 at 0x829621A4), zeroes the XOVERLAPPED at mode+88..+112
-// (0x8296215C) and calls the thunk j_XamShowKeyboardUI (0x830FF1F8, `b XamShowKeyboardUI`) at
-// 0x82962250 with r3 the player's user index `*(player+40)`, r4 0x20000004, r5 the default text
+// THE CALL. sub_82970BF8(mode, entity, pad, hero) (reached from the native 0x8254EF70 at
+// 0x8254F110) builds the title `TEXT_QUERY_INTERFACE_RENAME_TITLE` (mode+80, disc 0x829621C4) and the
+// description `TEXT_QUERY_INTERFACE_RENAME_DESC` (mode+84, disc 0x829621EC), empties the 17-unit
+// buffer at mode+44 (sub_82E661E0 at disc 0x829621A4), zeroes the XOVERLAPPED at mode+88..+112
+// (disc 0x8296215C) and calls the thunk j_XamShowKeyboardUI (0x831314B8, `b XamShowKeyboardUI`) at
+// disc 0x82962250 with r3 the player's user index `*(player+40)`, r4 0x20000004, r5 the default text
 // (the empty buffer), r6 the title, r7 the description, r8 the buffer, r9 17, r10 the
-// XOVERLAPPED. A result of 997 marks the request pending (mode+25 = 1, 0x82962260).
+// XOVERLAPPED. A result of 997 marks the request pending (mode+25 = 1, disc 0x82962260).
 //
-// THE ANSWER THE GUEST WAITS FOR. The mode's poll sub_82962E28 runs while mode+25 is set: it waits
-// for the XOVERLAPPED's InternalLow to leave 997 (0x82962EA8), then XGetOverlappedResult
-// (sub_82DABF20(ov, 0, 1) at 0x82962F10) answers InternalLow. Non-zero, or a buffer that names
-// nothing new, posts the message "ClosedSystemUI" (0x82962FE8..0x82963028); zero reads the buffer
-// as the new name (sub_8229B650 from mode+44) and hands it to sub_82962720, which renames the dog
+// THE ANSWER THE GUEST WAITS FOR. The mode's poll sub_82971AA8 runs while mode+25 is set: it waits
+// for the XOVERLAPPED's InternalLow to leave 997 (disc 0x82962EA8), then XGetOverlappedResult
+// (sub_82DDDE48(ov, 0, 1) at disc 0x82962F10) answers InternalLow. Non-zero, or a buffer that names
+// nothing new, posts the message "ClosedSystemUI" (0x82971C70..0x82971CB0); zero reads the buffer
+// as the new name (sub_82299940 from mode+44) and hands it to sub_829713A0, which renames the dog
 // or the weapon when the text is non-empty and differs from its current name. hEvent and the
 // completion routine are zero (the mode zeroed them), so the completion is the stores alone.
 //
@@ -210,7 +210,7 @@ bool AnswerKeyboardUi(uint8_t* base, const char* text) {
     result = kErrorSuccess;
   }
 
-  // The result word last: the guest's poll reads only it (0x82962EA8).
+  // The result word last: the guest's poll reads only it (disc 0x82962EA8).
   StoreGuestU32(base, pending.overlapped + kOverlappedExtended, result);
   __atomic_thread_fence(__ATOMIC_RELEASE);
   StoreGuestU32(base, pending.overlapped + kOverlappedResult, result);

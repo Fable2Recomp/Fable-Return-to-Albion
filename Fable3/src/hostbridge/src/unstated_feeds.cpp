@@ -14,6 +14,8 @@
 #include <cstdint>
 
 #include "host_abi.h"
+#include "../../vfs/include/fable3_guest_build.h"
+
 
 namespace {
 
@@ -189,17 +191,18 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWornItems(uint32_t* /*words*/, uint32
     return 0;
 }
 
-// Fable 3 ships one build: every address is its own.
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGuestAddress(uint32_t tu1_address) {
-    return tu1_address;
+// The running build and its translation (fable3_guest_build.h): the shell ABI's "TU1" is the build
+// a title's source names, which for Fable 3 is TU3; 1 is the disc.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGuestAddress(uint32_t tu3_address) {
+    return refiii_guest_address(tu3_address);
 }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGuestAddressToTu1(uint32_t live_address) {
-    return live_address;
+    return refiii_guest_address_to_tu3(live_address);
 }
 
 REFII_HOST_ABI_EXPORT int32_t RefiiHostGuestBuild(void) {
-    return 0;
+    return refiii_guest_build();
 }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostInstallWeaponAugmentHook(void) {

@@ -122,8 +122,8 @@ public static class SupportedGame
 
 	/// <summary>
 	/// Fable 3's USA / Europe disc (En, Zh, Ko, Pl, Ru, Cs, Hu, Sk), read from its own security
-	/// block and execution info. No title update is supported: there is no config for a patched
-	/// Fable 3 executable yet.
+	/// block and execution info. Its title update 3 (0.0.0.3 to 0.0.3.3) is cumulative; the
+	/// patched executable's config is Fable3/versions/Fable3TU3.
 	/// </summary>
 	public static readonly Pressing Fable3UsaEurope = new()
 	{
@@ -134,6 +134,8 @@ public static class SupportedGame
 			0xEC, 0xF4, 0x45, 0xBA, 0xD9, 0x9E, 0x18, 0xE7,
 		},
 		BaseVersion = 0x00000003,
+		TitleUpdateName = "TU_16L626M_000000C000000.00000000000O3",
+		UpdatedVersion = 0x00000303,
 	};
 
 	private static readonly Pressing[] Fable2Pressings = { UsaEurope, Russia, France, Spain };

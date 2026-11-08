@@ -2139,7 +2139,7 @@ public static class GameCodeBuild
 
 		// Which executable this payload is recompiled from. guest_build_stamp.cpp states it to
 		// the runtime at load, which is how the hooks and the host bridge pick per-build values.
-		if (GameVersionName == "Fable2")
+		if (Refii.Core.Engine_Title.Active.IsUnpatched(GameVersionName))
 		{
 			flags.Add("-DREFII_GUEST_BUILD_UNPATCHED=1");
 		}

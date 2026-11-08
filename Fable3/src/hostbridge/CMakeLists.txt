@@ -55,6 +55,9 @@ add_library(refiii_hostbridge SHARED
 # The whole core, --no-undefined and OUTPUT_NAME refii_hostbridge (src/hostcore/CMakeLists.txt).
 refii_link_hostcore(refiii_hostbridge)
 
+# Which build the payload stated, and the address table: refiii_vfs's, one copy in the process.
+target_link_libraries(refiii_hostbridge PRIVATE refiii_vfs)
+
 set_target_properties(refiii_hostbridge PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}/Fable3"
     LIBRARY_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}/Fable3"

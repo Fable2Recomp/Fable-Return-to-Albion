@@ -4,8 +4,8 @@
 // This feed reads only those tables; the Options screen's own state reaches Godot as the
 // `@Options.State` statement its handler's hook posts.
 //
-// The defaults before anything is stated are the Options screen's own: gamma 0.5 (0x825c9660),
-// music 1.0, sfx 1.0, voice 0.9 (0x825c9670..84), speaker 2 (0x825c96f8).
+// The defaults before anything is stated are the Options screen's own: gamma 0.5 (disc 0x825C9660),
+// music 1.0, sfx 1.0, voice 0.9 (disc 0x825C9670..84), speaker 2 (disc 0x825C96F8).
 
 #include <cstdint>
 

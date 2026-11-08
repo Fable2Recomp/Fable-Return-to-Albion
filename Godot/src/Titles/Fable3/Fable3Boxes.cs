@@ -212,7 +212,12 @@ public partial class Fable3Boxes : Control
 		}
 		else
 		{
-			buttons.Add(("A", Label(null, "GUI_DIALOG_ACCEPT", strings)));
+			// A box stated without its A (TU3's non-interactive message box) draws no prompt row.
+			if (box.Buttons is not { ShowA: false })
+			{
+				buttons.Add(("A", Label(null, "GUI_DIALOG_ACCEPT", strings)));
+			}
+
 			if (box.Kind == Engine_UiGuiBoxes.BoxKind.Adjuster)
 			{
 				// sub_8281C638(box, 0): B finishes it without the value (event 70).

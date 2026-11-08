@@ -3,19 +3,19 @@
 // at the guest's own entry points (core/payload_bridge.h, src/runtime/src/core/stated_hud.cpp).
 // Nothing here reads guest memory.
 //
-// A NAME is stated by the registry insert sub_8291FCF0 (registry, FNV-1 of the element's
-// attribute, element) and leaves when the registry unfiles it (sub_82B9A200) or is destroyed
-// (sub_8291FB70) — the HUD.bgf's MeterName [1], PulserName [4] and TextName [6] registries.
-//   - A TEXT is what its one writer sub_82733F30(registry, hash, LHString*) last assigned. The
-//     subtitler's pages (sub_82920278, each line of the `Subtitles` box) and the TopBox publisher's
-//     `TopTitle` / `TopMain` / button labels (sub_8217D880) are such writes.
-//   - A METER is the value its one writer sub_8291F6E8(meter, f1) last applied to the element,
+// A NAME is stated by the registry insert sub_82976060 (registry, FNV-1 of the element's
+// attribute, element) and leaves when the registry unfiles it (sub_82BCF348) or is destroyed
+// (sub_82975EE0) — the HUD.bgf's MeterName [1], PulserName [4] and TextName [6] registries.
+//   - A TEXT is what its one writer sub_827681B8(registry, hash, LHString*) last assigned. The
+//     subtitler's pages (sub_829763F8, each line of the `Subtitles` box) and the TopBox publisher's
+//     `TopTitle` / `TopMain` / button labels (sub_8217D7A0) are such writes.
+//   - A METER is the value its one writer sub_82975A58(meter, f1) last applied to the element,
 //     0..100: the meter's own update steps it toward the target its setters gave.
 //   - A PULSER is stated at creation, stopped (mode 2) at phase 0, and nothing in the image
 //     starts one (see hud_hooks.cpp).
 //
-// THE FADE is stated at its one start sub_825D5700 (from, target, seconds) and at the edges of its
-// advance sub_82287090 (held, resumed, complete, locked), and run between them on the host's clock
+// THE FADE is stated at its one start sub_82600658 (from, target, seconds) and at the edges of its
+// advance sub_822852C8 (held, resumed, complete, locked), and run between them on the host's clock
 // at the guest's own rate. The guest's fader stays alive and its readers are the guest's.
 
 #include <cstdint>
@@ -61,7 +61,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHudPulsers(uint32_t* out_hashes, floa
   return RefiiHostGetHudPulserStates(out_hashes, out_phases, nullptr, capacity);
 }
 
-/// The screen fade as the guest's lerp sub_82182CB8 would give it now: `from + (to - from) * t`
+/// The screen fade as the guest's lerp sub_82182C38 would give it now: `from + (to - from) * t`
 /// per byte, truncated, the bytes B, G, R, A. Returns the fader, 0 before the guest stated one.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetScreenFade(float* out_rgba, float* out_progress, uint32_t* out_locked) {
   uint8_t from[4]{};

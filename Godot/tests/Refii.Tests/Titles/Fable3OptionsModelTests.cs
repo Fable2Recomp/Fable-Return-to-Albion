@@ -98,13 +98,16 @@ public class Fable3OptionsModelTests
 	[TestCase]
 	public void SaveManagementGhostsWhatTheShowGhosts()
 	{
-		List<Fable3OptionsModel.Row> rows = Fable3OptionsModel.Rows(Snapshot(Fable3OptionsModel.PageSaveManagement, 1, flag112: 1u, canSave: 0u), Resolve, new List<string>(), NoStated);
+		// Load is ghosted by the stated canLoad (TU3 +192, the disc +112 == 0), not by +112 itself.
+		Fable3OptionsModel.Snapshot blocked = Snapshot(Fable3OptionsModel.PageSaveManagement, 1, canSave: 0u) with { CanLoad = false };
+		List<Fable3OptionsModel.Row> rows = Fable3OptionsModel.Rows(blocked, Resolve, new List<string>(), NoStated);
 		AssertThat(rows.Count).IsEqual(2);
 		AssertThat(rows[0].Name).IsEqual("Save&Continue");
 		AssertThat(rows[0].Ghosted).IsTrue();
 		AssertThat(rows[1].Name).IsEqual("LoadMangement");
 		AssertThat(rows[1].Ghosted).IsTrue();
 		AssertThat(Fable3OptionsModel.Rows(Snapshot(Fable3OptionsModel.PageSaveManagement, 1), Resolve, new List<string>(), NoStated)[0].Ghosted).IsFalse();
+		AssertThat(Fable3OptionsModel.Rows(Snapshot(Fable3OptionsModel.PageSaveManagement, 1, flag112: 2u), Resolve, new List<string>(), NoStated)[1].Ghosted).IsFalse();
 	}
 
 	[TestCase]

@@ -2,71 +2,71 @@
 // Godot's Fable3UiStatements: the HUD root's shown/hidden, the save menu, the Options screen's own
 // query, the money alert, the target names, the crime timer, the job
 // multiplier and the box-manager screens' rows and records. Each of these writers puts its value
-// on screen only behind a presentation (`*H` for the HUD, the box's sub_8291F4C8 for a box, the
+// on screen only behind a presentation (`*H` for the HUD, the box's sub_829588C8 for a box, the
 // save menu's cached +20) — the statement is the value as the caller passed it, at the call.
 //
 // Every address is the Fable 3 disc IDB (port 13339); each offset names its base. GUI =
-// *0x83556490, H = *(GUI+0x20) (the HUD), *H its presentation.
+// *0x83596F84, H = *(GUI+0x20) (the HUD), *H its presentation.
 //
 // THE HUD ROOT. hud.bgf's root (`Scene`) is written by three calls, none of them the interaction
-// mode's tick sub_825C3A78 (that one writes InteractionMode.bgf's root, IM+0): HIDE sub_825C1CB0(H)
-// sets 2 unless already 2 (GetState 0x825C1CE4, SetState 0x825C1D04) — every box's Show calls it;
-// SHOW sub_825C1D28(force) sets 1 unless already 1 and not forced (0x825C1D54..0x825C1D88) — the
-// boxes' hides, the HUD tick's enable (0x822599AC, forced), the cutscene rules (0x8249AA84) and
-// GUI.HideSideInfoPanel (0x8251EF4C); the CUTSCENE RULES sub_8249A030(rules, a2, a3) end by
+// mode's tick sub_825EE908 (that one writes InteractionMode.bgf's root, IM+0): HIDE sub_824CD7E8(H)
+// sets 2 unless already 2 (GetState 0x824CD81C, SetState 0x824CD83C) — every box's Show calls it;
+// SHOW sub_824CD860(force) sets 1 unless already 1 and not forced (0x824CD88C..0x824CD8C0) — the
+// boxes' hides, the HUD tick's enable (0x8225905C, forced), the cutscene rules (disc 0x8249AA84) and
+// GUI.HideSideInfoPanel (disc 0x8251EF4C); the CUTSCENE RULES sub_823A5558(rules, a2, a3) end by
 // setting 3 whenever their word `*rules` keeps bit 27 (0x08000000: `extrwi r10,r11,1,4`
-// 0x8249B6A8, `li r5,3` / SetState 0x8249B6D8 / 0x8249B6DC). `@Hud.Root(state)` on each return.
+// disc 0x8249B6A8, `li r5,3` / SetState disc 0x8249B6D8 / disc 0x8249B6DC). `@Hud.Root(state)` on each return.
 //
-// THE SAVE MENU (*(SM+56), SM = *(GUI+0x1C)): open sub_8296C5D0(menu, allowed, entity) stores
-// +0 = 1 (0x8296C6A8), +1 = allowed (0x8296C6D8) and the cursor +12 = allowed ? 1 : 3
-// (0x8296C6F4 / 0x8296C700) before its presentation block, and may refuse (0x8296C684); every
-// cursor change funnels into sub_8296CB08(menu) with the row at +12 (0x8296CB14: 1 Save, 2 Save
-// and Quit, 3 Quit, 4 Character Management); close sub_8296C858(menu) clears +0 (0x8296C874).
+// THE SAVE MENU (*(SM+56), SM = *(GUI+0x1C)): open sub_829B4E18(menu, allowed, entity) stores
+// +0 = 1 (0x829B4EF0), +1 = allowed (0x829B4F20) and the cursor +12 = allowed ? 1 : 3
+// (0x829B4F3C / 0x829B4F48) before its presentation block, and may refuse (0x829B4ECC); every
+// cursor change funnels into sub_829B5350(menu) with the row at +12 (0x829B535C: 1 Save, 2 Save
+// and Quit, 3 Quit, 4 Character Management); close sub_829B50A0(menu) clears +0 (0x829B50BC).
 // `@SaveMenu.Open(allowed, row)`, `@SaveMenu.Row(row)`, `@SaveMenu.Close`.
 //
-// THE OPTIONS QUERY sub_825CBEC0(box, tag): root state 6, the question by tag into
-// `.Group.QueryBox.Text` (dword_83558948, sub_82819328 at 0x825CBF08) and box+30 = 1
-// (0x825CBF10) — all behind the box's presentation (sub_8291F4C8 at 0x825CBED4, beq 0x825CBEE0).
+// THE OPTIONS QUERY sub_825F6D30(box, tag): root state 6, the question by tag into
+// `.Group.QueryBox.Text` (dword_835995E8, sub_82877030 at 0x825F6D78) and box+30 = 1
+// (0x825F6D80) — all behind the box's presentation (sub_829588C8 at 0x825F6D44, beq 0x825F6D50).
 // The question is r4: `@Options.Query(box, tag)`.
 //
-// THE MONEY ALERT A = *(H+120) player one, *(H+124) player two (sub_825C2150): change
-// sub_8281E560(A, old, delta, kingdom) — queued while A+0 is busy (0x8281E56C -> A+60);
-// show sub_8281E270(A, amount, kingdom); hide sub_8281EA00(A). The running count is the tick's.
+// THE MONEY ALERT A = *(H+120) player one, *(H+124) player two (sub_824CDC88): change
+// sub_8287C2C8(A, old, delta, kingdom) — queued while A+0 is busy (0x8287C2D4 -> A+60);
+// show sub_8287BFD8(A, amount, kingdom); hide sub_8287C768(A). The running count is the tick's.
 //
-// THE TARGET NAMES TN = *(H+112) / *(H+116): show sub_825D9FC8(TN, target, viewer, keep) and clear
-// sub_825DA3A0(TN). THE CRIME TIMER CT = *(H+104): fine sub_825E5270(CT, fine) and seconds
-// sub_825E5308(CT, secs), both formatted and committed only behind CT's elements and *H. THE JOB
-// MULTIPLIER J: sub_82950B60(J, level, LHString* prefix) — J+16 is the level shown (0x82950B80).
+// THE TARGET NAMES TN = *(H+112) / *(H+116): show sub_82604EF8(TN, target, viewer, keep) and clear
+// sub_82605308(TN). THE CRIME TIMER CT = *(H+104): fine sub_8260C4D0(CT, fine) and seconds
+// sub_8260C568(CT, secs), both formatted and committed only behind CT's elements and *H. THE JOB
+// MULTIPLIER J: sub_82973E00(J, level, LHString* prefix) — J+16 is the level shown (0x82973E20).
 //
-// THE BOX SCREENS. Quest summary rows sub_82973FB0(box, row 0..6, quest*, selected, isLast)
-// (0x82973E9C; refuses rows outside 0..6, 0x82973FD4..0x82973FDC); the stats page sub_8296EC88(box,
+// THE BOX SCREENS. Quest summary rows sub_829BCA18(box, row 0..6, quest*, selected, isLast)
+// (0x829BC904; refuses rows outside 0..6, 0x829BCA3C..0x829BCA44); the stats page sub_829B73B0(box,
 // page), which stores +0x34 before its presentation lookup and returns at once on the same page
-// (0x8296EC9C..0x8296ECB0); the king's schedule ctor sub_82972D58(box, table) -> day +0x1C
-// (0x82972DF0); the promise ctor sub_827A3290(box, entity, tag, accepted) -> +72 tag (0x827A32F4),
-// +77 accepted (0x827A3300).
+// (0x829B73C4..0x829B73D8); the king's schedule ctor sub_829BB7C0(box, table) -> day +0x1C
+// (0x829BB858); the promise ctor sub_827DA738(box, entity, tag, accepted) -> +72 tag (0x827DA79C),
+// +77 accepted (0x827DA7A8).
 //
 // THE SCREENS' CURSORS AND CHOICES live in the box and move only inside its pad handler — no call
 // carries them, and every element write of them is behind the presentation — so each handler is
 // stated at its RETURN as the fields it moved, `@Screen.Fields(box, kind, false, fields…)` when
 // they changed, and at the Show's return (display_box_hooks.cpp, StateScreenShown) as the fields it
 // starts on, `@Screen.Fields(box, kind, true, fields…)`. The handlers run on box+12 alone (set by
-// Show before its presentation gate), so they run headless. Join / visibility (CSimpleOnlineOptionsBox_HandleInput sub_82976BC8): the type
-// +48 (18 join / 19 visibility, `stw r28,0x30` 0x82521A10) and the cursor +52 (`stw r9,0x34(r29)`
-// 0x82976EF0). Chat (COrbChatBox_HandleInput sub_829727C8): the working mute byte +36
-// (`stb r9,0x24(r31)` 0x82972C28). Friends (sub_82977B78): the cursor +36 (`stw r9,0x24(r29)`
-// 0x82977D94). Treasury (CMiniStatementBox_HandleInput sub_82B5A410): the page +28 (`stw
-// r11,0x1C(r3)` 0x82B5A6F0), the direction byte +32 (`stb r9,0x20(r29)` 0x82B5A5D4), the amount
-// widget+16 = +56 (the widget at +40, sub_82B56830 at 0x82B5A698). Bed
-// (CBedInteractionMessageBox_HandleInput sub_82B59348): the row +44, sleep +48, sex +52 (0x82B597BC,
-// 0x82B595EC, 0x82B59640). Wedding (CWeddingPickerBox_HandleInput sub_82B5C260): the tier +68
-// (0x82B5C33C). Partners (CMultiplayerPartnersBox_HandleInput sub_82B5CA70): the cursor +56 and
-// scroll +60 (0x82B5CC10 / 0x82B5CC2C). Divorce (CDivorceMessageBox_HandleInput sub_82928958):
-// the reason byte +136 (0x82928AB4) and the Show's page mode +172 (sub_829284D8 at 0x8292859C:
-// 0/3 the reason page sub_82928C90, 1/4 sub_82928F78, 2/5 sub_82929378). Promise
-// (sub_827A3600): the signed byte +77 (A while unsigned, `+77 = 1` 0x827A36EC). Stats
-// (sub_8296DA10): the page +52 (sub_8296EC88), the cursor +68 every page highlights (categories
-// 0x8296EE30, statistics 0x8296F50C), the category +72 (`a1[18] = a1[17]` 0x8296DC68) and the
-// friends' row +76 (0x8296E098).
+// Show before its presentation gate), so they run headless. Join / visibility (CSimpleOnlineOptionsBox_HandleInput sub_829BF5E0): the type
+// +48 (18 join / 19 visibility, `stw r28,0x30` 0x82551870) and the cursor +52 (`stw r9,0x34(r29)`
+// 0x829BF908). Chat (COrbChatBox_HandleInput sub_829BB230): the working mute byte +36
+// (`stb r9,0x24(r31)` 0x829BB690). Friends (sub_829C0600): the cursor +36 (`stw r9,0x24(r29)`
+// 0x829C081C). Treasury (CMiniStatementBox_HandleInput sub_82B8F068): the page +28 (`stw
+// r11,0x1C(r3)` 0x82B8F348), the direction byte +32 (`stb r9,0x20(r29)` 0x82B8F22C), the amount
+// widget+16 = +56 (the widget at +40, sub_82B8B3E0 at 0x82B8F2F0). Bed
+// (CBedInteractionMessageBox_HandleInput sub_82B8DFA0): the row +44, sleep +48, sex +52 (0x82B8E414,
+// 0x82B8E244, 0x82B8E298). Wedding (CWeddingPickerBox_HandleInput sub_82B90EB8): the tier +68
+// (0x82B90F94). Partners (CMultiplayerPartnersBox_HandleInput sub_82B916C0): the cursor +56 and
+// scroll +60 (0x82B91864 / 0x82B91880). Divorce (CDivorceMessageBox_HandleInput sub_8297F5A8):
+// the reason byte +136 (0x8297F704) and the Show's page mode +172 (sub_8297F0D8 at 0x8297F19C:
+// 0/3 the reason page sub_8297F8D8, 1/4 sub_8297FBC0, 2/5 sub_8297FFC0). Promise
+// (sub_827DAB30): the signed byte +77 (A while unsigned, `+77 = 1` 0x827DAC1C). Stats
+// (sub_829B6158): the page +52 (sub_829B73B0), the cursor +68 every page highlights (categories
+// 0x829B7558, statistics 0x829B7C18), the category +72 (`a1[18] = a1[17]` 0x829B63B0) and the
+// friends' row +76 (0x829B67C8).
 
 #include <atomic>
 #include <cstdint>
@@ -78,6 +78,7 @@
 #include <rex/ppc.h>
 
 #include "gui_statements.h"
+#include "../../vfs/include/fable3_guest_build.h"
 
 REX_EXTERN(__imp__rex_Hud_Hide);
 REX_EXTERN(__imp__rex_Hud_Show);
@@ -115,7 +116,7 @@ namespace {
 
 using namespace refii::fable3;
 
-constexpr uint32_t kGuiManager = 0x83556490u;
+const refii::guest::Addr kGuiManager{0x83596F84u};
 constexpr uint32_t kGuiHud = 0x20u;
 constexpr uint32_t kHudMoneyOne = 120u;
 constexpr uint32_t kHudMoneyTwo = 124u;
@@ -240,7 +241,7 @@ REX_EXTERN(rex_Hud_Show) {
   StateRoot(1, "825C1D28");
 }
 
-/// sub_8249A030(rules, a2, a3): state 3 when the rules' word keeps bit 27 on return.
+/// sub_823A5558(rules, a2, a3): state 3 when the rules' word keeps bit 27 on return.
 REX_EXTERN(rex_CutsceneRules_Apply) {
   const uint32_t rules = ctx.r3.u32;
   __imp__rex_CutsceneRules_Apply(ctx, base);
@@ -287,7 +288,7 @@ REX_EXTERN(rex_OptionsBox_Query) {
   __imp__rex_OptionsBox_Query(ctx, base);
 }
 
-/// sub_8281E560(A, old, delta, kingdom).
+/// sub_8287C2C8(A, old, delta, kingdom).
 REX_EXTERN(rex_MoneyAlert_Change) {
   const int32_t player = PlayerOf(base, ctx.r3.u32, kHudMoneyOne, kHudMoneyTwo);
   const bool busy = base != nullptr && Plausible(ctx.r3.u32) && base[ctx.r3.u32 + kMoneyBusy] != 0u;
@@ -299,7 +300,7 @@ REX_EXTERN(rex_MoneyAlert_Change) {
   __imp__rex_MoneyAlert_Change(ctx, base);
 }
 
-/// sub_8281E270(A, amount, kingdom).
+/// sub_8287BFD8(A, amount, kingdom).
 REX_EXTERN(rex_MoneyAlert_Show) {
   const int32_t player = PlayerOf(base, ctx.r3.u32, kHudMoneyOne, kHudMoneyTwo);
   Statement statement("@Hud.Money.Show");
@@ -315,7 +316,7 @@ REX_EXTERN(rex_MoneyAlert_Hide) {
   __imp__rex_MoneyAlert_Hide(ctx, base);
 }
 
-/// sub_825D9FC8(TN, target, viewer, keep).
+/// sub_82604EF8(TN, target, viewer, keep).
 REX_EXTERN(rex_TargetNames_Show) {
   const int32_t player = PlayerOf(base, ctx.r3.u32, kHudTargetsOne, kHudTargetsTwo);
   Statement("@Hud.Target.Show")
@@ -349,19 +350,19 @@ REX_EXTERN(rex_CrimeTimer_Seconds) {
   __imp__rex_CrimeTimer_Seconds(ctx, base);
 }
 
-/// THE CRIME TIMER SHOWN OR HIDDEN. CT = `*(H+0x68)`; CT+4 the root `CrimeTimer` (dword_83559054,
-/// resolved in the HUD at 0x825E51C0). Every writer stores CT+0 = 2 shown / 1 hidden and then sets
+/// THE CRIME TIMER SHOWN OR HIDDEN. CT = `*(H+0x68)`; CT+4 the root `CrimeTimer` (dword_83599C6C,
+/// resolved in the HUD at 0x8260C420). Every writer stores CT+0 = 2 shown / 1 hidden and then sets
 /// the root to the same slide (hud.bgf CrimeTimer slide 2 "show", 1 "hide") behind the root's null
 /// test — so the store is the decision. A [[midasm_hook]] on each store, (CT, value):
-///   - the crime tick sub_828393F0: 0x82839598 / 0x828395CC / 0x82839838 / 0x8283985C [r11, r9];
-///   - the HUD build sub_825E5158: 1 at 0x825E5250 [r31, r9] (`li r9,1` 0x825E5244);
-///   - the partner's packet 369 sub_825E5408(msg, CT): 2 at 0x825E5460, 1 at 0x825E5488 [r31, r11]
-///     (`li r11,2|1` 0x825E5458 / 0x825E5480; r31 = CT, `mr r31,r4` 0x825E5424);
-///   - CECVillageCrimeManager_vf13: 1 at 0x8283A0C0, 2 at 0x8283A0E4 [r11, r9];
-///   - the criminal teardown sub_82837970: 1 at 0x82837A04 [r11, r9];
-///   - RemoveCriminal sub_8283CF88, the list emptied: 1 at 0x8283D0E8 [r11, r9];
-///   - GUI.ShowMiscGUIElements: 2 at 0x8251FE54 [r11, r9];
-///   - the region-change save sub_8232B870: 1 at 0x8232BBDC [r11, r26] (`li r26,1` 0x8232BBBC).
+///   - the crime tick sub_82897980: 0x82897B28 / 0x82897B5C / 0x82897DC8 / 0x82897DEC [r11, r9];
+///   - the HUD build sub_8260C3B0: 1 at 0x8260C4B0 [r31, r9] (`li r9,1` 0x8260C4A4);
+///   - the partner's packet 369 sub_8260C668(msg, CT): 2 at 0x8260C6C0, 1 at 0x8260C6E8 [r31, r11]
+///     (`li r11,2|1` 0x8260C6B8 / 0x8260C6E0; r31 = CT, `mr r31,r4` 0x8260C684);
+///   - CECVillageCrimeManager_vf13: 1 at 0x82898658, 2 at 0x8289867C [r11, r9];
+///   - the criminal teardown sub_82895F38: 1 at 0x82895FCC [r11, r9];
+///   - RemoveCriminal sub_8289B528, the list emptied: 1 at 0x8289B6A8 [r11, r9];
+///   - GUI.ShowMiscGUIElements: 2 at 0x8254FCB0 [r11, r9];
+///   - the region-change save sub_823326B8: 1 at 0x82332A28 [r11, r26] (`li r26,1` 0x82332A08).
 /// Each tick store is made only on a change (`cmpwi`/`beq` before it), the build's always.
 /// `@Hud.Crime.Shown(shown)`.
 void RefiiF3CrimeTimerShown(PPCRegister& timer, PPCRegister& value) {
@@ -369,7 +370,7 @@ void RefiiF3CrimeTimerShown(PPCRegister& timer, PPCRegister& value) {
   Statement("@Hud.Crime.Shown").Add(Boolean(value.u32 == 2u)).Post();
 }
 
-/// sub_82950B60(J, level, prefix).
+/// sub_82973E00(J, level, prefix).
 REX_EXTERN(rex_JobMultiplier_Set) {
   if (base != nullptr) {
     Statement statement("@Hud.Job");
@@ -379,7 +380,7 @@ REX_EXTERN(rex_JobMultiplier_Set) {
   __imp__rex_JobMultiplier_Set(ctx, base);
 }
 
-/// sub_82973FB0(box, row, quest, selected, isLast).
+/// sub_829BCA18(box, row, quest, selected, isLast).
 REX_EXTERN(rex_QuestSummary_Row) {
   const int32_t row = static_cast<int32_t>(ctx.r4.u32);
   if (row >= 0 && row <= 6) {
@@ -394,7 +395,7 @@ REX_EXTERN(rex_QuestSummary_Row) {
   __imp__rex_QuestSummary_Row(ctx, base);
 }
 
-/// sub_8296EC88(box, page): stated when it moves the page.
+/// sub_829B73B0(box, page): stated when it moves the page.
 REX_EXTERN(rex_StatsBox_Page) {
   const uint32_t box = ctx.r3.u32;
   const uint32_t page = ctx.r4.u32;
@@ -455,8 +456,8 @@ REFII_F3_SCREEN_HANDLER(StatsBox_HandleInput, "screen:stats")
 namespace refii::fable3 {
 
 /// A box-manager screen's fields as its Show left them (display_box_hooks.cpp, after the queue
-/// tick's Show): the cursor each Show starts on — join/visibility's saved setting (sub_829770A8),
-/// chat's saved mute (0x8297245C), friends' 1 (0x82977A64), the ctor's treasury page and bed row.
+/// tick's Show): the cursor each Show starts on — join/visibility's saved setting (sub_829BFAC0),
+/// chat's saved mute (0x829BAE34), friends' 1 (disc 0x82977A64), the ctor's treasury page and bed row.
 void StateScreenShown(const uint8_t* base, uint32_t box, const char* kind) {
   if (base != nullptr && Plausible(box)) {
     StateKindFields(base, box, kind, true);
@@ -465,12 +466,12 @@ void StateScreenShown(const uint8_t* base, uint32_t box, const char* kind) {
 
 }  // namespace refii::fable3
 
-/// THE BED'S OPENER sub_825FB858(queue, a2, a3, offered, group, cycle) keeps r6/r7/r8 in r27/r26/r25
-/// (0x825FB874..0x825FB87C) and stores them at box+56/+57/+58 (`stb r27,0x38(r31)` 0x825FB940,
-/// 0x825FB954, 0x825FB958). Offered: the Show halves the Sex row's opacity without it (sub_82B59BB8
-/// on `BedMenu.Sex` / `.Sex.Title`, 0x82B59030..0x82B59054) and the stick never moves onto it
-/// (`+56` tested at 0x82B59800); group picks the Sex title's tag (0x82B58FE8); cycle lets left /
-/// right change the Sex option (0x82B59628 / 0x82B59744). A [[midasm_hook]] at 0x825FB940.
+/// THE BED'S OPENER sub_82623738(queue, a2, a3, offered, group, cycle) keeps r6/r7/r8 in r27/r26/r25
+/// (0x82623754..0x8262375C) and stores them at box+56/+57/+58 (`stb r27,0x38(r31)` 0x82623820,
+/// 0x82623834, 0x82623838). Offered: the Show halves the Sex row's opacity without it (sub_82B8E810
+/// on `BedMenu.Sex` / `.Sex.Title`, 0x82B8DBE0..0x82B8DC04) and the stick never moves onto it
+/// (`+56` tested at 0x82B8E458); group picks the Sex title's tag (0x82B8DB98); cycle lets left /
+/// right change the Sex option (0x82B8E280 / 0x82B8E39C). A [[midasm_hook]] at 0x82623820.
 void RefiiF3BedOpened(PPCRegister& box, PPCRegister& offered, PPCRegister& group, PPCRegister& cycle) {
   Statement("@Screen.Opened")
       .Add(Text(Hex(box.u32)))
@@ -481,11 +482,11 @@ void RefiiF3BedOpened(PPCRegister& box, PPCRegister& offered, PPCRegister& group
       .Post();
 }
 
-/// THE WEDDING PICKER'S CTOR sub_82B5BCF0 stores its three affordable bytes (stack args 34/36/38)
-/// at box+88/+89/+90 from r5 / r3 / r10 (`stb` 0x82B5BDC4 / 0x82B5BDC8 / 0x82B5BDCC). A tier
-/// books only when its byte is set (sub_82B5C260, 0x82B5C408..0x82B5C43C) and the Show marks an
-/// unaffordable price (dword_8355DBBC appended, 0x82B5BF2C / 0x82B5BFA8 / 0x82B5C01C). A
-/// [[midasm_hook]] at 0x82B5BDD0, the stores done.
+/// THE WEDDING PICKER'S CTOR sub_82B90948 stores its three affordable bytes (stack args 34/36/38)
+/// at box+88/+89/+90 from r5 / r3 / r10 (`stb` 0x82B90A1C / 0x82B90A20 / 0x82B90A24). A tier
+/// books only when its byte is set (sub_82B90EB8, 0x82B91060..0x82B91094) and the Show marks an
+/// unaffordable price (dword_8359E824 appended, 0x82B90B84 / 0x82B90C00 / 0x82B90C74). A
+/// [[midasm_hook]] at 0x82B90A28, the stores done.
 void RefiiF3WeddingOpened(PPCRegister& box, PPCRegister& first, PPCRegister& second, PPCRegister& third) {
   Statement("@Screen.Opened")
       .Add(Text(Hex(box.u32)))
@@ -496,11 +497,11 @@ void RefiiF3WeddingOpened(PPCRegister& box, PPCRegister& first, PPCRegister& sec
       .Post();
 }
 
-/// THE PARTNERS' ROW WRITER sub_82B5D9E0(box, CCharString* row path, record): the window row's
-/// record as sub_82B5D6A8 passes it (0x82B5D8E4) after storing the online / joinable results of
-/// sub_82382FB0 / sub_82383020 at record+43 / +42 (0x82B5D730 / 0x82B5D74C; a local player's
-/// record +42 = 0, +43 = 1, 0x82B5D70C). +40 is the marriage: the writer states the children
-/// only for one (0x82B5DC30) and the row's slide is +2 without it (0x82B5D8FC..0x82B5D920).
+/// THE PARTNERS' ROW WRITER sub_82B92638(box, CCharString* row path, record): the window row's
+/// record as sub_82B92300 passes it (0x82B9253C) after storing the online / joinable results of
+/// sub_8238F7E0 / sub_8238F850 at record+43 / +42 (0x82B92388 / 0x82B923A4; a local player's
+/// record +42 = 0, +43 = 1, 0x82B92364). +40 is the marriage: the writer states the children
+/// only for one (0x82B92888) and the row's slide is +2 without it (0x82B92554..0x82B92578).
 /// `@Screen.PartnerRow(box, path, married, online, joinable)`.
 REX_EXTERN(rex_PartnersBox_Row) {
   if (base != nullptr && Plausible(ctx.r3.u32) && Plausible(ctx.r5.u32)) {
@@ -516,10 +517,10 @@ REX_EXTERN(rex_PartnersBox_Row) {
   __imp__rex_PartnersBox_Row(ctx, base);
 }
 
-/// THE KING'S SCHEDULE ROW sub_82973328(box, row 1..4, tick slide, tag): the Show's call per row
-/// (0x82973270) — the table's tick for a listed task, 4 and tag 0 past the day's tasks
-/// (0x82973264 / 0x82973268); the row writer sets the tag on `TaskN` and the tick on `TickBoxN`
-/// (0x829733E0 / 0x829733F0). `@Screen.ScheduleRow(box, row, tick, tag)`.
+/// THE KING'S SCHEDULE ROW sub_829BBD90(box, row 1..4, tick slide, tag): the Show's call per row
+/// (0x829BBCD8) — the table's tick for a listed task, 4 and tag 0 past the day's tasks
+/// (0x829BBCCC / 0x829BBCD0); the row writer sets the tag on `TaskN` and the tick on `TickBoxN`
+/// (0x829BBE48 / 0x829BBE58). `@Screen.ScheduleRow(box, row, tick, tag)`.
 REX_EXTERN(rex_KingsSchedule_Row) {
   const int32_t row = static_cast<int32_t>(ctx.r4.u32);
   if (row >= 1 && row <= 4) {
@@ -535,14 +536,14 @@ REX_EXTERN(rex_KingsSchedule_Row) {
 /// THE STATS SCREEN'S WINDOWS: each page's writer decides its first row, and the cursor `+68` is
 /// highlighted where `start + row == cursor`. `@Screen.StatsWindow(box, page, start, count, rows)`
 /// at the instruction after the decision:
-///   - categories sub_8296ED30: count = the categories / 20 (`divw r7` 0x8296ED58); start r24 = 0, or
-///     cursor - 8 when count > 8 and cursor >= 8 (0x8296ED5C..0x8296ED74); rows 0..7 (`cmplwi r28,8`
-///     0x8296EED0). Midasm at 0x8296ED7C (box r27).
-///   - statistics sub_8296EF78: count r30 (0x8296F1C0); rows r27 = 6 when the profile is online and
-///     listed (0x8296F1C8..0x8296F1D4), else 9 (0x8296F1E8); start r31 = 0, or cursor - rows + 1
-///     when count > rows and cursor >= rows (0x8296F200..0x8296F220). Midasm at 0x8296F224 (box r28).
-///   - friends sub_829708B0: count r31 (stored at box+80, 0x82970B58); start r10 = 0, or cursor - 8
-///     when count > 9 and cursor >= 9 (0x82970B54..0x82970B6C); rows 0..8. Midasm at 0x82970B70
+///   - categories sub_829B7458: count = the categories / 20 (`divw r7` 0x829B7480); start r24 = 0, or
+///     cursor - 8 when count > 8 and cursor >= 8 (0x829B7484..0x829B749C); rows 0..7 (`cmplwi r28,8`
+///     0x829B75F8). Midasm at 0x829B74A4 (box r27).
+///   - statistics sub_829B76A0: count r30 (0x829B78CC); rows r27 = 6 when the profile is online and
+///     listed (disc 0x8296F1C8..disc 0x8296F1D4), else 9 (disc 0x8296F1E8); start r31 = 0, or cursor - rows + 1
+///     when count > rows and cursor >= rows (0x829B790C..0x829B792C). Midasm at 0x829B7930 (box r28).
+///   - friends sub_829B8FC0: count r31 (stored at box+80, 0x829B9268); start r10 = 0, or cursor - 8
+///     when count > 9 and cursor >= 9 (0x829B9264..0x829B927C); rows 0..8. Midasm at 0x829B9280
 ///     (box r28).
 namespace {
 

@@ -2,71 +2,71 @@
 // the table both modules link (core/payload_bridge.h, src/runtime/src/core/stated_world_icons.cpp);
 // the host bridge (Fable3/src/hostbridge/src/icon_feed.cpp) reads only that table. Every hook runs
 // the guest's body unchanged: the icon objects and records stay alive and run — the hold fill
-// (sub_825EC530 posts message 116 at 0x825ECB20 and runs CECOnActionUse_Use at 0x825ECD64), the
-// choice commit (sub_825E91E0 finds its icon through sub_825EDDF8 at 0x825E93BC) and every read-back
+// (disc sub_825EC530 posts message 116 at disc 0x825ECB20 and runs CECOnActionUse_Use at disc 0x825ECD64), the
+// choice commit (sub_826103E8 finds its icon through sub_82615168 at 0x826105D0) and every read-back
 // are the guest's. The drawing is Godot's.
 //
-// Every address is the Fable 3 IDB; each offset names its base.
+// Every address is the Fable 3 TU3 IDB ("disc" marks one TU3 lacks); each offset names its base.
 //
-// THE REGISTRY R = *(*(GUI+0x20)+0x18), GUI = *0x83556490, ticked by sub_825EC530(R, time, ctx, draw).
-//   - Add (sub_825ED9C8 by entity, sub_825EDB10 by position) only builds a 64-byte request
-//     (sub_825EC218) and queues it on R+88 (sub_825EF6D8 at 0x825EDA44 / 0x825EDB9C).
-//   - The tick takes each accepted request (sub_825EF220, 0x825EC684) to sub_825EEB28 (0x825EC69C):
+// THE REGISTRY R = *(*(GUI+0x20)+0x18), GUI = *0x83596F84, ticked by disc sub_825EC530(R, time, ctx, draw).
+//   - Add (sub_82614D30 by entity, sub_82614E78 by position) only builds a 64-byte request
+//     (sub_826135E0) and queues it on R+88 (sub_82616B28 at 0x82614DAC / 0x82614F04).
+//   - The tick takes each accepted request (sub_82616590, disc 0x825EC684) to sub_82615E98 (disc 0x825EC69C):
 //     an icon already held under the same name and entity is initialised again (`vt+4` at
-//     0x825EEC80); otherwise a CWorldIcon3D (560 bytes, vtable 0x820029F8 stored 0x82B50314; built
-//     0x825EEDD8), a CEmotionWorldIcon (912, type 77, vtable 0x820C37A8 stored 0x829782E0; built
-//     0x825EEE18) or a HUD-element icon (192, vtable 0x820D5EBC stored 0x82B52534 by sub_82B52440,
-//     0x825EEE24) is built and initialised (`vt+4`, 0x825EEF44). Every Init reaches
-//     CWorldIconBase's sub_82B52DB0 (from 0x82B51274 and 0x82B5207C; the emotion Init sub_82978558
-//     runs the 3D one at 0x82978574).
-//   - Each tick it asks every icon it holds whether it lives (`vt+20`, 0x825EC7C4 / 0x825ECFA4 /
-//     0x825ED3E0) and Updates it (`vt+16`, icon, visible, ctx) — 0x825EC824 for the entity-less
-//     vector R+20..R+24, 0x825ED000 / 0x825ED04C / 0x825ED46C for the entity map. `visible` is
-//     sub_82230C10: the icon's player (+103, written 0x825EEEC0) is the current one (0x82230C54),
+//     0x82615FF0); otherwise a CWorldIcon3D (560 bytes, vtable 0x82002978 stored 0x82B84E84; built
+//     0x82616148), a CEmotionWorldIcon (912, type 77, vtable 0x820C6D50 stored 0x829C0E78; built
+//     0x82616188) or a HUD-element icon (192, vtable 0x820D889C stored 0x82B870BC by sub_82B86FC8,
+//     0x82616194) is built and initialised (`vt+4`, 0x826162B4). Every Init reaches
+//     CWorldIconBase's sub_82B87938 (from 0x82B85DE4 and 0x82B86BEC; the emotion Init sub_829C10F0
+//     runs the 3D one at 0x829C110C).
+//   - Each tick it asks every icon it holds whether it lives (`vt+20`, disc 0x825EC7C4 / 0x8261430C /
+//     0x82614748) and Updates it (`vt+16`, icon, visible, ctx) — disc 0x825EC824 for the entity-less
+//     vector R+20..R+24, 0x82614368 / 0x826143B4 / 0x826147D4 for the entity map. `visible` is
+//     sub_8222FA78: the icon's player (+103, written 0x82616230) is the current one (0x8222FABC),
 //     R+55 may draw world icons, the HUD's hidden bit, and for the opinion and hint kinds R+56 and
-//     R+57 (SetCanShowHintWorldIcons writes R+57 at 0x8251C328) — and, in an entity's group, only
-//     the icon that wins the group (0x825ED450). A dead icon is erased instead: sub_825EE968(out,
-//     R, vector, iterator) is the one erase of an icon (0x825EC858, 0x825ED06C, 0x825ED4A0, Remove
-//     sub_825EDCA8 at 0x825EDD68, the record's remover sub_8226CCF0 -> sub_821941A0 at 0x82194254).
-//   - The Updates: CWorldIcon3D's sub_82226DA8 (slot 4; the emotion Update sub_82979508 runs it at
-//     0x8297954C and then the ring tick sub_8297A400 at 0x829795CC) and the HUD-element icon's
-//     sub_82B51B58 (slot 4; `visible` shows its element through `vt+24` at 0x82B51F58). Both start
-//     with the base sub_8222F500: seconds left +48 -= dt (0x8222F538), age +68 += dt (0x8222F564).
-//   - Every icon class ends in CWorldIconBase's destructor sub_82B52D20 (0x82B505EC, 0x82B519AC,
-//     0x82B52CEC).
+//     R+57 (SetCanShowHintWorldIcons writes R+57 at 0x8254BFA8) — and, in an entity's group, only
+//     the icon that wins the group (0x826147B8). A dead icon is erased instead: sub_82615CD8(out,
+//     R, vector, iterator) is the one erase of an icon (disc 0x825EC858, 0x826143D4, 0x82614808, Remove
+//     sub_82615018 at 0x826150D8, the record's remover sub_8226B2E0 -> sub_82194468 at 0x8219451C).
+//   - The Updates: CWorldIcon3D's sub_82225AC8 (slot 4; the emotion Update sub_829C20A0 runs it at
+//     0x829C20E4 and then the ring tick sub_829C2F98 at 0x829C2164) and the HUD-element icon's
+//     sub_82B866C8 (slot 4; `visible` shows its element through `vt+24` at 0x82B86AC8). Both start
+//     with the base sub_8222E3F8: seconds left +48 -= dt (0x8222E430), age +68 += dt (0x8222E45C).
+//   - Every icon class ends in CWorldIconBase's destructor sub_82B878A8 (0x82B8515C, 0x82B8651C,
+//     0x82B87874).
 //
 // AN ICON (offsets from the icon object):
-//   +16 name CCharString (0x82B52DC8)   +20 type (`vt+8`: 0x82B512D0, 0x82B520E8)
-//   +24/+28 entity weak ref, `*(+28)` the node whose first word is the CThing (0x8222F5CC..F5F4)
-//   +48 seconds left, +52 persistent (0x82B52EC4..0x82B52EDC)
-//   +60..+63 colour, drawn as (+62, +61, +60, +63) / 255 (`vt+52` sub_82B53EA8 copies it,
-//   0x82B53EB0..0x82B53EC8; the draw sub_82B50AB8 reads it at 0x82B50E30..0x82B50EBC)
-//   +68 age   +100 fading out (cleared by Init 0x82B52DF4, set at age 4 s 0x82226F24)
-//   +103 player   +112 the anchor: GetWorldPosition (`vt+48`, sub_8221B4F0 `stvx128 v127, r27, r25`
-//   with r25 = 112 at 0x8221B990; the emotion icon's sub_829797B8 adds its orbit, 0x82979FF4) —
-//   the liveness test computes it each tick (0x8222F654) and the draw projects it
-//   3D and emotion only: +144 texture id (0x82B51304; the emotion's swap sub_8297A130 at 0x8297A148),
-//   +148 the GUI image, -1 while none (0x82B50D9C, released 0x82B5137C), +152 scale (0x82226EA8..
-//   0x82226EF0), +156 title and +372 opinion LHStrings (`vt+12` sub_82B51420, 0x82B5143C/0x82B5144C)
-//   emotion only: +692 ring on (sub_82979188, 0x829791B8), +696 progress 0..300 (0x8297A6A4), +700
-//   complete (0x8297A61C), +701 manual (0x829791FC), +720 manual speed (0x8297A544)
-//   HUD-element only: +144 is its pooled element slot (0x82B52520), +148 its element state.
+//   +16 name CCharString (0x82B87950)   +20 type (`vt+8`: 0x82B85E40, 0x82B86C58)
+//   +24/+28 entity weak ref, `*(+28)` the node whose first word is the CThing (0x8222E4C4..F5F4)
+//   +48 seconds left, +52 persistent (0x82B87A4C..0x82B87A64)
+//   +60..+63 colour, drawn as (+62, +61, +60, +63) / 255 (`vt+52` disc sub_82B53EA8 copies it,
+//   disc 0x82B53EB0..disc 0x82B53EC8; the draw sub_82B85628 reads it at 0x82B859A0..0x82B85A2C)
+//   +68 age   +100 fading out (cleared by Init 0x82B8797C, set at age 4 s 0x82225C44)
+//   +103 player   +112 the anchor: GetWorldPosition (`vt+48`, sub_8221A590 `stvx128 v127, r27, r25`
+//   with r25 = 112 at 0x8221AA30; the emotion icon's sub_829C2350 adds its orbit, 0x829C2B8C) —
+//   the liveness test computes it each tick (0x8222E54C) and the draw projects it
+//   3D and emotion only: +144 texture id (0x82B85E74; the emotion's swap sub_829C2CC8 at 0x829C2CE0),
+//   +148 the GUI image, -1 while none (0x82B8590C, released 0x82B85EEC), +152 scale (0x82225BC8..
+//   0x82225C10), +156 title and +372 opinion LHStrings (`vt+12` sub_82B85F90, 0x82B85FAC/0x82B85FBC)
+//   emotion only: +692 ring on (sub_829C1D20, 0x829C1D50), +696 progress 0..300 (0x829C3240), +700
+//   complete (0x829C31B8), +701 manual (0x829C1D94), +720 manual speed (0x829C30DC)
+//   HUD-element only: +144 is its pooled element slot (0x82B870A8), +148 its element state.
 //
-// THE CHOICE RECORDS. Every creator — Lua Emotion.AddEmotion (sub_825E8C90 0x825E8D08), the shop
-// plinth (sub_825E8EC0 0x825E8F8C), OnActionUse (sub_825E8FC0 0x825E9070), sub_825E8DC0 (0x825E8E94),
-// the net clone (sub_822951F0) — ends in sub_825E8D30(E, shared_ptr*), which pushes the shared
-// pointer onto E's list (sub_8238CFD0 copies its object word into the node at 0x8238D010). The
-// record's shared count deletes it through sub_825EBD70 (the deleter sub_825EBCF8 stores at
-// 0x825EBD64), which removes its icon (sub_8226CCF0 at 0x825EBDB8). The record (sub_825E8458):
-//   +0 action (0x825E847C; the release rewrites it, 0x825E9600)   +4 Name (0x825E84BC)
-//   +8/+12 player uid (0x825E86A4/0x825E86AC)   +16 Text LHString (0x825E850C)
-//   +20/+24 entity weak ref (0x825E8540/0x825E8548)   +32 Position (0x825E8560)
-//   +52 RecordName (0x825E859C)   +56 kind (sub_825EBEE8, 0x825E85A8)   +60 Holdable (0x825E85C0)
-//   +61 ManuallyIncreasePower (0x825E85D8)   +62 held (0x825E85DC; press 0x825E9924, release
-//   0x825E9608, both in sub_825E91E0)   +64 ManualPowerIncreaseSpeed (0x825E8610)
-// The record's icon is the one sub_825EDDF8(R, name, entity) finds: the record's Name and entity
-// (sub_825E8938 queues it under rec+4 and the entity at rec+20, 0x825E89C0), matched by
-// sub_82267178 on the icon's +16 and, when an entity is given, its +24.
+// THE CHOICE RECORDS. Every creator — Lua Emotion.AddEmotion (sub_8260FE98 0x8260FF10), the shop
+// plinth (sub_826100C8 0x82610194), OnActionUse (sub_826101C8 0x82610278), sub_8260FFC8 (0x8261009C),
+// the net clone (sub_822935B8) — ends in sub_8260FF38(E, shared_ptr*), which pushes the shared
+// pointer onto E's list (sub_82476A28 copies its object word into the node at 0x82476A68). The
+// record's shared count deletes it through sub_826131F0 (the deleter sub_82613178 stores at
+// 0x826131E4), which removes its icon (sub_8226B2E0 at 0x82613238). The record (sub_8260F610):
+//   +0 action (0x8260F634; the release rewrites it, disc 0x825E9600)   +4 Name (0x8260F674)
+//   +8/+12 player uid (0x8260F85C/0x8260F864)   +16 Text LHString (0x8260F6C4)
+//   +20/+24 entity weak ref (0x8260F6F8/0x8260F700)   +32 Position (0x8260F718)
+//   +52 RecordName (0x8260F754)   +56 kind (sub_82613368, 0x8260F760)   +60 Holdable (0x8260F778)
+//   +61 ManuallyIncreasePower (0x8260F790)   +62 held (0x8260F794; press disc 0x825E9924, release
+//   disc 0x825E9608, both in sub_826103E8)   +64 ManualPowerIncreaseSpeed (0x8260F7C8)
+// The record's icon is the one sub_82615168(R, name, entity) finds: the record's Name and entity
+// (sub_8260FB48 queues it under rec+4 and the entity at rec+20, 0x8260FBD0), matched by
+// sub_82265BC0 on the icon's +16 and, when an entity is given, its +24.
 
 #include <atomic>
 #include <cstdint>
@@ -78,6 +78,7 @@
 
 #include "core/payload_bridge.h"
 #include "gui_statements.h"
+#include "../../vfs/include/fable3_guest_build.h"
 
 REX_EXTERN(__imp__rex_WorldIcon_Init);
 REX_EXTERN(__imp__rex_WorldIcon3D_Update);
@@ -97,9 +98,9 @@ using refii::fable3::Plausible;
 using refii::fable3::ReadCharString;
 using refii::fable3::ReadLhString;
 
-constexpr uint32_t kVtWorldIcon3D = 0x820029F8u;
-constexpr uint32_t kVtEmotionIcon = 0x820C37A8u;
-constexpr uint32_t kVtHudElementIcon = 0x820D5EBCu;
+constexpr uint32_t kVtWorldIcon3D = 0x82002978u;  // classified by ToTu3
+constexpr uint32_t kVtEmotionIcon = 0x820C6D50u;  // classified by ToTu3
+constexpr uint32_t kVtHudElementIcon = 0x820D889Cu;  // classified by ToTu3
 
 constexpr uint32_t kMaxChoices = 64u;
 
@@ -116,7 +117,7 @@ uint32_t WeakRefTarget(const uint8_t* base, uint32_t at) {
 }
 
 uint32_t ClassOf(const uint8_t* base, uint32_t icon) {
-  switch (LoadGuestU32(base, icon)) {
+  switch (refii::guest::ToTu3(LoadGuestU32(base, icon))) {
     case kVtWorldIcon3D:
       return REFII_WORLD_ICON_CLASS_3D;
     case kVtEmotionIcon:

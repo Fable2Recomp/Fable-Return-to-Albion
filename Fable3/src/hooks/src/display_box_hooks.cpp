@@ -4,70 +4,70 @@
 // handed to the box's OWN answer function on the guest's thread (AnswerBoxAction); the box's pad
 // handler does nothing while Godot owns it.
 //
-// THE BOX MANAGER BM = *(*(GUI+0x1C)+0x30) (GUI = *0x83556490) holds two queues of 28 bytes at
+// THE BOX MANAGER BM = *(*(GUI+0x1C)+0x30) (GUI = *0x83596F84) holds two queues of 28 bytes at
 // BM+4 (Q0: messages, questions, adjusters, quest boxes) and BM+32 (Q1: intermission and info
 // cards, button boxes). Queue q: +4/+8 the pending vector's begin/end (8-byte {Box*, count*}
 // entries), +20 the SHOWING box's shared_ptr. Its writers:
-//   - the push sub_825FBBF8(q, shared_ptr<Box>) — every creator's one door (93 callers: the
-//     `GUI.Display*` natives, the C++ queries, the cards) — appends at q+4 through sub_825FC1C8
-//     (`v3[1] += 8` at 0x825FC2DC), except a card of type 6/7/8 whose name is already queued,
-//     which it drops (0x825FBC74..0x825FBC90). The box is complete there: its creator's ctor
+//   - the push sub_82623BF0(q, shared_ptr<Box>) — every creator's one door (93 callers: the
+//     `GUI.Display*` natives, the C++ queries, the cards) — appends at q+4 through sub_82458000
+//     (`v3[1] += 8` at 0x82458114), except a card of type 6/7/8 whose name is already queued,
+//     which it drops (0x82623C6C..0x82623C88). The box is complete there: its creator's ctor
 //     wrote every field from its own arguments.
-//   - the queue's tick sub_822878B0(q) (0x821B65DC / 0x821B660C): a showing box whose vt[5]
-//     Update answers 0 is released (0x82287910, `*(q+20) = 0` at 0x82287918) — the one exit for
+//   - the queue's tick sub_82285AE8(q) (0x821B671C / disc 0x821B660C): a showing box whose vt[5]
+//     Update answers 0 is released (disc 0x82287910, `*(q+20) = 0` at disc 0x82287918) — the one exit for
 //     lifetime, Hide and RemoveDisplayBox; with none showing and a pending box, unless the menu
 //     box is open (`*(SM+0x34)` +12, or its close timer +4 > 0), the queue's own vt[0]
-//     (sub_825FC030 for Q0) takes the front into q+20 (0x825FC060) and calls the box's vt[1]
-//     Show (0x825FC09C) — its only caller is this tick (0x822879D4) — then erases the front.
-//   - the pending erase sub_825FC2F8(out, vector, iterator) (the tick's at 0x822879E4,
-//     RemoveDisplayBox's sub_825FBCC8 at 0x825FBE64, RemoveAllDisplayBoxesWithName's sub_825FBE80
-//     at 0x825FBFFC): `*(vector+4) -= 8` at 0x825FC350.
+//     (sub_82624028 for Q0) takes the front into q+20 (0x82624058) and calls the box's vt[1]
+//     Show (0x82624094) — its only caller is this tick (disc 0x822879D4) — then erases the front.
+//   - the pending erase sub_826241C0(out, vector, iterator) (the tick's at disc 0x822879E4,
+//     RemoveDisplayBox's sub_82623CC0 at 0x82623E5C, RemoveAllDisplayBoxesWithName's sub_82623E78
+//     at 0x82623FF4): `*(vector+4) -= 8` at 0x82624218.
 //
-// THE BOX (base ctor sub_8291ECD8(box, name, text)): +0 vtable, +4 name CCharString (0x8291ED04),
-// +8 resolved text LHString (0x8291ED10), +12 shown. The class is its vtable, and slot 4 is its
-// pad handler HandleInput(box, ev*, player), reached only through sub_825C8B68(BM, ev) — Q0's
-// showing box, else Q1's (0x825C8BEC; the handler's answer is not read). The classes Godot owns:
-//   - message off_820B45C0 (CMessageBox_HandleInput sub_8281B390: 73 GUI_CANCEL plays the cancel
-//     cue and closes it, 0x8281B3D0..0x8281B404; 76 with the download form +33 opens the
-//     marketplace; both only when `+28` is -1 or the player, 0x8281B3BC);
-//   - yes/no off_820B45E0 (+28 = -1, +32/+36 the yes/no tags: Lua_GUI_DisplayYesNoQuestion
-//     0x82518E14..0x82518E30) and the natal query off_820D8868: 41 answers 1, 42 answers 0
-//     through sub_8281BD88(box, answer) (`li r4,1` 0x8281BD54 / `li r4,0` 0x8281BD38), which posts
-//     message event 68 with it (`sub_821CF948(..., 68, ..., 101, answer)` at 0x8281BE08) and
+// THE BOX (base ctor sub_82958000(box, name, text)): +0 vtable, +4 name CCharString (0x8295802C),
+// +8 resolved text LHString (0x82958038), +12 shown. The class is its vtable, and slot 4 is its
+// pad handler HandleInput(box, ev*, player), reached only through sub_825F38F8(BM, ev) — Q0's
+// showing box, else Q1's (0x825F397C; the handler's answer is not read). The classes Godot owns:
+//   - message disc off_820B45C0 (CMessageBox_HandleInput sub_82878F88: 73 GUI_CANCEL plays the cancel
+//     cue and closes it, disc 0x8281B3D0..disc 0x8281B404; 76 with the download form +33 opens the
+//     marketplace; both only when `+28` is -1 or the player, disc 0x8281B3BC);
+//   - yes/no disc off_820B45E0 (+28 = -1, +32/+36 the yes/no tags: Lua_GUI_DisplayYesNoQuestion
+//     0x82548A38..disc 0x82518E30) and the natal query off_820DB278: 41 answers 1, 42 answers 0
+//     through sub_82B93DB0(box, answer) (`li r4,1` disc 0x8281BD54 / `li r4,0` disc 0x8281BD38), which posts
+//     message event 68 with it (`sub_821CFA18(..., 68, ..., 101, answer)` at 0x82B93E30) and
 //     closes the box through its vt[2];
-//   - the numeric adjuster off_820B4600 (ctor sub_8281BEC0(box, text, min, max, increment,
-//     value, …): +100 min, +104 max, +108 increment, +112 value, 0x8281BF2C..0x8281BF38): 41/42
-//     finish it through sub_8281C638(box, accept), which posts event 69 (accept) or 70 with
-//     `box[28]` = +112 (0x8281C688..0x8281C6CC) and closes it;
-//   - the quest box off_820B4620 (CQuestInfoBox_HandleInput sub_8281CB80: 73/61 post event 67 and
-//     close, 0x8281CBF0..0x8281CC04);
-//   - the tutorial notice off_82091964 (CTutorialBox_HandleInput sub_824B29C0: 41 closes).
+//   - the numeric adjuster off_820B9A9C (ctor sub_82879C28(box, text, min, max, increment,
+//     value, …): +100 min, +104 max, +108 increment, +112 value, 0x82879C94..0x82879CA0): 41/42
+//     finish it through sub_8287A3A0(box, accept), which posts event 69 (accept) or 70 with
+//     `box[28]` = +112 (0x8287A3F0..0x8287A434) and closes it;
+//   - the quest box off_820B9AC0 (CQuestInfoBox_HandleInput sub_8287A8E8: 73/61 post event 67 and
+//     close, 0x8287A958..0x8287A96C);
+//   - the tutorial notice disc off_82091964 (CTutorialBox_HandleInput sub_824C13F0: 41 closes).
 // The cards (CAcceptHoldBox: a press and release on its own elements) and the button box stay
 // the guest's: their answers are hold and release, not one call.
 //
-// THE PAUSE SCREEN'S MESSAGE BOX is not a queued box. sub_825CEEB0(G, text LHString, download)
-// — reached only from sub_823AB718 (0x823AB7E8) when the top mode is the GUI's — runs when
-// G+36 is 1 (0x825CEED0): +36 = 2 (0x825CEEE4), +40 = screen 42 `paper.MessageBox` (0x825CEEEC),
-// +88 the download flag (0x825CEED8), and the text through sub_8281B598 (0x825CEFC4). The
-// screen input sub_825CE380(SM, ev, player) (SM = *(GUI+0x1C), 0x825CE3A0) answers it while
-// `*(SM+40) == 42`: 72 GUI_SELECT runs sub_825CF040(SM, 2) (0x825CE3BC), whose reset
-// sub_825CF0C8 (+36 = 1, +40 = 0 at 0x825CF0DC / 0x825CF0E4) drops it; 76 with +88 opens the
-// marketplace (0x825CE3D8). sub_823AB718 also resets an older one first (0x823AB7CC).
+// THE PAUSE SCREEN'S MESSAGE BOX is not a queued box. sub_825F9F38(G, text LHString, download)
+// — reached only from sub_823CDB48 (0x823CDC08) when the top mode is the GUI's — runs when
+// G+36 is 1 (0x825F9F58): +36 = 2 (0x825F9F6C), +40 = screen 42 `paper.MessageBox` (0x825F9F74),
+// +88 the download flag (0x825F9F60), and the text through sub_828791C8 (0x825FA04C). The
+// screen input sub_825F9408(SM, ev, player) (SM = *(GUI+0x1C), 0x825F9428) answers it while
+// `*(SM+40) == 42`: 72 GUI_SELECT runs sub_825FA0C8(SM, 2) (0x825F9444), whose reset
+// sub_825FA150 (+36 = 1, +40 = 0 at 0x825FA164 / 0x825FA16C) drops it; 76 with +88 opens the
+// marketplace (0x825F9460). sub_823CDB48 also resets an older one first (disc 0x823AB7CC).
 //
 // THE MENU BOX MB = *(SM+0x34): +0 the highlighted row, +12 open, +13 cancelled, +14 cancelable,
 // +16/+20 the rows (8-byte shared_ptrs to {+0 TextTag CCharString, +4 Enabled}), +32 the title,
-// the RESOLVED text LHString (sub_823A9728 resolves the tag, 0x8251861C / 0x82532A8C). Its
-// writers: the row add sub_825F9E68(MB, &tag) while closed and under six rows (0x825F9E74,
-// 0x825F9EA8; enabled 1 at 0x825F9ED0); the row enable sub_825F9FC0(MB, index, enabled)
-// (0x825FA014); the title and cancelable by its two fillers (DisplayMenuBox's sub_825185A0:
-// title 0x82518628, cancelable `+14 = a2` 0x8251864C; Lua_SleepMenu_ShowSleepMenu: title
-// 0x82532A98, rows SLEEP_FOR_*); the open sub_825FA220(MB) returns 1 when it opened (`+12 = 1`
-// at 0x825FA3F4). Its pad handler sub_825FA030(MB, ev, pad) (one caller, sub_825FA980) maps the
-// event through sub_82B13220 (0x825FA070) — 109 up, 114 down, 1 cancel, 28 select — and moves
-// the row with sub_825F9F38(MB, row) (0x825FA154 / 0x825FA1D8). Select is sub_825FA850(MB): an
-// enabled row clears +13 and closes (0x825FA8E4..0x825FA8E8); cancel, when +14, sets +13 and
-// closes (0x825FA0F0..0x825FA0F4). The close sub_825FA420(MB) posts event 65 with
-// `cancelled ? 0 : row + 1` (0x825FA4C0).
+// the RESOLVED text LHString (sub_823CBB30 resolves the tag, 0x82548244 / 0x82562F6C). Its
+// writers: the row add sub_82621CF0(MB, &tag) while closed and under six rows (0x82621CFC,
+// 0x82621D30; enabled 1 at 0x82621D58); the row enable sub_82621E48(MB, index, enabled)
+// (0x82621E9C); the title and cancelable by its two fillers (DisplayMenuBox's sub_825481C8:
+// title 0x82548250, cancelable `+14 = a2` 0x82548274; Lua_SleepMenu_ShowSleepMenu: title
+// 0x82562F78, rows SLEEP_FOR_*); the open sub_826220A8(MB) returns 1 when it opened (`+12 = 1`
+// at 0x8262227C). Its pad handler sub_82621EB8(MB, ev, pad) (one caller, sub_82622848) maps the
+// event through sub_82B51118 (0x82621EF8) — 109 up, 114 down, 1 cancel, 28 select — and moves
+// the row with sub_82621DC0(MB, row) (0x82621FDC / 0x82622060). Select is sub_826226D8(MB): an
+// enabled row clears +13 and closes (0x8262276C..0x82622770); cancel, when +14, sets +13 and
+// closes (0x82621F78..0x82621F7C). The close sub_826222A8(MB) posts event 65 with
+// `cancelled ? 0 : row + 1` (0x82622348).
 
 #include <cstdint>
 #include <cstdlib>
@@ -82,6 +82,7 @@
 
 #include "box_answers.h"
 #include "gui_statements.h"
+#include "../../vfs/include/fable3_guest_build.h"
 
 REX_EXTERN(__imp__rex_BoxQueue_Push);
 REX_EXTERN(__imp__rex_BoxQueue_Update);
@@ -100,12 +101,12 @@ REX_EXTERN(__imp__rex_MenuBox_Input);
 REX_EXTERN(__imp__rex_MenuBox_AddRow);
 REX_EXTERN(__imp__rex_MenuBox_SetEnabled);
 REX_EXTERN(rex_MessageBox_HandleInput);
+REX_EXTERN(rex_QueryBox_HandleInput);
 REX_EXTERN(rex_NatalQueryBox_HandleInput);
 REX_EXTERN(rex_QuestBox_HandleInput);
 REX_EXTERN(rex_TutorialBox_HandleInput);
 REX_EXTERN(rex_GuiManager_ScreenInput);
 REX_EXTERN(rex_MenuBox_Close);
-REX_EXTERN(rex_QueryBox_Answer);
 REX_EXTERN(rex_NumericAdjuster_Answer);
 REX_EXTERN(rex_MenuBox_Highlight);
 REX_EXTERN(rex_MenuBox_Accept);
@@ -115,85 +116,94 @@ namespace {
 
 using namespace refii::fable3;
 
-constexpr uint32_t kGuiManager = 0x83556490u;
+const refii::guest::Addr kGuiManager{0x83596F84u};
 constexpr uint32_t kQueuePendingEnd = 8u;
 constexpr uint32_t kQueueShowing = 20u;
-constexpr uint32_t kQueueStride = 28u;
+// A queue's size: Q0 at BM+4, Q1 after it (TU3 `addi r3,r31,0x28` 0x821B6748, disc 0x20 at
+// disc 0x821B6608: TU3 added a word; the pending vector and the showing box stay at +4/+8 and +20).
+uint32_t QueueStride() { return refii::guest::Pick(36u, 28u); }
 
 constexpr uint32_t kBoxName = 4u;
 constexpr uint32_t kBoxText = 8u;
 
-/// The box classes, by vtable (Fable 3 IDB, disc build).
-constexpr uint32_t kVtMessage = 0x820B45C0u;
-constexpr uint32_t kVtYesNo = 0x820B45E0u;
-constexpr uint32_t kVtNatalQuery = 0x820D8868u;
-constexpr uint32_t kVtAdjuster = 0x820B4600u;
-constexpr uint32_t kVtQuest = 0x820B4620u;
-constexpr uint32_t kVtMarriage = 0x820B4640u;
-constexpr uint32_t kVtIntermission = 0x820D87D4u;
+/// The box classes, by vtable (Fable 3 TU3 IDB).
+constexpr uint32_t kVtMessage = 0x820B9A30u;  // classified by ToTu3
+constexpr uint32_t kVtYesNo = 0x820B9A78u;  // classified by ToTu3
+constexpr uint32_t kVtNatalQuery = 0x820DB278u;  // classified by ToTu3
+constexpr uint32_t kVtAdjuster = 0x820B9A9Cu;  // classified by ToTu3
+constexpr uint32_t kVtQuest = 0x820B9AC0u;  // classified by ToTu3
+constexpr uint32_t kVtMarriage = 0x820B9AE4u;  // classified by ToTu3
+constexpr uint32_t kVtIntermission = 0x820DB1DCu;  // classified by ToTu3
 /// CAcceptHoldBox (type 8; the PC RTTI class map: `Paper.HoldButton`, `Paper.Accept`).
-constexpr uint32_t kVtInfoCard = 0x820D71CCu;
-constexpr uint32_t kVtButtonBox = 0x820D87F4u;
-constexpr uint32_t kVtWeddingPicker = 0x820D85A4u;
-/// Q0's CTutorialBox (type 26, ctor sub_824B1BC8: its Show hides the B button and both natal
-/// choices, 0x824B27C0..0x824B27E8; its input takes only 41, 0x824B29DC) and Q1's CAcceptBox
-/// (type 6, built by the card factory sub_825FB988 case 6; its input slot is `li r3, 0`) — class
+constexpr uint32_t kVtInfoCard = 0x820D9BB0u;  // classified by ToTu3
+constexpr uint32_t kVtButtonBox = 0x820DB200u;  // classified by ToTu3
+constexpr uint32_t kVtWeddingPicker = 0x820DAFA0u;  // classified by ToTu3
+/// Q0's CTutorialBox (type 26, ctor sub_824C0388: its Show hides the B button and both natal
+/// choices, disc 0x824B27C0..disc 0x824B27E8; its input takes only 41, 0x824C140C) and Q1's CAcceptBox
+/// (type 6, built by the card factory disc sub_825FB988 case 6; its input slot is `li r3, 0`) — class
 /// names from the PC build's RTTI (scratch f3/gaps/rtti/classmap.tsv).
-constexpr uint32_t kVtNotice = 0x82091964u;
-constexpr uint32_t kVtDisplay = 0x820D71ECu;
+constexpr uint32_t kVtNotice = 0x82092D7Cu;  // classified by ToTu3
+constexpr uint32_t kVtDisplay = 0x820D9BD4u;  // classified by ToTu3
+/// TU3 only: GUI.DisplayNonInteractiveMessageBox's box (native sub_82545F48, vtable stored at
+/// 0x82545FF8): a CMessageBox (ctor sub_82878AE0, name "Unnamed", the text its one argument
+/// resolves) whose input slot is `li r3,0` (0x82F5D180), type 28 (slot 7 0x82372790), shown as the
+/// message box with `paper.Buttons` hidden (0x82879570..0x82879578). It goes when RemoveDisplayBox
+/// closes it. The disc has no such class (and no row: the address is data there).
+constexpr uint32_t kVtNonInteractive = 0x820B9A54u;
+bool Tu3() { return refii::guest::Current() == refii::guest::Build::kTu3; }
 
 /// The box-manager SCREENS, by vtable: each class's slot 7 returns its box type (`li r3, N` at
 /// the function the vtable's +28 names) and its constructor stores the vtable — Options
-/// 0x8209D230 (sub_825C95F0 at 0x825c9680, type 15), hero status 0x820C345C (0x8252188c, 13),
-/// promises 0x820AFD94 (0x827a32e0, 12), stats 0x820C2E28 (0x8296d310, 20), quest summary
-/// 0x820C3214 (0x829735f8, 27), king's schedule 0x820C30E0 (0x82972da8, 25).
-constexpr uint32_t kVtOptions = 0x8209D230u;
-constexpr uint32_t kVtHeroStatus = 0x820C345Cu;
-constexpr uint32_t kVtPromises = 0x820AFD94u;
-constexpr uint32_t kVtStats = 0x820C2E28u;
-constexpr uint32_t kVtQuestSummary = 0x820C3214u;
-constexpr uint32_t kVtKingsSchedule = 0x820C30E0u;
+/// 0x820A0B10 (disc sub_825C95F0 at disc 0x825C9680, type 15), hero status 0x820C69DC (0x825516EC, 13),
+/// promises 0x820B3160 (0x827DA788, 12), stats 0x820C6398 (0x829B5AB0, 20), quest summary
+/// 0x820C6790 (0x829BC060, 27), king's schedule 0x820C6658 (0x829BB810, 25).
+constexpr uint32_t kVtOptions = 0x820A0B10u;  // classified by ToTu3
+constexpr uint32_t kVtHeroStatus = 0x820C69DCu;  // classified by ToTu3
+constexpr uint32_t kVtPromises = 0x820B3160u;  // classified by ToTu3
+constexpr uint32_t kVtStats = 0x820C6398u;  // classified by ToTu3
+constexpr uint32_t kVtQuestSummary = 0x820C6790u;  // classified by ToTu3
+constexpr uint32_t kVtKingsSchedule = 0x820C6658u;  // classified by ToTu3
 
 /// The rest of the box-manager screens, each writing its own .bgf's elements (the presentation
-/// slot is sub_8291F4C8's switch on the type; the slot's file is sub_82B3EC40's table):
-/// join / visibility options 0x820C35F8 (ctor sub_82521928, ONE class whose slot 7 returns its
-/// +48 — 18 JoinOptions.bgf, 19 Visability.bgf, `lwz r3, 0x30(r3)` at 0x82A0AF50), friends
-/// channel 0x820C3640 (sub_82521AF0, 21), chat channel 0x820C2F58 (sub_825208D8, 22), the
-/// treasury statement 0x820D84A4 (sub_82B59C40, 17), the bed menu 0x820D7508 (sub_825FB858, 14),
-/// the food query 0x820D72F4 (sub_825FB3D0 / sub_825FB4A8, 9), the wedding picker 0x820D85A4
-/// (sub_82B5BCF0, 23), co-op partners 0x820D8754 (sub_82B5C5D0, 24), the marriage proposal
-/// 0x820B4640 (sub_825FB730, 10) and the divorce message 0x820C0088 (sub_829281C8, 11).
-constexpr uint32_t kVtJoinOptions = 0x820C35F8u;
-constexpr uint32_t kVtFriendsChannel = 0x820C3640u;
-constexpr uint32_t kVtChatChannel = 0x820C2F58u;
-constexpr uint32_t kVtTreasury = 0x820D84A4u;
-constexpr uint32_t kVtBedMenu = 0x820D7508u;
-constexpr uint32_t kVtFoodQuery = 0x820D72F4u;
-constexpr uint32_t kVtPartners = 0x820D8754u;
-constexpr uint32_t kVtDivorce = 0x820C0088u;
+/// slot is sub_829588C8's switch on the type; the slot's file is sub_82B73E68's table):
+/// join / visibility options 0x820C6B58 (ctor sub_82551788, ONE class whose slot 7 returns its
+/// +48 — 18 JoinOptions.bgf, 19 Visability.bgf, `lwz r3, 0x30(r3)` at 0x82A4B7D0), friends
+/// channel 0x820C6BE0 (sub_82551950, 21), chat channel 0x820C64CC (sub_82550730, 22), the
+/// treasury statement 0x820DAE9C (sub_82B8E898, 17), the bed menu 0x820D9EF8 (sub_82623738, 14),
+/// the food query 0x820D9CE0 (sub_826232B0 / sub_82623388, 9), the wedding picker 0x820DAFA0
+/// (sub_82B90948, 23), co-op partners 0x820DB154 (sub_82B91228, 24), the marriage proposal
+/// 0x820B9AE4 (sub_82623610, 10) and the divorce message 0x820C4660 (sub_8297EDB8, 11).
+constexpr uint32_t kVtJoinOptions = 0x820C6B58u;  // classified by ToTu3
+constexpr uint32_t kVtFriendsChannel = 0x820C6BE0u;  // classified by ToTu3
+constexpr uint32_t kVtChatChannel = 0x820C64CCu;  // classified by ToTu3
+constexpr uint32_t kVtTreasury = 0x820DAE9Cu;  // classified by ToTu3
+constexpr uint32_t kVtBedMenu = 0x820D9EF8u;  // classified by ToTu3
+constexpr uint32_t kVtFoodQuery = 0x820D9CE0u;  // classified by ToTu3
+constexpr uint32_t kVtPartners = 0x820DB154u;  // classified by ToTu3
+constexpr uint32_t kVtDivorce = 0x820C4660u;  // classified by ToTu3
 
 /// The join/visibility class's box type (its slot 7 reads +48).
 constexpr uint32_t kJoinOptionsType = 48u;
 constexpr uint32_t kTypeVisibility = 19u;
 
-/// The message box's download form (DisplayDownloadMessageBox, sub_82516B18): +33 set (0x82516BAC)
-/// shows `paper.MessageBox.Action` and names its X button by the tag at +36 (sub_8281AFA8 at
-/// 0x8281B048 / 0x8281B07C); X (76) is taken only while +33 is set (sub_8281B390, 0x8281B410).
+/// The message box's download form (DisplayDownloadMessageBox, sub_82546080): +33 set (0x8254612C)
+/// shows `paper.MessageBox.Action` and names its X button by the tag at +36 (disc sub_8281AFA8 at
+/// disc 0x8281B048 / disc 0x8281B07C); X (76) is taken only while +33 is set (sub_82878F88, disc 0x8281B410).
 constexpr uint32_t kMessageDownload = 33u;
 constexpr uint32_t kMessageActionTag = 36u;
 
-/// The adjuster's answer reads its value at +112 (`box[28]`, 0x8281C688).
+/// The adjuster's answer reads its value at +112 (`box[28]`, 0x8287A3F0).
 constexpr uint32_t kAdjusterValue = 112u;
 
-/// The game actions the owned handlers take (sub_8281B390, sub_82B5F168, sub_8281CB80,
-/// sub_824B29C0, sub_825CE380).
+/// The game actions the owned handlers take (sub_82878F88, sub_82B93CD8, sub_8287A8E8,
+/// sub_824C13F0, sub_825F9408).
 constexpr uint32_t kActionYes = 41u;
 constexpr uint32_t kActionNo = 42u;
 constexpr uint32_t kActionSelect = 72u;
 constexpr uint32_t kActionCancel = 73u;
 constexpr uint32_t kActionX = 76u;
 
-/// The pause screen's message box: SM+40 is 42 while it is up (0x825CEEEC, read at 0x825CE3AC).
+/// The pause screen's message box: SM+40 is 42 while it is up (0x825F9F74, read at 0x825F9434).
 constexpr uint32_t kScreenManager = 0x1Cu;
 constexpr uint32_t kModalScreenWord = 40u;
 constexpr uint32_t kModalScreen = 42u;
@@ -205,15 +215,16 @@ constexpr uint32_t kMenuCancelled = 13u;
 constexpr uint32_t kMenuCancelable = 14u;
 constexpr uint32_t kMenuTitle = 32u;
 constexpr uint32_t kMenuMaxRows = 6u;
-/// sub_82B13220's actions the menu box's handler takes (0x825FA078..0x825FA08C).
+/// sub_82B51118's actions the menu box's handler takes (0x82621F00..0x82621F14).
 constexpr int32_t kMenuActionCancel = 1;
 constexpr int32_t kMenuActionSelect = 28;
 constexpr int32_t kMenuActionUp = 109;
 constexpr int32_t kMenuActionDown = 114;
 
 const char* KindOf(const uint8_t* base, uint32_t box, uint32_t vtable) {
-  switch (vtable) {
+  switch (refii::guest::ToTu3(vtable)) {
     case kVtMessage: return "message";
+    case kVtNonInteractive: return Tu3() ? "noninteractive" : "unknown";
     case kVtYesNo: return "question";
     case kVtNatalQuery: return "question";
     case kVtNotice: return "notice";
@@ -259,7 +270,7 @@ int32_t QueueIndex(const uint8_t* base, uint32_t queue) {
     return -1;
   }
   const uint32_t offset = queue - (manager + 4u);
-  return offset % kQueueStride == 0u && offset / kQueueStride < 2u ? static_cast<int32_t>(offset / kQueueStride) : -1;
+  return offset % QueueStride() == 0u && offset / QueueStride() < 2u ? static_cast<int32_t>(offset / QueueStride()) : -1;
 }
 
 /// `@Box.Queued(queue, box, kind, name, text, …)` — the creator's fields as the push receives
@@ -273,8 +284,9 @@ void PostQueued(const uint8_t* base, int32_t queue, uint32_t box) {
       .Add(Text(KindOf(base, box, vtable)))
       .Add(Text(ReadCharString(base, box + kBoxName)))
       .Add(Text(ReadLhString(base, box + kBoxText)));
-  switch (vtable) {
+  switch (refii::guest::ToTu3(vtable)) {
     case kVtMessage:
+    case kVtNonInteractive:
       queued.Add(Boolean(base[box + kMessageDownload] != 0u)).Add(Text(ReadCharString(base, box + kMessageActionTag)));
       break;
     case kVtYesNo:
@@ -301,7 +313,7 @@ void PostQueued(const uint8_t* base, int32_t queue, uint32_t box) {
 }
 
 /// A box on screen, as this file stated it: its class at the push and the last player the
-/// guest's own router handed its handler (the handler's player filter, sub_8281B390 0x8281B3BC).
+/// guest's own router handed its handler (the handler's player filter, sub_82878F88 disc 0x8281B3BC).
 struct Showing {
   int32_t queue = -1;
   uint32_t vtable = 0u;
@@ -380,7 +392,7 @@ void RunHandler(PPCContext& ctx, uint8_t* base, Handler handler, uint32_t box, u
 }
 
 /// The gate every owned handler runs through: Godot's answer passes, the guest's pad is
-/// consumed (the router does not read the answer, 0x825C8BEC) after its player is noted.
+/// consumed (the router does not read the answer, 0x825F397C) after its player is noted.
 template <typename Original>
 void Gate(PPCContext& ctx, uint8_t* base, Original original) {
   if (t_host_answer) {
@@ -464,7 +476,7 @@ bool AnswerBoxAction(PPCContext& ctx, uint8_t* base, const char* action) {
       if (base[menu + kMenuCancelable] == 0u) {
         return false;
       }
-      // The guest's own cancel: `+13 = 1` then the close (0x825FA0F0..0x825FA0F4).
+      // The guest's own cancel: `+13 = 1` then the close (0x82621F78..0x82621F7C).
       base[menu + kMenuCancelled] = 1u;
       rex_MenuBox_Close(work, base);
       return true;
@@ -511,8 +523,8 @@ bool AnswerBoxAction(PPCContext& ctx, uint8_t* base, const char* action) {
     if (!ModalUp(base)) {
       return false;
     }
-    // sub_825D6A08 passes SM = *(GUI+0x1C), the action itself (not an event block) and the
-    // player (0x825D6AB0, 0x825D6B8C).
+    // sub_826019F0 passes SM = *(GUI+0x1C), the action itself (not an event block) and the
+    // player (0x82601A98, 0x82601B74).
     PPCContext work = Frame(ctx);
     work.r3.u64 = LoadGuestU32(base, LoadGuestU32(base, kGuiManager) + kScreenManager);
     work.r4.u64 = verb == "action" ? kActionX : kActionSelect;
@@ -524,10 +536,12 @@ bool AnswerBoxAction(PPCContext& ctx, uint8_t* base, const char* action) {
 
   PPCContext work = Frame(ctx);
   work.r3.u64 = box;
-  switch (showing.vtable) {
+  switch (refii::guest::ToTu3(showing.vtable)) {
     case kVtYesNo:
-      work.r4.u64 = verb == "yes" ? 1u : 0u;
-      rex_QueryBox_Answer(work, base);
+      // Through the box's own input, so each build's rule decides: the disc's answers 41/42 at once
+      // (disc sub_8281BCF8); TU3's holds the other-player-paused box for its first 30 ticks and its
+      // answer refuses a "no" while +41 is set (sub_828799F8, sub_82879AD8 0x82879AF4).
+      RunHandler(ctx, base, rex_QueryBox_HandleInput, box, verb == "yes" ? kActionYes : kActionNo, showing.player);
       return true;
     case kVtNatalQuery:
       RunHandler(ctx, base, rex_NatalQueryBox_HandleInput, box, verb == "yes" ? kActionYes : kActionNo, showing.player);
@@ -587,7 +601,7 @@ REX_EXTERN(rex_BoxVector_Erase) {
 
   __imp__rex_BoxVector_Erase(ctx, base);
 
-  // The tick's own erase follows its take (0x822879D4 then 0x822879E4): that box is showing now,
+  // The tick's own erase follows its take (disc 0x822879D4 then disc 0x822879E4): that box is showing now,
   // and the tick states it.
   if (box == 0u || LoadGuestU32(base, vector - 4u + kQueueShowing) == box) {
     return;
@@ -637,7 +651,7 @@ REX_EXTERN(rex_BoxQueue_Update) {
       ShowingBoxes()[after] = Showing{index, vtable, 0u};
     }
     Statement("@Box.Show").Add(Number(static_cast<float>(index))).Add(Text(Hex(after))).Post();
-    // The Show has run (0x825FC09C inside the tick): a screen's starting cursor and choices.
+    // The Show has run (0x82624094 inside the tick): a screen's starting cursor and choices.
     StateScreenShown(base, after, KindOf(base, after, vtable));
   }
 }

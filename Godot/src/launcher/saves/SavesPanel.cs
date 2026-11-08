@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using Godot;
 using Refii.Core;
+using Refii.Launcher.Core;
 using Refii.Save;
 
 namespace Refii.Launcher;
@@ -21,6 +22,8 @@ namespace Refii.Launcher;
 public partial class SavesPanel : VBoxContainer
 {
 	private int _fontSize = 18;
+	private Font? _font;
+	private SmartStyle? _style;
 	private Label _where = null!;
 	private Label _status = null!;
 	private OptionButton _outgoing = null!;
@@ -30,11 +33,11 @@ public partial class SavesPanel : VBoxContainer
 	public override void _Ready()
 	{
 		AddThemeConstantOverride("separation", 8);
-		_where = new Label { AutowrapMode = TextServer.AutowrapMode.WordSmart };
+		_where = Styled(new Label { AutowrapMode = TextServer.AutowrapMode.WordSmart });
 		AddChild(_where);
 
 		var room = new HBoxContainer();
-		room.AddChild(new Label { Text = "To make room:" });
+		room.AddChild(Styled(new Label { Text = "To make room:" }));
 		_outgoing = new OptionButton { SizeFlagsHorizontal = SizeFlags.ExpandFill };
 		room.AddChild(_outgoing);
 		AddChild(room);
@@ -44,12 +47,48 @@ public partial class SavesPanel : VBoxContainer
 		scroll.AddChild(_rows);
 		AddChild(scroll);
 
-		_status = new Label { AutowrapMode = TextServer.AutowrapMode.WordSmart };
+		_status = Styled(new Label { AutowrapMode = TextServer.AutowrapMode.WordSmart });
 		AddChild(_status);
 		Refresh(false);
 	}
 
-	public void Configure(int fontSize) => _fontSize = fontSize;
+	/// <summary>The drawer's font, size and colours, as the Modding and Install tabs take them.</summary>
+	public void Configure(Font? font, int fontSize, SmartStyle style)
+	{
+		_font = font;
+		_fontSize = fontSize;
+		_style = style;
+		if (_rows is not null)
+		{
+			foreach (Label label in FindChildren("*", nameof(Label), true, false).OfType<Label>())
+			{
+				Styled(label);
+			}
+
+			Refresh(_gameRunning);
+		}
+	}
+
+	private T Styled<T>(T control) where T : Control
+	{
+		if (_font is not null)
+		{
+			control.AddThemeFontOverride("font", _font);
+		}
+
+		control.AddThemeFontSizeOverride("font_size", _fontSize);
+		if (control is Label && _style is not null)
+		{
+			control.AddThemeColorOverride("font_color", _style.Text);
+		}
+
+		if (control is BaseButton)
+		{
+			control.MouseDefaultCursorShape = CursorShape.PointingHand;
+		}
+
+		return control;
+	}
 
 	/// <summary>Lists the active title's slots and older saves again.</summary>
 	public void Refresh(bool gameRunning)
@@ -85,28 +124,25 @@ public partial class SavesPanel : VBoxContainer
 		List<Engine_SaveMigration.OlderSave> older = Engine_SaveMigration.ListOlderSaves(profile, title.TitleId);
 		if (older.Count == 0)
 		{
-			_rows.AddChild(new Label { Text = "No older saves." });
+			_rows.AddChild(Styled(new Label { Text = "No older saves." }));
 		}
 
 		foreach (Engine_SaveMigration.OlderSave save in older)
 		{
 			var row = new HBoxContainer();
-			row.AddChild(new Label
+			row.AddChild(Styled(new Label
 			{
 				Text = $"{save.Name} · {save.Label} · {save.Modified.ToLocalTime():yyyy-MM-dd HH:mm}",
 				SizeFlagsHorizontal = SizeFlags.ExpandFill,
 				ClipText = true,
-			});
-			var swap = new Button { Text = "Swap in", Disabled = gameRunning };
+			}));
+			var swap = Styled(new Button { Text = "Swap in", Disabled = gameRunning });
 			swap.Pressed += () => SwapIn(save);
 			row.AddChild(swap);
 			_rows.AddChild(row);
 		}
 
-		foreach (Control control in GetChildren().OfType<Control>())
-		{
-			control.AddThemeFontSizeOverride("font_size", _fontSize);
-		}
+		Styled(_outgoing);
 	}
 
 	private void SwapIn(Engine_SaveMigration.OlderSave save)

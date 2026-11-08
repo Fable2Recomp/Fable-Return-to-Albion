@@ -291,6 +291,7 @@ public static class AndroidPhoneCompiler
         {
             if (manifest.Fable3Hooks.Length == 0 || manifest.Fable3Includes.Length == 0 ||
                 !manifest.Files.ContainsKey("versions/Fable3/refiii_manifest.toml") ||
+                !manifest.Files.ContainsKey("versions/Fable3TU3/refiii_manifest.toml") ||
                 !manifest.NativeFiles.ContainsKey(request.HostBridge) ||
                 !manifest.NativeFiles.ContainsKey(Fable3Vfs))
                 throw new InvalidDataException("This APK's compiler bundle cannot build Fable 3");
@@ -326,9 +327,10 @@ public static class AndroidPhoneCompiler
         foreach (string name in new[] { "default.xex", "default.xexp" })
             if (File.Exists(Path.Combine(request.GameDirectory, name)))
                 File.Copy(Path.Combine(request.GameDirectory, name), Path.Combine(input, name), false);
-        // Fable 3 has one executable (no title update config); its files follow its key (refiii_*.toml).
-        string version = request.IsFable3 ? "Fable3" : File.Exists(Path.Combine(input, "default.xexp")) ? "Fable2TU1" : "Fable2";
-        string key = (request.Title ?? Refii.Core.Engine_Title.Fable2).Key;
+        // The title's own version folder for what was supplied; its files follow its key (refiii_*.toml).
+        Refii.Core.Engine_Title title = request.Title ?? Refii.Core.Engine_Title.Fable2;
+        string version = title.VersionFolder(File.Exists(Path.Combine(input, "default.xexp")));
+        string key = title.Key;
         string generated = Path.Combine(attempt, "generated");
         string config = Below(request.BundleDirectory, "versions/" + version);
         File.Copy(Path.Combine(config, key + "_config.toml"), Path.Combine(attempt, key + "_config.toml"), false);
@@ -890,9 +892,9 @@ public static class AndroidPhoneCompiler
         foreach (string macro in new[] { "TRACY_ENABLE", "TRACY_MANUAL_LIFETIME", "TRACY_DELAYED_INIT",
                      "TRACY_ON_DEMAND", "TRACY_FIBERS", "TRACY_IMPORTS", "REXGLUE_ENABLE_PROFILING" })
             flags.Add("-U" + macro);
-        if (version == "Fable2") flags.Add("-DREFII_GUEST_BUILD_UNPATCHED=1");
+        if ((request.Title ?? Refii.Core.Engine_Title.Fable2).IsUnpatched(version)) flags.Add("-DREFII_GUEST_BUILD_UNPATCHED=1");
         if (lseAtomics) flags.Add("-march=armv8.2-a");
-        foreach (string path in version == "Fable3" ? bundle.Fable3Includes : bundle.Includes)
+        foreach (string path in request.IsFable3 ? bundle.Fable3Includes : bundle.Includes)
             flags.Add("-I" + Below(request.BundleDirectory, path));
         return flags;
     }

@@ -41,6 +41,8 @@ set(_required_inputs
     "${_recompile}/versions/Fable2/refii_config.toml"
     "${_recompile}/versions/Fable3/refiii_manifest.toml"
     "${_recompile}/versions/Fable3/refiii_config.toml"
+    "${_recompile}/versions/Fable3TU3/refiii_manifest.toml"
+    "${_recompile}/versions/Fable3TU3/refiii_config.toml"
     "${_recompile}/src/payload_export.cpp"
 )
 foreach(_input IN LISTS _required_inputs)

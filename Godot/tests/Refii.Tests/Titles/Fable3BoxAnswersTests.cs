@@ -105,8 +105,9 @@ public class Fable3BoxAnswersTests
 	public void TheOptionsStateJoinsTheStatedLevels()
 	{
 		// page 3, row 4, invert on, subtitles off, tutorial on, breadcrumb 3, speaker 0 (the box's),
-		// language 1 of 4, flags 0/0, from the pause, in game, save allowed, no query, unchanged.
-		uint[]? words = Fable3OptionsState.Parse(State(3, 4, 1, 0, 1, 3, 0, 1, 4, 0, 0, 1, 0, 1, 0, 0));
+		// language 1 of 4, flags 0/0, from the pause, in game, save allowed, no query, unchanged, load
+		// not offered.
+		uint[]? words = Fable3OptionsState.Parse(State(3, 4, 1, 0, 1, 3, 0, 1, 4, 0, 0, 1, 0, 1, 0, 0, 0));
 		AssertThat(words).IsNotNull();
 		AssertThat(words![0]).IsEqual(0x8B0010A0u);
 		AssertThat(words[Fable3OptionsState.QueryWord]).IsEqual(0u);
@@ -124,6 +125,7 @@ public class Fable3BoxAnswersTests
 		AssertThat(snapshot.Sfx).IsEqual(0.75f);
 		AssertThat(snapshot.Voice).IsEqual(1.0f);
 		AssertThat(snapshot.CanSave).IsTrue();
+		AssertThat(snapshot.CanLoad).IsFalse();
 
 		// Unknown speaker: the screen's own field stands.
 		AssertThat(Fable3OptionsState.Snapshot(words, 0.5f, 1f, 1f, 0.9f, -1).Speaker).IsEqual(0);

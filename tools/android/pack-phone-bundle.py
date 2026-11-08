@@ -172,10 +172,11 @@ def pack(repo: Path, native: Path, tools_from: Path, out: Path, built_from: Path
         for name in ('refii_manifest.toml', 'refii_config.toml'):
             (data / 'versions' / version).mkdir(parents=True, exist_ok=True)
             shutil.copyfile(versions / version / name, data / 'versions' / version / name)
-    # Fable 3's, named for its key (refiii_*.toml), at versions/Fable3.
-    (data / 'versions' / 'Fable3').mkdir(parents=True, exist_ok=True)
-    for name in ('refiii_manifest.toml', 'refiii_config.toml'):
-        shutil.copyfile(repo / 'Fable3' / 'versions' / 'Fable3' / name, data / 'versions' / 'Fable3' / name)
+    # Fable 3's, named for its key (refiii_*.toml), at versions/Fable3 and versions/Fable3TU3.
+    for version in ('Fable3', 'Fable3TU3'):
+        (data / 'versions' / version).mkdir(parents=True, exist_ok=True)
+        for name in ('refiii_manifest.toml', 'refiii_config.toml'):
+            shutil.copyfile(repo / 'Fable3' / 'versions' / version / name, data / 'versions' / version / name)
 
     # The runtime libraries from this build; the tools stay as they came.
     manifest = json.loads((native / 'native-manifest.json').read_text(encoding='utf-8'))

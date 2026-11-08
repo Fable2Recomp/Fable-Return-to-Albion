@@ -5,37 +5,37 @@
 //
 // THE VM IS HAVOKSCRIPT ON LUA 5.1 SHAPES, and ONE library serves both the game scripts and
 // Gameface (one copy of every ldo/lauxlib string; the Gameface bindings at 0x82C2xxxx call the
-// same luaD_call sub_82215290). Every native is a SHARED DISPATCHER closure whose single upvalue
+// same luaD_call sub_82214408). Every native is a SHARED DISPATCHER closure whose single upvalue
 // is a 4-byte full userdata holding the C++ implementation: the registration helpers write
-// `*lua_newuserdata(L, 4) = impl` (0x822E069C) then `pushcclosure(L, dispatcher, 1, 0)`
-// (0x822E06B4) then the name hook sub_82359150 (0x822E06C4); every dispatcher opens with
+// `*lua_newuserdata(L, 4) = impl` (0x822E021C) then `pushcclosure(L, dispatcher, 1, 0)`
+// (0x822E0234) then the name hook sub_82361988 (0x822E0244); every dispatcher opens with
 // `closure = *(*(L+32) - 8)`, `tag = *(closure+16)`, tag 7 -> `impl = *(*(closure+12) + 16)`
-// (0x822E10F0..0x822E1128). So the identity is the IMPLEMENTATION POINTER, as in Fable 2; the
+// (0x822E0C70..0x822E0CA8). So the identity is the IMPLEMENTATION POINTER, as in Fable 2; the
 // dispatcher is shared across namespaces and names nothing.
 //
-// ONE HOOK SEES EVERY C CALL: the C-precall sub_82214E40(&L->base_ci, L, nresults, funcTV*,
+// ONE HOOK SEES EVERY C CALL: the C-precall sub_82213FB8(&L->base_ci, L, nresults, funcTV*,
 // newTop, pc), the only path to the three `bctrl` sites that run `closure->f(L)` (API luaD_call
-// 0x822153B8, OP_CALL 0x822A5A28, OP_TAILCALL 0x822A6C18). On entry r4 = L, r6 = the function's
+// 0x82214530, OP_CALL 0x822A4058, OP_TAILCALL 0x822A5248). On entry r4 = L, r6 = the function's
 // TValue (tag 10 = cfunction, its closure at +0) and r7 = the new top, so the arguments are the
-// TValues from func+8 up to r7 (the precall itself sets L->base = func+8 at 0x82214EB4 and
-// L->top = newTop at 0x82214EB8).
+// TValues from func+8 up to r7 (the precall itself sets L->base = func+8 at 0x8221402C and
+// L->top = newTop at 0x82214030).
 //
-// LAYOUTS (Fable 3 IDB, disc build): lua_State top +28 / base +32 (0x82215370 `lwz r7,0x1C(r31)`,
-// 0x822E10F0 `lwz r4,0x20(r3)`); TValue 8 bytes, value +0, tag +4; tags 0 nil, 1 boolean,
+// LAYOUTS (Fable 3 TU3 IDB): lua_State top +28 / base +32 (0x822144E8 `lwz r7,0x1C(r31)`,
+// 0x822E0C70 `lwz r4,0x20(r3)`); TValue 8 bytes, value +0, tag +4; tags 0 nil, 1 boolean,
 // 2 lightuserdata, 3 number, 4 string, 5 table, 7 userdata, 10 cfunction (typename table
-// 0x8329F638; pushcclosure 0x82239964 writes 10); lua_Number is a 32-bit FLOAT (0x82247280 `lfs
+// 0x832E00B8; pushcclosure 0x822385D4 writes 10); lua_Number is a 32-bit FLOAT (0x82246450 `lfs
 // f1,0(r30)` into "%0.14g"); CClosure f +0, env +4, nupvalues u16 +8, upvalue[0] TValue +12
-// (0x822398B0..0x82239924); Udata payload at +16 (0x821FBEC4); TString length = `*ts & 0x3FFFFFFF`
-// and characters at ts+8 (0x82247268 `clrlwi r9,r10,2`, 0x82247274 `addi r3,r11,8`); Table node
+// (0x82238520..0x82238594); Udata payload at +16 (0x821FB824); TString length = `*ts & 0x3FFFFFFF`
+// and characters at ts+8 (0x82246438 `clrlwi r9,r10,2`, 0x82246444 `addi r3,r11,8`); Table node
 // MASK (count-1) at +4, node array at +8, 24-byte nodes with the key TValue at +0, the value TValue
-// at +8 and the chain at +16 (luaH_get 0x82214948..0x8221498C, `idx*3*8`).
+// at +8 and the chain at +16 (luaH_get 0x82213AC0..0x82213B04, `idx*3*8`).
 //
-// THE NAME HOOK sub_82359150(r3 = namespace slot, r4 = L, r5 = name chars) runs right after
+// THE NAME HOOK sub_82361988(r3 = namespace slot, r4 = L, r5 = name chars) runs right after
 // pushcclosure in every registration helper (2,168 callers), with the closure the top TValue
 // (`*(L+28) - 8`). The namespace object is `*r3`: +8 its CCharString handle (rep at +8, the
-// characters at rep+0 — `sub_82226960(v11, *v3 + 8)` then `*(char**)v12[0]` at 0x823591E4), +12
+// characters at rep+0 — `sub_82225850(v11, *v3 + 8)` then `*(char**)v12[0]` at 0x82361A1C), +12
 // the byte gating the function's own body. The `GUI` table is `_G.GlobalTable.GUI`
-// (sub_825237F0); `GUI.Emotion` is a namespace created inside it (0x82524E34).
+// (disc sub_825237F0); `GUI.Emotion` is a namespace created inside it (disc 0x82524E34).
 
 #include <algorithm>
 #include <cstdint>
@@ -80,8 +80,8 @@ constexpr uint32_t kTableNodeMask = 4u;
 constexpr uint32_t kTableNodes = 8u;
 constexpr uint32_t kNodeSize = 24u;
 constexpr uint32_t kNodeValue = 8u;
-// The array part: luaH_getnum sub_82215838 reads `*(t+12)[8 * (i - 1)]` when `i - 1 <
-// *(t+16)` (0x82215850..0x8221585C) — the TValue array at +12, its size at +16.
+// The array part: luaH_getnum sub_822149B0 reads `*(t+12)[8 * (i - 1)]` when `i - 1 <
+// *(t+16)` (0x822149C8..0x822149D4) — the TValue array at +12, its size at +16.
 constexpr uint32_t kTableArray = 12u;
 constexpr uint32_t kTableArraySize = 16u;
 
@@ -178,7 +178,7 @@ uint32_t ImplementationFor(const uint8_t* base, uint32_t function_tvalue) {
   if (!Plausible(upvalue)) {
     return 0u;
   }
-  // The dispatcher's own two cases (0x822E10FC / 0x822E1110): a full userdata's payload, or a
+  // The dispatcher's own two cases (0x822E0C7C / 0x822E0C90): a full userdata's payload, or a
   // light userdata's pointer.
   if (tag == kLuaTUserdata) {
     return LoadGuestU32(base, upvalue + kUdataPayload);
@@ -195,7 +195,7 @@ void ReadTableValue(const uint8_t* base, const std::string& name, uint32_t tag, 
                     refii::vfs::GuiNativeArgument& argument);
 
 /// The entries of a table argument: the array part in index order (names `1`, `2`, …), then the
-/// named entries by node scan — the hash is a pointer hash (0x82214958..0x8221496C), so no bucket
+/// named entries by node scan — the hash is a pointer hash (0x82213AD0..0x82213AE4), so no bucket
 /// can be computed host-side.
 void ReadTableFields(const uint8_t* base, uint32_t table, const std::string& prefix, uint32_t depth,
                      refii::vfs::GuiNativeArgument& argument) {
@@ -392,7 +392,7 @@ REX_EXTERN(rex_lhLuaNamespace_RegisterFunctionHash) {
       }
     }
 
-    // `GUI` and the `Emotion` namespace nested inside it (sub_825237F0): the latter's natives
+    // `GUI` and the `Emotion` namespace nested inside it (disc sub_825237F0): the latter's natives
     // are named `Emotion.<Name>` so the host's table reads as the scripts do.
     const bool gui = namespace_name == "GUI";
     const bool emotion = namespace_name == "Emotion" || namespace_name == "GUI.Emotion";
@@ -406,7 +406,7 @@ REX_EXTERN(rex_lhLuaNamespace_RegisterFunctionHash) {
         }
 
         // A native whose implementation is a bare `blr` is a stub, and the stubs share one
-        // function (AddHealthBar / RemoveHealthBar / DisplayFastTravelScreen = 0x82C1BA40).
+        // function (AddHealthBar / RemoveHealthBar / DisplayFastTravelScreen = 0x828173B8).
         // Interception keys on the implementation, so a call through it cannot be attributed
         // to one name — leave it unnamed. Detected by the instruction, not an address list.
         if (implementation != 0u && !name.empty() && Plausible(implementation) &&

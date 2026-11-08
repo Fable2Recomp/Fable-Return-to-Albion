@@ -1,28 +1,28 @@
 // refii - Fable 3's guest tick pump: the host's posted work, run on the guest's own tick thread,
 // and the HF step it rides, timed.
 //
-// THE TICK. The main loop sub_821CB758 (the FE component's Update sub_8250F160 and the
+// THE TICK. The main loop sub_821CB7B0 (the FE component's Update sub_82534AA0 and the
 // MainGameComponent's both run it) is a fixed-step accumulator on the guest's mftb clock
-// (sub_8220A360): HF rate dbl_8329EA50 = 30.0, game-tick rate dbl_8329EA48 = 15.0, so every second
-// HF step is a GameTick (steps per tick = 2, 0x821CB848..5C; the GameTick/HFOnlyTick split at
-// 0x821CBB54). Owed <= 0 -> NtYieldExecution (sub_830FF0C8 at 0x821CC0B0) and re-read; owed > 1
-// -> one step and re-base to now, backlog discarded (0x821CBB1C..30). Under the host's driven
+// (sub_822099A0): HF rate dbl_832DF4D8 = 30.0, game-tick rate dbl_832DF4D0 = 15.0, so every second
+// HF step is a GameTick (steps per tick = 2, disc 0x821CB848..5C; the GameTick/HFOnlyTick split at
+// disc 0x821CBB54). Owed <= 0 -> NtYieldExecution (sub_83130CC0 at 0x821CC1B8) and re-read; owed > 1
+// -> one step and re-base to now, backlog discarded (disc 0x821CBB1C..30). Under the host's driven
 // time base that is one step per granted step, then yield: the contract Fable 2's loop meets at
-// 0x82276FA4, met here by the loop itself. Nothing in the loop reads the pad: its only exits are
-// app slot 4 (app+0x2C, 0x8217B7A8) and the component's quit bytes +180/+181/+187.
+// 0x822754CC, met here by the loop itself. Nothing in the loop reads the pad: its only exits are
+// app slot 4 (app+0x2C, disc 0x8217B7A8) and the component's quit bytes +180/+181/+187.
 //
-// THE SITE. Once per HF step, at 0x821CBD74, the loop calls slot 5 (+0x14) of the app object
-// *dword_83566A78 (vtable 0x820025C4; a second copy at 0x820EA180): sub_82188728, an eight-
+// THE SITE. Once per HF step, at disc 0x821CBD74, the loop calls slot 5 (+0x14) of the app object
+// *dword_835A76A8 (vtable 0x82002548; a second copy at 0x820ECB80): sub_82188640, an eight-
 // instruction thunk to slot 2 of the input system at app+0x24 (lwz r3,0x24(r3); beqlr; lwz
 // r11,0(r3); lwz r10,8(r11); mtctr; bctr). Those two vtable words are the pointer's only homes
 // in the image, so this runs exactly once per HF step, in every state the loop runs, and nowhere
-// else: Fable 2's sub_822C1BD0 seam (Fable2/src/vfs/src/hooks/guest_tick_pump.cpp).
+// else: Fable 2's disc sub_822C1BD0 seam (Fable2/src/vfs/src/hooks/guest_tick_pump.cpp).
 //
 // THE STEP'S COST. The guest's own step timings (component+136 game tick, +144 the rest, written
-// at 0x821CBE60 and 0x821CC0A4) are differences of the mftb clock, which the host freezes between
+// at 0x821CBF6C and disc 0x821CC0A4) are differences of the mftb clock, which the host freezes between
 // grants, so they cannot measure a stall. The wall time between two visits here is one whole HF
 // step as the host sees it; a step that the lead cap withheld costs nothing here, a step blocked
-// in the guest (the scene ring full in sub_821F4F30, a stream wait, a lock) shows as the gap.
+// in the guest (the scene ring full in sub_821F4450, a stream wait, a lock) shows as the gap.
 //
 // THE STALL'S SITE. A blocked thread cannot sample itself, so each step is stated to the shared
 // step sampler (core/payload_bridge.h, src/runtime/src/core/guest_step_sampler.cpp) on this
@@ -41,6 +41,7 @@
 #include "box_answers.h"
 #include "core/payload_bridge.h"
 #include "keyboard_ui.h"
+#include "../../vfs/include/fable3_guest_build.h"
 
 REX_EXTERN(__imp__rex_App_TickInput);
 
@@ -50,7 +51,7 @@ using Clock = std::chrono::steady_clock;
 
 /// The game loop's call site; the thunk is reached from no other loop today, but the step clock
 /// is only meaningful when the caller is the step.
-constexpr uint32_t kGameLoopReturn = 0x821CBD78u;
+const refii::guest::Addr kGameLoopReturn{0x821CBE84u};
 
 /// A step the host grants every 33 ms; a gap of this much is a guest that stopped stepping.
 constexpr auto kStallThreshold = std::chrono::milliseconds(250);

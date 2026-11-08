@@ -709,7 +709,7 @@ public partial class LauncherApp : Control
 		_settingsPanel.Configure(null, body, _infoStyle);
 		_moddingPanel.Configure(null, body, _infoStyle);
 		if (!ScaleAndroidInstallation(body)) _reinstallPanel.Configure(null, body, _infoStyle);
-		_savesPanel.Configure(body);
+		_savesPanel.Configure(null, body, _infoStyle);
 		ScaleFonts(_settingsPanel, body);
 		ScaleFonts(_moddingPanel, body);
 		ScaleFonts(_reinstallPanel, body);

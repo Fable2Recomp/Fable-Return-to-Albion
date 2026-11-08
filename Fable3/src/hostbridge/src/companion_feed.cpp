@@ -5,20 +5,20 @@
 //   EM = *(*(*(Game+0x1C)+4)+4), Game the presented game (presented_world.h) — the object the
 //   heroes' slots live on (entity_feed.cpp: EM+0x80 player one's hero, EM+0x88 player two's).
 //
-// THE SETTER. sub_82399CB8(EM r3, dog r4, hero r5), called from sub_82801700 (0x82801960), binds a
+// THE SETTER. sub_823BBF38(EM r3, dog r4, hero r5), called from sub_82808080 (0x828082E0), binds a
 // dog to its hero: it finds the 16-byte record at EM+0xB8 (else EM+0xC0) whose owner is `hero`
-// and re-points its dog, or allocates a record for the empty slot (sub_822A7180(16),
-// sub_823A3BA0 at 0x82399E3C / 0x82399EE8) and assigns both weak references — the dog at record+0
-// (`sub_82308B28(*slot, dog)` 0x82399E5C) and the hero at record+8 (0x82399E94). A weak reference
-// is {vtable off_820AE8DC, holder}: its entity is *(holder) (sub_829A2650: `lwz r11,4(r3)`,
-// `lwz r10,0(r11)`). sub_82399F78(EM, hero) releases and clears the hero's slot (0x82399FB8 /
-// 0x82399FE8).
+// and re-points its dog, or allocates a record for the empty slot (sub_8221E3C8(16),
+// sub_823C6318 at 0x823BC0BC / 0x823BC168) and assigns both weak references — the dog at record+0
+// (`sub_82258B38(*slot, dog)` 0x823BC0DC) and the hero at record+8 (0x823BC114). A weak reference
+// is {vtable off_820B1CB4, holder}: its entity is *(holder) (sub_82691588: `lwz r11,4(r3)`,
+// `lwz r10,0(r11)`). sub_823BC1F8(EM, hero) releases and clears the hero's slot (0x823BC238 /
+// 0x823BC268).
 //
-// THE GETTER. sub_821E8250(EM r3, hero r4) is the game's own answer: EM+0xB8's record when its
-// owner is `hero` (sub_824AC990(record+8, hero): *(*(record+0xC)) == hero), else EM+0xC0's, its
-// dog *(*(record+4)). GetLocalHeroDog (sub_8221D358 -> sub_821E82E8) asks it for the hero at
+// THE GETTER. sub_821E7EB8(EM r3, hero r4) is the game's own answer: EM+0xB8's record when its
+// owner is `hero` (sub_8238DD58(record+8, hero): *(*(record+0xC)) == hero), else EM+0xC0's, its
+// dog *(*(record+4)). GetLocalHeroDog (sub_8221C328 -> sub_821E7F50) asks it for the hero at
 // EM+0x7C (holder EM+0x80) once that hero is live, `lbz +0x94 & 0x40`; GetRemoteHeroDog
-// (sub_821FCAF0 -> sub_821E2DA8) for EM+0x84 (holder EM+0x88); the Lua GetDog(hero) (sub_8231AF68)
+// (sub_821FC440 -> sub_821E29B0) for EM+0x84 (holder EM+0x88); the Lua GetDog(hero) (sub_82321E58)
 // for any live hero. This export reads what that getter reads.
 
 #include <cstdint>
@@ -57,7 +57,7 @@ uint32_t EntityManager(const uint8_t* base) {
     return PlausibleGuest(em) ? em : 0u;
 }
 
-/// The live dog bound to the live hero in `slot`, as sub_821E8250 answers it, else 0.
+/// The live dog bound to the live hero in `slot`, as sub_821E7EB8 answers it, else 0.
 uint32_t HeroDog(const uint8_t* base, uint32_t em, uint32_t slot) {
     const uint32_t hero = GuestWord(base, GuestWord(base, em + slot));
     if (!Live(base, hero)) {
@@ -81,7 +81,7 @@ uint32_t HeroDog(const uint8_t* base, uint32_t em, uint32_t slot) {
 
 extern "C" {
 
-/// Player one's and player two's dogs (each hero's, as the game binds them in sub_82399CB8), 0
+/// Player one's and player two's dogs (each hero's, as the game binds them in sub_823BBF38), 0
 /// for a hero with no live dog. Returns how many were found.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroDogs(uint32_t* out_one, uint32_t* out_two) {
     const uint8_t* base = GuestBase();

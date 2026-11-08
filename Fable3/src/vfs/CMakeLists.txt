@@ -10,6 +10,9 @@
 add_library(refiii_vfs SHARED
     # The guest's resource hash to the host mount's override, and each hit's log line.
     ${CMAKE_CURRENT_LIST_DIR}/src/host_overrides.cpp
+    # Which build is running (TU3 or disc), stated by the payload, and the TU3 -> disc address
+    # table the hooks and the host bridge translate through (include/fable3_guest_build.h).
+    ${CMAKE_CURRENT_LIST_DIR}/src/guest_build.cpp
 )
 
 target_include_directories(refiii_vfs

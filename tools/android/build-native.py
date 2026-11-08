@@ -95,8 +95,8 @@ def generate_private(source: Path, game: Path, generator: Path, output: Path,
         raise ValueError("Game directory must contain the privately supplied default.xex")
     # Since the title split the version configs are under the title's folder (pack-phone-bundle.py
     # reads them the same way), named for its key: Fable2/versions/<version>/refii_*.toml,
-    # Fable3/versions/Fable3/refiii_*.toml.
-    title, key = ("Fable3", "refiii") if version == "Fable3" else ("Fable2", "refii")
+    # Fable3/versions/<version>/refiii_*.toml.
+    title, key = ("Fable3", "refiii") if version.startswith("Fable3") else ("Fable2", "refii")
     versions = source / title / "versions" if (source / title / "versions").is_dir() else source / "versions"
     config_root = versions / version
     shutil.copyfile(config_root / f"{key}_config.toml", private / f"{key}_config.toml")
@@ -195,7 +195,7 @@ def main() -> int:
     parser.add_argument("--host-codegen", required=True, type=Path)
     parser.add_argument("--generated-dir", type=Path)
     parser.add_argument("--game-directory", type=Path)
-    parser.add_argument("--game-version", choices=("Fable2", "Fable2TU1", "Fable3"), default="Fable2TU1")
+    parser.add_argument("--game-version", choices=("Fable2", "Fable2TU1", "Fable3", "Fable3TU3"), default="Fable2TU1")
     parser.add_argument("--api", type=int, default=31)
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--cmake", default="cmake")
@@ -244,8 +244,8 @@ def main() -> int:
             f"-DREFII_ANDROID_BUILD_SELFTESTS={'ON' if args.selftests else 'OFF'}",
             # Fable 3's module builds with its own hooks and link (cmake/refii_android.cmake); the
             # Fable 2 version the rest of the configure reads stays its default.
-            f"-DREFII_GAME_VERSION={'Fable2TU1' if args.game_version == 'Fable3' else args.game_version}",
-            f"-DREFII_ANDROID_GAME_TITLE={'Fable3' if args.game_version == 'Fable3' else 'Fable2'}"]
+            f"-DREFII_GAME_VERSION={'Fable2TU1' if args.game_version.startswith('Fable3') else args.game_version}",
+            f"-DREFII_ANDROID_GAME_TITLE={'Fable3' if args.game_version.startswith('Fable3') else 'Fable2'}"]
         if generated:
             configure.append(f"-DREFII_ANDROID_GENERATED_DIR={generated}")
         if args.rexnet:

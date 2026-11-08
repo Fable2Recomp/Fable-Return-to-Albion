@@ -7,32 +7,32 @@
 // Spans, each inside its object as the Fable 3 IDB (360 disc) allocates it:
 //
 //   CEntity (PC RTTI; its dtor 0x826180 walks the same {id, component} pairs), 0x98 bytes:
-//   `li r3,0x98` / `bl sub_8221F300` then the ctor sub_823F1630 (0x823F1A10..0x823F1A24, again
-//   0x823F1C20..0x823F1C2C). Fields [0x18, 0x95):
-//     +0x18/+0x1C the 64-bit unique id   `stw r5,0x18(r31)` 0x823F1A94, `stw r11,0x1C(r31)` 0x823F1A9C
-//     +0x20       the .gdb record id     `*(_QWORD *)(a1 + 32) = v74` 0x823F3B98 (sub_823F3A98)
-//     +0x54/+0x58 the component vector, {u32 id, u32 component} pairs: `lwz r31,0x54(r3)` 0x823F3474,
-//                 `lwz r10,0x58(r3)` 0x823F3478, component `lwz r3,4(r31)` 0x823F348C, step
-//                 `addi r31,r31,8` (sub_823F3458); ctor zeroes +0x54..+0x5C (0x823F1690..0x823F169C)
-//     +0x80       the placement          `lwz r11,4(r3)` / `lwz r30,0x80(r11)` 0x8221B0DC..0x8221B0E0
-//                 (the renderable's owner, sub_8221B070); ctor `+0x80 = 0` 0x823F16B8
-//     +0x94       flags, 0x40 live       sub_82399558 `(*(_BYTE *)(result + 148) & 0x40)`; ctor 0xCC
-//                 at 0x823F16F8; sub_823F3458 `lbz r11,0x94(r3)` 0x823F346C
-//   The list node is the entity's own +0xC..+0x17, {next, prev, entity} (sub_82399558: a2[3], a2[4],
+//   `li r3,0x98` / `bl sub_8221E3B0` then the ctor sub_82413988 (disc 0x823F1A10..disc 0x823F1A24, again
+//   0x82413F98..0x82413FA4). Fields [0x18, 0x95):
+//     +0x18/+0x1C the 64-bit unique id   `stw r5,0x18(r31)` disc 0x823F1A94, `stw r11,0x1C(r31)` disc 0x823F1A9C
+//     +0x20       the .gdb record id     `*(_QWORD *)(a1 + 32) = v74` disc 0x823F3B98 (sub_82415E58)
+//     +0x54/+0x58 the component vector, {u32 id, u32 component} pairs: `lwz r31,0x54(r3)` 0x824157E4,
+//                 `lwz r10,0x58(r3)` 0x824157E8, component `lwz r3,4(r31)` 0x824157FC, step
+//                 `addi r31,r31,8` (sub_824157C8); ctor zeroes +0x54..+0x5C (0x824139E8..0x824139F4)
+//     +0x80       the placement          `lwz r11,4(r3)` / `lwz r30,0x80(r11)` 0x8221A17C..0x8221A180
+//                 (the renderable's owner, sub_8221A110); ctor `+0x80 = 0` 0x82413A10
+//     +0x94       flags, 0x40 live       sub_823BB2C0 `(*(_BYTE *)(result + 148) & 0x40)`; ctor 0xCC
+//                 at 0x82413A50; sub_824157C8 `lbz r11,0x94(r3)` 0x824157DC
+//   The list node is the entity's own +0xC..+0x17, {next, prev, entity} (sub_823BB2C0: a2[3], a2[4],
 //   a2[5] = a2), read as one 12-byte block.
 //
-//   CECGraphicAppearance (NGraphicAppearance, vtable 0x82003120), component 3, 0x140 bytes:
-//   `li r3,0x140` 0x825420BC before its ctor (sub_825420A8). Fields [0x50, 0x118):
-//     +0x50 tint RGBA       `addi r31,r3,0x50` 0x82688994, `std` 0x826889F4 / 0x826889FC (sub_82688980)
-//     +0x78 scale           `stfs f1,0x78(r31)` 0x826883B0 (sub_82688368)
-//     +0x7C alpha           `stfs f31,0x7C(r31)` 0x826884E0 (sub_82688410); read `lfs f13,0x7C(r3)` 0x8221B0B0
-//     +0x80 camera alpha    `stfs f31,0x80(r31)` 0x82688658 (sub_82688530); read `lfs f0,0x80(r3)` 0x8221B0A8
-//     +0xA0/+0xB0 latch     `stvx128 v0,r31,r7` r7=0xA0 0x8221F008, `stvx128 v13,r31,r4` r4=0xB0
-//                           0x8221F028 (sub_8221EFB8); read `lvx128 v0,r31,r7` 0x8221B148
-//     +0xD0 highlight RGBA  `addi r11,r31,0xD0` 0x82688C9C, `std` 0x82688D50 / 0x82688D54 (sub_82688C38)
-//     +0xE5 drawable        `stb r4,0xE5(r3)` 0x826876C0 (sub_826876B0); read `lbz r11,0xE5(r3)` 0x8221B08C
-//     +0xE9 interpolate     `lbz r29,0xE9(r3)` 0x8221B0F4
-//     +0x114 draw veto      `lwz r11,0x114(r3)` 0x8221B0C4
+//   CECGraphicAppearance (NGraphicAppearance, vtable 0x820030A0), component 3, 0x140 bytes:
+//   `li r3,0x140` disc 0x825420BC before its ctor (sub_82573190). Fields [0x50, 0x118):
+//     +0x50 tint RGBA       `addi r31,r3,0x50` 0x826B2C84, `std` 0x826B2CE4 / 0x826B2CEC (sub_826B2C70)
+//     +0x78 scale           `stfs f1,0x78(r31)` disc 0x826883B0 (sub_826B2068)
+//     +0x7C alpha           `stfs f31,0x7C(r31)` 0x826B21FC (sub_826B2130); read `lfs f13,0x7C(r3)` 0x8221A150
+//     +0x80 camera alpha    `stfs f31,0x80(r31)` disc 0x82688658 (sub_826B2250); read `lfs f0,0x80(r3)` 0x8221A148
+//     +0xA0/+0xB0 latch     `stvx128 v0,r31,r7` r7=0xA0 0x8221E0B8, `stvx128 v13,r31,r4` r4=0xB0
+//                           0x8221E0D8 (sub_8221E068); read `lvx128 v0,r31,r7` 0x8221A1E8
+//     +0xD0 highlight RGBA  `addi r11,r31,0xD0` 0x826B2F8C, `std` 0x826B3040 / 0x826B3044 (sub_826B2F28)
+//     +0xE5 drawable        `stb r4,0xE5(r3)` 0x826B13B8 (sub_826B13A8); read `lbz r11,0xE5(r3)` 0x8221A12C
+//     +0xE9 interpolate     `lbz r29,0xE9(r3)` 0x8221A194
+//     +0x114 draw veto      `lwz r11,0x114(r3)` disc 0x8221B0C4
 //
 // The component pairs are read as one block of the stated [begin, end), at most 128 pairs, the
 // bytes the per-pair scan reads. Vectors are read 16 bytes at a time.
@@ -44,6 +44,7 @@
 #include <initializer_list>
 
 #include "guest_span.h"
+#include "../../vfs/include/fable3_guest_build.h"
 
 namespace refii::fable3::walk {
 
@@ -70,7 +71,9 @@ uint32_t WordAt(const Memory& memory, uint32_t address) {
 }
 
 using EntityFields = GuestSpan<0x18u, 0x95u>;
-using RenderableFields = GuestSpan<0x50u, 0x118u>;
+// Component 3 grew by 0x10 in TU3 (0x150, the disc's 0x140: 0x825731A4 / disc 0x825420BC), its words
+// from the disc's +0xF0 on moving by 0xC; the span covers both builds' reads.
+using RenderableFields = GuestSpan<0x50u, 0x124u>;
 
 /// An entity field at `offset`, 0 where `entity + offset` is no guest address.
 inline uint32_t EntityWord(const EntityFields& fields, uint32_t entity, uint32_t offset) {
@@ -122,19 +125,19 @@ struct ComponentPairs {
 /// 0x50 / 0x54 answer position / orientation; every class states them one of three ways, read
 /// here as the getter reads them (Fable 3 IDB, each getter decompiled):
 ///
-///   direct    `lvx128 v0,r4,r11` off the component: position sub_82333A80 (+0x20) or
-///             sub_821FC010 (+0x40); orientation sub_829B1C18 (+0x30), or sub_825AC090, which
-///             returns the global unk_835587A0 (the light's orientation is shared)
-///   delegate  sub_822061E8 / sub_8221AFF8: the object at +0x20 answers its slot 0x0C / 0x10;
-///             a null object is the origin and the identity (`vspltisw v0,0`, w = flt_82065480)
-///   hybrid    sub_822062B8 / sub_8221E4F0: the body at *(*(+0x20)+0x38) answers slot 0x18 /
+///   direct    `lvx128 v0,r4,r11` off the component: position sub_82862348 (+0x20) or
+///             sub_8298AF30 (+0x40); orientation sub_829EF860 (+0x30), or disc sub_825AC090, which
+///             returns the global disc unk_835587A0 (the light's orientation is shared)
+///   delegate  sub_822059F8 / sub_8221A098: the object at +0x20 answers its slot 0x0C / 0x10;
+///             a null object is the origin and the identity (`vspltisw v0,0`, w = flt_82065440)
+///   hybrid    sub_82205AC8 / sub_8221D5A0: the body at *(*(+0x20)+0x38) answers slot 0x18 /
 ///             0x1C while +0xB4 is clear and the chain holds; else position is the cache at
 ///             +0x80 and orientation the identity
 ///
 /// The vtables are the ones each registered factory stores LAST (component_ids: CECPhysicsSimple
-/// sub_82541238 ... CECPhysicsSimulationStatic sub_82541800, which overrides the base ctor
-/// sub_827D1BF8's 0x820B1808 with 0x82007DF8 at 0x82541874; the character factories likewise
-/// override sub_82761060's 0x820AD878); a class this table does not name is reported through
+/// sub_82572328 ... CECPhysicsSimulationStatic sub_825728F0, which overrides the base ctor
+/// sub_82847208's 0x820B8030 with 0x82007D28 at 0x82572964; the character factories likewise
+/// override sub_82797830's 0x820B0C68); a class this table does not name is reported through
 /// `out_unknown_vtables`, and its row keeps the renderable's latch.
 constexpr uint16_t kNoField = 0xFFFFu;
 
@@ -148,36 +151,36 @@ struct Placement {
 };
 
 constexpr Placement kPlacements[] = {
-    {0x82007D20u, PlacementKind::Direct, 0x20u, 0x30u},      // CECPhysicsSimple
-    {0x82007A98u, PlacementKind::Direct, 0x20u, 0x30u},      // CECPhysicsSimpleScaled
-    {0x82007B70u, PlacementKind::Direct, 0x20u, kNoField},   // CECPhysicsSimpleLight
-    {0x820999D8u, PlacementKind::Direct, 0x40u, 0x30u},      // CECPhysicsSimpleNetwork
-    {0x82007DF8u, PlacementKind::Delegate, 0u, 0u},          // CECPhysicsSimulationStatic (sub_82541800)
-    {0x820B1808u, PlacementKind::Delegate, 0u, 0u},          // the Static base / RopeBridge (sub_827D1BF8)
-    {0x820079C0u, PlacementKind::Delegate, 0u, 0u},          // CECPhysicsSimulationDynamic
-    {0x82007FA8u, PlacementKind::Delegate, 0u, 0u},          // CECPhysicsSimulationKeyframed
-    {0x82007C48u, PlacementKind::Hybrid, 0u, 0u},            // CECPhysicsSimulationCharacterControlled (sub_82541B30)
-    {0x82007ED0u, PlacementKind::Hybrid, 0u, 0u},            // CECPhysicsSimulationCharacterNavigator (sub_82541C38)
-    {0x820AD878u, PlacementKind::Hybrid, 0u, 0u},            // their base (sub_82761060)
+    {0x82007C50u, PlacementKind::Direct, 0x20u, 0x30u},      // CECPhysicsSimple
+    {0x820079C8u, PlacementKind::Direct, 0x20u, 0x30u},      // CECPhysicsSimpleScaled
+    {0x82007AA0u, PlacementKind::Direct, 0x20u, kNoField},   // CECPhysicsSimpleLight
+    {0x8209D448u, PlacementKind::Direct, 0x40u, 0x30u},      // CECPhysicsSimpleNetwork
+    {0x82007D28u, PlacementKind::Delegate, 0u, 0u},          // CECPhysicsSimulationStatic (sub_825728F0)
+    {0x820B8030u, PlacementKind::Delegate, 0u, 0u},          // the Static base / RopeBridge (sub_82847208)
+    {0x820078F0u, PlacementKind::Delegate, 0u, 0u},          // CECPhysicsSimulationDynamic
+    {0x82007ED8u, PlacementKind::Delegate, 0u, 0u},          // CECPhysicsSimulationKeyframed
+    {0x82007B78u, PlacementKind::Hybrid, 0u, 0u},            // CECPhysicsSimulationCharacterControlled (sub_82572C20)
+    {0x82007E00u, PlacementKind::Hybrid, 0u, 0u},            // CECPhysicsSimulationCharacterNavigator (sub_82572D28)
+    {0x820B0C68u, PlacementKind::Hybrid, 0u, 0u},            // their base (sub_82797830)
 };
 
 /// The objects a delegate or hybrid placement asks, by vtable: {position, orientation} offsets
 /// of the vectors their getters return, or `hop` when the getter asks the body at +0x38 instead.
-///   0x82006FF8  slot 0x0C sub_82BFA8F0 `li r11,0x50`, slot 0x10 sub_827375A8 `li r11,0x60`
-///   0x820070F8  slot 0x0C sub_821FC010 `li r11,0x40`, slot 0x10 sub_82BFA8F0 `li r11,0x50`
-///   0x82007270  the 80-byte proxy sub_829A9908 / sub_829AA468 give a Dynamic or Keyframed
-///               placement (`stw` to +0x20 through sub_827D2C78 at 0x829AA4E4): slot 0x0C
-///               sub_82206180 and 0x10 sub_821FAB28 ask `*(+0x38)` slot 0x18 / 0x1C, a null body
+///   0x82006F18  slot 0x0C sub_8298FF80 `li r11,0x50`, slot 0x10 disc sub_827375A8 `li r11,0x60`
+///   0x82007018  slot 0x0C sub_8298AF30 `li r11,0x40`, slot 0x10 sub_8298FF80 `li r11,0x50`
+///   0x82007190  the 80-byte proxy sub_829EFC68 / sub_829F0798 give a Dynamic or Keyframed
+///               placement (`stw` to +0x20 through sub_828486D8 at 0x829F0814): slot 0x0C
+///               sub_82205990 and 0x10 sub_821FA2B0 ask `*(+0x38)` slot 0x18 / 0x1C, a null body
 ///               answering the origin / identity
 ///   bodies (slots 0x18 / 0x1C, asked by a hybrid or by that proxy):
-///   0x82005C50  sub_82782B18 `li r11,0x100`, sub_82782B28 `li r11,0x110` — on the body itself
-///   0x82006070  0x82206130 / 0x821FAAD0: `lwz r11,0x38(r4)`, then 16 bytes at +0x120 / `lvx128`
+///   0x82005BD0  sub_827BA080 `li r11,0x100`, sub_827BA090 `li r11,0x110` — on the body itself
+///   0x82005FF0  0x82205940 / 0x821FA258: `lwz r11,0x38(r4)`, then 16 bytes at +0x120 / `lvx128`
 ///               at +0x160 of that inner object; null inner -> origin / identity (its slots
-///               0x0C / 0x10, sub_8227D818 / sub_8227D920, are the SETTERS: `stvx128 v1` then
-///               sub_82F3A5A8(inner, &v))
-///   0x82005DA0  0x82206330: `lwz r11,0x50(r4)`, position at +0xD0 of that inner object;
-///               sub_8221E4A8: the quaternion of the 3x3 at inner+0xA0 (three 16-byte columns),
-///               through sub_82EF2D88 -> sub_82EF2BA8 (trace > 0: w = sqrt(tr+1)/2, z =
+///               0x0C / 0x10, sub_8227BA90 / sub_8227BB70, are the SETTERS: `stvx128 v1` then
+///               sub_82F6C0F8(inner, &v))
+///   0x82005D20  disc 0x82206330: `lwz r11,0x50(r4)`, position at +0xD0 of that inner object;
+///               sub_8221D558: the quaternion of the 3x3 at inner+0xA0 (three 16-byte columns),
+///               through sub_82F24A40 -> sub_82F24860 (trace > 0: w = sqrt(tr+1)/2, z =
 ///               (m[1]-m[4])/(4w) ...; else the largest-diagonal branch) — the inner object is a
 ///               Havok transform, columns then translation
 struct PlacementTarget {
@@ -190,18 +193,18 @@ struct PlacementTarget {
 };
 
 constexpr PlacementTarget kDelegateTargets[] = {
-    {0x82006FF8u, 0u, 0x50u, 0x60u, false, false},
-    {0x820070F8u, 0u, 0x40u, 0x50u, false, false},
-    {0x82007270u, 0u, 0u, 0u, true, false},
+    {0x82006F18u, 0u, 0x50u, 0x60u, false, false},
+    {0x82007018u, 0u, 0x40u, 0x50u, false, false},
+    {0x82007190u, 0u, 0u, 0u, true, false},
 };
 
 constexpr PlacementTarget kBodyTargets[] = {
-    {0x82005C50u, 0u, 0x100u, 0x110u, false, false},
-    {0x82006070u, 0x38u, 0x120u, 0x160u, false, false},
-    {0x82005DA0u, 0x50u, 0xD0u, 0xA0u, false, true},
+    {0x82005BD0u, 0u, 0x100u, 0x110u, false, false},
+    {0x82005FF0u, 0x38u, 0x120u, 0x160u, false, false},
+    {0x82005D20u, 0x50u, 0xD0u, 0xA0u, false, true},
 };
 
-constexpr uint32_t kSharedLightOrientation = 0x835587A0u;
+const refii::guest::Addr kSharedLightOrientation{0x83599460u};
 constexpr uint32_t kIdentity[4] = {0u, 0u, 0u, kOne};
 
 inline float FloatOf(uint32_t bits) {
@@ -235,15 +238,16 @@ bool UnitQuaternionAt(const Memory& memory, uint32_t at, uint32_t* out) {
 
 template <size_t N>
 const PlacementTarget* FindTarget(const PlacementTarget (&targets)[N], uint32_t vtable) {
+    const uint32_t named = refii::guest::ToTu3(vtable);  // the tables name TU3's vtables
     for (const PlacementTarget& target : targets) {
-        if (target.vtable == vtable) {
+        if (target.vtable == named) {
             return &target;
         }
     }
     return nullptr;
 }
 
-/// sub_82EF2BA8: the quaternion of a rotation stored as three 16-byte columns at `at`
+/// sub_82F24860: the quaternion of a rotation stored as three 16-byte columns at `at`
 /// (element (row r, column c) = word 4c + r). False when the columns are not finite.
 template <typename Memory>
 bool QuaternionOfColumns(const Memory& memory, uint32_t at, uint32_t* out) {
@@ -341,8 +345,9 @@ bool LivePlacement(const Memory& memory, uint32_t placement, uint32_t* out_posit
     const uint32_t vtable = memory.Word(placement);
     *out_vtable = vtable;
     const Placement* layout = nullptr;
+    const uint32_t named = refii::guest::ToTu3(vtable);  // the table names TU3's vtables
     for (const Placement& candidate : kPlacements) {
-        if (candidate.vtable == vtable) {
+        if (candidate.vtable == named) {
             layout = &candidate;
             break;
         }
@@ -405,7 +410,7 @@ bool LivePlacement(const Memory& memory, uint32_t placement, uint32_t* out_posit
                 return false;
             }
 
-            // sub_822062B8: +0xB4 set takes the cached position; the orientation getter has no
+            // sub_82205AC8: +0xB4 set takes the cached position; the orientation getter has no
             // such gate.
             if (memory.Byte(placement + 0xB4u) != 0u) {
                 ReadGuestWords(memory, placement + 0x80u, out_position, 3u);
@@ -418,7 +423,7 @@ bool LivePlacement(const Memory& memory, uint32_t placement, uint32_t* out_posit
 }
 
 /// The renderable's targeting highlight as the shell's RGBA word, lanes {B, G, R, A} as Fable 2's
-/// `sub_82572C18` packs them (HostBridge.GuestEntity.HighlightColour): the float colour at +0xD0
+/// `disc sub_82572C18` packs them (HostBridge.GuestEntity.HighlightColour): the float colour at +0xD0
 /// quantised, alpha 255; a black colour is the guest's off, {0,0,0,255}.
 inline uint32_t HighlightWord(const RenderableFields& look) {
     uint32_t bytes[3];
@@ -499,7 +504,7 @@ uint32_t WalkEntities(const Memory& memory, uint32_t em, uint32_t* out, uint32_t
         appearance[1] = look.Word(0x80u);
         appearance[2] = look.Word(0x78u);
         look.Words(0x50u, appearance + 3, 4u);
-        appearance[7] = look.Byte(0xE5u) != 0u && look.Word(0x114u) == 0u ? kAppearanceDrawable : 0u;
+        appearance[7] = look.Byte(0xE5u) != 0u && look.Word(refii::guest::Pick(0x120u, 0x114u)) == 0u ? kAppearanceDrawable : 0u;
         ++written;
     }
 

@@ -5,6 +5,9 @@
 
 set(REFIII_HOOK_SOURCES
     # The device's no-GPU bit, armed as the ring buffer comes up.
+    # States the payload's build (TU3 or disc) to refiii_vfs at load.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/guest_build_stamp.cpp
+    ${CMAKE_SOURCE_DIR}/Fable3/src/vfs/include/fable3_guest_build.h
     ${CMAKE_CURRENT_SOURCE_DIR}/src/boot_no_gpu.cpp
     # The Bink players' open, rect, close and the startup player's skip byte, stated for the
     # host's native playback (core/movie_state.h).

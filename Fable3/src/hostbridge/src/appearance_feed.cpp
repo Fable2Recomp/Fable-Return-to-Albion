@@ -23,7 +23,7 @@ constexpr uint32_t kShellKinds = 0xFu;
 
 extern "C" {
 
-/// Per morphed part, as the guest handed sub_82C4BB20: [model hash, count, then count x (target
+/// Per morphed part, as the guest handed sub_82C80340: [model hash, count, then count x (target
 /// model hash, weight float bits)]; the part itself takes 1 - sum. A part that is not listed draws
 /// as its own model. `out_statements` low word counts every descriptor constructed with a target
 /// list (0 means the hook never ran), high word those that listed a target above the threshold.

@@ -138,6 +138,13 @@ public sealed class Engine_Title
 	public string VersionFolder(bool titleUpdateInstalled) =>
 		titleUpdateInstalled && SupportsTitleUpdate ? _updatedVersion : _discVersion;
 
+	/// <summary>
+	/// Whether <paramref name="versionFolder"/> is the disc executable of a title that also has a
+	/// title update: the payload built from it is told so (REFII_GUEST_BUILD_UNPATCHED), and its
+	/// hooks and host bridge then translate every address the source names in the updated build.
+	/// </summary>
+	public bool IsUnpatched(string versionFolder) => SupportsTitleUpdate && versionFolder == _discVersion;
+
 	/// <summary><c>assets/&lt;Folder&gt;</c>: the title's install and everything derived from it.</summary>
 	public string AssetsDirectory => System.IO.Path.Combine(Engine_AppRoot.AssetsDirectory, Folder);
 
@@ -210,7 +217,7 @@ public sealed class Engine_Title
 	/// <summary>Fable 3. Its remake has no name yet; it goes by the game's until it does.</summary>
 	public static readonly Engine_Title Fable3 = new(
 		"refiii", "Fable 3", "Fable 3", 0x4D5308D6, "Fable3", "refiii_generated",
-		"Fable3", string.Empty, hasHardMods: false, ".f3mod", 0xE0474CFFu, hashedModelNodes: true,
+		"Fable3", "Fable3TU3", hasHardMods: false, ".f3mod", 0xE0474CFFu, hashedModelNodes: true,
 		"refii_hostbridge", "refii_vfs")
 	{
 		UiText = Refii.Ui.Engine_UiTextContract.Fable3,

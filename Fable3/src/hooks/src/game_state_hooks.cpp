@@ -3,47 +3,47 @@
 // stated_game_state.cpp); the host bridge (Fable3/src/hostbridge/src/level_feed.cpp,
 // options_feed.cpp) reads only that table. Every hook runs the guest's body unchanged.
 //
-// Every address is the Fable 3 IDB; each offset names its base.
+// Every address is the Fable 3 TU3 IDB ("disc" marks one TU3 lacks); each offset names its base.
 //
 // THE MODE STACK. A game state's modes are a list S = `*(*(state+0x30)+4)` (state =
-// `*(*0x83556540+0xC)`, the pause push at 0x825CEA54 and the run at 0x826ED3C8..0x826ED3D0):
+// `*(*0x83597034+0xC)`, the pause push at 0x825F9ADC and the run at disc 0x826ED3C8..disc 0x826ED3D0):
 // S+0 the sentinel node, S+4 the depth, a node {+0, +4 links, +8 the mode, +12 its count}; the TOP
-// is `*(*(S+0)+4)`'s mode, the one the game loop runs (0x821CBE8C..0x821CBEA4). Its writers:
-//   - push sub_8240E7A0(S, shared_ptr<mode>*): the insert sub_8238CFD0 links the new node at the
-//     sentinel's +4 (0x8238D06C) and bumps S+4 (0x8238D068), so the pushed mode is the top; the
-//     old top's slot 8 runs first (0x8240E7E0), the new one's slot 5 after (0x8240E804).
-//   - pop sub_8240E820(S, id): the top when its slot 1 (the mode's id) answers `id` (0x8240E860),
-//     else the first mode below it that does (0x8240E918), erased through sub_825EBC88.
-//   - the run sub_8240E958(S), per game update (0x826ED3D4): it unlinks every top whose slot 2
-//     says it is finished (0x8240E9C8..0x8240EA2C) and runs the first that is not.
+// is `*(*(S+0)+4)`'s mode, the one the game loop runs (0x821CBF98..disc 0x821CBEA4). Its writers:
+//   - push sub_8242BD78(S, shared_ptr<mode>*): the insert sub_82476A28 links the new node at the
+//     sentinel's +4 (0x82476AC4) and bumps S+4 (0x82476AC0), so the pushed mode is the top; the
+//     old top's slot 8 runs first (0x8242BDB8), the new one's slot 5 after (0x8242BDDC).
+//   - pop sub_8242BDF8(S, id): the top when its slot 1 (the mode's id) answers `id` (0x8242BE38),
+//     else the first mode below it that does (0x8242BEF0), erased through sub_828A0628.
+//   - the run sub_8242BF30(S), per game update (disc 0x826ED3D4): it unlinks every top whose slot 2
+//     says it is finished (0x8242BFA0..0x8242C004) and runs the first that is not.
 // Each is stated as it returns: the top's mode, its vtable and the depth. The GUI's pause mode
-// (CGameModePause, ctor sub_824B3B68: vtable 0x82091988 at 0x824B3B94; id 1, slot 1 sub_82C13A28
-// `li r3,1`) is pushed by lhGuiManager_EnterGuiMode (0x825CEA54) and popped by id 1 by
-// lhGuiManager_ExitScreen (0x825CEB8C) and the credits' end (0x825CF328).
+// (CGameModePause, ctor disc sub_824B3B68: vtable 0x82093488 at disc 0x824B3B94; id 1, slot 1 sub_82A99990
+// `li r3,1`) is pushed by lhGuiManager_EnterGuiMode (0x825F9ADC) and popped by id 1 by
+// lhGuiManager_ExitScreen (0x825F9C14) and the credits' end (0x825FA3A0).
 //
-// THE GUI SCREEN, `*(SM+4)`, SM = `*(GUI+0x38)`, GUI = `*0x83556490`. Its writers, every
+// THE GUI SCREEN, `*(SM+4)`, SM = `*(GUI+0x38)`, GUI = `*0x83596F84`. Its writers, every
 // `lwz rN,0x38(..)` followed by `stw ..,4(rN)` in the image:
-//   - the screen set sub_825CE590(G, id, quiet): `stw r28,4(r10)` at 0x825CE900, r28 =
+//   - the screen set sub_825F9618(G, id, quiet): `stw r28,4(r10)` at 0x825F9988, r28 =
 //     the id argument;
-//   - lhGuiManager_ExitScreen: 32 at 0x825CED34;
-//   - the download message box sub_825CEEB0: sets 0 through sub_825CE590 (0x825CEF00) and puts
-//     the previous id back at 0x825CF02C;
-//   - the credits' end ScreenManager_EndCredits: 0x825CF35C, 0x825CF46C (its hook is
+//   - lhGuiManager_ExitScreen: 32 at 0x825F9DBC;
+//   - the download message box sub_825F9F38: sets 0 through sub_825F9618 (0x825F9F88) and puts
+//     the previous id back at 0x825FA0B4;
+//   - the credits' end ScreenManager_EndCredits: 0x825FA3D4, 0x825FA4E4 (its hook is
 //     end_screen_hooks.cpp's, which states it through StateGuiScreen below).
 // The set is stated from its argument; the others as they return, the field they wrote.
 //
-// THE CULTURES, Fable 2's table at Fable 3's addresses: rows of 96 bytes at *0x832A0AC8, the
-// count at 0x832A0ACC, the row in use at 0x832A0AD0. Each row leads with its code (copied by
-// sub_82DB5ED0(0, i, row, 85): 0x822E9148 / 0x822E8CB4) and holds its UTF-16 display name at
-// `*(row+88)` (0x822E9158 / 0x822E8CC4; read as a `wchar_t*` by the Options page,
-// sub_8229B650(&s, *(row+88)) at 0x825CDB38..0x825CDB40). Its writers:
-//   - the boot build sub_822E8FC8: frees, counts, fills, and takes the "en-uk" row as the one in
-//     use (0x822E918C);
-//   - the refresh sub_822E8A88 (sub_822E9B88, CGUIGameComponent's ctor): the same rebuild,
-//     keeping the code in use (0x822E8CFC), else selecting the en-uk row through the switch
-//     (0x822E8D60);
-//   - the switch sub_822E8D70(index): `index < count` (0x822E8D98) makes it the row in use
-//     (0x822E8DE8).
+// THE CULTURES, Fable 2's table at Fable 3's addresses: rows of 96 bytes at *0x832E1548, the
+// count at 0x832E154C, the row in use at 0x832E1550. Each row leads with its code (copied by
+// sub_82DE7E78(0, i, row, 85): 0x822E9008 / 0x822E8B74) and holds its UTF-16 display name at
+// `*(row+88)` (0x822E9018 / 0x822E8B84; read as a `wchar_t*` by the Options page,
+// sub_82299940(&s, *(row+88)) at 0x825F8A90..0x825F8A98). Its writers:
+//   - the boot build sub_822E8E88: frees, counts, fills, and takes the "en-uk" row as the one in
+//     use (0x822E904C);
+//   - the refresh sub_822E8948 (sub_822E9E18, CGUIGameComponent's ctor): the same rebuild,
+//     keeping the code in use (0x822E8BBC), else selecting the en-uk row through the switch
+//     (0x822E8C20);
+//   - the switch sub_822E8C30(index): `index < count` (0x822E8C58) makes it the row in use
+//     (0x822E8CA8).
 // The builds are stated as they return, the table they wrote; the switch from its argument.
 
 #include <atomic>
@@ -56,6 +56,7 @@
 #include "box_answers.h"
 #include "core/payload_bridge.h"
 #include "gui_statements.h"
+#include "../../vfs/include/fable3_guest_build.h"
 
 REX_EXTERN(__imp__rex_GameModeStack_Push);
 REX_EXTERN(__imp__rex_GameModeStack_Pop);
@@ -74,14 +75,14 @@ using refii::fable3::LoadGuestU16;
 using refii::fable3::LoadGuestU32;
 using refii::fable3::Plausible;
 
-constexpr uint32_t kGuiManager = 0x83556490u;
+const refii::guest::Addr kGuiManager{0x83596F84u};
 constexpr uint32_t kGuiScreens = 0x38u;
 constexpr uint32_t kScreenId = 0x4u;
-constexpr uint32_t kGuiPauseMode = 0x82091988u;
+const refii::guest::Addr kGuiPauseMode{0x82093488u};
 
-constexpr uint32_t kCultureTable = 0x832A0AC8u;
-constexpr uint32_t kCultureCount = 0x832A0ACCu;
-constexpr uint32_t kCultureCurrent = 0x832A0AD0u;
+const refii::guest::Addr kCultureTable{0x832E1548u};
+const refii::guest::Addr kCultureCount{0x832E154Cu};
+const refii::guest::Addr kCultureCurrent{0x832E1550u};
 constexpr uint32_t kCultureStride = 96u;
 constexpr uint32_t kCultureCode = 85u;
 constexpr uint32_t kCultureName = 88u;
@@ -198,7 +199,7 @@ REX_EXTERN(rex_GameModeStack_Run) {
   StateStack(base, stack);
 }
 
-// (G, id, quiet): the screen id is the argument (0x825CE900).
+// (G, id, quiet): the screen id is the argument (0x825F9988).
 REX_EXTERN(rex_GuiManager_SetScreen) {
   const uint32_t id = ctx.r4.u32;
   __imp__rex_GuiManager_SetScreen(ctx, base);
@@ -212,8 +213,8 @@ REX_EXTERN(rex_GuiManager_ExitScreen) {
 }
 
 // (G, text LHString, download): puts the previous screen id back as it returns. When G+36 was 1
-// the box came up (+36 = 2 at 0x825CEEE4): stated with the text and the download flag, read
-// before the call, which destroys the text as it returns (after 0x825CF02C).
+// the box came up (+36 = 2 at 0x825F9F6C): stated with the text and the download flag, read
+// before the call, which destroys the text as it returns (after 0x825FA0B4).
 REX_EXTERN(rex_GuiManager_DownloadBox) {
   const uint32_t manager = ctx.r3.u32;
   const bool takes = base != nullptr && Plausible(manager) && LoadGuestU32(base, manager + 36u) == 1u;

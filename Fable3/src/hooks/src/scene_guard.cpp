@@ -1,14 +1,14 @@
 // refii - Fable 3's render scenes: no object added to a scene the 3D Engine has already destroyed.
 //
-// THE SCENES. The render scenes live in the table *0x8355F454 (classic_feed.cpp in the host
+// THE SCENES. The render scenes live in the table *0x835A0070 (classic_feed.cpp in the host
 // bridge), one slot per scene index; scene+1000 is the scene's typed object list.
-// sub_82258F00(scene, object) adds an object to a scene, through that list (sub_821DBAE0 on
-// scene+1000), and leaves at once when the object is null (`beq cr6,0x82258f8c` on r4).
+// sub_82258560(scene, object) adds an object to a scene, through that list (sub_821DB820 on
+// scene+1000), and leaves at once when the object is null (`beq cr6,0x822585EC` on r4).
 //
-// THE RACE. The 3D Engine's command stream destroys a scene by index (sub_822A21A8 ->
-// sub_82C4F358), while the frame adds objects from the queue it drains itself (sub_82302EB8 looks
-// the scene up by the queued index and calls sub_821F17B0, whose object's vtable slot 13,
-// sub_821BC5C0, swaps its arguments and branches here). A new game destroys the front end's scene
+// THE RACE. The 3D Engine's command stream destroys a scene by index (sub_822A07D8 ->
+// sub_82C83AD0), while the frame adds objects from the queue it drains itself (sub_82307800 looks
+// the scene up by the queued index and calls sub_821F0E70, whose object's vtable slot 13,
+// sub_821BC788, swaps its arguments and branches here). A new game destroys the front end's scene
 // (index 127) while objects queued for it are still being added; the lookup reads the emptied slot
 // and the add read scene+1004: a guest access violation at guest 0x3EC, on desktop and Android
 // alike, after picking a hero, on about every other try. Under a debugger the timing changed

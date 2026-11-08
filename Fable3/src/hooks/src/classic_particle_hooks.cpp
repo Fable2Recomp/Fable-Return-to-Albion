@@ -2,36 +2,36 @@
 // writers lay each group's stream into the frame's vertex buffer, and where each group's message
 // names the sim data it was drawn from.
 //
-// Every address is the Fable 3 IDB; each offset names its base.
+// Every address is the Fable 3 TU3 IDB ("disc" marks one TU3 lacks); each offset names its base.
 //
-// THE STREAM. Once per particle frame (sub_8318B238 -> sub_8318E8F0, the particle thread) the two
-// stream writers W = *0x8330E9F8 / *0x8330E9F4 have their cursor W+0x84 zeroed and their buffer
-// locked to W+0x88 (sub_83188238, 0x8318E9B4..), every live instance updates and then writes its
-// emitters through its vtable slot 10 (sub_8318CE70 -> sub_831890D0): the root emitter block
-// E = instance+336 by sub_83181DE8, each child E = child+16 by sub_8317C1E0. Both switch on the
+// THE STREAM. Once per particle frame (sub_831BD0F8 -> sub_831C07B0, the particle thread) the two
+// stream writers W = *0x8334F4EC / *disc 0x8330E9F4 have their cursor W+0x84 zeroed and their buffer
+// locked to W+0x88 (sub_831BA0F8, 0x831C0874..), every live instance updates and then writes its
+// emitters through its vtable slot 10 (sub_831BED30 -> sub_831BAF90): the root emitter block
+// E = instance+336 by sub_831B3CA8, each child E = child+16 by sub_831AE0A0. Both switch on the
 // renderer kind def+32 (def = E+0x2C) and hand the writer (W, D + 4, n), D = E+0x24 the sim's
-// particle data, n = E+0x10 the live count (0x83181E28..0x83181E6C), keeping the returned byte
-// offset at E+0x78 (`stw r3,0x1C8(r31)` 0x83181E70), -1 when nothing was written:
-//   sub_83178480  QUADS: n records of 48 bytes at *(D+8) (`lwz r10,0(r4)` 0x831784F8, stride 0x30
-//                 0x831785D4) become n vertices of 48 bytes at W+0x88 + W+0x84: {rec+16..+31,
-//                 rec+8, rec+12, rec+4, min(rec+0, 19.0 flt_8206BD48), rec+32..+47} — Fable 2's
+// particle data, n = E+0x10 the live count (0x831B3CE8..0x831B3D2C), keeping the returned byte
+// offset at E+0x78 (`stw r3,0x1C8(r31)` 0x831B3D30), -1 when nothing was written:
+//   sub_831AA340  QUADS: n records of 48 bytes at *(D+8) (`lwz r10,0(r4)` 0x831AA3B8, stride 0x30
+//                 0x831AA494) become n vertices of 48 bytes at W+0x88 + W+0x84: {rec+16..+31,
+//                 rec+8, rec+12, rec+4, min(rec+0, 19.0 flt_8206BD08), rec+32..+47} — Fable 2's
 //                 ring copy exactly, so the host takes the records as Fable 2's export does.
-//   sub_8317A758  TRAILS: the ring at D (+8 base, +20 head, +32 mask, +36 count c), refused when
-//                 c < n (`cmplw r11,r5` 0x8317A768), unrolled with a point either side: c + 3
-//                 points of 32 bytes (the ring copied by sub_83101680 at 0x8317AA3C/58, the two
-//                 end points stored at 32 (c+1) / 32 (c+2), 0x8317AAA0..BC).
-//   sub_831797E0  DOUBLE TRAILS: the same c + 3 points (n >= 2, c >= n, 0x831797EC..0x8317982C).
+//   sub_831AC618  TRAILS: the ring at D (+8 base, +20 head, +32 mask, +36 count c), refused when
+//                 c < n (`cmplw r11,r5` 0x831AC628), unrolled with a point either side: c + 3
+//                 points of 32 bytes (the ring copied by sub_83133348 at 0x831AC8FC/58, the two
+//                 end points stored at 32 (c+1) / 32 (c+2), 0x831AC960..BC).
+//   sub_831AB6A0  DOUBLE TRAILS: the same c + 3 points (n >= 2, c >= n, 0x831AB6AC..0x831AB6EC).
 // The render side never sees those records: the group's message is copied into the render ring
-// with its data replaced by a render copy holding only the material (sub_82C49808 -> sub_82C49A78
-// / B70 / C78, `v7[3] = 0`), and the twin's draw (sub_82C53F10 -> sub_82C548B8) binds the frame's
-// buffer at the message's offset R+432, stride 48 (sub_82D42308), skipping a group at -1.
+// with its data replaced by a render copy holding only the material (sub_82C7E270 -> sub_82C7E4E0
+// / B70 / C78, `v7[3] = 0`), and the twin's draw (sub_82C88688 -> sub_82C89030) binds the frame's
+// buffer at the message's offset R+432, stride 48 (sub_82D74798), skipping a group at -1.
 //
-// THE JOIN. The submit of the same emitter (sub_83188B60 -> renderer slot 5 sub_825FC5C0) fills
-// the group's message (holder+16, vtable 0x82001A24 type 6, or 0x820E39FC type 36 for a
-// displacement group; sub_825FC478: +8 kind, +12 D, +28 n, +112 the offset E+0x78) and posts it
-// to its render object with sub_821C2120(id, message, ring) (0x825FD018). The id indexes the twin
-// table *0x8355F464 (sub_8220D870), so a twin's stream is the one written from the D its id was
-// last posted with. The object's end is its remove (sub_825FD208 -> sub_82C3C148, world_hooks.cpp).
+// THE JOIN. The submit of the same emitter (sub_831BAA20 -> renderer slot 5 sub_826243C8) fills
+// the group's message (holder+16, vtable 0x820019C0 type 6, or 0x820E63CC type 36 for a
+// displacement group; disc sub_825FC478: +8 kind, +12 D, +28 n, +112 the offset E+0x78) and posts it
+// to its render object with sub_821C20E0(id, message, ring) (0x82624E20). The id indexes the twin
+// table *0x835A0080 (sub_8220CF10), so a twin's stream is the one written from the D its id was
+// last posted with. The object's end is its remove (sub_82625010 -> sub_82C708C8, world_hooks.cpp).
 
 #include <cstdint>
 #include <cstring>
@@ -40,6 +40,7 @@
 #include <rex/ppc.h>
 
 #include "core/payload_bridge.h"
+#include "../../vfs/include/fable3_guest_build.h"
 
 REX_EXTERN(__imp__rex_ParticleQuads_WriteStream);
 REX_EXTERN(__imp__rex_ParticleTrail_WriteStream);
@@ -48,8 +49,8 @@ REX_EXTERN(__imp__rex_RenderObject_PostMessage);
 
 namespace {
 
-constexpr uint32_t kGroupMessage = 0x82001A24u;
-constexpr uint32_t kDisplacementGroupMessage = 0x820E39FCu;
+const refii::guest::Addr kGroupMessage{0x820019C0u};
+const refii::guest::Addr kDisplacementGroupMessage{0x820E63CCu};
 constexpr uint32_t kQuads = 1u;
 constexpr uint32_t kTrail = 2u;
 constexpr uint32_t kDoubleTrail = 3u;
@@ -85,8 +86,8 @@ std::vector<float>& Scratch() {
   return floats;
 }
 
-/// The writer's stream base for the offset it returned: *(W+0x88) + offset (0x831784B8,
-/// 0x8317A7A0, 0x83179830). The buffer is the device's, so it may sit in the physical views.
+/// The writer's stream base for the offset it returned: *(W+0x88) + offset (0x831AA378,
+/// 0x831AC660, 0x831AB6F0). The buffer is the device's, so it may sit in the physical views.
 uint32_t StreamAt(const uint8_t* base, uint32_t writer, uint32_t offset, uint32_t bytes) {
   const uint32_t buffer = Word(base, writer + 0x88u);
   if (buffer == 0u || offset == kNoOffset) {

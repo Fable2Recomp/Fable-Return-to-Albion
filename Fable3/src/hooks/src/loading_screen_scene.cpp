@@ -2,58 +2,64 @@
 // (Godot/src/Titles/Fable3/Fable3LoadingScreen.cs, through RefiiHostGetLoadingScreen/…Art reading
 // the table core/payload_bridge.h names), and its quads cut. The screen's state machine — fade,
 // dwell, closes, done, its scene and the display it points — runs unchanged; IsLoadingScreenActive
-// (sub_82176F38) and every other guest reader see the guest's own object.
+// (sub_82289500) and every other guest reader see the guest's own object.
 
-// Every address is the Fable 3 IDB; each offset names its base (ls = the screen, the r3 of its
-// per-frame update sub_823022D0).
+// Every address is the Fable 3 TU3 IDB ("disc" marks one TU3 lacks); each offset names its base (ls
+// = the screen, the r3 of its
+// per-frame update sub_82306BC8).
 //
-// THE QUADS. The screen's quad builders are sub_82302EB8 (one quad: 0x82302FE0, 0x82303034,
-// 0x82303088) and sub_82305CC0 (a text run: 0x82306088, 0x82306108, 0x82306188, 0x82306208,
-// 0x8230634C). Each site calls the twin create sub_821F17B0(desc r3, f1 time, r5 =
-// slot[ls+0] read straight from dword_8355F454 with no test, r6 = -1 "allot an id", r7) and keeps
-// the id it returns in one of the screen's id vectors (ls+232/248/264 through sub_82308B88; the
+// THE QUADS. The screen's quad builders are sub_82307800 (one quad: 0x8230793C, 0x823079A4,
+// 0x82307A0C) and sub_8230A6A8 (a text run: disc 0x82306088, disc 0x82306108, disc 0x82306188, disc 0x82306208,
+// 0x8230ADA8). Each site calls the twin create sub_821F0E70(desc r3, f1 time, r5 =
+// slot[ls+0] read straight from dword_835A0070 with no test, r6 = -1 "allot an id", r7) and keeps
+// the id it returns in one of the screen's id vectors (ls+232/248/264 through sub_8230D5C0; the
 // a31 vector its callers pass — ls+280/296/312 and others). The create's own "nothing made" path
-// is the descriptor making no object (`beq loc_821F192C` at 0x821F17F0) -> `mr r3, r31` with r31
-// = r6 (0x821F17D0, 0x821F192C): it returns the requested id, -1 at every site above, and touches
+// is the descriptor making no object (`beq loc_821F192C` at 0x821F0EB0) -> `mr r3, r31` with r31
+// = r6 (0x821F0E90, 0x821F0FEC): it returns the requested id, -1 at every site above, and touches
 // neither the scene, the twin table nor the id pool.
 //
 // THE STATEMENTS (offsets from ls; mgr = the manager, the r3 of its create and stop):
-//   - Creates: sub_82307750(mgr, a2, a3, kind, a5) and sub_82307890(mgr, a2, kind), each making
-//     the screen only while mgr+4 is empty (`if (!a1[1])` at 0x823077B8 / 0x823078F0) through its
-//     constructor (sub_82300580 at 0x823077F4 / sub_82300768 at 0x82307928), which stores `kind`
-//     at ls+0x170 (`stw` at 0x82300470 in sub_823002F0, reached with the create's kind), and
-//     storing it at mgr+4 (0x82307814 / 0x82307950). Stated when mgr+4 changed across the call.
-//   - Destruction: sub_82300968(ls), the one body every release runs (the stop's sub_82308260 at
-//     0x823082F4, the creates' replace at 0x82307808 / 0x82307944, the manager's destructor
-//     sub_82307638 at 0x82307684).
-//   - The art: sub_823030B0(ls), run from sub_82300BB0 (0x82300C50) when the update finds ls+0x1A7
-//     set (0x82302764), writes the CCharString handle ls+0x150 on every branch (sub_822295F0 at
-//     0x82303144..0x823033B4, the E32010 form then formatted in place at 0x82303168); the kind it
-//     switches on is ls+0x170 (0x8230319C).
+//   - Creates: sub_8230C120(mgr, a2, a3, kind, a5) and sub_8230C260(mgr, a2, kind), each making
+//     the screen only while mgr+4 is empty (`if (!a1[1])` at 0x8230C188 / 0x8230C2C0) through its
+//     constructor (sub_82304EA0 at 0x8230C1C4 / sub_82305088 at 0x8230C2F8), which stores `kind`
+//     at ls+0x170 (`stw` at disc 0x82300470 in sub_82304C20, reached with the create's kind), and
+//     storing it at mgr+4 (0x8230C1E4 / 0x8230C320). Stated when mgr+4 changed across the call.
+//   - Destruction: sub_82305288(ls), the one body every release runs (the stop's sub_8230CC30 at
+//     0x8230CCC4, the creates' replace at 0x8230C1D8 / 0x8230C314, the manager's destructor
+//     sub_8230C008 at 0x8230C054).
+//   - The art: sub_82307A30(ls), run from sub_823054E0 (0x82305580) when the update finds ls+0x1A7
+//     set (disc 0x82302764), writes the CCharString handle ls+0x150 on every branch (sub_82228298 at
+//     0x82307AC4..0x82307D34, the E32010 form then formatted in place at 0x82307AE8); the kind it
+//     switches on is ls+0x170 (0x82307B1C).
 //   - The update (r3 = ls) states, as it returns, what it moved: ls+0xD0 the cover opacity (up by
-//     1/dbl_8329EA48 per update while it shows, 0x82302874; down by the same after the close,
-//     0x82302380), ls+0x19C the close requested (set only by the close sub_823020D0 at 0x823020E8,
-//     cleared by the update's teardown at 0x823024B8) and ls+0x19D finished (set at 0x82302530 /
-//     0x82302570 beside the PulseEvent that releases the stop's waiter).
-//   - The close sub_823020D0(ls), from the stop sub_82307B18(mgr, imm) (0x82307BE8) and from the
-//     update's own dwell expiry (0x82302634), sets ls+0x19C and ls+0xD0 = 1.0 (0x823020F4): stated
+//     1/dbl_832DF4D0 per update while it shows, disc 0x82302874; down by the same after the close,
+//     0x82306C70), ls+0x19C the close requested (set only by the close sub_823069C8 at 0x823069E0,
+//     cleared by the update's teardown at disc 0x823024B8) and ls+0x19D finished (set at disc 0x82302530 /
+//     disc 0x82302570 beside the PulseEvent that releases the stop's waiter).
+//   - The close sub_823069C8(ls), from the stop sub_8230C4E8(mgr, imm) (0x8230C5B8) and from the
+//     update's own dwell expiry (disc 0x82302634), sets ls+0x19C and ls+0xD0 = 1.0 (0x823069EC): stated
 //     as it returns, so a stop reaches the host before the next update.
 //
-// WHO READS THE IDS BACK. Only the releases: sub_823022D0 (ls+236.., ls+220..),
-// sub_82303AF8/B78/BF8/FD8, sub_82304058 and sub_82305CC0's own clear, each `sub_82C4F128(id)`,
+// WHO READS THE IDS BACK. Only the releases: sub_82306BC8 (ls+236.., ls+220..),
+// sub_82308478/B78/BF8/FD8, sub_82308A18 and sub_8230A6A8's own clear, each `sub_82C838A0(id)`,
 // which returns at once for -1 (`if (result != -1)`). No screen function reads the twin table
-// dword_8355F464; no host feed reads these twins (the screen's statements are below). The builders' return values gate nothing. The screen's
-// own scene (sub_82C4F1A8 in sub_82300BB0) and its view twin ls+4 (sub_82301B58, the camera the
-// display names; the frame tests it, `a1 != -1 && twin[a1]`, sub_821988C8) are not quads and stay.
+// dword_835A0080; no host feed reads these twins (the screen's statements are below). The builders' return values gate nothing. The screen's
+// own scene (sub_82C83920 in sub_823054E0) and its view twin ls+4 (sub_82306488, the camera the
+// display names; the frame tests it, `a1 != -1 && twin[a1]`, sub_821989D8) are not quads and stay.
 //
 // THE FAULT IT REMOVES. A close that lands inside the screen's dwell tears an own-scene screen
-// down in its next frame (0x82302354) and hands its scene to the particle thread for destruction
-// (0x823024A8); the frame after, still inside the dwell (0x823025D4), the screen borrows the
-// pending display (0x82302650..68) — that same scene — and its next quad refresh read the emptied
-// slot: sub_82302EB8 -> sub_821F17B0 -> slot 13 (thunk sub_821BC5C0) -> sub_82258F00 ->
-// sub_821DBAE0(0 + 1000), the read of 0x3EC at 0x821DBAEC (r7 refiii_012.log 15:24:18). Every
-// other reader of that scene id tests the slot (the ring consumer sub_822A21A8, the display add
-// sub_8219AC68 -> ring opcode 3). With the quads answered "nothing made", nothing reads it.
+// down in its next frame (0x82306C44) and hands its scene to the particle thread for destruction
+// (0x82306DC0); the frame after, still inside the dwell (disc 0x823025D4), the screen borrows the
+// pending display (disc 0x82302650..68) — that same scene — and its next quad refresh read the emptied
+// slot: sub_82307800 -> sub_821F0E70 -> slot 13 (thunk sub_821BC788) -> sub_82258560 ->
+// sub_821DB820(0 + 1000), the read of 0x3EC at 0x821DB82C (r7 refiii_012.log 15:24:18). Every
+// other reader of that scene id tests the slot (the ring consumer sub_822A07D8, the display add
+// sub_8219AC40 -> ring opcode 3). With the quads answered "nothing made", nothing reads it.
+//
+// The fault is the disc's: TU3's builders test the scene first (sub_8230BE28, called by
+// LoadingScreen_BuildQuad / _BuildTextQuads / _Update: id != -1, inside the twin table
+// dword_835A0070..dword_835A0074 and its slot non-zero). The cut is the same on both: the host draws
+// the screen.
 //
 // The warning below marks the race still happening (the screen holding a destroyed scene); with
 // the cut it is followed by no fault.
@@ -69,6 +75,7 @@
 
 #include "core/payload_bridge.h"
 #include "gui_statements.h"
+#include "../../vfs/include/fable3_guest_build.h"
 
 REX_EXTERN(__imp__rex_LoadingScreen_Update);
 REX_EXTERN(__imp__rex_LoadingScreen_Create);
@@ -82,8 +89,8 @@ REX_EXTERN(__imp__rex_RenderTwin_Create);
 
 namespace {
 
-constexpr uint32_t kSceneTableBegin = 0x8355F454u;
-constexpr uint32_t kSceneTableEnd = 0x8355F458u;
+const refii::guest::Addr kSceneTableBegin{0x835A0070u};
+const refii::guest::Addr kSceneTableEnd{0x835A0074u};
 constexpr uint32_t kNoScene = 0xFFFFFFFFu;
 
 constexpr uint32_t kLsScene = 0x0u;
@@ -218,7 +225,7 @@ REX_EXTERN(rex_LoadingScreen_BuildTextQuads) {
 
 REX_EXTERN(rex_RenderTwin_Create) {
   if (t_building_quads != 0u) {
-    // The create's "nothing made" answer: the requested id, untouched (0x821F192C `mr r3, r31`).
+    // The create's "nothing made" answer: the requested id, untouched (0x821F0FEC `mr r3, r31`).
     ctx.r3.u64 = ctx.r6.u64;
     return;
   }

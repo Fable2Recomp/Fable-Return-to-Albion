@@ -1,0 +1,1544 @@
+# ReXGlue config for the Fable 3 USA / Europe executable with title update 3 applied (disc media ID
+# D99E18E7, executable 0.0.3.3; the update is TU_16L626M_000000C000000.00000000000O3).
+#
+# The same entries as Fable3/versions/Fable3, each at its TU3 address: the update is a full relink,
+# so no address is shared. Every address here was matched in the TU3 IDB (default.xex.i64 under
+# Fable 3/tu3, labelled from the disc IDB: each matched function's comment names its disc address),
+# and every [[midasm_hook]] site was compared instruction by instruction with the disc's. Where TU3
+# changed a hook site the entry says so. The hooks bind by the names, so the same hook sources
+# compile against either config.
+#
+# Size corrections the disc config carries for code TU3 rewrote or dropped are not carried; the
+# first generator run on this executable reports what it still needs, as the disc's did.
+
+[functions]
+# The ring-buffer initialiser (calls VdInitializeRingBuffer and VdEnableRingBufferRPtrWriteBack);
+# Fable3/src/hooks/src/boot_no_gpu.cpp arms the device's no-GPU bit as it returns.
+0x82D52788 = { name = "rex_D3DDevice_InitializeRingBuffer" }
+# InsertCallback (device, cmd, flags, callback, data); the same file runs each callback the GPU
+# interrupt would have.
+0x821D8A60 = { name = "rex_D3DDevice_InsertCallback" }
+# The app object's idle wait (vtable 0x82002548 slot 3), the one unlocked point of the 3D Engine
+# loop; Fable3/src/hooks/src/present_pacing.cpp paces the present there.
+0x82D64560 = { name = "rex_App_IdleWaitForFlags" }
+# The app object's input tick (vtable 0x82002548 slot 5, a thunk to the input system at app+0x24),
+# called once per HF step by the game loop at 0x821CBE80; Fable3/src/hooks/src/game_tick_pump.cpp
+# drains the host's posted work there and times the step.
+0x82188640 = { name = "rex_App_TickInput" }
+# The "Press START" splash's per-frame update (F); Fable3/src/hooks/src/splash_screen.cpp states
+# the transitions F's own build, timers and teardown make there to the host, which draws the screen.
+0x825324F8 = { name = "rex_Splash_Update" }
+# The splash's state as the Startup states it (the same file): its input handler (S, event), which
+# accepts START, and its two state setters on the splash holder (H): back to the prompt, go on.
+0x82319AB8 = { name = "rex_Splash_Input" }
+# TU3 only: the START accept (S, pad), out of the input into its own function, also called by the
+# Startup's update (0x82319788).
+0x82319C38 = { name = "rex_Splash_Accept" }
+0x82534560 = { name = "rex_Splash_BackToPrompt" }
+0x82534500 = { name = "rex_Splash_GoOn" }
+# The world view (Fable3/src/hooks/src/view_feed.cpp): the render camera's fill from the final
+# camera block, and the 3D Engine's preload gate the level load waits on.
+0x822607C8 = { name = "rex_View_SetRenderCamera" }
+0x821A8E58 = { name = "rex_Camera_Blend" }
+0x822E13B8 = { name = "rex_Engine_IsPreLoading" }
+0x82255CF0 = { name = "rex_GameLoop_HighFrequencyUpdate" }
+# The Bink object's open (B, source, audio, poolAlloc), rect setter (B, int rect[4], ...) and
+# close, every movie player's; and the startup logo player's constructor (P, owner, blob).
+# Fable3/src/hooks/src/movie_player.cpp states them for the host's native playback.
+0x82C71B68 = { name = "rex_BinkPlayer_Open" }
+0x82C71E78 = { name = "rex_BinkPlayer_SetDestRect" }
+0x82C71CF8 = { name = "rex_BinkPlayer_Close" }
+0x8230FDB0 = { name = "rex_StartupMoviePlayer_Ctor" }
+# The UI cut's seam (Fable3/src/hooks/src/gui_natives.cpp): the Lua C-precall every native call
+# passes through (&base_ci, L, nresults, funcTV, newTop, pc), and the namespace registration's
+# name hook (namespace slot, L, name) that binds each implementation to its `GUI.*` name.
+0x82213FB8 = { name = "rex_luaD_precallC" }
+0x82361988 = { name = "rex_lhLuaNamespace_RegisterFunctionHash" }
+# The Gameface element API every Fable 3 menu, box and HUD screen is written through
+# (Fable3/src/hooks/src/gui_element_hooks.cpp): the dotted-path resolver (path, parent,
+# presentation) and the setters — state (elem, pres, int), opacity (elem, pres, f1), a text box's
+# string commit (box, &string) and a text tag (elem, tagId).
+0x82877B48 = { name = "rex_GuiElement_Resolve" }
+0x8227BC50 = { name = "rex_GuiElement_SetState" }
+0x82877128 = { name = "rex_GuiElement_SetOpacity" }
+0x82B7A488 = { name = "rex_GuiTextBox_Commit" }
+0x82876F90 = { name = "rex_GuiElement_SetTextTag" }
+# The timeline position (elem, pres, f1 = value; the meters' fraction * 1000, sub_8281AD48) and
+# the text set from a tag NAME (elem, &name) that assigns box+0x88 without the commit above.
+0x828782E0 = { name = "rex_GuiElement_SetTime" }
+0x82876EB0 = { name = "rex_GuiElement_SetTextName" }
+# The HUD registry filer (registry, element, presentation) and the attribute-string getter (out,
+# element, presentation, attribute name) it calls: the elements the registries key by their
+# .bgf attribute (TextName, ToggleName, …) never pass the path resolver, and this names them.
+0x82BCF250 = { name = "rex_GuiRegistry_File" }
+0x828760D0 = { name = "rex_GuiElement_AttributeString" }
+# The presentation's root element getter (presentation, 0 = the current screen's): the screen
+# ticks write its state directly (sub_825C3A78 at 0x825EEBA0 / 0x825EED58), never through a path.
+0x82877AC0 = { name = "rex_GuiPresentation_Root" }
+# The element's local position (elem, pres, f1 x, f2 y, f3 z) — the guest-laid-out text boxes' lines
+# (sub_82920610) and the HUD icons' screen-edge clamp (sub_82B51B58) — and its texture by path
+# (&path, elem) — the interaction buttons' glyphs (sub_82961340, sub_829614A0).
+0x82876288 = { name = "rex_GuiElement_SetPosition" }
+0x82876BF8 = { name = "rex_GuiElement_SetTexture" }
+# The presentation's slide funnel (slides = pres+0x238, component, slide, flag) every slide change
+# reaches; the Gameface Lua methods' presentation getter (L), getElement (L) and setAttribute (L);
+# and the presentation's command executor (pres, &command) — the queued Lua goTo* and the .bgf's
+# authored actions (gui_element_hooks.cpp).
+0x82267158 = { name = "rex_GuiSlides_GoTo" }
+0x82265E20 = { name = "rex_GamefaceLua_Presentation" }
+0x82C589E8 = { name = "rex_GamefaceLua_GetElement" }
+0x82C59170 = { name = "rex_GamefaceLua_SetAttribute" }
+0x82C695D0 = { name = "rex_GamefacePresentation_Execute" }
+# XamShowKeyboardUI's one guest thunk (`b XamShowKeyboardUI`), called by the rename at 0x82970ED0;
+# keyboard_ui.cpp leaves the request pending for the host to answer.
+0x831314B8 = { name = "rex_Xam_ShowKeyboardUI" }
+# The box manager (Fable3/src/hooks/src/display_box_hooks.cpp): a queue's push (queue,
+# shared_ptr<Box>), its tick (queue) — the one place a display box becomes the showing box and the
+# one exit that drops it — and the pending vector's erase (out, vector, iterator); the pad
+# handlers (box, ev*, player) of the classes Godot owns — message, yes/no, natal query, numeric
+# adjuster, quest, tutorial notice — and the answer it runs, the adjuster's (box, accept); a
+# yes/no is answered through its own input. The pause screen's message box: the screen input (SM, action,
+# player) and its reset (G). The menu box: open (MB), input (MB, ev, pad), close (MB), the row
+# add (MB, &tag), enable (MB, index, enabled), highlight (MB, row) and select (MB), and the GUI
+# action mapping its input runs (ev*, pad).
+0x82623BF0 = { name = "rex_BoxQueue_Push" }
+0x82285AE8 = { name = "rex_BoxQueue_Update" }
+0x826241C0 = { name = "rex_BoxVector_Erase" }
+0x82878F88 = { name = "rex_MessageBox_HandleInput" }
+0x828799F8 = { name = "rex_QueryBox_HandleInput" }
+0x82B93CD8 = { name = "rex_NatalQueryBox_HandleInput" }
+0x8287A1B0 = { name = "rex_NumericAdjuster_HandleInput" }
+0x8287A8E8 = { name = "rex_QuestBox_HandleInput" }
+0x824C13F0 = { name = "rex_TutorialBox_HandleInput" }
+0x8287A3A0 = { name = "rex_NumericAdjuster_Answer" }
+0x825F9408 = { name = "rex_GuiManager_ScreenInput" }
+0x825FA150 = { name = "rex_GuiManager_ModalReset" }
+0x826220A8 = { name = "rex_MenuBox_Open" }
+0x82621EB8 = { name = "rex_MenuBox_Input" }
+0x826222A8 = { name = "rex_MenuBox_Close" }
+0x82621CF0 = { name = "rex_MenuBox_AddRow" }
+0x82621E48 = { name = "rex_MenuBox_SetEnabled" }
+0x82621DC0 = { name = "rex_MenuBox_Highlight" }
+0x826226D8 = { name = "rex_MenuBox_Accept" }
+0x82B51118 = { name = "rex_GuiInput_MenuAction" }
+# The options (Fable3/src/hooks/src/options_hooks.cpp): the audio appliers — sfx, voice, music
+# (A, f1) and the speaker mode (A, mode) — the Options screen's gamma applier (screen), the
+# saved settings' gamma read (user), blob read (user, out) and write (user, subtitles, f1 gamma,
+# &levels); the Options screen's Show (screen) and pad handler (screen, ev*, player).
+0x82D4F758 = { name = "rex_Audio_SetSfxVolume" }
+0x82D4F800 = { name = "rex_Audio_SetVoiceVolume" }
+0x82D4F980 = { name = "rex_Audio_SetMusicVolume" }
+0x82D4FA28 = { name = "rex_Audio_SetSpeakerMode" }
+0x825F8148 = { name = "rex_Options_ApplyGamma" }
+0x822F6018 = { name = "rex_Profile_ReadGamma" }
+0x822F78C8 = { name = "rex_Profile_ReadSettings" }
+0x822F62B8 = { name = "rex_Profile_WriteSettings" }
+0x825F4408 = { name = "rex_OptionsBox_Show" }
+0x825F4F30 = { name = "rex_OptionsBox_HandleInput" }
+# The Options screen's per-frame update (screen; vtable slot 5).
+0x825F4958 = { name = "rex_OptionsBox_Update" }
+# The epilogue's show (E, title, description, gold, image CCharString, flag) and hide (E), and the
+# screen manager's credits start and end (SM) (Fable3/src/hooks/src/end_screen_hooks.cpp).
+0x827A24D0 = { name = "rex_Epilogue_Show" }
+0x827A2A90 = { name = "rex_Epilogue_Hide" }
+0x825FA1B0 = { name = "rex_ScreenManager_StartCredits" }
+0x825FA2F8 = { name = "rex_ScreenManager_EndCredits" }
+# The game state the shell reads (Fable3/src/hooks/src/game_state_hooks.cpp): the game mode
+# stack's push (S, shared_ptr<mode>*), pop (S, id) and per-update run (S); the GUI screen id's
+# writers — the screen set (G, id, quiet), ExitScreen (G), the download box (G, text, download) —
+# and the culture table's boot build, rebuild (force) and switch (index).
+0x8242BD78 = { name = "rex_GameModeStack_Push" }
+0x8242BDF8 = { name = "rex_GameModeStack_Pop" }
+0x8242BF30 = { name = "rex_GameModeStack_Run" }
+0x825F9618 = { name = "rex_GuiManager_SetScreen" }
+0x825F9B20 = { name = "rex_GuiManager_ExitScreen" }
+0x825F9F38 = { name = "rex_GuiManager_DownloadBox" }
+0x822E8E88 = { name = "rex_Cultures_Build" }
+0x822E8948 = { name = "rex_Cultures_Refresh" }
+0x822E8C30 = { name = "rex_Culture_Select" }
+# The render scene's object add (scene, object): Fable3/src/hooks/src/scene_guard.cpp skips an add to
+# a scene the 3D Engine has already destroyed (a new game destroys the front end's while objects
+# queued for it are still being added).
+0x82258560 = { name = "rex_Scene_AddObject" }
+# The camera manager's per-tick update (manager): the active mode's Lua FrameUpdate runs inside
+# it, so Fable3/src/hooks/src/mouse_look.cpp hands the mouse's turn to that mode before it and
+# states what the mode made of it after. The mode's GameAction receiver (mode, {action, x, y}),
+# the registry-ref push (holder, L) that puts the mode's camera table on the stack, and the Lua
+# getfield/setfield (L, idx, name) the hook reads and writes the camera's fields with.
+0x822551E8 = { name = "rex_CameraManager_Update" }
+0x827A0DA8 = { name = "rex_CameraMode_ProcessGameAction" }
+0x82241C08 = { name = "rex_LuaRef_Push" }
+0x822A6118 = { name = "rex_lua_getfield" }
+0x822A6250 = { name = "rex_lua_setfield" }
+# The ranged aim's cursor move (aim, its stick as two packed floats, x high): the same file joins
+# the mouse's turn to the stick at the cursor's own gain. The aim stats it reads the gain from
+# (entity), and the native Player.HasPlayerMode (component 37, mode) it asks for a target lock.
+0x828AE960 = { name = "rex_lhRangedAim_MoveCursor" }
+0x821B1390 = { name = "rex_Entity_RangedAimStats" }
+0x821B9D80 = { name = "rex_Player_HasPlayerMode" }
+# The per-game-tick Lua GC driver (L holder, force); Fable3/src/hooks/src/lua_gc_slice.cpp runs
+# its time-boxed loop against the real clock.
+0x8226C488 = { name = "rex_lhLua_GcSliceStep" }
+# The world (Fable3/src/hooks/src/world_hooks.cpp): the level manager's post-load pass (mgr, run
+# by the loader sub_82348AD0 on its success at 0x82350674) and its unload (mgr, flag); the
+# particle command wrappers — create (int* handle, name hash), start (handle), scene (handle,
+# scene), position (handle; v1), position and velocity (handle; v1, v2), orientation (handle; v1),
+# kill (handle), kill by scene (scene, callback); the decal render command's executor (cmd), a
+# render twin releasing its decals (twin) and the decal list's clear; the render scene's add
+# (message, scene, ring; returns the object id — the drunk warp's full-screen quad is stated by
+# its message class) and remove (id, ring).
+0x823535D8 = { name = "rex_LevelManager_LevelLoaded" }
+0x82350AD8 = { name = "rex_LevelManager_Unload" }
+0x831C1C78 = { name = "rex_ParticleSystem_Create" }
+0x831C1C20 = { name = "rex_ParticleSystem_Start" }
+0x831C1BB8 = { name = "rex_ParticleSystem_SetScene" }
+0x831C19F0 = { name = "rex_ParticleSystem_SetPosition" }
+0x831C1960 = { name = "rex_ParticleSystem_SetPositionAndVelocity" }
+0x831C1890 = { name = "rex_ParticleSystem_SetOrientation" }
+0x831C1770 = { name = "rex_ParticleSystem_Kill" }
+0x831C13D0 = { name = "rex_ParticleSystem_KillScene" }
+# Who plays an effect: the CECParticleEmitter that makes its handle (handle at +0x14, stw at 0x826AC454)
+# and the entity it attaches to (weak ref +0x1C, attachment sub_82715270 at 0x826ACDF8) — fx_owner_hooks.cpp.
+0x826AC3C8 = { name = "rex_ParticleEmitter_CreateEffect" }
+0x826ACC40 = { name = "rex_ParticleEmitter_AttachToEntity" }
+0x82C73BF8 = { name = "rex_Decal_ExecuteRenderCommand" }
+0x82CD46A8 = { name = "rex_RenderTwin_ReleaseDecals" }
+0x82CA79C8 = { name = "rex_Decal_ClearAll" }
+0x82256458 = { name = "rex_RenderScene_AddObject" }
+0x82C708C8 = { name = "rex_RenderScene_RemoveObject" }
+# The classic particle streams (Fable3/src/hooks/src/classic_particle_hooks.cpp): the particle
+# system's stream writers (W, D + 4, n; return the byte offset in the frame's vertex buffer, -1
+# when nothing was written) for quads, trails and double trails, and the render object message
+# post (id, message, ring) through which a group's message names its sim data D.
+0x831AA340 = { name = "rex_ParticleQuads_WriteStream" }
+0x831AC618 = { name = "rex_ParticleTrail_WriteStream" }
+0x831AB6A0 = { name = "rex_ParticleDoubleTrail_WriteStream" }
+0x821C20E0 = { name = "rex_RenderObject_PostMessage" }
+# The aim reticules (Fable3/src/hooks/src/reticle_hooks.cpp): the ranged aim's setter (aimer, active) and the
+# spell target's per-tick update (caster), each writing its record of the HUD's reticule manager *(H+0x3C).
+0x828AFD90 = { name = "rex_HudReticule_SetRangedAim" }
+0x82727330 = { name = "rex_HudReticule_UpdateSpellTarget" }
+# The world icons and emotion choices (Fable3/src/hooks/src/world_icon_hooks.cpp): CWorldIconBase's
+# Init (icon, request) every class reaches, CWorldIcon3D's Update (icon, visible, ctx; the emotion
+# icon's too), the HUD-element icon's Update (icon, visible, ctx), the emotion icon's ring tick
+# (icon), the registry's one icon erase (out, R, vector, iterator), CWorldIconBase's destructor
+# (icon); the choice list's add (E, shared_ptr*), the record deleter (record) and the press/release
+# handler (E, &event, player).
+0x82B87938 = { name = "rex_WorldIcon_Init" }
+0x82225AC8 = { name = "rex_WorldIcon3D_Update" }
+0x82B866C8 = { name = "rex_HudElementIcon_Update" }
+0x829C2F98 = { name = "rex_EmotionIcon_RingTick" }
+0x82615CD8 = { name = "rex_IconRegistry_Erase" }
+0x82B878A8 = { name = "rex_WorldIcon_Destroy" }
+0x8260FF38 = { name = "rex_EmotionChoices_Add" }
+0x826131F0 = { name = "rex_EmotionChoice_Delete" }
+0x826103E8 = { name = "rex_EmotionChoices_Input" }
+# The HUD registries and the screen fade (Fable3/src/hooks/src/hud_hooks.cpp): the registry map's
+# insert (registry, hash, element), the filer's unfile (registry, element, pres), the registries'
+# destructor body (registry); the text writer (registry, hash, LHString*), the meter's value writer
+# (meter, f1); the fade's one start (fader, bgra*, f1 seconds, ..., entity) and its per-HF-step
+# advance (fader).
+0x82976060 = { name = "rex_HudRegistry_Insert" }
+0x82BCF348 = { name = "rex_HudRegistry_Unfile" }
+0x82975EE0 = { name = "rex_HudRegistry_Destroy" }
+0x827681B8 = { name = "rex_HudText_Set" }
+0x82975A58 = { name = "rex_HudMeter_Apply" }
+0x82600658 = { name = "rex_ScreenFade_Start" }
+0x822852C8 = { name = "rex_ScreenFade_Advance" }
+# The slide registries' writers (the same file): SlideSetName / SlideFader2Name's state (registry,
+# hash, N), SlideToggleName's (registry, hash, on), SlideFaderName's (registry, hash, slide);
+# ScriptPositioned's place (registry, hash, float* xy, net) and restore (registry, hash, net); the
+# HUD's update (H, f1), whose g_HUD:Enable() rests ItemReceived, and its reset (H); the d-pad's
+# slide (D, s) and slot writer (D, &texture, slot, count, flash).
+0x829B4CA0 = { name = "rex_HudSlides_SetState" }
+0x829759E8 = { name = "rex_HudSlides_Toggle" }
+0x82B847F0 = { name = "rex_HudSlides_Fade" }
+0x82B84A10 = { name = "rex_HudPositions_Place" }
+0x82B84AF8 = { name = "rex_HudPositions_Restore" }
+0x82258E60 = { name = "rex_Hud_Update" }
+0x824CD8D0 = { name = "rex_Hud_Reset" }
+0x82603B28 = { name = "rex_HudDpad_Slide" }
+0x82603980 = { name = "rex_HudDpad_Slot" }
+# The interaction mode (Fable3/src/hooks/src/interaction_hooks.cpp): its set (IM, mode, a3, a4,
+# table, a6), its close (IM, keepTarget) and the info panel's stager (mode object, id; the id
+# stated at entry).
+0x825EF1D8 = { name = "rex_InteractionMode_Set" }
+0x825F0CC8 = { name = "rex_InteractionMode_Close" }
+0x82971CC8 = { name = "rex_InteractionMode_SetPanel" }
+# The same file: the mode's tick (IM), whose flag edges write the root's slide, and its clear (IM),
+# which rests the root on slide 1 (it ends on a branch back into its body); the trigger and
+# bumper bars' show (bar, shown) and text commit (bar, LHString*; it ends on `b GuiTextBox_Commit`).
+0x825EE908 = { name = "rex_InteractionMode_Tick" }
+0x825EED90 = { name = "rex_InteractionMode_Clear", size = 0x3C0 }
+0x82B73C40 = { name = "rex_OverlayBar_Show" }
+# The interaction button's hold icon (mode, button, hold): Icon and LeftSection on 2 / 1.
+0x8296FED0 = { name = "rex_InteractionButton_Hold" }
+0x82B73D50 = { name = "rex_OverlayBar_CommitText", size = 0x34 }
+# THE UI STATED AT ENTRY (Fable3/src/hooks/src/ui_stated_hooks.cpp): every .bgf's load (slot,
+# CCharString* name) — the presentation's document; the text-by-path writer (path, pres, LHString*),
+# the info panes' text (pane, field, LHString*, r6, pres), the interaction button (mode, button,
+# label, glyph, enabled), the interaction list
+# (mode, scroll), the title/description panel (mode, title, description), the dye bar (mode, f1..f6,
+# r10 player) and the side panel (mode, kind, player).
+0x825F27D8 = { name = "rex_GuiPresentation_Load" }
+0x82876D78 = { name = "rex_GuiElement_SetTextAt" }
+0x82BDC5D8 = { name = "rex_InfoPane_SetText" }
+0x8296FF98 = { name = "rex_InteractionButton_Show" }
+0x82972A70 = { name = "rex_InteractionList_Write" }
+0x8296C650 = { name = "rex_InteractionMode_TitleDescription" }
+0x8296C150 = { name = "rex_InteractionMode_DyeBar" }
+0x8296BD10 = { name = "rex_InteractionMode_SidePanel" }
+# The slide-by-path setters (path, pres, slide): SetState's and GoToSlideAndRestart's.
+0x82878130 = { name = "rex_GuiElement_SetStateAt" }
+0x82878208 = { name = "rex_GuiElement_RestartStateAt" }
+# A meter by path (path, pres, f1 fraction): `@Ui.Time` at entry (ui_stated_hooks.cpp).
+0x82878A50 = { name = "rex_GuiElement_SetTimeAt" }
+# An element's colour (elem, pres, colour* B G R A): `@Ui.Colour` at entry (ui_stated_hooks.cpp).
+0x82876DF0 = { name = "rex_GuiElement_SetColour" }
+# The element writers' asked values (gui_element_hooks.cpp): the visibility toggle (elem, pres,
+# shown) and the active flag (elem, pres, on, force).
+0x828777E8 = { name = "rex_GuiElement_SetVisible" }
+0x828773E8 = { name = "rex_GuiElement_SetFlagActive" }
+# HEADLESS PRESENTATIONS (Fable3/src/hooks/src/headless_presentation_hooks.cpp, the shared core
+# core/headless_presentation.h): CGameface's maker (K, path) — vtable 0x82002A80 +28, its one
+# caller the load at 0x825F286C — its destroy (K, pres; +32) and per-frame pass (K, render; +40);
+# the element service's (vtable 0x82006E58) child-by-name (svc, hash, parent; +84) and child walk
+# (svc, parent, out, all; +92), both vtable slots outside every IDA function, sized by their flow
+# (0x82C6EC30..0x82C6EC78 `blr`, 0x82C6EC88..0x82C6ED4C `b __restgprlr_28`); SetParameterString
+# (name, value, pres) and the presentation chunk runner (script, pres).
+0x82C558F8 = { name = "rex_CGameface_CreatePresentation" }
+0x82C55C40 = { name = "rex_CGameface_DestroyPresentation" }
+0x82279AC8 = { name = "rex_CGameface_Update" }
+0x82C6EC30 = { name = "rex_GfService_ChildByName", size = 0x4C }
+0x82C6EC88 = { name = "rex_GfService_CollectChildren", size = 0xC8 }
+0x82B74698 = { name = "rex_GuiPresentation_SetParameterString" }
+# SetParameterFloat (name, f1 value, pres): the mini-game bar's Float1..3 (0x8271607C / 0x827160AC /
+# 0x827160E8, 0x82714430, 0x82714EEC / 0x82714F28), stated for a headless presentation.
+0x82B745D0 = { name = "rex_GuiPresentation_SetParameterFloat" }
+0x82877A48 = { name = "rex_GuiPresentation_RunScript" }
+# The HUD text boxes and the TopBox queue (Fable3/src/hooks/src/topbox_hooks.cpp): a box's lines
+# (R7, box hash, lines*, f1), the queue's post (M, channel, Msg*, broadcast, player), its
+# per-channel erase (channel, id), clear (M) and answer (M, answer).
+0x82976D48 = { name = "rex_HudTextBox_SetLines" }
+0x824D0CC8 = { name = "rex_TopBox_Post" }
+0x824D0470 = { name = "rex_TopBox_RemoveFromChannel" }
+0x824D14C0 = { name = "rex_TopBox_Clear" }
+# Screens and HUD widgets by their values (Fable3/src/hooks/src/screen_stated_hooks.cpp): the HUD
+# root's hide (H) and show (force) and the cutscene rules (rules, a2, a3); the save menu's open
+# (menu, allowed, entity), row writer (menu) and close (menu); the Options query (box, tag); the
+# money alert's change (A, old, delta, kingdom), show (A, amount, kingdom) and hide (A); the
+# target names' show (TN, target, viewer, keep) and clear (TN); the crime timer's fine (CT, fine) and seconds (CT, secs); the job
+# multiplier (J, level, prefix); the quest summary row (box, row, quest, selected, isLast), the
+# stats page (box, page), the king's schedule ctor (box, table) and the promise ctor (box, entity,
+# tag, accepted).
+0x824CD7E8 = { name = "rex_Hud_Hide" }
+0x824CD860 = { name = "rex_Hud_Show" }
+0x823A5558 = { name = "rex_CutsceneRules_Apply" }
+0x829B4E18 = { name = "rex_SaveMenu_Open" }
+0x829B5350 = { name = "rex_SaveMenu_Row" }
+0x829B50A0 = { name = "rex_SaveMenu_Close" }
+0x825F6D30 = { name = "rex_OptionsBox_Query" }
+0x8287C2C8 = { name = "rex_MoneyAlert_Change" }
+0x8287BFD8 = { name = "rex_MoneyAlert_Show" }
+0x8287C768 = { name = "rex_MoneyAlert_Hide" }
+0x82604EF8 = { name = "rex_TargetNames_Show" }
+0x82605308 = { name = "rex_TargetNames_Clear" }
+0x8260C4D0 = { name = "rex_CrimeTimer_Fine" }
+0x8260C568 = { name = "rex_CrimeTimer_Seconds" }
+0x82973E00 = { name = "rex_JobMultiplier_Set" }
+0x829BCA18 = { name = "rex_QuestSummary_Row" }
+0x829B73B0 = { name = "rex_StatsBox_Page" }
+0x829BB7C0 = { name = "rex_KingsSchedule_Ctor" }
+0x827DA738 = { name = "rex_PromiseBox_Ctor" }
+# The box screens' pad handlers (box, ev*, player), their moved cursor and choice fields stated
+# at return (screen_stated_hooks.cpp): join/visibility, orb chat, friends channel, treasury
+# statement, bed, wedding picker, co-op partners, divorce.
+0x829BF5E0 = { name = "rex_JoinOptionsBox_HandleInput" }
+0x829BB230 = { name = "rex_OrbChatBox_HandleInput" }
+0x829C0600 = { name = "rex_FriendsChannelBox_HandleInput" }
+0x82B8F068 = { name = "rex_MiniStatementBox_HandleInput" }
+0x82B8DFA0 = { name = "rex_BedBox_HandleInput" }
+0x82B90EB8 = { name = "rex_WeddingPickerBox_HandleInput" }
+0x82B916C0 = { name = "rex_PartnersBox_HandleInput" }
+0x8297F5A8 = { name = "rex_DivorceBox_HandleInput" }
+0x827DAB30 = { name = "rex_PromiseBox_HandleInput" }
+0x829B6158 = { name = "rex_StatsBox_HandleInput" }
+# The co-op partners' row writer (box, row path, record) and the king's schedule row (box, row,
+# tick, tag) (screen_stated_hooks.cpp).
+0x82B92638 = { name = "rex_PartnersBox_Row" }
+0x829BBD90 = { name = "rex_KingsSchedule_Row" }
+# The map tables (Fable3/src/hooks/src/map_table_hooks.cpp): the scene holder's add (holder, msg;
+# returns the id), add-or-update (holder, int* id, msg), present (holder, on), destroy (holder),
+# and the render object command post (id, cmd, ring) the map entities move their objects with.
+0x82984678 = { name = "rex_MapScene_Add" }
+0x829846D8 = { name = "rex_MapScene_AddOrUpdate" }
+0x82984588 = { name = "rex_MapScene_Present" }
+0x82984450 = { name = "rex_MapScene_Destroy" }
+0x821F4630 = { name = "rex_RenderObject_Command" }
+# The loading screen's quads, cut (Fable3/src/hooks/src/loading_screen_scene.cpp): Godot draws the
+# screen. Its per-frame update (ls, engine), its quad builders (one quad; a text run) and the twin
+# create they call (desc, f1 time, scene, requested id, ...), which inside a builder answers its
+# own "nothing made" result.
+0x82306BC8 = { name = "rex_LoadingScreen_Update" }
+0x82307800 = { name = "rex_LoadingScreen_BuildQuad" }
+0x8230A6A8 = { name = "rex_LoadingScreen_BuildTextQuads" }
+0x821F0E70 = { name = "rex_RenderTwin_Create" }
+# The loading screen's statements (the same file): its manager's two creates (mgr, a2, a3, kind,
+# a5) and (mgr, a2, kind), the screen's destructor body (ls), its art decision (ls) and its close
+# (ls), each stated to the table RefiiHostGetLoadingScreen/…Art read.
+0x8230C120 = { name = "rex_LoadingScreen_Create" }
+0x8230C260 = { name = "rex_LoadingScreen_CreateShown" }
+0x82305288 = { name = "rex_LoadingScreen_Destroy" }
+0x82307A30 = { name = "rex_LoadingScreen_ChooseArt" }
+0x823069C8 = { name = "rex_LoadingScreen_Close" }
+# Character appearance (Fable3/src/hooks/src/appearance_hooks.cpp): CECGraphicAppearanceMorph's
+# draw virtual (this = comp20+12, the entity at this-8), its part rebuild (comp20), the morph
+# descriptor's constructor (desc, flags, {model hash, weight} list, ...) and the serialisers of the
+# per-render-instance texture command (type 33: opcode 11 replaces a texture) and of the dye's
+# colour-mask command (type 30).
+0x8222AFD8 = { name = "rex_GraphicAppearanceMorph_Draw" }
+0x827AB7E8 = { name = "rex_GraphicAppearanceMorph_RebuildParts" }
+0x82C80340 = { name = "rex_MorphDescriptor_Ctor" }
+0x82C7FB48 = { name = "rex_TextureCommand_Serialise" }
+0x82C808B0 = { name = "rex_ColourMaskCommand_Serialise" }
+# Cloth (Fable3/src/hooks/src/cloth_hooks.cpp): the publish of one cloth piece's simulated pose to
+# its vertex buffer (item: waits for the step, lerps by the fade, builds normals and tangents,
+# writes the buffer) and the sim item's destroy (item).
+0x82267EE8 = { name = "rex_ClothItem_Publish" }
+0x82CE8480 = { name = "rex_ClothItem_Destroy" }
+# The CRT's double-precision math, answered by the host's libm (Fable3/src/hooks/src/crt_math.cpp;
+# each matched to Fable 2's routine by entry signature and size, see that file).
+0x821EED90 = { name = "rex_pow" }
+0x82E5DA00 = { name = "rex_atan2" }
+0x821FBD98 = { name = "rex_fmod" }
+0x821E19C0 = { name = "rex_sin" }
+0x821E1B20 = { name = "rex_cos" }
+0x82254688 = { name = "rex_tan" }
+0x821EE808 = { name = "rex_exp" }
+0x822453A0 = { name = "rex_log" }
+0x8225ADB0 = { name = "rex_asin" }
+0x82253B58 = { name = "rex_atan" }
+0x821F0130 = { name = "rex_floor" }
+0x821A10C0 = { name = "rex_ceil" }
+# The CRT's copy and fill, answered by the host's libc (Fable3/src/hooks/src/crt_memory.cpp; each
+# matched to Fable 2's routine by its whole body, XMemCpy by shape, see that file).
+0x82E64780 = { name = "rex_memcpy" }
+0x82E650F0 = { name = "rex_memmove" }
+0x82E64D80 = { name = "rex_memset" }
+0x8221E4E0 = { name = "rex_XMemCpy" }
+# The Limited Collector's Edition licence (Fable3/src/hooks/src/unlock_hooks.cpp): the Lua
+# PackageManager.IsPackagePremium thunk (namespace r3, CCharString* r4).
+0x822EE0A0 = { name = "rex_PackageManager_IsPackagePremium" }
+# Engine preloads (Fable3/src/hooks/src/preload_hooks.cpp): the type-46 preload instance's apply
+# (inst, prim), slot 5 of vtable 0x82005498; the handle at inst+0x50 is answered complete.
+0x82CB8940 = { name = "rex_PreloadInstance_Apply" }
+# The file system (Fable3/src/hooks/src/vfs_hooks.cpp): the root CCompositeFileSystem's Open
+# (out, fs, name, mode; vtable 0x820FDC04 slot 4) and Exists (fs, name; slot 11), which every
+# named and hashed open reaches; the name object's hash (name; cached at +0x1C), the
+# CMemoryFile factory (out, size, id) the host's override is served in, and the reference
+# reset (T** slot: release *slot, clear it) the replaced file is dropped through.
+0x82DBA828 = { name = "rex_VfsComposite_Open" }
+0x82DBAB48 = { name = "rex_VfsComposite_Exists" }
+0x822D5CA0 = { name = "rex_VfsName_Hash" }
+0x82DBFE90 = { name = "rex_VfsMemoryFile_Create" }
+0x822EE640 = { name = "rex_VfsRef_Reset" }
+# FUNCTIONS THE GENERATOR DID NOT FIND: reached only through a pointer or only as a tail-branch
+# target, with no .pdata entry. Found in the Fable 3 IDB against the built module's own symbol
+# list: every IDA function it lacks (multiple-inheritance adjustor thunks, `addi r3,r3,-N; b`, the
+# generator ran the function before them on into), every word in .rdata/.data/BINK* pointing at code
+# outside every IDA function (vtable slots), every code-formed pointer (`lis`/`addi` to a function passed as a callback), the branch
+# targets the generator reported unresolved, and every tail-branch target those reach; each sized
+# by IDA's flow (find_func_end) and ending on an unconditional branch. 0x82D97630 was the first
+# called: a vtable thunk reached from game init (sub_822D8AC8) through sub_82E122C0, fatal at boot.
+# The function the generator already had just before each is bounded by the same flow, so it
+# cannot run on into the new one.
+#
+# NEVER THE REGISTER SAVE/RESTORE HELPERS (__savegprlr_*, __restgprlr_*, the fpr and vmx families;
+# 0x82E646D0, 0x82E679F0, 0x83172450). The generator emits them natively; named here as
+# functions they compile as plain code and restore nothing. A tail branch into __restgprlr_28
+# once pulled seven of them in, and every function returning through them lost r28-r31 — the
+# first casualty was the thread-start trampoline sub_8310A350, which called the list head
+# sub_82DAC3E0 had left in r30.
+0x821DF6F8 = { size = 0x68 }
+0x8223CDE8 = { name = "rex_acos", size = 0x8 }
+0x8223CDF0 = { size = 0x1C }
+0x82248CE8 = { size = 0x98 }
+0x82248D80 = { size = 0xC }
+0x82253788 = { size = 0xA8 }
+0x82253830 = { size = 0xC }
+0x8225E660 = { size = 0x80 }
+0x8225E6E0 = { size = 0x70 }
+0x822735E8 = { size = 0xC }
+0x8228A1E0 = { size = 0xA8 }
+0x8228B0D8 = { size = 0x118 }
+0x8228B1F0 = { size = 0x8 }
+0x82295770 = { size = 0x68 }
+0x822957D8 = { size = 0x114 }
+0x82299098 = { size = 0x20 }
+0x822990B8 = { size = 0x118 }
+0x8232DD60 = { size = 0xD0 }
+0x8232DE30 = { size = 0x8 }
+0x8232DF58 = { size = 0x88 }
+0x8232DFE0 = { size = 0x8 }
+0x82337F38 = { size = 0x190 }
+0x823384F8 = { size = 0x28 }
+0x823382A8 = { size = 0x1F0 }
+0x82338498 = { size = 0x14 }
+0x8233FD48 = { size = 0xB8 }
+0x8233FE00 = { size = 0xC }
+0x823B33D0 = { size = 0x8 }
+0x823B33D8 = { size = 0x8 }
+0x823CFCD0 = { size = 0x1A0 }
+0x823CFE70 = { size = 0x54 }
+0x823F9600 = { size = 0x10 }
+0x823F9610 = { size = 0x8 }
+0x823FDA18 = { size = 0x1A0 }
+0x823FDBB8 = { size = 0x5C }
+0x82406FE0 = { size = 0x8 }
+0x82413018 = { size = 0x1A0 }
+0x824131B8 = { size = 0x5C }
+0x827DFD58 = { size = 0x1A0 }
+0x827E0098 = { size = 0x5C }
+0x8242C500 = { size = 0xA0 }
+0x82384058 = { size = 0x8 }
+0x824436E8 = { size = 0x50 }
+0x824786E8 = { size = 0xA8 }
+0x82478790 = { size = 0x8 }
+0x824B1A68 = { size = 0x110 }
+0x824B1B78 = { size = 0x58 }
+0x824C0908 = { size = 0xA0 }
+0x824C0C60 = { size = 0x8 }
+0x824DD868 = { size = 0x28 }
+0x824E8D40 = { size = 0x1A0 }
+0x824E8EE0 = { size = 0x54 }
+0x8254B9B8 = { size = 0xB8 }
+0x8254BA70 = { size = 0x1C }
+0x82558E08 = { size = 0x10 }
+0x82558E18 = { size = 0x10 }
+0x8239C2B8 = { size = 0x108 }
+0x828BD228 = { size = 0x10 }
+0x827A0080 = { size = 0x10 }
+0x828BD288 = { size = 0x10 }
+0x828BD2A8 = { size = 0x10 }
+0x825DCDC8 = { size = 0x10 }
+0x825DCDD8 = { size = 0x10 }
+0x825DCDE8 = { size = 0x10 }
+0x827A0098 = { size = 0x10 }
+0x824CD3F8 = { size = 0x218 }
+0x824CD610 = { size = 0x40 }
+0x8260BCC0 = { size = 0xF8 }
+0x8260BDB8 = { size = 0x10 }
+0x8261E338 = { size = 0x1A0 }
+0x8261E678 = { size = 0x5C }
+0x82625E88 = { size = 0x78 }
+0x82625F00 = { size = 0xC }
+0x826636F0 = { size = 0x1A0 }
+0x82663890 = { size = 0x54 }
+0x82680ED8 = { size = 0x1A0 }
+0x8269A3E8 = { size = 0x3D8 }
+0x826B7658 = { size = 0x1A0 }
+0x826B77F8 = { size = 0x54 }
+0x826E45A0 = { size = 0x1A0 }
+0x826DAB28 = { size = 0x8 }
+0x82700878 = { size = 0xD8 }
+0x82700950 = { size = 0x54 }
+0x827018B0 = { size = 0x18 }
+0x827018C8 = { size = 0x1C }
+0x82734E28 = { size = 0x70 }
+0x82734E98 = { size = 0x1C }
+0x82746B38 = { size = 0x1A0 }
+0x82746CD8 = { size = 0x54 }
+0x8277C720 = { size = 0x2C8 }
+0x8277C9E8 = { size = 0x40 }
+0x827A6120 = { size = 0x1A0 }
+0x827A62C0 = { size = 0x54 }
+0x827B4B70 = { size = 0x78 }
+0x827B4BE8 = { size = 0x54 }
+0x827D3120 = { size = 0x1A0 }
+0x827D32C0 = { size = 0x54 }
+0x8283EF98 = { size = 0xD8 }
+0x8283F070 = { size = 0xC }
+0x82856090 = { size = 0x120 }
+0x828561B0 = { size = 0x8 }
+0x82892870 = { size = 0x1A0 }
+0x82892A10 = { size = 0x54 }
+0x827F84A8 = { size = 0x1A0 }
+0x827F8648 = { size = 0x5C }
+0x82711FA8 = { size = 0x1A0 }
+0x82712148 = { size = 0x5C }
+0x828BD2C8 = { size = 0x10 }
+0x828BD2B8 = { size = 0x10 }
+0x828BD2D8 = { size = 0x10 }
+0x828BD268 = { size = 0x10 }
+0x828E1B30 = { size = 0x1A0 }
+0x828E1CD0 = { size = 0x18 }
+0x828E4558 = { size = 0x1A0 }
+0x828E46F8 = { size = 0x54 }
+0x828E6D28 = { size = 0x110 }
+0x828E6E38 = { size = 0x14 }
+0x828F8538 = { size = 0x1A0 }
+0x828F86D8 = { size = 0x5C }
+0x8291FEA0 = { size = 0xA8 }
+0x8291FF48 = { size = 0xC }
+0x8293A948 = { size = 0x1A0 }
+0x8293AAE8 = { size = 0x54 }
+0x8293E130 = { size = 0x1A0 }
+0x8293E2D0 = { size = 0x54 }
+0x827F3800 = { size = 0x1A0 }
+0x827F39A0 = { size = 0x54 }
+0x82944478 = { size = 0x1A0 }
+0x82944618 = { size = 0x110 }
+0x82948130 = { size = 0x1A0 }
+0x829482D0 = { size = 0x54 }
+0x8294A350 = { size = 0x1A0 }
+0x82372EE8 = { size = 0x8 }
+0x829550C8 = { size = 0x1A0 }
+0x82955268 = { size = 0x5C }
+0x828D04E8 = { size = 0x1A0 }
+0x828D0688 = { size = 0x54 }
+0x82957238 = { size = 0x1A0 }
+0x829573D8 = { size = 0x54 }
+0x829926C0 = { size = 0x1A0 }
+0x82992860 = { size = 0x5C }
+0x82994610 = { size = 0x1A0 }
+0x829947B0 = { size = 0x54 }
+0x8295A0F0 = { size = 0x1A0 }
+0x8295A290 = { size = 0x54 }
+0x829A22C8 = { size = 0x1A0 }
+0x829A2468 = { size = 0x54 }
+0x827E27E0 = { size = 0x1A0 }
+0x827E2980 = { size = 0x5C }
+0x829CD130 = { size = 0x18 }
+0x829CD148 = { size = 0xC }
+0x829DE068 = { size = 0x1A0 }
+0x829DE208 = { size = 0x11C }
+0x829E8608 = { size = 0x1A0 }
+0x829E87A8 = { size = 0x54 }
+0x829EFC48 = { size = 0x10 }
+0x829EFC58 = { size = 0x10 }
+0x829FDF38 = { size = 0x1A0 }
+0x829FE278 = { size = 0x5C }
+0x824C6F00 = { size = 0x1A0 }
+0x824C70A0 = { size = 0x5C }
+0x82A04DB0 = { size = 0x1A0 }
+0x82A04F50 = { size = 0x5C }
+0x82A0A080 = { size = 0xF0 }
+0x82A0A170 = { size = 0x4 }
+0x82A0AD00 = { size = 0xA0 }
+0x82A0ADA0 = { size = 0x8 }
+0x82A0ADA8 = { size = 0x110 }
+0x82A0AEB8 = { size = 0x8 }
+0x82A10D80 = { size = 0x1A0 }
+0x82A10F20 = { size = 0x54 }
+0x82A12100 = { size = 0x78 }
+0x82A12DE0 = { size = 0x1A0 }
+0x82A12F80 = { size = 0x54 }
+0x82A151F0 = { size = 0x1A0 }
+0x82A15530 = { size = 0x5C }
+0x82A184A8 = { size = 0x1A0 }
+0x82A18648 = { size = 0x5C }
+0x82A1E3E0 = { size = 0x1A0 }
+0x82A1E580 = { size = 0x54 }
+0x82A1F3B8 = { size = 0x1A0 }
+0x82A1F558 = { size = 0x54 }
+0x82A22B40 = { size = 0x1A0 }
+0x82A22CE0 = { size = 0x5C }
+0x82A30F58 = { size = 0x1A0 }
+0x828F5410 = { size = 0x1A0 }
+0x828F5750 = { size = 0x54 }
+0x82A351C0 = { size = 0x1A0 }
+0x82A35360 = { size = 0x54 }
+0x82A36588 = { size = 0x1A0 }
+0x82A36728 = { size = 0x54 }
+0x82A371D8 = { size = 0x170 }
+0x82A37348 = { size = 0x54 }
+0x82A39CE8 = { size = 0x1A0 }
+0x82A39E88 = { size = 0x5C }
+0x82A440D8 = { size = 0x1A0 }
+0x82A44278 = { size = 0x54 }
+0x82A48C40 = { size = 0x1A0 }
+0x82A48F80 = { size = 0x54 }
+0x82A4A7B0 = { size = 0x1A0 }
+0x82A4A950 = { size = 0x54 }
+0x82A4F778 = { size = 0x1A0 }
+0x82A4F918 = { size = 0x54 }
+0x82A534F0 = { size = 0x1A0 }
+0x82A53690 = { size = 0x54 }
+0x82A590E8 = { size = 0x1A0 }
+0x82A59288 = { size = 0x5C }
+0x82A5AEA8 = { size = 0x1A0 }
+0x82A5B048 = { size = 0x5C }
+0x82A63220 = { size = 0x1A0 }
+0x82A633C0 = { size = 0x5C }
+0x82A65F78 = { size = 0x1A0 }
+0x82A66118 = { size = 0x5C }
+0x82A7A468 = { size = 0x1A0 }
+0x82A7A608 = { size = 0x5C }
+0x82A7C648 = { size = 0x1A0 }
+0x82A7C7E8 = { size = 0x54 }
+0x82A7E848 = { size = 0x1A0 }
+0x82A7E9E8 = { size = 0x5C }
+0x82A815D8 = { size = 0x1A0 }
+0x82A81778 = { size = 0x5C }
+0x82A82548 = { size = 0x1A0 }
+0x82A826E8 = { size = 0x5C }
+0x82A85D08 = { size = 0x1A0 }
+0x82A85EA8 = { size = 0x5C }
+0x82A87E40 = { size = 0x1A0 }
+0x82A87FE0 = { size = 0x5C }
+0x82A8C208 = { size = 0x1A0 }
+0x82A8C3A8 = { size = 0x5C }
+0x82A8D418 = { size = 0x1A0 }
+0x82A8D5B8 = { size = 0x54 }
+0x82A8EBC8 = { size = 0x1A0 }
+0x82A8ED68 = { size = 0x54 }
+0x82A8F4D8 = { size = 0x1A0 }
+0x82A8F678 = { size = 0x54 }
+0x82A90FA8 = { size = 0x1A0 }
+0x82A91148 = { size = 0x54 }
+0x82A92E30 = { size = 0x1A0 }
+0x82A92FD0 = { size = 0x54 }
+0x82A94178 = { size = 0x1A0 }
+0x82A94318 = { size = 0x54 }
+0x82A974D8 = { size = 0x1A0 }
+0x82A97678 = { size = 0x54 }
+0x82A98418 = { size = 0x1A0 }
+0x82A985B8 = { size = 0x54 }
+0x82AA00D8 = { size = 0x1A0 }
+0x82AA0278 = { size = 0x54 }
+0x82AA35C8 = { size = 0x1A0 }
+0x82AA3768 = { size = 0x5C }
+0x82AA6160 = { size = 0x1A0 }
+0x82AA6300 = { size = 0x54 }
+0x82AABCF8 = { size = 0x1A0 }
+0x82AABE98 = { size = 0x54 }
+0x82AB25E8 = { size = 0x1A0 }
+0x82AB2788 = { size = 0x54 }
+0x82ABAF70 = { size = 0x1A0 }
+0x82ABB110 = { size = 0x54 }
+0x82AC1EB0 = { size = 0x1A0 }
+0x82AC2050 = { size = 0x5C }
+0x82AC82C0 = { size = 0x1A0 }
+0x82AC8460 = { size = 0x5C }
+0x82AC98B8 = { size = 0x1A0 }
+0x82AC9A58 = { size = 0x5C }
+0x82ACDBF8 = { size = 0x1A0 }
+0x82ACDD98 = { size = 0x5C }
+0x82ACE808 = { size = 0x270 }
+0x82ACEA78 = { size = 0x20 }
+0x82AD1C98 = { size = 0x1A0 }
+0x82AD1E38 = { size = 0x5C }
+0x82AD6890 = { size = 0x1A0 }
+0x82AD6A30 = { size = 0x54 }
+0x82AD7AC0 = { size = 0x140 }
+0x82AD7C00 = { size = 0x14 }
+0x82ADD030 = { size = 0x1A0 }
+0x82ADD1D0 = { size = 0x54 }
+0x82ADEEE0 = { size = 0x1A0 }
+0x82ADF080 = { size = 0x54 }
+0x82AE0A58 = { size = 0x1A0 }
+0x82AE0BF8 = { size = 0x54 }
+0x82AE7DF8 = { size = 0x1A0 }
+0x82AE7F98 = { size = 0x54 }
+0x82AE94A0 = { size = 0x1A0 }
+0x82AE9640 = { size = 0x54 }
+0x82AEC618 = { size = 0x1A0 }
+0x82AEC7B8 = { size = 0x54 }
+0x82AED800 = { size = 0x1A0 }
+0x82AED9A0 = { size = 0x54 }
+0x82AF0AB8 = { size = 0x170 }
+0x82AF0C28 = { size = 0x54 }
+0x82AF1480 = { size = 0x1A0 }
+0x82AF1620 = { size = 0x54 }
+0x82AF3C00 = { size = 0x1A0 }
+0x82AF3DA0 = { size = 0x54 }
+0x82AF5F68 = { size = 0x2C8 }
+0x825EDFA8 = { size = 0x8 }
+0x829838D0 = { size = 0x1A0 }
+0x82983A70 = { size = 0x5C }
+0x82B09520 = { size = 0x1A0 }
+0x82B096C0 = { size = 0x5C }
+0x82B0A4D8 = { size = 0x1A0 }
+0x82B0A678 = { size = 0x5C }
+0x82B0E0E8 = { size = 0x1A0 }
+0x82B0E288 = { size = 0x5C }
+0x82B10710 = { size = 0x1A0 }
+0x82B108B0 = { size = 0x5C }
+0x82B11730 = { size = 0x1A0 }
+0x82B118D0 = { size = 0x5C }
+0x82B1B210 = { size = 0x1A0 }
+0x82B1B550 = { size = 0x5C }
+0x82B1DBC8 = { size = 0x1A0 }
+0x82B1DD68 = { size = 0x5C }
+0x82B1F0B0 = { size = 0x10 }
+0x82B1F0C0 = { size = 0x10 }
+0x82B1F0D0 = { size = 0x10 }
+0x828BD258 = { size = 0x10 }
+0x82B1F0E0 = { size = 0x10 }
+0x828BD278 = { size = 0x10 }
+0x82B1F0F0 = { size = 0x10 }
+0x82B1F100 = { size = 0x10 }
+0x82B1F110 = { size = 0x10 }
+0x82B1F120 = { size = 0x10 }
+0x82B1F130 = { size = 0x10 }
+0x82B1F140 = { size = 0x10 }
+0x82B1F150 = { size = 0x10 }
+0x82B1F160 = { size = 0x14 }
+0x82B20CD0 = { size = 0x170 }
+0x82B20E40 = { size = 0x5C }
+0x82B21B18 = { size = 0x170 }
+0x82B21C88 = { size = 0x5C }
+0x82B22440 = { size = 0x1A0 }
+0x82B225E0 = { size = 0x54 }
+0x82B75A50 = { size = 0x10 }
+0x82B98610 = { size = 0x10 }
+0x82BA27C8 = { size = 0x4 }
+0x823727D0 = { size = 0x8 }
+0x823729D0 = { size = 0x8 }
+0x82C0B978 = { size = 0x158 }
+0x82BFC6E8 = { size = 0xC }
+0x82C1A350 = { size = 0x1C8 }
+0x82C1ADB0 = { size = 0xC }
+0x82C39E38 = { size = 0x128 }
+0x82C39F60 = { size = 0xC }
+0x82C3A210 = { size = 0x310 }
+0x82C5EA50 = { size = 0x20 }
+0x82C5EA70 = { size = 0x20 }
+0x82372D80 = { size = 0x8 }
+0x82D341B0 = { size = 0x18 }
+0x82D341C8 = { size = 0x18 }
+0x82D97610 = { size = 0x20 }
+0x82D97630 = { size = 0x10 }
+0x82D97678 = { size = 0x8 }
+0x82DD23E8 = { size = 0x30 }
+0x82DD2418 = { size = 0x38 }
+0x82DF0FD8 = { size = 0x18 }
+0x82DF0FF0 = { size = 0x10 }
+0x82DF1010 = { size = 0x1C }
+0x82DF7F40 = { size = 0x8 }
+0x82DF7F48 = { size = 0x8 }
+0x82DF7F50 = { size = 0x8 }
+0x82DF7F58 = { size = 0x8 }
+0x82DF7F60 = { size = 0x8 }
+0x82DFE798 = { size = 0x20 }
+0x82DFE7B8 = { size = 0x24 }
+0x82E01420 = { size = 0x28 }
+0x82E01448 = { size = 0x20 }
+0x82E016F0 = { size = 0x8 }
+0x82E016F8 = { size = 0x8 }
+0x82E01700 = { size = 0x8 }
+0x82E0EB70 = { size = 0x18 }
+0x82E0EB88 = { size = 0x14 }
+0x82E210D0 = { size = 0x10 }
+0x82E0D078 = { size = 0x8 }
+0x82E2D828 = { size = 0x18 }
+0x82E2D840 = { size = 0x18 }
+0x82E37EC0 = { size = 0x18 }
+0x82E37ED8 = { size = 0x1C }
+0x82E4C1B0 = { size = 0x20 }
+0x82E4C1D0 = { size = 0x20 }
+0x82E4C1F0 = { size = 0x18 }
+0x82E4C208 = { size = 0x28 }
+0x82E4C230 = { size = 0x1C }
+0x82E4C490 = { size = 0x20 }
+0x82E4C4B0 = { size = 0x20 }
+0x82E4C4D0 = { size = 0x20 }
+0x82E4C4F0 = { size = 0x24 }
+0x82E64698 = { size = 0x2C }
+0x82E78550 = { size = 0x8 }
+0x82E78558 = { size = 0x8 }
+0x82E7C8F0 = { size = 0x8 }
+0x82E7C908 = { size = 0x8 }
+0x82E833E8 = { size = 0x8 }
+0x82E83120 = { size = 0x8 }
+0x82E7C920 = { size = 0x8 }
+0x82E83410 = { size = 0x8 }
+0x82E830F8 = { size = 0x8 }
+0x82E83100 = { size = 0x8 }
+0x82E83108 = { size = 0x8 }
+0x82E833E0 = { size = 0x8 }
+0x82E833D8 = { size = 0x8 }
+0x82E833F8 = { size = 0x8 }
+0x82E83110 = { size = 0x8 }
+0x82E7C8F8 = { size = 0x8 }
+0x82E7C900 = { size = 0x8 }
+0x82E833C8 = { size = 0x8 }
+0x82E833F0 = { size = 0x8 }
+0x82E83118 = { size = 0x8 }
+0x82E83408 = { size = 0x8 }
+0x82E83A18 = { size = 0x8 }
+0x82E83A20 = { size = 0x8 }
+0x82E866D8 = { size = 0xB8 }
+0x82E86790 = { size = 0x34 }
+0x82E8C828 = { size = 0x18 }
+0x82E8C840 = { size = 0x18 }
+0x82E8D340 = { size = 0x8 }
+0x82E8D348 = { size = 0x8 }
+0x82EAA0E8 = { size = 0x10 }
+0x82EAA100 = { size = 0x8 }
+0x82ECA250 = { size = 0x74 }
+0x82FD37C0 = { size = 0x18 }
+0x82FD37D8 = { size = 0x28 }
+0x82FD3800 = { size = 0x28 }
+0x82FD3828 = { size = 0x18 }
+0x82FD3840 = { size = 0x18 }
+0x82FD3858 = { size = 0x18 }
+0x82FD3870 = { size = 0x18 }
+0x82FD3888 = { size = 0x18 }
+0x83032988 = { size = 0x7C }
+0x830603D0 = { size = 0x10 }
+0x8305D208 = { size = 0x40 }
+0x83062160 = { size = 0x10 }
+0x83062170 = { size = 0xC }
+0x8306E5B0 = { size = 0x98 }
+0x8306E648 = { size = 0x10 }
+0x8307F7E0 = { size = 0x78 }
+0x8307F858 = { size = 0x44 }
+0x83082B90 = { size = 0xB0 }
+0x83082C40 = { size = 0x18 }
+0x83093FC8 = { size = 0xD0 }
+0x83094098 = { size = 0x4C }
+0x8309FEF0 = { size = 0x80 }
+0x8309FF70 = { size = 0xC }
+0x830AA530 = { size = 0xC0 }
+0x830AA5F0 = { size = 0x14 }
+0x830E6A90 = { size = 0xF0 }
+0x830E6BD8 = { size = 0xC }
+0x830E6CD8 = { size = 0x228 }
+0x830E6F00 = { size = 0xC }
+0x830EA350 = { size = 0x150 }
+0x830EA4A0 = { size = 0xC }
+0x8315B928 = { size = 0xE8 }
+0x8315BA10 = { size = 0x60 }
+0x8317C220 = { size = 0x18 }
+0x8317C238 = { size = 0x18 }
+
+# SWITCH TABLES THE GENERATOR SIZES WRONG. Its bounds scan walks back from the bctr to the first
+# cmplwi on the index register, across conditional branches.
+#
+# 0x82DA1180, in the texture transcoder sub_82D6E9C8: a 13-entry table (jpt_82D6ECE0) on the
+# transcode format r18, bounded only by `cmplwi cr6,r18,0xC` at 0x82DA1098 ahead of the FIRST
+# switch on r18. The scan met a case compare inside that first switch instead and emitted
+# cases 0..2, so format 12 (the Texture Streamer's first texture after the logos) trapped.
+# Targets from the table at 0x82DA1184: 0 and 12 an 8-byte step, 1-2 and 3 a 16-byte step,
+# 4-11 the per-channel path.
+[[switch_tables]]
+address = 0x82DA1180
+register = 18
+labels = [
+  0x82DA11B8, 0x82DA11C4, 0x82DA11C4, 0x82DA11DC, 0x82DA14BC, 0x82DA14BC, 0x82DA14BC,
+  0x82DA14BC, 0x82DA14BC, 0x82DA14BC, 0x82DA14BC, 0x82DA14BC, 0x82DA11B8,
+]
+
+# THE TEXTS COMMITTED STRAIGHT TO A TEXT BOX (Fable3/src/hooks/src/headless_commit_hooks.cpp): each
+# hook sits on the commit's guard `lwz r11,4(rE)` before `bl sub_82B45268`, with the element and
+# the text (a register, or a stack LHString at r1 + the offset its name carries). Money alert, crime
+# timer, job multiplier, look-at, quest summary, stats, promise, divorce, food, bed and credits.
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x8287C42C
+registers = ["r11", "r4"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x8287C674
+registers = ["r11", "r4"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt50"
+address = 0x8287B9D8
+registers = ["r11", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x8260C524
+registers = ["r11", "r4"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x8260C5BC
+registers = ["r11", "r4"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x82973E70
+registers = ["r11", "r4"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x82973B68
+registers = ["r31", "r27"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x829BCC0C
+registers = ["r3", "r29"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt54"
+address = 0x829BCC60
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt58"
+address = 0x829BCCAC
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt50"
+address = 0x829B75C0
+registers = ["r31", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt7C"
+address = 0x829B7D68
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt64"
+address = 0x829B7DE4
+registers = ["r31", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x829B7F30
+registers = ["r30", "r3"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt70"
+address = 0x829B7F68
+registers = ["r27", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt80"
+address = 0x829B7FD4
+registers = ["r30", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt84"
+address = 0x829B8018
+registers = ["r27", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x829B8D20
+registers = ["r31", "r23"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x829B8D94
+registers = ["r31", "r27"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x829B8E08
+registers = ["r31", "r24"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt54"
+address = 0x829B9498
+# TU3 builds this text at r1+0x54 (0x829B94B0 `addi r4,r1,0x54`; the disc's is at +0x50).
+registers = ["r31", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt50"
+address = 0x829B9634
+# TU3 builds this text at r1+0x50 (0x829B964C `addi r4,r1,0x50`; the disc's is at +0x54).
+registers = ["r31", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x829B968C
+registers = ["r31", "r3"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x827DA8E0
+registers = ["r30", "r3"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x8297F84C
+registers = ["r3", "r30"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x8297F8A4
+registers = ["r3", "r30"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x8297F97C
+registers = ["r31", "r4"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt50"
+address = 0x8297FB90
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt50"
+address = 0x8297FCA0
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x8297FCFC
+registers = ["r3", "r30"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x8297FDC0
+registers = ["r30", "r4"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x8297FE00
+registers = ["r28", "r4"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt5C"
+address = 0x8297FED4
+registers = ["r27", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt58"
+address = 0x8297FEFC
+registers = ["r26", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt64"
+address = 0x8297FF5C
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x829800B0
+registers = ["r30", "r4"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt54"
+address = 0x829800F4
+registers = ["r29", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt54"
+address = 0x82980130
+registers = ["r27", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt54"
+address = 0x82980214
+# TU3 holds the element in r25 (0x8298020C `cmplwi cr6,r25,0`; the disc's is r26).
+registers = ["r25", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt58"
+address = 0x82980260
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x829804C8
+registers = ["r31", "r4"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x829805CC
+registers = ["r31", "r3"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt50"
+address = 0x82B8C860
+registers = ["r29", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x82B8CA3C
+registers = ["r31", "r3"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt50"
+address = 0x82B8DF5C
+registers = ["r11", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt50"
+address = 0x82B74E18
+registers = ["r31", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt50"
+address = 0x82B750B0
+registers = ["r30", "r1"]
+
+# The interaction modes that store their info panel IM+64 themselves, not through the stager
+# sub_82963040: `stw rX,0x40(r11)` with IM = `lwz r11,0x14(r31)` — decoration, sub_82B2AB28, the
+# shop and the pawn shop (Fable3/src/hooks/src/interaction_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiF3InteractionPanelStored"
+address = 0x82B6248C
+registers = ["r10"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionPanelStored"
+address = 0x82B624AC
+registers = ["r10"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionPanelStored"
+address = 0x82B624C0
+registers = ["r30"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionPanelStored"
+address = 0x82B624D4
+registers = ["r30"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionPanelStored"
+address = 0x82B62898
+registers = ["r10"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionPanelStored"
+address = 0x82B67F58
+registers = ["r9"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionPanelStored"
+address = 0x8295B6E0
+registers = ["r26"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionPanelStored"
+address = 0x82B6BB8C
+registers = ["r30"]
+
+# The interaction text box's commit (sub_82BEF428): its guard `lwz r11,4(r30)` with the resolved
+# text child r30 (`+44` + "1", else `+44`, 0x82C20544 / 0x82C20564) and the text r26 (0x82C203DC)
+# (Fable3/src/hooks/src/headless_commit_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x82C206E4
+registers = ["r30", "r26"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCreditsLine"
+address = 0x82B75068
+registers = ["r30", "r31", "r11"]
+
+# The crime timer shown (2) or hidden (1) as the crime manager's tick decides it: each
+# `stw r9,0(r11)` into CT+0 (Fable3/src/hooks/src/screen_stated_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x82897B28
+registers = ["r11", "r9"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x82897B5C
+registers = ["r11", "r9"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x82897DC8
+registers = ["r11", "r9"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x82897DEC
+registers = ["r11", "r9"]
+
+# The crime timer's other CT+0 stores (screen_stated_hooks.cpp): the HUD build, the partner's packet
+# 369, the manager's vf13, the criminal teardown, RemoveCriminal, GUI.ShowMiscGUIElements, the
+# region-change save.
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x8260C4B0
+registers = ["r31", "r9"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x8260C6C0
+registers = ["r31", "r11"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x8260C6E8
+registers = ["r31", "r11"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x82898658
+registers = ["r11", "r9"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x8289867C
+registers = ["r11", "r9"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x82895FCC
+registers = ["r11", "r9"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x8289B6A8
+registers = ["r11", "r9"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x8254FCB0
+registers = ["r11", "r9"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x82332A28
+registers = ["r11", "r26"]
+
+# The multiplier roots' build slide and their shown / hidden opacity, and the HUD layer fade: each
+# call's own arguments on its `bl` (ui_stated_hooks.cpp).
+
+[[midasm_hook]]
+name = "RefiiF3MultiplierSlide"
+address = 0x82973D74
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+name = "RefiiF3MultiplierOpacity"
+address = 0x82973DE0
+registers = ["r3", "r4", "f1"]
+
+[[midasm_hook]]
+name = "RefiiF3LayerFade"
+address = 0x82973470
+registers = ["r3", "r4", "f1"]
+
+# HUD texts committed straight to their box, on the commit's guard (headless_commit_hooks.cpp): the
+# received-item alert's player number (sub_82433468, r1+0x50) and the pooled HUD icon's title and
+# opinion (sub_82B52170: the entry r4, and r5 kept in r29).
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt50"
+address = 0x82452600
+registers = ["r31", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x82B86D34
+registers = ["r11", "r4"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x82B86D74
+registers = ["r11", "r29"]
+
+# The interaction list's emptied rows: sub_82963DE0's "" commit to a past-end row's or the leaving
+# row's `Title`, on its box guard `lwz r11,4(rTitle)` (title, r1 -> r1+0x50, row, presentation r29;
+# Fable3/src/hooks/src/ui_stated_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiF3InteractionRowEmptied"
+address = 0x82972C34
+registers = ["r27", "r1", "r28", "r29"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionRowEmptied"
+address = 0x82972D28
+registers = ["r30", "r1", "r26", "r29"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionRowEmptied"
+address = 0x82972E84
+registers = ["r30", "r1", "r24", "r29"]
+
+# The epilogue's screenshot texture hash, after sub_826EFBD8 wrote it to r1+0x58
+# (Fable3/src/hooks/src/end_screen_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiF3EpilogueScreenshot"
+address = 0x827A27FC
+registers = ["r1"]
+
+# The credits' positions at the roll's SetPosition calls (Fable3/src/hooks/src/headless_commit_hooks.cpp):
+# rows at init and tick, the logo sheet at init and as it scrolls.
+[[midasm_hook]]
+name = "RefiiF3CreditsPosition"
+address = 0x82B74E78
+registers = ["r3", "r4", "f1", "f2", "f3"]
+
+[[midasm_hook]]
+name = "RefiiF3CreditsPosition"
+address = 0x82B74F10
+registers = ["r3", "r4", "f1", "f2", "f3"]
+
+[[midasm_hook]]
+name = "RefiiF3CreditsPosition"
+address = 0x82B750F8
+registers = ["r3", "r4", "f1", "f2", "f3"]
+
+[[midasm_hook]]
+name = "RefiiF3CreditsPosition"
+address = 0x82B75144
+registers = ["r3", "r4", "f1", "f2", "f3"]
+
+# The look-at alert's slide as its writer chose it (r29 at 0x82973A50, the record in r27) and the
+# HUD tick's hide (0x82268DA8) (Fable3/src/hooks/src/headless_commit_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiF3LookAtSlide"
+address = 0x82973A50
+registers = ["r29", "r27"]
+
+[[midasm_hook]]
+name = "RefiiF3LookAtHidden"
+address = 0x82268DA8
+
+# The bed opener's offered / group / cycle (r27/r26/r25 at its +56 store, box r31) and the wedding
+# picker ctor's three affordable bytes (r5/r3/r10 after their +88..+90 stores, box r31)
+# (Fable3/src/hooks/src/screen_stated_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiF3BedOpened"
+address = 0x82623820
+registers = ["r31", "r27", "r26", "r25"]
+
+[[midasm_hook]]
+name = "RefiiF3WeddingOpened"
+address = 0x82B90A28
+registers = ["r31", "r5", "r3", "r10"]
+
+# The stats screen's page windows as each writer decides them (box, start, count[, rows]): the
+# categories (0x829B74A4), the statistics (0x829B7930) and the friends' board (0x829B9280)
+# (Fable3/src/hooks/src/screen_stated_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiF3StatsCategories"
+address = 0x829B74A4
+registers = ["r27", "r24", "r7"]
+
+[[midasm_hook]]
+name = "RefiiF3StatsStatistics"
+address = 0x829B7930
+# TU3 holds the box in r26 (0x829B76B4 `mr r26,r3`; r28 is box+0x2C, 0x829B76BC).
+registers = ["r26", "r31", "r30", "r27"]
+
+[[midasm_hook]]
+name = "RefiiF3StatsFriends"
+address = 0x829B9280
+registers = ["r28", "r10", "r31"]
+
+# THE INTERACTION MODE'S LAST UNSTATED WRITERS (f3last): the overlay bars' TopBox slide
+# (sub_825C6D78), the mini-game counter's slide (sub_826ECB18), the decoration and world-map
+# buttons' opacity (sub_82961660, sub_82910D60), the map region's slide (sub_82911F08) and the
+# world panel's opacity floor (CInteractionModeGUIWorld_vf8) — each on its `bl`, [element,
+# presentation, value] (Fable3/src/hooks/src/ui_stated_hooks.cpp); then the commits on their guards
+# (headless_commit_hooks.cpp): the counter text, the mode button title, the crowd bar, the side
+# pane and the save info panel.
+[[midasm_hook]]
+name = "RefiiF3OverlayBarTopBox"
+address = 0x825F1D4C
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+name = "RefiiF3OverlayBarTopBox"
+address = 0x825F1D90
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+name = "RefiiF3MiniGameCounterSlide"
+address = 0x827164EC
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+name = "RefiiF3DecorationButtonOpacity"
+address = 0x829702FC
+registers = ["r3", "r4", "f1"]
+
+[[midasm_hook]]
+name = "RefiiF3WorldMapButtonOpacity"
+address = 0x8271A378
+registers = ["r3", "r4", "f1"]
+
+[[midasm_hook]]
+name = "RefiiF3WorldMapRegionSlide"
+address = 0x8271B668
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+name = "RefiiF3GuiWorldOpacity"
+address = 0x82966DD0
+registers = ["r3", "r4", "f1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x82716524
+registers = ["r3", "r30"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x82970450
+registers = ["r31", "r3"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x82B61268
+registers = ["r31", "r3"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x82C201E0
+registers = ["r31", "r29"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt68"
+address = 0x82967A00
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt6C"
+address = 0x82967AE4
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt54"
+address = 0x82967BA8
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt58"
+address = 0x82967C04
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt58"
+address = 0x82967C94
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x82967CEC
+registers = ["r3", "r31"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt50"
+address = 0x82968098
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt58"
+address = 0x829680E0
+registers = ["r3", "r1"]
+
+# THE TOPBOX'S ANSWER (Fable3/src/hooks/src/topbox_hooks.cpp). The disc's rex_TopBox_Answer has no TU3
+# counterpart: TU3's hold and press answers (sub_824D1910, sub_824D1B08) post the answer through the
+# generic sub_824D1BC0 (r3 = the answer, message 101), which the hold box and the button box call too,
+# so the hooks sit on those two calls.
+[[midasm_hook]]
+name = "RefiiF3TopBoxAnswered"
+address = 0x824D1A0C
+registers = ["r3"]
+
+[[midasm_hook]]
+name = "RefiiF3TopBoxAnswered"
+address = 0x824D1BA0
+registers = ["r3"]

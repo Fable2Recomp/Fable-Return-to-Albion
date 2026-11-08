@@ -66,12 +66,20 @@ void vertex() {
 	// partly covered ones, which read heavier than solid ones once blended in linear light. Each
 	// corner goes to the nearest pixel edge, so a quad DrawWidth texels wide covers a whole number
 	// of pixels. Orthographic cameras only: a mirrored screen's perspective text is left alone.
+	//
+	// POSITION IS WRITTEN ON EVERY PATH. Any write of it anywhere in vertex() makes Godot define
+	// OVERRIDE_POSITION, which starts `position` at vec4(1.0) and outputs it as gl_Position
+	// (4.7.1 shader_compiler.cpp usage_defines, scene_forward_clustered.glsl `vec4 position =
+	// vec4(1.0)` / `gl_Position = position`), so a path that skipped the write put every vertex on
+	// one point and drew no text at all: every Fable 3 label (snap off), and Fable 2's under a
+	// perspective camera or the smooth text style. Unsnapped it is Godot's own transform,
+	// `projection_matrix * (modelview * vertex)`.
+	vec4 clip = PROJECTION_MATRIX * (MODELVIEW_MATRIX * vec4(VERTEX, 1.0));
 	if (snap_glyphs && PROJECTION_MATRIX[3][3] == 1.0) {
-		vec4 clip = PROJECTION_MATRIX * (MODELVIEW_MATRIX * vec4(VERTEX, 1.0));
 		vec2 pixel = round((clip.xy / clip.w * 0.5 + 0.5) * VIEWPORT_SIZE);
 		clip.xy = (pixel / VIEWPORT_SIZE * 2.0 - 1.0) * clip.w;
-		POSITION = clip;
 	}
+	POSITION = clip;
 }
 
 void fragment() {

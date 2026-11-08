@@ -6,17 +6,17 @@
 // belongs to. An entity holds that handle where its own draw addresses its instance (all Fable 3
 // IDB, base named per line):
 //
-//   component 4 (static mesh) +0x10      its draw virtual (secondary vtable 0x82002728 slot 1,
-//                                        sub_82253AC0, this = comp+0xC) creates and updates the
-//                                        instance through it, `addi r26,r3,4` 0x82253AE8 ->
-//                                        sub_82687B00 0x82253D48; the model hash is +0x18
-//   component 6 (animated mesh) +0x10    its draw (secondary vtable 0x8200279C slot 1, sub_821F51C0,
-//                                        this = comp+0xC) commands it, `lwz r3,4(r22)` 0x821F5240 ->
-//                                        sub_821F5110; the model hash is +0x18. (+0x14 is a second
-//                                        object, type 34, which the morph draw tints at 0x8222E5B0.)
+//   component 4 (static mesh) +0x10      its draw virtual (secondary vtable 0x820026AC slot 1,
+//                                        sub_82252D00, this = comp+0xC) creates and updates the
+//                                        instance through it, `addi r26,r3,4` 0x82252D28 ->
+//                                        sub_826B17F8 0x82252F88; the model hash is +0x18
+//   component 6 (animated mesh) +0x10    its draw (secondary vtable 0x82002720 slot 1, sub_821F46E0,
+//                                        this = comp+0xC) commands it, `lwz r3,4(r22)` 0x821F4760 ->
+//                                        sub_821F4630; the model hash is +0x18. (+0x14 is a second
+//                                        object, type 34, which the morph draw tints at disc 0x8222E5B0.)
 //   component 20 (composite) built part  the 128-byte records at comp+0x38..+0x3C, the part's model
-//                                        hash at +0, its instance's handle at +0x20 (sub_8222C190:
-//                                        `addi r28,r24,0x20` -> sub_82687B00 0x8222CDAC/0x8222CF00)
+//                                        hash at +0, its instance's handle at +0x20 (sub_8222AFD8:
+//                                        `addi r28,r24,0x20` -> sub_826B17F8 disc 0x8222CDAC/disc 0x8222CF00)
 //
 // Measured on a live Bowerstone run: every component 4 handle at +0x10 named a type-2 (rigid)
 // instance whose own +0x10 was the same handle (1721 of 1721 bound), every component 6 one a
@@ -24,11 +24,11 @@
 // 4 components 4 (flags sharing one definition).
 //
 // DRAWN AS CLOTH. The guest draws a record from its cloth piece only in a render frame whose
-// kicker found the piece inside its fade (proxy+0x111, sub_821C6800 0x821C6B20/0x821C6B48) — only
-// then does the instance build the cloth draw item that publishes (sub_82C948F8 0x82C94ECC); in
+// kicker found the piece inside its fade (proxy+0x111, sub_821C68D8 0x821C6BF8/0x821C6C20) — only
+// then does the instance build the cloth draw item that publishes (sub_82CC8720 0x82CC8CF4); in
 // any other frame the record draws its own skinned submesh. So a piece is drawn as cloth while its
-// last publish is from the render frame now counting (dword_83556810, incremented by sub_821988C8
-// at 0x82198954 before it kicks the cloth) or the one before it.
+// last publish is from the render frame now counting (dword_83597310, incremented by sub_821989D8
+// at 0x82198A64 before it kicks the cloth) or the one before it.
 
 #include <cstdint>
 #include <cstring>
@@ -36,13 +36,14 @@
 #include "core/payload_bridge.h"
 #include "host_abi.h"
 #include "host_core.h"
+#include "../../vfs/include/fable3_guest_build.h"
 
 namespace {
 
 using refii::hostcore::GuestWordAt;
 using refii::hostcore::SafeKernelMemory;
 
-constexpr uint32_t kRenderFrame = 0x83556810u;
+const refii::guest::Addr kRenderFrame{0x83597310u};
 constexpr uint32_t kStaticMesh = 4u;
 constexpr uint32_t kAnimatedMesh = 6u;
 constexpr uint32_t kComposite = 20u;

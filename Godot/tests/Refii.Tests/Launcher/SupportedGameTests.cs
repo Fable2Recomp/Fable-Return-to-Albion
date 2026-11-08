@@ -82,6 +82,55 @@ public class SupportedGameTests
     }
 
     [TestCase]
+    public void TestFable3DiscTakesTitleUpdate3()
+    {
+        Refii.Core.Engine_Title previous = Refii.Core.Engine_Title.Active;
+        Refii.Core.Engine_Title.Active = Refii.Core.Engine_Title.Fable3;
+        try
+        {
+            SupportedGame.Pressing disc = SupportedGame.Fable3UsaEurope;
+            AssertThat(disc.ShortMediaIdText).IsEqual("D99E18E7");
+            AssertThat(XexIdentity.FormatVersion(disc.BaseVersion)).IsEqual("0.0.0.3");
+            AssertThat(XexIdentity.FormatVersion(disc.UpdatedVersion)).IsEqual("0.0.3.3");
+            AssertThat(disc.TitleUpdateName).IsEqual("TU_16L626M_000000C000000.00000000000O3");
+
+            // The update's delta descriptor: source 0x3, target 0x303.
+            var patch = new XexIdentity
+            {
+                IsPatch = true,
+                TitleId = SupportedGame.TitleId,
+                MediaId = (byte[])disc.MediaId.Clone(),
+                SourceVersion = 0x00000003,
+                Version = 0x00000303,
+            };
+            bool accepted = SupportedGame.IsTitleUpdate(patch, disc, out string error);
+            AssertThat(error).IsEmpty();
+            AssertThat(accepted).IsTrue();
+
+            // TU4 (0.0.4.7) patches 0.0.0.7, the 16003BAB pressing, not this disc's 0.0.0.3.
+            var tu4 = new XexIdentity
+            {
+                IsPatch = true,
+                TitleId = SupportedGame.TitleId,
+                MediaId = (byte[])disc.MediaId.Clone(),
+                SourceVersion = 0x00000007,
+                Version = 0x00000407,
+            };
+            AssertThat(SupportedGame.IsTitleUpdate(tu4, disc, out _)).IsFalse();
+
+            // The generator reads the patched executable's own config when the update is installed.
+            AssertThat(Refii.Core.Engine_Title.Fable3.VersionFolder(true)).IsEqual("Fable3TU3");
+            AssertThat(Refii.Core.Engine_Title.Fable3.VersionFolder(false)).IsEqual("Fable3");
+            AssertThat(Refii.Core.Engine_Title.Fable3.IsUnpatched("Fable3")).IsTrue();
+            AssertThat(Refii.Core.Engine_Title.Fable3.IsUnpatched("Fable3TU3")).IsFalse();
+        }
+        finally
+        {
+            Refii.Core.Engine_Title.Active = previous;
+        }
+    }
+
+    [TestCase]
     public void TestDiscOfAnotherPressingIsReportedAsWrongPick()
     {
         XexIdentity french = Executable(SupportedGame.France, SupportedGame.France.BaseVersion);

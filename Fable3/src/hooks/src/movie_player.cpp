@@ -2,20 +2,20 @@
 // Godot plays each movie natively, as it does Fable 2's.
 //
 // ONE PLAYER CLASS, THREE OWNERS. Every Fable 3 movie is a 256-byte Bink object B (vtable
-// off_820E2B1C) opened by sub_82C3D2C0(B, source, audio, poolAlloc), drawn in the rect
-// sub_82C3D538 states and closed by sub_82C3D450 (the only caller of BinkClose). The owners are
-// the startup logo player (B = P+12 of a 276-byte player built by sub_8230B0F0, opened from a
+// off_820E54D4) opened by sub_82C71B68(B, source, audio, poolAlloc), drawn in the rect
+// sub_82C71E78 states and closed by sub_82C71CF8 (the only caller of BinkClose). The owners are
+// the startup logo player (B = P+12 of a 276-byte player built by sub_8230FDB0, opened from a
 // word-swapped .bik the guest has loaded), the script movie manager (opened by path from
-// sub_8235CA30 after a Lua PlayMovie*) and PRIMITIVE_INSTANCE_MOVIE (opened by name, silent).
+// sub_82362A60 after a Lua PlayMovie*) and PRIMITIVE_INSTANCE_MOVIE (opened by name, silent).
 //
-// B, as these hooks read it (all from the Fable 3 IDB):
-//   B+32  HBINK         (stw r3,0x20(r31) at 0x82C3D304)
-//   B+245 DONE          (stb r25,0xF5(r28) at 0x82C3E0DC, when FrameNum == Frames); read by the
-//                       startup player (P+257, 0x8230B350) and the movie manager (0x8235CC70)
-//   B+246 audio         (the opener's 3rd argument, stb r5,0xF6(r3) at 0x82C3D2D4): volumes
-//                       0x8000 for all six tracks when set, 0 when clear (0x82C3D3C8..0x82C3D414)
-// and the startup player's SKIP at P+272 (stb at 0x82313170; the player is torn down on it,
-// 0x8230B35C) — B+260 from the Bink object, a field of the startup player only.
+// B, as these hooks read it (all from the Fable 3 TU3 IDB):
+//   B+32  HBINK         (stw r3,0x20(r31) at 0x82C71BAC)
+//   B+245 DONE          (stb r25,0xF5(r28) at 0x82C72A1C, when FrameNum == Frames); read by the
+//                       startup player (P+257, 0x82310010) and the movie manager (disc 0x8235CC70)
+//   B+246 audio         (the opener's 3rd argument, stb r5,0xF6(r3) at 0x82C71B7C): volumes
+//                       0x8000 for all six tracks when set, 0 when clear (0x82C71C70..0x82C71CBC)
+// and the startup player's SKIP at P+272 (stb at disc 0x82313170; the player is torn down on it,
+// 0x8231001C) — B+260 from the Bink object, a field of the startup player only.
 
 #include <cstdint>
 #include <cstring>
@@ -34,11 +34,11 @@ namespace {
 constexpr uint32_t kDone = 245u;
 
 /// The startup player's skip byte, from its Bink object: P+272 with B = P+12 (`addi r29,r3,0xC`
-/// at 0x8230B130).
+/// at 0x8230FDF0).
 constexpr uint32_t kStartupPlayerBink = 12u;
 constexpr uint32_t kStartupPlayerSkip = 272u;
 
-/// The tracks every open selects: BinkSetSoundTrack(6, {0,1,2,3,4,5}) at 0x82C3D2E8, before
+/// The tracks every open selects: BinkSetSoundTrack(6, {0,1,2,3,4,5}) at 0x82C71B90, before
 /// BinkOpen, unconditionally.
 constexpr uint32_t kTrackIds[6] = {0u, 1u, 2u, 3u, 4u, 5u};
 
@@ -65,7 +65,7 @@ REX_EXTERN(rex_BinkPlayer_Open) {
 
   __imp__rex_BinkPlayer_Open(ctx, base);
 
-  // 1 on success (li r3,1 at 0x82C3D43C), 0 when BinkOpen returned no handle.
+  // 1 on success (li r3,1 at 0x82C71CE4), 0 when BinkOpen returned no handle.
   if (player != 0 && ctx.r3.u32 != 0) {
     refii_bridge_movie_open(player, player + kDone, 0u);
   }
@@ -94,8 +94,8 @@ REX_EXTERN(rex_BinkPlayer_SetDestRect) {
 }
 
 // THE STARTUP PLAYER has the one skip byte: stated once its constructor (which opens the movie)
-// has returned. A logo is skippable only after P+4 seconds (50 at 0x8230B138; the check is
-// `P+8 > P+4` at 0x8231315C), so in practice the guest plays it to its end.
+// has returned. A logo is skippable only after P+4 seconds (50 at 0x8230FDF8; the check is
+// `P+8 > P+4` at disc 0x8231315C), so in practice the guest plays it to its end.
 REX_EXTERN(rex_StartupMoviePlayer_Ctor) {
   const uint32_t startup_player = ctx.r3.u32;
   __imp__rex_StartupMoviePlayer_Ctor(ctx, base);

@@ -76,7 +76,7 @@ public partial class Fable3GuiNatives : Node
 		_router.Register("@Options.State", call => Fable3OptionsState.Stated(call));
 
 		const string queued = "queues a box; it is stated at the queue's push (@Box.Queued), as the queue shows it (@Box.Show) and as it drops it (@Box.Close)";
-		foreach (string name in new[] { "DisplayMessageBox", "DisplayYesNoQuestion", "DisplayYesNoQuestionWithTextOverride", "DisplayQuestPrimaryQuestion", "DisplayNumericAdjusterParams", "DisplayQuestBoxParams", "DisplayButtonBox", "DisplayFoodItemQueryBox", "DisplayNatalQueryBox", "DisplayDivorceMessage", "DisplayIntermissionScreen", "DisplayIntermissionScreenWithLifetime", "DisplayItemNameWithCount", "DisplayNameFromItem", "RemoveDisplayBox", "RemoveAllDisplayBoxesWithName", "DisplayDownloadMessageBox", "DisplaySaveGameIncompatibilityMessageBox" })
+		foreach (string name in new[] { "DisplayMessageBox", "DisplayYesNoQuestion", "DisplayYesNoQuestionWithTextOverride", "DisplayQuestPrimaryQuestion", "DisplayNumericAdjusterParams", "DisplayQuestBoxParams", "DisplayButtonBox", "DisplayFoodItemQueryBox", "DisplayNatalQueryBox", "DisplayDivorceMessage", "DisplayIntermissionScreen", "DisplayIntermissionScreenWithLifetime", "DisplayItemNameWithCount", "DisplayNameFromItem", "RemoveDisplayBox", "RemoveAllDisplayBoxesWithName", "DisplayDownloadMessageBox", "DisplaySaveGameIncompatibilityMessageBox", "DisplayNonInteractiveMessageBox" })
 		{
 			_router.Observe(name, queued);
 		}
@@ -509,6 +509,13 @@ public partial class Fable3GuiNatives : Node
 				break;
 			case "quest":
 				box = Boxes.QuestBox(name, text, 0, 1);
+				break;
+			case "noninteractive":
+				// TU3's DisplayNonInteractiveMessageBox (display_box_hooks.cpp kVtNonInteractive): the
+				// message box with its button row hidden (its Show hides `paper.Buttons`, 0x82879578)
+				// and no input; it goes when RemoveDisplayBox closes it. Not owned: no pad answers it.
+				box = Boxes.MessageBoxNamed(name, text);
+				box.Buttons = new Engine_UiGuiBoxes.BoxButtons(false, false, false, false, false, string.Empty, string.Empty);
 				break;
 			case "card":
 				// CAcceptHoldBox (type 8) draws nothing on the 360: its Show 0x82B56D80 takes presentation 4

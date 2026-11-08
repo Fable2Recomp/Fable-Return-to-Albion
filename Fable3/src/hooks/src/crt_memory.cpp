@@ -10,16 +10,16 @@
 // EACH ENTRY IS FABLE 2'S ROUTINE AT FABLE 3'S ADDRESS, found by Fable 2 TU1's whole body (every
 // word, relative branches masked) matching exactly one function start in the Fable 3 IDB, of the
 // same size:
-//   memcpy  0x82E32EF0 (0x488) `std r3,0(r1); clrlwi r6,r3,29; dcbt 0,r4` (Fable 2 0x82CA9480)
-//   memset  0x82E334F0 (0xA0)  `addi r0,r5,1; mtctr r0; mr r6,r3` (Fable 2 0x82CA99B0)
-//   memmove 0x82E33860 (0xBC)  `cmpw r3,r4; beqlr; bge 0x82E33870; b memcpy` and a backward
-//           byte loop (Fable 2 0x82CB0B30, which Fable 2 does not hook: its forward half is
+//   memcpy  0x82E64780 (0x488) `std r3,0(r1); clrlwi r6,r3,29; dcbt 0,r4` (Fable 2 0x82CDCBD0)
+//   memset  0x82E64D80 (0xA0)  `addi r0,r5,1; mtctr r0; mr r6,r3` (Fable 2 0x82CDD100)
+//   memmove 0x82E650F0 (0xBC)  `cmpw r3,r4; beqlr; bge 0x82E65100; b memcpy` and a backward
+//           byte loop (Fable 2 0x82CE4228, which Fable 2 does not hook: its forward half is
 //           memcpy; Fable 3 answers the backward half too)
-//   XMemCpy 0x8221F3D8 (0x2F4) no word match (register allocation moved); the same routine by
+//   XMemCpy 0x8221E4E0 (0x2F4) no word match (register allocation moved); the same routine by
 //           shape: `bl __savegprlr_26; mr r26,r3; mr r29,r5`, the <16/<8/<4 heads into _blkmov
-//           (0x82E33378, Fable 2's _blkmov word for word), the 0x400 dcbt and 0x80 dcbz128 blocks,
-//           the misaligned-cache-line helper call (0x8221F650), `mr r3,r26` on both returns.
-// NOT NAMED: XMemSet128 (Fable 2 0x82CC6D18) matches no Fable 3 function, and Fable 2 does not
+//           (0x82E64C08, Fable 2's _blkmov word for word), the 0x400 dcbt and 0x80 dcbz128 blocks,
+//           the misaligned-cache-line helper call (0x8221E758), `mr r3,r26` on both returns.
+// NOT NAMED: XMemSet128 (Fable 2 0x82CF9618) matches no Fable 3 function, and Fable 2 does not
 // answer it either.
 //
 // The translation is the SDK's `GuestPtr`, not bare `base + address`: on Windows and macOS arm64

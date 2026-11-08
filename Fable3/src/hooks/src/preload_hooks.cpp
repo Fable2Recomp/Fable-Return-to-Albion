@@ -1,25 +1,25 @@
 // refii - Fable 3's engine preloads, answered complete when the guest states them.
 //
 // THE PRELOAD. Game code asks the 3D Engine to make a resource resident with the engine primitive
-// NEngineInterface::CEnginePrimitivePreloadResource (vtable 0x820E2B6C, type 52; built by
-// sub_82C40458(prim, mode, &name_hash, &handle), mode 1 a texture, 0 a mesh) and waits on its
+// NEngineInterface::CEnginePrimitivePreloadResource (vtable 0x820E6390, type 52; built by
+// sub_82C7D9C0(prim, mode, &name_hash, &handle), mode 1 a texture, 0 a mesh) and waits on its
 // CEnginePrimitivePreloadHandle: the word at handle+8 (handle = 12 bytes, +4 the count). Every
-// address is the Fable 3 IDB; each offset names its base. The callers:
-//   CWorldIcon3D's update sub_82226DA8 (mode 1, 0x82227414) — it polls `*(*(icon+240)+8)` at
-//       0x822272F0 and only then builds its visual (icon+236 = 1); until it does, the emotion
-//       icon's update CEmotionWorldIcon_vf4 skips its ring (`lwz r11,0xF0(r3)` 0x82979518), so an
+// address is the Fable 3 TU3 IDB; each offset names its base. The callers:
+//   CWorldIcon3D's update sub_82225AC8 (mode 1, 0x82226134) — it polls `*(*(icon+240)+8)` at
+//       0x82226010 and only then builds its visual (icon+236 = 1); until it does, the emotion
+//       icon's update CEmotionWorldIcon_vf4 skips its ring (`lwz r11,0xF0(r3)` 0x829C20B0), so an
 //       interaction choice can never fill and never commit.
-//   sub_8235B1C0 (mode 1), sub_825DD9B0 (mode 0), Lua GraphicAppearance.StartPreloadingMeshes
-//       (sub_8268B218, mode 0) and Lua Breakable.PreloadPieces (sub_8278A480, mode 0).
+//   sub_82533D30 (mode 1), sub_82608918 (mode 0), Lua GraphicAppearance.StartPreloadingMeshes
+//       (sub_826B5758, mode 0) and Lua Breakable.PreloadPieces (sub_827C1CC8, mode 0).
 //
-// WHERE THE GUEST COMPLETES IT. The render twin create (sub_821F17B0) makes the engine-side
-// instance (vtable 0x82005518, type 46) and applies the primitive through its slot 5,
-// sub_82C75C90(inst, prim), which keeps the handle at inst+0x50 (`stw r28,0x50(r31)` at
-// 0x82C75F98). The only writer of handle+8 is that instance's slot 2, sub_82194C68, which stores
-// `status == 2` (`stwcx. r10,0,r7` at 0x82194CBC, r7 = handle+8) — and it runs only as the "Main
+// WHERE THE GUEST COMPLETES IT. The render twin create (sub_821F0E70) makes the engine-side
+// instance (vtable 0x82005498, type 46) and applies the primitive through its slot 5,
+// sub_82CB8940(inst, prim), which keeps the handle at inst+0x50 (`stw r28,0x50(r31)` at
+// 0x82CB8C48). The only writer of handle+8 is that instance's slot 2, sub_82194F30, which stores
+// `status == 2` (`stwcx. r10,0,r7` at 0x82194F84, r7 = handle+8) — and it runs only as the "Main
 // Scene" layer renderer's CRenderLayerTraversePrimitives(46) pass over a scene a view draws
-// (Render_BuildMainScenePipeline 0x82CA7A28, `li r4,0x2E` at 0x82CA7B0C). Godot draws; the 3D
-// Engine thread takes its no-view branch every frame (sub_821988C8, the counter dword_832A498C
+// (Render_BuildMainScenePipeline 0x82CDB1E8, `li r4,0x2E` at 0x82CDB2CC). Godot draws; the 3D
+// Engine thread takes its no-view branch every frame (sub_821989D8, the counter dword_832E542C
 // rises with the frame counter), so that pass never runs and no preload completes — the icon's
 // texture is never even requested (texture +76 stays 0x7FFFFFFF, no load outstanding).
 //

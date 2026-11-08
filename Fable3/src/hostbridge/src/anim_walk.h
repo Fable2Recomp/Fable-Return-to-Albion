@@ -5,60 +5,67 @@
 // (tests/anim_state_test.cpp) runs it on synthetic rigs against the per-field reads it replaced.
 // anim_feed.cpp's header states what each field means; this one states each span's extent.
 //
-// Spans, each inside its object as the Fable 3 IDB (360 disc) allocates it:
+// Spans, each inside its object as the Fable 3 IDBs allocate it (TU3 addresses unless marked disc):
 //
-//   CEntity, 0x98 bytes (`li r3,0x98` 0x823F1A10 / `bl sub_8221F300` 0x823F1A24). [0x54, 0x95):
-//     +0x54/+0x58 component vector (`lwz r31,0x54(r3)` 0x823F3474, `lwz r10,0x58(r3)` 0x823F3478),
-//     +0x80 placement (`lwz r3,0x80(r25)` 0x82353A18), +0x94 flags (`lbz r11,0x94(r3)` 0x823F346C).
+//   CEntity, 0x98 bytes (`li r3,0x98` disc 0x823F1A10 / `bl sub_8221E3B0` disc 0x823F1A24). [0x54, 0x95):
+//     +0x54/+0x58 component vector (`lwz r31,0x54(r3)` 0x824157E4, `lwz r10,0x58(r3)` 0x824157E8),
+//     +0x80 placement (`lwz r3,0x80(r25)` 0x8235BE98), +0x94 flags (`lbz r11,0x94(r3)` 0x824157DC).
 //   Component pairs {u32 id, component}: the stated [begin, end) rounded up to whole pairs, at
-//     most 128 — the bytes the per-pair scan reads (step `addi r31,r31,8`, sub_823F3458).
-//   CECAnimationManager, 0x2C0 bytes: registered as component `li r3,0x17` 0x825586EC with size
-//     `li r11,0x2C0` 0x825586F0; factory sub_82543A20 `li r3,0x2C0` 0x82543A34 / `bl` 0x82543A38,
-//     ctor sub_826BBDF8. [28, 108): +28 primary sentinel `stw` 0x826BBE7C, +32 count `= 0`
-//     0x826BBE6C, +40 overlay sentinel 0x826BBEA0, +44 count 0x826BBE90, +84 tier `= 4` 0x826BBED8,
-//     +88/+92 replicated trees 0x826BBEE0 / 0x826BBEE4, +96..+104 receipt times. +644 (`a2[161]`,
-//     sub_826BC820 0x826BC850) is read alone, only where the walk asks for it.
-//   List node, 12 bytes: `sub_822A7180(12)` 0x826C350C (primary insert sub_826C34E8, stores +0/+4/+8
-//     0x826C3520 / 0x826C3524 / 0x826C3534) and 0x826BCAD0 (overlay insert, 0x826BCAE0..0x826BCAF4);
-//     the sentinels 0x826BBE70 / 0x826BBE94. [0, 12).
-//   Record, 0x44 bytes: `li r3,0x44` 0x826BC884 / `bl sub_8221F300` 0x826BC888 (primary) and
-//     0x826BCA5C / 0x826BCA60 (overlay); ctor sub_8228FE70 stores +8..+64 (0x8228FEAC..0x8228FEF8).
+//     most 128 — the bytes the per-pair scan reads (step `addi r31,r31,8`, sub_824157C8).
+//   CECAnimationManager, 0x2D0 bytes in TU3 (`li r11,0x2D0` 0x82589550), 0x2C0 on the disc (`li r11,0x2C0`
+//     disc 0x825586F0); registered as component `li r3,0x17` (0x8258954C / disc 0x825586EC), ctor
+//     sub_826E74C8. [28, 108): +28 primary sentinel `stw` 0x826E754C, +32 count `= 0` 0x826E753C,
+//     +40 overlay sentinel 0x826E7570, +44 count 0x826E7560, +84 tier `stw r9,0x54(r31)` 0x826E75A8
+//     (disc 0x826BBED8) — the same in both builds. From +88 the builds differ (CurrentTreeOffset below):
+//     TU3 stores +88/+92/+96 (`stw r30,0x58/0x5C/0x60(r31)` 0x826E75B0/B4/B8), the disc +88/+92
+//     (`stw r30,0x58/0x5C(r31)` disc 0x826BBEE0/E4). The highest primary priority, +652 in TU3
+//     (`stw r6,0x28C(r4)` 0x826E7FD4) and +644 on the disc (`a2[161]`, disc 0x826BC854), is read
+//     alone, only on the disc, only where the walk asks for it.
+//   List node, 12 bytes: `sub_8221E3C8(12)` 0x826F08B4 (primary insert sub_826F0890, stores +0/+4/+8
+//     0x826F08C8 / 0x826F08CC / 0x826F08DC) and 0x826E8250 (overlay insert, 0x826E8260..0x826E8274);
+//     the sentinels disc 0x826BBE70 / 0x826E7564. [0, 12).
+//   Record, 0x48 bytes in TU3 (`li r3,0x48` 0x826E8004, the byte +0x44 added), 0x44 on the disc:
+//     `li r3,0x44` disc 0x826BC884 / `bl sub_8221E3B0` disc 0x826BC888 (primary) and
+//     disc 0x826BCA5C / disc 0x826BCA60 (overlay); ctor sub_8228E178 stores +8..+64 (disc 0x8228FEAC..disc 0x8228FEF8).
 //     [8, 64).
 //   Render node: every kind derives from one base (+16/+20 weights, +24 kind) and is allocated
-//     `sub_822A7180(n)` with n by kind (sub_826BB330 / sub_826BB7E0 / sub_82D50298, the tree copies):
-//       0 clip       0x2C  0x826BB36C (inline, kind store 0x826BB3CC); sub_8217F540 `sub_8221F300(44)`
-//                          0x8217F558, +24 0x8217F5D0, +28 0x8217F5DC, +32/+36 0x8217F5E0/E4, +40 0x8217F5E8
-//       1 crossfade  0x2C  0x826BB410, 0x821EB554, 0x82D504EC; Blend vf5 `sub_8221F300(44)` 0x828297AC;
-//                          ctor sub_826B9AE0 stores +28..+40 (0x826B9B1C..0x826B9B78)
-//       2 set        0x2C  0x826BB468 (kind 0x826BB4A8), 0x826BC5B0 (kind 0x826BC5E8, vector +32..+40
-//                          0x826BC5F4..0x826BC5FC); sub_826BE298 `sub_8221F300(44)` 0x826BE2BC
-//       3 layer      0x24  0x826BB594, 0x821CD2E0, 0x826BE198, 0x82D506FC; ctor sub_82198FD0 +28/+32
-//       4 bone mask  0x38  0x826BB658, 0x82D50800; ctor sub_826B9DA8 +28, +32, vector at +36, +52
-//       5 difference 0x24  0x826BB6E4, 0x82D508BC; ctor sub_826B9F10 +28/+32
-//       6 (not walked) 0x30  0x826BE008, 0x82D509F0; ctor sub_826B9FB0
-//     So [24, 36) lies inside every node; kinds 0, 1 and 2 also own [36, 44), kind 4 [36, 48).
-//     The evaluator sub_8222AEF8 reads them: kind `lwz r11,0x18(r28)` 0x8222AF74, clip key
-//     `lwz 0x1C` 0x8222AFA4, times `lfs 0x24` 0x8222AFE8 / `lfs 0x20` 0x8222AFF0, loop `lbz 0x28`
-//     0x8222B028, crossfade factor `lfs 0x24` 0x8222B484, A/B `lwz 0x1C` 0x8222B538 / `lwz 0x20`
-//     0x8222B55C, set vector `lwz 0x24` 0x8222B64C / `lwz 0x20` 0x8222B654, a child's weight
-//     `lfs 0x10` 0x8222B718, the layer `lwz 0x1C` 0x8222B99C and its weight `lfs 0x10` 0x8222B9A8.
+//     `sub_8221E3C8(n)` with n by kind (sub_826E6A00 / sub_826E6EB0 / sub_82D82800, the tree copies):
+//       0 clip       0x2C  0x826E6A3C (inline, kind store 0x826E6A9C); sub_8217F448 `sub_8221E3B0(44)`
+//                          0x8217F460, +24 0x8217F4D8, +28 0x8217F4E4, +32/+36 0x8217F4E8/E4, +40 0x8217F4F0
+//       1 crossfade  0x2C  0x826E6AE0, disc 0x821EB554, 0x82D82A54; Blend vf5 `sub_8221E3B0(44)` 0x8288763C;
+//                          ctor sub_826E5090 stores +28..+40 (0x826E50CC..0x826E5128)
+//       2 set        0x2C  0x826E6B38 (kind 0x826E6B78), 0x826E7D30 (kind 0x826E7D68, vector +32..+40
+//                          0x826E7D74..0x826E7D7C); sub_826EA518 `sub_8221E3B0(44)` 0x826EA53C
+//       3 layer      0x24  0x826E6C64, 0x821CD3E8, disc 0x826BE198, 0x82D82C64; ctor sub_821990E0 +28/+32
+//       4 bone mask  0x38  0x826E6D28, 0x82D82D68; ctor sub_826E53A8 +28, +32, vector at +36, +52
+//       5 difference 0x24  0x826E6DB4, 0x82D82E24; ctor sub_826E5510 +28/+32
+//       6 replica crossfade 0x30  `li r3,0x30` 0x826EA400, disc 0x826BE008, 0x82D82F58; ctor sub_826E55B0
+//                          stores +28 A, +32 B, +36 factor, +40/+44 the alphas (0x826E55F0..0x826E5650)
+//       7 replica    0x24  TU3 only: `li r3,0x24` 0x826EA2C8; ctor sub_826E5658 `li r6,7` 0x826E5670,
+//                          +28 child `stw r11,0x1C(r3)` 0x826E5698, +32 alpha `stfs f1,0x20(r3)` 0x826E56C0
+//     So [24, 36) lies inside every node; kinds 0, 1 and 2 also own [36, 44), kinds 4 and 6 [36, 48).
+//     The evaluator sub_82229C90 reads them: kind `lwz r11,0x18(r28)` disc 0x8222AF74, clip key
+//     `lwz 0x1C` disc 0x8222AFA4, times `lfs 0x24` disc 0x8222AFE8 / `lfs 0x20` disc 0x8222AFF0, loop `lbz 0x28`
+//     disc 0x8222B028, crossfade factor `lfs 0x24` disc 0x8222B484, A/B `lwz 0x1C` disc 0x8222B538 / `lwz 0x20`
+//     disc 0x8222B55C, set vector `lwz 0x24` disc 0x8222B64C / `lwz 0x20` disc 0x8222B654, a child's weight
+//     `lfs 0x10` 0x8222A4BC, the layer `lwz 0x1C` disc 0x8222B99C and its weight `lfs 0x10` 0x8222A74C.
 //     A child's +16 weight is read alone, before the child is visited.
 //   Set children: the stated [begin, end) of node pointers, whole words, at most 64.
-//   Bone-mask bytes: the stated [begin, end) of the kind-4 node's vector at +36 (sub_821C7B18:
-//     `lwz r8,8(r31)` 0x821C7BB0 with r31 = node+32, `lbzx r8,r10,r8` 0x821C7BCC), at most 1024.
-//   Ramps are 12 bytes timed (`sub_822A7180(12)` before sub_8217EEF8 / sub_8228F868) but 4 bytes
-//     instant (`sub_822A7180(4)` 0x82290050, vtable only): +4 is read alone, only on a timed ramp.
-//   Guest clock: dbl_83556BD0 (`lfd` 0x8220A3B4) then qword_83556BD8 (`ld` 0x8220A3A4), 16 bytes.
-//   CECLinkedAnimation, 0x38 bytes (`li r3,0xD7` 0x8256878C, `li r11,0x38` 0x82568790; factory
-//     sub_8254E4F0 `li r3,0x38` 0x8254E504). [16, 32): +16 the weak ref (ctor `= 0` 0x82711578),
-//     +28 the map head (`stw` 0x827115B4).
-//   Map node, 24 bytes: the head is `sub_822A7180(24)` 0x827115A8 with its colour/nil bytes +20/+21
-//     0x827115DC / 0x827115E4; every node of the tree is that type. [0, 22).
-//   Physics proxy: sub_8270CCF8 reads its vector `lwz r31,4(r3)` 0x8270CD04, `lwz r11,8(r3)`
-//     0x8270CD0C, pairs {object, ref} `lwz r30,0(r31)` 0x8270CD20 / `lwz r11,4(r31)` 0x8270CD1C, step
-//     `addi r31,r31,8` 0x8270CD78. [4, 12), and the pairs as one block.
-//   Ragdoll (vtable 0x82006DE0, stored 0x82B066A4; ctor sub_82B06638 stores to +156): [0x40, 0x45),
-//     mode `lwz r11,0x40(r11)` 0x82353A68 and flag `lbz r10,0x44(r11)` 0x82353A5C.
+//   Bone-mask bytes: the stated [begin, end) of the kind-4 node's vector at +36 (sub_821C7B78:
+//     `lwz r8,8(r31)` 0x821C7C10 with r31 = node+32, `lbzx r8,r10,r8` 0x821C7C2C), at most 1024.
+//   Ramps are 12 bytes timed (`sub_8221E3C8(12)` before sub_8217EE18 / sub_8228DBF0) but 4 bytes
+//     instant (`sub_8221E3C8(4)` 0x8228E35C, vtable only): +4 is read alone, only on a timed ramp.
+//   Guest clock: dbl_835976D0 (`lfd` 0x822099F4) then qword_835976D8 (`ld` 0x822099E4), 16 bytes.
+//   CECLinkedAnimation, 0x38 bytes (`li r3,0xD7` 0x82599584, `li r11,0x38` 0x82599588; factory
+//     sub_8257F350 `li r3,0x38` 0x8257F364). [16, 32): +16 the weak ref (ctor `= 0` 0x82745A18),
+//     +28 the map head (`stw` 0x82745A54).
+//   Map node, 24 bytes: the head is `sub_8221E3C8(24)` 0x82745A48 with its colour/nil bytes +20/+21
+//     0x82745A7C / 0x82745A84; every node of the tree is that type. [0, 22).
+//   Physics proxy: sub_82740F90 reads its vector `lwz r31,4(r3)` 0x82740F9C, `lwz r11,8(r3)`
+//     0x82740FA4, pairs {object, ref} `lwz r30,0(r31)` 0x82740FB8 / `lwz r11,4(r31)` 0x82740FB4, step
+//     `addi r31,r31,8` 0x82741010. [4, 12), and the pairs as one block.
+//   Ragdoll (vtable 0x82006D00, stored 0x82B449A4; ctor sub_82B44938 stores to +156): [0x40, 0x45),
+//     mode `lwz r11,0x40(r11)` 0x8235BEE8 and flag `lbz r10,0x44(r11)` 0x8235BEDC.
 //   The placement (+0 vtable, the vtable's +0x70, +0x20), the object vtables in the proxy pairs,
 //   the two option bytes and the list sentinels' own links stay single reads.
 //
@@ -74,6 +81,7 @@
 #include <cstring>
 
 #include "guest_span.h"
+#include "../../vfs/include/fable3_guest_build.h"
 
 namespace refii::fable3::anim {
 
@@ -89,25 +97,45 @@ constexpr uint32_t kMaxProxyPairs = 64u;
 constexpr uint32_t kMaxMaskBytes = 1024u;
 constexpr uint32_t kFullTier = 4u;
 
-/// The evaluator's cull, `a30[0]` (flt_8206C78C), and every 0.05 test of the fold.
+/// The evaluator's cull, `a30[0]` (flt_8206C74C), and every 0.05 test of the fold.
 constexpr float kCull = 0.05f;
 
-/// byte_8329E3D7: the fold crossfades the top against a partner at all (sub_821EB068).
-constexpr uint32_t kCrossfadeOn = 0x8329E3D7u;
-/// byte_83556685: the partner walk starts from 1 instead of 1 − w (sub_826BC358 0x826bc3fc).
-constexpr uint32_t kPartnerFromOne = 0x83556685u;
-/// dbl_83556BD0 / qword_83556BD8: the guest clock `(mftb − base) / frequency` (sub_8220A380).
-constexpr uint32_t kTimeFrequency = 0x83556BD0u;
+/// byte_832DE527: the fold crossfades the top against a partner at all (disc sub_821EB068).
+const refii::guest::Addr kCrossfadeOn{0x832DE527u};
+/// byte_8359717C: the partner walk starts from 1 instead of 1 − w (sub_826E7AC0 disc 0x826BC3FC).
+const refii::guest::Addr kPartnerFromOne{0x8359717Cu};
+/// dbl_835976D0 / qword_835976D8: the guest clock `(mftb − base) / frequency` (sub_822099C0).
+const refii::guest::Addr kTimeFrequency{0x835976D0u};
 
-constexpr uint32_t kRampInTimed = 0x82001B2Cu;
-constexpr uint32_t kRampOutTimed = 0x82001858u;
+const refii::guest::Addr kRampInTimed{0x82001AC8u};
+const refii::guest::Addr kRampOutTimed{0x820017F4u};
 
-/// The ragdoll's class (ctor sub_82B06638 stores it at 0x82b066a4); its slot 2 answers 1, the
-/// test sub_8270CCF8 makes.
-constexpr uint32_t kRagdollVtable = 0x82006DE0u;
-/// `lwz r3, 0x20(r3); blr` — slot 0x70 of every non-simple placement class (0x82007DF8,
-/// 0x820079C0, 0x82007FA8, 0x82007C48, 0x82007ED0, ...); the simple ones answer 0 (sub_82CE17A8).
-constexpr uint32_t kPhysicsProxyGetter = 0x82E78F88u;
+/// The ragdoll's class (ctor sub_82B44938 stores it at 0x82B449A4); its slot 2 answers 1, the
+/// test sub_82740F90 makes.
+const refii::guest::Addr kRagdollVtable{0x82006D00u};
+/// `lwz r3, 0x20(r3); blr` — slot 0x70 of every non-simple placement class (0x82007D28,
+/// 0x820078F0, 0x82007ED8, 0x82007B78, 0x82007E00, ...); the simple ones answer 0 (sub_82F5D180).
+const refii::guest::Addr kPhysicsProxyGetter{0x82EAA858u};
+
+/// The running build (fable3_guest_build.h). The bridge is compiled once; each walk asks.
+inline bool Tu3() { return refii::guest::Current() == refii::guest::Build::kTu3; }
+
+/// mgr+96 TU3 / mgr+92 disc: the current REPLICATED tree. TU3 inserted a word at +88 (the replica
+/// record, below), so the trees moved up one: TU3 ctor `stw r30,0x60(r31)` 0x826E75B8, receipt
+/// `stw r30,0x60(r31)` 0x826EE310, gate `lwz r11,0x60(r31)` 0x8235C0B4, linked pose `lwz r10,0x60(r31)`
+/// 0x82745E90; disc ctor `stw r30,0x5C(r31)` disc 0x826BBEE4, gate `lwz r11,0x5C(r31)` disc 0x82353C30,
+/// linked pose `lwz r11,0x5C(r31)` disc 0x826C1590.
+inline uint32_t CurrentTreeOffset(bool tu3) { return tu3 ? 96u : 92u; }
+
+/// mgr+104 TU3 / mgr+100 disc: the current tree's receipt time. TU3 `stfs f31,0x68(r31)` 0x826EE314,
+/// read `lfs f0,0x68(r31)` 0x82745EE4; disc `lfs f0,0x64(r31)` disc 0x826C1610.
+inline uint32_t CurrentReceiptOffset(bool tu3) { return tu3 ? 104u : 100u; }
+
+/// A receipt alpha the shell can use: a minute of extrapolation is a tree the host stopped sending,
+/// not a clip to run on (the disc walk's guard, applied to TU3's stated alphas alike).
+inline float ReceiptAlpha(double alpha) {
+    return std::isfinite(alpha) && alpha > -1.0 && alpha < 15.0 * 60.0 ? static_cast<float>(alpha) : 1.0f;
+}
 
 constexpr uint32_t kFirstGuest = 0x10000u;
 constexpr uint32_t kGuestCeiling = 0xC0000000u;
@@ -208,9 +236,11 @@ using NodeHead = Fields<Memory, 24u, 36u>;
 /// Inside a clip, crossfade or set node (kinds 0, 1, 2).
 template <typename Memory>
 using NodeTail = Fields<Memory, 36u, 44u>;
-/// Inside a bone-mask node (kind 4).
+/// Inside a bone-mask node (kind 4) or a replica crossfade (kind 6).
 template <typename Memory>
 using MaskTail = Fields<Memory, 36u, 48u>;
+template <typename Memory>
+using FadeTail = Fields<Memory, 36u, 48u>;
 /// A clip node (kind 0) known to be one.
 template <typename Memory>
 using ClipSpan = Fields<Memory, 28u, 40u>;
@@ -274,8 +304,8 @@ struct Components {
     }
 };
 
-/// The guest clock in seconds, as sub_8220A380 reads it: `(mftb − qword_83556BD8) /
-/// dbl_83556BD0`; `memory.GuestTicks()` is the recompiled module's `mftb`.
+/// The guest clock in seconds, as sub_822099C0 reads it: `(mftb − qword_835976D8) /
+/// dbl_835976D0`; `memory.GuestTicks()` is the recompiled module's `mftb`.
 template <typename Memory>
 bool GuestSeconds(const Memory& memory, double* out) {
     const ClockSpan<Memory> clock(memory, kTimeFrequency);
@@ -349,9 +379,20 @@ struct Stated {
     float replica_alpha = 0.0f;
 };
 
-/// Flattens one render tree into clip leaves, depth-first, as sub_8222AEF8 evaluates it.
+/// Flattens one render tree into clip leaves, depth-first, as sub_82229C90 evaluates it.
 /// `weight` is the leaf's share of the final pose; `importance` is the evaluator's `a7`, the
 /// product the culls test (a set's children carry their raw weight in it, not the normalised one).
+///
+/// TU3 walks kinds 0..7 (`cmplwi cr6,r11,7` 0x82229D14; the disc `cmplwi cr6,r11,6` disc 0x8222AF7C, and
+/// the disc walk takes no kind 6 or 7: its replica is WalkReplica's). The two replica kinds replace
+/// the evaluator's draw alpha (its f2, which a clip reads as `(1 − α)·+32 + α·+36`, `fmadds f31` 0x82229DA0)
+/// for their subtree:
+///   7: +28 at alpha +32 (`lwz r31,0x1C(r25)` 0x8222AB54, `lfs f2,0x20(r25)` 0x8222AB58), the same
+///      importance (`fmr f1,f30` 0x8222ABA8);
+///   6: A +28 at alpha +40 (`lfs f2,0x28(r25)` 0x8222AA3C) by `1 − f`, B +32 at alpha +44 (`lfs f2,0x2C(r25)`
+///      0x8222AAB8) by f, f = +36 (`lfs f31,0x24(r25)` 0x8222A9CC); one side alone when
+///      `min(f, 1 − f) · importance ≤ cull` (`ble cr6` 0x8222AA34), B when f ≥ 0.5 (`lis r10,0x3F00`
+///      0x8222AB00) — kind 1's rule, with an alpha per side.
 template <typename Memory>
 struct Flattener {
     const Memory& memory;
@@ -359,6 +400,7 @@ struct Flattener {
     uint32_t capacity;
     uint32_t leaves = 0;
     Stated stated;
+    bool tu3 = Tu3();
 
     struct Frame {
         uint32_t node;
@@ -366,6 +408,8 @@ struct Flattener {
         float importance;
         bool additive;
         uint32_t mask;
+        bool replica;  // the leaf's times are a replica extrapolation at `alpha`
+        float alpha;
     };
 
     void Emit(const Frame& frame, const NodeHead<Memory>& head) {
@@ -377,7 +421,7 @@ struct Flattener {
         leaf[0] = head.Word(28u);
         leaf[1] = tail.Word(36u);
         leaf[2] = head.Word(32u);
-        if (stated.replica) {
+        if (frame.replica) {
             // `(1 − α)·+32 + α·+36` at the receipt alpha, the previous value one graph step back
             // so consecutive folds join (Fable 2's replica contract).
             const float previous = head.Float(32u);
@@ -386,14 +430,14 @@ struct Flattener {
             if (!(step > 0.0f) || !std::isfinite(step)) {
                 step = 1.0f / 15.0f;
             }
-            const float sampled = previous + step * stated.replica_alpha;
+            const float sampled = previous + step * frame.alpha;
             if (std::isfinite(sampled)) {
                 leaf[1] = Bits(sampled);
                 leaf[2] = Bits(sampled - step);
             }
         }
         leaf[3] = Bits(frame.weight);
-        leaf[4] = (tail.Byte(40u) != 0u ? 1u : 0u) | (frame.additive ? 2u : 0u) | (stated.replica ? 8u : 0u) |
+        leaf[4] = (tail.Byte(40u) != 0u ? 1u : 0u) | (frame.additive ? 2u : 0u) | (frame.replica ? 8u : 0u) |
                   stated.role | ((stated.priority & 0xFFu) << 8) | ((stated.track & 0xFFu) << 16);
         leaf[5] = stated.uid;
         leaf[6] = stated.ramp_in_bits;
@@ -408,7 +452,7 @@ struct Flattener {
     void Walk(uint32_t root, float weight, float importance) {
         Frame stack[64];
         int depth = 0;
-        stack[depth++] = Frame{root, weight, importance, false, 0u};
+        stack[depth++] = Frame{root, weight, importance, false, 0u, stated.replica, stated.replica_alpha};
         int steps = 0;
         while (depth > 0 && leaves < capacity && ++steps < 512) {
             const Frame frame = stack[--depth];
@@ -417,7 +461,13 @@ struct Flattener {
             }
             const auto push = [&](uint32_t child, float w, float imp, bool additive, uint32_t mask) {
                 if (depth < 64 && Plausible(child)) {
-                    stack[depth++] = Frame{child, w, imp, additive, mask};
+                    stack[depth++] = Frame{child, w, imp, additive, mask, frame.replica, frame.alpha};
+                }
+            };
+            // A TU3 replica kind's child, at the alpha the node states.
+            const auto push_at = [&](uint32_t child, float w, float imp, float alpha) {
+                if (depth < 64 && Plausible(child)) {
+                    stack[depth++] = Frame{child, w, imp, frame.additive, frame.mask, true, ReceiptAlpha(alpha)};
                 }
             };
             const NodeHead<Memory> head(memory, frame.node);
@@ -487,6 +537,34 @@ struct Flattener {
                 case 5u:
                     push(head.Word(32u), frame.weight, frame.importance, true, frame.mask);
                     break;
+                case 6u: {
+                    if (!tu3) {
+                        break;
+                    }
+                    const FadeTail<Memory> tail(memory, frame.node);
+                    const float f = Finite(tail.Float(36u));
+                    const uint32_t a = head.Word(28u);
+                    const uint32_t b = head.Word(32u);
+                    const float alpha_a = tail.Float(40u);
+                    const float alpha_b = tail.Float(44u);
+                    if (std::min(f, 1.0f - f) * frame.importance <= kCull) {
+                        if (f >= 0.5f) {
+                            push_at(b, frame.weight, frame.importance, alpha_b);
+                        } else {
+                            push_at(a, frame.weight, frame.importance, alpha_a);
+                        }
+                        break;
+                    }
+                    const float t = std::clamp(f, 0.0f, 1.0f);
+                    push_at(a, frame.weight * (1.0f - t), frame.importance * (1.0f - t), alpha_a);
+                    push_at(b, frame.weight * t, frame.importance * t, alpha_b);
+                    break;
+                }
+                case 7u:
+                    if (tu3) {
+                        push_at(head.Word(28u), frame.weight, frame.importance, head.Float(32u));
+                    }
+                    break;
                 default:
                     break;
             }
@@ -494,7 +572,7 @@ struct Flattener {
     }
 };
 
-/// The 68-byte record, read once.
+/// The record (72 bytes TU3, 68 disc; the same [8, 64) in both), read once.
 struct Record {
     uint32_t address = 0;
     uint32_t priority = 0;
@@ -544,7 +622,7 @@ uint32_t ReadList(const Memory& memory, const ManagerSpan<Memory>& manager, uint
     return read;
 }
 
-/// sub_826BC358 at one end of the tick (`current` = α 1, else α 0): each non-top primary's
+/// sub_826E7AC0 at one end of the tick (`current` = α 1, else α 0): each non-top primary's
 /// share of the partner set, normalised; false when the guest builds no partner there.
 inline bool PartnerShares(const Record* records, uint32_t count, float top_weight, bool from_one, bool current,
                           float* shares) {
@@ -580,7 +658,7 @@ inline bool PartnerShares(const Record* records, uint32_t count, float top_weigh
     return true;
 }
 
-/// sub_821CD100 / sub_826BE298 at one end of the tick, for the primary of priority `priority`:
+/// sub_821CD208 / sub_826EA518 at one end of the tick, for the primary of priority `priority`:
 /// each overlay's share of its track's layer, restated as the factor a SEQUENTIAL application
 /// in list order needs (anim_feed.cpp states the arithmetic).
 inline void OverlayFactors(const Record* overlays, uint32_t count, uint32_t priority, bool current, float* factors) {
@@ -634,16 +712,57 @@ uint32_t LinkedAnimLeaf(const Memory& memory, const Components& components, uint
         return 0u;
     }
 
-    // sub_821FB610: 0 the leaf; 1 B (+32) when +36 ≥ 0.5 else A (+28); 3 and 4 take +28; 5 +32;
-    // a set has no dominant leaf.
+    // THE DOMINANT LEAF, sub_821FAD98 (disc sub_821FB610), both builds: 0 the leaf; 1 B (+32) when
+    // +36 ≥ 0.5 else A (+28); 3 and 4 take +28; 5 +32. The disc stops there (its switch holds 0, 1, 3,
+    // 4, 5; anything else `*a1 = 0` disc 0x821FB8F0). TU3 goes on (`cmplwi r10,7` 0x821FADC8):
+    //   2 the heaviest child by `+20·0 + +16` (`lfs 0x14`, `lfs 0x10` 0x821FB16C..0x821FB180), the first
+    //     of equals, above 0 (`fcmpu` 0x821FB178 against a best starting 0.0); none, no leaf;
+    //   6 its B, +32 (`addi r4,r11,0x20` 0x821FB084); 7 its child, +28 (`lwz r11,0x1C(r11)` 0x821FB094);
+    //   above 7 the node itself (`bgt cr6` 0x821FADCC -> `stw r11,0(r31)` 0x821FB1B8).
+    const bool tu3 = Tu3();
+    const auto heaviest_child = [&](uint32_t node, const NodeHead<Memory>& head) -> uint32_t {
+        const uint32_t begin = head.Word(32u);
+        const uint32_t end = NodeTail<Memory>(memory, node).Word(36u);
+        // `(end − begin) & ~3 > 0` (0x821FB150); the children bound is the walk's own, as the set's.
+        if (!Plausible(begin) || end < begin || end - begin > 4u * kMaxSetChildren ||
+            ((end - begin) & ~3u) == 0u) {
+            return 0u;
+        }
+        uint32_t child[kMaxSetChildren];
+        const uint32_t count = (end - begin) / 4u;
+        ReadWords(memory, begin, child, count, true);
+        uint32_t heaviest = 0u;
+        bool found = false;
+        float best = 0.0f;
+        for (uint32_t i = 0; i < count; ++i) {
+            // `+20·0 + +16`: +16 itself unless +20 is not finite, when no comparison holds.
+            const float w = FloatAt(memory, child[i] + 16u);
+            if (std::isfinite(FloatAt(memory, child[i] + 20u)) && w > best) {
+                best = w;
+                heaviest = child[i];
+                found = true;
+            }
+        }
+        return found ? heaviest : 0u;
+    };
     const auto dominant = [&](uint32_t node) -> uint32_t {
         for (int depth = 0; depth < 32 && Plausible(node); ++depth) {
             const NodeHead<Memory> head(memory, node);
-            switch (head.Word(24u)) {
+            const uint32_t kind = head.Word(24u);
+            if (tu3 && kind > 7u) {
+                return node;
+            }
+            switch (kind) {
                 case 0u:
                     return node;
                 case 1u:
                     node = head.Word(NodeTail<Memory>(memory, node).Float(36u) >= 0.5f ? 32u : 28u);
+                    break;
+                case 2u:
+                    if (!tu3) {
+                        return 0u;
+                    }
+                    node = heaviest_child(node, head);
                     break;
                 case 3u:
                 case 4u:
@@ -652,6 +771,18 @@ uint32_t LinkedAnimLeaf(const Memory& memory, const Components& components, uint
                 case 5u:
                     node = head.Word(32u);
                     break;
+                case 6u:
+                    if (!tu3) {
+                        return 0u;
+                    }
+                    node = head.Word(32u);
+                    break;
+                case 7u:
+                    if (!tu3) {
+                        return 0u;
+                    }
+                    node = head.Word(28u);
+                    break;
                 default:
                     return 0u;
             }
@@ -659,10 +790,13 @@ uint32_t LinkedAnimLeaf(const Memory& memory, const Components& components, uint
         return 0u;
     };
 
+    // The linked pose's source, sub_82745D38 (disc sub_826C1570): the current replicated tree's
+    // dominant leaf when one is installed (`lwz r10,0x60(r31)` 0x82745E90 / disc `lwz r11,0x5C(r31)`
+    // disc 0x826C1590), at `now − receipt + leaf+36` (0x82745EF4 / disc 0x826C1624); else the TOP record's.
     const ManagerSpan<Memory> fields(memory, manager);
     uint32_t leaf = 0u;
     double now = 0.0;
-    const uint32_t tree = fields.Word(92u);
+    const uint32_t tree = fields.Word(CurrentTreeOffset(tu3));
     const bool replica = Plausible(tree);
     if (replica) {
         leaf = dominant(tree);
@@ -681,7 +815,9 @@ uint32_t LinkedAnimLeaf(const Memory& memory, const Components& components, uint
         }
     }
 
-    // `dominant` answers only a kind-0 node, which owns [28, 40).
+    // `dominant` answers a kind-0 node, which owns [28, 40), or in TU3 one of a kind above 7, whose
+    // +28 and +36 the guest reads all the same (`lwz r30,0x1C(r3)` / `lfs f31,0x24(r3)` off
+    // sub_821FB200's answer, 0x82745ED8 / 0x82745EDC).
     const ClipSpan<Memory> clip(memory, leaf);
     float time = clip.Float(36u);
     float previous = clip.Float(32u);
@@ -691,7 +827,7 @@ uint32_t LinkedAnimLeaf(const Memory& memory, const Components& components, uint
         if (!(step > 0.0f) || !std::isfinite(step)) {
             step = 1.0f / 15.0f;
         }
-        time = static_cast<float>(now - fields.Float(100u)) + current;
+        time = static_cast<float>(now - fields.Float(CurrentReceiptOffset(tu3))) + current;
         previous = time - step;
     }
     if (!std::isfinite(time) || !std::isfinite(previous)) {
@@ -746,7 +882,11 @@ uint32_t LinkedAnimLeaf(const Memory& memory, const Components& components, uint
     return 1u;
 }
 
-/// The replicated tree as sub_826BDEC8 folds it (anim_feed.cpp states the contract).
+/// The replicated tree as disc sub_826BDEC8 folds it (anim_feed.cpp states the contract). DISC ONLY:
+/// its offsets are the disc manager's — +88 previous tree (`lwz r11,0x58(r31)` disc 0x826BDF78), +92
+/// current (`lwz r11,0x5C(r4)` disc 0x826BDEE0), +96 / +100 their receipts (`lfs f0,0x60(r31)` disc
+/// 0x826BE000, `lfs f0,0x64(r31)` disc 0x826BDF54), +104 the fade start (`lfs f0,0x68(r31)` disc 0x826BDF88).
+/// TU3 has no such fold: its replica is a primary record (EntityAnimState states it).
 template <typename Memory>
 void WalkReplica(const Memory& memory, const ManagerSpan<Memory>& manager, Flattener<Memory>& flat) {
     double now = 0.0;
@@ -755,9 +895,7 @@ void WalkReplica(const Memory& memory, const ManagerSpan<Memory>& manager, Flatt
         if (!clock) {
             return 1.0f;
         }
-        const double alpha = (now - manager.Float(receipt_offset)) * 15.0;
-        // A minute of extrapolation is a tree the host stopped sending, not a clip to run on.
-        return std::isfinite(alpha) && alpha > -1.0 && alpha < 15.0 * 60.0 ? static_cast<float>(alpha) : 1.0f;
+        return ReceiptAlpha((now - manager.Float(receipt_offset)) * 15.0);
     };
 
     float fade = 1.0f;
@@ -812,12 +950,14 @@ AnimState EntityAnimState(const Memory& memory, uint32_t entity, uint32_t* out_w
     uint32_t flags = PhysicsOwnsPose(memory, entity_fields) ? 8u : 0u;
     const Components components(memory, entity_fields);
     const uint32_t manager = components.Find(kAnimationManager);
+    const bool tu3 = Tu3();
     const ManagerSpan<Memory> fields(memory, manager);
     const uint32_t primary_count = manager == 0u ? 0u : fields.Word(32u);
-    const uint32_t replica = manager == 0u ? 0u : fields.Word(92u);
+    const uint32_t replica = manager == 0u ? 0u : fields.Word(CurrentTreeOffset(tu3));
 
-    // THE GATE'S CHOICE OF SOURCE (sub_823531E0 0x82353c30..0x82353e8c): component 23 with records
-    // or a replicated tree poses the rig; otherwise component 215 does, when present.
+    // THE GATE'S CHOICE OF SOURCE (sub_8235B698: `lwz r11,0x20(r31)` 0x8235C0A8, then the current
+    // tree `lwz r11,0x60(r31)` 0x8235C0B4 / disc `lwz r11,0x5C(r31)` disc 0x82353C30): component 23 with
+    // records or a replicated tree poses the rig; otherwise component 215 does, when present.
     if (manager == 0u || (primary_count == 0u && !Plausible(replica))) {
         const uint32_t linked = LinkedAnimLeaf(memory, components, out_words);
         if (out_flags != nullptr) {
@@ -840,11 +980,28 @@ AnimState EntityAnimState(const Memory& memory, uint32_t entity, uint32_t* out_w
         *out_flags = flags;
     }
 
-    Flattener<Memory> flat{memory, out_words, word_capacity / kLeafWords, 0u, Stated{}};
+    Flattener<Memory> flat{memory, out_words, word_capacity / kLeafWords, 0u, Stated{}, tu3};
 
-    // THE GUEST'S OWN CHOICE OF ROOT (sub_821E9AC0 0x821e9af8, sub_82208F50 0x82208f88): the
-    // replicated tree when it exists and the primary list is empty or holds nothing at 128.
-    if (Plausible(replica) && (primary_count == 0u || static_cast<int32_t>(WordAt(memory, manager + 644u)) < 128)) {
+    // THE GUEST'S OWN CHOICE OF ROOT, sub_821E9728 (disc sub_821E9AC0).
+    //
+    // DISC: the replicated tree when it exists and the primary list is empty or holds nothing at 128
+    // (`lwz r11,0x284(r3)` + `cmpwi cr6,r11,0x80` disc 0x821E9AF8 / disc 0x821E9AFC, then `lwz r11,0x5C(r27)`
+    // disc 0x821E9B0C -> `bl sub_826BDEC8` disc 0x821E9B40; likewise sub_822086C8 disc 0x82208F6C..disc 0x82208F80),
+    // else the primary fold (`bl sub_821EB068` disc 0x821E9BD0) — one or the other.
+    //
+    // TU3: no choice. The replica is a PRIMARY RECORD: on receipt sub_826EE1A0 inserts it into the
+    // primary list at priority 128 (`li r6,0x80` 0x826EE554, `bl NAnimationManager__CCompositeState_p_ctor`
+    // 0x826EE564, which links at mgr+28: `addi r4,r29,0x1C` 0x826E8058) and keeps it at mgr+88; the step
+    // states its weight at +20/+24 (`stfs f13,0x18(r11)` / `stfs f0,0x14(r11)` 0x8220E53C / 0x8220E540).
+    // Each fold rebuilds its root — the current tree under a kind-7 node, or a kind-6 crossfade from the
+    // previous one (sub_826EA238) — when the current tree is set and the weight is not 0 (`lwz r11,0x60(r3)`
+    // 0x821E9738, `lfs f0,0x2CC(r3)` 0x821E9760 against 1e-4, `bl sub_82293B30` on `lwz r3,0x58(r27)`
+    // 0x821E97CC..0x821E97D0), then ALWAYS runs the primary fold (`li r6,0` 0x821E9810, `bl sub_826E9CD8`
+    // 0x821E9820). So the primary walk below is the whole of it: the record is read as any other, and
+    // the Flattener takes its kind-7 / kind-6 root. (The +652 / 256 test — `lwz r11,0x28C(r31)`,
+    // `cmpwi cr6,r11,0x100` 0x826EA4EC / 0x826EA4F0 — only drives that weight, in the step.)
+    if (!tu3 && Plausible(replica) &&
+        (primary_count == 0u || static_cast<int32_t>(WordAt(memory, manager + 644u)) < 128)) {
         WalkReplica(memory, fields, flat);
         if (flat.leaves == 0u) {
             state.counts |= kCountEmptyList;
@@ -862,7 +1019,12 @@ AnimState EntityAnimState(const Memory& memory, uint32_t entity, uint32_t* out_w
         return state;
     }
 
-    // TOP = the tail (sub_821EB068: `sentinel->prev`), whatever its state.
+    // TOP = the tail (disc sub_821EB068: `sentinel->prev`), whatever its state. TU3's tail getter
+    // sub_826E7A70 skips records whose +0x44 byte is 0 only while byte_8359717E is set (`lbz r6,0x44(r7)`
+    // 0x826E7A9C), and only sub_826E9CD8 sets it, for a nonzero fifth argument (`stb r11` 0x826E9D10,
+    // cleared `stb r27` 0x826EA21C); the pose fold passes 0 (`li r6,0` 0x821E9810), so here it is the tail.
+    // The overlay test sub_826E6920 and the partner walk sub_826E7AC0 read the same byte (0x826E6978 /
+    // 0x826E7C38) and skip nothing either.
     const Record& top = primaries[count - 1u];
     const bool crossfade = ByteAt(memory, kCrossfadeOn) != 0u;
     const bool from_one = ByteAt(memory, kPartnerFromOne) != 0u;

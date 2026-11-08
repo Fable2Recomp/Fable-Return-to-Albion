@@ -3,45 +3,45 @@
 //
 // Every offset is from the Fable 3 IDB, each against its own base:
 //
-//   Game      = the game of the world on screen, *0x83556534 (presented_world.h)
-//   EM        = *(*(*(Game+0x1C)+4)+4)   the entity manager (GetHeroEntityFromGameWorld sub_821A8D40)
+//   Game      = the game of the world on screen, *0x83597030 (presented_world.h)
+//   EM        = *(*(*(Game+0x1C)+4)+4)   the entity manager (GetHeroEntityFromGameWorld sub_821A8B50)
 //   EM+4      the live list's head; each node {next, prev, entity} sits at entity+0xC, pushed at the
-//             front by sub_82399558 (`stw r11,4(r31)` 0x823995D8, count `+0xC` 0x823995E4)
+//             front by sub_823BB2C0 (`stw r11,4(r31)` 0x823BB340, count `+0xC` 0x823BB34C)
 //   EM+0x80 / EM+0x88   the slots holding player one's / player two's hero (** each)
 //   entity+0x18  64-bit unique id   +0x20 the .gdb record id   +0x54/+0x58 the component vector,
 //                {u32 id, u32 component} pairs   +0x80 the placement   +0x94 flags, 0x40 = live
-//   component 3 (the renderable, CECGraphicAppearance, ctor sub_826868B8, 320 bytes):
+//   component 3 (the renderable, CECGraphicAppearance, ctor sub_826B0450, 320 bytes):
 //             +0xA0 position, +0xB0 orientation quaternion — the PREVIOUS transform: the game tick's
-//             first act (sub_821C5928 0x821C5948 -> sub_821EE4D8, over EM+0x70..+0x74) latches the
-//             placement's slots 0x50/0x54 there (sub_8221EFB8: `stvx128` at r31+160 and +176) and
+//             first act (sub_821C58F8 0x821C5918 -> sub_821EDAB8, over EM+0x70..+0x74) latches the
+//             placement's slots 0x50/0x54 there (sub_8221E068: `stvx128` at r31+160 and +176) and
 //             zeroes the dirty word +0x94; the tick then moves the placement, and the high-frequency
-//             pass draws `prev*(1-alpha) + live*alpha` with a slerp (sub_8221B070: `lvx128 v0,r31,r7`
-//             r7=160 at 0x8221B138, sub_82206C20 on +176 at 0x8221B198), alpha = (step % 2 + 1) / 2
-//             (sub_821CB758 0x821CBCE0..0x821CBCF4);
-//             +0xE9 the interpolation ENABLE (`lbz r29,0xE9(r3)` 0x8221B0F4: zero takes the live
-//             transform), 1 from the ctor (0x82686AA0); the other `stb ...,0xE9(r)` sites
-//             (0x82964718, 0x82849474) are on objects not tied to this component;
-//             +0x50 tint, float RGBA (SetTintColour sub_82688A78 -> sub_82688980, bytes/255, ctor 1s);
-//             +0x78 scale (SetScale sub_82688368), +0x7C alpha (SetAlpha sub_82688410), +0x80 camera
-//             alpha (SetCameraAlpha sub_82688530), all 1.0 from the ctor; the draw gate is
-//             `+0xE5 && +0x7C * +0x80 >= 1e-4 && +0x114 == 0` (0x8221B08C..0x8221B0C4);
-//             +0xE5 drawable (SetAsDrawable sub_826876B0);
-//             +0xD0 the targeting highlight, float RGBA: the per-frame driver sub_8219AFD0 ramps the
-//             category colour in through sub_82688C38 (bytes B,G,R,A x 1/255 -> lanes R,G,B,A, stored
-//             at +208..+223, 0x82688D50..0x82688D54), +0xC0 strength, +0xC4 shininess, +0xC8 minimum
-//             brightness (sub_82688EE8/F78/9008, from flt_8329EACC..D4 = 10, 4, 1); the proxy packet
-//             sub_82688690 forwards +0xD0's lanes (words 8..10) and +0xC0/+0xC4 (6, 7), never the
-//             Lua SetHighlightColour bytes at +0x60. Off is the ctor's zero colour (dword_83559AD0).
+//             pass draws `prev*(1-alpha) + live*alpha` with a slerp (sub_8221A110: `lvx128 v0,r31,r7`
+//             r7=160 at 0x8221A1D8, sub_82206430 on +176 at 0x8221A238), alpha = (step % 2 + 1) / 2
+//             (sub_821CB7B0 disc 0x821CBCE0..0x821CBE00);
+//             +0xE9 the interpolation ENABLE (`lbz r29,0xE9(r3)` 0x8221A194: zero takes the live
+//             transform), 1 from the ctor (0x826B0640); the other `stb ...,0xE9(r)` sites
+//             (disc 0x82964718, 0x828A76EC) are on objects not tied to this component;
+//             +0x50 tint, float RGBA (SetTintColour sub_826B2D68 -> sub_826B2C70, bytes/255, ctor 1s);
+//             +0x78 scale (SetScale sub_826B2068), +0x7C alpha (SetAlpha sub_826B2130), +0x80 camera
+//             alpha (SetCameraAlpha sub_826B2250), all 1.0 from the ctor; the draw gate is
+//             `+0xE5 && +0x7C * +0x80 >= 1e-4 && +0x114 == 0` (0x8221A12C..disc 0x8221B0C4);
+//             +0xE5 drawable (SetAsDrawable sub_826B13A8);
+//             +0xD0 the targeting highlight, float RGBA: the per-frame driver sub_8219AFA8 ramps the
+//             category colour in through sub_826B2F28 (bytes B,G,R,A x 1/255 -> lanes R,G,B,A, stored
+//             at +208..+223, 0x826B3040..0x826B3044), +0xC0 strength, +0xC4 shininess, +0xC8 minimum
+//             brightness (sub_826B31D8/F78/9008, from flt_832DF550..D4 = 10, 4, 1); the proxy packet
+//             disc sub_82688690 forwards +0xD0's lanes (words 8..10) and +0xC0/+0xC4 (6, 7), never the
+//             Lua SetHighlightColour bytes at +0x60. Off is the ctor's zero colour (disc dword_83559AD0).
 //   the placement, entity+0x80: a component-2 class, read as its slot 0x50 (position) / 0x54
 //             (orientation) getters read it — see kPlacements below.
 //   component 6 (animated mesh) / 4 (static mesh): +0x18 the model's resource id (FNV-1 of the
-//             backslashed path, sub_822D78B0)
-//   component 6: +0x1C the published pose holder — sub_821F0218 swaps a fresh block in FIRST
-//             (0x821F0278 bl sub_82258410) and only then copies the pose into it (0x821F02B4
-//             bl sub_8221F3D8, from comp+0x38) and applies the one-bone override (comp+0x44 index,
-//             comp+0x48 transform, 0x821F02B8..0x821F02EC): block +0xC bone count, +0x10 bones,
+//             backslashed path, sub_822D5DE8)
+//   component 6: +0x1C the published pose holder — sub_821EF7E0 swaps a fresh block in FIRST
+//             (0x821EF840 bl sub_82210EA0) and only then copies the pose into it (0x821EF87C
+//             bl sub_8221E4E0, from comp+0x38) and applies the one-bone override (comp+0x44 index,
+//             comp+0x48 transform, 0x821EF880..0x821EF8B4): block +0xC bone count, +0x10 bones,
 //             48 bytes each (quaternion xyzw, translation at +0x10, scale at +0x20), model space
-//             (sub_82D4E7C0: root stamped identity, children through sub_8222AD80, which reads and
+//             (sub_82D80EC8: root stamped identity, children through sub_82229B18, which reads and
 //             writes +0x00/+0x10 only — scale is each bone's own), skeleton order;
 //             +0xA8 the skeleton: +0x38..+0x3C bone records {u32 name hash, i32 parent}, +0x9C..+0xA0
 //             the rest pose (local, same 48-byte bones)
@@ -57,8 +57,14 @@
 #include "host_abi.h"
 #include "host_core.h"
 #include "presented_world.h"
+#include "../../vfs/include/fable3_guest_build.h"
 
 namespace {
+
+/// Component 3's static-mesh word and zone (TU3 0x822638C4 `lwz r11,0xFC(r3)` / 0x822638D4 `lwz
+/// r5,0x100(r3)`; disc +0xF0 / +0xF4, disc 0x82264FA4 / disc 0x82264FB4): TU3 grew the class by 0x10.
+uint32_t RenderableStaticMesh() { return refii::guest::Pick(0xFCu, 0xF0u); }
+uint32_t RenderableZone() { return refii::guest::Pick(0x100u, 0xF4u); }
 
 namespace walk = refii::fable3::walk;
 
@@ -250,11 +256,11 @@ void CopyBones(const uint8_t* base, uint32_t from, uint32_t skeleton, uint32_t c
     }
 }
 
-/// The element a fresh block's bones are constructed with (sub_82D4D2D8, the stores at
-/// 0x82D4D528..0x82D4D55C): quaternion (0,0,0,1), translation 0, scale (1,1,1,1).
+/// The element a fresh block's bones are constructed with (sub_82D7F9E0, the stores at
+/// 0x82D7FC30..0x82D7FC64): quaternion (0,0,0,1), translation 0, scale (1,1,1,1).
 constexpr uint32_t kFreshBone[12] = {0u, 0u, 0u, kOne, 0u, 0u, 0u, 0u, kOne, kOne, kOne, kOne};
 
-/// Whether the published block is still waiting for its copy. The copy is forward (sub_8221F3D8
+/// Whether the published block is still waiting for its copy. The copy is forward (sub_8221E4E0
 /// advances its pointers), so a block caught before or during it ends in constructor bones; a
 /// last bone the skeleton rests away from the origin cannot sit there exactly in a copied pose.
 bool AwaitingCopy(const uint8_t* base, uint32_t skeleton, uint32_t count, const uint32_t* words) {
@@ -391,7 +397,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityRestPose(uint32_t entity, float
 }
 
 /// Bone names as the model states them: Fable 3 keeps only each name's hash (CRC-32, init 0, no
-/// final xor, sub_823F04B8), so a bone is named "0x%08X", as Engine_MdlEngine47 names the mesh's.
+/// final xor, sub_82412818), so a bone is named "0x%08X", as Engine_MdlEngine47 names the mesh's.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityBoneNames(uint32_t entity, char* out_names, uint32_t stride,
                                                            uint32_t max_bones) {
     const uint8_t* base = GuestBase();
@@ -442,7 +448,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityComponents(uint32_t entity, uin
 }
 
 /// The `Mesh` hashes of component 5 (StaticMultipleMesh): records at comp+0x10 begin, +0x14 end,
-/// +0x18 capacity (ctor sub_82542280, push sub_829AEA88), 64 bytes each, the hash at +4.
+/// +0x18 capacity (ctor sub_82573368, push sub_829F4A48), 64 bytes each, the hash at +4.
 /// `out_total` is the record count the component states.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMeshParts(uint32_t entity, uint32_t* out_hashes, uint32_t max_hashes,
                                                            uint32_t* out_total) {
@@ -494,17 +500,17 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityInteriorMeshes(uint32_t entity,
 }
 
 /// Whether the entity's light (component 8, CECGraphicAppearanceLight) states IgnoreZoning: the
-/// record's bool, kept at comp+0x9A (sub_82797250 0x82797514), which the light's zone update reads
-/// as "zone 0" (sub_827983C0 0x82798414: `v15 = +154 != 0 ? 0 : zone`).
+/// record's bool, kept at comp+0x9A (sub_827CE880 0x827CEB44), which the light's zone update reads
+/// as "zone 0" (sub_827CF990 0x827CF9E4: `v15 = +154 != 0 ? 0 : zone`).
 bool LightIgnoresZoning(const uint8_t* base, uint32_t entity) {
     const uint32_t light = Component(base, entity, 8u);
     return light != 0u && GuestByteAt(base, light + 0x9Au) != 0u;
 }
 
 /// The lighting zone of the entity's geometry: the renderable's (component 3) +0xF4, which
-/// sub_82264F98 keeps by LightZoneMode at +0xF0. A CECBuilding (component 79) in mode 0 is in the
+/// sub_822638B8 keeps by LightZoneMode at +0xF0. A CECBuilding (component 79) in mode 0 is in the
 /// zone of its own record id, `entity+0x20 & 0x7FFFFFFF`, while live, else 1 (the static-mesh
-/// override sub_829AD718, 0x829AD73C..0x829AD840). 0 when the entity's light ignores zoning.
+/// override sub_829F3800, 0x829F3824..disc 0x829AD840). 0 when the entity's light ignores zoning.
 /// 1 without a renderable.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityLightZone(uint32_t entity) {
     const uint8_t* base = GuestBase();
@@ -521,11 +527,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityLightZone(uint32_t entity) {
         return 1u;
     }
 
-    if (Component(base, entity, kBuildingComponent) != 0u && GuestWordAt(base, renderable + 0xF0u) == 0u) {
+    if (Component(base, entity, kBuildingComponent) != 0u && GuestWordAt(base, renderable + RenderableStaticMesh()) == 0u) {
         return Live(base, entity) ? GuestWordAt(base, entity + 0x20u) & 0x7FFFFFFFu : 1u;
     }
 
-    return GuestWordAt(base, renderable + 0xF4u);
+    return GuestWordAt(base, renderable + RenderableZone());
 }
 
 /// The entity's OWN zone, the renderable's +0xF4 without the static-mesh building override — what
@@ -542,7 +548,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityOwnLightZone(uint32_t entity) {
     }
 
     const uint32_t renderable = Component(base, entity, 3u);
-    return renderable == 0u ? 1u : GuestWordAt(base, renderable + 0xF4u);
+    return renderable == 0u ? 1u : GuestWordAt(base, renderable + RenderableZone());
 }
 
 /// The renderable's shadow word, +0x90, with 0x100 standing for its two-sided caster byte +0xE1;
@@ -562,7 +568,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityCasterFlags(uint32_t entity) {
     return flags;
 }
 
-/// The renderable's draw distance (+0x24) and fade-range factor (+0x28), written by sub_826873F0
+/// The renderable's draw distance (+0x24) and fade-range factor (+0x28), written by sub_826B10E8
 /// (the reverse of Fable 2's order). 1 with both, 0 without a renderable.
 REFII_HOST_ABI_EXPORT int RefiiHostGetEntityDrawRange(uint32_t entity, float* out_distance, float* out_fade_factor) {
     if (out_distance == nullptr || out_fade_factor == nullptr) {
@@ -928,21 +934,21 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopPlayerEntities(uint32_t* out_one,
 /// hero's components as Fable 3's own accessors read them. Component ids are the registrations'
 /// (component_ids: CECStats 15, CECHealth 40, CECMoney 102):
 ///
-///   words[0]   gold          CECMoney+0x0C   (vtable slot 0x38 sub_823AFCE0: `*(a1+12)`)
-///   words[1]   renown        CECStats+0x44C  guild seals accumulated via renown (sub_823B90B8
+///   words[0]   gold          CECMoney+0x0C   (vtable slot 0x38 disc sub_823AFCE0: `*(a1+12)`)
+///   words[1]   renown        CECStats+0x44C  guild seals accumulated via renown (sub_823DA248
 ///                                            "GetTotalNumberOfGuildSealsAccumulatedViaRenown" less
 ///                                            the standing renown pool)
-///   values[0]  health        CECHealth+0x14  (SetHeroHealth sub_82335DD8 0x82335F44 deltas it;
-///                                            sub_825FF9B0 clamps it at 0x825FFBB4..0x825FFC0C)
+///   values[0]  health        CECHealth+0x14  (SetHeroHealth sub_8233D1B0 0x8233D31C deltas it;
+///                                            sub_826279F0 clamps it at 0x82627BF4..0x82627C4C)
 ///   values[1]  base health   CECHealth+0x1C
-///   values[2]  max health    sub_8227F7F8: +0x1C + +0x20, capped at +0x24 while +0x50 is set
-///   values[3]  morality      CECStats+0x368  ("GetMorality" sub_82228128 `lfs 0x368`; the
+///   values[2]  max health    sub_8227DB58: +0x1C + +0x20, capped at +0x24 while +0x50 is set
+///   values[3]  morality      CECStats+0x368  ("GetMorality" sub_82226E48 `lfs 0x368`; the
 ///                                            accessor adds ability 11's modifier on top)
-///   values[5]  morality min  CECStats+0x36C  ("GetMinMorality" sub_823B81C0)
-///   values[6]  morality max  CECStats+0x370  ("GetMaxMorality" sub_823B81B8)
-///   values[12] seals         CECStats+0x444 + +0x448   ("GetNumberOfGuildSeals" sub_823B90A0)
-///   values[13] renown seals  CECStats+0x444  ("GetNumberOfGuildSealsRenown" sub_823B90B0)
-///   values[14] pure seals    CECStats+0x448  ("ModifyGuildSeals" sub_823B90C8 adds here)
+///   values[5]  morality min  CECStats+0x36C  ("GetMinMorality" sub_823D9350)
+///   values[6]  morality max  CECStats+0x370  ("GetMaxMorality" sub_823D9348)
+///   values[12] seals         CECStats+0x444 + +0x448   ("GetNumberOfGuildSeals" sub_823DA230)
+///   values[13] renown seals  CECStats+0x444  ("GetNumberOfGuildSealsRenown" sub_823DA240)
+///   values[14] pure seals    CECStats+0x448  ("ModifyGuildSeals" sub_823DA258 adds here)
 ///   values[16] seals earned  CECStats+0x444 + +0x44C
 ///
 /// Fable 3 has no purity, no strength/skill/will pools and no ability levels; those lanes stay 0.
@@ -999,16 +1005,16 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroVitals(uint32_t* words, uint32_t 
 }
 
 /// A character's parts, as the guest builds them to draw (component 20, CECGraphicAppearanceMorph:
-/// `GetECType` 0x82272018 `li r3,0x14`). The draw virtual sub_8222C190 rebuilds the list through
-/// sub_82774448 and reads it at comp+0x38/+0x3C (`lwz 0x2C(r24)`/`0x30(r24)` at 0x8222C3E8, r24 =
+/// `GetECType` 0x829B5A40 `li r3,0x14`). The draw virtual sub_8222AFD8 rebuilds the list through
+/// sub_827AB7E8 and reads it at comp+0x38/+0x3C (`lwz 0x2C(r24)`/`0x30(r24)` at disc 0x8222C3E8, r24 =
 /// comp+0xC), 128-byte records (`clrrwi r8,r9,7`), each led by the part's model hash. Until it is
 /// built the source list at comp+0x28/+0x2C (one hash per u32) stands. The eyes are component 7's
 /// own models (+0x18 right, +0x28 left, shown while +0x60 is set), appended as Fable 2 does.
 /// `out_built` is the built record count, 0 when the source list answered. The guest sorts the
 /// built list by layer (+0x34) DESCENDING, unlike Fable 2, so the order here carries no layering.
 /// A built part draws at its record's alpha +0x38 times the entity's fade (`lfs f0,0x38(r24)`,
-/// `fmuls` by +0x80 and +0x7C at 0x8222D24C; `lfs f0,0x38(r6)` at 0x8222C364): at or above 0.9999
-/// (flt_82073D6C) it takes the opaque path, below it the translucent one at that alpha. A part at
+/// `fmuls` by +0x80 and +0x7C at 0x8222C09C; `lfs f0,0x38(r6)` at disc 0x8222C364): at or above 0.9999
+/// (flt_82073E88) it takes the opaque path, below it the translucent one at that alpha. A part at
 /// alpha 0 is therefore invisible and is left out: the hero's fire gauntlet sits in his list at
 /// layer 80, alpha 0, until the game gives it to him.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uint32_t* out_hashes,
@@ -1073,7 +1079,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uin
 }
 
 /// The built parts the guest draws as displacement meshes: records whose +0x71 byte is set (the
-/// draw ORs 0x840 into the part's flags for them, 0x8222C5D4); alpha 0 draws nothing, as in
+/// draw ORs 0x840 into the part's flags for them, 0x8222B41C); alpha 0 draws nothing, as in
 /// RefiiHostGetEntityMorphParts.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityDisplacementParts(uint32_t entity, uint32_t* out_hashes,
                                                                   uint32_t max_hashes) {

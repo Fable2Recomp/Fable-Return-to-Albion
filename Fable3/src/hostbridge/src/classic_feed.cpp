@@ -5,29 +5,29 @@
 // host_bridge.cpp; Godot binds them in HostBridge.cs). Every offset is from the Fable 3 IDB,
 // each against its own base:
 //
-//   Game  = the game of the world on screen, *0x83556534 (presented_world.h)
-//   WG    = *(*(Game+0x1C)+4)   the world graphics (sub_821BF330 -> sub_821AF1B8 at 0x821BF3CC)
-//   L     = *(WG+0x6C)          the sky owner, sub_821AF1B8's `sub_822488A0(a1[27])`: L+4 the
+//   Game  = the game of the world on screen, *0x83597030 (presented_world.h)
+//   WG    = *(*(Game+0x1C)+4)   the world graphics (sub_821BF1A8 -> sub_821AF2F0 at 0x821BF244)
+//   L     = *(WG+0x6C)          the sky owner, sub_821AF2F0's `sub_82247A60(a1[27])`: L+4 the
 //                               scene index, L+8 the sun twin, L+12 the ambient twin, L+16 the sky
-//   scene = *(*0x8355F454 + 4*(L+4)), bounded by *0x8355F458 (sub_8228D388)
-//   twin  = *(*0x8355F464 + 4*h), bounded by *0x8355F468 (sub_8220D870)
-//   scene+16    the theme block, 916 bytes, packed (sub_8224FBC8 copies it field by field)
-//   scene+1000  the typed list (sub_82C6F230 in the scene ctor sub_82C57BA0): type nodes of 24
-//               bytes at +4..+8 keyed at +0, objects +8..+12 (sub_821DBC80, sub_821F3F28);
-//               category nodes at +20..+24, flag +4, objects +8..+12 (sub_8225DF60, sub_821F38E0)
-//   scene+0x4F4 the light manager LM (sub_82190650 0x8219067C; ctor 0x82C57E60): 32-byte entries
+//   scene = *(*0x835A0070 + 4*(L+4)), bounded by *0x835A0074 (sub_8228B600)
+//   twin  = *(*0x835A0080 + 4*h), bounded by *0x835A0084 (sub_8220CF10)
+//   scene+16    the theme block, 916 bytes, packed (sub_8224EF60 copies it field by field)
+//   scene+1000  the typed list (sub_82CA37E8 in the scene ctor sub_82C8C318): type nodes of 24
+//               bytes at +4..+8 keyed at +0, objects +8..+12 (sub_821DB9C0, sub_821F3458);
+//               category nodes at +20..+24, flag +4, objects +8..+12 (sub_8225D0E8, sub_821F2E10)
+//   scene+0x4F4 the light manager LM (sub_82190690 0x821906BC; ctor 0x82C8C5D8): 32-byte entries
 //               at *(LM+8)..*(LM+12) {sphere vec4, +16 the light}, LM+24 the live mask, LM+32 the
-//               directional mask (sub_822327E8)
+//               directional mask (sub_82231588)
 //   light       +4 type (8 point, 9 spot, 10 directional, 11 global), +80/+96 AABB, +112 sphere,
 //               +176 shadow object, +208 colour, +224 flicker brightness, +288 position,
-//               +304 direction (what every packer reads: directional sub_82288FF0 0x8228902c
-//               `lvx128 v10,r3,r7` r7 = 304, sub_82C758C0 0x82c758fc, spot sub_82C86E68
-//               0x82c86ebc, all negated by sign xor; set from the descriptor's +128 by
-//               sub_8229B940; the sky rig's command 4 writes +76 (sub_821A80A8 0x821a8114) and
+//               +304 direction (what every packer reads: directional sub_82286FC8 0x82287004
+//               `lvx128 v10,r3,r7` r7 = 304, disc sub_82C758C0 disc 0x82C758FC, spot sub_82CBBE68
+//               0x82CBBEBC, all negated by sign xor; set from the descriptor's +128 by
+//               sub_82299C30; the sky rig's command 4 writes +76 (sub_821A7EB8 0x821A7F24) and
 //               no reader of +76 was found in the light classes), +320 range, +324 cone,
 //               +328/+332 fade, +340/+341/+342 shadow
 //               bytes, +343 skip, +416 zone, +420/+424 cone cos and 1/(1-cos), +428 1/range,
-//               +432 flicker walk, +444 intensity (packer 0x82224000
+//               +432 flicker walk, +444 intensity (packer 0x82222EF0
 //               `li r6,0x1BC`), +448 range scale, +484 caster, +560 spot planes (count +816)
 
 #include <cmath>
@@ -39,6 +39,7 @@
 #include "host_abi.h"
 #include "host_core.h"
 #include "presented_world.h"
+#include "../../vfs/include/fable3_guest_build.h"
 
 namespace {
 
@@ -47,26 +48,26 @@ using refii::hostcore::GuestWord64At;
 using refii::hostcore::GuestWordAt;
 using refii::hostcore::SafeKernelMemory;
 
-constexpr uint32_t kScenes = 0x8355F454u;
-constexpr uint32_t kScenesEnd = 0x8355F458u;
-constexpr uint32_t kTwins = 0x8355F464u;
-constexpr uint32_t kTwinsEnd = 0x8355F468u;
-constexpr uint32_t kAmbientLight = 0x83564BD0u;
-constexpr uint32_t kZonesBegin = 0x83564BD8u;
-constexpr uint32_t kZonesEnd = 0x83564BDCu;
-constexpr uint32_t kNormalMapDarkening = 0x83564BB0u;
-// The lighting globals sub_82274678 sets each frame from the theme block T = scene+16 and
-// sub_82259C38 builds the frame's lighting registers from: the lightmap factor (1, 1, 1, 0)
-// (0x82274804), the local ambient colour T+64 (0x82274834), the AO contrast T+92 (0x82274848),
-// the lightmap flicker factor 1 + flicker x T+100 (0x82274880), and the sun shadow pass's light
-// (0x82274918, read by sub_822664B0 at 0x822639A0).
-constexpr uint32_t kLightmapFactor = 0x83564BA0u;
-constexpr uint32_t kLocalAmbient = 0x83564BC0u;
-constexpr uint32_t kAOContrast = 0x8329D5E4u;
-constexpr uint32_t kLightmapFlicker = 0x835568B0u;
-constexpr uint32_t kShadowLight = 0x835568C0u;
-constexpr uint32_t kAtmosphere = 0x83561560u;
-constexpr uint32_t kRenderClock = 0x83556818u;
+const refii::guest::Addr kScenes{0x835A0070u};
+const refii::guest::Addr kScenesEnd{0x835A0074u};
+const refii::guest::Addr kTwins{0x835A0080u};
+const refii::guest::Addr kTwinsEnd{0x835A0084u};
+const refii::guest::Addr kAmbientLight{0x835A5800u};
+const refii::guest::Addr kZonesBegin{0x835A5808u};
+const refii::guest::Addr kZonesEnd{0x835A580Cu};
+const refii::guest::Addr kNormalMapDarkening{0x835A57E0u};
+// The lighting globals sub_82272C18 sets each frame from the theme block T = scene+16 and
+// sub_82259310 builds the frame's lighting registers from: the lightmap factor (1, 1, 1, 0)
+// (0x82272DA4), the local ambient colour T+64 (0x82272DD4), the AO contrast T+92 (0x82272DE8),
+// the lightmap flicker factor 1 + flicker x T+100 (0x82272E20), and the sun shadow pass's light
+// (0x82272EB8, read by sub_82264DD0 at 0x82262458).
+const refii::guest::Addr kLightmapFactor{0x835A57D0u};
+const refii::guest::Addr kLocalAmbient{0x835A57F0u};
+const refii::guest::Addr kAOContrast{0x832DD734u};
+const refii::guest::Addr kLightmapFlicker{0x835973B0u};
+const refii::guest::Addr kShadowLight{0x835973C0u};
+const refii::guest::Addr kAtmosphere{0x835A2200u};
+const refii::guest::Addr kRenderClock{0x83597318u};
 
 constexpr uint32_t kTheme = 16u;
 constexpr uint32_t kTypedList = 1000u;
@@ -78,8 +79,8 @@ constexpr uint32_t kWeather = 25u;
 constexpr uint32_t kMist = 27u;
 constexpr uint32_t kDisplacementParticle = 30u;
 constexpr uint32_t kShadowSphere = 36u;
-// The sky object: the first of the scene's type-24 objects (sub_821A8DE8, `li r4,0x18`), the one
-// sub_821988C8 hands sub_82251098 (0x82198C1C).
+// The sky object: the first of the scene's type-24 objects (sub_821A8BF8, `li r4,0x18`), the one
+// sub_821989D8 hands sub_82250408 (0x82198D2C).
 constexpr uint32_t kSky = 24u;
 
 constexpr uint32_t kThemeParams = 194u;
@@ -177,8 +178,8 @@ bool ManagerEntries(const uint8_t* base, uint32_t scene, uint32_t* out_entries, 
 }
 
 /// Fable 2's [15] flag word: bit0 cast shadow (+340), bit1 +341, bit2 excluded (+342),
-/// bit3 caster (+484); and Fable 3's bit4, +343: the manager's LM+40 mask (sub_822327E8
-/// 0x8223298C), which a draw's light group leaves out (sub_82215BD8 0x82215C08 `ld r11,0x28(r4)`,
+/// bit3 caster (+484); and Fable 3's bit4, +343: the manager's LM+40 mask (sub_82231588
+/// 0x8223172C), which a draw's light group leaves out (sub_82214DF0 0x82214E20 `ld r11,0x28(r4)`,
 /// `andc`). Fable 2's bridge never sets bit4.
 float LightFlags(const uint8_t* base, uint32_t light) {
     uint32_t flags = 0u;
@@ -211,7 +212,7 @@ struct ThemeSlot {
     uint8_t lanes;
 };
 
-/// Fable 3's packed theme parameters (`sub_82C43978` colour vec4, `sub_82C439E8` float) by name
+/// Fable 3's packed theme parameters (`sub_82C77A98` colour vec4, `sub_82C77B08` float) by name
 /// into Fable 2's slots. The F3 parameters with no Fable 2 name are not carried.
 constexpr ThemeSlot kThemeSlots[] = {
     {0u, 0u, 4u},  // MAIN_LIGHT_COLOUR <- Main Light Colour
@@ -317,8 +318,8 @@ constexpr ThemeSlot kThemeSlots[] = {
 };
 
 /// Fable 2's LIGHTMAP_COLOUR slot. Fable 3 has no such parameter: its lightmap factor is the
-/// constant (1, 1, 1, 0) sub_82274678 stores at 0x83564BA0 (0x822747D8 `vperm` of 1.0 x 3 and
-/// 0x8206C95C = 0, 0x82274804), which is what the slot's reader feeds the lightmap register from.
+/// constant (1, 1, 1, 0) sub_82272C18 stores at 0x835A57D0 (0x82272D78 `vperm` of 1.0 x 3 and
+/// 0x8206C918 = 0, 0x82272DA4), which is what the slot's reader feeds the lightmap register from.
 constexpr uint32_t kLightmapColourSlot = 3u;
 
 /// Fable 2's theme parameters [0, `slots`) as float4s from the scene's packed block; `out` holds
@@ -338,7 +339,7 @@ void RemapTheme(const uint8_t* base, uint32_t scene, float* out, uint32_t slots)
 }
 
 /// Fable 2's theme texture slots (T + 16 x (194 + slot)) and the Fable 3 header each comes from
-/// (T + offset: +4 begin, +8 end of {f32 weight, u32 hash}, as sub_821A8308 copies it); 0 where
+/// (T + offset: +4 begin, +8 end of {f32 weight, u32 hash}, as sub_821A8118 copies it); 0 where
 /// Fable 3 has no such texture.
 constexpr uint16_t kThemeTextureSlots[15] = {
     0u,    // TONE_MAPPING_OVERLAY
@@ -382,7 +383,7 @@ void TextureKey(const uint8_t* base, uint32_t entry, float* o) {
 constexpr uint32_t kMaxStatedGroups = 4096u;
 
 /// The twin of every render object a particle group's message was posted to, to that id
-/// (Fable3/src/hooks/src/classic_particle_hooks.cpp; the id indexes the twin table, sub_8220D870).
+/// (Fable3/src/hooks/src/classic_particle_hooks.cpp; the id indexes the twin table, sub_8220CF10).
 const std::unordered_map<uint32_t, uint32_t>& StatedGroupTwins(const uint8_t* base) {
     static thread_local uint32_t ids[kMaxStatedGroups];
     static thread_local std::unordered_map<uint32_t, uint32_t> twins;
@@ -421,20 +422,20 @@ Stated StatedStream(const std::unordered_map<uint32_t, uint32_t>& twins, uint32_
 
 extern "C" {
 
-/// CONTRACT: 148 floats, Fable 2's layout. [0..3] ambient colour *0x83564BD0+208 and [4..7] its
-/// direction +304 (sub_82259C38 binds +208 x 0x83564BC0, `lvx128 v13,r3,r10` r10 = 208);
-/// [8..11] the lightmap factor 0x83564BA0; [12..15] normal-map darkening 0x83564BB0; [16..35]
-/// the atmosphere block 0x83561560, 5 float4 (sub_821B2F40 `sub_8220F3D8(dev, 64, 0x83561560,
+/// CONTRACT: 148 floats, Fable 2's layout. [0..3] ambient colour *0x835A5800+208 and [4..7] its
+/// direction +304 (sub_82259310 binds +208 x 0x835A57F0, `lvx128 v13,r3,r10` r10 = 208);
+/// [8..11] the lightmap factor 0x835A57D0; [12..15] normal-map darkening 0x835A57E0; [16..35]
+/// the atmosphere block 0x835A2200, 5 float4 (sub_821B2DC0 `sub_8220E778(dev, 64, 0x835A2200,
 /// 5)`); [36..131] Fable 2's theme slots 0..23 (kThemeSlots); [132..135] the sun twin's colour
 /// +208, [136..139] its direction +304, [140] its shadow byte +340, [141] its intensity +444
-/// (the light packer scales +208 by it: 0x82224000 `li r6,0x1BC`, 0x82224048 `vmulfp128`);
+/// (the light packer scales +208 by it: 0x82222EF0 `li r6,0x1BC`, 0x82222F38 `vmulfp128`);
 /// [142] 1 (not found); [143] the scene's global mist strength scene+0x2D4 (the mist binder
-/// sub_82C626E8 0x82C627BC); [144..146] the wind direction scene+972..980, [147] its speed
-/// scene+984 (scene ctor sub_82C57BA0).
+/// sub_82C96D98 0x82C96E6C); [144..146] the wind direction scene+972..980, [147] its speed
+/// scene+984 (scene ctor sub_82C8C318).
 /// Given room for 155, Fable 3's tail the lighting registers need and Fable 2 has no slot for:
-/// [148..151] the local ambient colour 0x83564BC0, [152] the AO contrast 0x8329D5E4, [153] the
-/// lightmap flicker factor 0x835568B0, [154] the sun shadow light's range scale, *0x835568C0+336,
-/// 1 without one (sub_822664B0 0x822664C4..0x822664C8). Returns 148 or 155, or 0 before the
+/// [148..151] the local ambient colour 0x835A57F0, [152] the AO contrast 0x832DD734, [153] the
+/// lightmap flicker factor 0x835973B0, [154] the sun shadow light's range scale, *0x835973C0+336,
+/// 1 without one (sub_82264DD0 0x82264DE4..0x82264DE8). Returns 148 or 155, or 0 before the
 /// ambient light is up.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicFrame(float* out, uint32_t capacity) {
     constexpr uint32_t kFloats = 148u;
@@ -486,7 +487,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicFrame(float* out, uint32_t cap
 
 /// CONTRACT: 15 slots x 17 words, Fable 2's layout: [0] the element count, then up to 8 (weight
 /// bits, hash) pairs in the vector's order. Each slot reads the Fable 3 header kThemeTextureSlots
-/// names (theme block scene+16, header +4 begin / +8 end, sub_821A8308); a slot Fable 3 lacks
+/// names (theme block scene+16, header +4 begin / +8 end, sub_821A8118); a slot Fable 3 lacks
 /// has count 0. Returns 255, or 0 when the scene is not up.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicThemeTextures(uint32_t* out, uint32_t capacity) {
     constexpr uint32_t kSlots = 15u;
@@ -525,9 +526,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicThemeTextures(uint32_t* out, u
 /// CONTRACT: 789 floats, Fable 2's layout: [0..775] Fable 2's 194 theme parameters x 4 lanes,
 /// remapped by name from Fable 3's packed block at scene+16 (kThemeSlots; a float in lane 0);
 /// [776..779] the sky object's sun colour S+144, [780..783] its sun direction S+160, [784..787]
-/// its moon direction S+208, as sub_82251098 writes them each frame (0x8225151C `stvx128 v0`
-/// at 0x80 and 0x90: lerp((1, 1, 1, 0), T+192 sunset colour, t), 0x82251514 S+96 to 0xA0,
-/// 0x82251518 S+112 to 0xD0), S the first type-24 object (kSky); [788] the moon phase, zero:
+/// its moon direction S+208, as sub_82250408 writes them each frame (0x8225088C `stvx128 v0`
+/// at 0x80 and 0x90: lerp((1, 1, 1, 0), T+192 sunset colour, t), 0x82250884 S+96 to 0xA0,
+/// 0x82250888 S+112 to 0xD0), S the first type-24 object (kSky); [788] the moon phase, zero:
 /// its Fable 3 field is not established. Returns 789, or 0 when the scene is not up.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicTheme(float* out, uint32_t capacity) {
     constexpr uint32_t kFloats = kThemeParams * 4u + 13u;
@@ -556,10 +557,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicTheme(float* out, uint32_t cap
 }
 
 /// CONTRACT: the light manager's live entries (scene+0x4F4; entries *(LM+8), 32 bytes, light at
-/// +16; mask LM+24, sub_822327E8), 20 floats each as Fable 2's: [0..3] the entry's sphere
-/// (sub_82CCF180: (+288, +448 x +320), radius 1e10 for a directional), [4..16] LightRow, [17] the
+/// +16; mask LM+24, sub_82231588), 20 floats each as Fable 2's: [0..3] the entry's sphere
+/// (sub_82D017A0: (+288, +448 x +320), radius 1e10 for a directional), [4..16] LightRow, [17] the
 /// entry index, [18] the light's address (bits), [19] the colour's w +220, which every group
-/// packer copies with the colour (point 0x82224018 `lvx128 v9,r3,r11` r11 = 0xD0; Fable 2's
+/// packer copies with the colour (point 0x82222F08 `lvx128 v9,r3,r11` r11 = 0xD0; Fable 2's
 /// row has 0 there). Returns the lights written.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicLights(float* out, uint32_t capacity) {
     constexpr uint32_t kStride = 20u;
@@ -595,7 +596,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicLights(float* out, uint32_t ca
 
 /// CONTRACT: every light of the scene's category list (scene+1000, category nodes +20..+24 with
 /// flag 1, objects +8..+12), less type 11, +342 and +343 — the set the manager's gather
-/// sub_821F3980 tests (0x821F3A68 +343, 0x821F3A88 type 11 / +342). 36 floats each as Fable 2's:
+/// sub_821F2EB0 tests (0x821F2F98 +343, 0x821F2FB8 type 11 / +342). 36 floats each as Fable 2's:
 /// [0..3] sphere +112, [4..16] LightRow, [17] 0, [18] the address (bits), [19] 0, [20..22]
 /// position +288, [23] fade distance +328, [24] fade range +332, [25] flicker brightness +224,
 /// [26] the flicker walk +432, [27..29] AABB min +80, [30..32] max +96. Returns the lights written.
@@ -691,13 +692,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSpotFrustums(float* out, uint32_t cap
 
 /// CONTRACT: the manager's points and spots, 16 floats each as Fable 2's: [0] entry index,
 /// [1..3] position +288, [4..6] direction +304, [7] has a map, [8] fovY 2 x +324, [9] near +272,
-/// [10] far +448 x +320 (the spot camera sub_82C87118: `lfs 0x110`, `lfs 0x1C0` x `lfs 0x140`),
+/// [10] far +448 x +320 (the spot camera sub_82CBC118: `lfs 0x110`, `lfs 0x1C0` x `lfs 0x140`),
 /// [11] depth bias +264, [12] slope-scale bias +268. A spot has a map when its shadow object
-/// S = +176 is up (S+8), +340 is set and +342 is not (sub_82CE09E0; S+0x14 is the light,
-/// sub_82CBC790 0x82CBC7A0). Fable 3's group packers read three stated terms Fable 2's row has
+/// S = +176 is up (S+8), +340 is set and +342 is not (sub_82D13640; S+0x14 is the light,
+/// sub_82CEF650 0x82CEF660). Fable 3's group packers read three stated terms Fable 2's row has
 /// no slot for, so they go in its unused tail: [13] cone cos +420, [14] 1 / (1 - cos) +424
-/// (spot 0x82C8701C / 0x82C87024), [15] 1 / range +428 (point 0x82224098, spot 0x82C86F44),
-/// all three copied from the light's description (sub_8229B940 0x8229BA60..0x8229BA80 into
+/// (spot 0x82CBC01C / 0x82CBC024), [15] 1 / range +428 (point 0x82222F88, spot 0x82CBBF44),
+/// all three copied from the light's description (sub_82299C30 0x82299D50..0x82299D70 into
 /// L+0xC0). Returns the lights written.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicLocalLights(float* out, uint32_t capacity) {
     constexpr uint32_t kStride = 16u;
@@ -744,9 +745,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicLocalLights(float* out, uint32
     return written;
 }
 
-/// CONTRACT: the type-36 objects of the scene's typed list (ctor 0x82C4AE10 `li r4,0x24`), 8 floats
+/// CONTRACT: the type-36 objects of the scene's typed list (ctor disc 0x82C4AE10 `li r4,0x24`), 8 floats
 /// each as Fable 2's: [0..2] previous centre +176, [3] previous radius +224, [4..6] newest centre
-/// +192, [7] newest radius +228 (the shift sub_82C8D2A0 moves +192 -> +176 and +228 -> +224).
+/// +192, [7] newest radius +228 (the shift sub_82CC1FA8 moves +192 -> +176 and +228 -> +224).
 /// Returns the spheres written.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicShadowSpheres(float* out, uint32_t capacity) {
     constexpr uint32_t kStride = 8u;
@@ -777,8 +778,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicShadowSpheres(float* out, uint
     return written;
 }
 
-/// CONTRACT: the type-27 objects of the scene's typed list (factory sub_82C3CF58), 36 floats each
-/// at Fable 2's offsets, which the binder sub_82C626E8 reads unchanged (+184, +192, +316, +320,
+/// CONTRACT: the type-27 objects of the scene's typed list (factory sub_82C71800), 36 floats each
+/// at Fable 2's offsets, which the binder sub_82C96D98 reads unchanged (+184, +192, +316, +320,
 /// +344, +352, +368): [0..2] bounds min +80, [3..5] max +96, [6..9] colour +192, [10] density
 /// +184, [11] noise offset +216, [12] time speed +220, [13..14] tiling +264, [15] +316, [16..19]
 /// +320, [20] global-strength weight +344, [21..24] +352, [25..28] +368, [29..31] extents +224,
@@ -823,16 +824,16 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicMists(float* out, uint32_t cap
     return written;
 }
 
-/// CONTRACT: the quad particle groups (R+240 == 1) of types 12 and 30 (ctors sub_82248718 /
-/// sub_82C4A010 `li r4,0xC` / `li r4,0x1E`) in Fable 2's layout: per group a 340-float header,
+/// CONTRACT: the quad particle groups (R+240 == 1) of types 12 and 30 (ctors sub_822478E8 /
+/// sub_82C7EA70 `li r4,0xC` / `li r4,0x1E`) in Fable 2's layout: per group a 340-float header,
 /// then count x 12 floats. R = the render object, D = *(*(R+180)+4), M = *(D+48), all at Fable
-/// 2's offsets, except: [12..15] the fades R+408..420 (sub_82C54180 `lfs 0x198..0x1A4`), [16] 0
+/// 2's offsets, except: [12..15] the fades R+408..420 (sub_82C888F8 `lfs 0x198..0x1A4`), [16] 0
 /// (Fable 3's fade constant has no alpha lane), [17] the scale R+424 (the keyframe scale's
-/// multiplier, sub_82C54220), [18..20] 0. The render copy D holds no records (sub_82C49A78): the
-/// records are the sim's, n of 48 bytes, as the quad writer sub_83178480 took them to build the
+/// multiplier, sub_82C88998), [18..20] 0. The render copy D holds no records (sub_82C7E4E0): the
+/// records are the sim's, n of 48 bytes, as the quad writer sub_831AA340 took them to build the
 /// frame's vertices, stated by classic_particle_hooks.cpp for the object R's id was posted to;
 /// [2] count is that n. A group whose writer wrote nothing is left out, as the guest's draw skips
-/// it (R+432 == -1, sub_82C53F10). [7] owner, [51..53] the lit ambient and [54] probes are 0.
+/// it (R+432 == -1, sub_82C88688). [7] owner, [51..53] the lit ambient and [54] probes are 0.
 /// out[0] = groups, out[1] = floats used; returns the floats used, 0 when none.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicParticles(float* out, uint32_t capacity) {
     constexpr uint32_t kHeader = 340u;
@@ -923,9 +924,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicParticles(float* out, uint32_t
 /// CONTRACT: the trails (R+240 == 2) and double trails (3) of types 12 and 30 in Fable 2's
 /// layout: a 288-float header, then (c + 3) x 8 floats. The materials are Fable 2's: TM =
 /// *(D+0x40), DM = *(D+0x2C), blend TM+0x24, texture block TM+0x50 with its count at +100 (the
-/// draw sub_82C55988 reads TM+36, TM+48, TM+80, TM+180). [12..15] the fades R+408..420, [16] 0.
-/// The render copy D holds no ring (sub_82C49B70 / C78): n, c and the c + 3 points are the ones
-/// the guest's own trail writers (sub_8317A758 / sub_831797E0) laid into the frame's vertex
+/// draw sub_82C8A100 reads TM+36, TM+48, TM+80, TM+180). [12..15] the fades R+408..420, [16] 0.
+/// The render copy D holds no ring (sub_82C7E5D8 / C78): n, c and the c + 3 points are the ones
+/// the guest's own trail writers (sub_831AC618 / sub_831AB6A0) laid into the frame's vertex
 /// buffer, the sim ring unrolled with its end points, under Fable 2's guard (n >= 2, n <= c <=
 /// 4096), stated by classic_particle_hooks.cpp for the object R's id was posted to; a trail whose
 /// writer wrote nothing is left out, as the guest's draw skips it. [6] closed is 0 (the writer
@@ -1030,10 +1031,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicTrails(float* out, uint32_t ca
     return groups == 0u ? 0u : used;
 }
 
-/// CONTRACT: Fable 2's layout. [0] 1 when the light-zone stack (0x83564BD8 begin / 0x83564BDC
-/// end, as the snow draw sub_82C91F28 reads it at 0x82C92B60) has a top zone Z, [1..3] its colour
-/// Z+0xD0; [4] the render clock dbl_83556818; [5] n lights; [8..71] the weather's (type 25, ctor
-/// sub_82C8E300 `li r7,0x19`) 8 push slots at W+0xB0, start and end vec4 each (sub_82C8F388:
+/// CONTRACT: Fable 2's layout. [0] 1 when the light-zone stack (0x835A5808 begin / 0x835A580C
+/// end, as the snow draw sub_82CC5D50 reads it at 0x82CC698C) has a top zone Z, [1..3] its colour
+/// Z+0xD0; [4] the render clock dbl_83597318; [5] n lights; [8..71] the weather's (type 25, ctor
+/// sub_82CC2120 `li r7,0x19`) 8 push slots at W+0xB0, start and end vec4 each (sub_82CC31B0:
 /// W+176+32i / W+192+32i); [72..79] their 1 / d at W+0x1B0; [80 + 8i ..] the manager's entries
 /// whose light has +192 == 1: position +288, range +320, colour +208, 0. The rain keeps the two
 /// nearest; the cut is the caller's. Returns the floats written, 0 when the scene is not up.

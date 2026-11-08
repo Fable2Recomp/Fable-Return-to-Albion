@@ -27,7 +27,7 @@ bool AnswerBoxAction(PPCContext& ctx, uint8_t* base, const char* action);
 /// Runs an `options:` action through the Options screen's handler. False when none shows.
 bool AnswerOptionsAction(PPCContext& ctx, uint8_t* base, const char* action);
 
-/// The pause screen's message box came up on `manager` with `text` (sub_825CEEB0's arguments).
+/// The pause screen's message box came up on `manager` with `text` (sub_825F9F38's arguments).
 void StateModalMessageBox(uint32_t manager, const std::string& text, bool download);
 
 /// Whether `box` is a queue's showing box, as the queue tick stated it.

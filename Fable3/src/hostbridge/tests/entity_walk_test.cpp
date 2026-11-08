@@ -18,6 +18,15 @@
 
 #include "entity_walk.h"
 
+// The walk names TU3's addresses (fable3_guest_build.h); this synthetic guest is TU3, so every
+// address is its own, as refiii_vfs answers before a disc payload says otherwise.
+extern "C" {
+int32_t refiii_guest_build(void) { return 0; }
+void refiii_guest_build_set(int32_t) {}
+uint32_t refiii_guest_address(uint32_t tu3_address) { return tu3_address; }
+uint32_t refiii_guest_address_to_tu3(uint32_t live_address) { return live_address; }
+}
+
 namespace {
 
 namespace walk = refii::fable3::walk;
@@ -448,7 +457,7 @@ uint32_t WalkEntities(uint32_t em, uint32_t* out, uint32_t max_entities, NoteUnk
         appearance[1] = GuestWordAt(renderable + 0x80u);
         appearance[2] = GuestWordAt(renderable + 0x78u);
         ReadLanes(renderable + 0x50u, appearance + 3, 4u);
-        appearance[7] = GuestByteAt(renderable + 0xE5u) != 0u && GuestWordAt(renderable + 0x114u) == 0u
+        appearance[7] = GuestByteAt(renderable + 0xE5u) != 0u && GuestWordAt(renderable + 0x120u) == 0u
                             ? kAppearanceDrawable
                             : 0u;
         ++written;
@@ -540,13 +549,13 @@ struct World {
     }
 
     uint32_t Body() {
-        const uint32_t vtables[] = {0x82005C50u, 0x82006070u, 0x82005DA0u, 0x82000000u + Below(0x100000u)};
+        const uint32_t vtables[] = {0x82005BD0u, 0x82005FF0u, 0x82005D20u, 0x82000000u + Below(0x100000u)};
         const uint32_t vtable = vtables[Below(4u)];
         const uint32_t body = Alloc(0x180u);
         memory.Put32(body, vtable);
         PutVector(body + 0x100u);
         PutQuaternion(body + 0x110u);
-        if (vtable == 0x82006070u || vtable == 0x82005DA0u) {
+        if (vtable == 0x82005FF0u || vtable == 0x82005D20u) {
             const uint32_t inner = Alloc(0x180u);
             PutVector(inner + 0x120u);
             PutQuaternion(inner + 0x160u);
@@ -559,8 +568,8 @@ struct World {
     }
 
     uint32_t PlacementObject() {
-        const uint32_t vtables[] = {0x82007D20u, 0x82007A98u, 0x82007B70u, 0x820999D8u, 0x82007DF8u, 0x820B1808u,
-                                    0x820079C0u, 0x82007FA8u, 0x82007C48u, 0x82007ED0u, 0x820AD878u, 0x8200ABCDu};
+        const uint32_t vtables[] = {0x82007C50u, 0x820079C8u, 0x82007AA0u, 0x8209D448u, 0x82007D28u, 0x820B8030u,
+                                    0x820078F0u, 0x82007ED8u, 0x82007B78u, 0x82007E00u, 0x820B0C68u, 0x8200ABCDu};
         const uint32_t kind = Below(12u);
         const uint32_t vtable = vtables[kind];
         const uint32_t placement = Alloc(0xC0u);
@@ -572,7 +581,7 @@ struct World {
         memory.Put8(placement + 0xB4u, Chance(30) ? 1u : 0u);
 
         // The delegate / hybrid object at +0x20.
-        const uint32_t object_vtables[] = {0x82006FF8u, 0x820070F8u, 0x82007270u, 0x82001234u};
+        const uint32_t object_vtables[] = {0x82006F18u, 0x82007018u, 0x82007190u, 0x820011E4u};
         const uint32_t object = Alloc(0x80u);
         memory.Put32(object, object_vtables[Below(4u)]);
         PutVector(object + 0x40u);
@@ -586,12 +595,12 @@ struct World {
     }
 
     uint32_t Renderable() {
-        const uint32_t renderable = Alloc(0x140u);
-        for (uint32_t at = 0x50u; at < 0x118u; at += 4u) memory.PutF(renderable + at, Lane());
+        const uint32_t renderable = Alloc(0x150u);
+        for (uint32_t at = 0x50u; at < 0x124u; at += 4u) memory.PutF(renderable + at, Lane());
         for (uint32_t at = 0xD0u; at < 0xDCu; at += 4u) memory.PutF(renderable + at, Unit() * 1.5f);
         memory.Put8(renderable + 0xE5u, Chance(70) ? 1u : 0u);
         memory.Put8(renderable + 0xE9u, Chance(70) ? 1u : 0u);
-        memory.Put32(renderable + 0x114u, Chance(80) ? 0u : rng());
+        memory.Put32(renderable + 0x120u, Chance(80) ? 0u : rng());
         return renderable;
     }
 

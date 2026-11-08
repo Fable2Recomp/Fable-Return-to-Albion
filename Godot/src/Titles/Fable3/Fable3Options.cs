@@ -31,7 +31,8 @@ using Refii.Ui;
 /// sub_82347CE8 refuses, 0x825cb7f8/0x825cb830), row 3 New Game (the confirm query, 0x825cb8ac/c0),
 /// row 4 Kick/Leave (multiplayer, 0x825cba94 — page 5's section carries it, 0x825c9a98); page 2
 /// (`+88`, 0x825cb5b4) row 1 Save and Continue (ghosted by the Show when the save is not allowed,
-/// 0x825c99f4..0x825c9a3c), row 2 Load Management (ghosted when +112, 0x825c9a58). Labels are the
+/// 0x825c99f4..0x825c9a3c), row 2 Load Management (ghosted when the guest does not offer it: TU3's
+/// +192, the disc's +112 != 0 — stated as canLoad, options_hooks.cpp). Labels are the
 /// rows' tags in options.bgf; the texts the guest writes into the section's `SelectionText` /
 /// `SelectionTitle` / `SelectionDesription` elements win when stated. A page the handler does not
 /// list falls back to every text stated under its section.
@@ -45,7 +46,7 @@ public static class Fable3OptionsModel
 	public readonly record struct Snapshot(
 		uint Box, int Page, int SelectedRow, bool Controller, bool Subtitles, bool Tutorial, int Breadcrumb,
 		int Speaker, int LanguageIndex, int LanguageCount, uint Flag108, uint Flag112, bool FromPause, bool Lite,
-		float Gamma, float Music, float Sfx, float Voice, bool CanSave = true);
+		float Gamma, float Music, float Sfx, float Voice, bool CanSave = true, bool CanLoad = true);
 
 	public const int Words = 15;
 	public const int Values = 4;
@@ -176,7 +177,7 @@ public static class Fable3OptionsModel
 				rows.Add(Make("Save&Continue", "GUI_SCREEN_PAUSE_SAVE_AND_CONTINUE", "GUI_SCREEN_PAUSE_SAVE_AND_CONTINUE_DESC",
 					"SelectionText.Save&Continue", "SelectionDesription.SaveAndContDescription", !s.CanSave));
 				rows.Add(Make("LoadMangement", "GUI_SCREEN_LOAD_MANGEMENT", "GUI_SCREEN_LOAD_MANGEMENT_DESC",
-					"SelectionText.LoadMangement", "SelectionDesription.LoadDescription", s.Flag112 != 0u));
+					"SelectionText.LoadMangement", "SelectionDesription.LoadDescription", !s.CanLoad));
 				break;
 		}
 
@@ -224,15 +225,18 @@ public static class Fable3OptionsModel
 /// <summary>
 /// The Options screen's state as its own handler and Show left it (`@Options.State(box, page,
 /// row, invert, subtitles, tutorial, breadcrumb, speaker, language, languages, flag108, flag112,
-/// fromPause, frontEnd, canSave, query, changed)`, options_hooks.cpp), held while the box manager
+/// fromPause, frontEnd, canSave, query, changed, canLoad)`, options_hooks.cpp), held while the box manager
 /// shows the screen. Pure, so the tests can run it.
 /// </summary>
 public static class Fable3OptionsState
 {
-	/// <summary>The statement's words: the box, then its 16 fields.</summary>
-	public const int Words = 17;
+	/// <summary>The statement's words: the box, then its 17 fields.</summary>
+	public const int Words = 18;
 
 	public const int QueryWord = 15;
+
+	/// <summary>Whether the guest offers Load Management (TU3 +192, the disc +112 == 0).</summary>
+	public const int CanLoadWord = 17;
 
 	private static uint[]? _words;
 
@@ -292,7 +296,10 @@ public static class Fable3OptionsState
 			head[7] = (uint)speaker;
 		}
 
-		return Fable3OptionsModel.Parse(head, new[] { gamma, music, sfx, voice });
+		return Fable3OptionsModel.Parse(head, new[] { gamma, music, sfx, voice }) with
+		{
+			CanLoad = words.Length <= CanLoadWord || words[CanLoadWord] != 0u,
+		};
 	}
 }
 

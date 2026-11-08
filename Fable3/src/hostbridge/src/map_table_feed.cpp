@@ -1,8 +1,8 @@
 // refii - Fable 3's map tables, as its hooks state them (Fable3/src/hooks/src/map_table_hooks.cpp,
 // the table in src/runtime/src/core/stated_scene_objects.cpp): the holder whose scene the guest
-// presents in place of the world (sub_8292AEA8), the camera it presents it through (the holder's
-// camera message, re-sent through sub_8292AFF8 each frame), and the mesh render objects added to
-// it (sub_8292AF98) as the map entities' commands (sub_821F5110) move them.
+// presents in place of the world (sub_82984588), the camera it presents it through (the holder's
+// camera message, re-sent through sub_829846D8 each frame), and the mesh render objects added to
+// it (sub_82984678) as the map entities' commands (sub_821F4630) move them.
 //
 // Nothing here reads guest memory: every word is one a hook took from a call's arguments.
 

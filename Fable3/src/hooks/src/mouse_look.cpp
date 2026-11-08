@@ -1,29 +1,30 @@
 // refii - Fable 3: the mouse turns the local player's camera, whole, in the update it is handed.
 //
 // Fable 2's hook (Fable2/src/vfs/src/hooks/mouse_look.cpp) is the reference; this file is the same
-// contract against Fable 3's binary and camera scripts. Every address is the Fable 3 IDB.
+// contract against Fable 3's binary and camera scripts. Every address is the Fable 3 TU3 IDB
+// ("disc" marks one TU3 lacks).
 //
 // WHERE THE TURN GOES.
-//   - The camera manager's update `sub_82255FB8(manager)` (rex_CameraManager_Update; its one
-//     caller sub_8226A8C0 runs it per tick under the game lock when the game is not paused) runs
+//   - The camera manager's update `sub_822551E8(manager)` (rex_CameraManager_Update; its one
+//     caller sub_82268F38 runs it per tick under the game lock when the game is not paused) runs
 //     the active mode's Lua FrameUpdate once: the override at manager+60, else the primary at
-//     manager+44 (`lwz r11,0x3C(r31); cmpwi; lwz r11,0x2C(r31)` at 0x822562EC..0x82256304), then
-//     `sub_82259328(mode+44, mode+24)` at 0x82256310 (the FrameUpdate holder, the camera table).
-//     An override whose +105 byte is set is dropped after its update (0x82256314..0x82256330).
-//   - A mode is the C++ wrapper `sub_82769188` builds around a Lua camera object (vtable
-//     0x82001FEC): +24 the camera table's ref holder, +32/+44/+56/+68/+80/+92 the Activate /
+//     manager+44 (`lwz r11,0x3C(r31); cmpwi; lwz r11,0x2C(r31)` at 0x8225551C..0x82255534), then
+//     `sub_82258978(mode+44, mode+24)` at 0x82255540 (the FrameUpdate holder, the camera table).
+//     An override whose +105 byte is set is dropped after its update (0x82255544..0x82255560).
+//   - A mode is the C++ wrapper `sub_827A00A8` builds around a Lua camera object (vtable
+//     0x82001F88): +24 the camera table's ref holder, +32/+44/+56/+68/+80/+92 the Activate /
 //     FrameUpdate / Deactivate / CleanUp / ProcessGameAction / OnLevelLoad function holders
-//     (0x82769458..0x827695C0). A holder's `*(+0)` is a ref object: +4 the lua_State
-//     (0x8276B2E4), +8 the registry ref (0x8276B30C; the camera table's at 0x82242B68).
-//   - The wrapper is an input listener: its vtable slot 1, `sub_82769E88(mode, msg)`
-//     (rex_CameraMode_ProcessGameAction), is what the dispatcher `sub_821CE2A8` calls with each
-//     32-byte GameAction (`l->vt[1](l, action)` at 0x821CE5D0): msg+0 the action id, +4 x, +8 y.
-//     It refuses while the player's input bit is set (`(*flags >> 3) & 1` at 0x82769EE0), while
-//     the debug camera holds (`byte_835565BF`, 0x82769FF4) and for action 52; negates y under
-//     CameraLookInverted (component 37's +40, 0x82769FCC); and calls
-//     `sub_8276B2B8(mode+80, mode+24, &action, &x, &y)`: pushes registry[ProcessGameAction],
+//     (0x827A0378..0x827A04E0). A holder's `*(+0)` is a ref object: +4 the lua_State
+//     (0x827A222C), +8 the registry ref (0x827A2254; the camera table's at 0x82241C30).
+//   - The wrapper is an input listener: its vtable slot 1, `sub_827A0DA8(mode, msg)`
+//     (rex_CameraMode_ProcessGameAction), is what the dispatcher `sub_821CE3B0` calls with each
+//     32-byte GameAction (`l->vt[1](l, action)` at 0x821CE6D8): msg+0 the action id, +4 x, +8 y.
+//     It refuses while the player's input bit is set (`(*flags >> 3) & 1` at 0x827A0E00), while
+//     the debug camera holds (`byte_835970C2`, 0x827A0F14) and for action 52; negates y under
+//     CameraLookInverted (component 37's +40, 0x827A0EEC); and calls
+//     `sub_827A2200(mode+80, mode+24, &action, &x, &y)`: pushes registry[ProcessGameAction],
 //     registry[camera table], the three numbers (tag 3, float32) and pcalls with 4 arguments
-//     (0x8276B3C4). Where the ids come from: the control scheme in globals.gdb binds
+//     (0x827A230C). Where the ids come from: the control scheme in globals.gdb binds
 //     GameActionRotateCameraPad (GameAction 2) and GameActionZoomCameraPad (GameAction 4) to
 //     XboxRightJoystick (records #2070b9bb / #f20eddba), x and y the stick's.
 //
@@ -35,7 +36,7 @@
 //     Player.GetCameraSensitivity and Timing.GetTickRate — so ProcessGameAction(ROTATION) ASSIGNS
 //     `RotateRight = -x * (RotateSpeed / GetTickRate()) * (0.5 + sensitivity)` and
 //     ApplyRotateVector eases it through SmoothRotateRight (GetRollingAverage, RotateDamp), as
-//     the Fable 2 header lays out. Timing.GetTickRate is `(float)dbl_8329EA48` (sub_82241980).
+//     the Fable 2 header lays out. Timing.GetTickRate is `(float)dbl_832DF4D0` (sub_82240908).
 //   FirstPersonCamera (chunk 04059234): RotateSmoothAmount, RotateX/RotateY, SmoothedRotateX/Y.
 //   RangedCombatCamera (chunk 6e8f631c): TendnessNormal, AngleLimit; an empty ProcessGameAction.
 //
@@ -49,28 +50,28 @@
 // horizontal distance to RollingFocalPos, IN PLACE for first person, NONE otherwise.
 //
 // THE LUA VM IS HAVOKSCRIPT ON 5.1 SHAPES (Fable3/src/hooks/src/gui_natives.cpp): L->top at +28,
-// L->base at +32, stack_last at +36 (the room check `top + 16 > L[9]` at 0x822A7CB8); a TValue is
+// L->base at +32, stack_last at +36 (the room check `top + 16 > L[9]` at 0x822A6278); a TValue is
 // 8 bytes, value then tag: 0 nil, 1 boolean, 3 number (a float32), 5 table, 7 userdata (payload
-// at +16). The stack is read and written directly where the guest itself does (sub_8276B2B8
+// at +16). The stack is read and written directly where the guest itself does (sub_827A2200
 // writes its three numbers inline); fields go through the guest's own lua_getfield
-// `sub_822A7B58(L, idx, name)` and lua_setfield `sub_822A7C90(L, idx, name)` (the ones the
-// native registrars use, 0x822A7C90 at 0x822E6244), and the camera table is pushed by the
-// guest's own `sub_82242B40(holder, L)` (rex_LuaRef_Push).
+// `sub_822A6118(L, idx, name)` and lua_setfield `sub_822A6250(L, idx, name)` (the ones the
+// native registrars use, 0x822A6250 at 0x822E62AC), and the camera table is pushed by the
+// guest's own `sub_82241C08(holder, L)` (rex_LuaRef_Push).
 //
-// THE MODE'S HERO, as the receiver finds it: `sub_82769E28(mode)` looks the key at mode+4 up in
+// THE MODE'S HERO, as the receiver finds it: `sub_827A0D48(mode)` looks the key at mode+4 up in
 // the game state's player table `*(state+0x40)` (`lwz r4,4(r3)` / `lwz r5,0x40(r10)` at
-// 0x82769E3C / 0x82769E4C, state = `*(*0x83556540+0xC)`) through `sub_821FD790` — 12-byte
-// {key, player} entries from +8 to +0xC (`li r10,0xC` / `lwz r3,4(r11)` at 0x821FD794 /
-// 0x821FD808) — and takes key 1 when that key has none (0x82769E60..0x82769E70); the entity is
-// `*(*(player+0x10))` (`sub_8243C9E8`: `addi r3,r3,0xC; lwz r11,4(r3); lwz r10,0(r11)`). Its
-// component 37 (the receiver's search, `cmpwi r10,0x25` at 0x82769F6C) carries CameraLookInverted
-// at +0x28 (`lbz r11,0x28(r31)` at 0x82769FCC).
+// 0x827A0D5C / 0x827A0D6C, state = `*(*0x83597034+0xC)`) through `sub_821FF0A8` — 12-byte
+// {key, player} entries from +8 to +0xC (`li r10,0xC` / `lwz r3,4(r11)` at 0x821FF0AC /
+// 0x821FF120) — and takes key 1 when that key has none (0x827A0D80..0x827A0D90); the entity is
+// `*(*(player+0x10))` (`sub_82A1D6E8`: `addi r3,r3,0xC; lwz r11,4(r3); lwz r10,0(r11)`). Its
+// component 37 (the receiver's search, `cmpwi r10,0x25` at 0x827A0E8C) carries CameraLookInverted
+// at +0x28 (`lbz r11,0x28(r31)` at 0x827A0EEC).
 //
 // A TARGET LOCK TAKES THE MOUSE AS FLICKS, as in Fable 2. The lock is the player mode
-// CPlayerModeTargetLock (vtable 0x820C59A0, slot 8 `li r3,4` at 0x82C05EC8), asked by the native
-// Player.HasPlayerMode `sub_821B9BC0(component37, mode)` (`lwz r3,0x14(r3)` then `sub_821F87E8`,
-// whose `sub_821E2EC0` matches each held mode's slot 8 against `mode`) — the targeting component
-// asks it the same way (`lwz r3,0x14(r11); li r4,4; bl sub_821F87E8` at 0x821A1F48..0x821A1F58).
+// CPlayerModeTargetLock (vtable disc 0x820C59A0, slot 8 `li r3,4` at 0x82E0CDE8), asked by the native
+// Player.HasPlayerMode `sub_821B9D80(component37, mode)` (`lwz r3,0x14(r3)` then `sub_821F8028`,
+// whose `sub_821E2AD0` matches each held mode's slot 8 against `mode`) — the targeting component
+// asks it the same way (`lwz r3,0x14(r11); li r4,4; bl sub_821F8028` at 0x821A1BD4..disc 0x821A1F58).
 // SACCamera's lock fields (IsTargetLocking, ClearToRotate, LastRotateFrame,
 // CheckForBetterTargetInDirection, in the chunk's constant pool) are Fable 2's: a look x past 0.8
 // switches target. So under a lock the mouse's turn is collected and only a deliberate flick
@@ -79,22 +80,22 @@
 // has no lock that switches by it here (no mod statement in Fable 3) and is dropped.
 //
 // THE RANGED AIM'S CURSOR TAKES THE MOUSE, as the PC build's does. Zoom aim
-// (CPlayerModeZoomAimRanged, type 27) runs the aim at mode+0x20 through `sub_82850218(aim, stick)`
-// (its only caller, `addi r29,r27,0x20; ld r4,0x160(r27)` at 0x8284DFCC / 0x8284DFD8), whose
-// cursor move `sub_82852218` (rex_lhRangedAim_MoveCursor) is called only while the cursor is free
-// (`lbz r11,0xCD(r31)` at 0x828506B4) with the smoothed stick (`ld r4,0x24(r31)` at 0x828506C4):
-// the 64-bit r4 is stored and read back as x then y (`std r4,arg_18(r1)` at 0x82852230,
-// `lfs f30,arg_18(r1)` / `lfs f29,arg_18+4(r1)` at 0x828522FC / 0x8285230C), so x is the high
+// (CPlayerModeZoomAimRanged, type 27) runs the aim at mode+0x20 through `sub_828AC9D8(aim, stick)`
+// (its only caller, `addi r29,r27,0x20; ld r4,0x160(r27)` at disc 0x8284DFCC / disc 0x8284DFD8), whose
+// cursor move `sub_828AE960` (rex_lhRangedAim_MoveCursor) is called only while the cursor is free
+// (`lbz r11,0xCD(r31)` at 0x828ACE74) with the smoothed stick (`ld r4,0x24(r31)` at 0x828ACE84):
+// the 64-bit r4 is stored and read back as x then y (`std r4,arg_18(r1)` at 0x828AE978,
+// `lfs f30,arg_18(r1)` / `lfs f29,arg_18+4(r1)` at disc 0x828522FC / 0x828AEA54), so x is the high
 // word, y the low. Free of a target it moves the cursor, screen fractions at aim+0x2C / +0x30:
 //     828526a8  fmadds f9, f13, f27, f12 / stfs f9, 0x2C(r31)   ; x += sx * speed * 2.0/tick
 //     828526b0  fmadds f8, f11, f26, f10 / stfs f8, 0x30(r31)   ; y += sy * speed * 1.6/tick
-// (speed `lfs f0,0x38(r28)` at 0x82852680, r28 = `sub_821B1398(owner)` at 0x828522EC; f27 / f26
-// = flt_8329EC04 / flt_8329EC08 over dbl_8329EA48, 0x82852324..0x82852348), then clamps it to
-// ±0.8 and searches under it (`sub_82853D28`); snapped to a target the stick picks between targets
-// instead (0x82852420..0x828525C0). The cursor's y is screen-down (`sub_82855340`: `py / height *
-// 2 - 1`), so the aim's stick y arrives negated unless the camera is inverted (`sub_8284D670`:
-// `lfs f0,flt_82070544` = -1.0 times +0x164 unless +0x17E, which is component 37's +0x28,
-// 0x8284D694..0x8284D6A0 / 0x8284DCE8..0x8284DCEC). The PC build moves the same cursor by the
+// (speed `lfs f0,0x38(r28)` at 0x828AEDC8, r28 = `sub_821B1390(owner)` at 0x828AEA34; f27 / f26
+// = flt_832DF684 / flt_832DF688 over dbl_832DF4D0, 0x828AEA6C..0x828AEA90), then clamps it to
+// ±0.8 and searches under it (`sub_828B0440`); snapped to a target the stick picks between targets
+// instead (0x828AEB68..0x828AED08). The cursor's y is screen-down (`sub_828B1A08`: `py / height *
+// 2 - 1`), so the aim's stick y arrives negated unless the camera is inverted (`sub_828A9DD8`:
+// `lfs f0,flt_82070520` = -1.0 times +0x164 unless +0x17E, which is component 37's +0x28,
+// disc 0x8284D694..disc 0x8284D6A0 / disc 0x8284DCE8..disc 0x8284DCEC). The PC build moves the same cursor by the
 // mouse through the same gain (`sub_F36C70`: `*(this+68) += a2[0] * (flt / tick) * stats[56]`).
 // So the mouse's turn joins the stick at the cursor's own gain — a posted degree moves the cursor
 // a degree's radians — its invert as the stick's, and the clamps, the search and the snap apply
@@ -117,6 +118,7 @@
 #include <rex/ppc.h>
 
 #include "core/payload_bridge.h"
+#include "../../vfs/include/fable3_guest_build.h"
 
 REX_EXTERN(__imp__rex_CameraManager_Update);
 REX_EXTERN(__imp__rex_lhRangedAim_MoveCursor);
@@ -133,18 +135,18 @@ namespace {
 constexpr uint32_t kRotateCamera = 2u;
 constexpr uint32_t kZoomCamera = 4u;
 
-/// The game mode, whose `*(+0xC)` is the game state (`lwz r10,0xC(r11)` at 0x82769E48).
-constexpr uint32_t kGame = 0x83556540u;
+/// The game mode, whose `*(+0xC)` is the game state (`lwz r10,0xC(r11)` at 0x827A0D68).
+const refii::guest::Addr kGame{0x83597034u};
 
-/// The game state's player table (0x82769E4C), keyed by a camera mode's +4.
+/// The game state's player table (0x827A0D6C), keyed by a camera mode's +4.
 constexpr uint32_t kStatePlayers = 0x40u;
 constexpr uint32_t kModePlayerKey = 4u;
 
-/// The player's component the receiver reads (0x82769F6C), its CameraLookInverted byte (0x82769FCC).
+/// The player's component the receiver reads (0x827A0E8C), its CameraLookInverted byte (0x827A0EEC).
 constexpr uint32_t kPlayerComponent = 37u;
 constexpr uint32_t kCameraLookInverted = 0x28u;
 
-/// CPlayerModeTargetLock's type (vtable 0x820C59A0 slot 8, `li r3,4` at 0x82C05EC8).
+/// CPlayerModeTargetLock's type (vtable disc 0x820C59A0 slot 8, `li r3,4` at 0x82E0CDE8).
 constexpr uint32_t kTargetLockMode = 4u;
 
 /// A flick that switches a lock's target, as Fable 2's: this much turn in one direction inside
@@ -152,11 +154,11 @@ constexpr uint32_t kTargetLockMode = 4u;
 constexpr double kFlickDegrees = 40.0;
 constexpr double kFlickWindowSeconds = 0.2;
 
-/// The aim's cursor move: the stats' cursor speed (0x82852680), the gains over the tick rate
-/// (0x82852328 / 0x8285232C).
+/// The aim's cursor move: the stats' cursor speed (0x828AEDC8), the gains over the tick rate
+/// (0x828AEA70 / 0x828AEA74).
 constexpr uint32_t kAimStatsSpeed = 0x38u;
-constexpr uint32_t kAimGainAcross = 0x8329EC04u;
-constexpr uint32_t kAimGainUp = 0x8329EC08u;
+const refii::guest::Addr kAimGainAcross{0x832DF684u};
+const refii::guest::Addr kAimGainUp{0x832DF688u};
 
 /// SACCamera:ProcessGameAction's height dead zone (`y > 0.1 or y < -0.1`), as Fable 2's.
 constexpr float kHeightDeadZone = 0.1f;
@@ -166,22 +168,22 @@ constexpr int32_t kModeNone = 0;
 constexpr int32_t kModeOrbit = 1;
 constexpr int32_t kModeInPlace = 2;
 
-/// The Lua camera mode wrapper's vtable (sub_82769188 at 0x827691A8), and its fields.
-constexpr uint32_t kModeVtable = 0x82001FECu;
+/// The Lua camera mode wrapper's vtable (sub_827A00A8 at 0x827A00C8), and its fields.
+const refii::guest::Addr kModeVtable{0x82001F88u};
 constexpr uint32_t kModeSelf = 24u;
 constexpr uint32_t kModeProcessGameAction = 80u;
 
-/// The camera manager's mode slots (0x822562EC..0x82256304).
+/// The camera manager's mode slots (0x8225551C..0x82255534).
 constexpr uint32_t kManagerPrimary = 44u;
 constexpr uint32_t kManagerOverride = 60u;
 
-/// The debug camera holds the pad (0x82769FF4): nothing reaches the camera scripts.
-constexpr uint32_t kDebugCameraFlag = 0x835565BFu;
+/// The debug camera holds the pad (0x827A0F14): nothing reaches the camera scripts.
+const refii::guest::Addr kDebugCameraFlag{0x835970C2u};
 
-/// Timing.GetTickRate's double (sub_82241980, `lfd f0, dbl_8329EA48`).
-constexpr uint32_t kTickRate = 0x8329EA48u;
+/// Timing.GetTickRate's double (sub_82240908, `lfd f0, dbl_832DF4D0`).
+const refii::guest::Addr kTickRate{0x832DF4D0u};
 
-/// lua_State layout (gui_natives.cpp; 0x822A7CB8).
+/// lua_State layout (gui_natives.cpp; 0x822A6278).
 constexpr uint32_t kLuaTop = 28u;
 constexpr uint32_t kLuaBase = 32u;
 constexpr uint32_t kLuaStackLast = 36u;
@@ -253,14 +255,14 @@ bool TakesInput(const uint8_t* base) { return base[kDebugCameraFlag] == 0u; }
 uint32_t Word(const uint8_t* base, uint32_t at) { return Plausible(at) ? LoadU32(base, at) : 0u; }
 
 /// What a weak reference at `holder` resolves to: `*(*(holder+4))` (lhSmartPtr_Deref
-/// 0x829A2650: `lwz r11,4(r3); lwz r10,0(r11)`), 0 when dead.
+/// 0x82691588: `lwz r11,4(r3); lwz r10,0(r11)`), 0 when dead.
 uint32_t Resolve(const uint8_t* base, uint32_t holder) {
   const uint32_t at = Word(base, Word(base, holder + 4u));
   return Plausible(at) ? at : 0u;
 }
 
 /// The entity's component `id`: its {id, component} pairs from +0x54 to +0x58 (the receiver's
-/// search, `lwz r11,0x54(r3); lwz r7,0x58(r3)` at 0x82769F4C), or 0.
+/// search, `lwz r11,0x54(r3); lwz r7,0x58(r3)` at 0x827A0E6C), or 0.
 uint32_t Component(const uint8_t* base, uint32_t entity, uint32_t id) {
   const uint32_t first = Word(base, entity + 0x54u);
   const uint32_t last = Word(base, entity + 0x58u);
@@ -276,7 +278,7 @@ uint32_t Component(const uint8_t* base, uint32_t entity, uint32_t id) {
   return 0u;
 }
 
-/// The mode's hero, as `sub_82769E28` and `sub_8243C9E8` find it (see the header), or 0.
+/// The mode's hero, as `sub_827A0D48` and `sub_82A1D6E8` find it (see the header), or 0.
 uint32_t HeroOf(const uint8_t* base, uint32_t mode) {
   const uint32_t table = Word(base, Word(base, Word(base, kGame) + 0xCu) + kStatePlayers);
   if (!Plausible(mode) || !Plausible(table)) {
@@ -321,7 +323,7 @@ bool LookInverted(const uint8_t* base, uint32_t hero) {
   return Plausible(player) && base[player + kCameraLookInverted] != 0u;
 }
 
-/// The camera's Lua table, pushed the way `sub_82242B40` pushes it, with a few field accessors.
+/// The camera's Lua table, pushed the way `sub_82241C08` pushes it, with a few field accessors.
 /// Everything runs below the caller's stack pointer; the Lua stack is restored on destruction.
 class CameraScript {
  public:
@@ -398,9 +400,9 @@ class CameraScript {
   }
 
   /// `self[name]` when it is a CVector3: a full userdata whose payload (+16) is a pointer to the
-  /// 16-byte vector, x y z at +0 +4 +8 (the constructor `sub_82241630`: `*lua_newuserdata(L, 4) =
-  /// block` at 0x82241754, a CVector3 argument read as `(*udata)[4]` then `lvx128` at
-  /// 0x822416A0). Finite, and within `within` metres of `near`, or false.
+  /// 16-byte vector, x y z at +0 +4 +8 (the constructor `sub_822405B8`: `*lua_newuserdata(L, 4) =
+  /// block` at 0x822406DC, a CVector3 argument read as `(*udata)[4]` then `lvx128` at
+  /// 0x82240628). Finite, and within `within` metres of `near`, or false.
   bool Vector(const char* name, const float* near, float within, float* xyz) {
     GetField(-1, name);
     bool ok = false;
@@ -456,7 +458,7 @@ class CameraScript {
     return w;
   }
 
-  /// registry[*(*(holder)+4)] pushed, as `sub_82242B40(holder, L)` does for the camera table.
+  /// registry[*(*(holder)+4)] pushed, as `sub_82241C08(holder, L)` does for the camera table.
   bool PushSelf() {
     if (!Room(1u)) {
       return false;
@@ -478,7 +480,7 @@ class CameraScript {
   uint32_t Top32() const { return LoadU32(base_, L_ + kLuaTop); }
   void SetTop32(uint32_t top) { StoreU32(base_, L_ + kLuaTop, top); }
 
-  /// Whether `slots` more values fit before stack_last (the guest's own check, 0x822A7CB8).
+  /// Whether `slots` more values fit before stack_last (the guest's own check, 0x822A6278).
   bool Room(uint32_t slots) const {
     return Top32() + slots * 8u <= LoadU32(base_, L_ + kLuaStackLast);
   }
@@ -801,7 +803,7 @@ void AfterCameraUpdate(PPCContext& ctx, uint8_t* base, uint32_t manager) {
   Update update = g_update;
   g_update = Update{};
 
-  // An override the update dropped (manager+60 cleared at 0x82256330) is gone with its state.
+  // An override the update dropped (manager+60 cleared at 0x82255560) is gone with its state.
   const bool current = update.mode != 0u && update.mode == ActiveCamera(base, manager);
   float pivot = 0.0f;
   {
@@ -884,7 +886,7 @@ REX_EXTERN(rex_CameraManager_Update) {
 REX_EXTERN(rex_lhRangedAim_MoveCursor) {
   const uint32_t aim = ctx.r3.u32;
   // The aim's owner, as the move itself resolves it (`lwz r11,4(r31)` / lhSmartPtr_Deref at
-  // 0x82852290..0x828522BC).
+  // 0x828AE9D8..0x828AEA04).
   const uint32_t hero = Resolve(base, aim);
   if (!Plausible(hero) || hero != g_mouse_hero || !TakesInput(base)) {
     __imp__rex_lhRangedAim_MoveCursor(ctx, base);
@@ -897,7 +899,7 @@ REX_EXTERN(rex_lhRangedAim_MoveCursor) {
   float pitch = 0.0f;
   refii_bridge_mouse_look_take(&yaw, &pitch);
   if (yaw != 0.0f || pitch != 0.0f) {
-    // The stats the move reads its speed from: `sub_821B1398(owner)` (0x828522E8..0x828522F0).
+    // The stats the move reads its speed from: `sub_821B1390(owner)` (disc 0x828522E8..disc 0x828522F0).
     uint32_t stats = 0u;
     {
       PPCContext work = Frame(ctx);

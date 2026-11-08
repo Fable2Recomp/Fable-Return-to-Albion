@@ -1,34 +1,34 @@
 // refii - whether Fable 3's guest poses an entity's rig this tick, as the guest decides it.
 //
-// The animation manager's step (component 23, sub_8220E630) poses a rig only when
-// sub_82205E00 says so (`bl sub_82205E00` 0x8220E75C); otherwise the pose is HELD while the clips
+// The animation manager's step (component 23, sub_8220DCD0) poses a rig only when
+// disc sub_82205E00 says so (`bl disc sub_82205E00` disc 0x8220E75C); otherwise the pose is HELD while the clips
 // keep running. Every term of that gate is a field the guest keeps, read here as it reads them
 // (all Fable 3 IDB, base named per line):
 //
-//   byte_83556521, byte_83556520           pose everything (0x82205E18, 0x82205F48)
-//   entity+0x94 byte, bits 0x40/0x20/0x10   all three set, or the rig is posed (0x82205E30..E68)
-//   entity+0x28 qword, low word bit 3       the entity has component 3, else never (0x82205E6C..E90)
+//   byte_83597017, byte_83597016           pose everything (disc 0x82205E18, disc 0x82205F48)
+//   entity+0x94 byte, bits 0x40/0x20/0x10   all three set, or the rig is posed (disc 0x82205E30..E68)
+//   entity+0x28 qword, low word bit 3       the entity has component 3, else never (disc 0x82205E6C..E90)
 //   comp3 = component 3 (CECGraphicAppearance; its +4 is the entity)
 //   comp3+0x24 float                        the draw distance the terms below are measured to
-//   comp3+0xEA byte                         SetAsAlwaysInView (setter sub_82575FE0, registered
-//                                           under that name at 0x8268ADF0)
-//   comp3+0xEB byte                         the pose pass's own force (writer sub_823531E0)
+//   comp3+0xEA byte                         SetAsAlwaysInView (setter disc sub_82575FE0, registered
+//                                           under that name at 0x826B52E8)
+//   comp3+0xEB byte                         the pose pass's own force (writer sub_8235B698)
 //   the heroes                              entity == **(EM+0x80) or **(EM+0x88), EM =
-//                                           *(*(*(entity+8)+4)+4) (sub_82209B80 -> sub_82209B20)
-//   sub_82209A28(comp3, distance)           within = comp3+0x6C < distance² (0x82209A54..A64);
-//                                           with byte_8329EACB and a render proxy at comp3+0x18:
+//                                           *(*(*(entity+8)+4)+4) (sub_82209238 -> sub_822091D8)
+//   disc sub_82209A28(comp3, distance)           within = comp3+0x6C < distance² (disc 0x82209A54..A64);
+//                                           with byte_832DF54D and a render proxy at comp3+0x18:
 //                                           frames since the proxy was last drawn (proxy+8 against
 //                                           the world frame, below) > 30 -> no; < 4 and within ->
-//                                           yes (0x82209AA8..0x82209AD8); then comp3+0xEE and
-//                                           within (0x82209AE0..0x82209B00)
-//   sub_82209DB8(comp3, distance)           the second view, when one stands (sub_82209E88:
-//                                           *(*(0x83556EF8)+0x10) +0x1C && +0x1E, or +0x58):
+//                                           yes (disc 0x82209AA8..disc 0x82209AD8); then comp3+0xEE and
+//                                           within (disc 0x82209AE0..disc 0x82209B00)
+//   sub_82209398(comp3, distance)           the second view, when one stands (sub_82209460:
+//                                           *(*(0x835979F8)+0x10) +0x1C && +0x1E, or +0x58):
 //                                           comp3+0xEF and comp3+0x70 < distance²
 //
 // comp3+0x6C/+0xEE (and +0x70/+0xEF) are the guest's own last view test, refreshed once per world
-// frame by sub_822098C0 (`stb r3,0xEE(r31)` 0x82209A0C: the entity's bounding sphere against the
-// camera's half-space, sub_8252FE28 -> sub_821FA358). The world frame is the one the gate reads:
-// `*(*(*(game+0xC)+4)+0x80)` (MainGameComponent vtable slot 4 sub_8221A428 = `*(*(component+0xC)
+// frame by sub_82209070 (`stb r3,0xEE(r31)` 0x822091BC: the entity's bounding sphere against the
+// camera's half-space, sub_82560338 -> sub_821F9AE0). The world frame is the one the gate reads:
+// `*(*(*(game+0xC)+4)+0x80)` (MainGameComponent vtable slot 4 sub_822194C8 = `*(*(component+0xC)
 // +0xC)`; game = the presented game, presented_world.h).
 //
 // WHY THE SHELL ASKS. A cutscene actor that is not a character (the castle intro's curtains and
@@ -42,6 +42,7 @@
 #include "host_abi.h"
 #include "host_core.h"
 #include "presented_world.h"
+#include "../../vfs/include/fable3_guest_build.h"
 
 namespace {
 
@@ -55,10 +56,10 @@ constexpr uint32_t kHeld = 0u;
 constexpr uint32_t kPosed = 1u;
 constexpr uint32_t kNotStated = 2u;
 
-constexpr uint32_t kPoseAll = 0x83556521u;
-constexpr uint32_t kPoseAllVisible = 0x83556520u;
-constexpr uint32_t kProxyFramesGate = 0x8329EACBu;
-constexpr uint32_t kSecondView = 0x83556EF8u;
+const refii::guest::Addr kPoseAll{0x83597017u};
+const refii::guest::Addr kPoseAllVisible{0x83597016u};
+const refii::guest::Addr kProxyFramesGate{0x832DF54Du};
+const refii::guest::Addr kSecondView{0x835979F8u};
 
 uint8_t Byte(const uint8_t* base, uint32_t address) {
     return PlausibleGuest(address) ? GuestByteAt(base, address) : 0u;
@@ -89,13 +90,13 @@ uint32_t Component(const uint8_t* base, uint32_t entity, uint32_t id) {
     return 0u;
 }
 
-/// sub_82209B20: the handle at `slot` (+4 its holder, holder+0 the entity) names `entity`.
+/// sub_822091D8: the handle at `slot` (+4 its holder, holder+0 the entity) names `entity`.
 bool HandleNames(const uint8_t* base, uint32_t slot, uint32_t entity) {
     const uint32_t holder = GuestWord(base, slot + 4u);
     return PlausibleGuest(holder) && GuestWord(base, holder) == entity;
 }
 
-/// sub_82209A28 without the refresh: the first view's term.
+/// disc sub_82209A28 without the refresh: the first view's term.
 bool FirstView(const uint8_t* base, uint32_t game, uint32_t comp3, float distanceSq) {
     const bool within = Float(base, comp3 + 0x6Cu) < distanceSq;
     const uint32_t proxy = GuestWord(base, comp3 + 0x18u);
@@ -114,7 +115,7 @@ bool FirstView(const uint8_t* base, uint32_t game, uint32_t comp3, float distanc
     return Byte(base, comp3 + 0xEEu) != 0u && within;
 }
 
-/// sub_82209DB8 without the refresh: the second view's term, when a second view stands.
+/// sub_82209398 without the refresh: the second view's term, when a second view stands.
 bool SecondView(const uint8_t* base, uint32_t comp3, float distanceSq) {
     const uint32_t view = GuestWord(base, GuestWord(base, kSecondView) + 0x10u);
     if (!PlausibleGuest(view)) {
@@ -122,7 +123,7 @@ bool SecondView(const uint8_t* base, uint32_t comp3, float distanceSq) {
     }
 
     const bool stands = (Byte(base, view + 0x1Cu) != 0u && Byte(base, view + 0x1Eu) != 0u) ||
-                        GuestWord(base, view + 0x58u) != 0u;
+                        GuestWord(base, view + refii::guest::Pick(0x5Cu, 0x58u)) != 0u;  // TU3 0x82209498 `lwz r11,0x5C(r10)`, disc 0x58
     return stands && Byte(base, comp3 + 0xEFu) != 0u && Float(base, comp3 + 0x70u) < distanceSq;
 }
 
@@ -130,7 +131,7 @@ bool SecondView(const uint8_t* base, uint32_t comp3, float distanceSq) {
 
 extern "C" {
 
-/// sub_82205E00 for `entity`: 1 when the guest poses its rig this tick, 0 when it holds the pose,
+/// disc sub_82205E00 for `entity`: 1 when the guest poses its rig this tick, 0 when it holds the pose,
 /// 2 when there is no world or no entity to ask about.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityPoseGate(uint32_t entity) {
     rex::memory::Memory* memory = SafeKernelMemory();
@@ -180,9 +181,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityPoseGate(uint32_t entity) {
 /// The sphere the shell's own view test uses when a title states no pose gate (Fable 2:
 /// RefiiHostGetEntityViewSphere there). Fable 3 always states its gate when it has an entity to
 /// ask about, so the shell never reaches that test here: 0, none. The guest's own sphere is not
-/// a substitute: sub_822098C0's view term (sub_821FA358, 0x82209A00/0x82209A08) tests the
-/// placement's physics body (entity+0x80 slot 0x74, shape copied by sub_82231010) or the
-/// placement position as a point (sub_82206250) — the placement, not where a clip carries the bones.
+/// a substitute: sub_82209070's view term (sub_821F9AE0, 0x822091B0/0x822091B8) tests the
+/// placement's physics body (entity+0x80 slot 0x74, shape copied by sub_8222FE78) or the
+/// placement position as a point (sub_82205A60) — the placement, not where a clip carries the bones.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityViewSphere(uint32_t, float*) {
     return 0u;
 }
