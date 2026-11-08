@@ -6,11 +6,12 @@ extends Node
 ## the keyboard holds A): the hero's receiver gets ACTION_SPRINT_SET (66) when it goes down and
 ## ACTION_SPRINT_RELEASE (67) when it comes up, and the release ends a sprint only while the sprint
 ## component's flag is set. So:
-##   SET while sprinting       the second press: cancelled, and its RELEASE passes and ends the sprint;
-##   SET while not sprinting   a fresh press: passes, and the game starts the sprint;
+##   SET with the sprint kept  the second press: cancelled, and its RELEASE passes and ends the sprint;
+##   SET otherwise             a fresh press: passes, and the game starts the sprint;
 ##   any other RELEASE         cancelled: the game keeps the sprint after the button comes up.
-## The flag is the game's own, read inside the verdict (host.read "sprinting") as it stands when the
-## press arrives, so a sprint the game ended itself makes the next press a fresh one.
+## A sprint is kept from the RELEASE cancelled until one ends it. The game's flag cannot say which press
+## this is: it already reads true when a first press's SET arrives. So it is asked each tick (query
+## sprinting) instead, and a sprint the game ended itself makes the next press a fresh one.
 ##
 ## STANDING STILL. After stop_after seconds with the hero's own velocity (query velocity) under
 ## STILL_SPEED, end_sprint(p) runs the release's own end: while the flag is set, the flag cleared and
@@ -25,6 +26,7 @@ var sprint_set := 66
 var sprint_release := 67
 
 # Per player, indexed 1 and 2. Fixed size: the verdict reads and writes them on the game's thread.
+var kept := [false, false, false]        # a RELEASE was cancelled: the sprint runs on with the button up
 var ending := [false, false, false]      # the second press's SET was cancelled, its RELEASE ends the sprint
 var still := [0.0, 0.0, 0.0]             # seconds stood still since the last press
 var slow := [false, false, false]        # the last velocity answer was under STILL_SPEED
@@ -55,11 +57,13 @@ func _on_game_action(e: Dictionary) -> bool:
 		return false
 	if action == sprint_set:
 		still[p] = 0.0
-		ending[p] = bool(host.read("sprinting", [p]).get("sprinting", false))
-		return ending[p]                     # cancelled while sprinting; a fresh press starts it
+		ending[p] = kept[p]
+		return ending[p]                     # cancelled while kept; a fresh press starts it
 	if ending[p]:
 		ending[p] = false                    # the second release ends the sprint
+		kept[p] = false
 		return false
+	kept[p] = true
 	return true                              # keep the sprint going after the button comes up
 
 
@@ -78,13 +82,18 @@ func _on_tick(e: Dictionary) -> void:
 			still[p] += seconds
 			if still[p] >= limit:
 				still[p] = 0.0
+				kept[p] = false
 				host.end_sprint(p)
 		else:
 			still[p] = 0.0
 
 
-# The hero's velocity, as the guest answers it this tick.
+# The hero's velocity and the sprint flag, as the guest answers them this tick.
 func _ask(p: int, hero: int) -> void:
+	var was: bool = kept[p]
+	host.ask("sprinting", [p], func(r: Dictionary) -> void:
+		if was and r.get("ok", false) and not r.get("sprinting", false):
+			kept[p] = false)
 	host.ask("velocity", [hero], func(r: Dictionary) -> void:
 		var vx := float(r.get("x", 0.0))
 		var vy := float(r.get("y", 0.0))
@@ -94,6 +103,7 @@ func _ask(p: int, hero: int) -> void:
 # A level change or a save load starts without anything held.
 func _on_level_loaded(_e: Dictionary) -> void:
 	for p in [1, 2]:
+		kept[p] = false
 		ending[p] = false
 		still[p] = 0.0
 		slow[p] = false

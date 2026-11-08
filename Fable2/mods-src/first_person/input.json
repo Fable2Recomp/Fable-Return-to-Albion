@@ -1,3 +1,3 @@
 {
-	"toggle": { "label": "{FIRST_PERSON_INPUT_TOGGLE}", "keys": ["H"] }
+	"toggle": { "label": "{FIRST_PERSON_INPUT_TOGGLE}", "keys": ["H"], "touch": "1st Person" }
 }

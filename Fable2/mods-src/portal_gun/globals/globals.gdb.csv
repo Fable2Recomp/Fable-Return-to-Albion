@@ -1,0 +1,12 @@
+entry,property,value
+# The Portal Gun: the game's Master Flintlock Rifle, so it has the rifle's two-handed stance, its aim
+# and its camera.
+PortalGunInventoryItem,parent,#6FD12728
+PortalGunInventoryItem,NameTag,PORTAL_GUN_NAME
+PortalGunInventoryItem,DescriptionTag,PORTAL_GUN_DESC
+ObjectInventoryWeaponPortalGun,parent,#22D9BABF
+ObjectInventoryWeaponPortalGun,InventoryItemComponent,PortalGunInventoryItem
+# Its own model, built on that rifle's so it keeps the rifle's grip points (source/make_model.py).
+PortalGunMesh,parent,#F30DA635
+PortalGunMesh,ModelFile,art/inventory/weapons/portal_gun/portal_gun.mdl
+ObjectInventoryWeaponPortalGun,GraphicAppearanceStaticMeshComponent,PortalGunMesh

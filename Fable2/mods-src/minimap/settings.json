@@ -1,0 +1,9 @@
+{
+	"minimap": {
+		"show": 1,
+		"enemies": 1,
+		"range": 50,
+		"opacity": 0.95,
+		"size": 1.0
+	}
+}

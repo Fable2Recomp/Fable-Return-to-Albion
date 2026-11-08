@@ -24,6 +24,9 @@ press arrives — as a Lua handler reads `Refii.sprinting(p)`. So when the game 
 the next press starts a new one rather than being taken for the second press. The latch clears on
 every level load.
 
+The flag already reads true when a first press's SET arrives, so the verdict keeps which press this
+is itself, and the flag is asked each tick instead (`query sprinting`).
+
 The toggle keeps the game's own SET and RELEASE rather than holding A with `press(p, "A", 1)`: a
 pressed A is OR'd into the player's pad, so while it was held the player's own presses of A would
 never reach the game as edges — the second press could not be seen — and every other use of A the

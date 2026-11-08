@@ -1,0 +1,9 @@
+{
+	"toggle": { "label": "Portal gun on or off", "keys": ["G"], "buttons": ["Back"], "touch": "Portal Gun" },
+	"swap": { "label": "Blue or orange next, on a touchscreen", "touch": { "pill": "Swap Colour", "when": "portal_gun.mode" } },
+	"aim_blue": { "label": "A portal on a touchscreen's Y", "buttons": ["Y"], "touch": { "caption": "Blue", "when": "portal_gun.blue_next" } },
+	"aim_orange": { "label": "Y's caption while orange is next", "buttons": ["Y"], "touch": { "caption": "Orange", "when": "portal_gun.orange_next" } },
+	"no_lock": { "label": "Lock-on, off in portal mode", "buttons": ["LT"] },
+	"no_melee": { "label": "Melee, off in portal mode", "buttons": ["X"] },
+	"no_magic": { "label": "Magic, off in portal mode", "buttons": ["B"] }
+}

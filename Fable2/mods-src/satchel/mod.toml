@@ -1,0 +1,4 @@
+name = "Hero's Satchel"
+version = "0.1.0"
+author = "ammuica"
+description = "Tab opens the inventory as one see-through screen, after SkyUI: a row of categories, a sortable list, filtering, favourites and a card that compares with what you have on."

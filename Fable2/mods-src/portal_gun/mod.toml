@@ -1,0 +1,4 @@
+name = "Portal Gun"
+version = "0.1.0"
+author = "ammuica"
+description = "A gun that fires a pair of linked portals onto walls, floors and ceilings. Look through one to see out of the other, and step in to come out there. G draws it; the mouse buttons fire."

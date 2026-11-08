@@ -1,0 +1,12 @@
+{
+	"toggle": { "label": "Skateboard on or off", "keys": ["K"], "touch": "Skate" },
+	"toggle_pad": { "label": "Skateboard on or off (pad)", "buttons": ["Back"], "chord": "LB" },
+	"ollie": { "label": "Hop", "keys": ["Space"], "buttons": ["A"], "touch": { "caption": "Hop", "when": "skate.on" } },
+	"flip": { "label": "Flourish (pad)", "buttons": ["X"], "touch": { "caption": "Flourish", "when": "skate.on" } },
+	"grab": { "label": "Grab (pad)", "buttons": ["B"], "touch": { "caption": "Grab", "when": "skate.on" } },
+	"manual": { "label": "Hobbe's Wheelie", "keys": ["Shift"], "buttons": ["RB"], "touch": { "pill": "Wheelie", "when": "skate.on" } },
+	"grind": { "label": "Rail Rider", "keys": ["F"], "buttons": ["Y"], "touch": { "caption": "Grind", "when": "skate.on" } },
+	"no_lock": { "label": "Lock-on, off while riding", "buttons": ["LT"] },
+	"help": { "label": "Skateboard controls on or off", "keys": ["N"] },
+	"help_pad": { "label": "Skateboard controls on or off (pad)", "buttons": ["DpadUp"], "chord": "LB" }
+}

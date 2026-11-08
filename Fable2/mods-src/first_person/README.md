@@ -11,6 +11,8 @@ both heroes, so it stays the game's own there.
 The switch is written as a Godot script (`godot/first_person.gd`); the game's camera is game Lua, so
 what is adjusted inside it stays Lua (`mod/camera.lua`).
 
+On a phone the **1st Person** pill in the top row of the touch controls is H.
+
 ## How it works
 
 | Piece | File | What it does |

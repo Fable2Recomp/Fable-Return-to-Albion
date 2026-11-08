@@ -82,6 +82,7 @@ var charge := [null, null, null]     # { key, spell, at, taken, up, released } w
 var held := [null, null, null]       # { key, performed, up }: the key holding an expression
 var third := ["", "", ""]            # slot 3's icon, kept while a hotbar charge has the slots lent
 var stated := [{}, {}, {}]           # what the HUD was last told, by key
+var written := [{}, {}, {}]          # key -> [kind, spell, hash] written but not yet read back from the store
 var refreshing := [0, 0, 0]          # steps on every refresh; an older one's answers are dropped
 
 var strings := {}                    # "def|field|item" -> the record's string, or null for none
@@ -155,9 +156,25 @@ func _legacy_hash(p: int, key: int, kind: int) -> String:
 	return _norm(host.hash("Expression" + LEGACY_EXPRESSIONS[index - 1]))
 
 
-# The kind and what: a spell type, or a record hash for an expression or an item.
+# The kind and what: a spell type, or a record hash for an expression or an item. A slot just written
+# is read as written: player_save reaches the store on the guest's tick, so until the store says the
+# same it still answers the old slot.
 func _read_slot(p: int, key: int) -> Array:
 	var kind := int(host.player_value(p, "hotbar.k%d" % key, EMPTY))
+	if written[p].has(key):
+		var w: Array = written[p][key]
+		var behind: bool = kind != w[0]
+		if not behind and w[0] == SPELL:
+			behind = int(host.player_value(p, "hotbar.a%d" % key, -1)) != w[1]
+		elif not behind and (w[0] == EXPRESSION or w[0] == ITEM):
+			behind = host.player_value_hash(p, "hotbar.h%d" % key) != w[2]
+		if behind:
+			if w[0] == SPELL:
+				return [SPELL, w[1]]
+			if w[0] == EXPRESSION or w[0] == ITEM:
+				return [w[0], w[2]]
+			return [EMPTY, null]
+		written[p].erase(key)
 	if kind == SPELL:
 		return [kind, int(host.player_value(p, "hotbar.a%d" % key, -1))]
 	if kind == EXPRESSION or kind == ITEM:
@@ -175,6 +192,7 @@ func _read_slot(p: int, key: int) -> Array:
 
 
 func _write_slot(p: int, key: int, kind: int, spell: int, hash: String) -> void:
+	written[p][key] = [kind, spell, hash]
 	host.player_save(p, "hotbar.k%d" % key, float(kind))
 	host.player_save(p, "hotbar.a%d" % key, float(spell))
 	if not hash.is_empty():
@@ -552,6 +570,7 @@ func _on_hero_gone(e: Dictionary) -> void:
 	if p == 1 or p == 2:
 		charge[p] = null
 		held[p] = null
+		written[p] = {}
 		_refresh(p)
 
 

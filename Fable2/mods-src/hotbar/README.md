@@ -26,6 +26,9 @@ subtitles); both change it at once.
 What is on each slot is the hero's and is saved with them (player values `hotbar.k<key>`,
 `hotbar.a<key>`, `hotbar.h<key>`). Slots saved by Hotbar 0.1 are read once and kept.
 
+On a phone the bar is drawn larger, and a tap on slot 4-0 is its key: a tap uses it, and holding a
+spell or an expression holds it as holding the key does.
+
 ## How it works
 
 This mod is written as a Godot script: the logic is `godot/hotbar.gd` on the `RefiiHost` singleton,
@@ -65,6 +68,9 @@ with the bar and the menus as data (`ui/hud.json`, `ui/templates.json`), and the
   (`item_added`, `item_removed`, `item_used`, `weapon_equipped`, `spell_pick`, `ability_level`,
   `attack_mode_changed`, `hero_ready`, `setting_changed`), never polled. The lit mode is the host's
   keyboard attack mode (`attack_mode`).
+- **The look** is Fable Anniversary's bar. The pictures are the mod's own
+  (`art/gui/hud/hotbar_*.png`), written with the pieces that place them by `source/make_art.py`, in
+  place of the atlas cuts above. The key numbers are the Fable II face's superscript figures.
 
 ## Limits
 
