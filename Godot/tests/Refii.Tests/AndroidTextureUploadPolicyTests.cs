@@ -23,6 +23,38 @@ public sealed class AndroidTextureUploadPolicyTests
         AssertThat(queries).IsEqual(0);
     }
 
+    /// <summary>Only a large normal map the GPU cannot sample, with a chain to fall back on, gives up its top level.</summary>
+    [TestCase]
+    public void OnlyLargeExpandedNormalMapsDropTheirTopMip()
+    {
+        int edge = AndroidTextureUploadPolicy.ReducedNormalMapMinimumEdge;
+        var low = AndroidTextureUploadPolicy.Capture(true, _ => false, reduceNormalMaps: true);
+        AssertThat(low.DropsTopMip(Image.Format.RgtcRg, edge, edge, true)).IsTrue();
+        AssertThat(low.DropsTopMip(Image.Format.RgtcRg, edge, edge / 2, true)).IsFalse();
+        AssertThat(low.DropsTopMip(Image.Format.RgtcRg, edge, edge, false)).IsFalse();
+        AssertThat(low.DropsTopMip(Image.Format.Dxt5, edge, edge, true)).IsFalse();
+        int colour = AndroidTextureUploadPolicy.ReducedColorMapMinimumEdge;
+        AssertThat(low.DropsTopMip(Image.Format.Dxt5, colour, colour, true)).IsTrue();
+        AssertThat(low.DropsTopMip(Image.Format.Dxt1, colour, colour, true)).IsTrue();
+        AssertThat(low.DropsTopMip(Image.Format.Dxt1, colour, colour, false)).IsFalse();
+        AssertThat(low.DropsTopMip(Image.Format.Dxt3, colour, colour, true)).IsFalse();
+        var withBc5 = AndroidTextureUploadPolicy.Capture(true, _ => true, reduceNormalMaps: true);
+        AssertThat(withBc5.DropsTopMip(Image.Format.RgtcRg, edge, edge, true)).IsFalse();
+        var plenty = AndroidTextureUploadPolicy.Capture(true, _ => false);
+        AssertThat(plenty.DropsTopMip(Image.Format.RgtcRg, edge, edge, true)).IsFalse();
+        var desktop = AndroidTextureUploadPolicy.Capture(false, _ => false, reduceNormalMaps: true);
+        AssertThat(desktop.DropsTopMip(Image.Format.RgtcRg, edge, edge, true)).IsFalse();
+    }
+
+    /// <summary>MemTotal reads as kB, and a missing or malformed one as nothing.</summary>
+    [TestCase]
+    public void TotalMemoryReadsFromMeminfo()
+    {
+        AssertThat(Refii.Game.AndroidMemoryRelease.MemTotalKilobytes("MemFree: 12 kB\nMemTotal:     5593256 kB\n")).IsEqual(5593256L);
+        AssertThat(Refii.Game.AndroidMemoryRelease.MemTotalKilobytes("MemTotal: lots\n")).IsEqual(0L);
+        AssertThat(Refii.Game.AndroidMemoryRelease.MemTotalKilobytes("MemFree: 12 kB\n")).IsEqual(0L);
+    }
+
     /// <summary>Each unsupported BC family uses precisely the renderer's color/channel fallback.</summary>
     [TestCase]
     public void UnsupportedFormatsMatchGodotFallbackChannels()

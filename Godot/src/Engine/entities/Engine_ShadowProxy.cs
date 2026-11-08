@@ -39,7 +39,7 @@ public static class Engine_ShadowProxy
 
 	/// <summary>Debug lever: false hands every body its own shadow back on its next <see cref="Sync"/>.</summary>
 	/// <remarks>
-	/// OFF WHEN THE SUN CASTS NOTHING (`sun_shadow_distance` 0, as a phone's Performance preset sets it). The
+	/// OFF WHEN THE SUN CASTS NOTHING (`sun_shadow_distance` 0, as a phone's Low and Medium presets set it). The
 	/// proxies are mostly the sun's casters; without them every rig keeps a second skeleton posed,
 	/// placed and culled for shadows nobody draws. A spot light the data marks to cast still gets
 	/// each body's own shadow, at the body's cadence. Measured in Bowerstone Market on the S25+:

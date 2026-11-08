@@ -39,11 +39,20 @@ public static class Engine_ShaderSpecialisation
     /// <see cref="FoldDefines"/>).</summary>
     public const string MaterialFoldsKey = "lite_material_folds";
 
+    /// <summary>`lite_material_folds_low_ram`: which of those flags the low-memory tier folds (see
+    /// <see cref="FoldScope"/>): off, const, normal or all.</summary>
+    public const string MaterialFoldsLowRamKey = "lite_material_folds_low_ram";
+
     /// <summary>`lite_terrain_single_fetch`: the lite terrain's no-weight fallback drawn by its
     /// splat loop's own fetch instead of a second copy of it (see <see cref="TerrainDefines"/>).</summary>
     public const string TerrainSingleFetchKey = "lite_terrain_single_fetch";
 
-    private readonly record struct Keys(bool Shadowless, bool BakeVariants, bool MaterialFolds, bool TerrainSingleFetch);
+    /// <summary>`lite_vegetation_folds`: the vegetation flags (foliage, grass, authored foliage
+    /// normals) folded into a model material's build, and a tree build's constant-zero transfer
+    /// varying dropped (see <see cref="VegetationDefines"/>).</summary>
+    public const string VegetationFoldsKey = "lite_vegetation_folds";
+
+    private readonly record struct Keys(bool Shadowless, bool BakeVariants, FoldScope Folds, bool TerrainSingleFetch, bool VegetationFolds = false);
 
     private static readonly Lazy<Keys> Read = new(ReadKeys, System.Threading.LazyThreadSafetyMode.ExecutionAndPublication);
 
@@ -60,11 +69,16 @@ public static class Engine_ShaderSpecialisation
             var keys = new Keys(
                 Shadowless: Refii.Core.Engine_RefiiConfig.Bool(values, ShadowlessKey, false),
                 BakeVariants: Refii.Core.Engine_RefiiConfig.Bool(values, BakeVariantsKey, false),
-                MaterialFolds: Refii.Core.Engine_RefiiConfig.Bool(values, MaterialFoldsKey, false),
-                TerrainSingleFetch: Refii.Core.Engine_RefiiConfig.Bool(values, TerrainSingleFetchKey, false));
+                // Each set of flags is a shader build of its own, and a build's bookkeeping is native
+                // memory: the low-memory tier folds only what adds few builds.
+                Folds: !Refii.Core.Engine_RefiiConfig.Bool(values, MaterialFoldsKey, false) ? FoldScope.Off
+                    : Refii.Game.AndroidMemoryRelease.LowRamMode ? ParseFoldScope(Refii.Core.Engine_RefiiConfig.String(values, MaterialFoldsLowRamKey, "off"))
+                    : FoldScope.All,
+                TerrainSingleFetch: Refii.Core.Engine_RefiiConfig.Bool(values, TerrainSingleFetchKey, false),
+                VegetationFolds: Refii.Core.Engine_RefiiConfig.Bool(values, VegetationFoldsKey, false));
             GD.Print($"[shader] specialisations: {ShadowlessKey}={keys.Shadowless}, " +
-                $"{BakeVariantsKey}={keys.BakeVariants}, {MaterialFoldsKey}={keys.MaterialFolds}, " +
-                $"{TerrainSingleFetchKey}={keys.TerrainSingleFetch} (relaunch to change)");
+                $"{BakeVariantsKey}={keys.BakeVariants}, {MaterialFoldsKey}={keys.Folds != FoldScope.Off} ({keys.Folds}), " +
+                $"{TerrainSingleFetchKey}={keys.TerrainSingleFetch}, {VegetationFoldsKey}={keys.VegetationFolds} (relaunch to change)");
             return keys;
         }
         catch (Exception)
@@ -136,7 +150,33 @@ public static class Engine_ShaderSpecialisation
         shader is not null && ByShader.TryGetValue(shader, out Built? built) ? built.Defines : Array.Empty<string>();
 
     /// <summary>Whether any specialisation can apply in this process.</summary>
-    public static bool Any => Read.Value.Shadowless || Read.Value.MaterialFolds || Read.Value.TerrainSingleFetch;
+    public static bool Any => Read.Value.Shadowless || MaterialFolds || Read.Value.TerrainSingleFetch || Read.Value.VegetationFolds;
+
+    /// <summary>Whether `lite_vegetation_folds` is on (and the lite set drawn).</summary>
+    public static bool VegetationFolds => Read.Value.VegetationFolds;
+
+    /// <summary>
+    /// The defines for a model material's vegetation flags, each folded to the value it holds
+    /// (standard_material_body.gdshaderinc), plus FABLE_SPEC_TREE_NO_TRANSFER on a tree build,
+    /// whose transfer varying is the constant zero. Pure.
+    /// </summary>
+    /// <remarks>
+    /// Exact: ApplyVegetation sets the three uniforms once, at build, with the facts. Both sides
+    /// fold, so a build splits by the mixes its materials hold: (none), foliage, grass, each with
+    /// or without authored foliage normals. Off vegetation every build already holds (none) and
+    /// splits nothing.
+    /// </remarks>
+    public static string[] VegetationDefines(bool foliage, bool grass, bool foliageNormals, bool tree)
+    {
+        var defines = new List<string>(4)
+        {
+            foliage ? "FABLE_SPEC_FOLIAGE" : "FABLE_SPEC_NOT_FOLIAGE",
+            grass ? "FABLE_SPEC_GRASS" : "FABLE_SPEC_NOT_GRASS",
+            foliageNormals ? "FABLE_SPEC_FOLIAGE_NORMALS" : "FABLE_SPEC_NO_FOLIAGE_NORMALS",
+        };
+        if (tree) defines.Add("FABLE_SPEC_TREE_NO_TRANSFER");
+        return defines.ToArray();
+    }
 
     /// <summary>
     /// The defines for the lite terrain splat (not the vista page, which has no loop):
@@ -147,7 +187,10 @@ public static class Engine_ShaderSpecialisation
         : Array.Empty<string>();
 
     /// <summary>Whether `lite_material_folds` is on (and the lite set drawn).</summary>
-    public static bool MaterialFolds => Read.Value.MaterialFolds;
+    public static bool MaterialFolds => Read.Value.Folds != FoldScope.Off;
+
+    /// <summary>Which of a material's folds this process applies (<see cref="ScopeFolds"/>).</summary>
+    public static FoldScope MaterialFoldScope => Read.Value.Folds;
 
     /// <summary>
     /// The defines for a model material's flags that are off: each folds a uniform the material
@@ -169,6 +212,64 @@ public static class Engine_ShaderSpecialisation
         if (!normalMap) defines.Add("FABLE_SPEC_NO_NORMAL_MAP");
         if (!grassBend) defines.Add("FABLE_SPEC_NO_GRASS_BEND");
         return defines.ToArray();
+    }
+
+    /// <summary>Which folds apply: all of them, except in the low-memory tier, which has its own key.</summary>
+    /// <remarks>
+    /// A build is compiled per (lite build, defines), so a flag folded where some materials have it
+    /// and some do not doubles that build. There are 13 lite model builds.
+    /// Const folds what splits nothing, so each stays one build: on a phone no stock material has an
+    /// ORM or authored PBR, a vegetation surface never draws a culled or translucent build, and
+    /// grass, which alone has a bend, draws only a no-specular one.
+    /// Normal adds the normal map, the fold worth having (DIAG_NO_NORMALMAP -5% on an Adreno 640), so
+    /// at most two per build, 26.
+    /// All is every fold, at most 92 by the flags alone.
+    /// A flag that is on is never folded, whatever the scope, so a mod's PBR map or a phone with the
+    /// ORM turned on gets a build more and the right picture.
+    /// </remarks>
+    public enum FoldScope
+    {
+        Off,
+        Const,
+        Normal,
+        All,
+    }
+
+    /// <summary>The key's value, as written; anything unknown is the default, <see cref="FoldScope.Normal"/>.</summary>
+    public static FoldScope ParseFoldScope(string value) => value.Trim().Trim('"').ToLowerInvariant() switch
+    {
+        "off" => FoldScope.Off,
+        "const" => FoldScope.Const,
+        "all" => FoldScope.All,
+        _ => FoldScope.Normal,
+    };
+
+    /// <summary>The folds of <see cref="FoldDefines"/> this scope applies to the lite build at <paramref name="path"/>. Pure.</summary>
+    public static string[] ScopeFolds(FoldScope scope, string path, string[] folds)
+    {
+        if (scope == FoldScope.All)
+        {
+            return folds;
+        }
+
+        var kept = new List<string>(folds.Length);
+        foreach (string fold in folds)
+        {
+            bool keep = scope != FoldScope.Off && fold switch
+            {
+                "FABLE_SPEC_NOT_PBR" or "FABLE_SPEC_NO_ORM" => true,
+                "FABLE_SPEC_NO_NORMAL_MAP" => scope == FoldScope.Normal,
+                "FABLE_SPEC_NOT_PREMULTIPLIED" => !Engine_ShaderVariant.DrawsVegetation(path),
+                "FABLE_SPEC_NO_GRASS_BEND" => !Engine_ShaderVariant.DrawsGrass(path),
+                _ => false,
+            };
+            if (keep)
+            {
+                kept.Add(fold);
+            }
+        }
+
+        return kept.ToArray();
     }
 
     /// <summary>Whether `lite_bake_variants` is on (and the lite set drawn).</summary>

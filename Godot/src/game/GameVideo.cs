@@ -492,6 +492,7 @@ public partial class GameVideo : Node
 	/// </summary>
 	private void StartVideo(byte[]? requested)
 	{
+		if (TakenAhead(requested)) return;
 		// A movie the guest replaced before we finished showing it. `FinishMovie` is deliberately
 		// NOT called: the open has already republished `g_bink_player`, so it would retire the
 		// movie starting rather than the one being cut. Said out loud because it is otherwise

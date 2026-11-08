@@ -82,6 +82,9 @@ public sealed class AndroidTouchPad
     private readonly Dictionary<int, Finger> _fingers = new();
     private readonly HashSet<string> _latched = new();
     private readonly List<(uint Bits, TouchTrigger Trigger, double Until)> _lingering = new();
+
+    /// <summary>The same for a button that presses no pad bits (a mod's pill or area): its id, held on by a quick tap.</summary>
+    private readonly List<(string Id, double Until)> _lingeringIds = new();
     private readonly List<TouchPointerEvent> _pointerEvents = new();
     private IReadOnlyList<TouchControl> _controls = System.Array.Empty<TouchControl>();
     private IReadOnlyList<Rect2> _passThrough = System.Array.Empty<Rect2>();
@@ -161,6 +164,32 @@ public sealed class AndroidTouchPad
         return false;
     }
 
+    /// <summary>
+    /// Whether the button <paramref name="id"/> is pressed now: a finger on it, or a tap shorter than
+    /// <see cref="MinimumHold"/> that ended a moment ago — a tap must be seen by a frame however quick.
+    /// </summary>
+    public bool Pressing(string id, double now)
+    {
+        if (Touching(id))
+        {
+            return true;
+        }
+
+        for (int i = _lingeringIds.Count - 1; i >= 0; --i)
+        {
+            if (_lingeringIds[i].Until <= now)
+            {
+                _lingeringIds.RemoveAt(i);
+            }
+            else if (_lingeringIds[i].Id == id)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>Whether a control is latched on by a tap.</summary>
     public bool IsLatched(string id) => _latched.Contains(id);
 
@@ -204,7 +233,7 @@ public sealed class AndroidTouchPad
         }
 
         if (context is TouchContext.Menu or TouchContext.Hidden or TouchContext.Photo or TouchContext.Mirror or TouchContext.PubGame or
-            TouchContext.Decorate)
+            TouchContext.Decorate or TouchContext.ModScreen)
         {
             _latched.Clear();
         }
@@ -420,6 +449,10 @@ public sealed class AndroidTouchPad
                 {
                     _lingering.Add((bits, control.Trigger, finger.Since + MinimumHold));
                 }
+                else if (now - finger.Since < MinimumHold && control.Kind == TouchControlKind.Button)
+                {
+                    _lingeringIds.Add((control.Id, finger.Since + MinimumHold));
+                }
 
                 break;
         }
@@ -437,6 +470,7 @@ public sealed class AndroidTouchPad
         _fingers.Clear();
         _latched.Clear();
         _lingering.Clear();
+        _lingeringIds.Clear();
         StickOrigin = null;
         StickKnob = Vector2.Zero;
         Sprinting = false;

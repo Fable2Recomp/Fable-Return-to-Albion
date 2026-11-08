@@ -109,7 +109,7 @@ public static class AndroidInstallState
         foreach (string file in Directory.EnumerateFiles(attempt))
         {
             string name = Path.GetFileName(file);
-            if (name == "refii.pch" || Regex.IsMatch(name, @"\Aunit-[0-9]+\.o\z") ||
+            if (name is "refii.pch" or "refii.pch.d" || Regex.IsMatch(name, @"\Aunit-[0-9]+\.o(?:\.d)?\z") ||
                 (!successful && name == "librefii_generated.so"))
             {
                 RejectLinks(file);

@@ -1179,7 +1179,7 @@ public partial class LauncherApp : Control
 		popup.Clear();
 		for (int i = 0; i < Refii.Core.Engine_Title.All.Count; i++)
 		{
-			popup.AddRadioCheckItem(Refii.Core.Engine_Title.All[i].Name, i);
+			popup.AddRadioCheckItem(PhoneTitleLabel(Refii.Core.Engine_Title.All[i]), i);
 		}
 
 		popup.IdPressed += id =>
@@ -1239,7 +1239,7 @@ public partial class LauncherApp : Control
 	/// <summary>The info drawer's tabs from the active title's screen; the drawer shows the first.</summary>
 	private void ApplyInfoTabs()
 	{
-		_infoTabList = _screen.InfoTabs;
+		_infoTabList = PhoneInfoTabs(_screen.InfoTabs);
 		_infoTabs.ClearTabs();
 		foreach (LauncherInfoTab tab in _infoTabList)
 		{
@@ -1411,6 +1411,7 @@ public partial class LauncherApp : Control
 				break;
 
 			case "Show Debug Panel":
+			case "Show Launch Options":
 				ShowSettingsDrawer();
 				break;
 

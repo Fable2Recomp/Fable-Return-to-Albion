@@ -183,7 +183,18 @@ public partial class GameLoadingScreen : Node
 	private string _loaded = string.Empty;
 
 	/// <summary>True while a loading screen is on screen, for a caller that wants to know.</summary>
-	public bool IsShowing { get; private set; }
+	public bool IsShowing
+	{
+		get => _isShowing;
+		private set => _isShowing = Showing = value;
+	}
+
+	private bool _isShowing;
+
+	/// <summary>The same, for a caller without this node (there is one loading screen).</summary>
+	public static bool Showing { get; private set; }
+
+	public override void _ExitTree() => Showing = false;
 
 	/// <summary>
 	/// True while the screen up is a level load's: the painted sheet, or our cover over a world

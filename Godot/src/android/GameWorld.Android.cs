@@ -14,6 +14,15 @@ namespace Refii.Game;
 /// </remarks>
 public partial class GameWorld
 {
+	/// <summary>
+	/// A phone's `[guest-entities]` report comes once, under the loading cover. Every report walks the
+	/// whole entity list and asks 512 of them for their components on the main thread; ten of them a
+	/// region, 120 frames apart, are a longer frame every 6-7 s of a phone's first minute of play.
+	/// </summary>
+	private static int EntityReportFrames => Refii.Core.Engine_Platform.IsAndroid ? 30 : 120;
+
+	private static int EntityReportLimit => Refii.Core.Engine_Platform.IsAndroid ? 1 : 10;
+
 	private bool _applicationPaused;
 
 	/// <summary>Pauses only Android retirement's active deadline when the application stops drawing in the background.</summary>
@@ -103,6 +112,7 @@ public partial class GameWorld
 		_retirement.Status, _retirementManagedBefore, _retirementManagedAfter,
 		_retirementTextureBefore, _retirementTextureAfter, _retirementBufferBefore, _retirementBufferAfter);
 
+	private bool _buildWasHeld;
 	private GameRegionRetirement? _retirement;
 	private System.Threading.Tasks.Task? _retiringBuild;
 	private System.Threading.Tasks.Task? _retirementCollection;
@@ -144,7 +154,17 @@ public partial class GameWorld
 	/// <summary>Holds native preload while the old region and its producers retire, without blocking the Godot loop on finalizers.</summary>
 	private bool PumpRegionRetirement()
 	{
-		if (_retirement is null || !_retirement.Status.NewBuildBlocked) return true;
+		if (_retirement is null || !_retirement.Status.NewBuildBlocked)
+		{
+			if (Refii.Core.Engine_Platform.IsAndroid)
+			{
+				AndroidMemoryRelease.PumpLoad(WorldBuildHeld);
+				// A hold that gave up can still have bakes reading this metadata on their workers, so it keeps the copies.
+				if (_buildWasHeld && !WorldBuildHeld && _region is not null && _propHoldFrames < PropHoldFrameLimit) AndroidMemoryRelease.ForgetMeshCopies(_region);
+				_buildWasHeld = WorldBuildHeld;
+			}
+			return true;
+		}
 		ulong frame = unchecked((uint)Engine.GetFramesDrawn());
 		int workers = Refii.Core.Engine_RegionWorkers.GlobalActive;
 		if (_retiringBuild is { IsCompleted: false }) ++workers;
@@ -177,10 +197,18 @@ public partial class GameWorld
 			try
 			{
 				if (work == RegionRetirementWork.ClearAndCollect) Refii.Core.Engine_LevelCaches.ReleaseRegion();
+				// The last pass compacts: the post-load compaction would otherwise come only after
+				// the next build's peak, on the gaps this region leaves.
+				bool compact = _retirement.NextCollectionIsLast && AndroidMemoryRelease.Wanted() && AndroidCompactsLargeObjects();
 				// Waiting on the finalizer thread from _Process can block engine progress needed by
 				// native destructors. A separate task permits rendered frames while it finishes.
 				_retirementCollection = System.Threading.Tasks.Task.Run(() =>
 				{
+					if (compact)
+					{
+						Compact(System.GC.GetTotalMemory(false));
+						return;
+					}
 					System.GC.Collect();
 					System.GC.WaitForPendingFinalizers();
 				});

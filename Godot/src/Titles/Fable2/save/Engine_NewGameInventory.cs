@@ -26,7 +26,8 @@ public sealed class Engine_NewGameInventory
     /// </summary>
     public GdbPatchDatabase Aliases { get; } = new();
 
-    public Engine_NewGameInventory(GdbMulti database)
+    public Engine_NewGameInventory(GdbMulti database, Func<GdbMulti> rebuild)
+        : this(database, rebuild, keepDatabase: !Refii.Game.AndroidMemoryRelease.LowRamMode)
     {
     }
 

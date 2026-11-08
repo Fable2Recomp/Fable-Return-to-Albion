@@ -3649,6 +3649,21 @@ public partial class RefiiHost : Node
 	public bool tap(long player, string button, long ticks) =>
 		player is 1 or 2 && ModInputPresses.Tap((int)player, button ?? string.Empty, ticks);
 
+	/// <summary>
+	/// A touchscreen AREA: a finger landing on <paramref name="rect"/> (the root viewport's coordinates,
+	/// where a script's CanvasLayer draws) presses <paramref name="action"/> (scoped,
+	/// <c>&lt;mod&gt;.&lt;action&gt;</c>) for player one, held while the finger stays; an empty
+	/// rectangle removes it. Stands until removed or the mod set reloads. False for an action no
+	/// enabled mod declares (<see cref="ModInputTouch"/>).
+	/// </summary>
+	public bool touch_area(string action, Rect2 rect) => ModInputTouch.SetArea(action ?? string.Empty, rect);
+
+	/// <summary>Whether the touchscreen is the device in use now: the touch controls are drawn and a tap goes to them.</summary>
+	public bool touch_mode() => Refii.Ui.Engine_UiInputMode.Touch;
+
+	/// <summary>The touch controls' move stick: x right and y up, each -1..1; zero with no thumb on it (or no touchscreen).</summary>
+	public Vector2 touch_stick() => ModInputTouch.Stick();
+
 	/// <summary>The buttons held for <paramref name="player"/> (1 or 2) by any surface's press, by name.</summary>
 	public Godot.Collections.Array<string> presses(long player)
 	{

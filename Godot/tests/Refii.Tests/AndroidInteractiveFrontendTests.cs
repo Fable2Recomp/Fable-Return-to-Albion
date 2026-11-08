@@ -80,6 +80,16 @@ public sealed class AndroidInteractiveFrontendTests
         AssertThat(InteractiveFrontEndPolicy.ShouldReveal(false, Screen.None, false, false, true)).IsTrue();
     }
 
+    /// <summary>Revealed UI stays through the title's hand-over to the main menu, and goes with the front end's GUI.</summary>
+    [TestCase]
+    public void RevealedFrontendStaysUntilItsGuiIsGone()
+    {
+        AssertThat(InteractiveFrontEndPolicy.StaysRevealed(true, true, false)).IsTrue();
+        AssertThat(InteractiveFrontEndPolicy.StaysRevealed(true, false, true)).IsTrue();
+        AssertThat(InteractiveFrontEndPolicy.StaysRevealed(true, false, false)).IsFalse();
+        AssertThat(InteractiveFrontEndPolicy.StaysRevealed(false, true, false)).IsFalse();
+    }
+
     /// <summary>Boot, GUI and title readiness remain distinct until the real native menu becomes interactive.</summary>
     [TestCase]
     public void FrontendStatusCannotReportAnUnobservedTitle()

@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Godot;
 using Refii.AndroidRuntime;
 using Refii.Core;
@@ -13,16 +15,22 @@ public partial class LauncherApp
     private AndroidPhoneLauncher? _phone;
     private string _phoneStatus = "";
 
+    /// <summary>The launcher is on its way straight to the game (<see cref="SkipLauncher"/>): hidden and not built.</summary>
+    private bool _skippingLauncher;
+
     /// <summary>The File menu on a phone: installation and save transfer instead of the install folder.</summary>
+    /// <remarks>"Show Launch Options", which the desktop calls "Show Debug Panel": it opens the Launch
+    /// options drawer, which is no debug panel.</remarks>
     private static readonly string[] AndroidFileMenuItems =
     {
         "Install from ISO", "Cancel installation", "", "Export logs and saves", "Export saves", "Import save", "",
-        "Show Announcements", "Show Debug Panel", "Close",
+        "Show Announcements", "Show Launch Options", "Close",
     };
 
     /// <summary>Builds the original launcher with private Android settings and self-contained installation actions.</summary>
     private void ReadyAndroid()
     {
+        AndroidIdlePower.EnterLauncher();
         AndroidNativeLog.StartPump();
         AndroidLastExit.RecordOnce();
         string user = OS.GetUserDataDir();
@@ -49,9 +57,51 @@ public partial class LauncherApp
         _updates = new UpdateChecker();
         BindNodes();
         AddAndroidInstallation();
+        if (SkipLauncher()) return;
+        BuildAndroidLauncher();
+    }
+
+    /// <summary>
+    /// Goes straight to the game when Options' "Skip launcher" is on and the installation plays as it is:
+    /// no installation running, none to finish, no game-code build due, and the last run did not crash
+    /// (then the launcher shows, with its log export). The launcher is hidden meanwhile and the boot
+    /// splash stays up until the game's startup screen replaces it.
+    /// </summary>
+    /// <returns>Whether the game is starting instead of the launcher.</returns>
+    private bool SkipLauncher()
+    {
+        if (_phone == null || !AndroidQuickSettings.SkipLauncher(Engine_AppRoot.ConfigPath) || _phone.IsInstalling ||
+            !_phone.HasPlayableInstall || _phone.NeedsBuild || AndroidLastExit.Crashed) return false;
+        _skippingLauncher = true;
+        Visible = false;
+        RenderingServer.SetDefaultClearColor(Colors.Black);
+        GD.Print("[launcher] skipped (Options: Skip launcher)");
+        // Deferred: the scene change removes this scene, which is still being added.
+        Callable.From(PlaySkippingLauncher).CallDeferred();
+        return true;
+    }
+
+    /// <summary>Plays as the launcher's Play button would; when that does not start the game, the launcher shows after all.</summary>
+    private void PlaySkippingLauncher()
+    {
+        _phone!.PlayFromLauncher();
+        // The scene change takes this scene out of the tree at once.
+        if (!IsInsideTree()) return;
+        GD.Print("[launcher] not skipped: " + _phone.Status);
+        _skippingLauncher = false;
+        Visible = true;
+        RenderingServer.SetDefaultClearColor(
+            ProjectSettings.GetSetting("rendering/environment/defaults/default_clear_color").AsColor());
+        BuildAndroidLauncher();
+    }
+
+    /// <summary>The launcher's art, menus, settings drawer and entrance, once the game is not started straight away.</summary>
+    private void BuildAndroidLauncher()
+    {
         _font = LoadLauncherFont();
         BuildStyles();
         ApplyStyles();
+        DrawPhoneGlyphs();
         WireMenus();
         WireTabs();
         _settingsTabs.CurrentTab = _phone.HasPlayableInstall ? 0 : 2;
@@ -60,11 +110,25 @@ public partial class LauncherApp
         _settingsTitle.Text = "Launch options";
         Resized += ApplyLayout;
         ApplyLayout();
+        Resized += DrawPhoneGlyphs;
+        DrawPhoneGlyphs();
         RefreshState();
+        // A crash said nothing: the launcher only came back. A tester now knows it was one and how to report it.
+        if (AndroidLastExit.Crashed)
+            Log(Engine_Title.Active.Name + " closed unexpectedly last time. If it happens again, choose File > Export " +
+                "logs and saves, and send the file from your Download folder with what you were doing.");
         RefreshDebugDrawer();
         CallDeferred(MethodName.PlayEntrance);
         _primaryButton.GrabFocus();
         FetchGitHubData();
+    }
+
+    /// <summary>The close crosses and the settings gear as drawn icons, at the size of their text (<see cref="AndroidLauncherGlyphs"/>).</summary>
+    private void DrawPhoneGlyphs()
+    {
+        AndroidLauncherGlyphs.Apply(_drawerClose, AndroidLauncherGlyphs.Glyph.Cross);
+        AndroidLauncherGlyphs.Apply(_settingsClose, AndroidLauncherGlyphs.Glyph.Cross);
+        AndroidLauncherGlyphs.Apply(_settingsTab, AndroidLauncherGlyphs.Glyph.Gear);
     }
 
     /// <summary>Writes the accepted Android defaults into the active title's config when it has none, before
@@ -148,6 +212,7 @@ public partial class LauncherApp
     /// <param name="delta">Godot frame interval.</param>
     private void ProcessAndroid(double delta)
     {
+        if (_skippingLauncher) return;
         _backgrounds.Update((float)delta);
         UpdateArtCredit();
         if (_phone == null || _phoneStatus == _phone.Status) return;
@@ -191,11 +256,26 @@ public partial class LauncherApp
         return true;
     }
 
+    /// <summary>The game menu's name for <paramref name="title"/>: on a phone, Fable 3 says it is experimental.</summary>
+    /// <remarks>It reaches its front end on a phone and not much further; listed beside Fable 2 without
+    /// a word, it read as the same kind of offer.</remarks>
+    private static string PhoneTitleLabel(Engine_Title title) =>
+        Engine_Platform.IsAndroid && title == Engine_Title.Fable3 ? title.Name + " (experimental)" : title.Name;
+
+    /// <summary>The title's info tabs, without Change Log and Credits on a phone while online metadata is off.</summary>
+    /// <remarks>Both are read from GitHub, and with <c>EnableOnlineMetadata</c> off they are never fetched,
+    /// so each only ever said "Failed to load ... Check network connection", which sent a player
+    /// looking for a network fault. The phone's drawer then holds its Installation tab alone.</remarks>
+    private static IReadOnlyList<LauncherInfoTab> PhoneInfoTabs(IReadOnlyList<LauncherInfoTab> tabs) =>
+        !Engine_Platform.IsAndroid || Ini.GetBool("EnableOnlineMetadata", false, "Github") ? tabs
+            : tabs.Where(tab => tab.Source is not (LauncherInfoSource.ProjectChangeLog or LauncherInfoSource.ProjectContributors)).ToList();
+
     /// <summary>Shows the Android installation progress log in the info drawer's Installation tab.</summary>
     /// <returns>False when another tab, or the desktop, is showing.</returns>
     private bool ShowAndroidInstallationLog()
     {
-        if (_phone == null || _infoTabs.CurrentTab != _infoTabs.TabCount - 1 || _infoTabs.GetTabTitle(_infoTabs.CurrentTab) != "Installation") return false;
+        if (_phone == null || _infoTabs.TabCount == 0 || _infoTabs.CurrentTab != _infoTabs.TabCount - 1 ||
+            _infoTabs.GetTabTitle(_infoTabs.CurrentTab) != "Installation") return false;
         _infoBody.Text = string.Join("\n", _consoleLines).Replace("[", "[lb]", StringComparison.Ordinal);
         return true;
     }

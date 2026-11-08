@@ -26,7 +26,8 @@ public sealed record AndroidGraphicsOption(
 /// picture and that the running game picks up at once. The host rereads the render scale and mesh LOD
 /// (AndroidGameHost.RefreshRenderScale); the rest reach their readers through
 /// <see cref="Refii.Core.Engine_RefiiConfig.TrySetGodotCvar"/> (placed lights, the sun shadow's depth and
-/// reach, the props' draw ranges, the trees' far reach, the bloom). Settings read only at launch (the
+/// reach, the props' draw ranges, the trees' far reach, the bloom). The host also rereads the sun shadow's
+/// map size and edge filter (<see cref="AndroidSunShadows"/>). Settings read only at launch (the
 /// characters' draw distance, the trees' shadow reach and thinned crowns) are left to the launcher.
 /// </summary>
 public static class AndroidGraphicsOptions
@@ -34,10 +35,11 @@ public static class AndroidGraphicsOptions
     /// <summary>The rows, top to bottom.</summary>
     /// <remarks>The impacts are from the phone measurements in GraphicsPresets: the render scale is
     /// most of the GPU's work (on the S25+, 60% saved about 6% against 67%, and 30% is the largest part
-    /// of Ultra Performance's 28% off Balanced); the sun shadow off is about 12% alone; eight lit lamps to four
+    /// of Low's 28% off High); the sun shadow off is about 12% alone; eight lit lamps to four
     /// took 8% on an Adreno 640; every lamp that casts renders its own shadow map. Model detail and prop
-    /// distance are most of the rest of Quality's +25-30% over Balanced. The shadow reach, lamp range and
-    /// bloom moved nothing measurable.</remarks>
+    /// distance are most of the rest of Ultra's +25-30% over High. The shadow reach, lamp range and
+    /// bloom moved nothing measurable. Shadow softness Off to High cost the S25+ about 9%; shadow
+    /// detail 1024 to 2048 nothing measurable.</remarks>
     public static readonly AndroidGraphicsOption[] All =
     {
         new("render_scale_percent", "Render scale", AndroidGraphicsImpact.High,
@@ -67,6 +69,14 @@ public static class AndroidGraphicsOptions
             "How far small and medium props cast the sun's shadow, as a share of their full reach. Large landscape shadows stay either way.",
             new[] { "0.5", "0.75", "1" },
             v => Number(v * 100) + "%"),
+        new(AndroidSunShadows.MapKey, "Shadow detail", AndroidGraphicsImpact.Low,
+            "How finely the sun's shadows are drawn. Higher shows smaller leaf and branch shadows and tighter soft edges, for a little more GPU time and memory.",
+            new[] { "1024", "2048", "4096" },
+            v => v switch { 1024 => "Low", 2048 => "Medium", 4096 => "High", _ => Number(v) }),
+        new(AndroidSunShadows.FilterKey, "Shadow softness", AndroidGraphicsImpact.Medium,
+            "How smooth the edges of the sun's shadows are. Off shows hard, stepped edges; Low is soft but grainy; Medium and High are smoother and cost more.",
+            new[] { "0", "1", "2", "3" },
+            v => v switch { 0 => "Off", 1 => "Low", 2 => "Medium", 3 => "High", _ => Number(v) }),
         // 0 lights every one within the range.
         new("placed_light_limit", "Lamps lit", AndroidGraphicsImpact.Medium,
             "How many of the nearest lamps, torches and fires are lit at once; the rest fade out until you come near. All lights every one in range.",

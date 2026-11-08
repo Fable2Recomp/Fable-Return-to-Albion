@@ -5,6 +5,22 @@ namespace Refii.Titles.Fable2;
 /// <summary>The pub games on a phone: the letterbox beside the stage.</summary>
 public partial class GamePubGames
 {
+	/// <summary>A board was torn down; its assets go on the next poll (Engine_SwfAssets.ReleaseBoards).</summary>
+	private bool _left;
+
+	/// <summary>
+	/// A frame after a teardown, when the board's nodes are gone, and not between tutorial and table:
+	/// what the boards built goes (the low-memory tier only, Engine_SwfAssets.ReleaseBoards).
+	/// </summary>
+	private void ReleaseLeftBoard()
+	{
+		if (_host is null && _left)
+		{
+			_left = false;
+			Refii.Titles.Fable2.PubGames.Engine_SwfAssets.ReleaseBoards();
+		}
+	}
+
 	/// <summary>
 	/// Black at the sides of a phone's screen past the board's stage. A phone is wider than the
 	/// console's 16:9, so the stage, fitted to the height, leaves strips where the loading screen

@@ -14,6 +14,7 @@ namespace Refii.Mods;
 /// <c>mod.&lt;mod&gt;.&lt;action&gt;</c> so the Godot side sees it. A mod CLAIMS an action for a
 /// player (<see cref="Claim"/>: <c>Refii.input_claim</c>, <c>RefiiHost.claim_input</c>,
 /// <c>refii_mod_input_claim</c>) to take its buttons away from the guest while keeping the events.
+/// An action may also state how a touchscreen presses it (<c>"touch"</c>, <see cref="ModInputTouch"/>).
 /// </summary>
 /// <remarks>
 /// Polled once per frame from <c>GameInput._Process</c>, after the pads are assigned, with the
@@ -85,6 +86,9 @@ public static class ModInput
 
 		/// <summary>The chord's key when it names one, else <see cref="Key.None"/>.</summary>
 		public Key ChordKey { get; init; } = Key.None;
+
+		/// <summary>How a touchscreen presses it (<c>"touch"</c>, <see cref="ModInputTouch"/>); null for no pill or caption.</summary>
+		public ModInputTouch.Spec? Touch { get; init; }
 	}
 
 	private static List<Action>? _actions;
@@ -289,6 +293,22 @@ public static class ModInput
 		ModInputPresses.Apply(player, ref buttons, ref leftTrigger, ref rightTrigger, _pressTick, _pressTickKnown, Time.GetTicksMsec());
 	}
 
+	/// <summary>
+	/// Keeps a pad state's split of physical and other buttons in step with <see cref="Withhold"/>
+	/// and <see cref="Press"/>, given its buttons before each: a withheld bit leaves both, and a
+	/// pressed one joins the other buttons. Where the transport publishes that split (Android's
+	/// controller mailbox, whose guest reads the physical phases and the other buttons rather than
+	/// the plain bits) a press would otherwise never arrive and a claimed button would still reach
+	/// the game.
+	/// </summary>
+	public static void KeepSplit(ref Refii.Game.GameInput.PadState state, uint beforeWithhold, uint beforePress)
+	{
+		uint withheld = beforeWithhold & ~beforePress;
+		state.PhysicalButtons &= ~withheld;
+		state.OtherButtons &= ~withheld;
+		state.OtherButtons |= state.Buttons & ~beforePress;
+	}
+
 	private static ulong _pressTickFrame = ulong.MaxValue;
 	private static uint _pressTick;
 	private static bool _pressTickKnown;
@@ -332,6 +352,7 @@ public static class ModInput
 		_actions = null;
 		ClearClaims();
 		ModInputPresses.Clear();
+		ModInputTouch.Clear();
 	}
 
 	/// <summary>The refii.toml key holding an action's keyboard rebind.</summary>
@@ -560,7 +581,9 @@ public static class ModInput
 				!ModInputClaims.PlainSuppressed(action, actions, a => PadModifierHeld(a, joypad1), keyboard: false);
 			bool pad2 = PadDown(action, joypad2) && PadModifierHeld(action, joypad2) &&
 				!ModInputClaims.PlainSuppressed(action, actions, a => PadModifierHeld(a, joypad2), keyboard: false);
-			Post(action, 1, keys || pad1);
+			// The touchscreen is player one's: a pill, an area, or the on-screen pad's buttons.
+			bool screen = devices && ModInputTouch.Down(action);
+			Post(action, 1, keys || pad1 || screen);
 			Post(action, 2, pad2);
 		}
 	}
@@ -788,7 +811,8 @@ public static class ModInput
 			}
 		}
 
-		if (keys.Count == 0 && buttons.Count == 0 && triggers.Count == 0 && axis is null)
+		ModInputTouch.Spec? touch = ModInputTouch.Parse(name, label, binding);
+		if (keys.Count == 0 && buttons.Count == 0 && triggers.Count == 0 && axis is null && touch is not { Pill.Length: > 0 })
 		{
 			GD.PushWarning($"[mod-input] {name}: no key, button or axis bound, nor a touch pill; ignored");
 			return null;

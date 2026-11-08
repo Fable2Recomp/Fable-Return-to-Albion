@@ -38,6 +38,7 @@ public sealed partial class RuntimeSettingsModel
     /// </summary>
     public static bool IsAdvanced(RuntimeCVarDefinition definition)
     {
+        if (Refii.AndroidRuntime.AndroidLauncherSettings.Advanced(definition.Name) is bool phone) return phone;
         if (definition.Name is "lighting_model" or "materials_modernized" or "texture_upscaling_enabled"
             or "lighting_preset" or "hdr_output" or "bloom_scale" or GraphicsPresets.Key)
         {

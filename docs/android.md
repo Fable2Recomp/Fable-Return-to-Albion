@@ -36,7 +36,7 @@ co-op work, with the gaps listed at the end.
   The Android [graphics presets](#android-graphics-preset) turn them on, and a desktop
   neither shows nor writes the presets.
 - **Godot.** The desktop keeps the official 4.7.1 editor and binaries. The Android
-  templates carry eight engine patches (`tools/android/godot-patches/README.md`); the four
+  templates carry nine engine patches (`tools/android/godot-patches/README.md`); the four
   C# binding races they fix (0004, 0005, 0007, 0008) are not Android-specific, only rarer on
   desktop.
 
@@ -162,7 +162,10 @@ launcher then removes the extracted game copies and builds it no longer uses.
 ## On the phone
 
 - **Settings** are the app's `files/runtime/refii.toml`, the same keys as the desktop's;
-  the launcher's Launch options edit it. `debug_channel = true` opens the debug channel on
+  the launcher's Launch options edit it. On a phone it lists what a player sets (the graphics
+  preset, frame cap, FPS counter, render scale, camera, vibration, RexNet and split screen);
+  everything else is under **Advanced**, and the desktop's window, VSync and anti-aliasing
+  settings, which a phone ignores, are not listed. `debug_channel = true` opens the debug channel on
   `127.0.0.1` (port in `files/runtime/debug/refii-debug.json`; forward it with adb).
   `android_render_thread = true` runs Godot's renderer on its own thread from the next
   launch; it needs the patched templates.
@@ -189,43 +192,149 @@ launcher then removes the extracted game copies and builds it no longer uses.
   *not on phone* and refuses them. Mod actions bound to keys need a keyboard; the touch
   controls have no buttons for them yet.
 - **Co-op.** RexNet needs the `--rexnet` native build and `--netplay` export (both in
-  `build-apk.py`). With RexNet up the game signs in with the RexNet profile, so earlier
-  saves need copying into it. Join from the main menu's Multiplayer, or with Interact on
-  another player's orb.
+  `build-apk.py`). With RexNet up the game signs in with the RexNet profile. When the game
+  starts, a profile that was saved to less recently than another one takes a copy of the
+  newest saves, so turning RexNet on or off keeps your heroes; the profile's own older saves
+  go to a hidden `.<XUID>.replaced-<time>` folder (`xam_save_profile_android.h`). Add a friend
+  by copying their friend code (Multiplayer, My friend code) and choosing Add a friend; join
+  from Multiplayer, Friends, or with Interact on another player's orb.
 
 ## Android graphics preset
 
-Launch options has a **Graphics Preset** row on a phone: **Ultra Performance**,
-**Performance**, **Balanced**, **Quality** or **Custom** (a preset setting changed by hand). A
-phone starts on Balanced with a 30 FPS cap, or on Ultra Performance if its GPU is an Adreno
-older than the 700s (with a 20 FPS cap below the 650).
+Launch options has a **Graphics Preset** row on a phone: **Low**, **Medium**, **High**,
+**Ultra** or **Custom** (a preset setting changed by hand). A
+phone starts on High, or on Low if its GPU is an Adreno older than the 700s,
+with a 30 FPS cap either way. A 20 FPS cap is the player's choice in Options.
 
 | Preset | Render scale | Sun shadow | Also |
 |---|---|---|---|
-| Ultra Performance | 40% | none | the nearest four placed lights, trees to 300 m, half the undergrowth |
-| Performance | 50% | none | more lights and distance than Ultra Performance |
-| Balanced | 60% | where the theme casts one | every same-picture shortcut |
-| Quality | 67% | longer | the 360's model detail, the desktop's prop distances, more placed lights |
+| Low | 40% | none | the nearest four placed lights, trees to 300 m, half the undergrowth |
+| Medium | 50% | none | more lights and distance than Low |
+| High | 60% | where the theme casts one | every same-picture shortcut |
+| Ultra | 67% | longer | the 360's model detail, the desktop's prop distances, more placed lights |
+
+High softens the sun shadow's edges at Godot's Soft Low and Ultra at Soft Medium (`sun_shadow_filter`);
+Godot's own default on a phone is Hard, which stair-steps. Both draw the sun shadow on a 2048 map
+instead of 1024 (`sun_shadow_map`). Both are rows in Options' Graphics settings: **Shadow softness**
+and **Shadow detail**.
+
+The low-memory tier (`android_low_ram_mode`) trades a little picture and waiting for memory: normal
+maps and large colour maps one size smaller where the GPU has no BC formats, the pause and Items menus built when first opened, no
+shader folds, and a bound on the hero's decoded texture sources. `auto` turns it on under 7 GB of
+memory, and the Low preset sets `on`. A new install under 7 GB starts on Low.
+
+Finished character composites are kept in `cache/<Title>/composites/<build>` in the form they upload,
+up to 256 MB, longest unused first out. `android_composite_cache = false` turns that off.
 
 The values and the measurements behind them are in `Godot/src/android/GraphicsPresets.cs`;
-raising its `Revision` makes a phone still on a preset take the new values once. Balanced and
-Ultra Performance keep their earlier stored names (`android`, `android_low`), so a phone on one
-stays on it.
+raising its `Revision` makes a phone still on a preset take the new values once. The stored names
+predate the labels (`android_low`, `android_mid`, `android`, `android_high`), so a phone on one
+stays on it. Picking Ultra, in Launch options or in-game, first warns that it isn't intended for
+casual use and has performance issues, and applies only if confirmed.
 
 ### In-game Options
 
-- **Graphics column:** the preset, picked from a list, and the settings that change the picture,
-  each applied at once (`Godot/src/android/AndroidGraphicsOptions.cs`). A coloured line under
-  each says what it costs and **?** says what it does; changing one makes the preset Custom.
+- **Graphics settings** opens the Graphics column beside the buttons: the preset, picked from the
+  list it opens on, the **Frame limit** (a button each for no cap, 20, 30 and 60 FPS), and the
+  settings that change the picture, each applied at once (`Godot/src/android/AndroidGraphicsOptions.cs`).
+  A coloured line under each says what it costs and **?** says what it does; changing one makes the
+  preset Custom. Options itself opens on the buttons alone, and back closes the column first.
 - **Shadows:** when a pick or a setting turns shadows on in a session that started without them,
   Options asks whether to rebuild the shaders now (the game pauses) or at the next loading screen.
-- **FPS** caps the frame rate, **FPS counter** shows it in the top left corner, and
+- **FPS counter** shows the frame rate in the top left corner, and
   **Vibration** sets the rumble's strength or turns it off (`vibration_strength`, 50% by default).
+- **Diagnostics** unfolds **Performance stats** and **Developer tools**, the desktop's F5 and F6.
 - **Controller buttons:** tap a game button, then press the controller's button for it; the two
   swap. Saved as `android-controller-map.json` beside `refii.toml`.
 - **Edit touch controls:** the layout of the kind of screen Options was opened on (the world,
   menus, a pub game...): drag to move, Smaller and Bigger, Reset screen, and named presets of every
   screen. Saved as `android-touch-layouts.json` beside `refii.toml`.
+
+## Mods on a touchscreen
+
+What a mod states for the touch controls. The rest of the mod API is in the modding guide
+([Godot/docs/modding](../Godot/docs/modding/README.md)); these parts only matter on a phone, so they are documented here.
+
+An action in a mod's `input.json` ([Input actions](../Godot/docs/modding/settings-and-input.md)) may carry one more field:
+
+| Field | Meaning |
+|---|---|
+| `touch` | optional: how a phone's touchscreen presses it — a pill of its own, or a caption on the on-screen button it is bound to |
+
+An action whose only binding is a touch pill is kept: only a touchscreen presses it, and the
+Controls page has no row for it.
+
+A phone has no keyboard, and the touch controls draw the pad's buttons, not the keys: an action
+bound to keys alone would never fire there. `"touch"` says how the screen presses it.
+
+```json
+{
+	"toggle":  { "label": "Skateboard on or off", "keys": ["K"], "touch": "Skate" },
+	"blue":    { "label": "Fire blue (touch)", "touch": { "pill": "Blue", "when": "portal_gun.mode" } },
+	"ollie":   { "label": "Hop", "keys": ["Space"], "buttons": ["A"], "touch": { "caption": "Hop", "when": "skate.on" } }
+}
+```
+
+| `touch` | Meaning |
+|---|---|
+| `"Skate"` | a PILL of its own, named so, held while a finger is on it |
+| `true` | a pill named by the action's `label` |
+| `{ "pill": "Blue" }` | the same as `"Blue"`; `label` is read when `pill` is absent |
+| `{ "caption": "Hop" }` | no pill: the on-screen button the action's `buttons` name (A, B, X or Y) is captioned "Hop", and stands even where the hero could not use it otherwise |
+| `"when": "<key>"` | with either: it stands only while that published value (`Refii.publish`, `host.publish`) is at least 0.5 — a mode's controls appear with the mode |
+
+- Pills go in the touch controls' top row, filling leftward from Emotes in the load order and the
+  file's order, and on into a second row beneath when the first is full. They look like Menu's and
+  Emotes'. A pill with `"when"` hangs under its own mod's first pill instead (the skateboard's
+  Wheelie under Skate), so the row never moves as a mode comes and goes. The player moves and resizes them with **Edit touch controls...** like any other
+  control, and the layout keeps them by action, so a pill comes back where it was put.
+- A pill or an area presses the action for player one with the other devices, through the same
+  `input_action` event, claims and rebinds: a script cannot tell a tap from a key.
+- THE ON-SCREEN PAD IS PLAYER ONE'S PAD. An action with no pill of its own is pressed by the touch
+  controls' buttons and triggers its `buttons` name, under its chord, as a controller's would: the
+  skateboard's `"A"` hop fires on the screen's A. An action with a pill is pressed by the pill alone,
+  so a pill on an action bound to `Back` keeps the screen's Emotes from pressing it too.
+- Pills and captions stand only in play, not in menus, wheels or photo mode.
+- A pill steers as the face buttons do: a thumb that slides off it turns the camera while the pill
+  stays held, so a held action can be aimed with the same thumb.
+
+A mod's own drawing can be tapped too. A Godot script states a rectangle of the screen with
+`host.touch_area("my_mod.size", rect)` — the root viewport's coordinates, where its `CanvasLayer`
+draws; an empty `Rect2()` removes it — and a finger landing there presses the action, held while
+it stays. The area takes the finger before the move stick and the camera. A HUD piece can be the
+area itself: its `"touch"` names the action, and the piece is tapped where it is drawn (see
+[HUD pieces](../Godot/docs/modding/ui-and-hud.md)). `host.touch_mode()` says whether the touchscreen is the device in
+use now, for a mod that draws differently there, and `host.touch_stick()` reads the on-screen move
+stick (x right, y up, -1..1) for a mod that steers by the stick itself.
+
+```gdscript
+func _process(_delta: float) -> void:
+	var wanted := Rect2(centre - Vector2(radius, radius), Vector2(radius, radius) * 2.0) if host.touch_mode() else Rect2()
+	if wanted != area:
+		area = wanted
+		host.touch_area("minimap.size", wanted)
+```
+
+The calls, on a Godot script's `host` (Lua has none: an area is a rectangle of a script's own drawing):
+
+| Call | Meaning |
+|---|---|
+| `touch_area(action, rect) -> bool` | on a touchscreen a finger on `rect` (the root viewport's coordinates) presses the action for player one; an empty `Rect2()` removes it |
+| `touch_mode() -> bool` | whether the touchscreen is the device in use now: the touch controls are drawn |
+| `touch_stick() -> Vector2` | the touch controls' move stick, x right and y up, -1..1; zero with no thumb on it |
+
+A HUD piece in `ui/hud.json` ([HUD pieces](../Godot/docs/modding/ui-and-hud.md)) has two touchscreen fields:
+
+| Field | Meaning |
+|---|---|
+| `touch` | a picture's input action (`"slot4"`, scoped to the mod, or `"my_mod.slot4"`): on a touchscreen a finger on player one's copy, where it is drawn, presses it |
+| `touchScale` | on a group: a number the scale is multiplied by on a touchscreen device (a phone), where the screen is small and the pieces are tapped with a thumb: a bar the right size on a monitor is too small to see or press there. Not stated, or not above 0, it is 1 |
+
+A mod's own screen ([A screen of your own](../Godot/docs/modding/ui-and-hud.md#a-screen-of-your-own)) takes the
+taps on a touchscreen: a finger lands on it as the mouse's left button, a swipe scrolls as the mouse
+wheel does, and the touch controls draw only Options and a Close pill (Start) over it — their pad
+does not reach the game here. Give every key the screen offers a button to tap when
+`host.touch_mode()` is true; a typed field needs a keyboard a phone does not have.
 
 ## A game module compiled on a PC
 

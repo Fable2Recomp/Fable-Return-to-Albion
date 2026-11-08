@@ -709,8 +709,11 @@ public partial class GameInput : Node
 		int player = Engine_TitleGame.Active.Input.ModPlayer(pad);
 		if (player != 0)
 		{
+			uint unclaimed = state.Buttons;
 			Refii.Mods.ModInput.Withhold(player, ref state.Buttons, ref state.LeftTrigger, ref state.RightTrigger);
+			uint unpressed = state.Buttons;
 			Refii.Mods.ModInput.Press(player, ref state.Buttons, ref state.LeftTrigger, ref state.RightTrigger);
+			Refii.Mods.ModInput.KeepSplit(ref state, unclaimed, unpressed);
 		}
 
 		Deliver(pad, connected, state, Engine_TitleGame.Active.Input.PublishPad(pad, connected, state, state));
@@ -858,8 +861,11 @@ public partial class GameInput : Node
 		int player = Engine_TitleGame.Active.Input.ModPlayer(0);
 		if (player != 0)
 		{
+			uint unclaimed = state.Buttons;
 			Refii.Mods.ModInput.Withhold(player, ref state.Buttons, ref state.LeftTrigger, ref state.RightTrigger);
+			uint unpressed = state.Buttons;
 			Refii.Mods.ModInput.Press(player, ref state.Buttons, ref state.LeftTrigger, ref state.RightTrigger);
+			Refii.Mods.ModInput.KeepSplit(ref state, unclaimed, unpressed);
 		}
 
 		// The title takes it from here: what the guest sees, and what its own host menus read

@@ -84,12 +84,18 @@ public final class RefiiInstallService extends Service {
         return START_NOT_STICKY;
     }
 
+    /** The app's monochrome emblem (its themed launcher icon) for the status bar, else Android's {@code fallback}. */
+    private int smallIcon(int fallback) {
+        int emblem = getResources().getIdentifier("icon_monochrome", "mipmap", getPackageName());
+        return emblem != 0 ? emblem : fallback;
+    }
+
     private Notification notification(String text) {
         Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());
         PendingIntent content = open == null ? null : PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Intent cancel = new Intent(this, RefiiInstallService.class).setAction("cancel").putExtra("job", job == null ? "" : job.getName());
         PendingIntent action = PendingIntent.getService(this, 1, cancel, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        return new Notification.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_sys_download)
+        return new Notification.Builder(this, CHANNEL).setSmallIcon(smallIcon(android.R.drawable.stat_sys_download))
             .setContentTitle("Installing Fable 2").setContentText(text).setContentIntent(content)
             .setOngoing(true).setOnlyAlertOnce(true).setProgress(0, 0, true)
             .addAction(new Notification.Action.Builder(null, "Cancel installation", action).build()).build();

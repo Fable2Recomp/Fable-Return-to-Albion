@@ -13,7 +13,8 @@ public sealed class GameRegionRetirement
     /// <summary>Maximum collection/finalizer passes, allowing mesh/material/texture wrapper chains to weaken in turn.</summary>
     public const int CollectionPasses = 3;
     /// <summary>Finite active-application deadline; a timeout is an explicit failure requiring recovery.</summary>
-    public const double TimeoutSeconds = 30;
+    /// <remarks>Room for the last pass's compaction on a phone out of memory, where the heap has to come back from swap first.</remarks>
+    public const double TimeoutSeconds = 120;
     private readonly double _started;
     private ulong _minimumFrame;
     private string _stage = "waiting-workers";
@@ -46,6 +47,9 @@ public sealed class GameRegionRetirement
         _pauseStarted = seconds;
         _minimumFrame = frame + 1;
     }
+
+    /// <summary>Whether the collection pass this gate asks for next is its last.</summary>
+    public bool NextCollectionIsLast => _passes == CollectionPasses - 1;
 
     /// <summary>The last observed immutable state.</summary>
     public Snapshot Status => new(_stage, _elapsed, _workers, _passes, _stage != "complete", _error,
@@ -95,7 +99,9 @@ public sealed class GameRegionRetirement
         _workers = Math.Max(0, workers);
         if (!ObserveClock(seconds) || workers < 0)
             return Fail("invalid retirement clock or worker count");
-        if (_elapsed >= TimeoutSeconds)
+        // A blocking compaction holds the main thread, so its finish is first seen late: work that is done is not timed out.
+        bool lastPassDone = _passes == CollectionPasses || (_stage == "collecting" && NextCollectionIsLast && collectionFinished);
+        if (_elapsed >= TimeoutSeconds && !lastPassDone)
             return Fail($"retirement timed out during {_stage} after {_elapsed:0.00}s ({_workers} worker(s), {_passes} pass(es))");
         if (_stage != "waiting-workers" && workers != 0)
             return Fail("a region producer resumed after retirement was quiescent");

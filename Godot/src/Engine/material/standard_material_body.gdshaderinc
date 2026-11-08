@@ -200,6 +200,43 @@ global uniform vec2 fable_wind_factors;
 #else
 #define FABLE_GRASS_BEND (grass_normal_gradient.x > 0.5)
 #endif
+// The vegetation family's flags (`lite_vegetation_folds`), each folded to the value its build's
+// materials hold; set once in Engine_MdlMaterial.ApplyVegetation, never written again.
+#ifdef FABLE_SPEC_FOLIAGE
+#define FABLE_FOLIAGE true
+#else
+#ifdef FABLE_SPEC_NOT_FOLIAGE
+#define FABLE_FOLIAGE false
+#else
+#define FABLE_FOLIAGE foliage
+#endif
+#endif
+#ifdef FABLE_SPEC_GRASS
+#define FABLE_GRASS true
+#else
+#ifdef FABLE_SPEC_NOT_GRASS
+#define FABLE_GRASS false
+#else
+#define FABLE_GRASS grass
+#endif
+#endif
+#ifdef FABLE_SPEC_FOLIAGE_NORMALS
+#define FABLE_FOLIAGE_NORMALS true
+#else
+#ifdef FABLE_SPEC_NO_FOLIAGE_NORMALS
+#define FABLE_FOLIAGE_NORMALS false
+#else
+#define FABLE_FOLIAGE_NORMALS foliage_normals
+#endif
+#endif
+// A tree's transfer is the constant zero (vertex() below): FABLE_SPEC_TREE_NO_TRANSFER drops the
+// varying and its test instead of interpolating four zeros.
+#ifndef FABLE_LITE_MODERN
+#if defined(FABLE_TREE_WIND) && defined(FABLE_SPEC_TREE_NO_TRANSFER)
+#else
+#define FABLE_TRANSFER_VARYING
+#endif
+#endif
 
 /// THE SPECULAR TERMS, HANDED TO `light()`. Godot's `light()` cannot reach a fragment local, and
 /// the guest's specular is Phong over the material's own maps, so the colour and the exponent
@@ -217,7 +254,7 @@ varying float v_specular_power;
 
 /// The PRT ambient, computed per vertex as the guest's AMB2 vertex shader does; a = present.
 /// Not in FABLE_LITE_MODERN: the modern model multiplies every probe bake by zero.
-#ifndef FABLE_LITE_MODERN
+#ifdef FABLE_TRANSFER_VARYING
 varying vec4 v_transfer;
 #endif
 
@@ -243,7 +280,7 @@ instance uniform float xr_fade_alpha : instance_index(13) = 1.0;
 varying float v_tree_fade;
 
 void vertex() {
-#ifndef FABLE_LITE_MODERN
+#ifdef FABLE_TRANSFER_VARYING
 #if defined(FABLE_TREE_WIND) || defined(FABLE_SPEC_NO_PRT)
     // A tree carries its wind lanes in CUSTOM1..3 (Engine_MdlTreeStreams), not transfer; a
     // FABLE_SPEC_NO_PRT build draws instances that state another bake mode, or a mesh without CUSTOM0.
@@ -303,6 +340,15 @@ void vertex() {
 
 #ifdef FABLE_TREE_WIND
     // The title's tree wind: the branch offset its trunk stage gives this vertex (COLOR1 weights).
+#ifdef FABLE_LITE
+    // Measured per copy to the same centre as the fade, so a whole tree settles at once. Past
+    // the reach the sway's work is skipped, in the binning pass's position-only stage too.
+    float sway_keep = fable_tree_sway_keep(
+        distance(MAIN_CAM_INV_VIEW_MATRIX[3].xyz, (MODEL_MATRIX * vec4(xr_tree_centre, 1.0)).xyz));
+    if (sway_keep > 0.0) {
+        VERTEX = mix(VERTEX, fable_tree_sway(VERTEX, CUSTOM1, MODEL_MATRIX), sway_keep);
+    }
+#else
     VERTEX = fable_tree_sway(VERTEX, CUSTOM1, MODEL_MATRIX);
 #endif
 #endif

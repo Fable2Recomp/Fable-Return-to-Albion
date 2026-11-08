@@ -195,7 +195,9 @@ public static class Engine_TexLibrary
 		}
 
 		using var temporary = new Engine_TextureTemporaries();
-		Image? image = temporary.Own(Decode(path, semantic, read, out bool decodedAlpha, out byte[]? source));
+		byte[]? source = null;
+		Image? image = temporary.Own(AndroidTexUploadCache.TryServe(path, read, out AndroidTexSourceKeys.Ticket upload, out bool decodedAlpha));
+		image ??= temporary.Own(Decode(path, semantic, read, out decodedAlpha, out source));
 
 		// A failed decode is not cached: a read can fail transiently (a bank not yet readable
 		// during a region change), and a material with no albedo samples the shader's default,
@@ -227,7 +229,8 @@ public static class Engine_TexLibrary
 			enhanced = true;
 		}
 
-		ImageTexture? texture = image is null || image.IsEmpty() ? null : temporary.Own(Engine_TextureUpload.CreateTexture(image));
+		image = temporary.Own(AndroidTexUploadCache.Remember(upload, image, decodedAlpha));
+		ImageTexture? texture = image is null || image.IsEmpty() ? null : temporary.Own(Engine_TextureUpload.CreateTexture(image, world: true));
 
 		lock (Gate)
 		{
@@ -595,6 +598,8 @@ public static class Engine_TexLibrary
 			$"{System.Threading.Volatile.Read(ref _compressFailures):N0} uncompressed " +
 			$"(BC unavailable), backend {Engine_TexEnhance.BackendId}");
 		Engine_TexCache.Report();
+		AndroidTexSourceKeys.Report();
+		AndroidTexUploadCache.Report();
 	}
 
 	/// <summary>
@@ -625,6 +630,11 @@ public static class Engine_TexLibrary
 
 		string path = Normalise(virtualPath);
 
+		if (AndroidTexSourceKeys.TryServe(path, read, out AndroidTexSourceKeys.Ticket ticket, out hasAlpha) is { } known)
+		{
+			return known;
+		}
+
 		try
 		{
 			source = read(path);
@@ -647,6 +657,7 @@ public static class Engine_TexLibrary
 		// enhancement of it and has to survive a backend being registered, swapped or turned off
 		// — and it is the same bytes whichever slot asked, so the semantic stays out of the key.
 		string key = Engine_TexCache.BaseKey(source);
+		AndroidTexSourceKeys.Learn(ticket, key, source);
 
 		Image? cached = Engine_TexCache.TryLoad(key, out hasAlpha);
 		if (cached is not null)

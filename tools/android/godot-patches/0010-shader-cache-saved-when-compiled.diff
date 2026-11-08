@@ -1,0 +1,128 @@
+--- a/servers/rendering/renderer_rd/shader_rd.cpp
++++ b/servers/rendering/renderer_rd/shader_rd.cpp
+@@ -258,6 +258,7 @@ void ShaderRD::_initialize_version(Version *p_version) {
+ 	p_version->variants.resize_initialized(variant_defines.size());
+ 	p_version->variant_data.resize(variant_defines.size());
+ 	p_version->group_compilation_tasks.resize_initialized(group_enabled.size());
++	p_version->group_compiles.resize_initialized(group_enabled.size());
+ }
+ 
+ void ShaderRD::_clear_version(Version *p_version) {
+@@ -422,6 +423,32 @@ void ShaderRD::_compile_variant(uint32_t p_variant, CompileData p_data) {
+ 	}
+ }
+ 
++void ShaderRD::_compile_variant_task(uint32_t p_variant, CompileData p_data) {
++	_compile_variant(p_variant, p_data);
++	if (p_data.compile->pending.decrement() == 0) {
++		_compile_group_finished(p_data.version, p_data.group, p_data.compile);
++	}
++}
++
++// Saves a group to the cache as soon as its last variant compiles. _compile_version_end saves it
++// only when a variant of the group is first used or the version is freed, so a group compiled
++// but not yet used when the process ends was compiled again on every launch.
++void ShaderRD::_compile_group_finished(Version *p_version, int p_group, GroupCompile *p_compile) {
++#if ENABLE_SHADER_CACHE
++	if (!shader_cache_user_dir_valid) {
++		return;
++	}
++	for (uint32_t i = 0; i < group_to_variant_map[p_group].size(); i++) {
++		int variant_id = group_to_variant_map[p_group][i];
++		if (variants_enabled[variant_id] && (p_version->variants[variant_id].is_null() || p_version->variant_data[variant_id].is_empty())) {
++			return; // A variant failed: _compile_version_end clears the group.
++		}
++	}
++	_save_to_cache(p_version, p_group);
++	p_compile->saved = true;
++#endif
++}
++
+ Vector<String> ShaderRD::version_build_variant_stage_sources(RID p_version, int p_variant) {
+ 	Version *version = version_owner.get_or_null(p_version);
+ 	ERR_FAIL_NULL_V(version, Vector<String>());
+@@ -731,8 +758,14 @@ void ShaderRD::_compile_version_start(Version *p_version, int p_group) {
+ 	CompileData compile_data;
+ 	compile_data.version = p_version;
+ 	compile_data.group = p_group;
++	if (p_version->group_compiles.size() <= (uint32_t)p_group) {
++		p_version->group_compiles.resize_initialized(group_enabled.size());
++	}
++	compile_data.compile = memnew(GroupCompile);
++	compile_data.compile->pending.set(group_to_variant_map[p_group].size());
++	p_version->group_compiles[p_group] = compile_data.compile;
+ 
+-	WorkerThreadPool::GroupID group_task = WorkerThreadPool::get_singleton()->add_template_group_task(this, &ShaderRD::_compile_variant, compile_data, group_to_variant_map[p_group].size(), -1, true, SNAME("ShaderCompilation"));
++	WorkerThreadPool::GroupID group_task = WorkerThreadPool::get_singleton()->add_template_group_task(this, &ShaderRD::_compile_variant_task, compile_data, group_to_variant_map[p_group].size(), -1, true, SNAME("ShaderCompilation"));
+ 	p_version->group_compilation_tasks.write[p_group] = group_task;
+ }
+ 
+@@ -744,6 +777,13 @@ void ShaderRD::_compile_version_end(Version *p_version, int p_group) {
+ 	WorkerThreadPool::get_singleton()->wait_for_group_task_completion(group_task);
+ 	p_version->group_compilation_tasks.write[p_group] = 0;
+ 
++	bool saved = false;
++	if (p_version->group_compiles.size() > (uint32_t)p_group && p_version->group_compiles[p_group] != nullptr) {
++		saved = p_version->group_compiles[p_group]->saved;
++		memdelete(p_version->group_compiles[p_group]);
++		p_version->group_compiles[p_group] = nullptr;
++	}
++
+ 	bool all_valid = true;
+ 
+ 	for (uint32_t i = 0; i < group_to_variant_map[p_group].size(); i++) {
+@@ -773,7 +813,7 @@ void ShaderRD::_compile_version_end(Version *p_version, int p_group) {
+ 		return;
+ 	}
+ #if ENABLE_SHADER_CACHE
+-	else if (shader_cache_user_dir_valid) {
++	else if (shader_cache_user_dir_valid && !saved) {
+ 		_save_to_cache(p_version, p_group);
+ 	}
+ #endif
+--- a/servers/rendering/renderer_rd/shader_rd.h
++++ b/servers/rendering/renderer_rd/shader_rd.h
+@@ -34,6 +34,7 @@
+ #include "core/templates/hash_map.h"
+ #include "core/templates/local_vector.h"
+ #include "core/templates/rid_owner.h"
++#include "core/templates/safe_refcount.h"
+ #include "servers/rendering/rendering_device.h"
+ #include "servers/rendering/rendering_server_types.h"
+ 
+@@ -68,6 +69,13 @@ private:
+ 	Vector<RD::PipelineImmutableSampler> immutable_samplers;
+ 	Vector<uint64_t> dynamic_buffers;
+ 
++	// A group's compile in flight: the variants still compiling, and whether the last one to
++	// finish saved the group to the cache.
++	struct GroupCompile {
++		SafeNumeric<uint32_t> pending;
++		bool saved = false;
++	};
++
+ 	struct Version {
+ 		Mutex *mutex = nullptr;
+ 		CharString uniforms;
+@@ -82,6 +90,7 @@ private:
+ 		HashMap<StringName, CharString> code_sections;
+ 		Vector<CharString> custom_defines;
+ 		Vector<WorkerThreadPool::GroupID> group_compilation_tasks;
++		LocalVector<GroupCompile *> group_compiles;
+ 
+ 		Vector<Vector<uint8_t>> variant_data;
+ 		Vector<RID> variants;
+@@ -95,10 +104,13 @@ private:
+ 	struct CompileData {
+ 		Version *version;
+ 		int group = 0;
++		GroupCompile *compile = nullptr;
+ 	};
+ 
+ 	// Vector will have the size of SHADER_STAGE_MAX and unused stages will have empty strings.
+ 	void _compile_variant(uint32_t p_variant, CompileData p_data);
++	void _compile_variant_task(uint32_t p_variant, CompileData p_data);
++	void _compile_group_finished(Version *p_version, int p_group, GroupCompile *p_compile);
+ 
+ 	void _initialize_version(Version *p_version);
+ 	void _clear_version(Version *p_version);

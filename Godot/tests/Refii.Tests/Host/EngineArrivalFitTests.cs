@@ -282,14 +282,14 @@ public class EngineArrivalFitTests
 	[TestCase]
 	public void ThePerformancePresetTurnsItOnAndADesktopKeepsItOff()
 	{
-		// Phones: Performance on (the S10e's paired walks), Balanced and Quality off (the S25+ runs at full speed
-		// and measured nothing for its latency); a phone still on Performance takes it on its next
+		// Phones: Low on (the S10e's paired walks), High and Ultra off (the S25+ runs at full speed
+		// and measured nothing for its latency); a phone still on Low takes it on its next
 		// start (revision 6).
-		AssertThat(GraphicsPresets.UltraPerformanceValues[Engine_TickTimeline.ArrivalFitKey]).IsEqual("true");
-		AssertThat(GraphicsPresets.BalancedValues[Engine_TickTimeline.ArrivalFitKey]).IsEqual("false");
-		AssertThat(GraphicsPresets.QualityValues[Engine_TickTimeline.ArrivalFitKey]).IsEqual("false");
+		AssertThat(GraphicsPresets.LowValues[Engine_TickTimeline.ArrivalFitKey]).IsEqual("true");
+		AssertThat(GraphicsPresets.HighValues[Engine_TickTimeline.ArrivalFitKey]).IsEqual("false");
+		AssertThat(GraphicsPresets.UltraValues[Engine_TickTimeline.ArrivalFitKey]).IsEqual("false");
 		AssertThat(GraphicsPresets.Revision).IsGreaterEqual(6);
-		var phone = new Dictionary<string, string> { [GraphicsPresets.Key] = GraphicsPresets.UltraPerformance, [GraphicsPresets.RevisionKey] = "5" };
+		var phone = new Dictionary<string, string> { [GraphicsPresets.Key] = GraphicsPresets.Low, [GraphicsPresets.RevisionKey] = "5" };
 		AssertThat(GraphicsPresets.Upgrade(phone)).IsTrue();
 		AssertThat(phone[Engine_TickTimeline.ArrivalFitKey]).IsEqual("true");
 

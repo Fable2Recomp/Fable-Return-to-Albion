@@ -8,6 +8,39 @@ namespace Refii.AndroidRuntime;
 /// <summary>Resolves desktop automatic paths before the shared settings panel writes Android's runtime configuration.</summary>
 public static class AndroidLauncherSettings
 {
+    /// <summary>The launcher settings a phone ignores: the window's size, mode, monitor and vsync, the
+    /// rendering driver, and the anti-aliasing and upscalers the phone's renderer turns off
+    /// (AndroidGameHost: MSAA and TAA off, bilinear scaling at render_scale_percent).</summary>
+    private static readonly System.Collections.Generic.HashSet<string> DesktopOnly = new(StringComparer.Ordinal)
+    {
+        "fullscreen", "monitor", "borderless", "display_aspect", "display_resolution", "vsync_mode",
+        "rendering_driver", "msaa", "taa", "render_scaler", "fsr_quality", "fsr_sharpness",
+    };
+
+    /// <summary>Whether the launcher's settings list shows <paramref name="name"/>: not, on a phone, a
+    /// setting the phone ignores, which only made the list longer and looked like it should do something.</summary>
+    public static bool Shows(string name) => !GraphicsPresets.Offered || !DesktopOnly.Contains(name);
+
+    /// <summary>What a phone player sets in the launcher without ticking Advanced: the graphics preset
+    /// and the frame cap with the two settings beside them, the camera and vibration, and online and
+    /// split-screen co-op. The rest of the list (the tuning dials the preset sets, the phone's own
+    /// experiments, keyboard and mouse bindings) stays under Advanced; the game's Options panel has
+    /// the graphics settings with an explanation each.</summary>
+    private static readonly System.Collections.Generic.HashSet<string> PlayerFacing = new(StringComparer.Ordinal)
+    {
+        GraphicsPresets.Key, "max_fps", "fps_counter", "render_scale_percent",
+        "camera_invert_x", "camera_invert_y", "controller_vibration", AndroidQuickSettings.VibrationStrengthKey,
+        "rexnet", "rexnet_display_name", Refii.Game.GameSplitView.SwitchKey, Refii.Game.GameSplitView.OrientationKey,
+    };
+
+    /// <summary>On a phone, whether <paramref name="name"/> waits for Advanced (anything a player does not
+    /// set); null elsewhere, where the panel's own rule decides.</summary>
+    public static bool? Advanced(string name) => GraphicsPresets.Offered ? !PlayerFacing.Contains(name) : null;
+
+    /// <summary>Whether the launcher offers the Look choice: not on a phone, which always draws the modern
+    /// lighting, and where Modern would only switch on the desktop's modernised materials.</summary>
+    public static bool ShowsLook => !GraphicsPresets.Offered;
+
     /// <summary>Preserves launch options while making automatic native paths writable and consistent with the selected installation.</summary>
     /// <param name="runtimeRoot">Physical private runtime directory supplied by the Android host.</param>
     /// <param name="gameRoot">Selected prepared game directory, or null before an installation exists.</param>
@@ -42,7 +75,8 @@ public static class AndroidLauncherSettings
     }
 
     /// <summary>Gives a configuration that never chose a graphics preset the one for this phone's GPU
-    /// (<see cref="FirstPreset"/>) and its frame cap.</summary>
+    /// (<see cref="FirstPreset"/>) and its frame cap, or Low with that cap on a phone short of memory
+    /// (<see cref="Refii.Game.AndroidMemoryRelease.LowRamPhone"/>).</summary>
     /// <remarks>Runs once: afterwards the key is present, and the player's own choices, the
     /// preset's settings and the cap included, stay exactly as they leave them.</remarks>
     /// <param name="values">The runtime configuration's values, changed in place.</param>
@@ -52,29 +86,33 @@ public static class AndroidLauncherSettings
     {
         if (values.ContainsKey(GraphicsPresets.Key)) return false;
         (string preset, string cap) = FirstPreset(adapter ?? AdapterName());
+        if (Refii.Core.Engine_Platform.IsAndroid && Refii.Game.AndroidMemoryRelease.LowRamPhone()) preset = GraphicsPresets.Low;
         if (!GraphicsPresets.Apply(preset, values)) return false;
         values["max_fps"] = cap;
+        // The key that says RuntimeConfig's one-shot migration has run: without it the next read
+        // turns placed_light_shadows back on, and the first preset reads as Custom with its
+        // shadowless shaders rebuilt.
+        values["placed_light_shadows_world"] = "false";
         return true;
     }
 
     /// <summary>
-    /// The preset and frame cap a phone starts on, by its GPU: Ultra Performance on an Adreno older than the
-    /// 700s (capped at 20 below the 650), else Balanced at <see cref="GraphicsPresets.AndroidFrameCap"/>.
+    /// The preset and frame cap a phone starts on, by its GPU: Low on an Adreno older than the
+    /// 700s, else High, both at <see cref="GraphicsPresets.AndroidFrameCap"/>.
     /// </summary>
-    /// <remarks>On the Galaxy S10e (Adreno 640) Balanced ran 13 FPS at either cap, GPU-bound, while
-    /// Ultra Performance held 19.6 at 20 with every frame 50 ms; at 30 it reached 22-25 with frames alternating
-    /// 33 and 50 ms, which reads as uneven, and the hotter phone ran the world slower (0.54 of real time
-    /// against 0.62). The 650 and 660 (Snapdragon 865, 888) have roughly half as much GPU again, untested:
-    /// they start on Ultra Performance at 30. The S25+'s Adreno 830 runs Balanced at 30 with room to spare, and
-    /// the 700s and any other GPU start on Balanced, as every phone did before.</remarks>
+    /// <remarks>On the Galaxy S10e (Adreno 640) High ran 13 FPS at either cap, GPU-bound, while
+    /// Low reached 22-25 at 30. A cap of 20 holds steadier there (every frame 50 ms), but it is the
+    /// player's choice in Options, never the default. The 650 and 660 (Snapdragon 865, 888) have
+    /// roughly half as much GPU again, untested. The S25+'s Adreno 830 runs High at 30 with room to
+    /// spare, and the 700s and any other GPU start on High, as every phone did before.</remarks>
     /// <param name="adapter">The GPU's name as the rendering server gives it ("Adreno (TM) 640").</param>
     public static (string Preset, string Cap) FirstPreset(string adapter)
     {
         Match adreno = Regex.Match(adapter, @"Adreno\D{0,8}(\d{3})", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         if (adreno.Success && int.TryParse(adreno.Groups[1].Value, System.Globalization.NumberStyles.None,
                 System.Globalization.CultureInfo.InvariantCulture, out int model) && model < 700)
-            return (GraphicsPresets.UltraPerformance, model < 650 ? "20" : GraphicsPresets.AndroidFrameCap);
-        return (GraphicsPresets.Balanced, GraphicsPresets.AndroidFrameCap);
+            return (GraphicsPresets.Low, GraphicsPresets.AndroidFrameCap);
+        return (GraphicsPresets.High, GraphicsPresets.AndroidFrameCap);
     }
 
     /// <summary>The GPU's name on a phone; empty elsewhere (tools and tests run without a GPU's server).</summary>

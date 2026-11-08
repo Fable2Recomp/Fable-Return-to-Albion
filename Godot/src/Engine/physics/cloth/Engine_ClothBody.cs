@@ -231,7 +231,7 @@ public partial class Engine_ClothBody : MeshInstance3D
         }
 
         List<ClothPiece> pieces = Engine_ClothPieces.ForMesh(
-            modelPaths, source, Refii.Level.Engine_PropStreamer.Resolve);
+            modelPaths, source, Refii.Game.AndroidMemoryRelease.ResolveClothPart);
         if (pieces.Count == 0)
         {
             return null;

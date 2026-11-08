@@ -20,7 +20,8 @@ internal sealed class AndroidNativeSession
     private readonly string _appRoot;
     private readonly Engine_GameAssets _assets;
     private readonly SinglePlayerControllerMailbox _controller = new();
-    private readonly AndroidMovieSkipPolicy _movieSkips;
+    private readonly AndroidMovieSkipPolicy _movieSkips, _unshownMovieSkips;
+    private readonly AndroidMovieSkipPolicy _aheadMovieSkips = new(true, AheadMovieDwellSeconds);
     private readonly bool _realClock;
     private Thread? _thread;
     private volatile bool _initialized;
@@ -37,6 +38,25 @@ internal sealed class AndroidNativeSession
 
     /// <summary>Holds the guest still while the app is away (a call, the shade, another app), apart from photo mode's hold.</summary>
     internal volatile bool Away;
+
+    /// <summary>The host plays the guest's movies (AndroidStartup's GameVideo): one it has not
+    /// picked up is retired only after <see cref="UnshownMovieDwellSeconds"/>, so a main-thread
+    /// hitch while the guest boots does not cost a startup video.</summary>
+    internal volatile bool HostPlaysMovies;
+
+    /// <summary>The host is showing the requested movie: it ends it (its end, or a tap), never the dwell.</summary>
+    internal volatile bool HostShowsMovie;
+
+    /// <summary>The dwell for a movie the host plays but has not shown: one it could not decode.</summary>
+    public const double UnshownMovieDwellSeconds = 10;
+
+    /// <summary>The sizes of the startup videos the host plays ahead of the guest (GameVideo.PlayAhead).
+    /// The guest's own request for one is retired after <see cref="AheadMovieDwellSeconds"/>, as a tap
+    /// would, whatever <c>skip_movies</c> says: the host shows it, before or after.</summary>
+    internal volatile System.Collections.Generic.IReadOnlySet<uint>? AheadSizes;
+
+    /// <summary>The shortest dwell the skip policy takes, about when a tap may first skip a movie.</summary>
+    public const double AheadMovieDwellSeconds = 0.5;
 
     [DllImport("refii_hostbridge", CallingConvention = CallingConvention.Cdecl)]
     private static extern int RefiiHostSetGameModulePath(
@@ -67,6 +87,7 @@ internal sealed class AndroidNativeSession
         _assets = assets;
         _realClock = realClock;
         _movieSkips = new(options.SkipMovies, options.MovieDwellSeconds);
+        _unshownMovieSkips = new(options.SkipMovies, Math.Max(options.MovieDwellSeconds, UnshownMovieDwellSeconds));
     }
 
     /// <summary>Whether refii.toml asks for the real clock; off when unset.</summary>
@@ -200,16 +221,19 @@ internal sealed class AndroidNativeSession
     private long AssetSize(string path) => _assets.TryGetFile(path, out _) ? _assets.FileSize(path) : -1;
 
     /// <summary>Retires explicit movie requests after a configured dwell; it sends no frontend/menu action.</summary>
-    /// <remarks>Video playback is not provided by this entry point. Keeping this configured policy in
+    /// <remarks>Video playback is not provided by this entry point, apart from the startup videos
+    /// AndroidStartup plays (<see cref="HostPlaysMovies"/>). Keeping this configured policy in
     /// configuration distinguishes skipped introductory video from decoded video or title automation.</remarks>
     private void SkipRequestedMovie()
     {
-        if (!_options.SkipMovies || HostBridge.MovieState() != HostBridge.MoviePlayback.Wanted) return;
+        if (HostShowsMovie || HostBridge.MovieState() != HostBridge.MoviePlayback.Wanted) return;
         uint embeddedSize = HostBridge.GetRequestedVideoSize(out uint bufferGeneration);
+        bool ahead = embeddedSize != 0 && AheadSizes?.Contains(embeddedSize) == true;
+        if (!ahead && !_options.SkipMovies) return;
         string path = HostBridge.GetRequestedVideoName(out uint nameGeneration);
         uint generation = path.Length != 0 ? nameGeneration : bufferGeneration;
         double seconds = Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
-        if (_movieSkips.ShouldFinish(true, generation, embeddedSize != 0 || path.Length != 0, seconds) &&
+        if ((ahead ? _aheadMovieSkips : HostPlaysMovies ? _unshownMovieSkips : _movieSkips).ShouldFinish(true, generation, embeddedSize != 0 || path.Length != 0, seconds) &&
             HostBridge.FinishMovie() != 0) Interlocked.Increment(ref _moviesSkipped);
     }
 

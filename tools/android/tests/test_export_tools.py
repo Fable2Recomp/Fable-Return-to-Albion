@@ -4,6 +4,7 @@ from pathlib import Path
 import struct
 import sys
 import tempfile
+import tomllib
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -137,6 +138,16 @@ class ElfAndExportTests(unittest.TestCase):
         self.assertIn('package/unique_name="org.example.test"', result)
         self.assertIn('gradle_build/min_sdk="31"', result)
 
+    def test_app_label_is_the_name_discord_shows_on_the_desktop(self):
+        # Discord on a phone shows the app's label, so it has to read as the desktop's application does.
+        root = Path(__file__).resolve().parents[3]
+        preset = (root/"Godot/export_presets.cfg").read_text(encoding="utf-8")
+        android = preset[preset.index('name="Android ARM64"'):]
+        label = android[android.index('package/name="') + len('package/name="'):].split('"', 1)[0]
+        discord = tomllib.loads((root/"Fable2/metadata/rexnet.toml").read_text(encoding="utf-8"))["discord"]
+        self.assertEqual(label, discord["large_text"])
+        self.assertNotIn("android", label.lower())
+
     def test_debug_network_changes_only_android_permission_and_requires_opt_in(self):
         source = ('[preset.0]\nname="Windows"\n[preset.0.options]\npermissions/internet=true\n'
                   '[preset.4]\nname="Android ARM64"\n[preset.4.options]\n'
@@ -241,6 +252,22 @@ class ElfAndExportTests(unittest.TestCase):
         self.assertIn('run/main_scene="res://main.tscn"', result)
         self.assertIn('enabled=PackedStringArray()', result)
         self.assertEqual(exporter.android_export_settings(result), result)
+
+    def test_startup_splash_is_the_seal_on_black_in_application(self):
+        source = '[application]\nrun/main_scene="res://main.tscn"\n\n[rendering]\nviewport/hdr_2d=true\n'
+        result = exporter.startup_splash_settings(source)
+        application = result.split("[rendering]")[0]
+        self.assertIn('boot_splash/image="' + exporter.STARTUP_SPLASH + '"', application)
+        self.assertIn("boot_splash/bg_color=Color(0, 0, 0, 1)", application)
+        self.assertIn('run/main_scene="res://main.tscn"', application)
+        self.assertEqual(exporter.startup_splash_settings(result), result)
+        replaced = exporter.startup_splash_settings('[application]\nboot_splash/image="res://other.png"\n')
+        self.assertEqual(replaced.count("boot_splash/image="), 1)
+        self.assertIn(exporter.STARTUP_SPLASH, replaced)
+        with self.assertRaises(ValueError):
+            exporter.startup_splash_settings('[rendering]\nviewport/hdr_2d=true\n')
+        with self.assertRaises(ValueError):
+            exporter.startup_splash_settings('[application]\n' + 'boot_splash/image="a.png"\n' * 2)
 
 
 class RenderingConfigurationTests(unittest.TestCase):

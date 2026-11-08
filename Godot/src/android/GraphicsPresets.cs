@@ -10,14 +10,15 @@ namespace Refii.Launcher.Core;
 /// later change to one of them reads back as "custom". Android only (<see cref="Offered"/>).
 /// </summary>
 /// <remarks>
-/// Balanced (stored "android") is the phone's default; Ultra Performance (stored "android_low")
-/// gives up everything but the look of the game for frame rate, Performance (stored "android_mid")
-/// sits between the two, and Quality (stored "android_high") gives up less, for a phone with
+/// High (stored "android") is the phone's default; Low (stored "android_low")
+/// gives up everything but the look of the game for frame rate, Medium (stored "android_mid")
+/// sits between the two, and Ultra (stored "android_high") gives up less, for a phone with
 /// headroom at the 30 FPS cap. They were measured on a Galaxy S25+
 /// and a Galaxy S10e in Bowerstone Market, where the phone is held at a fraction of its GPU clock by its own heat,
 /// so every setting is a trade of picture against sustained frame rate (docs/android.md, "Android
 /// graphics preset"). The stored names predate the labels and stay, so existing phones keep their
-/// choice: "android_low" was labelled Performance until the middle preset took that name. A setting outside the sets is untouched. On a desktop the preset is neither shown nor
+/// choice: "android_low" was labelled Performance and then Ultra Performance, "android_mid" Performance,
+/// "android" Quality and then Balanced, and "android_high" Quality. A setting outside the sets is untouched. On a desktop the preset is neither shown nor
 /// written, and changing a member setting records nothing.
 /// </remarks>
 public static class GraphicsPresets
@@ -45,20 +46,24 @@ public static class GraphicsPresets
     /// 10: Quality renders at 60% instead of 67%. 11: Performance ends trees at 300 m, switches the
     /// far trees' and the ground's coarser levels at half the distance, leaves the ground's normal
     /// maps out, and draws half the undergrowth. 12: each preset's render scale goes up a step: Ultra
-    /// Performance 40%, Performance 50%, Balanced 60%, Quality 67%.</remarks>
-    public const int Revision = 12;
+    /// Performance 40%, Performance 50%, Balanced 60%, Quality 67%. These are the labels of their day:
+    /// Ultra Performance is now Low, the later Performance Medium, Balanced High and the later Quality Ultra.
+    /// 13: Low takes the low-memory tier on any phone (android_low_ram_mode). 14: High softens the
+    /// sun shadow's edges at Soft Low and Ultra at Soft Medium, both on a map of 2048; the map had
+    /// been fixed at 1024, and the filter at Godot's phone default, Hard.</remarks>
+    public const int Revision = 14;
 
-    /// <summary>Balanced: the phone's default picture.</summary>
-    public const string Balanced = "android";
+    /// <summary>High: the phone's default picture.</summary>
+    public const string High = "android";
 
-    /// <summary>Ultra Performance: the most frame rate that still looks like the game.</summary>
-    public const string UltraPerformance = "android_low";
+    /// <summary>Low: the most frame rate that still looks like the game.</summary>
+    public const string Low = "android_low";
 
-    /// <summary>Performance: between Ultra Performance and Balanced, for a phone that runs Balanced at half its cap.</summary>
-    public const string Performance = "android_mid";
+    /// <summary>Medium: between Low and High, for a phone that runs High at half its cap.</summary>
+    public const string Medium = "android_mid";
 
-    /// <summary>Quality: Balanced with fewer compromises, for a phone with headroom at 30 FPS.</summary>
-    public const string Quality = "android_high";
+    /// <summary>Ultra: High with fewer compromises, for a phone with headroom at 30 FPS.</summary>
+    public const string Ultra = "android_high";
 
     /// <summary>Whether this platform offers the presets: Android. Tests stand in for a phone with it.</summary>
     public static bool Offered { get; set; } = Refii.Core.Engine_Platform.IsAndroid;
@@ -71,11 +76,11 @@ public static class GraphicsPresets
     /// <summary>The frame cap (<c>max_fps</c>) a phone starts with, set beside the preset, not in it.</summary>
     /// <remarks>An even 30 rather than an uneven 25-40 that heats the phone into lower clocks. Kept
     /// out of the presets so the in-game Options panel can change either without the other:
-    /// a cap of 60 still reads as Performance, and switching preset keeps the player's cap.</remarks>
+    /// a cap of 60 still reads as Low, and switching preset keeps the player's cap.</remarks>
     public const string AndroidFrameCap = "30";
 
-    /// <summary>The Balanced preset's values, in refii.toml spelling.</summary>
-    public static readonly IReadOnlyDictionary<string, string> BalancedValues =
+    /// <summary>The High preset's values, in refii.toml spelling.</summary>
+    public static readonly IReadOnlyDictionary<string, string> HighValues =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
             // The world at 60% of the screen's resolution; menus and text stay sharp.
@@ -92,6 +97,14 @@ public static class GraphicsPresets
             ["sun_shadows"] = "false",
             ["sun_shadow_distance"] = "80",
             ["sun_shadow_reach_scale"] = "0.5",
+            // The sun's map at 2048, twice the 1024 the phone always had, so the soft edge blurs half
+            // as much ground, and its edges filtered at Godot's Soft Low instead of the phone default,
+            // Hard, which stair-steps every leaf. S25+ at an Oakfield save, GPU-bound at 734 MHz: Soft
+            // Low +0.5 Mcycles a frame (+3%) against Hard, a relaunch per filter; Soft Very Low cost
+            // nothing measurable but is grainy without TAA. The 2048 map, switched live in three pairs
+            // with the sun up, cost nothing (20.65-20.74 against 20.96-21.05 ms) and 6 MB more memory.
+            ["sun_shadow_map"] = "2048",
+            ["sun_shadow_filter"] = "2",
             // Placed lights as the shipped data: the lighting presets' Performance light range
             // (45 m) and Balanced shadow range (30 m), and shadows only from the few spot lights
             // marked to cast.
@@ -103,7 +116,7 @@ public static class GraphicsPresets
             ["placed_shadow_range"] = "30.0",
             // The rest are the same picture for less work, measured at the Bowerstone Market archway
             // at night (00:50) on both phones (relaunch-paired, GPU work in Mcycles a frame); kept in
-            // Balanced wherever the S25+ showed no difference, for the phones built like the S10e.
+            // High wherever the S25+ showed no difference, for the phones built like the S10e.
             // The 10-bit colour buffer: half the bandwidth. S25+ 16.3 -> 15.2 / 15.0 (-7%); an
             // Adreno 640 6%.
             ["hdr_2d"] = "false",
@@ -115,7 +128,7 @@ public static class GraphicsPresets
             // 2.82 ms; the S10e's 13.5 -> 10.3-11.2 ms.
             ["entity_skip_index"] = "true",
             // Entity creation's frame budget: off in both until measured on a phone (5 suggested
-            // for Performance).
+            // for Low).
             ["entity_create_budget_ms"] = "0",
             // The effects' main-thread shortcuts: 0.4-0.5 ms of the S10e's FX step.
             ["fx_cpu_fastpaths"] = "true",
@@ -126,8 +139,8 @@ public static class GraphicsPresets
             // pipeline cache went from worst frames 36.5 / 23.9 ms, p99 25.0 / 21.4, to 21.8 / 21.1,
             // p99 20.8 / 20.0.
             ["stable_light_counts"] = "true",
-            // Lite builds without Godot's shadow sampling while no shadow map renders: Balanced's
-            // sun shadow renders wherever the theme casts one, so only the two Performance presets take it.
+            // Lite builds without Godot's shadow sampling while no shadow map renders: High's
+            // sun shadow renders wherever the theme casts one, so only Low and Medium take it.
             ["lite_shadowless"] = "false",
             // Static props' lite surfaces on a build per bake mode: nothing on the S10e.
             ["lite_bake_variants"] = "false",
@@ -168,7 +181,7 @@ public static class GraphicsPresets
             // above, paired relaunches walking the archway, Bowerlake and the square: managed heap
             // 0.83-0.85 against 1.41 GB, PSS -200-400 MB, continue-to-world 97-100 against 108-122 s,
             // archway frames at 50 ms 85-87% against 81-82% and its worst 84 against 150-1153 ms.
-            // The five together on the S25+ (Balanced, uncapped, four relaunch pairs at the archway at
+            // The five together on the S25+ (High, uncapped, four relaunch pairs at the archway at
             // night, 00:50): GC pause per 50 s walk 126-155 against 307-363 ms, no gen2 against one,
             // managed heap 1.08-1.16 against 1.33-1.43 GB, the game thread 38-40% of a core against
             // 44-46%; frame rate (~77 fps), frame times and GPU work the same.
@@ -177,20 +190,22 @@ public static class GraphicsPresets
             ["fx_prefetch_prepare"] = "true",
             // Bodies and the camera drawn along a line through their statements' arrival times: on the
             // S25+, whose world runs at full speed, out-and-back walks toggled live in three pairs moved
-            // no evenness figure, and it costs ~40 ms of latency. The two Performance presets only.
+            // no evenness figure, and it costs ~40 ms of latency. Low and Medium only.
             ["motion_arrival_fit"] = "false",
             // Far characters on the game's own half rate; a real-time rate is measured first.
             ["far_rig_pose_hz"] = "0",
             // Still scenery re-checked on the reconcile cadence; a longer one is measured first.
             ["entity_still_reconcile_scale"] = "1",
             // The far tree models, which ship no coarser level, get two thinned ones: 2.5% off the
-            // S25+'s frame work at Balanced, the crowns indistinguishable at the spot. Meant as an
+            // S25+'s frame work at High, the crowns indistinguishable at the spot. Meant as an
             // Android default, but the launcher writes the setting's own default (off) into every
             // phone's refii.toml, so the presets carry it.
             ["tree_card_lod"] = "true",
+            // The low-memory tier (AndroidMemoryRelease.LowRamMode) by the phone's memory; Low asks for it outright.
+            ["android_low_ram_mode"] = "auto",
             // Every tree to its stated reach (about a kilometre), the far trees' and the ground's
             // levels on the shared mesh_lod_pixels rule, and the ground's layer normal maps bound:
-            // the settings' own defaults, which Performance trades away.
+            // the settings' own defaults, which Low trades away.
             ["tree_far_reach"] = "0",
             ["tree_lod_bias"] = "1",
             ["terrain_lod_bias"] = "1",
@@ -199,14 +214,17 @@ public static class GraphicsPresets
         };
 
     /// <summary>
-    /// Ultra Performance: Balanced with every compromise that still looks like the game, for the
-    /// most frame rate (labelled Performance until revision 11). Measured at the Bowerstone Market
+    /// Low: High with every compromise that still looks like the game, for the
+    /// most frame rate (labelled Performance until revision 11, then Ultra Performance). Measured at the Bowerstone Market
     /// save spot with the S25+ at its floor (GPU ~375-400 of 1200 MHz), these together took 28%
-    /// off the GPU's work per frame against Balanced.
+    /// off the GPU's work per frame against High.
     /// </summary>
-    public static readonly IReadOnlyDictionary<string, string> UltraPerformanceValues =
-        new Dictionary<string, string>(BalancedValues, StringComparer.Ordinal)
+    public static readonly IReadOnlyDictionary<string, string> LowValues =
+        new Dictionary<string, string>(HighValues, StringComparer.Ordinal)
         {
+            // Every memory saving there is, on any phone: about 500 MB more free on a Galaxy S10e
+            // at Westcliff, for about 1 FPS and a slower first open of the pause and Items menus.
+            ["android_low_ram_mode"] = "on",
             // 40% of the screen's resolution, bilinear: the phone's own pixels are tiny, and on an
             // Adreno 640 the ground's and the models' pixel shading is still half the frame here.
             ["render_scale_percent"] = "40",
@@ -247,19 +265,21 @@ public static class GraphicsPresets
         };
 
     /// <summary>
-    /// Performance: between Ultra Performance and Balanced. Ultra Performance's shadowless
+    /// Medium: between Low and High. Low's shadowless
     /// shaders and lighter ground, with more of the resolution, the lights and the distance back.
     /// </summary>
     /// <remarks>
-    /// On the S10e, where Ultra Performance runs about 20 FPS and Balanced about 10: at noon,
+    /// On the S10e, where Low runs about 20 FPS and High about 10: at noon,
     /// standing, toggled live in three alternating pairs, these together cost 32% more GPU work than
-    /// Ultra Performance at the Bowerstone Market archway (20.3 -> 26.5 Mcycles a frame) and 42% more
-    /// at Bower Lake (30.2 -> 42.9), against Balanced's roughly 120% more at the archway.
+    /// Low at the Bowerstone Market archway (20.3 -> 26.5 Mcycles a frame) and 42% more
+    /// at Bower Lake (30.2 -> 42.9), against High's roughly 120% more at the archway.
     /// </remarks>
-    public static readonly IReadOnlyDictionary<string, string> PerformanceValues =
-        new Dictionary<string, string>(UltraPerformanceValues, StringComparer.Ordinal)
+    public static readonly IReadOnlyDictionary<string, string> MediumValues =
+        new Dictionary<string, string>(LowValues, StringComparer.Ordinal)
         {
-            // 50% of the screen's resolution, 1.56 times Ultra Performance's pixels. At 40% against
+            // The low-memory tier by the phone's memory, as High.
+            ["android_low_ram_mode"] = "auto",
+            // 50% of the screen's resolution, 1.56 times Low's pixels. At 40% against
             // 30% this step cost +19% at the archway and +21% at Bower Lake on an Adreno 640, most
             // of the preset's cost and most of what it shows.
             ["render_scale_percent"] = "50",
@@ -279,73 +299,80 @@ public static class GraphicsPresets
         };
 
     /// <summary>
-    /// Quality: Balanced with its distance, shadow and resolution compromises given back toward
-    /// the desktop's, for a phone that holds the 30 FPS cap at Balanced with room to spare. The
-    /// same-picture shortcuts stay as Balanced has them.
+    /// Ultra: High with its distance, shadow and resolution compromises given back toward
+    /// the desktop's, for a phone that holds the 30 FPS cap at High with room to spare. The
+    /// same-picture shortcuts stay as High has them.
     /// </summary>
     /// <remarks>
     /// Measured on the S25+ at the Bowerstone Market archway at noon, relaunch-paired: GPU work
-    /// 12.0-13.7 Mcycles a frame against Balanced's 9.5-9.9 (uncapped 61-65 FPS against 72-78).
-    /// At the 30 FPS cap it missed 0.05-0.4% of frames, as Balanced did: on a cooler over 15 and
+    /// 12.0-13.7 Mcycles a frame against High's 9.5-9.9 (uncapped 61-65 FPS against 72-78).
+    /// At the 30 FPS cap it missed 0.05-0.4% of frames, as High did: on a cooler over 15 and
     /// 18 minutes, and without one over 16 minutes at thermal status 3 after 40 minutes uncapped
     /// (2.9% in the first 2 minutes at the cap, while the GPU clock climbed back). The GPU ran at
-    /// 525 MHz against Balanced's 389-443. Memory and load time are Balanced's. Of the variants,
+    /// 525 MHz against High's 389-443. Memory and load time are High's. Of the variants,
     /// 75% resolution cost 4% more and 60% saved 6%, both hard to tell from 67% on the phone (so
-    /// Quality takes 60%), and
-    /// a 100 m sun shadow saved nothing repeatable. The S10e is not a Quality phone: it runs
-    /// Balanced at about 13 FPS.
+    /// Ultra takes 60%), and
+    /// a 100 m sun shadow saved nothing repeatable. The S10e is not an Ultra phone: it runs
+    /// High at about 13 FPS.
     /// </remarks>
-    public static readonly IReadOnlyDictionary<string, string> QualityValues =
-        new Dictionary<string, string>(BalancedValues, StringComparer.Ordinal)
+    public static readonly IReadOnlyDictionary<string, string> UltraValues =
+        new Dictionary<string, string>(HighValues, StringComparer.Ordinal)
         {
-            // 67% of the screen's resolution, 1.25 times Balanced's pixels.
+            // 67% of the screen's resolution, 1.25 times High's pixels.
             ["render_scale_percent"] = "67",
             // Coarser models when the 360 switched to them, small props at the desktop's distances.
             ["mesh_lod_pixels"] = "1",
             ["prop_cull_distance_scale"] = "1",
-            // The sun's shadow over half again Balanced's reach, every prop's shadow at its
+            // The sun's shadow over half again High's reach, every prop's shadow at its
             // size tier's full reach.
             ["sun_shadow_distance"] = "120",
             ["sun_shadow_reach_scale"] = "1",
+            // The edges at Soft Medium: +1.5 Mcycles (+9%) against Hard on the same S25+ runs.
+            ["sun_shadow_filter"] = "3",
             // The nearest 32 placed lights out to the lighting presets' Balanced light range.
             ["placed_light_limit"] = "32",
             ["placed_light_range"] = "65.0",
         };
 
-    /// <summary>The settings a preset decides: exactly the Balanced preset's keys.</summary>
-    public static IEnumerable<string> Members => BalancedValues.Keys;
+    /// <summary>The settings a preset decides: exactly the High preset's keys.</summary>
+    public static IEnumerable<string> Members => HighValues.Keys;
 
     /// <summary>The name a player sees for a stored preset.</summary>
     public static string Label(string preset) => preset.ToLowerInvariant() switch
     {
-        Balanced => "Balanced",
-        UltraPerformance => "Ultra Performance",
-        Performance => "Performance",
-        Quality => "Quality",
+        High => "High",
+        Low => "Low",
+        Medium => "Medium",
+        Ultra => "Ultra",
         _ => "Custom",
     };
+
+    /// <summary>What a player is told before <paramref name="preset"/> applies, to confirm or cancel; null for a preset that applies at once.</summary>
+    public static string? PickWarning(string preset) => preset.Equals(Ultra, StringComparison.OrdinalIgnoreCase)
+        ? "Ultra is not intended for casual use and has performance issues. Expect lower frame rates and a hotter phone. For normal play, use High or lower."
+        : null;
 
     /// <summary>The values a named preset writes; null for an unknown name or "custom".</summary>
     public static IReadOnlyDictionary<string, string>? Values(string preset)
     {
-        if (preset.Equals(Balanced, StringComparison.OrdinalIgnoreCase))
+        if (preset.Equals(High, StringComparison.OrdinalIgnoreCase))
         {
-            return BalancedValues;
+            return HighValues;
         }
 
-        if (preset.Equals(UltraPerformance, StringComparison.OrdinalIgnoreCase))
+        if (preset.Equals(Low, StringComparison.OrdinalIgnoreCase))
         {
-            return UltraPerformanceValues;
+            return LowValues;
         }
 
-        if (preset.Equals(Performance, StringComparison.OrdinalIgnoreCase))
+        if (preset.Equals(Medium, StringComparison.OrdinalIgnoreCase))
         {
-            return PerformanceValues;
+            return MediumValues;
         }
 
-        if (preset.Equals(Quality, StringComparison.OrdinalIgnoreCase))
+        if (preset.Equals(Ultra, StringComparison.OrdinalIgnoreCase))
         {
-            return QualityValues;
+            return UltraValues;
         }
 
         return null;
@@ -354,7 +381,7 @@ public static class GraphicsPresets
     /// <summary>The preset every member setting matches, or "custom".</summary>
     public static string Current(IReadOnlyDictionary<string, string> values)
     {
-        foreach (string preset in new[] { UltraPerformance, Performance, Balanced, Quality })
+        foreach (string preset in new[] { Low, Medium, High, Ultra })
         {
             if (Values(preset)!.All(pair => Same(values.TryGetValue(pair.Key, out string? value) ? value : DefaultOf(pair.Key), pair.Value)))
             {

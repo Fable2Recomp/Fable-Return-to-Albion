@@ -8,37 +8,37 @@ using Refii.Launcher.Core;
 namespace Refii.AndroidRuntime;
 
 /// <summary>
-/// The Options panel's frame cap, graphics preset and vibration: each tap steps one setting and
+/// The Options panel's frame cap, graphics preset, vibration and launcher skip: each tap sets or steps one setting and
 /// writes <c>refii.toml</c>, the same file the launcher's settings edit.
 /// </summary>
 /// <remarks>
 /// LIVE. The host rereads the cap, render scale and mesh LOD from the file
 /// (AndroidGameHost.RefreshRenderScale), and <see cref="ApplyPreset"/> hands the rest to
 /// <see cref="Engine_RefiiConfig.TrySetGodotCvar"/>, whose listeners reload the placed lights,
-/// the sun shadow's reach (Balanced and Quality cast the sun, the two Performance presets do not) and the
+/// the sun shadow's reach (High and Ultra cast the sun, Low and Medium do not) and the
 /// props' draw ranges. Vibration is the launcher's <c>controller_vibration</c>, the one switch
 /// for the host's rumble whether it reaches a controller or, played by touch, the phone;
 /// GameInput rereads it.
 /// </remarks>
 public static class AndroidQuickSettings
 {
-    /// <summary>The caps a tap steps through, in order; 0 is uncapped.</summary>
+    /// <summary>The caps the Frame limit row offers, a button each, left to right; 0 is uncapped.</summary>
     /// <remarks>Each divides a 60 Hz panel's refresh. 20 is for a phone that cannot hold 30: it
     /// shows every frame for three refreshes, where a missed 30 alternates two and three.</remarks>
-    public static readonly int[] FrameCaps = { 20, 30, 60, 0 };
+    public static readonly int[] FrameCaps = { 0, 20, 30, 60 };
 
     /// <summary>The presets Options offers, in order.</summary>
-    public static readonly string[] Presets = { GraphicsPresets.UltraPerformance, GraphicsPresets.Performance, GraphicsPresets.Balanced, GraphicsPresets.Quality };
+    public static readonly string[] Presets = { GraphicsPresets.Low, GraphicsPresets.Medium, GraphicsPresets.High, GraphicsPresets.Ultra };
 
-    /// <summary>The cap after <paramref name="current"/>; one not in the list steps to the first.</summary>
-    public static int NextFrameCap(int current)
-    {
-        int at = Array.IndexOf(FrameCaps, Math.Max(0, current));
-        return FrameCaps[(at + 1) % FrameCaps.Length];
-    }
+    /// <summary>The Frame limit row's name: the cap is the button that stands pressed, unless it was set by
+    /// hand to one the row doesn't offer, which the name then states.</summary>
+    /// <remarks>"Frame limit", not "FPS": beside "FPS counter" the two read as one setting.</remarks>
+    public static string FrameCapLabel(int cap) =>
+        Array.IndexOf(FrameCaps, Math.Max(0, cap)) >= 0 ? "Frame limit" : $"Frame limit: {cap} FPS";
 
-    /// <summary>The cap's button text.</summary>
-    public static string FrameCapLabel(int cap) => cap <= 0 ? "FPS: Uncapped" : $"FPS: {cap}";
+    /// <summary>A cap's button text in the Frame limit row: the number, or the infinity sign for uncapped.</summary>
+    public static string FrameCapChoiceLabel(int cap) =>
+        cap <= 0 ? "\u221E" : cap.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>The preset's button text.</summary>
     public static string PresetLabel(string preset) => "Preset: " + GraphicsPresets.Label(preset);
@@ -66,6 +66,25 @@ public static class AndroidQuickSettings
     {
         SortedDictionary<string, string> values = RuntimeConfig.ReadValues(config);
         values[AndroidFpsCounter.Key] = on ? "true" : "false";
+        Write(config, values);
+    }
+
+    /// <summary>Whether the app goes straight to the game, past the launcher (LauncherApp.SkipLauncher).</summary>
+    public const string SkipLauncherKey = "android_skip_launcher";
+
+    /// <summary>The skip-launcher button's text.</summary>
+    public static string SkipLauncherLabel(bool on) => on ? "Skip launcher: On" : "Skip launcher: Off";
+
+    /// <summary>Whether the next start skips the launcher; absent is off.</summary>
+    public static bool SkipLauncher(string config) =>
+        Engine_RefiiConfig.Bool(RuntimeConfig.ReadValues(config), SkipLauncherKey, false);
+
+    /// <summary>Writes <paramref name="on"/> as <c>android_skip_launcher</c>.</summary>
+    /// <exception cref="IOException">The file could not be written.</exception>
+    public static void SetSkipLauncher(string config, bool on)
+    {
+        SortedDictionary<string, string> values = RuntimeConfig.ReadValues(config);
+        values[SkipLauncherKey] = on ? "true" : "false";
         Write(config, values);
     }
 

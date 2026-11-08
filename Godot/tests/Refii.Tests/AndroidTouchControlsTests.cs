@@ -882,6 +882,12 @@ public sealed class AndroidTouchControlsTests
         AssertThat(standings.End.X < menu.Position.X).IsTrue();
         AssertThat(tips.Position.X).IsEqual(AndroidTouchLayout.OptionsInset);
         AssertThat(tips.Position.Y).IsEqual(menu.Position.Y);
+        // LT named as each board's legend names it.
+        string Odds(string game) => AndroidTouchLayout.Build(Phone, 1f, TouchContext.PubGame, pubGame: game)
+            .First(c => c.Id == "Odds").Label;
+        AssertThat(Odds("keystone")).IsEqual("Odds");
+        AssertThat(Odds("magedice")).IsEqual("Payouts");
+        AssertThat(Odds("wizardstower")).IsEqual("Tips");
     }
 
     /// <summary>

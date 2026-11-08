@@ -166,7 +166,7 @@ public static class Engine_LevelMesh
         arrays[(int)Mesh.ArrayType.TexUV] = uvs;
         arrays[(int)Mesh.ArrayType.Index] = indices;
         // Generated levels (`terrain_lod`) and the lite splat's steepest normal: Engine_TerrainLod.
-        Godot.Collections.Dictionary? lods = Engine_TerrainLod.For(mesh, arrays, vertices, normals, indices.Length);
+        Godot.Collections.Dictionary? lods = Engine_TerrainLod.For(mesh, arrays, vertices, normals, indices);
         Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays, null, lods);
         mesh.SurfaceSetName(mesh.GetSurfaceCount() - 1, surfaceName);
         // The level table alone (a few floats), so the lodcensus sees the ground's levels.

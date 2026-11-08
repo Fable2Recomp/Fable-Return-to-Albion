@@ -329,6 +329,11 @@ public static class RuntimeConfig
             return false;
         }
 
+        if (!Refii.AndroidRuntime.AndroidLauncherSettings.Shows(definition.Name))
+        {
+            return false;
+        }
+
         return ShouldWriteCVar(definition);
     }
 

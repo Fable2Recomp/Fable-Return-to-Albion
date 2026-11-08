@@ -114,6 +114,7 @@ public partial class SettingsPanel : VBoxContainer
 	{
 		_editingLabel = MakeLabel("Editing: " + _model.ConfigPath);
 		_editingLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+		_editingLabel.Visible = ShowsConfigPath;
 		AddChild(_editingLabel);
 
 		Label explain = MakeLabel(
@@ -123,7 +124,7 @@ public partial class SettingsPanel : VBoxContainer
 
 		// THE ONE DECISION ABOVE THE DIALS: which game to draw. It sets the lighting model and
 		// the materials switch together; the rows below show each on its own.
-		var lookRow = new HBoxContainer();
+		var lookRow = new HBoxContainer { Visible = Refii.AndroidRuntime.AndroidLauncherSettings.ShowsLook };
 		lookRow.AddThemeConstantOverride("separation", 6);
 		AddChild(lookRow);
 		Label lookLabel = MakeLabel("Look");

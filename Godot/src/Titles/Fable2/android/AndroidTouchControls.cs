@@ -29,6 +29,10 @@ using Refii.AndroidRuntime;
 /// the next touch brings them back.</para>
 /// <para>Settings, in refii.toml: <c>touch_controls</c> (on), <c>touch_scale</c> (1.0),
 /// <c>touch_opacity</c> (0.5) and <c>touch_look_sensitivity</c> (1.0).</para>
+/// <para>DRAWN ONLY WHEN SOMETHING DRAWN CHANGES: every circle and arc is a vertex and index buffer
+/// made and freed on the render thread. Whatever <see cref="_Draw"/> starts reading that can change
+/// goes in <see cref="TouchDrawnOverlay"/>; the stick has its own items (<see cref="AndroidTouchStick"/>),
+/// so a moving thumb redraws nothing.</para>
 /// </remarks>
 public partial class AndroidTouchControls : Control, IAndroidTouchControls
 {
@@ -56,6 +60,12 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
     private string _laidOutPubGame = string.Empty;
     private int _laidOutCustom = -1;
 
+    /// <summary>What the enabled mods ask of the screen, as last laid out (AndroidTouchModControls).</summary>
+    private AndroidTouchModControls.Offer _laidOutMods = AndroidTouchModControls.Offer.None;
+
+    /// <summary><see cref="FromHud"/> as one delegate: a method group makes a new one per call.</summary>
+    private System.Func<Rect2, Rect2?>? _fromHud;
+
     /// <summary>The spells the touch spell picker offers while it is open, or null while it is closed.</summary>
     private IReadOnlyList<(int Will, string Name)>? _pickerSpells, _laidOutPicker;
 
@@ -73,6 +83,13 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
 
     /// <summary>One box restyled for every pill and the D-pad: each draw is recorded as it is made.</summary>
     private readonly StyleBoxFlat _box = new() { AntiAliasing = true };
+
+    private readonly AndroidTouchStick _stick = new() { Name = "Stick" };
+    private TouchDrawnOverlay _drawn;
+    private double _drawnAt;
+
+    /// <summary>The last picture went without art that has not loaded yet: it is drawn again until it has.</summary>
+    private bool _artMissing;
 
     /// <summary>Whether the controls are switched on (`touch_controls`).</summary>
     public bool ControlsEnabled => _enabled;
@@ -101,6 +118,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
         _savedEmulation = Input.EmulateMouseFromTouch;
         // Photo mode hides every layer but this one's: the camera is flown from it.
         GetParent()?.AddToGroup(GamePhotoMode.KeepLayerGroup);
+        AddChild(_stick);
         ReadSettings(force: true);
         ApplyEmulation();
         // A phone with no controller starts on the screen: the menus open as touch menus.
@@ -114,6 +132,8 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
     {
         _pad.Cancel();
         GameInput.Touch = default;
+        Refii.Mods.ModInputTouch.SetPad(0u, 0u, 0u);
+        Refii.Mods.ModInputTouch.SetHeld(System.Array.Empty<string>());
         Input.EmulateMouseFromTouch = _savedEmulation;
     }
 
@@ -230,6 +250,9 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
         bool photoPanel = context == TouchContext.Decorate ? GameDecorate.PanelShown : GamePhotoMode.PanelShown;
         bool placing = context == TouchContext.Decorate && GameDecorate.Placing;
         string pubGame = GamePubGames.Showing;
+        AndroidTouchModControls.Offer mods = context == TouchContext.World
+            ? AndroidTouchModControls.Now(_fromHud ??= FromHud, _laidOutMods)
+            : AndroidTouchModControls.Offer.None;
         if (context != TouchContext.World)
         {
             // The picker is the play's: a menu, a wheel or photo mode closes it.
@@ -238,7 +261,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
 
         if (context != _laidOutContext || size != _laidOutSize || _scale != _laidOutScale || slotsMoved ||
             hero != _laidOutHero || photoPanel != _laidOutPhotoPanel || placing != _laidOutPlacing || _pickerSpells != _laidOutPicker ||
-            pubGame != _laidOutPubGame || AndroidTouchCustomLayout.Version != _laidOutCustom)
+            pubGame != _laidOutPubGame || AndroidTouchCustomLayout.Version != _laidOutCustom || !ReferenceEquals(mods, _laidOutMods))
         {
             _laidOutContext = context;
             _laidOutSize = size;
@@ -250,8 +273,9 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
             _laidOutPicker = _pickerSpells;
             _laidOutPubGame = pubGame;
             _laidOutCustom = AndroidTouchCustomLayout.Version;
+            _laidOutMods = mods;
             IReadOnlyList<TouchControl> controls = AndroidTouchCustomLayout.Apply(
-                AndroidTouchLayout.Build(size, _scale, context, slots, hero, photoPanel, pubGame, placing), size, context);
+                AndroidTouchLayout.Build(size, _scale, context, slots, hero, photoPanel, pubGame, placing, mods), size, context);
             if (_pickerSpells is { } offered)
             {
                 // Modal while it stands: the picker and its backdrop take every touch first.
@@ -311,7 +335,9 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
             _pad.Unlatch("Back");
         }
 
+        // What a finger holds of the mods' pills and areas, for their input actions this frame.
         double now = Now;
+        AndroidTouchModControls.Hold(_pad, _pad.Controls, now);
         TouchPadOutput output = _pad.Sample(now);
         _hidingWheel = _pad.Touching("RT") || (_hidingWheel && Engine_UiSpellAssignSet.GuestWheelOpen);
         Engine_UiSpellAssignSet.TouchHidesWheel = _hidingWheel;
@@ -325,6 +351,9 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
 
         GameInput.Touch = new GameInput.TouchHold(output.Buttons, output.LeftTrigger, output.RightTrigger,
             output.LeftX, output.LeftY);
+        // The mods' pad actions read what a finger presses: the stick's sprint holds A for the game alone.
+        Refii.Mods.ModInputTouch.SetPad(_pad.Sprinting && !_pad.Touching("A") ? output.Buttons & ~GameInput.PadA : output.Buttons,
+            output.LeftTrigger, output.RightTrigger);
         Vector2 look = _pad.TakeLook();
         if (look != Vector2.Zero && size.Y > 0f)
         {
@@ -350,8 +379,18 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
         FlushPointer();
         // Off the screen while a photo is taken, so the picture is the world's alone.
         Visible = _enabled && !GamePhotoMode.Capturing;
-        QueueRedraw();
+        _stick.Follow(AndroidTouchDrawState.Stick(_pad, _laidOutSize, _scale, _opacity, _pickerSpells is not null), _pad.StickKnob);
+        // Hidden nothing is drawn, and showing the controls draws them again by themselves.
+        if (IsVisibleInTree() && AndroidTouchDrawState.NeedsRedraw(OverlayNow(now), _drawn, _artMissing, now - _drawnAt))
+        {
+            QueueRedraw();
+        }
     }
+
+    /// <summary>What the main canvas item would draw now (<see cref="_Draw"/>).</summary>
+    private TouchDrawnOverlay OverlayNow(double now) => AndroidTouchDrawState.Overlay(_pad, _laidOutSize, _scale, _opacity,
+        GetViewport().GetFinalTransform().Scale.Y, _laidOutSlots, Engine_UiSpellAssignSet.HeroSpells.On(0) ?? -1,
+        Engine_UiKeyGlyphs.PadAtlas, _pickerSpells is not null, now);
 
     /// <summary>
     /// The spells the picker offers: every will the first power level may hold — each learned
@@ -418,6 +457,25 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
         return (centre, slots.Reach * sy);
     }
 
+    /// <summary>
+    /// A HUD piece's drawn box (the UI camera's canvas, +Y up) on this canvas, mapped as
+    /// <see cref="ItemSlots"/> maps the item cross; null until the HUD's canvas is known.
+    /// </summary>
+    private Rect2? FromHud(Rect2 piece)
+    {
+        if (Engine_UiPointer.VisibleCanvas is not { } canvas || canvas.Size.X <= 0f || canvas.Size.Y <= 0f)
+        {
+            return null;
+        }
+
+        Vector2 size = GetViewportRect().Size;
+        float sx = size.X / canvas.Size.X, sy = size.Y / canvas.Size.Y;
+        // The piece's top edge (its largest Y) is the nearer the screen's top.
+        var topLeft = new Vector2((piece.Position.X - canvas.Position.X) * sx,
+            (canvas.Position.Y + canvas.Size.Y - piece.End.Y) * sy);
+        return new Rect2(topLeft, new Vector2(piece.Size.X * sx, piece.Size.Y * sy));
+    }
+
     /// <summary>What the screen shows: the play, a wheel held open over it, or a menu.</summary>
     private TouchContext Context()
     {
@@ -428,10 +486,18 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
             return TouchContext.Hidden;
         }
 
-        // A pub game's board covers everything, the world and its menus alike.
+        // A pub game's board covers everything, the world and its menus alike. Asked before the
+        // loading screen: the guest keeps its loading screen up behind the board for the whole
+        // session (GamePubGames.LayerIndex), so a board is always over one.
         if (GamePubGames.Showing.Length != 0)
         {
             return TouchContext.PubGame;
+        }
+
+        // A loading screen takes no input: the pad drawn over its art and tip was only in the way.
+        if (GameLoadingScreen.Showing)
+        {
+            return TouchContext.Hidden;
         }
 
         if (GamePhotoMode.Active)
@@ -451,7 +517,8 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
 
         if (!GameInput.Playing)
         {
-            return TouchContext.Menu;
+            // A mod's screen in the pause book's place takes the taps, and the pad does not reach the game.
+            return GameUi.ModOwnsScreen ? TouchContext.ModScreen : TouchContext.Menu;
         }
 
         // The trigger a Spells hold sends is the overlay's own flag: the play keeps its layout.
@@ -587,15 +654,19 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
 
     public override void _Draw()
     {
+        _drawnAt = Now;
+        _drawn = OverlayNow(_drawnAt);
+        _artMissing = false;
         Font font = ThemeDB.FallbackFont;
         float unit = AndroidTouchLayout.Unit(_laidOutSize, _scale);
         // A menu's controls are a little lighter than the world's — its art is bright, and fainter
         // than this the see-through plates vanish into it.
-        float idle = _opacity * (_pad.Context == TouchContext.World ? 1f : 0.9f);
+        float idle = AndroidTouchDrawState.IdleAlpha(_opacity, _pad.Context);
         foreach (TouchControl control in _pad.Controls)
         {
             if (control.Id == AndroidTouchLayout.SpellsClose ||
-                control.Id.StartsWith(AndroidTouchLayout.SpellPrefix, System.StringComparison.Ordinal))
+                control.Id.StartsWith(AndroidTouchLayout.SpellPrefix, System.StringComparison.Ordinal) ||
+                AndroidTouchModControls.IsArea(control))
             {
                 continue;
             }
@@ -605,7 +676,13 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
             switch (control.Kind)
             {
                 case TouchControlKind.Stick:
-                    DrawStick(unit, idle);
+                    // On its own items, above all this; but under the open picker, which is drawn last here.
+                    if (_drawn.InlineStick.Origin is { } origin)
+                    {
+                        AndroidTouchStick.DrawBase(this, origin, _drawn.InlineStick);
+                        AndroidTouchStick.DrawKnob(this, origin + _drawn.InlineKnob, _drawn.InlineStick);
+                    }
+
                     continue;
                 case TouchControlKind.Look:
                     continue;
@@ -679,6 +756,10 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
             if (icon is not null)
             {
                 DrawTextureRect(icon, control.Bounds.Grow(-radius * 0.12f), false, pressed ? Colors.White.Lightened(0.2f) : Colors.White);
+            }
+            else
+            {
+                _artMissing = true;
             }
 
             DrawArc(centre, radius, 0f, Mathf.Tau, 48, chosen ? trim : trim with { A = 0.45f }, (chosen ? 4f : 2f) * unit, true);
@@ -792,6 +873,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
                 else
                 {
                     // No spell to show: three orbs, what the hold draws in.
+                    _artMissing |= will >= 0;
                     foreach ((float x, float y, float r) in new[] { (-0.22f, 0.12f, 0.17f), (0.2f, 0.16f, 0.13f), (0f, -0.2f, 0.15f) })
                     {
                         DrawCircle(centre + new Vector2(x, y) * radius, r * radius, ink);
@@ -800,7 +882,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
 
                 // THE HOLD IS THE TRIGGER, WHICH DRAWS IN THE ORBS: a ring fills round the button
                 // as a press becomes a hold, and stays full while it is one.
-                float hold = _pad.HoldProgress(control.Id, Now);
+                float hold = _drawn.Hold;
                 if (hold > 0f)
                 {
                     DrawArc(centre, radius + 4f * unit, -Mathf.Pi * 0.5f, -Mathf.Pi * 0.5f + Mathf.Tau * hold, 48,
@@ -843,6 +925,13 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
         float across = control.Round ? control.Bounds.Size.X : control.Bounds.Size.Y * 2f;
         float size = across * (control.Label.Length <= 2 ? 0.40f : 0.22f);
         DrawText(control.Label, centre, size, trim with { A = Mathf.Min(1f, alpha + 0.4f) }, fallback, top: false);
+        // A lettered round button says what it does beneath, as the face buttons do: a pub game's
+        // LB (Max bet) and Keystone's RB (Rebet).
+        if (control.Round && control.Caption.Length > 0)
+        {
+            DrawText(control.Caption, new Vector2(centre.X, control.Bounds.End.Y + 4f * unit), 18f * unit,
+                trim with { A = Mathf.Min(1f, alpha + 0.35f) }, fallback, top: true);
+        }
     }
 
     /// <summary>
@@ -969,6 +1058,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
         {
             if (Engine_UiKeyGlyphs.TextImage(text, pixels, Colors.White, new Color(0f, 0f, 0f, 0.85f)) is not { } image)
             {
+                _artMissing = true;
                 int size = Mathf.RoundToInt(height);
                 float y = top ? at.Y + size * 0.85f : at.Y + size * 0.35f;
                 DrawString(fallback, new Vector2(at.X - 200f, y), text, HorizontalAlignment.Center, 400f, size, colour);
@@ -982,26 +1072,6 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
         Vector2 drawn = texture.GetSize() / density;
         var rect = new Rect2(new Vector2(at.X - drawn.X * 0.5f, top ? at.Y : at.Y - drawn.Y * 0.5f), drawn);
         DrawTextureRect(texture, rect, false, colour);
-    }
-
-    /// <summary>The move stick, only under a thumb: its base, the sprint ring, the knob.</summary>
-    private void DrawStick(float unit, float alpha)
-    {
-        if (_pad.StickOrigin is not { } origin)
-        {
-            return;
-        }
-
-        float radius = _pad.StickRadius;
-        Color trim = Engine_UiKeyGlyphs.TrimColour;
-        Color ring = trim with { A = alpha * 0.9f };
-        DrawCircle(origin, radius, Engine_UiKeyGlyphs.PlateColour with { A = alpha * 0.55f });
-        DrawArc(origin, radius, 0f, Mathf.Tau, 64, ring, 2.5f * unit, true);
-        // The sprint ring, lit once the thumb is past it.
-        DrawArc(origin, radius * AndroidTouchPad.SprintReach, 0f, Mathf.Tau, 64,
-            ring with { A = ring.A * (_pad.Sprinting ? 1f : 0.3f) }, (_pad.Sprinting ? 4f : 2f) * unit, true);
-        DrawCircle(origin + _pad.StickKnob, radius * 0.45f, Engine_UiKeyGlyphs.PlateColour with { A = alpha * 0.9f });
-        DrawArc(origin + _pad.StickKnob, radius * 0.45f, 0f, Mathf.Tau, 48, trim with { A = alpha }, 2.5f * unit, true);
     }
 
     /// <summary>
@@ -1036,8 +1106,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
     /// by a third of an arm's width, the inner ones where the arms meet by a fifth (an opening, then
     /// a closing, of the sharp cross).
     /// </summary>
-    // The overlay redraws every frame: its fixed tables and point scratch are kept (Godot copies
-    // a drawn polygon), not made again each draw.
+    // Its fixed tables and point scratch are kept (Godot copies a drawn polygon), not made again each draw.
     private static readonly (uint Bit, Vector2 Direction)[] DPadArms =
     {
         (GameInput.PadUp, Vector2.Up), (GameInput.PadDown, Vector2.Down),

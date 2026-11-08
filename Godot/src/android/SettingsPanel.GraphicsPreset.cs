@@ -7,6 +7,10 @@ namespace Refii.Launcher;
 /// <summary>The phone's graphics preset row (<see cref="GraphicsPresets"/>).</summary>
 public partial class SettingsPanel
 {
+	/// <summary>Whether the header names the settings file: a desktop player can open it; on a phone it is a
+	/// private path nobody can reach.</summary>
+	private static bool ShowsConfigPath => !GraphicsPresets.Offered;
+
 	private OptionButton? _graphicsPresetOption;
 	private List<RuntimeCVarOption> _graphicsPresetOptions = new();
 
@@ -45,9 +49,12 @@ public partial class SettingsPanel
 			{
 				return;
 			}
-			_model.ApplyGraphicsPreset(chosen);
-			_statusLabel.Text = _model.StatusMessage;
-			Rebuild();
+			if (GraphicsPresets.PickWarning(chosen) is { } warning && chosen != _model.CurrentGraphicsPreset())
+			{
+				ConfirmGraphicsPreset(chosen, warning);
+				return;
+			}
+			ApplyGraphicsPreset(chosen);
 		};
 		grid.AddChild(option);
 		_graphicsPresetOption = option;
@@ -61,6 +68,42 @@ public partial class SettingsPanel
 		defaultLabel.VerticalAlignment = VerticalAlignment.Center;
 		defaultLabel.AddThemeColorOverride("font_color", _style.TextDisabled);
 		grid.AddChild(defaultLabel);
+	}
+
+	/// <summary>Writes <paramref name="preset"/>'s settings and shows the rows they changed.</summary>
+	private void ApplyGraphicsPreset(string preset)
+	{
+		_model.ApplyGraphicsPreset(preset);
+		_statusLabel.Text = _model.StatusMessage;
+		Rebuild();
+	}
+
+	/// <summary>Shows <paramref name="warning"/> large and red: Use applies <paramref name="preset"/>, Cancel puts the row back on the preset in use.</summary>
+	private void ConfirmGraphicsPreset(string preset, string warning)
+	{
+		var dialog = new ConfirmationDialog
+		{
+			Title = "WARNING",
+			DialogText = warning,
+			OkButtonText = "Use anyway",
+			CancelButtonText = "Cancel",
+			DialogAutowrap = true,
+			MinSize = new Vector2I(LauncherScale.Px(560), 0),
+		};
+		dialog.GetLabel().AddThemeFontSizeOverride("font_size", LauncherScale.Px(22));
+		dialog.GetLabel().AddThemeColorOverride("font_color", new Color(1f, 0.55f, 0.5f));
+		dialog.Confirmed += () => ApplyGraphicsPreset(preset);
+		dialog.Canceled += ShowGraphicsPreset;
+		dialog.VisibilityChanged += () =>
+		{
+			if (!dialog.Visible)
+			{
+				dialog.QueueFree();
+			}
+		};
+		Node top = (Node?)GetTree()?.Root.GetNodeOrNull("Launcher") ?? (Node?)GetWindow() ?? this;
+		top.AddChild(dialog);
+		dialog.PopupCentered();
 	}
 
 	/// <summary>Selects the preset the values match, without rebuilding the rows being edited.</summary>

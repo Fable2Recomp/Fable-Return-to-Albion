@@ -135,7 +135,12 @@ public partial class GameInput
 		}
 
 		LastFilteredPacket = packet;
+		// What the guest is handed, the mailbox's split where it carries one (mods' claims and presses included).
+		GuestPad0Buttons = packet.Physical is { } physical ? physical.Buttons | physical.OtherButtons : packet.Buttons;
 	}
+
+	/// <summary>The buttons pad 0 last handed the guest, after every mask, claim and press.</summary>
+	public static uint GuestPad0Buttons { get; private set; }
 
 	private readonly System.Collections.Generic.List<int> _connectedJoypadIds = new();
 

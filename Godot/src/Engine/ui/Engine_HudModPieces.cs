@@ -69,6 +69,8 @@ namespace Refii.Ui;
 /// <item><c>outline</c> / <c>outlineWidth</c>, <c>shadow</c> / <c>shadowOffset</c> — a text
 /// piece's ring and drop shadow: the same glyphs drawn again behind it in that colour, offset by
 /// the width all round (8 copies) or by the shadow's <c>[x, y]</c>, in the piece's own units.</item>
+/// <item><c>touch</c> — a picture's action (<c>input.json</c>'s, <c>"slot4"</c> or scoped): on a
+/// touchscreen a finger on player one's drawn picture presses it (<see cref="Refii.Mods.ModInputTouch"/>).</item>
 /// </list>
 /// <para>Value sources (<see cref="Engine_UiValueSources"/>, the one resolver every UI record
 /// reads through): a number; <c>mod:&lt;mod&gt;.&lt;name&gt;</c>, what a mod published;
@@ -708,6 +710,14 @@ public sealed partial class Engine_HudModPieces : Node3D
 				picture.Scale = new Vector3(grown, grown, 1f);
 				picture.Position = new Vector3(centre.X, centre.Y, Depth);
 				picture.Visible = true;
+				if (piece.Touch.Length != 0 && ContextFor(piece).Player <= 1 && picture.IsVisibleInTree() && picture.Mesh is not null)
+				{
+					// Where it is drawn, a finger presses its action (Refii.Mods.ModInputTouch): its
+					// drawn box in the UI camera's canvas, as the pointer hit-tests the HUD.
+					Aabb box = picture.GlobalTransform * picture.GetAabb();
+					Refii.Mods.ModInputTouch.HudArea(piece.Touch, new Rect2(box.Position.X, box.Position.Y, box.Size.X, box.Size.Y));
+				}
+
 				continue;
 			}
 

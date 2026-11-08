@@ -32,7 +32,7 @@ public static class Engine_UiGuiText
 
 		if (strings is null)
 		{
-			return tag;
+			return Refii.AndroidRuntime.AndroidMenuWords.ForPhone(tag);
 		}
 
 		if (strings.TryGetString(tag, out string direct))
@@ -48,7 +48,7 @@ public static class Engine_UiGuiText
 			return prefixed;
 		}
 
-		return tag;
+		return Refii.AndroidRuntime.AndroidMenuWords.ForPhone(tag);
 	}
 
 	/// <summary>The display string, discarding whether it resolved.</summary>

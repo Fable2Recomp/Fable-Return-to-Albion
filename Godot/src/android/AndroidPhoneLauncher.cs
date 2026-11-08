@@ -176,15 +176,15 @@ public partial class AndroidPhoneLauncher : Control
             _native = Marshal.PtrToStringUTF8(refii_phone_native_directory()) ?? "";
             if (_native.Contains('!') || !Directory.Exists(_native))
                 throw new IOException("The compiler APK must extract its native libraries");
-            _message = _result != null ? "Your compiled installation is ready to play." : _selected.Length > 0
-                ? "Game files are ready. Compile to finish installation."
+            _message = _result != null ? Engine_Title.Active.Name + " is installed and ready to play." : _selected.Length > 0
+                ? "The game files are ready. Choose Extract and compile on this phone to finish installing."
                 : (TakesUpdate ? "Choose your ISO, then its TU file." : "Choose your ISO.") + " Original files stay untouched.";
             // AN UPDATE THAT CHANGES THE GAME CODE ASKS FOR A BUILD. The module is compiled on the phone
             // from the APK's bundle (hooks, version configs, headers), so a new APK can leave the
             // installed module behind; played anyway, it ran without the update's native fixes
             // (a co-op crash fix in a game hook did nothing until the module was compiled again).
             // The build starts when the player chooses it, as desktop's Build Game Code does.
-            if (HasPlayableInstall && _selected.Length > 0 && _native.Length > 0 && IsStale(_result, ApkBundleIdentity()))
+            if (HasPlayableInstall && _selected.Length > 0 && _native.Length > 0 && IsStale(_result, ApkBundleIdentity()) && !AdoptIfCurrent())
             {
                 NeedsBuild = true;
                 _message = "This update changes the game's code. Saves are kept.";
@@ -212,6 +212,33 @@ public partial class AndroidPhoneLauncher : Control
         return AndroidPhoneCompiler.BundleIdentity(archive);
     }
 
+    /// <summary>Marks the completed build as this APK's when nothing it was built from has changed
+    /// (<see cref="AndroidPhoneCompiler.StillCurrent"/>), so that the update asks for no build.</summary>
+    /// <returns>Whether the module stands.</returns>
+    private bool AdoptIfCurrent()
+    {
+        if (_result == null) return false;
+        try
+        {
+            byte[] bytes = Godot.FileAccess.GetFileAsBytes("res://phonecompiler/data.zip");
+            if (bytes.Length == 0) return false;
+            using var archive = new ZipArchive(new MemoryStream(bytes), ZipArchiveMode.Read);
+            if (archive.GetEntry("bundle.json") is not { } entry) return false;
+            using var reader = new StreamReader(entry.Open());
+            var manifest = JsonSerializer.Deserialize(reader.ReadToEnd(), AndroidJsonContext.Default.BundleManifest);
+            if (manifest == null || !AndroidPhoneCompiler.StillCurrent(_result, manifest, _native, Engine_Title.Active)) return false;
+            _result = _result with { Bundle = AndroidPhoneCompiler.BundleIdentity(archive) };
+            AndroidInstallState.Save(_user, new(_prepared, _result));
+            GD.Print("[install] this APK's bundle builds the same module; no build needed");
+            return true;
+        }
+        catch (Exception error) when (error is IOException or InvalidDataException or JsonException or UnauthorizedAccessException)
+        {
+            GD.PushWarning("[install] could not compare this APK's bundle: " + error.Message);
+            return false;
+        }
+    }
+
     /// <summary>Shows worker progress on the main thread and restores normal idle screen behavior after completion.</summary>
     public override void _Process(double delta)
     {
@@ -221,7 +248,7 @@ public partial class AndroidPhoneLauncher : Control
             _task = null;
             DisplayServer.ScreenSetKeepOn(_keepScreenOn);
             try { _result = task.GetAwaiter().GetResult(); NeedsBuild = false; _message = _verificationOnly
-                ? $"Existing phone-compiled module verified. Select {PlayLabel} to use it."
+                ? $"The game code already built on this phone checks out. Select {PlayLabel}."
                 : $"Installation compiled and verified. Temporary copies and build files removed. Select {PlayLabel}."; }
             catch (OperationCanceledException) { _message = "Compilation cancelled. Your installed game is preserved."; }
             catch (Exception error) { _message = "Compilation stopped: " + error.Message; }
@@ -353,7 +380,8 @@ public partial class AndroidPhoneLauncher : Control
                 {
                     Progress("Preparing the bundled compiler");
                     _bundle = ExtractBundle(token);
-                    var request = new AndroidPhoneCompiler.Request(_bundle, _native, _selected, builds, Engine_Title.Active);
+                    var request = new AndroidPhoneCompiler.Request(_bundle, _native, _selected, builds, Engine_Title.Active,
+                        Path.Combine(_user, "phone-object-cache"));
                     var result = diagnosis == null
                         ? await AndroidPhoneCompiler.CompileAsync(request, Progress, token)
                         : await AndroidPhoneCompiler.VerifyExistingAsync(request, diagnosis.Module, diagnosis.Sha256,

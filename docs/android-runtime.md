@@ -16,6 +16,8 @@ How the Android app is put together. Building and installing it are in
   `AndroidNativeSession` is the one owner that initializes and steps the guest, on its own
   thread. One `Engine_GameAssets` mount serves the guest, the UI and the world, and the
   host does the per-frame mod work `GameSession` does on the desktop.
+- **Idle.** With no input for `android_idle_screen_minutes` (10) play pauses and the screen goes
+  by the phone's own timeout; an untouched pause menu draws at 10 fps. The launcher runs in Godot's low-processor mode (`AndroidIdlePower`).
 - **C#.** Release builds compile it with NativeAOT (`export-apk.py --nativeaot`); without
   that flag it runs on .NET 9 Mono. See the guide for what shared code must avoid.
 
@@ -49,7 +51,7 @@ current save to Download as a backup export, and swaps the new save in, carrying
 own `rexnet/` across. It refuses once the native session has started in this process.
 
 A first boot writes `refii.toml` only if it is absent, and a file that has never had a
-`graphics_preset` takes the Quality preset and a 30 FPS cap once. Defaults that differ from
+`graphics_preset` takes the High preset and a 30 FPS cap once. Defaults that differ from
 the desktop's: `render_scale_percent` 50 when absent, a 1024 shadow map with two splits, no
 eager shader warm-up (older Adreno drivers hung compiling unused shader families), no
 MSAA/TAA or texture upscaling, and smaller caches: decoded level files 256 MiB (64 MiB a
@@ -105,6 +107,6 @@ be absolute filesystem paths; unknown or mistyped fields stop the boot with an e
 With `debug_channel = true` the debug channel listens on `127.0.0.1` (the first free port
 from 8787; `refii-debug.json` names it); forward it with `adb forward`. It speaks the
 desktop's JSON-lines protocol, including `render` levers, `framephases`, `metrics` and the
-Android-only status fields. Options in game has Stats (F5) and Debug (F6), the desktop's
-overlays. The NativeAOT library's split debug symbols stay out of the APK, in the export's
+Android-only status fields. Options in game has Diagnostics, which unfolds Performance stats
+and Developer tools: the desktop's F5 and F6 overlays. The NativeAOT library's split debug symbols stay out of the APK, in the export's
 `native-symbols/`, for reading crash addresses from logcat.

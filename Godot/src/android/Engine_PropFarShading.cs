@@ -58,6 +58,7 @@ public static class Engine_PropFarShading
 	private static bool _hooked;
 	private static int _skippedMultiSurface;
 	private static int _swaps;
+	private static int _far;
 	private static bool _reported;
 
 	/// <summary>The distance in force (0: off). Lite only.</summary>
@@ -99,6 +100,8 @@ public static class Engine_PropFarShading
 				if (string.Equals(name, Key, StringComparison.OrdinalIgnoreCase))
 				{
 					_metres = float.NaN;
+					// The census again after the next whole sweep, so a live change can be checked in the log.
+					_reported = false;
 				}
 			};
 		}
@@ -143,14 +146,33 @@ public static class Engine_PropFarShading
 		Entries.Clear();
 		Registered.Clear();
 		_next = 0;
+		_far = 0;
 		_reported = false;
+	}
+
+	/// <summary>
+	/// Whether a sweep has nothing to do: no props, or the key off with none left far. Pure.
+	/// </summary>
+	public static bool Idle(int entries, float metres, int far) => entries == 0 || (metres <= 0f && far == 0);
+
+	/// <summary>
+	/// The sweep from a node that processes every frame (AndroidGameHost), measured from its
+	/// viewport's camera. The streamers call <see cref="Tick(Camera3D?)"/> too, but each stops
+	/// processing once its props have settled, which used to end the sweep with the load.
+	/// </summary>
+	public static void Tick(Node owner)
+	{
+		if (!Idle(Entries.Count, Metres, _far))
+		{
+			Tick(owner.GetViewport()?.GetCamera3D());
+		}
 	}
 
 	/// <summary>One frame's slice of the sweep. Once per process frame whoever calls it.</summary>
 	public static void Tick(Camera3D? camera)
 	{
 		ulong frame = Engine.GetProcessFrames();
-		if (frame == _tickedFrame || Entries.Count == 0 || camera is null)
+		if (frame == _tickedFrame || Idle(Entries.Count, Metres, _far) || camera is null)
 		{
 			return;
 		}
@@ -174,6 +196,7 @@ public static class Engine_PropFarShading
 			Entry entry = Entries[_next];
 			if (!GodotObject.IsInstanceValid(entry.Node))
 			{
+				_far -= entry.Far ? 1 : 0;
 				Entries[_next] = Entries[^1];
 				Entries.RemoveAt(Entries.Count - 1);
 				continue;
@@ -197,6 +220,7 @@ public static class Engine_PropFarShading
 			if (far != entry.Far)
 			{
 				entry.Far = far;
+				_far += far ? 1 : -1;
 				Apply(entry.Node, far);
 				++_swaps;
 			}

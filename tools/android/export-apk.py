@@ -235,6 +235,33 @@ def android_export_settings(text: str, rendering_method: str = "forward_plus") -
     return "".join(sections)
 
 
+# The startup screen's seal (Engine_ShaderWarmup.BackdropPath), shown by the engine while it starts.
+STARTUP_SPLASH = "res://assets/ui/preparation_seal.png"
+
+
+def startup_splash_settings(project_text: str) -> str:
+    """Show the startup screen's seal on black as the staged Android build's boot splash.
+
+    Godot's own splash is its logo on grey; on a slow phone it stays up for seconds before the
+    launcher or the startup screen replaces it. The seal over black is the startup screen
+    without its moving smoke. The image keeps its aspect (the default stretch), so a wider
+    screen has black at the sides, as the screen does. The desktop project keeps its splash.
+    """
+    settings = {"boot_splash/bg_color": "Color(0, 0, 0, 1)", "boot_splash/image": json.dumps(STARTUP_SPLASH)}
+    sections = re.split(r"(?m)(?=^\[)", project_text)
+    for i, section in enumerate(sections):
+        if section.startswith("[application]"):
+            for key, value in settings.items():
+                section, count = re.subn(r"(?m)^" + re.escape(key) + r"=.*$", key + "=" + value, section)
+                if count > 1:
+                    raise ValueError("Duplicate boot splash setting " + key)
+                if not count:
+                    section = section.replace("[application]", "[application]\n\n" + key + "=" + value, 1)
+            sections[i] = section
+            return "".join(sections)
+    raise ValueError("Project has no [application] section")
+
+
 def phone_compiler_settings(project_text: str, preset_text: str) -> tuple[str, str]:
     """Opt only the staged Android build into the self-contained compiler launcher.
 
@@ -550,6 +577,9 @@ def main() -> int:
     (output / "bundled-mods.json").write_text(json.dumps(bundled, indent=2), encoding="utf-8")
     project_settings = project / "project.godot"
     project_settings.write_text(android_export_settings(project_settings.read_text(encoding="utf-8"), args.rendering_method), encoding="utf-8")
+    if not (project / STARTUP_SPLASH.removeprefix("res://")).is_file():
+        raise ValueError("Startup splash missing: " + STARTUP_SPLASH)
+    project_settings.write_text(startup_splash_settings(project_settings.read_text(encoding="utf-8")), encoding="utf-8")
     if args.phone_compiler_bundle:
         proof = stage_phone_compiler(args.phone_compiler_bundle, project, args.native_manifest)
         settings_text, preset_text = phone_compiler_settings(project_settings.read_text(encoding="utf-8"),

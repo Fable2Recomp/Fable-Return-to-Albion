@@ -48,7 +48,7 @@ public static class Engine_TreeCardLods
     /// <param name="far">Also the two coarser levels (`tree_card_far_levels`).</param>
     /// <returns>(key, indices) pairs as Godot's `lods` dictionary takes them; empty when the
     /// surface has too few cards for a level to save 30%.</returns>
-    public static List<(float Key, int[] Indices)> Build(int[] indices, int vertexCount, float extent, bool far = false)
+    public static List<(float Key, int[] Indices)> Build(ReadOnlySpan<int> indices, int vertexCount, float extent, bool far = false)
     {
         var levels = new List<(float, int[])>();
         int triangles = indices.Length / 3;
@@ -86,42 +86,52 @@ public static class Engine_TreeCardLods
             parent[Find(b)] = Find(c);
         }
 
-        // Per component: its triangle count and first triangle, which names it stably.
-        var count = new Dictionary<int, int>();
-        var first = new Dictionary<int, int>();
+        // Per component, by its root vertex: its triangle count and first triangle, which names it stably.
+        var count = new int[vertexCount];
+        var first = new int[vertexCount];
         var root = new int[triangles];
         for (int t = 0; t < triangles; t++)
         {
             int r = Find(indices[t * 3]);
             root[t] = r;
-            count[r] = count.TryGetValue(r, out int n) ? n + 1 : 1;
-            first.TryAdd(r, t);
+            if (count[r]++ == 0)
+            {
+                first[r] = t;
+            }
         }
 
+        // A card's fixed place in [0, 1), or -1 for a component always kept.
+        var place = new float[triangles];
+        for (int t = 0; t < triangles; t++)
+        {
+            int r = root[t];
+            place[t] = count[r] <= CardTriangles ? Hash01(first[r]) : -1f;
+        }
+
+        var level = new int[triangles * 3];
         int previous = triangles;
         foreach ((float keep, float key) in far ? FarLevels : Levels)
         {
-            var level = new List<int>(indices.Length);
+            int kept = 0;
             for (int t = 0; t < triangles; t++)
             {
-                int r = root[t];
-                if (count[r] <= CardTriangles && Hash01(first[r]) >= keep)
+                if (place[t] >= keep)
                 {
                     continue;
                 }
 
-                level.Add(indices[t * 3]);
-                level.Add(indices[(t * 3) + 1]);
-                level.Add(indices[(t * 3) + 2]);
+                level[kept++] = indices[t * 3];
+                level[kept++] = indices[(t * 3) + 1];
+                level[kept++] = indices[(t * 3) + 2];
             }
 
-            if (level.Count / 3 > previous * 7 / 10 || level.Count == 0)
+            if (kept / 3 > previous * 7 / 10 || kept == 0)
             {
                 continue;
             }
 
-            levels.Add((key * extent, level.ToArray()));
-            previous = level.Count / 3;
+            levels.Add((key * extent, level.AsSpan(0, kept).ToArray()));
+            previous = kept / 3;
         }
 
         return levels;

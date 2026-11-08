@@ -14,8 +14,9 @@ namespace Refii.Ui;
 /// Android), each ask waits for that thread to catch up: on the S25+ the owned books built behind the
 /// loading screen asked 14,363 times, and their frames ran 240 ms to 1.3 s, about 13 s of the main
 /// thread in a 39 s load. A packed scene lists each property once, when it is packed; instantiating it
-/// sets them by name. So each art piece is duplicated and packed once, the first time it is cloned, and
-/// every clone after is instantiated from that.
+/// sets them by name. So the second clone of a piece packs it, and every clone after is instantiated
+/// from that. The first clone is a plain <c>Duplicate()</c>: it lists each property once too, and most
+/// pieces (a book's chrome, built once per screen) are cloned once and need no packed scene kept for them.
 ///
 /// The clone is the one <c>Duplicate()</c> gives: sub-resources shared (Art gives the clone its own
 /// materials after), metadata kept, every group kept (a packed scene keeps only persistent ones, so the
@@ -26,11 +27,15 @@ public static class Engine_UiArtClone
 {
     private static readonly ConditionalWeakTable<Node3D, PackedScene> Packed = new();
 
-    /// <summary>A clone of <paramref name="source"/>, from its packed scene, packed on first use.</summary>
+    /// <summary>Art cloned once already, so that its next clone packs it.</summary>
+    private static readonly ConditionalWeakTable<Node3D, object> Seen = new();
+
+    /// <summary>A clone of <paramref name="source"/>: duplicated the first time, from its packed scene after.</summary>
     public static Node3D Clone(Node3D source)
     {
         if (!Packed.TryGetValue(source, out PackedScene? scene))
         {
+            if (Seen.TryAdd(source, Seen)) return (Node3D)source.Duplicate();
             scene = Pack(source);
             if (scene is null) return (Node3D)source.Duplicate();
             Packed.Add(source, scene);
@@ -41,15 +46,14 @@ public static class Engine_UiArtClone
         return clone;
     }
 
-    /// <summary>A packed scene of a private duplicate of <paramref name="source"/>, or null for art with owners.</summary>
+    /// <summary>A packed scene of <paramref name="source"/>, owned by itself only while it packs; null for art with owners.</summary>
     private static PackedScene? Pack(Node3D source)
     {
         if (HasOwners(source)) return null;
-        var template = (Node3D)source.Duplicate();
-        SetOwners(template, template);
+        SetOwners(source, source);
         var scene = new PackedScene();
-        Error packed = scene.Pack(template);
-        template.Free();
+        Error packed = scene.Pack(source);
+        SetOwners(source, null);
         return packed == Error.Ok ? scene : null;
     }
 
@@ -61,8 +65,8 @@ public static class Engine_UiArtClone
         return false;
     }
 
-    /// <summary>Owns every node under <paramref name="root"/> by it, so packing keeps the whole tree.</summary>
-    private static void SetOwners(Node node, Node root)
+    /// <summary>Owns every node under <paramref name="node"/> by <paramref name="root"/>, so packing keeps the whole tree.</summary>
+    private static void SetOwners(Node node, Node? root)
     {
         foreach (Node child in node.GetChildren())
         {

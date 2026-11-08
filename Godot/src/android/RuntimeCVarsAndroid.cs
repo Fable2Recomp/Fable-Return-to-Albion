@@ -12,19 +12,29 @@ public static class RuntimeCVarsAndroid
     /// <summary>The graphics preset and the presets' revision it was written from (<see cref="GraphicsPresets"/>), after <c>display_resolution</c>.</summary>
     public static readonly RuntimeCVarDefinition[] GraphicsPreset =
     {
-        new(GraphicsPresets.Key, DisplayCategory, RuntimeCVarType.String, GraphicsPresets.Balanced,
-            "The picture's cost settings as one choice, on a phone. Balanced trades distance, "
+        new(GraphicsPresets.Key, DisplayCategory, RuntimeCVarType.String, GraphicsPresets.High,
+            "The picture's cost settings as one choice, on a phone. High trades distance, "
             + "shadows and resolution for a steady frame rate on a phone, which its own heat "
-            + "holds well below its peak clock; Ultra Performance gives up the sun's shadow, most "
-            + "of the resolution and some distance for the most frame rate; Performance keeps "
-            + "the shadowless picture with more resolution, lights and distance; Quality "
+            + "holds well below its peak clock; Low gives up the sun's shadow, most "
+            + "of the resolution and some distance for the most frame rate; Medium keeps "
+            + "the shadowless picture with more resolution, lights and distance; Ultra "
             + "gives back resolution, distance and shadow reach on a phone with frames to "
             + "spare. Changing any of those settings afterwards reads as Custom.",
-            "android_low|Ultra Performance,android_mid|Performance,android|Balanced,android_high|Quality,custom|Custom"),
+            "android_low|Low,android_mid|Medium,android|High,android_high|Ultra,custom|Custom"),
 
         new(GraphicsPresets.RevisionKey, DisplayCategory, RuntimeCVarType.Int, "1",
             "The presets' revision these settings were last written from; a phone still on a "
             + "named preset takes that preset's newer values once, on its next start."),
+    };
+
+    /// <summary>The sun shadow's edge filter (<see cref="Refii.AndroidRuntime.AndroidSunShadows"/>), after <c>sun_shadow_map</c>.</summary>
+    public static readonly RuntimeCVarDefinition[] SunShadowFilter =
+    {
+        new(Refii.AndroidRuntime.AndroidSunShadows.FilterKey, LightingCategory, RuntimeCVarType.Int, "0",
+            "Android: how smoothly the edges of the sun's shadows are filtered. 0 is hard (Godot's "
+            + "default on a phone, stair-stepped), 1 to 5 are Godot's Soft Very Low to Soft Ultra; "
+            + "1 is grainy without TAA. The desktop always filters at Soft Medium. Options in the "
+            + "game steps it, and it applies at once."),
     };
 
     /// <summary>The frame rate in the corner of the screen (<see cref="Refii.AndroidRuntime.AndroidFpsCounter"/>), after <c>max_fps</c>.</summary>
@@ -83,10 +93,33 @@ public static class RuntimeCVarsAndroid
             + "into its shader instead of read at draw. A surface without a normal map stops "
             + "carrying tangents too. The same picture; a few more shader builds. Applies at the next launch."),
 
+        new("lite_material_folds_low_ram", DisplayCategory, RuntimeCVarType.String, "off",
+            "Android, lite shaders, in the low-memory tier: which of lite_material_folds' switches are "
+            + "compiled in, since each mix of them is a shader build of its own. const: only those "
+            + "that add no build. normal: those and the normal map, at most one more build of each. "
+            + "all: every switch. off: none. The same picture. Applies at the next launch.",
+            "off|Off,const|No extra builds,normal|With the normal map,all|All"),
+
+        new(Refii.Models.Engine_ShaderSpecialisation.VegetationFoldsKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, lite shaders: plants' fixed switches (leaves, grass, their own normals) are "
+            + "compiled into their shaders instead of read at draw, and trees stop passing an "
+            + "always-zero value between shader stages. The same picture; a few more shader "
+            + "builds. Applies at the next launch."),
+
         new("lite_terrain_single_fetch", DisplayCategory, RuntimeCVarType.Bool, "false",
             "Android, lite ground: the fallback for ground no layer is painted on is drawn by the "
             + "splat loop's own layer fetch instead of a second copy of it, a smaller shader with "
             + "the same result. Applies at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidHudRate.Key, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android: the in-game HUD is drawn every other frame while nothing on it follows the "
+            + "world or the camera; menus, markers, mod pieces and a turning camera draw every "
+            + "frame. Its own animations then move at half the frame rate. Takes effect live."),
+
+        new(Refii.Level.Engine_TreeSwayFar.Key, DisplayCategory, RuntimeCVarType.Double, "0",
+            "Android, lite shaders: trees farther than this many metres stand still in the wind "
+            + "(they settle over the last eighth of it); 0 is off and every tree sways. Past "
+            + "150 m a tree's sway is about a pixel at a low render scale. Takes effect live."),
 
         new("prop_far_shading_metres", DisplayCategory, RuntimeCVarType.Double, "0",
             "Android, lite shaders: props whose nearest point is farther than this many metres draw "
@@ -119,11 +152,26 @@ public static class RuntimeCVarsAndroid
             + "are taken. Empty leaves the defaults. Takes effect at the next launch; the desktop "
             + "reads DOTNET_ variables from its own environment and ignores it."),
 
+        new(Refii.AndroidRuntime.AndroidPoolSpin.Key, DisplayCategory, RuntimeCVarType.String, "auto",
+            "Android, CPU: how long an idle .NET worker thread spins, in rounds, before it sleeps "
+            + "(the runtime's own is 280). Less spinning leaves the cores idle between the frame's "
+            + "bursts of pose and cloth work, for a wake when work arrives. auto spins 35 in the "
+            + "low-memory tier and leaves the runtime's own elsewhere; a number from 0 sets it; "
+            + "default leaves it. Takes effect at the next launch."),
+
         new("android_host_off_prime", DisplayCategory, RuntimeCVarType.Bool, "false",
             "Android, CPU: every thread but the game's simulation thread is kept off the phone's "
             + "fastest cores, so that thread has them to itself instead of sharing them with "
             + "Godot's own threads. The same game; the rest of the work runs on the other cores. "
             + "Takes effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidLoadPlacement.Key, DisplayCategory, RuntimeCVarType.String, "off",
+            "Android, CPU: while a level builds, the .NET and Godot worker threads run on the "
+            + "phone's faster cores only, and go back when the build ends; workers_main moves "
+            + "the main thread too. For a phone with little cores and at least three faster "
+            + "ones; the game's own threads stay where they are. The same game. Takes effect at "
+            + "the next launch.",
+            "off|Off,workers|Workers,workers_main|Workers and main thread"),
 
         new("foliage_density", DisplayCategory, RuntimeCVarType.Double, "1",
             "The share of ground foliage (nettles, bracken, grass clumps) drawn, from 0.25 to 1. Each "
@@ -134,6 +182,11 @@ public static class RuntimeCVarsAndroid
             "Android, CPU: the game reads the real clock directly, instead of through the "
             + "desktop's stepped clock with a lock on every read. The same game at the same "
             + "speed, with less waiting between its threads. Takes effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidIdlePower.ScreenMinutesKey, DisplayCategory, RuntimeCVarType.Int, "10",
+            "Android: minutes with no input until play pauses and the screen may turn off by the "
+            + "phone's own setting, which also stops the game using power. 0 keeps the screen on "
+            + "for as long as the game is open."),
 
         new("hdr_2d", DisplayCategory, RuntimeCVarType.Bool, "true",
             "Android: the world's colour in half floats (on) or 10 bits (off). Off halves the "
@@ -156,6 +209,29 @@ public static class RuntimeCVarsAndroid
             "Android, memory: when a level has finished loading, the app's large memory blocks "
             + "are compacted as on the desktop, giving back the gaps the load left. A slightly "
             + "longer pause at the end of the loading screen; nothing changes in play."),
+        new("android_memory_release", DisplayCategory, RuntimeCVarType.Bool, "true",
+            "Android, memory: while a level builds, memory it has finished with is collected, and "
+            + "at a level change what the last area no longer needs goes back to the phone before "
+            + "the next builds. A slightly longer loading screen, for a phone that runs out of memory."),
+        new(Refii.Game.AndroidMemoryRelease.BigCoreThreadKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, memory: with android_memory_release, the collections during a level build "
+            + "run on a thread of their own, held on the phone's faster cores, instead of on any "
+            + "worker. Applies at the next level load."),
+        new(Refii.Game.AndroidMemoryRelease.NonBlockingKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, memory: with android_memory_release, the collections during a level build "
+            + "run in the background instead of stopping the build. Memory comes back later, so "
+            + "the peak can be higher. Applies at the next level load."),
+        new(Refii.Game.AndroidMemoryRelease.CeilingKey, DisplayCategory, RuntimeCVarType.Int, "0",
+            "Android, memory: with android_memory_release, a collection during a level build "
+            + "waits until the managed heap reaches this many MB or the phone's free memory and "
+            + "swap are short; 0 collects at every 200 MB of growth. Applies at the next level load."),
+        new("android_low_ram_mode", DisplayCategory, RuntimeCVarType.String, "auto",
+            "Android, memory: the tier for a phone short of memory. Surface detail one size smaller, "
+            + "fewer shader shortcuts and menus built when they first open, which costs that first "
+            + "open a moment; hero_texture_sources_mb at 0 means 32 here instead of no limit. auto "
+            + "turns it on under 7 GB of memory; on and off choose, and the Low graphics preset "
+            + "sets on. Takes effect at the next launch.",
+            "auto|Auto,on|On,off|Off"),
     };
 
     /// <summary>The effect texture prefetch and the lean touch-control canvas, after <c>fx_cpu_fastpaths</c>.</summary>

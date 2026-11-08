@@ -46,6 +46,12 @@ namespace Refii.Models;
 /// <see cref="KeepFrames"/> frames later. A specialisation pipeline is one driver binary for one
 /// shader, far smaller than the ubershader set that ran the S10e out of memory, and a cached one
 /// costs nothing to ask for again.</para>
+/// <para>UNDER `stable_light_counts` ONE COMBINATION IS ALL OF THEM: the fillers put every instance
+/// in the scenario, these copies too, at two or more paired omni and spot lights, and
+/// `shader_count_for` folds any count from two up to "several". So a test light cannot change a
+/// copy's pipeline key, and each copy is drawn once, with none. The other eight draws found
+/// their pipeline cached (4-8 compiled of about 600 draws on both phones) and cost 16 frames of
+/// the hold, at 64-78 ms each.</para>
 /// </remarks>
 public static class Engine_PipelineWarmup
 {
@@ -118,6 +124,7 @@ public static class Engine_PipelineWarmup
     private static bool _enabled;
     private static bool _planned;
     private static bool _done;
+    private static bool _pinned;
     private static readonly List<(Source Source, int Omni, int Spot)> _draws = new();
     private static readonly Queue<(int Frame, List<Rid> Rids)> _live = new();
     private static readonly List<Light3D> _lights = new();
@@ -169,7 +176,29 @@ public static class Engine_PipelineWarmup
         _kinds = 0;
         _planned = false;
         _done = false;
+        _pinned = false;
         _holding = false;
+    }
+
+    /// <summary>
+    /// The light combinations a level's copies are drawn under, commonest first: those its lights
+    /// can make, or the one combination there is when <paramref name="pinned"/> (fillers stand).
+    /// </summary>
+    internal static IEnumerable<(int Omni, int Spot)> CombosFor(bool omni, bool spot, bool pinned)
+    {
+        if (pinned)
+        {
+            yield return (0, 0);
+            yield break;
+        }
+
+        foreach ((int o, int s) in Combos)
+        {
+            if ((o == 0 || omni) && (s == 0 || spot))
+            {
+                yield return (o, s);
+            }
+        }
     }
 
     /// <summary>
@@ -205,6 +234,7 @@ public static class Engine_PipelineWarmup
             _startTicks = System.Diagnostics.Stopwatch.GetTimestamp();
             _specialisationsAtStart = Performance.GetMonitor(Performance.Monitor.PipelineCompilationsSpecialization);
             _surfacesAtStart = Performance.GetMonitor(Performance.Monitor.PipelineCompilationsSurface);
+            _pinned = Refii.Lighting.Engine_StableLightCounts.StandsIn(world3D.Scenario);
             Plan(world);
         }
 
@@ -292,13 +322,8 @@ public static class Engine_PipelineWarmup
         }
 
         _kinds = kinds.Count;
-        foreach ((int o, int s) in Combos)
+        foreach ((int o, int s) in CombosFor(omni, spot, _pinned))
         {
-            if ((o != 0 && !omni) || (s != 0 && !spot))
-            {
-                continue;
-            }
-
             foreach (Source source in sources)
             {
                 if (_draws.Count < MaxDraws)
@@ -308,13 +333,13 @@ public static class Engine_PipelineWarmup
             }
         }
 
-        if (omni)
+        if (omni && !_pinned)
         {
             _omni = RenderingServer.OmniLightCreate();
             Configure(_omni);
         }
 
-        if (spot)
+        if (spot && !_pinned)
         {
             _spot = RenderingServer.SpotLightCreate();
             Configure(_spot);
@@ -322,7 +347,8 @@ public static class Engine_PipelineWarmup
         }
 
         GD.Print($"[pipeline-warmup] {_kinds} surface kind(s) on {sources.Count} source(s), " +
-            $"{(omni ? "omni" : "no omni")} and {(spot ? "spot" : "no spot")} lights: " +
+            $"{(omni ? "omni" : "no omni")} and {(spot ? "spot" : "no spot")} lights" +
+            $"{(_pinned ? " (counts pinned, one combination)" : "")}: " +
             $"{_draws.Count} draw(s){(_draws.Count == MaxDraws ? $" (capped at {MaxDraws})" : "")}" +
             (Refii.Level.Engine_PropFarShading.Active ? "; " + Refii.Level.Engine_PropFarShading.Census() : ""));
     }
@@ -429,6 +455,12 @@ public static class Engine_PipelineWarmup
     /// <summary>The nearest distance ahead no visible real light reaches; the nearest if none.</summary>
     private static float Clear(Camera3D camera)
     {
+        if (_pinned)
+        {
+            // A lamp over the grid cannot change a pinned count.
+            return Distances[0];
+        }
+
         Transform3D eye = camera.GlobalTransform;
         foreach (float distance in Distances)
         {

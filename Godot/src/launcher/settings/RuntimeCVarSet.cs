@@ -468,6 +468,7 @@ public static class RuntimeCVarsGodot
                 + "Godot's default; the shadow bias follows the texel, so 2048 trades edge "
                 + "sharpness for fill on a slow GPU without striping the ground, and 8192 suits "
                 + "a 4K display."),
+            ..RuntimeCVarsAndroid.SunShadowFilter,
 
             new("sun_shadows", LightingCategory, RuntimeCVarType.Bool, "true",
                 "Let the sun and moon cast dynamic shadows. Fable 2 gates this on the day-set's "

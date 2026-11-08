@@ -177,6 +177,46 @@ public sealed class AndroidPhoneCompilerTests
         fixture.AssertPreserved();
     }
 
+    /// <summary>A linker that dies from a signal is run again on one thread; a link error is not.</summary>
+    [TestCase]
+    public async Task LinkerCrashIsLinkedAgain()
+    {
+        using var fixture = new Fixture();
+        var links = new List<AndroidPhoneCompiler.Command>();
+        var result = await AndroidPhoneCompiler.CompileAsync(fixture.Request, _ => { }, CancellationToken.None,
+            (command, token) =>
+            {
+                if (!command.Arguments.Contains("-shared")) return fixture.Generate(command, token);
+                links.Add(command);
+                if (links.Count > 1) return fixture.Generate(command, token);
+                File.WriteAllText(command.Log, "librefii_clang: error: linker command failed due to signal (use -v to see invocation)\n");
+                return Task.FromResult(1);
+            });
+        AssertThat(File.ReadAllBytes(result.Module)).IsEqual(Elf());
+        AssertThat(links.Count).IsEqual(2);
+        AssertThat(links[0].Arguments.Contains(AndroidPhoneCompiler.SingleThreadLink)).IsFalse();
+        AssertThat(links[1].Arguments.Contains(AndroidPhoneCompiler.SingleThreadLink)).IsTrue();
+
+        using var errors = new Fixture();
+        int errorLinks = 0;
+        bool failed = false;
+        try
+        {
+            await AndroidPhoneCompiler.CompileAsync(errors.Request, _ => { }, CancellationToken.None,
+                (command, token) =>
+                {
+                    if (!command.Arguments.Contains("-shared")) return errors.Generate(command, token);
+                    ++errorLinks;
+                    File.WriteAllText(command.Log, "ld.lld: error: undefined symbol: refii_missing\n");
+                    return Task.FromResult(1);
+                });
+        }
+        catch (InvalidDataException) { failed = true; }
+        AssertThat(failed).IsTrue();
+        AssertThat(errorLinks).IsEqual(1);
+        errors.AssertPreserved();
+    }
+
     /// <summary>A linked ELF that fails its loader check is retained for diagnosis and never published for activation.</summary>
     [TestCase]
     public async Task LoaderFailurePreventsCompletionWithoutChangingInstallation()

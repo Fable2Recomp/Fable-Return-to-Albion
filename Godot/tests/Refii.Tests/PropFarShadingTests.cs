@@ -42,6 +42,31 @@ public sealed class PropFarShadingTests
         AssertThat(Engine_PropFarShading.Distance(box, new Vector3(13f, 6f, 5f))).IsEqual(5f);
     }
 
+    /// <summary>Idle with no props, or off with none left far; a far prop keeps it sweeping after the key goes to 0.</summary>
+    [TestCase]
+    public void IdlesOnlyWhenNothingIsLeftToMove()
+    {
+        AssertThat(Engine_PropFarShading.Idle(0, 30f, 0)).IsTrue();
+        AssertThat(Engine_PropFarShading.Idle(10, 0f, 0)).IsTrue();
+        AssertThat(Engine_PropFarShading.Idle(10, 0f, 3)).IsFalse();
+        AssertThat(Engine_PropFarShading.Idle(10, 30f, 0)).IsFalse();
+    }
+
+    /// <summary>
+    /// The sweep runs from a node that processes every frame: the streamers stop processing once
+    /// their props settle (SetProcess(false)), which ended the sweep with the load.
+    /// </summary>
+    [TestCase]
+    public void TheHostTicksTheSweepEveryFrame()
+    {
+        string host = File.ReadAllText(Path.GetFullPath(Path.Combine(Here(), "../../src/android/AndroidGameHost.cs")));
+        int process = host.IndexOf("public override void _Process(double delta)", System.StringComparison.Ordinal);
+        AssertThat(process).IsGreater(0);
+        int tick = host.IndexOf("Engine_PropFarShading.Tick(this);", process, System.StringComparison.Ordinal);
+        AssertThat(tick).IsGreater(process);
+        AssertThat(host.IndexOf("try", process, System.StringComparison.Ordinal)).IsGreater(tick);
+    }
+
     private static string Here([CallerFilePath] string source = "") => Path.GetDirectoryName(source)!;
 
     /// <summary>The far build's defines are ones the model body compiles out.</summary>

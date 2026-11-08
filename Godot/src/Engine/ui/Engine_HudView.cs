@@ -2881,6 +2881,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
             // subtitles and counters), and the group's own place is still the layout's.
             if (Engine_UiBindings.IsLayoutMeter(binding.Name) && !StatesTimes)
             {
+                HoldAndroidHealthPlace(built, screen, binding.ElementOrdinal);
                 continue;
             }
 
@@ -3444,6 +3445,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
             // bar's drop). The clone binding applies stated transforms only beneath a root, so
             // the difference is added here.
             at += StatedDelta(built) * scale;
+            at.Y -= AndroidCutoutDrop(built, frame, at);
 
             // A meter copy stands by its art, not its element's origin (Built.ArtShift).
             if (built.ArtShift != Vector3.Zero)

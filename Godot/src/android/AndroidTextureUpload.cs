@@ -17,23 +17,51 @@ namespace Refii.Textures;
 /// <param name="Astc4x4">ASTC4x4 UNORM can be sampled and updated without renderer fallback.</param>
 /// <param name="TranscodeAstc">BC1/BC3 without hardware support go to ASTC4x4 rather than RGBA8
 /// (`android_astc_textures`, on by default; only meaningful with <paramref name="Astc4x4"/>).</param>
+/// <param name="ReduceNormalMaps">Normal maps the GPU cannot sample as BC5, and large colour maps
+/// it cannot sample as BC1 or BC3, upload one size down (the low-memory tier,
+/// <see cref="Refii.Game.AndroidMemoryRelease.LowRamMode"/>).</param>
 public sealed record AndroidTextureUploadPolicy(bool Android, bool Bc1, bool Bc2,
-    bool Bc3, bool Bc4, bool Bc5, bool Rgb8, bool Astc4x4 = false, bool TranscodeAstc = true)
+    bool Bc3, bool Bc4, bool Bc5, bool Rgb8, bool Astc4x4 = false, bool TranscodeAstc = true,
+    bool ReduceNormalMaps = false)
 {
+    /// <summary>The smallest edge that gives up its top level; below it a normal map is cheap and already coarse.</summary>
+    public const int ReducedNormalMapMinimumEdge = 256;
+
+    /// <summary>The same for colour maps, which show the difference sooner than normal maps do.</summary>
+    public const int ReducedColorMapMinimumEdge = 512;
+
+    /// <summary>Whether this image uploads without its top mip level.</summary>
+    /// <param name="source">The decoded image's format.</param>
+    /// <param name="width">Its width.</param>
+    /// <param name="height">Its height.</param>
+    /// <param name="mipmaps">Whether it has a mip chain to fall back on.</param>
+    /// <param name="world">A world material's texture, sampled in normalised coordinates. Colour maps
+    /// only shrink when this is set: a terrain bake derives its UVs from its own size.</param>
+    public bool DropsTopMip(Image.Format source, int width, int height, bool mipmaps, bool world = true) =>
+        Android && ReduceNormalMaps && mipmaps && Math.Min(width, height) >= source switch
+        {
+            Image.Format.RgtcRg when !Bc5 => ReducedNormalMapMinimumEdge,
+            Image.Format.Dxt1 when !Bc1 && world => ReducedColorMapMinimumEdge,
+            Image.Format.Dxt5 when !Bc3 && world => ReducedColorMapMinimumEdge,
+            _ => int.MaxValue,
+        };
+
     /// <summary>Captures each required format once; desktop policy never invokes a device query.</summary>
     /// <param name="android">Enables the capability-dependent Android preparation.</param>
     /// <param name="supported">Tests the renderer's sampled/update usage for one data format.</param>
     /// <returns>A thread-safe immutable policy, with no retained renderer object.</returns>
     /// <param name="transcodeAstc">Whether unsupported BC1/BC3 may become ASTC4x4.</param>
+    /// <param name="reduceNormalMaps">Whether unsupported BC5 uploads one size down.</param>
     public static AndroidTextureUploadPolicy Capture(bool android,
-        Func<RenderingDevice.DataFormat, bool> supported, bool transcodeAstc = true) => android
+        Func<RenderingDevice.DataFormat, bool> supported, bool transcodeAstc = true,
+        bool reduceNormalMaps = false) => android
         ? new(true, supported(RenderingDevice.DataFormat.Bc1RgbUnormBlock),
             supported(RenderingDevice.DataFormat.Bc2UnormBlock),
             supported(RenderingDevice.DataFormat.Bc3UnormBlock),
             supported(RenderingDevice.DataFormat.Bc4UnormBlock),
             supported(RenderingDevice.DataFormat.Bc5UnormBlock),
             supported(RenderingDevice.DataFormat.R8G8B8Unorm),
-            supported(RenderingDevice.DataFormat.Astc4X4UnormBlock), transcodeAstc)
+            supported(RenderingDevice.DataFormat.Astc4X4UnormBlock), transcodeAstc, reduceNormalMaps)
         : new(false, true, true, true, true, true, true);
 
     /// <summary>Chooses precisely Godot's fallback storage channels for unsupported game formats.</summary>
@@ -91,22 +119,25 @@ public static class AndroidTextureUpload
         using RenderingDevice? device = RenderingServer.CreateLocalRenderingDevice();
         const RenderingDevice.TextureUsageBits usage =
             RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanUpdateBit;
-        bool transcode = true;
+        bool transcode = true, reduceNormalMaps = false;
         try
         {
-            transcode = Engine_RefiiConfig.Bool(Engine_RefiiConfig.Read(out _), "android_astc_textures", true);
+            var settings = Engine_RefiiConfig.Read(out _);
+            transcode = Engine_RefiiConfig.Bool(settings, "android_astc_textures", true);
+            reduceNormalMaps = Refii.Game.AndroidMemoryRelease.LowRamMode;
         }
         catch (Exception) { }
         Volatile.Write(ref _policy, AndroidTextureUploadPolicy.Capture(true,
-            format => device?.TextureIsFormatSupportedForUsage(format, usage) ?? false, transcode));
+            format => device?.TextureIsFormatSupportedForUsage(format, usage) ?? false, transcode, reduceNormalMaps));
     }
 
     /// <summary>Creates a 2D texture, releasing any private fallback image after Godot copies it.</summary>
     /// <param name="image">Caller-owned decoded image, which is never modified.</param>
+    /// <param name="world">See <see cref="AndroidTextureUploadPolicy.DropsTopMip"/>.</param>
     /// <returns>The ordinary Godot texture with capability-compatible storage.</returns>
-    public static ImageTexture CreateTexture(Image image)
+    public static ImageTexture CreateTexture(Image image, bool world = false)
     {
-        Image prepared = Prepare(image);
+        Image prepared = Prepare(image, world);
         try
         {
             // A transcode or expand that came back empty would raise Godot's
@@ -135,14 +166,20 @@ public static class AndroidTextureUpload
     /// <remarks>CPU work on a private image only, no renderer object: safe on any thread once the
     /// policy is captured (<see cref="InitializeOnMainThread"/>); before that it changes nothing.
     /// The caller owns both images and disposes the source when a new one comes back.</remarks>
-    public static Image PrepareAhead(Image image) => Prepare(image);
+    /// <param name="image">The image to prepare.</param>
+    /// <param name="world">See <see cref="AndroidTextureUploadPolicy.DropsTopMip"/>.</param>
+    public static Image PrepareAhead(Image image, bool world = false) => Prepare(image, world);
+
+    /// <summary>Stands in for the captured policy, which off a phone is never captured.</summary>
+    internal static void SetPolicyForTests(AndroidTextureUploadPolicy policy) => Volatile.Write(ref _policy, policy);
 
     /// <summary>Replaces a 2D image using the same capability policy as its initial upload.</summary>
     /// <param name="texture">Caller-owned GPU texture.</param>
     /// <param name="image">Caller-owned replacement CPU image.</param>
-    public static void SetImage(ImageTexture texture, Image image)
+    /// <param name="world">See <see cref="AndroidTextureUploadPolicy.DropsTopMip"/>.</param>
+    public static void SetImage(ImageTexture texture, Image image, bool world = false)
     {
-        Image prepared = Prepare(image);
+        Image prepared = Prepare(image, world);
         try
         {
             // As in CreateTexture: an empty prepared image is named here, never handed to
@@ -165,28 +202,40 @@ public static class AndroidTextureUpload
     /// <summary>Uploads cube/array layers with uniform fallback formats and preserved mip chains.</summary>
     /// <param name="texture">A cubemap or 2D array owned by the caller.</param>
     /// <param name="images">Uniform source layers, left intact after upload.</param>
+    /// <param name="world">See <see cref="AndroidTextureUploadPolicy.DropsTopMip"/>.</param>
     /// <returns>Godot's normal layered creation result.</returns>
-    public static Error CreateLayered(ImageTextureLayered texture, Godot.Collections.Array<Image> images)
+    public static Error CreateLayered(ImageTextureLayered texture, Godot.Collections.Array<Image> images, bool world = false)
     {
-        var temporary = new List<Image>();
+        var unique = new List<Image>();
+        var preparedOf = new Dictionary<Image, Image>();
+        foreach (Image image in images)
+        {
+            if (preparedOf.TryAdd(image, image)) unique.Add(image);
+        }
+        var results = new Image?[unique.Count];
         var prepared = new Godot.Collections.Array<Image>();
         // Array<T> exposes its same underlying native Array through this conversion;
         // only the untyped owner implements IDisposable in Godot 4.7.1.
         using Godot.Collections.Array preparedStorage = (Godot.Collections.Array)prepared;
         try
         {
-            foreach (Image image in images)
-            {
-                Image next = Prepare(image);
-                if (!ReferenceEquals(next, image)) temporary.Add(next);
-                prepared.Add(next);
-            }
+            // Side by side, and once for a layer that repeats an image: on an Adreno 640 each is a
+            // transcode of its whole mip chain, on a private image, and they were the array's main cost.
+            System.Threading.Tasks.Parallel.For(0, unique.Count, i => results[i] = Prepare(unique[i], world));
+            for (int i = 0; i < results.Length; i++) preparedOf[unique[i]] = results[i]!;
+            foreach (Image image in images) prepared.Add(preparedOf[image]);
             Error result = texture.CreateFromImages(prepared);
             if (result == Error.Ok)
                 for (int i = 0; i < images.Count; i++) RecordUpload(TextureUploadKind.Layer, images[i], prepared[i]);
             return result;
         }
-        finally { foreach (Image image in temporary) image.Dispose(); }
+        finally
+        {
+            for (int i = 0; i < results.Length; i++)
+            {
+                if (results[i] is { } made && !ReferenceEquals(made, unique[i])) made.Dispose();
+            }
+        }
     }
 
     /// <summary>Captures only native scalar metadata after a successful Android upload.</summary>
@@ -202,21 +251,24 @@ public static class AndroidTextureUpload
 
     /// <summary>Duplicates only unsupported inputs and performs the renderer's equivalent conversion.</summary>
     /// <param name="image">An image with its original decoded/cache representation.</param>
+    /// <param name="world">See <see cref="AndroidTextureUploadPolicy.DropsTopMip"/>.</param>
     /// <returns>The input itself if supported; otherwise a new caller-disposed compatible image.</returns>
-    private static Image Prepare(Image image)
+    private static Image Prepare(Image image, bool world)
     {
         AndroidTextureUploadPolicy policy = Policy;
         if (!policy.Android) return image;
         Image.Format source = image.GetFormat();
         Image.Format target = policy.Target(source);
         if (source == target) return image;
+        bool dropTopMip = policy.DropsTopMip(source, image.GetWidth(), image.GetHeight(), image.HasMipmaps(), world);
         if (target == Image.Format.Astc4X4)
         {
-            Image? astc = Transcode(image, source == Image.Format.Dxt5);
+            using Image? smaller = dropTopMip ? WithoutTopMip(image) : null;
+            Image? astc = Transcode(smaller ?? image, source == Image.Format.Dxt5);
             if (astc is not null) { Interlocked.Increment(ref _prepared); return astc; }
             target = Image.Format.Rgba8;
         }
-        Image copy = (Image)image.Duplicate();
+        Image copy = (dropTopMip ? WithoutTopMip(image) : null) ?? (Image)image.Duplicate();
         try
         {
             if (copy.IsCompressed())
@@ -232,13 +284,29 @@ public static class AndroidTextureUpload
         catch { copy.Dispose(); throw; }
     }
 
+    /// <summary>A new image from the second mip level down, or null if the chain does not fit that size.</summary>
+    /// <remarks>An expanded BC5 normal map is 2 bytes a texel, a third of the video memory the game's
+    /// textures take on an Adreno 640 and all of it unswappable: 303 MB at Bower Lake on a OnePlus 7 Pro.
+    /// The level below costs a quarter of that.</remarks>
+    private static Image? WithoutTopMip(Image image)
+    {
+        using var levels = new Engine_ImageBytes(image);
+        int offset = (int)image.GetMipmapOffset(1);
+        var result = new Image();
+        result.SetData(image.GetWidth() / 2, image.GetHeight() / 2, true, image.GetFormat(), levels.Span[offset..]);
+        if (!result.IsEmpty()) return result;
+        result.Dispose();
+        return null;
+    }
+
     /// <summary>A new ASTC4x4 image of the same size and mip chain, or null if the payload is not
     /// whole blocks (the caller then falls back to RGBA8).</summary>
     /// <remarks>Both formats store every level, down to 1x1, as whole 4x4 blocks in the same order,
     /// so the chain maps block for block without walking its levels.</remarks>
     private static Image? Transcode(Image image, bool bc3)
     {
-        byte[] blocks = image.GetData();
+        using var bytes = new Engine_ImageBytes(image);
+        ReadOnlySpan<byte> blocks = bytes.Span;
         int length = blocks.Length / (bc3 ? 16 : 8) * 16;
         // Pooled: SetData copies it, and a fresh array per texture is large-object garbage that
         // only a gen2 collection returns (measured: the NativeAOT heap 500-970 MB vs 240-310 without).

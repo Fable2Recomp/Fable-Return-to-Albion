@@ -62,7 +62,7 @@ public static class Engine_LevelLighting
 	}
 
 	/// <summary>`sun_shadow_map`: the directional shadow atlas size; the biases scale with its texel.</summary>
-	public static readonly int SunShadowMap = ReadSunShadowMap();
+	public static int SunShadowMap { get; set; } = ReadSunShadowMap();
 
 	private static int ReadSunShadowMap()
 	{

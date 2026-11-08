@@ -60,17 +60,24 @@ internal sealed class AndroidGuestPlacement
     /// <summary>How often the threads are looked at again.</summary>
     public const int ScanMilliseconds = 2000;
 
-    private const string TaskRoot = "/proc/self/task";
+    internal const string TaskRoot = "/proc/self/task";
     private const string CpuRoot = "/sys/devices/system/cpu";
     private const int PrioProcess = 0;
-    private const int Eperm = 1;
-    private const int Esrch = 3;
-    private const int Eacces = 13;
+    private const int PrSetName = 15;
+    internal const int Eperm = 1;
+    internal const int Esrch = 3;
+    internal const int Eacces = 13;
 
     /// <summary>A <c>cpu_set_t</c> as bionic declares it on arm64: 1024 bits.</summary>
-    private const int CpuSetWords = 16;
+    internal const int CpuSetWords = 16;
 
     private static readonly byte[] GameThreadBytes = System.Text.Encoding.ASCII.GetBytes(GameThreadPrefix);
+
+    private static readonly Lazy<ulong[]?> FasterMask = new(() =>
+    {
+        int[] cpus = FasterCpus(ReadMaxFrequencies());
+        return cpus.Length == 0 ? null : MaskOf(cpus);
+    });
 
     private readonly int[] _prime;
     private readonly ulong[] _wanted = new ulong[CpuSetWords];
@@ -88,13 +95,19 @@ internal sealed class AndroidGuestPlacement
     private volatile string _last = "not yet";
 
     [DllImport("libc", EntryPoint = "sched_setaffinity", SetLastError = true)]
-    private static extern int SchedSetAffinity(int tid, nint size, ulong[] mask);
+    internal static extern int SchedSetAffinity(int tid, nint size, ulong[] mask);
 
     [DllImport("libc", EntryPoint = "sched_getaffinity", SetLastError = true)]
-    private static extern int SchedGetAffinity(int tid, nint size, [Out] ulong[] mask);
+    internal static extern int SchedGetAffinity(int tid, nint size, [Out] ulong[] mask);
 
     [DllImport("libc", EntryPoint = "setpriority", SetLastError = true)]
     private static extern int SetPriority(int which, uint who, int prio);
+
+    [DllImport("libc", EntryPoint = "gettid")]
+    internal static extern int GetTid();
+
+    [DllImport("libc", EntryPoint = "prctl", SetLastError = true)]
+    private static extern int Prctl(int option, byte[] name, nint arg3, nint arg4, nint arg5);
 
     private AndroidGuestPlacement(int[] prime, IEnumerable<int> all, bool pinGame, bool offPrime)
     {
@@ -199,6 +212,74 @@ internal sealed class AndroidGuestPlacement
         return prime.ToArray();
     }
 
+    /// <summary>
+    /// The CPUs above the slowest maximum frequency, ascending: on a Snapdragon 855 the gold and
+    /// prime cores 4-7. None when every CPU shares it or none was read.
+    /// </summary>
+    public static int[] FasterCpus(IReadOnlyDictionary<int, long> maxFrequencies)
+    {
+        long bottom = long.MaxValue;
+        foreach (long frequency in maxFrequencies.Values)
+            bottom = Math.Min(bottom, frequency);
+        var faster = new List<int>();
+        foreach ((int cpu, long frequency) in maxFrequencies)
+        {
+            if (frequency > bottom && cpu is >= 0 and < CpuSetWords * 64)
+                faster.Add(cpu);
+        }
+
+        faster.Sort();
+        return faster.ToArray();
+    }
+
+    /// <summary>The <c>cpu_set_t</c> holding these CPUs; those out of its range are left out.</summary>
+    public static ulong[] MaskOf(IEnumerable<int> cpus)
+    {
+        var mask = new ulong[CpuSetWords];
+        foreach (int cpu in cpus)
+        {
+            if (cpu is >= 0 and < CpuSetWords * 64)
+                mask[cpu / 64] |= 1UL << (cpu % 64);
+        }
+
+        return mask;
+    }
+
+    /// <summary>
+    /// <c>android_gc_big_core_thread</c>: the calling thread, about to run a level build's forced
+    /// collection, named and held on the faster cores. A refusal is said in the result and the
+    /// collection still runs where the thread is.
+    /// </summary>
+    /// <remarks>A blocking collection's thread takes <see cref="Nice"/>, the main thread's, because
+    /// every managed thread waits on it. A background collection's takes 0: the runtime makes its
+    /// background thread from this one, and Linux copies mask, nice and name at clone (seen on a
+    /// desktop NativeAOT net9 build), so that thread would otherwise run at the main thread's
+    /// priority beside it, into play, until 20 s idle ends it. Thread.Name does not reach
+    /// <c>comm</c> on NativeAOT (same check), hence prctl, which is also what makes this thread's
+    /// samples and its background thread's readable in a profile.</remarks>
+    /// <param name="background">Whether it starts a background collection rather than blocking.</param>
+    /// <returns>What happened, for the log line.</returns>
+    public static string PlaceLoadCollectionThread(bool background)
+    {
+        NameCurrentThread(LoadCollectionThreadName);
+        ulong[]? mask = FasterMask.Value;
+        if (mask == null)
+            return "no faster cores in cpufreq";
+        if (SchedSetAffinity(0, CpuSetWords * sizeof(ulong), mask) != 0)
+            return $"not placed, errno {Marshal.GetLastPInvokeError()}";
+        int nice = background ? 0 : Nice;
+        return SetPriority(PrioProcess, 0, nice) == 0
+            ? $"on the faster cores, nice {nice}"
+            : $"on the faster cores, nice unchanged (errno {Marshal.GetLastPInvokeError()})";
+    }
+
+    /// <summary>Names the calling thread, as <c>comm</c> shows it.</summary>
+    internal static void NameCurrentThread(string name) =>
+        Prctl(PrSetName, System.Text.Encoding.ASCII.GetBytes(name + "\0"), 0, 0, 0);
+
+    /// <summary>The name a level build's forced collection thread gives itself, and so its background thread.</summary>
+    public const string LoadCollectionThreadName = "refii-load-gc";
+
     /// <summary>Whether a thread's <c>comm</c> bytes name the guest's game thread.</summary>
     public static bool IsGameThread(ReadOnlySpan<byte> comm) => comm.StartsWith(GameThreadBytes);
 
@@ -213,7 +294,7 @@ internal sealed class AndroidGuestPlacement
     };
 
     /// <summary>Each CPU's <c>cpuinfo_max_freq</c> in kHz, for the CPUs that report one.</summary>
-    private static Dictionary<int, long> ReadMaxFrequencies()
+    internal static Dictionary<int, long> ReadMaxFrequencies()
     {
         var frequencies = new Dictionary<int, long>();
         for (int cpu = 0; cpu < CpuSetWords * 64; cpu++)
@@ -305,14 +386,17 @@ internal sealed class AndroidGuestPlacement
     }
 
     /// <summary>Reads one thread's name into the reused buffer, without its newline.</summary>
-    private bool ReadComm(string taskDirectory, out int length)
+    private bool ReadComm(string taskDirectory, out int length) => ReadComm(taskDirectory, _comm, out length);
+
+    /// <summary>Reads one thread's name into a caller's buffer, without its newline.</summary>
+    internal static bool ReadComm(string taskDirectory, byte[] comm, out int length)
     {
         length = 0;
         try
         {
             using SafeFileHandle handle = File.OpenHandle(taskDirectory + "/comm");
-            length = RandomAccess.Read(handle, _comm, 0);
-            while (length > 0 && _comm[length - 1] is (byte)'\n' or 0)
+            length = RandomAccess.Read(handle, comm, 0);
+            while (length > 0 && comm[length - 1] is (byte)'\n' or 0)
                 length--;
             return true;
         }

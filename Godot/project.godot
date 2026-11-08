@@ -39,6 +39,7 @@ file_logging/max_log_files=10
 
 [display]
 
+window/handheld/orientation.android=4
 window/size/viewport_width=1280
 window/size/viewport_height=760
 window/size/viewport_width.android=1560
@@ -79,7 +80,7 @@ lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3
 shader_compiler/shader_cache/strip_debug=true
 viewport/hdr_2d=true
 limits/global_shader_variables/buffer_size=262144
-limits/global_shader_variables/buffer_size.android=1048576
+limits/global_shader_variables/buffer_size.android=524288
 rendering_device/d3d12/max_resource_descriptors_per_frame=131072
 rendering_device/d3d12/max_sampler_descriptors_per_frame=2048
 rendering_device/d3d12/max_misc_descriptors_per_frame=2048

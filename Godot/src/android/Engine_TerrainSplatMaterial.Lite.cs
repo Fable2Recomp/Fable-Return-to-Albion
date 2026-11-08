@@ -91,6 +91,18 @@ public static partial class Engine_TerrainSplatMaterial
     /// </summary>
     private static bool NormalMapsWanted() => NormalMapsEnabled() && !Refii.Models.Engine_ShaderVariant.FlatTerrain;
 
+    /// <summary>
+    /// The level's last splat is built. On a phone its decoded sources go now: they exist to share
+    /// a decode between one level's splats, and the build's busiest stretch is still ahead of them.
+    /// </summary>
+    internal static void LastSplatBuilt()
+    {
+        if (Refii.Core.Engine_Platform.IsAndroid)
+        {
+            ClearSharedCache();
+        }
+    }
+
     /// <summary>`terrain_normal_maps`: whether the ground binds its layers' normal maps (and the
     /// cavity and parallax derived from them). Read at each terrain build; default on.</summary>
     internal static bool NormalMapsEnabled()

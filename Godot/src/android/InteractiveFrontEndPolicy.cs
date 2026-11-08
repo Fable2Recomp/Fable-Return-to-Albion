@@ -17,6 +17,17 @@ public static class InteractiveFrontEndPolicy
         (found && guiUp && (screen == Engine_UiModel.FrontEndScreen.MainMenu ||
             screen == Engine_UiModel.FrontEndScreen.Title && canPressA));
 
+    /// <summary>Whether UI already on screen stays up although <see cref="ShouldReveal"/> no longer holds.</summary>
+    /// <remarks>As on the desktop (GameWindow): revealed UI goes only once the front end's GUI is gone
+    /// and no in-game presentation stands. After A on the title the title stops taking input while
+    /// the guest builds the main menu, and hiding the UI then left the screen black for about 2.4 s.</remarks>
+    /// <param name="revealed">Whether GameUi is revealed now.</param>
+    /// <param name="guiUp">Whether the real frontend GUI is active.</param>
+    /// <param name="hasInGameUi">Whether GameUi currently has an in-game presentation.</param>
+    /// <returns>True when the UI should stay as it is.</returns>
+    public static bool StaysRevealed(bool revealed, bool guiUp, bool hasInGameUi) =>
+        revealed && (guiUp || hasInGameUi);
+
     /// <summary>Describes only observed frontend readiness, so failed queries cannot imply a loaded title.</summary>
     /// <param name="found">Whether the native frontend query found a live screen.</param>
     /// <param name="screen">The native screen identity; ignored when the query failed.</param>

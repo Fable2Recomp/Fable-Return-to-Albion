@@ -53,6 +53,11 @@ public sealed class Engine_AnimDecoder
     private readonly Engine_AnimDataFile _file;
 
     public Engine_AnimDecoder(Engine_AnimDataFile file)
+        : this(file, BucketsFor(Refii.Game.AndroidMemoryRelease.LowRamMode))
+    {
+    }
+
+    internal Engine_AnimDecoder(Engine_AnimDataFile file, int cacheBuckets)
     {
         _file = file;
         _cache = new Block[cacheBuckets];

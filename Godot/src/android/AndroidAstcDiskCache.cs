@@ -10,6 +10,17 @@ namespace Refii.Textures;
 /// </summary>
 public static class AndroidAstcDiskCache
 {
+    /// <summary>Hashes a BC payload for the file name.</summary>
+    public delegate string PayloadDigest(ReadOnlySpan<byte> payload);
+
+    /// <summary>The file holding this image's transcode, hashing the image's own buffer in place.</summary>
+    internal static string FileName(Image image, string buildStamp, PayloadDigest digest)
+    {
+        using var payload = new Engine_ImageBytes(image);
+        string mipmaps = image.HasMipmaps() ? "m" : string.Empty;
+        return $"astc_{digest(payload.Span)}_{image.GetFormat()}_{image.GetWidth()}x{image.GetHeight()}{mipmaps}_{buildStamp}.bin";
+    }
+
     /// <summary>
     /// <see cref="Engine_TextureUpload.PrepareAhead"/>, with its BC to ASTC transcode kept on disk
     /// across launches: <c>astc_&lt;hash&gt;_&lt;format&gt;_&lt;size&gt;_&lt;build&gt;.bin</c> in
@@ -23,7 +34,7 @@ public static class AndroidAstcDiskCache
     /// nothing to ASTC, so this is <see cref="Engine_TextureUpload.PrepareAhead"/> alone.</remarks>
     /// <param name="cached">Incremented, thread-safely, for each image read from the cache.</param>
     public static Image PrepareAhead(Image image, string directory, string buildStamp,
-        Func<byte[], string> digest, ref int cached)
+        PayloadDigest digest, ref int cached)
     {
         Image.Format source = image.GetFormat();
         if (Engine_TextureUpload.Policy.Target(source) != Image.Format.Astc4X4)
@@ -33,8 +44,7 @@ public static class AndroidAstcDiskCache
 
         int width = image.GetWidth(), height = image.GetHeight();
         bool mipmaps = image.HasMipmaps();
-        string path = Path.Combine(directory,
-            $"astc_{digest(image.GetData())}_{source}_{width}x{height}{(mipmaps ? "m" : string.Empty)}_{buildStamp}.bin");
+        string path = Path.Combine(directory, FileName(image, buildStamp, digest));
         byte[]? data = Engine_PreparedImageFile.TryRead(
             path, width, height, (int)Image.Format.Astc4X4, mipmaps);
         if (data is not null)

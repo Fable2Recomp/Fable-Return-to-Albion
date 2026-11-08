@@ -16,7 +16,7 @@ namespace Refii.AndroidRuntime;
 /// <summary>Compiles privately supplied game executables with APK-distributed Android tools.</summary>
 /// <remarks>Each attempt owns a new directory. It never changes the installed module,
 /// runtime configuration, source game or saves. Activation is a separate launcher action.
-/// One compiler job limits peak memory; cancellation terminates only the owned child.</remarks>
+/// Compiler jobs are limited by the memory free (<see cref="PlanJobs"/>); cancellation terminates only owned children.</remarks>
 public static class AndroidPhoneCompiler
 {
     /// <summary>Physical roots for shipped tools, user inputs and new private output.</summary>
@@ -25,8 +25,11 @@ public static class AndroidPhoneCompiler
     /// <param name="GameDirectory">Installed game containing the user's default.xex and optional default.xexp.</param>
     /// <param name="PrivateDirectory">Parent for unique private compilation attempts.</param>
     /// <param name="Title">The game being compiled; Fable 2 when unset.</param>
+    /// <param name="ObjectCache">Directory that keeps compiled units between builds (<see cref="AndroidCompileCache"/>); null keeps none.</param>
+    /// <param name="Jobs">Compilers at once; 0 plans it from free memory for the real tools, and runs one for an injected runner.</param>
     public sealed record Request(string BundleDirectory, string NativeDirectory,
-        string GameDirectory, string PrivateDirectory, Refii.Core.Engine_Title? Title = null)
+        string GameDirectory, string PrivateDirectory, Refii.Core.Engine_Title? Title = null,
+        string? ObjectCache = null, int Jobs = 0)
     {
         /// <summary>Whether this compiles Fable 3: its own version config, hooks, includes, bridge and link set.</summary>
         internal bool IsFable3 => Title == Refii.Core.Engine_Title.Fable3;
@@ -256,6 +259,10 @@ public static class AndroidPhoneCompiler
             Overlaps(request.PrivateDirectory, request.BundleDirectory) ||
             Overlaps(request.PrivateDirectory, request.NativeDirectory))
             throw new InvalidDataException("Compilation output must be separate from its inputs");
+        if (request.ObjectCache != null && (Overlaps(request.ObjectCache, request.GameDirectory) ||
+            Overlaps(request.ObjectCache, request.BundleDirectory) || Overlaps(request.ObjectCache, request.NativeDirectory) ||
+            Overlaps(request.ObjectCache, request.PrivateDirectory)))
+            throw new InvalidDataException("The compile cache must be separate from build inputs and attempts");
         var manifest = JsonSerializer.Deserialize(
             File.ReadAllText(Path.Combine(request.BundleDirectory, "bundle.json")), AndroidJsonContext.Default.BundleManifest)
             ?? throw new InvalidDataException("Missing compiler bundle manifest");
@@ -342,7 +349,7 @@ public static class AndroidPhoneCompiler
             if (status != 0) throw new InvalidDataException($"{tool} exited {status}; diagnostic files: {attempt}");
         }
         progress("Generating game code on this phone");
-        await Run("librefii_codegen.so", new[] { "--force", "codegen", manifestPath }).ConfigureAwait(false);
+        await GenerateAsync(request, generated, () => Run("librefii_codegen.so", new[] { "--force", "codegen", manifestPath })).ConfigureAwait(false);
         string[] units = ReadSources(Path.Combine(generated, "sources.cmake"), generated);
         string header = Path.Combine(generated, "refii_pch.h");
         string generatedHeader = File.ReadAllText(header);
@@ -363,35 +370,75 @@ public static class AndroidPhoneCompiler
                 File.WriteAllText(unit, bounded);
             }
         }
-        var flags = CompilerFlags(request, bundle, generated, version, HasLseAtomics()).ToList();
-        string pch = Path.Combine(attempt, "refii.pch");
-        progress("Precompiling game headers");
-        await Run("librefii_clang.so", flags.Concat(new[] { "-x", "c++-header",
-            Path.Combine(generated, "refii_pch.h"), "-o", pch }).ToArray()).ConfigureAwait(false);
+        bool lseAtomics = HasLseAtomics();
+        var flags = CompilerFlags(request, bundle, generated, version, lseAtomics).ToList();
+        AndroidCompileCache? cache = null;
+        if (request.ObjectCache != null)
+        {
+            // The bundle and attempt folders differ every build; __FILE__ must not, or no object could be reused.
+            flags.Add("-fmacro-prefix-map=" + Path.GetFullPath(request.BundleDirectory) + "=bundle");
+            flags.Add("-fmacro-prefix-map=" + Path.GetFullPath(attempt) + "=build");
+            cache = new AndroidCompileCache(request.ObjectCache, request.BundleDirectory, generated, bundle.Files,
+                request.IsFable3 ? bundle.Fable3Includes : bundle.Includes, UnitRecipe(bundle, request.Title, version, lseAtomics));
+        }
         var all = units.Concat((request.IsFable3 ? bundle.Fable3Hooks : bundle.Hooks).Select(path => Below(request.BundleDirectory, path)))
             .Append(Below(request.BundleDirectory, "src/payload/src/payload_export.cpp")).ToArray();
-        var objects = new List<string>();
+        string[] objects = new string[all.Length];
+        var toCompile = new List<int>();
         for (int i = 0; i < all.Length; i++)
         {
+            cancellation.ThrowIfCancellationRequested();
+            if (cache?.Find(all[i]) is { } kept) objects[i] = kept;
+            else toCompile.Add(i);
+        }
+        string pch = Path.Combine(attempt, "refii.pch");
+        if (toCompile.Any(i => i < units.Length))
+        {
+            progress("Precompiling game headers");
+            string pchDependencies = pch + ".d";
+            await Run("librefii_clang.so", flags.Concat(Dependencies(cache, pchDependencies)).Concat(new[] { "-x", "c++-header",
+                Path.Combine(generated, "refii_pch.h"), "-o", pch }).ToArray()).ConfigureAwait(false);
+            cache?.StorePch(pchDependencies, pch);
+        }
+        int finished = all.Length - toCompile.Count;
+        if (toCompile.Count > 0) progress($"Compiling game code {finished + 1}/{all.Length}");
+        Task<int> Compile(int i, CancellationToken token)
+        {
             string obj = Path.Combine(attempt, "unit-" + i + ".o");
-            progress($"Compiling game code {i + 1}/{all.Length}");
             var args = new List<string>(flags);
             if (i < units.Length) args.AddRange(new[] { "-include-pch", pch });
+            args.AddRange(Dependencies(cache, obj + ".d"));
             args.AddRange(new[] { "-c", all[i], "-o", obj });
-            await Run("librefii_clang.so", args).ConfigureAwait(false);
-            objects.Add(obj);
+            return runner(new Command(Below(request.NativeDirectory, "librefii_clang.so"), args, attempt,
+                request.NativeDirectory, Path.Combine(attempt, "command-" + commandIndex++ + ".log")), token);
         }
+        void Compiled(int i)
+        {
+            string obj = Path.Combine(attempt, "unit-" + i + ".o");
+            objects[i] = cache?.Store(all[i], obj, obj + ".d", i < units.Length) ?? obj;
+            if (++finished < all.Length) progress($"Compiling game code {finished + 1}/{all.Length}");
+        }
+        int jobs = request.Jobs > 0 ? request.Jobs : execute == null ? PlanJobs(Environment.ProcessorCount, AvailableMemory()) : 1;
+        File.WriteAllText(Path.Combine(attempt, "compile-plan.txt"), $"{all.Length - toCompile.Count} of {all.Length} units reused; {jobs} compilers at once\n");
+        await RunUnitsAsync(toCompile, jobs, execute == null ? AvailableMemory : () => long.MaxValue, Compile, Compiled,
+            (i, status) => new InvalidDataException($"librefii_clang.so exited {status}; diagnostic files: {attempt}"), cancellation).ConfigureAwait(false);
         progress("Linking game module");
         string module = Path.Combine(attempt, "librefii_generated.so");
-        var link = flags.Concat(new[] { "-shared", "-Wl,--no-undefined", "-Wl,-z,max-page-size=16384",
-            "-Wl,-z,common-page-size=16384", ModuleLocalCalls,
-            "-Wl,-soname,librefii_generated.so", "-L" + request.NativeDirectory,
-            "-Wl,-rpath-link," + request.NativeDirectory }).Concat(objects)
-            // Lua and the VFS are Fable 2's instance; Fable 3's module links the shared natives alone, as on desktop.
-            .Concat(request.IsFable3
-                ? new[] { "-lrefii_core", "-lrefii_runtime", "-lrefiii_vfs", "-lrexruntime", "-o", module }
-                : new[] { "-lrefii_core", "-lrefii_runtime", "-lrefii_lua", "-lrefii_vfs", "-lrexruntime", "-o", module }).ToArray();
-        await Run("librefii_clang.so", link).ConfigureAwait(false);
+        var link = flags.Concat(LinkOptions(request)).Concat(objects)
+            .Concat(LinkLibraries(request)).Concat(new[] { "-o", module }).ToArray();
+        for (int linkAttempt = 1; ; linkAttempt++)
+        {
+            cancellation.ThrowIfCancellationRequested();
+            var command = new Command(Below(request.NativeDirectory, "librefii_clang.so"),
+                linkAttempt == 1 ? link : link.Append(SingleThreadLink).ToArray(), attempt,
+                request.NativeDirectory, Path.Combine(attempt, "command-" + commandIndex++ + ".log"));
+            int status = await runner(command, cancellation).ConfigureAwait(false);
+            cancellation.ThrowIfCancellationRequested();
+            if (status == 0) break;
+            if (linkAttempt >= LinkAttempts || !LinkerCrashed(command.Log))
+                throw new InvalidDataException($"librefii_clang.so exited {status}; diagnostic files: {attempt}");
+            progress("Linking game module again");
+        }
         ValidateModule(File.ReadAllBytes(module));
         bool nativeLoad = Refii.Core.Engine_Platform.IsAndroid && execute == null && verifyLoad == null;
         if (!(verifyLoad?.Invoke(module) ?? (!nativeLoad || VerifyLoadedModule(module, request.NativeDirectory, request.HostBridge))))
@@ -405,10 +452,275 @@ public static class AndroidPhoneCompiler
                 loader = "android_dlopen_rtld_now_global_runtime_first",
                 scope = "Loaded the complete module and called its metadata accessor; no guest boot or gameplay" }));
         string digest = Hash(module);
+        if (cache != null) RecordModuleInputs(request, bundle, cache, attempt, module, version, key, lseAtomics);
         var result = new Result(attempt, module, digest, version) { Bundle = RecordedBundle(request.BundleDirectory) };
         File.WriteAllText(Path.Combine(attempt, "completed.json"), Refii.Core.Engine_Json.Serialize(result));
+        try { cache?.KeepOnlyUsed(); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { progress("Could not tidy the compile cache: " + error.Message); }
         progress("Game code compiled on this phone");
         return result;
+    }
+
+    /// <summary>The generator's file of which recompiled unit each guest function goes in.</summary>
+    internal const string PartitionFile = "codegen.partition.json";
+
+    /// <summary>Runs the generator with the last build's function placement, and keeps this one's for the next.</summary>
+    /// <param name="request">The cache directory, if any, holds the placement.</param>
+    /// <param name="generated">The attempt's empty output folder.</param>
+    /// <param name="generate">Runs the generator.</param>
+    /// <remarks>The generator pins each function to a file across runs through this file, but an attempt's
+    /// folder is always new, so it divided the code afresh: with the desktop generator, adding one function
+    /// name to the config changed 271 of 295 sources, and only 5 with the placement kept. A first build has
+    /// none and is unchanged. A generator run that fails with one is retried without it, in case it is the cause.</remarks>
+    private static async Task GenerateAsync(Request request, string generated, Func<Task> generate)
+    {
+        string? kept = request.ObjectCache == null ? null : Path.Combine(request.ObjectCache, PartitionFile);
+        if (kept != null && File.Exists(kept))
+        {
+            Directory.CreateDirectory(generated);
+            File.Copy(kept, Path.Combine(generated, PartitionFile), true);
+            try { await generate().ConfigureAwait(false); }
+            catch (InvalidDataException)
+            {
+                File.Delete(kept);
+                Directory.Delete(generated, true);
+                await generate().ConfigureAwait(false);
+            }
+        }
+        else await generate().ConfigureAwait(false);
+        string made = Path.Combine(generated, PartitionFile);
+        if (kept == null || !File.Exists(made)) return;
+        Directory.CreateDirectory(request.ObjectCache!);
+        File.Copy(made, kept + ".tmp", true);
+        File.Move(kept + ".tmp", kept, true);
+    }
+
+    /// <summary>The arguments that make Clang report what a unit read, when the cache will use it.</summary>
+    private static string[] Dependencies(AndroidCompileCache? cache, string file) =>
+        cache == null ? Array.Empty<string>() : new[] { "-MD", "-MF", file };
+
+    /// <summary>Memory one compiler is planned at. Measured on the PC replica, whose Clang is the same LLVM:
+    /// 214 MB for a typical generated unit, 264 MB for a hook, 522 MB for the largest (refii_register.cpp).</summary>
+    internal const long JobMemoryBytes = 512L * 1024 * 1024;
+
+    /// <summary>Memory left to everything else while compilers run.</summary>
+    internal const long FreeMemoryFloorBytes = 1024L * 1024 * 1024;
+
+    /// <summary>Most compilers at once; no phone has more cores worth using.</summary>
+    internal const int MostJobs = 8;
+
+    /// <summary>How long a held job waits before looking at free memory again.</summary>
+    private const int MemoryRecheckMilliseconds = 1000;
+
+    /// <summary>How often one unit is tried again after being killed by a signal.</summary>
+    private const int KilledUnitRetries = 3;
+
+    /// <summary>How many compilers to start with.</summary>
+    /// <param name="cores">CPUs this process may use.</param>
+    /// <param name="available">Free memory in bytes (MemAvailable); negative when unknown, which runs one.</param>
+    internal static int PlanJobs(int cores, long available) => available < 0 ? 1
+        : (int)Math.Clamp((available - FreeMemoryFloorBytes) / JobMemoryBytes, 1, Math.Max(1, Math.Min(cores, MostJobs)));
+
+    /// <summary>/proc/meminfo's MemAvailable in bytes, or -1 when unreadable.</summary>
+    private static long AvailableMemory()
+    {
+        try
+        {
+            foreach (string line in File.ReadLines("/proc/meminfo"))
+            {
+                if (!line.StartsWith("MemAvailable:", StringComparison.Ordinal)) continue;
+                string[] parts = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+                return parts.Length > 1 && long.TryParse(parts[1], out long kb) ? kb * 1024 : -1;
+            }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        return -1;
+    }
+
+    /// <summary>Compiles units side by side, holding back while memory is short and backing off if the system kills one.</summary>
+    /// <param name="units">The units to compile, started in this order.</param>
+    /// <param name="jobs">The most to run at once.</param>
+    /// <param name="memory">Free memory in bytes now; a job starts beside others only with room for it.</param>
+    /// <param name="compile">Starts a unit and yields its exit status.</param>
+    /// <param name="completed">Called for each success, one at a time.</param>
+    /// <param name="failure">The error for a unit's nonzero status.</param>
+    /// <param name="cancellation">Stops running children.</param>
+    /// <remarks>lmkd answers memory pressure with SIGKILL (exit 137), and a unit it stopped is not a
+    /// compile error, so it runs again with half the jobs. A real failure stops the rest.</remarks>
+    internal static async Task RunUnitsAsync(IReadOnlyList<int> units, int jobs, Func<long> memory,
+        Func<int, CancellationToken, Task<int>> compile, Action<int> completed, Func<int, int, Exception> failure,
+        CancellationToken cancellation)
+    {
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        var waiting = new LinkedList<int>(units);
+        var running = new Dictionary<Task<int>, int>();
+        var killed = new Dictionary<int, int>();
+        int limit = Math.Max(1, jobs);
+        Exception? error = null;
+        while (running.Count > 0 || (waiting.Count > 0 && error == null))
+        {
+            bool held = false;
+            while (error == null && waiting.Count > 0 && running.Count < limit)
+            {
+                cancellation.ThrowIfCancellationRequested();
+                if (running.Count > 0 && memory() < FreeMemoryFloorBytes + JobMemoryBytes) { held = true; break; }
+                int unit = waiting.First!.Value;
+                waiting.RemoveFirst();
+                running[compile(unit, stop.Token)] = unit;
+            }
+            Task any = Task.WhenAny(running.Keys);
+            if (held) await Task.WhenAny(any, Task.Delay(MemoryRecheckMilliseconds, stop.Token)).ConfigureAwait(false);
+            else await any.ConfigureAwait(false);
+            foreach (Task<int> task in running.Keys.Where(task => task.IsCompleted).ToList())
+            {
+                int unit = running[task];
+                running.Remove(task);
+                try
+                {
+                    int status = await task.ConfigureAwait(false);
+                    if (status == 0) completed(unit);
+                    else if (status >= 128 && !stop.IsCancellationRequested && killed.GetValueOrDefault(unit) < KilledUnitRetries)
+                    {
+                        killed[unit] = killed.GetValueOrDefault(unit) + 1;
+                        limit = Math.Max(1, limit / 2);
+                        waiting.AddFirst(unit);
+                    }
+                    else error ??= failure(unit, status);
+                }
+                catch (Exception thrown) { error ??= thrown; }
+                if (error != null) stop.Cancel();
+            }
+        }
+        cancellation.ThrowIfCancellationRequested();
+        if (error != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
+    }
+
+    /// <summary>Linker options that hold for every module, before its objects.</summary>
+    private static string[] LinkOptions(Request request) => new[] { "-shared", "-Wl,--no-undefined", "-Wl,-z,max-page-size=16384",
+        "-Wl,-z,common-page-size=16384", ModuleLocalCalls, "-Wl,-soname,librefii_generated.so", "-L" + request.NativeDirectory,
+        "-Wl,-rpath-link," + request.NativeDirectory };
+
+    /// <summary>The native libraries a module links, after its objects.</summary>
+    /// <remarks>Lua and the VFS are Fable 2's instance; Fable 3's module links the shared natives alone, as on desktop.</remarks>
+    private static string[] LinkLibraries(Request request) => request.IsFable3
+        ? new[] { "-lrefii_core", "-lrefii_runtime", "-lrefiii_vfs", "-lrexruntime" }
+        : new[] { "-lrefii_core", "-lrefii_runtime", "-lrefii_lua", "-lrefii_vfs", "-lrexruntime" };
+
+    /// <summary>Bump when this file changes what a build makes in a way the flags and sources do not show.</summary>
+    /// <remarks>The rewrites of generated files are covered at unit level by hashing their results, but
+    /// <see cref="StillCurrent"/> decides without generating anything.</remarks>
+    internal const int RecipeRevision = 1;
+
+    /// <summary>Native files in a bundle that are tools, not libraries a module can bind.</summary>
+    private static readonly string[] BuildTools = { "librefii_clang.so", "librefii_lld.so", "librefii_codegen.so", "librefii_phone_bridge.so" };
+
+    /// <summary>The flags and tools that decide a unit's object, with this build's folders left out.</summary>
+    /// <param name="bundle">The bundle compiling, or the one a new APK ships.</param>
+    /// <param name="title">The game being compiled; Fable 2 when null.</param>
+    /// <param name="version">Patched or unpatched guest layout.</param>
+    /// <param name="lseAtomics">Whether the flags target ARMv8.2.</param>
+    /// <returns>A hex hash. The APK's library folder, the bundle's folder and the attempt all move between builds.</returns>
+    /// <remarks>The sysroot and Clang resources are all counted rather than through each unit's record,
+    /// because the link reads CRT files no dependency file lists and because headers there are probed
+    /// (__has_include) for files a record would not show as absent.</remarks>
+    internal static string UnitRecipe(BundleManifest bundle, Refii.Core.Engine_Title? title, string version, bool lseAtomics)
+    {
+        var text = new StringBuilder().Append(RecipeRevision).Append('\n').Append(bundle.Schema).Append('\n').Append(bundle.Abi).Append('\n')
+            .Append(bundle.Api).Append('\n').Append(bundle.Ndk).Append('\n').Append(bundle.SdkPin).Append('\n');
+        foreach (string flag in CompilerFlags(MovingRootsLeftOut(title), bundle, "/~build/generated", version, lseAtomics)) text.Append(flag).Append('\n');
+        foreach (string tool in new[] { "librefii_clang.so", "librefii_codegen.so" })
+            text.Append(tool).Append(' ').Append(bundle.NativeFiles.GetValueOrDefault(tool, "")).Append('\n');
+        foreach (var file in bundle.Files.Where(file => file.Key.StartsWith("sysroot/", StringComparison.Ordinal) ||
+                     file.Key.StartsWith("resource/", StringComparison.Ordinal)).OrderBy(file => file.Key, StringComparer.Ordinal))
+            text.Append(file.Key).Append(' ').Append(file.Value).Append('\n');
+        return AndroidCompileCache.HashText(text.ToString());
+    }
+
+    /// <summary>Everything that decides a whole module beyond its units' bundle inputs and its native libraries.</summary>
+    /// <param name="bundle">The bundle compiling, or the one a new APK ships.</param>
+    /// <param name="title">The game being compiled; Fable 2 when null.</param>
+    /// <param name="version">Patched or unpatched guest layout.</param>
+    /// <param name="lseAtomics">Whether the flags target ARMv8.2.</param>
+    internal static string ModuleRecipe(BundleManifest bundle, Refii.Core.Engine_Title? title, string version, bool lseAtomics)
+    {
+        Request roots = MovingRootsLeftOut(title);
+        var text = new StringBuilder(UnitRecipe(bundle, title, version, lseAtomics)).Append('\n');
+        foreach (string tool in new[] { "librefii_lld.so", "libc++_shared.so" })
+            text.Append(tool).Append(' ').Append(bundle.NativeFiles.GetValueOrDefault(tool, "")).Append('\n');
+        foreach (string option in LinkOptions(roots).Concat(LinkLibraries(roots))) text.Append(option).Append('\n');
+        foreach (string hook in roots.IsFable3 ? bundle.Fable3Hooks : bundle.Hooks) text.Append(hook).Append('\n');
+        text.Append(ProcessWideGuestLock).Append(ThreadLocalGuestLock);
+        return AndroidCompileCache.HashText(text.ToString());
+    }
+
+    /// <summary>Placeholder folders for a recipe's flags; no file is read through them.</summary>
+    private static Request MovingRootsLeftOut(Refii.Core.Engine_Title? title) => new("/~bundle", "/~native", "/~game", "/~build", title);
+
+    /// <summary>What a built module was made from, beside it; read back by <see cref="StillCurrent"/>.</summary>
+    internal const string ModuleInputsFile = "module-inputs.txt";
+
+    /// <summary>Records a finished module's inputs; a build that cannot name them all records nothing and rebuilds on any bundle change.</summary>
+    private static void RecordModuleInputs(Request request, BundleManifest bundle, AndroidCompileCache cache, string attempt,
+        string module, string version, string key, bool lseAtomics)
+    {
+        if (!cache.Complete) return;
+        var libraries = bundle.NativeFiles.Keys.Except(BuildTools).Select(name => Path.Combine(request.NativeDirectory, name)).ToList();
+        if (AndroidModuleImports.Bound(module, libraries) is not { } bound) return;
+        var inputs = new SortedSet<string>(cache.BundleInputs, StringComparer.Ordinal);
+        foreach (string name in new[] { "_config.toml", "_manifest.toml" }) inputs.Add("versions/" + version + "/" + key + name);
+        var text = new StringBuilder().Append("recipe ").Append(ModuleRecipe(bundle, request.Title, version, lseAtomics)).Append('\n')
+            .Append("names ").Append(AndroidCompileCache.SameNames(inputs, AndroidCompileCache.FileNameIndex(bundle.Files),
+                request.IsFable3 ? bundle.Fable3Includes : bundle.Includes)).Append('\n');
+        foreach (string input in inputs)
+        {
+            if (!bundle.Files.TryGetValue(input, out string? hash)) return;
+            text.Append("file ").Append(hash).Append(' ').Append(input).Append('\n');
+        }
+        foreach (string symbol in bound) text.Append("bound ").Append(symbol).Append('\n');
+        File.WriteAllText(Path.Combine(attempt, ModuleInputsFile), text.Append("end\n").ToString());
+    }
+
+    /// <summary>Whether a built module is exactly what a new APK's bundle would build, so that no build is needed.</summary>
+    /// <param name="built">The completed build the launcher would play.</param>
+    /// <param name="apk">The new APK's bundle manifest.</param>
+    /// <param name="nativeDirectory">The new APK's native libraries.</param>
+    /// <param name="title">The game; Fable 2 when null.</param>
+    /// <returns>True only when it can be shown: same tools, flags and recipe, the same bytes for every bundle
+    /// file the compiler read, nothing new an include could find first, and every native symbol the module
+    /// binds still exported. Any doubt is false, and the launcher offers a build as before.</returns>
+    /// <remarks>A bundle's identity changes far more often than this: bundle.json lists every native
+    /// library's hash, sdk-generated/include/rex/version.h holds the build's timestamp, and the bundle
+    /// carries thousands of headers no unit reads. None of the 23 bundles compared had a tool change.</remarks>
+    public static bool StillCurrent(Result built, BundleManifest apk, string nativeDirectory, Refii.Core.Engine_Title? title)
+    {
+        try
+        {
+            string path = Path.Combine(built.Directory, ModuleInputsFile);
+            if (!File.Exists(path)) return false;
+            string[] lines = File.ReadAllLines(path);
+            if (lines.Length < 3 || lines[^1] != "end" || !lines[0].StartsWith("recipe ", StringComparison.Ordinal) ||
+                !lines[1].StartsWith("names ", StringComparison.Ordinal)) return false;
+            if (lines[0][7..] != ModuleRecipe(apk, title, built.Version, HasLseAtomics())) return false;
+            var inputs = new List<string>();
+            var bound = new List<string>();
+            foreach (string line in lines.Skip(2).SkipLast(1))
+            {
+                if (line.StartsWith("bound ", StringComparison.Ordinal)) { bound.Add(line[6..]); continue; }
+                if (!line.StartsWith("file ", StringComparison.Ordinal)) return false;
+                int space = line.IndexOf(' ', 5);
+                if (space < 0) return false;
+                string input = line[(space + 1)..];
+                if (apk.Files.GetValueOrDefault(input) != line[5..space]) return false;
+                inputs.Add(input);
+            }
+            if (AndroidCompileCache.SameNames(inputs, AndroidCompileCache.FileNameIndex(apk.Files),
+                title == Refii.Core.Engine_Title.Fable3 ? apk.Fable3Includes : apk.Includes) != lines[1][6..]) return false;
+            foreach (string library in LinkLibraries(new Request("", "", "", "", title)))
+                if (!File.Exists(Path.Combine(nativeDirectory, "lib" + library[2..] + ".so"))) return false;
+            var exported = AndroidModuleImports.Exports(apk.NativeFiles.Keys.Except(BuildTools).Select(name => Path.Combine(nativeDirectory, name)));
+            return exported != null && bound.All(exported.Contains);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException) { return false; }
     }
 
     /// <summary>Loads the actual completed Android module and checks its versioned accessor before publication.</summary>
@@ -484,6 +796,26 @@ public static class AndroidPhoneCompiler
     /// one entry the host resolves are unchanged; only data symbols keep interposition. This also keeps
     /// rex_bridge_payload.cpp's forwarders module-internal, as -fvisibility=hidden does on desktop.</remarks>
     internal const string ModuleLocalCalls = "-Wl,-Bsymbolic-functions";
+
+    /// <summary>
+    /// How many times the link is run when the linker crashes. The bundled lld has aborted on a
+    /// Galaxy S10e at the end of two builds (2026-11-03 and 2026-11-06): bionic's "Pointer tag for
+    /// 0x… was truncated", a free() of a pointer that was never a heap pointer, so memory corrupted
+    /// inside lld. Both times the next build linked the same objects. Every unit is compiled by
+    /// then, so running the link again costs a link, not the build.
+    /// </summary>
+    internal const int LinkAttempts = 3;
+
+    /// <summary>The retries link on one thread, in case the corruption is a race in lld's parallel passes.</summary>
+    internal const string SingleThreadLink = "-Wl,--threads=1";
+
+    /// <summary>Whether a failed link's log says the linker died from a signal, as opposed to an error
+    /// in what it was given (an undefined symbol fails the same way every time).</summary>
+    internal static bool LinkerCrashed(string log)
+    {
+        try { return File.Exists(log) && File.ReadAllText(log).Contains("linker command failed due to signal", StringComparison.Ordinal); }
+        catch (IOException) { return false; }
+    }
 
     /// <summary>Fable 3's VFS, which its module links (refiii_vfs; librefiii_vfs.so in the APK, cmake/refii_android.cmake).</summary>
     internal const string Fable3Vfs = "librefiii_vfs.so";

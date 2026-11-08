@@ -132,6 +132,72 @@ public sealed class RegionRetirementTests
         }
     }
 
+    /// <summary>A last pass first seen finished past the deadline still completes; an earlier pass does not.</summary>
+    [TestCase]
+    public void AFinishedLastPassIsNotTimedOut()
+    {
+        var gate = new GameRegionRetirement(0, 0);
+        ulong frame = 1;
+        AssertThat(gate.Advance(frame++, 1, 0, false)).IsEqual(RegionRetirementWork.ClearAndCollect);
+        for (int pass = 0; pass < GameRegionRetirement.CollectionPasses - 1; ++pass)
+        {
+            AssertThat(gate.Advance(frame, frame++, 0, true)).IsEqual(RegionRetirementWork.None);
+            AssertThat(gate.Advance(frame, frame++, 0, false)).IsEqual(RegionRetirementWork.Collect);
+        }
+        AssertThat(gate.NextCollectionIsLast).IsTrue();
+        double late = GameRegionRetirement.TimeoutSeconds + 10;
+        AssertThat(gate.Advance(frame++, late, 0, true)).IsEqual(RegionRetirementWork.None);
+        AssertThat(gate.Advance(frame++, late + 1, 0, false)).IsEqual(RegionRetirementWork.Complete);
+        AssertThat(gate.Status.NewBuildBlocked).IsFalse();
+
+        var early = new GameRegionRetirement(0, 0);
+        AssertThat(early.Advance(1, 1, 0, false)).IsEqual(RegionRetirementWork.ClearAndCollect);
+        AssertThat(early.Advance(2, late, 0, true)).IsEqual(RegionRetirementWork.Failed);
+    }
+
+    /// <summary>Exactly the last collection pass is named, so only it compacts.</summary>
+    [TestCase]
+    public void OnlyTheLastCollectionPassIsNamedLast()
+    {
+        var gate = new GameRegionRetirement(0, 0);
+        var lastAtEachAsk = new List<bool>();
+        ulong frame = 1;
+        double seconds = 1;
+        RegionRetirementWork work = gate.Advance(frame, seconds, 0, false);
+        while (work is RegionRetirementWork.ClearAndCollect or RegionRetirementWork.Collect)
+        {
+            lastAtEachAsk.Add(gate.NextCollectionIsLast);
+            AssertThat(gate.Advance(++frame, ++seconds, 0, true)).IsEqual(RegionRetirementWork.None);
+            work = gate.Advance(++frame, ++seconds, 0, false);
+        }
+        AssertThat(work).IsEqual(RegionRetirementWork.Complete);
+        AssertThat(lastAtEachAsk.Count).IsEqual(GameRegionRetirement.CollectionPasses);
+        for (int pass = 0; pass < lastAtEachAsk.Count; ++pass)
+            AssertThat(lastAtEachAsk[pass]).IsEqual(pass == lastAtEachAsk.Count - 1);
+    }
+
+    /// <summary>The low-memory tier follows the setting when it says on or off, and the phone otherwise.</summary>
+    [TestCase]
+    public void LowMemoryTierFollowsTheSettingThenThePhone()
+    {
+        AssertThat(AndroidMemoryRelease.ResolveLowRamMode("on", false)).IsTrue();
+        AssertThat(AndroidMemoryRelease.ResolveLowRamMode("off", true)).IsFalse();
+        AssertThat(AndroidMemoryRelease.ResolveLowRamMode("auto", true)).IsTrue();
+        AssertThat(AndroidMemoryRelease.ResolveLowRamMode("auto", false)).IsFalse();
+        AssertThat(AndroidMemoryRelease.ResolveLowRamMode("anything", true)).IsTrue();
+    }
+
+    /// <summary>A level build collects only after a step of growth and the least gap.</summary>
+    [TestCase]
+    public void LevelBuildCollectsOnGrowthAfterTheGap()
+    {
+        long step = AndroidMemoryRelease.LoadStepBytes;
+        double gap = AndroidMemoryRelease.LoadCollectionGapSeconds;
+        AssertThat(AndroidMemoryRelease.ShouldCollect(1000 + step, 1000, gap)).IsTrue();
+        AssertThat(AndroidMemoryRelease.ShouldCollect(1000 + step - 1, 1000, gap)).IsFalse();
+        AssertThat(AndroidMemoryRelease.ShouldCollect(1000 + step, 1000, gap - 0.5)).IsFalse();
+    }
+
     /// <summary>A failing cleanup pass is explicit and does not repeat collection or unlock the build.</summary>
     [TestCase]
     public void CollectionFailureAndResumedProducerAreTerminal()

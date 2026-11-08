@@ -1,0 +1,193 @@
+--- a/drivers/vulkan/rendering_device_driver_vulkan.h
++++ b/drivers/vulkan/rendering_device_driver_vulkan.h
+@@ -487,12 +487,20 @@
+ 		VkShaderStageFlags vk_push_constant_stages = 0;
+ 		TightLocalVector<VkPipelineShaderStageCreateInfo> vk_stages_create_info;
+ 		TightLocalVector<VkDescriptorSetLayout> vk_descriptor_set_layouts;
+-		TightLocalVector<respv::Shader> respv_stage_shaders;
++		// One stage's code as the container holds it, for re-spirv to read when a pipeline is created.
++		struct RespvStageCode {
++			PackedByteArray compressed;
++			uint32_t compression_flags = 0;
++			uint32_t decompressed_size = 0;
++		};
++		TightLocalVector<RespvStageCode> respv_stage_code;
+ 		TightLocalVector<Vector<uint8_t>> spirv_stage_bytes;
+ 		TightLocalVector<uint64_t> original_stage_size;
+ 		VkPipelineLayout vk_pipeline_layout = VK_NULL_HANDLE;
+ 	};
+ 
++	static bool _respv_stage_spirv(const ShaderInfo::RespvStageCode &p_code, PackedByteArray &r_spirv);
++
+ public:
+ 	virtual ShaderID shader_create_from_container(const Ref<RenderingShaderContainer> &p_shader_container, const Vector<ImmutableSampler> &p_immutable_samplers) override final;
+ 	virtual void shader_free(ShaderID p_shader) override final;
+--- a/drivers/vulkan/rendering_device_driver_vulkan.cpp
++++ b/drivers/vulkan/rendering_device_driver_vulkan.cpp
+@@ -32,6 +32,7 @@
+ 
+ #include "core/config/engine.h"
+ #include "core/config/project_settings.h"
++#include "core/io/compression.h"
+ #include "core/os/os.h"
+ #include "core/templates/fixed_vector.h"
+ #include "drivers/vulkan/vulkan_hooks.h"
+@@ -4240,6 +4241,33 @@
+ 	VK_SHADER_STAGE_INTERSECTION_BIT_KHR,
+ };
+ 
++bool RenderingDeviceDriverVulkan::_respv_stage_spirv(const ShaderInfo::RespvStageCode &p_code, PackedByteArray &r_spirv) {
++	Vector<uint8_t> decompressed;
++	const uint8_t *code = p_code.compressed.ptr();
++	uint32_t code_size = p_code.compressed.size();
++	if (p_code.decompressed_size > 0) {
++		decompressed.resize(p_code.decompressed_size);
++		if (p_code.compression_flags & RenderingShaderContainer::COMPRESSION_FLAG_ZSTD) {
++			if (Compression::decompress(decompressed.ptrw(), p_code.decompressed_size, code, code_size, Compression::MODE_ZSTD) < 0) {
++				return false;
++			}
++		} else {
++			memcpy(decompressed.ptrw(), code, MIN(code_size, p_code.decompressed_size));
++		}
++		code = decompressed.ptr();
++		code_size = decompressed.size();
++	}
++
++	if (p_code.compression_flags & RenderingShaderContainerVulkan::COMPRESSION_FLAG_SMOLV) {
++		r_spirv.resize(smolv::GetDecodedBufferSize(code, code_size));
++		return !r_spirv.is_empty() && smolv::Decode(code, code_size, r_spirv.ptrw(), r_spirv.size());
++	}
++
++	r_spirv.resize(code_size);
++	memcpy(r_spirv.ptrw(), code, code_size);
++	return true;
++}
++
+ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Ref<RenderingShaderContainer> &p_shader_container, const Vector<ImmutableSampler> &p_immutable_samplers) {
+ 	ShaderReflection shader_refl = p_shader_container->get_shader_reflection();
+ 	ShaderInfo shader_info;
+@@ -4347,11 +4375,25 @@
+ #endif
+ 
+ 	if (store_respv) {
+-		shader_info.respv_stage_shaders.reserve(stage_count);
++		shader_info.respv_stage_code.reserve(stage_count);
+ 	}
+ 
+ 	for (int i = 0; i < stage_count; i++) {
+ 		const RenderingShaderContainer::Shader &shader = p_shader_container->shaders[i];
++		// Only graphics pipelines read re-spirv's copy. Those stages keep their compressed code and
++		// parse it, and make a module, as each pipeline is created: a parsed copy of every shader
++		// and the driver's copy of each module cost hundreds of MB on a phone.
++		const bool stage_on_demand = store_respv && (shader_refl.stages_vector[i] == SHADER_STAGE_VERTEX || shader_refl.stages_vector[i] == SHADER_STAGE_FRAGMENT);
++		if (store_respv) {
++			ShaderInfo::RespvStageCode stage_code;
++			if (stage_on_demand) {
++				stage_code.compressed = shader.code_compressed_bytes;
++				stage_code.compression_flags = shader.code_compression_flags;
++				stage_code.decompressed_size = shader.code_decompressed_size;
++			}
++			shader_info.respv_stage_code.push_back(stage_code);
++		}
++
+ 		bool requires_decompression = (shader.code_decompressed_size > 0);
+ 		if (requires_decompression) {
+ 			decompressed_code.resize(shader.code_decompressed_size);
+@@ -4382,18 +4424,13 @@
+ 
+ 		shader_info.original_stage_size.push_back(decoded_spirv.size());
+ 
+-		if (use_respv) {
+-			const bool inline_data = store_respv || (RESPV_ONLY_INLINE_SHADERS_WITH_SPEC_CONSTANTS == 0);
++		if (use_respv && !store_respv) {
++			const bool inline_data = (RESPV_ONLY_INLINE_SHADERS_WITH_SPEC_CONSTANTS == 0);
+ 			respv::Shader respv_shader(decoded_spirv.ptr(), decoded_spirv.size(), inline_data);
+ 			if (respv_shader.empty()) {
+ #if RESPV_VERBOSE
+ 				print_line("re-spirv failed to parse the shader, skipping optimization.");
+ #endif
+-				if (store_respv) {
+-					shader_info.respv_stage_shaders.push_back(respv::Shader());
+-				}
+-			} else if (store_respv) {
+-				shader_info.respv_stage_shaders.push_back(respv_shader);
+ 			} else {
+ 				std::vector<uint8_t> respv_optimized_data;
+ 				if (respv::Optimizer::run(respv_shader, nullptr, 0, respv_optimized_data)) {
+@@ -4419,10 +4456,13 @@
+ 		shader_module_create_info.codeSize = decoded_spirv.size();
+ 		shader_module_create_info.pCode = (const uint32_t *)(decoded_spirv.ptr());
+ 
+-		res = vkCreateShaderModule(vk_device, &shader_module_create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_SHADER_MODULE), &vk_module);
+-		if (res != VK_SUCCESS) {
+-			error_text = vformat("Error (%d) creating module for shader stage %s.", res, String(SHADER_STAGE_NAMES[shader_refl.stages_vector[i]]));
+-			break;
++		vk_module = VK_NULL_HANDLE;
++		if (!stage_on_demand) {
++			res = vkCreateShaderModule(vk_device, &shader_module_create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_SHADER_MODULE), &vk_module);
++			if (res != VK_SUCCESS) {
++				error_text = vformat("Error (%d) creating module for shader stage %s.", res, String(SHADER_STAGE_NAMES[shader_refl.stages_vector[i]]));
++				break;
++			}
+ 		}
+ 
+ 		VkPipelineShaderStageCreateInfo create_info = {};
+@@ -6131,9 +6171,19 @@
+ 	for (uint32_t i = 0; i < shader_info->vk_stages_create_info.size(); i++) {
+ 		vk_pipeline_stages[i] = shader_info->vk_stages_create_info[i];
+ 
++		const bool stage_on_demand = (i < shader_info->respv_stage_code.size()) && !shader_info->respv_stage_code[i].compressed.is_empty();
++		PackedByteArray stage_spirv;
++		if (stage_on_demand) {
++			ERR_FAIL_COND_V_MSG(!_respv_stage_spirv(shader_info->respv_stage_code[i], stage_spirv), PipelineID(), "Malformed shader code for a stage created on demand.");
++		}
++
+ 		if (p_specialization_constants.size()) {
+ 			bool use_pipeline_spec_constants = true;
+-			if ((i < shader_info->respv_stage_shaders.size()) && !shader_info->respv_stage_shaders[i].empty()) {
++			respv::Shader stage_respv;
++			if (stage_on_demand) {
++				stage_respv.parse(stage_spirv.ptr(), stage_spirv.size(), true);
++			}
++			if (!stage_respv.empty()) {
+ #if RECORD_PIPELINE_STATISTICS
+ 				uint64_t respv_start_time = OS::get_singleton()->get_ticks_usec();
+ #endif
+@@ -6149,7 +6199,7 @@
+ #if RESPV_DONT_REMOVE_DEAD_CODE
+ 				respv_options.removeDeadCode = false;
+ #endif
+-				if (respv::Optimizer::run(shader_info->respv_stage_shaders[i], respv_spec_constants.ptr(), respv_spec_constants.size(), respv_optimized_data, respv_options)) {
++				if (respv::Optimizer::run(stage_respv, respv_spec_constants.ptr(), respv_spec_constants.size(), respv_optimized_data, respv_options)) {
+ #if RESPV_VERBOSE
+ 					String spec_constants;
+ 					for (uint32_t j = 0; j < p_specialization_constants.size(); j++) {
+@@ -6159,7 +6209,7 @@
+ 						}
+ 					}
+ 
+-					print_line(vformat("re-spirv transformed the shader from %d bytes to %d bytes with constants %s (%d).", shader_info->respv_stage_shaders[i].inlinedSpirvWords.size() * sizeof(uint32_t), respv_optimized_data.size(), spec_constants, p_shader.id));
++					print_line(vformat("re-spirv transformed the shader from %d bytes to %d bytes with constants %s (%d).", stage_respv.inlinedSpirvWords.size() * sizeof(uint32_t), respv_optimized_data.size(), spec_constants, p_shader.id));
+ #endif
+ 
+ 					// Create the shader module with the optimized output.
+@@ -6209,6 +6259,19 @@
+ 				vk_pipeline_stages[i].pSpecializationInfo = specialization_info;
+ 			}
+ 		}
++
++		if (stage_on_demand && vk_pipeline_stages[i].module == VK_NULL_HANDLE) {
++			// No specialization, or re-spirv could not read it: the stage's code as it stands.
++			VkShaderModule shader_module = VK_NULL_HANDLE;
++			VkShaderModuleCreateInfo shader_module_create_info = {};
++			shader_module_create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
++			shader_module_create_info.pCode = (const uint32_t *)(stage_spirv.ptr());
++			shader_module_create_info.codeSize = stage_spirv.size();
++			VkResult err = vkCreateShaderModule(vk_device, &shader_module_create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_SHADER_MODULE), &shader_module);
++			ERR_FAIL_COND_V_MSG(err, PipelineID(), vformat("Error (%d) creating a shader module on demand.", err));
++			vk_pipeline_stages[i].module = shader_module;
++			respv_shader_modules.push_back(shader_module);
++		}
+ 	}
+ 
+ 	const RenderPassInfo *render_pass = (const RenderPassInfo *)(p_render_pass.id);

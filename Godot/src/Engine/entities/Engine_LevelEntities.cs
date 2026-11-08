@@ -226,7 +226,8 @@ public static class Engine_LevelEntities
                 node.AddChild(new Refii.Animations.Engine_EntityAnimator
                 {
                     Name = Refii.Animations.Engine_EntityAnimator.NodeName,
-                    ClipLimit = isEditor ? 1 : Refii.Animations.Engine_EntityAnimator.DefaultClipLimit,
+                    // Nothing in play plays this library (the guest's clips drive the rig); a phone keeps one clip, which still binds the skin.
+                    ClipLimit = isEditor || Refii.Game.AndroidMemoryRelease.LevelAnimatorOneClip ? 1 : Refii.Animations.Engine_EntityAnimator.DefaultClipLimit,
                 });
 
                 stats.Animated++;

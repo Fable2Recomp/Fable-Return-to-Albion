@@ -24,6 +24,7 @@ public partial class AndroidGameHost : Node3D
     private AndroidRuntimeOptions? _options;
     private AndroidNativeSession? _guest;
     private AndroidGuestPlacement? _placement;
+    private AndroidLoadPlacement? _loadPlacement;
     private Engine_GameAssets? _assets;
     private GameWorld? _world;
     private GameAudio? _audio;
@@ -36,6 +37,8 @@ public partial class AndroidGameHost : Node3D
     private CanvasLayer? _uiLayer;
     private bool? _canvasLeanSetting;
     private Label? _status;
+    private PanelContainer? _statusPanel;
+    private AndroidStartup? _startup;
     private object? _frontEnd;
     private bool _assetsReady, _focused = true;
 
@@ -56,6 +59,7 @@ public partial class AndroidGameHost : Node3D
     private string _renderThreadError = string.Empty;
     private readonly AndroidRenderScale _renderScale = new();
     private readonly Engine_MeshLodPolicy _meshLod = new();
+    private readonly AndroidSunShadows _sunShadows = new();
     private AndroidProfilingOptions? _profiling;
     private double _reportAge;
     private long _presentationFrames;
@@ -68,8 +72,10 @@ public partial class AndroidGameHost : Node3D
     {
         AndroidNativeLog.StartPump();
         AndroidLastExit.RecordOnce();
+        GD.Print($"[thread-pool] idle spin {AndroidPoolSpin.Outcome}");
         KeepInMemoryWhileAway();
         ProcessPriority = -100;
+        Refii.Level.Engine_TreeSwayFar.Apply();
         // The back gesture is the game's (AndroidSystemKeys), never Godot's quit.
         GetTree().QuitOnGoBack = false;
         _userDirectory = OS.GetUserDataDir();
@@ -109,7 +115,6 @@ public partial class AndroidGameHost : Node3D
             Refii.Lighting.Engine_GiRefresh.ForcedOff = true;
             Engine_TickClock.HostOwnsClock = false;
             Engine_TickClock.UseStatedClock = true;
-            RenderingServer.DirectionalShadowAtlasSetSize(1024, true);
             GetViewport().Msaa3D = Viewport.Msaa.Disabled;
             GetViewport().UseTaa = false;
             Engine_RenderStats.Track(GetViewport());
@@ -121,6 +126,9 @@ public partial class AndroidGameHost : Node3D
             if (AndroidLauncherSettings.ApplyPresetOnce(seeded) | Refii.Launcher.Core.GraphicsPresets.Upgrade(seeded))
                 Refii.Launcher.Core.RuntimeConfig.WriteValues(runtimeConfig, seeded, out _);
             _runtimeConfig = runtimeConfig;
+            _sunShadows.Apply(seeded, GetTree().Root);
+            AddChild(new AndroidIdlePower { Name = "IdlePower", PauseNow = () => _pauseOnReturn = 0,
+                ScreenMinutes = Engine_RefiiConfig.Int(seeded, AndroidIdlePower.ScreenMinutesKey, AndroidIdlePower.DefaultScreenMinutes) });
             // The thread model is fixed at start: this states it for the next one.
             _renderThreadError = AndroidRenderThread.Apply(Refii.Launcher.Core.RuntimeConfig.ReadValues(runtimeConfig));
             Engine_PresentationPolicy.ApplyAndroid(
@@ -138,6 +146,9 @@ public partial class AndroidGameHost : Node3D
             _phase = "mounting privately supplied game assets";
             _assets.Mount(_options.GameRoot);
             Engine_ShaderWarmup.Begin(this);
+            Engine_ShaderWarmup.BeginStartupScreen(this, "Loading Albion...");
+            AddChild(_startup = new AndroidStartup { Name = "AndroidStartup", Finished = () => GameHasScreen,
+                InWorld = () => _world != null, FrontEndPending = () => _guest != null && !_frontEndAttached });
         }
         catch (Exception error) { Fail(error); }
         SaveStatus();
@@ -147,6 +158,8 @@ public partial class AndroidGameHost : Node3D
     public override void _Process(double delta)
     {
         PauseOnReturn(delta);
+        // Every frame, not only while a streamer is still loading: it stops processing once settled.
+        Refii.Level.Engine_PropFarShading.Tick(this);
         try
         {
             if (_failure.Length == 0 && _guest == null && _assetsReady && Engine_ShaderWarmup.Done &&
@@ -164,10 +177,12 @@ public partial class AndroidGameHost : Node3D
                 {
                     var values = Refii.Launcher.Core.RuntimeConfig.ReadValues(_runtimeConfig);
                     _placement = AndroidGuestPlacement.Start(values);
+                    _loadPlacement = AndroidLoadPlacement.Start(values, static () => GameWorld.WorldBuildHeld);
                     AndroidGcStress.Start(values);
                 }
                 _phase = "booting native guest";
-                Engine_ShaderWarmup.ReleaseScreen();
+                Engine_ShaderWarmup.SetStatus("Preparing Albion...");
+                _startup?.PlayVideos(_guest);
             }
             if (_guest?.Error.Length > 0 && _failure.Length == 0)
                 Fail(new InvalidOperationException(_guest.Error));
@@ -187,7 +202,10 @@ public partial class AndroidGameHost : Node3D
                     Engine_TickClock.ObserveCounterPair(HostBridge.SimTick, clock.Tick);
                 }
                 Engine_TexLibrary.Pump();
-                AttachFrontEnd();
+                // GameSession's periodic report, which prints only when the counters have moved.
+                if (Engine.GetProcessFrames() % 600 == 0) Engine_TexLibrary.ReportIfChanged();
+                // Not while a startup video plays: attaching is one long frame (AndroidStartup.HoldsFrontEnd).
+                if (_startup is not { HoldsFrontEnd: true }) AttachFrontEnd();
                 FollowFrontEnd();
                 // The guest steps on its own thread: its pub-game manager is read once a frame.
                 Engine_TitleGame.Active.Step();
@@ -210,12 +228,10 @@ public partial class AndroidGameHost : Node3D
         if (_reportAge < 1) return;
         _reportAge = 0;
         SaveStatus();
-        if (_status != null)
-        {
-            bool gameUiVisible = _ui?.IsRevealed == true || _world?.Entities is { ReadyForRelease: true };
-            _status.Visible = !gameUiVisible || _failure.Length != 0;
-            _status.Text = _failure.Length == 0 ? _phase : _failure;
-        }
+        // ONLY A FAILURE IS SHOWN. The phase ("building the native guest world") stood in the corner
+        // over the loading screen and the startup screen on every start and load; it stays in the
+        // status file for tools, and the startup and loading screens say what is happening.
+        if (_failure.Length != 0) ShowFailure();
     }
 
     /// <summary>The mod scripts and their singleton go before the guest does.</summary>
@@ -325,6 +341,8 @@ public partial class AndroidGameHost : Node3D
         // pub games — unclaimed, the guest would play its own Scaleform movie unseen behind the
         // loading screen.
         Engine_TitleGame.Active.AddSessionNodes(this, held => guest.Held = held);
+        // In the same long frame, over the startup screen: the main menu too, not over the title later.
+        (_uiNode as IAndroidMenuPrebuild)?.PrebuildMenuNow();
     }
 
     /// <summary>Mirrors real guest UI state; navigation and Load Game come only from the player's input.</summary>
@@ -337,21 +355,47 @@ public partial class AndroidGameHost : Node3D
         bool guiUp = HostBridge.FrontEndGuiIsUp;
         bool reveal = InteractiveFrontEndPolicy.ShouldReveal(found, screen, guiUp, canPressA, _ui.HasInGameUi);
         if (reveal) _ui.Reveal();
-        else _ui.Conceal("native guest has no visible interactive UI");
+        else if (!InteractiveFrontEndPolicy.StaysRevealed(_ui.IsRevealed, guiUp, _ui.HasInGameUi))
+            _ui.Conceal("native guest has no visible interactive UI");
         _frontEnd = new { found, screen = screen.ToString(), state, can_press_a = canPressA,
             cursor, scene_slide = slide, slide_count = slideCount, gui_up = guiUp, should_reveal = reveal };
         if (_world == null) _phase = InteractiveFrontEndPolicy.Status(found, screen, guiUp, canPressA);
     }
+
+    /// <summary>Whether the front end, the world or an error has the screen, which hides the status line and ends the startup screen.</summary>
+    private bool GameHasScreen =>
+        _ui?.IsRevealed == true || _world?.Entities is { ReadyForRelease: true } || _failure.Length != 0;
 
     /// <summary>Shows boot/configuration errors without introducing game actions.</summary>
     private void BuildStatusOverlay()
     {
         var layer = new CanvasLayer { Name = "AndroidBootStatus", Layer = 100 };
         AddChild(layer);
-        _status = new Label { Position = new Vector2(16, 16), Text = _phase,
+        _statusPanel = new PanelContainer { Visible = false, MouseFilter = Control.MouseFilterEnum.Ignore };
+        _statusPanel.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.Center, Control.LayoutPresetMode.KeepSize);
+        _statusPanel.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        {
+            BgColor = new Color(0f, 0f, 0f, 0.85f), ContentMarginLeft = 28, ContentMarginRight = 28,
+            ContentMarginTop = 20, ContentMarginBottom = 20, CornerRadiusTopLeft = 8, CornerRadiusTopRight = 8,
+            CornerRadiusBottomLeft = 8, CornerRadiusBottomRight = 8,
+        });
+        _status = new Label { AutowrapMode = TextServer.AutowrapMode.WordSmart, CustomMinimumSize = new Vector2(760, 0),
             MouseFilter = Control.MouseFilterEnum.Ignore };
-        _status.AddThemeFontSizeOverride("font_size", 18);
-        layer.AddChild(_status);
+        _status.AddThemeFontSizeOverride("font_size", 22);
+        _statusPanel.AddChild(_status);
+        layer.AddChild(_statusPanel);
+    }
+
+    /// <summary>The failure, as a player reads it: what happened and how to report it, then the error's first line.</summary>
+    private void ShowFailure()
+    {
+        if (_status is null || _statusPanel is null) return;
+        _status.Text = AndroidFailureText.For(_failure, Engine_Title.Active.Name);
+        _statusPanel.Visible = true;
+        // Centred on its own size once the text has laid it out.
+        _statusPanel.Size = Vector2.Zero;
+        Vector2 size = _statusPanel.GetCombinedMinimumSize();
+        _statusPanel.Position = (GetViewport().GetVisibleRect().Size - size) / 2;
     }
 
     /// <summary>Records a bounded error once, preserving ordinary engine diagnostics.</summary>
@@ -414,7 +458,7 @@ public partial class AndroidGameHost : Node3D
                 assets_ready = _assetsReady, shared_asset_count = _assets?.FileCount ?? 0,
                 nested_bank_cache = bankCache,
                 nested_bank_cache_scope = "Process-wide BnkFileSystem nested cache; the budget bounds inflated containers only, memory-mapped containers are counted separately",
-                guest = _guest?.Describe(), guest_placement = _placement?.Report(), game_ui = _ui?.DescribeInteractiveUi(),
+                guest = _guest?.Describe(), guest_placement = _placement?.Report(), load_placement = _loadPlacement?.Report(), game_ui = _ui?.DescribeInteractiveUi(),
                 frontend = _frontEnd, controller = _input?.DescribeControllerInput(),
                 world_attached = _world != null, world_held = GameWorld.WorldBuildHeld,
                 region_retirement = _world?.RetirementStatus,
@@ -526,10 +570,11 @@ public partial class AndroidGameHost : Node3D
             // must never select a different config, resize Android's window or start a guest.
             var settings = AndroidRenderScale.ReadSettings(_runtimeConfig);
             // The frame cap follows the same live file, so a changed cap needs no restart.
-            if (Engine.MaxFps != settings.MaxFps)
+            int frameCap = AndroidIdlePower.FrameCap(settings.MaxFps);
+            if (Engine.MaxFps != frameCap)
             {
-                Engine.MaxFps = settings.MaxFps;
-                GD.Print($"[android] frame cap {(settings.MaxFps == 0 ? "off" : settings.MaxFps + " fps")}");
+                Engine.MaxFps = frameCap;
+                GD.Print($"[android] frame cap {(frameCap == 0 ? "off" : frameCap + " fps")}");
             }
             if (_renderScale.Apply(settings, scale =>
             {
@@ -542,6 +587,7 @@ public partial class AndroidGameHost : Node3D
             ApplyTextureSampling(GetViewport(), settings);
             ApplyColourBuffer(GetViewport(), settings);
             ApplyCanvasLean(settings);
+            _sunShadows.Apply(Engine_RefiiConfig.Read(out _), GetTree().Root);
             Viewport lodViewport = GetViewport();
             Vector2I physicalSize = GetTree().Root.Size;
             float projectScale = ProjectSettings.GetSetting("rendering/scaling_3d/scale", 1.0f).AsSingle();

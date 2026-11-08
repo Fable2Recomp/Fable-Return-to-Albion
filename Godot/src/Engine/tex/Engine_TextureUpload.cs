@@ -19,8 +19,10 @@ public static class Engine_TextureUpload
     /// <summary>Creates a 2D texture from a caller-owned image.</summary>
     /// <param name="image">Caller-owned decoded image, which is never modified.</param>
     /// <returns>The ordinary Godot texture with capability-compatible storage.</returns>
-    public static ImageTexture CreateTexture(Image image) =>
-        Prepares ? AndroidTextureUpload.CreateTexture(image) : ImageTexture.CreateFromImage(image);
+    /// <param name="world">A world material's texture, which the low-memory tier may upload a size
+    /// down; nothing that reads its own size to place itself may set this.</param>
+    public static ImageTexture CreateTexture(Image image, bool world = false) =>
+        Prepares ? AndroidTextureUpload.CreateTexture(image, world) : ImageTexture.CreateFromImage(image);
 
     /// <summary>
     /// The image in the form <see cref="CreateTexture"/> would upload it, for a worker that makes
@@ -36,7 +38,7 @@ public static class Engine_TextureUpload
     /// <param name="world">As <see cref="CreateTexture"/>.</param>
     public static void SetImage(ImageTexture texture, Image image, bool world = false)
     {
-        if (Prepares) AndroidTextureUpload.SetImage(texture, image);
+        if (Prepares) AndroidTextureUpload.SetImage(texture, image, world);
         else texture.SetImage(image);
     }
 
@@ -47,7 +49,7 @@ public static class Engine_TextureUpload
     /// <param name="world">As <see cref="CreateTexture"/>.</param>
     public static Error CreateLayered(ImageTextureLayered texture, Godot.Collections.Array<Image> images, bool world = false)
     {
-        if (Prepares) return AndroidTextureUpload.CreateLayered(texture, images);
+        if (Prepares) return AndroidTextureUpload.CreateLayered(texture, images, world);
         Error created = texture.CreateFromImages(images);
         GC.KeepAlive(images);
         return created;

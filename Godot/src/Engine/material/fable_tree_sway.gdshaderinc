@@ -23,6 +23,20 @@ global uniform vec4 fable_tree_wind;
 // x = the clock the trees run on, y = their integrated phase.
 global uniform vec2 fable_tree_clock;
 
+#ifdef FABLE_LITE
+// `prop_sway_far_metres` (Engine_TreeSwayFar, lite builds only): past it a copy stands still. 0 is off.
+global uniform float fable_tree_sway_far;
+
+/// How much of its sway a copy keeps with its centre `distance` metres from the main camera:
+/// all of it inside the last eighth of the reach, none past it, a linear ramp between so a
+/// copy settles rather than stops. Exactly 1 while the reach is off.
+float fable_tree_sway_keep(float distance) {
+	return fable_tree_sway_far > 0.0
+		? clamp((fable_tree_sway_far - distance) * 8.0 / fable_tree_sway_far, 0.0, 1.0)
+		: 1.0;
+}
+#endif
+
 const float FABLE_TAU = 6.2831853;
 
 uint fable_tree_rotate13(uint v) {

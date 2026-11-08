@@ -68,6 +68,7 @@ public partial class Engine_StableLightCounts : Node
 
 	private readonly List<Rid> _lights = new();
 	private readonly List<Rid> _instances = new();
+	private Rid _scenario;
 
 	/// <summary>Whether the fillers stand in every mounted world. Main thread; applies at once.</summary>
 	public static bool Enabled
@@ -120,6 +121,20 @@ public partial class Engine_StableLightCounts : Node
 		return value.GetBoolean();
 	}
 
+	/// <summary>
+	/// Whether the fillers stand in this scenario, so every instance in it sits at "several" for
+	/// both light types whatever else reaches it (Engine_PipelineWarmup).
+	/// </summary>
+	public static bool StandsIn(Rid scenario)
+	{
+		foreach (Engine_StableLightCounts node in Mounted)
+		{
+			if (node._scenario == scenario && node._instances.Count != 0) return true;
+		}
+
+		return false;
+	}
+
 	/// <summary>Fillers standing across every mounted world.</summary>
 	public static int Standing
 	{
@@ -157,6 +172,7 @@ public partial class Engine_StableLightCounts : Node
 		if (world is null) return;
 
 		Rid scenario = world.Scenario;
+		_scenario = scenario;
 		var at = new Transform3D(Basis.Identity, Origin);
 		for (int i = 0; i < PerType; i++)
 		{

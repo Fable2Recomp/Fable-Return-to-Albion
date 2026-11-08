@@ -20,7 +20,7 @@ namespace Refii.AndroidRuntime;
 /// re-parenting (a re-entry, a top-level change) wins, and the share is asserted again each frame.
 /// Nothing in the touch controls changes: their input, layout and drawing are untouched.</para>
 /// <para>The layers are found once (a native search) and then from the tree's node-added signal,
-/// connected only while the setting is on.</para>
+/// connected only while the setting is on and no pub game board is up.</para>
 /// </remarks>
 public partial class AndroidCanvasLean : Node
 {
@@ -67,6 +67,16 @@ public partial class AndroidCanvasLean : Node
         {
             Watch(false);
             Unshare(null);
+            return;
+        }
+
+        // A pub game's board adds hundreds of nodes a frame, and the node-added signal made each
+        // one a C# object to look at; most of a phone's frame on Fortune's Tower. The controls stay
+        // on their own layer while a board is up, and the layers are searched again after.
+        if (Refii.Core.Engine_TitleGame.Active.InteractionBoardUp)
+        {
+            Watch(false);
+            Unshare("pub game board");
             return;
         }
 

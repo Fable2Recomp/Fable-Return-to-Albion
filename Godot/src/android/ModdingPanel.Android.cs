@@ -12,6 +12,42 @@ public partial class ModdingPanel
 	/// </summary>
 	private static bool Phone => !Engine.IsEditorHint() && Refii.Core.Engine_Platform.IsAndroid;
 
+	private bool _rowsDeferred;
+
+	/// <summary>
+	/// On a phone the rows wait until the panel shows. Their symbols are in no font the app ships,
+	/// so measuring them loads Android's system fonts, which stay for the run: about 20 MB, on
+	/// every launch that never opens this tab.
+	/// </summary>
+	/// <returns>True when <see cref="Rebuild"/> should leave the rows for later.</returns>
+	private bool DeferRowsOnPhone()
+	{
+		if (!Phone || IsVisibleInTree())
+		{
+			return false;
+		}
+
+		if (!_rowsDeferred)
+		{
+			_rowsDeferred = true;
+			VisibilityChanged += BuildDeferredRows;
+		}
+
+		return true;
+	}
+
+	private void BuildDeferredRows()
+	{
+		if (!IsVisibleInTree())
+		{
+			return;
+		}
+
+		_rowsDeferred = false;
+		VisibilityChanged -= BuildDeferredRows;
+		Rebuild();
+	}
+
 	/// <summary>The panel's help line on a phone.</summary>
 	private static string PhoneHelp(string extension) =>
 		$"Install a mod package ({extension}) from this phone's storage; the mods that come with " +

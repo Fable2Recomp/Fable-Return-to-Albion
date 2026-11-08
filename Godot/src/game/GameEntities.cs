@@ -1856,7 +1856,9 @@ public partial class GameEntities : Node3D
             $"targets (run total); the guest stated {HostBridge.PartMorphStatements} part(s) " +
             $"with target records, {HostBridge.PartMorphsMorphed} of them morphed, and " +
             $"{HostBridge.TextureLayerStatements} texture composite(s), " +
-            $"{Refii.Hero.Engine_HeroTextureMorph.CompositesBuilt} built here");
+            $"{Refii.Hero.Engine_HeroTextureMorph.CompositesBuilt} built here " +
+            $"(saved {Refii.Hero.Engine_HeroTextureMorph.SavedWork}: joined, past the limit, from disk, decodes joined, sources decoded; " +
+            $"{Refii.Textures.AndroidCompositeCache.SourcesHashed} sources read to name one)");
 
         GD.Print($"[game-entities] multi-mesh appearances: {_multiMesh} entity(s) drawn this " +
             $"frame from component 5, {_multiMeshParts} mesh record(s) stated — these used to " +

@@ -4,7 +4,7 @@ namespace Refii.Core;
 
 /// <summary>
 /// The timeline's `motion_arrival_fit` rule (<see cref="Engine_ArrivalFit"/>), which the Android
-/// Performance presets turn on.
+/// Low and Medium presets turn on.
 /// </summary>
 public sealed partial class Engine_TickTimeline
 {
@@ -15,7 +15,7 @@ public sealed partial class Engine_TickTimeline
 	/// `motion_arrival_fit`: a body or the camera (a timeline built with stillWhenUnchanged) that
 	/// moves is drawn by <see cref="Engine_ArrivalFit"/> — its statements timed by the frame that
 	/// first draws them and fitted with a line drawn 100 ms behind the frame — instead of by their
-	/// tick stamps at the shared draw point. Off by default (the Android Performance presets turn
+	/// tick stamps at the shared draw point. Off by default (the Android Low and Medium presets turn
 	/// it on); the debug channel's `render` op flips it live (`motionArrivalFit`). Main-thread
 	/// owned, read once per observation and advance.
 	/// </summary>

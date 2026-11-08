@@ -23,6 +23,8 @@ public enum TouchContext
     PubGame,
     /// <summary>Decorating a home: the stick and the drag fly its camera, a tap picks up or puts down, the held piece is dragged; taps on its panel go to the panel.</summary>
     Decorate,
+    /// <summary>A mod's own screen stands where the pause book would (own_screen): taps go to it, and Close (Start) ends the pause.</summary>
+    ModScreen,
 }
 
 /// <summary>How a control turns a finger into pad input.</summary>
@@ -130,9 +132,11 @@ public static class AndroidTouchLayout
     /// same for its panel, which a Panel button brings back.</param>
     /// <param name="pubGame">At a pub game, which (GamePubGames.Showing): Keystone alone bets with X and RB.</param>
     /// <param name="placing">Decorating, whether a piece is held: its Place, Turn and Item buttons stand.</param>
+    /// <param name="mods">In the world, what the enabled mods ask of the screen (<see cref="AndroidTouchModControls"/>):
+    /// their pills in the top row left of Emotes, their areas, and captions on the pad's buttons.</param>
     public static IReadOnlyList<TouchControl> Build(Vector2 size, float scale, TouchContext context,
         (Vector2 Centre, float Reach)? itemSlots = null, TouchHero? hero = null, bool photoPanel = true,
-        string pubGame = "", bool placing = false)
+        string pubGame = "", bool placing = false, AndroidTouchModControls.Offer? mods = null)
     {
         var controls = new List<TouchControl>();
         if (size.X <= 0f || size.Y <= 0f)
@@ -144,6 +148,9 @@ public static class AndroidTouchLayout
         float w = size.X, h = size.Y, margin = 20f * u;
 
         TouchHero can = hero ?? TouchHero.Everything;
+        AndroidTouchModControls.Offer offer = context == TouchContext.World ? mods ?? AndroidTouchModControls.Offer.None
+            : AndroidTouchModControls.Offer.None;
+        string Caption(string button, string normal) => offer.Captions.TryGetValue(button, out string? said) ? said : normal;
         bool world = context == TouchContext.World;
         bool wheel = context == TouchContext.Wheel;
         bool pub = context == TouchContext.PubGame, keystone = pub && pubGame == "keystone";
@@ -196,6 +203,14 @@ public static class AndroidTouchLayout
             return controls;
         }
 
+        if (context == TouchContext.ModScreen)
+        {
+            // The screen is the mod's, pointer and all; the pad does not reach the game under it,
+            // so only the way out stands: Start, which ends the pause and the screen with it.
+            controls.Add(Pill("Start", TouchControlKind.Button, menuPill, GameInput.PadStart, TouchTrigger.None, "Close", "", Slate));
+            return controls;
+        }
+
         controls.Add(Pill("Start", TouchControlKind.Button, menuPill, GameInput.PadStart, TouchTrigger.None, "Menu", "", Slate));
         if (world || wheel)
         {
@@ -205,6 +220,8 @@ public static class AndroidTouchLayout
         if (world)
         {
             controls.Add(Pill("LB", TouchControlKind.Latch, viewPill, GameInput.PadLeftShoulder, TouchTrigger.None, "View", "", Slate));
+            // THE MODS' PILLS go on along the top row, left of Emotes, short of the HUD's health.
+            AndroidTouchModControls.AddPills(controls, offer, emotesPill.Position.X - gap, HudHealthRight * h / 720f, top, pillH, gap, u);
         }
 
         if (pub)
@@ -215,8 +232,11 @@ public static class AndroidTouchLayout
             // over a board.
             controls.Add(Pill("Stats", TouchControlKind.Latch, new Rect2(menuPill.Position.X - gap - 132f * u, top, 132f * u, pillH),
                 0u, TouchTrigger.Right, "Stats", "", Slate));
-            controls.Add(Pill("Odds", TouchControlKind.Latch, new Rect2(OptionsInset * u, top, 132f * u, pillH),
-                0u, TouchTrigger.Left, "Odds", "", Slate));
+            // Each board's legend names LT its own way: Keystone's odds, Spinnerbox's payouts,
+            // Fortune's Tower's tips.
+            string odds = pubGame switch { "magedice" => "Payouts", "wizardstower" => "Tips", _ => "Odds" };
+            controls.Add(Pill("Odds", TouchControlKind.Latch, new Rect2(OptionsInset * u, top, (odds.Length > 4 ? 176f : 132f) * u, pillH),
+                0u, TouchTrigger.Left, odds, "", Slate));
         }
         // A menu is tapped more than it is pressed: the same places, a little smaller. A wheel held
         // open keeps the world's sizes and places, so the latched opener stays under the finger
@@ -235,22 +255,23 @@ public static class AndroidTouchLayout
         // spell — and the others keep their places, so the thumb's memory holds when one returns.
         // At a pub game A and B are what the board's legend says (raise and lower a bet, spin, deal,
         // accept and back), so only Y, every game's bank, is named; X stands for Keystone's "done".
-        controls.Add(Circle("A", pivot, 78f * k, GameInput.PadA, "A", world ? "Use" : pub ? "" : "Select", GreenA, world));
+        // A mod's caption names what its action does with the button now, and stands the button.
+        controls.Add(Circle("A", pivot, 78f * k, GameInput.PadA, "A", Caption("A", world ? "Use" : pub ? "" : "Select"), GreenA, world));
         if (!pub || keystone)
         {
-            controls.Add(Circle("X", Inner(185f), face, GameInput.PadX, "X", world ? "Melee" : "", BlueX, world));
+            controls.Add(Circle("X", Inner(185f), face, GameInput.PadX, "X", Caption("X", world ? "Melee" : ""), BlueX, world));
         }
 
-        if (!world || can.Ranged || can.Villager)
+        if (!world || can.Ranged || can.Villager || offer.Captions.ContainsKey("Y"))
         {
             // A targeted villager's Y prompt outranks the bow: it is what Y does then.
             string yCaption = pub ? "Bank" : !world ? "" : can.Villager ? "Info" : "Ranged";
-            controls.Add(Circle("Y", Inner(230f), face, GameInput.PadY, "Y", yCaption, YellowY, world));
+            controls.Add(Circle("Y", Inner(230f), face, GameInput.PadY, "Y", Caption("Y", yCaption), YellowY, world));
         }
 
-        if (!world || can.Magic)
+        if (!world || can.Magic || offer.Captions.ContainsKey("B"))
         {
-            controls.Add(Circle("B", Inner(276f), face, GameInput.PadB, "B", world ? "Magic" : pub ? "" : "Back", RedB, world));
+            controls.Add(Circle("B", Inner(276f), face, GameInput.PadB, "B", Caption("B", world ? "Magic" : pub ? "" : "Back"), RedB, world));
         }
 
         // The camera mode (the right stick's click) is a double tap on the camera side (AndroidTouchPad).
@@ -337,6 +358,8 @@ public static class AndroidTouchLayout
                 TouchTrigger.None, "", "", Slate));
         }
 
+        // The mods' areas over their own drawing take a finger before the stick and the camera.
+        AndroidTouchModControls.AddAreas(controls, offer);
         if (world)
         {
             // The stick lands wherever the left thumb does on the left of the glass; the camera is
@@ -464,6 +487,9 @@ public static class AndroidTouchLayout
 
     /// <summary>Where the HUD's health ends below the top-left corner, in 720-unit canvas units.</summary>
     public const float HudHealthBottom = 120f;
+
+    /// <summary>Where the HUD's health ends right of the top-left corner, in 720-unit canvas units: the mods' pills stop short of it.</summary>
+    public const float HudHealthRight = 300f;
 
 
     /// <summary>Options' distance from the left edge, in layout units: past a phone's rounded corner (the S25+'s is 75 units).</summary>

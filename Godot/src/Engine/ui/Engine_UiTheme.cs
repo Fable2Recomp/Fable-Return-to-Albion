@@ -450,7 +450,7 @@ public sealed class Engine_UiTheme
 	/// VERBATIM rather than blanked, as the engine does (<see cref="Engine_UiScreen"/>).
 	/// </summary>
 	public string Resolve(string tag) =>
-		Strings is not null && Strings.TryGetString(tag, out string value) ? value : tag;
+		Strings is not null && Strings.TryGetString(tag, out string value) ? value : Refii.AndroidRuntime.AndroidMenuWords.ForPhone(tag);
 
 	/// <summary>
 	/// Builds a text mesh in the game's own fonts, as a node ready to parent.

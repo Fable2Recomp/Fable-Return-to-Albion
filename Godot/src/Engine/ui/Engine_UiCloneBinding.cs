@@ -46,6 +46,12 @@ public sealed class Engine_UiCloneBinding
 		/// </summary>
 		public Vector3 Pivot { get; init; }
 
+		/// <summary>
+		/// The local position the node keeps whatever the slide or the guest states, null where
+		/// it follows them — see <see cref="HoldPosition"/>.
+		/// </summary>
+		public Vector2? Held { get; set; }
+
 		/// <summary>What the node shows: the guest's draw gate AND <see cref="Open"/>.</summary>
 		public bool Drawn { get; set; } = true;
 
@@ -503,6 +509,23 @@ public sealed class Engine_UiCloneBinding
 	public Node3D? NodeFor(int ordinal) =>
 		_firstByOrdinal.TryGetValue(ordinal, out Node3D? node) ? node : null;
 
+	/// <summary>
+	/// Holds <paramref name="ordinal"/>'s nodes at <paramref name="position"/> (local, guest
+	/// units), whatever the slide or the guest states, while scale, rotation and every gate
+	/// still follow the guest. For an element that moves only to make room for another widget,
+	/// inside a widget the host places itself.
+	/// </summary>
+	public void HoldPosition(int ordinal, Vector2 position)
+	{
+		foreach (Bound bound in _bound)
+		{
+			if (bound.Ordinal == ordinal)
+			{
+				bound.Held = position;
+			}
+		}
+	}
+
 	/// <summary>Every bound node that paints text, with the element it belongs to.</summary>
 	public IEnumerable<(MeshInstance3D Node, int Ordinal)> TextNodes(Engine_UiScreen screen)
 	{
@@ -808,6 +831,7 @@ public sealed class Engine_UiCloneBinding
 			// poisons the basis. Each axis falls back to the slide/authored value instead.
 			if (values.Length > 0 && values[0] is { } x && !float.IsNaN(x)) position.X = x + bound.Shift.X;
 			if (values.Length > 1 && values[1] is { } y && !float.IsNaN(y)) position.Y = y + bound.Shift.Y;
+
 			if (values.Length > 2 && values[2] is { } z && !float.IsNaN(z))
 			{
 				position.Z = Engine_UiSceneBuilder.ToGodotZ(z + bound.Shift.Z);
@@ -816,6 +840,12 @@ public sealed class Engine_UiCloneBinding
 			if (values.Length > 3 && values[3] is { } sx && !float.IsNaN(sx)) scale.X = sx;
 			if (values.Length > 4 && values[4] is { } sy && !float.IsNaN(sy)) scale.Y = sy;
 			if (values.Length > 5 && values[5] is { } sz && !float.IsNaN(sz)) scale.Z = sz;
+		}
+
+		if (bound.Held is { } held)
+		{
+			position.X = held.X + bound.Shift.X;
+			position.Y = held.Y + bound.Shift.Y;
 		}
 
 		// Scale through the basis columns, never `node.Scale`: `Basis.Scale` reports (0,0,0) on a

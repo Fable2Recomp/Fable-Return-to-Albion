@@ -248,6 +248,7 @@ public static partial class Engine_SwfAssets
     /// </param>
     public static void Index(BnkFileSystem? filesystem, string gameDirectory)
     {
+        Refii.Textures.AndroidSwfCache.SweepOtherBuilds(() => ProjectSettings.GlobalizePath(CacheDirectory), BuildStamp);
         string gameRoot = PubGamesCatalog.ResolveRoot(gameDirectory).Length != 0
             ? gameDirectory
             : Engine_GameData.ResolveWhere(
@@ -832,7 +833,7 @@ public static partial class Engine_SwfAssets
 
         try
         {
-            using var stream = File.OpenRead(absolute);
+            using Stream stream = Refii.Textures.AndroidSwfCache.OpenParts(absolute);
             using var reader = new BinaryReader(stream);
             if (reader.ReadUInt32() != PartsMagic)
             {
@@ -897,7 +898,7 @@ public static partial class Engine_SwfAssets
             {
                 string absolute = ProjectSettings.GlobalizePath(PartsCachePath(game));
                 Directory.CreateDirectory(Path.GetDirectoryName(absolute)!);
-                using var stream = File.Create(absolute);
+                using Stream stream = Refii.Textures.AndroidSwfCache.CreateParts(absolute);
                 using var writer = new BinaryWriter(stream);
                 writer.Write(PartsMagic);
 

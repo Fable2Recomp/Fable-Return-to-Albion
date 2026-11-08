@@ -21,8 +21,13 @@ namespace Refii.Textures;
 /// against astcenc's decoder in the Godot editor; the unit tests decode with
 /// <see cref="DecodeForTests"/>, which covers only the modes written here.
 /// </remarks>
+[System.Runtime.CompilerServices.SkipLocalsInit]
 public static class Engine_AstcTranscode
 {
+    /// <summary>Bump when the same input gives different blocks: <see cref="AndroidTexUploadCache"/>
+    /// keeps them across launches. A test holds the output to this number.</summary>
+    public const int Version = 1;
+
     // Block modes for a 4x4 weight grid: single plane with 2-bit weights, the same dual-plane,
     // and single plane with trit (3-level) weights.
     private const int ModeQuant4 = 0x042, ModeQuant4Dual = 0x442, ModeQuant3 = 0x051;
@@ -47,8 +52,22 @@ public static class Engine_AstcTranscode
     private static readonly byte[] Rank48 = new byte[48];
     private static readonly byte[] TritPack = new byte[243];
 
+    /// <summary>Four BC indices (one byte of them) as their four 2-bit ASTC weights: four-colour BC
+    /// runs c0, c1, 1/3, 2/3, and ASTC stores weights bit-reversed from the top of the block.</summary>
+    private static readonly byte[] WeightByte = new byte[256];
+
     static Engine_AstcTranscode()
     {
+        for (int v = 0; v < 256; v++)
+        {
+            int packed = 0;
+            for (int t = 0; t < 4; t++)
+            {
+                int weight = ((v >> (2 * t)) & 3) switch { 0 => 0, 1 => 3, 2 => 1, _ => 2 };
+                packed |= (weight & 1) << (7 - 2 * t) | (weight >> 1) << (6 - 2 * t);
+            }
+            WeightByte[v] = (byte)packed;
+        }
         for (int v = 0; v < 256; v++)
         {
             int best = 0;
@@ -93,76 +112,102 @@ public static class Engine_AstcTranscode
     {
         int c0 = BinaryPrimitives.ReadUInt16LittleEndian(bc1), c1 = BinaryPrimitives.ReadUInt16LittleEndian(bc1[2..]);
         uint indices = BinaryPrimitives.ReadUInt32LittleEndian(bc1[4..]);
+        if (c0 > c1)
+        {
+            FourColour(c0, c1, indices, ModeQuant4 | CemRgb << 13, 0, astc);
+            return;
+        }
+
+        // One flat colour, a fifth of the game's BC1 blocks: every trit weight is zero.
+        if (c0 == c1 && indices == 0)
+        {
+            FourColour(c0, c1, 0, ModeQuant3 | CemRgb << 13, 0, astc);
+            return;
+        }
+
         Span<int> e0 = stackalloc int[3], e1 = stackalloc int[3];
         Expand565(c0, e0);
         Expand565(c1, e1);
         Span<int> weights = stackalloc int[16];
-        bool fourColour = c0 > c1;
-        int max = fourColour ? 3 : 2;
-        // Four-colour BC1 is c0, c1, 1/3, 2/3; three-colour is c0, c1, 1/2 and opaque black,
-        // which is off the line: the nearest of the three points stands in for it.
-        int black = 0;
-        if (!fourColour)
-        {
-            int d0 = Square(e0), d2 = Square(e1), d1 = 0;
-            for (int c = 0; c < 3; c++) { int m = (e0[c] + e1[c]) / 2; d1 += m * m; }
-            black = d0 <= d1 && d0 <= d2 ? 0 : d1 <= d2 ? 1 : 2;
-        }
+        // Three-colour is c0, c1, 1/2 and opaque black, which is off the line: the nearest of
+        // the three points stands in for it.
+        int d0 = Square(e0), d2 = Square(e1), d1 = 0;
+        for (int c = 0; c < 3; c++) { int m = (e0[c] + e1[c]) / 2; d1 += m * m; }
+        int black = d0 <= d1 && d0 <= d2 ? 0 : d1 <= d2 ? 1 : 2;
         for (int t = 0; t < 16; t++)
         {
             int index = (int)(indices >> (2 * t)) & 3;
-            weights[t] = fourColour
-                ? index switch { 0 => 0, 1 => 3, 2 => 1, _ => 2 }
-                : index switch { 0 => 0, 1 => 2, 2 => 1, _ => black };
+            weights[t] = index switch { 0 => 0, 1 => 2, 2 => 1, _ => black };
         }
-        OrderEndpoints(e0, e1, weights, max);
+        OrderEndpoints(e0, e1, weights, 2);
 
         var bits = new Bits();
-        bits.Put(0, 11, fourColour ? ModeQuant4 : ModeQuant3);
+        bits.Put(0, 11, ModeQuant3);
         bits.Put(13, 4, CemRgb);
         int at = 17;
         for (int c = 0; c < 3; c++) { bits.Put(at, 8, e0[c]); bits.Put(at + 8, 8, e1[c]); at += 16; }
-        if (fourColour) PutWeights2(ref bits, weights);
-        else PutTritWeights(ref bits, weights);
+        PutTritWeights(ref bits, weights);
         bits.Write(astc);
+    }
+
+    /// <summary>A single-plane block with 2-bit weights, the common case, written in one go. Bits
+    /// 0-16 are <paramref name="header"/>, then each channel's two endpoints from bit 17, then the
+    /// weights from bit 127 down; <paramref name="alpha"/> holds BC3's two alpha endpoints, already
+    /// in place from bit 65 (zero for BC1, whose block leaves them clear).</summary>
+    private static void FourColour(int c0, int c1, uint indices, int header, ulong alpha, Span<byte> astc)
+    {
+        int r0 = Expand5(c0 >> 11), g0 = Expand6(c0 >> 5), b0 = Expand5(c0);
+        int r1 = Expand5(c1 >> 11), g1 = Expand6(c1 >> 5), b1 = Expand5(c1);
+        uint weights = (uint)WeightByte[indices & 255] << 24 | (uint)WeightByte[(indices >> 8) & 255] << 16 |
+            (uint)WeightByte[(indices >> 16) & 255] << 8 | WeightByte[indices >> 24];
+        // As OrderEndpoints: e1 stays the larger, and 3 - w is every weight bit flipped.
+        if (r1 + g1 + b1 < r0 + g0 + b0)
+        {
+            (r0, r1) = (r1, r0); (g0, g1) = (g1, g0); (b0, b1) = (b1, b0);
+            weights = ~weights;
+        }
+
+        ulong low = (ulong)(uint)header | (ulong)(uint)r0 << 17 | (ulong)(uint)r1 << 25 | (ulong)(uint)g0 << 33 |
+            (ulong)(uint)g1 << 41 | (ulong)(uint)b0 << 49 | (ulong)(uint)b1 << 57;
+        ulong high = (ulong)(uint)(b1 >> 7) | alpha | (ulong)weights << 32;
+        BinaryPrimitives.WriteUInt64LittleEndian(astc, low);
+        BinaryPrimitives.WriteUInt64LittleEndian(astc[8..], high);
     }
 
     /// <summary>One BC3 block: uniform alpha stays single-plane, varying alpha goes dual-plane.</summary>
     public static void Bc3Block(ReadOnlySpan<byte> bc3, Span<byte> astc)
     {
-        Span<int> alpha = stackalloc int[16];
-        Bc3Alpha(bc3, alpha);
         ReadOnlySpan<byte> colour = bc3[8..];
         int c0 = BinaryPrimitives.ReadUInt16LittleEndian(colour), c1 = BinaryPrimitives.ReadUInt16LittleEndian(colour[2..]);
         uint indices = BinaryPrimitives.ReadUInt32LittleEndian(colour[4..]);
+        // Every texel on the first alpha endpoint, two thirds of the game's BC3 blocks.
+        if (BinaryPrimitives.ReadUInt64LittleEndian(bc3) >> 16 == 0)
+        {
+            FourColour(c0, c1, indices, ModeQuant4 | CemRgba << 13, (ulong)bc3[0] << 1 | (ulong)bc3[0] << 9, astc);
+            return;
+        }
+
+        Span<int> alpha = stackalloc int[16];
+        Bc3Alpha(bc3, alpha);
+        if (alpha.IndexOfAnyExcept(alpha[0]) < 0)
+        {
+            FourColour(c0, c1, indices, ModeQuant4 | CemRgba << 13, (ulong)(uint)alpha[0] << 1 | (ulong)(uint)alpha[0] << 9, astc);
+            return;
+        }
+
         Span<int> e0 = stackalloc int[3], e1 = stackalloc int[3];
         Expand565(c0, e0);
         Expand565(c1, e1);
         Span<int> weights = stackalloc int[16];
         Span<int> ids = stackalloc int[16];
-        bool uniform = true;
         for (int t = 0; t < 16; t++)
         {
             // BC3's colour half is always four-colour, whatever the endpoint order.
             ids[t] = (int)(indices >> (2 * t)) & 3;
-            weights[t] = ids[t] switch { 0 => 0, 1 => 3, 2 => 1, _ => 2 };
-            uniform &= alpha[t] == alpha[0];
         }
 
         var bits = new Bits();
         bits.Put(13, 4, CemRgba);
-        if (uniform)
-        {
-            OrderEndpoints(e0, e1, weights, 3);
-            bits.Put(0, 11, ModeQuant4);
-            int at = 17;
-            for (int c = 0; c < 3; c++) { bits.Put(at, 8, e0[c]); bits.Put(at + 8, 8, e1[c]); at += 16; }
-            bits.Put(at, 8, alpha[0]);
-            bits.Put(at + 8, 8, alpha[0]);
-            PutWeights2(ref bits, weights);
-            bits.Write(astc);
-            return;
-        }
 
         // Dual plane: 32 two-bit weights leave 45 bits for eight endpoints, which is range 48.
         // The texels to match are BC3's decoded colours; the weights are refitted to the
@@ -228,7 +273,7 @@ public static class Engine_AstcTranscode
         int lo = 255, hi = 0;
         foreach (int a in alpha) { lo = Math.Min(lo, a); hi = Math.Max(hi, a); }
         int bestQ0 = Nearest48[lo], bestQ1 = Nearest48[hi];
-        long bestError = AssignAlpha(alpha, Unq48[bestQ0], Unq48[bestQ1], weights);
+        long bestError = AssignAlpha(alpha, Unq48[bestQ0], Unq48[bestQ1], weights, long.MaxValue);
         // Cut-out alpha (two values, both on the grid) is already exact.
         if (bestError == 0) return (bestQ0, bestQ1);
 
@@ -249,19 +294,22 @@ public static class Engine_AstcTranscode
         for (int i = Math.Max(0, r0 - SearchSteps); i <= Math.Min(47, r0 + SearchSteps); i++)
             for (int j = Math.Max(0, r1 - SearchSteps); j <= Math.Min(47, r1 + SearchSteps); j++)
             {
-                long error = AssignAlpha(alpha, Unq48[Sorted48[i]], Unq48[Sorted48[j]], trial);
+                long error = AssignAlpha(alpha, Unq48[Sorted48[i]], Unq48[Sorted48[j]], trial, bestError);
                 if (error < bestError) { bestError = error; bestQ0 = Sorted48[i]; bestQ1 = Sorted48[j]; }
             }
-        AssignAlpha(alpha, Unq48[bestQ0], Unq48[bestQ1], weights);
+        AssignAlpha(alpha, Unq48[bestQ0], Unq48[bestQ1], weights, long.MaxValue);
         return (bestQ0, bestQ1);
     }
 
-    private static long AssignAlpha(ReadOnlySpan<int> alpha, int a0, int a1, Span<int> weights)
+    /// <summary>The error of these endpoints with the nearest weights; a trial stops once it has
+    /// reached <paramref name="enough"/>, leaving its weights unfinished.</summary>
+    private static long AssignAlpha(ReadOnlySpan<int> alpha, int a0, int a1, Span<int> weights, long enough)
     {
         // The four levels are monotonic, so the nearest is found by the midpoints between them.
         int l0 = Lerp(a0, a1, 0), l1 = Lerp(a0, a1, 21), l2 = Lerp(a0, a1, 43), l3 = Lerp(a0, a1, 64);
         bool rising = a1 >= a0;
         int m01 = l0 + l1, m12 = l1 + l2, m23 = l2 + l3;
+        uint levels = (uint)l0 | (uint)l1 << 8 | (uint)l2 << 16 | (uint)l3 << 24;
         long total = 0;
         for (int t = 0; t < 16; t++)
         {
@@ -269,9 +317,10 @@ public static class Engine_AstcTranscode
             int w = rising
                 ? (twice > m01 ? 1 : 0) + (twice > m12 ? 1 : 0) + (twice > m23 ? 1 : 0)
                 : (twice < m01 ? 1 : 0) + (twice < m12 ? 1 : 0) + (twice < m23 ? 1 : 0);
-            int d = (w switch { 0 => l0, 1 => l1, 2 => l2, _ => l3 }) - alpha[t];
+            int d = (int)((levels >> (8 * w)) & 255) - alpha[t];
             weights[t] = w;
             total += d * d;
+            if (total >= enough) return total;
         }
         return total;
     }
@@ -301,11 +350,6 @@ public static class Engine_AstcTranscode
         if (e1[0] + e1[1] + e1[2] >= e0[0] + e0[1] + e0[2]) return;
         for (int c = 0; c < 3; c++) (e0[c], e1[c]) = (e1[c], e0[c]);
         for (int t = 0; t < 16; t++) weights[t] = max - weights[t];
-    }
-
-    private static void PutWeights2(ref Bits bits, ReadOnlySpan<int> weights)
-    {
-        for (int t = 0; t < 16; t++) bits.PutReversed(2 * t, 2, weights[t]);
     }
 
     /// <summary>Sixteen trit weights (26 bits) from the top of the block, bit-reversed.</summary>
@@ -377,6 +421,10 @@ public static class Engine_AstcTranscode
         rgb[1] = (g << 2) | (g >> 4);
         rgb[2] = (b << 3) | (b >> 2);
     }
+
+    private static int Expand5(int c) { c &= 31; return (c << 3) | (c >> 2); }
+
+    private static int Expand6(int c) { c &= 63; return (c << 2) | (c >> 4); }
 
     private static int Square(ReadOnlySpan<int> rgb) => rgb[0] * rgb[0] + rgb[1] * rgb[1] + rgb[2] * rgb[2];
 
@@ -452,10 +500,19 @@ public static class Engine_AstcTranscode
     /// <summary>A 128-bit ASTC block, bit 0 the lowest bit of byte 0.</summary>
     private struct Bits
     {
-        private UInt128 _bits;
+        private ulong _low, _high;
 
-        public void Put(int at, int count, int value) =>
-            _bits |= ((UInt128)(uint)value & (((UInt128)1 << count) - 1)) << at;
+        public void Put(int at, int count, int value)
+        {
+            ulong v = (uint)value & ((1ul << count) - 1);
+            if (at < 64)
+            {
+                _low |= v << at;
+                if (at + count > 64) _high |= v >> (64 - at);
+            }
+            else
+                _high |= v << (at - 64);
+        }
 
         /// <summary>Writes counting down from bit 127, as ASTC stores its weights.</summary>
         public void PutReversed(int at, int count, int value)
@@ -464,22 +521,36 @@ public static class Engine_AstcTranscode
                 if (((value >> i) & 1) != 0) Set(127 - (at + i));
         }
 
-        public readonly int Get(int at, int count = 1) =>
-            (int)(uint)((_bits >> at) & (((UInt128)1 << count) - 1));
+        public readonly int Get(int at, int count = 1)
+        {
+            ulong v = at < 64 ? _low >> at : _high >> (at - 64);
+            if (at < 64 && at + count > 64) v |= _high << (64 - at);
+            return (int)(v & ((1ul << count) - 1));
+        }
 
         public readonly int GetReversed(int at, int count)
         {
             int value = 0;
-            for (int i = 0; i < count; i++) value |= Bit(127 - (at + i)) << i;
+            for (int i = 0; i < count; i++) value |= Get(127 - (at + i)) << i;
             return value;
         }
 
-        public readonly void Write(Span<byte> block) => BinaryPrimitives.WriteUInt128LittleEndian(block, _bits);
+        public readonly void Write(Span<byte> block)
+        {
+            BinaryPrimitives.WriteUInt64LittleEndian(block, _low);
+            BinaryPrimitives.WriteUInt64LittleEndian(block[8..], _high);
+        }
 
-        public void Read(ReadOnlySpan<byte> block) => _bits = BinaryPrimitives.ReadUInt128LittleEndian(block);
+        public void Read(ReadOnlySpan<byte> block)
+        {
+            _low = BinaryPrimitives.ReadUInt64LittleEndian(block);
+            _high = BinaryPrimitives.ReadUInt64LittleEndian(block[8..]);
+        }
 
-        private void Set(int i) => _bits |= (UInt128)1 << i;
-
-        private readonly int Bit(int i) => (int)(uint)((_bits >> i) & 1);
+        private void Set(int i)
+        {
+            if (i < 64) _low |= 1ul << i;
+            else _high |= 1ul << (i - 64);
+        }
     }
 }

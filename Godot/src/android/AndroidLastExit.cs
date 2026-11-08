@@ -38,7 +38,10 @@ public static class AndroidLastExit
     public const int Kept = 3;
 
     /// <summary>ApplicationExitInfo.REASON_* values.</summary>
-    public const int ReasonExitSelf = 1, ReasonSignaled = 2, ReasonCrashNative = 5, ReasonAnr = 6;
+    public const int ReasonExitSelf = 1, ReasonSignaled = 2, ReasonCrash = 4, ReasonCrashNative = 5, ReasonAnr = 6;
+
+    /// <summary>Whether the previous run crashed or stopped responding, as <see cref="RecordOnce"/> read it.</summary>
+    public static bool Crashed { get; private set; }
 
     private const string KeyPrefix = "key: ";
     private static int _read;
@@ -215,6 +218,7 @@ public static class AndroidLastExit
                 Text(Java(info, "getDescription")), Java(info, "getPid").AsInt32(), Text(Java(info, "getProcessName")),
                 Text(Java(info, "toString"))));
         }
+        Crashed = exits.Count > 0 && exits[0].Reason is ReasonCrash or ReasonCrashNative or ReasonAnr;
         Directory.CreateDirectory(logs);
         if (exits.Count == 0)
         {

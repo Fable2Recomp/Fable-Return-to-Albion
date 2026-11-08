@@ -22,8 +22,8 @@ namespace Refii.Models;
 /// kept. Skinned surfaces are left alone: their LODs would have to follow the bones. So are
 /// trees, whose leaf cards a simplifier would shrink: they thin by `tree_card_lod`.
 ///
-/// MEASURED, relaunch-paired, uncapped: on the S25+ (Balanced) visible triangles 1.90M -> 1.46M
-/// and GPU cycles -1 to -2%; on the S10e (Performance) 1.54M -> 1.11M and -3.5%. The triangles
+/// MEASURED, relaunch-paired, uncapped: on the S25+ (High) visible triangles 1.90M -> 1.46M
+/// and GPU cycles -1 to -2%; on the S10e (Low) 1.54M -> 1.11M and -3.5%. The triangles
 /// it removes are cheap ones, small distant props. No visible change at either spot.
 /// </remarks>
 public static class Engine_MdlAutoLod
@@ -54,11 +54,12 @@ public static class Engine_MdlAutoLod
 
 	/// <summary>The surface's generated levels, or null when it is too small or none is worth keeping.</summary>
 	/// <param name="vertices">The surface's positions.</param>
-	/// <param name="normals">Its normals, or null.</param>
-	/// <param name="indices">Its triangles, in the winding the surface is added with.</param>
-	public static Godot.Collections.Dictionary? Generate(Vector3[] vertices, Vector3[]? normals, int[] indices)
+	/// <param name="indexCount">How many indices it has.</param>
+	/// <param name="surface">Its arrays so far, of which the positions, normals and indices (in the
+	/// winding the surface is added with) are read.</param>
+	internal static Engine_MdlSurfaceArrays.Levels? Generate(ReadOnlySpan<Vector3> vertices, int indexCount, Godot.Collections.Array surface)
 	{
-		if (indices.Length < 600 || vertices.Length == 0)
+		if (indexCount < 600 || vertices.Length == 0)
 		{
 			return null;
 		}
@@ -78,39 +79,55 @@ public static class Engine_MdlAutoLod
 		}
 
 		// Positions and normals only: the levels index the surface's own vertices, so nothing
-		// else needs to reach the simplifier.
+		// else needs to reach the simplifier. They are the surface's own packed arrays, not copies.
 		var arrays = new Godot.Collections.Array();
 		arrays.Resize((int)Mesh.ArrayType.Max);
-		arrays[(int)Mesh.ArrayType.Vertex] = vertices;
-		if (normals is { } n && n.Length == vertices.Length)
+		foreach (Mesh.ArrayType kept in new[] { Mesh.ArrayType.Vertex, Mesh.ArrayType.Normal, Mesh.ArrayType.Index })
 		{
-			arrays[(int)Mesh.ArrayType.Normal] = n;
+			arrays[(int)kept] = surface[(int)kept];
 		}
-		arrays[(int)Mesh.ArrayType.Index] = indices;
 
 		using var tool = new SurfaceTool();
 		tool.CreateFromArrays(arrays);
 		GC.KeepAlive(arrays);
-		Godot.Collections.Dictionary? lods = null;
-		int previous = indices.Length;
-		foreach (float error in Errors)
+
+		// COARSEST FIRST, because each run simplifies the whole surface again. With a larger error
+		// meshoptimizer goes on along the same collapses, so a finer level never has fewer indices
+		// than a coarser one: when a coarse level does not save the 30%, no finer one will.
+		// Left null, it is what the walk below would have refused. A level of every index says
+		// nothing: it is also what `generate_lod` returns when a run collapses the surface to
+		// nothing, and a finer level can still be a good one then.
+		var generated = new int[Errors.Length][];
+		for (int e = Errors.Length - 1; e >= 0; e--)
 		{
-			int[] level = tool.GenerateLod(error, 3);
-			if (level.Length < 3 || level.Length > previous * 7 / 10)
+			int[] level = tool.GenerateLod(Errors[e], 3);
+			generated[e] = level;
+			if (level.Length > indexCount * 7 / 10 && level.Length < indexCount)
+			{
+				break;
+			}
+		}
+
+		Engine_MdlSurfaceArrays.Levels? levels = null;
+		int previous = indexCount;
+		for (int e = 0; e < Errors.Length; e++)
+		{
+			int[]? level = generated[e];
+			if (level is null || level.Length < 3 || level.Length > previous * 7 / 10)
 			{
 				continue;
 			}
 
-			lods ??= new Godot.Collections.Dictionary();
-			lods[error * extent] = level;
+			levels ??= new Engine_MdlSurfaceArrays.Levels();
+			levels.Add(Errors[e] * extent, level);
 			previous = level.Length;
 		}
 
-		if (lods is not null)
+		if (levels is not null)
 		{
 			System.Threading.Interlocked.Increment(ref _generated);
 		}
 
-		return lods;
+		return levels;
 	}
 }

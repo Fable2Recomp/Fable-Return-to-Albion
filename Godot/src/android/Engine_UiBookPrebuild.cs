@@ -9,11 +9,12 @@ namespace Refii.Ui;
 /// </summary>
 /// <remarks>
 /// Prebuilding builds every book with chrome, 24 in Fable 2, whether or not the player ever opens
-/// its screen, and a built book stays. At Bower Lake on Balanced that took a Galaxy S25+ from
+/// its screen, and a built book stays. At Bower Lake on High that took a Galaxy S25+ from
 /// 4.74 GB to 5.74 GB (native heap 1.70 to 2.54 GB), on phones the game is killed on for memory.
 /// Built on demand, a book costs its build on the frame its screen first opens: 0.75-0.8 s on the
 /// S25+, and 2.0-2.3 s on a Galaxy S10e, where pause and Items had opened in 0.85 s prebuilt.
-/// Those two are the screens a player opens first and most (Weapons opens in the Items book), so they are still built ahead.
+/// Those two are the screens a player opens first and most (Weapons opens in the Items book), so they are still built ahead,
+/// except in the low-memory tier, where even their first open waits for the room.
 /// </remarks>
 public static class Engine_UiBookPrebuild
 {
@@ -21,5 +22,6 @@ public static class Engine_UiBookPrebuild
 
     /// <summary>True when the book of the screen template <paramref name="name"/> is built behind the loading screen.</summary>
     public static bool Wants(string name) =>
-        !Refii.Core.Engine_Platform.IsAndroid || Array.IndexOf(PhoneBooks, name) >= 0;
+        !Refii.Core.Engine_Platform.IsAndroid ||
+        (!Refii.Game.AndroidMemoryRelease.LowRamMode && Array.IndexOf(PhoneBooks, name) >= 0);
 }

@@ -121,6 +121,7 @@ public partial class Engine_ShaderWarmup : Node
 	public override void _Ready()
 	{
 		_startedMs = Time.GetTicksMsec();
+		if (ReadyStartupScreen()) return;
 		Collect(ShaderRoot);
 		// The mobile lite builds are made in code, not files the scan finds.
 		if (Engine_ShaderVariant.Lite)

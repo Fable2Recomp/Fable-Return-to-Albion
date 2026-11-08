@@ -44,10 +44,16 @@ public final class RefiiPlayService extends Service {
         return START_NOT_STICKY;
     }
 
+    /** The app's monochrome emblem (its themed launcher icon) for the status bar, else Android's {@code fallback}. */
+    private int smallIcon(int fallback) {
+        int emblem = getResources().getIdentifier("icon_monochrome", "mipmap", getPackageName());
+        return emblem != 0 ? emblem : fallback;
+    }
+
     private Notification notification(String title) {
         Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());
         PendingIntent content = open == null ? null : PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        return new Notification.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.ic_media_play)
+        return new Notification.Builder(this, CHANNEL).setSmallIcon(smallIcon(android.R.drawable.ic_media_play))
             .setContentTitle(title + " is running").setContentText("Kept in memory while you use other apps")
             .setContentIntent(content).setOngoing(true).setOnlyAlertOnce(true).build();
     }

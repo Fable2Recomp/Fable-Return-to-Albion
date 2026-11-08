@@ -85,7 +85,7 @@ public sealed class CanvasLeanTests
 	{
 		AssertThat(GameWindowSettings.FromValues(new Dictionary<string, string>(), "test").CanvasLean).IsFalse();
 		AssertThat(GameWindowSettings.FromValues(new Dictionary<string, string> { [Engine_CanvasLean.Key] = "true" }, "test").CanvasLean).IsTrue();
-		AssertThat(GraphicsPresets.BalancedValues[Engine_CanvasLean.Key]).IsEqual("true");
-		AssertThat(GraphicsPresets.UltraPerformanceValues[Engine_CanvasLean.Key]).IsEqual("true");
+		AssertThat(GraphicsPresets.HighValues[Engine_CanvasLean.Key]).IsEqual("true");
+		AssertThat(GraphicsPresets.LowValues[Engine_CanvasLean.Key]).IsEqual("true");
 	}
 }

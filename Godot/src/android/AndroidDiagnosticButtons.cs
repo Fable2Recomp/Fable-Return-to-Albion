@@ -7,10 +7,11 @@ using Refii.Game;
 namespace Refii.AndroidRuntime;
 
 /// <summary>
-/// The Options panel: photo mode, the frame cap, vibration, the F5/F6 diagnostics and Export as touch
-/// buttons, and beside them the Graphics column: the preset and the settings that change the picture
-/// (<see cref="AndroidGraphicsOptions"/>), each stepped with - and +. Folded behind the touch controls'
-/// Options button so the corner they stood in is the HUD's again; hidden until Options is tapped. Both
+/// The Options panel: photo mode, Graphics settings, vibration, the diagnostics (the desktop's F5 and F6) and Export as
+/// touch buttons, and beside them, once Graphics settings is tapped, the Graphics column: the preset, the frame limit
+/// and the settings that change the picture (<see cref="AndroidGraphicsOptions"/>), each stepped with - and +. Folded
+/// behind the touch controls' Options button so the corner they stood in is the HUD's again; hidden until Options is
+/// tapped, and the Graphics column with it until asked for, so Options opens on the buttons alone. Both
 /// columns are see-through, so a change shows in the world behind them as it applies, and stepping the
 /// preset moves every row it sets. Export unfolds into Logs and saves, and Saves; a save is imported
 /// from the launcher only, never while the game runs (AndroidSaveTransfer).
@@ -20,15 +21,26 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
     private AndroidDiagnosticActions? _actions;
     private Button? _performance;
     private Button? _debug;
-    private Button? _frameCap;
+    private Label? _frameCap;
+    private readonly List<FrameCapChoice> _frameCapButtons = new();
+    private Button? _graphicsButton;
     private Button? _fpsCounterButton;
+    private Button? _skipLauncherButton;
     private AndroidFpsCounter? _fpsCounter;
     private Button? _preset;
     private GridContainer? _presetChoices;
     private readonly List<PresetChoice> _presetButtons = new();
+    private PanelContainer? _presetWarning;
+    private Label? _presetWarningText;
+    private Button? _presetWarningUse;
+    private Button? _presetWarningCancel;
+    private string? _warnedPreset;
     private Button? _vibration;
     private Button? _photo;
     private Button? _export;
+    private Button? _diagnostics;
+    private ScrollContainer? _buttonsScroll;
+    private VBoxContainer? _buttons;
     private Button? _remapButton;
     private Button? _editButton;
     private AndroidPadRemapMenu? _remap;
@@ -78,13 +90,15 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
             MouseFilter = Control.MouseFilterEnum.Ignore, SizeFlagsVertical = Control.SizeFlags.ShrinkEnd,
         };
         column.AddThemeConstantOverride("separation", 10);
-        _frameCap = CreateButton(AndroidQuickSettings.FrameCapLabel(0));
         _preset = CreateButton(AndroidQuickSettings.PresetLabel(Refii.Launcher.Core.GraphicsPresets.Custom));
         _fpsCounterButton = CreateButton(AndroidQuickSettings.FpsCounterLabel(false));
+        _skipLauncherButton = CreateButton(AndroidQuickSettings.SkipLauncherLabel(false));
         _vibration = CreateButton(AndroidQuickSettings.VibrationLabel(AndroidQuickSettings.VibrationStrengthDefault));
-        _performance = CreateButton("Stats (F5)");
-        _debug = CreateButton("Debug (F6)");
+        _diagnostics = CreateButton(DiagnosticsLabel);
+        _performance = CreateButton("  Performance stats");
+        _debug = CreateButton("  Developer tools");
         _photo = CreateButton("Photo Mode");
+        _graphicsButton = CreateButton(GraphicsLabel);
         _remapButton = CreateButton("Controller buttons...");
         _editButton = CreateButton("Edit touch controls...");
         _export = CreateButton(ExportLabel);
@@ -92,36 +106,44 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         _exportSaves = CreateButton(ExportChoiceLabel(AndroidLogBundle.Contents.Saves));
         // The result names the zip, wider than the panel: wrap it rather than widen the panel off screen.
         _exportBoth.AutowrapMode = _exportSaves.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-        _frameCap.Pressed += StepFrameCap;
         _fpsCounterButton.Pressed += ToggleFpsCounter;
+        _skipLauncherButton.Pressed += ToggleSkipLauncher;
         _preset.Pressed += TogglePresetChoices;
         _vibration.Pressed += StepVibration;
         _performance.Pressed += _actions.TogglePerformance;
         _debug.Pressed += _actions.ToggleDebug;
         _photo.Pressed += OpenPhotoMode;
+        _graphicsButton.Pressed += ToggleGraphics;
         _remapButton.Pressed += OpenRemap;
         _editButton.Pressed += OpenEditor;
         _export.Pressed += ToggleExportChoices;
+        _diagnostics.Pressed += ToggleDiagnostics;
         _exportSaves.Pressed += ExportSaves;
         _exportBoth.Pressed += ExportBoth;
-        column.AddChild(_photo);
-        column.AddChild(_frameCap);
-        column.AddChild(_fpsCounterButton);
-        column.AddChild(_vibration);
-        column.AddChild(_performance);
-        column.AddChild(_debug);
-        column.AddChild(_remapButton);
-        column.AddChild(_editButton);
-        column.AddChild(_export);
-        column.AddChild(_exportBoth);
-        column.AddChild(_exportSaves);
+        // THE BUTTONS SCROLL when they would rise off the top of the screen, as the Graphics column's
+        // settings do: ten buttons and Options under them were already taller than a phone's canvas,
+        // and Photo Mode stood half off the top; an unfolded Export or Diagnostics adds two more.
+        _buttons = new VBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
+        _buttons.AddThemeConstantOverride("separation", 10);
+        foreach (Button button in new[] { _photo, _graphicsButton, _fpsCounterButton, _skipLauncherButton, _vibration,
+                     _remapButton, _editButton, _diagnostics, _performance, _debug, _export, _exportBoth, _exportSaves })
+            _buttons.AddChild(button);
+        _buttonsScroll = new ScrollContainer
+        {
+            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
+            MouseFilter = Control.MouseFilterEnum.Pass,
+        };
+        _buttonsScroll.AddChild(_buttons);
+        column.AddChild(_buttonsScroll);
         // Room for the Options button under the buttons; the Graphics column beside them, right of
         // the View pill, reaches down to Options' bottom edge.
         column.AddChild(_overOptions = new Control { MouseFilter = Control.MouseFilterEnum.Ignore });
         _panel.AddChild(column);
         _panel.AddChild(_graphics = CreateGraphics(_preset));
         _panel.AddChild(_about = CreateAbout());
+        ShowGraphics(false);
         ShowExportChoices(false);
+        ShowDiagnostics(false);
         AddChild(_panel);
         // The two menus Options opens stand on their own layers, beside this one, so they show with
         // the panel closed.
@@ -153,14 +175,15 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
     }
 
     /// <summary>
-    /// The back gesture's first stop: closes the touch editor or the remap menu, else the panel. A way out
-    /// that never depends on a touch reaching a button.
+    /// The back gesture's first stop: closes the touch editor or the remap menu, else the Graphics column,
+    /// else the panel. A way out that never depends on a touch reaching a button.
     /// </summary>
     /// <returns>Whether something closed, so back goes no further.</returns>
     public bool CloseTop()
     {
         if (_editor is { Visible: true } editor) editor.Close();
         else if (_remap is { Visible: true } remap) remap.Close();
+        else if (Visible && _graphics is { Visible: true }) ShowGraphics(false);
         else if (Visible) Visible = false;
         else return false;
         return true;
@@ -183,11 +206,14 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
     /// <summary>One of the presets under the preset button, with its tap.</summary>
     private sealed record PresetChoice(string Preset, Button Button, Action Pick);
 
+    /// <summary>One of the caps in the Frame limit row, with its tap.</summary>
+    private sealed record FrameCapChoice(int Cap, Button Button, Action Pick);
+
     /// <summary>One graphics row: its setting, the value's text, and the - and + buttons with their taps.</summary>
     private sealed record GraphicsRow(AndroidGraphicsOption Option, Label Value, Button Less, Button More, Button Info,
         Action StepLess, Action StepMore, Action ShowInfo);
 
-    /// <summary>The Graphics column: the preset button, then one row per setting, its name over its impact.</summary>
+    /// <summary>The Graphics column: the preset button, the frame limit, then one row per setting, its name over its impact.</summary>
     private PanelContainer CreateGraphics(Button preset)
     {
         var box = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop, SizeFlagsVertical = Control.SizeFlags.ShrinkEnd };
@@ -211,6 +237,8 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
             _presetChoices.AddChild(button);
         }
         rows.AddChild(_presetChoices);
+        rows.AddChild(_presetWarning = CreatePresetWarning());
+        rows.AddChild(CreateFrameCaps());
         // The shadow rebuild's question stands under the preset, where the pick that needs it was made.
         rows.AddChild(_rebuild = CreateRebuild());
         // The settings scroll under the preset once they outgrow the room above Options (Place sizes it):
@@ -262,6 +290,35 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         return box;
     }
 
+    /// <summary>
+    /// The Frame limit row: its name, then a button per cap (uncapped, 20, 30, 60), the one in use standing
+    /// pressed as the preset in use does, so a cap is one tap rather than a cycle through the others.
+    /// </summary>
+    private HBoxContainer CreateFrameCaps()
+    {
+        var line = new HBoxContainer { MouseFilter = Control.MouseFilterEnum.Ignore };
+        line.AddThemeConstantOverride("separation", 6);
+        _frameCap = new Label
+        {
+            Text = AndroidQuickSettings.FrameCapLabel(0), SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        _frameCap.AddThemeFontSizeOverride("font_size", 18);
+        line.AddChild(_frameCap);
+        foreach (int cap in AndroidQuickSettings.FrameCaps)
+        {
+            Button button = CreateButton(AndroidQuickSettings.FrameCapChoiceLabel(cap));
+            button.CustomMinimumSize = new Vector2(88, 52);
+            // The infinity sign comes from a fallback font that draws it small beside the numbers.
+            button.AddThemeFontSizeOverride("font_size", cap <= 0 ? 36 : 22);
+            var picked = new FrameCapChoice(cap, button, () => PickFrameCap(cap));
+            button.Pressed += picked.Pick;
+            _frameCapButtons.Add(picked);
+            line.AddChild(button);
+        }
+        return line;
+    }
+
     /// <summary>The box beside the Graphics column that says what a setting does, hidden until a row's ? is tapped.</summary>
     private PanelContainer CreateAbout()
     {
@@ -272,6 +329,40 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         _aboutText.AddThemeFontSizeOverride("font_size", 18);
         about.AddChild(_aboutText);
         return about;
+    }
+
+    /// <summary>
+    /// The warning that stands in place of the preset choices when the one picked has one
+    /// (GraphicsPresets.PickWarning): large, near opaque and red-edged so it can't be read past, and
+    /// nothing applies until Use is tapped.
+    /// </summary>
+    private PanelContainer CreatePresetWarning()
+    {
+        StyleBoxFlat style = AndroidSeeThrough.Box(0.92f, 14f);
+        style.BorderColor = ImpactColor(AndroidGraphicsImpact.High);
+        style.SetBorderWidthAll(3);
+        var box = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop, Visible = false };
+        box.AddThemeStyleboxOverride("panel", style);
+        var body = new VBoxContainer();
+        body.AddThemeConstantOverride("separation", 8);
+        Label heading = AndroidSeeThrough.Label("WARNING", 34);
+        heading.HorizontalAlignment = HorizontalAlignment.Center;
+        heading.AddThemeColorOverride("font_color", ImpactColor(AndroidGraphicsImpact.High));
+        _presetWarningText = new Label { CustomMinimumSize = new Vector2(480, 0), AutowrapMode = TextServer.AutowrapMode.WordSmart };
+        _presetWarningText.AddThemeFontSizeOverride("font_size", 22);
+        var choices = new HBoxContainer();
+        choices.AddThemeConstantOverride("separation", 8);
+        _presetWarningCancel = AndroidSeeThrough.Button("Cancel", new Vector2(236, 52), 20);
+        _presetWarningUse = AndroidSeeThrough.Button("Use anyway", new Vector2(236, 52), 20);
+        _presetWarningCancel.Pressed += CancelPresetWarning;
+        _presetWarningUse.Pressed += UseWarnedPreset;
+        choices.AddChild(_presetWarningCancel);
+        choices.AddChild(_presetWarningUse);
+        body.AddChild(heading);
+        body.AddChild(_presetWarningText);
+        body.AddChild(choices);
+        box.AddChild(body);
+        return box;
     }
 
     /// <summary>
@@ -343,12 +434,33 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         if (Visible)
         {
             ShowExportChoices(false);
+            ShowDiagnostics(false);
+            ShowGraphics(false);
             ShowSettings();
-            _aboutKey = null;
-            if (_about is not null) _about.Visible = false;
-            if (_presetChoices is not null) _presetChoices.Visible = false;
         }
         Place();
+    }
+
+    private const string GraphicsLabel = "Graphics settings...";
+
+    /// <summary>
+    /// Shows the Graphics column beside the buttons, the four presets open at its top, or puts it away with
+    /// what it had opened (a setting's about box, a preset's warning).
+    /// </summary>
+    private void ShowGraphics(bool shown)
+    {
+        if (_graphics is not null) _graphics.Visible = shown;
+        _aboutKey = null;
+        if (_about is not null) _about.Visible = false;
+        if (_presetChoices is not null) _presetChoices.Visible = shown;
+        if (_presetWarning is not null) _presetWarning.Visible = false;
+        Place();
+    }
+
+    private void ToggleGraphics()
+    {
+        ShowGraphics(_graphics is { Visible: false });
+        ShowSettings();
     }
 
     /// <summary>The space the Graphics column leaves above it, in canvas units.</summary>
@@ -363,6 +475,14 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
     {
         if (!Visible || _panel is not { } panel) return;
         if (_overOptions is { } room) room.CustomMinimumSize = new Vector2(0, _options.Size.Y);
+        if (_buttonsScroll is { } buttonsScroll && _buttons is { } buttons)
+        {
+            // As tall as the buttons, or as the room above Options allows with a margin; the column's
+            // separation stands between the buttons and Options' room.
+            float above = _options.Position.Y - TopMargin - 10f;
+            float height = Math.Max(0f, Math.Min(buttons.GetCombinedMinimumSize().Y, above));
+            buttonsScroll.CustomMinimumSize = new Vector2(buttons.GetCombinedMinimumSize().X, height);
+        }
         if (_graphics is { } graphics && _graphicsScroll is { } scroll && _graphicsList is { } list)
         {
             // As tall as its rows, or as the room above Options' bottom edge allows with a margin.
@@ -381,18 +501,12 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         foreach (Rect2 rect in _remap?.Rects() ?? Array.Empty<Rect2>()) yield return rect;
         foreach (Rect2 rect in _editor?.Rects() ?? Array.Empty<Rect2>()) yield return rect;
         if (!Visible) yield break;
-        if (_frameCap is { } frameCap) yield return frameCap.GetGlobalRect();
-        if (_fpsCounterButton is { } fpsCounter) yield return fpsCounter.GetGlobalRect();
         // The whole Graphics column, so a finger between its buttons doesn't turn the camera.
-        if (_graphics is { } graphics) yield return graphics.GetGlobalRect();
+        if (_graphics is { Visible: true } graphics) yield return graphics.GetGlobalRect();
         if (_about is { Visible: true } about) yield return about.GetGlobalRect();
-        if (_rebuild is { Visible: true } rebuild) yield return rebuild.GetGlobalRect();
-        if (_vibration is { } vibration) yield return vibration.GetGlobalRect();
-        if (_performance is { } performance) yield return performance.GetGlobalRect();
-        if (_debug is { } debug) yield return debug.GetGlobalRect();
-        if (_photo is { } photo) yield return photo.GetGlobalRect();
-        foreach (Button? button in new[] { _remapButton, _editButton, _export, _exportBoth, _exportSaves })
-            if (button is { Visible: true }) yield return button.GetGlobalRect();
+        if (_rebuild is { } rebuild && rebuild.IsVisibleInTree()) yield return rebuild.GetGlobalRect();
+        // The buttons' scroll area, not each button: one scrolled out of view must not keep its rectangle.
+        if (_buttonsScroll is { } buttonsScroll) yield return buttonsScroll.GetGlobalRect();
     }
 
     private const string ExportLabel = "Export...";
@@ -409,7 +523,40 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         Place();
     }
 
-    private void ToggleExportChoices() => ShowExportChoices(_exportBoth is { Visible: false });
+    private void ToggleExportChoices()
+    {
+        bool open = _exportBoth is { Visible: false };
+        if (open) ShowDiagnostics(false);
+        ShowExportChoices(open);
+        if (open) Reveal(_exportSaves);
+    }
+
+    private const string DiagnosticsLabel = "Diagnostics...";
+
+    /// <summary>Shows or folds away the two diagnostic views under Diagnostics: the performance stats and
+    /// the developer tools (the desktop's F5 and F6, named for a phone that has no F keys).</summary>
+    private void ShowDiagnostics(bool shown)
+    {
+        foreach (Button? button in new[] { _performance, _debug })
+            if (button != null) button.Visible = shown;
+        Place();
+    }
+
+    private void ToggleDiagnostics()
+    {
+        bool open = _performance is { Visible: false };
+        if (open) ShowExportChoices(false);
+        ShowDiagnostics(open);
+        if (open) Reveal(_debug);
+    }
+
+    /// <summary>Scrolls the buttons, once laid out, so <paramref name="button"/> (the last choice a fold
+    /// unfolded) is in view.</summary>
+    private void Reveal(Button? button)
+    {
+        if (button is null || _buttonsScroll is not { } scroll) return;
+        Callable.From(() => { if (IsInstanceValid(button) && IsInstanceValid(scroll)) scroll.EnsureControlVisible(button); }).CallDeferred();
+    }
 
     private void ExportSaves() => Export(_exportSaves, AndroidLogBundle.Contents.Saves);
 
@@ -436,23 +583,58 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         GamePhotoMode.RequestOpen();
     }
 
-    /// <summary>Steps the frame cap: 30, 60, uncapped.</summary>
-    private void StepFrameCap() => Write(config => AndroidQuickSettings.SetFrameCap(
-        config, AndroidQuickSettings.NextFrameCap(AndroidQuickSettings.FrameCap(config))));
+    /// <summary>Sets the frame cap to <paramref name="cap"/>; 0 is uncapped.</summary>
+    private void PickFrameCap(int cap) => Write(config => AndroidQuickSettings.SetFrameCap(config, cap));
 
     /// <summary>Shows or hides the four presets under the preset button.</summary>
     private void TogglePresetChoices()
     {
         if (_presetChoices is null) return;
         _presetChoices.Visible = !_presetChoices.Visible;
+        if (_presetWarning is not null) _presetWarning.Visible = false;
         ShowSettings();
         Place();
     }
 
-    /// <summary>Applies <paramref name="preset"/> to the running game and closes the choices.</summary>
+    /// <summary>
+    /// Applies <paramref name="preset"/> to the running game, the choices staying open so the rows under them
+    /// don't jump up under a finger; or first shows its warning in their place if it has one.
+    /// </summary>
     private void PickPreset(string preset)
     {
-        if (_presetChoices is not null) _presetChoices.Visible = false;
+        if (Refii.Launcher.Core.GraphicsPresets.PickWarning(preset) is { } warning && _presetWarning is not null && _presetWarningText is not null)
+        {
+            if (_presetChoices is not null) _presetChoices.Visible = false;
+            _warnedPreset = preset;
+            _presetWarningText.Text = warning;
+            _presetWarning.Visible = true;
+            Place();
+            // The wrapped text only knows its height once the column has laid it out.
+            Callable.From(Place).CallDeferred();
+            return;
+        }
+        ApplyPreset(preset);
+    }
+
+    /// <summary>Puts the warning away and goes back to the choices, leaving the preset as it was.</summary>
+    private void CancelPresetWarning()
+    {
+        if (_presetWarning is not null) _presetWarning.Visible = false;
+        if (_presetChoices is not null) _presetChoices.Visible = true;
+        Place();
+    }
+
+    /// <summary>Applies the preset the warning was about, back on the choices.</summary>
+    private void UseWarnedPreset()
+    {
+        if (_presetWarning is not null) _presetWarning.Visible = false;
+        if (_presetChoices is not null) _presetChoices.Visible = true;
+        if (_warnedPreset is { } preset) ApplyPreset(preset);
+    }
+
+    /// <summary>Applies <paramref name="preset"/> to the running game.</summary>
+    private void ApplyPreset(string preset)
+    {
         Write(config => AndroidQuickSettings.ApplyPreset(config, preset,
             (name, value) => Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(name, value)));
         Place();
@@ -471,6 +653,10 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         AndroidQuickSettings.SetFpsCounter(config, on);
         _fpsCounter?.SetShown(on);
     });
+
+    /// <summary>Turns skipping the launcher at the next start on or off.</summary>
+    private void ToggleSkipLauncher() => Write(config =>
+        AndroidQuickSettings.SetSkipLauncher(config, !AndroidQuickSettings.SkipLauncher(config)));
 
     /// <summary>Steps the game's rumble on the phone (or a controller) through 100%, 75%, 50%, 25% and off, from the next frame.</summary>
     private void StepVibration() => Write(config =>
@@ -528,7 +714,9 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         if (ConfigPath?.Invoke() is not { Length: > 0 } config || _frameCap is null || _preset is null || _vibration is null) return;
         try
         {
-            _frameCap.Text = AndroidQuickSettings.FrameCapLabel(AndroidQuickSettings.FrameCap(config));
+            int cap = AndroidQuickSettings.FrameCap(config);
+            _frameCap.Text = AndroidQuickSettings.FrameCapLabel(cap);
+            foreach (FrameCapChoice choice in _frameCapButtons) choice.Button.Disabled = choice.Cap == cap;
             string current = AndroidQuickSettings.Preset(config);
             _preset.Text = AndroidQuickSettings.PresetLabel(current);
             // The preset in use is the one choice that does nothing.
@@ -536,6 +724,8 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
                 choice.Button.Disabled = choice.Preset.Equals(current, StringComparison.OrdinalIgnoreCase);
             if (_fpsCounterButton is not null)
                 _fpsCounterButton.Text = AndroidQuickSettings.FpsCounterLabel(AndroidQuickSettings.FpsCounter(config));
+            if (_skipLauncherButton is not null)
+                _skipLauncherButton.Text = AndroidQuickSettings.SkipLauncherLabel(AndroidQuickSettings.SkipLauncher(config));
             _vibration.Text = AndroidQuickSettings.VibrationLabel(AndroidQuickSettings.VibrationLevel(config));
             foreach (GraphicsRow row in _rows)
             {
@@ -593,19 +783,24 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
     public override void _ExitTree()
     {
         if (_actions is null) return;
-        if (_frameCap is not null) _frameCap.Pressed -= StepFrameCap;
+        foreach (FrameCapChoice choice in _frameCapButtons) choice.Button.Pressed -= choice.Pick;
         if (_fpsCounterButton is not null) _fpsCounterButton.Pressed -= ToggleFpsCounter;
+        if (_skipLauncherButton is not null) _skipLauncherButton.Pressed -= ToggleSkipLauncher;
         if (_preset is not null) _preset.Pressed -= TogglePresetChoices;
         foreach (PresetChoice choice in _presetButtons) choice.Button.Pressed -= choice.Pick;
+        if (_presetWarningCancel is not null) _presetWarningCancel.Pressed -= CancelPresetWarning;
+        if (_presetWarningUse is not null) _presetWarningUse.Pressed -= UseWarnedPreset;
         if (_vibration is not null) _vibration.Pressed -= StepVibration;
         if (_performance is not null) _performance.Pressed -= _actions.TogglePerformance;
         if (_debug is not null) _debug.Pressed -= _actions.ToggleDebug;
         if (_photo is not null) _photo.Pressed -= OpenPhotoMode;
+        if (_graphicsButton is not null) _graphicsButton.Pressed -= ToggleGraphics;
         if (_remapButton is not null) _remapButton.Pressed -= OpenRemap;
         if (_editButton is not null) _editButton.Pressed -= OpenEditor;
         if (_rebuildNow is not null) _rebuildNow.Pressed -= RebuildNow;
         if (_rebuildLater is not null) _rebuildLater.Pressed -= PutOffRebuild;
         if (_export is not null) _export.Pressed -= ToggleExportChoices;
+        if (_diagnostics is not null) _diagnostics.Pressed -= ToggleDiagnostics;
         if (_exportSaves is not null) _exportSaves.Pressed -= ExportSaves;
         if (_exportBoth is not null) _exportBoth.Pressed -= ExportBoth;
         foreach (GraphicsRow row in _rows)

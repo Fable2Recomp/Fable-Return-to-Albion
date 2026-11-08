@@ -46,6 +46,8 @@
 #include <rex/system/xthread.h>
 #include <rex/system/xtypes.h>
 
+#include "xam_save_profile_android.h"
+
 #if REXGLUE_ENABLE_REXNET
 #include <rex/runtime.h>
 #include <rex/net/pseudonym.h>
@@ -618,6 +620,9 @@ u32 NetDll_XNetStartup_entry(u32 caller, ppc_ptr_t<XNetStartupParams> params) {
 
 #if REXGLUE_ENABLE_REXNET
   RexNetStartup();
+#endif
+#if REX_PLATFORM_ANDROID
+  android_saves::AdoptForSignedInProfile(REX_KERNEL_STATE());
 #endif
 
   return 0;

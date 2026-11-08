@@ -87,9 +87,14 @@ public partial class GameInput
 	/// <returns>The degrees posted, zero when nothing was.</returns>
 	public static Vector2 PostTouchLook(Vector2 screens, float sensitivity)
 	{
+		// THE GUN'S AIM READS A TURN'S PITCH THE OTHER WAY: while the game's Y is held the active camera
+		// is the ranged aim, whose own ProcessGameAction takes the posted pitch as the stick's, inverted
+		// against the everyday camera. The mouse never aims there (its held click stays on the everyday
+		// camera); a finger on Y does, so up must still look up.
+		float pitch = (GuestPad0Buttons & PadY) != 0 ? 1f : -1f;
 		var degrees = new Vector2(
 			screens.X * TouchYawPerScreen * sensitivity * (InvertCameraX ? -1f : 1f),
-			-screens.Y * TouchPitchPerScreen * sensitivity);
+			pitch * screens.Y * TouchPitchPerScreen * sensitivity);
 		if (degrees == Vector2.Zero || HostBridge.TryGetAbiVersion() is null)
 		{
 			return Vector2.Zero;

@@ -268,6 +268,18 @@ public static class Engine_ShaderVariant
     /// <summary>The full shader a lite one was compiled from; any other path unchanged.</summary>
     public static string FullPathOf(string path) => FullOf.TryGetValue(path, out string? full) ? full : path;
 
+    /// <summary>
+    /// Whether a vegetation surface can draw this lite build: Engine_MdlMaterial.TryCreateShared
+    /// moves every one to the two-sided, wind or tree shader, and a translucent second pass is
+    /// made before ApplyVegetation marks anything premultiplied.
+    /// </summary>
+    public static bool DrawsVegetation(string path) =>
+        FullPathOf(path) is not (Engine_ShaderFamily.StandardCulledPath or Engine_ShaderFamily.StandardTranslucentPath);
+
+    /// <summary>Whether grass can draw this lite build: it binds no specular, so short of authored PBR it is a no-specular one.</summary>
+    public static bool DrawsGrass(string path) =>
+        DrawsVegetation(path) && Builds.TryGetValue(path, out Build build) && Array.IndexOf(build.Defines, "FABLE_LITE_NO_SPEC") >= 0;
+
     /// <summary>Whether this path is the full terrain splat or one of its lite builds.</summary>
     public static bool IsTerrainSplat(string? path) => path is not null && FullPathOf(path) == TerrainFullPath;
 

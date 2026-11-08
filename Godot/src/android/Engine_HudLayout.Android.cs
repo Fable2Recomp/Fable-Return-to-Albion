@@ -52,7 +52,15 @@ public sealed partial class Engine_HudLayout
 
         LiftDpad(AndroidDpadLift);
         InsetSpellCharge(AndroidSpellChargeInset);
+        // A phone's screen is small and tapped: mod HUD groups take their touchScale.
+        Engine_HudModGroups.Handheld = true;
     }
+
+    /// <summary>
+    /// The pieces placed from their measured rect (<see cref="Arrangement"/>): the health
+    /// readouts, which Android keeps where they stand (Engine_HudView.Android).
+    /// </summary>
+    public static bool PlacedFromRect(Piece piece) => Arrangement.ContainsKey(piece.Id);
 
     /// <summary>Moves every piece <paramref name="which"/> picks by <paramref name="delta"/> (reference units, +Y down).</summary>
     private int Nudge(System.Func<Piece, bool> which, Vector2 delta)

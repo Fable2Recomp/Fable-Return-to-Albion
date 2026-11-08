@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 
 namespace Refii.Models;
@@ -19,6 +20,9 @@ public static partial class Engine_MdlMaterial
     private static readonly StringName LiteFactsMeta = "lite_variant_facts";
 
     private const int FactNormal = 8, FactEmission = 16, FactOrm = 32, FactPremultiplied = 64, FactGrassBend = 128;
+
+    /// <summary>The vegetation flags `lite_vegetation_folds` folds (Engine_ShaderSpecialisation.VegetationDefines).</summary>
+    private const int FactFoliage = 256, FactGrass = 512, FactFoliageNormals = 1024;
 
     /// <summary>The authored-PBR bit, the third of the shader-build bits above.</summary>
     private const int FactPbr = 4;
@@ -132,7 +136,7 @@ public static partial class Engine_MdlMaterial
                 continue;
             }
 
-            if (Engine_ShaderSpecialisation.Load(path, SpecialisationDefines(shaded), LoadShared(path)) is { } special)
+            if (Engine_ShaderSpecialisation.Load(path, SpecialisationDefines(shaded, path), LoadShared(path)) is { } special)
             {
                 shaded.Shader = special;
             }
@@ -140,20 +144,27 @@ public static partial class Engine_MdlMaterial
     }
 
     /// <summary>The defines this material's own facts allow (Engine_ShaderSpecialisation.FoldDefines).</summary>
-    private static IEnumerable<string> SpecialisationDefines(ShaderMaterial pass)
+    private static IEnumerable<string> SpecialisationDefines(ShaderMaterial pass, string path)
     {
+        int facts = pass.GetMeta(LiteFactsMeta).AsInt32();
+        string[] vegetation = Engine_ShaderSpecialisation.VegetationFolds
+            ? Engine_ShaderSpecialisation.VegetationDefines(
+                foliage: (facts & FactFoliage) != 0,
+                grass: (facts & FactGrass) != 0,
+                foliageNormals: (facts & FactFoliageNormals) != 0,
+                tree: Engine_ShaderVariant.FullPathOf(path) == Engine_ShaderFamily.StandardTreePath)
+            : Array.Empty<string>();
         if (!Engine_ShaderSpecialisation.MaterialFolds)
         {
-            return Array.Empty<string>();
+            return vegetation;
         }
 
-        int facts = pass.GetMeta(LiteFactsMeta).AsInt32();
-        return Engine_ShaderSpecialisation.FoldDefines(
+        return vegetation.Concat(Engine_ShaderSpecialisation.ScopeFolds(Engine_ShaderSpecialisation.MaterialFoldScope, path, Engine_ShaderSpecialisation.FoldDefines(
             pbr: (facts & 4) != 0,
             orm: (facts & FactOrm) != 0,
             emission: (facts & FactEmission) != 0,
             premultiplied: (facts & FactPremultiplied) != 0,
             normalMap: (facts & FactNormal) != 0,
-            grassBend: (facts & FactGrassBend) != 0);
+            grassBend: (facts & FactGrassBend) != 0)));
     }
 }

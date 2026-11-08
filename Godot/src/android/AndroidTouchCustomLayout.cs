@@ -71,6 +71,7 @@ public static class AndroidTouchCustomLayout
         TouchContext.Photo => "Photo mode",
         TouchContext.Mirror => "The mirror",
         TouchContext.Decorate => "Decorating",
+        TouchContext.ModScreen => "Mod screens",
         _ => screen.ToString(),
     };
 
@@ -78,7 +79,7 @@ public static class AndroidTouchCustomLayout
     public static bool Editable(TouchControl control) =>
         control.Kind is not (TouchControlKind.Stick or TouchControlKind.Look) && !control.OverHud &&
         !control.Id.StartsWith(AndroidTouchLayout.SpellPrefix, StringComparison.Ordinal) &&
-        control.Id != AndroidTouchLayout.SpellsClose;
+        control.Id != AndroidTouchLayout.SpellsClose && !AndroidTouchModControls.IsArea(control);
 
     /// <summary>
     /// <paramref name="controls"/>, laid out for <paramref name="screen"/>, with the player's adjustments
