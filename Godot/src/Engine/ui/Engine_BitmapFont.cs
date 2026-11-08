@@ -95,10 +95,18 @@ public sealed class Engine_BitmapFont
 	/// </summary>
 	public readonly uint WeightHint;
 
+	/// <summary>
+	/// The glyph UVs are Fable 2's <c>pixel / (size - 1)</c>, with U1/V1 on the cell's last texel
+	/// (<see cref="Engine_BitmapFontTexture.GetGlyphRect"/>). Fable 3's fonts store
+	/// <c>pixel / size</c> and are drawn from their raw UVs.
+	/// </summary>
+	public readonly bool TexelUvs;
+
 	public int GlyphCount => _glyphs.Length;
 
 	private Engine_BitmapFont(BitmapGlyph[] glyphs, ushort[] charMap, int lineHeight, int cellHeight,
-		int averageCharWidth, uint weightHint, int atlasWidth, int atlasHeight, ReadOnlyMemory<byte> atlas)
+		int averageCharWidth, uint weightHint, int atlasWidth, int atlasHeight, ReadOnlyMemory<byte> atlas,
+		bool texelUvs)
 	{
 		_glyphs = glyphs;
 		_charMap = charMap;
@@ -109,6 +117,7 @@ public sealed class Engine_BitmapFont
 		AtlasWidth = atlasWidth;
 		AtlasHeight = atlasHeight;
 		AtlasBlocks = atlas;
+		TexelUvs = texelUvs;
 	}
 
 	public static Engine_BitmapFont Load(string path) => Parse(File.ReadAllBytes(path));
@@ -172,7 +181,7 @@ public sealed class Engine_BitmapFont
 				$"bft: atlas payload {actual} bytes, expected {expected} for {atlasWidth}x{atlasHeight} at 4bpp");
 
 		return new Engine_BitmapFont(glyphs, charMap, lineHeight, cellHeight, averageCharWidth,
-			weightHint, atlasWidth, atlasHeight, new ReadOnlyMemory<byte>(d, p, actual));
+			weightHint, atlasWidth, atlasHeight, new ReadOnlyMemory<byte>(d, p, actual), texelUvs: !fable3);
 	}
 
 	/// <summary>

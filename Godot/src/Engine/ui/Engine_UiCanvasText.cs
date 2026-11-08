@@ -52,11 +52,7 @@ public static class Engine_UiCanvasText
 			// A space has no cell to draw; advancing past it is the whole of its contribution.
 			if (glyph.DrawWidth > 0 && glyph.U1 > glyph.U0)
 			{
-				var source = new Rect2(
-					glyph.U0 * font.Font.AtlasWidth,
-					glyph.V0 * font.Font.AtlasHeight,
-					(glyph.U1 - glyph.U0) * font.Font.AtlasWidth,
-					(glyph.V1 - glyph.V0) * font.Font.AtlasHeight);
+				Rect2 source = Engine_BitmapFontTexture.GetGlyphRect(font.Font, glyph);
 
 				var destination = new Rect2(
 					origin + new Vector2((pen + glyph.LeftBearing) * scale, 0f),

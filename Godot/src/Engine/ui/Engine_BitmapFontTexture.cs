@@ -215,21 +215,37 @@ public static class Engine_BitmapFontTexture
 	}
 
 	/// <summary>
-	/// The atlas rectangle for a glyph, in pixels.
+	/// The atlas rectangle for a glyph, in shipped atlas texels: one texel per pixel of the
+	/// quad the engine draws, <see cref="BitmapGlyph.DrawWidth"/> wide and
+	/// <see cref="Engine_BitmapFont.LineHeight"/> + 1 tall.
 	/// </summary>
 	/// <remarks>
 	/// The stored UVs are <c>pixel / (size - 1)</c>, not <c>pixel / size</c>, so converting
-	/// back to pixels multiplies by <c>size - 1</c>. Getting this wrong shifts every glyph
-	/// by a fraction of a texel, which reads as soft or clipped edges rather than an
-	/// obvious break.
+	/// back to pixels multiplies by <c>size - 1</c>, and U1/V1 name the cell's LAST texel, not
+	/// the edge past it. In every shipped GUI font the cell's first column and row carry ink
+	/// and its last column and row are blank. Sampling the raw UVs instead starts each glyph
+	/// up to a whole texel late, so the letters on the right of the atlas lose their left
+	/// stroke (n, h, b, u, p, E), and squeezes the rest into the quad. A Fable 3 font
+	/// (<see cref="Engine_BitmapFont.TexelUvs"/> false) keeps its raw UVs.
 	/// </remarks>
 	public static Rect2 GetGlyphRect(Engine_BitmapFont font, in BitmapGlyph glyph)
 	{
-		float w = font.AtlasWidth - 1;
-		float h = font.AtlasHeight - 1;
-		float x0 = glyph.U0 * w;
-		float y0 = glyph.V0 * h;
-		return new Rect2(x0, y0, glyph.U1 * w - x0, glyph.V1 * h - y0);
+		if (!font.TexelUvs)
+		{
+			return new Rect2(glyph.U0 * font.AtlasWidth, glyph.V0 * font.AtlasHeight,
+				(glyph.U1 - glyph.U0) * font.AtlasWidth, (glyph.V1 - glyph.V0) * font.AtlasHeight);
+		}
+
+		return new Rect2(Mathf.Round(glyph.U0 * (font.AtlasWidth - 1)), Mathf.Round(glyph.V0 * (font.AtlasHeight - 1)),
+			glyph.DrawWidth, font.LineHeight + 1);
+	}
+
+	/// <summary><see cref="GetGlyphRect"/> as texture coordinates.</summary>
+	public static Rect2 GetGlyphUvRect(Engine_BitmapFont font, in BitmapGlyph glyph)
+	{
+		Rect2 texels = GetGlyphRect(font, glyph);
+		var size = new Vector2(font.AtlasWidth, font.AtlasHeight);
+		return new Rect2(texels.Position / size, texels.Size / size);
 	}
 
 	/// <summary>

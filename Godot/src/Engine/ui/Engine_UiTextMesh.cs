@@ -194,7 +194,8 @@ public static class Engine_UiTextMesh
 					continue;
 
 				Append(vertices, uvs, normals, colours, indices,
-					glyphLeft, lineTop, g.DrawWidth, quadHeight, g,
+					glyphLeft, lineTop, g.DrawWidth, quadHeight,
+					Engine_BitmapFontTexture.GetGlyphUvRect(font, g),
 					// White multiplies to the element's own colour, which is what an
 					// unmarked run gets and what keeps Engine_UiTheme.Retint working.
 					cell.Colour ?? Colors.White);
@@ -333,7 +334,7 @@ public static class Engine_UiTextMesh
 	/// </summary>
 	private static void Append(List<Vector3> vertices, List<Vector2> uvs, List<Vector3> normals,
 		List<Color> colours, List<int> indices,
-		float left, float top, float width, float height, in BitmapGlyph g, Color colour)
+		float left, float top, float width, float height, Rect2 uv, Color colour)
 	{
 		int b = vertices.Count;
 		float right = left + width;
@@ -344,10 +345,10 @@ public static class Engine_UiTextMesh
 		vertices.Add(new Vector3(right, bottom, 0f));
 		vertices.Add(new Vector3(right, top, 0f));
 
-		uvs.Add(new Vector2(g.U0, g.V0));
-		uvs.Add(new Vector2(g.U0, g.V1));
-		uvs.Add(new Vector2(g.U1, g.V1));
-		uvs.Add(new Vector2(g.U1, g.V0));
+		uvs.Add(uv.Position);
+		uvs.Add(new Vector2(uv.Position.X, uv.End.Y));
+		uvs.Add(uv.End);
+		uvs.Add(new Vector2(uv.End.X, uv.Position.Y));
 
 		for (int i = 0; i < 4; i++)
 		{
