@@ -8,9 +8,9 @@ using static GdUnit4.Assertions;
 
 /// <summary>
 /// Toggle Sprint is a Godot script on the mod API: the toggle is a <c>game_action</c> verdict that
-/// cancels SPRINT_SET (66) while sprinting and SPRINT_RELEASE (67) otherwise, on the game's own sprint
-/// flag read inside the verdict (<c>host.read("sprinting")</c>, as a Lua handler reads
-/// <c>Refii.sprinting</c>); standing still ends the sprint through <c>end_sprint</c> on the hero's own
+/// cancels SPRINT_SET (66) while the sprint is kept and SPRINT_RELEASE (67) otherwise, keeping which press
+/// this is itself, because the game's flag already reads true when a first press's SET arrives; the flag
+/// asked each tick (<c>query sprinting</c>) says when the game ended a sprint; standing still ends the sprint through <c>end_sprint</c> on the hero's own
 /// <c>query velocity</c>; both players, where each is played and in play. It ships no Lua and no
 /// native code, every RefiiHost member it uses exists with that argument count, every event and answer
 /// field it reads is stated, its data files validate, and the old Shift tap is gone.
@@ -45,7 +45,7 @@ public class ToggleSprintGodotTests
         string text = GodotModScripts.Script(root, Mod, File);
         string code = GodotModScripts.Code(text);
         var called = GodotModScripts.AssertHostContract(root, File, text);
-        foreach (string name in new[] { "on_verdict", "remove_verdict", "read", "ask", "end_sprint", "in_play", "player_here", "hero", "setting", "constants" })
+        foreach (string name in new[] { "on_verdict", "remove_verdict", "ask", "end_sprint", "in_play", "player_here", "hero", "setting", "constants" })
         {
             AssertThat(called.Contains(name)).OverrideFailureMessage(File + " never calls host." + name).IsTrue();
         }
@@ -53,10 +53,9 @@ public class ToggleSprintGodotTests
         var verdicts = GodotModScripts.Verdicts(code);
         AssertThat(verdicts.Count == 1 && verdicts[0] == ("game_action", "_on_game_action")).IsTrue();
 
-        // The flag is read in the verdict, as the press arrives: no copy of it asked per tick.
-        var reads = GodotModScripts.Reads(code);
-        AssertThat(reads.Count == 1 && reads[0] == ("sprinting", "_on_game_action")).IsTrue();
-        AssertThat(GodotModScripts.Asked(code).Contains("sprinting")).OverrideFailureMessage(File + " still asks the sprint flag per tick").IsFalse();
+        // The verdict reads no flag, which already says true on a first press: the flag is asked per tick.
+        AssertThat(GodotModScripts.Reads(code).Count).IsEqual(0);
+        AssertThat(GodotModScripts.Asked(code).Contains("sprinting")).OverrideFailureMessage(File + " no longer asks the sprint flag").IsTrue();
         foreach (string gone in new[] { "epoch", "asking", "_state(", "var sprinting" })
         {
             AssertThat(code.Contains(gone, StringComparison.Ordinal)).OverrideFailureMessage(File + " still keeps the cached flag: " + gone).IsFalse();

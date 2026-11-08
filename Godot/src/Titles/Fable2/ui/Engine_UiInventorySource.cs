@@ -30,7 +30,7 @@ using Refii.Ui;
 /// into a guest menu, and it does not need one — activating it is a host action, not a
 /// `PushButtonEvent` for a screen class to interpret.
 /// </summary>
-public static class Engine_UiInventorySource
+public static partial class Engine_UiInventorySource
 {
 	/// <summary>The source name a template asks for: `inventory` for everything, `inventory:N`
 	/// for one category.</summary>
@@ -534,13 +534,9 @@ public static class Engine_UiInventorySource
 			Globals!.TryFindInherited(item, field, type, out _, out value, out _);
 	}
 
-	/// <summary>A string field's text, through the GDB's own dictionary.</summary>
+	/// <summary>A string field's text, through the dictionaries of every GDB: the field may be inherited from another's record.</summary>
 	private static string ItemString(uint entity, uint field) =>
-		TryItemField(entity, field, (int)GdbFieldType.String, out uint hash) &&
-		Globals!.TryLookup(entity, out GdbCursor any) &&
-		any.View.Names.TryGetValue(hash, out string? text)
-			? text
-			: string.Empty;
+		TryItemField(entity, field, (int)GdbFieldType.String, out uint hash) ? Globals!.NameOf(hash) : string.Empty;
 
 	/// <summary>
 	/// The guest's gift predicate — `CanBeGift` on the item's `GiftComponent`, which

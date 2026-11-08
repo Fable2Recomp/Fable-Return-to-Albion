@@ -21,6 +21,9 @@ namespace Refii.Ui;
 /// <item><c>offset</c> — <c>[x, y]</c> in reference units (+Y down) added after the scale, each
 /// a number or a value source; a leading <c>-</c> on a source negates it (<c>"-setting:m.lift"</c>
 /// raises by the setting). Not stated, it is 0.</item>
+/// <item><c>touchScale</c> — a number the scale is multiplied by on a touchscreen device (a phone
+/// or tablet), whose screen is small and is pressed with a thumb: a bar the right size on a monitor
+/// is too small there to see or tap. Not stated, or not above 0, it is 1.</item>
 /// </list>
 /// <para>Read per frame with the readers of the member's own player, so a group of
 /// <c>each</c> pieces in player two's half reads player two's <c>player:</c> values and scales
@@ -38,7 +41,8 @@ public static class Engine_HudModGroups
 		Vector2 Pivot,
 		string Scale,
 		string OffsetX,
-		string OffsetY);
+		string OffsetY,
+		float TouchScale = 1f);
 
 	/// <summary>A group's values now: the factor about the pivot and the offset in reference units.</summary>
 	public readonly record struct Transform(float Scale, Vector2 Offset)
@@ -50,6 +54,11 @@ public static class Engine_HudModGroups
 	public static Transform Resolve(Group group, Engine_UiValueSources.Context context)
 	{
 		float scale = Number(group.Scale, context) is { } stated && stated > 0f && float.IsFinite(stated) ? stated : 1f;
+		if (Handheld && group.TouchScale > 0f && float.IsFinite(group.TouchScale))
+		{
+			scale *= group.TouchScale;
+		}
+
 		float x = Number(group.OffsetX, context) is { } ox && float.IsFinite(ox) ? ox : 0f;
 		float y = Number(group.OffsetY, context) is { } oy && float.IsFinite(oy) ? oy : 0f;
 		return new Transform(scale, new Vector2(x, y));
@@ -65,6 +74,9 @@ public static class Engine_HudModGroups
 		float unit = Engine_HudLayout.Scale(extent);
 		return pivot + (point - pivot) * transform.Scale + new Vector2(transform.Offset.X * unit, -transform.Offset.Y * unit);
 	}
+
+	/// <summary>Whether <see cref="Group.TouchScale"/> applies: the game runs on a touchscreen device. Set by the platform at start.</summary>
+	public static bool Handheld { get; set; }
 
 	/// <summary>A number or a value source, negated by a leading <c>-</c> before a source; null when it states nothing.</summary>
 	public static float? Number(string? text, Engine_UiValueSources.Context context)

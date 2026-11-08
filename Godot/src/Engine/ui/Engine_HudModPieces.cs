@@ -131,7 +131,8 @@ public sealed partial class Engine_HudModPieces : Node3D
 		Color? Outline = null,
 		float OutlineWidth = 0f,
 		Color? Shadow = null,
-		Vector2 ShadowOffset = default);
+		Vector2 ShadowOffset = default,
+		string Touch = "");
 
 	/// <summary>
 	/// A COPY of a shipped piece — the guest's own widget, built again beside the original, so it
@@ -1036,7 +1037,7 @@ public sealed partial class Engine_HudModPieces : Node3D
 
 			string name = id.AsString();
 			groups[name] = new Engine_HudModGroups.Group(name, mod, new Engine_HudLayout.Anchor(anchor.X, anchor.Y),
-				Pair(record, "pivot", Vector2.Zero), Text(record, "scale"), offsetX, offsetY);
+				Pair(record, "pivot", Vector2.Zero), Text(record, "scale"), offsetX, offsetY, Number(record, "touchScale", 1f));
 		}
 	}
 
@@ -1243,10 +1244,21 @@ public sealed partial class Engine_HudModPieces : Node3D
 				kind == Kind.Text ? ColourOf(record, "outline", null) : null,
 				Number(record, "outlineWidth", 1.5f),
 				kind == Kind.Text ? ColourOf(record, "shadow", null) : null,
-				Pair(record, "shadowOffset", new Vector2(1.5f, 1.5f))));
+				Pair(record, "shadowOffset", new Vector2(1.5f, 1.5f)),
+				TouchAction(mod, Text(record, "touch"))));
 		}
 
 		return pieces;
+	}
+
+	/// <summary>
+	/// A piece's <c>"touch"</c>: the action a finger on it presses, scoped to the mod — <c>"slot4"</c>
+	/// in mod <c>hotbar</c> is <c>hotbar.slot4</c>; a name already scoped to the mod stays as it is.
+	/// </summary>
+	private static string TouchAction(string mod, string action)
+	{
+		action = action.Trim();
+		return action.Length == 0 || action.StartsWith(mod + ".", System.StringComparison.Ordinal) ? action : mod + "." + action;
 	}
 
 	/// <summary>A picture's <c>region</c>: <c>[u, v, w, h]</c> fractions of its texture, clamped to it; null for none or a bad one.</summary>

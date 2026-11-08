@@ -1499,7 +1499,7 @@ public static class ModApi
 
 	private const string AnimationMeaning =
 		"a named animation as the shipped AI plays one: Action.SetCurrentAction with a PLAY_ANIMATION action (Anim the GDB animation record's name, " +
-		"OverrideLooking, SpeedMultiplier, BlendInTime), wrapped in a BATCH with NumLoops for loops above 1, so the game's own evaluator plays it " +
+		"OverrideLooking, SpeedMultiplier, BlendInTime), wrapped in a LOOP with NumLoops for loops above 1, so the game's own evaluator plays it " +
 		"and the pose feed shows it; a higher-priority action keeps the body. stop_animation is Action.FinishScriptedActions. Guest tick";
 
 	private const string OpinionSetMeaning =
@@ -1896,7 +1896,7 @@ public static class ModApi
 	public const string AskHostMeaning =
 		"THE HOST'S READS AND ACTIONS a Lua mod has no synchronous form of, asked of Godot on this machine: ask_host(what, fn, a, b, c, d) and fn(value) runs on a later tick with the answer " +
 		"(plain data: a number, a text, a boolean, a table of them; nil for none), false when it could not be posted; what is one of ModApi.HostCalls — fade_state(p), hud_overrides(p), input_claimed(p, action), input_claims(p), " +
-		"lights(), markers(), meters(), mods(), presses(p), snapshot_time(key), and the actions set_setting(key, v), save_snapshot(key), load_snapshot(key), which Refii.set_setting / save_snapshot / load_snapshot name (fn(true) once done)";
+		"inventory_items(), lights(), markers(), meters(), minimap(), minimap_point(x, y, z), mods(), presses(p), snapshot_time(key), and the actions inventory_action(operation, definition), own_screen(on), set_setting(key, v), save_snapshot(key), load_snapshot(key), which Refii.set_setting / save_snapshot / load_snapshot name (fn(true) once done)";
 
 	public const string GodotRuntimeMeaning =
 		"Godot's: counted by RefiiHost from the same tick and paused statements Lua's runtime counts (heard while a script is loaded), from this host's start — durations agree with Lua's, absolute values need not; " +
@@ -2123,6 +2123,7 @@ public static class ModApi
 		new ModApiHelper("constants() -> Dictionary / spell_info(type) -> Dictionary", ConstantsMeaning + " / " + SpellInfoMeaning + " ({ name_tag, icon })"),
 		new ModApiHelper("signal setting_changed(key, value)", SettingChangedMeaning),
 		new ModApiHelper("in_cutscene(player = 0, kinds = 7) -> bool / cutscene_kinds(player = 0)", "the cutscene event as this host last heard it (always heard while a script is loaded; seeded by a query when the host is made): whether any of kinds holds for player 1 or 2 (0: either), and the bits — " + InCutsceneMeaning + "; query in_cutscene P asks the guest now"),
+		new ModApiHelper("minimap() -> Dictionary / minimap_point(x, y, z) -> Vector2", "the current region's map as the game's own minimaps plot it: known, proper, texture, north, half_size, hero, facing, dog, quest, quest_here, quests, merchants; places in the image's element units around its centre, Y up"),
 		new ModApiHelper("query locked_target P / has_status E KIND / in_cutscene P", "target (0 when not locked) · has · kinds (the REFII_CUTSCENE_* bits, 0 none): refii_mod_locked_target / refii_mod_has_status / refii_mod_in_cutscene"),
 		new ModApiHelper("query speed_multiplier P / current_action E", "overridden, factor · action (0 for none), elapsed, interruptible: refii_mod_speed_multiplier / refii_mod_current_action, _action_elapsed, _action_interruptible"),
 		new ModApiHelper("query action A / frontend", "type, name, elapsed, interruptible (ok false for an unknown action; elapsed and interruptible are Refii.action_elapsed / action_interruptible of that action) · signed_in, saves, screen (ok false with no front end up): " + ActionKindMeaning + " / " + FrontEndMeaning),
@@ -2146,6 +2147,13 @@ public static class ModApi
 		new ModApiHelper("query inventory P [OFFSET]", "player P's hero's stacks in the game's order, up to 40 a reply from stack OFFSET: total, offset, next, count, d1..dk (definitions \"0x…\"), n1..nk (counts), c1..ck (categories), v1..vk (viewed 0/1), u1..uk (usable 0/1: the item's own UsableFromInventory test, Refii.inventory's usable); ask again from next while next < total"),
 		new ModApiHelper("save_game(player) · query can_save P", "the game's own save where player P may save (AutoSaveGame(true, true); save_written follows per package) · able: Player.IsAbleToSaveGame for P's hero"),
 		new ModApiHelper("modify_renown(entity, delta) / modify_morality(entity, delta) / modify_purity(entity, delta)", "the hero stats changed through the game's own Stats.Modify*, run in the guest tick (the lines `modify_renown E D` ..); the renown / morality / purity events fire"),
+		new ModApiHelper("inventory_items() -> Array / inventory_action(operation, definition) -> bool", "what this machine's hero carries as the game's own inventory pages show it, one Dictionary per stack (definition, count, category, name, description, icon, model, value, rating, usable, worn, weapon_class, new, lines), and what those pages do to an item: use, equip, wear, outfit, or remove, which empties its clothing slot"),
+		new ModApiHelper("dress_model(node, mesh)", "gives a MeshInstance3D in a script's own world this mesh and the lit material the game's item previews use: the world's shaders read the level's lighting and draw nothing there"),
+		new ModApiHelper("item_pose(item, yaw)", "how the game's item page holds an item of inventory_items() after yaw radians of its spin, as a Basis: at 0 its front faces a camera looking down -Z"),
+		new ModApiHelper("touch_area(action, rect) -> bool / touch_mode() -> bool / touch_stick() -> Vector2",
+			"on a touchscreen a finger on the rect (the root viewport's coordinates, where a script's CanvasLayer draws) presses the action (scoped, as input.json declares it) for player one, held while the finger stays; an empty Rect2 removes it; false for an action no enabled mod declares. " +
+			"touch_mode: whether the touchscreen is the device in use (the touch controls are drawn). touch_stick: the on-screen move stick, x right and y up, -1..1; zero when no thumb is on it"),
+		new ModApiHelper("own_screen(on)", "a mod's screen stands where the pause book would: while on, the book draws nothing and the pad is held from the game; press Start to enter and leave the pause, and turn it off when the paused signal says the pause ended"),
 		new ModApiHelper("use_item(player, definition) / equip_weapon(player, definition) / perform_expression(player, expression) / assign_spell(player, spell)", QuickActionMeaning),
 		new ModApiHelper("use_item(player, definition, options) / equip_weapon(player, definition, options) / perform_expression(player, expression, held [, options]) / perform_expression(player, expression, held, options, callback) -> bool / assign_spell(player, spell, options) / release_expression(player)", QuickOptionsMeaning + "; options is {\"ungated\": true}; use_item(player, definition, {\"ungated\": true}) is the per-player form of the Items page's use_item(definition); with callback it runs Lua's own Refii.perform_expression and callback(performed) follows on a later frame"),
 		new ModApiHelper("end_sprint(player) · query sprinting P", SprintMeaning + " · sprinting=true|false"),
@@ -2211,7 +2219,7 @@ public static class ModApi
 	/// </summary>
 	public static readonly IReadOnlyList<string> HostCalls = new[]
 	{
-		"fade_state", "hud_overrides", "input_claimed", "input_claims", "lights", "markers", "meters", "mods", "presses",
+		"fade_state", "hud_overrides", "input_claimed", "input_claims", "lights", "markers", "meters", "minimap", "minimap_point", "mods", "presses", "inventory_items", "inventory_action", "own_screen",
 		"snapshot_time", "set_setting", "save_snapshot", "load_snapshot",
 	};
 
@@ -2273,6 +2281,9 @@ public static class ModApi
 		T("", "run_lua call_lua frontend_lua query:lua_int",
 			"Lua IS the game VM: a Lua mod runs its code there directly, and its front-end code as mod/frontend.lua"),
 		T("", "node_for", "a Godot node: Lua has no scene tree (it places with mark, light and play_fx_on on the handle)"),
+		T("", "dress_model", "a Godot node: Lua has no scene tree"),
+		T("", "item_pose", "a Godot Basis: Lua has no scene tree"),
+		T("", "touch_area touch_mode touch_stick", "the touchscreen is drawn on: an area is a rectangle of a Godot script's own drawing, and Lua draws nothing"),
 		T("", "register_source register_condition",
 			"called by Godot's UI while it builds a list, at once; Lua runs on the guest tick, so it states a list's rows ahead with set_menu_rows (ghosted included)"),
 		T("", "register_command", "Lua's row verb is the command Mod:lua:name[:arg], which calls the Lua function of that name with the row"),
@@ -2359,6 +2370,8 @@ public static class ModApi
 		T("mark unmark world_meter mark_meter ask_host:markers", "mark unmark world_meter mark_meter markers"),
 		T("fade ask_host:fade_state", "fade fade_state"),
 		T("meter meter_remove ask_host:meters", "meter meter_remove meters"),
+		T("ask_host:minimap ask_host:minimap_point", "minimap minimap_point"),
+		T("ask_host:inventory_items ask_host:inventory_action ask_host:own_screen", "inventory_items inventory_action own_screen"),
 		T("hud_icon hud_slide hud_hold ask_host:hud_overrides", "hud_icon hud_slide hud_hold hud_overrides"),
 		T("set_menu_rows open_menu open_screen", "set_menu_rows open_menu open_screen"),
 		T("message_box event:mod_message_box", "message_box signal:message_box_answered"),

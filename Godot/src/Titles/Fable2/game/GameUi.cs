@@ -417,7 +417,7 @@ public partial class GameUi : Node, IGameTitleUi
 		_viewport.AddChild(_presentation);
 
 		// When asset mounting completes or modded text overlays arrive, update all UI references:
-		_presentation.StringsChanged += newStrings =>
+		System.Action<Refii.Text.Engine_BabelDatabase> adoptStrings = newStrings =>
 		{
 			if (_loading is not null)
 			{
@@ -438,6 +438,14 @@ public partial class GameUi : Node, IGameTitleUi
 				WarmTextBanks();
 			}
 		};
+		_presentation.StringsChanged += adoptStrings;
+
+		// The host's _Ready may already have adopted a book (a mount that finished before this ran):
+		// handed out now, or the item, place and HUD text waits for a menu that happens to pass it on.
+		if (_presentation.Strings is { } adopted)
+		{
+			adoptStrings(adopted);
+		}
 
 		_presentation.PatternBooksRetired += OnPatternBooksRetired;
 
@@ -2412,6 +2420,8 @@ public partial class GameUi : Node, IGameTitleUi
 				HostAppliesWidescreen ? Engine_UiWidescreen.Read(screen.Document) : null),
 		};
 
+		Engine_UiMinimapMod.ResolveTexture = _hud.ResolveTexture;
+
 		// Every later build re-derives from the files as they stand (G.23); this first one has
 		// just been derived below.
 		_hudLayoutFresh = true;
@@ -4237,18 +4247,9 @@ public partial class GameUi : Node, IGameTitleUi
 			return 0;
 		}
 
-		int seen = 0;
-		foreach (BgfSlide slide in file.Slides)
-		{
-			if (slide.OwnerElement != owner || slide.IsMaster || ++seen != wanted)
-			{
-				continue;
-			}
-
-			return ReleaseHudSlideEntries(file, slide, active, stated);
-		}
-
-		return 0;
+		return Engine_UiElementResolve.SlideOf(file, owner, wanted) is { } slide
+			? ReleaseHudSlideEntries(file, slide, active, stated)
+			: 0;
 	}
 
 	/// <summary>The one release of a slide's entries, shared with a copy's own slide (Engine_UiElementResolve.ReleaseSlideEntries).</summary>
@@ -7546,7 +7547,7 @@ public partial class GameUi : Node, IGameTitleUi
 		// A HOST SCREEN takes the frame whole over whichever list opened it — the achievements
 		// screen, a mod's screen (Engine_UiHostScreen, `Screen:open:<id>`). Before the lists, so
 		// its B closes the screen rather than collapsing a fold behind it.
-		if (DriveHostScreen(delta))
+		if (DriveModScreen() || DriveHostScreen(delta))
 		{
 			return;
 		}
@@ -9980,7 +9981,7 @@ public partial class GameUi : Node, IGameTitleUi
 			// Engine_HudWorldIcons.
 			_hudAddress = presentation.Address;
 			if (_hud is not null && GodotObject.IsInstanceValid(_hud) && !_hud.Visible &&
-				!_fullCutscene)
+				!_fullCutscene && !_modScreenHidHud)
 			{
 				// Back after a Quit to Title; LeaveGame hid it with the game.
 				_hud.Visible = true;

@@ -183,6 +183,23 @@ public abstract class Engine_TitleGame
 	/// <summary>The hero's companion's entity address (Fable 2's dog), or 0.</summary>
 	public virtual uint CompanionEntityAddress => 0u;
 
+	/// <summary>The title's region map as a mod reads it (<c>RefiiHost.minimap</c>); empty with none.</summary>
+	public virtual Godot.Collections.Dictionary ModMinimap() => new();
+
+	/// <summary>A guest world position on that map, in the same units; null with no map.</summary>
+	public virtual Godot.Vector2? ModMinimapPoint(Godot.Vector3 world) => null;
+
+	/// <summary>What this machine's hero carries, as a mod's screen reads it (<c>RefiiHost.inventory_items</c>); empty with none.</summary>
+	public virtual Godot.Collections.Array ModInventoryItems() => new();
+
+	/// <summary>The pump's action for what a mod's screen asks of an item (<c>RefiiHost.inventory_action</c>); null when it is not one.</summary>
+	public virtual string? ModInventoryAction(string operation, uint record, int category) => null;
+
+	/// <summary>A mod's screen takes the pause book's place: its list hidden, the pad held from the game (<c>RefiiHost.own_screen</c>).</summary>
+	public virtual void ModOwnScreen(bool on)
+	{
+	}
+
 	/// <summary>
 	/// The building entity a player (1 or 2) stands in, as the guest's own per-frame query found
 	/// it (0: none); null when the guest gave no answer this frame, so the caller holds the last.

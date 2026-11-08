@@ -1947,10 +1947,18 @@ extern "C" int32_t refii_mod_velocity(PPCContext* ctx, uint8_t* base, uint32_t e
   if (placement == 0 || out_xyz == nullptr) {
     return 0;
   }
+  const uint32_t vtable = refii::mods::LoadU32(base, placement);
+  if (vtable == 0) {
+    return 0;
+  }
+  // Not CallVirtual, which puts the object in r3: this slot takes the out vector there and the object
+  // in r4, and would write the velocity over the placement's own vtable.
   PPCContext work = refii::mods::Frame(*ctx);
-  work.r3.u32 = work.r1.u32 + 0x40u;
+  const uint32_t out = work.r1.u32 + 0x40u;
+  work.r3.u32 = out;
   work.r4.u32 = placement;
-  return refii::mods::CallVirtual(work, base, placement, kPlacementVelocitySlot) && ReadVector(base, work.r3.u32, out_xyz)
+  return refii::mods::CallGuest(work, base, refii::mods::LoadU32(base, vtable + kPlacementVelocitySlot * 4u)) &&
+                 ReadVector(base, out, out_xyz)
              ? 1
              : 0;
 }
@@ -2960,12 +2968,12 @@ extern "C" int32_t refii_mod_play_animation(PPCContext* ctx, uint8_t* base, uint
     blend_seconds = 0.0f;
   }
   char chunk[512];
-  // BehaviourBase:PlayAnimation's table, and PlayLoopedAnimation's batch around it for loops.
+  // BehaviourBase:PlayAnimation's table, and PlayLoopedAnimation's LOOP around it for loops.
   std::snprintf(chunk, sizeof(chunk),
                 "local e = Refii.entity(%u) if e then "
                 "local a = { Type = EScriptableAction.PLAY_ANIMATION, Anim = \"%s\", OverrideLooking = true, "
                 "SpeedMultiplier = %.4f, BlendInTime = %.4f } "
-                "if %d > 1 then a = { Type = EScriptableAction.BATCH, LoopAction = a, NumLoops = %d, KillFXOnFinish = true } end "
+                "if %d > 1 then a = { Type = EScriptableAction.LOOP, LoopAction = a, NumLoops = %d, KillFXOnFinish = true } end "
                 "Action.SetCurrentAction(e, a) end",
                 refii_mod_handle(entity), name, static_cast<double>(speed), static_cast<double>(blend_seconds), loops, loops);
   return refii_mod_run_game_lua(ctx, base, chunk);

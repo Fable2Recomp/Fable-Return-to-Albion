@@ -1060,9 +1060,11 @@ extern "C" int32_t refii_mod_stop_music(PPCContext* ctx, uint8_t* base, const ch
 /// with a Lua table reference) builds the action from the table: the base parser `sub_8229DC48`
 /// reads Target, Priority, BlendInTime (0.1), BlendOutTime, OverrideLooking, IsComboBreak,
 /// IsPrelude, KillFXOnFinish, CanBeOverridenBySamePriority; the animation parser Anim and
-/// SpeedMultiplier. `loops` above 1 wraps it as `PlayLoopedAnimation` does: `{ Type = BATCH (16),
+/// SpeedMultiplier. `loops` above 1 wraps it as `PlayLoopedAnimation` does: `{ Type = LOOP (48),
 /// LoopAction = <it>, NumLoops = loops, KillFXOnFinish = true }` (`sub_829CEDA0` reads NumLoops,
-/// IntoAction, LoopAction, OutOfAction; the two we leave out are unproven to be optional). The
+/// IntoAction, LoopAction, OutOfAction; the first and last are optional, so `loops` counts every
+/// play: 3 runs three times as long as 1). A BATCH takes `Actions`, not LoopAction, and crashes
+/// the game in `sub_822AD950`. The
 /// evaluator then plays it and the pose feed shows it. `name` is a GDB animation record name
 /// (letters, digits, '_'; Godot/docs/modding/gameplay.md, Animation). True when the chunk ran — not whether the
 /// action was accepted (a higher-priority action keeps the body). Guest tick thread only.

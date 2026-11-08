@@ -18,6 +18,8 @@ shipped UI runs through, with no second implementation.
   - [The game's own world icons](#the-games-own-world-icons)
 - [HUD overrides: icons, slides and holds](#hud-overrides-icons-slides-and-holds)
 - [Textures from a Godot script: game://](#textures-from-a-godot-script-game)
+- [The region map: minimap](#the-region-map-minimap)
+- [A screen of your own](#a-screen-of-your-own)
 - [Boxes: messages, notices and menu boxes](#boxes-messages-notices-and-menu-boxes)
 - [Modals: who answers the game's boxes](#modals-who-answers-the-games-boxes)
 - [A mod's own menus](#a-mods-own-menus)
@@ -376,6 +378,66 @@ var icon: Texture2D = load("game://art/gui/wheelicons/abilities/will_shock.tex")
 menus decode theirs, upscaled when the player has upscaling on. A path is lower case with `/`; a
 PNG a mod ships under its own path is read from the package as any file. A script rarely needs it:
 a HUD picture names its texture by path and `hud_icon` fills it, a marker names its icon.
+
+## The region map: minimap
+
+The data the pause root's and the world map's minimaps plot from, for a mod that draws its own map.
+
+| Surface | Call |
+|---|---|
+| Lua | `Refii.ask_host("minimap", fn)`, `Refii.ask_host("minimap_point", fn, x, y, z)`: `fn` gets the answer on a later tick, a place as a table of `x` and `y` |
+| Godot | `host.minimap() -> Dictionary`, `host.minimap_point(x, y, z) -> Vector2` |
+
+| Key | Meaning |
+|---|---|
+| `known` | a level stands and the game's database has a map record for it; without it only `half_size` follows |
+| `proper` | it has a real map, so the places below are stated; a place without one still states its art |
+| `texture` | the map's art, a `Texture2D`; absent when the record names none |
+| `north` | radians the image turns, as the game's own minimaps turn it |
+| `half_size` | the image's half-size, in the units the places are in |
+| `hero`, `facing` | the local hero's place, and the radians their marker turns |
+| `dog` | the dog's place |
+| `quest`, `quest_here` | the primary quest's trail target, and whether it lies in this region |
+| `quests`, `merchants` | Arrays of places: other quests' objectives, travelling merchants |
+
+Places are `Vector2`s in the image's element units around its centre, Y up, so `half_size` is the
+image's edge. `minimap_point` puts a guest world position on the same map: a position Lua publishes,
+an enemy's say. It answers null with no proper map. Both read the game each call, so ask a few times
+a second rather than every frame.
+
+## A screen of your own
+
+A script can draw a whole screen of its own and have it stand where the pause book would, with the
+world held behind it and the mouse free.
+
+| Surface | Call |
+|---|---|
+| Lua | `Refii.ask_host("own_screen", fn, true)` |
+| Godot | `host.own_screen(true)` |
+
+While on, the pause book and the HUD draw nothing and the pad is held from the game, all but Start. It
+does not pause by itself: hold Start with `press` to enter the pause, let go on the `paused` signal,
+and do the same to leave it. Turn it off when `paused` says the pause has ended, because a pad's Start
+still ends it. Escape is the menus' back while paused, so it is held too: a screen closes on it itself.
+A key the screen uses is yours through a claim, as in [Claims](settings-and-input.md).
+
+```gdscript
+func open():
+	host.own_screen(true)
+	host.press(1, "Start", true)
+
+func _on_paused(e):
+	host.press(1, "Start", false)
+	if not e.get("paused", false):
+		host.own_screen(false)
+```
+
+To show a model on the screen, draw it in a `SubViewport` of its own (`own_world_3d`) with its own
+lights. The world's shaders read the level's lighting and draw nothing there, so give the
+`MeshInstance3D` its mesh through `host.dress_model(node, mesh)`, which uses the lit material the
+game's item previews use. `host.item_pose(item, yaw)` is how the game's item page holds an item of
+`inventory_items()`: set it as the node's `basis` and grow `yaw` to spin it about the axis the item
+states, with its front to a camera looking down -Z at 0.
 
 ## Boxes: messages, notices and menu boxes
 

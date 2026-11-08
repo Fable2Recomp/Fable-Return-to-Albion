@@ -100,9 +100,26 @@ public static class Engine_UiModRows
 	/// A stated label as the row draws it: a Babel tag's string (the tag as given, then with
 	/// <c>TEXT_</c>, as <see cref="Engine_UiGuiText"/> resolves the game's), else the literal. The
 	/// list takes a sourced row's label as its text, so the tag is resolved here.
+	/// A literal may carry tags in braces — <c>"4   {GUI_SCREEN_EXPRESSIONS_FUN_FART_NAME}"</c>, a
+	/// slot and what is on it — each drawn as the book says, or as written (braces dropped) when the
+	/// book has no such tag.
 	/// </summary>
-	public static string BookLabel(string label) =>
-		Engine_UiGuiText.Resolve(label, Refii.Core.Engine_TitleGame.Active.Strings);
+	public static string BookLabel(string label)
+	{
+		Refii.Text.Engine_BabelDatabase? book = Refii.Core.Engine_TitleGame.Active.Strings;
+		if (label.IndexOf('{') >= 0 && label.IndexOf('}') > label.IndexOf('{'))
+		{
+			return BracedTag.Replace(label, m =>
+				Engine_UiGuiText.Resolve(m.Groups[1].Value, book, out bool found) is { Length: > 0 } text && found
+					? text
+					: m.Groups[1].Value);
+		}
+
+		return Engine_UiGuiText.Resolve(label, book);
+	}
+
+	private static readonly System.Text.RegularExpressions.Regex BracedTag =
+		new(@"\{([A-Za-z0-9_]+)\}", System.Text.RegularExpressions.RegexOptions.Compiled);
 
 	/// <summary>The stated rows as menu rows; <paramref name="label"/> turns a stated label into the row's text (as stated when null).</summary>
 	public static List<Engine_UiMenuSources.Row> ToRows(IReadOnlyList<Stated> stated, Func<string, string>? label = null)

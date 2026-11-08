@@ -158,6 +158,58 @@ public partial class GameUi
 	/// the moment the pause root is not standing: a tab push, a query box or the resume all close
 	/// it, the same window the list itself yields in.
 	/// </summary>
+	/// <summary>A mod's screen stands where the pause book would (<c>RefiiHost.own_screen</c>).</summary>
+	public static bool ModOwnsScreen { get; set; }
+
+	/// <summary>The book's lists hidden and the pad the mod's, with the world held by the pause under it.</summary>
+	private bool DriveModScreen()
+	{
+		if (!ModOwnsScreen || !HostBridge.IsInGame)
+		{
+			if (_modScreenHidHud)
+			{
+				_modScreenHidHud = false;
+				ShowHudViews(true);
+			}
+
+			return false;
+		}
+
+		if (_pauseView is not null)
+		{
+			_pauseView.Visible = false;
+		}
+
+		if (_screenMenuView is not null)
+		{
+			_screenMenuView.Visible = false;
+		}
+
+		if (_hostMenuView is not null)
+		{
+			_hostMenuView.Visible = false;
+		}
+
+		_modScreenHidHud = true;
+		ShowHudViews(false);
+		Fable2Input.HostUiOwnsPad = true;
+		return true;
+	}
+
+	private bool _modScreenHidHud;
+
+	private void ShowHudViews(bool show)
+	{
+		if (_hud is not null && IsInstanceValid(_hud))
+		{
+			_hud.Suppressed = !show;
+			if (!show)
+			{
+				_hud.Visible = false;   // the walk states it only on the guest's frames, which a pause stops
+			}
+		}
+	}
+
 	private bool DriveHostScreen(double delta)
 	{
 		if (_hostScreen is not { IsOpen: true } screen)

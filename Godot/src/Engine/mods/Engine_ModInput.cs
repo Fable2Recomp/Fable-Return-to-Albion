@@ -790,7 +790,7 @@ public static class ModInput
 
 		if (keys.Count == 0 && buttons.Count == 0 && triggers.Count == 0 && axis is null)
 		{
-			GD.PushWarning($"[mod-input] {name}: no key, button or axis bound; ignored");
+			GD.PushWarning($"[mod-input] {name}: no key, button or axis bound, nor a touch pill; ignored");
 			return null;
 		}
 
@@ -809,7 +809,7 @@ public static class ModInput
 			}
 		}
 
-		return new Action(name, mod, label, keys, buttons, triggers, axis, axisSign) { Chord = chord, ChordKey = chordKey };
+		return new Action(name, mod, label, keys, buttons, triggers, axis, axisSign) { Chord = chord, ChordKey = chordKey, Touch = touch };
 	}
 
 	/// <summary>A binding list: an array of strings, or one string.</summary>

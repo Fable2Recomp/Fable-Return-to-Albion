@@ -426,6 +426,8 @@ and the game's own evaluator plays it, so the pose shows in Godot with nothing a
   in the game VM; `loops` above 1 wraps it as `PlayLoopedAnimation` does (a BATCH with
   `LoopAction` and `NumLoops`). True when the chunk ran: a higher-priority action (combat, a
   cutscene) keeps the body, which the call cannot see.
+  The wrapper is a `LOOP` action, not a BATCH: `{ Type = EScriptableAction.LOOP, LoopAction = …,
+  NumLoops = loops, KillFXOnFinish = true }`, so the clip plays `loops` times.
 - **`stop_animation(entity)`**: `Action.FinishScriptedActions(entity)`, what the behaviours call
   to cut a played animation.
 
@@ -612,6 +614,41 @@ The Dynamic Sky's weather (the `dynamic_weather` event) is Godot's own, decided 
 Auto, or a set weather — and adopted by an online joiner; `set_weather` states the game's theme,
 which the sky reads like any other. In co-op, run the blend where `world_here()` is true and let
 the joiner's copy follow.
+
+## The inventory as a screen reads it
+
+Everything the game's own inventory pages show about what this machine's hero carries, read at the
+call, and what those pages do to an item. For a mod that draws its own inventory.
+
+| Surface | Read | Act |
+|---|---|---|
+| Lua | `Refii.ask_host("inventory_items", fn)`: `fn` gets the answer on a later tick | `Refii.ask_host("inventory_action", fn, operation, definition)` |
+| Godot | `host.inventory_items() -> Array` | `host.inventory_action(operation, definition) -> bool` |
+
+Each stack is a Dictionary, in the game's order, without what the game's pages hide (`VisibleInGUI`
+and an outfit none of whose pieces are carried):
+
+| Key | Meaning |
+|---|---|
+| `definition` | `"0x…"`, the record that `use_item` and `equip_weapon` take |
+| `count` | how many |
+| `category` | the item's `Category`: 1 weapons, 3 gifts, 4 trophies, 5 food, 6 potions, 7 augments, 8 dyes, 15 furniture, 16 books, 17-22 hats, coats, shirts, gloves, trousers, shoes, 23 accessories, 25 outfits, 2 and 26 tools, keys and quest items |
+| `name`, `description` | in the player's language |
+| `icon` | the texture path; `load("game://" + icon.replace("\\", "/").to_lower())` |
+| `model` | the item's model path, empty for none; `load("game://" + model.replace("\\", "/").to_lower())` is a `Mesh` |
+| `pieces` | an outfit's model paths, one per piece it names, empty for anything else: an outfit has no `model` of its own |
+| `rotation`, `rotation_axis` | the pose the item page turns it in; `host.item_pose(item, yaw)` makes them a `Basis` |
+| `value` | `BasePrice`, 0 for none |
+| `rating` | the item page's star rating |
+| `usable` | the item's own `UsableFromInventory` test |
+| `worn` | this hero wears it now; an outfit when every piece of it they carry is on |
+| `weapon_class` | 1 melee, 2 ranged, 0 neither |
+| `new` | not yet seen in a menu |
+| `lines` | the item page's stat lines, each a Dictionary of `label` and `value`, already in the player's language |
+
+`operation` is `use`, `equip`, `wear` or `outfit`, as the pages' own rows run them, or `remove`, which
+empties the clothing slot of the item named. An outfit is no slot, so `remove` refuses one: take off
+the worn items that are its pieces. Weapons in hand are `query equipped`.
 
 ## Items, weapons, expressions and spells
 

@@ -10,6 +10,7 @@ same path, converted in memory where it needs to be. Nothing is converted onto d
 - [Models: .mdl.glb](#models-mdlglb)
   - [New morph targets](#new-morph-targets)
   - [What is carried, what is refused](#what-is-carried-what-is-refused)
+  - [A new model of your own](#a-new-model-of-your-own)
   - [In the Studio](#in-the-studio)
 - [Attachment sockets: .mdl.gmd](#attachment-sockets-mdlgmd)
 - [Presentations: .bgf](#presentations-bgf)
@@ -87,6 +88,16 @@ replacement and mounted at its own path, where the game finds it by its hash
   counts: a reordered target loads and blends into a tangle.
 - Only the position and normal are blended (the tangent comes from the heaviest model); UVs,
   materials, bones and skin weights are the template's.
+
+### A new model of your own
+
+To add a model without changing a shipped one, compile the glTF against a shipped model and ship the
+result at a path of your own: `art/inventory/weapons/my_gun/my_gun.mdl`, its sockets copied beside it
+as `my_gun.mdl.gmd`, and its texture as `my_gun.tex.png`. A `.gdb.csv` row points a record's
+`ModelFile` at the path. `ModMeshOverlays.TryConvert` does the compile, and
+`Engine_MdlWriter.TryRewriteMaterialTextures` points its materials at your texture. The compile keeps
+the file's triangle order and the game's models are wound clockwise, the reverse of what glTF means, so
+a mesh written counter-clockwise is drawn inside out by a culled material.
 
 ### In the Studio
 

@@ -103,6 +103,17 @@ public sealed class Fable2Title : Engine_TitleGame
 
 	public override uint CompanionEntityAddress => Fable2Bridge.GetMinimapLive().Dog;
 
+	public override Godot.Collections.Dictionary ModMinimap() => Engine_UiMinimapMod.State();
+
+	public override Godot.Vector2? ModMinimapPoint(Godot.Vector3 world) => Engine_UiMinimapMod.Point(world);
+
+	public override Godot.Collections.Array ModInventoryItems() => Engine_UiInventorySource.ModItems();
+
+	public override string? ModInventoryAction(string operation, uint record, int category) =>
+		Engine_UiInventorySource.ModAction(operation, record, category);
+
+	public override void ModOwnScreen(bool on) => GameUi.ModOwnsScreen = on;
+
 	public override int HeroMorphPreviewGeneration => GameCharacterMorphs.PreviewGeneration;
 
 	public override bool HeroMorphPreviewHeld => GameMorphMirror.OwnsInput;

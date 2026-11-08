@@ -176,7 +176,7 @@ public sealed class Fable2Input : GameTitleInput
 			!boxMasked && MaskScreenMenuInput;
 		bool menuMask = goldenMenu || masked || pauseMasked || queryMasked || boxMasked || listMasked;
 		System.Func<uint, uint> filter =
-			goldenMenu ? static _ => 0u
+			goldenMenu ? (GameUi.ModOwnsScreen ? static held => held & Start : static _ => 0u)
 			: masked ? WithoutMenuInput
 			: pauseMasked ? WithoutPauseInput
 			: queryMasked ? WithoutQueryInput

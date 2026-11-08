@@ -180,7 +180,7 @@ public class RefiiHostTests
         AssertThat(Arities("perform_expression")).IsEqual(new[] { 2, 3, 4, 5 });
         AssertThat(Arities("register_command")).IsEqual(new[] { 2, 3 });
         AssertThat(Arities("player_here")).IsEqual(new[] { 1 });
-        AssertThat(typeof(RefiiHost).GetMethod("charge_spell", new[] { typeof(int), typeof(int), typeof(bool), typeof(Callable) })!.ReturnType).IsEqual(typeof(bool));
+        AssertThat(typeof(RefiiHost).GetMethod("charge_spell", new[] { typeof(int), typeof(int), typeof(bool), typeof(Variant) })!.ReturnType).IsEqual(typeof(bool));
         AssertThat(typeof(RefiiHost).GetMethod("player_here", new[] { typeof(int) })!.ReturnType).IsEqual(typeof(bool));
     }
 

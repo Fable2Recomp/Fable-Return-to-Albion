@@ -458,7 +458,8 @@ public static partial class ModValidate
 	// input.json — ModInput.Load / Parse / TryButton / TryTrigger
 	// ---------------------------------------------------------------------------------------
 
-	private static readonly string[] InputKeys = { "label", "keys", "buttons", "axis", "chord" };
+	private static readonly string[] InputKeys = { "label", "keys", "buttons", "axis", "chord", "touch" };
+
 
 	/// <summary>The pad modifiers a <c>"chord"</c> may name (ModInputClaims.PadModifiers); anything else is a key name, the engine's to check.</summary>
 	private static readonly string[] ChordModifiers = { "LT", "RT", "LB", "RB" };
@@ -590,9 +591,14 @@ public static partial class ModValidate
 				}
 			}
 
+			if (Has(binding, "touch") && CheckInputTouch(doc, binding.GetProperty("touch"), At(at, "touch")))
+			{
+				bound++;
+			}
+
 			if (bound == 0)
 			{
-				doc.Error(at, "binds no key, button or axis; the action is ignored");
+				doc.Error(at, "binds no key, button or axis (nor a touch pill); the action is ignored");
 			}
 		}
 	}
@@ -866,13 +872,14 @@ public static partial class ModValidate
 		"id", "kind", "anchor", "offset", "size", "value", "max", "fill", "back", "texture", "follow", "followElement",
 		"widthFrom", "widthPerUnit", "minWidth", "maxWidth", "chip", "border", "borderWidth", "corner", "textures", "index",
 		"text", "format", "colour", "align", "region", "each", "tint", "group", "outline", "outlineWidth", "shadow", "shadowOffset",
+		"touch",
 	};
 
 	/// <summary>The fields only a <c>text</c> piece reads.</summary>
 	private static readonly string[] HudTextKeys = { "text", "format", "colour", "align", "outline", "outlineWidth", "shadow", "shadowOffset" };
 
 	/// <summary>A <c>groups</c> record's fields (Engine_HudModGroups).</summary>
-	private static readonly string[] HudGroupKeys = { "anchor", "pivot", "scale", "offset" };
+	private static readonly string[] HudGroupKeys = { "anchor", "pivot", "scale", "offset", "touchScale" };
 
 	/// <summary>A layout entry's fields, as <c>user://hud/layout.json</c> carries them; the last four are informational.</summary>
 	private static readonly string[] HudLayoutEntryKeys = { "anchor", "offset", "art", "value", "driven", "placed" };
@@ -1009,6 +1016,11 @@ public static partial class ModValidate
 			{
 				doc.Warn(At(at, "scale"), "a scale of 0 or less is read as 1");
 			}
+		}
+
+		if (doc.Number(group, "touchScale", at) is <= 0)
+		{
+			doc.Warn(At(at, "touchScale"), "a touchScale of 0 or less is read as 1");
 		}
 
 		if (Has(group, "offset"))

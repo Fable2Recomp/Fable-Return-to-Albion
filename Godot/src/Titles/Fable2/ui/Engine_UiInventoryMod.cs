@@ -1,0 +1,209 @@
+using System.Collections.Generic;
+using System.Globalization;
+using Godot;
+using Refii.Core;
+using Refii.Equipment;
+using Refii.Gdb;
+using Refii.Host;
+
+namespace Refii.Titles.Fable2;
+
+/// <summary>
+/// THE INVENTORY AS A MOD'S SCREEN READS IT (<c>RefiiHost.inventory_items</c>): everything the game's own
+/// inventory pages show about what this machine's hero carries, one Dictionary per stack, and the same
+/// actions their rows run (<c>RefiiHost.inventory_action</c>).
+/// </summary>
+public static partial class Engine_UiInventorySource
+{
+	private static readonly uint DescriptionField = Engine_GameHash.Fnv1("DescriptionTag");
+	private static readonly uint ShopField = Engine_GameHash.Fnv1("ShopItemComponent");
+	private static readonly uint PriceField = Engine_GameHash.Fnv1("BasePrice");
+	private static readonly uint CategoryField = Engine_GameHash.Fnv1("Category");
+
+	private readonly record struct ModItemFacts(string Name, string Description, string Icon, string Model, string[] Pieces, int Category,
+		int Value, int WeaponClass, Engine_UiItemStats.Stats Stats, bool Usable, Vector3 Rotation, int RotationAxis);
+
+	/// <summary>What never changes for a record, read once: a name and a stat block are several lookups each.</summary>
+	private static readonly Dictionary<uint, ModItemFacts> ModFacts = new();
+
+	public static Godot.Collections.Array ModItems()
+	{
+		var items = new Godot.Collections.Array();
+		Globals ??= Engine_GameGdb.Database;   // set on a menu's path, which a mod's screen may never walk
+		if (Globals is null)
+		{
+			return items;
+		}
+
+		var worn = new HashSet<uint>();
+		foreach ((uint recordId, int _) in HostBridge.GetWornItems())
+		{
+			worn.Add(recordId);
+		}
+
+		IEnumerable<Fable2Bridge.InventoryRecord> carrying = Fable2Bridge.GetHeroInventory();
+		var carried = new HashSet<uint>();
+		foreach (Fable2Bridge.InventoryRecord record in carrying)
+		{
+			carried.Add(record.RecordId);
+		}
+
+		foreach (Fable2Bridge.InventoryRecord record in carrying)
+		{
+			if (!Listable(record, false))
+			{
+				continue;
+			}
+
+			ModItemFacts facts = FactsOf(record);
+			int category = record.Category >= 0 ? record.Category : facts.Category;
+			bool on = worn.Contains(record.RecordId);
+
+			// An outfit goes on as the pieces of it the hero carries, and with none has nothing to put on,
+			// so the game's own list leaves it out. It is itself never worn.
+			if (category == Category.Suits)
+			{
+				int owned = 0;
+				int wearing = 0;
+				foreach (uint piece in Engine_UiItemStats.SuitPieces(record.RecordId))
+				{
+					if (carried.Contains(piece))
+					{
+						++owned;
+						wearing += worn.Contains(piece) ? 1 : 0;
+					}
+				}
+
+				if (owned == 0)
+				{
+					continue;
+				}
+
+				on = wearing == owned;
+			}
+
+			var lines = new Godot.Collections.Array();
+			foreach (Engine_UiItemStats.Line line in facts.Stats.Lines)
+			{
+				lines.Add(new Godot.Collections.Dictionary { ["label"] = line.Label, ["value"] = line.Value });
+			}
+
+			items.Add(new Godot.Collections.Dictionary
+			{
+				["definition"] = "0x" + record.RecordId.ToString("X8", CultureInfo.InvariantCulture),
+				["count"] = record.Count,
+				["category"] = category,
+				["name"] = facts.Name,
+				["description"] = facts.Description,
+				["icon"] = facts.Icon,
+				["model"] = facts.Model,
+				["pieces"] = facts.Pieces,
+				["rotation"] = facts.Rotation,
+				["rotation_axis"] = facts.RotationAxis,
+				["value"] = facts.Value,
+				["rating"] = facts.Stats.Rating,
+				["usable"] = facts.Usable,
+				["worn"] = on,
+				["weapon_class"] = facts.WeaponClass,
+				["new"] = !record.Viewed,
+				["lines"] = lines,
+			});
+		}
+
+		return items;
+	}
+
+	private static ModItemFacts FactsOf(Fable2Bridge.InventoryRecord record)
+	{
+		if (ModFacts.TryGetValue(record.RecordId, out ModItemFacts known))
+		{
+			return known;
+		}
+
+		string name = DisplayNameOf(Globals!, record.RecordId);
+		if (name.Length == 0)
+		{
+			name = LabelOf(record with { Count = 1 }, NameTagOf(record));
+		}
+
+		// A tag no record names but the text bank holds, as the item page finds it.
+		if (name == NameTagOf(record) &&
+			Engine_BnkTextBankLoader.TryLookup(Engine_GameHash.Fnv1("TEXT_" + name), out string banked) && banked.Length != 0)
+		{
+			name = banked;
+		}
+
+		// A tag nothing holds reads as its words rather than as a tag.
+		if (name.StartsWith("INV_ITEM_", System.StringComparison.Ordinal))
+		{
+			name = CultureInfo.InvariantCulture.TextInfo.ToTitleCase(
+				name["INV_ITEM_".Length..].Replace("_NAME", string.Empty).Replace('_', ' ').ToLowerInvariant());
+		}
+
+		string descriptionTag = ItemString(record.RecordId, DescriptionField);
+		string description = Strings is { } book && descriptionTag.Length != 0 && book.TryGetString(descriptionTag, out string text)
+			? text
+			: string.Empty;
+		int value = TryComponent(record.RecordId, ShopField, out GdbCursor shop) &&
+			Globals!.TryFindInherited(shop, PriceField, (int)GdbFieldType.Int, out _, out uint price, out _)
+				? (int)price
+				: 0;
+		int category = TryItemNumber(record.RecordId, CategoryField, out uint stated) ? (int)stated : -1;
+		// An outfit states no model of its own: it is the pieces it names.
+		var pieces = new List<string>();
+		foreach (uint piece in Engine_UiItemStats.SuitPieces(record.RecordId))
+		{
+			if (ModelOf(piece) is { Length: > 0 } worn)
+			{
+				pieces.Add(worn);
+			}
+		}
+
+		// The pose the item page turns it in. An outfit states none, the mannequin showing it there, and
+		// a worn piece's front is away from the camera until it is turned half about.
+		ItemDetail? detail = Engine_ItemDetails.BuildOne(Globals!, record.RecordId);
+		Vector3 rotation = pieces.Count != 0 ? new Vector3(Mathf.Pi, 0f, 0f) : detail?.PreviewRotation ?? Vector3.Zero;
+		var facts = new ModItemFacts(name, description, IconOf(record), ModelOf(record.RecordId), pieces.ToArray(), category, value, WeaponClassOf(record.RecordId),
+			Engine_UiItemStats.For(record.RecordId, Strings), Acts(UseOperation, record), rotation, detail?.PreviewRotationAxis ?? 0);
+		// Without the string book an item has no description and its stats no labels: kept only once it has.
+		if (Strings is not null)
+		{
+			ModFacts[record.RecordId] = facts;
+		}
+
+		return facts;
+	}
+
+	/// <summary>The path of the mesh the item page's own preview spins (Engine_UiItemPage.Preview), empty for none.</summary>
+	private static string ModelOf(uint record)
+	{
+		ItemDetail? detail = Engine_ItemDetails.BuildOne(Globals!, record);
+		uint mesh = detail is null ? 0u : detail.PreviewMesh != 0 ? detail.PreviewMesh
+			: detail.WornModelPathHash != 0 ? detail.WornModelPathHash : detail.ModelPathHash;
+		return mesh != 0 ? Refii.Bnk.AssetHashIndex.PathForHash(mesh) ?? string.Empty : string.Empty;
+	}
+
+	/// <summary>
+	/// The pump's action for what a screen asks of an item: <c>use</c>, <c>equip</c>, <c>wear</c> and
+	/// <c>outfit</c> name the record, as the game's rows do; <c>remove</c> empties the slot a clothing
+	/// category is (the pages' "none" rows), which an outfit is not: its "none" row's event undresses
+	/// nothing here, so its pieces come off one by one. Null for anything else.
+	/// </summary>
+	public static string? ModAction(string operation, uint record, int category)
+	{
+		switch (operation)
+		{
+			case "use":
+			case "equip":
+			case "wear":
+			case "outfit":
+				return string.Create(CultureInfo.InvariantCulture, $"{InventoryAction}{operation}:{record}");
+			case "remove":
+				return category != Category.Suits && NoneRows.TryGetValue(category, out (string Suffix, int EventType, uint Id) none)
+					? string.Create(CultureInfo.InvariantCulture, $"{InventoryAction}unequip:{none.EventType}")
+					: null;
+			default:
+				return null;
+		}
+	}
+}

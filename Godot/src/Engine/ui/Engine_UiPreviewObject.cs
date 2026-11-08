@@ -390,7 +390,7 @@ public partial class Engine_UiPreviewObject : Node3D
 	/// and about its Y our −Z. The spinner animates only `rotation.y`, the player's turn here,
 	/// negated so that on the turntable axes (3/6, heading = −R.y) it is a plain yaw.
 	/// </summary>
-	private static Basis Stated(float yaw, Vector3 offset, int axis)
+	public static Basis Stated(float yaw, Vector3 offset, int axis)
 	{
 		var r = new Vector3(0f, -yaw, 0f);
 		Vector3 e = axis switch
