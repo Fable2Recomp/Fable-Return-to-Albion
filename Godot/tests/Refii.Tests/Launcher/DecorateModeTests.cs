@@ -910,8 +910,9 @@ public class DecorateModeTests
             Call("CarrySelection", camera, Transform3D.Identity, 0f); Call("UpdateGhost");
             AssertThat(Get<Vector3>("_piece").X < 4.3f).IsTrue();
             Call("ToggleCollision");
+            // Collision off: the room's walls no longer stop the preview (07258ad03).
             Call("CarrySelection", Transform3D.Identity, camera, 0f); Call("UpdateGhost");
-            AssertThat(Get<Vector3>("_piece").X < 4.57f).IsTrue();
+            AssertThat(Get<Vector3>("_piece").X > 4.57f).IsTrue();
             Set("_piece", new Vector3(0, 1, 0)); Set("_pendingMove", false); Set("_dirty", true);
             for (int i = 0; i < 5; i++) Call("UpdateGhost");
             Call("ToggleCollision");
@@ -1207,7 +1208,8 @@ public class DecorateModeTests
                 Set("_ghostSource", Transform3D.Identity);
                 Call("CreateGhost", mesh, Transform3D.Identity, 1u);
                 Call("CheckCollision");
-                AssertThat(Get<bool>("_blocked")).IsTrue();
+                // Collision off: nothing blocks, the room's bounds included (07258ad03).
+                AssertThat(Get<bool>("_blocked")).IsFalse();
                 AssertThat(Get<bool>("_collisionEnabled")).IsFalse();
                 Call("Back"); Call("ReconcileSelection", 0ul, 6, 0u);
             }
@@ -1303,6 +1305,8 @@ public class DecorateModeTests
             Call("Choose"); AssertThat(Get<bool>("_waiting")).IsFalse();
             Set("_ghostSource", Transform3D.Identity);
             Call("CreateGhost", mesh, Transform3D.Identity, 1u);
+            // The room's bounds only block with collision on (07258ad03).
+            Call("ToggleCollision");
             Call("CarrySelection", Transform3D.Identity, new Transform3D(Basis.Identity, Vector3.Right), 0f);
             Call("UpdateGhost");
             AssertThat(Get<Vector3>("_piece")).IsEqual(Vector3.Right);

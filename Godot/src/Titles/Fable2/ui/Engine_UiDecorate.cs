@@ -158,13 +158,8 @@ public partial class Engine_UiDecorate : Node3D
     {
         HelpOpen = open;
         _help.Visible = open;
-<<<<<<< Updated upstream:Godot/src/Titles/Fable2/ui/Engine_UiDecorate.cs
         string text = Engine_UiInputMode.Touch ? TouchHelp : Engine_UiInputMode.KeyboardMouse
-            ? "Click / Enter   Select or confirm\nMouse   Move preview\nWASD   Camera   /   RMB   Look\nQ / E   Camera down / up\nWheel   Move closer / farther\nComma / period   Rotate 45 degrees\nZ / C   Rotate   /   F / R   Item height\nClick X / Y / Z   Edit rotation\nEnter   Accept angle   /   Esc   Cancel\nShift   Faster   /   Ctrl   Slower\nDelete   Put away\nTab   Furniture inventory\nK   Collision on / off\nU   Hide UI   /   H   Controls\nF10   Exit Decorate mode"
-=======
-        string text = Engine_UiInputMode.KeyboardMouse
             ? "Click / Enter   Select or confirm\nMouse   Move preview\nWASD   Camera   /   RMB   Look\nQ / E   Camera down / up\nWheel   Item up / down; otherwise zoom\nComma / period   Rotate 45 degrees\nZ / C   Rotate   /   F / R   Item height\nClick X / Y / Z   Edit rotation\nEnter   Accept angle   /   Esc   Cancel\nShift   Faster   /   Ctrl   Slower\nDelete   Put away\nTab   Furniture inventory\nK   Collision on / off\nU   Hide UI   /   H   Controls\nF10   Exit Decorate mode"
->>>>>>> Stashed changes:Godot/src/Engine/ui/Engine_UiDecorate.cs
             : "Left stick   Move camera\nRight stick   Look around\nLT / RT   Camera down / up\nA   Select / confirm   /   B   Cancel\nLB / RB   Rotate preview\nD-pad up / down   Push / pull item\nD-pad left   Collision on / off\nY   Put away   /   Hold L3   Faster\nX   Furniture inventory\nView   Controls   /   R3   Hide UI\nMenu   Exit Decorate mode";
         _theme.Paint(_help, text, 15, Ink, verticalAlign: 0, boxWidth: 356);
     }
