@@ -27,8 +27,22 @@ public sealed class SwfSceneClip : IPubClip
     private AnimationPlayer? _timeline;
     private bool _timelineLooked;
 
-    private readonly Godot.Collections.Array? _table;
+    /// <summary>
+    /// The template this clip's node was copied from by a timeline placement, while the node may
+    /// be kept for that template's next placement (<see cref="SwfSceneUi.TakeSpare"/>); null for
+    /// any other clip, and once the game has been handed this clip.
+    /// </summary>
+    private Node2D? _spareOf;
+
+    /// <summary><see cref="SwfSceneUi.TintGeneration"/> when the node was copied.</summary>
+    private int _spareGeneration;
+
+    private readonly SwfFrameTable? _table;
     private readonly int[] _stops;
+    private readonly Dictionary<string, int>? _labels;
+
+    /// <summary>The node's frame count, read once: the animations ask for it every frame.</summary>
+    private readonly int _totalFrames;
     private int _frame = 1;
     private bool _playing;
     private double _accumulated;
@@ -41,19 +55,21 @@ public sealed class SwfSceneClip : IPubClip
         _parent = parent;
         _name = name;
         _depth = depth;
-        _characterId = node.HasMeta(Engine_SwfScene.CharacterMeta)
-            ? (int)node.GetMeta(Engine_SwfScene.CharacterMeta)
+        _characterId = node.HasMeta(SwfSceneMeta.Character)
+            ? (int)node.GetMeta(SwfSceneMeta.Character)
             : -1;
+        _totalFrames = node.HasMeta(SwfSceneMeta.FrameCount)
+            ? Math.Max(1, (int)node.GetMeta(SwfSceneMeta.FrameCount))
+            : 1;
 
         // A clip of a library sprite reads its character's shared timeline; only the stage's own
-        // clips, which are never duplicated, still carry theirs as metadata.
+        // clips, which are never duplicated, still carry theirs as metadata, read here once.
         SwfSceneUi.SharedTimeline? shared = scene.TimelineOf(_characterId);
-        _table = node.HasMeta(Engine_SwfScene.TimelineMeta)
-            ? node.GetMeta(Engine_SwfScene.TimelineMeta).AsGodotArray()
-            : shared?.Table;
-        _stops = node.HasMeta(Engine_SwfScene.StopFramesMeta)
-            ? node.GetMeta(Engine_SwfScene.StopFramesMeta).AsInt32Array()
+        _table = SwfSceneUi.TableOf(node) ?? shared?.Table;
+        _stops = node.HasMeta(SwfSceneMeta.Stops)
+            ? node.GetMeta(SwfSceneMeta.Stops).AsInt32Array()
             : shared?.Stops ?? Array.Empty<int>();
+        _labels = SwfSceneUi.LabelsOf(node) ?? shared?.Labels;
 
         if (_table is not null && TotalFrames > 1 && Array.IndexOf(_stops, 1) < 0)
         {
@@ -73,8 +89,20 @@ public sealed class SwfSceneClip : IPubClip
         get
         {
             EnsureChildren();
-            return _children!.Values;
+            foreach (SwfSceneClip child in _children!.Values)
+            {
+                child._spareOf = null;
+            }
+
+            return _children.Values;
         }
+    }
+
+    /// <summary>The children as <see cref="Children"/> gives them, without handing them out; for tests.</summary>
+    internal IEnumerable<SwfSceneClip> ChildrenUnshared()
+    {
+        EnsureChildren();
+        return _children!.Values;
     }
 
     public string Name => _name;
@@ -200,6 +228,7 @@ public sealed class SwfSceneClip : IPubClip
         tint.SetShaderParameter(
             "tint_offset", new Vector3(redOffset, greenOffset, blueOffset) / 255f);
         InheritMaterial(_node);
+        _scene.TintGeneration++;
     }
 
     private static readonly Shader TintShader = new()
@@ -322,10 +351,7 @@ public sealed class SwfSceneClip : IPubClip
         }
     }
 
-    public int TotalFrames =>
-        !Gone && _node.HasMeta(Engine_SwfScene.FrameCountMeta)
-            ? Math.Max(1, (int)_node.GetMeta(Engine_SwfScene.FrameCountMeta))
-            : 1;
+    public int TotalFrames => Gone ? 1 : _totalFrames;
 
     public void GotoAndStop(int frame) => Seek(frame, play: false);
 
@@ -370,7 +396,13 @@ public sealed class SwfSceneClip : IPubClip
     public IPubClip? GetChild(string name)
     {
         EnsureChildren();
-        return _byName!.GetValueOrDefault(name);
+        SwfSceneClip? child = _byName!.GetValueOrDefault(name);
+        if (child is not null)
+        {
+            child._spareOf = null;
+        }
+
+        return child;
     }
 
     public IPubClip? AttachMovie(string exportName, string instanceName, int depth)
@@ -387,7 +419,7 @@ public sealed class SwfSceneClip : IPubClip
     public IPubClip CreateEmptyMovieClip(string name, int depth)
     {
         var node = new Node2D { Name = Engine_SwfScene.SafeName(name) };
-        node.SetMeta(Engine_SwfScene.CharacterMeta, -1);
+        node.SetMeta(SwfSceneMeta.Character, -1);
         return Place(node, name, depth);
     }
 
@@ -442,14 +474,38 @@ public sealed class SwfSceneClip : IPubClip
         }
     }
 
-    private SwfSceneClip Attach(Node2D template, string name, int depth)
+    private SwfSceneClip Attach(Node2D template, string name, int depth, bool placed = false)
     {
-        var copy = (Node2D)template.Duplicate();
-        copy.Name = Engine_SwfScene.SafeName(name);
+        // A timeline placement of a static template takes a copy an earlier placement let go of,
+        // put back as the template stands, rather than copying the template again: an idle board
+        // re-places hundreds of small shapes a frame (Fortune's Tower), and copying them was most
+        // of a phone's frame. See SwfSceneUi.Spare for what makes a copy safe to keep.
+        bool spare = placed && _scene.Spare(template);
+        Node2D? copy = spare ? _scene.TakeSpare(template) : null;
+        if (copy is not null)
+        {
+            // The properties Duplicate copies, not Transform, whose setter re-derives them.
+            copy.Position = template.Position;
+            copy.Rotation = template.Rotation;
+            copy.Scale = template.Scale;
+            copy.Skew = template.Skew;
+            copy.Modulate = template.Modulate;
+        }
+        else
+        {
+            copy = (Node2D)template.Duplicate();
+        }
+
+        copy.Name = _scene.NodeName(name);
         copy.Visible = true;
         SwfSceneClip clip = Place(copy, name, depth);
-        _scene.WakeTimelines(copy, null);
-        _scene.TrackPrompts(copy);
+        _scene.Attached(template, copy);
+        if (spare)
+        {
+            clip._spareOf = template;
+            clip._spareGeneration = _scene.TintGeneration;
+        }
+
         return clip;
     }
 
@@ -461,7 +517,7 @@ public sealed class SwfSceneClip : IPubClip
             Remove(occupant);
         }
 
-        node.SetMeta(Engine_SwfScene.DepthMeta, depth);
+        node.SetMeta(SwfSceneMeta.Depth, depth);
         _node.AddChild(node);
 
         SwfSceneClip clip = _scene.Wrap(node, this, name, depth);
@@ -491,6 +547,14 @@ public sealed class SwfSceneClip : IPubClip
         if (GodotObject.IsInstanceValid(clip._node))
         {
             clip._node.GetParent()?.RemoveChild(clip._node);
+            if (clip._spareOf is { } template && clip._children is null &&
+                clip._spareGeneration == _scene.TintGeneration)
+            {
+                clip._spareOf = null;
+                _scene.KeepSpare(template, clip._node);
+                return;
+            }
+
             clip._node.QueueFree();
         }
     }
@@ -518,12 +582,12 @@ public sealed class SwfSceneClip : IPubClip
         if (other is not null)
         {
             other._depth = from;
-            other._node.SetMeta(Engine_SwfScene.DepthMeta, from);
+            other._node.SetMeta(SwfSceneMeta.Depth, from);
             _children[from] = other;
         }
 
         clip._depth = depth;
-        clip._node.SetMeta(Engine_SwfScene.DepthMeta, depth);
+        clip._node.SetMeta(SwfSceneMeta.Depth, depth);
         _children[depth] = clip;
         Reorder();
     }
@@ -562,13 +626,13 @@ public sealed class SwfSceneClip : IPubClip
         var fallback = 0;
         foreach (Node child in _node.GetChildren())
         {
-            if (child is not Node2D node2D || !node2D.HasMeta(Engine_SwfScene.CharacterMeta))
+            if (child is not Node2D node2D || !node2D.HasMeta(SwfSceneMeta.Character))
             {
                 continue;
             }
 
-            int depth = node2D.HasMeta(Engine_SwfScene.DepthMeta)
-                ? (int)node2D.GetMeta(Engine_SwfScene.DepthMeta)
+            int depth = node2D.HasMeta(SwfSceneMeta.Depth)
+                ? (int)node2D.GetMeta(SwfSceneMeta.Depth)
                 : fallback;
             while (_children.ContainsKey(depth))
             {
@@ -665,12 +729,9 @@ public sealed class SwfSceneClip : IPubClip
         _scene.SetTicking(this, playing);
     }
 
-    /// <summary>Drops this clip's reference to its timeline; see <see cref="SwfSceneUi.Release"/>.</summary>
-    internal void ReleaseTimeline()
-    {
-        _playing = false;
-        _table?.Dispose();
-    }
+    /// <summary>Stops this clip's timeline; see <see cref="SwfSceneUi.Release"/>.</summary>
+    /// <remarks>The table is managed now, and goes with the clip; it once held a native array.</remarks>
+    internal void ReleaseTimeline() => _playing = false;
 
     private void RebuildFrame(int frame)
     {
@@ -681,43 +742,36 @@ public sealed class SwfSceneClip : IPubClip
         }
 
         EnsureChildren();
-        // Every As* below is a fresh wrapper holding its own reference until the finalizer runs;
-        // a playing board makes them every frame, so they are disposed as soon as they are read.
-        using Godot.Collections.Array placements = _table[frame - 1].AsGodotArray();
-
-        var wanted = new HashSet<int>();
-        foreach (Variant item in placements)
+        foreach (SwfPlacement place in _table.Placements(frame))
         {
-            using Godot.Collections.Dictionary place = item.AsGodotDictionary();
-            int depth = place[Engine_SwfScene.PlaceDepth].AsInt32();
-            int character = place[Engine_SwfScene.PlaceCharacter].AsInt32();
-            wanted.Add(depth);
-
+            int depth = place.Depth;
             SwfSceneClip? child = _children!.GetValueOrDefault(depth);
-            if (child is null || child._characterId != character)
+            if (child is null || child._characterId != place.Character)
             {
-                Node2D? template = _scene.Template(character);
+                Node2D? template = _scene.Template(place.Character);
                 if (template is null)
                 {
                     continue;
                 }
 
-                string name = place.ContainsKey(Engine_SwfScene.PlaceName)
-                    ? place[Engine_SwfScene.PlaceName].AsString()
-                    : $"d{depth}";
-                child = Attach(template, name, depth);
+                child = Attach(template, place.Name ?? $"d{depth}", depth, placed: true);
             }
 
             ApplyPlacement(child._node, place);
         }
 
-        var stale = new List<SwfSceneClip>();
+        List<SwfSceneClip>? stale = null;
         foreach ((int depth, SwfSceneClip child) in _children!)
         {
-            if (!wanted.Contains(depth))
+            if (!_table.Places(frame, depth))
             {
-                stale.Add(child);
+                (stale ??= new List<SwfSceneClip>()).Add(child);
             }
+        }
+
+        if (stale is null)
+        {
+            return;
         }
 
         foreach (SwfSceneClip child in stale)
@@ -726,40 +780,24 @@ public sealed class SwfSceneClip : IPubClip
         }
     }
 
-
-    private static void ApplyPlacement(Node2D node, Godot.Collections.Dictionary place)
+    private static void ApplyPlacement(Node2D node, in SwfPlacement place)
     {
-        if (place.ContainsKey(Engine_SwfScene.PlaceMatrix))
+        if (place.Matrix is { } matrix)
         {
-            float[] m = place[Engine_SwfScene.PlaceMatrix].AsFloat32Array();
-            if (m.Length >= 6)
-            {
-                node.Transform = new Transform2D(
-                    new Vector2(m[0], m[1]), new Vector2(m[2], m[3]), new Vector2(m[4], m[5]));
-            }
+            node.Transform = matrix;
         }
 
-        if (place.ContainsKey(Engine_SwfScene.PlaceTint))
+        if (place.Tint is { } tint)
         {
-            float[] t = place[Engine_SwfScene.PlaceTint].AsFloat32Array();
-            if (t.Length >= 4)
-            {
-                node.Modulate = new Color(t[0], t[1], t[2], t[3]);
-            }
+            node.Modulate = tint;
         }
     }
 
     private int FrameOfLabel(string label)
     {
-        Godot.Collections.Dictionary? labels = _node.HasMeta(Engine_SwfScene.LabelsMeta)
-            ? _node.GetMeta(Engine_SwfScene.LabelsMeta).AsGodotDictionary()
-            : _scene.TimelineOf(_characterId)?.Labels;
-        if (labels is not null)
+        if (_labels is not null && _labels.TryGetValue(label, out int labelled))
         {
-            if (labels.ContainsKey(label))
-            {
-                return labels[label].AsInt32();
-            }
+            return labelled;
         }
 
         AnimationPlayer? player = Timeline();

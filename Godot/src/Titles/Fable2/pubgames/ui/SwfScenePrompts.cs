@@ -55,8 +55,8 @@ internal sealed class SwfScenePrompts
             return;
         }
 
-        if (node is Node2D shape && shape.HasMeta(Engine_SwfScene.CharacterMeta) &&
-            _faces.TryGetValue((int)shape.GetMeta(Engine_SwfScene.CharacterMeta), out string? button))
+        if (node is Node2D shape && shape.HasMeta(SwfSceneMeta.Character) &&
+            _faces.TryGetValue((int)shape.GetMeta(SwfSceneMeta.Character), out string? button))
         {
             if (_placed.Count >= Math.Max(64, _swept * 2))
             {
@@ -72,6 +72,31 @@ internal sealed class SwfScenePrompts
         {
             Track(child, skip);
         }
+    }
+
+    /// <summary>Whether <see cref="Track"/> would take any shape under <paramref name="node"/>.</summary>
+    public bool Holds(Node node)
+    {
+        if (_faces.Count == 0)
+        {
+            return false;
+        }
+
+        if (node is Node2D shape && shape.HasMeta(SwfSceneMeta.Character) &&
+            _faces.ContainsKey((int)shape.GetMeta(SwfSceneMeta.Character)))
+        {
+            return true;
+        }
+
+        foreach (Node child in node.GetChildren())
+        {
+            if (Holds(child))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Redraws every live prompt when the glyphs have changed since the last call.</summary>
@@ -148,7 +173,7 @@ internal sealed class SwfScenePrompts
     /// <summary>The union of a shape's meshes in its own space, or null for a shape that draws nothing.</summary>
     private Rect2? BoundsOf(Node2D shape)
     {
-        int character = (int)shape.GetMeta(Engine_SwfScene.CharacterMeta);
+        int character = (int)shape.GetMeta(SwfSceneMeta.Character);
         if (!_bounds.TryGetValue(character, out Rect2 box))
         {
             bool any = false;

@@ -54,7 +54,7 @@ public sealed class SwfSceneUi
     private readonly Dictionary<int, SharedTimeline> _timelines = new();
 
     internal sealed record SharedTimeline(
-        Godot.Collections.Array? Table, int[] Stops, Godot.Collections.Dictionary? Labels);
+        SwfFrameTable Table, int[] Stops, Dictionary<string, int>? Labels);
     private readonly HashSet<SwfSceneClip> _ticking = new();
     private readonly List<SwfSceneClip> _tickScratch = new();
 
@@ -85,9 +85,9 @@ public sealed class SwfSceneUi
                 }
 
                 _templatesByName[template.Name] = template;
-                if (template.HasMeta(Engine_SwfScene.CharacterMeta))
+                if (template.HasMeta(SwfSceneMeta.Character))
                 {
-                    _templatesById.TryAdd((int)template.GetMeta(Engine_SwfScene.CharacterMeta), template);
+                    _templatesById.TryAdd((int)template.GetMeta(SwfSceneMeta.Character), template);
                 }
             }
         }
@@ -102,6 +102,9 @@ public sealed class SwfSceneUi
         _prompts = new SwfScenePrompts(PromptFaces(node, library));
         _prompts.Track(node, library);
     }
+
+    /// <summary>A stage already instantiated, for tests.</summary>
+    internal static SwfSceneUi FromStage(string game, Node2D node) => new(game, node);
 
     /// <summary>The stage's button prompts, drawn in the player's glyphs.</summary>
     private readonly SwfScenePrompts _prompts;
@@ -228,7 +231,14 @@ public sealed class SwfSceneUi
     /// </summary>
     public void ReleaseOnPredelete(int what)
     {
-        if (what == GodotObject.NotificationPredelete && Refii.Textures.Engine_TexSettings.PubGameReleaseOnClose)
+        if (what != GodotObject.NotificationPredelete)
+        {
+            return;
+        }
+
+        // Kept copies are out of the tree, so the board's freeing does not reach them.
+        FreeSpares();
+        if (Refii.Textures.Engine_TexSettings.PubGameReleaseOnClose)
         {
             Release();
         }
@@ -238,10 +248,11 @@ public sealed class SwfSceneUi
     /// Lets go of every timeline this stage holds, for a board that is being freed.
     /// </summary>
     /// <remarks>
-    /// The timelines live in C# wrappers (the shared ones here, a stage clip's own in the clip),
+    /// The timelines lived in C# wrappers (the shared ones here, a stage clip's own in the clip),
     /// and a wrapper keeps its native array until the finalizer runs, which on the phone it often
-    /// had not by the next board. Disposing them frees the timelines with the board. Behind
-    /// <c>pubgame_release_on_close</c>: a clip read after this would read a disposed array.
+    /// had not by the next board. They are managed tables now (<see cref="SwfFrameTable"/>), and
+    /// the native arrays are let go of as they are read; this still stops every clip and drops the
+    /// stage's references. Behind <c>pubgame_release_on_close</c>: a clip is not to be read after this.
     /// </remarks>
     public void Release()
     {
@@ -258,17 +269,14 @@ public sealed class SwfSceneUi
             clip.ReleaseTimeline();
         }
 
-        foreach (SharedTimeline timeline in _timelines.Values)
-        {
-            timeline.Table?.Dispose();
-            timeline.Labels?.Dispose();
-        }
-
         _clips.Clear();
         _timelines.Clear();
         _templatesById.Clear();
         _templatesByName.Clear();
+        _attachWalks.Clear();
+        _nodeNames.Clear();
         _prompts.Clear();
+        FreeSpares();
     }
 
     public void Advance(double deltaSeconds)
@@ -300,27 +308,49 @@ public sealed class SwfSceneUi
             LiftTimelines(child);
         }
 
-        if (!node.HasMeta(Engine_SwfScene.CharacterMeta) || !node.HasMeta(Engine_SwfScene.TimelineMeta))
+        if (!node.HasMeta(SwfSceneMeta.Character) || !node.HasMeta(SwfSceneMeta.Timeline))
         {
             return;
         }
 
-        int characterId = (int)node.GetMeta(Engine_SwfScene.CharacterMeta);
+        int characterId = (int)node.GetMeta(SwfSceneMeta.Character);
         if (!_timelines.ContainsKey(characterId))
         {
             _timelines[characterId] = new SharedTimeline(
-                node.GetMeta(Engine_SwfScene.TimelineMeta).AsGodotArray(),
-                node.HasMeta(Engine_SwfScene.StopFramesMeta)
-                    ? node.GetMeta(Engine_SwfScene.StopFramesMeta).AsInt32Array()
+                TableOf(node)!,
+                node.HasMeta(SwfSceneMeta.Stops)
+                    ? node.GetMeta(SwfSceneMeta.Stops).AsInt32Array()
                     : System.Array.Empty<int>(),
-                node.HasMeta(Engine_SwfScene.LabelsMeta)
-                    ? node.GetMeta(Engine_SwfScene.LabelsMeta).AsGodotDictionary()
-                    : null);
+                LabelsOf(node));
         }
 
-        node.RemoveMeta(Engine_SwfScene.TimelineMeta);
-        node.RemoveMeta(Engine_SwfScene.StopFramesMeta);
-        node.RemoveMeta(Engine_SwfScene.LabelsMeta);
+        node.RemoveMeta(SwfSceneMeta.Timeline);
+        node.RemoveMeta(SwfSceneMeta.Stops);
+        node.RemoveMeta(SwfSceneMeta.Labels);
+    }
+
+    /// <summary>A node's own timeline as a managed table, or null for a node without one.</summary>
+    internal static SwfFrameTable? TableOf(Node node)
+    {
+        if (!node.HasMeta(SwfSceneMeta.Timeline))
+        {
+            return null;
+        }
+
+        using Godot.Collections.Array table = node.GetMeta(SwfSceneMeta.Timeline).AsGodotArray();
+        return SwfFrameTable.From(table);
+    }
+
+    /// <summary>A node's own labels, each the frame it names, or null for a node without them.</summary>
+    internal static Dictionary<string, int>? LabelsOf(Node node)
+    {
+        if (!node.HasMeta(SwfSceneMeta.Labels))
+        {
+            return null;
+        }
+
+        using Godot.Collections.Dictionary labels = node.GetMeta(SwfSceneMeta.Labels).AsGodotDictionary();
+        return SwfFrameTable.LabelsFrom(labels);
     }
 
     /// <summary>
@@ -347,11 +377,9 @@ public sealed class SwfSceneUi
             return null;
         }
 
-        if (node.HasMeta(Engine_SwfScene.LabelsMeta) && node.HasMeta(Engine_SwfScene.TimelineMeta))
+        if (node.HasMeta(SwfSceneMeta.Labels) && node.HasMeta(SwfSceneMeta.Timeline))
         {
-            using Godot.Collections.Array table = node.GetMeta(Engine_SwfScene.TimelineMeta).AsGodotArray();
-            using Godot.Collections.Dictionary labels = node.GetMeta(Engine_SwfScene.LabelsMeta).AsGodotDictionary();
-            if (FacesOf(table, labels) is { Count: > 0 } faces)
+            if (FacesOf(TableOf(node), LabelsOf(node)) is { Count: > 0 } faces)
             {
                 return faces;
             }
@@ -369,9 +397,9 @@ public sealed class SwfSceneUi
     }
 
     /// <summary>A sprite's prompt shapes from its timeline, or null for a sprite that is not the prompt symbol.</summary>
-    private static Dictionary<int, string>? FacesOf(Godot.Collections.Array? table, Godot.Collections.Dictionary? labels)
+    private static Dictionary<int, string>? FacesOf(SwfFrameTable? table, Dictionary<string, int>? labels)
     {
-        if (table is null || labels is null || !PubGamePrompts.IsPromptSymbol(label => labels.ContainsKey(label)))
+        if (table is null || labels is null || !PubGamePrompts.IsPromptSymbol(labels.ContainsKey))
         {
             return null;
         }
@@ -379,9 +407,9 @@ public sealed class SwfSceneUi
         var frames = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (string label in PubGamePrompts.Labels)
         {
-            if (labels.ContainsKey(label))
+            if (labels.TryGetValue(label, out int frame))
             {
-                frames[label] = labels[label].AsInt32();
+                frames[label] = frame;
             }
         }
 
@@ -393,19 +421,162 @@ public sealed class SwfSceneUi
                 return characters;
             }
 
-            using Godot.Collections.Array placements = table[frame - 1].AsGodotArray();
-            foreach (Variant item in placements)
+            foreach (SwfPlacement place in table.Placements(frame))
             {
-                using Godot.Collections.Dictionary place = item.AsGodotDictionary();
-                characters.Add(place[Engine_SwfScene.PlaceCharacter].AsInt32());
+                characters.Add(place.Character);
             }
 
             return characters;
         });
     }
 
-    /// <summary>Takes the prompt shapes of a clip just attached.</summary>
-    internal void TrackPrompts(Node2D attached) => _prompts.Track(attached, null);
+    /// <summary>
+    /// Wakes the timelines of a clip just attached from <paramref name="template"/>, and takes its
+    /// prompt shapes.
+    /// </summary>
+    /// <remarks>
+    /// Each walks the whole copy, and every node a walk visits gets a C# wrapper; a board that swaps
+    /// the character at a depth every frame paid both walks for every swap. What either finds
+    /// depends only on the template, so each is asked of the template once, and a copy is walked
+    /// only for what it holds.
+    /// </remarks>
+    internal void Attached(Node2D template, Node2D copy)
+    {
+        if (!_attachWalks.TryGetValue(template, out (bool Timelines, bool Prompts) walks))
+        {
+            walks = (HoldsTimeline(template), _prompts.Holds(template));
+            _attachWalks[template] = walks;
+        }
+
+        if (walks.Timelines)
+        {
+            WakeTimelines(copy, null);
+        }
+
+        if (walks.Prompts)
+        {
+            _prompts.Track(copy, null);
+        }
+    }
+
+    /// <summary>Bumped by every <see cref="SwfSceneClip.SetTint"/>, which reaches into the descendants it tints.</summary>
+    internal int TintGeneration { get; set; }
+
+    /// <summary>
+    /// Copies of static templates let go of by a timeline, kept out of the tree for the template's
+    /// next placement, by template.
+    /// </summary>
+    /// <remarks>
+    /// A copy is kept only where the next placement cannot tell it from a fresh one: its template's
+    /// whole subtree is static (<see cref="Spare"/>), the game was never handed its clip and no clip
+    /// was made for anything under it, and no tint has been set since it was copied. Placing it
+    /// again puts the template's transform and colour back, the only things a placement writes.
+    /// </remarks>
+    private readonly Dictionary<Node2D, Stack<Node2D>> _spares = new();
+
+    /// <summary>Whether a template's copies may be kept: nothing in its subtree changes by itself or is a prompt or text.</summary>
+    private readonly Dictionary<Node2D, bool> _spareTemplates = new();
+
+    internal bool Spare(Node2D template)
+    {
+        if (!_spareTemplates.TryGetValue(template, out bool spare))
+        {
+            spare = !_prompts.Holds(template) && Static(template);
+            _spareTemplates[template] = spare;
+        }
+
+        return spare;
+    }
+
+    /// <summary>No timeline (its own or its character's), no frames to play, no animation and no text anywhere under <paramref name="node"/>.</summary>
+    private bool Static(Node node)
+    {
+        if (node is AnimationPlayer or Label || node.HasMeta(SwfSceneMeta.Timeline) ||
+            (node.HasMeta(SwfSceneMeta.FrameCount) && (int)node.GetMeta(SwfSceneMeta.FrameCount) > 1) ||
+            (node.HasMeta(SwfSceneMeta.Character) && TimelineOf((int)node.GetMeta(SwfSceneMeta.Character)) is not null))
+        {
+            return false;
+        }
+
+        foreach (Node child in node.GetChildren())
+        {
+            if (!Static(child))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    internal Node2D? TakeSpare(Node2D template) =>
+        _spares.TryGetValue(template, out Stack<Node2D>? kept) && kept.TryPop(out Node2D? copy) ? copy : null;
+
+    internal void KeepSpare(Node2D template, Node2D copy)
+    {
+        if (!_spares.TryGetValue(template, out Stack<Node2D>? kept))
+        {
+            kept = new Stack<Node2D>();
+            _spares[template] = kept;
+        }
+
+        kept.Push(copy);
+    }
+
+    /// <summary>Frees every kept copy: they are out of the tree, so freeing the board does not reach them.</summary>
+    internal void FreeSpares()
+    {
+        foreach (Stack<Node2D> kept in _spares.Values)
+        {
+            foreach (Node2D copy in kept)
+            {
+                if (GodotObject.IsInstanceValid(copy))
+                {
+                    copy.QueueFree();
+                }
+            }
+        }
+
+        _spares.Clear();
+    }
+
+    /// <summary>
+    /// The node name of a clip attached as <paramref name="instanceName"/>, made once per name: a
+    /// string set as a node's name is a new tracked StringName every time.
+    /// </summary>
+    internal StringName NodeName(string instanceName)
+    {
+        if (!_nodeNames.TryGetValue(instanceName, out StringName? name))
+        {
+            name = Engine_SwfScene.SafeName(instanceName);
+            _nodeNames[instanceName] = name;
+        }
+
+        return name;
+    }
+
+    private readonly Dictionary<string, StringName> _nodeNames = new(StringComparer.Ordinal);
+
+    /// <summary>Whether a template's copies hold a timeline still on its nodes, and a prompt shape: what <see cref="Attached"/> walks them for.</summary>
+    private readonly Dictionary<Node2D, (bool Timelines, bool Prompts)> _attachWalks = new();
+
+    private static bool HoldsTimeline(Node node)
+    {
+        if (node is Node2D && node.HasMeta(SwfSceneMeta.Timeline))
+        {
+            return true;
+        }
+
+        foreach (Node child in node.GetChildren())
+        {
+            if (HoldsTimeline(child))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /// <summary>The shared timeline of a library sprite, or null for a character without one.</summary>
     internal SharedTimeline? TimelineOf(int characterId) =>
@@ -457,13 +628,13 @@ public sealed class SwfSceneUi
             return;
         }
 
-        if (node is Node2D node2D && node2D.HasMeta(Engine_SwfScene.TimelineMeta))
+        if (node is Node2D node2D && node2D.HasMeta(SwfSceneMeta.Timeline))
         {
             if (!_clips.ContainsKey(node2D))
             {
                 var name = node2D.Name.ToString();
-                int depth = node2D.HasMeta(Engine_SwfScene.DepthMeta)
-                    ? (int)node2D.GetMeta(Engine_SwfScene.DepthMeta)
+                int depth = node2D.HasMeta(SwfSceneMeta.Depth)
+                    ? (int)node2D.GetMeta(SwfSceneMeta.Depth)
                     : 0;
                 Wrap(node2D, null, name, depth);
             }
