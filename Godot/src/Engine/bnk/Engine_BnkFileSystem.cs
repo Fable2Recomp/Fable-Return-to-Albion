@@ -9,13 +9,26 @@ public sealed class BnkFileSystem : IDisposable
 {
     public const int MaxNestingDepth = 4;
 
+    /// <summary>
+    /// One directory. 134,000 of these hold 280,000 files in Fable 2, so a tree of objects per
+    /// entry was tens of MB the GC walks: sorted arrays, and none for a kind a directory lacks.
+    /// </summary>
     private sealed class Node
     {
-        public SortedDictionary<string, Node> Directories { get; } =
-            new(StringComparer.OrdinalIgnoreCase);
+        private static readonly SortedList<string, Node> NoDirectories = new(0);
+        private static readonly SortedList<string, BnkFile> NoFiles = new(0);
+        private SortedList<string, Node>? _directories;
+        private SortedList<string, BnkFile>? _files;
 
-        public SortedDictionary<string, BnkFile> Files { get; } =
-            new(StringComparer.OrdinalIgnoreCase);
+        public SortedList<string, Node> Directories => _directories ?? NoDirectories;
+
+        public SortedList<string, BnkFile> Files => _files ?? NoFiles;
+
+        public SortedList<string, Node> WritableDirectories =>
+            _directories ??= new SortedList<string, Node>(StringComparer.OrdinalIgnoreCase);
+
+        public SortedList<string, BnkFile> WritableFiles =>
+            _files ??= new SortedList<string, BnkFile>(StringComparer.OrdinalIgnoreCase);
     }
 
     private readonly Node _root = new();
@@ -59,7 +72,7 @@ public sealed class BnkFileSystem : IDisposable
     private sealed class NestedSlot
     {
         public required string Key;
-        public required Func<BnkEntry, byte[]> ReadOuter;
+        public required BnkEntryReader ReadOuter;
         public required BnkEntry Container;
         /// <summary>The container's bytes in the outer bank's map; null when it must be copied.</summary>
         public BnkMappedRange? Map;
@@ -75,7 +88,7 @@ public sealed class BnkFileSystem : IDisposable
     private readonly LinkedList<NestedSlot> _nestedLoaded = new();
     private long _nestedLoadedBytes;
 
-    private byte[] ReadNestedEntry(NestedSlot slot, BnkEntry target)
+    private BnkArchive NestedArchive(NestedSlot slot)
     {
         BnkArchive? archive = slot.Archive;
         if (archive is null)
@@ -106,7 +119,7 @@ public sealed class BnkFileSystem : IDisposable
                 }
                 else if (archive is null)
                 {
-                    byte[] container = slot.ReadOuter(slot.Container);
+                    byte[] container = slot.ReadOuter.Read(slot.Container);
                     if (!BnkArchive.TryOpenBytes(
                             slot.Key, container, out archive, out string error) ||
                         archive is null)
@@ -129,7 +142,7 @@ public sealed class BnkFileSystem : IDisposable
         }
 
         Touch(slot);
-        return archive.ReadEntryBytes(target);
+        return archive;
     }
 
     private void Retain(NestedSlot slot)
@@ -172,6 +185,9 @@ public sealed class BnkFileSystem : IDisposable
         _containers.TryGetValue(Normalize(virtualPath), out container!);
 
     public IReadOnlyList<BnkArchive> Archives => _archives;
+
+    /// <summary>The <c>.dat</c> files on disk that nested header banks read their data from.</summary>
+    public IEnumerable<string> DataFilePaths => _dataFiles.Keys;
 
     public IReadOnlyList<string> Failures => _failures;
 
@@ -221,8 +237,7 @@ public sealed class BnkFileSystem : IDisposable
                 archive is not null)
             {
                 filesystem._archives.Add(archive);
-                BnkArchive owner = archive;
-                filesystem.Index(archive, entry => owner.ReadEntryBytes(entry), 0, expandNested, gameDirectory);
+                filesystem.Index(archive, BnkEntryReader.Of(archive), 0, expandNested, gameDirectory);
             }
             else
             {
@@ -287,8 +302,7 @@ public sealed class BnkFileSystem : IDisposable
                 archive is not null)
             {
                 _archives.Add(archive);
-                BnkArchive owner = archive;
-                Index(archive, entry => owner.ReadEntryBytes(entry), 0, expandNested, updateRoot, preferNew: true);
+                Index(archive, BnkEntryReader.Of(archive), 0, expandNested, updateRoot, preferNew: true);
             }
             else
             {
@@ -363,8 +377,7 @@ public sealed class BnkFileSystem : IDisposable
                 archive is not null)
             {
                 _archives.Add(archive);
-                BnkArchive owner = archive;
-                Index(archive, entry => owner.ReadEntryBytes(entry), 0, expandNested, assetRoot, name);
+                Index(archive, BnkEntryReader.Of(archive), 0, expandNested, assetRoot, name);
             }
             else
             {
@@ -430,7 +443,7 @@ public sealed class BnkFileSystem : IDisposable
         winner.Alternates.Clear();
         promoted.Alternates.Clear();
         promoted.Alternates.AddRange(shadowed);
-        node.Files[split < 0 ? normalized : normalized[(split + 1)..]] = promoted;
+        node.WritableFiles[split < 0 ? normalized : normalized[(split + 1)..]] = promoted;
         return true;
     }
 
@@ -805,7 +818,7 @@ public sealed class BnkFileSystem : IDisposable
     /// nested header bank's <c>.dat</c> lies when no entry of <paramref name="archive"/> holds it.</param>
     private void Index(
         BnkArchive archive,
-        Func<BnkEntry, byte[]> read,
+        BnkEntryReader read,
         int depth,
         bool expandNested,
         string dataRoot,
@@ -851,7 +864,7 @@ public sealed class BnkFileSystem : IDisposable
     private bool TryExpandNested(
         BnkArchive archive,
         BnkEntry entry,
-        Func<BnkEntry, byte[]> read,
+        BnkEntryReader read,
         int depth,
         string normalized,
         BnkEntry? dataEntry,
@@ -875,7 +888,7 @@ public sealed class BnkFileSystem : IDisposable
             byte[] bytes;
             try
             {
-                bytes = read(entry);
+                bytes = read.Read(entry);
             }
             catch (Exception exception)
             {
@@ -909,23 +922,30 @@ public sealed class BnkFileSystem : IDisposable
         {
             Key = normalized, ReadOuter = read, Container = entry, Map = map, AttachData = attach,
         };
-        Func<BnkEntry, byte[]> nestedRead = target => ReadNestedEntry(slot, target);
+        var nestedRead = new BnkEntryReader(
+            target => NestedArchive(slot).ReadEntryBytes(target),
+            (target, destination, offset) => NestedArchive(slot).ReadEntryInto(target, destination, offset),
+            (target, count) => NestedArchive(slot).ReadEntryHead(target, count));
 
         try
         {
             ++NestedArchiveCount;
-            var contents = new List<BnkFile>(nested.Entries.Count);
-            foreach (BnkEntry nestedEntry in nested.Entries)
+            IReadOnlyList<BnkEntry> nestedEntries = nested.Entries;
+            _containers[normalized] = new BnkContainer(normalized, archive.ArchivePath, () =>
             {
-                contents.Add(new BnkFile(
-                    normalized,
-                    nestedEntry,
-                    Normalize(nestedEntry.RelativePath),
-                    nestedRead,
-                    sourceMod: sourceMod));
-            }
+                var contents = new List<BnkFile>(nestedEntries.Count);
+                foreach (BnkEntry nestedEntry in nestedEntries)
+                {
+                    contents.Add(new BnkFile(
+                        normalized,
+                        nestedEntry,
+                        Normalize(nestedEntry.RelativePath),
+                        nestedRead,
+                        sourceMod: sourceMod));
+                }
 
-            _containers[normalized] = new BnkContainer(normalized, archive.ArchivePath, contents);
+                return contents;
+            });
             Index(nested, nestedRead, depth + 1, true, dataRoot, sourceMod);
         }
         finally
@@ -963,7 +983,7 @@ public sealed class BnkFileSystem : IDisposable
     /// </summary>
     private Action<BnkArchive>? ResolveBankData(
         BnkArchive outer,
-        Func<BnkEntry, byte[]> readOuter,
+        BnkEntryReader readOuter,
         string normalized,
         BnkEntry? dataEntry,
         string dataRoot)
@@ -975,7 +995,7 @@ public sealed class BnkFileSystem : IDisposable
                 return nested => nested.AttachData(map.OpenStream(), map, ownsRange: false);
             }
 
-            return nested => nested.AttachData(new MemoryStream(readOuter(dataEntry), false), null, ownsRange: false);
+            return nested => nested.AttachData(new MemoryStream(readOuter.Read(dataEntry), false), null, ownsRange: false);
         }
 
         // Under the data root first; then beside the bank on disk that holds the header. Fable 3's
@@ -1011,34 +1031,58 @@ public sealed class BnkFileSystem : IDisposable
         return nested => nested.AttachData(whole.OpenStream(), whole, ownsRange: false);
     }
 
-    private void Insert(string normalized, BnkFile file, bool preferNew = false)
+    /// <summary>The directory the last <see cref="Insert"/> walked to: a bank lists a folder's files together.</summary>
+    private string _lastDirectory = string.Empty;
+
+    private Node? _lastDirectoryNode;
+
+    private Node DirectoryForInsert(string directory)
     {
-        string[] parts = normalized.Split('/');
         Node node = _root;
-        for (int i = 0; i < parts.Length - 1; ++i)
+        foreach (string part in directory.Split('/'))
         {
-            if (!node.Directories.TryGetValue(parts[i], out Node? child))
+            if (!node.Directories.TryGetValue(part, out Node? child))
             {
                 child = new Node();
-                node.Directories[parts[i]] = child;
+                node.WritableDirectories[part] = child;
             }
 
             node = child;
         }
 
-        string name = parts[^1];
+        _lastDirectory = directory;
+        _lastDirectoryNode = node;
+        return node;
+    }
+
+    private void Insert(string normalized, BnkFile file, bool preferNew = false)
+    {
+        int split = normalized.LastIndexOf('/');
+        Node node = _root;
+        string name = normalized;
+        if (split >= 0)
+        {
+            ReadOnlySpan<char> directory = normalized.AsSpan(0, split);
+            node = _lastDirectoryNode is not null && directory.SequenceEqual(_lastDirectory)
+                ? _lastDirectoryNode
+                : DirectoryForInsert(directory.ToString());
+            name = normalized[(split + 1)..];
+        }
+
         if (!node.Files.TryGetValue(name, out BnkFile? existing))
         {
             ++FileCount;
-            node.Files[name] = file;
+            node.WritableFiles[name] = file;
             return;
         }
 
         ++ShadowedFileCount;
+        // The same name in several banks needs its path only once.
+        file.SharePath(existing.VirtualPath);
 
         if (preferNew || file.Size > existing.Size)
         {
-            node.Files[name] = file;
+            node.WritableFiles[name] = file;
             file.Alternates.Add(existing);
             file.Alternates.AddRange(existing.Alternates);
             existing.Alternates.Clear();
@@ -1149,33 +1193,64 @@ public sealed class BnkFileSystem : IDisposable
 
 public sealed class BnkContainer
 {
-    internal BnkContainer(string virtualPath, string hostArchivePath, IReadOnlyList<BnkFile> files)
+    private readonly Lazy<IReadOnlyList<BnkFile>> _files;
+
+    internal BnkContainer(string virtualPath, string hostArchivePath, Func<IReadOnlyList<BnkFile>> files)
     {
         VirtualPath = virtualPath;
         HostArchivePath = hostArchivePath;
-        Files = files;
+        _files = new Lazy<IReadOnlyList<BnkFile>>(files);
     }
 
     public string VirtualPath { get; }
 
     public string HostArchivePath { get; }
 
-    public IReadOnlyList<BnkFile> Files { get; }
+    /// <summary>The bank's own entries, made when first asked: the index already holds its winners.</summary>
+    public IReadOnlyList<BnkFile> Files => _files.Value;
 
     public string Name => Path.GetFileName(VirtualPath);
 
     public override string ToString() => $"{VirtualPath} ({Files.Count} entries)";
 }
 
+/// <summary>
+/// How a bank file reaches its entry. <see cref="ReadInto"/> and <see cref="ReadHead"/> exist for
+/// entries in a bank; a loose or virtual file has only <see cref="Read"/>.
+/// </summary>
+internal sealed class BnkEntryReader(
+    Func<BnkEntry, byte[]> read,
+    Action<BnkEntry, byte[], int>? readInto = null,
+    Func<BnkEntry, int, byte[]>? readHead = null)
+{
+    public readonly Func<BnkEntry, byte[]> Read = read;
+    public readonly Action<BnkEntry, byte[], int>? ReadInto = readInto;
+    public readonly Func<BnkEntry, int, byte[]>? ReadHead = readHead;
+
+    public static BnkEntryReader Of(BnkArchive archive) =>
+        new(archive.ReadEntryBytes, archive.ReadEntryInto, archive.ReadEntryHead);
+}
+
 public sealed class BnkFile
 {
-    private readonly Func<BnkEntry, byte[]> _read;
+    private readonly BnkEntryReader _read;
 
     internal BnkFile(
         string sourceArchivePath,
         BnkEntry entry,
         string virtualPath,
         Func<BnkEntry, byte[]> read,
+        bool isLoose = false,
+        string sourceMod = "")
+        : this(sourceArchivePath, entry, virtualPath, new BnkEntryReader(read), isLoose, sourceMod)
+    {
+    }
+
+    internal BnkFile(
+        string sourceArchivePath,
+        BnkEntry entry,
+        string virtualPath,
+        BnkEntryReader read,
         bool isLoose = false,
         string sourceMod = "")
     {
@@ -1204,7 +1279,16 @@ public sealed class BnkFile
 
     public BnkEntry Entry { get; }
 
-    public string VirtualPath { get; }
+    public string VirtualPath { get; private set; }
+
+    internal void SharePath(string path)
+    {
+        if (string.Equals(VirtualPath, path, StringComparison.Ordinal))
+        {
+            VirtualPath = path;
+            Entry.SharePath(path);
+        }
+    }
 
     public uint Size => Entry.Size;
 
@@ -1223,7 +1307,7 @@ public sealed class BnkFile
     /// <summary>Everything this file shadows, nearest first. The master list reads it.</summary>
     public IReadOnlyList<BnkFile> Shadowed => (IReadOnlyList<BnkFile>?)_alternates ?? System.Array.Empty<BnkFile>();
 
-    internal byte[] ReadOwn() => _read(Entry);
+    internal byte[] ReadOwn() => _read.Read(Entry);
 
     /// <summary>
     /// The file's bytes, header entry + payload entry rejoined. A .mdl/.tex ships as two entries
@@ -1238,6 +1322,76 @@ public sealed class BnkFile
         return result;
     }
 
+    /// <summary>
+    /// At least the first <paramref name="count"/> bytes of what <see cref="ReadAllBytes"/> returns
+    /// (fewer only when the file is shorter), reading no more of the bank than that needs. Only the
+    /// rejoined forms of a model and a texture are worked out here; anything else with alternates
+    /// is read whole.
+    /// </summary>
+    public byte[] ReadHead(int count)
+    {
+        if (IsOverride || !HasAlternates)
+        {
+            return _read.ReadHead?.Invoke(Entry, count) ?? ReadOwn();
+        }
+
+        if (VirtualPath.EndsWith(".tex", StringComparison.OrdinalIgnoreCase) &&
+            TryPlanTexture(out byte[] texHeader, out BnkFile? whole, out BnkFile? mip0, out _))
+        {
+            if (texHeader.Length >= count)
+            {
+                return texHeader;
+            }
+
+            // The header is shorter than asked, so the payload's start follows it.
+            BnkFile next = whole ?? mip0!;
+            int more = count - texHeader.Length;
+            if (next._read.ReadHead is { } readNext && next.Entry.Size >= more)
+            {
+                byte[] head = new byte[count];
+                texHeader.CopyTo(head, 0);
+                readNext(next.Entry, more).CopyTo(head, texHeader.Length);
+                return head;
+            }
+
+            return ReadAllBytes();
+        }
+
+        if (!VirtualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) || _read.ReadHead is null)
+        {
+            return ReadAllBytes();
+        }
+
+        // THE JOIN'S FRONT IS ITS HEADER: this entry when it is one, else the first alternate that
+        // is, else this entry alone. See ReadAllBytesCore.
+        BnkFile front = this;
+        if (!HasMeshFileMagic(_read.ReadHead(Entry, MeshMagicLength)))
+        {
+            foreach (BnkFile alternate in Shadowed)
+            {
+                if (alternate._read.ReadHead is not { } readAlternate)
+                {
+                    return ReadAllBytes();
+                }
+
+                try
+                {
+                    if (HasMeshFileMagic(readAlternate(alternate.Entry, MeshMagicLength)))
+                    {
+                        front = alternate;
+                        break;
+                    }
+                }
+                catch (Exception)
+                {
+                }
+            }
+        }
+
+        // A front shorter than asked is continued by the payload, so the join has to be made.
+        return front.Entry.Size < count ? ReadAllBytes() : front._read.ReadHead!(front.Entry, count);
+    }
+
     private byte[] ReadAllBytesCore()
     {
         // AN OVERRIDE REPLACES; IT NEVER REJOINS. The join below reunites a header entry with a
@@ -1250,18 +1404,24 @@ public sealed class BnkFile
             return ReadOwn();
         }
 
-        if (Alternates.Count != 0 &&
+        if (HasAlternates &&
             VirtualPath.EndsWith(".tex", StringComparison.OrdinalIgnoreCase) &&
             TryReadTexture(out byte[] texture))
         {
             return texture;
         }
 
-        byte[] own = _read(Entry);
-        if (Alternates.Count == 0)
+        if (!HasAlternates)
         {
-            return own;
+            return _read.Read(Entry);
         }
+
+        if (VirtualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) && TryReadModel(out byte[] model))
+        {
+            return model;
+        }
+
+        byte[] own = _read.Read(Entry);
 
         Func<byte[], bool> isHeader;
         if (VirtualPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase))
@@ -1284,7 +1444,7 @@ public sealed class BnkFile
             byte[] other;
             try
             {
-                other = alternate._read(alternate.Entry);
+                other = alternate._read.Read(alternate.Entry);
             }
             catch (Exception)
             {
@@ -1312,6 +1472,32 @@ public sealed class BnkFile
     private bool TryReadTexture(out byte[] bytes)
     {
         bytes = Array.Empty<byte>();
+        if (!TryPlanTexture(out byte[] header, out BnkFile? whole, out BnkFile? mip0, out BnkFile? rest))
+        {
+            return false;
+        }
+
+        try
+        {
+            bytes = whole is not null ? Join(header, whole, null) : Join(header, mip0!, rest);
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Which entries make up this texture: its header's bytes, and either the one entry holding the
+    /// whole payload or the two holding mip 0 and the rest. False when they do not all exist.
+    /// </summary>
+    private bool TryPlanTexture(out byte[] headerBytes, out BnkFile? whole, out BnkFile? mip0, out BnkFile? rest)
+    {
+        headerBytes = Array.Empty<byte>();
+        whole = null;
+        mip0 = null;
+        rest = null;
 
         var parts = new List<BnkFile>(Shadowed.Count + 1) { this };
         parts.AddRange(Shadowed);
@@ -1328,7 +1514,7 @@ public sealed class BnkFile
             byte[] candidate;
             try
             {
-                candidate = part._read(part.Entry);
+                candidate = part._read.Read(part.Entry);
             }
             catch (Exception)
             {
@@ -1351,9 +1537,6 @@ public sealed class BnkFile
         }
 
         long payload = parsed.PayloadSize;
-        BnkFile? whole = null;
-        BnkFile? mip0 = null;
-        BnkFile? rest = null;
         long mip0Size = parsed.LevelCount >= 2 && parsed.LevelOffsets[1] > parsed.HeaderSize
             ? parsed.LevelOffsets[1] - parsed.HeaderSize
             : -1;
@@ -1380,44 +1563,89 @@ public sealed class BnkFile
             }
         }
 
+        headerBytes = header;
+        return whole is not null || (mip0 is not null && rest is not null);
+    }
+
+    /// <summary>
+    /// The header and payload of a model, read straight into the one array they end up in. False
+    /// when that cannot be done, and the general path below then decides what the read returns.
+    /// </summary>
+    private bool TryReadModel(out byte[] bytes)
+    {
+        bytes = Array.Empty<byte>();
         try
         {
-            if (whole is not null)
+            if (_read.ReadHead is null)
             {
-                bytes = Concat(header, whole._read(whole.Entry));
-                return true;
+                return false;
             }
 
-            if (mip0 is not null && rest is not null)
+            bool ownIsHeader = HasMeshFileMagic(_read.ReadHead(Entry, MeshMagicLength));
+            foreach (BnkFile alternate in Shadowed)
             {
-                bytes = Concat(header, mip0._read(mip0.Entry), rest._read(rest.Entry));
-                return true;
+                if (alternate._read.ReadHead is null)
+                {
+                    return false;
+                }
+
+                byte[] head;
+                try
+                {
+                    head = alternate._read.ReadHead(alternate.Entry, MeshMagicLength);
+                }
+                catch (Exception)
+                {
+                    continue;
+                }
+
+                if (HasMeshFileMagic(head) != ownIsHeader)
+                {
+                    bytes = ownIsHeader ? Join(null, this, alternate) : Join(null, alternate, this);
+                    return true;
+                }
             }
         }
         catch (Exception)
         {
-            return false;
         }
 
         return false;
     }
 
-    private static byte[] Concat(byte[] a, byte[] b)
+    /// <summary>
+    /// <paramref name="prefix"/>, then <paramref name="first"/>'s entry, then
+    /// <paramref name="second"/>'s, in one array. Entries in a bank are read directly into it.
+    /// </summary>
+    private static byte[] Join(byte[]? prefix, BnkFile first, BnkFile? second)
     {
-        var joined = new byte[a.Length + b.Length];
-        Buffer.BlockCopy(a, 0, joined, 0, a.Length);
-        Buffer.BlockCopy(b, 0, joined, a.Length, b.Length);
+        int prefixLength = prefix?.Length ?? 0;
+        if (first._read.ReadInto is not { } readFirst ||
+            (second is not null && second._read.ReadInto is null))
+        {
+            byte[] a = first._read.Read(first.Entry);
+            byte[] b = second?._read.Read(second.Entry) ?? Array.Empty<byte>();
+            var copied = new byte[prefixLength + a.Length + b.Length];
+            prefix?.CopyTo(copied, 0);
+            Buffer.BlockCopy(a, 0, copied, prefixLength, a.Length);
+            Buffer.BlockCopy(b, 0, copied, prefixLength + a.Length, b.Length);
+            return copied;
+        }
+
+        int firstSize = checked((int)first.Entry.Size);
+        int total = checked(prefixLength + firstSize + (int)(second?.Entry.Size ?? 0));
+
+        // Stored entries overwrite every byte; an inflated one relies on its range being zero.
+        byte[] joined = first.Entry.IsCompressed || second?.Entry.IsCompressed == true
+            ? new byte[total]
+            : GC.AllocateUninitializedArray<byte>(total);
+        prefix?.CopyTo(joined, 0);
+        readFirst(first.Entry, joined, prefixLength);
+        second?._read.ReadInto!(second.Entry, joined, prefixLength + firstSize);
         return joined;
     }
 
-    private static byte[] Concat(byte[] a, byte[] b, byte[] c)
-    {
-        var joined = new byte[a.Length + b.Length + c.Length];
-        Buffer.BlockCopy(a, 0, joined, 0, a.Length);
-        Buffer.BlockCopy(b, 0, joined, a.Length, b.Length);
-        Buffer.BlockCopy(c, 0, joined, a.Length + b.Length, c.Length);
-        return joined;
-    }
+    private const int MeshMagicLength = 8;
 
     /// <summary>
     /// A model file header. "DefMeshF" is the failed-export placeholder; the guest parses it as

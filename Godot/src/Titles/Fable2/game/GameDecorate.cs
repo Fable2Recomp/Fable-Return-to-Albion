@@ -22,6 +22,8 @@ public partial class GameDecorate : Node
     private static readonly HashSet<ulong> RefreshHighlights = new();
     public static bool Selected(ulong uid) => Active && uid != 0 && uid == _selectedUid;
     public static bool Targeted(ulong uid) => Active && uid != 0 && (uid == _selectedUid || uid == _aimUid);
+    /// <summary>Whether <see cref="Appearance"/> can do anything this walk: not decorating, nothing to refresh, it cannot.</summary>
+    public static bool RestatesEntities => Active || RefreshHighlights.Count > 0;
     public static HostBridge.GuestEntity Appearance(HostBridge.GuestEntity entity)
     {
         if (Active && RoomAddresses.TryGetValue(entity.UniqueId, out uint address) && address != entity.Address)

@@ -172,6 +172,7 @@ uint32_t CreateRefiiHostMemoryStream(PPCContext& ctx,
 
   record->host_served = true;
   record->size = record->bytes.size();
+  record->host_key = asset_key;
 
   const uint32_t stream_guest =
       CallLhMalloc(ctx, base, kRefiiHostDiskStreamSize);
@@ -712,6 +713,9 @@ uint32_t ReadRefiiHostStreamBytes(uint8_t* base,
   // Godot's bytes are already resident — no file to seek. Copied page by page because a guest
   // buffer is only guaranteed contiguous within a page.
   if (record->host_served) {
+    if (!LoadRefiiHostStreamBytes(*record)) {
+      return 0;
+    }
     uint32_t copied = 0;
     while (copied < requested_bytes) {
       const uint32_t guest = buffer_guest + copied;
@@ -726,6 +730,11 @@ uint32_t ReadRefiiHostStreamBytes(uint8_t* base,
     record->position = offset + copied;
     ++record->read_calls;
     record->read_bytes += copied;
+    record->read_since_load += copied;
+    if (record->read_since_load >= record->size) {
+      ReleaseRefiiHostStreamBytes(*record);
+      record->read_since_load = 0;
+    }
     ZoneValue(copied);
     TracyPlot("Refii VFS Read Completed Bytes", static_cast<int64_t>(copied));
     return copied;

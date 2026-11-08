@@ -266,6 +266,10 @@ fable_tree_clock={
 "type": "vec2",
 "value": Vector2(0, 0)
 }
+fable_tree_sway_far={
+"type": "float",
+"value": 0.0
+}
 fable_roofs={
 "type": "sampler2D",
 "value": ""

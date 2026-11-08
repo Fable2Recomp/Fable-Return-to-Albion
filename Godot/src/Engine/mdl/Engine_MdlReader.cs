@@ -58,21 +58,18 @@ public sealed class MdlReader
 
     public bool Strz(out string value, int maxLength = 8192)
     {
-        var sb = new StringBuilder();
         int limit = Math.Min(_data.Length, Position + maxLength);
-        while (Position < limit)
+        if (Position >= limit)
         {
-            char c = (char)_data[Position++];
-            if (c == 0)
-            {
-                value = sb.ToString();
-                return true;
-            }
-
-            sb.Append(c);
+            value = string.Empty;
+            return true;
         }
 
-        value = sb.ToString();
+        // Latin-1 widens each byte to the char of the same value.
+        ReadOnlySpan<byte> rest = _data.AsSpan(Position, limit - Position);
+        int length = rest.IndexOf((byte)0);
+        value = Encoding.Latin1.GetString(length < 0 ? rest : rest[..length]);
+        Position = length < 0 ? limit : Position + length + 1;
         return true;
     }
 
@@ -84,6 +81,16 @@ public sealed class MdlReader
     }
 
     public static float HalfToFloat(ushort h)
+    {
+        // The usual case on its own, so that it inlines into the vertex loops.
+        uint exponent = (uint)((h >> 10) & 0x1F);
+        return exponent - 1u < 30u
+            ? BitConverter.UInt32BitsToSingle(
+                ((uint)(h & 0x8000) << 16) | ((exponent + (127 - 15)) << 23) | ((uint)(h & 0x3FF) << 13))
+            : HalfSpecialToFloat(h);
+    }
+
+    private static float HalfSpecialToFloat(ushort h)
     {
         uint s = (uint)((h >> 15) & 1);
         uint e = (uint)((h >> 10) & 0x1F);
@@ -140,19 +147,39 @@ public sealed class MdlReader
         indices.Clear();
         if (strip.Count < 3) return;
 
+        var words = new ushort[strip.Count];
+        for (int i = 0; i < words.Length; ++i)
+        {
+            words[i] = strip[i];
+        }
+
+        var triangles = new uint[(words.Length - 2) * 3];
+        int count = BuildTrianglesFromStrip(words, triangles);
+        indices.AddRange(new ArraySegment<uint>(triangles, 0, count));
+    }
+
+    /// <summary>
+    /// Unrolls a strip into <paramref name="indices"/>, which holds three indices for every word
+    /// past the first two; returns how many it wrote.
+    /// </summary>
+    public static int BuildTrianglesFromStrip(ReadOnlySpan<ushort> strip, Span<uint> indices)
+    {
+        int count = 0;
+        if (strip.Length < 3) return count;
+
         const ushort restart = 0xFFFF;
         bool wind = false;
         ushort a = strip[0];
         ushort b = strip[1];
 
-        for (int i = 2; i < strip.Count; ++i)
+        for (int i = 2; i < strip.Length; ++i)
         {
             ushort c = strip[i];
             if (a == restart || b == restart || c == restart)
             {
                 int j = i + 1;
-                while (j < strip.Count && strip[j] == restart) ++j;
-                if (j + 1 < strip.Count)
+                while (j < strip.Length && strip[j] == restart) ++j;
+                if (j + 1 < strip.Length)
                 {
                     a = strip[j];
                     b = strip[j + 1];
@@ -166,24 +193,17 @@ public sealed class MdlReader
 
             if (a != b && b != c && c != a)
             {
-                if (!wind)
-                {
-                    indices.Add(a);
-                    indices.Add(b);
-                    indices.Add(c);
-                }
-                else
-                {
-                    indices.Add(b);
-                    indices.Add(a);
-                    indices.Add(c);
-                }
+                indices[count++] = wind ? b : a;
+                indices[count++] = wind ? a : b;
+                indices[count++] = c;
             }
 
             a = b;
             b = c;
             wind = !wind;
         }
+
+        return count;
     }
 
     /// <summary>
@@ -223,14 +243,37 @@ public sealed class MdlReader
     }
 
     public static uint ReadU32BE(byte[] data, int at) =>
-        ((uint)data[at] << 24) | ((uint)data[at + 1] << 16) |
-        ((uint)data[at + 2] << 8) | data[at + 3];
+        BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(at, 4));
 
-    public static float[] ComputeSmoothNormals(int vertexCount, List<uint> indices, float[] positions)
+    /// <summary>
+    /// <see cref="DecodeNormal_11_11_10"/>'s x and y lanes by their 11 bits, and its z lane and all
+    /// of <see cref="DecodeTangent_DEC3N"/>'s by their 10: a vertex loop saves six float divisions.
+    /// </summary>
+    internal static readonly float[] Snorm11 = BuildSnorm(11, 1023f);
+
+    /// <inheritdoc cref="Snorm11"/>
+    internal static readonly float[] Snorm10 = BuildSnorm(10, 511f);
+
+    private static float[] BuildSnorm(int bits, float scale)
+    {
+        var table = new float[1 << bits];
+        for (int i = 0; i < table.Length; i++)
+        {
+            int signed = (i & (1 << (bits - 1))) != 0 ? i - (1 << bits) : i;
+            table[i] = signed / scale;
+        }
+
+        return table;
+    }
+
+    public static float[] ComputeSmoothNormals(int vertexCount, List<uint> indices, float[] positions) =>
+        ComputeSmoothNormals(vertexCount, System.Runtime.InteropServices.CollectionsMarshal.AsSpan(indices), positions);
+
+    public static float[] ComputeSmoothNormals(int vertexCount, ReadOnlySpan<uint> indices, float[] positions)
     {
         var normals = new float[vertexCount * 3];
 
-        for (int i = 0; i + 2 < indices.Count; i += 3)
+        for (int i = 0; i + 2 < indices.Length; i += 3)
         {
             uint ia = indices[i], ib = indices[i + 1], ic = indices[i + 2];
             if (ia * 3 + 2 >= positions.Length ||

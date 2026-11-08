@@ -102,10 +102,12 @@ public static partial class Engine_MdlMaterial
         if (info.MeshKind == 1)
         {
             shader.SetShaderParameter("foliage", true);
+            SetFacts(shader, FactFoliage, true);
         }
         else if (info.MeshKind == 4)
         {
             shader.SetShaderParameter("grass", true);
+            SetFacts(shader, FactGrass, true);
             shader.SetShaderParameter("has_specular", false);
 
             // VS c45 as the classic builds it (`sub_82233570`): a ramp in model height from the
@@ -123,6 +125,7 @@ public static partial class Engine_MdlMaterial
         if (authoredNormals)
         {
             shader.SetShaderParameter("foliage_normals", true);
+            SetFacts(shader, FactFoliageNormals, true);
         }
     }
 
@@ -605,7 +608,7 @@ public static partial class Engine_MdlMaterial
         // painted over it: the child hero's boots (mhero_child_legs_01, flags 0xF0, alpha 255
         // over 96% of the map) showed the cobble blend straight through them.
         bool translucent = albedo is not null &&
-            Refii.Textures.Engine_TexLibrary.IsTranslucent(material.Diffuse, Engine_BnkMeshLoader.ReadBytes);
+            Refii.Textures.Engine_TexLibrary.IsTranslucent(material.Diffuse, Engine_BnkMeshLoader.ReadTextureHeader);
 
         // THE TEXTURE STATES THE CUTOUT, not its format. A standard surface is alpha tested only
         // when the diffuse header carries 0x20 (texture-set +152 = ALPHATESTENABLE), GREATER 128
@@ -614,7 +617,7 @@ public static partial class Engine_MdlMaterial
         // diffuses the title draws solid. Trees and scatter keep their own coverage rule.
         bool vegetation = info is not null && IsVegetationDrawPath(info);
         int diffuseFlags = albedo is not null && !vegetation
-            ? Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Diffuse, Engine_BnkMeshLoader.ReadBytes)
+            ? Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Diffuse, Engine_BnkMeshLoader.ReadTextureHeader)
             : 0;
         bool cutout = vegetation ? albedoHasAlpha : (diffuseFlags & 0x20) != 0;
         Shader? chosen = cutout || translucent ? shader : SharedCulled();
@@ -733,7 +736,7 @@ public static partial class Engine_MdlMaterial
         // by the map's alpha. Every other surface draws SP1, a fixed cos^4 (blob 0343 1637-1643
         // squares saturate(V.R) twice and never reads the range).
         bool rangedExponent = !string.IsNullOrEmpty(material.Specular) &&
-            (Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Specular, Engine_BnkMeshLoader.ReadBytes) & 0x80) != 0;
+            (Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Specular, Engine_BnkMeshLoader.ReadTextureHeader) & 0x80) != 0;
         result.SetShaderParameter("spec_power_min", rangedExponent ? material.SpecularPowerMin : FixedSpecularPower);
         result.SetShaderParameter("spec_power_max", rangedExponent ? material.SpecularPowerMax : FixedSpecularPower);
         result.SetShaderParameter("self_illum_scale", material.SelfIlluminationScale);

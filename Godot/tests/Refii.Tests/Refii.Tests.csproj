@@ -23,4 +23,17 @@
     <ProjectReference Include="..\..\refii-launcher.csproj" />
   </ItemGroup>
 
+  <!-- Engine_Hash's ARM path on any machine (Engine_HashArmTests): the same source a second time,
+       in a namespace whose ARM instruction classes are the architecture manual's pseudocode. -->
+  <Target Name="HashArmModelSource" BeforeTargets="BeforeCompile;CoreCompile">
+    <PropertyGroup>
+      <HashArmModelText>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../../src/Engine/core/Engine_Hash.cs').Replace('namespace Refii.Core;', 'namespace Refii.Tests.ShaModel;'))</HashArmModelText>
+      <HashArmModelFile>$(IntermediateOutputPath)Engine_Hash.ArmModel.cs</HashArmModelFile>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(HashArmModelFile)" Lines="$([MSBuild]::Escape($(HashArmModelText)))" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <Compile Include="$(HashArmModelFile)" />
+    </ItemGroup>
+  </Target>
+
 </Project>

@@ -44,12 +44,19 @@ public sealed class Engine_UiTextureCache
 	/// screen viewer, the scene exporter — set it here; the running game sets the same
 	/// thing from Engine_GameAssets over the same mount.
 	/// </summary>
-	private readonly BnkFileSystem _banks;
+	private BnkFileSystem _banks;
 
 	public Engine_UiTextureCache(BnkFileSystem banks)
 	{
 		_banks = banks;
 		Engine_BnkTextureLoader.EnsureRegistered();
+		Repoint(banks);
+	}
+
+	/// <summary>Serves from another mount from here on, as when the game's has been built again.</summary>
+	public void Repoint(BnkFileSystem banks)
+	{
+		_banks = banks;
 		Engine_BnkTextureLoader.SetFallbackResolver(
 			path => banks.TryGetFile(path, out BnkFile file) ? file.ReadAllBytes() : null);
 	}

@@ -34,6 +34,28 @@ public sealed class PreparedImageFileTests
         finally { Directory.Delete(Path.GetDirectoryName(path)!, true); }
     }
 
+    /// <summary>The pooled read takes the record's own description, and a short or absent file is a miss.</summary>
+    [TestCase]
+    public void PooledReadDescribesTheRecord()
+    {
+        string path = TempPath();
+        try
+        {
+            AssertThat(Engine_PreparedImageFile.TryReadPooled(path, out _, out _, out _, out _, out _, out _)).IsFalse();
+            AssertThat(Engine_PreparedImageFile.TryWrite(path, 8, 4, 22, true, Payload())).IsTrue();
+            AssertThat(Engine_PreparedImageFile.TryReadPooled(path, out int width, out int height, out int format,
+                out bool mipmaps, out byte[] payload, out int length)).IsTrue();
+            AssertThat((width, height, format, mipmaps)).IsEqual((8, 4, 22, true));
+            AssertThat(payload[..length]).IsEqual(Payload());
+            System.Buffers.ArrayPool<byte>.Shared.Return(payload);
+
+            byte[] whole = File.ReadAllBytes(path);
+            File.WriteAllBytes(path, whole[..^1]);
+            AssertThat(Engine_PreparedImageFile.TryReadPooled(path, out _, out _, out _, out _, out _, out _)).IsFalse();
+        }
+        finally { Directory.Delete(Path.GetDirectoryName(path)!, true); }
+    }
+
     /// <summary>A record of another image, a truncated one, or none at all is a miss.</summary>
     [TestCase]
     public void MismatchesAndDamageAreMisses()
@@ -52,6 +74,19 @@ public sealed class PreparedImageFileTests
         byte[] badMagic = (byte[])whole.Clone();
         badMagic[0] ^= 0xFF;
         AssertThat(Engine_PreparedImageFile.TryRead(new MemoryStream(badMagic), 8, 4, 22, true)).IsNull();
+
+        // The right length with the data lost, as a power cut can leave it.
+        byte[] zeroed = (byte[])whole.Clone();
+        Array.Clear(zeroed, zeroed.Length - Payload().Length, Payload().Length);
+        AssertThat(Engine_PreparedImageFile.TryRead(new MemoryStream(zeroed), 8, 4, 22, true)).IsNull();
+        string path = TempPath();
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllBytes(path, zeroed);
+            AssertThat(Engine_PreparedImageFile.TryReadPooled(path, out _, out _, out _, out _, out _, out _)).IsFalse();
+        }
+        finally { Directory.Delete(Path.GetDirectoryName(path)!, true); }
         AssertThat(Engine_PreparedImageFile.TryRead(TempPath(), 8, 4, 22, true)).IsNull();
     }
 }

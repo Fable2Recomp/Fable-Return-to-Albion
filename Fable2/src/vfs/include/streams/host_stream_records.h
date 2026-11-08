@@ -24,6 +24,9 @@ void StoreRefiiHostStreamRecord(
     uint32_t stream_guest,
     std::shared_ptr<RefiiHostStreamRecord> record);
 size_t RefiiHostStreamRecordCount();
+// Both with the record's mutex held. The first is false when Godot no longer answers in full.
+bool LoadRefiiHostStreamBytes(RefiiHostStreamRecord& record);
+void ReleaseRefiiHostStreamBytes(RefiiHostStreamRecord& record);
 
 std::shared_ptr<RefiiReadRequestRecord> FindRefiiReadRequestRecord(
     uint32_t request_guest,

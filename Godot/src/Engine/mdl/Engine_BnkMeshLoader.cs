@@ -9,6 +9,7 @@ public partial class Engine_BnkMeshLoader : ResourceFormatLoader
     public const string PathPrefix = "game://";
 
     private static Func<string, byte[]?>? _resolver;
+    private static Func<string, int, byte[]?>? _headResolver;
     private static Func<string, bool>? _exists;
 
     /// <summary>How many of each kind of empty mesh get a line before the count alone speaks.</summary>
@@ -34,16 +35,37 @@ public partial class Engine_BnkMeshLoader : ResourceFormatLoader
         EmptyUndecodable = 0;
     }
 
-    public static void SetResolver(Func<string, byte[]?>? resolver) => _resolver = resolver;
+    /// <param name="headResolver">Reads a file's first bytes alone; without one,
+    /// <see cref="ReadHead"/> reads the whole file through <paramref name="resolver"/>.</param>
+    public static void SetResolver(
+        Func<string, byte[]?>? resolver, Func<string, int, byte[]?>? headResolver = null)
+    {
+        _resolver = resolver;
+        _headResolver = headResolver;
+    }
 
     /// <summary>The resolver in place, for a caller that swaps one in and must put it back.</summary>
     public static Func<string, byte[]?>? Resolver => _resolver;
+
+    /// <summary>The head reader in place, put back with <see cref="Resolver"/>.</summary>
+    public static Func<string, int, byte[]?>? HeadResolver => _headResolver;
 
     public static void SetExistsProbe(Func<string, bool>? probe) => _exists = probe;
 
     public static bool FileExists(string virtualPath) => _exists?.Invoke(virtualPath) ?? false;
 
     public static byte[]? ReadBytes(string virtualPath) => _resolver?.Invoke(virtualPath);
+
+    /// <summary>
+    /// At least the first <paramref name="count"/> bytes of the file (fewer only when it is
+    /// shorter), for a caller that wants a header and not the body it would have to inflate.
+    /// </summary>
+    public static byte[]? ReadHead(string virtualPath, int count) =>
+        _headResolver is { } head ? head(virtualPath, count) : ReadBytes(virtualPath);
+
+    /// <summary>A texture's first bytes, as far as the longest header <c>TexHeader</c> parses.</summary>
+    public static byte[]? ReadTextureHeader(string virtualPath) =>
+        ReadHead(virtualPath, Refii.Textures.TexHeader.Fable3Size);
 
     public static bool Recognises(string path) =>
         path.StartsWith(PathPrefix, StringComparison.OrdinalIgnoreCase) &&

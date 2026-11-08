@@ -328,41 +328,66 @@ public static class Engine_AnimCatalog
                 return;
             }
 
-            var blobs = new List<byte[]>();
-            foreach (string path in GdbPaths())
-            {
-                byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(path);
-                if (bytes is not null && bytes.Length != 0)
-                {
-                    blobs.Add(bytes);
-                }
-            }
-
-            if (blobs.Count == 0)
+            var paths = new List<string>(GdbPaths());
+            if (paths.Count == 0)
             {
                 return;
             }
 
-            _bindingTask = System.Threading.Tasks.Task.Run(() => ScanBlobs(blobs));
+            _bindingTask = System.Threading.Tasks.Task.Run(() => ScanFiles(paths));
         }
     }
 
-    private static void ScanBlobs(List<byte[]> blobs)
+    /// <summary>One file in memory at a time: all of them together are about 30 MB, held for seconds.</summary>
+    private static void ScanFiles(List<string> paths)
     {
         var timer = System.Diagnostics.Stopwatch.StartNew();
         var seen = new HashSet<(uint Model, int Clip, uint Key)>();
         int scanned = 0;
         int parsed = 0;
+        int read = 0;
 
-        foreach (byte[] bytes in blobs)
+        foreach (string path in paths)
         {
-            if (!Gdb.GdbView.TryParse(bytes, out Gdb.GdbView view, out _))
+            // One file's read failing skips that file: a throw here would fault the task, and every
+            // later EnsureBindings would rethrow it for the rest of the session.
+            byte[]? bytes;
+            try
+            {
+                bytes = Engine_BnkMeshLoader.ReadBytes(path);
+            }
+            catch (System.Exception exception)
+            {
+                GD.PushWarning($"[anim] {path}: read threw {exception.GetType().Name}: {exception.Message}");
+                continue;
+            }
+
+            if (bytes is null || bytes.Length == 0)
+            {
+                continue;
+            }
+
+            read++;
+            if (!Gdb.GdbView.TryParseShared(bytes, out Gdb.GdbView view, out _))
             {
                 continue;
             }
 
             parsed++;
             scanned += Engine_AnimGdbScan.Scan(view, IndexByKey, Clips, Bindings, seen);
+        }
+
+        Engine_AnimGdbScan.ReleaseScratch();
+
+        if (read == 0)
+        {
+            // Nothing to read yet: as if the scan had not started, so a later call tries again.
+            lock (Gate)
+            {
+                _bindingTask = null;
+            }
+
+            return;
         }
 
         foreach (ModelAnimationBinding binding in Bindings)
@@ -379,7 +404,7 @@ public static class Engine_AnimCatalog
 
         _boundTried = true;
 
-        GD.Print($"[anim] scanned {parsed}/{blobs.Count} gdb file(s) in " +
+        GD.Print($"[anim] scanned {parsed}/{read} gdb file(s) in " +
             $"{timer.ElapsedMilliseconds} ms off-thread");
         GD.Print($"[anim] {Bindings.Count} model binding(s) from {scanned} reference(s)");
     }

@@ -33,7 +33,8 @@ public static class Engine_TextureUpload
     /// <summary>Replaces a 2D image using the same policy as its initial upload.</summary>
     /// <param name="texture">Caller-owned GPU texture.</param>
     /// <param name="image">Caller-owned replacement CPU image.</param>
-    public static void SetImage(ImageTexture texture, Image image)
+    /// <param name="world">As <see cref="CreateTexture"/>.</param>
+    public static void SetImage(ImageTexture texture, Image image, bool world = false)
     {
         if (Prepares) AndroidTextureUpload.SetImage(texture, image);
         else texture.SetImage(image);
@@ -43,7 +44,8 @@ public static class Engine_TextureUpload
     /// <param name="texture">A cubemap or 2D array owned by the caller.</param>
     /// <param name="images">Uniform source layers, left intact after upload.</param>
     /// <returns>Godot's normal layered creation result.</returns>
-    public static Error CreateLayered(ImageTextureLayered texture, Godot.Collections.Array<Image> images)
+    /// <param name="world">As <see cref="CreateTexture"/>.</param>
+    public static Error CreateLayered(ImageTextureLayered texture, Godot.Collections.Array<Image> images, bool world = false)
     {
         if (Prepares) return AndroidTextureUpload.CreateLayered(texture, images);
         Error created = texture.CreateFromImages(images);

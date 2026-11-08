@@ -17,6 +17,9 @@ public sealed class Engine_UiCloneBinding
 	private sealed class Bound
 	{
 		public required Node3D Node { get; init; }
+
+		/// <summary><see cref="Node"/> when it is a mesh, the type test made once.</summary>
+		public MeshInstance3D? Mesh { get; init; }
 		public required int Ordinal { get; init; }
 
 		/// <summary>
@@ -45,6 +48,9 @@ public sealed class Engine_UiCloneBinding
 
 		/// <summary>What the node shows: the guest's draw gate AND <see cref="Open"/>.</summary>
 		public bool Drawn { get; set; } = true;
+
+		/// <summary><see cref="MaterialsCleared"/> as of the last read of the material.</summary>
+		public int ClearsSeen { get; set; } = -1;
 
 		/// <summary>The guest's draw gate at the last sample.</summary>
 		public bool Stated { get; set; } = true;
@@ -92,9 +98,40 @@ public sealed class Engine_UiCloneBinding
 
 	public static long AppliedCalls;
 
+	/// <summary>
+	/// Whether the sections are timed: off until a reader has asked once, since it is a run of
+	/// clock reads per node, and thousands a frame are a real share of a phone's main thread. The
+	/// counts run regardless.
+	/// </summary>
+	public static bool Timed { get; private set; }
+
+	/// <summary>The start of a section walk: the clock when <see cref="Timed"/>.</summary>
+	internal static long Mark() => Timed ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
+
+	/// <summary>Closes a section onto its counter and starts the next, when <see cref="Timed"/>.</summary>
+	internal static void Lap(ref long ticks, ref long mark)
+	{
+		if (Timed)
+		{
+			long now = System.Diagnostics.Stopwatch.GetTimestamp();
+			ticks += now - mark;
+			mark = now;
+		}
+	}
+
+	/// <summary>
+	/// A material was taken off a node with none put in its place, and the next one must be written
+	/// whatever the node was last faded to (see <see cref="Apply"/>). Every site that clears a text
+	/// node calls this; a bound node reads its material again after one.
+	/// </summary>
+	public static void NoteMaterialCleared() => ++MaterialsCleared;
+
+	private static int MaterialsCleared;
+
 	/// <summary>Zeroes the section profile; the reader calls this after taking a sample.</summary>
 	public static void ResetProfile()
 	{
+		Timed = true;
 		TicksTransform = 0;
 		TicksDraw = 0;
 		TicksMaterial = 0;
@@ -206,6 +243,7 @@ public sealed class Engine_UiCloneBinding
 			_bound.Add(new Bound
 			{
 				Node = spatial,
+				Mesh = spatial as MeshInstance3D,
 				Ordinal = element.Ordinal,
 				Source = element.Ordinal,
 				IsQuad = element.Quad is not null,
@@ -506,11 +544,9 @@ public sealed class Engine_UiCloneBinding
 			}
 
 			++AppliedNodes;
-			long mark = System.Diagnostics.Stopwatch.GetTimestamp();
+			long mark = Mark();
 			ApplyTransform(bound, resolve, transform);
-			long now = System.Diagnostics.Stopwatch.GetTimestamp();
-			TicksTransform += now - mark;
-			mark = now;
+			Lap(ref TicksTransform, ref mark);
 
 			bool stated = resolve.Drawn[bound.Source];
 			if (stated)
@@ -525,57 +561,64 @@ public sealed class Engine_UiCloneBinding
 			bound.Stated = stated;
 			Show(bound);
 
-			now = System.Diagnostics.Stopwatch.GetTimestamp();
-			TicksDraw += now - mark;
-			mark = now;
+			Lap(ref TicksDraw, ref mark);
 
-			// Read every sample, never cached: `Engine_UiTheme.SetMeshText` and
+			float alpha = resolve.Opacity[bound.Source];
+
+			// A hash of zero is "unstated", not a change: the guest drops a stated hash to zero
+			// mid-write, and the file's own texture stands meanwhile.
+			uint hash = bound.IsQuad && textures is not null && bound.Source < textures.Count
+				? textures[bound.Source]
+				: 0;
+			bool picturing = hash != 0 && hash != bound.Pictured;
+
+			// Nothing to write, the usual case, so no crossing to fetch the material to write it
+			// on. What the read below would still notice is a material gone, which the sites that
+			// clear one say (a replaced one carries its opacity across, and is left alone either way).
+			if (!picturing && Mathf.IsEqualApprox(alpha, bound.Faded) && bound.ClearsSeen == MaterialsCleared)
+			{
+				Lap(ref TicksMaterial, ref mark);
+				continue;
+			}
+
+			// Read each time it is needed, never cached: `Engine_UiTheme.SetMeshText` and
 			// `Engine_UiTheme.Paint` replace `MaterialOverride` on every string change (carrying
 			// `clip_rect` and `opacity` across), and `Engine_UiSceneBuilder.OwnQuadMaterial`
 			// replaces it for a clone that writes privately. A cached material is an orphan:
 			// writes land on something nothing renders, and a quad's `diffuse_tex` would hit the
 			// pattern book's shared material instead of the clone's.
-			if (bound.Node is not MeshInstance3D mesh ||
-				mesh.MaterialOverride is not ShaderMaterial material)
+			bound.ClearsSeen = MaterialsCleared;
+			if (bound.Mesh is not { } painted ||
+				painted.MaterialOverride is not ShaderMaterial material)
 			{
 				// The next material this node is given must be written, whatever it was last
 				// faded to — an empty label is left with none at all.
 				bound.Faded = -1f;
-				TicksMaterial += System.Diagnostics.Stopwatch.GetTimestamp() - mark;
+				Lap(ref TicksMaterial, ref mark);
 				continue;
 			}
 
-			float alpha = resolve.Opacity[bound.Source];
 			if (!Mathf.IsEqualApprox(alpha, bound.Faded))
 			{
 				bound.Faded = alpha;
 				material.SetShaderParameter(OpacityName, alpha);
-				Engine_UiTheme.FadeInlineIcons(mesh, alpha);
+				Engine_UiTheme.FadeInlineIcons(painted, alpha);
 			}
 
-			now = System.Diagnostics.Stopwatch.GetTimestamp();
-			TicksMaterial += now - mark;
-			mark = now;
+			Lap(ref TicksMaterial, ref mark);
 
-			// A hash of zero is "unstated", not a change: the guest drops a stated hash to zero
-			// mid-write, and the file's own texture stands meanwhile.
-			if (bound.IsQuad && textures is not null && bound.Source < textures.Count)
+			if (picturing && ResolveTexture?.Invoke(hash) is { } picture)
 			{
-				uint hash = textures[bound.Source];
-				if (hash != 0 && hash != bound.Pictured &&
-					ResolveTexture?.Invoke(hash) is { } picture)
-				{
-					bound.Pictured = hash;
-					material.SetShaderParameter(DiffuseTexName, picture);
-				}
+				bound.Pictured = hash;
+				material.SetShaderParameter(DiffuseTexName, picture);
 			}
 
-			TicksTexture += System.Diagnostics.Stopwatch.GetTimestamp() - mark;
+			Lap(ref TicksTexture, ref mark);
 		}
 
-		long masks = System.Diagnostics.Stopwatch.GetTimestamp();
+		long masks = Mark();
 		RefreshMasks(resolve, transform);
-		TicksMasks += System.Diagnostics.Stopwatch.GetTimestamp() - masks;
+		Lap(ref TicksMasks, ref masks);
 	}
 
 	private Engine_UiScreen? _maskScreen;

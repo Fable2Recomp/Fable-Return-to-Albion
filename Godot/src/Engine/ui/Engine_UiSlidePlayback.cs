@@ -510,31 +510,35 @@ public sealed class Engine_UiSlidePlayback
 		if (owner >= 0 && _clocks[owner] is { Slide: > 0 } clock && _owned[owner] is { } slides &&
 			clock.Slide <= slides.Count)
 		{
-			foreach (BgfSlide slide in new[] { _master[owner], slides[clock.Slide - 1] })
-			{
-				foreach (BgfSlideEntry entry in slide?.Entries ?? System.Array.Empty<BgfSlideEntry>())
-				{
-					if (entry.ElementOrdinal != ordinal)
-					{
-						continue;
-					}
-
-					foreach (BgfAttribute command in entry.Commands ?? System.Array.Empty<BgfAttribute>())
-					{
-						if (command.Id == TimeOffsetId)
-						{
-							start = command.AsInt();
-						}
-						else if (command.Id == EndTimeId)
-						{
-							end = command.AsInt();
-						}
-					}
-				}
-			}
+			WindowFrom(_master[owner], ordinal, ref start, ref end);
+			WindowFrom(slides[clock.Slide - 1], ordinal, ref start, ref end);
 		}
 
 		return new Engine_UiTimeline.Window(ordinal, start, end);
+	}
+
+	/// <summary>What one slide's entries state of an element's window, over what stood before.</summary>
+	private static void WindowFrom(BgfSlide? slide, int ordinal, ref int start, ref int end)
+	{
+		foreach (BgfSlideEntry entry in slide?.Entries ?? System.Array.Empty<BgfSlideEntry>())
+		{
+			if (entry.ElementOrdinal != ordinal)
+			{
+				continue;
+			}
+
+			foreach (BgfAttribute command in entry.Commands ?? System.Array.Empty<BgfAttribute>())
+			{
+				if (command.Id == TimeOffsetId)
+				{
+					start = command.AsInt();
+				}
+				else if (command.Id == EndTimeId)
+				{
+					end = command.AsInt();
+				}
+			}
+		}
 	}
 
 	/// <summary>GotoSlide: the master's entries, then the slide's; time to 0; the record's mode.</summary>

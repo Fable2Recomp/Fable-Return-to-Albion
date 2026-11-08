@@ -396,8 +396,12 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 			}
 		}
 
+		Shown = shown;
 		Report(shown);
 	}
+
+	/// <summary>How many sprites the last frame placed on screen.</summary>
+	public int Shown { get; private set; }
 
 	/// <summary>
 	/// A world meter's three quads placed for this frame — back (with its rim), trail, fill, left

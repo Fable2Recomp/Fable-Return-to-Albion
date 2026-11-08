@@ -113,6 +113,7 @@ public sealed partial class Engine_FxDriver : Node
             FableFx.PrepareFrame(camera);
         }
         Stepped = 0;
+        FableFx.LapAt = System.Diagnostics.Stopwatch.GetTimestamp();
 
         // The frame at the guest's pace, 0 under a stated pause: one world delta for every system.
         double world = Refii.Core.Engine_DrawAdvance.Seconds(delta);
@@ -126,13 +127,12 @@ public sealed partial class Engine_FxDriver : Node
                 continue;
             }
 
-            if (!fx.IsInsideTree())
-            {
-                continue;
-            }
-
+            // In the tree: a system is registered from its _EnterTree to its _ExitTree.
             fx.Step(world, camera, cameraPos, cameraTransform);
             ++Stepped;
         }
+
+        // The frozen systems after the last one that lapped.
+        FableFx.FrameWork.Lap(1, ref FableFx.LapAt);
     }
 }

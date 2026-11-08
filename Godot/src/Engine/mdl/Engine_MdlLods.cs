@@ -1,5 +1,7 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 
 namespace Refii.Models;
 
@@ -71,6 +73,8 @@ public static class Engine_MdlLods
 
         int attached = 0;
         int dropped = 0;
+        var shared = new SharedVertices(data);
+        Dictionary<string, int>? boneByName = null;
 
         int level = 0;
         foreach (MdlLod lod in info.Lods)
@@ -79,7 +83,7 @@ public static class Engine_MdlLods
             float guestKey = info.LodReference > 0f
                 ? info.LodReference * level / (LodScreenFraction * ReferenceHeight)
                 : 0f;
-            int[]? boneRemap = RemapBones(lod, info);
+            int[]? boneRemap = RemapBones(lod, info, ref boneByName);
             if (boneRemap is null)
             {
                 dropped += targets.Count;
@@ -107,7 +111,7 @@ public static class Engine_MdlLods
                     continue;
                 }
 
-                target.Take(piece, boneRemap);
+                target.Take(piece, boneRemap, shared);
             }
 
             foreach (Target target in targets)
@@ -128,13 +132,14 @@ public static class Engine_MdlLods
             target.Finish();
         }
 
+        shared.Release();
         return (attached, dropped);
     }
 
     /// <summary>
     /// The payload's bone index to LOD 0's, by name; null when a name is not in LOD 0's table.
     /// </summary>
-    private static int[]? RemapBones(MdlLod lod, MdlInfo info)
+    private static int[]? RemapBones(MdlLod lod, MdlInfo info, ref Dictionary<string, int>? boneByName)
     {
         var remap = new int[lod.Bones.Count];
         if (lod.Bones.Count == 0)
@@ -142,10 +147,16 @@ public static class Engine_MdlLods
             return remap;
         }
 
-        var byName = new Dictionary<string, int>(info.Bones.Count);
-        for (int i = 0; i < info.Bones.Count; i++)
+        Dictionary<string, int>? byName = boneByName;
+        if (byName is null)
         {
-            byName.TryAdd(info.Bones[i].Name, i);
+            byName = new Dictionary<string, int>(info.Bones.Count);
+            for (int i = 0; i < info.Bones.Count; i++)
+            {
+                byName.TryAdd(info.Bones[i].Name, i);
+            }
+
+            boneByName = byName;
         }
 
         for (int i = 0; i < lod.Bones.Count; i++)
@@ -159,12 +170,65 @@ public static class Engine_MdlLods
         return remap;
     }
 
+    /// <summary>
+    /// LOD 0's rigid buffers, decoded for one model at the first vertex a level must append from
+    /// each, and shared by every level and piece over them.
+    /// </summary>
+    private sealed class SharedVertices
+    {
+        private readonly byte[] _data;
+        private readonly List<Decoded> _decoded = new();
+
+        public SharedVertices(byte[] data)
+        {
+            _data = data;
+        }
+
+        /// <summary>One buffer's vertices; the pieces over it have already checked it fits the body.</summary>
+        public Decoded Of(MdlMeshBuffer buffer)
+        {
+            foreach (Decoded known in _decoded)
+            {
+                if (known.Offset == buffer.VertexOffset)
+                {
+                    return known;
+                }
+            }
+
+            Engine_MdlGeometry.TryRentRigidVertices(_data, buffer,
+                out float[] positions, out float[] uvs, out float[] normals, out float[] tangents);
+            var decoded = new Decoded(buffer.VertexOffset, positions, uvs, normals, tangents);
+            _decoded.Add(decoded);
+            return decoded;
+        }
+
+        public void Release()
+        {
+            foreach (Decoded decoded in _decoded)
+            {
+                Engine_MdlGeometry.ReturnRigidVertices(
+                    decoded.Positions, decoded.Uvs, decoded.Normals, decoded.Tangents);
+            }
+
+            _decoded.Clear();
+        }
+
+        internal sealed record Decoded(int Offset, float[] Positions, float[] Uvs, float[] Normals, float[] Tangents);
+    }
+
     /// <summary>One LOD-0 surface being grown: its committed vertices, and the level under way.</summary>
     private sealed class Target
     {
         private readonly MdlGeometry _geo;
         private readonly bool _lightmapped;
         private readonly int _baseCount;
+
+        // Which local vertex holds a source vertex, among the surface's own: a table over the
+        // range of source numbers it holds (local + 1, 0 for none), rented at the first piece that
+        // asks and only then. A model whose coarser levels ship their own vertices never does.
+        private int[]? _baseLocals;
+        private int _baseSourceMin;
+        private int _baseSourceRange;
 
         // Committed growth beyond the surface's own vertices, and LOD 0's numbering of each.
         private readonly List<float> _positions = new();
@@ -194,21 +258,56 @@ public static class Engine_MdlLods
             _geo = geo;
             _lightmapped = lightmapped;
             _baseCount = geo.VertexCount;
-            _lastEdge = guestKeyed ? 0f : MeanEdge(geo.Indices, 0, geo.Indices.Length);
+            _lastEdge = guestKeyed ? 0f : MeanEdge(geo.Indices);
+        }
 
-            if (geo.SourceVertices.Length == _baseCount)
+        public bool LevelHadTriangles => _level.Count >= 3;
+
+        private void RentBaseLocals()
+        {
+            int min = int.MaxValue, max = -1;
+            int[] sources = _geo.SourceVertices;
+            bool mapped = sources.Length == _baseCount;
+            for (int v = 0; mapped && v < _baseCount; v++)
             {
-                for (int v = 0; v < _baseCount; v++)
+                if (sources[v] >= 0)
                 {
-                    if (geo.SourceVertices[v] >= 0)
-                    {
-                        _localOfSource.TryAdd(geo.SourceVertices[v], v);
-                    }
+                    min = Math.Min(min, sources[v]);
+                    max = Math.Max(max, sources[v]);
+                }
+            }
+
+            _baseSourceMin = min;
+            _baseSourceRange = max < 0 ? 0 : max - min + 1;
+            _baseLocals = ArrayPool<int>.Shared.Rent(_baseSourceRange);
+            Array.Clear(_baseLocals, 0, _baseSourceRange);
+            for (int v = 0; mapped && v < _baseCount; v++)
+            {
+                // The first vertex with a source number keeps it: a merged surface can hold one twice.
+                if (sources[v] >= 0 && _baseLocals[sources[v] - min] == 0)
+                {
+                    _baseLocals[sources[v] - min] = v + 1;
                 }
             }
         }
 
-        public bool LevelHadTriangles => _level.Count >= 3;
+        private bool TryLocal(int source, out int local)
+        {
+            if (_baseLocals is null)
+            {
+                RentBaseLocals();
+            }
+
+            uint at = (uint)(source - _baseSourceMin);
+            if (at < (uint)_baseSourceRange && _baseLocals![at] != 0)
+            {
+                local = _baseLocals[at] - 1;
+                return true;
+            }
+
+            return _localOfSource.TryGetValue(source, out local) ||
+                _stagedLocalOfSource.TryGetValue(source, out local);
+        }
 
         public void BeginLevel()
         {
@@ -224,7 +323,7 @@ public static class Engine_MdlLods
             _levelRefused = false;
         }
 
-        public void Take(MdlGeometry piece, int[] boneRemap)
+        public void Take(MdlGeometry piece, int[] boneRemap, SharedVertices shared)
         {
             if (_levelRefused)
             {
@@ -239,51 +338,63 @@ public static class Engine_MdlLods
                 return;
             }
 
-            var local = new uint[piece.VertexCount];
-            for (int v = 0; v < piece.VertexCount; v++)
+            int vertices = piece.VertexCount;
+            uint[] local = ArrayPool<uint>.Shared.Rent(vertices);
+            for (int v = 0; v < vertices; v++)
             {
                 int source = piece.SharesLod0Vertices && v < piece.SourceVertices.Length
                     ? piece.SourceVertices[v]
                     : -1;
 
-                if (source >= 0)
+                if (source >= 0 && TryLocal(source, out int have))
                 {
-                    if (_localOfSource.TryGetValue(source, out int have) ||
-                        _stagedLocalOfSource.TryGetValue(source, out have))
-                    {
-                        local[v] = (uint)have;
-                        continue;
-                    }
+                    local[v] = (uint)have;
+                    continue;
                 }
 
-                local[v] = (uint)Stage(piece, v, source, boneRemap);
+                local[v] = (uint)Stage(piece, v, source, boneRemap, shared);
             }
 
-            foreach (uint index in piece.Indices)
+            uint[] indices = piece.Indices;
+            int at = _level.Count;
+            CollectionsMarshal.SetCount(_level, at + indices.Length);
+            Span<uint> level = CollectionsMarshal.AsSpan(_level)[at..];
+            for (int i = 0; i < indices.Length; i++)
             {
-                _level.Add(index < local.Length ? local[index] : 0);
+                uint index = indices[i];
+                level[i] = index < (uint)vertices ? local[index] : 0;
             }
+
+            ArrayPool<uint>.Shared.Return(local);
         }
 
         /// <summary>Copies one of the piece's vertices into the staged growth; returns its local index.</summary>
-        private int Stage(MdlGeometry piece, int v, int source, int[] boneRemap)
+        private int Stage(MdlGeometry piece, int v, int source, int[] boneRemap, SharedVertices shared)
         {
             int local = _baseCount + _source.Count + _stagedSource.Count;
 
-            _stagedPositions.Add(piece.Positions[v * 3]);
-            _stagedPositions.Add(piece.Positions[v * 3 + 1]);
-            _stagedPositions.Add(piece.Positions[v * 3 + 2]);
-            _stagedNormals.Add(piece.Normals[v * 3]);
-            _stagedNormals.Add(piece.Normals[v * 3 + 1]);
-            _stagedNormals.Add(piece.Normals[v * 3 + 2]);
-            _stagedUvs.Add(piece.Uvs[v * 2]);
-            _stagedUvs.Add(piece.Uvs[v * 2 + 1]);
+            float[] positions = piece.Positions, normals = piece.Normals, uvs = piece.Uvs, tangents = piece.Tangents;
+            if (piece.VerticesIn is { } buffer)
+            {
+                SharedVertices.Decoded decoded = shared.Of(buffer);
+                (positions, normals, uvs, tangents) = (decoded.Positions, decoded.Normals, decoded.Uvs, decoded.Tangents);
+                v = source - buffer.SharedVertexBase;
+            }
+
+            _stagedPositions.Add(positions[v * 3]);
+            _stagedPositions.Add(positions[v * 3 + 1]);
+            _stagedPositions.Add(positions[v * 3 + 2]);
+            _stagedNormals.Add(normals[v * 3]);
+            _stagedNormals.Add(normals[v * 3 + 1]);
+            _stagedNormals.Add(normals[v * 3 + 2]);
+            _stagedUvs.Add(uvs[v * 2]);
+            _stagedUvs.Add(uvs[v * 2 + 1]);
 
             if (_geo.HasTangents)
             {
                 for (int k = 0; k < 4; k++)
                 {
-                    _stagedTangents.Add(piece.Tangents[v * 4 + k]);
+                    _stagedTangents.Add(tangents[v * 4 + k]);
                 }
             }
 
@@ -322,7 +433,7 @@ public static class Engine_MdlLods
                 _level.RemoveRange(triangles, _level.Count - triangles);
             }
 
-            float edge = guestKey > 0f ? guestKey : MeanEdge(_level, 0, _level.Count);
+            float edge = guestKey > 0f ? guestKey : MeanEdge(CollectionsMarshal.AsSpan(_level));
             if (!(edge > _lastEdge))
             {
                 return false;
@@ -348,6 +459,12 @@ public static class Engine_MdlLods
         /// <summary>Writes the committed growth into the surface's arrays.</summary>
         public void Finish()
         {
+            if (_baseLocals is not null)
+            {
+                ArrayPool<int>.Shared.Return(_baseLocals);
+                _baseLocals = null;
+            }
+
             if (_source.Count == 0)
             {
                 return;
@@ -390,12 +507,12 @@ public static class Engine_MdlLods
             return result;
         }
 
-        private float MeanEdge(IReadOnlyList<uint> indices, int start, int count)
+        private float MeanEdge(ReadOnlySpan<uint> indices)
         {
             double total = 0;
             int edges = 0;
-            int end = start + count - (count % 3);
-            for (int i = start; i < end; i += 3)
+            int end = indices.Length - (indices.Length % 3);
+            for (int i = 0; i < end; i += 3)
             {
                 total += Distance(indices[i], indices[i + 1]);
                 total += Distance(indices[i + 1], indices[i + 2]);

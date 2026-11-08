@@ -32,7 +32,7 @@ public sealed class RegionRetirementTests
         gate.SetApplicationPaused(false, 318);
         AssertThat(gate.Advance(2, 318, 0, true)).IsEqual(RegionRetirementWork.None);
         AssertThat(gate.Status.ElapsedSeconds).IsEqual(8.0);
-        AssertThat(gate.Advance(3, 340, 0, false)).IsEqual(RegionRetirementWork.Failed);
+        AssertThat(gate.Advance(3, 318 + GameRegionRetirement.TimeoutSeconds - 8, 0, false)).IsEqual(RegionRetirementWork.Failed);
         var startingPaused = new GameRegionRetirement(5, 1, true);
         AssertThat(startingPaused.Advance(6, 101, 0, false)).IsEqual(RegionRetirementWork.None);
         startingPaused.SetApplicationPaused(false, 101);
@@ -123,11 +123,11 @@ public sealed class RegionRetirementTests
         {
             var gate = new GameRegionRetirement(0, 0);
             if (collecting) gate.Advance(1, 1, 0, false);
-            AssertThat(gate.Advance(2, 30, collecting ? 0 : 4, false)).IsEqual(RegionRetirementWork.Failed);
+            AssertThat(gate.Advance(2, GameRegionRetirement.TimeoutSeconds, collecting ? 0 : 4, false)).IsEqual(RegionRetirementWork.Failed);
             var failed = gate.Status;
             AssertThat(failed.NewBuildBlocked).IsTrue();
             AssertThat(failed.Error.Contains("timed out")).IsTrue();
-            AssertThat(gate.Advance(3, 31, 0, true)).IsEqual(RegionRetirementWork.None);
+            AssertThat(gate.Advance(3, GameRegionRetirement.TimeoutSeconds + 1, 0, true)).IsEqual(RegionRetirementWork.None);
             AssertThat(gate.Status).IsEqual(failed);
         }
     }

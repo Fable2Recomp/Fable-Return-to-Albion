@@ -51,10 +51,22 @@ public static class Engine_CharacterMorphs
 
     private static string Name(HeroMorphInput input) => input.ToString().ToLowerInvariant();
 
-    /// <summary>Slot 1's setting for an input; every slot-shaped reader and writer takes slot 1's keys.</summary>
-    public static string Key(HeroMorphInput input) => InputPrefix + Name(input);
+    /// <summary>The per-frame keys, by input and made once: the look is compared every frame, on a standing world too.</summary>
+    private static readonly string[] Keys = KeysWith(InputPrefix);
+    private static readonly string[] SecondKeys = KeysWith(SecondInputPrefix);
+    private static readonly string[] StoreKeys = KeysWith(StorePrefix);
 
-    public static string Key(HeroMorphInput input, int slot) => (slot == 2 ? SecondInputPrefix : InputPrefix) + Name(input);
+    private static string[] KeysWith(string prefix)
+    {
+        var keys = new string[(int)HeroMorphInput.Age + 1];
+        for (int i = 0; i < keys.Length; i++) keys[i] = prefix + Name((HeroMorphInput)i);
+        return keys;
+    }
+
+    /// <summary>Slot 1's setting for an input; every slot-shaped reader and writer takes slot 1's keys.</summary>
+    public static string Key(HeroMorphInput input) => Keys[(int)input];
+
+    public static string Key(HeroMorphInput input, int slot) => (slot == 2 ? SecondKeys : Keys)[(int)input];
 
     public static string AutomaticKeyOf(int slot) => slot == 2 ? SecondAutomaticKey : AutomaticKey;
 
@@ -63,6 +75,8 @@ public static class Engine_CharacterMorphs
     {
         if (slot != 2) return key;
         if (key == AutomaticKey) return SecondAutomaticKey;
+        int input = Array.IndexOf(Keys, key);
+        if (input >= 0) return SecondKeys[input];
         return key.StartsWith(InputPrefix, StringComparison.Ordinal) ? SecondInputPrefix + key[InputPrefix.Length..] : key;
     }
 
@@ -78,7 +92,7 @@ public static class Engine_CharacterMorphs
         return slotted;
     }
 
-    public static string StoreKey(HeroMorphInput input) => StorePrefix + Name(input);
+    public static string StoreKey(HeroMorphInput input) => StoreKeys[(int)input];
 
     public static string BridgePrefix(int player) =>
         "refii.character_morphs.p" + player.ToString(CultureInfo.InvariantCulture) + ".";
@@ -93,13 +107,19 @@ public static class Engine_CharacterMorphs
     public static HeroMorphStats Read(Func<string, string> read)
     {
         var stats = new HeroMorphStats();
+        ReadInto(stats, read);
+        return stats;
+    }
+
+    /// <summary><see cref="Read"/> over stats that hold the defaults.</summary>
+    private static void ReadInto(HeroMorphStats stats, Func<string, string> read)
+    {
         foreach (var slider in Sliders)
         {
             if (float.TryParse(read(Key(slider.Input)).Trim().Trim('"'), NumberStyles.Float,
                 CultureInfo.InvariantCulture, out float value) && float.IsFinite(value))
                 Engine_HeroMorphSliders.Set(stats, slider, value);
         }
-        return stats;
     }
 
     public static int Steps(HeroMorphSlider slider) =>
@@ -121,26 +141,46 @@ public static class Engine_CharacterMorphs
     }
 
     /// <summary>The look slot-1-keyed settings state, as the store holds it: the mode (1 automatic) and every input.</summary>
-    public static Dictionary<string, float> StoreValues(Func<string, string> read)
+    public static Dictionary<string, float> StoreValues(Func<string, string> read) =>
+        StoreValues(read, new Dictionary<string, float>(Sliders.Length + 1));
+
+    /// <summary><see cref="StoreValues(Func{string, string})"/> into a kept dictionary, replacing what it held; returns it.</summary>
+    public static Dictionary<string, float> StoreValues(Func<string, string> read, Dictionary<string, float> look)
     {
-        var stats = Read(read);
-        var look = new Dictionary<string, float> { [StoreAutomaticKey] = Automatic(read) ? 1 : 0 };
+        HeroMorphStats stats = _readStats ??= new HeroMorphStats();
+        foreach (var slider in Sliders) stats[slider.Input] = DefaultStats[slider.Input];
+        ReadInto(stats, read);
+        look.Clear();
+        look[StoreAutomaticKey] = Automatic(read) ? 1 : 0;
         foreach (var slider in Sliders) look[StoreKey(slider.Input)] = stats[slider.Input];
         return look;
     }
+
+    private static readonly HeroMorphStats DefaultStats = new();
+
+    /// <summary>The stats a kept <see cref="StoreValues(Func{string, string}, Dictionary{string, float})"/> reads through; never handed out.</summary>
+    [ThreadStatic]
+    private static HeroMorphStats? _readStats;
 
     /// <summary>The look the store holds for a player, or null while it lacks any key (a store just emptied).</summary>
     public static Dictionary<string, float>? StoredLook(Func<string, float?> get)
     {
         var look = new Dictionary<string, float>(Sliders.Length + 1);
-        if (get(StoreAutomaticKey) is not { } automatic) return null;
+        return StoredLook(get, look) ? look : null;
+    }
+
+    /// <summary><see cref="StoredLook(Func{string, float?})"/> into a kept dictionary, replacing what it held; false where that answers null.</summary>
+    public static bool StoredLook(Func<string, float?> get, Dictionary<string, float> look)
+    {
+        look.Clear();
+        if (get(StoreAutomaticKey) is not { } automatic) return false;
         look[StoreAutomaticKey] = automatic;
         foreach (var slider in Sliders)
         {
-            if (get(StoreKey(slider.Input)) is not { } value || !float.IsFinite(value)) return null;
+            if (get(StoreKey(slider.Input)) is not { } value || !float.IsFinite(value)) return false;
             look[StoreKey(slider.Input)] = value;
         }
-        return look;
+        return true;
     }
 
     /// <summary>
@@ -184,6 +224,15 @@ public static class Engine_CharacterMorphs
     {
         if (a is null || b is null) return a is null && b is null;
         if (a.Count != b.Count) return false;
+        // The concrete enumerator where there is one: through the interface it is an object per compare.
+        if (a is Dictionary<string, float> concrete)
+        {
+            foreach (var (key, value) in concrete)
+            {
+                if (!b.TryGetValue(key, out float other) || other != value) return false;
+            }
+            return true;
+        }
         foreach (var (key, value) in a)
         {
             if (!b.TryGetValue(key, out float other) || other != value) return false;

@@ -102,9 +102,12 @@ internal static class Engine_ShaderCeilingSource
 	/// <param name="cut">Keep an alpha test where the original has one (`flatcut`).</param>
 	/// <param name="albedo">The constant colour, as three numbers 0..1.</param>
 	/// <param name="renderer">Godot's `CURRENT_RENDERER` for the conditionals.</param>
+	/// <param name="keepVaryings">`flatvs`: keep the whole vertex stage, its varying writes included,
+	/// and read in the pixel stage every varying it writes and every vertex built-in the original's
+	/// pixel and light stages read, so the compiler can drop none of that work.</param>
 	internal static Built? Build(
 		string code, string path, Func<string, string?> readInclude, bool cut, (float R, float G, float B) albedo,
-		int renderer = RendererMobile)
+		int renderer = RendererMobile, bool keepVaryings = false)
 	{
 		string active = Preprocess(code, path, readInclude, renderer);
 		if (!SpatialType.IsMatch(active))
@@ -116,6 +119,7 @@ internal static class Engine_ShaderCeilingSource
 		var macros = new Dictionary<string, string>(StringComparer.Ordinal);
 		var functions = new Dictionary<string, List<Item>>(StringComparer.Ordinal);
 		var varyings = new HashSet<string>(StringComparer.Ordinal);
+		var varyingTypes = new Dictionary<string, string>(StringComparer.Ordinal);
 		var samplers = new List<string>();
 		var bools = new HashSet<string>(StringComparer.Ordinal);
 		var floats = new HashSet<string>(StringComparer.Ordinal);
@@ -150,6 +154,10 @@ internal static class Engine_ShaderCeilingSource
 					else if (VaryingDeclaration.Match(text) is { Success: true } varying)
 					{
 						varyings.Add(varying.Groups[1].Value);
+						if (TypedVarying.Match(text) is { Success: true } typed)
+						{
+							varyingTypes[typed.Groups[2].Value] = typed.Groups[1].Value;
+						}
 					}
 					else if (Sampler2D.Match(text) is { Success: true } sampler)
 					{
@@ -177,17 +185,28 @@ internal static class Engine_ShaderCeilingSource
 		bool alphaTested = discards || scissor;
 
 		// The vertex stage stays only where it moves the vertex; its varyings feed nothing now.
+		// Under `flatvs` it stays whole, and the new pixel stage reads what it hands on.
 		bool keepVertex = false;
+		string? keep = null;
 		if (functions.TryGetValue("vertex", out List<Item>? vertex))
 		{
-			foreach (Item overload in vertex)
+			if (keepVaryings)
 			{
-				overload.Text = StripVaryingWrites(overload.Text, varyings);
+				string pixelReach = Reach(new[] { "fragment", "light" }, functions, macros, includeMacros: true);
+				keep = KeptReads(vertex, varyings, varyingTypes, pixelReach);
+				keepVertex = true;
 			}
-			keepVertex = PositionWrite.IsMatch(Reach(new[] { "vertex" }, functions, macros, includeMacros: true));
+			else
+			{
+				foreach (Item overload in vertex)
+				{
+					overload.Text = StripVaryingWrites(overload.Text, varyings);
+				}
+				keepVertex = PositionWrite.IsMatch(Reach(new[] { "vertex" }, functions, macros, includeMacros: true));
+			}
 		}
 
-		string fragment = Fragment(cut && alphaTested, discards, scissor, writesAlpha, samplers, bools, floats, albedo);
+		string fragment = Fragment(cut && alphaTested, discards, scissor, writesAlpha, samplers, bools, floats, albedo, keep);
 
 		// Every function the kept stages no longer reach goes: one using a pixel built-in would
 		// not compile uncalled, and one that is never called costs nothing anyway. The replaced
@@ -220,7 +239,7 @@ internal static class Engine_ShaderCeilingSource
 		HashSet<string> reached = Reached(roots, functions, macros);
 
 		var output = new StringBuilder();
-		output.Append("// shaderCeiling: ").Append(cut && alphaTested ? "flatcut" : "flat").Append(" of ")
+		output.Append("// shaderCeiling: ").Append(keepVaryings ? "flatvs" : cut && alphaTested ? "flatcut" : "flat").Append(" of ")
 			.Append(path.Length != 0 ? path : "an unnamed shader").Append(keepVertex ? ", its vertex kept" : ", plain vertex")
 			.Append('\n');
 		bool modeWritten = false;
@@ -447,7 +466,7 @@ internal static class Engine_ShaderCeilingSource
 	/// </summary>
 	private static string Fragment(
 		bool cut, bool discards, bool scissor, bool writesAlpha, List<string> samplers, HashSet<string> bools,
-		HashSet<string> floats, (float R, float G, float B) albedo)
+		HashSet<string> floats, (float R, float G, float B) albedo, string? keep = null)
 	{
 		var body = new StringBuilder("void fragment() {\n");
 		if (cut)
@@ -489,12 +508,90 @@ internal static class Engine_ShaderCeilingSource
 		}
 		body.Append("\tALBEDO = vec3(").Append(Number(albedo.R)).Append(", ").Append(Number(albedo.G))
 			.Append(", ").Append(Number(albedo.B)).Append(");\n");
+		if (keep is not null)
+		{
+			// Never taken (FRAGCOORD is not negative) and not foldable: every input stays live.
+			body.Append("\tALBEDO += (FRAGCOORD.x < 0.0 ? 1.0 : 0.0) * vec3(").Append(keep).Append(");\n");
+		}
 		if (writesAlpha)
 		{
 			// The original writes ALPHA: it draws in the transparent list, and so does this.
 			body.Append("\tALPHA = 1.0;\n");
 		}
 		return body.Append("}\n").ToString();
+	}
+
+	/// <summary>A varying's type and name, for `flatvs`: `varying smooth vec3 v`.</summary>
+	private static readonly Regex TypedVarying = new(
+		@"^varying\s+(?:(?:flat|smooth|highp|mediump|lowp)\s+)*(\w+)\s+([A-Za-z_]\w*)\s*;", RegexOptions.CultureInvariant);
+
+	/// <summary>The vertex built-ins a pixel stage can read, each read in full.</summary>
+	private static readonly (string Name, string Read)[] PixelInputs =
+	{
+		("NORMAL", "NORMAL.x + NORMAL.y + NORMAL.z"),
+		("UV", "UV.x + UV.y"),
+		("UV2", "UV2.x + UV2.y"),
+		("COLOR", "COLOR.r + COLOR.g + COLOR.b + COLOR.a"),
+	};
+
+	/// <summary>
+	/// `flatvs`: one float summing every component of each varying the vertex stage writes and of
+	/// each vertex built-in the original pixel stages read (the tangent frame when they read it or
+	/// a normal map), so no output of the vertex stage is dead. "0.0" when there is none.
+	/// </summary>
+	private static string KeptReads(
+		List<Item> vertex, HashSet<string> varyings, Dictionary<string, string> types, string pixelReach)
+	{
+		var terms = new List<string>();
+		string vertexText = string.Concat(vertex.ConvertAll(v => v.Text));
+		foreach (string varying in varyings)
+		{
+			bool written = Regex.IsMatch(vertexText,
+				@"(?<![\w.])" + Regex.Escape(varying) + @"\s*(?:\.\s*\w+)?\s*[-+*/]?=(?!=)", RegexOptions.CultureInvariant);
+			if (written && types.TryGetValue(varying, out string? type) && Components(varying, type) is { } read)
+			{
+				terms.Add(read);
+			}
+		}
+		foreach ((string name, string read) in PixelInputs)
+		{
+			if (Regex.IsMatch(pixelReach, @"\b" + name + @"\b", RegexOptions.CultureInvariant))
+			{
+				terms.Add(read);
+			}
+		}
+		if (Regex.IsMatch(pixelReach, @"\b(?:TANGENT|BINORMAL|NORMAL_MAP)\b", RegexOptions.CultureInvariant))
+		{
+			terms.Add("TANGENT.x + TANGENT.y + TANGENT.z + BINORMAL.x + BINORMAL.y + BINORMAL.z");
+		}
+		return terms.Count == 0 ? "0.0" : string.Join(" + ", terms);
+	}
+
+	/// <summary>Every component of a varying as one float sum; null for a type it does not read (a matrix, an array).</summary>
+	private static string? Components(string name, string type)
+	{
+		int count = type switch
+		{
+			"float" or "int" or "uint" => 1,
+			"vec2" or "ivec2" or "uvec2" => 2,
+			"vec3" or "ivec3" or "uvec3" => 3,
+			"vec4" or "ivec4" or "uvec4" => 4,
+			_ => 0,
+		};
+		if (count == 0)
+		{
+			return null;
+		}
+		if (count == 1)
+		{
+			return $"float({name})";
+		}
+		var parts = new List<string>();
+		for (int i = 0; i < count; i++)
+		{
+			parts.Add($"float({name}.{"xyzw"[i]})");
+		}
+		return string.Join(" + ", parts);
 	}
 
 	private static string? AlbedoSampler(List<string> samplers)

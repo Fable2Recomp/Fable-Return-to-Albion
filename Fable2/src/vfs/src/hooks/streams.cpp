@@ -137,9 +137,14 @@ bool TryAnswerRefiiStreamResidentBuffer(PPCContext& ctx,
     auto* destination = rex::memory::GuestPtr<uint8_t*>(base, buffer_guest);
     uint32_t filled = 0;
     if (record->host_served) {
-      filled = static_cast<uint32_t>(
-          std::min<size_t>(bytes, record->bytes.size()));
-      std::memcpy(destination, record->bytes.data(), filled);
+      if (refii::vfs::LoadRefiiHostStreamBytes(*record)) {
+        filled = static_cast<uint32_t>(
+            std::min<size_t>(bytes, record->bytes.size()));
+        std::memcpy(destination, record->bytes.data(), filled);
+        if (filled == record->size) {
+          refii::vfs::ReleaseRefiiHostStreamBytes(*record);
+        }
+      }
     } else {
       record->file.clear();
       record->file.seekg(0, std::ios::beg);

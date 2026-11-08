@@ -400,8 +400,10 @@ public static class Engine_BgfEdit
 			e.ParentOrdinal = Shifted(e.ParentOrdinal);
 		}
 
+		doc.SlidesByOwner = null;
 		foreach (BgfSlide s in doc.Slides)
 		{
+			s.Release = null;
 			s.OwnerElement = Shifted(s.OwnerElement);
 			for (int i = 0; i < s.Entries.Length; i++)
 			{

@@ -84,7 +84,8 @@ public static partial class Engine_TerrainSplatMaterial
         long parseMs = clock.ElapsedMilliseconds;
         clock.Restart();
 
-        List<SplatMaterial> materials = ResolveMaterials(parsed, read, findByName, out int resolved);
+        bool normalMaps = NormalMapsWanted();
+        List<SplatMaterial> materials = ResolveMaterials(parsed, read, findByName, normalMaps, out int resolved);
         if (resolved == 0)
         {
             error = $"none of the {parsed.Lods.Count} palette textures resolved";
@@ -94,7 +95,7 @@ public static partial class Engine_TerrainSplatMaterial
         long resolveMs = clock.ElapsedMilliseconds;
         clock.Restart();
 
-        if (!Engine_EhfSplat.TryBuild(parsed, materials, out TerrainSplatData data, out error))
+        if (!Engine_EhfSplat.TryBuild(parsed, materials, out TerrainSplatData data, out error, normalMaps))
         {
             return false;
         }
@@ -127,7 +128,6 @@ public static partial class Engine_TerrainSplatMaterial
 
         // The layers' normal maps, which the .ehf has always named and nothing has ever loaded.
         // A missing pair leaves the shader's flat default, which costs a sample and nothing else.
-        bool normalMaps = NormalMapsWanted();
         Texture2DArray? baseNormalArray = !normalMaps ? null :
             BuildColourArray(data.BaseNormalSlices, data.SliceSize, isNormalMap: true);
         Texture2DArray? detailNormalArray = !normalMaps ? null :
@@ -233,8 +233,9 @@ public static partial class Engine_TerrainSplatMaterial
         return true;
     }
 
-    private static List<SplatMaterial> ResolveMaterials(
-        EhfParsedBody parsed, ReadAsset read, FindByName? findByName, out int resolved)
+    /// <param name="normalMaps">Off, the layers' normal maps are not read at all: nothing would upload them.</param>
+    internal static List<SplatMaterial> ResolveMaterials(
+        EhfParsedBody parsed, ReadAsset read, FindByName? findByName, bool normalMaps, out int resolved)
     {
         resolved = 0;
 
@@ -259,6 +260,10 @@ public static partial class Engine_TerrainSplatMaterial
                 if (slot >= 2)
                 {
                     normalPaths.Add(normalized);
+                    if (!normalMaps)
+                    {
+                        continue;
+                    }
                 }
 
                 if (!cache.ContainsKey(normalized))
@@ -287,9 +292,9 @@ public static partial class Engine_TerrainSplatMaterial
             (byte[] detailRgba, int detailWidth, int detailHeight) =
                 LoadTexture(lod.DetailDiffuse, read, findByName, cache, false);
             (byte[] baseNormal, int baseNormalWidth, int baseNormalHeight) =
-                LoadTexture(lod.BaseNormal, read, findByName, cache, true);
+                LoadTexture(normalMaps ? lod.BaseNormal : string.Empty, read, findByName, cache, true);
             (byte[] detailNormal, int detailNormalWidth, int detailNormalHeight) =
-                LoadTexture(lod.DetailNormal, read, findByName, cache, true);
+                LoadTexture(normalMaps ? lod.DetailNormal : string.Empty, read, findByName, cache, true);
 
             if (baseRgba.Length != 0 || detailRgba.Length != 0)
             {
@@ -526,6 +531,15 @@ public static partial class Engine_TerrainSplatMaterial
             return null;
         }
 
+        // Layers that name one texture hold one array (ResolveMaterials), so they take one scan, one
+        // key and one cache entry, and share the image: 16 of Bower Lake's 40 colour slices.
+        var owners = new Dictionary<byte[], int>(slices.Length);
+        var owner = new int[slices.Length];
+        for (int i = 0; i < slices.Length; i++)
+        {
+            owner[i] = owners.TryAdd(slices[i], i) ? i : owners[slices[i]];
+        }
+
         // The format first, from each slice's base level: any layer with alpha takes the whole
         // array to BC3. Godot's own DetectAlpha on the base answers exactly what it did on the
         // mipped image — a mip is an average, so an all-opaque level stays all-opaque — and it
@@ -540,8 +554,7 @@ public static partial class Engine_TerrainSplatMaterial
             int alphaSlices = 0;
             System.Threading.Tasks.Parallel.For(0, slices.Length, i =>
             {
-                using Image probe = Image.CreateFromData(size, size, false, Image.Format.Rgba8, slices[i]);
-                if (probe.DetectAlpha() != Image.AlphaMode.None)
+                if (owner[i] == i && DetectsAlpha(slices[i]))
                 {
                     System.Threading.Interlocked.Increment(ref alphaSlices);
                 }
@@ -560,6 +573,11 @@ public static partial class Engine_TerrainSplatMaterial
         bool compressed = true;
         System.Threading.Tasks.Parallel.For(0, slices.Length, i =>
         {
+            if (owner[i] != i)
+            {
+                return;
+            }
+
             string key = Refii.Textures.Engine_TexCache.DerivedKey(recipe, slices[i]);
             if (temporary.Own(Refii.Textures.Engine_TexCache.TryLoad(key, out _)) is { } hit &&
                 hit.GetFormat() == expected && hit.HasMipmaps() &&
@@ -596,6 +614,11 @@ public static partial class Engine_TerrainSplatMaterial
 
             System.Threading.Tasks.Parallel.For(0, slices.Length, i =>
             {
+                if (owner[i] != i)
+                {
+                    return;
+                }
+
                 Image image = temporary.Own(Image.CreateFromData(
                     size, size, false, Image.Format.Rgba8, slices[i]))!;
                 image.GenerateMipmaps();
@@ -605,8 +628,9 @@ public static partial class Engine_TerrainSplatMaterial
 
         var images = new Godot.Collections.Array<Image>();
         using Godot.Collections.Array imageStorage = (Godot.Collections.Array)images;
-        foreach (Image image in built)
+        for (int i = 0; i < built.Length; i++)
         {
+            Image image = built[owner[i]];
             if (image is null)
             {
                 return null;
@@ -616,7 +640,38 @@ public static partial class Engine_TerrainSplatMaterial
         }
 
         var array = new Texture2DArray();
-        return Refii.Textures.Engine_TextureUpload.CreateLayered(array, images) == Error.Ok ? array : null;
+        return Refii.Textures.Engine_TextureUpload.CreateLayered(array, images, world: true) == Error.Ok ? array : null;
+    }
+
+    /// <summary>
+    /// Whether <see cref="Image.DetectAlpha"/> on these RGBA8 pixels would answer anything but None:
+    /// some alpha under 254 (Godot's DETECT_ALPHA_MAX_THRESHOLD), without copying them into an Image.
+    /// </summary>
+    /// <param name="rgba">The pixels, four bytes each, alpha last.</param>
+    internal static bool DetectsAlpha(ReadOnlySpan<byte> rgba)
+    {
+        // A little-endian pixel word's top byte is its alpha, so the word alone answers.
+        const uint Opaque = 0xFE000000u;
+        ReadOnlySpan<uint> pixels = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, uint>(rgba);
+        int at = 0;
+        var limit = System.Runtime.Intrinsics.Vector128.Create(Opaque);
+        for (; at + 4 <= pixels.Length; at += 4)
+        {
+            if (System.Runtime.Intrinsics.Vector128.LessThanAny(System.Runtime.Intrinsics.Vector128.Create(pixels.Slice(at, 4)), limit))
+            {
+                return true;
+            }
+        }
+
+        for (; at < pixels.Length; at++)
+        {
+            if (pixels[at] < Opaque)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -711,7 +766,7 @@ public static partial class Engine_TerrainSplatMaterial
         }
 
         var array = new Texture2DArray();
-        return Refii.Textures.Engine_TextureUpload.CreateLayered(array, images) == Error.Ok ? array : null;
+        return Refii.Textures.Engine_TextureUpload.CreateLayered(array, images, world: true) == Error.Ok ? array : null;
     }
 
     /// <summary>Uploads owned R8 weight images and releases their CPU wrappers and native array afterwards.</summary>
@@ -731,17 +786,20 @@ public static partial class Engine_TerrainSplatMaterial
         // EIGHT BITS A CHANNEL, NOT THIRTY-TWO: every value is in [0,1], and a byte carries a
         // blend weight with no visible difference.
         // R the weight, G the share of it from layers that state the cliff.
-        for (int plane = 0; plane < planes; plane++)
+        var packed = new byte[planes][];
+        System.Threading.Tasks.Parallel.For(0, planes, plane =>
         {
-            long baseIndex = plane * area;
-            byte[] bytes = Engine_TerrainWeightSupport.PackLayer(data.Weights, data.CliffShares, baseIndex, checked((int)area));
+            packed[plane] = Engine_TerrainWeightSupport.PackLayer(data.Weights, data.CliffShares, plane * area, checked((int)area));
+        });
 
+        foreach (byte[] bytes in packed)
+        {
             images.Add(temporary.Own(Image.CreateFromData(
                 data.WeightWidth, data.WeightHeight, false, Image.Format.Rg8, bytes))!);
         }
 
         var array = new Texture2DArray();
-        return Refii.Textures.Engine_TextureUpload.CreateLayered(array, images) == Error.Ok ? array : null;
+        return Refii.Textures.Engine_TextureUpload.CreateLayered(array, images, world: true) == Error.Ok ? array : null;
     }
 
     /// <summary>
@@ -762,24 +820,31 @@ public static partial class Engine_TerrainSplatMaterial
 
         int planes = Math.Min(data.MaterialCount, Engine_EhfSplat.MaxMaterials);
         var own = new uint[area];
-        for (int plane = 0; plane < planes; plane++)
+        System.Threading.Tasks.Parallel.For(0, height, y =>
         {
-            long baseIndex = plane * area;
-            for (long t = 0; t < area; t++)
+            long first = (long)y * width;
+            for (int plane = 0; plane < planes; plane++)
             {
-                // The same test as the weight byte: anything that rounds to a non-zero byte.
-                if (data.Weights[baseIndex + t] * 255f + 0.5f >= 1f)
+                long baseIndex = plane * area;
+                for (long t = first; t < first + width; t++)
                 {
-                    own[t] |= 1u << plane;
+                    // The same test as the weight byte: anything that rounds to a non-zero byte.
+                    if (data.Weights[baseIndex + t] * 255f + 0.5f >= 1f)
+                    {
+                        own[t] |= 1u << plane;
+                    }
                 }
             }
-        }
+        });
 
         var bytes = new byte[area * 4];
         long layers = 0;
         int widest = 0;
-        for (int y = 0; y < height; y++)
+        var tally = new object();
+        System.Threading.Tasks.Parallel.For(0, height, y =>
         {
+            long rowLayers = 0;
+            int rowWidest = 0;
             for (int x = 0; x < width; x++)
             {
                 uint bits = 0;
@@ -797,10 +862,16 @@ public static partial class Engine_TerrainSplatMaterial
                 bytes[(t * 4) + 2] = (byte)(bits >> 16);
                 bytes[(t * 4) + 3] = (byte)(bits >> 24);
                 int count = System.Numerics.BitOperations.PopCount(bits);
-                layers += count;
-                widest = Math.Max(widest, count);
+                rowLayers += count;
+                rowWidest = Math.Max(rowWidest, count);
             }
-        }
+
+            lock (tally)
+            {
+                layers += rowLayers;
+                widest = Math.Max(widest, rowWidest);
+            }
+        });
 
         GD.Print($"[terrain] layer mask: {layers / (double)area:0.00} layers a texel on average, at most {widest} of {planes}");
         using Image maskImage = Image.CreateFromData(width, height, false, Image.Format.Rgba8, bytes);

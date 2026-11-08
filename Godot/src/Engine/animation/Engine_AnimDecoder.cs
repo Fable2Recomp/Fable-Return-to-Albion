@@ -25,7 +25,8 @@ public sealed class Engine_AnimDecoder
 
     private const int SamplesPerBlock = 9;
 
-    private const int CacheBuckets = 1024;
+    /// <summary>A power of two. Each bucket keeps its last block's floats for good: 23.6 MB at 1024 in a desktop heap dump.</summary>
+    internal static int BucketsFor(bool lowRam) => lowRam ? 256 : 1024;
 
     private sealed class Block
     {
@@ -45,7 +46,7 @@ public sealed class Engine_AnimDecoder
         public Engine_AnimDataFile.ClipHeader? Header;
     }
 
-    private readonly Block[] _cache = new Block[CacheBuckets];
+    private readonly Block[] _cache;
 
     private readonly HeaderSlot[] _headers = new HeaderSlot[256];
 
@@ -54,6 +55,7 @@ public sealed class Engine_AnimDecoder
     public Engine_AnimDecoder(Engine_AnimDataFile file)
     {
         _file = file;
+        _cache = new Block[cacheBuckets];
         for (int i = 0; i < _cache.Length; i++)
         {
             _cache[i] = new Block();
@@ -141,7 +143,7 @@ public sealed class Engine_AnimDecoder
         uint blockIndex = frameInt >> 3;
         float fracInBlock = frame - (blockIndex << 3);
 
-        int bucket = (int)((((uint)offset >> 4) ^ blockIndex) & (CacheBuckets - 1));
+        int bucket = (int)((((uint)offset >> 4) ^ blockIndex) & (uint)(_cache.Length - 1));
         Block slot = _cache[bucket];
 
         lock (slot)

@@ -710,23 +710,8 @@ public sealed class Chain
             return false;
         }
 
-        foreach (GdbField field in _views[record.Db].Fields(record.Index))
-        {
-            if (field.Hash != fieldHash)
-            {
-                continue;
-            }
-
-            if (expectedType != 0xFF && (byte)field.Type != expectedType)
-            {
-                continue;
-            }
-
-            found = field;
-            return true;
-        }
-
-        return false;
+        return _views[record.Db].TryFindFirst(
+            record.Index, fieldHash, expectedType == 0xFF ? -1 : expectedType, out found);
     }
 
     /// <summary>

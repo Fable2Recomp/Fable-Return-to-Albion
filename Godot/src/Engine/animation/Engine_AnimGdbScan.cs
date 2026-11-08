@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Refii.Gdb;
 
@@ -41,6 +42,12 @@ public static class Engine_AnimGdbScan
 
         private readonly HashSet<(int Clip, uint Key)> _seen = new();
 
+        public void Clear()
+        {
+            Items.Clear();
+            _seen.Clear();
+        }
+
         public void Add(ClipRef reference)
         {
             if (_seen.Add((reference.ClipIndex, reference.AnimationKey)))
@@ -48,6 +55,25 @@ public static class Engine_AnimGdbScan
                 Items.Add(reference);
             }
         }
+    }
+
+    /// <summary>
+    /// What a scan needs for each record and can reuse for the next: the scan visits every record
+    /// of every database, and most of them come to nothing.
+    /// </summary>
+    private sealed class Scratch
+    {
+        public readonly List<uint> ModelHashes = new();
+
+        public readonly RefSet Refs = new();
+
+        public readonly Stack<int> Composites = new();
+
+        public readonly HashSet<int> Visited = new();
+
+        public readonly HashSet<int> Chain = new();
+
+        public readonly HashSet<uint> Resolved = new();
     }
 
     private static Dictionary<uint, List<ClipRef>>? _groupCache;
@@ -79,22 +105,21 @@ public static class Engine_AnimGdbScan
         {
             uint recordHash = view.RecordHash(i);
 
-            if (!view.TryFindFieldOwner(i, Engine_AnimGdbHashes.Animation,
-                    (int)GdbFieldType.String, out GdbField field, out int owner))
+            if (!TryFindAnimation(view, i, out uint animation, out int owner))
             {
                 continue;
             }
 
-            if (!byKey0.TryGetValue(field.Raw, out int clipIndex))
+            if (!byKey0.TryGetValue(animation, out int clipIndex))
             {
                 continue;
             }
 
-            string label = LabelForAnimationSource(view, recordHash, field.Raw);
+            string label = LabelForAnimationSource(view, recordHash, animation);
             records[recordHash] = new AnimationRecord
             {
                 ClipIndex = clipIndex,
-                AnimHash = field.Raw,
+                AnimHash = animation,
                 Label = label,
             };
 
@@ -108,36 +133,34 @@ public static class Engine_AnimGdbScan
         {
             foreach ((uint hash, GdbFieldType type, uint raw) in view.RawFields(i))
             {
-                string label = NameForHash(view, hash);
-                if (IsGenericFieldName(hash, label))
-                {
-                    continue;
-                }
-
+                // Few fields name a clip, so that comes before anything to do with the label.
                 if (type == GdbFieldType.Reference &&
                     records.TryGetValue(raw, out AnimationRecord? referenced))
                 {
-                    AssignLabel(clips, referenced.ClipIndex, label);
+                    AssignFieldLabel(view, clips, referenced.ClipIndex, hash);
                 }
                 else if (type == GdbFieldType.String && byKey0.TryGetValue(raw, out int keyed))
                 {
-                    AssignLabel(clips, keyed, label);
+                    AssignFieldLabel(view, clips, keyed, hash);
                 }
             }
         }
 
         int added = 0;
+        var scratch = new Scratch();
+        List<uint> modelHashes = scratch.ModelHashes;
+        RefSet refs = scratch.Refs;
 
         for (int i = 0; i < view.RecordCount; i++)
         {
-            var modelHashes = new List<uint>();
-            CollectAnimatedModelHashes(view, i, modelHashes);
+            modelHashes.Clear();
+            CollectAnimatedModelHashes(view, i, modelHashes, scratch);
             if (modelHashes.Count == 0)
             {
                 continue;
             }
 
-            var refs = new RefSet();
+            refs.Clear();
             CollectClipRefs(view, i, children, records, byKey0, refs);
             if (refs.Items.Count == 0)
             {
@@ -186,22 +209,31 @@ public static class Engine_AnimGdbScan
         return added;
     }
 
+    /// <summary>Lets go of what the last database's scan kept for the next one.</summary>
+    public static void ReleaseScratch()
+    {
+        _parentOf = null;
+        _inherited = null;
+        _inheritedUsed = 0;
+        _groupCache = null;
+    }
+
     private static Dictionary<uint, List<int>> ChildrenByParent(GdbView view)
     {
         var map = new Dictionary<uint, List<int>>();
 
         for (int i = 0; i < view.RecordCount; i++)
         {
-            if (!view.TryFindLocal(i, GdbView.HashParent, (int)GdbFieldType.Reference,
-                    out GdbField parent) || parent.Raw == 0)
+            if (!view.TryFindLocalRaw(i, GdbView.HashParent, (int)GdbFieldType.Reference,
+                    out uint parent, out _) || parent == 0)
             {
                 continue;
             }
 
-            if (!map.TryGetValue(parent.Raw, out List<int>? list))
+            if (!map.TryGetValue(parent, out List<int>? list))
             {
                 list = new List<int>();
-                map[parent.Raw] = list;
+                map[parent] = list;
             }
 
             list.Add(i);
@@ -218,35 +250,28 @@ public static class Engine_AnimGdbScan
 
         for (int i = 0; i < view.RecordCount; i++)
         {
-            parents[i] = view.TryFindLocal(i, GdbView.HashParent, (int)GdbFieldType.Reference,
-                    out GdbField parent) &&
-                parent.Raw != 0 &&
-                view.TryLookup(parent.Raw, out int index) &&
+            parents[i] = view.TryFindLocalRaw(i, GdbView.HashParent, (int)GdbFieldType.Reference,
+                    out uint parent, out _) &&
+                parent != 0 &&
+                view.TryLookup(parent, out int index) &&
                 index != i
                 ? index
                 : -1;
         }
 
         _parentOf = parents;
-        _inherited = null;
         _groupCache = null;
-    }
 
-    private static void VisitRecordAndParents(GdbView view, int record, System.Action<int> visit)
-    {
-        int[] parents = _parentOf ?? System.Array.Empty<int>();
-        int current = record;
-
-        for (int depth = 0; depth < 64; depth++)
+        // The memo arrays carry over: one set sized for the largest database, not one per database.
+        if (_inherited is not null)
         {
-            if (current < 0 || current >= parents.Length)
+            foreach (InheritedEntry[] cache in _inherited.Values)
             {
-                return;
+                Array.Clear(cache, 0, Math.Min(_inheritedUsed, cache.Length));
             }
-
-            visit(current);
-            current = parents[current];
         }
+
+        _inheritedUsed = parents.Length;
     }
 
     private struct InheritedEntry
@@ -259,6 +284,9 @@ public static class Engine_AnimGdbScan
     }
 
     private static Dictionary<uint, InheritedEntry[]>? _inherited;
+
+    /// <summary>How much of each memo array the current database may have written.</summary>
+    private static int _inheritedUsed;
 
     private static bool TryLocalValue(GdbView view, int record, uint fieldHash, out uint raw)
     {
@@ -294,13 +322,15 @@ public static class Engine_AnimGdbScan
         }
 
         _inherited ??= new Dictionary<uint, InheritedEntry[]>();
-        if (!_inherited.TryGetValue(fieldHash, out InheritedEntry[]? cache))
+        if (!_inherited.TryGetValue(fieldHash, out InheritedEntry[]? cache) ||
+            cache.Length < parents.Length)
         {
             cache = new InheritedEntry[parents.Length];
             _inherited[fieldHash] = cache;
         }
 
-        var path = new List<int>();
+        Span<int> path = stackalloc int[64];
+        int walked = 0;
         int current = record;
         InheritedEntry result = new() { Done = true };
 
@@ -324,11 +354,11 @@ public static class Engine_AnimGdbScan
                 break;
             }
 
-            path.Add(current);
+            path[walked++] = current;
             current = parents[current];
         }
 
-        foreach (int node in path)
+        foreach (int node in path[..walked])
         {
             cache[node] = result;
         }
@@ -337,9 +367,38 @@ public static class Engine_AnimGdbScan
         return result.Found && result.Raw != 0 && result.Raw != Engine_AnimGdbHashes.FnvOffsetBasis;
     }
 
+    /// <summary>
+    /// <see cref="GdbView.TryFindFieldOwner"/> for the Animation field, with the parent map in place
+    /// of reading and looking up each parent again: every record of every database comes through.
+    /// </summary>
+    private static bool TryFindAnimation(GdbView view, int record, out uint raw, out int owner)
+    {
+        int[] parents = _parentOf!;
+        int current = record;
+
+        for (int depth = 0; depth < 64 && current >= 0; depth++)
+        {
+            if (view.TryFindLocalRaw(current, Engine_AnimGdbHashes.Animation,
+                    (int)GdbFieldType.String, out raw, out _))
+            {
+                owner = current;
+                return true;
+            }
+
+            current = parents[current];
+        }
+
+        raw = 0;
+        owner = -1;
+        return false;
+    }
+
     private static void CollectModelFileHashes(GdbView view, int record, List<uint> outHashes)
     {
-        VisitRecordAndParents(view, record, current =>
+        int[] parents = _parentOf ?? System.Array.Empty<int>();
+        int current = record;
+
+        for (int depth = 0; depth < 64 && current >= 0 && current < parents.Length; depth++)
         {
             foreach ((uint hash, GdbFieldType type, uint raw) in view.RawFields(current))
             {
@@ -356,38 +415,46 @@ public static class Engine_AnimGdbScan
                     PushUnique(outHashes, raw);
                 }
             }
-        });
+
+            current = parents[current];
+        }
     }
 
-    private static void CollectAnimatedModelHashes(GdbView view, int record, List<uint> outHashes)
+    private static void CollectComponent(GdbView view, uint componentHash, List<uint> outHashes)
     {
-        void CollectComponent(uint componentHash)
+        if (view.TryLookup(componentHash, out int componentRecord))
         {
-            if (view.TryLookup(componentHash, out int componentRecord))
-            {
-                CollectModelFileHashes(view, componentRecord, outHashes);
-            }
+            CollectModelFileHashes(view, componentRecord, outHashes);
         }
+    }
 
+    private static void CollectAnimatedModelHashes(
+        GdbView view, int record, List<uint> outHashes, Scratch scratch)
+    {
         if (FindInherited(view, record,
                 Engine_AnimGdbHashes.GraphicAppearanceAnimatedMeshComponent, out uint direct))
         {
-            CollectComponent(direct);
+            CollectComponent(view, direct, outHashes);
         }
 
         if (FindInherited(view, record,
                 Engine_AnimGdbHashes.GraphicAppearanceComponent, out uint appearance) &&
             view.TryLookup(appearance, out int appearanceRecord))
         {
-            VisitRecordAndParents(view, appearanceRecord, current =>
+            int[] parents = _parentOf ?? System.Array.Empty<int>();
+            int current = appearanceRecord;
+
+            for (int depth = 0; depth < 64 && current >= 0 && current < parents.Length; depth++)
             {
-                if (view.TryFindLocal(current,
+                if (view.TryFindLocalRaw(current,
                         Engine_AnimGdbHashes.GraphicAppearanceAnimatedMeshComponent,
-                        (int)GdbFieldType.Reference, out GdbField component))
+                        (int)GdbFieldType.Reference, out uint component, out _))
                 {
-                    CollectComponent(component.Raw);
+                    CollectComponent(view, component, outHashes);
                 }
-            });
+
+                current = parents[current];
+            }
         }
 
         if (!FindInherited(view, record,
@@ -404,8 +471,12 @@ public static class Engine_AnimGdbScan
             return;
         }
 
-        var stack = new Stack<int>();
-        var visited = new HashSet<int>();
+        Stack<int> stack = scratch.Composites;
+        HashSet<int> visited = scratch.Visited;
+        HashSet<uint> resolved = scratch.Resolved;
+        HashSet<int> inherited = scratch.Chain;
+        stack.Clear();
+        visited.Clear();
         stack.Push(compositeRecord);
 
         while (stack.Count != 0 && visited.Count < 512)
@@ -416,8 +487,8 @@ public static class Engine_AnimGdbScan
                 continue;
             }
 
-            var resolved = new HashSet<uint>();
-            var inherited = new HashSet<int>();
+            resolved.Clear();
+            inherited.Clear();
             int cursor = current;
 
             for (int depth = 0; depth < 64; depth++)
@@ -450,9 +521,9 @@ public static class Engine_AnimGdbScan
                     }
                 }
 
-                if (!view.TryFindLocal(cursor, GdbView.HashParent, (int)GdbFieldType.Reference,
-                        out GdbField parent) ||
-                    !view.TryLookup(parent.Raw, out int parentRecord))
+                if (!view.TryFindLocalRaw(cursor, GdbView.HashParent, (int)GdbFieldType.Reference,
+                        out uint parent, out _) ||
+                    !view.TryLookup(parent, out int parentRecord))
                 {
                     break;
                 }
@@ -461,6 +532,13 @@ public static class Engine_AnimGdbScan
             }
         }
     }
+
+    private static readonly uint[] GroupFields =
+    {
+        Engine_AnimGdbHashes.AnimationList,
+        Engine_AnimGdbHashes.Animations,
+        Engine_AnimGdbHashes.AnimationSet,
+    };
 
     private static void CollectClipRefs(
         GdbView view,
@@ -484,14 +562,7 @@ public static class Engine_AnimGdbScan
                 });
             }
 
-            uint[] groups =
-            {
-                Engine_AnimGdbHashes.AnimationList,
-                Engine_AnimGdbHashes.Animations,
-                Engine_AnimGdbHashes.AnimationSet,
-            };
-
-            foreach (uint groupField in groups)
+            foreach (uint groupField in GroupFields)
             {
                 if (FindInherited(view, scopeRecord, groupField, out uint groupHash))
                 {
@@ -549,6 +620,11 @@ public static class Engine_AnimGdbScan
 
             foreach ((uint hash, GdbFieldType type, uint raw) in view.RawFields(current))
             {
+                if (type is not (GdbFieldType.Reference or GdbFieldType.String))
+                {
+                    continue;
+                }
+
                 string label = NameForHash(view, hash);
                 if (IsGenericFieldName(hash, label))
                 {
@@ -672,8 +748,16 @@ public static class Engine_AnimGdbScan
             return false;
         }
 
-        string stem = label[..digits];
-        return stem is "Anim" or "Animation" or "Slot" or "Entry";
+        return label.AsSpan(0, digits) is "Anim" or "Animation" or "Slot" or "Entry";
+    }
+
+    private static void AssignFieldLabel(GdbView view, List<AnimClip> clips, int index, uint fieldHash)
+    {
+        string label = NameForHash(view, fieldHash);
+        if (!IsGenericFieldName(fieldHash, label))
+        {
+            AssignLabel(clips, index, label);
+        }
     }
 
     private static void AssignLabel(List<AnimClip> clips, int index, string label)

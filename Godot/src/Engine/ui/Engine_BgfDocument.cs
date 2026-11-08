@@ -286,6 +286,9 @@ public sealed class BgfSlide
 	public int EndTime;
 	public BgfSlideEntry[] Entries = Array.Empty<BgfSlideEntry>();
 
+	/// <summary>The entries as <see cref="Engine_UiElementResolve.ReleaseSlideEntries"/> reads them, made on first use.</summary>
+	internal Engine_UiElementResolve.SlideRelease? Release;
+
 	public bool IsMaster => Name.Equals("Master Slide", StringComparison.Ordinal);
 }
 
@@ -414,6 +417,9 @@ public sealed class Engine_BgfDocument
 
 	/// <summary>Authored visual states, in file order. Driven by <c>MemoryCounts[14]</c>.</summary>
 	public BgfSlide[] Slides = Array.Empty<BgfSlide>();
+
+	/// <summary>Each owner's non-master slides in file order, made on first use; see <see cref="Engine_UiElementResolve.SlideOf"/>.</summary>
+	internal Dictionary<int, List<BgfSlide>>? SlidesByOwner;
 
 	/// <summary>
 	/// The state the screen shows once its slides are applied (see
@@ -656,7 +662,7 @@ public sealed class Engine_BgfDocument
 				// Commands are attribute records — the same 8-byte `packed id + value` pair
 				// an element carries, so they use the same decode.
 				int cmdCount = checked((int)r.U32());
-				var commands = new BgfAttribute[cmdCount];
+				var commands = cmdCount == 0 ? Array.Empty<BgfAttribute>() : new BgfAttribute[cmdCount];
 				for (int c = 0; c < cmdCount; c++)
 					commands[c] = ReadAttribute(ref r);
 
@@ -666,8 +672,8 @@ public sealed class Engine_BgfDocument
 				// switches on a SUBSET of its element's tracks (`TurnOn` and `TurnOffFast` on
 				// one fader are one track each) — see Engine_HudView.BindTracks.
 				int evtCount = checked((int)r.U32());
-				var activated = new int[evtCount];
-				var events = new BgfAnimationEvent[evtCount];
+				var activated = evtCount == 0 ? Array.Empty<int>() : new int[evtCount];
+				var events = evtCount == 0 ? Array.Empty<BgfAnimationEvent>() : new BgfAnimationEvent[evtCount];
 				for (int e = 0; e < evtCount; e++)
 				{
 					ushort flag = r.U16();

@@ -1,6 +1,5 @@
+using System;
 using System.Collections.Generic;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 
 namespace Refii.Entities;
 
@@ -28,6 +27,11 @@ namespace Refii.Entities;
 /// (<see cref="Invalidate"/>), a parent bone taken or let go, a lever that changes the skip
 /// paths themselves (<see cref="Clear"/>). An entity absent from a walk loses its verdict.
 /// </para>
+/// <para>
+/// ONE LOOKUP A ROW IS THE COST THIS IS HERE TO LOSE. The guest's list keeps its order, so the slot
+/// a row found last walk is the slot it finds this walk: <see cref="TryHit(uint, ulong, int, out Kind)"/>
+/// tries that slot first, and asks the table only when the row holds someone else.
+/// </para>
 /// </remarks>
 public sealed class Engine_EntitySkipIndex
 {
@@ -49,6 +53,7 @@ public sealed class Engine_EntitySkipIndex
 
 	private struct Entry
 	{
+		public uint Address;
 		public ulong UniqueId;
 		public uint Record;
 		public string? Key;
@@ -60,11 +65,24 @@ public sealed class Engine_EntitySkipIndex
 
 		/// <summary>Something outside the feed's path changed what the verdict read; no more hits.</summary>
 		public bool Stale;
+
+		/// <summary>The slot holds a verdict.</summary>
+		public bool Held;
 	}
 
-	private readonly Dictionary<uint, Entry> _entries = new();
+	private Entry[] _slots = new Entry[256];
 
-	private readonly List<uint> _absent = new();
+	/// <summary>Slots ever used; those below this are held or on <see cref="_free"/>.</summary>
+	private int _slotCount;
+
+	private readonly Stack<int> _free = new();
+
+	private readonly Dictionary<uint, int> _slotOf = new();
+
+	/// <summary>The slot each row found last, plus one; zero for none.</summary>
+	private int[] _rowSlots = new int[256];
+
+	private readonly List<int> _absent = new();
 
 	private int _walk;
 
@@ -74,7 +92,7 @@ public sealed class Engine_EntitySkipIndex
 	private bool _drawnAdded;
 
 	/// <summary>Verdicts held.</summary>
-	public int Count => _entries.Count;
+	public int Count => _slotOf.Count;
 
 	/// <summary>Entities this walk answered from the index.</summary>
 	public int Hits { get; private set; }
@@ -97,10 +115,39 @@ public sealed class Engine_EntitySkipIndex
 	/// present for this walk; false when none is held (or it went stale), and the walk's own path
 	/// decides. The caller has already checked what every skip path checks of the statement.
 	/// </summary>
-	public bool TryHit(uint address, ulong uniqueId, out Kind kind)
+	public bool TryHit(uint address, ulong uniqueId, out Kind kind) =>
+		TryHit(address, uniqueId, -1, out kind);
+
+	/// <summary>The same, for the entity at <paramref name="row"/> of this walk's list.</summary>
+	public bool TryHit(uint address, ulong uniqueId, int row, out Kind kind)
 	{
-		ref Entry entry = ref CollectionsMarshal.GetValueRefOrNullRef(_entries, address);
-		if (Unsafe.IsNullRef(ref entry) || entry.Stale || entry.UniqueId != uniqueId)
+		int slot = -1;
+		if (row >= 0)
+		{
+			if (row >= _rowSlots.Length)
+			{
+				Array.Resize(ref _rowSlots, Math.Max(row + 1, _rowSlots.Length * 2));
+			}
+
+			slot = _rowSlots[row] - 1;
+		}
+
+		if (slot < 0 || !_slots[slot].Held || _slots[slot].Address != address)
+		{
+			if (!_slotOf.TryGetValue(address, out slot))
+			{
+				kind = default;
+				return false;
+			}
+
+			if (row >= 0)
+			{
+				_rowSlots[row] = slot + 1;
+			}
+		}
+
+		ref Entry entry = ref _slots[slot];
+		if (entry.Stale || entry.UniqueId != uniqueId)
 		{
 			kind = default;
 			return false;
@@ -128,32 +175,55 @@ public sealed class Engine_EntitySkipIndex
 	/// </summary>
 	public void Park(uint address, ulong uniqueId, Kind kind, uint record, string? key)
 	{
-		ref Entry entry = ref CollectionsMarshal.GetValueRefOrAddDefault(_entries, address, out bool exists);
-		if (!exists || entry.Walk != _walk)
+		if (!_slotOf.TryGetValue(address, out int slot))
 		{
+			slot = _free.Count != 0 ? _free.Pop() : _slotCount++;
+			if (slot == _slots.Length)
+			{
+				Array.Resize(ref _slots, _slots.Length * 2);
+			}
+
+			_slotOf[address] = slot;
 			++_present;
 		}
-		else if (entry.Hit && entry.Kind != Kind.Nothing)
+		else
 		{
-			// The same address twice in one walk, the first answered here: the walk's own set holds
-			// it now.
-			--OwnedHits;
+			ref Entry held = ref _slots[slot];
+			if (held.Walk != _walk)
+			{
+				++_present;
+			}
+			else if (held.Hit && held.Kind != Kind.Nothing)
+			{
+				// The same address twice in one walk, the first answered here: the walk's own set holds
+				// it now.
+				--OwnedHits;
+			}
 		}
 
-		entry = new Entry
+		_slots[slot] = new Entry
 		{
+			Address = address,
 			UniqueId = uniqueId,
 			Record = record,
 			Key = key,
 			Walk = _walk,
 			Kind = kind,
+			Held = true,
 		};
 	}
 
 	/// <summary>The walk's own path went past every skip: no verdict for it.</summary>
 	public void Unpark(uint address)
 	{
-		if (!_entries.Remove(address, out Entry old) || old.Walk != _walk)
+		if (!_slotOf.TryGetValue(address, out int slot))
+		{
+			return;
+		}
+
+		Entry old = _slots[slot];
+		Drop(address, slot);
+		if (old.Walk != _walk)
 		{
 			return;
 		}
@@ -165,24 +235,35 @@ public sealed class Engine_EntitySkipIndex
 		}
 	}
 
+	private void Drop(uint address, int slot)
+	{
+		_slotOf.Remove(address);
+		_slots[slot] = default;
+		_free.Push(slot);
+	}
+
 	/// <summary>
 	/// Something the verdict read changed outside the feed's path (a rig built, a parent taken):
 	/// the next walk asks the path again. This walk's presence stands; it was decided before.
 	/// </summary>
 	public void Invalidate(uint address)
 	{
-		ref Entry entry = ref CollectionsMarshal.GetValueRefOrNullRef(_entries, address);
-		if (!Unsafe.IsNullRef(ref entry))
+		if (_slotOf.TryGetValue(address, out int slot))
 		{
-			entry.Stale = true;
+			_slots[slot].Stale = true;
 		}
 	}
 
 	/// <summary>Whether this walk answered <paramref name="address"/> from here as an entity the feed owns.</summary>
 	public bool Owns(uint address)
 	{
-		ref Entry entry = ref CollectionsMarshal.GetValueRefOrNullRef(_entries, address);
-		return !Unsafe.IsNullRef(ref entry) && entry.Walk == _walk && entry.Hit && entry.Kind != Kind.Nothing;
+		if (!_slotOf.TryGetValue(address, out int slot))
+		{
+			return false;
+		}
+
+		ref Entry entry = ref _slots[slot];
+		return entry.Walk == _walk && entry.Hit && entry.Kind != Kind.Nothing;
 	}
 
 	/// <summary>
@@ -198,9 +279,10 @@ public sealed class Engine_EntitySkipIndex
 		}
 
 		_drawnAdded = true;
-		foreach ((uint address, Entry entry) in _entries)
+		for (int slot = 0; slot < _slotCount; ++slot)
 		{
-			if (entry.Walk != _walk || !entry.Hit)
+			ref Entry entry = ref _slots[slot];
+			if (!entry.Held || entry.Walk != _walk || !entry.Hit)
 			{
 				continue;
 			}
@@ -212,7 +294,7 @@ public sealed class Engine_EntitySkipIndex
 
 			if (entry.Key is { } key)
 			{
-				keys.Add((address, key));
+				keys.Add((entry.Address, key));
 			}
 		}
 	}
@@ -220,30 +302,34 @@ public sealed class Engine_EntitySkipIndex
 	/// <summary>Ends a walk: an entity it did not report keeps no verdict.</summary>
 	public void EndWalk()
 	{
-		if (_present == _entries.Count)
+		if (_present == _slotOf.Count)
 		{
 			return;
 		}
 
 		_absent.Clear();
-		foreach ((uint address, Entry entry) in _entries)
+		for (int slot = 0; slot < _slotCount; ++slot)
 		{
-			if (entry.Walk != _walk)
+			if (_slots[slot].Held && _slots[slot].Walk != _walk)
 			{
-				_absent.Add(address);
+				_absent.Add(slot);
 			}
 		}
 
-		foreach (uint address in _absent)
+		foreach (int slot in _absent)
 		{
-			_entries.Remove(address);
+			Drop(_slots[slot].Address, slot);
 		}
 	}
 
 	/// <summary>Drops every verdict: the skip paths themselves changed.</summary>
 	public void Clear()
 	{
-		_entries.Clear();
+		Array.Clear(_slots, 0, _slotCount);
+		Array.Clear(_rowSlots);
+		_slotCount = 0;
+		_free.Clear();
+		_slotOf.Clear();
 		_present = 0;
 		Hits = 0;
 		OwnedHits = 0;

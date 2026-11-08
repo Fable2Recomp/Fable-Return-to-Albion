@@ -160,7 +160,8 @@ public static class Engine_EntityMesh
             AnchorUnskinned(arrays, vertexCount, anchorBone);
 
             int added = Refii.Models.Engine_MdlSurfaceArrays.Add(target, part.SurfaceGetPrimitiveType(surface), arrays,
-                Refii.Models.Engine_MdlMesh.SurfaceLods(part, surface));
+                Refii.Models.Engine_MdlMesh.SurfaceLods(part, surface),
+                Refii.Models.Engine_MdlSurfaceArrays.LevelTable(part, surface));
             target.SurfaceSetName(added, part.SurfaceGetName(surface));
             target.SurfaceSetMaterial(added, part.SurfaceGetMaterial(surface));
         }

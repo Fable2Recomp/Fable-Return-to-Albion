@@ -30,7 +30,8 @@ public class UiArtCloneTests
         Node3D art = Art();
         try
         {
-            foreach (Node3D clone in new[] { Engine_UiArtClone.Clone(art), Engine_UiArtClone.Clone(art) })
+            // The first is a plain duplicate, the second packs the art, the third comes from that scene.
+            foreach (Node3D clone in new[] { Engine_UiArtClone.Clone(art), Engine_UiArtClone.Clone(art), Engine_UiArtClone.Clone(art) })
             {
                 var duplicate = (Node3D)art.Duplicate();
                 try
@@ -60,5 +61,64 @@ public class UiArtCloneTests
             }
         }
         finally { art.Free(); }
+    }
+
+    /// <summary>Every stored property of a tree, one line a node, walked in order: what a clone must repeat.</summary>
+    private static string Describe(Node node)
+    {
+        var text = new System.Text.StringBuilder();
+        Walk(node, node, text);
+        return text.ToString();
+
+        static void Walk(Node at, Node root, System.Text.StringBuilder text)
+        {
+            text.Append(root.GetPathTo(at)).Append(' ').Append(at.GetClass());
+            foreach (Godot.Collections.Dictionary property in at.GetPropertyList())
+            {
+                if (((long)property["usage"] & (long)PropertyUsageFlags.Storage) == 0) continue;
+                string name = (string)property["name"];
+                if (name == "owner") continue;
+                Variant value = at.Get(name);
+                // A shared resource is the same object, not an equal one.
+                text.Append(' ').Append(name).Append('=').Append(value.VariantType == Variant.Type.Object
+                    ? value.AsGodotObject()?.GetInstanceId().ToString() ?? "null"
+                    : value.ToString());
+            }
+            foreach (StringName meta in at.GetMetaList()) text.Append(" meta:").Append(meta).Append('=').Append(at.GetMeta(meta));
+            var groups = new System.Collections.Generic.List<string>();
+            foreach (StringName group in at.GetGroups()) groups.Add(group);
+            groups.Sort(System.StringComparer.Ordinal);
+            text.Append(" groups:").AppendJoin(',', groups).Append('\n');
+            foreach (Node child in at.GetChildren()) Walk(child, root, text);
+        }
+    }
+
+    [TestCase]
+    [RequireGodotRuntime]
+    public void TestEveryCloneRepeatsTheDuplicateAndPackingLeavesTheArtAlone()
+    {
+        // Under a parent, as art is in a pattern book's tree.
+        var book = new Node3D { Name = "Book" };
+        Node3D art = Art();
+        book.AddChild(art);
+        try
+        {
+            string before = Describe(art);
+            var duplicate = (Node3D)art.Duplicate();
+            string expected = Describe(duplicate);
+            duplicate.Free();
+            for (int i = 0; i < 3; i++)
+            {
+                Node3D clone = Engine_UiArtClone.Clone(art);
+                AssertThat(Describe(clone)).IsEqual(expected);
+                clone.Free();
+                // The art itself: unchanged, and its nodes own by nothing again.
+                AssertThat(Describe(art)).IsEqual(before);
+                AssertThat(art.GetNode("Quad").Owner).IsNull();
+                AssertThat(art.GetNode("Quad/Text").Owner).IsNull();
+                AssertThat(art.GetParent()).IsSame(book);
+            }
+        }
+        finally { book.Free(); }
     }
 }

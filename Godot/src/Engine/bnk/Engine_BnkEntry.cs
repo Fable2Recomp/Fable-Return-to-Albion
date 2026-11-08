@@ -4,7 +4,22 @@ namespace Refii.Bnk;
 
 public sealed class BnkEntry
 {
-    public string RelativePath { get; init; } = string.Empty;
+    private string _relativePath = string.Empty;
+
+    public string RelativePath
+    {
+        get => _relativePath;
+        init => _relativePath = value;
+    }
+
+    /// <summary>Takes a string with the same text, so the entries of one name share it.</summary>
+    internal void SharePath(string path)
+    {
+        if (string.Equals(_relativePath, path, System.StringComparison.Ordinal))
+        {
+            _relativePath = path;
+        }
+    }
 
     public uint Offset { get; init; }
 

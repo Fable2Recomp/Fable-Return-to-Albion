@@ -971,4 +971,74 @@ public class CharacterMorphTests
         AssertThat(sync.Next(0, automatic, null, 8, out _)).IsEqual(Engine_MorphLookSync.Step.None);
         AssertThat(sync.Player).IsEqual(0);
     }
+
+    [TestCase]
+    public void TheKeptFormsAnswerAsTheFreshOnesAndKeepNothing()
+    {
+        var settings = new Dictionary<string, string>
+        {
+            ["character_morphs"] = "false",
+            ["character_morph_tan"] = "0.25",
+            ["character_morph_age"] = "99",
+            ["character_morph_will"] = "nan",
+        };
+        Func<string, string> read = key => settings.TryGetValue(key, out string? value) ? value : string.Empty;
+        var kept = new Dictionary<string, float> { ["left over"] = 1 };
+        var fresh = Engine_CharacterMorphs.StoreValues(read);
+        AssertThat(ReferenceEquals(Engine_CharacterMorphs.StoreValues(read, kept), kept)).IsTrue();
+        AssertThat(Engine_CharacterMorphs.SameLook(fresh, kept)).IsTrue();
+
+        // The read before leaves no mark on the next: an input the settings stop stating is its default again.
+        settings.Clear();
+        AssertThat(Engine_CharacterMorphs.SameLook(Engine_CharacterMorphs.StoreValues(read), Engine_CharacterMorphs.StoreValues(read, kept))).IsTrue();
+        AssertThat(kept[Engine_CharacterMorphs.StoreKey(HeroMorphInput.Tan)]).IsEqual(0.5f);
+        AssertThat(kept[Engine_CharacterMorphs.StoreKey(HeroMorphInput.Age)]).IsEqual(30f);
+
+        Func<string, float?> whole = key => key.EndsWith("automatic") ? 0 : 0.25f;
+        AssertThat(Engine_CharacterMorphs.StoredLook(whole, kept)).IsTrue();
+        AssertThat(Engine_CharacterMorphs.SameLook(Engine_CharacterMorphs.StoredLook(whole), kept)).IsTrue();
+        Func<string, float?> lacking = key => key.EndsWith("age") ? null : 0.25f;
+        AssertThat(Engine_CharacterMorphs.StoredLook(lacking, kept)).IsFalse();
+        AssertThat(Engine_CharacterMorphs.StoredLook(lacking)).IsNull();
+    }
+
+    [TestCase]
+    public void TheLookCheckAllocatesNothingOnAStandingWorld()
+    {
+        Func<string, string> slot1 = _ => string.Empty;
+        Func<string, string> slot2 = Engine_CharacterMorphs.ForSlot(slot1, 2);
+        Func<string, float?> store = _ => 0.5f;
+        var local = new Dictionary<string, float>();
+        var stored = new Dictionary<string, float>();
+        void Check()
+        {
+            Engine_CharacterMorphs.StoreValues(slot1, local);
+            Engine_CharacterMorphs.StoreValues(slot2, local);
+            Engine_CharacterMorphs.StoredLook(store, stored);
+            Engine_CharacterMorphs.SameLook(stored, stored);
+        }
+
+        Check();
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 100; i++) Check();
+        AssertThat(GC.GetAllocatedBytesForCurrentThread() - before).IsEqual(0L);
+    }
+
+    [TestCase]
+    public void TheKeysAreTheInputsNamedInLowerCase()
+    {
+        foreach (HeroMorphInput input in Enum.GetValues<HeroMorphInput>())
+        {
+            string name = input.ToString().ToLowerInvariant();
+            AssertThat(Engine_CharacterMorphs.Key(input)).IsEqual("character_morph_" + name);
+            AssertThat(Engine_CharacterMorphs.Key(input, 1)).IsEqual("character_morph_" + name);
+            AssertThat(Engine_CharacterMorphs.Key(input, 2)).IsEqual("character_morph2_" + name);
+            AssertThat(Engine_CharacterMorphs.StoreKey(input)).IsEqual("character_morphs." + name);
+            AssertThat(Engine_CharacterMorphs.SlotKey("character_morph_" + name, 2)).IsEqual("character_morph2_" + name);
+        }
+
+        AssertThat(Engine_CharacterMorphs.SlotKey("character_morph_other", 2)).IsEqual("character_morph2_other");
+        AssertThat(Engine_CharacterMorphs.SlotKey("character_morphs", 2)).IsEqual("character_morphs2");
+        AssertThat(Engine_CharacterMorphs.SlotKey("something_else", 2)).IsEqual("something_else");
+    }
 }

@@ -38,7 +38,8 @@ public static class Engine_LevelShadowPrebuild
 	public static Progress Run(
 		string gameDirectory,
 		Action<Progress>? report = null,
-		CancellationToken cancel = default)
+		CancellationToken cancel = default,
+		Lazy<BnkFileSystem>? mount = null)
 	{
 		if (string.IsNullOrEmpty(gameDirectory) || !Directory.Exists(gameDirectory))
 		{
@@ -50,7 +51,8 @@ public static class Engine_LevelShadowPrebuild
 			return new Progress(0, 0, 0, 0, 0, "classic lighting active (shadow maps disabled)");
 		}
 
-		using BnkFileSystem banks = BnkFileSystem.Mount(gameDirectory);
+		using BnkFileSystem? owned = mount is null ? BnkFileSystem.Mount(gameDirectory) : null;
+		BnkFileSystem banks = mount?.Value ?? owned!;
 		Func<string, byte[]?> read = path => banks.TryGetFile(path, out BnkFile file) ? file.ReadAllBytes() : null;
 
 		List<LevelEntry> levels = Engine_LevelIndex.Discover(banks);

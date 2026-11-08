@@ -80,6 +80,7 @@ public static class Engine_TexPrebuild
 		// `using` above disposes, and the launcher runs this sweep in its own process — a sky,
 		// weather or terrain read in the editor afterwards would have gone to a dead bank.
 		Func<string, byte[]?>? previous = Engine_BnkMeshLoader.Resolver;
+		Func<string, int, byte[]?>? previousHead = Engine_BnkMeshLoader.HeadResolver;
 		Engine_BnkMeshLoader.SetResolver(read);
 		try
 		{
@@ -185,7 +186,7 @@ public static class Engine_TexPrebuild
 		}
 		finally
 		{
-			Engine_BnkMeshLoader.SetResolver(previous);
+			Engine_BnkMeshLoader.SetResolver(previous, previousHead);
 		}
 	}
 
@@ -278,7 +279,8 @@ public static class Engine_TexPrebuild
 	public static Progress RunTextures(
 		string gameDirectory,
 		Action<Progress>? report = null,
-		CancellationToken cancel = default)
+		CancellationToken cancel = default,
+		Lazy<BnkFileSystem>? mount = null)
 	{
 		if (gameDirectory.Length == 0 || !System.IO.Directory.Exists(gameDirectory))
 		{
@@ -290,11 +292,12 @@ public static class Engine_TexPrebuild
 			return new Progress(0, 0, 0, 0, "enhancement off");
 		}
 
-		using BnkFileSystem banks = BnkFileSystem.Mount(gameDirectory);
+		using BnkFileSystem? owned = mount is null ? BnkFileSystem.Mount(gameDirectory) : null;
+		BnkFileSystem banks = mount?.Value ?? owned!;
 		Func<string, byte[]?> read =
 			path => banks.TryGetFile(path, out BnkFile file) ? file.ReadAllBytes() : null;
 
-		List<Item> items = Enumerate(banks, out _);
+		List<Item> items = EnumerateOnce(banks, out _);
 		int total = items.Count;
 
 		var done = 0;
@@ -370,7 +373,8 @@ public static class Engine_TexPrebuild
 	public static Progress RunOrm(
 		string gameDirectory,
 		Action<Progress>? report = null,
-		CancellationToken cancel = default)
+		CancellationToken cancel = default,
+		Lazy<BnkFileSystem>? mount = null)
 	{
 		if (gameDirectory.Length == 0 || !System.IO.Directory.Exists(gameDirectory))
 		{
@@ -382,11 +386,12 @@ public static class Engine_TexPrebuild
 			return new Progress(0, 0, 0, 0, "orm disabled");
 		}
 
-		using BnkFileSystem banks = BnkFileSystem.Mount(gameDirectory);
+		using BnkFileSystem? owned = mount is null ? BnkFileSystem.Mount(gameDirectory) : null;
+		BnkFileSystem banks = mount?.Value ?? owned!;
 		Func<string, byte[]?> read =
 			path => banks.TryGetFile(path, out BnkFile file) ? file.ReadAllBytes() : null;
 
-		Enumerate(banks, out List<OrmItem> orm);
+		EnumerateOnce(banks, out List<OrmItem> orm);
 		int total = orm.Count;
 
 		var done = 0;
@@ -467,6 +472,22 @@ public static class Engine_TexPrebuild
 	/// a prebuild could do for them is the base decode, and the six-face decode wants the live
 	/// path's assembly rather than this one's.
 	/// </remarks>
+	private sealed record Enumeration(List<Item> Items, List<OrmItem> Orm);
+
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<BnkFileSystem, Enumeration> Enumerations = new();
+
+	/// <summary>The work list of a mount, read once: it opens every model in the game.</summary>
+	private static List<Item> EnumerateOnce(BnkFileSystem banks, out List<OrmItem> orm)
+	{
+		Enumeration enumeration = Enumerations.GetValue(banks, mounted =>
+		{
+			List<Item> items = Enumerate(mounted, out List<OrmItem> found);
+			return new Enumeration(items, found);
+		});
+		orm = enumeration.Orm;
+		return enumeration.Items;
+	}
+
 	private static List<Item> Enumerate(BnkFileSystem banks, out List<OrmItem> orm)
 	{
 		var seen = new HashSet<Item>();

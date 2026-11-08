@@ -414,6 +414,8 @@ public partial class GameSession : Node
 				string directory = _bootDirectory;
 				var worker = new System.Threading.Thread(() =>
 				{
+					// One mount for the sweeps, opened by the first that has work.
+					var mount = new Lazy<Refii.Bnk.BnkFileSystem>(() => Refii.Bnk.BnkFileSystem.Mount(directory));
 					try
 					{
 						Refii.Textures.Engine_TexPrebuild.Progress result =
@@ -421,7 +423,7 @@ public partial class GameSession : Node
 								_ormStatus = progress.Total == 0
 									? "Preparing materials..."
 									: $"Preparing materials... {progress.Done:N0} of " +
-									  $"{progress.Total:N0}");
+									  $"{progress.Total:N0}", mount: mount);
 						GD.Print($"[game] orm sweep: {result.Built} built, " +
 							$"{result.Failed} failed of {result.Total}");
 
@@ -433,7 +435,7 @@ public partial class GameSession : Node
 									? "Checking static shadows..."
 									: progress.Built == 0 && progress.UpToDate > 0
 										? "Checking static shadows..."
-										: $"Baking static shadows... {progress.Done:N0} of {progress.Total:N0}");
+										: $"Baking static shadows... {progress.Done:N0} of {progress.Total:N0}", mount: mount);
 						GD.Print($"[game] shadow sweep: {shadowProg.Built} built, " +
 							$"{shadowProg.UpToDate} up-to-date, {shadowProg.Failed} failed of {shadowProg.Total}");
 
@@ -449,7 +451,7 @@ public partial class GameSession : Node
 									_ormStatus = progress.Total == 0
 										? "Enhancing textures..."
 										: $"Enhancing textures... {progress.Done:N0} of " +
-										  $"{progress.Total:N0}");
+										  $"{progress.Total:N0}", mount: mount);
 							GD.Print($"[game] texture sweep: {sharp.Built} prepared, " +
 								$"{sharp.Failed} failed of {sharp.Total}");
 
@@ -458,7 +460,7 @@ public partial class GameSession : Node
 									_ormStatus = progress.Total == 0
 										? "Preparing terrain..."
 										: $"Preparing terrain... {progress.Done:N0} of " +
-										  $"{progress.Total:N0}");
+										  $"{progress.Total:N0}", mount: mount);
 							GD.Print($"[game] terrain sweep: {ground.Built} enhanced, " +
 								$"{ground.Failed} unreadable of {ground.Total}");
 						}
@@ -471,6 +473,11 @@ public partial class GameSession : Node
 					}
 					finally
 					{
+						if (mount.IsValueCreated)
+						{
+							mount.Value.Dispose();
+						}
+
 						_ormDone = true;
 					}
 				})

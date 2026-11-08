@@ -105,6 +105,29 @@ public class GraphicsPresetTests
         AssertThat(values.Count).IsEqual(0);
     }
 
+    /// <summary>Low asks for the low-memory tier on any phone; the others leave it to the phone's memory, and a phone already on Low takes it.</summary>
+    [TestCase]
+    public void TestLowTakesTheLowMemoryTier()
+    {
+        AssertThat(GraphicsPresets.LowValues["android_low_ram_mode"]).IsEqual("on");
+        AssertThat(GraphicsPresets.MediumValues["android_low_ram_mode"]).IsEqual("auto");
+        AssertThat(GraphicsPresets.HighValues["android_low_ram_mode"]).IsEqual("auto");
+        AssertThat(GraphicsPresets.UltraValues["android_low_ram_mode"]).IsEqual("auto");
+        var low = new Dictionary<string, string>
+        {
+            [GraphicsPresets.Key] = GraphicsPresets.Low, [GraphicsPresets.RevisionKey] = "12", ["android_low_ram_mode"] = "auto",
+        };
+        AssertThat(GraphicsPresets.Upgrade(low)).IsTrue();
+        AssertThat(low["android_low_ram_mode"]).IsEqual("on");
+        var custom = new Dictionary<string, string>
+        {
+            [GraphicsPresets.Key] = GraphicsPresets.Custom, [GraphicsPresets.RevisionKey] = "12", ["android_low_ram_mode"] = "auto",
+        };
+        GraphicsPresets.Upgrade(custom);
+        AssertThat(custom["android_low_ram_mode"]).IsEqual("auto");
+    }
+
+    /// <summary>The first preset survives the next read: the fixture shadow migration has nothing left to do.</summary>
     [TestCase]
     public void TestAPhoneGetsBalancedOnceAndKeepsThePlayersChoice()
     {

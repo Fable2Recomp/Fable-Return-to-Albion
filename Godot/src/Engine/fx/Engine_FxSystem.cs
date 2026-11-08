@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using Godot;
 
 namespace Refii.Fx;
@@ -95,6 +97,10 @@ public sealed partial class Engine_FxSystem
 
     private sealed class VisualRuntime
     {
+        /// <summary>The batch this visual last drew into, at <see cref="SinkZ"/> (<see cref="SinkFor"/>).</summary>
+        public List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)>? Sink;
+        public int SinkZ;
+
         public string Texture = string.Empty;
         public int Cols = 1;
         public int Rows = 1;
@@ -1143,7 +1149,8 @@ public sealed partial class Engine_FxSystem
     {
         float step = inst.Step;
         float dts = inst.DtSec;
-        pt.Vel[0] += rt.WindDisp[0]; pt.Vel[1] += rt.WindDisp[1]; pt.Vel[2] += rt.WindDisp[2];
+        float[] vel = pt.Vel, pos = pt.Pos, wind = rt.WindDisp, velMul = rt.VelMul;
+        vel[0] += wind[0]; vel[1] += wind[1]; vel[2] += wind[2];
         if (hasAttractors)
         {
             foreach (int ai in rt.Attractors)
@@ -1171,8 +1178,8 @@ public sealed partial class Engine_FxSystem
             }
         }
 
-        pt.Vel[0] *= rt.VelMul[0]; pt.Vel[1] *= rt.VelMul[1]; pt.Vel[2] *= rt.VelMul[2];
-        float vpx = pt.Vel[0], vpy = pt.Vel[1], vpz = pt.Vel[2];
+        vel[0] *= velMul[0]; vel[1] *= velMul[1]; vel[2] *= velMul[2];
+        float vpx = vel[0], vpy = vel[1], vpz = vel[2];
         if (hasP14)
         {
             FxEmitter d = rt.Def!;
@@ -1192,7 +1199,7 @@ public sealed partial class Engine_FxSystem
             pt.Vel[0] *= mx; pt.Vel[1] *= my; pt.Vel[2] *= mz;
         }
 
-        pt.Pos[0] += vpx; pt.Pos[1] += vpy; pt.Pos[2] += vpz;
+        pos[0] += vpx; pos[1] += vpy; pos[2] += vpz;
         if (rt.Def!.Spin != 0f) Spin(rt, pt, rt.Def.Spin / Fps * step);
     }
 
@@ -1564,18 +1571,6 @@ public sealed partial class Engine_FxSystem
                 held.SummaryValid = false;
             }
         }
-        else
-        {
-            // The step's starting point, for the draw between steps.
-            foreach (EmitterRuntime held in inst.Emitters)
-            {
-                foreach (ParticleState live in held.Particles)
-                {
-                    live.PrevPos[0] = live.Pos[0]; live.PrevPos[1] = live.Pos[1]; live.PrevPos[2] = live.Pos[2];
-                    live.HasPrev = true;
-                }
-            }
-        }
 
         if (inst.SharedRand < 0f) inst.SharedRand = Frand();
 
@@ -1670,9 +1665,10 @@ public sealed partial class Engine_FxSystem
             float lifeFrames = d.LifetimeFrames;
             int nvis = rt.Visuals.Count;
             int kept = 0;
-            for (int i = 0; i < rt.Particles.Count; i++)
+            Span<ParticleState> particles = CollectionsMarshal.AsSpan(rt.Particles);
+            for (int i = 0; i < particles.Length; i++)
             {
-                ParticleState p = rt.Particles[i];
+                ParticleState p = particles[i];
                 bool dead = !infLoop ? p.Age >= p.Life : (useLife && lifeFrames <= (p.LoopIter + 1) * p.Age);
                 if (dead)
                 {
@@ -1680,10 +1676,16 @@ public sealed partial class Engine_FxSystem
                     continue;
                 }
 
-                rt.Particles[kept++] = p;
+                // The step's starting point, for the draw between steps. Here rather than in a
+                // pass of its own: nothing before this reads a particle, and each pass over the
+                // particles is a cache miss per particle.
+                float[] from = p.Pos, prev = p.PrevPos;
+                prev[0] = from[0]; prev[1] = from[1]; prev[2] = from[2];
+                p.HasPrev = true;
+                particles[kept++] = p;
             }
 
-            rt.Particles.RemoveRange(kept, rt.Particles.Count - kept);
+            rt.Particles.RemoveRange(kept, particles.Length - kept);
             if (rt.Beam)
             {
                 BeamTick(inst, rt);
@@ -1733,8 +1735,12 @@ public sealed partial class Engine_FxSystem
             bool hasP14 = !d.Generic[14].IsEmpty;
             bool hasVec0 = !d.Vec0.IsEmpty;
             VisualRuntime? v0 = nvis > 0 ? rt.Visuals[0] : null;
+            Span<VisualRuntime> visuals = CollectionsMarshal.AsSpan(rt.Visuals);
+            int[] slotFrames = rt.SlotFrames;
+            int rollFrames = v0 is null ? 0 : v0.IsMesh ? v0.RsFrames : v0.FlickerFrames;
+            bool rolls = v0 is not null && (v0.IsMesh ? v0.HasRandScale : v0.HasFlicker) && rollFrames > 0;
             ParticleSummary summary = ParticleSummary.Begin();
-            foreach (ParticleState pt in rt.Particles)
+            foreach (ParticleState pt in CollectionsMarshal.AsSpan(rt.Particles))
             {
                 if (rt.LoopCount != 0 && rt.LoopEnd <= pt.Age)
                 {
@@ -1743,20 +1749,20 @@ public sealed partial class Engine_FxSystem
                 }
 
                 bool crossed = false;
-                while (pt.Seg < nvis && pt.Age >= rt.Visuals[pt.Seg].DelayFrames) { pt.Seg++; crossed = true; }
+                while (pt.Seg < nvis && pt.Age >= visuals[pt.Seg].DelayFrames) { pt.Seg++; crossed = true; }
                 int kb = nvis <= 1 ? 0 : Math.Clamp(pt.Seg, 1, nvis - 1);
                 int ka = Math.Max(kb - 1, 0);
                 float t = 0f;
                 if (nvis > 1 && kb > ka)
                 {
-                    t = (pt.Age - rt.Visuals[ka].DelayFrames) * rt.Visuals[kb].InvSpan;
+                    t = (pt.Age - visuals[ka].DelayFrames) * visuals[kb].InvSpan;
                     t = Math.Clamp(t, 0f, 1f);
                 }
 
                 if (crossed && v0 is not null && nvis > 1)
                 {
-                    VisualRuntime vp = rt.Visuals[ka];
-                    VisualRuntime vk = rt.Visuals[kb];
+                    VisualRuntime vp = visuals[ka];
+                    VisualRuntime vk = visuals[kb];
                     if (vk.IsMesh)
                     {
                         pt.Spin = pt.SpinNext;
@@ -1776,13 +1782,14 @@ public sealed partial class Engine_FxSystem
 
                 if (v0 is not null && !v0.IsMesh && nvis > 0)
                 {
-                    float fcsA = rt.Visuals[ka].FrameSpeed;
-                    float fcsB = rt.Visuals[kb].FrameSpeed;
+                    float fcsA = visuals[ka].FrameSpeed;
+                    float fcsB = visuals[kb].FrameSpeed;
                     float fade = (fcsA + ((fcsB - fcsA) * t)) * spreadScale;
+                    float[] frames = pt.TexFrame;
                     for (int j = 0; j < 4; j++)
                     {
-                        float fr = pt.TexFrame[j] + fade;
-                        pt.TexFrame[j] = fr < rt.SlotFrames[j] ? fr : 0f;
+                        float fr = frames[j] + fade;
+                        frames[j] = fr < slotFrames[j] ? fr : 0f;
                     }
                 }
 
@@ -1801,15 +1808,10 @@ public sealed partial class Engine_FxSystem
                 pt.KeyAge = pt.Age;
                 pt.Age += step;
 
-                if (v0 is not null)
+                if (rolls)
                 {
-                    int rsFrames = v0.IsMesh ? v0.RsFrames : v0.FlickerFrames;
-                    bool rsOn = v0.IsMesh ? v0.HasRandScale : v0.HasFlicker;
-                    if (rsOn && rsFrames > 0)
-                    {
-                        int clk = (int)MathF.Floor(pt.Age + 0.5f);
-                        if (clk % rsFrames == 0) RollSize(v0, pt);
-                    }
+                    int clk = (int)MathF.Floor(pt.Age + 0.5f);
+                    if (clk % rollFrames == 0) RollSize(v0!, pt);
                 }
 
                 if (summarize) summary.Add(pt);
@@ -1857,22 +1859,26 @@ public sealed partial class Engine_FxSystem
         LastRebased = false;
         if (!lightsOnly && nodeGlobal is { } current)
         {
-            if (_previousGlobal is { } previous && _detachedParticles)
+            // Same as last frame, the usual case: nothing to rebase, and the same up.
+            if (_previousGlobal is not { } previous || previous != current)
             {
-                Transform3D delta = current.AffineInverse() * previous;
-                if (!delta.IsEqualApprox(Transform3D.Identity)) Rebase(delta);
-            }
+                if (_previousGlobal is { } moved && _detachedParticles)
+                {
+                    Transform3D delta = current.AffineInverse() * moved;
+                    if (!delta.IsEqualApprox(Transform3D.Identity)) Rebase(delta);
+                }
 
-            _previousGlobal = current;
+                _previousGlobal = current;
 
-            // Godot world up into node-local, then Godot (x, y, z) back to the sim's guest
-            // layout (x, z, y); `Gravity` carries the sign. The DIRECTION only: a placement's
-            // scale already scales every other term of the simulation with the node.
-            Vector3 up = current.Basis.Inverse() * Vector3.Up;
-            if (up.IsFinite() && !up.IsZeroApprox())
-            {
-                up = up.Normalized();
-                _down[0] = up.X; _down[1] = up.Z; _down[2] = up.Y;
+                // Godot world up into node-local, then Godot (x, y, z) back to the sim's guest
+                // layout (x, z, y); `Gravity` carries the sign. The DIRECTION only: a placement's
+                // scale already scales every other term of the simulation with the node.
+                Vector3 up = current.Basis.Inverse() * Vector3.Up;
+                if (up.IsFinite() && !up.IsZeroApprox())
+                {
+                    up = up.Normalized();
+                    _down[0] = up.X; _down[1] = up.Z; _down[2] = up.Y;
+                }
             }
         }
 
@@ -2565,6 +2571,9 @@ public sealed partial class Engine_FxSystem
     {
         public readonly List<int> Capacity = new();
         public readonly List<int> LastWritten = new();
+
+        /// <summary>Whether a surface has gone up whole since it was built, so its tail is zeros on the server too.</summary>
+        public readonly List<bool> Uploaded = new();
         public readonly List<Material?> Material = new();
         public readonly List<byte[]> VertexBytes = new();
         public readonly List<byte[]> AttributeBytes = new();
@@ -2616,6 +2625,7 @@ public sealed partial class Engine_FxSystem
             int removeCount = slots.Capacity.Count - existing;
             slots.Capacity.RemoveRange(existing, removeCount);
             slots.LastWritten.RemoveRange(existing, removeCount);
+            slots.Uploaded.RemoveRange(existing, removeCount);
             slots.Material.RemoveRange(existing, removeCount);
             slots.VertexBytes.RemoveRange(existing, removeCount);
             slots.AttributeBytes.RemoveRange(existing, removeCount);
@@ -2625,6 +2635,7 @@ public sealed partial class Engine_FxSystem
             mesh.ClearSurfaces();
             slots.Capacity.Clear();
             slots.LastWritten.Clear();
+            slots.Uploaded.Clear();
             slots.Material.Clear();
             slots.VertexBytes.Clear();
             slots.AttributeBytes.Clear();
@@ -2682,6 +2693,7 @@ public sealed partial class Engine_FxSystem
             int removeCount = slots.Capacity.Count - keep;
             slots.Capacity.RemoveRange(keep, removeCount);
             slots.LastWritten.RemoveRange(keep, removeCount);
+            slots.Uploaded.RemoveRange(keep, removeCount);
             slots.Material.RemoveRange(keep, removeCount);
             slots.VertexBytes.RemoveRange(keep, removeCount);
             slots.AttributeBytes.RemoveRange(keep, removeCount);
@@ -2757,6 +2769,7 @@ public sealed partial class Engine_FxSystem
         FlushBuild(mesh, material, list, capacity);
         slots.Capacity.Add(capacity);
         slots.LastWritten.Add(0);
+        slots.Uploaded.Add(false);
         slots.Material.Add(material);
         slots.VertexBytes.Add(System.Array.Empty<byte>());
         slots.AttributeBytes.Add(System.Array.Empty<byte>());
@@ -2836,17 +2849,7 @@ public sealed partial class Engine_FxSystem
         int motionAt = InPlaceLayout.Custom0Offset;
         int colourAt = InPlaceLayout.Custom1Offset;
 
-        for (int i = 0; i < n; i++)
-        {
-            (Vector3 pos, Vector2 uv, Color col, Vector2 off, Vector4 motion) = list[i];
-            System.Runtime.InteropServices.MemoryMarshal.Write(vertices.Slice(i * 12, 12), in pos);
-            Span<byte> a = attributes.Slice(i * stride, stride);
-            System.Runtime.InteropServices.MemoryMarshal.Write(a.Slice(uvAt, 8), in uv);
-            System.Runtime.InteropServices.MemoryMarshal.Write(a.Slice(uv2At, 8), in off);
-            System.Runtime.InteropServices.MemoryMarshal.Write(a.Slice(motionAt, 16), in motion);
-            // Direct 16-byte IEEE float write into CUSTOM1: preserves unclamped linear HDR colours.
-            System.Runtime.InteropServices.MemoryMarshal.Write(a.Slice(colourAt, 16), in col);
-        }
+        PackInPlace(CollectionsMarshal.AsSpan(list), vertices, attributes, stride, uvAt, uv2At, motionAt, colourAt);
 
         // Only clear newly unused tail vertices between n and prevWritten; all remaining tail
         // vertices up to capacity are already zeroed (degenerate zero-area triangles).
@@ -2860,13 +2863,53 @@ public sealed partial class Engine_FxSystem
             }
         }
 
+        int sent = InPlaceUploadVertices(n, prevWritten, capacity, slots.Uploaded[surface]);
         slots.LastWritten[surface] = n;
+        slots.Uploaded[surface] = true;
         FableFx.FrameWork.Lap(8, ref workAt);
         Rid rid = mesh.GetRid();
-        RenderingServer.MeshSurfaceUpdateVertexRegion(rid, surface, 0, (ReadOnlySpan<byte>)vertices);
-        RenderingServer.MeshSurfaceUpdateAttributeRegion(rid, surface, 0, (ReadOnlySpan<byte>)attributes);
-        Refii.Core.Engine_SpikeNotes.Upload(vertices.Length + attributes.Length);
+        RenderingServer.MeshSurfaceUpdateVertexRegion(rid, surface, 0, (ReadOnlySpan<byte>)vertices.Slice(0, sent * 12));
+        RenderingServer.MeshSurfaceUpdateAttributeRegion(rid, surface, 0, (ReadOnlySpan<byte>)attributes.Slice(0, sent * stride));
+        Refii.Core.Engine_SpikeNotes.Upload((sent * 12) + (sent * stride));
         FableFx.FrameWork.Lap(9, ref workAt);
+    }
+
+    /// <summary>
+    /// How many vertices of a surface an in-place write sends, from its start: those of this batch
+    /// and of the last, the rest being the zeros the server already holds. The first write to a
+    /// surface goes whole, over the tail it was built with.
+    /// </summary>
+    internal static int InPlaceUploadVertices(int written, int lastWritten, int capacity, bool uploaded) =>
+        !uploaded ? capacity : System.Math.Min(System.Math.Max(written, lastWritten), capacity);
+
+    /// <summary>
+    /// A batch into the vertex and attribute streams, with the batch's size checked once rather
+    /// than by five slices a vertex. The offsets are <see cref="InPlaceLayout"/>'s, which holds
+    /// the four attributes inside the stride.
+    /// </summary>
+    internal static void PackInPlace(
+        ReadOnlySpan<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> batch,
+        Span<byte> vertices,
+        Span<byte> attributes,
+        int stride,
+        int uvAt,
+        int uv2At,
+        int motionAt,
+        int colourAt)
+    {
+        ref byte vertexAt = ref MemoryMarshal.GetReference(vertices.Slice(0, batch.Length * 12));
+        ref byte attributeAt = ref MemoryMarshal.GetReference(attributes.Slice(0, batch.Length * stride));
+        for (int i = 0; i < batch.Length; i++)
+        {
+            ref readonly (Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion) v = ref batch[i];
+            Unsafe.WriteUnaligned(ref Unsafe.Add(ref vertexAt, i * 12), v.Pos);
+            ref byte a = ref Unsafe.Add(ref attributeAt, i * stride);
+            Unsafe.WriteUnaligned(ref Unsafe.Add(ref a, uvAt), v.Uv);
+            Unsafe.WriteUnaligned(ref Unsafe.Add(ref a, uv2At), v.Off);
+            Unsafe.WriteUnaligned(ref Unsafe.Add(ref a, motionAt), v.Motion);
+            // Direct 16-byte IEEE float write into CUSTOM1: preserves unclamped linear HDR colours.
+            Unsafe.WriteUnaligned(ref Unsafe.Add(ref a, colourAt), v.Col);
+        }
     }
 
     /// <summary>Builds one surface of <paramref name="padded"/> vertices from the batch.</summary>
@@ -3145,6 +3188,13 @@ public sealed partial class Engine_FxSystem
     /// <summary>The batch a visual's quads go in, created on first sight and pooled thereafter.</summary>
     private List<(Vector3, Vector2, Color, Vector2, Vector4)> SinkFor(VisualRuntime v, int z)
     {
+        // Asked per particle and the key hashes two strings, so the visual keeps its answer: a
+        // batch list stays with the system once made, and a visual's key fields do not change.
+        if (v.Sink is { } kept && v.SinkZ == z)
+        {
+            return kept;
+        }
+
         var key = new DrawKey(v.Texture, v.BlendMode, v.SatMask, v.SoftDepth, z);
         if (!_batches.TryGetValue(key, out List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)>? list))
         {
@@ -3152,6 +3202,8 @@ public sealed partial class Engine_FxSystem
             _batches[key] = list;
         }
 
+        v.Sink = list;
+        v.SinkZ = z;
         return list;
     }
 

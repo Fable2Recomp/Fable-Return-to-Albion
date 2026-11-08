@@ -277,14 +277,14 @@ public sealed class Engine_StaticTwins
         return name.ToLowerInvariant();
     }
 
-    private void AddByModel(Node3D node, Twin twin)
-    {
-        if (!node.HasMeta(Refii.Level.Engine_PropStreamer.ModelPathMeta))
-        {
-            return;
-        }
+    /// <summary>The model key a prop node states, or empty when it states none.</summary>
+    private static string StatedModelKey(Node3D node) =>
+        node.HasMeta(Refii.Level.Engine_PropStreamer.ModelPathMeta)
+            ? ModelKey(node.GetMeta(Refii.Level.Engine_PropStreamer.ModelPathMeta).AsString())
+            : string.Empty;
 
-        string key = ModelKey(node.GetMeta(Refii.Level.Engine_PropStreamer.ModelPathMeta).AsString());
+    private void AddByModel(string key, Twin twin)
+    {
         if (key.Length == 0)
         {
             return;
@@ -559,6 +559,10 @@ public sealed class Engine_StaticTwins
                 // which keeps it in step; a batch built elsewhere still asks the server.
                 int count = mesh.InstanceCount;
                 Transform3D[]? stated = Refii.Level.Engine_PropShadow.StatedTransforms(mesh);
+
+                // ONCE PER BATCH: a batch's instances are one model, and a level has tens of thousands
+                // of them (Bower Lake 56,200), each a metadata read and four strings on the mount's frame.
+                string batchKey = StatedModelKey(batched);
                 for (int i = 0; i < count; i++)
                 {
                     Transform3D placed;
@@ -574,7 +578,7 @@ public sealed class Engine_StaticTwins
                     }
 
                     var twin = new Twin(batched, i, placed);
-                    AddByModel(batched, twin);
+                    AddByModel(batchKey, twin);
                     if (i < records.Length && records[i] != 0L)
                     {
                         Add((uint)records[i], twin);
@@ -587,7 +591,7 @@ public sealed class Engine_StaticTwins
             if (child is MeshInstance3D single)
             {
                 var twin = new Twin(single, -1, single.Transform);
-                AddByModel(single, twin);
+                AddByModel(StatedModelKey(single), twin);
                 if (single.HasMeta(Refii.Level.Engine_PropStreamer.RecordMeta))
                 {
                     long record =

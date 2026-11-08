@@ -97,6 +97,13 @@ public class PropVisibilityCullTests
     }
 
     [TestCase]
+    public void TestBakeDrainTakesTheHeldBudgetAndKeepsItsOwnInPlay()
+    {
+        AssertThat(Engine_PropStreamer.DrainMilliseconds(100.0)).IsEqual(100.0);
+        AssertThat(Engine_PropStreamer.DrainMilliseconds(Engine_PropStreamer.DefaultMsPerFrame)).IsEqual(2.0);
+    }
+
+    [TestCase]
     public void TestSpatialLocalityBatchLimitIsSetToOne()
     {
         AssertThat(Engine_LevelProps.SelectableInstanceLimit).IsEqual(1);

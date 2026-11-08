@@ -84,7 +84,7 @@ public sealed class ShaderCeilingTests
         Engine_ShaderCeilingSource.Built tree = Build("res://src/Engine/material/lite/standard_material_tree_lite.gdshader", cut: true);
         AssertThat(tree.KeptVertex).IsTrue();
         AssertThat(tree.Cut).IsTrue();
-        AssertThat(tree.Code.Contains("VERTEX = fable_tree_sway(VERTEX, CUSTOM1, MODEL_MATRIX);")).IsTrue();
+        AssertThat(tree.Code.Contains("VERTEX = mix(VERTEX, fable_tree_sway(VERTEX, CUSTOM1, MODEL_MATRIX), sway_keep);")).IsTrue();
         AssertThat(tree.Code.Contains("if (alpha_scissor_on && fable_ceiling_texel.a < alpha_scissor_threshold)")).IsTrue();
         AssertThat(tree.Code.Contains("render_mode unshaded, blend_mix, depth_draw_opaque, cull_disabled;")).IsTrue();
         AssertThat(tree.Code.Contains("fable_transfer")).IsFalse();
@@ -95,6 +95,36 @@ public sealed class ShaderCeilingTests
         Engine_ShaderCeilingSource.Built flat = Build("res://src/Engine/material/lite/standard_material_tree_lite.gdshader", cut: false);
         AssertThat(flat.Code.Contains("discard")).IsFalse();
         AssertThat(flat.AlphaTested).IsTrue();
+    }
+
+    /// <summary>`flatvs` keeps the whole vertex stage and reads what it hands on, behind a test never taken.</summary>
+    [TestCase]
+    public void FlatVsKeepsTheVertexStageAndItsOutputs()
+    {
+        Engine_ShaderCeilingSource.Built standard = Engine_ShaderCeilingSource.Build(
+            Read("res://src/Engine/material/lite/standard_material_lite.gdshader")!,
+            "res://src/Engine/material/lite/standard_material_lite.gdshader", Read, cut: true, (0.5f, 0.4f, 0.3f),
+            keepVaryings: true)!.Value;
+        AssertThat(standard.KeptVertex).IsTrue();
+        AssertThat(standard.Code.Contains("// shaderCeiling: flatvs of")).IsTrue();
+        AssertThat(standard.Code.Contains("fable_transfer(CUSTOM0")).IsTrue();
+        AssertThat(standard.Code.Contains("ALBEDO += (FRAGCOORD.x < 0.0 ? 1.0 : 0.0) * vec3(")).IsTrue();
+        foreach (string read in new[] { "float(v_transfer.w)", "float(v_tree_fade)", "float(fable_world.z)", "NORMAL.x", "UV.x", "UV2.x", "TANGENT.x" })
+        {
+            AssertThat(standard.Code.Contains(read)).IsTrue();
+        }
+        AssertThat(standard.Code.Contains("void light()")).IsFalse();
+        AssertThat(standard.Code.Contains("float(v_specular")).IsFalse();
+
+        Engine_ShaderCeilingSource.Built tree = Engine_ShaderCeilingSource.Build(
+            Read("res://src/Engine/material/lite/standard_material_tree_lite.gdshader")!,
+            "res://src/Engine/material/lite/standard_material_tree_lite.gdshader", Read, cut: true, (0.5f, 0.4f, 0.3f),
+            keepVaryings: true)!.Value;
+        AssertThat(tree.Code.Contains("fable_tree_sway(VERTEX, CUSTOM1, MODEL_MATRIX)")).IsTrue();
+        AssertThat(tree.Cut).IsTrue();
+
+        // flatcut is as it was.
+        AssertThat(Build("res://src/Engine/material/lite/standard_material_lite.gdshader", cut: true).Code.Contains("FRAGCOORD.x < 0.0 ? 1.0")).IsFalse();
     }
 
     /// <summary>The wind's WIND1 offset stays; its PRT varying goes, and with it the transfer function.</summary>

@@ -185,13 +185,20 @@ std::string ReadGuestString(const uint8_t* base, uint32_t handle, std::size_t ca
     if (!plausible(characters)) {
         return std::string();
     }
+    // A 64-byte block at a time, never across one: a read reaches no page the characters up to the
+    // NUL do not already lie on. This runs for every attachment's dummy on every guest frame.
     std::string out;
-    for (std::size_t i = 0; i < cap; ++i) {
-        const uint8_t c = GuestByteAt(base, characters + static_cast<uint32_t>(i));
-        if (c == 0) {
+    while (out.size() < cap) {
+        const uint32_t at = characters + static_cast<uint32_t>(out.size());
+        const std::size_t chunk = std::min<std::size_t>(64u - (at & 63u), cap - out.size());
+        char block[64];
+        CopyGuest(base, at, block, chunk);
+        const void* end = std::memchr(block, 0, chunk);
+        if (end != nullptr) {
+            out.append(block, static_cast<const char*>(end) - block);
             break;
         }
-        out.push_back(static_cast<char>(c));
+        out.append(block, chunk);
     }
     return out;
 }
@@ -1310,6 +1317,69 @@ uint32_t EntityComponent(const uint8_t* base, uint32_t entity, uint32_t id) {
     for (uint32_t at = pairs; at + 8u <= pairs_end; at += 8u) {
         if (read32(at) == id) {
             const uint32_t component = read32(at + 4u);
+            return plausible(component) ? component : 0u;
+        }
+    }
+
+    return 0u;
+}
+
+/// One read of the entity fields the list walks ask of every entity: UniqueID (+0x14) through the
+/// state byte (+0x90). A walk of thousands of entities made a guarded call per field.
+struct EntityFields {
+    static constexpr uint32_t kFirst = 0x14u;
+    uint8_t bytes[0x91u - kFirst];
+
+    EntityFields(const uint8_t* base, uint32_t entity) {
+        CopyGuest(base, entity + kFirst, bytes, sizeof(bytes));
+    }
+
+    uint8_t Byte(uint32_t offset) const { return bytes[offset - kFirst]; }
+
+    uint32_t Word(uint32_t offset) const {
+        uint32_t value;
+        std::memcpy(&value, bytes + (offset - kFirst), sizeof(value));
+        return __builtin_bswap32(value);
+    }
+};
+
+/// EntityComponent over fields already read.
+uint32_t EntityComponentOf(const uint8_t* base, const EntityFields& fields, uint32_t id) {
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+
+    if (((fields.Word(0x24u + (id / 32u) * 4u) >> (id % 32u)) & 1u) == 0u) {
+        return 0u;
+    }
+
+    const uint32_t pairs = fields.Word(0x48u);
+    const uint32_t pairs_end = fields.Word(0x4Cu);
+    if (!plausible(pairs) || pairs_end < pairs || (pairs_end - pairs) > 8u * 512u) {
+        return 0u;
+    }
+
+    const auto pair_at = [base](uint32_t at, uint32_t& pair_id, uint32_t& component) {
+        uint32_t pair[2];
+        CopyGuest(base, at, pair, sizeof(pair));
+        pair_id = __builtin_bswap32(pair[0]);
+        component = __builtin_bswap32(pair[1]);
+    };
+
+    uint32_t pair_id = 0u;
+    uint32_t component = 0u;
+    const uint32_t accelerator = fields.Word(0x8Cu);
+    if (plausible(accelerator)) {
+        const uint32_t at = pairs + 8u * GuestByteAt(base, accelerator + id);
+        if (at + 8u <= pairs_end) {
+            pair_at(at, pair_id, component);
+            if (pair_id == id) {
+                return plausible(component) ? component : 0u;
+            }
+        }
+    }
+
+    for (uint32_t at = pairs; at + 8u <= pairs_end; at += 8u) {
+        pair_at(at, pair_id, component);
+        if (pair_id == id) {
             return plausible(component) ? component : 0u;
         }
     }
@@ -5823,8 +5893,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
         return address >= 0x10000u && address < 0xC0000000u;
     };
     const auto read_vector = [&](uint32_t at, uint32_t* dst, int lanes) {
+        uint32_t raw[4];
+        CopyGuest(base, at, raw, (std::size_t)lanes * 4u);
         for (int i = 0; i < lanes; ++i) {
-            dst[i] = read32(at + (uint32_t)(i * 4));
+            dst[i] = __builtin_bswap32(raw[i]);
         }
     };
 
@@ -5844,10 +5916,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
     /// clean 180° — so the characters simply stand in one fixed direction and nothing reports a
     /// fault. Rejecting here lets the NEXT source have its turn instead.
     const auto unit_quaternion_at = [&](uint32_t at, uint32_t* dst) -> bool {
+        uint32_t bits[4];
+        read_vector(at, bits, 4);
         float q[4];
         for (int i = 0; i < 4; ++i) {
-            const uint32_t bits = read32(at + (uint32_t)(i * 4));
-            std::memcpy(&q[i], &bits, sizeof(q[i]));
+            std::memcpy(&q[i], &bits[i], sizeof(q[i]));
             if (!std::isfinite(q[i])) {
                 return false;
             }
@@ -5858,10 +5931,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
             return false;
         }
 
-        for (int i = 0; i < 4; ++i) {
-            dst[i] = read32(at + (uint32_t)(i * 4));
-        }
-
+        std::memcpy(dst, bits, sizeof(bits));
         return true;
     };
 
@@ -5950,15 +6020,17 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
 
     for (uint32_t steps = 0u; plausible(node) && written < max_entities && steps < guard;
          ++steps) {
-        const uint32_t next = read32(node + 0u);
-        const uint32_t entity = read32(node + 8u);
-        node = next;
+        uint32_t list_node[3];
+        CopyGuest(base, node, list_node, sizeof(list_node));
+        const uint32_t entity = __builtin_bswap32(list_node[2]);
+        node = __builtin_bswap32(list_node[0]);
 
         if (!plausible(entity)) {
             break;
         }
 
-        if ((read8(entity + 0x90u) & 0x40u) == 0u) {
+        const EntityFields fields(base, entity);
+        if ((fields.Byte(0x90u) & 0x40u) == 0u) {
             continue;  // not LIVE
         }
 
@@ -5967,7 +6039,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
             KeepAnimatedInView(base, entity);
         }
 
-        const uint32_t placement = read32(entity + 0x7Cu);
+        const uint32_t placement = fields.Word(0x7Cu);
         if (!plausible(placement)) {
             continue;  // no placement component == not drawable
         }
@@ -6036,8 +6108,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
             }
 
             uint32_t lanes[3];
+            read_vector(phantom + 0xD0u, lanes, 3);
             for (int i = 0; i < 3; ++i) {
-                lanes[i] = read32(phantom + 0xD0u + (uint32_t)(i * 4));
                 float value;
                 std::memcpy(&value, &lanes[i], sizeof(value));
                 if (!std::isfinite(value)) {
@@ -6063,9 +6135,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
             }
 
             // Column-major: element (row, col) is float [col * 4 + row].
+            uint32_t raw[12];
+            CopyGuest(base, phantom + 0xA0u, raw, sizeof(raw));
             float m[12];
             for (int i = 0; i < 12; ++i) {
-                const uint32_t bits = read32(phantom + 0xA0u + (uint32_t)(i * 4));
+                const uint32_t bits = __builtin_bswap32(raw[i]);
                 std::memcpy(&m[i], &bits, sizeof(m[i]));
                 if (!std::isfinite(m[i])) {
                     return false;
@@ -6269,7 +6343,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
         // The model hash, off whichever graphic-appearance component the entity carries.
         uint32_t model = 0u;
         for (const ModelSlot& slot : kModelSlots) {
-            const uint32_t component = EntityComponent(base, entity, slot.id);
+            const uint32_t component = EntityComponentOf(base, fields, slot.id);
             if (plausible(component)) {
                 model = read32(component + slot.offset);
                 if (model != 0u) {
@@ -6288,9 +6362,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
         row[6] = orientation[3];
         row[7] = model;
         row[8] = entity;
-        row[9] = read32(entity + 0x14u);  // UniqueID, high
-        row[10] = read32(entity + 0x18u); // UniqueID, low
-        row[11] = read32(entity + 0x1Cu); // GDB record hash
+        row[9] = fields.Word(0x14u);  // UniqueID, high
+        row[10] = fields.Word(0x18u); // UniqueID, low
+        row[11] = fields.Word(0x1Cu); // GDB record hash
 
         // The pair the guest itself interpolates.
         //
@@ -6312,7 +6386,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
         // Lanes are sent as `read32` returns them (already swapped); the C# side reads each word
         // through `Int32BitsToSingle`. Same id as `kVisibilityId`, which is function-scoped.
         constexpr uint8_t kRenderableId = 3u;
-        const uint32_t renderable = EntityComponent(base, entity, kRenderableId);
+        const uint32_t renderable = EntityComponentOf(base, fields, kRenderableId);
         row[12] = 0u;
         row[13] = 0u;
         row[14] = 0u;
@@ -6330,14 +6404,22 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
         appearance[3] = appearance[4] = appearance[5] = appearance[6] = 0x3F800000u;
         appearance[kAppearanceFlags] = kAppearanceDrawable;
         if (plausible(renderable)) {
-            row[12] = read32(renderable + 0xA0u);
-            row[13] = read32(renderable + 0xA4u);
-            row[14] = read32(renderable + 0xA8u);
-            row[15] = read32(renderable + 0xB0u);
-            row[16] = read32(renderable + 0xB4u);
-            row[17] = read32(renderable + 0xB8u);
-            row[18] = read32(renderable + 0xBCu);
-            row[19] = GuestByteAt(base, renderable + 0xC9u) != 0u ? 1u : 0u;
+            // +0x60 through +0xC9 in one read, for the pair, its enable and the highlight below.
+            uint8_t state[0xCAu - 0x60u];
+            CopyGuest(base, renderable + 0x60u, state, sizeof(state));
+            const auto state_word = [&state](uint32_t offset) {
+                uint32_t value;
+                std::memcpy(&value, state + (offset - 0x60u), sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            row[12] = state_word(0xA0u);
+            row[13] = state_word(0xA4u);
+            row[14] = state_word(0xA8u);
+            row[15] = state_word(0xB0u);
+            row[16] = state_word(0xB4u);
+            row[17] = state_word(0xB8u);
+            row[18] = state_word(0xBCu);
+            row[19] = state[0xC9u - 0x60u] != 0u ? 1u : 0u;
 
             // The targeting highlight. The colour lives on the renderable (component 3) as RGBA
             // at +96..99, written by `sub_825738F0` and submitted as a shader constant by
@@ -6349,11 +6431,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
             // The colour stated to the setter (hooked in `target_highlight.cpp`, past the
             // component-159 redirect) wins; the component bytes are the fallback, and are what
             // a component the setter has never named reads back as.
-            const uint32_t on_component =
-                (static_cast<uint32_t>(GuestByteAt(base, renderable + 0x60u)) << 24) |
-                (static_cast<uint32_t>(GuestByteAt(base, renderable + 0x61u)) << 16) |
-                (static_cast<uint32_t>(GuestByteAt(base, renderable + 0x62u)) << 8) |
-                static_cast<uint32_t>(GuestByteAt(base, renderable + 0x63u));
+            const uint32_t on_component = state_word(0x60u);
             const uint32_t said = refii::vfs::StatedHighlightFor(renderable);
             row[20] = said != 0u ? said : on_component;
 
@@ -6950,7 +7028,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityViewSphere(uint32_t entity, flo
         return 0u;  // swapped during the copy; the next call reads the new block
     }
 
-    float points[kMaxBones + 1u][3] = {{0.0f, 0.0f, 0.0f}};
+    // Entries past `bones` are never read: no 3 KB of zeroes per rig per guest frame.
+    float points[kMaxBones + 1u][3];
+    points[0][0] = points[0][1] = points[0][2] = 0.0f;
     float low[3] = {0.0f, 0.0f, 0.0f};
     float high[3] = {0.0f, 0.0f, 0.0f};
     for (uint32_t i = 0u; i < bones; ++i) {
@@ -8018,16 +8098,6 @@ static uint32_t ForEachStatedAttachment(uint8_t* base, uint32_t max_records, Vis
         return 0u;
     }
 
-    /// The entity's component by id — the accelerator byte table at +0x8C when it is there,
-    /// the sorted {id, pointer} pairs at +0x48..+0x4C otherwise. Same walk the entity feed uses.
-    const auto component = [&](uint32_t entity, uint32_t id) -> uint32_t {
-        const uint32_t word = read32(entity + 0x24u + ((id / 32u) * 4u));
-        if (((word >> (id % 32u)) & 1u) == 0u) {
-            return 0u;
-        }
-        return EntityComponent(base, entity, id);
-    };
-
     uint32_t written = 0u;
     uint32_t node = read32(manager + 8u);
     const uint32_t counted = read32(manager + 0x10u);
@@ -8035,19 +8105,23 @@ static uint32_t ForEachStatedAttachment(uint8_t* base, uint32_t max_records, Vis
 
     for (uint32_t steps = 0u; plausible(node) && written < max_records && steps < guard;
          ++steps) {
-        const uint32_t next = read32(node + 0u);
-        const uint32_t entity = read32(node + 8u);
-        node = next;
+        uint32_t list_node[3];
+        CopyGuest(base, node, list_node, sizeof(list_node));
+        const uint32_t entity = __builtin_bswap32(list_node[2]);
+        node = __builtin_bswap32(list_node[0]);
 
         if (!plausible(entity)) {
             break;
         }
 
-        if ((read8(entity + 0x90u) & 0x40u) == 0u) {
+        const EntityFields fields(base, entity);
+        if ((fields.Byte(0x90u) & 0x40u) == 0u) {
             continue;  // not LIVE
         }
 
-        const uint32_t attachment = component(entity, 22u);
+        // The entity's component by id — the accelerator byte table at +0x8C when it is there,
+        // the sorted {id, pointer} pairs at +0x48..+0x4C otherwise. Same walk the entity feed uses.
+        const uint32_t attachment = EntityComponentOf(base, fields, 22u);
         if (!plausible(attachment)) {
             continue;
         }

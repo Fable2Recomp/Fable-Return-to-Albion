@@ -386,6 +386,11 @@ public sealed class Engine_UiTheme
 		node.MaterialOverride = mesh is null
 			? null
 			: Engine_UiSceneBuilder.TextMaterial(opaque, atlas);
+		if (mesh is null)
+		{
+			Engine_UiCloneBinding.NoteMaterialCleared();
+		}
+
 		if (node.MaterialOverride is ShaderMaterial fresh)
 		{
 			if (clip is { } c && c.VariantType != Variant.Type.Nil)

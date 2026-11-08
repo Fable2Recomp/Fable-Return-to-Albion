@@ -135,7 +135,7 @@ public static class Engine_PropDrawRange
 	public static PropModelClass ClassOf(string modelPath) =>
 		Classes.GetOrAdd(modelPath, static path =>
 		{
-			byte[]? bytes = Refii.Models.Engine_BnkMeshLoader.ReadBytes(path);
+			byte[]? bytes = Refii.Models.Engine_BnkMeshLoader.ReadHead(path, 79);
 			if (bytes is null || bytes.Length <= 78)
 			{
 				return PropModelClass.Static;

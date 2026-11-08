@@ -3064,7 +3064,8 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
     /// </summary>
     /// <remarks>
     /// One counter per section of this walk; <see cref="Engine_UiCloneBinding"/> profiles the
-    /// binding's own share separately.
+    /// binding's own share separately, and its <see cref="Engine_UiCloneBinding.Timed"/> says
+    /// whether these run too.
     /// </remarks>
     public static long TicksValues;
 
@@ -3246,13 +3247,13 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
         _placedPip = ExpressionPip;
         _refreshed = true;
         ++Walks;
-        long walkMark = System.Diagnostics.Stopwatch.GetTimestamp();
+        long walkMark = Engine_UiCloneBinding.Mark();
         if (read && ReadsValues)
         {
             Values.Read();
         }
 
-        TicksValues += System.Diagnostics.Stopwatch.GetTimestamp() - walkMark;
+        Engine_UiCloneBinding.Lap(ref TicksValues, ref walkMark);
 
         // Nothing before the first publish: an empty registry means "the hero has not spawned",
         // not "everything is at zero".
@@ -3287,7 +3288,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
         foreach (Built built in _built)
         {
             ++WalkedPieces;
-            long mark = System.Diagnostics.Stopwatch.GetTimestamp();
+            long mark = Engine_UiCloneBinding.Mark();
 
             // A widget's stand-in in the editor: at its place, its frame inside the screen edge
             // its home is on.
@@ -3378,9 +3379,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
 
             built.Node.Visible = true;
 
-            long now = System.Diagnostics.Stopwatch.GetTimestamp();
-            TicksGates += now - mark;
-            mark = now;
+            Engine_UiCloneBinding.Lap(ref TicksGates, ref mark);
 
             // The piece's own parts follow the guest per element — which page of a widget is up,
             // what has been ghosted, and which picture each slot carries.
@@ -3393,9 +3392,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
 
             RescaleClonedBars(built);
 
-            now = System.Diagnostics.Stopwatch.GetTimestamp();
-            TicksApply += now - mark;
-            mark = now;
+            Engine_UiCloneBinding.Lap(ref TicksApply, ref mark);
 
             // By piece ID: the flash container for the same element is also Art 'ExpressionMeter',
             // and lighting the pip in that hollow clone put a white dot at the screen's centre.
@@ -3405,9 +3402,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
             }
 
             // Timed apart from the live texts below.
-            now = System.Diagnostics.Stopwatch.GetTimestamp();
-            TicksPip += now - mark;
-            mark = now;
+            Engine_UiCloneBinding.Lap(ref TicksPip, ref mark);
 
             TintStated(built);
 
@@ -3440,9 +3435,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                 }
             }
 
-            now = System.Diagnostics.Stopwatch.GetTimestamp();
-            TicksTexts += now - mark;
-            mark = now;
+            Engine_UiCloneBinding.Lap(ref TicksTexts, ref mark);
 
             Vector2 at = Engine_HudLayout.Place(built.Piece, extent);
 
@@ -3471,17 +3464,23 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
             // The canvas factor multiplies the authored size, never replaces it. Composed from
             // the remembered basis rather than accumulated onto the live one, so the write stays
             // absolute across frames.
-            now = System.Diagnostics.Stopwatch.GetTimestamp();
-            TicksPlace += now - mark;
-            mark = now;
+            Engine_UiCloneBinding.Lap(ref TicksPlace, ref mark);
 
-            built.Node.Transform = new Transform3D(
+            // One write, and none when the piece stands where it stood: Godot does not compare,
+            // so a write walks the piece's subtree and restates every instance under it to the
+            // renderer. A bar places its own origin, in DriveBar.
+            Transform3D standing = built.Node.Transform;
+            var placed = new Transform3D(
                 built.Authored.Scaled(new Vector3(scale * built.ExtraScale, scale * built.ExtraScale, 1f)),
-                built.Node.Transform.Origin);
+                built.Piece.Driven == Engine_HudLayout.Drive.Bar && built.Tracks.Count == 0
+                    ? standing.Origin
+                    : new Vector3(at.X, at.Y, built.Piece.Depth));
+            if (placed != standing)
+            {
+                built.Node.Transform = placed;
+            }
 
-            now = System.Diagnostics.Stopwatch.GetTimestamp();
-            TicksTransform += now - mark;
-            mark = now;
+            Engine_UiCloneBinding.Lap(ref TicksTransform, ref mark);
 
             switch (built.Piece.Driven)
             {
@@ -3489,7 +3488,6 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                 // timeline (t = value x 10) and the piece's tracks say what moves. The left-edge
                 // bar scaling below serves only meter pieces with no applicable tracks.
                 case Engine_HudLayout.Drive.Bar when built.Tracks.Count > 0:
-                    built.Node.Position = new Vector3(at.X, at.Y, built.Piece.Depth);
                     ScrubTracks(built, at, stateResolve);
                     break;
 
@@ -3497,7 +3495,6 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                 // (registry 4); the tick is `phase × 1000`. No phase means it is not pulsing —
                 // the art stays as authored rather than hiding.
                 case Engine_HudLayout.Drive.Pulse:
-                    built.Node.Position = new Vector3(at.X, at.Y, built.Piece.Depth);
                     if (built.Tracks.Count > 0 && Values.Pulser(built.Value) is { } phase)
                     {
                         ScrubAt(built, at, Mathf.Clamp(phase, 0f, 1f) * 1000f, stateResolve);
@@ -3510,12 +3507,10 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                     break;
 
                 case Engine_HudLayout.Drive.Text:
-                    built.Node.Position = new Vector3(at.X, at.Y, built.Piece.Depth);
                     DriveText(built);
                     break;
 
                 default:
-                    built.Node.Position = new Vector3(at.X, at.Y, built.Piece.Depth);
                     if (built.Tracks.Count > 0)
                     {
                         ScrubNested(built, at, stateResolve);
@@ -3524,7 +3519,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                     break;
             }
 
-            TicksDrive += System.Diagnostics.Stopwatch.GetTimestamp() - mark;
+            Engine_UiCloneBinding.Lap(ref TicksDrive, ref mark);
 
             // The drive hides too: `ScrubTracks` and `DriveBar` return early on a meter the guest
             // has never published, after both gates above have passed.
@@ -3894,6 +3889,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
         {
             label.Mesh = null;
             label.MaterialOverride = null;
+            Engine_UiCloneBinding.NoteMaterialCleared();
             return;
         }
 

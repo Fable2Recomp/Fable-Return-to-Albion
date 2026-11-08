@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
@@ -110,6 +111,71 @@ public sealed class ShaderSpecialisationTests
         AssertThat(reads[0].Contains("float m = lightmap_colour.w;", StringComparison.Ordinal)).IsTrue();
     }
 
+    /// <summary>
+    /// The builds each low-memory scope can make, from every mix of flags the material code can
+    /// reach on a stock phone (no ORM, no authored PBR): vegetation only on the two-sided, wind and
+    /// tree builds, a grass bend only on vegetation's no-specular ones.
+    /// </summary>
+    [TestCase]
+    public void LowMemoryScopesBoundTheBuilds()
+    {
+        string[] models = Engine_ShaderVariant.AllVariantPaths
+            .Where(p => !Engine_ShaderVariant.IsTerrainSplat(p) && !p.Contains("/lite/modern/", StringComparison.Ordinal))
+            .ToArray();
+        AssertThat(models.Length).IsEqual(13);
+
+        int Builds(Engine_ShaderSpecialisation.FoldScope scope)
+        {
+            var builds = new HashSet<string>();
+            foreach (string path in models)
+            {
+                foreach (bool emission in new[] { false, true })
+                foreach (bool normal in new[] { false, true })
+                foreach (bool vegetation in Engine_ShaderVariant.DrawsVegetation(path) ? new[] { false, true } : new[] { false })
+                foreach (bool bend in vegetation && Engine_ShaderVariant.DrawsGrass(path) ? new[] { false, true } : new[] { false })
+                {
+                    string[] folds = Engine_ShaderSpecialisation.FoldDefines(false, false, emission, vegetation, normal, bend);
+                    builds.Add(path + ":" + string.Join(",", Engine_ShaderSpecialisation.ScopeFolds(scope, path, folds)));
+                }
+            }
+
+            return builds.Count;
+        }
+
+        AssertThat(Builds(Engine_ShaderSpecialisation.FoldScope.Off)).IsEqual(13);
+        AssertThat(Builds(Engine_ShaderSpecialisation.FoldScope.Const)).IsEqual(13);
+        AssertThat(Builds(Engine_ShaderSpecialisation.FoldScope.Normal)).IsEqual(26);
+        AssertThat(Builds(Engine_ShaderSpecialisation.FoldScope.All)).IsEqual(92);
+    }
+
+    /// <summary>A scope only ever narrows the folds, so a flag that is on stays a uniform in every one of them.</summary>
+    [TestCase]
+    public void ScopesKeepTheFlagsThatAreOn()
+    {
+        string lite = Engine_ShaderVariant.AllVariantPaths.First(p => p.EndsWith("/lite/standard_material_lite.gdshader", StringComparison.Ordinal));
+        foreach (Engine_ShaderSpecialisation.FoldScope scope in Enum.GetValues<Engine_ShaderSpecialisation.FoldScope>())
+        {
+            AssertThat(Engine_ShaderSpecialisation.ScopeFolds(scope, lite, Engine_ShaderSpecialisation.FoldDefines(true, true, true, true, true, true))).IsEmpty();
+        }
+
+        string[] folds = Engine_ShaderSpecialisation.FoldDefines(false, false, false, false, false, false);
+        AssertThat(Engine_ShaderSpecialisation.ScopeFolds(Engine_ShaderSpecialisation.FoldScope.Off, lite, folds)).IsEmpty();
+        AssertThat(Engine_ShaderSpecialisation.ScopeFolds(Engine_ShaderSpecialisation.FoldScope.All, lite, folds)).IsEqual(folds);
+        AssertThat(Engine_ShaderSpecialisation.ScopeFolds(Engine_ShaderSpecialisation.FoldScope.Normal, lite, folds))
+            .ContainsExactly("FABLE_SPEC_NOT_PBR", "FABLE_SPEC_NO_ORM", "FABLE_SPEC_NO_NORMAL_MAP", "FABLE_SPEC_NO_GRASS_BEND");
+    }
+
+    /// <summary>The key's spellings, and the default for anything else.</summary>
+    [TestCase]
+    public void FoldScopeKeyParses()
+    {
+        AssertThat(Engine_ShaderSpecialisation.ParseFoldScope("off")).IsEqual(Engine_ShaderSpecialisation.FoldScope.Off);
+        AssertThat(Engine_ShaderSpecialisation.ParseFoldScope("\"CONST\" ")).IsEqual(Engine_ShaderSpecialisation.FoldScope.Const);
+        AssertThat(Engine_ShaderSpecialisation.ParseFoldScope("all")).IsEqual(Engine_ShaderSpecialisation.FoldScope.All);
+        AssertThat(Engine_ShaderSpecialisation.ParseFoldScope("normal")).IsEqual(Engine_ShaderSpecialisation.FoldScope.Normal);
+        AssertThat(Engine_ShaderSpecialisation.ParseFoldScope("what")).IsEqual(Engine_ShaderSpecialisation.FoldScope.Normal);
+    }
+
     /// <summary>A fold for each flag that is off, none for one that is on; each one the body knows.</summary>
     [TestCase]
     public void FoldsOnlyTheFlagsThatAreOff()
@@ -179,5 +245,22 @@ public sealed class ShaderSpecialisationTests
             AssertThat(Engine_ShaderSpecialisation.RebuildWaiting).IsFalse();
         }
         finally { Engine_ShaderSpecialisation.SetShadowlessForTests(null); }
+    }
+
+    /// <summary>Each vegetation flag folds one way or the other; only a tree build drops the transfer, and the body knows every define.</summary>
+    [TestCase]
+    public void VegetationFoldsBothWays()
+    {
+        string[] plain = Engine_ShaderSpecialisation.VegetationDefines(false, false, false, tree: false);
+        AssertThat(plain).ContainsExactly("FABLE_SPEC_NOT_FOLIAGE", "FABLE_SPEC_NOT_GRASS", "FABLE_SPEC_NO_FOLIAGE_NORMALS");
+        string[] leaf = Engine_ShaderSpecialisation.VegetationDefines(true, false, true, tree: true);
+        AssertThat(leaf).ContainsExactly("FABLE_SPEC_FOLIAGE", "FABLE_SPEC_NOT_GRASS", "FABLE_SPEC_FOLIAGE_NORMALS", "FABLE_SPEC_TREE_NO_TRANSFER");
+        AssertThat(Engine_ShaderSpecialisation.VegetationDefines(false, true, false, tree: false)).Contains("FABLE_SPEC_GRASS");
+
+        string body = File("res://src/Engine/material/standard_material_body.gdshaderinc");
+        foreach (string define in plain.Concat(leaf).Append("FABLE_SPEC_GRASS"))
+        {
+            AssertThat(body.Contains("defined(" + define + ")") || body.Contains("#ifdef " + define)).IsTrue();
+        }
     }
 }

@@ -265,15 +265,29 @@ public sealed partial class Engine_HudModPieces : Node3D
 	/// </summary>
 	private Engine_UiValueSources.Context ContextFor(Piece piece)
 	{
-		bool followsTwo = piece.Follow.Length != 0 && Engine_HudLayout.OwnerOf(
-			new Engine_HudLayout.Piece(piece.Follow.Split(',')[0].Trim(), string.Empty, default, default)) ==
-			Engine_UiSeats.Seat.PlayerTwo;
+		bool followsTwo = piece.Follow.Length != 0 && FollowsPlayerTwo(piece.Follow);
 		int player = Engine_UiValueSources.PlayerFor(ForPlayerTwo, followsTwo);
 		return _contexts[player - 1] ??= (Sources ?? Standalone).ForPlayer(player) with
 		{
 			StandIn = PreviewSource is null && PreviewValue is null ? (Sources ?? Standalone).StandIn : PreviewStand,
 		};
 	}
+
+	/// <summary>Whether a <c>follow</c> text's first name is player two's widget, worked out once per text.</summary>
+	private bool FollowsPlayerTwo(string follow)
+	{
+		if (!_followsTwo.TryGetValue(follow, out bool two))
+		{
+			two = Engine_HudLayout.OwnerOf(
+				new Engine_HudLayout.Piece(follow.Split(',')[0].Trim(), string.Empty, default, default)) ==
+				Engine_UiSeats.Seat.PlayerTwo;
+			_followsTwo[follow] = two;
+		}
+
+		return two;
+	}
+
+	private readonly Dictionary<string, bool> _followsTwo = new();
 
 	/// <summary>The preview's stand-in for a source: the Studio's own, else the one stand-in for every non-game value.</summary>
 	private float? PreviewStand(string source)
@@ -744,7 +758,7 @@ public sealed partial class Engine_HudModPieces : Node3D
 	private bool DrawText(Built built, MeshInstance3D label)
 	{
 		Piece piece = built.Piece;
-		string? text = Engine_HudModText.Resolve(piece.Text, piece.Format, ContextFor(piece), Tag);
+		string? text = Engine_HudModText.Resolve(piece.Text, piece.Format, ContextFor(piece), _tag ??= Tag);
 		if (text is null || Theme is null)
 		{
 			return false;
@@ -760,6 +774,9 @@ public sealed partial class Engine_HudModPieces : Node3D
 
 		return true;
 	}
+
+	/// <summary><see cref="Tag"/> as one delegate: a method group makes a new one per draw.</summary>
+	private System.Func<string, string?>? _tag;
 
 	private string? Tag(string tag) =>
 		StringBook is { } book && book.TryGetString(tag, out string text) && text.Length != 0 ? text : null;

@@ -211,6 +211,193 @@ public class BnkMappedReadTests
 		}
 	}
 
+	[TestCase]
+	public void ReadIntoAndReadHeadMatchTheWholeRead()
+	{
+		byte[] payload = Pattern(ChunkSize * 3 + 12_345, 8);
+		byte[] tiny = Pattern(100, 9);
+		byte[] compressedBank = WriteCompressedBank(new[] { ("big.bin", payload), ("tiny.bin", tiny) });
+		byte[] storedBank = BnkWriter.Write(new[]
+		{
+			new BnkWriterEntry { Path = "big.bin", Bytes = payload },
+			new BnkWriterEntry { Path = "tiny.bin", Bytes = tiny },
+		});
+
+		string dir = NewTempDir();
+		try
+		{
+			foreach ((string name, byte[] bank) in new[] { ("compressed.bnk", compressedBank), ("stored.bnk", storedBank) })
+			{
+				string path = Path.Combine(dir, name);
+				File.WriteAllBytes(path, bank);
+				AssertThat(BnkArchive.TryOpen(path, out BnkArchive? mapped, out _)).IsTrue();
+				AssertThat(BnkArchive.TryOpenBytes("copy", bank, out BnkArchive? copy, out _)).IsTrue();
+				using (mapped)
+				using (copy)
+				{
+					foreach (BnkArchive archive in new[] { mapped!, copy! })
+					{
+						BnkEntry big = Find(archive, "big.bin");
+						var into = new byte[payload.Length + 7];
+						archive.ReadEntryInto(big, into, 7);
+						AssertThat(into.AsSpan(7).SequenceEqual(payload)).IsTrue();
+						AssertThat(into.AsSpan(0, 7).IndexOfAnyExcept((byte)0)).IsEqual(-1);
+
+						foreach (int count in new[] { 1, 8, 79, ChunkSize - 1, ChunkSize, ChunkSize + 1, ChunkSize * 2 + 5 })
+						{
+							AssertThat(archive.ReadEntryHead(big, count)).IsEqual(payload[..count]);
+						}
+
+						AssertThat(archive.ReadEntryHead(big, payload.Length + 100)).IsEqual(payload);
+						AssertThat(archive.ReadEntryHead(Find(archive, "tiny.bin"), 500)).IsEqual(tiny);
+					}
+				}
+			}
+		}
+		finally
+		{
+			Directory.Delete(dir, true);
+		}
+	}
+
+	[TestCase]
+	public void MountedJoinsMatchTheirParts()
+	{
+		var modelHeader = new byte[104];
+		Pattern(104, 10).CopyTo(modelHeader, 0);
+		Encoding.ASCII.GetBytes("MeshFile").CopyTo(modelHeader, 0);
+		byte[] modelBody = Pattern(ChunkSize * 2 + 77, 11);
+
+		byte[] mip0 = Pattern(4096, 12);
+		byte[] rest = Pattern(1024, 13);
+		byte[] wholeHeader = TexHeaderBytes(mip0.Length + rest.Length, mip0.Length);
+		byte[] splitHeader = TexHeaderBytes(mip0.Length + rest.Length, mip0.Length);
+		byte[] whole = Pattern(mip0.Length + rest.Length, 14);
+		byte[] loose = Pattern(300, 15);
+
+		string dir = NewTempDir();
+		try
+		{
+			File.WriteAllBytes(Path.Combine(dir, "a_headers.bnk"), BnkWriter.Write(new[]
+			{
+				new BnkWriterEntry { Path = "m/model.mdl", Bytes = modelHeader },
+				new BnkWriterEntry { Path = "m/nobody.mdl", Bytes = modelHeader },
+				new BnkWriterEntry { Path = "m/loose.mdl", Bytes = modelHeader },
+				new BnkWriterEntry { Path = "t/whole.tex", Bytes = wholeHeader },
+				new BnkWriterEntry { Path = "t/split.tex", Bytes = splitHeader },
+			}));
+			File.WriteAllBytes(Path.Combine(dir, "b_models.bnk"), WriteCompressedBank(new[]
+			{
+				("m/model.mdl", modelBody),
+				("m/loose.mdl", modelBody),
+			}));
+			File.WriteAllBytes(Path.Combine(dir, "c_textures.bnk"), BnkWriter.Write(new[]
+			{
+				new BnkWriterEntry { Path = "t/whole.tex", Bytes = whole },
+				new BnkWriterEntry { Path = "t/split.tex", Bytes = mip0 },
+			}));
+			File.WriteAllBytes(Path.Combine(dir, "d_textures.bnk"), BnkWriter.Write(new[]
+			{
+				new BnkWriterEntry { Path = "t/split.tex", Bytes = rest },
+			}));
+			Directory.CreateDirectory(Path.Combine(dir, "m"));
+			File.WriteAllBytes(Path.Combine(dir, "m", "loose.mdl"), loose);
+
+			using BnkFileSystem mount = BnkFileSystem.Mount(dir);
+
+			byte[] joinedModel = [.. modelHeader, .. modelBody];
+			AssertThat(mount.TryGetFile("m/model.mdl", out BnkFile model)).IsTrue();
+			AssertThat(model.ReadAllBytes()).IsEqual(joinedModel);
+			AssertThat(model.CachedResolvedSize).IsEqual((long)joinedModel.Length);
+			AssertThat(model.ReadHead(79)[..79]).IsEqual(modelHeader[..79]);
+			AssertThat(model.ReadHead(500)[..500]).IsEqual(joinedModel[..500]);
+
+			AssertThat(mount.TryGetFile("m/nobody.mdl", out BnkFile stub)).IsTrue();
+			AssertThat(stub.ReadAllBytes()).IsEqual(modelHeader);
+			AssertThat(stub.ReadHead(500)).IsEqual(modelHeader);
+
+			// A loose file replaces the bank's two parts, and so does its head.
+			AssertThat(mount.TryGetFile("m/loose.mdl", out BnkFile override_)).IsTrue();
+			AssertThat(override_.ReadAllBytes()).IsEqual(loose);
+			AssertThat(override_.ReadHead(79)[..79]).IsEqual(loose[..79]);
+
+			AssertThat(mount.TryGetFile("t/whole.tex", out BnkFile wholeFile)).IsTrue();
+			byte[] joinedWhole = [.. wholeHeader, .. whole];
+			AssertThat(wholeFile.ReadAllBytes()).IsEqual(joinedWhole);
+			AssertThat(wholeFile.ReadHead(84)[..84]).IsEqual(joinedWhole[..84]);
+			AssertThat(wholeFile.ReadHead(92)[..92]).IsEqual(joinedWhole[..92]);
+			AssertThat(mount.TryGetFile("t/split.tex", out BnkFile splitFile)).IsTrue();
+			byte[] joinedSplit = [.. splitHeader, .. mip0, .. rest];
+			AssertThat(splitFile.ReadAllBytes()).IsEqual(joinedSplit);
+			AssertThat(splitFile.ReadHead(92)[..92]).IsEqual(joinedSplit[..92]);
+		}
+		finally
+		{
+			Directory.Delete(dir, true);
+		}
+	}
+
+	[TestCase]
+	public void GunzipAnswersAsTheStreamDoes()
+	{
+		byte[] plain = Pattern(200_000, 16);
+		byte[] one = Gzip(plain);
+		byte[] two = [.. one, .. Gzip(Pattern(5000, 17))];
+		byte[] lyingTrailer = (byte[])one.Clone();
+		lyingTrailer[^4] ^= 0x55;
+		byte[] truncated = one[..(one.Length / 2)];
+
+		foreach (byte[] source in new[] { one, two, lyingTrailer, truncated, Gzip(Array.Empty<byte>()) })
+		{
+			byte[] bytes = source;
+			bool inflated = Refii.Core.Engine_GameGzip.MaybeGunzip(ref bytes);
+
+			byte[]? expected = null;
+			try
+			{
+				using var input = new MemoryStream(source);
+				using var gzip = new GZipStream(input, CompressionMode.Decompress);
+				using var output = new MemoryStream();
+				gzip.CopyTo(output);
+				expected = output.ToArray();
+			}
+			catch (InvalidDataException)
+			{
+			}
+			catch (IOException)
+			{
+			}
+
+			AssertThat(inflated).IsEqual(expected is not null);
+			AssertThat(bytes).IsEqual(expected ?? source);
+		}
+	}
+
+	private static byte[] Gzip(byte[] plain)
+	{
+		var output = new MemoryStream();
+		using (var gzip = new GZipStream(output, CompressionLevel.Fastest, true))
+		{
+			gzip.Write(plain);
+		}
+
+		return output.ToArray();
+	}
+
+	private static byte[] TexHeaderBytes(int payload, int mip0)
+	{
+		var header = new byte[84];
+		BinaryPrimitives.WriteInt32BigEndian(header, -1);
+		BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(0x04), payload);
+		BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(0x10), 64);
+		BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(0x14), 64);
+		BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(0x18), 35);
+		BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(0x1C), 2);
+		BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(0x20), 84);
+		BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(0x24), 84 + mip0);
+		return header;
+	}
+
 	/// <summary>
 	/// A format-3 bank with compressed file data, in the layout the reader expects: each entry's
 	/// stored bytes are 32 KB slots, one zlib stream per slot, the last slot cut to its stream;

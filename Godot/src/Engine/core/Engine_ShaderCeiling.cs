@@ -15,7 +15,10 @@ namespace Refii.Core;
 /// `off` the original materials; `flat` the original's own source cut to a constant unshaded colour
 /// (Engine_ShaderCeilingSource: same cull, blend and depth words, the vertex stage only where it
 /// moves the vertex); `flatcut` the same, but a material that alpha-tests keeps a discard on its
-/// albedo's alpha, so early Z and LRZ behave as they did; `hide` the category not drawn at all;
+/// albedo's alpha, so early Z and LRZ behave as they did; `flatvs` flatcut's pixel stage with the
+/// original's whole vertex stage kept and every varying and vertex built-in it hands on read, so
+/// flatvs against flatcut prices the vertex work and its interpolation, and off against flatvs
+/// the pixel work alone; `hide` the category not drawn at all;
 /// `+word,word` the ORIGINAL shader with those render-mode words added (`+shadows_disabled`,
 /// `+ambient_light_disabled`), to price what a word removes inside the real material — a word the
 /// shader already states is skipped, and a material whose amended shader does not compile keeps
@@ -57,6 +60,7 @@ internal sealed class Engine_ShaderCeiling
 		Flat,
 		FlatCut,
 		Hide,
+		FlatVs,
 		RenderModes,
 	}
 
@@ -70,7 +74,7 @@ internal sealed class Engine_ShaderCeiling
 
 	internal static readonly string[] CategoryNames = { "props", "trees", "terrain", "entities" };
 
-	private static readonly string[] ModeNames = { "off", "flat", "flatcut", "hide" };
+	private static readonly string[] ModeNames = { "off", "flat", "flatcut", "hide", "flatvs" };
 
 	/// <summary>Each category's constant colour, so a screenshot says which one is swapped.</summary>
 	private static readonly (float R, float G, float B)[] Colours =
@@ -211,7 +215,7 @@ internal sealed class Engine_ShaderCeiling
 		int mode = text is null ? -1 : Array.IndexOf(ModeNames, text);
 		return mode >= 0
 			? (Mode)mode
-			: throw new JsonException($"{Key}: a mode is one of off, flat, flatcut, hide, +word[,word] (and \"all\":\"unshaded\").");
+			: throw new JsonException($"{Key}: a mode is one of off, flat, flatcut, flatvs, hide, +word[,word] (and \"all\":\"unshaded\").");
 	}
 
 	/// <summary>A mode as the reply states it: `+` modes with their words.</summary>
@@ -384,6 +388,7 @@ internal sealed class Engine_ShaderCeiling
 		{
 			case Mode.Flat:
 			case Mode.FlatCut:
+			case Mode.FlatVs:
 			case Mode.RenderModes:
 				Swap(geometry, category);
 				break;
@@ -504,10 +509,11 @@ internal sealed class Engine_ShaderCeiling
 	private Shader? Replacement(Shader original, Category category)
 	{
 		Mode mode = _modes[(int)category];
-		bool cut = mode == Mode.FlatCut;
+		bool vertex = mode == Mode.FlatVs;
+		bool cut = mode is Mode.FlatCut or Mode.FlatVs;
 		string variant = mode == Mode.RenderModes
 			? ModeName((int)category)
-			: $"{(cut ? "flatcut" : "flat")}:{CategoryNames[(int)category]}";
+			: $"{ModeNames[(int)mode]}:{CategoryNames[(int)category]}";
 		if (_replacements.TryGetValue((original, variant), out Shader? cached))
 		{
 			return cached;
@@ -532,7 +538,7 @@ internal sealed class Engine_ShaderCeiling
 		try
 		{
 			built = Refii.Models.Engine_ShaderCeilingSource.Build(
-				code, original.ResourcePath ?? string.Empty, ReadInclude, cut, colour, CurrentRenderer());
+				code, original.ResourcePath ?? string.Empty, ReadInclude, cut, colour, CurrentRenderer(), vertex);
 		}
 		catch (Exception e)
 		{
@@ -658,7 +664,7 @@ internal sealed class Engine_ShaderCeiling
 		_swapped.Clear();
 
 		// Copies made since the last walk carry a replacement nothing recorded: find them by it.
-		if (_originalOf.Count != 0 && Array.Exists(_modes, m => m is Mode.Flat or Mode.FlatCut or Mode.RenderModes))
+		if (_originalOf.Count != 0 && Array.Exists(_modes, m => m is Mode.Flat or Mode.FlatCut or Mode.FlatVs or Mode.RenderModes))
 		{
 			Queue(root);
 			while (_walk.Count != 0)

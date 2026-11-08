@@ -384,7 +384,7 @@ public static partial class Engine_LevelProps
             return false;
         }
 
-        if (!GdbView.TryParse(gdbBytes, out view, out string why))
+        if (!GdbView.TryParseShared(gdbBytes, out view, out string why))
         {
             GD.Print($"[props] {level}: level gdb unreadable ({why})");
             return false;
@@ -1293,7 +1293,7 @@ public static partial class Engine_LevelProps
 
         if (OS.GetThreadCallerId() != OS.GetMainThreadId())
         {
-            Engine_PropStreamer.PrefetchModels(Engine_PropStreamer.PendingModelPaths(container));
+            container.PrefetchAhead();
         }
 
         if (keyed + missZero + missPlacementOnly + missModelOnly + missBoth != 0)
@@ -2696,7 +2696,7 @@ public static partial class Engine_LevelProps
         foreach (string path in SupplementalGdbPaths)
         {
             byte[]? bytes = read(path) ?? read("data/" + path);
-            if (bytes is not null && GdbView.TryParse(bytes, out GdbView view, out _))
+            if (bytes is not null && GdbView.TryParseShared(bytes, out GdbView view, out _))
             {
                 views.Add(view);
             }

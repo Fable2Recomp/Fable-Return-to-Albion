@@ -55,12 +55,47 @@ public static class Engine_MdlSurfaceArrays
 	/// </summary>
 	public static int Add(
 		ArrayMesh mesh, Mesh.PrimitiveType primitive, Godot.Collections.Array arrays,
-		Godot.Collections.Dictionary? lods)
+		Godot.Collections.Dictionary? lods) =>
+		Add(mesh, primitive, arrays, lods, null);
+
+	/// <summary>
+	/// <see cref="Add(ArrayMesh, Mesh.PrimitiveType, Godot.Collections.Array, Godot.Collections.Dictionary?)"/>
+	/// for a builder that already has the level table <see cref="LodsOf"/> reads (<see cref="Levels"/>,
+	/// or <see cref="LevelTable"/> of the surface it copies): finding a level's size in
+	/// <paramref name="lods"/> would marshal the whole index array across just to count it.
+	/// </summary>
+	public static int Add(
+		ArrayMesh mesh, Mesh.PrimitiveType primitive, Godot.Collections.Array arrays,
+		Godot.Collections.Dictionary? lods, float[]? levelTable)
 	{
 		Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, primitive, arrays, null, lods, Engine_MdlTransfer.FormatOf(arrays));
 		int added = mesh.GetSurfaceCount() - 1;
-		Record(mesh, added, arrays.Duplicate(false), LevelsOf(lods));
+		Record(mesh, added, arrays.Duplicate(false), lods is null ? null : levelTable ?? LevelsOf(lods));
 		return added;
+	}
+
+	/// <summary>A surface's `lods` dictionary as it is built, with the level table that goes beside it.</summary>
+	public sealed class Levels
+	{
+		private readonly List<(float Edge, int Triangles)> _table = new();
+
+		public Godot.Collections.Dictionary Lods { get; } = new();
+
+		/// <summary>Adds one level's index array, replacing any level at the same key.</summary>
+		public void Add(float key, System.ReadOnlySpan<int> indices)
+		{
+			using (Variant level = Variant.CreateFrom(System.Runtime.InteropServices.MemoryMarshal.CreateSpan(
+				ref System.Runtime.InteropServices.MemoryMarshal.GetReference(indices), indices.Length)))
+			{
+				Lods[key] = level;
+			}
+
+			_table.RemoveAll(known => known.Edge == key);
+			_table.Add((key, indices.Length / 3));
+		}
+
+		/// <summary>The table <see cref="Add(ArrayMesh, Mesh.PrimitiveType, Godot.Collections.Array, Godot.Collections.Dictionary?, float[]?)"/> takes.</summary>
+		public float[] Packed() => Pack(_table);
 	}
 
 	/// <summary>
@@ -69,17 +104,9 @@ public static class Engine_MdlSurfaceArrays
 	/// </summary>
 	public static (float Edge, int Triangles)[]? LodsOf(Mesh mesh, int surface)
 	{
-		float[] packed;
-		lock (Gate)
+		if (LevelTable(mesh, surface) is not { } packed)
 		{
-			if (!mesh.HasMeta(LodsMeta) ||
-				mesh.GetMeta(LodsMeta).AsGodotArray() is not { } all ||
-				surface >= all.Count || all[surface].VariantType != Variant.Type.PackedFloat32Array)
-			{
-				return null;
-			}
-
-			packed = all[surface].AsFloat32Array();
+			return null;
 		}
 
 		var levels = new (float Edge, int Triangles)[packed.Length / 2];
@@ -89,6 +116,22 @@ public static class Engine_MdlSurfaceArrays
 		}
 
 		return levels.Length == 0 ? null : levels;
+	}
+
+	/// <summary>A surface's recorded level table, edge key and triangle count in pairs; null when it has none.</summary>
+	public static float[]? LevelTable(Mesh mesh, int surface)
+	{
+		lock (Gate)
+		{
+			if (!mesh.HasMeta(LodsMeta) ||
+				mesh.GetMeta(LodsMeta).AsGodotArray() is not { } all ||
+				surface >= all.Count || all[surface].VariantType != Variant.Type.PackedFloat32Array)
+			{
+				return null;
+			}
+
+			return all[surface].AsFloat32Array();
+		}
 	}
 
 	/// <summary>
@@ -132,6 +175,11 @@ public static class Engine_MdlSurfaceArrays
 			levels.Add((level.Key.AsSingle(), level.Value.AsInt32Array().Length / 3));
 		}
 
+		return Pack(levels);
+	}
+
+	private static float[] Pack(List<(float Edge, int Triangles)> levels)
+	{
 		levels.Sort((a, b) => a.Edge.CompareTo(b.Edge));
 		var packed = new float[levels.Count * 2];
 		for (int i = 0; i < levels.Count; i++)
@@ -169,6 +217,18 @@ public static class Engine_MdlSurfaceArrays
 		Godot.Collections.Array read = Refii.Core.Engine_ServerSyncs.SurfaceArrays(mesh, surface);
 		Record(mesh, surface, read.Duplicate(false), null);
 		return read;
+	}
+
+	/// <summary>Drops a mesh's recorded arrays and keeps its level table; a later <see cref="Of"/> reads back from the GPU.</summary>
+	public static void Forget(Mesh mesh)
+	{
+		lock (Gate)
+		{
+			if (mesh.HasMeta(ArraysMeta))
+			{
+				mesh.RemoveMeta(ArraysMeta);
+			}
+		}
 	}
 
 	/// <summary>A surface's vertex count, from the mesh's own bookkeeping. No readback.</summary>

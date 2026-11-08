@@ -24,6 +24,9 @@ namespace Refii.Fx;
 [GlobalClass]
 public partial class FableFx : Node3D
 {
+	/// <summary>Where the running segment of <see cref="FrameWork"/> began; see <see cref="Step"/>.</summary>
+	internal static long LapAt;
+
 	/// <summary>Effect segments summed over all systems once per driver frame.</summary>
 	internal static readonly Refii.Core.Engine_FrameWork FrameWork = new("fx.build", "fx.cull", "fx.sim", "fx.light", "fx.geometry", "fx.submit", "fx.assemble", "fx.flush", "fx.pack", "fx.upload", "fx.sort", "fx.bounds");
 
@@ -392,6 +395,23 @@ public partial class FableFx : Node3D
 		FreeLayerInstances();
 	}
 
+	private Transform3D _placed = Transform3D.Identity;
+
+	/// <summary>
+	/// The node's own transform as the owner that places it last wrote it, which is what
+	/// <see cref="Node3D.Transform"/> reads back; hundreds of effects compare against it every
+	/// guest frame and most have not moved, so it is kept here rather than read across.
+	/// </summary>
+	internal Transform3D Placed
+	{
+		get => _placed;
+		set
+		{
+			_placed = value;
+			Transform = value;
+		}
+	}
+
 	private bool _transformDirty = true;
 	private Transform3D _cachedGlobalTransform;
 	private Transform3D _cachedGlobalInverse;
@@ -537,6 +557,7 @@ public partial class FableFx : Node3D
 	public override void _Process(double delta)
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("fablefx");
+		LapAt = System.Diagnostics.Stopwatch.GetTimestamp();
 		Step(Refii.Core.Engine_DrawAdvance.Seconds(delta));
 	}
 
@@ -562,10 +583,18 @@ public partial class FableFx : Node3D
 		}
 
 		// The step's segments, summed over every system (FrameWork): build, cull, sim, light, the
-		// geometry prelude, then the mesh-particle submit. EmitGeometry laps its own.
-		long lapAt = System.Diagnostics.Stopwatch.GetTimestamp();
-		EnsureBuilt();
-		FrameWork.Lap(0, ref lapAt);
+		// geometry prelude, then the mesh-particle submit. EmitGeometry laps its own. One running
+		// stamp, so a system that was built already and freezes reads no clock: its time falls in
+		// the next system's cull lap. Hundreds freeze a frame, and a read is a syscall-sized cost
+		// on a phone.
+		ref long lapAt = ref LapAt;
+		if (!_built || _builtName != _effectName)
+		{
+			FrameWork.Lap(1, ref lapAt);
+			EnsureBuilt();
+			FrameWork.Lap(0, ref lapAt);
+		}
+
 		if (!_built || _mesh is null || _system.IsEmpty)
 		{
 			return;
@@ -619,12 +648,13 @@ public partial class FableFx : Node3D
 		// A far effect in view freezes only once it has something to show: one that has never
 		// been near would otherwise keep its empty first frame however long it is looked at.
 		bool frozen = cullCamera is not null && !InAnyView(cullCamera, sharedCameraPos, out bool farOnly) && (!farOnly || _emitted || HasGeometry || lightsOnly);
-		FrameWork.Lap(1, ref lapAt);
 		if (frozen)
 		{
 			++FrozenThisFrame;
 			return;
 		}
+
+		FrameWork.Lap(1, ref lapAt);
 
 		_system.SetLoop(Loop);
 		_system.SetIntensity(Intensity * RecipeIntensity);
@@ -639,8 +669,9 @@ public partial class FableFx : Node3D
 		// when this effect moves — see AttachToRoot. A node bolted to a wall passes the same
 		// transform every frame and the system does nothing with it.
 		_system.Update((float)delta, lightsOnly ? null : CachedGlobalTransform, lightsOnly);
-		Refii.Core.Engine_SpikeNotes.Sim(System.Diagnostics.Stopwatch.GetTimestamp() - lapAt);
+		long simFrom = lapAt;
 		FrameWork.Lap(2, ref lapAt);
+		Refii.Core.Engine_SpikeNotes.Sim(lapAt - simFrom);
 
 		// THE LIGHTS FOLLOW THE SAME CLOCK AS THE PARTICLES, so a brazier's glow breathes with
 		// its flame instead of sitting at a constant. The colour and the energy stay SEPARATE —
@@ -1711,7 +1742,7 @@ public partial class FableFx : Node3D
 
 		// Decoded already by the level-load prefetch: the same bytes through the same decode,
 		// only the texture object is made here.
-		if (PrefetchedImages.TryTake(name, out Image prefetched))
+		if (PrefetchedImages.TryTake(name, out Image taken) && TakePrefetched(name, taken) is { } prefetched)
 		{
 			try
 			{
@@ -1828,6 +1859,7 @@ public partial class FableFx : Node3D
 		var thread = new System.Threading.Thread(() =>
 		{
 			long started = System.Diagnostics.Stopwatch.GetTimestamp();
+			PurgeStalePrefetchFiles();
 			int decoded = 0;
 			int prepared = 0;
 			int missing = 0;
@@ -1851,10 +1883,12 @@ public partial class FableFx : Node3D
 
 					if (prepare)
 					{
-						Image ready = Engine_TextureUpload.PrepareAhead(image);
+						// The low-memory tier's image waits in a file (FableFx.PrefetchFiles.cs), which disposes the source.
+						Image? kept = KeepPrefetchOnDisk(name, bytes!, image, out _);
+						Image ready = kept ?? Engine_TextureUpload.PrepareAhead(image);
 						if (!ReferenceEquals(ready, image))
 						{
-							image.Dispose();
+							if (kept is null) image.Dispose();
 							image = ready;
 							++prepared;
 						}

@@ -176,6 +176,36 @@ public partial class Engine_PropStreamer : Node3D
         return total > 0;
     }
 
+    /// <summary>
+    /// Adds up the streamers beneath <paramref name="root"/>, from <see cref="Live"/> rather than a
+    /// walk of its tree: the load's hold asks every frame, and a walk of thousands of nodes leaves a
+    /// finalizable array per node for the GC to carry.
+    /// </summary>
+    public static void SumProgress(Node root, ref int done, ref int total, ref int settling)
+    {
+        foreach (Engine_PropStreamer streamer in Live)
+        {
+            if (GodotObject.IsInstanceValid(streamer) && root.IsAncestorOf(streamer))
+            {
+                done += streamer.Done;
+                total += streamer.Total;
+                settling += streamer.Settling;
+            }
+        }
+    }
+
+    /// <summary>Sets the frame budget of the streamers beneath <paramref name="root"/>.</summary>
+    public static void SetBudget(Node root, double milliseconds)
+    {
+        foreach (Engine_PropStreamer streamer in Live)
+        {
+            if (GodotObject.IsInstanceValid(streamer) && root.IsAncestorOf(streamer))
+            {
+                streamer.MillisecondsPerFrame = milliseconds;
+            }
+        }
+    }
+
     public override void _Ready()
     {
         if (!Live.Contains(this))
@@ -215,8 +245,24 @@ public partial class Engine_PropStreamer : Node3D
     /// <summary>Counts outgoing vertex-bake producers through completion publication, independently of native node deletion.</summary>
     private readonly Refii.Core.Engine_RegionWorkers _retirementWorkers = new();
 
+    /// <summary>
+    /// Starts decoding this container's models while the region is still building. Off the main
+    /// thread; the pass <see cref="StartPrefetch"/> finds still running is not started twice.
+    /// </summary>
+    public void PrefetchAhead() => _prefetch = PrefetchModels(PendingModelPaths(this), () => _prefetchStop);
+
     private void StartPrefetch()
     {
+        _prefetchStop = false;
+
+        // A second pool over the list of one still running only waits on its gates, on pool
+        // threads the entity builds are queued behind. What the first pass leaves out, the
+        // requeue in _Process picks up when it ends.
+        if (_prefetch is { IsComplete: false })
+        {
+            return;
+        }
+
         var paths = new List<string>(_pending.Count);
         foreach (GeometryInstance3D instance in _pending)
         {
@@ -226,7 +272,6 @@ public partial class Engine_PropStreamer : Node3D
             }
         }
 
-        _prefetchStop = false;
         _prefetch = PrefetchModels(paths, () => _prefetchStop);
     }
 
@@ -1059,12 +1104,17 @@ public partial class Engine_PropStreamer : Node3D
     private string _ambientSplit = string.Empty;
     private readonly Queue<(ulong Id, int Ambient, Texture2D? Lightmap, int[]? BakeStarts)> _ambientRetries = new();
 
+    /// <summary>
+    /// A frame's share for the drain. Under the load hold nothing is on screen and the release
+    /// waits for the last bake, so the drain takes the streamer's held budget, under either renderer.
+    /// </summary>
+    internal static double DrainMilliseconds(double streamMilliseconds) =>
+        streamMilliseconds > DefaultMsPerFrame ? streamMilliseconds : DrainMillisecondsPerFrame;
+
     private void DrainVertexBakes()
     {
         long drainStart = System.Diagnostics.Stopwatch.GetTimestamp();
-        // Under the load hold nothing is on screen: the drain takes the streamer's held budget.
-        double drainMs = Refii.Models.Engine_ClassicLoad.Holding ? Math.Max(MillisecondsPerFrame, DrainMillisecondsPerFrame) : DrainMillisecondsPerFrame;
-        double drainLimit = drainMs * System.Diagnostics.Stopwatch.Frequency / 1000.0;
+        double drainLimit = DrainMilliseconds(MillisecondsPerFrame) * System.Diagnostics.Stopwatch.Frequency / 1000.0;
 
         // Ambient variants that waited for their shader's compile: asked again, each once a frame.
         for (int pending = _ambientRetries.Count; pending > 0; pending--)

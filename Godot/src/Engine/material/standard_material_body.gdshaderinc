@@ -305,6 +305,7 @@ void vertex() {
     // The title's tree wind: the branch offset its trunk stage gives this vertex (COLOR1 weights).
     VERTEX = fable_tree_sway(VERTEX, CUSTOM1, MODEL_MATRIX);
 #endif
+#endif
 
     // After the wind: the light table measures to where the vertex is drawn.
     fable_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
@@ -403,7 +404,7 @@ void fragment() {
     //
     // Flipped before the bake below as well, because the probe SH is evaluated for a direction
     // too and a back face was sampling the wrong lobe of it.
-    if (!foliage_normals) {
+    if (!FABLE_FOLIAGE_NORMALS) {
         float side = fable_normal_side(NORMAL, VERTEX, VIEW);
         NORMAL *= side;
         BINORMAL *= side;
@@ -538,7 +539,7 @@ void fragment() {
     vec3 ambient_half = vec3(0.0);
     if (FABLE_MODE > 3.5) {
         vec3 darken = vec3(1.0);
-        if (!grass && (!foliage || FABLE_HAS_NORMAL)) {
+        if (!FABLE_GRASS && (!FABLE_FOLIAGE || FABLE_HAS_NORMAL)) {
             vec3 amb_ref = normalize(vec3(fable_ambient_ref.x, fable_ambient_ref.z, fable_ambient_ref.y));
             float bend = 0.5 * (dot(world_normal, amb_ref) + 1.0);
             vec3 bent = normalize(mix(world_normal, amb_ref, bend));
@@ -551,12 +552,16 @@ void fragment() {
     AO = ao;
 #else
     vec3 bake;
+#ifdef FABLE_TRANSFER_VARYING
     if (v_transfer.a > 0.5 && FABLE_MODE > 0.5 && FABLE_MODE < 1.5) {
         // Mode 1 on a mesh that carries its transfer: the guest's PRT, decoded as AMB2 is.
         bake = pow(max(v_transfer.rgb, vec3(0.0)), vec3(FABLE_BAKE_GAMMA));
     } else {
         bake = fable_bake(world_normal, COLOR, UV2);
     }
+#else
+    bake = fable_bake(world_normal, COLOR, UV2);
+#endif
 
     // THE GUEST'S BENT NORMAL, exactly (blob 0245 lines 1248-1294, and 0335's use of it):
     // t = 0.5*(dot(N, AmbRef)+1); bent = lerp(N, AmbRef, t); factor = saturate(dot(bent,
@@ -570,7 +575,7 @@ void fragment() {
     // g_AmbientNormalMapDarkeningColour).
     vec3 mapped_world = normalize((INV_VIEW_MATRIX * vec4(mapped_view, 0.0)).xyz);
     vec3 darken = vec3(1.0);
-    if (!grass && (!foliage || FABLE_HAS_NORMAL)) {
+    if (!FABLE_GRASS && (!FABLE_FOLIAGE || FABLE_HAS_NORMAL)) {
         vec3 amb_ref = normalize(vec3(fable_ambient_ref.x, fable_ambient_ref.z, fable_ambient_ref.y));
         float bend = 0.5 * (dot(world_normal, amb_ref) + 1.0);
         vec3 bent = normalize(mix(world_normal, amb_ref, bend));
@@ -578,7 +583,7 @@ void fragment() {
         darken = mix(fable_darkening, vec3(1.0), nb * nb);
     }
 
-    if (foliage) {
+    if (FABLE_FOLIAGE) {
         // NO SUN TERM HERE — foliage is lit in `light()`, the sun AND the lamps. Modulating the
         // bake by a sun term as well counted the sun twice and the lamps never.
 
@@ -666,7 +671,7 @@ void fragment() {
     // multiply, which Godot owns.
     vec3 fog_t;
     vec3 fog_c;
-    if (fable_atmosphere_terms_for(VERTEX, INV_VIEW_MATRIX, !foliage, fog_t, fog_c)) {
+    if (fable_atmosphere_terms_for(VERTEX, INV_VIEW_MATRIX, !FABLE_FOLIAGE, fog_t, fog_c)) {
         // A SCISSORED PIXEL IS OPAQUE, whatever its texture says. The in-scatter is weighted by
         // coverage so an alpha-BLENDED surface does not add a full fog term over whatever is
         // behind it — but an alpha-TESTED one has already been decided: it either survived the
@@ -782,9 +787,9 @@ void light() {
             // A black specular colour (no map, grass, a black texel) takes no highlight.
 #ifndef FABLE_LITE_NO_SPEC
 #ifdef FABLE_LITE
-            if (!foliage && any(notEqual(v_specular, vec3(0.0)))) {
+            if (!FABLE_FOLIAGE && any(notEqual(v_specular, vec3(0.0)))) {
 #else
-            if (!foliage && (!fable_zero_specular_work || any(notEqual(v_specular, vec3(0.0))))) {
+            if (!FABLE_FOLIAGE && (!fable_zero_specular_work || any(notEqual(v_specular, vec3(0.0))))) {
 #endif
                 SPECULAR_LIGHT += fable_specular(
                     NORMAL, LIGHT, VIEW, atten, LIGHT_COLOR, v_specular, v_specular_power);

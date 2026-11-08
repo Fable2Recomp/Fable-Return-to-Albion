@@ -45,6 +45,23 @@ public static class Engine_GameHash
 		return h;
 	}
 
+	/// <summary>FNV-1 over the UTF-8 bytes of <paramref name="value"/>, as the string form hashes them.</summary>
+	public static uint Fnv1(ReadOnlySpan<char> value)
+	{
+		uint h = Fnv1Basis;
+		foreach (char c in value)
+		{
+			if (c >= 0x80)
+			{
+				return Fnv1(System.Text.Encoding.UTF8.GetBytes(value.ToArray()));
+			}
+
+			h = (h * Fnv1Prime) ^ c;
+		}
+
+		return h;
+	}
+
 	/// <summary>
 	/// FNV-1 over the UTF-8 bytes of <paramref name="value"/>. Babel keys are
 	/// UPPER_SNAKE_CASE by convention only — this does not fold case, so

@@ -1,4 +1,8 @@
 using System;
+using System.Buffers;
+using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 using Refii.Core;
 
@@ -69,65 +73,76 @@ public static class Engine_LhTexCodec
 		{ 3, 5, 1 }, { 3, 5, 2 }, { 3, 5, 3 },
 	};
 
-	private sealed class BitReader
+	/// <summary>
+	/// A body is big-endian 32-bit words, each read from its low bit up, with zeros past its end.
+	/// Words are fetched into a 64-bit window as the reader reaches them, off the caller's bytes.
+	/// </summary>
+	private ref struct BitReader
 	{
-		private readonly uint[] _words;
+		private readonly ReadOnlySpan<byte> _data;
+		private ulong _window;
+		private int _available;
+		private int _next;
 
 		public BitReader(byte[] data, int offset, int length)
 		{
-			int wordCount = (length + 3) / 4;
-			_words = new uint[wordCount + 2];
-
-			int i = 0;
-			int b = offset;
-			int end = offset + length;
-			for (; b + 4 <= end; b += 4, ++i)
+			if (offset < 0 || (long)offset + length > data.Length)
 			{
-				_words[i] = ((uint)data[b] << 24) | ((uint)data[b + 1] << 16) |
-							((uint)data[b + 2] << 8) | data[b + 3];
+				throw new IndexOutOfRangeException();
 			}
 
-			if (b < end)
-			{
-				uint partial = 0;
-				for (int k = 0; b + k < end; ++k)
-				{
-					partial |= (uint)data[b + k] << (24 - 8 * k);
-				}
-
-				_words[i] = partial;
-			}
-
-			TotalBits = (long)length * 8;
+			_data = new ReadOnlySpan<byte>(data, offset, length);
+			_window = 0;
+			_available = 0;
+			_next = 0;
 		}
 
-		public long CurrentBit { get; private set; }
+		public readonly long CurrentBit => ((long)_next * 8) - _available;
 
-		public long TotalBits { get; }
+		public readonly long TotalBits => (long)_data.Length * 8;
 
-		[System.Runtime.CompilerServices.MethodImpl(
-			System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+		private static uint LastWord(ReadOnlySpan<byte> data, int at)
+		{
+			uint word = 0;
+			for (int k = 0; at + k < data.Length; ++k)
+			{
+				word |= (uint)data[at + k] << (24 - (8 * k));
+			}
+
+			return word;
+		}
+
+		/// <summary>Up to 32 bits; the window holds at least that many after a refill.</summary>
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		public uint Peek(int n)
 		{
-			int bitOff = (int)(CurrentBit & 31);
-			long w = CurrentBit >> 5;
-			uint[] words = _words;
-			ulong lo = w < words.Length ? words[w] : 0u;
-			ulong hi = w + 1 < words.Length ? words[w + 1] : 0u;
-			uint value = (uint)(((hi << 32) | lo) >> bitOff);
-			return n == 32 ? value : value & ((1u << n) - 1u);
+			if (_available < 32)
+			{
+				int at = _next;
+				_next = at + 4;
+				uint word = at + 4 <= _data.Length
+					? BinaryPrimitives.ReadUInt32BigEndian(_data.Slice(at, 4))
+					: LastWord(_data, at);
+				_window |= (ulong)word << _available;
+				_available += 32;
+			}
+
+			return (uint)(_window & ((1UL << n) - 1UL));
 		}
 
-		[System.Runtime.CompilerServices.MethodImpl(
-			System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-		public void Skip(int n) => CurrentBit += n;
+		/// <summary>Only after a <see cref="Peek"/> of at least <paramref name="n"/> bits.</summary>
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
+		public void Skip(int n)
+		{
+			_window >>= n;
+			_available -= n;
+		}
 
-		[System.Runtime.CompilerServices.MethodImpl(
-			System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		public uint Read(int n)
 		{
 			uint value = Peek(n);
-			CurrentBit += n;
+			Skip(n);
 			return value;
 		}
 	}
@@ -138,32 +153,17 @@ public static class Engine_LhTexCodec
 
 		private const ushort TableSlow = 0;
 
-		private readonly uint[] _freq;
-		private readonly int[] _sym;
-		private readonly int[] _left;
-		private readonly int[] _right;
+		private uint[] _freq = Array.Empty<uint>();
+		private int[] _sym = Array.Empty<int>();
+		private int[] _left = Array.Empty<int>();
+		private int[] _right = Array.Empty<int>();
+		private int[] _heap = Array.Empty<int>();
 		private int _count;
+		private int _heapSize;
 
-		private ushort[]? _table;
-
-		public HuffTree(int capacity)
-		{
-			_freq = new uint[capacity];
-			_sym = new int[capacity];
-			_left = new int[capacity];
-			_right = new int[capacity];
-		}
+		private readonly ushort[] _table = new ushort[1 << TableBits];
 
 		public int Root { get; private set; } = -1;
-
-		private void BuildTable()
-		{
-			_table = new ushort[1 << TableBits];
-			if (Root >= 0)
-			{
-				Fill(Root, 0, 0);
-			}
-		}
 
 		private void Fill(int node, uint code, int length)
 		{
@@ -172,7 +172,7 @@ public static class Engine_LhTexCodec
 				return;
 			}
 
-			ushort[] table = _table!;
+			ushort[] table = _table;
 			if (_sym[node] >= 0)
 			{
 				if (length <= TableBits)
@@ -214,65 +214,80 @@ public static class Engine_LhTexCodec
 			return i;
 		}
 
-		public static HuffTree Build(uint[] freqs) => Build(freqs, false);
-
-		/// <summary><paramref name="skipZero"/>: Fable 3 leaves zero-frequency symbols out of the heap.</summary>
-		public static HuffTree Build(uint[] freqs, bool skipZero)
+		private void Push(int node)
 		{
-			int count = freqs.Length;
-			var tree = new HuffTree(count * 2 + 1);
-			var heap = new int[count * 2 + 1];
-			int heapSize = 0;
-
-			void Push(int node)
+			int[] heap = _heap;
+			uint[] freq = _freq;
+			heap[_heapSize] = node;
+			int i = _heapSize++;
+			while (i > 0)
 			{
-				heap[heapSize] = node;
-				int i = heapSize++;
-				while (i > 0)
+				int p = (i - 1) >> 1;
+				if (freq[heap[p]] < freq[heap[i]])
 				{
-					int p = (i - 1) >> 1;
-					if (tree._freq[heap[p]] < tree._freq[heap[i]])
+					break;
+				}
+
+				(heap[p], heap[i]) = (heap[i], heap[p]);
+				i = p;
+			}
+		}
+
+		private int Pop()
+		{
+			int[] heap = _heap;
+			uint[] freq = _freq;
+			int result = heap[0];
+			int heapSize = --_heapSize;
+			int last = heap[heapSize];
+			if (heapSize > 0)
+			{
+				heap[0] = last;
+				int i = 0;
+				while (true)
+				{
+					int l = 2 * i + 1;
+					if (l >= heapSize)
 					{
 						break;
 					}
 
-					(heap[p], heap[i]) = (heap[i], heap[p]);
-					i = p;
-				}
-			}
-
-			int Pop()
-			{
-				int result = heap[0];
-				int last = heap[--heapSize];
-				if (heapSize > 0)
-				{
-					heap[0] = last;
-					int i = 0;
-					while (true)
+					int rr = l + 1;
+					int s = rr >= heapSize
+						? l
+						: (freq[heap[rr]] >= freq[heap[l]] ? l : rr);
+					if (freq[heap[i]] < freq[heap[s]])
 					{
-						int l = 2 * i + 1;
-						if (l >= heapSize)
-						{
-							break;
-						}
-
-						int rr = l + 1;
-						int s = rr >= heapSize
-							? l
-							: (tree._freq[heap[rr]] >= tree._freq[heap[l]] ? l : rr);
-						if (tree._freq[heap[i]] < tree._freq[heap[s]])
-						{
-							break;
-						}
-
-						(heap[i], heap[s]) = (heap[s], heap[i]);
-						i = s;
+						break;
 					}
-				}
 
-				return result;
+					(heap[i], heap[s]) = (heap[s], heap[i]);
+					i = s;
+				}
 			}
+
+			return result;
+		}
+
+		/// <summary>
+		/// Rebuilds this tree in the arrays it already has.
+		/// <paramref name="skipZero"/>: Fable 3 leaves zero-frequency symbols out of the heap.
+		/// </summary>
+		public void Build(ReadOnlySpan<uint> freqs, bool skipZero)
+		{
+			int count = freqs.Length;
+			int capacity = count * 2 + 1;
+			if (_freq.Length < capacity)
+			{
+				_freq = new uint[capacity];
+				_sym = new int[capacity];
+				_left = new int[capacity];
+				_right = new int[capacity];
+				_heap = new int[capacity];
+			}
+
+			_count = 0;
+			_heapSize = 0;
 
 			for (int s = 0; s < count; ++s)
 			{
@@ -281,40 +296,89 @@ public static class Engine_LhTexCodec
 					continue;
 				}
 
-				Push(tree.Alloc(freqs[s], s, -1, -1));
+				Push(Alloc(freqs[s], s, -1, -1));
 			}
 
-			while (heapSize > 1)
+			while (_heapSize > 1)
 			{
 				int a = Pop();
 				int b = Pop();
-				Push(tree.Alloc(tree._freq[a] + tree._freq[b], -1, a, b));
+				Push(Alloc(_freq[a] + _freq[b], -1, a, b));
 			}
 
-			tree.Root = heapSize > 0 ? Pop() : -1;
-			tree.BuildTable();
-			return tree;
+			Root = _heapSize > 0 ? Pop() : -1;
+			Array.Clear(_table);
+			if (Root >= 0)
+			{
+				Fill(Root, 0, 0);
+			}
 		}
 
-		[System.Runtime.CompilerServices.MethodImpl(
-			System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-		public int Decode(BitReader reader)
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
+		public int Decode(ref BitReader reader)
 		{
-			ushort entry = _table![reader.Peek(TableBits)];
+			ushort entry = _table[reader.Peek(TableBits)];
 			if (entry != TableSlow)
 			{
 				reader.Skip((entry >> 10) & 0xF);
 				return entry & 0x3FF;
 			}
 
+			// By value, so that a block loop's reader can stay in registers.
+			reader = DecodeSlow(reader, out int symbol);
+			return symbol;
+		}
+
+		private BitReader DecodeSlow(BitReader reader, out int symbol)
+		{
 			int n = Root;
 			while (n >= 0 && _sym[n] < 0)
 			{
 				n = reader.Read(1) != 0 ? _right[n] : _left[n];
 			}
 
-			return n >= 0 ? _sym[n] : -1;
+			symbol = n >= 0 ? _sym[n] : -1;
+			return reader;
 		}
+	}
+
+	/// <summary>One decoding thread's trees and frequency table, kept between bodies: a level needs three or four.</summary>
+	private sealed class Scratch
+	{
+		public readonly HuffTree Tree0 = new();
+		public readonly HuffTree Tree1 = new();
+		public readonly HuffTree Tree2 = new();
+		public readonly HuffTree Tree3 = new();
+		public readonly uint[] Freq = new uint[512];
+
+		[ThreadStatic]
+		private static Scratch? _current;
+
+		public static Scratch Current => _current ??= new Scratch();
+	}
+
+	private static byte[] RentBlocks(long bytes) =>
+		bytes > Array.MaxLength ? new byte[bytes] : ArrayPool<byte>.Shared.Rent((int)bytes);
+
+	private static void Return(byte[] blocks)
+	{
+		if (blocks.Length != 0)
+		{
+			ArrayPool<byte>.Shared.Return(blocks);
+		}
+	}
+
+	/// <summary>An exact-size copy of a pooled result, for the callers that keep the array.</summary>
+	private static byte[] Keep(byte[] pooled, int length)
+	{
+		if (pooled.Length == 0)
+		{
+			return pooled;
+		}
+
+		byte[] kept = pooled.AsSpan(0, length).ToArray();
+		ArrayPool<byte>.Shared.Return(pooled);
+		return kept;
 	}
 
 	private static readonly int[] OpFlat = Flatten(OpTable);
@@ -376,6 +440,23 @@ public static class Engine_LhTexCodec
 		out byte[] blocks,
 		out string error)
 	{
+		bool ok = TryDecodeVariantPooled(body, offset, length, mode, width, height, scheme, out byte[] pooled, out error);
+		blocks = Keep(pooled, (width / 4) * (height / 4) * 8);
+		return ok;
+	}
+
+	/// <summary>The same, with <paramref name="blocks"/> from the shared pool for the caller to return; width / 4 * height / 4 * 8 bytes of it are the level.</summary>
+	internal static bool TryDecodeVariantPooled(
+		byte[] body,
+		int offset,
+		int length,
+		int mode,
+		int width,
+		int height,
+		TexScheme scheme,
+		out byte[] blocks,
+		out string error)
+	{
 		if (scheme != TexScheme.Auto)
 		{
 			return DecodeVariant(body, offset, length, mode, width, height, scheme, out blocks, out error, out _, out _);
@@ -392,11 +473,13 @@ public static class Engine_LhTexCodec
 		bool fable3Ok = DecodeVariant(body, offset, length, mode, width, height, TexScheme.Fable3, out blocks, out error, out consumed, out total);
 		if (fable3Ok && EndsAtBody(consumed, total))
 		{
+			Return(fable2Blocks);
 			return true;
 		}
 
 		if (fable2Ok)
 		{
+			Return(blocks);
 			blocks = fable2Blocks;
 			error = string.Empty;
 			return true;
@@ -449,19 +532,15 @@ public static class Engine_LhTexCodec
 		int modeFlag = (int)reader.Read(4);
 		reader.Read(8);
 
-		var freqA = new uint[64];
-		var freqB = new uint[32];
-		var freqC = new uint[fable3 ? 512 : 64];
-		var freqOp = new uint[32];
-		ReadFrequencies(reader, freqA, scheme);
-		ReadFrequencies(reader, freqB, scheme);
-		ReadFrequencies(reader, freqC, scheme);
-		ReadFrequencies(reader, freqOp, scheme);
-
-		HuffTree treeA = HuffTree.Build(freqA, fable3);
-		HuffTree treeB = HuffTree.Build(freqB, fable3);
-		HuffTree treeC = HuffTree.Build(freqC, fable3);
-		HuffTree treeOp = HuffTree.Build(freqOp, fable3);
+		Scratch scratch = Scratch.Current;
+		HuffTree treeA = scratch.Tree0;
+		HuffTree treeB = scratch.Tree1;
+		HuffTree treeC = scratch.Tree2;
+		HuffTree treeOp = scratch.Tree3;
+		ReadTree(ref reader, treeA, scratch.Freq.AsSpan(0, 64), scheme);
+		ReadTree(ref reader, treeB, scratch.Freq.AsSpan(0, 32), scheme);
+		ReadTree(ref reader, treeC, scratch.Freq.AsSpan(0, fable3 ? 512 : 64), scheme);
+		ReadTree(ref reader, treeOp, scratch.Freq.AsSpan(0, 32), scheme);
 
 		// Fable 3 leaves an unused table empty (no leaves at all); decoding from it is the error.
 		if (treeOp.Root < 0 || (!fable3 && (treeA.Root < 0 || treeB.Root < 0 || treeC.Root < 0)))
@@ -470,24 +549,60 @@ public static class Engine_LhTexCodec
 			return false;
 		}
 
-		Span<int> ramp = stackalloc int[16];
-
 		int bxCount = width / 4;
 		int byCount = height / 4;
-		blocks = new byte[(long)bxCount * byCount * 8];
+		blocks = RentBlocks((long)bxCount * byCount * 8);
+
+		if (!DecodeVariantBlocks(ref reader, treeA, treeB, treeC, treeOp, mode, modeFlag, fable3, bxCount, byCount, blocks, out error))
+		{
+			Return(blocks);
+			blocks = Array.Empty<byte>();
+			return false;
+		}
+
+		bitsConsumed = reader.CurrentBit;
+		if (reader.CurrentBit > reader.TotalBits + 32)
+		{
+			error = $"variant: ran past end of body: bit={reader.CurrentBit} of {reader.TotalBits}";
+			Return(blocks);
+			blocks = Array.Empty<byte>();
+			return false;
+		}
+
+		return true;
+	}
+
+	private static bool DecodeVariantBlocks(
+		ref BitReader shared,
+		HuffTree treeA,
+		HuffTree treeB,
+		HuffTree treeC,
+		HuffTree treeOp,
+		int mode,
+		int modeFlag,
+		bool fable3,
+		int bxCount,
+		int byCount,
+		byte[] blocks,
+		out string error)
+	{
+		error = string.Empty;
+		BitReader reader = shared;
+		Span<ulong> output = MemoryMarshal.Cast<byte, ulong>(blocks.AsSpan(0, bxCount * byCount * 8));
 
 		int runRemaining = 0;
 		int lastOpType = -1;
 		byte lastV20 = 0;
-		Span<byte> indices = stackalloc byte[16];
 		// Fable 3's five C symbols per block. Here, not in the block loop: a stackalloc is freed only
 		// when the method returns, so one per block grew the stack ~20 bytes a block until a large
 		// terrain texture overflowed a thread pool worker's stack (1 MB on Android).
 		Span<int> sym = stackalloc int[5];
+		Span<int> ramp = stackalloc int[16];
 
+		int at = 0;
 		for (int by = 0; by < byCount; ++by)
 		{
-			for (int bx = 0; bx < bxCount; ++bx)
+			for (int bx = 0; bx < bxCount; ++bx, ++at)
 			{
 				int opType;
 				byte v20 = 0;
@@ -500,7 +615,7 @@ public static class Engine_LhTexCodec
 				}
 				else
 				{
-					int opSym = treeOp.Decode(reader);
+					int opSym = treeOp.Decode(ref reader);
 					if (opSym < 0)
 					{
 						error = "variant: op tree decode failed";
@@ -533,36 +648,26 @@ public static class Engine_LhTexCodec
 					lastV20 = v20;
 				}
 
-				int o = (by * bxCount + bx) * 8;
-
 				switch (opType)
 				{
 					case 0:
-						for (int i = 0; i < 8; ++i) blocks[o + i] = 0;
+						output[at] = 0;
 						break;
 
 					case 1:
-						for (int i = 0; i < 8; ++i) blocks[o + i] = 0xFF;
+						output[at] = ulong.MaxValue;
 						break;
 
 					case 2:
-						if (mode == 2)
-						{
-							blocks[o] = v20;
-							blocks[o + 1] = v20;
-							for (int i = 2; i < 8; ++i) blocks[o + i] = 0;
-						}
-						else
-						{
-							for (int i = 0; i < 8; ++i) blocks[o + i] = v20;
-						}
-
+						output[at] = mode == 2
+							? v20 * 0x0101UL
+							: v20 * 0x0101010101010101UL;
 						break;
 
 					case 3:
 					{
-						int symA = treeA.Decode(reader);
-						int symB = treeB.Decode(reader);
+						int symA = treeA.Decode(ref reader);
+						int symB = treeB.Decode(ref reader);
 						if (symA < 0 || symB < 0)
 						{
 							error = "variant: A/B tree decode failed";
@@ -572,6 +677,8 @@ public static class Engine_LhTexCodec
 						int a0 = Dq6To8[Clamp6(symA + symB)];
 						int a1 = Dq6To8[Clamp6(symA - symB)];
 
+						// Sixteen 3-bit indices, first texel lowest.
+						ulong packed = 0;
 						if (fable3)
 						{
 							// FABLE 3 (sub_82D6DB58, 0x82d6e0a0..0x82d6e218): three raw bits start
@@ -583,7 +690,7 @@ public static class Engine_LhTexCodec
 							int raw = (int)reader.Read(3);
 							for (int k = 0; k < 5; ++k)
 							{
-								sym[k] = treeC.Decode(reader);
+								sym[k] = treeC.Decode(ref reader);
 								if (sym[k] < 0)
 								{
 									error = "variant: C tree decode failed";
@@ -607,54 +714,34 @@ public static class Engine_LhTexCodec
 								}
 							}
 
-							for (int i = 0; i < 16; ++i)
+							if (a0 != a1)
 							{
-								indices[i] = a0 == a1 ? (byte)0 : RampToBc3Index[ramp[i]];
+								for (int i = 0; i < 16; ++i)
+								{
+									packed |= (ulong)RampToBc3Index[ramp[i]] << (i * 3);
+								}
 							}
 						}
 						else
 						{
 							for (int iter = 0; iter < 4; ++iter)
 							{
-								int c1 = treeC.Decode(reader);
-								int c2 = treeC.Decode(reader);
+								int c1 = treeC.Decode(ref reader);
+								int c2 = treeC.Decode(ref reader);
 								if (c1 < 0 || c2 < 0)
 								{
 									error = "variant: C tree decode failed";
 									return false;
 								}
 
-								indices[iter * 4] = (byte)(c1 & 7);
-								indices[iter * 4 + 1] = (byte)((c1 >> 3) & 7);
-								indices[iter * 4 + 2] = (byte)(c2 & 7);
-								indices[iter * 4 + 3] = (byte)((c2 >> 3) & 7);
+								// Each symbol holds two indices, the first in its low bits.
+								packed |= (ulong)(uint)((c1 & 0x3F) | ((c2 & 0x3F) << 6)) << (iter * 12);
 							}
 						}
 
-						if (mode == 2)
-						{
-							blocks[o] = (byte)a0;
-							blocks[o + 1] = (byte)a1;
-							ulong packed = 0;
-							for (int i = 0; i < 16; ++i)
-							{
-								packed |= (ulong)(indices[i] & 7) << (i * 3);
-							}
-
-							blocks[o + 2] = (byte)(packed & 0xFF);
-							blocks[o + 3] = (byte)((packed >> 8) & 0xFF);
-							blocks[o + 4] = (byte)((packed >> 16) & 0xFF);
-							blocks[o + 5] = (byte)((packed >> 24) & 0xFF);
-							blocks[o + 6] = (byte)((packed >> 32) & 0xFF);
-							blocks[o + 7] = (byte)((packed >> 40) & 0xFF);
-						}
-						else
-						{
-							blocks[o] = (byte)a0;
-							blocks[o + 1] = (byte)a1;
-							for (int i = 2; i < 8; ++i) blocks[o + i] = 0;
-						}
-
+						output[at] = mode == 2
+							? (uint)a0 | ((ulong)(uint)a1 << 8) | (packed << 16)
+							: (uint)a0 | ((ulong)(uint)a1 << 8);
 						break;
 					}
 
@@ -665,13 +752,7 @@ public static class Engine_LhTexCodec
 			}
 		}
 
-		bitsConsumed = reader.CurrentBit;
-		if (reader.CurrentBit > reader.TotalBits + 32)
-		{
-			error = $"variant: ran past end of body: bit={reader.CurrentBit} of {reader.TotalBits}";
-			return false;
-		}
-
+		shared = reader;
 		return true;
 	}
 
@@ -694,7 +775,7 @@ public static class Engine_LhTexCodec
 		Fable3,
 	}
 
-	private static void ReadFrequencies(BitReader reader, uint[] freqs, TexScheme scheme)
+	private static void ReadFrequencies(ref BitReader reader, Span<uint> freqs, TexScheme scheme)
 	{
 		for (int i = 0; i < freqs.Length; ++i)
 		{
@@ -717,6 +798,13 @@ public static class Engine_LhTexCodec
 				freqs[i] = m << e;
 			}
 		}
+	}
+
+	/// <summary>A body's next frequency table and the tree it describes.</summary>
+	private static void ReadTree(ref BitReader reader, HuffTree tree, Span<uint> freqs, TexScheme scheme)
+	{
+		ReadFrequencies(ref reader, freqs, scheme);
+		tree.Build(freqs, scheme == TexScheme.Fable3);
 	}
 
 	/// <summary>Fable 3's BC3 index for a monotone ramp level 0 (lo) .. 7 (hi): byte_820EB2B0.</summary>
@@ -778,6 +866,27 @@ public static class Engine_LhTexCodec
 		out TexScheme used,
 		out string error)
 	{
+		bool ok = TryDecodeCompressedMipPooled(body, offset, length, comp11Layout, scheme, out width, out height,
+			out byte[] pooled, out bitsConsumed, out bitsTotal, out used, out error);
+		blocks = Keep(pooled, (width / 4) * (height / 4) * 8);
+		return ok;
+	}
+
+	/// <summary>The same, with <paramref name="blocks"/> from the shared pool for the caller to return; width / 4 * height / 4 * 8 bytes of it are the level.</summary>
+	internal static bool TryDecodeCompressedMipPooled(
+		byte[] body,
+		int offset,
+		int length,
+		bool comp11Layout,
+		TexScheme scheme,
+		out int width,
+		out int height,
+		out byte[] blocks,
+		out long bitsConsumed,
+		out long bitsTotal,
+		out TexScheme used,
+		out string error)
+	{
 		if (scheme != TexScheme.Auto)
 		{
 			used = scheme;
@@ -804,12 +913,14 @@ public static class Engine_LhTexCodec
 			out blocks, out bitsConsumed, out bitsTotal, out error);
 		if (fable3Ok && EndsAtBody(bitsConsumed, bitsTotal))
 		{
+			Return(fable2Blocks);
 			return true;
 		}
 
 		if (fable2Ok)
 		{
 			// Neither scheme lands on the end; keep Fable 2's reading, as before this detection.
+			Return(blocks);
 			used = TexScheme.Fable2;
 			width = fable2Width;
 			height = fable2Height;
@@ -877,16 +988,13 @@ public static class Engine_LhTexCodec
 		width = mw;
 		height = mh;
 
-		var freqIdx = new uint[256];
-		var freqOp = new uint[62];
-		var freqDel = new uint[122];
-		ReadFrequencies(reader, freqIdx, scheme);
-		ReadFrequencies(reader, freqOp, scheme);
-		ReadFrequencies(reader, freqDel, scheme);
-
-		HuffTree treeIdx = HuffTree.Build(freqIdx, fable3);
-		HuffTree treeOp = HuffTree.Build(freqOp, fable3);
-		HuffTree treeDel = HuffTree.Build(freqDel, fable3);
+		Scratch scratch = Scratch.Current;
+		HuffTree treeIdx = scratch.Tree0;
+		HuffTree treeOp = scratch.Tree1;
+		HuffTree treeDel = scratch.Tree2;
+		ReadTree(ref reader, treeIdx, scratch.Freq.AsSpan(0, 256), scheme);
+		ReadTree(ref reader, treeOp, scratch.Freq.AsSpan(0, 62), scheme);
+		ReadTree(ref reader, treeDel, scratch.Freq.AsSpan(0, 122), scheme);
 
 		// Fable 3 leaves an unused table empty (no leaves at all); decoding from it is the error.
 		if (treeOp.Root < 0 || (!fable3 && (treeIdx.Root < 0 || treeDel.Root < 0)))
@@ -897,22 +1005,59 @@ public static class Engine_LhTexCodec
 
 		int bw = mw / 4;
 		int bh = mh / 4;
-		blocks = new byte[(long)bw * bh * 8];
+		blocks = RentBlocks((long)bw * bh * 8);
 
+		if (!DecodeCompressedBlocks(ref reader, treeIdx, treeOp, treeDel, comp11Layout, bw, bh, blocks, out error))
+		{
+			Return(blocks);
+			blocks = Array.Empty<byte>();
+			return false;
+		}
+
+		bitsConsumed = reader.CurrentBit;
+		if (reader.CurrentBit > reader.TotalBits + 32)
+		{
+			error = $"ran past end of body: bit={reader.CurrentBit} of {reader.TotalBits}";
+			Return(blocks);
+			blocks = Array.Empty<byte>();
+			return false;
+		}
+
+		return true;
+	}
+
+	private static bool DecodeCompressedBlocks(
+		ref BitReader shared,
+		HuffTree treeIdx,
+		HuffTree treeOp,
+		HuffTree treeDel,
+		bool comp11Layout,
+		int bw,
+		int bh,
+		byte[] blocks,
+		out string error)
+	{
+		error = string.Empty;
+		BitReader reader = shared;
+		Span<ulong> output = MemoryMarshal.Cast<byte, ulong>(blocks.AsSpan(0, bw * bh * 8));
+		int[] opFlat = OpFlat;
+		int[] deltaFlat = DeltaFlat;
+
+		int at = 0;
 		for (int by = 0; by < bh; ++by)
 		{
-			for (int bx = 0; bx < bw; ++bx)
+			for (int bx = 0; bx < bw; ++bx, ++at)
 			{
-				int opIdx = treeOp.Decode(reader);
+				int opIdx = treeOp.Decode(ref reader);
 				if (opIdx < 0 || opIdx >= 62)
 				{
 					error = $"op_idx out of range at block ({bx},{by}): {opIdx}";
 					return false;
 				}
 
-				int op = OpFlat[opIdx * 3];
-				int dx = OpFlat[(opIdx * 3) + 1];
-				int dy = OpFlat[(opIdx * 3) + 2];
+				int op = opFlat[opIdx * 3];
+				int dx = opFlat[(opIdx * 3) + 1];
+				int dy = opFlat[(opIdx * 3) + 2];
 
 				ushort c0;
 				ushort c1;
@@ -932,33 +1077,33 @@ public static class Engine_LhTexCodec
 					}
 					else
 					{
-						int p = (ry * bw + rx) * 8;
-						c0 = (ushort)(blocks[p] | (blocks[p + 1] << 8));
-						c1 = (ushort)(blocks[p + 2] | (blocks[p + 3] << 8));
+						ulong reference = output[(ry * bw) + rx];
+						c0 = (ushort)reference;
+						c1 = (ushort)(reference >> 16);
 					}
 
 					if (op == 1 || op == 3)
 					{
-						int d = treeDel.Decode(reader);
+						int d = treeDel.Decode(ref reader);
 						if (d < 0 || d >= 122)
 						{
 							error = $"delta idx out of range (c0) at block ({bx},{by}): {d}";
 							return false;
 						}
 
-						c0 = ApplyDelta(c0, DeltaFlat[d * 3], DeltaFlat[(d * 3) + 1], DeltaFlat[(d * 3) + 2]);
+						c0 = ApplyDelta(c0, deltaFlat[d * 3], deltaFlat[(d * 3) + 1], deltaFlat[(d * 3) + 2]);
 					}
 
 					if (op == 2 || op == 3)
 					{
-						int d = treeDel.Decode(reader);
+						int d = treeDel.Decode(ref reader);
 						if (d < 0 || d >= 122)
 						{
 							error = $"delta idx out of range (c1) at block ({bx},{by}): {d}";
 							return false;
 						}
 
-						c1 = ApplyDelta(c1, DeltaFlat[d * 3], DeltaFlat[(d * 3) + 1], DeltaFlat[(d * 3) + 2]);
+						c1 = ApplyDelta(c1, deltaFlat[d * 3], deltaFlat[(d * 3) + 1], deltaFlat[(d * 3) + 2]);
 					}
 
 					if (!comp11Layout && c0 < c1)
@@ -967,46 +1112,32 @@ public static class Engine_LhTexCodec
 					}
 				}
 
-				int o = (by * bw + bx) * 8;
-				blocks[o] = (byte)(c0 & 0xFF);
-				blocks[o + 1] = (byte)(c0 >> 8);
-				blocks[o + 2] = (byte)(c1 & 0xFF);
-				blocks[o + 3] = (byte)(c1 >> 8);
+				ulong block = c0 | ((ulong)c1 << 16);
 
-				if (c0 == c1 && !comp11Layout)
+				if (c0 != c1 || comp11Layout)
 				{
-					blocks[o + 4] = 0;
-					blocks[o + 5] = 0;
-					blocks[o + 6] = 0;
-					blocks[o + 7] = 0;
-				}
-				else
-				{
-					int b0 = treeIdx.Decode(reader);
-					int b1 = treeIdx.Decode(reader);
-					int b2 = treeIdx.Decode(reader);
-					int b3 = treeIdx.Decode(reader);
+					int b0 = treeIdx.Decode(ref reader);
+					int b1 = treeIdx.Decode(ref reader);
+					int b2 = treeIdx.Decode(ref reader);
+					int b3 = treeIdx.Decode(ref reader);
 					if (b0 < 0 || b1 < 0 || b2 < 0 || b3 < 0)
 					{
 						error = $"idx decode failed at block ({bx},{by})";
 						return false;
 					}
 
-					blocks[o + 4] = (byte)((b0 & 0x0F) | ((b1 & 0x0F) << 4));
-					blocks[o + 5] = (byte)(((b0 >> 4) & 0x0F) | (b1 & 0xF0));
-					blocks[o + 6] = (byte)((b2 & 0x0F) | ((b3 & 0x0F) << 4));
-					blocks[o + 7] = (byte)(((b2 >> 4) & 0x0F) | (b3 & 0xF0));
+					uint indices = (uint)(b0 & 0x0F) | ((uint)(b1 & 0x0F) << 4) |
+						((uint)(b0 & 0xF0) << 4) | ((uint)(b1 & 0xF0) << 8) |
+						((uint)(b2 & 0x0F) << 16) | ((uint)(b3 & 0x0F) << 20) |
+						((uint)(b2 & 0xF0) << 20) | ((uint)(b3 & 0xF0) << 24);
+					block |= (ulong)indices << 32;
 				}
+
+				output[at] = block;
 			}
 		}
 
-		bitsConsumed = reader.CurrentBit;
-		if (reader.CurrentBit > reader.TotalBits + 32)
-		{
-			error = $"ran past end of body: bit={reader.CurrentBit} of {reader.TotalBits}";
-			return false;
-		}
-
+		shared = reader;
 		return true;
 	}
 }

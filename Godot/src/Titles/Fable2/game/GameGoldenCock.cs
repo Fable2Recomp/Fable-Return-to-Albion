@@ -53,7 +53,7 @@ public partial class GameGoldenCock : Node
         Actors.Remove(actor);
     }
 
-    public static bool ObserveGuest(HostBridge.GuestEntity entity)
+    public static bool ObserveGuest(in HostBridge.GuestEntity entity)
     {
         if (entity.RecordHash != Engine_GoldenCockRuntime.Record) return false;
         foreach (var actor in Actors) actor.SetHighlight(entity.Highlight);

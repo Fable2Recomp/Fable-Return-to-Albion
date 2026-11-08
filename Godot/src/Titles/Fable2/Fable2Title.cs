@@ -99,6 +99,8 @@ public sealed class Fable2Title : Engine_TitleGame
 	public override Refii.Host.HostBridge.GuestEntity Appearance(Refii.Host.HostBridge.GuestEntity entity) =>
 		GameDecorate.Appearance(entity);
 
+	public override bool RestatesEntities => GameDecorate.RestatesEntities;
+
 	public override bool WantsOwnNode(Refii.Host.HostBridge.GuestEntity entity) => GameDecorate.Targeted(entity.UniqueId);
 
 	public override uint CompanionEntityAddress => Fable2Bridge.GetMinimapLive().Dog;
@@ -122,7 +124,7 @@ public sealed class Fable2Title : Engine_TitleGame
 
 	public override float ManualTan(int player) => GameCharacterMorphs.ManualTanOf(player);
 
-	public override bool ObserveEntity(Refii.Host.HostBridge.GuestEntity entity) =>
+	public override bool ObserveEntity(in Refii.Host.HostBridge.GuestEntity entity) =>
 		GameGoldenCock.ObserveGuest(entity) || GameMorphMirror.ObserveGuest(entity);
 
 	public override void ObserveHero(Refii.Host.HostBridge.GuestEntity hero, uint frame) =>

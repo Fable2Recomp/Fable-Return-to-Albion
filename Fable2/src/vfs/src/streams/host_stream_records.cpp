@@ -68,6 +68,18 @@ void StoreRefiiHostStreamRecord(
   RefiiHostStreamRecords()[stream_guest] = std::move(record);
 }
 
+bool LoadRefiiHostStreamBytes(RefiiHostStreamRecord& record) {
+  if (record.bytes.size() == record.size) {
+    return true;
+  }
+  return ReadHostAsset(record.host_key, record.bytes) &&
+         record.bytes.size() == record.size;
+}
+
+void ReleaseRefiiHostStreamBytes(RefiiHostStreamRecord& record) {
+  std::vector<uint8_t>().swap(record.bytes);
+}
+
 size_t RefiiHostStreamRecordCount() {
   std::lock_guard<std::mutex> lock(RefiiHostStreamRecordsMutex());
   return RefiiHostStreamRecords().size();

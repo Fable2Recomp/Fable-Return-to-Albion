@@ -611,6 +611,7 @@ public partial class GameUi : Node, IGameTitleUi
 		_showing = presentation;
 	}
 
+
 	/// <summary>
 	/// Shows or hides the mirrored front-end tree. It is never freed and never stops being BUILT —
 	/// the live art catalogue comes off it and the owned views place themselves against it — so
@@ -6685,6 +6686,7 @@ public partial class GameUi : Node, IGameTitleUi
 			Fable2Input.CoopScreenOwnsInput = OwnedScreenId() == CoopScreenId;
 			PointerCoop();
 			ui_processBody(delta);
+			DriveHudRate();
 
 			// What no screen took becomes the pad's (right click B, wheel D-pad steps).
 			Engine_UiPointer.HandLeftoversToPad();

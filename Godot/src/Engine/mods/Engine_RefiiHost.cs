@@ -336,6 +336,17 @@ public partial class RefiiHost : Node
 	private int _coopStateWait;
 	private const int CoopStateRetryFrames = 120;
 
+	/// <summary>The drain's records and each record's fields, kept: _Process reads them and holds neither past the record.</summary>
+	private readonly List<(int Kind, string Fields)> _drained = new();
+	private readonly List<KeyValuePair<string, object>> _plain = new();
+
+	/// <summary>mod_event's name per kind, made on first use: a Variant of text costs a tracked object each time.</summary>
+	private readonly Variant[] _eventNames;
+
+	/// <summary>The argument lists of an event's emits; the emit reads them and keeps nothing.</summary>
+	private readonly Variant[] _emitOne = new Variant[1];
+	private readonly Variant[] _emitTwo = new Variant[2];
+
 	/// <summary>The node the loaded scripts live under; no children means no script is loaded.</summary>
 	public Node? ScriptsRoot { get; set; }
 
@@ -346,6 +357,7 @@ public partial class RefiiHost : Node
 	{
 		_signalByKind = new StringName?[ModApi.Events.Count];
 		_nameByKind = new StringName[ModApi.Events.Count];
+		_eventNames = new Variant[ModApi.Events.Count];
 		foreach (ModApiEvent e in ModApi.Events)
 		{
 			_nameByKind[e.Kind] = new StringName(e.LuaName);
@@ -676,12 +688,12 @@ public partial class RefiiHost : Node
 		bool scripts = ScriptsRoot is not null && IsInstanceValid(ScriptsRoot) && ScriptsRoot.GetChildCount() != 0;
 		if (scripts && (_coopStateQuery == 0 || ++_coopStateWait > CoopStateRetryFrames))
 		{
-			_coopStateQuery = query("coop_state", new Godot.Collections.Array());
+			_coopStateQuery = QueryCoopState();
 			_coopStateWait = 0;
 		}
 
-		List<(int Kind, string Fields)> events = HostBridge.DrainModEvents();
-		foreach ((int kind, string fields) in events)
+		HostBridge.DrainModEvents(_drained);
+		foreach ((int kind, string fields) in _drained)
 		{
 			// A save package the guest wrote: its sidecar is stamped with the mod set (ModSaveGate).
 			if (kind == ModSaveGate.SaveWrittenKind)
@@ -746,7 +758,8 @@ public partial class RefiiHost : Node
 			// A published number changed (the runtime's post): value_changed, never an event.
 			if (kind == ValueKind)
 			{
-				if (ModSignals.TryValueChange(ParseFieldsPlain(fields), out string changedKey, out double changedValue))
+				ParseFieldsPlain(fields, _plain);
+				if (ModSignals.TryValueChange(_plain, out string changedKey, out double changedValue))
 				{
 					EmitSignal(SignalName.value_changed, changedKey, changedValue);
 					if (_luaWatchesValues && double.IsFinite(changedValue))
@@ -776,23 +789,25 @@ public partial class RefiiHost : Node
 			if (kind == ReplyKind)
 			{
 				// The host's own questions (ModHostQueries: a host list's) are answered there, never to a script.
-				if (ModHostQueries.Take(ParseFieldsPlain(fields)))
+				ParseFieldsPlain(fields, _plain);
+				if (ModHostQueries.Take(_plain))
 				{
 					continue;
 				}
 
-				Godot.Collections.Dictionary result = ParseFields(fields);
-				long id = result.TryGetValue("id", out Variant idValue) ? idValue.AsInt64() : 0;
-				result.Remove("id");
+				long id = TryField(_plain, "id", out Variant idValue) ? idValue.AsInt64() : 0;
 				if (id != 0 && id == _coopStateQuery)
 				{
 					_coopStateQuery = 0;
-					_localHero = result.TryGetValue("local_hero", out Variant local) ? local.AsInt64() : 0;
-					_coopMode = result.TryGetValue("coop_mode", out Variant mode) ? mode.AsInt32() : 0;
-					_menuPlayer = result.TryGetValue("menu_player", out Variant owner) ? owner.AsInt32() : 1;
-					_splitScreen = result.TryGetValue("split_screen", out Variant splitValue) && splitValue.AsBool();
+					_localHero = TryField(_plain, "local_hero", out Variant local) ? local.AsInt64() : 0;
+					_coopMode = TryField(_plain, "coop_mode", out Variant mode) ? mode.AsInt32() : 0;
+					_menuPlayer = TryField(_plain, "menu_player", out Variant owner) ? owner.AsInt32() : 1;
+					_splitScreen = TryField(_plain, "split_screen", out Variant splitValue) && splitValue.AsBool();
 					continue;
 				}
+
+				Godot.Collections.Dictionary result = ToDictionary(_plain);
+				result.Remove(FieldKey("id"));
 
 				// An ask's answer goes to its callable, never to reply.
 				if (_askCallbacks.Remove(id, out Callable answered))
@@ -853,19 +868,13 @@ public partial class RefiiHost : Node
 				Refii.Entities.Engine_HiddenParts.Clear();
 			}
 
-			Godot.Collections.Dictionary e = ParseFields(fields);
-			TrackHero(kind, e);
-			TrackCutscene(kind, e);
-			TrackCamera(kind, e);
-			TrackPlay(kind, e);
-			TrackRuntime(kind, e);
-			if (_signalByKind[kind] is { } signal)
-			{
-				EmitSignal(signal, e);
-			}
-
-			EmitSignal(SignalName.mod_event, _nameByKind[kind].ToString(), e);
-			GC.KeepAlive(e);
+			ParseFieldsPlain(fields, _plain);
+			TrackHero(kind, _plain);
+			TrackCutscene(kind, _plain);
+			TrackCamera(kind, _plain);
+			TrackPlay(kind, _plain);
+			TrackRuntime(kind, _plain);
+			EmitEvent(kind, _plain);
 		}
 
 		FlushLuaValues();
@@ -874,15 +883,60 @@ public partial class RefiiHost : Node
 	}
 
 	/// <summary>
+	/// One event to its signal and to mod_event, both handed one Dictionary. What the emits are
+	/// handed is released here, not left to a finalizer: a handler gets its own reference, so a
+	/// script keeping its Dictionary keeps that.
+	/// </summary>
+	private void EmitEvent(int kind, List<KeyValuePair<string, object>> plain)
+	{
+		Godot.Collections.Dictionary e = ToDictionary(plain);
+		Variant argument = e;
+		if (_signalByKind[kind] is { } signal)
+		{
+			_emitOne[0] = argument;
+			EmitSignal(signal, _emitOne);
+			_emitOne[0] = default;
+		}
+
+		if (_eventNames[kind].VariantType == Variant.Type.Nil)
+		{
+			_eventNames[kind] = _nameByKind[kind].ToString();
+		}
+
+		_emitTwo[0] = _eventNames[kind];
+		_emitTwo[1] = argument;
+		EmitSignal(SignalName.mod_event, _emitTwo);
+		_emitTwo[1] = default;
+		argument.Dispose();
+		e.Dispose();
+	}
+
+	/// <summary>A field's value as the Dictionary would hold it: the last of its name, and false for none.</summary>
+	private static bool TryField(List<KeyValuePair<string, object>> plain, string key, out Variant value)
+	{
+		for (int i = plain.Count - 1; i >= 0; i--)
+		{
+			if (plain[i].Key == key)
+			{
+				value = FieldValue(plain[i].Value);
+				return true;
+			}
+		}
+
+		value = default;
+		return false;
+	}
+
+	/// <summary>
 	/// The runtime's statements: a tick counts into the clock (the game clock only while no paused
 	/// mode holds, as Lua's) and runs the timers it made due, before the tick's signal; entity_removed
 	/// forgets that handle's values.
 	/// </summary>
-	private void TrackRuntime(int kind, Godot.Collections.Dictionary e)
+	private void TrackRuntime(int kind, List<KeyValuePair<string, object>> e)
 	{
 		if (kind == TickKind)
 		{
-			double seconds = e.TryGetValue("seconds", out Variant s) ? s.AsDouble() : 0;
+			double seconds = TryField(e, "seconds", out Variant s) ? s.AsDouble() : 0;
 			foreach (Callable run in _clock.Tick(seconds, _play.AnyMode))
 			{
 				if (run.Target is { } target && !IsInstanceValid(target))
@@ -893,21 +947,21 @@ public partial class RefiiHost : Node
 				run.Call();
 			}
 		}
-		else if (kind == EntityRemovedKind && e.TryGetValue("entity", out Variant entity))
+		else if (kind == EntityRemovedKind && TryField(e, "entity", out Variant entity))
 		{
 			_entityStore.Forget(entity.AsInt64());
 		}
 	}
 
-	private void TrackHero(int kind, Godot.Collections.Dictionary e)
+	private void TrackHero(int kind, List<KeyValuePair<string, object>> e)
 	{
 		if (kind != 1 && kind != 2)
 		{
 			return;
 		}
 
-		long player = e.TryGetValue("player", out Variant p) ? p.AsInt64() : 0;
-		long hero = e.TryGetValue("hero", out Variant h) ? h.AsInt64() : 0;
+		long player = TryField(e, "player", out Variant p) ? p.AsInt64() : 0;
+		long hero = TryField(e, "hero", out Variant h) ? h.AsInt64() : 0;
 		if (kind == 1)
 		{
 			_hero[player] = hero;
@@ -919,13 +973,13 @@ public partial class RefiiHost : Node
 	}
 
 	/// <summary>The paused event and the level edges into <see cref="_play"/>.</summary>
-	private void TrackPlay(int kind, Godot.Collections.Dictionary e)
+	private void TrackPlay(int kind, List<KeyValuePair<string, object>> e)
 	{
 		switch (kind)
 		{
 			case PausedKind:
-				_play.Paused(e.TryGetValue("mode", out Variant mode) ? mode.AsInt32() : 1,
-					e.TryGetValue("paused", out Variant paused) && paused.AsBool());
+				_play.Paused(TryField(e, "mode", out Variant mode) ? mode.AsInt32() : 1,
+					TryField(e, "paused", out Variant paused) && paused.AsBool());
 				break;
 			case LevelUnloadingKind:
 				_play.Unloading();
@@ -937,20 +991,20 @@ public partial class RefiiHost : Node
 	}
 
 	/// <summary>The cutscene event into <see cref="_cutscene"/>: kinds is every statement holding after the edge.</summary>
-	private void TrackCamera(int kind, Godot.Collections.Dictionary e)
+	private void TrackCamera(int kind, List<KeyValuePair<string, object>> e)
 	{
-		if (kind == CameraChangedKind && e.TryGetValue("player", out Variant p) && e.TryGetValue("mode", out Variant m))
+		if (kind == CameraChangedKind && TryField(e, "player", out Variant p) && TryField(e, "mode", out Variant m))
 		{
 			_cameraMode[p.AsInt64()] = m.AsInt32();
 		}
 	}
 
-	private void TrackCutscene(int kind, Godot.Collections.Dictionary e)
+	private void TrackCutscene(int kind, List<KeyValuePair<string, object>> e)
 	{
 		if (kind == CutsceneKind)
 		{
-			_cutscene.Stated(e.TryGetValue("player", out Variant p) ? p.AsInt64() : -1,
-				e.TryGetValue("kinds", out Variant k) ? k.AsInt32() : 0);
+			_cutscene.Stated(TryField(e, "player", out Variant p) ? p.AsInt64() : -1,
+				TryField(e, "kinds", out Variant k) ? k.AsInt32() : 0);
 		}
 	}
 
@@ -989,7 +1043,9 @@ public partial class RefiiHost : Node
 			mask = mask.With(EntityRemovedKind);
 		}
 
-		if (GetSignalConnectionList(SignalName.mod_event).Count != 0)
+		// HasConnections, not the connection list: this runs per signal per frame, and the list is an
+		// Array of Dictionaries each time.
+		if (HasConnections(SignalName.mod_event))
 		{
 			for (int kind = 0; kind < _nameByKind.Length; kind++)
 			{
@@ -1001,7 +1057,7 @@ public partial class RefiiHost : Node
 
 		for (int kind = 0; kind < _signalByKind.Length; kind++)
 		{
-			if (_signalByKind[kind] is { } signal && GetSignalConnectionList(signal).Count != 0)
+			if (_signalByKind[kind] is { } signal && HasConnections(signal))
 			{
 				mask = mask.With(kind);
 			}
@@ -2511,13 +2567,25 @@ public partial class RefiiHost : Node
 	public long query(string what, Godot.Collections.Array args)
 	{
 		long id = ++_nextQueryId;
-		var line = new StringBuilder("query ").Append(id).Append(' ').Append(what.Replace(' ', '_'));
-		foreach (Variant arg in args)
+		StringBuilder line = (_queryLine ??= new StringBuilder()).Clear()
+			.Append("query ").Append(id).Append(' ').Append(what.Replace(' ', '_'));
+		int count = args.Count;
+		for (int i = 0; i < count; i++)
 		{
-			line.Append(' ').Append(Arg(arg));
+			line.Append(' ').Append(Arg(args[i]));
 		}
 
 		return Post(line.ToString()) ? id : 0;
+	}
+
+	[ThreadStatic]
+	private static StringBuilder? _queryLine;
+
+	/// <summary>The host's own <see cref="query"/> of the co-op state, asked every frame: the same line, no script's Array.</summary>
+	private long QueryCoopState()
+	{
+		long id = ++_nextQueryId;
+		return Post(string.Create(CultureInfo.InvariantCulture, $"query {id} coop_state")) ? id : 0;
 	}
 
 	/// <summary>One line to the guest tick; false, and nothing posted, when it would overflow the tick's buffer.</summary>
@@ -3802,7 +3870,15 @@ public partial class RefiiHost : Node
 	/// </summary>
 	public static List<KeyValuePair<string, object>> ParseFieldsPlain(string fields)
 	{
-		var result = new List<KeyValuePair<string, object>>();
+		var result = new List<KeyValuePair<string, object>>(fields.AsSpan().Count('='));
+		ParseFieldsPlain(fields, result);
+		return result;
+	}
+
+	/// <summary><see cref="ParseFieldsPlain(string)"/> into a kept list, replacing what it held.</summary>
+	public static void ParseFieldsPlain(string fields, List<KeyValuePair<string, object>> result)
+	{
+		result.Clear();
 		int i = 0;
 		int n = fields.Length;
 		while (i < n)
@@ -3818,7 +3894,7 @@ public partial class RefiiHost : Node
 				i++;
 			}
 
-			string key = fields[keyStart..i].Trim();
+			ReadOnlySpan<char> key = fields.AsSpan(keyStart, i - keyStart).Trim();
 			if (i >= n || fields[i] != '=')
 			{
 				break;
@@ -3834,7 +3910,7 @@ public partial class RefiiHost : Node
 					close = n;
 				}
 
-				value = fields[(i + 1)..close];
+				value = Shared(fields.AsSpan(i + 1, close - (i + 1)));
 				i = Math.Min(close + 1, n);
 			}
 			else
@@ -3845,33 +3921,31 @@ public partial class RefiiHost : Node
 					i++;
 				}
 
-				value = ParseScalarPlain(fields[valueStart..i].Trim());
+				value = ParseScalarPlain(fields.AsSpan(valueStart, i - valueStart).Trim());
 			}
 
 			if (key.Length != 0)
 			{
-				result.Add(new KeyValuePair<string, object>(key, value));
+				result.Add(new KeyValuePair<string, object>(Shared(key), value));
 			}
 		}
-
-		return result;
 	}
 
-	private static object ParseScalarPlain(string text)
+	private static object ParseScalarPlain(ReadOnlySpan<char> text)
 	{
-		if (text == "true")
+		if (text.SequenceEqual("true"))
 		{
-			return true;
+			return BoxedTrue;
 		}
 
-		if (text == "false")
+		if (text.SequenceEqual("false"))
 		{
-			return false;
+			return BoxedFalse;
 		}
 
 		if (long.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out long integer))
 		{
-			return integer;
+			return integer >= 0 && integer < BoxedSmall.Length ? BoxedSmall[integer] : integer;
 		}
 
 		if (double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double real))
@@ -3879,7 +3953,44 @@ public partial class RefiiHost : Node
 			return real;
 		}
 
-		return text;
+		return Shared(text);
+	}
+
+	private static readonly object BoxedTrue = true;
+	private static readonly object BoxedFalse = false;
+
+	/// <summary>Players, kinds, modes and flags: the small integers most fields are, boxed once.</summary>
+	private static readonly object[] BoxedSmall = Enumerable.Range(0, 256).Select(i => (object)(long)i).ToArray();
+
+	/// <summary>
+	/// The field names and short texts the bus keeps sending, one string each. Direct-mapped, so it
+	/// cannot grow and a clash only costs a new string; the guest thread's verdicts read it too, which
+	/// is safe as a slot is one reference and a string is compared before it is used.
+	/// </summary>
+	private static readonly string?[] SharedTexts = new string?[512];
+
+	private static string Shared(ReadOnlySpan<char> text)
+	{
+		if (text.Length == 0)
+		{
+			return string.Empty;
+		}
+
+		if (text.Length > 64)
+		{
+			return new string(text);
+		}
+
+		ref string? slot = ref SharedTexts[string.GetHashCode(text) & (SharedTexts.Length - 1)];
+		string? held = slot;
+		if (held is not null && text.SequenceEqual(held))
+		{
+			return held;
+		}
+
+		held = new string(text);
+		slot = held;
+		return held;
 	}
 
 	/// <summary>The fields text as the Dictionary a script receives (engine only).</summary>
@@ -3891,16 +4002,45 @@ public partial class RefiiHost : Node
 		var result = new Godot.Collections.Dictionary();
 		foreach ((string key, object value) in fields)
 		{
-			result[key] = value switch
-			{
-				long l => Variant.From(l),
-				double d => Variant.From(d),
-				bool b => Variant.From(b),
-				_ => Variant.From((string)value),
-			};
+			// The Dictionary keeps its own copy, so a text's Variant is released at once: left to
+			// the finalizer it outlives the next collection or two for nothing.
+			Variant held = FieldValue(value);
+			result[FieldKey(key)] = held;
+			held.Dispose();
 		}
 
 		return result;
 	}
+
+	private static Variant FieldValue(object value) => value switch
+	{
+		long l => Variant.From(l),
+		double d => Variant.From(d),
+		bool b => Variant.From(b),
+		_ => Variant.From((string)value),
+	};
+
+	/// <summary>
+	/// A field name as a Dictionary key. A Variant of text costs a tracked, finalized object per
+	/// conversion and a Dictionary's every key takes one, so each name is converted once. The names
+	/// are the API's; the bound is for a mod's own, which never reach here in numbers.
+	/// </summary>
+	private static Variant FieldKey(string key)
+	{
+		if (FieldKeys.TryGetValue(key, out Variant known))
+		{
+			return known;
+		}
+
+		Variant made = key;
+		if (FieldKeys.Count < 1024)
+		{
+			FieldKeys[key] = made;
+		}
+
+		return made;
+	}
+
+	private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Variant> FieldKeys = new(StringComparer.Ordinal);
 
 }

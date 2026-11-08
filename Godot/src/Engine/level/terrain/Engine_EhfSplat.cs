@@ -170,7 +170,8 @@ public static class Engine_EhfSplat
         EhfParsedBody parsed,
         IReadOnlyList<SplatMaterial> materials,
         out TerrainSplatData data,
-        out string error)
+        out string error,
+        bool normalSlices = true)
     {
         data = null!;
         error = string.Empty;
@@ -294,8 +295,8 @@ public static class Engine_EhfSplat
             SliceSize = CommonLodSize,
             BaseSlices = baseSlices,
             DetailSlices = detailSlices,
-            BaseNormalSlices = BuildNormalSlices(materials, detail: false),
-            DetailNormalSlices = BuildNormalSlices(materials, detail: true),
+            BaseNormalSlices = normalSlices ? BuildNormalSlices(materials, detail: false) : Array.Empty<byte[]>(),
+            DetailNormalSlices = normalSlices ? BuildNormalSlices(materials, detail: true) : Array.Empty<byte[]>(),
             SeededBase = seededBase,
             SeededDetail = seededDetail,
             PaintedTexels = painted,
@@ -329,18 +330,35 @@ public static class Engine_EhfSplat
         long expected = (long)chunkWidth * chunkHeight;
         int chunkCount = (int)Math.Min(parsed.Chunks.Count, expected);
 
+        // PLANE BY PLANE, SIDE BY SIDE. A plane's texels are written only by the layers that state
+        // its material, and they keep their chunk order here, so every float is the same sum in the
+        // same order as one pass over the chunks.
+        var layersOf = new List<(int Cx, int Cy, EhfChunkLayer Layer)>[planes];
         for (int ci = 0; ci < chunkCount; ci++)
         {
-            int cx = ci / chunkHeight;
-            int cy = ci % chunkHeight;
             EhfChunk chunk = parsed.Chunks[ci];
-
             int layerCount = Math.Min(chunk.Layers.Count, MaxLayers);
             for (int li = 0; li < layerCount; li++)
             {
                 EhfChunkLayer layer = chunk.Layers[li];
                 int material = Math.Clamp((int)layer.MaterialIndex, 0, planes - 1);
+                (layersOf[material] ??= new()).Add((ci / chunkHeight, ci % chunkHeight, layer));
+            }
+        }
+
+        long contributed = 0;
+        System.Threading.Tasks.Parallel.For(0, planes, material =>
+        {
+            if (layersOf[material] is not { } planeLayers)
+            {
+                return;
+            }
+
+            long samples = 0;
+            foreach ((int cx, int cy, EhfChunkLayer layer) in planeLayers)
+            {
                 bool cliff = ((layer.Blend[0] | layer.Blend[1] | layer.Blend[2] | layer.Blend[3]) & 2) != 0;
+                LayerMask mask = MaskOf(parsed, layer);
 
                 for (int py = 0; py <= WeightPerChunk; py++)
                 {
@@ -348,7 +366,7 @@ public static class Engine_EhfSplat
                     {
                         // THE TITLE'S REMAP (landscape VS 0173-0176): (w - 1/15) x 15/14, the SRCALPHA
                         // of the layer's pass — paint under 1/15 is no paint at all.
-                        float coverage = MathF.Max((SampleMask(parsed, layer, px, py) - (1f / 15f)) * (15f / 14f), 0f);
+                        float coverage = MathF.Max((mask.Sample(px, py) - (1f / 15f)) * (15f / 14f), 0f);
                         if (coverage <= 0.0001f)
                         {
                             continue;
@@ -367,42 +385,62 @@ public static class Engine_EhfSplat
                         {
                             cliffWeights[at] += coverage;
                         }
-                        contributions++;
+                        samples++;
                     }
                 }
             }
-        }
+
+            System.Threading.Interlocked.Add(ref contributed, samples);
+        });
+
+        contributions = contributed;
 
         // NOT NORMALISED. The title blends its layers as Σ weight x lit layer — the base quadrant
         // over dest ZERO, the rest over dest ONE (`sub_8221FC40` 0x822203A8) — so a texel whose
         // authored paint sums under one is darker there too. Only an unpainted texel takes the
         // first material whole.
         long underOne = 0;
+        long paintedTexels = 0;
+        long fallbackTexels = 0;
         cliffShares = cliffWeights;
-        for (long p = 0; p < area; p++)
+        System.Threading.Tasks.Parallel.For(0, weightHeight, y =>
         {
-            float sum = 0f;
-            for (int m = 0; m < planes; m++)
+            long rowPainted = 0;
+            long rowFallback = 0;
+            long rowUnder = 0;
+            long first = (long)y * weightWidth;
+            for (long p = first; p < first + weightWidth; p++)
             {
-                long at = (m * area) + p;
-                sum += weights[at];
-                cliffWeights[at] = weights[at] > 0f ? Math.Clamp(cliffWeights[at] / weights[at], 0f, 1f) : 0f;
-            }
-
-            if (sum > 0.00001f)
-            {
-                painted++;
-                if (sum < 0.9f)
+                float sum = 0f;
+                for (int m = 0; m < planes; m++)
                 {
-                    underOne++;
+                    long at = (m * area) + p;
+                    sum += weights[at];
+                    cliffWeights[at] = weights[at] > 0f ? Math.Clamp(cliffWeights[at] / weights[at], 0f, 1f) : 0f;
+                }
+
+                if (sum > 0.00001f)
+                {
+                    rowPainted++;
+                    if (sum < 0.9f)
+                    {
+                        rowUnder++;
+                    }
+                }
+                else
+                {
+                    weights[p] = 1f;
+                    rowFallback++;
                 }
             }
-            else
-            {
-                weights[p] = 1f;
-                fallback++;
-            }
-        }
+
+            System.Threading.Interlocked.Add(ref paintedTexels, rowPainted);
+            System.Threading.Interlocked.Add(ref fallbackTexels, rowFallback);
+            System.Threading.Interlocked.Add(ref underOne, rowUnder);
+        });
+
+        painted = paintedTexels;
+        fallback = fallbackTexels;
 
         if (painted != 0)
         {
@@ -412,7 +450,24 @@ public static class Engine_EhfSplat
         return weights;
     }
 
-    private static float SampleMask(EhfParsedBody parsed, EhfChunkLayer layer, int px, int py)
+    /// <summary>One layer's paint: its map and where in it the layer starts, looked up once a layer.</summary>
+    private readonly record struct LayerMask(byte[]? Map, int Width, int Height, int OriginX, int OriginY)
+    {
+        /// <summary>The paint at a texel of the layer's chunk; 1 where the layer has no readable map.</summary>
+        public float Sample(int px, int py)
+        {
+            if (Map is null)
+            {
+                return 1f;
+            }
+
+            int sx = Math.Clamp(OriginX + px, 0, Width - 1);
+            int sy = Math.Clamp(OriginY + py, 0, Height - 1);
+            return Map[(sy * (long)Width) + sx] / 255f;
+        }
+    }
+
+    private static LayerMask MaskOf(EhfParsedBody parsed, EhfChunkLayer layer)
     {
         byte[] map = parsed.SplatIndices;
         int width = (int)parsed.SplatWidth;
@@ -432,15 +487,12 @@ public static class Engine_EhfSplat
         if (map.Length == 0 || width <= 0 || height <= 0 ||
             map.Length != (long)width * height)
         {
-            return 1f;
+            return default;
         }
 
         int originX = Math.Clamp((int)MathF.Floor(layer.TileU * width), 0, width - 1);
         int originY = Math.Clamp((int)MathF.Floor(layer.TileV * height), 0, height - 1);
-        int sx = Math.Clamp(originX + px, 0, width - 1);
-        int sy = Math.Clamp(originY + py, 0, height - 1);
-
-        return map[(sy * (long)width) + sx] / 255f;
+        return new LayerMask(map, width, height, originX, originY);
     }
 
     private static byte[][] BuildSlices(

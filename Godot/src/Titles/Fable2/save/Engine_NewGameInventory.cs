@@ -10,14 +10,27 @@ using Refii.Save;
 
 public sealed class Engine_NewGameInventory
 {
-    private readonly GdbMulti _database;
+    /// <summary>
+    /// Read only by the New Game script, and about 40 MB and 330,000 objects to keep. In the
+    /// low-memory tier only the weak reference holds it, and a script that finds it collected
+    /// builds it again, about a second on a phone (not measured there).
+    /// </summary>
+    private readonly WeakReference<GdbMulti> _weakDatabase;
+    private readonly GdbMulti? _keptDatabase;
+    private readonly Func<GdbMulti> _rebuild;
     private readonly Dictionary<uint, string> _names = new();
     private readonly Dictionary<Engine_SaveHero.Augmentation, uint> _augmentItems = new();
     public GdbPatchDatabase Aliases { get; } = new();
 
     public Engine_NewGameInventory(GdbMulti database)
     {
-        _database = database;
+    }
+
+    internal Engine_NewGameInventory(GdbMulti database, Func<GdbMulti> rebuild, bool keepDatabase)
+    {
+        _weakDatabase = new WeakReference<GdbMulti>(database);
+        _keptDatabase = keepDatabase ? database : null;
+        _rebuild = rebuild;
         var used = database.Views.SelectMany(v => v.AliasPairs()).Select(p => p.Alias).ToHashSet();
         foreach (uint record in database.Views.SelectMany(v => v.AliasPairs()).Select(p => p.Target).Distinct().Order())
         {
@@ -38,6 +51,22 @@ public sealed class Engine_NewGameInventory
         }
     }
 
+    private void CopyName(GdbView view, uint hash)
+    {
+        if (view.Names.TryGetValue(hash, out string? text)) Aliases.Names.TryAdd(hash, text);
+    }
+
+    private GdbMulti Database()
+    {
+        if (!_weakDatabase.TryGetTarget(out GdbMulti? database))
+        {
+            database = _rebuild();
+            _weakDatabase.SetTarget(database);
+        }
+
+        return database;
+    }
+
     public string? RecordName(uint record) => _names.GetValueOrDefault(record);
 
     public string? AugmentationName(Engine_SaveHero.Augmentation augmentation) =>
@@ -46,12 +75,13 @@ public sealed class Engine_NewGameInventory
     public IReadOnlyList<Engine_SaveHero.Augmentation> InitialAugments(uint record)
     {
         var result = new List<Engine_SaveHero.Augmentation>();
-        if (!_database.TryLookup(record, out var item) ||
-            !_database.TryLookup(Reference(item, "AugmentableComponent"), out var augmentable) ||
-            !_database.TryLookup(Reference(augmentable, "InitialAugmentations"), out var list)) return result;
-        foreach (var field in _database.InheritedFields(list))
+        GdbMulti database = Database();
+        if (!database.TryLookup(record, out var item) ||
+            !database.TryLookup(Reference(item, "AugmentableComponent"), out var augmentable) ||
+            !database.TryLookup(Reference(augmentable, "InitialAugmentations"), out var list)) return result;
+        foreach (var field in database.InheritedFields(list))
         {
-            if (field.Type is not (GdbFieldType.Reference or GdbFieldType.ResourceReference) || !_database.TryLookup(field.Raw, out var entry)) continue;
+            if (field.Type is not (GdbFieldType.Reference or GdbFieldType.ResourceReference) || !database.TryLookup(field.Raw, out var entry)) continue;
             uint primary = Reference(entry, "PrimaryType");
             if (primary != 0) result.Add(new(primary, Reference(entry, "SecondaryType")));
         }
@@ -59,6 +89,6 @@ public sealed class Engine_NewGameInventory
     }
 
     private uint Reference(GdbCursor cursor, string field) =>
-        _database.TryFindInherited(cursor, Engine_GameHash.Fnv1(field), -1, out _, out uint value, out var type)
+        Database().TryFindInherited(cursor, Engine_GameHash.Fnv1(field), -1, out _, out uint value, out var type)
             && type is GdbFieldType.Reference or GdbFieldType.ResourceReference && value != GdbHash.Null ? value : 0;
 }

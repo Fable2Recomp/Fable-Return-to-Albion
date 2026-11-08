@@ -33,6 +33,26 @@ public partial class GameCharacterMorphs : Node
     private static int _morphRegistry = -1;
     private static int _morphsPublished;
 
+    // This compares every frame, on a standing world too (a save load, a mod's write or the other
+    // machine can move the store; the Mirror or refii.toml the settings), so its readers and
+    // dictionaries are kept. Nothing holds these past a Step: Engine_MorphLookSync and Published copy.
+    private static readonly Dictionary<string, float>?[] Stored = new Dictionary<string, float>?[2];
+    private static readonly Dictionary<string, float>[] StoredKept = { new(), new() };
+    private static readonly Dictionary<string, float>[] LocalKept = { new(), new() };
+    private static readonly string[] SlotKeys = { SlotKeyPrefix + "1", SlotKeyPrefix + "2" };
+
+    private static readonly System.Func<string, float?>[] StoreReaders =
+    {
+        key => HostBridge.GetPlayerValue(1, key),
+        key => HostBridge.GetPlayerValue(2, key),
+    };
+
+    private static readonly System.Func<string, string>[] SlotReaders =
+    {
+        Engine_CharacterMorphs.ForSlot(key => Engine_Switches.String(key, string.Empty), 1),
+        Engine_CharacterMorphs.ForSlot(key => Engine_Switches.String(key, string.Empty), 2),
+    };
+
     public static int PreviewGeneration { get; private set; }
 
     /// <summary>
@@ -46,7 +66,9 @@ public partial class GameCharacterMorphs : Node
 
     /// <summary>The guest player settings slot <paramref name="slot"/> belongs to on this machine, 0 for none.</summary>
     public static int PlayerOfSlot(int slot) =>
-        HostBridge.TryGetModValue(SlotKeyPrefix + slot.ToString(System.Globalization.CultureInfo.InvariantCulture), out float player) &&
+        HostBridge.TryGetModValue(
+            slot is 1 or 2 ? SlotKeys[slot - 1] : SlotKeyPrefix + slot.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            out float player) &&
         player is 1 or 2 ? (int)player : 0;
 
     /// <summary>The settings slot guest player <paramref name="player"/> edits on this machine, 0 when it is played elsewhere.</summary>
@@ -77,18 +99,18 @@ public partial class GameCharacterMorphs : Node
             Engine_ModMorphs.Publish(morphs, HostBridge.SetModSetting, ++_morphsPublished);
         }
 
-        var stored = new Dictionary<string, float>?[2];
+        Dictionary<string, float>?[] stored = Stored;
         for (int player = 1; player <= 2; player++)
-            stored[player - 1] = Engine_CharacterMorphs.StoredLook(key => HostBridge.GetPlayerValue(player, key));
+        {
+            Dictionary<string, float> kept = StoredKept[player - 1];
+            stored[player - 1] = Engine_CharacterMorphs.StoredLook(StoreReaders[player - 1], kept) ? kept : null;
+        }
 
         for (int slot = 1; slot <= 2; slot++)
         {
             int player = PlayerOfSlot(slot);
-            Dictionary<string, string>? preview = Previews[slot - 1];
-            System.Func<string, string> read = preview is not null
-                ? key => preview.TryGetValue(key, out string? value) ? value : string.Empty
-                : Engine_CharacterMorphs.ForSlot(key => Engine_Switches.String(key, string.Empty), slot);
-            var local = Engine_CharacterMorphs.StoreValues(read);
+            System.Func<string, string> read = Previews[slot - 1] is { } preview ? PreviewReader(preview) : SlotReaders[slot - 1];
+            var local = Engine_CharacterMorphs.StoreValues(read, LocalKept[slot - 1]);
             switch (Syncs[slot - 1].Next(player, local, player != 0 ? stored[player - 1] : null, now, out var values))
             {
                 case Engine_MorphLookSync.Step.Push:
@@ -105,11 +127,14 @@ public partial class GameCharacterMorphs : Node
             var look = stored[player - 1];
             if (PublishedOnce[player - 1] && Engine_CharacterMorphs.SameLook(look, Published[player - 1])) continue;
             PublishedOnce[player - 1] = true;
-            Published[player - 1] = look;
+            Published[player - 1] = look is null ? null : new Dictionary<string, float>(look);
             Tans[player - 1] = Engine_CharacterMorphs.LookTan(look);
             Engine_CharacterMorphs.Publish(look, HostBridge.SetModSetting, player, ++_published);
             PreviewPlayer = player;
             ++PreviewGeneration;
         }
     }
+
+    private static System.Func<string, string> PreviewReader(Dictionary<string, string> preview) =>
+        key => preview.TryGetValue(key, out string? value) ? value : string.Empty;
 }

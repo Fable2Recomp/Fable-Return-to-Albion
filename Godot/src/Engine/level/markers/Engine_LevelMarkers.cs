@@ -50,7 +50,7 @@ public static class Engine_LevelMarkers
         stats = new MarkerBuildStats();
 
         byte[]? gdbBytes = Engine_LevelGdb.TryRead(level, read, out string gdbPath);
-        if (gdbBytes is null || !GdbView.TryParse(gdbBytes, out GdbView levelView, out _))
+        if (gdbBytes is null || !GdbView.TryParseShared(gdbBytes, out GdbView levelView, out _))
         {
             return null;
         }
@@ -67,7 +67,7 @@ public static class Engine_LevelMarkers
         foreach (string path in Engine_LevelProps.SupplementalGdbPaths)
         {
             byte[]? suppBytes = read(path) ?? read("data/" + path);
-            if (suppBytes is not null && GdbView.TryParse(suppBytes, out GdbView suppView, out _))
+            if (suppBytes is not null && GdbView.TryParseShared(suppBytes, out GdbView suppView, out _))
             {
                 supplementalViews.Add(("data/" + path, suppView));
             }

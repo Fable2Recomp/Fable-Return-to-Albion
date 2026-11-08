@@ -225,6 +225,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         Engine_WeatherShelter.Tick(world);
         FollowSkyChoice();
         Engine_DynamicWeatherChoice.Tick(world);
+        Refii.Core.Engine_FramePhases.Lap("sky.choice", ref lap);
         if (Engine_DynamicSky.Enabled &&
             Environment?.Sky?.SkyMaterial is ShaderMaterial dynamicMaterial)
         {
@@ -276,6 +277,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             if (Current == this) Engine_DynamicSurfaceWeather.Reset();
         }
 
+        Refii.Core.Engine_FramePhases.Lap("sky.dynamic", ref lap);
         if (Current == this)
         {
             Engine_DynamicSkyLighting.Update(_dynamicSky?.Weather ?? default,

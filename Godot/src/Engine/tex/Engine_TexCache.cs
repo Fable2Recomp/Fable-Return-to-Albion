@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
 using System.Security.Cryptography;
@@ -103,6 +104,16 @@ public static class Engine_TexCache
 	private static string Root => $"{CacheRoot.Replace('\\', '/')}/v{ConverterVersion}";
 
 	private const uint Magic = 0x58544652u; // 'RFTX' little endian
+
+	/// <summary>Magic, version, width, height, format, mipmaps, alpha, cost, faces, length, deflated length.</summary>
+	private const int HeaderSize = 33;
+
+	/// <summary>The entry's face count, a u16: magic, version, width, height, format, three u8s.</summary>
+	private const int FacesOffset = 23;
+
+	/// <summary>The most deflate can expand: 258 bytes from a 2-bit match. Flat textures come close
+	/// (1027.5 measured in a real cache).</summary>
+	private const long MaxInflateRatio = 1032;
 
 	/// <summary>
 	/// Version 2 added the face count, so one entry can hold a cube's six faces.
@@ -246,118 +257,181 @@ public static class Engine_TexCache
 		TryLoadFaces(key, out Image[] faces, out hasAlpha) && faces.Length == 1 ? faces[0] : null;
 
 	/// <summary>
+	/// The size of a cached 2D entry, from its header alone; false when it has none. For a sweep
+	/// asking what is already built, which has no use for the pixels.
+	/// </summary>
+	public static bool TryPeek(string key, out int width, out int height)
+	{
+		width = height = 0;
+		if (!Engine_TexSettings.CacheEnabled)
+		{
+			return false;
+		}
+
+		try
+		{
+			string path = ProjectSettings.GlobalizePath(PathFor(key));
+			if (!System.IO.File.Exists(path))
+			{
+				return false;
+			}
+
+			Span<byte> header = stackalloc byte[HeaderSize];
+			using Microsoft.Win32.SafeHandles.SafeFileHandle file = System.IO.File.OpenHandle(path);
+			if (System.IO.RandomAccess.Read(file, header, 0) != HeaderSize ||
+				BinaryPrimitives.ReadUInt32LittleEndian(header) != Magic ||
+				BinaryPrimitives.ReadUInt32LittleEndian(header[4..]) != ContainerVersion ||
+				BinaryPrimitives.ReadUInt16LittleEndian(header[FacesOffset..]) != 1)
+			{
+				return false;
+			}
+
+			width = (int)BinaryPrimitives.ReadUInt32LittleEndian(header[8..]);
+			height = (int)BinaryPrimitives.ReadUInt32LittleEndian(header[12..]);
+			return true;
+		}
+		catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>
 	/// Reads every face of a cached entry: one image for a 2D texture, six for a cube.
 	/// </summary>
 	public static bool TryLoadFaces(string key, out Image[] faces, out bool hasAlpha)
 	{
 		faces = Array.Empty<Image>();
 		hasAlpha = false;
+		try
+		{
+			return ReadFaces(key, ref faces, ref hasAlpha);
+		}
+		catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException)
+		{
+			Interlocked.Increment(ref _misses);
+			return false;
+		}
+	}
+
+	private static bool ReadFaces(string key, ref Image[] faces, ref bool hasAlpha)
+	{
 
 		if (!Engine_TexSettings.CacheEnabled)
 		{
 			return false;
 		}
 
-		string path = PathFor(key);
-		if (!FileAccess.FileExists(path))
+		// READ DIRECTLY, INTO THE POOL. FileAccess.GetBuffer makes a native array and then a managed
+		// copy of it, a fresh large-object array per texture on every load.
+		string path = ProjectSettings.GlobalizePath(PathFor(key));
+		if (!System.IO.File.Exists(path))
 		{
 			Interlocked.Increment(ref _misses);
 			return false;
 		}
 
-		using FileAccess? file = FileAccess.Open(path, FileAccess.ModeFlags.Read);
-		if (file is null)
-		{
-			Interlocked.Increment(ref _misses);
-			return false;
-		}
-
-		if (file.Get32() != Magic || file.Get32() != ContainerVersion)
-		{
-			// A container from an older layout. Not an error worth reporting — the key already
-			// covers the CONTENT, so this only happens when the container itself changed shape,
-			// and the entry is simply rewritten below.
-			Interlocked.Increment(ref _misses);
-			return false;
-		}
-
-		int width = (int)file.Get32();
-		int height = (int)file.Get32();
-		var format = (Image.Format)file.Get32();
-		bool mipmaps = file.Get8() != 0;
-		hasAlpha = file.Get8() != 0;
-
-		// The cost class. Read and discarded here — only the sweep consults it, and it reads the
-		// header itself rather than going through this path. Skipping it by seeking would be the
-		// same thing said less obviously.
-		_ = file.Get8();
-		int faceCount = file.Get16();
-		uint length = file.Get32();
-
-		if (width <= 0 || height <= 0 || length == 0 || length > int.MaxValue ||
-			faceCount < 1 || faceCount > Engine_TexCube.FaceCount)
-		{
-			Interlocked.Increment(ref _misses);
-			return false;
-		}
-
-		uint deflatedLength = file.Get32();
-		if (deflatedLength == 0 || deflatedLength > int.MaxValue)
-		{
-			Interlocked.Increment(ref _misses);
-			return false;
-		}
-
-		byte[] compressed = file.GetBuffer((long)deflatedLength);
-		long totalLong = (long)length * faceCount;
-		if (compressed.Length != deflatedLength || totalLong > int.MaxValue)
-		{
-			Interlocked.Increment(ref _misses);
-			return false;
-		}
-
-		// Pooled, and each face is a span of it: the inflate buffer is multi-megabyte (LOH), and
-		// Image.CreateFromData copies the span.
-		int total = (int)totalLong;
-		byte[] all = System.Buffers.ArrayPool<byte>.Shared.Rent(total);
+		Span<byte> header = stackalloc byte[HeaderSize];
+		Microsoft.Win32.SafeHandles.SafeFileHandle file;
 		try
 		{
-			if (!InflateInto(compressed, all, total))
+			file = System.IO.File.OpenHandle(path);
+		}
+		catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException)
+		{
+			Interlocked.Increment(ref _misses);
+			return false;
+		}
+
+		using (file)
+		{
+			if (System.IO.RandomAccess.Read(file, header, 0) != HeaderSize ||
+				BinaryPrimitives.ReadUInt32LittleEndian(header) != Magic ||
+				BinaryPrimitives.ReadUInt32LittleEndian(header[4..]) != ContainerVersion)
 			{
-				// A truncated or corrupt entry. Treated as a miss so it is simply rebuilt, which
-				// is what every other unreadable container here does.
+				// A container from an older layout. Not an error worth reporting — the key already
+				// covers the CONTENT, so this only happens when the container itself changed shape,
+				// and the entry is simply rewritten below.
 				Interlocked.Increment(ref _misses);
 				return false;
 			}
 
-			Interlocked.Add(ref _bytesRead, compressed.Length);
+			int width = (int)BinaryPrimitives.ReadUInt32LittleEndian(header[8..]);
+			int height = (int)BinaryPrimitives.ReadUInt32LittleEndian(header[12..]);
+			var format = (Image.Format)BinaryPrimitives.ReadUInt32LittleEndian(header[16..]);
+			bool mipmaps = header[20] != 0;
+			hasAlpha = header[21] != 0;
 
-			var decoded = new Image[faceCount];
-			for (int face = 0; face < faceCount; ++face)
+			// header[22] is the cost class: only the sweep consults it, and it reads the header itself
+			// rather than going through this path.
+			int faceCount = BinaryPrimitives.ReadUInt16LittleEndian(header[23..]);
+			uint length = BinaryPrimitives.ReadUInt32LittleEndian(header[25..]);
+			uint deflatedLength = BinaryPrimitives.ReadUInt32LittleEndian(header[29..]);
+
+			if (width <= 0 || height <= 0 || length == 0 || length > int.MaxValue ||
+				faceCount < 1 || faceCount > Engine_TexCube.FaceCount ||
+				deflatedLength == 0 || deflatedLength > int.MaxValue)
 			{
-				try
+				Interlocked.Increment(ref _misses);
+				return false;
+			}
+
+			// The file has to back the lengths before they size a buffer: a damaged header could
+			// otherwise rent 2 GB, or throw for asking more than an array can hold.
+			long totalLong = (long)length * faceCount;
+			if (totalLong > int.MaxValue || HeaderSize + (long)deflatedLength > System.IO.RandomAccess.GetLength(file) ||
+				totalLong > deflatedLength * MaxInflateRatio)
+			{
+				Interlocked.Increment(ref _misses);
+				return false;
+			}
+
+			// Pooled, and each face is a span of it: the inflate buffer is multi-megabyte (LOH), and
+			// Image.CreateFromData copies the span.
+			int total = (int)totalLong;
+			byte[] compressed = System.Buffers.ArrayPool<byte>.Shared.Rent((int)deflatedLength);
+			byte[] all = System.Buffers.ArrayPool<byte>.Shared.Rent(total);
+			try
+			{
+				if (System.IO.RandomAccess.Read(file, compressed.AsSpan(0, (int)deflatedLength), HeaderSize) != deflatedLength ||
+					!InflateInto(compressed, (int)deflatedLength, all, total))
 				{
-					Image img = Image.CreateFromData(width, height, mipmaps, format,
-						new ReadOnlySpan<byte>(all, face * (int)length, (int)length));
-					if (img is null || img.IsEmpty())
+					// A truncated or corrupt entry. Treated as a miss so it is simply rebuilt, which
+					// is what every other unreadable container here does.
+					Interlocked.Increment(ref _misses);
+					return false;
+				}
+
+				Interlocked.Add(ref _bytesRead, deflatedLength);
+
+				var decoded = new Image[faceCount];
+				for (int face = 0; face < faceCount; ++face)
+				{
+					try
+					{
+						Image img = Image.CreateFromData(width, height, mipmaps, format,
+							new ReadOnlySpan<byte>(all, face * (int)length, (int)length));
+						if (img is null || img.IsEmpty())
+						{
+							Interlocked.Increment(ref _misses);
+							return false;
+						}
+						decoded[face] = img;
+					}
+					catch (Exception)
 					{
 						Interlocked.Increment(ref _misses);
 						return false;
 					}
-					decoded[face] = img;
 				}
-				catch (Exception)
-				{
-					Interlocked.Increment(ref _misses);
-					return false;
-				}
-			}
 
-			faces = decoded;
-		}
-		finally
-		{
-			System.Buffers.ArrayPool<byte>.Shared.Return(all);
+				faces = decoded;
+			}
+			finally
+			{
+				System.Buffers.ArrayPool<byte>.Shared.Return(all);
+				System.Buffers.ArrayPool<byte>.Shared.Return(compressed);
+			}
 		}
 
 		Interlocked.Increment(ref _hits);
@@ -436,13 +510,17 @@ public static class Engine_TexCache
 			// ONE DEFLATE OVER EVERY FACE, not one per face. A cube's six faces are near enough
 			// identical in structure that compressing them together is meaningfully better than
 			// compressing them apart, and the reader wants one buffer anyway.
-			var raw = new byte[payload.Length * images.Count];
-			var at = 0;
-			foreach (Image face in images)
+			byte[] raw = payload;
+			if (images.Count > 1)
 			{
-				byte[] data = face.GetData();
-				System.Array.Copy(data, 0, raw, at, System.Math.Min(data.Length, payload.Length));
-				at += payload.Length;
+				raw = new byte[payload.Length * images.Count];
+				var at = 0;
+				foreach (Image face in images)
+				{
+					byte[] data = face.GetData();
+					System.Array.Copy(data, 0, raw, at, System.Math.Min(data.Length, payload.Length));
+					at += payload.Length;
+				}
 			}
 
             byte[] deflated = Deflate(raw);
@@ -675,7 +753,7 @@ public static class Engine_TexCache
 	/// </remarks>
 	private static byte[] Deflate(byte[] raw)
 	{
-		using var output = new System.IO.MemoryStream();
+		using var output = new System.IO.MemoryStream(raw.Length / 2);
 		using (var deflate = new System.IO.Compression.DeflateStream(
 			output, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
 		{
@@ -694,7 +772,7 @@ public static class Engine_TexCache
 	/// that is not the exact length the format demands — so a short or long result is rejected here
 	/// rather than becoming a crash two frames later.
 	/// </remarks>
-	private static bool InflateInto(byte[] compressed, byte[] result, int expected)
+	private static bool InflateInto(byte[] compressed, int compressedLength, byte[] result, int expected)
 	{
 		if (expected <= 0)
 		{
@@ -703,7 +781,7 @@ public static class Engine_TexCache
 
 		try
 		{
-			using var input = new System.IO.MemoryStream(compressed);
+			using var input = new System.IO.MemoryStream(compressed, 0, compressedLength);
 			using var inflate = new System.IO.Compression.DeflateStream(
 				input, System.IO.Compression.CompressionMode.Decompress);
 

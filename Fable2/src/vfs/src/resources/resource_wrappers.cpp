@@ -156,9 +156,14 @@ bool EnsureRefiiResourceWrapperMaterialized(PPCContext& ctx,
     // GODOT'S BYTES ARE ALREADY ON THE RECORD — there is no stream to rewind. Reached through
     // the same short-read check below, so a truncated host answer fails exactly as a truncated
     // file does rather than materialising a half-filled buffer.
-    read = static_cast<uint32_t>(
-        std::min<size_t>(byte_count, record->bytes.size()));
-    std::memcpy(destination, record->bytes.data(), read);
+    if (LoadRefiiHostStreamBytes(*record)) {
+      read = static_cast<uint32_t>(
+          std::min<size_t>(byte_count, record->bytes.size()));
+      std::memcpy(destination, record->bytes.data(), read);
+      if (read == record->size) {
+        ReleaseRefiiHostStreamBytes(*record);
+      }
+    }
   } else {
     record->file.clear();
     record->file.seekg(0, std::ios::beg);

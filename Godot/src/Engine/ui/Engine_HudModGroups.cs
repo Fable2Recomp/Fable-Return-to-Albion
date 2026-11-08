@@ -95,6 +95,29 @@ public static class Engine_HudModGroups
 		Engine_UiValueSources.NumberProblem(Negated((text ?? string.Empty).Trim()) ?? text);
 
 	/// <summary>The source after a leading <c>-</c>, or null when the text is not a negated source.</summary>
-	private static string? Negated(string written) =>
-		written.Length > 1 && written[0] == '-' && Engine_UiValueSources.LooksLikeSource(written[1..]) ? written[1..] : null;
+	private static string? Negated(string written)
+	{
+		if (written.Length <= 1 || written[0] != '-')
+		{
+			return null;
+		}
+
+		// Read per piece per frame: each text is split once.
+		_negated ??= new System.Collections.Generic.Dictionary<string, string?>(System.StringComparer.Ordinal);
+		if (_negated.TryGetValue(written, out string? source))
+		{
+			return source;
+		}
+
+		if (_negated.Count >= 1024)
+		{
+			_negated.Clear();
+		}
+
+		string rest = written[1..];
+		return _negated[written] = Engine_UiValueSources.LooksLikeSource(rest) ? rest : null;
+	}
+
+	[System.ThreadStatic]
+	private static System.Collections.Generic.Dictionary<string, string?>? _negated;
 }

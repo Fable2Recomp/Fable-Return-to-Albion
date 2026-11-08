@@ -31,7 +31,8 @@ public static class Engine_TerrainPrebuild
 	public static Progress Run(
 		string gameDirectory,
 		Action<Progress>? report = null,
-		CancellationToken cancel = default)
+		CancellationToken cancel = default,
+		Lazy<BnkFileSystem>? mount = null)
 	{
 		if (gameDirectory.Length == 0 || !System.IO.Directory.Exists(gameDirectory))
 		{
@@ -50,7 +51,8 @@ public static class Engine_TerrainPrebuild
 			return new Progress(0, 0, 0, 0, $"upscaling deferred: {Engine_TexSettings.UpscaleWhen}");
 		}
 
-		using BnkFileSystem banks = BnkFileSystem.Mount(gameDirectory);
+		using BnkFileSystem? owned = mount is null ? BnkFileSystem.Mount(gameDirectory) : null;
+		BnkFileSystem banks = mount?.Value ?? owned!;
 		byte[]? Read(string path) =>
 			banks.TryGetFile(path, out BnkFile file) ? file.ReadAllBytes() : null;
 

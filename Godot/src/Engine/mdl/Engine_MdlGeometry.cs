@@ -1,5 +1,8 @@
 using System;
+using System.Buffers;
+using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 
 namespace Refii.Models;
 
@@ -69,11 +72,19 @@ public sealed class MdlGeometry
     /// </summary>
     public List<(float EdgeLength, uint[] Indices)> Lods { get; } = new();
 
-    public int VertexCount => Positions.Length / 3;
+    /// <summary>
+    /// A coarser piece over LOD 0's vertices (<see cref="SharesLod0Vertices"/>) is its indices and
+    /// <see cref="SourceVertices"/> alone: nearly every vertex is already on the surface it joins,
+    /// so its arrays stay empty and this buffer is decoded only when <see cref="Engine_MdlLods"/>
+    /// must append one. Always a rigid buffer, whose layout has tangents.
+    /// </summary>
+    internal MdlMeshBuffer? VerticesIn { get; set; }
+
+    public int VertexCount => VerticesIn is null ? Positions.Length / 3 : SourceVertices.Length;
 
     public int TriangleCount => Indices.Length / 3;
 
-    public bool HasTangents => Tangents.Length > 0;
+    public bool HasTangents => Tangents.Length > 0 || VerticesIn is not null;
 
     public bool HasBones => BoneIds.Length > 0;
 }
@@ -86,6 +97,7 @@ public static class Engine_MdlGeometry
     // fallback for buffers that carry no normal.
     private const int VertexStride = 28;
     private const int UvOffset = 20;
+    private const int RigidStride = 20;
 
     public static bool TryBuild(byte[] data, MdlInfo info, out List<MdlGeometry> geometry)
     {
@@ -135,39 +147,71 @@ public static class Engine_MdlGeometry
                 continue;
             }
 
-            if (!TryDecodeVertices(data, mb,
-                    out float[] positions, out float[] uvs, out float[]? normals,
-                    out float[]? tangents, out int[]? boneIds, out float[]? boneWeights))
+            int vertexCount = (int)mb.VertexCount;
+            bool lazyVertices = TakesVerticesLazily(mb);
+
+            // A buffer split into submeshes is copied out of these arrays and then done with.
+            bool rented = !lazyVertices && mb.SubMeshes.Count > 1 && !mb.IsFoliagePath &&
+                (mb.IsEngineRigid || mb.IsEngineSkinned || mb.IsEngineTree);
+
+            float[] positions = Array.Empty<float>(), uvs = positions;
+            float[]? normals = null, tangents = null, boneWeights = null;
+            int[]? boneIds = null;
+            if (lazyVertices)
+            {
+                if ((long)mb.VertexOffset + ((long)mb.VertexCount * RigidStride) > data.Length)
+                {
+                    continue;
+                }
+            }
+            else if (rented)
+            {
+                if (!TryDecodeEngineVertices(data, mb, rented,
+                        out positions, out uvs, out normals, out tangents, out boneIds, out boneWeights))
+                {
+                    continue;
+                }
+            }
+            else if (!TryDecodeVertices(data, mb,
+                    out positions, out uvs, out normals, out tangents, out boneIds, out boneWeights))
             {
                 continue;
             }
 
             if (boneIds is not null && boneWeights is not null)
             {
-                FilterBoneWeights(boneIds, boneWeights, boneCount);
+                FilterBoneWeights(boneIds, boneWeights, boneCount, vertexCount);
             }
 
-            ConvertZUpToYUp(positions);
-            ConvertZUpToYUp(normals);
-            ConvertTangentsZUpToYUp(tangents);
-
-            var strip = new ushort[mb.FaceCount];
-            bool hasRestart = false;
-            for (uint i = 0; i < mb.FaceCount; ++i)
+            if (!lazyVertices)
             {
-                int f = mb.FaceOffset + (int)(i * 2);
-                ushort w = (ushort)((data[f] << 8) | data[f + 1]);
-                strip[i] = w;
-                if (w == 0xFFFF)
-                {
-                    hasRestart = true;
-                }
+                ConvertToYUp(positions, normals, tangents, vertexCount);
             }
+
+            int words = (int)mb.FaceCount;
+            ushort[] stripWords = ArrayPool<ushort>.Shared.Rent(words);
+            Span<ushort> strip = stripWords.AsSpan(0, words);
+            BinaryPrimitives.ReverseEndianness(
+                MemoryMarshal.Cast<byte, ushort>(data.AsSpan(mb.FaceOffset, words * 2)), strip);
 
             if (mb.SubMeshes.Count > 1)
             {
                 AddSubMeshSurfaces(geometry, meshes, hideRegions, mb, positions, uvs, normals,
-                    tangents, boneIds, boneWeights, strip, bufferBase, clothRecord);
+                    tangents, boneIds, boneWeights, strip, bufferBase, clothRecord, lazyVertices);
+                ArrayPool<ushort>.Shared.Return(stripWords);
+                if (rented)
+                {
+                    ArrayPool<float>.Shared.Return(positions);
+                    ArrayPool<float>.Shared.Return(uvs);
+                    ArrayPool<float>.Shared.Return(normals!);
+                    ArrayPool<float>.Shared.Return(tangents!);
+                    if (boneIds is not null)
+                    {
+                        ArrayPool<int>.Shared.Return(boneIds);
+                        ArrayPool<float>.Shared.Return(boneWeights!);
+                    }
+                }
+
                 continue;
             }
 
@@ -183,71 +227,111 @@ public static class Engine_MdlGeometry
             //
             // A buffer with no section at all keeps the old inference — there is nothing to follow.
             bool statedList = mb.SubMeshes.Count == 1 && mb.SubMeshes[0].PrimitiveType == 0;
-            bool asList = mb.SubMeshes.Count == 1 ? statedList : !hasRestart;
+            bool asList = mb.SubMeshes.Count == 1
+                ? statedList
+                : ((ReadOnlySpan<ushort>)strip).IndexOf((ushort)0xFFFF) < 0;
 
-            var indices = new List<uint>();
+            uint[] scratch = ArrayPool<uint>.Shared.Rent(words * 3);
+            int indexCount = 0;
             if (!asList)
             {
-                MdlReader.BuildTrianglesFromStrip(strip, indices);
+                indexCount = MdlReader.BuildTrianglesFromStrip(strip, scratch);
             }
             else
             {
-                int triangles = strip.Length / 3;
-                for (int t = 0; t < triangles; ++t)
+                indexCount = strip.Length / 3 * 3;
+                for (int i = 0; i < indexCount; ++i)
                 {
-                    indices.Add(strip[t * 3]);
-                    indices.Add(strip[(t * 3) + 1]);
-                    indices.Add(strip[(t * 3) + 2]);
+                    scratch[i] = strip[i];
                 }
             }
 
-            if (indices.Count < 3)
-            {
-                continue;
-            }
-
+            ArrayPool<ushort>.Shared.Return(stripWords);
             uint maxIndex = 0;
-            foreach (uint i in indices)
+            for (int i = 0; i < indexCount; ++i)
             {
-                if (i > maxIndex) maxIndex = i;
+                if (scratch[i] > maxIndex) maxIndex = scratch[i];
             }
 
-            if (maxIndex >= mb.VertexCount)
+            if (indexCount < 3 || maxIndex >= mb.VertexCount)
             {
+                ArrayPool<uint>.Shared.Return(scratch);
                 continue;
             }
 
+            ReadOnlySpan<uint> indices = scratch.AsSpan(0, indexCount);
             var geo = new MdlGeometry
             {
                 Positions = positions,
                 Uvs = uvs,
                 Indices = indices.ToArray(),
-                Normals = normals ??
-                          MdlReader.ComputeSmoothNormals((int)mb.VertexCount, indices, positions),
+                Normals = lazyVertices ? Array.Empty<float>() : normals ??
+                          MdlReader.ComputeSmoothNormals(vertexCount, indices, positions),
                 AuthoredNormals = normals is not null,
                 Tangents = tangents ?? Array.Empty<float>(),
                 BoneIds = boneIds ?? Array.Empty<int>(),
                 BoneWeights = boneWeights ?? Array.Empty<float>(),
-                Name = ResolveName(meshes, mb.MeshIndex, -1),
+                Name = lazyVertices ? string.Empty : ResolveName(meshes, mb.MeshIndex, -1),
                 Material = ResolveMaterial(meshes, mb.MeshIndex, 0),
-                SourceVertices = Identity(bufferBase, (int)mb.VertexCount),
+                SourceVertices = Identity(bufferBase, vertexCount),
                 SharesLod0Vertices = mb.SharesLod0Vertices,
+                VerticesIn = lazyVertices ? mb : null,
                 ClothRecord = clothRecord,
             };
 
+            ArrayPool<uint>.Shared.Return(scratch);
             geometry.Add(geo);
         }
 
         return geometry.Count > 0;
     }
 
-    private static void ConvertZUpToYUp(float[]? values)
+    /// <summary>A buffer built as <see cref="MdlGeometry.VerticesIn"/> says, without decoding its vertices.</summary>
+    private static bool TakesVerticesLazily(MdlMeshBuffer mb) =>
+        mb.SharesLod0Vertices && mb.IsEngineRigid && !mb.IsFoliagePath;
+
+    /// <summary>
+    /// The vertices of a buffer over LOD 0's, in Y-up, for a piece that must append one.
+    /// The arrays are rented; hand them back with <see cref="ReturnRigidVertices"/>.
+    /// </summary>
+    internal static bool TryRentRigidVertices(
+        byte[] data, MdlMeshBuffer mb,
+        out float[] positions, out float[] uvs, out float[] normals, out float[] tangents)
     {
-        if (values is null)
+        if (!TryDecodeEngineVertices(data, mb, rent: true,
+                out positions, out uvs, out normals, out tangents, out _, out _))
         {
-            return;
+            return false;
         }
 
+        ConvertToYUp(positions, normals, tangents, (int)mb.VertexCount);
+        return true;
+    }
+
+    internal static void ReturnRigidVertices(float[] positions, float[] uvs, float[] normals, float[] tangents)
+    {
+        ArrayPool<float>.Shared.Return(positions);
+        ArrayPool<float>.Shared.Return(uvs);
+        ArrayPool<float>.Shared.Return(normals);
+        ArrayPool<float>.Shared.Return(tangents);
+    }
+
+    private static void ConvertToYUp(float[] positions, float[]? normals, float[]? tangents, int vertexCount)
+    {
+        ConvertZUpToYUp(positions.AsSpan(0, vertexCount * 3));
+        if (normals is not null)
+        {
+            ConvertZUpToYUp(normals.AsSpan(0, vertexCount * 3));
+        }
+
+        if (tangents is not null)
+        {
+            ConvertTangentsZUpToYUp(tangents.AsSpan(0, vertexCount * 4));
+        }
+    }
+
+    private static void ConvertZUpToYUp(Span<float> values)
+    {
         for (int i = 0; i + 2 < values.Length; i += 3)
         {
             float y = values[i + 1];
@@ -256,13 +340,8 @@ public static class Engine_MdlGeometry
         }
     }
 
-    private static void ConvertTangentsZUpToYUp(float[]? tangents)
+    private static void ConvertTangentsZUpToYUp(Span<float> tangents)
     {
-        if (tangents is null)
-        {
-            return;
-        }
-
         for (int i = 0; i + 3 < tangents.Length; i += 4)
         {
             float y = tangents[i + 1];
@@ -271,9 +350,8 @@ public static class Engine_MdlGeometry
         }
     }
 
-    private static void FilterBoneWeights(int[] boneIds, float[] boneWeights, int boneCount)
+    private static void FilterBoneWeights(int[] boneIds, float[] boneWeights, int boneCount, int vertexCount)
     {
-        int vertexCount = boneIds.Length / 4;
         for (int v = 0; v < vertexCount; v++)
         {
             int baseIdx = v * 4;
@@ -339,7 +417,7 @@ public static class Engine_MdlGeometry
 
         if (mb.IsEngineRigid || mb.IsEngineSkinned || mb.IsEngineTree)
         {
-            return TryDecodeEngineVertices(data, mb,
+            return TryDecodeEngineVertices(data, mb, rent: false,
                 out positions, out uvs, out normals, out tangents,
                 out boneIds, out boneWeights);
         }
@@ -370,7 +448,7 @@ public static class Engine_MdlGeometry
     }
 
     private static bool TryDecodeEngineVertices(
-        byte[] data, MdlMeshBuffer mb,
+        byte[] data, MdlMeshBuffer mb, bool rent,
         out float[] positions, out float[] uvs, out float[] normals,
         out float[] tangents, out int[]? boneIds, out float[]? boneWeights)
     {
@@ -381,7 +459,7 @@ public static class Engine_MdlGeometry
         // rigid ones do and only the stride differs.
         bool skinned = mb.IsEngineSkinned;
         bool tree = mb.IsEngineTree;
-        int stride = skinned ? 28 : tree ? 36 : 20;
+        int stride = skinned ? 28 : tree ? 36 : RigidStride;
         int uvOff = skinned ? 20 : 12;
         int tangentOff = skinned ? 24 : 16;
 
@@ -398,17 +476,18 @@ public static class Engine_MdlGeometry
         }
 
         uint vc = mb.VertexCount;
-        positions = new float[vc * 3];
-        uvs = new float[vc * 2];
-        normals = new float[vc * 3];
-        tangents = new float[vc * 4];
+        positions = rent ? ArrayPool<float>.Shared.Rent((int)vc * 3) : new float[vc * 3];
+        uvs = rent ? ArrayPool<float>.Shared.Rent((int)vc * 2) : new float[vc * 2];
+        normals = rent ? ArrayPool<float>.Shared.Rent((int)vc * 3) : new float[vc * 3];
+        tangents = rent ? ArrayPool<float>.Shared.Rent((int)vc * 4) : new float[vc * 4];
 
         if (skinned)
         {
-            boneIds = new int[vc * 4];
-            boneWeights = new float[vc * 4];
+            boneIds = rent ? ArrayPool<int>.Shared.Rent((int)vc * 4) : new int[vc * 4];
+            boneWeights = rent ? ArrayPool<float>.Shared.Rent((int)vc * 4) : new float[vc * 4];
         }
 
+        float[] snorm11 = MdlReader.Snorm11, snorm10 = MdlReader.Snorm10;
         for (uint v = 0; v < vc; v++)
         {
             int p = mb.VertexOffset + (int)(v * stride);
@@ -417,8 +496,11 @@ public static class Engine_MdlGeometry
             positions[v * 3 + 1] = MdlReader.HalfToFloat((ushort)((data[p + 2] << 8) | data[p + 3]));
             positions[v * 3 + 2] = MdlReader.HalfToFloat((ushort)((data[p + 4] << 8) | data[p + 5]));
 
+            // MdlReader.DecodeNormal_11_11_10.
             uint packedNormal = MdlReader.ReadU32BE(data, p + 8);
-            var (nx, ny, nz) = MdlReader.DecodeNormal_11_11_10(packedNormal);
+            float nx = snorm11[packedNormal & 0x7FF];
+            float ny = snorm11[(packedNormal >> 11) & 0x7FF];
+            float nz = snorm10[packedNormal >> 22];
             float nLen = MathF.Sqrt(nx * nx + ny * ny + nz * nz);
             if (nLen > 1e-6f) { nx /= nLen; ny /= nLen; nz /= nLen; }
             normals[v * 3] = nx;
@@ -448,8 +530,12 @@ public static class Engine_MdlGeometry
             uvs[v * 2] = MdlReader.HalfToFloat((ushort)((data[u] << 8) | data[u + 1]));
             uvs[v * 2 + 1] = MdlReader.HalfToFloat((ushort)((data[u + 2] << 8) | data[u + 3]));
 
+            // MdlReader.DecodeTangent_DEC3N.
             uint packedTangent = MdlReader.ReadU32BE(data, p + tangentOff);
-            var (tx, ty, tz, tw) = MdlReader.DecodeTangent_DEC3N(packedTangent);
+            float tx = snorm10[packedTangent & 0x3FF];
+            float ty = snorm10[(packedTangent >> 10) & 0x3FF];
+            float tz = snorm10[(packedTangent >> 20) & 0x3FF];
+            float tw = (packedTangent >> 31) == 0 ? 1f : -1f;
             float tLen = MathF.Sqrt(tx * tx + ty * ty + tz * tz);
             if (tLen > 1e-6f) { tx /= tLen; ty /= tLen; tz /= tLen; }
             tangents[v * 4] = tx;
@@ -477,9 +563,17 @@ public static class Engine_MdlGeometry
         List<MdlGeometry> geometry, IReadOnlyList<MdlMesh> meshes,
         IReadOnlyList<string> hideRegions, MdlMeshBuffer mb,
         float[] positions, float[] uvs, float[]? normals,
-        float[]? tangents, int[]? boneIds, float[]? boneWeights, ushort[] strip,
-        int bufferBase, int clothRecord = -1)
+        float[]? tangents, int[]? boneIds, float[]? boneWeights, ReadOnlySpan<ushort> strip,
+        int bufferBase, int clothRecord, bool lazyVertices)
     {
+        // One of each for the whole buffer: `remap` is put back after each submesh by walking
+        // `order`, the buffer's vertices the submesh reached, in the order it reached them.
+        int vertexCount = (int)mb.VertexCount;
+        uint[] remap = ArrayPool<uint>.Shared.Rent(vertexCount);
+        uint[] order = ArrayPool<uint>.Shared.Rent(vertexCount);
+        uint[] scratch = ArrayPool<uint>.Shared.Rent(strip.Length * 3);
+        Array.Fill(remap, uint.MaxValue, 0, vertexCount);
+
         for (int si = 0; si < mb.SubMeshes.Count; ++si)
         {
             MdlSubMesh sub = mb.SubMeshes[si];
@@ -499,11 +593,10 @@ public static class Engine_MdlGeometry
                 end = (uint)strip.Length;
             }
 
-            var slice = new ushort[end - start];
-            Array.Copy(strip, start, slice, 0, slice.Length);
+            ReadOnlySpan<ushort> slice = strip.Slice((int)start, (int)(end - start));
 
             // Same rule as the single-section path above: the section says which it is.
-            bool sliceHasRestart = Array.IndexOf(slice, (ushort)0xFFFF) >= 0;
+            bool sliceHasRestart = slice.IndexOf((ushort)0xFFFF) >= 0;
             bool triangleList = sub.PrimitiveType == 0
                 ? sub.FaceCount > 0 && slice.Length >= sub.FaceCount * 3
                 : false;
@@ -514,36 +607,37 @@ public static class Engine_MdlGeometry
                 triangleList = true;
             }
 
-            var subIndices = new List<uint>();
+            int indexCount;
             if (triangleList)
             {
-                foreach (ushort w in slice)
+                indexCount = slice.Length;
+                for (int i = 0; i < indexCount; ++i)
                 {
-                    subIndices.Add(w);
+                    scratch[i] = slice[i];
                 }
             }
             else
             {
-                MdlReader.BuildTrianglesFromStrip(slice, subIndices);
+                indexCount = MdlReader.BuildTrianglesFromStrip(slice, scratch);
                 int cap = (int)(sub.FaceCount * 3);
-                if (sub.FaceCount > 0 && subIndices.Count > cap)
+                if (sub.FaceCount > 0 && indexCount > cap)
                 {
-                    subIndices.RemoveRange(cap, subIndices.Count - cap);
+                    indexCount = cap;
                 }
             }
 
-            if (subIndices.Count < 3)
+            if (indexCount < 3)
             {
                 continue;
             }
 
-            var remap = new uint[mb.VertexCount];
-            Array.Fill(remap, uint.MaxValue);
             uint used = 0;
-            foreach (uint idx in subIndices)
+            for (int i = 0; i < indexCount; ++i)
             {
+                uint idx = scratch[i];
                 if (idx < mb.VertexCount && remap[idx] == uint.MaxValue)
                 {
+                    order[used] = idx;
                     remap[idx] = used++;
                 }
             }
@@ -554,6 +648,39 @@ public static class Engine_MdlGeometry
             }
 
             var subSource = new int[used];
+            for (uint nv = 0; nv < used; ++nv)
+            {
+                subSource[nv] = bufferBase + (int)order[nv];
+            }
+
+            // The piece's indices, in the submesh's own numbering.
+            var subIndices = new uint[indexCount];
+            for (int i = 0; i < indexCount; ++i)
+            {
+                uint old = scratch[i];
+                subIndices[i] = old < mb.VertexCount && remap[old] != uint.MaxValue ? remap[old] : 0;
+            }
+
+            for (uint nv = 0; nv < used; ++nv)
+            {
+                remap[order[nv]] = uint.MaxValue;
+            }
+
+            if (lazyVertices)
+            {
+                geometry.Add(new MdlGeometry
+                {
+                    Indices = subIndices,
+                    ClothRecord = clothRecord,
+                    Region = RegionName(hideRegions, sub),
+                    Material = ResolveMaterial(meshes, mb.MeshIndex, sub.MaterialIndex),
+                    SourceVertices = subSource,
+                    SharesLod0Vertices = mb.SharesLod0Vertices,
+                    VerticesIn = mb,
+                });
+                continue;
+            }
+
             var subPositions = new float[used * 3];
             var subUvs = new float[used * 2];
             float[]? subNormals = normals is null ? null : new float[used * 3];
@@ -561,15 +688,9 @@ public static class Engine_MdlGeometry
             int[]? subBoneIds = boneIds is not null ? new int[used * 4] : null;
             float[]? subBoneWeights = boneWeights is not null ? new float[used * 4] : null;
 
-            for (uint v = 0; v < mb.VertexCount; ++v)
+            for (uint nv = 0; nv < used; ++nv)
             {
-                uint nv = remap[v];
-                if (nv == uint.MaxValue)
-                {
-                    continue;
-                }
-
-                subSource[nv] = bufferBase + (int)v;
+                uint v = order[nv];
                 subPositions[nv * 3] = positions[v * 3];
                 subPositions[(nv * 3) + 1] = positions[(v * 3) + 1];
                 subPositions[(nv * 3) + 2] = positions[(v * 3) + 2];
@@ -605,17 +726,11 @@ public static class Engine_MdlGeometry
                 }
             }
 
-            for (int i = 0; i < subIndices.Count; ++i)
-            {
-                uint old = subIndices[i];
-                subIndices[i] = old < mb.VertexCount && remap[old] != uint.MaxValue ? remap[old] : 0;
-            }
-
             geometry.Add(new MdlGeometry
             {
                 Positions = subPositions,
                 Uvs = subUvs,
-                Indices = subIndices.ToArray(),
+                Indices = subIndices,
                 Normals = subNormals ??
                           MdlReader.ComputeSmoothNormals((int)used, subIndices, subPositions),
                 AuthoredNormals = subNormals is not null,
@@ -624,15 +739,22 @@ public static class Engine_MdlGeometry
                 BoneWeights = subBoneWeights ?? Array.Empty<float>(),
                 Name = ResolveName(meshes, mb.MeshIndex, si),
                 ClothRecord = clothRecord,
-                Region = sub.RegionIndex < hideRegions.Count
-                    ? hideRegions[(int)sub.RegionIndex]
-                    : sub.RegionIndex == uint.MaxValue ? string.Empty : "#" + sub.RegionIndex,
+                Region = RegionName(hideRegions, sub),
                 Material = ResolveMaterial(meshes, mb.MeshIndex, sub.MaterialIndex),
                 SourceVertices = subSource,
                 SharesLod0Vertices = mb.SharesLod0Vertices,
             });
         }
+
+        ArrayPool<uint>.Shared.Return(remap);
+        ArrayPool<uint>.Shared.Return(order);
+        ArrayPool<uint>.Shared.Return(scratch);
     }
+
+    private static string RegionName(IReadOnlyList<string> hideRegions, MdlSubMesh sub) =>
+        sub.RegionIndex < hideRegions.Count
+            ? hideRegions[(int)sub.RegionIndex]
+            : sub.RegionIndex == uint.MaxValue ? string.Empty : "#" + sub.RegionIndex;
 
     private static MdlMaterial? ResolveMaterial(
         IReadOnlyList<MdlMesh> meshes, uint meshIndex, int materialIndex)

@@ -503,7 +503,7 @@ public static class Engine_TexLibrary
 				continue;
 			}
 
-			Engine_TextureUpload.SetImage(texture, image);
+			Engine_TextureUpload.SetImage(texture, image, world: true);
 			lock (Gate)
 			{
 				entry.HasAlpha = hasAlpha;
@@ -778,6 +778,14 @@ public static class Engine_TexLibrary
 		// The base decode first, and it is the half that pays off even with enhancement off — the
 		// cache serves it to every later load whatever the player's settings say.
 		string baseKey = Engine_TexCache.BaseKey(source);
+
+		// Already built, as nearly every texture is on a boot after the first: no need for the pixels.
+		if (Engine_TexCache.TryPeek(baseKey, out int width, out int height) &&
+			EnhancementIsCached(source, width, height, semantic))
+		{
+			return true;
+		}
+
 		Image? original = Engine_TexCache.TryLoad(baseKey, out bool hasAlpha);
 		if (original is null)
 		{
@@ -1563,7 +1571,7 @@ public static class Engine_TexLibrary
 				// The swap, and the reason nothing had to register a callback: every material
 				// holding this Texture2D is holding THIS object, so replacing its image updates
 				// all of them at once. SetImage rather than Update because the size changes.
-				Engine_TextureUpload.SetImage(target, image);
+				Engine_TextureUpload.SetImage(target, image, world: true);
 				Refii.Core.Engine_TracedMemory.Resize(TracedPool, target.GetRid().Id, (ulong)image.GetDataSize());
 				lock (Gate)
 				{
@@ -1632,6 +1640,20 @@ public static class Engine_TexLibrary
 	/// is a decode cost and a quality loss for a caller that is only going to call
 	/// <c>Decompress</c> on it — which is exactly what the SWF rasterizer's sampler does.
 	/// </param>
+	/// <summary>Whether <see cref="EnhanceDecoded"/>, with its defaults, would have nothing to make.</summary>
+	private static bool EnhancementIsCached(byte[] source, int width, int height, TexSemantic semantic)
+	{
+		ITexUpscaler? backend = Engine_TexEnhance.Backend;
+		if (!Engine_TexEnhance.Enabled || backend is null)
+		{
+			return true;
+		}
+
+		int scale = Engine_TexSemantic.TargetScale(width, height, Engine_TexSemantic.For(semantic));
+		return scale <= 1 ||
+			Engine_TexCache.TryPeek(Engine_TexCache.Key(source, semantic, backend.Id, scale), out _, out _);
+	}
+
 	public static Image? EnhanceDecoded(
 		byte[] source,
 		Image original,

@@ -786,10 +786,10 @@ public partial class GameFx : Node3D
             }
 
             Transform3D smoothed = Smoothed(key, placed, refreshed: false);
-            if (!node.Transform.IsEqualApprox(smoothed))
+            if (!node.Placed.IsEqualApprox(smoothed))
             {
                 Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
-                node.Transform = smoothed;
+                node.Placed = smoothed;
                 if (_statedSplineByKey.TryGetValue(key, out Vector3[]? activeWorldSpline) && activeWorldSpline.Length >= 2)
                 {
                     Transform3D toNodeLocal = smoothed.AffineInverse();
@@ -902,10 +902,10 @@ public partial class GameFx : Node3D
             _statedSplineByKey.TryGetValue(key, out activeWorldSpline);
         }
 
-        if (!node.Transform.IsEqualApprox(smoothed))
+        if (!node.Placed.IsEqualApprox(smoothed))
         {
             Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
-            node.Transform = smoothed;
+            node.Placed = smoothed;
         }
 
         if (activeWorldSpline is { Length: >= 2 })
@@ -953,10 +953,10 @@ public partial class GameFx : Node3D
 
             // Anchored at the first weapon dummy, matching the simulation's world-aligned basis:
             Transform3D smoothed = new Transform3D(GuestIdentity, _weaponWorldSplineScratch[0]);
-            if (!tracker.Node.Transform.IsEqualApprox(smoothed))
+            if (!tracker.Node.Placed.IsEqualApprox(smoothed))
             {
                 Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Fx);
-                tracker.Node.Transform = smoothed;
+                tracker.Node.Placed = smoothed;
             }
 
             // Map local spline override endpoints relative to the updated node:

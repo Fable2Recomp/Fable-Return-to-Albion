@@ -244,10 +244,162 @@ public sealed class Engine_DecorateCatalog
         foreach (string path in paths.Where(p => p.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) || p.EndsWith(".hkx", StringComparison.OrdinalIgnoreCase)))
             models.TryAdd(Engine_GameHash.ResourcePath(path), path);
         const string target = "globals/globals.gdb.tu";
-        var patch = GdbPatchBuilder.LoadOrCreatePatchDatabase(Read(target));
-        Current = Build(db, models, patch);
-        byte[] bytes = GdbWriter.Serialize(patch);
+        byte[]? shipped = Read(target);
+
+        // THE ANSWER IS KEPT ON DISK. Building it looks at all of a million records several times,
+        // seconds on a phone at every boot, and it changes only when the data under it does.
+        //
+        // IT IS NOT SKIPPED WHEN THE MODE IS OFF. The setting only stops new placing: a save's layout
+        // is restored and kept without it (the script's restore, GetSaveTable), and a host's placed
+        // furniture reaches a joiner as a record id in the create message, whatever the joiner's own
+        // setting. Every machine has to hold these records.
+        byte[] key = CacheKey(blobs, models, shipped);
+        string cache = System.IO.Path.Combine(Engine_Title.Fable2.CacheDirectory, "decorate", "catalog.bin");
+        if (!TryReadCache(cache, key, models, out Engine_DecorateCatalog? catalog, out byte[] bytes, out string lua))
+        {
+            var patch = GdbPatchBuilder.LoadOrCreatePatchDatabase(shipped);
+            catalog = Build(GdbMulti.Build(blobs), models, patch);
+            bytes = GdbWriter.Serialize(patch);
+            lua = catalog.LuaCatalog();
+            WriteCache(cache, key, catalog, bytes, lua);
+        }
+
+        Current = catalog;
         mounted.AddVirtualFile(target, target, bytes.Length, () => bytes, "Refii");
-        Engine_DecorateRuntime.Attach(mounted, Current.LuaCatalog());
+        Engine_DecorateRuntime.Attach(mounted, lua);
+    }
+
+    /// <summary>Raise when <see cref="Build"/> or the file below changes in a way the build stamp would not show.</summary>
+    private const int CacheFormat = 2;
+
+    /// <summary>Everything <see cref="Build"/> reads, and the build of the code that reads it.</summary>
+    internal static byte[] CacheKey(IReadOnlyList<byte[]?> blobs, IReadOnlyDictionary<uint, string> models, byte[]? shipped)
+    {
+        using var hash = Engine_Hash.CreateIncrementalSha256();
+        void AddNumber(long value)
+        {
+            Span<byte> number = stackalloc byte[8];
+            System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(number, value);
+            hash.AppendData(number);
+        }
+
+        void AddBytes(byte[]? bytes)
+        {
+            AddNumber(bytes?.LongLength ?? -1);
+            hash.AppendData(bytes);
+        }
+
+        AddNumber(CacheFormat);
+        AddBytes(typeof(Engine_DecorateCatalog).Assembly.ManifestModule.ModuleVersionId.ToByteArray());
+        AddNumber(blobs.Count);
+        foreach (byte[]? blob in blobs) AddBytes(blob);
+        AddBytes(shipped);
+        AddNumber(models.Count);
+        foreach (var model in models)
+        {
+            AddNumber(model.Key);
+            AddBytes(Encoding.UTF8.GetBytes(model.Value));
+        }
+
+        return hash.GetHashAndReset();
+    }
+
+    /// <summary>
+    /// The patch and Lua from <paramref name="path"/>, when made from the same input and whole: a
+    /// damaged patch would be different game data. The catalog read holds what the mode's screens
+    /// read (<see cref="Items"/>, <see cref="Models"/>); the tables behind the Lua are not made.
+    /// </summary>
+    internal static bool TryReadCache(
+        string path, byte[] key, IReadOnlyDictionary<uint, string> models,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out Engine_DecorateCatalog? catalog, out byte[] patch, out string lua)
+    {
+        catalog = null;
+        patch = Array.Empty<byte>();
+        lua = string.Empty;
+        try
+        {
+            if (!System.IO.File.Exists(path))
+            {
+                return false;
+            }
+
+            byte[] file = System.IO.File.ReadAllBytes(path);
+            int body = key.Length + CacheDigestLength;
+            if (file.Length < body || !file.AsSpan(0, key.Length).SequenceEqual(key) ||
+                !file.AsSpan(key.Length, CacheDigestLength).SequenceEqual(Engine_Hash.Sha256(file.AsSpan(body))))
+            {
+                return false;
+            }
+
+            using var reader = new System.IO.BinaryReader(new System.IO.MemoryStream(file, body, file.Length - body));
+            var read = new Engine_DecorateCatalog();
+            foreach (var model in models) read.Models[model.Key] = model.Value;
+            byte[] readPatch = reader.ReadBytes(reader.ReadInt32());
+            string readLua = Encoding.UTF8.GetString(reader.ReadBytes(reader.ReadInt32()));
+            for (int i = reader.ReadInt32(); i > 0; i--)
+            {
+                var item = new Item(reader.ReadUInt32(), reader.ReadUInt32(), reader.ReadInt32(), reader.ReadInt32(), reader.ReadString());
+                read.Items.Add(item.Card, item);
+            }
+
+            catalog = read;
+            patch = readPatch;
+            lua = readLua;
+            return true;
+        }
+        catch (Exception exception) when (exception is System.IO.IOException or UnauthorizedAccessException or ArgumentException or OverflowException or FormatException)
+        {
+            // Unreadable: built again and written over.
+            return false;
+        }
+    }
+
+    private const int CacheDigestLength = 32;
+
+    /// <summary>Not being able to keep it only means the next boot builds it too.</summary>
+    internal static void WriteCache(string path, byte[] key, Engine_DecorateCatalog catalog, byte[] patch, string lua)
+    {
+        string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            using var body = new System.IO.MemoryStream();
+            using (var writer = new System.IO.BinaryWriter(body, Encoding.UTF8, leaveOpen: true))
+            {
+                writer.Write(patch.Length);
+                writer.Write(patch);
+                byte[] text = Encoding.UTF8.GetBytes(lua);
+                writer.Write(text.Length);
+                writer.Write(text);
+                writer.Write(catalog.Items.Count);
+                foreach (Item item in catalog.Items.Values)
+                {
+                    writer.Write(item.Card);
+                    writer.Write(item.Definition);
+                    writer.Write(item.Type);
+                    writer.Write(item.Level);
+                    writer.Write(item.Model);
+                }
+            }
+
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+            using (System.IO.FileStream file = System.IO.File.Create(temporary))
+            {
+                file.Write(key);
+                file.Write(Engine_Hash.Sha256(body.GetBuffer().AsSpan(0, (int)body.Length)));
+                file.Write(body.GetBuffer(), 0, (int)body.Length);
+            }
+
+            System.IO.File.Move(temporary, path, overwrite: true);
+        }
+        catch (Exception exception) when (exception is System.IO.IOException or UnauthorizedAccessException)
+        {
+            try
+            {
+                System.IO.File.Delete(temporary);
+            }
+            catch (Exception cleanup) when (cleanup is System.IO.IOException or UnauthorizedAccessException)
+            {
+            }
+        }
     }
 }

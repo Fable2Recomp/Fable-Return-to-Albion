@@ -35,67 +35,73 @@ public static class Engine_LevelMesh
     /// </summary>
     public static List<ArrayMesh> ToChunkMeshes(TerrainMesh terrain, string name)
     {
-        var chunks = new List<ArrayMesh>();
         int w = terrain.Width;
         int h = terrain.Height;
         if (w < 2 || h < 2)
         {
-            return chunks;
+            return new List<ArrayMesh>();
         }
 
         int columns = Math.Max(1, (w - 1 + ChunkCells - 1) / ChunkCells);
         int rows = Math.Max(1, (h - 1 + ChunkCells - 1) / ChunkCells);
-        var local = new int[(long)w * h];
-        for (int cy = 0; cy < rows; cy++)
+
+        // SIDE BY SIDE: generating a chunk's levels is most of this, and it was the longest serial
+        // stretch of the terrain task. A chunk touches only its own mesh; the list keeps grid order.
+        // Headless (the tests) runs on the dummy renderer, whose mesh storage is not thread-safe.
+        var meshes = new ArrayMesh[rows * columns];
+        var options = new System.Threading.Tasks.ParallelOptions
         {
+            MaxDegreeOfParallelism = DisplayServer.GetName() == "headless"
+                ? 1
+                : Math.Max(1, System.Environment.ProcessorCount - 2),
+        };
+        System.Threading.Tasks.Parallel.For(0, meshes.Length, options, at =>
+        {
+            int cy = at / columns;
+            int cx = at % columns;
             int y0 = cy * ChunkCells;
             int y1 = Math.Min(h - 1, y0 + ChunkCells);
-            for (int cx = 0; cx < columns; cx++)
+            int x0 = cx * ChunkCells;
+            int x1 = Math.Min(w - 1, x0 + ChunkCells);
+            int chunkW = x1 - x0 + 1;
+            int chunkH = y1 - y0 + 1;
+            var vertexIds = new int[chunkW * chunkH];
+            int n = 0;
+            for (int y = y0; y <= y1; y++)
             {
-                int x0 = cx * ChunkCells;
-                int x1 = Math.Min(w - 1, x0 + ChunkCells);
-                int chunkW = x1 - x0 + 1;
-                int chunkH = y1 - y0 + 1;
-                var vertexIds = new int[chunkW * chunkH];
-                int n = 0;
-                for (int y = y0; y <= y1; y++)
+                for (int x = x0; x <= x1; x++)
                 {
-                    for (int x = x0; x <= x1; x++)
-                    {
-                        int id = (y * w) + x;
-                        local[id] = n;
-                        vertexIds[n++] = id;
-                    }
+                    vertexIds[n++] = (y * w) + x;
                 }
-
-                var indices = new int[(chunkW - 1) * (chunkH - 1) * 6];
-                int k = 0;
-                for (int y = y0; y < y1; y++)
-                {
-                    for (int x = x0; x < x1; x++)
-                    {
-                        // The grid's winding (Engine_GhfTerrain.BuildMesh): clockwise from above
-                        // under the region's mirrored root.
-                        int i00 = local[(y * w) + x];
-                        int i10 = local[(y * w) + x + 1];
-                        int i01 = local[((y + 1) * w) + x];
-                        int i11 = local[((y + 1) * w) + x + 1];
-                        indices[k++] = i00;
-                        indices[k++] = i01;
-                        indices[k++] = i10;
-                        indices[k++] = i10;
-                        indices[k++] = i01;
-                        indices[k++] = i11;
-                    }
-                }
-
-                var mesh = new ArrayMesh();
-                AddSurface(mesh, terrain, vertexIds, indices, $"{name}[{cx},{cy}]");
-                chunks.Add(mesh);
             }
-        }
 
-        return chunks;
+            var indices = new int[(chunkW - 1) * (chunkH - 1) * 6];
+            int k = 0;
+            for (int y = 0; y < chunkH - 1; y++)
+            {
+                for (int x = 0; x < chunkW - 1; x++)
+                {
+                    // The grid's winding (Engine_GhfTerrain.BuildMesh): clockwise from above
+                    // under the region's mirrored root.
+                    int i00 = (y * chunkW) + x;
+                    int i10 = i00 + 1;
+                    int i01 = i00 + chunkW;
+                    int i11 = i01 + 1;
+                    indices[k++] = i00;
+                    indices[k++] = i01;
+                    indices[k++] = i10;
+                    indices[k++] = i10;
+                    indices[k++] = i01;
+                    indices[k++] = i11;
+                }
+            }
+
+            var mesh = new ArrayMesh();
+            AddSurface(mesh, terrain, vertexIds, indices, $"{name}[{cx},{cy}]");
+            meshes[at] = mesh;
+        });
+
+        return new List<ArrayMesh>(meshes);
     }
 
     /// <summary>
@@ -691,6 +697,7 @@ public static class Engine_LevelScene
         Func<string, byte[]?>? terrainRead = source;
         var interactionGround = new Engine_LandscapeGround();
         bool mainGridUnreadable = false;
+        long terrainDoneAt = 0;
         List<BuiltLandscape> TerrainWork()
         {
             // Every landscape the .engine_level states is built: the guest gives each type-4
@@ -700,6 +707,7 @@ public static class Engine_LevelScene
             // one without a .ghf is built from the .ehf's own patches.
             var built = new List<BuiltLandscape>();
             int vistas = 0;
+            int splatsLeft = stated.Landscapes.FindAll(l => l.Ehf.Length != 0 && l.Ghf.Length != 0).Count;
             foreach (StatedLandscape landscape in stated.Landscapes)
             {
                 bool main = built.Count == 0;
@@ -708,6 +716,10 @@ public static class Engine_LevelScene
                 Material? material = landscape.Ehf.Length != 0 && landscape.Ghf.Length != 0
                     ? LoadTerrainMaterial(landscape.Ehf, source, findByName)
                     : null;
+                if (landscape.Ehf.Length != 0 && landscape.Ghf.Length != 0 && --splatsLeft == 0)
+                {
+                    Engine_TerrainSplatMaterial.LastSplatBuilt();
+                }
 
                 if (landscape.Ghf.Length != 0)
                 {
@@ -741,7 +753,7 @@ public static class Engine_LevelScene
                             {
                                 GD.Print($"[classic] {level}: terrain stays on the modern splat ({classicError})");
                             }
-                            chunks = Engine_LevelMesh.ToChunkMeshes(Engine_GhfTerrain.BuildMesh(heights), name);
+                            chunks = Engine_LevelMesh.ToChunkMeshes(Engine_GhfTerrain.BuildMesh(heights, indices: false), name);
                         }
                     }
                     else if (main && terrainRead is null &&
@@ -830,6 +842,7 @@ public static class Engine_LevelScene
                     new List<ArrayMesh> { Engine_LevelMesh.ToArrayMesh(patchMesh, vistaName) }, material));
             }
 
+            terrainDoneAt = clock.ElapsedMilliseconds;
             return built;
         }
 
@@ -1203,6 +1216,7 @@ public static class Engine_LevelScene
 
         List<BuiltLandscape> landscapes =
             terrainTask is not null ? terrainTask.GetAwaiter().GetResult() : TerrainWork();
+        Mark("terrain-wait");
         if (root.GetNodeOrNull<Engine_SkyEnvironmentNode>(Engine_SkyEnvironment.NodeName) is { } interactionSky)
             interactionSky.InteractionGround = interactionGround;
 
@@ -1349,7 +1363,7 @@ public static class Engine_LevelScene
         Refii.Core.Engine_TitleGame.Active.DressLevel(root, level);
 
         GD.Print($"[level-build] {level}: {clock.ElapsedMilliseconds} ms of construction — " +
-            string.Join("  ", phases.ConvertAll(p => $"{p.Name} {p.Ms}ms")));
+            string.Join("  ", phases.ConvertAll(p => $"{p.Name} {p.Ms}ms")) + $"  (terrain task done at {terrainDoneAt}ms)");
         Finished(level, reads, "build-complete");
 
         return root;

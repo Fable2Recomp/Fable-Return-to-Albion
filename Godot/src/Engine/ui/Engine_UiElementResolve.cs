@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Godot;
 
@@ -210,6 +211,15 @@ public sealed class Engine_UiElementResolve
 	{
 		UiNode[] nodes = _screen.Nodes;
 
+		// The channels are arrays in the game; an array behind IReadOnlyList is an interface call
+		// per read, a few per element over thousands of elements a frame.
+		bool[]? activeBits = active as bool[];
+		bool[]? switchedBits = switchedOn as bool[];
+		float?[]? opacityValues = opacity as float?[];
+		int activeCount = active?.Count ?? 0;
+		int switchedCount = switchedOn?.Count ?? 0;
+		int opacityCount = opacity?.Count ?? 0;
+
 		// The slide pass, only when the selection changed — it walks every slide of every
 		// element. The fold below is cheap and runs every time.
 		if (slides is not null && SlidesChanged(slides))
@@ -265,21 +275,22 @@ public sealed class Engine_UiElementResolve
 			bool parentDraws = node.Parent is not { } up || Drawn[up.Ordinal];
 			float parentOpacity = node.Parent is { } above ? Opacity[above.Ordinal] : 1f;
 
-			bool own = active is null || i >= active.Count || active[i];
+			bool own = active is null || i >= activeCount || (activeBits is not null ? activeBits[i] : active[i]);
 			Active[i] = own;
 
 			// ONE BIT IN THE ENGINE. `goToSlide` writes an entry's active INTO the element's
 			// active bit, and a later `setActive` overwrites it — the logbook's fold slide
 			// names every subject page inactive and the guest then lit the chosen one. A host
 			// switch ON is that later write, so it is not gated by the slide's entry.
-			bool forced = switchedOn is not null && i < switchedOn.Count && switchedOn[i];
+			bool forced = switchedOn is not null && i < switchedCount && (switchedBits is not null ? switchedBits[i] : switchedOn[i]);
 			bool closed = Closed is { } shut && i < shut.Length && shut[i];
 			Drawn[i] = own && (_slid[i] || forced) && parentDraws && !closed;
 
-			bool fromGuest = opacity is not null && i < opacity.Count && opacity[i] is not null;
+			float? guest = opacity is null || i >= opacityCount ? null : opacityValues is not null ? opacityValues[i] : opacity[i];
+			bool fromGuest = guest is not null;
 			float animated = AnimatedValue(i, Engine_UiSlidePlayback.Channel.Opacity);
 			float stated = fromGuest
-				? Mathf.Clamp(opacity![i]!.Value, 0f, 100f)
+				? Mathf.Clamp(guest!.Value, 0f, 100f)
 				: !float.IsNaN(animated) ? Mathf.Clamp(animated, 0f, 100f) : _slidOpacity[i];
 
 			Stated[i] = fromGuest;
@@ -318,16 +329,77 @@ public sealed class Engine_UiElementResolve
 			return null;
 		}
 
-		int seen = 0;
-		foreach (BgfSlide slide in file.Slides)
+		if (file.SlidesByOwner is not { } byOwner)
 		{
-			if (slide.OwnerElement == owner && !slide.IsMaster && ++seen == wanted)
+			byOwner = new Dictionary<int, List<BgfSlide>>();
+			foreach (BgfSlide slide in file.Slides)
 			{
-				return slide;
+				if (slide.IsMaster)
+				{
+					continue;
+				}
+
+				if (!byOwner.TryGetValue(slide.OwnerElement, out List<BgfSlide>? owned))
+				{
+					byOwner[slide.OwnerElement] = owned = new List<BgfSlide>();
+				}
+
+				owned.Add(slide);
+			}
+
+			file.SlidesByOwner = byOwner;
+		}
+
+		return byOwner.TryGetValue(owner, out List<BgfSlide>? slides) && wanted <= slides.Count
+			? slides[wanted - 1]
+			: null;
+	}
+
+	/// <summary>
+	/// A slide's entries as <see cref="ReleaseSlideEntries"/> reads them, flat: the stated slides
+	/// are released every guest frame, and the entries' commands rarely name an opacity.
+	/// </summary>
+	internal sealed class SlideRelease
+	{
+		public required int[] Ordinals { get; init; }
+		public required bool[] Actives { get; init; }
+
+		/// <summary>Each element whose opacity the slide commands or animates, once.</summary>
+		public required int[] Opacities { get; init; }
+	}
+
+	private static SlideRelease FoldRelease(Engine_BgfDocument file, BgfSlide slide)
+	{
+		BgfSlideEntry[] entries = slide.Entries;
+		var ordinals = new int[entries.Length];
+		var actives = new bool[entries.Length];
+		var opacities = new HashSet<int>();
+		for (int i = 0; i < entries.Length; ++i)
+		{
+			ref readonly BgfSlideEntry entry = ref entries[i];
+			ordinals[i] = entry.ElementOrdinal;
+			actives[i] = entry.Active;
+			foreach (BgfAttribute command in entry.Commands ?? System.Array.Empty<BgfAttribute>())
+			{
+				if (command.Id == OpacityAttribute)
+				{
+					opacities.Add(entry.ElementOrdinal);
+					break;
+				}
+			}
+
+			foreach (int index in entry.ActivatedAnimations ?? System.Array.Empty<int>())
+			{
+				if (index >= 0 && index < file.Animations.Length && file.Animations[index].AttributeId == OpacityAttribute)
+				{
+					opacities.Add(file.Animations[index].ElementOrdinal);
+				}
 			}
 		}
 
-		return null;
+		var flat = new int[opacities.Count];
+		opacities.CopyTo(flat);
+		return new SlideRelease { Ordinals = ordinals, Actives = actives, Opacities = flat };
 	}
 
 	/// <summary>
@@ -339,42 +411,25 @@ public sealed class Engine_UiElementResolve
 	/// </summary>
 	public static int ReleaseSlideEntries(Engine_BgfDocument file, BgfSlide slide, bool[] active, float?[] stated)
 	{
-		int released = 0;
-		foreach (BgfSlideEntry entry in slide.Entries)
+		SlideRelease release = slide.Release ??= FoldRelease(file, slide);
+		int[] ordinals = release.Ordinals;
+		bool[] actives = release.Actives;
+		for (int i = 0; i < ordinals.Length; ++i)
 		{
-			int ordinal = entry.ElementOrdinal;
-			if (ordinal >= 0 && ordinal < stated.Length)
+			int ordinal = ordinals[i];
+			if (ordinal >= 0 && ordinal < stated.Length && ordinal < active.Length)
 			{
-				if (ordinal < active.Length)
-				{
-					active[ordinal] = entry.Active;
-				}
-
-				foreach (BgfAttribute command in entry.Commands)
-				{
-					if (command.Id == OpacityAttribute && stated[ordinal] is not null)
-					{
-						stated[ordinal] = null;
-						++released;
-						break;
-					}
-				}
+				active[ordinal] = actives[i];
 			}
+		}
 
-			foreach (int index in entry.ActivatedAnimations ?? System.Array.Empty<int>())
+		int released = 0;
+		foreach (int ordinal in release.Opacities)
+		{
+			if (ordinal >= 0 && ordinal < stated.Length && stated[ordinal] is not null)
 			{
-				if (index < 0 || index >= file.Animations.Length)
-				{
-					continue;
-				}
-
-				BgfAnimation track = file.Animations[index];
-				if (track.AttributeId == OpacityAttribute && track.ElementOrdinal >= 0 &&
-					track.ElementOrdinal < stated.Length && stated[track.ElementOrdinal] is not null)
-				{
-					stated[track.ElementOrdinal] = null;
-					++released;
-				}
+				stated[ordinal] = null;
+				++released;
 			}
 		}
 
@@ -383,6 +438,11 @@ public sealed class Engine_UiElementResolve
 
 	private bool SlidesChanged(IReadOnlyList<int> slides)
 	{
+		if (slides is int[] same && same.AsSpan().SequenceEqual(_slidesShown))
+		{
+			return false;
+		}
+
 		if (_slidesShown.Length != slides.Count)
 		{
 			_slidesShown = new int[slides.Count];

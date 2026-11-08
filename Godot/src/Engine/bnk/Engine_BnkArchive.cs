@@ -341,6 +341,12 @@ public sealed class BnkArchive : IDisposable
 			return new byte[4];
 		}
 
+		if (compressed.Count == 1)
+		{
+			return InflateAll(compressed[0])
+				   ?? throw new InvalidDataException("failed to decompress file-table stream");
+		}
+
 		int total = 0;
 		foreach (byte[] chunk in compressed)
 		{
@@ -361,7 +367,7 @@ public sealed class BnkArchive : IDisposable
 
 	private static byte[]? InflateAll(byte[] source)
 	{
-		foreach (int wrapper in new[] { 0, 1, 2 })
+		for (int wrapper = 0; wrapper < 3; wrapper++)
 		{
 			try
 			{
@@ -375,9 +381,7 @@ public sealed class BnkArchive : IDisposable
 
 				using (decompressor)
 				{
-					using var output = new MemoryStream();
-					decompressor.CopyTo(output);
-					return output.ToArray();
+					return ReadToEnd(decompressor, source.Length * 4);
 				}
 			}
 			catch (InvalidDataException)
@@ -386,6 +390,48 @@ public sealed class BnkArchive : IDisposable
 		}
 
 		return null;
+	}
+
+	/// <summary>A stream's bytes, grown in a pooled buffer so only the exact-size result is garbage.</summary>
+	private static byte[] ReadToEnd(Stream stream, int sizeHint)
+	{
+		byte[] buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(Math.Max(sizeHint, 4096));
+		try
+		{
+			int length = 0;
+			while (true)
+			{
+				int read = stream.Read(buffer, length, buffer.Length - length);
+				if (read == 0)
+				{
+					return buffer.AsSpan(0, length).ToArray();
+				}
+
+				length += read;
+				if (length == buffer.Length)
+				{
+					byte[] larger = System.Buffers.ArrayPool<byte>.Shared.Rent(checked(buffer.Length * 2));
+					Buffer.BlockCopy(buffer, 0, larger, 0, length);
+					System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+					buffer = larger;
+				}
+			}
+		}
+		finally
+		{
+			System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+		}
+	}
+
+	/// <summary>An entry name as the mount spells it, forward slashes, in one string.</summary>
+	private static string ReadEntryPath(byte[] table, int start, int length)
+	{
+		// UTF-8 never decodes to more chars than bytes.
+		Span<char> chars = length <= 512 ? stackalloc char[512] : new char[length];
+		int count = System.Text.Encoding.UTF8.GetChars(table.AsSpan(start, length), chars);
+		chars = chars[..count];
+		chars.Replace('\\', '/');
+		return new string(chars);
 	}
 
 	private static List<BnkEntry> ParseEntryTable(
@@ -424,8 +470,7 @@ public sealed class BnkArchive : IDisposable
 					$"failed to locate a null terminator for a bank entry in {path}");
 			}
 
-			string relativePath = System.Text.Encoding.UTF8.GetString(
-				table, position, nullPosition - position);
+			string relativePath = ReadEntryPath(table, position, nullPosition - position);
 			position = nullPosition + 1;
 
 			uint offset;
@@ -485,7 +530,7 @@ public sealed class BnkArchive : IDisposable
 
 			entries.Add(new BnkEntry
 			{
-				RelativePath = relativePath.Replace('\\', '/'),
+				RelativePath = relativePath,
 				Offset = offset,
 				Size = size,
 				StoredSize = storedSize,
@@ -628,6 +673,36 @@ public sealed class BnkArchive : IDisposable
 
 	public byte[] ReadEntryBytes(BnkEntry entry)
 	{
+		// A stored entry fills its array from the bank, so the array need not be cleared first. An
+		// inflated one stays zeroed: a chunk that ends early leaves its tail as zeros.
+		byte[] output = entry.IsCompressed
+			? new byte[entry.Size]
+			: GC.AllocateUninitializedArray<byte>(checked((int)entry.Size));
+		ReadEntryInto(entry, output, 0);
+		return output;
+	}
+
+	/// <summary>
+	/// Writes the entry's <see cref="BnkEntry.Size"/> bytes into <paramref name="destination"/> at
+	/// <paramref name="offset"/>, for a caller that joins entries and wants no array of their own.
+	/// A compressed entry's range must be zero on entry, as it is in a new array.
+	/// </summary>
+	public void ReadEntryInto(BnkEntry entry, byte[] destination, int offset) =>
+		ReadEntryRange(entry, destination, offset, checked((int)entry.Size));
+
+	/// <summary>
+	/// The first <paramref name="count"/> bytes of the entry, or all of it when it is shorter. A
+	/// compressed entry inflates only as far as that, so a header or magic costs almost nothing.
+	/// </summary>
+	public byte[] ReadEntryHead(BnkEntry entry, int count)
+	{
+		var head = new byte[Math.Min((uint)count, entry.Size)];
+		ReadEntryRange(entry, head, 0, head.Length);
+		return head;
+	}
+
+	private void ReadEntryRange(BnkEntry entry, byte[] output, int outputOffset, int length)
+	{
 		if (!_hasData)
 		{
 			throw new InvalidDataException(
@@ -638,11 +713,11 @@ public sealed class BnkArchive : IDisposable
 
 		if (!entry.IsCompressed)
 		{
-			var raw = new byte[entry.Size];
+			Span<byte> raw = output.AsSpan(outputOffset, length);
 			if (_range is not null)
 			{
 				_range.CopyTo(dataOffset, raw);
-				return raw;
+				return;
 			}
 
 			lock (_streamLock)
@@ -651,20 +726,18 @@ public sealed class BnkArchive : IDisposable
 				ReadExact(_stream, raw);
 			}
 
-			return raw;
+			return;
 		}
 
-		var output = new byte[entry.Size];
 		int storedLength = checked((int)entry.StoredSize);
 
 		if (_range is not null)
 		{
 			// Each chunk inflates straight out of the map: no copy of the stored bytes, no lock.
-			BnkMappedRange range = _range;
 			InflateChunks(
-				entry, output, storedLength,
-				(offset, count) => range.OpenStream(dataOffset + offset, count));
-			return output;
+				entry, output, outputOffset, length, storedLength,
+				new StoredBytes(_range, dataOffset, null));
+			return;
 		}
 
 		// THE STORED BYTES ARE SCRATCH. They are read once and inflated once, so they come from
@@ -680,89 +753,104 @@ public sealed class BnkArchive : IDisposable
 			}
 
 			InflateChunks(
-				entry, output, storedLength,
-				(offset, count) => new MemoryStream(stored, offset, count, false));
+				entry, output, outputOffset, length, storedLength,
+				new StoredBytes(null, 0, stored));
 		}
 		finally
 		{
 			ArrayPool<byte>.Shared.Return(stored);
 		}
+	}
 
-		return output;
+	/// <summary>Where a compressed entry's stored region is: in the map or in a scratch array.</summary>
+	private readonly record struct StoredBytes(BnkMappedRange? Range, long DataOffset, byte[]? Array)
+	{
+		public Stream Open(int offset, int count) => Range is not null
+			? Range.OpenStream(DataOffset + offset, count)
+			: new MemoryStream(Array!, offset, count, false);
 	}
 
 	/// <summary>
-	/// Inflates every chunk of a compressed entry into <paramref name="output"/>. Chunk i's
-	/// compressed bytes sit at <c>i * 0x8000</c> of the stored region; <paramref name="open"/>
-	/// hands back a stream over <c>(offset, count)</c> of that region.
+	/// Inflates the first <paramref name="length"/> output bytes of a compressed entry into
+	/// <paramref name="output"/> at <paramref name="outputOffset"/>. Chunk i's compressed bytes sit
+	/// at <c>i * 0x8000</c> of the stored region.
 	/// </summary>
 	private static void InflateChunks(
-		BnkEntry entry, byte[] output, int storedLength, Func<int, int, Stream> open)
+		BnkEntry entry, byte[] output, int outputOffset, int length, int storedLength, StoredBytes stored)
 	{
 		int chunkCount = entry.ChunkSizes.Count;
-
-		var starts = new int[chunkCount + 1];
-		for (int i = 0; i < chunkCount; ++i)
-		{
-			starts[i + 1] = (int)Math.Min((long)starts[i] + entry.ChunkSizes[i], output.Length);
-		}
-
-		void InflateChunk(int i)
-		{
-			int outOffset = starts[i];
-			int outLength = starts[i + 1] - starts[i];
-			if (outLength <= 0)
-			{
-				return;
-			}
-
-			int compressedOffset = i * CompressedChunkSize;
-			if (compressedOffset >= storedLength)
-			{
-				throw new InvalidDataException(
-					$"invalid chunk offset in {entry.RelativePath}");
-			}
-
-			int compressedSize = Math.Min(CompressedChunkSize, storedLength - compressedOffset);
-			if (!InflateInto(() => open(compressedOffset, compressedSize), output, outOffset, outLength))
-			{
-				throw new InvalidDataException(
-					$"failed to inflate chunk {i} of {entry.RelativePath}");
-			}
-		}
 
 		// Nested parallel dispatch inside an existing thread-pool worker can saturate
 		// the thread pool and cause work starvation; only parallelize on dedicated threads.
 		if (chunkCount >= ParallelInflateChunks && !Thread.CurrentThread.IsThreadPoolThread)
 		{
-			try
-			{
-				System.Threading.Tasks.Parallel.For(0, chunkCount, InflateChunk);
-			}
-			catch (AggregateException aggregate) when (aggregate.InnerException is not null)
-			{
-				throw aggregate.InnerException;
-			}
+			InflateChunksParallel(entry, output, outputOffset, length, storedLength, stored);
+			return;
 		}
-		else
+
+		int start = 0;
+		for (int i = 0; i < chunkCount && start < length; ++i)
 		{
-			for (int i = 0; i < chunkCount; ++i)
-			{
-				InflateChunk(i);
-			}
+			int end = (int)Math.Min((long)start + entry.ChunkSizes[i], length);
+			InflateChunk(entry, i, output, outputOffset + start, end - start, storedLength, stored);
+			start = end;
+		}
+	}
+
+	private static void InflateChunksParallel(
+		BnkEntry entry, byte[] output, int outputOffset, int length, int storedLength, StoredBytes stored)
+	{
+		int chunkCount = entry.ChunkSizes.Count;
+		var starts = new int[chunkCount + 1];
+		for (int i = 0; i < chunkCount; ++i)
+		{
+			starts[i + 1] = (int)Math.Min((long)starts[i] + entry.ChunkSizes[i], length);
+		}
+
+		try
+		{
+			System.Threading.Tasks.Parallel.For(0, chunkCount, i => InflateChunk(
+				entry, i, output, outputOffset + starts[i], starts[i + 1] - starts[i], storedLength, stored));
+		}
+		catch (AggregateException aggregate) when (aggregate.InnerException is not null)
+		{
+			throw aggregate.InnerException;
+		}
+	}
+
+	private static void InflateChunk(
+		BnkEntry entry, int i, byte[] output, int outOffset, int outLength, int storedLength, StoredBytes stored)
+	{
+		if (outLength <= 0)
+		{
+			return;
+		}
+
+		int compressedOffset = i * CompressedChunkSize;
+		if (compressedOffset >= storedLength)
+		{
+			throw new InvalidDataException(
+				$"invalid chunk offset in {entry.RelativePath}");
+		}
+
+		int compressedSize = Math.Min(CompressedChunkSize, storedLength - compressedOffset);
+		if (!InflateInto(stored, compressedOffset, compressedSize, output, outOffset, outLength))
+		{
+			throw new InvalidDataException(
+				$"failed to inflate chunk {i} of {entry.RelativePath}");
 		}
 	}
 
 	private const int ParallelInflateChunks = 64;
 
 	private static bool InflateInto(
-		Func<Stream> open, byte[] output, int outOffset, int outLength)
+		StoredBytes stored, int compressedOffset, int compressedSize, byte[] output, int outOffset, int outLength)
 	{
-		foreach (int wrapper in new[] { 0, 1, 2 })
+		for (int wrapper = 0; wrapper < 3; ++wrapper)
 		{
 			try
 			{
-				using Stream input = open();
+				using Stream input = stored.Open(compressedOffset, compressedSize);
 				Stream decompressor = wrapper switch
 				{
 					0 => new ZLibStream(input, CompressionMode.Decompress, true),

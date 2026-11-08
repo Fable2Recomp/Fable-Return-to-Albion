@@ -98,7 +98,7 @@ public sealed class XexScalarTimeline
     public bool HadMarker;
     public List<XexScalarKey> Keys = new();
     public bool HasSamples;
-    public float[] Samples = new float[10];
+    public float[] Samples = System.Array.Empty<float>();
     public float InvStep10;
     public float StartSecs = -1.0f;
     public float DefVal;
@@ -123,12 +123,12 @@ public sealed class XexVecTimeline
     public bool HadMarker;
     public List<XexVecKey> Keys = new();
     public bool HasSamples;
-    public float[][] Samples = MakeSamples();
+    public float[][] Samples = System.Array.Empty<float[]>();
     public float InvStep10;
     public float StartSecs = -1.0f;
     public float[] DefVal = new float[4];
 
-    private static float[][] MakeSamples()
+    internal static float[][] MakeSamples()
     {
         var s = new float[10][];
         for (int i = 0; i < 10; i++) s[i] = new float[4];
@@ -576,6 +576,7 @@ public static class XexBankParser
             int span = list[^1].Frame - list[0].Frame;
             float spanF = span;
             float step = spanF * 0.11111111f;
+            t.Samples = new float[10];
             for (int i = 0; i < 10; i++) t.Samples[i] = EvalListAtFrame(list, t.DefVal, XexConst.Fctiwz(i * step));
             t.InvStep10 = (spanF > 0.0f ? 1.0f / spanF : 0.0f) * 10.0f;
             t.HasSamples = true;
@@ -655,6 +656,7 @@ public static class XexBankParser
             int span = list[^1].Frame - list[0].Frame;
             float spanF = span;
             float step = spanF * 0.11111111f;
+            t.Samples = XexVecTimeline.MakeSamples();
             for (int i = 0; i < 10; i++) EvalVecListAtFrame(list, t.DefVal, XexConst.Fctiwz(i * step), t.Samples[i]);
             t.InvStep10 = (spanF > 0.0f ? 1.0f / spanF : 0.0f) * 10.0f;
             t.HasSamples = true;

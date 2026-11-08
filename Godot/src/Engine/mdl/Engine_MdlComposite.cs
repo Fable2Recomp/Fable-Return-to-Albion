@@ -96,7 +96,8 @@ public static class Engine_MdlComposite
         var pending =
             new List<(Godot.Collections.Array Arrays, Mesh.PrimitiveType Primitive,
                 string Name, Material Material, string? Bare, bool? Left, string Region, int Part,
-                Godot.Collections.Dictionary? Lods, int[]? PrtDescriptor, float[]? PrtTable)>();
+                Godot.Collections.Dictionary? Lods, float[]? LevelTable,
+                Variant PrtDescriptor, Variant PrtTable, bool HasPrt)>();
         var surfaceRegions = new List<string>();
         var surfaceParts = new List<int>();
         var surfaceLods = new Godot.Collections.Array();
@@ -160,6 +161,18 @@ public static class Engine_MdlComposite
             Engine_MdlRig? rig = Engine_MdlRig.TryFrom(part);
             int[]? remap = rig is { } table ? Absorb(table, boneIndex, names, parents, rest) : null;
 
+            // The part's transfer header and table, one packed array each however many surfaces ride it.
+            bool hasDescriptor = part.HasMeta(Engine_MdlTransfer.DescriptorMeta);
+            bool hasTable = part.HasMeta(Engine_MdlTransfer.TableMeta);
+            Variant partDescriptor = hasDescriptor
+                ? part.GetMeta(Engine_MdlTransfer.DescriptorMeta)
+                : Variant.CreateFrom(System.Array.Empty<int>());
+            Variant partTable = hasTable
+                ? part.GetMeta(Engine_MdlTransfer.TableMeta)
+                : Variant.CreateFrom(System.Array.Empty<float>());
+            bool partHasPrt = hasDescriptor && hasTable &&
+                partDescriptor.AsInt32Array().Length > 0 && partTable.AsFloat32Array().Length > 0;
+
             string[] partRegions = Engine_MdlMesh.SurfaceRegions(part);
             for (int surface = 0; surface < part.GetSurfaceCount(); surface++)
             {
@@ -171,13 +184,20 @@ public static class Engine_MdlComposite
                 if (remap is not null && skinned)
                 {
                     int[] bones = arrays[(int)Mesh.ArrayType.Bones].AsInt32Array();
+                    bool moved = false;
                     for (int i = 0; i < bones.Length; i++)
                     {
                         int local = bones[i];
                         bones[i] = local >= 0 && local < remap.Length ? remap[local] : 0;
+                        moved |= bones[i] != local;
                     }
 
-                    arrays[(int)Mesh.ArrayType.Bones] = bones;
+                    // The first part's numbering is usually the union's: then the part's own packed
+                    // array stands, shared, instead of a copy of it.
+                    if (moved)
+                    {
+                        arrays[(int)Mesh.ArrayType.Bones] = bones;
+                    }
                 }
                 else if (skinned)
                 {
@@ -217,8 +237,10 @@ public static class Engine_MdlComposite
                     surface < partRegions.Length ? partRegions[surface] : string.Empty,
                     partIndex,
                     Engine_MdlMesh.SurfaceLods(part, surface),
-                    part.HasMeta(Engine_MdlTransfer.DescriptorMeta) ? part.GetMeta(Engine_MdlTransfer.DescriptorMeta).AsInt32Array() : null,
-                    part.HasMeta(Engine_MdlTransfer.TableMeta) ? part.GetMeta(Engine_MdlTransfer.TableMeta).AsFloat32Array() : null));
+                    Engine_MdlSurfaceArrays.LevelTable(part, surface),
+                    partDescriptor,
+                    partTable,
+                    partHasPrt));
             }
         }
 
@@ -251,7 +273,8 @@ public static class Engine_MdlComposite
 
         foreach ((Godot.Collections.Array arrays, Mesh.PrimitiveType primitive, string name,
                   Material material, string? bare, bool? forcedLeft, string region, int fromPart,
-                  Godot.Collections.Dictionary? lods, int[]? prtDescriptor, float[]? prtTable) in pending)
+                  Godot.Collections.Dictionary? lods, float[]? levelTable,
+                  Variant prtDescriptor, Variant prtTable, bool hasPrt) in pending)
         {
             if (bare is not null && !Anchor(arrays, boneIndex, parents, rest, bare, forcedLeft))
             {
@@ -261,16 +284,16 @@ public static class Engine_MdlComposite
                 continue;
             }
 
-            int added = Engine_MdlSurfaceArrays.Add(mesh, primitive, arrays, lods);
+            int added = Engine_MdlSurfaceArrays.Add(mesh, primitive, arrays, lods, levelTable);
             mesh.SurfaceSetName(added, name);
             mesh.SurfaceSetMaterial(added, material);
             surfaceRegions.Add(region);
             surfaceParts.Add(fromPart);
             // Each part's own transfer header and cluster table: the title uploads a part's
             // g_PRTConstants from its own model (`sub_8225DC80`), so they ride per surface.
-            prtDescriptors.Add(prtDescriptor ?? System.Array.Empty<int>());
-            prtTables.Add(prtTable ?? System.Array.Empty<float>());
-            anyPrt |= prtDescriptor is { Length: > 0 } && prtTable is { Length: > 0 };
+            prtDescriptors.Add(prtDescriptor);
+            prtTables.Add(prtTable);
+            anyPrt |= hasPrt;
             surfaceLods.Add(lods ?? new Godot.Collections.Dictionary());
             anyLods |= lods is not null;
         }

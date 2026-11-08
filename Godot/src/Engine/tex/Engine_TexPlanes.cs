@@ -45,6 +45,12 @@ public static class Engine_TexPlanes
         }
 
         planes = new TexPlane[PlanesPerRecord];
+        ReadPlanes(d, recordOffset, planes);
+        return true;
+    }
+
+    private static void ReadPlanes(byte[] d, int recordOffset, Span<TexPlane> planes)
+    {
         for (int p = 0; p < PlanesPerRecord; p++)
         {
             int b = recordOffset + p * 12;
@@ -53,8 +59,6 @@ public static class Engine_TexPlanes
                 BinaryPrimitives.ReadUInt32BigEndian(d.AsSpan(b + 4, 4)),
                 BinaryPrimitives.ReadUInt32BigEndian(d.AsSpan(b + 8, 4)));
         }
-
-        return true;
     }
 
     public static string DescribeRecord(byte[] d, int recordOffset)
@@ -72,16 +76,29 @@ public static class Engine_TexPlanes
         TryDecodeLevel(d, recordOffset, header, header.Width, header.Height, out surface, out error);
 
     public static bool TryDecodeLevel(byte[] d, int recordOffset, TexHeader header,
-        int width, int height, out byte[] surface, out string error)
+        int width, int height, out byte[] surface, out string error) =>
+        TryDecodeLevel(d, recordOffset, header, width, height, null, 0, out surface, out error);
+
+    /// <summary>Decodes a level into <paramref name="target"/> at <paramref name="targetOffset"/>, which has room for it.</summary>
+    internal static bool TryDecodeLevelInto(byte[] d, int recordOffset, TexHeader header,
+        int width, int height, byte[] target, int targetOffset, out string error) =>
+        TryDecodeLevel(d, recordOffset, header, width, height, target, targetOffset, out _, out error);
+
+    /// <summary>A null <paramref name="target"/> asks for a new array in <paramref name="surface"/>.</summary>
+    private static bool TryDecodeLevel(byte[] d, int recordOffset, TexHeader header,
+        int width, int height, byte[]? target, int targetOffset, out byte[] surface, out string error)
     {
         surface = Array.Empty<byte>();
         error = string.Empty;
 
-        if (!TryReadRecord(d, recordOffset, out TexPlane[] planes))
+        if (recordOffset < 0 || recordOffset + RecordSize > d.Length)
         {
             error = $"record at {recordOffset} is outside the file";
             return false;
         }
+
+        Span<TexPlane> planes = stackalloc TexPlane[PlanesPerRecord];
+        ReadPlanes(d, recordOffset, planes);
 
         int stride = header.BlockStride;
         int planeCount = stride == 16 ? 2 : 1;
@@ -115,9 +132,10 @@ public static class Engine_TexPlanes
             // outside the buffer, so it would quietly leave most of the image zeroed.
             if (blocksWide < 32)
             {
-                var payload = new byte[needed];
-                Buffer.BlockCopy(d, rawOffset, payload, 0, needed);
-                Engine_Xbox360Tiling.SwapWords16(payload);
+                byte[] payload = target ?? new byte[needed];
+                int at = target is null ? 0 : targetOffset;
+                Buffer.BlockCopy(d, rawOffset, payload, at, needed);
+                Engine_Xbox360Tiling.SwapWords16(payload.AsSpan(at, needed));
                 surface = payload;
                 return true;
             }
@@ -130,6 +148,10 @@ public static class Engine_TexPlanes
                 d.AsSpan(rawOffset, needed).CopyTo(tiled);
                 Engine_Xbox360Tiling.SwapWords16(tiled);
                 surface = Engine_Xbox360Tiling.Untile(tiled, blocksWide, blocksHigh, stride);
+                if (target is not null)
+                {
+                    Buffer.BlockCopy(surface, 0, target, targetOffset, needed);
+                }
             }
             finally
             {
@@ -139,7 +161,14 @@ public static class Engine_TexPlanes
             return true;
         }
 
-        var output = new byte[blocks * stride];
+        byte[] outputBytes = target ?? new byte[blocks * stride];
+        Span<byte> output = target is null ? outputBytes : outputBytes.AsSpan(targetOffset, blocks * stride);
+        if (target is not null)
+        {
+            // A plane that is switched off leaves its half of each block zero.
+            output.Clear();
+        }
+
         bool wroteAnything = false;
         // The colour plane finds out which game wrote the record; the alpha plane beside it is
         // the same game's, and its layout cannot be told apart as safely on its own.
@@ -168,7 +197,7 @@ public static class Engine_TexPlanes
                         return false;
                     }
 
-                    if (!Engine_LhTexCodec.TryDecodeCompressedMip(d, bodyOffset, bodySize,
+                    if (!Engine_LhTexCodec.TryDecodeCompressedMipPooled(d, bodyOffset, bodySize,
                             plane.CompFlag == CompHuffmanNoSwap, scheme,
                             out int w, out int h, out byte[] bc1, out _, out _, out scheme, out string err))
                     {
@@ -176,13 +205,21 @@ public static class Engine_TexPlanes
                         return false;
                     }
 
-                    if (w != width || h != height)
+                    try
                     {
-                        error = $"plane {p} decoded {w}x{h}, level is {width}x{height}";
-                        return false;
+                        if (w != width || h != height)
+                        {
+                            error = $"plane {p} decoded {w}x{h}, level is {width}x{height}";
+                            return false;
+                        }
+
+                        Scatter(bc1.AsSpan(0, (w / 4) * (h / 4) * 8), output, blocks, stride, bias);
+                    }
+                    finally
+                    {
+                        System.Buffers.ArrayPool<byte>.Shared.Return(bc1);
                     }
 
-                    Scatter(bc1, output, blocks, stride, bias);
                     wroteAnything = true;
                     break;
                 }
@@ -191,14 +228,15 @@ public static class Engine_TexPlanes
                 case CompVariantB:
                 {
                     int mode = (int)plane.CompFlag - 1;
-                    if (!Engine_LhTexCodec.TryDecodeVariant(d, bodyOffset, bodySize, mode,
+                    if (!Engine_LhTexCodec.TryDecodeVariantPooled(d, bodyOffset, bodySize, mode,
                             width, height, scheme, out byte[] vb, out string verr))
                     {
                         error = $"plane {p}: {verr}";
                         return false;
                     }
 
-                    Scatter(vb, output, blocks, stride, bias);
+                    Scatter(vb.AsSpan(0, (width / 4) * (height / 4) * 8), output, blocks, stride, bias);
+                    System.Buffers.ArrayPool<byte>.Shared.Return(vb);
                     wroteAnything = true;
                     break;
                 }
@@ -223,21 +261,22 @@ public static class Engine_TexPlanes
             return false;
         }
 
-        surface = output;
+        surface = outputBytes;
         return true;
     }
 
-    private static void Scatter(byte[] src, byte[] dst, int blocks, int stride, int bias)
+    private static void Scatter(ReadOnlySpan<byte> src, Span<byte> dst, int blocks, int stride, int bias)
     {
         int count = Math.Min(blocks, src.Length / 8);
         if (stride == 8 && bias == 0)
         {
-            Buffer.BlockCopy(src, 0, dst, 0, Math.Min(count * 8, dst.Length));
+            int bytes = Math.Min(count * 8, dst.Length);
+            src[..bytes].CopyTo(dst);
             return;
         }
 
         System.ReadOnlySpan<ulong> source = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, ulong>(src);
-        System.Span<ulong> target = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, ulong>(dst.AsSpan());
+        System.Span<ulong> target = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, ulong>(dst);
         int step = stride / 8;
         int offset = bias / 8;
         for (int i = 0; i < count; i++)
@@ -281,7 +320,7 @@ public static class Engine_TexPlanes
         return codecId == 1 ? ConstantKind.AlphaExplicit : ConstantKind.AlphaBc4;
     }
 
-    private static void FillConstant(byte[] dst, int blocks, int stride, int bias,
+    private static void FillConstant(Span<byte> dst, int blocks, int stride, int bias,
         uint value, ConstantKind kind)
     {
         Span<byte> block = stackalloc byte[8];
@@ -332,7 +371,7 @@ public static class Engine_TexPlanes
                 return;
             }
 
-            block.CopyTo(dst.AsSpan(t, 8));
+            block.CopyTo(dst.Slice(t, 8));
         }
     }
 }

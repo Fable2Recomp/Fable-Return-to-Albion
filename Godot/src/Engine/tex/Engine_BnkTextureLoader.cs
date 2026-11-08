@@ -21,6 +21,9 @@ public partial class Engine_BnkTextureLoader : ResourceFormatLoader
 	/// </summary>
 	public static void SetResolver(Func<string, byte[]?>? resolver) => _resolver = resolver;
 
+	/// <summary>The resolver in place, for a caller that has to know where a read ends.</summary>
+	public static Func<string, byte[]?>? Resolver => _resolver;
+
 	/// <summary>
 	/// A mount of the caller's own, asked only when the game's has nothing — the UI's bank cache,
 	/// the screen viewer, the exporter. It was a second <see cref="SetResolver"/> and won by

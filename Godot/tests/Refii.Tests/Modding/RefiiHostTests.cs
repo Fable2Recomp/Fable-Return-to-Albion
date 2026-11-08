@@ -64,6 +64,50 @@ public class RefiiHostTests
     }
 
     [TestCase]
+    public void FieldsParseTheSameIntoAKeptList()
+    {
+        var kept = new List<KeyValuePair<string, object>> { new("left over", 1L) };
+        foreach (string text in new[]
+        {
+            "victim=123,damage=4.5,name='ALLOW_ACTION_INTERRUPT',unblockable=false,yes=true,neg=-7,small=255,past=256",
+            "a=1,a=2", " a = 1 ,b='x y',c= true ", "a='unterminated", "a=1,b", "=1,b=2", "text=word,huge=1e400",
+            "long='" + new string('z', 100) + "'", string.Empty,
+        })
+        {
+            RefiiHost.ParseFieldsPlain(text, kept);
+            List<KeyValuePair<string, object>> fresh = RefiiHost.ParseFieldsPlain(text);
+            AssertThat(kept.Count).IsEqual(fresh.Count);
+            for (int i = 0; i < fresh.Count; i++)
+            {
+                AssertThat(kept[i].Key).IsEqual(fresh[i].Key);
+                AssertThat(Equals(kept[i].Value, fresh[i].Value)).IsTrue();
+            }
+        }
+
+        var e = RefiiHost.ParseFieldsPlain(" a = 1 ,b='x y',c= true ,d=255,e=256,f=word");
+        AssertThat(e[0].Key).IsEqual("a");
+        AssertThat(e[0].Value).IsEqual(1L);
+        AssertThat(e[1].Value).IsEqual("x y");
+        AssertThat(e[2].Value).IsEqual(true);
+        AssertThat(e[3].Value).IsEqual(255L);
+        AssertThat(e[4].Value).IsEqual(256L);
+        AssertThat(e[5].Value).IsEqual("word");
+    }
+
+    [TestCase]
+    public void TheDrainsRecordsReadAsTheBusWritesThem()
+    {
+        var events = new List<(int Kind, string Fields)>();
+        Refii.Host.HostBridge.ReadModEventLines("0\tseconds=1\n\n1000\tid=2,ok=true\nnope\ta=1\n\tno kind\n5\t\n7\ta\tb\n8\tlast", events);
+        AssertThat(events.Count).IsEqual(5);
+        AssertThat(events[0]).IsEqual((0, "seconds=1"));
+        AssertThat(events[1]).IsEqual((1000, "id=2,ok=true"));
+        AssertThat(events[2]).IsEqual((5, string.Empty));
+        AssertThat(events[3]).IsEqual((7, "a\tb"));
+        AssertThat(events[4]).IsEqual((8, "last"));
+    }
+
+    [TestCase]
     public void GodotScriptPathsAreNotOverlays()
     {
         AssertThat(ModGodot.IsGodotScriptPath("godot/hud.gd")).IsTrue();

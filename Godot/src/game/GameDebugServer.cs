@@ -3394,7 +3394,8 @@ public partial class GameDebugServer : Node
 				string match = root.TryGetProperty("match", out JsonElement hm) ? hm.GetString() ?? string.Empty : string.Empty;
 				Refii.Ui.Engine_UiModel.SpellAssignState spells = Refii.Host.HostBridge.GetSpellAssign();
 				// The HUD walk's time, in milliseconds since the last read: the sections of
-				// `Engine_UiCloneBinding.Apply` summed across every binding. Reading zeroes them.
+				// `Engine_UiCloneBinding.Apply` summed across every binding. Reading zeroes them,
+				// and the first read starts them: the first reply's times are zero.
 				double perTick = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
 				var bindProfile = new Dictionary<string, object?>
 				{

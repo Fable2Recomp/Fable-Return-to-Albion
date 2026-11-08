@@ -214,6 +214,11 @@ public static class Engine_EntityAppearance
 
     public static void Apply(MeshInstance3D node, in HostBridge.EntityAppearance look, bool principal)
     {
+        if (Applied.Count == 0 && look.IsConstructed)
+        {
+            return;
+        }
+
         bool had = Applied.TryGetValue(node, out HostBridge.EntityAppearance was);
         if (!had && look.IsConstructed)
         {

@@ -58,7 +58,7 @@ public partial class GameMorphMirror : Node
         _actor = null;
     }
 
-    public static bool ObserveGuest(HostBridge.GuestEntity entity)
+    public static bool ObserveGuest(in HostBridge.GuestEntity entity)
     {
         if (entity.RecordHash != Engine_MorphMirrorRuntime.Record) return false;
         if (_actor is not null && IsInstanceValid(_actor)) _actor.Highlight(entity.Highlight);

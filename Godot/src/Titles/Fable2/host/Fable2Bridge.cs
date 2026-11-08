@@ -1785,14 +1785,22 @@ public static class Fable2Bridge
 	public static List<QuestEntry> GetQuestLog()
 	{
 		var quests = new List<QuestEntry>();
+		GetQuestLog(quests);
+		return quests;
+	}
+
+	/// <summary><see cref="GetQuestLog()"/> into a kept list, replacing what it held: a mod's minimap asks every frame.</summary>
+	public static void GetQuestLog(List<QuestEntry> quests)
+	{
+		quests.Clear();
 		if (TryGetAbiVersion() is null || !IsGuestUp)
 		{
-			return quests;
+			return;
 		}
 
 		const int max = 256;
 		const int stride = 9;
-		uint[] words = new uint[max * stride];
+		uint[] words = _questWords ??= new uint[max * stride];
 		uint found;
 		try
 		{
@@ -1800,11 +1808,11 @@ public static class Fable2Bridge
 		}
 		catch (System.DllNotFoundException)
 		{
-			return quests;
+			return;
 		}
 		catch (System.EntryPointNotFoundException)
 		{
-			return quests;
+			return;
 		}
 
 		for (uint i = 0; i < found && i < max; ++i)
@@ -1828,9 +1836,10 @@ public static class Fable2Bridge
 				(int)words[at + 7],
 				words[at + 8]));
 		}
-
-		return quests;
 	}
+
+	[System.ThreadStatic]
+	private static uint[]? _questWords;
 
 	/// <summary>
 	/// The items the hero is WEARING, by GDB record id — what a clothing list must not offer

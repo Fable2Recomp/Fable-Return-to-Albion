@@ -182,7 +182,9 @@ public static class Engine_GhfTerrain
         return true;
     }
 
-    public static TerrainMesh BuildMesh(GhfHeights heights)
+    /// <param name="heights">The decoded grid.</param>
+    /// <param name="indices">False for a caller that cuts the grid into chunks, which wind their own.</param>
+    public static TerrainMesh BuildMesh(GhfHeights heights, bool indices = true)
     {
         int w = heights.Width;
         int h = heights.Height;
@@ -192,7 +194,7 @@ public static class Engine_GhfTerrain
         var positions = new float[vertices * 3];
         var normals = new float[vertices * 3];
         var uvs = new float[vertices * 2];
-        var indices = new int[quads * 6];
+        int[] triangles = indices ? new int[quads * 6] : Array.Empty<int>();
 
         float[] values = heights.Values;
         float spacing = heights.Spacing;
@@ -249,7 +251,7 @@ public static class Engine_GhfTerrain
         }
 
         long k = 0;
-        for (int y = 0; y + 1 < h; y++)
+        for (int y = 0; indices && y + 1 < h; y++)
         {
             for (int x = 0; x + 1 < w; x++)
             {
@@ -260,13 +262,13 @@ public static class Engine_GhfTerrain
 
                 // Clockwise seen from above, under the region's mirrored root: Godot's front face.
                 // Wound the other way the ground drew as back faces (facing view, 2026-09-22).
-                indices[k++] = i00;
-                indices[k++] = i01;
-                indices[k++] = i10;
+                triangles[k++] = i00;
+                triangles[k++] = i01;
+                triangles[k++] = i10;
 
-                indices[k++] = i10;
-                indices[k++] = i01;
-                indices[k++] = i11;
+                triangles[k++] = i10;
+                triangles[k++] = i01;
+                triangles[k++] = i11;
             }
         }
 
@@ -277,7 +279,7 @@ public static class Engine_GhfTerrain
             Positions = positions,
             Normals = normals,
             Uvs = uvs,
-            Indices = indices,
+            Indices = triangles,
             MinHeight = heights.MinHeight,
             MaxHeight = heights.MaxHeight,
         };

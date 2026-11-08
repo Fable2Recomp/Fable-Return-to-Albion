@@ -433,7 +433,8 @@ public partial class GameWorld : Node3D
 		// `Engine_PropStreamer.TryGetProgress` sums the whole static `Live` list, which spans
 		// regions. One leftover streamer that never drains — a region torn down mid-stream, a
 		// node whose `_ExitTree` has not run yet — holds the total above the count for ever, and
-		// the guest with it. Walking the region we actually mounted cannot be poisoned that way.
+		// the guest with it. Asking only for those beneath the region we actually mounted cannot be
+		// poisoned that way.
 		//
 		// No streamer at all is DONE, not pending: a region with nothing to page in must not
 		// hold the guest.
@@ -442,7 +443,7 @@ public partial class GameWorld : Node3D
 		int settling = 0;
 		if (_region is not null)
 		{
-			SumPropProgress(_region, ref done, ref total, ref settling);
+			Refii.Level.Engine_PropStreamer.SumProgress(_region, ref done, ref total, ref settling);
 		}
 
 		// Placed is not finished: a prop's vertex bake and its ambient variant land after its
@@ -465,13 +466,34 @@ public partial class GameWorld : Node3D
 		string classicWait = Refii.Models.Engine_ClassicLoad.Pump(!propsPending && !entitiesPending);
 		// THEN THE LIGHT-COUNT PIPELINES (`android_pipeline_warmup`, Mobile only): every surface
 		// the level holds drawn beside the camera under each light count play can give it.
-		string pipelineWait = Refii.Models.Engine_PipelineWarmup.Pump(this,
-			!propsPending && !entitiesPending && classicWait.Length == 0);
-		bool pending = propsPending || entitiesPending || classicWait.Length != 0 || pipelineWait.Length != 0;
-		_readyFrames = pending ? 0 : _readyFrames + 1;
+		bool worldReady = !propsPending && !entitiesPending && classicWait.Length == 0;
+		string pipelineWait = Refii.Models.Engine_PipelineWarmup.Pump(this, worldReady);
+		bool pending = !worldReady || pipelineWait.Length != 0;
+		// A warm-up frame draws the whole world too, so it counts towards the settle.
+		_readyFrames = worldReady ? _readyFrames + 1 : 0;
 		if (!pending && _readyFrames < ReleaseSettleFrames)
 		{
 			pending = true;
+		}
+
+		if (!propsPending)
+		{
+			Refii.Core.Engine_LoadTimeline.Mark("props");
+		}
+
+		if (!entitiesPending)
+		{
+			Refii.Core.Engine_LoadTimeline.Mark("entities");
+		}
+
+		if (worldReady)
+		{
+			Refii.Core.Engine_LoadTimeline.Mark("world");
+		}
+
+		if (worldReady && pipelineWait.Length == 0)
+		{
+			Refii.Core.Engine_LoadTimeline.Mark("warmed");
 		}
 
 		++_propHoldFrames;
@@ -506,6 +528,7 @@ public partial class GameWorld : Node3D
 		Refii.Core.Engine_LoadTimeline.Released();
 		Refii.Models.Engine_ClassicLoad.End();
 		Refii.Models.Engine_PipelineWarmup.End();
+		_entities?.ReportLoadBuilds();
 		// The title clears its tone-map history for as long as a level streams
 		// (`sub_82181B68`), so the first frame after the load snaps the statistics; a cave
 		// theme with EXPOSURE_SPEED 0 then holds that snap.
@@ -663,9 +686,9 @@ public partial class GameWorld : Node3D
 	private static void Compact(long before)
 	{
 		long started = System.Diagnostics.Stopwatch.GetTimestamp();
-		System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
-			System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
-		System.GC.Collect(2, System.GCCollectionMode.Aggressive, blocking: true, compacting: true);
+		// The first pass only finds what the finalizers can let go of; the second compacts all of it,
+		// so moving everything in the first as well is a pause with no result of its own.
+		System.GC.Collect(2, System.GCCollectionMode.Forced, blocking: true, compacting: false);
 		System.GC.WaitForPendingFinalizers();
 		System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
 			System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
@@ -758,41 +781,15 @@ public partial class GameWorld : Node3D
 
 	private const double HeldStreamMsPerFrame = 100.0;
 
-	private static void SetStreamBudget(Node node, double milliseconds)
-	{
-		if (node is Refii.Level.Engine_PropStreamer streamer)
-		{
-			streamer.MillisecondsPerFrame = milliseconds;
-		}
-
-		foreach (Node child in node.GetChildren())
-		{
-			SetStreamBudget(child, milliseconds);
-		}
-	}
-
-	/// <summary>Adds up every prop streamer beneath one node. Recursive: a region nests them.</summary>
-	private static void SumPropProgress(Node node, ref int done, ref int total, ref int settling)
-	{
-		if (node is Refii.Level.Engine_PropStreamer streamer)
-		{
-			done += streamer.Done;
-			total += streamer.Total;
-			settling += streamer.Settling;
-		}
-
-		foreach (Node child in node.GetChildren())
-		{
-			SumPropProgress(child, ref done, ref total, ref settling);
-		}
-	}
+	private static void SetStreamBudget(Node node, double milliseconds) =>
+		Refii.Level.Engine_PropStreamer.SetBudget(node, milliseconds);
 
 	/// <summary>True between mounting a region and its props finishing streaming.</summary>
 	private bool _holdingForProps;
 
 	private int _propHoldFrames;
 
-	/// <summary>Frames in a row with nothing pending; the release waits for ReleaseSettleFrames of them.</summary>
+	/// <summary>Frames in a row with the world in place; the release waits for ReleaseSettleFrames of them.</summary>
 	private int _readyFrames;
 
 	/// <summary>Frames drawn with everything in place before the guest is released.</summary>
@@ -1282,7 +1279,10 @@ public partial class GameWorld : Node3D
 		_holdingForProps = true;
 		_propHoldFrames = 0;
 		_readyFrames = 0;
+		long mountFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+		System.TimeSpan mountPause = System.GC.GetTotalPauseDuration();
 		AddChild(region);
+		double mountTreeMs = System.Diagnostics.Stopwatch.GetElapsedTime(mountFrom).TotalMilliseconds;
 		Refii.Models.Engine_ClassicLoad.Begin(region);
 		Refii.Models.Engine_PipelineWarmup.Begin();
 
@@ -1326,8 +1326,9 @@ public partial class GameWorld : Node3D
 		Refii.Core.Engine_LoadTimeline.Mark("mounted");
 		long twinsFrom = System.Diagnostics.Stopwatch.GetTimestamp();
 		var twins = Refii.Entities.Engine_StaticTwins.Build(region);
+		long twinsTicks = System.Diagnostics.Stopwatch.GetTimestamp() - twinsFrom;
 		Refii.Core.Engine_LoadTimeline.Add(Refii.Core.Engine_LoadTimeline.Category.StaticTwins,
-			System.Diagnostics.Stopwatch.GetTimestamp() - twinsFrom, twins.Instances);
+			twinsTicks, twins.Instances);
 		GD.Print($"[game-world] the guest owns entities here; {twins.Instances} static " +
 			$"drawable(s) across {twins.Records} `.save` record(s) are waiting to be retired");
 
@@ -1351,7 +1352,10 @@ public partial class GameWorld : Node3D
 		// changing with the lamps in reach (`stable_light_counts`, off unless configured).
 		Refii.Lighting.Engine_StableLightCounts.Configure(Refii.Core.Engine_RefiiConfig.Read(out _));
 		Refii.Lighting.Engine_StableLightCounts.Mount(this);
-		GD.Print($"[game-world] built and mounted {start.World}/{start.Level}");
+		GD.Print($"[game-world] built and mounted {start.World}/{start.Level} in " +
+			$"{System.Diagnostics.Stopwatch.GetElapsedTime(mountFrom).TotalMilliseconds:0} ms (tree {mountTreeMs:0}, " +
+			$"static twins {twinsTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency:0}, " +
+			$"gc pause {(System.GC.GetTotalPauseDuration() - mountPause).TotalMilliseconds:0})");
 	}
 
 	/// <summary>
@@ -1494,7 +1498,7 @@ public partial class GameWorld : Node3D
 	/// </summary>
 	private void TraceEntities()
 	{
-		if (!_loaded || ++_entityTicks % 120 != 0 || _entityReports >= 10)
+		if (!_loaded || ++_entityTicks % EntityReportFrames != 0 || _entityReports >= EntityReportLimit)
 		{
 			return;
 		}

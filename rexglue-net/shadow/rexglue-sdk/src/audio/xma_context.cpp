@@ -53,17 +53,15 @@ XmaContext::~XmaContext() {
   if (av_frame_) {
     av_frame_free(&av_frame_);
   }
+  if (av_packet_) {
+    av_packet_free(&av_packet_);
+  }
 }
 
 int XmaContext::Setup(uint32_t id, memory::Memory* memory, uint32_t guest_ptr) {
   id_ = id;
   memory_ = memory;
   guest_ptr_ = guest_ptr;
-
-  // Allocate ffmpeg stuff:
-  av_packet_ = av_packet_alloc();
-  assert_not_null(av_packet_);
-  av_packet_->buf = av_buffer_alloc(128 * 1024);
 
   // find the XMA2 audio decoder
   av_codec_ = avcodec_find_decoder(AV_CODEC_ID_XMAFRAMES);
@@ -72,23 +70,9 @@ int XmaContext::Setup(uint32_t id, memory::Memory* memory, uint32_t guest_ptr) {
     return 1;
   }
 
-  av_context_ = avcodec_alloc_context3(av_codec_);
-  if (!av_context_) {
-    REXAPU_ERROR("XmaContext {}: Couldn't allocate context", id);
-    return 1;
-  }
-
-  // Initialize these to 0. They'll actually be set later.
-  av_context_->channels = 0;
-  av_context_->sample_rate = 0;
-
-  av_frame_ = av_frame_alloc();
-  if (!av_frame_) {
-    REXAPU_ERROR("XmaContext {}: Couldn't allocate frame", id);
-    return 1;
-  }
-
-  // FYI: We're purposely not opening the codec here. That is done later.
+  // The ffmpeg objects wait for this context's first decode (Work) and go when
+  // the guest releases it: 320 contexts held them for the whole run, about 170 MB
+  // on a phone, and a game only ever decodes a few streams at a time.
   return 0;
 }
 
@@ -139,6 +123,30 @@ bool XmaContext::Work() {
   if (minimum_subframe_decode_count > remaining_subframe_blocks_in_output_buffer_) {
     StoreContextMerged(data, initial_data, context_ptr);
     return true;
+  }
+
+  // Allocate ffmpeg stuff:
+  if (!av_packet_) {
+    av_packet_ = av_packet_alloc();
+    assert_not_null(av_packet_);
+    av_packet_->buf = av_buffer_alloc(128 * 1024);
+  }
+  if (!av_context_) {
+    av_context_ = avcodec_alloc_context3(av_codec_);
+    if (!av_context_) {
+      REXAPU_ERROR("XmaContext {}: Couldn't allocate context", id());
+      return true;
+    }
+    // Initialize these to 0. They'll actually be set later.
+    av_context_->channels = 0;
+    av_context_->sample_rate = 0;
+  }
+  if (!av_frame_) {
+    av_frame_ = av_frame_alloc();
+    if (!av_frame_) {
+      REXAPU_ERROR("XmaContext {}: Couldn't allocate frame", id());
+      return true;
+    }
   }
 
   while (remaining_subframe_blocks_in_output_buffer_ >= minimum_subframe_decode_count) {
@@ -231,6 +239,15 @@ void XmaContext::Release() {
 
   set_is_allocated(false);
   ResetDecoderState();
+  if (av_context_) {
+    avcodec_free_context(&av_context_);
+  }
+  if (av_frame_) {
+    av_frame_free(&av_frame_);
+  }
+  if (av_packet_) {
+    av_packet_free(&av_packet_);
+  }
   auto context_ptr = memory()->TranslateVirtual(guest_ptr());
   std::memset(context_ptr, 0, sizeof(XMA_CONTEXT_DATA));
 }

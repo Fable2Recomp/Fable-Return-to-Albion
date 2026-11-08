@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.CompilerServices;
+using System.Threading;
 
 namespace Refii.Level;
 
@@ -45,16 +46,20 @@ internal sealed class Engine_TerrainWeightSupport
         if (required > int.MaxValue) return null;
         var presence = new ulong[(int)required];
         int area = checked(data.WeightWidth * data.WeightHeight);
-        for (int plane = 0; plane < data.MaterialCount; plane++)
-        for (int y = 0; y < data.WeightHeight; y++)
-        for (int x = 0; x < data.WeightWidth; x++)
+        bool finite = true;
+        // Each plane owns its rows of the mask.
+        System.Threading.Tasks.Parallel.For(0, data.MaterialCount, plane =>
         {
-            float weight = data.Weights[plane * area + y * data.WeightWidth + x];
-            if (!float.IsFinite(weight)) return null;
-            if (Quantize(weight) != 0)
-                presence[(plane * data.WeightHeight + y) * rowWords + x / 64] |= 1UL << (x & 63);
-        }
-        return new Engine_TerrainWeightSupport(data, presence, rowWords);
+            for (int y = 0; y < data.WeightHeight; y++)
+            for (int x = 0; x < data.WeightWidth; x++)
+            {
+                float weight = data.Weights[plane * area + y * data.WeightWidth + x];
+                if (!float.IsFinite(weight)) { Volatile.Write(ref finite, false); return; }
+                if (Quantize(weight) != 0)
+                    presence[(plane * data.WeightHeight + y) * rowWords + x / 64] |= 1UL << (x & 63);
+            }
+        });
+        return finite ? new Engine_TerrainWeightSupport(data, presence, rowWords) : null;
     }
 
     /// <summary>Matches the uploaded R8 conversion, including low weights that round to exact zero.</summary>

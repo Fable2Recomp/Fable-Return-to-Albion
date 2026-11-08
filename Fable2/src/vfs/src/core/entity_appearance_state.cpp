@@ -31,6 +31,10 @@ constexpr uint32_t kProbes = 32u;
 
 StatedAppearance g_appearances[kSlots];
 
+/// A bit per first-probe slot ever claimed, so the entity walk's usual answer (no entry: nearly
+/// every renderable, every guest frame) costs one read of this and not a miss in the table.
+std::atomic<uint64_t> g_probed[kSlots / 64u] = {};
+
 uint32_t SlotFor(uint32_t component) {
   const uint32_t h = component * 2654435761u;
   return (h >> 12) & (kSlots - 1u);
@@ -38,6 +42,10 @@ uint32_t SlotFor(uint32_t component) {
 
 StatedAppearance* Find(uint32_t component) {
   const uint32_t start = SlotFor(component);
+  if (((g_probed[start / 64u].load(std::memory_order_acquire) >> (start % 64u)) & 1u) == 0u) {
+    return nullptr;
+  }
+
   for (uint32_t probe = 0u; probe < kProbes; ++probe) {
     StatedAppearance& slot = g_appearances[(start + probe) & (kSlots - 1u)];
     const uint32_t held = slot.component.load(std::memory_order_acquire);
@@ -59,6 +67,9 @@ StatedAppearance* Claim(uint32_t component) {
   }
 
   const uint32_t start = SlotFor(component);
+
+  // Before any slot can hold it: a clear bit means no component starting here was ever claimed.
+  g_probed[start / 64u].fetch_or(uint64_t{1} << (start % 64u), std::memory_order_acq_rel);
   for (uint32_t probe = 0u; probe < kProbes; ++probe) {
     StatedAppearance& slot = g_appearances[(start + probe) & (kSlots - 1u)];
     uint32_t held = slot.component.load(std::memory_order_relaxed);

@@ -19,7 +19,7 @@ public sealed class TextureMorphEntry
 }
 
 /// <summary>Composites the guest's stated appearance layers while retaining reusable decoded sources.</summary>
-public static class Engine_HeroTextureMorph
+public static partial class Engine_HeroTextureMorph
 {
     /// <summary>Composites kept before the cache is dropped; a dragged slider makes one per value.</summary>
     public const int CompositedLimit = 64;
@@ -35,6 +35,8 @@ public static class Engine_HeroTextureMorph
         public bool Ok { get; set; }
 
         public byte[] Rgba { get; set; } = Array.Empty<byte>();
+
+        public long LastUsed { get; set; }
     }
 
     private static readonly object MorphLock = new();
@@ -47,6 +49,21 @@ public static class Engine_HeroTextureMorph
         new(StringComparer.OrdinalIgnoreCase);
 
     private static readonly Dictionary<string, DecodedTexture> DecodedCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Composites past <see cref="CompositedLimit"/>, for as long as something else still holds them.
+    /// The limit bounds what this cache alone keeps alive; a texture a live material draws with
+    /// costs the same whether it is listed here or not, so a body asking for it again takes that
+    /// one rather than a second copy.
+    /// </summary>
+    private static readonly Dictionary<string, WeakReference<ImageTexture>> OverLimit =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly Dictionary<string, Flight> CompositeFlights =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly Dictionary<string, Flight> DecodeFlights =
         new(StringComparer.OrdinalIgnoreCase);
 
     private static Func<string, byte[]?>? _resolver;
@@ -88,6 +105,7 @@ public static class Engine_HeroTextureMorph
             _pairs = null;
             ++_textureEpoch;
             Composited.Clear();
+            OverLimit.Clear();
             DecodedCache.Clear();
             _decodedBytes = 0;
         }
@@ -101,6 +119,7 @@ public static class Engine_HeroTextureMorph
             _pairs = null;
             ++_textureEpoch;
             Composited.Clear();
+            OverLimit.Clear();
             DecodedCache.Clear();
             _decodedBytes = 0;
         }
@@ -115,6 +134,7 @@ public static class Engine_HeroTextureMorph
         {
             ++_textureEpoch;
             Composited.Clear();
+            OverLimit.Clear();
             DecodedCache.Clear();
             _decodedBytes = 0;
         }
@@ -161,6 +181,138 @@ public static class Engine_HeroTextureMorph
     public static long CompositesBuilt => System.Threading.Interlocked.Read(ref _compositesBuilt);
 
     private static long _compositesBuilt;
+
+    /// <summary>Run totals: builds and decodes that waited for the same one in flight, composites found
+    /// still alive past the limit or kept on disk, and the sources decoded.</summary>
+    public static (long CompositesJoined, long CompositesRevived, long CompositesFromDisk, long DecodesJoined, long SourcesDecoded) SavedWork => (
+        System.Threading.Interlocked.Read(ref _compositesJoined),
+        System.Threading.Interlocked.Read(ref _compositesRevived),
+        System.Threading.Interlocked.Read(ref _compositesFromDisk),
+        System.Threading.Interlocked.Read(ref _decodesJoined),
+        System.Threading.Interlocked.Read(ref _sourcesDecoded));
+
+    private static long _compositesJoined;
+
+    private static long _compositesRevived;
+
+    private static long _compositesFromDisk;
+
+    private static long _decodesJoined;
+
+    private static long _sourcesDecoded;
+
+    /// <summary>One build under way, for the workers that want the same result to wait for.</summary>
+    /// <remarks>Character builds run on several workers and crowds share textures, so without this
+    /// two bodies arriving together each decode, blend and encode the same image, and the
+    /// duplicate stays in video memory for as long as its material does.</remarks>
+    private sealed class Flight(long epoch)
+    {
+        public readonly long Epoch = epoch;
+
+        public readonly System.Threading.ManualResetEventSlim Landed = new(false);
+
+        public object? Result;
+
+        public bool Answered;
+    }
+
+    /// <summary>Under <see cref="MorphLock"/>: starts a flight and returns it, or sets <paramref name="running"/> to the one already up.</summary>
+    /// <remarks>A flight from before a retirement is not joined: its result must not serve the new region's first request.</remarks>
+    private static Flight? Board(Dictionary<string, Flight> flights, string key, long epoch, out Flight? running)
+    {
+        if (flights.TryGetValue(key, out running) && running.Epoch == epoch)
+        {
+            return null;
+        }
+
+        running = null;
+        var mine = new Flight(epoch);
+        flights[key] = mine;
+        return mine;
+    }
+
+    /// <summary>Waits for another worker's build. False when the caller has to build for itself: the
+    /// main thread never waits on a worker, and a build that threw gave no answer.</summary>
+    private static bool Await(Flight running, ref long joined, out object? result)
+    {
+        result = null;
+        if (OS.GetThreadCallerId() == OS.GetMainThreadId())
+        {
+            return false;
+        }
+
+        running.Landed.Wait();
+        if (!running.Answered)
+        {
+            return false;
+        }
+
+        System.Threading.Interlocked.Increment(ref joined);
+        result = running.Result;
+        return true;
+    }
+
+    private static void Land(Dictionary<string, Flight> flights, string key, Flight mine)
+    {
+        lock (MorphLock)
+        {
+            if (flights.TryGetValue(key, out Flight? listed) && ReferenceEquals(listed, mine))
+            {
+                flights.Remove(key);
+            }
+        }
+
+        mine.Landed.Set();
+    }
+
+    /// <summary>Under <see cref="MorphLock"/>: the composite under this key if it is still alive past the limit.</summary>
+    private static ImageTexture? Revive(string key)
+    {
+        if (!OverLimit.TryGetValue(key, out WeakReference<ImageTexture>? held) ||
+            !held.TryGetTarget(out ImageTexture? texture) || !GodotObject.IsInstanceValid(texture))
+        {
+            return null;
+        }
+
+        System.Threading.Interlocked.Increment(ref _compositesRevived);
+        if (Composited.Count < CompositedLimit)
+        {
+            OverLimit.Remove(key);
+            Composited[key] = texture;
+        }
+
+        return texture;
+    }
+
+    /// <summary>Under <see cref="MorphLock"/>: at the limit the list starts again, and what it held stays findable while alive.</summary>
+    private static void MakeRoomForComposite()
+    {
+        if (Composited.Count < CompositedLimit)
+        {
+            return;
+        }
+
+        var gone = new List<string>();
+        foreach ((string key, WeakReference<ImageTexture> held) in OverLimit)
+        {
+            if (!held.TryGetTarget(out _))
+            {
+                gone.Add(key);
+            }
+        }
+
+        foreach (string key in gone)
+        {
+            OverLimit.Remove(key);
+        }
+
+        foreach ((string key, ImageTexture texture) in Composited)
+        {
+            OverLimit[key] = new WeakReference<ImageTexture>(texture);
+        }
+
+        Composited.Clear();
+    }
 
     /// <summary>
     /// Serialises <c>Duplicate()</c> of the SHARED model materials. Composites build on
@@ -289,7 +441,8 @@ public static class Engine_HeroTextureMorph
             // specular, occlusion and height from the normal (Engine_TexOrm); a material whose
             // composite replaced either would otherwise draw with the unmorphed pack beside the
             // morphed map — the rule Engine_MdlMaterial already applies to an overridden source.
-            if (own is not null && packedSourceChanged && own.GetShaderParameter("has_orm").AsBool())
+            if (own is not null && packedSourceChanged && Engine_TexSettings.OrmEnabled &&
+                own.GetShaderParameter("has_orm").AsBool())
             {
                 ImageTexture? orm = Engine_TexLibrary.BuildOrmFromTextures(
                     own.GetShaderParameter("specular_tex").As<Texture2D>(),
@@ -407,6 +560,8 @@ public static class Engine_HeroTextureMorph
 
         string cacheKey = key.ToString();
         long epoch;
+        Flight? mine;
+        Flight? running;
         lock (MorphLock)
         {
             epoch = _textureEpoch;
@@ -414,6 +569,50 @@ public static class Engine_HeroTextureMorph
             {
                 return cached;
             }
+
+            if (Revive(cacheKey) is { } alive)
+            {
+                return alive;
+            }
+
+            mine = Board(CompositeFlights, cacheKey, epoch, out running);
+        }
+
+        if (running is not null && Await(running, ref _compositesJoined, out object? theirs))
+        {
+            return theirs as Texture2D;
+        }
+
+        if (mine is null)
+        {
+            return BuildComposite(original, layers, overlays, normalSlot, cacheKey, epoch);
+        }
+
+        try
+        {
+            ImageTexture? built = BuildComposite(original, layers, overlays, normalSlot, cacheKey, epoch);
+            mine.Result = built;
+            mine.Answered = true;
+            return built;
+        }
+        finally
+        {
+            Land(CompositeFlights, cacheKey, mine);
+        }
+    }
+
+    private static ImageTexture? BuildComposite(
+        uint original,
+        Refii.Host.HostBridge.GuestTextureLayer[] layers,
+        Refii.Host.HostBridge.GuestTextureLayer[] overlays,
+        bool normalSlot,
+        string cacheKey,
+        long epoch)
+    {
+        if (TryStoredComposite(cacheKey, original, layers, overlays, out string? stored) is { } kept)
+        {
+            System.Threading.Interlocked.Increment(ref _compositesFromDisk);
+            return Publish(cacheKey, epoch, kept);
         }
 
         string? basePath = Engine_TexPathIndex.Resolve(layers.Length != 0 ? layers[0].Texture : original);
@@ -443,19 +642,48 @@ public static class Engine_HeroTextureMorph
             }
         }
 
+        // Pooled when it would otherwise be a copy of the source: Image.CreateFromData copies it
+        // again, and a fresh array per composite is large-object garbage only a gen2 returns.
         byte[] output = Fit(source, width, height).Rgba;
+        byte[]? pooled = null;
         if (ReferenceEquals(output, source.Rgba))
         {
-            output = (byte[])output.Clone();
+            pooled = System.Buffers.ArrayPool<byte>.Shared.Rent(width * height * 4);
+            Buffer.BlockCopy(output, 0, pooled, 0, width * height * 4);
+            output = pooled;
         }
 
+        try
+        {
+            return BlendAndUpload(output, width, height, original, layers, decoded, overlays, normalSlot, cacheKey, epoch, stored);
+        }
+        finally
+        {
+            if (pooled is not null)
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(pooled);
+            }
+        }
+    }
+
+    private static ImageTexture BlendAndUpload(
+        byte[] output,
+        int width,
+        int height,
+        uint original,
+        Refii.Host.HostBridge.GuestTextureLayer[] layers,
+        DecodedTexture?[] decoded,
+        Refii.Host.HostBridge.GuestTextureLayer[] overlays,
+        bool normalSlot,
+        string cacheKey,
+        long epoch,
+        string? stored)
+    {
+        // Whether every layer, mask and bump was there; a composite built without one is not kept.
+        bool complete = true;
         if (layers.Length != 0 && layers[0].HasTint)
         {
-            var tint = new Colourise(layers[0].Tint, layers[0].Brightness);
-            for (int at = 0; at < output.Length; at += 4)
-            {
-                tint.Apply(output, at, output, at);
-            }
+            new Colourise(layers[0].Tint, layers[0].Brightness).ApplyAll(output, output, width * height);
         }
 
         for (int i = 1; i < layers.Length; i++)
@@ -466,6 +694,11 @@ public static class Engine_HeroTextureMorph
                 over = Fit(over, width, height);
                 Blend(output, width, height, over, over, layer.Mode, layer.Weight,
                     layer.HasTint ? new Colourise(layer.Tint, layer.Brightness) : null);
+            }
+            else
+            {
+                // Built without a layer: shown, but never kept, as the next build may have it.
+                complete = false;
             }
         }
 
@@ -480,6 +713,7 @@ public static class Engine_HeroTextureMorph
             DecodedTexture? mask = maskPath is null ? null : Decode(maskPath, epoch);
             if (mask is null || !mask.Ok)
             {
+                complete = false;
                 continue;
             }
 
@@ -494,20 +728,24 @@ public static class Engine_HeroTextureMorph
             {
                 Blend(output, width, height, Fit(colour, width, height), Fit(mask, width, height), 1, overlay.Weight, null);
             }
+            else
+            {
+                complete = false;
+            }
         }
 
+        string? keep = complete ? KeepAs(stored, cacheKey, original, layers, overlays) : null;
         System.Threading.Interlocked.Increment(ref _compositesBuilt);
-        ImageTexture texture = ToTexture(output, width, height, normalSlot);
+        return Publish(cacheKey, epoch, ToTexture(output, width, height, normalSlot, keep));
+    }
 
+    private static ImageTexture Publish(string cacheKey, long epoch, ImageTexture texture)
+    {
         lock (MorphLock)
         {
             if (epoch != _textureEpoch)
                 return texture;
-            if (Composited.Count >= CompositedLimit)
-            {
-                Composited.Clear();
-            }
-
+            MakeRoomForComposite();
             Composited[cacheKey] = texture;
         }
 
@@ -540,6 +778,14 @@ public static class Engine_HeroTextureMorph
         int sw = texture.Width;
         int sh = texture.Height;
         byte[] src = texture.Rgba;
+        var columns = new (int X0, int X1, float T)[width];
+        for (int x = 0; x < width; x++)
+        {
+            float fx = Math.Clamp((((x + 0.5f) * sw) / width) - 0.5f, 0f, sw - 1f);
+            int x0 = (int)fx;
+            columns[x] = (x0, Math.Min(x0 + 1, sw - 1), fx - x0);
+        }
+
         for (int y = 0; y < height; y++)
         {
             float fy = Math.Clamp((((y + 0.5f) * sh) / height) - 0.5f, 0f, sh - 1f);
@@ -548,10 +794,7 @@ public static class Engine_HeroTextureMorph
             float ty = fy - y0;
             for (int x = 0; x < width; x++)
             {
-                float fx = Math.Clamp((((x + 0.5f) * sw) / width) - 0.5f, 0f, sw - 1f);
-                int x0 = (int)fx;
-                int x1 = Math.Min(x0 + 1, sw - 1);
-                float tx = fx - x0;
+                (int x0, int x1, float tx) = columns[x];
                 int a = ((y0 * sw) + x0) * 4;
                 int b = ((y0 * sw) + x1) * 4;
                 int c = ((y1 * sw) + x0) * 4;
@@ -569,57 +812,27 @@ public static class Engine_HeroTextureMorph
         return new DecodedTexture { Width = width, Height = height, HasAlpha = texture.HasAlpha, Ok = true, Rgba = rgba };
     }
 
-    /// <summary>One layer over the target: colour from one texture, coverage from another's alpha.</summary>
+    /// <summary>One layer over the target: colour from one texture, coverage from another's alpha, both already at its size (<see cref="Fit"/>).</summary>
     private static void Blend(
         byte[] output, int width, int height, DecodedTexture colour, DecodedTexture coverage,
         int mode, float weight, Colourise? tint)
     {
-        var pixel = new byte[4];
-
-        for (int y = 0; y < height; y++)
+        int pixels = width * height;
+        if (tint is null)
         {
-            int cy = colour.Height == height ? y : Math.Min(colour.Height - 1, y * colour.Height / height);
-            int my = coverage.Height == height ? y : Math.Min(coverage.Height - 1, y * coverage.Height / height);
+            Engine_HeroTextureKernels.Blend(output, colour.Rgba, coverage.Rgba, pixels, mode, weight);
+            return;
+        }
 
-            for (int x = 0; x < width; x++)
-            {
-                int cx = colour.Width == width ? x : Math.Min(colour.Width - 1, x * colour.Width / width);
-                int mx = coverage.Width == width ? x : Math.Min(coverage.Width - 1, x * coverage.Width / width);
-
-                int src = ((cy * colour.Width) + cx) * 4;
-                int cover = ((my * coverage.Width) + mx) * 4;
-                int dst = ((y * width) + x) * 4;
-
-                float alpha = mode switch
-                {
-                    0 => 1.0f,
-                    3 => weight,
-                    _ => (coverage.Rgba[cover + 3] / 255.0f) * weight,
-                };
-
-                if (alpha <= 0.0f)
-                {
-                    continue;
-                }
-
-                byte[] from = colour.Rgba;
-                int fromAt = src;
-                if (tint is not null)
-                {
-                    tint.Apply(colour.Rgba, src, pixel, 0);
-                    from = pixel;
-                    fromAt = 0;
-                }
-
-                for (int k = 0; k < 3; k++)
-                {
-                    float value = mode == 2
-                        ? output[dst + k] + (from[fromAt + k] * alpha)
-                        : (output[dst + k] * (1.0f - alpha)) + (from[fromAt + k] * alpha);
-
-                    output[dst + k] = (byte)Math.Clamp(value + 0.5f, 0.0f, 255.0f);
-                }
-            }
+        byte[] dyed = System.Buffers.ArrayPool<byte>.Shared.Rent(pixels * 4);
+        try
+        {
+            tint.ApplyAll(colour.Rgba, dyed, pixels);
+            Engine_HeroTextureKernels.Blend(output, dyed, coverage.Rgba, pixels, mode, weight);
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(dyed);
         }
     }
 
@@ -690,34 +903,9 @@ public static class Engine_HeroTextureMorph
             }
         }
 
-        public void Apply(byte[] from, int fromAt, byte[] to, int toAt)
-        {
-            float tr = from[fromAt] / 255.0f;
-            float tg = from[fromAt + 1] / 255.0f;
-            float tb = from[fromAt + 2] / 255.0f;
-
-            float t = 4.0f * ((tr * _toIntensity[0]) + (tg * _toIntensity[1]) + (tb * _toIntensity[2]));
-            int i = Math.Clamp((int)t, 0, 3);
-            float f = Math.Clamp(t - i, 0.0f, 1.0f);
-            float curve = _curve[i] + ((_curve[i + 1] - _curve[i]) * f);
-
-            float lo = _pivot > 1e-5f ? MathF.Min(curve / _pivot, 1.0f) : 1.0f;
-            float hi = _pivot < 1.0f - 1e-5f
-                ? MathF.Max(curve - _pivot, 0.0f) / (1.0f - _pivot)
-                : 0.0f;
-
-            float texel0 = tr, texel1 = tg, texel2 = tb;
-            for (int k = 0; k < 3; k++)
-            {
-                float col = lo * _colour[k];
-                col += hi * (1.0f - col);
-                float texel = k == 0 ? texel0 : k == 1 ? texel1 : texel2;
-                float value = texel + ((col - texel) * _colourAlpha);
-                to[toAt + k] = (byte)Math.Clamp((value * 255.0f) + 0.5f, 0.0f, 255.0f);
-            }
-
-            to[toAt + 3] = from[fromAt + 3];
-        }
+        /// <summary>Dyes every pixel of <paramref name="from"/> into <paramref name="to"/>, which may be the same array.</summary>
+        public void ApplyAll(byte[] from, byte[] to, int pixels) =>
+            Engine_HeroTextureKernels.Colourise(from, to, pixels, _colour, _colourAlpha, _toIntensity, _pivot, _curve);
     }
 
     public static Dictionary<uint, List<TextureMorphEntry>> Active(Func<uint, float> weightOfType)
@@ -897,22 +1085,8 @@ public static class Engine_HeroTextureMorph
 
         System.Threading.Interlocked.Increment(ref _compositesBuilt);
         string stem = System.IO.Path.GetFileName(baseName);
-        ImageTexture texture = ToTexture(
-            output, width, height, stem.StartsWith("norm", StringComparison.OrdinalIgnoreCase));
-
-        lock (MorphLock)
-        {
-            if (epoch != _textureEpoch)
-                return texture;
-            if (Composited.Count >= CompositedLimit)
-            {
-                Composited.Clear();
-            }
-
-            Composited[cacheKey] = texture;
-        }
-
-        return texture;
+        return Publish(cacheKey, epoch, ToTexture(
+            output, width, height, stem.StartsWith("norm", StringComparison.OrdinalIgnoreCase)));
     }
 
     /// <summary>
@@ -923,17 +1097,19 @@ public static class Engine_HeroTextureMorph
     /// the chain and block-compressed the way the library compresses its own (BC5 for a
     /// normal, BC1/BC3 otherwise).
     /// </summary>
-    /// <param name="rgba">Owned composite pixel bytes.</param>
+    /// <param name="rgba">Composite pixel bytes, at least width x height x 4, possibly pooled; copied here.</param>
     /// <param name="width">Composite width in pixels.</param>
     /// <param name="height">Composite height in pixels.</param>
     /// <param name="normalMap">Whether mip generation renormalizes the normal vectors.</param>
+    /// <param name="stored">Where to keep the upload for next time (<see cref="StoredUpload"/>), if anywhere.</param>
     /// <returns>The uploaded texture using the Android format fallback when needed.</returns>
-    private static ImageTexture ToTexture(byte[] rgba, int width, int height, bool normalMap)
+    private static ImageTexture ToTexture(byte[] rgba, int width, int height, bool normalMap, string? stored = null)
     {
-        using Image image = Image.CreateFromData(width, height, false, Image.Format.Rgba8, rgba);
+        using Image image = Image.CreateFromData(
+            width, height, false, Image.Format.Rgba8, new ReadOnlySpan<byte>(rgba, 0, width * height * 4));
         image.GenerateMipmaps(normalMap);
         Engine_TexImage.CompressBlocks(image, normalMap);
-        return Refii.Textures.Engine_TextureUpload.CreateTexture(image);
+        return StoredUpload(image, stored) ?? Refii.Textures.Engine_TextureUpload.CreateTexture(image, world: true);
     }
 
     /// <summary>Retains top-level managed RGBA while releasing the newly decoded native Image after extraction.</summary>
@@ -943,15 +1119,49 @@ public static class Engine_HeroTextureMorph
     private static DecodedTexture Decode(string path, long epoch)
     {
         string key = path.Replace('\\', '/');
+        Flight? mine = null;
+        Flight? running = null;
 
         lock (MorphLock)
         {
-            if (epoch == _textureEpoch && DecodedCache.TryGetValue(key, out DecodedTexture? cached))
+            if (epoch == _textureEpoch)
             {
-                return cached;
+                if (DecodedCache.TryGetValue(key, out DecodedTexture? cached))
+                {
+                    cached.LastUsed = ++_decodedClock;
+                    return cached;
+                }
+
+                mine = Board(DecodeFlights, key, epoch, out running);
             }
         }
 
+        if (running is not null && Await(running, ref _decodesJoined, out object? theirs) && theirs is DecodedTexture landed)
+        {
+            return landed;
+        }
+
+        if (mine is null)
+        {
+            return DecodeSource(path, key, epoch);
+        }
+
+        try
+        {
+            DecodedTexture value = DecodeSource(path, key, epoch);
+            mine.Result = value;
+            mine.Answered = true;
+            return value;
+        }
+        finally
+        {
+            Land(DecodeFlights, key, mine);
+        }
+    }
+
+    private static DecodedTexture DecodeSource(string path, string key, long epoch)
+    {
+        System.Threading.Interlocked.Increment(ref _sourcesDecoded);
         var value = new DecodedTexture();
         byte[]? bytes = Refii.Models.Engine_BnkMeshLoader.ReadBytes(path);
 
@@ -977,17 +1187,18 @@ public static class Engine_HeroTextureMorph
         {
             if (epoch == _textureEpoch)
             {
-                if (SourceBudgetBytes > 0)
+                value.LastUsed = ++_decodedClock;
+                if (SourceBudgetBytes > 0 && DecodedCache.TryGetValue(key, out DecodedTexture? replaced))
                 {
-                    _decodedBytes += value.Rgba.LongLength;
-                    if (_decodedBytes > SourceBudgetBytes)
-                    {
-                        DecodedCache.Clear();
-                        _decodedBytes = value.Rgba.LongLength;
-                    }
+                    _decodedBytes -= replaced.Rgba.LongLength;
                 }
 
                 DecodedCache[key] = value;
+                if (SourceBudgetBytes > 0)
+                {
+                    _decodedBytes += value.Rgba.LongLength;
+                    TrimDecodedTo(SourceBudgetBytes, value);
+                }
             }
         }
 
@@ -996,8 +1207,8 @@ public static class Engine_HeroTextureMorph
 
     /// <summary>
     /// `hero_texture_sources_mb` (default 0, unbounded): the decoded sources kept for the next
-    /// composite, in MB. Past it the kept sources are dropped and the next composite decodes its
-    /// own again. Read once.
+    /// composite, in MB. Past it the longest unused go first, and a composite that wants one of
+    /// those decodes it again. Read once. On a phone 0 can mean a bound (<see cref="UnsetSourceMegabytes"/>).
     /// </summary>
     /// <remarks>
     /// Each source is the RGBA top mip of a base, layer, mask or bump texture, 1-4 MB and on the
@@ -1010,12 +1221,44 @@ public static class Engine_HeroTextureMorph
     /// <summary>Bytes in the decoded sources since they were last cleared, when budgeted.</summary>
     private static long _decodedBytes;
 
+    /// <summary>Stamps each source as it is used, for <see cref="TrimDecodedTo"/>.</summary>
+    private static long _decodedClock;
+
+    /// <summary>Under <see cref="MorphLock"/>: drops the longest unused sources until the rest fit.</summary>
+    /// <remarks>Dropping them all, as this once did, also dropped the ones every body is about to
+    /// ask for again, the shared skin maps above all.</remarks>
+    private static void TrimDecodedTo(long budget, DecodedTexture keep)
+    {
+        while (_decodedBytes > budget)
+        {
+            string? oldest = null;
+            long oldestUse = long.MaxValue;
+            foreach ((string key, DecodedTexture source) in DecodedCache)
+            {
+                if (!ReferenceEquals(source, keep) && source.LastUsed < oldestUse && source.Rgba.LongLength != 0)
+                {
+                    oldest = key;
+                    oldestUse = source.LastUsed;
+                }
+            }
+
+            if (oldest is null)
+            {
+                return;
+            }
+
+            _decodedBytes -= DecodedCache[oldest].Rgba.LongLength;
+            DecodedCache.Remove(oldest);
+        }
+    }
+
     private static long ReadSourceBudget()
     {
         try
         {
-            return Math.Max(0, Refii.Core.Engine_RefiiConfig.Int(
-                Refii.Core.Engine_RefiiConfig.Read(out _), "hero_texture_sources_mb", 0)) * 1048576L;
+            int unset = UnsetSourceMegabytes();
+            int megabytes = Refii.Core.Engine_RefiiConfig.Int(Refii.Core.Engine_RefiiConfig.Read(out _), "hero_texture_sources_mb", 0);
+            return Math.Max(0, megabytes == 0 ? unset : megabytes) * 1048576L;
         }
         catch (Exception)
         {
@@ -1025,6 +1268,10 @@ public static class Engine_HeroTextureMorph
 
     private static void Fill(DecodedTexture value, Image image)
     {
+        // Only the top level is composited: the rest of the chain would be decoded, copied out to
+        // a managed array and thrown away with it.
+        image.ClearMipmaps();
+
         if (image.IsCompressed())
         {
             image.Decompress();

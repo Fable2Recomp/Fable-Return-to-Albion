@@ -30,6 +30,15 @@ public sealed class TexSurface
 
 	public byte[] Data { get; init; } = Array.Empty<byte>();
 
+	/// <summary>
+	/// How much of <see cref="Data"/> is the surface when it is a pooled buffer, which only
+	/// <see cref="Engine_TexData.TryDecodePooled"/> hands out; -1 when it is all of it.
+	/// </summary>
+	internal int PooledLength { get; init; } = -1;
+
+	/// <summary>The surface's bytes, whichever kind of buffer holds them.</summary>
+	public ReadOnlySpan<byte> Bytes => PooledLength < 0 ? Data : new ReadOnlySpan<byte>(Data, 0, PooledLength);
+
 	public int MipLevels { get; init; } = 1;
 
 	public bool HasMipmaps => MipLevels > 1;
@@ -187,6 +196,35 @@ public static class Engine_TexData
 
 	public static bool TryDecode(byte[] d, out TexSurface surface, out string error)
 	{
+		if (!TryDecodePooled(d, out surface, out error))
+		{
+			return false;
+		}
+
+		if (surface.PooledLength >= 0)
+		{
+			TexSurface pooled = surface;
+			surface = new TexSurface
+			{
+				Width = pooled.Width,
+				Height = pooled.Height,
+				Format = pooled.Format,
+				Data = pooled.Bytes.ToArray(),
+				MipLevels = pooled.MipLevels,
+			};
+			Release(pooled);
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// <see cref="TryDecode"/> for a caller that is done with the surface before it returns: read
+	/// it through <see cref="TexSurface.Bytes"/>, then <see cref="Release"/> it. A chain is a few
+	/// megabytes at most and each load decodes hundreds.
+	/// </summary>
+	internal static bool TryDecodePooled(byte[] d, out TexSurface surface, out string error)
+	{
 		if (TexHeader.TryParse(d, out TexHeader header, out _))
 		{
 			return TryDecodeWithHeader(d, header, out surface, out error);
@@ -200,19 +238,30 @@ public static class Engine_TexData
 		return TryDecodeSingle(d, out surface, out error);
 	}
 
-	private static bool TryDecodeMipChain(
-		byte[] d, TexHeader header, byte[] level0, out byte[] chain, out int levels)
+	internal static void Release(TexSurface surface)
 	{
-		chain = Array.Empty<byte>();
-		levels = 1;
-
-		int available = Math.Min(header.LevelCount, header.LevelOffsets.Length);
-		if (available < 2)
+		if (surface.PooledLength >= 0)
 		{
-			return false;
+			System.Buffers.ArrayPool<byte>.Shared.Return(surface.Data);
 		}
+	}
 
-		var parts = new List<byte[]>(available) { level0 };
+	/// <summary>A decode this large is a damaged header. Bodies top out at 8192 x 8192, 86 MB with its mips.</summary>
+	private const long MaxPooledChainBytes = 1L << 30;
+
+	private static long HeaderLevelBytes(int width, int height, int stride) =>
+		(long)Math.Max(1, (width + 3) / 4) * Math.Max(1, (height + 3) / 4) * stride;
+
+	/// <summary>
+	/// Decodes every level past the first into <paramref name="chain"/> behind it. A level that
+	/// fails leaves the surface at level 0, returning false.
+	/// </summary>
+	private static bool TryDecodeMipChain(
+		byte[] d, TexHeader header, int available, byte[] chain, ref int length, out int levels)
+	{
+		levels = 1;
+		int cursor = length;
+		int stride = header.BlockStride;
 		int width = header.Width;
 		int height = header.Height;
 
@@ -227,30 +276,16 @@ public static class Engine_TexData
 				return false;
 			}
 
-			if (!Engine_TexPlanes.TryDecodeLevel(
-					d, offset, header, width, height, out byte[] blocks, out _))
+			if (!Engine_TexPlanes.TryDecodeLevelInto(d, offset, header, width, height, chain, cursor, out _))
 			{
 				return false;
 			}
 
-			parts.Add(blocks);
+			cursor += (int)HeaderLevelBytes(width, height, stride);
 		}
 
-		int total = 0;
-		foreach (byte[] part in parts)
-		{
-			total += part.Length;
-		}
-
-		chain = new byte[total];
-		int cursor = 0;
-		foreach (byte[] part in parts)
-		{
-			Buffer.BlockCopy(part, 0, chain, cursor, part.Length);
-			cursor += part.Length;
-		}
-
-		levels = parts.Count;
+		length = cursor;
+		levels = available;
 		return true;
 	}
 
@@ -283,33 +318,56 @@ public static class Engine_TexData
 			return false;
 		}
 
-		if (Engine_TexPlanes.TryDecodeLevel(d, recordOffset, header, out byte[] blocks, out string planeError))
-		{
-			TexSurfaceFormat format = header.BlockStride == 16
-				? (header.CodecId == 3 ? TexSurfaceFormat.Bc5 : TexSurfaceFormat.Bc3)
-				: header.SurfaceFormat;
+		TexSurfaceFormat format = header.BlockStride == 16
+			? (header.CodecId == 3 ? TexSurfaceFormat.Bc5 : TexSurfaceFormat.Bc3)
+			: header.SurfaceFormat;
 
-			if (TryDecodeMipChain(d, header, blocks, out byte[] chain, out int levels))
+		// EVERY LEVEL IN ONE BUFFER, sized from the header before the first is decoded.
+		int stride = header.BlockStride;
+		int available = Math.Max(1, Math.Min(header.LevelCount, header.LevelOffsets.Length));
+		long chainBytes = 0;
+		for (int level = 0, w = header.Width, h = header.Height; level < available; ++level)
+		{
+			chainBytes += HeaderLevelBytes(w, h, stride);
+			w = Math.Max(1, w / 2);
+			h = Math.Max(1, h / 2);
+		}
+
+		string planeError;
+		if (chainBytes > MaxPooledChainBytes)
+		{
+			if (Engine_TexPlanes.TryDecodeLevel(d, recordOffset, header, out byte[] blocks, out planeError))
 			{
 				surface = new TexSurface
 				{
 					Width = header.Width,
 					Height = header.Height,
 					Format = format,
+					Data = blocks,
+				};
+				return true;
+			}
+		}
+		else
+		{
+			byte[] chain = System.Buffers.ArrayPool<byte>.Shared.Rent((int)chainBytes);
+			if (Engine_TexPlanes.TryDecodeLevelInto(d, recordOffset, header, header.Width, header.Height, chain, 0, out planeError))
+			{
+				int length = (int)HeaderLevelBytes(header.Width, header.Height, stride);
+				TryDecodeMipChain(d, header, available, chain, ref length, out int levels);
+				surface = new TexSurface
+				{
+					Width = header.Width,
+					Height = header.Height,
+					Format = format,
 					Data = chain,
+					PooledLength = length,
 					MipLevels = levels,
 				};
 				return true;
 			}
 
-			surface = new TexSurface
-			{
-				Width = header.Width,
-				Height = header.Height,
-				Format = format,
-				Data = blocks,
-			};
-			return true;
+			System.Buffers.ArrayPool<byte>.Shared.Return(chain);
 		}
 
 		var payload = new byte[d.Length - recordOffset];

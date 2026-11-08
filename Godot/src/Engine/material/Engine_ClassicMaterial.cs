@@ -103,18 +103,23 @@ public static class Engine_ClassicMaterial
 
     private static Texture2D? _stipple;
     private static bool _stippleTried;
+    private static readonly object StippleGate = new();
 
-    /// <summary>Globals/Engine/Textures/alphastipple.tex, 32x32, loaded once.</summary>
+    /// <summary>Globals/Engine/Textures/alphastipple.tex, 32x32, loaded once. Locked: mesh builds on
+    /// several workers ask at once, and a second asker must not see "tried" with nothing loaded.</summary>
     private static Texture2D? Stipple()
     {
-        if (!_stippleTried)
+        lock (StippleGate)
         {
-            _stippleTried = true;
-            _stipple = Refii.Textures.Engine_TexLibrary.Get(
-                "Globals/Engine/Textures/alphastipple.tex", Refii.Textures.TexSemantic.Unknown,
-                Engine_BnkMeshLoader.ReadBytes, out _);
+            if (!_stippleTried)
+            {
+                _stipple = Refii.Textures.Engine_TexLibrary.Get(
+                    "Globals/Engine/Textures/alphastipple.tex", Refii.Textures.TexSemantic.Unknown,
+                    Engine_BnkMeshLoader.ReadBytes, out _);
+                _stippleTried = true;
+            }
+            return _stipple;
         }
-        return _stipple;
     }
 
     private static ImageTexture? _defaultDiffuse, _defaultSpecular, _defaultNormal;
@@ -367,7 +372,7 @@ public static class Engine_ClassicMaterial
             if (hasSpecular && hasNormal)
             {
                 int specularFlags = material.Specular.Length != 0
-                    ? Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Specular, Engine_BnkMeshLoader.ReadBytes)
+                    ? Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Specular, Engine_BnkMeshLoader.ReadTextureHeader)
                     : 0;
                 pixelTokens.Add((specularFlags & 0x80) != 0 ? "SP2" : "SP1");
             }
@@ -425,7 +430,7 @@ public static class Engine_ClassicMaterial
         // that is a cutout only; a translucent surface then draws again without SCR1, blended.
         bool standard = family == "STANDARDMATERIAL";
         int textureFlags = material.Diffuse.Length != 0
-            ? Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Diffuse, Engine_BnkMeshLoader.ReadBytes)
+            ? Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Diffuse, Engine_BnkMeshLoader.ReadTextureHeader)
             : 0;
         bool translucent = standard && (textureFlags & 0x80) != 0;
         // Fable 3's standard family has no screen-shadow axis: the opaque and the blended draw

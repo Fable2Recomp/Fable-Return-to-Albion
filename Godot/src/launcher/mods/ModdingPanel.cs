@@ -683,6 +683,7 @@ public partial class ModdingPanel : VBoxContainer
 
 	private void Rebuild()
 	{
+		if (DeferRowsOnPhone()) return;
 		_rootLabel.Text = "Mod folder: " + _modsRoot.Replace('\\', '/');
 		_statusLabel.Text = _statusMessage;
 		UpdateEditorButton();

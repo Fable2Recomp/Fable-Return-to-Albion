@@ -2,6 +2,8 @@ using System;
 using System.Buffers.Binary;
 using System.IO;
 using System.Numerics;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.Arm;
 using System.Security.Cryptography;
 
 namespace Refii.Core;
@@ -207,8 +209,40 @@ public static class Engine_Hash
 			_state[4] = 0x510e527f; _state[5] = 0x9b05688c; _state[6] = 0x1f83d9ab; _state[7] = 0x5be0cd19;
 		}
 
+		/// <summary>The same compression with the CPU's SHA-2 instructions, which every phone the game
+		/// runs on has: the texture cache hashes each texture's whole source on every load.</summary>
+		private void CompressArm(ReadOnlySpan<byte> block)
+		{
+			Vector128<uint> abcd = Vector128.Create<uint>(_state), efgh = Vector128.Create<uint>(_state.AsSpan(4));
+			Vector128<uint> start0 = abcd, start1 = efgh;
+			Span<Vector128<uint>> m = stackalloc Vector128<uint>[4];
+			for (int i = 0; i < 4; i++)
+				m[i] = AdvSimd.ReverseElement8(Vector128.Create<byte>(block.Slice(i * 16, 16)).AsUInt32());
+
+			for (int i = 0; i < 16; i++)
+			{
+				Vector128<uint> wk = m[i & 3] + Vector128.Create<uint>(K.AsSpan(i * 4));
+				Vector128<uint> previous = abcd;
+				abcd = System.Runtime.Intrinsics.Arm.Sha256.HashUpdate1(abcd, efgh, wk);
+				efgh = System.Runtime.Intrinsics.Arm.Sha256.HashUpdate2(efgh, previous, wk);
+				if (i < 12)
+					m[i & 3] = System.Runtime.Intrinsics.Arm.Sha256.ScheduleUpdate1(
+						System.Runtime.Intrinsics.Arm.Sha256.ScheduleUpdate0(m[i & 3], m[(i + 1) & 3]),
+						m[(i + 2) & 3], m[(i + 3) & 3]);
+			}
+
+			(abcd + start0).CopyTo(_state);
+			(efgh + start1).CopyTo(_state, 4);
+		}
+
 		protected override void Compress(ReadOnlySpan<byte> block)
 		{
+			if (System.Runtime.Intrinsics.Arm.Sha256.IsSupported)
+			{
+				CompressArm(block);
+				return;
+			}
+
 			uint[] w = _w;
 			for (int t = 0; t < 16; t++)
 				w[t] = BinaryPrimitives.ReadUInt32BigEndian(block.Slice(t * 4, 4));

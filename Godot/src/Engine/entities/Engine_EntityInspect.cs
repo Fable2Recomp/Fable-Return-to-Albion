@@ -36,7 +36,7 @@ public static class Engine_EntityInspect
     {
         byte[]? levelGdb = Engine_LevelGdb.TryRead(level, read, out string gdbPath);
         if (levelGdb is null ||
-            !GdbView.TryParse(levelGdb, out GdbView levelView, out _))
+            !GdbView.TryParseShared(levelGdb, out GdbView levelView, out _))
         {
             return null;
         }

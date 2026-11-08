@@ -40,12 +40,11 @@ public static class ModHostQueries
 	/// <summary>A reply off the bus: true when it answered one of these questions (and the callback ran).</summary>
 	public static bool Take(IReadOnlyList<KeyValuePair<string, object>> fields)
 	{
+		// Every reply passes here and nearly all are a script's: its fields are copied only when ours.
 		long id = 0;
-		var values = new Dictionary<string, object>(StringComparer.Ordinal);
-		foreach ((string key, object value) in fields)
+		for (int i = 0; i < fields.Count; i++)
 		{
-			values[key] = value;
-			if (key == "id" && value is long l)
+			if (fields[i].Key == "id" && fields[i].Value is long l)
 			{
 				id = l;
 			}
@@ -54,6 +53,12 @@ public static class ModHostQueries
 		if (id >= 0 || !_pending.Remove(id, out Action<IReadOnlyDictionary<string, object>>? answered))
 		{
 			return false;
+		}
+
+		var values = new Dictionary<string, object>(StringComparer.Ordinal);
+		foreach ((string key, object value) in fields)
+		{
+			values[key] = value;
 		}
 
 		answered(values);

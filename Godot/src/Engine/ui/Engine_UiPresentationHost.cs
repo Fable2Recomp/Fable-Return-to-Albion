@@ -307,6 +307,7 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// and every pattern book whose file changed under it.</summary>
 	private void OnMountChanged(int fileCount)
 	{
+		FollowGameMount();
 		ReloadStrings();
 		AddModLayers();
 		RefreshPatternBooks();
@@ -322,19 +323,11 @@ public partial class Engine_UiPresentationHost : Node3D
 		string StringsSource);
 
 	/// <summary>Reads the bank index; null when the banks hold no presentation. Any thread.</summary>
-	private static BankIndex? IndexBanks(BnkFileSystem banks, bool owns, string data)
+	private static BankIndex? IndexBanks(BnkFileSystem banks, bool owns, string data, bool shippedOnly = false)
 	{
 		var texturePaths = new List<string>();
 		var byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-		foreach (BnkFile file in banks.EnumerateAllFiles())
-		{
-			string path = file.VirtualPath;
-			if (path.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
-				texturePaths.Add(path);
-			// One entry per presentation; the .fac sidecar is a separate bank entry.
-			else if (path.EndsWith(".bgf", StringComparison.OrdinalIgnoreCase))
-				byName[BankEntryName(path)] = path;
-		}
+		ListBanks(banks, shippedOnly, texturePaths, byName);
 
 		if (byName.Count == 0)
 			return null;
@@ -349,6 +342,44 @@ public partial class Engine_UiPresentationHost : Node3D
 		Engine_UiFontLibrary fonts = Engine_UiFontLibrary.Load(data, Engine_GameCulture.Current);
 		Engine_BabelDatabase? strings = ReadStrings(data, diskFallback: true, out string source);
 		return new BankIndex(banks, owns, data, byName, names, fonts, strings, source);
+	}
+
+	/// <summary>
+	/// The texture paths and the presentations by name. <paramref name="shippedOnly"/> leaves out
+	/// what only a mod contributes, in the game's mount: <see cref="AddModLayers"/> adds those.
+	/// </summary>
+	internal static void ListBanks(
+		BnkFileSystem banks, bool shippedOnly, List<string> texturePaths, Dictionary<string, string> byName)
+	{
+		foreach (BnkFile file in banks.EnumerateAllFiles())
+		{
+			string path = file.VirtualPath;
+			bool isTexture = path.EndsWith(".tex", StringComparison.OrdinalIgnoreCase);
+			if ((!isTexture && !path.EndsWith(".bgf", StringComparison.OrdinalIgnoreCase)) ||
+				(shippedOnly && !IsShipped(file)))
+				continue;
+
+			if (isTexture)
+				texturePaths.Add(path);
+			// One entry per presentation; the .fac sidecar is a separate bank entry.
+			else
+				byName[BankEntryName(path)] = path;
+		}
+	}
+
+	/// <summary>Whether the game's own data has this name, under any mod that replaces it.</summary>
+	private static bool IsShipped(BnkFile file)
+	{
+		if (file.SourceMod.Length == 0)
+			return true;
+
+		foreach (BnkFile shadowed in file.Shadowed)
+		{
+			if (shadowed.SourceMod.Length == 0)
+				return true;
+		}
+
+		return false;
 	}
 
 	/// <summary>Takes a read index on the main thread: the host can stand screens after this.</summary>
@@ -376,11 +407,11 @@ public partial class Engine_UiPresentationHost : Node3D
 		_loadScreen = name =>
 		{
 			string bgfPath = byName[name];
-			byte[] bgf = ReadLayered(banks, bgfPath) ?? throw new IOException($"{bgfPath} vanished from the bank");
-			byte[]? fac = ReadLayered(banks, Path.ChangeExtension(bgfPath, ".fac"));
+			byte[] bgf = ReadLayered(_banks!, bgfPath) ?? throw new IOException($"{bgfPath} vanished from the bank");
+			byte[]? fac = ReadLayered(_banks!, Path.ChangeExtension(bgfPath, ".fac"));
 			// The .bsg carries the base transform the .bgf overrides — all three
 			// sidecars are separate bank entries under the same stem.
-			byte[]? bsg = ReadLayered(banks, Path.ChangeExtension(bgfPath, ".bsg"));
+			byte[]? bsg = ReadLayered(_banks!, Path.ChangeExtension(bgfPath, ".bsg"));
 			_lastLoadSignature = FileSignature(bgf, fac, bsg);
 			return Engine_UiScreen.Parse(name, bgf, fac, bsg, _names, Strings, SceneSlide);
 		};
@@ -468,9 +499,20 @@ public partial class Engine_UiPresentationHost : Node3D
 		// directory and stitches the header/payload halves a .tex is split across.
 		BnkFileSystem banks;
 		bool owns = false;
+		bool shared = false;
 		if (Mount is { } given)
 		{
 			banks = given;
+		}
+		else if (Refii.Assets.Engine_GameAssets.Instance?.SharedMount(data) is { } game)
+		{
+			// THE GAME'S MOUNT, not a second one: its garbage and its index, about 100 MB kept for
+			// the session, for files every read below takes from the game's mount first. Android
+			// comes here. The desktop's UI stands up while that mount is still being built, and
+			// waiting would hold the first frame through every mod's conversions, so it opens its
+			// own and leaves it when the game's is up (FollowGameMount).
+			banks = game;
+			shared = true;
 		}
 		else
 		{
@@ -489,7 +531,7 @@ public partial class Engine_UiPresentationHost : Node3D
 			owns = true;
 		}
 
-		BankIndex? index = IndexBanks(banks, owns, data);
+		BankIndex? index = IndexBanks(banks, owns, data, shippedOnly: shared);
 		if (index is null)
 		{
 			if (owns)
@@ -563,6 +605,31 @@ public partial class Engine_UiPresentationHost : Node3D
 		assets.ReadAllBytes(virtualPath) is { } layered
 			? layered
 			: Read(banks, virtualPath);
+
+	/// <summary>How long a mount this host has left stays open, for a read another thread took it for.</summary>
+	private const double RetireOwnMountSeconds = 30.0;
+
+	/// <summary>
+	/// The game's mount is up, or was built again: reads go to it, and this host's own mount, which
+	/// served nothing that one does not, or a tree that one has replaced, is let go.
+	/// </summary>
+	private void FollowGameMount()
+	{
+		if (Mount is not null || _banks is not { } current ||
+			_mountWatched?.SharedMount(ResolveGameDataRoot()) is not { } tree ||
+			ReferenceEquals(tree, current))
+		{
+			return;
+		}
+
+		_banks = tree;
+		Textures?.Repoint(tree);
+		if (_owned.Remove(current))
+		{
+			_ = System.Threading.Tasks.Task.Delay(TimeSpan.FromSeconds(RetireOwnMountSeconds))
+				.ContinueWith(_ => current.Dispose());
+		}
+	}
 
 	/// <summary>The presentations by name, as <see cref="_loadScreen"/> resolves them; null off the banks.</summary>
 	private Dictionary<string, string>? _bankScreens;

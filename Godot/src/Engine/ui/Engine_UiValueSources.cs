@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 
 namespace Refii.Ui;
@@ -98,10 +99,37 @@ public static class Engine_UiValueSources
 		public static readonly Context None = new();
 	}
 
+	/// <summary>
+	/// Each text's answer, per thread: every HUD piece asks for its sources every frame, the answer
+	/// depends on the text alone, and working it out allocates the key. Bounded for the Studio's
+	/// typing, the one place new texts keep arriving.
+	/// </summary>
+	[ThreadStatic]
+	private static Dictionary<string, Source>? _parsed;
+
+	private const int ParsedLimit = 4096;
+
 	/// <summary>What <paramref name="text"/> names. Whitespace around it is ignored.</summary>
 	public static Source Parse(string? text)
 	{
-		string source = (text ?? string.Empty).Trim();
+		string written = text ?? string.Empty;
+		Dictionary<string, Source> parsed = _parsed ??= new Dictionary<string, Source>(StringComparer.Ordinal);
+		if (parsed.TryGetValue(written, out Source known))
+		{
+			return known;
+		}
+
+		if (parsed.Count >= ParsedLimit)
+		{
+			parsed.Clear();
+		}
+
+		return parsed[written] = ParseText(written);
+	}
+
+	private static Source ParseText(string text)
+	{
+		string source = text.Trim();
 		if (source.Length == 0)
 		{
 			return new Source(Kind.Empty, string.Empty, 0f);

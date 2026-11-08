@@ -170,11 +170,12 @@ public static class Engine_PropFade
 
 	/// <summary>
 	/// Starts a node that just stood dithering in, with the twin or proxy that casts for it. Called
-	/// after the shadow hand-off, so the caster exists to be found.
+	/// after the shadow hand-off, so the caster exists to be found. Under the load hold no one
+	/// sees it arrive: it stands whole, the uniform's default.
 	/// </summary>
 	public static void BeginArrival(GeometryInstance3D node)
 	{
-		if (Refii.Models.Engine_ClassicMaterial.Active)
+		if (Refii.Models.Engine_ClassicMaterial.Active || Refii.Game.GameWorld.WorldBuildHeld)
 		{
 			return;
 		}

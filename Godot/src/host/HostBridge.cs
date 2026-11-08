@@ -1741,7 +1741,14 @@ public static partial class HostBridge
 	/// <param name="presentation">
 	/// A presentation from <see cref="GetPresentations"/>, or 0 for the front end's active screen.
 	/// </param>
-	public static LiveAttribute[,]? GetUiAttributes(uint[] ids, uint presentation = 0)
+	public static LiveAttribute[,]? GetUiAttributes(uint[] ids, uint presentation = 0) =>
+		GetUiAttributes(ids, presentation, null);
+
+	/// <summary>
+	/// <see cref="GetUiAttributes(uint[], uint)"/> written over <paramref name="reuse"/> when it is
+	/// the right shape, so a reader that polls and holds nothing past its read makes no garbage.
+	/// </summary>
+	public static LiveAttribute[,]? GetUiAttributes(uint[] ids, uint presentation, LiveAttribute[,]? reuse)
 	{
 		if (ids.Length == 0)
 		{
@@ -1754,16 +1761,25 @@ public static partial class HostBridge
 			return null;
 		}
 
-		// Two identity columns then the value pairs: `2 + ids * 2` words an element.
+		// Two identity columns then the value pairs: `2 + ids * 2` words an element. The walk writes
+		// every word of every row it counts, and only those rows are read back, so the buffer is kept.
 		int stride = 2 + (ids.Length * 2);
-		var words = new uint[elements * stride];
+		int needed = (int)elements * stride;
+		if (_uiAttributeWords is null || _uiAttributeWords.Length < needed)
+		{
+			_uiAttributeWords = new uint[Math.Max(needed, 4096)];
+		}
+
+		uint[] words = _uiAttributeWords;
 		uint written = RefiiHostGetUiAttributes(
-			presentation, ids, (uint)ids.Length, words, (uint)words.Length);
+			presentation, ids, (uint)ids.Length, words, (uint)needed);
 
 		int rows = (int)Math.Min(written, elements);
-		var table = new LiveAttribute[rows, ids.Length];
-		var found = new uint[rows];
-		var hashes = new uint[rows];
+		LiveAttribute[,] table = reuse is not null && reuse.GetLength(0) == rows && reuse.GetLength(1) == ids.Length
+			? reuse
+			: new LiveAttribute[rows, ids.Length];
+		uint[] found = LastAttributeElements.Length == rows ? LastAttributeElements : new uint[rows];
+		uint[] hashes = LastAttributeNameHashes.Length == rows ? LastAttributeNameHashes : new uint[rows];
 		for (int row = 0; row < rows; ++row)
 		{
 			int at = row * stride;
@@ -1784,11 +1800,15 @@ public static partial class HostBridge
 	/// <summary>
 	/// The element addresses and name hashes behind the last <see cref="GetUiAttributes"/> table,
 	/// row for row. The table is still indexed by ORDINAL, which is a join by position across two
-	/// separate walks; these let a caller prove that join rather than assume it.
+	/// separate walks; these let a caller prove that join rather than assume it. Refilled by the
+	/// next read: to be read at once, not held.
 	/// </summary>
 	public static uint[] LastAttributeElements { get; private set; } = System.Array.Empty<uint>();
 
 	public static uint[] LastAttributeNameHashes { get; private set; } = System.Array.Empty<uint>();
+
+	[System.ThreadStatic]
+	private static uint[]? _uiAttributeWords;
 
 	/// <summary>One live guest entity, in guest world space.</summary>
 	/// <summary>
@@ -1876,16 +1896,14 @@ public static partial class HostBridge
 		/// </summary>
 		public bool Submitted => Opacity > 0f;
 
-		public bool IsConstructed => this == Constructed;
+		/// <summary>
+		/// <c>this == Constructed</c>, written out: the record's equality goes through a comparer per
+		/// field, and every entity the walk does not skip asks this several times.
+		/// </summary>
+		public bool IsConstructed =>
+			Alpha == 1f && CameraAlpha == 1f && Scale == 1f && Flags == DrawableFlag &&
+			TintLanes.X == 1f && TintLanes.Y == 1f && TintLanes.Z == 1f && TintLanes.W == 1f;
 	}
-
-	/// <summary>Each address's stated words from the last walk, for <see cref="GuestEntity.Changed"/>.</summary>
-	private static readonly Dictionary<uint, (uint X, uint Y, uint Z, uint Qx, uint Qy, uint Qz, uint Qw, uint Model, uint Record)> _lastStated = new();
-
-	/// <summary>Each address's highlight and appearance words from the last walk, the other half of Changed.</summary>
-	private static readonly Dictionary<uint, (uint Highlight, uint A0, uint A1, uint A2, uint A3, uint A4, uint A5, uint A6, uint A7)> _lastStatedLook = new();
-
-	private static int _walksSinceStatedPrune;
 
 	/// <summary>Entities the last walk found changed, and the walk's size; reported.</summary>
 	public static int LastWalkChanged { get; private set; }
@@ -1909,12 +1927,15 @@ public static partial class HostBridge
 	/// Words per entity: 12 stated, the guest's previous transform and its flag, the highlight,
 	/// and eight of appearance (alpha, camera alpha, scale, four tint lanes, flags).
 	/// </summary>
-	private const int EntityStride = 29;
+	private const int EntityStride = HostStatedWords.Stride;
 
 	/// <summary>How many distinct unrecognised placement vtables to bring back.</summary>
 	private const uint MaxUnknownVtables = 32;
 
 	private static uint[]? _entityWords;
+
+	/// <summary>The walk's rows and each address's stated words, for <see cref="GuestEntity.Changed"/>.</summary>
+	private static HostStatedWords? _statedWords;
 
 	private static bool _reportedTruncation;
 
@@ -1948,7 +1969,8 @@ public static partial class HostBridge
 		// main thread.
 		lock (_entityWalkGate)
 		{
-		_entityWords ??= new uint[MaxEntities * EntityStride];
+		_statedWords ??= new HostStatedWords(MaxEntities);
+		_entityWords = _statedWords.Words;
 		uint[] pairs = _unknownPairs ??= new uint[MaxUnknownVtables * 2];
 		uint count = RefiiHostGetEntities(
 			_entityWords, MaxEntities, out unknown, pairs, MaxUnknownVtables,
@@ -1974,32 +1996,17 @@ public static partial class HostBridge
 		// placement of an entity whose statement did not move; the walk is where the comparison
 		// costs nothing the main thread pays.
 		int walkChanged = 0;
-		bool prune = ++_walksSinceStatedPrune >= 600;
-		HashSet<uint>? seen = prune ? new HashSet<uint>((int)count) : null;
+		_statedWords.BeginWalk((int)count);
 		for (uint i = 0; i < count; ++i)
 		{
 			int at = (int)(i * EntityStride);
 			uint address = _entityWords[at + 8];
-			var stated = (_entityWords[at], _entityWords[at + 1], _entityWords[at + 2],
-				_entityWords[at + 3], _entityWords[at + 4], _entityWords[at + 5], _entityWords[at + 6],
-				_entityWords[at + 7], _entityWords[at + 11]);
-
-			// The look words too — highlight and appearance — so a walk that skips an unchanged
-			// entity outright (GameEntities' still-adopted fast path) cannot miss a targeting
-			// outline or a fade that arrives without the placement moving.
-			var statedLook = (_entityWords[at + 20], _entityWords[at + 21], _entityWords[at + 22],
-				_entityWords[at + 23], _entityWords[at + 24], _entityWords[at + 25], _entityWords[at + 26],
-				_entityWords[at + 27], _entityWords[at + 28]);
-			bool changed = !_lastStated.TryGetValue(address, out var last) || !last.Equals(stated) ||
-				!_lastStatedLook.TryGetValue(address, out var lastLook) || !lastLook.Equals(statedLook);
+			bool changed = _statedWords.Changed((int)i);
 			if (changed)
 			{
-				_lastStated[address] = stated;
-				_lastStatedLook[address] = statedLook;
 				++walkChanged;
 			}
 
-			seen?.Add(address);
 			entities.Add(new GuestEntity(
 				new Vector3(
 					BitConverter.Int32BitsToSingle((int)_entityWords[at]),
@@ -2040,24 +2047,7 @@ public static partial class HostBridge
 
 		LastWalkChanged = walkChanged;
 		LastWalkCount = (int)count;
-		if (prune && seen is not null)
-		{
-			_walksSinceStatedPrune = 0;
-			var gone = new List<uint>();
-			foreach (uint address in _lastStated.Keys)
-			{
-				if (!seen.Contains(address))
-				{
-					gone.Add(address);
-				}
-			}
-
-			foreach (uint address in gone)
-			{
-				_lastStated.Remove(address);
-				_lastStatedLook.Remove(address);
-			}
-		}
+		_statedWords.EndWalk((int)count);
 		}
 
 		return entities;
@@ -6677,10 +6667,10 @@ public static partial class HostBridge
 			return false;
 		}
 
-		byte[] bytes = System.Text.Encoding.UTF8.GetBytes(key);
+		byte[] bytes = Utf8Scratch(key, out int length);
 		try
 		{
-			return RefiiHostGetModValue(bytes, (uint)bytes.Length, out value) != 0;
+			return RefiiHostGetModValue(bytes, (uint)length, out value) != 0;
 		}
 		catch (EntryPointNotFoundException)
 		{
@@ -6706,7 +6696,28 @@ public static partial class HostBridge
 		}
 	}
 
+	/// <summary>
+	/// <paramref name="text"/> as UTF-8 in a kept buffer, valid until this thread's next call: for a
+	/// native call that copies what it needs, on a path a mod or the HUD takes every frame.
+	/// </summary>
+	private static byte[] Utf8Scratch(string text, out int length)
+	{
+		int needed = System.Text.Encoding.UTF8.GetByteCount(text);
+		if (_utf8Scratch is null || _utf8Scratch.Length < needed)
+		{
+			_utf8Scratch = new byte[Math.Max(needed, 256)];
+		}
+
+		length = System.Text.Encoding.UTF8.GetBytes(text, _utf8Scratch);
+		return _utf8Scratch;
+	}
+
+	[System.ThreadStatic]
+	private static byte[]? _utf8Scratch;
+
 	private static byte[]? _modEventBuffer;
+
+	private static char[]? _modEventChars;
 
 	/// <summary>
 	/// Every mod event the payload posted since the last drain, oldest first: the kind
@@ -6717,12 +6728,21 @@ public static partial class HostBridge
 	public static List<(int Kind, string Fields)> DrainModEvents()
 	{
 		var events = new List<(int, string)>();
+		DrainModEvents(events);
+		return events;
+	}
+
+	/// <summary><see cref="DrainModEvents()"/> into a kept list, replacing what it held. Main thread only.</summary>
+	public static void DrainModEvents(List<(int Kind, string Fields)> events)
+	{
+		events.Clear();
 		if (TryGetAbiVersion() is null || !IsGuestUp)
 		{
-			return events;
+			return;
 		}
 
 		_modEventBuffer ??= new byte[64 * 1024];
+		_modEventChars ??= new char[System.Text.Encoding.UTF8.GetMaxCharCount(_modEventBuffer.Length)];
 		try
 		{
 			for (int round = 0; round < 64; round++)
@@ -6733,22 +6753,29 @@ public static partial class HostBridge
 					break;
 				}
 
-				string text = System.Text.Encoding.UTF8.GetString(_modEventBuffer, 0, (int)written);
-				foreach (string line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries))
-				{
-					int tab = line.IndexOf('\t');
-					if (tab > 0 && int.TryParse(line.AsSpan(0, tab), out int kind))
-					{
-						events.Add((kind, line[(tab + 1)..]));
-					}
-				}
+				int count = System.Text.Encoding.UTF8.GetChars(_modEventBuffer, 0, (int)written, _modEventChars, 0);
+				ReadModEventLines(_modEventChars.AsSpan(0, count), events);
 			}
 		}
 		catch (EntryPointNotFoundException)
 		{
 		}
+	}
 
-		return events;
+	/// <summary>The drained records, <c>&lt;kind&gt;\t&lt;fields&gt;\n</c>: only the fields become a string.</summary>
+	internal static void ReadModEventLines(ReadOnlySpan<char> text, List<(int Kind, string Fields)> events)
+	{
+		while (text.Length != 0)
+		{
+			int end = text.IndexOf('\n');
+			ReadOnlySpan<char> line = end < 0 ? text : text[..end];
+			text = end < 0 ? default : text[(end + 1)..];
+			int tab = line.IndexOf('\t');
+			if (tab > 0 && int.TryParse(line[..tab], out int kind))
+			{
+				events.Add((kind, new string(line[(tab + 1)..])));
+			}
+		}
 	}
 
 	/// <summary>
@@ -6813,10 +6840,10 @@ public static partial class HostBridge
 			return;
 		}
 
-		byte[] bytes = System.Text.Encoding.UTF8.GetBytes(line);
+		byte[] bytes = Utf8Scratch(line, out int length);
 		try
 		{
-			RefiiHostPostModCommand(bytes, (uint)bytes.Length);
+			RefiiHostPostModCommand(bytes, (uint)length);
 		}
 		catch (EntryPointNotFoundException)
 		{

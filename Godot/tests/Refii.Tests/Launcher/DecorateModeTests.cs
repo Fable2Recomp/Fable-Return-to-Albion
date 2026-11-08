@@ -147,6 +147,64 @@ public class DecorateModeTests
     }
 
     [TestCase]
+    public void CachedCatalogIsTheBuiltOne()
+    {
+        string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "refii_decorate_" + Guid.NewGuid().ToString("N"));
+        string file = System.IO.Path.Combine(dir, "sub", "catalog.bin");
+        try
+        {
+            byte[] gdb = Fixture();
+            var models = Models();
+            byte[]?[] blobs = { gdb, null };
+            byte[] key = Engine_DecorateCatalog.CacheKey(blobs, models, null);
+            var patch = new GdbPatchDatabase();
+            Engine_DecorateCatalog built = Engine_DecorateCatalog.Build(GdbMulti.Build(blobs), models, patch);
+            byte[] bytes = GdbWriter.Serialize(patch);
+            AssertThat(Engine_DecorateCatalog.TryReadCache(file, key, models, out _, out _, out _)).IsFalse();
+
+            Engine_DecorateCatalog.WriteCache(file, key, built, bytes, built.LuaCatalog());
+            AssertThat(Engine_DecorateCatalog.TryReadCache(file, key, models, out Engine_DecorateCatalog? read, out byte[] readBytes, out string readLua)).IsTrue();
+            AssertThat(readBytes).IsEqual(bytes);
+            AssertThat(readLua).IsEqual(built.LuaCatalog());
+            AssertThat(read!.Items.Values.ToArray()).IsEqual(built.Items.Values.ToArray());
+            AssertThat(read.Models.Count).IsEqual(models.Count);
+
+            // Any input that differs is a different answer.
+            AssertThat(Engine_DecorateCatalog.CacheKey(blobs, models, null)).IsEqual(key);
+            byte[] changed = (byte[])gdb.Clone();
+            changed[^1] ^= 1;
+            var otherModels = new Dictionary<uint, string>(models) { [1u] = "x.mdl" };
+            foreach (byte[] other in new[]
+            {
+                Engine_DecorateCatalog.CacheKey(new byte[]?[] { changed, null }, models, null),
+                Engine_DecorateCatalog.CacheKey(new byte[]?[] { null, gdb }, models, null),
+                Engine_DecorateCatalog.CacheKey(blobs, otherModels, null),
+                Engine_DecorateCatalog.CacheKey(blobs, models, new byte[] { 1 }),
+            })
+            {
+                AssertThat(other.AsSpan().SequenceEqual(key)).IsFalse();
+                AssertThat(Engine_DecorateCatalog.TryReadCache(file, other, models, out _, out _, out _)).IsFalse();
+            }
+
+            // A file cut short, or with any byte of its patch changed, reads as no cache at all: a
+            // damaged patch must never reach the game as data.
+            byte[] whole = System.IO.File.ReadAllBytes(file);
+            System.IO.File.WriteAllBytes(file, whole[..(whole.Length / 2)]);
+            AssertThat(Engine_DecorateCatalog.TryReadCache(file, key, models, out _, out _, out _)).IsFalse();
+            byte[] damaged = (byte[])whole.Clone();
+            damaged[key.Length + 32 + 8] ^= 1;
+            System.IO.File.WriteAllBytes(file, damaged);
+            AssertThat(Engine_DecorateCatalog.TryReadCache(file, key, models, out _, out _, out _)).IsFalse();
+            System.IO.File.WriteAllBytes(file, whole);
+            AssertThat(Engine_DecorateCatalog.TryReadCache(file, key, models, out _, out _, out _)).IsTrue();
+        }
+        finally
+        {
+            if (System.IO.Directory.Exists(dir)) System.IO.Directory.Delete(dir, true);
+        }
+    }
+
+    [TestCase]
     public void FurnitureUsesItsInventoryCategoryAndRealUpgradeComponent()
     {
         foreach (var invalid in new[] { Fixture(1), Fixture(15, 0), Fixture(15, 6), Fixture(fake: true) })

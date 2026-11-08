@@ -84,8 +84,10 @@ public static class Engine_TexImage
 		int levels = mipmaps ? FullChainLength(width, height) : 1;
 
 		// One pooled output, each level encoded straight from a span of the source; SetData
-		// copies the span.
-		byte[] source = image.GetData();
+		// copies the span. The image's own buffer, not a managed copy: it stays as it is until
+		// released, even once SetData has replaced the image's data.
+		using var sourceBytes = new Engine_ImageBytes(image);
+		ReadOnlySpan<byte> source = sourceBytes.Span;
 		int total = 0;
 		for (int level = 0; level < levels; ++level)
 		{
@@ -112,7 +114,7 @@ public static class Engine_TexImage
 				int blockBytes = Engine_BcEncoder.EncodedBytes(levelWidth, levelHeight, target);
 				if (blockBytes != BlockBytesFor(levelWidth, levelHeight, target) ||
 					!Engine_BcEncoder.EncodeInto(
-						new ReadOnlySpan<byte>(source, offset, levelBytes), levelWidth, levelHeight, target, packed, cursor))
+						source.Slice(offset, levelBytes), levelWidth, levelHeight, target, packed, cursor))
 				{
 					return false;
 				}
@@ -153,10 +155,24 @@ public static class Engine_TexImage
 	{
 		hasAlpha = false;
 
-		if (!Engine_TexData.TryDecode(texBytes, out TexSurface surface, out error))
+		if (!Engine_TexData.TryDecodePooled(texBytes, out TexSurface surface, out error))
 		{
 			return null;
 		}
+
+		try
+		{
+			return CreateImage(surface, out hasAlpha, ref error);
+		}
+		finally
+		{
+			Engine_TexData.Release(surface);
+		}
+	}
+
+	private static Image? CreateImage(TexSurface surface, out bool hasAlpha, ref string error)
+	{
+		hasAlpha = false;
 
 		if (surface.Format == TexSurfaceFormat.Unsupported)
 		{
@@ -167,7 +183,7 @@ public static class Engine_TexImage
 		hasAlpha = surface.Format is TexSurfaceFormat.Bc3 or TexSurfaceFormat.Rgba8;
 
 		if (surface.Format == TexSurfaceFormat.Bc1 &&
-			Bc1HasPunchThrough(surface.Data))
+			Bc1HasPunchThrough(surface.Bytes))
 		{
 			Image? punched = TryCreateBc1PunchThroughImage(surface);
 			if (punched is not null)
@@ -211,7 +227,7 @@ public static class Engine_TexImage
 				{
 					ReadOnlySpan<byte> chain = extended is not null
 						? new ReadOnlySpan<byte>(extended, 0, extendedLength)
-						: surface.Data;
+						: surface.Bytes;
 					Image mipped = Image.CreateFromData(
 						surface.Width, surface.Height, true, format, chain);
 					if (IsUsable(mipped, surface))
@@ -230,10 +246,10 @@ public static class Engine_TexImage
 		}
 
 		int topLevel = TopLevelBytes(surface);
-		int topLength = topLevel > 0 && surface.Data.Length > topLevel ? topLevel : surface.Data.Length;
+		int topLength = topLevel > 0 && surface.Bytes.Length > topLevel ? topLevel : surface.Bytes.Length;
 
 		Image image = Image.CreateFromData(
-			surface.Width, surface.Height, false, format, new ReadOnlySpan<byte>(surface.Data, 0, topLength));
+			surface.Width, surface.Height, false, format, surface.Bytes[..topLength]);
 
 		if (!IsUsable(image, surface))
 		{
@@ -272,112 +288,84 @@ public static class Engine_TexImage
 		}
 
 		int smallestBytes = BlockBytesFor(width, height, surface.Format);
-		if (offset + smallestBytes != surface.Data.Length)
+		if (offset + smallestBytes != surface.Bytes.Length)
 		{
 			return false;
 		}
 
-		var seedBlocks = new byte[smallestBytes];
-		Buffer.BlockCopy(surface.Data, offset, seedBlocks, 0, smallestBytes);
-
-		byte[]? colour = null;
-		byte[]? gray0 = null;
-		byte[]? gray1 = null;
-		switch (surface.Format)
+		int stride = surface.Format is TexSurfaceFormat.Bc3 or TexSurfaceFormat.Bc5 ? 16 : 8;
+		bool hasColour = surface.Format is TexSurfaceFormat.Bc1 or TexSurfaceFormat.Bc3;
+		bool hasGray0 = surface.Format is TexSurfaceFormat.Bc4 or TexSurfaceFormat.Bc3 or TexSurfaceFormat.Bc5;
+		bool hasGray1 = surface.Format == TexSurfaceFormat.Bc5;
+		if (!hasColour && !hasGray0)
 		{
-			case TexSurfaceFormat.Bc1:
-				colour = Engine_TexMipGen.DecodeBc1(seedBlocks, width, height);
-				break;
-			case TexSurfaceFormat.Bc4:
-				gray0 = Engine_TexMipGen.DecodeBc4(seedBlocks, width, height);
-				break;
-			case TexSurfaceFormat.Bc5:
-				gray0 = Engine_TexMipGen.DecodeBc4(HalfBlocks(seedBlocks, 0), width, height);
-				gray1 = Engine_TexMipGen.DecodeBc4(HalfBlocks(seedBlocks, 8), width, height);
-				break;
-			case TexSurfaceFormat.Bc3:
-				gray0 = Engine_TexMipGen.DecodeBc4(HalfBlocks(seedBlocks, 0), width, height);
-				colour = Engine_TexMipGen.DecodeBc1(HalfBlocks(seedBlocks, 8), width, height);
-				break;
-			default:
-				return false;
+			return false;
 		}
 
-		var parts = new List<byte[]> { surface.Data };
-		int w = width;
-		int h = height;
-		while (w > 1 || h > 1)
+		int total = surface.Bytes.Length;
+		for (int w = width, h = height; w > 1 || h > 1;)
 		{
-			int nw = Math.Max(1, w / 2);
-			int nh = Math.Max(1, h / 2);
-			if (colour is not null) colour = Engine_TexMipGen.Downscale(colour, w, h, 4);
-			if (gray0 is not null) gray0 = Engine_TexMipGen.Downscale(gray0, w, h, 1);
-			if (gray1 is not null) gray1 = Engine_TexMipGen.Downscale(gray1, w, h, 1);
-			w = nw;
-			h = nh;
+			w = Math.Max(1, w / 2);
+			h = Math.Max(1, h / 2);
+			total += BlockBytesFor(w, h, surface.Format);
+		}
 
-			byte[] level = surface.Format switch
+		// THE TAIL IS BUILT IN PLACE: each pixel plane shrinks where it is, each level's blocks go
+		// straight into the chain, and this one buffer is all that outlives the seed's planes.
+		byte[] result = System.Buffers.ArrayPool<byte>.Shared.Rent(total);
+		int colourBytes = hasColour ? width * height * 4 : 0;
+		int grayBytes = hasGray0 ? width * height : 0;
+		byte[] planes = System.Buffers.ArrayPool<byte>.Shared.Rent(colourBytes + (grayBytes * 2));
+		try
+		{
+			ReadOnlySpan<byte> seed = surface.Bytes.Slice(offset, smallestBytes);
+			Span<byte> colour = planes.AsSpan(0, colourBytes);
+			Span<byte> gray0 = planes.AsSpan(colourBytes, grayBytes);
+			Span<byte> gray1 = planes.AsSpan(colourBytes + grayBytes, grayBytes);
+			if (hasColour)
 			{
-				TexSurfaceFormat.Bc1 => Engine_TexMipGen.EncodeBc1(colour!, w, h),
-				TexSurfaceFormat.Bc4 => Engine_TexMipGen.EncodeBc4(gray0!, w, h),
-				TexSurfaceFormat.Bc5 => Interleave(
-					Engine_TexMipGen.EncodeBc4(gray0!, w, h),
-					Engine_TexMipGen.EncodeBc4(gray1!, w, h)),
-				_ => Interleave(
-					Engine_TexMipGen.EncodeBc4(gray0!, w, h),
-					Engine_TexMipGen.EncodeBc1(colour!, w, h)),
-			};
-
-			if (level.Length != BlockBytesFor(w, h, surface.Format))
-			{
-				return false;
+				Engine_TexMipGen.DecodeBc1Into(seed, stride, stride - 8, width, height, colour);
 			}
 
-			parts.Add(level);
-		}
+			if (hasGray0)
+			{
+				Engine_TexMipGen.DecodeBc4Into(seed, stride, 0, width, height, gray0);
+			}
 
-		int total = 0;
-		foreach (byte[] part in parts)
-		{
-			total += part.Length;
-		}
+			if (hasGray1)
+			{
+				Engine_TexMipGen.DecodeBc4Into(seed, stride, 8, width, height, gray1);
+			}
 
-		byte[] result = System.Buffers.ArrayPool<byte>.Shared.Rent(total);
-		int cursor = 0;
-		foreach (byte[] part in parts)
+			surface.Bytes.CopyTo(result);
+			int cursor = surface.Bytes.Length;
+			int w = width;
+			int h = height;
+			while (w > 1 || h > 1)
+			{
+				int nw = Math.Max(1, w / 2);
+				int nh = Math.Max(1, h / 2);
+				if (hasColour) Engine_TexMipGen.Downscale(colour, w, h, 4, colour);
+				if (hasGray0) Engine_TexMipGen.Downscale(gray0, w, h, 1, gray0);
+				if (hasGray1) Engine_TexMipGen.Downscale(gray1, w, h, 1, gray1);
+				w = nw;
+				h = nh;
+
+				Span<byte> level = result.AsSpan(cursor, BlockBytesFor(w, h, surface.Format));
+				if (hasGray0) Engine_TexMipGen.EncodeBc4Into(gray0, w, h, level, stride, 0);
+				if (hasGray1) Engine_TexMipGen.EncodeBc4Into(gray1, w, h, level, stride, 8);
+				if (hasColour) Engine_TexMipGen.EncodeBc1Into(colour, w, h, level, stride, stride - 8);
+				cursor += level.Length;
+			}
+		}
+		finally
 		{
-			Buffer.BlockCopy(part, 0, result, cursor, part.Length);
-			cursor += part.Length;
+			System.Buffers.ArrayPool<byte>.Shared.Return(planes);
 		}
 
 		chain = result;
 		chainLength = total;
 		return true;
-	}
-
-	private static byte[] HalfBlocks(byte[] blocks16, int at)
-	{
-		int count = blocks16.Length / 16;
-		var half = new byte[count * 8];
-		for (int i = 0; i < count; ++i)
-		{
-			Buffer.BlockCopy(blocks16, (i * 16) + at, half, i * 8, 8);
-		}
-
-		return half;
-	}
-
-	private static byte[] Interleave(byte[] first, byte[] second)
-	{
-		int count = Math.Min(first.Length, second.Length) / 8;
-		var blocks = new byte[count * 16];
-		for (int i = 0; i < count; ++i)
-		{
-			Buffer.BlockCopy(first, i * 8, blocks, i * 16, 8);
-			Buffer.BlockCopy(second, i * 8, blocks, (i * 16) + 8, 8);
-		}
-
-		return blocks;
 	}
 
 	private static int BlockBytesFor(int width, int height, TexSurfaceFormat format)
@@ -501,25 +489,25 @@ public static class Engine_TexImage
 		return image is null || image.IsEmpty() ? null : Engine_TextureUpload.CreateTexture(image);
 	}
 
-	public static bool Bc1HasPunchThrough(byte[] blocks)
+	public static bool Bc1HasPunchThrough(byte[] blocks) => Bc1HasPunchThrough(new ReadOnlySpan<byte>(blocks));
+
+	public static bool Bc1HasPunchThrough(ReadOnlySpan<byte> blocks)
 	{
-		for (int b = 0; b + 8 <= blocks.Length; b += 8)
+		ReadOnlySpan<ulong> words = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, ulong>(blocks);
+		foreach (ulong block in words)
 		{
-			ushort c0 = (ushort)(blocks[b] | (blocks[b + 1] << 8));
-			ushort c1 = (ushort)(blocks[b + 2] | (blocks[b + 3] << 8));
+			var c0 = (ushort)block;
+			var c1 = (ushort)(block >> 16);
 			if (c0 > c1)
 			{
 				continue;
 			}
 
-			uint bits = blocks[b + 4] | ((uint)blocks[b + 5] << 8) |
-						((uint)blocks[b + 6] << 16) | ((uint)blocks[b + 7] << 24);
-			for (int t = 0; t < 16; ++t)
+			// Any of the sixteen 2-bit indices that is 3.
+			var bits = (uint)(block >> 32);
+			if ((bits & (bits >> 1) & 0x55555555u) != 0)
 			{
-				if (((bits >> (t * 2)) & 0x3u) == 3u)
-				{
-					return true;
-				}
+				return true;
 			}
 		}
 
@@ -536,49 +524,63 @@ public static class Engine_TexImage
 		{
 			if (shipsFullChain && !suppressMips)
 			{
-				var chain = new List<byte[]>();
-				int w = surface.Width;
-				int h = surface.Height;
-				int offset = 0;
-				for (int level = 0; level < fullChain; ++level)
+				int total = 0;
+				for (int level = 0, w = surface.Width, h = surface.Height; level < fullChain; ++level)
 				{
-					int blockBytes = BlockBytesFor(w, h, TexSurfaceFormat.Bc1);
-					if (offset + blockBytes > surface.Data.Length)
-					{
-						return null;
-					}
-
-					chain.Add(DecodeBc1Rgba(surface.Data, offset, w, h));
-					offset += blockBytes;
+					total += w * h * 4;
 					w = Math.Max(1, w / 2);
 					h = Math.Max(1, h / 2);
 				}
 
-				int total = 0;
-				foreach (byte[] part in chain)
+				byte[] data = System.Buffers.ArrayPool<byte>.Shared.Rent(total);
+				try
 				{
-					total += part.Length;
-				}
+					int w = surface.Width;
+					int h = surface.Height;
+					int offset = 0;
+					int cursor = 0;
+					for (int level = 0; level < fullChain; ++level)
+					{
+						int blockBytes = BlockBytesFor(w, h, TexSurfaceFormat.Bc1);
+						if (offset + blockBytes > surface.Bytes.Length)
+						{
+							return null;
+						}
 
-				var data = new byte[total];
-				int cursor = 0;
-				foreach (byte[] part in chain)
-				{
-					Buffer.BlockCopy(part, 0, data, cursor, part.Length);
-					cursor += part.Length;
-				}
+						DecodeBc1Rgba(surface.Bytes, offset, w, h, data.AsSpan(cursor, w * h * 4));
+						offset += blockBytes;
+						cursor += w * h * 4;
+						w = Math.Max(1, w / 2);
+						h = Math.Max(1, h / 2);
+					}
 
-				Image full = Image.CreateFromData(
-					surface.Width, surface.Height, true, Image.Format.Rgba8, data);
-				if (IsUsable(full, surface))
+					Image full = Image.CreateFromData(
+						surface.Width, surface.Height, true, Image.Format.Rgba8, new ReadOnlySpan<byte>(data, 0, total));
+					if (IsUsable(full, surface))
+					{
+						return full;
+					}
+				}
+				finally
 				{
-					return full;
+					System.Buffers.ArrayPool<byte>.Shared.Return(data);
 				}
 			}
 
-			byte[] top = DecodeBc1Rgba(surface.Data, 0, surface.Width, surface.Height);
-			Image image = Image.CreateFromData(
-				surface.Width, surface.Height, false, Image.Format.Rgba8, top);
+			int topBytes = surface.Width * surface.Height * 4;
+			byte[] top = System.Buffers.ArrayPool<byte>.Shared.Rent(topBytes);
+			Image image;
+			try
+			{
+				DecodeBc1Rgba(surface.Bytes, 0, surface.Width, surface.Height, top.AsSpan(0, topBytes));
+				image = Image.CreateFromData(
+					surface.Width, surface.Height, false, Image.Format.Rgba8, new ReadOnlySpan<byte>(top, 0, topBytes));
+			}
+			finally
+			{
+				System.Buffers.ArrayPool<byte>.Shared.Return(top);
+			}
+
 			if (!IsUsable(image, surface))
 			{
 				return null;
@@ -597,13 +599,12 @@ public static class Engine_TexImage
 		}
 	}
 
-	private static byte[] DecodeBc1Rgba(byte[] blocks, int offset, int width, int height)
+	private static void DecodeBc1Rgba(ReadOnlySpan<byte> blocks, int offset, int width, int height, Span<byte> pixels)
 	{
-		var pixels = new byte[width * height * 4];
 		int blocksW = Math.Max(1, (width + 3) / 4);
 		int blocksH = Math.Max(1, (height + 3) / 4);
 
-		Span<uint> texels = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, uint>(pixels.AsSpan());
+		Span<uint> texels = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, uint>(pixels);
 		Span<uint> palette = stackalloc uint[4];
 
 		for (int by = 0; by < blocksH; ++by)
@@ -662,8 +663,6 @@ public static class Engine_TexImage
 				}
 			}
 		}
-
-		return pixels;
 	}
 
 	private static uint Pack(int r, int g, int b, int a) =>

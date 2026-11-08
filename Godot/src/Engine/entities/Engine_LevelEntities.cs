@@ -49,7 +49,7 @@ public static class Engine_LevelEntities
         stats = new EntityPlaceStats();
 
         byte[]? levelGdb = Engine_LevelGdb.TryRead(level, read, out string gdbPath);
-        if (levelGdb is null || !GdbView.TryParse(levelGdb, out GdbView levelView, out _))
+        if (levelGdb is null || !GdbView.TryParseShared(levelGdb, out GdbView levelView, out _))
         {
             return null;
         }
@@ -87,7 +87,7 @@ public static class Engine_LevelEntities
         {
             byte[]? suppBytes = read(path) ?? read("data/" + path);
             blobs.Add(suppBytes);
-            if (suppBytes is not null && GdbView.TryParse(suppBytes, out GdbView suppView, out _))
+            if (suppBytes is not null && GdbView.TryParseShared(suppBytes, out GdbView suppView, out _))
             {
                 supplementalViews.Add(("data/" + path, suppView));
             }

@@ -215,8 +215,11 @@ public abstract class Engine_TitleGame
 	/// </summary>
 	public virtual Refii.Host.HostBridge.GuestEntity Appearance(Refii.Host.HostBridge.GuestEntity entity) => entity;
 
+	/// <summary>False while <see cref="Appearance"/> would hand every entity back as it came, this walk.</summary>
+	public virtual bool RestatesEntities => false;
+
 	/// <summary>A live entity the title draws or answers itself; true when the shell should skip it.</summary>
-	public virtual bool ObserveEntity(Refii.Host.HostBridge.GuestEntity entity) => false;
+	public virtual bool ObserveEntity(in Refii.Host.HostBridge.GuestEntity entity) => false;
 
 	/// <summary>
 	/// A live entity the title wants on a node of its own rather than in a batch (one it is moving

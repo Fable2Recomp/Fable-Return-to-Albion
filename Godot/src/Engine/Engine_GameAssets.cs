@@ -563,7 +563,7 @@ public partial class Engine_GameAssets : Node
 			ResourceLoader.AddResourceFormatLoader(_textureLoader);
 		}
 
-		Refii.Models.Engine_BnkMeshLoader.SetResolver(ReadAllBytes);
+		Refii.Models.Engine_BnkMeshLoader.SetResolver(ReadAllBytes, ReadHead);
 		Refii.Models.Engine_BnkMeshLoader.SetExistsProbe(p => TryGetFile(p, out _));
 
 		// Read from the player's gamescripts bank, never transcribed into the repo.
@@ -1028,6 +1028,10 @@ public partial class Engine_GameAssets : Node
 		return file.ReadAllBytes();
 	}
 
+	/// <summary>See <see cref="BnkFile.ReadHead"/>.</summary>
+	public byte[]? ReadHead(string virtualPath, int count) =>
+		TryGetFile(virtualPath, out BnkFile file) ? file.ReadHead(count) : null;
+
 	public bool FileExists(string virtualPath) => TryGetFile(virtualPath, out _);
 
 	/// <summary>
@@ -1085,6 +1089,20 @@ public partial class Engine_GameAssets : Node
 
 	public IEnumerable<BnkFile> EnumerateAllFiles() =>
 		Snapshot()?.EnumerateAllFiles() ?? Enumerable.Empty<BnkFile>();
+
+	/// <summary>
+	/// This mount, for a reader of the same game data that would otherwise open its own. Null when
+	/// none serves that directory yet. The tree closes after a <see cref="Remount"/>, so hold it
+	/// only until <see cref="Mounted"/>.
+	/// </summary>
+	public BnkFileSystem? SharedMount(string gameDirectory) =>
+		SameDirectory(GameDirectory, gameDirectory) ? Snapshot() : null;
+
+	private static bool SameDirectory(string a, string b) =>
+		a.Length != 0 && b.Length != 0 && string.Equals(
+			System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath(a)),
+			System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath(b)),
+			StringComparison.Ordinal);
 
 	private BnkFileSystem? Snapshot()
 	{

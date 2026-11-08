@@ -128,6 +128,8 @@ public partial class GamePubGames : Node
 	/// </summary>
 	public void Poll()
 	{
+		ReleaseLeftBoard();
+
 		if (Fable2Bridge.GetPubGame() is not { } pub)
 		{
 			_claimed = false;
@@ -378,6 +380,7 @@ public partial class GamePubGames : Node
 
 		_host.QueueFree();
 		_host = null;
+		_left = true;
 		_session = null;
 		Showing = string.Empty;
 		DialogUp = false;

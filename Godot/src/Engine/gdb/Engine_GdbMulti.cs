@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 
 namespace Refii.Gdb;
 
@@ -20,36 +21,63 @@ public readonly struct GdbCursor
 
 public sealed class GdbMulti
 {
-    private readonly List<GdbView> _views = new();
+    private readonly Tables _tables;
 
-    private readonly Dictionary<uint, GdbCursor> _index = new();
-    private readonly Dictionary<uint, List<GdbCursor>> _cursorsByHash = new();
-    private readonly Dictionary<uint, uint> _aliasesByTarget = new();
+    private readonly List<GdbView> _views;
+
+    private readonly Dictionary<uint, GdbCursor> _index;
+
+    /// <summary>
+    /// Every layer of a record that more than one view states, base first. A record with one layer
+    /// is not here: <see cref="_index"/> already says all there is to say about it, and a list per
+    /// record was two thirds of the index's bytes.
+    /// </summary>
+    private readonly Dictionary<uint, List<GdbCursor>> _layers;
+    private readonly Dictionary<uint, uint> _aliasesByTarget;
 
     public IReadOnlyList<GdbView> Views => _views;
 
     /// <summary>Every database built, weakly, so the heap census can count the copies still alive.</summary>
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<GdbMulti, object?> Live = new();
 
-    private GdbMulti()
+    /// <summary>
+    /// The views and the indexes over them. Nothing changes them once built, so databases over the
+    /// same views in the same order hold one set: the item, clothing, weapon, entity and game
+    /// databases are all the same files, and a set each was 30 MB each. Weakly held, so the set
+    /// lives exactly as long as a database that uses it. Each build still gets its own
+    /// <see cref="GdbMulti"/>, for the callers that tell one database from another by reference.
+    /// </summary>
+    private static readonly List<WeakReference<Tables>> SharedTables = new();
+
+    private GdbMulti(Tables tables)
     {
+        _tables = tables;
+        _views = tables.Views;
+        _index = tables.Index;
+        _layers = tables.Layers;
+        _aliasesByTarget = tables.AliasesByTarget;
         Live.AddOrUpdate(this, null);
     }
 
     /// <summary>
     /// The databases alive (or not yet collected) and an estimate of their bytes: each view's blob
-    /// and offsets, counted once however many databases share it, plus about 160 bytes per
-    /// record for the two hash indexes and the per-record cursor lists.
+    /// and offsets and each set of tables, counted once however many databases share them, with
+    /// about 40 bytes per index entry and 120 per record stated by more than one view.
     /// </summary>
     internal static (long Databases, long Bytes) LiveCensus()
     {
         long databases = 0, bytes = 0;
         var views = new HashSet<GdbView>(ReferenceEqualityComparer.Instance);
+        var tables = new HashSet<Tables>(ReferenceEqualityComparer.Instance);
         foreach (KeyValuePair<GdbMulti, object?> entry in Live)
         {
             GdbMulti multi = entry.Key;
             ++databases;
-            bytes += (long)multi._index.Count * 40 + (long)multi._cursorsByHash.Count * 120;
+            if (tables.Add(multi._tables))
+            {
+                bytes += (long)multi._index.Count * 40 + (long)multi._layers.Count * 120;
+            }
+
             foreach (GdbView view in multi._views)
             {
                 if (views.Add(view))
@@ -66,57 +94,144 @@ public sealed class GdbMulti
 
     public static GdbMulti Build(IEnumerable<byte[]?> gdbs)
     {
-        var multi = new GdbMulti();
+        var views = new List<GdbView>();
 
         foreach (byte[]? bytes in gdbs)
         {
-            if (bytes is not null && bytes.Length != 0 &&
-                GdbView.TryParse(bytes, out GdbView view, out _))
-            {
-                multi._views.Add(view);
-            }
+            AddView(views, bytes);
         }
 
-        foreach (GdbView view in multi._views)
+        return new GdbMulti(Tables.For(views));
+    }
+
+    private static void AddView(List<GdbView> views, byte[]? bytes)
+    {
+        if (bytes is null || bytes.Length == 0 || !GdbView.TryParseShared(bytes, out GdbView view, out _))
         {
-            for (int i = 0; i < view.RecordCount; i++)
-            {
-                uint hash = view.RecordHash(i);
-                if (hash == 0 || hash == GdbHash.Null)
-                {
-                    continue;
-                }
-
-                var cursor = new GdbCursor(view, i);
-                multi._index[hash] = cursor;
-
-                if (!multi._cursorsByHash.TryGetValue(hash, out var list))
-                {
-                    list = new List<GdbCursor>();
-                    multi._cursorsByHash[hash] = list;
-                }
-                list.Add(cursor);
-            }
+            return;
         }
 
-        // THE NAME ALIASES, second so a real record hash always wins. A record's hash is NOT the
-        // hash of its name — the GDB carries a pair table mapping FNV-1(name) to the entry hash,
-        // and `TryLookup(Fnv1("AbilityPhysiqueBase"))` finds nothing without it: every by-name
-        // lookup in the game (abilities, item records, level records) rides this table.
-        foreach (GdbView view in multi._views)
+        // One file listed twice is two layers, and layers are told apart by their view.
+        if (!views.Contains(view) || GdbView.TryParse(bytes, out view, out _))
         {
-            foreach ((uint alias, uint target) in view.AliasPairs())
+            views.Add(view);
+        }
+    }
+
+    private sealed class Tables
+    {
+        public readonly List<GdbView> Views;
+        public readonly Dictionary<uint, GdbCursor> Index = new();
+        public readonly Dictionary<uint, List<GdbCursor>> Layers = new();
+        public readonly Dictionary<uint, uint> AliasesByTarget = new();
+
+        private Tables(List<GdbView> views)
+        {
+            Views = views;
+            BuildIndex();
+        }
+
+        public static Tables For(List<GdbView> views)
+        {
+            lock (SharedTables)
             {
-                if (alias != 0 && alias != GdbHash.Null &&
-                    multi._index.TryGetValue(target, out GdbCursor cursor))
+                for (int i = SharedTables.Count - 1; i >= 0; i--)
                 {
-                    multi._index.TryAdd(alias, cursor);
-                    multi._aliasesByTarget.TryAdd(target, alias);
+                    if (!SharedTables[i].TryGetTarget(out Tables? held))
+                    {
+                        SharedTables.RemoveAt(i);
+                    }
+                    else if (SameViews(held.Views, views))
+                    {
+                        return held;
+                    }
+                }
+            }
+
+            var built = new Tables(views);
+            lock (SharedTables)
+            {
+                SharedTables.Add(new WeakReference<Tables>(built));
+            }
+
+            return built;
+        }
+
+        private static bool SameViews(List<GdbView> a, List<GdbView> b)
+        {
+            if (a.Count != b.Count)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < a.Count; i++)
+            {
+                if (!ReferenceEquals(a[i], b[i]))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private void BuildIndex()
+        {
+            int records = 0, aliases = 0;
+            foreach (GdbView view in Views)
+            {
+                records += view.RecordCount;
+                aliases += view.AliasCount;
+            }
+
+            Index.EnsureCapacity(records + aliases);
+            AliasesByTarget.EnsureCapacity(aliases);
+
+            foreach (GdbView view in Views)
+            {
+                for (int i = 0; i < view.RecordCount; i++)
+                {
+                    uint hash = view.RecordHash(i);
+                    if (hash == 0 || hash == GdbHash.Null)
+                    {
+                        continue;
+                    }
+
+                    var cursor = new GdbCursor(view, i);
+                    ref GdbCursor slot = ref CollectionsMarshal.GetValueRefOrAddDefault(Index, hash, out bool stated);
+                    if (stated)
+                    {
+                        if (!Layers.TryGetValue(hash, out List<GdbCursor>? list))
+                        {
+                            list = new List<GdbCursor>(2) { slot };
+                            Layers[hash] = list;
+                        }
+
+                        list.Add(cursor);
+                    }
+
+                    slot = cursor;
+                }
+            }
+
+            // THE NAME ALIASES, second so a real record hash always wins. A record's hash is NOT the
+            // hash of its name — the GDB carries a pair table mapping FNV-1(name) to the entry hash,
+            // and `TryLookup(Fnv1("AbilityPhysiqueBase"))` finds nothing without it: every by-name
+            // lookup in the game (abilities, item records, level records) rides this table.
+            foreach (GdbView view in Views)
+            {
+                for (int i = 0; i < view.AliasCount; i++)
+                {
+                    view.AliasPair(i, out uint alias, out uint target);
+                    if (alias != 0 && alias != GdbHash.Null &&
+                        Index.TryGetValue(target, out GdbCursor cursor))
+                    {
+                        Index.TryAdd(alias, cursor);
+                        AliasesByTarget.TryAdd(target, alias);
+                    }
                 }
             }
         }
-
-        return multi;
     }
 
     /// <summary>
@@ -126,60 +241,21 @@ public sealed class GdbMulti
     /// </summary>
     public static GdbMulti BuildWithOverlays(GdbMulti baseMulti, IEnumerable<byte[]?> overlayGdbs)
     {
-        var multi = new GdbMulti();
+        var views = new List<GdbView>();
         if (baseMulti is not null)
         {
-            multi._views.AddRange(baseMulti._views);
+            views.AddRange(baseMulti._views);
         }
 
         if (overlayGdbs is not null)
         {
             foreach (byte[]? bytes in overlayGdbs)
             {
-                if (bytes is not null && bytes.Length != 0 &&
-                    GdbView.TryParse(bytes, out GdbView view, out _))
-                {
-                    multi._views.Add(view);
-                }
+                AddView(views, bytes);
             }
         }
 
-        foreach (GdbView view in multi._views)
-        {
-            for (int i = 0; i < view.RecordCount; i++)
-            {
-                uint hash = view.RecordHash(i);
-                if (hash == 0 || hash == GdbHash.Null)
-                {
-                    continue;
-                }
-
-                var cursor = new GdbCursor(view, i);
-                multi._index[hash] = cursor;
-
-                if (!multi._cursorsByHash.TryGetValue(hash, out var list))
-                {
-                    list = new List<GdbCursor>();
-                    multi._cursorsByHash[hash] = list;
-                }
-                list.Add(cursor);
-            }
-        }
-
-        foreach (GdbView view in multi._views)
-        {
-            foreach ((uint alias, uint target) in view.AliasPairs())
-            {
-                if (alias != 0 && alias != GdbHash.Null &&
-                    multi._index.TryGetValue(target, out GdbCursor cursor))
-                {
-                    multi._index.TryAdd(alias, cursor);
-                    multi._aliasesByTarget.TryAdd(target, alias);
-                }
-            }
-        }
-
-        return multi;
+        return new GdbMulti(Tables.For(views));
     }
 
     public bool TryLookup(uint hash, out GdbCursor cursor)
@@ -235,25 +311,23 @@ public sealed class GdbMulti
             return true;
         }
 
-        var visited = new HashSet<uint>();
+        // The chains walked here are short, so the loop guard needs no set until one is not.
+        Span<uint> visited = stackalloc uint[32];
+        int visitedCount = 0;
+        HashSet<uint>? visitedMore = null;
         uint currentHash = start.View.RecordHash(start.Record);
         if (currentHash == 0 && start.View.TryFindLocalRaw(start.Record, GdbView.HashParent, 6, out uint startParent, out _))
         {
             currentHash = startParent;
         }
 
-        while (currentHash != 0 && currentHash != GdbHash.Null && visited.Add(currentHash))
+        while (currentHash != 0 && currentHash != GdbHash.Null &&
+            FirstVisit(visited, ref visitedCount, ref visitedMore, currentHash))
         {
-            // Gather all cursors for this record hash (highest priority / TU patch first, base GDB last):
-            List<GdbCursor>? layers = null;
-            if (_cursorsByHash.TryGetValue(currentHash, out var list) && list.Count > 0)
-            {
-                layers = list;
-            }
-
             uint nextParent = 0;
 
-            if (layers is not null)
+            // Every layer of this record (highest priority / TU patch first, base GDB last):
+            if (_layers.TryGetValue(currentHash, out List<GdbCursor>? layers))
             {
                 for (int i = layers.Count - 1; i >= 0; i--)
                 {
@@ -293,6 +367,31 @@ public sealed class GdbMulti
         }
 
         return false;
+    }
+
+    private static bool FirstVisit(Span<uint> visited, ref int count, ref HashSet<uint>? more, uint hash)
+    {
+        foreach (uint seen in visited[..count])
+        {
+            if (seen == hash)
+            {
+                return false;
+            }
+        }
+
+        if (more is not null)
+        {
+            return more.Add(hash);
+        }
+
+        if (count < visited.Length)
+        {
+            visited[count++] = hash;
+            return true;
+        }
+
+        more = new HashSet<uint> { hash };
+        return true;
     }
 
     public string NameOf(uint hash)
@@ -359,7 +458,7 @@ public sealed class GdbMulti
 
         // Also check if start had underlying cursors (e.g. from base databases):
         uint startHash = start.View.RecordHash(start.Record);
-        if (startHash != 0 && _cursorsByHash.TryGetValue(startHash, out var cursors) && cursors.Count > 1)
+        if (startHash != 0 && _layers.TryGetValue(startHash, out var cursors))
         {
             for (int c = cursors.Count - 1; c >= 0; c--)
             {

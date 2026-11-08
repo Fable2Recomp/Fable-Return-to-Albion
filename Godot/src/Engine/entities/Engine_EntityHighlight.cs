@@ -118,7 +118,7 @@ public static class Engine_EntityHighlight
 
         // Nothing wanted and nothing applied: the common case, and no engine crossing. The
         // instance id is one, and this runs for every entity of every walk.
-        if (!highlighted && !LitNodes.Contains(node))
+        if (!highlighted && (LitNodes.Count == 0 || !LitNodes.Contains(node)))
         {
             return;
         }

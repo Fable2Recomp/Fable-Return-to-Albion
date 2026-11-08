@@ -64,6 +64,9 @@ public static class Engine_LoadTimeline
 	private static long _longestFrameTicks;
 	private static long _lastFrameStart;
 	private static long _lastFrameEnd;
+	private static long _allocatedAtOpen;
+	private static int _gen0AtOpen, _gen1AtOpen, _gen2AtOpen;
+	private static double _pauseAtOpen;
 
 	/// <summary>Whether a window is open (its totals are being kept).</summary>
 	public static bool IsOpen => Volatile.Read(ref _open);
@@ -99,6 +102,11 @@ public static class Engine_LoadTimeline
 				_longestFrameTicks = 0;
 				_lastFrameStart = 0;
 				_lastFrameEnd = 0;
+				_allocatedAtOpen = System.GC.GetTotalAllocatedBytes();
+				_gen0AtOpen = System.GC.CollectionCount(0);
+				_gen1AtOpen = System.GC.CollectionCount(1);
+				_gen2AtOpen = System.GC.CollectionCount(2);
+				_pauseAtOpen = System.GC.GetTotalPauseDuration().TotalMilliseconds;
 			}
 
 			MarkLocked(what, now);
@@ -136,6 +144,7 @@ public static class Engine_LoadTimeline
 	{
 		long now = Stopwatch.GetTimestamp();
 		Dictionary<string, object?> snapshot;
+		var stages = new System.Text.StringBuilder();
 		lock (Gate)
 		{
 			if (!_open || _releasedAt != 0)
@@ -148,11 +157,26 @@ public static class Engine_LoadTimeline
 			snapshot = Totals(now, _syncsAtRelease);
 			_releasedAt = now;
 			_atRelease = snapshot;
+			foreach ((string name, long at) in Marks)
+			{
+				stages.Append($" {name} {(at - _openedAt) / (double)Stopwatch.Frequency:0.00}");
+			}
+			for (int i = 0; i < CategoryCount; i++)
+			{
+				long items = Interlocked.Read(ref CategoryItems[i]);
+				if (items != 0)
+				{
+					stages.Append($"; {(Category)i} {items}x {Interlocked.Read(ref CategoryTicks[i]) * 1000.0 / Stopwatch.Frequency:0} ms");
+				}
+			}
 		}
 
 		Godot.GD.Print($"[load] {_what} to release in {(now - _openedAt) / (double)Stopwatch.Frequency:0.00} s over " +
 			$"{snapshot["frames"]} frame(s), process {snapshot["processMs"]} ms, engine {snapshot["engineMs"]} ms; " +
-			Engine_ServerSyncs.Describe(_syncsAtOpen, _syncsAtRelease));
+			Engine_ServerSyncs.Describe(_syncsAtOpen, _syncsAtRelease) +
+			$"; allocated {(System.GC.GetTotalAllocatedBytes() - _allocatedAtOpen) >> 20} MB, gc gen0 +{System.GC.CollectionCount(0) - _gen0AtOpen} " +
+			$"gen1 +{System.GC.CollectionCount(1) - _gen1AtOpen} gen2 +{System.GC.CollectionCount(2) - _gen2AtOpen}, " +
+			$"pause {System.GC.GetTotalPauseDuration().TotalMilliseconds - _pauseAtOpen:0} ms; at{stages}");
 	}
 
 	/// <summary>One item of a kind, the time it took and how many it covered. Any thread.</summary>

@@ -1,4 +1,7 @@
+using System;
+using System.Buffers;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using Godot;
 
 namespace Refii.Models;
@@ -231,7 +234,6 @@ public static int SurfacesWithLods;
         // merging have moved everything. Carried as resource metadata because an ArrayMesh has
         // nowhere else to put a per-surface fact, and because the streamer needs it long after
         // this function has returned.
-        var sourceVertices = new List<int>();
         var surfaceRegions = new List<string>();
         int sourceVertexTotal = 0;
         foreach (MdlMeshBuffer buffer in info.MeshBuffers)
@@ -242,6 +244,13 @@ public static int SurfacesWithLods;
         List<MdlGeometry> surfaces = Engine_MdlMerge.ByMaterial(geometry);
         (int lodsAttached, int lodsDropped) = Engine_MdlLods.Attach(data, info, surfaces);
         var surfaceLods = new Godot.Collections.Array();
+        int meshVertices = 0;
+        foreach (MdlGeometry geo in surfaces)
+        {
+            meshVertices += geo.VertexCount;
+        }
+
+        var sourceVertices = new List<int>(meshVertices);
 
         foreach (MdlGeometry geo in surfaces)
         {
@@ -250,9 +259,7 @@ public static int SurfacesWithLods;
                 continue;
             }
 
-            var vertices = new Vector3[geo.VertexCount];
-            var normals = new Vector3[geo.VertexCount];
-            var uvs = new Vector2[geo.VertexCount];
+            int vertexCount = geo.VertexCount;
 
             // A NON-FINITE VERTEX HANGS THE PROCESS, and this is the chokepoint every surface
             // passes through on its way to Godot.
@@ -275,15 +282,14 @@ public static int SurfacesWithLods;
             // REFUSED, NOT REPAIRED. Clamping would hand Godot geometry we know we mis-read, and
             // it would draw as a spike to the origin. The name in the log is the diagnostic:
             // it says WHICH asset, which is what a silent clamp would cost us.
+            // The float arrays reach Godot as they are, viewed as vectors: the checks need nothing
+            // else, and a surface's packed arrays are then the only copy made of them here.
+            Span<Vector3> vertices = MemoryMarshal.Cast<float, Vector3>(geo.Positions.AsSpan(0, vertexCount * 3));
+            Span<Vector3> normals = MemoryMarshal.Cast<float, Vector3>(geo.Normals.AsSpan(0, vertexCount * 3));
+            Span<Vector2> uvs = MemoryMarshal.Cast<float, Vector2>(geo.Uvs.AsSpan(0, vertexCount * 2));
             bool finite = true;
-            for (int v = 0; v < geo.VertexCount; ++v)
+            for (int v = 0; v < vertices.Length; ++v)
             {
-                vertices[v] = new Vector3(
-                    geo.Positions[v * 3], geo.Positions[v * 3 + 1], geo.Positions[v * 3 + 2]);
-                normals[v] = new Vector3(
-                    geo.Normals[v * 3], geo.Normals[v * 3 + 1], geo.Normals[v * 3 + 2]);
-                uvs[v] = new Vector2(geo.Uvs[v * 2], geo.Uvs[v * 2 + 1]);
-
                 // Two shipped buffers (b_left_hand, b_ribcage) hold 15 half-float specials in
                 // their UVs. A UV moves nothing, so it is zeroed rather than the surface lost.
                 if (!uvs[v].IsFinite())
@@ -315,30 +321,18 @@ public static int SurfacesWithLods;
             // rest modelled with both sides. Reversing it here, as this did, drew the whole world
             // as back faces — which is what made back-face culling impossible.
             //
-            // The tail is copied rather than left behind. A count that is not a multiple of
-            // three is malformed for a triangle list, but striding past it leaves those indices
-            // at the array's default of ZERO — degenerate triangles all anchored on vertex 0,
-            // which is a silent corruption rather than a complaint.
-            var indices = new int[geo.Indices.Length];
-            int triangles = geo.Indices.Length - (geo.Indices.Length % 3);
-            for (int i = 0; i < triangles; i += 3)
-            {
-                indices[i] = (int)geo.Indices[i];
-                indices[i + 1] = (int)geo.Indices[i + 1];
-                indices[i + 2] = (int)geo.Indices[i + 2];
-            }
-
-            for (int i = triangles; i < geo.Indices.Length; ++i)
-            {
-                indices[i] = (int)geo.Indices[i];
-            }
+            // Every index is carried, a malformed tail too. A count that is not a multiple of
+            // three is malformed for a triangle list, but leaving it out would stand those indices
+            // at the packed array's default of ZERO — degenerate triangles all anchored on
+            // vertex 0, which is a silent corruption rather than a complaint.
+            Span<int> indices = MemoryMarshal.Cast<uint, int>(geo.Indices.AsSpan());
 
             var arrays = new Godot.Collections.Array();
             arrays.Resize((int)Mesh.ArrayType.Max);
-            arrays[(int)Mesh.ArrayType.Vertex] = vertices;
-            arrays[(int)Mesh.ArrayType.Normal] = normals;
-            arrays[(int)Mesh.ArrayType.TexUV] = uvs;
-            arrays[(int)Mesh.ArrayType.Index] = indices;
+            SetArray(arrays, Mesh.ArrayType.Vertex, Variant.CreateFrom(vertices));
+            SetArray(arrays, Mesh.ArrayType.Normal, Variant.CreateFrom(normals));
+            SetArray(arrays, Mesh.ArrayType.TexUV, Variant.CreateFrom(uvs));
+            SetArray(arrays, Mesh.ArrayType.Index, Variant.CreateFrom(indices));
 
             // The amb3 lightmap UVs, routed by the SAME per-file-vertex map the vertex bakes
             // use — never a running cursor, because split/merge re-orders emitted vertices.
@@ -347,18 +341,18 @@ public static int SurfacesWithLods;
             if (info.LightmapUvs.Length > 0 && info.SkinnedCount == 0 &&
                 geo.SourceVertices.Length == geo.VertexCount)
             {
-                var lightmapUv = new Vector2[geo.VertexCount];
-                for (int v = 0; v < geo.VertexCount; v++)
+                Vector2[] rented = ArrayPool<Vector2>.Shared.Rent(vertexCount);
+                Span<Vector2> lightmapUv = rented.AsSpan(0, vertexCount);
+                for (int v = 0; v < vertexCount; v++)
                 {
                     int at = geo.SourceVertices[v] * 2;
-                    if (at >= 0 && at + 1 < info.LightmapUvs.Length)
-                    {
-                        lightmapUv[v] = new Vector2(
-                            info.LightmapUvs[at], info.LightmapUvs[at + 1]);
-                    }
+                    lightmapUv[v] = at >= 0 && at + 1 < info.LightmapUvs.Length
+                        ? new Vector2(info.LightmapUvs[at], info.LightmapUvs[at + 1])
+                        : default;
                 }
 
-                arrays[(int)Mesh.ArrayType.TexUV2] = lightmapUv;
+                SetArray(arrays, Mesh.ArrayType.TexUV2, Variant.CreateFrom(lightmapUv));
+                ArrayPool<Vector2>.Shared.Return(rented);
             }
 
             // A tangent array that is zero throughout is no basis: see TryCreateShared.
@@ -370,20 +364,13 @@ public static int SurfacesWithLods;
 
             if (geo.HasTangents && tangentBasis)
             {
-                var tangents = new float[geo.VertexCount * 4];
-                System.Array.Copy(geo.Tangents, tangents, tangents.Length);
-                arrays[(int)Mesh.ArrayType.Tangent] = tangents;
+                SetArray(arrays, Mesh.ArrayType.Tangent, Variant.CreateFrom(geo.Tangents.AsSpan(0, vertexCount * 4)));
             }
 
             if (geo.HasBones)
             {
-                var bones = new int[geo.VertexCount * 4];
-                System.Array.Copy(geo.BoneIds, bones, bones.Length);
-                arrays[(int)Mesh.ArrayType.Bones] = bones;
-
-                var weights = new float[geo.VertexCount * 4];
-                System.Array.Copy(geo.BoneWeights, weights, weights.Length);
-                arrays[(int)Mesh.ArrayType.Weights] = weights;
+                SetArray(arrays, Mesh.ArrayType.Bones, Variant.CreateFrom(geo.BoneIds.AsSpan(0, vertexCount * 4)));
+                SetArray(arrays, Mesh.ArrayType.Weights, Variant.CreateFrom(geo.BoneWeights.AsSpan(0, vertexCount * 4)));
             }
 
             // The coarser levels, in the same reversed winding as the surface's own triangles.
@@ -393,7 +380,7 @@ public static int SurfacesWithLods;
             // index_array_len)`), and again on every re-add from the stored dictionary.
             // `Engine_MdlLods.Attach` only compares a level with the one before it, so the first
             // level is checked here against `indices`. A failing level is dropped and counted.
-            Godot.Collections.Dictionary? lods = null;
+            Engine_MdlSurfaceArrays.Levels? levels = null;
             if (geo.Lods.Count != 0)
             {
                 int baseIndices = indices.Length;
@@ -407,21 +394,14 @@ public static int SurfacesWithLods;
                         continue;
                     }
 
-                    var levelIndices = new int[level.Length];
-                    for (int i = 0; i + 2 < level.Length; i += 3)
-                    {
-                        levelIndices[i] = (int)level[i];
-                        levelIndices[i + 1] = (int)level[i + 1];
-                        levelIndices[i + 2] = (int)level[i + 2];
-                    }
-
-                    lods ??= new Godot.Collections.Dictionary();
-                    lods[edgeLength] = levelIndices;
+                    levels ??= new Engine_MdlSurfaceArrays.Levels();
+                    levels.Add(edgeLength, MemoryMarshal.Cast<uint, int>(level.AsSpan()));
                 }
             }
 
             // Still no level: a tree's thinned cards or generated ones, when set (Engine_MdlExtraLods).
-            lods ??= Engine_MdlExtraLods.For(info, geo, vertices, normals, indices);
+            levels ??= Engine_MdlExtraLods.For(info, geo, vertices, arrays, indices);
+            Godot.Collections.Dictionary? lods = levels?.Lods;
 
             // The model's radiance transfer, expanded per vertex: CUSTOM0..2 are the red, green
             // and blue transfer vectors the shader dots with the entity's probe. Absent on a
@@ -478,7 +458,7 @@ public static int SurfacesWithLods;
                 ++SurfacesWithTransfer;
             }
 
-            Engine_MdlSurfaceArrays.Add(mesh, Mesh.PrimitiveType.Triangles, arrays, lods);
+            Engine_MdlSurfaceArrays.Add(mesh, Mesh.PrimitiveType.Triangles, arrays, lods, levels?.Packed());
             surfaceLods.Add(lods ?? new Godot.Collections.Dictionary());
             if (lods is not null)
             {
@@ -494,16 +474,13 @@ public static int SurfacesWithLods;
                 mesh.SurfaceSetName(added, geo.Name);
             }
 
-            if (geo.SourceVertices.Length == geo.VertexCount)
+            if (geo.SourceVertices.Length == vertexCount)
             {
                 sourceVertices.AddRange(geo.SourceVertices);
             }
             else
             {
-                for (int v = 0; v < geo.VertexCount; v++)
-                {
-                    sourceVertices.Add(-1);
-                }
+                sourceVertices.AddRange(System.Linq.Enumerable.Repeat(-1, vertexCount));
             }
 
             // Wind comes from the mesh header, not the material: the file states a movement mode
@@ -532,7 +509,11 @@ public static int SurfacesWithLods;
             return null;
         }
 
-        mesh.SetMeta(SourceVertexMapMeta, sourceVertices.ToArray());
+        using (Variant sourceMap = Variant.CreateFrom(CollectionsMarshal.AsSpan(sourceVertices)))
+        {
+            mesh.SetMeta(SourceVertexMapMeta, sourceMap);
+        }
+
         mesh.SetMeta(SourceVertexTotalMeta, sourceVertexTotal);
         mesh.SetMeta(SurfaceRegionsMeta, surfaceRegions.ToArray());
         if (info.FileBoundingSphere.Length == 4)
@@ -618,6 +599,13 @@ public static int SurfacesWithLods;
 
         error = string.Empty;
         return mesh;
+    }
+
+    /// <summary>Hands a surface array to Godot's collection and drops this side's hold on it at once.</summary>
+    private static void SetArray(Godot.Collections.Array arrays, Mesh.ArrayType slot, Variant value)
+    {
+        arrays[(int)slot] = value;
+        value.Dispose();
     }
 
     /// <summary>Metadata key: the model's bone parent indices, in the order BONES indexes.</summary>

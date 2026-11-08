@@ -9,7 +9,7 @@ using Refii.Core;
 
 namespace Refii.Titles.Fable2.PubGames;
 
-public static class Engine_SwfAssets
+public static partial class Engine_SwfAssets
 {
     public const string RootFolder = "FlashGames";
 
@@ -38,7 +38,6 @@ public static class Engine_SwfAssets
 
     private static readonly object Gate = new();
     private static readonly Dictionary<string, Bitmap> Bitmaps = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly Dictionary<string, MeshEntry> Meshes = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, Game> Games = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, Face> Faces = new(StringComparer.OrdinalIgnoreCase);
     private static readonly List<FontPack> Packs = new();
@@ -131,15 +130,6 @@ public static class Engine_SwfAssets
         /// transcoded or expanded), made ahead on a worker by <see cref="PrepareBitmaps"/> and
         /// handed to the first <see cref="TextureFor"/>, which owns it from then on.</summary>
         public Image? Upload;
-    }
-
-    private sealed class MeshEntry
-    {
-        public required Game Game { get; init; }
-
-        public required int ShapeId { get; init; }
-
-        public required int Fill { get; init; }
     }
 
     private static Engine_SwfTextureLoader? _textureLoader;
@@ -506,6 +496,14 @@ public static class Engine_SwfAssets
             filesystem?.AddVirtualFile(virtualPath, source, size, () => ReadPng(key));
         }
 
+        // ONLY THE EDITOR LISTS THE SHAPES. A file for each one means parsing and tracing every
+        // shape of every pub game, in a session that may never open a board; TryGetMesh reads what
+        // it needs from the path.
+        if (filesystem is null || !Engine.IsEditorHint())
+        {
+            return;
+        }
+
         SwfDocument document = DocumentOf(game);
         foreach ((int shapeId, SwfShape shape) in document.Shapes)
         {
@@ -518,19 +516,53 @@ public static class Engine_SwfAssets
             foreach (int fill in SwfVectorShape.PartFills(shape, geometry))
             {
                 string virtualPath = MeshPath(game.Folder, shapeId, fill);
-                lock (Gate)
-                {
-                    Meshes[virtualPath] = new MeshEntry { Game = game, ShapeId = shapeId, Fill = fill };
-                }
-
-                string key = virtualPath;
-                filesystem?.AddVirtualFile(virtualPath, entry.SwfPath, size, () => ReadMeshBytes(key));
+                filesystem.AddVirtualFile(virtualPath, entry.SwfPath, size, () => ReadMeshBytes(virtualPath));
             }
+        }
+
+        // Drop the parsed shapes until a pub game is played: a large object graph the GC walks on
+        // every full collection, as the font packs below found.
+        lock (game)
+        {
+            game.Document = null;
         }
     }
 
     private static string MeshPath(string gameFolder, int shapeId, int fill) =>
         $"{RootFolder}/{gameFolder}/{ShapesFolder}/{shapeId}_f{fill}{MeshExtension}";
+
+    /// <summary>The reverse of <see cref="MeshPath"/>; case does not matter, as the mount's does not.</summary>
+    internal static bool TryParseMeshPath(string path, out string gameFolder, out int shapeId, out int fill)
+    {
+        gameFolder = string.Empty;
+        shapeId = fill = 0;
+        string prefix = RootFolder + "/";
+        string middle = "/" + ShapesFolder + "/";
+        if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
+            !path.EndsWith(MeshExtension, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        int shapes = path.IndexOf(middle, prefix.Length, StringComparison.OrdinalIgnoreCase);
+        if (shapes <= prefix.Length)
+        {
+            return false;
+        }
+
+        ReadOnlySpan<char> leaf = path.AsSpan(
+            shapes + middle.Length, path.Length - shapes - middle.Length - MeshExtension.Length);
+        int split = leaf.IndexOf("_f", StringComparison.OrdinalIgnoreCase);
+        if (split <= 0 ||
+            !int.TryParse(leaf[..split], System.Globalization.NumberStyles.None, null, out shapeId) ||
+            !int.TryParse(leaf[(split + 2)..], System.Globalization.NumberStyles.None, null, out fill))
+        {
+            return false;
+        }
+
+        gameFolder = path[prefix.Length..shapes];
+        return true;
+    }
 
     public static PackedScene? BuildScene(string gameFolder)
     {
@@ -818,29 +850,20 @@ public static class Engine_SwfAssets
                 bool hasUvs = reader.ReadBoolean();
 
                 var vertices = new Vector2[vertexCount];
-                for (var v = 0; v < vertexCount; v++)
-                {
-                    vertices[v] = new Vector2(reader.ReadSingle(), reader.ReadSingle());
-                }
+                Engine_SwfPartsIo.Read(stream, vertices);
 
                 Color[]? colours = null;
                 if (hasColours)
                 {
                     colours = new Color[vertexCount];
-                    for (var v = 0; v < vertexCount; v++)
-                    {
-                        colours[v] = Color.Color8(reader.ReadByte(), reader.ReadByte(), reader.ReadByte(), reader.ReadByte());
-                    }
+                    Engine_SwfPartsIo.Read(stream, colours);
                 }
 
                 Vector2[]? uvs = null;
                 if (hasUvs)
                 {
                     uvs = new Vector2[vertexCount];
-                    for (var v = 0; v < vertexCount; v++)
-                    {
-                        uvs[v] = new Vector2(reader.ReadSingle(), reader.ReadSingle());
-                    }
+                    Engine_SwfPartsIo.Read(stream, uvs);
                 }
 
                 if (!cached.TryGetValue(shapeId, out List<CachedPart>? list))
@@ -894,30 +917,15 @@ public static class Engine_SwfAssets
                         writer.Write(part.Vertices.Length);
                         writer.Write(part.Colours is not null);
                         writer.Write(part.Uvs is not null);
-                        foreach (Vector2 v in part.Vertices)
-                        {
-                            writer.Write(v.X);
-                            writer.Write(v.Y);
-                        }
-
+                        Engine_SwfPartsIo.Write(stream, part.Vertices);
                         if (part.Colours is not null)
                         {
-                            foreach (Color c in part.Colours)
-                            {
-                                writer.Write((byte)c.R8);
-                                writer.Write((byte)c.G8);
-                                writer.Write((byte)c.B8);
-                                writer.Write((byte)c.A8);
-                            }
+                            Engine_SwfPartsIo.Write(stream, part.Colours);
                         }
 
                         if (part.Uvs is not null)
                         {
-                            foreach (Vector2 uv in part.Uvs)
-                            {
-                                writer.Write(uv.X);
-                                writer.Write(uv.Y);
-                            }
+                            Engine_SwfPartsIo.Write(stream, part.Uvs);
                         }
                     }
                 }
@@ -930,21 +938,27 @@ public static class Engine_SwfAssets
             }
         }
     }
+
     public static ArrayMesh? TryGetMesh(string virtualPath)
     {
 
-        MeshEntry? entry;
+        if (!TryParseMeshPath(Strip(virtualPath), out string folder, out int shapeId, out int fill))
+        {
+            return null;
+        }
+
+        Game? game;
         lock (Gate)
         {
-            if (!Meshes.TryGetValue(Strip(virtualPath), out entry))
+            if (!Games.TryGetValue(folder, out game))
             {
                 return null;
             }
         }
 
-        foreach (SwfVectorPart part in Parts(entry.Game, entry.ShapeId))
+        foreach (SwfVectorPart part in Parts(game, shapeId))
         {
-            if (part.FirstFill == entry.Fill)
+            if (part.FirstFill == fill)
             {
                 return part.Mesh;
             }
@@ -1352,7 +1366,7 @@ public static class Engine_SwfAssets
         }
     }
 
-    private static string Digest(byte[] bytes)
+    internal static string Digest(ReadOnlySpan<byte> bytes)
     {
         byte[] hash = Refii.Core.Engine_Hash.Sha1(bytes);
         return Convert.ToHexString(hash, 0, 8).ToLowerInvariant();

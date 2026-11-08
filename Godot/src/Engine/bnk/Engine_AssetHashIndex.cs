@@ -32,33 +32,85 @@ public static class AssetHashIndex
 	{
 		var index = new Dictionary<uint, string>();
 
+		// The two spellings built in one buffer: this runs over every file of the mount on the
+		// main thread, and a string per spelling was 156 MB of garbage.
+		const string dataPrefix = "data\\";
+		Span<char> shared = stackalloc char[256];
+		dataPrefix.CopyTo(shared);
 		foreach (BnkFile file in files)
 		{
-			string path = MountKey(file.VirtualPath);
-			if (path.Length == 0)
+			string virtualPath = file.VirtualPath;
+			Span<char> chars = shared;
+			if (virtualPath.Length + dataPrefix.Length > shared.Length)
+			{
+				chars = new char[virtualPath.Length + dataPrefix.Length];
+				dataPrefix.CopyTo(chars);
+			}
+
+			ReadOnlySpan<char> spelling = GuestSpelling(virtualPath, chars[dataPrefix.Length..]);
+			if (spelling.Length == 0)
 			{
 				continue;
 			}
 
 			// Key hashed in the guest's spelling (backslashes); value the mount's own string.
-			Add(index, GuestSpelling(path), file.VirtualPath);
+			Add(index, spelling, virtualPath);
 
 			// The guest hashes relative to its data root: `sub_82C6EFC0` strips `game:\` then
 			// `cache:\`; `GameInit_MountDataFileSystems` (0x822F2868) sets that root to `"data\"`.
-			const string dataPrefix = "data/";
-			if (path.StartsWith(dataPrefix, StringComparison.Ordinal))
+			if (spelling.StartsWith(dataPrefix, StringComparison.Ordinal))
 			{
-				Add(index, GuestSpelling(path[dataPrefix.Length..]), file.VirtualPath);
+				Add(index, spelling[dataPrefix.Length..], virtualPath);
 			}
 			else
 			{
-				Add(index, GuestSpelling(dataPrefix + path), file.VirtualPath);
+				// The spelling sits at the start of its buffer's tail, right after the prefix.
+				Add(index, chars[..(dataPrefix.Length + spelling.Length)], virtualPath);
 			}
 
 			// No bare-leaf key: every hashed call site in the binary hashes a full relative path.
 		}
 
 		_byHash = index;
+	}
+
+	/// <summary>
+	/// <see cref="GuestSpelling(string)"/> of <see cref="MountKey"/> without the strings, written
+	/// to the start of <paramref name="buffer"/>, which is as long as <paramref name="path"/>.
+	/// </summary>
+	internal static ReadOnlySpan<char> GuestSpelling(string path, Span<char> buffer)
+	{
+		for (int i = 0; i < path.Length; i++)
+		{
+			char ch = path[i];
+			buffer[i] = ch == '/' ? '\\' : ch >= 'A' && ch <= 'Z' ? (char)(ch + 32) : ch;
+		}
+
+		ReadOnlySpan<char> key = buffer[..path.Length];
+		int start = 0;
+		if (key.StartsWith("game:\\", StringComparison.Ordinal))
+		{
+			start = 6;
+		}
+		else if (key.StartsWith("game:", StringComparison.Ordinal))
+		{
+			start = 5;
+		}
+
+		while (start < key.Length && key[start] == '\\')
+		{
+			start++;
+		}
+
+		if (start == 0)
+		{
+			return key;
+		}
+
+		// To the start: the caller relies on the spelling following its prefix.
+		int length = key.Length - start;
+		buffer.Slice(start, length).CopyTo(buffer);
+		return buffer[..length];
 	}
 
 	/// <summary>Drops the index.</summary>
@@ -96,14 +148,14 @@ public static class AssetHashIndex
 	public static string? PathForHash(uint hash) =>
 		_byHash is { } index && index.TryGetValue(hash, out string? path) ? MountKey(path) : null;
 
-	private static void Add(Dictionary<uint, string> index, string spelling, string path)
+	private static void Add(Dictionary<uint, string> index, ReadOnlySpan<char> spelling, string path)
 	{
 		if (spelling.Length == 0)
 		{
 			return;
 		}
 
-		index.TryAdd(Hash(spelling), path);
+		index.TryAdd(Refii.Core.Engine_GameHash.Fnv1(spelling), path);
 	}
 
 	/// <summary>The native <c>NormalizeLooseAssetKey</c> spelling the mount is keyed by: forward

@@ -1,4 +1,6 @@
 using System;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 
 using Refii.Core;
 
@@ -52,8 +54,9 @@ internal static class Engine_BcEncoder
             return false;
         }
 
-        var texels = new byte[16 * 4];
-        int cursor = offset;
+        Span<byte> texels = stackalloc byte[16 * 4];
+        Span<byte> target = output.AsSpan(offset);
+        int cursor = 0;
 
         for (int by = 0; by < blocksH; ++by)
         {
@@ -64,21 +67,21 @@ internal static class Engine_BcEncoder
                 switch (format)
                 {
                     case TexSurfaceFormat.Bc1:
-                        EncodeBc1Block(texels, output, cursor);
+                        WriteBlock(target, cursor, Bc1Block(texels));
                         break;
 
                     case TexSurfaceFormat.Bc4:
-                        EncodeBc4Block(texels, 0, output, cursor);
+                        WriteBlock(target, cursor, Bc4Block(texels, 4));
                         break;
 
                     case TexSurfaceFormat.Bc3:
-                        EncodeBc4Block(texels, 3, output, cursor);
-                        EncodeBc1Block(texels, output, cursor + 8);
+                        WriteBlock(target, cursor, Bc4Block(texels[3..], 4));
+                        WriteBlock(target, cursor + 8, Bc1Block(texels));
                         break;
 
                     case TexSurfaceFormat.Bc5:
-                        EncodeBc4Block(texels, 0, output, cursor);
-                        EncodeBc4Block(texels, 1, output, cursor + 8);
+                        WriteBlock(target, cursor, Bc4Block(texels, 4));
+                        WriteBlock(target, cursor + 8, Bc4Block(texels[1..], 4));
                         break;
                 }
 
@@ -89,26 +92,35 @@ internal static class Engine_BcEncoder
         return true;
     }
 
-    private static void GatherBlock(
-        ReadOnlySpan<byte> rgba, int width, int height, int originX, int originY, byte[] texels)
+    private static void WriteBlock(Span<byte> output, int at, ulong block) =>
+        MemoryMarshal.Write(output.Slice(at, 8), in block);
+
+    /// <summary>A block's 16 texels, four bytes each, the image's edge repeated past its end.</summary>
+    internal static void GatherBlock(
+        ReadOnlySpan<byte> rgba, int width, int height, int originX, int originY, Span<byte> texels)
     {
+        if (originX + 4 <= width && originY + 4 <= height)
+        {
+            for (int y = 0; y < 4; ++y)
+            {
+                rgba.Slice(((originY + y) * width + originX) * 4, 16).CopyTo(texels.Slice(y * 16, 16));
+            }
+
+            return;
+        }
+
         for (int y = 0; y < 4; ++y)
         {
             int sy = Math.Min(height - 1, originY + y);
             for (int x = 0; x < 4; ++x)
             {
                 int sx = Math.Min(width - 1, originX + x);
-                int src = ((sy * width) + sx) * 4;
-                int dst = ((y * 4) + x) * 4;
-                texels[dst] = rgba[src];
-                texels[dst + 1] = rgba[src + 1];
-                texels[dst + 2] = rgba[src + 2];
-                texels[dst + 3] = rgba[src + 3];
+                rgba.Slice(((sy * width) + sx) * 4, 4).CopyTo(texels.Slice((y * 16) + (x * 4), 4));
             }
         }
     }
 
-    private static void EncodeBc1Block(byte[] texels, byte[] output, int offset)
+    private static ulong Bc1Block(ReadOnlySpan<byte> texels)
     {
         int minR = 255, minG = 255, minB = 255;
         int maxR = 0, maxG = 0, maxB = 0;
@@ -131,118 +143,121 @@ internal static class Engine_BcEncoder
             (high, low) = (low, high);
         }
 
-        output[offset + 0] = (byte)(high & 0xFF);
-        output[offset + 1] = (byte)(high >> 8);
-        output[offset + 2] = (byte)(low & 0xFF);
-        output[offset + 3] = (byte)(low >> 8);
-
-        if (high == low)
+        uint indices = 0;
+        if (high != low)
         {
-            output[offset + 4] = 0;
-            output[offset + 5] = 0;
-            output[offset + 6] = 0;
-            output[offset + 7] = 0;
-            return;
+            Unpack565(high, out int r0, out int g0, out int b0);
+            Unpack565(low, out int r1, out int g1, out int b1);
+            indices = Bc1Indices(
+                texels,
+                Vector128.Create(r0, r1, ((2 * r0) + r1) / 3, (r0 + (2 * r1)) / 3),
+                Vector128.Create(g0, g1, ((2 * g0) + g1) / 3, (g0 + (2 * g1)) / 3),
+                Vector128.Create(b0, b1, ((2 * b0) + b1) / 3, (b0 + (2 * b1)) / 3));
         }
 
-        Span<int> paletteR = stackalloc int[4];
-        Span<int> paletteG = stackalloc int[4];
-        Span<int> paletteB = stackalloc int[4];
-        Unpack565(high, out paletteR[0], out paletteG[0], out paletteB[0]);
-        Unpack565(low, out paletteR[1], out paletteG[1], out paletteB[1]);
-        paletteR[2] = ((2 * paletteR[0]) + paletteR[1]) / 3;
-        paletteG[2] = ((2 * paletteG[0]) + paletteG[1]) / 3;
-        paletteB[2] = ((2 * paletteB[0]) + paletteB[1]) / 3;
-        paletteR[3] = (paletteR[0] + (2 * paletteR[1])) / 3;
-        paletteG[3] = (paletteG[0] + (2 * paletteG[1])) / 3;
-        paletteB[3] = (paletteB[0] + (2 * paletteB[1])) / 3;
+        return high | ((ulong)low << 16) | ((ulong)indices << 32);
+    }
 
+    /// <summary>
+    /// For each of 16 RGBA texels the palette entry nearest by squared distance, the lowest
+    /// index on a tie, packed two bits apiece.
+    /// </summary>
+    internal static uint Bc1Indices(
+        ReadOnlySpan<byte> texels, Vector128<int> paletteR, Vector128<int> paletteG, Vector128<int> paletteB)
+    {
         uint indices = 0;
         for (int i = 0; i < 16; ++i)
         {
-            int r = texels[(i * 4) + 0];
-            int g = texels[(i * 4) + 1];
-            int b = texels[(i * 4) + 2];
+            Vector128<int> dr = Vector128.Create((int)texels[(i * 4) + 0]) - paletteR;
+            Vector128<int> dg = Vector128.Create((int)texels[(i * 4) + 1]) - paletteG;
+            Vector128<int> db = Vector128.Create((int)texels[(i * 4) + 2]) - paletteB;
+            Vector128<int> distance = (dr * dr) + (dg * dg) + (db * db);
 
             int best = 0;
-            int bestDistance = int.MaxValue;
-            for (int p = 0; p < 4; ++p)
-            {
-                int dr = r - paletteR[p];
-                int dg = g - paletteG[p];
-                int db = b - paletteB[p];
-                int distance = (dr * dr) + (dg * dg) + (db * db);
-                if (distance < bestDistance)
-                {
-                    bestDistance = distance;
-                    best = p;
-                }
-            }
+            int bestDistance = distance.GetElement(0);
+            int d1 = distance.GetElement(1);
+            if (d1 < bestDistance) { bestDistance = d1; best = 1; }
+            int d2 = distance.GetElement(2);
+            if (d2 < bestDistance) { bestDistance = d2; best = 2; }
+            if (distance.GetElement(3) < bestDistance) { best = 3; }
 
             indices |= (uint)best << (i * 2);
         }
 
-        output[offset + 4] = (byte)(indices & 0xFF);
-        output[offset + 5] = (byte)((indices >> 8) & 0xFF);
-        output[offset + 6] = (byte)((indices >> 16) & 0xFF);
-        output[offset + 7] = (byte)((indices >> 24) & 0xFF);
+        return indices;
     }
 
-    private static void EncodeBc4Block(byte[] texels, int channel, byte[] output, int offset)
+    /// <summary>
+    /// A BC4 block over 16 values <paramref name="step"/> bytes apart: the extremes, then each
+    /// value's 3-bit index.
+    /// </summary>
+    internal static ulong Bc4Block(ReadOnlySpan<byte> values, int step)
     {
         int min = 255;
         int max = 0;
         for (int i = 0; i < 16; ++i)
         {
-            int v = texels[(i * 4) + channel];
+            int v = values[i * step];
             min = Math.Min(min, v);
             max = Math.Max(max, v);
         }
 
-        output[offset + 0] = (byte)max;
-        output[offset + 1] = (byte)min;
-
+        ulong block = (uint)max | ((ulong)(uint)min << 8);
         if (max == min)
         {
-            for (int i = 2; i < 8; ++i)
-            {
-                output[offset + i] = 0;
-            }
-
-            return;
+            return block;
         }
 
-        Span<int> palette = stackalloc int[8];
-        palette[0] = max;
-        palette[1] = min;
-        for (int p = 1; p <= 6; ++p)
-        {
-            palette[p + 1] = (((7 - p) * max) + (p * min)) / 7;
-        }
-
+        int range = max - min;
+        ReadOnlySpan<byte> nearest = Bc4Nearest.AsSpan(range * (range + 1) / 2, range + 1);
         ulong indices = 0;
         for (int i = 0; i < 16; ++i)
         {
-            int v = texels[(i * 4) + channel];
-            int best = 0;
-            int bestDistance = int.MaxValue;
-            for (int p = 0; p < 8; ++p)
+            indices |= (ulong)nearest[values[i * step] - min] << (i * 3);
+        }
+
+        return block | (indices << 16);
+    }
+
+    /// <summary>
+    /// The BC4 index of each value in each range: the palette entry nearest by absolute distance,
+    /// the lowest index on a tie. Entry <c>range * (range + 1) / 2 + value - min</c>. The palette's
+    /// offsets from its minimum depend on nothing but the range, so one table serves every block.
+    /// </summary>
+    private static readonly byte[] Bc4Nearest = BuildBc4Nearest();
+
+    private static byte[] BuildBc4Nearest()
+    {
+        var table = new byte[256 * 257 / 2];
+        Span<int> palette = stackalloc int[8];
+        for (int range = 1; range < 256; ++range)
+        {
+            palette[0] = range;
+            palette[1] = 0;
+            for (int p = 1; p <= 6; ++p)
             {
-                int distance = Math.Abs(v - palette[p]);
-                if (distance < bestDistance)
-                {
-                    bestDistance = distance;
-                    best = p;
-                }
+                palette[p + 1] = (7 - p) * range / 7;
             }
 
-            indices |= (ulong)best << (i * 3);
+            for (int value = 0; value <= range; ++value)
+            {
+                int best = 0;
+                int bestDistance = int.MaxValue;
+                for (int p = 0; p < 8; ++p)
+                {
+                    int distance = Math.Abs(value - palette[p]);
+                    if (distance < bestDistance)
+                    {
+                        bestDistance = distance;
+                        best = p;
+                    }
+                }
+
+                table[(range * (range + 1) / 2) + value] = (byte)best;
+            }
         }
 
-        for (int i = 0; i < 6; ++i)
-        {
-            output[offset + 2 + i] = (byte)((indices >> (i * 8)) & 0xFF);
-        }
+        return table;
     }
 
     private static ushort Pack565(int r, int g, int b) =>

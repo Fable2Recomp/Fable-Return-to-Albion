@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Threading;
 
 namespace Refii.Gdb;
 
@@ -106,11 +107,48 @@ public sealed class GdbView
 
     public int BodyEnd => SchemaBase;
 
-    public IReadOnlyDictionary<uint, string> Names { get; private set; } =
-        new Dictionary<uint, string>();
+    private Dictionary<uint, string>? _names;
 
-    public IReadOnlyDictionary<uint, string> RecordNames { get; private set; } =
-        new Dictionary<uint, string>();
+    private Dictionary<uint, string>? _recordNames;
+
+    /// <summary>
+    /// The string table, decoded on first use: a walk that only compares hashes never pays for it,
+    /// and a database holds tens of thousands of strings.
+    /// </summary>
+    public IReadOnlyDictionary<uint, string> Names
+    {
+        get
+        {
+            EnsureMetadata();
+            return _names!;
+        }
+    }
+
+    public IReadOnlyDictionary<uint, string> RecordNames
+    {
+        get
+        {
+            EnsureMetadata();
+            return _recordNames!;
+        }
+    }
+
+    private void EnsureMetadata()
+    {
+        // _recordNames is published last, so seeing it means _names is there too.
+        if (Volatile.Read(ref _recordNames) is not null)
+        {
+            return;
+        }
+
+        lock (_recordOffsets)
+        {
+            if (_recordNames is null)
+            {
+                LoadMetadata(_bytes, this, (uint)RecordCount);
+            }
+        }
+    }
 
     /// <summary>
     /// <see cref="TryParse"/>, but a blob is parsed ONCE and the view is reused.
@@ -120,16 +158,23 @@ public sealed class GdbView
     /// end of the bracket it blends between. With the sky, lighting and cloud extracts on top, one
     /// re-evaluation re-parsed the whole chain about nine times to read numbers that had not moved.
     ///
-    /// KEYED ON THE BLOB'S IDENTITY, NOT ITS CONTENT — no hashing, so the lookup is O(1) and cannot
-    /// be fooled by two banks holding equal bytes. A ConditionalWeakTable rather than a Dictionary
-    /// so a cached view dies with the blob that produced it; a level change drops its banks and the
-    /// cache empties itself, where a strong map would pin every region ever visited.
+    /// KEYED ON THE BLOB'S IDENTITY FIRST — no hashing, so the lookup is O(1). A ConditionalWeakTable
+    /// rather than a Dictionary so a cached view dies with the blob that produced it; a level change
+    /// drops its banks and the cache empties itself, where a strong map would pin every region ever
+    /// visited.
+    ///
+    /// THEN ON EQUAL BYTES, because every index reads the same files for itself: a second read of a
+    /// database still alive somewhere gets the view already parsed, and its own copy of the file is
+    /// left to the collector. A view reads nothing but its blob, so equal blobs answer alike.
     ///
     /// Callers that genuinely want a fresh parse (a re-read after a bank remount) should call
     /// <see cref="TryParse"/> directly.
     /// </summary>
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<byte[], GdbView>
         SharedViews = new();
+
+    /// <summary>The newest view of each file length, weakly: few files share a length.</summary>
+    private static readonly Dictionary<int, WeakReference<GdbView>> SharedByLength = new();
 
     public static bool TryParseShared(byte[] bytes, out GdbView view, out string error)
     {
@@ -141,13 +186,40 @@ public sealed class GdbView
             return true;
         }
 
+        if (bytes is not null && TryFindEqual(bytes, out GdbView? equal))
+        {
+            SharedViews.AddOrUpdate(bytes, equal);
+            view = equal;
+            return true;
+        }
+
         if (!TryParse(bytes!, out view, out error))
         {
             return false;
         }
 
         SharedViews.AddOrUpdate(bytes!, view);
+        lock (SharedByLength)
+        {
+            SharedByLength[bytes!.Length] = new WeakReference<GdbView>(view);
+        }
+
         return true;
+    }
+
+    private static bool TryFindEqual(byte[] bytes, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out GdbView? equal)
+    {
+        lock (SharedByLength)
+        {
+            if (!SharedByLength.TryGetValue(bytes.Length, out WeakReference<GdbView>? held) ||
+                !held.TryGetTarget(out equal))
+            {
+                equal = null;
+                return false;
+            }
+        }
+
+        return equal._bytes.AsSpan().SequenceEqual(bytes);
     }
 
     public static bool TryParse(byte[] bytes, out GdbView view, out string error)
@@ -228,7 +300,6 @@ public sealed class GdbView
         view = new GdbView(
             bytes, offsets, (int)schemaBase, (int)hashBase, (int)offsetBase,
             (int)aliasBase, (int)aliasCount);
-        LoadMetadata(bytes, view, count);
         return true;
     }
 
@@ -313,6 +384,14 @@ public sealed class GdbView
         }
     }
 
+    /// <summary>One pair of <see cref="AliasPairs"/>, for the walk over all of them.</summary>
+    internal void AliasPair(int index, out uint alias, out uint target)
+    {
+        int at = AliasBase + (index * 8);
+        alias = ReadU32(_bytes, at);
+        target = ReadU32(_bytes, at + 4);
+    }
+
     /// <summary>The record lookup alone, with no alias fallback — what breaks the recursion.</summary>
     private bool TryLookupEntry(uint hash, out int index)
     {
@@ -338,14 +417,14 @@ public sealed class GdbView
 
     public List<GdbField> Fields(int index)
     {
-        var fields = new List<GdbField>();
         int record = _recordOffsets[index];
         if (!TryReadSchemaHeader(
                 _bytes, record, SchemaBase, HashBase, out int schemaOffset, out int fieldCount))
         {
-            return fields;
+            return new List<GdbField>();
         }
 
+        var fields = new List<GdbField>(fieldCount);
         int hashes = schemaOffset + 4;
         int descriptors = hashes + (fieldCount * 4);
 
@@ -362,12 +441,18 @@ public sealed class GdbView
             var type = (GdbFieldType)(byte)(descriptor >> 24);
             uint raw = ReadU32(_bytes, slot);
 
-            Names.TryGetValue(fieldHash, out string? name);
-            fields.Add(new GdbField(
-                fieldHash, type, raw, name ?? string.Empty, ResolveValueText(type, raw)));
+            fields.Add(Named(fieldHash, type, raw));
         }
 
         return fields;
+    }
+
+    /// <summary>A raw field with its name and value text looked up.</summary>
+    private GdbField Named(uint fieldHash, GdbFieldType type, uint raw)
+    {
+        Names.TryGetValue(fieldHash, out string? name);
+        return new GdbField(
+            fieldHash, type, raw, name ?? string.Empty, ResolveValueText(type, raw));
     }
 
     private string ResolveValueText(GdbFieldType type, uint raw) => type switch
@@ -393,10 +478,28 @@ public sealed class GdbView
             return false;
         }
 
-        Names.TryGetValue(fieldHash, out string? name);
-        found = new GdbField(
-            fieldHash, type, raw, name ?? string.Empty, ResolveValueText(type, raw));
+        found = Named(fieldHash, type, raw);
         return true;
+    }
+
+    /// <summary>
+    /// What a search of <see cref="Fields"/> finds, without building the list: the first field of
+    /// that hash whose type is <paramref name="expectedType"/>, or of any type when it is negative.
+    /// Unlike <see cref="TryFindLocal"/>, a field of another type does not end the search.
+    /// </summary>
+    public bool TryFindFirst(int index, uint fieldHash, int expectedType, out GdbField found)
+    {
+        foreach ((uint hash, GdbFieldType type, uint raw) in RawFields(index))
+        {
+            if (hash == fieldHash && (expectedType < 0 || (int)type == expectedType))
+            {
+                found = Named(hash, type, raw);
+                return true;
+            }
+        }
+
+        found = default;
+        return false;
     }
 
     public bool TryFindLocalRaw(
@@ -471,35 +574,84 @@ public sealed class GdbView
         return false;
     }
 
-    public IEnumerable<(uint Hash, GdbFieldType Type, uint Raw)> RawFields(int index)
+    /// <summary>
+    /// A record's fields, unnamed. A struct enumerator: a level load's animation scan asks for
+    /// millions of these, and an iterator object per record was hundreds of megabytes of garbage.
+    /// </summary>
+    public RawFieldList RawFields(int index)
     {
         if (index < 0 || index >= RecordCount)
         {
-            yield break;
+            return default;
         }
 
         int record = _recordOffsets[index];
-        if (!TryReadSchemaHeader(
-                _bytes, record, SchemaBase, HashBase, out int schemaOffset, out int fieldCount))
+        return TryReadSchemaHeader(
+                _bytes, record, SchemaBase, HashBase, out int schemaOffset, out int fieldCount)
+            ? new RawFieldList(_bytes, record, schemaOffset + 4, fieldCount, BodyEnd)
+            : default;
+    }
+
+    /// <summary>What <see cref="RawFields"/> returns: foreach over it allocates nothing.</summary>
+    public readonly struct RawFieldList : IEnumerable<(uint Hash, GdbFieldType Type, uint Raw)>
+    {
+        private readonly byte[]? _bytes;
+        private readonly int _record, _hashes, _count, _bodyEnd;
+
+        internal RawFieldList(byte[] bytes, int record, int hashes, int count, int bodyEnd)
         {
-            yield break;
+            _bytes = bytes;
+            _record = record;
+            _hashes = hashes;
+            _count = count;
+            _bodyEnd = bodyEnd;
         }
 
-        int hashes = schemaOffset + 4;
-        int descriptors = hashes + (fieldCount * 4);
+        public Enumerator GetEnumerator() => new(_bytes, _record, _hashes, _count, _bodyEnd);
 
-        for (int i = 0; i < fieldCount; i++)
+        IEnumerator<(uint Hash, GdbFieldType Type, uint Raw)> IEnumerable<(uint Hash, GdbFieldType Type, uint Raw)>.GetEnumerator() =>
+            GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+        public struct Enumerator : IEnumerator<(uint Hash, GdbFieldType Type, uint Raw)>
         {
-            int slot = record + 4 + (i * 4);
-            if (slot + 4 > BodyEnd)
+            private readonly byte[]? _bytes;
+            private readonly int _record, _hashes, _count, _bodyEnd;
+            private int _at;
+
+            internal Enumerator(byte[]? bytes, int record, int hashes, int count, int bodyEnd)
             {
-                yield break;
+                _bytes = bytes;
+                _record = record;
+                _hashes = hashes;
+                _count = count;
+                _bodyEnd = bodyEnd;
+                _at = -1;
             }
 
-            yield return (
-                ReadU32(_bytes, hashes + (i * 4)),
-                (GdbFieldType)(byte)(ReadU32(_bytes, descriptors + (i * 4)) >> 24),
-                ReadU32(_bytes, slot));
+            public bool MoveNext()
+            {
+                int next = _at + 1;
+                if (next >= _count || _record + 4 + (next * 4) + 4 > _bodyEnd)
+                {
+                    return false;
+                }
+
+                _at = next;
+                return true;
+            }
+
+            public readonly (uint Hash, GdbFieldType Type, uint Raw) Current => (
+                ReadU32(_bytes!, _hashes + (_at * 4)),
+                (GdbFieldType)(byte)(ReadU32(_bytes!, _hashes + (_count * 4) + (_at * 4)) >> 24),
+                ReadU32(_bytes!, _record + 4 + (_at * 4)));
+
+            readonly object System.Collections.IEnumerator.Current => Current;
+
+            public void Reset() => _at = -1;
+
+            public readonly void Dispose() { }
         }
     }
 
@@ -563,18 +715,19 @@ public sealed class GdbView
         int current = index;
         for (int depth = 0; depth < 64; depth++)
         {
-            if (TryFindLocal(current, fieldHash, expectedType, out found))
+            if (TryFindLocalRaw(current, fieldHash, expectedType, out uint raw, out GdbFieldType type))
             {
+                found = Named(fieldHash, type, raw);
                 owner = current;
                 return true;
             }
 
-            if (!TryFindLocal(current, HashParent, 6, out GdbField parent) || parent.Raw == 0)
+            if (!TryFindLocalRaw(current, HashParent, 6, out uint parent, out _) || parent == 0)
             {
                 return false;
             }
 
-            if (!TryLookup(parent.Raw, out int parentIndex) || parentIndex == current)
+            if (!TryLookup(parent, out int parentIndex) || parentIndex == current)
             {
                 return false;
             }
@@ -672,7 +825,7 @@ public sealed class GdbView
     private static void LoadMetadata(byte[] bytes, GdbView view, uint count)
     {
         var names = new Dictionary<uint, string>();
-        var recordNames = new Dictionary<uint, string>();
+        Dictionary<uint, string>? recordNames = null;
 
         try
         {
@@ -704,6 +857,9 @@ public sealed class GdbView
                 return;
             }
 
+            // At most one string per five bytes of table, whatever the header claims.
+            names.EnsureCapacity((int)Math.Min(stringCount, dataBytes / 5));
+
             long offset = dataStart;
             for (uint i = 0; i < stringCount && offset + 5 <= dataEnd; i++)
             {
@@ -721,6 +877,7 @@ public sealed class GdbView
                 offset = terminator + 1;
             }
 
+            recordNames = new Dictionary<uint, string>((int)Math.Min(namePairs, (uint)names.Count));
             for (uint i = 0; i < namePairs; i++)
             {
                 long pair = nameBase + ((long)i * 8);
@@ -742,12 +899,11 @@ public sealed class GdbView
         }
         finally
         {
-            view.Names = names;
-            view.RecordNames = recordNames;
+            view._names = names;
+            Volatile.Write(ref view._recordNames, recordNames ?? new Dictionary<uint, string>());
         }
     }
 
     private static uint ReadU32(byte[] data, int at) =>
-        ((uint)data[at] << 24) | ((uint)data[at + 1] << 16) |
-        ((uint)data[at + 2] << 8) | data[at + 3];
+        System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(at, 4));
 }

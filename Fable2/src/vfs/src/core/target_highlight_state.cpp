@@ -69,8 +69,14 @@ uint32_t StatedHighlightFor(uint32_t component) {
   const uint32_t start = SlotFor(component);
   for (uint32_t probe = 0u; probe < 12u; ++probe) {
     StatedHighlight& slot = g_highlights[(start + probe) & (kSlots - 1u)];
-    if (slot.component.load(std::memory_order_acquire) == component) {
+    const uint32_t held = slot.component.load(std::memory_order_acquire);
+    if (held == component) {
       return slot.rgba.load(std::memory_order_relaxed);
+    }
+
+    // `Claim` takes the first empty slot and none is ever given back: nothing lies past one.
+    if (held == 0u) {
+      return 0u;
     }
   }
 

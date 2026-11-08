@@ -26,6 +26,7 @@ struct RefiiHostStreamRecord {
   uint32_t materialized_bytes = 0;
   uint64_t read_calls = 0;
   uint64_t read_bytes = 0;
+  uint64_t read_since_load = 0;
   std::ifstream file;
 
   /// GODOT'S BYTES, WHEN GODOT IS THE ONE HOLDING THEM.
@@ -36,6 +37,10 @@ struct RefiiHostStreamRecord {
   /// would make a seek cost a whole transfer.
   std::vector<uint8_t> bytes;
   bool host_served = false;
+
+  /// What to ask Godot for again: the guest can hold a stream for good after reading all of it,
+  /// so `bytes` goes once read whole (ReleaseRefiiHostStreamBytes) and a later read fetches it.
+  std::string host_key;
 
   std::mutex mutex;
 };
