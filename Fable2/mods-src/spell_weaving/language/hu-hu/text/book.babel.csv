@@ -1,0 +1,9 @@
+key,value
+SPELL_WEAVING_HYBRID,Hibrid
+SPELL_WEAVING_NAME,Varázslatok összeszövése
+SPELL_WEAVING_DESCRIPTION,"Két varázslat egyként való használatának művészete. Válassz egy társvarázslatot, és az minden varázslatba beleszövődik a(z) %1. szintig, ugyanabban a pillanatban sújtva ugyanazt a célpontot. Az árát egyenlő arányban Mágia- és Ügyesség-tapasztalattal fizeted."
+SPELL_WEAVING_TOTAL_XP,Elérhető Mágia- és Ügyesség-tapasztalat:
+SPELL_WEAVING_SET_PARTNER,Társ beállítása
+SPELL_WEAVING_REMOVE_PARTNER,Társ eltávolítása
+SPELL_WEAVING_MOD_NAME,Varázslatok összeszövése
+SPELL_WEAVING_MOD_DESCRIPTION,"A Fable 3 varázslat-összeszövése a Fable 2-ben: egy második varázslat, a társ, a feltöltött hely varázslatával együtt hat, ugyanazzal az erővel és ugyanarra a célpontra. Alapból egyetlen varázslat a feltöltött erővel, ahogy a Fable 3 ütemezi, a Fable 2 összes alacsonyabb helyen végigfutó sorozata helyett. Minden varázslathelynek saját társa van: a gyorskeréken vagy a képességek könyvének varázslatoldalán jelölj ki egy varázslatot, és nyomd meg az X-et, hogy a hely társa legyen, vagy az Y-t az eltávolításához. Magát a Varázslatok összeszövését a képességek könyvének Hibrid oldalán lehet megtanulni, félig Mágia-, félig Ügyesség-tapasztalattal fizetve; az N. szint N. erősségig szövi össze a varázslatokat. Az Időlassítás és a Feltámasztás soha nem lehet társ."

@@ -1,0 +1,23 @@
+key,value
+FIRST_PERSON_MOD_NAME,Widok pierwszoosobowy
+FIRST_PERSON_MOD_DESCRIPTION,"Graj w Fable II z perspektywy pierwszej osoby: kamera znajduje się w głowie bohatera, głowa jest ukryta, a ciało pozostaje widoczne, ty zaś chodzisz, walczysz i rozglądasz się myszą lub prawym drążkiem. H przełącza między widokiem pierwszo- i trzecioosobowym, osobno dla każdego gracza na podzielonym ekranie i we współpracy online. Pełne przerywniki, zaprogramowane akcje i (domyślnie) celowanie z broni palnej zachowują kamery gry."
+FIRST_PERSON_SETTING_START_ON,Zaczynaj w widoku pierwszoosobowym
+FIRST_PERSON_SETTING_START_ON_DESCRIPTION,"Czy każdy gracz zaczyna sesję w widoku pierwszoosobowym. H przełącza widok temu, kto go naciśnie."
+FIRST_PERSON_SETTING_FOV,Pole widzenia
+FIRST_PERSON_SETTING_FOV_DESCRIPTION,W stopniach. Własny widok pierwszoosobowy gry używa 75.
+FIRST_PERSON_SETTING_EYE_HEIGHT,Wysokość oczu
+FIRST_PERSON_SETTING_EYE_HEIGHT_DESCRIPTION,Metry nad punktem kolizji głowy.
+FIRST_PERSON_SETTING_EYE_FORWARD,Wysunięcie oczu
+FIRST_PERSON_SETTING_EYE_FORWARD_DESCRIPTION,"Metry przed głową, aby twarz nie zasłaniała widoku."
+FIRST_PERSON_SETTING_PITCH_LIMIT,Patrzenie w górę i w dół
+FIRST_PERSON_SETTING_PITCH_LIMIT_DESCRIPTION,"Jak wysoko lub nisko możesz spojrzeć, w stopniach."
+FIRST_PERSON_SETTING_FACE_CAMERA,Bohater zwrócony w stronę widoku
+FIRST_PERSON_SETTING_FACE_CAMERA_NEVER,Nigdy
+FIRST_PERSON_SETTING_FACE_CAMERA_STANDING,Gdy stoi
+FIRST_PERSON_SETTING_FACE_CAMERA_ALWAYS,Zawsze
+FIRST_PERSON_SETTING_FACE_CAMERA_DESCRIPTION,"Obraca bohatera tam, gdzie patrzysz, aby ciosy i czary leciały w tę stronę."
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM,Celowanie z trzeciej osoby
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM_DESCRIPTION,Celowanie z broni palnej lub kuszy używa kamery zza ramienia z gry.
+FIRST_PERSON_SETTING_SCENES,Pierwsza osoba w rozmowach
+FIRST_PERSON_SETTING_SCENES_DESCRIPTION,"Pozostaje w widoku pierwszoosobowym podczas rozmów i scen interaktywnych, zwrócony do rozmówcy. Pełne przerywniki zachowują własną kamerę."
+FIRST_PERSON_INPUT_TOGGLE,Pierwsza / trzecia osoba

@@ -1,0 +1,7 @@
+key,value
+SOULS_COMBAT_STAMINA_NAME,スタミナ
+SOULS_COMBAT_STAMINA_DESCRIPTION,戦いを耐え抜く持久力。スタミナゲージが長くなり、退く前により長く攻撃、回避、ガードを続けられる。
+SOULS_COMBAT_MOD_NAME,Souls風バトル
+SOULS_COMBAT_MOD_DESCRIPTION,エルデンリング風の、スタミナを軸にした覚悟の戦闘: 固定の周回カメラの下でその場で向きを変える主人公、群がってコンボをやり切り、隙を逃さない敵。LTでロックオンを切り替え、攻撃、回避、ガードはスタミナを、魔法はマナを消費し、力にスタミナの能力が加わる。Mod APIの公開イベントと呼び出しだけを使い、Luaのみでゲームプレイを全面改修するRefiiの作例。
+SOULS_COMBAT_SETTING_BARS,満タンでないときにバーを表示
+SOULS_COMBAT_SETTING_BARS_DESCRIPTION,体力、マナ、スタミナのいずれかが最大値未満の間、画面に表示し続ける。

@@ -47,7 +47,18 @@ public sealed class TextBank
     {
         var bank = new TextBank();
 
+        // The culture in force and the guest's remap order first (Engine_GameCulture), then the
+        // rest of the known cultures.
+        var order = new List<string>(Engine_GameCulture.SearchOrder(Engine_GameCulture.Current));
         foreach (string language in LanguageOrder)
+        {
+            if (!order.Contains(language))
+            {
+                order.Add(language);
+            }
+        }
+
+        foreach (string language in order)
         {
             string path = $"language/{language}/text/book.babel";
             byte[]? bytes = read(path) ?? read("data/" + path);

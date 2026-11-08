@@ -104,7 +104,7 @@ public static class Engine_UiTextMesh
 	{
 		contract ??= Engine_UiTextContract.Active;
 
-		List<List<Cell>> paragraphs = Cells(text.Display, font, contract);
+		List<List<Cell>> paragraphs = Cells(Displayed(text, font, contract), font, contract);
 		if (paragraphs.Count == 0)
 		{
 			return new Built(null, 0, Array.Empty<IconPlacement>());
@@ -224,6 +224,64 @@ public static class Engine_UiTextMesh
 	}
 
 	/// <summary>
+	/// The block <see cref="Build"/> lays out, measured as the guest's measure counts it and
+	/// without building a mesh: the line count after the same wrap, the widest line, and
+	/// <c>lines × (LineHeight + 1)</c> tall (Fable 3 `sub_82D40300`: <c>LineHeight + 1</c> to start
+	/// at 0x82D40344 and again per newline at 0x82D403A0; an empty string stores 0 at 0x82D40350
+	/// and skips the walk, 0x82D4036C → 0x82D40564). Scaled as the mesh is.
+	/// </summary>
+	public static (int Lines, float Width, float Height) Measure(UiText text, Engine_BitmapFont font, float scale,
+		Engine_UiTextContract? contract = null)
+	{
+		contract ??= Engine_UiTextContract.Active;
+		List<List<Cell>> paragraphs = Cells(Displayed(text, font, contract), font, contract);
+		if (paragraphs.Count == 0)
+		{
+			return (0, 0f, 0f);
+		}
+
+		float wrapWidth = text.BoxWidth / Mathf.Max(scale, 0.0001f);
+		List<Line> lines = Wrap(paragraphs, text.WrapMode == 1 ? wrapWidth : 0f);
+		float width = 0f;
+		foreach (Line line in lines)
+		{
+			width = Mathf.Max(width, line.Width);
+		}
+
+		return (lines.Count, width * scale, lines.Count * (font.LineHeight + 1) * scale);
+	}
+
+	/// <summary>The string as drawn: a single-line text ellipsised where the title's contract truncates.</summary>
+	private static string Displayed(UiText text, Engine_BitmapFont font, Engine_UiTextContract contract) =>
+		contract.Truncates && text.WrapMode == 0 && text.Truncate > 0
+			? Engine_UiTextTruncate.Apply(text.Display, text.Truncate,
+				candidate => Width(candidate, font, contract), font.AverageCharWidth, font.LineHeight,
+				BestLabel())
+			: text.Display;
+
+	/// <summary>
+	/// A string's single-line width in font pixels, markup included — the widest of its lines, as
+	/// the measure <c>sub_82D40300</c> reports it, truncated to whole pixels.
+	/// </summary>
+	internal static int Width(string display, Engine_BitmapFont font, Engine_UiTextContract contract)
+	{
+		float widest = 0f;
+		foreach (List<Cell> paragraph in Cells(display, font, contract))
+		{
+			widest = Mathf.Max(widest, Measure(paragraph, 0, paragraph.Count));
+		}
+
+		return (int)widest;
+	}
+
+	/// <summary>The running title's word for the inventory's best mark, or null with no string table.</summary>
+	private static string? BestLabel() =>
+		Engine_TitleGame.Active.Strings is { } strings &&
+		strings.TryGetString(Engine_UiTextTruncate.BestTag, out string best)
+			? best
+			: null;
+
+	/// <summary>
 	/// Turns a string into one cell list per paragraph, running the markup tokeniser first. An
 	/// icon advances by the title's <see cref="Engine_UiTextContract.IconPenAdvance"/> — Fable 2's
 	/// `lineHeight + 1` box (doubled in width for the five stars), Fable 3's fixed 26.
@@ -234,7 +292,7 @@ public static class Engine_UiTextMesh
 		var paragraphs = new List<List<Cell>>();
 		var current = new List<Cell>();
 
-		foreach (Engine_UiTextMarkup.Run run in Engine_UiTextMarkup.Split(display))
+		foreach (Engine_UiTextMarkup.Run run in contract.Markup.Split(display))
 		{
 			if (run.Break)
 			{

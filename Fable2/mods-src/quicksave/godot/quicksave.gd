@@ -11,9 +11,12 @@ extends Node
 ## In play only (host.in_play): the keys do nothing in menus, on loading screens or while a save or
 ## load is under way, and the quickload is refused during a cutscene. Alone only: a snapshot is the
 ## player-one save, and a load in co-op would leave the partner behind.
+##
+## Every message is a key of language/<culture>/text/book.babel.csv, read in the player's language
+## through host.text; the notice's title names the mod's own {QUICKSAVE_MOD_NAME}.
 
 const KEY := "quicksave.quick"
-const TITLE := "Quicksave"
+const TITLE := "{QUICKSAVE_MOD_NAME}"
 
 var host: Object
 var asked := false                  # init.lua asked to save, its answer not yet in
@@ -47,7 +50,7 @@ func _quicksave() -> void:
 	if _busy():
 		return
 	if host.coop_mode() != 0:
-		_notice("Quicksave works in a single-player game only.")
+		_notice("QUICKSAVE_SAVE_ALONE_ONLY")
 		return
 	asked = host.run_lua("Quicksave.save(1)")
 
@@ -56,19 +59,19 @@ func _quickload() -> void:
 	if _busy():
 		return
 	if host.coop_mode() != 0:
-		_notice("Quickload works in a single-player game only.")
+		_notice("QUICKSAVE_LOAD_ALONE_ONLY")
 		return
 	var taken: int = host.snapshot_time(KEY)
 	if taken == 0:
-		_notice("There is no quicksave yet. Quicksave to make one.")
+		_notice("QUICKSAVE_NONE_YET")
 		return
 	if host.in_cutscene(1):
-		_notice("You can't quickload right now.")
+		_notice("QUICKSAVE_CANT_LOAD_NOW")
 		return
 	if host.load_snapshot(KEY):
 		quickloading = true
 	else:
-		_notice("The quicksave could not be loaded.")
+		_notice("QUICKSAVE_LOAD_FAILED")
 
 
 func _on_mod_signal(mod: String, name: String, payload: String) -> void:
@@ -78,7 +81,7 @@ func _on_mod_signal(mod: String, name: String, payload: String) -> void:
 	if payload == "saving":
 		saving = true
 	else:
-		_notice("You can't save right now.")
+		_notice("QUICKSAVE_CANT_SAVE_NOW")
 
 
 func _on_save_written(e: Dictionary) -> void:
@@ -86,11 +89,11 @@ func _on_save_written(e: Dictionary) -> void:
 		return
 	saving = false
 	if not e.get("ok", true):
-		_notice("The game did not save. Nothing was quicksaved.")
+		_notice("QUICKSAVE_GAME_NOT_SAVED")
 	elif host.save_snapshot(KEY):
-		_notice("Quicksaved.")
+		_notice("QUICKSAVE_SAVED")
 	else:
-		_notice("The game saved, but the quicksave could not be kept.")
+		_notice("QUICKSAVE_NOT_KEPT")
 
 
 # A new level: nothing asked before it is still coming.
@@ -100,11 +103,12 @@ func _on_level_loaded(_e: Dictionary) -> void:
 	if not quickloading:
 		return
 	quickloading = false
-	_notice("Quickloaded the save from %s." % _clock(host.snapshot_time(KEY)))
+	_notice("QUICKSAVE_LOADED", [_clock(host.snapshot_time(KEY))])
 
 
-func _notice(text: String) -> void:
-	host.notice(TITLE, text, 3.0)
+# A notice: `key` a text key, %1 ... filled from `args`.
+func _notice(key: String, args: Array = []) -> void:
+	host.notice(TITLE, host.text(key, args), 3.0)
 
 
 # A unix time as the local hour and minute.

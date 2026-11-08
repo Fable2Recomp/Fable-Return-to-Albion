@@ -156,7 +156,7 @@ public sealed class Engine_UiSceneBuilder
 	/// </summary>
 	public Node3D?[] ByOrdinal { get; private set; } = System.Array.Empty<Node3D?>();
 
-	/// <summary>Each element's pivot, in Godot space, for the live transform's origin term.</summary>
+	/// <summary>Each element's pivot, in Godot space, for a live position's origin term.</summary>
 	public Vector3[] PivotByOrdinal { get; private set; } = System.Array.Empty<Vector3>();
 
 	/// <summary>
@@ -264,7 +264,6 @@ public sealed class Engine_UiSceneBuilder
 		QuadsBuilt = TexturesResolved = TextsBuilt = DegenerateQuads = TextGlyphsBuilt = 0;
 		MasksApplied = 0;
 		MasksSkipped = 0;
-		_clipped.Clear();
 		_screen = screen;
 		_inheritedOpacity = 1f;
 		ByOrdinal = new Node3D?[screen.Nodes.Length];
@@ -291,170 +290,8 @@ public sealed class Engine_UiSceneBuilder
 	}
 
 	/// <summary>
-	/// Writes the guest's live transforms onto an already-built tree and reports how many
-	/// elements moved. Animation such as `sub_82990730`'s `Foreground.Book` advance and the
-	/// ambient presentation's `"Scrolling"` element arrives as attribute writes, not slides or
-	/// visibility changes, so this is the only path that picks them up short of a rebuild.
-	///
-	/// <paramref name="transform"/> is keyed by ordinal, with a null row where the guest states
-	/// nothing for that element, in which case the file's own transform stands.
-	/// </summary>
-	/// <summary>The unit vector for a basis column index, for a basis with nothing left to keep.</summary>
-	private static Vector3 UnitAxis(int axis) => axis switch
-	{
-		0 => new Vector3(1f, 0f, 0f),
-		1 => new Vector3(0f, 1f, 0f),
-		_ => new Vector3(0f, 0f, 1f),
-	};
-
-	/// <summary>Meta name for a host scale factor a node keeps through every live transform.</summary>
-	public const string RemasterScaleMeta = "remaster_scale";
-
-	/// <summary>Scales a node by a factor the live transform will keep applying.</summary>
-	public static void RemasterScale(Node3D node, float factor)
-	{
-		node.SetMeta(RemasterScaleMeta, factor);
-		node.Scale *= factor;
-	}
-
-	public int ApplyLiveTransform(System.Collections.Generic.IReadOnlyList<float?[]?> transform)
-	{
-		int moved = 0;
-
-		for (int i = 0; i < ByOrdinal.Length && i < transform.Count; ++i)
-		{
-			if (ByOrdinal[i] is not { } node || transform[i] is not { } values)
-			{
-				continue;
-			}
-
-			Transform3D before = node.Transform;
-
-			// The position, not the origin: `BuildTransform` stores
-			// `origin = position - basis * pivot`.
-			Vector3 position = PositionByOrdinal[i];
-			Vector3 pivot = PivotByOrdinal[i];
-
-			if (values.Length > 0 && values[0] is { } x) position.X = x;
-			if (values.Length > 1 && values[1] is { } y) position.Y = y;
-
-			// Through the handedness flip, as BuildTransform builds it: Fable authors UI
-			// left-handed (+Z away), so a raw z inverts depth.
-			if (values.Length > 2 && values[2] is { } z) position.Z = ToGodotZ(z);
-
-			// Scale through the basis COLUMNS, never through `node.Scale`: `Basis.Scale` is
-			// derived and lies on a singular basis — one zero column makes the determinant zero,
-			// so it reports (0,0,0) for all three axes and a read-modify-write flattens the two
-			// axes the guest did not state. Every meter bar in `hud.bgf` is authored
-			// `scale.x = 0`, so this is live here.
-			//
-			// A zero column has no direction to scale along, so rebuild the axis from the cross
-			// product of the other two, keeping the basis right-handed.
-			Basis basis = before.Basis;
-			bool scaled = false;
-			for (int axis = 0; axis < 3; ++axis)
-			{
-				if (values.Length <= 3 + axis || values[3 + axis] is not { } length)
-				{
-					continue;
-				}
-
-				Vector3 column = basis[axis];
-				if (column.LengthSquared() <= 0.000001f)
-				{
-					column = basis[(axis + 1) % 3].Cross(basis[(axis + 2) % 3]);
-				}
-
-				basis[axis] = column.LengthSquared() > 0.000001f
-					? column.Normalized() * length
-					: UnitAxis(axis) * length;
-				scaled = true;
-			}
-
-			// A REMASTER SCALE RIDES OVER THE GUEST'S: a node marked `remaster_scale` keeps
-			// that factor however the guest restates its columns (the menu box's option labels,
-			// authored at seven pixels).
-			if (scaled && node.HasMeta(RemasterScaleMeta))
-			{
-				float factor = (float)node.GetMeta(RemasterScaleMeta);
-				basis = basis.Scaled(new Vector3(factor, factor, factor));
-			}
-
-			// Rebuilt from the CURRENT basis — a live scale changes the pivot term too.
-			Vector3 origin = position - basis * pivot;
-
-			var after = new Transform3D(basis, origin);
-			if (after == before)
-			{
-				continue;
-			}
-
-			// Every number here is a raw guest word — `LiveAttribute.AsFloat` bit-casts the
-			// attribute slot, so an unset, freed or mid-write slot is a NaN, and the
-			// `LengthSquared() <= 1e-6f` tests above admit it (every NaN comparison is false).
-			// A NaN reaching the render-list sort walks libstdc++ off the array into an endless
-			// fault; keeping the previous transform costs one stale frame on one element.
-			if (!origin.IsFinite() || !basis.X.IsFinite() ||
-				!basis.Y.IsFinite() || !basis.Z.IsFinite())
-			{
-				++NonFiniteLiveTransforms;
-				continue;
-			}
-
-			node.Transform = after;
-
-			// The merged position, not the authored one: the guest stops stating an axis once it
-			// settles, and the authored value would snap it back.
-			PositionByOrdinal[i] = position;
-			++moved;
-		}
-
-		return moved;
-	}
-
-	/// <summary>
-	/// Applies stated opacity changes to the BUILT tree, without a rebuild — a stated opacity is
-	/// a material parameter, so it is applied as one.
-	///
-	/// Opacity is a chain (see <see cref="_inheritedOpacity"/>): a change on one element
-	/// re-derives its whole subtree's accumulated product. The chain state lives in metas —
-	/// `opacity` (authored own), `opacity_live` (stated own, written here), `live_accum` (the
-	/// product as applied) — and ordinals are document order, parents first.
-	///
-	/// Returns how many elements' stated value CHANGED, not how many nodes were retinted.
-	/// </summary>
-	public int ApplyLiveOpacity(System.Collections.Generic.IReadOnlyList<float?> opacity)
-	{
-		int changed = 0;
-		for (int i = 0; i < ByOrdinal.Length && i < opacity.Count; ++i)
-		{
-			if (ByOrdinal[i] is not { } node || opacity[i] is not { } stated ||
-				!float.IsFinite(stated))
-			{
-				continue;
-			}
-
-			float own = Mathf.Clamp(stated / 100f, 0f, 1f);
-			float applied = node.HasMeta(OpacityLiveMeta)
-				? (float)node.GetMeta(OpacityLiveMeta)
-				: node.HasMeta(OpacityName) ? (float)node.GetMeta(OpacityName) : 1f;
-			if (Mathf.IsEqualApprox(own, applied))
-			{
-				continue;
-			}
-
-			node.SetMeta(OpacityLiveMeta, own);
-			ReapplyOpacityChain(node, ParentAccumulated(node));
-			++changed;
-		}
-
-		return changed;
-	}
-
-	/// <summary>
 	/// States one element's OWN opacity on a built or cloned tree and re-derives its subtree —
-	/// the single-node form of <see cref="ApplyLiveOpacity"/>, for an owned surface standing on
-	/// a slide other than the one its art was built from.
+	/// for an owned surface standing on a slide other than the one its art was built from.
 	/// </summary>
 	public static void RestateOpacity(Node node, float own)
 	{
@@ -575,7 +412,7 @@ public sealed class Engine_UiSceneBuilder
 		{
 			ByOrdinal[n.Ordinal] = node;
 
-			// The two terms `ApplyLiveTransform` rebuilds the origin from: an origin is
+			// The two terms `SetLivePosition` rebuilds the origin from: an origin is
 			// `position - basis * pivot`, so it needs both, for stated axes and unstated.
 			PivotByOrdinal[n.Ordinal] = new Vector3(n.PivotX, n.PivotY, ToGodotZ(n.PivotZ));
 			PositionByOrdinal[n.Ordinal] =
@@ -627,7 +464,7 @@ public sealed class Engine_UiSceneBuilder
 	private Node3D CreateNodeFor(UiNode n)
 	{
 		// A mask publishes a rect and draws nothing — `sub_8286E748` returns at 0x8286E784
-		// before emitting the quad. The node is still built: RefreshClips reads its transform.
+		// before emitting the quad. The node is still built: the clone binding reads its transform.
 		if (_screen is { } screen && n.Ordinal >= 0 &&
 			n.Ordinal < screen.MaskByOrdinal.Length && screen.MaskElements.Contains(n.Ordinal))
 		{
@@ -696,6 +533,10 @@ public sealed class Engine_UiSceneBuilder
 		node.SetMeta("text_wrap", text.WrapMode);
 		node.SetMeta("text_box", new Vector2(text.BoxWidth, text.BoxHeight));
 		node.SetMeta("text_colour", new Color(text.R, text.G, text.B));
+		if (text.Truncate > 0)
+		{
+			node.SetMeta("text_truncate", text.Truncate);
+		}
 
 		if (FontResolver?.Invoke(text.Size) is not { } selection)
 			return node;
@@ -746,9 +587,6 @@ public sealed class Engine_UiSceneBuilder
 	///
 	/// <paramref name="colour"/> carries its own alpha; the scene builder passes 1.
 	/// </summary>
-	/// <summary>Live UI transforms refused as not finite. Run total.</summary>
-	public static int NonFiniteLiveTransforms;
-
 	public static ShaderMaterial TextMaterial(Color colour, Texture2D? atlas)
 	{
 		var material = new ShaderMaterial { Shader = TextShader };
@@ -1098,33 +936,6 @@ public sealed class Engine_UiSceneBuilder
 
 	private Engine_UiScreen? _screen;
 
-	private readonly List<(ShaderMaterial Material, int Mask)> _clipped = new();
-
-	/// <summary>
-	/// Recomputes every clip rect from the mask nodes' BUILT transforms, so a mask the guest
-	/// moves clips where it now is. Call after the live transform. One pass over the clipped
-	/// materials, not the element tree.
-	/// </summary>
-	public void RefreshClips()
-	{
-		foreach ((ShaderMaterial material, int mask) in _clipped)
-		{
-			if (mask < 0 || mask >= ByOrdinal.Length || ByOrdinal[mask] is not { } node ||
-				!node.IsInsideTree())
-			{
-				continue;
-			}
-
-			Transform3D world = Engine_UiSeats.LayoutTransform(node);
-			float halfW = 0.5f * QuadBaseSize * world.Basis.X.Length();
-			float halfH = 0.5f * QuadBaseSize * world.Basis.Y.Length();
-
-			material.SetShaderParameter(ClipRectName, new Vector4(
-				world.Origin.X - halfW, world.Origin.Y - halfH,
-				world.Origin.X + halfW, world.Origin.Y + halfH));
-		}
-	}
-
 	/// <summary>Quads clipped to a mask's rect. Zero on a screen that authors none.</summary>
 	public int MasksApplied;
 
@@ -1168,9 +979,6 @@ public sealed class Engine_UiSceneBuilder
 		mat.SetShaderParameter(ClipRectName,
 			new Vector4(cx - halfW, cy - halfH, cx + halfW, cy + halfH));
 
-		// Remembered so RefreshClips can recompute when the guest moves a mask: a live
-		// transform arrives per frame without a rebuild.
-		_clipped.Add((mat, mask));
 		++MasksApplied;
 	}
 

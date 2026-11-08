@@ -1,6 +1,6 @@
 // refii - Fable 3's screens and HUD widgets stated at the calls that carry their values, for
 // Godot's Fable3UiStatements: the HUD root's shown/hidden, the save menu, the Options screen's own
-// query, the money alert, the objective list, the target names, the crime timer, the job
+// query, the money alert, the target names, the crime timer, the job
 // multiplier and the box-manager screens' rows and records. Each of these writers puts its value
 // on screen only behind a presentation (`*H` for the HUD, the box's sub_8291F4C8 for a box, the
 // save menu's cached +20) — the statement is the value as the caller passed it, at the call.
@@ -32,18 +32,6 @@
 // THE MONEY ALERT A = *(H+120) player one, *(H+124) player two (sub_825C2150): change
 // sub_8281E560(A, old, delta, kingdom) — queued while A+0 is busy (0x8281E56C -> A+60);
 // show sub_8281E270(A, amount, kingdom); hide sub_8281EA00(A). The running count is the tick's.
-//
-// THE OBJECTIVE LIST O = *(H+92): add sub_82953CC8(O, CCharString* tag, done) — a known tag only
-// re-marks it (sub_82953DD0 first, 0x82953CE0), at most 5 (O+4 < 5, 0x82953CF8); completion
-// sub_82953DD0(O, tag, done) answers 1 when the tag was listed (0x82953E50). THE REDRAW
-// sub_82953E68(O) is what puts the list on screen, behind *H (0x82953E90 / 0x82953FB0): no rows
-// -> `ObjectiveList.ObjectiveList` slide 1 (0x82953FC0); else that slide count + 1 (0x82953EAC)
-// and, per row i from 1 in list order, `…Bar<i>.Text` the row's tag NAME (sub_82819230 ->
-// sub_828191A8, 0x82953F10) and `…Bar<i>.tickbox.tick` slide done + 1 (0x82953F64). It runs from
-// the add (0x82953DA0), the completion (0x82953E58), GUI.ShowSubObjectives (0x8251D8D8),
-// GUI.ClearSubObjectives (0x8251D7F0) and the HUD tick when the add's / show's countdown O+12
-// reaches 0 (0x82259AA4..0x82259AB0) — never from GUI.RemoveSubObjective, whose row stays drawn
-// until the next redraw. `@Hud.Objective.Redraw` at its entry: Godot draws the rows it was told.
 //
 // THE TARGET NAMES TN = *(H+112) / *(H+116): show sub_825D9FC8(TN, target, viewer, keep) and clear
 // sub_825DA3A0(TN). THE CRIME TIMER CT = *(H+104): fine sub_825E5270(CT, fine) and seconds
@@ -101,9 +89,6 @@ REX_EXTERN(__imp__rex_OptionsBox_Query);
 REX_EXTERN(__imp__rex_MoneyAlert_Change);
 REX_EXTERN(__imp__rex_MoneyAlert_Show);
 REX_EXTERN(__imp__rex_MoneyAlert_Hide);
-REX_EXTERN(__imp__rex_Objectives_Add);
-REX_EXTERN(__imp__rex_Objectives_Mark);
-REX_EXTERN(__imp__rex_Objectives_Redraw);
 REX_EXTERN(__imp__rex_TargetNames_Show);
 REX_EXTERN(__imp__rex_TargetNames_Clear);
 REX_EXTERN(__imp__rex_CrimeTimer_Fine);
@@ -142,7 +127,6 @@ constexpr uint32_t kSaveMenuOpen = 0u;
 constexpr uint32_t kSaveMenuAllowed = 1u;
 constexpr uint32_t kSaveMenuRow = 12u;
 
-constexpr uint32_t kObjectivesCount = 4u;
 constexpr uint32_t kMoneyBusy = 0u;
 constexpr uint32_t kScheduleDay = 0x1Cu;
 constexpr uint32_t kPromiseTag = 72u;
@@ -331,36 +315,6 @@ REX_EXTERN(rex_MoneyAlert_Hide) {
   __imp__rex_MoneyAlert_Hide(ctx, base);
 }
 
-/// sub_82953CC8(O, tag, done): `@Hud.Objective.Add` when the list grew.
-REX_EXTERN(rex_Objectives_Add) {
-  const uint32_t list = ctx.r3.u32;
-  const std::string tag = base != nullptr ? ReadCharString(base, ctx.r4.u32) : std::string();
-  const bool done = (ctx.r5.u32 & 0xFFu) != 0u;
-  const uint32_t before = base != nullptr && Plausible(list) ? LoadGuestU32(base, list + kObjectivesCount) : 0u;
-  __imp__rex_Objectives_Add(ctx, base);
-  if (base != nullptr && Plausible(list) && LoadGuestU32(base, list + kObjectivesCount) > before) {
-    Statement("@Hud.Objective.Add").Add(Text(tag)).Add(Boolean(done)).Post();
-  }
-}
-
-/// sub_82953DD0(O, tag, done): `@Hud.Objective.Mark` when the tag was listed.
-REX_EXTERN(rex_Objectives_Mark) {
-  const std::string tag = base != nullptr ? ReadCharString(base, ctx.r4.u32) : std::string();
-  const bool done = (ctx.r5.u32 & 0xFFu) != 0u;
-  __imp__rex_Objectives_Mark(ctx, base);
-  if ((ctx.r3.u32 & 0xFFu) != 0u) {
-    Statement("@Hud.Objective.Mark").Add(Text(tag)).Add(Boolean(done)).Post();
-  }
-}
-
-/// sub_82953E68(O): `@Hud.Objective.Redraw` when *H is up — the redraw's own gate (0x82953E90).
-REX_EXTERN(rex_Objectives_Redraw) {
-  if (base != nullptr && HudWord(base, 0u) != 0u) {
-    Statement("@Hud.Objective.Redraw").Post();
-  }
-  __imp__rex_Objectives_Redraw(ctx, base);
-}
-
 /// sub_825D9FC8(TN, target, viewer, keep).
 REX_EXTERN(rex_TargetNames_Show) {
   const int32_t player = PlayerOf(base, ctx.r3.u32, kHudTargetsOne, kHudTargetsTwo);
@@ -395,11 +349,21 @@ REX_EXTERN(rex_CrimeTimer_Seconds) {
   __imp__rex_CrimeTimer_Seconds(ctx, base);
 }
 
-/// THE CRIME TIMER SHOWN OR HIDDEN, as the crime manager's tick sub_828393F0 decides it: CT+0 = 2
-/// shown / 1 hidden, `li r9,2|1` then `stw r9,0(r11)` (r11 = CT) at 0x82839598 / 0x828395CC and
-/// 0x82839838 / 0x8283985C — each store made only when the value changes (`cmpwi r9,2|1` /
-/// `beq` before it) and followed by the root's SetState to the same value (hud.bgf CrimeTimer
-/// slide 2 "show", 1 "hide"). A [[midasm_hook]] on each store: `@Hud.Crime.Shown(shown)`.
+/// THE CRIME TIMER SHOWN OR HIDDEN. CT = `*(H+0x68)`; CT+4 the root `CrimeTimer` (dword_83559054,
+/// resolved in the HUD at 0x825E51C0). Every writer stores CT+0 = 2 shown / 1 hidden and then sets
+/// the root to the same slide (hud.bgf CrimeTimer slide 2 "show", 1 "hide") behind the root's null
+/// test — so the store is the decision. A [[midasm_hook]] on each store, (CT, value):
+///   - the crime tick sub_828393F0: 0x82839598 / 0x828395CC / 0x82839838 / 0x8283985C [r11, r9];
+///   - the HUD build sub_825E5158: 1 at 0x825E5250 [r31, r9] (`li r9,1` 0x825E5244);
+///   - the partner's packet 369 sub_825E5408(msg, CT): 2 at 0x825E5460, 1 at 0x825E5488 [r31, r11]
+///     (`li r11,2|1` 0x825E5458 / 0x825E5480; r31 = CT, `mr r31,r4` 0x825E5424);
+///   - CECVillageCrimeManager_vf13: 1 at 0x8283A0C0, 2 at 0x8283A0E4 [r11, r9];
+///   - the criminal teardown sub_82837970: 1 at 0x82837A04 [r11, r9];
+///   - RemoveCriminal sub_8283CF88, the list emptied: 1 at 0x8283D0E8 [r11, r9];
+///   - GUI.ShowMiscGUIElements: 2 at 0x8251FE54 [r11, r9];
+///   - the region-change save sub_8232B870: 1 at 0x8232BBDC [r11, r26] (`li r26,1` 0x8232BBBC).
+/// Each tick store is made only on a change (`cmpwi`/`beq` before it), the build's always.
+/// `@Hud.Crime.Shown(shown)`.
 void RefiiF3CrimeTimerShown(PPCRegister& timer, PPCRegister& value) {
   (void)timer;
   Statement("@Hud.Crime.Shown").Add(Boolean(value.u32 == 2u)).Post();

@@ -349,6 +349,13 @@ public abstract class Engine_TitleGame
 	/// <summary>The HUD's pip anchors, in resolve order (Fable 2's expression meter: hero, henchman, both).</summary>
 	public virtual System.Collections.Generic.IReadOnlyList<string> HudPipBindings => System.Array.Empty<string>();
 
+	/// <summary>
+	/// The title's guard on a front-end entry that opens a screen: whether it guards
+	/// <paramref name="item"/>, and the refusal's text tag when it refuses (null: the screen opens).
+	/// </summary>
+	public virtual (bool Guards, string? Refusal) FrontEndOpenGuard(Refii.Ui.Engine_FrontEndMenu menu,
+		Refii.Ui.Engine_UiExpandableMenu.Item item) => (false, null);
+
 	/// <summary>Whether a presentation is one of the title's front-end screens (drawn by its own front end).</summary>
 	public virtual bool IsFrontEndPresentation(string presentation) => false;
 

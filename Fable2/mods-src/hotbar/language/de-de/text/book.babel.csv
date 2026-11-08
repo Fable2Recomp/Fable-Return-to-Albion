@@ -1,0 +1,18 @@
+key,value
+HOTBAR_MENU,Schnellleiste
+HOTBAR_KIND,Auf den Platz legen
+HOTBAR_KIND_SPELLS,Zauber
+HOTBAR_KIND_EXPRESSIONS,Ausdrücke
+HOTBAR_KIND_FOOD,Essen
+HOTBAR_KIND_POTIONS,Tränke
+HOTBAR_KIND_ITEMS,Andere Gegenstände
+HOTBAR_KIND_CLEAR,Platz leeren
+HOTBAR_MOD_NAME,Schnellleiste
+HOTBAR_MOD_DESCRIPTION,"Eine Schnellleiste im Stil von Fable 1 im HUD. Die Tasten 1-3 behalten die Waffenmodi; lege Zauber, Ausdrücke, Essen, Tränke und andere nutzbare Gegenstände auf der Seite Schnellleiste im Pausenmenü auf 4-0."
+HOTBAR_SETTING_SHOW,Schnellleiste anzeigen
+HOTBAR_SETTING_SHOW_DESCRIPTION,Die Tasten funktionieren so oder so.
+HOTBAR_SETTING_SIZE,Größe
+HOTBAR_SETTING_SIZE_DESCRIPTION,Wie groß die Plätze gezeichnet werden.
+HOTBAR_SETTING_LIFT,Höhe über dem unteren Rand
+HOTBAR_SETTING_LIFT_DESCRIPTION,Hebt die Leiste über die Untertitel.
+HOTBAR_INPUT_SLOT,Schnellleisten-Platz

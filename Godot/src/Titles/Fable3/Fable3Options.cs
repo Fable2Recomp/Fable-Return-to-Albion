@@ -499,20 +499,30 @@ public partial class Fable3Options : Fable3ListScreen
 	/// book; the element's text stands only for the kick query, whose henchman-formatted text is
 	/// written inline (sub_82819070 at 0x825CBA5C) without the call. THE QUERY HAS NO TITLE: the
 	/// binary names no `.Group.QueryBox.Title` path (only `.Text` and the two button paths). Its
-	/// button labels are constants per case written inline behind the presentation (0x825cb770 …
-	/// 0x825cbc34) — the elements' texts.
+	/// button labels are constants per case written inline behind the presentation (sub_82819328 on
+	/// dword_835589D8 / 835589DC: 0x825cb770 / 0x825cb788, 0x825cb878 / 0x825cb890, 0x825cbb58 /
+	/// 0x825cbb70, 0x825cbc1c / 0x825cbc34) — the elements' stated tags. THE BUTTONS ARE NEVER HIDDEN:
+	/// no code resolves `QueryBox.Buttons…` for anything but those two tag writes (the only other
+	/// Options opacity writers, sub_828194F8 at 0x825c9b50 / 0x825c9b64 and sub_82B59BB8 at
+	/// 0x825c9a0c…0x825c9a58, touch the Options / Multiplayer sections' B button and rows), and every
+	/// query enters the root's slide 6 (0x825cbef4, 0x825cb9e8), whose Options.bgf `Buttons` Slide1
+	/// activates A_Button and B_Button. A query that writes no label (the overwrite warning
+	/// 0x825cb60c, the disconnect 0x825cb8e4 / 0x825cba94, the kick 0x825cb9e8) shows what the
+	/// element last held, the file's own `GUI_YES` / `GUI_NO` before any write.
 	/// </summary>
 	private static Fable3ScreenPage.QueryBox? Query(uint box)
 	{
 		string text = Fable3UiStatements.OptionsQuery is { } asked && asked.Box == box &&
 			Fable3Elements.TagText(asked.Tag) is { } question
 			? question
-			: Fable3Elements.Latest(QueryRoot + ".Group.QueryBox.Text")?.Text ?? string.Empty;
+			: Fable3Elements.Latest(QueryRoot + ".Group.QueryBox.Text")?.StatedTextValue ?? string.Empty;
 		const string title = "";
 		var prompts = new List<Fable3ScreenPage.Prompt>(2);
-		foreach (string button in new[] { "A", "B" })
+		foreach ((string button, string authored) in new[] { ("A", "GUI_YES"), ("B", "GUI_NO") })
 		{
-			if (Fable3Elements.Latest(QueryRoot + ".Buttons.Buttons." + button + "_Button.small.Text") is { Hidden: false, Text: { Length: > 0 } label })
+			string? label = Fable3Elements.Latest(QueryRoot + ".Buttons.Buttons." + button + "_Button.small.Text")?.StatedTextValue ??
+				Fable3Elements.TagNameText(authored);
+			if (label is { Length: > 0 })
 			{
 				prompts.Add(new Fable3ScreenPage.Prompt(button, label));
 			}
@@ -526,7 +536,7 @@ public partial class Fable3Options : Fable3ListScreen
 	{
 		foreach (KeyValuePair<(string Document, string Path), Fable3Elements.Element> entry in Fable3Elements.All)
 		{
-			if (entry.Key.Path == path && entry.Value.Text is { Length: > 0 } text)
+			if (entry.Key.Path == path && entry.Value.StatedTextValue is { Length: > 0 } text)
 			{
 				return text;
 			}
@@ -539,7 +549,7 @@ public partial class Fable3Options : Fable3ListScreen
 	{
 		foreach (KeyValuePair<(string Document, string Path), Fable3Elements.Element> entry in Fable3Elements.All)
 		{
-			if (entry.Value.Text is { Length: > 0 } text)
+			if (entry.Value.StatedTextValue is { Length: > 0 } text)
 			{
 				yield return new KeyValuePair<string, string>(entry.Key.Path, text);
 			}

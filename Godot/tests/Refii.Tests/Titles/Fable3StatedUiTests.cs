@@ -48,8 +48,8 @@ public class Fable3StatedUiTests
 		Fable3Elements.Take(Call("@Ui.Text", S("40001000"), S("00000000"), S("Options.Title"), S("Options"), S("82819070")));
 
 		AssertThat(Fable3Elements.DocumentOf(0x40001000u)).IsEqual("options");
-		AssertThat(Fable3Elements.Get("options", "Options.Title")?.Text).IsEqual("Options");
-		AssertThat(Fable3Elements.Latest("Options.Title")?.Text).IsEqual("Options");
+		AssertThat(Fable3Elements.Get("options", "Options.Title")?.StatedTextValue).IsEqual("Options");
+		AssertThat(Fable3Elements.Latest("Options.Title")?.StatedTextValue).IsEqual("Options");
 
 		// A reload of the document — at another address — starts clean.
 		Fable3Elements.Take(Call("@Presentation.Load", S("40002000"), S("Options.bgf")));
@@ -62,7 +62,7 @@ public class Fable3StatedUiTests
 		Fresh();
 		// The native names the document once it saw the load: a dropped load statement costs nothing.
 		Fable3Elements.Take(Call("@Ui.Text", S("=hud"), S("00000000"), S("Layer.JobMultiplier.Text"), S("x3"), S("82819070")));
-		AssertThat(Fable3Elements.Get("hud", "Layer.JobMultiplier.Text")?.Text).IsEqual("x3");
+		AssertThat(Fable3Elements.Get("hud", "Layer.JobMultiplier.Text")?.StatedTextValue).IsEqual("x3");
 	}
 
 	[TestCase]
@@ -71,65 +71,67 @@ public class Fable3StatedUiTests
 		Fresh();
 		// No load named the presentation: keyed by its address, not dropped, not waiting.
 		Fable3Elements.Take(Call("@Ui.Text", S("40003000"), S("00000000"), S("SaveMenu.Title"), S("Save"), S("82819070")));
-		AssertThat(Fable3Elements.Get("#40003000", "SaveMenu.Title")?.Text).IsEqual("Save");
+		AssertThat(Fable3Elements.Get("#40003000", "SaveMenu.Title")?.StatedTextValue).IsEqual("Save");
 	}
 
 	[TestCase]
-	public void TheStatedTextOutranksTheBoxAndTheBoxIsTheCrossCheck()
+	public void TheBoxReadBackIsNotAStatement()
 	{
+		// The text box's read-back (`@Element.Text`) has no route: the stated tag is the only text.
 		Fresh();
 		Fable3Elements.Take(Call("@Presentation.Load", S("40001000"), S("InteractionMode.bgf")));
 		Fable3Elements.Take(Call("@Ui.TextTag", S("40001000"), S("50000000"), S("LowerElements.Query"), S("00001234"), S("82819288")));
-		Fable3Elements.Take(Call("@Element.Text", S("40001000"), S("50000000"), S("LowerElements.Query"), S("Are you\nsure?")));
+		AssertThat(Fable3Elements.Take(Call("@Element.Text", S("40001000"), S("50000000"), S("LowerElements.Query"), S("Something else")))).IsFalse();
 
-		Fable3Elements.Element? element = Fable3Elements.Get("interactionmode", "LowerElements.Query");
-		AssertThat(element?.Text).IsEqual("Are you sure?");
-		AssertThat(element?.SampledText).IsEqual("Are you\nsure?");
-		AssertThat(Fable3Elements.Differences).IsEqual(0);  // the wrap is not a difference
-
-		Fable3Elements.Take(Call("@Element.Text", S("40001000"), S("50000000"), S("LowerElements.Query"), S("Something else")));
-		AssertThat(Fable3Elements.Differences).IsEqual(1);
-		AssertThat(element?.Text).IsEqual("Are you sure?");
-	}
-
-	[TestCase]
-	public void ASampleWithNoStatedWriterIsDrawnAndNamed()
-	{
-		Fresh();
-		Fable3Elements.Take(Call("@Presentation.Load", S("40001000"), S("StatsBox.bgf")));
-		Fable3Elements.Take(Call("@Element.Text", S("40001000"), S("50000010"), S("Stats.Row1"), S("Kills")));
-
-		AssertThat(Fable3Elements.Get("statsbox", "Stats.Row1")?.Text).IsEqual("Kills");
-		AssertThat(Logged.Exists(line => line.Contains("sample-only statsbox:Stats.Row1"))).IsTrue();
+		AssertThat(Fable3Elements.Get("interactionmode", "LowerElements.Query")?.StatedTextValue).IsEqual("Are you sure?");
 	}
 
 	[TestCase]
 	public void TheToggleHidesAndShowsAsTheGuestScales()
 	{
-		// A document that takes the setters' echoes (the interaction mode is stated-only and drops them).
+		// An outright opacity is a writer's own call (`@Ui.Opacity`, the world map button's
+		// sub_82910D60 at 0x82910E00); the toggle scales over it.
 		Fresh();
-		Fable3Elements.Take(Call("@Presentation.Load", S("40001000"), S("MessageBox.bgf")));
-		const string path = "LowerElements.InteractionMenuRight.Elements.Button1";
+		Fable3Elements.Take(Call("@Presentation.Load", S("40001000"), S("InteractionMode.bgf")));
+		const string path = "LowerElements.InteractionMenuRight.Elements.Buttons.Button1";
 
-		Fable3Elements.Take(Call("@Element.Opacity", S("40001000"), S("50000020"), S(path), N(50f)));
+		Fable3Elements.Take(Call("@Ui.Opacity", S("40001000"), S("50000020"), S(path), N(50f), S("82910D60")));
 		Fable3Elements.Take(Call("@Ui.Visible", S("40001000"), S("50000020"), S(path), B(false), S("82819AE0")));
-		Fable3Elements.Element element = Fable3Elements.Get("messagebox", path)!;
+		Fable3Elements.Element element = Fable3Elements.Get("interactionmode", path)!;
 		AssertThat(element.Hidden).IsTrue();
-		AssertThat(element.DrawnOpacity).IsEqual(0f);
 
 		Fable3Elements.Take(Call("@Ui.Visible", S("40001000"), S("50000020"), S(path), B(true), S("82819AE0")));
 		AssertThat(element.Hidden).IsFalse();
-		AssertThat(element.DrawnOpacity).IsEqual(50f);
 
 		// Shown over an outright 0 stays hidden (0 * 1024).
-		Fable3Elements.Take(Call("@Element.Opacity", S("40001000"), S("50000020"), S(path), N(0f)));
+		Fable3Elements.Take(Call("@Ui.Opacity", S("40001000"), S("50000020"), S(path), N(0f), S("82910D60")));
 		Fable3Elements.Take(Call("@Ui.Visible", S("40001000"), S("50000020"), S(path), B(true), S("82819AE0")));
 		AssertThat(element.Hidden).IsTrue();
 
-		// The toggle's read-back opacity disagreeing with the request is a difference.
-		Fable3Elements.Take(Call("@Ui.Visible", S("40001000"), S("50000020"), S(path), B(false), S("82819AE0")));
-		Fable3Elements.Take(Call("@Element.ToggleOpacity", S("40001000"), S("50000020"), S(path), N(100f)));
-		AssertThat(Fable3Elements.Differences).IsEqual(1);
+		// No document takes the opacity setter's report any more, Options included.
+		Fable3Elements.Take(Call("@Presentation.Load", S("40002000"), S("Options.bgf")));
+		const string label = "Options.Sections.QueryBox.Buttons.Buttons.A_Button.small.Text";
+		AssertThat(Fable3Elements.Take(Call("@Element.Opacity", S("40002000"), S("50000030"), S(label), N(0f)))).IsFalse();
+		AssertThat(Fable3Elements.Take(Call("@Element.StoredOpacity", S("40002000"), S("50000030"), S(label), N(0f)))).IsFalse();
+		AssertThat(Fable3Elements.Get("options", label)).IsNull();
+	}
+
+	[TestCase]
+	public void TheSettersReportLandsOnNoStatedDocument()
+	{
+		Fresh();
+		Fable3Elements.Take(Call("@Presentation.Load", S("40001000"), S("HUD.bgf")));
+		const string path = "JobMultiplier";
+		Fable3Elements.Take(Call("@Element.Opacity", S("40001000"), S("50000020"), S(path), N(0f)));
+		AssertThat(Fable3Elements.Get("hud", path)).IsNull();
+
+		// The multiplier root's own call (sub_82950AF0 at 0x82950B40) is the statement.
+		Fable3Elements.Take(Call("@Ui.Opacity", S("=hud"), S("50000020"), S(path), N(100f), S("82950AF0")));
+		AssertThat(Fable3Elements.Get("hud", path)?.StatedDrawnOpacity).IsEqual(100f);
+		Fable3Elements.Take(Call("@Ui.Visible", S("=hud"), S("50000020"), S(path), B(false), S("82819AE0")));
+		AssertThat(Fable3Elements.Get("hud", path)?.StatedDrawnOpacity).IsEqual(0f);
+		Fable3Elements.Take(Call("@Ui.Opacity", S("=hud"), S("50000020"), S(path), N(0f), S("82950AF0")));
+		AssertThat(Fable3Elements.Get("hud", path)?.Visible).IsNull();
 	}
 
 	[TestCase]
@@ -141,7 +143,7 @@ public class Fable3StatedUiTests
 		Fable3Elements.Take(Call("@Presentation.Load", S("40002000"), S("InteractionMode.bgf")));
 
 		// The interaction mode's root hidden is not the HUD hidden.
-		Fable3Elements.Take(Call("@Element.State", S("40002000"), S("50000030"), S("Scene"), N(2f)));
+		Fable3Elements.Take(Call("@Ui.State", S("40002000"), S("50000030"), S("Scene"), N(2f), S("825C3A78")));
 		AssertThat(Fable3Elements.HudHidden).IsFalse();
 
 		Fable3UiStatements.Take(Call("@Hud.Root", N(2f), S("825C1CB0")));
@@ -194,10 +196,55 @@ public class Fable3StatedUiTests
 		const string button = "LowerElements.InteractionMenuRight.Elements.Button2";
 		Fable3UiStatements.Take(Call("@Interaction.Button", S("40001000"), S(button), S("Talk"), S("gui\\a_text.tex"), B(false)));
 
-		AssertThat(Fable3Elements.Get("interactionmode", button + ".Title")?.Text).IsEqual("Talk");
-		AssertThat(Fable3Elements.Get("interactionmode", button)?.DrawnOpacity).IsEqual(50f);
+		AssertThat(Fable3Elements.Get("interactionmode", button + ".Title")?.StatedTextValue).IsEqual("Talk");
+		AssertThat(Fable3Elements.Get("interactionmode", button)?.StatedDrawnOpacity).IsEqual(50f);
 		AssertThat(Fable3Elements.Get("interactionmode", button)?.Hidden).IsFalse();
 		AssertThat(Fable3Elements.Get("interactionmode", button + ".Icon.Container.A_Text")?.Texture).IsEqual("gui\\a_text.tex");
+	}
+
+	/// <summary>
+	/// The list writer sub_82963DE0 at the last row: Button3 takes the cursor's label through the
+	/// button writer, Button2 and Button1 are past the end — their `Title` committed "" (stated at
+	/// the box guards 0x82963FA4 / 0x82964098) and hidden. No row keeps the label it held before:
+	/// cursor-1, cursor, cursor+1 never read "Feet / Feet / Feet". A row filled again with the label
+	/// it held before it was emptied shows it again.
+	/// </summary>
+	[TestCase]
+	public void AnEmptiedInteractionRowNeverKeepsItsLastLabel()
+	{
+		Fresh();
+		Fable3Elements.Take(Call("@Presentation.Load", S("40001000"), S("InteractionMode.bgf")));
+		const string rows = "LowerElements.InteractionMenuScrollableList.Buttons.";
+		string Title(string row) => Fable3Elements.Get("interactionmode", rows + row + ".Title")?.StatedTextValue ?? "<none>";
+		void Fill(string row, string label) =>
+			Fable3UiStatements.Take(Call("@Interaction.Button", S("=interactionmode"), S(rows + row), S(label), S("gui\\a_text.tex"), B(true)));
+		void Empty(string row, string title)
+		{
+			Fable3Elements.Take(Call("@Ui.Text", S("=interactionmode"), S(title), S(rows + row + ".Title"), S(string.Empty), S("82963DE0")));
+			Fable3Elements.Take(Call("@Ui.Visible", S("=interactionmode"), S("43000000"), S(rows + row), B(false), S("82819AE0")));
+		}
+
+		// Cursor on Lower Body, the row before the last (Feet): Button1 is past the end.
+		Fill("Button3", "Lower Body");
+		Fill("Button2", "Feet");
+		Empty("Button1", "43000110");
+
+		// Cursor on Feet: Button3 Feet, Button2 past the end.
+		Fill("Button3", "Feet");
+		Empty("Button2", "43000120");
+		Empty("Button1", "43000110");
+
+		AssertThat(Title("Button3")).IsEqual("Feet");
+		AssertThat(Title("Button2")).IsEqual(string.Empty);
+		AssertThat(Title("Button1")).IsEqual(string.Empty);
+		AssertThat(Fable3Elements.Get("interactionmode", rows + "Button2")!.Hidden).IsTrue();
+
+		// Back up: Button2 takes Feet again, the label it held before it was emptied.
+		Fill("Button3", "Lower Body");
+		Fill("Button2", "Feet");
+		AssertThat(Title("Button2")).IsEqual("Feet");
+		AssertThat(Fable3Elements.Get("interactionmode", rows + "Button2")!.Hidden).IsFalse();
+		AssertThat(Title("Button1")).IsEqual(string.Empty);
 	}
 
 	[TestCase]
@@ -208,11 +255,9 @@ public class Fable3StatedUiTests
 		const string bar = "UpperElements.TriggerButtons";
 		const string button = "LowerElements.InteractionMenuRight.Elements.Buttons.Button1";
 
-		// The setters' after-the-fact reports land on the element but on no stated channel.
-		Fable3Elements.Take(Call("@Element.State", S("=interactionmode"), S("42000010"), S(bar), N(3f)));
+		// The setters' after-the-fact reports land nowhere.
 		Fable3Elements.Take(Call("@Element.StoredOpacity", S("=interactionmode"), S("42000020"), S(button), N(0f)));
-		AssertThat(Fable3Elements.Get("interactionmode", bar)?.StatedState).IsNull();
-		AssertThat(Fable3Elements.Get("interactionmode", button)?.StatedDrawnOpacity).IsNull();
+		AssertThat(Fable3Elements.Get("interactionmode", button)).IsNull();
 
 		// The bar's show (vf0) states its slide; its label commit (vf1) its text.
 		Fable3Elements.Take(Call("@Ui.State", S("=interactionmode"), S("42000010"), S(bar), N(3f), S("82B3EA18")));
@@ -256,24 +301,6 @@ public class Fable3StatedUiTests
 
 		Fable3UiStatements.Take(Call("@Hud.Money.Hide", N(0f)));
 		AssertThat(Fable3UiStatements.Money[0].Shown).IsFalse();
-	}
-
-	[TestCase]
-	public void TheObjectiveListHoldsFiveAndMarksByTag()
-	{
-		Fresh();
-		for (int i = 0; i < 7; ++i)
-		{
-			Fable3UiStatements.Take(Call("@Hud.Objective.Add", S("TEXT_OBJ_" + i), B(false)));
-		}
-
-		AssertThat(Fable3UiStatements.Objectives.Count).IsEqual(5);
-		Fable3UiStatements.Take(Call("@Hud.Objective.Mark", S("TEXT_OBJ_2"), B(true)));
-		AssertThat(Fable3UiStatements.Objectives[2].Done).IsTrue();
-		Fable3UiStatements.Take(Call("RemoveSubObjective", S("TEXT_OBJ_0")));
-		AssertThat(Fable3UiStatements.Objectives.Count).IsEqual(4);
-		Fable3UiStatements.Take(Call("ClearSubObjectives"));
-		AssertThat(Fable3UiStatements.Objectives.Count).IsEqual(0);
 	}
 
 	[TestCase]
@@ -327,21 +354,21 @@ public class Fable3StatedUiTests
 	}
 
 	[TestCase]
-	public void AStatedPathTakesNoSetterStatement()
+	public void TheCrimeTimerIsItsManagersDecisionEnteredEachTime()
 	{
 		Fresh();
 		Fable3Elements.Take(Call("@Presentation.Load", S("40001000"), S("HUD.bgf")));
 		Fable3UiStatements.Take(Call("@Hud.Crime.Shown", B(true)));
-		AssertThat(Fable3Elements.Get("hud", "CrimeTimer")?.State).IsEqual(2);
+		Fable3Elements.Element root = Fable3Elements.Get("hud", "CrimeTimer")!;
+		AssertThat(root.StatedState).IsEqual(2);
+		ulong shown = root.StatedStateStamp;
 
-		// The guest's own SetState on the stated root is the mirror: dropped.
-		Fable3Elements.Take(Call("@Element.State", S("40001000"), S("40005000"), S("CrimeTimer"), N(1f), S("x")));
-		AssertThat(Fable3Elements.Get("hud", "CrimeTimer")?.State).IsEqual(2);
-		AssertThat(Fable3Elements.MirrorDropped).IsGreater(0);
-
-		// A path no stated call owns still takes it.
-		Fable3Elements.Take(Call("@Element.State", S("40001000"), S("40006000"), S("LookAt"), N(2f), S("x")));
-		AssertThat(Fable3Elements.Get("hud", "LookAt")?.State).IsEqual(2);
+		// The setter's own SetState has no route; the next decision is a new entry.
+		AssertThat(Fable3Elements.Take(Call("@Element.State", S("40001000"), S("40005000"), S("CrimeTimer"), N(1f)))).IsFalse();
+		AssertThat(root.StatedState).IsEqual(2);
+		Fable3UiStatements.Take(Call("@Hud.Crime.Shown", B(false)));
+		AssertThat(root.StatedState).IsEqual(1);
+		AssertThat(root.StatedStateStamp > shown).IsTrue();
 	}
 
 	[TestCase]
@@ -350,7 +377,7 @@ public class Fable3StatedUiTests
 		Fresh();
 		Fable3Elements.Take(Call("@Presentation.Load", S("40003000"), S("CreditsScreen.bgf")));
 		Fable3Elements.Take(Call("@Ui.Position", S("40003000"), S("40007000"), S("Text.Text0"), N(0f), N(328f), N(0f), S("82B3FD70")));
-		Fable3Elements.Take(Call("@Element.Position", S("40003000"), S("40007000"), S("Text.Text0"), N(0f), N(5f), N(0f)));
+		AssertThat(Fable3Elements.Take(Call("@Element.Position", S("40003000"), S("40007000"), S("Text.Text0"), N(0f), N(5f), N(0f)))).IsFalse();
 		AssertThat(Fable3Elements.Get("creditsscreen", "Text.Text0")?.Position?.Y).IsEqual(328f);
 	}
 }

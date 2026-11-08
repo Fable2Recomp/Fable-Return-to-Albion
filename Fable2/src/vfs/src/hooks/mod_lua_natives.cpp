@@ -71,6 +71,7 @@
 //   open_menu(name [, p]) · _message_box(title, text, accept, cancel, question, p)
 //   (message_box is the preamble's: it fills the defaults)
 //   notice(title, text [, seconds [, p]]) · _menu_box(title, text, p, cancelable, n, o1 .. o12)
+//   _text(text) -> the mod text lookup's answer, or nil (text(key, a .. h) is the preamble's: it fills %1 .. %8)
 //   _mark(e, x, y, z, icon, text, p) (mark is the preamble's) · unmark(id) · fade(p, dir [, seconds])
 //   _world_meter(e, x, y, z, value, max, style, p) (world_meter is the preamble's) · mark_meter(id, value, max [, style])
 //   meter(id, label, value, max [, p [, style]]) · meter_remove(id)
@@ -2624,6 +2625,21 @@ REFII_LUA_NATIVE(NativeNotice) {
   RESULTS(1);
 }
 
+// Refii._text(text): refii_mod_text — a bare key, or each {KEY} in the text, through the host's lookup
+// (the running book, the mods' tables in the culture in force, their en-uk rows), or nil with no
+// lookup installed. The preamble's Refii.text fills %1 .. %8 from its arguments.
+REFII_LUA_NATIVE(NativeText) {
+  char text[480];
+  lua.String(1, text, sizeof(text));
+  char out[1024];
+  if (text[0] != 0 && refii_mod_text(text, out, sizeof(out)) >= 0) {
+    lua.PushString(out);
+  } else {
+    lua.PushNil();
+  }
+  RESULTS(1);
+}
+
 // Refii._menu_box(title, text, p, cancelable, n, o1 .. o12): refii_mod_menu_box; the preamble's
 // Refii.menu_box(title, text, options [, p [, cancelable]]) unpacks the options table (this Lua's
 // C API here has no array reads). The id the mod_menu_box event carries, or nil.
@@ -2858,6 +2874,7 @@ Native g_natives[] = {
     {"open_screen", &NativeOpenScreen, 0},
     {"_message_box", &NativeMessageBox, 0},
     {"notice", &NativeNotice, 0},
+    {"_text", &NativeText, 0},
     {"_mark", &NativeMark, 0},
     {"unmark", &NativeUnmark, 0},
     {"_world_meter", &NativeWorldMeter, 0},

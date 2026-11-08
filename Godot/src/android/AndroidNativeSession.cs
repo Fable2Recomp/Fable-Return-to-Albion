@@ -135,6 +135,7 @@ internal sealed class AndroidNativeSession
                 throw new InvalidOperationException("Production texture and asset readers must be registered before native boot");
             HostBridge.SetAssetReader(ReadAsset, AssetSize);
             HostBridge.SetAssetOverrideQuery(_assets.FileIsOverride);
+            HostBridge.SetModTextLookup(text => Refii.Mods.ModText.Text(text));
             HostBridge.SetAssetNameResolver(AssetHashIndex.PathForHash);
             if (_realClock)
             {

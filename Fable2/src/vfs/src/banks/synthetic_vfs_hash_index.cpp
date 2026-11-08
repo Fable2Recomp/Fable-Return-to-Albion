@@ -1,5 +1,7 @@
 #include "vfs_hooks_private.h"
 
+#include "core/installed_cultures.h"
+
 namespace refii::vfs {
 inline namespace detail {
 
@@ -80,9 +82,10 @@ std::vector<std::string> BuildSyntheticVfsEntryCandidates(
 }
 
 bool IsKnownLanguageLocale(std::string_view value) {
-  // IDA/Lumen: the original language table includes these locale roots (same
-  // set the extractor materializes aliases for). en-uk first to match runtime
-  // fallback scoring.
+  // Every code XLip's own tables name — `dword_832D5E90` (XGetLanguage -> culture) and
+  // `dword_832D5EC8` (XGetLocale -> culture), disc build — plus en-uk and zh-cht; the same set
+  // the extractor canonicalises with, so a stored alias and its lookup agree. A culture this
+  // install ships is one too, whatever the tables name.
   constexpr std::string_view kKnownLanguageLocales[] = {
       "en-uk", "en-us", "ja-jp", "de-de", "fr-fr", "es-es",
       "it-it", "ko-kr", "zh-tw", "zh-cht", "pt-pt", "zh-cn",
@@ -94,7 +97,7 @@ bool IsKnownLanguageLocale(std::string_view value) {
       return true;
     }
   }
-  return false;
+  return IsInstalledLanguageCulture(value);
 }
 
 std::string_view GetLanguageAssetTail(std::string_view normalized_alias) {
@@ -190,10 +193,9 @@ bool IsLanguageVideoAssetTail(std::string_view asset_tail) {
 }
 
 int KnownLanguageLocaleRank(std::string_view locale) {
-  constexpr std::string_view kKnownLanguageLocales[] = {
-      "en-uk", "hu-hu", "zh-cht", "cs-cz", "ko-kr", "pl-pl", "sk-sk"};
-  for (size_t i = 0; i < std::size(kKnownLanguageLocales); ++i) {
-    if (locale == kKnownLanguageLocales[i]) {
+  const std::vector<std::string> installed = InstalledLanguageCultures();
+  for (size_t i = 0; i < installed.size(); ++i) {
+    if (locale == installed[i]) {
       return static_cast<int>(i);
     }
   }
@@ -245,7 +247,7 @@ int ScoreVfsDatabaseAliasCandidate(std::string_view candidate,
         GetLanguageLocale(normalized_candidate);
     if (!alias_locale.empty() && candidate_locale == alias_locale) {
       best_score = std::min(best_score, 1 + tail_score);
-    } else if (candidate_locale == "en-uk") {
+    } else if (candidate_locale == kFallbackCulture) {
       best_score = std::min(best_score, 3 + tail_score);
     } else if (!candidate_locale.empty()) {
       best_score =
@@ -263,13 +265,12 @@ std::vector<std::string> BuildRefiiVfsDatabasePrimeAliases(
   std::vector<std::string> expanded;
 
   constexpr std::string_view kLanguagePrefix = "language/";
-  constexpr std::string_view kKnownLanguageLocales[] = {
-      "en-uk", "hu-hu", "zh-cht", "cs-cz", "ko-kr", "pl-pl", "sk-sk"};
   constexpr std::string_view kPatchTextPrefix = "patch_text/";
   constexpr std::string_view kTextPrefix = "text/";
+  const std::vector<std::string> installed_cultures = InstalledLanguageCultures();
 
   auto add_language_family = [&](std::string_view asset_tail) {
-    for (const std::string_view locale : kKnownLanguageLocales) {
+    for (const std::string& locale : installed_cultures) {
       AddUnique(expanded,
                 std::string(kLanguagePrefix) + std::string(locale) + "/" +
                     std::string(asset_tail));

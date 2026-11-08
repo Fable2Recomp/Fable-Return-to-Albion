@@ -1,21 +1,21 @@
 {
-	"up":    { "label": "Quickslot up",    "buttons": ["DpadUp"],    "keys": ["F1"] },
-	"down":  { "label": "Quickslot down",  "buttons": ["DpadDown"],  "keys": ["F2"] },
-	"left":  { "label": "Quickslot left",  "buttons": ["DpadLeft"],  "keys": ["F3"] },
-	"right": { "label": "Quickslot right", "buttons": ["DpadRight"], "keys": ["F4"] },
+	"up":    { "label": "{QUICKSLOTS_INPUT_UP}",    "buttons": ["DpadUp"],    "keys": ["F1"] },
+	"down":  { "label": "{QUICKSLOTS_INPUT_DOWN}",  "buttons": ["DpadDown"],  "keys": ["F2"] },
+	"left":  { "label": "{QUICKSLOTS_INPUT_LEFT}",  "buttons": ["DpadLeft"],  "keys": ["F3"] },
+	"right": { "label": "{QUICKSLOTS_INPUT_RIGHT}", "buttons": ["DpadRight"], "keys": ["F4"] },
 
-	"lt_up":    { "label": "LT quickslot up",    "buttons": ["DpadUp"],    "chord": "LT" },
-	"lt_down":  { "label": "LT quickslot down",  "buttons": ["DpadDown"],  "chord": "LT" },
-	"lt_left":  { "label": "LT quickslot left",  "buttons": ["DpadLeft"],  "chord": "LT" },
-	"lt_right": { "label": "LT quickslot right", "buttons": ["DpadRight"], "chord": "LT" },
+	"lt_up":    { "label": "{QUICKSLOTS_INPUT_LT_UP}",    "buttons": ["DpadUp"],    "chord": "LT" },
+	"lt_down":  { "label": "{QUICKSLOTS_INPUT_LT_DOWN}",  "buttons": ["DpadDown"],  "chord": "LT" },
+	"lt_left":  { "label": "{QUICKSLOTS_INPUT_LT_LEFT}",  "buttons": ["DpadLeft"],  "chord": "LT" },
+	"lt_right": { "label": "{QUICKSLOTS_INPUT_LT_RIGHT}", "buttons": ["DpadRight"], "chord": "LT" },
 
-	"rt_up":    { "label": "RT quickslot up",    "buttons": ["DpadUp"],    "chord": "RT" },
-	"rt_down":  { "label": "RT quickslot down",  "buttons": ["DpadDown"],  "chord": "RT" },
-	"rt_left":  { "label": "RT quickslot left",  "buttons": ["DpadLeft"],  "chord": "RT" },
-	"rt_right": { "label": "RT quickslot right", "buttons": ["DpadRight"], "chord": "RT" },
+	"rt_up":    { "label": "{QUICKSLOTS_INPUT_RT_UP}",    "buttons": ["DpadUp"],    "chord": "RT" },
+	"rt_down":  { "label": "{QUICKSLOTS_INPUT_RT_DOWN}",  "buttons": ["DpadDown"],  "chord": "RT" },
+	"rt_left":  { "label": "{QUICKSLOTS_INPUT_RT_LEFT}",  "buttons": ["DpadLeft"],  "chord": "RT" },
+	"rt_right": { "label": "{QUICKSLOTS_INPUT_RT_RIGHT}", "buttons": ["DpadRight"], "chord": "RT" },
 
-	"lt": { "label": "LT bank (held)", "buttons": ["LT"] },
-	"rt": { "label": "RT bank (held)", "buttons": ["RT"] },
+	"lt": { "label": "{QUICKSLOTS_INPUT_LT}", "buttons": ["LT"] },
+	"rt": { "label": "{QUICKSLOTS_INPUT_RT}", "buttons": ["RT"] },
 
-	"assign": { "label": "Assign the highlighted expression", "buttons": ["Y"], "keys": ["Q"] }
+	"assign": { "label": "{QUICKSLOTS_INPUT_ASSIGN}", "buttons": ["Y"], "keys": ["Q"] }
 }

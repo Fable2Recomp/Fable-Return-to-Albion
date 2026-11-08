@@ -1,0 +1,12 @@
+key,value
+HEALTH_BARS_MOD_NAME,Health Bars
+HEALTH_BARS_MOD_DESCRIPTION,"A health bar over every enemy near you, with a pale trail that shows each hit."
+HEALTH_BARS_SETTING_SHOW,Show enemy health bars
+HEALTH_BARS_SETTING_RANGE,Range
+HEALTH_BARS_SETTING_RANGE_DESCRIPTION,"How far away, in metres, an enemy still gets a bar."
+HEALTH_BARS_SETTING_ONLY_HURT,Only hurt enemies
+HEALTH_BARS_SETTING_ONLY_HURT_DESCRIPTION,Leave out enemies that have not been hit yet.
+HEALTH_BARS_SETTING_NUMBERS,Show numbers
+HEALTH_BARS_SETTING_NUMBERS_DESCRIPTION,Current and most health as numbers under the bar.
+HEALTH_BARS_SETTING_SIZE,Size
+HEALTH_BARS_SETTING_SIZE_DESCRIPTION,How big the bars are drawn.

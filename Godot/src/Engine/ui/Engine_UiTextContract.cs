@@ -47,9 +47,21 @@ public sealed class Engine_UiTextContract
 	/// <summary>Where an icon's top-left sits from the pen, Y up: left by this, up by this.</summary>
 	public float IconInset { get; }
 
+	/// <summary>The inline-markup tag table: which tags exist, their codes, colours and icon art.</summary>
+	public Engine_UiTextMarkup.Vocabulary Markup { get; }
+
+	/// <summary>
+	/// Whether a single-line text element with a <c>truncate</c> attribute is ellipsised when it
+	/// measures wider (<see cref="Engine_UiTextTruncate"/>).
+	/// </summary>
+	public bool Truncates { get; }
+
 	private Engine_UiTextContract(float boxWidthUnits, float boxHeightUnits, int normalSize,
-		bool scalesOffBucket, int lineAdvanceExtra, float iconAdvance, float iconSide, float iconInset)
+		bool scalesOffBucket, int lineAdvanceExtra, float iconAdvance, float iconSide, float iconInset,
+		Engine_UiTextMarkup.Vocabulary markup, bool truncates)
 	{
+		Markup = markup;
+		Truncates = truncates;
 		BoxWidthUnits = boxWidthUnits;
 		BoxHeightUnits = boxHeightUnits;
 		NormalSize = normalSize;
@@ -78,9 +90,14 @@ public sealed class Engine_UiTextContract
 	/// <c>size × 1/24</c> (0x82871694) above 24 in +0x5C, which the wrap and the measure multiply
 	/// (<c>sub_828716D0</c> 0x82871838, 0x828718DC). Line: the draw's <c>&lt;br&gt;</c> case
 	/// (0x8226F1B4) drops <c>(LineHeight + 1) × scale</c>. Icons: the <c>LineHeight + 1</c> square
-	/// at the pen, advancing by what they draw.
+	/// at the pen, advancing by what they draw. Markup: <see cref="Engine_UiTextMarkup.Vocabulary.Fable2"/>.
+	/// Truncate: off. TU1 has the same rule as Fable 3 (<c>CTextAsset_vf3</c> reads
+	/// <c>truncate</c> into +0xA0 at 0x828711F4; <c>sub_82871930</c> builds the ellipsis) and 52 of
+	/// its <c>.bgf</c> files carry the attribute (260 records), but Fable 2's UI was verified
+	/// without it and must not move, so it stays off until that is asked for.
 	/// </summary>
-	public static readonly Engine_UiTextContract Fable2 = new(960f, 720f, 18, true, 1, 0f, 0f, 0f);
+	public static readonly Engine_UiTextContract Fable2 = new(960f, 720f, 18, true, 1, 0f, 0f, 0f,
+		Engine_UiTextMarkup.Vocabulary.Fable2, truncates: false);
 
 	/// <summary>
 	/// Fable 3. Box: <c>CTextAsset_vf1</c> 0x82B45F70 (<c>boxwidth × 1280.0</c>, flt_8206D2A0 →
@@ -99,9 +116,13 @@ public sealed class Engine_UiTextContract
 	/// loaded at 0x821F6428; the line-width sum <c>sub_82B45320</c> 0x82B453F8 and the wrap's
 	/// <c>sub_82B40A40</c> 0x82B40B00 bill 26, 52 for its wide class at 0x82B40AF8), from a pen moved
 	/// left 6 and up 6 for the icon (<c>sub_821F6180</c> 0x821F661C <c>x − 6.0</c>, 0x821F6644
-	/// <c>y + 6.0</c>, flt_8206C77C).
+	/// <c>y + 6.0</c>, flt_8206C77C). The wide class (stars, <c>motif.img</c>) passes side 64 and
+	/// advances 52: <c>sub_82B457A8</c> draws <c>side</c> wide (0x82B458A8..0x82B458E8) and a fixed
+	/// 32 tall (flt_8206BFB4 at 0x82B45860, <c>fsubs</c> 0x82B45888). Markup:
+	/// <see cref="Engine_UiTextMarkup.Vocabulary.Fable3"/>. Truncate: on (<c>sub_82B46980</c>).
 	/// </summary>
-	public static readonly Engine_UiTextContract Fable3 = new(1280f, 720f, 16, false, 0, 26f, 32f, 6f);
+	public static readonly Engine_UiTextContract Fable3 = new(1280f, 720f, 16, false, 0, 26f, 32f, 6f,
+		Engine_UiTextMarkup.Vocabulary.Fable3, truncates: true);
 
 	/// <summary>The contract of the title this process runs.</summary>
 	public static Engine_UiTextContract Active => Refii.Core.Engine_Title.Active.UiText;

@@ -1,0 +1,5 @@
+key,value
+TOGGLE_SPRINT_MOD_NAME,Sprint umschalten
+TOGGLE_SPRINT_MOD_DESCRIPTION,"Sprinten wird umgeschaltet statt gehalten: Drücke einmal Umschalt (oder A am Controller), um loszusprinten, und noch einmal, um anzuhalten. Jeder Koop-Spieler hat seine eigene Umschaltung."
+TOGGLE_SPRINT_SETTING_STOP_AFTER,Nach Stillstand anhalten
+TOGGLE_SPRINT_SETTING_STOP_AFTER_DESCRIPTION,"Sekunden Stillstand, bis der Sprint endet und Umschalt erneut gedrückt werden muss. 0 sprintet weiter."

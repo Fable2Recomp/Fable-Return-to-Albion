@@ -47,7 +47,7 @@ public sealed class UiFont
 public sealed class Engine_UiFontLibrary
 {
 	/// <summary>The culture every other one falls back to, per <c>cultures.txt</c>.</summary>
-	public const string DefaultCulture = "en-uk";
+	public const string DefaultCulture = Refii.Text.Engine_GameCulture.Fallback;
 
 	private readonly Dictionary<UiFontBucket, UiFont> _fonts = new();
 
@@ -99,11 +99,23 @@ public sealed class Engine_UiFontLibrary
 		return true;
 	}
 
-	/// <summary>The culture's own fonts folder, else the default culture's; empty when neither exists.</summary>
-	private static string DirectoryFor(string gameDataRoot, string culture) =>
-		FontDirectory(gameDataRoot, culture)
-			?? FontDirectory(gameDataRoot, DefaultCulture)
-			?? string.Empty;
+	/// <summary>
+	/// The first fonts folder of <see cref="Refii.Text.Engine_GameCulture.SearchOrder"/> — the
+	/// culture's own, then <see cref="DefaultCulture"/>'s, then any installed culture's, the guest's
+	/// remap order; empty when none exists.
+	/// </summary>
+	private static string DirectoryFor(string gameDataRoot, string culture)
+	{
+		foreach (string folder in Refii.Text.Engine_GameCulture.SearchOrder(culture))
+		{
+			if (FontDirectory(gameDataRoot, folder) is { } directory)
+			{
+				return directory;
+			}
+		}
+
+		return string.Empty;
+	}
 
 	private void LoadFrom(string directory)
 	{

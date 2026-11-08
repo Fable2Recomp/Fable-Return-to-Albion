@@ -1,0 +1,67 @@
+key,value
+CHEAT_MENU,Menu cheatů
+CHEAT_MENU_EXPERIENCE,Zkušenosti
+CHEAT_MENU_GOLD,Zlaťáky
+CHEAT_MENU_RENOWN,Reputace
+CHEAT_MENU_MORALITY,Morálka
+CHEAT_MENU_PURITY,Mravnost
+CHEAT_MENU_ITEMS,Věci
+CHEAT_MENU_TIME,Denní doba
+CHEAT_MENU_HEAL,Plné uzdravení
+CHEAT_MENU_XP_GENERAL_1K,+1 000 celkových
+CHEAT_MENU_XP_GENERAL_10K,+10 000 celkových
+CHEAT_MENU_XP_STRENGTH_1K,+1 000 Síly
+CHEAT_MENU_XP_STRENGTH_10K,+10 000 Síly
+CHEAT_MENU_XP_SKILL_1K,+1 000 Dovednosti
+CHEAT_MENU_XP_SKILL_10K,+10 000 Dovednosti
+CHEAT_MENU_XP_WILL_1K,+1 000 Vůle
+CHEAT_MENU_XP_WILL_10K,+10 000 Vůle
+CHEAT_MENU_XP_ALL_10K,+10 000 od každé
+CHEAT_MENU_GOLD_1K,+1 000 zlaťáků
+CHEAT_MENU_GOLD_10K,+10 000 zlaťáků
+CHEAT_MENU_GOLD_100K,+100 000 zlaťáků
+CHEAT_MENU_GOLD_1M,+1 000 000 zlaťáků
+CHEAT_MENU_RENOWN_1K,+1 000 reputace
+CHEAT_MENU_RENOWN_10K,+10 000 reputace
+CHEAT_MENU_RENOWN_100K,+100 000 reputace
+CHEAT_MENU_GOOD_100,Více dobra (+100)
+CHEAT_MENU_GOOD_1000,Mnohem více dobra (+1 000)
+CHEAT_MENU_EVIL_100,Více zla (-100)
+CHEAT_MENU_EVIL_1000,Mnohem více zla (-1 000)
+CHEAT_MENU_PURE_100,Více mravnosti (+100)
+CHEAT_MENU_PURE_1000,Mnohem více mravnosti (+1 000)
+CHEAT_MENU_CORRUPT_100,Více zkaženosti (-100)
+CHEAT_MENU_CORRUPT_1000,Mnohem více zkaženosti (-1 000)
+CHEAT_MENU_TIME_DAWN,Úsvit
+CHEAT_MENU_TIME_NOON,Poledne
+CHEAT_MENU_TIME_DUSK,Soumrak
+CHEAT_MENU_TIME_MIDNIGHT,Půlnoc
+CHEAT_MENU_MOD_NAME,Menu cheatů
+CHEAT_MENU_MOD_DESCRIPTION,"Stránka Menu cheatů v menu pozastavení: zkušenosti, zlaťáky, reputace, morálka, mravnost, věci, denní doba a plné uzdravení."
+CHEAT_MENU_NUMBER_SAMPLE,1 000
+CHEAT_MENU_GAVE_XP_GENERAL,+%1 celkových zkušeností
+CHEAT_MENU_GAVE_XP_STRENGTH,+%1 zkušeností Síly
+CHEAT_MENU_GAVE_XP_SKILL,+%1 zkušeností Dovednosti
+CHEAT_MENU_GAVE_XP_WILL,+%1 zkušeností Vůle
+CHEAT_MENU_GAVE_XP_ALL,+%1 zkušeností od každé
+CHEAT_MENU_GAVE_GOLD,+%1 zlaťáků
+CHEAT_MENU_GAVE_RENOWN,+%1 reputace
+CHEAT_MENU_GAVE_GOOD,+%1 dobra
+CHEAT_MENU_GAVE_EVIL,+%1 zla
+CHEAT_MENU_GAVE_PURITY,+%1 mravnosti
+CHEAT_MENU_GAVE_CORRUPTION,+%1 zkaženosti
+CHEAT_MENU_HEALED,Zdraví obnoveno na %1
+CHEAT_MENU_TIME_SET,Nyní je %1
+CHEAT_MENU_ITEM_ADDED,Přidáno do inventáře: %1
+CHEAT_MENU_ITEM_PART_ADDED,Přidáno do inventáře: %1 z %2
+CHEAT_MENU_ITEM_HEALTH,10 x Lektvar věčného života
+CHEAT_MENU_ITEM_RESURRECTION,5 x Lektvar vzkříšení
+CHEAT_MENU_ITEM_XP_GENERAL,5 x Čistý extrakt zkušenosti
+CHEAT_MENU_ITEM_XP_STRENGTH,5 x Bouřlivákův nápoj síly
+CHEAT_MENU_ITEM_XP_SKILL,5 x Nápoj dovedností experta
+CHEAT_MENU_ITEM_XP_WILL,5 x Neředěný nápoj vůle
+CHEAT_MENU_ITEM_YOUTH,Lektvar mládí
+CHEAT_MENU_ITEM_SCAR,Lektvar Zázračný jizvozmiz
+CHEAT_MENU_ITEM_FAT,Lektvar Hubeňour
+CHEAT_MENU_ITEM_BEAUTY,Hloubková zkrášlovací kúra
+CHEAT_MENU_ITEM_CHICKS,10 x Křupavé kuřátko

@@ -1,0 +1,5 @@
+key,value
+TOGGLE_SPRINT_MOD_NAME,切換加速前進
+TOGGLE_SPRINT_MOD_DESCRIPTION,將加速前進改為切換而非按住：按一次 Shift (控制器為 A) 開始加速前進，再按一次停止。合作模式中每位玩家各自切換。
+TOGGLE_SPRINT_SETTING_STOP_AFTER,停下後取消
+TOGGLE_SPRINT_SETTING_STOP_AFTER_DESCRIPTION,靜止多少秒後加速前進結束，需要再按一次 Shift。0 表示持續加速前進。

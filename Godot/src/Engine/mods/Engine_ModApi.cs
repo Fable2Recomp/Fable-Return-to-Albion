@@ -1675,10 +1675,18 @@ public static class ModApi
 		new ModApiHelper("uint32_t refii_mod_notice(player, title, text, seconds)",
 			"a notice for player 1 or 2 (0: the menu owner here) on the notice channel the game's co-op notices use — in game the HUD's info box " +
 			"for seconds (0: the channel's length), on the front end its dialog; notices queue; returns the id mod_notice carries (0 shown, -1 never). Any thread"),
+		new ModApiHelper("int32_t refii_mod_text(text, out, capacity)",
+			TextMeaning + " Writes it NUL-terminated into out (cut to capacity) and returns its length; -1 when Godot installed no lookup. Any thread"),
 		new ModApiHelper("uint32_t refii_mod_menu_box(player, title, text, options, count, cancelable)",
 			"the game's own menu box (the Golden Cock's) for player 1 or 2 (0: the menu owner here), on the front end and in game: up to 16 options, " +
 			"paged past six; B closes a cancelable box; returns the id mod_menu_box carries with the option's index (-1 none). Any thread"),
 	};
+
+	/// <summary>What a text lookup means on every surface (Engine_ModText).</summary>
+	public const string TextMeaning =
+		"a mod's text in the culture the game runs in: a bare key (QUICKSAVE_SAVED) or each {KEY} inside a text, looked up in the running book, " +
+		"the enabled mods' language/<culture>/text/book.babel.csv, their en-uk rows, then the engine's own words; a key nothing knows stays as written. " +
+		"A notice's, message box's and menu box's title, text, captions and options take {KEY}s as they are (docs/modding/gdb-and-text.md, Text keys).";
 
 	/// <summary>What mark means on every surface (Engine_HudModMarkers).</summary>
 	public const string MarkMeaning =
@@ -2041,6 +2049,7 @@ public static class ModApi
 		new ModApiHelper("Refii.open_menu(name [, p])", "opens a mod's menu (ui/templates.json) for player p (nil: the menu owner here) over the list that has the input, or on its own with none up; true when asked"),
 		new ModApiHelper("Refii.message_box(title, text [, accept [, cancel [, p]]])", "the game's own box for player p: a question when cancel is given (nil captions keep the box's own), else a notice; the id mod_message_box carries"),
 		new ModApiHelper("Refii.notice(title, text [, seconds [, p]])", "a notice on the notice channel for player p (nil: the menu owner here): the HUD's info box in game, queued behind the others; the id mod_notice carries (0 shown, -1 never)"),
+		new ModApiHelper("Refii.text(text [, a .. h])", TextMeaning + " %1 .. %8 take the arguments; in a game and on the front end"),
 		new ModApiHelper("Refii.frontend", "true in the front end's own Lua state (mod/frontend.lua), absent in the game VM"),
 		new ModApiHelper("Refii.signed_in() -> user / Refii.save_count() -> n / Refii.screen() -> name", "FRONT END ONLY (mod/frontend.lua): " + FrontEndMeaning + "; nil for none. With Refii.hash, setting, log, publish / value, notice, message_box, menu_box, open_menu, menu_player and Refii.on for start_game, mod_menu_row, mod_message_box, mod_notice, mod_menu_box — the whole front-end surface (docs/modding/ui-and-hud.md, The front-end surface)"),
 		new ModApiHelper("Refii.menu_box(title, text, options [, p [, cancelable]])", "the game's own menu box for player p: up to 12 options from the table, paged past six; B closes it unless cancelable is false; the id mod_menu_box carries with the option's index (-1 none)"),
@@ -2090,6 +2099,7 @@ public static class ModApi
 		new ModApiHelper("open_menu(name, player = 0) -> bool", "opens a menu a mod defines in ui/templates.json for player 1 or 2 (0: whoever owns the menus here) over the menu list that has the input — B returns — or, with no list up (in play, on the title), as a list of its own that takes the pad and closes on B. False for no such menu or a player played on the other machine. A row chosen there raises mod_menu_row here at once, and reaches native handlers (and Lua in a game) on the guest's next tick through the menu_row command"),
 		new ModApiHelper("message_box(title, text, buttons, player = 0) -> id / signal message_box_answered(id, button)", "the game's own box for player 1 or 2 (0: the menu owner here) — in game the message box (one button) or query box (two), on the front end its own dialog; more than two buttons is a menu box answered here with the button's index; button is 0 for A, 1 for B, -1 when another box replaced it or the player is played on the other machine. The mod_message_box event carries the same, on every surface"),
 		new ModApiHelper("notice(title, text, seconds = 0, player = 0) -> id / signal notice_done(id, outcome)", "a notice on the channel the game's co-op notices use — in game the HUD's info box for seconds (0: its own length), on the front end its dialog — queued behind the others; outcome 0 once shown, -1 when it never showed. The mod_notice event carries the same, on every surface"),
+		new ModApiHelper("text(text, args = []) -> String", TextMeaning + " %1, %2 … take args. Any thread"),
 		new ModApiHelper("menu_box(title, text, options, player = 0, cancelable = true) -> id / signal menu_box_answered(id, option)", "the game's own menu box (the Golden Cock's) on the front end and in game, for player 1 or 2 (0: the menu owner here): up to 16 options, paged past six; option is the index chosen, -1 for B, a box replacing it or a player played on the other machine. The mod_menu_box event carries the same, on every surface"),
 		new ModApiHelper("give_gold / modify_health / set_health / add_item / give_experience / spend_experience / cast_spell / cast_spell_at(caster, type, targeted, target, level, pos, dir) / set_position / save_set", "helper calls, run in the guest tick with the real context; silent when there is nothing to act on; cast_spell_at starts the spell at pos (Vector3, guest axes) facing dir, as refii_mod_cast_spell's pos / dir"),
 		new ModApiHelper("use_item(definition) -> bool", "uses one of an item definition (\"0x…\" or a number) from this machine's hero's inventory, as the Items page's Use does, with no menu open: a potion drinks, food is eaten, item_used fires; nothing when the hero carries none or the item states no use. False when the definition does not parse"),
@@ -2353,6 +2363,7 @@ public static class ModApi
 		T("set_menu_rows open_menu open_screen", "set_menu_rows open_menu open_screen"),
 		T("message_box event:mod_message_box", "message_box signal:message_box_answered"),
 		T("notice event:mod_notice", "notice signal:notice_done"),
+		T("text", "text"),
 		T("menu_box event:mod_menu_box", "menu_box signal:menu_box_answered"),
 		T("ask_host:mods", "mods"),
 	};

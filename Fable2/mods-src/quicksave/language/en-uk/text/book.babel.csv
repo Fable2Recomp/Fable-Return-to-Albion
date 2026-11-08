@@ -1,0 +1,15 @@
+key,value
+QUICKSAVE_MOD_NAME,Quicksave
+QUICKSAVE_MOD_DESCRIPTION,"Bethesda-style quicksave and quickload: F8 saves the game and keeps a quicksave beside your save, F9 loads that quicksave back without leaving the game. A quickload leaves your own save as it was."
+QUICKSAVE_INPUT_QUICKSAVE,Quicksave
+QUICKSAVE_INPUT_QUICKLOAD,Quickload
+QUICKSAVE_SAVE_ALONE_ONLY,Quicksave works in a single-player game only.
+QUICKSAVE_LOAD_ALONE_ONLY,Quickload works in a single-player game only.
+QUICKSAVE_NONE_YET,There is no quicksave yet. Quicksave to make one.
+QUICKSAVE_CANT_LOAD_NOW,You can't quickload right now.
+QUICKSAVE_LOAD_FAILED,The quicksave could not be loaded.
+QUICKSAVE_CANT_SAVE_NOW,You can't save right now.
+QUICKSAVE_GAME_NOT_SAVED,The game did not save. Nothing was quicksaved.
+QUICKSAVE_SAVED,Quicksaved.
+QUICKSAVE_NOT_KEPT,"The game saved, but the quicksave could not be kept."
+QUICKSAVE_LOADED,Quickloaded the save from %1.

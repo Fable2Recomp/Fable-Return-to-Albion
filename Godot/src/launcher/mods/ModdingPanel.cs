@@ -840,7 +840,8 @@ public partial class ModdingPanel : VBoxContainer
 
 		grid.AddChild(orderBox);
 
-		string displayName = mod.Metadata.Title.Length == 0 ? mod.Name : mod.Metadata.Title;
+		// mod.toml's name and description may name the mod's text ({KEY}): its own tables, in the install's culture.
+		string displayName = ModText.TitleOf(mod);
 		string label = mod.Metadata.Version.Length == 0
 			? displayName
 			: displayName + " (" + mod.Metadata.Version + ")";
@@ -866,7 +867,7 @@ public partial class ModdingPanel : VBoxContainer
 		if (mod.Metadata.Description.Length != 0)
 		{
 			sb.AppendLine();
-			sb.AppendLine(mod.Metadata.Description);
+			sb.AppendLine(ModText.ForMod(mod, mod.Metadata.Description));
 		}
 		if (mod.Metadata.Requires.Count != 0)
 		{

@@ -1,0 +1,67 @@
+key,value
+CHEAT_MENU,Menu trucchi
+CHEAT_MENU_EXPERIENCE,Esperienza
+CHEAT_MENU_GOLD,Oro
+CHEAT_MENU_RENOWN,Fama
+CHEAT_MENU_MORALITY,Moralità
+CHEAT_MENU_PURITY,Purezza
+CHEAT_MENU_ITEMS,Oggetti
+CHEAT_MENU_TIME,Ora del giorno
+CHEAT_MENU_HEAL,Cura completa
+CHEAT_MENU_XP_GENERAL_1K,+1.000 generale
+CHEAT_MENU_XP_GENERAL_10K,+10.000 generale
+CHEAT_MENU_XP_STRENGTH_1K,+1.000 Forza
+CHEAT_MENU_XP_STRENGTH_10K,+10.000 Forza
+CHEAT_MENU_XP_SKILL_1K,+1.000 Abilità
+CHEAT_MENU_XP_SKILL_10K,+10.000 Abilità
+CHEAT_MENU_XP_WILL_1K,+1.000 Volontà
+CHEAT_MENU_XP_WILL_10K,+10.000 Volontà
+CHEAT_MENU_XP_ALL_10K,+10.000 di ciascuna
+CHEAT_MENU_GOLD_1K,+1.000 oro
+CHEAT_MENU_GOLD_10K,+10.000 oro
+CHEAT_MENU_GOLD_100K,+100.000 oro
+CHEAT_MENU_GOLD_1M,+1.000.000 oro
+CHEAT_MENU_RENOWN_1K,+1.000 fama
+CHEAT_MENU_RENOWN_10K,+10.000 fama
+CHEAT_MENU_RENOWN_100K,+100.000 fama
+CHEAT_MENU_GOOD_100,Più bontà (+100)
+CHEAT_MENU_GOOD_1000,Molta più bontà (+1.000)
+CHEAT_MENU_EVIL_100,Più malvagità (-100)
+CHEAT_MENU_EVIL_1000,Molta più malvagità (-1.000)
+CHEAT_MENU_PURE_100,Più purezza (+100)
+CHEAT_MENU_PURE_1000,Molta più purezza (+1.000)
+CHEAT_MENU_CORRUPT_100,Più corruzione (-100)
+CHEAT_MENU_CORRUPT_1000,Molta più corruzione (-1.000)
+CHEAT_MENU_TIME_DAWN,Alba
+CHEAT_MENU_TIME_NOON,Mezzogiorno
+CHEAT_MENU_TIME_DUSK,Crepuscolo
+CHEAT_MENU_TIME_MIDNIGHT,Mezzanotte
+CHEAT_MENU_MOD_NAME,Menu trucchi
+CHEAT_MENU_MOD_DESCRIPTION,"Una pagina Menu trucchi nel menu di pausa: esperienza, oro, fama, moralità, purezza, oggetti, ora del giorno e cura completa."
+CHEAT_MENU_NUMBER_SAMPLE,1.000
+CHEAT_MENU_GAVE_XP_GENERAL,+%1 esperienza generale
+CHEAT_MENU_GAVE_XP_STRENGTH,+%1 esperienza di Forza
+CHEAT_MENU_GAVE_XP_SKILL,+%1 esperienza di Abilità
+CHEAT_MENU_GAVE_XP_WILL,+%1 esperienza di Volontà
+CHEAT_MENU_GAVE_XP_ALL,+%1 esperienza di ogni tipo
+CHEAT_MENU_GAVE_GOLD,+%1 oro
+CHEAT_MENU_GAVE_RENOWN,+%1 fama
+CHEAT_MENU_GAVE_GOOD,+%1 bontà
+CHEAT_MENU_GAVE_EVIL,+%1 malvagità
+CHEAT_MENU_GAVE_PURITY,+%1 purezza
+CHEAT_MENU_GAVE_CORRUPTION,+%1 corruzione
+CHEAT_MENU_HEALED,Salute riportata a %1
+CHEAT_MENU_TIME_SET,Ora sono le %1
+CHEAT_MENU_ITEM_ADDED,Aggiunto all'inventario: %1
+CHEAT_MENU_ITEM_PART_ADDED,Aggiunti all'inventario: %1 di %2
+CHEAT_MENU_ITEM_HEALTH,10 x Pozione di salute eterna
+CHEAT_MENU_ITEM_RESURRECTION,5 x Fiala della resurrezione
+CHEAT_MENU_ITEM_XP_GENERAL,5 x Estratto di esperienza pura
+CHEAT_MENU_ITEM_XP_STRENGTH,5 x Pozione di forza del tuono
+CHEAT_MENU_ITEM_XP_SKILL,5 x Pozione di abilità esperta
+CHEAT_MENU_ITEM_XP_WILL,5 x Pozione di volontà non diluita
+CHEAT_MENU_ITEM_YOUTH,Una pozione della giovinezza
+CHEAT_MENU_ITEM_SCAR,Una pozione miracolosa cancella-cicatrici
+CHEAT_MENU_ITEM_FAT,Una pozione magro come un chiodo
+CHEAT_MENU_ITEM_BEAUTY,Un trattamento di bellezza profondo
+CHEAT_MENU_ITEM_CHICKS,10 x Pulcino croccante

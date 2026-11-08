@@ -969,14 +969,6 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		// The page stack may have arrived inside another unit; markers hang off it either way.
 		_pages ??= Template.PageRootUnit.Length == 0 ? null : Find(Template.PageRootUnit);
 
-		// Bound but not driven: `infowindow.lua`/`iteminfo.lua` still run in the guest
-		// (`sub_82426470` is a passthrough) and their `goToSlide` arrives on the slide channel;
-		// driving the port too would give the slide two owners.
-		_infoWindow.Theme = Book;
-		_infoWindow.Bind(this);
-		_itemInfo.Theme = Book;
-		_itemInfo.Bind(this);
-
 		// One `Page` (`scripts/gameface/page.lua`) per page component, bound by structure (carries
 		// `Contents` and `DimensionsImage`, as `AK.fetchObjects` asks), never by name.
 		if (_pages is not null)
@@ -1044,8 +1036,6 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			(_pageWidgets.Count == 0
 				? string.Empty
 				: $", {_pageWidgets.Count} page(s) [{string.Join("; ", _pageWidgets.ConvertAll(p => p.Describe()))}]") +
-			(_infoWindow.IsBound ? $", {_infoWindow.Describe()}" : string.Empty) +
-			(_itemInfo.IsBound ? $", {_itemInfo.Describe()}" : string.Empty) +
 			(_binding.SuppressedCount == 0
 				? string.Empty
 				: $", {_binding.SuppressedCount} subtree(s) left to their owning view") +
@@ -3703,12 +3693,6 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			}
 		}
 	}
-
-	/// <summary>The ported `g_InfoWindow`, when this screen's art carries one.</summary>
-	private readonly Engine_UiInfoWindow _infoWindow = new();
-
-	/// <summary>The ported `g_ItemInfo`, same condition.</summary>
-	private readonly Engine_UiItemInfo _itemInfo = new();
 
 	/// <summary>The runtime border cloner — `framecloning.lua`.</summary>
 	private Engine_UiFrameCloning? _frameCloning;

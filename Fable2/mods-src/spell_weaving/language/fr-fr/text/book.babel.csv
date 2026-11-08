@@ -1,0 +1,9 @@
+key,value
+SPELL_WEAVING_HYBRID,Hybride
+SPELL_WEAVING_NAME,Tissage de sorts
+SPELL_WEAVING_DESCRIPTION,L'art de lancer deux sorts en un. Choisissez un sort partenaire : il est tissé dans chaque lancer jusqu'au niveau de puissance %1 et frappe la même cible au même instant. Se paie à parts égales en expérience de Volonté et d'Adresse.
+SPELL_WEAVING_TOTAL_XP,Expérience de Volonté et d'Adresse disponible :
+SPELL_WEAVING_SET_PARTNER,Définir le partenaire
+SPELL_WEAVING_REMOVE_PARTNER,Retirer le partenaire
+SPELL_WEAVING_MOD_NAME,Tissage de sorts
+SPELL_WEAVING_MOD_DESCRIPTION,"Le tissage de sorts de Fable 3 dans Fable 2 : un second sort, le partenaire, est lancé avec celui de l'emplacement chargé, à la même puissance et sur la même cible. Par défaut, un seul lancer à la puissance chargée, au rythme de Fable 3, au lieu de la cascade de Fable 2 à travers tous les emplacements inférieurs. Chaque emplacement de sort a son propre partenaire : sur la roue rapide ou la page des sorts du livre des capacités, mettez un sort de Volonté en surbrillance et appuyez sur X pour en faire le partenaire de l'emplacement, ou sur Y pour le retirer. Le Tissage de sorts s'apprend sur la page Hybride du livre des capacités, payé pour moitié en expérience de Volonté et pour moitié en expérience d'Adresse ; le niveau N tisse les lancers jusqu'à la puissance N. Contrôle du temps et Résurrection des morts ne sont jamais partenaires."

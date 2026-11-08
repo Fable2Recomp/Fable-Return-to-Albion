@@ -57,10 +57,6 @@ public static class Fable3LuaContracts
 	public static Fable3MiniGameBar? BarOf(string document) =>
 		Documents.TryGetValue(document, out Presentation? presentation) ? presentation.Bar : null;
 
-	/// <summary>The stamp of the bar's last write in a document, 0 when none.</summary>
-	public static ulong BarStampOf(string document) =>
-		Documents.TryGetValue(document, out Presentation? presentation) ? presentation.BarStamp : 0u;
-
 	/// <summary>`@Lua.Param(pres, name, value)`.</summary>
 	public static void Param(Engine_UiModel.GuiNativeCall call)
 	{

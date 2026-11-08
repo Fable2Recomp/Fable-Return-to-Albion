@@ -1,0 +1,15 @@
+key,value
+QUICKSAVE_MOD_NAME,快速儲存
+QUICKSAVE_MOD_DESCRIPTION,Bethesda 風格的快速儲存與快速載入：F8 會儲存遊戲並在您的存檔旁保留一份快速存檔，F9 會在不離開遊戲的情況下載入該快速存檔。快速載入不會更動您原本的存檔。
+QUICKSAVE_INPUT_QUICKSAVE,快速儲存
+QUICKSAVE_INPUT_QUICKLOAD,快速載入
+QUICKSAVE_SAVE_ALONE_ONLY,快速儲存僅能在單人遊戲中使用。
+QUICKSAVE_LOAD_ALONE_ONLY,快速載入僅能在單人遊戲中使用。
+QUICKSAVE_NONE_YET,目前還沒有快速存檔。請先快速儲存以建立一個。
+QUICKSAVE_CANT_LOAD_NOW,現在無法快速載入。
+QUICKSAVE_LOAD_FAILED,無法載入快速存檔。
+QUICKSAVE_CANT_SAVE_NOW,現在無法儲存。
+QUICKSAVE_GAME_NOT_SAVED,遊戲未儲存。沒有建立快速存檔。
+QUICKSAVE_SAVED,已快速儲存。
+QUICKSAVE_NOT_KEPT,遊戲已儲存，但無法保留快速存檔。
+QUICKSAVE_LOADED,已載入 %1 的快速存檔。

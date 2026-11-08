@@ -1,0 +1,7 @@
+key,value
+SOULS_COMBAT_STAMINA_NAME,Ausdauer
+SOULS_COMBAT_STAMINA_DESCRIPTION,"Durchhaltevermögen im Kampf. Verlängert deine Ausdaueranzeige, damit du länger zuschlagen, ausweichen und blocken kannst, bevor du zurückweichen musst."
+SOULS_COMBAT_MOD_NAME,Souls-Kampf
+SOULS_COMBAT_MOD_DESCRIPTION,"Entschlossene, ausdauerbasierte Kämpfe im Stil von Elden Ring: Ein Held, der sich unter einer festen Orbitkamera auf der Stelle dreht, Gegner, die sich zusammentun, ihre Kombos durchziehen und Lücken bestrafen, LT schaltet die Zielerfassung um, Schläge, Rollen und Blocken verbrauchen Ausdauer, Zauber verbrauchen Mana, und eine Ausdauer-Fähigkeit gesellt sich zur Stärke. Refiis Beispiel für eine komplette Gameplay-Überarbeitung allein in Lua, auf Grundlage der erklärten Ereignisse und Aufrufe der Mod-API."
+SOULS_COMBAT_SETTING_BARS,"Leisten anzeigen, solange nicht voll"
+SOULS_COMBAT_SETTING_BARS_DESCRIPTION,"Gesundheit, Mana und Ausdauer bleiben auf dem Bildschirm, solange eine davon unter ihrem Maximum liegt."

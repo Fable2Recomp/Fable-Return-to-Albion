@@ -603,10 +603,11 @@ public sealed class BnkFileSystem : IDisposable
     }
 
     /// <summary>
-    /// The one culture whose files also answer to their locale-less spelling; `en-uk` is the
-    /// title's own fallback culture.
+    /// The one culture whose files also answer to their locale-less spelling: the culture the
+    /// guest runs in (<see cref="Refii.Text.Engine_GameCulture.Current"/>) — the install's own
+    /// until the guest states one, so a disc that ships only es-es aliases es-es.
     /// </summary>
-    public static string ActiveCulture { get; set; } = "en-uk";
+    public static string ActiveCulture => Refii.Text.Engine_GameCulture.Current;
 
     /// <summary>
     /// The other names a path answers to.
@@ -734,9 +735,10 @@ public sealed class BnkFileSystem : IDisposable
     private static bool IsCultureFolder(string segment) =>
         string.Equals(segment, ActiveCulture, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>True when <paramref name="segment"/> matches any known game localization culture folder.</summary>
+    /// <summary>True when <paramref name="segment"/> is a culture folder: a code of the install's
+    /// <c>cultures.txt</c>, or one of <see cref="KnownCultures"/>.</summary>
     private static bool IsAnyCultureFolder(string segment) =>
-        KnownCultures.Contains(segment);
+        KnownCultures.Contains(segment) || Refii.Text.Engine_GameCulture.IsCultureCode(segment);
 
     private void IndexLoose(string gameDirectory, IReadOnlyList<string> extensions)
     {

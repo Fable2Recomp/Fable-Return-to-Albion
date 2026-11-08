@@ -1,0 +1,9 @@
+key,value
+SPELL_WEAVING_HYBRID,Hybrid
+SPELL_WEAVING_NAME,Zauberweben
+SPELL_WEAVING_DESCRIPTION,"Die Kunst, zwei Zauber als einen zu wirken. Wähle einen Partnerzauber, und er wird in jeden Zauber bis Machtstufe %1 eingewoben und trifft dasselbe Ziel im selben Moment. Bezahlt zu gleichen Teilen mit Willens- und Geschick-Erfahrung."
+SPELL_WEAVING_TOTAL_XP,Verfügbare Willens- und Geschick-Erfahrung:
+SPELL_WEAVING_SET_PARTNER,Partner festlegen
+SPELL_WEAVING_REMOVE_PARTNER,Partner entfernen
+SPELL_WEAVING_MOD_NAME,Zauberweben
+SPELL_WEAVING_MOD_DESCRIPTION,"Das Zauberweben aus Fable 3 in Fable 2: Ein zweiter Zauber, der Partner, wird zusammen mit dem auf dem aufgeladenen Platz gewirkt, mit derselben Macht und auf dasselbe Ziel. Standardmäßig ein Zauber mit der aufgeladenen Macht, wie Fable 3 es taktet, statt Fable 2s Kaskade durch alle niedrigeren Plätze. Jeder Zauberplatz hat seinen eigenen Partner: Markiere im Schnellrad oder auf der Zauberseite des Fähigkeitenbuchs einen Willenszauber und drücke X, um ihn zum Partner des Platzes zu machen, oder Y, um ihn zu entfernen. Das Zauberweben selbst wird auf der Seite Hybrid des Fähigkeitenbuchs erlernt und je zur Hälfte mit Willens- und Geschick-Erfahrung bezahlt; Stufe N webt Zauber bis Machtstufe N ein. Zeitkontrolle und Totenerweckung sind niemals Partner."

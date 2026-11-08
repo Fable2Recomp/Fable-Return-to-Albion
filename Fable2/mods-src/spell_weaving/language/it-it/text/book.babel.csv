@@ -1,0 +1,9 @@
+key,value
+SPELL_WEAVING_HYBRID,Ibrido
+SPELL_WEAVING_NAME,Intreccio di incantesimi
+SPELL_WEAVING_DESCRIPTION,"L'arte di lanciare due incantesimi come uno solo. Scegli un incantesimo compagno: verrà intrecciato in ogni lancio fino al livello di potenza %1, colpendo lo stesso bersaglio nello stesso istante. Si paga in parti uguali con esperienza di Volontà e di Abilità."
+SPELL_WEAVING_TOTAL_XP,Esperienza di Volontà e Abilità disponibile:
+SPELL_WEAVING_SET_PARTNER,Imposta compagno
+SPELL_WEAVING_REMOVE_PARTNER,Rimuovi compagno
+SPELL_WEAVING_MOD_NAME,Intreccio di incantesimi
+SPELL_WEAVING_MOD_DESCRIPTION,"L'intreccio di incantesimi di Fable 3 in Fable 2: un secondo incantesimo, il compagno, viene lanciato insieme a quello nello slot caricato, con la stessa potenza e sullo stesso bersaglio. In modo predefinito un solo lancio alla potenza caricata, al ritmo di Fable 3, invece della cascata di Fable 2 attraverso tutti gli slot inferiori. Ogni slot degli incantesimi ha il proprio compagno: nella ruota rapida o nella pagina degli incantesimi del libro delle abilità, evidenzia un incantesimo di Volontà e premi X per renderlo il compagno dello slot, Y per rimuoverlo. L'Intreccio di incantesimi si impara nella pagina Ibrido del libro delle abilità e si paga metà con esperienza di Volontà e metà con esperienza di Abilità; il livello N intreccia i lanci fino alla potenza N. Controllo del tempo e Rianimazione dei morti non sono mai compagni."

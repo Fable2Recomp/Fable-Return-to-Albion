@@ -1,4 +1,4 @@
-name = "Quickslots"
+name = "{QUICKSLOTS_MOD_NAME}"
 version = "0.1.0"
 author = "Refii"
-description = "Twelve assignable quickslots on the D-pad: the four directions, LT + a direction and RT + a direction, each holding an item to use, a weapon to draw, an expression to perform or a spell to ready. Assign from the inventory, expressions and abilities books or from the expression wheel; the D-pad on the HUD shows what each slot holds. A direction with nothing assigned keeps the game's own use."
+description = "{QUICKSLOTS_MOD_DESCRIPTION}"

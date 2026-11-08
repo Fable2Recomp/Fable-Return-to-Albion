@@ -1,0 +1,15 @@
+key,value
+QUICKSAVE_MOD_NAME,Salvataggio rapido
+QUICKSAVE_MOD_DESCRIPTION,"Salvataggio e caricamento rapidi in stile Bethesda: F8 salva la partita e tiene un salvataggio rapido accanto al tuo salvataggio, F9 ricarica quel salvataggio rapido senza uscire dalla partita. Un caricamento rapido lascia il tuo salvataggio com'era."
+QUICKSAVE_INPUT_QUICKSAVE,Salvataggio rapido
+QUICKSAVE_INPUT_QUICKLOAD,Caricamento rapido
+QUICKSAVE_SAVE_ALONE_ONLY,Il salvataggio rapido funziona solo nelle partite a giocatore singolo.
+QUICKSAVE_LOAD_ALONE_ONLY,Il caricamento rapido funziona solo nelle partite a giocatore singolo.
+QUICKSAVE_NONE_YET,Non c'è ancora un salvataggio rapido. Esegui un salvataggio rapido per crearne uno.
+QUICKSAVE_CANT_LOAD_NOW,Non puoi eseguire un caricamento rapido adesso.
+QUICKSAVE_LOAD_FAILED,Impossibile caricare il salvataggio rapido.
+QUICKSAVE_CANT_SAVE_NOW,Non puoi salvare adesso.
+QUICKSAVE_GAME_NOT_SAVED,La partita non è stata salvata. Nessun salvataggio rapido eseguito.
+QUICKSAVE_SAVED,Salvataggio rapido eseguito.
+QUICKSAVE_NOT_KEPT,"La partita è stata salvata, ma non è stato possibile conservare il salvataggio rapido."
+QUICKSAVE_LOADED,Caricato il salvataggio rapido delle %1.

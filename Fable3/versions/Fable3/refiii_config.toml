@@ -270,14 +270,13 @@
 0x82B3EB28 = { name = "rex_OverlayBar_CommitText", size = 0x34 }
 # THE UI STATED AT ENTRY (Fable3/src/hooks/src/ui_stated_hooks.cpp): every .bgf's load (slot,
 # CCharString* name) — the presentation's document; the text-by-path writer (path, pres, LHString*),
-# the info panes' text (pane, field, LHString*, r6, pres), the interaction text wrapper (wrapper,
-# LHString*), the interaction button (mode, button, label, glyph, enabled), the interaction list
+# the info panes' text (pane, field, LHString*, r6, pres), the interaction button (mode, button,
+# label, glyph, enabled), the interaction list
 # (mode, scroll), the title/description panel (mode, title, description), the dye bar (mode, f1..f6,
 # r10 player) and the side panel (mode, kind, player).
 0x825C7A90 = { name = "rex_GuiPresentation_Load" }
 0x82819070 = { name = "rex_GuiElement_SetTextAt" }
 0x82BEA6D8 = { name = "rex_InfoPane_SetText" }
-0x82BEF428 = { name = "rex_InteractionText_Set" }
 0x82961340 = { name = "rex_InteractionButton_Show" }
 0x82963DE0 = { name = "rex_InteractionList_Write" }
 0x8295CE40 = { name = "rex_InteractionMode_TitleDescription" }
@@ -323,8 +322,7 @@
 # root's hide (H) and show (force) and the cutscene rules (rules, a2, a3); the save menu's open
 # (menu, allowed, entity), row writer (menu) and close (menu); the Options query (box, tag); the
 # money alert's change (A, old, delta, kingdom), show (A, amount, kingdom) and hide (A); the
-# objective list's add (O, tag, done), mark (O, tag, done) and redraw (O); the target names' show (TN, target,
-# viewer, keep) and clear (TN); the crime timer's fine (CT, fine) and seconds (CT, secs); the job
+# target names' show (TN, target, viewer, keep) and clear (TN); the crime timer's fine (CT, fine) and seconds (CT, secs); the job
 # multiplier (J, level, prefix); the quest summary row (box, row, quest, selected, isLast), the
 # stats page (box, page), the king's schedule ctor (box, table) and the promise ctor (box, entity,
 # tag, accepted).
@@ -338,9 +336,6 @@
 0x8281E560 = { name = "rex_MoneyAlert_Change" }
 0x8281E270 = { name = "rex_MoneyAlert_Show" }
 0x8281EA00 = { name = "rex_MoneyAlert_Hide" }
-0x82953CC8 = { name = "rex_Objectives_Add" }
-0x82953DD0 = { name = "rex_Objectives_Mark" }
-0x82953E68 = { name = "rex_Objectives_Redraw" }
 0x825D9FC8 = { name = "rex_TargetNames_Show" }
 0x825DA3A0 = { name = "rex_TargetNames_Clear" }
 0x825E5270 = { name = "rex_CrimeTimer_Fine" }
@@ -1199,6 +1194,57 @@ name = "RefiiF3StateCommitAt50"
 address = 0x82B3FE88
 registers = ["r30", "r1"]
 
+# The interaction modes that store their info panel IM+64 themselves, not through the stager
+# sub_82963040: `stw rX,0x40(r11)` with IM = `lwz r11,0x14(r31)` — decoration, sub_82B2AB28, the
+# shop and the pawn shop (Fable3/src/hooks/src/interaction_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiF3InteractionPanelStored"
+address = 0x82B25998
+registers = ["r10"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionPanelStored"
+address = 0x82B259B8
+registers = ["r10"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionPanelStored"
+address = 0x82B259CC
+registers = ["r30"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionPanelStored"
+address = 0x82B259E0
+registers = ["r30"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionPanelStored"
+address = 0x82B25DA0
+registers = ["r10"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionPanelStored"
+address = 0x82B2AC98
+registers = ["r9"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionPanelStored"
+address = 0x82B2E7B0
+registers = ["r26"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionPanelStored"
+address = 0x82B36704
+registers = ["r30"]
+
+# The interaction text box's commit (sub_82BEF428): its guard `lwz r11,4(r30)` with the resolved
+# text child r30 (`+44` + "1", else `+44`, 0x82BEF5B4 / 0x82BEF5D4) and the text r26 (0x82BEF44C)
+# (Fable3/src/hooks/src/headless_commit_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x82BEF754
+registers = ["r30", "r26"]
+
 [[midasm_hook]]
 name = "RefiiF3StateCreditsLine"
 address = 0x82B3FE40
@@ -1225,6 +1271,110 @@ registers = ["r11", "r9"]
 name = "RefiiF3CrimeTimerShown"
 address = 0x8283985C
 registers = ["r11", "r9"]
+
+# The crime timer's other CT+0 stores (screen_stated_hooks.cpp): the HUD build, the partner's packet
+# 369, the manager's vf13, the criminal teardown, RemoveCriminal, GUI.ShowMiscGUIElements, the
+# region-change save.
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x825E5250
+registers = ["r31", "r9"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x825E5460
+registers = ["r31", "r11"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x825E5488
+registers = ["r31", "r11"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x8283A0C0
+registers = ["r11", "r9"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x8283A0E4
+registers = ["r11", "r9"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x82837A04
+registers = ["r11", "r9"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x8283D0E8
+registers = ["r11", "r9"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x8251FE54
+registers = ["r11", "r9"]
+
+[[midasm_hook]]
+name = "RefiiF3CrimeTimerShown"
+address = 0x8232BBDC
+registers = ["r11", "r26"]
+
+# The multiplier roots' build slide and their shown / hidden opacity, and the HUD layer fade: each
+# call's own arguments on its `bl` (ui_stated_hooks.cpp).
+
+[[midasm_hook]]
+name = "RefiiF3MultiplierSlide"
+address = 0x82950AD4
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+name = "RefiiF3MultiplierOpacity"
+address = 0x82950B40
+registers = ["r3", "r4", "f1"]
+
+[[midasm_hook]]
+name = "RefiiF3LayerFade"
+address = 0x82B14B28
+registers = ["r3", "r4", "f1"]
+
+# HUD texts committed straight to their box, on the commit's guard (headless_commit_hooks.cpp): the
+# received-item alert's player number (sub_82433468, r1+0x50) and the pooled HUD icon's title and
+# opinion (sub_82B52170: the entry r4, and r5 kept in r29).
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt50"
+address = 0x82433538
+registers = ["r31", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x82B521AC
+registers = ["r11", "r4"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x82B521EC
+registers = ["r11", "r29"]
+
+# The interaction list's emptied rows: sub_82963DE0's "" commit to a past-end row's or the leaving
+# row's `Title`, on its box guard `lwz r11,4(rTitle)` (title, r1 -> r1+0x50, row, presentation r29;
+# Fable3/src/hooks/src/ui_stated_hooks.cpp).
+[[midasm_hook]]
+name = "RefiiF3InteractionRowEmptied"
+address = 0x82963FA4
+registers = ["r27", "r1", "r28", "r29"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionRowEmptied"
+address = 0x82964098
+registers = ["r30", "r1", "r26", "r29"]
+
+[[midasm_hook]]
+name = "RefiiF3InteractionRowEmptied"
+address = 0x829641F4
+registers = ["r30", "r1", "r24", "r29"]
 
 # The epilogue's screenshot texture hash, after sub_826EFBD8 wrote it to r1+0x58
 # (Fable3/src/hooks/src/end_screen_hooks.cpp).
@@ -1296,3 +1446,105 @@ registers = ["r28", "r31", "r30", "r27"]
 name = "RefiiF3StatsFriends"
 address = 0x82970B70
 registers = ["r28", "r10", "r31"]
+
+# THE INTERACTION MODE'S LAST UNSTATED WRITERS (f3last): the overlay bars' TopBox slide
+# (sub_825C6D78), the mini-game counter's slide (sub_826ECB18), the decoration and world-map
+# buttons' opacity (sub_82961660, sub_82910D60), the map region's slide (sub_82911F08) and the
+# world panel's opacity floor (CInteractionModeGUIWorld_vf8) — each on its `bl`, [element,
+# presentation, value] (Fable3/src/hooks/src/ui_stated_hooks.cpp); then the commits on their guards
+# (headless_commit_hooks.cpp): the counter text, the mode button title, the crowd bar, the side
+# pane and the save info panel.
+[[midasm_hook]]
+name = "RefiiF3OverlayBarTopBox"
+address = 0x825C6DD4
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+name = "RefiiF3OverlayBarTopBox"
+address = 0x825C6E18
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+name = "RefiiF3MiniGameCounterSlide"
+address = 0x826ECB94
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+name = "RefiiF3DecorationButtonOpacity"
+address = 0x829616A4
+registers = ["r3", "r4", "f1"]
+
+[[midasm_hook]]
+name = "RefiiF3WorldMapButtonOpacity"
+address = 0x82910E00
+registers = ["r3", "r4", "f1"]
+
+[[midasm_hook]]
+name = "RefiiF3WorldMapRegionSlide"
+address = 0x82912040
+registers = ["r3", "r4", "r5"]
+
+[[midasm_hook]]
+name = "RefiiF3GuiWorldOpacity"
+address = 0x82957470
+registers = ["r3", "r4", "f1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x826ECBCC
+registers = ["r3", "r30"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x829617F8
+registers = ["r31", "r3"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x82B24800
+registers = ["r31", "r3"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x82BEF248
+registers = ["r31", "r29"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt68"
+address = 0x829580A0
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt6C"
+address = 0x82958184
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt54"
+address = 0x82958248
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt58"
+address = 0x829582A4
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt58"
+address = 0x82958334
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommit"
+address = 0x8295838C
+registers = ["r3", "r31"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt50"
+address = 0x82958738
+registers = ["r3", "r1"]
+
+[[midasm_hook]]
+name = "RefiiF3StateCommitAt58"
+address = 0x82958780
+registers = ["r3", "r1"]

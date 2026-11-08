@@ -6,7 +6,8 @@
 -- game's own setters: the purse's and the experience pools' Modify (Refii.give_gold,
 -- Refii.give_experience), Stats.ModifyRenown / ModifyMorality / ModifyPurity (Refii.modify_renown /
 -- modify_morality / modify_purity), the inventory's add (Refii.add_item), the clock's own setter.
--- A notice says what was given.
+-- A notice says what was given, in the player's language: every line is a key of
+-- language/<culture>/text/book.babel.csv, read through Refii.text.
 --
 -- The Items page is a row list stated here (set_menu_rows) from ITEMS when the Cheat Menu opens,
 -- each row named as the game names the item: its record's NameTag, drawn through the string book.
@@ -14,34 +15,41 @@
 CheatMenu = CheatMenu or {}
 local C = CheatMenu
 
-local POOLS = { [0] = "general", [1] = "strength", [2] = "skill", [3] = "will" }
+local POOLS = { [0] = "GENERAL", [1] = "STRENGTH", [2] = "SKILL", [3] = "WILL" }
 
 -- The Items page: what a row gives, by GDB record name (the names the shipped scripts give
--- Inventory.AddItemOfType), how many, and the label the notice says (and the row shows when the
--- record states no name). A record the database lacks is left off the page and logged.
+-- Inventory.AddItemOfType), how many, and the label (a text key) the row shows when the record
+-- states no name. A record the database lacks is left off the page and logged.
 local ITEMS = {
-	{ record = "ObjectInventoryPotionHealth_5", count = 10, label = "10 Live Forever Health Potions" },
-	{ record = "ObjectInventoryPotionResurrection", count = 5, label = "5 Resurrection Phials" },
-	{ record = "ObjectInventoryPotionExperienceGeneral_5", count = 5, label = "5 Pure Experience Extracts" },
-	{ record = "ObjectInventoryPotionExperienceStrength_5", count = 5, label = "5 Thunder's Strength Potions" },
-	{ record = "ObjectInventoryPotionExperienceSkill_5", count = 5, label = "5 Expert Skill Potions" },
-	{ record = "ObjectInventoryPotionExperienceWill_5", count = 5, label = "5 Undiluted Will Potions" },
-	{ record = "ObjectInventoryPotionYouth", count = 1, label = "A Youth Potion" },
-	{ record = "ObjectInventoryPotionScarReduction_5", count = 1, label = "A Miracle Scar Vanishing Potion" },
-	{ record = "ObjectInventoryPotionFatReduction_5", count = 1, label = "A Stick-thin Potion" },
-	{ record = "ObjectInventoryPotionAttractiveness", count = 1, label = "A Deep Skin Beauty Treatment" },
-	{ record = "ObjectInventoryFoodAndDrinkCrunchyChick", count = 10, label = "10 Crunchy Chicks" },
+	{ record = "ObjectInventoryPotionHealth_5", count = 10, label = "{CHEAT_MENU_ITEM_HEALTH}" },
+	{ record = "ObjectInventoryPotionResurrection", count = 5, label = "{CHEAT_MENU_ITEM_RESURRECTION}" },
+	{ record = "ObjectInventoryPotionExperienceGeneral_5", count = 5, label = "{CHEAT_MENU_ITEM_XP_GENERAL}" },
+	{ record = "ObjectInventoryPotionExperienceStrength_5", count = 5, label = "{CHEAT_MENU_ITEM_XP_STRENGTH}" },
+	{ record = "ObjectInventoryPotionExperienceSkill_5", count = 5, label = "{CHEAT_MENU_ITEM_XP_SKILL}" },
+	{ record = "ObjectInventoryPotionExperienceWill_5", count = 5, label = "{CHEAT_MENU_ITEM_XP_WILL}" },
+	{ record = "ObjectInventoryPotionYouth", count = 1, label = "{CHEAT_MENU_ITEM_YOUTH}" },
+	{ record = "ObjectInventoryPotionScarReduction_5", count = 1, label = "{CHEAT_MENU_ITEM_SCAR}" },
+	{ record = "ObjectInventoryPotionFatReduction_5", count = 1, label = "{CHEAT_MENU_ITEM_FAT}" },
+	{ record = "ObjectInventoryPotionAttractiveness", count = 1, label = "{CHEAT_MENU_ITEM_BEAUTY}" },
+	{ record = "ObjectInventoryFoodAndDrinkCrunchyChick", count = 10, label = "{CHEAT_MENU_ITEM_CHICKS}" },
 }
 
 for _, item in ipairs(ITEMS) do
 	item.def = Refii.hash(item.record)
 end
 
+-- A whole number grouped as the player's language groups digits: CHEAT_MENU_NUMBER_SAMPLE is 1000
+-- written that way ("1,000", "1.000", "1 000"), and the separator is what stands between 1 and 000.
 local function thousands(n)
 	local text = tostring(math.floor(math.abs(n) + 0.5))
+	local sample = Refii.text("CHEAT_MENU_NUMBER_SAMPLE")
+	local separator = ","
+	if string.sub(sample, 1, 1) == "1" and string.sub(sample, -3) == "000" then
+		separator = string.gsub(string.sub(sample, 2, -4), "%%", "%%%%")
+	end
 	while true do
 		local done
-		text, done = string.gsub(text, "^(%d+)(%d%d%d)", "%1,%2")
+		text, done = string.gsub(text, "^(%d+)(%d%d%d)", "%1" .. separator .. "%2")
 		if done == 0 then
 			break
 		end
@@ -59,8 +67,10 @@ local function hero_of(e)
 	return hero, p
 end
 
-local function tell(p, text)
-	Refii.notice("Cheat Menu", text, 0, p)
+-- A notice under the menu's own title; `key` a text key, %1 / %2 filled from a and b.
+local function tell(p, key, a, b)
+	local text = Refii.text(key, a, b)
+	Refii.notice("{CHEAT_MENU}", text, 0, p)
 	Refii.log("cheat_menu: player " .. p .. ": " .. text)
 end
 
@@ -76,10 +86,10 @@ function C.experience(arg, e)
 		for n = 0, 3 do
 			Refii.give_experience(handle, n, amount)
 		end
-		tell(p, "+" .. thousands(amount) .. " of each experience")
+		tell(p, "CHEAT_MENU_GAVE_XP_ALL", thousands(amount))
 	elseif POOLS[tonumber(pool)] ~= nil then
 		Refii.give_experience(handle, tonumber(pool), amount)
-		tell(p, "+" .. thousands(amount) .. " " .. POOLS[tonumber(pool)] .. " experience")
+		tell(p, "CHEAT_MENU_GAVE_XP_" .. POOLS[tonumber(pool)], thousands(amount))
 	end
 end
 
@@ -88,7 +98,7 @@ function C.gold(arg, e)
 	local amount = tonumber(arg)
 	if handle ~= nil and amount ~= nil then
 		Refii.give_gold(handle, amount)
-		tell(p, "+" .. thousands(amount) .. " gold")
+		tell(p, "CHEAT_MENU_GAVE_GOLD", thousands(amount))
 	end
 end
 
@@ -96,7 +106,7 @@ function C.renown(arg, e)
 	local hero, p = hero_of(e)
 	local amount = tonumber(arg)
 	if hero ~= nil and amount ~= nil and Refii.modify_renown(hero, amount) then
-		tell(p, "+" .. thousands(amount) .. " renown")
+		tell(p, "CHEAT_MENU_GAVE_RENOWN", thousands(amount))
 	end
 end
 
@@ -104,7 +114,7 @@ function C.morality(arg, e)
 	local hero, p = hero_of(e)
 	local amount = tonumber(arg)
 	if hero ~= nil and amount ~= nil and Refii.modify_morality(hero, amount) then
-		tell(p, (amount >= 0 and "+" .. thousands(amount) .. " good" or "+" .. thousands(-amount) .. " evil"))
+		tell(p, amount >= 0 and "CHEAT_MENU_GAVE_GOOD" or "CHEAT_MENU_GAVE_EVIL", thousands(amount))
 	end
 end
 
@@ -112,7 +122,7 @@ function C.purity(arg, e)
 	local hero, p = hero_of(e)
 	local amount = tonumber(arg)
 	if hero ~= nil and amount ~= nil and Refii.modify_purity(hero, amount) then
-		tell(p, (amount >= 0 and "+" .. thousands(amount) .. " purity" or "+" .. thousands(-amount) .. " corruption"))
+		tell(p, amount >= 0 and "CHEAT_MENU_GAVE_PURITY" or "CHEAT_MENU_GAVE_CORRUPTION", thousands(amount))
 	end
 end
 
@@ -121,7 +131,7 @@ function C.heal(_, e)
 	local _, most = Refii.health(handle or 0)
 	if handle ~= nil and most ~= nil then
 		Refii.set_health(handle, most)
-		tell(p, "Healed to " .. thousands(most))
+		tell(p, "CHEAT_MENU_HEALED", thousands(most))
 	end
 end
 
@@ -130,22 +140,7 @@ function C.time(arg, e)
 	local hours = tonumber(arg)
 	if hours ~= nil then
 		Refii.set_time_of_day(hours)
-		tell(e and e.player or 1, string.format("The time is now %02d:00", hours))
-	end
-end
-
--- arg the row's index in ITEMS.
-function C.item(arg, e)
-	local hero, p = hero_of(e)
-	local item = ITEMS[tonumber(arg) or 0]
-	if hero == nil or item == nil or not Refii.record_exists(item.def) then
-		return
-	end
-	local _, added = Refii.add_item(hero, item.def, item.count)
-	if added == item.count then
-		tell(p, item.label .. " added to the inventory")
-	elseif (added or 0) > 0 then
-		tell(p, added .. " of " .. item.label .. " added to the inventory")
+		tell(e and e.player or 1, "CHEAT_MENU_TIME_SET", string.format("%02d:00", hours))
 	end
 end
 
@@ -162,6 +157,23 @@ local function item_label(item)
 		return item.label
 	end
 	return "{" .. tag .. "}" .. (item.count > 1 and (" x" .. item.count) or "")
+end
+
+-- arg the row's index in ITEMS.
+function C.item(arg, e)
+	local hero, p = hero_of(e)
+	local item = ITEMS[tonumber(arg) or 0]
+	if hero == nil or item == nil or not Refii.record_exists(item.def) then
+		return
+	end
+	local _, added = Refii.add_item(hero, item.def, item.count)
+	-- The item as its row names it: the game's own name in the player's language, or ITEMS' label.
+	local name = Refii.text(item_label(item))
+	if added == item.count then
+		tell(p, "CHEAT_MENU_ITEM_ADDED", name)
+	elseif (added or 0) > 0 then
+		tell(p, "CHEAT_MENU_ITEM_PART_ADDED", added, name)
+	end
 end
 
 local checked = false

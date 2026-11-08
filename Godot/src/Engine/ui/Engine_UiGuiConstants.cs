@@ -40,21 +40,6 @@ public static class Engine_UiGuiConstants
 
 	public const float ThumbstickReleaseThreshold = 0.65f;
 
-	/// <summary>
-	/// `GUI.Const.EVENT_TYPE_*` — the GUI layer's event ids, NOT the menu's. `NAVIGATION` is 100
-	/// here and 201 in `g_Menu.EventConst`; `BUTTON_REMOVE`/`BUTTON_SET` are 101/102 versus
-	/// 202/203. The scroll ids 140/141 are shared and reach the front-end dispatcher unchanged.
-	/// </summary>
-	public const int EventNavigation = 100;
-
-	public const int EventButtonRemove = 101;
-
-	public const int EventButtonSet = 102;
-
-	public const int EventMenuScrollUp = 140;
-
-	public const int EventMenuScrollDown = 141;
-
 	/// <summary>`GUI.Const.BUTTON_TYPE_*`.</summary>
 	public enum Button
 	{

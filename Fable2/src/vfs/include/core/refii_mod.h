@@ -1817,6 +1817,14 @@ extern "C" uint32_t refii_mod_message_box(int32_t player, const char* title, con
 /// thread.
 extern "C" uint32_t refii_mod_notice(int32_t player, const char* title, const char* text, float seconds);
 
+/// A mod's text in the culture the game runs in: `text` a bare key ("QUICKSAVE_SAVED") or a text
+/// with {KEY}s inside, each looked up in the running book, the enabled mods'
+/// language/<culture>/text/book.babel.csv, then their en-uk rows; a key nothing knows stays as
+/// written. Writes the result NUL-terminated into `out` (cut to `capacity`) and returns its length,
+/// or -1 when Godot has installed no lookup (a headless run). A title, text or option given to
+/// refii_mod_notice / refii_mod_message_box / refii_mod_menu_box takes {KEY}s as they are. Any thread.
+extern "C" int32_t refii_mod_text(const char* text, char* out, uint32_t capacity);
+
 /// Raises a menu box for `player` (1 or 2; 0 for whoever owns the menus here) in the game's own
 /// menu box art, on the front end and in game: `title` above `text`, then `count` options (at most
 /// 16; more than the box's six rows are paged). B closes it when `cancelable` is non-zero. Returns

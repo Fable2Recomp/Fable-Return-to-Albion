@@ -1,0 +1,67 @@
+key,value
+CHEAT_MENU,Menu kodów
+CHEAT_MENU_EXPERIENCE,Doświadczenie
+CHEAT_MENU_GOLD,Złoto
+CHEAT_MENU_RENOWN,Sława
+CHEAT_MENU_MORALITY,Moralność
+CHEAT_MENU_PURITY,Czystość
+CHEAT_MENU_ITEMS,Przedmioty
+CHEAT_MENU_TIME,Pora dnia
+CHEAT_MENU_HEAL,Pełne uzdrowienie
+CHEAT_MENU_XP_GENERAL_1K,+1000 ogólnego
+CHEAT_MENU_XP_GENERAL_10K,+10 000 ogólnego
+CHEAT_MENU_XP_STRENGTH_1K,+1000 Siły
+CHEAT_MENU_XP_STRENGTH_10K,+10 000 Siły
+CHEAT_MENU_XP_SKILL_1K,+1000 Umiejętności
+CHEAT_MENU_XP_SKILL_10K,+10 000 Umiejętności
+CHEAT_MENU_XP_WILL_1K,+1000 Woli
+CHEAT_MENU_XP_WILL_10K,+10 000 Woli
+CHEAT_MENU_XP_ALL_10K,+10 000 każdego
+CHEAT_MENU_GOLD_1K,+1000 złota
+CHEAT_MENU_GOLD_10K,+10 000 złota
+CHEAT_MENU_GOLD_100K,+100 000 złota
+CHEAT_MENU_GOLD_1M,+1 000 000 złota
+CHEAT_MENU_RENOWN_1K,+1000 sławy
+CHEAT_MENU_RENOWN_10K,+10 000 sławy
+CHEAT_MENU_RENOWN_100K,+100 000 sławy
+CHEAT_MENU_GOOD_100,Więcej dobra (+100)
+CHEAT_MENU_GOOD_1000,Dużo więcej dobra (+1000)
+CHEAT_MENU_EVIL_100,Więcej zła (-100)
+CHEAT_MENU_EVIL_1000,Dużo więcej zła (-1000)
+CHEAT_MENU_PURE_100,Więcej czystości (+100)
+CHEAT_MENU_PURE_1000,Dużo więcej czystości (+1000)
+CHEAT_MENU_CORRUPT_100,Więcej zepsucia (-100)
+CHEAT_MENU_CORRUPT_1000,Dużo więcej zepsucia (-1000)
+CHEAT_MENU_TIME_DAWN,Świt
+CHEAT_MENU_TIME_NOON,Południe
+CHEAT_MENU_TIME_DUSK,Zmierzch
+CHEAT_MENU_TIME_MIDNIGHT,Północ
+CHEAT_MENU_MOD_NAME,Menu kodów
+CHEAT_MENU_MOD_DESCRIPTION,"Strona Menu kodów w menu pauzy: doświadczenie, złoto, sława, moralność, czystość, przedmioty, pora dnia i pełne uzdrowienie."
+CHEAT_MENU_NUMBER_SAMPLE,1 000
+CHEAT_MENU_GAVE_XP_GENERAL,+%1 ogólnego doświadczenia
+CHEAT_MENU_GAVE_XP_STRENGTH,+%1 doświadczenia Siły
+CHEAT_MENU_GAVE_XP_SKILL,+%1 doświadczenia Umiejętności
+CHEAT_MENU_GAVE_XP_WILL,+%1 doświadczenia Woli
+CHEAT_MENU_GAVE_XP_ALL,+%1 doświadczenia każdego rodzaju
+CHEAT_MENU_GAVE_GOLD,+%1 złota
+CHEAT_MENU_GAVE_RENOWN,+%1 sławy
+CHEAT_MENU_GAVE_GOOD,+%1 dobra
+CHEAT_MENU_GAVE_EVIL,+%1 zła
+CHEAT_MENU_GAVE_PURITY,+%1 czystości
+CHEAT_MENU_GAVE_CORRUPTION,+%1 zepsucia
+CHEAT_MENU_HEALED,Zdrowie przywrócone do %1
+CHEAT_MENU_TIME_SET,Jest teraz %1
+CHEAT_MENU_ITEM_ADDED,Dodano do ekwipunku: %1
+CHEAT_MENU_ITEM_PART_ADDED,Dodano do ekwipunku: %1 z %2
+CHEAT_MENU_ITEM_HEALTH,10 x Mikstura wiecznego zdrowia
+CHEAT_MENU_ITEM_RESURRECTION,5 x Fiolka wskrzeszenia
+CHEAT_MENU_ITEM_XP_GENERAL,5 x Najczystsza mikstura doświadczenia
+CHEAT_MENU_ITEM_XP_STRENGTH,5 x Mikstura siły Groma
+CHEAT_MENU_ITEM_XP_SKILL,5 x Mikstura eksperta
+CHEAT_MENU_ITEM_XP_WILL,5 x Czysta mikstura Woli
+CHEAT_MENU_ITEM_YOUTH,Eliksir młodości
+CHEAT_MENU_ITEM_SCAR,Cudowna mikstura usuwania blizn
+CHEAT_MENU_ITEM_FAT,Mikstura „Skóra i kości”
+CHEAT_MENU_ITEM_BEAUTY,Serum głęboko upiększające
+CHEAT_MENU_ITEM_CHICKS,10 x Chrupiący kurczak

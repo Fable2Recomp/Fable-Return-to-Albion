@@ -70,6 +70,9 @@ tuning, and a mod with no `settings.ui.json` has no page at all.
 | `choice` | a fixed list of labelled values, stepped in the file's order; writes the chosen option's `value` (a number) |
 
 - A value no option states (an old value, a hand edit) shows the nearest option.
+- A `label`, `description` or option `label` written `{KEY}` is your text table's row, drawn in the
+  player's language (see [Text keys](gdb-and-text.md#text-keys)); the page's title is `mod.toml`'s
+  `name`, which may be a key too. Off / On are the game's own words.
 - An option with no `value` is skipped; one with no `label` is captioned by its number; a
   `choice` with no usable option falls back to a slider. `min`, `max` and `step` are ignored on a
   choice.
@@ -94,7 +97,7 @@ game scopes it `<mod>.<action>`:
 
 | Field | Meaning |
 |---|---|
-| `label` | the name the rebinding page shows; defaults to the action's name |
+| `label` | the name the rebinding page shows; defaults to the action's name. `{KEY}` is a row of your text table, in the player's language ([Text keys](gdb-and-text.md#text-keys)) |
 | `keys` | Godot key names: `F`, `Ctrl`, `Space`, `F5`, `BracketLeft`, … |
 | `buttons` | `JoyButton` names (`A`, `LeftShoulder`, `DpadUp`, `Guide`, …) or the Xbox aliases `A B X Y LB RB L3 R3 LT RT Start Back`; `LT` and `RT` are the triggers, pressed past half their travel |
 | `axis` | one `JoyAxis` name (`LeftX`, `LeftY`, `RightX`, `RightY`, `TriggerLeft`, `TriggerRight`) or null; pressed past half deflection either way, or one way with a leading `+` / `-` |

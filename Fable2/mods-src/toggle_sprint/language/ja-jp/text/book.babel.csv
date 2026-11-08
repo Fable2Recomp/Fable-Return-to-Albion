@@ -1,0 +1,5 @@
+key,value
+TOGGLE_SPRINT_MOD_NAME,ダッシュ切り替え
+TOGGLE_SPRINT_MOD_DESCRIPTION,ダッシュを押し続けではなく切り替え式にする: Shift (パッドではA) を1回押すとダッシュを開始し、もう一度押すと止まる。協力プレイでは各プレイヤーが個別に切り替えられる。
+TOGGLE_SPRINT_SETTING_STOP_AFTER,立ち止まったら解除
+TOGGLE_SPRINT_SETTING_STOP_AFTER_DESCRIPTION,ダッシュが終了して再びShiftを押す必要があるまでの静止秒数。0でダッシュを続ける。

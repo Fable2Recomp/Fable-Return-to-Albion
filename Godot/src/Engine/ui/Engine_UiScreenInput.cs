@@ -82,7 +82,4 @@ public static class Engine_UiScreenInput
 
 	/// <summary>The abilities screen — the one screen with an assignment blade behind it.</summary>
 	public const uint AbilitiesScreenId = 14;
-
-	/// <summary>The presentation the assignment blade's art is authored in.</summary>
-	public const string AbilitiesPresentation = "abilitiesscreen";
 }

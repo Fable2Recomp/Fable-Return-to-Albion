@@ -1,0 +1,23 @@
+key,value
+FIRST_PERSON_MOD_NAME,Вид от первого лица
+FIRST_PERSON_MOD_DESCRIPTION,"Играйте в Fable II от первого лица: камера находится в голове героя, голова скрыта, а тело остаётся в кадре, и вы ходите, сражаетесь и осматриваетесь мышью или правым стиком. H переключает вид от первого и третьего лица для каждого игрока на разделённом экране и в сетевой совместной игре. Полные катсцены, постановочные действия и (по умолчанию) прицеливание из огнестрельного оружия сохраняют камеры игры."
+FIRST_PERSON_SETTING_START_ON,Начинать от первого лица
+FIRST_PERSON_SETTING_START_ON_DESCRIPTION,"Начинает ли каждый игрок сеанс от первого лица. H переключает вид того, кто её нажал."
+FIRST_PERSON_SETTING_FOV,Поле зрения
+FIRST_PERSON_SETTING_FOV_DESCRIPTION,В градусах. Собственный вид от первого лица в игре использует 75.
+FIRST_PERSON_SETTING_EYE_HEIGHT,Высота глаз
+FIRST_PERSON_SETTING_EYE_HEIGHT_DESCRIPTION,Метры над точкой столкновения головы.
+FIRST_PERSON_SETTING_EYE_FORWARD,Глаза вперёд
+FIRST_PERSON_SETTING_EYE_FORWARD_DESCRIPTION,"Метры перед головой, чтобы лицо не закрывало обзор."
+FIRST_PERSON_SETTING_PITCH_LIMIT,Обзор вверх и вниз
+FIRST_PERSON_SETTING_PITCH_LIMIT_DESCRIPTION,"Насколько высоко или низко можно смотреть, в градусах."
+FIRST_PERSON_SETTING_FACE_CAMERA,Герой смотрит по камере
+FIRST_PERSON_SETTING_FACE_CAMERA_NEVER,Никогда
+FIRST_PERSON_SETTING_FACE_CAMERA_STANDING,Когда стоит
+FIRST_PERSON_SETTING_FACE_CAMERA_ALWAYS,Всегда
+FIRST_PERSON_SETTING_FACE_CAMERA_DESCRIPTION,"Поворачивает героя туда, куда вы смотрите, чтобы удары и заклинания летели туда же."
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM,Прицел от третьего лица
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM_DESCRIPTION,Прицеливание из огнестрельного оружия или арбалета использует камеру игры из-за плеча.
+FIRST_PERSON_SETTING_SCENES,Первое лицо в разговорах
+FIRST_PERSON_SETTING_SCENES_DESCRIPTION,"Вид от первого лица сохраняется в разговорах и интерактивных сценах, лицом к собеседнику. Полные катсцены сохраняют свою камеру."
+FIRST_PERSON_INPUT_TOGGLE,Первое / третье лицо

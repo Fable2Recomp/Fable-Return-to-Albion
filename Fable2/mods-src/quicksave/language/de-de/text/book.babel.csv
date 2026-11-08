@@ -1,0 +1,15 @@
+key,value
+QUICKSAVE_MOD_NAME,Schnellspeichern
+QUICKSAVE_MOD_DESCRIPTION,"Schnellspeichern und Schnellladen wie bei Bethesda: F8 speichert das Spiel und legt einen Schnellspeicherstand neben deinem Spielstand an, F9 lädt diesen Schnellspeicherstand, ohne das Spiel zu verlassen. Schnellladen lässt deinen eigenen Spielstand unverändert."
+QUICKSAVE_INPUT_QUICKSAVE,Schnellspeichern
+QUICKSAVE_INPUT_QUICKLOAD,Schnellladen
+QUICKSAVE_SAVE_ALONE_ONLY,Schnellspeichern funktioniert nur im Einzelspielermodus.
+QUICKSAVE_LOAD_ALONE_ONLY,Schnellladen funktioniert nur im Einzelspielermodus.
+QUICKSAVE_NONE_YET,"Es gibt noch keinen Schnellspeicherstand. Speichere schnell, um einen anzulegen."
+QUICKSAVE_CANT_LOAD_NOW,Schnellladen ist gerade nicht möglich.
+QUICKSAVE_LOAD_FAILED,Der Schnellspeicherstand konnte nicht geladen werden.
+QUICKSAVE_CANT_SAVE_NOW,Speichern ist gerade nicht möglich.
+QUICKSAVE_GAME_NOT_SAVED,Das Spiel wurde nicht gespeichert. Es wurde nichts schnellgespeichert.
+QUICKSAVE_SAVED,Schnell gespeichert.
+QUICKSAVE_NOT_KEPT,"Das Spiel wurde gespeichert, aber der Schnellspeicherstand konnte nicht behalten werden."
+QUICKSAVE_LOADED,Schnellspeicherstand von %1 Uhr geladen.

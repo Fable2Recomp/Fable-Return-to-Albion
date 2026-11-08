@@ -18,23 +18,19 @@ using Refii.Ui;
 /// what its previous presentation was told. The path is the file's own (the resolver's spelling,
 /// joined to the document's ordinals by <see cref="Fable3HudStatements"/>).</para>
 ///
-/// <para>STATED, THEN SAMPLED. A writer's value as its caller passed it, stated at the writer's
-/// entry (`@Ui.Text`, `@Ui.TextTag`, `@Ui.TextName`, `@Ui.Visible`; ui_stated_hooks.cpp and
-/// gui_element_hooks.cpp), is what an element shows. The reads the element hooks make after the
-/// guest committed — the text box's string (`@Element.Text`) and the opacity the visibility toggle
-/// derived from a read-back (`@Element.ToggleOpacity`) — exist only while Gameface builds the
-/// element; they are kept as the CROSS-CHECK (<c>[fable3-statecheck]</c>: a difference is logged
-/// once per element and value) and, until every text has its stated writer, as the fallback a
-/// path with no stated text draws (<c>sample-only</c>, logged once per path).</para>
+/// <para>ONLY STATED. Every value here is a writer's argument as its caller passed it (`@Ui.*`,
+/// the surface statements of <see cref="Fable3UiStatements"/>); no setter's after-the-fact report
+/// (`@Element.*`) has a route.</para>
 /// </remarks>
 public static class Fable3Elements
 {
 	/// <summary>One element's last stated values.</summary>
 	public sealed class Element
 	{
+		/// <summary>The slide its writer passed (`@Ui.State`, a surface statement), null until one did.</summary>
 		public int? State { get; set; }
 
-		/// <summary>The opacity a writer set outright (SetOpacity, Lua, a .bgf action) — not the visibility toggle's.</summary>
+		/// <summary>An outright opacity a writer's call stated (`@Ui.Opacity`, a surface statement), null until one did.</summary>
 		public float? Opacity { get; set; }
 
 		/// <summary>The visibility toggle's request (sub_82819AE0's bool), null until asked or after an outright opacity.</summary>
@@ -75,26 +71,16 @@ public static class Fable3Elements
 		/// <summary>The stated text resolved (a literal, or the tag's text in the title's book), or null.</summary>
 		public string? StatedTextValue => Stated is { } stated ? Resolve(stated) : null;
 
-		/// <summary>The text box's string read after the commit (`@Element.Text`): the cross-check.</summary>
-		public string? SampledText { get; set; }
-
-		/// <summary>The opacity the toggle wrote, read back after it (`@Element.ToggleOpacity`): the cross-check.</summary>
-		public float? ToggleOpacity { get; set; }
-
-		/// <summary>What the element shows: its stated text, else (no stated writer yet) the sample.</summary>
-		public string? Text => Stated is { } stated ? Resolve(stated) : SampledText;
-
-		/// <summary>The element's timeline position as the guest passed it (a meter's fraction × 1000).</summary>
+		/// <summary>A meter's timeline position as its writer passed it (`@Ui.Time`: fraction × 1000).</summary>
 		public float? Time { get; set; }
 
 		/// <summary>
-		/// The element's local `position.x/.y/.z` as the guest last wrote them (sub_82818580): the
-		/// .bgf's own units, null until written. A TopBox line's guest fit is never stated: Godot
-		/// stacks those rows from the file's first line (Engine_UiTextBoxFit).
+		/// The element's local `position.x/.y/.z` as a stated call passed them (`@Ui.Position`: the
+		/// credits roll's SetPosition sites), the .bgf's own units, null until one did.
 		/// </summary>
 		public (float X, float Y, float Z)? Position { get; set; }
 
-		/// <summary>The texture path the guest last set on the element (sub_82818EF0), null until set.</summary>
+		/// <summary>The texture path stated for the element (`@Ui.Texture`, a surface statement), null until one was.</summary>
 		public string? Texture { get; set; }
 
 		/// <summary>
@@ -102,12 +88,6 @@ public static class Fable3Elements
 		/// sub_828190E8): r, g, b, a in 0..1; null until one was — the file's colour stands.
 		/// </summary>
 		public (float R, float G, float B, float A)? Colour { get; set; }
-
-		/// <summary>The element's `active` flag (flag 0x2000: Lua setAttribute, sub_828196E0), null until set.</summary>
-		public bool? Active { get; set; }
-
-		/// <summary>Every other attribute a Gameface write set by name, as last stated.</summary>
-		public Dictionary<string, Engine_UiModel.GuiNativeArgument> Attributes { get; } = new(System.StringComparer.Ordinal);
 
 		public uint Address { get; set; }
 
@@ -125,14 +105,6 @@ public static class Fable3Elements
 			false => true,
 			true => Opacity is { } o && o * 1024f <= HiddenOpacity,
 			null => Opacity is { } o && o <= HiddenOpacity,
-		};
-
-		/// <summary>The opacity the element is drawn at: 0 hidden, the toggle's scale applied, null for the authored.</summary>
-		public float? DrawnOpacity => Visible switch
-		{
-			false => 0f,
-			true => Opacity is { } o ? (o <= HiddenOpacity ? o * 1024f : o) : null,
-			null => Opacity,
 		};
 
 		/// <summary>The document and path this element is held under.</summary>
@@ -155,11 +127,9 @@ public static class Fable3Elements
 	private static readonly Dictionary<uint, Element> ByAddress = new();
 	private static readonly Dictionary<uint, string> Documents = new();
 	private static readonly HashSet<string> Reported = new();
-	private static readonly HashSet<string> Checked = new();
 	private const int MaxReported = 600;
-	private const int MaxChecked = 400;
 
-	/// <summary>Where the census and the cross-check write (GD.Print in the game; a test's own sink).</summary>
+	/// <summary>Where the census writes (GD.Print in the game; a test's own sink).</summary>
 	public static System.Action<string> Log { get; set; } = message => GD.Print(message);
 
 	/// <summary>A tag hash's text in the title's book (Fable3Strings), or null.</summary>
@@ -170,9 +140,6 @@ public static class Fable3Elements
 
 	/// <summary>Bumped on every statement, so a view redraws only when something changed.</summary>
 	public static ulong Generation { get; private set; }
-
-	/// <summary>Cross-check differences logged so far (stated vs sampled), for the run's census.</summary>
-	public static int Differences { get; private set; }
 
 	/// <summary>
 	/// The next stamp on the one clock every Fable 3 UI statement is ordered by — the element
@@ -191,7 +158,7 @@ public static class Fable3Elements
 	public static int? HudRootState { get; private set; }
 
 	/// <summary>The HUD is hidden: its root on state 2 (hud.bgf's `GameToPauseMenu` slide fades every widget).</summary>
-	public static bool HudHidden => (HudRootState ?? Get(HudDocument, Fable3HudStatements.RootPath)?.State) == 2;
+	public static bool HudHidden => HudRootState == 2;
 
 	/// <summary>The document under each root segment that most recently stated an element there.</summary>
 	private static readonly Dictionary<string, string> LatestByRoot = new(System.StringComparer.Ordinal);
@@ -258,9 +225,7 @@ public static class Fable3Elements
 		Documents.Clear();
 		LatestByRoot.Clear();
 		Reported.Clear();
-		Checked.Clear();
 		HudRootState = null;
-		Differences = 0;
 		++Generation;
 	}
 
@@ -304,16 +269,16 @@ public static class Fable3Elements
 		// headless_commit_hooks.cpp): (pres, elem, path, x, y, z, via).
 		Add("@Ui.Position", call => Apply(call, (element, value) =>
 			element.Position = (value.Number, call.Argument(4).Number, call.Argument(5).Number)));
-		Add("@Ui.Visible", call => Apply(call, (element, value) =>
+		Add("@Ui.Visible", call => Apply(call, (element, value) => element.Visible = value.Boolean));
+		Add("@Ui.State", call => Apply(call, (element, value) => Slide(element, (int)value.Number)));
+		// An outright opacity a writer's own call passes (`@Ui.Opacity`, ui_stated_hooks.cpp: the
+		// multiplier roots' shown 100 / hidden 0, sub_82950AF0 at 0x82950B40; the layer fade
+		// sub_82B14A50 at 0x82B14B28): it overrides the visibility toggle, as SetOpacity does.
+		Add("@Ui.Opacity", call => Apply(call, (element, value) =>
 		{
-			element.Visible = value.Boolean;
-			CheckVisible(element);
-		}));
-		Add("@Ui.State", call => Apply(call, (element, value) =>
-		{
-			element.StatedState = (int)value.Number;
-			element.State = (int)value.Number;
-			element.StatedStateStamp = Generation + 1;
+			element.StatedOpacity = value.Number;
+			element.Opacity = value.Number;
+			element.Visible = null;
 		}));
 		Add("@Ui.Active", call => Apply(call, (element, value) => element.StatedActive = value.Boolean));
 		// (pres, elem, path, r, g, b, a, via), 0..255 (ui_stated_hooks.cpp, sub_828190E8).
@@ -325,44 +290,6 @@ public static class Fable3Elements
 		{
 			element.StatedTexture = value.Text;
 			element.Texture = value.Text;
-		}));
-
-		// The setters' arguments, after the call (gui_element_hooks.cpp): stated too.
-		Add("@Element.State", call => Apply(call, (element, value) => element.State = (int)value.Number));
-		Add("@Element.Opacity", call => Apply(call, (element, value) =>
-		{
-			element.Opacity = value.Number;
-			element.Visible = null;  // an outright opacity overrides the toggle (it sets what the toggle reads)
-		}));
-		// THE OPACITY THE ELEMENT HOLDS after its writers and the track pass (gui_element_hooks.cpp
-		// StateStoredOpacity): what the scene draws. The toggle hides by storing opacity / 1024 and its
-		// show reads the stored value back (sub_82819560 at 0x82819b2c), so mid-fade its own write is
-		// not the picture; the store is. Above 100 (SetOpacity scales its argument by 1024 over a
-		// stored value under 0.09765625, 0x828194ac..0x828194bc) draws as 100.
-		Add("@Element.StoredOpacity", call => Apply(call, (element, value) =>
-		{
-			element.Opacity = System.Math.Clamp(value.Number, 0f, 100f);
-			element.Visible = null;
-		}));
-		Add("@Element.Time", call => Apply(call, (element, value) => element.Time = value.Number));
-		Add("@Element.Texture", call => Apply(call, (element, value) => element.Texture = value.Text));
-		Add("@Element.Position", call => Apply(call, (element, value) =>
-			element.Position = (value.Number, call.Argument(4).Number, call.Argument(5).Number)));
-		Add("@Element.Active", call => Apply(call, (element, value) => element.Active = value.Boolean));
-		// (pres, elem, path, name, value): the name in argument 3, the value after it.
-		Add("@Element.Attribute", call => Apply(call, (element, name) =>
-			element.Attributes[name.Text] = call.Argument(4)));
-
-		// Read back after the guest committed: the cross-check.
-		Add("@Element.Text", call => Apply(call, (element, value) =>
-		{
-			element.SampledText = value.Text;
-			CheckText(element);
-		}));
-		Add("@Element.ToggleOpacity", call => Apply(call, (element, value) =>
-		{
-			element.ToggleOpacity = value.Number;
-			CheckVisible(element);
 		}));
 
 		return routes;
@@ -406,7 +333,7 @@ public static class Fable3Elements
 	public static void StateHudRoot(int state, string via)
 	{
 		HudRootState = state;
-		State(HudDocument, Fable3HudStatements.RootPath, element => element.State = state);
+		StateSlide(HudDocument, Fable3HudStatements.RootPath, state);
 		Log($"[fable3-elements] HUD root state = {state} ({(state == 2 ? "hidden" : state == 3 ? "ambient cutscene" : "shown")}) by sub_{via}");
 	}
 
@@ -420,6 +347,20 @@ public static class Fable3Elements
 		set(element);
 		element.Stamp = NextStamp();
 		return element;
+	}
+
+	/// <summary>
+	/// A surface statement's SLIDE onto a document's path: an entry of the slide under its own stamp
+	/// (the guest's funnel sub_82268BE0 enters a slide on every write, a repeat included).
+	/// </summary>
+	public static Element StateSlide(string document, string path, int slide) =>
+		State(document, path, element => Slide(element, slide));
+
+	private static void Slide(Element element, int slide)
+	{
+		element.StatedState = slide;
+		element.State = slide;
+		element.StatedStateStamp = Generation + 1;
 	}
 
 	private static Element ElementAt(string document, string path, uint address)
@@ -437,11 +378,7 @@ public static class Fable3Elements
 
 	private static string Via(Engine_UiModel.GuiNativeCall call) => call.Argument(4).Text;
 
-	private static void SetStated(Element element, StatedText stated)
-	{
-		element.Stated = stated;
-		CheckText(element);
-	}
+	private static void SetStated(Element element, StatedText stated) => element.Stated = stated;
 
 	private static string? Resolve(StatedText stated) =>
 		stated.Literal ?? (stated.Tag is { } tag ? TagText(tag) : stated.TagName is { } name ? TagNameText(name) : null);
@@ -451,60 +388,6 @@ public static class Fable3Elements
 
 	private static string? DefaultTagNameText(string name) =>
 		name.Length == 0 ? string.Empty : Engine_UiGuiText.Resolve(name, Fable3Strings.Current);
-
-	/// <summary>Logs a stated text the box read back differently (once per element and pair), or a sample with no stated writer (once per path).</summary>
-	private static void CheckText(Element element)
-	{
-		string where = element.Key is { } key ? $"{key.Document}:{key.Path}" : $"<unnamed {element.Address:X8}>";
-		if (element.Stated is not { } stated)
-		{
-			if (element.SampledText is { Length: > 0 } && Checked.Count < MaxChecked && Checked.Add("sample-only " + where))
-			{
-				Log($"[fable3-statecheck] sample-only {where} = '{element.SampledText}' (no stated writer reached it)");
-			}
-
-			return;
-		}
-
-		if (element.SampledText is not { } sampled)
-		{
-			return;
-		}
-
-		string? said = Resolve(stated);
-		if (said is null || Normalise(said) == Normalise(sampled))
-		{
-			return;
-		}
-
-		++Differences;
-		if (Checked.Count < MaxChecked && Checked.Add($"text {where} {said} {sampled}"))
-		{
-			Log($"[fable3-statecheck] DIFF text {where}: stated '{said}' by sub_{stated.Via}, box shows '{sampled}'");
-		}
-	}
-
-	/// <summary>Logs a toggle request the read-back opacity disagrees with (once per element and pair).</summary>
-	private static void CheckVisible(Element element)
-	{
-		if (element.Visible is not { } visible || element.ToggleOpacity is not { } read)
-		{
-			return;
-		}
-
-		bool shown = read > HiddenOpacity;
-		if (shown == visible)
-		{
-			return;
-		}
-
-		++Differences;
-		string where = element.Key is { } key ? $"{key.Document}:{key.Path}" : $"<unnamed {element.Address:X8}>";
-		if (Checked.Count < MaxChecked && Checked.Add($"visible {where} {visible} {read}"))
-		{
-			Log($"[fable3-statecheck] DIFF visible {where}: asked {(visible ? "shown" : "hidden")}, toggle wrote opacity {read}");
-		}
-	}
 
 	/// <summary>The guest wraps lines with U+000A and the book's strings carry their own breaks: compared without whitespace.</summary>
 	internal static string Normalise(string text)
@@ -521,127 +404,12 @@ public static class Fable3Elements
 		return builder.ToString();
 	}
 
-	/// <summary>
-	/// THE MIRROR CUT. The paths whose look a stated call drives (<see cref="Fable3UiStatements"/>):
-	/// a setter statement (`@Element.State`, `.Opacity`, `.StoredOpacity`, `.Time`, `.Position`)
-	/// on one of them is dropped, so the stated value is the only one there is.
-	/// </summary>
-	private static readonly HashSet<(string Document, string Path)> OwnedPaths = new()
-	{
-		// hud.bgf's root: `@Hud.Root` (sub_825C1CB0 / sub_825C1D28 / sub_8249A030).
-		(HudDocument, Fable3HudStatements.RootPath),
-		// The crime timer's root: `@Hud.Crime.Shown` (sub_828393F0's CT+0 stores).
-		(HudDocument, "CrimeTimer"),
-		(HudDocument, "Layer.CrimeTimer"),
-		// The job multiplier's root: `@Hud.Job` and TurnJobMultiplierOff (Fable3UiStatements.JobLevel / JobOff).
-		(HudDocument, "JobMultiplier"),
-		(HudDocument, "Layer.JobMultiplier"),
-		// The look-at alert: `@Hud.LookAt` (sub_82B14CB8's slide, the HUD tick's hide).
-		(HudDocument, "LookAt.LookAt.LookAt"),
-		(HudDocument, "Layer.LookAt.LookAt.LookAt"),
-		// The money alert's gold icons: shown and hidden only by the visibility toggle sub_8281E468 ->
-		// sub_82819B90 asks for (`@Ui.Visible`), never an outright opacity.
-		(HudDocument, "MoneyAlert.MainPlayer.Group.KingdomGold"),
-		(HudDocument, "MoneyAlert.MainPlayer.Group.PlayerGold"),
-		(HudDocument, "MoneyAlertSecondPlayer.SecondPlayer.Group.KingdomGold"),
-		(HudDocument, "MoneyAlertSecondPlayer.SecondPlayer.Group.PlayerGold"),
-		// The objective list and its rows' ticks: `@Hud.Objective.Redraw` (sub_82953E68) and the
-		// hide (Fable3UiStatements.ObjectivesDrawn / ObjectivesHidden).
-		(HudDocument, "ObjectiveList.ObjectiveList"),
-		(HudDocument, "Layer.ObjectiveList.ObjectiveList"),
-		(HudDocument, "ObjectiveList.ObjectiveList.Bar1.tickbox.tick"),
-		(HudDocument, "Layer.ObjectiveList.ObjectiveList.Bar1.tickbox.tick"),
-		(HudDocument, "ObjectiveList.ObjectiveList.Bar2.tickbox.tick"),
-		(HudDocument, "Layer.ObjectiveList.ObjectiveList.Bar2.tickbox.tick"),
-		(HudDocument, "ObjectiveList.ObjectiveList.Bar3.tickbox.tick"),
-		(HudDocument, "Layer.ObjectiveList.ObjectiveList.Bar3.tickbox.tick"),
-		(HudDocument, "ObjectiveList.ObjectiveList.Bar4.tickbox.tick"),
-		(HudDocument, "Layer.ObjectiveList.ObjectiveList.Bar4.tickbox.tick"),
-		(HudDocument, "ObjectiveList.ObjectiveList.Bar5.tickbox.tick"),
-		(HudDocument, "Layer.ObjectiveList.ObjectiveList.Bar5.tickbox.tick"),
-		// The co-op partners' markers: placed and faded by Fable3WorldIcons from their stated icons
-		// (types 52/53), never from the clamp's SetPosition (sub_82B51B58 at 0x82B51FC8) or the
-		// icon's slide and visibility writes (0x82B51F28, sub_82B52818).
-		(HudDocument, "HeroOffScreenWorldIcon"),
-		(HudDocument, "Layer.HeroOffScreenWorldIcon"),
-		(HudDocument, "HeroOffScreenWorldIcon.Contents"),
-		(HudDocument, "HeroOffScreenWorldIcon.Contents.Icon"),
-		(HudDocument, "HeroOffScreenWorldIcon.Contents.Opinion"),
-		(HudDocument, "HenchmanOffScreenWorldIcon"),
-		(HudDocument, "Layer.HenchmanOffScreenWorldIcon"),
-		(HudDocument, "HenchmanOffScreenWorldIcon.Contents"),
-		(HudDocument, "HenchmanOffScreenWorldIcon.Contents.Icon"),
-		(HudDocument, "HenchmanOffScreenWorldIcon.Contents.Opinion"),
-	};
-
-	/// <summary>
-	/// The setter channels a whole document takes from stated calls instead: the credits' positions
-	/// are the roll's own SetPosition calls (`@Ui.Position`), so `@Element.Position` there is dropped.
-	/// </summary>
-	private static readonly Dictionary<string, HashSet<string>> OwnedChannels = new(System.StringComparer.Ordinal)
-	{
-		["creditsscreen"] = new HashSet<string>(System.StringComparer.Ordinal) { "@Element.Position" },
-		// The box-manager screens and the save menu (Fable3StatedScreen): their texts, slides by path,
-		// meters by path and visibility toggles are stated at the call (`@Ui.*`), their cursor rows,
-		// ghosting and rows by their own calls (Fable3ScreenStatements); the setters' own state,
-		// opacity and timeline writes never reach them.
-		["herostatus"] = ScreenChannels(),
-		["statsscreen"] = ScreenChannels(),
-		["promises"] = ScreenChannels(),
-		["questsummary"] = ScreenChannels(),
-		["kingsschedule"] = ScreenChannels(),
-		["joinoptions"] = ScreenChannels(),
-		["visability"] = ScreenChannels(),
-		["friendschannel"] = ScreenChannels(),
-		["chatchannel"] = ScreenChannels(),
-		["treasureaccounts"] = ScreenChannels(),
-		["bedmenubox"] = ScreenChannels(),
-		["foodquerybox"] = ScreenChannels(),
-		["compweddingpicker"] = ScreenChannels(),
-		["cooppartnersscreen"] = ScreenChannels(),
-		["proposalquerybox"] = ScreenChannels(),
-		["divorcemessagebox"] = ScreenChannels(),
-		["savemenu"] = ScreenChannels(),
-		// The interaction mode is stated-only (Fable3Hud: slides `@Ui.State`, visibility `@Ui.Visible`,
-		// opacity `@Interaction.Button`, times from the registry). The setters' echoes must not even
-		// touch the record: the toggle's own SetOpacity echo (0.09765625 after a hide, 0x82819B68)
-		// cleared `Visible` and drew a hidden button (Button1, an empty glyph under Wear).
-		["interactionmode"] = new HashSet<string>(System.StringComparer.Ordinal)
-		{
-			"@Element.State", "@Element.Opacity", "@Element.StoredOpacity", "@Element.Time", "@Element.Position",
-		},
-	};
-
-	/// <summary>The setter channels a stated screen document drops (sub_82B3EC40's files, by stem).</summary>
-	private static HashSet<string> ScreenChannels() => new(System.StringComparer.Ordinal)
-	{
-		"@Element.State", "@Element.Opacity", "@Element.StoredOpacity", "@Element.Time",
-	};
-
-	/// <summary>Setter statements dropped on an owned path, for the census.</summary>
-	public static int MirrorDropped { get; private set; }
-
-	/// <summary>Whether a stated call owns the look of this document's path (<see cref="OwnedPaths"/>).</summary>
-	public static bool IsOwned(string document, string path) => OwnedPaths.Contains((document, path));
-
 	private static void Apply(Engine_UiModel.GuiNativeCall call, System.Action<Element, Engine_UiModel.GuiNativeArgument> set)
 	{
 		uint address = Parse(call.Argument(1).Text);
 		string path = call.Argument(2).Text;
 		Engine_UiModel.GuiNativeArgument value = call.Argument(3);
 		string document = DocumentOfKey(call.Argument(0).Text);
-		if (call.Name.StartsWith("@Element.", System.StringComparison.Ordinal) && call.Name != "@Element.Text" &&
-			call.Name != "@Element.ToggleOpacity" && call.Name != "@Element.Texture" && call.Name != "@Element.Active" &&
-			call.Name != "@Element.Attribute" &&
-			(IsOwned(document, path) || (OwnedChannels.TryGetValue(document, out HashSet<string>? channels) && channels.Contains(call.Name))))
-		{
-			if (++MirrorDropped is 1 or 16 or 256 or 4096)
-			{
-				Log($"[fable3-mirror] dropped {call.Name} on stated {document}:{path} ({MirrorDropped} so far)");
-			}
-
-			return;
-		}
 
 		// One element under every name it was stated by: the address first (a registry key and the
 		// resolver's later path are the same element), else the path.

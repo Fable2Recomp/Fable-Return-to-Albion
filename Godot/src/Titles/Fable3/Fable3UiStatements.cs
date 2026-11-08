@@ -83,9 +83,6 @@ public static class Fable3UiStatements
 		}
 	}
 
-	/// <summary>One objective row as the add / mark stated it.</summary>
-	public readonly record struct Objective(string Tag, bool Done);
-
 	public static TopBoxQueue TopBox { get; } = new();
 
 	/// <summary>The last answer the TopBox got (1 A, 4 Y), or 0.</summary>
@@ -112,9 +109,6 @@ public static class Fable3UiStatements
 
 	/// <summary>Per player (0, 1): the money alert's shown amount and whether it is the kingdom's.</summary>
 	public static readonly (bool Shown, int Amount, bool Kingdom)[] Money = new (bool, int, bool)[2];
-
-	/// <summary>The objective list, in add order (at most five, as O+4 &lt; 5 allows).</summary>
-	public static List<Objective> Objectives { get; } = new();
 
 	/// <summary>Per player: the targeted entity, 0 when cleared.</summary>
 	public static readonly uint[] Targets = new uint[2];
@@ -199,39 +193,33 @@ public static class Fable3UiStatements
 		Add("@Hud.Money.Show", call => MoneyShown(
 			(int)call.Argument(0).Number, (int)call.Argument(1).Number, call.Argument(2).Boolean));
 		Add("@Hud.Money.Hide", call => MoneyHidden((int)call.Argument(0).Number));
-		Add("@Hud.Objective.Add", call => ObjectiveAdded(call.Argument(0).Text, call.Argument(1).Boolean));
-		Add("@Hud.Objective.Mark", call => ObjectiveMarked(call.Argument(0).Text, call.Argument(1).Boolean));
 		Add("@Hud.Target.Show", call => Target((int)call.Argument(0).Number, Fable3Elements.Parse(call.Argument(1).Text)));
 		Add("@Hud.Target.Clear", call => Target((int)call.Argument(0).Number, 0u));
 		Add("@Hud.Crime.Fine", call => Said(() => CrimeFine = (int)call.Argument(0).Number, null));
 		Add("@Hud.Crime.Seconds", call => Said(() => CrimeSeconds = (int)call.Argument(0).Number, null));
-		// The crime manager's own decision (sub_828393F0's CT+0 stores, 2 shown / 1 hidden): the
-		// root's hud.bgf slide 2 `show` / 1 `hide`, played by Godot. The root is a stated path
-		// (Fable3Elements.OwnedPaths), so no setter statement reaches it.
+		// THE CRIME TIMER'S SHOWN STATE, CT+0 (CT = `*(H+0x68)`), at every store that precedes the
+		// root's SetState to the same value (screen_stated_hooks.cpp RefiiF3CrimeTimerShown): the
+		// crime tick sub_828393F0, the HUD build sub_825E5158, the partner's packet 369
+		// sub_825E5408, the manager's vf13, the criminal teardown sub_82837970, RemoveCriminal
+		// sub_8283CF88, GUI.ShowMiscGUIElements and the region-change save sub_8232B870. The root's
+		// hud.bgf slide 2 `show` / 1 `hide`, played by Godot.
 		Add("@Hud.Crime.Shown", call => Said(() =>
 		{
 			CrimeShown = call.Argument(0).Boolean;
-			Fable3Elements.State(Fable3Elements.HudDocument, "CrimeTimer", element => element.State = CrimeShown ? 2 : 1);
+			Fable3Elements.StateSlide(Fable3Elements.HudDocument, "CrimeTimer", CrimeShown ? 2 : 1);
 		}, $"crime timer {(call.Argument(0).Boolean ? "shown" : "hidden")}"));
 		Add("@Hud.Job", call => Said(() => JobLevel((int)call.Argument(0).Number, call.Argument(1).Text),
 			$"job multiplier {call.Argument(1).Text}{(int)call.Argument(0).Number}"));
 		// The look-at alert's slide as sub_82B14CB8 chose it (0x82B14D30) or the HUD tick's hide 6
 		// (0x8226A730), on `LookAt.LookAt.LookAt` (hud.bgf #510).
-		Add("@Hud.LookAt", call => Said(() => Fable3Elements.State(Fable3Elements.HudDocument, "LookAt.LookAt.LookAt",
-			element => element.State = (int)call.Argument(0).Number), null));
+		Add("@Hud.LookAt", call => Said(() => Fable3Elements.StateSlide(Fable3Elements.HudDocument, "LookAt.LookAt.LookAt",
+			(int)call.Argument(0).Number), null));
 		Add("TurnJobMultiplierOff", call => Said(() => JobOff(call.Argument(0).Boolean),
 			$"job multiplier off ({(call.Argument(0).Boolean ? "success" : "gone")})"));
 
 		// A map table message class the table does not draw (map_table_hooks.cpp), named once.
 		Add("@MapTable.Unstated", call => Said(null,
 			$"map table {call.Argument(0).Text} adds message class {call.Argument(2).Text} (id {(int)call.Argument(1).Number}) that is not drawn"));
-
-		// The objective list's remove and clear are natives the seam states (gui_natives.cpp).
-		Add("RemoveSubObjective", call => ObjectiveRemoved(call.Argument(0).Text));
-		Add("ClearSubObjectives", _ => Said(Objectives.Clear, "objectives cleared"));
-		// The list on screen: the redraw sub_82953E68 (screen_stated_hooks.cpp) and the hide.
-		Add("@Hud.Objective.Redraw", _ => ObjectivesDrawn());
-		Add("HideSubObjectives", _ => ObjectivesHidden());
 
 		return routes;
 	}
@@ -250,7 +238,7 @@ public static class Fable3UiStatements
 		int was = Job.Level;
 		Job = (level, prefix);
 		int slide = was == 0 ? 1 : level > was ? 2 : 3;
-		Fable3Elements.State(Fable3Elements.HudDocument, JobRoot, element => element.State = slide);
+		Fable3Elements.StateSlide(Fable3Elements.HudDocument, JobRoot, slide);
 	}
 
 	/// <summary>
@@ -265,7 +253,7 @@ public static class Fable3UiStatements
 		}
 
 		Job = (0, Job.Prefix);
-		Fable3Elements.State(Fable3Elements.HudDocument, JobRoot, element => element.State = success ? 4 : 5);
+		Fable3Elements.StateSlide(Fable3Elements.HudDocument, JobRoot, success ? 4 : 5);
 	}
 
 	/// <summary>Forgets everything (a new session; the tests).</summary>
@@ -281,7 +269,6 @@ public static class Fable3UiStatements
 		DyeBar = null;
 		SidePanel = 0;
 		System.Array.Clear(Money);
-		Objectives.Clear();
 		System.Array.Clear(Targets);
 		CrimeFine = 0;
 		CrimeSeconds = 0;
@@ -339,11 +326,15 @@ public static class Fable3UiStatements
 	{
 		uint box = Fable3Elements.Parse(call.Argument(0).Text);
 		int count = (int)call.Argument(1).Number;
+		var lines = new (uint Hash, string Text)[count];
 		for (int i = 0; i < count; ++i)
 		{
 			int at = 2 + (i * 3);
-			Fable3HudRegistry.StateLine(box, Fable3Elements.Parse(call.Argument(at).Text), call.Argument(at + 1).Text);
+			lines[i] = (Fable3Elements.Parse(call.Argument(at).Text), call.Argument(at + 1).Text);
+			Fable3HudRegistry.StateLine(box, lines[i].Hash, lines[i].Text);
 		}
+
+		Fable3HudRegistry.StateBoxLines(box, lines);
 
 		++Generation;
 	}
@@ -431,35 +422,18 @@ public static class Fable3UiStatements
 		Said(null, $"money P{player + 1} hidden");
 	}
 
-	public static void ObjectiveAdded(string tag, bool done)
-	{
-		if (Objectives.Count < 5)
-		{
-			Objectives.Add(new Objective(tag, done));
-		}
-
-		Said(null, $"objective + {tag}{(done ? " (done)" : string.Empty)}");
-	}
-
-	public static void ObjectiveMarked(string tag, bool done)
-	{
-		int at = Objectives.FindIndex(objective => objective.Tag == tag);
-		if (at >= 0)
-		{
-			Objectives[at] = new Objective(tag, done);
-		}
-
-		Said(null, $"objective {tag} {(done ? "done" : "open")}");
-	}
-
-	/// <summary>The objective list's remove / clear are GUI natives the seam states (Lua_GUI_RemoveSubObjective 0x8251D6D8, ClearSubObjectives 0x8251D7B8).</summary>
-	public static void ObjectiveRemoved(string tag)
-	{
-		Objectives.RemoveAll(objective => objective.Tag == tag);
-		++Generation;
-	}
-
-	/// <summary>The objective list's component in hud.bgf (`dword_8355C108`, "ObjectiveList" + ".ObjectiveList").</summary>
+	/// <summary>
+	/// THE OBJECTIVE LIST IS DRAWN FROM ITS REDRAW'S OWN CALLS. sub_82953E68(O) writes, behind its
+	/// `*H` gate (0x82953E90 / 0x82953E98), the list's slide — count + 1 (`addi r5,r11,1`,
+	/// sub_8281A428 at 0x82953EAC), 1 when empty (0x82953FC0) — and per row i from 1 in list order
+	/// the tag by name on `Bar&lt;i&gt;.Text` (node+8, sub_82819230 at 0x82953F10 -> sub_828191A8 at
+	/// 0x8281926C) and the tick on slide done + 1 (`addi r5,r27,1`, sub_8281A428 at 0x82953F64);
+	/// GUI.HideSubObjectives writes slide 1 (0x8251D89C). Those writers are stated at their entry
+	/// (`@Ui.State`, `@Ui.TextName`, ui_stated_hooks.cpp),,
+	/// so no model of the list is kept: rows past the count keep what was last written, as in the
+	/// guest, whose redraw never touches them.
+	/// </summary>
+	/// <remarks>The list's component (`dword_8355C108`, "ObjectiveList" + ".ObjectiveList").</remarks>
 	public const string ObjectiveListPath = "ObjectiveList.ObjectiveList";
 
 	/// <summary>A row's text element: `dword_8355C10C` ("….Bar") + the row from 1 + `dword_8355C114` (".Text").</summary>
@@ -467,48 +441,6 @@ public static class Fable3UiStatements
 
 	/// <summary>A row's tick: `dword_8355C10C` + the row + `dword_8355C110` (".tickbox.tick").</summary>
 	public static string ObjectiveTickPath(int row) => ObjectiveListPath + ".Bar" + row.ToString(CultureInfo.InvariantCulture) + ".tickbox.tick";
-
-	/// <summary>The most rows the list holds (the add's `O+4 &lt; 5`, 0x82953CF8).</summary>
-	public const int MaxObjectives = 5;
-
-	/// <summary>
-	/// `@Hud.Objective.Redraw` — sub_82953E68 put the list on screen: with no rows the component
-	/// rests on slide 1 (0x82953FC0); else it plays slide count + 1 (0x82953EAC) and each row i
-	/// from 1, in list order, shows its tag by NAME on `Bar&lt;i&gt;.Text` (sub_82819230 ->
-	/// sub_828191A8, 0x82953F10) and its tick on slide done + 1 (0x82953F64). The rows are the
-	/// add / mark / remove / clear model above: a remove changes the list but is drawn only by the
-	/// next redraw, as in the guest.
-	/// </summary>
-	public static void ObjectivesDrawn()
-	{
-		int count = Objectives.Count;
-		StateSlide(Fable3Elements.HudDocument, ObjectiveListPath, count == 0 ? 1 : count + 1);
-		for (int i = 0; i < count; ++i)
-		{
-			Objective row = Objectives[i];
-			Fable3Elements.State(Fable3Elements.HudDocument, ObjectiveTextPath(i + 1), element =>
-				element.Stated = new Fable3Elements.StatedText(null, null, row.Tag, "82953E68"));
-			StateSlide(Fable3Elements.HudDocument, ObjectiveTickPath(i + 1), row.Done ? 2 : 1);
-		}
-
-		Said(null, $"objectives drawn: {count} row(s)");
-	}
-
-	/// <summary>`GUI.HideSubObjectives` (0x8251D868): the list's component to slide 1 (sub_8281A428 at 0x8251D89C).</summary>
-	public static void ObjectivesHidden()
-	{
-		StateSlide(Fable3Elements.HudDocument, ObjectiveListPath, 1);
-		Said(null, "objectives hidden");
-	}
-
-	/// <summary>A slide stated as an entry (`@Ui.State`'s fields): Godot plays it from this stamp.</summary>
-	private static void StateSlide(string document, string path, int slide) =>
-		Fable3Elements.State(document, path, element =>
-		{
-			element.State = slide;
-			element.StatedState = slide;
-			element.StatedStateStamp = Fable3Elements.Generation + 1;
-		});
 
 	public static void Target(int player, uint target)
 	{

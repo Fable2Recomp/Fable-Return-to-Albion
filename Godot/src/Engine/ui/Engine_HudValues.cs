@@ -68,24 +68,6 @@ public sealed class Engine_HudValues
     /// <summary>The meters stated over this feed's reads (<see cref="OverrideMeter"/>).</summary>
     private readonly Dictionary<uint, float> _meterOverrides = new();
 
-    /// <summary>States an element's visibility on this overlay (null withdraws it).</summary>
-    public void OverrideVisible(Handle handle, bool? visible)
-    {
-        if (visible is { } shown)
-        {
-            _toggled[handle.Hash] = shown;
-        }
-        else
-        {
-            _toggled.Remove(handle.Hash);
-        }
-    }
-
-    /// <summary>How many meters and text fields the guest published on the last read.</summary>
-    public int MeterCount => _meters.Count;
-
-    public int TextCount => _texts.Count;
-
     /// <summary>
     /// Text stated through `GUI.SetGUIText(element, tag)`, keyed by FNV-1 of the raw element
     /// name (no Babel lookup, no `TEXT_` prefix); the value is the resolved Babel tag. Guest
@@ -302,10 +284,6 @@ public sealed class Engine_HudValues
     /// </summary>
     private readonly Dictionary<uint, int> _faded = new();
 
-    /// <summary>The slide the guest last faded an element to, or null when it never has.</summary>
-    public int? FadeSlide(Handle handle) =>
-        _faded.TryGetValue(handle.Hash, out int slide) ? slide : null;
-
     /// <summary>`GUI.FadeElementIn` / `FadeElementOutFast` / `FadeElementOutSlow`.</summary>
     /// <param name="slide">1 in, 2 out fast, 3 out slow — the `SlideFaderName` index.</param>
     public void StateFade(uint elementHash, int slide) => _faded[elementHash] = slide;
@@ -416,9 +394,6 @@ public sealed class Engine_HudValues
     /// read, a draining bar stepped at 30 Hz under a display drawing faster.
     /// </summary>
     private readonly Dictionary<uint, Seek> _polledMeters = new();
-
-    /// <summary>The guest's frame interval, which a published change is glided over.</summary>
-    private const float GuestFrameSeconds = 1f / 30f;
 
     /// <summary>
     /// A pulser on Godot's clock: its phase advances at the rate measured between the guest's

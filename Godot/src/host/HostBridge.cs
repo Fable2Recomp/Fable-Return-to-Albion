@@ -6160,6 +6160,74 @@ public static partial class HostBridge
 		}
 	}
 
+	[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+	private delegate int ModTextDelegate(IntPtr text, uint length, IntPtr buffer, uint capacity);
+
+	/// <summary>Held for the process's lifetime, for the reason on <see cref="_assetReader"/>.</summary>
+	private static ModTextDelegate? _modTextLookup;
+
+	private static Func<string, string>? _modTextSource;
+
+	/// <summary>
+	/// Installs the mods' text lookup (<c>Refii.Mods.ModText.Text</c>) for Lua's <c>Refii.text</c> and a
+	/// native mod's <c>refii_mod_text</c> (<c>RefiiHostSetModTextLookup</c>, <c>refii_bridge_mod_text</c>).
+	/// Called on the GUEST's thread; null unregisters. Tolerates a library without the export.
+	/// </summary>
+	public static void SetModTextLookup(Func<string, string>? source)
+	{
+		_modTextSource = source;
+		if (TryGetAbiVersion() is null)
+		{
+			return;
+		}
+
+		try
+		{
+			if (source is null)
+			{
+				RefiiHostSetModTextLookup(IntPtr.Zero);
+				_modTextLookup = null;
+				return;
+			}
+
+			_modTextLookup ??= ModTextForGuest;
+			RefiiHostSetModTextLookup(Marshal.GetFunctionPointerForDelegate(_modTextLookup));
+		}
+		catch (EntryPointNotFoundException)
+		{
+		}
+	}
+
+	/// <summary>One lookup for the guest: the answer as UTF-8, NUL-terminated and cut to the buffer; -1 on any failure. Never throws.</summary>
+	private static int ModTextForGuest(IntPtr text, uint length, IntPtr buffer, uint capacity)
+	{
+		try
+		{
+			if (_modTextSource is not { } source || text == IntPtr.Zero || buffer == IntPtr.Zero || capacity == 0u)
+			{
+				return -1;
+			}
+
+			string asked = Marshal.PtrToStringUTF8(text, (int)Math.Min(length, 4096u)) ?? string.Empty;
+			byte[] bytes = Encoding.UTF8.GetBytes(source(asked));
+			int written = (int)Math.Min((uint)bytes.Length, capacity - 1u);
+
+			// Never split a UTF-8 sequence: back off to the start of the last whole character.
+			while (written > 0 && written < bytes.Length && (bytes[written] & 0xC0) == 0x80)
+			{
+				written--;
+			}
+
+			Marshal.Copy(bytes, 0, buffer, written);
+			Marshal.WriteByte(buffer, written, 0);
+			return written;
+		}
+		catch (Exception)
+		{
+			return -1;
+		}
+	}
+
 	/// <summary>
 	/// Points the guest VFS at Godot's asset override predicate.
 	/// When Godot serves a virtual mod overlay (e.g. globals.gdb or book.babel), this answers 1
@@ -8513,6 +8581,9 @@ public static partial class HostBridge
 
 	[DllImport(Library)]
 	private static extern void RefiiHostSetAssetReader(IntPtr reader);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetModTextLookup(IntPtr lookup);
 
 	[DllImport(Library)]
 	private static extern void RefiiHostSetAssetOverrideQuery(IntPtr query);

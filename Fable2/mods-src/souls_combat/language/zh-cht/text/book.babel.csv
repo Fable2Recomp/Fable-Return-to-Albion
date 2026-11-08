@@ -1,0 +1,7 @@
+key,value
+SOULS_COMBAT_STAMINA_NAME,活力
+SOULS_COMBAT_STAMINA_DESCRIPTION,戰鬥中的持久力。增加活力量表的長度，讓您在必須後退之前能更久地揮擊、翻滾與防禦。
+SOULS_COMBAT_MOD_NAME,Souls 戰鬥
+SOULS_COMBAT_MOD_DESCRIPTION,艾爾登法環風格、以活力為核心的果決戰鬥：英雄在固定的環繞鏡頭下原地轉身，敵人會群起圍攻、打完整套連擊並懲罰破綻，LT 切換鎖定，揮擊、翻滾與格擋消耗活力，法術消耗魔力，並新增一項與力量並列的活力能力。這是 Refii 僅以 Lua、透過模組 API 公開的事件與呼叫來全面改造玩法的範例。
+SOULS_COMBAT_SETTING_BARS,未滿時顯示量表
+SOULS_COMBAT_SETTING_BARS_DESCRIPTION,只要生命值、魔力或活力任一項低於上限，就會持續顯示在畫面上。

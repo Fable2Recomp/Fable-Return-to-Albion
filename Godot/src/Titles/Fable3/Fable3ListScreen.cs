@@ -81,6 +81,12 @@ public abstract partial class Fable3ListScreen : Fable3Canvas
 	/// <summary>The page this frame, or null when the screen is not up in the guest.</summary>
 	protected abstract Fable3ScreenPage? Compose(double delta);
 
+	/// <summary>
+	/// Whether the screen stands in its own .bgf frame (<see cref="Fable3ScreenFrames"/>), whose
+	/// description band replaces the template's plain panel behind the description.
+	/// </summary>
+	protected virtual bool Framed => false;
+
 	/// <summary>Whether the screen is up in the guest this frame.</summary>
 	public bool IsOpen => _open;
 
@@ -323,7 +329,11 @@ public abstract partial class Fable3ListScreen : Fable3Canvas
 			int lines = Engine_UiCanvasText.MeasureWrappedLines(font, _description, inner, scale);
 			float height = (lines * font.Font.LineHeight * scale) + (2f * Padding * scale);
 			var rect = new Rect2(new Vector2((size.X - inner) * 0.5f - (Padding * scale), size.Y - (DescriptionBottom * scale) - height), new Vector2(inner + (2f * Padding * scale), height));
-			DrawRect(rect, Panel);
+			if (!Framed)
+			{
+				DrawRect(rect, Panel);
+			}
+
 			Engine_UiCanvasText.DrawWrapped(this, font, _description, rect.Position + new Vector2(Padding * scale, Padding * scale), inner, scale, Colors.White);
 		}
 

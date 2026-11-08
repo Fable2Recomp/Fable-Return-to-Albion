@@ -292,6 +292,20 @@ REFII_FRONTEND_NATIVE(NativeNotice) {
   results = 1;
 }
 
+// Refii._text(text): refii_mod_text, under the shared preamble's Refii.text — the host's text lookup
+// for a bare key or each {KEY} in the text, or nil with no lookup installed.
+REFII_FRONTEND_NATIVE(NativeText) {
+  char text[480];
+  lua.String(1, text, sizeof(text));
+  char out[1024];
+  if (text[0] != 0 && refii_mod_text(text, out, sizeof(out)) >= 0) {
+    lua.PushString(out);
+  } else {
+    lua.PushNil();
+  }
+  results = 1;
+}
+
 // Refii._menu_box(title, text, p, cancelable, n, o1 .. o12): refii_mod_menu_box, under the shared
 // preamble's Refii.menu_box(title, text, options [, p [, cancelable]]); the id mod_menu_box carries.
 REFII_FRONTEND_NATIVE(NativeMenuBox) {
@@ -383,6 +397,7 @@ Native g_natives[] = {
     {"__refii_message_box", &NativeMessageBox, 0},
     {"__refii_menu_player", &NativeMenuPlayer, 0},
     {"__refii_notice", &NativeNotice, 0},
+    {"__refii_text", &NativeText, 0},
     {"__refii_menu_box", &NativeMenuBox, 0},
     {"__refii_hash", &NativeHash, 0},
     {"__refii_signed_in", &NativeSignedIn, 0},

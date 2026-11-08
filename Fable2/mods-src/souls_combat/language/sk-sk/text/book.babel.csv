@@ -1,0 +1,7 @@
+key,value
+SOULS_COMBAT_STAMINA_NAME,Výdrž
+SOULS_COMBAT_STAMINA_DESCRIPTION,"Vytrvalost v boji. Prodlouží tvůj ukazatel výdrže, takže můžeš déle útočit, kutálet se a krýt se, než musíš ustoupit."
+SOULS_COMBAT_MOD_NAME,Souls souboje
+SOULS_COMBAT_MOD_DESCRIPTION,"Rozvážné souboje založené na výdrži ve stylu Elden Ring: hrdina, který se otáčí na místě pod pevnou orbitální kamerou, nepřátelé, kteří se spojují, dotahují svá komba a trestají každé odkrytí, LT zapíná a vypíná zaměření cíle, údery, kotouly a krytí spotřebovávají výdrž, kouzla spotřebovávají manu a k Síle přibývá schopnost Výdrž. Ukázka Refii, jak kompletně přestavět hratelnost čistě v Lua, nad deklarovanými událostmi a voláními API pro mody."
+SOULS_COMBAT_SETTING_BARS,"Ukazatele, dokud nejsou plné"
+SOULS_COMBAT_SETTING_BARS_DESCRIPTION,"Zdraví, mana a výdrž zůstávají na obrazovce, dokud je kterékoli z nich pod maximem."

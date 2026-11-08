@@ -396,6 +396,128 @@ public class ModRowOverlaysTests
         }
     }
 
+    [TestCase]
+    public void EnglishModTextReachesTheBookOfADiscWithoutEnUk()
+    {
+        // A single-language disc (the Spanish GOTY ships es-es alone): the mod's en-uk rows land
+        // in the culture's book, and a mod that ships that culture's own table keeps it.
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_babel_culture_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        Engine_GameCulture.ResetForTests();
+        try
+        {
+            AssertThat(Engine_GameCulture.Set("es-es")).IsTrue();
+
+            byte[] baseBabelBytes = CreateMinimalBabel(new Dictionary<uint, string> { { SwordNameTag, "Espada" } });
+            var fs = new BnkFileSystem();
+            fs.AddVirtualFile("language/es-es/text/book.babel", "base", baseBabelBytes.Length, () => baseBabelBytes);
+
+            string englishOnly = Path.Combine(tempDir, "EnglishOnly", "language", "en-uk", "text");
+            Directory.CreateDirectory(englishOnly);
+            File.WriteAllText(Path.Combine(englishOnly, "book.babel.csv"), $"0x{ModNewItemTag:X8},Moonstone Ring\n");
+
+            string translated = Path.Combine(tempDir, "Translated", "language");
+            Directory.CreateDirectory(Path.Combine(translated, "en-uk", "text"));
+            Directory.CreateDirectory(Path.Combine(translated, "es-es", "text"));
+            File.WriteAllText(Path.Combine(translated, "en-uk", "text", "book.babel.csv"), $"0x{SwordNameTag:X8},Blade\n");
+            File.WriteAllText(Path.Combine(translated, "es-es", "text", "book.babel.csv"), $"0x{SwordNameTag:X8},Hoja\n");
+
+            var overlays = new List<ModOverlay>
+            {
+                new() { Name = "EnglishOnly", AssetRoot = Path.Combine(tempDir, "EnglishOnly") },
+                new() { Name = "Translated", AssetRoot = Path.Combine(tempDir, "Translated") },
+            };
+
+            List<RowMerge> merges = ModRowOverlays.Apply(fs, overlays);
+
+            AssertThat(merges.Count).IsEqual(1);
+            AssertThat(merges[0].Table).IsEqual("language/es-es/text/book.babel");
+            AssertThat(merges[0].Errors.Count).IsEqual(0);
+            AssertThat(merges[0].Applied).IsEqual(2);
+
+            AssertThat(fs.TryGetFile("language/es-es/text/book.babel", out BnkFile patched)).IsTrue();
+            TextBank? bank = TextBank.FromBytes(patched.ReadAllBytes());
+            AssertThat(bank).IsNotNull();
+            AssertThat(bank!.TryLookup(ModNewItemTag, out string english)).IsTrue();
+            AssertThat(english).IsEqual("Moonstone Ring");
+            AssertThat(bank.TryLookup(SwordNameTag, out string own)).IsTrue();
+            AssertThat(own).IsEqual("Hoja");
+        }
+        finally
+        {
+            Engine_GameCulture.ResetForTests();
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+    }
+
+    [TestCase]
+    public void TranslationsIntoLanguagesTheDiscDoesNotShipAreNotRefusals()
+    {
+        // A mod carries every culture; the European disc ships en-uk and a few others. Its fr-fr
+        // table has no book here and is skipped without a refusal; its hu-hu table applies to the
+        // hu-hu book the disc does ship, ready for a switch from the title's Language menu.
+        string tempDir = Path.Combine(Path.GetTempPath(), "refii_babel_cultures_" + Guid.NewGuid().ToString("N"));
+        Engine_GameCulture.ResetForTests();
+        try
+        {
+            byte[] english = CreateMinimalBabel(new Dictionary<uint, string> { { SwordNameTag, "Sword" } });
+            byte[] hungarian = CreateMinimalBabel(new Dictionary<uint, string> { { SwordNameTag, "Kard" } });
+            var fs = new BnkFileSystem();
+            fs.AddVirtualFile("language/en-uk/text/book.babel", "base", english.Length, () => english);
+            fs.AddVirtualFile("language/hu-hu/text/book.babel", "base", hungarian.Length, () => hungarian);
+
+            string language = Path.Combine(tempDir, "Translated", "language");
+            foreach ((string culture, string value) in new[] { ("en-uk", "Blade"), ("fr-fr", "Lame"), ("hu-hu", "Penge") })
+            {
+                Directory.CreateDirectory(Path.Combine(language, culture, "text"));
+                File.WriteAllText(Path.Combine(language, culture, "text", "book.babel.csv"), $"key,value\n0x{SwordNameTag:X8},{value}\n");
+            }
+
+            List<RowMerge> merges = ModRowOverlays.Apply(fs, new List<ModOverlay>
+            {
+                new() { Name = "Translated", AssetRoot = Path.Combine(tempDir, "Translated") },
+            });
+
+            AssertThat(merges.Count).IsEqual(2);
+            AssertThat(merges[0].Table).IsEqual("language/en-uk/text/book.babel");
+            AssertThat(merges[1].Table).IsEqual("language/hu-hu/text/book.babel");
+            foreach (RowMerge merge in merges)
+            {
+                AssertThat(merge.Errors.Count).OverrideFailureMessage(merge.Table + ": " + string.Join("; ", merge.Errors)).IsEqual(0);
+                AssertThat(merge.Applied).IsEqual(1);
+            }
+
+            AssertThat(fs.TryGetFile("language/hu-hu/text/book.babel", out BnkFile patched)).IsTrue();
+            AssertThat(TextBank.FromBytes(patched.ReadAllBytes())!.TryLookup(SwordNameTag, out string own)).IsTrue();
+            AssertThat(own).IsEqual("Penge");
+        }
+        finally
+        {
+            Engine_GameCulture.ResetForTests();
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+    }
+
+    [TestCase]
+    public void ATableNamesItsCulture()
+    {
+        AssertThat(BabelOverlay.CultureOf("language/fr-fr/text/book.babel")).IsEqual("fr-fr");
+        AssertThat(BabelOverlay.CultureOf("data/language/ZH-CHT/text/book.babel")).IsEqual("zh-cht");
+        AssertThat(BabelOverlay.CultureOf("language/book.babel")).IsNull();
+        AssertThat(BabelOverlay.CultureOf("text/book.babel")).IsNull();
+
+        AssertThat(BabelOverlay.IsOtherCultureTable("language/fr-fr/text/book.babel", "en-uk")).IsTrue();
+        AssertThat(BabelOverlay.IsOtherCultureTable("language/es-es/text/book.babel", "es-es")).IsFalse();
+        AssertThat(BabelOverlay.IsOtherCultureTable("language/en-uk/text/book.babel", "es-es")).IsFalse();
+        AssertThat(BabelOverlay.IsOtherCultureTable("globals/globals.gdb", "es-es")).IsFalse();
+    }
+
     private static byte[] CreateMinimalBabel(Dictionary<uint, string> entries)
     {
         var blocks = new List<byte[]>();

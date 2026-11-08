@@ -1,0 +1,5 @@
+key,value
+TOGGLE_SPRINT_MOD_NAME,Sprint à bascule
+TOGGLE_SPRINT_MOD_DESCRIPTION,"Le sprint se bascule au lieu d'être maintenu : appuyez une fois sur Maj (ou A à la manette) pour sprinter, et à nouveau pour vous arrêter. Chaque joueur en coopération a sa propre bascule."
+TOGGLE_SPRINT_SETTING_STOP_AFTER,Arrêt après immobilité
+TOGGLE_SPRINT_SETTING_STOP_AFTER_DESCRIPTION,Secondes d'immobilité avant que le sprint s'arrête et qu'il faille rappuyer sur Maj. 0 garde le sprint.

@@ -1,0 +1,51 @@
+key,value
+QUICKSLOTS_MENU,Rychlé pozice
+QUICKSLOTS_ASSIGN,Přiřadit rychlou pozici
+QUICKSLOTS_ASSIGN_TITLE,Přiřadit k rychlé pozici
+QUICKSLOTS_CHOOSE_TITLE,Vyber obsah pozice
+QUICKSLOTS_SLOT_1,Kříž nahoru
+QUICKSLOTS_SLOT_2,Kříž dolů
+QUICKSLOTS_SLOT_3,Kříž vlevo
+QUICKSLOTS_SLOT_4,Kříž vpravo
+QUICKSLOTS_SLOT_5,LT + nahoru
+QUICKSLOTS_SLOT_6,LT + dolů
+QUICKSLOTS_SLOT_7,LT + vlevo
+QUICKSLOTS_SLOT_8,LT + vpravo
+QUICKSLOTS_SLOT_9,RT + nahoru
+QUICKSLOTS_SLOT_10,RT + dolů
+QUICKSLOTS_SLOT_11,RT + vlevo
+QUICKSLOTS_SLOT_12,RT + vpravo
+QUICKSLOTS_AUTOMATIC,Automaticky (podle hry)
+QUICKSLOTS_EMPTY,Prázdné
+QUICKSLOTS_CLEAR,Vyprázdnit tuto pozici
+QUICKSLOTS_REMOVE,Odebrat ze všech pozic
+QUICKSLOTS_ITEM,Věc
+QUICKSLOTS_WEAPON,Zbraň
+QUICKSLOTS_EXPRESSION,Gesto
+QUICKSLOTS_SPELL,Kouzlo
+QUICKSLOTS_ITEMS,Věci a zbraně
+QUICKSLOTS_EXPRESSIONS,Gesta
+QUICKSLOTS_SPELLS,Kouzla
+QUICKSLOTS_MOD_NAME,Rychlé pozice
+QUICKSLOTS_MOD_DESCRIPTION,"Dvanáct přiřaditelných rychlých pozic na kříži: čtyři směry, LT + směr a RT + směr, každá s věcí k použití, zbraní k tasení, gestem k provedení nebo kouzlem k připravení. Přiřazuj je z inventáře, knih gest a schopností nebo z kola gest; kříž na obrazovce ukazuje, co každá pozice obsahuje. Směr bez přiřazení si ponechá své běžné použití ve hře."
+QUICKSLOTS_SETTING_LT_BANK,Sada LT + kříž
+QUICKSLOTS_SETTING_LT_BANK_DESCRIPTION,"Čtyři další pozice, dostupné podržením levé spouště."
+QUICKSLOTS_SETTING_RT_BANK,Sada RT + kříž
+QUICKSLOTS_SETTING_RT_BANK_DESCRIPTION,"Čtyři další pozice, dostupné podržením pravé spouště. Dokud je některá z nich přiřazená, pravá spoušť už neotevírá menu kouzel."
+QUICKSLOTS_SETTING_HUD_ICONS,Ikony pozic na kříži
+QUICKSLOTS_SETTING_HUD_ICONS_DESCRIPTION,"Ukazuje na kříži na obrazovce, co každá pozice obsahuje, a při stisknuté spoušti pozice držené sady."
+QUICKSLOTS_INPUT_UP,Rychlá pozice nahoru
+QUICKSLOTS_INPUT_DOWN,Rychlá pozice dolů
+QUICKSLOTS_INPUT_LEFT,Rychlá pozice vlevo
+QUICKSLOTS_INPUT_RIGHT,Rychlá pozice vpravo
+QUICKSLOTS_INPUT_LT_UP,Pozice LT nahoru
+QUICKSLOTS_INPUT_LT_DOWN,Pozice LT dolů
+QUICKSLOTS_INPUT_LT_LEFT,Pozice LT vlevo
+QUICKSLOTS_INPUT_LT_RIGHT,Pozice LT vpravo
+QUICKSLOTS_INPUT_RT_UP,Pozice RT nahoru
+QUICKSLOTS_INPUT_RT_DOWN,Pozice RT dolů
+QUICKSLOTS_INPUT_RT_LEFT,Pozice RT vlevo
+QUICKSLOTS_INPUT_RT_RIGHT,Pozice RT vpravo
+QUICKSLOTS_INPUT_LT,Sada LT (držet)
+QUICKSLOTS_INPUT_RT,Sada RT (držet)
+QUICKSLOTS_INPUT_ASSIGN,Přiřadit zvýrazněné gesto

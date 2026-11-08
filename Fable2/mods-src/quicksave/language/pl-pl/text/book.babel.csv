@@ -1,0 +1,15 @@
+key,value
+QUICKSAVE_MOD_NAME,Szybki zapis
+QUICKSAVE_MOD_DESCRIPTION,"Szybki zapis i szybkie wczytywanie w stylu Bethesdy: F8 zapisuje grę i przechowuje szybki zapis obok twojego zapisu, F9 wczytuje ten szybki zapis bez wychodzenia z gry. Szybkie wczytanie pozostawia twój własny zapis bez zmian."
+QUICKSAVE_INPUT_QUICKSAVE,Szybki zapis
+QUICKSAVE_INPUT_QUICKLOAD,Szybkie wczytanie
+QUICKSAVE_SAVE_ALONE_ONLY,Szybki zapis działa tylko w grze jednoosobowej.
+QUICKSAVE_LOAD_ALONE_ONLY,Szybkie wczytanie działa tylko w grze jednoosobowej.
+QUICKSAVE_NONE_YET,"Nie ma jeszcze szybkiego zapisu. Wykonaj szybki zapis, aby go utworzyć."
+QUICKSAVE_CANT_LOAD_NOW,Nie możesz teraz wykonać szybkiego wczytania.
+QUICKSAVE_LOAD_FAILED,Nie udało się wczytać szybkiego zapisu.
+QUICKSAVE_CANT_SAVE_NOW,Nie możesz teraz zapisać gry.
+QUICKSAVE_GAME_NOT_SAVED,Gra nie została zapisana. Nie wykonano szybkiego zapisu.
+QUICKSAVE_SAVED,Wykonano szybki zapis.
+QUICKSAVE_NOT_KEPT,"Gra została zapisana, ale nie udało się zachować szybkiego zapisu."
+QUICKSAVE_LOADED,Wczytano szybki zapis z godziny %1.

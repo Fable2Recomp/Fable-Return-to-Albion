@@ -1,0 +1,15 @@
+key,value
+QUICKSAVE_MOD_NAME,Guardado rápido
+QUICKSAVE_MOD_DESCRIPTION,"Guardado y carga rápidos al estilo de Bethesda: F8 guarda la partida y conserva un guardado rápido junto a tu partida guardada, F9 carga ese guardado rápido sin salir del juego. Una carga rápida deja tu propia partida guardada como estaba."
+QUICKSAVE_INPUT_QUICKSAVE,Guardado rápido
+QUICKSAVE_INPUT_QUICKLOAD,Carga rápida
+QUICKSAVE_SAVE_ALONE_ONLY,El guardado rápido solo funciona en partidas de un jugador.
+QUICKSAVE_LOAD_ALONE_ONLY,La carga rápida solo funciona en partidas de un jugador.
+QUICKSAVE_NONE_YET,Aún no hay ningún guardado rápido. Haz un guardado rápido para crear uno.
+QUICKSAVE_CANT_LOAD_NOW,Ahora no puedes hacer una carga rápida.
+QUICKSAVE_LOAD_FAILED,No se ha podido cargar el guardado rápido.
+QUICKSAVE_CANT_SAVE_NOW,Ahora no puedes guardar.
+QUICKSAVE_GAME_NOT_SAVED,La partida no se ha guardado. No se ha hecho ningún guardado rápido.
+QUICKSAVE_SAVED,Guardado rápido completado.
+QUICKSAVE_NOT_KEPT,"La partida se ha guardado, pero no se ha podido conservar el guardado rápido."
+QUICKSAVE_LOADED,Cargado el guardado rápido de las %1.

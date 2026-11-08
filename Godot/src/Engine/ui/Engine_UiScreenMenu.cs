@@ -36,26 +36,14 @@ public sealed class Engine_UiScreenMenu
 	/// <summary>Whether the C++'s `SetInitiallySelectedItem` has placed this list's cursor.</summary>
 	private bool _initiallySelectedApplied;
 
-	/// <summary>How many rows the guest has spawned into the pool.</summary>
+	/// <summary>How many rows the list shows.</summary>
 	public int Count => Menu.Visible.Count;
-
 
 	private readonly List<string> _labels = new();
 	private readonly List<int> _ordinals = new();
 
 	/// <summary>Each row's stated indent, kept for the report — see <see cref="Describe"/>.</summary>
 	private readonly List<float?> _indents = new();
-
-	/// <summary>
-	/// How far a laid-out row's x may sit from its slot's authored x and still be on the page the
-	/// player is looking at. The pool holds more than one list — the gift screen keeps its category
-	/// list and the open category's item list in the same 26 buttons, separated in x by about a
-	/// page width — and reading both as one makes every row disagree about the highlight.
-	/// <c>GetMenuItemTabOffset</c> is <c>-65 - 5*(depth-1)</c> plus 24 for a heading, so a live row
-	/// sits 41..90 units left of its slot; widened to 120, since the bound that matters is the
-	/// page displacement rather than the exact depth.
-	/// </summary>
-	private const float PageBand = 120f;
 
 	/// <summary>
 	/// The `MenuPopulationScript` the screen's widget names — see
@@ -82,13 +70,13 @@ public sealed class Engine_UiScreenMenu
 	/// <summary>The presentation this list's Lua lives in — one `lua_State` per `.bgf`.</summary>
 	public uint Presentation { get; private set; }
 
-	/// <summary>True while the model is the guest's STATED one rather than a position solve.</summary>
+	/// <summary>True while the list is built from the guest's STATED `g_Menu` model.</summary>
 	public bool Stated => _stated;
 
 	/// <summary>
 	/// The menu model built from the C++'s own statements — rows, tree, ghosting and emphasis from
 	/// the 28 `g_Menu:` statements. When it carries rows for this presentation it wins and the Lua
-	/// VM is not read; null is legal and falls back to the position solve.
+	/// VM is not read; null is legal and leaves the list to its template.
 	/// </summary>
 	public Engine_UiMenuModel? Model { get; set; }
 
@@ -118,16 +106,6 @@ public sealed class Engine_UiScreenMenu
 
 	/// <summary>What the last stated read produced, so an unchanged model costs no rebuild.</summary>
 	private readonly List<string> _signature = new();
-
-	/// <summary>
-	/// What the last stated rebuild was handed, so a fold can be followed per frame against text
-	/// at worst one sample old (the label does not change when a folder opens).
-	/// </summary>
-	private IReadOnlyList<Engine_ExpandableMenuItems.Button>? _lastButtons;
-
-	private Engine_UiScreen? _lastScreen;
-
-	private IReadOnlyList<bool>? _lastActive;
 
 	/// <summary>
 	/// How many rows the guest said were showing when the model was last built from it. The
@@ -176,7 +154,7 @@ public sealed class Engine_UiScreenMenu
 	/// position or a pool button to decide WHAT the list contains. What the guest still supplies
 	/// is what only it knows: the decorated label (`Abilities &lt;s4&gt;(2)&lt;/s4&gt;` when
 	/// there are points to spend, `&lt;exclamation.img&gt;` when something inside is new) and the
-	/// ghosting. Both are joined by <see cref="Engine_PauseMenu.ApplyStatedLabels"/>, which is
+	/// ghosting. Both are joined by <see cref="Engine_UiMenuModel.ApplyStatedLabels"/>, which is
 	/// the same authored-list-against-the-guest's-pool join the pause menu has always used —
 	/// name first, then position, and an empty read treated as no news rather than no rows.
 	///
@@ -196,8 +174,7 @@ public sealed class Engine_UiScreenMenu
 		}
 
 		PopulationScript = script;
-		bool changed = RebuildFromTemplate(
-			template, _lastButtons ?? System.Array.Empty<Engine_ExpandableMenuItems.Button>());
+		bool changed = RebuildFromTemplate(template);
 		GD.Print($"[screen-menu] the dye flow shows '{script}' — {Script.Visible.Count} row(s)");
 		return changed;
 	}
@@ -217,13 +194,10 @@ public sealed class Engine_UiScreenMenu
 			return false;
 		}
 
-		return RebuildFromTemplate(
-			template, _lastButtons ?? System.Array.Empty<Engine_ExpandableMenuItems.Button>());
+		return RebuildFromTemplate(template);
 	}
 
-	private bool RebuildFromTemplate(
-		Engine_UiMenuTemplate template,
-		IReadOnlyList<Engine_ExpandableMenuItems.Button> buttons)
+	private bool RebuildFromTemplate(Engine_UiMenuTemplate template)
 	{
 		// WHOSE POPULATION THE CAPTURE HOLDS. `capture:Root` asks for every row spawned under
 		// `Root` and the capture is one list, so without this a screen took whatever was
@@ -233,7 +207,7 @@ public sealed class Engine_UiScreenMenu
 		Engine_UiMenuSources.BoundScreen = CaptureKey;
 		try
 		{
-			return BuildBound(template, buttons);
+			return BuildBound(template);
 		}
 		finally
 		{
@@ -243,7 +217,7 @@ public sealed class Engine_UiScreenMenu
 
 	/// <summary>
 	/// Every non-root row named in <paramref name="stated"/> takes the stated label; true when one
-	/// changed. Roots are <see cref="Engine_PauseMenu.ApplyStatedLabels"/>'s.
+	/// changed. Roots are <see cref="Engine_UiMenuModel.ApplyStatedLabels"/>'s.
 	/// </summary>
 	public static bool JoinStatedLabels(IEnumerable<Engine_UiExpandableMenu.Item> rows,
 		IReadOnlyList<Engine_UiMenuModel.Row> stated)
@@ -277,9 +251,7 @@ public sealed class Engine_UiScreenMenu
 		return changed;
 	}
 
-	private bool BuildBound(
-		Engine_UiMenuTemplate template,
-		IReadOnlyList<Engine_ExpandableMenuItems.Button> buttons)
+	private bool BuildBound(Engine_UiMenuTemplate template)
 	{
 		// Built once and then only re-joined: the row set cannot change, so rebuilding it every
 		// sample would throw the fold and the cursor away for nothing.
@@ -346,9 +318,7 @@ public sealed class Engine_UiScreenMenu
 			built = true;
 		}
 
-		// The guest's own decorated labels and ghosting over our rows. The stated rows are the
-		// spawn capture where there is one; with none, the join falls back to the pool by
-		// position, which is exactly what the pause menu does before its Lua is up.
+		// The guest's own decorated labels and ghosting over our rows, from the spawn capture.
 		IReadOnlyList<Engine_UiMenuModel.Row> stated =
 			Model?.For(Presentation)?.Rows ?? NoStatedRows;
 
@@ -358,7 +328,7 @@ public sealed class Engine_UiScreenMenu
 		// handed our fourth row (Help) the guest's fourth label, putting "Achievements" back on
 		// screen with Help's identity underneath it. A template row carries a real name and its
 		// own Babel tag, so an unmatched row has a correct label already.
-		bool moved = Engine_PauseMenu.ApplyStatedLabels(Menu, stated, clearUnnamed: false);
+		bool moved = Engine_UiMenuModel.ApplyStatedLabels(Menu, stated, clearUnnamed: false);
 
 		// AND BELOW THE ROOT, by name: `SpawnButton`'s String2 (and `RefreshButtonText`'s) is the
 		// label with the guest's decorations at every depth — an unviewed item's "!", an
@@ -741,17 +711,13 @@ public sealed class Engine_UiScreenMenu
 		return true;
 	}
 
-	public bool Rebuild(uint presentation, Engine_UiScreen? screen, IReadOnlyList<string?>? text,
-		IReadOnlyList<bool>? active, IReadOnlyList<int>? slides,
-		IReadOnlyList<float?[]?>? transform)
+	public bool Rebuild(uint presentation, Engine_UiScreen? screen)
 	{
-		bool changed = RebuildList(presentation, screen, text, active, slides, transform);
+		bool changed = RebuildList(presentation, screen);
 		return RestorePoppedHighlight() | changed;
 	}
 
-	private bool RebuildList(uint presentation, Engine_UiScreen? screen, IReadOnlyList<string?>? text,
-		IReadOnlyList<bool>? active, IReadOnlyList<int>? slides,
-		IReadOnlyList<float?[]?>? transform)
+	private bool RebuildList(uint presentation, Engine_UiScreen? screen)
 	{
 		PopulationScript = Engine_ExpandableMenuItems.PopulationScriptOf(screen);
 
@@ -820,9 +786,6 @@ public sealed class Engine_UiScreenMenu
 			PopulationScript = held;
 		}
 
-		IReadOnlyList<Engine_ExpandableMenuItems.Button> buttons =
-			Engine_ExpandableMenuItems.Read(screen, text, active, slides);
-
 		Presentation = presentation;
 
 		// THE TEMPLATE FIRST, WHERE IT HAS ROWS. This list is Godot's: the rows come from the
@@ -834,7 +797,7 @@ public sealed class Engine_UiScreenMenu
 		// `Engine_UiMenuPopulation` gives eight tables real entries — HenchmanPauseMenu,
 		// OptionsMenu, LogbookMenu, LogbookMenuOrb, CrimeMenu, ExpressionsMenu, AugmentMenu,
 		// DyeMenu — and registers thirteen more as names alone: PauseMenu (its rows are the
-		// C++'s, and `Engine_PauseMenu` builds them from `pause-root`), AbilitiesMenu,
+		// C++'s, and the title builds them from `pause-root`), AbilitiesMenu,
 		// EquipmentMenu, ItemsMenu, ClothingMenu, WorldMapMenu and the rest, which are populated
 		// at runtime from the save. Those rows genuinely ARE the guest's data and still arrive
 		// through the capture below, until they are read from the data areas instead.
@@ -861,7 +824,7 @@ public sealed class Engine_UiScreenMenu
 		if (authored is not null &&
 			(authored.Entries.Count != 0 || authored.Source.Length != 0))
 		{
-			bool changed = RebuildFromTemplate(authored, buttons);
+			bool changed = RebuildFromTemplate(authored);
 			if (Script.Visible.Count != 0)
 			{
 				if (!_saidAuthored)
@@ -877,32 +840,26 @@ public sealed class Engine_UiScreenMenu
 
 				_stated = false;
 				_authored = true;
-				_lastButtons = buttons;
-				_lastScreen = screen;
-				_lastActive = active;
 				return changed;
 			}
 
 			// THE TEMPLATE PRODUCED NOTHING, so its source is dry — for the runtime menus that
 			// means the `g_Menu` capture has no rows, which is a DEAD DATA HOOK and not a menu
-			// with no entries. Said once per list, because the fallback below hides it: reading
-			// the rows back out of the button pool's geometry looks like it works right up until
-			// a row is mid-tween or its identity is needed.
+			// with no entries. Said once per list; the model below is the only other source.
 			if (!_saidTemplateDry)
 			{
 				_saidTemplateDry = true;
 				GD.Print($"[screen-menu] '{PopulationScript}' has a template but it yielded NO " +
-					$"rows (source '{authored.Source}') — falling back to reading the guest's " +
-					"pool. This is the data hook, not the menu.");
+					$"rows (source '{authored.Source}') — falling back to the stated g_Menu " +
+					"model. This is the data hook, not the menu.");
 			}
 		}
 
 		// NO SCRIPT AND NO BINDING — the list is nobody's template, so say which screen it was.
 		//
-		// The fallback below reads rows out of the button pool's geometry and looks like it
-		// works, so an unowned screen is invisible unless it names itself. Every screen that
-		// reaches this line is one still to be bound, and the id is the only handle on it: these
-		// are exactly the screens whose widgets state no `MenuPopulationScript`.
+		// Every screen that reaches this line is one still to be bound, and the id is the only
+		// handle on it: these are exactly the screens whose widgets state no
+		// `MenuPopulationScript`.
 		if (PopulationScript.Length == 0 && _saidUnbound != ScreenId)
 		{
 			_saidUnbound = ScreenId;
@@ -914,7 +871,7 @@ public sealed class Engine_UiScreenMenu
 		_authoredFrom = null;
 
 		// The model next where it has rows: its rows are the C++'s own `g_Menu` statements, and
-		// this path never touches the Gameface VM. Below it is the older position solve.
+		// this path never touches the Gameface VM.
 		if (Model?.For(presentation) is { Rows.Count: > 0 } modelled)
 		{
 			if (!_saidModel)
@@ -926,9 +883,6 @@ public sealed class Engine_UiScreenMenu
 			}
 
 			_stated = true;
-			_lastButtons = buttons;
-			_lastScreen = screen;
-			_lastActive = active;
 			return RebuildFromModel(modelled, screen);
 		}
 

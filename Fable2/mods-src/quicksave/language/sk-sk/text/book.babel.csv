@@ -1,0 +1,15 @@
+key,value
+QUICKSAVE_MOD_NAME,Rychlé uložení
+QUICKSAVE_MOD_DESCRIPTION,"Rychlé uložení a načtení ve stylu Bethesdy: F8 uloží hru a ponechá rychlé uložení vedle tvé uložené hry, F9 načte toto rychlé uložení, aniž bys opustil hru. Rychlé načtení ponechá tvou vlastní uloženou hru tak, jak byla."
+QUICKSAVE_INPUT_QUICKSAVE,Rychlé uložení
+QUICKSAVE_INPUT_QUICKLOAD,Rychlé načtení
+QUICKSAVE_SAVE_ALONE_ONLY,Rychlé uložení funguje jen ve hře pro jednoho hráče.
+QUICKSAVE_LOAD_ALONE_ONLY,Rychlé načtení funguje jen ve hře pro jednoho hráče.
+QUICKSAVE_NONE_YET,Zatím neexistuje žádné rychlé uložení. Vytvoř ho rychlým uložením.
+QUICKSAVE_CANT_LOAD_NOW,Teď nelze provést rychlé načtení.
+QUICKSAVE_LOAD_FAILED,Rychlé uložení se nepodařilo načíst.
+QUICKSAVE_CANT_SAVE_NOW,Teď nelze ukládat.
+QUICKSAVE_GAME_NOT_SAVED,Hra se neuložila. Nic nebylo rychle uloženo.
+QUICKSAVE_SAVED,Rychle uloženo.
+QUICKSAVE_NOT_KEPT,"Hra se uložila, ale rychlé uložení se nepodařilo ponechat."
+QUICKSAVE_LOADED,Načteno rychlé uložení z %1.

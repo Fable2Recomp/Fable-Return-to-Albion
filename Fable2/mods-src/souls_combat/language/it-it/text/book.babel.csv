@@ -1,0 +1,7 @@
+key,value
+SOULS_COMBAT_STAMINA_NAME,Resistenza
+SOULS_COMBAT_STAMINA_DESCRIPTION,"Tenacia in battaglia. Allunga l'indicatore di resistenza, così puoi colpire, rotolare e parare più a lungo prima di dover arretrare."
+SOULS_COMBAT_MOD_NAME,Combattimento Souls
+SOULS_COMBAT_MOD_DESCRIPTION,"Combattimento impegnativo basato sulla resistenza, nello stile di Elden Ring: un eroe che ruota sul posto sotto una telecamera orbitale fissa, nemici che si coalizzano, portano a termine le loro combo e puniscono ogni apertura, LT attiva e disattiva l'aggancio del bersaglio, colpi, rotolate e parate consumano resistenza, gli incantesimi consumano mana e un'abilità Resistenza si aggiunge a Forza. L'esempio di Refii di una revisione completa del gameplay solo in Lua, basata sugli eventi e sulle chiamate dichiarati dell'API per le mod."
+SOULS_COMBAT_SETTING_BARS,Barre visibili se non piene
+SOULS_COMBAT_SETTING_BARS_DESCRIPTION,"Salute, mana e resistenza restano sullo schermo finché una di esse è sotto il massimo."

@@ -1,0 +1,15 @@
+key,value
+QUICKSAVE_MOD_NAME,Sauvegarde rapide
+QUICKSAVE_MOD_DESCRIPTION,"Sauvegarde et chargement rapides à la Bethesda : F8 sauvegarde la partie et garde une sauvegarde rapide à côté de la vôtre, F9 recharge cette sauvegarde rapide sans quitter la partie. Un chargement rapide laisse votre propre sauvegarde intacte."
+QUICKSAVE_INPUT_QUICKSAVE,Sauvegarde rapide
+QUICKSAVE_INPUT_QUICKLOAD,Chargement rapide
+QUICKSAVE_SAVE_ALONE_ONLY,La sauvegarde rapide ne fonctionne qu'en partie solo.
+QUICKSAVE_LOAD_ALONE_ONLY,Le chargement rapide ne fonctionne qu'en partie solo.
+QUICKSAVE_NONE_YET,Aucune sauvegarde rapide pour l'instant. Faites une sauvegarde rapide pour en créer une.
+QUICKSAVE_CANT_LOAD_NOW,Impossible de charger rapidement pour le moment.
+QUICKSAVE_LOAD_FAILED,La sauvegarde rapide n'a pas pu être chargée.
+QUICKSAVE_CANT_SAVE_NOW,Impossible de sauvegarder pour le moment.
+QUICKSAVE_GAME_NOT_SAVED,La partie n'a pas été sauvegardée. Aucune sauvegarde rapide n'a été faite.
+QUICKSAVE_SAVED,Sauvegarde rapide effectuée.
+QUICKSAVE_NOT_KEPT,"La partie a été sauvegardée, mais la sauvegarde rapide n'a pas pu être conservée."
+QUICKSAVE_LOADED,Sauvegarde rapide de %1 chargée.

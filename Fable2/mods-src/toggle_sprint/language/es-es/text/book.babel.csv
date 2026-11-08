@@ -1,0 +1,5 @@
+key,value
+TOGGLE_SPRINT_MOD_NAME,Alternar esprint
+TOGGLE_SPRINT_MOD_DESCRIPTION,Esprintar se activa y desactiva en lugar de mantener pulsado: pulsa Mayús (o A en el mando) una vez para empezar a esprintar y otra vez para parar. Cada jugador del cooperativo tiene su propio interruptor.
+TOGGLE_SPRINT_SETTING_STOP_AFTER,Parar tras quedarse quieto
+TOGGLE_SPRINT_SETTING_STOP_AFTER_DESCRIPTION,Segundos sin moverse antes de que termine el esprint y haya que volver a pulsar Mayús. 0 sigue esprintando.

@@ -1,4 +1,4 @@
-name = "Cheat Menu"
+name = "{CHEAT_MENU_MOD_NAME}"
 version = "0.1.0"
 author = "ammuica"
-description = "A Cheat Menu page on the pause menu: experience, gold, renown, morality, purity, items, the time of day and a full heal."
+description = "{CHEAT_MENU_MOD_DESCRIPTION}"

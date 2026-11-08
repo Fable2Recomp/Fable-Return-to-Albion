@@ -97,4 +97,57 @@ public class ModBundledTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    /// <summary>
+    /// EVERY SHIPPED MOD PACKS, by the path the launcher takes (<see cref="ModBundled.Install"/>):
+    /// one installed package per tree under <c>Fable2/mods-src</c>, each opening with its metadata
+    /// and carrying every file <see cref="ModBundled.Collect"/> takes from its source.
+    /// </summary>
+    [TestCase]
+    public void EveryShippedModPacksAndOpens()
+    {
+        string? repo = GodotModScripts.RepoRoot();
+        if (repo == null)
+        {
+            return;  // a packaged test run without the source tree
+        }
+
+        string source = Path.Combine(repo, "Fable2", "mods-src");
+        string root = Path.Combine(Path.GetTempPath(), "refii_bundled_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string mods = Path.Combine(root, "mods");
+            var report = ModBundled.Install(source, mods, ".f2mod");
+            string[] trees = Directory.GetDirectories(source);
+            AssertThat(report.Count).OverrideFailureMessage(string.Join("\n", report)).IsEqual(trees.Length);
+            foreach (string line in report)
+            {
+                AssertThat(line).Contains("installed");
+            }
+
+            foreach (string tree in trees)
+            {
+                string name = Path.GetFileName(tree);
+                AssertThat(F2ModPackage.TryOpen(Path.Combine(mods, name + ".f2mod"), out F2ModPackage? packed, out string error))
+                    .OverrideFailureMessage($"{name}: {error}").IsTrue();
+                using (packed!)
+                {
+                    AssertThat(packed!.Metadata.Title.Length > 0).OverrideFailureMessage($"{name}: no title").IsTrue();
+                    var files = ModBundled.Collect(tree);
+                    AssertThat(packed.Entries.Count).OverrideFailureMessage(name).IsEqual(files.Count);
+                    foreach (var file in files)
+                    {
+                        AssertThat(packed.TryGetEntry(file.Path, out _)).OverrideFailureMessage($"{name}: {file.Path}").IsTrue();
+                    }
+                }
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
 }

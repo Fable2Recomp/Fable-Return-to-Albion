@@ -1,0 +1,5 @@
+key,value
+TOGGLE_SPRINT_MOD_NAME,Přepínání sprintu
+TOGGLE_SPRINT_MOD_DESCRIPTION,"Sprint se přepíná místo držení: stiskni jednou Shift (nebo A na ovladači) a začneš sprintovat, stiskni ho znovu a zastavíš se. Každý hráč v kooperaci má vlastní přepínač."
+TOGGLE_SPRINT_SETTING_STOP_AFTER,Zastavit po stání
+TOGGLE_SPRINT_SETTING_STOP_AFTER_DESCRIPTION,"Sekundy stání na místě, než sprint skončí a je nutné znovu stisknout Shift. 0 sprintuje dál."

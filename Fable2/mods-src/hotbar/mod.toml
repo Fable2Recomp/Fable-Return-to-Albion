@@ -1,4 +1,4 @@
-name = "Hotbar"
+name = "{HOTBAR_MOD_NAME}"
 version = "0.3.0"
 author = "ammuica"
-description = "A Fable 1-style hotbar on the HUD. Keys 1-3 keep the weapon modes; put spells, expressions, food, potions and other usable items on 4-0 from the Hotbar page of the pause menu."
+description = "{HOTBAR_MOD_DESCRIPTION}"

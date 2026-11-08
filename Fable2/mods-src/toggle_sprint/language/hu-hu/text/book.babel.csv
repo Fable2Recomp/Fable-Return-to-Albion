@@ -1,0 +1,5 @@
+key,value
+TOGGLE_SPRINT_MOD_NAME,Rohanáskapcsoló
+TOGGLE_SPRINT_MOD_DESCRIPTION,"A rohanás kapcsolható lesz nyomva tartás helyett: nyomd meg egyszer a Shiftet (vagy kontrolleren az A-t) a rohanáshoz, majd újra a megálláshoz. A kooperatív játékban minden játékosnak saját kapcsolója van."
+TOGGLE_SPRINT_SETTING_STOP_AFTER,Megállás egy helyben állás után
+TOGGLE_SPRINT_SETTING_STOP_AFTER_DESCRIPTION,"Ennyi másodperc egy helyben állás után ér véget a rohanás, és újra meg kell nyomni a Shiftet. 0: a rohanás folytatódik."

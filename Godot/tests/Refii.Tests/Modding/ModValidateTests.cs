@@ -62,7 +62,16 @@ public class ModValidateTests
             return;  // a packaged test run without the source tree
         }
 
-        var expected = new Dictionary<string, int> { ["souls_combat"] = 5, ["spell_weaving"] = 20 };  // spell_weaving: thirteen effects, Blades + and Fireball + Force Push have none
+        // EVERY BUNDLED MOD, by the content kinds it ships: spell_weaving carries thirteen effects
+        // (Blades + and Fireball + Force Push have none).
+        var expected = new Dictionary<string, int>
+        {
+            ["cheat_menu"] = 2, ["first_person"] = 4, ["health_bars"] = 3, ["hotbar"] = 6, ["quicksave"] = 2,
+            ["quickslots"] = 5, ["souls_combat"] = 5, ["spell_weaving"] = 20, ["toggle_sprint"] = 3,
+        };
+        AssertThat(Directory.GetDirectories(Path.Combine(root, "Fable2", "mods-src")).Select(Path.GetFileName).OrderBy(n => n, StringComparer.Ordinal).ToArray())
+            .OverrideFailureMessage("a bundled mod was added or removed; list it here")
+            .IsEqual(expected.Keys.OrderBy(n => n, StringComparer.Ordinal).ToArray());
         foreach ((string mod, int kinds) in expected)
         {
             string folder = Path.Combine(root, "Fable2", "mods-src", mod);
@@ -81,6 +90,9 @@ public class ModValidateTests
             }
 
             AssertThat(checkedFiles).OverrideFailureMessage($"{mod}: content kinds found").IsEqual(kinds);
+            // One advisory is a design, not a defect: a picture with no texture of its own is the
+            // hotbar's slot icon, drawn from what its script states with hud_icon.
+            issues.RemoveAll(i => !i.Error && i.Message.Contains("draws only what hud_icon", StringComparison.Ordinal));
             AssertThat(issues.Count).OverrideFailureMessage($"{mod}:\n{Lines(issues)}").IsEqual(0);
         }
     }
@@ -208,6 +220,36 @@ public class ModValidateTests
         HasWarning(issues, "pieces[1]", "draws only what hud_icon");
         HasError(issues, "clones[0].of", "is required");
         HasError(issues, "clones[0].bars.Bar", "names meter 'N'");
+    }
+
+    /// <summary>
+    /// A panel field is still the format — read, kept, written back — but nothing draws it since
+    /// presentations went headless, so a mod that states one is told rather than ignored.
+    /// </summary>
+    [TestCase]
+    public void APanelFieldIsKeptAndWarnedAsDrawingNothing()
+    {
+        List<ModIssue> issues = Check("ui/templates.json",
+            "{ \"screens\": { \"15\": { \"patch\": true, " +
+            "\"panelFields\": [ { \"path\": \"Foreground.Book.Pages.Page2.Contents.ItemName\", \"multiline\": false } ], " +
+            "\"panelSubtrees\": [ \"Foreground.Book.Pages.Page2\" ] } } }");
+        AssertThat(issues.Count(i => i.Error)).OverrideFailureMessage("panel fields:\n" + Lines(issues)).IsEqual(0);
+        HasWarning(issues, "screens.15.panelFields", "draws nothing");
+        HasWarning(issues, "screens.15.panelSubtrees", "draws nothing");
+
+        // An empty list is what a whole-record copy carries, and says nothing.
+        AssertThat(Check("ui/templates.json",
+            "{ \"screens\": { \"15\": { \"patch\": true, \"panelFields\": [], \"panelSubtrees\": [] } } }").Count).IsEqual(0);
+    }
+
+    /// <summary>The fields the loaders read are fields to the validator too: `purse` and a query's `alternate`.</summary>
+    [TestCase]
+    public void PurseAndAQuerysAlternateAreFields()
+    {
+        List<ModIssue> issues = Check("ui/templates.json",
+            "{ \"screens\": { \"15\": { \"patch\": true, \"purse\": true } }, " +
+            "\"modals\": { \"20\": { \"kind\": \"query\", \"confirm\": 36, \"alternate\": 75 } } }");
+        AssertThat(issues.Count).OverrideFailureMessage("purse / alternate:\n" + Lines(issues)).IsEqual(0);
     }
 
     [TestCase]

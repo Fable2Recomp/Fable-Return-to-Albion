@@ -671,14 +671,14 @@ public sealed class Engine_UiScreenTemplate
 	/// </summary>
 	public float ListLift = Engine_UiPresentationDepth.Step / 4f;
 
-	/// <summary>The info-panel fields the screen states, dotted paths in its document.</summary>
+	/// <summary>
+	/// Info-panel fields, dotted paths in the screen's document. Read, written and validated, and
+	/// DRAWN BY NOTHING — see <see cref="Engine_UiScreenPanel"/>; a book's texts are its provider's,
+	/// the registry's and the told writers'.
+	/// </summary>
 	public List<Engine_UiScreenPanel.Field> PanelFields = new();
 
-	/// <summary>
-	/// Roots whose every text descendant the panel owns — see
-	/// <see cref="Engine_UiScreenPanel.FieldsUnder"/>. Combined with <see cref="PanelFields"/>,
-	/// so a screen can list the few fields it lays out specially and sweep the rest.
-	/// </summary>
+	/// <summary>Roots whose every text descendant the panel would own. Drawn by nothing, as <see cref="PanelFields"/>.</summary>
 	public List<string> PanelSubtrees = new();
 
 	/// <summary>Where the 3D preview hangs, or empty when the screen has none.</summary>
@@ -1006,8 +1006,6 @@ public static class Engine_UiTemplates
 		}
 	}
 
-	public static IReadOnlyList<ModConflict> ModConflicts => Set.Conflicts;
-
 	/// <summary>Every screen record, for a caller that works across the whole set — the component
 	/// exporter and the editor's listing.</summary>
 	public static IEnumerable<Engine_UiScreenTemplate> Screens => Set.Screens.Values;
@@ -1043,36 +1041,9 @@ public static class Engine_UiTemplates
 		return owners.TryGetValue("menu:" + menu, out string? owner) ? owner : string.Empty;
 	}
 
-	/// <summary>The mod that stated a screen record whole, or empty for the game's or the player's.</summary>
-	public static string ScreenOwner(uint screenId) =>
-		Set.Owners.TryGetValue("screen:" + screenId.ToString(System.Globalization.CultureInfo.InvariantCulture),
-			out string? owner) ? owner : string.Empty;
-
 	/// <summary>One screen's record, or null for a screen Godot has no template for.</summary>
 	public static Engine_UiScreenTemplate? Screen(uint screenId) =>
 		Set.Screens.TryGetValue(screenId, out Engine_UiScreenTemplate? template) ? template : null;
-	/// <summary>
-	/// Whether ANY screen Godot owns is drawn from this presentation — not
-	/// `ScreenFor(...) is not null`, which answers "which single screen is this" and returns null
-	/// on an ambiguous file (three screens share `GiftGivingScreen.bgf`). Ambiguity is not the
-	/// question here: every screen sharing a file draws the same chrome from the same pattern
-	/// book, so if any owns it the guest's copy is redundant.
-	/// </summary>
-	public static bool AnyScreenOwns(string presentation)
-	{
-		foreach (Engine_UiScreenTemplate template in Set.Screens.Values)
-		{
-			if (template.ChromeUnits.Count != 0 &&
-				string.Equals(template.Presentation, presentation,
-					System.StringComparison.OrdinalIgnoreCase))
-			{
-				return true;
-			}
-		}
-
-		return false;
-	}
-
 	/// <summary>
 	/// The screen drawn from a given `.bgf`; null when no template names it, and null when
 	/// several GUEST screens do — an ambiguous file cannot say which screen is up.

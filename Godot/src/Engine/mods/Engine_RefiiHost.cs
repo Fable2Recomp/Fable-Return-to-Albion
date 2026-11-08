@@ -2946,6 +2946,27 @@ public partial class RefiiHost : Node
 	}
 
 	/// <summary>
+	/// A mod's text in the culture the game runs in (<see cref="ModText.Text"/>, the lookup Lua's
+	/// <c>Refii.text</c> makes): <paramref name="key"/> a bare key (<c>QUICKSAVE_SAVED</c>) or a text with
+	/// <c>{KEY}</c>s in it — the running book, the mods' <c>language/&lt;culture&gt;/text/book.babel.csv</c>,
+	/// their en-uk rows — then <c>%1</c>, <c>%2</c> … replaced by <paramref name="args"/>. A key nothing
+	/// knows is returned as written. Any thread.
+	/// </summary>
+	public string text(string key, Godot.Collections.Array args)
+	{
+		var values = new List<string>(args.Count);
+		foreach (Variant arg in args)
+		{
+			values.Add(arg.AsString());
+		}
+
+		return ModText.Text(key, values);
+	}
+
+	/// <summary>The short form, no arguments: the script bridge passes no C# default.</summary>
+	public string text(string key) => ModText.Text(key);
+
+	/// <summary>
 	/// Posts a notice for <paramref name="player"/> (1 or 2; 0, the default, for whoever owns the
 	/// menus here) on the notice channel the game's own co-op notices use — in game the HUD's info
 	/// box for <paramref name="seconds"/> (0: the channel's length), on the front end its dialog until

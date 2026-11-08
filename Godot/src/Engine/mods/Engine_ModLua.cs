@@ -656,6 +656,20 @@ public static class ModLua
 			"\treturn Refii._light(target, 0, 0, 0, r, g, b, energy or 1, range or 0, f[1] or f.x or 0, f[2] or f.y or 0, f[3] or f.z or 0, o.at or '', o.flicker or 0,\n" +
 			"\t\td[1] or d.x or 0, d[2] or d.y or 0, d[3] or d.z or 0, o.cone or 0, o.attenuation or 0)\n" +
 			"end\n" +
+			// text(key_or_text [, a .. h]): a mod's text in the culture the game runs in — a bare key, or
+			// each {KEY} inside a text, through the host's lookup (the native Refii._text, refii_mod_text:
+			// Engine_ModText) — then %1 .. %8 replaced by the arguments (a marker with none stays); as
+			// written when nothing knows it.
+			"function Refii.text(text, a, b, c, d, e, f, g, h)\n" +
+			"\tlocal s = tostring(text or '')\n" +
+			"\tif Refii._text ~= nil then s = Refii._text(s) or s end\n" +
+			"\tlocal args = { a, b, c, d, e, f, g, h }\n" +
+			"\treturn (string.gsub(s, '%%(%d+)', function(i)\n" +
+			"\t\tlocal v = args[tonumber(i)]\n" +
+			"\t\tif v == nil then return '%' .. i end\n" +
+			"\t\treturn tostring(v)\n" +
+			"\tend))\n" +
+			"end\n" +
 			// message_box(title, text [, accept [, cancel [, p]]]): a question when cancel is given
 			// (nil captions keep the box's own), else a notice; the id mod_message_box carries.
 			"function Refii.message_box(title, text, accept, cancel, p)\n" +
@@ -917,7 +931,7 @@ public static class ModLua
 	/// <item><c>open_menu(name [, p])</c>, <c>message_box(...)</c>, <c>notice(title, text [, seconds [, p]])</c>,
 	/// <c>menu_box(title, text, options [, p [, cancelable]])</c>: the host's list, dialog, notices and
 	/// menu box, which the front end has (G.14, G.18 #6).</item>
-	/// <item><c>menu_player()</c>.</item>
+	/// <item><c>menu_player()</c>; <c>_text(text)</c>, the host's text lookup under <c>Refii.text</c>.</item>
 	/// </list>
 	/// The events heard there are <c>mod_menu_row</c>, <c>mod_message_box</c>, <c>mod_notice</c> and
 	/// <c>mod_menu_box</c> — the only ones raised without a world. Everything that needs a world, a hero, an entity or the save (health,
@@ -947,6 +961,7 @@ public static class ModLua
 		"Refii.open_menu = __refii_open_menu\n" +
 		"Refii._message_box = __refii_message_box\n" +
 		"Refii.notice = __refii_notice\n" +
+		"Refii._text = __refii_text\n" +
 		"Refii._menu_box = __refii_menu_box\n" +
 		"Refii.menu_player = __refii_menu_player\n" +
 		"Refii.hash = __refii_hash\n" +

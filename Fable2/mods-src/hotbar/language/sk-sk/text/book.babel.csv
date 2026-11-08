@@ -1,0 +1,18 @@
+key,value
+HOTBAR_MENU,Rychlá lišta
+HOTBAR_KIND,Umístit na pozici
+HOTBAR_KIND_SPELLS,Kouzla
+HOTBAR_KIND_EXPRESSIONS,Gesta
+HOTBAR_KIND_FOOD,Jídlo
+HOTBAR_KIND_POTIONS,Lektvary
+HOTBAR_KIND_ITEMS,Ostatní věci
+HOTBAR_KIND_CLEAR,Vyprázdnit pozici
+HOTBAR_MOD_NAME,Rychlá lišta
+HOTBAR_MOD_DESCRIPTION,"Rychlá lišta ve stylu Fable 1 na obrazovce. Klávesy 1-3 si ponechávají režimy zbraní; kouzla, gesta, jídlo, lektvary a další použitelné věci umísti na 4-0 ze stránky Rychlá lišta v menu pozastavení."
+HOTBAR_SETTING_SHOW,Zobrazit rychlou lištu
+HOTBAR_SETTING_SHOW_DESCRIPTION,Klávesy fungují tak jako tak.
+HOTBAR_SETTING_SIZE,Velikost
+HOTBAR_SETTING_SIZE_DESCRIPTION,Jak velké se pozice kreslí.
+HOTBAR_SETTING_LIFT,Výška nad spodním okrajem
+HOTBAR_SETTING_LIFT_DESCRIPTION,Zvedne lištu nad titulky.
+HOTBAR_INPUT_SLOT,Pozice rychlé lišty

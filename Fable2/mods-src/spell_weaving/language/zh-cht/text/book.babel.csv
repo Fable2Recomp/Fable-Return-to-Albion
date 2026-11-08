@@ -1,0 +1,9 @@
+key,value
+SPELL_WEAVING_HYBRID,混合
+SPELL_WEAVING_NAME,法術融合
+SPELL_WEAVING_DESCRIPTION,將兩種法術合而為一施展的技藝。選擇一個搭配法術，它會融入每一次施法，最高至等級 %1，在同一時間擊中同一目標。以等量的精神力與技能經驗值支付。
+SPELL_WEAVING_TOTAL_XP,可用的精神力與技能經驗值：
+SPELL_WEAVING_SET_PARTNER,設定搭配法術
+SPELL_WEAVING_REMOVE_PARTNER,移除搭配法術
+SPELL_WEAVING_MOD_NAME,法術融合
+SPELL_WEAVING_MOD_DESCRIPTION,將 Fable 3 的法術融合帶入 Fable 2：第二個法術 (搭配法術) 會與已蓄力空格的法術一同施放，威力相同、目標相同。預設只以蓄力的威力施放一次，如同 Fable 3 的節奏，而非 Fable 2 依序施放所有較低空格。每個法術空格都有自己的搭配法術：在快速轉盤或能力書的法術頁面反白一個精神力法術，按 X 設為該空格的搭配法術，按 Y 移除。法術融合本身在能力書的混合頁面學習，以精神力與技能經驗值各付一半；等級 N 可融合威力最高至 N 的施法。時間遲緩術與死屍復甦術永遠無法成為搭配法術。

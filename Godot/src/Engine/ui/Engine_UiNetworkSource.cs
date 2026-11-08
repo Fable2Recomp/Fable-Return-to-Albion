@@ -170,7 +170,7 @@ public static class Engine_UiNetworkSource
 		{
 			// The mod's own title, in load order; a mod whose package is gone is ghosted.
 			bool present = installed.TryGetValue(mod, out ModMetadata? meta);
-			string title = present && meta!.Title.Length != 0 ? meta.Title : mod;
+			string title = present && meta!.Title.Length != 0 ? Refii.Mods.ModText.Game(meta.Title) : mod;
 			rows.Add(Row($"{ModRowPrefix}{mod}", title, $"{CommandPrefix}mod:{mod}", ghosted: !present));
 		}
 

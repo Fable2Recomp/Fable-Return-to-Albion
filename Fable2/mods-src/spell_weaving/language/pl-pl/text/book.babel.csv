@@ -1,0 +1,9 @@
+key,value
+SPELL_WEAVING_HYBRID,Hybryda
+SPELL_WEAVING_NAME,Tkanie czarów
+SPELL_WEAVING_DESCRIPTION,"Sztuka rzucania dwóch czarów jako jednego. Wybierz czar partnerski, a zostanie wpleciony w każde rzucenie do poziomu mocy %1, trafiając ten sam cel w tej samej chwili. Opłacane po równo doświadczeniem Woli i Umiejętności."
+SPELL_WEAVING_TOTAL_XP,Dostępne doświadczenie Woli i Umiejętności:
+SPELL_WEAVING_SET_PARTNER,Ustaw partnera
+SPELL_WEAVING_REMOVE_PARTNER,Usuń partnera
+SPELL_WEAVING_MOD_NAME,Tkanie czarów
+SPELL_WEAVING_MOD_DESCRIPTION,"Tkanie czarów z Fable 3 w Fable 2: drugi czar, partner, jest rzucany razem z czarem z naładowanego pola, z tą samą mocą i w ten sam cel. Domyślnie jedno rzucenie z naładowaną mocą, jak w Fable 3, zamiast kaskady z Fable 2 przez wszystkie niższe pola. Każde pole czaru ma własnego partnera: w szybkim kole lub na stronie czarów księgi zdolności podświetl czar Woli i naciśnij X, aby uczynić go partnerem pola, lub Y, aby go usunąć. Samo Tkanie czarów poznaje się na stronie Hybryda księgi zdolności, płacąc po połowie doświadczeniem Woli i Umiejętności; poziom N tka czary do mocy N. Kontrola czasu i Wskrzeszenie umarłych nigdy nie są partnerami."

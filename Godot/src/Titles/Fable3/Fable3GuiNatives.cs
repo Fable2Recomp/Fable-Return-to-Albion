@@ -235,7 +235,7 @@ public partial class Fable3GuiNatives : Node
 		// `IsDPadEnabled()` (0x8251BE10 -> sub_825D7598 on the d-pad menu `*(H+48)`: bytes +40
 		// enabled, +41/+42 suppressed) and `SetDPadEnabled(b)` (0x8251BDF0: `*(H+48)+40 = b`,
 		// 0x8251BE00) are the d-pad menu's own state; what it shows reaches us as the
-		// `dpad.dpad.dpadmenu` element's state (@Element.State).
+		// `dpad.dpad.dpadmenu` element's state (sub_825D8B30, `@Hud.Dpad.Slide`).
 		_router.Observe("IsDPadEnabled", "the d-pad menu's own byte (*(H+48)+40); its visibility is stated as the dpad.dpad.dpadmenu element");
 		_router.Observe("SetDPadEnabled", "writes *(H+48)+40; the d-pad menu states itself through its elements");
 
@@ -273,9 +273,10 @@ public partial class Fable3GuiNatives : Node
 		_router.Observe("StopShowing2ndPlayerMoney", "second money widget sub_8281EA00: MoneyAlertSecondPlayer meter to 0 over 500 ms (0x8291F738)");
 		_router.Observe("AddSubObjective", "adds a row to *(H+92); refresh sub_82953E68 states ObjectiveList.ObjectiveList (0x82953EAC), Bar<i>.Text (sub_828191A8 0x8281926C) and tickbox.tick (0x82953F64)");
 		_router.Observe("SetSubObjectiveCompletion", "sets the row's done flag and refreshes (sub_82953DD0 -> sub_82953E68)");
-		// RemoveSubObjective / ClearSubObjectives / HideSubObjectives: handled by Fable3UiStatements
-		// (the list's model); the rows are drawn from it at each redraw (`@Hud.Objective.Redraw`, sub_82953E68).
-		_router.Observe("ShowSubObjectives", "refreshes and re-arms the HUD tick's refresh (*(H+92)+12 = 3, 0x8251D8E0 / 0x82259AB0); the refresh is stated (@Hud.Objective.Redraw)");
+		_router.Observe("RemoveSubObjective", "unlinks the row (--O+4 at 0x8251D7A8) without a refresh: the next sub_82953E68 draws it");
+		_router.Observe("ClearSubObjectives", "empties the list (sub_822DFF08) and refreshes (0x8251D7F0): slide 1 (0x82953FC0)");
+		_router.Observe("HideSubObjectives", "ObjectiveList.ObjectiveList slide 1 (sub_8281A428 at 0x8251D89C)");
+		_router.Observe("ShowSubObjectives", "refreshes and re-arms the HUD tick's refresh (*(H+92)+12 = 3, 0x8251D8E0 / 0x82259AB0); each refresh's writes are stated at sub_8281A428 / sub_828191A8");
 		_router.Observe("ShowWeaponPanel", "WeaponPanelToggle on (0x8281A4AC) and WeaponsInformation filled through the registries (sub_829590A8)");
 		_router.Observe("ShowClothesPanel", "WeaponPanelToggle off; its MiddleElements.SideInfoPanel writes resolve nothing (no such element in interactionmode.bgf)");
 		_router.Observe("ShowAugmentPanel", "WeaponPanelToggle off; its MiddleElements.SideInfoPanel writes resolve nothing (no such element in interactionmode.bgf)");
@@ -285,7 +286,7 @@ public partial class Fable3GuiNatives : Node
 		_router.Observe("ShowMiscGUIElements", "debug show-all: corner records, a TopBox info message, ExpAmounts and *(H+104) slides (0x8251FE68), all through hooked writers");
 		_router.Observe("ShowAchievementProgess", "files '<name>: cur/max' as corner records (sub_825D1A10 -> sub_825E79D8); the counter tick lays them into CornerBox (0x825E7CDC)");
 		_router.Observe("SetExperienceShouldShowAbilities", "no visible effect: writes **(H+84) (0x8251D290), which has no reader");
-		_router.Observe("SetMiniGameCounter", "mini-game bar Counter<n> slide 2 (0x826ECB94) and text (0x826ECBE8) on interactionmode Bar");
+		_router.Observe("SetMiniGameCounter", "mini-game bar Counter<n> slide 2 (bl 0x826ECB94) and text (guard 0x826ECBCC) on interactionmode Bar, each stated at its call (@Ui.State / @Ui.Text)");
 		_router.Observe("Create2dParticle", "spawns an effect through the hooked particle wrappers (Create 0x823AC02C, Start 0x823AC038, SetPosition sub_8318FB30): the FX feed draws it");
 
 		// ---- CUTSCENE PRESENTATION: no shipped script calls these (gamescripts/_r/guiscripts banks) ----
@@ -311,11 +312,11 @@ public partial class Fable3GuiNatives : Node
 		_router.Observe("ToggleTownMapPrototype", "pushes the town-map component sub_82950FD0 (0x8251D4CC, push 0x8251D504; pops type 12 at 0x8251D47C); it presents its holder's scene (sub_8292AEA8 0x829514B8), stated by map_table_hooks.cpp and drawn by Fable3MapTable");
 		_router.Observe("DisplayRealEstateScreen", "opens interaction mode 6 (sub_825C4348(IM,6,…) 0x8251A8A8): BuildingInfo texts (commit 0x82BEA78C), its verb rows (sub_82963DE0 -> sub_82961340) and buttons are element writes drawn by the interactionmode document; the buy/sell confirmations are box-manager boxes (@Box.Queued / @Box.Show)");
 		_router.Observe("DisplayRealEstateScreenUnloaded", "opens interaction mode 6/7 for a property in an unloaded region (sub_825C4BB8 0x8251A970, same sub_82B191F0 object): element writes drawn by the interactionmode document");
-		_router.Observe("AddItemRewardToEpilogueScreen", "writes EpilogueItem1/2 (SetState + registry text -> @Element.Text) on questcompletion.bgf, drawn by Fable3EndScreens");
-		_router.Observe("SetGoldRewardInEpilogueScreen", "writes EpilogueRenown / EpilogueRenownAmt (registry text -> @Element.Text), drawn by Fable3EndScreens");
-		_router.Observe("ShowJudgementConsequences", "slides JudgementConsequences on / TargetName1-3 off (SetState 0x8218D8E0) and writes the four Judgement{Left,Right}{Top,Bottom} texts (@Element.Text); the shared HUD view's JudgementConsequences group draws them");
+		_router.Observe("AddItemRewardToEpilogueScreen", "toggles EpilogueItem1/2 (SlideToggleName, sub_82921200 -> @Hud.Slide) and writes their texts (text registry sub_82733F30 -> @Hud.Text) on questcompletion.bgf, drawn by Fable3EndScreens");
+		_router.Observe("SetGoldRewardInEpilogueScreen", "writes EpilogueRenown / EpilogueRenownAmt through the text registry (sub_82733F30 -> @Hud.Text), drawn by Fable3EndScreens");
+		_router.Observe("ShowJudgementConsequences", "slides JudgementConsequences on / TargetName1-3 off (SetState 0x8218D8E0) and writes the four Judgement{Left,Right}{Top,Bottom} texts (text registry -> @Hud.Text); the shared HUD view's JudgementConsequences group draws them");
 		_router.Observe("ClearJudgementConsequences", "slides JudgementConsequences to 3 (SetState); the shared HUD view hides it from the element state");
-		_router.Observe("ShowCreditsScreen", "loads creditsscreen.bgf and starts the roll (sub_825CF128 0x8251D198); stated as @Credits.Open/Close, its lines and scroll as @Element.Text/Position, drawn by Fable3EndScreens");
+		_router.Observe("ShowCreditsScreen", "loads creditsscreen.bgf and starts the roll (sub_825CF128 0x8251D198); stated as @Credits.Open/Close, its lines and scroll as @Ui.Text / @Ui.Position at the roll's own commits and SetPosition calls, drawn by Fable3EndScreens");
 		_router.Observe("SetCanCouchPlayerEnterGUIld", "writes *(H+0x58)+0x55, read by the guest's Sanctuary entry gate sub_823A9AF0 (0x823A9BA0) — no surface");
 		_router.Observe("SetCanGiveMoney", "writes *(H+0x58)+0x50, read by the guest's give-money suggestion gate (sub_829686E8, 0x829691A0)");
 		_router.Observe("SetCanReceivedItemsGoToGUIld", "writes *(H+0x58)+0x54, read by the received-item overlay (sub_825DEDF0, 0x825DF7D0), which adds its RI_ROOM choice on E — drawn by the emotion-choice feed");

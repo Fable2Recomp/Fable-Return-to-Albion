@@ -183,11 +183,10 @@ public partial class Engine_UiPresentationHost : Node3D
 	public Engine_UiTheme? Theme { get; private set; }
 
 	/// <summary>
-	/// Art as the FILE authors it, with nothing the guest has done applied — the pattern book a
-	/// host-authored screen clones from. <see cref="Theme"/> is the other catalogue: the live
-	/// screen, carrying the guest's slides, visibility, transforms and opacity. Cloning from
-	/// that one picks up `ApplyLiveOpacity`'s baked result, so a row the guest never faded in
-	/// comes out invisible. Built once per screen NAME and kept out of the scene tree.
+	/// Art as the FILE authors it, every page kept — the pattern book a host-authored screen
+	/// clones from. <see cref="Theme"/> is the other catalogue: the screen built on its
+	/// <see cref="SceneSlide"/>, which drops every subtree inactive on that page. Built once per
+	/// screen NAME and kept out of the scene tree.
 	/// </summary>
 	public Engine_UiTheme? Templates { get; private set; }
 
@@ -222,53 +221,6 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// effect on the next <see cref="ShowByName(string,int)"/> — overrides resolve at build.
 	/// </summary>
 	public int SceneSlide { get; set; }
-
-	/// <summary>
-	/// Per-element slides read from the running guest, by element ordinal. When set, these
-	/// win over <see cref="SceneSlide"/> — they are what the game is actually showing
-	/// rather than a guess at it.
-	/// </summary>
-	public IReadOnlyList<int>? LiveSlides { get; set; }
-
-	/// <summary>Per-element text read from the running guest, by element ordinal.</summary>
-	public IReadOnlyList<string?>? LiveText { get; set; }
-
-	/// <summary>Per-element opacity read from the running guest, by element ordinal.</summary>
-	public IReadOnlyList<float?>? LiveOpacity { get; set; }
-
-	/// <summary>
-	/// Per-element <c>globalactive</c> read from the running guest, by element ordinal — the
-	/// guest's own draw gate. When present it REPLACES the slide-derived visibility, which can
-	/// only reproduce what the file authored.
-	/// </summary>
-	public IReadOnlyList<bool>? LiveVisible { get; set; }
-
-	/// <summary>
-	/// Per-element live TRANSFORM read from the guest, by element ordinal:
-	/// <c>{position.x, position.y, position.z, scale.x, scale.y, scale.z}</c>, any of which
-	/// may be null when the guest holds no such attribute on that element.
-	///
-	/// Without this everything laid out at runtime collapses onto one spot — a menu's twelve
-	/// row components are authored at the same place and moved apart by script.
-	/// </summary>
-	public IReadOnlyList<float?[]?>? LiveTransform { get; set; }
-
-	/// <summary>
-	/// Per-element live TEXTURE HASH read from the guest, by element ordinal; 0 where the
-	/// guest states none.
-	///
-	/// The file's texture is a placeholder wherever the game picks the picture at runtime — the
-	/// dpad quick-slots are all authored on a grey `empty.tex`, the HUD's twenty-four world-icon
-	/// slots all on one icon.
-	/// </summary>
-	public IReadOnlyList<uint>? LiveTextures { get; set; }
-
-	/// <summary>
-	/// The guest's <c>TintingAmount</c> per element, or null where it states none — the WEIGHT of
-	/// the vertex tint, not the tint. The guest subtracts <c>(1 - tint)</c> scaled by it rather
-	/// than multiplying by the colour; it starts at zero on most quads.
-	/// </summary>
-	public IReadOnlyList<Engine_UiScreen.LiveTint?>? LiveTint { get; set; }
 
 	/// <summary>
 	/// The camera the current screen renders through, so a window resize can re-fit it. A canvas
@@ -388,6 +340,12 @@ public partial class Engine_UiPresentationHost : Node3D
 			return null;
 
 		Engine_TextureNameTable names = Engine_TextureNameTable.FromPaths(texturePaths, new[] { ".tex" });
+		if (Engine_GameCulture.Installed.Count == 0)
+		{
+			// A UI standing before the game's mount: the install's culture, not en-uk by default.
+			Engine_GameCulture.UseInstall(data);
+		}
+
 		Engine_UiFontLibrary fonts = Engine_UiFontLibrary.Load(data, Engine_GameCulture.Current);
 		Engine_BabelDatabase? strings = ReadStrings(data, diskFallback: true, out string source);
 		return new BankIndex(banks, owns, data, byName, names, fonts, strings, source);
@@ -424,12 +382,7 @@ public partial class Engine_UiPresentationHost : Node3D
 			// sidecars are separate bank entries under the same stem.
 			byte[]? bsg = ReadLayered(banks, Path.ChangeExtension(bgfPath, ".bsg"));
 			_lastLoadSignature = FileSignature(bgf, fac, bsg);
-			// LiveOpacity and LiveVisible are passed HERE, and were not before: the properties
-			// existed, GameUi set them every frame, and nothing ever read them. A live value
-			// that never reaches the parser is worse than no live value, because the call site
-			// looks like it is following the guest and is not.
-			return Engine_UiScreen.Parse(name, bgf, fac, bsg, _names, Strings, SceneSlide, LiveSlides,
-				LiveText, LiveOpacity, LiveVisible, LiveTransform, LiveTextures, LiveTint);
+			return Engine_UiScreen.Parse(name, bgf, fac, bsg, _names, Strings, SceneSlide);
 		};
 
 		OnLoaded();
@@ -591,7 +544,7 @@ public partial class Engine_UiPresentationHost : Node3D
 			return false;
 		}
 
-		_loadScreen = name => Engine_UiScreen.Load(files[name], _names, null, SceneSlide, LiveSlides);
+		_loadScreen = name => Engine_UiScreen.Load(files[name], _names, null, SceneSlide);
 		return true;
 	}
 
@@ -679,8 +632,8 @@ public partial class Engine_UiPresentationHost : Node3D
 	}
 
 	/// <summary>
-	/// The guest changed language: the fonts are read again from the new culture's folder (en-uk's
-	/// when it ships none — only ko-kr and zh-cht do), IN PLACE, so every theme, pattern book and
+	/// The guest changed language: the fonts are read again from the new culture's folder (the
+	/// next of <see cref="Engine_GameCulture.SearchOrder"/> that ships one), IN PLACE, so every theme, pattern book and
 	/// resolver holding this library draws the new glyphs; then the string book. False when no
 	/// fonts had been loaded yet — the first load reads the culture itself.
 	/// </summary>
@@ -735,7 +688,7 @@ public partial class Engine_UiPresentationHost : Node3D
 		source = string.Empty;
 		byte[]? mountBytes = null;
 		string mountedPathUsed = string.Empty;
-		// The culture the guest runs in (Engine_GameCulture), then en-uk.
+		// The culture the guest runs in (Engine_GameCulture), then en-uk, then the install's others.
 		string culture = Engine_GameCulture.Current;
 		if (Refii.Assets.Engine_GameAssets.Instance is { } assets)
 		{
@@ -865,13 +818,6 @@ public partial class Engine_UiPresentationHost : Node3D
 		return ShowByName(name);
 	}
 
-	/// <summary>Shows a screen with the guest's live per-element slides applied.</summary>
-	public bool ShowByName(string name, IReadOnlyList<int>? liveSlides)
-	{
-		LiveSlides = liveSlides;
-		return ShowByName(name);
-	}
-
 	/// <summary>
 	/// Shows a screen by name. Returns false when the presentation is not among the
 	/// shipped set, or when loading has not finished.
@@ -892,8 +838,7 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// once — the guest keeps several standing together, and it hides what it does not want with
 	/// per-element <c>globalactive</c>, so a presentation being live says nothing about whether
 	/// it is showing anything. <see cref="Show"/> owns exactly one screen instead. Banks, texture
-	/// cache, fonts and string book are shared. Set <see cref="LiveSlides"/> and friends first;
-	/// they are read while the screen is parsed. Null when the name is not shipped.
+	/// cache, fonts and string book are shared. Null when the name is not shipped.
 	/// </summary>
 	public Node3D? BuildDetached(string name, out Engine_UiScreen? screen) =>
 		BuildDetached(name, out screen, out _);
@@ -965,7 +910,7 @@ public partial class Engine_UiPresentationHost : Node3D
 		Theme?.Clear();
 	}
 
-	/// <summary>Rebuilds the current screen — after the live slides have changed.</summary>
+	/// <summary>Rebuilds the current screen — after its scene slide has changed.</summary>
 	public void Rebuild()
 	{
 		if (_screens.Count > 0)
@@ -1087,7 +1032,7 @@ public partial class Engine_UiPresentationHost : Node3D
 	}
 
 	/// <summary>
-	/// Catalogues <see cref="Templates"/> from a FILE-ONLY build of a screen: the live inputs are
+	/// Catalogues <see cref="Templates"/> from a FILE-ONLY build of a screen: the scene slide is
 	/// withheld for the duration and restored after, so the same parser and builder produce the
 	/// artist's version. Built once per name — the pattern book does not change per rebuild.
 	/// </summary>
@@ -1151,8 +1096,7 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// The parsed DOCUMENT of a screen, from the same file-only build the pattern book uses —
 	/// for a host-owned panel that joins live state read off the bridge by ordinal, and needs
 	/// the authored structure (names, ordinals, element count) to do it. Built (and cached)
-	/// with the live inputs withheld, so a stale live array from the last mirrored screen can
-	/// never leak into the parse.
+	/// with every page kept and no scene slide applied.
 	/// </summary>
 	public Engine_UiScreen? DocumentFor(string name)
 	{
@@ -1171,25 +1115,10 @@ public partial class Engine_UiPresentationHost : Node3D
 			// A pattern book is a whole detached build with inactive subtrees KEPT (the world map
 			// is 4125 elements), built synchronously on the frame the screen is first shown.
 			long began = System.Diagnostics.Stopwatch.GetTimestamp();
-			IReadOnlyList<int>? slides = LiveSlides;
-			IReadOnlyList<string?>? text = LiveText;
-			IReadOnlyList<float?>? opacity = LiveOpacity;
-			IReadOnlyList<bool>? visible = LiveVisible;
-			IReadOnlyList<float?[]?>? transform = LiveTransform;
-			IReadOnlyList<uint>? textures = LiveTextures;
-			IReadOnlyList<Engine_UiScreen.LiveTint?>? tint = LiveTint;
 			int sceneSlide = SceneSlide;
 
 			try
 			{
-				LiveSlides = null;
-				LiveText = null;
-				LiveOpacity = null;
-				LiveVisible = null;
-				LiveTransform = null;
-				LiveTextures = null;
-				LiveTint = null;
-
 				// The scene slide goes too: a screen is built on ONE page and the builder drops
 				// an inactive element's whole subtree, so cataloguing on the guest's current page
 				// throws away the components a host-owned screen borrows. Zero is the preview
@@ -1207,13 +1136,6 @@ public partial class Engine_UiPresentationHost : Node3D
 			}
 			finally
 			{
-				LiveSlides = slides;
-				LiveText = text;
-				LiveOpacity = opacity;
-				LiveVisible = visible;
-				LiveTransform = transform;
-				LiveTextures = textures;
-				LiveTint = tint;
 				SceneSlide = sceneSlide;
 			}
 

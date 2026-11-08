@@ -1,0 +1,23 @@
+key,value
+FIRST_PERSON_MOD_NAME,Prima persona
+FIRST_PERSON_MOD_DESCRIPTION,"Gioca a Fable II in prima persona: la telecamera si trova nella testa dell'eroe, la testa è nascosta e il corpo resta visibile, e cammini, combatti e ti guardi intorno con il mouse o la levetta destra. H passa dalla prima alla terza persona, per ogni giocatore in schermo condiviso e in cooperativa online. Le scene d'intermezzo complete, le azioni predefinite e (in modo predefinito) la mira delle armi da fuoco mantengono le telecamere del gioco."
+FIRST_PERSON_SETTING_START_ON,Inizia in prima persona
+FIRST_PERSON_SETTING_START_ON_DESCRIPTION,Se ogni giocatore inizia una sessione in prima persona. H cambia visuale per chi lo preme.
+FIRST_PERSON_SETTING_FOV,Campo visivo
+FIRST_PERSON_SETTING_FOV_DESCRIPTION,In gradi. La visuale in prima persona del gioco usa 75.
+FIRST_PERSON_SETTING_EYE_HEIGHT,Altezza degli occhi
+FIRST_PERSON_SETTING_EYE_HEIGHT_DESCRIPTION,Metri sopra il punto di collisione della testa.
+FIRST_PERSON_SETTING_EYE_FORWARD,Avanzamento degli occhi
+FIRST_PERSON_SETTING_EYE_FORWARD_DESCRIPTION,"Metri davanti alla testa, così il viso non copre la visuale."
+FIRST_PERSON_SETTING_PITCH_LIMIT,Guarda in alto e in basso
+FIRST_PERSON_SETTING_PITCH_LIMIT_DESCRIPTION,"Quanto puoi guardare in alto o in basso, in gradi."
+FIRST_PERSON_SETTING_FACE_CAMERA,L'eroe segue la visuale
+FIRST_PERSON_SETTING_FACE_CAMERA_NEVER,Mai
+FIRST_PERSON_SETTING_FACE_CAMERA_STANDING,Da fermo
+FIRST_PERSON_SETTING_FACE_CAMERA_ALWAYS,Sempre
+FIRST_PERSON_SETTING_FACE_CAMERA_DESCRIPTION,"Gira l'eroe dove guardi, così colpi e incantesimi vanno in quella direzione."
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM,Mira in terza persona
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM_DESCRIPTION,Mirare con un'arma da fuoco o una balestra usa la telecamera sopra la spalla del gioco.
+FIRST_PERSON_SETTING_SCENES,Prima persona nei dialoghi
+FIRST_PERSON_SETTING_SCENES_DESCRIPTION,"Resta in prima persona nei dialoghi e nelle scene interattive, rivolto verso chi parla. Le scene d'intermezzo complete mantengono la loro telecamera."
+FIRST_PERSON_INPUT_TOGGLE,Prima / terza persona

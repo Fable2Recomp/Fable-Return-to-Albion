@@ -1,0 +1,7 @@
+key,value
+SOULS_COMBAT_STAMINA_NAME,Endurance
+SOULS_COMBAT_STAMINA_DESCRIPTION,"L'endurance au combat. Allonge votre jauge d'endurance pour frapper, rouler et garder votre garde plus longtemps avant de devoir reculer."
+SOULS_COMBAT_MOD_NAME,Combat Souls
+SOULS_COMBAT_MOD_DESCRIPTION,"Un combat engagé, fondé sur l'endurance, dans le style d'Elden Ring : un héros qui pivote sur place sous une caméra orbitale fixe, des ennemis qui s'allient, vont au bout de leurs combos et punissent les ouvertures, LT active ou désactive le verrouillage, coups, roulades et parades consomment l'endurance, les sorts consomment le mana, et une capacité Endurance rejoint la Force. L'exemple de Refii d'une refonte complète du gameplay en Lua seul, sur les événements et appels déclarés de l'API de mods."
+SOULS_COMBAT_SETTING_BARS,Barres affichées si non pleines
+SOULS_COMBAT_SETTING_BARS_DESCRIPTION,"La santé, le mana et l'endurance restent à l'écran tant que l'un d'eux est sous son maximum."

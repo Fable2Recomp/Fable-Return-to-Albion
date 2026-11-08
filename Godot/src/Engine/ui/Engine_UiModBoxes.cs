@@ -19,10 +19,12 @@ namespace Refii.Ui;
 /// (<c>box_answer</c>), <c>ModNotice</c> (<c>notice_done</c>), <c>ModMenuBox</c> (<c>menu_box_answer</c>).
 /// </summary>
 /// <remarks>
-/// PLAYER-AWARE: a request names player 1 or 2, or 0 for whoever owns the menus here. A machine
+/// <para>A title, text, caption or option may name a mod's text as <c>{KEY}</c>; it is drawn in the culture
+/// in force (<see cref="Refii.Mods.ModText.Game"/>), a plain string as written.</para>
+/// <para>PLAYER-AWARE: a request names player 1 or 2, or 0 for whoever owns the menus here. A machine
 /// shows only the players it plays (<see cref="Engine_UiModRequest.PlayedHere"/>); the mod's code
 /// runs on the other machine too and shows it there. A box for a player not played here is
-/// answered -1 at once, so a script waiting on it does not wait for ever.
+/// answered -1 at once, so a script waiting on it does not wait for ever.</para>
 /// </remarks>
 public static class Engine_UiModBoxes
 {
@@ -168,7 +170,8 @@ public static class Engine_UiModBoxes
 			return false;
 		}
 
-		Engine_UiNotices.Post(id, shownTo, title, text, seconds, Engine_UiNotices.ModBoxName, Done);
+		Engine_UiNotices.Post(id, shownTo, Refii.Mods.ModText.Game(title), Refii.Mods.ModText.Game(text), seconds,
+			Engine_UiNotices.ModBoxName, Done);
 		return true;
 	}
 
@@ -210,7 +213,14 @@ public static class Engine_UiModBoxes
 			return false;
 		}
 
-		Engine_UiModMenuBox.Open(id, shownTo, Engine_UiModRequest.Body(title, text), options, cancelable, Answered);
+		var shown = new List<string>(options.Count);
+		foreach (string option in options)
+		{
+			shown.Add(Refii.Mods.ModText.Game(option));
+		}
+
+		Engine_UiModMenuBox.Open(id, shownTo, Engine_UiModRequest.Body(Refii.Mods.ModText.Game(title), Refii.Mods.ModText.Game(text)),
+			shown, cancelable, Answered);
 		GD.Print($"[mod-ui] menu box {id} up for player {shownTo}: {options.Count} option(s)");
 		return true;
 	}
@@ -240,10 +250,11 @@ public static class Engine_UiModBoxes
 			return false;
 		}
 
-		string body = Engine_UiModRequest.Body(title, text);
+		string body = Engine_UiModRequest.Body(Refii.Mods.ModText.Game(title), Refii.Mods.ModText.Game(text));
 		if (question)
 		{
-			Engine_UiHostBoxes.Ask(body, Answered, accept, cancel);
+			Engine_UiHostBoxes.Ask(body, Answered,
+				accept is null ? null : Refii.Mods.ModText.Game(accept), cancel is null ? null : Refii.Mods.ModText.Game(cancel));
 		}
 		else
 		{

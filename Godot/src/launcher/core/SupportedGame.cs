@@ -16,6 +16,9 @@ namespace Refii.Launcher.Core;
 /// one, so a patched Russian image is the TU1 program and runs on the TU1 config. The French
 /// GOTY disc is the same re-signing again (318 header bytes differ, the payload is identical);
 /// its title update has not been found, so it installs without one and runs on the disc config.
+/// The Spanish GOTY disc is the same re-signing (319 header bytes differ, the payload is
+/// identical); its title update (0.0.0.29 to 0.0.1.29) carries the same 48 image-delta blocks
+/// and the same tu1_data.bnk as the USA/Europe one, so it runs on the TU1 config when patched.
 ///
 /// All of it is read from the XEX headers: title id and version from the execution info,
 /// the 16-byte media id from the security block, the versions a patch joins from its delta
@@ -104,6 +107,19 @@ public static class SupportedGame
 		BaseVersion = 0x0000001B,
 	};
 
+	public static readonly Pressing Spain = new()
+	{
+		Name = "Spain",
+		MediaId = new byte[]
+		{
+			0xA8, 0x54, 0x3A, 0x62, 0x98, 0x8E, 0x27, 0xB1,
+			0x1C, 0x26, 0xFF, 0x12, 0x77, 0x2E, 0x8E, 0xE8,
+		},
+		BaseVersion = 0x0000001D,
+		TitleUpdateName = "TU_16L61VH_000003K000000.000000000008T",
+		UpdatedVersion = 0x0000011D,
+	};
+
 	/// <summary>
 	/// Fable 3's USA / Europe disc (En, Zh, Ko, Pl, Ru, Cs, Hu, Sk), read from its own security
 	/// block and execution info. No title update is supported: there is no config for a patched
@@ -120,7 +136,7 @@ public static class SupportedGame
 		BaseVersion = 0x00000003,
 	};
 
-	private static readonly Pressing[] Fable2Pressings = { UsaEurope, Russia, France };
+	private static readonly Pressing[] Fable2Pressings = { UsaEurope, Russia, France, Spain };
 
 	private static readonly Pressing[] Fable3Pressings = { Fable3UsaEurope };
 

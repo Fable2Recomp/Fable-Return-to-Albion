@@ -1,0 +1,12 @@
+key,value
+HEALTH_BARS_MOD_NAME,Barres de vie
+HEALTH_BARS_MOD_DESCRIPTION,"Une barre de vie au-dessus de chaque ennemi proche, avec une traînée pâle qui montre chaque coup."
+HEALTH_BARS_SETTING_SHOW,Afficher les barres de vie ennemies
+HEALTH_BARS_SETTING_RANGE,Portée
+HEALTH_BARS_SETTING_RANGE_DESCRIPTION,"Distance, en mètres, jusqu'à laquelle un ennemi a encore une barre."
+HEALTH_BARS_SETTING_ONLY_HURT,Ennemis blessés uniquement
+HEALTH_BARS_SETTING_ONLY_HURT_DESCRIPTION,Ignore les ennemis qui n'ont pas encore été touchés.
+HEALTH_BARS_SETTING_NUMBERS,Afficher les valeurs
+HEALTH_BARS_SETTING_NUMBERS_DESCRIPTION,La santé actuelle et maximale en chiffres sous la barre.
+HEALTH_BARS_SETTING_SIZE,Taille
+HEALTH_BARS_SETTING_SIZE_DESCRIPTION,La taille d'affichage des barres.

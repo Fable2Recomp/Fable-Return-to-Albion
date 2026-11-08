@@ -1,0 +1,12 @@
+key,value
+HEALTH_BARS_MOD_NAME,Életerősávok
+HEALTH_BARS_MOD_DESCRIPTION,"Életerősáv minden közeli ellenség fölött, halvány nyommal, amely minden találatot megmutat."
+HEALTH_BARS_SETTING_SHOW,Ellenségek életerősávjának mutatása
+HEALTH_BARS_SETTING_RANGE,Hatótáv
+HEALTH_BARS_SETTING_RANGE_DESCRIPTION,Hány méter távolságig kap még sávot egy ellenség.
+HEALTH_BARS_SETTING_ONLY_HURT,Csak sebesült ellenségek
+HEALTH_BARS_SETTING_ONLY_HURT_DESCRIPTION,"Kihagyja azokat az ellenségeket, akiket még nem ért találat."
+HEALTH_BARS_SETTING_NUMBERS,Számok mutatása
+HEALTH_BARS_SETTING_NUMBERS_DESCRIPTION,A jelenlegi és a legnagyobb életerő számokkal a sáv alatt.
+HEALTH_BARS_SETTING_SIZE,Méret
+HEALTH_BARS_SETTING_SIZE_DESCRIPTION,Mekkorák legyenek a sávok.

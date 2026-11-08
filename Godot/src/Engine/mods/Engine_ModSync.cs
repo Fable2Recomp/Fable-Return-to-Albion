@@ -736,7 +736,8 @@ public static class ModSyncCache
 			{
 			}
 
-			items.Add(new ModSync.Item(new ModFingerprint.Mod(meta.Title, meta.Title, meta.Version, sha, size), ModSync.Source.Cached, file));
+			string title = ModText.ForMod(file, meta.Title);
+			items.Add(new ModSync.Item(new ModFingerprint.Mod(title, title, meta.Version, sha, size), ModSync.Source.Cached, file));
 		}
 
 		return items;

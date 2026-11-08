@@ -15,7 +15,10 @@ using Refii.Ui;
 /// over it, a `rim`, a `highlight` glow and a `shadow`. The HUD's prompts stack the layers
 /// (`Icon.Container.A_Orb` under `A_Text`, set by sub_82961340 / sub_829614A0 through
 /// sub_82818EF0), so the glyph goes on the `complete` art and on the orb, and the letter and rim
-/// over the orb draw nothing while the glyph shows; the glow and shadow stay.
+/// over the orb draw nothing while the glyph shows; the glow and shadow stay. The `complete`
+/// art is that stack flattened — its alpha covers the shadow's disc — so a glyph in its place is
+/// backed (<see cref="Engine_UiKeyGlyphs.GlyphArt.Backed"/>): it sits on the art's silhouette in
+/// black, the shadow the layered prompt draws as its own element.
 /// </remarks>
 public static class Fable3Glyphs
 {
@@ -44,7 +47,9 @@ public static class Fable3Glyphs
 			string part = name.Contains('_') ? name[(name.IndexOf('_') + 1)..] : name;
 			return part switch
 			{
-				"complete" or "complete_pressed" or "orb" => new Engine_UiKeyGlyphs.GlyphArt(button, Engine_UiKeyGlyphs.GlyphLayer.Whole),
+				"complete" or "complete_pressed" =>
+					new Engine_UiKeyGlyphs.GlyphArt(button, Engine_UiKeyGlyphs.GlyphLayer.Whole, Backed: true),
+				"orb" => new Engine_UiKeyGlyphs.GlyphArt(button, Engine_UiKeyGlyphs.GlyphLayer.Whole),
 				"text" or "textb" or "orbt" or "rim" or "stick" or "trigger" or "start" or "back" =>
 					new Engine_UiKeyGlyphs.GlyphArt(button, Engine_UiKeyGlyphs.GlyphLayer.Overlay),
 				_ => null,

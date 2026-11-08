@@ -1,0 +1,12 @@
+key,value
+HEALTH_BARS_MOD_NAME,Lebensbalken
+HEALTH_BARS_MOD_DESCRIPTION,"Ein Lebensbalken über jedem Gegner in deiner Nähe, mit einer blassen Spur, die jeden Treffer zeigt."
+HEALTH_BARS_SETTING_SHOW,Lebensbalken der Gegner anzeigen
+HEALTH_BARS_SETTING_RANGE,Reichweite
+HEALTH_BARS_SETTING_RANGE_DESCRIPTION,Bis zu welcher Entfernung in Metern ein Gegner noch einen Balken bekommt.
+HEALTH_BARS_SETTING_ONLY_HURT,Nur verletzte Gegner
+HEALTH_BARS_SETTING_ONLY_HURT_DESCRIPTION,"Gegner, die noch nicht getroffen wurden, auslassen."
+HEALTH_BARS_SETTING_NUMBERS,Zahlen anzeigen
+HEALTH_BARS_SETTING_NUMBERS_DESCRIPTION,Aktuelle und maximale Gesundheit als Zahlen unter dem Balken.
+HEALTH_BARS_SETTING_SIZE,Größe
+HEALTH_BARS_SETTING_SIZE_DESCRIPTION,Wie groß die Balken gezeichnet werden.

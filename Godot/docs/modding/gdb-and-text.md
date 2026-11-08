@@ -12,6 +12,7 @@ apply.
   - [Mod morphs in rows](#mod-morphs-in-rows)
 - [Binary patches: .gdb.tu](#binary-patches-gdbtu)
 - [Text rows: .babel.csv](#text-rows-babelcsv)
+- [Text keys](#text-keys)
 - [Hashes from names](#hashes-from-names)
 - [Live reload and its limits](#live-reload-and-its-limits)
 - [Records in saves](#records-in-saves)
@@ -131,8 +132,68 @@ MY_MOD_MENU_GREET,Say hello
   text is a legitimate thing for a mod to ship.
 - `key,kind,value` is read too, so a row copied out of a full dump works; only `text` rows apply.
 - Two mods retranslating different keys both apply.
+- Write your text in `language/en-uk/text/book.babel.csv`. When the game runs in another language
+  (a Spanish disc ships only `es-es`), your `language/<that language>/text/book.babel.csv` is used
+  if you ship one, otherwise your en-uk rows go into that language's book — so your menus are
+  never blank on a non-English install. Ship a per-language file only for the languages you
+  actually translate. A file for a language the player's disc does not ship is skipped quietly;
+  one for a language it does ship edits that book too, ready for a switch from the title's
+  Language menu.
+- Name the folder exactly as the disc does: `fr-fr`, `de-de`, `it-it`, `es-es`, `ru-ru`, `pl-pl`,
+  `cs-cz`, `hu-hu`, `sk-sk`, `ja-jp`, `ko-kr`, `zh-cht`. Keep every key and every `%1`, `{TAG}`,
+  `<…>` tag and `\n` of the en-uk row; quote a value that contains a comma. The bundled mods are
+  translated into all twelve and the tests hold them to the en-uk keys and markup.
+- Settings pages, input labels, `mod.toml`, notices and script text name these rows as `{KEY}` —
+  see [Text keys](#text-keys).
 - Menus, the HUD and item names read the reloaded book live (see
   [Live iteration](live-iteration.md)).
+
+## Text keys
+
+Everything of a mod's that the player reads can be translated: write `{KEY}` where the text goes,
+and put `KEY` in your `language/en-uk/text/book.babel.csv` (and in each language you translate).
+It is the same form a stated menu row's label takes (`"{QUICKSLOTS_SLOT_1}: {OBJECT_HEALTH_POTION_NAME}"`).
+
+| Where | What takes `{KEY}` |
+|---|---|
+| `settings.ui.json` | each row's `label` and `description`, each choice option's `label` |
+| `input.json` | each action's `label` (the Controls page adds the device: "Label (key)" / "Label (pad)", in the player's language) |
+| `mod.toml` | `name` and `description` — in game (the Options › Mods page, the Controls page, the co-op mods list) and in the launcher's Mods panel |
+| notices and boxes | `Refii.notice` / `RefiiHost.notice` / `refii_mod_notice`, and the message and menu boxes: title, text, captions and options |
+| script text | `Refii.text(text [, a .. h])` in Lua, `RefiiHost.text(text, args = [])` in Godot, `refii_mod_text(text, out, capacity)` natively |
+
+```toml
+name = "{MY_MOD_NAME}"
+description = "{MY_MOD_DESCRIPTION}"
+```
+
+```json
+{ "range": { "label": "{MY_MOD_RANGE}", "description": "{MY_MOD_RANGE_DESCRIPTION}", "type": "slider" } }
+```
+
+```lua
+Refii.notice("{MY_MOD_NAME}", Refii.text("MY_MOD_GAVE_GOLD", 1000))   -- "+%1 gold" in the table
+```
+
+```gdscript
+host.notice("{MY_MOD_NAME}", host.text("MY_MOD_SAVED"))
+```
+
+- **One lookup everywhere.** A key is looked up in the book the game is running (the game's own
+  tags, and every mod's rows merged into it), then in the enabled mods' tables for the language in
+  force, then in their en-uk rows, then in the engine's own words. So a mod translated into Czech
+  but missing one line shows that line in English, and `{OBJECT_HEALTH_POTION_NAME}` is the game's
+  own item name in the player's language.
+- **A key nothing knows is drawn as written**, braces and all. A string with no `{…}` is drawn as
+  it is, so a mod written before keys is unchanged.
+- **In scripts** a bare key works too: `Refii.text("MY_MOD_SAVED")`. `%1`, `%2` … take the call's
+  arguments (Lua takes up to eight).
+- **The launcher** has no running book: it reads the mod's own tables in the install's language
+  (the one the game starts in, from the disc's `cultures.txt`), then en-uk.
+- **The validator warns** when a `{KEY}` in `settings.ui.json`, `input.json` or `mod.toml` has no
+  row in your en-uk table — fine for a game tag, a typo otherwise.
+- Keep your en-uk table complete: it is every language's fallback. The bundled mods' tables are a
+  worked example of every surface.
 
 ## Hashes from names
 

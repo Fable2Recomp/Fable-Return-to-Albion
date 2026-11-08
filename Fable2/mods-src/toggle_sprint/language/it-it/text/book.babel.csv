@@ -1,0 +1,5 @@
+key,value
+TOGGLE_SPRINT_MOD_NAME,Scatto alternato
+TOGGLE_SPRINT_MOD_DESCRIPTION,Lo scatto si attiva e disattiva invece di tenere premuto: premi Maiusc (o A sul controller) una volta per iniziare a scattare e di nuovo per fermarti. Ogni giocatore in cooperativa ha il proprio interruttore.
+TOGGLE_SPRINT_SETTING_STOP_AFTER,Ferma dopo una sosta
+TOGGLE_SPRINT_SETTING_STOP_AFTER_DESCRIPTION,Secondi da fermo prima che lo scatto finisca e si debba premere di nuovo Maiusc. 0 continua a scattare.

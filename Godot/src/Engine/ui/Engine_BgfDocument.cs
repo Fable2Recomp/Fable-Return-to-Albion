@@ -744,46 +744,6 @@ public sealed class Engine_BgfDocument
 	/// </summary>
 	public const int SceneOwnerElement = 0;
 
-	/// <summary>
-	/// Applies the LIVE slide of every element, as read from the running guest.
-	///
-	/// Indexed by element ORDINAL, not by name: the runtime walks depth-first (child, then
-	/// sibling) in exactly the order elements appear in this file. A name hash is not a key — a
-	/// screen has far more elements than distinct names (3812 elements, 289 names on the main
-	/// menu), so hashing forces every "Group" onto one widget's state.
-	///
-	/// A length mismatch means the guest is on a different presentation, and nothing is applied.
-	/// </summary>
-	public bool SetElementSlides(IReadOnlyList<int> slidesByOrdinal)
-	{
-		if (slidesByOrdinal.Count != Elements.Length)
-		{
-			return false;
-		}
-
-		SlideGrouping grouping = Grouped();
-		SlideState = ComputeSlideState((owner, owned) =>
-		{
-			if (owner < 0 || owner >= slidesByOrdinal.Count)
-			{
-				return null;
-			}
-
-			// Slide 0 is the master, which ComputeSlideState already applies as the
-			// baseline — there is no numbered slide on top of it.
-			int slide = slidesByOrdinal[owner];
-			if (slide <= 0)
-			{
-				return null;
-			}
-
-			BgfSlide[] numbered = Numbered(grouping, owner);
-			return slide <= numbered.Length ? numbered[slide - 1] : null;
-		});
-
-		return true;
-	}
-
 	/// <summary>One owner's slides in file order, its master, and the rest in order.</summary>
 	private sealed class SlideGroup
 	{

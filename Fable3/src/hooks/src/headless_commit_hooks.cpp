@@ -4,7 +4,7 @@
 //
 // THE COMMIT. GuiTextBox_Commit sub_82B45268(box, LHString* text) assigns the box's shown string
 // (box+0x88, 0x82B452A4). Its callers outside the stated writers (sub_82819070, sub_82BEA6D8,
-// sub_82BEF428, sub_82961340, ui_stated_hooks.cpp) reach it the same way: the element `rE`, then
+// sub_82961340, ui_stated_hooks.cpp) reach it the same way: the element `rE`, then
 // `lwz r11,4(rE)` / `lwz r11,0(r11)` — the element's renderable node and its text box — each
 // tested for 0, and only then `bl sub_82B45268` with the text in r4. A headless element's +4 is 0
 // (headless_presentation_hooks.cpp), so the commit is never reached and the text is said nowhere
@@ -37,10 +37,35 @@
 //                 0x82929944 r31, r3
 //   food          CFoodItemQueryBox_Show sub_82B579E8 0x82B57C30 r29, r1+0x50, 0x82B57E0C r31, r3
 //   bed           CBedInteractionMessageBox_vf5 sub_82B59298 0x82B59304 r11, r1+0x50
+//   interaction   the text box sub_82BEF428 0x82BEF754 r30, r26 (the child it resolved: `+44` + "1",
+//   text          else `+44` — CrimeInfo's `Contents.Crimes`)
+//   received item sub_82433468 (CECReceivedItemQueue_vf18 0x82437A78): `ReceivedItems.ReceivedItemAlert.
+//                 Group.PlayerNum` (dword_83557C18, resolved in the HUD 0x82433504) 0x82433538 r31,
+//                 r1+0x50 (the number by sub_82300020 0x8243351C, or "" by sub_82D72E80 0x82433534)
+//   HUD icon      the pooled icon's slot 3 sub_82B52170(icon, title, opinion): `Contents.Title`
+//                 (slot+16, 0x82B5218C) 0x82B521AC r11, r4; `Contents.Opinion` (slot+12, 0x82B521CC)
+//                 0x82B521EC r11, r29 (`mr r29,r5` 0x82B52184)
 //   credits       the roll's init sub_82B3F980 0x82B3FBF0 r31, r1+0x50; its tick sub_82B3FD70
 //                 0x82B3FE88 r30, r1+0x50 (the empty line past the end) and 0x82B3FE40 r30 —
 //                 the next line, `*(roll+0x1C) + 4 * roll+0x14` (0x82B3FE58..0x82B3FE60), r31 the
 //                 roll and r11 its index (0x82B3FE18).
+//   mini-game     the counter sub_826ECB18 (bar, player, text): `Bar.Elements.Text.Counter<n>.Counter.
+//   counter       Text` (dword_8355A0BC joined 0x826ECBAC, resolved 0x826ECBB4) 0x826ECBCC r3, r30
+//                 (`mr r30,r5` 0x826ECB28)
+//   mode button   sub_82961790(mode, parent, tag name): the button's `Title` (resolved under r4 in
+//   title         IM+0, 0x829617DC) 0x829617F8 r31, r3 — the tag's text sub_823A9728 answered at
+//                 0x829617F4, moved to r4 at 0x829617FC
+//   crowd bar     sub_82B24688(mode): `CrowdInterestBar.CurrentRenown` (dword_8355D828, 0x82B246CC)
+//                 0x82B24800 r31, r3 (the renown by sub_82300020 "%d", 0x82B247FC)
+//   side pane     sub_82BEF220(pane, path, text): the path under dword_8355EB40 in IM+0 (sub_82BEF178,
+//                 0x82BEF238) 0x82BEF248 r31, r29 (`mr r29,r5` 0x82BEF234); the guest then commits
+//                 only a kind-5 (text) node (0x82BEF254), which the .bgf's own element type is
+//   save info     Lua_GUI_ShowSaveInfoBoxFromStatue's sub_82957E70(mode, entity, flag), then IM+64 = 9
+//                 SaveGameInfo (sub_82963040 0x829587C0), each path resolved in IM+0 (r24):
+//                 dword_8355C28C 0x829580A0 r3, r1+0x68; C290 0x82958184 r3, r1+0x6C; C294
+//                 0x82958248 r3, r1+0x54; C298 0x829582A4 r3, r1+0x58; C2A0 0x82958334 r3, r1+0x58
+//                 and 0x82958780 r3, r1+0x58; C29C 0x8295838C r3, r31 (sub_82300020 0x8295836C) and
+//                 0x82958738 r3, r1+0x50
 // A text register the caller moves to r4 after the guard (`mr r4,rS`) is not written between the
 // guard and that move (the guard touches only r11/r10 and cr6).
 
@@ -93,6 +118,8 @@ REFII_F3_STACK_COMMIT(54)
 REFII_F3_STACK_COMMIT(58)
 REFII_F3_STACK_COMMIT(5C)
 REFII_F3_STACK_COMMIT(64)
+REFII_F3_STACK_COMMIT(68)
+REFII_F3_STACK_COMMIT(6C)
 REFII_F3_STACK_COMMIT(70)
 REFII_F3_STACK_COMMIT(7C)
 REFII_F3_STACK_COMMIT(80)

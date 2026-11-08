@@ -1,0 +1,51 @@
+key,value
+QUICKSLOTS_MENU,Schnellplätze
+QUICKSLOTS_ASSIGN,Schnellplatz zuweisen
+QUICKSLOTS_ASSIGN_TITLE,Einem Schnellplatz zuweisen
+QUICKSLOTS_CHOOSE_TITLE,Inhalt des Platzes wählen
+QUICKSLOTS_SLOT_1,Steuerkreuz oben
+QUICKSLOTS_SLOT_2,Steuerkreuz unten
+QUICKSLOTS_SLOT_3,Steuerkreuz links
+QUICKSLOTS_SLOT_4,Steuerkreuz rechts
+QUICKSLOTS_SLOT_5,LT + oben
+QUICKSLOTS_SLOT_6,LT + unten
+QUICKSLOTS_SLOT_7,LT + links
+QUICKSLOTS_SLOT_8,LT + rechts
+QUICKSLOTS_SLOT_9,RT + oben
+QUICKSLOTS_SLOT_10,RT + unten
+QUICKSLOTS_SLOT_11,RT + links
+QUICKSLOTS_SLOT_12,RT + rechts
+QUICKSLOTS_AUTOMATIC,Automatisch (vom Spiel)
+QUICKSLOTS_EMPTY,Leer
+QUICKSLOTS_CLEAR,Diesen Platz leeren
+QUICKSLOTS_REMOVE,Von allen Plätzen entfernen
+QUICKSLOTS_ITEM,Gegenstand
+QUICKSLOTS_WEAPON,Waffe
+QUICKSLOTS_EXPRESSION,Ausdruck
+QUICKSLOTS_SPELL,Zauber
+QUICKSLOTS_ITEMS,Gegenstände und Waffen
+QUICKSLOTS_EXPRESSIONS,Ausdrücke
+QUICKSLOTS_SPELLS,Zauber
+QUICKSLOTS_MOD_NAME,Schnellplätze
+QUICKSLOTS_MOD_DESCRIPTION,"Zwölf belegbare Schnellplätze auf dem Steuerkreuz: die vier Richtungen, LT + Richtung und RT + Richtung, jeweils mit einem Gegenstand zum Benutzen, einer Waffe zum Ziehen, einem Ausdruck zum Vorführen oder einem Zauber zum Bereitmachen. Belege sie aus dem Inventar, den Büchern für Ausdrücke und Fähigkeiten oder dem Ausdrucksrad; das Steuerkreuz im HUD zeigt, was jeder Platz enthält. Eine Richtung ohne Belegung behält ihre normale Funktion im Spiel."
+QUICKSLOTS_SETTING_LT_BANK,LT + Steuerkreuz-Gruppe
+QUICKSLOTS_SETTING_LT_BANK_DESCRIPTION,"Vier weitere Plätze, erreichbar durch Halten des linken Triggers."
+QUICKSLOTS_SETTING_RT_BANK,RT + Steuerkreuz-Gruppe
+QUICKSLOTS_SETTING_RT_BANK_DESCRIPTION,"Vier weitere Plätze, erreichbar durch Halten des rechten Triggers. Solange einer davon belegt ist, öffnet der rechte Trigger nicht mehr das Zaubermenü."
+QUICKSLOTS_SETTING_HUD_ICONS,Platzsymbole auf dem Steuerkreuz
+QUICKSLOTS_SETTING_HUD_ICONS_DESCRIPTION,"Zeigt auf dem Steuerkreuz im HUD, was jeder Platz enthält, und bei gedrücktem Trigger die Plätze der gehaltenen Gruppe."
+QUICKSLOTS_INPUT_UP,Schnellplatz oben
+QUICKSLOTS_INPUT_DOWN,Schnellplatz unten
+QUICKSLOTS_INPUT_LEFT,Schnellplatz links
+QUICKSLOTS_INPUT_RIGHT,Schnellplatz rechts
+QUICKSLOTS_INPUT_LT_UP,LT-Schnellplatz oben
+QUICKSLOTS_INPUT_LT_DOWN,LT-Schnellplatz unten
+QUICKSLOTS_INPUT_LT_LEFT,LT-Schnellplatz links
+QUICKSLOTS_INPUT_LT_RIGHT,LT-Schnellplatz rechts
+QUICKSLOTS_INPUT_RT_UP,RT-Schnellplatz oben
+QUICKSLOTS_INPUT_RT_DOWN,RT-Schnellplatz unten
+QUICKSLOTS_INPUT_RT_LEFT,RT-Schnellplatz links
+QUICKSLOTS_INPUT_RT_RIGHT,RT-Schnellplatz rechts
+QUICKSLOTS_INPUT_LT,LT-Gruppe (halten)
+QUICKSLOTS_INPUT_RT,RT-Gruppe (halten)
+QUICKSLOTS_INPUT_ASSIGN,Markierten Ausdruck zuweisen

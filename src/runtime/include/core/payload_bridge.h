@@ -113,6 +113,13 @@ int32_t refii_bridge_mod_value_f32(const char* key, size_t key_length, float* ou
 void refii_bridge_mod_set_setting_f32(const char* key, size_t key_length, float value);
 float refii_bridge_mod_setting_f32(const char* key, size_t key_length, float fallback);
 
+// A mod's TEXT in the culture the game runs in, from the host's lookup (Godot's Engine_ModText:
+// the running book, the enabled mods' language/<culture>/text/book.babel.csv, their en-uk rows):
+// `text` a bare key or a text with {KEY}s inside. Writes the result NUL-terminated (cut to
+// `capacity`) and returns its length; -1 when no host lookup is installed. Any thread — the host
+// answers on the caller's. State in src/core/mod_values.cpp, installed by RefiiHostSetModTextLookup.
+int32_t refii_bridge_mod_text(const char* text, size_t length, char* out, uint32_t capacity);
+
 // The mod event bus, both ways across the bridge (state in src/core/mod_values.cpp):
 // - the payload POSTS an event the host asked for (`fields` is the Lua-table-literal body the
 //   bus builds for Lua handlers) and the host drains them in order (Godot scripts' RefiiHost);

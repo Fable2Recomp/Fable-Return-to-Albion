@@ -334,12 +334,6 @@ public static class Engine_UiModel
 	/// </param>
 	public readonly record struct AchievementUnlock(uint UserIndex, uint AchievementId, ulong Sequence);
 
-	/// <summary>A direction on the menu stick, in the guest's own action order.</summary>
-	public enum MenuStick
-	{
-		Up, Down, Left, Right,
-	}
-
 	/// <summary>One spawned menu row's identity, as the guest handed it to `SpawnButton`.</summary>
 	public readonly record struct MenuRow(
 		string Name, string Parent, uint Id, int EventType, int Rating, string Label)

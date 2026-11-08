@@ -5,6 +5,7 @@ using GdUnit4;
 using Refii.Bnk;
 using Refii.Core;
 using Refii.Ui;
+using Refii.Titles.Fable2;
 using static GdUnit4.Assertions;
 
 namespace Refii.Tests.Ui;

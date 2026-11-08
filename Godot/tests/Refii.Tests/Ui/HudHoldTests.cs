@@ -8,6 +8,7 @@ using static GdUnit4.Assertions;
 using Refii.Bnk;
 using Refii.Core;
 using Refii.Ui;
+using Refii.Titles.Fable2;
 
 /// <summary>
 /// A held HUD piece (<see cref="Engine_UiHudHold"/>, <c>hud_hold</c>) against the shipped

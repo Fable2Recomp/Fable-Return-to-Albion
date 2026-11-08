@@ -1,0 +1,15 @@
+key,value
+QUICKSAVE_MOD_NAME,クイックセーブ
+QUICKSAVE_MOD_DESCRIPTION,Bethesda風のクイックセーブとクイックロード: F8でゲームをセーブし、セーブデータの隣にクイックセーブを残す。F9でゲームを終了せずにそのクイックセーブをロードする。クイックロードしても自分のセーブデータはそのまま。
+QUICKSAVE_INPUT_QUICKSAVE,クイックセーブ
+QUICKSAVE_INPUT_QUICKLOAD,クイックロード
+QUICKSAVE_SAVE_ALONE_ONLY,クイックセーブはシングルプレイ時のみ使用できます。
+QUICKSAVE_LOAD_ALONE_ONLY,クイックロードはシングルプレイ時のみ使用できます。
+QUICKSAVE_NONE_YET,クイックセーブがまだありません。クイックセーブして作成してください。
+QUICKSAVE_CANT_LOAD_NOW,現在はクイックロードできません。
+QUICKSAVE_LOAD_FAILED,クイックセーブをロードできませんでした。
+QUICKSAVE_CANT_SAVE_NOW,現在はセーブできません。
+QUICKSAVE_GAME_NOT_SAVED,ゲームはセーブされませんでした。クイックセーブは作成されていません。
+QUICKSAVE_SAVED,クイックセーブしました。
+QUICKSAVE_NOT_KEPT,ゲームはセーブされましたが、クイックセーブを残せませんでした。
+QUICKSAVE_LOADED,%1のクイックセーブをロードしました。

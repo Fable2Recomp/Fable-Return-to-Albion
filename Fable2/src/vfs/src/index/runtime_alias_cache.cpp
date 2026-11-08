@@ -1,5 +1,7 @@
 #include "vfs_hooks_private.h"
 
+#include "core/installed_cultures.h"
+
 #include <iterator>
 
 namespace refii::vfs {
@@ -515,9 +517,6 @@ void PrimeRefiiVfsDatabaseAliasCandidates(
       add_alias_to_load(normalized_alias);
 
       constexpr std::string_view kLanguagePrefix = "language/";
-      constexpr std::string_view kKnownLanguageLocales[] = {
-          "en-uk", "hu-hu", "zh-cht", "cs-cz",
-          "ko-kr", "pl-pl", "sk-sk"};
       if (StartsWith(normalized_alias, kLanguagePrefix)) {
         const std::string_view asset_tail =
             GetLanguageAssetTail(normalized_alias);
@@ -525,8 +524,10 @@ void PrimeRefiiVfsDatabaseAliasCandidates(
           if (IsLanguageVideoAssetTail(asset_tail)) {
             continue;
           }
+          const std::vector<std::string> installed_cultures =
+              InstalledLanguageCultures();
           auto add_language_tail = [&](std::string_view tail) {
-            for (const std::string_view locale : kKnownLanguageLocales) {
+            for (const std::string& locale : installed_cultures) {
               add_alias_to_load(std::string(kLanguagePrefix) +
                                 std::string(locale) + "/" +
                                 std::string(tail));
@@ -617,15 +618,13 @@ void PrimeRefiiVfsDatabaseAliasCandidates(
         AppendUniqueDatabaseCandidate(&loaded_candidates[row.candidate],
                                       row.candidate);
 
-        constexpr std::string_view kEnglishLocale = "en-uk";
-        constexpr std::string_view kKnownLanguageLocales[] = {
-            "en-uk", "hu-hu", "zh-cht", "cs-cz",
-            "ko-kr", "pl-pl", "sk-sk"};
-        if (locale_end == kEnglishLocale.size() &&
-            language_tail.substr(0, locale_end) == kEnglishLocale &&
+        // The fallback culture's row answers for every installed culture's spelling, as the
+        // guest's second remap does (`sub_823728E0`, 0x82372AC4).
+        if (locale_end == kFallbackCulture.size() &&
+            language_tail.substr(0, locale_end) == kFallbackCulture &&
             locale_end + 1 < language_tail.size() &&
             !IsLanguageVideoAssetTail(asset_tail)) {
-          for (const std::string_view locale : kKnownLanguageLocales) {
+          for (const std::string& locale : InstalledLanguageCultures()) {
             AppendUniqueDatabaseCandidate(
                 &loaded_candidates[std::string(kLanguagePrefix) +
                                    std::string(locale) + "/" +

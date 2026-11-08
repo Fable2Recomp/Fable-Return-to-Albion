@@ -963,8 +963,8 @@ public static class Engine_UiAbilityPage
 		}
 
 		if (row is null || orbs is not { Length: > 3 } ||
-			!Refii.Gdb.Engine_AbilityRecords.TryGet(row.Name,
-				out Refii.Gdb.Engine_AbilityRecords.Ability ability))
+			!Engine_AbilityRecords.TryGet(row.Name,
+				out Engine_AbilityRecords.Ability ability))
 		{
 			return slides;
 		}
@@ -972,7 +972,7 @@ public static class Engine_UiAbilityPage
 		int level = levels is { Length: > 14 } && ability.Type is > 0 and < 15
 			? levels[ability.Type]
 			: 0;
-		int max = Refii.Gdb.Engine_AbilityRecords.MaxLevel(ability.BaseRecord);
+		int max = Engine_AbilityRecords.MaxLevel(ability.BaseRecord);
 		if (max > 0 && level >= max)
 		{
 			return slides;
@@ -1027,8 +1027,8 @@ public static class Engine_UiAbilityPage
 	public static string MovieFor(Engine_UiExpandableMenu.Item? row, int[]? levels)
 	{
 		if (row is null ||
-			!Refii.Gdb.Engine_AbilityRecords.TryGet(row.Name,
-				out Refii.Gdb.Engine_AbilityRecords.Ability ability))
+			!Engine_AbilityRecords.TryGet(row.Name,
+				out Engine_AbilityRecords.Ability ability))
 		{
 			return string.Empty;
 		}
@@ -1037,7 +1037,7 @@ public static class Engine_UiAbilityPage
 		// `VideoFilePathAndName`; the base record only carries it for the abilities that happen
 		// to inherit one, which is why Brutal Styles found a movie and Physique did not — and a
 		// blank name leaves the previous ability's movie standing.
-		string video = Refii.Gdb.Engine_AbilityRecords.VideoPathOf(ability.BaseRecord);
+		string video = Engine_AbilityRecords.VideoPathOf(ability.BaseRecord);
 		if (video.Length == 0)
 		{
 			video = ability.VideoPath;
@@ -1056,7 +1056,7 @@ public static class Engine_UiAbilityPage
 		int level = levels is { Length: > 14 } && ability.Type is > 0 and < 15
 			? levels[ability.Type]
 			: 0;
-		int max = Refii.Gdb.Engine_AbilityRecords.MaxLevel(ability.BaseRecord);
+		int max = Engine_AbilityRecords.MaxLevel(ability.BaseRecord);
 		string suffix = max > 0 && level >= max
 			? MovieAllSuffix
 			: (level + 1).ToString(CultureInfo.InvariantCulture);

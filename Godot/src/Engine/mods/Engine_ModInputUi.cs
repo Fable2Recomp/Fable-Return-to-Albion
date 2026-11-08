@@ -80,8 +80,13 @@ public static class ModInputUi
 	/// <summary>One row: an action on one device.</summary>
 	public sealed record Row(ModInput.Action Action, Device Device)
 	{
-		/// <summary>The row's label: the action's label and the device.</summary>
-		public string Label => Action.Label + (Device == Device.Keyboard ? " (key)" : " (pad)");
+		/// <summary>
+		/// The row's label: the action's label (a <c>{KEY}</c> in it is the mod's text, <see cref="ModText"/>)
+		/// in the engine's row pattern for the device, "%1 (key)" / "%1 (pad)" in the culture in force.
+		/// </summary>
+		public string Label => ModText.Format(
+			ModText.Word(Device == Device.Keyboard ? ModText.InputKeyRow : ModText.InputPadRow),
+			new[] { ModText.Game(Action.Label) });
 
 		/// <summary>The refii.toml key the row writes.</summary>
 		public string SettingKey => Device == Device.Keyboard ? ModInput.KeySettingKey(Action) : ModInput.PadSettingKey(Action);
@@ -240,20 +245,24 @@ public static class ModInputUi
 
 	private static IReadOnlyList<ModInput.Action>? _builtFor;
 
-	/// <summary>The sections for the actions loaded now; rebuilt when the actions reload.</summary>
+	private static string? _builtCulture;
+
+	/// <summary>The sections for the actions loaded now; rebuilt when the actions reload or the culture changes.</summary>
 	public static IReadOnlyList<Section> Sections()
 	{
 		IReadOnlyList<ModInput.Action> actions = ModInput.All;
-		if (_sections is null || !ReferenceEquals(_builtFor, actions))
+		string culture = Refii.Text.Engine_GameCulture.Current;
+		if (_sections is null || !ReferenceEquals(_builtFor, actions) || _builtCulture != culture)
 		{
 			var titles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 			foreach (ModInstall install in ModSession.Resolve(Refii.Assets.Engine_GameAssets.ModsRoot).Installs)
 			{
-				titles[install.Name] = install.Metadata.Title.Length != 0 ? install.Metadata.Title : install.Name;
+				titles[install.Name] = install.Metadata.Title.Length != 0 ? ModText.Game(install.Metadata.Title) : install.Name;
 			}
 
 			_sections = Sections(actions, mod => titles.TryGetValue(mod, out string? title) ? title : mod);
 			_builtFor = actions;
+			_builtCulture = culture;
 		}
 
 		return _sections;

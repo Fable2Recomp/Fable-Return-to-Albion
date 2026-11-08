@@ -1,0 +1,23 @@
+key,value
+FIRST_PERSON_MOD_NAME,First Person
+FIRST_PERSON_MOD_DESCRIPTION,"Play Fable II in first person: the camera sits in the hero's head, the head is hidden and the body stays in view, and you walk, fight and look around with the mouse or right stick. H switches between first and third person, for each player in split screen and online co-op. Full cutscenes, canned actions and (by default) the gun aim keep the game's own cameras."
+FIRST_PERSON_SETTING_START_ON,Start in first person
+FIRST_PERSON_SETTING_START_ON_DESCRIPTION,"Whether each player starts a session in first person. H switches, for whoever presses it."
+FIRST_PERSON_SETTING_FOV,Field of view
+FIRST_PERSON_SETTING_FOV_DESCRIPTION,Degrees. The game's own first-person view uses 75.
+FIRST_PERSON_SETTING_EYE_HEIGHT,Eye height
+FIRST_PERSON_SETTING_EYE_HEIGHT_DESCRIPTION,Metres above the head's collision point.
+FIRST_PERSON_SETTING_EYE_FORWARD,Eye forward
+FIRST_PERSON_SETTING_EYE_FORWARD_DESCRIPTION,"Metres in front of the head, so the view clears the face."
+FIRST_PERSON_SETTING_PITCH_LIMIT,Look up and down
+FIRST_PERSON_SETTING_PITCH_LIMIT_DESCRIPTION,"How far up or down you can look, in degrees."
+FIRST_PERSON_SETTING_FACE_CAMERA,Hero faces the view
+FIRST_PERSON_SETTING_FACE_CAMERA_NEVER,Never
+FIRST_PERSON_SETTING_FACE_CAMERA_STANDING,When standing
+FIRST_PERSON_SETTING_FACE_CAMERA_ALWAYS,Always
+FIRST_PERSON_SETTING_FACE_CAMERA_DESCRIPTION,"Turns the hero to where you look, so swings and spells go there."
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM,Third-person gun aim
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM_DESCRIPTION,Aiming a gun or crossbow uses the game's over-the-shoulder camera.
+FIRST_PERSON_SETTING_SCENES,First person in conversations
+FIRST_PERSON_SETTING_SCENES_DESCRIPTION,"Stay in first person when talking and in interactive scenes, facing the speaker. Full cutscenes keep their own camera."
+FIRST_PERSON_INPUT_TOGGLE,First / third person

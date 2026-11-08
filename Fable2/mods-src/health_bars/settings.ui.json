@@ -1,11 +1,11 @@
 {
-	"show": { "label": "Show enemy health bars", "type": "toggle" },
-	"range": { "label": "Range", "type": "slider", "min": 5, "max": 60, "step": 5,
-	           "description": "How far away, in metres, an enemy still gets a bar." },
-	"only_hurt": { "label": "Only hurt enemies", "type": "toggle",
-	               "description": "Leave out enemies that have not been hit yet." },
-	"numbers": { "label": "Show numbers", "type": "toggle",
-	             "description": "Current and most health as numbers under the bar." },
-	"size": { "label": "Size", "type": "slider", "min": 0.6, "max": 2.0, "step": 0.1,
-	          "description": "How big the bars are drawn." }
+	"show": { "label": "{HEALTH_BARS_SETTING_SHOW}", "type": "toggle" },
+	"range": { "label": "{HEALTH_BARS_SETTING_RANGE}", "type": "slider", "min": 5, "max": 60, "step": 5,
+	           "description": "{HEALTH_BARS_SETTING_RANGE_DESCRIPTION}" },
+	"only_hurt": { "label": "{HEALTH_BARS_SETTING_ONLY_HURT}", "type": "toggle",
+	               "description": "{HEALTH_BARS_SETTING_ONLY_HURT_DESCRIPTION}" },
+	"numbers": { "label": "{HEALTH_BARS_SETTING_NUMBERS}", "type": "toggle",
+	             "description": "{HEALTH_BARS_SETTING_NUMBERS_DESCRIPTION}" },
+	"size": { "label": "{HEALTH_BARS_SETTING_SIZE}", "type": "slider", "min": 0.6, "max": 2.0, "step": 0.1,
+	          "description": "{HEALTH_BARS_SETTING_SIZE_DESCRIPTION}" }
 }

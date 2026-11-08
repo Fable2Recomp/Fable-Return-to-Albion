@@ -19,7 +19,12 @@
 // 1 closed, 5 NPC, 6 weapon, 9 save, 7 world map, 13/15 the Lua text panels, … Its InfoBoxOpen
 // toggle (id > 1, 0x829630B0) is a registry write hud_hooks.cpp states. The id is stated here
 // at each of its three writers: the set and close as IM+64 stands when they return, the stager
-// as its r4 asks (its own store is behind IM+0): `@Interaction.Panel(id)`.
+// as its r4 asks (its own store is behind IM+0), the clear as IM+64 stands when it returns
+// (`stw r27,0x40(r29)` 0x825C400C, 1), and the modes that store IM+64 themselves on their stores
+// (`RefiiF3InteractionPanelStored`, the value register, IM = `lwz r11,0x14(r31)`): decoration vf1
+// 0x82B25998 / 0x82B259B8 (r10 = 2), 0x82B259CC / 0x82B259E0 (r30), vf2 0x82B25DA0 (r10 = 1),
+// sub_82B2AB28 0x82B2AC98 (r9 = 13), the shop's vf1 0x82B2E7B0 (r26), the pawn shop's 0x82B36704
+// (r30): `@Interaction.Panel(id)`.
 //
 // THE ROOT. The tick sub_825C3A78(IM) writes InteractionMode.bgf's root (`GuiPresentation_Root(IM+0)`)
 // on the edges of two IM flags it owns: IM+7 (a screen over the mode — sub_821F8758, the GUI's
@@ -245,7 +250,11 @@ REX_EXTERN(rex_InteractionMode_Clear) {
   if (presentation != 0u) {
     StateState(presentation, 0u, "Scene", 1, "825C3F00");
   }
+  StatePanel(base, im);
 }
+
+/// A mode's own IM+64 store (the value register at the `stw rX,0x40(r11)`).
+void RefiiF3InteractionPanelStored(PPCRegister& value) { StatePanelId(static_cast<int32_t>(value.u32)); }
 
 // (mode, button, hold).
 REX_EXTERN(rex_InteractionButton_Hold) {

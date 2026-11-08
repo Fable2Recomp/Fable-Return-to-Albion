@@ -426,7 +426,8 @@ public sealed class ModFingerprint
 		{
 		}
 
-		return new Mod(mod.Name, mod.Metadata.Title, mod.Metadata.Version, HashPackage(mod.PackagePath), size, HasNative(mod.PackagePath));
+		// The title is display only (Digest reads name and bytes): mod.toml's {KEY} resolved, so the peer shows a name.
+		return new Mod(mod.Name, ModText.ForMod(mod, mod.Metadata.Title), mod.Metadata.Version, HashPackage(mod.PackagePath), size, HasNative(mod.PackagePath));
 	}
 
 	/// <summary>

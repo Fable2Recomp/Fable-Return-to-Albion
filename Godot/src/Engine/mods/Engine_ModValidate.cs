@@ -1459,7 +1459,7 @@ public static partial class ModValidate
 
 	private static readonly string[] RowActionKeys = { "button", "tag", "command" };
 
-	private static readonly string[] ModalKeys = { "kind", "confirm", "cancel" };
+	private static readonly string[] ModalKeys = { "kind", "confirm", "cancel", "alternate" };
 
 	private static readonly string[] MenuKeys = { "patch", "highlight", "title", "rowCommand", "source", "entries" };
 
@@ -1483,7 +1483,7 @@ public static partial class ModValidate
 
 	private static readonly string[] ScreenFlagKeys =
 	{
-		"ownsList", "restFromFile", "flowWhenDrawn", "commitsByHighlight", "ownsRevealedInput", "hasSpellBlade", "fadesTopEnd", "fadesBottomEnd",
+		"ownsList", "restFromFile", "purse", "flowWhenDrawn", "commitsByHighlight", "ownsRevealedInput", "hasSpellBlade", "fadesTopEnd", "fadesBottomEnd",
 	};
 
 	private static readonly string[] ScreenListKeys =
@@ -1939,6 +1939,19 @@ public static partial class ModValidate
 				}
 
 				doc.Text(stat, "path", where);
+			}
+		}
+
+		// THE INFO PANEL DRAWS NOTHING (Engine_UiScreenPanel): the presentation it painted from is
+		// headless, so a stated field is read and kept, and the mod is told.
+		foreach (string inert in new[] { "panelFields", "panelSubtrees" })
+		{
+			if (screen.TryGetProperty(inert, out JsonElement list) &&
+				list.ValueKind == JsonValueKind.Array && list.GetArrayLength() != 0)
+			{
+				doc.Warn(At(at, inert), "is read but draws nothing: the info panel painted the guest's " +
+					"own presentation text, and presentations are headless now. A game screen's page text is " +
+					"its provider's; a host screen states its own with \"provider\": \"data\" and \"fields\"");
 			}
 		}
 

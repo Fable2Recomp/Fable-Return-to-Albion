@@ -1,0 +1,5 @@
+key,value
+TOGGLE_SPRINT_MOD_NAME,Toggle Sprint
+TOGGLE_SPRINT_MOD_DESCRIPTION,"Sprint is a toggle instead of a hold: press Shift (or A on a pad) once to start sprinting, press it again to stop. Each co-op player has their own toggle."
+TOGGLE_SPRINT_SETTING_STOP_AFTER,Stop after standing still
+TOGGLE_SPRINT_SETTING_STOP_AFTER_DESCRIPTION,Seconds standing still before the sprint ends and Shift must be pressed again. 0 keeps sprinting.

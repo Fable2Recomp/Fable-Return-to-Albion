@@ -1,0 +1,12 @@
+key,value
+HEALTH_BARS_MOD_NAME,Barre della salute
+HEALTH_BARS_MOD_DESCRIPTION,"Una barra della salute sopra ogni nemico vicino, con una scia chiara che mostra ogni colpo."
+HEALTH_BARS_SETTING_SHOW,Mostra le barre della salute nemiche
+HEALTH_BARS_SETTING_RANGE,Portata
+HEALTH_BARS_SETTING_RANGE_DESCRIPTION,"Fino a quale distanza, in metri, un nemico ha ancora una barra."
+HEALTH_BARS_SETTING_ONLY_HURT,Solo nemici feriti
+HEALTH_BARS_SETTING_ONLY_HURT_DESCRIPTION,Esclude i nemici che non sono ancora stati colpiti.
+HEALTH_BARS_SETTING_NUMBERS,Mostra i valori
+HEALTH_BARS_SETTING_NUMBERS_DESCRIPTION,Salute attuale e massima in numeri sotto la barra.
+HEALTH_BARS_SETTING_SIZE,Dimensione
+HEALTH_BARS_SETTING_SIZE_DESCRIPTION,Quanto sono grandi le barre.

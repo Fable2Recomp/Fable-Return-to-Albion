@@ -555,13 +555,6 @@ public partial class GameUi : Node, IGameTitleUi
 			return;
 		}
 
-		_presentation.LiveOpacity = null;
-		_presentation.LiveTint = null;
-		_presentation.LiveVisible = null;
-		_presentation.LiveSlides = null;
-		_presentation.LiveText = null;
-		_presentation.LiveTransform = null;
-		_presentation.LiveTextures = null;
 		if (!_presentation.ShowByName(presentation, sceneSlide))
 		{
 			GD.PushWarning($"[game-ui] the guest is on '{screen}' but '{presentation}' " +
@@ -768,7 +761,7 @@ public partial class GameUi : Node, IGameTitleUi
 			// The MODEL outlives the view: the view holds nodes from the tree freed when the
 			// guest leaves the front end, while the model holds the list and the highlight —
 			// the player's place in a menu, which survives a trip to the title and back.
-			_menu ??= Engine_FrontEndMenu.BuildRoot();
+			_menu ??= Fable2FrontEndRoot.BuildRoot();
 
 			// The authored anchor and cursor pose, read from the book — see
 			// Engine_FrontEndMenuView.Anchor for why the constant is 25 low. The cursor assembly
@@ -5031,11 +5024,6 @@ public partial class GameUi : Node, IGameTitleUi
 	}
 	private uint _screenMenuAddress;
 	private uint _screenMenuScreen = uint.MaxValue;
-	/// <summary>The owned in-game list's origin — see <see cref="_pauseAnchor"/> for why the
-	/// Z belongs with the X and the Y.</summary>
-	/// <summary>The HUD's live element text, reused across frames.</summary>
-	private string?[]? _hudTexts;
-
 	/// <summary>The expression-wheel sector last posted, so the cursor lever fires on change.</summary>
 	private int _wheelSector = -1;
 
@@ -5819,7 +5807,7 @@ public partial class GameUi : Node, IGameTitleUi
 		// The languages come from HERE, not from the model, because reading them reads guest
 		// memory — and this is the one place that already knows a guest is up, having just got a
 		// front-end model out of it.
-		_menu.ApplyAvailability(model, HostBridge.GetSaveState(),
+		Fable2FrontEndRoot.ApplyAvailability(_menu, model, HostBridge.GetSaveState(),
 			languages: HostBridge.GetLanguages());
 
 		// HERE, not only at view creation: the pump's first subtitles sample lands on its own
@@ -7748,7 +7736,7 @@ public partial class GameUi : Node, IGameTitleUi
 		// same class on the same slot table, so the front end — which draws correctly — is the
 		// control: a difference between the two lines localises a defect in one report.
 		ReportMenuView(_menuView);
-		Engine_UiModMenus.Focus(_menuView, Engine_FrontEndMenu.RootTemplate, Engine_UiCommandList.FrontEnd);
+		Engine_UiModMenus.Focus(_menuView, Fable2FrontEndRoot.RootTemplate, Engine_UiCommandList.FrontEnd);
 
 		if (Fable2Input.MenuBackPressed)
 		{
@@ -7774,7 +7762,7 @@ public partial class GameUi : Node, IGameTitleUi
 
 		Engine_UiExpandableMenu.Item? frontChosen = _menuView.Menu?.Highlighted;
 		string? action = _menuView.Activate();
-		if (Engine_UiModMenus.Activated(_menuView, Engine_FrontEndMenu.RootTemplate, frontChosen, action,
+		if (Engine_UiModMenus.Activated(_menuView, Fable2FrontEndRoot.RootTemplate, frontChosen, action,
 				Engine_UiCommandList.FrontEnd))
 		{
 			return;
@@ -7802,8 +7790,8 @@ public partial class GameUi : Node, IGameTitleUi
 		{
 			string frontRow = frontChosen?.Name ?? string.Empty;
 			handledHere = Engine_UiCommands.Run(action, new Engine_UiCommandContext(
-				Engine_UiCommandList.FrontEnd, Engine_FrontEndMenu.RootTemplate, frontRow, Engine_UiModMenus.MenuPlayer,
-				Engine_UiTemplates.MenuOwner(Engine_FrontEndMenu.RootTemplate, frontRow)) { View = _menuView })
+				Engine_UiCommandList.FrontEnd, Fable2FrontEndRoot.RootTemplate, frontRow, Engine_UiModMenus.MenuPlayer,
+				Engine_UiTemplates.MenuOwner(Fable2FrontEndRoot.RootTemplate, frontRow)) { View = _menuView })
 				.Outcome != Engine_UiCommandOutcome.NotOurs;
 		}
 
@@ -7817,7 +7805,7 @@ public partial class GameUi : Node, IGameTitleUi
 			// (`r6 = 1` at 0x826E01A4) and it labels its accept button GUI_DEVICE_REMOVED_CONTINUE
 			// — a generic "Continue", reused. Every other storage refusal passes `r6 = 0` with
 			// GUI_OK. Carried explicitly rather than derived, because it is the guest's flag.
-			bool limit = warning == Engine_FrontEndMenu.SaveLimitWarning;
+			bool limit = warning == Fable2FrontEndRoot.SaveLimitWarning;
 			string button = limit ? "GUI_DEVICE_REMOVED_CONTINUE" : "GUI_OK";
 
 			if (_warningView is not null)
@@ -7830,9 +7818,9 @@ public partial class GameUi : Node, IGameTitleUi
 				// host-authored messages, and those must dismiss to the list. Setting it
 				// unconditionally made A on the friend-code box start a new game.
 				_warningView.AcceptOpens =
-					warning == Engine_FrontEndMenu.NoProfileWarning ||
-					warning == Engine_FrontEndMenu.SaveLimitWarning
-						? Engine_FrontEndMenu.HeroCardScreen
+					warning == Fable2FrontEndRoot.NoProfileWarning ||
+					warning == Fable2FrontEndRoot.SaveLimitWarning
+						? Fable2FrontEndRoot.HeroCardScreen
 						: null;
 				_menuView.Visible = false;
 			}
@@ -8487,7 +8475,7 @@ public partial class GameUi : Node, IGameTitleUi
 
 	private void OpenScreen(string screen)
 	{
-		if (screen == Engine_FrontEndMenu.HeroCardScreen && _cardView is not null)
+		if (screen == Fable2FrontEndRoot.HeroCardScreen && _cardView is not null)
 		{
 			// Reset on the way IN, not on the way out. The guest re-enters through the same
 			// `Intro` slide and substate 2 every time, whatever the player did last, so a
@@ -9813,7 +9801,7 @@ public partial class GameUi : Node, IGameTitleUi
 			bool rebuilt;
 			using (Refii.Core.Engine_FramePhases.Measure("ui.list.rebuild"))
 			{
-				rebuilt = list.Rebuild(address, screen, null, null, null, null);
+				rebuilt = list.Rebuild(address, screen);
 			}
 
 			if (rebuilt && ReferenceEquals(list, _screenMenu))
@@ -9821,18 +9809,17 @@ public partial class GameUi : Node, IGameTitleUi
 				_screenMenuView?.Refresh();
 			}
 
-			// THE PAUSE ROOT'S LABELS, from the guest's own buttons. Its list is ours — the
-			// guest keeps no C++ item list — but the STRING in each row is the guest's, and it
-			// carries what a tag cannot: the unspent-ability count and the new-item marker,
-			// both appended at spawn time. Read here because this is where the live text is
-			// already joined to the file, and re-read on every sample because the decorations
-			// change as the player picks things up.
+			// THE PAUSE ROOT'S LABELS, from the guest's own `SpawnButton` statements. Its list is
+			// ours — the guest keeps no C++ item list — but the STRING in each row is the
+			// guest's, and it carries what a tag cannot: the unspent-ability count and the
+			// new-item marker, both appended at spawn time. Re-read on every sample because the
+			// decorations change as the player picks things up.
 			if (name == PausePresentation && _pauseMenu is not null)
 			{
 				// NAMED FIRST, so the label join and the sub-tab source read the same capture.
 				Engine_UiMenuSources.StatedPresentation = address;
 
-				bool moved = Engine_PauseMenu.ApplyStatedLabels(_pauseMenu, _menuModel.For(address).Rows);
+				bool moved = Engine_UiMenuModel.ApplyStatedLabels(_pauseMenu, _menuModel.For(address).Rows);
 
 				// AND THE SUB-TABS, from the same capture the in-game lists join against.
 				//

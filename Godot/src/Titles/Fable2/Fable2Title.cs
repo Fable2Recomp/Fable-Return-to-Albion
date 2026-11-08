@@ -128,13 +128,13 @@ public sealed class Fable2Title : Engine_TitleGame
 	public override void OnAssetsMounted(Refii.Bnk.BnkFileSystem mounted)
 	{
 		CoopHeroLua.Attach(mounted);
-		Refii.Save.Engine_SaveCompatLua.Attach(mounted, CoopHeroLua.Key);
+		Engine_SaveCompatLua.Attach(mounted, CoopHeroLua.Key);
 		CoopText.Attach(mounted);
 		try { Engine_GoldenCockRuntime.Attach(mounted, Engine_GoldenCockPlacements.Load()); }
 		catch (System.Exception exception) { Godot.GD.PushError("[golden-cock] " + exception.Message); }
 		try { Engine_MorphMirrorRuntime.Attach(mounted, Engine_MorphMirrorPlacements.Load()); }
 		catch (System.Exception exception) { Godot.GD.PushError("[morph-mirror] " + exception.Message); }
-		try { Refii.Level.Engine_DecorateCatalog.Attach(mounted); }
+		try { Engine_DecorateCatalog.Attach(mounted); }
 		catch (System.Exception exception) { Godot.GD.PushError("[decorate] " + exception.Message); }
 		Engine_NewGameRuntime.Attach(mounted);
 	}
@@ -231,6 +231,9 @@ public sealed class Fable2Title : Engine_TitleGame
 	public override System.Collections.Generic.IReadOnlyList<string> HudPipBindings => Pips;
 
 	public override bool IsFrontEndPresentation(string presentation) => Engine_UiFrontEndScreens.Is(presentation);
+
+	public override (bool Guards, string? Refusal) FrontEndOpenGuard(Refii.Ui.Engine_FrontEndMenu menu,
+		Refii.Ui.Engine_UiExpandableMenu.Item item) => Fable2FrontEndRoot.OpenGuard(menu, item);
 
 	public override string ScreenMovie(uint screenId, Refii.Ui.Engine_UiExpandableMenu.Item? row,
 		Refii.Host.HostBridge.HeroVitals vitals) =>

@@ -71,8 +71,6 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
-#include <utility>
-#include <vector>
 
 #include <rex/logging.h>
 #include <rex/ppc.h>
@@ -117,9 +115,6 @@ constexpr uint32_t kElementsSourceLine = 0x57u;
 constexpr uint32_t kGuiManager = 0x83556490u;
 constexpr uint32_t kGuiLoader = 0x38u;
 constexpr uint32_t kLoaderCurrent = 0x825C7B60u;
-
-// `opacity`'s attribute id (SetOpacity `lwz r5,dword_8355EE48@l(r9)` 0x8281946c).
-constexpr uint32_t kAttrOpacity = 0x8355EE48u;
 
 bool Milestone(uint64_t n) { return n <= 32u || (n & (n - 1u)) == 0u; }
 
@@ -266,21 +261,6 @@ REX_EXTERN(rex_CGameface_Update) {
   const size_t updated = refii::headless::UpdateAll(Table(), ctx, base, gameface, &clock);
   if (updated == 0u) {
     return;
-  }
-  // THE STORE'S OPACITIES. Each Update ran Mgr:Animations vf +4 (`sub_82274B08` ->
-  // `sub_821CA070`): every active track on a visible element stored its value at the element's
-  // time through the store (`lwz r10,0x48(r11)` / `bctrl`, 0x821ca18c and the interpolated paths),
-  // and a slide's enter wrote its entries' commands (`sub_821CA668`). No writer hook sees either,
-  // so the opacities they left are stated here, on change, for every element a track drives and
-  // every one a writer stated — a list slide's `opacity=100` over the 0 its Hide track left
-  // (interactionmode.bgf `Buttons` #18, slides 265/266) is otherwise never heard.
-  {
-    static thread_local std::vector<std::pair<uint32_t, uint32_t>> changed;
-    changed.clear();
-    refii::headless::ChangedStoredValues(base, LoadGuestU32(base, kAttrOpacity) & 0x07FFFFFFu, &changed);
-    for (const auto& [element, bits] : changed) {
-      StateStoredOpacity(element, 0u, bits);
-    }
   }
   const uint64_t passes = ++g_passes;
   if (Milestone(passes) && passes < 4096u) {

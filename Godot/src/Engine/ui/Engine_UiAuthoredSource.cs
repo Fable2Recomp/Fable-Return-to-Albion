@@ -57,9 +57,6 @@ public sealed class Engine_UiAuthoredSource : Engine_UiSource
 		return taken;
 	}
 
-	/// <summary>Forgets the recorded levers. The state above is left alone.</summary>
-	public void ClearPosted() => Posted.Clear();
-
 	public override List<Engine_UiModel.Presentation> GetPresentations() => Presentations;
 
 	public override List<Engine_UiModel.MenuRow> GetMenuRows(out ulong generation)

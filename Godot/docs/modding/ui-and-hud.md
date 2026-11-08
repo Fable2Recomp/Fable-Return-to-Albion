@@ -389,6 +389,9 @@ From Godot, `notice(title, text, seconds = 0, player = 0) -> id` and
 answer with `notice_done(id, outcome)` and `menu_box_answered(id, option)`; `message_box` also
 takes `player = 0`. An argument written `= value` may be left off, from the right.
 
+- Every title, text, caption and option may name your text as `{KEY}`; it is drawn in the
+  player's language (see [Text keys](gdb-and-text.md#text-keys)). `Refii.text` / `text` give
+  you the string itself, with `%1` … filled in.
 - A Godot `message_box` with `buttons` empty or one caption is a notice (one dismiss); two
   captions are a question (A and B). `title` sits above `text`. In game only.
 - `button` is 0 for A (accept, or a notice's dismiss), 1 for B, -1 only when the box was

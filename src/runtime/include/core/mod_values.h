@@ -59,5 +59,10 @@ void PostInputFromHost(std::string_view action, int32_t player, bool pressed);
 void PostCommandFromHost(std::string_view line);
 /// Moves the queued mod errors into `out`, one per line, oldest first. Returns the bytes written.
 size_t DrainErrorsForHost(char* out, size_t capacity);
+/// Godot's text lookup (Engine_ModText) as a registered function pointer, called on the asking
+/// thread: writes the resolved text NUL-terminated into `out` (cut to `capacity`) and returns its
+/// length, or -1. Passing nullptr unregisters it (Godot leaving the tree).
+using HostModTextFn = int32_t (*)(const char* text, uint32_t length, char* out, uint32_t capacity);
+void SetHostModTextLookup(HostModTextFn lookup);
 
 }  // namespace refii::mods

@@ -3,9 +3,19 @@
 // then set its state, its opacity or its text. There is no `g_Menu:` chunk mechanism as in Fable 2
 // (the chunk runner sub_82819D40 serves only the HUD lifecycle, the mini-game bar and the display
 // box); the rows of the options, hero status, stats, quest and interaction screens are element
-// writes. Hooking the resolver and the four setters therefore names and values every element the
-// guest shows, for Godot's Fable3Elements, posted as `@Element.*` pseudo-calls on the UI cut's
-// queue (core/gui_native_calls.h).
+// writes. The resolver's hook NAMES every element (ElementName: the dotted path, a registry key, a
+// Lua getElement's), for the statements the writers' own calls make (`@Ui.*`, ui_stated_hooks.cpp
+// and the hooks below). The setters' own reports are NOT statements: Godot draws hud.bgf,
+// questcompletion.bgf, creditsscreen.bgf, the interaction mode and the box screens from stated
+// calls alone. What stays of the setter hooks here:
+//   - the headless bookkeeping the guest's read-backs need (RememberHeadless: GetOpacity in the
+//     visibility toggle at 0x82819B2C, the credits' GetPosition at 0x82B3FDEC);
+//   - THE CENSUS `[fable3-unstated] <doc> <path> <channel> = <value> via <caller>`: every write the
+//     setter funnels (SetState, SetOpacity outside the toggle, SetTime, SetPosition, the text box
+//     commit, the slide funnel, Lua setAttribute, the .bgf executor) make on a document Godot draws
+//     from stated calls (kStatedOnlyDocuments), logged once per (document, path, channel, caller). A
+//     caller that is not a stated site (Fable3/versions/Fable3/refiii_config.toml) is a writer the
+//     static census missed.
 //
 // THE RESOLVER sub_82819E40(CCharString* path, parent, presentation) walks `A.B.C` one segment per
 // recursive call (`sub_8226E420(path, ".")` at 0x82819EC8), starting at the presentation's "Layer"
@@ -33,15 +43,6 @@
 // 0x827A34D0 / 0x827A3508) and sub_82819230's six callers. All are read AFTER they return, from box+0x88: rep +0 = UTF-16BE
 // characters, +4 = length in code units (as the HUD registry's strings, hud_hooks.cpp).
 //
-// WHAT GODOT DRAWS vs WHAT IT CHECKS. A text read back from box+0x88 after a commit and an opacity
-// the visibility toggle derived from a read-back exist only while Gameface builds the element's
-// renderable. The values those writers were ASKED for are stated at their entry instead
-// (`@Ui.TextTag` / `@Ui.TextName` / `@Ui.Visible` here, `@Ui.Text` in ui_stated_hooks.cpp), and
-// Godot draws those; `@Element.Text` and `@Element.ToggleOpacity` remain as the cross-check.
-//
-// Statements, not samples: each (element, kind) posts only when its value changes — the HUD update
-// sub_822597B0 restates two states on each g_HUD:Enable() (0x82259978, 0x82259990; once, H+9 cleared at 0x8225990C).
-//
 // THE REGISTRY ELEMENTS NEVER PASS THE RESOLVER. The HUD's registry builder sub_82675288 walks the
 // whole element tree (sub_82675848 recurses the children from sub_8281A138) and hands every element
 // to each of fourteen registries' filer, ONE shared body sub_82B9A108(registry, element, pres): it
@@ -66,14 +67,15 @@
 // units: the element's LOCAL position, as the file authors it. Its writers are the box layout
 // sub_82920610, which measures a guest-laid-out text box (`BoxName`) and places each line element
 // (0x829207DC), and the HUD-element icon placement sub_82B51B58 (0x82B51FC8, the co-op off-screen
-// markers clamped to the screen edge). Posted as `@Element.Position(pres, elem, path, x, y, z)`.
+// markers clamped to the screen edge). The credits' own calls are stated (`@Ui.Position`,
+// headless_commit_hooks.cpp); the box fit's lines are Godot's (Fable3HudDocument.StateStacked).
 //
 // THE TEXTURE SETTER sub_82818EF0(&path, elem) hands the CCharString path to the element's
 // renderable `*(*(elem+4))` (sub_82B42970 at 0x82818F1C), which hashes it (sub_8312F3D8 at
 // 0x82B429EC) into its texture slot +512 (0x82B42A00). The interaction buttons take their glyph
 // this way: sub_82961340 sets `Icon.Container.A_Text` to the button's `…\<b>_text.tex`
 // (0x82961464) and sub_829614A0 maps it to the matching `…\<b>_orb.tex` on `Icon.Container.A_Orb`
-// (0x82961644). Posted as `@Element.Texture(pres, elem, path, texturePath)`.
+// (0x82961644). Stated as `@Ui.Texture(pres, elem, path, texturePath)`.
 //
 // THE SCREEN ROOT is written straight through `sub_82819DB8(pres)` — the renderer's root element,
 // `pres->vt[8]()->vt[17]()` (0x82819E08 / 0x82819E1C): the interaction mode's tick sub_825C3A78
@@ -107,11 +109,11 @@
 // presentation's slide manager (vtable 0x82002B40, `pres->vt[9]` = 0x82193990 `addi r3,r3,0x238`).
 // It writes the component's current slide byte +0x2B (0x82268CE4) after its range check
 // (0x82268C24). Every slide change reaches it: SetState (0x8227DA8C), the executor, the name and
-// next/previous variants. It posts `@Element.State` — except INSIDE SetState, which already posts
-// the element its caller named (the funnel gets that element's component, sub_822800B0), so each
-// change posts once. Attribute writes are hooked at the Lua method and the executor instead of the
-// store's vt[18] (sub_821C9F28): SetOpacity (0x828194dc) and SetPosition reach vt[18] too, and the
-// two entry points are disjoint from them — neither calls the other.
+// next/previous variants. It is census only — except INSIDE SetState, whose own census line names
+// the element its caller passed (the funnel gets that element's component, sub_822800B0).
+// Attribute writes are watched at the Lua method and the executor instead of the store's vt[18]
+// (sub_821C9F28): SetOpacity (0x828194dc) and SetPosition reach vt[18] too, and the two entry
+// points are disjoint from them — neither calls the other.
 
 #include <cstdint>
 #include <array>
@@ -120,8 +122,10 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
+#include <rex/logging.h>
 #include <rex/ppc.h>
 
 #include "core/headless_presentation.h"
@@ -169,15 +173,7 @@ struct Known {
 std::mutex g_mutex;
 std::unordered_map<uint32_t, Known> g_elements;   // element -> its presentation and full path
 std::unordered_map<uint32_t, uint32_t> g_boxes;   // text box -> element
-std::unordered_map<uint64_t, uint32_t> g_states;  // (element, kind) -> last value posted
-std::unordered_map<uint32_t, std::string> g_texts;
-std::unordered_map<uint32_t, std::array<uint32_t, 3>> g_positions;  // element -> last x, y, z bits
-std::unordered_map<uint32_t, std::string> g_textures;                // element -> last texture path
-
-constexpr uint32_t kKindState = 1u;
-constexpr uint32_t kKindOpacity = 2u;
-constexpr uint32_t kKindTime = 3u;
-constexpr uint32_t kKindStoredOpacity = 4u;
+std::unordered_map<uint32_t, std::string> g_textures;  // element -> last texture path stated
 
 /// The presentation root's name; it prefixes nothing.
 const char kRootPath[] = "Scene";
@@ -194,8 +190,8 @@ thread_local Filing t_filing;
 thread_local uint32_t t_set_state_depth = 0u;
 
 /// Inside the visibility toggle sub_82819AE0 on this thread: the opacity its SetOpacity writes
-/// (0x82819B68) is derived from a read-back (GetOpacity at 0x82819B2C) and is posted only as
-/// `@Element.ToggleOpacity`, the cross-check of the toggle's stated bool (`@Ui.Visible`).
+/// (0x82819B68) is derived from a read-back (GetOpacity at 0x82819B2C); the toggle's own bool is the
+/// statement (`@Ui.Visible`), so that SetOpacity is neither reported nor counted.
 thread_local uint32_t t_toggle_depth = 0u;
 
 /// The presentation the Gameface Lua method running on this thread took from the registry
@@ -259,8 +255,6 @@ const std::unordered_map<uint32_t, std::string>& FloatAttributes() {
 
 uint32_t CommandHash(const char* name) { return Sdbm(name) & 0x7FFFFFFFu; }
 
-uint64_t Key(uint32_t element, uint32_t kind) { return (static_cast<uint64_t>(element) << 32) | kind; }
-
 /// The text box an element owns now (`*(*(elem+4))`), or 0.
 uint32_t BoxOf(const uint8_t* base, uint32_t element) {
   const uint32_t ref = LoadGuestU32(base, element + kElementTextRef);
@@ -312,66 +306,57 @@ bool Named(uint32_t element, Known& out) {
   return true;
 }
 
-/// `@Element.<kind>(presentation hex, element hex, path, value)`.
-void Post(const char* name, uint32_t presentation, uint32_t element, const std::string& path,
-          refii::vfs::GuiNativeArgument value) {
-  refii::vfs::GuiNativeCall call;
-  call.name = name;
-  call.arguments.push_back(Text(PresentationKey(presentation)));
-  call.arguments.push_back(Text(Hex(element)));
-  call.arguments.push_back(Text(path));
-  call.arguments.push_back(std::move(value));
-  refii::vfs::PostGuiNativeCall(std::move(call));
-}
+/// THE DOCUMENTS GODOT DRAWS FROM STATED CALLS, what the census watches: the HUD and the end screens
+/// (Fable3Hud, Fable3EndScreens), the interaction mode (Fable3Hud.InteractionGroups), Options
+/// (Fable3Options) and the box screens' documents (Fable3StatedScreen, Fable3ScreenFrames).
+constexpr const char* kStatedOnlyDocuments[] = {
+    "=hud",           "=questcompletion",   "=creditsscreen",      "=interactionmode", "=options",
+    "=herostatus",    "=statsscreen",       "=promises",           "=questsummary",    "=kingsschedule",
+    "=joinoptions",   "=visability",        "=friendschannel",     "=chatchannel",     "=treasureaccounts",
+    "=bedmenubox",    "=foodquerybox",      "=compweddingpicker",  "=cooppartnersscreen",
+    "=proposalquerybox", "=divorcemessagebox", "=savemenu"};
+constexpr size_t kMaxCensus = 4096u;
 
-void PostValue(const uint8_t* base, uint32_t element, uint32_t presentation, uint32_t kind, uint32_t bits,
-               const char* name, float value) {
-  (void)base;
+std::mutex g_census_mutex;
+std::unordered_set<std::string> g_census;
+
+/// `[fable3-unstated] <doc> <path> <channel> = <value> via <caller>`, once per (document, path,
+/// channel, caller), for a write on a stated-only document.
+void Unstated(uint32_t element, uint32_t presentation, const char* channel, const std::string& value, uint32_t via) {
   if (!Plausible(element)) {
     return;
   }
   Known known;
-  std::lock_guard<std::mutex> lock(g_mutex);
-  uint32_t& last = g_states[Key(element, kind)];
-  if (last != 0u && last == bits + 1u) {
+  bool named = false;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    named = Named(element, known);
+  }
+  const std::string document = PresentationKey(named && known.presentation != 0u ? known.presentation : presentation);
+  bool watched = false;
+  for (const char* stated : kStatedOnlyDocuments) {
+    watched = watched || document == stated;
+  }
+  if (!watched) {
     return;
   }
-  last = bits + 1u;  // 0 is "never posted"
-  if (g_states.size() > kMaxValues) {
-    g_states.clear();
+  const std::string path = named && !known.path.empty() ? known.path : "<unnamed " + Hex(element) + ">";
+  {
+    std::lock_guard<std::mutex> lock(g_census_mutex);
+    if (g_census.size() >= kMaxCensus || !g_census.insert(document + ' ' + path + ' ' + channel + ' ' + Hex(via)).second) {
+      return;
+    }
   }
-  const bool named = Named(element, known);
-  Post(name, named && known.presentation != 0u ? known.presentation : presentation, element,
-       named ? known.path : std::string(), Number(value));
+  REXLOG_INFO("[fable3-unstated] {} {} {} = {} via {:08X}", document.substr(1), path, channel, value, via);
 }
 
-/// The text the box shows now, posted when it changed.
-void PostBoxText(const uint8_t* base, uint32_t box) {
-  if (!Plausible(box)) {
-    return;
-  }
-  std::string text = ReadLhString(base, box + kTextBoxString);
-  std::lock_guard<std::mutex> lock(g_mutex);
-  auto last = g_texts.find(box);
-  if (last != g_texts.end() && last->second == text) {
-    return;
-  }
-  if (g_texts.size() > kMaxValues) {
-    g_texts.clear();
-  }
-  g_texts[box] = text;
+std::string Shown(float value) { return std::to_string(value); }
 
-  uint32_t element = 0u;
+/// The element whose text box `box` is (the resolver's or a commit's earlier answer), or 0.
+uint32_t BoxOwner(const uint8_t* base, uint32_t box) {
+  std::lock_guard<std::mutex> lock(g_mutex);
   auto owner = g_boxes.find(box);
-  if (owner != g_boxes.end()) {
-    element = owner->second;
-  } else {
-    element = FindBoxOwner(base, box);
-  }
-  Known known;
-  const bool named = element != 0u && Named(element, known);
-  Post("@Element.Text", named ? known.presentation : 0u, element, named ? known.path : std::string(),
-       Text(text));
+  return owner != g_boxes.end() ? owner->second : FindBoxOwner(base, box);
 }
 
 // THE EXISTENCE-CHECKED SETTERS on a headless element (headless_presentation_hooks.cpp). SetOpacity
@@ -384,9 +369,6 @@ void PostBoxText(const uint8_t* base, uint32_t box) {
 // hook from its arguments.
 const uint32_t kAttrOpacityIds[] = {0x8355EE48u};
 const uint32_t kAttrPositionIds[] = {0x8355EE4Cu, 0x8355EE50u, 0x8355EE54u};
-
-/// After a writer of `opacity`: the value a headless element now holds, stated (defined below).
-void StateHeld(const uint8_t* base, uint32_t element, uint32_t presentation);
 
 void RememberHeadless(const uint8_t* base, uint32_t element, const uint32_t* globals, const float* values,
                       size_t count) {
@@ -505,46 +487,45 @@ REX_EXTERN(rex_GuiElement_AttributeString) {
   }
 }
 
+/// SetState sub_8227DA00(elem, pres, slide): census only.
 REX_EXTERN(rex_GuiElement_SetState) {
   const uint32_t element = ctx.r3.u32;
   const uint32_t presentation = ctx.r4.u32;
-  const uint32_t state = ctx.r5.u32;
+  const int32_t state = static_cast<int32_t>(ctx.r5.u32);
+  const uint32_t via = static_cast<uint32_t>(ctx.lr);
   ++t_set_state_depth;
   __imp__rex_GuiElement_SetState(ctx, base);
   --t_set_state_depth;
   if (base != nullptr && presentation != 0u) {
-    PostValue(base, element, presentation, kKindState, state, "@Element.State", static_cast<float>(static_cast<int32_t>(state)));
+    Unstated(element, presentation, "State", std::to_string(state), via);
   }
 }
 
+/// SetOpacity sub_82819420(elem, pres, f1): the headless store the read-backs answer from, and the
+/// census — not for the visibility toggle's own write (its bool is the statement).
 REX_EXTERN(rex_GuiElement_SetOpacity) {
   const uint32_t element = ctx.r3.u32;
   const uint32_t presentation = ctx.r4.u32;
   const float opacity = static_cast<float>(ctx.f1.f64);
+  const uint32_t via = static_cast<uint32_t>(ctx.lr);
   if (base != nullptr && presentation != 0u) {
     RememberHeadless(base, element, kAttrOpacityIds, &opacity, 1u);
   }
   __imp__rex_GuiElement_SetOpacity(ctx, base);
-  if (base != nullptr && presentation != 0u) {
-    uint32_t bits = 0u;
-    std::memcpy(&bits, &opacity, sizeof(bits));
-    PostValue(base, element, presentation, kKindOpacity, bits,
-              t_toggle_depth != 0u ? "@Element.ToggleOpacity" : "@Element.Opacity", opacity);
-    StateHeld(base, element, presentation);
+  if (base != nullptr && presentation != 0u && t_toggle_depth == 0u) {
+    Unstated(element, presentation, "Opacity", Shown(opacity), via);
   }
 }
 
-/// A timeline position, `sub_8281A5D8(elem, pres, f1)`: posted as the guest passes it (the meters'
-/// fraction * 1000), before the truncation the callee applies.
+/// A timeline position, `sub_8281A5D8(elem, pres, f1)` (the meters' fraction * 1000): census only.
 REX_EXTERN(rex_GuiElement_SetTime) {
   const uint32_t element = ctx.r3.u32;
   const uint32_t presentation = ctx.r4.u32;
   const float value = static_cast<float>(ctx.f1.f64);
+  const uint32_t via = static_cast<uint32_t>(ctx.lr);
   __imp__rex_GuiElement_SetTime(ctx, base);
   if (base != nullptr && presentation != 0u) {
-    uint32_t bits = 0u;
-    std::memcpy(&bits, &value, sizeof(bits));
-    PostValue(base, element, presentation, kKindTime, bits, "@Element.Time", value);
+    Unstated(element, presentation, "Time", Shown(value), via);
   }
 }
 
@@ -560,28 +541,19 @@ REX_EXTERN(rex_GuiElement_SetTextName) {
     StateTextName(presentation, element, path, ReadCharString(base, ctx.r4.u32), "828191A8");
   }
   __imp__rex_GuiElement_SetTextName(ctx, base);
-  if (base == nullptr || !Plausible(element)) {
-    return;
-  }
-  const uint32_t box = BoxOf(base, element);
-  if (box == 0u) {
-    return;
-  }
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    if (g_boxes.find(box) == g_boxes.end()) {
-      g_boxes[box] = element;
-    }
-  }
-  PostBoxText(base, box);
 }
 
-/// A literal string committed to a text box: `sub_82B45268(box, &string)`.
+/// A string committed to a text box, `sub_82B45268(box, LHString*)`: census only — the commits
+/// Godot draws are stated on their guards (headless_commit_hooks.cpp) or by their writer's entry.
 REX_EXTERN(rex_GuiTextBox_Commit) {
   const uint32_t box = ctx.r3.u32;
+  const std::string text = base != nullptr && Plausible(box) ? ReadLhString(base, ctx.r4.u32, kMaxTextUnits) : std::string();
+  const uint32_t via = static_cast<uint32_t>(ctx.lr);
   __imp__rex_GuiTextBox_Commit(ctx, base);
-  if (base != nullptr) {
-    PostBoxText(base, box);
+  if (base != nullptr && Plausible(box)) {
+    if (const uint32_t element = BoxOwner(base, box); element != 0u) {
+      Unstated(element, 0u, "Text", "'" + text + "'", via);
+    }
   }
 }
 
@@ -597,72 +569,28 @@ REX_EXTERN(rex_GuiElement_SetTextTag) {
     StateTextTag(presentation, element, path, ctx.r4.u32, "82819288");
   }
   __imp__rex_GuiElement_SetTextTag(ctx, base);
-  if (base == nullptr || !Plausible(element)) {
-    return;
-  }
-  const uint32_t box = BoxOf(base, element);
-  if (box == 0u) {
-    return;
-  }
-  {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    if (g_boxes.find(box) == g_boxes.end()) {
-      g_boxes[box] = element;
-    }
-  }
-  PostBoxText(base, box);
 }
 
 /// A position, `sub_82818580(elem, pres, f1, f2, f3)`: the element's local position attributes,
-/// posted when any of the three changed.
+/// kept for the headless read-backs (GetPosition), and the census.
 REX_EXTERN(rex_GuiElement_SetPosition) {
   const uint32_t element = ctx.r3.u32;
   const uint32_t presentation = ctx.r4.u32;
   const float x = static_cast<float>(ctx.f1.f64);
   const float y = static_cast<float>(ctx.f2.f64);
   const float z = static_cast<float>(ctx.f3.f64);
+  const uint32_t via = static_cast<uint32_t>(ctx.lr);
   if (base != nullptr && presentation != 0u) {
     const float xyz[3] = {x, y, z};
     RememberHeadless(base, element, kAttrPositionIds, xyz, 3u);
   }
   __imp__rex_GuiElement_SetPosition(ctx, base);
-  if (base == nullptr || presentation == 0u || !Plausible(element)) {
-    return;
+  if (base != nullptr && presentation != 0u) {
+    Unstated(element, presentation, "Position", Shown(x) + ", " + Shown(y) + ", " + Shown(z), via);
   }
-  // A TopBox line placed by the guest's own box fit (sub_82920610 at 0x829207DC, inside
-  // sub_82920BC8) is not stated: Godot stands the first row where the file's fit puts it and
-  // stacks the rest from the text it draws (Engine_UiTextBoxFit, Engine_UiTopBoxLayout).
-  const uint32_t box = LaidOutBox();
-  if (box != 0u && box == TopBoxName(base)) {
-    return;
-  }
-  std::array<uint32_t, 3> bits{};
-  std::memcpy(&bits[0], &x, sizeof(float));
-  std::memcpy(&bits[1], &y, sizeof(float));
-  std::memcpy(&bits[2], &z, sizeof(float));
-  Known known;
-  std::lock_guard<std::mutex> lock(g_mutex);
-  auto last = g_positions.find(element);
-  if (last != g_positions.end() && last->second == bits) {
-    return;
-  }
-  if (g_positions.size() > kMaxValues) {
-    g_positions.clear();
-  }
-  g_positions[element] = bits;
-  const bool named = Named(element, known);
-  refii::vfs::GuiNativeCall call;
-  call.name = "@Element.Position";
-  call.arguments.push_back(Text(PresentationKey(named && known.presentation != 0u ? known.presentation : presentation)));
-  call.arguments.push_back(Text(Hex(element)));
-  call.arguments.push_back(Text(named ? known.path : std::string()));
-  call.arguments.push_back(Number(x));
-  call.arguments.push_back(Number(y));
-  call.arguments.push_back(Number(z));
-  refii::vfs::PostGuiNativeCall(std::move(call));
 }
 
-/// A texture by path, `sub_82818EF0(&path, elem)`: posted when the element's path changed.
+/// A texture by path, `sub_82818EF0(&path, elem)`: `@Ui.Texture` when the element's path changed.
 REX_EXTERN(rex_GuiElement_SetTexture) {
   const uint32_t path_handle = ctx.r3.u32;
   const uint32_t element = ctx.r4.u32;
@@ -682,18 +610,12 @@ REX_EXTERN(rex_GuiElement_SetTexture) {
   }
   g_textures[element] = texture;
   const bool named = Named(element, known);
-  Post("@Element.Texture", named ? known.presentation : 0u, element, named ? known.path : std::string(),
-       Text(texture));
   StateTexture(named ? known.presentation : 0u, element, named ? known.path : std::string(), texture, "82818EF0");
 }
 
 namespace {
 
-constexpr uint32_t kKindActive = 4u;
 constexpr uint32_t kMaxLuaPath = 256u;
-
-std::unordered_map<uint32_t, std::string> g_lua_texts;  // element -> last textstring posted
-std::unordered_map<uint64_t, uint32_t> g_attributes;    // (element, attribute id) -> last bits + 1
 
 /// A TString by its stated length, bounded; empty when it is not one.
 std::string LuaString(const uint8_t* base, uint32_t tstring, uint32_t max_chars) {
@@ -782,63 +704,21 @@ bool FromRoot(const std::string& known, std::vector<std::string>& out) {
   return true;
 }
 
-/// `@Element.Attribute(pres, elem, path, name, value)`: a write no other statement carries.
-void PostAttribute(uint32_t presentation, uint32_t element, uint32_t id, const std::string& name, uint32_t bits,
-                   refii::vfs::GuiNativeArgument value) {
-  Known known;
-  std::lock_guard<std::mutex> lock(g_mutex);
-  uint32_t& last = g_attributes[(static_cast<uint64_t>(element) << 32) | id];
-  if (last != 0u && last == bits + 1u) {
-    return;
-  }
-  last = bits + 1u;
-  if (g_attributes.size() > kMaxValues) {
-    g_attributes.clear();
-  }
-  const bool named = Named(element, known);
-  refii::vfs::GuiNativeCall call;
-  call.name = "@Element.Attribute";
-  call.arguments.push_back(Text(PresentationKey(named && known.presentation != 0u ? known.presentation : presentation)));
-  call.arguments.push_back(Text(Hex(element)));
-  call.arguments.push_back(Text(named ? known.path : std::string()));
-  call.arguments.push_back(Text(name));
-  call.arguments.push_back(std::move(value));
-  refii::vfs::PostGuiNativeCall(std::move(call));
-}
-
-/// A Lua `textstring`, posted when the element's string changed.
-void PostLuaText(uint32_t presentation, uint32_t element, const std::string& text) {
-  Known known;
-  std::lock_guard<std::mutex> lock(g_mutex);
-  auto last = g_lua_texts.find(element);
-  if (last != g_lua_texts.end() && last->second == text) {
-    return;
-  }
-  if (g_lua_texts.size() > kMaxValues) {
-    g_lua_texts.clear();
-  }
-  g_lua_texts[element] = text;
-  const bool named = Named(element, known);
-  Post("@Element.Text", named && known.presentation != 0u ? known.presentation : presentation, element,
-       named ? known.path : std::string(), Text(text));
-}
-
 }  // namespace
 
-/// The slide funnel, `sub_82268BE0(slides, component, slide, flag)`: posted when the component's
-/// slide byte took the value (the range check refuses others, 0x82268C24), unless SetState is
-/// the caller — it states the change itself.
+/// The slide funnel, `sub_82268BE0(slides, component, slide, flag)`: census of a slide the component
+/// took (the range check refuses others, 0x82268C24) outside SetState, which counts its own.
 REX_EXTERN(rex_GuiSlides_GoTo) {
   const uint32_t slides = ctx.r3.u32;
   const uint32_t component = ctx.r4.u32;
   const uint32_t slide = ctx.r5.u32;
+  const uint32_t via = static_cast<uint32_t>(ctx.lr);
   __imp__rex_GuiSlides_GoTo(ctx, base);
   if (base == nullptr || t_set_state_depth != 0u || !Plausible(component) ||
       base[component + kComponentSlide] != (slide & 0xFFu)) {
     return;
   }
-  PostValue(base, component, PresentationOfSlides(base, slides), kKindState, slide, "@Element.State",
-            static_cast<float>(static_cast<int32_t>(slide)));
+  Unstated(component, PresentationOfSlides(base, slides), "Slide", std::to_string(static_cast<int32_t>(slide)), via);
 }
 
 /// The Gameface Lua methods' presentation getter (L): its answer, for the method hooks below.
@@ -916,8 +796,7 @@ REX_EXTERN(rex_GamefaceLua_GetElement) {
   }
 }
 
-/// Lua `setAttribute(elem, name, value)`: opacity, textstring and active as their own statements,
-/// every other attribute as `@Element.Attribute`.
+/// Lua `setAttribute(elem, name, value)`: the census.
 REX_EXTERN(rex_GamefaceLua_SetAttribute) {
   const uint32_t state = ctx.r3.u32;
   uint32_t element = 0u;
@@ -949,43 +828,16 @@ REX_EXTERN(rex_GamefaceLua_SetAttribute) {
   float number = 0.0f;
   std::memcpy(&number, &value, sizeof(number));
 
-  if (name == "active") {  // the flag write at 0x82c24c3c: truthy = not nil, not false
-    const bool on = value_tag != 0u && !(value_tag == kLuaTBoolean && value == 0u);
-    Known known;
-    {
-      std::lock_guard<std::mutex> lock(g_mutex);
-      uint32_t& last = g_states[Key(element, kKindActive)];
-      if (last != 0u && last == static_cast<uint32_t>(on) + 1u) {
-        return;
-      }
-      last = static_cast<uint32_t>(on) + 1u;
-      const bool named = Named(element, known);
-      Post("@Element.Active", named && known.presentation != 0u ? known.presentation : presentation, element,
-           named ? known.path : std::string(), Boolean(on));
-    }
-    return;
-  }
-  if (name == "opacity" && value_tag == kLuaTNumber) {
-    PostValue(base, element, presentation, kKindOpacity, value, "@Element.Opacity", number);
-    return;
-  }
-  if (name == "textstring" && value_tag == kLuaTString) {
-    PostLuaText(presentation, element, text);
-    return;
-  }
-  const uint32_t id = Sdbm(name) & kAttributeIdMask;
-  if (value_tag == kLuaTNumber) {
-    PostAttribute(presentation, element, id, name, value, Number(number));
-  } else if (value_tag == kLuaTBoolean) {
-    PostAttribute(presentation, element, id, name, value, Boolean(value != 0u));
-  } else if (value_tag == kLuaTString) {
-    PostAttribute(presentation, element, id, name, static_cast<uint32_t>(std::hash<std::string>{}(text)), Text(text));
-  }
+  const std::string shown = value_tag == kLuaTNumber    ? Shown(number)
+                            : value_tag == kLuaTString  ? "'" + text + "'"
+                            : value_tag == kLuaTBoolean ? (value != 0u ? "true" : "false")
+                                                        : "?";
+  Unstated(element, presentation, ("Lua." + name).c_str(), shown, 0x82C24A70u);
 }
 
 /// The presentation's command executor, `sub_82C34EC0(pres, &command)`: the queued Lua commands
 /// and the .bgf's authored actions. Its slide commands reach the funnel above; its property and
-/// timeline commands are stated here.
+/// timeline commands are counted here.
 REX_EXTERN(rex_GamefacePresentation_Execute) {
   static const uint32_t kSetProperty = CommandHash("COMMAND_SETPROPERTY");
   static const uint32_t kGoToTime = CommandHash("COMMAND_GOTOTIME");
@@ -1003,10 +855,7 @@ REX_EXTERN(rex_GamefacePresentation_Execute) {
     return;
   }
   if (id == kGoToTime) {  // vt[11](slides, target, ms) at 0x82c35008: SetTime's unit
-    const float ms = static_cast<float>(static_cast<int32_t>(first));
-    uint32_t bits = 0u;
-    std::memcpy(&bits, &ms, sizeof(bits));
-    PostValue(base, target, presentation, kKindTime, bits, "@Element.Time", ms);
+    Unstated(target, presentation, "Execute.Time", std::to_string(static_cast<int32_t>(first)), 0x82C34EC0u);
     return;
   }
   if (id != kSetProperty) {
@@ -1020,44 +869,8 @@ REX_EXTERN(rex_GamefacePresentation_Execute) {
   }
   float number = 0.0f;
   std::memcpy(&number, &second, sizeof(number));
-  if (found->second == "opacity") {
-    PostValue(base, target, presentation, kKindOpacity, second, "@Element.Opacity", number);
-  } else {
-    PostAttribute(presentation, target, attribute, found->second, second, Number(number));
-  }
+  Unstated(target, presentation, ("Execute." + found->second).c_str(), Shown(number), 0x82C34EC0u);
 }
-
-void refii::fable3::StateStoredOpacity(uint32_t element, uint32_t presentation, uint32_t bits) {
-  if (!Plausible(element)) {
-    return;
-  }
-  Known known;
-  std::lock_guard<std::mutex> lock(g_mutex);
-  uint32_t& last = g_states[Key(element, kKindStoredOpacity)];
-  if (last != 0u && last == bits + 1u) {
-    return;
-  }
-  last = bits + 1u;
-  float value = 0.0f;
-  std::memcpy(&value, &bits, sizeof(value));
-  const bool named = Named(element, known);
-  Post("@Element.StoredOpacity", named && known.presentation != 0u ? known.presentation : presentation, element,
-       named ? known.path : std::string(), Number(value));
-}
-
-namespace {
-
-/// After a writer of `opacity` (SetOpacity, the visibility toggle): the value the element now holds.
-void StateHeld(const uint8_t* base, uint32_t element, uint32_t presentation) {
-  uint32_t bits = 0u;
-  const uint32_t id = LoadGuestU32(base, kAttrOpacityIds[0]) & kAttributeIdMask;
-  if (refii::headless::AttributeBits(base, element, id, &bits)) {
-    StateStoredOpacity(element, presentation, bits);
-    refii::headless::WatchStoredValue(element, bits);
-  }
-}
-
-}  // namespace
 
 bool refii::fable3::ElementName(uint32_t element, uint32_t& presentation, std::string& path) {
   std::lock_guard<std::mutex> lock(g_mutex);
@@ -1073,8 +886,8 @@ bool refii::fable3::ElementName(uint32_t element, uint32_t& presentation, std::s
 /// THE VISIBILITY TOGGLE sub_82819AE0(elem, pres, shown): stated as the bool its caller asks for
 /// (r5, `mr r30,r5` 0x82819AFC). Its body compares the request with IsVisible (sub_82819BF8 at
 /// 0x82819B00), reads the opacity back (GetOpacity sub_82819560 at 0x82819B2C) and scales it by
-/// 1024 or 1/1024 across 0.09765625 (flt_832A18DC, 0x82819B38..0x82819B64) — a read-back a
-/// headless element answers 0, so its SetOpacity is only the cross-check (`@Element.ToggleOpacity`).
+/// 1024 or 1/1024 across 0.09765625 (flt_832A18DC, 0x82819B38..0x82819B64) — a read-back, so its
+/// SetOpacity is neither reported nor counted.
 REX_EXTERN(rex_GuiElement_SetVisible) {
   const uint32_t element = ctx.r3.u32;
   const uint32_t presentation = ctx.r4.u32;
@@ -1088,14 +901,11 @@ REX_EXTERN(rex_GuiElement_SetVisible) {
   ++t_toggle_depth;
   __imp__rex_GuiElement_SetVisible(ctx, base);
   --t_toggle_depth;
-  if (base != nullptr && Plausible(element) && presentation != 0u) {
-    StateHeld(base, element, presentation);
-  }
 }
 
 /// THE ACTIVE FLAG sub_828196E0(elem, pres, on, force): flag 0x2000 through the store's vt+80
 /// (0x82819774), skipped when the store's vt+76 already answers `on` unless forced (0x82819754)
-/// — a read-back. Stated as asked, `@Element.Active` as Lua's `setAttribute(e, 'active', b)` is.
+/// — a read-back. Stated as asked (`@Ui.Active`).
 REX_EXTERN(rex_GuiElement_SetFlagActive) {
   const uint32_t element = ctx.r3.u32;
   const uint32_t presentation = ctx.r4.u32;
@@ -1105,17 +915,6 @@ REX_EXTERN(rex_GuiElement_SetFlagActive) {
     std::string path;
     if (ElementName(element, named_in, path) && !path.empty()) {
       StateActive(presentation, element, path, on, "828196E0");
-    }
-  }
-  if (base != nullptr && Plausible(element) && presentation != 0u) {
-    Known known;
-    std::lock_guard<std::mutex> lock(g_mutex);
-    uint32_t& last = g_states[Key(element, kKindActive)];
-    if (last == 0u || last != static_cast<uint32_t>(on) + 1u) {
-      last = static_cast<uint32_t>(on) + 1u;
-      const bool named = Named(element, known);
-      Post("@Element.Active", named && known.presentation != 0u ? known.presentation : presentation, element,
-           named ? known.path : std::string(), Boolean(on));
     }
   }
   __imp__rex_GuiElement_SetFlagActive(ctx, base);

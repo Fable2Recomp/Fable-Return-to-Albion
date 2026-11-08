@@ -1,4 +1,4 @@
-name = "Quicksave"
+name = "{QUICKSAVE_MOD_NAME}"
 version = "0.1.0"
 author = "ammuica"
-description = "Bethesda-style quicksave and quickload: F8 saves the game and keeps a quicksave beside your save, F9 loads that quicksave back without leaving the game. A quickload leaves your own save as it was."
+description = "{QUICKSAVE_MOD_DESCRIPTION}"

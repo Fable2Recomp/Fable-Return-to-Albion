@@ -114,11 +114,11 @@ public static class Engine_UiMenuCloning
 	/// Clones are appended to <paramref name="screen"/>'s node array as well as to the parent's
 	/// child list, so passes that sweep <c>Nodes</c> rather than walking from the roots see them
 	/// — the frame engine among them, since a cloned <c>Frame</c> is a nine-slice needing
-	/// layout. Their ordinals stay -1 and the array only grows at the end, so indexing live
-	/// guest state by ordinal is unaffected.
+	/// layout. Their ordinals stay -1 and the array only grows at the end, so indexing element
+	/// state by ordinal is unaffected.
 	///
 	/// The Lua's <c>TintingAmount</c> clear across the frame's nine cells is applied, hoisted to
-	/// the parent quad as <see cref="Engine_UiScreen.ApplyLiveTint"/> hoists the live one. Its
+	/// the parent quad (the attribute is on a material child, the quad on its parent). Its
 	/// <c>diffuse.a</c> = 103 on the highlight is only counted: that is a material colour alpha
 	/// and <see cref="UiQuad"/> carries no fourth lane; the wheel animation drives it separately
 	/// as <c>highlight_opacity</c>.
@@ -354,7 +354,7 @@ public static class Engine_UiMenuCloning
 	/// The clear is `menucloning.dis main.1 pc87..145`, run on the TEMPLATE before it is copied;
 	/// skipping it copies the template's last weight into every item's frame cells. The
 	/// attribute sits on a material descendant and the quad is on its PARENT, so the write
-	/// hoists as <see cref="Engine_UiScreen.ApplyLiveTint"/> hoists the guest's live one.
+	/// hoists to the parent's quad.
 	///
 	/// The colour is untouched — the Lua writes only the weight, and `rgb -= (1 - tint) * amount`
 	/// means a zero weight already neutralises the authored colour.
@@ -556,7 +556,6 @@ public static class Engine_UiMenuCloning
 			copy.Text = new UiText
 			{
 				Tag = text.Tag,
-				Live = text.Live,
 				Display = text.Display,
 				Localised = text.Localised,
 				Size = text.Size,

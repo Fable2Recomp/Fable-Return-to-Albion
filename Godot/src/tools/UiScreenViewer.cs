@@ -509,13 +509,9 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 	}
 
 	/// <summary>
-	/// With <c>REFII_UI_MENU=1</c>, prints the screen's <c>ExpandableMenu</c> button pool.
-	///
-	/// With no guest attached every button is necessarily EMPTY, and that is the point: it
-	/// establishes the pool's size and that the walk down
-	/// <c>ExpandableMenu/Buttons/MenuItemButtonN/Icon/Title</c> finds the labels, so when the
-	/// running game prints the same line with entries in it the difference is the guest's
-	/// spawns and nothing else.
+	/// With <c>REFII_UI_MENU=1</c>, prints the screen's <c>ExpandableMenu</c> button pool: its size
+	/// and that the walk down <c>ExpandableMenu/Buttons/MenuItemButtonN/Icon/Title</c> finds the
+	/// labels.
 	/// </summary>
 	private void DumpMenuIfRequested()
 	{
@@ -523,13 +519,11 @@ public partial class UiScreenViewer : Engine_UiPresentationHost
 			CurrentScreen is not { } probe)
 			return;
 
-		IReadOnlyList<Engine_ExpandableMenuItems.Button> buttons =
-			Engine_ExpandableMenuItems.Read(probe, null, null, null);
+		IReadOnlyList<Engine_ExpandableMenuItems.Button> buttons = Engine_ExpandableMenuItems.Read(probe);
 
 		foreach (Engine_ExpandableMenuItems.Button b in buttons)
 			GD.Print($"[ui-menu] {b.Name,-20} element {b.Ordinal,5}  " +
-				$"Icon/Title {b.TitleOrdinal,5}  authored \"{b.Authored}\"  " +
-				$"text {(b.Text is null ? "(none)" : $"\"{b.Text}\"")}");
+				$"Icon/Title {b.TitleOrdinal,5}  authored \"{b.Authored}\"");
 
 		GD.Print($"[ui-menu] {Engine_ExpandableMenuItems.Describe(buttons)}");
 

@@ -1,0 +1,9 @@
+key,value
+SPELL_WEAVING_HYBRID,ハイブリッド
+SPELL_WEAVING_NAME,魔法の融合
+SPELL_WEAVING_DESCRIPTION,2つの魔法を1つとして放つ技。パートナーの魔法を選ぶと、パワーレベル%1までのすべての詠唱に織り込まれ、同じ瞬間に同じ標的を打つ。意志と技の経験値を同じだけ消費する。
+SPELL_WEAVING_TOTAL_XP,使用できる意志と技の経験値:
+SPELL_WEAVING_SET_PARTNER,パートナーに設定
+SPELL_WEAVING_REMOVE_PARTNER,パートナーを外す
+SPELL_WEAVING_MOD_NAME,魔法の融合
+SPELL_WEAVING_MOD_DESCRIPTION,Fable 3の魔法の融合をFable 2に: 2つ目の魔法 (パートナー) が、チャージしたスロットの魔法と一緒に、同じパワーで同じ標的に放たれる。既定ではFable 3と同じく、チャージしたパワーで1回だけ放ち、Fable 2のように下位のスロットすべてを順に放つことはない。魔法スロットごとにパートナーを持つ: クイックホイールまたは能力の本の魔法ページで意志の魔法を選び、Xでそのスロットのパートナーにし、Yで外す。魔法の融合そのものは能力の本のハイブリッドページで習得し、意志と技の経験値を半分ずつ支払う。レベルNではパワーNまでの詠唱を融合する。時間操作と死者復活はパートナーにならない。

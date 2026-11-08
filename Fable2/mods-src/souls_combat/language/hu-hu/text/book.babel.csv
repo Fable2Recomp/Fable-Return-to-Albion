@@ -1,0 +1,7 @@
+key,value
+SOULS_COMBAT_STAMINA_NAME,Állóképesség
+SOULS_COMBAT_STAMINA_DESCRIPTION,"Kitartás a harcban. Növeli az állóképesség-sávod hosszát, így tovább csapkodhatsz, gurulhatsz és védekezhetsz, mielőtt hátrálnod kell."
+SOULS_COMBAT_MOD_NAME,Souls harc
+SOULS_COMBAT_MOD_DESCRIPTION,"Elszánt, állóképességre épülő harc az Elden Ring stílusában: a hős egy rögzített, körbeforgó kamera alatt helyben fordul, az ellenségek összefognak, végigviszik kombóikat és megbüntetik a réseket, az LT be- és kikapcsolja a célrögzítést, az ütések, gurulások és védések állóképességet, a varázslatok manát fogyasztanak, és az Erő mellé egy Állóképesség képesség is társul. A Refii mintapéldája egy teljes játékmenet-átalakításra kizárólag Luában, a mod API kimondott eseményeire és hívásaira építve."
+SOULS_COMBAT_SETTING_BARS,"Sávok, amíg nincsenek tele"
+SOULS_COMBAT_SETTING_BARS_DESCRIPTION,"Az életerő, a mana és az állóképesség a képernyőn marad, amíg bármelyikük a maximum alatt van."

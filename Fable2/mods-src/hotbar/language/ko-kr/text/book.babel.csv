@@ -1,0 +1,18 @@
+key,value
+HOTBAR_MENU,단축 바
+HOTBAR_KIND,슬롯에 넣기
+HOTBAR_KIND_SPELLS,마법
+HOTBAR_KIND_EXPRESSIONS,표현 기술
+HOTBAR_KIND_FOOD,음식
+HOTBAR_KIND_POTIONS,포션
+HOTBAR_KIND_ITEMS,기타 아이템
+HOTBAR_KIND_CLEAR,슬롯 비우기
+HOTBAR_MOD_NAME,단축 바
+HOTBAR_MOD_DESCRIPTION,"Fable 1 스타일의 단축 바를 화면에 표시합니다. 1-3 키는 무기 모드를 유지하며, 주 메뉴의 단축 바 페이지에서 마법, 표현 기술, 음식, 포션, 기타 사용 가능한 아이템을 4-0에 넣을 수 있습니다."
+HOTBAR_SETTING_SHOW,단축 바 표시
+HOTBAR_SETTING_SHOW_DESCRIPTION,표시하지 않아도 키는 작동합니다.
+HOTBAR_SETTING_SIZE,크기
+HOTBAR_SETTING_SIZE_DESCRIPTION,슬롯을 그리는 크기입니다.
+HOTBAR_SETTING_LIFT,아래쪽 가장자리로부터 높이
+HOTBAR_SETTING_LIFT_DESCRIPTION,자막을 가리지 않도록 바를 올립니다.
+HOTBAR_INPUT_SLOT,단축 바 슬롯

@@ -260,9 +260,7 @@ public sealed class Engine_UiExpandableMenu
 	/// </summary>
 	public void UpdateAllGhosting()
 	{
-		// A tree read back from the button pool cannot answer "has no children": the pool holds only
-		// what is drawn, so a collapsed category reads as zero children. The rule needs the Lua
-		// menu's full tree, so it applies only to a menu this populated itself.
+		// The rule needs the menu's full tree, so it applies only once `SpawnButton` has populated it.
 		if (!KnowsItsOwnChildren)
 		{
 			return;
@@ -318,9 +316,7 @@ public sealed class Engine_UiExpandableMenu
 	public bool Animating { get; set; }
 
 	/// <summary>
-	/// Whether the tree holds every entry or only the ones currently drawn. Set by `SpawnButton`;
-	/// false for a menu read back from the guest's button pool, where a collapsed category
-	/// contributes one row and its contents live in Lua.
+	/// Whether `SpawnButton` has populated the tree since the last <see cref="Clear"/>.
 	/// </summary>
 	public bool KnowsItsOwnChildren { get; private set; }
 
@@ -336,22 +332,12 @@ public sealed class Engine_UiExpandableMenu
 	/// <summary>`g_Menu.SpawnedItems` — what the population put in, in spawn order.</summary>
 	public IReadOnlyList<Item> SpawnedItems => _spawned;
 
-	/// <summary>`g_Menu:IsValidMenuItem(name)` — `AddChild` asserts on this before attaching.</summary>
-	public bool IsValidMenuItem(string name) => Find(name) is not null;
-
 	/// <summary>
 	/// `g_Menu:GetLastItemIndex()` — `NumberOfItems - 1` (`expandablemenu.dis main.27` pc4..6, into
 	/// `Float1`). `CreateMenuItem` stamps the current count then increments (`main.9` pc49..56), so
 	/// the counter is one past the last index.
 	/// </summary>
 	public int GetLastItemIndex() => NumberOfItems - 1;
-
-	/// <summary>
-	/// `g_Menu:IsHighlightedItemAtRoot()` — 1 into `Float1` when the highlighted row's parent is the
-	/// root or there is no row at all; an empty menu reporting "at root" stops B unwinding past the top.
-	/// </summary>
-	public bool IsHighlightedItemAtRoot() =>
-		Highlighted is not { } item || item.Parent == MenuRoot;
 
 	/// <summary>One saved menu, as `PushMenuState` keeps it.</summary>
 	private sealed record Backup(Item Root, int Highlight, List<Item> Spawned, int Items);

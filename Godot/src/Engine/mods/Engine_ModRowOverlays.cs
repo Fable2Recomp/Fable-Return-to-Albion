@@ -96,6 +96,8 @@ public static class ModRowOverlays
 		var babelByTable = new Dictionary<string, List<BabelOverlayRow>>(StringComparer.OrdinalIgnoreCase);
 		var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
 		var contributors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+		// Every mod's book tables as authored, in mount order: the text lookup's (ModText.UseMounted).
+		var authoredBooks = new List<(string Table, IEnumerable<BabelOverlayRow> Rows)>();
 
 		foreach (ModOverlay overlay in overlays)
 		{
@@ -104,6 +106,7 @@ public static class ModRowOverlays
 			{
 				if (F2ModPackage.TryOpen(sourcePath, out F2ModPackage? pkg, out string openErr) && pkg is not null)
 				{
+					var pending = new List<(string Table, List<BabelOverlayRow> Rows, List<string> Errors)>();
 					using (pkg)
 					{
 						foreach (F2ModEntry entry in pkg.Entries)
@@ -140,25 +143,12 @@ public static class ModRowOverlays
 								row.Mod = overlay.Name;
 							}
 
-							int added = rows.Count;
-							if (added != 0)
-							{
-								if (!babelByTable.TryGetValue(table, out List<BabelOverlayRow>? existing))
-								{
-									existing = new List<BabelOverlayRow>();
-									babelByTable[table] = existing;
-								}
-
-								existing.AddRange(rows);
-								Add(contributors, table, overlay.Name);
-							}
-
-							foreach (string error in parseErrors)
-							{
-								Add(errors, table, $"{overlay.Name}: {error}");
-							}
+							pending.Add((table, rows, parseErrors));
 						}
 					}
+
+					authoredBooks.AddRange(pending.Select(t => (t.Table, (IEnumerable<BabelOverlayRow>)t.Rows)));
+					AddModTables(pending, overlay.Name, babelByTable, errors, contributors);
 				}
 				else
 				{
@@ -172,6 +162,7 @@ public static class ModRowOverlays
 				continue;
 			}
 
+			var folderTables = new List<(string Table, List<BabelOverlayRow> Rows, List<string> Errors)>();
 			foreach (string file in ModManifest.EnumerateAssets(overlay.AssetRoot))
 			{
 				if (!file.EndsWith(BabelOverlay.CsvSuffix, StringComparison.OrdinalIgnoreCase))
@@ -207,30 +198,26 @@ public static class ModRowOverlays
 					row.Mod = overlay.Name;
 				}
 
-				int added = rows.Count;
-				if (added != 0)
-				{
-					if (!babelByTable.TryGetValue(table, out List<BabelOverlayRow>? existing))
-					{
-						existing = new List<BabelOverlayRow>();
-						babelByTable[table] = existing;
-					}
-
-					existing.AddRange(rows);
-					Add(contributors, table, overlay.Name);
-				}
-
-				foreach (string error in parseErrors)
-				{
-					Add(errors, table, $"{overlay.Name}: {error}");
-				}
+				folderTables.Add((table, rows, parseErrors));
 			}
+
+			authoredBooks.AddRange(folderTables.Select(t => (t.Table, (IEnumerable<BabelOverlayRow>)t.Rows)));
+			AddModTables(folderTables, overlay.Name, babelByTable, errors, contributors);
 		}
+
+		ModText.UseMounted(ModText.Tables.From(authoredBooks));
 
 		var merges = new List<RowMerge>();
 
 		foreach ((string table, List<BabelOverlayRow> rows) in babelByTable)
 		{
+			// A TRANSLATION INTO A LANGUAGE THIS DISC DOES NOT SHIP has no book to edit, and that is
+			// not a refusal: a mod carries every culture, a disc carries a few.
+			if (BabelOverlay.IsOtherCultureTable(table, Engine_GameCulture.Current) && !Mounts(mounted, table))
+			{
+				continue;
+			}
+
 			var keys = new List<(string Key, string Mod)>(rows.Count);
 			foreach (BabelOverlayRow row in rows)
 			{
@@ -251,6 +238,70 @@ public static class ModRowOverlays
 
 		merges.Sort((left, right) => string.CompareOrdinal(left.Table, right.Table));
 		return merges;
+	}
+
+	/// <summary>
+	/// One mod's text tables into the composed set, each at the book it applies to in the culture
+	/// in force (<see cref="BabelOverlay.TableForCulture"/>): rows and parse errors move with it,
+	/// and a table the mod's own culture table supersedes is dropped.
+	/// </summary>
+	private static void AddModTables(
+		List<(string Table, List<BabelOverlayRow> Rows, List<string> Errors)> modTables,
+		string mod,
+		Dictionary<string, List<BabelOverlayRow>> babelByTable,
+		Dictionary<string, List<string>> errors,
+		Dictionary<string, List<string>> contributors)
+	{
+		var authored = new List<string>(modTables.Count);
+		foreach ((string table, _, _) in modTables)
+		{
+			authored.Add(table);
+		}
+
+		string culture = Engine_GameCulture.Current;
+		foreach ((string authoredTable, List<BabelOverlayRow> rows, List<string> parseErrors) in modTables)
+		{
+			if (BabelOverlay.TableForCulture(authoredTable, authored, culture) is not { } table)
+			{
+				continue;
+			}
+
+			if (rows.Count != 0)
+			{
+				if (!babelByTable.TryGetValue(table, out List<BabelOverlayRow>? existing))
+				{
+					existing = new List<BabelOverlayRow>();
+					babelByTable[table] = existing;
+				}
+
+				existing.AddRange(rows);
+				Add(contributors, table, mod);
+			}
+
+			foreach (string error in parseErrors)
+			{
+				Add(errors, table, $"{mod}: {error}");
+			}
+		}
+	}
+
+	/// <summary>True when the mount has <paramref name="table"/> under its own name or an alias.</summary>
+	private static bool Mounts(BnkFileSystem mounted, string table)
+	{
+		if (mounted.TryGetFile(table, out _))
+		{
+			return true;
+		}
+
+		foreach (string alias in BnkFileSystem.AliasesFor(table))
+		{
+			if (mounted.TryGetFile(alias, out _))
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/// <summary>

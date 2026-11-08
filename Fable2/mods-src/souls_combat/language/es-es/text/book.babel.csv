@@ -1,0 +1,7 @@
+key,value
+SOULS_COMBAT_STAMINA_NAME,Aguante
+SOULS_COMBAT_STAMINA_DESCRIPTION,"Resistencia para el combate. Aumenta la longitud del indicador de aguante para que puedas golpear, rodar y cubrirte durante más tiempo antes de tener que retroceder."
+SOULS_COMBAT_MOD_NAME,Combate Souls
+SOULS_COMBAT_MOD_DESCRIPTION,"Combate exigente basado en el aguante, al estilo de Elden Ring: un héroe que gira sobre sí mismo bajo una cámara orbital fija, enemigos que se agrupan, completan sus combos y castigan los descuidos, LT activa y desactiva el fijado de objetivo, golpes, volteretas y bloqueos gastan aguante, los conjuros gastan maná y una aptitud de Aguante se suma a la Fuerza. El ejemplo de Refii de una revisión completa de la jugabilidad solo con Lua, sobre los eventos y llamadas declarados de la API de mods."
+SOULS_COMBAT_SETTING_BARS,Barras visibles si no están llenas
+SOULS_COMBAT_SETTING_BARS_DESCRIPTION,"La salud, el maná y el aguante siguen en pantalla mientras alguno esté por debajo de su máximo."

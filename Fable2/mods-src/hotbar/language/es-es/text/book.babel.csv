@@ -1,0 +1,18 @@
+key,value
+HOTBAR_MENU,Barra rápida
+HOTBAR_KIND,Poner en la ranura
+HOTBAR_KIND_SPELLS,Conjuros
+HOTBAR_KIND_EXPRESSIONS,Expresiones
+HOTBAR_KIND_FOOD,Comida
+HOTBAR_KIND_POTIONS,Pociones
+HOTBAR_KIND_ITEMS,Otros objetos
+HOTBAR_KIND_CLEAR,Vaciar la ranura
+HOTBAR_MOD_NAME,Barra rápida
+HOTBAR_MOD_DESCRIPTION,"Una barra rápida al estilo de Fable 1 en la interfaz. Las teclas 1-3 mantienen los modos de arma; pon conjuros, expresiones, comida, pociones y otros objetos utilizables en 4-0 desde la página Barra rápida del menú Pausa."
+HOTBAR_SETTING_SHOW,Mostrar la barra rápida
+HOTBAR_SETTING_SHOW_DESCRIPTION,Las teclas funcionan de todos modos.
+HOTBAR_SETTING_SIZE,Tamaño
+HOTBAR_SETTING_SIZE_DESCRIPTION,El tamaño con el que se dibujan las ranuras.
+HOTBAR_SETTING_LIFT,Altura sobre el borde inferior
+HOTBAR_SETTING_LIFT_DESCRIPTION,Sube la barra para dejar sitio a los subtítulos.
+HOTBAR_INPUT_SLOT,Ranura de la barra rápida

@@ -1,0 +1,18 @@
+key,value
+HOTBAR_MENU,Barre rapide
+HOTBAR_KIND,Placer dans l'emplacement
+HOTBAR_KIND_SPELLS,Sorts
+HOTBAR_KIND_EXPRESSIONS,Expressions
+HOTBAR_KIND_FOOD,Nourriture
+HOTBAR_KIND_POTIONS,Potions
+HOTBAR_KIND_ITEMS,Autres objets
+HOTBAR_KIND_CLEAR,Vider l'emplacement
+HOTBAR_MOD_NAME,Barre rapide
+HOTBAR_MOD_DESCRIPTION,"Une barre rapide façon Fable 1 à l'écran. Les touches 1-3 gardent les modes d'arme ; placez sorts, expressions, nourriture, potions et autres objets utilisables sur 4-0 depuis la page Barre rapide du menu pause."
+HOTBAR_SETTING_SHOW,Afficher la barre rapide
+HOTBAR_SETTING_SHOW_DESCRIPTION,Les touches fonctionnent dans tous les cas.
+HOTBAR_SETTING_SIZE,Taille
+HOTBAR_SETTING_SIZE_DESCRIPTION,La taille d'affichage des emplacements.
+HOTBAR_SETTING_LIFT,Hauteur depuis le bas
+HOTBAR_SETTING_LIFT_DESCRIPTION,Relève la barre pour dégager les sous-titres.
+HOTBAR_INPUT_SLOT,Emplacement rapide

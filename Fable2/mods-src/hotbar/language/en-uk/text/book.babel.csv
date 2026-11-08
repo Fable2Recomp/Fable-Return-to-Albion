@@ -7,3 +7,12 @@ HOTBAR_KIND_FOOD,Food
 HOTBAR_KIND_POTIONS,Potions
 HOTBAR_KIND_ITEMS,Other items
 HOTBAR_KIND_CLEAR,Empty the slot
+HOTBAR_MOD_NAME,Hotbar
+HOTBAR_MOD_DESCRIPTION,"A Fable 1-style hotbar on the HUD. Keys 1-3 keep the weapon modes; put spells, expressions, food, potions and other usable items on 4-0 from the Hotbar page of the pause menu."
+HOTBAR_SETTING_SHOW,Show the hotbar
+HOTBAR_SETTING_SHOW_DESCRIPTION,The keys work either way.
+HOTBAR_SETTING_SIZE,Size
+HOTBAR_SETTING_SIZE_DESCRIPTION,How big the slots are drawn.
+HOTBAR_SETTING_LIFT,Height above the bottom
+HOTBAR_SETTING_LIFT_DESCRIPTION,Raise the bar to clear the subtitles.
+HOTBAR_INPUT_SLOT,Hotbar slot

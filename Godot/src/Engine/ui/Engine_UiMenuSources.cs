@@ -307,9 +307,6 @@ public static class Engine_UiMenuSources
 		return SpawnRows(parent, spawned);
 	}
 
-	/// <summary>Forgets the held population — a screen change, or the menu going away.</summary>
-	public static void ForgetSpawn() => _wholeSpawn = null;
-
 	/// <summary>The captured rows; the last whole population while one is in flight. The one accessor for capture consumers.</summary>
 	public static List<Engine_UiModel.MenuRow> SpawnedRows()
 	{

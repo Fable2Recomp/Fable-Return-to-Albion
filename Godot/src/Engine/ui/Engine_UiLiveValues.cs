@@ -114,9 +114,6 @@ public sealed class Engine_UiLiveValues
 	/// <summary>The look text is drawn with. Without it a bound field stays as the file left it.</summary>
 	public Engine_UiTheme? Theme { get; set; }
 
-	/// <summary>How many bound text fields found a mesh to drive.</summary>
-	public int FieldsBound => _fields.Count;
-
 	/// <summary>Text fields written on the last <see cref="Apply"/>.</summary>
 	public int TextsApplied { get; private set; }
 
@@ -124,13 +121,10 @@ public sealed class Engine_UiLiveValues
 	/// Bound text fields whose name the guest actually publishes, whatever it publishes for it.
 	///
 	/// The denominator that tells a broken hash from an empty message: equal to
-	/// <see cref="FieldsBound"/> means the join is sound and the guest simply has nothing to
+	/// the bound field count means the join is sound and the guest simply has nothing to
 	/// say, while zero against a non-empty registry means we are looking up the wrong key.
 	/// </summary>
 	public int FieldsMatched { get; private set; }
-
-	/// <summary>How many bound meters found nodes to drive. Zero with bindings means the join failed.</summary>
-	public int BarsBound => _bars.Count;
 
 	/// <summary>
 	/// What each bar actually resolved to, for a check tool.
@@ -163,8 +157,7 @@ public sealed class Engine_UiLiveValues
 	/// <paramref name="nodes"/> is indexed by ELEMENT ORDINAL, which is the only key that
 	/// works here. A `.bgf` has far more elements than distinct names — `hud.bgf` has 3431
 	/// elements and reuses "Bar", "BarMiddle" and "Component" dozens of times — so a lookup by
-	/// name hash would collapse every bar onto one widget. That is the same mistake
-	/// <see cref="Engine_BgfDocument.SetElementSlides"/> documents from the live-state side.
+	/// name hash would collapse every bar onto one widget.
 	/// </summary>
 	public void Bind(
 		Engine_BgfDocument document, Engine_UiBindings bindings, IReadOnlyList<Node3D?> nodes)
@@ -251,7 +244,7 @@ public sealed class Engine_UiLiveValues
 			// LAYOUT meters — `TopBoxY`, `CornerY`, `SubtitlesX` — are real bindings the guest
 			// really publishes; they simply are not bars, and driving whatever quad happens to
 			// sit under them is how a meter at 50% drew the heart icon at half size. Keeping
-			// them means `BarsBound` still counts what the file binds.
+			// them means the bar count still counts what the file binds.
 			_bars.Add(new Bar(
 				binding.NameHash, binding.Name, fill,
 				// The cap only means anything beside a fill this binding actually owns.

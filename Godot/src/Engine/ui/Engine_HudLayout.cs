@@ -160,10 +160,13 @@ public sealed partial class Engine_HudLayout
     /// art placed beneath (Fable 3's `hud.bgf`: `TopBoxRefined`, `Subtitles`, `dpad` all sit at or
     /// near 0,0), where snapping from the root's own position puts every widget on the centre
     /// anchor and nothing reaches the edges of a wider display.
+    /// <para><paramref name="AnyNode"/> cuts an element of any type by that name, not only a
+    /// component: Fable 3's box screens hold their frame art (`BlackBox`, `TopLine`, `BottomLine`) in
+    /// a plain node (`BedMenu.Medium2`, `StatsBox.Large2`), cut under its named parent.</para>
     /// </remarks>
     public readonly record struct GroupSubtree(
         string Name, string Label, Anchor? Anchor, float Depth,
-        bool AnchorFromContents = false, string? Parent = null);
+        bool AnchorFromContents = false, string? Parent = null, bool AnyNode = false);
 
     /// <summary>
     /// The subtrees cut whole: element name under `Layer`, id label, a fixed anchor (null snaps
@@ -416,6 +419,9 @@ public sealed partial class Engine_HudLayout
         _pieces.Add(piece);
         return this;
     }
+
+    /// <summary>Drops every piece <paramref name="keep"/> refuses; how many went.</summary>
+    public int KeepOnly(Predicate<Piece> keep) => _pieces.RemoveAll(piece => !keep(piece));
 
     /// <summary>
     /// Where a piece lands in the canvas's own space, for a given viewport. The canvas is
@@ -687,7 +693,7 @@ public sealed partial class Engine_HudLayout
         //   Engine_UiTopBoxLayout from the text Godot draws; the guest's own fit (`sub_823FC8F0`,
         //   TopBoxX/TopBoxY via `sub_823FE638`) places nothing on a headless element and measures
         //   in its own font. Its faders are the guest's stated opacity.
-        foreach ((string name, string label, Anchor? fixedAnchor, float depth, bool fromContents, string? parent)
+        foreach ((string name, string label, Anchor? fixedAnchor, float depth, bool fromContents, string? parent, bool anyNode)
             in groups ?? GroupSubtrees)
         {
             for (int i = 0; i < screen.Nodes.Length; ++i)
@@ -699,7 +705,7 @@ public sealed partial class Engine_HudLayout
                 // bare container and not a widget of its own. Restricting to `Layer` silently
                 // matched nothing for it — a group that never forms leaves the per-binding
                 // pieces standing, which looks like the layout working.
-                if (node.Type != BgfElementType.Component || node.Name != name ||
+                if ((!anyNode && node.Type != BgfElementType.Component) || node.Name != name ||
                     (parent is null
                         ? node.Parent?.Name is not ("Layer" or "UpperElements")
                         : node.Parent?.Name != parent))

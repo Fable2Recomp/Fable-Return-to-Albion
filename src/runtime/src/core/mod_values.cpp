@@ -129,6 +129,36 @@ extern "C" int32_t refii_bridge_mod_value_f32(const char* key, size_t key_length
   return 1;
 }
 
+namespace {
+
+/// The host's text lookup (refii::mods::SetHostModTextLookup); null until Godot installs one.
+std::atomic<refii::mods::HostModTextFn> g_mod_text_lookup{nullptr};
+
+/// A text to look up is a label or a line: bounded so a garbage length cannot cross megabytes.
+constexpr size_t kMaxModTextLength = 4096;
+
+}  // namespace
+
+void refii::mods::SetHostModTextLookup(HostModTextFn lookup) {
+  g_mod_text_lookup.store(lookup, std::memory_order_release);
+}
+
+extern "C" int32_t refii_bridge_mod_text(const char* text, size_t length, char* out, uint32_t capacity) {
+  const refii::mods::HostModTextFn lookup = g_mod_text_lookup.load(std::memory_order_acquire);
+  if (lookup == nullptr || text == nullptr || out == nullptr || capacity == 0u || length > kMaxModTextLength) {
+    return -1;
+  }
+  out[0] = 0;
+  const std::string terminated(text, length);
+  const int32_t written = lookup(terminated.c_str(), static_cast<uint32_t>(terminated.size()), out, capacity);
+  if (written < 0) {
+    out[0] = 0;
+    return -1;
+  }
+  out[capacity - 1u] = 0;
+  return written < static_cast<int32_t>(capacity) ? written : static_cast<int32_t>(capacity - 1u);
+}
+
 extern "C" void refii_bridge_mod_set_setting_f32(const char* key, size_t key_length, float value) {
   if (!ValidKey(key, key_length)) {
     return;

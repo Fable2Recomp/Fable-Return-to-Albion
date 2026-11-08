@@ -305,7 +305,7 @@ public sealed class Engine_UiCloneBinding
 
 	/// <summary>
 	/// A bound mask node's rect in WORLD space — the 100-unit base quad scaled by the node's
-	/// world basis, centred on its world origin, as `Engine_UiSceneBuilder.RefreshClips` does.
+	/// world basis, centred on its world origin.
 	/// </summary>
 	private static Rect2? WorldClip(Node3D? node)
 	{
@@ -702,8 +702,8 @@ public sealed class Engine_UiCloneBinding
 	/// runtime is a position or scale attribute write (menus authored at x -800 and tweened in,
 	/// meter bars authored `scale.x = 0`), so a clone left at the artist's spot never moves.
 	///
-	/// Same arithmetic as <see cref="Engine_UiSceneBuilder.ApplyLiveTransform"/>: origin is
-	/// `position - basis * pivot`, and scale goes through the basis COLUMNS because `Basis.Scale`
+	/// The origin is `position - basis * pivot` (as <see cref="Engine_UiSceneBuilder.SetLivePosition"/>
+	/// builds it), and scale goes through the basis COLUMNS because `Basis.Scale`
 	/// reports (0,0,0) on a singular basis and a read-modify-write flattens unmentioned axes.
 	/// </summary>
 	private static void ApplyTransform(Bound bound, Engine_UiElementResolve resolve,

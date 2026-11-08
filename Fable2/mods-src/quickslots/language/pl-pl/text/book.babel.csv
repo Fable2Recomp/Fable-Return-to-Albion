@@ -1,0 +1,51 @@
+key,value
+QUICKSLOTS_MENU,Szybkie pola
+QUICKSLOTS_ASSIGN,Przypisz szybkie pole
+QUICKSLOTS_ASSIGN_TITLE,Przypisz do szybkiego pola
+QUICKSLOTS_CHOOSE_TITLE,Wybierz zawartość pola
+QUICKSLOTS_SLOT_1,Krzyżak w górę
+QUICKSLOTS_SLOT_2,Krzyżak w dół
+QUICKSLOTS_SLOT_3,Krzyżak w lewo
+QUICKSLOTS_SLOT_4,Krzyżak w prawo
+QUICKSLOTS_SLOT_5,LT + w górę
+QUICKSLOTS_SLOT_6,LT + w dół
+QUICKSLOTS_SLOT_7,LT + w lewo
+QUICKSLOTS_SLOT_8,LT + w prawo
+QUICKSLOTS_SLOT_9,RT + w górę
+QUICKSLOTS_SLOT_10,RT + w dół
+QUICKSLOTS_SLOT_11,RT + w lewo
+QUICKSLOTS_SLOT_12,RT + w prawo
+QUICKSLOTS_AUTOMATIC,Automatycznie (jak w grze)
+QUICKSLOTS_EMPTY,Puste
+QUICKSLOTS_CLEAR,Opróżnij to pole
+QUICKSLOTS_REMOVE,Usuń ze wszystkich pól
+QUICKSLOTS_ITEM,Przedmiot
+QUICKSLOTS_WEAPON,Broń
+QUICKSLOTS_EXPRESSION,Gest
+QUICKSLOTS_SPELL,Czar
+QUICKSLOTS_ITEMS,Przedmioty i broń
+QUICKSLOTS_EXPRESSIONS,Gesty
+QUICKSLOTS_SPELLS,Czary
+QUICKSLOTS_MOD_NAME,Szybkie pola
+QUICKSLOTS_MOD_DESCRIPTION,"Dwanaście przypisywanych szybkich pól na krzyżaku: cztery kierunki, LT + kierunek i RT + kierunek, a w każdym przedmiot do użycia, broń do wyciągnięcia, gest do wykonania lub czar do przygotowania. Przypisuj je z ekwipunku, książek gestów i zdolności lub z koła gestów; krzyżak na ekranie pokazuje zawartość każdego pola. Kierunek bez przypisania zachowuje swoje działanie z gry."
+QUICKSLOTS_SETTING_LT_BANK,Zestaw LT + krzyżak
+QUICKSLOTS_SETTING_LT_BANK_DESCRIPTION,"Cztery dodatkowe pola, dostępne po przytrzymaniu lewego spustu."
+QUICKSLOTS_SETTING_RT_BANK,Zestaw RT + krzyżak
+QUICKSLOTS_SETTING_RT_BANK_DESCRIPTION,"Cztery dodatkowe pola, dostępne po przytrzymaniu prawego spustu. Gdy którekolwiek z nich jest przypisane, prawy spust nie otwiera już menu czarów."
+QUICKSLOTS_SETTING_HUD_ICONS,Ikony pól na krzyżaku
+QUICKSLOTS_SETTING_HUD_ICONS_DESCRIPTION,"Pokazuje zawartość każdego pola na krzyżaku na ekranie, a przy wciśniętym spuście pola trzymanego zestawu."
+QUICKSLOTS_INPUT_UP,Szybkie pole w górę
+QUICKSLOTS_INPUT_DOWN,Szybkie pole w dół
+QUICKSLOTS_INPUT_LEFT,Szybkie pole w lewo
+QUICKSLOTS_INPUT_RIGHT,Szybkie pole w prawo
+QUICKSLOTS_INPUT_LT_UP,Pole LT w górę
+QUICKSLOTS_INPUT_LT_DOWN,Pole LT w dół
+QUICKSLOTS_INPUT_LT_LEFT,Pole LT w lewo
+QUICKSLOTS_INPUT_LT_RIGHT,Pole LT w prawo
+QUICKSLOTS_INPUT_RT_UP,Pole RT w górę
+QUICKSLOTS_INPUT_RT_DOWN,Pole RT w dół
+QUICKSLOTS_INPUT_RT_LEFT,Pole RT w lewo
+QUICKSLOTS_INPUT_RT_RIGHT,Pole RT w prawo
+QUICKSLOTS_INPUT_LT,Zestaw LT (przytrzymaj)
+QUICKSLOTS_INPUT_RT,Zestaw RT (przytrzymaj)
+QUICKSLOTS_INPUT_ASSIGN,Przypisz podświetlony gest

@@ -1,4 +1,4 @@
 {
-	"stop_after": { "label": "Stop after standing still", "type": "slider", "min": 0, "max": 3, "step": 0.25,
-	                "description": "Seconds standing still before the sprint ends and Shift must be pressed again. 0 keeps sprinting." }
+	"stop_after": { "label": "{TOGGLE_SPRINT_SETTING_STOP_AFTER}", "type": "slider", "min": 0, "max": 3, "step": 0.25,
+	                "description": "{TOGGLE_SPRINT_SETTING_STOP_AFTER_DESCRIPTION}" }
 }

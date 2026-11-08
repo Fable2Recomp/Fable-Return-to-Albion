@@ -1,0 +1,18 @@
+key,value
+HOTBAR_MENU,Быстрая панель
+HOTBAR_KIND,Поместить в ячейку
+HOTBAR_KIND_SPELLS,Заклинания
+HOTBAR_KIND_EXPRESSIONS,Выражения
+HOTBAR_KIND_FOOD,Еда
+HOTBAR_KIND_POTIONS,Эликсиры
+HOTBAR_KIND_ITEMS,Другие предметы
+HOTBAR_KIND_CLEAR,Очистить ячейку
+HOTBAR_MOD_NAME,Быстрая панель
+HOTBAR_MOD_DESCRIPTION,"Быстрая панель в стиле Fable 1 на экране. Клавиши 1-3 сохраняют режимы оружия; помещайте заклинания, выражения, еду, эликсиры и другие используемые предметы на 4-0 со страницы «Быстрая панель» в меню паузы."
+HOTBAR_SETTING_SHOW,Показывать быструю панель
+HOTBAR_SETTING_SHOW_DESCRIPTION,Клавиши работают в любом случае.
+HOTBAR_SETTING_SIZE,Размер
+HOTBAR_SETTING_SIZE_DESCRIPTION,Насколько крупно рисуются ячейки.
+HOTBAR_SETTING_LIFT,Высота над нижним краем
+HOTBAR_SETTING_LIFT_DESCRIPTION,Поднимает панель над субтитрами.
+HOTBAR_INPUT_SLOT,Ячейка панели

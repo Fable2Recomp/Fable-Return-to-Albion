@@ -46,63 +46,6 @@ public static class Engine_UiScreenConstants
 	public const string FrontEndPageNavPath = "Scene.Layer.pagenav";
 
 	/// <summary>
-	/// `hud.lua` — the ABXY prompt component's two slides. Its button vocabulary is the same
-	/// table as <see cref="Engine_UiGuiConstants.Button"/> and is not restated here.
-	/// </summary>
-	public const int AbxyShowSpellsSlide = 1;
-
-	public const int AbxyHideSpellsSlide = 2;
-
-	/// <summary>
-	/// `spellassigning.lua` — the paths, dimensions and slides the will carousel runs on. Five
-	/// rows by eight will types, the same 5×8 as the offering matrix at
-	/// `spellMgr + 156/196 + 5*spell + row`.
-	/// </summary>
-	public const string SpellRootAdjusterPath = "parent.Group.Adjuster";
-
-	public const string SpellAdjusterComponentPath = "parent.Group.Adjuster.Adjuster";
-
-	public const string SpellBubbleRootPath = "parent.Group.Spell";
-
-	/// <summary>`MAX_SPELL_LEVELS` — the five d-pad rows.</summary>
-	public const int MaxSpellLevels = 5;
-
-	/// <summary>`MAX_SPELL_TYPES` — the eight wills.</summary>
-	public const int MaxSpellTypes = 8;
-
-	/// <summary>`NUM_SCROLLER_BUBBLES` — SIX, not the five cells the carousel shows.</summary>
-	public const int SpellScrollerBubbles = 6;
-
-	/// <summary>The component's own fade slides.</summary>
-	public const int SpellComponentFadeInSlide = 2;
-
-	public const int SpellComponentFadeOutSlide = 3;
-
-	/// <summary>Which way the carousel is sliding: static, left, right.</summary>
-	public const int SpellSlideStatic = 1;
-
-	public const int SpellSlideLeft = 2;
-
-	public const int SpellSlideRight = 3;
-
-	/// <summary>A row's own fade, and the bubble's active/inactive state.</summary>
-	public const int SpellRowNoFadeSlide = 1;
-
-	public const int SpellRowFadeInSlide = 2;
-
-	public const int SpellRowFadeOutSlide = 3;
-
-	public const int SpellBubbleActiveSlide = 3;
-
-	public const int SpellBubbleInactiveSlide = 1;
-
-	/// <summary>The script's own cursor origin — both 1-based, like every index in these
-	/// scripts.</summary>
-	public const int SpellFirstRow = 1;
-
-	public const int SpellFirstColumn = 1;
-
-	/// <summary>
 	/// The eight wills, in the guest's own index order: icon stem then Babel name tag. From the
 	/// binary — `sub_826B5D30` and `sub_826B50B8` unroll them as literal string tables, no
 	/// data-driven path. The icon path is `Art\GUI\WheelIcons\Abilities\&lt;stem&gt;.tex`, built

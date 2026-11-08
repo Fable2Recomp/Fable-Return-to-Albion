@@ -1,0 +1,23 @@
+key,value
+FIRST_PERSON_MOD_NAME,Belső nézet
+FIRST_PERSON_MOD_DESCRIPTION,"Játszd a Fable II-t belső nézetből: a kamera a hős fejében ül, a fej rejtve marad, a test látható, te pedig az egérrel vagy a jobb karral sétálsz, harcolsz és nézel körül. A H vált a belső és a külső nézet között, minden játékosnak külön osztott képernyőn és online kooperatív játékban. A teljes átvezető jelenetek, a kötött mozdulatok és (alapból) a lőfegyveres célzás megtartják a játék saját kameráit."
+FIRST_PERSON_SETTING_START_ON,Indítás belső nézetben
+FIRST_PERSON_SETTING_START_ON_DESCRIPTION,"Minden játékos belső nézetben kezdi-e a játékmenetet. A H annak vált, aki megnyomja."
+FIRST_PERSON_SETTING_FOV,Látómező
+FIRST_PERSON_SETTING_FOV_DESCRIPTION,Fokban. A játék saját belső nézete 75-öt használ.
+FIRST_PERSON_SETTING_EYE_HEIGHT,Szemmagasság
+FIRST_PERSON_SETTING_EYE_HEIGHT_DESCRIPTION,Méter a fej ütközési pontja fölött.
+FIRST_PERSON_SETTING_EYE_FORWARD,Szem előretolása
+FIRST_PERSON_SETTING_EYE_FORWARD_DESCRIPTION,"Méter a fej előtt, hogy az arc ne takarja a képet."
+FIRST_PERSON_SETTING_PITCH_LIMIT,Fel- és lenézés
+FIRST_PERSON_SETTING_PITCH_LIMIT_DESCRIPTION,"Mennyire nézhetsz fel vagy le, fokban."
+FIRST_PERSON_SETTING_FACE_CAMERA,A hős a nézés irányába fordul
+FIRST_PERSON_SETTING_FACE_CAMERA_NEVER,Soha
+FIRST_PERSON_SETTING_FACE_CAMERA_STANDING,Álló helyzetben
+FIRST_PERSON_SETTING_FACE_CAMERA_ALWAYS,Mindig
+FIRST_PERSON_SETTING_FACE_CAMERA_DESCRIPTION,"A hőst oda fordítja, ahová nézel, így az ütések és a varázslatok arra mennek."
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM,Célzás külső nézetben
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM_DESCRIPTION,Lőfegyverrel vagy számszeríjjal célozva a játék válla fölötti kamerája működik.
+FIRST_PERSON_SETTING_SCENES,Belső nézet beszélgetésekben
+FIRST_PERSON_SETTING_SCENES_DESCRIPTION,"Beszélgetéskor és interaktív jelenetekben is belső nézetben marad, a beszélő felé fordulva. A teljes átvezető jelenetek megtartják a saját kamerájukat."
+FIRST_PERSON_INPUT_TOGGLE,Belső / külső nézet

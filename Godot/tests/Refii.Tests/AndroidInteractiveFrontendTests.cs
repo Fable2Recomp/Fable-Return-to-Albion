@@ -3,6 +3,7 @@ using GdUnit4;
 using Refii.AndroidRuntime;
 using Refii.Game;
 using Refii.Ui;
+using Refii.Titles.Fable2;
 using static GdUnit4.Assertions;
 using Screen = Refii.Ui.Engine_UiModel.FrontEndScreen;
 
@@ -105,12 +106,12 @@ public sealed class AndroidInteractiveFrontendTests
     {
         var menu = new Engine_FrontEndMenu();
         menu.Add(new Engine_UiExpandableMenu.Item("New Game", "new")
-            { Opens = Engine_FrontEndMenu.HeroCardScreen });
+            { Opens = Fable2FrontEndRoot.HeroCardScreen });
         menu.Add(new Engine_UiExpandableMenu.Item("Load Game", "load"));
         var model = new Engine_UiModel.FrontEndModel(true, 0, 1, 0, false, true, 0, 0, true, 0, 0);
-        menu.ApplyAvailability(model, new Engine_UiModel.SaveState(true, -1, 6));
+        Fable2FrontEndRoot.ApplyAvailability(menu, model, new Engine_UiModel.SaveState(true, -1, 6));
         AssertThat(menu.Visible.Count).IsEqual(1);
-        menu.ApplyAvailability(model, new Engine_UiModel.SaveState(true, 1, 6));
+        Fable2FrontEndRoot.ApplyAvailability(menu, model, new Engine_UiModel.SaveState(true, 1, 6));
         AssertThat(menu.Visible.Count).IsEqual(2);
         AssertThat(menu.Highlighted!.Name).IsEqual("New Game");
         // Idle polling cannot choose a save or turn the initial New Game highlight into a dispatch.
@@ -121,7 +122,7 @@ public sealed class AndroidInteractiveFrontendTests
         AssertThat(menu.Highlighted!.Name).IsEqual("Load Game");
         AssertThat(menu.Activate()).IsEqual("Load Game");
         AssertThat(menu.Back()).IsFalse();
-        menu.ApplyAvailability(model, new Engine_UiModel.SaveState(true, 0, 6));
+        Fable2FrontEndRoot.ApplyAvailability(menu, model, new Engine_UiModel.SaveState(true, 0, 6));
         AssertThat(menu.Visible.Count).IsEqual(1);
         AssertThat(menu.Highlighted!.Name).IsEqual("New Game");
     }

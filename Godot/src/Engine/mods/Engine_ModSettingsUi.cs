@@ -26,6 +26,9 @@ namespace Refii.Mods;
 /// <para>A <c>choice</c> row steps through a fixed list of labelled values, in the order the file
 /// lists them; the setting holds the chosen option's number, and a value no option states shows
 /// the nearest one.</para>
+/// <para>Any label, description or option label may name the mod's text as <c>{KEY}</c> — a row of its
+/// <c>language/&lt;culture&gt;/text/book.babel.csv</c> — drawn in the culture in force (<see cref="ModText"/>);
+/// a plain string is drawn as written. The page's title is <c>mod.toml</c>'s name, the same way.</para>
 /// <para>Only what the file describes is shown. A setting it leaves out is the author's tuning, not
 /// the player's, and a mod with no <c>settings.ui.json</c> has no page at all.</para>
 /// </remarks>
@@ -166,7 +169,8 @@ public static class ModSettingsUi
 		{
 			if (Kind == Kind.Toggle)
 			{
-				return index != 0 ? "On" : "Off";
+				// The game's own words (the Options page's), through the mods' text lookup.
+				return ModText.Word(index != 0 ? ModText.OnTag : ModText.OffTag);
 			}
 
 			if (Kind == Kind.Choice)
@@ -316,16 +320,27 @@ public static class ModSettingsUi
 
 	private static IReadOnlyDictionary<string, float>? _builtFor;
 
-	/// <summary>Every enabled mod's page, in load order; rebuilt when the settings are reloaded.</summary>
+	private static string? _builtCulture;
+
+	private static ModText.Tables? _builtTables;
+
+	/// <summary>
+	/// Every enabled mod's page, in load order; rebuilt when the settings are reloaded, and when the
+	/// culture or the mounted text changes (the rows hold their text resolved, <see cref="ModText.Game"/>).
+	/// </summary>
 	public static IReadOnlyList<Page> Pages
 	{
 		get
 		{
 			IReadOnlyDictionary<string, float> defaults = ModSettings.Defaults;
-			if (_pages is null || !ReferenceEquals(_builtFor, defaults))
+			string culture = Refii.Text.Engine_GameCulture.Current;
+			ModText.Tables tables = ModText.Mounted;
+			if (_pages is null || !ReferenceEquals(_builtFor, defaults) || _builtCulture != culture || !ReferenceEquals(_builtTables, tables))
 			{
 				_pages = Build(defaults);
 				_builtFor = defaults;
+				_builtCulture = culture;
+				_builtTables = tables;
 			}
 
 			return _pages;
@@ -452,7 +467,7 @@ public static class ModSettingsUi
 		var titles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 		foreach (ModInstall install in ModSession.Resolve(Refii.Assets.Engine_GameAssets.ModsRoot).Installs)
 		{
-			titles[install.Name] = install.Metadata.Title.Length != 0 ? install.Metadata.Title : install.Name;
+			titles[install.Name] = install.Metadata.Title.Length != 0 ? ModText.Game(install.Metadata.Title) : install.Name;
 		}
 
 		var pages = new List<Page>();
@@ -546,8 +561,9 @@ public static class ModSettingsUi
 	private static Row DescribeRow(
 		string mod, string key, string name, float file, Godot.Collections.Dictionary? spec, bool switches)
 	{
-		string label = Text(spec, "label", name.Replace('_', ' '));
-		string description = Text(spec, "description", string.Empty);
+		// A {KEY} in the label, the description or an option's label is the mod's text in the culture in force.
+		string label = ModText.Game(Text(spec, "label", name.Replace('_', ' ')));
+		string description = ModText.Game(Text(spec, "description", string.Empty));
 		string type = Text(spec, "type", string.Empty).Trim().ToLowerInvariant();
 
 		if (type == "choice" && ChoiceOptions(spec, switches) is { Count: > 0 } options)
@@ -633,7 +649,7 @@ public static class ModSettingsUi
 				}
 
 				string text = value.AsString();
-				options.Add(new Option(options.Count, Text(option, "label", text), text, aliases));
+				options.Add(new Option(options.Count, ModText.Game(Text(option, "label", text)), text, aliases));
 				continue;
 			}
 
@@ -643,7 +659,7 @@ public static class ModSettingsUi
 			}
 
 			float number = value.VariantType == Variant.Type.Bool ? (value.AsBool() ? 1f : 0f) : (float)value.AsDouble();
-			options.Add(new Option(number, Text(option, "label", number.ToString(CultureInfo.InvariantCulture))));
+			options.Add(new Option(number, ModText.Game(Text(option, "label", number.ToString(CultureInfo.InvariantCulture)))));
 		}
 
 		return options;

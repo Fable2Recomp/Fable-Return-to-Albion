@@ -1948,7 +1948,6 @@ public partial class GameEntities : Node3D
                 $"\n    refused as NOT FINITE — placements: {NonFinitePlacements}, " +
                 $"camera: {Refii.Game.GameWorld.NonFiniteCameras}, " +
                 $"fx: {Refii.Game.GameFx.NonFiniteFx}, " +
-                $"ui transforms: {Refii.Ui.Engine_UiSceneBuilder.NonFiniteLiveTransforms}, " +
                 $"prop instances: {Refii.Level.Engine_LevelProps.NonFiniteInstances}, " +
                 $"mesh surfaces: {Refii.Models.Engine_MdlMesh.NonFiniteSurfaces}" +
 

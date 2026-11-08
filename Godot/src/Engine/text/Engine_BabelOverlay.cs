@@ -112,6 +112,82 @@ public static class BabelOverlay
 	}
 
 	/// <summary>
+	/// The book one of a mod's text tables applies to while the game runs in
+	/// <paramref name="culture"/>. Mods author text in <c>language/en-uk/text/book.babel.csv</c>;
+	/// in any other culture the mod's own <c>language/&lt;culture&gt;/…</c> table wins when the mod
+	/// ships one (this en-uk table is then dropped: null), else its en-uk rows go to the culture's
+	/// book — a disc that ships one language and no en-uk still shows the mod's text. Every other
+	/// table, and every table while the culture is en-uk, applies where it is authored.
+	/// <paramref name="table"/> and <paramref name="modTables"/> are normalised mod-relative paths
+	/// without <c>.csv</c>.
+	/// </summary>
+	public static string? TableForCulture(string table, IReadOnlyCollection<string> modTables, string culture)
+	{
+		string? target = Engine_GameCulture.Normalize(culture);
+		if (target is null || string.Equals(target, Engine_GameCulture.Fallback, StringComparison.Ordinal))
+		{
+			return table;
+		}
+
+		foreach (string prefix in new[] { "language/", "data/language/" })
+		{
+			string authored = prefix + Engine_GameCulture.Fallback + "/";
+			if (!table.StartsWith(authored, StringComparison.OrdinalIgnoreCase))
+			{
+				continue;
+			}
+
+			string own = prefix + target + "/" + table[authored.Length..];
+			foreach (string other in modTables)
+			{
+				if (string.Equals(other, own, StringComparison.OrdinalIgnoreCase))
+				{
+					return null;
+				}
+			}
+
+			return own;
+		}
+
+		return table;
+	}
+
+	/// <summary>
+	/// The culture folder a normalised table path is under (<c>language/&lt;culture&gt;/…</c>, with or
+	/// without <c>data/</c>), lower case, or null for a table outside the language root or one
+	/// without a culture folder.
+	/// </summary>
+	public static string? CultureOf(string table)
+	{
+		foreach (string prefix in new[] { "language/", "data/language/" })
+		{
+			if (!table.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+			{
+				continue;
+			}
+
+			int end = table.IndexOf('/', prefix.Length);
+			return end > prefix.Length ? Engine_GameCulture.Normalize(table[prefix.Length..end]) : null;
+		}
+
+		return null;
+	}
+
+	/// <summary>
+	/// True for a mod's translation into a culture other than <paramref name="culture"/>: a book an
+	/// install that does not ship that language has no copy of, which is a language the player
+	/// cannot be running in rather than a fault in the mod. The book of the culture in force, an
+	/// en-uk table and any table outside the language root are not.
+	/// </summary>
+	public static bool IsOtherCultureTable(string table, string culture)
+	{
+		string? own = CultureOf(table);
+		return own is not null &&
+			!string.Equals(own, Engine_GameCulture.Normalize(culture), StringComparison.Ordinal) &&
+			!string.Equals(own, Engine_GameCulture.Fallback, StringComparison.Ordinal);
+	}
+
+	/// <summary>
 	/// Applies rows to <paramref name="original"/>, in the order given — later rows win.
 	/// </summary>
 	public static BabelOverlayResult Apply(byte[] original, IReadOnlyList<BabelOverlayRow> rows)

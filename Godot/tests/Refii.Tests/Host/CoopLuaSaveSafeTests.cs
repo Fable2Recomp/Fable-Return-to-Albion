@@ -74,7 +74,7 @@ public class CoopLuaSaveSafeTests
 	[TestCase]
 	public void TheSaveCompatStubIsMovesThenReturn()
 	{
-		string text = Refii.Save.Engine_SaveCompatLua.Source;
+		string text = Engine_SaveCompatLua.Source;
 		byte[]? bytes = Compile(text, "@refii/save-compat", out string why);
 		if (bytes == null && why.Length == 0)
 		{
@@ -83,7 +83,7 @@ public class CoopLuaSaveSafeTests
 
 		AssertThat(bytes != null).OverrideFailureMessage($"save-compat does not compile: {why}").IsTrue();
 		LuaProto main = LuaChunk.Parse(bytes!);
-		LuaProto? stub = LuaChunk.All(main).FirstOrDefault(p => p.Code.Length >= Refii.Save.Engine_SaveCompatLua.StubMoves);
+		LuaProto? stub = LuaChunk.All(main).FirstOrDefault(p => p.Code.Length >= Engine_SaveCompatLua.StubMoves);
 		AssertThat(stub != null).OverrideFailureMessage("the stub function was not found").IsTrue();
 		// `local a, b` at pc 0 emits no LOADNIL (registers are nil at entry), so the body is the
 		// MOVEs and the RETURN alone.
@@ -92,7 +92,7 @@ public class CoopLuaSaveSafeTests
 		AssertThat(code[^1] & 0x3F).IsEqual(OpReturn);
 		int moves = code.Take(code.Length - 1).Count(i => (i & 0x3F) == OpMove);
 		AssertThat(moves).IsEqual(code.Length - 1);
-		AssertThat(moves).IsEqual(Refii.Save.Engine_SaveCompatLua.StubMoves);
+		AssertThat(moves).IsEqual(Engine_SaveCompatLua.StubMoves);
 		AssertThat(stub.Nups).IsEqual(0);
 	}
 

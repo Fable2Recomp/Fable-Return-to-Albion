@@ -46,6 +46,7 @@ public static class Fable3HudRegistry
 	private static readonly Dictionary<uint, Fable3HudStatements.Statement> Texts = new();
 	private static readonly Dictionary<uint, Fable3HudStatements.Statement> Images = new();
 	private static readonly Dictionary<uint, (uint Box, string Text)> LineTexts = new();
+	private static readonly Dictionary<uint, (uint Hash, string Text)[]> BoxLineLists = new();
 
 	private const int ChannelState = 0;
 	private const int ChannelText = 1;
@@ -247,6 +248,23 @@ public static class Fable3HudRegistry
 		Fable3Elements.NextStamp();
 	}
 
+	/// <summary>
+	/// A text box's whole line vector as its caller passed sub_82920BC8 (`@Hud.Lines`), in order —
+	/// what the box's fit stacks (Fable3TextBoxes). An empty vector leaves the box's last one:
+	/// sub_82920278 returns before the fit (0x829202B4).
+	/// </summary>
+	public static void StateBoxLines(uint box, (uint Hash, string Text)[] lines)
+	{
+		if (lines.Length != 0)
+		{
+			BoxLineLists[box] = lines;
+		}
+	}
+
+	/// <summary>The box's last stated line vector, or null before its caller stated one.</summary>
+	public static IReadOnlyList<(uint Hash, string Text)>? BoxLines(uint box) =>
+		BoxLineLists.TryGetValue(box, out (uint Hash, string Text)[]? lines) ? lines : null;
+
 	/// <summary>The stated line under a text name hash, or null.</summary>
 	public static string? Line(uint lineHash) => LineTexts.TryGetValue(lineHash, out (uint Box, string Text) line) ? line.Text : null;
 
@@ -256,6 +274,7 @@ public static class Fable3HudRegistry
 		Texts.Clear();
 		Images.Clear();
 		LineTexts.Clear();
+		BoxLineLists.Clear();
 		Slides.Clear();
 		Resets.Clear();
 		PlacedNames.Clear();

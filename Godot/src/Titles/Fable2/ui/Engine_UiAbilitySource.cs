@@ -148,7 +148,7 @@ public static class Engine_UiAbilitySource
 			//
 			// The artwork each index selects is authored in the `.bgf`; the index is the whole
 			// of the guest's statement.
-			int maxLevel = Refii.Gdb.Engine_AbilityRecords.MaxLevel(record);
+			int maxLevel = Engine_AbilityRecords.MaxLevel(record);
 			bool maxed = maxLevel > 0 && level >= maxLevel;
 			int rating = maxed
 				? (type == HeavyWeapons || type == RangedWeapons ? MaxedStylesSlide : 2 * level)
@@ -164,7 +164,7 @@ public static class Engine_UiAbilitySource
 			// Expressed through the row's own `Counted` flag rather than a special case in the
 			// menu, because that flag already means exactly this.
 			bool upgradeable = !maxed &&
-				Refii.Gdb.Engine_AbilityRecords.TryCost(record, level, out int next) &&
+				Engine_AbilityRecords.TryCost(record, level, out int next) &&
 				next <= Affordable(vitals, category);
 
 			rows.Add(new Engine_UiMenuSources.Row(
@@ -178,7 +178,7 @@ public static class Engine_UiAbilitySource
 				// THE GUEST'S OWN IDENTITY for the row: the base record's ENTRY id (the name is an
 				// alias — `AbilityHeavyWeaponsBase` is 0x064A4B7E for entry 0x19F1B0CD). Nothing is
 				// dispatched on it: A buys and Y unlearns BY TYPE (the command below, AskUnlearn).
-				Id: Refii.Gdb.Engine_AbilityRecords.EntryId(record) is var entry && entry != 0
+				Id: Engine_AbilityRecords.EntryId(record) is var entry && entry != 0
 					? entry
 					: Refii.Core.Engine_GameHash.Fnv1(record),
 				Rating: rating,

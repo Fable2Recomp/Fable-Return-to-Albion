@@ -1,0 +1,23 @@
+key,value
+FIRST_PERSON_MOD_NAME,Ego-Perspektive
+FIRST_PERSON_MOD_DESCRIPTION,"Spiele Fable II aus der Ego-Perspektive: Die Kamera sitzt im Kopf des Helden, der Kopf wird ausgeblendet und der Körper bleibt sichtbar, und du gehst, kämpfst und schaust dich mit der Maus oder dem rechten Stick um. H wechselt zwischen Ego- und Third-Person-Ansicht, für jeden Spieler im geteilten Bildschirm und im Online-Koop. Vollständige Zwischensequenzen, festgelegte Aktionen und (standardmäßig) das Zielen mit Schusswaffen behalten die Kameras des Spiels."
+FIRST_PERSON_SETTING_START_ON,In der Ego-Perspektive starten
+FIRST_PERSON_SETTING_START_ON_DESCRIPTION,"Ob jeder Spieler eine Sitzung in der Ego-Perspektive beginnt. H wechselt für den, der die Taste drückt."
+FIRST_PERSON_SETTING_FOV,Sichtfeld
+FIRST_PERSON_SETTING_FOV_DESCRIPTION,In Grad. Die Ego-Ansicht des Spiels selbst nutzt 75.
+FIRST_PERSON_SETTING_EYE_HEIGHT,Augenhöhe
+FIRST_PERSON_SETTING_EYE_HEIGHT_DESCRIPTION,Meter über dem Kollisionspunkt des Kopfes.
+FIRST_PERSON_SETTING_EYE_FORWARD,Augen nach vorn
+FIRST_PERSON_SETTING_EYE_FORWARD_DESCRIPTION,"Meter vor dem Kopf, damit das Gesicht nicht die Sicht verdeckt."
+FIRST_PERSON_SETTING_PITCH_LIMIT,Blick nach oben und unten
+FIRST_PERSON_SETTING_PITCH_LIMIT_DESCRIPTION,"Wie weit du nach oben oder unten schauen kannst, in Grad."
+FIRST_PERSON_SETTING_FACE_CAMERA,Held folgt dem Blick
+FIRST_PERSON_SETTING_FACE_CAMERA_NEVER,Nie
+FIRST_PERSON_SETTING_FACE_CAMERA_STANDING,Im Stehen
+FIRST_PERSON_SETTING_FACE_CAMERA_ALWAYS,Immer
+FIRST_PERSON_SETTING_FACE_CAMERA_DESCRIPTION,"Dreht den Helden in Blickrichtung, damit Schläge und Zauber dorthin gehen."
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM,Zielen in der Third-Person-Ansicht
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM_DESCRIPTION,Zielen mit Schusswaffe oder Armbrust nutzt die Schulterkamera des Spiels.
+FIRST_PERSON_SETTING_SCENES,Ego-Perspektive in Gesprächen
+FIRST_PERSON_SETTING_SCENES_DESCRIPTION,"Bleibt in Gesprächen und interaktiven Szenen in der Ego-Perspektive, dem Sprecher zugewandt. Vollständige Zwischensequenzen behalten ihre eigene Kamera."
+FIRST_PERSON_INPUT_TOGGLE,Ego / Third-Person

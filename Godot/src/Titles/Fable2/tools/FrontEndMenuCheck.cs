@@ -665,7 +665,7 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 	/// </summary>
 	private Engine_FrontEndMenu BuildMenu()
 	{
-		Engine_FrontEndMenu menu = Engine_FrontEndMenu.BuildRoot();
+		Engine_FrontEndMenu menu = Fable2FrontEndRoot.BuildRoot();
 		ApplyAvailability(menu);
 		menu.Add(BuildCustomScreen());
 		return menu;
@@ -702,8 +702,7 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 	/// guest's spawn conditions and rebuilds the visible list.
 	/// </summary>
 	private void ApplyAvailability(Engine_FrontEndMenu menu) =>
-		menu.ApplyAvailability(
-			new Engine_UiModel.FrontEndModel(
+		Fable2FrontEndRoot.ApplyAvailability(menu, new Engine_UiModel.FrontEndModel(
 				SignedIn: _signedIn,
 				UserIndex: 0,
 				LanguageCount: _languageCount,
@@ -717,7 +716,7 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 				EnumeratedSaves: (uint)_saveCount),
 			// Limit 6, which is what `sub_82378618` stores over `dword_83319620` before the menu
 			// can dispatch — not the 150 that sits in the image.
-			new Engine_UiModel.SaveState(_signedIn, _saveCount, Engine_FrontEndMenu.DefaultSaveLimit));
+			new Engine_UiModel.SaveState(_signedIn, _saveCount, Fable2FrontEndRoot.DefaultSaveLimit));
 
 	public override void _Process(double delta)
 	{
@@ -857,7 +856,7 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 				if (_view.TakeOpenedScreen() is { } screen)
 				{
 					GD.Print($"[menu-check] the entry opens screen '{screen}'");
-					if (screen == Engine_FrontEndMenu.HeroCardScreen)
+					if (screen == Fable2FrontEndRoot.HeroCardScreen)
 					{
 						OpenCards();
 					}

@@ -565,10 +565,6 @@ struct ElementState {
 std::mutex g_mutex;
 std::vector<Headless> g_live;
 std::unordered_map<uint32_t, ElementState> g_element_keys;
-/// The stored-value watch (ChangedStoredValues): element -> the value last reported, kNotSaid before
-/// the first report.
-constexpr uint64_t kNotSaid = ~uint64_t{0};
-std::unordered_map<uint32_t, uint64_t> g_track_said;
 uint32_t g_scene_vtable = 0;
 uint32_t g_next_serial = 0;
 std::atomic<uint32_t> g_inert_record{0};
@@ -1242,10 +1238,8 @@ bool Destroy(const GamefaceTable& t, PPCContext& ctx, uint8_t* base, uint32_t ga
             return false;
         }
         g_element_keys.erase(it->root);
-        g_track_said.erase(it->root);
         for (const uint32_t element : it->elements) {
             g_element_keys.erase(element);
-            g_track_said.erase(element);
         }
         entry = std::move(*it);
         g_live.erase(it);
@@ -1461,66 +1455,6 @@ bool ElementKey(uint32_t element, uint32_t* presentation, uint32_t* serial, uint
 bool IsHeadless(uint32_t presentation) {
     std::lock_guard<std::mutex> lock(g_mutex);
     return LiveLocked(presentation) != nullptr;
-}
-
-bool AttributeBits(const uint8_t* base, uint32_t element, uint32_t id, uint32_t* bits) {
-    if (base == nullptr || bits == nullptr || !Plausible(element)) {
-        return false;
-    }
-    std::lock_guard<std::mutex> lock(g_mutex);
-    const auto key = g_element_keys.find(element);
-    if (key == g_element_keys.end() || LiveLocked(key->second.presentation) == nullptr) {
-        return false;
-    }
-    const uint32_t record = RecordOf(base, element, id);
-    if (record == 0u) {
-        return false;
-    }
-    *bits = LoadU32(base, record + 4u);
-    return true;
-}
-
-void ChangedStoredValues(const uint8_t* base, uint32_t id, std::vector<std::pair<uint32_t, uint32_t>>* out) {
-    if (base == nullptr || out == nullptr) {
-        return;
-    }
-    std::lock_guard<std::mutex> lock(g_mutex);
-    // Every element a file track drives `id` on joins the watch, ON OR OFF: a slide that switches
-    // its track off writes its own command over the value the track left (the slide enter, F3
-    // `sub_821CA668`), and that store has no writer hook either.
-    for (const Headless& entry : g_live) {
-        if (entry.track_records == 0u || !entry.table) {
-            continue;
-        }
-        const uint32_t count = static_cast<uint32_t>(entry.table->tracks.size());
-        for (uint32_t i = 0; i < count; ++i) {
-            const uint32_t at = entry.track_records + i * 16u;
-            const uint32_t element = LoadU32(base, at);
-            if (element != 0u && (LoadU32(base, at + 4u) & 0x07FFFFFFu) == id) {
-                g_track_said.try_emplace(element, kNotSaid);
-            }
-        }
-    }
-    for (auto& [element, said] : g_track_said) {
-        const uint32_t record = RecordOf(base, element, id);
-        if (record == 0u) {
-            continue;
-        }
-        const uint32_t bits = LoadU32(base, record + 4u);
-        if (said != static_cast<uint64_t>(bits)) {
-            said = bits;
-            out->emplace_back(element, bits);
-        }
-    }
-}
-
-void WatchStoredValue(uint32_t element, uint32_t bits) {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    const auto key = g_element_keys.find(element);
-    if (key == g_element_keys.end() || LiveLocked(key->second.presentation) == nullptr) {
-        return;
-    }
-    g_track_said[element] = bits;
 }
 
 int32_t FileOrdinal(uint32_t element) {

@@ -558,7 +558,7 @@ public static class ModInstaller
 				.Select(problem => problem.Message)
 				.ToList();
 
-			string title = meta.Title.Length == 0 ? name : meta.Title;
+			string title = meta.Title.Length == 0 ? name : ModText.ForMod(packagePath, meta.Title);
 			native.Sort(StringComparer.Ordinal);
 			return new ModInstallResult(name, title, meta.Version, packagePath, hard, native, missing,
 				warnings, string.Empty, replaces);

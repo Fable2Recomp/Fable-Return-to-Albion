@@ -1,0 +1,7 @@
+key,value
+SOULS_COMBAT_STAMINA_NAME,Wytrzymałość
+SOULS_COMBAT_STAMINA_DESCRIPTION,"Wytrwałość w walce. Wydłuża pasek wytrzymałości, dzięki czemu dłużej możesz zadawać ciosy, robić uniki i blokować, zanim musisz się wycofać."
+SOULS_COMBAT_MOD_NAME,Walka w stylu Souls
+SOULS_COMBAT_MOD_DESCRIPTION,"Wymagająca walka oparta na wytrzymałości w stylu Elden Ring: bohater obracający się w miejscu pod stałą kamerą orbitalną, wrogowie, którzy atakują grupą, kończą swoje kombinacje i karzą za odsłonięcie się, LT włącza i wyłącza namierzanie, ciosy, przewroty i bloki zużywają wytrzymałość, czary zużywają manę, a do Siły dołącza zdolność Wytrzymałość. Przykład Refii pełnej przebudowy rozgrywki w samym Lua, na zadeklarowanych zdarzeniach i wywołaniach API modów."
+SOULS_COMBAT_SETTING_BARS,"Paski widoczne, gdy niepełne"
+SOULS_COMBAT_SETTING_BARS_DESCRIPTION,"Zdrowie, mana i wytrzymałość pozostają na ekranie, dopóki którekolwiek z nich jest poniżej maksimum."

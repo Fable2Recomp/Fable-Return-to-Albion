@@ -346,8 +346,17 @@ public partial class Fable3WorldIcons : SubViewportContainer
 	//     +Y, sub_82195450 at 0x82B51CE8) by max(2 * the view's +0x30, 2 * |its distance from the
 	//     camera plane|) (0x82B51D78..0x82B51DB0), projected again and its y set to the viewport's
 	//     bottom (+0x48, 0x82B51DC8..0x82B51DD0);
-	//   - ON SCREEN the point is first lifted by the icon's +160 offset (0x82B51E94), whose height
-	//     sub_82B529E8 measures from the element's own bounds (stored at 0x82B51E7C);
+	//   - ON SCREEN the point is first lifted by the icon's world offset +160 (`vaddfp` 0x82B51E94).
+	//     The constructor zeroes it and sets +176 (0x82B52540 / 0x82B52548); every Update clears
+	//     +176 (0x82B51FCC). The offset is MEASURED ONCE, on an on-screen Update after the first,
+	//     while its z is still 0 (0x82B51E34..0x82B51E48): sub_82B529E8 takes the element's bounds
+	//     where it was last placed (sub_8281AA20: left, top, right, bottom, y up; the base Update
+	//     dirties them every frame, +72 = -1 at 0x8222F55C), maps the corners (left, top) and
+	//     (right, bottom) through the HUD camera to pixels and back into the world at the
+	//     point's own depth (sub_82C403E0 = project, project, unproject sub_82269260), and the
+	//     offset's z is the point's z minus the bottom corner's (`fsubs` 0x82B51E68, stored into
+	//     lane z by unk_82065370 at 0x82B51E7C). Placed at the point the frame before, the icon's
+	//     bottom edge comes to stand on the point, at the depth it was measured;
 	//   - every placement of 52/53 then goes through the edge clamp sub_82B519C8 (0x82B51DDC,
 	//     0x82B51EEC): x into [x0 + 10% + 10, x1 - 9% - 10], y into [y0 + 10% + 40, y1 - 9%] of the
 	//     viewport rect, in its 720-line pixels (0x82B51A14..0x82B51AF4).
@@ -364,12 +373,6 @@ public partial class Fable3WorldIcons : SubViewportContainer
 	/// <summary>The `HenchmanOffScreenWorldIcon` marker: art `icon_player2`, record 0x832A1DB0.</summary>
 	private const uint MarkerHenchman = 53u;
 
-	/// <summary>The icon's side in hud.bgf units: `Contents.Icon.ImageModel`, scale 0.375 of the 100-unit quad on every slide.</summary>
-	private const float MarkerSide = 37.5f;
-
-	/// <summary>The icon's height above the element's root on `Fade In`: `Contents.Icon` position.y 25.</summary>
-	private const float MarkerIconLift = 25f;
-
 	/// <summary>`Fade In` and `Fade Out` run the icon's opacity 0..100 and back over 1000 ms (hud.bgf anims 44 / 45).</summary>
 	private const float MarkerFadeSeconds = 1f;
 
@@ -381,15 +384,19 @@ public partial class Fable3WorldIcons : SubViewportContainer
 	/// <summary>Each marker icon's stated age (+68) when it was first drawn: `Fade In` runs from there.</summary>
 	private readonly Dictionary<uint, float> _markerShownAt = new();
 
+	/// <summary>Each marker icon's root as last placed, window pixels: the guest's previous SetPosition (0x82B51FC8).</summary>
+	private readonly Dictionary<uint, Vector2> _markerPlaced = new();
+
+	/// <summary>Each marker icon's measured world lift (+160's z, Godot's up), once measured.</summary>
+	private readonly Dictionary<uint, float> _markerLift = new();
+
 	private readonly Dictionary<uint, Texture2D?> _markerArt = new();
 	private readonly HashSet<uint> _markersReported = new();
 
 	/// <summary>
 	/// The markers the guest states this frame, placed by Godot's own camera as sub_82B51B58
-	/// places them (see above) and faded as their slides do. The on-screen lift is the icon's own
-	/// side on the screen, where the guest lifts the world point by the element's bounds measured
-	/// once in world units (sub_82B529E8). The fade's authored ease tangents are not reproduced;
-	/// it is linear over the authored second.
+	/// places them (see above) and faded as their slides do. The fade's authored ease tangents are
+	/// not reproduced; it is linear over the authored second.
 	/// </summary>
 	private void PlaceMarkers(Camera3D? camera, Vector2 window)
 	{
@@ -435,12 +442,32 @@ public partial class Fable3WorldIcons : SubViewportContainer
 			float alpha = sprite.Fading
 				? Mathf.Clamp(sprite.SecondsLeft / MarkerFadeSeconds, 0f, 1f)
 				: Mathf.Clamp((sprite.Age - shownAt) / MarkerFadeSeconds, 0f, 1f);
-			(Vector2 root, string where) = PlaceMarker(camera, window, sprite.Anchor, MarkerSide * unit);
-			_markers.Add((art, root - new Vector2(0f, MarkerIconLift * unit), MarkerSide * unit, alpha));
+			(Vector2 root, string where) = PlaceMarker(camera, window, sprite.Object, sprite.Anchor, unit);
+			_markers.Add((art, root - new Vector2(0f, Fable3MarkerPlacement.IconLift * unit), Fable3MarkerPlacement.Side * unit, alpha));
 			if (_markersReported.Count < 32 && _markersReported.Add(sprite.Object))
 			{
 				GD.Print($"[fable3-markers] type {sprite.Type} icon {sprite.Object:X8} entity {sprite.Entity:X8}: " +
 					$"drawn {where} at ({root.X:F0},{root.Y:F0}) of {window.X:F0}x{window.Y:F0}");
+			}
+		}
+
+		// The guest's offset lives as long as its icon; an icon hidden a while keeps it. Forgotten
+		// only once more icons were seen than any session has partners.
+		if (_markerPlaced.Count > 32)
+		{
+			var held = new HashSet<uint>();
+			foreach (HostBridge.WorldSprite sprite in _markerSprites)
+			{
+				held.Add(sprite.Object);
+			}
+
+			foreach (uint key in new List<uint>(_markerPlaced.Keys))
+			{
+				if (!held.Contains(key))
+				{
+					_markerPlaced.Remove(key);
+					_markerLift.Remove(key);
+				}
 			}
 		}
 
@@ -464,12 +491,13 @@ public partial class Fable3WorldIcons : SubViewportContainer
 
 	/// <summary>
 	/// A marker's root in window pixels (y down): the stated world point through Godot's camera,
-	/// pushed in front when behind it and dropped to the bottom edge, lifted by
-	/// <paramref name="lift"/> pixels when on screen, then held inside sub_82B519C8's margins with
+	/// pushed in front when behind it and dropped to the bottom edge, raised by its measured world
+	/// lift when on screen (<see cref="MarkerLift"/>), then held inside sub_82B519C8's margins with
 	/// its 10 / 40 pixels scaled from 720 lines to the window. The push's floor, twice the view's
-	/// +0x30, is taken as twice the camera's near distance.
+	/// +0x30, is taken as twice the camera's near distance. <paramref name="unit"/> is window
+	/// pixels per hud.bgf unit.
 	/// </summary>
-	private static (Vector2 Root, string Where) PlaceMarker(Camera3D camera, Vector2 window, Vector3 guest, float lift)
+	private (Vector2 Root, string Where) PlaceMarker(Camera3D camera, Vector2 window, uint icon, Vector3 guest, float unit)
 	{
 		Vector3 world = GameWorld.GuestToGodot(guest);
 		Vector2 pixel;
@@ -490,20 +518,40 @@ public partial class Fable3WorldIcons : SubViewportContainer
 			bool onScreen = pixel.X >= 0f && pixel.X < window.X && pixel.Y >= 0f && pixel.Y < window.Y;
 			if (onScreen)
 			{
-				pixel.Y -= lift;
+				if (!_markerLift.ContainsKey(icon) && _markerPlaced.TryGetValue(icon, out Vector2 placed) &&
+					MarkerLift(camera, world, placed, unit) is { } measured)
+				{
+					_markerLift[icon] = measured;
+				}
+
+				float lift = _markerLift.TryGetValue(icon, out float held) ? held : 0f;
+				pixel = camera.UnprojectPosition(world + new Vector3(0f, lift, 0f));
 			}
 
 			where = onScreen ? "on screen" : "off screen";
 		}
 
-		float line = window.Y / 720f;
-		float left = (window.X * 0.1f) + (10f * line);
-		float right = window.X - (window.X * 0.09f) - (10f * line);
-		float top = (window.Y * 0.1f) + (40f * line);
-		float bottom = window.Y - (window.Y * 0.09f);
-		pixel.X = Mathf.Min(Mathf.Max(pixel.X, left), right);
-		pixel.Y = Mathf.Min(Mathf.Max(pixel.Y, top), bottom);
+		pixel = Fable3MarkerPlacement.Clamp(pixel, window);
+		_markerPlaced[icon] = pixel;
 		return (pixel, where);
+	}
+
+	/// <summary>
+	/// The guest's one measurement of the on-screen lift (sub_82B51B58 0x82B51E04..0x82B51E7C over
+	/// sub_82B529E8): the world height from the icon's bottom-right corner as it was last placed
+	/// (<see cref="Fable3MarkerPlacement.LiftCorner"/>), unprojected at the point's own depth, down
+	/// to <paramref name="world"/>. Null for a lift of 0, which the guest measures again (0x82B51E3C).
+	/// </summary>
+	private static float? MarkerLift(Camera3D camera, Vector3 world, Vector2 placed, float unit)
+	{
+		float depth = -(camera.GlobalTransform.AffineInverse() * world).Z;
+		if (!(depth > 0f))
+		{
+			return null;
+		}
+
+		float lift = world.Y - camera.ProjectPosition(Fable3MarkerPlacement.LiftCorner(placed, unit), depth).Y;
+		return lift != 0f && float.IsFinite(lift) ? lift : null;
 	}
 
 	public override void _Draw()

@@ -26,6 +26,8 @@ public partial class Fable3StatedScreen : Fable3ListScreen
 
 	protected override string LogContext => $"{_root} ";
 
+	protected override bool Framed => Fable3ScreenFrames.FrameOf(_root) is not null;
+
 	protected override Fable3ScreenPage? Compose(double delta)
 	{
 		if (Fable3Elements.Generation == _elements && Fable3UiStatements.Generation == _statements &&
@@ -87,7 +89,9 @@ public partial class Fable3StatedScreen : Fable3ListScreen
 			if (path == root || path.StartsWith(prefix, System.StringComparison.Ordinal))
 			{
 				Fable3Elements.Element element = entry.Value;
-				_stated[path] = new Fable3ScreenModel.Probe(element.State, element.Hidden, element.Text, element.Time);
+				// The writers' values as their calls passed them (`@Ui.State`, `@Ui.Visible`,
+				// `@Ui.Opacity`, `@Ui.Text*`, `@Ui.Time`): no setter report has a route (Fable3Elements).
+				_stated[path] = new Fable3ScreenModel.Probe(element.State, element.Hidden, element.StatedTextValue, element.Time);
 			}
 		}
 	}

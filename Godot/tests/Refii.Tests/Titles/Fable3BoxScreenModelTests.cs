@@ -148,6 +148,81 @@ public class Fable3BoxScreenModelTests
 		AssertThat(page.Rows[0].Line).IsEqual("Personal Balance    1200");
 	}
 
+	/// <summary>
+	/// The divorce box draws the page its Show dispatched on `+172` (fields[1]): an asking page
+	/// (0 / 3) both names, the reason picker under the cursor, the assets and the children, with A
+	/// and B; a told page (1 / 4) the partner, the partner's reason and both shares, A only; a
+	/// confirmed page (2 / 5) the partner and one share. A path another page left behind is not read.
+	/// </summary>
+	[TestCase]
+	public void DivorceDrawsThePageItsShowDispatched()
+	{
+		const string fore = "DivorceMessageBox.Foreground.";
+		var stated = new Dictionary<string, Probe>
+		{
+			[fore + "Title"] = Text("Divorce"),
+			[fore + "ActionDescription"] = Text("Choose a reason"),
+			[fore + "GamerTagPics.Pic1.Tag"] = Text("Hero"),
+			[fore + "GamerTagPics.Pic2.Tag"] = Text("Spouse"),
+			[fore + "ReasonsPicker.Reasons.ReasonText"] = Text("Snoring"),
+			[fore + "ReasonReport.ReasonReportTitle"] = Text("Spouse says"),
+			[fore + "ReasonReport.ReasonText"] = Text("Chickens"),
+			[fore + "JointAssetsBreakdown.Amount1"] = Text("500"),
+			[fore + "JointAssetsBreakdown.Tag2"] = Text("Spouse's share"),
+			[fore + "JointAssetsBreakdown.Amount2"] = Text("250"),
+			[fore + "Kids"] = Text("2 children orphaned"),
+		};
+
+		Fable3ScreenPage asking = Fable3ScreenModel.Compose("DivorceMessageBox", stated, new Fable3ScreenState { Fields = new[] { 0, 3 } }, Resolve)!.Value;
+		AssertThat(asking.Rows[0].Line).IsEqual("Hero    Spouse");
+		AssertThat(asking.Rows[asking.Selected].Line).IsEqual("◀ Snoring ▶");
+		AssertThat(asking.Prompts.Count).IsEqual(2);
+		AssertThat(asking.Cursor).IsTrue();
+		AssertThat(asking.Rows[^1].Line).IsEqual("2 children orphaned");
+
+		Fable3ScreenPage told = Fable3ScreenModel.Compose("DivorceMessageBox", stated, new Fable3ScreenState { Fields = new[] { 0, 1 } }, Resolve)!.Value;
+		AssertThat(told.Rows[0].Line).IsEqual("Spouse");
+		AssertThat(told.Rows[1].Line).IsEqual("Spouse says    Chickens");
+		AssertThat(told.Rows[^1].Line).IsEqual("Spouse's share    250");
+		AssertThat(told.Selected).IsEqual(-1);
+		AssertThat(told.Prompts.Count).IsEqual(1);
+
+		Fable3ScreenPage confirmed = Fable3ScreenModel.Compose("DivorceMessageBox", stated, new Fable3ScreenState { Fields = new[] { 0, 5 } }, Resolve)!.Value;
+		AssertThat(confirmed.Rows.Count).IsEqual(2);
+		AssertThat(confirmed.Rows[1].Line).IsEqual("500");
+		AssertThat(Fable3BoxScreenModel.DivorcePageOf(4)).IsEqual(Fable3BoxScreenModel.DivorceKind.Told);
+	}
+
+	/// <summary>
+	/// Every box screen stands in its own document's frame, and the frame's slide follows the page
+	/// the screen's calls stated: the divorce page (asking 2, told 3, confirmed 4), the treasury
+	/// page, the stats page, the bed row, the join choice.
+	/// </summary>
+	[TestCase]
+	public void EachBoxScreenStandsInItsOwnDocumentsFrame()
+	{
+		foreach (string kind in new[]
+		{
+			"screen:herostatus", "screen:stats", "screen:promises", "screen:quests", "screen:schedule", "screen:join",
+			"screen:visibility", "screen:friends", "screen:chat", "screen:treasury", "screen:bed", "screen:food",
+			"screen:wedding", "screen:partners", "screen:proposal", "screen:divorce",
+		})
+		{
+			AssertThat(Fable3ScreenFrames.FrameOf(Fable3ScreenModel.RootOf(kind))).IsNotNull();
+		}
+
+		AssertThat(Fable3ScreenFrames.FrameOf("SaveMenu")).IsNull();
+		AssertThat(Fable3ScreenFrames.FrameOf("BedMenu")!.Value.Document).IsEqual("bedmenubox");
+		AssertThat(Fable3ScreenFrames.RootSlide("DivorceMessageBox", new Fable3ScreenState { Fields = new[] { 0, 3 } })).IsEqual(2);
+		AssertThat(Fable3ScreenFrames.RootSlide("DivorceMessageBox", new Fable3ScreenState { Fields = new[] { 0, 4 } })).IsEqual(3);
+		AssertThat(Fable3ScreenFrames.RootSlide("DivorceMessageBox", new Fable3ScreenState { Fields = new[] { 0, 2 } })).IsEqual(4);
+		AssertThat(Fable3ScreenFrames.RootSlide("TreasureAccounts", new Fable3ScreenState { Fields = new[] { 4 } })).IsEqual(4);
+		AssertThat(Fable3ScreenFrames.RootSlide("StatsBox", new Fable3ScreenState { StatsPage = 3 })).IsEqual(3);
+		AssertThat(Fable3ScreenFrames.RootSlide("BedMenu", new Fable3ScreenState { Fields = new[] { 1 } })).IsEqual(2);
+		AssertThat(Fable3ScreenFrames.RootSlide("OrbEmote", new Fable3ScreenState { Fields = new[] { 18, 3 } })).IsEqual(3);
+		AssertThat(Fable3ScreenFrames.RootSlide("QuestSummary", Fable3ScreenState.Empty)).IsEqual(1);
+	}
+
 	[TestCase]
 	public void SaveMenuRowAndGhostingAreItsOpensStatements()
 	{

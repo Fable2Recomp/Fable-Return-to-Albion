@@ -1,0 +1,15 @@
+key,value
+QUICKSAVE_MOD_NAME,Gyorsmentés
+QUICKSAVE_MOD_DESCRIPTION,"Gyorsmentés és gyorsbetöltés Bethesda-stílusban: az F8 elmenti a játékot, és gyorsmentést tart a mentésed mellett, az F9 pedig a játék elhagyása nélkül tölti vissza ezt a gyorsmentést. A gyorsbetöltés a saját mentésedet érintetlenül hagyja."
+QUICKSAVE_INPUT_QUICKSAVE,Gyorsmentés
+QUICKSAVE_INPUT_QUICKLOAD,Gyorsbetöltés
+QUICKSAVE_SAVE_ALONE_ONLY,A gyorsmentés csak egyjátékos játékban működik.
+QUICKSAVE_LOAD_ALONE_ONLY,A gyorsbetöltés csak egyjátékos játékban működik.
+QUICKSAVE_NONE_YET,Még nincs gyorsmentés. Készíts egyet gyorsmentéssel.
+QUICKSAVE_CANT_LOAD_NOW,Most nem lehet gyorsbetölteni.
+QUICKSAVE_LOAD_FAILED,A gyorsmentést nem sikerült betölteni.
+QUICKSAVE_CANT_SAVE_NOW,Most nem lehet menteni.
+QUICKSAVE_GAME_NOT_SAVED,A játék nem mentett. Gyorsmentés nem készült.
+QUICKSAVE_SAVED,Gyorsmentés kész.
+QUICKSAVE_NOT_KEPT,"A játék elmentve, de a gyorsmentést nem sikerült megtartani."
+QUICKSAVE_LOADED,Betöltve a %1-kor készült gyorsmentés.

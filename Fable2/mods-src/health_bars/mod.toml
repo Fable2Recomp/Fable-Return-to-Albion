@@ -1,4 +1,4 @@
-name = "Health Bars"
+name = "{HEALTH_BARS_MOD_NAME}"
 version = "0.2.0"
 author = "ammuica"
-description = "A health bar over every enemy near you, with a pale trail that shows each hit."
+description = "{HEALTH_BARS_MOD_DESCRIPTION}"

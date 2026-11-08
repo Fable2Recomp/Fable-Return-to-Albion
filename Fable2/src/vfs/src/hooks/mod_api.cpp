@@ -681,6 +681,13 @@ extern "C" uint32_t refii_mod_notice(int32_t player, const char* title, const ch
   return id;
 }
 
+extern "C" int32_t refii_mod_text(const char* text, char* out, uint32_t capacity) {
+  if (text == nullptr || out == nullptr || capacity == 0u) {
+    return -1;
+  }
+  return refii_bridge_mod_text(text, std::strlen(text), out, capacity);
+}
+
 extern "C" uint32_t refii_mod_menu_box(int32_t player, const char* title, const char* text, const char* const* options,
                                        int32_t count, int32_t cancelable) {
   constexpr int32_t kMaxOptions = 16;  // Engine_UiModRequest.MaxMenuOptions

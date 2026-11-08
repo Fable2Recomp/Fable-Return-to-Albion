@@ -1,0 +1,12 @@
+key,value
+HEALTH_BARS_MOD_NAME,Paski zdrowia
+HEALTH_BARS_MOD_DESCRIPTION,"Pasek zdrowia nad każdym wrogiem w pobliżu, z bladym śladem pokazującym każde trafienie."
+HEALTH_BARS_SETTING_SHOW,Pokaż paski zdrowia wrogów
+HEALTH_BARS_SETTING_RANGE,Zasięg
+HEALTH_BARS_SETTING_RANGE_DESCRIPTION,"Do jakiej odległości, w metrach, wróg nadal ma pasek."
+HEALTH_BARS_SETTING_ONLY_HURT,Tylko ranni wrogowie
+HEALTH_BARS_SETTING_ONLY_HURT_DESCRIPTION,"Pomija wrogów, którzy nie zostali jeszcze trafieni."
+HEALTH_BARS_SETTING_NUMBERS,Pokaż liczby
+HEALTH_BARS_SETTING_NUMBERS_DESCRIPTION,Bieżące i maksymalne zdrowie jako liczby pod paskiem.
+HEALTH_BARS_SETTING_SIZE,Rozmiar
+HEALTH_BARS_SETTING_SIZE_DESCRIPTION,Jak duże są rysowane paski.

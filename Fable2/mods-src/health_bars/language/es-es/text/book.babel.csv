@@ -1,0 +1,12 @@
+key,value
+HEALTH_BARS_MOD_NAME,Barras de salud
+HEALTH_BARS_MOD_DESCRIPTION,"Una barra de salud sobre cada enemigo cercano, con un rastro pálido que muestra cada golpe."
+HEALTH_BARS_SETTING_SHOW,Mostrar barras de salud enemigas
+HEALTH_BARS_SETTING_RANGE,Alcance
+HEALTH_BARS_SETTING_RANGE_DESCRIPTION,"Hasta qué distancia, en metros, un enemigo sigue teniendo barra."
+HEALTH_BARS_SETTING_ONLY_HURT,Solo enemigos heridos
+HEALTH_BARS_SETTING_ONLY_HURT_DESCRIPTION,Omite a los enemigos que aún no han recibido ningún golpe.
+HEALTH_BARS_SETTING_NUMBERS,Mostrar números
+HEALTH_BARS_SETTING_NUMBERS_DESCRIPTION,La salud actual y máxima en números bajo la barra.
+HEALTH_BARS_SETTING_SIZE,Tamaño
+HEALTH_BARS_SETTING_SIZE_DESCRIPTION,El tamaño con el que se dibujan las barras.

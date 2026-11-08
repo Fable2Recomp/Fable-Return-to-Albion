@@ -1,0 +1,51 @@
+key,value
+QUICKSLOTS_MENU,Slot rapidi
+QUICKSLOTS_ASSIGN,Assegna slot rapido
+QUICKSLOTS_ASSIGN_TITLE,Assegna a uno slot rapido
+QUICKSLOTS_CHOOSE_TITLE,Scegli il contenuto dello slot
+QUICKSLOTS_SLOT_1,Croce su
+QUICKSLOTS_SLOT_2,Croce giù
+QUICKSLOTS_SLOT_3,Croce sinistra
+QUICKSLOTS_SLOT_4,Croce destra
+QUICKSLOTS_SLOT_5,LT + su
+QUICKSLOTS_SLOT_6,LT + giù
+QUICKSLOTS_SLOT_7,LT + sinistra
+QUICKSLOTS_SLOT_8,LT + destra
+QUICKSLOTS_SLOT_9,RT + su
+QUICKSLOTS_SLOT_10,RT + giù
+QUICKSLOTS_SLOT_11,RT + sinistra
+QUICKSLOTS_SLOT_12,RT + destra
+QUICKSLOTS_AUTOMATIC,Automatico (del gioco)
+QUICKSLOTS_EMPTY,Vuoto
+QUICKSLOTS_CLEAR,Svuota questo slot
+QUICKSLOTS_REMOVE,Rimuovi da tutti gli slot
+QUICKSLOTS_ITEM,Oggetto
+QUICKSLOTS_WEAPON,Arma
+QUICKSLOTS_EXPRESSION,Espressione
+QUICKSLOTS_SPELL,Incantesimo
+QUICKSLOTS_ITEMS,Oggetti e armi
+QUICKSLOTS_EXPRESSIONS,Espressioni
+QUICKSLOTS_SPELLS,Incantesimi
+QUICKSLOTS_MOD_NAME,Slot rapidi
+QUICKSLOTS_MOD_DESCRIPTION,"Dodici slot rapidi assegnabili sulla croce direzionale: le quattro direzioni, LT + una direzione e RT + una direzione, ognuno con un oggetto da usare, un'arma da estrarre, un'espressione da eseguire o un incantesimo da preparare. Assegnali dall'inventario, dai libri delle espressioni e delle abilità o dalla ruota delle espressioni; la croce sull'HUD mostra cosa contiene ogni slot. Una direzione senza assegnazione mantiene la sua funzione nel gioco."
+QUICKSLOTS_SETTING_LT_BANK,Gruppo LT + croce
+QUICKSLOTS_SETTING_LT_BANK_DESCRIPTION,"Altri quattro slot, raggiungibili tenendo premuto il grilletto sinistro."
+QUICKSLOTS_SETTING_RT_BANK,Gruppo RT + croce
+QUICKSLOTS_SETTING_RT_BANK_DESCRIPTION,"Altri quattro slot, raggiungibili tenendo premuto il grilletto destro. Finché uno di essi è assegnato, il grilletto destro non apre più il menu degli incantesimi."
+QUICKSLOTS_SETTING_HUD_ICONS,Icone degli slot sulla croce
+QUICKSLOTS_SETTING_HUD_ICONS_DESCRIPTION,"Mostra cosa contiene ogni slot sulla croce dell'HUD e, mentre tieni premuto un grilletto, gli slot del gruppo corrispondente."
+QUICKSLOTS_INPUT_UP,Slot rapido su
+QUICKSLOTS_INPUT_DOWN,Slot rapido giù
+QUICKSLOTS_INPUT_LEFT,Slot rapido sinistra
+QUICKSLOTS_INPUT_RIGHT,Slot rapido destra
+QUICKSLOTS_INPUT_LT_UP,Slot rapido LT su
+QUICKSLOTS_INPUT_LT_DOWN,Slot rapido LT giù
+QUICKSLOTS_INPUT_LT_LEFT,Slot rapido LT sinistra
+QUICKSLOTS_INPUT_LT_RIGHT,Slot rapido LT destra
+QUICKSLOTS_INPUT_RT_UP,Slot rapido RT su
+QUICKSLOTS_INPUT_RT_DOWN,Slot rapido RT giù
+QUICKSLOTS_INPUT_RT_LEFT,Slot rapido RT sinistra
+QUICKSLOTS_INPUT_RT_RIGHT,Slot rapido RT destra
+QUICKSLOTS_INPUT_LT,Gruppo LT (tieni premuto)
+QUICKSLOTS_INPUT_RT,Gruppo RT (tieni premuto)
+QUICKSLOTS_INPUT_ASSIGN,Assegna l'espressione evidenziata

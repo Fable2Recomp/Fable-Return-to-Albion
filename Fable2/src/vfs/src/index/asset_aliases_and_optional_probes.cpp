@@ -1,5 +1,7 @@
 #include "vfs_hooks_private.h"
 
+#include "core/installed_cultures.h"
+
 #include <rex/runtime.h>
 
 #include <filesystem>
@@ -34,7 +36,10 @@ bool IsOptionalLocalizedDirectoryProbe(std::string_view normalized) {
   const std::string_view locale = after_language.substr(0, locale_separator);
   const std::string_view locale_tail =
       after_language.substr(locale_separator + 1);
-  if (locale == "en-uk") {
+  // The fallback culture's roots are expected whenever the install ships it: the guest remaps
+  // every language file to it (`sub_823728E0`, 0x82372AC4). A disc without it (the Spanish GOTY
+  // ships es-es alone) makes those probes as optional as any other culture's.
+  if (locale == kFallbackCulture && IsInstalledLanguageCulture(locale)) {
     return false;
   }
   return locale_tail == "fonts" ||

@@ -1,0 +1,7 @@
+key,value
+SOULS_COMBAT_STAMINA_NAME,원기
+SOULS_COMBAT_STAMINA_DESCRIPTION,"전투를 위한 지구력. 원기 게이지가 늘어나 물러서기 전까지 더 오래 공격하고, 구르고, 방어할 수 있습니다."
+SOULS_COMBAT_MOD_NAME,Souls 전투
+SOULS_COMBAT_MOD_DESCRIPTION,"엘든 링 스타일의 원기 중심 전투: 고정된 궤도 카메라 아래에서 제자리 회전하는 영웅, 떼로 덤비고 콤보를 끝까지 이어 가며 빈틈을 응징하는 적, LT로 록온 전환, 공격과 구르기와 방어는 원기를, 마법은 마나를 소모하며, 힘에 원기 능력이 더해집니다. 모드 API의 공개 이벤트와 호출만으로 Lua에서 게임플레이 전체를 개편한 Refii의 예제입니다."
+SOULS_COMBAT_SETTING_BARS,가득 차지 않으면 바 표시
+SOULS_COMBAT_SETTING_BARS_DESCRIPTION,"체력, 마나, 원기 중 하나라도 최대치보다 낮으면 화면에 계속 표시됩니다."

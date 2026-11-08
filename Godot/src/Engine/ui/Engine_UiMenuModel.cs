@@ -708,4 +708,69 @@ public sealed class Engine_UiMenuModel
 		int bar = all.IndexOf(" | ", System.StringComparison.Ordinal);
 		return bar < 0 ? string.Empty : all[(bar + 3)..];
 	}
+
+	/// <summary>
+	/// Takes each row's label from the guest's own statements, BY NAME. True when anything changed.
+	///
+	/// The Babel tags all resolve, but only to the bare noun: the guest composes the live
+	/// decoration before it spawns the row — "Abilities" becomes
+	/// `Abilities &lt;s4&gt;(2)&lt;/s4&gt;` when there are points to spend, Items and Clothing
+	/// pick up `&lt;exclamation.img&gt;` when something inside is new — and `SpawnButton`'s
+	/// String2 carries it (`sub_8298DF98`, 0x8298e510..0x8298e5c8), recorded with the row's name.
+	/// Host-only and mod rows are not the guest's and are never joined.
+	/// </summary>
+	/// <param name="clearUnnamed">
+	/// Whether a row the stated rows do not name loses a label it took earlier — true for the pause
+	/// list, built to match the guest's one for one; false for a template list that deliberately
+	/// differs and whose unmatched rows carry their own tags.
+	/// </param>
+	public static bool ApplyStatedLabels(
+		Engine_FrontEndMenu menu,
+		System.Collections.Generic.IReadOnlyList<Engine_UiMenuModel.Row> stated,
+		bool clearUnnamed = true)
+	{
+		// An empty capture is no news, not no labels: a pause list torn down for a tab change and
+		// not yet repopulated reads the same as "the guest offers no rows".
+		if (stated.Count == 0)
+		{
+			return false;
+		}
+
+		var byName = new System.Collections.Generic.Dictionary<string, string>(
+			System.StringComparer.Ordinal);
+		foreach (Engine_UiMenuModel.Row row in stated)
+		{
+			if (row.Name.Length != 0 && row.IsRoot && row.Label.Length != 0)
+			{
+				byName[row.Name] = row.Label;
+			}
+		}
+
+		bool changed = false;
+		foreach (Engine_UiExpandableMenu.Item item in menu.Roots)
+		{
+			if (!item.Available || item.HostOnly || item.FromMod)
+			{
+				continue;
+			}
+
+			if (byName.TryGetValue(item.Name, out string? label))
+			{
+				if (!string.Equals(item.StatedLabel, label, System.StringComparison.Ordinal))
+				{
+					item.StatedLabel = label;
+					changed = true;
+				}
+			}
+			else if (clearUnnamed && item.StatedLabel is not null)
+			{
+				// The guest's population is up and does not carry this row: its label belongs to a
+				// list that no longer exists.
+				item.StatedLabel = null;
+				changed = true;
+			}
+		}
+
+		return changed;
+	}
 }

@@ -13872,46 +13872,23 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPresentations(uint32_t* words, uint32
 }
 
 // ---------------------------------------------------------------------------
-// The Gameface Lua state, read directly.
+// Lua 5.1 values, read directly out of guest memory (read-only; no guest code runs).
 //
-// Every in-game list is `g_Menu`, a plain Lua table in the presentation's own VM, stating the
-// visible order, the fold, the depth, the cursor and each row's commit identity. What follows
-// is a READ-ONLY walk: no guest code runs, nothing is pushed on a Lua stack, and there is no
-// thread constraint.
-//
-// There are two Lua VMs in this image and they DO NOT share a layout. Every offset below is
-// from the GAMEFACE one, taken out of its own copy of the interpreter:
-//
-//   index2adr_gameface (0x82BCBB98)  LUA_GLOBALSINDEX -> `a1 + 17` words, i.e. L + 68.
-//                                    The game VM's copy (0x82A240E0) returns `a1 + 18` — 72.
-//                                    Reading the game VM's offset here lands on `env`.
-//   luaH_getnum        (0x821E18D8)  array at t+12, sizearray at t+28, node at t+16,
-//                                    lsizenode a BYTE at t+7, Node stride 20.
-//                                    The game VM's luaH_getstr (0x82228470) reads a full
-//                                    `int sizenode` at t+8 and node at t+20 — LuaPlus.
-//   luaS_newlstr       (0x8227BBB8)  TString len at +12, chars at +16.
-//   lua_getfield       (0x821E1848)  `L->top += 8` — TValue is EIGHT bytes, so lua_Number is
-//                                    a float, not a double.
-//
-// The state itself hangs off the presentation: `sub_82426470` fetches it through vtable+20
-// (`sub_82915D88`, `return *(pres + 28)`) and `sub_82372500` then reads `*(that + 4)` as the
-// `lua_State*`. One state per CPresentation, so the caller names the presentation.
+//   lua_getfield (0x821E1848, Gameface copy)  `L->top += 8`: a TValue is EIGHT bytes, value
+//                                             word then tag word, so lua_Number is a float.
+//   luaS_newlstr (0x8227BBB8)                 TString length at +12, characters at +16.
 // ---------------------------------------------------------------------------
 //
 // `extern "C++"` because this file's exports live inside one big `extern "C"` block and these
 // helpers return `LuaValue` and `std::string`, which warn under C linkage.
 extern "C++" {
 namespace {
-/// Vanilla Lua 5.1 type tags — the one thing both VMs agree on.
+/// Vanilla Lua 5.1 type tags.
 constexpr uint32_t kLuaTNil = 0u;
 
-constexpr uint32_t kLuaTBoolean = 1u;
 constexpr uint32_t kLuaTNumber = 3u;
 constexpr uint32_t kLuaTString = 4u;
 constexpr uint32_t kLuaTTable = 5u;
-
-/// `L + 68` — see index2adr_gameface above. NOT 72.
-constexpr uint32_t kLuaGlobalsOffset = 68u;
 
 /// A TValue, split. `value` is the GC pointer, the boolean, or the float's bit pattern.
 struct LuaValue {
@@ -13934,15 +13911,6 @@ float LuaNumber(const LuaValue& value) {
     return number;
 }
 
-/// Lua's own truth: only nil and false are false. A zero NUMBER is true.
-bool LuaTruthy(const LuaValue& value) {
-    return !(value.tt == kLuaTNil || (value.tt == kLuaTBoolean && value.value == 0u));
-}
-
-int32_t LuaInt(const LuaValue& value) {
-    return value.tt == kLuaTNumber ? static_cast<int32_t>(LuaNumber(value)) : 0;
-}
-
 std::string LuaText(const uint8_t* base, const LuaValue& value) {
     if (value.tt != kLuaTString || !LuaPlausible(value.value)) {
         return std::string();
@@ -13957,208 +13925,6 @@ std::string LuaText(const uint8_t* base, const LuaValue& value) {
         out.push_back(static_cast<char>(GuestByteAt(base, value.value + 16u + i)));
     }
     return out;
-}
-
-/// How many Node slots the hash part has. A table with no hash part points at the shared dummy
-/// node with `lsizenode` 0, which reads back as one nil-keyed slot.
-uint32_t LuaNodeCount(const uint8_t* base, uint32_t table) {
-    const uint8_t lsizenode = GuestByteAt(base, table + 7u);
-    return lsizenode > 16u ? 0u : (1u << lsizenode);
-}
-
-/// Reads several string-keyed fields in ONE pass over the hash part.
-///
-/// By scan, not by hash: finding a key by its main position needs the INTERNED TString for
-/// that key, so correctness would depend on matching the guest's hash function. These tables
-/// are menu items — thirty-two slots — and one pass fills every field.
-void LuaFields(const uint8_t* base, uint32_t table, const char* const* keys, LuaValue* out,
-               size_t count) {
-    for (size_t k = 0; k < count; ++k) {
-        out[k] = LuaValue{};
-    }
-    if (!LuaPlausible(table)) {
-        return;
-    }
-
-    const uint32_t node = GuestWordAt(base, table + 16u);
-    const uint32_t nodes = LuaNodeCount(base, table);
-    if (!LuaPlausible(node)) {
-        return;
-    }
-
-    for (uint32_t i = 0; i < nodes; ++i) {
-        const uint32_t slot = node + i * 20u;
-        if (GuestWordAt(base, slot + 12u) != kLuaTString) {
-            continue;
-        }
-        const uint32_t key = GuestWordAt(base, slot + 8u);
-        if (!LuaPlausible(key)) {
-            continue;
-        }
-        const uint32_t length = GuestWordAt(base, key + 12u);
-        if (length == 0u || length > 64u) {
-            continue;
-        }
-
-        for (size_t k = 0; k < count; ++k) {
-            if (out[k].tt != kLuaTNil || std::strlen(keys[k]) != length) {
-                continue;
-            }
-            bool same = true;
-            for (uint32_t c = 0; c < length && same; ++c) {
-                same = GuestByteAt(base, key + 16u + c) == static_cast<uint8_t>(keys[k][c]);
-            }
-            if (same) {
-                out[k] = LuaRead(base, slot);
-                break;
-            }
-        }
-    }
-}
-
-LuaValue LuaField(const uint8_t* base, uint32_t table, const char* key) {
-    LuaValue out;
-    const char* keys[1] = {key};
-    LuaFields(base, table, keys, &out, 1);
-    return out;
-}
-
-/// `t[i]` for a positive integer key — the array part first, then the hash part.
-///
-/// Both parts: which one holds an index is a rehash decision, and a table built one element at
-/// a time can leave its tail in the hash part.
-LuaValue LuaIndex(const uint8_t* base, uint32_t table, int32_t index) {
-    if (!LuaPlausible(table) || index < 1) {
-        return LuaValue{};
-    }
-
-    const uint32_t sizearray = GuestWordAt(base, table + 28u);
-    if (static_cast<uint32_t>(index) <= sizearray) {
-        const uint32_t array = GuestWordAt(base, table + 12u);
-        if (LuaPlausible(array)) {
-            return LuaRead(base, array + (static_cast<uint32_t>(index) - 1u) * 8u);
-        }
-    }
-
-    const uint32_t node = GuestWordAt(base, table + 16u);
-    const uint32_t nodes = LuaNodeCount(base, table);
-    if (!LuaPlausible(node)) {
-        return LuaValue{};
-    }
-
-    for (uint32_t i = 0; i < nodes; ++i) {
-        const uint32_t slot = node + i * 20u;
-        if (GuestWordAt(base, slot + 12u) != kLuaTNumber) {
-            continue;
-        }
-        LuaValue key;
-        key.tt = kLuaTNumber;
-        key.value = GuestWordAt(base, slot + 8u);
-        if (LuaNumber(key) == static_cast<float>(index)) {
-            return LuaRead(base, slot);
-        }
-    }
-
-    return LuaValue{};
-}
-
-/// The presentation's own globals table, or 0.
-uint32_t LuaGlobals(const uint8_t* base, uint32_t presentation) {
-    if (!LuaPlausible(presentation)) {
-        return 0u;
-    }
-    const uint32_t engine = GuestWordAt(base, presentation + 28u);
-    if (!LuaPlausible(engine)) {
-        return 0u;
-    }
-    const uint32_t state = GuestWordAt(base, engine + 4u);
-    if (!LuaPlausible(state)) {
-        return 0u;
-    }
-    const LuaValue globals = LuaRead(base, state + kLuaGlobalsOffset);
-    return globals.tt == kLuaTTable && LuaPlausible(globals.value) ? globals.value : 0u;
-}
-
-/// `g_Menu:WaitForInput()`, evaluated host-side from the same two globals it reads.
-///
-/// It is the FIRST line of `SelectMenuItem` (`expandablemenuinput.dis main.5 pc0..4`) and
-/// returns before the button event and the fold, so while it is true every A press the host
-/// posts is swallowed. The rule, from `expandablemenuinput.dis main.4`:
-///
-///     for _, a in ipairs(g_AnimationList) do
-///       if not (0 < a.time_delay and not (a.start_time < 0)) then
-///         if 0 < a.start_time and not (a.time_delay < the_time - a.start_time) then
-///           return true          -- this one is still inside its window
-///         end
-///       end
-///     end
-///     return false
-///
-/// `the_time` has no writer — a shipped bug: the sequences `the_time`, `g_AnimationList` and
-/// `start_time` do not occur in `default.xex`, so `the_time - start_time` is a nil arithmetic
-/// error the enclosing `luaD_pcall` catches, aborting `SelectMenuItem`. It goes unnoticed
-/// because `ProcessAnimationList` sweeps the list empty every frame.
-///
-/// `now` is therefore `getElapsedTime()` = `sub_8219F200`: `*(pres + 852) * 0.001`, the
-/// presentation clock `ProcessAnimationList` writes `start_time` from. The blocking entry's
-/// `start_time`, `time_delay` and the clock are written out, so a frozen clock is visible.
-bool LuaMenuWaitingForInput(const uint8_t* base, uint32_t presentation, uint32_t globals,
-                            uint32_t* out_count, float* out_now, float* out_start,
-                            float* out_delay) {
-    if (out_count != nullptr) *out_count = 0;
-    if (out_now != nullptr) *out_now = 0.0f;
-    if (out_start != nullptr) *out_start = 0.0f;
-    if (out_delay != nullptr) *out_delay = 0.0f;
-
-    const LuaValue list = LuaField(base, globals, "g_AnimationList");
-    if (list.tt != kLuaTTable || !LuaPlausible(list.value)) {
-        return false;
-    }
-
-    // `getElapsedTime()` — NOT the dead `the_time` global. See the note above.
-    const float the_time =
-        static_cast<float>(GuestWordAt(base, presentation + 852u)) * 0.001f;
-    if (out_now != nullptr) *out_now = the_time;
-
-    constexpr uint32_t kMaxAnimations = 512u;
-    uint32_t count = 0;
-    bool waiting = false;
-
-    for (uint32_t i = 1; i <= kMaxAnimations; ++i) {
-        const LuaValue entry = LuaIndex(base, list.value, static_cast<int32_t>(i));
-        if (entry.tt != kLuaTTable || !LuaPlausible(entry.value)) {
-            break;  // ipairs stops at the first hole
-        }
-        ++count;
-
-        if (waiting) {
-            continue;  // keep counting, but the answer is settled
-        }
-
-        const char* const kKeys[] = {"time_delay", "start_time"};
-        LuaValue fields[2];
-        LuaFields(base, entry.value, kKeys, fields, 2);
-
-        const float delay = fields[0].tt == kLuaTNumber ? LuaNumber(fields[0]) : 0.0f;
-        const float start = fields[1].tt == kLuaTNumber ? LuaNumber(fields[1]) : 0.0f;
-
-        if (delay > 0.0f && start >= 0.0f) {
-            continue;
-        }
-        if (!(start > 0.0f)) {
-            continue;
-        }
-        if (delay < the_time - start) {
-            continue;
-        }
-
-        waiting = true;
-        if (out_start != nullptr) *out_start = start;
-        if (out_delay != nullptr) *out_delay = delay;
-    }
-
-    if (out_count != nullptr) *out_count = count;
-    return waiting;
 }
 }  // namespace
 }  // extern "C++"
@@ -15189,10 +14955,8 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetInGameScreen(uint32_t* out) {
 /// Reads named attributes off every element of one presentation.
 ///
 /// <paramref name="requested_presentation"/> is a `CPresentation*` from
-/// <see cref="RefiiHostGetPresentations"/>, or 0 for the front end's active screen. Same
-/// parameterisation as RefiiHostGetUiElements and for the same reason: the front-end chain
-/// this used to hardcode cannot reach the HUD, and `opacity` is exactly the attribute the
-/// in-game UI needs — the game hides the whole HUD by writing it to 0 on one group.
+/// <see cref="RefiiHostGetPresentations"/>, or 0 for the front end's active screen; the
+/// front-end chain alone cannot reach the HUD, whose whole-HUD hide is `opacity` 0 on one group.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiAttributes(uint32_t requested_presentation,
                                   const uint32_t* ids, uint32_t id_count,
                                   uint32_t* out, uint32_t out_capacity) {

@@ -61,7 +61,7 @@ public static class AndroidModPicker
             {
                 if (!F2ModPackage.TryReadMetadata(partial, out ModMetadata meta, out string error))
                     return ModInstallResult.Failed("The picked file is not a mod package: " + error);
-                name = NameFromTitle(meta.Title);
+                name = NameFromTitle(ModText.ForMod(partial, meta.Title));
             }
             string final = Path.Combine(downloads, name + ModWorkspace.PackageExtension);
             File.Move(partial, final, overwrite: true);

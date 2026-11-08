@@ -49,6 +49,39 @@ public class SupportedGameTests
     }
 
     [TestCase]
+    public void TestSpanishDiscIsVersion29WithTitleUpdate08T()
+    {
+        SupportedGame.Pressing spain = SupportedGame.Spain;
+        AssertThat(spain.ShortMediaIdText).IsEqual("772E8EE8");
+        AssertThat(XexIdentity.FormatVersion(spain.BaseVersion)).IsEqual("0.0.0.29");
+        AssertThat(XexIdentity.FormatVersion(spain.UpdatedVersion)).IsEqual("0.0.1.29");
+        AssertThat(spain.TitleUpdateName).IsEqual("TU_16L61VH_000003K000000.000000000008T");
+
+        var patch = new XexIdentity
+        {
+            IsPatch = true,
+            TitleId = SupportedGame.TitleId,
+            MediaId = (byte[])spain.MediaId.Clone(),
+            SourceVersion = spain.BaseVersion,
+            Version = spain.UpdatedVersion,
+        };
+        bool accepted = SupportedGame.IsTitleUpdate(patch, spain, out string error);
+        AssertThat(error).IsEmpty();
+        AssertThat(accepted).IsTrue();
+
+        // The USA/Europe update names another media id: a wrong pick for Spain.
+        var usa = new XexIdentity
+        {
+            IsPatch = true,
+            TitleId = SupportedGame.TitleId,
+            MediaId = (byte[])SupportedGame.UsaEurope.MediaId.Clone(),
+            SourceVersion = SupportedGame.UsaEurope.BaseVersion,
+            Version = SupportedGame.UsaEurope.UpdatedVersion,
+        };
+        AssertThat(SupportedGame.IsTitleUpdate(usa, spain, out _)).IsFalse();
+    }
+
+    [TestCase]
     public void TestDiscOfAnotherPressingIsReportedAsWrongPick()
     {
         XexIdentity french = Executable(SupportedGame.France, SupportedGame.France.BaseVersion);

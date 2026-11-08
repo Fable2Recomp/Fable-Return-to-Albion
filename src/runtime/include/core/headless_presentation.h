@@ -169,20 +169,6 @@ bool ElementKey(uint32_t element, uint32_t* presentation, uint32_t* serial, uint
 /// Whether `presentation` is a live headless one.
 bool IsHeadless(uint32_t presentation);
 
-/// A headless element's stored value of attribute `id` (the record's value word), or false: not
-/// headless, or the element carries no such attribute.
-bool AttributeBits(const uint8_t* base, uint32_t element, uint32_t id, uint32_t* bits);
-
-/// THE STORED VALUES' CHANGES: every watched element whose stored value of attribute `id` changed
-/// since the last call, with the value now — read after the guest's own pass (Mgr:Animations vf +4).
-/// Watched: every element a file track drives `id` on (on or off — a slide's command overwrites
-/// what its track left), and every element stated through WatchStoredValue.
-void ChangedStoredValues(const uint8_t* base, uint32_t id, std::vector<std::pair<uint32_t, uint32_t>>* out);
-
-/// Adds a headless element to the stored-value watch at the value just reported for it: a writer
-/// hook stated it, and a later slide command or track over it is reported by ChangedStoredValues.
-void WatchStoredValue(uint32_t element, uint32_t bits);
-
 /// A headless element's ordinal in its presentation's file (the .bgf element table's index, the
 /// root 0), or -1: not headless, or made for a name the file has not got there.
 int32_t FileOrdinal(uint32_t element);

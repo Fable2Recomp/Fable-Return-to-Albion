@@ -161,6 +161,9 @@ public partial class Engine_GameAssets : Node
 			// mods included, because there is only one of them.
 			overlays = Refii.Mods.ModIndex.ResolveOverlays(
 				ModsRoot, out Refii.Mods.ModLoadOrder order);
+			// The install's cultures first: the mount aliases the locale-less language spellings to
+			// the culture in force, and a mod's en-uk text is retargeted to it.
+			Refii.Text.Engine_GameCulture.UseInstall(GameDirectory);
 			mounted = BnkFileSystem.Mount(
 				GameDirectory,
 				overlays: Refii.Mods.ModIndex.ToMountOverlays(overlays),
@@ -578,6 +581,9 @@ public partial class Engine_GameAssets : Node
 		// The guest reads through this same mount.
 		Refii.Host.HostBridge.SetAssetReader(ReadAllBytes, FileSize);
 		Refii.Host.HostBridge.SetAssetOverrideQuery(FileIsOverride);
+
+		// A mod's text for Lua's Refii.text and native refii_mod_text: the one lookup Godot's own surfaces use.
+		Refii.Host.HostBridge.SetModTextLookup(text => Refii.Mods.ModText.Text(text));
 
 		// Guest texture requests carry a 32-bit hash and no path; the index is a view of this mount.
 		Refii.Bnk.AssetHashIndex.Build(EnumerateAllFiles());

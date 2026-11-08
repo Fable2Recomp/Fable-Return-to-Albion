@@ -70,7 +70,12 @@ public static partial class Engine_UiKeyGlyphs
 	}
 
 	/// <summary>A texture that is a button's art: the button, and how the texture layers.</summary>
-	public readonly record struct GlyphArt(string Button, GlyphLayer Layer);
+	/// <param name="Backed">
+	/// True when the art is a flattened prompt whose silhouette carries the button's shadow
+	/// (Fable 3's <c>complete</c> textures): a glyph drawn in its place sits on that silhouette in
+	/// black, as the shipped orb sits on its shadow layer. False draws the glyph alone.
+	/// </param>
+	public readonly record struct GlyphArt(string Button, GlyphLayer Layer, bool Backed = false);
 
 	private sealed class Proxy
 	{
@@ -79,6 +84,9 @@ public static partial class Engine_UiKeyGlyphs
 		public required string Button;
 
 		public GlyphLayer Layer;
+
+		/// <summary><see cref="GlyphArt.Backed"/>.</summary>
+		public bool Backed;
 
 		/// <summary>A stick or D-pad prompt's direction (`LeftUp`), else none.</summary>
 		public Direction Arrow;
@@ -326,6 +334,7 @@ public static partial class Engine_UiKeyGlyphs
 			Original = original,
 			Button = button,
 			Layer = art.Layer,
+			Backed = art.Backed,
 			Arrow = ArrowFor(key),
 		};
 		_proxies[key] = proxy;
@@ -518,6 +527,49 @@ public static partial class Engine_UiKeyGlyphs
 		return new Rect2I(left, top, side, side);
 	}
 
+	/// <summary>
+	/// Lays black beneath what the cell holds, at the shipped art's own alpha (destination-over):
+	/// the shadow a flattened prompt carries. Fable 3's layered prompts draw it as their own
+	/// element — <c>Icon.Container.A_shadow</c>, behind <c>A_Orb</c> (z 0.4 against 0.3, same
+	/// position and scale 0.32 in <c>interactionmode.bgf</c>), which <c>sub_82961340</c> and
+	/// <c>sub_829614A0</c> never retexture — and <c>a_shadow.tex</c> is a constant-colour plane of
+	/// 0 (compFlag 6, record word 1 = 0: black, <c>sub_82D6E9C8</c> 0x82D6EE0C..0x82D6EE78) under a
+	/// disc alpha. The <c>complete</c> art is that stack flattened, its alpha covering the shadow's.
+	/// </summary>
+	private static void UnderSilhouette(Canvas canvas, Image pad, Rect2I cell, int scale)
+	{
+		if (pad.IsCompressed())
+		{
+			pad = (Image)pad.Duplicate();
+			if (pad.Decompress() != Error.Ok)
+			{
+				return;
+			}
+		}
+
+		int x0 = cell.Position.X / scale, y0 = cell.Position.Y / scale;
+		int x1 = Math.Min(pad.GetWidth(), cell.End.X / scale), y1 = Math.Min(pad.GetHeight(), cell.End.Y / scale);
+		for (int y = y0; y < y1; ++y)
+		{
+			for (int x = x0; x < x1; ++x)
+			{
+				float alpha = pad.GetPixel(x, y).A;
+				if (alpha <= 0f)
+				{
+					continue;
+				}
+
+				for (int dy = 0; dy < scale; ++dy)
+				{
+					for (int dx = 0; dx < scale; ++dx)
+					{
+						canvas.Under((x * scale) + dx, (y * scale) + dy, Colors.Black, alpha);
+					}
+				}
+			}
+		}
+	}
+
 	private static void Draw(Proxy proxy, bool keys)
 	{
 		Image? pad = Refii.Core.Engine_ServerSyncs.Image(proxy.Original);
@@ -557,17 +609,23 @@ public static partial class Engine_UiKeyGlyphs
 				if (!keys)
 				{
 					DrawPadCell(canvas, cell, proxy.Button, proxy.Arrow);
-					continue;
+				}
+				else
+				{
+					// THE KEY COVERS WHAT THE ORB COVERED. The shipped art's transparent margin is
+					// the gap the layout leaves between a prompt's label and its glyph (Fable 3's
+					// `24x24_NoRim` orbs sit inside their cell); a keycap filling the whole cell ran
+					// into the label. An orb that fills its cell gives the cell back unchanged.
+					Rect2I key = OpaqueFootprint(pad, cell, scale) ?? cell;
+					if (!BlitPack(canvas, key, KeyPackName(label)))
+					{
+						DrawKeycap(canvas, key, label, pressed: false);
+					}
 				}
 
-				// THE KEY COVERS WHAT THE ORB COVERED. The shipped art's transparent margin is the
-				// gap the layout leaves between a prompt's label and its glyph (Fable 3's
-				// `24x24_NoRim` orbs sit inside their cell); a keycap filling the whole cell ran
-				// into the label. An orb that fills its cell gives the cell back unchanged.
-				Rect2I key = OpaqueFootprint(pad, cell, scale) ?? cell;
-				if (!BlitPack(canvas, key, KeyPackName(label)))
+				if (proxy.Backed)
 				{
-					DrawKeycap(canvas, key, label, pressed: false);
+					UnderSilhouette(canvas, pad, cell, scale);
 				}
 			}
 		}
@@ -693,7 +751,7 @@ public static partial class Engine_UiKeyGlyphs
 	/// the keycap is the same picture a pixel-at-a-time draw gave — without a native call per
 	/// pixel, which was tens of milliseconds for a redraw of every prompt on a device switch.
 	/// </summary>
-	private sealed class Canvas
+	internal sealed class Canvas
 	{
 		public readonly int Width;
 		public readonly int Height;
@@ -769,6 +827,29 @@ public static partial class Engine_UiKeyGlyphs
 				((colour.R * a) + (under.R * under.A * (1f - a))) / outA,
 				((colour.G * a) + (under.G * under.A * (1f - a))) / outA,
 				((colour.B * a) + (under.B * under.A * (1f - a))) / outA,
+				outA));
+		}
+
+		/// <summary>Lays <paramref name="colour"/> beneath a pixel at <paramref name="coverage"/> (0..1), destination-over.</summary>
+		public void Under(int x, int y, Color colour, float coverage)
+		{
+			if (x < 0 || y < 0 || x >= Width || y >= Height || coverage <= 0f)
+			{
+				return;
+			}
+
+			float a = colour.A * Math.Min(1f, coverage);
+			Color top = Get(x, y);
+			float outA = top.A + (a * (1f - top.A));
+			if (outA <= 0f)
+			{
+				return;
+			}
+
+			Set(x, y, new Color(
+				((top.R * top.A) + (colour.R * a * (1f - top.A))) / outA,
+				((top.G * top.A) + (colour.G * a * (1f - top.A))) / outA,
+				((top.B * top.A) + (colour.B * a * (1f - top.A))) / outA,
 				outA));
 		}
 

@@ -1,0 +1,18 @@
+key,value
+HOTBAR_MENU,Barra rapida
+HOTBAR_KIND,Metti nello slot
+HOTBAR_KIND_SPELLS,Incantesimi
+HOTBAR_KIND_EXPRESSIONS,Espressioni
+HOTBAR_KIND_FOOD,Cibo
+HOTBAR_KIND_POTIONS,Pozioni
+HOTBAR_KIND_ITEMS,Altri oggetti
+HOTBAR_KIND_CLEAR,Svuota lo slot
+HOTBAR_MOD_NAME,Barra rapida
+HOTBAR_MOD_DESCRIPTION,"Una barra rapida in stile Fable 1 sull'HUD. I tasti 1-3 mantengono le modalità delle armi; metti incantesimi, espressioni, cibo, pozioni e altri oggetti utilizzabili su 4-0 dalla pagina Barra rapida del menu di pausa."
+HOTBAR_SETTING_SHOW,Mostra la barra rapida
+HOTBAR_SETTING_SHOW_DESCRIPTION,I tasti funzionano comunque.
+HOTBAR_SETTING_SIZE,Dimensione
+HOTBAR_SETTING_SIZE_DESCRIPTION,Quanto sono grandi gli slot.
+HOTBAR_SETTING_LIFT,Altezza dal fondo
+HOTBAR_SETTING_LIFT_DESCRIPTION,Alza la barra per lasciare spazio ai sottotitoli.
+HOTBAR_INPUT_SLOT,Slot della barra rapida

@@ -972,33 +972,6 @@ public static class Engine_UiGameTemplates
       "wideRight": [
         "Foreground.Book"
       ],
-      "panelFields": [
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.AbilityName",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.TotalXP",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.AbilityName",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.Text.Description",
-          "multiline": true,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.AbilityCost",
-          "multiline": false,
-          "alternate": false
-        }
-      ],
       "pages": [
         "Foreground.Book.Pages.Page1",
         "Foreground.Book.Pages.Page2",
@@ -1045,43 +1018,6 @@ public static class Engine_UiGameTemplates
       ],
       "wideRight": [
         "Foreground.Book"
-      ],
-      "panelFields": [
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemName",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemValueName",
-          "multiline": false,
-          "alternate": true
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemValue2",
-          "multiline": false,
-          "alternate": true
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemValue",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemDescription",
-          "multiline": true,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.ItemName",
-          "multiline": false,
-          "alternate": true
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Info",
-          "multiline": false,
-          "alternate": true
-        }
       ],
       "pages": [
         "Foreground.Book.Pages.Page1",
@@ -1131,43 +1067,6 @@ public static class Engine_UiGameTemplates
       "wideRight": [
         "Foreground.Book"
       ],
-      "panelFields": [
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemName",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemValueName",
-          "multiline": false,
-          "alternate": true
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemValue2",
-          "multiline": false,
-          "alternate": true
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemValue",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemDescription",
-          "multiline": true,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.ItemName",
-          "multiline": false,
-          "alternate": true
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Info",
-          "multiline": false,
-          "alternate": true
-        }
-      ],
       "pages": [
         "Foreground.Book.Pages.Page1",
         "Foreground.Book.Pages.Page2"
@@ -1216,43 +1115,6 @@ public static class Engine_UiGameTemplates
       "wideRight": [
         "Foreground.Book"
       ],
-      "panelFields": [
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemName",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemValueName",
-          "multiline": false,
-          "alternate": true
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemValue2",
-          "multiline": false,
-          "alternate": true
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemValue",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemDescription",
-          "multiline": true,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.ItemName",
-          "multiline": false,
-          "alternate": true
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Info",
-          "multiline": false,
-          "alternate": true
-        }
-      ],
       "pages": [
         "Foreground.Book.Pages.Page1",
         "Foreground.Book.Pages.Page2"
@@ -1294,43 +1156,6 @@ public static class Engine_UiGameTemplates
       ],
       "wideRight": [
         "Foreground.Book"
-      ],
-      "panelFields": [
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemName",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemValueName",
-          "multiline": false,
-          "alternate": true
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemValue2",
-          "multiline": false,
-          "alternate": true
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemValue",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemDescription",
-          "multiline": true,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.ItemName",
-          "multiline": false,
-          "alternate": true
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Info",
-          "multiline": false,
-          "alternate": true
-        }
       ],
       "pages": [
         "Foreground.Book.Pages.Page1",
@@ -1378,43 +1203,6 @@ public static class Engine_UiGameTemplates
       "wideRight": [
         "Foreground.Book"
       ],
-      "panelFields": [
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemName",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemValueName",
-          "multiline": false,
-          "alternate": true
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemValue2",
-          "multiline": false,
-          "alternate": true
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemValue",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemDescription",
-          "multiline": true,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.ItemName",
-          "multiline": false,
-          "alternate": true
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Info",
-          "multiline": false,
-          "alternate": true
-        }
-      ],
       "pages": [
         "Foreground.Book.Pages.Page1",
         "Foreground.Book.Pages.Page2"
@@ -1452,16 +1240,6 @@ public static class Engine_UiGameTemplates
       "backdropUnit": "background_yellow",
       "chrome": [
         "Foreground"
-      ],
-      "panelSubtrees": [
-        "Foreground.Book.Pages.MoralityPage",
-        "Foreground.Book.Pages.ExpressionsPage",
-        "Foreground.Book.Pages.CompletedQuestsPage",
-        "Foreground.Book.Pages.RenownPage",
-        "Foreground.Book.Pages.AttractivenessPage",
-        "Foreground.Book.Pages.StatsPage",
-        "Foreground.Book.Pages.DogPage",
-        "Foreground.Book.Pages.HelpPage"
       ],
       "ownedElsewhere": [
         "ExpandableMenu.Buttons",
@@ -1930,23 +1708,6 @@ public static class Engine_UiGameTemplates
       "wideRight": [
         "Foreground.Book"
       ],
-      "panelFields": [
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Text",
-          "multiline": true,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.Text",
-          "multiline": true,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page3.Contents.Text",
-          "multiline": true,
-          "alternate": false
-        }
-      ],
       "pages": [
         "Foreground.Book.Pages.Page1",
         "Foreground.Book.Pages.Page2",
@@ -1987,38 +1748,6 @@ public static class Engine_UiGameTemplates
         "Foreground.FrontPage",
         "Foreground.PageTextureFar",
         "Foreground.PageTextureNear"
-      ],
-      "panelFields": [
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.ItemName",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Text.TextElements.PriceValue",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Text.TextElements.ValueValue",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.ItemName",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.TextElements.PriceValue",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page2.Contents.Text.Group.Group.ItemDescription",
-          "multiline": true,
-          "alternate": false
-        }
       ],
       "pages": [
         "Foreground.Book.Pages.Page1",
@@ -2100,63 +1829,6 @@ public static class Engine_UiGameTemplates
         "WorldMap_Spring_D",
         "WorldMap_Spring_C2",
         "WorldMap_Spring_A2"
-      ],
-      "panelFields": [
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.PageTitle",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Text.DistanceAmount",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Text.TraveltimeAmount",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Text.FineAmount",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Text.MerchantsList",
-          "multiline": true,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Text.OwnedAmount",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Text.ChestAmount",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Text.DigspotAmount",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Text.DivespotsSearchedAmount",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Text.GargoylesDestroyedAmount",
-          "multiline": false,
-          "alternate": false
-        },
-        {
-          "path": "Foreground.Book.Pages.Page1.Contents.Text.SilverKeysFoundAmount",
-          "multiline": false,
-          "alternate": false
-        }
       ],
       "pages": [
         "Foreground.Book.Pages.Page1",
@@ -2302,9 +1974,6 @@ public static class Engine_UiGameTemplates
         "Motif",
         "Amounts",
         "Title"
-      ],
-      "panelSubtrees": [
-        "Component"
       ]
     },
     "12": {
@@ -2326,9 +1995,6 @@ public static class Engine_UiGameTemplates
         "Reward",
         "RenownPoints",
         "Points"
-      ],
-      "panelSubtrees": [
-        "elements"
       ]
     },
     "10": {
@@ -2339,9 +2005,6 @@ public static class Engine_UiGameTemplates
       "revealedBack": "screen:back",
       "presentation": "queryscreen",
       "chrome": [
-        "elements"
-      ],
-      "panelSubtrees": [
         "elements"
       ]
     },
@@ -2408,16 +2071,6 @@ public static class Engine_UiGameTemplates
       "chrome": [
         "Foreground"
       ],
-      "panelSubtrees": [
-        "Foreground.Book.Pages.MoralityPage",
-        "Foreground.Book.Pages.ExpressionsPage",
-        "Foreground.Book.Pages.CompletedQuestsPage",
-        "Foreground.Book.Pages.RenownPage",
-        "Foreground.Book.Pages.AttractivenessPage",
-        "Foreground.Book.Pages.StatsPage",
-        "Foreground.Book.Pages.DogPage",
-        "Foreground.Book.Pages.HelpPage"
-      ],
       "ownedElsewhere": [
         "ExpandableMenu.Buttons",
         "MenuHighlight"
@@ -2442,16 +2095,6 @@ public static class Engine_UiGameTemplates
       "backdropUnit": "background_yellow",
       "chrome": [
         "Foreground"
-      ],
-      "panelSubtrees": [
-        "Foreground.Book.Pages.MoralityPage",
-        "Foreground.Book.Pages.ExpressionsPage",
-        "Foreground.Book.Pages.CompletedQuestsPage",
-        "Foreground.Book.Pages.RenownPage",
-        "Foreground.Book.Pages.AttractivenessPage",
-        "Foreground.Book.Pages.StatsPage",
-        "Foreground.Book.Pages.DogPage",
-        "Foreground.Book.Pages.HelpPage"
       ],
       "ownedElsewhere": [
         "ExpandableMenu.Buttons",
@@ -2478,16 +2121,6 @@ public static class Engine_UiGameTemplates
       "chrome": [
         "Foreground"
       ],
-      "panelSubtrees": [
-        "Foreground.Book.Pages.MoralityPage",
-        "Foreground.Book.Pages.ExpressionsPage",
-        "Foreground.Book.Pages.CompletedQuestsPage",
-        "Foreground.Book.Pages.RenownPage",
-        "Foreground.Book.Pages.AttractivenessPage",
-        "Foreground.Book.Pages.StatsPage",
-        "Foreground.Book.Pages.DogPage",
-        "Foreground.Book.Pages.HelpPage"
-      ],
       "ownedElsewhere": [
         "ExpandableMenu.Buttons",
         "MenuHighlight"
@@ -2513,16 +2146,6 @@ public static class Engine_UiGameTemplates
       "backdropUnit": "background_yellow",
       "chrome": [
         "Foreground"
-      ],
-      "panelSubtrees": [
-        "Foreground.Book.Pages.MoralityPage",
-        "Foreground.Book.Pages.ExpressionsPage",
-        "Foreground.Book.Pages.CompletedQuestsPage",
-        "Foreground.Book.Pages.RenownPage",
-        "Foreground.Book.Pages.AttractivenessPage",
-        "Foreground.Book.Pages.StatsPage",
-        "Foreground.Book.Pages.DogPage",
-        "Foreground.Book.Pages.HelpPage"
       ],
       "ownedElsewhere": [
         "ExpandableMenu.Buttons",

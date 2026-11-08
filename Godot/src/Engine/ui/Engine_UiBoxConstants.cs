@@ -1,8 +1,7 @@
 namespace Refii.Ui;
 
 /// <summary>
-/// Constants from `displayboxes/*.lua`, `page.lua` and `listlib.lua`: the modal cards, the
-/// scrolling book page and the info-panel highlight list.
+/// Constants from `displayboxes/*.lua` and `page.lua`: the modal cards and the scrolling book page.
 /// </summary>
 public static class Engine_UiBoxConstants
 {
@@ -121,17 +120,6 @@ public static class Engine_UiBoxConstants
 	public const float PageDefaultVisualRange = 100f;
 
 	public const float PageDefaultHeight = 100f;
-
-	/// <summary>`listlib.lua`: highlight 1/0; an empty row draws the script's own `Empty` at half opacity.</summary>
-	public const float ListHighlightOn = 1f;
-
-	public const float ListHighlightOff = 0f;
-
-	public const string ListEmptyText = "Empty";
-
-	public const float ListEmptyOpacity = 50f;
-
-	public const float ListFullOpacity = 100f;
 
 	// `theme/themetext.lua` palette: aliases onto `Engine_UiThemeText`, the port of record.
 

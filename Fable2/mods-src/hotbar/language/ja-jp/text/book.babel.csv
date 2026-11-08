@@ -1,0 +1,18 @@
+key,value
+HOTBAR_MENU,ホットバー
+HOTBAR_KIND,スロットに入れる
+HOTBAR_KIND_SPELLS,魔法
+HOTBAR_KIND_EXPRESSIONS,表現
+HOTBAR_KIND_FOOD,食べ物
+HOTBAR_KIND_POTIONS,ポーション
+HOTBAR_KIND_ITEMS,その他のアイテム
+HOTBAR_KIND_CLEAR,スロットを空にする
+HOTBAR_MOD_NAME,ホットバー
+HOTBAR_MOD_DESCRIPTION,Fable 1風のホットバーを画面に表示。1-3キーは武器モードのまま。ポーズメニューのホットバーページから、魔法、表現、食べ物、ポーション、その他の使用可能なアイテムを4-0に入れられる。
+HOTBAR_SETTING_SHOW,ホットバーを表示
+HOTBAR_SETTING_SHOW_DESCRIPTION,表示しなくてもキーは使える。
+HOTBAR_SETTING_SIZE,サイズ
+HOTBAR_SETTING_SIZE_DESCRIPTION,スロットの表示サイズ。
+HOTBAR_SETTING_LIFT,下端からの高さ
+HOTBAR_SETTING_LIFT_DESCRIPTION,字幕と重ならないようにバーを上げる。
+HOTBAR_INPUT_SLOT,ホットバースロット

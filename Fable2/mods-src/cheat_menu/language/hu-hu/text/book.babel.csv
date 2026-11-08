@@ -1,0 +1,67 @@
+key,value
+CHEAT_MENU,Csalásmenü
+CHEAT_MENU_EXPERIENCE,Tapasztalat
+CHEAT_MENU_GOLD,Arany
+CHEAT_MENU_RENOWN,Hírnév
+CHEAT_MENU_MORALITY,Erkölcs
+CHEAT_MENU_PURITY,Tisztaság
+CHEAT_MENU_ITEMS,Tárgyak
+CHEAT_MENU_TIME,Napszak
+CHEAT_MENU_HEAL,Teljes gyógyítás
+CHEAT_MENU_XP_GENERAL_1K,+1000 általános
+CHEAT_MENU_XP_GENERAL_10K,+10 000 általános
+CHEAT_MENU_XP_STRENGTH_1K,+1000 Erő
+CHEAT_MENU_XP_STRENGTH_10K,+10 000 Erő
+CHEAT_MENU_XP_SKILL_1K,+1000 Ügyesség
+CHEAT_MENU_XP_SKILL_10K,+10 000 Ügyesség
+CHEAT_MENU_XP_WILL_1K,+1000 Mágia
+CHEAT_MENU_XP_WILL_10K,+10 000 Mágia
+CHEAT_MENU_XP_ALL_10K,+10 000 mindegyikből
+CHEAT_MENU_GOLD_1K,+1000 arany
+CHEAT_MENU_GOLD_10K,+10 000 arany
+CHEAT_MENU_GOLD_100K,+100 000 arany
+CHEAT_MENU_GOLD_1M,+1 000 000 arany
+CHEAT_MENU_RENOWN_1K,+1000 hírnév
+CHEAT_MENU_RENOWN_10K,+10 000 hírnév
+CHEAT_MENU_RENOWN_100K,+100 000 hírnév
+CHEAT_MENU_GOOD_100,Több jóság (+100)
+CHEAT_MENU_GOOD_1000,Sokkal több jóság (+1000)
+CHEAT_MENU_EVIL_100,Több gonoszság (-100)
+CHEAT_MENU_EVIL_1000,Sokkal több gonoszság (-1000)
+CHEAT_MENU_PURE_100,Több tisztaság (+100)
+CHEAT_MENU_PURE_1000,Sokkal több tisztaság (+1000)
+CHEAT_MENU_CORRUPT_100,Több romlottság (-100)
+CHEAT_MENU_CORRUPT_1000,Sokkal több romlottság (-1000)
+CHEAT_MENU_TIME_DAWN,Hajnal
+CHEAT_MENU_TIME_NOON,Dél
+CHEAT_MENU_TIME_DUSK,Alkonyat
+CHEAT_MENU_TIME_MIDNIGHT,Éjfél
+CHEAT_MENU_MOD_NAME,Csalásmenü
+CHEAT_MENU_MOD_DESCRIPTION,"Csalásmenü oldal a Szüneteltetés menüben: tapasztalat, arany, hírnév, erkölcs, tisztaság, tárgyak, napszak és teljes gyógyítás."
+CHEAT_MENU_NUMBER_SAMPLE,1 000
+CHEAT_MENU_GAVE_XP_GENERAL,+%1 általános tapasztalat
+CHEAT_MENU_GAVE_XP_STRENGTH,+%1 Erő-tapasztalat
+CHEAT_MENU_GAVE_XP_SKILL,+%1 Ügyesség-tapasztalat
+CHEAT_MENU_GAVE_XP_WILL,+%1 Mágia-tapasztalat
+CHEAT_MENU_GAVE_XP_ALL,+%1 tapasztalat mindegyikből
+CHEAT_MENU_GAVE_GOLD,+%1 arany
+CHEAT_MENU_GAVE_RENOWN,+%1 hírnév
+CHEAT_MENU_GAVE_GOOD,+%1 jóság
+CHEAT_MENU_GAVE_EVIL,+%1 gonoszság
+CHEAT_MENU_GAVE_PURITY,+%1 tisztaság
+CHEAT_MENU_GAVE_CORRUPTION,+%1 romlottság
+CHEAT_MENU_HEALED,Életerő visszaállítva: %1
+CHEAT_MENU_TIME_SET,Az idő most %1
+CHEAT_MENU_ITEM_ADDED,A tárgylistához adva: %1
+CHEAT_MENU_ITEM_PART_ADDED,A tárgylistához adva: %1 / %2
+CHEAT_MENU_ITEM_HEALTH,10 x Örök élet gyógyital
+CHEAT_MENU_ITEM_RESURRECTION,5 x Feltámasztó fiola
+CHEAT_MENU_ITEM_XP_GENERAL,5 x Tömény tapasztalatkivonat
+CHEAT_MENU_ITEM_XP_STRENGTH,5 x Mennydörgő erőital
+CHEAT_MENU_ITEM_XP_SKILL,5 x Nagymester ügyességital
+CHEAT_MENU_ITEM_XP_WILL,5 x Tömény mágiafőzet
+CHEAT_MENU_ITEM_YOUTH,Fiatalító főzet
+CHEAT_MENU_ITEM_SCAR,Csodás heggyógyító főzet
+CHEAT_MENU_ITEM_FAT,Nádszálvékonyság főzet
+CHEAT_MENU_ITEM_BEAUTY,Mélytisztító szépségkúra
+CHEAT_MENU_ITEM_CHICKS,10 x Ropogós csibe

@@ -7,8 +7,8 @@ using Refii.Ui;
 /// <summary>
 /// Fable 3's in-game HUD on the SHARED engine: one presentation host over the title's banks and
 /// one <see cref="Fable3HudDocument"/> per presentation the HUD draws — `hud.bgf` (the widgets
-/// below), `interactionmode.bgf` (the interaction mode) and the end screens
-/// (<see cref="Fable3EndScreens"/>) — each on the shared
+/// below), `interactionmode.bgf` (the interaction mode), the end screens
+/// (<see cref="Fable3EndScreens"/>) and the box screens' frames (<see cref="Fable3ScreenFrames"/>) — each on the shared
 /// <see cref="Engine_HudView"/>, driven by what the guest states. The same view, layout, art and
 /// resolve draw Fable 2's HUD; this is the title's feed into them.
 /// </summary>
@@ -82,7 +82,7 @@ public partial class Fable3Hud : Fable3Canvas
 
 	/// <summary>
 	/// The interaction mode's widgets in `interactionmode.bgf`, each cut whole and drawn from what
-	/// its writers were CALLED with alone (the document is stated-only, <see cref="Fable3HudDocument.StatedOnly"/>):
+	/// its writers were CALLED with alone (as every Fable3HudDocument is):
 	/// the root's slide from the mode's tick and clear and its active flag (interaction_hooks.cpp),
 	/// the list's slide from its path setter, the bars' from their show, every text, texture and
 	/// visibility at its writer's entry. The buttons, `LowerElements.InteractionMenuRight`: every interaction class hides
@@ -98,7 +98,10 @@ public partial class Fable3Hud : Fable3Canvas
 		// The option list: a three-row window over the guest's list. sub_82963DE0 writes the row at
 		// the cursor (mode+116) into `Buttons.Button3` (sub_82961340 at 0x82963ED8), the next two into
 		// Button2 / Button1 (0x82963F5C / 0x82964050) and the leaving one into DissapearingButton —
-		// hiding a row past the end (sub_82819AE0 at 0x82963FEC / 0x829640E0 / 0x8296423C) — so the
+		// committing "" to a row past the end's and the leaving row's `Title` (the box guards
+		// 0x82963FA4 / 0x82964098 / 0x829641F4, `@Ui.Text`, ui_stated_hooks.cpp
+		// RefiiF3InteractionRowEmptied) and hiding it (sub_82819AE0 at 0x82963FEC / 0x829640E0 /
+		// 0x8296423C), so no row keeps a label from an earlier pass. The
 		// cursor IS Button3, the only row with `Selection_Box_Glow`. A scroll moves the cursor and
 		// plays the list root's slide 3 (down, sub_82963D18 at 0x82963D9C) or 4 (up, sub_82964248 at
 		// 0x82964520) through sub_8281A500 -> sub_8281A490 -> SetState (0x8281A4AC); a refresh sets 2
@@ -120,7 +123,9 @@ public partial class Fable3Hud : Fable3Canvas
 		// (vtable 0x820D1CD8, sub_82B18EF0: `.Buttons.LB/RB_Complete`, stored 0x825C40AC) — label
 		// text (sub_82B3EB28, commit 0x82B3EB58: `@Ui.Text`), the sides' `_Complete` shown
 		// (sub_82B3EB60 at 0x82B3EB9C: `@Ui.Visible`), root slide 1 hide / 2 TopBoxOn / 3 TopBoxOff
-		// (sub_82B3EA18 at 0x82B3EAF0: `@Ui.State`). The GUI.*Triggers* natives drive IM+32 =
+		// (sub_82B3EA18 at 0x82B3EAF0: `@Ui.State`), and while shown 2 / 3 again as a TopBox message goes
+		// up / the channels empty (sub_825C6D78 at 0x825C6DD4 / 0x825C6E18: `@Ui.State`). The
+		// GUI.*Triggers* natives drive IM+32 =
 		// BumperButtons and the *Bumpers* ones IM+36 = TriggerButtons (0x8251DC98).
 		new("TriggerButtons", "InteractionTriggers", null, 0f, true, "UpperElements"),
 		new("BumperButtons", "InteractionBumpers", null, 0f, true, "UpperElements"),
@@ -156,8 +161,9 @@ public partial class Fable3Hud : Fable3Canvas
 		AddChild(_fade);
 
 		_documents.Add(new Fable3HudDocument(Fable3Elements.HudDocument, Groups, layouts: true));
-		_documents.Add(new Fable3HudDocument(Fable3Elements.InteractionDocument, InteractionGroups, layouts: false, statedOnly: true));
+		_documents.Add(new Fable3HudDocument(Fable3Elements.InteractionDocument, InteractionGroups, layouts: false));
 		_documents.AddRange(Fable3EndScreens.Documents());
+		_documents.AddRange(Fable3ScreenFrames.Documents());
 
 		_host = new Fable3Presentations { Name = "Presentations", LoadsInBackground = true };
 		_host.Loaded += Stand;
@@ -190,6 +196,7 @@ public partial class Fable3Hud : Fable3Canvas
 		{
 			document.Frame(window);
 			Fable3EndScreens.Gate(document);
+			Fable3ScreenFrames.Gate(document);
 		}
 	}
 

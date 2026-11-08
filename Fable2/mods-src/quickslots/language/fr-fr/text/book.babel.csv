@@ -1,0 +1,51 @@
+key,value
+QUICKSLOTS_MENU,Raccourcis
+QUICKSLOTS_ASSIGN,Assigner un raccourci
+QUICKSLOTS_ASSIGN_TITLE,Assigner à un raccourci
+QUICKSLOTS_CHOOSE_TITLE,Choisir le contenu
+QUICKSLOTS_SLOT_1,Croix haut
+QUICKSLOTS_SLOT_2,Croix bas
+QUICKSLOTS_SLOT_3,Croix gauche
+QUICKSLOTS_SLOT_4,Croix droite
+QUICKSLOTS_SLOT_5,LT + haut
+QUICKSLOTS_SLOT_6,LT + bas
+QUICKSLOTS_SLOT_7,LT + gauche
+QUICKSLOTS_SLOT_8,LT + droite
+QUICKSLOTS_SLOT_9,RT + haut
+QUICKSLOTS_SLOT_10,RT + bas
+QUICKSLOTS_SLOT_11,RT + gauche
+QUICKSLOTS_SLOT_12,RT + droite
+QUICKSLOTS_AUTOMATIC,Automatique (celui du jeu)
+QUICKSLOTS_EMPTY,Vide
+QUICKSLOTS_CLEAR,Vider cet emplacement
+QUICKSLOTS_REMOVE,Retirer de tous les emplacements
+QUICKSLOTS_ITEM,Objet
+QUICKSLOTS_WEAPON,Arme
+QUICKSLOTS_EXPRESSION,Expression
+QUICKSLOTS_SPELL,Sort
+QUICKSLOTS_ITEMS,Objets et armes
+QUICKSLOTS_EXPRESSIONS,Expressions
+QUICKSLOTS_SPELLS,Sorts
+QUICKSLOTS_MOD_NAME,Raccourcis
+QUICKSLOTS_MOD_DESCRIPTION,"Douze raccourcis assignables sur la croix directionnelle : les quatre directions, LT + une direction et RT + une direction, chacun contenant un objet à utiliser, une arme à dégainer, une expression à effectuer ou un sort à préparer. Assignez-les depuis l'inventaire, les livres d'expressions et de capacités ou la roue des expressions ; la croix à l'écran montre le contenu de chaque emplacement. Une direction sans assignation garde son usage habituel dans le jeu."
+QUICKSLOTS_SETTING_LT_BANK,Groupe LT + croix
+QUICKSLOTS_SETTING_LT_BANK_DESCRIPTION,"Quatre emplacements de plus, accessibles en maintenant la gâchette gauche."
+QUICKSLOTS_SETTING_RT_BANK,Groupe RT + croix
+QUICKSLOTS_SETTING_RT_BANK_DESCRIPTION,"Quatre emplacements de plus, accessibles en maintenant la gâchette droite. Tant que l'un d'eux est assigné, la gâchette droite n'ouvre plus le menu des sorts."
+QUICKSLOTS_SETTING_HUD_ICONS,Icônes des emplacements sur la croix
+QUICKSLOTS_SETTING_HUD_ICONS_DESCRIPTION,"Affiche le contenu de chaque emplacement sur la croix à l'écran, et ceux du groupe maintenu tant qu'une gâchette est enfoncée."
+QUICKSLOTS_INPUT_UP,Raccourci haut
+QUICKSLOTS_INPUT_DOWN,Raccourci bas
+QUICKSLOTS_INPUT_LEFT,Raccourci gauche
+QUICKSLOTS_INPUT_RIGHT,Raccourci droite
+QUICKSLOTS_INPUT_LT_UP,Raccourci LT haut
+QUICKSLOTS_INPUT_LT_DOWN,Raccourci LT bas
+QUICKSLOTS_INPUT_LT_LEFT,Raccourci LT gauche
+QUICKSLOTS_INPUT_LT_RIGHT,Raccourci LT droite
+QUICKSLOTS_INPUT_RT_UP,Raccourci RT haut
+QUICKSLOTS_INPUT_RT_DOWN,Raccourci RT bas
+QUICKSLOTS_INPUT_RT_LEFT,Raccourci RT gauche
+QUICKSLOTS_INPUT_RT_RIGHT,Raccourci RT droite
+QUICKSLOTS_INPUT_LT,Groupe LT (maintenir)
+QUICKSLOTS_INPUT_RT,Groupe RT (maintenir)
+QUICKSLOTS_INPUT_ASSIGN,Assigner l'expression en surbrillance

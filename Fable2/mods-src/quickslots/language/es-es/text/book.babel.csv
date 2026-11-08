@@ -1,0 +1,51 @@
+key,value
+QUICKSLOTS_MENU,Accesos rápidos
+QUICKSLOTS_ASSIGN,Asignar acceso rápido
+QUICKSLOTS_ASSIGN_TITLE,Asignar a un acceso rápido
+QUICKSLOTS_CHOOSE_TITLE,Elige el contenido de la ranura
+QUICKSLOTS_SLOT_1,Cruceta arriba
+QUICKSLOTS_SLOT_2,Cruceta abajo
+QUICKSLOTS_SLOT_3,Cruceta izquierda
+QUICKSLOTS_SLOT_4,Cruceta derecha
+QUICKSLOTS_SLOT_5,LT + arriba
+QUICKSLOTS_SLOT_6,LT + abajo
+QUICKSLOTS_SLOT_7,LT + izquierda
+QUICKSLOTS_SLOT_8,LT + derecha
+QUICKSLOTS_SLOT_9,RT + arriba
+QUICKSLOTS_SLOT_10,RT + abajo
+QUICKSLOTS_SLOT_11,RT + izquierda
+QUICKSLOTS_SLOT_12,RT + derecha
+QUICKSLOTS_AUTOMATIC,Automático (el del juego)
+QUICKSLOTS_EMPTY,Vacío
+QUICKSLOTS_CLEAR,Vaciar esta ranura
+QUICKSLOTS_REMOVE,Quitar de todas las ranuras
+QUICKSLOTS_ITEM,Objeto
+QUICKSLOTS_WEAPON,Arma
+QUICKSLOTS_EXPRESSION,Expresión
+QUICKSLOTS_SPELL,Conjuro
+QUICKSLOTS_ITEMS,Objetos y armas
+QUICKSLOTS_EXPRESSIONS,Expresiones
+QUICKSLOTS_SPELLS,Conjuros
+QUICKSLOTS_MOD_NAME,Accesos rápidos
+QUICKSLOTS_MOD_DESCRIPTION,"Doce accesos rápidos asignables en la cruceta: las cuatro direcciones, LT + una dirección y RT + una dirección, cada uno con un objeto para usar, un arma para desenvainar, una expresión para hacer o un conjuro para preparar. Asígnalos desde el inventario, los libros de expresiones y de aptitudes o desde la rueda de expresiones; la cruceta de la interfaz muestra lo que contiene cada ranura. Una dirección sin nada asignado mantiene su uso normal en el juego."
+QUICKSLOTS_SETTING_LT_BANK,Grupo LT + cruceta
+QUICKSLOTS_SETTING_LT_BANK_DESCRIPTION,"Cuatro ranuras más, a las que se llega manteniendo pulsado el gatillo izquierdo."
+QUICKSLOTS_SETTING_RT_BANK,Grupo RT + cruceta
+QUICKSLOTS_SETTING_RT_BANK_DESCRIPTION,"Cuatro ranuras más, a las que se llega manteniendo pulsado el gatillo derecho. Mientras alguna esté asignada, el gatillo derecho ya no abre el menú de conjuros."
+QUICKSLOTS_SETTING_HUD_ICONS,Iconos de ranura en la cruceta
+QUICKSLOTS_SETTING_HUD_ICONS_DESCRIPTION,"Muestra lo que contiene cada ranura en la cruceta de la interfaz, y las ranuras del grupo mientras se mantiene pulsado un gatillo."
+QUICKSLOTS_INPUT_UP,Acceso rápido arriba
+QUICKSLOTS_INPUT_DOWN,Acceso rápido abajo
+QUICKSLOTS_INPUT_LEFT,Acceso rápido izquierda
+QUICKSLOTS_INPUT_RIGHT,Acceso rápido derecha
+QUICKSLOTS_INPUT_LT_UP,Acceso rápido LT arriba
+QUICKSLOTS_INPUT_LT_DOWN,Acceso rápido LT abajo
+QUICKSLOTS_INPUT_LT_LEFT,Acceso rápido LT izquierda
+QUICKSLOTS_INPUT_LT_RIGHT,Acceso rápido LT derecha
+QUICKSLOTS_INPUT_RT_UP,Acceso rápido RT arriba
+QUICKSLOTS_INPUT_RT_DOWN,Acceso rápido RT abajo
+QUICKSLOTS_INPUT_RT_LEFT,Acceso rápido RT izquierda
+QUICKSLOTS_INPUT_RT_RIGHT,Acceso rápido RT derecha
+QUICKSLOTS_INPUT_LT,Grupo LT (mantener)
+QUICKSLOTS_INPUT_RT,Grupo RT (mantener)
+QUICKSLOTS_INPUT_ASSIGN,Asignar la expresión resaltada

@@ -364,7 +364,7 @@ public partial class UiStudioSettingsView : VBoxContainer
 
 		string title = ModWorkspace.DiscoverModInstalls(Refii.Assets.Engine_GameAssets.ModsRoot)
 			.FirstOrDefault(m => string.Equals(m.Name, _docs.Mod, StringComparison.OrdinalIgnoreCase)) is { } install &&
-			install.Metadata.Title.Length != 0 ? install.Metadata.Title : _docs.Mod;
+			install.Metadata.Title.Length != 0 ? ModText.TitleOf(install) : _docs.Mod;
 		(ModSettingsUi.Page page, IReadOnlyList<float> values) =
 			ModSettingsUi.PreviewPage(_docs.Mod, title, _docs.SettingsText, UiStudioDocs.Text(_docs.SettingsUi));
 		if (page.Count == 0)

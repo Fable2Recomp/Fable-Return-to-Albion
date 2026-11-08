@@ -1,0 +1,9 @@
+key,value
+SPELL_WEAVING_HYBRID,Híbrido
+SPELL_WEAVING_NAME,Tejido de conjuros
+SPELL_WEAVING_DESCRIPTION,"El arte de lanzar dos conjuros como si fueran uno. Elige un conjuro compañero y se entretejerá en cada lanzamiento hasta el nivel de poder %1, golpeando al mismo objetivo en el mismo instante. Se paga a partes iguales con experiencia de Voluntad y de Habilidad."
+SPELL_WEAVING_TOTAL_XP,Experiencia de Voluntad y Habilidad disponible:
+SPELL_WEAVING_SET_PARTNER,Fijar compañero
+SPELL_WEAVING_REMOVE_PARTNER,Quitar compañero
+SPELL_WEAVING_MOD_NAME,Tejido de conjuros
+SPELL_WEAVING_MOD_DESCRIPTION,"El tejido de conjuros de Fable 3 en Fable 2: un segundo conjuro, el compañero, se lanza junto con el de la ranura cargada, con la misma potencia y al mismo objetivo. Por defecto, un solo lanzamiento a la potencia cargada, al ritmo de Fable 3, en lugar de la cascada de Fable 2 por todas las ranuras inferiores. Cada ranura de conjuro tiene su propio compañero: en la rueda rápida o en la página de conjuros del libro de aptitudes, resalta un conjuro de Voluntad y pulsa X para hacerlo compañero de la ranura, o Y para quitarlo. El Tejido de conjuros se aprende en la página Híbrido del libro de aptitudes y se paga mitad con experiencia de Voluntad y mitad con experiencia de Habilidad; el nivel N teje lanzamientos hasta la potencia N. Control del tiempo y Revivir a los muertos nunca son compañeros."

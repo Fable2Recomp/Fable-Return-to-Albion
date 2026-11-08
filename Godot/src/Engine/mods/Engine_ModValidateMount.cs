@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Text.Json;
 
 namespace Refii.Mods;
 
@@ -48,9 +49,18 @@ public static partial class ModValidate
 
 			using (package)
 			{
-				issues.AddRange(Validate(ModWorkspace.ModMetadataFilename, ModWorkspace.FormatModToml(package.Metadata)));
+				var texts = new Dictionary<string, string>(StringComparer.Ordinal)
+				{
+					[ModWorkspace.ModMetadataFilename] = ModWorkspace.FormatModToml(package.Metadata),
+				};
+				issues.AddRange(Validate(ModWorkspace.ModMetadataFilename, texts[ModWorkspace.ModMetadataFilename]));
 				foreach (F2ModEntry entry in package.Entries)
 				{
+					if (Normalize(entry.Path) == EnglishTable)
+					{
+						texts[EnglishTable] = Encoding.UTF8.GetString(package.ReadEntryBytes(entry));
+					}
+
 					if (KindOf(entry.Path).Length == 0 || KindOf(entry.Path) == ModWorkspace.ModMetadataFilename)
 					{
 						continue;
@@ -67,8 +77,11 @@ public static partial class ModValidate
 						continue;
 					}
 
+					texts[Normalize(entry.Path)] = text;
 					issues.AddRange(Validate(entry.Path, text));
 				}
+
+				issues.AddRange(TextKeys(texts));
 			}
 
 			return issues;
@@ -79,18 +92,136 @@ public static partial class ModValidate
 			return issues;
 		}
 
+		var loose = new Dictionary<string, string>(StringComparer.Ordinal);
 		string toml = Path.Combine(source, ModWorkspace.ModMetadataFilename);
 		if (File.Exists(toml))
 		{
-			issues.AddRange(Validate(ModWorkspace.ModMetadataFilename, ReadText(toml)));
+			loose[ModWorkspace.ModMetadataFilename] = ReadText(toml);
+			issues.AddRange(Validate(ModWorkspace.ModMetadataFilename, loose[ModWorkspace.ModMetadataFilename]));
 		}
 
 		foreach (string file in ModManifest.EnumerateAssets(source))
 		{
 			string relative = Path.GetRelativePath(source, file);
+			if (Normalize(relative) == EnglishTable)
+			{
+				loose[EnglishTable] = ReadText(file);
+			}
+
 			if (KindOf(relative).Length != 0)
 			{
-				issues.AddRange(Validate(relative, ReadText(file)));
+				string text = ReadText(file);
+				loose[Normalize(relative)] = text;
+				issues.AddRange(Validate(relative, text));
+			}
+		}
+
+		issues.AddRange(TextKeys(loose));
+		return issues;
+	}
+
+	/// <summary>A mod's own en-uk text table, which every text key it names must have a row in.</summary>
+	public const string EnglishTable = "language/en-uk/text/book.babel.csv";
+
+	/// <summary>
+	/// THE TEXT KEYS a mod names where the player reads them — <c>{KEY}</c> in <c>settings.ui.json</c>'s
+	/// labels, descriptions and option labels, <c>input.json</c>'s labels and <c>mod.toml</c>'s name and
+	/// description (<see cref="ModText"/>) — each WARNED when the mod's own en-uk table
+	/// (<see cref="EnglishTable"/>) has no row for it: in a language the mod does not translate it would
+	/// fall to the running book (fine for a game tag) or be drawn as written. <paramref name="files"/> is
+	/// the mod's texts by normalised path (<see cref="Normalize"/>), <c>mod.toml</c> under its own name.
+	/// </summary>
+	public static List<ModIssue> TextKeys(IReadOnlyDictionary<string, string> files)
+	{
+		var issues = new List<ModIssue>();
+		var english = new HashSet<string>(StringComparer.Ordinal);
+		if (files.TryGetValue(EnglishTable, out string? table))
+		{
+			foreach (Refii.Text.BabelOverlayRow row in Refii.Text.BabelOverlay.ParseCsv(table, new List<string>()))
+			{
+				english.Add(row.Key);
+			}
+		}
+
+		void Check(string path, string pointer, string? text)
+		{
+			foreach (string key in ModText.Keys(text))
+			{
+				if (!english.Contains(key))
+				{
+					issues.Add(new ModIssue(path, pointer, false,
+						$"names the text key {{{key}}}, which {EnglishTable} has no row for; it is drawn from the game's book if the " +
+						"game has that tag, else as written"));
+				}
+			}
+		}
+
+		if (files.TryGetValue(ModWorkspace.ModMetadataFilename, out string? toml))
+		{
+			ModMetadata metadata = ModWorkspace.ParseModToml(toml.TrimStart('\uFEFF'));
+			Check(ModWorkspace.ModMetadataFilename, "name", metadata.Title);
+			Check(ModWorkspace.ModMetadataFilename, "description", metadata.Description);
+		}
+
+		foreach ((string path, string[] fields, bool options) in new[]
+		{
+			(ModSettingsUi.ModSettingsUiPath, new[] { "label", "description" }, true),
+			(ModInput.ModInputPath, new[] { "label" }, false),
+		})
+		{
+			if (!files.TryGetValue(path, out string? json))
+			{
+				continue;
+			}
+
+			JsonDocument document;
+			try
+			{
+				document = JsonDocument.Parse(json.TrimStart('\uFEFF'),
+					new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+			}
+			catch (JsonException)
+			{
+				continue;  // the file's own check says why
+			}
+
+			using (document)
+			{
+				if (document.RootElement.ValueKind != JsonValueKind.Object)
+				{
+					continue;
+				}
+
+				foreach (JsonProperty entry in document.RootElement.EnumerateObject())
+				{
+					if (entry.Value.ValueKind != JsonValueKind.Object)
+					{
+						continue;
+					}
+
+					foreach (string field in fields)
+					{
+						if (entry.Value.TryGetProperty(field, out JsonElement value) && value.ValueKind == JsonValueKind.String)
+						{
+							Check(path, entry.Name + "." + field, value.GetString());
+						}
+					}
+
+					if (options && entry.Value.TryGetProperty("options", out JsonElement list) && list.ValueKind == JsonValueKind.Array)
+					{
+						int i = 0;
+						foreach (JsonElement option in list.EnumerateArray())
+						{
+							if (option.ValueKind == JsonValueKind.Object &&
+								option.TryGetProperty("label", out JsonElement label) && label.ValueKind == JsonValueKind.String)
+							{
+								Check(path, $"{entry.Name}.options[{i}].label", label.GetString());
+							}
+
+							i++;
+						}
+					}
+				}
 			}
 		}
 

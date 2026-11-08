@@ -314,6 +314,7 @@ public sealed class Engine_UiTheme
 		int wrap = node.HasMeta("text_wrap") ? (int)node.GetMeta("text_wrap") : 0;
 		Vector2 box = node.HasMeta("text_box") ? (Vector2)node.GetMeta("text_box") : Vector2.Zero;
 		Color colour = node.HasMeta("text_colour") ? (Color)node.GetMeta("text_colour") : Colors.White;
+		int truncate = node.HasMeta("text_truncate") ? (int)node.GetMeta("text_truncate") : 0;
 
 		// Opaque, as Engine_UiSceneBuilder builds text: the engine overwrites a .bgf's own
 		// text alpha with 1.0, and the accumulated opacity belongs to the render association
@@ -353,7 +354,7 @@ public sealed class Engine_UiTheme
 
 		Engine_UiTextMesh.Built built = Layout(
 			display, size, opaque, horizontal, vertical, box.X, box.Y, wrap,
-			out Texture2D? atlas);
+			out Texture2D? atlas, truncate);
 		ArrayMesh? mesh = built.Mesh;
 		foreach (Engine_UiTextMesh.IconPlacement icon in built.Icons)
 		{
@@ -513,9 +514,12 @@ public sealed class Engine_UiTheme
 			}
 		}
 
+		// A built element's truncate rides its node (Engine_UiSceneBuilder), as its box and wrap
+		// ride the caller's arguments.
+		int truncate = label.HasMeta("text_truncate") ? (int)label.GetMeta("text_truncate") : 0;
 		Engine_UiTextMesh.Built built = Layout(
 			display, pointSize, colour, horizontalAlign, verticalAlign,
-			boxWidth, boxHeight, wrapMode, out Texture2D? atlas);
+			boxWidth, boxHeight, wrapMode, out Texture2D? atlas, truncate);
 
 		label.Mesh = built.Mesh;
 		label.MaterialOverride =
@@ -664,7 +668,7 @@ public sealed class Engine_UiTheme
 	private Engine_UiTextMesh.Built Layout(
 		string display, int pointSize, Color colour,
 		int horizontalAlign, int verticalAlign,
-		float boxWidth, float boxHeight, int wrapMode, out Texture2D? atlas)
+		float boxWidth, float boxHeight, int wrapMode, out Texture2D? atlas, int truncate = 0)
 	{
 		atlas = null;
 		if (display.Length == 0 || Fonts?.For(pointSize) is not { } selection)
@@ -686,6 +690,7 @@ public sealed class Engine_UiTheme
 			WrapMode = wrapMode,
 			BoxWidth = boxWidth,
 			BoxHeight = boxHeight,
+			Truncate = truncate,
 			R = colour.R,
 			G = colour.G,
 			B = colour.B,

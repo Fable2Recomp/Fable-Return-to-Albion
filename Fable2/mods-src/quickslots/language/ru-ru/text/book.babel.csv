@@ -1,0 +1,51 @@
+key,value
+QUICKSLOTS_MENU,Быстрые ячейки
+QUICKSLOTS_ASSIGN,Назначить быструю ячейку
+QUICKSLOTS_ASSIGN_TITLE,Назначить в быструю ячейку
+QUICKSLOTS_CHOOSE_TITLE,Выберите содержимое ячейки
+QUICKSLOTS_SLOT_1,Крестовина вверх
+QUICKSLOTS_SLOT_2,Крестовина вниз
+QUICKSLOTS_SLOT_3,Крестовина влево
+QUICKSLOTS_SLOT_4,Крестовина вправо
+QUICKSLOTS_SLOT_5,LT + вверх
+QUICKSLOTS_SLOT_6,LT + вниз
+QUICKSLOTS_SLOT_7,LT + влево
+QUICKSLOTS_SLOT_8,LT + вправо
+QUICKSLOTS_SLOT_9,RT + вверх
+QUICKSLOTS_SLOT_10,RT + вниз
+QUICKSLOTS_SLOT_11,RT + влево
+QUICKSLOTS_SLOT_12,RT + вправо
+QUICKSLOTS_AUTOMATIC,Автоматически (как в игре)
+QUICKSLOTS_EMPTY,Пусто
+QUICKSLOTS_CLEAR,Очистить эту ячейку
+QUICKSLOTS_REMOVE,Убрать из всех ячеек
+QUICKSLOTS_ITEM,Предмет
+QUICKSLOTS_WEAPON,Оружие
+QUICKSLOTS_EXPRESSION,Выражение
+QUICKSLOTS_SPELL,Заклинание
+QUICKSLOTS_ITEMS,Предметы и оружие
+QUICKSLOTS_EXPRESSIONS,Выражения
+QUICKSLOTS_SPELLS,Заклинания
+QUICKSLOTS_MOD_NAME,Быстрые ячейки
+QUICKSLOTS_MOD_DESCRIPTION,"Двенадцать назначаемых быстрых ячеек на крестовине: четыре направления, LT + направление и RT + направление, в каждой — предмет для использования, оружие, которое нужно достать, выражение для исполнения или заклинание для подготовки. Назначайте их из инвентаря, книг выражений и способностей или из колеса выражений; крестовина на экране показывает, что лежит в каждой ячейке. Направление без назначения сохраняет своё обычное действие в игре."
+QUICKSLOTS_SETTING_LT_BANK,Набор LT + крестовина
+QUICKSLOTS_SETTING_LT_BANK_DESCRIPTION,"Ещё четыре ячейки, доступные при удержании левого триггера."
+QUICKSLOTS_SETTING_RT_BANK,Набор RT + крестовина
+QUICKSLOTS_SETTING_RT_BANK_DESCRIPTION,"Ещё четыре ячейки, доступные при удержании правого триггера. Пока хоть одна из них назначена, правый триггер больше не открывает меню заклинаний."
+QUICKSLOTS_SETTING_HUD_ICONS,Значки ячеек на крестовине
+QUICKSLOTS_SETTING_HUD_ICONS_DESCRIPTION,"Показывает на крестовине на экране, что лежит в каждой ячейке, а при зажатом триггере — ячейки удерживаемого набора."
+QUICKSLOTS_INPUT_UP,Быстрая ячейка вверх
+QUICKSLOTS_INPUT_DOWN,Быстрая ячейка вниз
+QUICKSLOTS_INPUT_LEFT,Быстрая ячейка влево
+QUICKSLOTS_INPUT_RIGHT,Быстрая ячейка вправо
+QUICKSLOTS_INPUT_LT_UP,Ячейка LT вверх
+QUICKSLOTS_INPUT_LT_DOWN,Ячейка LT вниз
+QUICKSLOTS_INPUT_LT_LEFT,Ячейка LT влево
+QUICKSLOTS_INPUT_LT_RIGHT,Ячейка LT вправо
+QUICKSLOTS_INPUT_RT_UP,Ячейка RT вверх
+QUICKSLOTS_INPUT_RT_DOWN,Ячейка RT вниз
+QUICKSLOTS_INPUT_RT_LEFT,Ячейка RT влево
+QUICKSLOTS_INPUT_RT_RIGHT,Ячейка RT вправо
+QUICKSLOTS_INPUT_LT,Набор LT (удерживать)
+QUICKSLOTS_INPUT_RT,Набор RT (удерживать)
+QUICKSLOTS_INPUT_ASSIGN,Назначить выделенное выражение

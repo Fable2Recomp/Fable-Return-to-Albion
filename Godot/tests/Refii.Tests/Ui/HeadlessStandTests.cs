@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using GdUnit4;
 using Refii.Ui;
+using Refii.Titles.Fable2;
 using static GdUnit4.Assertions;
 
 namespace Refii.Tests.Ui;

@@ -1,0 +1,5 @@
+key,value
+TOGGLE_SPRINT_MOD_NAME,Przełączany sprint
+TOGGLE_SPRINT_MOD_DESCRIPTION,"Sprint jest przełączany zamiast przytrzymywany: naciśnij Shift (lub A na padzie) raz, aby zacząć sprint, i ponownie, aby się zatrzymać. Każdy gracz w trybie współpracy ma własny przełącznik."
+TOGGLE_SPRINT_SETTING_STOP_AFTER,Zatrzymaj po bezruchu
+TOGGLE_SPRINT_SETTING_STOP_AFTER_DESCRIPTION,"Sekundy bezruchu, po których sprint się kończy i trzeba ponownie nacisnąć Shift. 0 oznacza ciągły sprint."

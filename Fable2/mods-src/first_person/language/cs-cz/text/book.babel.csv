@@ -1,0 +1,23 @@
+key,value
+FIRST_PERSON_MOD_NAME,Pohled z první osoby
+FIRST_PERSON_MOD_DESCRIPTION,"Hraj Fable II z pohledu první osoby: kamera sedí v hlavě hrdiny, hlava je skrytá a tělo zůstává vidět, a ty chodíš, bojuješ a rozhlížíš se myší nebo pravou páčkou. H přepíná mezi první a třetí osobou, pro každého hráče zvlášť na rozdělené obrazovce i v online kooperaci. Celé animace, skriptované akce a (ve výchozím nastavení) míření střelnou zbraní si ponechávají kamery hry."
+FIRST_PERSON_SETTING_START_ON,Začínat v první osobě
+FIRST_PERSON_SETTING_START_ON_DESCRIPTION,"Zda každý hráč začne relaci v první osobě. H přepíná pohled tomu, kdo ho stiskne."
+FIRST_PERSON_SETTING_FOV,Zorné pole
+FIRST_PERSON_SETTING_FOV_DESCRIPTION,Ve stupních. Vlastní pohled hry z první osoby používá 75.
+FIRST_PERSON_SETTING_EYE_HEIGHT,Výška očí
+FIRST_PERSON_SETTING_EYE_HEIGHT_DESCRIPTION,Metry nad kolizním bodem hlavy.
+FIRST_PERSON_SETTING_EYE_FORWARD,Posun očí vpřed
+FIRST_PERSON_SETTING_EYE_FORWARD_DESCRIPTION,"Metry před hlavou, aby obličej nezakrýval pohled."
+FIRST_PERSON_SETTING_PITCH_LIMIT,Pohled nahoru a dolů
+FIRST_PERSON_SETTING_PITCH_LIMIT_DESCRIPTION,"Jak daleko nahoru nebo dolů se můžeš podívat, ve stupních."
+FIRST_PERSON_SETTING_FACE_CAMERA,Hrdina se otáčí za pohledem
+FIRST_PERSON_SETTING_FACE_CAMERA_NEVER,Nikdy
+FIRST_PERSON_SETTING_FACE_CAMERA_STANDING,Když stojí
+FIRST_PERSON_SETTING_FACE_CAMERA_ALWAYS,Vždy
+FIRST_PERSON_SETTING_FACE_CAMERA_DESCRIPTION,"Otáčí hrdinu tam, kam se díváš, aby údery a kouzla mířily tam."
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM,Míření z třetí osoby
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM_DESCRIPTION,Míření střelnou zbraní nebo kuší používá herní kameru přes rameno.
+FIRST_PERSON_SETTING_SCENES,První osoba v rozhovorech
+FIRST_PERSON_SETTING_SCENES_DESCRIPTION,"Zůstane v první osobě při rozhovorech a interaktivních scénách, čelem k mluvčímu. Celé animace si ponechávají vlastní kameru."
+FIRST_PERSON_INPUT_TOGGLE,První / třetí osoba

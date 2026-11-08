@@ -1,5 +1,7 @@
 #include "vfs_hooks_private.h"
 
+#include "core/installed_cultures.h"
+
 namespace refii::vfs {
 inline namespace detail {
 
@@ -348,10 +350,8 @@ std::vector<std::filesystem::path> BuildBankManifestRootCandidates(
     const bool has_locale_component =
         first_component.find('-') != std::string_view::npos;
     if (!has_locale_component && first_separator != std::string_view::npos) {
-      static constexpr std::string_view kKnownLanguageLocales[] = {
-          "en-uk", "hu-hu", "zh-cht", "cs-cz", "ko-kr", "pl-pl", "sk-sk"};
       const std::string_view localized_tail = tail;
-      for (const std::string_view locale : kKnownLanguageLocales) {
+      for (const std::string& locale : InstalledLanguageCultures()) {
         add_unique(std::filesystem::path("language") /
                    std::string(locale) / std::string(localized_tail));
       }

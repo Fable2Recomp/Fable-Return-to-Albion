@@ -1,0 +1,23 @@
+key,value
+FIRST_PERSON_MOD_NAME,1인칭 시점
+FIRST_PERSON_MOD_DESCRIPTION,"Fable II를 1인칭 시점으로 플레이합니다. 카메라가 영웅의 머리 위치에 놓이고, 머리는 숨겨지며 몸은 보이는 상태로, 마우스나 오른쪽 스틱으로 걷고 싸우고 둘러봅니다. H 키로 1인칭과 3인칭을 전환하며, 화면 분할과 온라인 협동 게임에서는 플레이어마다 따로 전환됩니다. 전체 컷신, 정해진 동작, (기본적으로) 총 조준은 게임 고유의 카메라를 유지합니다."
+FIRST_PERSON_SETTING_START_ON,1인칭으로 시작
+FIRST_PERSON_SETTING_START_ON_DESCRIPTION,각 플레이어가 1인칭 시점으로 세션을 시작할지 정합니다. H 키는 누른 플레이어의 시점을 전환합니다.
+FIRST_PERSON_SETTING_FOV,시야각
+FIRST_PERSON_SETTING_FOV_DESCRIPTION,단위는 도입니다. 게임 고유의 1인칭 시점은 75를 사용합니다.
+FIRST_PERSON_SETTING_EYE_HEIGHT,눈 높이
+FIRST_PERSON_SETTING_EYE_HEIGHT_DESCRIPTION,머리 충돌 지점 위의 높이(미터)입니다.
+FIRST_PERSON_SETTING_EYE_FORWARD,눈 앞쪽 위치
+FIRST_PERSON_SETTING_EYE_FORWARD_DESCRIPTION,"머리 앞쪽 거리(미터)로, 얼굴이 시야를 가리지 않게 합니다."
+FIRST_PERSON_SETTING_PITCH_LIMIT,위아래 보기
+FIRST_PERSON_SETTING_PITCH_LIMIT_DESCRIPTION,위나 아래로 볼 수 있는 각도(도)입니다.
+FIRST_PERSON_SETTING_FACE_CAMERA,영웅이 시선 방향을 향함
+FIRST_PERSON_SETTING_FACE_CAMERA_NEVER,안 함
+FIRST_PERSON_SETTING_FACE_CAMERA_STANDING,서 있을 때
+FIRST_PERSON_SETTING_FACE_CAMERA_ALWAYS,항상
+FIRST_PERSON_SETTING_FACE_CAMERA_DESCRIPTION,보는 방향으로 영웅을 돌려 공격과 마법이 그쪽으로 향하게 합니다.
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM,3인칭 총 조준
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM_DESCRIPTION,총이나 석궁으로 조준할 때 게임의 어깨 너머 카메라를 사용합니다.
+FIRST_PERSON_SETTING_SCENES,대화 중 1인칭
+FIRST_PERSON_SETTING_SCENES_DESCRIPTION,대화와 상호작용 장면에서도 1인칭을 유지하며 말하는 사람을 바라봅니다. 전체 컷신은 고유의 카메라를 유지합니다.
+FIRST_PERSON_INPUT_TOGGLE,1인칭 / 3인칭

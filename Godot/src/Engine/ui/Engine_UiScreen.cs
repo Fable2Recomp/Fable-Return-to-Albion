@@ -51,9 +51,6 @@ public sealed class UiText
 	/// <summary>The authored tag or literal, before localisation.</summary>
 	public string Tag = string.Empty;
 
-	/// <summary>True when the string came from the running guest rather than the file.</summary>
-	public bool Live;
-
 	/// <summary>The string to display, after Babel lookup. Empty for the <c>"-"</c> sentinel.</summary>
 	public string Display = string.Empty;
 
@@ -69,6 +66,12 @@ public sealed class UiText
 
 	/// <summary>Box extents in virtual UI pixels — the authored 0..1 already scaled.</summary>
 	public float BoxWidth, BoxHeight;
+
+	/// <summary>
+	/// The element's <c>truncate</c> attribute in pixels, 0 when it has none: a single line wider
+	/// than this is ellipsised where the title's contract truncates (<see cref="Engine_UiTextTruncate"/>).
+	/// </summary>
+	public int Truncate;
 
 	public float R = 1, G = 1, B = 1;
 
@@ -152,9 +155,6 @@ public sealed class Engine_UiScreen
 	public int CanvasWidth;
 	public int CanvasHeight;
 
-	/// <summary>True when the guest's live element state was applied to this screen.</summary>
-	public bool IsLive;
-
 	public UiNode[] Nodes = Array.Empty<UiNode>();
 
 	/// <summary>
@@ -193,8 +193,7 @@ public sealed class Engine_UiScreen
 	/// automatically when present.
 	/// </summary>
 	public static Engine_UiScreen Load(string bgfPath, Engine_TextureNameTable? textures = null,
-		Engine_BabelDatabase? strings = null, int sceneSlide = 0,
-		IReadOnlyList<int>? liveSlides = null)
+		Engine_BabelDatabase? strings = null, int sceneSlide = 0)
 	{
 		string facPath = Path.ChangeExtension(bgfPath, ".fac");
 		string bsgPath = Path.ChangeExtension(bgfPath, ".bsg");
@@ -202,7 +201,7 @@ public sealed class Engine_UiScreen
 			File.ReadAllBytes(bgfPath),
 			File.Exists(facPath) ? File.ReadAllBytes(facPath) : null,
 			File.Exists(bsgPath) ? File.ReadAllBytes(bsgPath) : null,
-			textures, strings, sceneSlide, liveSlides);
+			textures, strings, sceneSlide);
 	}
 
 	/// <summary>
@@ -215,21 +214,13 @@ public sealed class Engine_UiScreen
 	/// </summary>
 	public static Engine_UiScreen Parse(string name, byte[] bgfBytes, byte[]? facBytes,
 		byte[]? bsgBytes = null, Engine_TextureNameTable? textures = null, Engine_BabelDatabase? strings = null,
-		int sceneSlide = 0, IReadOnlyList<int>? liveSlides = null,
-		IReadOnlyList<string?>? liveText = null,
-		IReadOnlyList<float?>? liveOpacity = null,
-		IReadOnlyList<bool>? liveVisible = null,
-		IReadOnlyList<float?[]?>? liveTransform = null,
-		IReadOnlyList<uint>? liveTextures = null,
-		IReadOnlyList<LiveTint?>? liveTint = null)
+		int sceneSlide = 0)
 	{
 		var doc = Engine_BgfDocument.Parse(bgfBytes);
 
 		// Before anything reads MasterActive or an override: visibility and every attribute
-		// lookup resolve against the slide state. The guest's per-element slides win when
-		// present; the single scene slide is the no-guest fallback.
-		bool live = liveSlides is { Count: > 0 } && doc.SetElementSlides(liveSlides);
-		if (!live && sceneSlide > 0)
+		// lookup resolve against the slide state.
+		if (sceneSlide > 0)
 		{
 			doc.SetSceneSlide(sceneSlide);
 		}
@@ -337,47 +328,6 @@ public sealed class Engine_UiScreen
 		// value is a placeholder the guest restates from the ability's GDB record.
 		screen.FindMovieSlots();
 		screen.ResolveMasks();
-
-		// Last, over everything the file said: what the element holds right now. The shipped
-		// presentation carries placeholders (`DEFAULT_TEXT_ID`) and some tags resolve through a
-		// table that is not the Babel book.
-		screen.IsLive = live;
-
-		// The screen's Lua hides and moves elements with setAttribute and none of that is in the
-		// file — Page.Initialize zeroes DimensionsImage opacity, display boxes hide themselves.
-		if (live && liveVisible is { Count: > 0 })
-		{
-			screen.ApplyLiveVisibility(liveVisible);
-		}
-		if (live && liveOpacity is { Count: > 0 })
-		{
-			screen.ApplyLiveOpacity(liveOpacity);
-		}
-		// After the slide state: a slide's move is an attribute write too, so what the guest
-		// currently holds already includes it and is the final word.
-		if (live && liveTransform is { Count: > 0 })
-		{
-			screen.ApplyLiveTransform(liveTransform);
-		}
-		if (live && liveText is { Count: > 0 })
-		{
-			screen.ApplyLiveText(liveText);
-		}
-
-		// After the quads exist (AttachFac builds them) and after the slide baseline, so a swap
-		// lands on the quad the screen will draw.
-		if (live && liveTextures is { Count: > 0 })
-		{
-			screen.LiveTexturesRead = true;
-			screen.ApplyLiveTextures(liveTextures, textures);
-		}
-
-		// The tint WEIGHT is a live attribute; the file's copy is only where it starts. After the
-		// quads exist, because it lands on a quad rather than an element.
-		if (live && liveTint is { Count: > 0 })
-		{
-			screen.ApplyLiveTint(liveTint);
-		}
 
 		// Before the frame engine: a wheel item's frame is copied off MenuItemTemplate rather
 		// than authored, and it is a nine-slice, so laying out first would size panels against a
@@ -540,259 +490,17 @@ public sealed class Engine_UiScreen
 				continue;
 			}
 			node.Text = BuildText(t, strings);
+
+			// An int on the element itself, not in the .fac record: CTextAsset_vf3 reads it
+			// live (Fable 3 0x82B46318..0x82B46344, Fable 2 0x828711D8..0x82871208).
+			if (node.Element.TryGetAttribute("truncate", out BgfAttribute truncate) &&
+				truncate.Type is BgfValueType.Int1 or BgfValueType.Int2)
+			{
+				node.Text.Truncate = truncate.AsInt();
+			}
 		}
 
 		// LIGHT records address the .bsg scene graph, so they are not joined here.
-	}
-
-	/// <summary>
-	/// Replaces each node's visibility with the guest's own <c>globalactive</c>, overriding the
-	/// slide-derived state entirely. The guest derives it every frame as
-	/// <c>active AND in-time-range AND parent's globalactive</c> and gates drawing on it; the
-	/// parent chain is folded in guest-side, so an element whose ancestor is off arrives false
-	/// and the builder drops its subtree. A node the guest did not report keeps the file's answer.
-	/// </summary>
-	private void ApplyLiveVisibility(IReadOnlyList<bool> liveVisible)
-	{
-		// Keep what the file said before overwriting it, so the disagreement is measurable.
-		_fileVisible = new bool[Nodes.Length];
-		for (int i = 0; i < Nodes.Length; ++i)
-		{
-			_fileVisible[i] = Nodes[i].Visible;
-		}
-
-		for (int i = 0; i < Nodes.Length && i < liveVisible.Count; ++i)
-		{
-			Nodes[i].Visible = liveVisible[i];
-		}
-	}
-
-	private bool[]? _fileVisible;
-
-	/// <summary>
-	/// What the .bgf's own slide state said about element <paramref name="index"/>, before the
-	/// guest's <c>globalactive</c> replaced it. Falls back to the live value when no live
-	/// visibility was applied.
-	/// </summary>
-	public bool FileVisible(int index) =>
-		_fileVisible is not null && index >= 0 && index < _fileVisible.Length
-			? _fileVisible[index]
-			: index >= 0 && index < Nodes.Length && Nodes[index].Visible;
-
-	/// <summary>The guest's live tint for one element: a weight, and the colour it weights.</summary>
-	public readonly record struct LiveTint(float Amount, float? R, float? G, float? B);
-
-	/// <summary>
-	/// Applies the guest's <c>TintingAmount</c> to each quad that has one. A null entry means the
-	/// guest states no amount and the authored lane stands — unstated is not zero. Elements with
-	/// no quad are skipped: the attribute is legal anywhere, but only a quad has a colour.
-	/// </summary>
-	private void ApplyLiveTint(IReadOnlyList<LiveTint?> liveTint)
-	{
-		for (int i = 0; i < Nodes.Length && i < liveTint.Count; ++i)
-		{
-			if (liveTint[i] is not { } tint)
-			{
-				continue;
-			}
-
-			// THE ATTRIBUTE IS ON A MATERIAL CHILD; THE QUAD IS ON ITS PARENT.
-			// `g_MenuFormatter:SetTintingAmountAndDiffuseColour` targets `GetFirstChild(border)`,
-			// so the element carrying `TintingAmount` never has a quad and vice versa. Hoisting
-			// to the parent is the first-child rule `Engine_UiMenuCloning.TintWritesUnder` uses.
-			UiQuad? quad = Nodes[i].Quad;
-			if (quad is null && Nodes[i].Parent is { Quad: { } parentQuad })
-			{
-				quad = parentQuad;
-			}
-
-			if (quad is null)
-			{
-				continue;
-			}
-
-			quad.TintAmount = tint.Amount;
-
-			// Colour only where the guest states it — an unstated channel keeps the .fac's,
-			// which is the same "unstated is not zero" rule the transform read follows.
-			if (tint.R is { } r) quad.R = r;
-			if (tint.G is { } g) quad.G = g;
-			if (tint.B is { } b) quad.B = b;
-
-			++LiveTintsApplied;
-		}
-	}
-
-	/// <summary>Quads whose tint weight the guest stated. Zero on a screen it never tints.</summary>
-	public int LiveTintsApplied;
-
-	/// <summary>
-	/// Replaces each node's opacity with the guest's. Indexed by element ordinal like the
-	/// slides; a node the guest did not report keeps the authored value.
-	/// </summary>
-	private void ApplyLiveOpacity(IReadOnlyList<float?> liveOpacity)
-	{
-		for (int i = 0; i < Nodes.Length && i < liveOpacity.Count; ++i)
-		{
-			if (liveOpacity[i] is { } opacity)
-			{
-				Nodes[i].Opacity = opacity;
-			}
-		}
-	}
-
-	/// <summary>
-	/// Applies the guest's live transform attributes over the file's. A slide moves an element by
-	/// writing attributes (`setAttribute(el, 'position.x', …)`) and the shipped Lua does the same
-	/// for anything it lays out. A null entry means the guest states none and the file stands.
-	/// </summary>
-	private void ApplyLiveTransform(IReadOnlyList<float?[]?> liveTransform)
-	{
-		for (int i = 0; i < Nodes.Length && i < liveTransform.Count; ++i)
-		{
-			if (liveTransform[i] is not { } values)
-			{
-				continue;
-			}
-
-			UiNode n = Nodes[i];
-			if (values.Length > 0 && values[0] is { } x) n.PositionX = x;
-			if (values.Length > 1 && values[1] is { } y) n.PositionY = y;
-			if (values.Length > 2 && values[2] is { } z) n.PositionZ = z;
-			if (values.Length > 3 && values[3] is { } sx) n.ScaleX = sx;
-			if (values.Length > 4 && values[4] is { } sy) n.ScaleY = sy;
-			if (values.Length > 5 && values[5] is { } sz) n.ScaleZ = sz;
-		}
-	}
-
-	/// <summary>
-	/// Replaces each quad's texture with the one the guest has put on that element. The file's
-	/// texture is a placeholder for a whole class of widget — the dpad quick-slots are authored
-	/// on `art\gui\expressions\empty.tex`, the HUD's `WorldIcons` slots share one icon. A zero
-	/// hash means the guest states nothing and the file stands; a hash that resolves to no path
-	/// is also left alone, being a gap in the name table.
-	/// </summary>
-	private void ApplyLiveTextures(IReadOnlyList<uint> liveTextures, Engine_TextureNameTable? textures)
-	{
-		if (textures is null)
-		{
-			return;
-		}
-
-		for (int i = 0; i < Nodes.Length && i < liveTextures.Count; ++i)
-		{
-			uint hash = liveTextures[i];
-			if (hash == 0)
-			{
-				continue;
-			}
-
-			++LiveTexturesStated;
-
-			if (Nodes[i].Quad is not { } quad)
-			{
-				++LiveTexturesNotAQuad;
-				continue;
-			}
-
-			if (quad.TextureHash == hash)
-			{
-				++LiveTexturesSame;
-				continue;
-			}
-
-			if (!textures.TryResolve(hash, out string path))
-			{
-				++LiveTexturesUnresolved;
-
-				// Named, not just counted: an unresolved hash is either a gap in the name table
-				// or a surface the guest RENDERS INTO (a Bink target), and those need opposite
-				// work. Capped — a genuine table gap would print thousands.
-				if (UnresolvedTextures.Count < 8)
-				{
-					UnresolvedTextures.Add($"{Nodes[i].Name}#{i}=0x{hash:X8}");
-				}
-
-				continue;
-			}
-
-			quad.TextureHash = hash;
-			quad.TexturePath = path;
-			++LiveTexturesApplied;
-		}
-	}
-
-	/// <summary>Quads whose texture the guest replaced. Zero on a screen that swaps none.</summary>
-	public int LiveTexturesApplied;
-
-	/// <summary>
-	/// Elements for which the guest stated ANY texture, applied or not. The counters below split
-	/// the four causes of "0 swapped": array never read, guest states nothing, guest states what
-	/// the file already says, or a hash the name table cannot resolve — only the last is ours.
-	/// </summary>
-	public int LiveTexturesStated;
-
-	/// <summary>Stated textures identical to the file's — the guest confirming, not swapping.</summary>
-	public int LiveTexturesSame;
-
-	/// <summary>Stated textures whose hash is not in the name table. These are the losses.</summary>
-	public int LiveTexturesUnresolved;
-
-	/// <summary>The first few unresolved ones by element and hash — see ApplyLiveTextures.</summary>
-	public readonly List<string> UnresolvedTextures = new();
-
-	/// <summary>
-	/// Stated textures on an element with no quad. Not a defect: the guest holds texture
-	/// references on Material and Texture elements too, and those never draw.
-	/// </summary>
-	public int LiveTexturesNotAQuad;
-
-	/// <summary>True when the host handed us a per-element texture array at all.</summary>
-	public bool LiveTexturesRead;
-
-	/// <summary>
-	/// One line describing the texture-swap pass. Not silent when nothing happened: an array read
-	/// back entirely zero is a different state from one never read.
-	/// </summary>
-	public string DescribeLiveTextures()
-	{
-		if (!LiveTexturesRead)
-		{
-			return ", no live texture array";
-		}
-
-		if (LiveTexturesStated == 0)
-		{
-			return ", live textures read but every element stated 0";
-		}
-
-		return $", textures stated {LiveTexturesStated}: {LiveTexturesApplied} swapped, " +
-			$"{LiveTexturesSame} already correct" +
-			(LiveTexturesNotAQuad > 0
-				? $", {LiveTexturesNotAQuad} on elements that draw no quad"
-				: string.Empty) +
-			(LiveTexturesUnresolved > 0
-				? $", {LiveTexturesUnresolved} NOT IN THE NAME TABLE " +
-				  $"[{string.Join(", ", UnresolvedTextures)}]"
-				: string.Empty);
-	}
-
-	/// <summary>
-	/// Replaces each text node's string with the guest's, keyed by the element's sdbm name hash.
-	/// A node the guest did not report keeps whatever the file resolved to.
-	/// </summary>
-	private void ApplyLiveText(IReadOnlyList<string?> liveText)
-	{
-		for (int i = 0; i < Nodes.Length && i < liveText.Count; ++i)
-		{
-			if (Nodes[i].Text is not { } text || liveText[i] is not { Length: > 0 } live)
-			{
-				continue;
-			}
-
-			text.Display = live;
-			text.Live = true;
-		}
 	}
 
 	private static UiText BuildText(FacTextRecord t, Engine_BabelDatabase? strings)

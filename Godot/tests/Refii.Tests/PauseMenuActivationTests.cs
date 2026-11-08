@@ -84,15 +84,15 @@ public sealed class PauseMenuActivationTests
     {
         var menu = new Engine_FrontEndMenu();
         menu.Add(new Engine_UiExpandableMenu.Item("New Game", "New Game")
-            { Opens = Engine_FrontEndMenu.HeroCardScreen });
+            { Opens = Fable2FrontEndRoot.HeroCardScreen });
         AssertThat(menu.Activate(out string? screen)).IsNull();
-        AssertThat(menu.Warning).IsEqual(Engine_FrontEndMenu.NoProfileWarning);
+        AssertThat(menu.Warning).IsEqual(Fable2FrontEndRoot.NoProfileWarning);
         AssertThat(screen).IsNull();
         var model = new Engine_UiModel.FrontEndModel(true, 0, 1, 0, false, true, 0, 0, true, 0, 0);
-        menu.ApplyAvailability(model, new Engine_UiModel.SaveState(true, 1, 6));
+        Fable2FrontEndRoot.ApplyAvailability(menu, model, new Engine_UiModel.SaveState(true, 1, 6));
         AssertThat(menu.Activate(out screen)).IsNull();
         AssertThat(menu.Warning).IsNull();
-        AssertThat(screen).IsEqual(Engine_FrontEndMenu.HeroCardScreen);
+        AssertThat(screen).IsEqual(Fable2FrontEndRoot.HeroCardScreen);
         menu.Highlighted!.Ghosted = true;
         AssertThat(menu.Activate(out screen)).IsNull();
         AssertThat(screen).IsNull();
@@ -152,7 +152,7 @@ public sealed class PauseMenuActivationTests
         {
             stated.Add(new() { Name = guestNames[i], Parent = "Root", Label = labels[i] });
         }
-        AssertThat(Engine_PauseMenu.ApplyStatedLabels(menu, stated)).IsTrue();
+        AssertThat(Engine_UiMenuModel.ApplyStatedLabels(menu, stated)).IsTrue();
         AssertThat(menu.Visible.Count).IsEqual(10);
         AssertThat(menu.Visible[7].Name).IsEqual("Achievements");
         AssertThat(menu.Visible[8].Name).IsEqual("Multiplayer");
@@ -198,22 +198,22 @@ public sealed class PauseMenuActivationTests
     public void StatedLabelsJoinByNameOnly()
     {
         Engine_FrontEndMenu menu = PauseFixture();
-        AssertThat(Engine_PauseMenu.ApplyStatedLabels(menu, new List<Engine_UiMenuModel.Row>())).IsFalse();
+        AssertThat(Engine_UiMenuModel.ApplyStatedLabels(menu, new List<Engine_UiMenuModel.Row>())).IsFalse();
 
         var stated = new List<Engine_UiMenuModel.Row>
         {
             new() { Name = "Map", Parent = "Root", Label = "Quests/Maps!" },
             new() { Name = "Options", Parent = "Root", Label = "Options" },
         };
-        AssertThat(Engine_PauseMenu.ApplyStatedLabels(menu, stated)).IsTrue();
+        AssertThat(Engine_UiMenuModel.ApplyStatedLabels(menu, stated)).IsTrue();
         AssertThat(menu.Find("Map")!.StatedLabel).IsEqual("Quests/Maps!");
         AssertThat(menu.Find("Abilities")!.StatedLabel).IsNull();
         AssertThat(menu.Find("Achievements")!.StatedLabel).IsNull();
 
         stated.RemoveAt(0);
-        AssertThat(Engine_PauseMenu.ApplyStatedLabels(menu, stated)).IsTrue();
+        AssertThat(Engine_UiMenuModel.ApplyStatedLabels(menu, stated)).IsTrue();
         AssertThat(menu.Find("Map")!.StatedLabel).IsNull();
-        AssertThat(Engine_PauseMenu.ApplyStatedLabels(menu, stated, clearUnnamed: false)).IsFalse();
+        AssertThat(Engine_UiMenuModel.ApplyStatedLabels(menu, stated, clearUnnamed: false)).IsFalse();
     }
 
     /// <summary>Builds a synthetic population using the production tab factory and both host-only commands.</summary>

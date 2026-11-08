@@ -26,3 +26,26 @@ QUICKSLOTS_SPELL,Spell
 QUICKSLOTS_ITEMS,Items and weapons
 QUICKSLOTS_EXPRESSIONS,Expressions
 QUICKSLOTS_SPELLS,Spells
+QUICKSLOTS_MOD_NAME,Quickslots
+QUICKSLOTS_MOD_DESCRIPTION,"Twelve assignable quickslots on the D-pad: the four directions, LT + a direction and RT + a direction, each holding an item to use, a weapon to draw, an expression to perform or a spell to ready. Assign from the inventory, expressions and abilities books or from the expression wheel; the D-pad on the HUD shows what each slot holds. A direction with nothing assigned keeps the game's own use."
+QUICKSLOTS_SETTING_LT_BANK,LT + D-pad bank
+QUICKSLOTS_SETTING_LT_BANK_DESCRIPTION,"Four more slots, reached by holding the left trigger."
+QUICKSLOTS_SETTING_RT_BANK,RT + D-pad bank
+QUICKSLOTS_SETTING_RT_BANK_DESCRIPTION,"Four more slots, reached by holding the right trigger. While any of them is assigned the right trigger no longer opens the spells menu."
+QUICKSLOTS_SETTING_HUD_ICONS,Slot icons on the D-pad
+QUICKSLOTS_SETTING_HUD_ICONS_DESCRIPTION,"Show what each slot holds on the HUD's D-pad, and the held bank's slots while a trigger is down."
+QUICKSLOTS_INPUT_UP,Quickslot up
+QUICKSLOTS_INPUT_DOWN,Quickslot down
+QUICKSLOTS_INPUT_LEFT,Quickslot left
+QUICKSLOTS_INPUT_RIGHT,Quickslot right
+QUICKSLOTS_INPUT_LT_UP,LT quickslot up
+QUICKSLOTS_INPUT_LT_DOWN,LT quickslot down
+QUICKSLOTS_INPUT_LT_LEFT,LT quickslot left
+QUICKSLOTS_INPUT_LT_RIGHT,LT quickslot right
+QUICKSLOTS_INPUT_RT_UP,RT quickslot up
+QUICKSLOTS_INPUT_RT_DOWN,RT quickslot down
+QUICKSLOTS_INPUT_RT_LEFT,RT quickslot left
+QUICKSLOTS_INPUT_RT_RIGHT,RT quickslot right
+QUICKSLOTS_INPUT_LT,LT bank (held)
+QUICKSLOTS_INPUT_RT,RT bank (held)
+QUICKSLOTS_INPUT_ASSIGN,Assign the highlighted expression

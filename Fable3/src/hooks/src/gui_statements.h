@@ -157,12 +157,6 @@ bool ElementName(uint32_t element, uint32_t& presentation, std::string& path);
 bool HeadlessAnswerAttributeString(PPCContext& ctx, uint8_t* base, uint32_t out, uint32_t element,
                                    uint32_t presentation, uint32_t name);
 
-/// THE OPACITY A HEADLESS ELEMENT HOLDS, as the guest's own writers left it (gui_element_hooks.cpp):
-/// `@Element.StoredOpacity(pres, elem, path, value)` with the element's stored `opacity` — after
-/// SetOpacity, after the visibility toggle, and for each element the track pass moved
-/// (headless_presentation_hooks.cpp) — posted when it changed. `bits` is the stored word.
-void StateStoredOpacity(uint32_t element, uint32_t presentation, uint32_t bits);
-
 /// A presentation as a statement names it: `=<document>` once its load was seen (the .bgf's stem,
 /// lower-cased: `=hud`, `=interactionmode`), else its address in hex (ui_stated_hooks.cpp).
 std::string PresentationKey(uint32_t presentation);
@@ -187,6 +181,9 @@ void StateVisible(uint32_t presentation, uint32_t element, const std::string& pa
 /// path setters' r5 (sub_8281A428 / sub_8281A500), the interaction mode tick's root slide and the
 /// interaction bars' show (interaction_hooks.cpp).
 void StateState(uint32_t presentation, uint32_t element, const std::string& path, int32_t slide, const char* via);
+/// `@Ui.Opacity(pres, elem, path, opacity, via)` — an outright opacity a writer's own call passes
+/// (sub_82819420's f1 at a stated call site).
+void StateOpacity(uint32_t presentation, uint32_t element, const std::string& path, float opacity, const char* via);
 /// `@Ui.Active(pres, elem, path, on, via)` — the active flag's request (sub_828196E0's r5): flag 0x2000,
 /// `globalactive`, the whole subtree skipped when off.
 void StateActive(uint32_t presentation, uint32_t element, const std::string& path, bool on, const char* via);

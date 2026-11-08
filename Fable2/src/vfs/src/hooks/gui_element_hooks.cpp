@@ -4,7 +4,6 @@
 #include <cstdint>
 
 #include "vfs_hooks_private.h"
-#include "core/guest_state.h"
 #include "gui/gui_told_statements.h"
 #include "hooks/ppc_externs.h"
 
@@ -82,11 +81,8 @@ REX_EXTERN(rex_lhGuiElement_SetText) {
 ///
 /// THE EXPRESSION WHEEL WRITES EVERY ONE OF ITS EIGHT TITLES THROUGH THIS ONE.
 /// `sub_826AC5F0` resolves `item<N>/Title` and calls it at 0x826ac704; `sub_826AB1F8` runs
-/// that for all eight sectors in the single frame the ring opens. With only the sibling above
-/// hooked, no text change was ever noted for the wheel, the cached element list kept its seed,
-/// and all eight sectors painted `hud.bgf`'s authored placeholder `QUICK_FLIRTY` — the same
-/// string sixteen times in the art, which is why every sector read alike rather than each
-/// reading its own name.
+/// that for all eight sectors in the single frame the ring opens, so each sector's title is
+/// told here.
 REX_EXTERN(rex_lhGuiElement_SetTextFromTag) {
     REX_FUNC_PROLOGUE();
 

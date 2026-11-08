@@ -1,3 +1,7 @@
 key,value
 SOULS_COMBAT_STAMINA_NAME,Stamina
 SOULS_COMBAT_STAMINA_DESCRIPTION,"Endurance for the fight. Increases the length of your stamina meter, so you can swing, roll and hold your guard for longer before you have to back off."
+SOULS_COMBAT_MOD_NAME,Souls Combat
+SOULS_COMBAT_MOD_DESCRIPTION,"Committed, stamina-driven combat in the style of Elden Ring: a hero who pivots on the spot under a fixed orbit camera, enemies that gang up, commit to their combos and punish openings, LT toggles the lock-on, swings, rolls and blocks spend stamina, spells spend mana, and a Stamina ability joins Strength. Refii's worked example of a full gameplay overhaul in Lua alone, on the mod API's stated events and calls."
+SOULS_COMBAT_SETTING_BARS,Bars shown while not full
+SOULS_COMBAT_SETTING_BARS_DESCRIPTION,"Health, mana and stamina stay on screen while any of them is below its maximum."

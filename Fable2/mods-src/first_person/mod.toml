@@ -1,4 +1,4 @@
-name = "First Person"
+name = "{FIRST_PERSON_MOD_NAME}"
 version = "0.3.0"
 author = "ammuica"
-description = "Play Fable II in first person: the camera sits in the hero's head, the head is hidden and the body stays in view, and you walk, fight and look around with the mouse or right stick. H switches between first and third person, for each player in split screen and online co-op. Full cutscenes, canned actions and (by default) the gun aim keep the game's own cameras."
+description = "{FIRST_PERSON_MOD_DESCRIPTION}"

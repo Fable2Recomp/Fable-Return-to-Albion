@@ -1,0 +1,12 @@
+key,value
+HEALTH_BARS_MOD_NAME,Полоски здоровья
+HEALTH_BARS_MOD_DESCRIPTION,"Полоска здоровья над каждым врагом поблизости с бледным следом, который показывает каждый удар."
+HEALTH_BARS_SETTING_SHOW,Показывать полоски здоровья врагов
+HEALTH_BARS_SETTING_RANGE,Дальность
+HEALTH_BARS_SETTING_RANGE_DESCRIPTION,На каком расстоянии в метрах у врага ещё есть полоска.
+HEALTH_BARS_SETTING_ONLY_HURT,Только раненые враги
+HEALTH_BARS_SETTING_ONLY_HURT_DESCRIPTION,"Не показывать врагов, которых ещё не ударили."
+HEALTH_BARS_SETTING_NUMBERS,Показывать числа
+HEALTH_BARS_SETTING_NUMBERS_DESCRIPTION,Текущее и максимальное здоровье числами под полоской.
+HEALTH_BARS_SETTING_SIZE,Размер
+HEALTH_BARS_SETTING_SIZE_DESCRIPTION,Насколько крупно рисуются полоски.

@@ -805,13 +805,20 @@ public static class RuntimeCVarsGodot
     /// </summary>
     public static IEnumerable<RuntimeCVarDefinition> ModBindings()
     {
+        // A {KEY} in a mod's name or an action's label is the mod's own text, in the install's culture.
         var titles = new System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var installs = new System.Collections.Generic.Dictionary<string, Refii.Mods.ModInstall>(StringComparer.OrdinalIgnoreCase);
         foreach (Refii.Mods.ModInstall install in Refii.Mods.ModWorkspace.DiscoverModInstalls(Refii.Assets.Engine_GameAssets.ModsRoot))
         {
-            titles[install.Name] = install.Metadata.Title.Length != 0 ? install.Metadata.Title : install.Name;
+            titles[install.Name] = Refii.Mods.ModText.TitleOf(install);
+            installs[install.Name] = install;
         }
 
-        return ModBindings(Refii.Mods.ModInput.ReadDeclared(), mod => titles.TryGetValue(mod, out string? title) ? title : mod);
+        IEnumerable<Refii.Mods.ModInput.Action> actions = Refii.Mods.ModInput.ReadDeclared().Select(action =>
+            installs.TryGetValue(action.Mod, out Refii.Mods.ModInstall? install)
+                ? action with { Label = Refii.Mods.ModText.ForMod(install, action.Label) }
+                : action);
+        return ModBindings(actions, mod => titles.TryGetValue(mod, out string? title) ? title : mod);
     }
 
     /// <summary>The definitions for <paramref name="actions"/>: a key row where keys are declared, a pad row where buttons or triggers are.</summary>

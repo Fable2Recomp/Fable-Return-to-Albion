@@ -1,4 +1,4 @@
 {
-	"bars_always_when_not_full": { "label": "Bars shown while not full", "type": "toggle",
-	                               "description": "Health, mana and stamina stay on screen while any of them is below its maximum." }
+	"bars_always_when_not_full": { "label": "{SOULS_COMBAT_SETTING_BARS}", "type": "toggle",
+	                               "description": "{SOULS_COMBAT_SETTING_BARS_DESCRIPTION}" }
 }

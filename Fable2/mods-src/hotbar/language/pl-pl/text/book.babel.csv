@@ -1,0 +1,18 @@
+key,value
+HOTBAR_MENU,Pasek skrótów
+HOTBAR_KIND,Umieść w polu
+HOTBAR_KIND_SPELLS,Czary
+HOTBAR_KIND_EXPRESSIONS,Gesty
+HOTBAR_KIND_FOOD,Jedzenie
+HOTBAR_KIND_POTIONS,Mikstury
+HOTBAR_KIND_ITEMS,Inne przedmioty
+HOTBAR_KIND_CLEAR,Opróżnij pole
+HOTBAR_MOD_NAME,Pasek skrótów
+HOTBAR_MOD_DESCRIPTION,"Pasek skrótów w stylu Fable 1 na ekranie. Klawisze 1-3 zachowują tryby broni; umieszczaj czary, gesty, jedzenie, mikstury i inne przedmioty użytkowe na 4-0 ze strony Pasek skrótów w menu pauzy."
+HOTBAR_SETTING_SHOW,Pokaż pasek skrótów
+HOTBAR_SETTING_SHOW_DESCRIPTION,Klawisze działają w obu przypadkach.
+HOTBAR_SETTING_SIZE,Rozmiar
+HOTBAR_SETTING_SIZE_DESCRIPTION,Jak duże są rysowane pola.
+HOTBAR_SETTING_LIFT,Wysokość nad dolną krawędzią
+HOTBAR_SETTING_LIFT_DESCRIPTION,Podnosi pasek nad napisy.
+HOTBAR_INPUT_SLOT,Pole paska skrótów

@@ -47,29 +47,29 @@ public sealed class Fable3HudDocument
 	/// </param>
 	/// <param name="groups">The widgets cut whole.</param>
 	/// <param name="layouts">Whether this document's arrangement is the title's HUD layout file (snapshot written, player file applied).</param>
-	/// <param name="statedOnly">
-	/// Whether the document folds ONLY what its writers were called with (<see cref="StatedOnly"/>).
+	/// <param name="groupsOnly">
+	/// Whether only the widgets cut whole are drawn: no piece for the document's own bindings
+	/// (a box screen's frame art, <see cref="Fable3ScreenFrames"/>, whose rows Godot's list draws).
 	/// </param>
 	public Fable3HudDocument(
-		string document, IReadOnlyList<Engine_HudLayout.GroupSubtree> groups, bool layouts, bool statedOnly = false)
+		string document, IReadOnlyList<Engine_HudLayout.GroupSubtree> groups, bool layouts, bool groupsOnly = false)
 	{
 		Document = document;
 		Groups = groups;
 		_layouts = layouts;
-		StatedOnly = statedOnly;
+		_groupsOnly = groupsOnly;
 	}
 
-	/// <summary>
-	/// THE DOCUMENT IS DRAWN FROM ITS CALLS ALONE: each element's slide, text, texture and opacity
+	/// <remarks>
+	/// EVERY DOCUMENT IS DRAWN FROM ITS CALLS ALONE: each element's slide, text, texture and opacity
 	/// as its writer was called with them (`@Ui.State`, `@Ui.Text` / `TextTag` / `TextName`,
 	/// `@Ui.Texture`, `@Ui.Visible`, the surface statements' own values — the interaction button's
 	/// 100 / 50), never the setters' after-the-fact reports (`@Element.*`: the slide funnel's
 	/// writes, the stored opacity, the timeline) nor anything read back off a headless element.
 	/// Meters stand at the registry values their writers state; the registry slides and the
-	/// interaction panel are <see cref="Fable3HudRegistry"/>'s.
-	/// </summary>
-	public bool StatedOnly { get; }
-
+	/// interaction panel are <see cref="Fable3HudRegistry"/>'s. A writer the static census missed shows
+	/// in a run as `[fable3-unstated] doc path channel via` (gui_element_hooks.cpp).
+	/// </remarks>
 	public string Document { get; }
 
 	public IReadOnlyList<Engine_HudLayout.GroupSubtree> Groups { get; }
@@ -78,6 +78,7 @@ public sealed class Fable3HudDocument
 	public Engine_HudView? View { get; private set; }
 
 	private readonly bool _layouts;
+	private readonly bool _groupsOnly;
 	private Engine_UiScreen? _screen;
 	private Engine_UiBindings? _bindings;
 	private Fable3HudStatements? _statements;
@@ -97,10 +98,9 @@ public sealed class Fable3HudDocument
 	private bool[] _active = System.Array.Empty<bool>();
 
 	/// <summary>
-	/// A stated-only document's slides PLAYED by Godot (the shared <see cref="Engine_UiSlidePlayback"/>,
+	/// The document's slides PLAYED by Godot (the shared <see cref="Engine_UiSlidePlayback"/>,
 	/// as Fable 2's HUD stand plays its file): each stated slide entered, its tracks run over real
-	/// time, the meters' components at their registry time. Null for a document that folds the
-	/// guest's own reports.
+	/// time, the meters' components at their registry time. Null before <see cref="Stand"/>.
 	/// </summary>
 	private Engine_UiSlidePlayback? _playback;
 
@@ -144,6 +144,11 @@ public sealed class Fable3HudDocument
 		_bindings = Engine_UiBindings.Read(_screen.Document);
 		_wide = Engine_UiWidescreen.Read(_screen.Document);
 		var layout = Engine_HudLayout.FromBindings(_screen, _bindings, _wide, Groups);
+		if (_groupsOnly)
+		{
+			layout.KeepOnly(piece => piece.Id.StartsWith("group.", System.StringComparison.Ordinal));
+		}
+
 		View = new Engine_HudView
 		{
 			Name = "Hud_" + Document,
@@ -213,12 +218,9 @@ public sealed class Fable3HudDocument
 			}
 		}
 
-		if (StatedOnly)
-		{
-			_playback = new Engine_UiSlidePlayback(_screen);
-			_slideStamps = new ulong[count];
-			_played = false;
-		}
+		_playback = new Engine_UiSlidePlayback(_screen);
+		_slideStamps = new ulong[count];
+		_played = false;
 
 		IndexScriptPositioned(_screen.Document);
 		_statements = new Fable3HudStatements(PathsOf(_screen), Bound, SlideOwners(_screen.Document), Named);
@@ -291,10 +293,8 @@ public sealed class Fable3HudDocument
 				["state"] = e.State,
 				["opacity"] = e.Opacity,
 				["visible"] = e.Visible,
-				["drawnOpacity"] = e.DrawnOpacity,
-				["text"] = e.Text,
 				["time"] = e.Time,
-				["active"] = e.Active,
+				["position"] = e.Position is { } at ? new[] { at.X, at.Y, at.Z } : null,
 				["statedState"] = e.StatedState,
 				["statedOpacity"] = e.StatedDrawnOpacity,
 				["statedText"] = e.StatedTextValue,
@@ -306,7 +306,6 @@ public sealed class Fable3HudDocument
 		return new Dictionary<string, object?>
 		{
 			["document"] = Document,
-			["statedOnly"] = StatedOnly,
 			["elements"] = rows,
 			["stated"] = stated,
 			["pieces"] = View?.Describe(match),
@@ -364,65 +363,41 @@ public sealed class Fable3HudDocument
 		_gathered.Clear();
 		foreach (KeyValuePair<(string Document, string Path), Fable3Elements.Element> entry in Fable3Elements.Of(Document))
 		{
-			if (StatedOnly)
-			{
-				Fable3Elements.Element stated = entry.Value;
-				if (IsRegistryStated(entry.Key.Path))
-				{
-					continue;
-				}
-
-				// The slide under its own stamp: an entry is re-entered only by a newer slide write.
-				if (stated.StatedState is { } slide)
-				{
-					_gathered.Add(new Fable3HudStatements.Statement(
-						entry.Key.Path, slide, null, null, null, stated.StatedStateStamp));
-				}
-
-				if (stated.StatedDrawnOpacity is not null || stated.Stated is not null || stated.StatedTexture is not null ||
-					stated.Colour is not null)
-				{
-					_gathered.Add(new Fable3HudStatements.Statement(
-						entry.Key.Path, null, stated.StatedDrawnOpacity, stated.StatedTextValue, null,
-						stated.Stamp, null, stated.StatedTexture, Colour: stated.Colour));
-				}
-
-				continue;
-			}
-
 			// An element filed under a name the registry writers state is written by them: their
-			// statement (Fable3HudRegistry, the text and meter values below) is the one taken.
+			// statement (Fable3HudRegistry, the text and meter values below) is the one taken. Where
+			// a laid-out box's line stands is Godot's (StateStacked).
+			Fable3Elements.Element stated = entry.Value;
 			if (IsRegistryStated(entry.Key.Path))
 			{
-				// Except where the element stands: the text boxes' line fit (sub_82920BC8 ->
-				// sub_82920610 -> sub_82818580 at 0x829207DC) places each line element it writes
-				// through the text registry, from the box's own attributes (sub_82818760 / sub_82818C30
-				// up the `BoxName` element's chain): the subtitle and corner lines stand at it. The
-				// TopBox's fit is not stated — Godot stacks those rows from the file's first line
-				// (Engine_HudView.StatedLineTop, Engine_UiTextBoxFit).
-				if (entry.Value.Position is { } fit)
-				{
-					_gathered.Add(new Fable3HudStatements.Statement(
-						entry.Key.Path, null, null, null, null, entry.Value.Stamp, fit));
-				}
-
 				continue;
 			}
 
-			Fable3Elements.Element element = entry.Value;
-			_gathered.Add(new Fable3HudStatements.Statement(
-				entry.Key.Path, element.State, element.DrawnOpacity, element.Text, element.Time, element.Stamp,
-				element.Position, element.Texture, Colour: element.Colour));
+			// The slide under its own stamp: an entry is re-entered only by a newer slide write.
+			if (stated.StatedState is { } slide)
+			{
+				_gathered.Add(new Fable3HudStatements.Statement(
+					entry.Key.Path, slide, null, null, null, stated.StatedStateStamp));
+			}
+
+			if (stated.StatedDrawnOpacity is not null || stated.Stated is not null || stated.StatedTexture is not null ||
+				stated.Colour is not null || stated.Time is not null || stated.Position is not null)
+			{
+				_gathered.Add(new Fable3HudStatements.Statement(
+					entry.Key.Path, null, stated.StatedDrawnOpacity, stated.StatedTextValue, stated.Time,
+					stated.Stamp, stated.Position, stated.StatedTexture, Colour: stated.Colour));
+			}
 		}
 
 		_gathered.AddRange(Fable3HudRegistry.StatementsFor(Document));
 		_gathered.AddRange(Fable3LuaContracts.StatementsFor(Document, SlideNamed));
+		_gathered.AddRange(Fable3ScreenFrames.StatementsFor(Document));
 		_statements!.Apply(_gathered, _slides, _opacity, _texts, _times, _transforms, _textures,
 			_playback is null ? null : _slideStamps, _colours);
 		_meterTimes.Clear();
 		StatePlaced();
 		StateWidescreen();
 		StateLuaTransforms();
+		StateStacked();
 		if (_statements.Unmapped != _reportedUnmapped)
 		{
 			_reportedUnmapped = _statements.Unmapped;
@@ -694,6 +669,161 @@ public sealed class Fable3HudDocument
 		}
 
 		return null;
+	}
+
+	/// <summary>Per line element ordinal, where the last stacking of its box placed it (a line keeps its place until its box is laid again, as the fit's write does).</summary>
+	private readonly Dictionary<int, (float X, float Y)> _stacked = new();
+
+	private readonly List<Engine_UiTextBoxStack.Measured> _measured = new();
+
+	/// <summary>Measured blocks by (text, point size): the walk restates its lines every frame.</summary>
+	private readonly Dictionary<(string Text, int Size), Engine_UiTextBoxStack.Measured> _measures = new();
+
+	/// <summary>Per box, the places last stacked, so the report is built only on a change.</summary>
+	private readonly Dictionary<string, (float X, float Y)[]> _lastPlaced = new(System.StringComparer.Ordinal);
+
+	/// <summary>
+	/// THE LAID-OUT BOXES' LINES ARE GODOT'S (Fable3TextBoxes: the corner counters, the subtitles).
+	/// Each box's lines are the vector its caller last stated (`@Hud.Lines`, sub_82920BC8), in
+	/// order; each line is measured as Godot draws it — the text registry's wrapped write of it,
+	/// else the stated line, in the line element's own font size through the title's text
+	/// contract (Engine_UiTextMesh.Measure) — and the fit's contract stacks them
+	/// (Engine_UiTextBoxStack: line 0 at the BoxName chain's FirstLineY for the fitted height,
+	/// each next line one measured block lower). The chain reads the widescreen adapters' writes
+	/// (the Corner's `Group` [422] x −135), as the guest's getter does on the 360's widescreen
+	/// set. The rows are the line elements' local position, the channel the view's binding
+	/// writes; the fit's own `@Element.Position` on them is dropped (Fable3Elements).
+	/// </summary>
+	private void StateStacked()
+	{
+		if (_screen is null || _bindings is null || View?.Theme?.Fonts is not { } fonts)
+		{
+			return;
+		}
+
+		Engine_HudValues values = View.Values;
+		foreach (Engine_UiTextBoxStack.Box box in Fable3TextBoxes.Stacked)
+		{
+			if (Fable3HudRegistry.BoxLines(Refii.Core.Engine_GameHash.Fnv1(box.Name)) is not { Count: > 0 } lines)
+			{
+				continue;
+			}
+
+			_measured.Clear();
+			foreach ((uint hash, string stated) in lines)
+			{
+				IReadOnlyList<int> ordinals = Named(Engine_UiBindings.Kind.Text, hash);
+				UiText? authored = ordinals.Count > 0 && ordinals[0] < _screen.Nodes.Length ? _screen.Nodes[ordinals[0]].Text : null;
+				string painted = values.Text(new Engine_HudValues.Handle(string.Empty, hash)) ?? stated;
+				if (authored is null || fonts.For(authored.Size) is not { } font)
+				{
+					_measured.Add(new Engine_UiTextBoxStack.Measured(0f, 0f));
+					continue;
+				}
+
+				if (!_measures.TryGetValue((painted, authored.Size), out Engine_UiTextBoxStack.Measured measured))
+				{
+					var text = new UiText
+					{
+						Display = painted,
+						Size = authored.Size,
+						HorzAlign = authored.HorzAlign,
+						VertAlign = authored.VertAlign,
+						WrapMode = authored.WrapMode,
+						BoxWidth = authored.BoxWidth,
+						BoxHeight = authored.BoxHeight,
+						Truncate = authored.Truncate,
+					};
+					(int _, float width, float height) = Engine_UiTextMesh.Measure(text, font.Font.Font, font.Scale, fonts.Contract);
+					measured = new Engine_UiTextBoxStack.Measured(width, height);
+					if (_measures.Count > 256)
+					{
+						_measures.Clear();
+					}
+
+					_measures[(painted, authored.Size)] = measured;
+				}
+
+				_measured.Add(measured);
+			}
+
+			if (Engine_UiTextBoxStack.Place(_screen.Document, box, _measured, WidescreenStated) is not { } placed)
+			{
+				continue;
+			}
+
+			for (int i = 0; i < lines.Count; ++i)
+			{
+				foreach (int ordinal in Named(Engine_UiBindings.Kind.Text, lines[i].Hash))
+				{
+					_stacked[ordinal] = placed[i];
+				}
+			}
+
+			if (_lastPlaced.TryGetValue(box.Name, out (float X, float Y)[]? before) &&
+				Same(before, placed))
+			{
+				continue;
+			}
+
+			_lastPlaced[box.Name] = placed;
+			var report = new System.Text.StringBuilder();
+			(float fittedWidth, float fittedHeight) = Engine_UiTextBoxStack.Fitted(box, _measured);
+			report.Append(System.FormattableString.Invariant($"{lines.Count} line(s), box {fittedWidth:0.#}x{fittedHeight:0.#}"));
+			for (int i = 0; i < lines.Count; ++i)
+			{
+				report.Append(System.FormattableString.Invariant(
+					$"; {lines[i].Hash:X8} w {_measured[i].Width:0.#} h {_measured[i].Height:0.#} -> ({placed[i].X:0.#}, {placed[i].Y:0.#}) on {Named(Engine_UiBindings.Kind.Text, lines[i].Hash).Count} element(s)"));
+			}
+
+			GD.Print($"[fable3-stack] {Document} {box.Name}: {report}");
+		}
+
+		foreach (KeyValuePair<int, (float X, float Y)> line in _stacked)
+		{
+			if (line.Key >= 0 && line.Key < _transforms.Length)
+			{
+				float?[] row = _transforms[line.Key] ??= new float?[Fable3HudStatements.TransformWidth];
+				row[0] = line.Value.X;
+				row[1] = line.Value.Y;
+				row[2] = Engine_UiTextBoxStack.LineZ;
+			}
+		}
+	}
+
+	private static bool Same((float X, float Y)[] a, (float X, float Y)[] b)
+	{
+		if (a.Length != b.Length)
+		{
+			return false;
+		}
+
+		for (int i = 0; i < a.Length; ++i)
+		{
+			if (a[i] != b[i])
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/// <summary>The widescreen adapters' position writes, per moved ordinal, as the fit's chain getter reads them.</summary>
+	private (float? X, float? Y) WidescreenStated(int ordinal)
+	{
+		if (_wide is not null)
+		{
+			foreach (Engine_UiWidescreen.Override over in _wide.Overrides)
+			{
+				if (over.ParentOrdinal == ordinal)
+				{
+					return (over.X, over.Y);
+				}
+			}
+		}
+
+		return (null, null);
 	}
 
 	private void StateWidescreen()

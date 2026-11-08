@@ -1124,6 +1124,14 @@ REFII_HOST_ABI_EXPORT void RefiiHostSetAssetReader(refii::vfs::HostAssetReaderFn
     refii::vfs::SetHostAssetReader(reader);
 }
 
+/// Installs Godot's text lookup for mods (Engine_ModText): Lua's Refii.text and a native mod's
+/// refii_mod_text ask it, ON THE ASKING (guest) THREAD, through refii_bridge_mod_text. It must be
+/// reentrant and must not throw across the boundary. nullptr unregisters. Additive and optional
+/// (the binding tolerates its absence), so the ABI number is unchanged.
+REFII_HOST_ABI_EXPORT void RefiiHostSetModTextLookup(refii::mods::HostModTextFn lookup) {
+    refii::mods::SetHostModTextLookup(lookup);
+}
+
 /// Installs Godot's asset override query — answers whether an asset is a virtual mod override.
 /// When true, native VFS prioritizes Godot's virtual asset over loose files on disk.
 REFII_HOST_ABI_EXPORT void RefiiHostSetAssetOverrideQuery(

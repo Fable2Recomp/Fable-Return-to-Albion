@@ -11,21 +11,21 @@ using Refii.Ui;
 /// </summary>
 /// <remarks>
 /// THE EPILOGUE. The show (sub_8276B460) writes the title, description, reward caption, renown
-/// and button texts through the HUD text registry, whose flush commits each to its text box
-/// (sub_8223A888 -> sub_82B45268 at 0x8223A8DC: `@Element.Text`) — all behind its presentation
-/// (0x8276B4BC), so the title and description are taken from the show's own arguments
+/// and button texts through the HUD text registry sub_82733F30 (`@Hud.Text`) — all behind its
+/// presentation (0x8276B4BC), so the title and description are taken from the show's own arguments
 /// (`@Epilogue.Open`, <see cref="Opened"/>); the reward rows
-/// (AddItemRewardToEpilogueScreen -> sub_8276B978) toggle `EpilogueItem1/2` through SetState
-/// (sub_8281A490 at 0x8281A4AC) and write their texts the same way; the gold
+/// (AddItemRewardToEpilogueScreen -> sub_8276B978) toggle `EpilogueItem1/2` through the
+/// SlideToggleName registry (sub_82921200 at 0x8276B9CC, `@Hud.Slide`) and write their texts the
+/// same way; the show hides the reward caption with sub_828196E0 (0x8276B61C, `@Ui.Active`); the gold
 /// (SetGoldRewardInEpilogueScreen -> sub_8276B848) writes `EpilogueRenown` / `EpilogueRenownAmt`.
 /// The image is not an element write — the show stores it into the `ScreenShot` texture
 /// (0x8276B7F8) — so it arrives only as `@Epilogue.Open`'s second argument. INTERACT (13) closes
 /// it in the guest (vt+20 sub_8276B410): Godot draws only.
 ///
 /// THE CREDITS. The roll (sub_82B3F980, then its tick sub_82B3FD70) writes the `GUI_CREDITS` lines
-/// into `Text.Text0..23` (sub_82B45268 at 0x82B3FC0C / 0x82B3FE64 / 0x82B3FEA4) and scrolls them
-/// and `credits_logos` with SetPosition (0x82B3FC50, 0x82B3FED0, 0x82B3FCE8, 0x82B3FF1C), so the
-/// view follows the stated positions. It ends itself, or on GUI_SELECT / GUI_CANCEL (72/73,
+/// into `Text.Text0..23` (sub_82B45268 at 0x82B3FC0C / 0x82B3FE64 / 0x82B3FEA4, `@Ui.Text` on their
+/// guards) and scrolls them and `credits_logos` with SetPosition (0x82B3FC50, 0x82B3FED0, 0x82B3FCE8,
+/// 0x82B3FF1C, `@Ui.Position`). Both documents are drawn from those statements alone (stated-only). It ends itself, or on GUI_SELECT / GUI_CANCEL (72/73,
 /// sub_82B3FF60) in the guest.
 /// </remarks>
 public static class Fable3EndScreens
@@ -47,9 +47,6 @@ public static class Fable3EndScreens
 
 	/// <summary>The epilogue's presentation while it is up, else 0.</summary>
 	public static uint EpiloguePresentation { get; private set; }
-
-	/// <summary>The image the epilogue was shown with (the `ScreenShot` texture's source), or empty.</summary>
-	public static string EpilogueImage { get; private set; } = string.Empty;
 
 	/// <summary>The credits' presentation while they roll, else 0.</summary>
 	public static uint CreditsPresentation { get; private set; }
@@ -90,7 +87,6 @@ public static class Fable3EndScreens
 		router.Register("@Epilogue.Open", call =>
 		{
 			EpiloguePresentation = Parse(call.Argument(0).Text);
-			EpilogueImage = call.Argument(1).Text;
 			Opened(call.Argument(2).Text, call.Argument(3).Text, (int)call.Argument(4).Number,
 				Parse(call.Argument(5).Text), Parse(call.Argument(6).Text));
 		});
@@ -106,14 +102,10 @@ public static class Fable3EndScreens
 		router.Register("@Epilogue.Close", _ =>
 		{
 			EpiloguePresentation = 0u;
-			EpilogueImage = string.Empty;
 		});
 		router.Register("@Credits.Open", call => CreditsPresentation = Parse(call.Argument(0).Text));
 		router.Register("@Credits.Close", _ => CreditsPresentation = 0u);
 	}
-
-	/// <summary>The renown the epilogue was shown with (Epilogue_Show's r6; 0 none).</summary>
-	public static int EpilogueRenown { get; private set; }
 
 	/// <summary>
 	/// The show's own arguments (end_screen_hooks.cpp): the title and description land on the
@@ -123,7 +115,6 @@ public static class Fable3EndScreens
 	/// </summary>
 	public static void Opened(string title, string description, int renown, uint titleName, uint descriptionName)
 	{
-		EpilogueRenown = renown;
 		if (titleName != 0u)
 		{
 			Fable3HudRegistry.StateText(titleName, title);

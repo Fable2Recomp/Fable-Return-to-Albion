@@ -1,0 +1,23 @@
+key,value
+FIRST_PERSON_MOD_NAME,Primera persona
+FIRST_PERSON_MOD_DESCRIPTION,"Juega a Fable II en primera persona: la cámara se sitúa en la cabeza del héroe, la cabeza se oculta y el cuerpo sigue a la vista, y caminas, luchas y miras a tu alrededor con el ratón o el stick derecho. H cambia entre primera y tercera persona, para cada jugador en pantalla dividida y en cooperativo en línea. Las cinemáticas completas, las acciones predefinidas y (por defecto) el apuntado con armas de fuego conservan las cámaras del juego."
+FIRST_PERSON_SETTING_START_ON,Empezar en primera persona
+FIRST_PERSON_SETTING_START_ON_DESCRIPTION,Si cada jugador empieza una sesión en primera persona. H cambia la vista de quien la pulse.
+FIRST_PERSON_SETTING_FOV,Campo de visión
+FIRST_PERSON_SETTING_FOV_DESCRIPTION,En grados. La vista en primera persona del propio juego usa 75.
+FIRST_PERSON_SETTING_EYE_HEIGHT,Altura de los ojos
+FIRST_PERSON_SETTING_EYE_HEIGHT_DESCRIPTION,Metros por encima del punto de colisión de la cabeza.
+FIRST_PERSON_SETTING_EYE_FORWARD,Ojos hacia delante
+FIRST_PERSON_SETTING_EYE_FORWARD_DESCRIPTION,"Metros por delante de la cabeza, para que la cara no tape la vista."
+FIRST_PERSON_SETTING_PITCH_LIMIT,Mirar arriba y abajo
+FIRST_PERSON_SETTING_PITCH_LIMIT_DESCRIPTION,"Cuánto puedes mirar hacia arriba o hacia abajo, en grados."
+FIRST_PERSON_SETTING_FACE_CAMERA,El héroe mira hacia la vista
+FIRST_PERSON_SETTING_FACE_CAMERA_NEVER,Nunca
+FIRST_PERSON_SETTING_FACE_CAMERA_STANDING,Al estar quieto
+FIRST_PERSON_SETTING_FACE_CAMERA_ALWAYS,Siempre
+FIRST_PERSON_SETTING_FACE_CAMERA_DESCRIPTION,"Gira al héroe hacia donde miras, para que los golpes y los conjuros vayan allí."
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM,Apuntado en tercera persona
+FIRST_PERSON_SETTING_THIRD_PERSON_AIM_DESCRIPTION,Apuntar con un arma de fuego o una ballesta usa la cámara sobre el hombro del juego.
+FIRST_PERSON_SETTING_SCENES,Primera persona en conversaciones
+FIRST_PERSON_SETTING_SCENES_DESCRIPTION,"Sigue en primera persona al hablar y en escenas interactivas, mirando a quien habla. Las cinemáticas completas conservan su propia cámara."
+FIRST_PERSON_INPUT_TOGGLE,Primera / tercera persona

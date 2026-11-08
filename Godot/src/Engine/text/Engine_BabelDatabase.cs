@@ -37,8 +37,13 @@ public sealed class Engine_BabelDatabase
 
 	// Blocks are large (up to ~17 KB) and strings cluster, so caching the most
 	// recently inflated block turns a screenful of lookups into one inflate.
-	private int _cachedBlock = -1;
-	private byte[]? _cachedBytes;
+	/// <summary>
+	/// The last inflated block, as ONE reference: the mods' text lookup reads the book on the guest's
+	/// thread too (Engine_ModText), and an index and its bytes held apart could be read torn.
+	/// </summary>
+	private sealed record CachedBlock(int Index, byte[] Bytes);
+
+	private volatile CachedBlock? _cached;
 
 	/// <summary>Speaker display names, keyed by the same hash as the record table.</summary>
 	public readonly Dictionary<uint, string> SpeakerNames = new();
@@ -341,8 +346,8 @@ public sealed class Engine_BabelDatabase
 
 	private byte[] GetBlock(int index)
 	{
-		if (_cachedBlock == index && _cachedBytes is not null)
-			return _cachedBytes;
+		if (_cached is { } cached && cached.Index == index)
+			return cached.Bytes;
 
 		var outBytes = new byte[_blockUncompressedSize[index]];
 		using (var src = new MemoryStream(_data, _blockDataOffset[index], _blockCompressedSize[index], writable: false))
@@ -358,8 +363,7 @@ public sealed class Engine_BabelDatabase
 			}
 		}
 
-		_cachedBlock = index;
-		_cachedBytes = outBytes;
+		_cached = new CachedBlock(index, outBytes);
 		return outBytes;
 	}
 

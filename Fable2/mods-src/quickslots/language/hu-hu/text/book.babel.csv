@@ -1,0 +1,51 @@
+key,value
+QUICKSLOTS_MENU,Gyorshelyek
+QUICKSLOTS_ASSIGN,Gyorshely kiosztása
+QUICKSLOTS_ASSIGN_TITLE,Hozzárendelés gyorshelyhez
+QUICKSLOTS_CHOOSE_TITLE,Mi legyen a helyen?
+QUICKSLOTS_SLOT_1,Iránygomb fel
+QUICKSLOTS_SLOT_2,Iránygomb le
+QUICKSLOTS_SLOT_3,Iránygomb balra
+QUICKSLOTS_SLOT_4,Iránygomb jobbra
+QUICKSLOTS_SLOT_5,LT + fel
+QUICKSLOTS_SLOT_6,LT + le
+QUICKSLOTS_SLOT_7,LT + balra
+QUICKSLOTS_SLOT_8,LT + jobbra
+QUICKSLOTS_SLOT_9,RT + fel
+QUICKSLOTS_SLOT_10,RT + le
+QUICKSLOTS_SLOT_11,RT + balra
+QUICKSLOTS_SLOT_12,RT + jobbra
+QUICKSLOTS_AUTOMATIC,Automatikus (a játéké)
+QUICKSLOTS_EMPTY,Üres
+QUICKSLOTS_CLEAR,Hely ürítése
+QUICKSLOTS_REMOVE,Eltávolítás minden helyről
+QUICKSLOTS_ITEM,Tárgy
+QUICKSLOTS_WEAPON,Fegyver
+QUICKSLOTS_EXPRESSION,Kifejezés
+QUICKSLOTS_SPELL,Varázslat
+QUICKSLOTS_ITEMS,Tárgyak és fegyverek
+QUICKSLOTS_EXPRESSIONS,Kifejezések
+QUICKSLOTS_SPELLS,Varázslatok
+QUICKSLOTS_MOD_NAME,Gyorshelyek
+QUICKSLOTS_MOD_DESCRIPTION,"Tizenkét kiosztható gyorshely az iránygombon: a négy irány, LT + irány és RT + irány, mindegyikben egy használható tárgy, előrántható fegyver, előadható kifejezés vagy előkészíthető varázslat. A tárgylistából, a kifejezések és a képességek könyvéből vagy a kifejezéskerékről oszthatod ki őket; a képernyőn lévő iránygomb mutatja, mi van az egyes helyeken. Egy kiosztás nélküli irány megtartja a játék saját funkcióját."
+QUICKSLOTS_SETTING_LT_BANK,LT + iránygomb csoport
+QUICKSLOTS_SETTING_LT_BANK_DESCRIPTION,"Még négy hely, a bal ravasz nyomva tartásával érhető el."
+QUICKSLOTS_SETTING_RT_BANK,RT + iránygomb csoport
+QUICKSLOTS_SETTING_RT_BANK_DESCRIPTION,"Még négy hely, a jobb ravasz nyomva tartásával érhető el. Amíg bármelyikük ki van osztva, a jobb ravasz már nem nyitja meg a varázslatmenüt."
+QUICKSLOTS_SETTING_HUD_ICONS,Helyikonok az iránygombon
+QUICKSLOTS_SETTING_HUD_ICONS_DESCRIPTION,"Megmutatja a képernyő iránygombján, mi van az egyes helyeken, ravasz lenyomásakor pedig a tartott csoport helyeit."
+QUICKSLOTS_INPUT_UP,Gyorshely fel
+QUICKSLOTS_INPUT_DOWN,Gyorshely le
+QUICKSLOTS_INPUT_LEFT,Gyorshely balra
+QUICKSLOTS_INPUT_RIGHT,Gyorshely jobbra
+QUICKSLOTS_INPUT_LT_UP,LT gyorshely fel
+QUICKSLOTS_INPUT_LT_DOWN,LT gyorshely le
+QUICKSLOTS_INPUT_LT_LEFT,LT gyorshely balra
+QUICKSLOTS_INPUT_LT_RIGHT,LT gyorshely jobbra
+QUICKSLOTS_INPUT_RT_UP,RT gyorshely fel
+QUICKSLOTS_INPUT_RT_DOWN,RT gyorshely le
+QUICKSLOTS_INPUT_RT_LEFT,RT gyorshely balra
+QUICKSLOTS_INPUT_RT_RIGHT,RT gyorshely jobbra
+QUICKSLOTS_INPUT_LT,LT csoport (nyomva tartva)
+QUICKSLOTS_INPUT_RT,RT csoport (nyomva tartva)
+QUICKSLOTS_INPUT_ASSIGN,Kijelölt kifejezés kiosztása

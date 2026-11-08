@@ -1,0 +1,18 @@
+key,value
+HOTBAR_MENU,Gyorssáv
+HOTBAR_KIND,Mi kerüljön a helyre?
+HOTBAR_KIND_SPELLS,Varázslatok
+HOTBAR_KIND_EXPRESSIONS,Kifejezések
+HOTBAR_KIND_FOOD,Étel
+HOTBAR_KIND_POTIONS,Varázsitalok
+HOTBAR_KIND_ITEMS,Egyéb tárgyak
+HOTBAR_KIND_CLEAR,Hely ürítése
+HOTBAR_MOD_NAME,Gyorssáv
+HOTBAR_MOD_DESCRIPTION,"Fable 1 stílusú gyorssáv a képernyőn. Az 1-3 billentyűk megtartják a fegyvermódokat; a varázslatokat, kifejezéseket, ételt, varázsitalokat és egyéb használható tárgyakat a Szüneteltetés menü Gyorssáv oldalán teheted a 4-0 helyekre."
+HOTBAR_SETTING_SHOW,Gyorssáv mutatása
+HOTBAR_SETTING_SHOW_DESCRIPTION,"A billentyűk így is, úgy is működnek."
+HOTBAR_SETTING_SIZE,Méret
+HOTBAR_SETTING_SIZE_DESCRIPTION,Mekkorák legyenek a helyek.
+HOTBAR_SETTING_LIFT,Magasság az alsó széltől
+HOTBAR_SETTING_LIFT_DESCRIPTION,"Megemeli a sávot, hogy ne takarja a feliratokat."
+HOTBAR_INPUT_SLOT,Gyorssávhely

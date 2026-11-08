@@ -1,0 +1,9 @@
+key,value
+SPELL_WEAVING_HYBRID,Hybrid
+SPELL_WEAVING_NAME,Splétání kouzel
+SPELL_WEAVING_DESCRIPTION,"Umění vyslat dvě kouzla jako jedno. Vyber partnerské kouzlo a bude vpleteno do každého vyslání až do úrovně nabití %1, takže zasáhne stejný cíl ve stejnou chvíli. Platí se rovným dílem zkušenostmi s Vůlí a s Dovedností."
+SPELL_WEAVING_TOTAL_XP,Dostupné zkušenosti s Vůlí a s Dovedností:
+SPELL_WEAVING_SET_PARTNER,Nastavit partnera
+SPELL_WEAVING_REMOVE_PARTNER,Odebrat partnera
+SPELL_WEAVING_MOD_NAME,Splétání kouzel
+SPELL_WEAVING_MOD_DESCRIPTION,"Splétání kouzel z Fable 3 ve Fable 2: druhé kouzlo, partner, se vyšle spolu s kouzlem na nabité pozici, se stejnou silou a na stejný cíl. Ve výchozím nastavení jedno vyslání s nabitou silou, jak to dělá Fable 3, místo kaskády Fable 2 přes všechny nižší pozice. Každá pozice kouzla má vlastního partnera: v rychlém kole nebo na stránce kouzel v knize schopností zvýrazni kouzlo Vůle a stiskni X, aby se stalo partnerem pozice, nebo Y, abys ho odebral. Samotné Splétání kouzel se učí na stránce Hybrid v knize schopností a platí se napůl zkušenostmi s Vůlí a napůl s Dovedností; úroveň N splétá kouzla až do úrovně nabití N. Ovládnutí času a Vzkříšení mrtvých nikdy nejsou partnery."

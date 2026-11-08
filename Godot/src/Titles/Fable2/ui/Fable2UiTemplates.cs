@@ -997,7 +997,7 @@ public static class Fable2UiTemplates
 				new Engine_UiMenuEntry
 				{
 					Name = "New Game", Tag = "GUI_SCREEN_FRONT_END_NEW_GAME",
-					Opens = Engine_FrontEndMenu.HeroCardScreen,
+					Opens = Fable2FrontEndRoot.HeroCardScreen,
 				},
 				new Engine_UiMenuEntry { Name = "Load Game", Tag = "GUI_SCREEN_FRONT_END_LOAD_GAME" },
 				// TWO FOLDS, not one. Mods are content; friends, invitations and games are a
@@ -1049,21 +1049,6 @@ public static class Fable2UiTemplates
 					Command = Engine_FrontEndMenu.QuitToDesktopCommand,
 				},
 			},
-		};
-
-		// The item-book vocabulary shared by five sibling screen classes — the dotted paths each
-		// copies into its own globals (writer `sub_829B6B50`, 0x829b6cc8..0x829b7094).
-		// `ItemValueName`/`ItemValue2` are the same label under two names (items/gift vs
-		// clothing); both pages are listed because the panel gates on the guest's draw bit.
-		var itemFields = new List<Engine_UiScreenPanel.Field>
-		{
-			new("Foreground.Book.Pages.Page2.Contents.ItemName"),
-			new("Foreground.Book.Pages.Page2.Contents.ItemValueName", Alternate: true),
-			new("Foreground.Book.Pages.Page2.Contents.ItemValue2", Alternate: true),
-			new("Foreground.Book.Pages.Page2.Contents.ItemValue"),
-			new("Foreground.Book.Pages.Page2.Contents.ItemDescription", Multiline: true),
-			new("Foreground.Book.Pages.Page1.Contents.ItemName", Alternate: true),
-			new("Foreground.Book.Pages.Page1.Contents.Info", Alternate: true),
 		};
 
 		AddScreen(screens, new Engine_UiScreenTemplate
@@ -1146,17 +1131,6 @@ public static class Fable2UiTemplates
 				"Foreground.Book.Pages.Page4",
 			},
 			PageStackAt = Vector3.Zero,
-			PanelFields =
-			{
-				new("Foreground.Book.Pages.Page1.Contents.AbilityName"),
-				new("Foreground.Book.Pages.Page1.Contents.TotalXP"),
-				new("Foreground.Book.Pages.Page2.Contents.AbilityName"),
-				new("Foreground.Book.Pages.Page2.Contents.Text.Description", Multiline: true),
-
-				// Page ONE, not Page4: in `abilitiesscreen.bgf` AbilityName (ord 49) and
-				// AbilityCost (ord 50) are siblings under Page1.Contents.
-				new("Foreground.Book.Pages.Page1.Contents.AbilityCost"),
-			},
 		});
 
 		foreach (uint id in new uint[] { 15, 16, 25, 26, 27 })
@@ -1257,7 +1231,6 @@ public static class Fable2UiTemplates
 				// every earlier one a menu row's icon plate. UpgradeFurniture is grey where the
 				// gift and equipment books are green, so this is per-id.
 				BackdropUnit = id == 26 ? "background_grey" : "background_green",
-				PanelFields = new List<Engine_UiScreenPanel.Field>(itemFields),
 				// Same skeleton, different parent for the proxy: equipmentscreen.bgf parks it
 				// under TypeSpecific, the gift and furniture books under ModelHider.
 				PreviewAnchor = id == 16
@@ -1391,17 +1364,6 @@ public static class Fable2UiTemplates
 			// riding in on the guest's stated position for `ExpandableMenu`.
 			OwnedElsewhere = { "ExpandableMenu.Buttons", "MenuHighlight" },
 			PageRootUnit = "Pages", BackdropUnit = "background_yellow",
-			PanelSubtrees =
-			{
-				"Foreground.Book.Pages.MoralityPage",
-				"Foreground.Book.Pages.ExpressionsPage",
-				"Foreground.Book.Pages.CompletedQuestsPage",
-				"Foreground.Book.Pages.RenownPage",
-				"Foreground.Book.Pages.AttractivenessPage",
-				"Foreground.Book.Pages.StatsPage",
-				"Foreground.Book.Pages.DogPage",
-				"Foreground.Book.Pages.HelpPage",
-			},
 		});
 
 		AddScreen(screens, new Engine_UiScreenTemplate
@@ -1446,12 +1408,6 @@ public static class Fable2UiTemplates
 			ScrollMask = "Mask|Mask|Mask",
 			ScrollBar =
 				"Foreground.Book.Pages.Page1.Contents.Scrollbar|Foreground.Book.Pages.Page2.Contents.Scrollbar|Foreground.Book.Pages.Page3.Contents.Scrollbar",
-			PanelFields =
-			{
-				new("Foreground.Book.Pages.Page1.Contents.Text", Multiline: true),
-				new("Foreground.Book.Pages.Page2.Contents.Text", Multiline: true),
-				new("Foreground.Book.Pages.Page3.Contents.Text", Multiline: true),
-			},
 		});
 
 		// The SHOP's panel: `PriceValue` is the full chain of base price, shop multiplier,
@@ -1488,16 +1444,6 @@ public static class Fable2UiTemplates
 			// The front page (name, anecdote, keeper, owner, opinions, sale, discount, wealth) is
 			// composed from the guest's own helpers' answers (Engine_UiShopFrontPage), sampled
 			// while the screen stands — nothing is read back from the page `sub_82991800` fills.
-			PanelFields =
-			{
-				new("Foreground.Book.Pages.Page1.Contents.ItemName"),
-				new("Foreground.Book.Pages.Page1.Contents.Text.TextElements.PriceValue"),
-				new("Foreground.Book.Pages.Page1.Contents.Text.TextElements.ValueValue"),
-				new("Foreground.Book.Pages.Page2.Contents.ItemName"),
-				new("Foreground.Book.Pages.Page2.Contents.TextElements.PriceValue"),
-				new("Foreground.Book.Pages.Page2.Contents.Text.Group.Group.ItemDescription",
-					Multiline: true),
-			},
 			PreviewAnchor = "Foreground.Book.Pages.Page1.Contents.ModelHider.model_proxy.model",
 		});
 
@@ -1575,20 +1521,6 @@ public static class Fable2UiTemplates
 			{
 				"Foreground.Book.Pages.Page1.Contents.Text.SilverKeysFoundAmount",
 				"Foreground.Book.Pages.Page1.Contents.Text.SilverKeysFound",
-			},
-			PanelFields =
-			{
-				new("Foreground.Book.Pages.Page1.Contents.PageTitle"),
-				new("Foreground.Book.Pages.Page1.Contents.Text.DistanceAmount"),
-				new("Foreground.Book.Pages.Page1.Contents.Text.TraveltimeAmount"),
-				new("Foreground.Book.Pages.Page1.Contents.Text.FineAmount"),
-				new("Foreground.Book.Pages.Page1.Contents.Text.MerchantsList", Multiline: true),
-				new("Foreground.Book.Pages.Page1.Contents.Text.OwnedAmount"),
-				new("Foreground.Book.Pages.Page1.Contents.Text.ChestAmount"),
-				new("Foreground.Book.Pages.Page1.Contents.Text.DigspotAmount"),
-				new("Foreground.Book.Pages.Page1.Contents.Text.DivespotsSearchedAmount"),
-				new("Foreground.Book.Pages.Page1.Contents.Text.GargoylesDestroyedAmount"),
-				new("Foreground.Book.Pages.Page1.Contents.Text.SilverKeysFoundAmount"),
 			},
 		});
 
@@ -1776,7 +1708,6 @@ public static class Fable2UiTemplates
 			// bare name is right here and the label comes through the text sweep.
 			// `Title` too: un-cloned it had no node, and the tally drew with no heading.
 			ChromeUnits = { "paperbox", "Select", "Motif", "Amounts", "Title" },
-			PanelSubtrees = { "Component" },
 
 			// EVERY STRING AND ROW IS A REGISTRY STATEMENT, read by the names the file binds
 			// (`Engine_UiOwnedBook.RegistryText` / `RegistrySlide`): `TurnOnMiniGameComplete`
@@ -1809,7 +1740,6 @@ public static class Fable2UiTemplates
 				"Component", "frame2", "leaf", "Bullet1", "Bullet2", "Buttons", "Image",
 				"QuestTitle", "QuestDescription", "Reward", "RenownPoints", "Points",
 			},
-			PanelSubtrees = { "elements" },
 
 			// EVERY STRING, BULLET AND THE PICTURE ARE REGISTRY STATEMENTS, as on the tally next
 			// door: `ShowEpilogueScreen` (`sub_823D3FF0`), `SetGoldRewardInEpilogue` and
@@ -1835,7 +1765,6 @@ public static class Fable2UiTemplates
 			OwnsRevealedInput = true,
 			RevealedBack = Engine_UiScreenActions.ScreenBack,
 			ChromeUnits = { "elements" },
-			PanelSubtrees = { "elements" },
 
 			// THE CARD IS REGISTRY STATEMENTS: `sub_826CCC88` and its fillers publish every text
 			// (QueryName, QueryDesc, the likes and dislikes), the gift/divorce/marry toggles and
@@ -1928,9 +1857,6 @@ public static class Fable2UiTemplates
 		// is cloned from the FILE-ONLY pattern book, so this record needs no live presentation of
 		// the guest's and stands whether or not the logbook has ever been opened.
 		//
-		// `PanelSubtrees` carries the whole page stack rather than `ExpressionsPage` alone: the
-		// provider switches seven of the eight off and the panel must know the fields it is
-		// hiding, the same statement screen 17 makes.
 		// The Active Mods book is the same screen over its own list: one page, two subjects. The
 		// host page book (Engine_UiHostBoxPage) is the same screen again: a host question's
 		// title and body on the page, Continue and Back as the rows.
@@ -1956,17 +1882,6 @@ public static class Fable2UiTemplates
 				ScrollContent = "Foreground.Book.Pages.ExpressionsPage.Contents",
 				ScrollMask = "Mask",
 				ScrollBar = "Foreground.Book.Pages.ExpressionsPage.Scrollbar",
-				PanelSubtrees =
-				{
-					"Foreground.Book.Pages.MoralityPage",
-					"Foreground.Book.Pages.ExpressionsPage",
-					"Foreground.Book.Pages.CompletedQuestsPage",
-					"Foreground.Book.Pages.RenownPage",
-					"Foreground.Book.Pages.AttractivenessPage",
-					"Foreground.Book.Pages.StatsPage",
-					"Foreground.Book.Pages.DogPage",
-					"Foreground.Book.Pages.HelpPage",
-				},
 			});
 		}
 
@@ -1991,17 +1906,6 @@ public static class Fable2UiTemplates
 			ScrollContent = "Foreground.Book.Pages.ExpressionsPage.Contents",
 			ScrollMask = "Mask",
 			ScrollBar = "Foreground.Book.Pages.ExpressionsPage.Scrollbar",
-			PanelSubtrees =
-			{
-				"Foreground.Book.Pages.MoralityPage",
-				"Foreground.Book.Pages.ExpressionsPage",
-				"Foreground.Book.Pages.CompletedQuestsPage",
-				"Foreground.Book.Pages.RenownPage",
-				"Foreground.Book.Pages.AttractivenessPage",
-				"Foreground.Book.Pages.StatsPage",
-				"Foreground.Book.Pages.DogPage",
-				"Foreground.Book.Pages.HelpPage",
-			},
 		});
 
 		// Screen 8 — the receive-items card, owned elsewhere; recorded for its preview anchor.

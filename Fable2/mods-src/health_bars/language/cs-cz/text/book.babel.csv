@@ -1,0 +1,12 @@
+key,value
+HEALTH_BARS_MOD_NAME,Ukazatele zdraví
+HEALTH_BARS_MOD_DESCRIPTION,"Ukazatel zdraví nad každým nepřítelem poblíž, s bledou stopou, která ukazuje každý zásah."
+HEALTH_BARS_SETTING_SHOW,Zobrazit ukazatele zdraví nepřátel
+HEALTH_BARS_SETTING_RANGE,Dosah
+HEALTH_BARS_SETTING_RANGE_DESCRIPTION,Do jaké vzdálenosti v metrech má nepřítel ještě ukazatel.
+HEALTH_BARS_SETTING_ONLY_HURT,Jen zranění nepřátelé
+HEALTH_BARS_SETTING_ONLY_HURT_DESCRIPTION,"Vynechá nepřátele, kteří ještě nebyli zasaženi."
+HEALTH_BARS_SETTING_NUMBERS,Zobrazit čísla
+HEALTH_BARS_SETTING_NUMBERS_DESCRIPTION,Aktuální a nejvyšší zdraví jako čísla pod ukazatelem.
+HEALTH_BARS_SETTING_SIZE,Velikost
+HEALTH_BARS_SETTING_SIZE_DESCRIPTION,Jak velké se ukazatele kreslí.

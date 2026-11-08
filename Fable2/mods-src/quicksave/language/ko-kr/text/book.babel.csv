@@ -1,0 +1,15 @@
+key,value
+QUICKSAVE_MOD_NAME,빠른 저장
+QUICKSAVE_MOD_DESCRIPTION,"Bethesda 스타일의 빠른 저장과 빠른 불러오기: F8 키는 게임을 저장하고 저장 파일 옆에 빠른 저장을 보관하며, F9 키는 게임을 나가지 않고 그 빠른 저장을 불러옵니다. 빠른 불러오기는 원래 저장 파일을 그대로 둡니다."
+QUICKSAVE_INPUT_QUICKSAVE,빠른 저장
+QUICKSAVE_INPUT_QUICKLOAD,빠른 불러오기
+QUICKSAVE_SAVE_ALONE_ONLY,빠른 저장은 싱글 플레이 게임에서만 작동합니다.
+QUICKSAVE_LOAD_ALONE_ONLY,빠른 불러오기는 싱글 플레이 게임에서만 작동합니다.
+QUICKSAVE_NONE_YET,아직 빠른 저장이 없습니다. 빠른 저장으로 만드십시오.
+QUICKSAVE_CANT_LOAD_NOW,지금은 빠른 불러오기를 할 수 없습니다.
+QUICKSAVE_LOAD_FAILED,빠른 저장을 불러올 수 없습니다.
+QUICKSAVE_CANT_SAVE_NOW,지금은 저장할 수 없습니다.
+QUICKSAVE_GAME_NOT_SAVED,게임이 저장되지 않았습니다. 빠른 저장도 되지 않았습니다.
+QUICKSAVE_SAVED,빠른 저장했습니다.
+QUICKSAVE_NOT_KEPT,게임은 저장되었지만 빠른 저장을 보관할 수 없습니다.
+QUICKSAVE_LOADED,%1에 만든 빠른 저장을 불러왔습니다.

@@ -882,8 +882,9 @@ bool EndsWith(std::string_view value, std::string_view suffix) {
            value.substr(value.size() - suffix.size()) == suffix;
 }
 
-// IDA/Lumen: the original language table includes these locale roots. Keep
-// en-uk first to match runtime fallback scoring.
+// Every code XLip's own tables name — `dword_832D5E90` (XGetLanguage -> culture) and
+// `dword_832D5EC8` (XGetLocale -> culture), disc build — plus en-uk and zh-cht. Used only to
+// recognise a culture segment in a path, so its order carries no preference.
 constexpr std::string_view kKnownLanguageLocales[] = {
     "en-uk", "en-us", "ja-jp", "de-de", "fr-fr", "es-es",
     "it-it", "ko-kr", "zh-tw", "zh-cht", "pt-pt", "zh-cn",
@@ -2474,13 +2475,16 @@ void AddVfsSyntheticBankRowsForManifest(VfsDatabaseBuildState* state,
     };
 
     add_bank_alias_with_separator_variants(alias);
-    if (language_tail == "en-uk/speech/speech") {
+    // The locale-less speech and lipsync spellings answer to whichever culture ships the bank:
+    // en-uk alone on the USA/Europe disc, es-es alone on the Spanish GOTY disc. The guest itself
+    // opens them through its culture remap (`sub_823728E0`), so no culture is assumed here.
+    if (asset_tail == "speech/speech") {
         if (language_root == "language") {
             add_bank_alias_with_separator_variants("speech/speech.bnk");
         }
         add_bank_alias_with_separator_variants(
             std::string(language_root) + "/speech.bnk");
-    } else if (language_tail == "en-uk/lipsync/lipsync") {
+    } else if (asset_tail == "lipsync/lipsync") {
         if (language_root == "language") {
             add_bank_alias_with_separator_variants("lipsync/lipsync.bnk");
         }

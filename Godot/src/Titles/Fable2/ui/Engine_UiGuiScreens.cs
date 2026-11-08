@@ -76,14 +76,6 @@ public sealed class Engine_UiGuiScreens
 		StateText(element, display);
 	}
 
-	/// <summary>The epilogue screen opening — resets the counter and hides both slots.</summary>
-	public void ResetEpilogue()
-	{
-		EpilogueRewards = 0;
-		StateShown("EpilogueItem1", false);
-		StateShown("EpilogueItem2", false);
-	}
-
 	// ---- THE NEXT-EPISODE PAGE, screen 13 --------------------------------------------------
 
 	/// <summary>True between `TurnOnNextEpisode` and `TurnOffNextEpisode`.</summary>

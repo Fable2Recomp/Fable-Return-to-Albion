@@ -82,7 +82,7 @@ public static class Fable3BoxScreenModel
 		WeddingPicker => WeddingPage(stated, screen, resolve),
 		Partners => PartnersPage(stated, screen, resolve),
 		Proposal => ProposalPage(stated, resolve),
-		Divorce => DivorcePage(stated, resolve),
+		Divorce => DivorcePage(stated, screen, resolve),
 		SaveMenu => SaveMenuPage(screen, resolve),
 		_ => null,
 	};
@@ -413,18 +413,22 @@ public static class Fable3BoxScreenModel
 	}
 
 	/// <summary>
-	/// THE DIVORCE MESSAGE. Its pages (sub_82928C90 / sub_82928F78 / sub_82929378) state the root
-	/// and `Foreground.GamerTagPics` / `Foreground.JointAssetsBreakdown` states and commit the title
-	/// and action line (sub_82928BB0: `Foreground.Title`, `Foreground.ActionDescription`), the two
-	/// names (`GamerTagPics.Pic1.Tag` / `.Pic2.Tag`), the reason (`ReasonsPicker.Reasons.ReasonText`,
-	/// sub_829297D8; `ReasonReport.*`), the asset split (`JointAssetsBreakdown.Tag/Amount1`,
-	/// `.Tag2/Amount2`) and the children line (`Foreground.Kids`). Input sub_82928958: A (74,
-	/// 0x829289A8) advances, B (75, 0x829289F4) backs out, left/right (31/32) pick the reason.
+	/// THE DIVORCE MESSAGE. Fields (reason `+136`, page `+172`). The page is the ctor's 6th argument
+	/// (sub_829281C8, `stw r26,0xAC(r31)` 0x8292832C — nothing else writes it) and the Show writes it
+	/// out at 0x8292859C..0x82928684: the title/action pair through sub_82928BB0 (`Foreground.Title`,
+	/// `Foreground.ActionDescription`), then the page's writer — <see cref="DivorcePageOf"/>. Input
+	/// sub_82928958: A (74) closes every page (sub_82929628 sets +176/+177, 0x8292963C/0x82929640),
+	/// on an asking page first queueing the confirmation query (0x82929760) and recording the
+	/// request with the reason (sub_825C6660 at 0x829297C4); B (75, 0x82928A10) and left/right
+	/// (31/32, the reason +136 wrapped at the GDB list's count, 0x82928AB4 / 0x82928B80) only on an
+	/// asking page (`cmpwi r11,3` / `cmpwi r11,0` at 0x829289E4 / 0x829289EC).
 	/// </summary>
-	private static Fable3ScreenPage DivorcePage(IReadOnlyDictionary<string, Probe> stated, System.Func<string, string> resolve)
+	private static Fable3ScreenPage DivorcePage(IReadOnlyDictionary<string, Probe> stated, Fable3ScreenState screen, System.Func<string, string> resolve)
 	{
 		string fore = Divorce + ".Foreground.";
+		DivorceKind kind = DivorcePageOf(screen.Field(1, 0));
 		var rows = new List<Fable3ScreenPage.Row>();
+		int selected = -1;
 		void Line(string name, params string?[] parts)
 		{
 			var present = new List<string>(Present(parts));
@@ -434,22 +438,69 @@ public static class Fable3BoxScreenModel
 			}
 		}
 
-		if (At(stated, fore + "GamerTagPics") is not { Hidden: true })
+		switch (kind)
 		{
-			Line("Names", Text(stated, fore + "GamerTagPics.Pic1.Tag"), Text(stated, fore + "GamerTagPics.Pic2.Tag"));
+			case DivorceKind.Asking:
+				// sub_82928C90: both pictures (sub_82929888(box, 1) at 0x82928CE0), the reason picked
+				// now (sub_829297D8 at 0x82928CE8), the joint assets +124 (0x82928D50) and the
+				// orphaned children line (0x82928F64).
+				Line("Names", Text(stated, fore + "GamerTagPics.Pic1.Tag"), Text(stated, fore + "GamerTagPics.Pic2.Tag"));
+				if (Text(stated, fore + "ReasonsPicker.Reasons.ReasonText") is { } reason)
+				{
+					selected = rows.Count;
+					rows.Add(new("Reason", "◀ " + reason + " ▶"));
+				}
+
+				Line("Assets1", Text(stated, fore + "JointAssetsBreakdown.Tag"), Text(stated, fore + "JointAssetsBreakdown.Amount1"));
+				Line("Kids", Text(stated, fore + "Kids"));
+				break;
+			case DivorceKind.Told:
+				// sub_82928F78: the partner's picture only (sub_82929888(box, 0) at 0x82928FC8), the
+				// reason the partner gave (0x82929074 / 0x829290D0), both shares +124 / +128
+				// (0x82929194 / 0x829291D4) under their names (0x829292A8 / 0x829292D0).
+				Line("Names", Text(stated, fore + "GamerTagPics.Pic2.Tag"));
+				Line("Reason", Text(stated, fore + "ReasonReport.ReasonReportTitle"), Text(stated, fore + "ReasonReport.ReasonText"));
+				Line("Assets1", Text(stated, fore + "JointAssetsBreakdown.Tag"), Text(stated, fore + "JointAssetsBreakdown.Amount1"));
+				Line("Assets2", Text(stated, fore + "JointAssetsBreakdown.Tag2"), Text(stated, fore + "JointAssetsBreakdown.Amount2"));
+				break;
+			case DivorceKind.Confirmed:
+				// sub_82929378: the partner's picture, one share +128 (0x82929484) under the
+				// player's name (0x829295B0); Amount2 / Tag2 / Kids emptied (0x829294C8..0x829295FC).
+				Line("Names", Text(stated, fore + "GamerTagPics.Pic2.Tag"));
+				Line("Assets1", Text(stated, fore + "JointAssetsBreakdown.Tag"), Text(stated, fore + "JointAssetsBreakdown.Amount1"));
+				break;
 		}
 
-		Line("Reason", Text(stated, fore + "ReasonReport.ReasonReportTitle"), Text(stated, fore + "ReasonsPicker.Reasons.ReasonText") ?? Text(stated, fore + "ReasonReport.ReasonText"));
-		if (At(stated, fore + "JointAssetsBreakdown") is not { Hidden: true })
+		var prompts = new List<Fable3ScreenPage.Prompt> { new("A", resolve("GUI_ACCEPT")) };
+		if (kind == DivorceKind.Asking)
 		{
-			Line("Assets1", Text(stated, fore + "JointAssetsBreakdown.Tag"), Text(stated, fore + "JointAssetsBreakdown.Amount1"));
-			Line("Assets2", Text(stated, fore + "JointAssetsBreakdown.Tag2"), Text(stated, fore + "JointAssetsBreakdown.Amount2"));
+			prompts.Add(new("B", resolve("GUI_BACK")));
 		}
 
-		Line("Kids", Text(stated, fore + "Kids"));
-		return new Fable3ScreenPage(Text(stated, fore + "Title") ?? string.Empty, rows, -1, Text(stated, fore + "ActionDescription") ?? string.Empty,
-			new[] { new Fable3ScreenPage.Prompt("A", resolve("GUI_ACCEPT")), new Fable3ScreenPage.Prompt("B", resolve("GUI_BACK")) }, false);
+		return new Fable3ScreenPage(Text(stated, fore + "Title") ?? string.Empty, rows, selected,
+			Text(stated, fore + "ActionDescription") ?? string.Empty, prompts, kind == DivorceKind.Asking);
 	}
+
+	/// <summary>What a divorce page shows: asking for a reason, told of the partner's, or the outcome confirmed.</summary>
+	public enum DivorceKind
+	{
+		Asking,
+		Told,
+		Confirmed,
+	}
+
+	/// <summary>
+	/// The divorce box's page `+172` as the Show dispatches it (0x8292859C..0x82928684): 0 divorce /
+	/// 3 partnership split ask (sub_82928C90, root slide 2 at 0x82928CB4), 1 divorced / 4 split up are
+	/// told (sub_82928F78, slide 3 at 0x82928F9C), 2 / 5 confirmed (sub_82929378, slide 4 at
+	/// 0x8292939C); above 5 the Show writes nothing (`cmplwi r11,5` / `bgt` 0x829285A0).
+	/// </summary>
+	public static DivorceKind DivorcePageOf(int page) => page switch
+	{
+		1 or 4 => DivorceKind.Told,
+		2 or 5 => DivorceKind.Confirmed,
+		_ => DivorceKind.Asking,
+	};
 
 	/// <summary>
 	/// THE SAVE MENU (<see cref="Fable3UiStatements"/>: `@SaveMenu.Open(allowed, row)`,
