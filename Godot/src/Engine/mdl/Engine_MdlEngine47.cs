@@ -142,7 +142,7 @@ public static class Engine_MdlEngine47
         if (BodyStart + total > data.Length) return false;
 
         bool shared = data[SharedVertexStreamFlag] != 0;
-        var body = new BodyWriter(data.Length);
+        using var body = new BodyWriter(data.Length);
         Payload? lod0 = null;
         var coarser = new List<Payload>();
 
@@ -917,18 +917,29 @@ public static class Engine_MdlEngine47
     /// <summary>
     /// The repacked body. Every byte is a copy of one file byte, so it never outgrows the file.
     /// </summary>
-    private sealed class BodyWriter
+    /// <remarks>
+    /// Pooled scratch: only <see cref="ToArray"/>'s copy of the written length leaves it. A rented
+    /// buffer is not zeroed, which nothing can see — every reserved byte is written before the
+    /// body is copied out (<see cref="Copy"/>, and RepackRigid / RepackSkinned / RepackTree each
+    /// fill all 20 / 28 / 36 bytes of a vertex).
+    /// </remarks>
+    private sealed class BodyWriter : IDisposable
     {
         private byte[] _buffer;
         private int _length;
 
-        public BodyWriter(int capacity) => _buffer = new byte[Math.Max(capacity, 16)];
+        public BodyWriter(int capacity) =>
+            _buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(Math.Max(capacity, 16));
 
         public int Reserve(int count)
         {
             if (_length + count > _buffer.Length)
             {
-                Array.Resize(ref _buffer, Math.Max(_buffer.Length * 2, _length + count));
+                byte[] grown = System.Buffers.ArrayPool<byte>.Shared.Rent(
+                    Math.Max(_buffer.Length * 2, _length + count));
+                _buffer.AsSpan(0, _length).CopyTo(grown);
+                System.Buffers.ArrayPool<byte>.Shared.Return(_buffer);
+                _buffer = grown;
             }
 
             int at = _length;
@@ -946,5 +957,16 @@ public static class Engine_MdlEngine47
         }
 
         public byte[] ToArray() => _buffer.AsSpan(0, _length).ToArray();
+
+        public void Dispose()
+        {
+            byte[] buffer = _buffer;
+            _buffer = Array.Empty<byte>();
+            _length = 0;
+            if (buffer.Length != 0)
+            {
+                System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
     }
 }

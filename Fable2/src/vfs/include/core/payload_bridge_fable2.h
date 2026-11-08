@@ -265,6 +265,12 @@ void refii_bridge_hero_derived_snapshot(void* out);
 /// copies as many whole records as fit.
 void refii_bridge_publish_hero_inventory(const uint32_t* words, uint32_t count);
 uint32_t refii_bridge_hero_inventory_snapshot(uint32_t* out, uint32_t word_capacity);
+/// Player 1's or 2's inventory as the pump last walked it (SamplePlayerInventories), whoever's menus
+/// are open: four words per record {recordId, count, category, flags}, flags bit 0 viewed and bit 1
+/// worn. Publishing never bumps the UI generation (no menu lists it). The snapshot call returns the
+/// record count, 0 for any other player, and copies as many whole records as fit.
+void refii_bridge_publish_player_inventory(int32_t player, const uint32_t* words, uint32_t count);
+uint32_t refii_bridge_player_inventory_snapshot(int32_t player, uint32_t* out, uint32_t word_capacity);
 void refii_bridge_publish_quests(const void* entries, uint32_t count);
 uint32_t refii_bridge_requested_world_map_region(void);
 void refii_bridge_publish_world_map_region(const void* region);

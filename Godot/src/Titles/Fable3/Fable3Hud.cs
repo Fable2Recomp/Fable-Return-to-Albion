@@ -184,6 +184,7 @@ public partial class Fable3Hud : Fable3Canvas
 				_host.DocumentFor(document.Document) is { } screen)
 			{
 				ReportUncut(screen);
+				Fable3WorldIcons.UseHud(screen);
 			}
 		}
 	}

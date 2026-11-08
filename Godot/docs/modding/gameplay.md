@@ -423,11 +423,10 @@ The shipped AI plays a named animation as a scripted action
 and the game's own evaluator plays it, so the pose shows in Godot with nothing added.
 
 - **`play_animation(entity, name, loops = 1, blend_seconds = 0.1, speed = 1)`**: that table, run
-  in the game VM; `loops` above 1 wraps it as `PlayLoopedAnimation` does (a BATCH with
-  `LoopAction` and `NumLoops`). True when the chunk ran: a higher-priority action (combat, a
-  cutscene) keeps the body, which the call cannot see.
-  The wrapper is a `LOOP` action, not a BATCH: `{ Type = EScriptableAction.LOOP, LoopAction = …,
-  NumLoops = loops, KillFXOnFinish = true }`, so the clip plays `loops` times.
+  in the game VM; `loops` above 1 wraps it in a `LOOP` action, `{ Type = EScriptableAction.LOOP,
+  LoopAction = …, NumLoops = loops, KillFXOnFinish = true }` (the loop action's constructor reads
+  `NumLoops`, `IntoAction`, `LoopAction` and `OutOfAction`), so the clip plays `loops` times. True when
+  the chunk ran: a higher-priority action (combat, a cutscene) keeps the body, which the call cannot see.
 - **`stop_animation(entity)`**: `Action.FinishScriptedActions(entity)`, what the behaviours call
   to cut a played animation.
 
@@ -617,13 +616,19 @@ the joiner's copy follow.
 
 ## The inventory as a screen reads it
 
-Everything the game's own inventory pages show about what this machine's hero carries, read at the
+Everything the game's own inventory pages show about what a player's hero carries, read at the
 call, and what those pages do to an item. For a mod that draws its own inventory.
 
 | Surface | Read | Act |
 |---|---|---|
-| Lua | `Refii.ask_host("inventory_items", fn)`: `fn` gets the answer on a later tick | `Refii.ask_host("inventory_action", fn, operation, definition)` |
-| Godot | `host.inventory_items() -> Array` | `host.inventory_action(operation, definition) -> bool` |
+| Lua | `Refii.ask_host("inventory_items", fn, p)`: `fn` gets the answer on a later tick | `Refii.ask_host("inventory_action", fn, p, operation, definition)` |
+| Godot | `host.inventory_items(p) -> Array` | `host.inventory_action(p, operation, definition) -> bool` |
+
+`p` is 1 or 2, 0 for the player whose menus are open on this machine. Either player's list answers,
+whoever's menus are open: it is that hero's own inventory as this machine's game holds it. An action
+for the player whose menus are open runs the pages' own row; one for the other player acts on their own
+hero in local co-op, and is false for a player on another machine.
+Lua gets plain data: `pieces` is a list of paths, and the stat `lines` a list of tables.
 
 Each stack is a Dictionary, in the game's order, without what the game's pages hide (`VisibleInGUI`
 and an outfit none of whose pieces are carried):
@@ -633,7 +638,7 @@ and an outfit none of whose pieces are carried):
 | `definition` | `"0x…"`, the record that `use_item` and `equip_weapon` take |
 | `count` | how many |
 | `category` | the item's `Category`: 1 weapons, 3 gifts, 4 trophies, 5 food, 6 potions, 7 augments, 8 dyes, 15 furniture, 16 books, 17-22 hats, coats, shirts, gloves, trousers, shoes, 23 accessories, 25 outfits, 2 and 26 tools, keys and quest items |
-| `name`, `description` | in the player's language |
+| `name`, `description` | in the player's language; a name tag the game's book has no text for stays the tag |
 | `icon` | the texture path; `load("game://" + icon.replace("\\", "/").to_lower())` |
 | `model` | the item's model path, empty for none; `load("game://" + model.replace("\\", "/").to_lower())` is a `Mesh` |
 | `pieces` | an outfit's model paths, one per piece it names, empty for anything else: an outfit has no `model` of its own |

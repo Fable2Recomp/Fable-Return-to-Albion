@@ -17,7 +17,7 @@ public sealed class AndroidBundledModsTests
 {
     private static string Scratch()
     {
-        string root = Path.Combine(Path.GetTempPath(), "refii-android-mods-" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-android-mods-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         return root;
     }

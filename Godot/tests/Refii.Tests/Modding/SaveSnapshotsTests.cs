@@ -12,7 +12,7 @@ using Refii.Save;
 /// A mod's save snapshots (RefiiHost save_snapshot / load_snapshot / snapshot_time, and the
 /// save_written signal's fields): taken beside the save, staged into the folder for the guest's
 /// fail-quest reload with the main save as the fail-quest save, and put back after — a file the
-/// game wrote meanwhile kept, a crash's partial hold never deleting. On a temporary save root.
+/// game wrote meanwhile kept, a crash's partial hold never deleting. On a temporary save profile.
 /// </summary>
 [TestSuite]
 public class SaveSnapshotsTests
@@ -21,8 +21,8 @@ public class SaveSnapshotsTests
 
 	private static string NewSave(out string root)
 	{
-		root = Path.Combine(Path.GetTempPath(), "refii-snapshots-" + Guid.NewGuid().ToString("N"));
-		string save = Path.Combine(root, "E06FD4BA20120108", "4D5307F1", "00000001", "Hero000");
+		root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-snapshots-" + Guid.NewGuid().ToString("N"));
+		string save = Path.Combine(root, "Fable 2", "00000001", "Hero000");
 		Directory.CreateDirectory(save);
 		Write(save, "mainsave.bin", "main-1");
 		Write(save, "failquestsave.bin", "quest-fail");
@@ -57,7 +57,7 @@ public class SaveSnapshotsTests
 		try
 		{
 			string? directory = SaveSnapshots.SnapshotDirectory(save, Key);
-			AssertThat(directory).IsEqual(Path.Combine(root, "E06FD4BA20120108", "refii-snapshots", "Hero000", Key));
+			AssertThat(directory).IsEqual(Path.Combine(root, "Fable 2", "refii-snapshots", "Hero000", Key));
 			AssertThat(SaveSnapshots.SnapshotDirectory(save, "bad")).IsNull();
 			AssertThat(SaveSnapshots.SnapshotDirectory(Path.Combine(root, "elsewhere", "Hero000"), Key)).IsNull();
 

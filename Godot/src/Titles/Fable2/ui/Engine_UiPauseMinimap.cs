@@ -107,27 +107,46 @@ public static class Engine_UiPauseMinimap
 		// THE MENU OWNER'S HERO, not player one's: the pause root resolves the local player
 		// (`sub_8229EE78(sub_821C7CE0(…))`), so player two's pause plots player two — the bridge's
 		// `live.Hero` is that same resolution.
-		if (live.Hero != 0u && Refii.Game.GameEntities.TryGuestPosition(live.Hero, out Vector3 heroAt))
+		if (Engine_UiMinimapPage.Place(info, origin, live.Hero, live.Extent) is { } heroAt)
 		{
-			Vector2 at = Engine_UiMinimapPage.Project(info, origin, heroAt, live.Extent);
-			said.Positions[Player] = new Vector3(at.X, at.Y, PlayerDepth);
-
-			float facing = 0f;
-			if (Refii.Game.GameEntities.TryGuestRotation(live.Hero, out Quaternion heroRotation))
-			{
-				Vector3 forward = heroRotation * Vector3.Up;  // the guest's (0, 1, 0)
-				facing = Mathf.Atan2(forward.X, forward.Y);
-			}
-
-			said.Rotations[Player] = Mathf.DegToRad(info.IconRotation + info.DegreesToNorth) - facing;
+			said.Positions[Player] = new Vector3(heroAt.X, heroAt.Y, PlayerDepth);
+			said.Rotations[Player] = PlayerTurn(info, live.Hero);
 		}
 
-		if (live.Dog != 0u && Refii.Game.GameEntities.TryGuestPosition(live.Dog, out Vector3 dogAt))
+		if (Engine_UiMinimapPage.Place(info, origin, live.Dog, live.Extent) is { } dogAt)
 		{
-			Vector2 at = Engine_UiMinimapPage.Project(info, origin, dogAt, live.Extent);
-			said.Positions[Dog] = new Vector3(at.X, at.Y, DogDepth);
+			said.Positions[Dog] = new Vector3(dogAt.X, dogAt.Y, DogDepth);
 		}
 
 		return said;
+	}
+
+	/// <summary>`MiniMap.Player`'s turn for <paramref name="hero"/>: the `fmsubs` at 0x826a3074 (see the class summary).</summary>
+	public static float PlayerTurn(Engine_UiMinimapPage.Info info, uint hero)
+	{
+		float facing = Engine_UiMinimapPage.Forward(hero) is { } forward ? Mathf.Atan2(forward.X, forward.Y) : 0f;
+		return Mathf.DegToRad(info.IconRotation + info.DegreesToNorth) - facing;
+	}
+
+	/// <summary>
+	/// The map image's half-size in `MiniMap`'s units: half the authored quad (<see cref="Engine_UiSceneBuilder.QuadBaseSize"/>
+	/// scaled by the image's own scale) of `MiniMap.Bowerstone` in the pause root's file; null when the file has no such element.
+	/// </summary>
+	public static float? ImageHalfSize(Engine_UiScreen? pauseRoot)
+	{
+		if (pauseRoot is null)
+		{
+			return null;
+		}
+
+		foreach (UiNode node in pauseRoot.Nodes)
+		{
+			if (node.Name == "Bowerstone" && node.Parent is { Name: "MiniMap" })
+			{
+				return 0.5f * Engine_UiSceneBuilder.QuadBaseSize * Mathf.Abs(node.ScaleX);
+			}
+		}
+
+		return null;
 	}
 }

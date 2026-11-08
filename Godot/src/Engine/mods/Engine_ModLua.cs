@@ -56,6 +56,9 @@ public static class ModLua
 	/// function), <c>Refii._require(mod)</c> is that mod's <c>require</c>. A name is lower-cased with
 	/// <c>.</c> read as <c>/</c>; a missing module is an error naming the file; the first result is
 	/// cached, nil as <c>true</c>, and a cycle sees <c>true</c>.
+	/// <c>Refii._as_mod(mod)</c> is the <c>Refii</c> a mod's block sees (a local of the block): every field
+	/// the global's, read and written through, but its <c>ask_host</c> names the mod, so the host knows
+	/// which mod an ask comes from (<c>own_screen</c> is that mod's).
 	/// </summary>
 	public const string RequireRuntime =
 		"Refii._modules = Refii._modules or {}\n" +
@@ -63,6 +66,18 @@ public static class ModLua
 		"\tlocal scope = { modules = {}, loaded = {} }\n" +
 		"\tRefii._modules[mod] = scope\n" +
 		"\treturn scope\n" +
+		"end\n" +
+		"function Refii._as_mod(mod)\n" +
+		"\tRefii._mod_views = Refii._mod_views or {}\n" +
+		"\tlocal view = Refii._mod_views[mod]\n" +
+		"\tif view == nil then\n" +
+		"\t\tview = setmetatable({ ask_host = function(what, fn, a, b, c, d)\n" +
+		"\t\t\tif Refii._ask_as ~= nil then return Refii._ask_as(mod, what, fn, a, b, c, d) end\n" +
+		"\t\t\treturn Refii.ask_host(what, fn, a, b, c, d)\n" +
+		"\t\tend }, { __index = Refii, __newindex = Refii })\n" +
+		"\t\tRefii._mod_views[mod] = view\n" +
+		"\tend\n" +
+		"\treturn view\n" +
 		"end\n" +
 		"function Refii._require(mod)\n" +
 		"\treturn function(name)\n" +
@@ -354,7 +369,8 @@ public static class ModLua
 			if dot == nil then return end
 			Refii._raise_local('mod_signal', { mod = string.sub(scoped, 1, dot - 1), name = string.sub(scoped, dot + 1), payload = payload })
 		end
-		function Refii.ask_host(what, fn, a, b, c, d)
+		function Refii.ask_host(what, fn, a, b, c, d) return Refii._ask_as(nil, what, fn, a, b, c, d) end
+		function Refii._ask_as(mod, what, fn, a, b, c, d)
 			if Refii.signal == nil or what == nil then return false end
 			local id = 0
 			if type(fn) == 'function' then
@@ -363,7 +379,7 @@ public static class ModLua
 				Refii._asks[id] = fn
 			end
 			local E = Refii._encode
-			local text = tostring(id) .. '\n' .. tostring(what) .. '\n' .. E(a) .. '\n' .. E(b) .. '\n' .. E(c) .. '\n' .. E(d)
+			local text = tostring(id) .. '\n' .. tostring(what) .. '\n' .. E(a) .. '\n' .. E(b) .. '\n' .. E(c) .. '\n' .. E(d) .. '\n' .. E(mod)
 			if Refii.signal('refii.ask', text) then return true end
 			Refii._asks[id] = nil
 			return false
@@ -1062,8 +1078,11 @@ public static class ModLua
 	}
 
 	/// <summary>The mod's own <c>require</c>, a local of the block its chunks and modules close over.</summary>
-	private static void AppendRequire(StringBuilder text, string mod) =>
+	private static void AppendRequire(StringBuilder text, string mod)
+	{
 		text.Append("local require = Refii._require(\"").Append(Escape(mod)).Append("\")\n");
+		text.Append("local Refii = Refii and Refii._as_mod and Refii._as_mod(\"").Append(Escape(mod)).Append("\") or Refii\n");
+	}
 
 	/// <summary>
 	/// The mod's modules registered under a fresh scope, each as <c>function(...)</c> over its text —

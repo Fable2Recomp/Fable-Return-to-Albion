@@ -45,7 +45,7 @@ public static class Engine_UiQuestBoxPage
 	/// Condition2, `+44` Occupation, `+48` Appearance, `+52` Features, `+56` TargetName, `+60`
 	/// Whereabouts, `+64` Reason.
 	/// </summary>
-	public static Statement? Of(Engine_UiDisplayBoxes.Box? box, Refii.Text.Engine_BabelDatabase? strings)
+	public static Statement? Of(Engine_UiStatedBoxes.Box? box, Refii.Text.Engine_BabelDatabase? strings)
 	{
 		if (box is not { Kind: Engine_UiDisplayBoxes.Quest })
 		{

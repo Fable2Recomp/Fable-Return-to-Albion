@@ -1896,7 +1896,7 @@ public static class ModApi
 	public const string AskHostMeaning =
 		"THE HOST'S READS AND ACTIONS a Lua mod has no synchronous form of, asked of Godot on this machine: ask_host(what, fn, a, b, c, d) and fn(value) runs on a later tick with the answer " +
 		"(plain data: a number, a text, a boolean, a table of them; nil for none), false when it could not be posted; what is one of ModApi.HostCalls — fade_state(p), hud_overrides(p), input_claimed(p, action), input_claims(p), " +
-		"inventory_items(), lights(), markers(), meters(), minimap(), minimap_point(x, y, z), mods(), presses(p), snapshot_time(key), and the actions inventory_action(operation, definition), own_screen(on), set_setting(key, v), save_snapshot(key), load_snapshot(key), which Refii.set_setting / save_snapshot / load_snapshot name (fn(true) once done)";
+		"input_label(name), inventory_items(p), lights(), markers(), meters(), minimap(p), minimap_point(x, y, z), mods(), move_stick(p), presses(p), snapshot_time(key), touch_mode(), touch_stick(), and the actions inventory_action(p, operation, definition), own_screen(p, on) (the asking mod's), set_setting(key, v), save_snapshot(key), load_snapshot(key), which Refii.set_setting / save_snapshot / load_snapshot name (fn(true) once done)";
 
 	public const string GodotRuntimeMeaning =
 		"Godot's: counted by RefiiHost from the same tick and paused statements Lua's runtime counts (heard while a script is loaded), from this host's start — durations agree with Lua's, absolute values need not; " +
@@ -2123,7 +2123,7 @@ public static class ModApi
 		new ModApiHelper("constants() -> Dictionary / spell_info(type) -> Dictionary", ConstantsMeaning + " / " + SpellInfoMeaning + " ({ name_tag, icon })"),
 		new ModApiHelper("signal setting_changed(key, value)", SettingChangedMeaning),
 		new ModApiHelper("in_cutscene(player = 0, kinds = 7) -> bool / cutscene_kinds(player = 0)", "the cutscene event as this host last heard it (always heard while a script is loaded; seeded by a query when the host is made): whether any of kinds holds for player 1 or 2 (0: either), and the bits — " + InCutsceneMeaning + "; query in_cutscene P asks the guest now"),
-		new ModApiHelper("minimap() -> Dictionary / minimap_point(x, y, z) -> Vector2", "the current region's map as the game's own minimaps plot it: known, proper, texture, north, half_size, hero, facing, dog, quest, quest_here, quests, merchants; places in the image's element units around its centre, Y up"),
+		new ModApiHelper("minimap(player) -> Dictionary / minimap_point(x, y, z) -> Vector2", "the current region's map as the game's own minimaps plot it, for player 1 or 2's hero (0 this machine's): known, proper, texture (Godot only), texture_path (its game:// path), north, half_size, hero, facing, quests (the other quests' objectives, from the quest log of the hero whose menus this machine shows); the extent is the level's own heightfields', the places the entity feed's; places in the image's element units around its centre, Y up"),
 		new ModApiHelper("query locked_target P / has_status E KIND / in_cutscene P", "target (0 when not locked) · has · kinds (the REFII_CUTSCENE_* bits, 0 none): refii_mod_locked_target / refii_mod_has_status / refii_mod_in_cutscene"),
 		new ModApiHelper("query speed_multiplier P / current_action E", "overridden, factor · action (0 for none), elapsed, interruptible: refii_mod_speed_multiplier / refii_mod_current_action, _action_elapsed, _action_interruptible"),
 		new ModApiHelper("query action A / frontend", "type, name, elapsed, interruptible (ok false for an unknown action; elapsed and interruptible are Refii.action_elapsed / action_interruptible of that action) · signed_in, saves, screen (ok false with no front end up): " + ActionKindMeaning + " / " + FrontEndMeaning),
@@ -2147,13 +2147,15 @@ public static class ModApi
 		new ModApiHelper("query inventory P [OFFSET]", "player P's hero's stacks in the game's order, up to 40 a reply from stack OFFSET: total, offset, next, count, d1..dk (definitions \"0x…\"), n1..nk (counts), c1..ck (categories), v1..vk (viewed 0/1), u1..uk (usable 0/1: the item's own UsableFromInventory test, Refii.inventory's usable); ask again from next while next < total"),
 		new ModApiHelper("save_game(player) · query can_save P", "the game's own save where player P may save (AutoSaveGame(true, true); save_written follows per package) · able: Player.IsAbleToSaveGame for P's hero"),
 		new ModApiHelper("modify_renown(entity, delta) / modify_morality(entity, delta) / modify_purity(entity, delta)", "the hero stats changed through the game's own Stats.Modify*, run in the guest tick (the lines `modify_renown E D` ..); the renown / morality / purity events fire"),
-		new ModApiHelper("inventory_items() -> Array / inventory_action(operation, definition) -> bool", "what this machine's hero carries as the game's own inventory pages show it, one Dictionary per stack (definition, count, category, name, description, icon, model, value, rating, usable, worn, weapon_class, new, lines), and what those pages do to an item: use, equip, wear, outfit, or remove, which empties its clothing slot"),
+		new ModApiHelper("inventory_items(player) -> Array / inventory_action(player, operation, definition) -> bool", "what player 1 or 2's hero carries (0 the player whose menus are open here) as the game's own inventory pages show it, one Dictionary per stack (definition, count, category, name, description, icon, model, pieces, value, rating, usable, worn, weapon_class, new, lines), and what those pages do to an item: use, equip, wear, outfit, or remove, which empties its clothing slot; either player's, whoever's menus are open: the hero's own inventory as this machine's guest holds it, and an action for the player whose menus are not open is taken on their own hero in local co-op (false for another machine's player)"),
 		new ModApiHelper("dress_model(node, mesh)", "gives a MeshInstance3D in a script's own world this mesh and the lit material the game's item previews use: the world's shaders read the level's lighting and draw nothing there"),
-		new ModApiHelper("item_pose(item, yaw)", "how the game's item page holds an item of inventory_items() after yaw radians of its spin, as a Basis: at 0 its front faces a camera looking down -Z"),
+		new ModApiHelper("item_pose(item, yaw)", "how the game's item page holds an item of inventory_items(player) after yaw radians of its spin, as a Basis: at 0 its front faces a camera looking down -Z"),
 		new ModApiHelper("touch_area(action, rect) -> bool / touch_mode() -> bool / touch_stick() -> Vector2",
 			"on a touchscreen a finger on the rect (the root viewport's coordinates, where a script's CanvasLayer draws) presses the action (scoped, as input.json declares it) for player one, held while the finger stays; an empty Rect2 removes it; false for an action no enabled mod declares. " +
 			"touch_mode: whether the touchscreen is the device in use (the touch controls are drawn). touch_stick: the on-screen move stick, x right and y up, -1..1; zero when no thumb is on it"),
-		new ModApiHelper("own_screen(on)", "a mod's screen stands where the pause book would: while on, the book draws nothing and the pad is held from the game; press Start to enter and leave the pause, and turn it off when the paused signal says the pause ended"),
+		new ModApiHelper("move_stick(player) -> Vector2", "player 1 or 2's move stick as the game is handed it, x right and y up, -1..1: player 1's folds the keyboard's movement keys, the touch controls' stick and their joypad, player 2's is their own joypad (the split input_action and claim_input use); zero for a player with no pad. Lua reads it through ask_host as { x, y }"),
+		new ModApiHelper("own_screen(player, on, script)", "a mod's screen stands where the pause book would, for player 1 or 2 (0 the player whose menus are open here): while on, the book draws nothing and the pad is held from the game; press Start for that player to enter and leave the pause, and turn it off when the paused signal says the pause ended. script is the calling script's node (self): the screen is that mod's, and only that mod turns it off (Lua's ask_host names its mod itself; own_screen(player, on) names none). One screen at a time, a later take by any mod takes it over; released when the mod set reloads, the game VM's Lua reloads (a Lua mod's), the game is left or a level unloads"),
+		new ModApiHelper("input_glyph(name) -> Texture2D / input_label(name) -> String", "the prompt for a mod action (scoped <mod>.<action>, as input.json declares it) or a game pad button (A, B, Start, LT ...) as the game's prompts draw it now: the bound key's keycap on the keyboard and mouse, the bound button in the player's glyph style and pack on a pad, so a rebind shows at once; null / empty with nothing bound on the device in use. Lua reads input_label through ask_host"),
 		new ModApiHelper("use_item(player, definition) / equip_weapon(player, definition) / perform_expression(player, expression) / assign_spell(player, spell)", QuickActionMeaning),
 		new ModApiHelper("use_item(player, definition, options) / equip_weapon(player, definition, options) / perform_expression(player, expression, held [, options]) / perform_expression(player, expression, held, options, callback) -> bool / assign_spell(player, spell, options) / release_expression(player)", QuickOptionsMeaning + "; options is {\"ungated\": true}; use_item(player, definition, {\"ungated\": true}) is the per-player form of the Items page's use_item(definition); with callback it runs Lua's own Refii.perform_expression and callback(performed) follows on a later frame"),
 		new ModApiHelper("end_sprint(player) · query sprinting P", SprintMeaning + " · sprinting=true|false"),
@@ -2219,8 +2221,8 @@ public static class ModApi
 	/// </summary>
 	public static readonly IReadOnlyList<string> HostCalls = new[]
 	{
-		"fade_state", "hud_overrides", "input_claimed", "input_claims", "lights", "markers", "meters", "minimap", "minimap_point", "mods", "presses", "inventory_items", "inventory_action", "own_screen",
-		"snapshot_time", "set_setting", "save_snapshot", "load_snapshot",
+		"fade_state", "hud_overrides", "input_claimed", "input_claims", "input_label", "lights", "markers", "meters", "minimap", "minimap_point", "mods", "presses", "inventory_items", "inventory_action", "own_screen",
+		"snapshot_time", "touch_mode", "touch_stick", "move_stick", "set_setting", "save_snapshot", "load_snapshot",
 	};
 
 	private static ModApiTwin T(string lua, string godot, string why = "") => new(lua, godot, why);
@@ -2283,7 +2285,8 @@ public static class ModApi
 		T("", "node_for", "a Godot node: Lua has no scene tree (it places with mark, light and play_fx_on on the handle)"),
 		T("", "dress_model", "a Godot node: Lua has no scene tree"),
 		T("", "item_pose", "a Godot Basis: Lua has no scene tree"),
-		T("", "touch_area touch_mode touch_stick", "the touchscreen is drawn on: an area is a rectangle of a Godot script's own drawing, and Lua draws nothing"),
+		T("", "touch_area", "the touchscreen is drawn on: an area is a rectangle of a Godot script's own drawing, and Lua draws nothing"),
+		T("", "input_glyph", "a Godot texture: Lua draws nothing, and reads the same binding as text through ask_host:input_label"),
 		T("", "register_source register_condition",
 			"called by Godot's UI while it builds a list, at once; Lua runs on the guest tick, so it states a list's rows ahead with set_menu_rows (ghosted included)"),
 		T("", "register_command", "Lua's row verb is the command Mod:lua:name[:arg], which calls the Lua function of that name with the row"),
@@ -2372,6 +2375,7 @@ public static class ModApi
 		T("meter meter_remove ask_host:meters", "meter meter_remove meters"),
 		T("ask_host:minimap ask_host:minimap_point", "minimap minimap_point"),
 		T("ask_host:inventory_items ask_host:inventory_action ask_host:own_screen", "inventory_items inventory_action own_screen"),
+		T("ask_host:touch_mode ask_host:touch_stick ask_host:move_stick ask_host:input_label", "touch_mode touch_stick move_stick input_label"),
 		T("hud_icon hud_slide hud_hold ask_host:hud_overrides", "hud_icon hud_slide hud_hold hud_overrides"),
 		T("set_menu_rows open_menu open_screen", "set_menu_rows open_menu open_screen"),
 		T("message_box event:mod_message_box", "message_box signal:message_box_answered"),

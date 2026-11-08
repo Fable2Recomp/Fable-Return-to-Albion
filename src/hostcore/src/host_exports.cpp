@@ -417,7 +417,7 @@ extern "C" {
 /// `sub_824482E0` read into `SaveMgr+1016` for it, flattened with its two experience vectors.
 /// 132 adds RefiiHostGetCoopHeroSaveName — the chosen co-op hero save's file name, the
 /// `szFileName` the guest keeps at `SaveMgr+4`, which is the save's directory under
-/// `user_data_root/<xuid>/<title>/00000001/`. The host reads that save's own files from it.
+/// `user_data_root/<title folder>/00000001/`. The host reads that save's own files from it.
 /// 133 adds RefiiHostGetCoopPlayerEntities — both players' entity addresses off the player map
 /// (`game+0x9C`, keys 1 and 2, record+16 → control → entity), so the host can name which rig is
 /// player two's when a co-op body draws wrong.
@@ -680,7 +680,9 @@ extern "C" {
 ///     RefiiHostGetUiTextureStats, RefiiHostGetUiMovie, RefiiHostTakeUiElementChanges and
 ///     RefiiHostUiElementCounters: every Fable 2 presentation is headless (CGameface vtable +28),
 ///     so there is no element tree to walk and nothing on the host reads one.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 237; }
+/// 238 adds RefiiHostGetPlayerInventory — player 1's or 2's inventory, whoever's menus are open,
+///     each record flagged worn, from the pump's per-player snapshot (Fable 2).
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 238; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveRoot(char* output, uint32_t capacity) {
     auto* state = rex::system::kernel_state();
@@ -694,13 +696,19 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveRoot(char* output, uint32_t capac
 
 namespace {
 
-/// The emulator's user_data_root, where the game's saves are, for the player state's save files.
+/// The running title's savegame folder of the signed-in profile, for the player state's save
+/// files: the content manager's own path for savegame content (type 1), so it is the folder the
+/// guest's saves are created in.
 std::string PlayerStateSaveRoot() {
     auto* state = rex::system::kernel_state();
-    if (!state || !state->emulator()) {
+    if (!state || !state->emulator() || state->emulator()->user_data_root().empty() ||
+        !state->content_manager() || !state->user_profile()) {
         return {};
     }
-    const auto path = state->emulator()->user_data_root().u8string();
+    const auto path = (state->content_manager()->ResolveTitleRoot(
+                           state->user_profile()->xuid(), rex::system::xam::kCurrentlyRunningTitleId) /
+                       "00000001")
+                          .u8string();
     return std::string(path.begin(), path.end());
 }
 

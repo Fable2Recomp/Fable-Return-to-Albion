@@ -64,7 +64,7 @@ public static class AndroidTouchModControls
             {
                 if (action.Touch is { Pill.Length: > 0 } pill && (pill.When.Length != 0) == modal && ModInputTouch.Shown(action))
                 {
-                    _pills.Add((action.Name, pill.Pill, modal));
+                    _pills.Add((action.Name, ModText.Game(pill.Pill), modal));
                 }
             }
         }
@@ -80,7 +80,7 @@ public static class AndroidTouchModControls
             {
                 foreach (JoyButton button in ModInput.EffectivePad(action).Buttons)
                 {
-                    _captions[ModInput.PadName(button)] = action.Touch.Caption;
+                    _captions[ModInput.PadName(button)] = ModText.Game(action.Touch.Caption);
                 }
             }
         }
@@ -143,8 +143,12 @@ public static class AndroidTouchModControls
         return true;
     }
 
-    /// <summary>A pill's width for its text, in layout units: the text's rough run plus the pill's ends.</summary>
-    public static float PillWidth(string text) => Mathf.Max(88f, text.Length * 11.5f + 36f);
+    /// <summary>The size, in layout units, a pill's text is measured at.</summary>
+    private const int PillFontSize = 20;
+
+    /// <summary>A pill's width for its resolved text, in layout units: the text's run in the touch controls' font plus the pill's ends.</summary>
+    public static float PillWidth(string text) =>
+        Mathf.Max(88f, ThemeDB.FallbackFont.GetStringSize(text, HorizontalAlignment.Left, -1, PillFontSize).X + 36f);
 
     /// <summary>
     /// The pills, laid leftward from <paramref name="right"/> along the top row and, past

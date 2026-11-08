@@ -1,0 +1,45 @@
+key,value
+SKATE_MOD_NAME,Skateboard
+SKATE_MOD_DESCRIPTION,"Attraversa Albion in skateboard: K per salire o scendere, Spazio per saltare, clic sinistro per una Fioritura, clic destro per una Presa, e totalizza combo."
+SKATE_INPUT_TOGGLE,Attiva o disattiva lo skateboard
+SKATE_INPUT_OLLIE,Salto
+SKATE_INPUT_FLIP,Fioritura
+SKATE_INPUT_GRAB,Presa
+SKATE_INPUT_NO_LOCK,"Aggancio, disattivato in skate"
+SKATE_INPUT_HELP,Mostra o nascondi i comandi dello skateboard
+SKATE_TOUCH_TOGGLE,Skate
+SKATE_TOUCH_HOP,Salto
+SKATE_TOUCH_FLOURISH,Fioritura
+SKATE_TOUCH_GRAB,Presa
+SKATE_TOUCH_WHEELIE,Impennata
+SKATE_TOUCH_GRIND,Grind
+SKATE_TRICK_FLOURISH,Fioritura
+SKATE_TRICK_BACK_FLOURISH,Fioritura all'indietro
+SKATE_TRICK_CHEEKY_SHOVE,Spinta sfacciata
+SKATE_TRICK_IMPROBABLE,L'Improbabile
+SKATE_TRICK_PIE_GRAB,Presa del pasticcio
+SKATE_TRICK_HEROS_GRIP,Presa dell'eroe
+SKATE_TRICK_BALVERINES_TAIL,Coda di Balverine
+SKATE_TRICK_GARGOYLES_NOSE,Naso di doccione
+SKATE_TRICK_WHEELIE,Impennata di Hobbe
+SKATE_TRICK_RAIL_RIDER,Cavaliere della ringhiera
+SKATE_TRICK_GUILD_GRINDER,Grind della Gilda
+SKATE_GUILD_GRINDER_CALLOUT,Grind della Gilda!
+SKATE_CRASH,Caduta!
+SKATE_CLOSE_CALL,Per un pelo
+SKATE_CLOSE_CALL_POINTS,Per un pelo  +%1
+SKATE_COMBO,%1  x  %2
+SKATE_CONTROLS_HINT,Tieni una direzione per un'altra Fioritura o Presa
+SKATE_CONTROL_PUSH,"Spingi, frena"
+SKATE_CONTROL_PUSH_KEYS,"W, S"
+SKATE_CONTROL_PUSH_STICK,"Levetta su, giù"
+SKATE_CONTROL_STEER,"Sterza, gira"
+SKATE_CONTROL_STEER_KEYS,"A, D"
+SKATE_CONTROL_STEER_STICK,"Levetta sinistra, destra"
+SKATE_CONTROL_HOP,Salto
+SKATE_CONTROL_LEFT_CLICK,Clic sinistro
+SKATE_CONTROL_HOLD_RIGHT_CLICK,Tieni premuto il clic destro
+SKATE_CONTROL_HOLD,Tieni premuto %1
+SKATE_CONTROL_NEAR_LEDGE,"%1, vicino a un bordo"
+SKATE_CONTROL_STEP_OFF,Scendi
+SKATE_CONTROL_HIDE,Nascondi

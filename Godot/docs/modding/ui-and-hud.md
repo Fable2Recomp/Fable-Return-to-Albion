@@ -159,6 +159,7 @@ reference units:
 | `tint` | a picture's HTML colour (with alpha) its texture is multiplied by: a darkened orb, a dimmed icon (`"#ffffff59"`), a gold ring |
 | `scale` (file level, id → factor) | a piece drawn larger about its own point |
 | `group` | the id of a file-level `groups` record: the piece moves and sizes with it ([below](#moving-pieces-together-groups)) |
+| `touch` | a picture's input action (`"slot4"`, scoped to the mod, or `"my_mod.slot4"`): on a touchscreen a finger on player one's copy, where it is drawn, presses it ([On a touchscreen](settings-and-input.md#on-a-touchscreen)). An action name, not text; ignored on a desktop |
 
 Pieces draw in file order (the mods' files in load order): a later piece over an earlier one, so
 an icon listed after its frame sits on it and a ring listed after the icon rims it.
@@ -221,6 +222,7 @@ every frame, so a setting the player changes on Options › Mods moves the piece
 | `anchor`, `pivot` | the point the group scales about, placed as a piece's point is: the screen fraction plus reference units (+Y down) |
 | `scale` | a number or a value source; every member's point moves that factor away from the pivot and the member is drawn that factor larger. Not stated, or not above 0, it is 1 |
 | `offset` | `[x, y]` in reference units (+Y down), added after the scale; each a number or a value source, a leading `-` negating a source (`"-setting:my_mod.lift"` raises by the setting). Not stated, it is 0 |
+| `touchScale` | a number the scale is multiplied by on a touchscreen device (a phone), where the screen is small and the pieces are tapped with a thumb. Not stated, or not above 0, it is 1; a desktop never applies it |
 
 A member is placed first as it always is (anchor and offset, or `follow`), then moved by its group.
 The values are read for the member's player: a group of `each` pieces in player two's half scales
@@ -381,29 +383,37 @@ a HUD picture names its texture by path and `hud_icon` fills it, a marker names 
 
 ## The region map: minimap
 
-The data the pause root's and the world map's minimaps plot from, for a mod that draws its own map.
+The data the pause root's and the world map's minimaps plot from, for a mod that draws its own map,
+for one player's hero.
 
 | Surface | Call |
 |---|---|
-| Lua | `Refii.ask_host("minimap", fn)`, `Refii.ask_host("minimap_point", fn, x, y, z)`: `fn` gets the answer on a later tick, a place as a table of `x` and `y` |
-| Godot | `host.minimap() -> Dictionary`, `host.minimap_point(x, y, z) -> Vector2` |
+| Lua | `Refii.ask_host("minimap", fn, p)`, `Refii.ask_host("minimap_point", fn, x, y, z)`: `fn` gets the answer on a later tick, a place as a table of `x` and `y` |
+| Godot | `host.minimap(p) -> Dictionary`, `host.minimap_point(x, y, z) -> Vector2` |
+
+`p` is 1 or 2, 0 for this machine's hero (`local_hero`): pass the player the map is drawn for — the
+one `player_here` says this machine plays.
 
 | Key | Meaning |
 |---|---|
 | `known` | a level stands and the game's database has a map record for it; without it only `half_size` follows |
 | `proper` | it has a real map, so the places below are stated; a place without one still states its art |
-| `texture` | the map's art, a `Texture2D`; absent when the record names none |
+| `texture` | the map's art, a `Texture2D` (Godot only); absent when the record names none |
+| `texture_path` | the same art's `game://` path, which Lua gets in its place |
 | `north` | radians the image turns, as the game's own minimaps turn it |
-| `half_size` | the image's half-size, in the units the places are in |
-| `hero`, `facing` | the local hero's place, and the radians their marker turns |
-| `dog` | the dog's place |
-| `quest`, `quest_here` | the primary quest's trail target, and whether it lies in this region |
-| `quests`, `merchants` | Arrays of places: other quests' objectives, travelling merchants |
+| `half_size` | the image's half-size, in the units the places are in: read from the pause root's own file |
+| `hero`, `facing` | the player's hero's place, and the radians their marker turns |
+| `quests` | an Array of places: the objectives of the quests in the log other than the primary one, each where its objective entity stands, as the world map's minimap plots them |
 
-Places are `Vector2`s in the image's element units around its centre, Y up, so `half_size` is the
-image's edge. `minimap_point` puts a guest world position on the same map: a position Lua publishes,
-an enemy's say. It answers null with no proper map. Both read the game each call, so ask a few times
-a second rather than every frame.
+The map record comes from the game's database, the extent the places are divided by from the
+level's own heightfields (as the game computes its level bounds), the hero's place and turn from
+the entity feed by the pause root's own rules. The quests come from the hero's quest log, placed by
+the same rule; the log is that of the hero whose menus this machine shows (`local_hero`), whichever
+`p` asks, which is the map's own player whenever a map is up in play. Other marks are the mod's to
+place from stated calls: a dog's position from `player_dog` and `position`, an enemy's from `near`.
+Places are `Vector2`s in the image's element units around its centre, Y up, so `half_size`
+is the image's edge. `minimap_point` puts a guest world position on the same map. It
+answers null with no proper map. Ask a few times a second rather than every frame.
 
 ## A screen of your own
 
@@ -412,31 +422,37 @@ world held behind it and the mouse free.
 
 | Surface | Call |
 |---|---|
-| Lua | `Refii.ask_host("own_screen", fn, true)` |
-| Godot | `host.own_screen(true)` |
+| Lua | `Refii.ask_host("own_screen", fn, p, true)` |
+| Godot | `host.own_screen(p, true, self)` |
 
-While on, the pause book and the HUD draw nothing and the pad is held from the game, all but Start. It
+`p` is the player the screen serves, 1 or 2 (0 the player whose menus are open here): the one whose
+input opened it. The screen is your mod's: in Godot pass your script (`self`), and Lua's `ask_host`
+names your mod by itself, so only your mod turns it off and another mod's `own_screen(p, false)` leaves
+it standing. One screen stands at a time, and a later take by any mod takes it over; the engine releases
+it when the mod set reloads (a mod enabled or disabled), the game VM's Lua reloads (a screen a Lua mod
+took), the game is left or a level unloads, so a screen whose mod is gone never keeps the book hidden. While on, the pause book and the HUD draw nothing and the pad is held from the game, all but Start. It
 does not pause by itself: hold Start with `press` to enter the pause, let go on the `paused` signal,
 and do the same to leave it. Turn it off when `paused` says the pause has ended, because a pad's Start
 still ends it. Escape is the menus' back while paused, so it is held too: a screen closes on it itself.
 A key the screen uses is yours through a claim, as in [Claims](settings-and-input.md).
 
 ```gdscript
-func open():
-	host.own_screen(true)
-	host.press(1, "Start", true)
+func open(p: int):
+	player = p
+	host.own_screen(player, true, self)
+	host.press(player, "Start", true)
 
 func _on_paused(e):
-	host.press(1, "Start", false)
+	host.press(player, "Start", false)
 	if not e.get("paused", false):
-		host.own_screen(false)
+		host.own_screen(player, false, self)
 ```
 
 To show a model on the screen, draw it in a `SubViewport` of its own (`own_world_3d`) with its own
 lights. The world's shaders read the level's lighting and draw nothing there, so give the
 `MeshInstance3D` its mesh through `host.dress_model(node, mesh)`, which uses the lit material the
 game's item previews use. `host.item_pose(item, yaw)` is how the game's item page holds an item of
-`inventory_items()`: set it as the node's `basis` and grow `yaw` to spin it about the axis the item
+`inventory_items(p)`: set it as the node's `basis` and grow `yaw` to spin it about the axis the item
 states, with its front to a camera looking down -Z at 0.
 
 ## Boxes: messages, notices and menu boxes

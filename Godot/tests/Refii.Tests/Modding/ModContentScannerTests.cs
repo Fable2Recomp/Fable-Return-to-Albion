@@ -29,7 +29,7 @@ public class ModContentScannerTests
     [TestCase]
     public void TestScanEmptyOrMissingModReturnsEmptySummary()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_scanner_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_scanner_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -53,7 +53,7 @@ public class ModContentScannerTests
     [TestCase]
     public void TestScanModWithTitleUpdatesAndBabel()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_scanner_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_scanner_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string packagePath = Path.Combine(tempDir, "DragonMod.f2mod");
 
@@ -112,7 +112,7 @@ public class ModContentScannerTests
     [TestCase]
     public void TestScanModStrictIsolationIgnoresOtherMods()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_scanner_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_scanner_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -151,7 +151,7 @@ public class ModContentScannerTests
     [TestCase]
     public void TestRevertGdbRecordRemovesSingleRecord()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_scanner_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_scanner_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string packagePath = Path.Combine(tempDir, "RevertMod.f2mod");
 
@@ -187,7 +187,7 @@ public class ModContentScannerTests
     [TestCase]
     public void TestRevertBabelStringRemovesSingleKey()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_scanner_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_scanner_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string packagePath = Path.Combine(tempDir, "BabelRevertMod.f2mod");
 
@@ -218,7 +218,7 @@ public class ModContentScannerTests
     [TestCase]
     public void TestScanModFriendlyRecordNameAndValueSummary()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_scanner_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_scanner_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string packagePath = Path.Combine(tempDir, "FriendlyTestMod.f2mod");
 
@@ -261,7 +261,7 @@ public class ModContentScannerTests
     [TestCase]
     public void TestConflictEvaluationOrder1WinsOverOrder2()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_conflict_order_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_conflict_order_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -321,7 +321,7 @@ public class ModContentScannerTests
     [TestCase]
     public void TestConflictEvaluationMultiModAttributionAndBanner()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_multimod_conflict_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_multimod_conflict_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -407,7 +407,7 @@ public class ModContentScannerTests
     [TestCase]
     public void TestScanMod_DiscreteSaveTuAdditionsAndRemovals()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_scanner_savetu_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_scanner_savetu_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string packagePath = Path.Combine(tempDir, "LevelMod.f2mod");
 

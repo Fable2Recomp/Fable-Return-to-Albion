@@ -1,0 +1,12 @@
+key,value
+MINIMAP_MOD_NAME,Minimapa
+MINIMAP_MOD_DESCRIPTION,"Okrągła mapa regionu w prawym górnym rogu, północą do góry, ze strzałką dla bohatera i kropkami dla misji, psa i wrogów. M zmienia jej rozmiar i ją ukrywa."
+MINIMAP_INPUT_SIZE,Rozmiar minimapy
+MINIMAP_SETTING_SHOW,Pokaż minimapę
+MINIMAP_SETTING_ENEMIES,Pokaż wrogów
+MINIMAP_SETTING_RANGE,Zasięg wrogów
+MINIMAP_SETTING_RANGE_DESCRIPTION,"Jak daleko od bohatera widać wrogów, w metrach."
+MINIMAP_SETTING_OPACITY,Nieprzezroczystość
+MINIMAP_SETTING_SIZE,Rozmiar
+MINIMAP_SETTING_SIZE_DESCRIPTION,"Skaluje każdy rozmiar, przez który przechodzi M."
+MINIMAP_COMPASS_NORTH,N

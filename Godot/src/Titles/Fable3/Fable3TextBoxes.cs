@@ -1,5 +1,6 @@
 namespace Refii.Titles.Fable3;
 
+using System.Collections.Generic;
 using Refii.Ui;
 
 /// <summary>
@@ -50,4 +51,101 @@ public static class Fable3TextBoxes
 
 	/// <summary>The boxes Godot stacks.</summary>
 	public static readonly Engine_UiTextBoxStack.Box[] Stacked = { Corner, Subtitles };
+
+	/// <summary>
+	/// The meters a box's fit states its size on (sub_82921110 at 0x829205C8): the X meter from its
+	/// width, the Y meter from its height — hud.bgf's `MeterName` bindings `CornerX` [424] /
+	/// `CornerY` [425], `SubtitlesX` [503] / `SubtitlesY` [504].
+	/// </summary>
+	public static (string X, string Y) MetersOf(Engine_UiTextBoxStack.Box box) =>
+		box.Name == Subtitles.Name ? ("SubtitlesX", "SubtitlesY") : ("CornerX", "CornerY");
+
+	/// <summary>
+	/// The percent sub_82921110 states for a size: <c>(size − min) / (max − min) × 100</c> (a range
+	/// with max = min states nothing, `+20 != +12`), held to 0..100 by the meter's store sub_8291F8C0
+	/// (the `fsel` pair over the {1, −1} table unk_82073D10).
+	/// </summary>
+	public static float? MeterPercent(Engine_UiTextBoxStack.Range range, float size) =>
+		range.Max == range.Min ? null : System.Math.Clamp((size - range.Min) / (range.Max - range.Min) * 100f, 0f, 100f);
+
+	/// <summary>
+	/// A meter's value as one box's fit sees it — ONE FIT LATE. The fit states its meters through
+	/// sub_8291F8C0, which only stores the target (+28) with no rate (+12 = 0, +24 = 0); the registry
+	/// tick sub_8221D780 applies it on its next run (rate 0 takes the target, 0x8221D8C4, then
+	/// sub_8291F6E8's SetTime at 0x8221D8D0), and the element's tracks follow its time after that. The
+	/// next fit's chain getter sub_82818760 reads the attribute values (sub_82818688 → sub_821C9ED0),
+	/// so it places this box's lines on the track at the PREVIOUS fit's meter. A refit that states no
+	/// meter (the corner after each subtitle change, sub_825E7BA0 → sub_82920610 at 0x825E7BF8, from
+	/// 0x825E5F64 / 0x825E611C / 0x825E61DC) sees the latest one.
+	/// </summary>
+	public sealed class MeterLag
+	{
+		private float? _applied;
+
+		/// <summary>The meter the last fit placed by; null before any fit applied one.</summary>
+		public float? AtFit { get; private set; }
+
+		/// <summary>A fit that states <paramref name="percent"/>: it places by the one before.</summary>
+		public void Laid(float? percent)
+		{
+			AtFit = _applied;
+			if (percent is not null)
+			{
+				_applied = percent;
+			}
+		}
+
+		/// <summary>A refit that states no meter: it places by the last one stated.</summary>
+		public void Refit() => AtFit = _applied;
+	}
+
+	/// <summary>
+	/// The position tracks a meter element's own slide (relative slide 1, `Slide1`, flags 13) plays on
+	/// its time: per element, the `position.x` and `position.y` tracks it switches on (CornerX: the
+	/// `BoxMiddle` [425] x −152 → −153, track 446).
+	/// </summary>
+	public static Dictionary<int, (BgfAnimation? X, BgfAnimation? Y)> PositionTracks(Engine_BgfDocument document, int meter)
+	{
+		var tracks = new Dictionary<int, (BgfAnimation? X, BgfAnimation? Y)>();
+		int relative = 0;
+		foreach (BgfSlide slide in document.Slides)
+		{
+			if (slide.OwnerElement != meter || relative++ != 1)
+			{
+				continue;
+			}
+
+			foreach (BgfSlideEntry entry in slide.Entries)
+			{
+				foreach (int index in entry.ActivatedAnimations ?? System.Array.Empty<int>())
+				{
+					if (index < 0 || index >= document.Animations.Length)
+					{
+						continue;
+					}
+
+					BgfAnimation track = document.Animations[index];
+					bool x = track.AttributeId == PositionX;
+					if (!x && track.AttributeId != PositionY)
+					{
+						continue;
+					}
+
+					tracks.TryGetValue(track.ElementOrdinal, out (BgfAnimation? X, BgfAnimation? Y) pair);
+					tracks[track.ElementOrdinal] = x ? (track, pair.Y) : (pair.X, track);
+				}
+			}
+		}
+
+		return tracks;
+	}
+
+	/// <summary>
+	/// A meter track's value at <paramref name="percent"/>: the meter's time is percent × 10 cut to a
+	/// whole tick (sub_8291F6E8: `fmuls` by flt_820E7004 0x8291F714, `fctiwz` 0x8291F718).
+	/// </summary>
+	public static float? At(BgfAnimation? track, float percent) => track?.Evaluate((int)(percent * 10f));
+
+	private static readonly uint PositionX = Refii.Core.Engine_GameHash.AttributeId("position.x");
+	private static readonly uint PositionY = Refii.Core.Engine_GameHash.AttributeId("position.y");
 }

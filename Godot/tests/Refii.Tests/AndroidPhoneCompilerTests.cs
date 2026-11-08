@@ -296,7 +296,7 @@ public sealed class AndroidPhoneCompilerTests
     [TestCase]
     public void NestedRootsAreRejected()
     {
-        string root = Path.Combine(Path.GetTempPath(), "refii-phone-paths-" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-phone-paths-" + Guid.NewGuid().ToString("N"));
         var request = new AndroidPhoneCompiler.Request(Path.Combine(root, "public"),
             Path.Combine(root, "native"), Path.Combine(root, "game"), Path.Combine(root, "private"));
         // Containment must reject the request before opening any bundle file.
@@ -310,7 +310,7 @@ public sealed class AndroidPhoneCompilerTests
     [TestCase]
     public void GeneratedListIsLiteralAndContained()
     {
-        string root = Path.Combine(Path.GetTempPath(), "refii-phone-list-" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-phone-list-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         string source = Path.Combine(root, "fixture.cpp"), list = Path.Combine(root, "sources.cmake");
         try
@@ -352,7 +352,7 @@ public sealed class AndroidPhoneCompilerTests
     {
         // This unit checks a recipe, not filesystem integrity; lifecycle fixtures
         // cover the hashed files separately without creating them for this case.
-        string root = Path.Combine(Path.GetTempPath(), "refii-phone-flags-" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-phone-flags-" + Guid.NewGuid().ToString("N"));
         var request = new AndroidPhoneCompiler.Request(Path.Combine(root, "public"),
             Path.Combine(root, "native"), Path.Combine(root, "game"), Path.Combine(root, "private"));
         var manifest = new AndroidPhoneCompiler.BundleManifest { Includes = new[] { "sdk/include" } };
@@ -374,7 +374,7 @@ public sealed class AndroidPhoneCompilerTests
     [TestCase]
     public void Fable3UsesItsOwnIncludesAndBridge()
     {
-        string root = Path.Combine(Path.GetTempPath(), "refii-phone-fable3-" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-phone-fable3-" + Guid.NewGuid().ToString("N"));
         var manifest = new AndroidPhoneCompiler.BundleManifest
         {
             Includes = new[] { "Fable2/src/vfs/include" }, Fable3Includes = new[] { "Fable3/src/hooks/src" },
@@ -401,7 +401,7 @@ public sealed class AndroidPhoneCompilerTests
     [TestCase]
     public void EachTitleKeepsItsOwnInstallFolder()
     {
-        string user = Path.Combine(Path.GetTempPath(), "refii-user");
+        string user = Path.Combine(Refii.Tests.TestTemp.Root, "refii-user");
         AssertThat(AndroidRuntimeOptions.TitleDirectory(user, Refii.Core.Engine_Title.Fable2)).IsEqual(user);
         AssertThat(AndroidRuntimeOptions.TitleDirectory(user, Refii.Core.Engine_Title.Fable3))
             .IsEqual(Path.Combine(user, "Fable3"));
@@ -473,7 +473,7 @@ public sealed class AndroidPhoneCompilerTests
     {
         // Child execution only needs an owned working directory and diagnostic
         // file, rather than a complete synthetic compiler installation.
-        string root = Path.Combine(Path.GetTempPath(), "refii-phone-child-" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-phone-child-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         string log = Path.Combine(root, "child.log");
         try
@@ -551,7 +551,7 @@ public sealed class AndroidPhoneCompilerTests
     internal sealed class Fixture : IDisposable
     {
         /// <summary>Fresh temporary fixture root.</summary>
-        public string Root { get; } = Path.Combine(Path.GetTempPath(), "refii-phone-test-" + Guid.NewGuid().ToString("N"));
+        public string Root { get; } = Path.Combine(Refii.Tests.TestTemp.Root, "refii-phone-test-" + Guid.NewGuid().ToString("N"));
         /// <summary>Explicit separated build roots.</summary>
         public AndroidPhoneCompiler.Request Request { get; }
         /// <summary>Mutable synthetic manifest for rejection tests.</summary>

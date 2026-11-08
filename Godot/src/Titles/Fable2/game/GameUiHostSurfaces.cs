@@ -40,7 +40,7 @@ public partial class GameUi
 		bool question = Engine_UiHostBoxes.Question is not null;
 		string? body = Engine_UiHostBoxes.Question ?? Engine_UiHostBoxes.Notice;
 		bool up = body is not null && !HostBridge.IsInGame && IsRevealed && _presentation?.Theme is not null &&
-			!_guestDialogShown && Engine_UiSource.Current.GetFrontEndDialog() is null &&
+			!_guestDialogShown && Fable2UiSource.Active.GetFrontEndDialog() is null &&
 			(_hostBoxShown is not null || _warningView is not { Visible: true });
 		if (!up)
 		{

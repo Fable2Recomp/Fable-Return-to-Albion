@@ -56,7 +56,9 @@ public class ModLuaModulesTests
     public void TheWrappersCarryTheModsOwnRequire()
     {
         string wrapped = ModLua.Wrap("my\"mod", "return 1");
-        AssertThat(wrapped.StartsWith("do\nlocal require = Refii._require(\"my\\\"mod\")\nlocal ok, err = pcall(function()\nreturn 1\nend)", StringComparison.Ordinal)).IsTrue();
+        AssertThat(wrapped.StartsWith("do\nlocal require = Refii._require(\"my\\\"mod\")\n" +
+            "local Refii = Refii and Refii._as_mod and Refii._as_mod(\"my\\\"mod\") or Refii\n" +
+            "local ok, err = pcall(function()\nreturn 1\nend)", StringComparison.Ordinal)).IsTrue();
         AssertThat(wrapped.EndsWith("end\n", StringComparison.Ordinal)).IsTrue();
 
         string module = ModLua.WrapModule("mymod", "ai/wheel", "local t = {}\nreturn t");
@@ -81,6 +83,7 @@ public class ModLuaModulesTests
     {
         string chunk = ModLua.RequireRuntime +
             "do\nlocal require = Refii._require(\"m\")\n" +
+            "local Refii = Refii and Refii._as_mod and Refii._as_mod(\"m\") or Refii\n" +
             ModLua.WrapModule("m", "common", "local C = {}\nfunction C.Setting(k, d) return Refii.setting(k, d) end\nreturn C") +
             ModLua.Wrap("m", "local C = require(\"common\")\nC.Setting(\"x\", 1)") +
             "end\n";

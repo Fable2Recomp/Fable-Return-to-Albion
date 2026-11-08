@@ -1,0 +1,12 @@
+key,value
+MINIMAP_MOD_NAME,Мини-карта
+MINIMAP_MOD_DESCRIPTION,"Круглая карта области в правом верхнем углу, север сверху, со стрелкой для героя и точками для заданий, собаки и врагов. M меняет её размер и скрывает её."
+MINIMAP_INPUT_SIZE,Размер мини-карты
+MINIMAP_SETTING_SHOW,Показывать мини-карту
+MINIMAP_SETTING_ENEMIES,Показывать врагов
+MINIMAP_SETTING_RANGE,Радиус врагов
+MINIMAP_SETTING_RANGE_DESCRIPTION,"На каком расстоянии от героя видны враги, в метрах."
+MINIMAP_SETTING_OPACITY,Непрозрачность
+MINIMAP_SETTING_SIZE,Размер
+MINIMAP_SETTING_SIZE_DESCRIPTION,"Масштабирует каждый размер, который перебирает M."
+MINIMAP_COMPASS_NORTH,С

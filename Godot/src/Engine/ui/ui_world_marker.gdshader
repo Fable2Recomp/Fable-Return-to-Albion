@@ -26,6 +26,12 @@ uniform vec4 tint = vec4(1.0);
 // `tex` is a glyph atlas: coverage in alpha, colour from the tint and the run's vertex colour.
 uniform bool glyphs = false;
 
+// A glyph label whose title outlines its world-icon text (Engine_UiTextContract.WorldIconTextStyle,
+// Outlined): the glyphs marked outlined (UV2.x > 1.5, Engine_UiTextMesh) draw the outline
+// ui_text.gdshader draws, from the shipped coverage. `supersample`: texture pixels per shipped texel.
+uniform bool outline = false;
+uniform float supersample = 1.0;
+
 // Anchor uv.xy and depth; x < 0 leaves the marker untested.
 uniform vec3 sight = vec3(-1.0, 0.0, 0.0);
 
@@ -36,6 +42,8 @@ const float SLACK = 0.04;
 const vec2 TAP = vec2(0.0035, 0.006);
 
 varying float seen;
+
+#include "res://src/Engine/ui/ui_text_outline.gdshaderinc"
 
 float tap(vec2 uv) {
 	vec2 at = clamp(uv, vec2(0.001), vec2(0.999));
@@ -58,6 +66,15 @@ void fragment() {
 	vec4 colour = glyphs
 		? vec4(tint.rgb * COLOR.rgb, texel.a * tint.a * COLOR.a)
 		: texel * tint;
+	if (outline) {
+		vec2 uv_dx = dFdx(UV);
+		vec2 uv_dy = dFdy(UV);
+		if (glyphs && UV2.x > 1.5) {
+			colour = vec4(tint.rgb * COLOR.rgb * texel.a,
+				ui_text_outline_cover(tex, tex, UV, texel.a, uv_dx, uv_dy, false, 1e-4, 0.0, supersample) *
+					tint.a * COLOR.a);
+		}
+	}
 	float alpha = colour.a * smoothstep(0.1, 0.5, seen);
 	if (alpha < 0.01) {
 		discard;

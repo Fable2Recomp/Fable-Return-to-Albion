@@ -70,7 +70,7 @@ public class DisplayBoxStatementsTests
 	[TestCase]
 	public void TheAdjusterStandsOnItsOwnWidget()
 	{
-		Engine_UiDisplayBoxes.Box box = Engine_UiDisplayBoxes.Opened(Adjuster, Engine_UiDisplayBoxes.Adjuster,
+		Engine_UiStatedBoxes.Box box = Engine_UiDisplayBoxes.Opened(Adjuster, Engine_UiDisplayBoxes.Adjuster,
 			"Unnamed", "Donate?", new[] { "100", "100", "1000", "100", "1" });
 
 		AssertThat(box.Adjuster).IsNotNull();
@@ -86,7 +86,7 @@ public class DisplayBoxStatementsTests
 	[TestCase]
 	public void APercentAdjusterWithASignShowsBoth()
 	{
-		Engine_UiDisplayBoxes.Box box = Engine_UiDisplayBoxes.Opened(Adjuster, Engine_UiDisplayBoxes.Adjuster,
+		Engine_UiStatedBoxes.Box box = Engine_UiDisplayBoxes.Opened(Adjuster, Engine_UiDisplayBoxes.Adjuster,
 			"Unnamed", "Tax", new[] { "10", "-50", "50", "5", "6" });
 
 		AssertThat(box.Adjuster!.Display).IsEqual("+10%");
@@ -165,7 +165,7 @@ public class DisplayBoxStatementsTests
 	[TestCase]
 	public void TheQuestBoxPageIsTheBoxsFields()
 	{
-		Engine_UiDisplayBoxes.Box box = Engine_UiDisplayBoxes.Opened(0x4C007000u, Engine_UiDisplayBoxes.Quest,
+		Engine_UiStatedBoxes.Box box = Engine_UiDisplayBoxes.Opened(0x4C007000u, Engine_UiDisplayBoxes.Quest,
 			"Unnamed Quest", "Find the bandit.", new[]
 			{
 				"2", "3", "1", "COND_ONE", "COND_TWO", "OCC", "APP", "FEAT", "NAME", "WHERE", "WHY",

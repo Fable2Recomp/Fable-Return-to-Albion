@@ -285,10 +285,9 @@ public:
       paths.config_path = configPath;
       RefiiEnsureDirectoryExists(paths.config_path.parent_path());
     }
+    // The saves are never defaulted here: the host states the profile's folder as
+    // user_data_root (HostBridge.Initialize), and only the host knows which profile is active.
     if (const std::filesystem::path &appRoot = RefiiGetAppRoot(); !appRoot.empty()) {
-      if (paths.user_data_root.empty()) {
-        paths.user_data_root = appRoot / "assets" / "save";
-      }
       if (paths.cache_root.empty()) {
         paths.cache_root = appRoot / "cache";
       }

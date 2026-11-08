@@ -73,6 +73,13 @@ public sealed class UiText
 	/// </summary>
 	public int Truncate;
 
+	/// <summary>
+	/// The element's draw style, <see cref="Engine_UiTextContract.ElementStyle"/> of the <c>.fac</c>
+	/// record's; 3 without one, the constructor's (Fable 3 <c>stw r5, 0x5C</c> 0x82B44EC0). Style 1
+	/// is the outlined text where the title outlines (<see cref="Engine_UiTextContract.Outlines"/>).
+	/// </summary>
+	public int Style = 3;
+
 	public float R = 1, G = 1, B = 1;
 
 	public FacTextRecord Source = null!;
@@ -517,6 +524,7 @@ public sealed class Engine_UiScreen
 			BoxWidth = t.BoxWidth * Engine_UiTextContract.Active.BoxWidthUnits,
 			BoxHeight = t.BoxHeight * Engine_UiTextContract.Active.BoxHeightUnits,
 			R = t.R, G = t.G, B = t.B,
+			Style = Engine_UiTextContract.ElementStyle(t.Style),
 			Source = t,
 		};
 

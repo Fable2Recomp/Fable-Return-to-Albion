@@ -20,6 +20,10 @@ what you have in hand or on, in green and red.
 | Filter by name | `/`, or click the box; Enter ends it | |
 | Close | Tab, Escape, right click | B, Start |
 
+Equip, Favourite, Remove all clothing, Sort, Filter and Close are rebindable in Options › Controls,
+and the bar along the bottom shows each as it is bound now, as your controller's glyphs on a pad. The
+screen is the player's whose Tab opened it: their hero's inventory, their favourites.
+
 On a phone the **Inventory** pill in the top row of the touch controls opens it. Tap a category or a
 column's head, tap a row to choose it and tap it again to use it, swipe the list to scroll, and tap
 the buttons along the bottom: Equip, Wear or Use, Favourite, Sort and Close. Tap the Filter box
@@ -28,10 +32,14 @@ for the phone's keyboard.
 ## How it works
 
 This mod is a Godot script, `godot/satchel.gd`. `input.json`'s Tab action is claimed from the game
-(`claim_input`), which takes Tab and leaves Escape on the pause. Tab holds Start for the pause, and
-`own_screen` stands the screen where the pause book would. Everything closes on the `paused` signal,
-because a pad's Start ends the pause too.
+(`claim_input`), which takes Tab and leaves Escape on the pause. Tab holds Start for the pause of the
+player who pressed it, and `own_screen(player, true, self)` stands the screen where their pause book would, as the satchel's own:
+only the satchel takes it down.
+Everything closes on the `paused` signal, because a pad's Start ends the pause too. The screen's other
+keys and buttons are `input.json` actions too, read through Godot's InputMap so the player's rebinds
+hold, and drawn with `input_glyph` / `input_label`.
 
-`inventory_items()` is what the game's own pages show, and `inventory_action` does what their rows do.
+`inventory_items(player)` is what the game's own pages show that player, and `inventory_action(player, ...)`
+does what their rows do. The category names are the game's own inventory page tags.
 Favourites are saved with the hero (`player_save`). The model is drawn in a `SubViewport` with
 `dress_model`'s lit material and posed by `item_pose`.

@@ -7,10 +7,10 @@ namespace Refii.Titles.Fable2;
 using Refii.Host;
 
 /// <summary>
-/// <see cref="Engine_UiSource"/> answered by the live guest through <see cref="HostBridge"/>.
+/// <see cref="Engine_UiSource"/> and Fable 2's own reads (<see cref="Fable2UiSource"/>) answered by the live guest through <see cref="HostBridge"/>.
 /// Pure pass-through: no caching, no gating.
 /// </summary>
-public sealed class HostUiSource : Engine_UiSource
+public sealed class HostUiSource : Fable2UiSource
 {
 	/// <summary>Makes the live guest the UI's source for the rest of the session.</summary>
 	public static void Install() => Current = new HostUiSource();

@@ -3,31 +3,41 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace Refii.AndroidRuntime;
 
 /// <summary>
-/// Import save: restores the save folder from an export that holds saves (<see cref="AndroidLogBundle"/>),
-/// picked in Android's document picker, after writing the current save to Download as a backup export.
+/// Import save: restores the active save profile from an export that holds saves (<see cref="AndroidLogBundle"/>),
+/// picked in Android's document picker, after writing the current profile to Download as a backup export.
 /// </summary>
 /// <remarks>
 /// <para>Only from the launcher, before the game has started in this process
 /// (<see cref="GameStarted"/>): the running game holds the save folder and would write over an
 /// import, or read half of one.</para>
+/// <para>Two layouts import. An export of the save profiles has its entries under
+/// <c>files/runtime/assets/saves/&lt;profile&gt;/</c> and replaces the profile's games whole. One made
+/// before them has a single content root under <c>files/runtime/assets/save/</c>; it is migrated into a
+/// fresh profile (<see cref="Refii.Save.Engine_SaveMigration.MigrateInto"/>) first, so its saves land in
+/// the title folders and past-the-slot-limit saves go to Older saves.</para>
 /// <para>Every entry is checked before anything changes: only paths under the export's save root,
 /// no empty, <c>.</c> or <c>..</c> segment, no absolute or backslashed path, no duplicate, sizes within
 /// <see cref="MaxFileBytes"/> and <see cref="MaxTotalBytes"/>, and at least one hero's save header. The
-/// zip's other entries (device.txt, logs, the manifest) are left out, and so is any <c>rexnet/</c>:
-/// the phone keeps its own RexNet identity and friends, which an export never carries.</para>
-/// <para>The save is extracted into a fresh staging folder beside the save folder, then swapped in;
-/// a failure before the swap leaves the current save untouched, and one during it puts it back.</para>
+/// zip's other entries (device.txt, logs, the manifest) are left out, and so are any <c>rexnet/</c> and
+/// <c>.profile</c>: the phone keeps its own RexNet identity, friends and profile id, which an export
+/// never carries.</para>
+/// <para>The save is extracted into a fresh staging folder in the save root, then swapped in;
+/// a failure before the swap leaves the current profile untouched, and one during it puts it back.</para>
 /// </remarks>
 public static class AndroidSaveTransfer
 {
-    /// <summary>The prefix of a save file's name in an export.</summary>
+    /// <summary>The prefix of a save file's name in an export of the save profiles.</summary>
     public const string SaveRoot = "files/" + AndroidLogBundle.SaveFolder + "/";
+
+    /// <summary>The prefix of a save file's name in an export made before the save profiles.</summary>
+    public const string LegacySaveRoot = "files/" + AndroidLogBundle.LegacySaveFolder + "/";
 
     /// <summary>The largest single save file accepted (a hero's saves are a few MB).</summary>
     public const long MaxFileBytes = 64L * 1024 * 1024;
@@ -44,28 +54,57 @@ public static class AndroidSaveTransfer
     /// <summary>Set once the native game session starts; an import is refused from then until the app restarts.</summary>
     public static volatile bool GameStarted;
 
-    /// <summary>A hero's save header: <c>&lt;profile&gt;/&lt;title&gt;/Headers/&lt;slot&gt;/HeroNNN.header</c>.</summary>
+    /// <summary>A hero's save header in a profile: <c>&lt;game&gt;/Headers/&lt;type&gt;/HeroNNN.header</c>.</summary>
     private static readonly Regex HeroHeader = new(
+        @"\A[^/]+/Headers/[0-9A-Fa-f]{8}/[^/]+\.header\z", RegexOptions.CultureInvariant);
+
+    /// <summary>A hero's save header in a legacy content root: <c>&lt;xuid&gt;/&lt;title&gt;/Headers/&lt;type&gt;/HeroNNN.header</c>.</summary>
+    private static readonly Regex LegacyHeroHeader = new(
         @"\A[0-9A-Fa-f]{16}/[0-9A-Fa-f]{8}/Headers/[0-9A-Fa-f]{8}/[^/]+\.header\z", RegexOptions.CultureInvariant);
 
     /// <summary>What a valid export's save holds.</summary>
     /// <param name="Files">Save files.</param>
     /// <param name="Bytes">Their size in all.</param>
     /// <param name="Heroes">Hero save headers among them.</param>
-    public sealed record Inspection(int Files, long Bytes, int Heroes);
+    /// <param name="Legacy">Whether it is an export made before the save profiles.</param>
+    public sealed record Inspection(int Files, long Bytes, int Heroes, bool Legacy = false);
 
     /// <summary>The outcome of an import.</summary>
     /// <param name="Imported">What was restored.</param>
     /// <param name="Backup">The backup export's path, or null when there was no save to back up.</param>
     public sealed record Result(Inspection Imported, string? Backup);
 
-    /// <summary>A save entry's path inside the save folder, or null when the entry is not a save file.</summary>
+    /// <summary>
+    /// A save entry's path inside the profile (below the exporting phone's profile folder), or null
+    /// when the entry is not a save file of an export of the save profiles.
+    /// </summary>
     /// <param name="entryName">The zip entry's full name.</param>
     /// <exception cref="InvalidDataException">The name is under the save root but unsafe to extract.</exception>
     public static string? SaveRelativePath(string entryName)
     {
-        if (!entryName.StartsWith(SaveRoot, StringComparison.Ordinal)) return null;
-        string relative = entryName[SaveRoot.Length..];
+        if (Checked(entryName, SaveRoot) is not { } relative) return null;
+        int slash = relative.IndexOf('/');
+        if (slash <= 0) return null;
+        string inside = relative[(slash + 1)..];
+        if (inside == AndroidLogBundle.PrivateSaveFile || inside.Split('/')[0] == AndroidLogBundle.PrivateSaveFolder) return null;
+        return inside;
+    }
+
+    /// <summary>A save entry's path inside an export made before the save profiles, or null.</summary>
+    /// <param name="entryName">The zip entry's full name.</param>
+    /// <exception cref="InvalidDataException">The name is under the save root but unsafe to extract.</exception>
+    public static string? LegacyRelativePath(string entryName)
+    {
+        if (Checked(entryName, LegacySaveRoot) is not { } relative) return null;
+        if (relative.Split('/')[0] == AndroidLogBundle.PrivateSaveFolder) return null;
+        return relative;
+    }
+
+    /// <summary>The entry's path below <paramref name="root"/>, checked safe; null when it is not below it or names a folder.</summary>
+    private static string? Checked(string entryName, string root)
+    {
+        if (!entryName.StartsWith(root, StringComparison.Ordinal)) return null;
+        string relative = entryName[root.Length..];
         if (relative.Length == 0 || relative.EndsWith('/')) return null;
         if (relative.Contains('\\') || relative.Contains(':') || relative.StartsWith('/') || relative.Length > 400)
             throw new InvalidDataException("The export has an unsafe file name: " + entryName);
@@ -74,38 +113,49 @@ public static class AndroidSaveTransfer
             if (segment.Length == 0 || segment == "." || segment == ".." || segment.Length > 200)
                 throw new InvalidDataException("The export has an unsafe file name: " + entryName);
         }
-        if (relative.Split('/')[0] == AndroidLogBundle.PrivateSaveFolder) return null;
         return relative;
     }
+
+    /// <summary>Whether <paramref name="zip"/> is an export made before the save profiles: it has no entry under <see cref="SaveRoot"/>.</summary>
+    private static bool IsLegacy(ZipArchive zip) =>
+        !zip.Entries.Any(entry => entry.FullName.StartsWith(SaveRoot, StringComparison.Ordinal));
+
+    private static string? RelativePath(string entryName, bool legacy) =>
+        legacy ? LegacyRelativePath(entryName) : SaveRelativePath(entryName);
 
     /// <summary>Checks every save entry of <paramref name="zip"/> without extracting anything.</summary>
     /// <exception cref="InvalidDataException">The zip holds no save, or an unsafe or oversized one; the message says which.</exception>
     public static Inspection Inspect(ZipArchive zip)
     {
+        bool legacy = IsLegacy(zip);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var profiles = new HashSet<string>(StringComparer.Ordinal);
         int files = 0, heroes = 0;
         long bytes = 0;
         foreach (ZipArchiveEntry entry in zip.Entries)
         {
-            if (SaveRelativePath(entry.FullName) is not { } relative) continue;
+            if (RelativePath(entry.FullName, legacy) is not { } relative) continue;
+            if (!legacy) profiles.Add(entry.FullName[SaveRoot.Length..].Split('/')[0]);
             if (!seen.Add(relative)) throw new InvalidDataException("The export has a save file twice: " + relative);
             if (entry.Length < 0 || entry.Length > MaxFileBytes)
                 throw new InvalidDataException("The export has a save file too large to be one: " + relative);
             files++;
             bytes += entry.Length;
             if (files > MaxFiles || bytes > MaxTotalBytes)
-                throw new InvalidDataException("The export's save is larger than any Fable 2 save.");
-            if (HeroHeader.IsMatch(relative)) heroes++;
+                throw new InvalidDataException("The export's save is larger than any Fable save.");
+            if ((legacy ? LegacyHeroHeader : HeroHeader).IsMatch(relative)) heroes++;
         }
         if (files == 0)
             throw new InvalidDataException("This export has no save in it. Export \"Saves\" or \"Logs and saves\" to make one that can be imported.");
+        if (profiles.Count > 1)
+            throw new InvalidDataException("This export holds more than one save profile.");
         if (heroes == 0)
             throw new InvalidDataException("This export's save folder has no hero's save in it.");
-        return new Inspection(files, bytes, heroes);
+        return new Inspection(files, bytes, heroes, legacy);
     }
 
     /// <summary>
-    /// Restores the save folder under <paramref name="userDirectory"/> from the export at <paramref name="zipPath"/>,
+    /// Restores the active save profile under <paramref name="userDirectory"/> from the export at <paramref name="zipPath"/>,
     /// calling <paramref name="backup"/> first when there is a save to replace.
     /// </summary>
     /// <param name="zipPath">A local copy of the export.</param>
@@ -117,19 +167,21 @@ public static class AndroidSaveTransfer
     {
         if (GameStarted)
             throw new InvalidOperationException("The game has already started. Close the app, open it again and import from the launcher.");
-        string saves = AndroidLogBundle.SaveDirectory(userDirectory);
+        string root = AndroidLogBundle.SavesRoot(userDirectory);
         using ZipArchive zip = ZipFile.OpenRead(zipPath);
         Inspection inspection = Inspect(zip);
+        string profile = Refii.Save.Engine_SaveProfiles.Ensure(root);
 
-        string staging = saves + ".import-" + Guid.NewGuid().ToString("N");
-        Directory.CreateDirectory(staging);
+        string staging = Path.Combine(root, ".import-" + Guid.NewGuid().ToString("N"));
+        string extracted = inspection.Legacy ? Path.Combine(staging, "legacy") : Path.Combine(staging, "profile");
+        Directory.CreateDirectory(extracted);
         try
         {
             foreach (ZipArchiveEntry entry in zip.Entries)
             {
-                if (SaveRelativePath(entry.FullName) is not { } relative) continue;
-                string target = Path.GetFullPath(Path.Combine(staging, relative.Replace('/', Path.DirectorySeparatorChar)));
-                if (!target.StartsWith(staging + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+                if (RelativePath(entry.FullName, inspection.Legacy) is not { } relative) continue;
+                string target = Path.GetFullPath(Path.Combine(extracted, relative.Replace('/', Path.DirectorySeparatorChar)));
+                if (!target.StartsWith(extracted + Path.DirectorySeparatorChar, StringComparison.Ordinal))
                     throw new InvalidDataException("The export has an unsafe file name: " + entry.FullName);
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                 using Stream source = entry.Open();
@@ -137,8 +189,18 @@ public static class AndroidSaveTransfer
                 CopyBounded(source, output, MaxFileBytes, relative);
             }
 
-            string? backupPath = HasFiles(saves) ? backup() : null;
-            Swap(saves, staging);
+            string incoming = Path.Combine(staging, "profile");
+            if (inspection.Legacy)
+            {
+                Refii.Save.Engine_SaveMigration.MigrateInto(incoming, new[]
+                {
+                    new Refii.Save.Engine_SaveMigration.Source(extracted, "imported", Owned: true, Refii.Core.Engine_Title.Fable2.TitleId),
+                }, root, DateTime.Now);
+            }
+
+            string? backupPath = HasSaveFiles(profile) ? backup() : null;
+            Swap(profile, incoming, root);
+            if (Directory.Exists(staging)) TryDelete(staging);
             return new Result(inspection, backupPath);
         }
         catch
@@ -219,42 +281,57 @@ public static class AndroidSaveTransfer
         }
     }
 
-    /// <summary>Moves <paramref name="staging"/> into place as <paramref name="saves"/>, carrying the phone's own <c>rexnet/</c> across.</summary>
-    /// <remarks>The current save is set aside first and put back if any step fails; it is deleted only once the new one stands.</remarks>
-    private static void Swap(string saves, string staging)
+    /// <summary>Moves <paramref name="staging"/> into place as <paramref name="profile"/>, carrying the phone's own <c>rexnet/</c> and <c>.profile</c> across.</summary>
+    /// <remarks>The current profile is set aside first and put back if any step fails; it is deleted only once the new one stands.</remarks>
+    private static void Swap(string profile, string staging, string root)
     {
         string? replaced = null;
-        string rexnet = AndroidLogBundle.PrivateSaveFolder;
+        string[] own = { AndroidLogBundle.PrivateSaveFolder, AndroidLogBundle.PrivateSaveFile };
         try
         {
-            if (Directory.Exists(saves))
+            if (Directory.Exists(profile))
             {
-                replaced = saves + ".replaced-" + Guid.NewGuid().ToString("N");
-                Directory.Move(saves, replaced);
-                if (Directory.Exists(Path.Combine(replaced, rexnet)))
-                    Directory.Move(Path.Combine(replaced, rexnet), Path.Combine(staging, rexnet));
+                replaced = Path.Combine(root, ".replaced-" + Guid.NewGuid().ToString("N"));
+                Directory.Move(profile, replaced);
+                foreach (string name in own) MoveEntry(Path.Combine(replaced, name), Path.Combine(staging, name));
             }
-            Directory.Move(staging, saves);
+            Directory.Move(staging, profile);
         }
         catch
         {
-            if (replaced != null && Directory.Exists(replaced) && !Directory.Exists(saves))
+            if (replaced != null && Directory.Exists(replaced) && !Directory.Exists(profile))
             {
-                if (Directory.Exists(Path.Combine(staging, rexnet)) && !Directory.Exists(Path.Combine(replaced, rexnet)))
-                    Directory.Move(Path.Combine(staging, rexnet), Path.Combine(replaced, rexnet));
-                Directory.Move(replaced, saves);
+                foreach (string name in own)
+                {
+                    if (!Exists(Path.Combine(replaced, name))) MoveEntry(Path.Combine(staging, name), Path.Combine(replaced, name));
+                }
+                Directory.Move(replaced, profile);
             }
             throw;
         }
         if (replaced != null) TryDelete(replaced);
     }
 
-    /// <summary>Whether <paramref name="folder"/> holds any file at all.</summary>
-    private static bool HasFiles(string folder)
+    private static bool Exists(string path) => Directory.Exists(path) || File.Exists(path);
+
+    private static void MoveEntry(string from, string to)
     {
-        if (!Directory.Exists(folder)) return false;
-        using IEnumerator<string> files = Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories).GetEnumerator();
-        return files.MoveNext();
+        if (Directory.Exists(from)) Directory.Move(from, to);
+        else if (File.Exists(from)) File.Move(from, to);
+    }
+
+    /// <summary>Whether the profile holds any file but its own identity and id: a save worth backing up.</summary>
+    private static bool HasSaveFiles(string profile)
+    {
+        if (!Directory.Exists(profile)) return false;
+        foreach (string file in Directory.EnumerateFiles(profile, "*", SearchOption.AllDirectories))
+        {
+            string relative = Path.GetRelativePath(profile, file).Replace(Path.DirectorySeparatorChar, '/');
+            if (relative == AndroidLogBundle.PrivateSaveFile || relative.StartsWith(AndroidLogBundle.PrivateSaveFolder + "/", StringComparison.Ordinal))
+                continue;
+            return true;
+        }
+        return false;
     }
 
     private static void TryDelete(string folder)

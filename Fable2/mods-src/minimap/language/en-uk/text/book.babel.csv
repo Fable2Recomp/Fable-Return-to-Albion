@@ -1,0 +1,12 @@
+key,value
+MINIMAP_MOD_NAME,Minimap
+MINIMAP_MOD_DESCRIPTION,"A round map of the region in the top right corner, north up, with an arrow for the hero and dots for quests, the dog and enemies. M changes its size and hides it."
+MINIMAP_INPUT_SIZE,Minimap size
+MINIMAP_SETTING_SHOW,Show the minimap
+MINIMAP_SETTING_ENEMIES,Show enemies
+MINIMAP_SETTING_RANGE,Enemy range
+MINIMAP_SETTING_RANGE_DESCRIPTION,"How far from the hero enemies show, in metres."
+MINIMAP_SETTING_OPACITY,Opacity
+MINIMAP_SETTING_SIZE,Size
+MINIMAP_SETTING_SIZE_DESCRIPTION,Scales every size M steps through.
+MINIMAP_COMPASS_NORTH,N

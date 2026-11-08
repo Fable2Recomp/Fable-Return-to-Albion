@@ -1,7 +1,8 @@
 -- Portal Gun: where a shot lands, and moving the hero between the two portals.
 --
 -- G puts the hero's own gun into portal mode and back, so its stance, aiming and camera stay the game's
--- and nothing is equipped or unequipped. In portal mode its shot is cancelled here (ranged_shot) and
+-- and nothing is equipped or unequipped. Portal mode serves one player at a time, the one whose G turned
+-- it on (PortalGun.toggle(p)), published as portal_gun.player. In portal mode its shot is cancelled here (ranged_shot) and
 -- the fire signal asks godot/portal_gun.gd for the aim, which arrives as PortalGun.fire(which, x,
 -- y, z, dx, dy, dz), in world axes. portal_gun.mode says portal mode holds, and portal_gun.weapon names
 -- the gun's entity, whose model godot/portal_gun.gd swaps. The game's physics answers one question, whether a line is clear, so a hit
@@ -51,6 +52,7 @@ local function sound_at(cue, at)
 end
 
 P.Portals = P.Portals or {}
+P.Player = P.Player or 1
 P.Armed = P.Armed == nil and true or P.Armed
 P.Rest = P.Rest or 0
 
@@ -206,7 +208,7 @@ function P.fire(i, x, y, z, dx, dy, dz)
 	if dir == nil or (i ~= 1 and i ~= 2) then
 		return
 	end
-	sound_on(SOUNDS.launch[i], Refii.player_hero(1))
+	sound_on(SOUNDS.launch[i], Refii.player_hero(P.Player))
 	local at, normal, up = placement({ x, y, z }, dir, i)
 	if at == nil then
 		return fail(i, normal)
@@ -268,18 +270,24 @@ local function way_out(p)
 	return out
 end
 
--- G: portal mode on the gun the hero has, or off again.
-function P.toggle()
-	local hero = Refii.player_hero(1)
+-- G for player p: portal mode on the gun that player's hero has, or off again. While it is on it is
+-- p's alone, and the other player's G does nothing.
+function P.toggle(p)
+	if P.On and p ~= P.Player then
+		return
+	end
+	local hero = Refii.player_hero(p)
 	if hero == nil then
 		return
 	end
 	local _, ranged = Refii.equipped(hero)
 	if not P.On and ranged == nil then
-		Refii.notice("Portal Gun", "Equip a gun first", 0, 1)
+		Refii.notice("{PORTAL_GUN_MOD_NAME}", Refii.text("PORTAL_GUN_EQUIP_A_GUN"), 0, p)
 		return
 	end
+	P.Player = p
 	P.On = not P.On
+	Refii.publish("portal_gun.player", p)
 	Refii.publish("portal_gun.mode", P.On and 1 or 0)
 	P.Looked = LOOK_EVERY
 end
@@ -300,7 +308,7 @@ local function find_weapon(hero)
 end
 
 Refii.on("ranged_shot", function(e)
-	if e.player ~= 1 or not P.On then
+	if e.player ~= P.Player or not P.On then
 		return
 	end
 	Refii.signal("portal_gun.fire", "")
@@ -312,12 +320,12 @@ Refii.on("tick", function(e)
 	P.Looked = (P.Looked or 0) + e.seconds
 	if P.On and P.Looked >= LOOK_EVERY then
 		P.Looked = 0
-		local holder = Refii.player_hero(1)
+		local holder = Refii.player_hero(P.Player)
 		Refii.publish("portal_gun.weapon", holder and find_weapon(holder) or 0)
 	end
 	local a, b = P.Portals[1], P.Portals[2]
-	local hero = Refii.player_hero(1)
-	if a == nil or b == nil or hero == nil or not Refii.living(hero) or Refii.in_cutscene(1) then
+	local hero = Refii.player_hero(P.Player)
+	if a == nil or b == nil or hero == nil or not Refii.living(hero) or Refii.in_cutscene(P.Player) then
 		return
 	end
 	local x, y, z = Refii.position(hero)

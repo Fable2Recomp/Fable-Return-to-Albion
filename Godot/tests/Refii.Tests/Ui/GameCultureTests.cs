@@ -163,7 +163,7 @@ public class GameCultureTests
 	[TestCase]
 	public void AnInstallWithoutEnUkSearchesItsOwnCulture()
 	{
-		string root = Path.Combine(Path.GetTempPath(), "refii_culture_" + Guid.NewGuid().ToString("N"));
+		string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii_culture_" + Guid.NewGuid().ToString("N"));
 		string language = Path.Combine(root, "data", "language");
 		Engine_GameCulture.ResetForTests();
 		try
@@ -201,7 +201,7 @@ public class GameCultureTests
 	[TestCase]
 	public void AnInstallWithEnUkStaysInEnUk()
 	{
-		string root = Path.Combine(Path.GetTempPath(), "refii_culture_" + Guid.NewGuid().ToString("N"));
+		string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii_culture_" + Guid.NewGuid().ToString("N"));
 		string language = Path.Combine(root, "language");
 		Engine_GameCulture.ResetForTests();
 		try

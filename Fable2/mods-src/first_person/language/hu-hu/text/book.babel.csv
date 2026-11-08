@@ -21,3 +21,4 @@ FIRST_PERSON_SETTING_THIRD_PERSON_AIM_DESCRIPTION,Lőfegyverrel vagy számszerí
 FIRST_PERSON_SETTING_SCENES,Belső nézet beszélgetésekben
 FIRST_PERSON_SETTING_SCENES_DESCRIPTION,"Beszélgetéskor és interaktív jelenetekben is belső nézetben marad, a beszélő felé fordulva. A teljes átvezető jelenetek megtartják a saját kamerájukat."
 FIRST_PERSON_INPUT_TOGGLE,Belső / külső nézet
+FIRST_PERSON_TOUCH_TOGGLE,Belső nézet

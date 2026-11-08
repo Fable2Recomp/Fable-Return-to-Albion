@@ -23,6 +23,9 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 	private static readonly StringName Param_glyphs = "glyphs";
 	private static readonly StringName Param_atlas = "atlas";
 	private static readonly StringName Param_sight_view = "sight_view";
+	private static readonly StringName Param_outline = "outline";
+	private static readonly StringName Param_supersample = "supersample";
+	private static readonly StringName Meta_text_style = "text_style";
 
 	/// <summary>Resolves a lowercase resource hash to a texture, or null.</summary>
 	public Func<uint, Texture2D?>? ResolveTexture { get; set; }
@@ -220,13 +223,13 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 			if (Theme is not null && (sprite.Title != drawn.ShownTitle || rgb != drawn.ShownRgb))
 			{
 				drawn.ShownTitle = sprite.Title;
-				drawn.TitleMaterial = Text(drawn.Title, sprite.Title, rgb, horizontalAlign: 1);
+				drawn.TitleMaterial = Text(drawn.Title, sprite.Title, rgb, horizontalAlign: 1, iconText: true);
 			}
 
 			if (Theme is not null && (sprite.Opinion != drawn.ShownOpinion || rgb != drawn.ShownRgb))
 			{
 				drawn.ShownOpinion = sprite.Opinion;
-				drawn.OpinionMaterial = Text(drawn.Opinion, sprite.Opinion, rgb, horizontalAlign: 0);
+				drawn.OpinionMaterial = Text(drawn.Opinion, sprite.Opinion, rgb, horizontalAlign: 0, iconText: true);
 			}
 
 			if (Theme is not null && sprite.Badge != drawn.ShownBadge)
@@ -255,10 +258,22 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 		}
 	}
 
-	/// <summary>Paints one line and hands it the marker material, so text is hidden with its icon.</summary>
-	private ShaderMaterial? Text(MeshInstance3D label, string value, Color rgb, int horizontalAlign)
+	/// <summary>
+	/// Paints one line and hands it the marker material, so text is hidden with its icon. The icon's
+	/// own title and opinion (<paramref name="iconText"/>) draw at the title's
+	/// <see cref="Engine_UiTextContract.WorldIconTextStyle"/>, outlined where the contract outlines
+	/// it; the badge is ours and unstyled.
+	/// </summary>
+	private ShaderMaterial? Text(MeshInstance3D label, string value, Color rgb, int horizontalAlign, bool iconText = false)
 	{
-		Theme!.Paint(label, value, TextSize, rgb,
+		Engine_UiTextContract contract = Theme!.Fonts?.Contract ?? Engine_UiTextContract.Active;
+		int style = iconText ? contract.WorldIconTextStyle : 3;
+		if (style != 3)
+		{
+			label.SetMeta(Meta_text_style, style);
+		}
+
+		Theme.Paint(label, value, TextSize, rgb,
 			horizontalAlign: horizontalAlign, verticalAlign: 1, boxWidth: 0f, boxHeight: 0f, wrapMode: 0);
 		if (label.Mesh is null || label.MaterialOverride is not ShaderMaterial painted)
 		{
@@ -269,6 +284,12 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 		material.SetShaderParameter(Param_tex, painted.GetShaderParameter(Param_atlas));
 		material.SetShaderParameter(Param_glyphs, true);
 		material.SetShaderParameter(Param_sight_view, SightView);
+		if (contract.Outlined(style))
+		{
+			material.SetShaderParameter(Param_outline, true);
+			material.SetShaderParameter(Param_supersample, painted.GetShaderParameter(Param_supersample));
+		}
+
 		label.MaterialOverride = material;
 		return material;
 	}

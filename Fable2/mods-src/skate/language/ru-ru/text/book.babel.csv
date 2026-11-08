@@ -1,0 +1,45 @@
+key,value
+SKATE_MOD_NAME,Скейтборд
+SKATE_MOD_DESCRIPTION,"Катайтесь по Альбиону на скейтборде: K — встать или сойти, Пробел — прыжок, левый щелчок — Финт, правый щелчок — Захват, и набирайте комбо."
+SKATE_INPUT_TOGGLE,Включить или выключить скейтборд
+SKATE_INPUT_OLLIE,Прыжок
+SKATE_INPUT_FLIP,Финт
+SKATE_INPUT_GRAB,Захват
+SKATE_INPUT_NO_LOCK,"Захват цели, отключён на скейтборде"
+SKATE_INPUT_HELP,Показать или скрыть управление скейтбордом
+SKATE_TOUCH_TOGGLE,Скейт
+SKATE_TOUCH_HOP,Прыжок
+SKATE_TOUCH_FLOURISH,Финт
+SKATE_TOUCH_GRAB,Захват
+SKATE_TOUCH_WHEELIE,Вилли
+SKATE_TOUCH_GRIND,Грайнд
+SKATE_TRICK_FLOURISH,Финт
+SKATE_TRICK_BACK_FLOURISH,Обратный финт
+SKATE_TRICK_CHEEKY_SHOVE,Наглый толчок
+SKATE_TRICK_IMPROBABLE,Невероятный
+SKATE_TRICK_PIE_GRAB,Захват пирога
+SKATE_TRICK_HEROS_GRIP,Хватка героя
+SKATE_TRICK_BALVERINES_TAIL,Хвост балверина
+SKATE_TRICK_GARGOYLES_NOSE,Нос горгульи
+SKATE_TRICK_WHEELIE,Вилли хобба
+SKATE_TRICK_RAIL_RIDER,Наездник перил
+SKATE_TRICK_GUILD_GRINDER,Гильдейский грайнд
+SKATE_GUILD_GRINDER_CALLOUT,Гильдейский грайнд!
+SKATE_CRASH,Падение!
+SKATE_CLOSE_CALL,На волоске
+SKATE_CLOSE_CALL_POINTS,На волоске  +%1
+SKATE_COMBO,%1  x  %2
+SKATE_CONTROLS_HINT,Удерживайте направление для другого финта или захвата
+SKATE_CONTROL_PUSH,"Толчок, тормоз"
+SKATE_CONTROL_PUSH_KEYS,"W, S"
+SKATE_CONTROL_PUSH_STICK,"Стик вверх, вниз"
+SKATE_CONTROL_STEER,"Поворот, вращение"
+SKATE_CONTROL_STEER_KEYS,"A, D"
+SKATE_CONTROL_STEER_STICK,"Стик влево, вправо"
+SKATE_CONTROL_HOP,Прыжок
+SKATE_CONTROL_LEFT_CLICK,Левый щелчок
+SKATE_CONTROL_HOLD_RIGHT_CLICK,Удерживать правый щелчок
+SKATE_CONTROL_HOLD,Удерживать %1
+SKATE_CONTROL_NEAR_LEDGE,"%1, у края"
+SKATE_CONTROL_STEP_OFF,Сойти
+SKATE_CONTROL_HIDE,Скрыть

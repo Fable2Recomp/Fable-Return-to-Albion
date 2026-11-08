@@ -295,7 +295,7 @@ public class LevelEditingPipelineTests
     [TestCase]
     public void TestLevelEditingPipeline_CompileSyncAndMultiModMount_E2E()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_level_edit_e2e_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_level_edit_e2e_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -1196,7 +1196,7 @@ public class LevelEditingPipelineTests
     [TestCase]
     public void TestLevelEditing_SaveToModPackage_IncrementalMultiSaveLifecycle()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "RefiiTests_SaveCycle_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "RefiiTests_SaveCycle_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string modPath = Path.Combine(tempDir, "TestLevelEditMod.f2mod");
 
@@ -1296,7 +1296,7 @@ public class LevelEditingPipelineTests
     [TestCase]
     public void TestLevelGdbPatchCompiler_NewAndMovedProps_EmitsVisualMeshAndTransformWithoutSyntheticPhysics()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_physics_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_physics_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try

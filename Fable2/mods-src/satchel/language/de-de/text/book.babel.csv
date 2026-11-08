@@ -1,0 +1,38 @@
+key,value
+SATCHEL_MOD_NAME,Heldentasche
+SATCHEL_MOD_DESCRIPTION,"Tab öffnet das Inventar als einen durchsichtigen Bildschirm nach dem Vorbild von SkyUI: eine Reihe von Kategorien, eine sortierbare Liste, Filter, Favoriten und eine Karte, die mit dem vergleicht, was du trägst."
+SATCHEL_INPUT_OPEN,Öffnen und schließen
+SATCHEL_INPUT_ACT,"Ausrüsten, anziehen oder benutzen"
+SATCHEL_INPUT_FAVOURITE,Favorit
+SATCHEL_INPUT_SORT,Sortieren
+SATCHEL_INPUT_FILTER,Nach Namen filtern
+SATCHEL_INPUT_REMOVE_ALL,Alles ausziehen
+SATCHEL_INPUT_CLOSE,Schließen
+SATCHEL_TOUCH_OPEN,Inventar
+SATCHEL_CATEGORY_FAVOURITES,Favoriten
+SATCHEL_CATEGORY_ALL,Alle
+SATCHEL_KIND_TREASURE,Schatz
+SATCHEL_COLUMN_NAME,Name
+SATCHEL_COLUMN_TYPE,Typ
+SATCHEL_VALUE,Wert
+SATCHEL_FILTER,Filter
+SATCHEL_NOTHING_HERE,Hier ist nichts.
+SATCHEL_NOTHING_BY_NAME,Nichts mit diesem Namen.
+SATCHEL_EQUIPPED,Ausgerüstet
+SATCHEL_WEARING,Getragen
+SATCHEL_COMPARED_WITH,Verglichen mit %1
+SATCHEL_ACTION_EQUIP,Ausrüsten
+SATCHEL_ACTION_TAKE_OFF,Ablegen
+SATCHEL_ACTION_WEAR,Anziehen
+SATCHEL_FAVOURITE,Favorit
+SATCHEL_UNFAVOURITE,Kein Favorit
+SATCHEL_SORT,Sortieren
+SATCHEL_REMOVE_ALL_CLOTHING,Alles ausziehen
+SATCHEL_EQUIPPED_ITEM,%1 ausgerüstet
+SATCHEL_USED_ITEM,%1 benutzt
+SATCHEL_NOW_WEARING,Du trägst jetzt %1
+SATCHEL_TOOK_OFF,%1 abgelegt
+SATCHEL_COULD_NOT_PUT_ON,%1 konnte nicht angezogen werden
+SATCHEL_COULD_NOT_TAKE_OFF,%1 konnte nicht abgelegt werden
+SATCHEL_REMOVED_ALL,Alles ausgezogen
+SATCHEL_COULD_NOT_REMOVE_ALL,Konnte nicht alles ausziehen

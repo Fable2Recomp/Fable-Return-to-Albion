@@ -24,7 +24,7 @@ public class BnkSeparateDataTests
 
 	private static string NewTempDir()
 	{
-		string dir = Path.Combine(Path.GetTempPath(), "refii_bnk_f4_" + Guid.NewGuid().ToString("N"));
+		string dir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_bnk_f4_" + Guid.NewGuid().ToString("N"));
 		Directory.CreateDirectory(dir);
 		return dir;
 	}

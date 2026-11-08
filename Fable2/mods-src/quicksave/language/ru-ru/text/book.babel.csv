@@ -13,3 +13,5 @@ QUICKSAVE_GAME_NOT_SAVED,Игра не сохранена. Быстрое сох
 QUICKSAVE_SAVED,Быстрое сохранение выполнено.
 QUICKSAVE_NOT_KEPT,"Игра сохранена, но быстрое сохранение оставить не удалось."
 QUICKSAVE_LOADED,Загружено быстрое сохранение от %1.
+QUICKSAVE_TOUCH_QUICKSAVE,Сохранить
+QUICKSAVE_TOUCH_QUICKLOAD,Загрузить

@@ -1,0 +1,45 @@
+key,value
+SKATE_MOD_NAME,Skateboard
+SKATE_MOD_DESCRIPTION,"Projeď se Albionem na skateboardu: K pro naskočení a seskočení, mezerník pro skok, levé kliknutí pro Ostrou ránu, pravé kliknutí pro Chyt a sbírej komba."
+SKATE_INPUT_TOGGLE,Zapnout nebo vypnout skateboard
+SKATE_INPUT_OLLIE,Skok
+SKATE_INPUT_FLIP,Ostrá rána
+SKATE_INPUT_GRAB,Chyt
+SKATE_INPUT_NO_LOCK,"Zaměření, vypnuto při jízdě"
+SKATE_INPUT_HELP,Zobrazit nebo skrýt ovládání skateboardu
+SKATE_TOUCH_TOGGLE,Skate
+SKATE_TOUCH_HOP,Skok
+SKATE_TOUCH_FLOURISH,Ostrá rána
+SKATE_TOUCH_GRAB,Chyt
+SKATE_TOUCH_WHEELIE,Wheelie
+SKATE_TOUCH_GRIND,Grind
+SKATE_TRICK_FLOURISH,Ostrá rána
+SKATE_TRICK_BACK_FLOURISH,Ostrá rána vzad
+SKATE_TRICK_CHEEKY_SHOVE,Drzé strčení
+SKATE_TRICK_IMPROBABLE,Nepravděpodobné
+SKATE_TRICK_PIE_GRAB,Koláčový chyt
+SKATE_TRICK_HEROS_GRIP,Hrdinův úchop
+SKATE_TRICK_BALVERINES_TAIL,Vlkodlačí ocas
+SKATE_TRICK_GARGOYLES_NOSE,Chrličův nos
+SKATE_TRICK_WHEELIE,Skřetí wheelie
+SKATE_TRICK_RAIL_RIDER,Jezdec po zábradlí
+SKATE_TRICK_GUILD_GRINDER,Cechovní grind
+SKATE_GUILD_GRINDER_CALLOUT,Cechovní grind!
+SKATE_CRASH,Pád!
+SKATE_CLOSE_CALL,O chlup
+SKATE_CLOSE_CALL_POINTS,O chlup  +%1
+SKATE_COMBO,%1  x  %2
+SKATE_CONTROLS_HINT,Drž směr pro jinou Ostrou ránu nebo Chyt
+SKATE_CONTROL_PUSH,"Odraz, brzda"
+SKATE_CONTROL_PUSH_KEYS,"W, S"
+SKATE_CONTROL_PUSH_STICK,"Páčka nahoru, dolů"
+SKATE_CONTROL_STEER,"Řízení, otočka"
+SKATE_CONTROL_STEER_KEYS,"A, D"
+SKATE_CONTROL_STEER_STICK,"Páčka vlevo, vpravo"
+SKATE_CONTROL_HOP,Skok
+SKATE_CONTROL_LEFT_CLICK,Levé kliknutí
+SKATE_CONTROL_HOLD_RIGHT_CLICK,Podržet pravé kliknutí
+SKATE_CONTROL_HOLD,Podržet %1
+SKATE_CONTROL_NEAR_LEDGE,"%1, u hrany"
+SKATE_CONTROL_STEP_OFF,Seskočit
+SKATE_CONTROL_HIDE,Skrýt

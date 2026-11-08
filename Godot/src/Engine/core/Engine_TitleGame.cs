@@ -29,16 +29,17 @@ public abstract class Engine_TitleGame
 	}
 
 	/// <summary>The active title's game, or a title that adds nothing when none registered.</summary>
-	public static Engine_TitleGame Active
+	public static Engine_TitleGame Active => For(Engine_Title.Active);
+
+	/// <summary>
+	/// <paramref name="title"/>'s game, or a title that adds nothing when none registered — for the
+	/// shell's answers that name one title's data whichever title is active.
+	/// </summary>
+	public static Engine_TitleGame For(Engine_Title title)
 	{
-		get
+		lock (Registered)
 		{
-			lock (Registered)
-			{
-				return Registered.TryGetValue(Engine_Title.Active, out Engine_TitleGame? game)
-					? game
-					: new Bare(Engine_Title.Active);
-			}
+			return Registered.TryGetValue(title, out Engine_TitleGame? game) ? game : new Bare(title);
 		}
 	}
 
@@ -184,21 +185,17 @@ public abstract class Engine_TitleGame
 	public virtual uint CompanionEntityAddress => 0u;
 
 	/// <summary>The title's region map as a mod reads it (<c>RefiiHost.minimap</c>); empty with none.</summary>
-	public virtual Godot.Collections.Dictionary ModMinimap() => new();
+	public virtual Godot.Collections.Dictionary ModMinimap(uint hero) => new();
 
 	/// <summary>A guest world position on that map, in the same units; null with no map.</summary>
 	public virtual Godot.Vector2? ModMinimapPoint(Godot.Vector3 world) => null;
 
-	/// <summary>What this machine's hero carries, as a mod's screen reads it (<c>RefiiHost.inventory_items</c>); empty with none.</summary>
-	public virtual Godot.Collections.Array ModInventoryItems() => new();
+	/// <summary>What player 1's or 2's hero carries, as a mod's screen reads it (<c>RefiiHost.inventory_items</c>); empty with none.</summary>
+	public virtual Godot.Collections.Array ModInventoryItems(int player) => new();
 
-	/// <summary>The pump's action for what a mod's screen asks of an item (<c>RefiiHost.inventory_action</c>); null when it is not one.</summary>
-	public virtual string? ModInventoryAction(string operation, uint record, int category) => null;
+	/// <summary>The pump's action for what a mod's screen asks of an item (<c>RefiiHost.inventory_action</c>): <paramref name="player"/> 0 for the hero whose menus are open, 1 or 2 for another local hero; null when it is not one.</summary>
+	public virtual string? ModInventoryAction(string operation, uint record, int category, int player) => null;
 
-	/// <summary>A mod's screen takes the pause book's place: its list hidden, the pad held from the game (<c>RefiiHost.own_screen</c>).</summary>
-	public virtual void ModOwnScreen(bool on)
-	{
-	}
 
 	/// <summary>
 	/// The building entity a player (1 or 2) stands in, as the guest's own per-frame query found
@@ -366,6 +363,18 @@ public abstract class Engine_TitleGame
 	/// <summary>The HUD elements the title's own views draw whole, by element name.</summary>
 	public virtual System.Collections.Generic.IReadOnlyCollection<string> HudOwnedSubtrees => System.Array.Empty<string>();
 
+	/// <summary>
+	/// What the title's `hud.bgf` is to the shared HUD layout and view: its group table, placements,
+	/// widgets and seat rules (<see cref="Refii.Ui.Engine_HudTitleLayout"/>).
+	/// </summary>
+	public virtual Refii.Ui.Engine_HudTitleLayout HudLayout => Refii.Ui.Engine_HudTitleLayout.None;
+
+	/// <summary>
+	/// The guest's display and menu boxes as the title states them open, for the shared box
+	/// surfaces (<see cref="Refii.Ui.Engine_UiStatedBoxes"/>).
+	/// </summary>
+	public virtual Refii.Ui.Engine_UiStatedBoxes StatedBoxes => Refii.Ui.Engine_UiStatedBoxes.None;
+
 	/// <summary>The HUD's pip anchors, in resolve order (Fable 2's expression meter: hero, henchman, both).</summary>
 	public virtual System.Collections.Generic.IReadOnlyList<string> HudPipBindings => System.Array.Empty<string>();
 
@@ -388,6 +397,12 @@ public abstract class Engine_TitleGame
 
 	/// <summary>The folder of a named save under a save root, as the title lays its saves out; null when it has none.</summary>
 	public virtual string? FindSaveDirectory(string saveRoot, string save) => null;
+
+	/// <summary>
+	/// The guest's own files in a save's folder — what a console or Xenia reads, and all a copy for
+	/// one carries (<see cref="Refii.Save.SaveExport"/>); empty when the title names none.
+	/// </summary>
+	public virtual System.Collections.Generic.IReadOnlyList<string> SaveGuestFiles => System.Array.Empty<string>();
 
 	/// <summary>The title's string book in the running culture, for shared consumers resolving a Babel tag; null before it is read.</summary>
 	public virtual Refii.Text.Engine_BabelDatabase? Strings => null;
@@ -415,6 +430,13 @@ public abstract class Engine_TitleGame
 	public virtual void Step()
 	{
 	}
+
+	/// <summary>
+	/// The title's Modding Guide cards for a page (<see cref="Refii.Mods.ModGuidePages"/>) —
+	/// <paramref name="closing"/>: the ones after its widgets — asked of each title with hard mods.
+	/// </summary>
+	public virtual System.Collections.Generic.IReadOnlyList<Refii.Mods.ModGuideCard> ModGuideCards(string page, bool closing) =>
+		System.Array.Empty<Refii.Mods.ModGuideCard>();
 
 	/// <summary>
 	/// A mod manager outside ours whose mods the title's saves can carry, or null for none.

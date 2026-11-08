@@ -14,6 +14,10 @@ Ride a skateboard through Albion, and score tricks.
 | Rail Rider | F | Y |
 | Show or hide these controls | N | LB + D-pad up |
 
+The mod's keys and buttons are rebindable in Options › Controls, and the controls panel shows what
+they are bound to now, as your controller's glyphs on a pad. The board is the player's who stepped
+on: in co-op the other player's K or LB + Back does nothing until they step off.
+
 A Flourish or Grab from the ground hops first. Hold a direction as you press: nothing or left is a
 Flourish or Pie Grab, right a Back-Flourish or Hero's Grip, back a Cheeky Shove or Balverine's Tail,
 forward The Improbable or Gargoyle's Nose.
@@ -42,7 +46,8 @@ the hero each tick from its own heading, speed and height, with `Refii.line_of_s
 ground and walls. Being thrown is `Refii.knockback`. A Rail Rider looks for steps in the ground with
 rays, so it works anywhere and can misjudge a rough collision shape.
 
-`godot/skate.gd` draws the board, its flips and grabs and the score, and reads the stick. A
+`godot/skate.gd` draws the board, its flips and grabs and the score, and reads the stick: the rider's own,
+`host.move_stick(player)`, so in local co-op player two steers with their own pad. A
 `SkeletonModifier3D` there poses the hero's body after the game has, for drawing only, so a crouch, a
 grab and a push need no animation of their own.
 

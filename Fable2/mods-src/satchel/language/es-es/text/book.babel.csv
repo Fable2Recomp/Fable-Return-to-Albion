@@ -1,0 +1,38 @@
+key,value
+SATCHEL_MOD_NAME,Zurrón del héroe
+SATCHEL_MOD_DESCRIPTION,"Tab abre el inventario como una sola pantalla transparente, inspirada en SkyUI: una fila de categorías, una lista ordenable, filtro, favoritos y una ficha que compara con lo que llevas puesto."
+SATCHEL_INPUT_OPEN,Abrir y cerrar
+SATCHEL_INPUT_ACT,"Equipar, ponerse o usar"
+SATCHEL_INPUT_FAVOURITE,Favorito
+SATCHEL_INPUT_SORT,Ordenar
+SATCHEL_INPUT_FILTER,Filtrar por nombre
+SATCHEL_INPUT_REMOVE_ALL,Quitarse toda la ropa
+SATCHEL_INPUT_CLOSE,Cerrar
+SATCHEL_TOUCH_OPEN,Inventario
+SATCHEL_CATEGORY_FAVOURITES,Favoritos
+SATCHEL_CATEGORY_ALL,Todo
+SATCHEL_KIND_TREASURE,Tesoro
+SATCHEL_COLUMN_NAME,Nombre
+SATCHEL_COLUMN_TYPE,Tipo
+SATCHEL_VALUE,Valor
+SATCHEL_FILTER,Filtro
+SATCHEL_NOTHING_HERE,Aquí no hay nada.
+SATCHEL_NOTHING_BY_NAME,Nada con ese nombre.
+SATCHEL_EQUIPPED,Equipado
+SATCHEL_WEARING,Puesto
+SATCHEL_COMPARED_WITH,Comparado con %1
+SATCHEL_ACTION_EQUIP,Equipar
+SATCHEL_ACTION_TAKE_OFF,Quitar
+SATCHEL_ACTION_WEAR,Ponerse
+SATCHEL_FAVOURITE,Favorito
+SATCHEL_UNFAVOURITE,Quitar de favoritos
+SATCHEL_SORT,Ordenar
+SATCHEL_REMOVE_ALL_CLOTHING,Quitarse toda la ropa
+SATCHEL_EQUIPPED_ITEM,%1 equipado
+SATCHEL_USED_ITEM,%1 usado
+SATCHEL_NOW_WEARING,Ahora llevas %1
+SATCHEL_TOOK_OFF,Te has quitado %1
+SATCHEL_COULD_NOT_PUT_ON,No se pudo poner %1
+SATCHEL_COULD_NOT_TAKE_OFF,No se pudo quitar %1
+SATCHEL_REMOVED_ALL,Te has quitado toda la ropa
+SATCHEL_COULD_NOT_REMOVE_ALL,No se pudo quitar toda la ropa

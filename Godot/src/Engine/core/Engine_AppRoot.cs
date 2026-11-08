@@ -26,7 +26,7 @@ namespace Refii.Core;
 /// other.
 ///
 ///   &lt;root&gt;/bin              native libraries, and bin/recompile
-///   &lt;root&gt;/assets           game, generated, unpacked, save
+///   &lt;root&gt;/assets           each title's game, generated, unpacked; saves
 ///   &lt;root&gt;/&lt;key&gt;.toml       runtime config, one per title (refii.toml, refiii.toml)
 ///   &lt;root&gt;/logs             guest logs
 ///
@@ -180,10 +180,35 @@ public static partial class Engine_AppRoot
 		: System.IO.Path.GetFullPath(System.IO.Path.Combine(SafeGetProjectDir(), "..", title.Folder, "mods-src"));
 
 	/// <summary>
-	/// Player-owned state — the profile and savegames — for the active title:
-	/// <c>assets/&lt;Folder&gt;/save</c> (<see cref="Engine_Title.SaveDirectory"/>).
+	/// Every title's player-owned state, one folder for the app: <c>assets/saves</c>
+	/// (<see cref="Refii.Save.Engine_SaveLayout"/>).
 	/// </summary>
-	public static string SaveDirectory => Engine_Title.Active.SaveDirectory;
+	public static string SavesDirectory => Refii.Save.Engine_SaveLayout.Root(AssetsDirectory);
+
+	private static string? _profileFor;
+	private static string? _profile;
+
+	/// <summary>
+	/// The active save profile's folder, <c>assets/saves/&lt;profile&gt;</c>: the guest's user_data_root,
+	/// holding the RexNet identity and one folder per game (<see cref="Engine_Title.SaveDirectory"/>).
+	/// </summary>
+	public static string SaveDirectory
+	{
+		get
+		{
+			string root = SavesDirectory;
+			lock (Gate)
+			{
+				if (_profile is null || _profileFor != root)
+				{
+					_profile = Refii.Save.Engine_SaveProfiles.ActiveDirectory(root);
+					_profileFor = root;
+				}
+
+				return _profile;
+			}
+		}
+	}
 
 	/// <summary>
 	/// Derived data that can be thrown away and regenerated: <c>&lt;app&gt;/cache</c>.
@@ -204,8 +229,10 @@ public static partial class Engine_AppRoot
 	public static string CacheDirectory => System.IO.Path.Combine(Path, "cache");
 
 	/// <summary>
-	/// Moves a pre-title install into its title folder (<see cref="Engine_TitleLayout"/>), then
-	/// creates the directories the app expects to write into.
+	/// Moves a pre-title install into its title folder (<see cref="Engine_TitleLayout"/>), every
+	/// earlier save location into the one save folder (<see cref="Refii.Save.Engine_SaveMigration"/>),
+	/// makes sure a save profile is active (<see cref="Refii.Save.Engine_SaveProfiles.Ensure"/>), then
+	/// creates the directories the app expects to write into. Runs before any guest starts.
 	/// </summary>
 	public static void EnsureLayout()
 	{
@@ -214,6 +241,8 @@ public static partial class Engine_AppRoot
 		{
 			GD.Print("[layout] " + line);
 		}
+
+		MigrateSaves();
 
 		foreach (string directory in new[]
 		         {
@@ -229,6 +258,47 @@ public static partial class Engine_AppRoot
 			catch (Exception)
 			{
 			}
+		}
+	}
+
+	/// <summary>
+	/// The one-time save migration and the profile check, logged as <c>[saves]</c>. The folders outside
+	/// the install (an earlier build's <c>~/.local/share/refii</c>, Xenia's content) are copied from
+	/// where they exist; a phone's private home has none of them.
+	/// </summary>
+	private static void MigrateSaves()
+	{
+		string root = SavesDirectory;
+		try
+		{
+			string home = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile);
+			string? dataHome = System.Environment.GetEnvironmentVariable("XDG_DATA_HOME");
+			string documents = System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments);
+			var sources = Refii.Save.Engine_SaveMigration.DefaultSources(AssetsDirectory, home, dataHome, documents);
+			Refii.Save.Engine_SaveMigration.Report report = Refii.Save.Engine_SaveMigration.Run(root, sources, DateTime.Now);
+			if (report.Ran)
+			{
+				GD.Print($"[saves] migrated into {report.ProfileDirectory}: {report.Summary} (see {System.IO.Path.Combine(root, Refii.Save.Engine_SaveLayout.MigrationLogName)})");
+			}
+
+			var lines = new System.Collections.Generic.List<string>();
+			string profile = Refii.Save.Engine_SaveProfiles.Ensure(root, lines);
+			foreach (string line in lines)
+			{
+				GD.Print("[saves] " + line);
+			}
+
+			lock (Gate)
+			{
+				_profile = profile;
+				_profileFor = root;
+			}
+
+			GD.Print("[saves] profile " + profile);
+		}
+		catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+		{
+			GD.PushError("[saves] the save folder could not be prepared: " + exception.Message);
 		}
 	}
 }

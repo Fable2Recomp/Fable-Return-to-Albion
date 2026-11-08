@@ -29,6 +29,9 @@ public static class Engine_LoadEntityBuilds
     private static long _textureTicks;
     private static long _lockTicks;
     private static long _lockWaits;
+    private static long _ormPacks;
+    private static long _ormPackTicks;
+    private static long _ormReused;
 
     /// <summary>Whether a hold is on: builds outside one are play's, not the load's.</summary>
     public static volatile bool Collecting;
@@ -81,6 +84,28 @@ public static class Engine_LoadEntityBuilds
         }
     }
 
+    /// <summary>One composed ORM (Engine_TexLibrary.ComposedOrm): packed, or found kept. Any thread.</summary>
+    public static void NoteOrm(bool reused, long ticks)
+    {
+        if (!Collecting)
+        {
+            return;
+        }
+
+        lock (Gate)
+        {
+            if (reused)
+            {
+                ++_ormReused;
+            }
+            else
+            {
+                ++_ormPacks;
+                _ormPackTicks += ticks;
+            }
+        }
+    }
+
     private static void KeepIfSlow(long ticks, string name)
     {
         int at = Slowest.Count;
@@ -113,6 +138,8 @@ public static class Engine_LoadEntityBuilds
                 line.Append($" {name} {Ms(ticks):0}");
             }
 
+            line.Append($"; composed ORMs: {_ormPacks} packed {Ms(_ormPackTicks):0} ms, {_ormReused} kept");
+
             _meshes = 0;
             _meshTicks = 0;
             _composites = 0;
@@ -120,6 +147,9 @@ public static class Engine_LoadEntityBuilds
             _textureTicks = 0;
             _lockTicks = 0;
             _lockWaits = 0;
+            _ormPacks = 0;
+            _ormPackTicks = 0;
+            _ormReused = 0;
             Slowest.Clear();
             return line.ToString();
         }

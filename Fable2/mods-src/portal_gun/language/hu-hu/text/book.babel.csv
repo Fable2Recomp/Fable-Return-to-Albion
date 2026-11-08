@@ -1,0 +1,21 @@
+key,value
+PORTAL_GUN_NAME,Portal Gun
+PORTAL_GUN_DESC,"Egy pár összekapcsolt portált lő falakra, padlókra és mennyezetekre."
+PORTAL_GUN_MOD_NAME,Portal Gun
+PORTAL_GUN_MOD_DESCRIPTION,"Egy fegyver, amely egy pár összekapcsolt portált lő falakra, padlókra és mennyezetekre. Nézz bele az egyikbe, és kilátsz a másikon; lépj bele, és ott jössz ki. A G előveszi; az egérgombok lőnek."
+PORTAL_GUN_INPUT_TOGGLE,Portal Gun be- vagy kikapcsolása
+PORTAL_GUN_INPUT_SWAP,"Következő kék vagy narancs, érintőképernyőn"
+PORTAL_GUN_INPUT_AIM_BLUE,Egy portál az érintőképernyő Y gombján
+PORTAL_GUN_INPUT_AIM_ORANGE,"Az Y felirata, amikor a narancs következik"
+PORTAL_GUN_INPUT_NO_LOCK,"Célpont befogása, portálmódban kikapcsolva"
+PORTAL_GUN_INPUT_NO_MELEE,"Közelharc, portálmódban kikapcsolva"
+PORTAL_GUN_INPUT_NO_MAGIC,"Varázslás, portálmódban kikapcsolva"
+PORTAL_GUN_TOUCH_TOGGLE,Portal Gun
+PORTAL_GUN_TOUCH_SWAP,Színváltás
+PORTAL_GUN_TOUCH_BLUE,Kék
+PORTAL_GUN_TOUCH_ORANGE,Narancs
+PORTAL_GUN_SETTING_QUALITY,Nézet minősége
+PORTAL_GUN_SETTING_QUALITY_DESCRIPTION,A portálon át látott kép felbontása a képernyőéhez képest. Alacsonyabb gyorsabb.
+PORTAL_GUN_SETTING_VIEW_RANGE,Látótávolság
+PORTAL_GUN_SETTING_VIEW_RANGE_DESCRIPTION,Ennyi méteren túl a portál nem rajzolja ki a nézetét.
+PORTAL_GUN_EQUIP_A_GUN,Előbb szerelj fel egy lőfegyvert

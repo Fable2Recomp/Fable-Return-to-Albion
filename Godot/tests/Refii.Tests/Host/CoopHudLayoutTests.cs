@@ -3,6 +3,7 @@ namespace Refii.Tests;
 using GdUnit4;
 using Godot;
 using static GdUnit4.Assertions;
+using Refii.Titles.Fable2;
 using Refii.Ui;
 
 [TestSuite]
@@ -29,7 +30,7 @@ public class CoopHudLayoutTests
 		AssertThat(will!.Value.Id).IsEqual("group.SpellCharging2.SpellCharging2");
 
 		AssertThat(layout.PlayerTwoSourceOf(layout.Pieces[1]).HasValue).IsFalse();
-		AssertThat(Engine_HudLayout.PlayerOneIdOf("group.CoopHealth.CoopHealth")).IsEqual("group.PlayerHealth.PlayerHealth");
+		AssertThat(Fable2HudLayout.Instance.PlayerOneIdOf("group.CoopHealth.CoopHealth")).IsEqual("group.PlayerHealth.PlayerHealth");
 	}
 
 	[TestCase]
@@ -37,24 +38,24 @@ public class CoopHudLayoutTests
 	{
 		// Asked per piece per frame by the player-two view: the nested name is rewritten
 		// through the whole id, a non-source id answers null, and a repeat is the held string.
-		string? first = Engine_HudLayout.PlayerTwoSourceId("group.PlayerHealth.PlayerHealthBar");
+		string? first = Fable2HudLayout.Instance.PlayerTwoSourceId("group.PlayerHealth.PlayerHealthBar");
 		AssertThat(first).IsEqual("group.CoopHealth.CoopHealthBar");
-		AssertThat(ReferenceEquals(first, Engine_HudLayout.PlayerTwoSourceId("group.PlayerHealth.PlayerHealthBar"))).IsTrue();
-		AssertThat(Engine_HudLayout.PlayerTwoSourceId("group.QuestBox.TopBox")).IsNull();
-		AssertThat(Engine_HudLayout.PlayerTwoSourceId("group.QuestBox.TopBox")).IsNull();
+		AssertThat(ReferenceEquals(first, Fable2HudLayout.Instance.PlayerTwoSourceId("group.PlayerHealth.PlayerHealthBar"))).IsTrue();
+		AssertThat(Fable2HudLayout.Instance.PlayerTwoSourceId("group.QuestBox.TopBox")).IsNull();
+		AssertThat(Fable2HudLayout.Instance.PlayerTwoSourceId("group.QuestBox.TopBox")).IsNull();
 
-		string? back = Engine_HudLayout.PlayerOneIdOf("group.SpellCharging2.SpellCharging2Bar");
+		string? back = Fable2HudLayout.Instance.PlayerOneIdOf("group.SpellCharging2.SpellCharging2Bar");
 		AssertThat(back).IsEqual("group.SpellCharging.SpellChargingBar");
-		AssertThat(ReferenceEquals(back, Engine_HudLayout.PlayerOneIdOf("group.SpellCharging2.SpellCharging2Bar"))).IsTrue();
-		AssertThat(Engine_HudLayout.PlayerOneIdOf("group.PlayerHealth.PlayerHealth")).IsNull();
+		AssertThat(ReferenceEquals(back, Fable2HudLayout.Instance.PlayerOneIdOf("group.SpellCharging2.SpellCharging2Bar"))).IsTrue();
+		AssertThat(Fable2HudLayout.Instance.PlayerOneIdOf("group.PlayerHealth.PlayerHealth")).IsNull();
 	}
 
 	[TestCase]
 	public void TestSharedAndWheelPieces()
 	{
-		AssertThat(Engine_HudLayout.SharedOnSplit(Piece("group.QuestBox.TopBox", "TopBox", 0f, 0f, 0f))).IsTrue();
-		AssertThat(Engine_HudLayout.SharedOnSplit(Piece("text.Subtitles.Text", "Text", 0f, 0f, 0f))).IsTrue();
-		AssertThat(Engine_HudLayout.SharedOnSplit(Piece("meter.SubtitlesY.dpad", "dpad", 0f, 0f, 0f))).IsFalse();
-		AssertThat(Engine_HudLayout.IsExpressionWheel(Piece("group.ExpressionWheel.wheelmenu", "wheelmenu", 0f, 0f, 0f))).IsTrue();
+		AssertThat(Fable2HudLayout.Instance.SharedOnSplit(Piece("group.QuestBox.TopBox", "TopBox", 0f, 0f, 0f))).IsTrue();
+		AssertThat(Fable2HudLayout.Instance.SharedOnSplit(Piece("text.Subtitles.Text", "Text", 0f, 0f, 0f))).IsTrue();
+		AssertThat(Fable2HudLayout.Instance.SharedOnSplit(Piece("meter.SubtitlesY.dpad", "dpad", 0f, 0f, 0f))).IsFalse();
+		AssertThat(Fable2HudLayout.Instance.IsExpressionWheel(Piece("group.ExpressionWheel.wheelmenu", "wheelmenu", 0f, 0f, 0f))).IsTrue();
 	}
 }

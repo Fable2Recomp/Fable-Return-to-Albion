@@ -135,7 +135,7 @@ public class ArchonToolboxTests
 
 	private static string Scratch()
 	{
-		string root = Path.Combine(Path.GetTempPath(), "refii-scratch", "archon", "test-" + Guid.NewGuid().ToString("N"));
+		string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-scratch", "archon", "test-" + Guid.NewGuid().ToString("N"));
 		Directory.CreateDirectory(root);
 		return root;
 	}

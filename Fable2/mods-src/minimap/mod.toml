@@ -1,4 +1,4 @@
-name = "Minimap"
+name = "{MINIMAP_MOD_NAME}"
 version = "0.1.0"
 author = "ammuica"
-description = "A round map of the region in the top right corner, north up, with an arrow for the hero and dots for quests and enemies. M changes its size and hides it."
+description = "{MINIMAP_MOD_DESCRIPTION}"

@@ -63,7 +63,7 @@ public sealed class PresentationPolicyTests
     [TestCase]
     public void PostFxConfigLifecycle()
     {
-        string path = Path.Combine(Path.GetTempPath(), "refii_postfx_" + Guid.NewGuid().ToString("N") + ".toml");
+        string path = Path.Combine(Refii.Tests.TestTemp.Root, "refii_postfx_" + Guid.NewGuid().ToString("N") + ".toml");
         const string original = "sun_shadow_map = 1024\n";
         try
         {

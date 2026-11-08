@@ -16,7 +16,7 @@ public sealed class AndroidSwfCacheTests
 
     private static string TempFolder()
     {
-        string folder = Path.Combine(Path.GetTempPath(), $"refii-swfcache-{Guid.NewGuid():N}");
+        string folder = Path.Combine(Refii.Tests.TestTemp.Root, $"refii-swfcache-{Guid.NewGuid():N}");
         Directory.CreateDirectory(folder);
         return folder;
     }
@@ -102,7 +102,7 @@ public sealed class AndroidSwfCacheTests
     public void AMissingFolderIsNothing()
     {
         (int files, long bytes) = AndroidSwfCache.DeleteOtherBuilds(
-            Path.Combine(Path.GetTempPath(), $"refii-swfcache-{Guid.NewGuid():N}"), Stamp);
+            Path.Combine(Refii.Tests.TestTemp.Root, $"refii-swfcache-{Guid.NewGuid():N}"), Stamp);
         AssertThat(files).IsEqual(0);
         AssertThat(bytes).IsEqual(0L);
     }

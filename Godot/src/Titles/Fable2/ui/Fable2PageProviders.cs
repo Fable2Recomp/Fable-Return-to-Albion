@@ -590,7 +590,7 @@ public static class Fable2PageProviders
 		public bool FillsOnDraw => true;
 
 		/// <summary>The card's stated fields: title tag, ShowA, ShowY, HoldA, accept tag, help tag.</summary>
-		private static Engine_UiDisplayBoxes.Box? Card =>
+		private static Engine_UiStatedBoxes.Box? Card =>
 			Engine_UiDisplayBoxes.ShowingOf(Engine_UiDisplayBoxes.AcceptHold);
 
 		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page)

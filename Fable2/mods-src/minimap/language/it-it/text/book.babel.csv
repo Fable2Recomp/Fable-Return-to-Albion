@@ -1,0 +1,12 @@
+key,value
+MINIMAP_MOD_NAME,Minimappa
+MINIMAP_MOD_DESCRIPTION,"Una mappa rotonda della regione nell'angolo in alto a destra, con il nord in alto, una freccia per l'eroe e punti per le missioni, il cane e i nemici. M ne cambia la dimensione e la nasconde."
+MINIMAP_INPUT_SIZE,Dimensione della minimappa
+MINIMAP_SETTING_SHOW,Mostra la minimappa
+MINIMAP_SETTING_ENEMIES,Mostra i nemici
+MINIMAP_SETTING_RANGE,Raggio dei nemici
+MINIMAP_SETTING_RANGE_DESCRIPTION,"Fino a che distanza dall'eroe compaiono i nemici, in metri."
+MINIMAP_SETTING_OPACITY,Opacità
+MINIMAP_SETTING_SIZE,Dimensione
+MINIMAP_SETTING_SIZE_DESCRIPTION,Scala ogni dimensione che M fa scorrere.
+MINIMAP_COMPASS_NORTH,N

@@ -1,0 +1,21 @@
+key,value
+PORTAL_GUN_NAME,포탈 건
+PORTAL_GUN_DESC,"벽, 바닥, 천장에 서로 연결된 포탈 한 쌍을 쏩니다."
+PORTAL_GUN_MOD_NAME,포탈 건
+PORTAL_GUN_MOD_DESCRIPTION,"벽, 바닥, 천장에 서로 연결된 포탈 한 쌍을 쏘는 총입니다. 한쪽을 들여다보면 다른 쪽 너머가 보이고, 들어가면 그쪽으로 나옵니다. G로 꺼내고 마우스 버튼으로 쏩니다."
+PORTAL_GUN_INPUT_TOGGLE,포탈 건 켜기/끄기
+PORTAL_GUN_INPUT_SWAP,다음 색 파랑/주황 (터치스크린)
+PORTAL_GUN_INPUT_AIM_BLUE,터치스크린 Y 버튼의 포탈
+PORTAL_GUN_INPUT_AIM_ORANGE,다음이 주황일 때 Y 버튼 표시
+PORTAL_GUN_INPUT_NO_LOCK,"목표물 고정, 포탈 모드에서 꺼짐"
+PORTAL_GUN_INPUT_NO_MELEE,"근거리 전투, 포탈 모드에서 꺼짐"
+PORTAL_GUN_INPUT_NO_MAGIC,"마법, 포탈 모드에서 꺼짐"
+PORTAL_GUN_TOUCH_TOGGLE,포탈 건
+PORTAL_GUN_TOUCH_SWAP,색 바꾸기
+PORTAL_GUN_TOUCH_BLUE,파랑
+PORTAL_GUN_TOUCH_ORANGE,주황
+PORTAL_GUN_SETTING_QUALITY,시야 품질
+PORTAL_GUN_SETTING_QUALITY_DESCRIPTION,"포탈 너머 화면의 해상도로, 화면 해상도에 대한 비율입니다. 낮을수록 빠릅니다."
+PORTAL_GUN_SETTING_VIEW_RANGE,시야 거리
+PORTAL_GUN_SETTING_VIEW_RANGE_DESCRIPTION,이 거리 (미터)를 넘으면 포탈이 너머의 모습을 그리지 않습니다.
+PORTAL_GUN_EQUIP_A_GUN,먼저 총을 장비하십시오

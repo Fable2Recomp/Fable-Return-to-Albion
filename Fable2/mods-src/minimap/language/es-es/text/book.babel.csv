@@ -1,0 +1,12 @@
+key,value
+MINIMAP_MOD_NAME,Minimapa
+MINIMAP_MOD_DESCRIPTION,"Un mapa redondo de la región en la esquina superior derecha, con el norte arriba, una flecha para el héroe y puntos para las misiones, el perro y los enemigos. M cambia su tamaño y lo oculta."
+MINIMAP_INPUT_SIZE,Tamaño del minimapa
+MINIMAP_SETTING_SHOW,Mostrar el minimapa
+MINIMAP_SETTING_ENEMIES,Mostrar enemigos
+MINIMAP_SETTING_RANGE,Alcance de enemigos
+MINIMAP_SETTING_RANGE_DESCRIPTION,"Hasta qué distancia del héroe se muestran los enemigos, en metros."
+MINIMAP_SETTING_OPACITY,Opacidad
+MINIMAP_SETTING_SIZE,Tamaño
+MINIMAP_SETTING_SIZE_DESCRIPTION,Escala cada tamaño que M va recorriendo.
+MINIMAP_COMPASS_NORTH,N

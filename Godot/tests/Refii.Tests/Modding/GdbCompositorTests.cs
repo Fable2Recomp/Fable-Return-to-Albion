@@ -20,7 +20,7 @@ public class GdbCompositorTests
     [TestCase]
     public void TestLoadOrderPriorityAndConflictReporting()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -82,7 +82,7 @@ public class GdbCompositorTests
     [TestCase]
     public void TestNonCollidingPropertyComposition()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -141,7 +141,7 @@ public class GdbCompositorTests
     [TestCase]
     public void TestDisjointRecordsMerging()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -191,7 +191,7 @@ public class GdbCompositorTests
     [TestCase]
     public void TestPurgeCacheDeletesCompositeDirectory()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_purge_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_purge_test_" + Guid.NewGuid().ToString("N"));
         string cacheDir = Path.Combine(tempDir, ".cache", "gdb_composite");
         Directory.CreateDirectory(cacheDir);
         File.WriteAllText(Path.Combine(cacheDir, "test.gdb.tu"), "dummy");
@@ -214,7 +214,7 @@ public class GdbCompositorTests
     [TestCase]
     public void TestApplyWithZeroOverlaysPurgesCompositeCache()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_apply_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_apply_test_" + Guid.NewGuid().ToString("N"));
         string cacheDir = Path.Combine(tempDir, ".cache", "gdb_composite");
         Directory.CreateDirectory(cacheDir);
         File.WriteAllText(Path.Combine(cacheDir, "test.gdb.tu"), "dummy");

@@ -495,9 +495,8 @@ public static class AndroidTexSourceKeys
 	private static long _stale;
 	private static long _lastReported = -1;
 
-	/// <summary>Phones only; REFII_TEX_SOURCE_KEYS=0 turns it off to compare a load with and without it.</summary>
-	internal static bool Enabled { get; set; } =
-		Engine_Platform.IsAndroid && System.Environment.GetEnvironmentVariable("REFII_TEX_SOURCE_KEYS") != "0";
+	/// <summary>Phones only.</summary>
+	internal static bool Enabled { get; set; } = Engine_Platform.IsAndroid;
 
 	internal static MountLookup Lookup { get; set; } = FromGameAssets;
 

@@ -125,6 +125,66 @@ public static partial class Engine_UiKeyGlyphs
 		return keycap;
 	}
 
+	private static readonly Dictionary<string, ImageTexture> _actionGlyphs = new();
+
+	private static int _actionGlyphsFor = -1;
+
+	/// <summary>
+	/// The glyph for an input a mod binds itself: <paramref name="keyLabel"/>'s keycap while the keyboard
+	/// and mouse are in use, <paramref name="padButton"/>'s pad glyph (a name of <see cref="Buttons"/>, or
+	/// <c>DpadUp</c> … for one D-pad arrow) in the player's style and pack otherwise; null when the device
+	/// in use has nothing bound. Redrawn with every other glyph (<see cref="Generation"/>).
+	/// </summary>
+	public static ImageTexture? ActionGlyph(string? keyLabel, string? padButton)
+	{
+		bool keys = Engine_UiInputMode.Keycaps;
+		string? shown = keys ? keyLabel : padButton;
+		if (string.IsNullOrEmpty(shown))
+		{
+			return null;
+		}
+
+		if (_actionGlyphsFor != Generation)
+		{
+			_actionGlyphs.Clear();
+			_actionGlyphsFor = Generation;
+		}
+
+		string cacheKey = (keys ? "k:" : "p:") + shown;
+		if (_actionGlyphs.TryGetValue(cacheKey, out ImageTexture? cached))
+		{
+			return cached;
+		}
+
+		var canvas = new Canvas(KeycapSize, KeycapSize);
+		var cell = new Rect2I(0, 0, KeycapSize, KeycapSize);
+		if (keys)
+		{
+			if (!BlitPack(canvas, cell, KeyPackName(shown)))
+			{
+				DrawKeycap(canvas, cell, shown, pressed: false);
+			}
+		}
+		else
+		{
+			(string button, Direction arrow) = shown switch
+			{
+				"DpadUp" => ("DPad", Direction.Up),
+				"DpadDown" => ("DPad", Direction.Down),
+				"DpadLeft" => ("DPad", Direction.Left),
+				"DpadRight" => ("DPad", Direction.Right),
+				"L3" => ("LS", Direction.None),
+				"R3" => ("RS", Direction.None),
+				_ => (shown, Direction.None),
+			};
+			DrawPadCell(canvas, cell, button, arrow);
+		}
+
+		ImageTexture texture = ImageTexture.CreateFromImage(canvas.ToImage(mipmaps: true));
+		_actionGlyphs[cacheKey] = texture;
+		return texture;
+	}
+
 	/// <summary>
 	/// Whether a prompt for <paramref name="button"/> shows its shipped Xbox art now — on the pad
 	/// and <see cref="ShowsShipped"/> — rather than its keycap.

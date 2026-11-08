@@ -13,7 +13,7 @@ public class ModLoadOrderTests
     [TestCase]
     public void TestReadAndWriteTomlRoundTrip()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_loadorder_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_loadorder_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -54,7 +54,7 @@ public class ModLoadOrderTests
     [TestCase]
     public void TestLegacyEnabledTxtFallback()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_legacy_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_legacy_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -94,7 +94,7 @@ public class ModLoadOrderTests
     [TestCase]
     public void TestPruneMissingModsPreservesInstalledAndRemovesStale()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_loadorder_prune_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_loadorder_prune_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -148,7 +148,7 @@ public class ModLoadOrderTests
     [TestCase]
     public void TestDeleteModUpdatesOrderAndDiscoversNone()
     {
-        string modsDir = Path.Combine(Path.GetTempPath(), "refii_delete_mod_test_" + Guid.NewGuid().ToString("N"));
+        string modsDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_delete_mod_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(modsDir);
 
         try
@@ -189,7 +189,7 @@ public class ModLoadOrderTests
     [TestCase]
     public void TestOrderListPreservesDisabledModPositionAndRoundTrips()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_order_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_order_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -236,7 +236,7 @@ public class ModLoadOrderTests
     [TestCase]
     public void TestLegacyTomlWithoutOrderArrayPopulatesOrderFromEnabled()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_legacy_order_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_legacy_order_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -262,7 +262,7 @@ public class ModLoadOrderTests
     [TestCase]
     public void TestSyncEnabledWithOrderRepairsInvertedOrder()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_sync_order_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_sync_order_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try

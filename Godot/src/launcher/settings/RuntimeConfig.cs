@@ -129,7 +129,7 @@ public static class RuntimeConfig
         bool changed = !File.Exists(configPath);
 
         // The roots are anchored on the shared install root; the host states the running title's
-        // data and save roots on the command line, which outranks the config.
+        // data root and the save profile on the command line, which outranks the config.
         string baseRoot = Installer.GetInstallRootPath();
         string configDirectory = Path.GetDirectoryName(configPath) ?? string.Empty;
 
@@ -156,6 +156,15 @@ public static class RuntimeConfig
                 : legacyDefault;
 
             changed |= UpdateDefaultPath(values, key, legacy, ToGeneric(absolute));
+        }
+
+        // THE SAVES ARE NEVER IN THIS FILE: the host states the active save profile as the guest's
+        // user_data_root on its command line (HostBridge.Initialize). What earlier launchers wrote
+        // here was the pre-split shared folder, never read; it goes.
+        if (values.TryGetValue("user_data_root", out string? savedRoot) && IsLegacySaveRoot(savedRoot))
+        {
+            values.Remove("user_data_root");
+            changed = true;
         }
 
         // ONE CACHE CONTAINER, STATED RATHER THAN DERIVED.
@@ -288,8 +297,19 @@ public static class RuntimeConfig
     private static readonly (string Key, string LegacyDefault)[] AssetRelativeRoots =
     {
         ("game_data_root", "assets"),
-        ("user_data_root", "assets/save"),
     };
+
+    /// <summary>The <c>user_data_root</c> launchers wrote before the save profiles: <c>assets/save</c>, relative or absolute.</summary>
+    internal static bool IsLegacySaveRoot(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        string generic = value.Replace('\\', '/').TrimEnd('/');
+        return generic == "assets/save" || generic.EndsWith("/assets/save", StringComparison.Ordinal);
+    }
 
 
     private static bool UpdateDefaultPath(

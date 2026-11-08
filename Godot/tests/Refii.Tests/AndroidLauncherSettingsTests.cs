@@ -22,7 +22,7 @@ public sealed class AndroidLauncherSettingsTests
     [TestCase]
     public void DesktopSettingsAndroidBootLifecycle()
     {
-        string root = Path.Combine(Path.GetTempPath(), "refii-android-settings-" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-android-settings-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try
         {

@@ -252,6 +252,8 @@ public partial class LauncherApp
         _settingsPanel.Visible = _settingsTabs.CurrentTab == 0;
         _moddingPanel.Visible = _settingsTabs.CurrentTab == 1;
         _phone.Visible = _settingsTabs.CurrentTab == 2;
+        _savesPanel.Visible = _settingsTabs.CurrentTab == 3;
+        if (_savesPanel.Visible) _savesPanel.Refresh(_launch.GameIsRunning);
         _reinstallPanel.Hide();
         return true;
     }

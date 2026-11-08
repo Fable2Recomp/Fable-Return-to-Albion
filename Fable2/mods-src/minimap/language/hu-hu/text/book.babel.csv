@@ -1,0 +1,12 @@
+key,value
+MINIMAP_MOD_NAME,Minitérkép
+MINIMAP_MOD_DESCRIPTION,"Kerek térkép a régióról a jobb felső sarokban, északkal felfelé, egy nyíllal a hősnek és pöttyökkel a küldetéseknek, a kutyának és az ellenségeknek. Az M változtatja a méretét és elrejti."
+MINIMAP_INPUT_SIZE,Minitérkép mérete
+MINIMAP_SETTING_SHOW,Minitérkép megjelenítése
+MINIMAP_SETTING_ENEMIES,Ellenségek megjelenítése
+MINIMAP_SETTING_RANGE,Ellenségek hatótávja
+MINIMAP_SETTING_RANGE_DESCRIPTION,"A hőstől milyen messze látszanak az ellenségek, méterben."
+MINIMAP_SETTING_OPACITY,Átlátszatlanság
+MINIMAP_SETTING_SIZE,Méret
+MINIMAP_SETTING_SIZE_DESCRIPTION,"Átméretez minden méretet, amelyen az M végiglép."
+MINIMAP_COMPASS_NORTH,É

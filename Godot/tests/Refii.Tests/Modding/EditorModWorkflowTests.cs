@@ -14,7 +14,7 @@ public class EditorModWorkflowTests
     [TestCase]
     public void TestCreateModPackageCreatesOnlyF2ModWithoutLooseFolders()
     {
-        string modsDir = Path.Combine(Path.GetTempPath(), "refii_editor_create_test_" + Guid.NewGuid().ToString("N"));
+        string modsDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_editor_create_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(modsDir);
 
         try
@@ -47,7 +47,7 @@ public class EditorModWorkflowTests
     [TestCase]
     public void TestEditorDirectF2ModIncrementalSyncPreservesPackageIntegrity()
     {
-        string modsDir = Path.Combine(Path.GetTempPath(), "refii_editor_sync_test_" + Guid.NewGuid().ToString("N"));
+        string modsDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_editor_sync_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(modsDir);
 
         try
@@ -99,7 +99,7 @@ public class EditorModWorkflowTests
     [TestCase]
     public void TestDiscoverModNamesOrdersActiveModFirst()
     {
-        string modsDir = Path.Combine(Path.GetTempPath(), "refii_editor_discover_test_" + Guid.NewGuid().ToString("N"));
+        string modsDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_editor_discover_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(modsDir);
 
         try
@@ -142,7 +142,7 @@ public class EditorModWorkflowTests
     public void TestDeleteModPurgesPackageAndCreatorDirectory()
     {
         string testModName = "DeleteTestMod_" + Guid.NewGuid().ToString("N").Substring(0, 8);
-        string modsDir = Path.Combine(Path.GetTempPath(), "refii_mod_delete_test_" + Guid.NewGuid().ToString("N"));
+        string modsDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_mod_delete_test_" + Guid.NewGuid().ToString("N"));
         string creatorDir = Path.Combine(Refii.Core.Engine_AppRoot.AssetsDirectory, "creator", testModName);
 
         Directory.CreateDirectory(modsDir);

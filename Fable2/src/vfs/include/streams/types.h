@@ -42,6 +42,11 @@ struct RefiiHostStreamRecord {
   /// so `bytes` goes once read whole (ReleaseRefiiHostStreamBytes) and a later read fetches it.
   std::string host_key;
 
+  /// The digest of the bytes released, which a re-fetch must match: a live mod remount can
+  /// serve `host_key` from another file of the same size, and one stream never mixes two files.
+  uint64_t released_digest = 0;
+  bool released = false;
+
   std::mutex mutex;
 };
 

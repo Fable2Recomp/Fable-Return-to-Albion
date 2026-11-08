@@ -162,11 +162,13 @@ public static class Engine_UiTextMarkup
 	};
 
 	// Fable 3's colours. `b` loads the vector at 0x820FD340 (0.78, 0.26, 0.30, 1.0) and hands the
-	// run draw `sub_82B45538` style 2 where the others pass the element's +0x5C (not drawn here:
-	// no style is modelled); s1..s4 and s6 load the vectors 0x8355DD50/60/70/80/90, built at
+	// run draw `sub_82B45538` style 2 where the others pass the element's +0x5C, so a `b` run is
+	// never outlined (Engine_UiTextContract.RunStyle / Outlined); s1..s4 and s6 load the vectors 0x8355DD50/60/70/80/90, built at
 	// static init (0x831EF738..) from the D3DCOLOR bytes at 0x832A5054 + 4k times 1/255
 	// (flt_832A8930) — byte 2 is red, 1 green, 0 blue, 3 alpha (255 in every one); s5 is grey
-	// 0.5 at HALF the caller's opacity (`v21 * 0.5`, sub_821F6180 default case, code 6).
+	// 0.5 at HALF the caller's opacity (`v21 * 0.5`, sub_821F6180 default case, code 6). Every one
+	// REPLACES the element's colour and opacity rather than tinting them; s5's 0.5 alpha is the half
+	// it keeps of the element's (Engine_UiTextContract.ColourRunsReplace / RunReplaces).
 	private static readonly Color F3Bold = new(0.78f, 0.26f, 0.30f);
 	private static readonly Color F3Red = new(200 / 255f, 67 / 255f, 77 / 255f);
 	private static readonly Color F3Green = new(177 / 255f, 224 / 255f, 167 / 255f);
@@ -305,7 +307,7 @@ public static class Engine_UiTextMarkup
 		public System.Collections.Generic.List<Run> Split(string display)
 		{
 			var runs = new System.Collections.Generic.List<Run>();
-			Parse(this, display.Replace("\n", "<br>"), null, runs, 0);
+			Parse(this, display.Replace("\n", "<br>"), null, 0, runs, 0);
 			return runs;
 		}
 
@@ -355,7 +357,9 @@ public static class Engine_UiTextMarkup
 	/// The tint of the paired tag enclosing this run, or null to use the element's own colour.
 	/// </param>
 	/// <param name="Break">True for `&lt;br&gt;`.</param>
-	public readonly record struct Run(string Text, Tag? Tag, Color? Colour, bool Break);
+	/// <param name="Code">The code of the paired tag enclosing this run, 0 outside one — the code the
+	/// draw switches on (Fable 3 `sub_821F6180`; <see cref="Engine_UiTextContract.RunStyle"/>).</param>
+	public readonly record struct Run(string Text, Tag? Tag, Color? Colour, bool Break, int Code = 0);
 
 	/// <summary>
 	/// Splits a resolved string into runs — `sub_828031B8`, the tokeniser every `.bgf` text
@@ -377,7 +381,7 @@ public static class Engine_UiTextMarkup
 	private const int MaxDepth = 16;
 
 	private static void Parse(Vocabulary vocabulary,
-		string input, Color? style, System.Collections.Generic.List<Run> into, int depth)
+		string input, Color? style, int code, System.Collections.Generic.List<Run> into, int depth)
 	{
 		while (input.Length != 0)
 		{
@@ -385,13 +389,13 @@ public static class Engine_UiTextMarkup
 			int close = input.IndexOf('>');
 			if (open < 0 || close < 0 || close <= open)
 			{
-				into.Add(new Run(input, null, style, false));
+				into.Add(new Run(input, null, style, false, code));
 				return;
 			}
 
 			if (open != 0)
 			{
-				into.Add(new Run(input[..open], null, style, false));
+				into.Add(new Run(input[..open], null, style, false, code));
 			}
 
 			string name = input[(open + 1)..close];
@@ -406,14 +410,14 @@ public static class Engine_UiTextMarkup
 
 			if (tag.Kind == Kind.LineBreak)
 			{
-				into.Add(new Run(string.Empty, null, style, true));
+				into.Add(new Run(string.Empty, null, style, true, code));
 				input = rest;
 				continue;
 			}
 
 			if (tag.Kind == Kind.Icon)
 			{
-				into.Add(new Run(string.Empty, tag, style, false));
+				into.Add(new Run(string.Empty, tag, style, false, code));
 				input = rest;
 				continue;
 			}
@@ -423,7 +427,8 @@ public static class Engine_UiTextMarkup
 			//
 			// Stated divergence: `<b>` hardcodes alpha 1.0 in the guest (`0x822707EC` stores the
 			// literal instead of `f31`) where `s1`..`s4` take the caller's opacity. A multiplier
-			// cannot cancel the element's alpha, so `<b>` fades with its element here.
+			// cannot cancel the element's alpha, so `<b>` fades with its element here. Fable 3's runs
+			// replace instead, through the title contract (Engine_UiTextContract.RunReplaces).
 			Color tint = tag.Colour;
 
 			string closing = "</" + name + ">";
@@ -432,11 +437,11 @@ public static class Engine_UiTextMarkup
 
 			if (depth < MaxDepth)
 			{
-				Parse(vocabulary, inner, tint, into, depth + 1);
+				Parse(vocabulary, inner, tint, tag.Code, into, depth + 1);
 			}
 			else
 			{
-				into.Add(new Run(inner, null, tint, false));
+				into.Add(new Run(inner, null, tint, false, tag.Code));
 			}
 
 			input = end < 0 ? string.Empty : rest[(end + closing.Length)..];

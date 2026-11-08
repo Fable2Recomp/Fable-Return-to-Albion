@@ -142,7 +142,7 @@ public class GraphicsPresetTests
     [TestCase]
     public void TestTheFirstPresetSurvivesTheNextRead()
     {
-        string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"refii-first-preset-{System.Guid.NewGuid():N}.toml");
+        string path = System.IO.Path.Combine(Refii.Tests.TestTemp.Root, $"refii-first-preset-{System.Guid.NewGuid():N}.toml");
         try
         {
             var fresh = new Dictionary<string, string> { ["sun_shadow_map"] = "1024" };
@@ -341,7 +341,7 @@ public class GraphicsPresetTests
         AssertThat(model.Values.ContainsKey(GraphicsPresets.Key)).IsFalse();
 
         // A file a phone build wrote loses the key on the next desktop save.
-        string config = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "refii-preset-" + System.Guid.NewGuid().ToString("N") + ".toml");
+        string config = System.IO.Path.Combine(Refii.Tests.TestTemp.Root, "refii-preset-" + System.Guid.NewGuid().ToString("N") + ".toml");
         try
         {
             AssertThat(RuntimeConfig.WriteValues(config, new Dictionary<string, string> { [GraphicsPresets.Key] = "android" }, out _)).IsTrue();

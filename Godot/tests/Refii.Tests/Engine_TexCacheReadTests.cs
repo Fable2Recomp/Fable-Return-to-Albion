@@ -32,7 +32,7 @@ public sealed class Engine_TexCacheReadTests
     private sealed class TemporaryRoot : IDisposable
     {
         private readonly string? _previous = System.Environment.GetEnvironmentVariable(Engine_AppRoot.EnvironmentVariable);
-        private readonly string _directory = Path.Combine(Path.GetTempPath(), $"refii-texcache-{Guid.NewGuid():N}");
+        private readonly string _directory = Path.Combine(Refii.Tests.TestTemp.Root, $"refii-texcache-{Guid.NewGuid():N}");
 
         public TemporaryRoot()
         {

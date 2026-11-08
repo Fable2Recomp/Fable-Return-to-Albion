@@ -13,3 +13,5 @@ QUICKSAVE_GAME_NOT_SAVED,La partie n'a pas été sauvegardée. Aucune sauvegarde
 QUICKSAVE_SAVED,Sauvegarde rapide effectuée.
 QUICKSAVE_NOT_KEPT,"La partie a été sauvegardée, mais la sauvegarde rapide n'a pas pu être conservée."
 QUICKSAVE_LOADED,Sauvegarde rapide de %1 chargée.
+QUICKSAVE_TOUCH_QUICKSAVE,Sauvegarder
+QUICKSAVE_TOUCH_QUICKLOAD,Charger

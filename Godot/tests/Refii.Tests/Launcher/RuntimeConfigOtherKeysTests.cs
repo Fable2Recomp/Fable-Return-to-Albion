@@ -17,7 +17,7 @@ public class RuntimeConfigOtherKeysTests
 	[TestCase]
 	public void ADottedKeyUnderAValueIsDroppedAndTheRestKept()
 	{
-		string file = Path.Combine(Path.GetTempPath(), "refii_other_keys_" + Guid.NewGuid().ToString("N") + ".toml");
+		string file = Path.Combine(Refii.Tests.TestTemp.Root, "refii_other_keys_" + Guid.NewGuid().ToString("N") + ".toml");
 		try
 		{
 			var values = new SortedDictionary<string, string>(StringComparer.Ordinal)

@@ -38,6 +38,7 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
 
     private static Texture2Drd? _mask;
     private static Rid _whiteRid;
+    private static readonly object MaskGate = new();
 
     private static ImageTexture? _white;
 
@@ -59,25 +60,46 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
         }
     }
 
-    /// <summary>The mask as the classic materials bind it; white until the first pass.</summary>
+    /// <summary>
+    /// The mask as the classic materials bind it; white until the first pass. Any thread (the
+    /// material builds run on workers): one mask, and its white texture made on the render thread.
+    /// </summary>
     public static Texture2Drd Mask
     {
         get
         {
-            if (_mask is null)
+            if (System.Threading.Volatile.Read(ref _mask) is { } mask)
             {
-                _mask = new Texture2Drd();
-                if (RenderingServer.GetRenderingDevice() is { } rd)
-                {
-                    _whiteRid = rd.Texture(new RDTextureFormat
-                    {
-                        Width = 1, Height = 1, Format = RenderingDevice.DataFormat.R8Unorm,
-                        UsageBits = RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanUpdateBit,
-                    }, new RDTextureView(), new byte[] { 255 });
-                    _mask.TextureRdRid = _whiteRid;
-                }
+                return mask;
             }
-            return _mask;
+            lock (MaskGate)
+            {
+                if (_mask is null)
+                {
+                    var created = new Texture2Drd();
+                    System.Threading.Volatile.Write(ref _mask, created);
+                    RenderingServer.CallOnRenderThread(Callable.From(BindWhite));
+                }
+                return _mask;
+            }
+        }
+    }
+
+    /// <summary>Render thread: the white texture, bound unless a pass has bound its target first.</summary>
+    private static void BindWhite()
+    {
+        if (_whiteRid.IsValid || RenderingServer.GetRenderingDevice() is not { } rd)
+        {
+            return;
+        }
+        _whiteRid = rd.Texture(new RDTextureFormat
+        {
+            Width = 1, Height = 1, Format = RenderingDevice.DataFormat.R8Unorm,
+            UsageBits = RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanUpdateBit,
+        }, new RDTextureView(), new byte[] { 255 });
+        if (!_mask!.TextureRdRid.IsValid)
+        {
+            _mask.TextureRdRid = _whiteRid;
         }
     }
 

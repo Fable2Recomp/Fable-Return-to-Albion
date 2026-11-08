@@ -1,0 +1,12 @@
+key,value
+MINIMAP_MOD_NAME,Minimapa
+MINIMAP_MOD_DESCRIPTION,"Kulatá mapa oblasti v pravém horním rohu, sever nahoře, se šipkou pro hrdinu a tečkami pro úkoly, psa a nepřátele. M mění její velikost a skrývá ji."
+MINIMAP_INPUT_SIZE,Velikost minimapy
+MINIMAP_SETTING_SHOW,Zobrazit minimapu
+MINIMAP_SETTING_ENEMIES,Zobrazit nepřátele
+MINIMAP_SETTING_RANGE,Dosah nepřátel
+MINIMAP_SETTING_RANGE_DESCRIPTION,"Jak daleko od hrdiny se nepřátelé zobrazují, v metrech."
+MINIMAP_SETTING_OPACITY,Neprůhlednost
+MINIMAP_SETTING_SIZE,Velikost
+MINIMAP_SETTING_SIZE_DESCRIPTION,"Mění měřítko každé velikosti, kterou M přepíná."
+MINIMAP_COMPASS_NORTH,S

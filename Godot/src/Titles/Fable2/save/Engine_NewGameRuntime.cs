@@ -5,7 +5,6 @@ using System.Text;
 using Refii.Bnk;
 using Refii.Core;
 using Refii.Gdb;
-using Refii.Launcher.Core;
 using Refii.Mods;
 using Refii.Host;
 
@@ -36,16 +35,11 @@ public static class Engine_NewGameRuntime
         }
     }
 
+    /// <summary>Fable 2's saved games in the profile the guest runs from, else the active profile's.</summary>
     public static IReadOnlyList<string> SaveRoots()
     {
         string? liveRoot = HostBridge.GetSaveRoot();
-        if (!string.IsNullOrWhiteSpace(liveRoot)) return Engine_NewGameCatalog.DefaultRoots(string.Empty, null, string.Empty, liveRoot);
-        var values = RuntimeConfig.ReadValues(Engine_AppRoot.ConfigPath);
-        values.TryGetValue("user_data_root", out string? configured);
-        if (!string.IsNullOrWhiteSpace(configured) && !Path.IsPathRooted(configured))
-            configured = Path.GetFullPath(configured, Engine_AppRoot.Path);
-        return Engine_NewGameCatalog.DefaultRoots(Engine_AppRoot.SaveDirectory, configured,
-            System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments));
+        return new[] { Engine_NewGameCatalog.SaveGamesOf(string.IsNullOrWhiteSpace(liveRoot) ? Engine_AppRoot.SaveDirectory : liveRoot) };
     }
 
     public static bool PrepareLive(NewGameSelection selection, out string error)

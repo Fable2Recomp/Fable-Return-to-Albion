@@ -1,0 +1,21 @@
+key,value
+PORTAL_GUN_NAME,Портальная пушка
+PORTAL_GUN_DESC,"Выпускает пару связанных порталов на стены, пол и потолок."
+PORTAL_GUN_MOD_NAME,Портальная пушка
+PORTAL_GUN_MOD_DESCRIPTION,"Оружие, которое выпускает пару связанных порталов на стены, пол и потолок. Посмотрите в один, чтобы увидеть, что за другим, и шагните внутрь, чтобы выйти там. G достаёт её; кнопки мыши стреляют."
+PORTAL_GUN_INPUT_TOGGLE,Включить или выключить портальную пушку
+PORTAL_GUN_INPUT_SWAP,"Следующий синий или оранжевый, на сенсорном экране"
+PORTAL_GUN_INPUT_AIM_BLUE,Портал на кнопке Y сенсорного экрана
+PORTAL_GUN_INPUT_AIM_ORANGE,"Подпись Y, когда следующий оранжевый"
+PORTAL_GUN_INPUT_NO_LOCK,"Захват цели, отключён в режиме порталов"
+PORTAL_GUN_INPUT_NO_MELEE,"Ближний бой, отключён в режиме порталов"
+PORTAL_GUN_INPUT_NO_MAGIC,"Магия, отключена в режиме порталов"
+PORTAL_GUN_TOUCH_TOGGLE,Порталы
+PORTAL_GUN_TOUCH_SWAP,Сменить цвет
+PORTAL_GUN_TOUCH_BLUE,Синий
+PORTAL_GUN_TOUCH_ORANGE,Оранжевый
+PORTAL_GUN_SETTING_QUALITY,Качество вида
+PORTAL_GUN_SETTING_QUALITY_DESCRIPTION,Разрешение вида через портал относительно разрешения экрана. Ниже — быстрее.
+PORTAL_GUN_SETTING_VIEW_RANGE,Дальность вида
+PORTAL_GUN_SETTING_VIEW_RANGE_DESCRIPTION,Дальше этого числа метров портал перестаёт показывать вид.
+PORTAL_GUN_EQUIP_A_GUN,Сначала возьмите огнестрельное оружие

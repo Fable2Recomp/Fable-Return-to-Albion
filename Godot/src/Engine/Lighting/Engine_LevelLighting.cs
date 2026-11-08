@@ -64,6 +64,9 @@ public static class Engine_LevelLighting
 	/// <summary>`sun_shadow_map`: the directional shadow atlas size; the biases scale with its texel.</summary>
 	public static int SunShadowMap { get; set; } = ReadSunShadowMap();
 
+	/// <summary>The sun's constant bias for a <paramref name="map"/>-texel shadow map: it only grows, under 4096.</summary>
+	public static float SunBiasFor(int map) => 0.03f * Mathf.Max(1f, 4096f / map);
+
 	private static int ReadSunShadowMap()
 	{
 		try
@@ -119,7 +122,7 @@ public static class Engine_LevelLighting
 			// holds for any map or reach. The constant bias is depth in world units: it only
 			// grows, for a map under 4096; scaling it down stripes sunlit ground at a grazing sun.
 			ShadowNormalBias = NearSlopeBias,
-			ShadowBias = 0.03f * Mathf.Max(1f, 4096f / SunShadowMap),
+			ShadowBias = SunBiasFor(SunShadowMap),
 		};
 
 		UpdateSun(light, frame);

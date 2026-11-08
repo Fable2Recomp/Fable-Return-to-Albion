@@ -13,3 +13,5 @@ QUICKSAVE_GAME_NOT_SAVED,Gra nie została zapisana. Nie wykonano szybkiego zapis
 QUICKSAVE_SAVED,Wykonano szybki zapis.
 QUICKSAVE_NOT_KEPT,"Gra została zapisana, ale nie udało się zachować szybkiego zapisu."
 QUICKSAVE_LOADED,Wczytano szybki zapis z godziny %1.
+QUICKSAVE_TOUCH_QUICKSAVE,Zapisz
+QUICKSAVE_TOUCH_QUICKLOAD,Wczytaj

@@ -99,6 +99,31 @@ as `my_gun.mdl.gmd`, and its texture as `my_gun.tex.png`. A `.gdb.csv` row point
 the file's triangle order and the game's models are wound clockwise, the reverse of what glTF means, so
 a mesh written counter-clockwise is drawn inside out by a culled material.
 
+The game can also build the model when the mod is mounted: ship the glTF as `my_gun.mdl.glb` with its
+textures, and name the shipped model it is templated on in the mod's `models.json`:
+
+```json
+[
+	{
+		"model": "art/inventory/weapons/my_gun/my_gun.mdl",
+		"template": "art/inventory/weapons/dotxsi/rifleflintlock_master/rifleflintlock_master.mdl",
+		"materials": [
+			{ "diffuse": "art/inventory/weapons/my_gun/my_gun.tex", "specular": "art/inventory/weapons/my_gun/my_gun_spec.tex" }
+		]
+	}
+]
+```
+
+| Field | Meaning |
+|---|---|
+| `model` | The new model's path; the glTF beside it is `<model>.glb`. A path the game ships is a replacement, not a new model. |
+| `template` | A shipped `.mdl`. It states what a glTF cannot — bounds, bones, material blocks, the mesh-kind fields — and its `.mdl.gmd` (the grip points, sheath, projectile emitter and FX sockets) is mounted beside the new model unchanged. |
+| `materials` | Optional. One object per material, in the converted model's order (the glTF's material index): `diffuse`, `specular`, `normal`, `environment`, `self_illumination`. A slot left out keeps the template's texture; `""` clears it. |
+
+The template and its socket file are read from the player's own install and the glTF is converted in
+memory. A template that is not a model the game has, or a glTF that does not convert, is named in the
+mount's `[mods]` log line.
+
 ### In the Studio
 
 Right-click a model → **Import .glb over <model> into [mod]…** converts it against the shipped

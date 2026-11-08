@@ -510,7 +510,12 @@ public static class Fable3BoxScreenModel
 	/// (0x8296C6F4 / 0x8296C700); sub_8296CB08 highlights the row's `.Layout`: 1 Save, 2 SaveAndQuit,
 	/// 4 CharacterManagement, else Quit (0x8296CB30..0x8296CC24). Input sub_8296C918: up/down
 	/// (29/30 and the stick) move, 72 runs the row (sub_8296CDB0), 73 closes (sub_8296C858).
-	/// The rows' captions are SaveMenu.bgf's, not extracted here: their element names stand in.
+	/// NO DOCUMENT SHIPS FOR IT: the open asks for presentation type 11 (`li r4,0xB` 0x8296C71C →
+	/// sub_825C79A0), sub_82B3EC40 names it `SaveMenu.bgf` (0x82B3EE9C..0x82B3EEAC), and that file is
+	/// in no bank on the disc; the loader stores a presentation only when the open succeeds
+	/// (sub_825C7A90: `LHSFS__CLegacyFile_vf10` 0x825C7AE8, `beq` 0x825C7AF4, store 0x825C7B30), and
+	/// every write above is skipped while the slot is null (0x8296C734, 0x8296CB68, 0x8296C87C). So
+	/// there are no authored captions or frame: the element names stand in for the captions.
 	/// </summary>
 	private static Fable3ScreenPage SaveMenuPage(Fable3ScreenState screen, System.Func<string, string> resolve)
 	{

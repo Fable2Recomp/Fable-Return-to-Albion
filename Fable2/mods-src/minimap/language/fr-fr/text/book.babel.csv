@@ -1,0 +1,12 @@
+key,value
+MINIMAP_MOD_NAME,Minicarte
+MINIMAP_MOD_DESCRIPTION,"Une carte ronde de la région en haut à droite, nord en haut, avec une flèche pour le héros et des points pour les quêtes, le chien et les ennemis. M change sa taille et la masque."
+MINIMAP_INPUT_SIZE,Taille de la minicarte
+MINIMAP_SETTING_SHOW,Afficher la minicarte
+MINIMAP_SETTING_ENEMIES,Afficher les ennemis
+MINIMAP_SETTING_RANGE,Portée des ennemis
+MINIMAP_SETTING_RANGE_DESCRIPTION,"Jusqu'à quelle distance du héros les ennemis apparaissent, en mètres."
+MINIMAP_SETTING_OPACITY,Opacité
+MINIMAP_SETTING_SIZE,Taille
+MINIMAP_SETTING_SIZE_DESCRIPTION,Met à l'échelle chaque taille que M fait défiler.
+MINIMAP_COMPASS_NORTH,N

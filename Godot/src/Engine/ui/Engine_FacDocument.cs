@@ -89,7 +89,9 @@ public sealed class FacTextRecord
 	/// <summary>0 / 1 / 2, with 1 = middle.</summary>
 	public int VertAlign;
 
-	/// <summary>Clamped to &lt;4, defaulting to 3. No reader for it was found in the engine.</summary>
+	/// <summary>The draw style, as authored. Fable 3's element keeps it below 4, else 0
+	/// (<see cref="Engine_UiTextContract.ElementStyle"/>), and outlines style 1
+	/// (<see cref="Engine_UiTextContract.Outlines"/>).</summary>
 	public int Style;
 
 	/// <summary>Text tint. The authored alpha is overwritten with 1.0 by the engine — text is always opaque.</summary>

@@ -149,7 +149,7 @@ public class DecorateModeTests
     [TestCase]
     public void CachedCatalogIsTheBuiltOne()
     {
-        string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "refii_decorate_" + Guid.NewGuid().ToString("N"));
+        string dir = System.IO.Path.Combine(Refii.Tests.TestTemp.Root, "refii_decorate_" + Guid.NewGuid().ToString("N"));
         string file = System.IO.Path.Combine(dir, "sub", "catalog.bin");
         try
         {

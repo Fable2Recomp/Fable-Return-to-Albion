@@ -138,6 +138,9 @@ public static partial class Engine_HeroTextureMorph
             DecodedCache.Clear();
             _decodedBytes = 0;
         }
+
+        // The ORMs packed from those composites go with them, so a release frees what it did before.
+        Engine_TexLibrary.ForgetComposedOrms();
     }
 
     public static List<TextureMorphPair> Pairs()
@@ -741,6 +744,10 @@ public static partial class Engine_HeroTextureMorph
 
     private static ImageTexture Publish(string cacheKey, long epoch, ImageTexture texture)
     {
+        // Every composite reaches a material through here, and none is rewritten after: the only
+        // in-place writers (Engine_TexLibrary.Refresh and its enhancement swaps, Engine_ModRemount,
+        // Engine_UiKeyGlyphs) touch their own textures, never one made here.
+        Engine_TexLibrary.MarkUnchanging(texture);
         lock (MorphLock)
         {
             if (epoch != _textureEpoch)

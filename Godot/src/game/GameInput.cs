@@ -709,6 +709,7 @@ public partial class GameInput : Node
 		int player = Engine_TitleGame.Active.Input.ModPlayer(pad);
 		if (player != 0)
 		{
+			Refii.Mods.ModInputSticks.Set(player, state.LeftX, state.LeftY, Engine.GetProcessFrames());
 			uint unclaimed = state.Buttons;
 			Refii.Mods.ModInput.Withhold(player, ref state.Buttons, ref state.LeftTrigger, ref state.RightTrigger);
 			uint unpressed = state.Buttons;
@@ -861,6 +862,7 @@ public partial class GameInput : Node
 		int player = Engine_TitleGame.Active.Input.ModPlayer(0);
 		if (player != 0)
 		{
+			Refii.Mods.ModInputSticks.Set(player, state.LeftX, state.LeftY, Engine.GetProcessFrames());
 			uint unclaimed = state.Buttons;
 			Refii.Mods.ModInput.Withhold(player, ref state.Buttons, ref state.LeftTrigger, ref state.RightTrigger);
 			uint unpressed = state.Buttons;

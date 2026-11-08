@@ -4,7 +4,8 @@ A gun that fires a pair of linked portals onto walls, floors and ceilings. Look 
 out of the other, and step in to come out there.
 
 **G** (Back on a pad) turns the gun you have equipped into the Portal Gun, and **G** again turns it
-back. You keep the game's stance and aim for that gun.
+back. You keep the game's stance and aim for that gun. Portal mode belongs to whoever turned it on:
+in co-op the other player's **G** does nothing until it is off again.
 
 **Hold the left mouse button to aim and release to fire the blue portal; do the same with the right
 button for the orange one.** A controller fires blue only for now. While portal mode is on, the right

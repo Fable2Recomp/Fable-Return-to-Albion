@@ -1,0 +1,38 @@
+key,value
+SATCHEL_MOD_NAME,Bisaccia dell'eroe
+SATCHEL_MOD_DESCRIPTION,"Tab apre l'inventario come un'unica schermata trasparente, ispirata a SkyUI: una fila di categorie, un elenco ordinabile, filtri, preferiti e una scheda che confronta con ciò che indossi."
+SATCHEL_INPUT_OPEN,Apri e chiudi
+SATCHEL_INPUT_ACT,"Equipaggia, indossa o usa"
+SATCHEL_INPUT_FAVOURITE,Preferito
+SATCHEL_INPUT_SORT,Ordina
+SATCHEL_INPUT_FILTER,Filtra per nome
+SATCHEL_INPUT_REMOVE_ALL,Togli tutti i vestiti
+SATCHEL_INPUT_CLOSE,Chiudi
+SATCHEL_TOUCH_OPEN,Inventario
+SATCHEL_CATEGORY_FAVOURITES,Preferiti
+SATCHEL_CATEGORY_ALL,Tutto
+SATCHEL_KIND_TREASURE,Tesoro
+SATCHEL_COLUMN_NAME,Nome
+SATCHEL_COLUMN_TYPE,Tipo
+SATCHEL_VALUE,Valore
+SATCHEL_FILTER,Filtro
+SATCHEL_NOTHING_HERE,Qui non c'è niente.
+SATCHEL_NOTHING_BY_NAME,Niente con quel nome.
+SATCHEL_EQUIPPED,Equipaggiato
+SATCHEL_WEARING,Indossato
+SATCHEL_COMPARED_WITH,Confronto con %1
+SATCHEL_ACTION_EQUIP,Equipaggia
+SATCHEL_ACTION_TAKE_OFF,Togli
+SATCHEL_ACTION_WEAR,Indossa
+SATCHEL_FAVOURITE,Preferito
+SATCHEL_UNFAVOURITE,Non preferito
+SATCHEL_SORT,Ordina
+SATCHEL_REMOVE_ALL_CLOTHING,Togli tutti i vestiti
+SATCHEL_EQUIPPED_ITEM,%1 equipaggiato
+SATCHEL_USED_ITEM,%1 usato
+SATCHEL_NOW_WEARING,Ora indossi %1
+SATCHEL_TOOK_OFF,%1 tolto
+SATCHEL_COULD_NOT_PUT_ON,Impossibile indossare %1
+SATCHEL_COULD_NOT_TAKE_OFF,Impossibile togliere %1
+SATCHEL_REMOVED_ALL,Tutti i vestiti tolti
+SATCHEL_COULD_NOT_REMOVE_ALL,Impossibile togliere tutti i vestiti

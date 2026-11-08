@@ -15,15 +15,16 @@ public class AndroidSaveTransferTests
 {
     private static string TempDirectory()
     {
-        string path = Path.Combine(Path.GetTempPath(), "refii-transfer-" + Guid.NewGuid().ToString("N"));
+        string path = Path.Combine(Refii.Tests.TestTemp.Root, "refii-transfer-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(path);
         return path;
     }
 
     private static string Save(string user) => AndroidLogBundle.SaveDirectory(user);
 
-    private static string MainSave(string user) =>
-        Path.Combine(Save(user), "E0C3DF3F20120108", "4D5307F1", "00000001", "Hero000", "mainsave.bin");
+    private static string Game(string user) => Path.Combine(Save(user), "Fable 2");
+
+    private static string MainSave(string user) => Path.Combine(Game(user), "00000001", "Hero000", "mainsave.bin");
 
     /// <summary>A zip holding <paramref name="entries"/> (name, text).</summary>
     private static string Zip(string folder, params (string Name, string Text)[] entries)
@@ -50,29 +51,38 @@ public class AndroidSaveTransferTests
         finally { Directory.Delete(other, true); }
     }
 
+    /// <summary>The staging and set-aside folders an import leaves in the save root: none.</summary>
     private static string[] Leftovers(string user) =>
-        Directory.EnumerateDirectories(Path.GetDirectoryName(Save(user))!)
-            .Select(Path.GetFileName).OfType<string>().Where(name => name != "save").ToArray();
+        Directory.EnumerateDirectories(AndroidLogBundle.SavesRoot(user))
+            .Select(Path.GetFileName).OfType<string>().Where(name => name.StartsWith('.')).ToArray();
 
     [TestCase]
     public void TestOnlySafeSaveEntriesAreTaken()
     {
         AssertThat(AndroidSaveTransfer.SaveRelativePath("device.txt")).IsNull();
         AssertThat(AndroidSaveTransfer.SaveRelativePath("files/logs/godot.log")).IsNull();
-        AssertThat(AndroidSaveTransfer.SaveRelativePath("files/runtime/assets/save/")).IsNull();
-        AssertThat(AndroidSaveTransfer.SaveRelativePath("files/runtime/assets/save/rexnet/identity.key")).IsNull();
-        AssertThat(AndroidSaveTransfer.SaveRelativePath("files/runtime/assets/save/achievements.refii")).IsEqual("achievements.refii");
-        foreach (string unsafeName in new[]
+        AssertThat(AndroidSaveTransfer.SaveRelativePath("files/runtime/assets/saves/")).IsNull();
+        AssertThat(AndroidSaveTransfer.SaveRelativePath("files/runtime/assets/saves/profiles.toml")).IsNull();
+        AssertThat(AndroidSaveTransfer.SaveRelativePath("files/runtime/assets/saves/Player/rexnet/identity.key")).IsNull();
+        AssertThat(AndroidSaveTransfer.SaveRelativePath("files/runtime/assets/saves/Player/.profile")).IsNull();
+        AssertThat(AndroidSaveTransfer.SaveRelativePath("files/runtime/assets/saves/Player/Fable 2/achievements.refii"))
+            .IsEqual("Fable 2/achievements.refii");
+        AssertThat(AndroidSaveTransfer.LegacyRelativePath("files/runtime/assets/save/rexnet/identity.key")).IsNull();
+        AssertThat(AndroidSaveTransfer.LegacyRelativePath("files/runtime/assets/save/achievements.refii")).IsEqual("achievements.refii");
+        foreach (string root in new[] { "files/runtime/assets/saves/", "files/runtime/assets/save/" })
         {
-            "files/runtime/assets/save/../../../evil", "files/runtime/assets/save/a//b",
-            "files/runtime/assets/save//etc/passwd", "files/runtime/assets/save/a\\b", "files/runtime/assets/save/./a",
-            "files/runtime/assets/save/C:x",
-        })
-        {
-            bool refused = false;
-            try { AndroidSaveTransfer.SaveRelativePath(unsafeName); }
-            catch (InvalidDataException) { refused = true; }
-            AssertThat(refused).OverrideFailureMessage(unsafeName + " was taken").IsTrue();
+            foreach (string tail in new[] { "../../../evil", "a//b", "/etc/passwd", "a\\b", "./a", "C:x" })
+            {
+                string unsafeName = root + tail;
+                bool refused = false;
+                try
+                {
+                    if (root.EndsWith("saves/", StringComparison.Ordinal)) AndroidSaveTransfer.SaveRelativePath(unsafeName);
+                    else AndroidSaveTransfer.LegacyRelativePath(unsafeName);
+                }
+                catch (InvalidDataException) { refused = true; }
+                AssertThat(refused).OverrideFailureMessage(unsafeName + " was taken").IsTrue();
+            }
         }
     }
 
@@ -83,10 +93,15 @@ public class AndroidSaveTransferTests
         try
         {
             string logs = Zip(folder, ("device.txt", "x"), ("files/logs/godot.log", "log"));
-            string noHero = Zip(folder, ("files/runtime/assets/save/achievements.refii", "a"));
+            string noHero = Zip(folder, ("files/runtime/assets/saves/Player/Fable 2/achievements.refii", "a"));
             string twice = Zip(folder,
-                ("files/runtime/assets/save/E0C3DF3F20120108/4D5307F1/Headers/00000001/Hero000.header", "h"),
-                ("files/runtime/assets/save/achievements.refii", "a"), ("files/runtime/assets/save/Achievements.refii", "b"));
+                ("files/runtime/assets/saves/Player/Fable 2/Headers/00000001/Hero000.header", "h"),
+                ("files/runtime/assets/saves/Player/Fable 2/achievements.refii", "a"),
+                ("files/runtime/assets/saves/Player/Fable 2/Achievements.refii", "b"));
+            string two = Zip(folder,
+                ("files/runtime/assets/saves/Player/Fable 2/Headers/00000001/Hero000.header", "h"),
+                ("files/runtime/assets/saves/Other/Fable 2/Headers/00000001/Hero001.header", "h"));
+            string legacyNoHero = Zip(folder, ("files/runtime/assets/save/achievements.refii", "a"));
             string Reason(string path)
             {
                 using ZipArchive zip = ZipFile.OpenRead(path);
@@ -96,6 +111,8 @@ public class AndroidSaveTransferTests
             AssertThat(Reason(logs)).Contains("no save in it");
             AssertThat(Reason(noHero)).Contains("no hero");
             AssertThat(Reason(twice)).Contains("twice");
+            AssertThat(Reason(two)).Contains("more than one save profile");
+            AssertThat(Reason(legacyNoHero)).Contains("no hero");
 
             using ZipArchive valid = ZipFile.OpenRead(Export(folder, "b"));
             AndroidSaveTransfer.Inspection inspection = AndroidSaveTransfer.Inspect(valid);
@@ -112,7 +129,8 @@ public class AndroidSaveTransferTests
         try
         {
             AndroidLogBundleTests.WriteSave(user, "mine");
-            File.WriteAllText(Path.Combine(Save(user), "only-mine.bin"), "x");
+            File.WriteAllText(Path.Combine(Game(user), "only-mine.bin"), "x");
+            string id = File.ReadAllText(Path.Combine(Save(user), ".profile"));
             string export = Export(folder, "theirs");
             int backups = 0;
             string MakeBackup()
@@ -130,16 +148,17 @@ public class AndroidSaveTransferTests
             AssertThat(Path.GetFileName(result.Backup)).IsEqual("Fable2-saves-before-import-2026-10-30_12-00-00.zip");
             AssertThat(result.Imported.Heroes).IsEqual(1);
             AssertThat(File.ReadAllText(MainSave(user))).IsEqual("main theirs");
-            AssertThat(File.ReadAllText(Path.Combine(Save(user), "achievements.refii"))).IsEqual("achievements theirs");
-            AssertThat(File.Exists(Path.Combine(Save(user), "only-mine.bin"))).IsFalse();
-            // The phone keeps its own RexNet identity.
+            AssertThat(File.ReadAllText(Path.Combine(Game(user), "achievements.refii"))).IsEqual("achievements theirs");
+            AssertThat(File.Exists(Path.Combine(Game(user), "only-mine.bin"))).IsFalse();
+            // The phone keeps its own RexNet identity and its profile's id.
             AssertThat(File.ReadAllText(Path.Combine(Save(user), "rexnet", "identity.key"))).IsEqual("key mine");
+            AssertThat(File.ReadAllText(Path.Combine(Save(user), ".profile"))).IsEqual(id);
             AssertThat(Leftovers(user).Length).IsEqual(0);
 
             // The backup is itself an export that imports the old save back.
             AndroidSaveTransfer.Import(result.Backup!, user, () => Path.Combine(folder, "unused.zip"));
             AssertThat(File.ReadAllText(MainSave(user))).IsEqual("main mine");
-            AssertThat(File.Exists(Path.Combine(Save(user), "only-mine.bin"))).IsTrue();
+            AssertThat(File.Exists(Path.Combine(Game(user), "only-mine.bin"))).IsTrue();
             AssertThat(File.ReadAllText(Path.Combine(Save(user), "rexnet", "identity.key"))).IsEqual("key mine");
         }
         finally
@@ -176,8 +195,8 @@ public class AndroidSaveTransferTests
         {
             AndroidLogBundleTests.WriteSave(user, "mine");
             string traversal = Zip(folder,
-                ("files/runtime/assets/save/E0C3DF3F20120108/4D5307F1/Headers/00000001/Hero000.header", "h"),
-                ("files/runtime/assets/save/../../escape.txt", "x"));
+                ("files/runtime/assets/saves/Player/Fable 2/Headers/00000001/Hero000.header", "h"),
+                ("files/runtime/assets/saves/Player/../../escape.txt", "x"));
             string export = Export(folder, "theirs");
             foreach ((string zip, Func<string> backup) in new (string, Func<string>)[]
             {
@@ -219,6 +238,38 @@ public class AndroidSaveTransferTests
         finally
         {
             AndroidSaveTransfer.GameStarted = false;
+            Directory.Delete(user, true);
+            Directory.Delete(folder, true);
+        }
+    }
+
+    [TestCase]
+    public void TestAnExportMadeBeforeTheProfilesImportsIntoTheTitleFolders()
+    {
+        string user = TempDirectory(), folder = TempDirectory();
+        try
+        {
+            AndroidLogBundleTests.WriteSave(user, "mine");
+            string old = Zip(folder,
+                ("files/runtime/assets/save/E0C3DF3F20120108/4D5307F1/00000001/Hero000/mainsave.bin", "main old"),
+                ("files/runtime/assets/save/E0C3DF3F20120108/4D5307F1/00000001/Hero000/herosave.bin", "hero old"),
+                ("files/runtime/assets/save/E0C3DF3F20120108/4D5307F1/Headers/00000001/Hero000.header", "header old"),
+                ("files/runtime/assets/save/4D5307F1/profile/Brave Fox/63E83FFF", "settings old"),
+                ("files/runtime/assets/save/achievements.refii", "achievements old"));
+            AndroidSaveTransfer.Result result = AndroidSaveTransfer.Import(old, user, () => Path.Combine(folder, "backup.zip"));
+
+            AssertThat(result.Imported.Legacy).IsTrue();
+            AssertThat(result.Imported.Heroes).IsEqual(1);
+            AssertThat(File.ReadAllText(MainSave(user))).IsEqual("main old");
+            AssertThat(File.ReadAllText(Path.Combine(Game(user), "Headers", "00000001", "Hero000.header"))).IsEqual("header old");
+            AssertThat(File.ReadAllText(Path.Combine(Game(user), "profile", "63E83FFF"))).IsEqual("settings old");
+            AssertThat(File.ReadAllText(Path.Combine(Game(user), "achievements.refii"))).IsEqual("achievements old");
+            AssertThat(File.ReadAllText(Path.Combine(Save(user), "rexnet", "identity.key"))).IsEqual("key mine");
+            AssertThat(Leftovers(user).Length).IsEqual(0);
+            AssertThat(File.Exists(Path.Combine(AndroidLogBundle.SavesRoot(user), "migration.log"))).IsTrue();
+        }
+        finally
+        {
             Directory.Delete(user, true);
             Directory.Delete(folder, true);
         }

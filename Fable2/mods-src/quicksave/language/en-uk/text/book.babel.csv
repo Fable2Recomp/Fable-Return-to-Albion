@@ -13,3 +13,5 @@ QUICKSAVE_GAME_NOT_SAVED,The game did not save. Nothing was quicksaved.
 QUICKSAVE_SAVED,Quicksaved.
 QUICKSAVE_NOT_KEPT,"The game saved, but the quicksave could not be kept."
 QUICKSAVE_LOADED,Quickloaded the save from %1.
+QUICKSAVE_TOUCH_QUICKSAVE,Quicksave
+QUICKSAVE_TOUCH_QUICKLOAD,Quickload

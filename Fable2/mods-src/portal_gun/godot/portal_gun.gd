@@ -12,6 +12,10 @@ extends Node
 ## would stand if the other portal were this one, turned to look out of it, and draws the same world
 ## into its own viewport at a fraction of the screen.
 ##
+## Portal mode is one player's at a time: the one whose G turned it on (mod/init.lua's portal_gun.player).
+## Their buttons are claimed and pressed, their hero aims, and the mouse is theirs only where this
+## machine's keyboard plays them (attack_mode).
+##
 ## A shot shows as a muzzle flash, then, once init.lua has said where it ended, a beam to there and a
 ## burst of sparks, with the portal scaling open. init.lua plays the sounds.
 
@@ -71,6 +75,7 @@ const TAP_AIM_SECONDS := 1.5        # how long the aim a touch shot was let go o
 
 var host: Object
 var canvas: Control
+var player := 1                     # whose portal mode: portal_gun.player
 var colour := 1                     # the next shot's portal, 1 or 2
 var outline: MeshInstance3D         # where the aim would open a portal
 var outline_material: ShaderMaterial
@@ -166,9 +171,14 @@ func _on_level_unloading(_e: Dictionary) -> void:
 
 
 func _on_input_action(e: Dictionary) -> void:
-	if int(e.get("player", 1)) != 1:
-		return
+	var from := int(e.get("player", 1))
 	var name: String = e.get("name", "")
+	if name == "portal_gun.toggle":
+		if e.get("pressed", false) and host.in_play(from) and not host.in_cutscene(from, interactive):
+			host.run_lua("PortalGun.toggle(%d)" % from)
+		return
+	if from != player:
+		return
 	# aim_orange is the same Y, there only for Y's caption while orange is next.
 	if name == "portal_gun.aim_blue":
 		if host.touch_mode():
@@ -178,12 +188,8 @@ func _on_input_action(e: Dictionary) -> void:
 		return
 	if not _in_play():
 		return
-	match e.get("name", ""):
-		"portal_gun.toggle":
-			host.run_lua("PortalGun.toggle()")
-		"portal_gun.swap":
-			if claimed:
-				colour = 3 - colour
+	if name == "portal_gun.swap" and claimed:
+		colour = 3 - colour
 
 
 func _on_mod_signal(mod: String, name: String, payload: String) -> void:
@@ -199,6 +205,8 @@ func _on_mod_signal(mod: String, name: String, payload: String) -> void:
 ## The buttons are the mod's only while portal mode holds in play; otherwise they are the game's, and a
 ## menu has its own B back. On a touchscreen only Y is: there is no mouse to press the others.
 func _claim() -> void:
+	if not claimed:
+		player = maxi(1, int(_value("portal_gun.player")))
 	var wanted: bool = _value("portal_gun.mode") >= 0.5 and _in_play()
 	if wanted != claimed:
 		claimed = wanted
@@ -210,7 +218,7 @@ func _claim() -> void:
 		_claim_all(pad_claimed)
 	if (claimed and touch) != touch_claimed:
 		touch_claimed = claimed and touch
-		host.claim_input(1, "portal_gun.aim_blue", touch_claimed)
+		host.claim_input(player, "portal_gun.aim_blue", touch_claimed)
 	_publish_next()
 
 
@@ -225,7 +233,7 @@ func _publish_next() -> void:
 
 func _claim_all(on: bool) -> void:
 	for action in ["portal_gun.no_lock", "portal_gun.no_melee", "portal_gun.no_magic"]:
-		host.claim_input(1, action, on)
+		host.claim_input(player, action, on)
 
 
 func _let_go() -> void:
@@ -237,7 +245,7 @@ func _let_go() -> void:
 ## Each button aims and fires its own portal, holding the game's ranged button while either is down.
 func _input(event: InputEvent) -> void:
 	var click := event as InputEventMouseButton
-	if click == null or not claimed or Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+	if click == null or not claimed or Input.mouse_mode != Input.MOUSE_MODE_CAPTURED or host.attack_mode(player) == 0:
 		return
 	if click.pressed and not _in_play():
 		return
@@ -270,7 +278,7 @@ func _touch_fire(pressed: bool) -> void:
 		tap_ray = _ray()
 		tap_ray_left = TAP_AIM_SECONDS
 		tap_left = TAP_SECONDS
-		host.press(1, "Y", 1)
+		host.press(player, "Y", 1)
 
 
 ## Lets go of the game's ranged button once a touch shot's press is over, and forgets its aim later.
@@ -287,20 +295,20 @@ func _tap(delta: float) -> void:
 
 
 func _press_gun() -> void:
-	host.press(1, "Y", 1 if left_held or right_held else 0)
+	host.press(player, "Y", 1 if left_held or right_held else 0)
 
 
 func _exit_tree() -> void:
 	if pad_claimed:
 		_claim_all(false)
 	if claimed:
-		host.press(1, "Y", 0)
+		host.press(player, "Y", 0)
 	if touch_claimed:
-		host.claim_input(1, "portal_gun.aim_blue", false)
+		host.claim_input(player, "portal_gun.aim_blue", false)
 
 
 func _in_play() -> bool:
-	return host.in_play(1) and not host.in_cutscene(1, interactive)
+	return host.in_play(player) and not host.in_cutscene(player, interactive)
 
 
 ## The game's axes from Godot's, and back: X is mirrored and Y and Z trade places.
@@ -320,7 +328,7 @@ func _ray() -> Array:
 		return []
 	var along := -camera.global_transform.basis.z
 	var from := camera.global_position
-	var body = host.node_for(host.hero(1))
+	var body = host.node_for(host.hero(player))
 	if body is Node3D:
 		from += along * maxf(0.0, along.dot(body.global_position - from))
 	return [from, along, body]

@@ -141,8 +141,8 @@ internal sealed class AndroidNativeSession
                 throw new InvalidDataException("game_root must contain the user's prepared default.xex and data directory");
             if (!File.Exists(_options.ModulePath))
                 throw new FileNotFoundException("Android ARM64 game module is missing", _options.ModulePath);
-            // Fable 2's own save folder, the one HostBridge.Initialize states as --user_data_root.
-            string saves = Refii.Core.Engine_AppRoot.SaveDirectory;
+            // The app's save folder; the active profile in it is what HostBridge.Initialize states as --user_data_root.
+            string saves = Refii.Core.Engine_AppRoot.SavesDirectory;
             AndroidSaveTransfer.GameStarted = true;
             AndroidSaveImporter.Result imported = AndroidSaveImporter.ImportIfEmpty(_options.SaveImportRoot, saves);
             _import = imported.Status;

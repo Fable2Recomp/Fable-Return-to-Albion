@@ -77,6 +77,14 @@ public static class Engine_ClassicTerrain
 
     private const string LayerRenderMode = "unshaded, blend_add, depth_draw_never, cull_front";
 
+    /// <summary>
+    /// THE TITLE'S PATCH IS 32 x 32 CELLS whatever the host grid's spacing: four quadrants of 16,
+    /// one vertex a cell (`sub_8221FC40`, tessellation level 15), the cell being the chunk's extent
+    /// over 32. Deriving the cell count from the finer heightfield grid made each patch a slab of
+    /// hundreds of thousands of triangles.
+    /// </summary>
+    private const int PatchCells = 32;
+
     /// <summary>Transparent sort order of every landscape layer: before the shadow spheres and the water.</summary>
     public const int TerrainRenderPriority = -120;
 
@@ -115,9 +123,25 @@ public static class Engine_ClassicTerrain
         float extentX = (samplesX - 1) * spacing, extentY = (samplesY - 1) * spacing;
         float originX = heights.OriginX, originY = heights.OriginZ;
 
-        // The level textures the vertex shader samples: heights in metres, normals from them.
-        ImageTexture heightTexture = HeightTexture(heights);
-        ImageTexture normalTexture = NormalTexture(heights);
+        // The level textures the vertex shader samples (heights in metres, normals from them) and
+        // every patch's geometry are pure functions of the heights and the chunk records, so they
+        // are built side by side; the materials below stay serial in chunk order (the shared paint
+        // and texture tables, Engine_ClassicMaterial.Register).
+        ImageTexture? heightTexture = null;
+        ImageTexture? normalTexture = null;
+        var patchMeshes = new ArrayMesh?[body.Chunks.Count];
+        System.Threading.Tasks.Parallel.Invoke(
+            () => heightTexture = HeightTexture(heights),
+            () => normalTexture = NormalTexture(heights),
+            () => System.Threading.Tasks.Parallel.For(0, body.Chunks.Count, ci =>
+            {
+                EhfChunk chunk = body.Chunks[ci];
+                float size = chunk.Extent[0] - chunk.Origin[0];
+                if (size > 0f)
+                {
+                    patchMeshes[ci] = PatchMesh(heights, chunk.Origin[0], chunk.Origin[1], PatchCells / 2, size / PatchCells);
+                }
+            }));
         var paints = new Dictionary<int, ImageTexture>();
         var layerTextures = new Dictionary<uint, (Texture2D? Diffuse, Texture2D? Normal, Texture2D? Cliff, Texture2D? CliffNormal)>();
 
@@ -129,11 +153,7 @@ public static class Engine_ClassicTerrain
         for (int ci = 0; ci < body.Chunks.Count; ci++)
         {
             EhfChunk chunk = body.Chunks[ci];
-            // THE TITLE'S PATCH IS 32 x 32 CELLS whatever the host grid's spacing: four
-            // quadrants of 16, one vertex a cell (`sub_8221FC40`, tessellation level 15), the
-            // cell being the chunk's extent over 32. Deriving the cell count from the finer
-            // heightfield grid made each patch a slab of hundreds of thousands of triangles.
-            const int cells = 32;
+            const int cells = PatchCells;
             // The chunk record's second vector is its FAR CORNER, not its size: chunk 1 spans
             // (0, 16) to (16, 32), a 16 m patch of 32 cells at the heightfield's 0.5 m. Dividing
             // the corner made every patch past the first row hundreds of metres wide, stacked
@@ -146,7 +166,7 @@ public static class Engine_ClassicTerrain
             float patchSpacing = size / cells;
             int quadrant = cells / 2;
             float ox = chunk.Origin[0], oy = chunk.Origin[1];
-            ArrayMesh mesh = PatchMesh(heights, ox, oy, quadrant, patchSpacing);
+            ArrayMesh mesh = patchMeshes[ci]!;
             if (mesh.GetSurfaceCount() == 0)
             {
                 continue;
@@ -222,8 +242,8 @@ public static class Engine_ClassicTerrain
                     material.SetMeta(Engine_ClassicMaterial.DefinesMeta, defines);
 
                     // The vertex stage: the level textures and the patch's placement.
-                    material.SetShaderParameter("vs_s16", heightTexture);
-                    material.SetShaderParameter("vs_s17", normalTexture);
+                    material.SetShaderParameter("vs_s16", heightTexture!);
+                    material.SetShaderParameter("vs_s17", normalTexture!);
                     material.SetShaderParameter("vs_s18", Paint(body, layer, paints));
                     material.SetShaderParameter("vs_g_PositionOffSetXY", new Vector4(ox, oy, 0f, 0f));
                     material.SetShaderParameter("vs_g_PositionScale", new Vector4(quadrant * patchSpacing, quadrant * patchSpacing, 1f, 1f));

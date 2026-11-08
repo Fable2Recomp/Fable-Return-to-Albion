@@ -23,7 +23,7 @@ public static partial class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 237;
+	public const int ExpectedAbiVersion = 238;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -244,11 +244,16 @@ public static partial class HostBridge
 	{
 		var message = new byte[MessageCapacity];
 
-		// THE TITLE'S SAVES, stated beside its data root: a command-line value outranks the config,
-		// so each title's guest writes into its own folder whatever its file says.
+		// THE SAVES, stated: the active profile's folder is the guest's user_data_root, and the
+		// content manager is told each title's folder in it (Refii.Save.Engine_SaveLayout), so both
+		// titles share one identity and Fable 3 enumerates Fable 2's saves as its alternate title.
+		// The cache is the app's own container, never under the profile. A command-line value
+		// outranks the config, so the guest writes there whatever its file says.
 		var stated = new List<string>(arguments ?? Array.Empty<string>())
 		{
 			"--user_data_root=" + Refii.Core.Engine_AppRoot.SaveDirectory,
+			"--content_title_folders=" + Refii.Save.Engine_SaveLayout.TitleFoldersArgument(),
+			"--cache_root=" + Refii.Core.Engine_AppRoot.CacheDirectory,
 		};
 		string packed = string.Join('\n', stated);
 

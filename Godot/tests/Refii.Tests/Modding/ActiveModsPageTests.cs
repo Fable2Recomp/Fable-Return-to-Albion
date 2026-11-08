@@ -18,7 +18,7 @@ public class ActiveModsPageTests
     [TestCase]
     public void AModRowsPageIsItsDescriptionAndCredit()
     {
-        string mods = Path.Combine(Path.GetTempPath(), "refii_active_mods_test_" + Guid.NewGuid().ToString("N"));
+        string mods = Path.Combine(Refii.Tests.TestTemp.Root, "refii_active_mods_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(mods);
         string before = Engine_UiNetworkSource.ModsRoot;
         try

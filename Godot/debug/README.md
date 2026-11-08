@@ -91,12 +91,11 @@ Add `--headless` for anything that does not need to draw. The two viewers do.
   the one above it and write it beside the artist's own, so the encoder can be checked
   against real data rather than against an opinion
 
-Texture decoding has two switches, and they answer different questions:
+Texture decoding has one switch:
 
-- `REFII_TEX_NO_MIP_TAIL=1` — keep the levels the file ships, drop the synthesised tail
 - `REFII_TEX_NO_MIPS=1` — no mipmaps at all, shipped levels included
 
-Together they separate "mipmapping is involved" from "the levels we generated are wrong".
+It separates "mipmapping is involved" from everything else.
 That distinction is what found the actual bug behind green fringing on the Crucible: not
 the tail, but raw (`comp=7`) shipped levels being copied without untiling.
 

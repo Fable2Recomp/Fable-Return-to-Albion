@@ -161,7 +161,7 @@ public sealed class AndroidRenderScaleTests
     [TestCase]
     public void AndroidFileDefaultPreservesExplicitPercentagesAndDesktopPolicy()
     {
-        string root = Path.Combine(Path.GetTempPath(), "refii-android-default-" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-android-default-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try
         {
@@ -193,7 +193,7 @@ public sealed class AndroidRenderScaleTests
     [TestCase]
     public void AndroidDefaultOverrideAndRestoreLifecycle()
     {
-        string root = Path.Combine(Path.GetTempPath(), "refii-android-scale-life-" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-android-scale-life-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try
         {
@@ -226,7 +226,7 @@ public sealed class AndroidRenderScaleTests
     [TestCase]
     public void RuntimeConfigReloadLifecycleAppliesOnlyEffectiveChanges()
     {
-        string root = Path.Combine(Path.GetTempPath(), "refii-render-scale-" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-render-scale-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try
         {

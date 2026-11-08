@@ -47,7 +47,7 @@ public sealed class AndroidSunShadows
             Engine_LevelLighting.SunShadowMap = map;
             // As Engine_LevelLighting.BuildSun states it, for the sun already standing.
             if (root.FindChild(Engine_LevelLighting.SunNodeName, true, false) is DirectionalLight3D sun)
-                sun.ShadowBias = 0.03f * Mathf.Max(1f, 4096f / map);
+                sun.ShadowBias = Engine_LevelLighting.SunBiasFor(map);
             GD.Print($"[android] sun shadow map {map}");
         }
 

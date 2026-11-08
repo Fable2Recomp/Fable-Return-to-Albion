@@ -46,6 +46,12 @@ public sealed class MeshConversion
 /// whose mesh buffers, vertex counts or face counts differ from its template's is refused here, by
 /// name, rather than drawn unmorphed. The converted model is mounted at its own path, where the
 /// guest's hash lookup finds it (AssetHashIndex over the mount) and the prop index draws it.
+///
+/// A NEW MODEL is a model at a path the game does not ship, declared in the mod's
+/// <c>models.json</c> with the shipped model it is templated on: the template states what a
+/// glTF cannot (bounds, bones, material blocks, the mesh-kind fields) and its <c>.mdl.gmd</c>
+/// (sockets, helpers, FX attachment points) is mounted beside the new model unchanged. Both are
+/// read from the player's own install at mount time, so a mod ships only its glTF and textures.
 /// </summary>
 public static class ModMeshOverlays
 {
@@ -53,6 +59,119 @@ public static class ModMeshOverlays
 
 	/// <summary>The manifest of new morph target models and the part each one morphs.</summary>
 	public const string TargetsPath = "morph_targets.json";
+
+	/// <summary>The manifest of new models and the shipped model each one is templated on.</summary>
+	public const string ModelsPath = "models.json";
+
+	/// <summary>The socket file the game reads beside a model.</summary>
+	public const string SocketSuffix = ".gmd";
+
+	/// <summary>
+	/// One <see cref="ModelsPath"/> entry: the new model's path, its template's, and per material
+	/// (the converted model's flat material index, its glTF material index) the texture slots to
+	/// point at the mod's own textures — a slot left out keeps the template's, an empty string clears it.
+	/// </summary>
+	public sealed record NewModel(string Model, string Template, IReadOnlyList<MdlMaterialTexturePatch> Materials);
+
+	private static readonly string[] SlotNames = { "diffuse", "specular", "normal", "environment", "self_illumination" };
+
+	/// <summary>
+	/// A <c>models.json</c> as model path to entry, paths normalized; each entry that cannot be read
+	/// is an error line.
+	/// <c>[{ "model": "art/.../my_gun.mdl", "template": "art/.../shipped_gun.mdl",
+	/// "materials": [{ "diffuse": "art/.../my_gun.tex", "specular": "art/.../my_gun_spec.tex" }] }]</c>
+	/// </summary>
+	public static Dictionary<string, NewModel> ParseModels(string text, List<string> errors)
+	{
+		var models = new Dictionary<string, NewModel>(StringComparer.Ordinal);
+		System.Text.Json.JsonDocument document;
+		try
+		{
+			document = System.Text.Json.JsonDocument.Parse(text ?? string.Empty);
+		}
+		catch (System.Text.Json.JsonException exception)
+		{
+			errors.Add($"{ModelsPath}: not valid JSON: {exception.Message}");
+			return models;
+		}
+
+		using (document)
+		{
+			if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array)
+			{
+				errors.Add($"{ModelsPath}: must be an array of {{ \"model\": \"art/.../new.mdl\", \"template\": \"art/.../shipped.mdl\" }}");
+				return models;
+			}
+
+			int index = 0;
+			foreach (System.Text.Json.JsonElement entry in document.RootElement.EnumerateArray())
+			{
+				string at = $"{ModelsPath}[{index++}]";
+				string Field(string name) =>
+					entry.ValueKind == System.Text.Json.JsonValueKind.Object && entry.TryGetProperty(name, out var value) &&
+					value.ValueKind == System.Text.Json.JsonValueKind.String ? ModLoadOrder.Normalize(value.GetString()!.Trim()) : string.Empty;
+				string model = Field("model"), template = Field("template");
+				if (!model.EndsWith(".mdl", StringComparison.Ordinal) || !template.EndsWith(".mdl", StringComparison.Ordinal))
+				{
+					errors.Add($"{at}: needs \"model\" and \"template\", each a .mdl path");
+					continue;
+				}
+
+				if (model == template)
+				{
+					errors.Add($"{at}: '{model}' cannot be its own template");
+					continue;
+				}
+
+				var materials = new List<MdlMaterialTexturePatch>();
+				if (entry.TryGetProperty("materials", out System.Text.Json.JsonElement list))
+				{
+					if (list.ValueKind != System.Text.Json.JsonValueKind.Array)
+					{
+						errors.Add($"{at}.materials: must be an array of objects naming texture slots ({string.Join(", ", SlotNames)})");
+						continue;
+					}
+
+					int m = 0;
+					foreach (System.Text.Json.JsonElement material in list.EnumerateArray())
+					{
+						string where = $"{at}.materials[{m++}]";
+						var slots = new string?[SlotNames.Length];
+						if (material.ValueKind != System.Text.Json.JsonValueKind.Object)
+						{
+							errors.Add($"{where}: must be an object naming texture slots");
+						}
+						else
+						{
+							foreach (System.Text.Json.JsonProperty slot in material.EnumerateObject())
+							{
+								int which = Array.IndexOf(SlotNames, slot.Name);
+								if (which < 0 || slot.Value.ValueKind != System.Text.Json.JsonValueKind.String)
+								{
+									errors.Add($"{where}.{slot.Name}: not a texture slot ({string.Join(", ", SlotNames)}) with a path");
+									continue;
+								}
+
+								slots[which] = ModLoadOrder.Normalize(slot.Value.GetString()!.Trim()).Replace('/', '\\');
+							}
+						}
+
+						materials.Add(new MdlMaterialTexturePatch
+						{
+							Diffuse = slots[0], Specular = slots[1], Normal = slots[2], EnvironmentMap = slots[3], SelfIllumination = slots[4],
+						});
+					}
+				}
+
+				if (!models.TryAdd(model, new NewModel(model, template, materials)))
+				{
+					errors.Add($"{at}: '{model}' is declared twice; the first stands");
+				}
+			}
+		}
+
+		return models;
+	}
 
 	/// <summary>
 	/// A <c>morph_targets.json</c> as model path to template path, both normalized; each entry that
@@ -157,39 +276,52 @@ public static class ModMeshOverlays
 		return true;
 	}
 
-	/// <summary>The mod's declared morph targets (<see cref="TargetsPath"/>), from its package or folder; errors reported as conversions.</summary>
-	private static Dictionary<string, string> ReadTargets(F2ModPackage? package, string? folder, string mod, List<MeshConversion> conversions)
+	/// <summary>A manifest's text from the mod's package or folder, null without one; a read failure reported as a conversion.</summary>
+	private static string? ReadManifest(F2ModPackage? package, string? folder, string path, string mod, List<MeshConversion> conversions)
 	{
-		string? text = null;
 		try
 		{
-			if (package is not null && package.TryGetEntry(TargetsPath, out F2ModEntry? entry) && entry is not null)
+			if (package is not null && package.TryGetEntry(path, out F2ModEntry? entry) && entry is not null)
 			{
-				text = System.Text.Encoding.UTF8.GetString(package.ReadEntryBytes(entry));
+				return System.Text.Encoding.UTF8.GetString(package.ReadEntryBytes(entry));
 			}
-			else if (folder is not null && File.Exists(Path.Combine(folder, TargetsPath)))
+
+			if (folder is not null && File.Exists(Path.Combine(folder, path)))
 			{
-				text = File.ReadAllText(Path.Combine(folder, TargetsPath));
+				return File.ReadAllText(Path.Combine(folder, path));
 			}
 		}
 		catch (Exception exception)
 		{
-			conversions.Add(new MeshConversion { Target = TargetsPath, Mod = mod, Error = exception.Message });
+			conversions.Add(new MeshConversion { Target = path, Mod = mod, Error = exception.Message });
 		}
 
-		if (text is null)
-		{
-			return new Dictionary<string, string>(StringComparer.Ordinal);
-		}
+		return null;
+	}
 
+	/// <summary>The mod's declared morph targets (<see cref="TargetsPath"/>) and new models (<see cref="ModelsPath"/>); errors reported as conversions.</summary>
+	private static (Dictionary<string, string> Targets, Dictionary<string, NewModel> Models) ReadManifests(
+		F2ModPackage? package, string? folder, string mod, List<MeshConversion> conversions)
+	{
 		var errors = new List<string>();
-		Dictionary<string, string> targets = ParseTargets(text, errors);
+		Dictionary<string, string> targets = ReadManifest(package, folder, TargetsPath, mod, conversions) is { } targetText
+			? ParseTargets(targetText, errors)
+			: new Dictionary<string, string>(StringComparer.Ordinal);
 		foreach (string error in errors)
 		{
 			conversions.Add(new MeshConversion { Target = TargetsPath, Mod = mod, Error = error });
 		}
 
-		return targets;
+		errors.Clear();
+		Dictionary<string, NewModel> models = ReadManifest(package, folder, ModelsPath, mod, conversions) is { } modelText
+			? ParseModels(modelText, errors)
+			: new Dictionary<string, NewModel>(StringComparer.Ordinal);
+		foreach (string error in errors)
+		{
+			conversions.Add(new MeshConversion { Target = ModelsPath, Mod = mod, Error = error });
+		}
+
+		return (targets, models);
 	}
 
 	public static List<MeshConversion> Apply(
@@ -206,7 +338,7 @@ public static class ModMeshOverlays
 				{
 					using (pkg)
 					{
-						Dictionary<string, string> templates = ReadTargets(pkg, null, overlay.Name, conversions);
+						(Dictionary<string, string> templates, Dictionary<string, NewModel> models) = ReadManifests(pkg, null, overlay.Name, conversions);
 						foreach (F2ModEntry entry in pkg.Entries)
 						{
 							string? suffix = null;
@@ -246,7 +378,7 @@ public static class ModMeshOverlays
 							string target = ModLoadOrder.Normalize(relative);
 							target = target[..^(suffix.Length - ".mdl".Length)];
 
-							ProcessMesh(mounted, conversions, overlay.Name, target, gltf, templates);
+							ProcessMesh(mounted, conversions, overlay.Name, target, gltf, templates, models);
 						}
 					}
 				}
@@ -258,7 +390,7 @@ public static class ModMeshOverlays
 				continue;
 			}
 
-			Dictionary<string, string> folderTemplates = ReadTargets(null, overlay.AssetRoot, overlay.Name, conversions);
+			(Dictionary<string, string> folderTemplates, Dictionary<string, NewModel> folderModels) = ReadManifests(null, overlay.AssetRoot, overlay.Name, conversions);
 			foreach (string file in ModManifest.EnumerateAssets(overlay.AssetRoot))
 			{
 				string? suffix = null;
@@ -300,7 +432,7 @@ public static class ModMeshOverlays
 				string target = ModLoadOrder.Normalize(normRel);
 				target = target[..^(suffix.Length - ".mdl".Length)];
 
-				ProcessMesh(mounted, conversions, overlay.Name, target, gltf, folderTemplates);
+				ProcessMesh(mounted, conversions, overlay.Name, target, gltf, folderTemplates, folderModels);
 			}
 		}
 
@@ -313,9 +445,17 @@ public static class ModMeshOverlays
 		string modName,
 		string target,
 		byte[] gltf,
-		IReadOnlyDictionary<string, string> templates)
+		IReadOnlyDictionary<string, string> templates,
+		IReadOnlyDictionary<string, NewModel> models)
 	{
 		var conversion = new MeshConversion { Target = target, Mod = modName };
+
+		// A new model: a path the game does not ship, built on the shipped model it names.
+		if (models.TryGetValue(target, out NewModel? declared) && !mounted.TryGetFile(target, out _))
+		{
+			ProcessNewModel(mounted, conversions, conversion, declared, gltf);
+			return;
+		}
 
 		// A new morph target: a path the game does not ship, with the part it morphs as its template.
 		if (templates.TryGetValue(target, out string? templatePath) && !mounted.TryGetFile(target, out _))
@@ -341,8 +481,8 @@ public static class ModMeshOverlays
 			{
 				conversion.Error =
 					$"there is no '{target}' to replace — a model mod edits a model the game " +
-					"already has, because the file states far more than its mesh. A new morph target " +
-					$"names the part it morphs in {TargetsPath}.";
+					"already has, because the file states far more than its mesh. A new model names " +
+					$"the shipped model it is templated on in {ModelsPath}, a new morph target the part it morphs in {TargetsPath}.";
 				conversions.Add(conversion);
 				return;
 			}
@@ -373,6 +513,88 @@ public static class ModMeshOverlays
 
 		mounted.AddVirtualFile(
 			target, $"<mesh:{target}>", rebuilt.LongLength, () => rebuilt, modName);
+	}
+
+	/// <summary>The mounted file at <paramref name="path"/> or one of its aliases, with the path it was found at.</summary>
+	private static bool TryShipped(BnkFileSystem mounted, string path, out BnkFile file, out string found)
+	{
+		foreach (string candidate in new[] { path }.Concat(BnkFileSystem.AliasesFor(path)))
+		{
+			if (mounted.TryGetFile(candidate, out file))
+			{
+				found = candidate;
+				return true;
+			}
+		}
+
+		file = default!;
+		found = string.Empty;
+		return false;
+	}
+
+	/// <summary>
+	/// Builds a <see cref="NewModel"/>: the glTF converted against its template, its materials pointed
+	/// at the mod's textures, mounted at its own path with the template's socket file beside it.
+	/// </summary>
+	private static void ProcessNewModel(
+		BnkFileSystem mounted, List<MeshConversion> conversions, MeshConversion conversion, NewModel declared, byte[] gltf)
+	{
+		if (!TryShipped(mounted, declared.Template, out BnkFile template, out string templatePath))
+		{
+			conversion.Error = $"its template '{declared.Template}' ({ModelsPath}) is not a model the game has";
+			conversions.Add(conversion);
+			return;
+		}
+
+		byte[] original;
+		try
+		{
+			original = template.ReadAllBytes();
+		}
+		catch (Exception exception)
+		{
+			conversion.Error = exception.Message;
+			conversions.Add(conversion);
+			return;
+		}
+
+		if (!TryConvert(gltf, original, out byte[] rebuilt, out string writeError, out int vertexCount, out int triangleCount))
+		{
+			conversion.Error = writeError;
+			conversions.Add(conversion);
+			return;
+		}
+
+		if (declared.Materials.Count != 0)
+		{
+			var patches = new Dictionary<int, MdlMaterialTexturePatch>();
+			for (int i = 0; i < declared.Materials.Count; i++)
+			{
+				patches[i] = declared.Materials[i];
+			}
+
+			if (!Engine_MdlWriter.TryRewriteMaterialTextures(rebuilt, patches, out byte[] dressed, out string textureError))
+			{
+				conversion.Error = $"its textures ({ModelsPath}) could not be set: {textureError}";
+				conversions.Add(conversion);
+				return;
+			}
+
+			rebuilt = dressed;
+		}
+
+		conversion.VertexCount = vertexCount;
+		conversion.TriangleCount = triangleCount;
+		conversions.Add(conversion);
+		string target = conversion.Target;
+		mounted.AddVirtualFile(target, $"<mesh:{target}>", rebuilt.LongLength, () => rebuilt, conversion.Mod);
+		if (mounted.TryGetFile(templatePath + SocketSuffix, out BnkFile sockets))
+		{
+			byte[] socketBytes = sockets.ReadAllBytes();
+			mounted.AddVirtualFile(target + SocketSuffix, $"<sockets:{templatePath}{SocketSuffix}>", socketBytes.LongLength, () => socketBytes, conversion.Mod);
+		}
+
+		Refii.Level.Engine_PropModelIndex.RegisterPath(target);
 	}
 
 	private static void ProcessTarget(

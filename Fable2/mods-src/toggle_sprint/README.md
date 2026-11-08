@@ -18,14 +18,12 @@ is a `game_action` verdict (`on_verdict`) that cancels one of the two on each pr
 | while not sprinting | passes: the sprint starts | cancelled: the game keeps the sprint |
 | while sprinting | cancelled: already sprinting | passes: the sprint ends |
 
-The flag is the game's own, read inside the verdict with `host.read("sprinting", [p])`: the verdict
-runs inside the game's own action, on the game's thread, so it reads the flag as it stands when the
-press arrives — as a Lua handler reads `Refii.sprinting(p)`. So when the game ends a sprint by itself
+The game's flag cannot tell the verdict which press this is: it already reads true when a first
+press's SET arrives. The hero's movement handler runs before the action receiver the verdict hooks,
+and it starts the sprint, setting the flag, as it takes the SET. So the verdict keeps which press this
+is itself, and the flag is asked each tick (`query sprinting`): when the game ends a sprint by itself
 the next press starts a new one rather than being taken for the second press. The latch clears on
 every level load.
-
-The flag already reads true when a first press's SET arrives, so the verdict keeps which press this
-is itself, and the flag is asked each tick instead (`query sprinting`).
 
 The toggle keeps the game's own SET and RELEASE rather than holding A with `press(p, "A", 1)`: a
 pressed A is OR'd into the player's pad, so while it was held the player's own presses of A would

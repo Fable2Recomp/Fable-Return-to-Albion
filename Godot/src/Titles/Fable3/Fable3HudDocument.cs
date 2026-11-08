@@ -682,6 +682,19 @@ public sealed class Fable3HudDocument
 	/// <summary>Per box, the places last stacked, so the report is built only on a change.</summary>
 	private readonly Dictionary<string, (float X, float Y)[]> _lastPlaced = new(System.StringComparer.Ordinal);
 
+	/// <summary>Per box, the line vector its last fit laid (a new statement is a new fit).</summary>
+	private readonly Dictionary<string, object> _fitLines = new(System.StringComparer.Ordinal);
+
+	/// <summary>Per box, its X meter as its fits see it (Fable3TextBoxes.MeterLag).</summary>
+	private readonly Dictionary<string, Fable3TextBoxes.MeterLag> _meterLags = new(System.StringComparer.Ordinal);
+
+	/// <summary>Per box, the position tracks its X meter's slide plays on the chain, read once.</summary>
+	private readonly Dictionary<string, Dictionary<int, (BgfAnimation? X, BgfAnimation? Y)>> _meterTracks = new(System.StringComparer.Ordinal);
+
+	/// <summary>The box being laid: its X meter's lag and tracks, read by <see cref="StackStated"/>.</summary>
+	private Fable3TextBoxes.MeterLag? _layingLag;
+	private Dictionary<int, (BgfAnimation? X, BgfAnimation? Y)>? _layingTracks;
+
 	/// <summary>
 	/// THE LAID-OUT BOXES' LINES ARE GODOT'S (Fable3TextBoxes: the corner counters, the subtitles).
 	/// Each box's lines are the vector its caller last stated (`@Hud.Lines`, sub_82920BC8), in
@@ -702,6 +715,10 @@ public sealed class Fable3HudDocument
 		}
 
 		Engine_HudValues values = View.Values;
+
+		// A subtitle fit refits the corner without a meter of its own (sub_825E7BA0).
+		bool subtitlesFit = Fable3HudRegistry.BoxLines(Refii.Core.Engine_GameHash.Fnv1(Fable3TextBoxes.Subtitles.Name)) is { } said &&
+			!(_fitLines.TryGetValue(Fable3TextBoxes.Subtitles.Name, out object? subtitlesLaid) && ReferenceEquals(subtitlesLaid, said));
 		foreach (Engine_UiTextBoxStack.Box box in Fable3TextBoxes.Stacked)
 		{
 			if (Fable3HudRegistry.BoxLines(Refii.Core.Engine_GameHash.Fnv1(box.Name)) is not { Count: > 0 } lines)
@@ -709,6 +726,7 @@ public sealed class Fable3HudDocument
 				continue;
 			}
 
+			bool fit = !(_fitLines.TryGetValue(box.Name, out object? laid) && ReferenceEquals(laid, lines));
 			_measured.Clear();
 			foreach ((uint hash, string stated) in lines)
 			{
@@ -747,7 +765,51 @@ public sealed class Fable3HudDocument
 				_measured.Add(measured);
 			}
 
-			if (Engine_UiTextBoxStack.Place(_screen.Document, box, _measured, WidescreenStated) is not { } placed)
+			// THE FIT'S METERS ARE GODOT'S: stated from the size Godot fitted, as sub_82921110 states the
+			// guest's (0x829205C8), so the box art matches the lines; the lines stand on the X meter's
+			// position tracks one fit late (Fable3TextBoxes.MeterLag).
+			(float fitWidth, float fitHeight) = Engine_UiTextBoxStack.Fitted(box, _measured);
+			(string meterX, string meterY) = Fable3TextBoxes.MetersOf(box);
+			if (!_meterLags.TryGetValue(box.Name, out Fable3TextBoxes.MeterLag? lag))
+			{
+				_meterLags[box.Name] = lag = new Fable3TextBoxes.MeterLag();
+			}
+
+			if (!_meterTracks.TryGetValue(box.Name, out Dictionary<int, (BgfAnimation? X, BgfAnimation? Y)>? tracks))
+			{
+				IReadOnlyList<int> meters = _bindings.Elements(Engine_UiBindings.Kind.Meter, meterX);
+				_meterTracks[box.Name] = tracks = meters.Count > 0
+					? Fable3TextBoxes.PositionTracks(_screen.Document, meters[0])
+					: new Dictionary<int, (BgfAnimation? X, BgfAnimation? Y)>();
+			}
+
+			if (fit)
+			{
+				_fitLines[box.Name] = lines;
+				float? percentX = Fable3TextBoxes.MeterPercent(box.Width, fitWidth);
+				float? percentY = Fable3TextBoxes.MeterPercent(box.Height, fitHeight);
+				lag.Laid(percentX);
+				if (percentX is { } x)
+				{
+					values.OverrideMeter(Engine_HudValues.Handle.For(meterX), x);
+				}
+
+				if (percentY is { } y)
+				{
+					values.OverrideMeter(Engine_HudValues.Handle.For(meterY), y);
+				}
+			}
+			else if (subtitlesFit && box.Name == Fable3TextBoxes.Corner.Name)
+			{
+				lag.Refit();
+			}
+
+			_layingLag = lag;
+			_layingTracks = tracks;
+			(float X, float Y)[]? stackedRows = Engine_UiTextBoxStack.Place(_screen.Document, box, _measured, StackStated);
+			_layingLag = null;
+			_layingTracks = null;
+			if (stackedRows is not { } placed)
 			{
 				continue;
 			}
@@ -807,6 +869,27 @@ public sealed class Fable3HudDocument
 		}
 
 		return true;
+	}
+
+	/// <summary>
+	/// What the fit's chain getter reads on a chain element: the widescreen adapters' write, else the
+	/// laid box's X meter track at the meter its fit sees (<see cref="_layingLag"/>), else the file.
+	/// </summary>
+	private (float? X, float? Y) StackStated(int ordinal)
+	{
+		(float? X, float? Y) wide = WidescreenStated(ordinal);
+		if (wide.X is not null || wide.Y is not null)
+		{
+			return wide;
+		}
+
+		if (_layingLag?.AtFit is { } percent && _layingTracks is not null &&
+			_layingTracks.TryGetValue(ordinal, out (BgfAnimation? X, BgfAnimation? Y) track))
+		{
+			return (Fable3TextBoxes.At(track.X, percent), Fable3TextBoxes.At(track.Y, percent));
+		}
+
+		return (null, null);
 	}
 
 	/// <summary>The widescreen adapters' position writes, per moved ordinal, as the fit's chain getter reads them.</summary>

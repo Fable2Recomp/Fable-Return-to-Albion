@@ -315,7 +315,7 @@ func _process(_delta: float) -> void:
 		host.touch_area("minimap.size", wanted)
 ```
 
-The calls, on a Godot script's `host` (Lua has none: an area is a rectangle of a script's own drawing):
+The calls, on a Godot script's `host` (Lua asks `touch_mode` and `touch_stick` through `Refii.ask_host`; an area is a rectangle of a script's own drawing, so `touch_area` is Godot's alone). The modding guide carries the same tables ([On a touchscreen](../Godot/docs/modding/settings-and-input.md#on-a-touchscreen)):
 
 | Call | Meaning |
 |---|---|

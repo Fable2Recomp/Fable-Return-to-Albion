@@ -68,15 +68,48 @@ void StoreRefiiHostStreamRecord(
   RefiiHostStreamRecords()[stream_guest] = std::move(record);
 }
 
+namespace {
+// FNV-1a over 64-bit words with a rotate, then the tail bytes.
+uint64_t HostStreamDigest(const std::vector<uint8_t>& bytes) {
+  constexpr uint64_t kPrime = 0x100000001B3ull;
+  uint64_t hash = 0xCBF29CE484222325ull ^ bytes.size();
+  size_t at = 0;
+  for (; at + sizeof(uint64_t) <= bytes.size(); at += sizeof(uint64_t)) {
+    uint64_t word;
+    std::memcpy(&word, bytes.data() + at, sizeof(word));
+    hash ^= word;
+    hash = ((hash << 31) | (hash >> 33)) * kPrime;
+  }
+  for (; at < bytes.size(); ++at) {
+    hash = (hash ^ bytes[at]) * kPrime;
+  }
+  return hash ^ (hash >> 29);
+}
+}  // namespace
+
 bool LoadRefiiHostStreamBytes(RefiiHostStreamRecord& record) {
   if (record.bytes.size() == record.size) {
     return true;
   }
-  return ReadHostAsset(record.host_key, record.bytes) &&
-         record.bytes.size() == record.size;
+  if (!ReadHostAsset(record.host_key, record.bytes) || record.bytes.size() != record.size) {
+    std::vector<uint8_t>().swap(record.bytes);
+    return false;
+  }
+  if (record.released && HostStreamDigest(record.bytes) != record.released_digest) {
+    REXLOG_ERROR("Refii Godot stream re-fetch refused: '{}' now serves different bytes of the "
+                 "same size ({}), so the open stream ends here",
+                 record.host_key, record.size);
+    std::vector<uint8_t>().swap(record.bytes);
+    return false;
+  }
+  return true;
 }
 
 void ReleaseRefiiHostStreamBytes(RefiiHostStreamRecord& record) {
+  if (!record.released) {
+    record.released_digest = HostStreamDigest(record.bytes);
+    record.released = true;
+  }
   std::vector<uint8_t>().swap(record.bytes);
 }
 

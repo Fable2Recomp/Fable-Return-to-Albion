@@ -10,8 +10,13 @@ extends Node
 ##   SET otherwise             a fresh press: passes, and the game starts the sprint;
 ##   any other RELEASE         cancelled: the game keeps the sprint after the button comes up.
 ## A sprint is kept from the RELEASE cancelled until one ends it. The game's flag cannot say which press
-## this is: it already reads true when a first press's SET arrives. So it is asked each tick (query
-## sprinting) instead, and a sprint the game ended itself makes the next press a fresh one.
+## this is: it already reads true when a first press's SET reaches the verdict. The hero's handlers run
+## highest priority first (comparator sub_8244B608, vf2 > at 0x8244b65c): CInputProcessCharacterMovement
+## (vf2 0x8286b838 li r3,7) before CPlayerActionReceiver (vf2 0x828fd4a0 li r3,0), whose entry the verdict
+## hooks. Movement's case 0x42 (0x826e7668) performs CAbilitySprintSet (0x826e7810), whose Start
+## sub_8297AF50 sets the flag (bl sub_8284A8C0 r4=1 at 0x8297b098; disc 0x829aa6b0) — and ProcessAction
+## has no case 66 at all. So it is asked each tick (query sprinting) instead, and a sprint the game ended
+## itself makes the next press a fresh one.
 ##
 ## STANDING STILL. After stop_after seconds with the hero's own velocity (query velocity) under
 ## STILL_SPEED, end_sprint(p) runs the release's own end: while the flag is set, the flag cleared and

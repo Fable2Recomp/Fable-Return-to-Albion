@@ -142,7 +142,7 @@ public sealed partial class Engine_UiSpellAssignSet
 			return;
 		}
 
-		_spells = Engine_UiSource.Current.GetSpellAssign();
+		_spells = Fable2UiSource.Active.GetSpellAssign();
 		PublishForTouch();
 		TrackAssigned();
 
@@ -226,7 +226,7 @@ public sealed partial class Engine_UiSpellAssignSet
 				// itself (the pump feeds it the stick every held frame); this copy follows them.
 				int player = _spells.WheelOpenPlayerTwo && !_spells.WheelOpen ? 2 : 1;
 				_wheel.Player = player;
-				_wheel.FollowGuest(Engine_UiSource.Current.GetSpellWheel(player));
+				_wheel.FollowGuest(Fable2UiSource.Active.GetSpellWheel(player));
 				_wheel.SetLive(_spells);
 
 				// In its owner's half while split. The widget's own node is untransformed (its
@@ -306,7 +306,7 @@ public sealed partial class Engine_UiSpellAssignSet
 			element.Visible = false;
 		}
 
-		Engine_UiModel.SpellWheelState state = Engine_UiSource.Current.GetSpellBlade();
+		Engine_UiModel.SpellWheelState state = Fable2UiSource.Active.GetSpellBlade();
 		if (state.Known && !_bladeWasKnown)
 		{
 			_bladeOpenedWills = OpenedWills();
@@ -421,7 +421,7 @@ public sealed partial class Engine_UiSpellAssignSet
 			}
 		}
 
-		int row = Engine_UiSource.Current.GetSpellWheel(player).Row;
+		int row = Fable2UiSource.Active.GetSpellWheel(player).Row;
 		for (int n = 1; n <= 5; ++n)
 		{
 			if (Engine_UiTheme.FindByName(wheel, $"Spell{n}") is not Node3D slot ||
@@ -446,7 +446,7 @@ public sealed partial class Engine_UiSpellAssignSet
 	public void WheelSecondary(Engine_UiSpellAssign.SecondaryAction action)
 	{
 		int player = _spells.WheelOpenPlayerTwo && !_spells.WheelOpen ? 2 : 1;
-		Engine_UiModel.SpellWheelState state = Engine_UiSource.Current.GetSpellWheel(player);
+		Engine_UiModel.SpellWheelState state = Fable2UiSource.Active.GetSpellWheel(player);
 		if (action == Engine_UiSpellAssign.SecondaryAction.Remove)
 		{
 			if (state.Known)
@@ -635,7 +635,7 @@ public sealed partial class Engine_UiSpellAssignSet
 		{
 			// The mods' picks on the blade, for the book's player: X picks the will under the
 			// carousel's centre into the active pick, Y clears the row's active pick.
-			Engine_UiModel.SpellWheelState state = Engine_UiSource.Current.GetSpellBlade();
+			Engine_UiModel.SpellWheelState state = Fable2UiSource.Active.GetSpellBlade();
 			int bookPlayer = Engine_UiModMenus.MenuPlayer;
 			if (state.Known && action == Engine_UiSpellAssign.SecondaryAction.Remove)
 			{

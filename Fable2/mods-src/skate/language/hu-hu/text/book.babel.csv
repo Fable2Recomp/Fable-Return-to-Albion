@@ -1,0 +1,45 @@
+key,value
+SKATE_MOD_NAME,Gördeszka
+SKATE_MOD_DESCRIPTION,"Gördeszkázz Albionon át: K-val fellépsz vagy leszállsz, Szóközzel ugrasz, bal kattintással virtuóz csapás, jobb kattintással fogás, és gyűjtsd a kombókat."
+SKATE_INPUT_TOGGLE,Gördeszka be- vagy kikapcsolása
+SKATE_INPUT_OLLIE,Ugrás
+SKATE_INPUT_FLIP,Virtuóz csapás
+SKATE_INPUT_GRAB,Fogás
+SKATE_INPUT_NO_LOCK,"Célpont befogása, gördeszkán kikapcsolva"
+SKATE_INPUT_HELP,Gördeszka-irányítás megjelenítése vagy elrejtése
+SKATE_TOUCH_TOGGLE,Deszka
+SKATE_TOUCH_HOP,Ugrás
+SKATE_TOUCH_FLOURISH,Virtuóz
+SKATE_TOUCH_GRAB,Fogás
+SKATE_TOUCH_WHEELIE,Wheelie
+SKATE_TOUCH_GRIND,Grind
+SKATE_TRICK_FLOURISH,Virtuóz csapás
+SKATE_TRICK_BACK_FLOURISH,Hátra virtuóz csapás
+SKATE_TRICK_CHEEKY_SHOVE,Pimasz lökés
+SKATE_TRICK_IMPROBABLE,A Valószínűtlen
+SKATE_TRICK_PIE_GRAB,Pitefogás
+SKATE_TRICK_HEROS_GRIP,Hősi fogás
+SKATE_TRICK_BALVERINES_TAIL,Vérfarkasfarok
+SKATE_TRICK_GARGOYLES_NOSE,Vízköpőorr
+SKATE_TRICK_WHEELIE,Manó-wheelie
+SKATE_TRICK_RAIL_RIDER,Korlátlovas
+SKATE_TRICK_GUILD_GRINDER,Céhes grind
+SKATE_GUILD_GRINDER_CALLOUT,Céhes grind!
+SKATE_CRASH,Bukás!
+SKATE_CLOSE_CALL,Hajszálon múlt
+SKATE_CLOSE_CALL_POINTS,Hajszálon múlt  +%1
+SKATE_COMBO,%1  x  %2
+SKATE_CONTROLS_HINT,Tarts egy irányt egy másik virtuóz csapáshoz vagy fogáshoz
+SKATE_CONTROL_PUSH,"Lökés, fék"
+SKATE_CONTROL_PUSH_KEYS,"W, S"
+SKATE_CONTROL_PUSH_STICK,"Kar fel, le"
+SKATE_CONTROL_STEER,"Kormányzás, pörgés"
+SKATE_CONTROL_STEER_KEYS,"A, D"
+SKATE_CONTROL_STEER_STICK,"Kar balra, jobbra"
+SKATE_CONTROL_HOP,Ugrás
+SKATE_CONTROL_LEFT_CLICK,Bal kattintás
+SKATE_CONTROL_HOLD_RIGHT_CLICK,Tartsd lenyomva a jobb gombot
+SKATE_CONTROL_HOLD,Tartsd lenyomva: %1
+SKATE_CONTROL_NEAR_LEDGE,"%1, perem közelében"
+SKATE_CONTROL_STEP_OFF,Leszállás
+SKATE_CONTROL_HIDE,Elrejtés

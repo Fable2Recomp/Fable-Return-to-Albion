@@ -16,7 +16,7 @@ public sealed class AndroidInstallJobTests
     [TestCase]
     public async Task WorkerProgressCompletionAndFailureReleaseService()
     {
-        string user = Path.Combine(Path.GetTempPath(), "refii-job-" + Guid.NewGuid().ToString("N"));
+        string user = Path.Combine(Refii.Tests.TestTemp.Root, "refii-job-" + Guid.NewGuid().ToString("N"));
         try
         {
             var job = new AndroidInstallJob(user);
@@ -45,7 +45,7 @@ public sealed class AndroidInstallJobTests
     [TestCase]
     public async Task ServiceAndLauncherCancellationFinishBeforeWorkerStarts()
     {
-        string user = Path.Combine(Path.GetTempPath(), "refii-job-" + Guid.NewGuid().ToString("N"));
+        string user = Path.Combine(Refii.Tests.TestTemp.Root, "refii-job-" + Guid.NewGuid().ToString("N"));
         try
         {
             foreach (bool notification in new[] { true, false })

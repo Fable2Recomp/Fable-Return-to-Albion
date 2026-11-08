@@ -21,3 +21,4 @@ FIRST_PERSON_SETTING_THIRD_PERSON_AIM_DESCRIPTION,Aiming a gun or crossbow uses 
 FIRST_PERSON_SETTING_SCENES,First person in conversations
 FIRST_PERSON_SETTING_SCENES_DESCRIPTION,"Stay in first person when talking and in interactive scenes, facing the speaker. Full cutscenes keep their own camera."
 FIRST_PERSON_INPUT_TOGGLE,First / third person
+FIRST_PERSON_TOUCH_TOGGLE,1st Person

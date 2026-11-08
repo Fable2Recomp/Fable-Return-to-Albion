@@ -53,17 +53,23 @@
 #include <cstdio>
 #include <cstring>
 
+#include "entity_walk.h"
 #include "host_abi.h"
 #include "host_core.h"
 #include "presented_world.h"
 
 namespace {
 
-using refii::hostcore::GuestByteAt;
-using refii::hostcore::GuestWordAt;
-using refii::hostcore::SafeKernelMemory;
+namespace walk = refii::fable3::walk;
 
-constexpr uint32_t kMaxListed = 8192u;
+using refii::hostcore::GuestByteAt;
+using refii::hostcore::GuestReader;
+using refii::hostcore::GuestWordAt;
+using refii::hostcore::ReadGuestWords;
+using refii::hostcore::SafeKernelMemory;
+using walk::kMaxListed;
+using walk::kOne;
+
 constexpr uint32_t kMorphComponent = 20u;
 constexpr uint32_t kEyesComponent = 7u;
 constexpr uint32_t kMorphPartBytes = 128u;
@@ -74,18 +80,11 @@ constexpr uint32_t kMeshRecordBytes = 64u;
 constexpr uint32_t kGenderComponent = 13u;
 constexpr uint32_t kWornComponent = 18u;
 constexpr uint32_t kWornBytes = 0x60u;
-constexpr uint32_t kAttachmentComponent = 26u;
 constexpr uint32_t kAttachmentName = 64u;
 constexpr uint32_t kBuildingComponent = 79u;
 constexpr uint32_t kCollectableComponent = 84u;
 constexpr uint32_t kBoneMorphBytes = 32u;
 constexpr uint32_t kBoneMorphWords = 7u;
-
-/// Words per entity record, the shell's layout (HostBridge.EntityStride): 12 stated, the previous
-/// transform and its interpolation flag, the highlight, and eight of appearance.
-constexpr uint32_t kEntityStride = 29u;
-constexpr uint32_t kOne = 0x3F800000u;
-constexpr uint32_t kAppearanceDrawable = 1u;
 
 bool Plausible(uint32_t address) { return address >= 0x10000u && address < 0xC0000000u; }
 
@@ -136,31 +135,6 @@ float Float(const uint8_t* base, uint32_t address) {
     float value;
     std::memcpy(&value, &bits, sizeof(value));
     return value;
-}
-
-/// An LHString field (it holds a Rep: +0 characters, +4 length) into a NUL-terminated buffer,
-/// truncated to fit unless `whole`; false when it is empty, does not fit whole, or is not printable.
-bool ReadRep(const uint8_t* base, uint32_t field, char* out, uint32_t capacity, bool whole) {
-    std::memset(out, 0, capacity);
-    const uint32_t rep = Word(base, field);
-    const uint32_t chars = Word(base, rep);
-    const uint32_t length = Plausible(rep) ? GuestWordAt(base, rep + 4u) : 0u;
-    if (!Plausible(chars) || length == 0u || length > 1024u || (whole && length >= capacity)) {
-        return false;
-    }
-
-    const uint32_t copied = length < capacity ? length : capacity - 1u;
-    for (uint32_t i = 0; i < copied; ++i) {
-        const uint8_t c = GuestByteAt(base, chars + i);
-        if (c < 0x20u || c > 0x7Eu) {
-            std::memset(out, 0, capacity);
-            return false;
-        }
-
-        out[i] = static_cast<char>(c);
-    }
-
-    return true;
 }
 
 /// Component 5's records [begin, end), checked as a begin <= end <= capacity triple; false when
@@ -215,48 +189,11 @@ uint32_t LayerList(const uint8_t* base, uint32_t list, uint32_t* out, uint32_t c
     return written;
 }
 
-/// The attachment walk: every live entity's component 26 (CECObjectAttachment) list, sentinel at
-/// comp+0xC, nodes {next, prev, record}; the child is **(record+4) and is visited only while live
-/// (child+0x94 & 0x40), as the guest places it. Visits (parent, record, child, ordinal) up to
-/// `max_records`; returns the count visited.
+/// The attachment walk (entity_walk.h) of the world standing now.
 template <typename Visit>
 uint32_t ForEachAttachment(const uint8_t* base, uint32_t max_records, Visit&& visit) {
     const uint32_t em = EntityManager(base);
-    if (em == 0u) {
-        return 0u;
-    }
-
-    uint32_t written = 0u;
-    uint32_t node = Word(base, em + 4u);
-    for (uint32_t walked = 0; Plausible(node) && walked < kMaxListed && written < max_records; ++walked) {
-        const uint32_t entity = GuestWordAt(base, node + 8u);
-        node = GuestWordAt(base, node);
-        if (!Plausible(entity) || !Live(base, entity)) {
-            continue;
-        }
-
-        const uint32_t attachment = Component(base, entity, kAttachmentComponent);
-        const uint32_t sentinel = attachment == 0u ? 0u : Word(base, attachment + 0xCu);
-        if (!Plausible(sentinel)) {
-            continue;
-        }
-
-        uint32_t link = GuestWordAt(base, sentinel);
-        for (uint32_t depth = 0u; depth < 64u && written < max_records && link != sentinel && Plausible(link);
-             ++depth) {
-            const uint32_t record = GuestWordAt(base, link + 8u);
-            link = GuestWordAt(base, link);
-            const uint32_t child = Plausible(record) ? Word(base, Word(base, record + 4u)) : 0u;
-            if (!Plausible(child) || !Live(base, child)) {
-                continue;
-            }
-
-            visit(entity, record, child, written);
-            ++written;
-        }
-    }
-
-    return written;
+    return em == 0u ? 0u : walk::ForEachAttachment(GuestReader{base}, em, max_records, visit);
 }
 
 /// The hero in slot `slot` (0x80 player one, 0x88 player two), or 0.
@@ -294,18 +231,22 @@ bool Rig(const uint8_t* base, uint32_t entity, uint32_t* out_skeleton, uint32_t*
 }
 
 /// `count` 48-byte bones at `from` into 12 floats each, and the skeleton's parents.
+/// The parent of each of `count` bones: the second word of each {name hash, parent} record.
+void CopyParents(const uint8_t* base, uint32_t skeleton, uint32_t count, int32_t* out_parents) {
+    static thread_local uint32_t records[kMaxBones * 2u];
+    ReadGuestWords(GuestReader{base}, Word(base, skeleton + 0x38u), records, count * 2u);
+    for (uint32_t bone = 0; bone < count; ++bone) {
+        out_parents[bone] = static_cast<int32_t>(records[(bone * 2u) + 1u]);
+    }
+}
+
 void CopyBones(const uint8_t* base, uint32_t from, uint32_t skeleton, uint32_t count,
                float* out_transforms, int32_t* out_parents) {
-    const uint32_t records = Word(base, skeleton + 0x38u);
-    for (uint32_t bone = 0; bone < count; ++bone) {
-        for (uint32_t lane = 0; lane < 12u; ++lane) {
-            const uint32_t bits = GuestWordAt(base, from + (bone * kBoneBytes) + (lane * 4u));
-            std::memcpy(&out_transforms[(bone * 12u) + lane], &bits, sizeof(bits));
-        }
-
-        if (out_parents != nullptr) {
-            out_parents[bone] = static_cast<int32_t>(GuestWordAt(base, records + (bone * 8u) + 4u));
-        }
+    static thread_local uint32_t bones[kMaxBones * 12u];
+    ReadGuestWords(GuestReader{base}, from, bones, count * (kBoneBytes / 4u));
+    std::memcpy(out_transforms, bones, count * kBoneBytes);
+    if (out_parents != nullptr) {
+        CopyParents(base, skeleton, count, out_parents);
     }
 }
 
@@ -331,312 +272,6 @@ bool AwaitingCopy(const uint8_t* base, uint32_t skeleton, uint32_t count, const 
     return false;
 }
 
-/// THE LIVE PLACEMENT. entity+0x80 is a component-2 (CECPhysics*) object, and its vtable slots
-/// 0x50 / 0x54 answer position / orientation; every class states them one of three ways, read
-/// here as the getter reads them (Fable 3 IDB, each getter decompiled):
-///
-///   direct    `lvx128 v0,r4,r11` off the component: position sub_82333A80 (+0x20) or
-///             sub_821FC010 (+0x40); orientation sub_829B1C18 (+0x30), or sub_825AC090, which
-///             returns the global unk_835587A0 (the light's orientation is shared)
-///   delegate  sub_822061E8 / sub_8221AFF8: the object at +0x20 answers its slot 0x0C / 0x10;
-///             a null object is the origin and the identity (`vspltisw v0,0`, w = flt_82065480)
-///   hybrid    sub_822062B8 / sub_8221E4F0: the body at *(*(+0x20)+0x38) answers slot 0x18 /
-///             0x1C while +0xB4 is clear and the chain holds; else position is the cache at
-///             +0x80 and orientation the identity
-///
-/// The vtables are the ones each registered factory stores LAST (component_ids: CECPhysicsSimple
-/// sub_82541238 ... CECPhysicsSimulationStatic sub_82541800, which overrides the base ctor
-/// sub_827D1BF8's 0x820B1808 with 0x82007DF8 at 0x82541874; the character factories likewise
-/// override sub_82761060's 0x820AD878); a class this table does not name is reported through
-/// `out_unknown_vtables`, and its row keeps the renderable's latch.
-constexpr uint16_t kNoField = 0xFFFFu;
-
-enum class PlacementKind : uint8_t { Direct, Delegate, Hybrid };
-
-struct Placement {
-    uint32_t vtable;
-    PlacementKind kind;
-    uint16_t position;     // Direct: byte offset of the position vector
-    uint16_t orientation;  // Direct: byte offset of the quaternion, kNoField = the global
-};
-
-constexpr Placement kPlacements[] = {
-    {0x82007D20u, PlacementKind::Direct, 0x20u, 0x30u},      // CECPhysicsSimple
-    {0x82007A98u, PlacementKind::Direct, 0x20u, 0x30u},      // CECPhysicsSimpleScaled
-    {0x82007B70u, PlacementKind::Direct, 0x20u, kNoField},   // CECPhysicsSimpleLight
-    {0x820999D8u, PlacementKind::Direct, 0x40u, 0x30u},      // CECPhysicsSimpleNetwork
-    {0x82007DF8u, PlacementKind::Delegate, 0u, 0u},          // CECPhysicsSimulationStatic (sub_82541800)
-    {0x820B1808u, PlacementKind::Delegate, 0u, 0u},          // the Static base / RopeBridge (sub_827D1BF8)
-    {0x820079C0u, PlacementKind::Delegate, 0u, 0u},          // CECPhysicsSimulationDynamic
-    {0x82007FA8u, PlacementKind::Delegate, 0u, 0u},          // CECPhysicsSimulationKeyframed
-    {0x82007C48u, PlacementKind::Hybrid, 0u, 0u},            // CECPhysicsSimulationCharacterControlled (sub_82541B30)
-    {0x82007ED0u, PlacementKind::Hybrid, 0u, 0u},            // CECPhysicsSimulationCharacterNavigator (sub_82541C38)
-    {0x820AD878u, PlacementKind::Hybrid, 0u, 0u},            // their base (sub_82761060)
-};
-
-/// The objects a delegate or hybrid placement asks, by vtable: {position, orientation} offsets
-/// of the vectors their getters return, or `hop` when the getter asks the body at +0x38 instead.
-///   0x82006FF8  slot 0x0C sub_82BFA8F0 `li r11,0x50`, slot 0x10 sub_827375A8 `li r11,0x60`
-///   0x820070F8  slot 0x0C sub_821FC010 `li r11,0x40`, slot 0x10 sub_82BFA8F0 `li r11,0x50`
-///   0x82007270  the 80-byte proxy sub_829A9908 / sub_829AA468 give a Dynamic or Keyframed
-///               placement (`stw` to +0x20 through sub_827D2C78 at 0x829AA4E4): slot 0x0C
-///               sub_82206180 and 0x10 sub_821FAB28 ask `*(+0x38)` slot 0x18 / 0x1C, a null body
-///               answering the origin / identity
-///   bodies (slots 0x18 / 0x1C, asked by a hybrid or by that proxy):
-///   0x82005C50  sub_82782B18 `li r11,0x100`, sub_82782B28 `li r11,0x110` — on the body itself
-///   0x82006070  0x82206130 / 0x821FAAD0: `lwz r11,0x38(r4)`, then 16 bytes at +0x120 / `lvx128`
-///               at +0x160 of that inner object; null inner -> origin / identity (its slots
-///               0x0C / 0x10, sub_8227D818 / sub_8227D920, are the SETTERS: `stvx128 v1` then
-///               sub_82F3A5A8(inner, &v))
-///   0x82005DA0  0x82206330: `lwz r11,0x50(r4)`, position at +0xD0 of that inner object;
-///               sub_8221E4A8: the quaternion of the 3x3 at inner+0xA0 (three 16-byte columns),
-///               through sub_82EF2D88 -> sub_82EF2BA8 (trace > 0: w = sqrt(tr+1)/2, z =
-///               (m[1]-m[4])/(4w) ...; else the largest-diagonal branch) — the inner object is a
-///               Havok transform, columns then translation
-struct PlacementTarget {
-    uint32_t vtable;
-    uint16_t inner;        // offset of the object the vectors are read from; 0 = this object
-    uint16_t position;
-    uint16_t orientation;  // a quaternion, or with `matrix` the first of three 16-byte columns
-    bool hop;              // the getters ask *(+0x38) its slots 0x18 / 0x1C instead (a body)
-    bool matrix;
-};
-
-constexpr PlacementTarget kDelegateTargets[] = {
-    {0x82006FF8u, 0u, 0x50u, 0x60u, false, false},
-    {0x820070F8u, 0u, 0x40u, 0x50u, false, false},
-    {0x82007270u, 0u, 0u, 0u, true, false},
-};
-
-constexpr PlacementTarget kBodyTargets[] = {
-    {0x82005C50u, 0u, 0x100u, 0x110u, false, false},
-    {0x82006070u, 0x38u, 0x120u, 0x160u, false, false},
-    {0x82005DA0u, 0x50u, 0xD0u, 0xA0u, false, true},
-};
-
-constexpr uint32_t kSharedLightOrientation = 0x835587A0u;
-constexpr uint32_t kIdentity[4] = {0u, 0u, 0u, kOne};
-
-void ReadLanes(const uint8_t* base, uint32_t at, uint32_t* out, uint32_t lanes) {
-    for (uint32_t lane = 0; lane < lanes; ++lane) {
-        out[lane] = GuestWordAt(base, at + (lane * 4u));
-    }
-}
-
-/// A rotation quaternion is unit by definition; a torn read of one is not. True when the four
-/// lanes at `at` are finite and unit, with them copied to `out`.
-bool UnitQuaternionAt(const uint8_t* base, uint32_t at, uint32_t* out) {
-    float q[4];
-    float length = 0.0f;
-    for (uint32_t lane = 0; lane < 4u; ++lane) {
-        q[lane] = Float(base, at + (lane * 4u));
-        if (!std::isfinite(q[lane])) {
-            return false;
-        }
-        length += q[lane] * q[lane];
-    }
-
-    if (!(length > 0.98f && length < 1.02f)) {
-        return false;
-    }
-
-    ReadLanes(base, at, out, 4u);
-    return true;
-}
-
-template <size_t N>
-const PlacementTarget* FindTarget(const PlacementTarget (&targets)[N], uint32_t vtable) {
-    for (const PlacementTarget& target : targets) {
-        if (target.vtable == vtable) {
-            return &target;
-        }
-    }
-    return nullptr;
-}
-
-/// sub_82EF2BA8: the quaternion of a rotation stored as three 16-byte columns at `at`
-/// (element (row r, column c) = word 4c + r). False when the columns are not finite.
-bool QuaternionOfColumns(const uint8_t* base, uint32_t at, uint32_t* out) {
-    float m[12];
-    for (uint32_t i = 0; i < 12u; ++i) {
-        m[i] = Float(base, at + (i * 4u));
-        if (!std::isfinite(m[i])) {
-            return false;
-        }
-    }
-
-    float q[4];
-    const float trace = m[0] + m[5] + m[10];
-    if (trace > 0.0f) {
-        const float s = std::sqrt(trace + 1.0f);
-        const float f = 0.5f / s;
-        q[3] = s * 0.5f;
-        q[0] = (m[6] - m[9]) * f;
-        q[1] = (m[8] - m[2]) * f;
-        q[2] = (m[1] - m[4]) * f;
-    } else {
-        uint32_t i = m[5] > m[0] ? 1u : 0u;
-        if (m[10] > m[5u * i]) i = 2u;
-        const uint32_t j = (i + 1u) % 3u;
-        const uint32_t k = (i + 2u) % 3u;
-        const float s = std::sqrt((m[5u * i] - (m[5u * j] + m[5u * k])) + 1.0f);
-        if (!(s > 0.0f)) {
-            return false;
-        }
-        const float f = 0.5f / s;
-        q[i] = s * 0.5f;
-        q[j] = (m[(4u * i) + j] + m[(4u * j) + i]) * f;
-        q[k] = (m[(4u * i) + k] + m[(4u * k) + i]) * f;
-        q[3] = (m[(4u * j) + k] - m[(4u * k) + j]) * f;
-    }
-
-    for (uint32_t lane = 0; lane < 4u; ++lane) {
-        std::memcpy(&out[lane], &q[lane], sizeof(float));
-    }
-    return true;
-}
-
-/// The vectors a non-hop target states: through its inner object when it has one (a null inner
-/// is the origin and the identity, as the getters answer), a quaternion or a column matrix.
-bool ReadTarget(const uint8_t* base, uint32_t object, const PlacementTarget& target, uint32_t* out_position,
-                uint32_t* out_orientation) {
-    uint32_t from = object;
-    if (target.inner != 0u) {
-        from = Word(base, object + target.inner);
-        if (from == 0u) {
-            std::memset(out_position, 0, 3u * sizeof(uint32_t));
-            std::memcpy(out_orientation, kIdentity, sizeof(kIdentity));
-            return true;
-        }
-        if (!Plausible(from)) {
-            return false;
-        }
-    }
-
-    ReadLanes(base, from + target.position, out_position, 3u);
-    return target.matrix ? QuaternionOfColumns(base, from + target.orientation, out_orientation)
-                         : UnitQuaternionAt(base, from + target.orientation, out_orientation);
-}
-
-/// A body at `body` (the object a hop proxy or a hybrid keeps at +0x38), by its vtable; false
-/// with `*out_vtable` naming it when it is not known.
-bool ReadBody(const uint8_t* base, uint32_t body, uint32_t* out_position, uint32_t* out_orientation,
-              uint32_t* out_vtable) {
-    const uint32_t body_vtable = Plausible(body) ? GuestWordAt(base, body) : 0u;
-    const PlacementTarget* target = FindTarget(kBodyTargets, body_vtable);
-    if (target == nullptr) {
-        *out_vtable = body_vtable;
-        return false;
-    }
-
-    return ReadTarget(base, body, *target, out_position, out_orientation);
-}
-
-/// The placement's live transform, as its getters state it. `out_position` takes three lanes,
-/// `out_orientation` four. False when the placement, or the object it defers to, is a class
-/// this file does not know; `*out_vtable` then names it (0 when there is no placement at all).
-bool LivePlacement(const uint8_t* base, uint32_t entity, uint32_t* out_position, uint32_t* out_orientation,
-                   uint32_t* out_vtable) {
-    *out_vtable = 0u;
-    const uint32_t placement = Word(base, entity + 0x80u);
-    if (!Plausible(placement)) {
-        return false;
-    }
-
-    const uint32_t vtable = GuestWordAt(base, placement);
-    *out_vtable = vtable;
-    const Placement* layout = nullptr;
-    for (const Placement& candidate : kPlacements) {
-        if (candidate.vtable == vtable) {
-            layout = &candidate;
-            break;
-        }
-    }
-    if (layout == nullptr) {
-        return false;
-    }
-
-    switch (layout->kind) {
-        case PlacementKind::Direct:
-            ReadLanes(base, placement + layout->position, out_position, 3u);
-            if (layout->orientation == kNoField) {
-                if (!UnitQuaternionAt(base, kSharedLightOrientation, out_orientation)) {
-                    std::memcpy(out_orientation, kIdentity, sizeof(kIdentity));
-                }
-            } else if (!UnitQuaternionAt(base, placement + layout->orientation, out_orientation)) {
-                return false;
-            }
-            return true;
-
-        case PlacementKind::Delegate: {
-            const uint32_t object = Word(base, placement + 0x20u);
-            if (object == 0u) {
-                std::memset(out_position, 0, 3u * sizeof(uint32_t));
-                std::memcpy(out_orientation, kIdentity, sizeof(kIdentity));
-                return true;
-            }
-
-            const uint32_t object_vtable = Plausible(object) ? GuestWordAt(base, object) : 0u;
-            const PlacementTarget* target = FindTarget(kDelegateTargets, object_vtable);
-            if (target == nullptr) {
-                *out_vtable = object_vtable;
-                return false;
-            }
-
-            if (!target->hop) {
-                return ReadTarget(base, object, *target, out_position, out_orientation);
-            }
-
-            const uint32_t body = Word(base, object + 0x38u);
-            if (body == 0u) {
-                std::memset(out_position, 0, 3u * sizeof(uint32_t));
-                std::memcpy(out_orientation, kIdentity, sizeof(kIdentity));
-                return true;
-            }
-
-            return ReadBody(base, body, out_position, out_orientation, out_vtable);
-        }
-
-        case PlacementKind::Hybrid: {
-            const uint32_t object = Word(base, placement + 0x20u);
-            const uint32_t body = Plausible(object) ? Word(base, object + 0x38u) : 0u;
-            if (body == 0u) {
-                ReadLanes(base, placement + 0x80u, out_position, 3u);
-                std::memcpy(out_orientation, kIdentity, sizeof(kIdentity));
-                return true;
-            }
-
-            if (!ReadBody(base, body, out_position, out_orientation, out_vtable)) {
-                return false;
-            }
-
-            // sub_822062B8: +0xB4 set takes the cached position; the orientation getter has no
-            // such gate.
-            if (GuestByteAt(base, placement + 0xB4u) != 0u) {
-                ReadLanes(base, placement + 0x80u, out_position, 3u);
-            }
-            return true;
-        }
-    }
-
-    return false;
-}
-
-/// The renderable's targeting highlight as the shell's RGBA word, lanes {B, G, R, A} as Fable 2's
-/// `sub_82572C18` packs them (HostBridge.GuestEntity.HighlightColour): the float colour at +0xD0
-/// quantised, alpha 255; a black colour is the guest's off, {0,0,0,255}.
-uint32_t HighlightWord(const uint8_t* base, uint32_t renderable) {
-    uint32_t bytes[3];
-    bool lit = false;
-    for (uint32_t lane = 0; lane < 3u; ++lane) {
-        const float value = Float(base, renderable + 0xD0u + (lane * 4u));
-        const float clamped = !(value > 0.0f) ? 0.0f : (value > 1.0f ? 1.0f : value);
-        bytes[lane] = static_cast<uint32_t>(clamped * 255.0f + 0.5f);
-        lit = lit || bytes[lane] != 0u;
-    }
-
-    return lit ? (bytes[2] << 24) | (bytes[1] << 16) | (bytes[0] << 8) | 0xFFu : 0x000000FFu;
-}
 
 }  // namespace
 
@@ -683,65 +318,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
         }
     };
 
-    uint32_t written = 0u;
-    uint32_t node = Word(base, em + 4u);
-    for (uint32_t walked = 0; Plausible(node) && walked < kMaxListed && written < max_entities; ++walked) {
-        const uint32_t entity = GuestWordAt(base, node + 8u);
-        node = GuestWordAt(base, node);
-        if (!Plausible(entity) || !Live(base, entity)) {
-            continue;
-        }
-
-        const uint32_t renderable = Component(base, entity, 3u);
-        if (renderable == 0u) {
-            continue;
-        }
-
-        uint32_t model = 0u;
-        for (uint32_t id : {6u, 4u}) {
-            const uint32_t mesh = Component(base, entity, id);
-            if (mesh != 0u && (model = GuestWordAt(base, mesh + 0x18u)) != 0u) {
-                break;
-            }
-        }
-
-        uint32_t* row = out + (written * kEntityStride);
-
-        // The previous transform: the latch the tick's first act took (header, component 3).
-        ReadLanes(base, renderable + 0xA0u, row + 12, 3u);
-        ReadLanes(base, renderable + 0xB0u, row + 15, 4u);
-
-        // The live transform, from the placement as its own getters read it. A class not in the
-        // table, or a torn quaternion, states the latch twice and does not interpolate.
-        uint32_t vtable = 0u;
-        const bool live = LivePlacement(base, entity, row, row + 3, &vtable);
-        if (!live) {
-            std::memcpy(row, row + 12, 7u * sizeof(uint32_t));
-            if (vtable != 0u) {
-                note_unknown(vtable);
-            }
-        }
-
-        row[7] = model;
-        row[8] = entity;
-        row[9] = GuestWordAt(base, entity + 0x18u);
-        row[10] = GuestWordAt(base, entity + 0x1Cu);
-        row[11] = GuestWordAt(base, entity + 0x20u);
-        row[19] = live && GuestByteAt(base, renderable + 0xE9u) != 0u ? 1u : 0u;
-        row[20] = HighlightWord(base, renderable);
-
-        // The appearance as the renderable holds it (header, component 3). Drawable is the draw
-        // gate's own: SetAsDrawable set and +0x114 clear.
-        uint32_t* appearance = row + 21;
-        appearance[0] = GuestWordAt(base, renderable + 0x7Cu);
-        appearance[1] = GuestWordAt(base, renderable + 0x80u);
-        appearance[2] = GuestWordAt(base, renderable + 0x78u);
-        ReadLanes(base, renderable + 0x50u, appearance + 3, 4u);
-        appearance[7] = GuestByteAt(base, renderable + 0xE5u) != 0u && GuestWordAt(base, renderable + 0x114u) == 0u
-                            ? kAppearanceDrawable
-                            : 0u;
-        ++written;
-    }
+    const uint32_t written = walk::WalkEntities(GuestReader{base}, em, out, max_entities, note_unknown);
 
     if (out_unknown != nullptr) *out_unknown = unknown;
     if (out_unknown_vtable_count != nullptr) *out_unknown_vtable_count = unknown_vtable_count;
@@ -777,18 +354,15 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityPose(uint32_t entity, float* ou
             return 0u;
         }
 
-        for (uint32_t at = 0; at < words; ++at) first[at] = GuestWordAt(base, bones + (at * 4u));
-        for (uint32_t at = 0; at < words; ++at) second[at] = GuestWordAt(base, bones + (at * 4u));
+        ReadGuestWords(GuestReader{base}, bones, first, words);
+        ReadGuestWords(GuestReader{base}, bones, second, words);
         coherent = Word(base, holder) == published && std::memcmp(first, second, words * 4u) == 0 &&
                    !AwaitingCopy(base, skeleton, count, first);
     }
 
     std::memcpy(out_transforms, first, words * 4u);
     if (out_parents != nullptr) {
-        const uint32_t records = Word(base, skeleton + 0x38u);
-        for (uint32_t bone = 0; bone < count; ++bone) {
-            out_parents[bone] = static_cast<int32_t>(GuestWordAt(base, records + (bone * 8u) + 4u));
-        }
+        CopyParents(base, skeleton, count, out_parents);
     }
 
     if (out_space != nullptr) *out_space = 2u;
@@ -1129,7 +703,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAttachments(uint32_t* out_words, uint
         words[2] = GuestWordAt(base, record + 0xCu);
         words[3] = GuestWordAt(base, record + 0x90u);
         if (out_names != nullptr) {
-            ReadRep(base, record + 8u, out_names + (at * kAttachmentName), kAttachmentName, false);
+            walk::ReadRep(GuestReader{base}, record + 8u, out_names + (at * kAttachmentName), kAttachmentName, false);
         }
     });
 }
@@ -1147,12 +721,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetAttachmentGrips(uint32_t* out_words, 
     }
 
     return ForEachAttachment(base, max_records, [&](uint32_t, uint32_t record, uint32_t child, uint32_t at) {
-        uint32_t* words = out_words + (at * 18u);
+        uint32_t* words = out_words + (at * walk::kAttachmentGripWords);
         words[0] = child;
         words[1] = GuestWordAt(base, record + 0x90u);
-        for (uint32_t i = 0u; i < 16u; ++i) {
-            words[2u + i] = GuestWordAt(base, record + 0x50u + (i * 4u));
-        }
+        ReadGuestWords(GuestReader{base}, record + 0x50u, words + 2, 16u);
     });
 }
 
@@ -1220,7 +792,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityPartHides(uint32_t entity, char
                 }
 
                 char name[96];
-                if (GuestByteAt(base, node + 17u) == 0u && ReadRep(base, node + 12u, name, sizeof(name), true)) {
+                if (GuestByteAt(base, node + 17u) == 0u && walk::ReadRep(GuestReader{base}, node + 12u, name, sizeof(name), true)) {
                     put(first ? " " : ";", 1u);
                     put(name, static_cast<uint32_t>(std::strlen(name)));
                     first = false;

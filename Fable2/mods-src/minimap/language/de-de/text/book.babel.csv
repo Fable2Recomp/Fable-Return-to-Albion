@@ -1,0 +1,12 @@
+key,value
+MINIMAP_MOD_NAME,Minikarte
+MINIMAP_MOD_DESCRIPTION,"Eine runde Karte der Region oben rechts, Norden oben, mit einem Pfeil für den Helden und Punkten für Quests, den Hund und Gegner. M ändert ihre Größe und blendet sie aus."
+MINIMAP_INPUT_SIZE,Größe der Minikarte
+MINIMAP_SETTING_SHOW,Minikarte anzeigen
+MINIMAP_SETTING_ENEMIES,Gegner anzeigen
+MINIMAP_SETTING_RANGE,Gegner-Reichweite
+MINIMAP_SETTING_RANGE_DESCRIPTION,"Wie weit vom Helden entfernt Gegner angezeigt werden, in Metern."
+MINIMAP_SETTING_OPACITY,Deckkraft
+MINIMAP_SETTING_SIZE,Größe
+MINIMAP_SETTING_SIZE_DESCRIPTION,"Skaliert jede Größe, die M durchschaltet."
+MINIMAP_COMPASS_NORTH,N

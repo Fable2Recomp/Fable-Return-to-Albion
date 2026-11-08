@@ -983,6 +983,7 @@ public partial class RefiiHost : Node
 				break;
 			case LevelUnloadingKind:
 				_play.Unloading();
+				ModScreen.ReleaseFor(this);
 				break;
 			case LevelLoadedKind:
 				_play.Loaded();
@@ -1270,7 +1271,7 @@ public partial class RefiiHost : Node
 		{
 			case ModLuaLane.Ask when ModLuaLane.ParseAsk(payload) is { } ask:
 			{
-				object? answer = HostCall(ask.What, ask.Args);
+				object? answer = HostCall(ask.What, ask.Args, ask.Mod);
 				if (ask.Id > 0 && !PostLua(ModLuaLane.ReplyChunk(ask.Id, answer)))
 				{
 					PostLua(ModLuaLane.ReplyChunk(ask.Id, null));
@@ -1289,6 +1290,7 @@ public partial class RefiiHost : Node
 				_luaWatchesValues = true;
 				break;
 			case ModLuaLane.Hello:
+				ModScreen.ReleaseLua(this);
 				RestateToLua();
 				break;
 			default:
@@ -1301,7 +1303,7 @@ public partial class RefiiHost : Node
 	/// What <c>Refii.ask_host(what, fn, ...)</c> may name (<see cref="ModApi.HostCalls"/>): the host-side
 	/// reads and actions a Lua mod has no synchronous form of, answered as plain values.
 	/// </summary>
-	private object? HostCall(string what, object?[] args)
+	private object? HostCall(string what, object?[] args, string mod)
 	{
 		object? At(int i) => i < args.Length ? args[i] : null;
 		long Player(int i) => At(i) is double d ? (long)d : 0;
@@ -1323,19 +1325,23 @@ public partial class RefiiHost : Node
 			case "hud_overrides": return Plain(hud_overrides(Player(0)));
 			case "input_claimed": return input_claimed(Player(0), Text(1));
 			case "input_claims": return Plain(Variant.From(input_claims(Player(0))));
-			case "inventory_action": return inventory_action(Text(0), Text(1));
-			case "inventory_items": return Plain(Variant.From(inventory_items()));
+			case "input_label": return input_label(Text(0));
+			case "inventory_action": return inventory_action(Player(0), Text(1), Text(2));
+			case "inventory_items": return Plain(Variant.From(inventory_items(Player(0))));
 			case "lights": return Plain(Variant.From(lights()));
 			case "markers": return Plain(Variant.From(markers()));
 			case "meters": return Plain(Variant.From(meters()));
-			case "minimap": return Plain(minimap());
+			case "minimap": return Plain(minimap(Player(0)));
 			case "minimap_point": return Plain(minimap_point(Number(0), Number(1), Number(2)));
 			case "mods": return EnabledMods.ToList();
 			case "own_screen":
-				own_screen(Number(0) != 0f);
+				OwnScreen(Player(0), Number(1) != 0f, mod, fromLua: true);
 				return true;
 			case "presses": return Plain(Variant.From(presses(Player(0))));
 			case "snapshot_time": return snapshot_time(Text(0));
+			case "touch_mode": return touch_mode();
+			case "touch_stick": return Plain(touch_stick());
+			case "move_stick": return Plain(move_stick(Player(0)));
 			case "set_setting":
 				set_setting(Text(0), Number(1));
 				return true;
@@ -1373,6 +1379,10 @@ public partial class RefiiHost : Node
 			}
 			case Variant.Type.Array:
 				return v.AsGodotArray().Select(Plain).ToList();
+			case Variant.Type.PackedStringArray:
+				return v.AsStringArray().Select(text => (object?)text).ToList();
+			case Variant.Type.Object:
+				return null;
 			case Variant.Type.Dictionary:
 			{
 				var map = new SortedDictionary<string, object?>(StringComparer.Ordinal);
@@ -1927,7 +1937,7 @@ public partial class RefiiHost : Node
 		return new Godot.Collections.Dictionary { ["save"] = save, ["player"] = player };
 	}
 
-	/// <summary>The game's live save root (the emulator's user_data_root), else the configured one.</summary>
+	/// <summary>The game's live save profile (the emulator's user_data_root), else the active one.</summary>
 	private static string SaveRoot() =>
 		HostBridge.GetSaveRoot() is { Length: > 0 } live ? live : ModSaveGate.UserDataRoot;
 
@@ -3664,6 +3674,18 @@ public partial class RefiiHost : Node
 	/// <summary>The touch controls' move stick: x right and y up, each -1..1; zero with no thumb on it (or no touchscreen).</summary>
 	public Vector2 touch_stick() => ModInputTouch.Stick();
 
+	/// <summary>
+	/// <paramref name="player"/>'s (1 or 2) move stick as the game is handed it: x right and y up, each -1..1.
+	/// Player 1's folds the keyboard's movement keys, the touch controls' stick and their joypad; player 2's
+	/// is their own joypad (the split the <c>input_action</c> events and <see cref="claim_input"/> use). Zero for a
+	/// player with no pad this frame.
+	/// </summary>
+	public Vector2 move_stick(long player)
+	{
+		(float x, float y) = ModInputSticks.Move((int)Math.Clamp(player, 0, 3), Engine.GetProcessFrames());
+		return new Vector2(x, y);
+	}
+
 	/// <summary>The buttons held for <paramref name="player"/> (1 or 2) by any surface's press, by name.</summary>
 	public Godot.Collections.Array<string> presses(long player)
 	{
@@ -3679,30 +3701,49 @@ public partial class RefiiHost : Node
 		return list;
 	}
 
-	/// <summary>
-	/// The current region's map, as the game's own minimaps plot it: <c>known</c>, <c>proper</c> (it
-	/// has a real map, so the places below are stated), <c>texture</c>, <c>north</c> (radians the image
-	/// turns), <c>half_size</c>, <c>hero</c>, <c>facing</c>, <c>dog</c>, <c>quest</c>, <c>quest_here</c>,
-	/// <c>quests</c>, <c>merchants</c>. Places are element units around the image's centre, Y up.
-	/// </summary>
-	public Godot.Collections.Dictionary minimap() => Refii.Core.Engine_TitleGame.Active.ModMinimap();
+	/// <summary>The player a player argument names: 1 or 2 as given, 0 the player whose menus are open on this machine; 0 for anything else.</summary>
+	private int Named(long player) => player is 1 or 2 ? (int)player : player == 0 ? _menuPlayer : 0;
 
 	/// <summary>
-	/// What this machine's hero carries, one Dictionary per stack in the game's order, as the game's own
-	/// inventory pages show it: <c>definition</c>, <c>count</c>, <c>category</c>, <c>name</c>,
-	/// <c>description</c>, <c>icon</c>, <c>model</c>, <c>value</c>, <c>rating</c>, <c>usable</c>, <c>worn</c>,
-	/// <c>weapon_class</c> (1 melee, 2 ranged, 0 neither), <c>new</c> and <c>lines</c> (the item page's
-	/// stat lines, each <c>label</c> and <c>value</c>). Read at the call, on this machine.
+	/// The current region's map, as the game's own minimaps plot it, for <paramref name="player"/>'s
+	/// hero (1 or 2; 0 this machine's, <see cref="local_hero"/>): <c>known</c>, <c>proper</c> (it has a real
+	/// map, so the places below are stated), <c>texture</c> (Godot only) and <c>texture_path</c> (its
+	/// <c>game://</c> path), <c>north</c> (radians the image turns), <c>half_size</c> (the image's half-size,
+	/// from the pause root's file), <c>hero</c> and <c>facing</c>, and <c>quests</c> (an Array of places: the
+	/// other quests' objectives, from the quest log of the hero whose menus this machine shows, whichever
+	/// player is named). The extent is the level's own heightfields', the places the entity feed's. Places are
+	/// element units around the image's centre, Y up.
 	/// </summary>
-	public Godot.Collections.Array inventory_items() => Refii.Core.Engine_TitleGame.Active.ModInventoryItems();
+	public Godot.Collections.Dictionary minimap(long player)
+	{
+		long handle = player is 1 or 2 ? hero((int)player) : player == 0 ? local_hero() : 0;
+		uint address = handle > 0 && handle <= uint.MaxValue ? HostBridge.ModHandleAddress((uint)handle) : 0u;
+		return Refii.Core.Engine_TitleGame.Active.ModMinimap(address);
+	}
 
 	/// <summary>
-	/// Does to an item what the game's own inventory pages do, for this machine's hero: <c>use</c>,
-	/// <c>equip</c>, <c>wear</c>, <c>outfit</c>, or <c>remove</c> (empties that item's clothing slot; give
-	/// the item's definition). False for an operation that is none of them, or a definition that does
-	/// not parse.
+	/// What <paramref name="player"/>'s hero carries (1 or 2; 0 the player whose menus are open here), one
+	/// Dictionary per stack in the game's order, as the game's own inventory pages show it:
+	/// <c>definition</c>, <c>count</c>, <c>category</c>, <c>name</c>, <c>description</c>, <c>icon</c>,
+	/// <c>model</c>, <c>pieces</c> (an outfit's worn models), <c>value</c>, <c>rating</c>, <c>usable</c>,
+	/// <c>worn</c>, <c>weapon_class</c> (1 melee, 2 ranged, 0 neither), <c>new</c> and <c>lines</c> (the item
+	/// page's stat lines, each <c>label</c> and <c>value</c>). Either player's, whoever's menus are open: the
+	/// hero's own inventory as this machine's guest holds it.
 	/// </summary>
-	public bool inventory_action(string operation, Variant definition)
+	public Godot.Collections.Array inventory_items(long player) =>
+		Named(player) is var named && named != 0
+			? Refii.Core.Engine_TitleGame.Active.ModInventoryItems(named)
+			: new Godot.Collections.Array();
+
+	/// <summary>
+	/// Does to an item what the game's own inventory pages do, for <paramref name="player"/>'s hero (as
+	/// <see cref="inventory_items"/>): <c>use</c>, <c>equip</c>, <c>wear</c>, <c>outfit</c>, or <c>remove</c>
+	/// (empties that item's clothing slot; give the item's definition). The player whose menus are open here
+	/// acts through the pages' own action; the other player acts on their own hero directly, in local co-op
+	/// (<see cref="coop_mode"/> 1), where both heroes are this machine's. False for an operation that is none
+	/// of them, a definition that does not parse or the hero does not carry, or another machine's player.
+	/// </summary>
+	public bool inventory_action(long player, string operation, Variant definition)
 	{
 		string named = definition.AsString().Trim();
 		bool hex = named.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
@@ -3714,17 +3755,26 @@ public partial class RefiiHost : Node
 
 		string spelled = "0x" + record.ToString("X8", CultureInfo.InvariantCulture);
 		int category = -1;
-		foreach (Variant item in inventory_items())
+		bool carried = false;
+		foreach (Variant item in inventory_items(player))
 		{
 			Godot.Collections.Dictionary stack = item.AsGodotDictionary();
 			if (stack["definition"].AsString() == spelled)
 			{
 				category = stack["category"].AsInt32();
+				carried = true;
 				break;
 			}
 		}
 
-		return Refii.Core.Engine_TitleGame.Active.ModInventoryAction(operation ?? string.Empty, record, category) is { } action &&
+		int acting = Named(player);
+		int addressed = acting == _menuPlayer ? 0 : acting;
+		if (!carried || (addressed != 0 && _coopMode != 1))
+		{
+			return false;
+		}
+
+		return Refii.Core.Engine_TitleGame.Active.ModInventoryAction(operation ?? string.Empty, record, category, addressed) is { } action &&
 			HostBridge.PostFrontEndAction(action) != 0;
 	}
 
@@ -3752,12 +3802,110 @@ public partial class RefiiHost : Node
 	}
 
 	/// <summary>
-	/// A mod's screen stands where the pause book would: while on, the book draws nothing and the pad is
-	/// held from the game, so a script's own screen has the mouse and the keys. It does not pause by itself:
-	/// press Start to enter and leave the pause (<see cref="press"/>), and turn this off when the
-	/// <see cref="paused"/> signal says the pause has ended.
+	/// A mod's screen stands where the pause book would, for <paramref name="player"/> (1 or 2; 0 the player
+	/// whose menus are open here): while on, the book draws nothing and the pad is held from the game, so a
+	/// script's own screen has the mouse and the keys. It does not pause by itself: press Start for that
+	/// player to enter and leave the pause (<see cref="press"/>), and turn this off when the
+	/// <see cref="paused"/> signal says the pause has ended. <paramref name="script"/> is the calling script's
+	/// node (<c>self</c>): the screen is that MOD's, so only it turns it off. One screen stands at a time (a
+	/// later call, by any mod, takes it over); the engine releases it when the mod set reloads or a mod is
+	/// enabled or disabled, the game is left, or a level unloads (<see cref="ModScreen"/>).
 	/// </summary>
-	public void own_screen(bool on) => Refii.Core.Engine_TitleGame.Active.ModOwnScreen(on);
+	public void own_screen(long player, bool on, Node script) => OwnScreen(player, on, ModOf(script), fromLua: false);
+
+	/// <summary>The short form, with no script named: the screen is the mod set's, owned by no one mod.</summary>
+	public void own_screen(long player, bool on) => OwnScreen(player, on, string.Empty, fromLua: false);
+
+	private void OwnScreen(long player, bool on, string mod, bool fromLua)
+	{
+		int named = Named(player);
+		if (named == 0)
+		{
+			return;
+		}
+
+		if (on)
+		{
+			ModScreen.Take(this, mod, named, fromLua);
+		}
+		else
+		{
+			ModScreen.Release(this, mod, named);
+		}
+	}
+
+	/// <summary>
+	/// The mod a script node belongs to: the <c>refii_mod</c> meta <see cref="ModGodot"/> stamps on each script it
+	/// runs, read off the node or the nearest ancestor that carries it; empty for a node of no mod's.
+	/// </summary>
+	private static string ModOf(Node? node)
+	{
+		for (Node? at = node; at is not null && IsInstanceValid(at); at = at.GetParent())
+		{
+			if (at.HasMeta(ModGodot.ModMeta))
+			{
+				return at.GetMeta(ModGodot.ModMeta).AsString();
+			}
+		}
+
+		return string.Empty;
+	}
+
+	/// <summary>The scoped mod action <paramref name="name"/> names (<c>&lt;mod&gt;.&lt;action&gt;</c>), or null.</summary>
+	private static ModInput.Action? ModAction(string name)
+	{
+		foreach (ModInput.Action action in ModInput.All)
+		{
+			if (string.Equals(action.Name, name, StringComparison.OrdinalIgnoreCase))
+			{
+				return action;
+			}
+		}
+
+		return null;
+	}
+
+	/// <summary>What is bound now to a mod action or a game pad button: (key name, pad button name), either empty when unbound.</summary>
+	private static (string Key, string Pad) Bound(string name)
+	{
+		name = (name ?? string.Empty).Trim();
+		if (ModAction(name) is { } action)
+		{
+			IReadOnlyList<Key> keys = ModInput.EffectiveKeys(action);
+			(IReadOnlyList<JoyButton> buttons, IReadOnlyList<JoyAxis> triggers) = ModInput.EffectivePad(action);
+			string key = keys.Count != 0 ? OS.GetKeycodeString(keys[0]) : string.Empty;
+			string pad = buttons.Count != 0 ? ModInput.PadName(buttons[0]) : triggers.Count != 0 ? ModInput.TriggerName(triggers[0]) : string.Empty;
+			return (key, pad);
+		}
+
+		string button = name.Length == 0 ? string.Empty
+			: ModInput.TryButton(name, out JoyButton joy) ? ModInput.PadName(joy)
+			: ModInput.TryTrigger(name, out JoyAxis trigger) ? ModInput.TriggerName(trigger)
+			: string.Empty;
+		return button.Length != 0
+			? (Refii.Ui.Engine_UiKeyGlyphs.LabelFor?.Invoke(button) ?? button, button)
+			: (string.Empty, string.Empty);
+	}
+
+	/// <summary>
+	/// The prompt glyph for <paramref name="name"/> — a mod action scoped <c>&lt;mod&gt;.&lt;action&gt;</c>
+	/// (input.json), or a game pad button (<c>A</c>, <c>B</c>, <c>Start</c>, <c>LT</c> …) — as the game's own
+	/// prompts draw it now: the bound key's keycap on the keyboard and mouse, the bound button in the
+	/// player's glyph style and pack on a pad. A rebind shows at once. Null with nothing bound on the device
+	/// in use. Godot only: Lua reads <see cref="input_label"/>.
+	/// </summary>
+	public Texture2D? input_glyph(string name)
+	{
+		(string key, string pad) = Bound(name);
+		return Refii.Ui.Engine_UiKeyGlyphs.ActionGlyph(key, pad);
+	}
+
+	/// <summary>The name of what is bound to <paramref name="name"/> (as <see cref="input_glyph"/>) on the device in use now; empty when unbound.</summary>
+	public string input_label(string name)
+	{
+		(string key, string pad) = Bound(name);
+		return Refii.Ui.Engine_UiInputMode.Keycaps ? key : pad;
+	}
 
 	/// <summary>A guest world position on <see cref="minimap"/>'s map, in its units; a Vector2, or null with no proper map.</summary>
 	public Variant minimap_point(double x, double y, double z) =>

@@ -59,12 +59,16 @@ public static class Engine_UiTextMesh
 		public readonly Color? Colour;
 		public readonly float Advance;
 
-		public Cell(char c, Engine_UiTextMarkup.Tag? icon, Color? colour, float advance)
+		/// <summary>The enclosing paired tag's code (<see cref="Engine_UiTextMarkup.Run.Code"/>).</summary>
+		public readonly int Code;
+
+		public Cell(char c, Engine_UiTextMarkup.Tag? icon, Color? colour, float advance, int code = 0)
 		{
 			Char = c;
 			Icon = icon;
 			Colour = colour;
 			Advance = advance;
+			Code = code;
 		}
 
 		public bool IsIcon => Icon is not null;
@@ -155,6 +159,9 @@ public static class Engine_UiTextMesh
 		var uvs = new List<Vector2>();
 		var normals = new List<Vector3>();
 		var colours = new List<Color>();
+		// Each vertex's run mode: x = 1 replaces the RGB (Engine_UiTextContract.RunReplaces), plus 2 when
+		// the run is outlined (Engine_UiTextContract.Outlined); y = 1 replaces the alpha.
+		var modes = contract.ColourRunsReplace || contract.Outlines ? new List<Vector2>() : null;
 		var indices = new List<int>();
 		var icons = new List<IconPlacement>();
 
@@ -193,12 +200,39 @@ public static class Engine_UiTextMesh
 				if (g.DrawWidth <= 0)
 					continue;
 
+				bool outlined = contract.Outlined(Engine_UiTextContract.RunStyle(text.Style, cell.Code));
+				Rect2 uv = Engine_BitmapFontTexture.GetGlyphUvRect(font, g);
+				float quadLeft = glyphLeft, quadWidth = g.DrawWidth, glyphHeight = quadHeight;
+				if (outlined)
+				{
+					// The guest pads every glyph quad 2 texels left, 1 right and 1 below, UVs and
+					// screen alike (sub_82C76940: u0·W − 2.0 `fmsubs` 0x82C77068, u1·W + 1.0 `fmadds`
+					// 0x82C77074, v1·H + 1.0 `fmadds` 0x82C770A0, v0 kept 0x82C770A8; left − 2.0
+					// 0x82C770BC, right + 1.0 0x82C770C8, bottom + 1.0 0x82C771CC; W, H the glyph
+					// texture's surface size 0x82C76FE8 / 0x82C77024), so the outline's one-texel ring
+					// has room. Here only the outlined runs are padded: on the others it samples the
+					// atlas's empty gutter.
+					var texel = new Vector2(1f / font.AtlasWidth, 1f / font.AtlasHeight);
+					uv = new Rect2(uv.Position - new Vector2(2f * texel.X, 0f), uv.Size + new Vector2(3f * texel.X, texel.Y));
+					quadLeft -= 2f;
+					quadWidth += 3f;
+					glyphHeight += 1f;
+				}
+
 				Append(vertices, uvs, normals, colours, indices,
-					glyphLeft, lineTop, g.DrawWidth, quadHeight,
-					Engine_BitmapFontTexture.GetGlyphUvRect(font, g),
+					quadLeft, lineTop, quadWidth, glyphHeight, uv,
 					// White multiplies to the element's own colour, which is what an
 					// unmarked run gets and what keeps Engine_UiTheme.Retint working.
 					cell.Colour ?? Colors.White);
+				if (modes is not null)
+				{
+					(bool rgb, bool alpha) = contract.RunReplaces(cell.Colour);
+					var mode = new Vector2((rgb ? 1f : 0f) + (outlined ? 2f : 0f), alpha ? 1f : 0f);
+					modes.Add(mode);
+					modes.Add(mode);
+					modes.Add(mode);
+					modes.Add(mode);
+				}
 			}
 		}
 
@@ -217,6 +251,11 @@ public static class Engine_UiTextMesh
 		arrays[(int)Mesh.ArrayType.TexUV] = uvs.ToArray();
 		arrays[(int)Mesh.ArrayType.Normal] = normals.ToArray();
 		arrays[(int)Mesh.ArrayType.Color] = colours.ToArray();
+		if (modes is not null)
+		{
+			arrays[(int)Mesh.ArrayType.TexUV2] = modes.ToArray();
+		}
+
 		arrays[(int)Mesh.ArrayType.Index] = indices.ToArray();
 
 		var mesh = new ArrayMesh();
@@ -313,7 +352,7 @@ public static class Engine_UiTextMesh
 
 			foreach (char c in run.Text)
 			{
-				current.Add(new Cell(c, null, run.Colour, font.GetGlyph(c).Advance));
+				current.Add(new Cell(c, null, run.Colour, font.GetGlyph(c).Advance, run.Code));
 			}
 		}
 

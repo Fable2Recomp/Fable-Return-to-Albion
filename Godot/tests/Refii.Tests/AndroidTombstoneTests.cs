@@ -124,7 +124,7 @@ public class AndroidTombstoneTests
     [TestCase]
     public void TestTheLastExitRecordCarriesTheDecodedCrash()
     {
-        string trace = Path.Combine(Path.GetTempPath(), "refii-tombstone-" + Guid.NewGuid().ToString("N") + ".bin");
+        string trace = Path.Combine(Refii.Tests.TestTemp.Root, "refii-tombstone-" + Guid.NewGuid().ToString("N") + ".bin");
         try
         {
             File.WriteAllBytes(trace, Tombstone(fault: false));

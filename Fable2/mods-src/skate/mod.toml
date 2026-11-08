@@ -1,4 +1,4 @@
-name = "Skateboard"
+name = "{SKATE_MOD_NAME}"
 version = "0.1.0"
 author = "ammuica"
-description = "Ride a skateboard through Albion: K to step on or off, Space to hop, left click to Flourish, right click to Grab, and score combos."
+description = "{SKATE_MOD_DESCRIPTION}"

@@ -10,7 +10,7 @@ namespace Refii.Titles.Fable2;
 
 /// <summary>
 /// THE INVENTORY AS A MOD'S SCREEN READS IT (<c>RefiiHost.inventory_items</c>): everything the game's own
-/// inventory pages show about what this machine's hero carries, one Dictionary per stack, and the same
+/// inventory pages show about what player 1's or 2's hero carries, one Dictionary per stack, and the same
 /// actions their rows run (<c>RefiiHost.inventory_action</c>).
 /// </summary>
 public static partial class Engine_UiInventorySource
@@ -23,29 +23,43 @@ public static partial class Engine_UiInventorySource
 	private readonly record struct ModItemFacts(string Name, string Description, string Icon, string Model, string[] Pieces, int Category,
 		int Value, int WeaponClass, Engine_UiItemStats.Stats Stats, bool Usable, Vector3 Rotation, int RotationAxis);
 
-	/// <summary>What never changes for a record, read once: a name and a stat block are several lookups each.</summary>
+	/// <summary>
+	/// What a record's text and records give, read once per culture, mod set and book: a name and a stat block
+	/// are several lookups each. Dropped when the culture, the mounted mod tables (a mod set's GDB and text
+	/// overlays), the string book or the database changes.
+	/// </summary>
 	private static readonly Dictionary<uint, ModItemFacts> ModFacts = new();
 
-	public static Godot.Collections.Array ModItems()
+	private static (string Culture, object? Tables, object? Book, object? Database) _factsFor;
+
+	/// <summary>What <paramref name="player"/>'s hero (1 or 2) carries, from the pump's per-player snapshot (<see cref="Fable2Bridge.GetPlayerInventory"/>).</summary>
+	public static Godot.Collections.Array ModItems(int player)
 	{
 		var items = new Godot.Collections.Array();
-		Globals ??= Engine_GameGdb.Database;   // set on a menu's path, which a mod's screen may never walk
-		if (Globals is null)
+		if (Globals is not { } database)
 		{
 			return items;
 		}
 
-		var worn = new HashSet<uint>();
-		foreach ((uint recordId, int _) in HostBridge.GetWornItems())
+		(string, object?, object?, object?) standing =
+			(Refii.Text.Engine_GameCulture.Current, Refii.Mods.ModText.Mounted, Strings, database);
+		if (!standing.Equals(_factsFor))
 		{
-			worn.Add(recordId);
+			ModFacts.Clear();
+			_factsFor = standing;
 		}
 
-		IEnumerable<Fable2Bridge.InventoryRecord> carrying = Fable2Bridge.GetHeroInventory();
+		var worn = new HashSet<uint>();
+		var carrying = new List<Fable2Bridge.InventoryRecord>();
 		var carried = new HashSet<uint>();
-		foreach (Fable2Bridge.InventoryRecord record in carrying)
+		foreach ((Fable2Bridge.InventoryRecord record, bool on) in Fable2Bridge.GetPlayerInventory(player))
 		{
+			carrying.Add(record);
 			carried.Add(record.RecordId);
+			if (on)
+			{
+				worn.Add(record.RecordId);
+			}
 		}
 
 		foreach (Fable2Bridge.InventoryRecord record in carrying)
@@ -133,12 +147,7 @@ public static partial class Engine_UiInventorySource
 			name = banked;
 		}
 
-		// A tag nothing holds reads as its words rather than as a tag.
-		if (name.StartsWith("INV_ITEM_", System.StringComparison.Ordinal))
-		{
-			name = CultureInfo.InvariantCulture.TextInfo.ToTitleCase(
-				name["INV_ITEM_".Length..].Replace("_NAME", string.Empty).Replace('_', ' ').ToLowerInvariant());
-		}
+		// A tag nothing holds stays the tag, as the item page leaves it.
 
 		string descriptionTag = ItemString(record.RecordId, DescriptionField);
 		string description = Strings is { } book && descriptionTag.Length != 0 && book.TryGetString(descriptionTag, out string text)
@@ -188,22 +197,33 @@ public static partial class Engine_UiInventorySource
 	/// <c>outfit</c> name the record, as the game's rows do; <c>remove</c> empties the slot a clothing
 	/// category is (the pages' "none" rows), which an outfit is not: its "none" row's event undresses
 	/// nothing here, so its pieces come off one by one. Null for anything else.
+	/// <paramref name="player"/> 0 is the hero whose menus are open (the pages' own action); 1 or 2 names a
+	/// hero whose menus are not (<see cref="PlayerInventoryAction"/>), acted on directly.
 	/// </summary>
-	public static string? ModAction(string operation, uint record, int category)
+	public static string? ModAction(string operation, uint record, int category, int player = 0)
 	{
+		string prefix = player is 1 or 2
+			? string.Create(CultureInfo.InvariantCulture, $"{PlayerInventoryAction}{player}:")
+			: InventoryAction;
 		switch (operation)
 		{
 			case "use":
 			case "equip":
 			case "wear":
 			case "outfit":
-				return string.Create(CultureInfo.InvariantCulture, $"{InventoryAction}{operation}:{record}");
+				return string.Create(CultureInfo.InvariantCulture, $"{prefix}{operation}:{record}");
 			case "remove":
 				return category != Category.Suits && NoneRows.TryGetValue(category, out (string Suffix, int EventType, uint Id) none)
-					? string.Create(CultureInfo.InvariantCulture, $"{InventoryAction}unequip:{none.EventType}")
+					? string.Create(CultureInfo.InvariantCulture, $"{prefix}unequip:{none.EventType}")
 					: null;
 			default:
 				return null;
 		}
 	}
+
+	/// <summary>
+	/// <c>InventoryFor:&lt;player&gt;:&lt;op&gt;:&lt;record&gt;</c> — an inventory action on player 1's or 2's own
+	/// hero when their menus are not the open ones (the pump's <c>kActionInventoryForPrefix</c>): local co-op only.
+	/// </summary>
+	public const string PlayerInventoryAction = "InventoryFor:";
 }

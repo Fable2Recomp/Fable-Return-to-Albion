@@ -1,0 +1,38 @@
+key,value
+SATCHEL_MOD_NAME,Hero's Satchel
+SATCHEL_MOD_DESCRIPTION,"Tab opens the inventory as one see-through screen, after SkyUI: a row of categories, a sortable list, filtering, favourites and a card that compares with what you have on."
+SATCHEL_INPUT_OPEN,Open and close
+SATCHEL_INPUT_ACT,"Equip, wear or use"
+SATCHEL_INPUT_FAVOURITE,Favourite
+SATCHEL_INPUT_SORT,Sort
+SATCHEL_INPUT_FILTER,Filter by name
+SATCHEL_INPUT_REMOVE_ALL,Remove all clothing
+SATCHEL_INPUT_CLOSE,Close
+SATCHEL_TOUCH_OPEN,Inventory
+SATCHEL_CATEGORY_FAVOURITES,Favourites
+SATCHEL_CATEGORY_ALL,All
+SATCHEL_KIND_TREASURE,Treasure
+SATCHEL_COLUMN_NAME,Name
+SATCHEL_COLUMN_TYPE,Type
+SATCHEL_VALUE,Value
+SATCHEL_FILTER,Filter
+SATCHEL_NOTHING_HERE,Nothing here.
+SATCHEL_NOTHING_BY_NAME,Nothing by that name.
+SATCHEL_EQUIPPED,Equipped
+SATCHEL_WEARING,Wearing
+SATCHEL_COMPARED_WITH,Compared with %1
+SATCHEL_ACTION_EQUIP,Equip
+SATCHEL_ACTION_TAKE_OFF,Take off
+SATCHEL_ACTION_WEAR,Wear
+SATCHEL_FAVOURITE,Favourite
+SATCHEL_UNFAVOURITE,Unfavourite
+SATCHEL_SORT,Sort
+SATCHEL_REMOVE_ALL_CLOTHING,Remove All Clothing
+SATCHEL_EQUIPPED_ITEM,Equipped %1
+SATCHEL_USED_ITEM,Used %1
+SATCHEL_NOW_WEARING,Now wearing %1
+SATCHEL_TOOK_OFF,Took off %1
+SATCHEL_COULD_NOT_PUT_ON,Could not put on %1
+SATCHEL_COULD_NOT_TAKE_OFF,Could not take off %1
+SATCHEL_REMOVED_ALL,Removed all clothing
+SATCHEL_COULD_NOT_REMOVE_ALL,Could not remove all clothing

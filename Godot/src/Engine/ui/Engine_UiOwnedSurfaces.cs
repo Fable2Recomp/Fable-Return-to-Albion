@@ -5,12 +5,12 @@ namespace Refii.Ui;
 // The concrete owned surfaces — one per presentation Godot draws instead of mirroring. Each
 // states which presentation it owns, how to build its view, how to resolve its join against the
 // file, and what the guest stated for it to show. Frame: Engine_UiSurface.cs; views:
-// Engine_UiBoxes.cs; the stated boxes: Engine_UiDisplayBoxes.cs.
+// Engine_UiBoxes.cs; the stated boxes: Engine_UiStatedBoxes.cs (the title's statements).
 
 /// <summary>
 /// The owned MenuBox (screen id 9) — the option list `GUI.DisplayMenuBox`, the Orb, the sleep
 /// menu and the rest open through `sub_823DC100`. Its populate states the title and rows
-/// (`@MenuBox.Open`, Engine_UiDisplayBoxes.Menu) and its close the answer; Godot draws them,
+/// (`@MenuBox.Open`, Engine_UiStatedBoxes.Menu) and its close the answer; Godot draws them,
 /// moves the highlight, and answers through the guest's own accept, which posts message 35.
 ///
 /// Navigation moves the guest's own selection, not a host copy: its selector reslides the two
@@ -112,7 +112,7 @@ public sealed class Engine_UiMenuBoxSurface : Engine_UiModalSurface<Engine_UiMen
 		// the lever its accept reads.
 		var labels = new string?[Engine_UiMenuBox.MaxOptions];
 		string? title;
-		if (Engine_UiDisplayBoxes.Menu is { } stated && stated.Model.Options.Count == _box.Count)
+		if (Engine_UiStatedBoxes.Current.Menu is { } stated && stated.Model.Options.Count == _box.Count)
 		{
 			title = stated.Model.Text;
 			for (int i = 0; i < labels.Length && i < stated.Model.Options.Count; ++i)
@@ -149,7 +149,7 @@ public sealed class Engine_UiMenuBoxSurface : Engine_UiModalSurface<Engine_UiMen
 			_box.EnabledMask, _box.Cancelable, gamerTag, gamerName, gamerScore);
 		GD.Print($"[game-ui] menu box up — '{title}', {_box.Count} option(s), " +
 			$"selected {_box.Selected}, enabled 0x{_box.EnabledMask:X}" +
-			(Engine_UiDisplayBoxes.Menu is { } menu && menu.Model.Options.Count == _box.Count
+			(Engine_UiStatedBoxes.Current.Menu is { } menu && menu.Model.Options.Count == _box.Count
 				? $" (populate of 0x{menu.Address:X8})"
 				: " (told texts)"));
 		return true;
@@ -404,7 +404,7 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 	/// presentation, different answer: its own handler `sub_823CF3B0` takes 46/47 and posts reply
 	/// 1/0, addressed to this box (`BoxAction:<code>@<box>`).
 	/// </summary>
-	private Engine_UiDisplayBoxes.Box? _display;
+	private Engine_UiStatedBoxes.Box? _display;
 
 	protected override bool TakesInput => _display is not null || _codes is not null || _host;
 
@@ -490,7 +490,7 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 		}
 
 		_codes = null;
-		_display = Engine_UiDisplayBoxes.ShowingOf(Engine_UiDisplayBoxes.Query);
+		_display = Engine_UiStatedBoxes.Current.ShowingQuery;
 		// A host box needs the box's join to be shown; without one it must not hold the frame.
 		// In game only: out of it the front end's own dialog draws it (GameUi.DriveFrontEndHostBox).
 		// A question stands before a notice, as on the front end.
@@ -638,7 +638,7 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 /// The owned numeric adjuster (modal mode 5, or a DISPLAY adjuster from
 /// `GUI.DisplayNumericAdjusterParams`). Drawn from what the opener STATED: the router's
 /// `sub_8236FCA8(…, value, min, max, step, flags)` or the display box's Open, its widget at
-/// `box+24` (display_box_hooks.cpp; <see cref="Engine_UiDisplayBoxes.Box.Adjuster"/>). The steps go
+/// `box+24` (display_box_hooks.cpp; <see cref="Engine_UiStatedBoxes.Box.Adjuster"/>). The steps go
 /// to the guest as its own codes, each with its release — its handler steps and commits its own
 /// value — and the value drawn is the one the widget tells (ToldValue); the arrows are gated by
 /// the room left at that value.
@@ -685,7 +685,7 @@ public sealed class Engine_UiNumericSurface : Engine_UiModalSurface<Engine_UiNum
 	/// different lever: its own handler `sub_823CF8A8` takes them — 28/29 step, 46 commits and
 	/// posts 37, 47 cancels and posts 38 — addressed to this box (`BoxAction:<code>@<box>`).
 	/// </summary>
-	private Engine_UiDisplayBoxes.Box? _display;
+	private Engine_UiStatedBoxes.Box? _display;
 
 	private double _repeat;
 
@@ -719,7 +719,7 @@ public sealed class Engine_UiNumericSurface : Engine_UiModalSurface<Engine_UiNum
 		}
 		else
 		{
-			_display = Engine_UiDisplayBoxes.ShowingOf(Engine_UiDisplayBoxes.Adjuster);
+			_display = Engine_UiStatedBoxes.Current.ShowingAdjuster;
 			open = _display is not null;
 		}
 

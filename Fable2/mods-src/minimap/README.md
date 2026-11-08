@@ -9,10 +9,8 @@ Normal › Bigger › Biggest (mid-screen) › Hidden › Normal.
 | Mark | Means |
 |---|---|
 | white arrow | the hero |
-| flashing gold | the current quest's target, on the edge of the frame when it lies elsewhere |
 | green | other quests' objectives |
 | red | enemies near the hero |
-| blue | travelling merchants |
 | brown | the dog |
 
 Shops and exits are painted on the art. The dial on the rim is the time of day: day on the left,
@@ -26,7 +24,8 @@ toward north; tap that to bring the map back.
 
 ## How it works
 
-`godot/minimap.gd` draws it, from `RefiiHost.minimap()`: the data the game's own pause and world
-map minimaps plot from. `mod/init.lua` publishes what only the guest's Lua can answer, the clock
-and the enemies near the hero, and `minimap_point` puts those on the map. In split screen the map
-is player one's.
+`godot/minimap.gd` draws it, from `RefiiHost.minimap(player)`: the data the game's own pause and
+world map minimaps plot from, the other quests' objectives among them. `mod/init.lua` publishes what only the guest's Lua can answer, the
+clock, the dog (`Refii.player_dog`) and the enemies near the hero, and `minimap_point` puts those on
+the map. The map is the player this machine plays (`player_here`): player one alone, in split screen
+and when hosting, player two on an online joiner. Its text is in `language/<culture>/text`.

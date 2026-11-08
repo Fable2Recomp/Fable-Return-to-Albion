@@ -7,10 +7,18 @@ extends Node
 ## own_screen takes the pause book's place, so the world holds and the mouse is free. A pad's Start still
 ## ends the pause, so everything closes on the paused signal.
 ##
-## The items are inventory_items(), the game's own pages' facts, and inventory_action does what their
-## rows do. A list's stat columns are whichever stat lines its items share, in the game's own words.
+## The screen serves the player whose Tab opened it: their Start pauses, their menus are open, so
+## inventory_items(player) reads their hero's items and inventory_action(player, ...) acts on them.
+## The items are the game's own pages' facts, and inventory_action does what their rows do. A list's stat
+## columns are whichever stat lines its items share, in the game's own words.
+##
+## The screen's own keys and buttons are input.json actions, read through Godot's InputMap (the player's
+## rebinds in force), and the bar shows each as bound now (input_glyph, input_label). Every word drawn is
+## the game's own tag (the inventory pages' category names, GUI_USE) or a key of
+## language/<culture>/text/book.babel.csv, through host.text.
 
 const FONT := "res://assets/launcher/fable2.ttf"
+const ACTION := "mod.satchel."       # the InputMap prefix of input.json's actions
 const REFRESH := [0.25, 1.0]          # seconds after an action until the items are read again
 const SETTLE := 1.6                   # seconds a garment may take to show as on before it counts as refused
 const NOTICE_TIME := 3.5
@@ -49,26 +57,34 @@ const TOUCH_LEFT := 0.27              # where the bar's buttons start on a touch
 const MODEL_SIZE := 0.36
 const MODEL_TURN := 0.5                # radians a second
 
-# The categories, stepped left and right: a name, the icon drawn for it and what belongs in it.
+# The categories, stepped left and right: the text of its name, the icon drawn for it and what belongs in
+# it. A name is the game's own inventory page tag where the game has one.
 const CATEGORIES := [
-	{ "name": "Favourites", "icon": "star", "favourites": true },
-	{ "name": "All", "icon": "bag" },
-	{ "name": "Melee", "icon": "sword", "weapon": 1 },
-	{ "name": "Ranged", "icon": "gun", "weapon": 2 },
-	{ "name": "Clothing", "icon": "shirt", "ids": [25, 17, 18, 19, 20, 21, 22, 23], "undress": true },
-	{ "name": "Potions", "icon": "flask", "ids": [6] },
-	{ "name": "Food", "icon": "apple", "ids": [5] },
-	{ "name": "Gifts", "icon": "gift", "ids": [3] },
-	{ "name": "Books", "icon": "book", "ids": [16] },
-	{ "name": "Dyes", "icon": "drop", "ids": [8] },
-	{ "name": "Augments", "icon": "gem", "ids": [7] },
-	{ "name": "Trophies", "icon": "cup", "ids": [4] },
-	{ "name": "Furniture", "icon": "chair", "ids": [15] },
-	{ "name": "Keys and Tools", "label": "Keys", "icon": "key", "ids": [2, 26, 0, 24] },
+	{ "text": "SATCHEL_CATEGORY_FAVOURITES", "icon": "star", "favourites": true },
+	{ "text": "SATCHEL_CATEGORY_ALL", "icon": "bag" },
+	{ "text": "GUI_SCREEN_INVENTORY_CATEGORIES_MELEE_WEAPONS", "icon": "sword", "weapon": 1 },
+	{ "text": "GUI_SCREEN_INVENTORY_CATEGORIES_RANGED_WEAPONS", "icon": "gun", "weapon": 2 },
+	{ "text": "GUI_SCREEN_PAUSE_CLOTHING", "icon": "shirt", "ids": [25, 17, 18, 19, 20, 21, 22, 23], "undress": true },
+	{ "text": "GUI_SCREEN_INVENTORY_CATEGORIES_POTIONS", "icon": "flask", "ids": [6] },
+	{ "text": "GUI_SCREEN_INVENTORY_CATEGORIES_FOOD", "icon": "apple", "ids": [5] },
+	{ "text": "GUI_SCREEN_INVENTORY_CATEGORIES_GIFTS", "icon": "gift", "ids": [3] },
+	{ "text": "GUI_SCREEN_INVENTORY_CATEGORIES_BOOKS", "icon": "book", "ids": [16] },
+	{ "text": "GUI_SCREEN_INVENTORY_CATEGORIES_DYES", "icon": "drop", "ids": [8] },
+	{ "text": "GUI_SCREEN_INVENTORY_CATEGORIES_AUGMENTATIONS", "icon": "gem", "ids": [7] },
+	{ "text": "GUI_SCREEN_INVENTORY_CATEGORIES_TROPHIES", "icon": "cup", "ids": [4] },
+	{ "text": "GUI_SCREEN_INVENTORY_CATEGORIES_FURNITURE", "icon": "chair", "ids": [15] },
+	{ "text": "GUI_SCREEN_INVENTORY_CATEGORIES_TOOLS", "icon": "key", "ids": [2, 26, 0, 24] },
 ]
-const KIND_NAMES := { 1: "Weapon", 2: "Tool", 3: "Gift", 4: "Trophy", 5: "Food", 6: "Potion", 7: "Augment", 8: "Dye",
-	15: "Furniture", 16: "Book", 17: "Hat", 18: "Coat", 19: "Shirt", 20: "Gloves", 21: "Trousers", 22: "Shoes",
-	23: "Accessory", 25: "Outfit", 26: "Key item", 0: "Treasure" }
+# The TYPE column's text by item category: the tag of the inventory page group the game files it under.
+const KIND_TAGS := { 2: "GUI_SCREEN_INVENTORY_CATEGORIES_TOOLS", 3: "GUI_SCREEN_INVENTORY_CATEGORIES_GIFTS",
+	4: "GUI_SCREEN_INVENTORY_CATEGORIES_TROPHIES", 5: "GUI_SCREEN_INVENTORY_CATEGORIES_FOOD", 6: "GUI_SCREEN_INVENTORY_CATEGORIES_POTIONS",
+	7: "GUI_SCREEN_INVENTORY_CATEGORIES_AUGMENTATIONS", 8: "GUI_SCREEN_INVENTORY_CATEGORIES_DYES",
+	15: "GUI_SCREEN_INVENTORY_CATEGORIES_FURNITURE", 16: "GUI_SCREEN_INVENTORY_CATEGORIES_BOOKS", 17: "GUI_SCREEN_INVENTORY_CATEGORIES_HATS",
+	18: "GUI_SCREEN_INVENTORY_CATEGORIES_COATS", 19: "GUI_SCREEN_INVENTORY_CATEGORIES_SHIRTS", 20: "GUI_SCREEN_INVENTORY_CATEGORIES_GLOVES",
+	21: "GUI_SCREEN_INVENTORY_CATEGORIES_PANTS", 22: "GUI_SCREEN_INVENTORY_CATEGORIES_SHOES", 23: "GUI_SCREEN_INVENTORY_CATEGORIES_MASKS",
+	25: "GUI_SCREEN_INVENTORY_CATEGORIES_SUITS", 26: "GUI_SCREEN_INVENTORY_CATEGORIES_TOOLS", 0: "SATCHEL_KIND_TREASURE" }
+# A weapon's TYPE by its weapon class.
+const WEAPON_TAGS := { 1: "GUI_SCREEN_INVENTORY_CATEGORIES_MELEE_WEAPONS", 2: "GUI_SCREEN_INVENTORY_CATEGORIES_RANGED_WEAPONS" }
 const SLOT_IDS := [17, 18, 19, 20, 21, 22, 23, 25]
 
 var host: Object
@@ -77,6 +93,7 @@ var canvas: Control
 var face: Font
 var plain: Font
 var numerals: Font                    # the face's superscript figures: its ordinary 1 and 2 have decorative cuts
+var player := 1                       # whose screen: the player whose Tab opened it
 
 var open := false
 var opening := false                  # Start is held for the pause
@@ -244,23 +261,25 @@ func _pose_stage() -> void:
 
 
 func _claim() -> void:
-	host.claim_input(1, "satchel.open", true)
+	host.claim_input(0, "satchel.open", true)
 
 
 func _exit_tree() -> void:
 	if open or opening:
-		host.own_screen(false)
-	host.claim_input(1, "satchel.open", false)
+		host.own_screen(player, false, self)
+	host.claim_input(0, "satchel.open", false)
 
 
 func _on_input_action(e: Dictionary) -> void:
-	if not e.get("pressed", false) or int(e.get("player", 1)) != 1 or e.get("name", "") != "satchel.open":
+	if e.get("replica", false) or not e.get("pressed", false) or e.get("name", "") != "satchel.open":
 		return
-	if not open and not opening and host.in_play(1) and not host.in_cutscene(1):
+	var from := int(e.get("player", 1))
+	if not open and not opening and host.in_play(from) and not host.in_cutscene(from):
+		player = from
 		opening = true
 		opening_for = 0.0
-		host.own_screen(true)
-		host.press(1, "Start", true)
+		host.own_screen(player, true, self)
+		host.press(player, "Start", true)
 
 
 func _on_paused(e: Dictionary) -> void:
@@ -270,13 +289,13 @@ func _on_paused(e: Dictionary) -> void:
 	if e.get("paused", false):
 		if opening:
 			opening = false
-			host.press(1, "Start", false)
+			host.press(player, "Start", false)
 			_show()
 	else:
 		var ended := open or opening or closing
 		if ended:
-			host.press(1, "Start", false)
-			host.own_screen(false)
+			host.press(player, "Start", false)
+			host.own_screen(player, false, self)
 		open = false
 		opening = false
 		closing = false
@@ -288,7 +307,7 @@ func _on_paused(e: Dictionary) -> void:
 func _close() -> void:
 	if open and not closing:
 		closing = true
-		host.press(1, "Start", true)
+		host.press(player, "Start", true)
 
 
 func _show() -> void:
@@ -307,10 +326,10 @@ func _show() -> void:
 
 
 func _read() -> void:
-	items = host.inventory_items()
+	items = host.inventory_items(player)
 	for item: Dictionary in items:
-		item["favourite"] = host.player_value(1, "satchel.f" + item.definition, 0.0) > 0.5
-	var hero: int = host.hero(1)
+		item["favourite"] = host.player_value(player, "satchel.f" + item.definition, 0.0) > 0.5
+	var hero: int = host.hero(player)
 	if hero != 0:
 		host.ask("equipped", [hero], func(r: Dictionary) -> void:
 			melee = chosen_melee if not chosen_melee.is_empty() else _def(r.get("melee", ""))
@@ -384,13 +403,13 @@ func _columns() -> void:
 				order.append(line.label)
 			counts[line.label] += 1
 	order.sort_custom(func(a, b): return counts[a] > counts[b])
-	columns = [{ "key": "name", "title": "NAME", "width": 0.0 }]
+	columns = [{ "key": "name", "title": host.text("SATCHEL_COLUMN_NAME"), "width": 0.0 }]
 	var chosen: Dictionary = CATEGORIES[category]
 	if not chosen.has("weapon") and chosen.get("ids", [0, 0]).size() > 1 or not chosen.has("ids") and not chosen.has("weapon"):
-		columns.append({ "key": "kind", "title": "TYPE", "width": 0.09 })
+		columns.append({ "key": "kind", "title": host.text("SATCHEL_COLUMN_TYPE"), "width": 0.09 })
 	for label: String in order.slice(0, 2):
-		columns.append({ "key": "line:" + label, "title": _plain_label(label).to_upper(), "width": 0.15 })
-	columns.append({ "key": "value", "title": "VALUE", "width": 0.075 })
+		columns.append({ "key": "line:" + label, "title": _plain_label(label), "width": 0.15 })
+	columns.append({ "key": "value", "title": host.text("SATCHEL_VALUE"), "width": 0.075 })
 	if not columns.any(func(c): return c.key == sort_column):
 		sort_column = "name"
 		sort_down = false
@@ -436,7 +455,8 @@ func _cell(item: Dictionary, key: String) -> String:
 		"name":
 			return str(item.name)
 		"kind":
-			return KIND_NAMES.get(int(item.category), "")
+			var tag: String = WEAPON_TAGS.get(int(item.weapon_class), KIND_TAGS.get(int(item.category), ""))
+			return host.text(tag) if not tag.is_empty() else ""
 		"count":
 			return str(int(item.count))
 		"value":
@@ -478,7 +498,12 @@ func _input(event: InputEvent) -> void:
 		on_touch = event.device == InputEvent.DEVICE_ID_EMULATION
 	elif event is InputEventJoypadButton and event.pressed:
 		on_touch = false
-	if event is InputEventKey and event.pressed:
+	if searching and event is InputEventKey and event.pressed:
+		_type(event)
+		get_viewport().set_input_as_handled()
+	elif _screen_action(event):
+		get_viewport().set_input_as_handled()
+	elif event is InputEventKey and event.pressed:
 		_key(event)
 		get_viewport().set_input_as_handled()
 	elif event is InputEventMouseButton and event.pressed:
@@ -494,29 +519,50 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
-func _key(event: InputEventKey) -> void:
-	if searching:
-		match event.keycode:
-			KEY_ENTER, KEY_KP_ENTER:
-				_search(false)
-			KEY_BACKSPACE:
-				search = search.substr(0, search.length() - 1)
-				row = 0
-				_list()
-			KEY_ESCAPE:
-				_search(false)
-			KEY_TAB:
-				_close()
-			_:
-				if event.unicode >= 32:
-					search += String.chr(event.unicode)
-					row = 0
-					_list()
+## The screen's own actions (input.json), as the player has them bound. True when the event was one.
+func _screen_action(event: InputEvent) -> bool:
+	if event.is_action_pressed(ACTION + "open") or event.is_action_pressed(ACTION + "close"):
+		_close()
+	elif event.is_action_pressed(ACTION + "act"):
+		_act()
+	elif event.is_action_pressed(ACTION + "favourite"):
+		_favourite()
+	elif event.is_action_pressed(ACTION + "sort"):
+		_step_sort()
+	elif event.is_action_pressed(ACTION + "filter"):
+		_search(true)
 		canvas.queue_redraw()
+	elif event.is_action_pressed(ACTION + "remove_all"):
+		if CATEGORIES[category].has("undress"):
+			_remove_all()
+	else:
+		return false
+	return true
+
+
+## A key while filtering: typed into the filter, Enter or Escape ends it, and the open action still closes.
+func _type(event: InputEventKey) -> void:
+	if event.is_action_pressed(ACTION + "open"):
+		_close()
 		return
 	match event.keycode:
-		KEY_TAB, KEY_ESCAPE:
-			_close()
+		KEY_ENTER, KEY_KP_ENTER, KEY_ESCAPE:
+			_search(false)
+		KEY_BACKSPACE:
+			search = search.substr(0, search.length() - 1)
+			row = 0
+			_list()
+		_:
+			if event.unicode >= 32:
+				search += String.chr(event.unicode)
+				row = 0
+				_list()
+	canvas.queue_redraw()
+
+
+## Moving about: the keys the list and the categories step with.
+func _key(event: InputEventKey) -> void:
+	match event.keycode:
 		KEY_UP, KEY_W:
 			_move(-1)
 		KEY_DOWN, KEY_S:
@@ -529,20 +575,9 @@ func _key(event: InputEventKey) -> void:
 			_step_category(-1)
 		KEY_RIGHT, KEY_D:
 			_step_category(1)
-		KEY_E, KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
-			_act()
-		KEY_F:
-			_favourite()
-		KEY_R:
-			if CATEGORIES[category].has("undress"):
-				_remove_all()
-		KEY_C:
-			_step_sort()
-		KEY_SLASH:
-			_search(true)
-			canvas.queue_redraw()
 
 
+## Moving about on a pad: the d-pad and the shoulders.
 func _pad(button: int) -> void:
 	match button:
 		JOY_BUTTON_DPAD_UP:
@@ -557,17 +592,6 @@ func _pad(button: int) -> void:
 			_step_category(-1)
 		JOY_BUTTON_RIGHT_SHOULDER:
 			_step_category(1)
-		JOY_BUTTON_A:
-			_act()
-		JOY_BUTTON_B:
-			_close()
-		JOY_BUTTON_X:
-			_step_sort()
-		JOY_BUTTON_Y:
-			_favourite()
-		JOY_BUTTON_BACK:
-			if CATEGORIES[category].has("undress"):
-				_remove_all()
 
 
 func _click(event: InputEventMouseButton) -> void:
@@ -605,7 +629,7 @@ func _click(event: InputEventMouseButton) -> void:
 				_act()
 			"favourite":
 				_favourite()
-			"sort":
+			"step_sort":
 				_step_sort()
 			"close":
 				_close()
@@ -682,7 +706,7 @@ func _favourite() -> void:
 	if item.is_empty():
 		return
 	item.favourite = not item.favourite
-	host.player_save(1, "satchel.f" + item.definition, 1.0 if item.favourite else 0.0)
+	host.player_save(player, "satchel.f" + item.definition, 1.0 if item.favourite else 0.0)
 	_list(true)
 
 
@@ -697,14 +721,14 @@ func _act() -> void:
 	if int(item.weapon_class) != 0:
 		if _held(item):
 			return
-		host.inventory_action("equip", item.definition)
+		host.inventory_action(player, "equip", item.definition)
 		if int(item.weapon_class) == 1:
 			chosen_melee = item.definition
 			melee = chosen_melee
 		else:
 			chosen_ranged = item.definition
 			ranged = chosen_ranged
-		_tell("Equipped " + label, item.definition)
+		_tell(host.text("SATCHEL_EQUIPPED_ITEM", [label]), item.definition)
 		_list(true)
 	elif SLOT_IDS.has(id):
 		var taking_off: bool = item.get("worn", false)
@@ -712,16 +736,16 @@ func _act() -> void:
 			# An outfit is not a slot: what comes off is each worn item that is one of its pieces.
 			for piece: Dictionary in items:
 				if piece.get("worn", false) and int(piece.category) != 25 and item.pieces.has(str(piece.model)):
-					host.inventory_action("remove", piece.definition)
+					host.inventory_action(player, "remove", piece.definition)
 		else:
-			host.inventory_action("remove" if taking_off else ("outfit" if id == 25 else "wear"), item.definition)
+			host.inventory_action(player, "remove" if taking_off else ("outfit" if id == 25 else "wear"), item.definition)
 		waiting = { "definition": item.definition, "on": not taking_off,
-			"done": ("Took off " if taking_off else "Now wearing ") + label,
-			"refused": ("Could not take off " if taking_off else "Could not put on ") + label }
+			"done": host.text("SATCHEL_TOOK_OFF" if taking_off else "SATCHEL_NOW_WEARING", [label]),
+			"refused": host.text("SATCHEL_COULD_NOT_TAKE_OFF" if taking_off else "SATCHEL_COULD_NOT_PUT_ON", [label]) }
 		waiting_for = 0.0
 	elif item.get("usable", false):
-		host.inventory_action("use", item.definition)
-		_tell("Used " + label, item.definition)
+		host.inventory_action(player, "use", item.definition)
+		_tell(host.text("SATCHEL_USED_ITEM", [label]), item.definition)
 	else:
 		return
 	refresh_in = REFRESH.duplicate()
@@ -744,8 +768,8 @@ func _remove_all() -> void:
 		return
 	order_held = true
 	for slot: int in slots:
-		host.inventory_action("remove", slots[slot])
-	waiting = { "all_off": true, "done": "Removed all clothing", "refused": "Could not remove all clothing" }
+		host.inventory_action(player, "remove", slots[slot])
+	waiting = { "all_off": true, "done": host.text("SATCHEL_REMOVED_ALL"), "refused": host.text("SATCHEL_COULD_NOT_REMOVE_ALL") }
 	waiting_for = 0.0
 	refresh_in = REFRESH.duplicate()
 
@@ -781,8 +805,8 @@ func _process(delta: float) -> void:
 		opening_for += delta
 		if opening_for > 2.0:           # the game would not pause here
 			opening = false
-			host.press(1, "Start", false)
-			host.own_screen(false)
+			host.press(player, "Start", false)
+			host.own_screen(player, false, self)
 	if not open or closing:
 		return
 	if not waiting.is_empty():
@@ -884,7 +908,7 @@ func _draw_screen() -> void:
 	_pill(Rect2(left + 0.006 * tu, 0.018 * tu, width - 0.012 * tu, (bar_y - 0.036) * unit), Color(0, 0, 0, 0), Color(COPPER, 0.35), 0.0012, 0.022)
 	var inner := left + 0.022 * tu
 	var inner_w := width - 0.044 * tu
-	_text(face, Vector2(inner, title_y * unit), str(CATEGORIES[category].name), 0.043 * tu, GOLD)
+	_text(face, Vector2(inner, title_y * unit), host.text(CATEGORIES[category].text), 0.043 * tu, GOLD)
 	_draw_search(inner, inner_w)
 	_draw_icons(inner, inner_w)
 	_flourish(Vector2(inner + inner_w * 0.5, rule_y * unit), inner_w * 0.5, COPPER_LIT)
@@ -918,7 +942,7 @@ func _draw_search(x: float, width: float) -> void:
 	var y := box.position.y + box.size.y * 0.72
 	var text := search + ("_" if searching else "")
 	if text.is_empty():
-		_text(plain, Vector2(box.position.x, y), "Filter", size, DIM, box.size.x - 0.018 * tu, HORIZONTAL_ALIGNMENT_RIGHT)
+		_text(plain, Vector2(box.position.x, y), host.text("SATCHEL_FILTER"), size, DIM, box.size.x - 0.018 * tu, HORIZONTAL_ALIGNMENT_RIGHT)
 	else:
 		_text(plain, Vector2(box.position.x + 0.016 * tu, y), text, size, CREAM, box.size.x - 0.03 * tu)
 
@@ -935,8 +959,8 @@ func _draw_icons(x: float, width: float) -> void:
 			canvas.draw_circle(centre, 0.0245 * tu, Color(COPPER_LIT, 0.16), true, -1.0, true)
 			canvas.draw_arc(centre, 0.0245 * tu, 0.0, TAU, 40, COPPER_LIT, maxf(1.0, tu * 0.0018), true)
 		_glyph(CATEGORIES[i].icon, centre, 0.0145 * tu, colour)
-		var label: String = CATEGORIES[i].get("label", CATEGORIES[i].name)
-		_text(plain, Vector2(centre.x - step * 0.5, labels_y * unit), label, _fitted(label, 0.0118 * tu, step * 0.96) if tu != unit else 0.0118 * unit, colour, step, HORIZONTAL_ALIGNMENT_CENTER)
+		var label: String = host.text(CATEGORIES[i].text)
+		_text(plain, Vector2(centre.x - step * 0.5, labels_y * unit), label, _fitted(label, 0.0118 * tu, step * 0.96), colour, step, HORIZONTAL_ALIGNMENT_CENTER)
 		hits.append({ "rect": Rect2(centre.x - step * 0.5, y - 0.025 * tu, step, 0.07 * tu), "kind": "category", "value": i })
 
 
@@ -1022,7 +1046,7 @@ func _draw_list(x: float, width: float) -> void:
 		hits.append({ "rect": Rect2(at, head_y * unit - size, w, size * 1.3), "kind": "sort", "value": column.key })
 		at += w
 	if shown.is_empty():
-		_text(plain, Vector2(x + 0.036 * tu, y + 0.03 * tu), "Nothing here." if search.is_empty() else "Nothing by that name.", size, DIM)
+		_text(plain, Vector2(x + 0.036 * tu, y + 0.03 * tu), host.text("SATCHEL_NOTHING_HERE" if search.is_empty() else "SATCHEL_NOTHING_BY_NAME"), size, DIM)
 		return
 	var end := mini(shown.size(), scroll + _rows_fit())
 	for i in range(scroll, end):
@@ -1134,7 +1158,7 @@ func _draw_card(view: Vector2) -> void:
 	_flourish(Vector2(inner + inner_w * 0.5, y), inner_w * 0.42, INK_DIM)
 	y += 0.03 * tu
 	if held:
-		_text(face, Vector2(inner, y), "Equipped" if int(item.weapon_class) != 0 else "Wearing", size, BETTER, inner_w, HORIZONTAL_ALIGNMENT_CENTER)
+		_text(face, Vector2(inner, y), host.text("SATCHEL_EQUIPPED" if int(item.weapon_class) != 0 else "SATCHEL_WEARING"), size, BETTER, inner_w, HORIZONTAL_ALIGNMENT_CENTER)
 		y += step
 	for line: Dictionary in lines:
 		_text(plain, Vector2(inner, y), _plain_label(str(line.label)), size * 0.95, INK_DIM, inner_w * 0.62)
@@ -1143,11 +1167,11 @@ func _draw_card(view: Vector2) -> void:
 		_compare_mark(other, line, value, inner, y, inner_w, size)
 		y += step
 	if int(item.value) > 0:
-		_text(plain, Vector2(inner, y), "Value", size * 0.95, INK_DIM)
+		_text(plain, Vector2(inner, y), host.text("SATCHEL_VALUE"), size * 0.95, INK_DIM)
 		_text(plain, Vector2(inner, y), str(int(item.value)), size, INK, inner_w, HORIZONTAL_ALIGNMENT_RIGHT)
 		y += step
 	if not other.is_empty():
-		_text(plain, Vector2(inner, y), "Compared with " + str(other.name), size * 0.85, INK_DIM, inner_w)
+		_text(plain, Vector2(inner, y), host.text("SATCHEL_COMPARED_WITH", [str(other.name)]), size * 0.85, INK_DIM, inner_w)
 		y += step
 	if not description.is_empty():
 		canvas.draw_multiline_string(plain, Vector2(inner, y), description, HORIZONTAL_ALIGNMENT_LEFT, inner_w, int(size * 0.88), -1, INK)
@@ -1183,10 +1207,10 @@ func _action_name(item: Dictionary) -> String:
 		return ""
 	var id := int(item.category)
 	if int(item.weapon_class) != 0:
-		return "" if _held(item) else "Equip"
+		return "" if _held(item) else host.text("SATCHEL_ACTION_EQUIP")
 	if SLOT_IDS.has(id):
-		return "Take off" if item.get("worn", false) else "Wear"
-	return "Use" if item.get("usable", false) else ""
+		return host.text("SATCHEL_ACTION_TAKE_OFF" if item.get("worn", false) else "SATCHEL_ACTION_WEAR")
+	return host.text("GUI_USE") if item.get("usable", false) else ""
 
 
 ## The bar under everything, a long copper-edged pill: the keys on the left, the purse on the right.
@@ -1201,23 +1225,29 @@ func _draw_bar(view: Vector2) -> void:
 	# On a touchscreen the hints are the buttons, each tapped from the bar to the screen's bottom edge,
 	# and Filter, which needs a keyboard, is left out.
 	var touch: bool = on_touch
+	# Each hint: the actions that do it, the first one bound on the device in use shown; what it does; its hit.
 	var hints := []
 	if not action.is_empty():
-		hints.append(["E", action, "act"])
-	hints.append(["F", "Unfavourite" if _current().get("favourite", false) else "Favourite", "favourite"])
-	hints.append(["C", "Sort", "sort"])
+		hints.append([["satchel.act"], action, "act"])
+	hints.append([["satchel.favourite"], host.text("SATCHEL_UNFAVOURITE" if _current().get("favourite", false) else "SATCHEL_FAVOURITE"), "favourite"])
+	hints.append([["satchel.sort"], host.text("SATCHEL_SORT"), "step_sort"])
 	if not touch:
-		hints.append(["/", "Filter", "search"])
-	hints.append(["Tab", "Close", "close"])
+		hints.append([["satchel.filter"], host.text("SATCHEL_FILTER"), "search"])
+	hints.append([["satchel.open", "satchel.close"], host.text("TEXT_QUERY_INTERFACE_CLOSE"), "close"])
 	if CATEGORIES[category].has("undress") and not _worn_slots().is_empty():
-		hints.append(["R", "Remove All Clothing", "remove_all"])
+		hints.append([["satchel.remove_all"], host.text("SATCHEL_REMOVE_ALL_CLOTHING"), "remove_all"])
 	var size := 0.024 * tu
 	for hint: Array in hints:
 		var start := x
-		x = _touch_button(x, y, hint[1], size) if touch else _hint(x, y, hint[0], hint[1], size)
 		if touch:
+			x = _touch_button(x, y, hint[1], size)
 			hits.append({ "rect": Rect2(start, y - height * 0.5, x - start, view.y - (y - height * 0.5)), "kind": hint[2], "value": 0 })
-		elif hint[0] == "R":
+			continue
+		var bound := _binding(hint[0])
+		if bound.is_empty():
+			continue
+		x = _hint(x, y, bound, hint[1], size)
+		if hint[2] == "remove_all":
 			hits.append({ "rect": Rect2(start, y - height * 0.5, x - start, height), "kind": "remove_all", "value": 0 })
 	var right := view.x - PANEL_X * unit - 0.03 * tu
 	if notice_for > 0.0:
@@ -1248,12 +1278,30 @@ func _touch_button(x: float, y: float, label: String, size: float) -> float:
 	return x + width + 0.02 * tu
 
 
-## A key in the gold box the game's own prompts draw, and what it does.
-func _hint(x: float, y: float, key: String, label: String, size: float) -> float:
-	var key_w := maxf(plain.get_string_size(key, HORIZONTAL_ALIGNMENT_LEFT, -1, int(size * 0.8)).x + 0.014 * tu, size * 1.25)
-	var box := Rect2(x, y - size * 0.68, key_w, size * 1.36)
-	_pill(box, ROW_INSIDE, GOLD, 0.0018, 0.2)
-	_text(plain, Vector2(x, y + size * 0.28), key, size * 0.8, GOLD, key_w, HORIZONTAL_ALIGNMENT_CENTER)
+## The first of these actions bound on the device in use, as { glyph, label }; empty when none is.
+func _binding(names: Array) -> Dictionary:
+	for name: String in names:
+		var glyph: Texture2D = host.input_glyph(name)
+		var label: String = host.input_label(name)
+		if glyph != null or not label.is_empty():
+			return { "glyph": glyph, "label": label }
+	return {}
+
+
+## What an action is bound to, its glyph or its name in the gold box the game's own prompts draw, and
+## what it does.
+func _hint(x: float, y: float, bound: Dictionary, label: String, size: float) -> float:
+	var glyph: Texture2D = bound.glyph
+	var key_w: float
+	if glyph != null:
+		var high := size * 1.36
+		key_w = high * glyph.get_width() / maxf(1.0, glyph.get_height())
+		canvas.draw_texture_rect(glyph, Rect2(x, y - high * 0.5, key_w, high), false)
+	else:
+		var key: String = bound.label
+		key_w = maxf(plain.get_string_size(key, HORIZONTAL_ALIGNMENT_LEFT, -1, int(size * 0.8)).x + 0.014 * tu, size * 1.25)
+		_pill(Rect2(x, y - size * 0.68, key_w, size * 1.36), ROW_INSIDE, GOLD, 0.0018, 0.2)
+		_text(plain, Vector2(x, y + size * 0.28), key, size * 0.8, GOLD, key_w, HORIZONTAL_ALIGNMENT_CENTER)
 	var after := x + key_w + 0.009 * tu
 	_text(plain, Vector2(after, y + size * 0.34), label, size, CREAM)
 	return after + plain.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, int(size)).x + 0.028 * tu

@@ -419,23 +419,17 @@ public static class Engine_UiMinimapPage
 
 		// The hero — the menu owner's (`live.Hero`), so player two's map plots player two: the
 		// sprite is turned to face the way that hero does.
-		if (live.Hero != 0u && Refii.Game.GameEntities.TryGuestPosition(live.Hero, out Vector3 heroAt))
+		if (Place(info, origin, live.Hero, live.Extent) is { } heroAt)
 		{
-			float facing = 0f;
-			if (Refii.Game.GameEntities.TryGuestRotation(live.Hero, out Quaternion heroRotation))
-			{
-				Vector3 forward = heroRotation * Vector3.Up;  // the guest's (0, 1, 0)
-				facing = Mathf.Atan2(forward.Y, forward.X);
-			}
-
+			float facing = Forward(live.Hero) is { } forward ? Mathf.Atan2(forward.Y, forward.X) : 0f;
 			float turn = Mathf.DegToRad(270f - (info.IconRotation + info.DegreesToNorth)) - facing;
-			markers.Add(new Marker(IconHash(16), Project(info, origin, heroAt, live.Extent), turn, depth));
+			markers.Add(new Marker(IconHash(16), heroAt, turn, depth));
 			depth += 0.1f;
 		}
 
-		if (live.Dog != 0u && Refii.Game.GameEntities.TryGuestPosition(live.Dog, out Vector3 dogAt))
+		if (Place(info, origin, live.Dog, live.Extent) is { } dogAt)
 		{
-			markers.Add(new Marker(IconHash(11), Project(info, origin, dogAt, live.Extent), 0f, depth));
+			markers.Add(new Marker(IconHash(11), dogAt, 0f, depth));
 			depth += 0.1f;
 		}
 
@@ -472,6 +466,22 @@ public static class Engine_UiMinimapPage
 
 		return markers;
 	}
+
+	/// <summary>
+	/// An entity's place on a region map, in the map's element units around <paramref name="origin"/>:
+	/// its position from the entity feed through <see cref="Project"/>. Null for no entity or no position.
+	/// One rule for the pause root, this page and a mod's map.
+	/// </summary>
+	public static Vector2? Place(Info info, Vector2 origin, uint entity, float extent) =>
+		entity != 0u && extent > 0f && Refii.Game.GameEntities.TryGuestPosition(entity, out Vector3 at)
+			? Project(info, origin, at, extent)
+			: null;
+
+	/// <summary>The hero's forward from the entity feed: its rotation applied to the guest's (0, 1, 0); null with none.</summary>
+	public static Vector3? Forward(uint hero) =>
+		hero != 0u && Refii.Game.GameEntities.TryGuestRotation(hero, out Quaternion rotation)
+			? rotation * Vector3.Up
+			: null;
 
 	/// <summary>`sub_829AEAB8`: world metres to `Page2.Contents` units.</summary>
 	public static Vector2 Project(Info info, Vector2 mapImageAt, Vector3 world, float extent)

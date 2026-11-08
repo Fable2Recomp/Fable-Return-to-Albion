@@ -21,3 +21,4 @@ FIRST_PERSON_SETTING_THIRD_PERSON_AIM_DESCRIPTION,Zielen mit Schusswaffe oder Ar
 FIRST_PERSON_SETTING_SCENES,Ego-Perspektive in Gesprächen
 FIRST_PERSON_SETTING_SCENES_DESCRIPTION,"Bleibt in Gesprächen und interaktiven Szenen in der Ego-Perspektive, dem Sprecher zugewandt. Vollständige Zwischensequenzen behalten ihre eigene Kamera."
 FIRST_PERSON_INPUT_TOGGLE,Ego / Third-Person
+FIRST_PERSON_TOUCH_TOGGLE,Ego

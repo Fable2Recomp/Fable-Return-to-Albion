@@ -47,6 +47,9 @@ public static class HostEntityWalk
 	/// <summary>The most game ticks a single walk spanned.</summary>
 	public static long WalkTickSpanWorst;
 
+	/// <summary>The worker's last walk, milliseconds: the native walk and the rows' decode.</summary>
+	public static double LastWalkMs;
+
 	private static Thread? _thread;
 	private static readonly AutoResetEvent _kick = new(false);
 	private static readonly ManualResetEventSlim _done = new(true);
@@ -117,8 +120,10 @@ public static class HostEntityWalk
 
 			// Read live, not from the published stamp: both reads bracket the walk on this thread.
 			uint before = HostBridge.SimClock() is { } a ? a.Tick : 0u;
+			long walkFrom = System.Diagnostics.Stopwatch.GetTimestamp();
 			List<HostBridge.GuestEntity> entities =
 				HostBridge.GetEntities(into, out uint unknown, out HostBridge.UnknownPlacement[] unknownVtables);
+			LastWalkMs = System.Diagnostics.Stopwatch.GetElapsedTime(walkFrom).TotalMilliseconds;
 			uint after = HostBridge.SimClock() is { } b ? b.Tick : 0u;
 
 			if (before != 0u && after != 0u && after > before)

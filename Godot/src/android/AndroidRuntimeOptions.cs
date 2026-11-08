@@ -87,43 +87,36 @@ public sealed record AndroidRuntimeOptions(string GameRoot, string ModulePath, s
     }
 }
 
-/// <summary>Copies an optional complete native save tree into an empty private destination.</summary>
-/// <remarks>The user supplies the full user_data_root, including account/title/profile headers.
-/// Existing saves always win. A fresh staging directory makes failed imports non-destructive;
-/// partial staging is retained on failure for inspection rather than deleting unknown files.</remarks>
+/// <summary>Migrates an optional supplied native save tree into the active save profile, once.</summary>
+/// <remarks>The user supplies a full content root (account/title/profile headers, in any layout the
+/// native side has used). It is copied, never changed, through <see cref="Refii.Save.Engine_SaveMigration"/>:
+/// nothing in the profile is overwritten, identical saves merge, past-the-slot-limit saves go to
+/// Older saves, and the source is recorded so a later boot takes nothing from it again.</remarks>
 public static class AndroidSaveImporter
 {
     /// <summary>The outcome of an import without exposing any private save content.</summary>
-    public sealed record Result(string Status, int Files, long Bytes);
+    public sealed record Result(string Status, int Items);
 
-    /// <summary>Preserves existing private saves or commits a staged byte-for-byte copy.</summary>
+    /// <summary>Copies what the supplied tree holds into the active profile under <paramref name="savesRoot"/>.</summary>
     /// <param name="source">Optional full supplied user_data_root directory.</param>
-    /// <param name="destination">The new runtime's private user_data_root.</param>
+    /// <param name="savesRoot">The app's save folder, <c>runtime/assets/saves</c>.</param>
     /// <returns>A bounded summary of the import.</returns>
-    public static Result ImportIfEmpty(string? source, string destination)
+    public static Result ImportIfEmpty(string? source, string savesRoot)
     {
-        string target = AndroidRuntimeOptions.PhysicalPath(destination, "save destination");
-        if (Directory.Exists(target))
-        {
-            var entries = Directory.EnumerateFileSystemEntries(target).GetEnumerator();
-            using (entries) if (entries.MoveNext()) return new("existing private saves preserved", 0, 0);
-        }
-        if (source == null) return new("no save import requested", 0, 0);
+        string target = AndroidRuntimeOptions.PhysicalPath(savesRoot, "save destination");
+        if (source == null) return new("no save import requested", 0);
         string from = AndroidRuntimeOptions.PhysicalPath(source, "save source");
         if (!Directory.Exists(from)) throw new DirectoryNotFoundException("Supplied save tree is missing: " + from);
         if (Contains(from, target) || Contains(target, from))
             throw new InvalidDataException("Save source and destination must be separate directory trees");
         RejectLink(from);
-        string staging = target + ".import-" + Guid.NewGuid().ToString("N");
-        Directory.CreateDirectory(staging);
-        int files = 0;
-        long bytes = 0;
-        CopyDirectory(from, staging, ref files, ref bytes);
-        if (files == 0) throw new InvalidDataException("Supplied save tree contains no files; staging retained: " + staging);
-        // Delete only the known empty destination. Never remove an existing profile recursively.
-        if (Directory.Exists(target)) Directory.Delete(target, recursive: false);
-        Directory.Move(staging, target);
-        return new("copied supplied save tree", files, bytes);
+        Refii.Save.Engine_SaveMigration.Report report = Refii.Save.Engine_SaveMigration.Run(target, new[]
+        {
+            new Refii.Save.Engine_SaveMigration.Source(from, "supplied save tree", Owned: false, Refii.Core.Engine_Title.Fable2.TitleId),
+        }, DateTime.Now);
+        return report.Ran
+            ? new("migrated supplied save tree: " + report.Summary, report.Copied)
+            : new("supplied save tree already migrated", 0);
     }
 
     /// <summary>Checks path containment using the host filesystem's case rules.</summary>
@@ -139,26 +132,5 @@ public static class AndroidSaveImporter
     {
         if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
             throw new InvalidDataException("Save import does not follow symbolic links: " + path);
-    }
-
-    /// <summary>Streams ordinary files while preserving the complete relative native save hierarchy.</summary>
-    private static void CopyDirectory(string source, string destination, ref int files, ref long bytes)
-    {
-        foreach (string entry in Directory.EnumerateFileSystemEntries(source))
-        {
-            RejectLink(entry);
-            string output = Path.Combine(destination, Path.GetFileName(entry));
-            if (Directory.Exists(entry))
-            {
-                Directory.CreateDirectory(output);
-                CopyDirectory(entry, output, ref files, ref bytes);
-            }
-            else
-            {
-                File.Copy(entry, output, overwrite: false);
-                files++;
-                bytes += new FileInfo(output).Length;
-            }
-        }
     }
 }

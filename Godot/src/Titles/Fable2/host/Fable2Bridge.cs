@@ -2119,6 +2119,47 @@ public static class Fable2Bridge
 		return records;
 	}
 
+	/// <summary>
+	/// Player 1's or 2's inventory, whoever's menus are open (<c>RefiiHostGetPlayerInventory</c>, the pump's
+	/// per-player snapshot), with whether the hero wears each record. Empty for any other player.
+	/// </summary>
+	public static List<(InventoryRecord Record, bool Worn)> GetPlayerInventory(int player)
+	{
+		var records = new List<(InventoryRecord, bool)>();
+		if (player is not (1 or 2) || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return records;
+		}
+
+		const int stride = 4;
+		uint count;
+		try
+		{
+			count = RefiiHostGetPlayerInventory(player, null, 0);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return records;
+		}
+
+		if (count == 0)
+		{
+			return records;
+		}
+
+		var words = new uint[(count + 32u) * stride];
+		uint written = RefiiHostGetPlayerInventory(player, words, (uint)words.Length);
+		int usable = (int)Math.Min(written, (uint)(words.Length / stride));
+		for (int i = 0; i < usable; ++i)
+		{
+			int at = i * stride;
+			records.Add((new InventoryRecord(words[at], (int)words[at + 1], (int)words[at + 2], (words[at + 3] & 1u) != 0u),
+				(words[at + 3] & 2u) != 0u));
+		}
+
+		return records;
+	}
+
 	/// <summary>The shop's front page as its writer computes it — see <c>ShopFront</c> in hero_derived.h.</summary>
 	public readonly record struct ShopFront(
 		bool Known, bool Trader, bool Crier, bool HasKeeperName, bool Owner, bool SaleKnown,
@@ -2669,6 +2710,9 @@ public static class Fable2Bridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetHeroInventory(uint[]? outWords, uint wordCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetPlayerInventory(int player, uint[]? outWords, uint wordCapacity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetItemAugments(uint recordId, uint[] outWords, uint wordCapacity);

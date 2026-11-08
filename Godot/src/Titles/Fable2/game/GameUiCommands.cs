@@ -154,17 +154,12 @@ public partial class GameUi
 	}
 
 	/// <summary>
-	/// The standing host screen's frame, over the pause book. True when it took the frame. Dropped
-	/// the moment the pause root is not standing: a tab push, a query box or the resume all close
-	/// it, the same window the list itself yields in.
+	/// A mod's screen stands where the pause book would (<see cref="Refii.Mods.ModScreen"/>): the book's
+	/// lists hidden and the pad the mod's, with the world held by the pause under it.
 	/// </summary>
-	/// <summary>A mod's screen stands where the pause book would (<c>RefiiHost.own_screen</c>).</summary>
-	public static bool ModOwnsScreen { get; set; }
-
-	/// <summary>The book's lists hidden and the pad the mod's, with the world held by the pause under it.</summary>
 	private bool DriveModScreen()
 	{
-		if (!ModOwnsScreen || !HostBridge.IsInGame)
+		if (!Refii.Mods.ModScreen.Owned || !HostBridge.IsInGame)
 		{
 			if (_modScreenHidHud)
 			{
@@ -210,6 +205,11 @@ public partial class GameUi
 		}
 	}
 
+	/// <summary>
+	/// The standing host screen's frame, over the pause book. True when it took the frame. Dropped
+	/// the moment the pause root is not standing: a tab push, a query box or the resume all close
+	/// it, the same window the list itself yields in.
+	/// </summary>
 	private bool DriveHostScreen(double delta)
 	{
 		if (_hostScreen is not { IsOpen: true } screen)

@@ -35,6 +35,10 @@ uniform vec4 clip_rect = vec4(-1e9, -1e9, 1e9, 1e9);
 // pages' text bleeding through wherever a book selects pages by opacity.
 uniform float opacity = 1.0;
 
+// The title's draw floor (Engine_UiTextContract.AlphaFloor): at or below this element alpha the
+// text draws nothing. Negative draws at any alpha.
+uniform float alpha_floor = -1.0;
+
 // A menu seated in one player's half on split screen (Engine_UiPresentationHost.MenuLayer):
 // scale in xy, offset in zw. The clip compares in the menu's own laid-out space, so the seat
 // comes back out of the world position. Identity everywhere else. A MATERIAL uniform, not an
@@ -43,18 +47,26 @@ uniform float opacity = 1.0;
 // UI's template clones) crashed in InstanceUniforms::get_property_list (2026-10-20).
 uniform vec4 clip_seat = vec4(1.0, 1.0, 0.0, 0.0);
 
+// The title's text contract (Engine_UiTextContract): SnapGlyphs, ContrastFloor, CoverageGamma.
+// The neutral values (false, 1.0, 1.0) draw the shipped coverage as the shader did before them.
+uniform bool snap_glyphs = false;
+uniform float contrast_floor = 1.0;
+uniform float coverage_gamma = 1.0;
+
 varying vec2 clip_world;
+
+#include "res://src/Engine/ui/ui_text_outline.gdshaderinc"
 
 void vertex() {
 	clip_world = ((MODEL_MATRIX * vec4(VERTEX, 1.0)).xy - clip_seat.zw) / clip_seat.xy;
 
-	// GLYPHS SIT ON WHOLE PIXELS, as the 360 drew them: a 2-texel stem there is two solid pixels.
+	// SNAPPED, GLYPHS SIT ON WHOLE PIXELS, as the 360 drew them: a 2-texel stem is two solid pixels.
 	// The canvas camera frames 712.1 units in a 720-pixel viewport and elements sit at fractional
 	// positions, so a glyph quad lands between pixels and every stem smears over three or four
 	// partly covered ones, which read heavier than solid ones once blended in linear light. Each
 	// corner goes to the nearest pixel edge, so a quad DrawWidth texels wide covers a whole number
 	// of pixels. Orthographic cameras only: a mirrored screen's perspective text is left alone.
-	if (PROJECTION_MATRIX[3][3] == 1.0) {
+	if (snap_glyphs && PROJECTION_MATRIX[3][3] == 1.0) {
 		vec4 clip = PROJECTION_MATRIX * (MODELVIEW_MATRIX * vec4(VERTEX, 1.0));
 		vec2 pixel = round((clip.xy / clip.w * 0.5 + 0.5) * VIEWPORT_SIZE);
 		clip.xy = (pixel / VIEWPORT_SIZE * 2.0 - 1.0) * clip.w;
@@ -69,6 +81,8 @@ void fragment() {
 	}
 
 	vec4 texel = texture(atlas, UV);
+	vec2 uv_dx = dFdx(UV);
+	vec2 uv_dy = dFdy(UV);
 
 	// Screen pixels per SHIPPED atlas texel.
 	vec2 shipped = UV * vec2(textureSize(atlas, 0)) / supersample;
@@ -79,23 +93,24 @@ void fragment() {
 	// stroke thinner than a pixel below the 0.5 contour — Fable 3's list rows lost the bar of 'H'
 	// and the bowls of 'B' at 1280x720. The shipped coverage is exact there.
 	bool from_field = use_distance_field && magnified > 1.25;
+	float field_width = 1e-4;
+	float contrast = 0.0;
 	if (from_field) {
 		// One screen pixel of anti-aliasing across the 0.5 contour: the field's own change per
 		// pixel, so the edge is as sharp at 3x as at 1.25x and never wider than a pixel.
 		float distance = texture(distance_field, UV).r;
-		float width = max(fwidth(distance), 1e-4);
-		texel.a = clamp((distance - 0.5) / width + 0.5, 0.0, 1.0);
-	} else if (magnified > 0.75) {
+		field_width = max(fwidth(distance), 1e-4);
+		texel.a = clamp((distance - 0.5) / field_width + 0.5, 0.0, 1.0);
+	} else if (magnified > 1.0 || (contrast_floor > 1.0 && magnified > 0.75)) {
 		// LEGIBLE AT ANY SIZE. The font is a 720p coverage mask whose edge is about one shipped
 		// texel wide; magnified, the coverage is re-contrasted about its half point by that factor
 		// so the edge is one SCREEN pixel wide.
 		//
-		// NEAR 1:1 THE FACTOR STAYS AT 1.3 (a 720p window, most phones). The mip read there is not
-		// the shipped coverage: the cubic upsample leaves each edge a fringe of about 0.11 one texel
-		// out and 0.89 inside, and on the menus' dark leather that fringe shows at about a third of
-		// the text's brightness, so a 2-texel stem reads as nearly three. 1.3 takes it off and
-		// barely moves the font's own antialiasing. Well below 1:1 the coverage is left alone.
-		float contrast = max(min(magnified, 8.0), 1.3);
+		// A contrast floor above 1.0 holds the factor there from 0.75x up: the mip read near 1:1 is
+		// the cubic upsample, whose edge fringe (about 0.11 one texel out, 0.89 inside) shows on dark
+		// leather at a third of the text's brightness. At 1.0, at or below 1:1 the coverage is the
+		// shipped coverage untouched.
+		contrast = max(min(magnified, 8.0), contrast_floor);
 		texel.a = clamp((texel.a - 0.5) * contrast + 0.5, 0.0, 1.0);
 	}
 
@@ -106,22 +121,39 @@ void fragment() {
 	// live channel Engine_UiTheme.Retint writes.
 	vec4 tint = colour * COLOR;
 
-	// COVERAGE BLENDS AS THE 360 BLENDED IT, in gamma space. Godot mixes in linear light, where a
-	// half-covered pixel of light text on a dark page shows at about three quarters of the text's
-	// brightness, and dark text on parchment fades the other way. Bright text takes its coverage to
-	// the 2.2 power and dark text the mirror of that, so a partly covered edge looks as it did on the
-	// console. Solid and empty pixels are unchanged.
-	// The distance field's one-pixel edge is left as it is drawn.
-	if (!from_field) {
+	// A RUN THAT REPLACES (Engine_UiTextContract.RunReplaces, UV2 x = RGB, y = alpha): Fable 3's
+	// colour tags overwrite the element's colour and opacity with their own vector instead of
+	// multiplying. An OUTLINED run (Engine_UiTextContract.Outlined) adds 2 to x. Unmarked runs and
+	// every Fable 2 run carry (0, 0).
+	if (colour.a * opacity <= alpha_floor) {
+		discard;
+	}
+	bool outlined = UV2.x > 1.5;
+	if (UV2.x - (outlined ? 2.0 : 0.0) > 0.5) {
+		tint.rgb = COLOR.rgb;
+	}
+	float run_alpha = UV2.y > 0.5 ? COLOR.a : tint.a * opacity;
+
+	// THE COVERAGE CURVE. Godot mixes in linear light, where a half-covered pixel of light text on a
+	// dark page shows at about three quarters of the text's brightness, and dark text on parchment
+	// fades the other way. Bright text takes its coverage to `coverage_gamma` and dark text the
+	// mirror of that. Solid and empty pixels are unchanged, and the distance field's one-pixel edge
+	// is left as it is drawn. 1.0 is no curve.
+	if (!from_field && coverage_gamma != 1.0) {
 		float bright = clamp(dot(tint.rgb, vec3(0.2126, 0.7152, 0.0722)) * 2.0, 0.0, 1.0);
-		texel.a = mix(1.0 - pow(1.0 - texel.a, 2.2), pow(texel.a, 2.2), bright);
+		texel.a = mix(1.0 - pow(1.0 - texel.a, coverage_gamma), pow(texel.a, coverage_gamma), bright);
 	}
 
+	// THE OUTLINE (ui_text_outline.gdshaderinc).
+	float cover = outlined
+		? ui_text_outline_cover(atlas, distance_field, UV, texel.a, uv_dx, uv_dy, from_field, field_width, contrast, supersample)
+		: texel.a;
+
 	// The scissor.
-	if (texel.a * tint.a * opacity < 0.01) {
+	if (cover * run_alpha < 0.01) {
 		discard;
 	}
 
-	ALBEDO = tint.rgb;
-	ALPHA = texel.a * tint.a * opacity;
+	ALBEDO = outlined ? tint.rgb * texel.a : tint.rgb;
+	ALPHA = cover * run_alpha;
 }

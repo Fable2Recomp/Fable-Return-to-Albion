@@ -23,7 +23,7 @@ public class ModRowOverlaysTests
     [TestCase]
     public void TestBabelOverlayFromF2ModPackageAppliesToVfs()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_babel_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_babel_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -122,7 +122,7 @@ public class ModRowOverlaysTests
     [TestCase]
     public void TestMultiModBabelOverlaysPriorityAndConflictDetection()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_babel_multi_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_babel_multi_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -210,7 +210,7 @@ public class ModRowOverlaysTests
     [TestCase]
     public void TestBabelOverlayWithFilesPrefixInPackage()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_babel_prefix_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_babel_prefix_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -266,7 +266,7 @@ public class ModRowOverlaysTests
     [TestCase]
     public void TestBabelOverlayWithDataAliasResolution()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_babel_alias_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_babel_alias_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -330,7 +330,7 @@ public class ModRowOverlaysTests
     [TestCase]
     public void TestDetectRowConflictsBetweenMultipleMods()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_rowconflict_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_rowconflict_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -401,7 +401,7 @@ public class ModRowOverlaysTests
     {
         // A single-language disc (the Spanish GOTY ships es-es alone): the mod's en-uk rows land
         // in the culture's book, and a mod that ships that culture's own table keeps it.
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_babel_culture_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_babel_culture_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         Engine_GameCulture.ResetForTests();
         try
@@ -459,7 +459,7 @@ public class ModRowOverlaysTests
         // A mod carries every culture; the European disc ships en-uk and a few others. Its fr-fr
         // table has no book here and is skipped without a refusal; its hu-hu table applies to the
         // hu-hu book the disc does ship, ready for a switch from the title's Language menu.
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_babel_cultures_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_babel_cultures_" + Guid.NewGuid().ToString("N"));
         Engine_GameCulture.ResetForTests();
         try
         {

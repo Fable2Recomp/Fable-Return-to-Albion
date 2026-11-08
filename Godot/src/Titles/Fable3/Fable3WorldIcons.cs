@@ -376,6 +376,19 @@ public partial class Fable3WorldIcons : SubViewportContainer
 	/// <summary>`Fade In` and `Fade Out` run the icon's opacity 0..100 and back over 1000 ms (hud.bgf anims 44 / 45).</summary>
 	private const float MarkerFadeSeconds = 1f;
 
+	/// <summary>The two markers' authored fades, read from hud.bgf once it stands (<see cref="UseHud"/>).</summary>
+	private static Fable3MarkerPlacement.Fades? _heroFades;
+	private static Fable3MarkerPlacement.Fades? _henchmanFades;
+
+	/// <summary>Takes the markers' fade tracks from the HUD's own document (Fable3Hud, when hud.bgf stands).</summary>
+	internal static void UseHud(Engine_UiScreen screen)
+	{
+		_heroFades = Fable3MarkerPlacement.FadesOf(screen, "HeroOffScreenWorldIcon");
+		_henchmanFades = Fable3MarkerPlacement.FadesOf(screen, "HenchmanOffScreenWorldIcon");
+		GD.Print($"[fable3-markers] fade tracks: hero {(_heroFades is null ? "absent" : "read")}, " +
+			$"henchman {(_henchmanFades is null ? "absent" : "read")}");
+	}
+
 	private readonly List<HostBridge.WorldSprite> _markerSprites = new();
 
 	/// <summary>This frame's markers in window pixels: art, the icon's centre, its side, its opacity.</summary>
@@ -395,8 +408,8 @@ public partial class Fable3WorldIcons : SubViewportContainer
 
 	/// <summary>
 	/// The markers the guest states this frame, placed by Godot's own camera as sub_82B51B58
-	/// places them (see above) and faded as their slides do. The fade's authored ease tangents are
-	/// not reproduced; it is linear over the authored second.
+	/// places them (see above) and faded as their slides do: each fade's own hud.bgf opacity track
+	/// (<see cref="Fable3MarkerPlacement.Alpha"/>).
 	/// </summary>
 	private void PlaceMarkers(Camera3D? camera, Vector2 window)
 	{
@@ -439,9 +452,11 @@ public partial class Fable3WorldIcons : SubViewportContainer
 				_markerShownAt[sprite.Object] = shownAt;
 			}
 
+			// Fade Out starts with one second left (0x82B52020); Fade In at the first show.
+			Fable3MarkerPlacement.Fades? fades = sprite.Type == MarkerHero ? _heroFades : _henchmanFades;
 			float alpha = sprite.Fading
-				? Mathf.Clamp(sprite.SecondsLeft / MarkerFadeSeconds, 0f, 1f)
-				: Mathf.Clamp((sprite.Age - shownAt) / MarkerFadeSeconds, 0f, 1f);
+				? Fable3MarkerPlacement.Alpha(fades, true, (MarkerFadeSeconds - sprite.SecondsLeft) / MarkerFadeSeconds)
+				: Fable3MarkerPlacement.Alpha(fades, false, (sprite.Age - shownAt) / MarkerFadeSeconds);
 			(Vector2 root, string where) = PlaceMarker(camera, window, sprite.Object, sprite.Anchor, unit);
 			_markers.Add((art, root - new Vector2(0f, Fable3MarkerPlacement.IconLift * unit), Fable3MarkerPlacement.Side * unit, alpha));
 			if (_markersReported.Count < 32 && _markersReported.Add(sprite.Object))
@@ -493,22 +508,21 @@ public partial class Fable3WorldIcons : SubViewportContainer
 	/// A marker's root in window pixels (y down): the stated world point through Godot's camera,
 	/// pushed in front when behind it and dropped to the bottom edge, raised by its measured world
 	/// lift when on screen (<see cref="MarkerLift"/>), then held inside sub_82B519C8's margins with
-	/// its 10 / 40 pixels scaled from 720 lines to the window. The push's floor, twice the view's
-	/// +0x30, is taken as twice the camera's near distance. <paramref name="unit"/> is window
-	/// pixels per hud.bgf unit.
+	/// its 10 / 40 pixels scaled from 720 lines to the window. Behind and the push are the guest
+	/// camera's (<see cref="Fable3MarkerPlacement.Behind"/>, <see cref="Fable3MarkerPlacement.Push"/>:
+	/// its 0.1 near plane, not Godot's camera's). <paramref name="unit"/> is window pixels per hud.bgf unit.
 	/// </summary>
 	private (Vector2 Root, string Where) PlaceMarker(Camera3D camera, Vector2 window, uint icon, Vector3 guest, float unit)
 	{
 		Vector3 world = GameWorld.GuestToGodot(guest);
 		Vector2 pixel;
 		string where;
-		if (camera.IsPositionBehind(world))
+		Transform3D eye = camera.GlobalTransform;
+		Vector3 forward = -eye.Basis.Z.Normalized();
+		float distance = forward.Dot(world - eye.Origin);
+		if (Fable3MarkerPlacement.Behind(distance))
 		{
-			Transform3D eye = camera.GlobalTransform;
-			Vector3 forward = -eye.Basis.Z.Normalized();
-			float distance = forward.Dot(world - eye.Origin);
-			float push = Mathf.Max(2f * camera.Near, 2f * Mathf.Abs(distance));
-			pixel = camera.UnprojectPosition(world + (forward * push));
+			pixel = camera.UnprojectPosition(world + (forward * Fable3MarkerPlacement.Push(distance)));
 			pixel.Y = window.Y;
 			where = "behind";
 		}

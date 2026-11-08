@@ -27,6 +27,9 @@ public static class ModGodot
 	public const string Folder = "godot/";
 	public const string RootName = "RefiiMods";
 
+	/// <summary>The meta every script node carries: the name of the mod that ships it (who a call comes from).</summary>
+	public const string ModMeta = "refii_mod";
+
 	private static RefiiHost? _host;
 	private static Node? _root;
 
@@ -97,6 +100,11 @@ public static class ModGodot
 	/// <summary>Unregisters the singleton and frees the scripts; safe when nothing was started.</summary>
 	public static void Stop()
 	{
+		if (_host is not null)
+		{
+			ModScreen.ReleaseFor(_host);
+		}
+
 		if (Engine.HasSingleton(RefiiHost.SingletonName))
 		{
 			Engine.UnregisterSingleton(RefiiHost.SingletonName);
@@ -195,7 +203,7 @@ public static class ModGodot
 
 		// A node name cannot carry '/', '.' or ':'; the origin stays readable in the metadata.
 		node.Name = $"{mod}-{file[..^3]}".Replace('/', '-').Replace('.', '-').Replace(':', '-');
-		node.SetMeta("refii_mod", mod);
+		node.SetMeta(ModMeta, mod);
 		node.SetMeta("refii_file", Folder + file);
 		return node;
 	}

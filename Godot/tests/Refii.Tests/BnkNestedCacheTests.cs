@@ -52,7 +52,7 @@ public sealed class BnkNestedCacheTests
     /// <summary>Owns only temporary synthetic base/mod directories, removed after archive owners close.</summary>
     private sealed class Fixture : IDisposable
     {
-        private readonly string _root = Path.Combine(Path.GetTempPath(), "refii-nested-cache-" + Guid.NewGuid().ToString("N"));
+        private readonly string _root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-nested-cache-" + Guid.NewGuid().ToString("N"));
         /// <summary>Synthetic base game directory.</summary>
         internal string BaseRoot => Path.Combine(_root, "base");
         /// <summary>Synthetic enabled-mod directory.</summary>
@@ -72,7 +72,7 @@ public sealed class BnkNestedCacheTests
         public void Dispose()
         {
             string resolved = Path.GetFullPath(_root);
-            if (!string.Equals(Path.GetDirectoryName(resolved), Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath())), StringComparison.OrdinalIgnoreCase)
+            if (!string.Equals(Path.GetDirectoryName(resolved), Path.TrimEndingDirectorySeparator(Path.GetFullPath(Refii.Tests.TestTemp.Root)), StringComparison.OrdinalIgnoreCase)
                 || !Path.GetFileName(resolved).StartsWith("refii-nested-cache-", StringComparison.Ordinal))
                 throw new InvalidOperationException("Unexpected fixture directory");
             Directory.Delete(resolved, recursive: true);

@@ -205,7 +205,7 @@ public sealed class AndroidGameInstallerTests
     [TestCase]
     public void PruneRemovesOnlyUnusedCompleteOwnedFolders()
     {
-        string user = Path.Combine(Path.GetTempPath(), "refii-prune-" + Guid.NewGuid().ToString("N"));
+        string user = Path.Combine(Refii.Tests.TestTemp.Root, "refii-prune-" + Guid.NewGuid().ToString("N"));
         try
         {
             string Folder(string root, string prefix, string marker, string? complete, string? owner = "")
@@ -359,7 +359,7 @@ public sealed class AndroidGameInstallerTests
     private sealed class DiscFixture : IDisposable
     {
         /// <summary>Fresh fixture root, never a real user's game directory.</summary>
-        public string Root { get; } = Path.Combine(Path.GetTempPath(), "refii-disc-fixture-" + Guid.NewGuid().ToString("N"));
+        public string Root { get; } = Path.Combine(Refii.Tests.TestTemp.Root, "refii-disc-fixture-" + Guid.NewGuid().ToString("N"));
         /// <summary>App-private user stand-in.</summary>
         public string User => Path.Combine(Root, "user");
         /// <summary>Untouched disc input stand-in.</summary>

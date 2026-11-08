@@ -24,7 +24,7 @@ public static class RuntimeCVars
             new("log_max_file_size_mb", "Log", RuntimeCVarType.Int, "5", "Maximum log file size before rotation.", null, null),
             new("log_max_files", "Log", RuntimeCVarType.Int, "20", "Maximum rotated log files to keep.", null, null),
             new("game_data_root", "Runtime", RuntimeCVarType.String, "assets", "Override game data path.", null, null),
-            new("user_data_root", "Runtime", RuntimeCVarType.String, "assets/save", "Override user data path.", null, null),
+            new("user_data_root", "Runtime", RuntimeCVarType.String, "", "Override user data path.", null, null),
             new("update_data_root", "Runtime", RuntimeCVarType.String, "", "Override update data path.", null, null),
             new("cache_path", "Runtime", RuntimeCVarType.String, "", "Override shader cache path.", null, "Fable2"),
             new("lua_trace_script_loads", "Developer", RuntimeCVarType.Bool, "false", "Log script source paths at load time.", null, "Fable2"),

@@ -125,7 +125,8 @@ public static partial class ModValidate
 
 	/// <summary>
 	/// THE TEXT KEYS a mod names where the player reads them — <c>{KEY}</c> in <c>settings.ui.json</c>'s
-	/// labels, descriptions and option labels, <c>input.json</c>'s labels and <c>mod.toml</c>'s name and
+	/// labels, descriptions and option labels, <c>input.json</c>'s labels and <c>"touch"</c> pill, label and
+	/// caption text, and <c>mod.toml</c>'s name and
 	/// description (<see cref="ModText"/>) — each WARNED when the mod's own en-uk table
 	/// (<see cref="EnglishTable"/>) has no row for it: in a language the mod does not translate it would
 	/// fall to the running book (fine for a game tag) or be drawn as written. <paramref name="files"/> is
@@ -219,6 +220,25 @@ public static partial class ModValidate
 							}
 
 							i++;
+						}
+					}
+
+					// input.json's "touch": a pill's text, or { pill | label, caption }.
+					if (path == ModInput.ModInputPath && entry.Value.TryGetProperty("touch", out JsonElement touch))
+					{
+						if (touch.ValueKind == JsonValueKind.String)
+						{
+							Check(path, entry.Name + ".touch", touch.GetString());
+						}
+						else if (touch.ValueKind == JsonValueKind.Object)
+						{
+							foreach (string part in new[] { "pill", "label", "caption" })
+							{
+								if (touch.TryGetProperty(part, out JsonElement said) && said.ValueKind == JsonValueKind.String)
+								{
+									Check(path, $"{entry.Name}.touch.{part}", said.GetString());
+								}
+							}
 						}
 					}
 				}

@@ -13,7 +13,7 @@ public class InstallerTests
     [TestCase]
     public void TestInstallTitleUpdateWithEmptySourceOnMissingPathsDoesNotThrow()
     {
-        string nonExistentRoot = Path.Combine(Path.GetTempPath(), "refii_test_nonexistent_" + Guid.NewGuid().ToString("N"));
+        string nonExistentRoot = Path.Combine(Refii.Tests.TestTemp.Root, "refii_test_nonexistent_" + Guid.NewGuid().ToString("N"));
         string patchPath = Path.Combine(nonExistentRoot, "game", "default.xexp");
 
         // When sourcePath is empty (unpatched), InstallTitleUpdate deletes previous patch/bank files.
@@ -27,7 +27,7 @@ public class InstallerTests
     [TestCase]
     public void TestHasExtractedAssetsFailsWhenInstallFailedMarkerExists()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_test_assets_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_test_assets_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         try
         {
@@ -60,7 +60,7 @@ public class InstallerTests
     [TestCase]
     public void TestBnkArchiveFileSharingAllowsConcurrentWriter()
     {
-        string tempFile = Path.Combine(Path.GetTempPath(), "refii_share_test_" + Guid.NewGuid().ToString("N") + ".bnk");
+        string tempFile = Path.Combine(Refii.Tests.TestTemp.Root, "refii_share_test_" + Guid.NewGuid().ToString("N") + ".bnk");
         // Write minimal V3 BNK file: 16-byte header
         byte[] minimalBnk = new byte[32];
         minimalBnk[3] = 0x10; // header pointer = 16

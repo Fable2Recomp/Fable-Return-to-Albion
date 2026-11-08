@@ -56,12 +56,116 @@ public sealed class Engine_UiTextContract
 	/// </summary>
 	public bool Truncates { get; }
 
+	/// <summary>
+	/// Whether a colour tag's run REPLACES the element's colour and opacity (Fable 3) instead of
+	/// multiplying them (Fable 2). Fable 3's markup draw sub_821F6180 starts every run from the text
+	/// object's colour vector +0x40 (the ctor's (1, 1, 1, 1) from unk_820013A0, 0x82B44EB4; the
+	/// `textcolor` attributes write its RGB, CTextAsset_vf3 0x82B463B0..0x82B46460), whose alpha lane
+	/// +0x4C is the opacity CTextAsset slot 5 sub_82B46680 writes (vperm mask 0x82065380, 0x82B466F0;
+	/// its caller is not traced), and a colour code
+	/// overwrites all four lanes with the tag's own vector (codes 2..5 and 7: 0x821F8624..0x821F8634;
+	/// `b`: 0x821F85A4..0x821F85B8, vector 0x820FD340), whose alpha is 1.0 (bytes 0x832A5054.. all
+	/// 0xFF). `s5` alone keeps the element's alpha, halved (0.5 grey, `f31 * f28` at 0x821F85E8).
+	/// </summary>
+	public bool ColourRunsReplace { get; private init; }
+
+	/// <summary>
+	/// The element alpha at or below which a text draws nothing (Fable 3: sub_821F6180 reads +0x4C
+	/// into f31 at 0x821F61E0 and skips the whole draw when <c>f31 &lt;= flt_832A18DC</c> =
+	/// 0.09765625, 0x821F61E4..0x821F61E8); negative draws at any alpha. The floor matters to the
+	/// replacing runs, which would otherwise stay opaque as their element fades out.
+	/// </summary>
+	public float AlphaFloor { get; private init; } = -1f;
+
+	/// <summary>
+	/// Whether a run drawn at style 1 is outlined (Fable 3). Every run hands <c>sub_82B45538</c> a
+	/// style in r8 (<c>mr r29, r8</c> 0x82B45560): <c>&lt;b&gt;</c> passes 2 (<c>li r8, 2</c>
+	/// 0x821F85A0), every other run its element's +0x5C (<c>lwz r8, 0x5C(r29)</c> 0x821F855C). Only
+	/// style 1 sets the packet's byte +0x2C (<c>addi r8, r29, -1; cntlzw; extrwi</c>
+	/// 0x82B45708..0x82B45728 → sub_823595E0 <c>stb r30, 0x2C</c> 0x82359664 → instance +212,
+	/// 0x821BAF5C), which selects pixel shader 115 PSHADER_GUI_OUTLINED_TEXT_3D over 114
+	/// PSHADER_GUI_TEXT_3D (<c>li r3, 0x73</c> / <c>0x72</c> 0x82C9955C / 0x82C99568, ShadersRelease.sbk
+	/// entries 115 / 114). That shader takes the 3x3 maximum of the glyph coverage one font texel
+	/// apart (c48 = 1/atlas size, param 0x67 0x82C99764 → c48) as alpha and the centre coverage
+	/// times the run colour as RGB, so the ring around a glyph is the run's alpha in black. The
+	/// <c>TextOutlineColours</c> vector the style also picks (0x82B455F0..0x82B4567C) goes to param
+	/// 0xAE (0x82C997D4, 0x82C77384), which no shader in either bank binds, so
+	/// <c>sub_82D5D010</c>'s <c>count &gt;= 1</c> test (0x82D5D040) drops it.
+	/// </summary>
+	public bool Outlines { get; private init; }
+
+	/// <summary>
+	/// The style a world icon's title and opinion lines draw at (<see cref="Engine_HudWorldSprites"/>);
+	/// 3, <see cref="UiText.Style"/>'s default, leaves the labels unstyled. Fable 3: 1. Those lines
+	/// are CWorldIcon3D's +156 / +372 strings, which its draw (vf16 sub_82B50AB8) packs straight into
+	/// a text packet, not through a HUD element: the title at 0x82B51030 and the opinion at
+	/// 0x82B511EC, each with <c>li r10, 1</c> (0x82B50FD8, 0x82B511A0), which sub_823595E0 stores as
+	/// the outline byte (<c>mr r30, r10</c> 0x82359604, <c>stb r30, 0x2C</c> 0x82359664) that
+	/// CPrimitiveInstance3DText copies to +212 (vf5 0x821BAF50..0x821BAF5C), the byte style 1 sets.
+	/// </summary>
+	public int WorldIconTextStyle { get; private init; } = 3;
+
+	/// <summary>A <c>.fac</c> TEXT record's style as the element stores it: below 4 kept, else 0
+	/// (<c>cmplwi r5, 4</c> 0x82B45FD8, <c>stw r27 = 0</c> / <c>stw r5, 0x5C</c> 0x82B45FE0 / 0x82B45FE8).</summary>
+	public static int ElementStyle(int facStyle) => (uint)facStyle < 4 ? facStyle : 0;
+
+	/// <summary>The style a run draws at: <c>&lt;b&gt;</c> (markup code 1) 2, any other run its element's.</summary>
+	public static int RunStyle(int elementStyle, int markupCode) => markupCode == 1 ? 2 : elementStyle;
+
+	/// <summary>Whether a run at <paramref name="runStyle"/> draws the outline (<see cref="Outlines"/>).</summary>
+	public bool Outlined(int runStyle) => Outlines && runStyle == 1;
+
+	/// <summary>
+	/// How a run with <paramref name="tint"/> (a colour tag's, or null for unmarked text) combines
+	/// with its element: whether its RGB and its alpha replace the element's. Fable 3's `s5` is the
+	/// one tag whose vector alpha is below 1 (half the element's), so it replaces the RGB only.
+	/// </summary>
+	public (bool Rgb, bool Alpha) RunReplaces(Godot.Color? tint) =>
+		ColourRunsReplace && tint is { } colour ? (true, colour.A >= 1f) : (false, false);
+
+	/// <summary>
+	/// The player's text style (<c>ui_text_style</c>): true draws a title's console look where it has
+	/// one (<see cref="HasConsoleLook"/>), false draws the plain coverage path. Set from the
+	/// config before the first text material is made.
+	/// </summary>
+	public static bool ConsoleLook { get; set; } = true;
+
+	/// <summary>Whether this title states a console text look the player can choose.</summary>
+	public bool HasConsoleLook => _snapGlyphs || _contrastFloor != 1f || _coverageGamma != 1f;
+
+	private readonly bool _snapGlyphs;
+	private readonly float _contrastFloor;
+	private readonly float _coverageGamma;
+
+	/// <summary>
+	/// Whether <c>ui_text.gdshader</c> moves each glyph quad's corners to the nearest pixel edge under
+	/// an orthographic camera (<c>snap_glyphs</c>).
+	/// </summary>
+	public bool SnapGlyphs => ConsoleLook && _snapGlyphs;
+
+	/// <summary>
+	/// The least factor the coverage is re-contrasted by about its half point from 0.75x
+	/// magnification up (<c>contrast_floor</c>); 1.0 re-contrasts only magnified text, by its
+	/// magnification.
+	/// </summary>
+	public float ContrastFloor => ConsoleLook ? _contrastFloor : 1f;
+
+	/// <summary>
+	/// The power a partly covered coverage-path pixel is taken to, mirrored for dark text
+	/// (<c>coverage_gamma</c>); 1.0 is no curve.
+	/// </summary>
+	public float CoverageGamma => ConsoleLook ? _coverageGamma : 1f;
+
 	private Engine_UiTextContract(float boxWidthUnits, float boxHeightUnits, int normalSize,
 		bool scalesOffBucket, int lineAdvanceExtra, float iconAdvance, float iconSide, float iconInset,
-		Engine_UiTextMarkup.Vocabulary markup, bool truncates)
+		Engine_UiTextMarkup.Vocabulary markup, bool truncates, bool snapGlyphs, float contrastFloor,
+		float coverageGamma)
 	{
 		Markup = markup;
 		Truncates = truncates;
+		_snapGlyphs = snapGlyphs;
+		_contrastFloor = contrastFloor;
+		_coverageGamma = coverageGamma;
 		BoxWidthUnits = boxWidthUnits;
 		BoxHeightUnits = boxHeightUnits;
 		NormalSize = normalSize;
@@ -94,10 +198,14 @@ public sealed class Engine_UiTextContract
 	/// Truncate: off. TU1 has the same rule as Fable 3 (<c>CTextAsset_vf3</c> reads
 	/// <c>truncate</c> into +0xA0 at 0x828711F4; <c>sub_82871930</c> builds the ellipsis) and 52 of
 	/// its <c>.bgf</c> files carry the attribute (260 records), but Fable 2's UI was verified
-	/// without it and must not move, so it stays off until that is asked for.
+	/// without it and must not move, so it stays off until that is asked for. Shader: snapped glyphs,
+	/// a 1.3 contrast floor and the 2.2 coverage curve (c614ef6f5, checked against Fable 2 screens).
 	/// </summary>
 	public static readonly Engine_UiTextContract Fable2 = new(960f, 720f, 18, true, 1, 0f, 0f, 0f,
-		Engine_UiTextMarkup.Vocabulary.Fable2, truncates: false);
+		Engine_UiTextMarkup.Vocabulary.Fable2, truncates: false,
+		snapGlyphs: true,
+		contrastFloor: 1.3f,
+		coverageGamma: 2.2f);
 
 	/// <summary>
 	/// Fable 3. Box: <c>CTextAsset_vf1</c> 0x82B45F70 (<c>boxwidth × 1280.0</c>, flt_8206D2A0 →
@@ -120,9 +228,23 @@ public sealed class Engine_UiTextContract
 	/// advances 52: <c>sub_82B457A8</c> draws <c>side</c> wide (0x82B458A8..0x82B458E8) and a fixed
 	/// 32 tall (flt_8206BFB4 at 0x82B45860, <c>fsubs</c> 0x82B45888). Markup:
 	/// <see cref="Engine_UiTextMarkup.Vocabulary.Fable3"/>. Truncate: on (<c>sub_82B46980</c>).
+	/// Shader: the shipped coverage, re-contrasted only when magnified (the 1280x720 list rows).
+	/// Colour runs replace the element's colour and opacity, above the 0.09765625 draw floor
+	/// (<see cref="ColourRunsReplace"/>, <see cref="AlphaFloor"/>). Style-1 runs are outlined
+	/// (<see cref="Outlines"/>), and so are the world icons' title and opinion lines
+	/// (<see cref="WorldIconTextStyle"/>).
 	/// </summary>
-	public static readonly Engine_UiTextContract Fable3 = new(1280f, 720f, 16, false, 0, 26f, 32f, 6f,
-		Engine_UiTextMarkup.Vocabulary.Fable3, truncates: true);
+	public static readonly Engine_UiTextContract Fable3= new(1280f, 720f, 16, false, 0, 26f, 32f, 6f,
+		Engine_UiTextMarkup.Vocabulary.Fable3, truncates: true,
+		snapGlyphs: false,
+		contrastFloor: 1f,
+		coverageGamma: 1f)
+	{
+		ColourRunsReplace = true,
+		AlphaFloor = 0.09765625f,
+		Outlines = true,
+		WorldIconTextStyle = 1,
+	};
 
 	/// <summary>The contract of the title this process runs.</summary>
 	public static Engine_UiTextContract Active => Refii.Core.Engine_Title.Active.UiText;

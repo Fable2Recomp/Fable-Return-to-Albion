@@ -123,8 +123,8 @@ public partial class Engine_ClassicShadows : Node
 
     public override void _Ready()
     {
-        Instance = this;
         BuildSet(0);
+        Instance = this;
     }
 
     /// <summary>One view's pair of cascade viewports, cameras and captures.</summary>

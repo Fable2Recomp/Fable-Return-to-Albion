@@ -1,0 +1,21 @@
+key,value
+PORTAL_GUN_NAME,Portal Gun
+PORTAL_GUN_DESC,"Vystřeluje dvojici propojených portálů na stěny, podlahy a stropy."
+PORTAL_GUN_MOD_NAME,Portal Gun
+PORTAL_GUN_MOD_DESCRIPTION,"Zbraň, která vystřeluje dvojici propojených portálů na stěny, podlahy a stropy. Podívej se jedním a uvidíš ven druhým, vstup do něj a vyjdeš tam. G ji tasí; tlačítka myši střílejí."
+PORTAL_GUN_INPUT_TOGGLE,Zapnout nebo vypnout Portal Gun
+PORTAL_GUN_INPUT_SWAP,"Příště modrý nebo oranžový, na dotykové obrazovce"
+PORTAL_GUN_INPUT_AIM_BLUE,Portál na tlačítku Y dotykové obrazovky
+PORTAL_GUN_INPUT_AIM_ORANGE,"Popisek Y, když je na řadě oranžový"
+PORTAL_GUN_INPUT_NO_LOCK,"Zaměření, vypnuto v režimu portálů"
+PORTAL_GUN_INPUT_NO_MELEE,"Boj na blízko, vypnutý v režimu portálů"
+PORTAL_GUN_INPUT_NO_MAGIC,"Kouzla, vypnutá v režimu portálů"
+PORTAL_GUN_TOUCH_TOGGLE,Portal Gun
+PORTAL_GUN_TOUCH_SWAP,Změnit barvu
+PORTAL_GUN_TOUCH_BLUE,Modrý
+PORTAL_GUN_TOUCH_ORANGE,Oranžový
+PORTAL_GUN_SETTING_QUALITY,Kvalita pohledu
+PORTAL_GUN_SETTING_QUALITY_DESCRIPTION,Rozlišení pohledu skrz portál vzhledem k rozlišení obrazovky. Nižší běží rychleji.
+PORTAL_GUN_SETTING_VIEW_RANGE,Dohled
+PORTAL_GUN_SETTING_VIEW_RANGE_DESCRIPTION,Za tímto počtem metrů portál přestane kreslit svůj pohled.
+PORTAL_GUN_EQUIP_A_GUN,Nejdřív si vybav střelnou zbraň

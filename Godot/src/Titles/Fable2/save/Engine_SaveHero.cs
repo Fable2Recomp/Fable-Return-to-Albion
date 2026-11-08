@@ -84,11 +84,11 @@ public static class Engine_SaveHero
 	}
 
 	/// <summary>
-	/// Finds the save directory named <paramref name="saveName"/> under any user of the game's
-	/// content root — `<root>/<xuid>/4D5307F1/00000001/<name>/` — newest first.
+	/// Finds the save directory named <paramref name="saveName"/> in the save profile at
+	/// <paramref name="userDataRoot"/> — `<profile>/Fable 2/00000001/<name>/`.
 	/// </summary>
 	public static string? FindSaveDirectory(string userDataRoot, string saveName) =>
-		Engine_SaveDirectory.Find(userDataRoot, saveName);
+		Engine_SaveDirectory.Find(userDataRoot, saveName, Refii.Core.Engine_Title.Fable2.TitleId);
 
 	/// <summary>Why the last <see cref="Read"/> returned null, for the log; empty on success.</summary>
 	public static string LastError { get; private set; } = string.Empty;

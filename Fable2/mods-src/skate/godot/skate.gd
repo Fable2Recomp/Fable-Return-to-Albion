@@ -1,5 +1,10 @@
 extends Node
 ## The board under the hero, its flips and grabs, the score, and the stick for mod/init.lua.
+##
+## The board is one player's at a time, mod/init.lua's skate.player: their hero rides it and is posed, and
+## the mouse flips and grabs only where this machine's keyboard plays them (attack_mode). Every word drawn
+## is a key of language/<culture>/text/book.babel.csv (host.text), and the controls panel draws what each
+## action is bound to now (input_glyph, input_label).
 
 const MODEL := "game://art/inventory/weapons/skateboard/skateboard.mdl"
 const TOP_PUSH := 9.0               # metres a second, the most pushing reaches
@@ -9,7 +14,10 @@ const FLIP_DROP := 0.16             # how far under the feet the board falls awa
 const GRAB_LIFT := 0.5              # how far up the board comes to meet a hand
 const GRAB_TILT := 0.75             # radians
 const GRAB_EASE := 12.0
-const NAMES := {1: "Flourish", 2: "Back-Flourish", 3: "Cheeky Shove", 4: "The Improbable", 5: "Pie Grab", 6: "Hero's Grip", 7: "Balverine's Tail", 8: "Gargoyle's Nose", 9: "Hobbe's Wheelie", 10: "Rail Rider", 11: "Guild Grinder"}
+# The tricks' names by id, as text keys; a spin's id is its degrees, shown as the number.
+const NAMES := {1: "SKATE_TRICK_FLOURISH", 2: "SKATE_TRICK_BACK_FLOURISH", 3: "SKATE_TRICK_CHEEKY_SHOVE", 4: "SKATE_TRICK_IMPROBABLE",
+	5: "SKATE_TRICK_PIE_GRAB", 6: "SKATE_TRICK_HEROS_GRIP", 7: "SKATE_TRICK_BALVERINES_TAIL", 8: "SKATE_TRICK_GARGOYLES_NOSE",
+	9: "SKATE_TRICK_WHEELIE", 10: "SKATE_TRICK_RAIL_RIDER", 11: "SKATE_TRICK_GUILD_GRINDER"}
 const WHITE := Color(1.0, 0.97, 0.88)
 const GOLD := Color(1.0, 0.8, 0.28)
 const GOOD := Color(0.55, 1.0, 0.45)
@@ -20,8 +28,6 @@ const MANUAL_EASE := 7.0
 const METER := Vector2(340.0, 14.0)
 const TILT_EASE := 9.0
 const ROLL_MOST := 0.16             # radians, leaning into a full turn at speed
-const CRASH := "Crash!"
-const CLOSE_CALL := "Close Call"
 const BIG_COMBO := 3000.0           # the points at which the score text is at its largest
 const CROUCH_REST := 0.42            # riding along
 const CROUCH_AIR := 0.8
@@ -56,18 +62,22 @@ const PANEL_AT := Vector2(26.0, 330.0)
 const PANEL_ROW := 30.0
 const PANEL_KEYS_AT := 170.0        # the keys' column, from the panel's left
 const PANEL_WIDTH := 430.0
-# What does what, with its key and its pad button.
+# What does what: its text key, then how the keyboard and the pad do it. A "text" is a text key drawn as
+# it is (the game's own movement and the mouse buttons); otherwise "pattern", a text key whose %1 (and %2)
+# stand for the bound inputs of "binds", each drawn as its glyph (input_glyph) or, with none, its name.
 const CONTROLS := [
-	["Push, brake", "W, S", "Stick up, down"],
-	["Steer, spin", "A, D", "Stick left, right"],
-	["Hop", "Space", "A"],
-	["Flourish", "Left click", "X"],
-	["Pie Grab", "Hold right click", "Hold B"],
-	["Hobbe's Wheelie", "Hold Shift", "Hold RB"],
-	["Rail Rider", "F, near a ledge", "Y, near a ledge"],
-	["Step off", "K", "LB + Back"],
-	["Hide this", "N", "LB + D-pad up"],
+	["SKATE_CONTROL_PUSH", { "text": "SKATE_CONTROL_PUSH_KEYS" }, { "text": "SKATE_CONTROL_PUSH_STICK" }],
+	["SKATE_CONTROL_STEER", { "text": "SKATE_CONTROL_STEER_KEYS" }, { "text": "SKATE_CONTROL_STEER_STICK" }],
+	["SKATE_CONTROL_HOP", { "binds": ["skate.ollie"] }, { "binds": ["skate.ollie"] }],
+	["SKATE_TRICK_FLOURISH", { "text": "SKATE_CONTROL_LEFT_CLICK" }, { "binds": ["skate.flip"] }],
+	["SKATE_TRICK_PIE_GRAB", { "text": "SKATE_CONTROL_HOLD_RIGHT_CLICK" }, { "pattern": "SKATE_CONTROL_HOLD", "binds": ["skate.grab"] }],
+	["SKATE_TRICK_WHEELIE", { "pattern": "SKATE_CONTROL_HOLD", "binds": ["skate.manual"] }, { "pattern": "SKATE_CONTROL_HOLD", "binds": ["skate.manual"] }],
+	["SKATE_TRICK_RAIL_RIDER", { "pattern": "SKATE_CONTROL_NEAR_LEDGE", "binds": ["skate.grind"] }, { "pattern": "SKATE_CONTROL_NEAR_LEDGE", "binds": ["skate.grind"] }],
+	["SKATE_CONTROL_STEP_OFF", { "binds": ["skate.toggle"] }, { "chord": true, "binds": ["LB", "skate.toggle_pad"] }],
+	["SKATE_CONTROL_HIDE", { "binds": ["skate.help"] }, { "chord": true, "binds": ["LB", "skate.help_pad"] }],
 ]
+const CHORD := "%1 + %2"            # a held pad modifier and the button under it
+const BOUND := "%1"
 const GUILD_GRINDER := 11            # the trick that earns its own callout
 const SHOWN := 5                    # trick names on the line at once
 const FLASH_TIME := 1.4
@@ -262,6 +272,8 @@ class Rider extends SkeletonModifier3D:
 
 
 var host: Object
+var player := 1                     # whose board: skate.player
+var marker := RegEx.create_from_string("%(\\d)")   # a pattern's %N
 var interactive := 2                # the cutscene kind that also takes the player's hands
 var board: MeshInstance3D
 var canvas: Control
@@ -436,20 +448,16 @@ func _value(key: String) -> float:
 	return 0.0 if is_nan(value) else value
 
 
+## The board owner's own move stick, x right and y up: player 1's keys, touch stick and pad, player 2's pad.
 func _read_stick() -> Vector2:
-	var keys := Vector2(
-		float(Input.is_physical_key_pressed(KEY_D)) - float(Input.is_physical_key_pressed(KEY_A)),
-		float(Input.is_physical_key_pressed(KEY_W)) - float(Input.is_physical_key_pressed(KEY_S)))
-	var pad := Vector2(Input.get_joy_axis(0, JOY_AXIS_LEFT_X), -Input.get_joy_axis(0, JOY_AXIS_LEFT_Y))
-	if pad.length() < 0.2:
-		pad = Vector2.ZERO
-	if pad == Vector2.ZERO:
-		pad = host.touch_stick()          # the touchscreen's move stick, x right and y up
-	return keys if keys != Vector2.ZERO else pad
+	var read: Vector2 = host.move_stick(player)
+	return Vector2.ZERO if read.length() < 0.2 else read
 
 
 func _on_input_action(e: Dictionary) -> void:
 	var name: String = e.get("name", "")
+	if int(e.get("player", 1)) != player:
+		return
 	if (name == "skate.help" or name == "skate.help_pad") and e.get("pressed", false) and _value("skate.on") >= 0.5:
 		show_controls = not show_controls
 		var prefs := ConfigFile.new()
@@ -459,7 +467,7 @@ func _on_input_action(e: Dictionary) -> void:
 
 ## While riding, the left mouse button flips and the right one grabs, in place of what the game has them do.
 func _in_play() -> bool:
-	return host.in_play(1) and not host.in_cutscene(1, interactive)
+	return host.in_play(player) and not host.in_cutscene(player, interactive)
 
 
 func _input(event: InputEvent) -> void:
@@ -483,8 +491,9 @@ func _input(event: InputEvent) -> void:
 
 func _process(delta: float) -> void:
 	var riding := _value("skate.on") >= 0.5
+	player = maxi(1, int(_value("skate.player")))
 	# The claims in init.lua take what the buttons would press: X, Y and B, the attack button, and LT.
-	mouse_ours = riding and _in_play()
+	mouse_ours = riding and _in_play() and host.attack_mode(player) != 0
 	if not riding:
 		if rider != null and is_instance_valid(rider) and rider.active:
 			rider.active = false
@@ -510,7 +519,7 @@ func _process(delta: float) -> void:
 	if _value("skate.bailing") >= 0.5:
 		sparks.emitting = false
 		return
-	var hero = host.node_for(host.hero(1))
+	var hero = host.node_for(host.hero(player))
 	if not hero is Node3D:
 		board.visible = false
 		return
@@ -613,10 +622,10 @@ func _read_tricks() -> void:
 	if seen != trick_seen:
 		trick_seen = seen
 		var id := int(_value("skate.trick"))
-		line.append(NAMES.get(id, "%d" % id))
+		line.append(host.text(NAMES[id]) if NAMES.has(id) else "%d" % id)
 		if id == GUILD_GRINDER:
 			flash = FLASH_TIME
-			flash_text = "Guild Grinder!"
+			flash_text = host.text("SKATE_GUILD_GRINDER_CALLOUT")
 			flash_colour = GOLD
 			flash_size = 1.3
 	if _value("skate.count") == 0.0:
@@ -629,10 +638,10 @@ func _read_tricks() -> void:
 		var sketchy := _value("skate.sketchy") >= 0.5
 		if amount < 0:
 			_shot(thrown_sound)
-			flash_text = CRASH
+			flash_text = host.text("SKATE_CRASH")
 			flash_colour = BAD
 		elif sketchy:
-			flash_text = CLOSE_CALL if amount == 0 else "%s  +%d" % [CLOSE_CALL, amount]
+			flash_text = host.text("SKATE_CLOSE_CALL") if amount == 0 else host.text("SKATE_CLOSE_CALL_POINTS", [amount])
 			flash_colour = GOLD
 		else:
 			flash_text = "+%d" % amount
@@ -698,12 +707,49 @@ func _draw_controls(scale: float) -> void:
 	var size := int(20 * scale)
 	var panel := Rect2(corner - Vector2(12.0, 28.0) * scale, Vector2(PANEL_WIDTH * scale, row * (CONTROLS.size() + 1.25)))
 	canvas.draw_rect(panel, Color(0.0, 0.0, 0.0, 0.38))
-	canvas.draw_string(face, corner, "Hold a direction for another Flourish or Grab", HORIZONTAL_ALIGNMENT_LEFT, -1, int(16 * scale), Color(GOLD, 0.8))
+	canvas.draw_string(face, corner, host.text("SKATE_CONTROLS_HINT"), HORIZONTAL_ALIGNMENT_LEFT, -1, int(16 * scale), Color(GOLD, 0.8))
 	for i in CONTROLS.size():
 		var at := corner + Vector2(0.0, row * (i + 1))
 		var entry: Array = CONTROLS[i]
-		canvas.draw_string(face, at, entry[0], HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(WHITE, 0.72))
-		canvas.draw_string(face, at + Vector2(PANEL_KEYS_AT * scale, 0.0), entry[2] if on_pad else entry[1], HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(GOLD, 0.95))
+		canvas.draw_string(face, at, host.text(entry[0]), HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(WHITE, 0.72))
+		_draw_how(at + Vector2(PANEL_KEYS_AT * scale, 0.0), entry[2] if on_pad else entry[1], size, Color(GOLD, 0.95))
+
+
+## One control's how: its text, or its pattern with each %N drawn as that bound input.
+func _draw_how(at: Vector2, how: Dictionary, size: int, colour: Color) -> void:
+	if how.has("text"):
+		canvas.draw_string(face, at, host.text(how.text), HORIZONTAL_ALIGNMENT_LEFT, -1, size, colour)
+		return
+	var binds: Array = how.get("binds", [])
+	var pattern: String = CHORD if how.get("chord", false) else (host.text(how.pattern) if how.has("pattern") else BOUND)
+	var x := at.x
+	var from := 0
+	for found: RegExMatch in marker.search_all(pattern):
+		x += _words(Vector2(x, at.y), pattern.substr(from, found.get_start() - from), size, colour)
+		var which := found.get_string(1).to_int() - 1
+		if which >= 0 and which < binds.size():
+			x += _bound(Vector2(x, at.y), binds[which], size, colour)
+		from = found.get_end()
+	_words(Vector2(x, at.y), pattern.substr(from), size, colour)
+
+
+func _words(at: Vector2, text: String, size: int, colour: Color) -> float:
+	if text.is_empty():
+		return 0.0
+	canvas.draw_string(face, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, colour)
+	return face.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+
+
+## What an action or a pad button is bound to now, on the device in use: its glyph standing on the line,
+## or its name where there is no glyph. The width taken.
+func _bound(at: Vector2, name: String, size: int, colour: Color) -> float:
+	var glyph: Texture2D = host.input_glyph(name)
+	if glyph == null:
+		return _words(at, host.input_label(name), size, colour)
+	var high := size * 1.2
+	var wide := high * glyph.get_width() / maxf(1.0, glyph.get_height())
+	canvas.draw_texture_rect(glyph, Rect2(at.x, at.y - size * 0.95, wide, high), false)
+	return wide
 
 
 ## How much larger a score shows, from 1 up to half as big again.
@@ -741,7 +787,7 @@ func _draw_score() -> void:
 	if count > 0:
 		var so_far := _value("skate.combo") * count
 		var shade := GOLD.lerp(Color(1.0, 0.45, 0.2), clampf(so_far / BIG_COMBO, 0.0, 1.0))
-		_text(Vector2(0.0, 815.0 * scale), "%d  x  %d" % [int(_value("skate.combo")), count], int(46 * scale * _grown(so_far)), shade)
+		_text(Vector2(0.0, 815.0 * scale), host.text("SKATE_COMBO", [int(_value("skate.combo")), count]), int(46 * scale * _grown(so_far)), shade)
 	if flash > 0.0:
 		var shade := flash_colour
 		shade.a = minf(1.0, flash / (FLASH_TIME * 0.4))

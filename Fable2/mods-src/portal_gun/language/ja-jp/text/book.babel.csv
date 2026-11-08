@@ -1,0 +1,21 @@
+key,value
+PORTAL_GUN_NAME,ポータルガン
+PORTAL_GUN_DESC,壁、床、天井に連結した2つのポータルを撃ち込む。
+PORTAL_GUN_MOD_NAME,ポータルガン
+PORTAL_GUN_MOD_DESCRIPTION,壁、床、天井に連結した2つのポータルを撃ち込む銃。片方をのぞくともう片方から外が見え、入るとそこから出られる。Gで構え、マウスボタンで撃つ。
+PORTAL_GUN_INPUT_TOGGLE,ポータルガンのオン/オフ
+PORTAL_GUN_INPUT_SWAP,次に撃つ色 (青/オレンジ)、タッチスクリーン用
+PORTAL_GUN_INPUT_AIM_BLUE,タッチスクリーンのYに表示するポータル
+PORTAL_GUN_INPUT_AIM_ORANGE,次がオレンジのときのYの表示
+PORTAL_GUN_INPUT_NO_LOCK,ロックオン、ポータルモード中はオフ
+PORTAL_GUN_INPUT_NO_MELEE,近接攻撃、ポータルモード中はオフ
+PORTAL_GUN_INPUT_NO_MAGIC,魔法、ポータルモード中はオフ
+PORTAL_GUN_TOUCH_TOGGLE,ポータルガン
+PORTAL_GUN_TOUCH_SWAP,色を切替
+PORTAL_GUN_TOUCH_BLUE,青
+PORTAL_GUN_TOUCH_ORANGE,オレンジ
+PORTAL_GUN_SETTING_QUALITY,ビューの画質
+PORTAL_GUN_SETTING_QUALITY_DESCRIPTION,ポータル越しの映像の解像度 (画面に対する比率)。低いほど速く動作する。
+PORTAL_GUN_SETTING_VIEW_RANGE,ビューの距離
+PORTAL_GUN_SETTING_VIEW_RANGE_DESCRIPTION,この距離 (メートル) を超えると、ポータルは向こう側を描画しない。
+PORTAL_GUN_EQUIP_A_GUN,先に銃を装備してください

@@ -280,7 +280,7 @@ public static class AndroidTouchLayout
         // at its edge and clear of the camera drag over the middle of the screen. A third of the way
         // down: below a corner's punch-hole camera and above the one a phone centres on a side edge.
         // On the left that is where the HUD's spell-charge meter runs, so Android moves the meter in
-        // (Engine_HudLayout.InsetSpellCharge). Between the HUD's
+        // (Fable 2's Fable2HudLayout.InsetSpellCharge). Between the HUD's
         // health above and B below, the pair shrinks rather than covering either at the largest
         // scales. Each keeps its place with the game's spell menu open, so a latch is tapped closed
         // where it was opened. The lock stays whatever the hero carries — it also aims an expression.

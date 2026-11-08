@@ -18,7 +18,7 @@ public sealed class PreparedImageFileTests
     }
 
     private static string TempPath() =>
-        Path.Combine(Path.GetTempPath(), $"refii-prepared-{Guid.NewGuid():N}", "a.bin");
+        Path.Combine(Refii.Tests.TestTemp.Root, $"refii-prepared-{Guid.NewGuid():N}", "a.bin");
 
     /// <summary>What was written is what is read, and no temporary file is left beside it.</summary>
     [TestCase]

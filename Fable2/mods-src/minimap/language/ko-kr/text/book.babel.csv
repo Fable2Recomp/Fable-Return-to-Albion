@@ -1,0 +1,12 @@
+key,value
+MINIMAP_MOD_NAME,미니맵
+MINIMAP_MOD_DESCRIPTION,"오른쪽 위에 지역을 보여 주는 둥근 지도로, 북쪽이 위이며 영웅은 화살표로, 퀘스트와 애완견, 적은 점으로 표시합니다. M으로 크기를 바꾸거나 숨깁니다."
+MINIMAP_INPUT_SIZE,미니맵 크기
+MINIMAP_SETTING_SHOW,미니맵 표시
+MINIMAP_SETTING_ENEMIES,적 표시
+MINIMAP_SETTING_RANGE,적 표시 범위
+MINIMAP_SETTING_RANGE_DESCRIPTION,영웅으로부터 몇 미터 안의 적을 표시할지 정합니다.
+MINIMAP_SETTING_OPACITY,불투명도
+MINIMAP_SETTING_SIZE,크기
+MINIMAP_SETTING_SIZE_DESCRIPTION,M으로 전환하는 모든 크기의 배율입니다.
+MINIMAP_COMPASS_NORTH,북

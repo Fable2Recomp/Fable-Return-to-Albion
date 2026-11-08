@@ -18,6 +18,9 @@ public sealed class Fable2Title : Engine_TitleGame
 
 	public override Refii.Mods.Engine_ExternalModManager ExternalMods => Archon;
 
+	public override System.Collections.Generic.IReadOnlyList<Refii.Mods.ModGuideCard> ModGuideCards(string page, bool closing) =>
+		Fable2ModGuideCards.For(page, closing);
+
 	protected override void Install()
 	{
 		Fable2PageProviders.Register();
@@ -86,6 +89,18 @@ public sealed class Fable2Title : Engine_TitleGame
 
 	public override string? FindSaveDirectory(string saveRoot, string save) => Engine_SaveHero.FindSaveDirectory(saveRoot, save);
 
+	/// <summary>
+	/// A Fable 2 save's own files, the ones a 360 writes inside its STFS package: what a console or
+	/// Xenia reads, and all a copy for one carries.
+	/// </summary>
+	private static readonly string[] GuestSaveFiles =
+	{
+		"mainsave.bin", "herosave.bin", "chaptersave.bin", "saveuid.bin", "texturemorphs.bin",
+		"failquestsave.bin", "Fable2PubInfo.xml",
+	};
+
+	public override System.Collections.Generic.IReadOnlyList<string> SaveGuestFiles => GuestSaveFiles;
+
 	public override Refii.Text.Engine_BabelDatabase? Strings => Engine_UiInventorySource.Strings;
 
 	public override bool InteractionDialogUp => GamePubGames.DialogUp;
@@ -105,16 +120,15 @@ public sealed class Fable2Title : Engine_TitleGame
 
 	public override uint CompanionEntityAddress => Fable2Bridge.GetMinimapLive().Dog;
 
-	public override Godot.Collections.Dictionary ModMinimap() => Engine_UiMinimapMod.State();
+	public override Godot.Collections.Dictionary ModMinimap(uint hero) => Engine_UiMinimapMod.State(hero);
 
 	public override Godot.Vector2? ModMinimapPoint(Godot.Vector3 world) => Engine_UiMinimapMod.Point(world);
 
-	public override Godot.Collections.Array ModInventoryItems() => Engine_UiInventorySource.ModItems();
+	public override Godot.Collections.Array ModInventoryItems(int player) => Engine_UiInventorySource.ModItems(player);
 
-	public override string? ModInventoryAction(string operation, uint record, int category) =>
-		Engine_UiInventorySource.ModAction(operation, record, category);
+	public override string? ModInventoryAction(string operation, uint record, int category, int player) =>
+		Engine_UiInventorySource.ModAction(operation, record, category, player);
 
-	public override void ModOwnScreen(bool on) => GameUi.ModOwnsScreen = on;
 
 	public override int HeroMorphPreviewGeneration => GameCharacterMorphs.PreviewGeneration;
 
@@ -235,6 +249,10 @@ public sealed class Fable2Title : Engine_TitleGame
 	};
 
 	public override System.Collections.Generic.IReadOnlyCollection<string> HudOwnedSubtrees => OwnedHud;
+
+	public override Refii.Ui.Engine_HudTitleLayout HudLayout => Fable2HudLayout.Instance;
+
+	public override Refii.Ui.Engine_UiStatedBoxes StatedBoxes => Engine_UiDisplayBoxes.Statements;
 
 	private static readonly string[] Pips =
 	{

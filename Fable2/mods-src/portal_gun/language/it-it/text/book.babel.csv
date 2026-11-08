@@ -1,0 +1,21 @@
+key,value
+PORTAL_GUN_NAME,Portal Gun
+PORTAL_GUN_DESC,"Spara una coppia di portali collegati su pareti, pavimenti e soffitti."
+PORTAL_GUN_MOD_NAME,Portal Gun
+PORTAL_GUN_MOD_DESCRIPTION,"Un'arma che spara una coppia di portali collegati su pareti, pavimenti e soffitti. Guarda in uno per vedere dall'altro ed entraci per uscire di là. G la estrae; i tasti del mouse sparano."
+PORTAL_GUN_INPUT_TOGGLE,Attiva o disattiva la Portal Gun
+PORTAL_GUN_INPUT_SWAP,"Prossimo blu o arancione, su touchscreen"
+PORTAL_GUN_INPUT_AIM_BLUE,Un portale sulla Y del touchscreen
+PORTAL_GUN_INPUT_AIM_ORANGE,Didascalia della Y quando tocca all'arancione
+PORTAL_GUN_INPUT_NO_LOCK,"Aggancio, disattivato in modalità portale"
+PORTAL_GUN_INPUT_NO_MELEE,"Corpo a corpo, disattivato in modalità portale"
+PORTAL_GUN_INPUT_NO_MAGIC,"Magia, disattivata in modalità portale"
+PORTAL_GUN_TOUCH_TOGGLE,Portal Gun
+PORTAL_GUN_TOUCH_SWAP,Cambia colore
+PORTAL_GUN_TOUCH_BLUE,Blu
+PORTAL_GUN_TOUCH_ORANGE,Arancione
+PORTAL_GUN_SETTING_QUALITY,Qualità della vista
+PORTAL_GUN_SETTING_QUALITY_DESCRIPTION,"La risoluzione della vista attraverso un portale, rispetto a quella dello schermo. Più bassa è più veloce."
+PORTAL_GUN_SETTING_VIEW_RANGE,Distanza della vista
+PORTAL_GUN_SETTING_VIEW_RANGE_DESCRIPTION,Oltre questi metri un portale smette di disegnare la sua vista.
+PORTAL_GUN_EQUIP_A_GUN,Prima equipaggia un'arma da fuoco

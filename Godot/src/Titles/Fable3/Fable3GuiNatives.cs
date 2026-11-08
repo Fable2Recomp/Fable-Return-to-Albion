@@ -511,10 +511,12 @@ public partial class Fable3GuiNatives : Node
 				box = Boxes.QuestBox(name, text, 0, 1);
 				break;
 			case "card":
-				box = Boxes.InfoBoxParams(name, Engine_UiGuiText.Resolve(call.Argument(5).Text, Fable3Strings.Current), -1f, text, 1,
-					new Engine_UiGuiBoxes.BoxButtons(call.Argument(8).Boolean, false, false, call.Argument(9).Boolean, false,
-						call.Argument(6).Text, call.Argument(7).Text));
-				break;
+				// CAcceptHoldBox (type 8) draws nothing on the 360: its Show 0x82B56D80 takes presentation 4
+				// from sub_8291F4C8 and skips every write when it is null (beq 0x82B56DA0); that
+				// presentation is DisplayBox.bgf (sub_82B3EC40 0x82B3ED30..0x82B3ED40), which no bank ships.
+				// The hold itself stays the guest's (its meter step sub_82C06070 runs on its own ticks).
+				GD.Print($"[fable3-boxes] hold box {address:X8} '{name}' shown — the 360 draws none");
+				return;
 			case "unknown":
 			case string screen when screen.StartsWith("screen:", System.StringComparison.Ordinal):
 				// The box-manager SCREENS: Options (`screen:options`, drawn by Fable3Options from

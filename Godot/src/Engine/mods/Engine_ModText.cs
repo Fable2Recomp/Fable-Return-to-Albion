@@ -263,13 +263,25 @@ public static class ModText
 	/// <summary>One key in the running game: <see cref="Find(string, Func{string, string?}?, Tables, string)"/> over the running book, the mount's tables and the culture in force.</summary>
 	public static string? Find(string key) => Find(key, RunningBook, _mounted, Engine_GameCulture.Current);
 
+	/// <summary>The running book's string for a tag: the tag as given, then with <c>TEXT_</c>, as the game's GUI resolves a tag (<see cref="Refii.Ui.Engine_UiGuiText.Resolve(string?, Refii.Text.Engine_BabelDatabase?, out bool)"/>).</summary>
 	private static string? RunningBook(string key)
 	{
 		try
 		{
-			return Refii.Core.Engine_TitleGame.Active.Strings is { } book && book.TryGetString(key, out string text) && text.Length != 0
-				? text
-				: null;
+			if (Refii.Core.Engine_TitleGame.Active.Strings is not { } book)
+			{
+				return null;
+			}
+
+			if (book.TryGetString(key, out string text) && text.Length != 0)
+			{
+				return text;
+			}
+
+			return !key.StartsWith(Refii.Ui.Engine_UiGuiText.TagPrefix, StringComparison.Ordinal) &&
+				book.TryGetString(Refii.Ui.Engine_UiGuiText.TagPrefix + key, out string prefixed) && prefixed.Length != 0
+					? prefixed
+					: null;
 		}
 		catch (Exception)
 		{

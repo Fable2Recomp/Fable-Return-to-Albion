@@ -828,7 +828,7 @@ public class MdlConverterTests
 	[TestCase]
 	public void TheMountServesAModsGlbAsTheModel()
 	{
-		string scratch = Path.Combine(Path.GetTempPath(), "refii-scratch", "mdl", "mount-" + Guid.NewGuid().ToString("N"));
+		string scratch = Path.Combine(Refii.Tests.TestTemp.Root, "refii-scratch", "mdl", "mount-" + Guid.NewGuid().ToString("N"));
 		string mod = Path.Combine(scratch, "mod");
 		Directory.CreateDirectory(Path.Combine(mod, "art", "models"));
 		try
@@ -855,6 +855,39 @@ public class MdlConverterTests
 			AssertThat(served.SourceMod).IsEqual("fixture");
 			MdlInfo info = Parse(served.ReadAllBytes());
 			AssertThat(info.MeshBuffers[0].VertexCount).IsEqual(8u);
+		}
+		finally
+		{
+			Directory.Delete(scratch, recursive: true);
+		}
+	}
+
+	/// <summary>A new model (models.json) is built on its template from the mount, with the template's socket file beside it.</summary>
+	[TestCase]
+	public void TheMountBuildsANewModelOnItsTemplate()
+	{
+		string scratch = Path.Combine(Refii.Tests.TestTemp.Root, "refii-scratch", "mdl", "new-" + Guid.NewGuid().ToString("N"));
+		string mod = Path.Combine(scratch, "mod");
+		Directory.CreateDirectory(Path.Combine(mod, "art", "mine"));
+		try
+		{
+			byte[] mdl = BuildMdl(new Fixture { Parts = { Triangle() } });
+			byte[] sockets = { 0x47, 0x61, 0x6D, 0x65, 0x4D, 0x65, 0x73, 0x68, 0, 1, 2, 3 };
+			File.WriteAllBytes(Path.Combine(mod, "art", "mine", "gun.mdl.glb"), BuildGlb(new GlbScene { Primitives = { CubePrimitive() } }));
+			File.WriteAllText(Path.Combine(mod, ModMeshOverlays.ModelsPath),
+				"[{ \"model\": \"art/mine/gun.mdl\", \"template\": \"art/shipped/rifle.mdl\" }]");
+
+			var mounted = new BnkFileSystem();
+			mounted.AddVirtualFile("art/shipped/rifle.mdl", "<fixture>", mdl.LongLength, () => mdl);
+			mounted.AddVirtualFile("art/shipped/rifle.mdl.gmd", "<fixture>", sockets.LongLength, () => sockets);
+
+			List<MeshConversion> conversions = ModMeshOverlays.Apply(mounted, new[] { new ModOverlay { Name = "fixture", AssetRoot = mod } });
+			MeshConversion gun = conversions.Single(c => c.Target == "art/mine/gun.mdl");
+			AssertThat(gun.Ok).OverrideFailureMessage(Msg(gun.Error)).IsTrue();
+			AssertThat(mounted.TryGetFile("art/mine/gun.mdl", out BnkFile served)).IsTrue();
+			AssertThat(Parse(served.ReadAllBytes()).MeshBuffers[0].VertexCount).IsEqual(8u);
+			AssertThat(mounted.TryGetFile("art/mine/gun.mdl.gmd", out BnkFile socketFile)).IsTrue();
+			AssertThat(Convert.ToHexString(socketFile.ReadAllBytes())).IsEqual(Convert.ToHexString(sockets));
 		}
 		finally
 		{

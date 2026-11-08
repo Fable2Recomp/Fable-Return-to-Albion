@@ -35,7 +35,7 @@ public class ModdingFeatureTests
     [TestCase]
     public void TestFullModdingLifecycle_MultiModCompositionAndInheritance_E2E()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_feature_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_feature_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -203,7 +203,7 @@ public class ModdingFeatureTests
     [TestCase]
     public void TestConflictDetectionAndTally_E2E()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_feature_conflict_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_feature_conflict_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -307,7 +307,7 @@ public class ModdingFeatureTests
     [TestCase]
     public void TestModDisablingAndCacheLifecycle_E2E()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_feature_cache_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_feature_cache_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -419,7 +419,7 @@ public class ModdingFeatureTests
     [TestCase]
     public void TestLoadOrderDisabledModPositionPreservation_E2E()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_feature_order_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_feature_order_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try

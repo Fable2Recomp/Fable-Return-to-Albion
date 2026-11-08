@@ -9,7 +9,7 @@ namespace Refii.Tests;
 [TestSuite]
 public class KeyedFileCacheTests
 {
-    private static string TempPath() => Path.Combine(Path.GetTempPath(), "refii-keyed-" + Guid.NewGuid().ToString("N"), "carry.bin");
+    private static string TempPath() => Path.Combine(Refii.Tests.TestTemp.Root, "refii-keyed-" + Guid.NewGuid().ToString("N"), "carry.bin");
 
     [TestCase]
     public void TestTheBytesComeBackForTheSameInputOnly()

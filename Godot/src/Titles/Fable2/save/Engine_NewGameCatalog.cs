@@ -29,15 +29,14 @@ public sealed record NewGameSelection(NewGameStart Start, WantedPosterRecipient?
 
 public static class Engine_NewGameCatalog
 {
-    public static IReadOnlyList<string> DefaultRoots(string installedRoot, string? configuredRoot, string documentsRoot, string? runtimeRoot = null)
-    {
-        if (!string.IsNullOrWhiteSpace(runtimeRoot)) return new[] { Path.GetFullPath(runtimeRoot) };
-        var roots = new List<string> { installedRoot };
-        if (!string.IsNullOrWhiteSpace(configuredRoot)) roots.Add(configuredRoot);
-        else if (!string.IsNullOrWhiteSpace(documentsRoot)) roots.Add(Path.Combine(documentsRoot, "refii"));
-        return roots.Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-    }
+    /// <summary>
+    /// Fable 2's saved games in a save profile, <c>&lt;profile&gt;/Fable 2/00000001</c>: only that title's,
+    /// never Fable 3's (which have the same file names) and never the Older saves beside it.
+    /// </summary>
+    public static string SaveGamesOf(string profileDirectory) =>
+        Path.GetFullPath(Engine_SaveLayout.SaveGames(profileDirectory, Refii.Core.Engine_Title.Fable2.TitleId));
 
+    /// <summary>The saves directly in each root: a root is a savegame folder, each save one folder in it.</summary>
     public static NewGameSaveScan Scan(IEnumerable<string> roots)
     {
         var saves = new List<NewGameSave>();
@@ -48,7 +47,7 @@ public static class Engine_NewGameCatalog
             try
             {
                 if (!Directory.Exists(root)) continue;
-                var options = new EnumerationOptions { RecurseSubdirectories = true, MaxRecursionDepth = 6,
+                var options = new EnumerationOptions { RecurseSubdirectories = true, MaxRecursionDepth = 1,
                     AttributesToSkip = FileAttributes.ReparsePoint, IgnoreInaccessible = false };
                 foreach (string main in Directory.EnumerateFiles(root, "mainsave.bin", options))
                 {

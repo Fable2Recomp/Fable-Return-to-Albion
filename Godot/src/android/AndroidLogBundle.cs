@@ -29,18 +29,30 @@ public static class AndroidLogBundle
     /// <summary>What an export holds.</summary>
     public enum Contents { Logs, Saves, LogsAndSaves }
 
-    /// <summary>The save folder's name in an export: where the saves were before the title split, so an export
-    /// from either side of it imports on the other.</summary>
-    public const string SaveFolder = "runtime/assets/save";
+    /// <summary>
+    /// The saves' root in an export: the app's one save folder, so an export's save entries are
+    /// <c>files/runtime/assets/saves/&lt;profile&gt;/...</c>, the active profile with every title in it.
+    /// </summary>
+    public const string SaveFolder = "runtime/assets/" + Refii.Save.Engine_SaveLayout.RootFolderName;
 
-    /// <summary>The save folder on the phone: Fable 2's own (<c>runtime/assets/Fable2/save</c>), where the
-    /// native session points the game.</summary>
+    /// <summary>The save folder an export named before the save profiles: one content root, still imported.</summary>
+    public const string LegacySaveFolder = "runtime/assets/save";
+
+    /// <summary>The app's one save folder on the phone, <c>runtime/assets/saves</c>.</summary>
+    /// <param name="userDirectory">The app's data directory.</param>
+    public static string SavesRoot(string userDirectory) =>
+        Refii.Save.Engine_SaveLayout.Root(Path.Combine(userDirectory, "runtime", "assets"));
+
+    /// <summary>The active save profile on the phone, the folder the native session points the game at.</summary>
     /// <param name="userDirectory">The app's data directory.</param>
     public static string SaveDirectory(string userDirectory) =>
-        Path.Combine(userDirectory, "runtime", "assets", Refii.Core.Engine_Title.Fable2.Folder, "save");
+        Refii.Save.Engine_SaveProfiles.ActiveDirectory(SavesRoot(userDirectory));
 
-    /// <summary>The save folder's own folder that never leaves the phone: the RexNet identity key and friend lists.</summary>
-    public const string PrivateSaveFolder = "rexnet";
+    /// <summary>The profile's own folder that never leaves the phone: the RexNet identity key and friend lists.</summary>
+    public const string PrivateSaveFolder = Refii.Save.Engine_SaveLayout.IdentityFolderName;
+
+    /// <summary>The profile's id file, which names this phone's profile and never leaves it either.</summary>
+    public const string PrivateSaveFile = Refii.Save.Engine_SaveLayout.ProfileIdFileName;
 
     /// <summary>The manifest an export with saves carries: what it holds. An import checks the save entries themselves.</summary>
     public const string ManifestName = "export.json";
@@ -120,12 +132,14 @@ public static class AndroidLogBundle
             .ToList();
     }
 
-    /// <summary>Every file in the save folder but its <see cref="PrivateSaveFolder"/>, as <c>files/runtime/assets/save/...</c>.</summary>
+    /// <summary>Every file in the active profile but its <see cref="PrivateSaveFolder"/> and <see cref="PrivateSaveFile"/>,
+    /// as <c>files/runtime/assets/saves/&lt;profile&gt;/...</c>.</summary>
     /// <param name="userDirectory">The app's data directory.</param>
     /// <remarks>Symbolic links are not followed: the save folder is the app's own and holds none.</remarks>
     public static List<Entry> SelectSaveEntries(string userDirectory)
     {
         string root = SaveDirectory(userDirectory);
+        string profile = Path.GetFileName(root);
         var entries = new List<Entry>();
         if (!Directory.Exists(root)) return entries;
         var pending = new Stack<string>();
@@ -142,7 +156,8 @@ public static class AndroidLogBundle
                     if (folder == root && relative == PrivateSaveFolder) continue;
                     pending.Push(path);
                 }
-                else entries.Add(new Entry(path, "files/" + SaveFolder + "/" + relative));
+                else if (folder != root || relative != PrivateSaveFile)
+                    entries.Add(new Entry(path, "files/" + SaveFolder + "/" + profile + "/" + relative));
             }
         }
         entries.Sort((a, b) => string.CompareOrdinal(a.ZipPath, b.ZipPath));

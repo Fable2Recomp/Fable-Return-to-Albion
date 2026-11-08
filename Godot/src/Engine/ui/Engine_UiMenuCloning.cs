@@ -565,6 +565,7 @@ public static class Engine_UiMenuCloning
 				BoxWidth = text.BoxWidth,
 				BoxHeight = text.BoxHeight,
 				R = text.R, G = text.G, B = text.B,
+				Style = text.Style,
 				Source = text.Source,
 			};
 		}

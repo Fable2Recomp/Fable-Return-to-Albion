@@ -17,10 +17,10 @@ public class AndroidCustomControlsTests
     {
         AndroidPadRemap.Reset();
         AndroidPadRemap.Suppress = false;
-        AndroidTouchCustomLayout.Load(Path.Combine(Path.GetTempPath(), "refii-none-" + Guid.NewGuid().ToString("N") + ".json"));
+        AndroidTouchCustomLayout.Load(Path.Combine(Refii.Tests.TestTemp.Root, "refii-none-" + Guid.NewGuid().ToString("N") + ".json"));
     }
 
-    private static string Temp(string name) => Path.Combine(Path.GetTempPath(), "refii-" + name + "-" + Guid.NewGuid().ToString("N") + ".json");
+    private static string Temp(string name) => Path.Combine(Refii.Tests.TestTemp.Root, "refii-" + name + "-" + Guid.NewGuid().ToString("N") + ".json");
 
     [TestCase]
     public void TestARemapSwapsSoEveryButtonStaysReachable()

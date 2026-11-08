@@ -17,7 +17,7 @@ public partial class LauncherApp : Control
 
 	private static readonly string[] DebugTabs =
 	{
-		"Settings", "Modding", "Install",
+		"Settings", "Modding", "Install", "Saves",
 	};
 	private static readonly string[] FileMenuItems =
 	{
@@ -112,6 +112,7 @@ public partial class LauncherApp : Control
 	private SettingsPanel _settingsPanel = null!;
 	private ModdingPanel _moddingPanel = null!;
 	private ReinstallPanel _reinstallPanel = null!;
+	private SavesPanel _savesPanel = null!;
 	private float _menuBarHeight = 72.0f;
 
 	/// <summary>
@@ -282,6 +283,12 @@ public partial class LauncherApp : Control
 		_settingsPanel = GetNode<SettingsPanel>("SettingsDrawer/SettingsColumn/SettingsPanel");
 		_moddingPanel = GetNode<ModdingPanel>("SettingsDrawer/SettingsColumn/ModdingPanel");
 		_reinstallPanel = GetNode<ReinstallPanel>("SettingsDrawer/SettingsColumn/ReinstallPanel");
+		_savesPanel = new SavesPanel
+		{
+			Name = "SavesPanel", Visible = false,
+			SizeFlagsHorizontal = _reinstallPanel.SizeFlagsHorizontal, SizeFlagsVertical = _reinstallPanel.SizeFlagsVertical,
+		};
+		_reinstallPanel.AddSibling(_savesPanel);
 	}
 
 	private static bool IsExportedBuild() => OS.HasFeature("template");
@@ -702,6 +709,7 @@ public partial class LauncherApp : Control
 		_settingsPanel.Configure(null, body, _infoStyle);
 		_moddingPanel.Configure(null, body, _infoStyle);
 		if (!ScaleAndroidInstallation(body)) _reinstallPanel.Configure(null, body, _infoStyle);
+		_savesPanel.Configure(body);
 		ScaleFonts(_settingsPanel, body);
 		ScaleFonts(_moddingPanel, body);
 		ScaleFonts(_reinstallPanel, body);
@@ -901,6 +909,7 @@ public partial class LauncherApp : Control
 			0 => _settingsPanel,
 			1 => _moddingPanel,
 			2 => (Control?)_phone ?? _reinstallPanel,
+			3 => _savesPanel,
 			_ => _settingsPanel,
 		};
 
@@ -1823,10 +1832,16 @@ public partial class LauncherApp : Control
 		bool isSettings = tab == "Settings";
 		bool isModding = tab == "Modding";
 		bool isReinstall = tab == "Install";
+		bool isSaves = tab == "Saves";
 
 		_settingsPanel.Visible = isSettings;
 		_moddingPanel.Visible = isModding;
 		_reinstallPanel.Visible = isReinstall;
+		_savesPanel.Visible = isSaves;
+		if (isSaves)
+		{
+			_savesPanel.Refresh(_launch.GameIsRunning);
+		}
 
 		if (isReinstall)
 		{

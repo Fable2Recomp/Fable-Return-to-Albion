@@ -60,7 +60,7 @@ public static class ModSaveGate
 	/// <summary>The unfiltered `mainsave.bin` kept beside a filtered one until the next save.</summary>
 	public const string UnfilteredName = "refii_mainsave_unfiltered.bin";
 
-	/// <summary>Where the game's saves are: the active title's `assets/&lt;Folder&gt;/save`, by convention.</summary>
+	/// <summary>The active save profile (the guest's user_data_root), by convention; the title's folder is below it.</summary>
 	public static string UserDataRoot { get; set; } =
 		Refii.Core.Engine_AppRoot.SaveDirectory;
 

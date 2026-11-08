@@ -24,7 +24,7 @@ public class BnkMappedReadTests
 
 	private static string NewTempDir()
 	{
-		string dir = Path.Combine(Path.GetTempPath(), "refii_bnk_map_" + Guid.NewGuid().ToString("N"));
+		string dir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_bnk_map_" + Guid.NewGuid().ToString("N"));
 		Directory.CreateDirectory(dir);
 		return dir;
 	}
@@ -381,7 +381,8 @@ public class BnkMappedReadTests
 			gzip.Write(plain);
 		}
 
-		return output.ToArray();
+		// a GZipStream given no bytes writes nothing on .NET 9+; an empty member is header, empty stored block, zero trailer.
+		return output.Length == 0 ? new byte[] { 0x1F, 0x8B, 0x08, 0, 0, 0, 0, 0, 0, 0xFF, 0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0 } : output.ToArray();
 	}
 
 	private static byte[] TexHeaderBytes(int payload, int mip0)

@@ -217,7 +217,7 @@ public class ModSaveTests
 	[TestCase]
 	public void TestFileRoundTripThroughDisk()
 	{
-		string folder = Path.Combine(Path.GetTempPath(), "refii-modsave-" + Guid.NewGuid().ToString("N"));
+		string folder = Path.Combine(Refii.Tests.TestTemp.Root, "refii-modsave-" + Guid.NewGuid().ToString("N"));
 		Directory.CreateDirectory(folder);
 		try
 		{
@@ -491,8 +491,8 @@ public class ModSaveTests
 	[TestCase]
 	public void TestExportCopiesGuestFilesOnlyAndStripsEveryModRecord()
 	{
-		string folder = Path.Combine(Path.GetTempPath(), "refii-modsave-" + Guid.NewGuid().ToString("N"));
-		string save = Path.Combine(folder, "E0EA", "4D5307F1", "00000001", "Hero000");
+		string folder = Path.Combine(Refii.Tests.TestTemp.Root, "refii-modsave-" + Guid.NewGuid().ToString("N"));
+		string save = Path.Combine(folder, "Fable 2", "00000001", "Hero000");
 		Directory.CreateDirectory(save);
 		try
 		{
@@ -502,7 +502,7 @@ public class ModSaveTests
 			File.WriteAllText(Path.Combine(save, SaveSidecar.FileName), "{}");
 
 			string destination = SaveExport.DestinationFor(folder, "Hero000");
-			AssertThat(destination.EndsWith(Path.Combine("save-export", "4D5307F1", "00000001", "Hero000"), StringComparison.Ordinal)).IsTrue();
+			AssertThat(destination).IsEqual(Path.Combine(folder, "Fable 2", "save-export", "4D5307F1", "00000001", "Hero000"));
 			int removed = SaveExport.Copy(save, destination, new HashSet<uint> { ModSword, ModHat });
 
 			AssertThat(removed).IsEqual(4);

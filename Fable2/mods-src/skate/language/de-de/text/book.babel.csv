@@ -1,0 +1,45 @@
+key,value
+SKATE_MOD_NAME,Skateboard
+SKATE_MOD_DESCRIPTION,"Fahr mit dem Skateboard durch Albion: K zum Auf- oder Absteigen, Leertaste zum Springen, Linksklick für einen Kraftschlag, Rechtsklick für einen Grab, und sammle Punkte mit Combos."
+SKATE_INPUT_TOGGLE,Skateboard an oder aus
+SKATE_INPUT_OLLIE,Sprung
+SKATE_INPUT_FLIP,Kraftschlag
+SKATE_INPUT_GRAB,Grab
+SKATE_INPUT_NO_LOCK,"Anvisieren, beim Fahren aus"
+SKATE_INPUT_HELP,Skateboard-Steuerung an oder aus
+SKATE_TOUCH_TOGGLE,Skaten
+SKATE_TOUCH_HOP,Sprung
+SKATE_TOUCH_FLOURISH,Kraftschlag
+SKATE_TOUCH_GRAB,Grab
+SKATE_TOUCH_WHEELIE,Wheelie
+SKATE_TOUCH_GRIND,Grind
+SKATE_TRICK_FLOURISH,Kraftschlag
+SKATE_TRICK_BACK_FLOURISH,Rückwärts-Kraftschlag
+SKATE_TRICK_CHEEKY_SHOVE,Frecher Schubser
+SKATE_TRICK_IMPROBABLE,Das Unwahrscheinliche
+SKATE_TRICK_PIE_GRAB,Kuchengriff
+SKATE_TRICK_HEROS_GRIP,Heldengriff
+SKATE_TRICK_BALVERINES_TAIL,Balverinenschwanz
+SKATE_TRICK_GARGOYLES_NOSE,Wasserspeiernase
+SKATE_TRICK_WHEELIE,Hobbe-Wheelie
+SKATE_TRICK_RAIL_RIDER,Geländerreiter
+SKATE_TRICK_GUILD_GRINDER,Gildenschleifer
+SKATE_GUILD_GRINDER_CALLOUT,Gildenschleifer!
+SKATE_CRASH,Sturz!
+SKATE_CLOSE_CALL,Knapp vorbei
+SKATE_CLOSE_CALL_POINTS,Knapp vorbei  +%1
+SKATE_COMBO,%1  x  %2
+SKATE_CONTROLS_HINT,Halte eine Richtung für einen anderen Kraftschlag oder Grab
+SKATE_CONTROL_PUSH,"Anschieben, bremsen"
+SKATE_CONTROL_PUSH_KEYS,"W, S"
+SKATE_CONTROL_PUSH_STICK,"Stick hoch, runter"
+SKATE_CONTROL_STEER,"Lenken, drehen"
+SKATE_CONTROL_STEER_KEYS,"A, D"
+SKATE_CONTROL_STEER_STICK,"Stick links, rechts"
+SKATE_CONTROL_HOP,Sprung
+SKATE_CONTROL_LEFT_CLICK,Linksklick
+SKATE_CONTROL_HOLD_RIGHT_CLICK,Rechtsklick halten
+SKATE_CONTROL_HOLD,%1 halten
+SKATE_CONTROL_NEAR_LEDGE,"%1, nahe einer Kante"
+SKATE_CONTROL_STEP_OFF,Absteigen
+SKATE_CONTROL_HIDE,Ausblenden

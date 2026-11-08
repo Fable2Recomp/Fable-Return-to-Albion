@@ -308,10 +308,11 @@ void KernelState::LoadAchievementsData() {
   }
 
   // Set up the unlock save path and restore persisted state.
-  const auto user_root = emulator_->user_data_root();
-  if (!user_root.empty()) {
-    achievement_manager_.SetUnlockSavePath(user_root / "achievements" /
-                                           fmt::format("{:08X}.toml", title_id()));
+  // In the running title's own folder of the profile, beside its saves.
+  if (!emulator_->user_data_root().empty()) {
+    achievement_manager_.SetUnlockSavePath(
+        content_manager_->ResolveTitleRoot(user_profile_->xuid(), xam::kCurrentlyRunningTitleId) /
+        "achievements.toml");
     achievement_manager_.LoadUnlockState();
   }
 }

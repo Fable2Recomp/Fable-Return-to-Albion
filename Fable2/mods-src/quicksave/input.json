@@ -1,4 +1,4 @@
 {
-	"quicksave": { "label": "{QUICKSAVE_INPUT_QUICKSAVE}", "keys": ["F8"], "touch": "Quicksave" },
-	"quickload": { "label": "{QUICKSAVE_INPUT_QUICKLOAD}", "keys": ["F9"], "touch": "Quickload" }
+	"quicksave": { "label": "{QUICKSAVE_INPUT_QUICKSAVE}", "keys": ["F8"], "touch": "{QUICKSAVE_TOUCH_QUICKSAVE}" },
+	"quickload": { "label": "{QUICKSAVE_INPUT_QUICKLOAD}", "keys": ["F9"], "touch": "{QUICKSAVE_TOUCH_QUICKLOAD}" }
 }

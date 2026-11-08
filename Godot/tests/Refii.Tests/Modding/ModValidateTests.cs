@@ -66,8 +66,9 @@ public class ModValidateTests
         // (Blades + and Fireball + Force Push have none).
         var expected = new Dictionary<string, int>
         {
-            ["cheat_menu"] = 2, ["first_person"] = 4, ["health_bars"] = 3, ["hotbar"] = 6, ["quicksave"] = 2,
-            ["quickslots"] = 5, ["souls_combat"] = 5, ["spell_weaving"] = 20, ["toggle_sprint"] = 3,
+            ["cheat_menu"] = 2, ["first_person"] = 4, ["health_bars"] = 3, ["hotbar"] = 6, ["minimap"] = 4,
+            ["portal_gun"] = 5, ["quicksave"] = 2, ["quickslots"] = 5, ["satchel"] = 2, ["skate"] = 2,
+            ["souls_combat"] = 5, ["spell_weaving"] = 20, ["toggle_sprint"] = 3,
         };
         AssertThat(Directory.GetDirectories(Path.Combine(root, "Fable2", "mods-src")).Select(Path.GetFileName).OrderBy(n => n, StringComparer.Ordinal).ToArray())
             .OverrideFailureMessage("a bundled mod was added or removed; list it here")

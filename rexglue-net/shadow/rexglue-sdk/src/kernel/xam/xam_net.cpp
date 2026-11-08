@@ -46,8 +46,6 @@
 #include <rex/system/xthread.h>
 #include <rex/system/xtypes.h>
 
-#include "xam_save_profile_android.h"
-
 #if REXGLUE_ENABLE_REXNET
 #include <rex/runtime.h>
 #include <rex/net/pseudonym.h>
@@ -593,6 +591,12 @@ void RexNetStartup() {
     if (auto* profile = kernel_state->user_profile()) {
       profile->set_identity(net::RexNet::XuidFromPeer(rexnet->local_peer_id()),
                             net::Pseudonym(rexnet->local_peer_id()));
+      // The name the guest now signs in with, beside the key it is derived from: the host
+      // names the profile's folder after it (Refii.Save.Engine_SaveProfiles).
+      if (std::ofstream name_file(options.data_dir / "profile_name.txt", std::ios::trunc);
+          name_file.good()) {
+        name_file << profile->name() << '\n';
+      }
       // The profile just went from signed-in-locally to signed-in-to-LIVE.
       // Titles cache XamUserGetSigninState and only re-scan on
       // XN_SYS_SIGNINCHANGED (Fable 2 keeps NLivePresence in
@@ -620,9 +624,6 @@ u32 NetDll_XNetStartup_entry(u32 caller, ppc_ptr_t<XNetStartupParams> params) {
 
 #if REXGLUE_ENABLE_REXNET
   RexNetStartup();
-#endif
-#if REX_PLATFORM_ANDROID
-  android_saves::AdoptForSignedInProfile(REX_KERNEL_STATE());
 #endif
 
   return 0;

@@ -38,7 +38,7 @@ public static class Engine_MdlExtraLods
             {
                 levels ??= new Engine_MdlSurfaceArrays.Levels();
                 levels.Add(key, level);
-                ++TreeCardLevels;
+                System.Threading.Interlocked.Increment(ref TreeCardLevels);
             }
         }
 

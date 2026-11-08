@@ -877,6 +877,10 @@ constexpr const char* kActionMenuEventPrefix = "MenuEvent:";
 /// `Inventory:<op>:<recordHash>` — see DispatchInventoryAction.
 constexpr const char* kActionInventoryPrefix = "Inventory:";
 
+/// `InventoryFor:<player>:<op>:<recordHash>` — the same, on player 1's or 2's own hero when their
+/// menus are not the open ones (local co-op); see DispatchInventoryAction's `addressed`.
+constexpr const char* kActionInventoryForPrefix = "InventoryFor:";
+
 /// `Ability:learn:<index>` / `Ability:unlearn:<index>` — one level of one of the fourteen
 /// abilities bought or given back, see DispatchAbilityAction.
 constexpr const char* kActionAbilityPrefix = "Ability:";
@@ -2075,8 +2079,8 @@ void WearSuitPieces(PPCContext& ctx, uint8_t* base, const PPCContext& saved, uin
 /// A joiner cannot take that call: it picks the player through the `game+140` chooser, the read
 /// that faulted for `unequip` on a client. It runs the same inner pair on its own hero instead.
 void DressOutfit(PPCContext& ctx, uint8_t* base, const PPCContext& saved, uint32_t frame,
-                 uint32_t suit, uint32_t hero, uint32_t suit_hash) {
-  if (!IsCoopJoiner(base) && !MenusActForPlayerTwo(base)) {
+                 uint32_t suit, uint32_t hero, uint32_t suit_hash, bool direct) {
+  if (!direct) {
     const uint32_t dressed = CallGuestAt(ctx, base, saved, frame, refii::guest::Address(0x826CBF10u), 0u, suit) & 0xFFu;
     REXLOG_INFO("Refii guest-tick pump: Inventory:outfit — sub_826CBF10 on suit 0x{:08X}: {}",
                 suit_hash, dressed != 0u ? "pieces equipped" : "the hero owns none of its pieces");
@@ -2416,7 +2420,31 @@ bool CommitItemThroughScreen(PPCContext& ctx, uint8_t* base, const std::string& 
   return true;
 }
 
-bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& body) {
+/// `addressed` 0 acts for the hero whose menus are open (HeroEntity); 1 or 2 names a player whose menus
+/// are NOT, in local co-op (`game+0x11C == 2`, the guest's IsLocalCoopGame), where both heroes are this
+/// machine's: that hero — `refii_mod_player_hero`, the entity manager's slot the guest reads — is acted
+/// on through the direct calls player two's own book takes, never through the open screen's rows (they
+/// list the other player's inventory). Only use, equip, wear, outfit and unequip.
+bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& body,
+                             int32_t addressed) {
+  if (addressed != 0) {
+    const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+    const uint32_t game = LooksLikeGuestPointer(root) ? LoadGuestU32(base, root + 12u) : 0u;
+    const bool local = LooksLikeGuestPointer(game) && LoadGuestU32(base, game + 0x11Cu) == 2u;
+    const std::string verb = body.substr(0, body.find(':'));
+    if (!local || (addressed != 1 && addressed != 2) ||
+        (verb != "use" && verb != "equip" && verb != "wear" && verb != "outfit" && verb != "unequip")) {
+      REXLOG_INFO("Refii guest-tick pump: InventoryFor:{}:{} — {}; dropped", addressed, body,
+                  local ? "not an action a named player takes" : "not local co-op");
+      return true;
+    }
+  }
+  const auto hero_of = [&]() {
+    return addressed != 0 ? refii_mod_player_hero(base, addressed) : HeroEntity(base);
+  };
+  // Player two's own hero, or a named one, acted on directly (see the joiner notes below).
+  const bool direct = addressed != 0 || IsCoopJoiner(base) || MenusActForPlayerTwo(base);
+
   if (body.rfind("dye:", 0) == 0) {
     return DispatchDye(ctx, base, body.substr(4));
   }
@@ -2476,13 +2504,13 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
   //
   // The screen calls around it (`sub_826D48F0`, `sub_826D7F90`) drive the 3D preview and the
   // presentation; both are Godot's now.
-  if (op == "unequip" && (IsCoopJoiner(base) || MenusActForPlayerTwo(base))) {
+  if (op == "unequip" && direct) {
     // THE INNER CALL, on the joiner's own hero. `sub_826CC430` picks the player through the
     // `game+140` chooser and faulted at 0x34 on a client (see CoopRepairNetworkSlot); what it
     // does after that is `sub_824BF4D8(comp15, slot)` with slot = `sub_826CC340(type - 91)`,
     // a seven-entry table returning 17..23 (0x826CC374: `li r3, 0x11` … `0x17`) — the
     // clothing categories. Verified in the decompile; client-safe (no manager read).
-    const uint32_t entity = HeroEntity(base);
+    const uint32_t entity = hero_of();
     const uint32_t appearance = entity != 0u ? HeroComponent(base, entity, 15u) : 0u;
     const uint32_t slot = static_cast<uint32_t>(hash) - 74u;
     if (appearance == 0u || slot < 17u || slot > 23u) {
@@ -2540,7 +2568,7 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
   //   Then `sub_823E0FF8(entity, &handle, "")` uses it, or `sub_823F2718(component33, &handle)`
   //   gives it. `sub_823F2718` resolves the RECIPIENT itself, off the giver's property 77 and
   //   that object's vtable+68, so no target has to be supplied.
-  if ((op == "use" || op == "equip" || op == "wear" || op == "gift") &&
+  if (addressed == 0 && (op == "use" || op == "equip" || op == "wear" || op == "gift") &&
       CommitItemThroughScreen(ctx, base, op, static_cast<uint32_t>(hash))) {
     return true;
   }
@@ -2553,7 +2581,7 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
     return true;
   }
 
-  const uint32_t hero = HeroEntity(base);
+  const uint32_t hero = hero_of();
   if (hero == 0u) {
     REXLOG_INFO("Refii guest-tick pump: Inventory:{} — no hero", body);
     return true;
@@ -2623,7 +2651,7 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
   const uint32_t activate = refii::guest::Address(0x826C9AB8u);
   // Player two's own hero, acted on directly: an online joiner's, or local player two's while
   // their pause is open (the guest's pending records land on player one either way).
-  const bool joiner = IsCoopJoiner(base) || MenusActForPlayerTwo(base);
+  const bool joiner = direct;
   const bool switched = op == "equip" || (op == "use" && !joiner);
   PPCFunc* find = FindGuestFunction(refii::guest::Address(0x824F1C90u));
   PPCFunc* release = FindGuestFunction(refii::guest::Address(0x82764DC0u));
@@ -2660,7 +2688,7 @@ bool DispatchInventoryAction(PPCContext& ctx, uint8_t* base, const std::string& 
   }
 
   if (op == "outfit") {
-    DressOutfit(ctx, base, saved, frame, handle, hero, static_cast<uint32_t>(hash));
+    DressOutfit(ctx, base, saved, frame, handle, hero, static_cast<uint32_t>(hash), direct);
   } else if (op == "equip" && joiner) {
     // A JOINER EQUIPS PLAYER TWO DIRECTLY. The pending-record slot at `GUI+52` (record A) is
     // applied at pause exit by `sub_8236ED98` to the entity at EM+104 — player ONE — on every
@@ -7956,6 +7984,8 @@ void SampleLogbookAttractiveness(PPCContext& ctx, uint8_t* base, bool logbook_ac
 /// (`GetNumberOfItems`, `sub_824F23D0`). Sampled with the hero derived values: every 15 ticks
 /// and on the tick after a UI change; a publish that differs bumps the generation, so a removal
 /// no hook announces (a gift, a drop) still reaches the open list within the cadence.
+void SamplePlayerInventories(uint8_t* base);
+
 void SampleHeroInventory(uint8_t* base) {
   const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
   std::vector<uint32_t> words;
@@ -7981,6 +8011,64 @@ void SampleHeroInventory(uint8_t* base) {
     }
   }
   refii_bridge_publish_hero_inventory(words.data(), static_cast<uint32_t>(words.size() / 4u));
+  SamplePlayerInventories(base);
+}
+
+/// EACH PLAYER'S INVENTORY, for a read that names its player (`RefiiHostGetPlayerInventory`): the
+/// walk above on the hero `refii_mod_player_hero` resolves — the guest's own route to a player's
+/// entity, `*(*(*(*(0x83496AB8)+0xC)+0x58)+4)` then `EM+104` for player one (`sub_8222C1B8`, disc
+/// `sub_8222C210`) and `EM+112` for player two (`sub_828E5A78`, disc `sub_828BEEC0`), as
+/// `CECMoney_Modify` reads it (TU1 0x8242E750..0x8242E75C, disc 0x8239E870..0x8239E87C). The list is
+/// `GetNumberOfItems`' (TU1 `sub_824F23D0`, disc `sub_8261C0B8`: `+0x10` the sentinel, `node+8` the
+/// item, `item+0xC` its count). Flags bit 0 is `Viewed` (`item+0x14`), bit 1 WORN: the record is on
+/// component 15's worn vector, `+0x10`..`+0x14`, stride 0x18, element `+0` the item and `item+4` its
+/// record — `IsWearingItemOfType` (TU1 `sub_824C4380` 0x824C4388..0x824C4400, disc `sub_82574F98`
+/// 0x82574FA0..0x82575018). Walked here, on the guest's thread, for the reason the hero's is.
+void SamplePlayerInventories(uint8_t* base) {
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+  for (int32_t player = 1; player <= 2; ++player) {
+    std::vector<uint32_t> words;
+    const uint32_t hero = refii_mod_player_hero(base, player);
+    const uint32_t inventory = hero != 0u ? HeroComponent(base, hero, 13u) : 0u;
+    const uint32_t appearance = hero != 0u ? HeroComponent(base, hero, 15u) : 0u;
+
+    std::vector<uint32_t> worn;
+    if (appearance != 0u) {
+      constexpr uint32_t kWornStride = 0x18u;
+      const uint32_t begin = LoadGuestU32(base, appearance + 0x10u);
+      const uint32_t end = LoadGuestU32(base, appearance + 0x14u);
+      if (plausible(begin) && end > begin && (end - begin) % kWornStride == 0u &&
+          (end - begin) / kWornStride <= 256u) {
+        for (uint32_t at = begin; at < end; at += kWornStride) {
+          const uint32_t item = LoadGuestU32(base, at);
+          if (plausible(item)) {
+            worn.push_back(LoadGuestU32(base, item + 0x04u));
+          }
+        }
+      }
+    }
+
+    const uint32_t sentinel = inventory != 0u ? LoadGuestU32(base, inventory + 0x10u) : 0u;
+    if (plausible(sentinel)) {
+      constexpr uint32_t kMaxRecords = 4096u;
+      uint32_t node = LoadGuestU32(base, sentinel);
+      uint32_t found = 0u;
+      while (plausible(node) && node != sentinel && found < kMaxRecords) {
+        const uint32_t item = LoadGuestU32(base, node + 8u);
+        if (plausible(item)) {
+          const uint32_t record = LoadGuestU32(base, item + 0x04u);
+          const bool on = std::find(worn.begin(), worn.end(), record) != worn.end();
+          words.push_back(record);
+          words.push_back(LoadGuestU32(base, item + 0x0Cu));
+          words.push_back(LoadGuestU32(base, item + 0x10u));
+          words.push_back((LoadGuestU8(base, item + 0x14u) != 0u ? 1u : 0u) | (on ? 2u : 0u));
+          ++found;
+        }
+        node = LoadGuestU32(base, node);
+      }
+    }
+    refii_bridge_publish_player_inventory(player, words.data(), static_cast<uint32_t>(words.size() / 4u));
+  }
 }
 
 void SampleHeroDerived(PPCContext& ctx, uint8_t* base) {
@@ -8872,7 +8960,12 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base, bool ui_pass) {
       ran = DispatchSpellsMenu(ctx, base, name.substr(std::strlen(kActionSpellsMenuPrefix)));
     } else if (name.rfind(kActionInventoryPrefix, 0) == 0) {
       ran = DispatchInventoryAction(ctx, base,
-                                    name.substr(std::strlen(kActionInventoryPrefix)));
+                                    name.substr(std::strlen(kActionInventoryPrefix)), 0);
+      refii_bridge_ui_data_changed();
+    } else if (name.rfind(kActionInventoryForPrefix, 0) == 0) {
+      const std::string rest = name.substr(std::strlen(kActionInventoryForPrefix));
+      const int32_t player = rest.size() > 2 && rest[1] == ':' ? rest[0] - '0' : 0;
+      ran = DispatchInventoryAction(ctx, base, player != 0 ? rest.substr(2) : rest, player != 0 ? player : -1);
       refii_bridge_ui_data_changed();
     } else if (name.rfind(kActionAbilityPrefix, 0) == 0) {
       ran = DispatchAbilityAction(ctx, base,

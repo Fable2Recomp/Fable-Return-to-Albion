@@ -1,0 +1,38 @@
+key,value
+SATCHEL_MOD_NAME,A Hős tarisznyája
+SATCHEL_MOD_DESCRIPTION,"A Tab egyetlen áttetsző, a SkyUI ihlette képernyőként nyitja meg a leltárt: kategóriák sora, rendezhető lista, szűrés, kedvencek és egy kártya, amely összeveti azzal, ami rajtad van."
+SATCHEL_INPUT_OPEN,Megnyitás és bezárás
+SATCHEL_INPUT_ACT,"Felszerel, felvesz vagy használ"
+SATCHEL_INPUT_FAVOURITE,Kedvenc
+SATCHEL_INPUT_SORT,Rendezés
+SATCHEL_INPUT_FILTER,Szűrés név szerint
+SATCHEL_INPUT_REMOVE_ALL,Minden ruha levétele
+SATCHEL_INPUT_CLOSE,Bezár
+SATCHEL_TOUCH_OPEN,Leltár
+SATCHEL_CATEGORY_FAVOURITES,Kedvencek
+SATCHEL_CATEGORY_ALL,Mind
+SATCHEL_KIND_TREASURE,Kincs
+SATCHEL_COLUMN_NAME,Név
+SATCHEL_COLUMN_TYPE,Típus
+SATCHEL_VALUE,Érték
+SATCHEL_FILTER,Szűrő
+SATCHEL_NOTHING_HERE,Itt nincs semmi.
+SATCHEL_NOTHING_BY_NAME,Nincs ilyen nevű.
+SATCHEL_EQUIPPED,Felszerelve
+SATCHEL_WEARING,Rajtad
+SATCHEL_COMPARED_WITH,Összevetve: %1
+SATCHEL_ACTION_EQUIP,Felszerel
+SATCHEL_ACTION_TAKE_OFF,Levesz
+SATCHEL_ACTION_WEAR,Felvesz
+SATCHEL_FAVOURITE,Kedvenc
+SATCHEL_UNFAVOURITE,Nem kedvenc
+SATCHEL_SORT,Rendezés
+SATCHEL_REMOVE_ALL_CLOTHING,Minden ruha levétele
+SATCHEL_EQUIPPED_ITEM,Felszerelve: %1
+SATCHEL_USED_ITEM,Használva: %1
+SATCHEL_NOW_WEARING,Most rajtad: %1
+SATCHEL_TOOK_OFF,Levetted: %1
+SATCHEL_COULD_NOT_PUT_ON,Nem sikerült felvenni: %1
+SATCHEL_COULD_NOT_TAKE_OFF,Nem sikerült levenni: %1
+SATCHEL_REMOVED_ALL,Minden ruha levéve
+SATCHEL_COULD_NOT_REMOVE_ALL,Nem sikerült minden ruhát levenni

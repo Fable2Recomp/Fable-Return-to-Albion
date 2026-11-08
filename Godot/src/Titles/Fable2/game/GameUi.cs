@@ -284,6 +284,7 @@ public partial class GameUi : Node, IGameTitleUi
 			"boxes, the menu capture and the element cache");
 
 		RetireDrawn("the guest left the game");
+		Refii.Mods.ModScreen.Release();
 		Engine_UiModalText.Clear();
 		Engine_UiDisplayBoxes.Clear();
 
@@ -978,15 +979,15 @@ public partial class GameUi : Node, IGameTitleUi
 	{
 		// Raised or not is read whether or not the UI is revealed, so a raise made before the
 		// reveal keeps its texts.
-		Engine_UiSource.FrontEndDialogState? raised = !HostBridge.IsInGame
-			? Engine_UiSource.Current.GetFrontEndDialog()
+		Fable2UiSource.FrontEndDialogState? raised = !HostBridge.IsInGame
+			? Fable2UiSource.Active.GetFrontEndDialog()
 			: null;
 		if (raised is null)
 		{
 			_guestDialogSince = Engine_UiSlideStatements.Sequence;
 		}
 
-		Engine_UiSource.FrontEndDialogState? up = IsRevealed ? raised : null;
+		Fable2UiSource.FrontEndDialogState? up = IsRevealed ? raised : null;
 		if (up is not { } dialog)
 		{
 			if (_guestDialogShown)
@@ -2423,6 +2424,7 @@ public partial class GameUi : Node, IGameTitleUi
 		};
 
 		Engine_UiMinimapMod.ResolveTexture = _hud.ResolveTexture;
+		Engine_UiMinimapMod.PauseRoot = () => _presentation?.DocumentFor(PausePresentation);
 
 		// Every later build re-derives from the files as they stand (G.23); this first one has
 		// just been derived below.
@@ -2469,7 +2471,7 @@ public partial class GameUi : Node, IGameTitleUi
 		int modArranged = _hud.Layout.ApplyModLayout();
 		// The platform's own arrangement (Android: clear of the touch controls), beneath the
 		// player's file.
-		_hud.Layout.ApplyPlatformDefaults();
+		Fable2HudLayout.ApplyPlatformDefaults(_hud.Layout);
 
 		// The derived arrangement, written out for the player's layout tool and for modders: the
 		// piece ids are the contract for BOTH override files. It is the arrangement BENEATH the
@@ -4944,11 +4946,11 @@ public partial class GameUi : Node, IGameTitleUi
 
 		if (_statedFold.Screen != fold.Screen && _statedFold.Depth != 0)
 		{
-			Engine_UiSource.Current.StateListFoldDepth(_statedFold.Screen, 0);
+			Fable2UiSource.Active.StateListFoldDepth(_statedFold.Screen, 0);
 		}
 
 		_statedFold = fold;
-		Engine_UiSource.Current.StateListFoldDepth(fold.Screen, fold.Depth);
+		Fable2UiSource.Active.StateListFoldDepth(fold.Screen, fold.Depth);
 	}
 
 	/// <summary>
@@ -4964,7 +4966,7 @@ public partial class GameUi : Node, IGameTitleUi
 		}
 
 		_statedFrontEndFold = depth;
-		Engine_UiSource.Current.StateListFoldDepth(HostBridge.FrontEndMainMenuList, depth);
+		Fable2UiSource.Active.StateListFoldDepth(HostBridge.FrontEndMainMenuList, depth);
 	}
 
 	private Engine_FrontEndMenuView? _screenMenuView;
@@ -6147,8 +6149,8 @@ public partial class GameUi : Node, IGameTitleUi
 			// Record id → def name, off the host's own globals.gdb view — the same lookup the
 			// inventory rows use. `Engine_` is reached from here, never from the host layer.
 			// WHERE THE GAME SAVES, not where it saves by default: the emulator's live
-			// `user_data_root`, which refii.toml may set elsewhere, and the title's save folder
-			// under the app only while the guest has not said. The default alone read a joiner's
+			// `user_data_root` (the save profile it runs from), and the active profile only while
+			// the guest has not said. The default alone read a joiner's
 			// hero from a stale copy in the app folder while the game saved to the configured
 			// root, so a joiner who had changed outfit arrived at the host in the old one.
 			CoopHeroKit.UserDataRoot = HostBridge.GetSaveRoot() is { Length: > 0 } live
@@ -6669,7 +6671,7 @@ public partial class GameUi : Node, IGameTitleUi
 
 	/// <summary>The expression wheel's HUD node: its piece id, dots made underscores (Engine_HudArt).</summary>
 	private static readonly string ExpressionWheelNode =
-		"group_ExpressionWheel_" + Engine_HudLayout.ExpressionWheelName;
+		"group_ExpressionWheel_" + Fable2HudLayout.ExpressionWheelName;
 
 	/// <summary>The co-op screen — id 24, `CoopScreen.bgf`.</summary>
 	private const uint CoopScreenId = 24u;
@@ -7338,7 +7340,7 @@ public partial class GameUi : Node, IGameTitleUi
 		// visible to this frame's drive rather than the next one.
 		if (guestFrame)
 		{
-			_menuModel.Apply(Engine_UiSource.Current.TakeMenuChunks());
+			_menuModel.Apply(Fable2UiSource.Active.TakeMenuChunks());
 		}
 		// Change-keyed on what the model HOLDS, not on the statement count: the pause root
 		// restates its rows every tick (four statements a tick, the same rows), and a line per
@@ -8248,7 +8250,7 @@ public partial class GameUi : Node, IGameTitleUi
 							1 => "Friend request sent.\n\nThey appear under Friends once they accept.",
 							2 => "That is your own friend code.\n\nIf this came from another install, " +
 								"that install is a copy of this one and shares its identity: delete " +
-								"its assets/save/rexnet/identity.key and restart it.",
+								"its assets/saves/<profile>/rexnet/identity.key and restart it.",
 							_ => "That request could not be sent — RexNet may be off.",
 						});
 					break;

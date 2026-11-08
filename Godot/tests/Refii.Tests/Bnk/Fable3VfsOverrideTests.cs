@@ -20,7 +20,7 @@ public class Fable3VfsOverrideTests
 {
 	private static string NewTempDir()
 	{
-		string dir = Path.Combine(Path.GetTempPath(), "refii_f3vfs_" + Guid.NewGuid().ToString("N"));
+		string dir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_f3vfs_" + Guid.NewGuid().ToString("N"));
 		Directory.CreateDirectory(dir);
 		return dir;
 	}

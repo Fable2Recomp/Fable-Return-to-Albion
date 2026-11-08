@@ -116,7 +116,7 @@ public class ModNativeTests
     [TestCase]
     public void ReadsNativeSourcesFromAPackage()
     {
-        string root = Path.Combine(Path.GetTempPath(), "refii_native_test_" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii_native_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try
         {

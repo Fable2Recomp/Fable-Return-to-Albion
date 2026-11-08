@@ -1,0 +1,38 @@
+key,value
+SATCHEL_MOD_NAME,Torba Bohatera
+SATCHEL_MOD_DESCRIPTION,"Tab otwiera ekwipunek jako jeden przezroczysty ekran, wzorowany na SkyUI: rząd kategorii, lista z sortowaniem, filtr, ulubione i karta porównująca z tym, co masz na sobie."
+SATCHEL_INPUT_OPEN,Otwórz i zamknij
+SATCHEL_INPUT_ACT,"Wyekwipuj, załóż lub użyj"
+SATCHEL_INPUT_FAVOURITE,Ulubione
+SATCHEL_INPUT_SORT,Sortuj
+SATCHEL_INPUT_FILTER,Filtruj według nazwy
+SATCHEL_INPUT_REMOVE_ALL,Zdejmij całe ubranie
+SATCHEL_INPUT_CLOSE,Zamknij
+SATCHEL_TOUCH_OPEN,Ekwipunek
+SATCHEL_CATEGORY_FAVOURITES,Ulubione
+SATCHEL_CATEGORY_ALL,Wszystko
+SATCHEL_KIND_TREASURE,Skarb
+SATCHEL_COLUMN_NAME,Nazwa
+SATCHEL_COLUMN_TYPE,Typ
+SATCHEL_VALUE,Wartość
+SATCHEL_FILTER,Filtr
+SATCHEL_NOTHING_HERE,Nic tu nie ma.
+SATCHEL_NOTHING_BY_NAME,Nic o tej nazwie.
+SATCHEL_EQUIPPED,Wyekwipowane
+SATCHEL_WEARING,Założone
+SATCHEL_COMPARED_WITH,W porównaniu z: %1
+SATCHEL_ACTION_EQUIP,Wyekwipuj
+SATCHEL_ACTION_TAKE_OFF,Zdejmij
+SATCHEL_ACTION_WEAR,Załóż
+SATCHEL_FAVOURITE,Do ulubionych
+SATCHEL_UNFAVOURITE,Usuń z ulubionych
+SATCHEL_SORT,Sortuj
+SATCHEL_REMOVE_ALL_CLOTHING,Zdejmij całe ubranie
+SATCHEL_EQUIPPED_ITEM,Wyekwipowano: %1
+SATCHEL_USED_ITEM,Użyto: %1
+SATCHEL_NOW_WEARING,Masz teraz na sobie: %1
+SATCHEL_TOOK_OFF,Zdjęto: %1
+SATCHEL_COULD_NOT_PUT_ON,Nie udało się założyć: %1
+SATCHEL_COULD_NOT_TAKE_OFF,Nie udało się zdjąć: %1
+SATCHEL_REMOVED_ALL,Zdjęto całe ubranie
+SATCHEL_COULD_NOT_REMOVE_ALL,Nie udało się zdjąć całego ubrania

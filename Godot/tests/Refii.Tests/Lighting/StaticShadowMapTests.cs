@@ -289,7 +289,7 @@ public class StaticShadowMapTests
 		};
 
 		byte[] payload = Engine_LevelShadowMaps.Serialize(original);
-		string tempPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"refii_test_shadow_{Guid.NewGuid():N}.shadows");
+		string tempPath = System.IO.Path.Combine(Refii.Tests.TestTemp.Root, $"refii_test_shadow_{Guid.NewGuid():N}.shadows");
 		try
 		{
 			System.IO.File.WriteAllBytes(tempPath, payload);
@@ -334,7 +334,7 @@ public class StaticShadowMapTests
 		};
 
 		byte[] payload = Engine_LevelShadowMaps.Serialize(original);
-		string tempPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"refii_test_shadow_{Guid.NewGuid():N}.shadows");
+		string tempPath = System.IO.Path.Combine(Refii.Tests.TestTemp.Root, $"refii_test_shadow_{Guid.NewGuid():N}.shadows");
 		try
 		{
 			System.IO.File.WriteAllBytes(tempPath, payload);

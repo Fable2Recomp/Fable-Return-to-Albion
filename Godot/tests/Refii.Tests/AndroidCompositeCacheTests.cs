@@ -18,7 +18,7 @@ public sealed class AndroidCompositeCacheTests
     [TestCase, RequireGodotRuntime]
     public void AStoredCompositeIsTheBytesThatWereUploaded()
     {
-        string folder = Path.Combine(Path.GetTempPath(), $"refii-composites-{Guid.NewGuid():N}");
+        string folder = Path.Combine(Refii.Tests.TestTemp.Root, $"refii-composites-{Guid.NewGuid():N}");
         Directory.CreateDirectory(folder);
         AndroidCompositeCache.UseFolderForTests(folder);
         try
@@ -53,7 +53,7 @@ public sealed class AndroidCompositeCacheTests
     {
         const string first = "fixture/first.tex", second = "fixture/second.tex";
         var files = new Dictionary<string, byte[]> { [first] = new byte[] { 1 }, [second] = new byte[] { 2 } };
-        string folder = Path.Combine(Path.GetTempPath(), $"refii-composites-{Guid.NewGuid():N}");
+        string folder = Path.Combine(Refii.Tests.TestTemp.Root, $"refii-composites-{Guid.NewGuid():N}");
         Engine_TexPathIndex.SetPathSource(() => new[] { first, second });
         Engine_BnkMeshLoader.SetResolver(path => files.GetValueOrDefault(path.Replace('\\', '/')));
         AndroidCompositeCache.UseFolderForTests(folder);
@@ -88,7 +88,7 @@ public sealed class AndroidCompositeCacheTests
     public void AShippedSourceIsNamedWithoutAReadAndAMountChangeRenamesIt()
     {
         const string texture = "art/t.tex";
-        string root = Path.Combine(Path.GetTempPath(), $"refii-composite-mount-{Guid.NewGuid():N}");
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, $"refii-composite-mount-{Guid.NewGuid():N}");
         string game = Path.Combine(root, "game"), mod = Path.Combine(root, "mod");
         Directory.CreateDirectory(Path.Combine(game, "data", Refii.Titles.Fable2.PubGames.PubGamesCatalog.FolderName));
         Directory.CreateDirectory(Path.Combine(mod, "art"));
@@ -153,7 +153,7 @@ public sealed class AndroidCompositeCacheTests
     public void ACompositeShortOfALayerIsNotStored()
     {
         const string first = "fixture/base.tex", second = "fixture/layer.tex";
-        string folder = Path.Combine(Path.GetTempPath(), $"refii-composites-{Guid.NewGuid():N}");
+        string folder = Path.Combine(Refii.Tests.TestTemp.Root, $"refii-composites-{Guid.NewGuid():N}");
         Directory.CreateDirectory(folder);
         Engine_TexPathIndex.SetPathSource(() => new[] { first, second });
         Engine_BnkMeshLoader.SetResolver(path => new byte[] { 1 });
@@ -187,7 +187,7 @@ public sealed class AndroidCompositeCacheTests
     [TestCase]
     public void TheSweepKeepsTheBuildAndTheBudget()
     {
-        string parent = Path.Combine(Path.GetTempPath(), $"refii-composites-{Guid.NewGuid():N}");
+        string parent = Path.Combine(Refii.Tests.TestTemp.Root, $"refii-composites-{Guid.NewGuid():N}");
         string current = Path.Combine(parent, "now"), old = Path.Combine(parent, "was");
         Directory.CreateDirectory(current);
         Directory.CreateDirectory(old);

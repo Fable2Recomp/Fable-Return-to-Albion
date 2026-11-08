@@ -1,0 +1,38 @@
+key,value
+SATCHEL_MOD_NAME,Hrdinova brašna
+SATCHEL_MOD_DESCRIPTION,"Tab otevře inventář jako jednu průhlednou obrazovku podle vzoru SkyUI: řadu kategorií, řaditelný seznam, filtr, oblíbené a kartu, která porovná s tím, co máš na sobě."
+SATCHEL_INPUT_OPEN,Otevřít a zavřít
+SATCHEL_INPUT_ACT,"Vybavit, obléct nebo použít"
+SATCHEL_INPUT_FAVOURITE,Oblíbené
+SATCHEL_INPUT_SORT,Seřadit
+SATCHEL_INPUT_FILTER,Filtrovat podle názvu
+SATCHEL_INPUT_REMOVE_ALL,Svléct všechen oděv
+SATCHEL_INPUT_CLOSE,Zavřít
+SATCHEL_TOUCH_OPEN,Inventář
+SATCHEL_CATEGORY_FAVOURITES,Oblíbené
+SATCHEL_CATEGORY_ALL,Vše
+SATCHEL_KIND_TREASURE,Poklad
+SATCHEL_COLUMN_NAME,Název
+SATCHEL_COLUMN_TYPE,Typ
+SATCHEL_VALUE,Hodnota
+SATCHEL_FILTER,Filtr
+SATCHEL_NOTHING_HERE,Nic tu není.
+SATCHEL_NOTHING_BY_NAME,Nic s tímto názvem.
+SATCHEL_EQUIPPED,Vybaveno
+SATCHEL_WEARING,Na sobě
+SATCHEL_COMPARED_WITH,Porovnáno s: %1
+SATCHEL_ACTION_EQUIP,Vybavit
+SATCHEL_ACTION_TAKE_OFF,Svléct
+SATCHEL_ACTION_WEAR,Obléct
+SATCHEL_FAVOURITE,Do oblíbených
+SATCHEL_UNFAVOURITE,Z oblíbených
+SATCHEL_SORT,Seřadit
+SATCHEL_REMOVE_ALL_CLOTHING,Svléct všechen oděv
+SATCHEL_EQUIPPED_ITEM,Vybaveno: %1
+SATCHEL_USED_ITEM,Použito: %1
+SATCHEL_NOW_WEARING,Teď máš na sobě: %1
+SATCHEL_TOOK_OFF,Svlečeno: %1
+SATCHEL_COULD_NOT_PUT_ON,Nepodařilo se obléct: %1
+SATCHEL_COULD_NOT_TAKE_OFF,Nepodařilo se svléct: %1
+SATCHEL_REMOVED_ALL,Všechen oděv svlečen
+SATCHEL_COULD_NOT_REMOVE_ALL,Nepodařilo se svléct všechen oděv

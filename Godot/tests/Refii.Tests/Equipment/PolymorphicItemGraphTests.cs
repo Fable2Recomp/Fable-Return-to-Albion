@@ -505,7 +505,7 @@ public class PolymorphicItemGraphTests
     [TestCase]
     public void TestCustomChildNodeComponentEditingBabelTagsAndFullItemEditorInheritance()
     {
-        string tempRoot = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "refii_gdb_test_" + Guid.NewGuid().ToString("N"));
+        string tempRoot = System.IO.Path.Combine(Refii.Tests.TestTemp.Root, "refii_gdb_test_" + Guid.NewGuid().ToString("N"));
         System.IO.Directory.CreateDirectory(tempRoot);
 
         string? prevModsRoot = Refii.EditorTools.EditorModValueService.ModsRootOverride;
@@ -916,7 +916,7 @@ public class PolymorphicItemGraphTests
     [TestCase]
     public void TestEndToEndAssetLinkingSurfaceTexturePatchingAndOrphanPruning()
     {
-        string tempRoot = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "refii_asset_link_test_" + Guid.NewGuid().ToString("N"));
+        string tempRoot = System.IO.Path.Combine(Refii.Tests.TestTemp.Root, "refii_asset_link_test_" + Guid.NewGuid().ToString("N"));
         System.IO.Directory.CreateDirectory(tempRoot);
 
         string? prevModsRoot = Refii.EditorTools.EditorModValueService.ModsRootOverride;
@@ -1132,7 +1132,7 @@ public class PolymorphicItemGraphTests
     public void TestCreatorWorkspaceResPathAndScannerIntegration()
     {
         string testModName = "CreatorResTestMod_" + Guid.NewGuid().ToString("N")[..8];
-        string tempModsDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "refii_creator_res_test_" + Guid.NewGuid().ToString("N"));
+        string tempModsDir = System.IO.Path.Combine(Refii.Tests.TestTemp.Root, "refii_creator_res_test_" + Guid.NewGuid().ToString("N"));
         System.IO.Directory.CreateDirectory(tempModsDir);
 
         string creatorDir = Refii.EditorTools.EditorModExporter.GetCreatorDirectory(testModName);

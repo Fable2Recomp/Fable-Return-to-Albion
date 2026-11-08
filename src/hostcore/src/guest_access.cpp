@@ -93,6 +93,7 @@ void FlushLogging();
 #include "refii_host.h"
 
 #include "host_abi.h"
+#include "guest_span.h"
 #include "host_core.h"
 
 #if defined(__aarch64__) && !defined(_WIN32)
@@ -363,6 +364,14 @@ bool CopyGuest(const uint8_t* base, uint32_t address, void* out, std::size_t siz
         return false;
     }
     return true;
+}
+
+bool CopyGuestPages(const uint8_t* base, uint32_t address, void* out, std::size_t size) {
+    bool ok = true;
+    ForEachGuestPage(address, out, size, [&](uint32_t at, uint8_t* into, std::size_t chunk) {
+        ok = CopyGuest(base, at, into, chunk) && ok;
+    });
+    return ok;
 }
 
 /// One guest byte, or 0 when it is not readable.

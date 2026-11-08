@@ -1,0 +1,45 @@
+key,value
+SKATE_MOD_NAME,Monopatín
+SKATE_MOD_DESCRIPTION,"Recorre Albión en monopatín: K para subir o bajar, Espacio para saltar, clic izquierdo para una Floritura, clic derecho para un Agarre, y suma combos."
+SKATE_INPUT_TOGGLE,Activar o desactivar el monopatín
+SKATE_INPUT_OLLIE,Salto
+SKATE_INPUT_FLIP,Floritura
+SKATE_INPUT_GRAB,Agarre
+SKATE_INPUT_NO_LOCK,"Fijar objetivo, desactivado en monopatín"
+SKATE_INPUT_HELP,Mostrar u ocultar los controles del monopatín
+SKATE_TOUCH_TOGGLE,Patinar
+SKATE_TOUCH_HOP,Salto
+SKATE_TOUCH_FLOURISH,Floritura
+SKATE_TOUCH_GRAB,Agarre
+SKATE_TOUCH_WHEELIE,Caballito
+SKATE_TOUCH_GRIND,Grind
+SKATE_TRICK_FLOURISH,Floritura
+SKATE_TRICK_BACK_FLOURISH,Floritura inversa
+SKATE_TRICK_CHEEKY_SHOVE,Empujón descarado
+SKATE_TRICK_IMPROBABLE,El Improbable
+SKATE_TRICK_PIE_GRAB,Agarre de tarta
+SKATE_TRICK_HEROS_GRIP,Agarre del héroe
+SKATE_TRICK_BALVERINES_TAIL,Cola de balverino
+SKATE_TRICK_GARGOYLES_NOSE,Nariz de gárgola
+SKATE_TRICK_WHEELIE,Caballito de hobbe
+SKATE_TRICK_RAIL_RIDER,Jinete de barandilla
+SKATE_TRICK_GUILD_GRINDER,Grind del gremio
+SKATE_GUILD_GRINDER_CALLOUT,¡Grind del gremio!
+SKATE_CRASH,¡Caída!
+SKATE_CLOSE_CALL,Por los pelos
+SKATE_CLOSE_CALL_POINTS,Por los pelos  +%1
+SKATE_COMBO,%1  x  %2
+SKATE_CONTROLS_HINT,Mantén una dirección para otra Floritura u otro Agarre
+SKATE_CONTROL_PUSH,"Impulsar, frenar"
+SKATE_CONTROL_PUSH_KEYS,"W, S"
+SKATE_CONTROL_PUSH_STICK,"Stick arriba, abajo"
+SKATE_CONTROL_STEER,"Girar, rotar"
+SKATE_CONTROL_STEER_KEYS,"A, D"
+SKATE_CONTROL_STEER_STICK,"Stick izquierda, derecha"
+SKATE_CONTROL_HOP,Salto
+SKATE_CONTROL_LEFT_CLICK,Clic izquierdo
+SKATE_CONTROL_HOLD_RIGHT_CLICK,Mantén pulsado clic derecho
+SKATE_CONTROL_HOLD,Mantén pulsado %1
+SKATE_CONTROL_NEAR_LEDGE,"%1, junto a un saliente"
+SKATE_CONTROL_STEP_OFF,Bajarse
+SKATE_CONTROL_HIDE,Ocultar esto

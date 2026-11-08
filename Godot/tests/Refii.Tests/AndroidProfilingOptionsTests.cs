@@ -17,7 +17,7 @@ public sealed class AndroidProfilingOptionsTests
     [TestCase]
     public void ChannelRequiresAnExplicitParsedTrueValue()
     {
-        string root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "refii-profile-policy"));
+        string root = Path.GetFullPath(Path.Combine(Refii.Tests.TestTemp.Root, "refii-profile-policy"));
         foreach (string? value in new string?[] { null, "", "false", "0", "1", "yes", "true trailing" })
         {
             var values = new Dictionary<string, string> { ["gpu_profile"] = "true", ["REFII_DEBUG_PORT"] = "8787" };
@@ -36,7 +36,7 @@ public sealed class AndroidProfilingOptionsTests
     [TestCase]
     public void ArgumentVisibilityAndPrivateChannelAreIndependent()
     {
-        string root = Path.GetFullPath(Path.GetTempPath());
+        string root = Path.GetFullPath(Refii.Tests.TestTemp.Root);
         var values = new Dictionary<string, string> { ["debug_channel"] = "true", ["gpu_profile"] = "true" };
         foreach (string[] args in new[] { Array.Empty<string>(), new[] { "--gpu-profile=true" },
             new[] { "--", "--gpu-profile" }, new[] { "++", "--gpu-profile" } })
@@ -56,7 +56,7 @@ public sealed class AndroidProfilingOptionsTests
     [TestCase]
     public void HandshakeUsesOnlyTheAbsolutePrivateDirectory()
     {
-        string root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "refii profile paths", "nested", ".."));
+        string root = Path.GetFullPath(Path.Combine(Refii.Tests.TestTemp.Root, "refii profile paths", "nested", ".."));
         var options = AndroidProfilingOptions.FromValues(root, new Dictionary<string, string>
         {
             ["debug_channel"] = "true", ["debug_handshake"] = "../../external.json",
@@ -77,7 +77,7 @@ public sealed class AndroidProfilingOptionsTests
     [TestCase]
     public void HostOwnsSamplingRegardlessOfOptionalListener()
     {
-        string root = Path.GetFullPath(Path.GetTempPath());
+        string root = Path.GetFullPath(Refii.Tests.TestTemp.Root);
         var events = new List<string>();
         foreach (bool enabled in new[] { false, true, false })
         {
@@ -93,7 +93,7 @@ public sealed class AndroidProfilingOptionsTests
     [TestCase]
     public void ListenerRefusalPreservesHostSampling()
     {
-        string root = Path.GetFullPath(Path.GetTempPath());
+        string root = Path.GetFullPath(Refii.Tests.TestTemp.Root);
         var options = AndroidProfilingOptions.FromValues(root,
             new Dictionary<string, string> { ["debug_channel"] = "true" }, Array.Empty<string>());
         var events = new List<string>();
@@ -117,7 +117,7 @@ public sealed class AndroidProfilingOptionsTests
     [TestCase]
     public void ListenerExceptionCannotSkipHostSampling()
     {
-        var options = AndroidProfilingOptions.FromValues(Path.GetFullPath(Path.GetTempPath()),
+        var options = AndroidProfilingOptions.FromValues(Path.GetFullPath(Refii.Tests.TestTemp.Root),
             new Dictionary<string, string> { ["debug_channel"] = "true" }, Array.Empty<string>());
         int samplerPairs = 0;
         bool failed = false;
@@ -138,7 +138,7 @@ public sealed class AndroidProfilingOptionsTests
     [TestCase]
     public void PrivateConfigStartupLifecycleIsStableAndReadOnly()
     {
-        string root = Path.Combine(Path.GetTempPath(), "refii-profile-lifecycle-" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-profile-lifecycle-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try
         {

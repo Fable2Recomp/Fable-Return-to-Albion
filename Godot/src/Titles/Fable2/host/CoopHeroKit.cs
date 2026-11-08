@@ -279,7 +279,7 @@ public static class CoopHeroKit
 	}
 
 	/// <summary>
-	/// Where the game's saves live — `user_data_root`, set by the shell. Null until it is.
+	/// The save profile the game runs from — `user_data_root`, set by the shell. Null until it is.
 	/// </summary>
 	public static string? UserDataRoot { get; set; }
 

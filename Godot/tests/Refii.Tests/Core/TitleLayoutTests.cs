@@ -18,7 +18,7 @@ public class TitleLayoutTests
 {
     private static string NewRoot()
     {
-        string dir = Path.Combine(Path.GetTempPath(), "refii_title_layout_" + Guid.NewGuid().ToString("N"));
+        string dir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_title_layout_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         return dir;
     }

@@ -13,7 +13,7 @@ public class ModManifestTests
     [TestCase]
     public void TestAssetEnumerationIgnoresMetadataAndImports()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_manifest_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_manifest_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -56,7 +56,7 @@ public class ModManifestTests
     [TestCase]
     public void TestTuAssetClassificationAsKindTu()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_manifest_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_manifest_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -97,7 +97,7 @@ public class ModManifestTests
     [TestCase]
     public void TestManifestJsonSerializationRoundTrip()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_manifest_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_manifest_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -163,7 +163,7 @@ public class ModManifestTests
     [TestCase]
     public void TestSidecarsExcludedFromEnumerateAssets()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_manifest_sidecars_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_manifest_sidecars_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
 
         try
@@ -199,7 +199,7 @@ public class ModManifestTests
     [TestCase]
     public void TestManifestBuildFromF2ModPackage()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_manifest_pkg_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_manifest_pkg_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string pkgPath = Path.Combine(tempDir, "MyMod.f2mod");
 

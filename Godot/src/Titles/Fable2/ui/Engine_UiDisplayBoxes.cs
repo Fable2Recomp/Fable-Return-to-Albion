@@ -1,6 +1,9 @@
-using System.Collections.Generic;
+namespace Refii.Titles.Fable2;
 
-namespace Refii.Ui;
+using System.Collections.Generic;
+using Refii.Ui;
+using Box = Refii.Ui.Engine_UiStatedBoxes.Box;
+using MenuBox = Refii.Ui.Engine_UiStatedBoxes.MenuBox;
 
 /// <summary>
 /// THE GUEST'S DISPLAY BOXES, as each class's own Open and Close state them — not read out of its
@@ -24,6 +27,9 @@ namespace Refii.Ui;
 /// `owner+52` — `ShowingDisplayBox`, gui_display_box.h).</para>
 /// <para>The menu box is a different object — one controller at <c>*(guiOwner+56)</c> — stated by
 /// its populate and close (<c>@MenuBox.Open</c> / <c>.Close</c>): see <see cref="Menu"/>.</para>
+/// <para>A box's record (<see cref="Engine_UiStatedBoxes.Box"/>): its address, kind, the identity at
+/// `box+4` (the name `RemoveDisplayBox` matches), the resolved body at `box+8` and the class's own
+/// fields. The shared surfaces read these through <see cref="Statements"/>.</para>
 /// <para>Pure .NET: held by tests without a Godot type in the host.</para>
 /// </remarks>
 public static class Engine_UiDisplayBoxes
@@ -53,27 +59,6 @@ public static class Engine_UiDisplayBoxes
 		AcceptHold => 0x820EBF1Cu,
 		_ => 0u,
 	};
-
-	/// <summary>One open box as its Open stated it.</summary>
-	/// <param name="Address">The box object — what an answer is addressed to.</param>
-	/// <param name="Kind">The class's type; see the class note.</param>
-	/// <param name="Name">The identity at `box+4`, the name `RemoveDisplayBox` matches.</param>
-	/// <param name="Body">The resolved body at `box+8`, what the Open writes into the presentation.</param>
-	/// <param name="Fields">The class's own fields, in the order its hook states them.</param>
-	public sealed record Box(uint Address, int Kind, string Name, string Body, IReadOnlyList<string> Fields)
-	{
-		/// <summary>The adjuster's widget, for kind 3: the host steps it by the widget's rule on the
-		/// same codes it sends the guest.</summary>
-		public Engine_UiGuiBoxes.AdjusterState? Adjuster { get; init; }
-
-		public string Field(int index) => index >= 0 && index < Fields.Count ? Fields[index] : string.Empty;
-
-		public int Number(int index) =>
-			int.TryParse(Field(index), System.Globalization.NumberStyles.Integer,
-				System.Globalization.CultureInfo.InvariantCulture, out int value) ? value : 0;
-
-		public bool Flag(int index) => Field(index) == "1";
-	}
 
 	private static readonly List<Box> _open = new();
 
@@ -178,10 +163,6 @@ public static class Engine_UiDisplayBoxes
 		return dropped;
 	}
 
-	/// <summary>One menu box as its populate stated it: the title, cancelable, the Orb's player card,
-	/// and each row's label (resolved by the receiver) and enabled byte.</summary>
-	public sealed record MenuBox(uint Address, Engine_UiGuiBoxes.MenuBoxModel Model, bool Card);
-
 	/// <summary>The menu box stated open, null once its close is stated.</summary>
 	public static MenuBox? Menu { get; private set; }
 
@@ -220,5 +201,19 @@ public static class Engine_UiDisplayBoxes
 		_open.Clear();
 		Menu = null;
 		++Generation;
+	}
+
+	/// <summary>These statements as the shared box surfaces read them (<see cref="Fable2Title.StatedBoxes"/>).</summary>
+	public static readonly Engine_UiStatedBoxes Statements = new Stated();
+
+	private sealed class Stated : Engine_UiStatedBoxes
+	{
+		public override Box? Showing => Engine_UiDisplayBoxes.Showing;
+
+		public override Box? ShowingQuery => ShowingOf(Query);
+
+		public override Box? ShowingAdjuster => ShowingOf(Adjuster);
+
+		public override MenuBox? Menu => Engine_UiDisplayBoxes.Menu;
 	}
 }

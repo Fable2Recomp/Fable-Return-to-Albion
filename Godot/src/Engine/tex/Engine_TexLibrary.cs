@@ -394,6 +394,8 @@ public static class Engine_TexLibrary
 			Live.Clear();
 			LiveCubes.Clear();
 			LiveOrm.Clear();
+			ComposedOrms.Clear();
+			ComposedOrmsOverLimit.Clear();
 		}
 
 		Refii.Core.Engine_TracedMemory.FreeAll(TracedPool);
@@ -1191,9 +1193,12 @@ public static class Engine_TexLibrary
 	/// <remarks>
 	/// For sources that do not live in a bank — the hero's morphed specular and normal. The
 	/// path-keyed cache would pack the UNMORPHED bytes under the same identity, so a morphed
-	/// material would bind maps and an ORM that disagree. Uncached on purpose: the hero is a
-	/// handful of materials rebuilt when the morph changes, which is exactly when the ORM must
-	/// change too.
+	/// material would bind maps and an ORM that disagree.
+	///
+	/// Kept by what the pack is a function of (<see cref="ComposedOrm"/>): the two textures'
+	/// CONTENT as read back, or the identity of a texture that is never rewritten in place
+	/// (<see cref="MarkUnchanging"/>), and every parameter. A morph that changes either map changes
+	/// its bytes and so its key; a hit is the same bytes a rebuild would pack.
 	/// </remarks>
 	public static ImageTexture? BuildOrmFromTextures(
 		Texture2D? specular,
@@ -1208,17 +1213,166 @@ public static class Engine_TexLibrary
 			return null;
 		}
 
-		Image? spec = Refii.Core.Engine_ServerSyncs.Image(specular);
-		Image? norm = Refii.Core.Engine_ServerSyncs.Image(normal);
+		return ComposedOrm(
+			specular, normal, powerMin, powerMax,
+			Engine_TexSettings.OrmAoStrength, Engine_TexSettings.OrmMetallicStrength,
+			Engine_TexSettings.OrmHeight, out hasHeight);
+	}
+
+	/// <summary>Composed ORMs kept strongly before the list starts again; matches the composites' own limit.</summary>
+	internal const int ComposedOrmLimit = Refii.Hero.Engine_HeroTextureMorph.CompositedLimit;
+
+	private static readonly Dictionary<string, (ImageTexture? Texture, bool HasHeight)> ComposedOrms =
+		new(StringComparer.Ordinal);
+
+	/// <summary>Composed ORMs past the limit, for as long as a material still holds them.</summary>
+	private static readonly Dictionary<string, (WeakReference<ImageTexture> Texture, bool HasHeight)> ComposedOrmsOverLimit =
+		new(StringComparer.Ordinal);
+
+	/// <summary>Textures whose content is fixed for their lifetime, each with an id never reused.</summary>
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Texture2D, object> Unchanging = new();
+
+	private static long _unchangingIds;
+
+	/// <summary>Run totals: composed ORMs packed, answered by identity, answered by content.</summary>
+	public static (long Packed, long ByIdentity, long ByContent) ComposedOrmWork => (
+		System.Threading.Interlocked.Read(ref _composedPacked),
+		System.Threading.Interlocked.Read(ref _composedByIdentity),
+		System.Threading.Interlocked.Read(ref _composedByContent));
+
+	private static long _composedPacked;
+	private static long _composedByIdentity;
+	private static long _composedByContent;
+
+	/// <summary>
+	/// States that <paramref name="texture"/>'s content never changes after this call, so a
+	/// composed ORM can be found by its identity without reading it back. Only for textures the
+	/// caller made and hands out read-only (the character composites): the library's own live
+	/// maps are swapped in place (<see cref="Refresh"/>, the enhancement completions,
+	/// Engine_ModRemount) and are never marked.
+	/// </summary>
+	public static void MarkUnchanging(Texture2D? texture)
+	{
+		if (texture is not null)
+		{
+			Unchanging.AddOrUpdate(texture, System.Threading.Interlocked.Increment(ref _unchangingIds));
+		}
+	}
+
+	/// <summary>Drops the composed ORMs' strong references (a region release, a remount). Content-keyed, so nothing goes stale.</summary>
+	public static void ForgetComposedOrms()
+	{
+		lock (Gate)
+		{
+			ComposedOrms.Clear();
+			ComposedOrmsOverLimit.Clear();
+		}
+	}
+
+	/// <summary>
+	/// The composed ORM for these two textures and parameters: kept, or packed and kept.
+	/// </summary>
+	/// <remarks>
+	/// <see cref="PackComposedOrm"/> is a pure function of the two read-back images (size, format,
+	/// mip flag, bytes) and the five parameters — serial, no clock, no setting read inside — so a
+	/// key over exactly those answers with the bytes a rebuild would produce. An identity key is
+	/// used only when every texture given is <see cref="MarkUnchanging"/>: an unchanging texture
+	/// reads back the same bytes every time, so its identity stands for its content.
+	/// </remarks>
+	internal static ImageTexture? ComposedOrm(
+		Texture2D? specular,
+		Texture2D? normal,
+		float powerMin,
+		float powerMax,
+		float aoStrength,
+		float metallicStrength,
+		bool withHeight,
+		out bool hasHeight)
+	{
+		hasHeight = false;
+		if (specular is null && normal is null)
+		{
+			return null;
+		}
+
+		string recipe = ComposedRecipe(powerMin, powerMax, aoStrength, metallicStrength, withHeight);
+		string? byIdentity = IdentityKey(specular, normal, recipe);
+		if (byIdentity is not null && TryComposed(byIdentity, out ImageTexture? known, out hasHeight))
+		{
+			System.Threading.Interlocked.Increment(ref _composedByIdentity);
+			Refii.Entities.Engine_LoadEntityBuilds.NoteOrm(reused: true, 0);
+			return known;
+		}
+
+		long from = System.Diagnostics.Stopwatch.GetTimestamp();
+		using Image? spec = Refii.Core.Engine_ServerSyncs.Image(specular);
+		using Image? norm = Refii.Core.Engine_ServerSyncs.Image(normal);
+		if (spec is null && norm is null)
+		{
+			return null;
+		}
+
+		string byContent = ContentKey(spec, norm, recipe);
+		if (TryComposed(byContent, out known, out hasHeight))
+		{
+			System.Threading.Interlocked.Increment(ref _composedByContent);
+			if (byIdentity is not null)
+			{
+				Keep(byIdentity, known, hasHeight);
+			}
+
+			Refii.Entities.Engine_LoadEntityBuilds.NoteOrm(reused: true, System.Diagnostics.Stopwatch.GetTimestamp() - from);
+			return known;
+		}
+
+		ImageTexture? built = PackComposedOrm(
+			spec, norm, powerMin, powerMax, aoStrength, metallicStrength, withHeight, out bool packedHeight);
+		System.Threading.Interlocked.Increment(ref _composedPacked);
+
+		// Two workers packing the same key produced the same bytes; the first kept answers both,
+		// so every material holding this content holds one texture.
+		lock (Gate)
+		{
+			if (TryComposedLocked(byContent, out ImageTexture? raced, out bool racedHeight))
+			{
+				built = raced;
+				packedHeight = racedHeight;
+			}
+			else
+			{
+				KeepLocked(byContent, built, packedHeight);
+			}
+
+			if (byIdentity is not null)
+			{
+				KeepLocked(byIdentity, built, packedHeight);
+			}
+		}
+
+		Refii.Entities.Engine_LoadEntityBuilds.NoteOrm(reused: false, System.Diagnostics.Stopwatch.GetTimestamp() - from);
+		hasHeight = packedHeight;
+		return built;
+	}
+
+	/// <summary>The uncached pack: what <see cref="BuildOrmFromTextures"/> always did with the two read-back images.</summary>
+	internal static ImageTexture? PackComposedOrm(
+		Image? spec,
+		Image? norm,
+		float powerMin,
+		float powerMax,
+		float aoStrength,
+		float metallicStrength,
+		bool withHeight,
+		out bool hasHeight)
+	{
+		hasHeight = false;
 		if (spec is null && norm is null)
 		{
 			return null;
 		}
 
 		Image? packed = Engine_TexOrm.TryPack(
-			spec, norm, powerMin, powerMax,
-			Engine_TexSettings.OrmAoStrength, Engine_TexSettings.OrmMetallicStrength,
-			Engine_TexSettings.OrmHeight, out bool packedHeight);
+			spec, norm, powerMin, powerMax, aoStrength, metallicStrength, withHeight, out bool packedHeight);
 		if (packed is null)
 		{
 			return null;
@@ -1229,6 +1383,136 @@ public static class Engine_TexLibrary
 		CompressOrReport(packed, isNormalMap: false, "orm");
 		hasHeight = packedHeight;
 		return packed.IsEmpty() ? null : Engine_TextureUpload.CreateTexture(packed);
+	}
+
+	private static string ComposedRecipe(
+		float powerMin, float powerMax, float aoStrength, float metallicStrength, bool withHeight) =>
+		$"{BitConverter.SingleToUInt32Bits(powerMin):x8}-{BitConverter.SingleToUInt32Bits(powerMax):x8}-" +
+		$"{BitConverter.SingleToUInt32Bits(aoStrength):x8}-{BitConverter.SingleToUInt32Bits(metallicStrength):x8}-" +
+		(withHeight ? "h" : "f");
+
+	/// <summary>Null unless every texture given is unchanging.</summary>
+	private static string? IdentityKey(Texture2D? specular, Texture2D? normal, string recipe)
+	{
+		object? specularId = null;
+		object? normalId = null;
+		if ((specular is not null && !Unchanging.TryGetValue(specular, out specularId)) ||
+			(normal is not null && !Unchanging.TryGetValue(normal, out normalId)))
+		{
+			return null;
+		}
+
+		return $"i {specularId?.ToString() ?? "-"} {normalId?.ToString() ?? "-"} {recipe}";
+	}
+
+	/// <summary>SHA-256 over each image's presence, size, format, mip flag and bytes, then the recipe.</summary>
+	internal static string ContentKey(Image? spec, Image? norm, string recipe)
+	{
+		using Refii.Core.Engine_Hash.Incremental sha = Refii.Core.Engine_Hash.CreateIncrementalSha256();
+		Span<byte> header = stackalloc byte[17];
+		foreach (Image? image in new[] { spec, norm })
+		{
+			header.Clear();
+			if (image is not null)
+			{
+				header[0] = 1;
+				BitConverter.TryWriteBytes(header[1..], image.GetWidth());
+				BitConverter.TryWriteBytes(header[5..], image.GetHeight());
+				BitConverter.TryWriteBytes(header[9..], (int)image.GetFormat());
+				BitConverter.TryWriteBytes(header[13..], image.HasMipmaps() ? 1 : 0);
+			}
+
+			sha.AppendData(header);
+			if (image is not null)
+			{
+				var bytes = new Engine_ImageBytes(image);
+				try
+				{
+					BitConverter.TryWriteBytes(header[..4], bytes.Span.Length);
+					sha.AppendData(header[..4]);
+					sha.AppendData(bytes.Span);
+				}
+				finally
+				{
+					bytes.Dispose();
+				}
+			}
+		}
+
+		sha.AppendData(System.Text.Encoding.UTF8.GetBytes(recipe));
+		return "c " + Convert.ToHexString(sha.GetHashAndReset());
+	}
+
+	private static bool TryComposed(string key, out ImageTexture? texture, out bool hasHeight)
+	{
+		lock (Gate)
+		{
+			return TryComposedLocked(key, out texture, out hasHeight);
+		}
+	}
+
+	/// <summary>Under <see cref="Gate"/>. A null pack is an answer too and is kept as one.</summary>
+	private static bool TryComposedLocked(string key, out ImageTexture? texture, out bool hasHeight)
+	{
+		if (ComposedOrms.TryGetValue(key, out (ImageTexture? Texture, bool HasHeight) kept))
+		{
+			texture = kept.Texture;
+			hasHeight = kept.HasHeight;
+			return true;
+		}
+
+		if (ComposedOrmsOverLimit.TryGetValue(key, out (WeakReference<ImageTexture> Texture, bool HasHeight) held) &&
+			held.Texture.TryGetTarget(out ImageTexture? alive) && GodotObject.IsInstanceValid(alive))
+		{
+			texture = alive;
+			hasHeight = held.HasHeight;
+			return true;
+		}
+
+		texture = null;
+		hasHeight = false;
+		return false;
+	}
+
+	private static void Keep(string key, ImageTexture? texture, bool hasHeight)
+	{
+		lock (Gate)
+		{
+			KeepLocked(key, texture, hasHeight);
+		}
+	}
+
+	/// <summary>Under <see cref="Gate"/>: at the limit the strong list starts again, and what it held stays findable while alive.</summary>
+	private static void KeepLocked(string key, ImageTexture? texture, bool hasHeight)
+	{
+		if (ComposedOrms.Count >= ComposedOrmLimit && !ComposedOrms.ContainsKey(key))
+		{
+			var gone = new List<string>();
+			foreach ((string listed, (WeakReference<ImageTexture> Texture, bool HasHeight) held) in ComposedOrmsOverLimit)
+			{
+				if (!held.Texture.TryGetTarget(out _))
+				{
+					gone.Add(listed);
+				}
+			}
+
+			foreach (string listed in gone)
+			{
+				ComposedOrmsOverLimit.Remove(listed);
+			}
+
+			foreach ((string listed, (ImageTexture? Texture, bool HasHeight) kept) in ComposedOrms)
+			{
+				if (kept.Texture is not null)
+				{
+					ComposedOrmsOverLimit[listed] = (new WeakReference<ImageTexture>(kept.Texture), kept.HasHeight);
+				}
+			}
+
+			ComposedOrms.Clear();
+		}
+
+		ComposedOrms[key] = (texture, hasHeight);
 	}
 
 	/// <summary>

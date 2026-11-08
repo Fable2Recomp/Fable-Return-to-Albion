@@ -24,15 +24,17 @@ public partial class Engine_BnkMeshLoader : ResourceFormatLoader
     /// missing model leaves no trace anywhere: the node exists, the material is applied, the
     /// prop is counted as streamed, and nothing draws.
     /// </summary>
-    public static int EmptyStubs { get; private set; }
+    public static int EmptyStubs => _emptyStubs;
 
-    public static int EmptyUndecodable { get; private set; }
+    public static int EmptyUndecodable => _emptyUndecodable;
+
+    private static int _emptyStubs, _emptyUndecodable;
 
     /// <summary>Zeroed per region, so the counts describe the level rather than the run.</summary>
     public static void ResetEmptyMeshCounts()
     {
-        EmptyStubs = 0;
-        EmptyUndecodable = 0;
+        System.Threading.Interlocked.Exchange(ref _emptyStubs, 0);
+        System.Threading.Interlocked.Exchange(ref _emptyUndecodable, 0);
     }
 
     /// <param name="headResolver">Reads a file's first bytes alone; without one,
@@ -122,7 +124,7 @@ public partial class Engine_BnkMeshLoader : ResourceFormatLoader
             // failures under them is how the log stops being readable.
             mesh = new ArrayMesh();
 
-            int seen = isStub ? ++EmptyStubs : ++EmptyUndecodable;
+            int seen = System.Threading.Interlocked.Increment(ref (isStub ? ref _emptyStubs : ref _emptyUndecodable));
             if (seen <= EmptyMeshReportCap)
             {
                 GD.Print($"[bnk] {path} DREW NOTHING — " +

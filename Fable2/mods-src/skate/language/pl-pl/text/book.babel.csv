@@ -1,0 +1,45 @@
+key,value
+SKATE_MOD_NAME,Deskorolka
+SKATE_MOD_DESCRIPTION,"Jeździj na deskorolce po Albionie: K, by wskoczyć lub zeskoczyć, Spacja, by podskoczyć, lewy przycisk myszy na Przełamanie, prawy na Chwyt, i zdobywaj punkty za kombinacje."
+SKATE_INPUT_TOGGLE,Włącz lub wyłącz deskorolkę
+SKATE_INPUT_OLLIE,Podskok
+SKATE_INPUT_FLIP,Przełamanie
+SKATE_INPUT_GRAB,Chwyt
+SKATE_INPUT_NO_LOCK,"Namierzanie, wyłączone podczas jazdy"
+SKATE_INPUT_HELP,Pokaż lub ukryj sterowanie deskorolką
+SKATE_TOUCH_TOGGLE,Deska
+SKATE_TOUCH_HOP,Podskok
+SKATE_TOUCH_FLOURISH,Przełamanie
+SKATE_TOUCH_GRAB,Chwyt
+SKATE_TOUCH_WHEELIE,Wheelie
+SKATE_TOUCH_GRIND,Grind
+SKATE_TRICK_FLOURISH,Przełamanie
+SKATE_TRICK_BACK_FLOURISH,Przełamanie w tył
+SKATE_TRICK_CHEEKY_SHOVE,Bezczelne pchnięcie
+SKATE_TRICK_IMPROBABLE,Nieprawdopodobne
+SKATE_TRICK_PIE_GRAB,Chwyt ciasta
+SKATE_TRICK_HEROS_GRIP,Chwyt Bohatera
+SKATE_TRICK_BALVERINES_TAIL,Ogon wilkołaka
+SKATE_TRICK_GARGOYLES_NOSE,Nos gargulca
+SKATE_TRICK_WHEELIE,Wheelie hobbesa
+SKATE_TRICK_RAIL_RIDER,Jeździec poręczy
+SKATE_TRICK_GUILD_GRINDER,Grind Gildii
+SKATE_GUILD_GRINDER_CALLOUT,Grind Gildii!
+SKATE_CRASH,Wywrotka!
+SKATE_CLOSE_CALL,O włos
+SKATE_CLOSE_CALL_POINTS,O włos  +%1
+SKATE_COMBO,%1  x  %2
+SKATE_CONTROLS_HINT,"Przytrzymaj kierunek, by wykonać inne Przełamanie lub Chwyt"
+SKATE_CONTROL_PUSH,"Odepchnij, hamuj"
+SKATE_CONTROL_PUSH_KEYS,"W, S"
+SKATE_CONTROL_PUSH_STICK,"Gałka w górę, w dół"
+SKATE_CONTROL_STEER,"Skręt, obrót"
+SKATE_CONTROL_STEER_KEYS,"A, D"
+SKATE_CONTROL_STEER_STICK,"Gałka w lewo, w prawo"
+SKATE_CONTROL_HOP,Podskok
+SKATE_CONTROL_LEFT_CLICK,Lewy przycisk
+SKATE_CONTROL_HOLD_RIGHT_CLICK,Przytrzymaj prawy przycisk
+SKATE_CONTROL_HOLD,Przytrzymaj %1
+SKATE_CONTROL_NEAR_LEDGE,"%1, przy krawędzi"
+SKATE_CONTROL_STEP_OFF,Zeskocz
+SKATE_CONTROL_HIDE,Ukryj

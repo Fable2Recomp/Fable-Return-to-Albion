@@ -12,11 +12,14 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cstdlib>
 #include <queue>
 #include <string>
+#include <unordered_map>
 
 #include <fmt/format.h>
 
+#include <rex/cvar.h>
 #include <rex/filesystem.h>
 #include <rex/filesystem/devices/host_path_device.h>
 #include <rex/filesystem/devices/stfs_container_device.h>
@@ -26,6 +29,10 @@
 #include <rex/system/xam/content_manager.h>
 #include <rex/system/xfile.h>
 #include <rex/system/xobject.h>
+
+REXCVAR_DEFINE_STRING(content_title_folders, "", "Runtime",
+                      "Each title's content folder in the profile, as TITLEID=Folder pairs separated "
+                      "by ';'. A title not named uses its id.");
 
 namespace rex {
 namespace system {
@@ -41,13 +48,13 @@ static int content_device_id_ = 0;
 
 ContentPackage::ContentPackage(KernelState* kernel_state, const std::string_view root_name,
                                const XCONTENT_AGGREGATE_DATA& data,
-                               const std::filesystem::path& package_path)
+                               const std::filesystem::path& package_path, bool read_only)
     : kernel_state_(kernel_state), root_name_(root_name), package_path_(package_path), license_(0) {
   device_path_ = fmt::format("\\Device\\Content\\{0}\\", ++content_device_id_);
   content_data_ = data;
 
   auto fs = kernel_state_->file_system();
-  auto device = std::make_unique<rex::filesystem::HostPathDevice>(device_path_, package_path, false,
+  auto device = std::make_unique<rex::filesystem::HostPathDevice>(device_path_, package_path, read_only,
                                                                   /*allow_share_delete=*/true);
   device->Initialize();
   fs->RegisterDevice(std::move(device));
@@ -105,23 +112,61 @@ void ContentPackage::LoadPackageLicenseMask(const std::filesystem::path header_p
   fclose(file);
 }
 
+// REFII SHADOW: THE ROOT IS ONE PROFILE. The host states user_data_root as the profile's own
+// folder and names each title's folder in it (content_title_folders), so the layout is
+//
+//   content_root/<title folder>/<content type>/<file name>/
+//   content_root/<title folder>/Headers/<content type>/<file name>.header
+//   content_root/<title folder>/profile/<setting id>
+//
+// and the XUID picks no folder. The guest never reads a package's XUID back: enumeration hands
+// it XCONTENT_DATA without one, and XamContentGetCreator answers the live profile (F2 TU1
+// sub_82449930 -> XamContentGetCreator, F3 0x83100908 copies 0x134 bytes and the title id only).
+// Marketplace content (type 2) is the device's, every other type the profile's: a listing for
+// the common owner (xuid 0) sees only the first, one for the signed-in xuid only the rest, so
+// the enumerators' two calls never list a package twice.
 ContentManager::ContentManager(KernelState* kernel_state, const std::filesystem::path& root_path)
-    : kernel_state_(kernel_state), root_path_(root_path) {}
+    : kernel_state_(kernel_state), root_path_(root_path) {
+  const std::string folders = REXCVAR_GET(content_title_folders);
+  for (size_t pos = 0; pos < folders.size();) {
+    size_t end = folders.find(';', pos);
+    if (end == std::string::npos) {
+      end = folders.size();
+    }
+    const std::string pair = folders.substr(pos, end - pos);
+    const size_t eq = pair.find('=');
+    if (eq != std::string::npos && eq > 0 && eq + 1 < pair.size()) {
+      const uint32_t title = static_cast<uint32_t>(std::strtoul(pair.substr(0, eq).c_str(), nullptr, 16));
+      const std::string folder = pair.substr(eq + 1);
+      if (title != 0 && folder.find_first_of("/\\") == std::string::npos && folder != "." &&
+          folder != "..") {
+        title_folders_[title] = folder;
+      }
+    }
+    pos = end + 1;
+  }
+}
 
 ContentManager::~ContentManager() = default;
 
-std::filesystem::path ContentManager::ResolvePackageRoot(uint64_t xuid, XContentType content_type,
-                                                         uint32_t title_id) {
+std::filesystem::path ContentManager::ResolveTitleRoot(uint64_t xuid, uint32_t title_id) const {
+  (void)xuid;
   if (title_id == kCurrentlyRunningTitleId) {
     title_id = kernel_state_->title_id();
   }
-  auto xuid_str = fmt::format("{:016X}", xuid);
-  auto title_id_str = fmt::format("{:08X}", title_id);
-  auto content_type_str = fmt::format("{:08X}", uint32_t(content_type));
+  auto it = title_folders_.find(title_id);
+  return root_path_ / (it != title_folders_.end() ? rex::to_path(it->second)
+                                                  : rex::to_path(fmt::format("{:08X}", title_id)));
+}
 
-  // Package root path:
-  // content_root/xuid/title_id/content_type/
-  return root_path_ / xuid_str / title_id_str / content_type_str;
+bool ContentManager::IsOtherTitle(uint32_t title_id) const {
+  return title_id != kCurrentlyRunningTitleId && title_id != kernel_state_->title_id();
+}
+
+std::filesystem::path ContentManager::ResolvePackageRoot(uint64_t xuid, XContentType content_type,
+                                                         uint32_t title_id) {
+  // content_root/<title folder>/content_type/
+  return ResolveTitleRoot(xuid, title_id) / fmt::format("{:08X}", uint32_t(content_type));
 }
 
 std::filesystem::path ContentManager::ResolvePackagePath(uint64_t xuid,
@@ -146,19 +191,11 @@ std::filesystem::path ContentManager::ResolvePackageHeaderPath(const std::string
     title_id = kernel_state_->title_id();
   }
 
-  if (content_type == XContentType::kMarketplaceContent) {
-    xuid = 0;
-  }
-
-  auto xuid_str = fmt::format("{:016X}", xuid);
-  auto title_id_str = fmt::format("{:08X}", title_id);
-  auto content_type_str = fmt::format("{:08X}", uint32_t(content_type));
   std::string final_name = std::string(file_name) + ".header";
 
-  // Header root path:
-  // content_root/xuid/title_id/Headers/content_type/filename.header
-  return root_path_ / xuid_str / title_id_str / kGameContentHeaderDirName / content_type_str /
-         final_name;
+  // content_root/<title folder>/Headers/content_type/filename.header
+  return ResolveTitleRoot(xuid, title_id) / kGameContentHeaderDirName /
+         fmt::format("{:08X}", uint32_t(content_type)) / rex::to_path(final_name);
 }
 
 std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device_id, uint64_t xuid,
@@ -170,8 +207,13 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(uint32_t device
     title_id = kernel_state_->title_id();
   }
 
+  // One owner per content type: the device (xuid 0) owns marketplace content, the profile the rest.
+  if ((xuid == 0) != (content_type == XContentType::kMarketplaceContent)) {
+    return result;
+  }
+
   // Search path:
-  // content_root/xuid/title_id/type_name/*
+  // content_root/<title folder>/type_name/*
   auto package_root = ResolvePackageRoot(xuid, content_type, title_id);
   auto file_infos = rex::filesystem::ListFiles(package_root);
 
@@ -227,6 +269,9 @@ bool ContentManager::ContentExists(uint64_t xuid, const XCONTENT_AGGREGATE_DATA&
 
 X_RESULT ContentManager::WriteContentHeaderFile(uint64_t xuid, XCONTENT_AGGREGATE_DATA data,
                                                 uint32_t license_mask) {
+  if (IsOtherTitle(data.title_id)) {
+    return X_ERROR_ACCESS_DENIED;
+  }
   if (data.title_id == uint32_t(-1)) {
     data.title_id = kernel_state_->title_id();
   }
@@ -294,6 +339,9 @@ X_RESULT ContentManager::ReadContentHeaderFile(const std::string_view file_name,
 
 X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_t xuid,
                                        const XCONTENT_AGGREGATE_DATA& data) {
+  if (IsOtherTitle(data.title_id)) {
+    return X_ERROR_ACCESS_DENIED;
+  }
   {
     auto global_lock = global_critical_region_.Acquire();
     if (open_packages_.count(string::string_key_case(root_name))) {
@@ -335,10 +383,14 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t 
   if (!std::filesystem::exists(package_path)) {
     return X_ERROR_FILE_NOT_FOUND;
   }
-  auto package = ResolvePackage(root_name, xuid, data);
-  assert_not_null(package);
-  package->LoadPackageLicenseMask(ResolvePackageHeaderPath(
-      data.file_name(), xuid, kernel_state_->title_id(), data.content_type));
+  // Another title's content mounts read-only: open-existing is all XAM grants it (F2 TU1
+  // lhXam_XamContentCreateInternal 0x82cc4138: an alternate title with a disposition other
+  // than 3 returns 5; F3 sub_822FA998 opens Fable 2's packages with 3 and reads HeroSave.bin).
+  auto package = std::make_unique<ContentPackage>(kernel_state_, root_name, data, package_path,
+                                                  IsOtherTitle(data.title_id));
+  // The record's own title: a cross-title open reads that title's header, not the running one's.
+  package->LoadPackageLicenseMask(
+      ResolvePackageHeaderPath(data.file_name(), xuid, data.title_id, data.content_type));
   content_license = package->GetPackageLicense();
 
   {
@@ -387,6 +439,9 @@ X_RESULT ContentManager::GetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
 
 X_RESULT ContentManager::SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data,
                                              std::vector<uint8_t> buffer) {
+  if (IsOtherTitle(data.title_id)) {
+    return X_ERROR_ACCESS_DENIED;
+  }
   auto global_lock = global_critical_region_.Acquire();
   auto package_path = ResolvePackagePath(xuid, data);
   std::filesystem::create_directories(package_path);
@@ -402,6 +457,9 @@ X_RESULT ContentManager::SetContentThumbnail(uint64_t xuid, const XCONTENT_AGGRE
 }
 
 X_RESULT ContentManager::DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data) {
+  if (IsOtherTitle(data.title_id)) {
+    return X_ERROR_ACCESS_DENIED;
+  }
   auto global_lock = global_critical_region_.Acquire();
 
   if (IsContentOpen(data)) {
@@ -444,6 +502,9 @@ X_RESULT ContentManager::UnmountContent(uint64_t xuid, const XCONTENT_AGGREGATE_
 
 X_RESULT ContentManager::UnmountAndDeleteContent(uint64_t xuid,
                                                  const XCONTENT_AGGREGATE_DATA& data) {
+  if (IsOtherTitle(data.title_id)) {
+    return X_ERROR_ACCESS_DENIED;
+  }
   // Unmount phase: tolerant of not-mounted state
   ContentPackage* package = nullptr;
   {
@@ -478,12 +539,10 @@ X_RESULT ContentManager::UnmountAndDeleteContent(uint64_t xuid,
 }
 
 std::filesystem::path ContentManager::ResolveGameUserContentPath() {
-  auto title_id = fmt::format("{:08X}", kernel_state_->title_id());
-  auto user_name = rex::to_path(kernel_state_->user_profile()->name());
-
-  // Per-game per-profile data location:
-  // content_root/title_id/profile/user_name
-  return root_path_ / title_id / kGameUserContentDirName / user_name;
+  // content_root/<title folder>/profile: the root is the profile, so the profile's name picks
+  // no folder (it changes with RexNet on or off; the settings must not).
+  return ResolveTitleRoot(kernel_state_->user_profile()->xuid(), kCurrentlyRunningTitleId) /
+         kGameUserContentDirName;
 }
 
 std::unordered_map<string::string_key_case, ContentPackage*,

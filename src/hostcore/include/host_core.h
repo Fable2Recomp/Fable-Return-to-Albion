@@ -153,6 +153,19 @@ uint16_t GuestHalfAt(const uint8_t* base, uint32_t address);
 /// One guest doubleword, big-endian, or 0 when it is not readable.
 uint64_t GuestWord64At(const uint8_t* base, uint32_t address);
 
+/// CopyGuest a 4 KiB page at a time (guest_span.h): an unreadable page zeroes only its own bytes.
+/// False when any page was not readable.
+bool CopyGuestPages(const uint8_t* base, uint32_t address, void* out, std::size_t size);
+
+/// Guest memory as the spans of guest_span.h read it.
+struct GuestReader {
+    const uint8_t* base;
+
+    void Copy(uint32_t address, void* out, std::size_t size) const { CopyGuestPages(base, address, out, size); }
+    uint32_t Word(uint32_t address) const { return GuestWordAt(base, address); }
+    uint8_t Byte(uint32_t address) const { return GuestByteAt(base, address); }
+};
+
 /// Stores `size` bytes into guest memory, or returns false when the page is not there. The
 /// few host-side writes are latches on objects the guest handed over, so a miss is a stale
 /// pointer, not a reason to fault.

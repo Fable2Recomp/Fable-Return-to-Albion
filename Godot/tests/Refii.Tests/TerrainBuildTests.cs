@@ -55,7 +55,8 @@ public sealed class TerrainBuildTests
             gzip.Write(plain);
         }
 
-        return packed.ToArray();
+        // a GZipStream given no bytes writes nothing on .NET 9+; an empty member is header, empty stored block, zero trailer.
+        return packed.Length == 0 ? new byte[] { 0x1F, 0x8B, 0x08, 0, 0, 0, 0, 0, 0, 0xFF, 0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0 } : packed.ToArray();
     }
 
     /// <summary>What the doubling stream this replaced returned, or null where it refused.</summary>

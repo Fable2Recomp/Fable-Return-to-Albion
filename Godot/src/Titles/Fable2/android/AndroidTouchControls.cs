@@ -518,7 +518,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
         if (!GameInput.Playing)
         {
             // A mod's screen in the pause book's place takes the taps, and the pad does not reach the game.
-            return GameUi.ModOwnsScreen ? TouchContext.ModScreen : TouchContext.Menu;
+            return Refii.Mods.ModScreen.Owned ? TouchContext.ModScreen : TouchContext.Menu;
         }
 
         // The trigger a Spells hold sends is the overlay's own flag: the play keeps its layout.

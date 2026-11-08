@@ -145,8 +145,14 @@ public static partial class Engine_UiInventorySource
 		};
 	}
 
-	/// <summary>`globals.gdb`, for the item records. Set once the banks are readable.</summary>
-	public static GdbMulti? Globals { get; set; }
+	/// <summary>`globals.gdb`, for the item records: what a menu's path set, else the game's shared database.</summary>
+	public static GdbMulti? Globals
+	{
+		get => _globals ?? Engine_GameGdb.Database;
+		set => _globals = value;
+	}
+
+	private static GdbMulti? _globals;
 
 	/// <summary>The string book, for the item name tags.</summary>
 	public static Refii.Text.Engine_BabelDatabase? Strings { get; set; }

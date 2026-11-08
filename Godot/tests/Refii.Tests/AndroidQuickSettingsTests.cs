@@ -19,7 +19,7 @@ public class AndroidQuickSettingsTests
 
     private static string Config(string text)
     {
-        string path = Path.Combine(Path.GetTempPath(), "refii-quick-" + Guid.NewGuid().ToString("N") + ".toml");
+        string path = Path.Combine(Refii.Tests.TestTemp.Root, "refii-quick-" + Guid.NewGuid().ToString("N") + ".toml");
         File.WriteAllText(path, text);
         return path;
     }

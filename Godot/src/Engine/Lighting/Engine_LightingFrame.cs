@@ -312,29 +312,31 @@ public static class Engine_LightingFrame
 			}
 
 			CheckGeneration();
-			if (_modernAmbient is null)
+			bool? known = _modernAmbient;
+			if (known is null)
 			{
 				try
 				{
 					string forced = System.Environment.GetEnvironmentVariable("REFII_LIGHTING_MODEL") ?? string.Empty;
 					if (forced.Length != 0)
 					{
-						_modernAmbient = !IsClassic(forced);
+						known = !IsClassic(forced);
 					}
 					else
 					{
-						_modernAmbient = !Refii.Core.Engine_RefiiConfig.Read(out _)
+						known = !Refii.Core.Engine_RefiiConfig.Read(out _)
 							.TryGetValue("lighting_model", out string? model) ||
 							!IsClassic(model);
 					}
 				}
 				catch (Exception)
 				{
-					_modernAmbient = true;
+					known = true;
 				}
+				_modernAmbient = known;
 			}
 
-			return _modernAmbient.Value;
+			return known.Value;
 		}
 	}
 

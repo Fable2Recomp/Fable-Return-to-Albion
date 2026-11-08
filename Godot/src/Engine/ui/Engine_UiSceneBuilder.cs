@@ -538,6 +538,12 @@ public sealed class Engine_UiSceneBuilder
 			node.SetMeta("text_truncate", text.Truncate);
 		}
 
+		// The draw style rides the node as the truncate does, so a re-mesh keeps the outline.
+		if (Engine_UiTextContract.Active.Outlines && text.Style != 3)
+		{
+			node.SetMeta("text_style", text.Style);
+		}
+
 		if (FontResolver?.Invoke(text.Size) is not { } selection)
 			return node;
 
@@ -587,10 +593,38 @@ public sealed class Engine_UiSceneBuilder
 	///
 	/// <paramref name="colour"/> carries its own alpha; the scene builder passes 1.
 	/// </summary>
+	private static bool _textStyleRead;
+
+	/// <summary>`ui_text_style`: "console" (the default) or "smooth"; read once per run.</summary>
+	private static void ReadTextStyle()
+	{
+		if (_textStyleRead)
+		{
+			return;
+		}
+
+		_textStyleRead = true;
+		try
+		{
+			string style = Engine_RefiiConfig.String(Engine_RefiiConfig.Read(out _), "ui_text_style", "console");
+			Engine_UiTextContract.ConsoleLook = !style.Equals("smooth", System.StringComparison.OrdinalIgnoreCase);
+		}
+		catch (System.Exception)
+		{
+			Engine_UiTextContract.ConsoleLook = true;
+		}
+	}
+
 	public static ShaderMaterial TextMaterial(Color colour, Texture2D? atlas)
 	{
 		var material = new ShaderMaterial { Shader = TextShader };
 		material.SetShaderParameter(ColourName, colour);
+		ReadTextStyle();
+		Engine_UiTextContract contract = Engine_UiTextContract.Active;
+		material.SetShaderParameter("snap_glyphs", contract.SnapGlyphs);
+		material.SetShaderParameter("contrast_floor", contract.ContrastFloor);
+		material.SetShaderParameter("coverage_gamma", contract.CoverageGamma);
+		material.SetShaderParameter("alpha_floor", contract.AlphaFloor);
 		if (atlas is not null)
 		{
 			material.SetShaderParameter(AtlasName, atlas);

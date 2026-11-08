@@ -1,3 +1,21 @@
 key,value
 PORTAL_GUN_NAME,Portal Gun
 PORTAL_GUN_DESC,"Fires a pair of linked portals onto walls, floors and ceilings."
+PORTAL_GUN_MOD_NAME,Portal Gun
+PORTAL_GUN_MOD_DESCRIPTION,"A gun that fires a pair of linked portals onto walls, floors and ceilings. Look through one to see out of the other, and step in to come out there. G draws it; the mouse buttons fire."
+PORTAL_GUN_INPUT_TOGGLE,Portal gun on or off
+PORTAL_GUN_INPUT_SWAP,"Blue or orange next, on a touchscreen"
+PORTAL_GUN_INPUT_AIM_BLUE,A portal on a touchscreen's Y
+PORTAL_GUN_INPUT_AIM_ORANGE,Y's caption while orange is next
+PORTAL_GUN_INPUT_NO_LOCK,"Lock-on, off in portal mode"
+PORTAL_GUN_INPUT_NO_MELEE,"Melee, off in portal mode"
+PORTAL_GUN_INPUT_NO_MAGIC,"Magic, off in portal mode"
+PORTAL_GUN_TOUCH_TOGGLE,Portal Gun
+PORTAL_GUN_TOUCH_SWAP,Swap Colour
+PORTAL_GUN_TOUCH_BLUE,Blue
+PORTAL_GUN_TOUCH_ORANGE,Orange
+PORTAL_GUN_SETTING_QUALITY,View quality
+PORTAL_GUN_SETTING_QUALITY_DESCRIPTION,"The resolution of the view through a portal, of the screen's. Lower runs faster."
+PORTAL_GUN_SETTING_VIEW_RANGE,View range
+PORTAL_GUN_SETTING_VIEW_RANGE_DESCRIPTION,"Past this many metres a portal stops drawing its view."
+PORTAL_GUN_EQUIP_A_GUN,Equip a gun first

@@ -17,7 +17,7 @@ public sealed class AndroidUpdateBankTests
     [TestCase]
     public void UpdateMountLifecycle()
     {
-        string root = Path.Combine(Path.GetTempPath(), "refii-update-" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-update-" + Guid.NewGuid().ToString("N"));
         string game = Path.Combine(root, "game"), mod = Path.Combine(root, "mod");
         Directory.CreateDirectory(Path.Combine(game, "data"));
         // An empty pub-games folder keeps the Flash index on this fixture; without one, Mount falls back to

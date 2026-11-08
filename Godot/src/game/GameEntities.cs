@@ -780,7 +780,12 @@ public partial class GameEntities : Node3D
                 node = fastNode;
                 mesh = fastMesh;
 
-                // Not stored again: unchanged, this is what the walk that last changed it stored.
+                // Unchanged, this is what the walk that last changed it stored; stored here only when
+                // that walk's placement was not usable.
+                if (!_guestPlacements.ContainsKey(entity.Address) && IsUsablePlacement(entity.Position))
+                {
+                    _guestPlacements[entity.Address] = (entity.Position, entity.Rotation);
+                }
                 string? fastKey = null;
                 if (!adopted)
                 {
@@ -4285,9 +4290,9 @@ public partial class GameEntities : Node3D
     }
 
     /// <summary>
-    /// A fixed set of locks by path: different models load side by side, one model once. Enough of
-    /// them that ten builds in flight rarely share one by chance: at 64, a load has a one in seven
-    /// chance of waiting out an unrelated model's whole load.
+    /// A fixed set of 1024 locks by path: different models load side by side, one model once. With
+    /// ten builds in flight a load shares its lock with an unrelated one about one time in a
+    /// hundred (64 locks made it one in seven).
     /// </summary>
     private static readonly object[] WorkerMeshLoads =
         System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(System.Linq.Enumerable.Range(0, 1024), _ => new object()));
@@ -4316,6 +4321,51 @@ public partial class GameEntities : Node3D
         return Refii.Hero.Engine_HeroMorph.Blend(own, listed);
     }
 
+    /// <summary>One part loaded ahead of its assembly: the mesh, or what loading it threw.</summary>
+    private readonly record struct PreloadedPart(
+        Mesh? Mesh, System.Runtime.ExceptionServices.ExceptionDispatchInfo? Error);
+
+    /// <summary>
+    /// Every distinct part of one composite through <see cref="LoadPart"/>, side by side. The
+    /// loads are independent (per-path locks in <see cref="LoadMesh"/>, the resource cache, a pure
+    /// blend), so each result is the one the assembly's own serial ask would get; the assembly
+    /// still consumes them in its own order. A throw is kept and rethrown where that ask was.
+    /// </summary>
+    private static Dictionary<string, PreloadedPart> PreloadParts(
+        List<string> paths, System.Func<string, List<(string Path, float Weight)>?> stated)
+    {
+        var distinct = new List<string>(paths.Count);
+        var seen = new HashSet<string>(System.StringComparer.Ordinal);
+        foreach (string path in paths)
+        {
+            if (path.Length != 0 && seen.Add(path))
+            {
+                distinct.Add(path);
+            }
+        }
+
+        var loaded = new PreloadedPart[distinct.Count];
+        System.Threading.Tasks.Parallel.For(0, distinct.Count, i =>
+        {
+            try
+            {
+                loaded[i] = new PreloadedPart(LoadPart(distinct[i], stated(distinct[i])), null);
+            }
+            catch (System.Exception e)
+            {
+                loaded[i] = new PreloadedPart(null, System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e));
+            }
+        });
+
+        var byPath = new Dictionary<string, PreloadedPart>(distinct.Count, System.StringComparer.Ordinal);
+        for (int i = 0; i < distinct.Count; i++)
+        {
+            byPath[distinct[i]] = loaded[i];
+        }
+
+        return byPath;
+    }
+
     /// <summary>Builds one composite off this thread, once.</summary>
     private void QueueCompositeBuild(
         string key, List<string> paths, List<long> hashes,
@@ -4342,18 +4392,32 @@ public partial class GameEntities : Node3D
             try
             {
                 long assembleFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+                List<(string Path, float Weight)>? Stated(string path)
+                {
+                    int at = paths.IndexOf(path);
+                    List<(string Path, float Weight)>? stated = null;
+                    if (targets is not null && at >= 0)
+                    {
+                        targets.TryGetValue((uint)hashes[at], out stated);
+                    }
+
+                    return stated;
+                }
+
+                Dictionary<string, PreloadedPart> preloaded = PreloadParts(paths, Stated);
                 assembled = Refii.Models.Engine_MdlComposite.Build(
                     paths,
                     path =>
                     {
-                        int at = paths.IndexOf(path);
-                        List<(string Path, float Weight)>? stated = null;
-                        if (targets is not null && at >= 0)
+                        // A path's first ask takes its preload; any later ask of the same path
+                        // loads again, as every ask did before.
+                        if (preloaded.Remove(path, out PreloadedPart part))
                         {
-                            targets.TryGetValue((uint)hashes[at], out stated);
+                            part.Error?.Throw();
+                            return part.Mesh;
                         }
 
-                        return LoadPart(path, stated);
+                        return LoadPart(path, Stated(path));
                     },
                     out resolved,
                     out missing);

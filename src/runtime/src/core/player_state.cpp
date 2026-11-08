@@ -602,28 +602,16 @@ const std::string& Root(State& s) {
   return s.root;
 }
 
-/// The folder of the save named `name`: `<root>/<user>/4D5307F1/00000001/<name>/`, the newest when
-/// more than one user holds that name.
+/// The folder of the save named `name`: `<root>/<name>/`, the root being the running title's
+/// savegame folder of the signed-in profile.
 std::filesystem::path SaveFolder(const std::string& root, std::string_view name) {
   namespace fs = std::filesystem;
   std::error_code error;
-  if (root.empty() || !SafeName(name) || !fs::is_directory(root, error)) {
+  if (root.empty() || !SafeName(name)) {
     return {};
   }
-  fs::path best;
-  fs::file_time_type best_time{};
-  for (const fs::directory_entry& user : fs::directory_iterator(root, error)) {
-    const fs::path candidate = user.path() / "4D5307F1" / "00000001" / std::string(name);
-    if (!fs::is_directory(candidate, error)) {
-      continue;
-    }
-    const fs::file_time_type when = fs::last_write_time(candidate, error);
-    if (best.empty() || when > best_time) {
-      best = candidate;
-      best_time = when;
-    }
-  }
-  return best;
+  const fs::path candidate = fs::path(root) / std::string(name);
+  return fs::is_directory(candidate, error) ? candidate : fs::path{};
 }
 
 /// Nesting depth of replica dispatches on this thread (the guest tick thread runs every event).

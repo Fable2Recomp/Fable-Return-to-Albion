@@ -13,3 +13,5 @@ QUICKSAVE_GAME_NOT_SAVED,A játék nem mentett. Gyorsmentés nem készült.
 QUICKSAVE_SAVED,Gyorsmentés kész.
 QUICKSAVE_NOT_KEPT,"A játék elmentve, de a gyorsmentést nem sikerült megtartani."
 QUICKSAVE_LOADED,Betöltve a %1-kor készült gyorsmentés.
+QUICKSAVE_TOUCH_QUICKSAVE,Mentés
+QUICKSAVE_TOUCH_QUICKLOAD,Betöltés

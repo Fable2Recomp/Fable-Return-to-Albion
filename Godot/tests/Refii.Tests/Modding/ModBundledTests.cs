@@ -22,7 +22,7 @@ public class ModBundledTests
     [TestCase]
     public void CollectTakesEveryFileButTheMetadataAndReadme()
     {
-        string root = Path.Combine(Path.GetTempPath(), "refii_bundled_" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii_bundled_" + Guid.NewGuid().ToString("N"));
         try
         {
             var files = ModBundled.Collect(MakeSource(root));
@@ -38,7 +38,7 @@ public class ModBundledTests
     [TestCase]
     public void InstallsUpdatesAndLeavesEditsAlone()
     {
-        string root = Path.Combine(Path.GetTempPath(), "refii_bundled_" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii_bundled_" + Guid.NewGuid().ToString("N"));
         try
         {
             string tree = MakeSource(root);
@@ -73,7 +73,7 @@ public class ModBundledTests
     [TestCase]
     public void AStaleFileLeftByAnUnpackIsNotPacked()
     {
-        string root = Path.Combine(Path.GetTempPath(), "refii_bundled_" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii_bundled_" + Guid.NewGuid().ToString("N"));
         try
         {
             string tree = MakeSource(root);
@@ -113,7 +113,7 @@ public class ModBundledTests
         }
 
         string source = Path.Combine(repo, "Fable2", "mods-src");
-        string root = Path.Combine(Path.GetTempPath(), "refii_bundled_" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii_bundled_" + Guid.NewGuid().ToString("N"));
         try
         {
             string mods = Path.Combine(root, "mods");

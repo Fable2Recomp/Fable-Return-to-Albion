@@ -294,7 +294,7 @@ public sealed class AndroidCompileCacheTests
     [TestCase]
     public void ModuleImportsReadDynamicSymbols()
     {
-        string root = Path.Combine(Path.GetTempPath(), "refii-elf-" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-elf-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try
         {

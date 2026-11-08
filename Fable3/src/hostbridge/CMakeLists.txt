@@ -64,3 +64,27 @@ set_target_properties(refiii_hostbridge PROPERTIES
 # Restaged after every link: the shared natives to bin/, Fable 3's instance
 # (REFII_TITLE_INSTANCE_TARGETS_Fable3) to bin/Fable3/.
 refii_stage_title_bridge(refiii_hostbridge Fable3)
+
+# The entity walk's span reads (entity_walk.h) against the per-field reads on synthetic guest
+# memory, run after every link of the test: a difference fails the build. Header-only, no guest.
+if(NOT CMAKE_CROSSCOMPILING)
+    add_executable(refiii_entity_walk_test ${CMAKE_CURRENT_LIST_DIR}/tests/entity_walk_test.cpp)
+    target_include_directories(refiii_entity_walk_test PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/src
+        ${CMAKE_CURRENT_LIST_DIR}/../../../src/hostcore/include)
+    # Beside its build files, never in the staged library directory.
+    set_target_properties(refiii_entity_walk_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    add_custom_command(TARGET refiii_entity_walk_test POST_BUILD
+        COMMAND refiii_entity_walk_test
+        COMMENT "Fable 3 entity walk: span reads against per-field reads")
+
+    # The animation-state walk (anim_walk.h) likewise, against anim_feed.cpp's per-field reads.
+    add_executable(refiii_anim_state_test ${CMAKE_CURRENT_LIST_DIR}/tests/anim_state_test.cpp)
+    target_include_directories(refiii_anim_state_test PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}/src
+        ${CMAKE_CURRENT_LIST_DIR}/../../../src/hostcore/include)
+    set_target_properties(refiii_anim_state_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    add_custom_command(TARGET refiii_anim_state_test POST_BUILD
+        COMMAND refiii_anim_state_test
+        COMMENT "Fable 3 animation state: span reads against per-field reads")
+endif()

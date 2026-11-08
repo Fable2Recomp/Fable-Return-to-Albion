@@ -440,6 +440,35 @@ extern "C" uint32_t refii_bridge_hero_inventory_snapshot(uint32_t* out, uint32_t
   return words / 4u;
 }
 
+namespace {
+std::mutex g_player_inventory_mutex;
+std::vector<uint32_t> g_player_inventory[2];
+}  // namespace
+
+extern "C" void refii_bridge_publish_player_inventory(int32_t player, const uint32_t* words, uint32_t count) {
+  if (player != 1 && player != 2) {
+    return;
+  }
+  std::lock_guard lock(g_player_inventory_mutex);
+  g_player_inventory[player - 1].assign(words, words + static_cast<size_t>(count) * 4u);
+}
+
+extern "C" uint32_t refii_bridge_player_inventory_snapshot(int32_t player, uint32_t* out, uint32_t word_capacity) {
+  if (player != 1 && player != 2) {
+    return 0u;
+  }
+  std::lock_guard lock(g_player_inventory_mutex);
+  const std::vector<uint32_t>& held = g_player_inventory[player - 1];
+  const uint32_t words = static_cast<uint32_t>(held.size());
+  if (out != nullptr && word_capacity != 0u) {
+    const uint32_t n = std::min(words, word_capacity - (word_capacity % 4u));
+    if (n != 0u) {
+      std::memcpy(out, held.data(), n * sizeof(uint32_t));
+    }
+  }
+  return words / 4u;
+}
+
 void RequestQuestTravel(uint32_t record) { g_journey_wanted.store(record); }
 
 extern "C" uint32_t refii_bridge_requested_quest_travel() {

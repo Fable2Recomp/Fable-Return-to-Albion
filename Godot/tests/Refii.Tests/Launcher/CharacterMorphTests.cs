@@ -661,7 +661,7 @@ public class CharacterMorphTests
     [TestCase]
     public void ManualAppearanceRoundTripsThroughConfigWithoutChangingOtherSettings()
     {
-        string file = System.IO.Path.Combine(System.IO.Path.GetTempPath(), Guid.NewGuid() + ".toml");
+        string file = System.IO.Path.Combine(Refii.Tests.TestTemp.Root, Guid.NewGuid() + ".toml");
         var culture = CultureInfo.CurrentCulture;
         try
         {

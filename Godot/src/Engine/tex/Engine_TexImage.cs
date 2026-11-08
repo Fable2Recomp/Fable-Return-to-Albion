@@ -272,11 +272,6 @@ public static class Engine_TexImage
 			return false;
 		}
 
-		if (OS.GetEnvironment("REFII_TEX_NO_MIP_TAIL") == "1")
-		{
-			return false;
-		}
-
 		int width = surface.Width;
 		int height = surface.Height;
 		int offset = 0;

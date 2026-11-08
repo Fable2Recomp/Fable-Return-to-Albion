@@ -32,9 +32,9 @@ inline constexpr std::string_view kSaveFileName = "refii_player.txt";
 
 // --- the host bridge's side -------------------------------------------------------------------
 
-/// How to find the content root the game's saves live under (the emulator's user_data_root): a
-/// save named N is the folder `<root>/<user>/4D5307F1/00000001/<N>/`. The host bridge registers
-/// it when it loads; it is asked the first time a save is read or written.
+/// How to find the folder the running title's saves live in (the profile's savegame content,
+/// `<user_data_root>/<title folder>/00000001`): a save named N is the folder `<root>/<N>/`. The
+/// host bridge registers it when it loads; it is asked the first time a save is read or written.
 using SaveRootResolver = std::string (*)();
 void SetSaveRootResolver(SaveRootResolver resolver);
 

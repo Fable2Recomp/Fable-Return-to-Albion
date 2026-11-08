@@ -27,7 +27,10 @@
 -- across it at either side. Each tick the same halving follows it, until it runs out and the hero pops off.
 -- Both are the same balance, a lean that grows by itself and which the stick pushes back.
 --
--- Published for godot/skate.gd: skate.on, skate.heading, skate.air, skate.bailing, skate.flip
+-- The board is one player's at a time: the one whose K (or LB + Back) stepped on, S.Player, published as
+-- skate.player. Only that player's actions ride it, and the other player's toggle does nothing meanwhile.
+--
+-- Published for godot/skate.gd: skate.on, skate.player, skate.heading, skate.air, skate.bailing, skate.flip
 -- and skate.flip_seq (a flip's kind, 1 to 4, counted so a repeat shows), skate.grab (0, or a grab's kind),
 -- skate.trick and skate.trick_seq (the latest trick's id, a spin's being its degrees), skate.combo,
 -- skate.count, skate.total, skate.landed and skate.landed_seq (what a landing banked, -1 for a bail),
@@ -38,6 +41,7 @@
 
 Skate = Skate or {}
 local S = Skate
+S.Player = S.Player or 1
 
 local TURN_SLOW, TURN_FAST = 2.7, 1.5 -- radians a second at full stick, at a standstill and at TOP
 local SPIN = 7.5            -- the same, in the air
@@ -207,13 +211,13 @@ local function mount(hero, heading)
 	S.Travel = S.Heading
 	S.StanceLooked = 0
 	reset_air()
-	Refii.set_speed_multiplier(1, 0)
+	Refii.set_speed_multiplier(S.Player, 0)
 	Physics.SetIgnoresGravity(body, true)
 	hold_stance(body)
 end
 
 local function unmount(hero)
-	Refii.clear_speed_multiplier(1)
+	Refii.clear_speed_multiplier(S.Player)
 	if hero ~= nil then
 		local body = Refii.entity(hero)
 		Physics.SetIgnoresGravity(body, false)
@@ -224,12 +228,12 @@ end
 local function step_on(hero)
 	mount(hero)
 	S.On, S.Bailing = true, nil
-	Refii.input_claim(1, "skate.ollie", true)
-	Refii.input_claim(1, "skate.flip", true)
-	Refii.input_claim(1, "skate.grab", true)
-	Refii.input_claim(1, "skate.manual", true)
-	Refii.input_claim(1, "skate.grind", true)
-	Refii.input_claim(1, "skate.no_lock", true)
+	Refii.input_claim(S.Player, "skate.ollie", true)
+	Refii.input_claim(S.Player, "skate.flip", true)
+	Refii.input_claim(S.Player, "skate.grab", true)
+	Refii.input_claim(S.Player, "skate.manual", true)
+	Refii.input_claim(S.Player, "skate.grind", true)
+	Refii.input_claim(S.Player, "skate.no_lock", true)
 	clear_combo()
 	Refii.publish("skate.bailing", 0)
 	Refii.publish("skate.on", 1)
@@ -238,26 +242,31 @@ end
 local function step_off(hero)
 	S.On, S.Bailing = false, nil
 	unmount(hero)
-	Refii.input_claim(1, "skate.ollie", false)
-	Refii.input_claim(1, "skate.flip", false)
-	Refii.input_claim(1, "skate.grab", false)
-	Refii.input_claim(1, "skate.manual", false)
-	Refii.input_claim(1, "skate.grind", false)
-	Refii.input_claim(1, "skate.no_lock", false)
+	Refii.input_claim(S.Player, "skate.ollie", false)
+	Refii.input_claim(S.Player, "skate.flip", false)
+	Refii.input_claim(S.Player, "skate.grab", false)
+	Refii.input_claim(S.Player, "skate.manual", false)
+	Refii.input_claim(S.Player, "skate.grind", false)
+	Refii.input_claim(S.Player, "skate.no_lock", false)
 	S.ManualHeld = false
 	clear_combo()
 	Refii.publish("skate.bailing", 0)
 	Refii.publish("skate.on", 0)
 end
 
-function S.toggle()
-	local hero = Refii.player_hero(1)
+function S.toggle(p)
+	if S.On and p ~= S.Player then
+		return
+	end
+	local hero = Refii.player_hero(p)
 	if hero == nil then
 		return
 	end
 	if S.On then
 		step_off(hero)
 	else
+		S.Player = p
+		Refii.publish("skate.player", p)
 		step_on(hero)
 	end
 end
@@ -709,7 +718,13 @@ local function ride(hero, dt)
 end
 
 Refii.on("input_action", function(e)
-	if e.player ~= 1 then
+	if e.name == "skate.toggle" or e.name == "skate.toggle_pad" then
+		if e.pressed then
+			S.toggle(e.player)
+		end
+		return
+	end
+	if e.player ~= S.Player then
 		return
 	end
 	if e.name == "skate.grab" then
@@ -718,8 +733,6 @@ Refii.on("input_action", function(e)
 		S.ManualHeld = e.pressed
 	elseif not e.pressed then
 		return
-	elseif e.name == "skate.toggle" or e.name == "skate.toggle_pad" then
-		S.toggle()
 	elseif e.name == "skate.ollie" then
 		S.ollie()
 	elseif e.name == "skate.flip" then
@@ -733,12 +746,12 @@ Refii.on("tick", function(e)
 	if not S.On then
 		return
 	end
-	local hero = Refii.player_hero(1)
-	if hero == nil or not Refii.living(hero) or Refii.in_cutscene(1, Refii.CUTSCENE_FULL + Refii.CUTSCENE_INTERACTIVE) then
+	local hero = Refii.player_hero(S.Player)
+	if hero == nil or not Refii.living(hero) or Refii.in_cutscene(S.Player, Refii.CUTSCENE_FULL + Refii.CUTSCENE_INTERACTIVE) then
 		step_off(hero)
 		return
 	end
-	if not Refii.in_play(1) then
+	if not Refii.in_play(S.Player) then
 		return
 	end
 	-- One name a tick, so each reaches the display by itself.
@@ -762,6 +775,6 @@ end)
 
 Refii.on("level_unloading", function()
 	if S.On then
-		step_off(Refii.player_hero(1))
+		step_off(Refii.player_hero(S.Player))
 	end
 end)

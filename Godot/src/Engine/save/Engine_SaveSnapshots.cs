@@ -11,9 +11,9 @@ namespace Refii.Save;
 /// quickload are made of (RefiiHost <c>save_snapshot</c> / <c>load_snapshot</c>).
 /// </summary>
 /// <remarks>
-/// WHERE THEY ARE: `user_data_root/&lt;xuid&gt;/refii-snapshots/&lt;save&gt;/&lt;key&gt;/` — beside
-/// the title's own `4D5307F1/`, so the load list (which enumerates `4D5307F1/00000001/`) never
-/// shows one, and per save, so a key loads back only into the hero it was taken from. A key is a
+/// WHERE THEY ARE: `&lt;profile&gt;/&lt;game&gt;/refii-snapshots/&lt;save&gt;/&lt;key&gt;/` — in the title's own
+/// folder beside its `00000001/`, so the load list (which enumerates `00000001/`) never shows one,
+/// and per save, so a key loads back only into the hero it was taken from. A key is a
 /// mod's own name: `"&lt;mod&gt;.&lt;name&gt;"`. A snapshot is every file of the save folder as it
 /// stood, plus <see cref="TakenName"/>.
 ///
@@ -51,20 +51,19 @@ public static class SaveSnapshots
 		key is { Length: > 0 and <= 128 } && KeyPattern.IsMatch(key) && !key.Contains("..", StringComparison.Ordinal) &&
 		!key.EndsWith('.');
 
-	/// <summary>`&lt;xuid&gt;/refii-snapshots/&lt;save&gt;/` for a save folder in the content layout; null otherwise.</summary>
+	/// <summary>`&lt;game&gt;/refii-snapshots/&lt;save&gt;/` for a save folder `&lt;game&gt;/00000001/&lt;save&gt;`; null otherwise.</summary>
 	public static string? SaveFolder(string saveDirectory)
 	{
 		string save = Path.GetFileName(Path.TrimEndingDirectorySeparator(saveDirectory));
 		DirectoryInfo? content = Directory.GetParent(Path.TrimEndingDirectorySeparator(saveDirectory));
-		DirectoryInfo? title = content?.Parent;
-		DirectoryInfo? user = title?.Parent;
-		if (save.Length == 0 || user is null ||
-			!string.Equals(title!.Name, SaveExport.TitleId, StringComparison.OrdinalIgnoreCase))
+		DirectoryInfo? game = content?.Parent;
+		if (save.Length == 0 || game is null ||
+			!string.Equals(content!.Name, Engine_SaveLayout.SaveGameType, StringComparison.Ordinal))
 		{
 			return null;
 		}
 
-		return Path.Combine(user.FullName, FolderName, save);
+		return Path.Combine(game.FullName, FolderName, save);
 	}
 
 	/// <summary>Where the snapshot under <paramref name="key"/> of this save is kept; null for a bad key or layout.</summary>

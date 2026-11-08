@@ -16,8 +16,8 @@ public sealed class AndroidRuntimeOptionsTests
     [TestCase]
     public void MinimalConfigurationUsesSeparatePrivateRuntimePaths()
     {
-        string user = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "refii-user"));
-        string game = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "refii-game"));
+        string user = Path.GetFullPath(Path.Combine(Refii.Tests.TestTemp.Root, "refii-user"));
+        string game = Path.GetFullPath(Path.Combine(Refii.Tests.TestTemp.Root, "refii-game"));
         string json = JsonSerializer.Serialize(new { schema = 1, game_root = game });
         var options = AndroidRuntimeOptions.Parse(json, user);
         AssertThat(options.GameRoot).IsEqual(game);
@@ -32,7 +32,7 @@ public sealed class AndroidRuntimeOptionsTests
     [TestCase]
     public void ExplicitConfigurationDoesNotChooseAnImplicitImportOrMovieAction()
     {
-        string user = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "refii-user"));
+        string user = Path.GetFullPath(Path.Combine(Refii.Tests.TestTemp.Root, "refii-user"));
         string game = Path.Combine(user, "game");
         string module = Path.Combine(user, "supplied", "module.so");
         string save = Path.Combine(user, "supplied-save");
@@ -51,7 +51,7 @@ public sealed class AndroidRuntimeOptionsTests
     [TestCase]
     public void StrictConfigurationRejectsAmbiguousInputs()
     {
-        string user = Path.GetTempPath();
+        string user = Refii.Tests.TestTemp.Root;
         string game = JsonSerializer.Serialize(Path.GetFullPath(Path.Combine(user, "game")));
         foreach (string json in new[]
         {
@@ -71,29 +71,30 @@ public sealed class AndroidRuntimeOptionsTests
         }) AssertThat(IsInvalid(() => AndroidRuntimeOptions.Parse(json, user))).IsTrue();
     }
 
-    /// <summary>Copies a complete synthetic account/title/profile tree once and preserves both source and newer private saves.</summary>
+    /// <summary>Migrates a synthetic content root into the profile once, never changing the source or a newer private save.</summary>
     [TestCase]
     public void SaveImportLifecycleNeverOverwritesAnExistingProfile()
     {
         using var tree = new TemporaryTree();
         string source = Path.Combine(tree.Root, "source");
-        string relative = Path.Combine("account", "title", "profile", "mainsave.bin");
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(source, relative))!);
+        string hero = Path.Combine(source, "E0C3DF3F20120108", "4D5307F1", "00000001", "Hero000");
+        Directory.CreateDirectory(hero);
         byte[] expected = { 0, 128, 255, 1, 2 };
-        File.WriteAllBytes(Path.Combine(source, relative), expected);
-        File.WriteAllText(Path.Combine(source, "account", "header.bin"), "synthetic-header");
-        string target = Path.Combine(tree.Root, "runtime", "assets", "save");
-        Directory.CreateDirectory(target);
+        File.WriteAllBytes(Path.Combine(hero, "mainsave.bin"), expected);
+        string target = Path.Combine(tree.Root, "runtime", "assets", "saves");
+        string profile = Refii.Save.Engine_SaveProfiles.Ensure(target);
+        string placed = Path.Combine(profile, "Fable 2", "00000001", "Hero000", "mainsave.bin");
+
         var imported = AndroidSaveImporter.ImportIfEmpty(source, target);
-        AssertThat(imported.Files).IsEqual(2);
-        AssertThat(imported.Bytes).IsEqual(21L);
-        AssertThat(File.ReadAllBytes(Path.Combine(target, relative))).IsEqual(expected);
-        AssertThat(File.ReadAllBytes(Path.Combine(source, relative))).IsEqual(expected);
-        File.WriteAllText(Path.Combine(target, relative), "new private progress");
+        AssertThat(imported.Items).IsEqual(1);
+        AssertThat(File.ReadAllBytes(placed)).IsEqual(expected);
+        AssertThat(File.ReadAllBytes(Path.Combine(hero, "mainsave.bin"))).IsEqual(expected);
+
+        File.WriteAllText(placed, "new private progress");
         var preserved = AndroidSaveImporter.ImportIfEmpty(source, target);
-        AssertThat(preserved.Status).IsEqual("existing private saves preserved");
-        AssertThat(File.ReadAllText(Path.Combine(target, relative))).IsEqual("new private progress");
-        AssertThat(File.ReadAllBytes(Path.Combine(source, relative))).IsEqual(expected);
+        AssertThat(preserved.Status).IsEqual("supplied save tree already migrated");
+        AssertThat(File.ReadAllText(placed)).IsEqual("new private progress");
+        AssertThat(File.ReadAllBytes(Path.Combine(hero, "mainsave.bin"))).IsEqual(expected);
     }
 
     /// <summary>Optional imports are harmless and overlapping source/destination trees are refused.</summary>
@@ -102,7 +103,7 @@ public sealed class AndroidRuntimeOptionsTests
     {
         using var tree = new TemporaryTree();
         string target = Path.Combine(tree.Root, "private-save");
-        AssertThat(AndroidSaveImporter.ImportIfEmpty(null, target).Files).IsEqual(0);
+        AssertThat(AndroidSaveImporter.ImportIfEmpty(null, target).Items).IsEqual(0);
         Directory.CreateDirectory(target);
         AssertThat(IsInvalid(() => AndroidSaveImporter.ImportIfEmpty(target, target))).IsTrue();
         AssertThat(IsInvalid(() => AndroidSaveImporter.ImportIfEmpty(tree.Root, target))).IsTrue();
@@ -125,7 +126,7 @@ public sealed class AndroidRuntimeOptionsTests
     private sealed class TemporaryTree : IDisposable
     {
         /// <summary>The unique absolute directory owned entirely by this test.</summary>
-        internal string Root { get; } = Path.Combine(Path.GetTempPath(), "refii-android-test-" + Guid.NewGuid().ToString("N"));
+        internal string Root { get; } = Path.Combine(Refii.Tests.TestTemp.Root, "refii-android-test-" + Guid.NewGuid().ToString("N"));
         /// <summary>Creates the synthetic source/destination parent.</summary>
         internal TemporaryTree() => Directory.CreateDirectory(Root);
         /// <summary>Removes only this test's uniquely allocated synthetic tree.</summary>

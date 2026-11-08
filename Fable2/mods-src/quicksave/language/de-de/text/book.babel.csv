@@ -13,3 +13,5 @@ QUICKSAVE_GAME_NOT_SAVED,Das Spiel wurde nicht gespeichert. Es wurde nichts schn
 QUICKSAVE_SAVED,Schnell gespeichert.
 QUICKSAVE_NOT_KEPT,"Das Spiel wurde gespeichert, aber der Schnellspeicherstand konnte nicht behalten werden."
 QUICKSAVE_LOADED,Schnellspeicherstand von %1 Uhr geladen.
+QUICKSAVE_TOUCH_QUICKSAVE,Speichern
+QUICKSAVE_TOUCH_QUICKLOAD,Laden

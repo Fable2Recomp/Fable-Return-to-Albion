@@ -306,7 +306,7 @@ public static int SurfacesWithLods;
 
             if (!finite)
             {
-                ++NonFiniteSurfaces;
+                System.Threading.Interlocked.Increment(ref NonFiniteSurfaces);
                 GD.PushWarning(
                     $"[mdl] surface '{geo.Name}' of '{virtualPath}' has a non-finite vertex; " +
                     "the surface is dropped rather than handed to the renderer, which would " +
@@ -448,7 +448,7 @@ public static int SurfacesWithLods;
                 }
                 mesh.SetMeta(Engine_MdlTransfer.DescriptorMeta, System.Array.ConvertAll(info.ShDescriptor, v => (int)v));
                 mesh.SetMeta(Engine_MdlTransfer.TableMeta, info.ShProbeData);
-                ++SurfacesWithTransfer;
+                System.Threading.Interlocked.Increment(ref SurfacesWithTransfer);
             }
             else if (!treeStreams && !Refii.Lighting.Engine_LightingFrame.ModernModel &&
                 geo.SourceVertices.Length == geo.VertexCount &&
@@ -458,18 +458,18 @@ public static int SurfacesWithLods;
                 arrays[(int)Mesh.ArrayType.Custom0] = tr;
                 arrays[(int)Mesh.ArrayType.Custom1] = tg;
                 arrays[(int)Mesh.ArrayType.Custom2] = tb;
-                ++SurfacesWithTransfer;
+                System.Threading.Interlocked.Increment(ref SurfacesWithTransfer);
             }
 
             Engine_MdlSurfaceArrays.Add(mesh, Mesh.PrimitiveType.Triangles, arrays, lods, levels?.Packed());
             surfaceLods.Add(lods ?? new Godot.Collections.Dictionary());
             if (lods is not null)
             {
-                ++SurfacesWithLods;
+                System.Threading.Interlocked.Increment(ref SurfacesWithLods);
             }
             else if (info.Lods.Count != 0)
             {
-                ++SurfacesWithoutLods;
+                System.Threading.Interlocked.Increment(ref SurfacesWithoutLods);
             }
 
             if (geo.Name.Length != 0)
@@ -528,8 +528,8 @@ public static int SurfacesWithLods;
             mesh.SetMeta(FurMeta, fur);
         }
 
-        LodLevelsAttached += lodsAttached;
-        LodLevelsDropped += lodsDropped;
+        System.Threading.Interlocked.Add(ref LodLevelsAttached, lodsAttached);
+        System.Threading.Interlocked.Add(ref LodLevelsDropped, lodsDropped);
         if (lodsAttached != 0)
         {
             mesh.SetMeta(SurfaceLodsMeta, surfaceLods);

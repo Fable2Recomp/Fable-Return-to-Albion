@@ -1,0 +1,21 @@
+key,value
+PORTAL_GUN_NAME,Portalkanone
+PORTAL_GUN_DESC,"Schießt ein Paar verbundener Portale auf Wände, Böden und Decken."
+PORTAL_GUN_MOD_NAME,Portalkanone
+PORTAL_GUN_MOD_DESCRIPTION,"Eine Waffe, die ein Paar verbundener Portale auf Wände, Böden und Decken schießt. Schau durch eines, um aus dem anderen zu sehen, und tritt hinein, um dort herauszukommen. G zieht sie; die Maustasten feuern."
+PORTAL_GUN_INPUT_TOGGLE,Portalkanone an oder aus
+PORTAL_GUN_INPUT_SWAP,"Als Nächstes Blau oder Orange, auf dem Touchscreen"
+PORTAL_GUN_INPUT_AIM_BLUE,Ein Portal auf Y des Touchscreens
+PORTAL_GUN_INPUT_AIM_ORANGE,"Beschriftung von Y, wenn Orange als Nächstes kommt"
+PORTAL_GUN_INPUT_NO_LOCK,"Anvisieren, im Portalmodus aus"
+PORTAL_GUN_INPUT_NO_MELEE,"Nahkampf, im Portalmodus aus"
+PORTAL_GUN_INPUT_NO_MAGIC,"Magie, im Portalmodus aus"
+PORTAL_GUN_TOUCH_TOGGLE,Portalkanone
+PORTAL_GUN_TOUCH_SWAP,Farbwechsel
+PORTAL_GUN_TOUCH_BLUE,Blau
+PORTAL_GUN_TOUCH_ORANGE,Orange
+PORTAL_GUN_SETTING_QUALITY,Sichtqualität
+PORTAL_GUN_SETTING_QUALITY_DESCRIPTION,"Die Auflösung der Sicht durch ein Portal, gemessen an der des Bildschirms. Niedriger läuft schneller."
+PORTAL_GUN_SETTING_VIEW_RANGE,Sichtweite
+PORTAL_GUN_SETTING_VIEW_RANGE_DESCRIPTION,Ab so vielen Metern zeichnet ein Portal seine Sicht nicht mehr.
+PORTAL_GUN_EQUIP_A_GUN,Rüste zuerst eine Schusswaffe aus

@@ -13,3 +13,5 @@ QUICKSAVE_GAME_NOT_SAVED,ゲームはセーブされませんでした。クイ�
 QUICKSAVE_SAVED,クイックセーブしました。
 QUICKSAVE_NOT_KEPT,ゲームはセーブされましたが、クイックセーブを残せませんでした。
 QUICKSAVE_LOADED,%1のクイックセーブをロードしました。
+QUICKSAVE_TOUCH_QUICKSAVE,クイックセーブ
+QUICKSAVE_TOUCH_QUICKLOAD,クイックロード

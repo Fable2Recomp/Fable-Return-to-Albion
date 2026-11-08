@@ -97,29 +97,14 @@ public static class Engine_UiModRows
 		ToRows(For(list, Engine_UiModMenus.MenuPlayer), BookLabel);
 
 	/// <summary>
-	/// A stated label as the row draws it: a Babel tag's string (the tag as given, then with
-	/// <c>TEXT_</c>, as <see cref="Engine_UiGuiText"/> resolves the game's), else the literal. The
-	/// list takes a sourced row's label as its text, so the tag is resolved here.
-	/// A literal may carry tags in braces — <c>"4   {GUI_SCREEN_EXPRESSIONS_FUN_FART_NAME}"</c>, a
-	/// slot and what is on it — each drawn as the book says, or as written (braces dropped) when the
-	/// book has no such tag.
+	/// A stated label as the row draws it, through the one mod text lookup (<see cref="Refii.Mods.ModText.Text"/>):
+	/// a bare tag looked up whole, or each <c>{KEY}</c> in a literal —
+	/// <c>"4   {GUI_SCREEN_EXPRESSIONS_FUN_FART_NAME}"</c>, a slot and what is on it — from the game's book (the tag,
+	/// then with <c>TEXT_</c>), the mods' tables in the culture then en-uk, and the engine's words. A key nothing
+	/// knows is drawn as written, braces and all. The list takes a sourced row's label as its text, so it is
+	/// resolved here.
 	/// </summary>
-	public static string BookLabel(string label)
-	{
-		Refii.Text.Engine_BabelDatabase? book = Refii.Core.Engine_TitleGame.Active.Strings;
-		if (label.IndexOf('{') >= 0 && label.IndexOf('}') > label.IndexOf('{'))
-		{
-			return BracedTag.Replace(label, m =>
-				Engine_UiGuiText.Resolve(m.Groups[1].Value, book, out bool found) is { Length: > 0 } text && found
-					? text
-					: m.Groups[1].Value);
-		}
-
-		return Engine_UiGuiText.Resolve(label, book);
-	}
-
-	private static readonly System.Text.RegularExpressions.Regex BracedTag =
-		new(@"\{([A-Za-z0-9_]+)\}", System.Text.RegularExpressions.RegexOptions.Compiled);
+	public static string BookLabel(string label) => Refii.Mods.ModText.Text(label);
 
 	/// <summary>The stated rows as menu rows; <paramref name="label"/> turns a stated label into the row's text (as stated when null).</summary>
 	public static List<Engine_UiMenuSources.Row> ToRows(IReadOnlyList<Stated> stated, Func<string, string>? label = null)

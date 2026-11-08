@@ -198,7 +198,7 @@ public sealed class AndroidTouchControlsTests
     {
         var health = new Rect2(0f, 0f, 400f, 120f);
         // Where Android draws the spell-charge meter: moved in from the left edge, where Lock stands.
-        var spellCharge = new Rect2(85f + Engine_HudLayout.AndroidSpellChargeInset, 195f, 65f, 320f);
+        var spellCharge = new Rect2(85f + Fable2HudLayout.AndroidSpellChargeInset, 195f, 65f, 320f);
         foreach (float scale in new[] { AndroidTouchLayout.MinScale, 1f, AndroidTouchLayout.MaxScale })
         foreach (TouchContext context in new[] { TouchContext.World, TouchContext.Wheel })
         foreach (TouchControl control in AndroidTouchLayout.Build(Phone, scale, context))
@@ -569,9 +569,9 @@ public sealed class AndroidTouchControlsTests
             .Add(new Engine_HudLayout.Piece("group.SpellCharging.SpellCharging", "SpellCharging", new Engine_HudLayout.Anchor(0f, 0.5f), new Vector2(110f, 26f)))
             .Add(new Engine_HudLayout.Piece("group.SpellCharging2.SpellCharging2", "SpellCharging2", new Engine_HudLayout.Anchor(1f, 0.5f), new Vector2(-110f, 26f)))
             .Add(new Engine_HudLayout.Piece("group.PlayerHealth.PlayerHealth", "PlayerHealth", Engine_HudLayout.Anchor.TopLeft, new Vector2(69f, 65f)));
-        AssertThat(layout.InsetSpellCharge(Engine_HudLayout.AndroidSpellChargeInset)).IsEqual(2);
-        AssertThat(layout.Pieces[0].Offset).IsEqual(new Vector2(110f + Engine_HudLayout.AndroidSpellChargeInset, 26f));
-        AssertThat(layout.Pieces[1].Offset).IsEqual(new Vector2(-110f - Engine_HudLayout.AndroidSpellChargeInset, 26f));
+        AssertThat(Fable2HudLayout.InsetSpellCharge(layout, Fable2HudLayout.AndroidSpellChargeInset)).IsEqual(2);
+        AssertThat(layout.Pieces[0].Offset).IsEqual(new Vector2(110f + Fable2HudLayout.AndroidSpellChargeInset, 26f));
+        AssertThat(layout.Pieces[1].Offset).IsEqual(new Vector2(-110f - Fable2HudLayout.AndroidSpellChargeInset, 26f));
         AssertThat(layout.Pieces[2].Offset).IsEqual(new Vector2(69f, 65f));
     }
 
@@ -589,7 +589,7 @@ public sealed class AndroidTouchControlsTests
             .Add(Piece("meter.SubtitlesY.dpadmenu"))
             .Add(Piece("group.PlayerHealth.PlayerHealth"));
 
-        AssertThat(layout.LiftDpad(Engine_HudLayout.AndroidDpadLift)).IsEqual(2);
+        AssertThat(Fable2HudLayout.LiftDpad(layout, Engine_HudLayout.AndroidDpadLift)).IsEqual(2);
         AssertThat(layout.Pieces[0].Offset).IsEqual(new Vector2(280f, -150f - Engine_HudLayout.AndroidDpadLift));
         AssertThat(layout.Pieces[1].Offset).IsEqual(new Vector2(280f, -150f - Engine_HudLayout.AndroidDpadLift));
         AssertThat(layout.Pieces[2].Offset).IsEqual(new Vector2(280f, -150f));

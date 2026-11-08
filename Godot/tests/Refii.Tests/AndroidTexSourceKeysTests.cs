@@ -22,7 +22,7 @@ public sealed class AndroidTexSourceKeysTests
 	/// <summary>A game directory the mount will not go looking outside of.</summary>
 	private sealed class Fixture : IDisposable
 	{
-		public readonly string Root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "refii-source-keys-" + Guid.NewGuid().ToString("N"));
+		public readonly string Root = System.IO.Path.Combine(Refii.Tests.TestTemp.Root, "refii-source-keys-" + Guid.NewGuid().ToString("N"));
 
 		public Fixture()
 		{

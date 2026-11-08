@@ -58,7 +58,7 @@ public class AndroidLastExitTests
     [TestCase]
     public void TestANewExitKeepsThePreviousAndTheSameExitIsWrittenOnce()
     {
-        string logs = Path.Combine(Path.GetTempPath(), "refii-exit-" + Guid.NewGuid().ToString("N"));
+        string logs = Path.Combine(Refii.Tests.TestTemp.Root, "refii-exit-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(logs);
         try
         {

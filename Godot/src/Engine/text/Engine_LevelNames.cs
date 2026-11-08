@@ -183,16 +183,15 @@ public sealed class Engine_LevelNames
 	/// `Caves\GargoylesCave` becomes `caves_gargoylescave`; `Tombs\BWSMarket\Nightmare Hollow`
 	/// becomes `tombs_bwsmarket_nightmare_hollow`. Both are entries in the shipped record.
 	///
-	/// THE DOUBLED SEPARATORS ARE REPLACED FIRST, as whole units, which is why they are not
-	/// simply folded into the single-character pass: `\\` is ONE underscore, not two, and a
-	/// character-at-a-time replacement would produce a key that hashes to nothing.
+	/// The guest replaces one string at a time, singles before doubles, so a doubled separator is
+	/// two underscores: Fable 2 TU1 sub_8231CE98 replaces " " (0x8231CFBC), "/" (0x8231D000), "//"
+	/// (0x8231D044), "\\" (0x8231D088), "\\\\" (0x8231D0CC), "(" (0x8231D110) and ")" (0x8231D154) with
+	/// "_"; Fable 3 sub_82349978 does the same from 0x82349A44 to 0x82349BF0. Each doubled pass then
+	/// finds nothing, which is a per-character replacement.
 	/// </summary>
 	public static string Normalise(string levelKey)
 	{
-		string value = levelKey.ToLowerInvariant()
-			.Replace("//", "_")
-			.Replace("\\\\", "_");
-
+		string value = levelKey.ToLowerInvariant();
 		var built = new System.Text.StringBuilder(value.Length);
 		foreach (char c in value)
 		{

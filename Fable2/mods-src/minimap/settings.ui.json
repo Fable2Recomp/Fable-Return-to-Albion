@@ -1,9 +1,9 @@
 {
-	"show": { "label": "Show the minimap", "type": "toggle" },
-	"enemies": { "label": "Show enemies", "type": "toggle" },
-	"range": { "label": "Enemy range", "type": "slider", "min": 10, "max": 120, "step": 5,
-	           "description": "How far from the hero enemies show, in metres." },
-	"opacity": { "label": "Opacity", "type": "slider", "min": 0.3, "max": 1, "step": 0.05 },
-	"size": { "label": "Size", "type": "slider", "min": 0.6, "max": 1.5, "step": 0.05,
-	          "description": "Scales every size M steps through." }
+	"show": { "label": "{MINIMAP_SETTING_SHOW}", "type": "toggle" },
+	"enemies": { "label": "{MINIMAP_SETTING_ENEMIES}", "type": "toggle" },
+	"range": { "label": "{MINIMAP_SETTING_RANGE}", "type": "slider", "min": 10, "max": 120, "step": 5,
+	           "description": "{MINIMAP_SETTING_RANGE_DESCRIPTION}" },
+	"opacity": { "label": "{MINIMAP_SETTING_OPACITY}", "type": "slider", "min": 0.3, "max": 1, "step": 0.05 },
+	"size": { "label": "{MINIMAP_SETTING_SIZE}", "type": "slider", "min": 0.6, "max": 1.5, "step": 0.05,
+	          "description": "{MINIMAP_SETTING_SIZE_DESCRIPTION}" }
 }

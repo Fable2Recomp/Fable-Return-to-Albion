@@ -43,11 +43,11 @@ public static class Engine_Achievements
 
 	public static string Report { get; private set; } = "not started";
 
-	/// <summary>A harness's own store file; null takes the install's save directory.</summary>
+	/// <summary>A harness's own store file; null takes the active title's folder in the active profile.</summary>
 	public static string? StorePathOverride { get; set; }
 
 	public static string StorePath =>
-		StorePathOverride ?? System.IO.Path.Combine(Refii.Core.Engine_AppRoot.SaveDirectory, FileName);
+		StorePathOverride ?? System.IO.Path.Combine(Refii.Core.Engine_Title.Active.SaveDirectory, FileName);
 
 	public static AchievementDefinition? Definition(uint id) =>
 		_byId.TryGetValue(id, out AchievementDefinition definition) ? definition : null;

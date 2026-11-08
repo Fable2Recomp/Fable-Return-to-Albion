@@ -83,6 +83,7 @@
 #include <tracy/TracyC.h>
 #endif
 
+#include "guest_span.h"
 #include "host_abi.h"
 #include "host_core.h"
 #include "core/traced_mutex.h"
@@ -1326,22 +1327,7 @@ uint32_t EntityComponent(const uint8_t* base, uint32_t entity, uint32_t id) {
 
 /// One read of the entity fields the list walks ask of every entity: UniqueID (+0x14) through the
 /// state byte (+0x90). A walk of thousands of entities made a guarded call per field.
-struct EntityFields {
-    static constexpr uint32_t kFirst = 0x14u;
-    uint8_t bytes[0x91u - kFirst];
-
-    EntityFields(const uint8_t* base, uint32_t entity) {
-        CopyGuest(base, entity + kFirst, bytes, sizeof(bytes));
-    }
-
-    uint8_t Byte(uint32_t offset) const { return bytes[offset - kFirst]; }
-
-    uint32_t Word(uint32_t offset) const {
-        uint32_t value;
-        std::memcpy(&value, bytes + (offset - kFirst), sizeof(value));
-        return __builtin_bswap32(value);
-    }
-};
+using EntityFields = GuestSpan<0x14u, 0x91u>;
 
 /// EntityComponent over fields already read.
 uint32_t EntityComponentOf(const uint8_t* base, const EntityFields& fields, uint32_t id) {
@@ -2249,6 +2235,17 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroVitals(uint32_t* words, uint32_t 
 /// fitted.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroInventory(uint32_t* words, uint32_t word_capacity) {
     return refii_bridge_hero_inventory_snapshot(words, word_capacity);
+}
+
+/// PLAYER 1's OR 2's INVENTORY, whoever's menus are open — what a mod reads for a named player
+/// (`RefiiHost.inventory_items`). Served from the pump's snapshot (SamplePlayerInventories, walked
+/// on the guest's thread beside the hero's) of the hero `refii_mod_player_hero` resolves, the
+/// entity manager's player slots the guest itself reads. Four words per record — {recordId, count,
+/// category, flags} — as RefiiHostGetHeroInventory, with flags bit 1 set when the hero WEARS that
+/// record (component 15's worn vector). Returns the number of records, 0 for any other player.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetPlayerInventory(int32_t player, uint32_t* words,
+                                                           uint32_t word_capacity) {
+    return refii_bridge_player_inventory_snapshot(player, words, word_capacity);
 }
 
 /// The AUGMENTS socketed into one inventory record — the weapon page's augment lines.
@@ -6029,7 +6026,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
             break;
         }
 
-        const EntityFields fields(base, entity);
+        const EntityFields fields(GuestReader{base}, entity);
         if ((fields.Byte(0x90u) & 0x40u) == 0u) {
             continue;  // not LIVE
         }
@@ -8114,7 +8111,7 @@ static uint32_t ForEachStatedAttachment(uint8_t* base, uint32_t max_records, Vis
             break;
         }
 
-        const EntityFields fields(base, entity);
+        const EntityFields fields(GuestReader{base}, entity);
         if ((fields.Byte(0x90u) & 0x40u) == 0u) {
             continue;  // not LIVE
         }

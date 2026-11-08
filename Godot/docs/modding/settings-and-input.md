@@ -15,6 +15,8 @@ Numbers a player can tune, and buttons a mod can bind.
   - [The keyboard's attack mode](#the-keyboards-attack-mode)
   - [Rebinding](#rebinding)
   - [Pad bindings name the game's buttons](#pad-bindings-name-the-games-buttons)
+  - [Prompts for your own actions](#prompts-for-your-own-actions)
+  - [On a touchscreen](#on-a-touchscreen)
 
 ## settings.json
 
@@ -102,6 +104,7 @@ game scopes it `<mod>.<action>`:
 | `buttons` | `JoyButton` names (`A`, `LeftShoulder`, `DpadUp`, `Guide`, …) or the Xbox aliases `A B X Y LB RB L3 R3 LT RT Start Back`; `LT` and `RT` are the triggers, pressed past half their travel |
 | `axis` | one `JoyAxis` name (`LeftX`, `LeftY`, `RightX`, `RightY`, `TriggerLeft`, `TriggerRight`) or null; pressed past half deflection either way, or one way with a leading `+` / `-` |
 | `chord` | optional: a held modifier the action fires under — `LT`, `RT`, `LB` or `RB` on the pad, or a Godot key name on the keyboard (see [Chords](#chords)) |
+| `touch` | optional: how a touchscreen presses it — a pill of its own, or a caption on the on-screen button it is bound to (see [On a touchscreen](#on-a-touchscreen)); its text is a `{KEY}` like `label` |
 
 - A list field also takes a single string.
 - An action with nothing bound is ignored with a warning.
@@ -258,3 +261,54 @@ mod never sees which controller is in the player's hands. A `JoyButton` the game
 (`Guide`, a paddle) is read as itself. The `InputMap` action `mod.<mod>.<action>` is registered
 with the physical inputs player one's remap binds to those game buttons. A `"Press a button..."`
 capture on a mod's pad row stores the game button the pressed one stands for.
+
+### Prompts for your own actions
+
+A screen or a hint that names a control draws what is bound now, never a key spelled in the script, so
+a rebind and the player's glyph style (Xbox, PlayStation, Switch) and pack show at once:
+
+| Call | Meaning |
+|---|---|
+| `host.input_glyph(name) -> Texture2D` | the prompt for `name` — a mod action scoped `<mod>.<action>`, or a game pad button (`A`, `B`, `X`, `Y`, `LB`, `RB`, `LT`, `RT`, `Start`, `Back`, `DpadUp` …) — as the game's own prompts draw it: the bound key's keycap while the keyboard and mouse are in use, the bound button's glyph on a pad. Null with nothing bound on the device in use |
+| `host.input_label(name) -> String` · `Refii.ask_host("input_label", fn, name)` | the same binding as text: the key's name or the pad button's; empty when unbound |
+
+A game button's keycap is the key the game binds to it (`A` is `E` in the world).
+
+### On a touchscreen
+
+A phone has no keyboard, and the touch controls draw the pad's buttons, not the keys: an action bound
+to keys alone would never fire there. An action's `"touch"` says how the screen presses it:
+
+```json
+{
+	"toggle": { "label": "{MY_MOD_INPUT_TOGGLE}", "keys": ["K"], "touch": "{MY_MOD_TOUCH_TOGGLE}" },
+	"blue":   { "label": "{MY_MOD_INPUT_BLUE}", "touch": { "pill": "{MY_MOD_TOUCH_BLUE}", "when": "my_mod.mode" } },
+	"hop":    { "label": "{MY_MOD_INPUT_HOP}", "keys": ["Space"], "buttons": ["A"], "touch": { "caption": "{MY_MOD_TOUCH_HOP}", "when": "my_mod.on" } }
+}
+```
+
+| `touch` | Meaning |
+|---|---|
+| `"Skate"` | a PILL of its own, named so, held while a finger is on it |
+| `true` | a pill named by the action's `label` |
+| `{ "pill": "Blue" }` | the same as `"Blue"`; `label` is read when `pill` is absent |
+| `{ "caption": "Hop" }` | no pill: the on-screen button the action's `buttons` name (A, B, X or Y) is captioned so, and stands even where the hero could not use it otherwise |
+| `"when": "<key>"` | with either: it stands only while that published value (`Refii.publish`, `host.publish`) is at least 0.5 — a mode's controls appear with the mode |
+
+- Pill and caption text is a `{KEY}` of your text table, drawn in the player's language, as `label` is ([Text keys](gdb-and-text.md#text-keys)); the validator warns about a key with no en-uk row.
+- An action whose only binding is a touch pill is kept: only a touchscreen presses it, and the Controls page has no row for it.
+- A pill or an area presses the action for player one through the same `input_action` event, claims and rebinds: a script cannot tell a tap from a key. The on-screen pad is player one's pad: an action with no pill of its own is pressed by the touch controls' buttons its `buttons` name, under its chord.
+- Pills and captions stand only in play, not in menus, wheels or photo mode.
+
+A mod's own drawing can be tapped too, and a HUD piece can be tapped where it is drawn (its `"touch"`,
+[HUD pieces](ui-and-hud.md#a-mods-own-pieces-meter-panel-picture)); a HUD group's `touchScale` scales it
+up on a phone ([groups](ui-and-hud.md#moving-pieces-together-groups)).
+
+| Call | Meaning |
+|---|---|
+| `host.touch_area(action, rect) -> bool` | on a touchscreen a finger on `rect` (the root viewport's coordinates, where a script's `CanvasLayer` draws) presses the action for player one, held while it stays; an empty `Rect2()` removes it. Godot only: an area is a rectangle of a script's own drawing |
+| `host.touch_mode() -> bool` · `Refii.ask_host("touch_mode", fn)` | whether the touchscreen is the device in use now: the touch controls are drawn |
+| `host.touch_stick() -> Vector2` · `Refii.ask_host("touch_stick", fn)` | the touch controls' move stick, x right and y up, -1..1 (Lua: `{ x, y }`); zero with no thumb on it |
+| `host.move_stick(p) -> Vector2` · `Refii.ask_host("move_stick", fn, p)` | player `p`'s (1 or 2) move stick as the game is handed it, x right and y up, -1..1 (Lua: `{ x, y }`): player 1's folds the movement keys, the touch stick and their pad, player 2's is their own pad; zero for a player with no pad. Read a player's steering here, never off joypad 0 |
+
+On a desktop none of it does anything.

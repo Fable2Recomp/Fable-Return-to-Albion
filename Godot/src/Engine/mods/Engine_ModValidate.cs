@@ -69,6 +69,7 @@ public static partial class ModValidate
 			case ModWorkspace.ModMetadataFilename:
 			case Refii.Hero.Engine_ModMorphs.ManifestPath:
 			case ModMeshOverlays.TargetsPath:
+			case ModMeshOverlays.ModelsPath:
 				return normalized;
 		}
 
@@ -170,6 +171,19 @@ public static partial class ModValidate
 			var targetErrors = new List<string>();
 			ModMeshOverlays.ParseTargets(text, targetErrors);
 			foreach (string error in targetErrors)
+			{
+				doc.Error(string.Empty, error);
+			}
+
+			return doc.Issues;
+		}
+
+		// models.json: ModMeshOverlays.ParseModels is its reader.
+		if (kind == ModMeshOverlays.ModelsPath)
+		{
+			var modelErrors = new List<string>();
+			ModMeshOverlays.ParseModels(text, modelErrors);
+			foreach (string error in modelErrors)
 			{
 				doc.Error(string.Empty, error);
 			}

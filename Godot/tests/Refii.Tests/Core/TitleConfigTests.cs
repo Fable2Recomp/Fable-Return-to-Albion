@@ -60,7 +60,7 @@ public class TitleConfigTests
 	public void ATitlesFileHoldsOnlyItsOwnSettings()
 	{
 		Engine_Title before = Engine_Title.Active;
-		string file = Path.Combine(Path.GetTempPath(), "refii_title_config_" + Guid.NewGuid().ToString("N") + ".toml");
+		string file = Path.Combine(Refii.Tests.TestTemp.Root, "refii_title_config_" + Guid.NewGuid().ToString("N") + ".toml");
 		try
 		{
 			Engine_Title.Active = Engine_Title.Fable3;

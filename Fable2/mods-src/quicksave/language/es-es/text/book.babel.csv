@@ -13,3 +13,5 @@ QUICKSAVE_GAME_NOT_SAVED,La partida no se ha guardado. No se ha hecho ningún gu
 QUICKSAVE_SAVED,Guardado rápido completado.
 QUICKSAVE_NOT_KEPT,"La partida se ha guardado, pero no se ha podido conservar el guardado rápido."
 QUICKSAVE_LOADED,Cargado el guardado rápido de las %1.
+QUICKSAVE_TOUCH_QUICKSAVE,Guardar
+QUICKSAVE_TOUCH_QUICKLOAD,Cargar

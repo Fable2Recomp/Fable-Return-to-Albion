@@ -3159,6 +3159,8 @@ public partial class GameDebugServer : Node
 						["torn"] = Refii.Host.HostEntityWalk.TornWalks,
 						["tornSpanWorst"] = Refii.Host.HostEntityWalk.WalkTickSpanWorst,
 						["waited"] = Refii.Host.HostEntityWalk.Waited,
+						// The worker's last walk, ms (native walk + decode), off the main thread.
+						["walkMs"] = Refii.Host.HostEntityWalk.LastWalkMs,
 					},
 					["frameMs"] = Performance.GetMonitor(Performance.Monitor.TimeProcess) * 1000.0,
 					["physicsMs"] =

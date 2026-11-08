@@ -186,7 +186,7 @@ public sealed class AndroidTexUploadCacheTests
 		private readonly AndroidTexSourceKeys.MountLookup _lookupBefore = AndroidTexSourceKeys.Lookup;
 		private readonly AndroidTextureUploadPolicy _policyBefore = AndroidTextureUpload.Policy;
 		private readonly List<string> _entries = new();
-		public readonly string Root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "refii-upload-cache-" + Guid.NewGuid().ToString("N"));
+		public readonly string Root = System.IO.Path.Combine(Refii.Tests.TestTemp.Root, "refii-upload-cache-" + Guid.NewGuid().ToString("N"));
 		public BnkFileSystem Mount;
 		public int Reads;
 		public bool NoIdentity;

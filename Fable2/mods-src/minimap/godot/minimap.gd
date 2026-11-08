@@ -1,8 +1,11 @@
 extends Node
 ## Minimap: the region's map in a round frame, north up, the hero an arrow that points.
 ##
-## The art and the places come from the host (minimap(), the game's own region map data); the map
-## never moves or zooms, only the marks on it do. M steps Normal > Bigger > Biggest (mid-screen) >
+## The art, the hero's place and the other quests' objectives come from the host (minimap(player), the
+## game's own region map data); the dog and the enemies near are mod/init.lua's, put on the map by
+## minimap_point. The map never moves
+## or zooms, only the marks on it do. It is the map of the player this machine plays: the first of 1 and 2
+## that player_here holds for, so player two's on an online joiner. M steps Normal > Bigger > Biggest (mid-screen) >
 ## Hidden. A place with no map of its own keeps the last one up, without marks. Shows in play only:
 ## not in the pause or the menus, not through a level change and not in a cutscene.
 ##
@@ -25,11 +28,9 @@ const GOLD_LIT := Color(0.97, 0.86, 0.55)
 const GOLD_DARK := Color(0.32, 0.22, 0.09)
 const ARROW := Color(0.98, 0.97, 0.94)
 const ARROW_EDGE := Color(0.05, 0.04, 0.03)
-const QUEST := Color(1.0, 0.82, 0.2)
 const OTHER_QUEST := Color(0.25, 0.68, 0.38)
 const ENEMY := Color(0.86, 0.14, 0.11)
 const DOG := Color(0.62, 0.42, 0.22)
-const MERCHANT := Color(0.28, 0.62, 0.86)
 const DAY := Color(0.65, 0.78, 0.84)
 const NIGHT := Color(0.09, 0.16, 0.24)
 const SUN := Color(0.98, 0.76, 0.2)
@@ -38,9 +39,9 @@ const DOT_EDGE := Color(0.05, 0.04, 0.03, 0.8)
 
 var host: Object
 var canvas: Control
+var player := 1                                   # whose map: the player this machine plays
 var step := 0
 var waited := REFRESH
-var clock := 0.0
 var state := {}
 var texture: Texture2D
 var north := 0.0
@@ -65,22 +66,30 @@ func _ready() -> void:
 
 
 func _on_input_action(e: Dictionary) -> void:
-	if not e.get("pressed", false) or int(e.get("player", 1)) != 1:
+	if not e.get("pressed", false) or int(e.get("player", 1)) != player:
 		return
 	if e.get("name", "") == "minimap.size" and _in_play():
 		step = (step + 1) % (STEPS + 1)
 
 
 func _in_play() -> bool:
-	return host.in_play(1) and not host.in_cutscene(1)
+	return host.in_play(player) and not host.in_cutscene(player)
+
+
+## The first of 1 and 2 that this machine plays.
+func _here() -> int:
+	for p in [1, 2]:
+		if host.player_here(p):
+			return p
+	return 1
 
 
 func _process(delta: float) -> void:
-	clock += delta
 	waited += delta
 	if waited >= REFRESH:
 		waited = 0.0
-		state = host.minimap()
+		player = _here()
+		state = host.minimap(player)
 		if state.get("texture") != null:
 			texture = state.texture
 			north = state.get("north", 0.0)
@@ -160,18 +169,16 @@ func _draw_map() -> void:
 
 
 func _draw_marks(unit: float) -> void:
-	for place in state.get("merchants", []):
-		_dot(_on_screen(place), 4.5 * unit, MERCHANT)
-	if state.has("dog"):
-		_dot(_on_screen(state.dog), 3.5 * unit, DOG)
+	if _value("minimap.dog") >= 0.5:
+		var dog = host.minimap_point(_value("minimap.dog_x"), _value("minimap.dog_y"), _value("minimap.dog_z"))
+		if dog != null:
+			_dot(_on_screen(dog), 3.5 * unit, DOG)
 	for i in range(1, int(_value("minimap.n")) + 1):
 		var place = host.minimap_point(_value("minimap.x%d" % i), _value("minimap.y%d" % i), _value("minimap.z%d" % i))
 		if place != null:
 			_dot(_on_screen(place), 4.0 * unit, ENEMY)
 	for place in state.get("quests", []):
 		_dot(_on_screen(place), 6.0 * unit, OTHER_QUEST)
-	if state.has("quest"):
-		_dot(_on_screen(state.quest), 7.0 * unit, Color(QUEST, 0.55 + 0.45 * sin(clock * 6.0)))
 	if state.has("hero"):
 		_draw_arrow(_on_screen(state.hero), -state.get("facing", 0.0), unit)
 
@@ -212,11 +219,12 @@ func _draw_compass(at: Vector2, ring: float) -> void:
 	canvas.draw_colored_polygon(PackedVector2Array([at + north * ring * 0.62, at + side * ring * 0.16, at - side * ring * 0.16]), NEEDLE_NORTH)
 	canvas.draw_colored_polygon(PackedVector2Array([at - north * ring * 0.62, at - side * ring * 0.16, at + side * ring * 0.16]), CREAM)
 	canvas.draw_circle(at, ring * 0.08, GOLD_DARK)
-	var font := ThemeDB.fallback_font
+	var font := canvas.get_theme_default_font()
 	var size := int(ring * 0.36)
 	var letter := at + north * ring * 1.0
-	canvas.draw_string_outline(font, letter + Vector2(-ring * 0.5, size * 0.36), "N", HORIZONTAL_ALIGNMENT_CENTER, ring, size, maxi(2, size / 5), ARROW_EDGE)
-	canvas.draw_string(font, letter + Vector2(-ring * 0.5, size * 0.36), "N", HORIZONTAL_ALIGNMENT_CENTER, ring, size, GOLD_LIT)
+	var mark: String = host.text("MINIMAP_COMPASS_NORTH")
+	canvas.draw_string_outline(font, letter + Vector2(-ring * 0.5, size * 0.36), mark, HORIZONTAL_ALIGNMENT_CENTER, ring, size, maxi(2, size / 5), ARROW_EDGE)
+	canvas.draw_string(font, letter + Vector2(-ring * 0.5, size * 0.36), mark, HORIZONTAL_ALIGNMENT_CENTER, ring, size, GOLD_LIT)
 
 
 ## The camera's heading on the map, radians clockwise from north (0 when it is not known): the camera and a

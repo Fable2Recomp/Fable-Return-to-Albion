@@ -10,14 +10,14 @@ namespace Refii.Save;
 /// original, which keeps everything.
 /// </summary>
 /// <remarks>
-/// WHERE THE GAME'S SAVES ARE. Refii keeps them exactly as Xenia does: `user_data_root/&lt;xuid&gt;/
-/// 4D5307F1/00000001/&lt;name&gt;/` holding `mainsave.bin`, `herosave.bin`, `chaptersave.bin`,
-/// `saveuid.bin`, `texturemorphs.bin`, `failquestsave.bin` and `Fable2PubInfo.xml` — the files
-/// a 360 writes inside its STFS package. Refii's own files beside them (`refii_save.json`, the
-/// player store's `refii_player.txt` and blobs) are never read by the game. So a save folder
-/// dropped into a Xenia profile's `4D5307F1/00000001/` loads there; a real 360 needs the same
-/// files wrapped into a CON package by a tool such as Velocity or Horizon (a console-signed
-/// container Refii does not produce).
+/// WHERE THE GAME'S SAVES ARE. Refii keeps each title's below the profile as Xenia keeps them below
+/// its title id: `&lt;profile&gt;/Fable 2/00000001/&lt;name&gt;/` holding `mainsave.bin`, `herosave.bin`,
+/// `chaptersave.bin`, `saveuid.bin`, `texturemorphs.bin`, `failquestsave.bin` and `Fable2PubInfo.xml`
+/// — the files a 360 writes inside its STFS package. Refii's own files beside them
+/// (`refii_save.json`, the player store's `refii_player.txt` and blobs) are never read by the game. So
+/// an export, written in Xenia's layout (`4D5307F1/00000001/&lt;name&gt;/`), drops into a Xenia profile
+/// and loads there; a real 360 needs the same files wrapped into a CON package by a tool such as
+/// Velocity or Horizon (a console-signed container Refii does not produce).
 ///
 /// A save made WITH mods carries mod records in the guest's own inventory data, which a vanilla
 /// game does not know. The guest tolerates them (see <see cref="Refii.Mods.ModSaveStamp"/>), but
@@ -26,23 +26,23 @@ namespace Refii.Save;
 /// </remarks>
 public static class SaveExport
 {
-	public const string ExportFolderName = "save-export";
-	public static string TitleId => Refii.Core.Engine_Title.Active.TitleId.ToString("X8", System.Globalization.CultureInfo.InvariantCulture);
-	public const string ContentType = "00000001";
+	public const string ExportFolderName = Engine_SaveLayout.ExportFolderName;
+	public static string TitleId => Engine_SaveLayout.TitleIdText(Refii.Core.Engine_Title.Active.TitleId);
+	public const string ContentType = Engine_SaveLayout.SaveGameType;
 
-	/// <summary>`&lt;assets&gt;/save-export/4D5307F1/00000001/&lt;name&gt;/` beside the content root.</summary>
-	public static string DestinationFor(string userDataRoot, string saveName)
-	{
-		string parent = Path.GetDirectoryName(Path.GetFullPath(userDataRoot)) ?? userDataRoot;
-		return Path.Combine(parent, ExportFolderName, TitleId, ContentType, saveName);
-	}
+	/// <summary>`&lt;profile&gt;/&lt;game&gt;/save-export/4D5307F1/00000001/&lt;name&gt;/`, in the title's own folder.</summary>
+	public static string DestinationFor(string profileDirectory, string saveName) =>
+		Path.Combine(Engine_SaveLayout.GameDirectory(profileDirectory, Refii.Core.Engine_Title.Active.TitleId),
+			ExportFolderName, TitleId, ContentType, saveName);
 
 	/// <summary>
 	/// Writes the copy of <paramref name="saveDirectory"/> at <paramref name="destination"/>: the
-	/// guest's files, `mainsave.bin` without <paramref name="records"/>. Returns how many
-	/// inventory entries went. The original is only read.
+	/// guest's files (<paramref name="guestFiles"/>, else the active title's
+	/// <see cref="Refii.Core.Engine_TitleGame.SaveGuestFiles"/>), `mainsave.bin` without
+	/// <paramref name="records"/>. Returns how many inventory entries went. The original is only read.
 	/// </summary>
-	public static int Copy(string saveDirectory, string destination, ISet<uint> records)
+	public static int Copy(string saveDirectory, string destination, ISet<uint> records,
+		IReadOnlyList<string>? guestFiles = null)
 	{
 		Directory.CreateDirectory(destination);
 		foreach (string file in Directory.GetFiles(destination))
@@ -51,7 +51,7 @@ public static class SaveExport
 		}
 
 		int removed = 0;
-		foreach (string name in SaveSidecar.GuestFiles)
+		foreach (string name in guestFiles ?? Refii.Core.Engine_TitleGame.Active.SaveGuestFiles)
 		{
 			string source = Path.Combine(saveDirectory, name);
 			if (!File.Exists(source))

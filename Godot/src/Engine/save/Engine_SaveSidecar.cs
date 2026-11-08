@@ -51,13 +51,6 @@ public sealed class SaveSidecar
 	/// <summary>The player store's files beside a save, as the native player state names them.</summary>
 	public static readonly string[] PlayerStateFiles = { "refii_player.txt", "refii_blob_*.bin" };
 
-	/// <summary>The guest's own files: what a console or Xenia reads, and all an export carries.</summary>
-	public static readonly string[] GuestFiles =
-	{
-		"mainsave.bin", "herosave.bin", "chaptersave.bin", "saveuid.bin", "texturemorphs.bin",
-		"failquestsave.bin", "Fable2PubInfo.xml",
-	};
-
 	// ---------------------------------------------------------------- the refii layer
 
 	public sealed class RefiiLayer

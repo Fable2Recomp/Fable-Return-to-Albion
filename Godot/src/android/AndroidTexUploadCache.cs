@@ -652,14 +652,15 @@ public static class AndroidTexUploadCache
 			{
 				Write(job, table);
 			}
-			catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+			catch (Exception e)
 			{
 				// A full disk, most likely. The next launch's sweep may free some; this one stops trying.
+				// Every exception: one escaping this thread ends the process.
 				lock (Gate)
 				{
 					if (!_writesFailed)
 					{
-						GD.PushWarning($"[tex] upload cache stops writing: {e.Message}");
+						GD.PushWarning($"[tex] upload cache stops writing: {e.GetType().Name}: {e.Message}");
 					}
 
 					_writesFailed = true;

@@ -31,6 +31,7 @@ public static class Engine_ClassicAtmosphere
     private static readonly float[] _lastInputs = new float[32];
     private static Image? _extinctionImage, _inScatteringImage;
     private static ImageTexture? _extinctionTexture, _inScatteringTexture;
+    private static readonly object CreateGate = new();
     private static bool _ever;
     private static long _rebuilds;
 
@@ -97,16 +98,24 @@ public static class Engine_ClassicAtmosphere
         _inScatteringTexture!.Update(_inScatteringImage);
     }
 
+    /// <summary>Any thread (the material builds run on workers): one pair, published whole.</summary>
     private static void EnsureCreated()
     {
-        if (_extinctionTexture is not null)
+        if (System.Threading.Volatile.Read(ref _inScatteringTexture) is not null)
         {
             return;
         }
-        _extinctionImage = Image.CreateEmpty(ExtinctionWidth, 1, false, Image.Format.Rgba8);
-        _extinctionTexture = ImageTexture.CreateFromImage(_extinctionImage);
-        _inScatteringImage = Image.CreateEmpty(InScatteringWidth, 1, false, Image.Format.Rgbah);
-        _inScatteringTexture = ImageTexture.CreateFromImage(_inScatteringImage);
+        lock (CreateGate)
+        {
+            if (_inScatteringTexture is not null)
+            {
+                return;
+            }
+            _extinctionImage = Image.CreateEmpty(ExtinctionWidth, 1, false, Image.Format.Rgba8);
+            _extinctionTexture = ImageTexture.CreateFromImage(_extinctionImage);
+            _inScatteringImage = Image.CreateEmpty(InScatteringWidth, 1, false, Image.Format.Rgbah);
+            System.Threading.Volatile.Write(ref _inScatteringTexture, ImageTexture.CreateFromImage(_inScatteringImage));
+        }
     }
 
     private static float Theme(float[] frame, int index, int lane = 0) => frame[36 + index * 4 + lane];

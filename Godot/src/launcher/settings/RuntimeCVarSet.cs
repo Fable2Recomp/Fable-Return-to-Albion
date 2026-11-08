@@ -150,6 +150,14 @@ public static class RuntimeCVarsGodot
                 + "fixed step and only the drawing rate changes."),
             ..RuntimeCVarsAndroid.FpsCounter,
 
+            new("ui_text_style", DisplayCategory, RuntimeCVarType.String, "console",
+                "How menu and HUD text is drawn. 'Xbox 360' draws it as thin as the console did: "
+                + "each glyph on whole pixels and its edges blended as the 360 blended them. "
+                + "'Smooth' draws the font's own antialiased edges, softer and slightly heavier. "
+                + "Takes effect the next time the game starts.",
+                "console|Xbox 360,smooth|Smooth",
+                OwnerTitle: Refii.Core.Engine_Title.Fable2.Folder),
+
             new("vsync_mode", DisplayCategory, RuntimeCVarType.String, "mailbox",
                 "How frames meet the display. 'mailbox' shows the newest finished frame at each "
                 + "refresh with no tearing and no cap at a fraction of the refresh rate; 'on' "

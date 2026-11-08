@@ -302,7 +302,7 @@ public class ModPbrPipelineTests
     [TestCase]
     public void TestResolveCompanionOrmPathProbing()
     {
-        string tempRoot = Path.Combine(Path.GetTempPath(), "refii_pbr_probe_test_" + Guid.NewGuid().ToString("N"));
+        string tempRoot = Path.Combine(Refii.Tests.TestTemp.Root, "refii_pbr_probe_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempRoot);
         string? prevModsRoot = EditorModValueService.ModsRootOverride;
 
@@ -342,7 +342,7 @@ public class ModPbrPipelineTests
     [TestCase]
     public void TestGetModelMaterialSlotsIncludesSlot5PbrOrm()
     {
-        string tempRoot = Path.Combine(Path.GetTempPath(), "refii_pbr_slots_test_" + Guid.NewGuid().ToString("N"));
+        string tempRoot = Path.Combine(Refii.Tests.TestTemp.Root, "refii_pbr_slots_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempRoot);
         string? prevModsRoot = EditorModValueService.ModsRootOverride;
 
@@ -380,7 +380,7 @@ public class ModPbrPipelineTests
     [TestCase]
     public void TestLinkSurfaceTextureToModelSlotPbrOrmAddAndRevert()
     {
-        string tempRoot = Path.Combine(Path.GetTempPath(), "refii_pbr_link_test_" + Guid.NewGuid().ToString("N"));
+        string tempRoot = Path.Combine(Refii.Tests.TestTemp.Root, "refii_pbr_link_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempRoot);
         string? prevModsRoot = EditorModValueService.ModsRootOverride;
         string prevActiveMod = EditorModExporter.ActiveModName;
@@ -585,7 +585,7 @@ public class ModPbrPipelineTests
     [TestCase]
     public void TestAddMaterialSlotToModel()
     {
-        string tempRoot = Path.Combine(Path.GetTempPath(), "refii_add_slot_test_" + Guid.NewGuid().ToString("N"));
+        string tempRoot = Path.Combine(Refii.Tests.TestTemp.Root, "refii_add_slot_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempRoot);
         string? prevModsRoot = EditorModValueService.ModsRootOverride;
         string prevActiveMod = EditorModExporter.ActiveModName;

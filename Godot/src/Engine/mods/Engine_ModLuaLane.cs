@@ -13,7 +13,8 @@ namespace Refii.Mods;
 /// <see cref="Scope"/> (never raised as <c>mod_signal</c>), Godot to Lua is a <c>run_lua</c> chunk calling
 /// the preamble's <c>Refii._godot_*</c> / <c>_host_*</c>. What rides it:
 /// <list type="bullet">
-/// <item><c>refii.ask</c> — Lua's <c>Refii.ask_host(what, fn, ...)</c>: <c>id\nwhat\narg…</c>; the host
+/// <item><c>refii.ask</c> — Lua's <c>Refii.ask_host(what, fn, ...)</c>: <c>id\nwhat\na\nb\nc\nd\nmod</c>, the mod
+/// the mod block that asked was composed for (<c>Refii._as_mod</c>, nil outside one); the host
 /// runs the read or action <c>what</c> names (<see cref="ModApi.HostCalls"/>) and, for an id above 0,
 /// answers with <see cref="ReplyChunk"/>.</item>
 /// <item><c>refii.answer</c> — Lua's answer to a Godot <c>call_lua</c>: <c>id\nok\nvalue…</c>.</item>
@@ -171,8 +172,11 @@ public static class ModLuaLane
 		return plain.ToString();
 	}
 
-	/// <summary>An ask off the lane: the id (0: no answer wanted), what it names, its arguments.</summary>
-	public readonly record struct Request(long Id, string What, object?[] Args);
+	/// <summary>The arguments an ask carries (<c>Refii.ask_host</c>'s a, b, c, d).</summary>
+	public const int AskValues = 4;
+
+	/// <summary>An ask off the lane: the id (0: no answer wanted), what it names, its arguments, the mod that asked (empty when not stated).</summary>
+	public readonly record struct Request(long Id, string What, object?[] Args, string Mod);
 
 	/// <summary>The ask in <paramref name="payload"/>, or null when it is not one.</summary>
 	public static Request? ParseAsk(string payload)
@@ -184,7 +188,8 @@ public static class ModLuaLane
 			return null;
 		}
 
-		return new Request(id, lines[1], lines.Skip(2).Select(Decode).ToArray());
+		string mod = lines.Length > 2 + AskValues && Decode(lines[2 + AskValues]) is string named ? named : string.Empty;
+		return new Request(id, lines[1], lines.Skip(2).Take(AskValues).Select(Decode).ToArray(), mod);
 	}
 
 	/// <summary>A Lua answer to a call_lua: the id, whether the expression ran, its values (trailing nils dropped).</summary>

@@ -14,7 +14,7 @@ public class AndroidLogBundleTests
 {
     private static string TempDirectory()
     {
-        string path = Path.Combine(Path.GetTempPath(), "refii-logs-" + Guid.NewGuid().ToString("N"));
+        string path = Path.Combine(Refii.Tests.TestTemp.Root, "refii-logs-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(path);
         return path;
     }
@@ -182,17 +182,17 @@ public class AndroidLogBundleTests
         finally { Directory.Delete(user, true); }
     }
 
-    /// <summary>A save folder as the phone holds one: a hero, the achievements and the RexNet identity.</summary>
+    /// <summary>A save profile as the phone holds one: a Fable 2 hero, its achievements and the RexNet identity.</summary>
     internal static void WriteSave(string user, string marker)
     {
-        string save = AndroidLogBundle.SaveDirectory(user);
-        string hero = Path.Combine(save, "E0C3DF3F20120108", "4D5307F1");
-        Directory.CreateDirectory(Path.Combine(hero, "Headers", "00000001"));
-        Directory.CreateDirectory(Path.Combine(hero, "00000001", "Hero000"));
+        string save = Refii.Save.Engine_SaveProfiles.Ensure(AndroidLogBundle.SavesRoot(user));
+        string game = Path.Combine(save, "Fable 2");
+        Directory.CreateDirectory(Path.Combine(game, "Headers", "00000001"));
+        Directory.CreateDirectory(Path.Combine(game, "00000001", "Hero000"));
         Directory.CreateDirectory(Path.Combine(save, "rexnet"));
-        File.WriteAllText(Path.Combine(hero, "Headers", "00000001", "Hero000.header"), "header " + marker);
-        File.WriteAllText(Path.Combine(hero, "00000001", "Hero000", "mainsave.bin"), "main " + marker);
-        File.WriteAllText(Path.Combine(save, "achievements.refii"), "achievements " + marker);
+        File.WriteAllText(Path.Combine(game, "Headers", "00000001", "Hero000.header"), "header " + marker);
+        File.WriteAllText(Path.Combine(game, "00000001", "Hero000", "mainsave.bin"), "main " + marker);
+        File.WriteAllText(Path.Combine(game, "achievements.refii"), "achievements " + marker);
         File.WriteAllText(Path.Combine(save, "rexnet", "identity.key"), "key " + marker);
     }
 
@@ -224,9 +224,9 @@ public class AndroidLogBundleTests
                 .IsEqual(new[]
                 {
                     "device.txt", "export.json",
-                    "files/runtime/assets/save/E0C3DF3F20120108/4D5307F1/00000001/Hero000/mainsave.bin",
-                    "files/runtime/assets/save/E0C3DF3F20120108/4D5307F1/Headers/00000001/Hero000.header",
-                    "files/runtime/assets/save/achievements.refii",
+                    "files/runtime/assets/saves/Player/Fable 2/00000001/Hero000/mainsave.bin",
+                    "files/runtime/assets/saves/Player/Fable 2/Headers/00000001/Hero000.header",
+                    "files/runtime/assets/saves/Player/Fable 2/achievements.refii",
                 });
             using var manifest = new StreamReader(zip.GetEntry("export.json")!.Open());
             string text = manifest.ReadToEnd();
@@ -254,13 +254,14 @@ public class AndroidLogBundleTests
             using var zip = ZipFile.OpenRead(path);
             string[] names = zip.Entries.Select(entry => entry.FullName).ToArray();
             AssertThat(names.Contains("files/logs/godot.log")).IsTrue();
-            AssertThat(names.Contains("files/runtime/assets/save/achievements.refii")).IsTrue();
+            AssertThat(names.Contains("files/runtime/assets/saves/Player/Fable 2/achievements.refii")).IsTrue();
+            AssertThat(names.Any(name => name.EndsWith("/.profile", StringComparison.Ordinal))).IsFalse();
             AssertThat(names.Contains("export.json")).IsTrue();
             AssertThat(names.Any(name => name.Contains("rexnet"))).IsFalse();
             // A logs export carries no manifest, so it is never taken for a save.
             string logs = AndroidLogBundle.Write(downloads, user, "", new DateTime(2026, 10, 30));
             using var logZip = ZipFile.OpenRead(logs);
-            AssertThat(logZip.Entries.Any(entry => entry.FullName == "export.json" || entry.FullName.StartsWith("files/runtime/assets/save/"))).IsFalse();
+            AssertThat(logZip.Entries.Any(entry => entry.FullName == "export.json" || entry.FullName.StartsWith("files/runtime/assets/saves/"))).IsFalse();
         }
         finally
         {
@@ -278,7 +279,7 @@ public class AndroidLogBundleTests
         try
         {
             WriteSave(user, "a");
-            main = Path.Combine(AndroidLogBundle.SaveDirectory(user), "E0C3DF3F20120108", "4D5307F1", "00000001", "Hero000", "mainsave.bin");
+            main = Path.Combine(AndroidLogBundle.SaveDirectory(user), "Fable 2", "00000001", "Hero000", "mainsave.bin");
             File.SetUnixFileMode(main, UnixFileMode.None);
             bool failed = false;
             try { AndroidLogBundle.Write(downloads, user, "", new DateTime(2026, 10, 30), contents: AndroidLogBundle.Contents.Saves); }

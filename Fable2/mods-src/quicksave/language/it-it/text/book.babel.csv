@@ -13,3 +13,5 @@ QUICKSAVE_GAME_NOT_SAVED,La partita non è stata salvata. Nessun salvataggio rap
 QUICKSAVE_SAVED,Salvataggio rapido eseguito.
 QUICKSAVE_NOT_KEPT,"La partita è stata salvata, ma non è stato possibile conservare il salvataggio rapido."
 QUICKSAVE_LOADED,Caricato il salvataggio rapido delle %1.
+QUICKSAVE_TOUCH_QUICKSAVE,Salva
+QUICKSAVE_TOUCH_QUICKLOAD,Carica

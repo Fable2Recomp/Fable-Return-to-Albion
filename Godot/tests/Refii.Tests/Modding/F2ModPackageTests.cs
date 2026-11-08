@@ -15,7 +15,7 @@ public class F2ModPackageTests
     [TestCase]
     public void TestCreatePackageAndReadEntries()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_f2mod_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_f2mod_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string packagePath = Path.Combine(tempDir, "TestMod.f2mod");
 
@@ -84,7 +84,7 @@ public class F2ModPackageTests
     [TestCase]
     public void TestIncrementalSyncAddNewData()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_f2mod_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_f2mod_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string packagePath = Path.Combine(tempDir, "IncrementalAdd.f2mod");
 
@@ -125,7 +125,7 @@ public class F2ModPackageTests
     [TestCase]
     public void TestIncrementalSyncEditExistingData()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_f2mod_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_f2mod_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string packagePath = Path.Combine(tempDir, "IncrementalEdit.f2mod");
 
@@ -162,7 +162,7 @@ public class F2ModPackageTests
     [TestCase]
     public void TestIncrementalSyncDeleteData()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_f2mod_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_f2mod_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string packagePath = Path.Combine(tempDir, "IncrementalDelete.f2mod");
 
@@ -201,7 +201,7 @@ public class F2ModPackageTests
     [TestCase]
     public void TestDiscoverOnlyF2ModPackages()
     {
-        string modsDir = Path.Combine(Path.GetTempPath(), "refii_mods_dir_" + Guid.NewGuid().ToString("N"));
+        string modsDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_mods_dir_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(modsDir);
 
         try
@@ -274,7 +274,7 @@ public class F2ModPackageTests
     [TestCase]
     public void TestCalculateZombieBytesOnFreshPackageReturnsZero()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string pkgPath = Path.Combine(tempDir, "Fresh.f2mod");
 
@@ -300,7 +300,7 @@ public class F2ModPackageTests
     [TestCase]
     public void TestCalculateZombieBytesDetectsOrphanedBytesAfterDelete()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string pkgPath = Path.Combine(tempDir, "ZombieDelete.f2mod");
 
@@ -334,7 +334,7 @@ public class F2ModPackageTests
     [TestCase]
     public void TestDefragmentReclaimsSpaceFromDeletedEntries()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string pkgPath = Path.Combine(tempDir, "ReclaimDelete.f2mod");
 
@@ -385,7 +385,7 @@ public class F2ModPackageTests
     [TestCase]
     public void TestDefragmentReclaimsSpaceFromMultipleOverwrites()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string pkgPath = Path.Combine(tempDir, "Overwrites.f2mod");
 
@@ -436,7 +436,7 @@ public class F2ModPackageTests
     [TestCase]
     public void TestIncrementalSyncWithDefragFlagDirectlyCompacts()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string pkgPath = Path.Combine(tempDir, "AutoDefrag.f2mod");
 
@@ -479,7 +479,7 @@ public class F2ModPackageTests
     [TestCase]
     public void TestDefragmentPreserves16ByteAlignmentAndArbitrarySizes()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string pkgPath = Path.Combine(tempDir, "Alignment.f2mod");
 
@@ -532,7 +532,7 @@ public class F2ModPackageTests
     [TestCase]
     public void TestDefragmentEmptyPackage()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_defrag_test_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         string pkgPath = Path.Combine(tempDir, "Empty.f2mod");
 

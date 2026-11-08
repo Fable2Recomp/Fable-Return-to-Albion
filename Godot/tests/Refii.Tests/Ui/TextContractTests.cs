@@ -70,10 +70,56 @@ public class TextContractTests
 		AssertThat(f3.IconInset).IsEqual(6f);
 	}
 
+	/// <summary>Fable 3's text draws as it did before c614ef6f5: no snap, no floor, no curve.</summary>
+	[TestCase]
+	public void Fable3TextShaderIsTheShippedCoverage()
+	{
+		Engine_UiTextContract f3 = Engine_UiTextContract.Fable3;
+		AssertThat(f3.SnapGlyphs).IsFalse();
+		AssertThat(f3.ContrastFloor).IsEqual(1f);
+		AssertThat(f3.CoverageGamma).IsEqual(1f);
+	}
+
+	/// <summary>Fable 2 carries c614ef6f5's snap, 1.3 floor and 2.2 coverage curve.</summary>
+	[TestCase]
+	public void Fable2TextShaderIsTheThinMenuText()
+	{
+		Engine_UiTextContract f2 = Engine_UiTextContract.Fable2;
+		AssertThat(f2.SnapGlyphs).IsTrue();
+		AssertThat(f2.ContrastFloor).IsEqual(1.3f);
+		AssertThat(f2.CoverageGamma).IsEqual(2.2f);
+	}
+
 	[TestCase]
 	public void EachTitleStatesItsOwn()
 	{
 		AssertThat(Engine_Title.Fable2.UiText).IsSame(Engine_UiTextContract.Fable2);
 		AssertThat(Engine_Title.Fable3.UiText).IsSame(Engine_UiTextContract.Fable3);
 	}
+
+    [TestCase]
+    public void TheSmoothStyleDrawsFableTwosTextWithoutTheConsoleLook()
+    {
+        bool before = Engine_UiTextContract.ConsoleLook;
+        try
+        {
+            Engine_UiTextContract.ConsoleLook = true;
+            AssertThat(Engine_UiTextContract.Fable2.HasConsoleLook).IsTrue();
+            AssertThat(Engine_UiTextContract.Fable2.SnapGlyphs).IsTrue();
+            AssertThat(Engine_UiTextContract.Fable2.ContrastFloor).IsEqual(1.3f);
+            AssertThat(Engine_UiTextContract.Fable2.CoverageGamma).IsEqual(2.2f);
+
+            Engine_UiTextContract.ConsoleLook = false;
+            AssertThat(Engine_UiTextContract.Fable2.SnapGlyphs).IsFalse();
+            AssertThat(Engine_UiTextContract.Fable2.ContrastFloor).IsEqual(1f);
+            AssertThat(Engine_UiTextContract.Fable2.CoverageGamma).IsEqual(1f);
+
+            AssertThat(Engine_UiTextContract.Fable3.HasConsoleLook).IsFalse();
+            AssertThat(Engine_UiTextContract.Fable3.SnapGlyphs).IsFalse();
+        }
+        finally
+        {
+            Engine_UiTextContract.ConsoleLook = before;
+        }
+    }
 }

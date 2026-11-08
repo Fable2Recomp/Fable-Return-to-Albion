@@ -200,7 +200,7 @@ public class GdbCsvOverlayTests
     [TestCase]
     public void CsvAndTuMergeThroughOneCompositorWithConflicts()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_gdbcsv_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_gdbcsv_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
         try
         {
@@ -266,7 +266,7 @@ public class GdbCsvOverlayTests
     [TestCase]
     public void ApplyMountsTheCompiledPatchAndReportsIt()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_gdbcsv_apply_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_gdbcsv_apply_" + Guid.NewGuid().ToString("N"));
         string modDir = Path.Combine(tempDir, "ModRows");
         Directory.CreateDirectory(Path.Combine(modDir, "test"));
         Engine_GameGdb.SetBaseResolver(_ => null);
@@ -332,7 +332,7 @@ public class GdbCsvOverlayTests
     [TestCase]
     public void ACompositeMadeAgainstAnotherBaseIsMadeAgain()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_gdbcsv_base_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_gdbcsv_base_" + Guid.NewGuid().ToString("N"));
         string modDir = Path.Combine(tempDir, "ModRows");
         Directory.CreateDirectory(Path.Combine(modDir, "test"));
         Engine_GameGdb.SetBaseResolver(_ => null);
@@ -377,7 +377,7 @@ public class GdbCsvOverlayTests
     [TestCase]
     public void TheLooseBaseReadIgnoresCase()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), "refii_gdbcase_" + Guid.NewGuid().ToString("N"));
+        string tempDir = Path.Combine(Refii.Tests.TestTemp.Root, "refii_gdbcase_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Path.Combine(tempDir, "data", "Globals"));
         try
         {

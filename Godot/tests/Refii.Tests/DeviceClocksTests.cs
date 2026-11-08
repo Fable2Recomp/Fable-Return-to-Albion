@@ -12,7 +12,7 @@ public class DeviceClocksTests
 {
     private static string FakeRoot(bool throttled)
     {
-        string root = Path.Combine(Path.GetTempPath(), "refii-clocks-" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-clocks-" + Guid.NewGuid().ToString("N"));
         void Write(string relative, string text)
         {
             string path = Path.Combine(root, relative);
@@ -93,7 +93,7 @@ public class DeviceClocksTests
     [TestCase]
     public void TestPlatformWithoutClocksShowsNothing()
     {
-        string root = Path.Combine(Path.GetTempPath(), "refii-clocks-none-" + Guid.NewGuid().ToString("N"));
+        string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii-clocks-none-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try
         {

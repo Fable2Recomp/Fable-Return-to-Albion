@@ -13,3 +13,5 @@ QUICKSAVE_GAME_NOT_SAVED,게임이 저장되지 않았습니다. 빠른 저장�
 QUICKSAVE_SAVED,빠른 저장했습니다.
 QUICKSAVE_NOT_KEPT,게임은 저장되었지만 빠른 저장을 보관할 수 없습니다.
 QUICKSAVE_LOADED,%1에 만든 빠른 저장을 불러왔습니다.
+QUICKSAVE_TOUCH_QUICKSAVE,빠른 저장
+QUICKSAVE_TOUCH_QUICKLOAD,빠른 불러오기

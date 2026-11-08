@@ -15,7 +15,7 @@ namespace Refii.Core;
 ///
 /// EVERY TITLE IS ITS OWN FOLDER, the same shape for each: <c>assets/&lt;Folder&gt;/</c> holds the
 /// install and everything derived from it (<c>game</c>, <c>update</c>, <c>unpacked</c>,
-/// <c>generated</c>, <c>mods</c>, <c>save</c>, <c>metadata</c>), and <c>bin/&lt;Folder&gt;/</c> holds
+/// <c>generated</c>, <c>mods</c>, <c>metadata</c>), and <c>bin/&lt;Folder&gt;/</c> holds
 /// the title's ReXGlue instance — its host bridge, vfs, Lua runtime and compiled module — beside
 /// the shared natives in <c>bin/</c>. The native runtime derives the leaves from the game data root
 /// the host states, so it needs no title knowledge of its own.
@@ -121,6 +121,10 @@ public sealed class Engine_Title
 	/// <summary>How the title's Gameface text element lays out: box canvas, font buckets, line advance.</summary>
 	public Refii.Ui.Engine_UiTextContract UiText { get; private init; } = Refii.Ui.Engine_UiTextContract.Fable2;
 
+	/// <summary>The title's host-only menu labels as a phone says them (Refii.AndroidRuntime.AndroidMenuWords).</summary>
+	public IReadOnlyDictionary<string, string> PhoneHostLabels { get; private init; } =
+		Refii.AndroidRuntime.AndroidMenuWords.None;
+
 	/// <summary>
 	/// The instance libraries this title ships in <c>bin/&lt;Folder&gt;/</c>. Every title has its
 	/// host bridge; the vfs and Lua runtime are Fable 2's hooks and the code they call.
@@ -140,8 +144,26 @@ public sealed class Engine_Title
 	/// <summary><c>bin/&lt;Folder&gt;</c>: the title's ReXGlue instance.</summary>
 	public string BinDirectory => System.IO.Path.Combine(Engine_AppRoot.BinDirectory, Folder);
 
-	/// <summary><c>assets/&lt;Folder&gt;/save</c>: the title's saves, achievements and per-player state.</summary>
-	public string SaveDirectory => System.IO.Path.Combine(AssetsDirectory, "save");
+	/// <summary>
+	/// The title's folder in a save profile (<see cref="Refii.Save.Engine_SaveLayout"/>): the game's own
+	/// name, "Fable 2" and "Fable 3", as a player looks for it.
+	/// </summary>
+	public string SaveFolder => Name;
+
+	/// <summary>
+	/// How many saved games the title keeps. Fable 2: 6, stored over the image's 150 by the front end's
+	/// enter (0x82378D38 <c>li r10, 6</c>, 0x82378D3C <c>stw r10, dword_83319620</c>) and compared by the
+	/// save create (0x82445104..0x8244510C: <c>sub_824431E8</c>'s count <c>bge</c> the limit). Fable 3:
+	/// 5, the save create's own constant (0x822F4D50 <c>bl sub_822F2370</c>, 0x822F4D54
+	/// <c>cmpwi r3, 5</c>, 0x822F4D58 <c>bge</c> refuses).
+	/// </summary>
+	public int SaveSlots { get; private init; } = 6;
+
+	/// <summary>
+	/// The title's folder in the active save profile, <c>assets/saves/&lt;profile&gt;/&lt;SaveFolder&gt;</c>:
+	/// its saves, settings, achievements and per-player state.
+	/// </summary>
+	public string SaveDirectory => Refii.Save.Engine_SaveLayout.GameDirectory(Engine_AppRoot.SaveDirectory, TitleId);
 
 	/// <summary>
 	/// <c>cache/&lt;Folder&gt;</c>: everything regenerable from this title's install — converted and
@@ -180,7 +202,10 @@ public sealed class Engine_Title
 	public static readonly Engine_Title Fable2 = new(
 		"refii", "Fable 2", "Fable 2 Return to Albion", 0x4D5307F1, "Fable2", "refii_generated",
 		"Fable2", "Fable2TU1", hasHardMods: true, ".f2mod", 0x5DD978FFu, hashedModelNodes: false,
-		"refii_hostbridge", "refii_vfs", "refii_lua");
+		"refii_hostbridge", "refii_vfs", "refii_lua")
+	{
+		PhoneHostLabels = Refii.AndroidRuntime.AndroidMenuWords.Fable2,
+	};
 
 	/// <summary>Fable 3. Its remake has no name yet; it goes by the game's until it does.</summary>
 	public static readonly Engine_Title Fable3 = new(
@@ -189,6 +214,7 @@ public sealed class Engine_Title
 		"refii_hostbridge", "refii_vfs")
 	{
 		UiText = Refii.Ui.Engine_UiTextContract.Fable3,
+		SaveSlots = 5,
 	};
 
 	public static IReadOnlyList<Engine_Title> All { get; } = new[] { Fable2, Fable3 };

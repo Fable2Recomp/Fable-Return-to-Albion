@@ -785,7 +785,18 @@ public static partial class Engine_MdlMaterial
         "albedo_tex", "normal_tex", "specular_tex", "emission_tex",
     };
 
-    public static Func<string, TexSemantic, Texture2D?>? TextureOverride { get; set; }
+    /// <summary>
+    /// Per thread: a hero's composite (Engine_HeroInstance.Rebuild) builds synchronously on the
+    /// thread that sets it, and a worker's load meanwhile must not take the hero's textures.
+    /// </summary>
+    public static Func<string, TexSemantic, Texture2D?>? TextureOverride
+    {
+        get => _textureOverride;
+        set => _textureOverride = value;
+    }
+
+    [ThreadStatic]
+    private static Func<string, TexSemantic, Texture2D?>? _textureOverride;
 
     private static Texture2D? TryLoad(string name, TexSemantic semantic, out bool hasAlpha) =>
         TryLoad(name, semantic, out hasAlpha, out _);

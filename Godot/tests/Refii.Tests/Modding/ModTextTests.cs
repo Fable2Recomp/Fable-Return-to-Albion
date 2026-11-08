@@ -118,7 +118,7 @@ public class ModTextTests
 	[TestCase]
 	public void TheLauncherReadsTheModsOwnTablesInTheInstallsCulture()
 	{
-		string root = Path.Combine(Path.GetTempPath(), "refii_modtext_" + Guid.NewGuid().ToString("N"));
+		string root = Path.Combine(Refii.Tests.TestTemp.Root, "refii_modtext_" + Guid.NewGuid().ToString("N"));
 		string game = Path.Combine(root, "game");
 		string mod = Path.Combine(root, "my_mod");
 		Engine_GameCulture.ResetForTests();
@@ -206,7 +206,7 @@ public class ModTextTests
 			named += 2;
 		}
 
-		AssertThat(named).IsEqual(18);
+		AssertThat(named).IsEqual(26);
 	}
 
 	/// <summary>

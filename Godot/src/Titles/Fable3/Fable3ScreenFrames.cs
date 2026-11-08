@@ -53,7 +53,11 @@ public static class Fable3ScreenFrames
 		new("divorcemessagebox", Fable3BoxScreenModel.Divorce, "DivorceMessageBox", "DivorceMessageBox", new[] { "Large1", "Medium1" }),
 	};
 
-	/// <summary>The frame of the screen whose element root is <paramref name="root"/>, or null (the save menu, an unknown root).</summary>
+	/// <summary>
+	/// The frame of the screen whose element root is <paramref name="root"/>, or null: an unknown root,
+	/// or the save menu, whose `SaveMenu.bgf` (sub_82B3EC40 type 11, 0x82B3EE9C) ships in no bank, so
+	/// the guest never loads it (sub_825C7A90 0x825C7AF4) and draws no frame.
+	/// </summary>
 	public static Frame? FrameOf(string? root)
 	{
 		foreach (Frame frame in Frames)

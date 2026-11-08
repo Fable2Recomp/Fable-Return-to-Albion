@@ -1,3 +1,9 @@
 {
-	"open": { "label": "Hero's Satchel", "keys": ["Tab"], "touch": "Inventory" }
+	"open": { "label": "{SATCHEL_INPUT_OPEN}", "keys": ["Tab"], "touch": "{SATCHEL_TOUCH_OPEN}" },
+	"act": { "label": "{SATCHEL_INPUT_ACT}", "keys": ["E", "Enter", "Kp Enter", "Space"], "buttons": ["A"] },
+	"favourite": { "label": "{SATCHEL_INPUT_FAVOURITE}", "keys": ["F"], "buttons": ["Y"] },
+	"sort": { "label": "{SATCHEL_INPUT_SORT}", "keys": ["C"], "buttons": ["X"] },
+	"filter": { "label": "{SATCHEL_INPUT_FILTER}", "keys": ["Slash"] },
+	"remove_all": { "label": "{SATCHEL_INPUT_REMOVE_ALL}", "keys": ["R"], "buttons": ["Back"] },
+	"close": { "label": "{SATCHEL_INPUT_CLOSE}", "keys": ["Escape"], "buttons": ["B"] }
 }

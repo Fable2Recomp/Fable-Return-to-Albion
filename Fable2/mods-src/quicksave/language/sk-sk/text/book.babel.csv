@@ -13,3 +13,5 @@ QUICKSAVE_GAME_NOT_SAVED,Hra se neuložila. Nic nebylo rychle uloženo.
 QUICKSAVE_SAVED,Rychle uloženo.
 QUICKSAVE_NOT_KEPT,"Hra se uložila, ale rychlé uložení se nepodařilo ponechat."
 QUICKSAVE_LOADED,Načteno rychlé uložení z %1.
+QUICKSAVE_TOUCH_QUICKSAVE,Uložit
+QUICKSAVE_TOUCH_QUICKLOAD,Načíst

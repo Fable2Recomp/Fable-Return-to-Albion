@@ -1,0 +1,38 @@
+key,value
+SATCHEL_MOD_NAME,Сумка героя
+SATCHEL_MOD_DESCRIPTION,"Tab открывает инвентарь одним прозрачным экраном по мотивам SkyUI: ряд категорий, сортируемый список, фильтр, избранное и карточка сравнения с тем, что на вас надето."
+SATCHEL_INPUT_OPEN,Открыть и закрыть
+SATCHEL_INPUT_ACT,"Экипировать, надеть или использовать"
+SATCHEL_INPUT_FAVOURITE,Избранное
+SATCHEL_INPUT_SORT,Сортировка
+SATCHEL_INPUT_FILTER,Фильтр по названию
+SATCHEL_INPUT_REMOVE_ALL,Снять всю одежду
+SATCHEL_INPUT_CLOSE,Закрыть
+SATCHEL_TOUCH_OPEN,Инвентарь
+SATCHEL_CATEGORY_FAVOURITES,Избранное
+SATCHEL_CATEGORY_ALL,Все
+SATCHEL_KIND_TREASURE,Сокровища
+SATCHEL_COLUMN_NAME,Название
+SATCHEL_COLUMN_TYPE,Тип
+SATCHEL_VALUE,Цена
+SATCHEL_FILTER,Фильтр
+SATCHEL_NOTHING_HERE,Здесь пусто.
+SATCHEL_NOTHING_BY_NAME,Ничего с таким названием.
+SATCHEL_EQUIPPED,Экипировано
+SATCHEL_WEARING,Надето
+SATCHEL_COMPARED_WITH,Сравнение с %1
+SATCHEL_ACTION_EQUIP,Экипировать
+SATCHEL_ACTION_TAKE_OFF,Снять
+SATCHEL_ACTION_WEAR,Надеть
+SATCHEL_FAVOURITE,В избранное
+SATCHEL_UNFAVOURITE,Из избранного
+SATCHEL_SORT,Сортировка
+SATCHEL_REMOVE_ALL_CLOTHING,Снять всю одежду
+SATCHEL_EQUIPPED_ITEM,Экипировано: %1
+SATCHEL_USED_ITEM,Использовано: %1
+SATCHEL_NOW_WEARING,Теперь надето: %1
+SATCHEL_TOOK_OFF,Снято: %1
+SATCHEL_COULD_NOT_PUT_ON,Не удалось надеть %1
+SATCHEL_COULD_NOT_TAKE_OFF,Не удалось снять %1
+SATCHEL_REMOVED_ALL,Вся одежда снята
+SATCHEL_COULD_NOT_REMOVE_ALL,Не удалось снять всю одежду

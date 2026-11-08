@@ -46,8 +46,8 @@ public abstract class Engine_UiSource
 	public virtual Engine_UiModel.MenuBoxState? GetMenuBox() => null;
 
 	/// <summary>The address of the display box showing, or 0: the box an answer is addressed to —
-	/// the newest one its class's Open stated (<see cref="Engine_UiDisplayBoxes.Showing"/>).</summary>
-	public virtual uint DisplayBoxAddress() => Engine_UiDisplayBoxes.Showing?.Address ?? 0u;
+	/// the newest one its class's Open stated (<see cref="Engine_UiStatedBoxes.Showing"/>).</summary>
+	public virtual uint DisplayBoxAddress() => Engine_UiStatedBoxes.Current.Showing?.Address ?? 0u;
 
 	/// <summary>
 	/// The screen id the showing display box stands on, <see cref="uint.MaxValue"/> when none.
@@ -56,32 +56,12 @@ public abstract class Engine_UiSource
 	/// </summary>
 	public virtual uint DisplayBoxScreen() => uint.MaxValue;
 
-	/// <summary>
-	/// The front end's own `dialog` box, raised by the guest (`sub_826E40E0`): which screen
-	/// object owns it, the presentation its `dialog.Group` texts are on, whether it takes input
-	/// yet, and whether it has a cancel button.
-	/// </summary>
-	public readonly record struct FrontEndDialogState(
-		uint Owner, uint Presentation, bool Accepting, bool AllowCancel);
-
-	/// <summary>The front-end dialog that is up, or null.</summary>
-	public virtual FrontEndDialogState? GetFrontEndDialog() => null;
-
 	/// <summary>The pause gate: underlying screen id, pending modal id and mode, current tab.</summary>
 	public virtual Engine_UiModel.PauseState? GetPauseState() => null;
 
 	/// <summary>The pause-root minimap's quest markers.</summary>
 	public virtual List<Engine_UiModel.MapMarker> GetMapMarkers() =>
 		new List<Engine_UiModel.MapMarker>();
-
-	/// <summary>The spell-assignment blade's model.</summary>
-	public virtual Engine_UiModel.SpellAssignState GetSpellAssign() => default;
-
-	/// <summary>The quick wheel's guest-held cursor — see <see cref="Engine_UiModel.SpellWheelState"/>.</summary>
-	public virtual Engine_UiModel.SpellWheelState GetSpellWheel(int player) => default;
-
-	/// <summary>The abilities book's blade widget, while that screen is up and the blade is open.</summary>
-	public virtual Engine_UiModel.SpellWheelState GetSpellBlade() => default;
 
 	// ---- THE HUD -----------------------------------------------------------------------
 
@@ -157,10 +137,6 @@ public abstract class Engine_UiSource
 	/// <summary>True while a menu population is in flight; consumers hold their last whole population while set. See <see cref="GetMenuRows"/>.</summary>
 	public virtual bool MenuPopulating() => false;
 
-	/// <summary>The `g_Menu:` mutations the game's C++ has made since the last drain, with their staged attributes. See docs/ui_native_cut.md.</summary>
-	public virtual System.Collections.Generic.List<Engine_UiModel.MenuChunk> TakeMenuChunks() =>
-		new();
-
 	// ---- THE LEVERS --------------------------------------------------------------------
 	// Each returns what the bridge returns (queue depth or accepted flag), never an outcome.
 
@@ -208,24 +184,6 @@ public abstract class Engine_UiSource
 			? PostFrontEndAction($"BoxAction:{(int)action}@{box:X8}")
 			: PostFrontEndAction($"BoxAction:{(int)action}");
 
-	/// <summary>Answers one `GUI` predicate instead of the guest. Only for a native whose setters this host owns; otherwise the answer is a guess.</summary>
-	public virtual void SetPredicate(string name, bool value)
-	{
-	}
-
-	/// <summary>Answers a float-returning predicate.</summary>
-	public virtual void SetPredicate(string name, float value)
-	{
-	}
-
-	/// <summary>
-	/// Stops the guest running a native this host owns outright. Suppress only audited natives —
-	/// some carry side effects (display box suspends gameplay, the minigame tally opens a screen).
-	/// </summary>
-	public virtual void SuppressNative(string name)
-	{
-	}
-
 	/// <summary>One action code to the current in-game screen's own input method.</summary>
 	public virtual uint ScreenAction(uint code) => 0;
 
@@ -235,12 +193,6 @@ public abstract class Engine_UiSource
 	/// <summary>States the highlighted row of an in-game screen's list (screen 0 clears) — see
 	/// <c>HostBridge.SetHighlightedRow</c>.</summary>
 	public virtual void StateHighlightedRow(uint screen, int eventType, int id, string name, string label)
-	{
-	}
-
-	/// <summary>States the fold depth of the list Godot shows for a screen (0 at the root, which
-	/// clears) — see <c>HostBridge.SetListFoldDepth</c>.</summary>
-	public virtual void StateListFoldDepth(uint screen, uint depth)
 	{
 	}
 
