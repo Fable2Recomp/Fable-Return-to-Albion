@@ -6,7 +6,6 @@ SKATE_INPUT_OLLIE,Ugrás
 SKATE_INPUT_FLIP,Virtuóz csapás
 SKATE_INPUT_GRAB,Fogás
 SKATE_INPUT_NO_LOCK,"Célpont befogása, gördeszkán kikapcsolva"
-SKATE_INPUT_HELP,Gördeszka-irányítás megjelenítése vagy elrejtése
 SKATE_TOUCH_TOGGLE,Deszka
 SKATE_TOUCH_HOP,Ugrás
 SKATE_TOUCH_FLOURISH,Virtuóz
@@ -42,4 +41,3 @@ SKATE_CONTROL_HOLD_RIGHT_CLICK,Tartsd lenyomva a jobb gombot
 SKATE_CONTROL_HOLD,Tartsd lenyomva: %1
 SKATE_CONTROL_NEAR_LEDGE,"%1, perem közelében"
 SKATE_CONTROL_STEP_OFF,Leszállás
-SKATE_CONTROL_HIDE,Elrejtés

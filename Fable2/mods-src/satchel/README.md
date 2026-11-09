@@ -1,6 +1,6 @@
 # Hero's Satchel
 
-Tab opens the inventory as one see-through screen. Escape still opens the game's pause book. The world
+Tab (the mod wheel on a controller) opens the inventory as one see-through screen. Escape still opens the game's pause book. The world
 holds behind the screen while it is open.
 
 Category icons run along the top: Favourites, All, Melee, Ranged, Clothing, Potions, Food, Gifts,

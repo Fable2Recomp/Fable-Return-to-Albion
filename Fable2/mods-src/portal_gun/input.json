@@ -1,9 +1,10 @@
 {
-	"toggle": { "label": "{PORTAL_GUN_INPUT_TOGGLE}", "keys": ["G"], "buttons": ["Back"], "touch": "{PORTAL_GUN_TOUCH_TOGGLE}" },
+	"toggle": { "label": "{PORTAL_GUN_INPUT_TOGGLE}", "keys": ["G"], "touch": "{PORTAL_GUN_TOUCH_TOGGLE}", "wheel": "{PORTAL_GUN_TOUCH_TOGGLE}", "wheel_icon": "art/gui/wheel/portal.png" },
 	"swap": { "label": "{PORTAL_GUN_INPUT_SWAP}", "touch": { "pill": "{PORTAL_GUN_TOUCH_SWAP}", "when": "portal_gun.mode" } },
 	"aim_blue": { "label": "{PORTAL_GUN_INPUT_AIM_BLUE}", "buttons": ["Y"], "touch": { "caption": "{PORTAL_GUN_TOUCH_BLUE}", "when": "portal_gun.blue_next" } },
 	"aim_orange": { "label": "{PORTAL_GUN_INPUT_AIM_ORANGE}", "buttons": ["Y"], "touch": { "caption": "{PORTAL_GUN_TOUCH_ORANGE}", "when": "portal_gun.orange_next" } },
-	"no_lock": { "label": "{PORTAL_GUN_INPUT_NO_LOCK}", "buttons": ["LT"] },
+	"fire_blue": { "label": "{PORTAL_GUN_INPUT_FIRE_BLUE}", "buttons": ["LT"] },
+	"fire_orange": { "label": "{PORTAL_GUN_INPUT_FIRE_ORANGE}", "buttons": ["RT"] },
 	"no_melee": { "label": "{PORTAL_GUN_INPUT_NO_MELEE}", "buttons": ["X"] },
 	"no_magic": { "label": "{PORTAL_GUN_INPUT_NO_MAGIC}", "buttons": ["B"] }
 }

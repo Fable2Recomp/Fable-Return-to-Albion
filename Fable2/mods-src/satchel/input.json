@@ -1,5 +1,5 @@
 {
-	"open": { "label": "{SATCHEL_INPUT_OPEN}", "keys": ["Tab"], "touch": "{SATCHEL_TOUCH_OPEN}" },
+	"open": { "label": "{SATCHEL_INPUT_OPEN}", "keys": ["Tab"], "touch": "{SATCHEL_TOUCH_OPEN}", "wheel": "{SATCHEL_TOUCH_OPEN}", "wheel_icon": "art/gui/wheel/satchel.png" },
 	"act": { "label": "{SATCHEL_INPUT_ACT}", "keys": ["E", "Enter", "Kp Enter", "Space"], "buttons": ["A"] },
 	"favourite": { "label": "{SATCHEL_INPUT_FAVOURITE}", "keys": ["F"], "buttons": ["Y"] },
 	"sort": { "label": "{SATCHEL_INPUT_SORT}", "keys": ["C"], "buttons": ["X"] },

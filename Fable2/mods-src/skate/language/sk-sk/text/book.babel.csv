@@ -6,7 +6,6 @@ SKATE_INPUT_OLLIE,Skok
 SKATE_INPUT_FLIP,Ostrá rána
 SKATE_INPUT_GRAB,Chyt
 SKATE_INPUT_NO_LOCK,"Zaměření, vypnuto při jízdě"
-SKATE_INPUT_HELP,Zobrazit nebo skrýt ovládání skateboardu
 SKATE_TOUCH_TOGGLE,Skate
 SKATE_TOUCH_HOP,Skok
 SKATE_TOUCH_FLOURISH,Ostrá rána
@@ -42,4 +41,3 @@ SKATE_CONTROL_HOLD_RIGHT_CLICK,Podržet pravé kliknutí
 SKATE_CONTROL_HOLD,Podržet %1
 SKATE_CONTROL_NEAR_LEDGE,"%1, u hrany"
 SKATE_CONTROL_STEP_OFF,Seskočit
-SKATE_CONTROL_HIDE,Skrýt

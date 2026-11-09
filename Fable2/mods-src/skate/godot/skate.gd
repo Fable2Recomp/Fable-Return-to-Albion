@@ -55,13 +55,15 @@ const ROLL_PITCHES := Vector2(0.7, 1.5)
 const ROLL_QUIET := -22.0           # decibels when barely moving, up to LOOP_VOLUME at speed
 const ROLL_FROM := 0.2              # metres a second below which the wheels make no sound
 const TOP_SPEED := 14.0             # the most a hill can reach, in mod/init.lua
-const PREFS := "user://skate.cfg"
 const SCORE_AT := Vector2(30.0, 62.0)
 const TOUCH_SCORE_AT := Vector2(40.0, 355.0)   # on a touchscreen, under Lock and over the items (720 to the screen's height)
 const PANEL_AT := Vector2(26.0, 330.0)
 const PANEL_ROW := 30.0
+const PANEL_ROW_PAD := 44.0
 const PANEL_KEYS_AT := 170.0        # the keys' column, from the panel's left
 const PANEL_WIDTH := 430.0
+const PANEL_KEYS_AT_PAD := 230.0
+const PANEL_WIDTH_PAD := 540.0
 # What does what: its text key, then how the keyboard and the pad do it. A "text" is a text key drawn as
 # it is (the game's own movement and the mouse buttons); otherwise "pattern", a text key whose %1 (and %2)
 # stand for the bound inputs of "binds", each drawn as its glyph (input_glyph) or, with none, its name.
@@ -73,8 +75,7 @@ const CONTROLS := [
 	["SKATE_TRICK_PIE_GRAB", { "text": "SKATE_CONTROL_HOLD_RIGHT_CLICK" }, { "pattern": "SKATE_CONTROL_HOLD", "binds": ["skate.grab"] }],
 	["SKATE_TRICK_WHEELIE", { "pattern": "SKATE_CONTROL_HOLD", "binds": ["skate.manual"] }, { "pattern": "SKATE_CONTROL_HOLD", "binds": ["skate.manual"] }],
 	["SKATE_TRICK_RAIL_RIDER", { "pattern": "SKATE_CONTROL_NEAR_LEDGE", "binds": ["skate.grind"] }, { "pattern": "SKATE_CONTROL_NEAR_LEDGE", "binds": ["skate.grind"] }],
-	["SKATE_CONTROL_STEP_OFF", { "binds": ["skate.toggle"] }, { "chord": true, "binds": ["LB", "skate.toggle_pad"] }],
-	["SKATE_CONTROL_HIDE", { "binds": ["skate.help"] }, { "chord": true, "binds": ["LB", "skate.help_pad"] }],
+	["SKATE_CONTROL_STEP_OFF", { "binds": ["skate.toggle"] }, { "binds": ["Back"] }],
 ]
 const CHORD := "%1 + %2"            # a held pad modifier and the button under it
 const BOUND := "%1"
@@ -315,17 +316,12 @@ var rider: Rider
 var rider_failed := false
 var crouch := CROUCH_REST
 var crouch_speed := 0.0
-var show_controls := true
 var on_pad := false
 
 
 func _ready() -> void:
 	host = Engine.get_singleton("RefiiHost")
 	interactive = int(host.constants().get("CUTSCENE_INTERACTIVE", interactive))
-	host.input_action.connect(_on_input_action)
-	var prefs := ConfigFile.new()
-	if prefs.load(PREFS) == OK:
-		show_controls = prefs.get_value("skate", "show_controls", true)
 	board = MeshInstance3D.new()
 	board.visible = false
 	add_child(board)
@@ -452,17 +448,6 @@ func _value(key: String) -> float:
 func _read_stick() -> Vector2:
 	var read: Vector2 = host.move_stick(player)
 	return Vector2.ZERO if read.length() < 0.2 else read
-
-
-func _on_input_action(e: Dictionary) -> void:
-	var name: String = e.get("name", "")
-	if int(e.get("player", 1)) != player:
-		return
-	if (name == "skate.help" or name == "skate.help_pad") and e.get("pressed", false) and _value("skate.on") >= 0.5:
-		show_controls = not show_controls
-		var prefs := ConfigFile.new()
-		prefs.set_value("skate", "show_controls", show_controls)
-		prefs.save(PREFS)
 
 
 ## While riding, the left mouse button flips and the right one grabs, in place of what the game has them do.
@@ -703,16 +688,18 @@ func _board_transform(feet: Vector3, delta: float) -> Transform3D:
 
 func _draw_controls(scale: float) -> void:
 	var corner := PANEL_AT * scale
-	var row := PANEL_ROW * scale
-	var size := int(20 * scale)
-	var panel := Rect2(corner - Vector2(12.0, 28.0) * scale, Vector2(PANEL_WIDTH * scale, row * (CONTROLS.size() + 1.25)))
+	# Larger on a pad, where a row carries the game's button pictures.
+	var row := (PANEL_ROW_PAD if on_pad else PANEL_ROW) * scale
+	var size := int((24 if on_pad else 20) * scale)
+	var keys_at := (PANEL_KEYS_AT_PAD if on_pad else PANEL_KEYS_AT) * scale
+	var panel := Rect2(corner - Vector2(12.0, 28.0) * scale, Vector2((PANEL_WIDTH_PAD if on_pad else PANEL_WIDTH) * scale, row * (CONTROLS.size() + 1.25)))
 	canvas.draw_rect(panel, Color(0.0, 0.0, 0.0, 0.38))
 	canvas.draw_string(face, corner, host.text("SKATE_CONTROLS_HINT"), HORIZONTAL_ALIGNMENT_LEFT, -1, int(16 * scale), Color(GOLD, 0.8))
 	for i in CONTROLS.size():
 		var at := corner + Vector2(0.0, row * (i + 1))
 		var entry: Array = CONTROLS[i]
 		canvas.draw_string(face, at, host.text(entry[0]), HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color(WHITE, 0.72))
-		_draw_how(at + Vector2(PANEL_KEYS_AT * scale, 0.0), entry[2] if on_pad else entry[1], size, Color(GOLD, 0.95))
+		_draw_how(at + Vector2(keys_at, 0.0), entry[2] if on_pad else entry[1], size, Color(GOLD, 0.95))
 
 
 ## One control's how: its text, or its pattern with each %N drawn as that bound input.
@@ -746,9 +733,9 @@ func _bound(at: Vector2, name: String, size: int, colour: Color) -> float:
 	var glyph: Texture2D = host.input_glyph(name)
 	if glyph == null:
 		return _words(at, host.input_label(name), size, colour)
-	var high := size * 1.2
+	var high := size * (1.6 if on_pad else 1.2)
 	var wide := high * glyph.get_width() / maxf(1.0, glyph.get_height())
-	canvas.draw_texture_rect(glyph, Rect2(at.x, at.y - size * 0.95, wide, high), false)
+	canvas.draw_texture_rect(glyph, Rect2(at.x, at.y - size * 0.35 - high * 0.5, wide, high), false)
 	return wide
 
 
@@ -768,7 +755,7 @@ func _draw_score() -> void:
 		return
 	var scale := canvas.size.y / 1080.0
 	# On a touchscreen the pad's own buttons are captioned with the tricks (input.json's "touch").
-	if show_controls and not host.touch_mode():
+	if not host.touch_mode():
 		_draw_controls(scale)
 	# Top left, clear of the objective above the middle and the map on the right. On a touchscreen the
 	# health stands there (lower still under a corner's camera) and the objective under the top row: the

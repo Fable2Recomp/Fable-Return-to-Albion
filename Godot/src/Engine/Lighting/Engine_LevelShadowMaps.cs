@@ -670,11 +670,7 @@ public static class Engine_LevelShadowMaps
 			return;
 		}
 
-		if (Refii.AndroidRuntime.AndroidBakedShadows.LevelsIgnoreBakes)
-		{
-			Clear();
-			return;
-		}
+		if (Refii.AndroidRuntime.AndroidBakedShadows.LevelsIgnoreBakes) { Clear(); return; }
 
 		// 1. Try cache directory first (<app>/cache/shadows/...)
 		string diskPath = GetShadowMapDiskPath(level, gdbPath);

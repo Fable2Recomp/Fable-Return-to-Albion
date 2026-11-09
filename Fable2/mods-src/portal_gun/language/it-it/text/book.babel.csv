@@ -5,9 +5,10 @@ PORTAL_GUN_MOD_NAME,Portal Gun
 PORTAL_GUN_MOD_DESCRIPTION,"Un'arma che spara una coppia di portali collegati su pareti, pavimenti e soffitti. Guarda in uno per vedere dall'altro ed entraci per uscire di là. G la estrae; i tasti del mouse sparano."
 PORTAL_GUN_INPUT_TOGGLE,Attiva o disattiva la Portal Gun
 PORTAL_GUN_INPUT_SWAP,"Prossimo blu o arancione, su touchscreen"
-PORTAL_GUN_INPUT_AIM_BLUE,Un portale sulla Y del touchscreen
+PORTAL_GUN_INPUT_AIM_BLUE,Mira un portale
 PORTAL_GUN_INPUT_AIM_ORANGE,Didascalia della Y quando tocca all'arancione
-PORTAL_GUN_INPUT_NO_LOCK,"Aggancio, disattivato in modalità portale"
+PORTAL_GUN_INPUT_FIRE_BLUE,Spara un portale blu mirando
+PORTAL_GUN_INPUT_FIRE_ORANGE,Spara un portale arancione mirando
 PORTAL_GUN_INPUT_NO_MELEE,"Corpo a corpo, disattivato in modalità portale"
 PORTAL_GUN_INPUT_NO_MAGIC,"Magia, disattivata in modalità portale"
 PORTAL_GUN_TOUCH_TOGGLE,Portal Gun

@@ -5,9 +5,10 @@ PORTAL_GUN_MOD_NAME,ポータルガン
 PORTAL_GUN_MOD_DESCRIPTION,壁、床、天井に連結した2つのポータルを撃ち込む銃。片方をのぞくともう片方から外が見え、入るとそこから出られる。Gで構え、マウスボタンで撃つ。
 PORTAL_GUN_INPUT_TOGGLE,ポータルガンのオン/オフ
 PORTAL_GUN_INPUT_SWAP,次に撃つ色 (青/オレンジ)、タッチスクリーン用
-PORTAL_GUN_INPUT_AIM_BLUE,タッチスクリーンのYに表示するポータル
+PORTAL_GUN_INPUT_AIM_BLUE,ポータルを狙う
 PORTAL_GUN_INPUT_AIM_ORANGE,次がオレンジのときのYの表示
-PORTAL_GUN_INPUT_NO_LOCK,ロックオン、ポータルモード中はオフ
+PORTAL_GUN_INPUT_FIRE_BLUE,狙っている間に青いポータルを撃つ
+PORTAL_GUN_INPUT_FIRE_ORANGE,狙っている間にオレンジのポータルを撃つ
 PORTAL_GUN_INPUT_NO_MELEE,近接攻撃、ポータルモード中はオフ
 PORTAL_GUN_INPUT_NO_MAGIC,魔法、ポータルモード中はオフ
 PORTAL_GUN_TOUCH_TOGGLE,ポータルガン

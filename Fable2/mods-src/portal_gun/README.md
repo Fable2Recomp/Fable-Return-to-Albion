@@ -3,13 +3,16 @@
 A gun that fires a pair of linked portals onto walls, floors and ceilings. Look through one to see
 out of the other, and step in to come out there.
 
-**G** (Back on a pad) turns the gun you have equipped into the Portal Gun, and **G** again turns it
+**G** (the mod wheel on a pad) turns the gun you have equipped into the Portal Gun, and **G** again turns it
 back. You keep the game's stance and aim for that gun. Portal mode belongs to whoever turned it on:
 in co-op the other player's **G** does nothing until it is off again.
 
 **Hold the left mouse button to aim and release to fire the blue portal; do the same with the right
-button for the orange one.** A controller fires blue only for now. While portal mode is on, the right
-button and `T` aren't the game's lock-on, and on a pad LT, X and B wait until you turn it off.
+button for the orange one.** While portal mode is on, the right
+button and `T` aren't the game's lock-on, and with a mouse melee and magic wait until you turn it off.
+
+On a controller, **hold Y to aim, and press LT for the blue portal or RT for the orange one**. Letting
+go of Y without a trigger opens nothing.
 
 While you aim, an outline shows where the portal would open, red when it wouldn't fit. Portals close
 when you change level.

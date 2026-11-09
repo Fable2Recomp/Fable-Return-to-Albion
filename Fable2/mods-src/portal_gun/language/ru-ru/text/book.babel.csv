@@ -5,9 +5,10 @@ PORTAL_GUN_MOD_NAME,Портальная пушка
 PORTAL_GUN_MOD_DESCRIPTION,"Оружие, которое выпускает пару связанных порталов на стены, пол и потолок. Посмотрите в один, чтобы увидеть, что за другим, и шагните внутрь, чтобы выйти там. G достаёт её; кнопки мыши стреляют."
 PORTAL_GUN_INPUT_TOGGLE,Включить или выключить портальную пушку
 PORTAL_GUN_INPUT_SWAP,"Следующий синий или оранжевый, на сенсорном экране"
-PORTAL_GUN_INPUT_AIM_BLUE,Портал на кнопке Y сенсорного экрана
+PORTAL_GUN_INPUT_AIM_BLUE,Прицелиться порталом
 PORTAL_GUN_INPUT_AIM_ORANGE,"Подпись Y, когда следующий оранжевый"
-PORTAL_GUN_INPUT_NO_LOCK,"Захват цели, отключён в режиме порталов"
+PORTAL_GUN_INPUT_FIRE_BLUE,Синий портал при прицеливании
+PORTAL_GUN_INPUT_FIRE_ORANGE,Оранжевый портал при прицеливании
 PORTAL_GUN_INPUT_NO_MELEE,"Ближний бой, отключён в режиме порталов"
 PORTAL_GUN_INPUT_NO_MAGIC,"Магия, отключена в режиме порталов"
 PORTAL_GUN_TOUCH_TOGGLE,Порталы

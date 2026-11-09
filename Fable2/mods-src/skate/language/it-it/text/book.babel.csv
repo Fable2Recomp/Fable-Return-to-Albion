@@ -6,7 +6,6 @@ SKATE_INPUT_OLLIE,Salto
 SKATE_INPUT_FLIP,Fioritura
 SKATE_INPUT_GRAB,Presa
 SKATE_INPUT_NO_LOCK,"Aggancio, disattivato in skate"
-SKATE_INPUT_HELP,Mostra o nascondi i comandi dello skateboard
 SKATE_TOUCH_TOGGLE,Skate
 SKATE_TOUCH_HOP,Salto
 SKATE_TOUCH_FLOURISH,Fioritura
@@ -42,4 +41,3 @@ SKATE_CONTROL_HOLD_RIGHT_CLICK,Tieni premuto il clic destro
 SKATE_CONTROL_HOLD,Tieni premuto %1
 SKATE_CONTROL_NEAR_LEDGE,"%1, vicino a un bordo"
 SKATE_CONTROL_STEP_OFF,Scendi
-SKATE_CONTROL_HIDE,Nascondi

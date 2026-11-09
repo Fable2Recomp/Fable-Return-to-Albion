@@ -24,6 +24,8 @@ your last real save, not the quicksave.
 There is one quicksave per hero, replaced by each F8. It is kept beside the save, in
 `<save root>/<profile>/refii-snapshots/<hero>/quicksave.quick/`, and never shows in Load Game.
 
+On a controller both are on the mod wheel: press **Back** and choose one.
+
 On a phone the **Quicksave** and **Quickload** pills in the top row of the touch controls are F8
 and F9.
 

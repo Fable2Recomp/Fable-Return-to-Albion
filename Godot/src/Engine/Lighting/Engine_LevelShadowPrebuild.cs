@@ -200,10 +200,7 @@ public static class Engine_LevelShadowPrebuild
 					container = baked;
 					if (resolvedGdb.Length != 0)
 					{
-						if (Refii.AndroidRuntime.AndroidBakedShadows.KeepsOneBake)
-						{
-							bakedGeometryCache.Clear();
-						}
+						if (Refii.AndroidRuntime.AndroidBakedShadows.KeepsOneBake) bakedGeometryCache.Clear();
 
 						bakedGeometryCache[$"{scenarioEntry.HeightfieldPath}|{resolvedGdb}|{resolution}|{lightsPerMap}"] =
 							(container, tris);

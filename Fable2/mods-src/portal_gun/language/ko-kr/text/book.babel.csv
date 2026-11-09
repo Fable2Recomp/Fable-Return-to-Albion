@@ -5,9 +5,10 @@ PORTAL_GUN_MOD_NAME,포탈 건
 PORTAL_GUN_MOD_DESCRIPTION,"벽, 바닥, 천장에 서로 연결된 포탈 한 쌍을 쏘는 총입니다. 한쪽을 들여다보면 다른 쪽 너머가 보이고, 들어가면 그쪽으로 나옵니다. G로 꺼내고 마우스 버튼으로 쏩니다."
 PORTAL_GUN_INPUT_TOGGLE,포탈 건 켜기/끄기
 PORTAL_GUN_INPUT_SWAP,다음 색 파랑/주황 (터치스크린)
-PORTAL_GUN_INPUT_AIM_BLUE,터치스크린 Y 버튼의 포탈
+PORTAL_GUN_INPUT_AIM_BLUE,포털 조준
 PORTAL_GUN_INPUT_AIM_ORANGE,다음이 주황일 때 Y 버튼 표시
-PORTAL_GUN_INPUT_NO_LOCK,"목표물 고정, 포탈 모드에서 꺼짐"
+PORTAL_GUN_INPUT_FIRE_BLUE,조준 중 파란 포털 발사
+PORTAL_GUN_INPUT_FIRE_ORANGE,조준 중 주황 포털 발사
 PORTAL_GUN_INPUT_NO_MELEE,"근거리 전투, 포탈 모드에서 꺼짐"
 PORTAL_GUN_INPUT_NO_MAGIC,"마법, 포탈 모드에서 꺼짐"
 PORTAL_GUN_TOUCH_TOGGLE,포탈 건

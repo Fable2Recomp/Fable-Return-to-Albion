@@ -47,10 +47,10 @@ public static class ModInput
 	public const float AxisThreshold = 0.5f;
 
 	/// <summary>
-	/// <c>InputEvent.DEVICE_ID_ALL_DEVICES</c>: Godot 4.3+ matches an InputMap event with this
-	/// device against every joypad (-1 is the emulation id there, not "all").
+	/// <c>InputMap</c>'s "every device": an event bound with this device matches a press from any
+	/// joypad. Held by a test against the running engine, since no binding names the constant.
 	/// </summary>
-	private const int AllDevices = -3;
+	internal const int AllDevices = -1;
 
 	/// <summary>The refii.toml keys a rebind lives under, before the scoped action name.</summary>
 	public const string KeyPrefix = "key_";
@@ -86,6 +86,12 @@ public static class ModInput
 
 		/// <summary>The chord's key when it names one, else <see cref="Key.None"/>.</summary>
 		public Key ChordKey { get; init; } = Key.None;
+
+		/// <summary>What the controller's mod wheel calls it (<c>"wheel"</c>, <see cref="ModWheel"/>); empty for not on the wheel.</summary>
+		public string Wheel { get; init; } = string.Empty;
+
+		/// <summary>The picture on its wedge (<c>"wheel_icon"</c>): a game texture or a PNG the mod ships; empty for none.</summary>
+		public string WheelIcon { get; init; } = string.Empty;
 
 		/// <summary>How a touchscreen presses it (<c>"touch"</c>, <see cref="ModInputTouch"/>); null for no pill or caption.</summary>
 		public ModInputTouch.Spec? Touch { get; init; }
@@ -583,10 +589,16 @@ public static class ModInput
 				!ModInputClaims.PlainSuppressed(action, actions, a => PadModifierHeld(a, joypad2), keyboard: false);
 			// The touchscreen is player one's: a pill, an area, or the on-screen pad's buttons.
 			bool screen = devices && ModInputTouch.Down(action);
-			Post(action, 1, keys || pad1 || screen);
+			Post(action, 1, keys || pad1 || screen || _fired.Remove(action.Name));
 			Post(action, 2, pad2);
 		}
 	}
+
+	/// <summary>The actions to press for one pump, as though their buttons had been tapped (<see cref="Fire"/>).</summary>
+	private static readonly HashSet<string> _fired = new(StringComparer.Ordinal);
+
+	/// <summary>Taps <paramref name="action"/> for player one: its <c>input_action</c> press now, its release on the next pump.</summary>
+	public static void Fire(Action action) => _fired.Add(action.Name);
 
 	/// <summary>A key chord's modifier on the keyboard; a pad chord's on player 1's joypad; a plain action's always.</summary>
 	private static bool KeyChordHeld(Action action) => action.ChordModifier switch
@@ -812,9 +824,10 @@ public static class ModInput
 		}
 
 		ModInputTouch.Spec? touch = ModInputTouch.Parse(name, label, binding);
-		if (keys.Count == 0 && buttons.Count == 0 && triggers.Count == 0 && axis is null && touch is not { Pill.Length: > 0 })
+		string wheel = WheelOf(binding, label);
+		if (keys.Count == 0 && buttons.Count == 0 && triggers.Count == 0 && axis is null && touch is not { Pill.Length: > 0 } && wheel.Length == 0)
 		{
-			GD.PushWarning($"[mod-input] {name}: no key, button or axis bound, nor a touch pill; ignored");
+			GD.PushWarning($"[mod-input] {name}: no key, button or axis bound, nor a touch pill or wheel entry; ignored");
 			return null;
 		}
 
@@ -833,7 +846,24 @@ public static class ModInput
 			}
 		}
 
-		return new Action(name, mod, label, keys, buttons, triggers, axis, axisSign) { Chord = chord, ChordKey = chordKey, Touch = touch };
+		return new Action(name, mod, label, keys, buttons, triggers, axis, axisSign) { Chord = chord, ChordKey = chordKey, Touch = touch, Wheel = wheel,
+			WheelIcon = binding.TryGetValue("wheel_icon", out Variant icon) && icon.VariantType == Variant.Type.String ? icon.AsString().Trim() : string.Empty };
+	}
+
+	/// <summary>The file's <c>"wheel"</c>: true for the action's label, a string for its own text, absent for none.</summary>
+	private static string WheelOf(Godot.Collections.Dictionary binding, string label)
+	{
+		if (!binding.TryGetValue("wheel", out Variant wheel))
+		{
+			return string.Empty;
+		}
+
+		return wheel.VariantType switch
+		{
+			Variant.Type.Bool => wheel.AsBool() ? label : string.Empty,
+			Variant.Type.String => wheel.AsString().Trim(),
+			_ => string.Empty,
+		};
 	}
 
 	/// <summary>A binding list: an array of strings, or one string.</summary>

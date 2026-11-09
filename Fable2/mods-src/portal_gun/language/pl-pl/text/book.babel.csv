@@ -5,9 +5,10 @@ PORTAL_GUN_MOD_NAME,Portal Gun
 PORTAL_GUN_MOD_DESCRIPTION,"Broń, która wystrzeliwuje parę połączonych portali na ściany, podłogi i sufity. Spójrz w jeden, by zobaczyć przez drugi, i wejdź, by tam wyjść. G ją wyjmuje; przyciski myszy strzelają."
 PORTAL_GUN_INPUT_TOGGLE,Włącz lub wyłącz Portal Gun
 PORTAL_GUN_INPUT_SWAP,"Następny niebieski lub pomarańczowy, na ekranie dotykowym"
-PORTAL_GUN_INPUT_AIM_BLUE,Portal na przycisku Y ekranu dotykowego
+PORTAL_GUN_INPUT_AIM_BLUE,Celuj portalem
 PORTAL_GUN_INPUT_AIM_ORANGE,"Napis na Y, gdy następny jest pomarańczowy"
-PORTAL_GUN_INPUT_NO_LOCK,"Namierzanie, wyłączone w trybie portali"
+PORTAL_GUN_INPUT_FIRE_BLUE,Wystrzel niebieski portal podczas celowania
+PORTAL_GUN_INPUT_FIRE_ORANGE,Wystrzel pomarańczowy portal podczas celowania
 PORTAL_GUN_INPUT_NO_MELEE,"Walka w zwarciu, wyłączona w trybie portali"
 PORTAL_GUN_INPUT_NO_MAGIC,"Czary, wyłączone w trybie portali"
 PORTAL_GUN_TOUCH_TOGGLE,Portal Gun

@@ -105,6 +105,8 @@ game scopes it `<mod>.<action>`:
 | `axis` | one `JoyAxis` name (`LeftX`, `LeftY`, `RightX`, `RightY`, `TriggerLeft`, `TriggerRight`) or null; pressed past half deflection either way, or one way with a leading `+` / `-` |
 | `chord` | optional: a held modifier the action fires under — `LT`, `RT`, `LB` or `RB` on the pad, or a Godot key name on the keyboard (see [Chords](#chords)) |
 | `touch` | optional: how a touchscreen presses it — a pill of its own, or a caption on the on-screen button it is bound to (see [On a touchscreen](#on-a-touchscreen)); its text is a `{KEY}` like `label` |
+| `wheel` | optional: puts the action on the controller's [mod wheel](#the-controllers-mod-wheel), showing its `label` (`true`) or this text |
+| `wheel_icon` | optional: the picture on its wedge, a PNG the mod ships (128 by 128, transparent) or a game texture |
 
 - A list field also takes a single string.
 - An action with nothing bound is ignored with a warning.
@@ -148,6 +150,19 @@ pad, or a key (`Shift`, `Alt`, …) on the keyboard. While a chord's modifier is
 `alt_up` is LT + D-pad up, never both. A pad chord gates the pad and the keyboard both (player 1's
 keyboard reads player 1's pad for its trigger); a key chord gates the keyboard alone. The chord is
 not rebound; the keys and buttons under it are, as usual.
+
+### The controller's mod wheel
+
+Actions with `wheel` appear on a wheel a controller opens with Back, each taking the next free wedge in
+load order. The stick points, A chooses, B or Back closes, and LB and RB turn the page. Choosing a
+wedge sends the action's `input_action` press and release for player one, so a handler needs nothing
+new. An action may have `wheel` and nothing else bound. A page has six wedges: Close and the Dog
+wedge stay the game's. On the keyboard or a touchscreen, or with no entries, Back holds the expression
+wheel as usual.
+
+```json
+{ "toggle": { "label": "Skateboard on or off", "keys": ["K"], "wheel": "{SKATE_TOUCH_TOGGLE}", "wheel_icon": "art/gui/wheel/skateboard.png" } }
+```
 
 ### Claims: taking a button from the game
 

@@ -291,6 +291,11 @@ public partial class GameUi : Node, IGameTitleUi
 		// The HUD's feed is its address; with it at 0 the icons and the piece gate stop, and a
 		// null gate hides every stated piece. Hidden outright as well: a piece with no ordinal
 		// is not gated and would otherwise stand. Shown again when the game names hud.bgf.
+		if (_hudAddress != 0)
+		{
+			_hudRetired.Add(_hudAddress);
+		}
+
 		_hudAddress = 0;
 		_hudStand?.Reset();
 		_cyclerAddress = 0;
@@ -4502,10 +4507,10 @@ public partial class GameUi : Node, IGameTitleUi
 				// THE ART: the textures told to the HUD's elements, under a mod's icon overrides.
 				if (cadence || _hud.LiveTextures is null || _hudTexturesGeneration != _hudStand.Generation ||
 					_hudOverrideGeneration != Engine_UiHudOverrides.Generation ||
-					_hudRegistryTexturesGeneration != _hud.Values.RegistryGeneration)
+					_hudRegistryTexturesGeneration != _hud.Values.RegistryGeneration || ModWheelIconsStale)
 				{
 					_hudRegistryTexturesGeneration = _hud.Values.RegistryGeneration;
-					_hud.LiveTextures = HudTextures(_hudStand);
+					_hud.LiveTextures = ModWheelIcons(doc, HudTextures(_hudStand));
 				}
 
 				// AND THE TRANSFORMS: the stand's tracks and told writes — a meter's bar scale is its
@@ -4518,7 +4523,7 @@ public partial class GameUi : Node, IGameTitleUi
 
 				// AND THE ELEMENT TEXT, for the expression wheel's titles — the guest writes them onto
 				// the elements (`sub_826AB1F8`), not into the text registry.
-				_hud.LiveTexts = _hudStand.Texts;
+				_hud.LiveTexts = ModWheelTexts(doc, _hudStand.Texts);
 
 				bool[] shown = Buffer(ref _hudShown, count);
 				for (int i = 0; i < count; ++i)
@@ -4574,7 +4579,12 @@ public partial class GameUi : Node, IGameTitleUi
 			{
 				// A accepts (`sub_826AA230`: enter a group / start the item), its release
 				// ends a held expression (`sub_826AA5D8`), B backs out (`sub_826AA510`).
-				if (Fable2Input.MenuAcceptPressed)
+				bool modWheel = Refii.Mods.ModWheel.Open;
+				if (modWheel)
+				{
+					FollowModWheelButtons();
+				}
+				else if (Fable2Input.MenuAcceptPressed)
 				{
 					HostBridge.PostFrontEndAction("QuickWheel:select");
 					NoteWheelSelect(_wheelSector);
@@ -4637,7 +4647,7 @@ public partial class GameUi : Node, IGameTitleUi
 					HostBridge.PostFrontEndAction($"QuickWheel:point:{sector}");
 				}
 
-				if (clicked)
+				if (clicked && !modWheel)
 				{
 					HostBridge.PostFrontEndAction("QuickWheel:select");
 					NoteWheelSelect(_wheelSector);
@@ -9475,6 +9485,10 @@ public partial class GameUi : Node, IGameTitleUi
 	/// </summary>
 	private void FollowFrontEndExtras(System.Collections.Generic.List<Engine_UiModel.Presentation> live)
 	{
+		// Back at the title every HUD is gone. Not sooner: the guest's list empties for a moment during a
+		// reload, and the old HUD comes back on it beside the new one.
+		_hudRetired.Clear();
+
 		if (_presentation is null)
 		{
 			return;
@@ -9570,6 +9584,16 @@ public partial class GameUi : Node, IGameTitleUi
 
 		return any;
 	}
+
+	/// <summary>HUDs the game has left behind: an in-game reload makes a new one while the old is still listed.</summary>
+	private readonly System.Collections.Generic.HashSet<uint> _hudRetired = new();
+
+	/// <summary>
+	/// Which HUD to follow, given the one followed so far and another the guest lists. A HUD from before
+	/// a reload never takes over from a fresh one; alone, it is followed, since its address may be recycled.
+	/// </summary>
+	internal static uint ChosenHud(uint current, uint candidate, System.Collections.Generic.IReadOnlySet<uint> retired) =>
+		retired.Contains(candidate) && current != 0 && !retired.Contains(current) ? current : candidate;
 
 	private void FollowInGameUi(System.Collections.Generic.List<Engine_UiModel.Presentation> live)
 	{
@@ -10024,7 +10048,7 @@ public partial class GameUi : Node, IGameTitleUi
 			// The address is still taken: the world icons — the one part of the HUD the guest
 			// arranges — are sampled off this presentation without mirroring it. See
 			// Engine_HudWorldIcons.
-			_hudAddress = presentation.Address;
+			_hudAddress = ChosenHud(_hudAddress, presentation.Address, _hudRetired);
 			if (_hud is not null && GodotObject.IsInstanceValid(_hud) && !_hud.Visible &&
 				!_fullCutscene && !_modScreenHidHud)
 			{

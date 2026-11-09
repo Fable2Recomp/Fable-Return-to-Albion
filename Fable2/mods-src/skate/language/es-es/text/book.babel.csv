@@ -6,7 +6,6 @@ SKATE_INPUT_OLLIE,Salto
 SKATE_INPUT_FLIP,Floritura
 SKATE_INPUT_GRAB,Agarre
 SKATE_INPUT_NO_LOCK,"Fijar objetivo, desactivado en monopatín"
-SKATE_INPUT_HELP,Mostrar u ocultar los controles del monopatín
 SKATE_TOUCH_TOGGLE,Patinar
 SKATE_TOUCH_HOP,Salto
 SKATE_TOUCH_FLOURISH,Floritura
@@ -42,4 +41,3 @@ SKATE_CONTROL_HOLD_RIGHT_CLICK,Mantén pulsado clic derecho
 SKATE_CONTROL_HOLD,Mantén pulsado %1
 SKATE_CONTROL_NEAR_LEDGE,"%1, junto a un saliente"
 SKATE_CONTROL_STEP_OFF,Bajarse
-SKATE_CONTROL_HIDE,Ocultar esto

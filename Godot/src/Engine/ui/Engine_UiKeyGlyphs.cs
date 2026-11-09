@@ -125,17 +125,18 @@ public static partial class Engine_UiKeyGlyphs
 		return keycap;
 	}
 
-	private static readonly Dictionary<string, ImageTexture> _actionGlyphs = new();
+	private static readonly Dictionary<string, Texture2D> _actionGlyphs = new();
 
 	private static int _actionGlyphsFor = -1;
 
 	/// <summary>
 	/// The glyph for an input a mod binds itself: <paramref name="keyLabel"/>'s keycap while the keyboard
 	/// and mouse are in use, <paramref name="padButton"/>'s pad glyph (a name of <see cref="Buttons"/>, or
-	/// <c>DpadUp</c> … for one D-pad arrow) in the player's style and pack otherwise; null when the device
-	/// in use has nothing bound. Redrawn with every other glyph (<see cref="Generation"/>).
+	/// <c>DpadUp</c> … for one D-pad arrow) in the player's style and pack otherwise, which is the game's
+	/// own art wherever its prompts would show it; null when the device in use has nothing bound. Redrawn
+	/// with every other glyph (<see cref="Generation"/>).
 	/// </summary>
-	public static ImageTexture? ActionGlyph(string? keyLabel, string? padButton)
+	public static Texture2D? ActionGlyph(string? keyLabel, string? padButton)
 	{
 		bool keys = Engine_UiInputMode.Keycaps;
 		string? shown = keys ? keyLabel : padButton;
@@ -151,9 +152,15 @@ public static partial class Engine_UiKeyGlyphs
 		}
 
 		string cacheKey = (keys ? "k:" : "p:") + shown;
-		if (_actionGlyphs.TryGetValue(cacheKey, out ImageTexture? cached))
+		if (_actionGlyphs.TryGetValue(cacheKey, out Texture2D? cached))
 		{
 			return cached;
+		}
+
+		if (!keys && ShippedActionGlyph(shown) is { } shipped)
+		{
+			_actionGlyphs[cacheKey] = shipped;
+			return shipped;
 		}
 
 		var canvas = new Canvas(KeycapSize, KeycapSize);
@@ -167,22 +174,86 @@ public static partial class Engine_UiKeyGlyphs
 		}
 		else
 		{
-			(string button, Direction arrow) = shown switch
-			{
-				"DpadUp" => ("DPad", Direction.Up),
-				"DpadDown" => ("DPad", Direction.Down),
-				"DpadLeft" => ("DPad", Direction.Left),
-				"DpadRight" => ("DPad", Direction.Right),
-				"L3" => ("LS", Direction.None),
-				"R3" => ("RS", Direction.None),
-				_ => (shown, Direction.None),
-			};
+			(string button, Direction arrow) = PadCellOf(shown);
 			DrawPadCell(canvas, cell, button, arrow);
 		}
 
 		ImageTexture texture = ImageTexture.CreateFromImage(canvas.ToImage(mipmaps: true));
 		_actionGlyphs[cacheKey] = texture;
 		return texture;
+	}
+
+	/// <summary>The prompt a bound pad input shows: its button, and which way when it is one D-pad arrow.</summary>
+	private static (string Button, Direction Arrow) PadCellOf(string padButton) => padButton switch
+	{
+		"DpadUp" => ("DPad", Direction.Up),
+		"DpadDown" => ("DPad", Direction.Down),
+		"DpadLeft" => ("DPad", Direction.Left),
+		"DpadRight" => ("DPad", Direction.Right),
+		"L3" => ("LS", Direction.None),
+		"R3" => ("RS", Direction.None),
+		_ => (padButton, Direction.None),
+	};
+
+	/// <summary>
+	/// The game's own texture for a prompt button, the paths its text markup names; null for one with none.
+	/// </summary>
+	internal static string? ShippedArtPath(string button) => button switch
+	{
+		"A" => "art/gui/controller/icon_button_a.tex",
+		"B" => "art/gui/controller/icon_button_b.tex",
+		"X" => "art/gui/controller/icon_button_x.tex",
+		"Y" => "art/gui/controller/icon_button_y.tex",
+		"LB" => "art/gui/controller/24x24/leftbutton.tex",
+		"RB" => "art/gui/controller/24x24/rightbutton.tex",
+		"LT" => "art/gui/controller/24x24/lefttrigger.tex",
+		"RT" => "art/gui/controller/24x24/righttrigger.tex",
+		"Start" => "art/gui/controller/24x24/start.tex",
+		"Back" => "art/gui/controller/24x24/back.tex",
+		"DPad" => "art/gui/controller/24x24/dpad.tex",
+		"LS" => "art/gui/controller/24x24/left.tex",
+		"RS" => "art/gui/controller/24x24/right.tex",
+		_ => null,
+	};
+
+	/// <summary>
+	/// The game's art for <paramref name="padButton"/>, wherever a prompt of the game's would show it: the
+	/// Xbox style, not remapped, no pack file. The game has one D-pad picture, so one arrow is drawn on it.
+	/// </summary>
+	private static Texture2D? ShippedActionGlyph(string padButton)
+	{
+		(string button, Direction arrow) = PadCellOf(padButton);
+		if (ShippedArtPath(button) is not { } path || !ShowsShipped(button) ||
+			(arrow != Direction.None && Engine_UiGlyphPack.Find(PackName, PadPackName(Engine_PadRemap.FromGlyphButton(button), arrow)) is not null) ||
+			Engine_HudModPieces.LoadAnyTexture(path) is not { } art)
+		{
+			return null;
+		}
+
+		if (arrow == Direction.None)
+		{
+			return art;
+		}
+
+		Image? image = Refii.Core.Engine_ServerSyncs.Image(art);
+		if (image is null || image.IsEmpty())
+		{
+			return null;
+		}
+
+		// Blit reads RGBA8 at the top level; the game's textures come compressed, with mips.
+		var rgba = (Image)image.Duplicate();
+		if (rgba.IsCompressed())
+		{
+			rgba.Decompress();
+		}
+
+		rgba.ClearMipmaps();
+		rgba.Convert(Image.Format.Rgba8);
+		var canvas = new Canvas(KeycapSize, KeycapSize);
+		canvas.Blit(rgba, new Rect2I(0, 0, KeycapSize, KeycapSize));
+		Arrow(canvas, KeycapSize / 2f, KeycapSize / 2f, KeycapSize * 0.42f, KeycapSize * 0.13f, arrow, Lit);
+		return ImageTexture.CreateFromImage(canvas.ToImage(mipmaps: true));
 	}
 
 	/// <summary>

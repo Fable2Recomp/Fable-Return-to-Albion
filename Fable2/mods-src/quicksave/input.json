@@ -1,4 +1,4 @@
 {
-	"quicksave": { "label": "{QUICKSAVE_INPUT_QUICKSAVE}", "keys": ["F8"], "touch": "{QUICKSAVE_TOUCH_QUICKSAVE}" },
-	"quickload": { "label": "{QUICKSAVE_INPUT_QUICKLOAD}", "keys": ["F9"], "touch": "{QUICKSAVE_TOUCH_QUICKLOAD}" }
+	"quicksave": { "label": "{QUICKSAVE_INPUT_QUICKSAVE}", "keys": ["F8"], "touch": "{QUICKSAVE_TOUCH_QUICKSAVE}", "wheel": "{QUICKSAVE_TOUCH_QUICKSAVE}", "wheel_icon": "art/gui/wheel/quicksave.png" },
+	"quickload": { "label": "{QUICKSAVE_INPUT_QUICKLOAD}", "keys": ["F9"], "touch": "{QUICKSAVE_TOUCH_QUICKLOAD}", "wheel": "{QUICKSAVE_TOUCH_QUICKLOAD}", "wheel_icon": "art/gui/wheel/quickload.png" }
 }

@@ -16,6 +16,7 @@ extends Node
 ## VM also starts each player's toggle again as start_on says.
 
 const HELD := "first_person.held"
+const TOGGLE := "first_person.toggle"
 const HOLD_SETTINGS := ["first_person.fov", "first_person.pitch_limit", "first_person.third_person_aim", "first_person.scenes"]
 
 var host: Object
@@ -23,6 +24,7 @@ var first_person := 8
 var interactive := 2
 var on := [false, false, false]     # per player (1, 2): whether they want first person (the toggle)
 var stated := ["", "", ""]          # per player: what was last stated, so an unchanged hold is not stated again
+var l3_held := false                # a pad's left stick is clicked: L3 + R3 is the game's Photo mode
 
 
 func _ready() -> void:
@@ -48,7 +50,30 @@ func _start() -> void:
 	var start := _setting("start_on", 1.0) != 0.0
 	on = [false, start, start]
 	stated = ["", "", ""]
+	_claim_toggle()
 	_apply_both()
+
+
+# R3 is the game's Camera mode, so the toggle takes it from the game. Claims are cleared when the
+# mods' Lua loads, so this is stated again on lua_ready. Not while L3 is held: the game's Photo mode
+# is L3 + R3, read from the pad the claim would hide R3 from.
+func _claim_toggle() -> void:
+	host.claim_input(1, TOGGLE, not l3_held)
+	host.claim_input(2, TOGGLE, not l3_held)
+
+
+func _l3_down() -> bool:
+	for device in Input.get_connected_joypads():
+		if Input.is_joy_button_pressed(device, JOY_BUTTON_LEFT_STICK):
+			return true
+	return false
+
+
+func _process(_delta: float) -> void:
+	var down := _l3_down()
+	if down != l3_held:
+		l3_held = down
+		_claim_toggle()
 
 
 # A shared screen is one camera framing both heroes, so neither player holds it there.
@@ -89,10 +114,10 @@ func _apply_both() -> void:
 	_apply(2)
 
 
-# H (input.json "toggle", rebindable in Options > Controls): whoever pressed it.
+# H or R3 (input.json "toggle", rebindable in Options > Controls): whoever pressed it.
 func _on_input_action(e: Dictionary) -> void:
 	var p := int(e.get("player", 0))
-	if e.get("name", "") == "first_person.toggle" and e.get("pressed", false) and (p == 1 or p == 2):
+	if e.get("name", "") == TOGGLE and e.get("pressed", false) and not l3_held and (p == 1 or p == 2):
 		on[p] = not on[p]
 		_apply(p)
 		print("first person %s for player %d" % ["on" if on[p] else "off", p])

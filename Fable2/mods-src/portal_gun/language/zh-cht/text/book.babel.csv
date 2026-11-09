@@ -5,9 +5,10 @@ PORTAL_GUN_MOD_NAME,傳送門槍
 PORTAL_GUN_MOD_DESCRIPTION,一把能在牆壁、地板與天花板上射出一對相連傳送門的槍。從其中一個望進去，就能看到另一個外面的景象；走進去，就會從那裡出來。按 G 拔出，滑鼠按鍵射擊。
 PORTAL_GUN_INPUT_TOGGLE,開啟或關閉傳送門槍
 PORTAL_GUN_INPUT_SWAP,下一發藍色或橘色 (觸控螢幕)
-PORTAL_GUN_INPUT_AIM_BLUE,觸控螢幕 Y 鍵上的傳送門
+PORTAL_GUN_INPUT_AIM_BLUE,瞄準傳送門
 PORTAL_GUN_INPUT_AIM_ORANGE,下一發為橘色時 Y 鍵的標示
-PORTAL_GUN_INPUT_NO_LOCK,鎖定目標，傳送門模式下關閉
+PORTAL_GUN_INPUT_FIRE_BLUE,瞄準時發射藍色傳送門
+PORTAL_GUN_INPUT_FIRE_ORANGE,瞄準時發射橘色傳送門
 PORTAL_GUN_INPUT_NO_MELEE,近戰，傳送門模式下關閉
 PORTAL_GUN_INPUT_NO_MAGIC,法術，傳送門模式下關閉
 PORTAL_GUN_TOUCH_TOGGLE,傳送門槍

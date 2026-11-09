@@ -29,6 +29,21 @@ public class HotbarGodotTests
     private static string Read(string root, params string[] parts) =>
         System.IO.File.ReadAllText(Path.Combine(new[] { GodotModScripts.ModFolder(root, Mod) }.Concat(parts).ToArray()));
 
+    /// <summary>Slots 2 and 3 show what the keys 2 and 3 do: magic, then ranged.</summary>
+    [TestCase]
+    public void SlotsTwoAndThreeFollowTheKeys()
+    {
+        string? root = GodotModScripts.RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string text = GodotModScripts.Script(root, Mod, File);
+        AssertThat(text).Contains("_show_slot(p, 2, third[p], third[p] != \"\", mode == magic_mode, -1)");
+        AssertThat(text).Contains("_show_slot(p, 3, _icon(ranged), not ranged.is_empty(), mode == ranged_mode, -1)");
+    }
+
     [TestCase]
     public void ShipsOneGodotScriptAndNoLua()
     {

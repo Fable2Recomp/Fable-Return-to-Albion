@@ -2,7 +2,8 @@
 
 Play Fable II from the hero's eyes. Walk, fight and look around with the mouse or the right stick.
 Your body stays in view when you look down; the head (with its hair and hat) is hidden so it never
-fills the screen. **H** switches between first and third person (rebind it in Options › Controls).
+fills the screen. **H** (**R3** on a controller) switches between first and third person (rebind it in
+Options › Controls). R3 replaces the game's Camera mode; L3 + R3 still opens Photo mode.
 
 Each player has their own: in split screen and in an online game whoever presses H switches their
 own view, and each holds first person or not on their own. On one shared screen the camera frames

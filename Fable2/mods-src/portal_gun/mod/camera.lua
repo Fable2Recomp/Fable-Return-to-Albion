@@ -5,8 +5,9 @@
 --
 -- The gun's aim (camera/rangedcombatcamera.lua) chases the aim point: outside a cone of FOV * 0.5 *
 -- Tightness round its direction it is pulled toward that point, turned OffsetDegrees to the side, and its
--- elevation stops at AngleLimit (30 degrees). In portal mode the cone is wide, so nothing pulls it back;
--- the offset is nothing, so the aim is the middle of the screen; the elevation reaches further.
+-- elevation stops at AngleLimit (30 degrees). In portal mode the cone is narrow, so a controller's stick
+-- turns the camera with the aim point; the offset is nothing, so the aim is the middle of the screen,
+-- where the portal goes; the elevation reaches further.
 --
 -- The everyday camera (camera/stringandcagecamera.lua, SACCamera) hangs on a string from a focal point
 -- that slides about and takes in whoever is near, blends into a high combat camera near a foe, and decays
@@ -23,7 +24,7 @@ local function PortalMode()
 end
 
 if RangedCombatCamera ~= nil then
-	local WIDE_CONE = 3
+	local NARROW_CONE = 0.1
 	local ELEVATION = math.rad(70)
 
 	-- The camera scripts build RangedCombatCamera afresh each run, so a table without the mark is a new one.
@@ -36,7 +37,7 @@ if RangedCombatCamera ~= nil then
 			-- Asked just before the elevation is bounded.
 			self.AngleLimit = PortalMode() and ELEVATION or shipped_elevation
 			if PortalMode() then
-				return WIDE_CONE
+				return NARROW_CONE
 			end
 			return tightness(self)
 		end

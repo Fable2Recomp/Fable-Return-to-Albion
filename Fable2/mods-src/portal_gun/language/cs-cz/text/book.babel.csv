@@ -5,9 +5,10 @@ PORTAL_GUN_MOD_NAME,Portal Gun
 PORTAL_GUN_MOD_DESCRIPTION,"Zbraň, která vystřeluje dvojici propojených portálů na stěny, podlahy a stropy. Podívej se jedním a uvidíš ven druhým, vstup do něj a vyjdeš tam. G ji tasí; tlačítka myši střílejí."
 PORTAL_GUN_INPUT_TOGGLE,Zapnout nebo vypnout Portal Gun
 PORTAL_GUN_INPUT_SWAP,"Příště modrý nebo oranžový, na dotykové obrazovce"
-PORTAL_GUN_INPUT_AIM_BLUE,Portál na tlačítku Y dotykové obrazovky
+PORTAL_GUN_INPUT_AIM_BLUE,Zamířit portál
 PORTAL_GUN_INPUT_AIM_ORANGE,"Popisek Y, když je na řadě oranžový"
-PORTAL_GUN_INPUT_NO_LOCK,"Zaměření, vypnuto v režimu portálů"
+PORTAL_GUN_INPUT_FIRE_BLUE,Vystřelit modrý portál při míření
+PORTAL_GUN_INPUT_FIRE_ORANGE,Vystřelit oranžový portál při míření
 PORTAL_GUN_INPUT_NO_MELEE,"Boj na blízko, vypnutý v režimu portálů"
 PORTAL_GUN_INPUT_NO_MAGIC,"Kouzla, vypnutá v režimu portálů"
 PORTAL_GUN_TOUCH_TOGGLE,Portal Gun

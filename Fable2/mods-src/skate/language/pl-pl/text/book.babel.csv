@@ -6,7 +6,6 @@ SKATE_INPUT_OLLIE,Podskok
 SKATE_INPUT_FLIP,Przełamanie
 SKATE_INPUT_GRAB,Chwyt
 SKATE_INPUT_NO_LOCK,"Namierzanie, wyłączone podczas jazdy"
-SKATE_INPUT_HELP,Pokaż lub ukryj sterowanie deskorolką
 SKATE_TOUCH_TOGGLE,Deska
 SKATE_TOUCH_HOP,Podskok
 SKATE_TOUCH_FLOURISH,Przełamanie
@@ -42,4 +41,3 @@ SKATE_CONTROL_HOLD_RIGHT_CLICK,Przytrzymaj prawy przycisk
 SKATE_CONTROL_HOLD,Przytrzymaj %1
 SKATE_CONTROL_NEAR_LEDGE,"%1, przy krawędzi"
 SKATE_CONTROL_STEP_OFF,Zeskocz
-SKATE_CONTROL_HIDE,Ukryj

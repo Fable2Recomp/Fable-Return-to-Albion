@@ -5,9 +5,10 @@ PORTAL_GUN_MOD_NAME,Portal Gun
 PORTAL_GUN_MOD_DESCRIPTION,"Egy fegyver, amely egy pár összekapcsolt portált lő falakra, padlókra és mennyezetekre. Nézz bele az egyikbe, és kilátsz a másikon; lépj bele, és ott jössz ki. A G előveszi; az egérgombok lőnek."
 PORTAL_GUN_INPUT_TOGGLE,Portal Gun be- vagy kikapcsolása
 PORTAL_GUN_INPUT_SWAP,"Következő kék vagy narancs, érintőképernyőn"
-PORTAL_GUN_INPUT_AIM_BLUE,Egy portál az érintőképernyő Y gombján
+PORTAL_GUN_INPUT_AIM_BLUE,Portál célzása
 PORTAL_GUN_INPUT_AIM_ORANGE,"Az Y felirata, amikor a narancs következik"
-PORTAL_GUN_INPUT_NO_LOCK,"Célpont befogása, portálmódban kikapcsolva"
+PORTAL_GUN_INPUT_FIRE_BLUE,Kék portál kilövése célzás közben
+PORTAL_GUN_INPUT_FIRE_ORANGE,Narancs portál kilövése célzás közben
 PORTAL_GUN_INPUT_NO_MELEE,"Közelharc, portálmódban kikapcsolva"
 PORTAL_GUN_INPUT_NO_MAGIC,"Varázslás, portálmódban kikapcsolva"
 PORTAL_GUN_TOUCH_TOGGLE,Portal Gun

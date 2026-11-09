@@ -72,6 +72,7 @@ const MODEL := "game://art/inventory/weapons/portal_gun/portal_gun.mdl"
 const RAY_LENGTH := 120.0
 const TAP_SECONDS := 0.5            # how long a touch shot holds the game's ranged button: shorter only raises the gun
 const TAP_AIM_SECONDS := 1.5        # how long the aim a touch shot was let go on waits for the shot
+const PAD_REARM_SECONDS := 0.35     # the game's button stays up this long after a trigger's shot
 
 var host: Object
 var canvas: Control
@@ -83,8 +84,13 @@ var preview_wait := 0.0
 var left_held := false
 var right_held := false
 var claimed := false
-var pad_claimed := false            # LT, X and B, while portal mode holds and a mouse may press them
-var touch_claimed := false          # the screen's Y as well, while portal mode holds on a touchscreen
+var y_claimed := false              # Y, on a pad or the screen, while portal mode holds
+var pad_aim := false                # a controller's Y is down: the game aims, the outline shows, LT or RT fires
+var pad_rearm := 0.0                # seconds after a trigger's shot before Y's hold goes back to the game
+var pad_held := 0.0                 # seconds the game's button has been held this time; a shorter press won't fire
+var pad_queued := 0                 # a trigger pulled too soon: its portal, fired once the gun is up
+var shot_void_left := 0.0           # seconds in which the game's next shot is Y let go without firing: no portal
+var on_pad := false                 # the controller was used last, rather than the mouse or keyboard
 var tap_left := 0.0                 # seconds a touch shot still presses the game's ranged button
 var tap_ray: Array = []             # the camera's line when a touch shot was let go: the shot's aim
 var tap_ray_left := 0.0
@@ -158,8 +164,7 @@ func _build(i: int, shader: Shader) -> Dictionary:
 ## A reload clears the claims.
 func _on_lua_ready(_e) -> void:
 	claimed = false
-	pad_claimed = false
-	touch_claimed = false
+	y_claimed = false
 	published_next = -1
 
 
@@ -183,6 +188,8 @@ func _on_input_action(e: Dictionary) -> void:
 	if name == "portal_gun.aim_blue":
 		if host.touch_mode():
 			_touch_fire(e.get("pressed", false))
+		else:
+			_pad_aim(e.get("pressed", false))
 		return
 	if not e.get("pressed", false):
 		return
@@ -190,6 +197,10 @@ func _on_input_action(e: Dictionary) -> void:
 		return
 	if name == "portal_gun.swap" and claimed:
 		colour = 3 - colour
+	elif name == "portal_gun.fire_blue":
+		_pad_fire(1)
+	elif name == "portal_gun.fire_orange":
+		_pad_fire(2)
 
 
 func _on_mod_signal(mod: String, name: String, payload: String) -> void:
@@ -197,13 +208,18 @@ func _on_mod_signal(mod: String, name: String, payload: String) -> void:
 		return
 	match name:
 		"fire":
-			_fire(colour)
+			if shot_void_left > 0.0:
+				shot_void_left = 0.0
+			else:
+				_fire(colour)
 		"shot":
 			_on_shot(payload)
 
 
 ## The buttons are the mod's only while portal mode holds in play; otherwise they are the game's, and a
-## menu has its own B back. On a touchscreen only Y is: there is no mouse to press the others.
+## menu has its own B back. Y is the mod's on a pad and a touchscreen. A mouse's clicks would press the
+## game's lock, melee and magic through its own mapping, so those wait out portal mode; on a controller
+## melee and magic stay the game's, and the triggers are the gun's only while Y aims.
 func _claim() -> void:
 	if not claimed:
 		player = maxi(1, int(_value("portal_gun.player")))
@@ -213,12 +229,15 @@ func _claim() -> void:
 		if not wanted:
 			_let_go()      # a menu takes the mouse, and with it the button's release
 	var touch: bool = host.touch_mode()
-	if (claimed and not touch) != pad_claimed:
-		pad_claimed = claimed and not touch
-		_claim_all(pad_claimed)
-	if (claimed and touch) != touch_claimed:
-		touch_claimed = claimed and touch
-		host.claim_input(player, "portal_gun.aim_blue", touch_claimed)
+	var mouse: bool = claimed and not touch and not on_pad
+	var triggers: bool = claimed and not touch and pad_aim
+	host.claim_input(player, "portal_gun.fire_blue", mouse or triggers)
+	host.claim_input(player, "portal_gun.fire_orange", triggers)
+	host.claim_input(player, "portal_gun.no_melee", mouse)
+	host.claim_input(player, "portal_gun.no_magic", mouse)
+	if claimed != y_claimed:
+		y_claimed = claimed
+		host.claim_input(player, "portal_gun.aim_blue", y_claimed)
 	_publish_next()
 
 
@@ -231,19 +250,25 @@ func _publish_next() -> void:
 		host.publish("portal_gun.orange_next", 1.0 if next == 2 else 0.0)
 
 
-func _claim_all(on: bool) -> void:
-	for action in ["portal_gun.no_lock", "portal_gun.no_melee", "portal_gun.no_magic"]:
-		host.claim_input(player, action, on)
-
-
 func _let_go() -> void:
 	left_held = false
 	right_held = false
+	if pad_aim and pad_rearm <= 0.0:
+		shot_void_left = TAP_AIM_SECONDS
+	pad_aim = false
+	pad_rearm = 0.0
+	pad_queued = 0
 	_press_gun()
 
 
 ## Each button aims and fires its own portal, holding the game's ranged button while either is down.
 func _input(event: InputEvent) -> void:
+	if event is InputEventJoypadButton:
+		on_pad = true
+	elif event is InputEventJoypadMotion:
+		on_pad = on_pad or absf(event.axis_value) > 0.4
+	elif event is InputEventKey or event is InputEventMouseButton:
+		on_pad = false
 	var click := event as InputEventMouseButton
 	if click == null or not claimed or Input.mouse_mode != Input.MOUSE_MODE_CAPTURED or host.attack_mode(player) == 0:
 		return
@@ -267,7 +292,7 @@ func _input(event: InputEvent) -> void:
 ## would open, the thumb sliding off the button turns the camera; let go, a short press of the game's
 ## ranged button fires. The game's Y is NOT held while aiming: held long, the gun's own aim takes the
 ## camera over, zooms in behind the hero and turns its aim point instead of the camera the shot
-## follows. A controller's Y is left as it was.
+## follows, which a thumb on the screen can't steer. A controller's stick can: see _pad_aim.
 func _touch_fire(pressed: bool) -> void:
 	if pressed and (not claimed or not _in_play()):
 		return
@@ -281,8 +306,54 @@ func _touch_fire(pressed: bool) -> void:
 		host.press(player, "Y", 1)
 
 
+## A controller's Y holds the game's own aim for as long as it is down, down the sights and turned by the
+## stick. The game fires on letting go, so letting Y go without a trigger makes no portal.
+func _pad_aim(pressed: bool) -> void:
+	if pressed == pad_aim or (pressed and (not claimed or not _in_play())):
+		return
+	pad_aim = pressed
+	pad_held = 0.0
+	pad_queued = 0
+	if not pressed and pad_rearm <= 0.0:
+		shot_void_left = TAP_AIM_SECONDS
+	_press_gun()
+
+
+## While Y aims, LT fires blue and RT orange along the camera's line as it is now. A pull before the gun is
+## up waits until it is.
+func _pad_fire(which: int) -> void:
+	if not pad_aim or pad_rearm > 0.0:
+		return
+	if pad_held < TAP_SECONDS:
+		pad_queued = which
+		return
+	_pad_shoot(which)
+
+
+## The game's button goes up, which is its shot, and back down after a moment for the next one while Y is
+## still held.
+func _pad_shoot(which: int) -> void:
+	colour = which
+	pad_queued = 0
+	pad_held = 0.0
+	shot_void_left = 0.0
+	tap_ray = _ray()
+	tap_ray_left = TAP_AIM_SECONDS
+	pad_rearm = PAD_REARM_SECONDS
+	_press_gun()
+
+
 ## Lets go of the game's ranged button once a touch shot's press is over, and forgets its aim later.
 func _tap(delta: float) -> void:
+	shot_void_left = maxf(0.0, shot_void_left - delta)
+	if pad_rearm > 0.0:
+		pad_rearm -= delta
+		if pad_rearm <= 0.0:
+			_press_gun()
+	elif pad_aim:
+		pad_held += delta
+		if pad_queued != 0 and pad_held >= TAP_SECONDS:
+			_pad_shoot(pad_queued)
 	if tap_ray_left > 0.0:
 		tap_ray_left -= delta
 		if tap_ray_left <= 0.0:
@@ -295,15 +366,15 @@ func _tap(delta: float) -> void:
 
 
 func _press_gun() -> void:
-	host.press(player, "Y", 1 if left_held or right_held else 0)
+	host.press(player, "Y", 1 if left_held or right_held or (pad_aim and pad_rearm <= 0.0) else 0)
 
 
 func _exit_tree() -> void:
-	if pad_claimed:
-		_claim_all(false)
+	for action in ["portal_gun.fire_blue", "portal_gun.fire_orange", "portal_gun.no_melee", "portal_gun.no_magic"]:
+		host.claim_input(player, action, false)
 	if claimed:
 		host.press(player, "Y", 0)
-	if touch_claimed:
+	if y_claimed:
 		host.claim_input(player, "portal_gun.aim_blue", false)
 
 
@@ -352,7 +423,7 @@ func _fire(which: int) -> void:
 
 func _aiming() -> bool:
 	return _value("portal_gun.mode") >= 0.5 and _in_play() and \
-		(left_held or right_held)
+		(left_held or right_held or pad_aim)
 
 
 func _build_outline() -> void:

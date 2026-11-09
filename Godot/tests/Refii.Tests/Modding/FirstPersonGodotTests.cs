@@ -36,6 +36,24 @@ public class FirstPersonGodotTests
 
     private static string Camera(string root) => LuaComment.Replace(Read(root, "mod", "camera.lua"), string.Empty);
 
+    /// <summary>R3 toggles on a controller and is taken from the game, except while L3 is held for Photo mode.</summary>
+    [TestCase]
+    public void TheControllerTogglesOnR3AndLeavesPhotoMode()
+    {
+        string? root = GodotModScripts.RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string script = Read(root, "godot", File);
+        AssertThat(Read(root, "input.json")).Contains("\"buttons\": [\"R3\"]");
+        AssertThat(script).Contains("host.claim_input(1, TOGGLE, not l3_held)");
+        AssertThat(script).Contains("host.claim_input(2, TOGGLE, not l3_held)");
+        AssertThat(script).Contains("JOY_BUTTON_LEFT_STICK");
+        AssertThat(script).Contains("and not l3_held and");
+    }
+
     [TestCase]
     public void ShipsTheGodotSwitchAndOnlyTheCameraLua()
     {

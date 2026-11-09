@@ -718,7 +718,7 @@ local function ride(hero, dt)
 end
 
 Refii.on("input_action", function(e)
-	if e.name == "skate.toggle" or e.name == "skate.toggle_pad" then
+	if e.name == "skate.toggle" then
 		if e.pressed then
 			S.toggle(e.player)
 		end

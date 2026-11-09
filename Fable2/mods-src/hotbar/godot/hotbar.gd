@@ -1,7 +1,7 @@
 extends Node
 ## Hotbar: a Fable 1-style bar of ten slots on the keys 1-0, for each player.
 ##
-## 1, 2 and 3 stay the game's own: the keyboard's attack mode (melee, ranged, magic), lit on the bar
+## 1, 2 and 3 stay the game's own: the keyboard's attack mode (melee, magic, ranged), lit on the bar
 ## with the weapons in hand and the spell on the first charge level, which the spell wheel chooses as
 ## ever. 4-0 hold what the player puts there from the Hotbar page of the pause menu, and add to the
 ## game's controls without changing them:
@@ -80,7 +80,7 @@ var magic_mode := 3
 var editing := [-1, -1, -1]          # the key whose slot the Hotbar page is filling
 var charge := [null, null, null]     # { key, spell, at, taken, up, released } while a slot's charge is out
 var held := [null, null, null]       # { key, performed, up }: the key holding an expression
-var third := ["", "", ""]            # slot 3's icon, kept while a hotbar charge has the slots lent
+var third := ["", "", ""]            # the magic slot's icon, kept while a hotbar charge has the slots lent
 var stated := [{}, {}, {}]           # what the HUD was last told, by key
 var written := [{}, {}, {}]          # key -> [kind, spell, hash] written but not yet read back from the store
 var refreshing := [0, 0, 0]          # steps on every refresh; an older one's answers are dropped
@@ -409,10 +409,10 @@ func _show_bar(p: int, known: Dictionary) -> void:
 	var melee: String = known.melee
 	var ranged: String = known.ranged
 	_show_slot(p, 1, _icon(melee), not melee.is_empty(), mode == melee_mode, -1)
-	_show_slot(p, 2, _icon(ranged), not ranged.is_empty(), mode == ranged_mode, -1)
 	if known.third != null and (charge[p] == null or not charge[p].taken):
 		third[p] = known.third
-	_show_slot(p, 3, third[p], third[p] != "", mode == magic_mode, -1)
+	_show_slot(p, 2, third[p], third[p] != "", mode == magic_mode, -1)
+	_show_slot(p, 3, _icon(ranged), not ranged.is_empty(), mode == ranged_mode, -1)
 	for key in KEYS:
 		var shown := _describe(p, key, known)
 		var charging: bool = charge[p] != null and charge[p].taken and charge[p].key == key

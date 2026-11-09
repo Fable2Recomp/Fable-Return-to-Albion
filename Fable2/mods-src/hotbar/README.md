@@ -1,7 +1,7 @@
 # Hotbar
 
 A Fable 1-style hotbar: ten slots along the bottom of the screen on the keys 1-0, one bar for each
-player. 1, 2 and 3 keep the game's own job (the attack button on melee, ranged or magic) and show
+player. 1, 2 and 3 keep the game's own job (the attack button on melee, magic or ranged) and show
 the weapons in hand and the spell at the first charge level, which you choose with the spell wheel
 as always; the mode in force is lit. 4-0 hold what you put there, adding to the game's controls
 without changing them:

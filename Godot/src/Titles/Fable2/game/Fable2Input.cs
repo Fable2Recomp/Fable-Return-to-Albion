@@ -208,6 +208,12 @@ public sealed class Fable2Input : GameTitleInput
 		{
 			wheelBits |= Back;
 		}
+		// The mods' wheel takes the face buttons and bumpers while it stands open.
+		if (pad == 0 && Refii.Mods.ModWheel.Open)
+		{
+			wheelBits |= ButtonA | ButtonB | ButtonX | ButtonY | LeftShoulder | RightShoulder;
+		}
+
 		uint maskBits = ~filter(uint.MaxValue) | wheelBits;
 		_heldAcrossUnmask[pad] |= _maskBits[pad] & ~maskBits & buttons;
 		_heldAcrossUnmask[pad] &= buttons;
@@ -609,6 +615,13 @@ public sealed class Fable2Input : GameTitleInput
 	private static void PublishHolds(uint buttons)
 	{
 		bool wheel = (buttons & Back) != 0;
+
+		// With a controller and mods on it, Back opens and closes the mods' wheel instead of holding this one.
+		if (Refii.Mods.ModWheel.Follow(wheel, Instance.WorldHasInput, out bool held))
+		{
+			wheel = held;
+		}
+
 		QuickWheelPressed = wheel && !_wheelWasDown;
 		QuickWheelReleased = !wheel && _wheelWasDown;
 		QuickWheelHeld = wheel;

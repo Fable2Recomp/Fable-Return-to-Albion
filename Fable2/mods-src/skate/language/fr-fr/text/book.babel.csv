@@ -6,7 +6,6 @@ SKATE_INPUT_OLLIE,Saut
 SKATE_INPUT_FLIP,Fioriture
 SKATE_INPUT_GRAB,Saisie
 SKATE_INPUT_NO_LOCK,"Verrouillage, désactivé en skate"
-SKATE_INPUT_HELP,Afficher ou masquer les commandes du skate
 SKATE_TOUCH_TOGGLE,Skate
 SKATE_TOUCH_HOP,Saut
 SKATE_TOUCH_FLOURISH,Fioriture
@@ -42,4 +41,3 @@ SKATE_CONTROL_HOLD_RIGHT_CLICK,Maintenir clic droit
 SKATE_CONTROL_HOLD,Maintenir %1
 SKATE_CONTROL_NEAR_LEDGE,"%1, près d'un rebord"
 SKATE_CONTROL_STEP_OFF,Descendre
-SKATE_CONTROL_HIDE,Masquer ceci

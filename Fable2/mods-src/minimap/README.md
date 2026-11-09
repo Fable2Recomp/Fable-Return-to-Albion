@@ -3,7 +3,7 @@
 A round map of the region in the top right corner, with Fable 2's own region art. North stays up
 and the map never moves or zooms; the hero is an arrow that points the way they face.
 
-**M** steps through the sizes, and is rebindable in Options › Controls:
+**M** (the mod wheel on a controller) steps through the sizes, and is rebindable in Options › Controls:
 Normal › Bigger › Biggest (mid-screen) › Hidden › Normal.
 
 | Mark | Means |

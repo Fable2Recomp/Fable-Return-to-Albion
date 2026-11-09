@@ -1,12 +1,9 @@
 {
-	"toggle": { "label": "{SKATE_INPUT_TOGGLE}", "keys": ["K"], "touch": "{SKATE_TOUCH_TOGGLE}" },
-	"toggle_pad": { "label": "{SKATE_INPUT_TOGGLE}", "buttons": ["Back"], "chord": "LB" },
+	"toggle": { "label": "{SKATE_INPUT_TOGGLE}", "keys": ["K"], "touch": "{SKATE_TOUCH_TOGGLE}", "wheel": "{SKATE_TOUCH_TOGGLE}", "wheel_icon": "art/gui/wheel/skateboard.png" },
 	"ollie": { "label": "{SKATE_INPUT_OLLIE}", "keys": ["Space"], "buttons": ["A"], "touch": { "caption": "{SKATE_TOUCH_HOP}", "when": "skate.on" } },
 	"flip": { "label": "{SKATE_INPUT_FLIP}", "buttons": ["X"], "touch": { "caption": "{SKATE_TOUCH_FLOURISH}", "when": "skate.on" } },
 	"grab": { "label": "{SKATE_INPUT_GRAB}", "buttons": ["B"], "touch": { "caption": "{SKATE_TOUCH_GRAB}", "when": "skate.on" } },
 	"manual": { "label": "{SKATE_TRICK_WHEELIE}", "keys": ["Shift"], "buttons": ["RB"], "touch": { "pill": "{SKATE_TOUCH_WHEELIE}", "when": "skate.on" } },
 	"grind": { "label": "{SKATE_TRICK_RAIL_RIDER}", "keys": ["F"], "buttons": ["Y"], "touch": { "caption": "{SKATE_TOUCH_GRIND}", "when": "skate.on" } },
-	"no_lock": { "label": "{SKATE_INPUT_NO_LOCK}", "buttons": ["LT"] },
-	"help": { "label": "{SKATE_INPUT_HELP}", "keys": ["N"] },
-	"help_pad": { "label": "{SKATE_INPUT_HELP}", "buttons": ["DpadUp"], "chord": "LB" }
+	"no_lock": { "label": "{SKATE_INPUT_NO_LOCK}", "buttons": ["LT"] }
 }

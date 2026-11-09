@@ -5,9 +5,10 @@ PORTAL_GUN_MOD_NAME,Portal Gun
 PORTAL_GUN_MOD_DESCRIPTION,"Une arme qui tire une paire de portails reliés sur les murs, les sols et les plafonds. Regardez dans l'un pour voir par l'autre, et entrez-y pour ressortir de l'autre côté. G la dégaine ; les boutons de la souris tirent."
 PORTAL_GUN_INPUT_TOGGLE,Activer ou désactiver le Portal Gun
 PORTAL_GUN_INPUT_SWAP,"Bleu ou orange ensuite, sur écran tactile"
-PORTAL_GUN_INPUT_AIM_BLUE,Un portail sur le Y de l'écran tactile
+PORTAL_GUN_INPUT_AIM_BLUE,Viser un portail
 PORTAL_GUN_INPUT_AIM_ORANGE,Légende du Y quand l'orange est le suivant
-PORTAL_GUN_INPUT_NO_LOCK,"Verrouillage, désactivé en mode portail"
+PORTAL_GUN_INPUT_FIRE_BLUE,Tirer un portail bleu en visant
+PORTAL_GUN_INPUT_FIRE_ORANGE,Tirer un portail orange en visant
 PORTAL_GUN_INPUT_NO_MELEE,"Corps à corps, désactivé en mode portail"
 PORTAL_GUN_INPUT_NO_MAGIC,"Magie, désactivée en mode portail"
 PORTAL_GUN_TOUCH_TOGGLE,Portal Gun

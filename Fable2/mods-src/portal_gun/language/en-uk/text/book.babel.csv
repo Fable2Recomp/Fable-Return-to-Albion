@@ -5,9 +5,10 @@ PORTAL_GUN_MOD_NAME,Portal Gun
 PORTAL_GUN_MOD_DESCRIPTION,"A gun that fires a pair of linked portals onto walls, floors and ceilings. Look through one to see out of the other, and step in to come out there. G draws it; the mouse buttons fire."
 PORTAL_GUN_INPUT_TOGGLE,Portal gun on or off
 PORTAL_GUN_INPUT_SWAP,"Blue or orange next, on a touchscreen"
-PORTAL_GUN_INPUT_AIM_BLUE,A portal on a touchscreen's Y
+PORTAL_GUN_INPUT_AIM_BLUE,Aim a portal
 PORTAL_GUN_INPUT_AIM_ORANGE,Y's caption while orange is next
-PORTAL_GUN_INPUT_NO_LOCK,"Lock-on, off in portal mode"
+PORTAL_GUN_INPUT_FIRE_BLUE,Fire a blue portal while aiming
+PORTAL_GUN_INPUT_FIRE_ORANGE,Fire an orange portal while aiming
 PORTAL_GUN_INPUT_NO_MELEE,"Melee, off in portal mode"
 PORTAL_GUN_INPUT_NO_MAGIC,"Magic, off in portal mode"
 PORTAL_GUN_TOUCH_TOGGLE,Portal Gun

@@ -6,7 +6,6 @@ SKATE_INPUT_OLLIE,Прыжок
 SKATE_INPUT_FLIP,Финт
 SKATE_INPUT_GRAB,Захват
 SKATE_INPUT_NO_LOCK,"Захват цели, отключён на скейтборде"
-SKATE_INPUT_HELP,Показать или скрыть управление скейтбордом
 SKATE_TOUCH_TOGGLE,Скейт
 SKATE_TOUCH_HOP,Прыжок
 SKATE_TOUCH_FLOURISH,Финт
@@ -42,4 +41,3 @@ SKATE_CONTROL_HOLD_RIGHT_CLICK,Удерживать правый щелчок
 SKATE_CONTROL_HOLD,Удерживать %1
 SKATE_CONTROL_NEAR_LEDGE,"%1, у края"
 SKATE_CONTROL_STEP_OFF,Сойти
-SKATE_CONTROL_HIDE,Скрыть

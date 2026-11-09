@@ -472,7 +472,7 @@ public static partial class ModValidate
 	// input.json — ModInput.Load / Parse / TryButton / TryTrigger
 	// ---------------------------------------------------------------------------------------
 
-	private static readonly string[] InputKeys = { "label", "keys", "buttons", "axis", "chord", "touch" };
+	private static readonly string[] InputKeys = { "label", "keys", "buttons", "axis", "chord", "touch", "wheel", "wheel_icon" };
 
 
 	/// <summary>The pad modifiers a <c>"chord"</c> may name (ModInputClaims.PadModifiers); anything else is a key name, the engine's to check.</summary>
@@ -605,6 +605,21 @@ public static partial class ModValidate
 				}
 			}
 
+			if (Has(binding, "wheel") && binding.GetProperty("wheel").ValueKind is not
+				(System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False or System.Text.Json.JsonValueKind.String))
+			{
+				doc.Error(At(at, "wheel"), "not true, false or a string; the action stays off the controller's wheel");
+			}
+
+			else if (Has(binding, "wheel") && binding.GetProperty("wheel") is var wheel &&
+				(wheel.ValueKind == System.Text.Json.JsonValueKind.True ||
+				(wheel.ValueKind == System.Text.Json.JsonValueKind.String && wheel.GetString()!.Trim().Length != 0)))
+			{
+				bound++;
+			}
+
+			doc.Text(binding, "wheel_icon", at, strict: true);
+
 			if (Has(binding, "touch") && CheckInputTouch(doc, binding.GetProperty("touch"), At(at, "touch")))
 			{
 				bound++;
@@ -612,7 +627,7 @@ public static partial class ModValidate
 
 			if (bound == 0)
 			{
-				doc.Error(at, "binds no key, button or axis (nor a touch pill); the action is ignored");
+				doc.Error(at, "binds no key, button or axis (nor a touch pill or wheel entry); the action is ignored");
 			}
 		}
 	}

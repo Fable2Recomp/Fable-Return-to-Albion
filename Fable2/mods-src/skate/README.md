@@ -4,7 +4,7 @@ Ride a skateboard through Albion, and score tricks.
 
 | | Keyboard | Pad |
 |---|---|---|
-| Step on or off | K | LB + Back |
+| Step on or off | K | the mod wheel (Back) |
 | Push, brake | W, S | left stick up, down |
 | Steer; spin in the air | A, D | left stick left, right |
 | Hop | Space | A |
@@ -12,11 +12,10 @@ Ride a skateboard through Albion, and score tricks.
 | Grab, held | right mouse button | B |
 | Hobbe's Wheelie, held | Shift | RB |
 | Rail Rider | F | Y |
-| Show or hide these controls | N | LB + D-pad up |
 
 The mod's keys and buttons are rebindable in Options › Controls, and the controls panel shows what
 they are bound to now, as your controller's glyphs on a pad. The board is the player's who stepped
-on: in co-op the other player's K or LB + Back does nothing until they step off.
+on: in co-op the other player's K does nothing until they step off.
 
 A Flourish or Grab from the ground hops first. Hold a direction as you press: nothing or left is a
 Flourish or Pie Grab, right a Back-Flourish or Hero's Grip, back a Cheeky Shove or Balverine's Tail,
