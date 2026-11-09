@@ -1295,6 +1295,25 @@ bool Destroy(const GamefaceTable& t, PPCContext& ctx, uint8_t* base, uint32_t ga
     return true;
 }
 
+void DestroyRemaining(const GamefaceTable& t, PPCContext& ctx, uint8_t* base, uint32_t gameface) {
+    std::vector<uint32_t> remaining;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        for (const Headless& entry : g_live) {
+            if (entry.gameface == gameface) {
+                remaining.push_back(entry.presentation);
+            }
+        }
+    }
+    for (const uint32_t presentation : remaining) {
+        Destroy(t, ctx, base, gameface, presentation);
+    }
+    if (!remaining.empty()) {
+        REXLOG_INFO("Refii headless presentation ({}): {} left on gameface 0x{:08X} freed with it", t.title,
+                    remaining.size(), gameface);
+    }
+}
+
 uint32_t MakeNamed(const GamefaceTable& t, PPCContext& ctx, uint8_t* base, uint32_t service, uint32_t hash,
                    uint32_t parent) {
     if (hash == 0u) {

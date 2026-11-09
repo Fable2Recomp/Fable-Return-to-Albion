@@ -138,6 +138,10 @@ uint32_t Create(const GamefaceTable& table, PPCContext& ctx, uint8_t* base, uint
 /// not one of the core's (the caller runs the original).
 bool Destroy(const GamefaceTable& table, PPCContext& ctx, uint8_t* base, uint32_t gameface, uint32_t presentation);
 
+/// CGameface's destructor: destroys the headless presentations still on `gameface`. The shipped
+/// destructor frees what is left in its kernel list, which never holds these.
+void DestroyRemaining(const GamefaceTable& table, PPCContext& ctx, uint8_t* base, uint32_t gameface);
+
 /// After child-by-name (service, hash, parent or 0 the root level) answered 0: the element a
 /// headless presentation makes for that name, or 0.
 uint32_t MakeNamed(const GamefaceTable& table, PPCContext& ctx, uint8_t* base, uint32_t service,

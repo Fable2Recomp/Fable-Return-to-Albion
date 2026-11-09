@@ -371,6 +371,18 @@ REX_EXTERN(rex_lhItemManager_NotifyAndRemoveItem) {
     ctx.r3.u32 = 0u;
 }
 
+/// CGameface's destructor (TU1 `sub_82BBA2C8`, disc `sub_82BB3BC8`), (r3 gameface) only: the plain
+/// destructor, without a delete flag. An in-game reload deletes the
+/// CGameface, and the guest only unloads some screens first: the HUD holder (`sub_823C9FB8`) just
+/// zeroes its pointer, leaving the presentation to the kernel list this destructor frees (+40).
+REX_EXTERN(rex_CGameface_Destructor) {
+    REX_FUNC_PROLOGUE();
+    const uint32_t gameface = ctx.r3.u32;
+    refii::headless::DestroyRemaining(Table(), ctx, base, gameface);
+    ctx.r3.u32 = gameface;
+    __imp__rex_CGameface_Destructor(ctx, base);
+}
+
 /// Element service vf +84 — (r3 service, r4 name hash, r5 parent or 0). The original answers;
 /// a headless presentation makes the element it lacks.
 REX_EXTERN(rex_lhGuiAttributeService_ChildByName) {

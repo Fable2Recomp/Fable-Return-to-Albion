@@ -11812,6 +11812,7 @@
 # (vtable +32) is rex_lhItemManager_NotifyAndRemoveItem. The element service's child-by-name
 # (vtable +84) makes the elements the guest names on them.
 0x82BBA588 = { name = "rex_CGameface_CreatePresentation" }
+0x82BBA2C8 = { name = "rex_CGameface_Destructor" }
 0x822BE860 = { name = "rex_CGameface_Update" }
 0x82BB5658 = { name = "rex_lhGuiAttributeService_ChildByName" }
 # A headless element answers the FILE's children (service vtable +92) and string attributes
