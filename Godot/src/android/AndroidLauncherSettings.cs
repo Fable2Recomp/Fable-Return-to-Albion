@@ -19,7 +19,8 @@ public static class AndroidLauncherSettings
 
     /// <summary>Whether the launcher's settings list shows <paramref name="name"/>: not, on a phone, a
     /// setting the phone ignores, which only made the list longer and looked like it should do something.</summary>
-    public static bool Shows(string name) => !GraphicsPresets.Offered || !DesktopOnly.Contains(name);
+    public static bool Shows(string name) =>
+        GraphicsPresets.Offered ? !DesktopOnly.Contains(name) : name != AndroidBakedShadows.Key && name != AndroidStartup.SkipVideosKey;
 
     /// <summary>What a phone player sets in the launcher without ticking Advanced: the graphics preset
     /// and the frame cap with the two settings beside them, the camera and vibration, and online and
@@ -28,7 +29,7 @@ public static class AndroidLauncherSettings
     /// the graphics settings with an explanation each.</summary>
     private static readonly System.Collections.Generic.HashSet<string> PlayerFacing = new(StringComparer.Ordinal)
     {
-        GraphicsPresets.Key, "max_fps", "fps_counter", "render_scale_percent",
+        GraphicsPresets.Key, "max_fps", "fps_counter", "render_scale_percent", AndroidBakedShadows.Key, AndroidStartup.SkipVideosKey,
         "camera_invert_x", "camera_invert_y", "controller_vibration", AndroidQuickSettings.VibrationStrengthKey,
         "rexnet", "rexnet_display_name", Refii.Game.GameSplitView.SwitchKey, Refii.Game.GameSplitView.OrientationKey,
     };

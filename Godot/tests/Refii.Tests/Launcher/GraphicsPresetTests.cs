@@ -271,7 +271,7 @@ public class GraphicsPresetTests
         // High keeps the settings' own defaults, so a High phone without the keys stays on it.
         var balanced = new Dictionary<string, string>();
         GraphicsPresets.Apply(GraphicsPresets.High, balanced);
-        foreach (string key in new[] { "tree_far_reach", "tree_lod_bias", "terrain_lod_bias", "terrain_normal_maps", "foliage_density" })
+        foreach (string key in new[] { "tree_far_reach", "terrain_lod_bias" })
         {
             balanced.Remove(key);
         }
@@ -411,7 +411,7 @@ public class GraphicsPresetTests
         // Each setting it changes from High costs more, never less.
         string[] costlier = { "render_scale_percent", "prop_cull_distance_scale", "sun_shadow_distance",
                               "sun_shadow_reach_scale", "placed_light_limit", "placed_light_range",
-                              "sun_shadow_filter" };
+                              "sun_shadow_filter", "tree_lod_bias", "foliage_density" };
         foreach (string key in costlier)
         {
             AssertThat(double.Parse(GraphicsPresets.UltraValues[key], System.Globalization.CultureInfo.InvariantCulture))
@@ -424,7 +424,9 @@ public class GraphicsPresetTests
         // Everything else, the same-picture shortcuts among it, is High's.
         foreach ((string key, string value) in GraphicsPresets.HighValues)
         {
-            if (!costlier.Contains(key) && key != "mesh_lod_pixels")
+            // The far trees' sway: Ultra lets every tree sway (0), High stills those past 150 m.
+            if (!costlier.Contains(key) && key != "mesh_lod_pixels" && key != Refii.Level.Engine_TreeSwayFar.Key &&
+                key != "terrain_normal_maps")
             {
                 AssertThat(GraphicsPresets.UltraValues[key]).OverrideFailureMessage(key).IsEqual(value);
             }
@@ -441,7 +443,7 @@ public class GraphicsPresetTests
         AssertThat(phone[GraphicsPresets.Key]).IsEqual("android");
         AssertThat(GraphicsPresets.Upgrade(phone)).IsFalse();
         AssertThat(GraphicsPresets.Current(phone)).IsEqual(GraphicsPresets.High);
-        AssertThat(phone["render_scale_percent"]).IsEqual("60");
+        AssertThat(phone["render_scale_percent"]).IsEqual("50");
     }
 
     [TestCase]

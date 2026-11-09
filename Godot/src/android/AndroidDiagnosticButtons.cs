@@ -291,7 +291,7 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
     }
 
     /// <summary>
-    /// The Frame limit row: its name, then a button per cap (uncapped, 20, 30, 60), the one in use standing
+    /// The Frame limit row: its name, then a button per cap (uncapped, 20, 30, 40, 60), the one in use standing
     /// pressed as the preset in use does, so a cap is one tap rather than a cycle through the others.
     /// </summary>
     private HBoxContainer CreateFrameCaps()
@@ -308,7 +308,7 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         foreach (int cap in AndroidQuickSettings.FrameCaps)
         {
             Button button = CreateButton(AndroidQuickSettings.FrameCapChoiceLabel(cap));
-            button.CustomMinimumSize = new Vector2(88, 52);
+            button.CustomMinimumSize = new Vector2(70, 52);
             // The infinity sign comes from a fallback font that draws it small beside the numbers.
             button.AddThemeFontSizeOverride("font_size", cap <= 0 ? 36 : 22);
             var picked = new FrameCapChoice(cap, button, () => PickFrameCap(cap));
@@ -642,8 +642,8 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
 
     /// <summary>Steps one graphics setting, applying it to the running game.</summary>
     private void StepGraphics(AndroidGraphicsOption option, int direction) => Write(config =>
-        AndroidQuickSettings.SetGraphics(config, option.Key,
-            AndroidGraphicsOptions.Step(option, AndroidQuickSettings.Value(config, option.Key), direction),
+        AndroidQuickSettings.SetGraphics(config,
+            AndroidGraphicsOptions.Writes(option, AndroidGraphicsOptions.Step(option, AndroidQuickSettings.Value(config, option.Key), direction)),
             (name, value) => Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(name, value)));
 
     /// <summary>Shows or hides the frame rate in the top left corner.</summary>
@@ -731,8 +731,10 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
             {
                 string value = AndroidQuickSettings.Value(config, row.Option.Key);
                 row.Value.Text = AndroidGraphicsOptions.Label(row.Option, value);
-                row.Less.Disabled = !AndroidGraphicsOptions.CanStep(row.Option, value, -1);
-                row.More.Disabled = !AndroidGraphicsOptions.CanStep(row.Option, value, 1);
+                // A row that changes nothing as things stand (shadow quality with no shadows) stands greyed.
+                bool applies = AndroidGraphicsOptions.Applies(row.Option, key => AndroidQuickSettings.Value(config, key));
+                row.Less.Disabled = !applies || !AndroidGraphicsOptions.CanStep(row.Option, value, -1);
+                row.More.Disabled = !applies || !AndroidGraphicsOptions.CanStep(row.Option, value, 1);
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)

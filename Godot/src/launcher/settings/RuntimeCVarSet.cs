@@ -576,6 +576,9 @@ public static class RuntimeCVarsGodot
                 "Multiplier on placed light radius (reach) inside town buildings in outdoor "
                 + "levels. 1.0 preserves the authored room reach without over-overlapping. "
                 + "Caves are unaffected."),
+            ..RuntimeCVarsAndroid.BakedShadows,
+            ..RuntimeCVarsAndroid.IntroVideos,
+            ..RuntimeCVarsAndroid.TextureStorage,
             new("static_shadow_resolution", LightingCategory, RuntimeCVarType.Int, "2048",
                 "Atlas resolution for pre-baked static fixture shadow maps (2048, 4096, 8192). "
                 + "Automatically selects the optimal lights-per-slice grid for each preset (36 at 2K, 64 at 4K/8K). "

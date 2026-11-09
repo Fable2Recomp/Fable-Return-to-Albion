@@ -13,13 +13,12 @@ public static class RuntimeCVarsAndroid
     public static readonly RuntimeCVarDefinition[] GraphicsPreset =
     {
         new(GraphicsPresets.Key, DisplayCategory, RuntimeCVarType.String, GraphicsPresets.High,
-            "The picture's cost settings as one choice, on a phone. High trades distance, "
-            + "shadows and resolution for a steady frame rate on a phone, which its own heat "
-            + "holds well below its peak clock; Low gives up the sun's shadow, most "
-            + "of the resolution and some distance for the most frame rate; Medium keeps "
-            + "the shadowless picture with more resolution, lights and distance; Ultra "
-            + "gives back resolution, distance and shadow reach on a phone with frames to "
-            + "spare. Changing any of those settings afterwards reads as Custom.",
+            "The picture's cost settings as one choice, on a phone. Low gives up the sun's "
+            + "shadow, most of the resolution and some distance for the most frame rate and the "
+            + "least memory (a 5-6 GB phone); Medium adds resolution, lamps and distance back (an "
+            + "8 GB Adreno 640 phone's smoothest); High adds the sun's shadows and sharpness; Ultra "
+            + "gives back resolution, distance, shadow reach and the ground's bump, for the fastest "
+            + "phones. Changing any of those settings afterwards reads as Custom.",
             "android_low|Low,android_mid|Medium,android|High,android_high|Ultra,custom|Custom"),
 
         new(GraphicsPresets.RevisionKey, DisplayCategory, RuntimeCVarType.Int, "1",
@@ -35,6 +34,32 @@ public static class RuntimeCVarsAndroid
             + "default on a phone, stair-stepped), 1 to 5 are Godot's Soft Very Low to Soft Ultra; "
             + "1 is grainy without TAA. The desktop always filters at Soft Medium. Options in the "
             + "game steps it, and it applies at once."),
+    };
+
+    /// <summary>The launcher's Skip intro videos (<see cref="Refii.AndroidRuntime.AndroidStartup"/>), beside Baked lamp shadows.</summary>
+    public static readonly RuntimeCVarDefinition[] IntroVideos =
+    {
+        new(Refii.AndroidRuntime.AndroidStartup.SkipVideosKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android: skip the logo videos when the game starts."),
+    };
+
+    /// <summary>How textures are stored for the GPU. Advanced rows of the launcher.</summary>
+    public static readonly RuntimeCVarDefinition[] TextureStorage =
+    {
+        new("android_tex_upload_cache", DisplayCategory, RuntimeCVarType.Bool, "true",
+            "Android: keep each texture's GPU-ready form on disk so later loads skip the conversion."),
+        new("android_eac_normals", DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, GPUs without BC: store normal maps as EAC RG11 rather than RG8, at half the "
+            + "memory. A one-time conversion cost as each is first loaded."),
+    };
+
+    /// <summary>The launcher's Baked lamp shadows option (<see cref="Refii.AndroidRuntime.AndroidBakedShadows"/>), before <c>static_shadow_resolution</c>.</summary>
+    public static readonly RuntimeCVarDefinition[] BakedShadows =
+    {
+        // Display, not Lighting: the launcher's list leaves Lighting to the desktop's own dialog.
+        new(Refii.AndroidRuntime.AndroidBakedShadows.Key, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android: bake lamp and torch shadows on the phone at Play and draw them from the "
+            + "stored result. About 2 GB and a long one-time bake."),
     };
 
     /// <summary>The frame rate in the corner of the screen (<see cref="Refii.AndroidRuntime.AndroidFpsCounter"/>), after <c>max_fps</c>.</summary>

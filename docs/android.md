@@ -167,8 +167,11 @@ launcher then removes the extracted game copies and builds it no longer uses.
   everything else is under **Advanced**, and the desktop's window, VSync and anti-aliasing
   settings, which a phone ignores, are not listed. `debug_channel = true` opens the debug channel on
   `127.0.0.1` (port in `files/runtime/debug/refii-debug.json`; forward it with adb).
-  `android_render_thread = true` runs Godot's renderer on its own thread from the next
-  launch; it needs the patched templates.
+  `android_render_thread = true`, which every graphics preset sets, runs Godot's renderer on its
+  own thread from the next launch; it needs the patched templates. `android_tex_upload_cache`
+  (on by default) keeps each texture's GPU-ready form on disk for a GPU without BC, for faster
+  repeat loads; `android_eac_normals` (off) stores normal maps there as EAC RG11, at half the
+  video memory and a slower load.
 - **Logs and saves.** Export (the launcher's Install tab and File menu, and Options in game)
   writes a zip to Download: the logs, settings, device and save for a bug report
   (`Fable2-logs-and-saves-…`), or the save folder alone as a backup (`Fable2-saves-…`).
@@ -209,14 +212,25 @@ with a 30 FPS cap either way. A 20 FPS cap is the player's choice in Options.
 | Preset | Render scale | Sun shadow | Also |
 |---|---|---|---|
 | Low | 40% | none | the nearest four placed lights, trees to 300 m, half the undergrowth |
-| Medium | 50% | none | more lights and distance than Low |
-| High | 60% | where the theme casts one | every same-picture shortcut |
-| Ultra | 67% | longer | the 360's model detail, the desktop's prop distances, more placed lights |
+| Medium | 45% | none | more lights and distance than Low |
+| High | 50% | where the theme casts one | 16 placed lights, three quarters of the undergrowth, every same-picture shortcut |
+| Ultra | 67% | longer | the 360's model detail, the desktop's prop distances, 32 placed lights, the ground's bump |
+
+Each preset has the phones it is for: Low and Medium a 5-6 GB phone such as the OnePlus 7 Pro,
+Medium and High an 8 GB Adreno 640 phone such as the Galaxy S10e, High and Ultra a Snapdragon
+8 Elite such as the Galaxy S25+. On an Adreno 640 the game is limited by its GPU everywhere
+outdoors (trees with no simpler model are most of what it draws), so no preset holds 30 FPS there:
+measured uncapped on 2026-11-07, Low ran 21-26 FPS in Bowerstone Market, Westcliff and Bower Lake
+and 15 in Oakfield, Medium 17-21 and 13, High 11-16 and 8; and the OnePlus 7 Pro, on a charger, clamped its CPU
+after about ten minutes, halving that whatever the preset. The S25+ ran High at 66-94 and Ultra at
+53-60 in the same places (52-64 and 37 in Oakfield). High leaves the ground's normal maps
+out, as Low and Medium do: an Adreno 640 holds them uncompressed, and they were a quarter of its
+work in the Westcliff forest.
 
 High softens the sun shadow's edges at Godot's Soft Low and Ultra at Soft Medium (`sun_shadow_filter`);
 Godot's own default on a phone is Hard, which stair-steps. Both draw the sun shadow on a 2048 map
 instead of 1024 (`sun_shadow_map`). Both are rows in Options' Graphics settings: **Shadow softness**
-and **Shadow detail**.
+and **Shadow quality**.
 
 The low-memory tier (`android_low_ram_mode`) trades a little picture and waiting for memory: normal
 maps and large colour maps one size smaller where the GPU has no BC formats, the pause and Items menus built when first opened, no
@@ -235,12 +249,29 @@ casual use and has performance issues, and applies only if confirmed.
 ### In-game Options
 
 - **Graphics settings** opens the Graphics column beside the buttons: the preset, picked from the
-  list it opens on, the **Frame limit** (a button each for no cap, 20, 30 and 60 FPS), and the
+  list it opens on, the **Frame limit** (a button each for no cap, 20, 30, 40 and 60 FPS), and the
   settings that change the picture, each applied at once (`Godot/src/android/AndroidGraphicsOptions.cs`).
   A coloured line under each says what it costs and **?** says what it does; changing one makes the
   preset Custom. Options itself opens on the buttons alone, and back closes the column first.
+- **Graphics rows:** Resolution, Distant detail, Object distance, Tree distance, Plant density,
+  Shadow distance, Shadow quality, Shadow softness, Lamps, Lamp shadows and Bloom. A row the
+  presets always move together with other settings steps them as one: Distant detail also sets
+  the trees' and the ground's simpler-version distances (`tree_lod_bias`, `terrain_lod_bias`),
+  Shadow distance the small objects' shadow reach (`sun_shadow_reach_scale`) and Lamps the lamp
+  range (`placed_light_range`), each step one of the presets' own combinations. Plant density
+  (`foliage_density`) applies at the next loading screen. Shadow quality and Shadow softness stand
+  greyed while Shadow distance is Off. The launcher's list on a phone uses the
+  same names, and a plain description for each (`Godot/src/android/AndroidSettingNames.cs`).
 - **Shadows:** when a pick or a setting turns shadows on in a session that started without them,
   Options asks whether to rebuild the shaders now (the game pauses) or at the next loading screen.
+- **Skip intro videos** (the launcher's Display settings, `android_skip_intro_videos`, off by
+  default) plays none of the logo videos when the game starts; the guest's requests for them are
+  retired as a tap would (`AndroidStartup`). Cutscenes later in the game are not affected.
+- **Baked lamp shadows** (the launcher's Display settings, `android_baked_shadows`, off by default) runs the desktop's
+  static shadow sweep on the phone (`AndroidBakedShadows`): Play bakes any area that is missing into
+  `cache/Fable2/shadows`, as a foreground job with a notification, about 2 GB in all. A bake that is
+  cancelled carries on at the next launcher start, and an area with no bake plays as it does with
+  the option off. Fable 2 only.
 - **FPS counter** shows the frame rate in the top left corner, and
   **Vibration** sets the rumble's strength or turns it off (`vibration_strength`, 50% by default).
 - **Diagnostics** unfolds **Performance stats** and **Developer tools**, the desktop's F5 and F6.

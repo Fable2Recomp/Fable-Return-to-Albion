@@ -3,6 +3,7 @@ namespace Refii.Tests;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using GdUnit4;
 using static GdUnit4.Assertions;
 using Refii.AndroidRuntime;
@@ -25,9 +26,9 @@ public class AndroidQuickSettingsTests
     }
 
     [TestCase]
-    public void TestFrameCapRowOffersUncappedTwentyThirtySixty()
+    public void TestFrameCapRowOffersUncappedTwentyThirtyFortySixty()
     {
-        AssertThat(AndroidQuickSettings.FrameCaps).ContainsExactly(0, 20, 30, 60);
+        AssertThat(AndroidQuickSettings.FrameCaps).ContainsExactly(0, 20, 30, 40, 60);
         AssertThat(AndroidQuickSettings.FrameCapChoiceLabel(0)).IsEqual("\u221E");
         AssertThat(AndroidQuickSettings.FrameCapChoiceLabel(30)).IsEqual("30");
         AssertThat(AndroidQuickSettings.FrameCapLabel(0)).IsEqual("Frame limit");
@@ -150,7 +151,7 @@ public class AndroidQuickSettingsTests
     {
         AndroidGraphicsOption scale = Row("render_scale_percent");
         AssertThat(AndroidGraphicsOptions.Step(scale, "50", 1)).IsEqual("60");
-        AssertThat(AndroidGraphicsOptions.Step(scale, "50", -1)).IsEqual("40");
+        AssertThat(AndroidGraphicsOptions.Step(scale, "50", -1)).IsEqual("45");
         AssertThat(AndroidGraphicsOptions.Step(scale, "100", 1)).IsEqual("100");
         AssertThat(AndroidGraphicsOptions.CanStep(scale, "100", 1)).IsFalse();
         AssertThat(AndroidGraphicsOptions.CanStep(scale, "30", -1)).IsFalse();
@@ -162,7 +163,8 @@ public class AndroidQuickSettingsTests
         AssertThat(AndroidGraphicsOptions.Label(Row("placed_light_limit"), "0")).IsEqual("All");
         AssertThat(AndroidGraphicsOptions.Label(Row("sun_shadow_distance"), "0")).IsEqual("Off");
         AssertThat(AndroidGraphicsOptions.Label(Row("sun_shadow_distance"), "120")).IsEqual("120 m");
-        AssertThat(AndroidGraphicsOptions.Label(Row("mesh_lod_pixels"), "2")).IsEqual("Medium");
+        AssertThat(AndroidGraphicsOptions.Label(Row("mesh_lod_pixels"), "2")).IsEqual("High");
+        AssertThat(AndroidGraphicsOptions.Label(Row("mesh_lod_pixels"), "3")).IsEqual("Medium");
         AssertThat(AndroidGraphicsOptions.Label(Row("prop_cull_distance_scale"), "0.6")).IsEqual("60%");
         AssertThat(AndroidGraphicsOptions.Label(Row("placed_light_shadows"), "true")).IsEqual("On");
         AssertThat(AndroidGraphicsOptions.Step(Row("placed_light_shadows"), "false", 1)).IsEqual("true");
@@ -178,13 +180,83 @@ public class AndroidQuickSettingsTests
     }
 
     [TestCase]
+    public void TestLinkedRowsWriteThePresetsOwnCombinations()
+    {
+        // Distant detail moves the trees' and the ground's coarser levels with the models', as each preset does.
+        AssertThat(AndroidGraphicsOptions.Writes(Row("mesh_lod_pixels"), "4"))
+            .ContainsExactly(("mesh_lod_pixels", "4"), ("tree_lod_bias", "0.5"), ("terrain_lod_bias", "0.5"));
+        AssertThat(AndroidGraphicsOptions.Writes(Row("mesh_lod_pixels"), "1"))
+            .ContainsExactly(("mesh_lod_pixels", "1"), ("tree_lod_bias", "1"), ("terrain_lod_bias", "1"));
+        // The sun shadow's quality and softness change nothing while the shadow distance is 0.
+        AssertThat(AndroidGraphicsOptions.Applies(Row("sun_shadow_filter"), _ => "0")).IsFalse();
+        AssertThat(AndroidGraphicsOptions.Applies(Row("sun_shadow_map"), _ => "80")).IsTrue();
+        AssertThat(AndroidGraphicsOptions.Applies(Row("render_scale_percent"), _ => "0")).IsTrue();
+        // A value set by hand off the steps writes only the row's own key.
+        AssertThat(AndroidGraphicsOptions.Writes(Row("mesh_lod_pixels"), "2.5")).ContainsExactly(("mesh_lod_pixels", "2.5"));
+        AssertThat(AndroidGraphicsOptions.Writes(Row("sun_shadow_distance"), "120"))
+            .ContainsExactly(("sun_shadow_distance", "120"), ("sun_shadow_reach_scale", "1"));
+        AssertThat(AndroidGraphicsOptions.Writes(Row("placed_light_limit"), "32"))
+            .ContainsExactly(("placed_light_limit", "32"), ("placed_light_range", "65.0"));
+
+        // Every preset's value of a row is one of its steps, with the linked settings that step writes, so
+        // stepping a row back to a preset's value makes that preset again.
+        foreach (string preset in AndroidQuickSettings.Presets)
+        {
+            IReadOnlyDictionary<string, string> values = GraphicsPresets.Values(preset)!;
+            foreach (AndroidGraphicsOption option in AndroidGraphicsOptions.All)
+            {
+                if (!values.TryGetValue(option.Key, out string? value)) continue;
+                AssertThat(option.Steps.Any(step => AsNumber(step)
+                        == AsNumber(value))).OverrideFailureMessage($"{preset}: {option.Key} = {value} is not a step").IsTrue();
+                foreach ((string key, string written) in AndroidGraphicsOptions.Writes(option, value))
+                {
+                    AssertThat(AsNumber(values[key])).OverrideFailureMessage($"{preset}: {option.Name} writes {key} = {written}")
+                        .IsEqual(AsNumber(written));
+                }
+            }
+        }
+    }
+
+    private static double AsNumber(string value) => bool.TryParse(value, out bool on)
+        ? (on ? 1 : 0)
+        : double.Parse(value.Trim('"'), System.Globalization.CultureInfo.InvariantCulture);
+
+    [TestCase]
+    public void TestAPhoneNamesItsSettingsInAPlayersWords()
+    {
+        bool offered = GraphicsPresets.Offered;
+        try
+        {
+            GraphicsPresets.Offered = true;
+            RuntimeCVarDefinition scale = RuntimeCVarSet.All.First(d => d.Name == "render_scale_percent");
+            AssertThat(RuntimeSettingsModel.FormatDisplayName(scale)).IsEqual("Resolution");
+            AssertThat(RuntimeSettingsModel.FormatDescription(scale)).StartsWith("How sharp the world is drawn");
+            // Every setting a preset decides has a phone name, and none of the names is a key's dev words.
+            foreach (string key in GraphicsPresets.Members)
+            {
+                string? name = AndroidSettingNames.Name(key);
+                AssertThat(name).OverrideFailureMessage(key + " has no phone name").IsNotNull();
+                foreach (string word in new[] { "LOD", "Prop", "Entity", "Fixture", "Atlas", "Cull", "Lite", "Android", "_" })
+                {
+                    AssertThat(name!.Contains(word, System.StringComparison.Ordinal))
+                        .OverrideFailureMessage($"{key}: \"{name}\" says {word}").IsFalse();
+                }
+            }
+
+            GraphicsPresets.Offered = false;
+            AssertThat(RuntimeSettingsModel.FormatDisplayName(scale)).IsEqual("Render scale percent");
+        }
+        finally { GraphicsPresets.Offered = offered; }
+    }
+
+    [TestCase]
     public void TestAGraphicsRowMakesThePresetCustomAndThePresetMovesTheRows()
     {
         string config = Config("max_fps = 30\n");
         try
         {
             AndroidQuickSettings.ApplyPreset(config, GraphicsPresets.High, (_, _) => { });
-            AssertThat(AndroidQuickSettings.Value(config, "render_scale_percent")).IsEqual("60");
+            AssertThat(AndroidQuickSettings.Value(config, "render_scale_percent")).IsEqual("50");
             // A row goes to the file and the game, and the preset reads Custom, stored as the launcher stores it.
             var live = new Dictionary<string, string>();
             AndroidQuickSettings.SetGraphics(config, "render_scale_percent", "67", (k, v) => live[k] = v);
@@ -193,7 +265,7 @@ public class AndroidQuickSettingsTests
             AssertThat(AndroidQuickSettings.Preset(config)).IsEqual(GraphicsPresets.Custom);
             AssertThat(RuntimeConfig.ReadValues(config)[GraphicsPresets.Key].Trim('"')).IsEqual(GraphicsPresets.Custom);
             // Back to the preset's value, it is that preset again.
-            AndroidQuickSettings.SetGraphics(config, "render_scale_percent", "60", (_, _) => { });
+            AndroidQuickSettings.SetGraphics(config, "render_scale_percent", "50", (_, _) => { });
             AssertThat(AndroidQuickSettings.Preset(config)).IsEqual(GraphicsPresets.High);
             // Stepping the preset moves every row it sets; the rest (bloom) and the cap stay.
             AndroidQuickSettings.SetGraphics(config, "bloom_scale", "0.5", (_, _) => { });

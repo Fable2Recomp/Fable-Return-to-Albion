@@ -35,6 +35,16 @@ public partial class AndroidStartup : Node
     /// <summary>The video layer, just over the startup screen (145), which stays drawn under it.</summary>
     private const int VideoLayer = 146;
 
+    /// <summary>The launcher's Skip intro videos. Off unless the player turns it on.</summary>
+    public const string SkipVideosKey = "android_skip_intro_videos";
+
+    private bool _skip;
+
+    /// <summary>Whether the player asked to skip the startup videos.</summary>
+    /// <param name="values">The runtime configuration's values.</param>
+    public static bool SkipsVideos(System.Collections.Generic.IReadOnlyDictionary<string, string> values) =>
+        Refii.Core.Engine_RefiiConfig.Bool(values, SkipVideosKey, false);
+
     /// <summary>The startup videos the guest asked for last time, one file name a line, in the title's directory.</summary>
     public const string LearnedFile = "startup-videos.txt";
 
@@ -93,6 +103,14 @@ public partial class AndroidStartup : Node
         // Its black backdrop follows the picture from its first update on; before that it covered the screen for a frame.
         _video.GetNode<CanvasItem>("VideoLayer/VideoBackdrop").Visible = false;
         _video.GuestRequested = Asked;
+        _skip = SkipsVideos(Refii.Core.Engine_RefiiConfig.Read(out _));
+        if (_skip)
+        {
+            // Nothing is played or learned: the guest's requests are retired in its session.
+            _video.SetProcess(false);
+            return;
+        }
+
         string learned = _learned = Path.Combine(AndroidRuntimeOptions.TitleDirectory(OS.GetUserDataDir()), LearnedFile);
         string root = Refii.Core.Engine_GameData.Resolve();
         _loading = Task.Run(() => Load(root, learned));
@@ -128,8 +146,9 @@ public partial class AndroidStartup : Node
     {
         if (_done) return;
         _guest = guest;
-        guest.HostPlaysMovies = true;
+        guest.HostPlaysMovies = !_skip;
         guest.AheadSizes = _aheadSizes;
+        guest.RetireEveryMovie = _skip;
     }
 
     /// <summary>Plays the videos ahead, hides the screen while one plays, and ends the startup once the game has the screen and no video plays.</summary>
@@ -167,12 +186,12 @@ public partial class AndroidStartup : Node
         MuteGuest(false);
         if (_guest != null)
         {
-            _guest.HostShowsMovie = _guest.HostPlaysMovies = false;
+            _guest.HostShowsMovie = _guest.HostPlaysMovies = _guest.RetireEveryMovie = false;
             _guest.AheadSizes = null;
         }
         GD.Print($"[android] startup over at {Time.GetTicksMsec()} ms: {_video.MoviesRequested} video(s), " +
             $"{_video.MoviesSkipped} skipped; the guest asked for [{string.Join(", ", _asked)}]");
-        Learn();
+        if (!_skip) Learn();
         _video.QueueFree();
     }
 

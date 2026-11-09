@@ -332,6 +332,7 @@ public sealed partial class RuntimeSettingsModel
     /// </summary>
     public static string FormatDisplayName(RuntimeCVarDefinition definition)
     {
+        if (AndroidSettingNames.Name(definition.Name) is { } phone) return phone;
         string[] words = definition.Name.Split('_', StringSplitOptions.RemoveEmptyEntries);
         for (int i = 0; i < words.Length; i++)
         {
@@ -354,7 +355,7 @@ public sealed partial class RuntimeSettingsModel
     /// </summary>
     public static string FormatDescription(RuntimeCVarDefinition definition) =>
         System.Text.RegularExpressions.Regex.Replace(
-            definition.Description,
+            AndroidSettingNames.About(definition.Name) ?? definition.Description,
             @"`?\b[a-z0-9]+(?:_[a-z0-9]+)+\b`?",
             match =>
             {

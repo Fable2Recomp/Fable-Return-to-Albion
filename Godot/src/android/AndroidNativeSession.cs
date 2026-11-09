@@ -55,6 +55,10 @@ internal sealed class AndroidNativeSession
     /// would, whatever <c>skip_movies</c> says: the host shows it, before or after.</summary>
     internal volatile System.Collections.Generic.IReadOnlySet<uint>? AheadSizes;
 
+    /// <summary>The launcher's Skip intro videos: while the game starts, the guest's own requests are retired
+    /// after <see cref="AheadMovieDwellSeconds"/> and the host plays nothing (AndroidStartup).</summary>
+    internal volatile bool RetireEveryMovie;
+
     /// <summary>The shortest dwell the skip policy takes, about when a tap may first skip a movie.</summary>
     public const double AheadMovieDwellSeconds = 0.5;
 
@@ -229,7 +233,7 @@ internal sealed class AndroidNativeSession
     {
         if (HostShowsMovie || HostBridge.MovieState() != HostBridge.MoviePlayback.Wanted) return;
         uint embeddedSize = HostBridge.GetRequestedVideoSize(out uint bufferGeneration);
-        bool ahead = embeddedSize != 0 && AheadSizes?.Contains(embeddedSize) == true;
+        bool ahead = RetireEveryMovie || (embeddedSize != 0 && AheadSizes?.Contains(embeddedSize) == true);
         if (!ahead && !_options.SkipMovies) return;
         string path = HostBridge.GetRequestedVideoName(out uint nameGeneration);
         uint generation = path.Length != 0 ? nameGeneration : bufferGeneration;

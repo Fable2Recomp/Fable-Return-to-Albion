@@ -25,6 +25,14 @@ public partial class AndroidPhoneLauncher : Control
     private Label? _status;
     private Button? _compile, _pick, _update, _play, _playCompiled, _cancel, _exportBoth, _exportSaves, _importSave;
     private Task<AndroidPhoneCompiler.Result>? _task;
+    /// <summary>The baked lamp shadow sweep Play runs first (<see cref="AndroidBakedShadows"/>).</summary>
+    private Task<Refii.Lighting.Engine_LevelShadowPrebuild.Progress>? _bakeTask;
+    /// <summary>The sweep finished, stopped or failed since the launcher opened; Play goes straight to the game.</summary>
+    private bool _bakeSettled;
+    /// <summary>Removes the sweep's listeners on the assets' mount.</summary>
+    private Action? _detachBakeMount;
+    /// <summary>Whether a compile or a bake owns the worker.</summary>
+    private bool Busy => _task != null || _bakeTask != null;
     private CancellationTokenSource? _cancellation;
     private AndroidPhoneCompiler.Result? _result;
     private AndroidRuntimeOptions? _runtime;
@@ -45,7 +53,7 @@ public partial class AndroidPhoneLauncher : Control
     /// <summary>Current background worker status for the shared launcher's progress display.</summary>
     public string Status => _message;
     /// <summary>Whether an owned installation worker is still running.</summary>
-    public bool IsInstalling => _task != null;
+    public bool IsInstalling => Busy;
     /// <summary>Whether a completed installation or previous runtime is available to play.</summary>
     public bool HasPlayableInstall => _result != null || _runtime != null;
     /// <summary>Whether the playable module was built from another APK's compiler bundle and must be built again
@@ -60,8 +68,102 @@ public partial class AndroidPhoneLauncher : Control
     /// <summary>Runs the platform's verified activation path from the shared launcher's Play button.</summary>
     public void PlayFromLauncher()
     {
+        if (Busy) return;
+        if (BakeBeforePlaying) StartBake();
+        else StartGame();
+    }
+
+    private void StartGame()
+    {
         if (_result != null) PlayCompiled();
         else PlayInstalled();
+    }
+
+    /// <summary>Whether the launcher's Baked lamp shadows option has a sweep to run before the game starts.</summary>
+    private bool BakeBeforePlaying => InstalledGameRoot != null && AndroidBakedShadows.ShouldBake(
+        AndroidBakedShadows.Wanted(Refii.Launcher.Core.RuntimeConfig.ReadValues(
+            Path.Combine(_app, "runtime", Engine_Title.Active.ConfigFileName))),
+        Engine_Title.Active, _bakeSettled);
+
+    /// <summary>Runs the shadow sweep under the installation's foreground service, which keeps it alive with the
+    /// screen off; the game starts when it finishes. A problem starting it never stands between the player and the game.</summary>
+    private void StartBake()
+    {
+        string game = InstalledGameRoot!;
+        try
+        {
+            long free = new DriveInfo(Path.GetFullPath(_app)).AvailableFreeSpace;
+            if (free < AndroidBakedShadows.StorageNeeded)
+                throw new IOException($"it needs about {AndroidBakedShadows.StorageNeeded / 1000000000.0:0.#} GB free");
+            if (!Engine.HasSingleton("RefiiInstall")) throw new IOException("this APK lacks the Android installation service");
+            _cancellation = new CancellationTokenSource();
+            CancellationToken token = _cancellation.Token;
+            _job = new AndroidInstallJob(_app);
+            string serviceError = Engine.GetSingleton("RefiiInstall").Call("begin", _job.Id).AsString();
+            if (serviceError.Length > 0) throw new IOException(serviceError);
+            var job = _job;
+            DisplayServer.ScreenSetKeepOn(true);
+            _message = "Checking baked lamp shadows...";
+            // The bake reads the game's object database, which the assets' mount connects; the game mounts
+            // again when it starts, replacing this one.
+            Refii.Assets.Engine_GameAssets assets = Refii.Assets.Engine_GameAssets.Instance
+                ?? throw new IOException("the game's asset service is missing");
+            var mounted = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Refii.Assets.Engine_GameAssets.MountedEventHandler onMounted = _ => mounted.TrySetResult(null);
+            Refii.Assets.Engine_GameAssets.MountFailedEventHandler onFailed = reason => mounted.TrySetResult(reason);
+            assets.Mounted += onMounted;
+            assets.MountFailed += onFailed;
+            _detachBakeMount = () => { assets.Mounted -= onMounted; assets.MountFailed -= onFailed; };
+            assets.Mount(game);
+            _bakeTask = Task.Run(() => job.RunAsync(async protectedToken =>
+            {
+                string? failure = await mounted.Task.WaitAsync(protectedToken);
+                if (failure != null) throw new IOException(failure);
+                return Refii.Lighting.Engine_LevelShadowPrebuild.Run(game, progress =>
+                {
+                    string line = AndroidBakedShadows.Line(progress);
+                    _message = line;
+                    job.Report(line);
+                }, protectedToken);
+            }, token));
+            UpdateButtons();
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            _detachBakeMount?.Invoke();
+            _detachBakeMount = null;
+            _job?.Finish();
+            _cancellation?.Dispose();
+            _cancellation = null;
+            _bakeSettled = true;
+            _message = "Cannot bake lamp shadows: " + error.Message + ". Press Play to start without them.";
+        }
+    }
+
+    /// <summary>Ends a finished sweep on the main thread: on to the game, or back to the launcher if it was stopped.</summary>
+    private void FinishBake()
+    {
+        var task = _bakeTask!;
+        _bakeTask = null;
+        _bakeSettled = true;
+        _detachBakeMount?.Invoke();
+        _detachBakeMount = null;
+        DisplayServer.ScreenSetKeepOn(_keepScreenOn);
+        bool play = false;
+        try
+        {
+            Refii.Lighting.Engine_LevelShadowPrebuild.Progress result = task.GetAwaiter().GetResult();
+            GD.Print($"[launcher] lamp shadow bake: {result.Built} built, {result.UpToDate} up to date, " +
+                $"{result.Failed} failed of {result.Total}");
+            if (result.Done < result.Total) _message = AndroidBakedShadows.Stopped(result);
+            else play = true;
+        }
+        catch (OperationCanceledException) { _message = "Baking cancelled. Press Play to start without the rest."; }
+        catch (Exception error) { _message = "Baking stopped: " + error.Message + ". Press Play to start without the rest."; }
+        _cancellation?.Dispose();
+        _cancellation = null;
+        UpdateButtons();
+        if (play) StartGame();
     }
 
     /// <summary>Explicitly cancels the owned worker; activity backgrounding is not a cancellation.</summary>
@@ -88,7 +190,7 @@ public partial class AndroidPhoneLauncher : Control
     /// </summary>
     public void ImportSave()
     {
-        if (_transferring || _task != null) return;
+        if (_transferring || Busy) return;
         var error = DisplayServer.FileDialogShow("Import save", "", "", false, DisplayServer.FileDialogMode.OpenFile,
             // An export is a zip; some file managers report no MIME type for it, so show every document and check its contents.
             new[] { "*.zip;Fable 2 export;*/*" },
@@ -104,7 +206,7 @@ public partial class AndroidPhoneLauncher : Control
     /// <summary>Imports the picked export on the main thread's schedule, the work itself on a worker.</summary>
     private async void RunImport(string uri)
     {
-        if (_transferring || _task != null) return;
+        if (_transferring || Busy) return;
         SetTransferring(true);
         _message = "Importing the save...";
         _message = await AndroidSaveTransfer.ImportAsync(uri);
@@ -256,6 +358,7 @@ public partial class AndroidPhoneLauncher : Control
             _cancellation = null;
             UpdateButtons();
         }
+        if (_bakeTask?.IsCompleted == true) FinishBake();
         if (_status != null) _status.Text = _message;
     }
 
@@ -338,7 +441,7 @@ public partial class AndroidPhoneLauncher : Control
     /// <summary>Owns a complete prepare/compile/cleanup pipeline; progress writes contain no Godot UI calls.</summary>
     private void StartCompile()
     {
-        if (_task != null) return;
+        if (Busy) return;
         try
         {
             _cancellation = new CancellationTokenSource();
@@ -449,13 +552,13 @@ public partial class AndroidPhoneLauncher : Control
     /// <summary>Runs the existing configured Android host without initializing a second guest.</summary>
     private void PlayInstalled()
     {
-        if (_task == null && _runtime != null) GetTree().ChangeSceneToFile("res://src/android/AndroidGame.tscn");
+        if (!Busy && _runtime != null) GetTree().ChangeSceneToFile("res://src/android/AndroidGame.tscn");
     }
 
     /// <summary>Activates a verified fresh installation or replacement while preserving previous configuration and saves.</summary>
     private void PlayCompiled()
     {
-        if (_task != null || !CanActivate(_result)) return;
+        if (Busy || !CanActivate(_result)) return;
         try
         {
             _runtime = AndroidInstallState.Activate(_user, _selected, _result!);
@@ -483,7 +586,7 @@ public partial class AndroidPhoneLauncher : Control
     /// <summary>Disables conflicting actions during compilation and offers activation only for completed output.</summary>
     private void UpdateButtons()
     {
-        bool running = _task != null;
+        bool running = Busy;
         _pick!.Disabled = running;
         _update!.Disabled = running || _isoUri.Length == 0;
         _compile!.Disabled = running || (_selected.Length == 0 && _isoUri.Length == 0) || _native.Length == 0;

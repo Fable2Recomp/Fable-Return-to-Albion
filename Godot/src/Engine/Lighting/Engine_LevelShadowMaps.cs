@@ -670,6 +670,12 @@ public static class Engine_LevelShadowMaps
 			return;
 		}
 
+		if (Refii.AndroidRuntime.AndroidBakedShadows.LevelsIgnoreBakes)
+		{
+			Clear();
+			return;
+		}
+
 		// 1. Try cache directory first (<app>/cache/shadows/...)
 		string diskPath = GetShadowMapDiskPath(level, gdbPath);
 		byte[]? raw = File.Exists(diskPath) ? File.ReadAllBytes(diskPath) : null;
@@ -1389,6 +1395,9 @@ public static class Engine_LevelShadowMaps
 
 	private static readonly ConcurrentDictionary<string, Vector3[]?> ModelTriangleCache =
 		new(StringComparer.OrdinalIgnoreCase);
+
+	/// <summary>Drops every model's triangles read so far, which a sweep otherwise holds for all its areas.</summary>
+	internal static void ClearBakeTriangles() => ModelTriangleCache.Clear();
 
 	/// <summary>The bound static shadow atlas's texels, for the heap census.</summary>
 	internal static (long Atlases, long Bytes) AtlasCensus() =>

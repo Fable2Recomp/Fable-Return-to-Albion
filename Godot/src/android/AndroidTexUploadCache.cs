@@ -303,7 +303,8 @@ internal readonly record struct AndroidTexUploadHeader(ulong Recipe, int Width, 
 /// </remarks>
 public static class AndroidTexUploadCache
 {
-	/// <summary>The setting. Off until tested on a phone.</summary>
+	/// <summary>The setting. On unless turned off: measured 2026-11-08, repeat loads 18-21 s against 24 on a
+	/// Galaxy S10e and 17 against 18 on a OnePlus 7 Pro, for about 92 MB. A GPU with BC has nothing to store.</summary>
 	public const string SettingKey = "android_tex_upload_cache";
 
 	/// <summary>Bump when the file's bytes mean something else, or Prepare's output changes for another reason.</summary>
@@ -499,7 +500,7 @@ public static class AndroidTexUploadCache
 
 		try
 		{
-			return Engine_RefiiConfig.Bool(Engine_RefiiConfig.Read(out _), SettingKey, false);
+			return Engine_RefiiConfig.Bool(Engine_RefiiConfig.Read(out _), SettingKey, true);
 		}
 		catch (Exception)
 		{

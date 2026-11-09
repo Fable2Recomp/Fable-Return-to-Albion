@@ -1,5 +1,6 @@
 using GdUnit4;
 using Refii.AndroidRuntime;
+using Refii.Launcher.Core;
 using System.Collections.Generic;
 using static GdUnit4.Assertions;
 
@@ -19,6 +20,14 @@ public sealed class AndroidRenderThreadTests
         AssertThat(AndroidRenderThread.Configured(new Dictionary<string, string> { ["android_render_thread"] = "\"true\"" })).IsTrue();
         // The desktop key the launcher has already written into Android configs at its default.
         AssertThat(AndroidRenderThread.Configured(new Dictionary<string, string> { ["render_thread"] = "true" })).IsFalse();
+    }
+
+    /// <summary>Every graphics preset asks for the thread; a phone on Custom keeps what it set.</summary>
+    [TestCase]
+    public void EveryPresetRunsTheRenderThread()
+    {
+        foreach (string preset in new[] { GraphicsPresets.Low, GraphicsPresets.Medium, GraphicsPresets.High, GraphicsPresets.Ultra })
+            AssertThat(AndroidRenderThread.Configured(GraphicsPresets.Values(preset)!)).IsTrue();
     }
 
     /// <summary>No file and nothing to state writes nothing; stating it makes the section.</summary>

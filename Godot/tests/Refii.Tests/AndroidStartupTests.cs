@@ -9,6 +9,23 @@ public class AndroidStartupTests
 {
     private const string Microsoft = "microsoft_logo.bik", Lionhead = "lionhead_logo.bik";
 
+    /// <summary>Skip intro videos is off unless the player turns it on, and a phone's player sees it without Advanced.</summary>
+    [TestCase]
+    public void TestSkipIntroVideosIsAnOffByDefaultPhoneOption()
+    {
+        AssertThat(AndroidStartup.SkipsVideos(new System.Collections.Generic.Dictionary<string, string>())).IsFalse();
+        AssertThat(AndroidStartup.SkipsVideos(new System.Collections.Generic.Dictionary<string, string> { [AndroidStartup.SkipVideosKey] = "true" })).IsTrue();
+        Refii.Launcher.Core.GraphicsPresets.Offered = true;
+        try
+        {
+            AssertThat(AndroidLauncherSettings.Shows(AndroidStartup.SkipVideosKey)).IsTrue();
+            AssertThat(AndroidLauncherSettings.Advanced(AndroidStartup.SkipVideosKey)).IsEqual(false);
+            Refii.Launcher.Core.GraphicsPresets.Offered = false;
+            AssertThat(AndroidLauncherSettings.Shows(AndroidStartup.SkipVideosKey)).IsFalse();
+        }
+        finally { Refii.Launcher.Core.GraphicsPresets.Offered = Refii.Core.Engine_Platform.IsAndroid; }
+    }
+
     [TestCase]
     public void TestAFirstStartLearnsTheGuestsOrder()
     {

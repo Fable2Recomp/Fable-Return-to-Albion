@@ -22,7 +22,7 @@ namespace Refii.Textures;
 /// <see cref="Refii.Game.AndroidMemoryRelease.LowRamMode"/>).</param>
 public sealed record AndroidTextureUploadPolicy(bool Android, bool Bc1, bool Bc2,
     bool Bc3, bool Bc4, bool Bc5, bool Rgb8, bool Astc4x4 = false, bool TranscodeAstc = true,
-    bool ReduceNormalMaps = false)
+    bool ReduceNormalMaps = false, bool EacNormals = false)
 {
     /// <summary>The smallest edge that gives up its top level; below it a normal map is cheap and already coarse.</summary>
     public const int ReducedNormalMapMinimumEdge = 256;
@@ -54,14 +54,15 @@ public sealed record AndroidTextureUploadPolicy(bool Android, bool Bc1, bool Bc2
     /// <param name="reduceNormalMaps">Whether unsupported BC5 uploads one size down.</param>
     public static AndroidTextureUploadPolicy Capture(bool android,
         Func<RenderingDevice.DataFormat, bool> supported, bool transcodeAstc = true,
-        bool reduceNormalMaps = false) => android
+        bool reduceNormalMaps = false, bool transcodeEac = false) => android
         ? new(true, supported(RenderingDevice.DataFormat.Bc1RgbUnormBlock),
             supported(RenderingDevice.DataFormat.Bc2UnormBlock),
             supported(RenderingDevice.DataFormat.Bc3UnormBlock),
             supported(RenderingDevice.DataFormat.Bc4UnormBlock),
             supported(RenderingDevice.DataFormat.Bc5UnormBlock),
             supported(RenderingDevice.DataFormat.R8G8B8Unorm),
-            supported(RenderingDevice.DataFormat.Astc4X4UnormBlock), transcodeAstc, reduceNormalMaps)
+            supported(RenderingDevice.DataFormat.Astc4X4UnormBlock), transcodeAstc, reduceNormalMaps,
+            transcodeEac && supported(RenderingDevice.DataFormat.EacR11G11UnormBlock))
         : new(false, true, true, true, true, true, true);
 
     /// <summary>Chooses precisely Godot's fallback storage channels for unsupported game formats.</summary>
@@ -74,7 +75,7 @@ public sealed record AndroidTextureUploadPolicy(bool Android, bool Bc1, bool Bc2
         Image.Format.Dxt3 when !Bc2 => Image.Format.Rgba8,
         Image.Format.Dxt5 when !Bc3 => Astc ? Image.Format.Astc4X4 : Image.Format.Rgba8,
         Image.Format.RgtcR when !Bc4 => Image.Format.R8,
-        Image.Format.RgtcRg when !Bc5 => Image.Format.Rg8,
+        Image.Format.RgtcRg when !Bc5 => EacNormals ? Image.Format.Etc2Rg11 : Image.Format.Rg8,
         Image.Format.Rgb8 when !Rgb8 => Image.Format.Rgba8,
         _ => source,
     };
@@ -119,16 +120,17 @@ public static class AndroidTextureUpload
         using RenderingDevice? device = RenderingServer.CreateLocalRenderingDevice();
         const RenderingDevice.TextureUsageBits usage =
             RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanUpdateBit;
-        bool transcode = true, reduceNormalMaps = false;
+        bool transcode = true, reduceNormalMaps = false, eacNormals = false;
         try
         {
             var settings = Engine_RefiiConfig.Read(out _);
             transcode = Engine_RefiiConfig.Bool(settings, "android_astc_textures", true);
+            eacNormals = Engine_RefiiConfig.Bool(settings, "android_eac_normals", false);
             reduceNormalMaps = Refii.Game.AndroidMemoryRelease.LowRamMode;
         }
         catch (Exception) { }
         Volatile.Write(ref _policy, AndroidTextureUploadPolicy.Capture(true,
-            format => device?.TextureIsFormatSupportedForUsage(format, usage) ?? false, transcode, reduceNormalMaps));
+            format => device?.TextureIsFormatSupportedForUsage(format, usage) ?? false, transcode, reduceNormalMaps, eacNormals));
     }
 
     /// <summary>Creates a 2D texture, releasing any private fallback image after Godot copies it.</summary>
@@ -268,6 +270,13 @@ public static class AndroidTextureUpload
             if (astc is not null) { Interlocked.Increment(ref _prepared); return astc; }
             target = Image.Format.Rgba8;
         }
+        if (target == Image.Format.Etc2Rg11)
+        {
+            using Image? smaller = dropTopMip ? WithoutTopMip(image) : null;
+            Image? eac = TranscodeEac(smaller ?? image);
+            if (eac is not null) { Interlocked.Increment(ref _prepared); return eac; }
+            target = Image.Format.Rg8;
+        }
         Image copy = (dropTopMip ? WithoutTopMip(image) : null) ?? (Image)image.Duplicate();
         try
         {
@@ -297,6 +306,25 @@ public static class AndroidTextureUpload
         if (!result.IsEmpty()) return result;
         result.Dispose();
         return null;
+    }
+
+    /// <summary>A new EAC RG11 image of the same size and mip chain, or null if the payload is not whole blocks.</summary>
+    private static Image? TranscodeEac(Image image)
+    {
+        using var bytes = new Engine_ImageBytes(image);
+        ReadOnlySpan<byte> blocks = bytes.Span;
+        byte[] eac = System.Buffers.ArrayPool<byte>.Shared.Rent(Math.Max(blocks.Length, 1));
+        try
+        {
+            if (!Engine_EacTranscode.Transcode(blocks, eac.AsSpan(0, blocks.Length))) return null;
+            var result = new Image();
+            result.SetData(image.GetWidth(), image.GetHeight(), image.HasMipmaps(), Image.Format.Etc2Rg11,
+                new ReadOnlySpan<byte>(eac, 0, blocks.Length));
+            if (!result.IsEmpty()) return result;
+            result.Dispose();
+            return null;
+        }
+        finally { System.Buffers.ArrayPool<byte>.Shared.Return(eac); }
     }
 
     /// <summary>A new ASTC4x4 image of the same size and mip chain, or null if the payload is not

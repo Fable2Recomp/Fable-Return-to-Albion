@@ -111,6 +111,7 @@ public partial class AndroidGameHost : Node3D
             SetEnvironment("REFII_TEX_ORM", "0");
             SetEnvironment("REFII_TEX_WORKERS", "1");
             SetEnvironment("REFII_TEX_CACHE_MB", "512");
+            Refii.Textures.Engine_TexCache.Maintain();
             SetEnvironment("REFII_LIGHTING_MODEL", "fable");
             Refii.Lighting.Engine_GiRefresh.ForcedOff = true;
             Engine_TickClock.HostOwnsClock = false;

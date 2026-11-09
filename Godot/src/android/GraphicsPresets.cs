@@ -13,7 +13,10 @@ namespace Refii.Launcher.Core;
 /// High (stored "android") is the phone's default; Low (stored "android_low")
 /// gives up everything but the look of the game for frame rate, Medium (stored "android_mid")
 /// sits between the two, and Ultra (stored "android_high") gives up less, for a phone with
-/// headroom at the 30 FPS cap. They were measured on a Galaxy S25+
+/// headroom at the 30 FPS cap. Since revision 15 each has the phones it is for: Low and Medium
+/// a 5-6 GB phone like the OnePlus 7 Pro, Medium and High an Adreno 640 with 8 GB like the Galaxy S10e,
+/// High and Ultra a Snapdragon 8 Elite like the Galaxy S25+ (the 2026-11-07 measurements are in
+/// docs/android.md). They were measured on a Galaxy S25+
 /// and a Galaxy S10e in Bowerstone Market, where the phone is held at a fraction of its GPU clock by its own heat,
 /// so every setting is a trade of picture against sustained frame rate (docs/android.md, "Android
 /// graphics preset"). The stored names predate the labels and stay, so existing phones keep their
@@ -50,8 +53,14 @@ public static class GraphicsPresets
     /// Ultra Performance is now Low, the later Performance Medium, Balanced High and the later Quality Ultra.
     /// 13: Low takes the low-memory tier on any phone (android_low_ram_mode). 14: High softens the
     /// sun shadow's edges at Soft Low and Ultra at Soft Medium, both on a map of 2048; the map had
-    /// been fixed at 1024, and the filter at Godot's phone default, Hard.</remarks>
-    public const int Revision = 14;
+    /// been fixed at 1024, and the filter at Godot's phone default, Hard. 15: the presets re-tiered so
+    /// each has a phone it runs well on: Low and Medium the OnePlus 7 Pro (5.3 GB), Medium and High the
+    /// Galaxy S10e (Adreno 640), High and Ultra the Galaxy S25+. High renders at 50%, lights 16 lamps,
+    /// draws small props to half their distances, three quarters of the undergrowth and the far trees'
+    /// thinned crowns sooner; Medium renders at 45% with the far trees' crowns at Low's distance; Low,
+    /// Medium and High stop trees past 150 m swaying. Ultra keeps what it had and gives back the trees,
+    /// the undergrowth and the sway. 16: every preset runs Godot's renderer on its own thread.</remarks>
+    public const int Revision = 16;
 
     /// <summary>High: the phone's default picture.</summary>
     public const string High = "android";
@@ -83,16 +92,29 @@ public static class GraphicsPresets
     public static readonly IReadOnlyDictionary<string, string> HighValues =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            // The world at 60% of the screen's resolution; menus and text stay sharp.
-            ["render_scale_percent"] = "60",
+            // Measured 2026-11-08 at the Bowerstone Crucible, uncapped: the S10e 24-26 FPS to 29 and
+            // the OnePlus 7 Pro 26 to 28-29, GPU time unchanged; background and resume held on both.
+            ["android_render_thread"] = "true",
+            // The world at 50% of the screen's resolution; menus and text stay sharp. 60% (revisions
+            // 10-14) cost an Adreno 640 15% more GPU work in Oakfield, the S25+ 12.5%.
+            ["render_scale_percent"] = "50",
             // The 360's own distances: characters at their stated range, trees shadowing only as
             // far as the level file says. Coarser models a little sooner than the 360 switched.
             ["entity_draw_distance_scale"] = "1",
             ["tree_shadow_reach"] = "stated",
             ["mesh_lod_pixels"] = "2",
-            // Small props stop drawing at 60% of the size-tiered distances: a chair at 36 m, not
+            // Far trees' thinned crowns from three quarters of the distance, the ground's levels at the
+            // shared rule (Options' Distant detail High). On an Adreno 640 in Oakfield, where trees with no
+            // coarser model are most of the 2.4 million triangles in view, the trees and the models'
+            // levels a step coarser took 3% off High; the trees alone half again took 8.5% off Medium.
+            ["tree_lod_bias"] = "0.75",
+            ["terrain_lod_bias"] = "1",
+            // Trees past 150 m stand still in the wind, where their sway is about a pixel: 3% of an
+            // Adreno 640's work at Medium in Oakfield, 5% of the S25+'s at High (live, alternating).
+            [Refii.Level.Engine_TreeSwayFar.Key] = "150",
+            // Small props stop drawing at half the size-tiered distances: a chair at 30 m, not
             // 60. Most of what it removes in Bowerstone is furniture inside buildings.
-            ["prop_cull_distance_scale"] = "0.6",
+            ["prop_cull_distance_scale"] = "0.5",
             // Sun shadows where the theme casts them (as the 360), over a shorter reach.
             ["sun_shadows"] = "false",
             ["sun_shadow_distance"] = "80",
@@ -108,9 +130,10 @@ public static class GraphicsPresets
             // Placed lights as the shipped data: the lighting presets' Performance light range
             // (45 m) and Balanced shadow range (30 m), and shadows only from the few spot lights
             // marked to cast.
-            // The nearest 24 placed lights lit at once; the far lamps fade out until near. 16
-            // already darkened lit shop windows across the Bowerstone square at dusk.
-            ["placed_light_limit"] = "24",
+            // The nearest 16 placed lights lit at once; the far lamps fade out until near. 16
+            // darkens a few lit shop windows across the Bowerstone square at dusk; 24 (revisions
+            // 1-14) is Ultra's.
+            ["placed_light_limit"] = "16",
             ["placed_light_shadows"] = "false",
             ["placed_light_range"] = "45.0",
             ["placed_shadow_range"] = "30.0",
@@ -203,14 +226,15 @@ public static class GraphicsPresets
             ["tree_card_lod"] = "true",
             // The low-memory tier (AndroidMemoryRelease.LowRamMode) by the phone's memory; Low asks for it outright.
             ["android_low_ram_mode"] = "auto",
-            // Every tree to its stated reach (about a kilometre), the far trees' and the ground's
-            // levels on the shared mesh_lod_pixels rule, and the ground's layer normal maps bound:
-            // the settings' own defaults, which Low trades away.
+            // Every tree to its stated reach (about a kilometre), the setting's own default, which Low
+            // trades away. Three quarters of the undergrowth, as Medium.
             ["tree_far_reach"] = "0",
-            ["tree_lod_bias"] = "1",
-            ["terrain_lod_bias"] = "1",
-            ["terrain_normal_maps"] = "true",
-            ["foliage_density"] = "1",
+            ["foliage_density"] = "0.75",
+            // The ground's layer normal maps left out, as Low and Medium have them since revision 11: an
+            // Adreno 640 holds them uncompressed. On the S10e at High, relaunch-paired walks: 24% less GPU
+            // work a frame in the Westcliff forest and 8% in Bowerstone Market, ~480 MB less memory in
+            // Westcliff. Ultra binds them.
+            ["terrain_normal_maps"] = "false",
         };
 
     /// <summary>
@@ -279,20 +303,21 @@ public static class GraphicsPresets
         {
             // The low-memory tier by the phone's memory, as High.
             ["android_low_ram_mode"] = "auto",
-            // 50% of the screen's resolution, 1.56 times Low's pixels. At 40% against
-            // 30% this step cost +19% at the archway and +21% at Bower Lake on an Adreno 640, most
-            // of the preset's cost and most of what it shows.
-            ["render_scale_percent"] = "50",
+            // 45% of the screen's resolution, 1.27 times Low's pixels. 50% (revisions 1-14) cost an
+            // Adreno 640 8.4% more GPU work in Oakfield, where Medium ran 14 FPS.
+            ["render_scale_percent"] = "45",
             // The nearest eight placed lights: +6% in town, nothing in the countryside.
             ["placed_light_limit"] = "8",
             // Small props to half their tiered distances, and the coarser models a little later:
             // +4% / +2%, and +2% / +1%.
             ["prop_cull_distance_scale"] = "0.5",
             ["mesh_lod_pixels"] = "3",
-            // Every tree to its stated reach, the far trees' and the ground's coarser levels at three
-            // quarters of the distance: +8% / +12%. A far reach of 400 m costs the same as all.
+            // Every tree to its stated reach, the ground's coarser levels at three quarters of the
+            // distance and the far trees' thinned crowns at half (Options' Distant detail Medium): the
+            // trees at 0.75 cost an Adreno 640 8.5% more in Oakfield. A far reach of 400 m or 300 m
+            // saved under 2% there.
             ["tree_far_reach"] = "0",
-            ["tree_lod_bias"] = "0.75",
+            ["tree_lod_bias"] = "0.5",
             ["terrain_lod_bias"] = "0.75",
             // Three quarters of the undergrowth's clumps.
             ["foliage_density"] = "0.75",
@@ -312,13 +337,15 @@ public static class GraphicsPresets
     /// 525 MHz against High's 389-443. Memory and load time are High's. Of the variants,
     /// 75% resolution cost 4% more and 60% saved 6%, both hard to tell from 67% on the phone (so
     /// Ultra takes 60%), and
-    /// a 100 m sun shadow saved nothing repeatable. The S10e is not an Ultra phone: it runs
-    /// High at about 13 FPS.
+    /// a 100 m sun shadow saved nothing repeatable. The S10e is not an Ultra phone: it ran the
+    /// High of revisions 10-14 at about 13 FPS. Revision 15 keeps these values while High gives up
+    /// resolution, lamps and distance, so Ultra is now the S25+'s look of revisions 10-14 and more:
+    /// on the S25+ uncapped 53-60 FPS in Bowerstone and Westcliff, 37 in Oakfield, 91 in a cave.
     /// </remarks>
     public static readonly IReadOnlyDictionary<string, string> UltraValues =
         new Dictionary<string, string>(HighValues, StringComparer.Ordinal)
         {
-            // 67% of the screen's resolution, 1.25 times High's pixels.
+            // 67% of the screen's resolution, 1.8 times High's pixels.
             ["render_scale_percent"] = "67",
             // Coarser models when the 360 switched to them, small props at the desktop's distances.
             ["mesh_lod_pixels"] = "1",
@@ -332,6 +359,14 @@ public static class GraphicsPresets
             // The nearest 32 placed lights out to the lighting presets' Balanced light range.
             ["placed_light_limit"] = "32",
             ["placed_light_range"] = "65.0",
+            // The far trees' crowns and the ground at the shared rule, every plant, and every tree
+            // swaying in the wind however far.
+            ["tree_lod_bias"] = "1",
+            ["terrain_lod_bias"] = "1",
+            ["foliage_density"] = "1",
+            [Refii.Level.Engine_TreeSwayFar.Key] = "0",
+            // The ground's bump, which High leaves out.
+            ["terrain_normal_maps"] = "true",
         };
 
     /// <summary>The settings a preset decides: exactly the High preset's keys.</summary>

@@ -20,8 +20,8 @@ namespace Refii.AndroidRuntime;
 /// the host writes the key there. A change takes effect at the next launch, which the cvar says
 /// already.
 ///
-/// OFF UNLESS refii.toml SAYS <c>android_render_thread = true</c>: Godot marks the mode experimental, and
-/// the Android default waits on measurement. The file is the toml's mirror: a hand-written
+/// OFF UNLESS refii.toml SAYS <c>android_render_thread = true</c>, which every graphics preset does
+/// (<see cref="GraphicsPresets"/>); Godot marks the mode experimental. The file is the toml's mirror: a hand-written
 /// <c>driver/threads/thread_model</c> there is replaced by what the toml says, and every other
 /// key in the file is kept.
 ///

@@ -23,9 +23,10 @@ namespace Refii.AndroidRuntime;
 public static class AndroidQuickSettings
 {
     /// <summary>The caps the Frame limit row offers, a button each, left to right; 0 is uncapped.</summary>
-    /// <remarks>Each divides a 60 Hz panel's refresh. 20 is for a phone that cannot hold 30: it
-    /// shows every frame for three refreshes, where a missed 30 alternates two and three.</remarks>
-    public static readonly int[] FrameCaps = { 0, 20, 30, 60 };
+    /// <remarks>20, 30 and 60 divide a 60 Hz panel's refresh, and 40 an 80 or 120 Hz panel's (a Galaxy
+    /// S25+ runs its panel at 80 Hz for it); on a 60 Hz panel 40 alternates one and two refreshes. 20 is for a phone that cannot
+    /// hold 30: it shows every frame for three refreshes, where a missed 30 alternates two and three.</remarks>
+    public static readonly int[] FrameCaps = { 0, 20, 30, 40, 60 };
 
     /// <summary>The presets Options offers, in order.</summary>
     public static readonly string[] Presets = { GraphicsPresets.Low, GraphicsPresets.Medium, GraphicsPresets.High, GraphicsPresets.Ultra };
@@ -166,13 +167,29 @@ public static class AndroidQuickSettings
     /// the settings now make, "custom" when they match none, as a change in the launcher stores it.
     /// </summary>
     /// <exception cref="IOException">The file could not be written.</exception>
-    public static void SetGraphics(string config, string key, string value, Action<string, string> live)
+    public static void SetGraphics(string config, string key, string value, Action<string, string> live) =>
+        SetGraphics(config, new[] { (key, value) }, live);
+
+    /// <summary>
+    /// Writes several graphics settings at once (an Options row and the settings that move with it,
+    /// <see cref="Refii.AndroidRuntime.AndroidGraphicsOptions.Writes"/>) and passes each to <paramref name="live"/>.
+    /// </summary>
+    /// <exception cref="IOException">The file could not be written.</exception>
+    public static void SetGraphics(string config, IEnumerable<(string Key, string Value)> settings, Action<string, string> live)
     {
         SortedDictionary<string, string> values = RuntimeConfig.ReadValues(config);
-        values[key] = value;
+        var written = settings.ToList();
+        foreach ((string key, string value) in written)
+        {
+            values[key] = value;
+        }
+
         values[GraphicsPresets.Key] = GraphicsPresets.Current(values);
         Write(config, values);
-        live(key, value);
+        foreach ((string key, string value) in written)
+        {
+            live(key, value);
+        }
     }
 
     /// <summary>The touch controls' opacity key, which they reread every couple of seconds.</summary>

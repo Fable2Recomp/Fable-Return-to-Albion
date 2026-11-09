@@ -177,6 +177,7 @@ public static class Engine_LevelShadowPrebuild
 
 			string geoSig = $"{scenarioEntry.HeightfieldPath}|{gdbPath}|{resolution}|{lightsPerMap}";
 			StaticShadowMapContainer? container = null;
+			string bakeFailure = string.Empty;
 
 			if (gdbPath.Length != 0 && bakedGeometryCache.TryGetValue(geoSig, out var cached))
 			{
@@ -194,11 +195,16 @@ public static class Engine_LevelShadowPrebuild
 					out StaticShadowMapContainer? baked,
 					out string resolvedGdb,
 					out int tris,
-					out string _) && baked is not null)
+					out bakeFailure) && baked is not null)
 				{
 					container = baked;
 					if (resolvedGdb.Length != 0)
 					{
+						if (Refii.AndroidRuntime.AndroidBakedShadows.KeepsOneBake)
+						{
+							bakedGeometryCache.Clear();
+						}
+
 						bakedGeometryCache[$"{scenarioEntry.HeightfieldPath}|{resolvedGdb}|{resolution}|{lightsPerMap}"] =
 							(container, tris);
 					}
@@ -227,9 +233,11 @@ public static class Engine_LevelShadowPrebuild
 			}
 			else
 			{
+				GD.PrintErr($"[shadow-prebuild] {scenarioEntry.Name} ({scenario}): {bakeFailure}");
 				failed++;
 			}
 
+			Refii.AndroidRuntime.AndroidBakedShadows.AfterArea();
 			done++;
 			report?.Invoke(new Progress(done, total, built, upToDate, failed, scenarioEntry.Name));
 		}
