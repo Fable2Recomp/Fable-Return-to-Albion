@@ -55,9 +55,17 @@
 // 1818 live instances), the proxy's slot in the instance's list and the instance type. The host
 // bridge joins handles to entities (Fable3/src/hostbridge/src/cloth_feed.cpp).
 //
-// THE TICK. Each publish is stamped with the world's game tick as GetWorldFrame states it
-// (sub_82209028: component dword_83597034, game = component+0xC, game+0xBA set, then
-// *(*(*(game+0x1C)+4)+0x100)) and with the render frame dword_83597310.
+// THE INSTANT. The kicker poses the instance for the render frame's time R (sub_821989D8 stores
+// it at dbl_83597318, 0x82198A60, and hands it to the view, 0x82198D00 -> sub_8218E148 view+0x308)
+// inside the instance's transform window W = *(instance+0xB0): t0 at W+0, t1 at W+8, the times
+// of the last two render-queue batches that moved it (sub_822127E8 shifts t1 into t0 for a newer
+// batch, 0x82212804/0x82212808). sub_822055F8 takes alpha = clamp((R - t0) / (t1 - t0)), 1 when
+// t0 is 0 or the span is not positive, and sub_82260D00 poses the instance there; the cloth's
+// skin and colliders are built from that pose. So the pose is the instance at clamp(R, t0, t1)
+// — not the newest step, and not the game tick's — and each publish is stamped with that time as
+// a guest frame (refii_bridge_guest_frame_at, from the HF pass's step times, view_feed.cpp). The
+// window is the one the kicker read: only the render queue's drain writes it, before the views.
+// Stamped with the render frame dword_83597310 as well.
 
 #include <cstdint>
 #include <cstring>
@@ -73,7 +81,8 @@ REX_EXTERN(__imp__rex_ClothItem_Destroy);
 namespace {
 
 const refii::guest::Addr kRenderFrame{0x83597310u};
-const refii::guest::Addr kMainGameComponent{0x83597034u};
+/// The render frame's time R, the instant the kicker poses every cloth instance for.
+const refii::guest::Addr kRenderClock{0x83597318u};
 constexpr uint32_t kSkinnedInstanceType = 5u;
 constexpr uint32_t kMaxSlots = 256u;
 
@@ -96,14 +105,33 @@ uint32_t Word(const uint8_t* base, uint32_t address) {
   return PlausibleGuest(address) ? LoadGuestU32(base, address) : 0u;
 }
 
-/// sub_82209028, GetWorldFrame: the world's game tick, 0 when no world stands.
-uint32_t WorldTick(const uint8_t* base) {
-  const uint32_t component = Word(base, kMainGameComponent);
-  const uint32_t game = Word(base, component + 0xCu);
-  if (!PlausibleGuest(game) || base[game + 0xBAu] == 0u) {
-    return 0u;
+double LoadGuestF64(const uint8_t* base, uint32_t address) {
+  uint64_t bits = 0;
+  std::memcpy(&bits, base + address, sizeof(bits));
+  bits = __builtin_bswap64(bits);
+  double value;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+/// The guest frame of the instant sub_82263DC8 posed `instance` for: clamp(R, t0, t1) (the
+/// header's THE INSTANT). The current guest frame when the window or the step times are missing.
+double PoseFrame(const uint8_t* base, uint32_t instance) {
+  const uint32_t window = Word(base, instance + 0xB0u);
+  double posed = -1.0;
+  if (PlausibleGuest(window)) {
+    const double t0 = LoadGuestF64(base, window);
+    const double t1 = LoadGuestF64(base, window + 8u);
+    const double now = LoadGuestF64(base, kRenderClock);
+    if (t0 == 0.0 || !(t1 > t0)) {
+      posed = t1;
+    } else {
+      posed = now < t0 ? t0 : (now > t1 ? t1 : now);
+    }
   }
-  return Word(base, Word(base, Word(base, game + 0x1Cu) + 4u) + 0x100u);
+
+  const double frame = posed > 0.0 ? refii_bridge_guest_frame_at(posed) : -1.0;
+  return frame >= 0.0 ? frame : static_cast<double>(refii_bridge_guest_frame());
 }
 
 /// The vertices sub_82267EE8 wrote, as REFII_CLOTH_VERTEX_FLOATS floats each. One buffer: the
@@ -178,7 +206,7 @@ void State(const uint8_t* base, uint32_t item) {
 
   const uint32_t flags = Word(base, instance + 4u) == kSkinnedInstanceType ? REFII_CLOTH_SKINNED : 0u;
   refii_bridge_cloth_published(item, Word(base, instance + 0x10u), slot, flags, Word(base, kRenderFrame),
-                               WorldTick(base), g_vertices, count);
+                               PoseFrame(base, instance), g_vertices, count);
 }
 
 }  // namespace

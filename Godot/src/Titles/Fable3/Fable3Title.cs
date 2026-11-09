@@ -21,6 +21,13 @@ public sealed class Fable3Title : Engine_TitleGame
 	/// </summary>
 	public override bool GuestStatesLevelEffects => true;
 
+	/// <summary>
+	/// Measured 2026-11-09 (Mistpeak camp, the guest's own cloth publish): the guest simulated and
+	/// drew the morphed hero's hat and both coat pieces as cloth (3 pieces stated and drawn for the
+	/// hero entity), so its morphed garments keep their cloth.
+	/// </summary>
+	public override bool MorphedModelsKeepCloth => true;
+
 	/// <summary>Fable 3's shader banks are entries of levels.bnk, not loose files.</summary>
 	public override (string Named, string Release)? PackedShaderBanks =>
 		("shaders/shaders.sbk", "shaders/shadersrelease.sbk");

@@ -445,6 +445,14 @@ public static class Engine_TickClock
 			: tick - ((int)(frame & 1u) == _tickParity ? 0.5 : 0.0);
 	}
 
+	/// <summary>
+	/// A guest frame (fractional: an instant between two HF steps) as a stamp on
+	/// <see cref="FrameStamp"/>'s timeline: each HF step is half a game tick, counted from the frame
+	/// the stamp was last derived for. NaN until that stamp exists.
+	/// </summary>
+	public static double StampOfGuestFrame(double frame) =>
+		double.IsNaN(FrameStamp) || _stampFrame == 0u ? double.NaN : FrameStamp + ((frame - _stampFrame) * 0.5);
+
 	/// <summary>Publishes the frame's game tick. Zero (no world) leaves the last one standing.</summary>
 	public static void PublishGuestGameTick(uint tick)
 	{

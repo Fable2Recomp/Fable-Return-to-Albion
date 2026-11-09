@@ -686,7 +686,10 @@ extern "C" {
 ///     blue, alpha), which Fable 3's guest applies at every draw (Fable 2 writes white), and [26]
 ///     its particle flushes; flags 128 (spline points stated) and 256 (saturation mask); adds
 ///     RefiiHostGetFxSpline — those points by handle.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 239; }
+/// 240 restates RefiiHostGetClothPieceVertices: a pose by index (0 the newest of up to four) with
+///     the guest frame, fractional, of the instant it was posed for (a double), in place of the
+///     current/previous game tick; RefiiHostGetEntityClothPieces' [6] is the poses kept.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 240; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveRoot(char* output, uint32_t capacity) {
     auto* state = rex::system::kernel_state();

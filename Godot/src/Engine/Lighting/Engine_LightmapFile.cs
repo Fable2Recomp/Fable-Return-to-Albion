@@ -92,6 +92,13 @@ public sealed class LightmapContainer
 
     public bool ObjectAtlasBuilt { get; set; }
 
+    /// <summary>The composed atlas image awaiting its upload (<see cref="Engine_LevelBakedLighting.PrepareObjectAtlas"/>
+    /// makes it on the region's build worker; the first lookup on the main thread uploads it).</summary>
+    public Godot.Image? ObjectAtlasImage { get; set; }
+
+    /// <summary>Set once the atlas image has been composed, whether or not anything was in it.</summary>
+    public bool ObjectAtlasComposed { get; set; }
+
     public Dictionary<ulong, uint[]> VertexBakes { get; } = new();
 
     public Dictionary<ulong, uint[]> U32Arrays { get; } = new();

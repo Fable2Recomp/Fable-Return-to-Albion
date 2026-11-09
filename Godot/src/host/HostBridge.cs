@@ -23,7 +23,7 @@ public static partial class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 239;
+	public const int ExpectedAbiVersion = 240;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -615,12 +615,12 @@ public static partial class HostBridge
 	/// <see cref="GetClothPieceVertices"/>, the model hash of the part it belongs to, its proxy's
 	/// slot in that model's rigid list or, <see cref="Skinned"/>, skinned list, whether the guest
 	/// drew it as cloth in its current or last render frame (otherwise the record draws its own
-	/// skinned submesh), its vertex count, a sequence that moves with every publish, and the game
-	/// ticks of its current pose and of the pose kept for the previous tick (0 when none).
+	/// skinned submesh), its vertex count, a sequence that moves with every publish, and how many
+	/// poses are kept (<see cref="GetClothPieceVertices"/>' indices, newest first).
 	/// </summary>
 	public readonly record struct GuestClothPiece(
 		uint Key, uint Model, int Slot, bool Skinned, bool Drawn, int VertexCount, uint Sequence,
-		uint Tick, uint PreviousTick);
+		int PoseCount);
 
 	/// <summary>Words per piece in RefiiHostGetEntityClothPieces' rows.</summary>
 	public const int ClothPieceWords = 8;
@@ -701,8 +701,7 @@ public static partial class HostBridge
 				Drawn: (row[3] & 2u) != 0u,
 				VertexCount: (int)row[4],
 				Sequence: row[5],
-				Tick: row[6],
-				PreviousTick: row[7]);
+				PoseCount: (int)row[6]);
 		}
 
 		return count;
@@ -710,19 +709,21 @@ public static partial class HostBridge
 
 	/// <summary>
 	/// One stated piece's vertices, <see cref="ClothVertexFloats"/> floats each, in the model's own
-	/// space (the file's Z-up): the current pose, or <paramref name="previous"/> the last pose of the
-	/// previous game tick. Returns the vertex count, 0 when the piece or pose is not there.
+	/// space (the file's Z-up): the pose at <paramref name="index"/> (0 the newest), with the guest
+	/// frame, fractional, of the instant the guest posed it for
+	/// (<see cref="Refii.Core.Engine_TickClock.StampOfGuestFrame"/> puts it on the draw timeline).
+	/// Returns the vertex count, 0 when the piece or pose is not there.
 	/// </summary>
-	public static int GetClothPieceVertices(uint key, bool previous, float[] into, out uint tick)
+	public static int GetClothPieceVertices(uint key, int index, float[] into, out double frame)
 	{
-		tick = 0u;
-		if (key == 0 || !ClothStated || !IsGuestUp)
+		frame = 0.0;
+		if (key == 0 || index < 0 || !ClothStated || !IsGuestUp)
 		{
 			return 0;
 		}
 
 		return (int)RefiiHostGetClothPieceVertices(
-			key, previous ? 1u : 0u, into, (uint)(into.Length / ClothVertexFloats), out tick);
+			key, (uint)index, into, (uint)(into.Length / ClothVertexFloats), out frame);
 	}
 
 	/// <summary>
@@ -9218,7 +9219,7 @@ public static partial class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetClothPieceVertices(
-		uint key, uint previous, [Out] float[] outFloats, uint maxVertices, out uint outTick);
+		uint key, uint index, [Out] float[] outFloats, uint maxVertices, out double outFrame);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetEntityViewSphere(uint entity, [Out] float[] sphere);

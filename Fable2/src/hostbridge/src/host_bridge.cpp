@@ -6982,9 +6982,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityClothPieces(uint32_t, uint32_t*
 
 /// Fable 2 states no cloth vertices (RefiiHostGetEntityClothPieces).
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClothPieceVertices(uint32_t, uint32_t, float*, uint32_t,
-                                                              uint32_t* out_tick) {
-    if (out_tick != nullptr) {
-        *out_tick = 0u;
+                                                              double* out_frame) {
+    if (out_frame != nullptr) {
+        *out_frame = 0.0;
     }
     return 0u;
 }

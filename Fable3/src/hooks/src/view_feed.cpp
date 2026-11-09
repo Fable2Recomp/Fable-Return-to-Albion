@@ -113,13 +113,18 @@ REX_EXTERN(rex_Camera_Blend) {
   __imp__rex_Camera_Blend(ctx, base);
 }
 
-// THE GUEST FRAME. sub_82255CF0(game) is the main loop's high-frequency pass (its one caller,
-// sub_821CB7B0 at disc 0x821CBEE8): the camera blend and publish above, the posed state of the step.
-// The guest keeps no counter of it, so this is where the host learns a new frame of guest state
-// is in memory — what Fable 2's rex_lhGameLoop_HighFrequencyUpdate states.
+// THE GUEST FRAME. sub_82255CF0(game, f1 step time) is the main loop's high-frequency pass (its
+// one caller, sub_821CB7B0 at disc 0x821CBEE8): the camera blend and publish above, the posed
+// state of the step. The guest keeps no counter of it, so this is where the host learns a new frame
+// of guest state is in memory — what Fable 2's rex_lhGameLoop_HighFrequencyUpdate states. f1 is
+// the step's time (lhGameLoop_Tick's gameloop+0xC0, QPC seconds; `fmr f31,f1` at 0x82255D0C), the
+// stamp it gives the render queue's batch (sub_82195F88(dword_835A0270, f31) at 0x82255D28): kept
+// with the frame, it turns a render-side time back into a guest frame (cloth_hooks.cpp).
 REX_EXTERN(rex_GameLoop_HighFrequencyUpdate) {
+  const double step_time = ctx.f1.f64;
   __imp__rex_GameLoop_HighFrequencyUpdate(ctx, base);
   refii_bridge_note_guest_frame();
+  refii_bridge_note_guest_step_time(step_time);
 }
 
 REX_EXTERN(rex_Engine_IsPreLoading) {

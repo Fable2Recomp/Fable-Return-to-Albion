@@ -129,9 +129,9 @@ extern "C" {
 /// slot of its proxy in that model's instance — the rigid list's index, or with flag 1 the skinned
 /// list's, [3] flags (1 the skinned list, 2 drawn as cloth in the guest's current or last render
 /// frame; clear, the record draws its own skinned submesh), [4] its vertex count, [5] a sequence
-/// that moves with every publish, [6] the game tick of its current pose, [7] that of the pose kept
-/// for the previous tick, 0 when none. Returns the rows written.
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityClothPieces(uint32_t entity, uint32_t* out_words, uint32_t max_pieces) {
+/// that moves with every publish, [6] how many poses are kept (RefiiHostGetClothPieceVertices'
+/// indices, newest first), [7] 0. Returns the rows written.
+[[maybe_unused]] static uint32_t StatedClothPieces(uint32_t entity, uint32_t* out_words, uint32_t max_pieces) {
     rex::memory::Memory* memory = SafeKernelMemory();
     const uint8_t* base = memory == nullptr ? nullptr : memory->virtual_membase();
     if (base == nullptr || out_words == nullptr || max_pieces == 0u || !Plausible(entity)) {
@@ -173,14 +173,22 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityClothPieces(uint32_t entity, ui
     return found;
 }
 
+/// NOT STATED (0xFFFFFFFF), as Fable 2's bridge answers: the shell runs Fable 3's cloth on its own
+/// solver, posed from the skeleton it draws and stepped on its own clock, so cloth and hair move
+/// with the body they hang on. The guest's own cloth (cloth_hooks.cpp, StatedClothPieces above)
+/// was drawn from the guest's render-side pose, which left a running hero's coat rigid.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityClothPieces(uint32_t, uint32_t*, uint32_t) {
+    return 0xFFFFFFFFu;
+}
+
 /// One piece's drawn vertices, 12 floats each — position xyz 1, normal xyz 0, tangent xyz and
 /// handedness — in the model's own space (the file's Z-up), as the guest wrote its vertex buffer:
-/// the current pose, or with `previous` non-zero the last pose of the previous game tick.
-/// `out_tick` is the pose's game tick. Returns the vertex count, 0 when the piece or the pose is
-/// not there or does not fit.
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClothPieceVertices(uint32_t key, uint32_t previous, float* out_floats,
-                                                              uint32_t max_vertices, uint32_t* out_tick) {
-    return refii_bridge_cloth_vertices(key, previous, out_floats, max_vertices, out_tick, nullptr);
+/// the pose at `index` (0 the newest). `out_frame` is the guest frame, fractional, of the instant
+/// the guest posed it for (cloth_hooks.cpp). Returns the vertex count, 0 when the piece or the pose
+/// is not there or does not fit.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClothPieceVertices(uint32_t key, uint32_t index, float* out_floats,
+                                                              uint32_t max_vertices, double* out_frame) {
+    return refii_bridge_cloth_vertices(key, index, out_floats, max_vertices, out_frame, nullptr);
 }
 
 }  // extern "C"

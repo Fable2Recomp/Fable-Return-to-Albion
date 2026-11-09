@@ -882,6 +882,7 @@ public static class Engine_LevelScene
             Engine_LevelBakedLighting.TryLoad(
                 bakedGdbPath, p => source(p), out bakedLightmaps, out probeField);
             Engine_LevelBakedLighting.CurrentProbes = probeField;
+            Engine_LevelBakedLighting.PrepareObjectAtlas(bakedLightmaps);
 
             GD.Print(
                 $"[baked] {level}: {Engine_LevelBakedLighting.Describe(bakedLightmaps, probeField)}");

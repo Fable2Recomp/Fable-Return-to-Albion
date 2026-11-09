@@ -7,11 +7,11 @@ namespace Refii.Physics;
 /// brought into the drawn mesh's space and sampled at the shared draw tick. Pure: no engine type.
 /// </summary>
 /// <remarks>
-/// The guest publishes each piece once per render frame, stamped with the world's game tick; the
-/// bridge keeps the newest pose of the current tick and the last pose of the tick before. The
-/// shell draws every tick-stamped thing at one point on that timeline
-/// (<see cref="Refii.Entities.Engine_DrawnFrame.DrawTick"/>), so the cloth is blended between those
-/// two poses there, as a body's placement and its bone pose are.
+/// The guest publishes each piece once per render frame, posed for an instant between two of its HF
+/// steps; the bridge keeps the last few poses, each stamped with that instant as a guest frame. The
+/// shell draws every stamped thing at one point on the game-tick timeline
+/// (<see cref="Refii.Entities.Engine_DrawnFrame.DrawTick"/>), so the cloth is blended between the
+/// two poses stamped around it, as a body's bone pose is.
 /// </remarks>
 public static class Engine_ClothStated
 {
@@ -24,18 +24,46 @@ public static class Engine_ClothStated
         skinned ? rigidRecords + slot : slot;
 
     /// <summary>
-    /// How far from the previous tick's pose toward the current one the draw tick falls, clamped
-    /// to [0, 1]. 1 (the current pose) without a previous pose or a draw tick.
+    /// The two poses around <paramref name="drawTick"/> among <paramref name="stamps"/> (newest
+    /// first, on the draw timeline) and how far from the older toward the newer it falls: past the
+    /// newest, the newest alone (t 1); before the oldest, the oldest alone; a NaN draw point or a
+    /// NaN stamp, the newest. Indices into <paramref name="stamps"/>.
     /// </summary>
-    public static float Fraction(double drawTick, uint previousTick, uint currentTick)
+    public static (int Older, int Newer, float T) Locate(ReadOnlySpan<double> stamps, double drawTick)
     {
-        if (previousTick == 0u || currentTick <= previousTick || double.IsNaN(drawTick))
+        if (stamps.Length == 0)
         {
-            return 1.0f;
+            return (-1, -1, 1.0f);
         }
 
-        double t = (drawTick - previousTick) / (currentTick - previousTick);
-        return (float)Math.Clamp(t, 0.0, 1.0);
+        if (double.IsNaN(drawTick) || double.IsNaN(stamps[0]) || drawTick >= stamps[0])
+        {
+            return (0, 0, 1.0f);
+        }
+
+        for (int i = 1; i < stamps.Length; i++)
+        {
+            double older = stamps[i];
+            if (double.IsNaN(older))
+            {
+                break;
+            }
+
+            if (drawTick >= older)
+            {
+                double span = stamps[i - 1] - older;
+                float t = span > 0.0 ? (float)Math.Clamp((drawTick - older) / span, 0.0, 1.0) : 1.0f;
+                return (i, i - 1, t);
+            }
+        }
+
+        int oldest = stamps.Length - 1;
+        while (oldest > 0 && double.IsNaN(stamps[oldest]))
+        {
+            oldest--;
+        }
+
+        return (oldest, oldest, 1.0f);
     }
 
     /// <summary>

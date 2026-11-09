@@ -42,6 +42,33 @@ public sealed class ClothPatch
         DrivenMask = mask;
     }
 
+    /// <summary>
+    /// Whether <see cref="Capture"/> can build <paramref name="piece"/>'s surface: vertices, and a
+    /// whole triangle list that stays inside them. A piece it cannot is dropped from the body, so
+    /// piece i and surface i stay the same piece.
+    /// </summary>
+    public static bool Capturable(ClothPiece piece)
+    {
+        ClothAsset asset = piece.Asset;
+        int count = asset.VertexCount;
+        if (count == 0 || asset.Indices.Length < 3)
+        {
+            return false;
+        }
+
+        int triangles = asset.Indices.Length - (asset.Indices.Length % 3);
+        for (int i = 0; i < triangles; i++)
+        {
+            if (asset.Indices[i] >= count)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>One surface per piece, in order: every piece must pass <see cref="Capturable"/>.</summary>
     public static ClothPatch? Capture(IReadOnlyList<ClothPiece> pieces)
     {
         var surfaces = new List<Surface>();

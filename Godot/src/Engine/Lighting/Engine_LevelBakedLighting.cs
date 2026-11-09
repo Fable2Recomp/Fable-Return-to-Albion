@@ -640,6 +640,9 @@ public static partial class Engine_LevelBakedLighting
 					container.ObjectAtlas = null;
 				}
 
+				container.ObjectAtlasImage?.Dispose();
+				container.ObjectAtlasImage = null;
+
 				lock (container.ObjectTextures)
 				{
 					foreach (ImageTexture? tex in container.ObjectTextures.Values)
@@ -1491,7 +1494,7 @@ public static partial class Engine_LevelBakedLighting
 
 		if (!container.ObjectAtlasBuilt)
 		{
-			BuildObjectAtlas(container);
+			UploadObjectAtlas(container);
 		}
 
 		if (container.ObjectAtlas is null ||
@@ -1505,34 +1508,85 @@ public static partial class Engine_LevelBakedLighting
 		return true;
 	}
 
-	private static void BuildObjectAtlas(LightmapContainer container)
+	/// <summary>
+	/// Composes the region's object-lightmap atlas image, CPU only, so the region's build worker
+	/// can pay it (Engine_LevelScene, right after the bake loads) rather than the first prop step
+	/// on the main thread — 500 to 700 ms a load when it ran there. Safe on any thread; once per
+	/// container.
+	/// </summary>
+	public static void PrepareObjectAtlas(LightmapContainer? container)
 	{
-		container.ObjectAtlasBuilt = true;
+		if (container is null || container.ObjectLightmapBlobs.Count == 0)
+		{
+			return;
+		}
 
-		var decoded = new List<(ulong Key, Image Image)>();
-		long area = 0;
-		int widest = 1;
-		foreach (KeyValuePair<ulong, byte[]> entry in container.ObjectLightmapBlobs)
+		lock (container.ObjectAtlasRects)
+		{
+			if (!container.ObjectAtlasComposed)
+			{
+				ComposeObjectAtlas(container);
+			}
+		}
+	}
+
+	/// <summary>The atlas texture from its composed image (composing it here when no worker did),
+	/// published once; main thread.</summary>
+	private static void UploadObjectAtlas(LightmapContainer container)
+	{
+		PrepareObjectAtlas(container);
+		lock (container.ObjectAtlasRects)
+		{
+			container.ObjectAtlasBuilt = true;
+			using Image? atlas = container.ObjectAtlasImage;
+			container.ObjectAtlasImage = null;
+			if (atlas is null)
+			{
+				return;
+			}
+
+			container.ObjectAtlas = Refii.Textures.Engine_TextureUpload.CreateTexture(atlas);
+		}
+	}
+
+	private static void ComposeObjectAtlas(LightmapContainer container)
+	{
+		container.ObjectAtlasComposed = true;
+
+		// Each blob decodes on its own, so they decode in parallel (300-odd a region; one after
+		// another they were most of a second).
+		KeyValuePair<ulong, byte[]>[] blobs = container.ObjectLightmapBlobs.ToArray();
+		var images = new Image?[blobs.Length];
+		System.Threading.Tasks.Parallel.For(0, blobs.Length, i =>
 		{
 			// Decoded to an image, never through a texture: `GetImage` on a texture is a GPU
 			// readback that stalls every frame in flight, once per lightmap.
 			Image? image = container.SharedKeyTable
-				? ComposeObjectBake(container, entry.Key, entry.Value)
-				: DecodeImage(entry.Value);
+				? ComposeObjectBake(container, blobs[i].Key, blobs[i].Value)
+				: DecodeImage(blobs[i].Value);
 			if (image is not null && image.IsCompressed())
 			{
 				image.Decompress();
 			}
 
+			images[i] = image;
+		});
+
+		var decoded = new List<(ulong Key, Image Image)>();
+		long area = 0;
+		int widest = 1;
+		for (int i = 0; i < blobs.Length; i++)
+		{
+			Image? image = images[i];
 			if (image is null)
 			{
-				GD.PushWarning($"[bake] object lightmap {entry.Key:X16} failed to decode");
+				GD.PushWarning($"[bake] object lightmap {blobs[i].Key:X16} failed to decode");
 				continue;
 			}
 
 			area += (long)image.GetWidth() * image.GetHeight();
 			widest = Math.Max(widest, image.GetWidth());
-			decoded.Add((entry.Key, image));
+			decoded.Add((blobs[i].Key, image));
 		}
 
 		if (decoded.Count == 0)
@@ -1568,7 +1622,7 @@ public static partial class Engine_LevelBakedLighting
 
 		int atlasHeight = penY + rowHeight;
 		Image.Format atlasFormat = container.SharedKeyTable ? Image.Format.Rgbe9995 : Image.Format.Rgba8;
-		using var atlas = Image.CreateEmpty(rowWidth, atlasHeight, false, atlasFormat);
+		Image atlas = Image.CreateEmpty(rowWidth, atlasHeight, false, atlasFormat);
 
 		float atlasW = rowWidth;
 		float atlasH = atlasHeight;
@@ -1598,7 +1652,13 @@ public static partial class Engine_LevelBakedLighting
 			}
 		}
 
-		container.ObjectAtlas = Refii.Textures.Engine_TextureUpload.CreateTexture(atlas);
+		Image ready = Refii.Textures.Engine_TextureUpload.PrepareAhead(atlas);
+		if (!ReferenceEquals(ready, atlas))
+		{
+			atlas.Dispose();
+		}
+
+		container.ObjectAtlasImage = ready;
 		GD.Print($"[bake] object lightmap atlas: {decoded.Count} texture(s), " +
 			$"{rowWidth}x{atlasHeight}");
 	}
@@ -1751,13 +1811,21 @@ public static partial class Engine_LevelBakedLighting
 	/// <summary>A Fable 3 entry's composed bake at its slot-0 size (<see cref="ComposeFable3Bake"/>).</summary>
 	private static Image? ComposeObjectBake(LightmapContainer container, ulong key, byte[] intensityBlob)
 	{
-		if (DecodeImage(intensityBlob) is not { } size)
+		int width;
+		int height;
+		using (Image? size = DecodeImage(intensityBlob))
 		{
-			return null;
+			if (size is null)
+			{
+				return null;
+			}
+
+			width = size.GetWidth();
+			height = size.GetHeight();
 		}
 
 		container.ObjectSecondLightmapBlobs.TryGetValue(key, out byte[]? colour);
-		return ComposeFable3Bake(intensityBlob, colour, size.GetWidth(), size.GetHeight());
+		return ComposeFable3Bake(intensityBlob, colour, width, height);
 	}
 
 	/// <summary>The object lightmap for a placement key as its own texture, or null when none.</summary>

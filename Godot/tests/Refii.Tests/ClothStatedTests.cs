@@ -37,8 +37,8 @@ public sealed class ClothStatedTests
     {
         uint[] words =
         {
-            0x45323110u, 0xE3C5D2A7u, 0u, 3u, 230u, 17u, 9001u, 9000u,
-            0x44D5C1B0u, 0x32F79A3Fu, 2u, 0u, 70u, 4u, 9001u, 0u,
+            0x45323110u, 0xE3C5D2A7u, 0u, 3u, 230u, 17u, 4u, 0u,
+            0x44D5C1B0u, 0x32F79A3Fu, 2u, 0u, 70u, 4u, 1u, 0u,
         };
         var pieces = new HostBridge.GuestClothPiece[4];
 
@@ -46,9 +46,9 @@ public sealed class ClothStatedTests
 
         AssertThat(count).IsEqual(2);
         AssertThat(pieces[0]).IsEqual(new HostBridge.GuestClothPiece(
-            0x45323110u, 0xE3C5D2A7u, 0, true, true, 230, 17u, 9001u, 9000u));
+            0x45323110u, 0xE3C5D2A7u, 0, true, true, 230, 17u, 4));
         AssertThat(pieces[1]).IsEqual(new HostBridge.GuestClothPiece(
-            0x44D5C1B0u, 0x32F79A3Fu, 2, false, false, 70, 4u, 9001u, 0u));
+            0x44D5C1B0u, 0x32F79A3Fu, 2, false, false, 70, 4u, 1));
     }
 
     [TestCase]
@@ -69,14 +69,27 @@ public sealed class ClothStatedTests
         AssertThat(Engine_ClothStated.Record(true, 0, 0)).IsEqual(0);
     }
 
+    /// <summary>Poses newest first, half a tick apart: the draw point falls between two of them.</summary>
     [TestCase]
-    public void FractionRunsFromThePreviousTickToTheCurrent()
+    public void LocateFindsThePosesAroundTheDrawPoint()
     {
-        AssertThat(Engine_ClothStated.Fraction(99.25, 99u, 100u)).IsEqual(0.25f);
-        AssertThat(Engine_ClothStated.Fraction(98.0, 99u, 100u)).IsEqual(0f);
-        AssertThat(Engine_ClothStated.Fraction(101.0, 99u, 100u)).IsEqual(1f);
-        AssertThat(Engine_ClothStated.Fraction(99.5, 0u, 100u)).IsEqual(1f);
-        AssertThat(Engine_ClothStated.Fraction(double.NaN, 99u, 100u)).IsEqual(1f);
+        double[] stamps = { 100.0, 99.5, 99.0, 98.5 };
+
+        AssertThat(Engine_ClothStated.Locate(stamps, 99.25)).IsEqual((2, 1, 0.5f));
+        AssertThat(Engine_ClothStated.Locate(stamps, 99.875)).IsEqual((1, 0, 0.75f));
+        AssertThat(Engine_ClothStated.Locate(stamps, 98.5)).IsEqual((3, 2, 0f));
+    }
+
+    [TestCase]
+    public void LocateHoldsAtEitherEnd()
+    {
+        double[] stamps = { 100.0, 99.5 };
+
+        AssertThat(Engine_ClothStated.Locate(stamps, 101.0)).IsEqual((0, 0, 1f));
+        AssertThat(Engine_ClothStated.Locate(stamps, 98.0)).IsEqual((1, 1, 1f));
+        AssertThat(Engine_ClothStated.Locate(stamps, double.NaN)).IsEqual((0, 0, 1f));
+        AssertThat(Engine_ClothStated.Locate(new[] { double.NaN, double.NaN }, 99.0)).IsEqual((0, 0, 1f));
+        AssertThat(Engine_ClothStated.Locate(ReadOnlySpan<double>.Empty, 99.0)).IsEqual((-1, -1, 1f));
     }
 
     /// <summary>

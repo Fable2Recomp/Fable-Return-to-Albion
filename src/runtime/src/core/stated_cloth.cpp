@@ -6,10 +6,10 @@
 // (on Godot's), which live in different modules; this is the one table both link. Neither side
 // knows a title: a hook states what the guest's publish wrote, the bridge joins it to entities.
 //
-// WHOLE PER PUBLISH. A publish replaces the piece's current pose in one step under the lock, so a
-// read never sees half of one. The pose of the previous game tick is kept beside it: a publish
-// stamped with a new tick first moves the current pose there, so the shell blends from the last
-// pose of tick T-1 to the newest of tick T at the shared draw tick, as it blends the bodies.
+// WHOLE PER PUBLISH. A publish replaces or adds one pose in one step under the lock, so a read
+// never sees half of one. Each pose carries the guest frame of the instant the guest posed it for
+// (fractional: the render frame poses between two HF steps), and the last REFII_CLOTH_POSES are
+// kept newest first, so the shell samples them at its draw point as it samples a body's ring.
 
 #include <cstdint>
 #include <cstring>
@@ -22,7 +22,7 @@
 namespace {
 
 struct ClothPose {
-  uint32_t tick = 0u;
+  double frame = 0.0;
   std::vector<float> floats;
 };
 
@@ -33,8 +33,9 @@ struct ClothPiece {
   uint32_t vertex_count = 0u;
   uint32_t frame = 0u;
   uint32_t sequence = 0u;
-  ClothPose current;
-  ClothPose previous;
+  /// Newest first; `poses` of them hold a pose.
+  ClothPose ring[REFII_CLOTH_POSES];
+  uint32_t poses = 0u;
 };
 
 std::mutex g_cloth_lock;
@@ -53,7 +54,7 @@ std::unordered_map<uint32_t, ClothPiece>& Pieces() {
 extern "C" {
 
 void refii_bridge_cloth_published(uint32_t key, uint32_t handle, uint32_t slot, uint32_t flags,
-                                  uint32_t frame, uint32_t tick, const float* vertices,
+                                  uint32_t frame, double pose_frame, const float* vertices,
                                   uint32_t vertex_count) {
   if (key == 0u || vertices == nullptr || vertex_count == 0u ||
       vertex_count > REFII_CLOTH_MAX_VERTICES) {
@@ -64,11 +65,20 @@ void refii_bridge_cloth_published(uint32_t key, uint32_t handle, uint32_t slot, 
   std::lock_guard<std::mutex> guard(g_cloth_lock);
   ++g_cloth_publishes;
   ClothPiece& piece = Pieces()[key];
-  if (piece.vertex_count != vertex_count) {
-    piece.current = ClothPose{};
-    piece.previous = ClothPose{};
-  } else if (piece.current.tick != tick && !piece.current.floats.empty()) {
-    std::swap(piece.previous, piece.current);
+  if (piece.vertex_count != vertex_count || (piece.poses != 0u && pose_frame < piece.ring[0].frame)) {
+    piece.poses = 0u;
+  }
+
+  if (piece.poses == 0u || pose_frame != piece.ring[0].frame) {
+    // A new instant: the oldest pose's buffer becomes the newest.
+    ClothPose recycled = std::move(piece.ring[REFII_CLOTH_POSES - 1u]);
+    for (uint32_t i = REFII_CLOTH_POSES - 1u; i > 0u; --i) {
+      piece.ring[i] = std::move(piece.ring[i - 1u]);
+    }
+    piece.ring[0] = std::move(recycled);
+    if (piece.poses < REFII_CLOTH_POSES) {
+      ++piece.poses;
+    }
   }
 
   piece.handle = handle;
@@ -77,8 +87,8 @@ void refii_bridge_cloth_published(uint32_t key, uint32_t handle, uint32_t slot, 
   piece.vertex_count = vertex_count;
   piece.frame = frame;
   ++piece.sequence;
-  piece.current.tick = tick;
-  piece.current.floats.assign(vertices, vertices + floats);
+  piece.ring[0].frame = pose_frame;
+  piece.ring[0].floats.assign(vertices, vertices + floats);
 }
 
 void refii_bridge_cloth_dropped(uint32_t key) {
@@ -114,18 +124,18 @@ uint32_t refii_bridge_cloth_pieces(const uint32_t* handles, uint32_t handle_coun
     row[4] = piece.vertex_count;
     row[5] = piece.frame;
     row[6] = piece.sequence;
-    row[7] = piece.current.tick;
-    row[8] = piece.previous.floats.empty() ? 0u : piece.previous.tick;
+    row[7] = piece.poses;
+    row[8] = 0u;
     ++written;
   }
 
   return written;
 }
 
-uint32_t refii_bridge_cloth_vertices(uint32_t key, uint32_t previous, float* out_floats,
-                                     uint32_t max_vertices, uint32_t* out_tick,
+uint32_t refii_bridge_cloth_vertices(uint32_t key, uint32_t index, float* out_floats,
+                                     uint32_t max_vertices, double* out_pose_frame,
                                      uint32_t* out_sequence) {
-  if (out_tick != nullptr) *out_tick = 0u;
+  if (out_pose_frame != nullptr) *out_pose_frame = 0.0;
   if (out_sequence != nullptr) *out_sequence = 0u;
   if (out_floats == nullptr || max_vertices == 0u) {
     return 0u;
@@ -138,13 +148,17 @@ uint32_t refii_bridge_cloth_vertices(uint32_t key, uint32_t previous, float* out
   }
 
   const ClothPiece& piece = found->second;
-  const ClothPose& pose = previous != 0u ? piece.previous : piece.current;
-  if (pose.floats.empty() || piece.vertex_count > max_vertices) {
+  if (index >= piece.poses || piece.vertex_count > max_vertices) {
+    return 0u;
+  }
+
+  const ClothPose& pose = piece.ring[index];
+  if (pose.floats.empty()) {
     return 0u;
   }
 
   std::memcpy(out_floats, pose.floats.data(), pose.floats.size() * sizeof(float));
-  if (out_tick != nullptr) *out_tick = pose.tick;
+  if (out_pose_frame != nullptr) *out_pose_frame = pose.frame;
   if (out_sequence != nullptr) *out_sequence = piece.sequence;
   return piece.vertex_count;
 }

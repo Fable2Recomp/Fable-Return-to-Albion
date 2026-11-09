@@ -233,7 +233,85 @@ public static class Engine_Clouds
             return null;
         }
 
-        return Engine_TexImage.TryCreateTexture(bytes, out _);
+        Image? image = Engine_TexImage.TryCreateImage(bytes, out _);
+        if (image is null || image.IsEmpty())
+        {
+            return null;
+        }
+
+        (byte[] Alpha, int W, int H) alpha = AlphaOf(image);
+        ImageTexture texture = Refii.Textures.Engine_TextureUpload.CreateTexture(image);
+        lock (DensityAlpha)
+        {
+            DensityAlpha[texture.GetInstanceId()] = alpha;
+        }
+
+        return texture;
+    }
+
+    /// <summary>
+    /// Each density map's alpha, taken from its decoded image before the upload, so the sky's
+    /// cloud-visibility test never reads a texture back from the GPU (a readback on the first
+    /// load's main thread waited 1 s for the render thread). Keyed by the texture's instance.
+    /// </summary>
+    private static readonly Dictionary<ulong, (byte[] Alpha, int W, int H)> DensityAlpha = new();
+
+    /// <summary>The alpha <see cref="ResolveDensityMap"/> kept for <paramref name="texture"/>, handed
+    /// over once.</summary>
+    public static bool TakeDensityAlpha(Texture2D? texture, out (byte[] Alpha, int W, int H) map)
+    {
+        map = (System.Array.Empty<byte>(), 0, 0);
+        if (texture is null)
+        {
+            return false;
+        }
+
+        lock (DensityAlpha)
+        {
+            return DensityAlpha.Remove(texture.GetInstanceId(), out map);
+        }
+    }
+
+    /// <summary>One byte of alpha per texel of the image's top level; the image is left as it was.</summary>
+    public static (byte[] Alpha, int W, int H) AlphaOf(Image source)
+    {
+        Image image = source;
+        bool copied = false;
+        if (image.IsCompressed() || image.GetFormat() != Image.Format.Rgba8)
+        {
+            image = (Image)source.Duplicate();
+            copied = true;
+            if (image.IsCompressed())
+            {
+                image.Decompress();
+            }
+
+            if (image.GetFormat() != Image.Format.Rgba8)
+            {
+                image.Convert(Image.Format.Rgba8);
+            }
+        }
+
+        try
+        {
+            int w = image.GetWidth();
+            int h = image.GetHeight();
+            byte[] rgba = image.GetData();
+            var alpha = new byte[w * h];
+            for (int i = 0, a = 3; i < alpha.Length && a < rgba.Length; i++, a += 4)
+            {
+                alpha[i] = rgba[a];
+            }
+
+            return (alpha, w, h);
+        }
+        finally
+        {
+            if (copied)
+            {
+                image.Dispose();
+            }
+        }
     }
 
     // Made once: a string literal converts to a new StringName on every call.

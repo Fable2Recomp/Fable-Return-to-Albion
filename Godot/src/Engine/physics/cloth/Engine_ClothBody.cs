@@ -149,19 +149,20 @@ public partial class Engine_ClothBody : MeshInstance3D
     /// <summary>The entity a body's parent stands for: GameEntities' meta on the entity node.</summary>
     private static readonly StringName EntityAddressMeta = "entity_address";
 
-    /// <summary>One piece's stated pose: the published buffers, their ticks and the drawn arrays.</summary>
+    /// <summary>One piece's stated poses: the published buffers newest first, the guest frame each
+    /// was posed for, the pair last drawn and the drawn arrays.</summary>
     private sealed class StatedPose
     {
         public uint Model;
         public uint Key;
         public uint Sequence;
-        public uint Tick;
-        public uint PreviousTick;
         public float Fraction = -1.0f;
+        public int Older = -1;
+        public int Newer = -1;
         public bool Drawn;
-        public float[] Current = Array.Empty<float>();
-        public float[] Previous = Array.Empty<float>();
-        public int PreviousCount;
+        public readonly float[][] Poses = { Array.Empty<float>(), Array.Empty<float>(), Array.Empty<float>(), Array.Empty<float>() };
+        public readonly double[] Frames = new double[4];
+        public int PoseCount;
         public PhysVec4[] Positions = Array.Empty<PhysVec4>();
         public PhysVec4[] Normals = Array.Empty<PhysVec4>();
         public PhysVec4[] Tangents = Array.Empty<PhysVec4>();
@@ -207,10 +208,12 @@ public partial class Engine_ClothBody : MeshInstance3D
         }
 
         // A morphed model carries no cloth definition in Fable 2's guest (its record copies drop
-        // the pointer), so its garments draw GPU-skinned; the same here. A title whose guest states
-        // its cloth says itself which pieces it draws.
+        // the pointer), so its garments draw GPU-skinned; the same here, for a title whose guest
+        // does that (Engine_TitleGame.MorphedModelsKeepCloth). A title whose guest states its cloth
+        // says itself which pieces it draws.
         bool stated = Refii.Host.HostBridge.ClothStated;
-        if (!stated && source.HasMeta(Refii.Hero.Engine_HeroBodyMorph.MorphedMeta))
+        if (!stated && !Refii.Core.Engine_TitleGame.Active.MorphedModelsKeepCloth &&
+            source.HasMeta(Refii.Hero.Engine_HeroBodyMorph.MorphedMeta))
         {
             return null;
         }
@@ -232,6 +235,13 @@ public partial class Engine_ClothBody : MeshInstance3D
 
         List<ClothPiece> pieces = Engine_ClothPieces.ForMesh(
             modelPaths, source, Refii.Game.AndroidMemoryRelease.ResolveClothPart);
+        if (pieces.Count == 0)
+        {
+            return null;
+        }
+
+        // A piece with no buildable surface would shift every later piece onto its neighbour's.
+        pieces.RemoveAll(piece => !ClothPatch.Capturable(piece));
         if (pieces.Count == 0)
         {
             return null;
@@ -594,7 +604,14 @@ public partial class Engine_ClothBody : MeshInstance3D
     {
         if (!Bound(Refii.Entities.Engine_BodyVariants.SourceMesh(parent)))
         {
+            // The mesh this body was built for is gone: give its surfaces back to the parent.
             Visible = false;
+            if (_statedDrawn != UInt128.Zero)
+            {
+                _statedDrawn = UInt128.Zero;
+                Refii.Entities.Engine_HiddenClusters.SetClothSurfaces(parent, UInt128.Zero);
+            }
+
             return;
         }
 
@@ -631,14 +648,26 @@ public partial class Engine_ClothBody : MeshInstance3D
 
             Refii.Host.HostBridge.GuestClothPiece stated = _statedRows[row];
             bool fresh = (stated.Key != pose.Key || stated.Sequence != pose.Sequence) && Fetch(pose, stated);
-            float t = Engine_ClothStated.Fraction(drawTick, pose.PreviousTick, pose.Tick);
-            if (fresh || t != pose.Fraction)
+
+            // Sampled at the draw point between the two poses stamped around it, as a body's ring is.
+            Span<double> stamps = stackalloc double[4];
+            for (int p = 0; p < pose.PoseCount; p++)
             {
+                stamps[p] = Refii.Core.Engine_TickClock.StampOfGuestFrame(pose.Frames[p]);
+            }
+
+            (int older, int newer, float t) = Engine_ClothStated.Locate(stamps[..pose.PoseCount], drawTick);
+            if (newer >= 0 && (fresh || t != pose.Fraction || older != pose.Older || newer != pose.Newer))
+            {
+                int floats = piece.Asset.VertexCount * Refii.Host.HostBridge.ClothVertexFloats;
+                ReadOnlySpan<float> from = older != newer ? pose.Poses[older].AsSpan(0, floats) : ReadOnlySpan<float>.Empty;
                 (pose.Min, pose.Max) = Engine_ClothStated.Blend(
-                    pose.Previous.AsSpan(0, pose.PreviousCount * Refii.Host.HostBridge.ClothVertexFloats),
-                    pose.Current, t, piece.Asset.VertexCount, pose.Positions, pose.Normals, pose.Tangents);
+                    from, pose.Poses[newer], older != newer ? t : 1.0f, piece.Asset.VertexCount,
+                    pose.Positions, pose.Normals, pose.Tangents);
                 _patch!.Pack(i, pose.Positions, pose.Normals, pose.Tangents);
                 pose.Fraction = t;
+                pose.Older = older;
+                pose.Newer = newer;
                 packed = true;
             }
 
@@ -686,34 +715,39 @@ public partial class Engine_ClothBody : MeshInstance3D
         SyncCollapse();
     }
 
-    /// <summary>Reads a piece's published poses; false when the bridge no longer has them.</summary>
+    /// <summary>Reads a piece's published poses, newest first; false when the bridge no longer has them.</summary>
     private static bool Fetch(StatedPose pose, in Refii.Host.HostBridge.GuestClothPiece stated)
     {
         int floats = stated.VertexCount * Refii.Host.HostBridge.ClothVertexFloats;
-        if (pose.Current.Length < floats)
+        int wanted = Math.Min(stated.PoseCount, pose.Poses.Length);
+        int count = 0;
+        for (int p = 0; p < wanted; p++)
         {
-            pose.Current = new float[floats];
-            pose.Previous = new float[floats];
+            if (pose.Poses[p].Length < floats)
+            {
+                pose.Poses[p] = new float[floats];
+            }
+
+            if (Refii.Host.HostBridge.GetClothPieceVertices(stated.Key, p, pose.Poses[p], out double frame) != stated.VertexCount)
+            {
+                break;
+            }
+
+            pose.Frames[p] = frame;
+            count++;
         }
 
-        if (Refii.Host.HostBridge.GetClothPieceVertices(stated.Key, false, pose.Current, out uint tick) != stated.VertexCount)
+        if (count == 0)
         {
             return false;
         }
 
-        pose.PreviousCount = 0;
-        pose.PreviousTick = 0u;
-        if (stated.PreviousTick != 0u &&
-            Refii.Host.HostBridge.GetClothPieceVertices(stated.Key, true, pose.Previous, out uint previousTick) == stated.VertexCount)
-        {
-            pose.PreviousCount = stated.VertexCount;
-            pose.PreviousTick = previousTick;
-        }
-
-        pose.Tick = tick;
+        pose.PoseCount = count;
         pose.Key = stated.Key;
         pose.Sequence = stated.Sequence;
         pose.Fraction = -1.0f;
+        pose.Older = -1;
+        pose.Newer = -1;
         return true;
     }
 
@@ -1350,7 +1384,7 @@ public partial class Engine_ClothBody : MeshInstance3D
         {
             StatedPose pose = _statedPoses[index - 1];
             return $"{asset.VertexCount} verts, record {_pieces[index - 1].Record}, stated by the guest, " +
-                (pose.Drawn ? $"drawn as cloth (publish {pose.Sequence}, tick {pose.Tick})" : "drawn skinned by the body");
+                (pose.Drawn ? $"drawn as cloth (publish {pose.Sequence}, {pose.PoseCount} pose(s), newest at guest frame {pose.Frames[0]:0.00})" : "drawn skinned by the body");
         }
 
         ClothInstance instance = _instances[index - 1];

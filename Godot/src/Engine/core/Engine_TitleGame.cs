@@ -53,6 +53,12 @@ public abstract class Engine_TitleGame
 	public virtual bool GuestStatesLevelEffects => false;
 
 	/// <summary>
+	/// A morph-blended model keeps its cloth. Fable 2's guest drops it: its MorphTarget blend copies
+	/// the records without the cloth definition (record+64), so its garments draw skinned.
+	/// </summary>
+	public virtual bool MorphedModelsKeepCloth => false;
+
+	/// <summary>
 	/// The title's UI over the world, standing up beside the session before any guest runs (it
 	/// draws from the shipped assets); null when the title has none. The game window drives it
 	/// through <c>Refii.Game.IGameTitleUi</c> when the node implements it.

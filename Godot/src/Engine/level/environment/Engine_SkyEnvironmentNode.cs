@@ -1668,34 +1668,23 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         var texture = material.GetShaderParameter(Param_cloud_density).As<Texture2D>();
-        Image? image = Refii.Core.Engine_ServerSyncs.Image(texture);
+
+        // The alpha the cloud build kept from the decoded image; a readback only for a texture
+        // made elsewhere.
+        if (Refii.Level.Engine_Clouds.TakeDensityAlpha(texture, out map))
+        {
+            _cloudAlpha[index] = map;
+            return map.Alpha.Length != 0;
+        }
+
+        using Image? image = Refii.Core.Engine_ServerSyncs.Image(texture);
         if (image is null)
         {
             _cloudAlpha[index] = map;
             return false;
         }
 
-        if (image.IsCompressed())
-        {
-            image.Decompress();
-        }
-
-        // One native crossing for the whole map, not a GetPixel per texel.
-        if (image.GetFormat() != Image.Format.Rgba8)
-        {
-            image.Convert(Image.Format.Rgba8);
-        }
-
-        int w = image.GetWidth();
-        int h = image.GetHeight();
-        byte[] rgba = image.GetData();
-        var alpha = new byte[w * h];
-        for (int i = 0, a = 3; i < alpha.Length && a < rgba.Length; i++, a += 4)
-        {
-            alpha[i] = rgba[a];
-        }
-
-        map = (alpha, w, h);
+        map = Refii.Level.Engine_Clouds.AlphaOf(image);
         _cloudAlpha[index] = map;
         return true;
     }

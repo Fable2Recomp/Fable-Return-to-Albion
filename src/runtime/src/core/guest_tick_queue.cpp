@@ -205,6 +205,59 @@ void refii_bridge_note_guest_frame(void) {
   g_guest_frame.fetch_add(1, std::memory_order_release);
 }
 
+namespace {
+/// The last HF passes' (guest frame, step time) pairs, oldest first in ring order.
+struct GuestStep {
+  uint32_t frame;
+  double time;
+};
+constexpr uint32_t kGuestSteps = 32u;
+std::mutex g_step_lock;
+GuestStep g_steps[kGuestSteps];
+uint32_t g_step_next = 0u;
+uint32_t g_step_count = 0u;
+}  // namespace
+
+void refii_bridge_note_guest_step_time(double time) {
+  const uint32_t frame = g_guest_frame.load(std::memory_order_acquire);
+  std::lock_guard<std::mutex> lock(g_step_lock);
+  if (g_step_count != 0u) {
+    const GuestStep& newest = g_steps[(g_step_next + kGuestSteps - 1u) % kGuestSteps];
+    if (time <= newest.time || frame <= newest.frame) {
+      // A clock or counter that went back is a new run of steps: forget the old ones.
+      g_step_count = 0u;
+    }
+  }
+  g_steps[g_step_next] = GuestStep{frame, time};
+  g_step_next = (g_step_next + 1u) % kGuestSteps;
+  if (g_step_count < kGuestSteps) {
+    ++g_step_count;
+  }
+}
+
+double refii_bridge_guest_frame_at(double time) {
+  std::lock_guard<std::mutex> lock(g_step_lock);
+  if (g_step_count == 0u || !(time == time)) {
+    return -1.0;
+  }
+  const uint32_t oldest = (g_step_next + kGuestSteps - g_step_count) % kGuestSteps;
+  const GuestStep* later = &g_steps[(g_step_next + kGuestSteps - 1u) % kGuestSteps];
+  if (time >= later->time) {
+    return static_cast<double>(later->frame);
+  }
+  for (uint32_t k = 1u; k < g_step_count; ++k) {
+    const GuestStep* earlier = &g_steps[(g_step_next + kGuestSteps - 1u - k) % kGuestSteps];
+    if (time >= earlier->time) {
+      const double span = later->time - earlier->time;
+      const double into = span > 0.0 ? (time - earlier->time) / span : 1.0;
+      return static_cast<double>(earlier->frame) +
+             into * static_cast<double>(later->frame - earlier->frame);
+    }
+    later = earlier;
+  }
+  return static_cast<double>(g_steps[oldest].frame);
+}
+
 void refii_bridge_guest_tick_pump_note_ran(void) {
   refii::vfs::g_drained.fetch_add(1, std::memory_order_relaxed);
 }

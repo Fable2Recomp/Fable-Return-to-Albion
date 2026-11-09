@@ -58,6 +58,12 @@ uint64_t refii_bridge_guest_tick_pump_drained(void);
 /// (`sub_821A61B0`, which writes every character's pose) returns. 0 before the first.
 uint32_t refii_bridge_guest_frame(void);
 void refii_bridge_note_guest_frame(void);
+/// The step time the HF pass that just counted ran for (a title's clock, seconds), kept with its
+/// guest frame for the last 32 passes; and the guest frame, fractional between two passes, that a
+/// time on that clock falls at (the newest pass's frame past it, the oldest kept before it; -1
+/// before any pass). A title stamps a value the guest made for a time between its steps with it.
+void refii_bridge_note_guest_step_time(double time);
+double refii_bridge_guest_frame_at(double time);
 void refii_bridge_guest_tick_pump_note_ran(void);
 
 // The drain protocol, and ONLY from the guest tick thread. Begin takes the whole queue aside
@@ -506,27 +512,29 @@ uint32_t refii_bridge_texture_layers_read(uint32_t entity, uint32_t* out, uint32
 // item), read back by its host bridge per entity.
 // - a publish: the render instance's handle the piece belongs to, the record slot of its proxy in
 //   that instance, flags (REFII_CLOTH_SKINNED: the instance's records are the skinned list), the
-//   guest render frame and game tick it was published on, and `vertex_count` vertices of
-//   REFII_CLOTH_VERTEX_FLOATS floats each — position xyz 1, normal xyz 0, tangent xyzw — in the
-//   model's own space, as the guest writes its vertex buffer. A publish stamped with a new tick
-//   keeps the piece's last pose as the previous tick's.
+//   guest render frame it was published on, the guest frame (fractional, refii_bridge_guest_frame_at)
+//   of the instant the guest posed it for, and `vertex_count` vertices of REFII_CLOTH_VERTEX_FLOATS
+//   floats each — position xyz 1, normal xyz 0, tangent xyzw — in the model's own space, as the
+//   guest writes its vertex buffer. The last REFII_CLOTH_POSES poses are kept, newest first; a
+//   publish for the same instant replaces that pose, one for an earlier instant starts over.
 // - a drop: the piece is gone (its sim item destroyed).
 #define REFII_CLOTH_VERTEX_FLOATS 12u
 #define REFII_CLOTH_MAX_VERTICES 8192u
 #define REFII_CLOTH_SKINNED 1u
+#define REFII_CLOTH_POSES 4u
 void refii_bridge_cloth_published(uint32_t key, uint32_t handle, uint32_t slot, uint32_t flags,
-                                  uint32_t frame, uint32_t tick, const float* vertices,
+                                  uint32_t frame, double pose_frame, const float* vertices,
                                   uint32_t vertex_count);
 void refii_bridge_cloth_dropped(uint32_t key);
 //   Read back: the pieces of any of `handles`, as rows of REFII_CLOTH_PIECE_WORDS words — key,
-//   handle, slot, flags, vertex count, frame, sequence (moves per publish), current tick, previous
-//   tick (0 when none is kept) — and one pose's vertices (`previous` non-zero for the previous
-//   tick's), returning the vertex count, 0 when the piece or pose is not there.
+//   handle, slot, flags, vertex count, frame, sequence (moves per publish), the poses kept, 0 —
+//   and one pose's vertices by `index` (0 the newest), with its guest frame, returning the vertex
+//   count, 0 when the piece or pose is not there.
 #define REFII_CLOTH_PIECE_WORDS 9u
 uint32_t refii_bridge_cloth_pieces(const uint32_t* handles, uint32_t handle_count,
                                    uint32_t* out_words, uint32_t max_pieces);
-uint32_t refii_bridge_cloth_vertices(uint32_t key, uint32_t previous, float* out_floats,
-                                     uint32_t max_vertices, uint32_t* out_tick,
+uint32_t refii_bridge_cloth_vertices(uint32_t key, uint32_t index, float* out_floats,
+                                     uint32_t max_vertices, double* out_pose_frame,
                                      uint32_t* out_sequence);
 uint64_t refii_bridge_cloth_publish_count(void);
 
