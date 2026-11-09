@@ -419,8 +419,13 @@ public static class Engine_PipelineWarmup
         if (!adds)
         {
             // Released here, on the main thread: a SkinReference left to the finalizer thread
-            // edits the live Skeleton3D's bindings from there (`~SkinReference`).
-            skin?.Dispose();
+            // edits the live Skeleton3D's bindings from there (`~SkinReference`). Unless a kept
+            // source holds it: meshes sharing a skin get the same C# wrapper back.
+            if (skin is not null && !sources.Exists(kept => ReferenceEquals(kept.Skin, skin)))
+            {
+                skin.Dispose();
+            }
+
             return;
         }
 
@@ -537,7 +542,7 @@ public static class Engine_PipelineWarmup
                 RenderingServer.InstanceGeometrySetMaterialOverlay(copy, overlay.GetRid());
             }
 
-            if (source.Skin is { } skin)
+            if (source.Skin is { } skin && GodotObject.IsInstanceValid(skin))
             {
                 RenderingServer.InstanceAttachSkeleton(copy, skin.GetSkeleton());
             }

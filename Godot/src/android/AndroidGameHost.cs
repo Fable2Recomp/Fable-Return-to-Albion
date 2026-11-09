@@ -362,9 +362,11 @@ public partial class AndroidGameHost : Node3D
         if (_world == null) _phase = InteractiveFrontEndPolicy.Status(found, screen, guiUp, canPressA);
     }
 
-    /// <summary>Whether the front end, the world or an error has the screen, which hides the status line and ends the startup screen.</summary>
+    /// <summary>Whether the front end, the title's own title screen (Fable 3 has no <see cref="IGameTitleUi"/>),
+    /// the world or an error has the screen, which hides the status line and ends the startup screen.</summary>
     private bool GameHasScreen =>
-        _ui?.IsRevealed == true || _world?.Entities is { ReadyForRelease: true } || _failure.Length != 0;
+        _ui?.IsRevealed == true || Engine_TitleGame.Active.Input.TitleScreenUp
+        || _world?.Entities is { ReadyForRelease: true } || _failure.Length != 0;
 
     /// <summary>Shows boot/configuration errors without introducing game actions.</summary>
     private void BuildStatusOverlay()

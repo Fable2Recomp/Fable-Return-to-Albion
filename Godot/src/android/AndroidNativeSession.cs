@@ -165,8 +165,9 @@ internal sealed class AndroidNativeSession
             }
 
             _phase = "initializing native guest";
+            // HostBridge states user_data_root, content_title_folders and cache_root itself; stating one
+            // again here fails the whole command line's parse, and the saves' folders with it.
             var result = HostBridge.Initialize(_options.GameRoot,
-                "--cache_root=" + Path.Combine(_appRoot, "cache"),
                 "--log_file=" + Path.Combine(_appRoot, "logs", "refii.log"));
             if (!result.Success) throw new InvalidOperationException(result.Message);
             _initialized = true;

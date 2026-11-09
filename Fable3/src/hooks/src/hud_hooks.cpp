@@ -165,7 +165,9 @@ constexpr uint32_t kFaderLock = 33u;
 const refii::guest::Addr kGameTickRate{0x832DF4D0u};  // double, 15.0
 const refii::guest::Addr kHfStepRate{0x832DF4D8u};    // double, 30.0
 
-double LoadGuestF64(const uint8_t* base, uint32_t address) {
+// Not inlined: the phone's Clang folded the two constant addresses of FadeRate's reads into a
+// sign-extended 64-bit offset, so the second one read below the guest's memory and faulted.
+[[gnu::noinline]] double LoadGuestF64(const uint8_t* base, uint32_t address) {
   const uint64_t bits = (static_cast<uint64_t>(LoadGuestU32(base, address)) << 32) | LoadGuestU32(base, address + 4u);
   double value = 0.0;
   std::memcpy(&value, &bits, sizeof(value));
