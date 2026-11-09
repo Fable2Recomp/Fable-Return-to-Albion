@@ -4130,6 +4130,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetStatedFxCount(void) {
     return refii::vfs::StatedFxCount();
 }
 
+/// A stated effect's spline points (RefiiHostGetActiveFx flag 128): none here — Fable 2's spline
+/// override travels in the node row itself (flag 32).
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFxSpline(uint32_t /*handle*/, float* /*out*/, uint32_t /*max_points*/) {
+    return 0u;
+}
+
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_effects) {
     if (out == nullptr || max_effects == 0u) {
         return 0u;
@@ -4182,8 +4188,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
     /// position (3 floats), the world basis rows 0..2 (9 floats), the effect handle, the
     /// effect's intensity (float), the element's scale (float, +412), its fade-out fraction
     /// (float), the entity that owns the effect and the entity it is attached to (0 when
-    /// none). Must match `HostBridge.ActiveFxStride`; no compiler checks it.
-    constexpr uint32_t kStride = 22u;
+    /// none), and a stated colour's red, green, blue and alpha (floats; white here, where the
+    /// effect's colour is the intensity above), and the particle flushes stated (0 here). Must
+    /// match `HostBridge.ActiveFxStride`; no compiler checks it.
+    constexpr uint32_t kStride = 27u;
 
     // Both ends re-read together: the vector reallocates as it grows and no lock is taken.
     const uint32_t begin = read32(kVectorBegin);
@@ -4452,7 +4460,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
         // spline node's override vector (`begin` at +0x14C, `end` at +0x150, 16-byte stride) with
         // override flag `*(uint8_t*)(node + 0x158) = 1`. Non-root spline nodes do not use
         // `row[7..15]` (`Rows`) or `row[18]` (`Scale`), so we export 2..3 override world points in
-        // `row[7..15]` and the point count in `row[18]` without changing `ActiveFxWords = 22`.
+        // `row[7..15]` and the point count in `row[18]`.
         if (!is_root && node_vt == refii::guest::Address(0x820058C8u) &&
             read8(node + 0x158u) != 0u) {
             const uint32_t sp_begin = read32(node + 0x14Cu);
@@ -4485,6 +4493,16 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
                     }
                 }
             }
+        }
+
+        {
+            const float white = 1.0f;
+            uint32_t bits;
+            std::memcpy(&bits, &white, sizeof(bits));
+            for (uint32_t lane = 22u; lane < 26u; ++lane) {
+                row[lane] = bits;
+            }
+            row[26] = 0u;
         }
 
         ++written;

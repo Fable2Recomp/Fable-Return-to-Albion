@@ -1266,11 +1266,20 @@ public static partial class Engine_LevelProps
             }
         }
 
-        int levelFx = Engine_LevelFx.Spawn(
-            container, view, supplementalViews, placements, fxModelPaths, fxAttachTo, probes);
-        if (levelFx != 0)
+        // In a game whose guest states its level's effects, those statements draw them; spawning
+        // them from the level data as well drew each one twice.
+        if (Refii.Fx.Engine_LiveFx.GuestOwnsLevelEffects(Refii.Core.Engine_RefiiConfig.Read(out _)))
         {
-            GD.Print($"[props] {level}: {levelFx} level FX spawned from bank");
+            GD.Print($"[props] {level}: level FX left to the guest, which states them");
+        }
+        else
+        {
+            int levelFx = Engine_LevelFx.Spawn(
+                container, view, supplementalViews, placements, fxModelPaths, fxAttachTo, probes);
+            if (levelFx != 0)
+            {
+                GD.Print($"[props] {level}: {levelFx} level FX spawned from bank");
+            }
         }
 
         // THE REGION'S OWN LIGHTS, beside the effects and off the same placements — a torch's

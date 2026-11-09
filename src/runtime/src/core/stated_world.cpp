@@ -42,6 +42,17 @@ struct StatedEffect {
   /// The entity that plays the effect and the entity that one was attached to, 0 when unstated.
   uint32_t owner = 0u;
   uint32_t attached = 0u;
+  /// The fade-out's length and the guest frame it was stated on (REFII_STATED_FX_FADING).
+  float fade_seconds = 0.0f;
+  uint32_t fade_frame = 0u;
+  /// The stated colour (red, green, blue, alpha) and size scale; 1 until stated.
+  float colour[4]{1.0f, 1.0f, 1.0f, 1.0f};
+  float scale = 1.0f;
+  /// Particle flushes stated since the create (REFII_STATED_FX_FLUSHES at row [21]).
+  uint32_t flushes = 0u;
+  /// The last point list a spline setter stated, x y z each (REFII_STATED_FX_SPLINE).
+  uint32_t spline_count = 0u;
+  float spline[REFII_STATED_FX_SPLINE_POINTS * 3u]{};
 };
 
 /// Sized above the live effect population: one slot per effect instance, not per particle.
@@ -200,6 +211,16 @@ void refii_bridge_fx_created(uint32_t handle, uint32_t name_hash) {
     // play this one until a hook says so.
     slot->owner = 0u;
     slot->attached = 0u;
+    slot->flags &= ~REFII_STATED_FX_FADING;
+    slot->fade_seconds = 0.0f;
+    slot->fade_frame = 0u;
+    for (float& lane : slot->colour) {
+      lane = 1.0f;
+    }
+    slot->scale = 1.0f;
+    slot->flushes = 0u;
+    slot->spline_count = 0u;
+    slot->flags &= ~(REFII_STATED_FX_SPLINE | REFII_STATED_FX_SATURATION);
     Stamp(*slot);
   }
 }
@@ -254,6 +275,89 @@ void refii_bridge_fx_killed(uint32_t handle) {
   }
 }
 
+void refii_bridge_fx_fade(uint32_t handle, float seconds) {
+  std::lock_guard<std::mutex> lock(g_fx_lock);
+  // Found, not claimed: a fade ends an effect a create already stated.
+  if (StatedEffect* slot = FindEffect(handle); slot != nullptr) {
+    slot->fade_seconds = seconds;
+    slot->fade_frame = refii_bridge_guest_frame();
+    slot->flags |= REFII_STATED_FX_FADING;
+    Stamp(*slot);
+  }
+}
+
+void refii_bridge_fx_colour(uint32_t handle, float red, float green, float blue) {
+  std::lock_guard<std::mutex> lock(g_fx_lock);
+  if (StatedEffect* slot = FindEffect(handle); slot != nullptr) {
+    slot->colour[0] = red;
+    slot->colour[1] = green;
+    slot->colour[2] = blue;
+    Stamp(*slot);
+  }
+}
+
+void refii_bridge_fx_alpha(uint32_t handle, float alpha) {
+  std::lock_guard<std::mutex> lock(g_fx_lock);
+  if (StatedEffect* slot = FindEffect(handle); slot != nullptr) {
+    slot->colour[3] = alpha;
+    Stamp(*slot);
+  }
+}
+
+void refii_bridge_fx_scale(uint32_t handle, float scale) {
+  std::lock_guard<std::mutex> lock(g_fx_lock);
+  if (StatedEffect* slot = FindEffect(handle); slot != nullptr) {
+    slot->scale = scale;
+    Stamp(*slot);
+  }
+}
+
+void refii_bridge_fx_spline(uint32_t handle, const float* points, uint32_t count) {
+  if (points == nullptr || count < 2u) {
+    return;
+  }
+  if (count > REFII_STATED_FX_SPLINE_POINTS) {
+    count = REFII_STATED_FX_SPLINE_POINTS;
+  }
+  std::lock_guard<std::mutex> lock(g_fx_lock);
+  if (StatedEffect* slot = FindEffect(handle); slot != nullptr) {
+    std::memcpy(slot->spline, points, count * 3u * sizeof(float));
+    slot->spline_count = count;
+    slot->flags |= REFII_STATED_FX_SPLINE;
+    Stamp(*slot);
+  }
+}
+
+uint32_t refii_bridge_fx_spline_read(uint32_t handle, float* out, uint32_t max_points) {
+  if (out == nullptr || max_points == 0u) {
+    return 0u;
+  }
+  std::lock_guard<std::mutex> lock(g_fx_lock);
+  const StatedEffect* slot = FindEffect(handle);
+  if (slot == nullptr || slot->spline_count == 0u) {
+    return 0u;
+  }
+  const uint32_t count = slot->spline_count < max_points ? slot->spline_count : max_points;
+  std::memcpy(out, slot->spline, count * 3u * sizeof(float));
+  return count;
+}
+
+void refii_bridge_fx_flush(uint32_t handle) {
+  std::lock_guard<std::mutex> lock(g_fx_lock);
+  if (StatedEffect* slot = FindEffect(handle); slot != nullptr) {
+    ++slot->flushes;
+    Stamp(*slot);
+  }
+}
+
+void refii_bridge_fx_saturation_mask(uint32_t handle) {
+  std::lock_guard<std::mutex> lock(g_fx_lock);
+  if (StatedEffect* slot = FindEffect(handle); slot != nullptr) {
+    slot->flags |= REFII_STATED_FX_SATURATION;
+    Stamp(*slot);
+  }
+}
+
 void refii_bridge_fx_scene_killed(uint32_t scene) {
   std::lock_guard<std::mutex> lock(g_fx_lock);
   // An erase can move a later slot of the scene back onto an index already passed, so the
@@ -280,7 +384,7 @@ void refii_bridge_fx_owner(uint32_t handle, uint32_t owner, uint32_t attached) {
   }
 }
 
-static_assert(REFII_STATED_FX_WORDS >= 14u, "a stated effect row carries its owner and attached words at [12] [13]");
+static_assert(REFII_STATED_FX_WORDS >= 22u, "a stated effect row carries its owner and attached words at [12] [13], its fade at [14] [15], its colour and scale at [16..20] and its flushes at [21]");
 
 uint32_t refii_bridge_fx_rows(uint32_t* out_words, uint32_t word_capacity) {
   if (out_words == nullptr) {
@@ -303,6 +407,11 @@ uint32_t refii_bridge_fx_rows(uint32_t* out_words, uint32_t word_capacity) {
     std::memcpy(row + 8, slot.orientation, sizeof(slot.orientation));
     row[12] = slot.owner;
     row[13] = slot.attached;
+    std::memcpy(row + 14, &slot.fade_seconds, sizeof(uint32_t));
+    row[15] = slot.fade_frame;
+    std::memcpy(row + 16, slot.colour, sizeof(slot.colour));
+    std::memcpy(row + 20, &slot.scale, sizeof(uint32_t));
+    row[21] = slot.flushes;
     ++written;
   }
   return written;

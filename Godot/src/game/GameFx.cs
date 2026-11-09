@@ -15,17 +15,11 @@ namespace Refii.Game;
 /// </summary>
 public partial class GameFx : Node3D
 {
-    /// <summary><c>refii.toml</c> key for drawing the mirror; on by default.</summary>
-    public const string DrawSettingKey = "fx_live_effects";
+    /// <summary><c>refii.toml</c> key for drawing the effects the guest plays (<see cref="Engine_LiveFx"/>).</summary>
+    public const string DrawSettingKey = Engine_LiveFx.DrawSettingKey;
 
     /// <summary>Whether to log the census. Off by default.</summary>
     public const string ReportSettingKey = "fx_live_report";
-
-    /// <summary>
-    /// Overrides the setting for a headless run, where there may be no <c>refii.toml</c> at all.
-    /// <c>1</c> forces drawing on, <c>0</c> forces it off; unset defers to the setting.
-    /// </summary>
-    public const string DrawEnvironmentVariable = "REFII_FX_LIVE";
 
     /// <summary>Nodes by guest instance pointer, so a moving effect is updated, not rebuilt.</summary>
     private readonly Dictionary<uint, FableFx> _nodes = new();
@@ -65,6 +59,15 @@ public partial class GameFx : Node3D
 
     /// <summary>Runtime Type 5 spline override points in Godot world space, keyed by effect handle.</summary>
     private readonly Dictionary<uint, Vector3[]> _statedSplineByKey = new();
+
+    /// <summary>
+    /// Effects whose spline points the guest restates itself (Fable 3's spline setters,
+    /// <see cref="HostBridge.ActiveFx.SplineStated"/>): taken as stated each walk, never latched to
+    /// a weapon the way Fable 2's multi-dummy points are.
+    /// </summary>
+    private readonly HashSet<uint> _guestSplineKeys = new();
+
+    private readonly Vector3[] _guestSplineRead = new Vector3[32];
 
     /// <summary>Pooled world-space spline arrays keyed by effect handle to avoid per-frame allocations.</summary>
     private readonly Dictionary<uint, Vector3[]> _statedSplinePool = new();
@@ -119,7 +122,7 @@ public partial class GameFx : Node3D
     private readonly HashSet<uint> _candidateAttachmentKeys = new();
 
     /// <summary>Scratch buffer for transforming world-space spline override endpoints into node-local space.</summary>
-    private readonly Vector3[] _localSplineScratch = new Vector3[3];
+    private readonly Vector3[] _localSplineScratch = new Vector3[32];
 
     /// <summary>Every effect hash the guest has played, and how many instances carried it.</summary>
     private readonly Dictionary<uint, int> _census = new();
@@ -209,6 +212,7 @@ public partial class GameFx : Node3D
             described.Add(
                 $"{key:X8} FX_{effect:X8}{(name.Length != 0 ? " " + name : string.Empty)} d={distance:0.0} " +
                 $"at=({p.X:0.0},{p.Y:0.0},{p.Z:0.0}) intensity={node.Intensity:0.000} scale={node.SizeScale:0.00} " +
+                $"colour=({node.StatedColour.R:0.00},{node.StatedColour.G:0.00},{node.StatedColour.B:0.00},{node.StatedColour.A:0.00}) " +
                 $"alive={node.DebugAlive} spawned={node.DebugSpawned} surfaces={node.DebugSurfaces}/{node.DebugAddSurfaces}/{node.DebugDispSurfaces} " +
                 $"built={node.DebugBuilt} em/vis/trail/parts={node.DebugCensus.Emitters}/{node.DebugCensus.Visuals}/" +
                 $"{node.DebugCensus.TrailVisuals}/{node.DebugCensus.Particles}{stated}");
@@ -218,6 +222,59 @@ public partial class GameFx : Node3D
     }
 
     public int DrawnCount => _nodes.Count;
+
+    /// <summary>
+    /// Live effects that a LEVEL-spawned node (<see cref="Refii.Level.Engine_LevelFx"/>) of the same
+    /// effect also stands within <paramref name="radius"/> of — one effect drawn twice. Returns the
+    /// count and up to <paramref name="take"/> of them.
+    /// </summary>
+    public (int Doubles, int LevelNodes, List<string> Rows) DescribeLevelDoubles(float radius, int take)
+    {
+        var mine = new HashSet<FableFx>(_nodes.Values);
+        var level = new List<FableFx>();
+        var pending = new Stack<Node>();
+        pending.Push(GetTree().Root);
+        while (pending.Count != 0)
+        {
+            Node walk = pending.Pop();
+            if (walk is FableFx candidate && !mine.Contains(candidate) && candidate.IsInsideTree())
+            {
+                level.Add(candidate);
+            }
+
+            foreach (Node child in walk.GetChildren())
+            {
+                pending.Push(child);
+            }
+        }
+
+        int doubles = 0;
+        var rows = new List<string>();
+        foreach ((uint key, FableFx node) in _nodes)
+        {
+            if (!IsInstanceValid(node) || !node.IsInsideTree())
+            {
+                continue;
+            }
+
+            Vector3 at = node.GlobalPosition;
+            foreach (FableFx other in level)
+            {
+                if (other.EffectName == node.EffectName && other.GlobalPosition.DistanceTo(at) <= radius)
+                {
+                    ++doubles;
+                    if (rows.Count < take)
+                    {
+                        rows.Add($"{key:X8} {node.EffectName} at=({at.X:0.0},{at.Y:0.0},{at.Z:0.0}) level={other.Name} d={other.GlobalPosition.DistanceTo(at):0.00}");
+                    }
+
+                    break;
+                }
+            }
+        }
+
+        return (doubles, level.Count, rows);
+    }
 
     /// <summary>Every drawn effect's lights, nearest <paramref name="eye"/> first.</summary>
     public List<string> DescribeLights(Vector3 eye, int take)
@@ -292,16 +349,9 @@ public partial class GameFx : Node3D
         System.Collections.Generic.IReadOnlyDictionary<string, string> config =
             Refii.Core.Engine_RefiiConfig.Read(out string path);
 
-        _draw = Refii.Core.Engine_RefiiConfig.Bool(config, DrawSettingKey, true);
+        _draw = Engine_LiveFx.Draws(config);
         _report = Refii.Core.Engine_RefiiConfig.Bool(config, ReportSettingKey, false);
         Refii.Fx.Engine_FxFastPaths.Configure(config);
-
-        // The environment wins: a headless harness may have no config.
-        string forced = OS.GetEnvironment(DrawEnvironmentVariable);
-        if (forced == "1" || forced == "0")
-        {
-            _draw = forced == "1";
-        }
 
         // Under classic the title's particle path (Engine_ClassicParticles) draws every live
         // effect with its own shaders; drawing them here as well drew each one twice.
@@ -413,6 +463,7 @@ public partial class GameFx : Node3D
         _keyByInstance.Clear();
         _boneRoots.Clear();
         _statedSplineByKey.Clear();
+        _guestSplineKeys.Clear();
         _drawnSplineByKey.Clear();
         _emitterState.Clear();
         foreach (HostBridge.ActiveFx fx in live)
@@ -444,7 +495,7 @@ public partial class GameFx : Node3D
                 continue;
             }
 
-            FxEmitter? emitterDef = bank?.EmitterForType(fx.NameHash);
+            FxEmitter? emitterDef = fx.NamesEffect ? null : bank?.EmitterForType(fx.NameHash);
 
             // Runtime spline override endpoints on a Type 5 `CParticleSplineNode` (`sub_8322E858`),
             // exported by `RefiiHostGetActiveFx` in `fx.Rows[0..count-1]` with `fx.Scale = count`.
@@ -478,11 +529,38 @@ public partial class GameFx : Node3D
                 }
             }
 
+            // A spline setter's points (Fable 3: an energy beam's ends, an arc's list), guest world.
+            if (fx.SplineStated && !_statedSplineByKey.ContainsKey(rootKey))
+            {
+                int count = HostBridge.GetFxSpline(fx.Handle, _guestSplineRead);
+                bool usable = count >= 2;
+                for (int p = 0; p < count && usable; p++)
+                {
+                    usable = _guestSplineRead[p].IsFinite() && _guestSplineRead[p].Length() < MaxFxReach;
+                }
+
+                if (usable)
+                {
+                    if (!_statedSplinePool.TryGetValue(rootKey, out Vector3[]? pts) || pts.Length != count)
+                    {
+                        pts = new Vector3[count];
+                        _statedSplinePool[rootKey] = pts;
+                    }
+                    for (int p = 0; p < count; p++)
+                    {
+                        pts[p] = ToGodot(_guestSplineRead[p]);
+                    }
+
+                    _statedSplineByKey[rootKey] = pts;
+                    _guestSplineKeys.Add(rootKey);
+                }
+            }
+
             // Scale and fade live on the element, and only a standard emitter's slots mean
             // anything (a spline or light node's +412 holds something else). The bank says which
-            // type a node is.
+            // type a node is. A row that names its effect carries the effect's own stated values.
             if (!_emitterState.ContainsKey(rootKey) &&
-                emitterDef is { TypeId: 0 or 9 } &&
+                (fx.NamesEffect || emitterDef is { TypeId: 0 or 9 }) &&
                 float.IsFinite(fx.Scale) && fx.Scale > 0f && fx.Scale < 100f &&
                 float.IsFinite(fx.Fade))
             {
@@ -542,7 +620,7 @@ public partial class GameFx : Node3D
             }
 
             // The instance names its type, not its effect; the bank holds the type->effect join.
-            uint effect = bank?.EffectForType(fx.NameHash) ?? 0u;
+            uint effect = fx.NamesEffect ? fx.NameHash : bank?.EffectForType(fx.NameHash) ?? 0u;
             bool known = effect != 0 && bank?.FindByHash(effect) is not null;
             if (!known)
             {
@@ -707,6 +785,9 @@ public partial class GameFx : Node3D
             // Fable2/src/vfs/src/hooks/particle_dress.cpp); this node applies that factor itself
             // (FxEffect.Scale, Engine_FxSystem), so the size it takes from the guest is the game's.
             node.SizeScale = scale / AuthoredScale(effect);
+            node.StatedColour = fx.StatedColour ?? Colors.White;
+            node.StatedFlushes = fx.StatedFlushes;
+            node.StatedSaturationMask = fx.SaturationMask;
             if (_guestDrawn.Contains(key))
             {
                 _guestDrawnEffects.Add(effect);
@@ -835,6 +916,7 @@ public partial class GameFx : Node3D
 
             if (latchNewWeaponSplines &&
                 attached != 0u &&
+                !_guestSplineKeys.Contains(rootKey) &&
                 _statedSplineByKey.TryGetValue(rootKey, out Vector3[]? statedSpline) &&
                 (!_weaponSplineByKey.TryGetValue(rootKey, out var cached) ||
                  cached.Target != attached ||

@@ -258,6 +258,9 @@ public sealed partial class Engine_FxSystem
         public List<float[]> BeamPts = new();
         public List<float[]> BeamWander = new();
         public float BeamSegLen;
+
+        /// <summary>The <see cref="_splineSerial"/> this beam's base was built from.</summary>
+        public int BeamSerial;
         public float BeamJerkTimer;
 
         public List<ParticleState> Particles { get; } = new();
@@ -277,6 +280,10 @@ public sealed partial class Engine_FxSystem
         public int Frame;
         public int Step = 1;
         public float AuthoredStep = 1f;
+
+        /// <summary>The size scale also scales launch speed and each chain node's offset
+        /// (<see cref="FxBank.ScaleCarriesMotion"/>).</summary>
+        public bool ScaleCarriesMotion;
         public float DtSec = 1f / 30f;
         public float SharedRand = -1f;
         public List<EmitterRuntime> Emitters { get; } = new();
@@ -335,8 +342,82 @@ public sealed partial class Engine_FxSystem
         _tint[2] = float.IsFinite(b) ? MathF.Max(b, 0f) : 1f;
     }
 
+    /// <summary>
+    /// A multiplier on every particle's alpha at draw time — a title's stated alpha (Fable 3's
+    /// SetAlpha, uploaded with each draw), so it reaches particles already born.
+    /// </summary>
+    private float _liveAlpha = 1f;
+
+    public void SetLiveAlpha(float alpha) =>
+        _liveAlpha = float.IsFinite(alpha) ? MathF.Max(alpha, 0f) : 1f;
+
+    /// <summary>
+    /// Every live particle of the standard emitters (type 0) dies now; emission goes on. Fable 3's
+    /// flush (opcode 22, sub_831BA3D0 ages each live particle to 999999.88).
+    /// </summary>
+    public void FlushParticles()
+    {
+        foreach (InstanceState inst in _instances)
+        {
+            foreach (EmitterRuntime rt in inst.Emitters)
+            {
+                if (rt.Def is not { TypeId: 0 })
+                {
+                    continue;
+                }
+
+                foreach (ParticleState pt in rt.Particles)
+                {
+                    ReturnParticle(pt);
+                }
+
+                rt.Particles.Clear();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The saturation mask on every standard emitter's (type 0) visuals, as Fable 3's opcode 10
+    /// turns ApplySaturationMask on for the effect (sub_831B5B00).
+    /// </summary>
+    public void ForceSaturationMask()
+    {
+        foreach (InstanceState inst in _instances)
+        {
+            foreach (EmitterRuntime rt in inst.Emitters)
+            {
+                if (rt.Def is not { TypeId: 0 })
+                {
+                    continue;
+                }
+
+                foreach (VisualRuntime v in rt.Visuals)
+                {
+                    if (!v.SatMask)
+                    {
+                        v.SatMask = true;
+                        v.Sink = null;
+                    }
+                }
+
+                foreach (VisualRuntime v in rt.TrailVisuals)
+                {
+                    if (!v.SatMask)
+                    {
+                        v.SatMask = true;
+                        v.Sink = null;
+                    }
+                }
+            }
+        }
+    }
+
     private float _sizeScale = 1f;
     private float[][]? _splineOverride;
+
+    /// <summary>Moves whenever <see cref="_splineOverride"/>'s points change; a beam built from an
+    /// older set restates itself (<see cref="BeamTick"/>).</summary>
+    private int _splineSerial;
 
     /// <summary>The live size scale — the guest's element+412: folded into the keyframe global
     /// scales (binding 338) at draw time, and multiplied into the spawn-shape offset and the
@@ -361,6 +442,7 @@ public sealed partial class Engine_FxSystem
         }
 
         bool wasNull = _splineOverride is null;
+        bool changed = wasNull || _splineOverride!.Length != nodeLocalPoints.Length;
         if (_splineOverride is null || _splineOverride.Length != nodeLocalPoints.Length)
         {
             _splineOverride = new float[nodeLocalPoints.Length][];
@@ -374,9 +456,16 @@ public sealed partial class Engine_FxSystem
         {
             Vector3 p = nodeLocalPoints[i];
             // Godot node-local (x, y, z) -> simulation space (x, z, y) so ToGodot(sim) = (x, y, z).
-            _splineOverride[i][0] = p.X;
-            _splineOverride[i][1] = p.Z;
-            _splineOverride[i][2] = p.Y;
+            float[] at = _splineOverride[i];
+            changed |= at[0] != p.X || at[1] != p.Z || at[2] != p.Y;
+            at[0] = p.X;
+            at[1] = p.Z;
+            at[2] = p.Y;
+        }
+
+        if (changed)
+        {
+            ++_splineSerial;
         }
 
         if (wasNull)
@@ -708,7 +797,8 @@ public sealed partial class Engine_FxSystem
                 }
             }
 
-            lps[0] = lp[0] * scale; lps[1] = lp[1] * scale; lps[2] = lp[2] * scale;
+            float nodeScale = inst.ScaleCarriesMotion ? scale * _sizeScale : scale;
+            lps[0] = lp[0] * nodeScale; lps[1] = lp[1] * nodeScale; lps[2] = lp[2] * nodeScale;
             MatVec(R, lps, w);
             t[0] += w[0]; t[1] += w[1]; t[2] += w[2];
             MatMul(R, node.LocalRot, R);
@@ -922,7 +1012,9 @@ public sealed partial class Engine_FxSystem
             // (`Step = 1`, `DtSec = 1/30f`) while recording `AuthoredStep` (`2` for group 0, `1` for
             // group 1) so per-step drag, spawn spread, spin spread, and flipbook speed preserve their
             // exact authored per-second rates.
-            inst.AuthoredStep = eff.UpdateFrequency >= 1 ? 1f : 2f;
+            // Fable 3 has no 15 Hz group (FxBank.FixedThirtyHertz).
+            inst.AuthoredStep = bank.FixedThirtyHertz || eff.UpdateFrequency >= 1 ? 1f : 2f;
+            inst.ScaleCarriesMotion = bank.ScaleCarriesMotion;
             inst.Step = 1;
             inst.DtSec = 1f / 30f;
 
@@ -1347,6 +1439,7 @@ public sealed partial class Engine_FxSystem
         int f = (int)rt.Age;
         float dts = inst.DtSec;
         float speed = d.Generic[4].EvalFrame(f) + (Frand() * d.Generic[5].EvalFrame(f));
+        if (inst.ScaleCarriesMotion) speed *= _sizeScale;
         pt.Vel[0] = dirw[0] * speed * dts;
         pt.Vel[1] = dirw[1] * speed * dts;
         pt.Vel[2] = dirw[2] * speed * dts;
@@ -1438,18 +1531,79 @@ public sealed partial class Engine_FxSystem
         o[0] = dir[0] * sc; o[1] = dir[1] * sc; o[2] = dir[2] * sc;
     }
 
+    /// <summary>
+    /// A beam's undisplaced points into <paramref name="into"/>: a stated point list as given, two
+    /// stated ends spread evenly over the authored segment count (sub_831B20E8), or the authored
+    /// line from the emitter. Returns the segment count.
+    /// </summary>
+    private int BeamBaseline(EmitterRuntime rt, List<float[]> into)
+    {
+        FxEmitter d = rt.Def!;
+        into.Clear();
+        float[][]? stated = _splineOverride;
+        if (stated is { Length: > 2 })
+        {
+            foreach (float[] p in stated) into.Add(new[] { p[0], p[1], p[2] });
+            return stated.Length - 1;
+        }
+
+        int nseg = Math.Max(1, d.NumSplineSegments);
+        float[] P0, P1;
+        if (stated is { Length: 2 })
+        {
+            P0 = stated[0];
+            P1 = stated[1];
+        }
+        else
+        {
+            var endw = new float[3];
+            MatVec(rt.RotW, new[] { 0f, 3f, 0f }, endw);
+            P0 = new[] { rt.PosW[0], rt.PosW[1], rt.PosW[2] };
+            P1 = new[] { rt.PosW[0] + (endw[0] * rt.Scale), rt.PosW[1] + (endw[1] * rt.Scale), rt.PosW[2] + (endw[2] * rt.Scale) };
+        }
+
+        var stepv = new[] { (P1[0] - P0[0]) / nseg, (P1[1] - P0[1]) / nseg, (P1[2] - P0[2]) / nseg };
+        for (int i = 0; i <= nseg; i++) into.Add(new[] { P0[0] + (i * stepv[0]), P0[1] + (i * stepv[1]), P0[2] + (i * stepv[2]) });
+        return nseg;
+    }
+
+    private readonly List<float[]> _beamRestated = new();
+
+    /// <summary>
+    /// New stated points for a built beam: the same count moves each point with its own base,
+    /// keeping its displacement (sub_831B1DD8 updates in place); another count builds it again.
+    /// </summary>
+    private void BeamRestate(EmitterRuntime rt)
+    {
+        int nseg = BeamBaseline(rt, _beamRestated);
+        if (_beamRestated.Count != rt.BeamBase.Count || rt.BeamPts.Count != rt.BeamBase.Count)
+        {
+            BeamInit(rt);
+            return;
+        }
+
+        for (int i = 0; i < _beamRestated.Count; i++)
+        {
+            for (int c = 0; c < 3; c++)
+            {
+                rt.BeamPts[i][c] += _beamRestated[i][c] - rt.BeamBase[i][c];
+                rt.BeamBase[i][c] = _beamRestated[i][c];
+            }
+        }
+
+        float[] a = rt.BeamBase[0], b = rt.BeamBase[nseg];
+        rt.BeamSegLen = VLen(new[] { (b[0] - a[0]) / nseg, (b[1] - a[1]) / nseg, (b[2] - a[2]) / nseg });
+        rt.BeamSerial = _splineSerial;
+    }
+
     private void BeamInit(EmitterRuntime rt)
     {
         FxEmitter d = rt.Def!;
-        int nseg = Math.Max(1, d.NumSplineSegments);
-        var endw = new float[3];
-        MatVec(rt.RotW, new[] { 0f, 3f, 0f }, endw);
-        var P0 = new[] { rt.PosW[0], rt.PosW[1], rt.PosW[2] };
-        var P1 = new[] { rt.PosW[0] + (endw[0] * rt.Scale), rt.PosW[1] + (endw[1] * rt.Scale), rt.PosW[2] + (endw[2] * rt.Scale) };
-        var stepv = new[] { (P1[0] - P0[0]) / nseg, (P1[1] - P0[1]) / nseg, (P1[2] - P0[2]) / nseg };
-        rt.BeamSegLen = VLen(stepv);
-        rt.BeamBase.Clear(); rt.BeamPts.Clear(); rt.BeamWander.Clear();
-        for (int i = 0; i <= nseg; i++) rt.BeamBase.Add(new[] { P0[0] + (i * stepv[0]), P0[1] + (i * stepv[1]), P0[2] + (i * stepv[2]) });
+        rt.BeamSerial = _splineSerial;
+        int nseg = BeamBaseline(rt, rt.BeamBase);
+        float[] first = rt.BeamBase[0], last = rt.BeamBase[nseg];
+        rt.BeamSegLen = VLen(new[] { (last[0] - first[0]) / nseg, (last[1] - first[1]) / nseg, (last[2] - first[2]) / nseg });
+        rt.BeamPts.Clear(); rt.BeamWander.Clear();
         foreach (float[] b in rt.BeamBase) rt.BeamPts.Add(new[] { b[0], b[1], b[2] });
         for (int i = 1; i < nseg; i++)
         {
@@ -1474,6 +1628,7 @@ public sealed partial class Engine_FxSystem
     private void BeamTick(InstanceState inst, EmitterRuntime rt)
     {
         FxEmitter d = rt.Def!;
+        if (_splineOverride is not null && rt.BeamSerial != _splineSerial) BeamRestate(rt);
         int n = rt.BeamPts.Count;
         if (n < 2) return;
         if (rt.BeamJerkTimer > 0f) rt.BeamJerkTimer -= inst.DtSec;
@@ -2387,13 +2542,13 @@ public sealed partial class Engine_FxSystem
                             motions.Add(new Vector4(flow.X, flow.Y, flow.Z, rateClass));
                         }
 
-                        EmitRibbon(Sink, rt, rt.TrailVisuals, pts, ages, motions, cameraPosition, false, inst.Lit, inst.Tint, pt.Intensity);
+                        EmitRibbon(Sink, rt, rt.TrailVisuals, pts, ages, motions, cameraPosition, false, inst.Lit, inst.Tint, pt.Intensity * _liveAlpha);
                     }
                 }
 
                 // The fast emit's early rejections (Engine_FxSystem.FastPaths.cs): a whole emitter
                 // here, a particle on its fade term and then on its alpha below.
-                float alphaCeiling = fast ? FastAlphaCeiling(rt) : float.PositiveInfinity;
+                float alphaCeiling = fast ? FastAlphaCeiling(rt) * _liveAlpha : float.PositiveInfinity;
                 if (fast && FastSkipsEmitter(rt, cameraPosition, alphaCeiling)) continue;
 
                 if (rt.Ribbon)
@@ -2408,7 +2563,7 @@ public sealed partial class Engine_FxSystem
                         motions.Add(new Vector4(moved.X, moved.Y, moved.Z, chainClass));
                     }
 
-                    EmitRibbon(Sink, rt, rt.Visuals, pts, ages, motions, cameraPosition, true, inst.Lit, inst.Tint, ribbonIntensity);
+                    EmitRibbon(Sink, rt, rt.Visuals, pts, ages, motions, cameraPosition, true, inst.Lit, inst.Tint, ribbonIntensity * _liveAlpha);
                     continue;
                 }
 
@@ -2418,7 +2573,7 @@ public sealed partial class Engine_FxSystem
                     Vector3 ppos = ToGodot(pt.Pos);
 
                     float fadeTerm = 0f;
-                    if (fast && FastRejectsFade(rt, ppos, cameraPosition, pt.Intensity, alphaCeiling, out fadeTerm)) continue;
+                    if (fast && FastRejectsFade(rt, ppos, cameraPosition, pt.Intensity * _liveAlpha, alphaCeiling, out fadeTerm)) continue;
 
                     float tLife = pt.Life > 0f ? Math.Clamp(pt.KeyAge / pt.Life, 0f, 1f) : 0f;
                     int segB = nvis <= 1 ? 0 : Math.Clamp(pt.Seg, 1, nvis - 1);
@@ -2451,7 +2606,7 @@ public sealed partial class Engine_FxSystem
                         // The instance intensity is an alpha term: 0038 `r5.w = fade × FadeOut.z`
                         // (binding 321.z = the batch's intensity), `oColor0.w = r5.w × keyframe.a`;
                         // the pixel shader then multiplies rgb by that alpha as well.
-                        a *= DistanceFadeFactor(rt, ppos, cameraPosition) * pt.Intensity;
+                        a *= DistanceFadeFactor(rt, ppos, cameraPosition) * pt.Intensity * _liveAlpha;
                         if (a <= 0.003f) { ++SkipZeroAlpha; continue; }
                     }
 

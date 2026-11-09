@@ -33,6 +33,41 @@
 //       sub_831B6B58 per emitter.
 //   sub_831C1770(handle)                          KILL (opcode 11, 0x831C17A0): sub_831B54D8 sets
 //       every emitter's +0xC8.
+//   sub_831C1A68(handle; f1 seconds)              KILL WITH FADE-OUT (opcode 5, `stfs f31, 0xC`
+//       0x831C1A94): sub_831BC920 → sub_831B5570 takes n = floor(seconds × flt_8334F4F0 + 0.5)
+//       frames (flt_8334F4F0 = 30.0, sub_831C0F90) and sub_831B6AE0 stores n at +192 and +196 of
+//       every chained emitter (0x831B6B04/0x831B6B08). +196 counts down a frame at a time; the
+//       emitter's intensity is +196/+192 (sub_831B6760) and it ends at 0 — Fable 2's
+//       KillParticleWithFadeOut counter word for word. The Lua KillParticleWithFadeOut, spells and
+//       melee strikes post it.
+//   sub_831BC758(cmd)                             RELEASE (executor case 33, `bl` at 0x831BD2B8):
+//       erases the handle-map node of cmd+8 (sub_82D373E0 / sub_82D37028 under dword_835A7130).
+//       The guest posts it once for EVERY handle that ends — a natural end, a kill, a fade's end:
+//       the sim retires the instance (sub_831BF490) and its listener sub_82D36DD0 queues the
+//       handle; the main thread's sub_831BCB68 tells the owner (CECParticleEmitter zeroes its
+//       +0x14, sub_826ADB48 0x826ADCAC) and posts op 33 (0x831BCE34). Kills (op 11, op 5) do not
+//       erase a handle; this does, and only after it may sub_831BC630 hand the value out again.
+//   sub_831C1B30(handle, colour*)                 COLOUR (opcode 3): the four bytes are blue, green,
+//       red, alpha (`lbz` 0..3 into cmd+0xE/+0xD/+0xC/+0xF, 0x831C1B70..8C); the executor scales
+//       them by 1/255 and sub_831B52C0 `vsel`s red, green, blue into inst+80 under mask
+//       unk_82065300 (lane 3 set), keeping the instance's alpha.
+//   sub_831C15E8(handle; f1 alpha)                ALPHA (opcode 15): sub_831B5188 `vperm`s the scalar
+//       into lane 3 of inst+80 (unk_82065340 = 00..0B,10..13). Both setters then copy inst+80 to
+//       +400 of every node of type 0 or 9. The collection ctor seeds inst+80 with 1.0 x4
+//       (`vspltisw v0,1` / `vcfux` / `stvx128 v13,r3,0x50`, 0x831B6454..0x831B64B4).
+//   sub_831C1828(handle; f1 scale)                SCALE (opcode 9): sub_831B5068 calls node vtable
+//       +48 on every node — an emitter stores it at +0xCC and +0x1B4 (disc 0x82D05FB8).
+//   sub_831C1650(handle; v1 start, v2 end)        SPLINE ENDS (opcode 13, v1 -> cmd+0x10, v2 -> cmd+0x20):
+//       the effect's first spline emitter (type 9, sub_82D37828) takes the two world points;
+//       sub_831B2660 → sub_831B20E8 spreads a 2-point list over type+244 + 1 even points, the
+//       interior ones displaced (sub_831B2598). Energy beams (CECEnergyBeamAttack) and arcs.
+//   sub_831C1E78(handle, list, index, vector*)    SPLINE POINTS (opcode 14): a whole point list,
+//       16-byte points from vector+4 to vector+8, for spline emitter (list 0) or spline entity
+//       (list 1) `index`. Arcs, CECParticleEmitter spline entities, the emotion icon.
+//   sub_831C1908(handle)                          FLUSH (opcode 22): sub_831BA3D0 sets every live
+//       particle's age to 999999.88 on the standard emitters, so all die next update.
+//   sub_831C17C8(handle)                          SATURATION MASK (opcode 10, byte 1): the standard
+//       emitters' diffuse texture takes ApplySaturationMask (sub_831B5B00; hit impacts).
 //   sub_831C13D0(scene, callback)                 opcode 23 (0x831C140C), `cmd+12 = scene`: the
 //       executor kills every instance whose inst+100 is that scene (sub_831BFF40); the level
 //       teardown sub_82350E80 posts it for both render scenes.
@@ -98,6 +133,8 @@
 REX_EXTERN(__imp__rex_LevelManager_LevelLoaded);
 REX_EXTERN(__imp__rex_LevelManager_Unload);
 REX_EXTERN(__imp__rex_ParticleSystem_Create);
+REX_EXTERN(__imp__rex_ParticleSystem_KillWithFadeOut);
+REX_EXTERN(__imp__rex_ParticleSystem_ReleaseHandle);
 REX_EXTERN(__imp__rex_ParticleSystem_Start);
 REX_EXTERN(__imp__rex_ParticleSystem_SetScene);
 REX_EXTERN(__imp__rex_ParticleSystem_SetPosition);
@@ -105,6 +142,13 @@ REX_EXTERN(__imp__rex_ParticleSystem_SetPositionAndVelocity);
 REX_EXTERN(__imp__rex_ParticleSystem_SetOrientation);
 REX_EXTERN(__imp__rex_ParticleSystem_Kill);
 REX_EXTERN(__imp__rex_ParticleSystem_KillScene);
+REX_EXTERN(__imp__rex_ParticleSystem_SetColour);
+REX_EXTERN(__imp__rex_ParticleSystem_SetAlpha);
+REX_EXTERN(__imp__rex_ParticleSystem_SetScale);
+REX_EXTERN(__imp__rex_ParticleSystem_SetSplineEnds);
+REX_EXTERN(__imp__rex_ParticleSystem_SetSplinePoints);
+REX_EXTERN(__imp__rex_ParticleSystem_Flush);
+REX_EXTERN(__imp__rex_ParticleSystem_SaturationMask);
 REX_EXTERN(__imp__rex_RenderTwin_ReleaseDecals);
 REX_EXTERN(__imp__rex_Decal_ClearAll);
 REX_EXTERN(__imp__rex_RenderScene_AddObject);
@@ -123,6 +167,15 @@ uint32_t LoadGuestU32(const uint8_t* base, uint32_t address) {
   uint32_t value = 0;
   std::memcpy(&value, base + address, sizeof(value));
   return __builtin_bswap32(value);
+}
+
+uint8_t LoadGuestU8(const uint8_t* base, uint32_t address) { return base[address]; }
+
+float LoadGuestF32(const uint8_t* base, uint32_t address) {
+  const uint32_t bits = LoadGuestU32(base, address);
+  float value;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
 }
 
 bool PlausibleGuest(uint32_t address) { return address >= 0x10000u && address < 0xC0000000u; }
@@ -196,6 +249,94 @@ REX_EXTERN(rex_ParticleSystem_Kill) {
   const uint32_t handle = ctx.r3.u32;
   __imp__rex_ParticleSystem_Kill(ctx, base);
   refii_bridge_fx_killed(handle);
+}
+
+REX_EXTERN(rex_ParticleSystem_KillWithFadeOut) {
+  const uint32_t handle = ctx.r3.u32;
+  const float seconds = static_cast<float>(ctx.f1.f64);
+  __imp__rex_ParticleSystem_KillWithFadeOut(ctx, base);
+  refii_bridge_fx_fade(handle, seconds);
+}
+
+REX_EXTERN(rex_ParticleSystem_ReleaseHandle) {
+  const uint32_t command = ctx.r3.u32;
+  const uint32_t handle = PlausibleGuest(command) ? LoadGuestU32(base, command + 8u) : 0u;
+  __imp__rex_ParticleSystem_ReleaseHandle(ctx, base);
+  if (handle != 0u) {
+    refii_bridge_fx_killed(handle);
+  }
+}
+
+REX_EXTERN(rex_ParticleSystem_SetColour) {
+  const uint32_t handle = ctx.r3.u32;
+  const uint32_t colour = ctx.r4.u32;
+  __imp__rex_ParticleSystem_SetColour(ctx, base);
+  if (PlausibleGuest(colour)) {
+    // Blue, green, red, alpha bytes; the executor keeps the instance's alpha.
+    constexpr float kByte = 1.0f / 255.0f;
+    refii_bridge_fx_colour(handle, static_cast<float>(LoadGuestU8(base, colour + 2u)) * kByte,
+                           static_cast<float>(LoadGuestU8(base, colour + 1u)) * kByte,
+                           static_cast<float>(LoadGuestU8(base, colour)) * kByte);
+  }
+}
+
+REX_EXTERN(rex_ParticleSystem_SetAlpha) {
+  const uint32_t handle = ctx.r3.u32;
+  const float alpha = static_cast<float>(ctx.f1.f64);
+  __imp__rex_ParticleSystem_SetAlpha(ctx, base);
+  refii_bridge_fx_alpha(handle, alpha);
+}
+
+REX_EXTERN(rex_ParticleSystem_SetScale) {
+  const uint32_t handle = ctx.r3.u32;
+  const float scale = static_cast<float>(ctx.f1.f64);
+  __imp__rex_ParticleSystem_SetScale(ctx, base);
+  refii_bridge_fx_scale(handle, scale);
+}
+
+REX_EXTERN(rex_ParticleSystem_SetSplineEnds) {
+  const uint32_t handle = ctx.r3.u32;
+  // The recompiler's lanes run w z y x: the point's x y z are lanes 3 2 1.
+  const float points[6] = {ctx.v1.f32[3], ctx.v1.f32[2], ctx.v1.f32[1],
+                           ctx.v2.f32[3], ctx.v2.f32[2], ctx.v2.f32[1]};
+  __imp__rex_ParticleSystem_SetSplineEnds(ctx, base);
+  refii_bridge_fx_spline(handle, points, 2u);
+}
+
+REX_EXTERN(rex_ParticleSystem_SetSplinePoints) {
+  const uint32_t handle = ctx.r3.u32;
+  const uint32_t index = ctx.r5.u32;
+  const uint32_t list = ctx.r6.u32;
+  float points[REFII_STATED_FX_SPLINE_POINTS * 3u];
+  uint32_t count = 0u;
+  // The effect's first spline child, of either list (spline emitters 0, spline entities 1).
+  if (index == 0u && PlausibleGuest(list)) {
+    const uint32_t begin = LoadGuestU32(base, list + 4u);
+    const uint32_t end = LoadGuestU32(base, list + 8u);
+    if (PlausibleGuest(begin) && end > begin && ((end - begin) & 15u) == 0u) {
+      const uint32_t stated = (end - begin) >> 4;
+      count = stated < REFII_STATED_FX_SPLINE_POINTS ? stated : REFII_STATED_FX_SPLINE_POINTS;
+      for (uint32_t i = 0u; i < count * 3u; ++i) {
+        points[i] = LoadGuestF32(base, begin + (i / 3u) * 16u + (i % 3u) * 4u);
+      }
+    }
+  }
+  __imp__rex_ParticleSystem_SetSplinePoints(ctx, base);
+  if (count >= 2u) {
+    refii_bridge_fx_spline(handle, points, count);
+  }
+}
+
+REX_EXTERN(rex_ParticleSystem_Flush) {
+  const uint32_t handle = ctx.r3.u32;
+  __imp__rex_ParticleSystem_Flush(ctx, base);
+  refii_bridge_fx_flush(handle);
+}
+
+REX_EXTERN(rex_ParticleSystem_SaturationMask) {
+  const uint32_t handle = ctx.r3.u32;
+  __imp__rex_ParticleSystem_SaturationMask(ctx, base);
+  refii_bridge_fx_saturation_mask(handle);
 }
 
 REX_EXTERN(rex_ParticleSystem_KillScene) {

@@ -40,8 +40,10 @@ public sealed class XexStream
 {
     /// <summary>
     /// FABLE 3's bank layout: the same header and versions as Fable 2's, but every emitter
-    /// carries five more bytes (a byte and a u32) between its attach flag and the shared entity
-    /// block. Detected by the parser when the Fable 2 layout misreads the second entity.
+    /// carries five more bytes between its attach flag and the shared entity block — the float
+    /// InternalScattering and the byte AtmosScattering (<see cref="XexEmitterType"/>), at every
+    /// version. Detected by the parser when the Fable 2 layout misreads the second entity: the
+    /// file does not name its title.
     /// </summary>
     public bool Fable3Layout;
 
@@ -178,9 +180,20 @@ public class XexEntityType
 
 public class XexEmitterType : XexEntityType
 {
-    /// <summary>Fable 3 only (see <see cref="XexStream.Fable3Layout"/>); meaning not yet read from its binary.</summary>
-    public byte Fable3Flag;
-    public uint Fable3Value;
+    /// <summary>
+    /// Fable 3 only (see <see cref="XexStream.Fable3Layout"/>): the emitter's InternalScattering,
+    /// a float after AttachToRoot (TU3 CParticleEmitterType_vf11 0x831CE5B8: `stfs f0,0xDC`
+    /// 0x831CEBD8; named by the property serializer vf10 0x831CDF50). The particle twin uploads it
+    /// as shader parameter 372 when it draws (sub_82C88EA0 → sub_82201160(372, twin+400)).
+    /// </summary>
+    public float InternalScattering;
+
+    /// <summary>
+    /// Fable 3 only: AtmosScattering, the byte after <see cref="InternalScattering"/> (`stb r8,0xE0`
+    /// 0x831CEC44, stored as v != 0). When set, the twin's draw runs the distance-based atmospheric
+    /// extinction / in-scatter helper sub_82CB0480 on the camera-to-emitter vector (sub_82C88EA0).
+    /// </summary>
+    public bool AtmosScattering;
 
     public bool PositionalInteractable;
     public int MaxActiveParticles = -1;
@@ -708,8 +721,8 @@ public static class XexBankParser
         e.AttachToRoot = s.U8() != 0;
         if (s.Fable3Layout)
         {
-            e.Fable3Flag = s.U8();
-            e.Fable3Value = s.U32();
+            e.InternalScattering = s.F32();
+            e.AtmosScattering = s.U8() != 0;
         }
         EntityTypeLoadBin(s, e);
     }

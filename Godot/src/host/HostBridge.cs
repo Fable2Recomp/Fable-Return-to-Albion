@@ -23,7 +23,7 @@ public static partial class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 238;
+	public const int ExpectedAbiVersion = 239;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -3910,7 +3910,7 @@ public static partial class HostBridge
 	/// <c>kStride</c> — both sides index one flat buffer and a disagreement is an ABI break the
 	/// compiler cannot see.
 	/// </summary>
-	public const int ActiveFxStride = 22;
+	public const int ActiveFxStride = 27;
 
 	/// <summary>
 	/// How many live particle NODES are read in one frame. The guest's vector holds every node,
@@ -4003,7 +4003,31 @@ public static partial class HostBridge
 		/// Whether this node owns a guest render twin (<c>CParticleGroup</c> or <c>CTrailGroup</c>),
 		/// even when its active quad count is currently 0.
 		/// </summary>
-		bool HasGuestTwin = false);
+		bool HasGuestTwin = false,
+
+		/// <summary>
+		/// <see cref="NameHash"/> is the EFFECT's own bank key, not a node type to join through
+		/// <see cref="Refii.Fx.FxBank.EffectForType"/>: Fable 3's guest states the effect at its
+		/// create (flag 64), where Fable 2's rows are the effect's nodes.
+		/// </summary>
+		bool NamesEffect = false,
+
+		/// <summary>
+		/// The effect's stated colour (red, green, blue, alpha), multiplied into every draw of its
+		/// particles: Fable 3's SetColour / SetAlpha (inst+80, copied to each emitter's +400 and
+		/// uploaded per draw). White where the title states none.
+		/// </summary>
+		Color? StatedColour = null,
+
+		/// <summary>Particle flushes stated since the effect's create (Fable 3's opcode 22).</summary>
+		uint StatedFlushes = 0,
+
+		/// <summary>The saturation mask is on for the effect's standard emitters (flag 256).</summary>
+		bool SaturationMask = false,
+
+		/// <summary>A spline setter stated points for this effect (flag 128): read them with
+		/// <see cref="GetFxSpline"/>.</summary>
+		bool SplineStated = false);
 
 	/// <summary>
 	/// Every particle effect the guest is currently playing, in world space — the only route
@@ -4061,13 +4085,42 @@ public static partial class HostBridge
 				Bits(_activeFx[at + 19]),
 				_activeFx[at + 20],
 				_activeFx[at + 21],
-				(flags & 16u) != 0));
+				(flags & 16u) != 0,
+				(flags & 64u) != 0,
+				new Color(Bits(_activeFx[at + 22]), Bits(_activeFx[at + 23]), Bits(_activeFx[at + 24]), Bits(_activeFx[at + 25])),
+				_activeFx[at + 26],
+				(flags & 256u) != 0,
+				(flags & 128u) != 0));
 		}
 
 		return effects;
 	}
 
 	private static float Bits(uint raw) => BitConverter.Int32BitsToSingle(unchecked((int)raw));
+
+	private static readonly float[] _fxSpline = new float[96];
+
+	/// <summary>
+	/// The points an effect's spline setter last stated (<see cref="ActiveFx.SplineStated"/>), raw
+	/// guest world axes like <see cref="ActiveFx.Position"/>, into <paramref name="into"/>; returns
+	/// how many (0 when none).
+	/// </summary>
+	public static int GetFxSpline(uint handle, Span<Vector3> into)
+	{
+		if (TryGetAbiVersion() is null || into.Length == 0)
+		{
+			return 0;
+		}
+
+		uint max = (uint)Math.Min(into.Length, _fxSpline.Length / 3);
+		int count = (int)RefiiHostGetFxSpline(handle, _fxSpline, max);
+		for (int i = 0; i < count; i++)
+		{
+			into[i] = new Vector3(_fxSpline[i * 3], _fxSpline[(i * 3) + 1], _fxSpline[(i * 3) + 2]);
+		}
+
+		return count;
+	}
 
 	/// <summary>
 	/// The rows array for list slot i, reused across reads: the record is consumed within the
@@ -7869,6 +7922,9 @@ public static partial class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetActiveFx(uint[]? outWords, uint maxEffects);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetFxSpline(uint handle, float[] outPoints, uint maxPoints);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetSaveCards(out uint cursor, out uint baseSlot, [Out] byte[]? text, uint capacity);

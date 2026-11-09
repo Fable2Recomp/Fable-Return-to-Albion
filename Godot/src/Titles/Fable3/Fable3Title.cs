@@ -13,6 +13,14 @@ public sealed class Fable3Title : Engine_TitleGame
 
 	public override Engine_Title Title => Engine_Title.Fable3;
 
+	/// <summary>
+	/// Measured 2026-11-09 (Mistpeak gypsy camp, the fx debug op's levelDoubles): all 47 effects the
+	/// level build spawned stood at a live effect of the same hash at distance 0.00 — each
+	/// level-placed CECParticleEmitter creates and places its effect through the particle wrappers
+	/// (fx_owner_hooks.cpp, world_hooks.cpp).
+	/// </summary>
+	public override bool GuestStatesLevelEffects => true;
+
 	/// <summary>Fable 3's shader banks are entries of levels.bnk, not loose files.</summary>
 	public override (string Named, string Release)? PackedShaderBanks =>
 		("shaders/shaders.sbk", "shaders/shadersrelease.sbk");

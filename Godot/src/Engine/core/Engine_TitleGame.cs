@@ -47,6 +47,12 @@ public abstract class Engine_TitleGame
 	public abstract Engine_Title Title { get; }
 
 	/// <summary>
+	/// The running guest creates and places every standing effect its level places, so the level
+	/// build spawns none of them from the level data (<see cref="Refii.Fx.Engine_LiveFx.GuestOwnsLevelEffects"/>).
+	/// </summary>
+	public virtual bool GuestStatesLevelEffects => false;
+
+	/// <summary>
 	/// The title's UI over the world, standing up beside the session before any guest runs (it
 	/// draws from the shipped assets); null when the title has none. The game window drives it
 	/// through <c>Refii.Game.IGameTitleUi</c> when the node implements it.

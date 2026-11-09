@@ -522,8 +522,8 @@ public static class Engine_FxBankWriter
 		if (fable3)
 		{
 			var emitter = like as XexEmitterType;
-			w.U8(emitter?.Fable3Flag ?? 0);
-			w.U32(emitter?.Fable3Value ?? 0u);
+			w.F32(emitter?.InternalScattering ?? 0f);
+			w.Bool(emitter?.AtmosScattering ?? false);
 		}
 
 		EntityCommon(w, e, t, like);

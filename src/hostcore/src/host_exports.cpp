@@ -682,7 +682,11 @@ extern "C" {
 ///     so there is no element tree to walk and nothing on the host reads one.
 /// 238 adds RefiiHostGetPlayerInventory — player 1's or 2's inventory, whoever's menus are open,
 ///     each record flagged worn, from the pump's per-player snapshot (Fable 2).
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 238; }
+/// 239 widens RefiiHostGetActiveFx to 27 words: [22..25] an effect's stated colour (red, green,
+///     blue, alpha), which Fable 3's guest applies at every draw (Fable 2 writes white), and [26]
+///     its particle flushes; flags 128 (spline points stated) and 256 (saturation mask); adds
+///     RefiiHostGetFxSpline — those points by handle.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 239; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveRoot(char* output, uint32_t capacity) {
     auto* state = rex::system::kernel_state();

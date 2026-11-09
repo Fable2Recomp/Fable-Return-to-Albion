@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 using Refii.Models;
 using Refii.Textures;
@@ -214,6 +215,43 @@ public partial class FableFx : Node3D
 
 	public float RecipeIntensity { get; set; } = 1f;
 
+	/// <summary>
+	/// The effect's colour as the guest states it (Fable 3's SetColour / SetAlpha, inst+80), applied
+	/// at every draw as the guest's own draw does: red, green, blue on the particle colour beside
+	/// <see cref="Tint"/>, alpha on the particle alpha. White untouched.
+	/// </summary>
+	public Color StatedColour { get; set; } = Colors.White;
+
+	/// <summary>
+	/// Particle flushes the guest has stated for this effect (Fable 3's opcode 22): each new one
+	/// kills every live particle of the standard emitters; emission goes on.
+	/// </summary>
+	public uint StatedFlushes
+	{
+		get => _statedFlushes;
+		set
+		{
+			if (value != _statedFlushes)
+			{
+				_statedFlushes = value;
+				if (_built)
+				{
+					_system.FlushParticles();
+				}
+			}
+		}
+	}
+
+	private uint _statedFlushes;
+
+	/// <summary>
+	/// The guest turned the saturation mask on for this effect's standard emitters (Fable 3's
+	/// opcode 10, hit impacts). Applied once, after the build.
+	/// </summary>
+	public bool StatedSaturationMask { get; set; }
+
+	private bool _saturationApplied;
+
 	public float RecipeSize { get; set; } = 1f;
 
 	/// <summary>
@@ -329,7 +367,9 @@ public partial class FableFx : Node3D
 
 		GD.Print(
 			$"[fx] bank loaded: {bank.Effects.Count} effects, " +
-			$"{bank.Emitters.Count} emitters, {bank.Systems.Count} systems");
+			$"{bank.Emitters.Count} emitters, {bank.Systems.Count} systems; " +
+			$"{bank.Effects.Count(e => e.UpdateFrequency == 0)} authored in the 15 Hz group" +
+			(bank.FixedThirtyHertz ? " (stepped at 30 Hz: this title has no such group)" : string.Empty));
 		_bankBytes = bytes;
 		_bank = bank;
 		return bank;
@@ -659,7 +699,13 @@ public partial class FableFx : Node3D
 		_system.SetLoop(Loop);
 		_system.SetIntensity(Intensity * RecipeIntensity);
 		_system.SetSizeScale(SizeScale * RecipeSize);
-		_system.SetTint(Tint.R, Tint.G, Tint.B);
+		_system.SetTint(Tint.R * StatedColour.R, Tint.G * StatedColour.G, Tint.B * StatedColour.B);
+		_system.SetLiveAlpha(StatedColour.A);
+		if (StatedSaturationMask && !_saturationApplied)
+		{
+			_system.ForceSaturationMask();
+			_saturationApplied = true;
+		}
 		Engine_FxSystem.FadeOut = !Refii.Lighting.Engine_LightingFrame.ModernModel;
 		if (!lightsOnly)
 		{
@@ -1593,6 +1639,7 @@ public partial class FableFx : Node3D
 
 		_built = true;
 		_builtName = _effectName;
+		_saturationApplied = false;
 
 		if (!placement.Resolved && _pieces.Count == 0)
 		{

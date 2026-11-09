@@ -384,16 +384,37 @@ void refii_bridge_fx_position(uint32_t handle, const float* lanes);
 void refii_bridge_fx_orientation(uint32_t handle, const float* lanes);
 void refii_bridge_fx_killed(uint32_t handle);
 void refii_bridge_fx_scene_killed(uint32_t scene);
+// A kill with a fade-out over `seconds`, stamped with the guest frame it was stated on.
+void refii_bridge_fx_fade(uint32_t handle, float seconds);
+// The effect's colour as its setters state it: red, green and blue together, alpha alone, and
+// its size scale. A create resets all four lanes and the scale to 1.
+void refii_bridge_fx_colour(uint32_t handle, float red, float green, float blue);
+void refii_bridge_fx_alpha(uint32_t handle, float alpha);
+void refii_bridge_fx_scale(uint32_t handle, float scale);
+// A spline setter's point list (x y z each, guest world space, at most
+// REFII_STATED_FX_SPLINE_POINTS kept), read back by handle; a particle flush (every live particle
+// of the effect's standard emitters dies, emission goes on), counted; the saturation mask turned
+// on for the effect's standard emitters. A create clears all three.
+#define REFII_STATED_FX_SPLINE_POINTS 32u
+void refii_bridge_fx_spline(uint32_t handle, const float* points, uint32_t count);
+uint32_t refii_bridge_fx_spline_read(uint32_t handle, float* out, uint32_t max_points);
+void refii_bridge_fx_flush(uint32_t handle);
+void refii_bridge_fx_saturation_mask(uint32_t handle);
 // The entity that plays the effect and the entity that one was attached to, as the title's emitter hooks state them.
 void refii_bridge_fx_owner(uint32_t handle, uint32_t owner, uint32_t attached);
 //   Read back as rows of REFII_STATED_FX_WORDS words: handle, name hash, sequence (the last
 //   statement's), flags, four position lanes, four orientation lanes, the owner entity, the entity it
-//   was attached to. Returns the rows written;
+//   was attached to, the fade-out's seconds (float bits) and the guest frame it was stated on
+//   (both 0 until a fade is stated), the colour's red, green, blue and alpha and the size scale
+//   (float bits, 1 until stated), the flushes stated. Returns the rows written;
 //   the count is the statements since boot (0 until a hook has stated one).
-#define REFII_STATED_FX_WORDS 14u
+#define REFII_STATED_FX_WORDS 22u
 #define REFII_STATED_FX_STARTED 1u
 #define REFII_STATED_FX_PLACED 2u
 #define REFII_STATED_FX_ORIENTED 4u
+#define REFII_STATED_FX_FADING 8u
+#define REFII_STATED_FX_SPLINE 16u
+#define REFII_STATED_FX_SATURATION 32u
 uint32_t refii_bridge_fx_rows(uint32_t* out_words, uint32_t word_capacity);
 uint32_t refii_bridge_fx_statement_count(void);
 // - a decal, in the 15 words Fable 2's decal hook states (the shell's RefiiHostGetDecals row

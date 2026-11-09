@@ -183,7 +183,7 @@
 # by the loader sub_82348AD0 on its success at 0x82350674) and its unload (mgr, flag); the
 # particle command wrappers — create (int* handle, name hash), start (handle), scene (handle,
 # scene), position (handle; v1), position and velocity (handle; v1, v2), orientation (handle; v1),
-# kill (handle), kill by scene (scene, callback); the decal render command's executor (cmd), a
+# kill (handle), kill with a fade-out (handle; f1 seconds), kill by scene (scene, callback), the handle's release once the effect has ended (command), colour (handle; four bytes), alpha (handle; f1), scale (handle; f1), spline ends (handle; v1, v2), a spline point list (handle, list, index, vector), a particle flush (handle) and the saturation mask (handle); the decal render command's executor (cmd), a
 # render twin releasing its decals (twin) and the decal list's clear; the render scene's add
 # (message, scene, ring; returns the object id — the drunk warp's full-screen quad is stated by
 # its message class) and remove (id, ring).
@@ -196,7 +196,16 @@
 0x831C1960 = { name = "rex_ParticleSystem_SetPositionAndVelocity" }
 0x831C1890 = { name = "rex_ParticleSystem_SetOrientation" }
 0x831C1770 = { name = "rex_ParticleSystem_Kill" }
+0x831C1A68 = { name = "rex_ParticleSystem_KillWithFadeOut" }
 0x831C13D0 = { name = "rex_ParticleSystem_KillScene" }
+0x831BC758 = { name = "rex_ParticleSystem_ReleaseHandle" }
+0x831C1B30 = { name = "rex_ParticleSystem_SetColour" }
+0x831C15E8 = { name = "rex_ParticleSystem_SetAlpha" }
+0x831C1828 = { name = "rex_ParticleSystem_SetScale" }
+0x831C1650 = { name = "rex_ParticleSystem_SetSplineEnds" }
+0x831C1E78 = { name = "rex_ParticleSystem_SetSplinePoints" }
+0x831C1908 = { name = "rex_ParticleSystem_Flush" }
+0x831C17C8 = { name = "rex_ParticleSystem_SaturationMask" }
 # Who plays an effect: the CECParticleEmitter that makes its handle (handle at +0x14, stw at 0x826AC454)
 # and the entity it attaches to (weak ref +0x1C, attachment sub_82715270 at 0x826ACDF8) — fx_owner_hooks.cpp.
 0x826AC3C8 = { name = "rex_ParticleEmitter_CreateEffect" }

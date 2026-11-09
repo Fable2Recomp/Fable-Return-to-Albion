@@ -41,6 +41,14 @@ public partial class GameDebugServer : Node
 	private static readonly Refii.Core.Engine_ShaderZeroWorkControls ShaderZeroWork = new();
 	private static readonly Refii.Core.Engine_ShaderCostDiagnostic ShaderCostDiagnostic = new();
 
+	/// <summary>The fx op's level-double census as a reply object.</summary>
+	private static Dictionary<string, object?> DoublesReply((int Doubles, int LevelNodes, List<string> Rows) d) => new()
+	{
+		["count"] = d.Doubles,
+		["levelNodes"] = d.LevelNodes,
+		["rows"] = d.Rows,
+	};
+
 	/// <summary>
 	/// `REFII_DEBUG_PORT=1` (or a port number) turns the channel on; so does `debug_channel =
 	/// true` in the package config, which is how a launch from the launcher gets one.
@@ -1634,6 +1642,8 @@ public partial class GameDebugServer : Node
 					["frozenSinceLastRead"] = Refii.Fx.FableFx.FrozenThisFrame,
 					["eye"] = $"({eye.X:0.0},{eye.Y:0.0},{eye.Z:0.0})",
 					["effects"] = feed?.Describe(eye, take) ?? new List<string>(),
+					// `doubles`: a level-spawned node of the same effect within 0.5 m of a live one.
+					["levelDoubles"] = feed is null ? null : DoublesReply(feed.DescribeLevelDoubles(0.5f, take)),
 				});
 			}
 

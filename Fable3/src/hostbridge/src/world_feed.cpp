@@ -41,7 +41,36 @@ namespace {
 using refii::hostcore::GuestWordAt;
 using refii::hostcore::SafeKernelMemory;
 
-constexpr uint32_t kActiveFxWords = 22u;
+constexpr uint32_t kActiveFxWords = 27u;
+/// The live-effect row flags (Godot/src/host/HostBridge.cs, ActiveFx).
+constexpr uint32_t kActiveAlive = 1u;
+constexpr uint32_t kActiveEmitting = 4u;
+constexpr uint32_t kActiveRoot = 8u;
+constexpr uint32_t kActiveNamesEffect = 64u;
+constexpr uint32_t kActiveSpline = 128u;
+constexpr uint32_t kActiveSaturationMask = 256u;
+/// FNV-1 of "$$reserved_root_name$$", the synthetic root's type (Engine_FxBank.ReservedRootType).
+constexpr uint32_t kReservedRootType = 0x7B825CFAu;
+/// Particle frames a second, flt_8334F4F0 (sub_831C0F90 stores 30.0; Fable 3 has no 15 Hz group).
+constexpr float kParticleFramesPerSecond = 30.0f;
+
+/// The fade-out's remaining fraction, the guest's +196/+192 (sub_831B6760): n = floor(seconds x 30
+/// + 0.5) frames from the statement (sub_831B5570), one off each frame, 1 while none is stated, 0
+/// once spent or for an n of 0. Counted on the guest's frame (refii_bridge_guest_frame), which
+/// steps at the particle frame's 30 Hz.
+float FadeLeft(const uint32_t* row) {
+    if ((row[3] & REFII_STATED_FX_FADING) == 0u) {
+        return 1.0f;
+    }
+    float seconds;
+    std::memcpy(&seconds, row + 14, sizeof(seconds));
+    const float frames = std::floor(seconds * kParticleFramesPerSecond + 0.5f);
+    if (!(frames > 0.0f)) {
+        return 0.0f;
+    }
+    const float elapsed = static_cast<float>(refii_bridge_guest_frame() - row[15]);
+    return std::fmax(0.0f, (frames - elapsed) / frames);
+}
 constexpr uint32_t kStatedFxWords = 10u;
 constexpr uint32_t kDecalWords = REFII_WORLD_DECAL_WORDS;
 constexpr uint32_t kDecalRowWords = kDecalWords + 12u;
@@ -173,15 +202,27 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetStatedFx(uint32_t* out_words, uint32_
 /// Statements the hooks have seen since boot; 0 means none has run yet.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetStatedFxCount(void) { return refii_bridge_fx_statement_count(); }
 
-/// The live effects, Fable 2's 22 words a row: [0] the handle as the instance, [1] the effect's
-/// name hash (FNV-1 of its backslashed path, the particle bank's key), [2] flags — 1 alive,
-/// 4 emitting, 8 root: each row is the effect's placement, the position its root emitters take
-/// (sub_831B5618 → emitter+0x50) — [3] 0 live particles (the guest's particles are not read),
-/// [4..6] the stated position's x, y, z, [7..15] the rotation's rows from the stated orientation,
-/// [16] the handle, [17] intensity 1, [18] scale 1, [19] fade 1 (no fade-out is stated), [20] the
-/// entity that plays the effect and [21] the entity that one was attached to, as fx_owner_hooks.cpp
-/// states them (0 for an effect no CECParticleEmitter plays). An effect is listed from its START
-/// until its KILL or its scene's.
+/// The live effects, Fable 2's 27 words a row, TWO rows an effect — Fable 2's shape, where a
+/// synthetic root carries the placement and the effect's nodes carry what is drawn:
+///   the ROOT row: [1] FNV-1 of "$$reserved_root_name$$" (the type Fable 2's guest gives a
+///     type-vector's root), [2] 8 root;
+///   the EFFECT row: [1] the effect's name hash as the create stated it (FNV-1 of its backslashed
+///     path, the particle bank's own key), [2] 1 alive | 4 emitting | 64 the hash names the
+///     EFFECT — Fable 2's node rows name an emitter TYPE the shell joins to its effect; Fable 3
+///     states the effect itself — | 128 a spline setter stated points (RefiiHostGetFxSpline) |
+///     256 the saturation mask is on.
+/// Both rows: [0] the handle as the instance, [3] 0 live particles (the guest's particles are not
+/// read), [4..6] the stated position's x, y, z (sub_831B5618 → emitter+0x50, the position every
+/// root emitter takes), [7..15] the rotation's rows from the stated orientation, [16] the handle,
+/// [17] intensity 1, [18] the stated scale (1 until SetScale), [19] the fade-out's remaining
+/// fraction (FadeLeft; 1 until a kill with a fade is stated), [20] the entity that plays the
+/// effect and [21] the entity that one was attached to, as fx_owner_hooks.cpp states them (0 for
+/// an effect no CECParticleEmitter plays), [22..25] the stated colour's red, green, blue, alpha
+/// (inst+80, applied by the guest's every draw; 1 until its setters run, world_hooks.cpp), [26]
+/// the particle flushes stated since the create. An
+/// effect is listed from its START until its handle is RELEASED (every end, world_hooks.cpp), its
+/// KILL, its scene's, or the end of its fade-out.
+/// `max_effects` counts rows.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_effects) {
     if (out == nullptr || max_effects == 0u) {
         return 0u;
@@ -207,30 +248,55 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
             continue;
         }
 
+        const float fade = FadeLeft(row);
+        if (fade <= 0.0f) {
+            continue;
+        }
+
         float basis[9];
         RowsOf(q, (flags & REFII_STATED_FX_ORIENTED) != 0u, basis);
 
-        uint32_t* fx = out + written * kActiveFxWords;
-        fx[0] = row[0];
-        fx[1] = row[1];
-        fx[2] = 1u | 4u | 8u;
-        fx[3] = 0u;
-        for (uint32_t lane = 0u; lane < 3u; ++lane) {
-            fx[4u + lane] = Bits(position[lane]);
+        if (written + 2u > max_effects) {
+            break;
         }
-        for (uint32_t k = 0u; k < 9u; ++k) {
-            fx[7u + k] = Bits(basis[k]);
+
+        for (uint32_t part = 0u; part < 2u; ++part) {
+            const bool root = part == 0u;
+            uint32_t* fx = out + written * kActiveFxWords;
+            fx[0] = row[0];
+            fx[1] = root ? kReservedRootType : row[1];
+            fx[2] = root ? kActiveRoot
+                         : (kActiveAlive | kActiveEmitting | kActiveNamesEffect |
+                            ((flags & REFII_STATED_FX_SPLINE) != 0u ? kActiveSpline : 0u) |
+                            ((flags & REFII_STATED_FX_SATURATION) != 0u ? kActiveSaturationMask : 0u));
+            fx[3] = 0u;
+            for (uint32_t lane = 0u; lane < 3u; ++lane) {
+                fx[4u + lane] = Bits(position[lane]);
+            }
+            for (uint32_t k = 0u; k < 9u; ++k) {
+                fx[7u + k] = Bits(basis[k]);
+            }
+            fx[16] = row[0];
+            fx[17] = Bits(1.0f);
+            fx[18] = row[20];
+            fx[19] = Bits(fade);
+            fx[20] = row[12];
+            fx[21] = row[13];
+            for (uint32_t lane = 0u; lane < 4u; ++lane) {
+                fx[22u + lane] = row[16u + lane];
+            }
+            fx[26] = row[21];
+            ++written;
         }
-        fx[16] = row[0];
-        fx[17] = Bits(1.0f);
-        fx[18] = Bits(1.0f);
-        fx[19] = Bits(1.0f);
-        fx[20] = row[12];
-        fx[21] = row[13];
-        ++written;
     }
 
     return written;
+}
+
+/// The last point list an effect's spline setter stated (world_hooks.cpp: the two ends, or a
+/// whole list), x y z in guest world space each; returns the points written.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFxSpline(uint32_t handle, float* out, uint32_t max_points) {
+    return refii_bridge_fx_spline_read(handle, out, max_points);
 }
 
 /// The decals the guest handed its renderer (world_hooks.cpp's take of sub_82C73BF8), oldest

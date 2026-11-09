@@ -582,6 +582,24 @@ public sealed class FxBank
     public string Error = string.Empty;
     public uint Version;
 
+    /// <summary>
+    /// Every effect steps at 30 Hz, whatever its <see cref="FxEffect.UpdateFrequency"/> says: a
+    /// Fable 3 bank. Fable 3's collection reader takes the four bytes into a stack temporary and
+    /// keeps nothing (TU3 CParticleSystemEntityTypeCollection_vf6 0x831C57D8, 0x831C5878..0x831C58A4),
+    /// and its rate init hard-codes 30 and 1/30 (sub_831C0F90: flt_8334F4F0 = 30.0) where Fable 2
+    /// indexes a 15/30 table by the effect's group.
+    /// </summary>
+    public bool FixedThirtyHertz;
+
+    /// <summary>
+    /// The stated size scale also scales each particle's launch speed and every chain node's
+    /// offset from its parent — Fable 3 (disc): the emitter's +0x1B4 multiplies the initial
+    /// velocity (sub_83188EF0 `vmulfp128` 0x83188F60 and the trail/mesh spawners) and the node's
+    /// +0xCC its translation (sub_831852F8 `vmulfp128 v21,v22,v29` 0x83185388). Fable 2's scale
+    /// reaches only size, the spawn offset and the acceleration.
+    /// </summary>
+    public bool ScaleCarriesMotion;
+
     public List<FxEmitter> Emitters { get; } = new();
     public List<FxSystemDef> Systems { get; } = new();
     public List<FxEffect> Effects { get; } = new();
@@ -756,6 +774,8 @@ public static class Engine_FxBank
 
         outBank.ExactModel = x;
         outBank.Version = x.BankVersion;
+        outBank.FixedThirtyHertz = x.Fable3Layout;
+        outBank.ScaleCarriesMotion = x.Fable3Layout;
         outBank.Emitters.Clear();
         outBank.Systems.Clear();
         outBank.Effects.Clear();
