@@ -1,5 +1,6 @@
 #include "core/native_lua_hooks.h"
 #include "core/native_lua_rexglue_compat.h"
+#include <algorithm>
 #include <string>
 #include <string_view>
 
@@ -9,6 +10,7 @@
 
 PPC_EXTERN_FUNC(__imp__rex_lhLua_RunScriptFile);
 PPC_EXTERN_FUNC(__imp__rex_lhLua_RunScriptBuffer);
+PPC_EXTERN_FUNC(__imp__rex_lhLua_GamePanic);
 
 namespace refii::lua {
 namespace {
@@ -66,4 +68,35 @@ REX_EXTERN(rex_lhLua_RunScriptBuffer) {
   }
 
   __imp__rex_lhLua_RunScriptBuffer(ctx, base);
+}
+
+// THE GAME VM'S PANIC NAMES ITSELF. lhCreateLuaState installs this as lua_atpanic (TU1
+// 0x824517D8, disc 0x82414E88): it builds "PANIC: unprotected error in call to Lua API (" + the
+// string at L->top-1 and destroys it unread; luaD_throw then calls exit(1). An error raised outside
+// any pcall -- Pluto refusing a value while the save writes its Lua section is the case seen --
+// otherwise surfaces only as a fault in a thread the atexit handlers tore down. L->top is L+8; a
+// TValue is {value, tag}, tag 4 a string, a TString's length at +12 and its chars at +16.
+REX_EXTERN(rex_lhLua_GamePanic) {
+  REX_FUNC_PROLOGUE();
+
+  const uint32_t state = ctx.r3.u32;
+  const uint32_t top = state != 0 ? refii::lua::PpcLoadU32(base, state + 8) : 0;
+  if (top >= 8) {
+    const uint32_t tag = refii::lua::PpcLoadU32(base, top - 4);
+    const uint32_t value = refii::lua::PpcLoadU32(base, top - 8);
+    if (tag == 4 && value != 0) {
+      const uint32_t length = std::min<uint32_t>(refii::lua::PpcLoadU32(base, value + 12), 4096);
+      std::string message(length, '\0');
+      for (uint32_t i = 0; i < length; ++i) {
+        message[i] = static_cast<char>(refii::lua::PpcLoadU8(base, value + 16 + i));
+      }
+      REXLOG_ERROR("Lua PANIC (unprotected error, the game exits): {}", message);
+    } else {
+      REXLOG_ERROR("Lua PANIC (unprotected error, the game exits): error value of type {}", tag);
+    }
+  } else {
+    REXLOG_ERROR("Lua PANIC (unprotected error, the game exits): no state");
+  }
+
+  __imp__rex_lhLua_GamePanic(ctx, base);
 }

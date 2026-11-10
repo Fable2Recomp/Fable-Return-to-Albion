@@ -58,7 +58,12 @@ public static class ModLua
 	/// cached, nil as <c>true</c>, and a cycle sees <c>true</c>.
 	/// <c>Refii._as_mod(mod)</c> is the <c>Refii</c> a mod's block sees (a local of the block): every field
 	/// the global's, read and written through, but its <c>ask_host</c> names the mod, so the host knows
-	/// which mod an ask comes from (<c>own_screen</c> is that mod's).
+	/// which mod an ask comes from (<c>own_screen</c> is that mod's). Every mod function holds its view
+	/// as an upvalue, and a mod function the game keeps (a wrapper stored by value in a combat info)
+	/// is written into the save with its upvalues: so <c>Refii</c> and each view are PERMANENTS
+	/// (<c>Refii._permanent</c>, the game's <c>AddToPermanentsTables</c> without its throw once the load
+	/// table is gone), written by name. Written by value they took the 213 C natives along, Pluto
+	/// raised "Attempt to persist a C function" and the game exited part-way through the save.
 	/// </summary>
 	public const string RequireRuntime =
 		"Refii._modules = Refii._modules or {}\n" +
@@ -66,6 +71,15 @@ public static class ModLua
 		"\tlocal scope = { modules = {}, loaded = {} }\n" +
 		"\tRefii._modules[mod] = scope\n" +
 		"\treturn scope\n" +
+		"end\n" +
+		"function Refii._permanent(value, name)\n" +
+		"\tlocal save = PlutoPermanentsSaveTable\n" +
+		"\tif save == nil or FNVHash == nil or save[value] ~= nil then return end\n" +
+		"\tlocal hash = FNVHash(name)\n" +
+		"\tsave[value] = hash\n" +
+		"\tif PlutoPermanentsLoadTable ~= nil and IsLoadedFromSaveGame ~= nil and IsLoadedFromSaveGame() then\n" +
+		"\t\trawset(PlutoPermanentsLoadTable, hash, value)\n" +
+		"\tend\n" +
 		"end\n" +
 		"function Refii._as_mod(mod)\n" +
 		"\tRefii._mod_views = Refii._mod_views or {}\n" +
@@ -77,6 +91,8 @@ public static class ModLua
 		"\t\tend }, { __index = Refii, __newindex = Refii })\n" +
 		"\t\tRefii._mod_views[mod] = view\n" +
 		"\tend\n" +
+		"\tRefii._permanent(Refii, 'RefiiApi')\n" +
+		"\tRefii._permanent(view, 'RefiiModView.' .. mod)\n" +
 		"\treturn view\n" +
 		"end\n" +
 		"function Refii._require(mod)\n" +

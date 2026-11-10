@@ -137,9 +137,13 @@ PPC_EXTERN_FUNC(rex_lua_rawseti);
 PPC_EXTERN_FUNC(rex_lhLua_PushEntity);
 PPC_EXTERN_FUNC(rex_lhLua_IsFableType);
 PPC_EXTERN_FUNC(rex_lhScriptEntityRef_Resolve);
+PPC_EXTERN_FUNC(rex_lhEntityManager_CollectWithComponent);
+PPC_EXTERN_FUNC(rex_CECGroupMind_AddGroupMinds);
 
 namespace refii::vfs {
 bool WriteModEventField(int32_t kind, const char* field, double value);
+// guest_tick_pump.cpp: a component off an entity by id, the guest's own layout.
+uint32_t EntityComponent(uint8_t* base, uint32_t entity, uint32_t id);
 // mod_commands.cpp: the camera per player.
 void ModCameraStated(PPCContext& ctx, uint8_t* base, uint32_t hero, int32_t mode);
 bool ModCameraHold(PPCContext& ctx, uint8_t* base, uint32_t hero, int32_t* mode, float* fov, float* pitch, float* blend,
@@ -1199,6 +1203,65 @@ REFII_LUA_NATIVE(NativeSetPartnerDog) {
 
 // Refii._job_worker(p) / Refii._estate_buyer(p): the core Lua's statements of who works the
 // running job and who the real-estate screen about to open buys for (0 none, 1, 2).
+// Core only: Refii._restore_group_minds() -> count. Every group-mind component in the world
+// registers its group minds again, as the game's own Lua_Debug_ReloadAI does for component 42
+// (TU1 0x82459F4C..0x8245A08C): the entities holding one come from the entity manager's own
+// search (rex_lhEntityManager_CollectWithComponent, filter = the component id word, kind 7, out =
+// a vector {_, begin, end, capacity}; the manager is *(*(*(*(game root)+12)+88)+4)+12) and each
+// component's rex_CECGroupMind_AddGroupMinds calls GroupMindManager:AddGroupMindAttachedToEntity
+// for every group-mind name it holds. A component restored from a save skips that at activation
+// (CECGroupMind_vf11 tests +0x1C, set by vf8 for a restore) because the save's AISave brings the
+// group minds back: a save without one leaves every guard, monk and quest NPC without its group.
+REFII_LUA_NATIVE(NativeRestoreGroupMinds) {
+  constexpr uint32_t kGroupMindComponent = 42u;
+  uint8_t* base = lua.base;
+  const auto step = [&](uint32_t at, uint32_t offset) -> uint32_t {
+    return at >= 0x10000u && at < 0xC0000000u ? refii::mods::LoadU32(base, at + offset) : 0u;
+  };
+  const uint32_t root = refii::mods::LoadU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t manager = step(step(step(step(root, 0xCu), 0x58u), 0x4u), 0xCu);
+  if (manager < 0x10000u || manager >= 0xC0000000u) {
+    lua.PushNumber(0);
+    RESULTS(1);
+  }
+
+  PPCContext call = refii::mods::Frame(lua.ctx);
+  const uint32_t filter = call.r1.u32 + 0x80u;
+  const uint32_t found = call.r1.u32 + 0x90u;
+  refii::mods::StoreU32(base, filter, kGroupMindComponent);
+  for (uint32_t i = 0; i < 16u; i += 4u) {
+    refii::mods::StoreU32(base, found + i, 0u);
+  }
+  call.r3.u32 = manager;
+  call.r4.u32 = filter;
+  call.r5.u32 = 7u;
+  call.r6.u32 = found;
+  rex_lhEntityManager_CollectWithComponent(call, base);
+
+  const uint32_t begin = refii::mods::LoadU32(base, found + 4u);
+  const uint32_t end = refii::mods::LoadU32(base, found + 8u);
+  int32_t restored = 0;
+  if (begin != 0u && end >= begin && end - begin <= 4u * 65536u) {
+    for (uint32_t at = begin; at < end; at += 4u) {
+      const uint32_t component = refii::vfs::EntityComponent(base, refii::mods::LoadU32(base, at), kGroupMindComponent);
+      if (component == 0u) {
+        continue;
+      }
+      PPCContext add = refii::mods::Frame(lua.ctx);
+      add.r3.u32 = component;
+      rex_CECGroupMind_AddGroupMinds(add, base);
+      ++restored;
+    }
+  }
+  if (begin != 0u) {
+    PPCContext release = refii::mods::Frame(lua.ctx);
+    release.r3.u32 = begin;
+    rex_lh_free(release, base);
+  }
+  lua.PushNumber(restored);
+  RESULTS(1);
+}
+
 REFII_LUA_NATIVE(NativeJobWorker) {
   RefiiCoopSetJobWorker(lua.Int(1));
   RESULTS(0);
@@ -2791,6 +2854,7 @@ Native g_natives[] = {
     {"player_dog", &NativePlayerDog, 0},
     {"player_for", &NativePlayerFor, 0},
     {"_set_partner_dog", &NativeSetPartnerDog, 0},
+    {"_restore_group_minds", &NativeRestoreGroupMinds, 0},
     {"_job_worker", &NativeJobWorker, 0},
     {"_estate_buyer", &NativeEstateBuyer, 0},
     {"_household", &NativeHousehold, 0},

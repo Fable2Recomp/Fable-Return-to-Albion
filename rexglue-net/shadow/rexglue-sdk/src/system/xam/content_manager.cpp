@@ -46,6 +46,85 @@ static const char* kGameContentHeaderDirName = "Headers";
 
 static int content_device_id_ = 0;
 
+// REFII SHADOW: A PACKAGE IS WRITTEN WHOLE OR NOT AT ALL. The guest opens a save package, writes
+// its files in place and closes it (Fable 2: lhSaveManager_WritePackage, WriteHeroPackage and
+// SaveGame_LoadFromDevice all end in XamContentClose, TU1 sub_82449BD8). A process that dies
+// between the two - a guest exit(1) part-way through a write, a crash, power loss - used to leave
+// a half-written file the next load read as the save. So a writable package is copied aside when
+// it opens and the copy is dropped when it closes; a copy still there at the next open means the
+// last session never closed the package, and the copy is put back before the guest sees it. A
+// package created in that open had no earlier state: it is removed. The copies live beside the
+// content types, <title folder>/refii-pending/<type>/<name>, where no listing looks.
+static const char* kPendingDirName = "refii-pending";
+static const char* kCreatedMarkerName = ".refii-created";
+
+static std::filesystem::path PendingPath(const std::filesystem::path& package_path) {
+  const auto type_dir = package_path.parent_path();
+  return type_dir.parent_path() / kPendingDirName / type_dir.filename() / package_path.filename();
+}
+
+static void RestorePending(const std::filesystem::path& package_path) {
+  std::error_code ec;
+  const auto pending = PendingPath(package_path);
+  if (!std::filesystem::exists(pending, ec)) {
+    return;
+  }
+  const bool created = std::filesystem::exists(pending / kCreatedMarkerName, ec);
+  std::filesystem::remove_all(package_path, ec);
+  if (created) {
+    std::filesystem::remove_all(pending, ec);
+    REXSYS_WARN("Content package {} was created and never closed (the session ended part-way "
+                "through writing it): removed",
+                rex::path_to_utf8(package_path));
+    return;
+  }
+  ec.clear();
+  std::filesystem::rename(pending, package_path, ec);
+  if (ec) {
+    ec.clear();
+    std::filesystem::copy(pending, package_path, std::filesystem::copy_options::recursive, ec);
+    if (!ec) {
+      std::filesystem::remove_all(pending, ec);
+    }
+  }
+  if (ec) {
+    REXSYS_ERROR("Content package {} was left open by the last session; restoring its copy "
+                 "from {} failed: {}",
+                 rex::path_to_utf8(package_path), rex::path_to_utf8(pending), ec.message());
+    return;
+  }
+  REXSYS_WARN("Content package {} was left open by the last session (it ended part-way through "
+              "writing it): restored to the state it opened in",
+              rex::path_to_utf8(package_path));
+}
+
+static void BeginPending(const std::filesystem::path& package_path, bool created) {
+  std::error_code ec;
+  const auto pending = PendingPath(package_path);
+  std::filesystem::remove_all(pending, ec);
+  ec.clear();
+  std::filesystem::create_directories(pending.parent_path(), ec);
+  if (created) {
+    std::filesystem::create_directories(pending, ec);
+    if (FILE* marker = rex::filesystem::OpenFile(pending / kCreatedMarkerName, "wb")) {
+      fclose(marker);
+    }
+  } else {
+    std::filesystem::copy(package_path, pending, std::filesystem::copy_options::recursive, ec);
+  }
+  if (ec) {
+    REXSYS_ERROR("Content package {}: its copy for a crash part-way through a write could not be "
+                 "made ({}); this open is unprotected",
+                 rex::path_to_utf8(package_path), ec.message());
+    std::filesystem::remove_all(pending, ec);
+  }
+}
+
+static void EndPending(const std::filesystem::path& package_path) {
+  std::error_code ec;
+  std::filesystem::remove_all(PendingPath(package_path), ec);
+}
+
 ContentPackage::ContentPackage(KernelState* kernel_state, const std::string_view root_name,
                                const XCONTENT_AGGREGATE_DATA& data,
                                const std::filesystem::path& package_path, bool read_only)
@@ -356,6 +435,7 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name, uint64_
   if (!std::filesystem::create_directories(package_path)) {
     return X_ERROR_ACCESS_DENIED;
   }
+  BeginPending(package_path, /*created=*/true);
   auto package = ResolvePackage(root_name, xuid, data);
   assert_not_null(package);
 
@@ -380,8 +460,15 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name, uint64_t 
   }
 
   auto package_path = ResolvePackagePath(xuid, data);
+  const bool read_only = IsOtherTitle(data.title_id);
+  if (!read_only) {
+    RestorePending(package_path);
+  }
   if (!std::filesystem::exists(package_path)) {
     return X_ERROR_FILE_NOT_FOUND;
+  }
+  if (!read_only) {
+    BeginPending(package_path, /*created=*/false);
   }
   // Another title's content mounts read-only: open-existing is all XAM grants it (F2 TU1
   // lhXam_XamContentCreateInternal 0x82cc4138: an alternate title with a disposition other
@@ -414,7 +501,9 @@ X_RESULT ContentManager::CloseContent(const std::string_view root_name) {
     }
     package = DetachPackage(it);
   }
+  const auto package_path = package->package_path();
   delete package;
+  EndPending(package_path);
   return X_ERROR_SUCCESS;
 }
 
@@ -468,6 +557,7 @@ X_RESULT ContentManager::DeleteContent(uint64_t xuid, const XCONTENT_AGGREGATE_D
   }
 
   auto package_path = ResolvePackagePath(xuid, data);
+  EndPending(package_path);
   std::error_code ec;
   auto dir_removed = std::filesystem::remove_all(package_path, ec);
   if (ec) {
@@ -496,7 +586,9 @@ X_RESULT ContentManager::UnmountContent(uint64_t xuid, const XCONTENT_AGGREGATE_
     }
     package = DetachPackage(it);
   }
+  const auto package_path = package->package_path();
   delete package;
+  EndPending(package_path);
   return X_ERROR_SUCCESS;
 }
 
@@ -518,6 +610,7 @@ X_RESULT ContentManager::UnmountAndDeleteContent(uint64_t xuid,
 
   // Delete phase: remove package directory and .header file
   auto package_path = ResolvePackagePath(xuid, data);
+  EndPending(package_path);
 
   uint64_t used_xuid = (data.xuid != uint64_t(-1) && data.xuid != 0) ? uint64_t(data.xuid) : xuid;
   auto header_path =

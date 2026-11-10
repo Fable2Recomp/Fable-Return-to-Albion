@@ -9968,6 +9968,35 @@ public partial class GameUi : Node, IGameTitleUi
 	private static string ShortName(Engine_UiModel.Presentation presentation) =>
 		System.IO.Path.GetFileNameWithoutExtension(presentation.Name.Replace('\\', '/'));
 
+	/// <summary>
+	/// The HUD presentation the guest plays: the in-game GUI's HUD object (`GUI+32`) and its
+	/// presentation (`+4`), as the pump's ArmHudShow reads them. 0 when the GUI states none.
+	/// </summary>
+	private static uint StatedHudPresentation()
+	{
+		System.Span<uint> word = stackalloc uint[1];
+		uint gui = HostBridge.GuestAddress(0x83496B08u);
+		if (gui == 0u || HostBridge.Peek(gui, word) != 1 || word[0] < 0x10000u)
+		{
+			return 0u;
+		}
+
+		// Only the in-game GUI's +32 is the HUD object: `dword_83496B08` also holds the front end's
+		// GUI and a base-only instance (Fable2Input's note), whose +32 is something else.
+		uint gameGui = word[0];
+		if (HostBridge.Peek(gameGui, word) != 1 || word[0] != HostBridge.GuestAddress(0x82001610u))
+		{
+			return 0u;
+		}
+
+		if (HostBridge.Peek(gameGui + 32u, word) != 1 || word[0] < 0x10000u)
+		{
+			return 0u;
+		}
+
+		return HostBridge.Peek(word[0] + 4u, word) == 1 && word[0] >= 0x10000u ? word[0] : 0u;
+	}
+
 	/// <summary>Builds or refreshes one live presentation at a given depth.</summary>
 	private void Follow(Engine_UiModel.Presentation presentation, int depth)
 	{
@@ -9981,6 +10010,17 @@ public partial class GameUi : Node, IGameTitleUi
 		// shipped for.
 		if (string.Equals(name, HudPresentation, System.StringComparison.OrdinalIgnoreCase))
 		{
+			// THE HUD IS THE ONE THE GUEST NAMES, not whichever hud.bgf is listed last. A load from
+			// in game leaves the previous load's HUD presentation live beside the new one, and the
+			// stand then read the old one's statements: its root on the hiding slide, UpperElements
+			// dark, no health, quest box or d-pad for the rest of the session. The HUD object's
+			// presentation, `*(*(GUI+32)+4)`, is the one the guest plays (the pump's ArmHudShow).
+			uint stated = StatedHudPresentation();
+			if (stated != 0u && stated != presentation.Address)
+			{
+				return;
+			}
+
 			// The address is still taken: the world icons — the one part of the HUD the guest
 			// arranges — are sampled off this presentation without mirroring it. See
 			// Engine_HudWorldIcons.

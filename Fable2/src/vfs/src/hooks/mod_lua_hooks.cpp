@@ -56,6 +56,9 @@ constexpr const char* kCoreKey = "refii/core_init.lua";
 constexpr const char* kCoreCameraKey = "refii/core_camera.lua";
 constexpr const char* kInitKey = "refii/mod_init.lua";
 constexpr const char* kCameraKey = "refii/mod_camera.lua";
+/// Refii's save integrity (Godot/src/Titles/Fable2/save/Engine_SaveCompatLua.cs), run after every
+/// mod so its GetSaveTable / LoadScriptSave guards are the outermost and it names what they added.
+constexpr const char* kCoreTailKey = "refii/core_tail.lua";
 
 bool Plausible(uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; }
 
@@ -155,6 +158,7 @@ REX_EXTERN(rex_lhLuaScriptSystem_LoadStartupScripts) {
     refii::vfs::RegisterModLuaNatives(work, base, state);
     RunComposedChunk(work, base, state, kCoreKey);
     RunComposedChunk(work, base, state, kInitKey);
+    RunComposedChunk(work, base, state, kCoreTailKey);
     RunComposedChunk(work, base, state, kCoreCameraKey);
     RunComposedChunk(work, base, state, kCameraKey);
   }

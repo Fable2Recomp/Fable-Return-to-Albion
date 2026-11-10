@@ -1500,7 +1500,7 @@
 0x824FE2F8 = { size = 0x70 }
 0x825F2B08 = { size = 0x3C }
 0x82414E28 = { size = 0x60 }
-0x82414E88 = { size = 0xB8 }
+0x82414E88 = { name = "rex_lhLua_GamePanic", size = 0xB8 }
 0x82414F40 = { size = 0x130 }
 0x82415070 = { size = 0x50 }
 0x824150C0 = { size = 0x124 }
@@ -10737,6 +10737,8 @@
 0x824154F0 = { name = "rex_lhLua_RunScriptFile" }
 0x824155C8 = { name = "rex_lhLua_RunScriptBuffer" }
 0x825ACEA0 = { name = "rex_lhLuaBindings_RegisterGameNamespaces" }
+0x82345A40 = { name = "rex_lhEntityManager_CollectWithComponent" }
+0x82916690 = { name = "rex_CECGroupMind_AddGroupMinds" }
 0x825AD498 = { name = "rex_lhLuaScriptSystem_LoadStartupScripts" }
 0x825AE828 = { name = "rex_lhLuaScriptSystem_RunCameraScripts" }
 0x8273DA00 = { name = "rex_CECAbilities_PerformRequest" }
