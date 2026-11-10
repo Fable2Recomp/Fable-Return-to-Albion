@@ -112,6 +112,8 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     ${REFII_VFS_ROOT}/src/hooks/pubgame_pump.cpp
     ${REFII_VFS_ROOT}/src/hooks/babel_text_hooks.cpp
     ${REFII_VFS_ROOT}/src/hooks/guest_tick_pump.cpp
+    # The renderer's deferred-release list, released on a co-op joiner too.
+    ${REFII_VFS_ROOT}/src/hooks/deferred_release_hooks.cpp
     ${REFII_VFS_ROOT}/src/hooks/game_init_trace.cpp
     # Mods' own Lua, run in the game VM after the startup and camera scripts.
     ${REFII_VFS_ROOT}/src/hooks/mod_lua_hooks.cpp

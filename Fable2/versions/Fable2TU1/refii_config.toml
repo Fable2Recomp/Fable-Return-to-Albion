@@ -10760,7 +10760,8 @@
 0x821B6EE0 = { }
 0x821BA0F0 = { }
 0x821BFDF0 = { }
-0x821C3858 = { }
+0x821C3858 = { name = "rex_lhRenderer_FrameBody" }
+0x822B4F38 = { name = "rex_lhRenderer_ReleasePending" }
 0x821C3C60 = { name = "rex_lhRenderer_DrawScene" }
 0x821C6708 = { }
 0x821C91C8 = { }
